@@ -6,7 +6,7 @@
 // 开关 = ModelEntry.enabled（聊天 🧠 下拉只显示 enabled 模型）。
 // 厂商被禁用（vendorDisabled）时整行变淡、启用开关与连接测试禁用。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Pencil, Plug, Trash2 } from "lucide-react";
 import { formatCommandError } from "../../lib/errorHandler";
@@ -50,10 +50,14 @@ export function ModelRow({
   /** 连接测试结果（本地态，不入库）：ok=绿 / fail=红，title 显示细节 */
   const [testState, setTestState] = useState<TestState>("idle");
   const [testMsg, setTestMsg] = useState("");
+  /** 在途测试的过期守卫：改 baseUrl/格式会作废在途结果（见下方 reset 效果） */
+  const testSeqRef = useRef(0);
   const isOn = model.enabled !== false;
   // Base URL / API 格式变了 → 本行瞬态测试结果作废（请求路径已指向新地址，
   // 绿色与「改 URL/格式后需重新测试」的提示不能自相矛盾）
   useEffect(() => {
+    // 递增序号：在途 bot_test_connection 迟到 resolve 不得把 idle 覆写成假绿
+    testSeqRef.current++;
     // oxlint-disable-next-line react/set-state-in-effect
     setTestState("idle");
     // oxlint-disable-next-line react/set-state-in-effect
@@ -81,6 +85,7 @@ export function ModelRow({
   /** 插头连接测试：bot_test_connection 只判 HTTP 状态（后端 5s 超时） */
   const runTest = async () => {
     if (testState === "testing" || vendorDisabled) return;
+    const seq = testSeqRef.current;
     setTestState("testing");
     setTestMsg("");
     try {
@@ -88,16 +93,21 @@ export function ModelRow({
         "bot_test_connection",
         { baseUrl: model.baseUrl, apiFormat: apiProvider, vendor: model.vendor ?? null },
       );
-      if (r.ok) {
-        setTestState("ok");
-        setTestMsg(r.status ? `连接成功（HTTP ${r.status}）` : "连接成功");
-      } else {
-        setTestState("fail");
-        setTestMsg(r.error ?? (r.status ? `HTTP ${r.status}` : "连接失败"));
+      // await 期间改了 baseUrl/格式：结果属于旧配置，只通知父级、不污染本行状态
+      if (seq === testSeqRef.current) {
+        if (r.ok) {
+          setTestState("ok");
+          setTestMsg(r.status ? `连接成功（HTTP ${r.status}）` : "连接成功");
+        } else {
+          setTestState("fail");
+          setTestMsg(r.error ?? (r.status ? `HTTP ${r.status}` : "连接失败"));
+        }
       }
     } catch (e) {
-      setTestState("fail");
-      setTestMsg(formatCommandError(e));
+      if (seq === testSeqRef.current) {
+        setTestState("fail");
+        setTestMsg(formatCommandError(e));
+      }
     }
     // 后端已把可用性落盘（ok 进 verified_vendors / 失败移出）：通知父级刷新
     onTested?.();

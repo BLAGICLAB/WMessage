@@ -325,7 +325,15 @@ where
                 steps.len()
             ),
         );
-        if unknown.len() >= steps.len() {
+        // 终止判定按主步逐条计数：unknown 是 steps+rollback 去重后的工具名清单，
+        // 与步数错比会漏终止（主步重复调用同一改名工具时 unknown.len() 恒小于步数）；
+        // 仅 rollback 段引用未知工具不会触发（主步未知计数不含）
+        if steps
+            .iter()
+            .filter(|s| !known.contains(&s.tool_name))
+            .count()
+            == steps.len()
+        {
             let reason = format!(
                 "技能「{name}」的所有步骤都引用了已不存在的工具（{}）——工具已更名或技能过旧，请更新 SKILL.md",
                 unknown.join("、")
@@ -1108,5 +1116,115 @@ mod tests {
         // 收尾：不给其他测试留状态
         let registry = skill_runs(&app);
         registry.lock().unwrap().remove(name);
+    }
+
+    /// 回归锁：全部主步重复调用同一改名工具时必须提前终止。
+    /// 旧判定 unknown.len() >= steps.len() 把「去重后未知工具名数」与「主步数」
+    /// 错比——3 步都调 ghost_tool 时 unknown.len()=1 < 3，漏终止、逐步失败白烧回滚。
+    #[tokio::test]
+    async fn compat_gate_terminates_when_all_steps_call_same_renamed_tool() {
+        let app = {
+            let app = tauri::test::mock_app();
+            tauri::Manager::manage(&app, crate::app_state::AppState::default());
+            app.handle().clone()
+        };
+        let body = "## Step 1: a\nghost_tool({})\n\n## Step 2: b\nghost_tool({})\n\n## Step 3: c\nghost_tool({})\n\n## Rollback\nrb_tool({})";
+        let meta = crate::bot_skills::parse_meta(body, "compat-gate-test");
+        let exec_calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let exec_calls2 = exec_calls.clone();
+        let exec = move |_tool: String, _args: String| {
+            let calls = exec_calls2.clone();
+            async move {
+                calls.lock().unwrap().push("called".into());
+                crate::bot::registry::ToolResult::ok("mock ok".to_string(), Vec::new())
+            }
+        };
+        let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let persisted2 = persisted.clone();
+        let persist = move |name: &str,
+                            kind: &str,
+                            _reason: Option<&str>,
+                            _summary: Option<&str>,
+                            _rb: Option<bool>| {
+            persisted2
+                .lock()
+                .unwrap()
+                .push((name.to_string(), kind.to_string()));
+        };
+        let result = run_skill_scheduler_core(
+            &app,
+            "compat-gate-test",
+            &meta,
+            body,
+            None,
+            &serde_json::Value::Null,
+            &[],
+            None,
+            exec,
+            persist,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(DslFailure::Terminated { .. })),
+            "全部主步未知必须提前终止：{result:?}"
+        );
+        assert_eq!(
+            exec_calls.lock().unwrap().len(),
+            0,
+            "终止前不得调用任何工具"
+        );
+        let pv = persisted.lock().unwrap();
+        assert!(
+            pv.iter().any(|(_, k)| k == "terminated"),
+            "应落 terminated：{pv:?}"
+        );
+    }
+
+    /// 对照组：仅 rollback 段引用未知工具、主步全部已知 → 不终止，正常跑完主步
+    #[tokio::test]
+    async fn compat_gate_keeps_running_when_only_rollback_unknown() {
+        let app = {
+            let app = tauri::test::mock_app();
+            tauri::Manager::manage(&app, crate::app_state::AppState::default());
+            app.handle().clone()
+        };
+        // query_single_task 内置已知；rb_tool 未知且只在 rollback 段
+        let body = "## Step 1: list\nquery_single_task({})\n\n## Rollback\nrb_tool({})";
+        let meta = crate::bot_skills::parse_meta(body, "compat-gate-rb-only");
+        let exec = move |_tool: String, _args: String| async move {
+            crate::bot::registry::ToolResult::ok("[]".to_string(), Vec::new())
+        };
+        let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let persisted2 = persisted.clone();
+        let persist = move |_name: &str,
+                            kind: &str,
+                            _r: Option<&str>,
+                            _s: Option<&str>,
+                            _rb: Option<bool>| {
+            persisted2
+                .lock()
+                .unwrap()
+                .push((_name.to_string(), kind.to_string()));
+        };
+        let outcome = run_skill_scheduler_core(
+            &app,
+            "compat-gate-rb-only",
+            &meta,
+            body,
+            None,
+            &serde_json::Value::Null,
+            &[],
+            None,
+            exec,
+            persist,
+        )
+        .await
+        .expect("主步全部已知不得被兼容闸终止");
+        assert!(matches!(outcome, DslOutcome::Done(_)));
+        let pv = persisted.lock().unwrap();
+        assert!(
+            !pv.iter().any(|(_, k)| k == "terminated"),
+            "仅 rollback 未知不得终止：{pv:?}"
+        );
     }
 }

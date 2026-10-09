@@ -1016,6 +1016,8 @@ pub async fn bot_chat(
         &trace_app,
         &trace_capture,
         loop_result.is_ok(),
+        // 用户停止时 run_model_loop 返回 Ok（「⏹ 已停止」），须显式传停止标志
+        stop.stopped(),
         loop_result.as_ref().err().map(|e| e.to_string()),
     )
     .await;
@@ -1833,6 +1835,8 @@ where
         }
     }
     let stop = StopGuard::new(app, true, Some(sid.clone()));
+    // 收尾判定停止用：stop 本体 move 进 run，先留只读令牌
+    let stop_token = stop.token();
     let block = build_task_block(&task, ctx);
     let mut msgs = vec![
         serde_json::json!({"role": "system", "content": format!("{}\n\n{}\n\n{}", EXECUTE_SYSTEM_PROMPT, gen_dir_rule(app), build_skill_block_for(app, Some(&task.title)).await)}),
@@ -1865,6 +1869,8 @@ where
             app,
             hook,
             outcome.is_ok(),
+            // 用户停止也返回 Ok（「⏹ 已停止」），按令牌判定收尾为 stopped
+            stop_token.stopped(),
             outcome.as_ref().err().map(|e| e.to_string()),
         )
         .await;

@@ -742,6 +742,13 @@ pub(crate) fn delete_non_self_locked(
             [self_pid],
         )
         .map_err(|e| CommandError::DbError(e.to_string()))?;
+    // 卡片档案级联（critical，与 delete_tasks 同口径）：硬删卡不留 brief_entries 孤儿行。
+    // 尽力而为：无 brief_entries 表的连接上不炸主删除
+    for id in &ids {
+        if let Err(e) = crate::db::brief::brief_delete_task(conn, id) {
+            eprintln!("[brief] 卡片档案清理失败（不阻断删除）：{e}");
+        }
+    }
     Ok((n, ids))
 }
 
@@ -1580,6 +1587,47 @@ mod task_set_column_tests {
         let (count, ids) = delete_non_self_locked(&conn, "self-pid").unwrap();
         assert_eq!((count, ids.len()), (0, 0));
         assert_eq!(load_all(&conn).unwrap().len(), 2);
+    }
+
+    /// 硬删同步级联卡片档案（critical，与 delete_tasks 同口径）：被删卡的
+    /// brief_entries 行一并清掉不留孤儿；本人卡与工作流级条目（task_id NULL）不动
+    #[test]
+    fn delete_non_self_cascades_brief_entries() {
+        let _g = crate::db::lock_db_write();
+        let conn = setup_conn();
+        crate::db::brief::ensure_brief_entries(&conn).unwrap();
+        insert_owned_task(&conn, "other", Some("someone-else"));
+        insert_owned_task(&conn, "mine", Some("self-pid"));
+        for tid in ["other", "mine"] {
+            conn.execute(
+                "INSERT INTO brief_entries (workflow_id, task_id, kind, source, text, created_at)
+                 VALUES ('wf1', ?1, 'node', 'manual', 'x', 1000)",
+                rusqlite::params![tid],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO brief_entries (workflow_id, task_id, kind, source, text, created_at)
+             VALUES ('wf1', NULL, 'node', 'manual', 'x', 1000)",
+            [],
+        )
+        .unwrap();
+
+        let (count, _) = delete_non_self_locked(&conn, "self-pid").unwrap();
+        assert_eq!(count, 1);
+
+        let remaining: Vec<Option<String>> = {
+            let mut stmt = conn
+                .prepare("SELECT task_id FROM brief_entries ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(remaining.len(), 2, "仅留本人卡与工作流级档案行");
+        assert!(remaining.contains(&Some("mine".to_string())));
+        assert!(remaining.contains(&None), "task_id NULL 的工作流级条目不动");
     }
 
     #[test]

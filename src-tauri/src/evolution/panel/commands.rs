@@ -283,10 +283,10 @@ pub fn toggle_inner<R: tauri::Runtime>(
 
         // ── 段 ③：锁内把 CR 流转到 Active——重新 load 定位（段 ② 期间文件
         // 可能被并发改），仅状态真正变化才 rewrite（重复批 no-op 零写放大）。
-        // pending 的 CR 不可被回滚（rollback_precheck 拒绝），段 ② 窗口无竞争面。
+        // 段 ② 窗口存在竞争面：rollback_precheck 只拦终态，pending 的 CR 可被
+        // 并发回滚——先取盘面最新状态再流转，RolledBack fail-closed 不复活。
         if cr.status != ChangeStatus::Active {
             let _g = lock_evolution_store();
-            mark_human_applied(&mut cr)?;
             let mut changes = load_changes(app)?;
             let pos = changes.iter().position(|c| c.change_id == cr.change_id).ok_or_else(|| {
                 // 落库已生效但 CR 行没了（段 ② 期间被并发删除）：fail-closed 响亮报错，
@@ -296,6 +296,15 @@ pub fn toggle_inner<R: tauri::Runtime>(
                     cr.change_id
                 )
             })?;
+            // 以盘面状态为准：段①带出的 cr.status 经段②窗口可能已陈旧
+            cr.status = changes[pos].status;
+            if cr.status == ChangeStatus::RolledBack {
+                return Err(format!(
+                    "CR {} 已在批准执行期间被并发回滚，不再流转到 Active（本次记忆已落库，请刷新面板核实状态）",
+                    cr.change_id
+                ));
+            }
+            mark_human_applied(&mut cr)?;
             changes[pos] = cr.clone();
             rewrite_jsonl(&changes_path(app), &changes)?;
         }
@@ -455,18 +464,19 @@ fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Res
 /// cascade_source 的记忆级联内核（注入连接，内存库可单测）——
 /// related_refs 源记忆整删 + apply 落下的 lesson 按 key_tag（evo:<id>）删。
 /// 只删 related_refs 会把废案提案的 lesson 留成孤儿（injection_block 永带出）。
+/// 先删 lesson 再删源记忆：中途失败只剩源记忆可重试，不会留下孤儿 lesson。
 pub(crate) fn cascade_delete_mem_items(
     conn: &rusqlite::Connection,
     related_refs: &[String],
     proposal_id: &str,
 ) -> Result<usize, String> {
-    let mut n = if related_refs.is_empty() {
-        0
+    let mut n = if crate::evolution::apply::rollback_applied(conn, proposal_id)? {
+        1
     } else {
-        crate::memory::store::delete_by_ids(conn, related_refs)?
+        0
     };
-    if crate::evolution::apply::rollback_applied(conn, proposal_id)? {
-        n += 1;
+    if !related_refs.is_empty() {
+        n += crate::memory::store::delete_by_ids(conn, related_refs)?;
     }
     Ok(n)
 }

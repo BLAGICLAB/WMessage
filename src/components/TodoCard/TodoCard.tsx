@@ -274,7 +274,8 @@ export function TodoCardView({
             }
             onPointerDown={stop}
             onClick={
-              archived
+              // 回收站/归档只读：trashed 卡也不得点进标题编辑（blur 会提交改写）
+              archived || trashed
                 ? undefined
                 : () => setEditing(true)
             }

@@ -162,14 +162,19 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
 
 // screenshot
 
-/// 截图文件名（纯函数，可测）：wm-screen-YYYYMMDD-HHMMSS.png
+/// 截图文件名（纯函数，可测）：wm-screen-YYYYMMDD-HHMMSS-mmm.png。
+/// 毫秒后缀防并行 tool_call 同秒互相覆盖
 fn screenshot_filename(ts_ms: i64) -> String {
     use chrono::TimeZone;
     let dt = chrono::Local
         .timestamp_millis_opt(ts_ms)
         .single()
         .unwrap_or_else(chrono::Local::now);
-    format!("wm-screen-{}.png", dt.format("%Y%m%d-%H%M%S"))
+    format!(
+        "wm-screen-{}-{:03}.png",
+        dt.format("%Y%m%d-%H%M%S"),
+        ts_ms.rem_euclid(1000)
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -287,10 +292,13 @@ mod tests {
 
     #[test]
     fn screenshot_filename_has_timestamp_shape() {
-        // 固定时间戳 → wm-screen-YYYYMMDD-HHMMSS.png
+        // 固定时间戳 → wm-screen-YYYYMMDD-HHMMSS-mmm.png
         let name = screenshot_filename(1_759_000_000_000);
-        let re = regex::Regex::new(r"^wm-screen-\d{8}-\d{6}\.png$").unwrap();
+        let re = regex::Regex::new(r"^wm-screen-\d{8}-\d{6}-\d{3}\.png$").unwrap();
         assert!(re.is_match(&name), "{name}");
+        // 同秒两截屏文件名必须不同（毫秒后缀防并行覆盖）
+        let next = screenshot_filename(1_759_000_000_001);
+        assert_ne!(name, next, "{name}");
     }
 
     /// 真实截屏冒烟（macOS，需屏幕录制授权；Windows 手动跑 PowerShell 分支）。

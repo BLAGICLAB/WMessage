@@ -291,6 +291,29 @@ fn sched_last_dt(ms: Option<i64>) -> chrono::DateTime<chrono::Local> {
 /// 关机/休眠/机器人开关关闭期间错过的到点，恢复时距到点超过 2h 一律不补跑。
 const CATCHUP_WINDOW: chrono::Duration = chrono::Duration::hours(2);
 
+/// 调度扫描周期（秒），start_scheduler 的 interval 与 at: 首跑宽限共用同一常量防漂移
+const SCHED_TICK_SECS: u64 = 30;
+
+/// at: 一次性首跑宽限：2×tick。sched_last=None 且到点已超该窗口的 at: 不进 due
+///（交给 stale 清理）；窗口内视为「刚到点」，保留既有首跑语义。
+const AT_FIRST_RUN_GRACE: chrono::Duration =
+    chrono::Duration::seconds((SCHED_TICK_SECS * 2) as i64);
+
+/// at: 首跑宽限判定（纯函数，可测）：从未执行的 at: 到点已超宽限窗口 → true。
+/// 防 find_due_tasks 同帧双命中：classify_due 以远古基准判 at: 恒 Run，与
+/// stale_ids 清理同帧命中会把重启前早已过期的 at: 补跑。
+fn at_first_run_stale(
+    sched: &str,
+    sched_last: Option<i64>,
+    now: chrono::DateTime<chrono::Local>,
+) -> bool {
+    sched.starts_with("at:")
+        && sched_last.is_none()
+        && occurrence_after(sched, sched_last_dt(None))
+            .map(|occ| now - occ > AT_FIRST_RUN_GRACE)
+            .unwrap_or(false)
+}
+
 /// 到点判定（纯函数，可测）：
 /// - Run：触发点已到且未超补跑窗口（或新任务首跑），正常执行；
 /// - Missed：recurring 触发点已超 2h 窗口——不补跑，调用方消费掉该 occurrence
@@ -355,6 +378,10 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())?;
+            // 过期超宽限的 at: 交给 stale_ids 清理，不进 due（防重启后补跑）
+            if at_first_run_stale(sched, t.sched_last, now) {
+                return None;
+            }
             match classify_due(sched, t.sched_last, now) {
                 DueVerdict::Run => Some(t),
                 DueVerdict::Missed => {
@@ -595,6 +622,31 @@ async fn run_scheduled_workflow(app: AppHandle, wf: crate::db::workflow::Workflo
                     crate::bot::truncate_for_log(&e.message(), 160)
                 ),
             );
+            // spawn 失败回滚 sched_last 至原值（RMW 基线 = 首步写入的 updated_at）：
+            // 不回滚的话 at: 一次性工作流本次触发永久搁浅（既不再到期也不算过期），
+            // 周期工作流也要白等一整个周期；回滚后下轮 tick 重新判定
+            let rb_now = chrono::Local::now();
+            let reverted = update_wf_schedule_fields(
+                &app,
+                &wf.id,
+                Some(now.timestamp_millis()),
+                wf.schedule.clone(),
+                wf.sched_last,
+                rb_now.timestamp_millis(),
+            )
+            .await;
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "sched_wf_rollback | id: {} | sched_last 回滚{}",
+                    wf.id,
+                    if reverted {
+                        "成功，下轮 tick 重判"
+                    } else {
+                        "失败，本次触发仍会丢弃"
+                    }
+                ),
+            );
         }
     }
 }
@@ -752,10 +804,23 @@ async fn update_job_sched_fields(
     ok
 }
 
+/// spawn_blocking（返回 Result<(), String>）的失败文本归一：None = 成功，
+/// join 失败与业务 Err 都转文本（收尾三处落库共用同一审计口径）
+fn blocking_err_text<E: std::fmt::Display>(
+    outcome: &Result<Result<(), String>, E>,
+) -> Option<String> {
+    match outcome {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(e.clone()),
+        Err(e) => Some(e.to_string()),
+    }
+}
+
 async fn delete_job_row(app: &AppHandle, id: &str) {
     let app_cl = app.clone();
     let id = id.to_string();
-    let _ = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    let id_audit = id.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let _g = crate::db::lock_db_write();
         let conn = crate::db::open_db(&app_cl)?;
         crate::db::delete_scheduled_job(&conn, &id)
@@ -763,6 +828,17 @@ async fn delete_job_row(app: &AppHandle, id: &str) {
             .map_err(|e| e.to_string())
     })
     .await;
+    // 删除失败只留痕不重试：at: 的删除是「成功或最终失败都算已触发」的有意消费
+    //（sched_last 已推进，残留行不会被再判到期），有意不加 CAS
+    if let Some(e) = blocking_err_text(&outcome) {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "sched_job_delete_skip | id: {id_audit} | {}",
+                crate::bot::truncate_for_log(&e, 120)
+            ),
+        );
+    }
 }
 
 /// 到点执行一个内容型定时作业：新建任务卡 → 交机器人执行（run_task_in_chat
@@ -962,7 +1038,7 @@ async fn finalize_job_run(
                 ),
             )
         };
-        let _ = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
             let _g = crate::db::lock_db_write();
             let conn = crate::db::open_db(&app_cl)?;
             crate::db::record_job_run(
@@ -977,6 +1053,17 @@ async fn finalize_job_run(
             .map_err(|e| e.to_string())
         })
         .await;
+        // 历史落库失败留痕：徽标/通知已发但历史缺行，静默丢会查不到执行记录
+        if let Some(e) = blocking_err_text(&outcome) {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "sched_job_history_skip | id: {} | {}",
+                    job.id,
+                    crate::bot::truncate_for_log(&e, 160)
+                ),
+            );
+        }
     }
     // 2) 状态 / 重试 / 自动暂停裁决
     let retry_max = job.retry_max_or_zero();
@@ -999,7 +1086,7 @@ async fn finalize_job_run(
         } else {
             (None, None) // 成功或重试用尽：清零（下一周期从零计）
         };
-        let _ = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
             let _g = crate::db::lock_db_write();
             let conn = crate::db::open_db(&app_cl)?;
             crate::db::update_job_run_state(
@@ -1015,6 +1102,18 @@ async fn finalize_job_run(
             .map_err(|e| e.to_string())
         })
         .await;
+        // 状态落库失败留痕：UI 已报「已排重试/已自动暂停」但状态未写中，
+        // 重试不会触发、暂停不生效，必须可查
+        if let Some(e) = blocking_err_text(&outcome) {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "sched_job_state_skip | id: {} | {}",
+                    job.id,
+                    crate::bot::truncate_for_log(&e, 160)
+                ),
+            );
+        }
     }
     // 3) 通知 / 审计
     if will_retry {
@@ -1259,7 +1358,7 @@ const SCHED_MAX_CONCURRENT: usize = 4;
 /// 启动定时调度器：每 30s 扫一次到点任务卡并顺序执行（App 启动时调用）
 pub fn start_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(SCHED_TICK_SECS));
         ticker.tick().await; // 消耗首个立即触发的 tick
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(SCHED_MAX_CONCURRENT));
         loop {
@@ -1674,6 +1773,21 @@ mod sched_tests {
     }
 
     #[test]
+    fn blocking_err_text_normalizes_inner_and_join_errors() {
+        // 成功 → None
+        assert_eq!(blocking_err_text(&Ok::<_, std::io::Error>(Ok(()))), None);
+        // 业务 Err（DB 写失败）→ 原文
+        assert_eq!(
+            blocking_err_text(&Ok::<_, std::io::Error>(Err("db 锁超时".into()))),
+            Some("db 锁超时".to_string())
+        );
+        // join 失败 → 转文本（不区分类型，统一进审计）
+        let join: Result<Result<(), String>, std::io::Error> =
+            Err(std::io::Error::other("join 失败"));
+        assert_eq!(blocking_err_text(&join), Some("join 失败".to_string()));
+    }
+
+    #[test]
     fn resolve_local_equals_single_for_normal_times() {
         // 非 DST 切换日的普通时刻：resolve_local 与 single 等价（DST 行为依赖系统
         // 时区，单测环境（国内无 DST）只能锁正常路径不回归）
@@ -1788,6 +1902,37 @@ mod sched_tests {
             classify_due("at:2026-08-10T10:00", None, now),
             DueVerdict::Run
         );
+    }
+
+    #[test]
+    fn at_first_run_stale_respects_grace_window() {
+        // 到点 10:00，宽限 2×tick=60s：
+        // 恰到点 / 到点后 30s（宽限内）→ 刚到点首跑，不算 stale
+        let just_due = dt(2026, 8, 16, 10, 0);
+        assert!(!at_first_run_stale("at:2026-08-16T10:00", None, just_due));
+        assert!(!at_first_run_stale(
+            "at:2026-08-16T10:00",
+            None,
+            just_due + chrono::Duration::seconds(30)
+        ));
+        // 61s（超宽限）与 10:30（如重启后）→ stale，不进 due
+        assert!(at_first_run_stale(
+            "at:2026-08-16T10:00",
+            None,
+            just_due + chrono::Duration::seconds(61)
+        ));
+        let late = dt(2026, 8, 16, 10, 30);
+        assert!(at_first_run_stale("at:2026-08-16T10:00", None, late));
+        // 执行过（sched_last 有值）→ 不适用（由 occurrence_after 判不重跑）
+        assert!(!at_first_run_stale(
+            "at:2026-08-16T10:00",
+            Some(ms(2026, 8, 16, 10, 0)),
+            late
+        ));
+        // 非 at: → 不适用
+        assert!(!at_first_run_stale("daily:10:00", None, late));
+        // 坏格式 → 不适用（NotDue，stale 清理按 at_expired 放弃）
+        assert!(!at_first_run_stale("at:junk", None, late));
     }
 
     #[test]

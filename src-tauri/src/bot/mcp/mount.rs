@@ -210,6 +210,17 @@ pub(crate) async fn execute_mcp_direct(
             }
         }
     };
+    // 合法 JSON 但非对象（数组/字符串/数字等）也不透传：透传后远端按对象收参
+    // 会拿不到字段 → 无参静默调用。本地明确回 warn，模型拿错误自己重发。
+    if !parsed.is_object() {
+        return crate::bot::registry::ToolResult::warn(
+            format!(
+                "MCP 工具参数必须是 JSON 对象，未发起调用：{}；请以 JSON 对象重发参数",
+                mounted.func_name
+            ),
+            Vec::new(),
+        );
+    }
     match shared().call_tool(cfg, &mounted.tool_name, parsed).await {
         Ok(result) => {
             if result.is_error == Some(true) {
@@ -442,5 +453,34 @@ mod tests {
             text.chars().count()
         );
         assert!(text.contains("内容过长已截断"), "应有截断标注");
+    }
+
+    /// 非对象合法 JSON 参数（数组/字符串）不透传远端——透传会变成无参静默调用，
+    /// 本地 warn 回显（校验在 call_tool 之前，无需真实连接）
+    #[tokio::test]
+    async fn non_object_args_are_rejected_before_remote_call() {
+        let cfg = McpServerConfig::default();
+        let mounted = McpMountedTool {
+            func_name: "mcp_fs_read".into(),
+            server_id: "s1".into(),
+            server_name: "fs".into(),
+            tool_name: "read".into(),
+            schema: json!({}),
+        };
+        for args in ["[1,2]", "\"x\"", "42"] {
+            let out = execute_mcp_direct(&cfg, &mounted, args).await;
+            assert!(
+                out.text.contains("必须是 JSON 对象"),
+                "args={args} 应本地拒绝：{:?}",
+                out.text
+            );
+        }
+        // 空参（无参工具常见形态）仍按空对象放行——不会卡在本地校验
+        let empty = execute_mcp_direct(&cfg, &mounted, "").await;
+        assert!(
+            !empty.text.contains("必须是 JSON 对象"),
+            "空串应放行：{:?}",
+            empty.text
+        );
     }
 }

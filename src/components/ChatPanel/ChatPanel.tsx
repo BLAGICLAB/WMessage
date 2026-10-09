@@ -941,7 +941,10 @@ export function ChatPanel({
       if (sid === sessionId) {
         // 删的是当前会话：切到剩余第一个；没有则新建
         if (rest.length) {
-          setSessionId(rest[0].id);
+          const targetSid = rest[0].id;
+          setSessionId(targetSid);
+          // 镜像同步落（openExecSession 同款）：await 期间守卫必须读到新会话
+          sessionIdRef.current = targetSid;
           const rows = await invoke<
             {
               role: string;
@@ -950,7 +953,9 @@ export function ChatPanel({
               thinking?: string | null;
               toolsJson?: string | null;
             }[]
-          >("bot_history_load", { sessionId: rest[0].id });
+          >("bot_history_load", { sessionId: targetSid });
+          // 等待期用户已切走：丢弃过期历史，防旧会话消息刷进新视图
+          if (sessionIdRef.current !== targetSid) return;
           setMessages(rowsToMsgs(rows));
         } else {
           const s = await invoke<Session>("bot_session_create", { title: null });

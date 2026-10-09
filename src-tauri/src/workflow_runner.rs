@@ -858,7 +858,10 @@ async fn run_controller(
                 };
                 // W-QA C1：attempt 计数（证据链：重试/返工后 attempt 递增）
                 let attempt = {
-                    let mut m = attempts.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut m = attempts.lock().unwrap_or_else(|e| {
+                        eprintln!("[mutex_poisoned] workflow attempts: {e:?}");
+                        e.into_inner()
+                    });
                     let n = m.entry(id.clone()).or_insert(0);
                     *n += 1;
                     *n
@@ -937,7 +940,10 @@ async fn run_controller(
                             rework_used += 1;
                             attempt_n += 1;
                             {
-                                let mut m = attempts.lock().unwrap_or_else(|e| e.into_inner());
+                                let mut m = attempts.lock().unwrap_or_else(|e| {
+                                    eprintln!("[mutex_poisoned] workflow attempts: {e:?}");
+                                    e.into_inner()
+                                });
                                 m.insert(id.clone(), attempt_n);
                             }
                             wa_log(

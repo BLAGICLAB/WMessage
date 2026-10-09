@@ -41,12 +41,21 @@ def registered_commands():
     return cmds
 
 
+# 泛型参数支持两层嵌套：invoke<T> / invoke<Promise<T>> / invoke<Record<string, number>>
+INVOKE_RE = re.compile(r'\binvoke(?:<(?:[^<>]|<[^<>]*>)*>)?\(\s*"([^"]+)"')
+
+
+def invoke_names(text):
+    """单段文本里 invoke("...") / invoke<T>("...") 的字面量命令名"""
+    return [m.group(1) for m in INVOKE_RE.finditer(text)]
+
+
 def frontend_invokes():
     """src/ 里 invoke("...") / invoke<T>("...") 的字面量命令名"""
     out = {}  # name -> file
     for f, t in TS_SRC.items():
-        for m in re.finditer(r'\binvoke(?:<[^>]*>)?\(\s*"([^"]+)"', t):
-            out.setdefault(m.group(1), f)
+        for name in invoke_names(t):
+            out.setdefault(name, f)
     return out
 
 
@@ -160,6 +169,21 @@ def test_backend_emits_have_listener_warn_only():
 
 
 # ───────────────────────── 自检（提取器本身不空转） ─────────────────────────
+
+
+def test_invoke_names_nested_generics():
+    """invoke 泛型提取：无泛型 / 单层 / 双层嵌套均能拿到命令名"""
+    assert invoke_names('await invoke("cmd_a")') == ["cmd_a"]
+    assert invoke_names('invoke<T>("cmd_b")') == ["cmd_b"]
+    assert invoke_names('invoke<Promise<T>>("cmd_c")') == ["cmd_c"]
+    assert invoke_names('invoke<Record<string, number>>("cmd_d")') == ["cmd_d"]
+    # 非字面量参数不误报
+    assert invoke_names('invoke(name, { a: 1 })') == []
+
+
+def test_invoke_names_real_sample_memory_tuning_get():
+    """真实样本：MemoryPanel.tsx 的双层泛型调用曾被旧正则漏抓（实际已注册）"""
+    assert "memory_tuning_get" in frontend_invokes()
 
 
 def test_extractors_nonempty():

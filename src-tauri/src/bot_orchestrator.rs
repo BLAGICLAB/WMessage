@@ -126,7 +126,7 @@ fn acceptance_note(criteria: &[String], context_summary: Option<&str>) -> String
 /// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 建子卡 → 插 queued 行。
 /// 返回 (ack, 子卡) —— 广播由异步包装做（锁内不做 IO 之外的事）。
 pub(crate) fn spawn_subagent_locked(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     req: &SpawnRequest,
     now: i64,
 ) -> CommandResult<(SpawnAck, Task)> {
@@ -181,7 +181,11 @@ pub(crate) fn spawn_subagent_locked(
         enabled: None,         // 派发卡无定时配置
         expected_updated_at: None,
     };
-    crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).map_err(CommandError::DbError)?;
+    // 两写包同一事务：卡与行任一失败都不留孤儿（同 setup/finalize 既有模式）
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    crate::db::upsert_tasks(&tx, std::slice::from_ref(&card)).map_err(CommandError::DbError)?;
     let row = SubagentRow {
         id: subagent_id.clone(),
         status: SubagentStatus::Queued,
@@ -205,7 +209,9 @@ pub(crate) fn spawn_subagent_locked(
         started_at: None,
         finished_at: None,
     };
-    crate::db::insert_subagent(conn, &row).map_err(CommandError::DbError)?;
+    crate::db::insert_subagent(&tx, &row).map_err(CommandError::DbError)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok((
         SpawnAck {
             subagent_id,
@@ -280,7 +286,7 @@ pub(crate) fn check_subagent_locked(
 
 /// cancel 纯 DB 核心：queued/running → cancelled（error=原因）；终态 no-op。
 pub(crate) fn cancel_subagent_locked(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     key: &str,
     reason: &str,
     now: i64,
@@ -297,22 +303,28 @@ pub(crate) fn cancel_subagent_locked(
             None,
         ));
     }
-    crate::db::update_subagent_status(conn, &row.id, SubagentStatus::Cancelled, now, Some(reason))
+    // 两写包同一事务：行置 cancelled 与子卡回退任一失败都不留半成品
+    let tx = conn
+        .transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    crate::db::update_subagent_status(&tx, &row.id, SubagentStatus::Cancelled, now, Some(reason))
         .map_err(CommandError::DbError)?;
     // 子卡同步回退 doing → todo：取消后卡片不能永远停在「进行中」
     //（取消必须让前端可见，否则卡片悬挂在 doing）
-    let card = crate::db::load_task(conn, &row.task_id).map_err(CommandError::DbError)?;
+    let card = crate::db::load_task(&tx, &row.task_id).map_err(CommandError::DbError)?;
     let card = match card {
         Some(mut c) if c.column == crate::db::TaskStatus::Doing => {
             c.column = crate::db::TaskStatus::Todo;
             c.expected_updated_at = c.updated_at;
             c.updated_at = Some(now);
-            crate::db::upsert_tasks(conn, std::slice::from_ref(&c))
+            crate::db::upsert_tasks(&tx, std::slice::from_ref(&c))
                 .map_err(CommandError::DbError)?;
             Some(c)
         }
         other => other,
     };
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok((
         CancelAck {
             ok: true,
@@ -343,9 +355,9 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     let (ack, card) =
         tauri::async_runtime::spawn_blocking(move || -> CommandResult<(SpawnAck, Task)> {
             let _g = crate::db::lock_db_write();
-            let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+            let mut conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
             let now = chrono::Utc::now().timestamp_millis();
-            spawn_subagent_locked(&conn, &req, now)
+            spawn_subagent_locked(&mut conn, &req, now)
         })
         .await
         .map_err(|e| CommandError::from(format!("subagent spawn 线程 join 失败：{e}")))??;
@@ -419,9 +431,9 @@ pub async fn cancel_subagent_async(
     let (ack, card) = tauri::async_runtime::spawn_blocking(
         move || -> CommandResult<(CancelAck, Option<Task>)> {
             let _g = crate::db::lock_db_write();
-            let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+            let mut conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
             let now = chrono::Utc::now().timestamp_millis();
-            cancel_subagent_locked(&conn, &key, &reason, now)
+            cancel_subagent_locked(&mut conn, &key, &reason, now)
         },
     )
     .await
@@ -2054,9 +2066,9 @@ mod orchestrator_tests {
 
     #[test]
     fn task_wrapper_contains_all_sections() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, card) = spawn_subagent_locked(&conn, &req(None), 5_000).unwrap();
+        let (ack, card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)
             .unwrap()
             .unwrap();
@@ -2088,10 +2100,10 @@ mod orchestrator_tests {
 
     #[test]
     fn spawn_creates_row_and_subcard_with_acceptance_note() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
         let parent = parent_card(&conn);
-        let (ack, card) = spawn_subagent_locked(&conn, &req(Some(parent)), 5_000).unwrap();
+        let (ack, card) = spawn_subagent_locked(&mut conn, &req(Some(parent)), 5_000).unwrap();
         assert!(ack.subagent_id.starts_with("sa_"));
         assert_eq!(ack.status, SubagentStatus::Queued);
         // 一子 agent 一子卡，且 parent_task_id 关联落在行上
@@ -2119,18 +2131,18 @@ mod orchestrator_tests {
 
     #[test]
     fn spawn_without_parent_card_is_allowed() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&conn, &req(None), 5_000).unwrap();
+        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
         assert!(ack.task_id != ack.subagent_id);
     }
 
     #[test]
     fn spawn_with_missing_parent_card_is_task_not_found() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
         // Result 的 OK 侧 (SpawnAck, Task) 无 Debug——用 match 拆错误，不 unwrap_err
-        let err = match spawn_subagent_locked(&conn, &req(Some("ghost-card".into())), 5_000) {
+        let err = match spawn_subagent_locked(&mut conn, &req(Some("ghost-card".into())), 5_000) {
             Err(e) => e,
             Ok(_) => panic!("缺卡 spawn 必须失败"),
         };
@@ -2142,17 +2154,17 @@ mod orchestrator_tests {
 
     #[test]
     fn spawn_rejects_blank_objective_and_empty_acceptance() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
         let mut r = req(None);
         r.objective = "  ".into();
-        assert!(spawn_subagent_locked(&conn, &r, 5_000).is_err());
+        assert!(spawn_subagent_locked(&mut conn, &r, 5_000).is_err());
         let mut r2 = req(None);
         r2.acceptance_criteria = Vec::new();
-        assert!(spawn_subagent_locked(&conn, &r2, 5_000).is_err());
+        assert!(spawn_subagent_locked(&mut conn, &r2, 5_000).is_err());
         let mut r3 = req(None);
         r3.acceptance_criteria = vec!["  ".into()];
-        assert!(spawn_subagent_locked(&conn, &r3, 5_000).is_err());
+        assert!(spawn_subagent_locked(&mut conn, &r3, 5_000).is_err());
     }
 
     #[test]
@@ -2177,10 +2189,11 @@ mod orchestrator_tests {
 
     #[test]
     fn cancel_sets_cancelled_and_terminal_noop() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&conn, &req(None), 5_000).unwrap();
-        let (c, card) = cancel_subagent_locked(&conn, &ack.subagent_id, "用户取消", 6_000).unwrap();
+        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let (c, card) =
+            cancel_subagent_locked(&mut conn, &ack.subagent_id, "用户取消", 6_000).unwrap();
         assert!(c.ok);
         assert!(!c.already_terminal);
         assert_eq!(c.status, SubagentStatus::Cancelled);
@@ -2195,7 +2208,7 @@ mod orchestrator_tests {
         assert_eq!(row.finished_at, Some(6_000));
         // 终态再取消 = no-op 幂等，不返回卡片（无变更可广播）
         let (again, no_card) =
-            cancel_subagent_locked(&conn, &ack.subagent_id, "再取消", 7_000).unwrap();
+            cancel_subagent_locked(&mut conn, &ack.subagent_id, "再取消", 7_000).unwrap();
         assert!(again.already_terminal);
         assert_eq!(again.status, SubagentStatus::Cancelled);
         assert!(no_card.is_none());
@@ -2203,19 +2216,20 @@ mod orchestrator_tests {
 
     #[test]
     fn cancel_resolves_by_task_id_too() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&conn, &req(None), 5_000).unwrap();
-        let (c, _) = cancel_subagent_locked(&conn, &ack.task_id, "卡片停止按钮", 6_000).unwrap();
+        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let (c, _) =
+            cancel_subagent_locked(&mut conn, &ack.task_id, "卡片停止按钮", 6_000).unwrap();
         assert_eq!(c.subagent_id, ack.subagent_id);
         assert_eq!(c.status, SubagentStatus::Cancelled);
     }
 
     #[test]
     fn cancel_unknown_id_is_invalid_argument() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         // OK 侧 (CancelAck, Option<Task>) 无 Debug——match 拆错误
-        let err = match cancel_subagent_locked(&conn, "sa_ghost", "x", 1) {
+        let err = match cancel_subagent_locked(&mut conn, "sa_ghost", "x", 1) {
             Err(e) => e,
             Ok(_) => panic!("未知 id 必须失败"),
         };
@@ -2224,9 +2238,9 @@ mod orchestrator_tests {
 
     #[test]
     fn check_resolves_both_keys_and_counts_progress() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&conn, &req(None), 5_000).unwrap();
+        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
         // 给子卡补两个 subtask（勾一个）→ progress 小计 1/2
         let mut card = crate::db::load_all(&conn)
             .unwrap()
@@ -2270,9 +2284,9 @@ mod orchestrator_tests {
 
     #[test]
     fn check_returns_parsed_result_json() {
-        let conn = test_conn();
+        let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&conn, &req(None), 5_000).unwrap();
+        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
         crate::db::set_subagent_result(
             &conn,
             &ack.subagent_id,

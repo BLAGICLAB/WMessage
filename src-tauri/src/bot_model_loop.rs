@@ -515,9 +515,18 @@ pub async fn run_model_loop(
     }
     // 共享客户端（连接池复用）；总超时取消，流式路径逐 chunk idle 超时兜底
     let client = shared_llm_client().clone();
-    let model_for_reasoning = cfg.model.clone();
+    // 推理参数族映射按实际请求端点：override 整组替换后走条目的 model/provider，
+    // 仍按全局 cfg 解析会把 OpenAI 风格 reasoning_effort 发去 Anthropic 端点（或反之）
+    let model_for_reasoning = resolved
+        .as_ref()
+        .map(|r| r.model.clone())
+        .unwrap_or_else(|| cfg.model.clone());
     // None/非法值 → Openai（旧行为零影响）
     let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
+    let provider_for_reasoning = resolved
+        .as_ref()
+        .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))
+        .unwrap_or(provider);
     // 条目级推理参数：active 条目 > 全局 > 内置默认（解析见 schema::effective_inference；
     // cfg 是对外视图 BotConfigView，拆参传入与 keyring::read_llm_key 同风格）
     let inference = crate::bot::effective_inference(
@@ -537,10 +546,7 @@ pub async fn run_model_loop(
             .as_ref()
             .map(|r| r.model.clone())
             .unwrap_or(cfg.model),
-        provider: resolved
-            .as_ref()
-            .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))
-            .unwrap_or(provider),
+        provider: provider_for_reasoning,
         max_tokens: inference.max_tokens,
         temperature: inference.temperature,
         top_p: inference.top_p,
@@ -548,7 +554,7 @@ pub async fn run_model_loop(
         // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。
         // budget < max_tokens 夹紧用的就是条目覆盖后的 max_tokens
         reasoning: crate::bot::reasoning::resolve(
-            provider,
+            provider_for_reasoning,
             &model_for_reasoning,
             crate::bot::reasoning::EffortLevel::from_cfg(
                 reasoning_override

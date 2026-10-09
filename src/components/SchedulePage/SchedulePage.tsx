@@ -4,7 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { AlarmClock, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
-import { handleCommandError } from "../../lib/errorHandler";
+import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { formatSchedule, relativeTime, untilTime } from "../../format";
 import { EmptyState } from "../EmptyState";
 import { TracePanel } from "../TracePanel";
@@ -35,6 +35,8 @@ function formatDuration(ms: number): string {
 export function SchedulePage() {
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
+  /** 首次列表加载失败信息（null=正常）：失败不能伪装成「暂无定时任务」空态 */
+  const [loadError, setLoadError] = useState<string | null>(null);
   /** 新建流程的目标下拉数据源（工作流全量，含 schedule 用于「已定时」禁用） */
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   /** 工作流执行中状态（「立即执行」禁用依据） */
@@ -81,6 +83,7 @@ export function SchedulePage() {
       if (seq !== reloadSeqRef.current) return;
       setEntries(list);
       setLoaded(true);
+      setLoadError(null);
       // 工作流执行态逐个回查（数量少，逐个问比后端加聚合接口简单）
       const wfIds = list.filter((e) => e.kind === "workflow").map((e) => e.targetId);
       const running: Record<string, boolean> = {};
@@ -96,7 +99,8 @@ export function SchedulePage() {
     } catch (e) {
       if (seq !== reloadSeqRef.current) return;
       handleCommandError(e, "读取定时任务列表", { silent: true });
-      setLoaded(true);
+      // 失败不置 loaded：留错误行 + 重试入口，不渲染成「暂无定时任务」空态
+      setLoadError(formatCommandError(e));
     }
     invoke<Workflow[]>("workflow_list")
       .then((w) => {
@@ -610,7 +614,22 @@ export function SchedulePage() {
         </div>
       )}
 
-      {loaded && entries.length === 0 && !creating ? (
+      {/* 加载失败：错误行 + 重试入口（失败绝不能渲染成「暂无定时任务」空态） */}
+      {loadError && (
+        <div className="nm-inset flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-[var(--danger)]">
+          <span className="min-w-0 flex-1 truncate" title={loadError}>
+            定时任务列表加载失败：{loadError}
+          </span>
+          <button
+            className="nm-btn shrink-0 px-2 py-0.5 text-[11px] text-[var(--t3)]"
+            onClick={() => void reload()}
+          >
+            重试
+          </button>
+        </div>
+      )}
+
+      {loaded && !loadError && entries.length === 0 && !creating ? (
         <EmptyState
           icon={<AlarmClock size={18} aria-hidden />}
           title="暂无定时任务"

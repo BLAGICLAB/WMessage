@@ -255,11 +255,16 @@ pub fn gather_candidates(
     Ok(items)
 }
 
-/// 候选条目 → prompt 用文本行
+/// 候选条目 → prompt 用文本行。行格式 `id | kind | importance | content`：
+/// content 先压平换行、替换 '|'，防止条目自身内容伪造行/列边界（格式注入）
+/// 导致 LLM 按错位的 id 配对、进而误改误删。
 fn format_candidates(items: &[MemItem]) -> String {
     items
         .iter()
-        .map(|m| format!("{} | {} | {} | {}", m.id, m.kind, m.importance, m.content))
+        .map(|m| {
+            let content = m.content.replace(['\n', '\r'], " ").replace('|', "｜");
+            format!("{} | {} | {} | {}", m.id, m.kind, m.importance, content)
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

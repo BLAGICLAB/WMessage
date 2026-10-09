@@ -197,10 +197,12 @@ pub(crate) async fn begin_trace<R: tauri::Runtime>(
 
 /// 执行尾：注销 session 映射 + trace_finish（汇总 LoopTrace 统计）+ trace.complete 审计。
 /// 无论成败都要调（与 begin_trace 成对）；trace 未建立（begin 降级）时静默跳过。
+/// `stopped`：用户停止（run_model_loop 的停止返回是 Ok，须单独传标志区分 done）
 pub(crate) async fn end_trace<R: tauri::Runtime>(
     app: &AppHandle<R>,
     hook: &std::sync::Arc<std::sync::Mutex<TraceCapture>>,
     ok: bool,
+    stopped: bool,
     err: Option<String>,
 ) {
     let (trace_id, session_id, stats) = {
@@ -213,7 +215,10 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
             m.remove(sid);
         }
     }
-    let status = if ok {
+    // status 三态：stopped 优先（停止不是失败，也不是正常完成）
+    let status = if stopped {
+        crate::db::TRACE_STATUS_STOPPED
+    } else if ok {
         crate::db::TRACE_STATUS_DONE
     } else {
         crate::db::TRACE_STATUS_FAILED

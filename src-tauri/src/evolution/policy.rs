@@ -38,8 +38,16 @@ pub fn read_apply_policy<R: tauri::Runtime>(app: &AppHandle<R>) -> ApplyPolicy {
 
 /// 可测内核（纯路径参数）：缺文件/缺块/缺字段/非法值 → Auto。
 pub fn read_apply_policy_at(path: &Path) -> ApplyPolicy {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return ApplyPolicy::Auto;
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                // 缺文件 = 未配置（常态静默）；其余 IO 错留痕——confirm 档
+                // 被瞬态读失败静默旁路成 auto 就绕过了治理，得可诊断
+                eprintln!("[evolution] 读 {path:?} 失败（{e}），applyPolicy 按 auto 放行");
+            }
+            return ApplyPolicy::Auto;
+        }
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
         // 文件坏掉 ≠ 未配置：留痕（每次 consolidate 一行，低频可接受）
@@ -58,6 +66,8 @@ pub fn read_apply_policy_at(path: &Path) -> ApplyPolicy {
 }
 
 /// 写互斥：RMW（读→改→写）全程持锁，防并发两次点档后写覆盖先写。
+/// applyPolicy 与 deriveThresholds 共用这一把：两者都 RMW 同一 bot-config.json，
+/// 各持独立锁会让设置页并发点档互相覆盖丢字段。
 /// 持锁跨阻塞文件 IO 是有意取舍：这是低频设置写入路径，拆锁会破坏
 /// 「读到的基线在写回时仍有效」的 RMW 不变式。
 static APPLY_POLICY_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -131,17 +141,16 @@ pub fn read_derive_thresholds_at(path: &Path) -> crate::evolution::derive::Deriv
         .unwrap_or_default()
 }
 
-/// 写互斥：与 applyPolicy 写锁同款（RMW 全程持锁，低频设置写）。
-static DERIVE_THRESHOLDS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// 定向写回：只改 evolution.deriveThresholds，其余字段原样保留；
 /// 落盘前 clamped；坏文件拒绝写（fail-closed）。
+/// 写互斥：与 applyPolicy 同一把锁（见 APPLY_POLICY_WRITE_LOCK——同一
+/// bot-config.json 的两个 RMW 必须互斥，独立锁会互相覆盖丢字段）。
 pub fn set_derive_thresholds_at(
     path: &Path,
     t: crate::evolution::derive::DeriveThresholds,
 ) -> Result<(), String> {
-    let _g = DERIVE_THRESHOLDS_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] evolution::policy::DERIVE_THRESHOLDS_WRITE_LOCK: {e:?}");
+    let _g = APPLY_POLICY_WRITE_LOCK.lock().unwrap_or_else(|e| {
+        eprintln!("[mutex_poisoned] evolution::policy::APPLY_POLICY_WRITE_LOCK: {e:?}");
         e.into_inner()
     });
     let mut v = match std::fs::read_to_string(path) {

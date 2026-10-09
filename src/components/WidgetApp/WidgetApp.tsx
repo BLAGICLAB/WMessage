@@ -293,9 +293,12 @@ export default function WidgetApp() {
     const win = getCurrentWindow();
     win.setAlwaysOnTop(true).catch(() => {});
     (async () => {
-      const { w: sw } = await screenSize();
+      const { w: sw, h: sh } = await screenSize();
       const saved = loadAnchor();
       const anchor: Anchor = saved ?? { x: sw - STRIP_W, y: TOP_Y, edge: "right" };
+      // 恢复前夹回当前屏内：拔掉第二显示器后存下的 x/y 会整窗出屏且永远够不着
+      anchor.x = Math.min(Math.max(anchor.x, 0), Math.max(0, sw - STRIP_W));
+      anchor.y = Math.min(Math.max(anchor.y, 0), Math.max(0, sh - STRIP_H));
       anchorRef.current = anchor;
       setEdge(anchor.edge);
       const top = anchor.edge === "top";

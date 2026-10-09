@@ -398,6 +398,8 @@ fn build_adjudication_msgs(
 /// 解析裁决输出（容错同 parse_extract 风格：剥围栏 → 截方括号 → 逐项对位）。
 /// 坏输出 / 缺项 / 未知 action / 幻觉 existing_id 一律回退 New——裁决失败只
 /// 降级为 v1 行为（照插入，insert_item_with 语义去重兜底），绝不丢数据。
+/// 同批多条事实命中同一候选都判 update 时，只有第一条放行 Update，
+/// 后续降级 New（顺序 update_by_id 会让后者覆盖前者，第一条内容丢失）。
 fn parse_adjudication(text: &str, candidates: &[Option<store::MemItem>]) -> Vec<Adjudication> {
     let t = text.trim();
     let t = t
@@ -413,27 +415,36 @@ fn parse_adjudication(text: &str, candidates: &[Option<store::MemItem>]) -> Vec<
     let Some(items) = parsed else {
         return vec![Adjudication::New; candidates.len()]; // 坏输出整体回退全 new
     };
-    candidates
-        .iter()
-        .enumerate()
-        .map(|(i, cand)| {
-            let Some(m) = cand else {
-                return Adjudication::New; // 无候选条目不参与裁决（本就不发它）
-            };
-            let Some(entry) = items.iter().find(|e| e["index"].as_u64() == Some(i as u64)) else {
-                return Adjudication::New; // 缺该项 → 回退 new
-            };
-            match entry["action"].as_str().map(str::trim) {
-                Some("skip") => Adjudication::Skip,
-                Some("update") => match entry["existing_id"].as_str() {
-                    // id 必须精确等于该条候选（防幻觉 id 误改别条记忆）
-                    Some(id) if id == m.id => Adjudication::Update(m.id.clone()),
-                    _ => Adjudication::New,
-                },
-                _ => Adjudication::New, // new / 未知 / 缺 action → 回退 new
+    let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(candidates.len());
+    for (i, cand) in candidates.iter().enumerate() {
+        let Some(m) = cand else {
+            out.push(Adjudication::New); // 无候选条目不参与裁决（本就不发它）
+            continue;
+        };
+        let Some(entry) = items.iter().find(|e| e["index"].as_u64() == Some(i as u64)) else {
+            out.push(Adjudication::New); // 缺该项 → 回退 new
+            continue;
+        };
+        let adj = match entry["action"].as_str().map(str::trim) {
+            Some("skip") => Adjudication::Skip,
+            Some("update") => match entry["existing_id"].as_str() {
+                // id 必须精确等于该条候选（防幻觉 id 误改别条记忆）
+                Some(id) if id == m.id => Adjudication::Update(m.id.clone()),
+                _ => Adjudication::New,
+            },
+            _ => Adjudication::New, // new / 未知 / 缺 action → 回退 new
+        };
+        // 候选已被本批更早的 update 认领 → 降级 New，防顺序覆盖丢内容
+        if let Adjudication::Update(id) = &adj {
+            if !claimed.insert(id.clone()) {
+                out.push(Adjudication::New);
+                continue;
             }
-        })
-        .collect()
+        }
+        out.push(adj);
+    }
+    out
 }
 
 /// 应用裁决（&Connection 内核，锁内调用；内存库可单测）：

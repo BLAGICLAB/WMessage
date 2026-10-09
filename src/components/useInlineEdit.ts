@@ -34,6 +34,9 @@ export function useInlineEdit({
     if (editing && !prevEditing.current) {
       setDraft(value);
       committedRef.current = false; // 新一轮编辑复位提交标记
+      // 同步复位取消标记：上轮 Escape 后 blur 未触发（如输入框直接卸载）时
+      // cancelledRef 残留 true，会吞掉本轮首次 blur 导致编辑静默丢失
+      cancelledRef.current = false;
     }
     prevEditing.current = editing;
     // value 不进依赖：编辑中外部值变化不得覆盖用户输入

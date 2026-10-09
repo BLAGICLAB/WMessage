@@ -3,9 +3,11 @@ use std::sync::LazyLock;
 
 // 变量替换
 
-/// 任务卡 UUID 提取正则（标准 UUID v4 格式）
+/// 任务卡 UUID 提取正则：连字符 36 位（展示格式）+ 32 位 hex——任务/子任务 id
+/// 实际由 `Uuid::new_v4().simple()` 生成（32 位无连字符），只匹配 36 位会恒提取失败
 static TASK_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap()
+    Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}")
+        .unwrap()
 });
 
 /// `${stepN.field}` 索引匹配（field ∈ {result, id}）
@@ -366,6 +368,31 @@ mod tests {
         assert_eq!(extract_task_id("no uuid here"), None);
         // 部分 UUID 格式（不足 36 字符）不应匹配
         assert_eq!(extract_task_id("short 7c9e6679-7425-40de-944b"), None);
+    }
+
+    #[test]
+    fn extract_task_id_matches_simple_32_hex() {
+        // 任务卡 id 实际生成格式：Uuid::new_v4().simple()（32 位无连字符 hex）——
+        // 只匹配 36 位连字符格式会让 ${stepN.id} 恒提取失败
+        let text = "已创建任务 7c9e6679742540de944be07fc1f90ae7，请查收";
+        assert_eq!(
+            extract_task_id(text).as_deref(),
+            Some("7c9e6679742540de944be07fc1f90ae7")
+        );
+        // 提取结果直接可用于 ${stepN.id} 替换链
+        let ctx = vec![CompletedStep {
+            index: 1,
+            title: "create".into(),
+            result: text.into(),
+            id: extract_task_id(text),
+            parsed: None,
+        }];
+        assert_eq!(
+            substitute_vars(r#"{"id": "${step1.id}"}"#, &ctx),
+            r#"{"id": "7c9e6679742540de944be07fc1f90ae7"}"#
+        );
+        // 31 位不足 → 不匹配
+        assert_eq!(extract_task_id("id=7c9e6679742540de944be07fc1f90ae"), None);
     }
 
     #[test]

@@ -542,10 +542,11 @@ pub struct ResolvedModel {
 
 /// 按模型库条目 id 解析覆盖配置（纯查表 + key 读取，单测锚点）：
 /// 先 openai 后 anthropic 列表；条目不存在/禁用 → 响亮报错；
-/// key = 条目厂商 key（有则用）→ 全局 key 兜底（read_llm_key 同款回退）。
+/// key = 条目厂商 key（有则用）→ 全局主 key 兜底。不走 active 模型厂商回退：
+/// override 条目打自己的 base_url，借 active 厂商的 key 属跨厂商凭据泄漏。
 pub fn resolve_model_override(
-    api_provider: Option<&str>,
-    active_model_id: Option<&ActiveModelId>,
+    _api_provider: Option<&str>,
+    _active_model_id: Option<&ActiveModelId>,
     models_by_provider: Option<&ModelsByProvider>,
     entry_id: &str,
     global_max_tokens: Option<u32>,
@@ -573,16 +574,17 @@ pub fn resolve_model_override(
             entry.label
         ));
     }
-    // key：厂商 key 优先，缺 → 全局 key 兜底（与 read_llm_key 回退语义一致）。
+    // key：厂商 key 优先，缺 → 全局主 key 兜底（仅全局，不走 active 模型厂商——
+    // 该 key 会打 override 条目自己的 base_url，跨厂商回退是凭据泄漏）。
     // 单次 read_vendor_key 的 Result 直接决策，不做 has 预检——预检+读取两段
     // keyring I/O 之间条目可被改删（check-then-act），且预检失败映射成 false 会吞掉
     // 可行动的错误上下文；读取失败（含不存在）统一走全局兜底，行为与原先等价
     let api_key = match &entry.vendor {
         Some(v) => match crate::bot::read_vendor_key(v) {
             Ok(k) if !k.trim().is_empty() => k,
-            _ => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
+            _ => crate::bot::config::keyring::read_api_key()?,
         },
-        None => crate::bot::read_llm_key(api_provider, active_model_id, models_by_provider)?,
+        None => crate::bot::config::keyring::read_api_key()?,
     };
     Ok(ResolvedModel {
         base_url: entry.base_url.clone(),

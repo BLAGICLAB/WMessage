@@ -137,6 +137,27 @@ pub fn wa_list(
         .map_err(|e| e.to_string())
 }
 
+/// 导出专用：全量读取，不带 LIMIT——列表接口的 1..=500 钳制是为 UI 分页，
+/// 导出是落盘全量，多 run × 多节点事件可超 500 条，复用列表会静默截断导出文件。
+/// 体量由保留策略兜底（wa_prune 只留最近 5..=100 个 run）。
+pub fn wa_export_list(
+    conn: &rusqlite::Connection,
+    workflow_id: &str,
+) -> Result<Vec<AuditEntry>, String> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {ENTRY_COLS} FROM workflow_audit
+             WHERE workflow_id = ?1
+             ORDER BY id DESC"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([workflow_id], row_to_entry)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 /// 保留清理：只留最近 keep_runs 个 distinct run（跨工作流全局计）。
 /// 返回删除行数；keep=0 视为清空（settings 钳制在 5..=100，此分支仅测试用）。
 pub fn wa_prune(conn: &rusqlite::Connection, keep_runs: u32) -> Result<usize, String> {
@@ -250,7 +271,7 @@ pub async fn workflow_audit_export(
     let wid2 = workflow_id.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> CommandResult<(usize, String)> {
         let conn = crate::db::open_db(&app2)?;
-        let rows = wa_list(&conn, &wid2, 500).map_err(crate::error::CommandError::DbError)?;
+        let rows = wa_export_list(&conn, &wid2).map_err(crate::error::CommandError::DbError)?;
         let n = rows.len();
         let json = serde_json::to_string_pretty(&rows)
             .map_err(|e| crate::error::CommandError::from(e.to_string()))?;
@@ -411,6 +432,31 @@ mod tests {
         assert!(runs.contains(&2000) && runs.contains(&3000));
         assert_eq!(wa_prune(&conn, 0).unwrap(), 2); // 全清
         assert!(wa_list(&conn, "wf1", 50).unwrap().is_empty());
+    }
+
+    /// 导出全量回归：超 500 条时 wa_list 钳制截断，wa_export_list 必须全量返回，
+    /// 导出文件不得静默丢行
+    #[test]
+    fn export_list_not_clamped_by_list_limit() {
+        let conn = mem_conn();
+        for i in 0..505 {
+            wa_insert(
+                &conn,
+                "wf1",
+                1000 + i,
+                None,
+                KIND_NODE_START,
+                "info",
+                &serde_json::json!({ "i": i }),
+            )
+            .unwrap();
+        }
+        assert_eq!(wa_list(&conn, "wf1", 500).unwrap().len(), 500, "列表钳 500");
+        assert_eq!(
+            wa_export_list(&conn, "wf1").unwrap().len(),
+            505,
+            "导出全量不截断"
+        );
     }
 
     #[test]

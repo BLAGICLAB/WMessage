@@ -243,6 +243,8 @@ export function TracePanel({
   const detailSeqRef = useRef(0);
 
   const reload = (pickId: number | null) => {
+    // 开头即作废在途响应：taskId 模式下慢的旧 reload 不得覆盖新选中的详情
+    const seq = ++detailSeqRef.current;
     setLoading(true);
     setError(null);
     // 直查模式（traceId）：单条结果即完整 detail，直接复用不再重复查询；
@@ -250,25 +252,38 @@ export function TracePanel({
     if (traceId != null) {
       traceDetail(traceId)
         .then((d) => {
+          if (seq !== detailSeqRef.current) return;
           const list = d ? [d] : [];
           setTraces(list);
           const pick = list.find((t) => t.id === pickId) ?? list[0] ?? null;
           setSelected(pick);
           setDetail(d);
         })
-        .catch((e) => setError(String(e)))
-        .finally(() => setLoading(false));
+        .catch((e) => {
+          if (seq === detailSeqRef.current) setError(String(e));
+        })
+        .finally(() => {
+          if (seq === detailSeqRef.current) setLoading(false);
+        });
       return;
     }
     traceListByTask(taskId ?? "")
       .then(async (list) => {
+        if (seq !== detailSeqRef.current) return;
         setTraces(list);
         const pick = list.find((t) => t.id === pickId) ?? list[0] ?? null;
         setSelected(pick);
-        setDetail(pick ? await traceDetail(pick.id) : null);
+        const d = pick ? await traceDetail(pick.id) : null;
+        // 二段 await 期间可能已有新选中/新 reload：过期即弃
+        if (seq !== detailSeqRef.current) return;
+        setDetail(d);
       })
-      .catch((e) => setError(String(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (seq === detailSeqRef.current) setError(String(e));
+      })
+      .finally(() => {
+        if (seq === detailSeqRef.current) setLoading(false);
+      });
   };
 
   useEffect(() => {

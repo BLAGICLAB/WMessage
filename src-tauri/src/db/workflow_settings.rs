@@ -183,9 +183,13 @@ pub async fn workflow_settings_set(
             ),
             (
                 "auditRetention",
-                audit_retention_runs
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "-".into()),
+                // Some(_) 记钳制后的实际生效值（view）：原始入参可超范围（如传 1000 实际生效 100），
+                // 审计轨迹必须与实际生效一致，不能记原始值失真
+                if audit_retention_runs.is_some() {
+                    r.audit_retention_runs.to_string()
+                } else {
+                    "-".to_string()
+                },
             ),
             (
                 "reviewModel",
@@ -202,3 +206,27 @@ pub async fn workflow_settings_set(
 }
 
 use rusqlite::OptionalExtension;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mem_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_workflow_settings(&conn).unwrap();
+        conn
+    }
+
+    /// 锁定审计口径依赖的语义：超范围入参存库与 view 一律是钳制后的实际生效值
+    /// （审计事件记 view.audit_retention_runs，必须等于真实生效值而非原始入参）
+    #[test]
+    fn retention_stored_and_viewed_clamped() {
+        let conn = mem_conn();
+        let view = settings_set(&conn, None, Some(1000), None).unwrap();
+        assert_eq!(view.audit_retention_runs, RETENTION_MAX);
+        assert_eq!(audit_retention_runs(&conn), RETENTION_MAX);
+        let view = settings_set(&conn, None, Some(1), None).unwrap();
+        assert_eq!(view.audit_retention_runs, RETENTION_MIN);
+        assert_eq!(audit_retention_runs(&conn), RETENTION_MIN);
+    }
+}

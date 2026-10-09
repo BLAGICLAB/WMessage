@@ -458,7 +458,7 @@ static void ReviseParagraph(Paragraph para, string oldText, string newText, Func
 }
 
 // 表后/段后插入新段落（整段 w:ins）：pPr 克隆自锚点段落继承样式，
-// rPr 克隆自锚点段落首个含文本 run 继承字体；无锚点则插到正文开头（sectPr 之前）
+// rPr 克隆自锚点段落首个含文本 run 继承字体；无锚点则插到正文开头（首个非 sectPr 子元素之前）
 static Paragraph InsertRevisedParagraph(Body body, OpenXmlElement? anchor, string text, Func<int> nextId)
 {
     var para = new Paragraph();
@@ -478,9 +478,12 @@ static Paragraph InsertRevisedParagraph(Body body, OpenXmlElement? anchor, strin
     para.Append(MakeIns(text, rpr, nextId));
     if (anchor == null)
     {
-        var sect = body.Elements<SectionProperties>().FirstOrDefault();
-        if (sect != null) body.InsertBefore(para, sect);
-        else body.Append(para);
+        // 无锚点 = 插正文开头：不能锚在 sectPr 上——它是 body 最后一个子元素，
+        // 插它之前实际落在正文末尾；须插在第一个非 sectPr 子元素之前
+        var head = body.ChildElements.FirstOrDefault(e => e is not SectionProperties)
+            ?? body.Elements<SectionProperties>().FirstOrDefault();
+        if (head != null) body.InsertBefore(para, head);
+        else body.AppendChild(para);
     }
     else
     {
@@ -615,6 +618,15 @@ static List<string> ReadDocxLines(string path)
 static List<Opcode> DiffList<T>(IReadOnlyList<T> a, IReadOnlyList<T> b) where T : IEquatable<T>
 {
     int n = a.Count, m = b.Count;
+    // LCS 是 O(n×m) 内存：大文档段落级对齐（同 DiffText 的 4M cells 口径）超限时
+    // dp 表可达 GB 级——统一退化成单个 replace（整删+整增，语义等价）
+    const int MaxCells = 4_000_000; // 4M int ≈ 16MB，超出则整体 replace
+    if ((long)n * m > MaxCells)
+    {
+        // 退化必须有痕：否则用户只看到「整段删+整段增」，不知道为什么没有逐段对齐
+        Console.Error.WriteLine($"warn: 序列过长（{n}×{m} 项），LCS 对齐退化为整体替换");
+        return new List<Opcode> { new Opcode("replace", 0, n, 0, m) };
+    }
     // LCS 长度表（从右下角往回递推）
     var dp = new int[n + 1, m + 1];
     for (int i = n - 1; i >= 0; i--)

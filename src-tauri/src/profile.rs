@@ -244,25 +244,31 @@ pub fn ensure_person_id<R: Runtime>(app: &AppHandle<R>) -> (String, String) {
         return (pid, name);
     }
     let pid = uuid::Uuid::new_v4().to_string();
-    {
+    // 锁内重取 canonical pid：并发/多窗口下后来者发现已有 person_id 时必须沿用
+    // 已有值——若仍用本地 pid 落 people 行并返回，会产生双 is_self 行 + 孤儿行
+    let pid = {
         let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
             eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
             e.into_inner()
         });
         let mut data = load_data(app);
-        // 双检：并发调用下后来者发现已有值就不再覆盖
-        if data
+        match data
             .person_id
             .as_deref()
-            .map(|s| s.trim().is_empty())
-            .unwrap_or(true)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
         {
-            data.person_id = Some(pid.clone());
-            if let Err(e) = save_data(app, &data) {
-                eprintln!("[profile] personId 持久化失败（本次内存生效）：{e}");
+            // 双检：已有非空值即 canonical，不再覆盖
+            Some(canonical) => canonical.to_string(),
+            None => {
+                data.person_id = Some(pid.clone());
+                if let Err(e) = save_data(app, &data) {
+                    eprintln!("[profile] personId 持久化失败（本次内存生效）：{e}");
+                }
+                pid
             }
         }
-    }
+    };
     // people 表本人行（失败不致命：people_list 对 is_self 行会用 profile 名兜底；
     // 但缺失会让本人行整个消失，尽力补建）。
     // 注意不加 DB_WRITE_LOCK——调用方（导入/导出）可能已持锁，普通 Mutex 不可重入；

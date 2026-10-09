@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use crate::bot::config::audit::read_log_tail;
     use crate::bot::config::io::{
-        base_url_is_safe, lock_config_write, migrate_search_key_slot, read_bypass_llm_switch_at,
+        base_url_is_safe, migrate_search_key_slot, read_bypass_llm_switch_at,
         read_memory_control_at, read_memory_tuning_at, write_bot_config_file_locked,
     };
     use crate::bot::config::keyring::{

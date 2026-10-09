@@ -126,7 +126,10 @@ function WorkflowPageInner({
   /** 打开竞态守卫：慢的旧 workflow_load 响应不得覆盖用户后来的选择（OCR r1 medium） */
   const openSeqRef = useRef(0);
   /** 删除确认的 3s 复位定时器（卸载/重臂时清理，OCR r1 medium） */
-  const armedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 重新生成的 3s 复位定时器：与删除各自独立——共用一个 ref 时先 arm 的一方
+   *  会被另一方的 clearTimeout 抹掉，armed 旗标永久残留变成「一次点击即执行」 */
+  const regenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 重新生成两步确认 */
   const [regenArmed, setRegenArmed] = useState(false);
   /** 工作流执行中：开始执行/停止按钮切换 + 进度显示 */
@@ -157,7 +160,8 @@ function WorkflowPageInner({
   useEffect(
     () => () => {
       decomposeSeqRef.current++; // 卸载时使在途拆解响应失效
-      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
     },
     []
   );
@@ -473,11 +477,14 @@ function WorkflowPageInner({
     if (decomposing) return;
     if (!regenArmed) {
       setRegenArmed(true);
-      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
-      armedTimerRef.current = setTimeout(() => setRegenArmed(false), 3000);
+      // 进入重生成确认流：复位删除的 armed 旗标与定时器（两流互不抹掉）
+      setDeleteArmed(false);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
+      regenTimerRef.current = setTimeout(() => setRegenArmed(false), 3000);
       return;
     }
-    if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
     setRegenArmed(false);
     decomposeSeqRef.current++; // 丢弃在途 clarify/decompose 响应（同 cancelClarify/cancelDecompose 语义）
     setClarifyState(null);
@@ -829,11 +836,14 @@ function WorkflowPageInner({
     if (!activeId) return;
     if (!deleteArmed) {
       setDeleteArmed(true);
-      if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
-      armedTimerRef.current = setTimeout(() => setDeleteArmed(false), 3000);
+      // 进入删除确认流：复位重生成的 armed 旗标与定时器（两流互不抹掉）
+      setRegenArmed(false);
+      if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = setTimeout(() => setDeleteArmed(false), 3000);
       return;
     }
-    if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
     setDeleteArmed(false);
     try {
       await invoke("workflow_delete", { id: activeId });

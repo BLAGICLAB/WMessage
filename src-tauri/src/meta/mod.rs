@@ -336,8 +336,20 @@ pub fn upsert_provider_user(
     Ok(())
 }
 
+/// upsert_model_user 的错误分类：只有 provider 缺失是业务规则（可重试）；
+/// 数据库错误（SQLITE_BUSY/磁盘等）单独携带 rusqlite::Error，
+/// 命令层按 Db 口径上抛，不得伪装成 DomainRule
+#[derive(Debug)]
+pub enum UpsertModelUserError {
+    ProviderMissing(String),
+    Db(rusqlite::Error),
+}
+
 /// 用户自建/更新模型（source='user_custom'）：provider 须先存在，否则 Err
-pub fn upsert_model_user(conn: &rusqlite::Connection, m: &MetaModel) -> Result<(), String> {
+pub fn upsert_model_user(
+    conn: &rusqlite::Connection,
+    m: &MetaModel,
+) -> Result<(), UpsertModelUserError> {
     debug_assert!(crate::db::holding_db_write(), "meta 写操作必须持有 db 写锁");
     let exists: i64 = conn
         .query_row(
@@ -345,12 +357,12 @@ pub fn upsert_model_user(conn: &rusqlite::Connection, m: &MetaModel) -> Result<(
             [&m.provider_key],
             |r| r.get(0),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(UpsertModelUserError::Db)?;
     if exists == 0 {
-        return Err(format!(
+        return Err(UpsertModelUserError::ProviderMissing(format!(
             "provider 不存在：{}，请先创建服务商",
             m.provider_key
-        ));
+        )));
     }
     conn.execute(
         "INSERT INTO meta_model (model_key, provider_key, display_name, context_length, temperature, top_p, max_tokens, default_system_prompt, source)
@@ -375,7 +387,7 @@ pub fn upsert_model_user(conn: &rusqlite::Connection, m: &MetaModel) -> Result<(
             m.default_system_prompt
         ],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(UpsertModelUserError::Db)?;
     Ok(())
 }
 
@@ -499,9 +511,13 @@ pub async fn meta_upsert_model(
             default_system_prompt,
             source: "user_custom".into(),
         };
-        upsert_model_user(&conn, &m).map_err(|reason| CommandError::DomainRule {
-            domain: "meta".into(),
-            reason,
+        upsert_model_user(&conn, &m).map_err(|e| match e {
+            UpsertModelUserError::ProviderMissing(reason) => CommandError::DomainRule {
+                domain: "meta".into(),
+                reason,
+            },
+            // 数据库错误按 Db 口径（不可重试），不再伪装成业务规则
+            UpsertModelUserError::Db(e) => CommandError::from(e),
         })?;
         query_model_joined(&conn, &model_key)
             .map_err(CommandError::from)?
@@ -640,7 +656,10 @@ mod tests {
         let _g = crate::db::lock_db_write(); // 写锁契约（debug_assert）
         let conn = mem_conn();
         let err = upsert_model_user(&conn, &dev_model("ghost/m", "ghost", "M")).unwrap_err();
-        assert!(err.contains("provider 不存在"), "err={err}");
+        assert!(
+            matches!(err, UpsertModelUserError::ProviderMissing(ref r) if r.contains("provider 不存在")),
+            "err={err:?}"
+        );
         assert!(models_by_provider(&conn, "ghost").unwrap().is_empty());
     }
 
