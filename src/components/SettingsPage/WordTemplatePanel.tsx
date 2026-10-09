@@ -85,7 +85,7 @@ export function WordTemplatePanel() {
     <div className="nm-card p-5">
       <h2 className="text-lg font-semibold text-[var(--t1)]">Word 模板</h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
-        上传排好版的 .docx 作为模板，机器人 create_word 时版式随模板（字体/页边距/页眉页脚/样式表）。
+        上传排好版的 .docx 作为模板，机器人 create_word 时版式随模板（正文字体/字号/行距/缩进/页边距/页眉页脚，按模板正文实际排版收割）。
         未设默认时使用内置版式
       </p>
       {error && <p className="mt-2 text-xs text-[var(--danger)]">{error}</p>}

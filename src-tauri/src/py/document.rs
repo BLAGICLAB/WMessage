@@ -70,6 +70,7 @@ else:
 "#;
 
 pub const MAKE_DOCX_SCRIPT: &str = r#"import json, os, re
+from copy import deepcopy
 import docx
 from docx.shared import Pt, Cm, Inches
 from docx.oxml import OxmlElement
@@ -84,46 +85,141 @@ tpl = p.get('template', '')
 use_tpl = bool(tpl) and os.path.exists(tpl)
 d = docx.Document(tpl) if use_tpl else docx.Document()
 if use_tpl:
-    # 模板锚定：继承模板的样式表/页面设置/页眉页脚；清空示例正文（保留 sectPr）
+    # 模板锚定 = 页面设置/页眉页脚随 sectPr 走 + 正文格式走原型收割。
+    # 公文/WPS 模板的排版大多不在样式表里，而在段落直接格式（仿宋三号/
+    # 行距/首行缩进逐段手排）或自定义名样式（如「Normal.0」）；样式表自带
+    # 的 Heading/Normal 只是 Office 通用款（蓝主题标题+五号正文），按命名
+    # 样式生成与模板视觉两回事——清空正文前先从模板段落抄格式原型，
+    # 加内容时逐段拷贝，模板示例正文整段清掉。
     body = d.element.body
+    def para_len(p_el):
+        return sum(len(t.text or '') for t in p_el.iter(qn('w:t')))
+    def take_protos(p_el):
+        ppr = p_el.find(qn('w:pPr'))
+        rpr = None
+        for r in p_el.findall(qn('w:r')):
+            rr = r.find(qn('w:rPr'))
+            if rr is not None:
+                rpr = deepcopy(rr)
+                break
+        return (deepcopy(ppr) if ppr is not None else None, rpr)
+    def has_first_line_ind(p_el):
+        ppr = p_el.find(qn('w:pPr'))
+        ind = ppr.find(qn('w:ind')) if ppr is not None else None
+        if ind is None:
+            return False
+        return any((ind.get(qn(a)) or '').isdigit() and int(ind.get(qn(a))) > 0
+                   for a in ('w:firstLineChars', 'w:firstLine'))
+    def font_sig(rpr):
+        if rpr is None:
+            return None
+        f = rpr.find(qn('w:rFonts'))
+        s = rpr.find(qn('w:sz'))
+        return (f.get(qn('w:eastAsia')) if f is not None else None,
+                s.get(qn('w:val')) if s is not None else None)
+    body_ps = [el for el in body if el.tag == qn('w:p')]
+    # 正文原型：带首行缩进的最长段（公文正文定义特征）；全无缩进则取最长段
+    body_el = max([el for el in body_ps if has_first_line_ind(el)] or body_ps,
+                  key=para_len, default=None)
+    body_ppr, body_rpr = take_protos(body_el) if body_el is not None else (None, None)
+    # 模板示例段的列表编号是样例自身的，不随原型带走
+    if body_ppr is not None:
+        for e in body_ppr.findall(qn('w:numPr')):
+            body_ppr.remove(e)
+    # 标题级原型：模板正文真用了 Heading N 样式的段（每级取首个）
+    head_protos = {}
+    for para in d.paragraphs:
+        m = re.match(r'^heading ([1-3])$', para.style.name, re.I)
+        if m and para_len(para._p) > 0 and int(m.group(1)) not in head_protos:
+            head_protos[int(m.group(1))] = take_protos(para._p)
+    # 主标题原型：首个非空段——居中或字体字号异于正文才算
+    title_ppr = title_rpr = None
+    first_el = next((el for el in body_ps if para_len(el) > 0), None)
+    if first_el is not None:
+        f_ppr, f_rpr = take_protos(first_el)
+        f_jc = f_ppr.find(qn('w:jc')) if f_ppr is not None else None
+        if (f_jc is not None and f_jc.get(qn('w:val')) == 'center') \
+                or font_sig(f_rpr) != font_sig(body_rpr):
+            title_ppr, title_rpr = f_ppr, f_rpr
     for child in list(body):
         if not child.tag.endswith('}sectPr'):
             body.remove(child)
+    def stamp(para, ppr, rpr, text):
+        # pPr 是 w:p 首子元素、rPr 是 w:r 首子元素（schema 顺序）
+        if ppr is not None:
+            para._p.insert(0, deepcopy(ppr))
+        run = para.add_run(text)
+        if rpr is not None:
+            run._element.insert(0, deepcopy(rpr))
+    def ppr_outline(ppr, lvl):
+        for e in ppr.findall(qn('w:outlineLvl')):
+            ppr.remove(e)
+        ol = OxmlElement('w:outlineLvl')
+        ol.set(qn('w:val'), str(lvl))
+        anchor = ppr.find(qn('w:rPr'))
+        if anchor is not None:
+            ppr.insert(list(ppr).index(anchor), ol)
+        else:
+            ppr.append(ol)
+    def force_font(rpr, name):
+        rf = rpr.find(qn('w:rFonts'))
+        if rf is None:
+            rf = OxmlElement('w:rFonts')
+            rpr.insert(0, rf)
+        for a in ('w:ascii', 'w:hAnsi', 'w:eastAsia', 'w:cs'):
+            rf.set(qn(a), name)
+    def add_heading_cjk(text, level):
+        if level in head_protos:
+            ppr, rpr = head_protos[level]
+            stamp(d.add_paragraph(), ppr, rpr, text)
+            return
+        h = d.add_paragraph()
+        if body_ppr is not None:
+            # 模板无可学的标题段：按公文惯例正文原型改黑体、去首行缩进
+            # （标题与正文同字号），outlineLvl 让导航窗格/目录按层级识别
+            ppr = deepcopy(body_ppr)
+            for e in ppr.findall(qn('w:ind')):
+                ppr.remove(e)
+            rpr = deepcopy(body_rpr) if body_rpr is not None else OxmlElement('w:rPr')
+            force_font(rpr, '黑体')
+            # 段落标记的 rPr（pPr 内）一并改黑体，整段字体口径一致
+            prf = ppr.find(qn('w:rPr'))
+            if prf is not None:
+                force_font(prf, '黑体')
+            stamp(h, ppr, rpr, text)
+        else:
+            # 空模板兜底：黑体+分级字号
+            r = h.add_run(text)
+            r.font.name = '黑体'
+            r.font.size = Pt({1: 16, 2: 14, 3: 12}.get(level, 12))
+            # font.name 只写 w:rFonts 的 ascii/hAnsi，中文字形要显式补 eastAsia
+            r._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'), '黑体')
+        ppr_outline(h._p.get_or_add_pPr(), level - 1)
+    def add_body_para(text):
+        stamp(d.add_paragraph(), body_ppr, body_rpr, text)
+    if title:
+        tp = d.add_paragraph()
+        if title_ppr is not None or title_rpr is not None:
+            stamp(tp, title_ppr, title_rpr, title)
+        else:
+            # 模板没有可辨的标题段：正文原型改居中顶替
+            ppr = deepcopy(body_ppr) if body_ppr is not None else None
+            if ppr is not None:
+                jc = ppr.find(qn('w:jc'))
+                if jc is None:
+                    jc = OxmlElement('w:jc')
+                    anchor = ppr.find(qn('w:rPr'))
+                    if anchor is not None:
+                        ppr.insert(list(ppr).index(anchor), jc)
+                    else:
+                        ppr.append(jc)
+                jc.set(qn('w:val'), 'center')
+            stamp(tp, ppr, body_rpr, title)
+        ppr_outline(tp._p.get_or_add_pPr(), 0)
 else:
     style = d.styles['Normal']
     style.font.name = '宋体'
     style.font.size = Pt(12)
-if use_tpl:
-    # 模板模式：优先命名样式（Heading 1/Normal），版式随模板样式表走。
-    # 公文/WPS 导出的模板常缺 Heading 命名样式（styleId 是数字/字母缩写），
-    # add_heading 按名查样式 KeyError 会让整单失败——缺样式时降级为直接
-    # 格式化（黑体+分级字号）并补 w:outlineLvl，导航窗格/目录仍按标题层级识别
-    def has_style(name):
-        try:
-            d.styles[name]
-            return True
-        except KeyError:
-            return False
-    def add_heading_cjk(text, level):
-        if has_style('Heading %d' % level):
-            d.add_heading(text, level=level)
-            return
-        h = d.add_paragraph()
-        r = h.add_run(text)
-        r.font.name = '黑体'
-        r.font.size = Pt({1: 16, 2: 14, 3: 12}.get(level, 12))
-        # font.name 只写 w:rFonts 的 ascii/hAnsi，中文字形要显式补 eastAsia
-        rpr = r._element.get_or_add_rPr()
-        rpr.rFonts.set(qn('w:eastAsia'), '黑体')
-        ppr = h._p.get_or_add_pPr()
-        ol = OxmlElement('w:outlineLvl')
-        ol.set(qn('w:val'), str(level - 1))
-        ppr.append(ol)
-    def add_body_para(text):
-        d.add_paragraph(text)
-    if title:
-        add_heading_cjk(title, 1)
-else:
     if title:
         h = d.add_heading('', level=1)
         r = h.add_run(title)
@@ -967,6 +1063,13 @@ pub async fn doc_make_word(
     template: Option<String>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
+    // 审计带模板文件名：模板锚定是否生效在产物里肉眼难辨（页面设置继承、
+    // 正文格式走收割），排障要先知道这次到底用没用模板
+    let tpl_note = template
+        .as_deref()
+        .and_then(|t| Path::new(t).file_name())
+        .map(|n| format!(" | tpl: {}", n.to_string_lossy()))
+        .unwrap_or_else(|| " | tpl: -".to_string());
     let input = serde_json::json!({
         "title": title,
         "paragraphs": paragraphs,
@@ -999,7 +1102,7 @@ pub async fn doc_make_word(
             "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
         )));
     }
-    py_audit(&app, &format!("doc_make_word | out: {out}"));
+    py_audit(&app, &format!("doc_make_word{tpl_note} | out: {out}"));
     Ok(out)
 }
 
@@ -1708,17 +1811,27 @@ mod fake_success_guard_tests {
         }
     }
 
-    /// MAKE_DOCX_SCRIPT 的 Heading 样式守卫回归锁：公文/WPS 导出的模板常无
-    /// Heading 命名样式，add_heading 按名查样式 KeyError 会让整单失败（用户
-    /// 真实模板触发过）。脚本必须有样式存在性守卫 + outlineLvl 降级
+    /// MAKE_DOCX_SCRIPT 模板格式收割回归锁：公文/WPS 模板的排版在段落直接
+    /// 格式或自定义名样式里，样式表自带的 Heading/Normal 只是 Office 通用款
+    /// （用户模板实测：真模板零 Heading 段、生成物却套上样式表的蓝主题
+    /// heading 1）。脚本必须清空正文前收割格式原型（正文取带首行缩进的最长
+    /// 段），降级标题仍带 outlineLvl
     #[test]
-    fn docx_script_guards_missing_heading_styles() {
+    fn docx_script_harvests_template_format_protos() {
         let src = include_str!("document.rs");
-        assert!(src.contains("def has_style(name)"), "缺样式守卫被移除");
-        assert!(src.contains("w:outlineLvl"), "outlineLvl 降级被移除");
+        assert!(src.contains("def take_protos"), "格式原型收割被移除");
         assert!(
-            src.contains("if has_style('Heading %d' % level)"),
-            "add_heading 未走样式守卫"
+            src.contains("has_first_line_ind"),
+            "正文原型须取带首行缩进的最长段"
+        );
+        assert!(src.contains("head_protos"), "Heading 原型优先路径被移除");
+        assert!(src.contains("w:outlineLvl"), "降级标题 outlineLvl 被移除");
+        // 命名样式优先已被证伪：样式表有通用 heading 1 ≠ 模板真实版式，
+        // 模板模式不得再按样式名盲调 add_heading（KeyError 风险一并消除）。
+        // 针线拼接写法：include_str 含测试自身源码，整串字面量会自命中
+        assert!(
+            !src.contains(concat!("add_heading(text, level=", "=level)")),
+            "命名样式优先路径回流"
         );
     }
 }
