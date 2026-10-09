@@ -990,6 +990,18 @@ pub async fn doc_make_word(
         );
         return Err(script_fail_err("生成 Word 失败", &r.stderr));
     }
+    // 真校验：退出码 0 ≠ 文件落盘——脚本任何「静默跳过保存」的路径都会假成功，
+    // 这里对产物本身做存在性 + 非空检查（杜绝对用户谎报生成成功）
+    let meta = std::fs::metadata(&out);
+    if meta.as_ref().map(|m| m.len() == 0).unwrap_or(true) {
+        py_audit(
+            &app,
+            &format!("doc_make_word 假成功拦截 | {out} 未落盘或为空"),
+        );
+        return Err(CommandError::IoError(format!(
+            "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
+        )));
+    }
     py_audit(&app, &format!("doc_make_word | out: {out}"));
     Ok(out)
 }
@@ -1028,6 +1040,17 @@ pub async fn doc_make_word_revisions(
             ),
         );
         return Err(script_fail_err("生成修订版 Word 失败", &r.stderr));
+    }
+    // 真校验（同 doc_make_word）：退出码 0 ≠ 文件落盘
+    let meta = std::fs::metadata(&out);
+    if meta.as_ref().map(|m| m.len() == 0).unwrap_or(true) {
+        py_audit(
+            &app,
+            &format!("doc_make_word_revisions 假成功拦截 | {out} 未落盘或为空"),
+        );
+        return Err(CommandError::IoError(format!(
+            "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
+        )));
     }
     py_audit(
         &app,
