@@ -393,6 +393,236 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     Ok(name)
 }
 
+// ── create_skill：机器人自建技能（工具口） ──
+
+/// SKILL.md 正文字符上限（对齐业界 SKILL.md ≤500 行/≈5K tokens 规范的宽松裕度）
+const CREATE_MAX_SKILL_CHARS: usize = 64 * 1024;
+/// 单附件上限；附件个数上限；附件总字节上限
+const CREATE_MAX_FILE_BYTES: usize = 200 * 1024;
+const CREATE_MAX_FILES: usize = 10;
+const CREATE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
+
+/// 创建校验的元数据部分（纯逻辑可测）：description 必填（技能清单与路由展示必需）
+/// + intents/description 危险关键词预检（与运行时 preflight 同一黑名单——把拒绝
+/// 提前到落盘前，而非装上后每次启动才炸）。
+fn validate_created_meta(meta: &SkillMeta) -> Result<(), String> {
+    if meta.description.trim().is_empty() {
+        return Err("frontmatter 缺少 description（技能清单与路由展示必需）".into());
+    }
+    let hay = format!(
+        "{} {}",
+        meta.description.to_lowercase(),
+        meta.intents.join(" ")
+    );
+    if let Some(hit) = super::runtime::INTENT_BLACKLIST
+        .iter()
+        .find(|b| hay.contains(&b.to_lowercase()))
+    {
+        return Err(format!(
+            "intents/description 命中危险关键词「{hit}」，拒绝创建"
+        ));
+    }
+    Ok(())
+}
+
+/// 落盘核（同步、可测）：name 须已过 validate_skill_name；content 为完整 SKILL.md
+/// 文本；files 为相对技能目录的附件（path, content）。排他占位 + 失败清理，
+/// 与 skills_import 同一模式。返回写入的附件个数。
+fn create_skill_at(
+    dir: &std::path::Path,
+    name: &str,
+    content: &str,
+    files: &[(String, String)],
+) -> Result<usize, CommandError> {
+    if content.chars().count() > CREATE_MAX_SKILL_CHARS {
+        return Err(CommandError::InvalidArgument {
+            field: "content".into(),
+            value: String::new(),
+            reason: format!("SKILL.md 超过 {CREATE_MAX_SKILL_CHARS} 字符上限"),
+        });
+    }
+    let meta = parse_meta(content, name);
+    validate_created_meta(&meta).map_err(|reason| CommandError::InvalidArgument {
+        field: "content".into(),
+        value: String::new(),
+        reason,
+    })?;
+    if files.len() > CREATE_MAX_FILES {
+        return Err(CommandError::InvalidArgument {
+            field: "files".into(),
+            value: files.len().to_string(),
+            reason: format!("附件超过 {CREATE_MAX_FILES} 个上限"),
+        });
+    }
+    let mut total = content.len();
+    let mut cleaned: Vec<(std::path::PathBuf, &str)> = Vec::new();
+    for (p, c) in files {
+        let pb = std::path::Path::new(p);
+        if pb.is_absolute() || p.contains("..") {
+            return Err(CommandError::InvalidArgument {
+                field: "files.path".into(),
+                value: p.clone(),
+                reason: "附件路径必须为技能目录内的相对路径".into(),
+            });
+        }
+        // 逐组件字符集校验（字母/数字/点/-/_，禁空组件）：穿越与怪名都在这里挡下
+        for comp in pb.components() {
+            let s = match comp {
+                std::path::Component::Normal(s) => s.to_string_lossy().to_string(),
+                _ => {
+                    return Err(CommandError::InvalidArgument {
+                        field: "files.path".into(),
+                        value: p.clone(),
+                        reason: "附件路径含非法组件（绝对路径/./.. 等）".into(),
+                    })
+                }
+            };
+            if s.is_empty()
+                || !s
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+                || s == "."
+                || s == ".."
+            {
+                return Err(CommandError::InvalidArgument {
+                    field: "files.path".into(),
+                    value: p.clone(),
+                    reason: format!("附件路径组件「{s}」含不允许的字符"),
+                });
+            }
+        }
+        if pb
+            .file_name()
+            .map(|f| f.to_string_lossy().eq_ignore_ascii_case("skill.md"))
+            .unwrap_or(false)
+        {
+            return Err(CommandError::InvalidArgument {
+                field: "files.path".into(),
+                value: p.clone(),
+                reason: "SKILL.md 由 content 参数提供，附件不得覆盖".into(),
+            });
+        }
+        if c.len() > CREATE_MAX_FILE_BYTES {
+            return Err(CommandError::InvalidArgument {
+                field: "files.content".into(),
+                value: p.clone(),
+                reason: format!("单附件超过 {} 字节上限", CREATE_MAX_FILE_BYTES),
+            });
+        }
+        total += c.len();
+        if total > CREATE_MAX_TOTAL_BYTES {
+            return Err(CommandError::InvalidArgument {
+                field: "files".into(),
+                value: p.clone(),
+                reason: format!("附件总大小超过 {} 字节上限", CREATE_MAX_TOTAL_BYTES),
+            });
+        }
+        cleaned.push((pb.to_path_buf(), c.as_str()));
+    }
+
+    // 排他占位（同 skills_import：并发双建只有一个成功）
+    std::fs::create_dir_all(dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    let dest = dir.join(name);
+    std::fs::create_dir(&dest).map_err(|_| CommandError::SkillLoadFailed {
+        name: name.to_string(),
+        reason: "同名技能已存在：如需覆盖请先删除".into(),
+    })?;
+    let write_all = || -> Result<(), CommandError> {
+        std::fs::write(dest.join("SKILL.md"), content)
+            .map_err(|e| CommandError::IoError(e.to_string()))?;
+        for (p, c) in &cleaned {
+            let target = dest.join(p);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| CommandError::IoError(e.to_string()))?;
+            }
+            std::fs::write(target, c).map_err(|e| CommandError::IoError(e.to_string()))?;
+        }
+        Ok(())
+    };
+    if let Err(e) = write_all() {
+        // 不留半拷贝残骸堵死重试
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
+    }
+    Ok(cleaned.len())
+}
+
+/// 机器人自建技能：把对话中沉淀的可复用流程固化为 SKILL.md（可带脚本/模板附件），
+/// 创建即生效（路由重建）。与 skills_import 同一校验核/排他落盘/路由重建口径；
+/// intents 危险词在创建时预检（同运行时 preflight 黑名单）。
+pub async fn tool_create_skill(app: &AppHandle, args: &str) -> crate::bot::registry::ToolResult {
+    use crate::bot::registry::ToolResult;
+    let v = crate::bot::parse_args(args);
+    let Some(name) = v["name"]
+        .as_str()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        // 「create_skill 缺少 name」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            "create_skill 缺少 name（技能名：字母/数字/-/_）".to_string(),
+            Vec::new(),
+        );
+    };
+    if let Err(reason) = validate_skill_name(&name) {
+        return ToolResult::ok(format!("create_skill：{reason}"), Vec::new());
+    }
+    let Some(content) = v["content"].as_str().map(|s| s.to_string()) else {
+        return ToolResult::ok(
+            "create_skill 缺少 content（完整 SKILL.md 文本，frontmatter 必含 description）"
+                .to_string(),
+            Vec::new(),
+        );
+    };
+    let mut files: Vec<(String, String)> = Vec::new();
+    if let Some(arr) = v["files"].as_array() {
+        for f in arr {
+            match (f["path"].as_str(), f["content"].as_str()) {
+                (Some(p), Some(c)) => files.push((p.to_string(), c.to_string())),
+                _ => {
+                    return ToolResult::ok(
+                        "files 条目必须同时包含 path 与 content".to_string(),
+                        Vec::new(),
+                    )
+                }
+            }
+        }
+    }
+
+    let dir = skills_dir(app);
+    let dir_log = dir.display().to_string();
+    crate::bot::audit_log(
+        app,
+        &format!(
+            "skill_create | {} | files: {}",
+            crate::bot::escape_for_log(&name, 100),
+            files.len()
+        ),
+    );
+    let name_for_task = name.clone();
+    let created = crate::py::document::spawn_blocking_map(move || {
+        create_skill_at(&dir, &name_for_task, &content, &files).map_err(|e| e.to_string())
+    })
+    .await;
+    match created {
+        Ok(file_count) => {
+            rebuild_intent_routes(app);
+            // 成功摘要中路径段首字不定 → ok
+            ToolResult::ok(
+                format!(
+                    "技能「{name}」已创建并生效（附件 {file_count} 个），技能目录：{dir_log}。路由已重建：用户说出该技能 intents 关键词即会进入该技能流程。"
+                ),
+                Vec::new(),
+            )
+        }
+        Err(e) => {
+            // 失败文本首字不定（错误消息可能任意） → ok
+            ToolResult::ok(format!("创建失败：{e}"), Vec::new())
+        }
+    }
+}
+
 /// 删除技能（整目录）
 ///
 /// 删除范围：用户装的 skill 落在 `skills_dir()` (data dir)；debug build 下
@@ -459,6 +689,94 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── create_skill_at：机器人自建技能落盘核 ──
+
+    #[test]
+    fn create_skill_writes_doc_and_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content =
+            "---\nname: my-skill\ndescription: 测试技能\nintents:\n  - 测试流程\n---\n# 步骤\n做事";
+        let files = vec![("scripts/run.py".to_string(), "print('hi')".to_string())];
+        let n = create_skill_at(tmp.path(), "my-skill", content, &files).unwrap();
+        assert_eq!(n, 1);
+        assert!(tmp.path().join("my-skill/SKILL.md").is_file());
+        assert!(tmp.path().join("my-skill/scripts/run.py").is_file());
+    }
+
+    #[test]
+    fn create_skill_rejects_duplicate_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("dup")).unwrap();
+        let err = create_skill_at(
+            tmp.path(),
+            "dup",
+            "---\nname: dup\ndescription: d\n---\nx",
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommandError::SkillLoadFailed { .. }), "{err}");
+    }
+
+    #[test]
+    fn create_skill_rejects_blacklisted_intents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = create_skill_at(
+            tmp.path(),
+            "bad",
+            "---\nname: bad\ndescription: 一键清空所有数据\n---\nx",
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("危险关键词"), "{err}");
+    }
+
+    #[test]
+    fn create_skill_requires_description() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = create_skill_at(tmp.path(), "x", "---\nname: x\n---\n正文", &[]).unwrap_err();
+        assert!(err.to_string().contains("description"), "{err}");
+    }
+
+    #[test]
+    fn create_skill_rejects_traversal_and_skill_md_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let traversal = vec![("../evil.txt".to_string(), "x".to_string())];
+        let err = create_skill_at(
+            tmp.path(),
+            "x",
+            "---\nname: x\ndescription: d\n---\nb",
+            &traversal,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("相对路径"), "{err}");
+
+        let override_md = vec![("SKILL.md".to_string(), "x".to_string())];
+        let err = create_skill_at(
+            tmp.path(),
+            "x",
+            "---\nname: x\ndescription: d\n---\nb",
+            &override_md,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("不得覆盖"), "{err}");
+    }
+
+    #[test]
+    fn create_skill_enforces_file_count_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let files: Vec<(String, String)> = (0..11)
+            .map(|i| (format!("f{i}.txt"), "x".to_string()))
+            .collect();
+        let err = create_skill_at(
+            tmp.path(),
+            "x",
+            "---\nname: x\ndescription: d\n---\nb",
+            &files,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("上限"), "{err}");
+    }
 
     // ── scan_skill_dirs 多目录去重 ──
 

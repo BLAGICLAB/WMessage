@@ -7,26 +7,31 @@ use crate::bot::registry::ToolResult;
 use crate::error::CommandError;
 use tauri::AppHandle;
 
+/// 意图/描述危险关键词黑名单（与系统提示词安全红线一致）：命中即拒绝启动；
+/// create_skill 创建时也做同款预检（创建早于启动，把拒绝提前到落盘前）。
+pub(crate) const INTENT_BLACKLIST: [&str; 5] = [
+    "全盘遍历",
+    "批量删除",
+    "无确认删除",
+    "遍历文件系统",
+    "清空所有",
+];
+
 /// 前置预审（Harness 意图预审层）：禁用/黑名单拒绝；超长/非法字段已在 parse_meta 兜底。
 /// 返回 Ok 表示放行启动。
 fn preflight(meta: &SkillMeta) -> Result<(), String> {
     if !meta.enabled {
         return Err(format!("技能「{}」已被禁用", meta.name));
     }
-    // 黑名单意图关键词（与系统提示词安全红线一致）：命中即拒绝启动
-    const BLACKLIST: [&str; 5] = [
-        "全盘遍历",
-        "批量删除",
-        "无确认删除",
-        "遍历文件系统",
-        "清空所有",
-    ];
     let hay = format!(
         "{} {}",
         meta.description.to_lowercase(),
         meta.intents.join(" ")
     );
-    if let Some(hit) = BLACKLIST.iter().find(|b| hay.contains(&b.to_lowercase())) {
+    if let Some(hit) = INTENT_BLACKLIST
+        .iter()
+        .find(|b| hay.contains(&b.to_lowercase()))
+    {
         return Err(format!(
             "技能「{}」意图命中安全黑名单（{hit}），已拒绝启动",
             meta.name

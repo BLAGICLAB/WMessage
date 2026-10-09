@@ -20,7 +20,7 @@ use crate::bot::tools::{
     tool_link_file_to_task, tool_query_single_task, tool_query_tasks, tool_remove_subtask,
     tool_run_python, tool_toggle_subtask, tool_web_search,
 };
-use crate::bot_skills::tool_use_skill;
+use crate::bot_skills::{tool_create_skill, tool_use_skill};
 
 pub struct ToolCtx<'a> {
     pub app: &'a AppHandle,
@@ -297,6 +297,9 @@ pub const SCHEMA_RECORD_LESSON: &str = r##"{"type":"function","function":{"name"
     "lesson":{"type":"string","description":"教训内容（≤800 字）：什么场景下应该/不应该怎么做，以及原因"},
     "scenario":{"type":"string","description":"场景标签（可选 ≤50 字），如工具名或任务类型：create_ppt、批量执行、文档修订"}
   },"required":["lesson"]}}}"##;
+/// create_skill：机器人自建技能（SKILL.md + 可选脚本/模板附件），创建即生效并重建路由
+pub const SCHEMA_CREATE_SKILL: &str = r##"{"type":"function","function":{"name":"create_skill","description":"把本次对话中沉淀的可复用流程固化为技能（skill），长期生效、重启保留。适合：用户明确说「把这个流程存成技能/记住这个做法」，或同一多步流程第二次被手动描述时。content 为完整 SKILL.md 文本（YAML frontmatter 必含 name 与 description；可声明 risk_level/mode/max_steps/intents 触发关键词；步骤用 ## 标题分节）。创建后立即生效：用户说出 intents 关键词即进入该技能。同名技能已存在、或 description/intents 命中危险关键词会被拒绝","parameters":{"type":"object","properties":{"name":{"type":"string","description":"技能名：仅字母/数字/-/_"},"content":{"type":"string","description":"完整 SKILL.md 文本（frontmatter + 正文步骤）"},"files":{"type":"array","description":"可选附件（脚本/模板），路径相对技能目录","items":{"type":"object","properties":{"path":{"type":"string","description":"相对路径，如 scripts/run.py"},"content":{"type":"string","description":"文件文本内容"}}}}},"required":["name","content"]}}}"##;
+
 pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"},
     "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
@@ -509,6 +512,10 @@ fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
         )
         .await
     })
+}
+
+fn call_create_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { tool_create_skill(ctx.app, args).await })
 }
 
 fn call_use_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -940,6 +947,14 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_use_skill,
     },
+    ToolDef {
+        name: "create_skill",
+        schema: SCHEMA_CREATE_SKILL,
+        mutating: true,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_create_skill,
+    },
     // 子 agent 编排（主 agent 可见，追加表尾）
     ToolDef {
         name: "spawn_subagent",
@@ -1233,17 +1248,17 @@ mod registry_tests {
     use std::collections::HashSet;
 
     #[test]
-    fn tools_table_contains_38_main_visible_tools() {
+    fn tools_table_contains_39_main_visible_tools() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
-        //  +  +  +  + 主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两 + ask_user；
-        // write_artifact_file / read_own_card 仅子 agent 白名单可见
-        assert_eq!(arr.len(), 38, "主 agent 可见工具必须为 38");
+        //  +  +  +  + 主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两 + ask_user
+        //  + create_skill（机器人自建技能）；write_artifact_file / read_own_card 仅子 agent 可见
+        assert_eq!(arr.len(), 39, "主 agent 可见工具必须为 39");
         assert_eq!(
             TOOLS_TABLE.len(),
-            40,
-            "TOOLS_TABLE 全量 40（含 2 个 subagent-only）"
+            41,
+            "TOOLS_TABLE 全量 41（含 2 个 subagent-only）"
         );
 
         let mut seen: HashSet<String> = HashSet::new();
@@ -1298,6 +1313,7 @@ mod registry_tests {
             "recall_facts",
             "record_lesson",
             "use_skill",
+            "create_skill",
             "spawn_subagent",
             "check_subagent",
             "cancel_subagent",
@@ -1353,6 +1369,7 @@ mod registry_tests {
             "recall_facts",
             "record_lesson",
             "use_skill",
+            "create_skill",
             "spawn_subagent",
             "check_subagent",
             "cancel_subagent",
@@ -1394,6 +1411,7 @@ mod registry_tests {
             "write_artifact_file",
             "edit_file",
             "write_file",
+            "create_skill",
         ]
         .into_iter()
         .collect();
@@ -1430,8 +1448,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 10,
-            "主可见应为 28+3+4+2+1（含 ask_user）"
+            base_arr.len() + 11,
+            "主可见应为 28+3+4+2+1+1（含 ask_user 与 create_skill）"
         );
     }
 
@@ -1714,10 +1732,14 @@ mod registry_tests {
         s.push_str("\n]");
         let v: serde_json::Value = serde_json::from_str(&s).expect("拼装结果必须合法");
         let arr = v.as_array().unwrap();
-        assert_eq!(arr.len(), 39, "38 内置（含 ask_user）+ 1 假 MCP");
-        assert_eq!(arr[38]["function"]["name"], "mcp_fake_x");
-        // 内置前 38 项顺序不变（增量挂载不漂移）
+        assert_eq!(
+            arr.len(),
+            40,
+            "39 内置（含 ask_user 与 create_skill）+ 1 假 MCP"
+        );
+        assert_eq!(arr[39]["function"]["name"], "mcp_fake_x");
+        // 内置前 39 项顺序不变（增量挂载不漂移）
         let base_arr = serde_json::from_str::<serde_json::Value>(base).unwrap();
-        assert_eq!(&arr[..38], base_arr.as_array().unwrap().as_slice());
+        assert_eq!(&arr[..39], base_arr.as_array().unwrap().as_slice());
     }
 }

@@ -5970,3 +5970,25 @@ opener:default 必须存在」，防回退语义保留（恢复前端开路径�
   生成物名字排除（min.*.js/css、*.map、各系 lockfile——GitHub 代码搜索同款
   口径，命中行又长又无信息量）。2MB 阈值保留作 read_to_string 的内存兜底
   （行截断 200 字符原本就在）。
+
+## 2026-10-09（周四）create_skill — 机器人自建技能工具（外部调研选型：结构化创建工具）
+
+**为什么**：外部 skill 模块（导入/删除/执行/outcomes）已齐，但机器人无法把对话中
+沉淀的可复用流程固化为技能。调研业界三方案：Anthropic 元技能引导（依赖通用
+写工具+目录开闸，无结构校验）、结构化创建工具（校验集中可审计）、Voyager
+自进化库（创建后自动试跑迭代，副作用大）。选结构化创建工具：skills 是文本
+指令而非代码执行，影响面=路由+prompt 注入，工具级校验核足够；Voyager 式
+outcomes 迭代天然可后接（upsert_skill_outcome 已有）。
+
+- 落盘核 create_skill_at（manage.rs，纯同步可测）：名字校验（防穿越）→
+  SKILL.md ≤64K 字符 → description 必填 → intents/description 危险词预检
+  （runtime INTENT_BLACKLIST 抽出复用，与运行时 preflight 同一黑名单——拒绝
+  提前到落盘前）→ 附件 ≤10 个/单个 200KB/总量 1MB → 附件路径逐组件字符集
+  校验（穿越/绝对路径/SKILL.md 覆盖全拒）→ 排他 create_dir（防并发重名，
+  同 skills_import）→ 失败清理不留半拷贝
+- 工具壳 tool_create_skill：audit（skill_create）→ spawn_blocking 落盘 →
+  rebuild_intent_routes（创建即生效）→ 成功摘要含技能目录与 intents 生效说明
+- registry 注册：mutating=true（走 P3-c 工具规则，用户可配 ask/deny）
+
+验证：manage 19 测试（含新增 7 分支）+ clippy 0（除 vendor）+
+scripts/test-all.sh 全绿。
