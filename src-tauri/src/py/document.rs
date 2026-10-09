@@ -2281,7 +2281,12 @@ mod fake_success_guard_tests {
         let src = include_str!("document.rs");
         let make = super::const_script_body(src, "MAKE_DOCX_SCRIPT");
         let harvest = super::const_script_body(src, "HARVEST_PROTO_SCRIPT");
-        for marker in ["def take_protos", "has_first_line_ind", "def style_of"] {
+        for marker in [
+            "def proto_of",
+            "def merge_layer",
+            "has_first_line_ind",
+            "def style_of",
+        ] {
             assert!(harvest.contains(marker), "提取脚本缺启发式 {marker}");
         }
         for marker in ["tpl_params", "def mk_rpr", "def mk_ppr"] {
@@ -2289,7 +2294,7 @@ mod fake_success_guard_tests {
         }
         // 针线拼接写法：include_str 含测试自身源码，整串字面量会自命中
         assert!(
-            !make.contains(concat!("take_", "protos")),
+            !make.contains(concat!("proto", "_of")),
             "收割启发式回流生成脚本（两套口径漂移）"
         );
         // 参数构造按 schema 序插 pPr/rPr 首子元素；标题补 outlineLvl 导航层级

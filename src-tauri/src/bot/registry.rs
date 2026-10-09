@@ -1482,6 +1482,36 @@ mod registry_tests {
         );
     }
 
+    /// 「重生成 fixture」流程的显式入口（测试注释承诺的流程落地）：
+    /// `cargo test regen_tools_baseline_fixture -- --ignored` 后人眼复核 diff。
+    /// 只写前 28 项核心工具；格式无关紧要（基线比对是 Value 级）
+    #[test]
+    #[ignore]
+    fn regen_tools_baseline_fixture() {
+        let derived: serde_json::Value =
+            serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
+        let arr = derived.as_array().expect("tools_json() 必须是数组");
+        let body = serde_json::to_string_pretty(&arr[..base_arr_len()]).unwrap();
+        let text = format!("const TOOLS: &str = r#\"{body}\"#;\n");
+        std::fs::write(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/tools_baseline.json"
+            ),
+            text,
+        )
+        .expect("fixture 写入失败");
+    }
+
+    fn base_arr_len() -> usize {
+        let fixture = include_str!("../../tests/fixtures/tools_baseline.json");
+        let r_str_marker = fixture.find("r#\"").expect("fixture 缺 r#\"") + 3;
+        let end = fixture.rfind("]\"#;").expect("fixture 缺 ]\"#;") + 1;
+        let baseline: serde_json::Value = serde_json::from_str(&fixture[r_str_marker..end])
+            .expect("fixture 内 const TOOLS 正文必须是合法 JSON");
+        baseline.as_array().unwrap().len()
+    }
+
     /// 单源真相的核心不变式：ToolDef.name 必须等于它自己 schema 里的 function.name。
     /// 二者漂移 = 模型按 schema 调的工具名在 dispatch 查表时找不到（silent bug）。
     #[test]
