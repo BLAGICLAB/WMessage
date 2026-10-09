@@ -1674,8 +1674,17 @@ pub(crate) async fn tool_create_excel(
     }
     match crate::bot_py::doc_make_excel(app.clone(), sheets.clone(), opt_filename(&v)).await {
         Ok(out) => {
+            // 真校验后的产物元信息：让模型必须把完整路径转告用户（防「说了生成却找不到文件」）
+            let size_note = std::fs::metadata(&out)
+                .map(|m| format!("，{} KB", m.len() / 1024))
+                .unwrap_or_default();
             // 「已生成 Excel 文档」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(format!("已生成 Excel 文档：{out}"), Vec::new())
+            ToolResult::ok(
+                format!(
+                    "已生成 Excel 文档：{out}{size_note}。向用户报告时必须附上完整路径；用户找不到文件时可用 reveal_path 打开所在文件夹"
+                ),
+                Vec::new(),
+            )
         }
         // 「生成失败」首字「生」非「失败」前缀 → ok
         Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
@@ -1709,8 +1718,17 @@ pub(crate) async fn tool_create_ppt(
     .await
     {
         Ok(out) => {
+            // 真校验后的产物元信息：让模型必须把完整路径转告用户（防「说了生成却找不到文件」）
+            let size_note = std::fs::metadata(&out)
+                .map(|m| format!("，{} KB", m.len() / 1024))
+                .unwrap_or_default();
             // 「已生成 PPT 演示文稿」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(format!("已生成 PPT 演示文稿：{out}"), Vec::new())
+            ToolResult::ok(
+                format!(
+                    "已生成 PPT 演示文稿：{out}{size_note}。向用户报告时必须附上完整路径；用户找不到文件时可用 reveal_path 打开所在文件夹"
+                ),
+                Vec::new(),
+            )
         }
         // 「生成失败」首字「生」非「失败」前缀 → ok
         Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
@@ -1741,8 +1759,17 @@ pub(crate) async fn tool_create_pdf(
         .await
     {
         Ok(out) => {
+            // 真校验后的产物元信息：让模型必须把完整路径转告用户（防「说了生成却找不到文件」）
+            let size_note = std::fs::metadata(&out)
+                .map(|m| format!("，{} KB", m.len() / 1024))
+                .unwrap_or_default();
             // 「已生成 PDF 文档」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(format!("已生成 PDF 文档：{out}"), Vec::new())
+            ToolResult::ok(
+                format!(
+                    "已生成 PDF 文档：{out}{size_note}。向用户报告时必须附上完整路径；用户找不到文件时可用 reveal_path 打开所在文件夹"
+                ),
+                Vec::new(),
+            )
         }
         // 「生成失败」首字「生」非「失败」前缀 → ok
         Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),

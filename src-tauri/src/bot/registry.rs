@@ -219,7 +219,7 @@ pub const SCHEMA_EXTRACT_DOCUMENT: &str = r##"{"type":"function","function":{"na
     "offset":{"type":"integer","description":"字符偏移（可选，默认 0；返回里带『已截断』提示时用提示的 offset 值续读）"},
     "limit":{"type":"integer","description":"本页字符数（可选，默认 30000，上限 60000）"}
   }}}}"##;
-pub const SCHEMA_CREATE_WORD: &str = r##"{"type":"function","function":{"name":"create_word","description":"生成 Word 文档到 AI_Gen_Files（润色后的文本用这个落地；不覆盖任何已有文件）","parameters":{"type":"object","properties":{"template":{"type":"string","description":"模板名（设置页「Word 模板」已上传的）。用户指定了模板就传；未指定自动用默认模板（未设置默认则内置版式）；存在多个模板且用户意图不明时，先用 ask_user 问用户用哪个"},
+pub const SCHEMA_CREATE_WORD: &str = r##"{"type":"function","function":{"name":"create_word","description":"生成 Word 文档到 AI_Gen_Files（润色后的文本用这个落地；不覆盖任何已有文件）。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{"template":{"type":"string","description":"模板名（设置页「Word 模板」已上传的）。用户指定了模板就传；未指定自动用默认模板（未设置默认则内置版式）；存在多个模板且用户意图不明时，先用 ask_user 问用户用哪个"},
     "title":{"type":"string","description":"文档标题，可选"},
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表，每段一个字符串"},
     "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{
@@ -236,14 +236,14 @@ pub const SCHEMA_CREATE_WORD_REVISIONS: &str = r##"{"type":"function","function"
     "title":{"type":"string","description":"文档标题，可选"},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["revised"]}}}"##;
-pub const SCHEMA_CREATE_EXCEL: &str = r##"{"type":"function","function":{"name":"create_excel","description":"生成 Excel 到 AI_Gen_Files（单元格以 = 开头会写入原生公式如 =SUM(A1:A10)）","parameters":{"type":"object","properties":{
+pub const SCHEMA_CREATE_EXCEL: &str = r##"{"type":"function","function":{"name":"create_excel","description":"生成 Excel 到 AI_Gen_Files（单元格以 = 开头会写入原生公式如 =SUM(A1:A10)）。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
     "sheets":{"type":"array","items":{"type":"object","properties":{
       "name":{"type":"string"},
       "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}}},
     "description":"工作表列表：name 表名、rows 二维数组"},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["sheets"]}}}"##;
-pub const SCHEMA_CREATE_PPT: &str = r##"{"type":"function","function":{"name":"create_ppt","description":"生成排版统一的 PPT 到 AI_Gen_Files（版式/配色/字体随模板：设置页可导入 .pptx 母版设默认；未导入时用内置专业母版，封面/章节页深底、内容页浅底、中文雅黑）。多版式：封面/目录/章节页/内容页/表格页/结束页；要点超 5 条自动拆页。需要设计感更强的自由版式（图表/双栏/大数字）时，若已安装 ppt 设计类技能（见技能清单）优先用技能","parameters":{"type":"object","properties":{
+pub const SCHEMA_CREATE_PPT: &str = r##"{"type":"function","function":{"name":"create_ppt","description":"生成排版统一的 PPT 到 AI_Gen_Files（版式/配色/字体随模板：设置页可导入 .pptx 母版设默认；未导入时用内置专业母版，封面/章节页深底、内容页浅底、中文雅黑）。多版式：封面/目录/章节页/内容页/表格页/结束页；要点超 5 条自动拆页。需要设计感更强的自由版式（图表/双栏/大数字）时，若已安装 ppt 设计类技能（见技能清单）优先用技能。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"演示文稿主标题"},
     "template":{"type":"string","description":"模板名（设置页已导入的 .pptx 母版名，不含扩展名），可选；缺省用默认模板，未设默认时用内置母版。用户给过公司模板/指定过模板名时用"},
     "slides":{"type":"array","description":"幻灯片列表，按展示顺序；每页一个 type","items":{"type":"object","properties":{
@@ -257,7 +257,7 @@ pub const SCHEMA_CREATE_PPT: &str = r##"{"type":"function","function":{"name":"c
     },"required":["type","title"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["slides"]}}}"##;
-pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持，自动分页）","parameters":{"type":"object","properties":{
+pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持，自动分页）。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"文档标题，可选"},
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表"},
     "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{

@@ -1005,6 +1005,17 @@ pub async fn doc_make_excel(
         );
         return Err(script_fail_err("生成 Excel 失败", &r.stderr));
     }
+    // 真校验（同 doc_make_word）：退出码 0 ≠ 文件落盘
+    let meta = std::fs::metadata(&out);
+    if meta.as_ref().map(|m| m.len() == 0).unwrap_or(true) {
+        py_audit(
+            &app,
+            &format!("doc_make_excel 假成功拦截 | {out} 未落盘或为空"),
+        );
+        return Err(CommandError::IoError(format!(
+            "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
+        )));
+    }
     py_audit(&app, &format!("doc_make_excel | out: {out}"));
     Ok(out)
 }
@@ -1034,6 +1045,17 @@ pub async fn doc_make_pdf(
             ),
         );
         return Err(script_fail_err("生成 PDF 失败", &r.stderr));
+    }
+    // 真校验（同 doc_make_word）：退出码 0 ≠ 文件落盘
+    let meta = std::fs::metadata(&out);
+    if meta.as_ref().map(|m| m.len() == 0).unwrap_or(true) {
+        py_audit(
+            &app,
+            &format!("doc_make_pdf 假成功拦截 | {out} 未落盘或为空"),
+        );
+        return Err(CommandError::IoError(format!(
+            "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
+        )));
     }
     py_audit(&app, &format!("doc_make_pdf | out: {out}"));
     Ok(out)
@@ -1069,6 +1091,17 @@ pub async fn doc_make_ppt(
             ),
         );
         return Err(script_fail_err("生成 PPT 失败", &r.stderr));
+    }
+    // 真校验（同 doc_make_word）：退出码 0 ≠ 文件落盘
+    let meta = std::fs::metadata(&out);
+    if meta.as_ref().map(|m| m.len() == 0).unwrap_or(true) {
+        py_audit(
+            &app,
+            &format!("doc_make_ppt 假成功拦截 | {out} 未落盘或为空"),
+        );
+        return Err(CommandError::IoError(format!(
+            "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
+        )));
     }
     py_audit(&app, &format!("doc_make_ppt | out: {out}"));
     Ok(out)
@@ -1580,5 +1613,27 @@ mod pptx_template_tests {
             MAKE_PPTX_SCRIPT.contains("MAX_BULLETS = 5"),
             "密度拆页闸必须在"
         );
+    }
+}
+
+// 回归锁（读源字符串，同 bot_py 对 runtime.rs 的锁法）：
+// 五个生成函数都必须带「退出码 0 ≠ 文件落盘」真校验——脚本静默跳过保存的
+// 路径会假成功（杜绝对用户谎报已生成）。新增 doc_make_* 时必须同步补齐块，
+// 否则此测试红。
+#[cfg(test)]
+mod fake_success_guard_tests {
+    #[test]
+    fn fake_success_guard_covers_all_doc_makers() {
+        let src = include_str!("document.rs");
+        for name in [
+            "doc_make_word",
+            "doc_make_word_revisions",
+            "doc_make_excel",
+            "doc_make_pdf",
+            "doc_make_ppt",
+        ] {
+            let marker = format!("{name} 假成功拦截");
+            assert!(src.contains(&marker), "{name} 缺少假成功拦截块");
+        }
     }
 }
