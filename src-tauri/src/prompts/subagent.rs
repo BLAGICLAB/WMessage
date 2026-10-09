@@ -62,7 +62,7 @@ pub(crate) const PROFILE_RESEARCH: &str = r#"你是 research 子 agent。
 /// coder profile（设计 §8.4）。
 pub(crate) const PROFILE_CODER: &str = r#"你是 coder 子 agent。
 工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
-- 改文件用 edit_file（oldString 唯一精确匹配）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
+- 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 产物路径写入 artifacts。
 - 不要改任务卡主状态。"#;
@@ -70,7 +70,7 @@ pub(crate) const PROFILE_CODER: &str = r#"你是 coder 子 agent。
 /// general profile：research ∪ coder 的通用段。
 pub(crate) const PROFILE_GENERAL: &str = r#"你是 general 子 agent。
 工具：web_search、fetch_url、read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
-- 调研结论给来源；写代码先读后改、小步验证。
+- 调研结论给来源；写代码先读后改、小步验证；改文件用 edit_file（批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）。
 - 产物路径写入 artifacts。
 - 不要改任务卡主状态。"#;
 
