@@ -1682,7 +1682,7 @@ pub(crate) async fn tool_create_excel(
     }
 }
 
-/// 生成 PPT：slides 结构 [{title, bullets: [..]}]
+/// 生成 PPT：slides 结构 [{type, title, bullets/rows, notes}]，版式随模板（缺省内置母版）
 pub(crate) async fn tool_create_ppt(
     app: &AppHandle,
     args: &str,
@@ -1697,17 +1697,14 @@ pub(crate) async fn tool_create_ppt(
         return ToolResult::ok("slides 不能为空".to_string(), Vec::new());
     }
     let title = v["title"].as_str().unwrap_or("").to_string();
-    // theme：blue/navy/teal/forest/wine/sky/plum/coral/dark/green 十套；模型自选，非法回退 blue
-    let theme = v["theme"].as_str().map(|s| s.to_string());
-    // customColors：可选配色覆盖（脚本侧校验 hex，非法忽略）
-    let custom_colors = v.get("customColors").cloned();
+    // template：显式 .pptx 模板名（设置页导入的模板库）；缺省走 _default 标记，再回退内置母版
+    let template = v["template"].as_str().map(|s| s.to_string());
     match crate::bot_py::doc_make_ppt(
         app.clone(),
         title,
         slides.clone(),
         opt_filename(&v),
-        theme,
-        custom_colors,
+        template,
     )
     .await
     {

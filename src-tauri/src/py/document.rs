@@ -650,231 +650,134 @@ for i in range(n):
 print(n)
 "#;
 
-pub const MAKE_PPTX_SCRIPT: &str = r#"import json, datetime
+pub const MAKE_PPTX_SCRIPT: &str = r#"import json
 from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.util import Inches
 
 p = json.load(open('params.json', encoding='utf-8'))
 out = p['out']
 title = p.get('title', '')
-slides = p.get('slides', [])
-theme = p.get('theme', 'blue')
+slides_in = p.get('slides', [])
 
-THEMES = {
-    # 来源：color-font-skill 18 套配色精选（文字型 PPT 对比度适配后取色）。
-    # band=大面积色块（章节页/标题条/表头，必深色配 bandtext）；accent=点缀（竖条/强调字）；alt=表格斑马纹。
-    'blue':  dict(bg='FFFFFF', accent='2B2D42', text='2B2B2B', sub='6B6B6B', band='2B2D42', bandtext='FFFFFF', alt='F2F4F7'),   # 商务与权威
-    'navy':  dict(bg='000814', accent='FFC300', text='F0F0F0', sub='9AA5B1', band='003566', bandtext='FFFFFF', alt='0F1E33'),    # 科技与夜景（深色）
-    'teal':  dict(bg='FFFFFF', accent='006D77', text='2B2B2B', sub='6B6B6B', band='006D77', bandtext='FFFFFF', alt='F2F7F7'),   # 现代与健康
-    'forest':dict(bg='FEFAE0', accent='606C38', text='283618', sub='7A7A5C', band='283618', bandtext='FEFAE0', alt='F6F1DA'),   # 自然与户外
-    'wine':  dict(bg='FDF0D5', accent='780000', text='2B2B2B', sub='8A6A4A', band='780000', bandtext='FFFFFF', alt='F9E8C8'),   # 复古与学院
-    'sky':   dict(bg='FFFFFF', accent='0077B6', text='03045E', sub='6B6B6B', band='03045E', bandtext='FFFFFF', alt='F0F6FB'),   # 纯净科技蓝
-    'plum':  dict(bg='F2E9E4', accent='22223B', text='2B2B2B', sub='8A8A8A', band='22223B', bandtext='FFFFFF', alt='EBE0D8'),   # 轻奢与神秘
-    'coral': dict(bg='FDFCDC', accent='0081A7', text='2B2B2B', sub='6B6B6B', band='0081A7', bandtext='FFFFFF', alt='F8F5D2'),   # 海岸珊瑚
-    'dark':  dict(bg='1E1E1E', accent='4A90D9', text='F0F0F0', sub='B0B0B0', band='2D2D2D', bandtext='FFFFFF', alt='2D2D2D'),   # 深色通用
-    'green': dict(bg='FFFFFF', accent='1E7145', text='2B2B2B', sub='6B6B6B', band='1E7145', bandtext='FFFFFF', alt='F2F6F2'),   # 清新绿
-}
-T = THEMES.get(theme, THEMES['blue']).copy()
-# customColors（骨架固定、皮肤开放）：可选覆盖主题配色，
-# 键 bg/accent/text/sub/band/bandtext/alt，值为 6 位 hex（可带 # 前缀）；非法值忽略保底
-import re as _re
-custom = p.get('customColors') or {}
-if isinstance(custom, dict):
-    for k in ('bg', 'accent', 'text', 'sub', 'band', 'bandtext', 'alt'):
-        v = custom.get(k)
-        if isinstance(v, str):
-            v = v.strip().lstrip('#')
-            if _re.fullmatch(r'[0-9a-fA-F]{6}', v):
-                T[k] = v.upper()
-C = lambda h: RGBColor.from_string(h)
-
-prs = Presentation()
-prs.slide_width = Inches(13.333)
+# 版式/颜色/字体全部继承母版（明暗三明治与主题色由母版承载），本脚本零颜色代码，
+# 只做占位符填充。模板路径由 Rust 侧 resolve（显式模板 → 默认标记 → 内置母版）保证可用。
+prs = Presentation(p['template'])
+prs.slide_width = Inches(13.333)   # 母版被外部改动时按 16:9 兜底
 prs.slide_height = Inches(7.5)
-BLANK = prs.slide_layouts[6]
-W, H = prs.slide_width, prs.slide_height
 
-def rect(s, x, y, w, h, fill, line=None):
-    from pptx.enum.shapes import MSO_SHAPE
-    sp = s.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
-    sp.fill.solid(); sp.fill.fore_color.rgb = C(fill)
-    if line is None:
-        sp.line.fill.background()
+# ── 版式匹配：候选名精确匹配（忽略大小写）→ 包含匹配 → 索引兜底；中英文母版都认 ──
+LAYOUT_CANDIDATES = {
+    'cover':   ['title slide', '标题幻灯片', '标题页'],
+    'section': ['section header', '节标题', '章节页'],
+    'content': ['title and content', '标题和内容', '标题与内容', '标题和文本'],
+    'toc':     ['title and content', '标题和内容', '标题与内容'],
+    'table':   ['title only', '仅标题'],
+    'closing': ['title slide', '标题幻灯片', 'section header', '节标题'],
+}
+
+def layout_for(stype):
+    names = LAYOUT_CANDIDATES.get(stype) or LAYOUT_CANDIDATES['content']
+    lays = list(prs.slide_layouts)
+    for want in names:
+        for lay in lays:
+            if (lay.name or '').strip().lower() == want:
+                return lay
+    for want in names:
+        for lay in lays:
+            if want in (lay.name or '').strip().lower():
+                return lay
+    return lays[0] if stype == 'cover' or len(lays) == 1 else lays[1]
+
+def ph_by_idx(slide, idx):
+    for ph in slide.placeholders:
+        if ph.placeholder_format.idx == idx:
+            return ph
+    return None
+
+def first_body_ph(slide):
+    for ph in slide.placeholders:
+        if ph.placeholder_format.idx != 0:
+            return ph
+    return None
+
+def put_sub(slide, text):
+    sp = ph_by_idx(slide, 1) or first_body_ph(slide)
+    if sp is not None:
+        sp.text = str(text)
+
+# ── 密度硬规范：content/toc 每页要点 >5 自动拆页（不丢内容），续页标题加「（续）」──
+MAX_BULLETS = 5
+expanded = []
+has_cover = any(s.get('type') == 'cover' for s in slides_in)
+for sl in slides_in:
+    st = sl.get('type', 'content')
+    bullets = [str(b) for b in (sl.get('bullets') or [])]
+    if st in ('content', 'toc') and len(bullets) > MAX_BULLETS:
+        chunks = [bullets[i:i + MAX_BULLETS] for i in range(0, len(bullets), MAX_BULLETS)]
+        for k, chunk in enumerate(chunks):
+            d = dict(sl)
+            d['bullets'] = chunk
+            if k:
+                d['title'] = (sl.get('title') or '') + '（续）'
+                d['notes'] = ''
+            expanded.append(d)
     else:
-        sp.line.color.rgb = C(line)
-    sp.shadow.inherit = False
-    return sp
+        expanded.append(sl)
+if not has_cover:
+    expanded.insert(0, {'type': 'cover', 'title': title or '演示文稿', 'subtitle': ''})
 
-def textbox(s, x, y, w, h, runs, size, color, bold=False, align=PP_ALIGN.LEFT,
-            anchor=MSO_ANCHOR.TOP, line_spacing=1.1):
-    """runs: str 或 [(text, dict)]；dict 可含 size/color/bold/italic"""
-    tb = s.shapes.add_textbox(x, y, w, h)
-    tf = tb.text_frame
-    tf.word_wrap = True
-    tf.vertical_anchor = anchor
-    if isinstance(runs, str):
-        runs = [(runs, {})]
-    else:
-        runs = [(str(r), {}) if not isinstance(r, (tuple, list)) else r for r in runs]
-    for i, (txt, st) in enumerate(runs):
-        para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        para.alignment = st.get('align', align)
-        para.line_spacing = st.get('line_spacing', line_spacing)
-        r = para.add_run(); r.text = txt
-        f = r.font
-        f.size = Pt(st.get('size', size))
-        f.bold = st.get('bold', bold)
-        f.color.rgb = C(st.get('color', color))
-        f.name = 'Microsoft YaHei'
-        try:
-            # 中文字符需设置 ea typeface（latin 字体只对西文生效）
-            from lxml import etree
-            rPr = r._r.get_or_add_rPr()
-            ea = rPr.find('{http://schemas.openxmlformats.org/drawingml/2006/main}ea')
-            if ea is None:
-                ea = etree.SubElement(rPr, '{http://schemas.openxmlformats.org/drawingml/2006/main}ea')
-            ea.set('typeface', 'Microsoft YaHei')
-        except Exception:
-            pass
-    return tb
+for sl in expanded:
+    st = sl.get('type', 'content')
+    slide = prs.slides.add_slide(layout_for(st))
+    ttl = sl.get('title') or (title if st == 'cover' else '')
+    if ttl:
+        tp = ph_by_idx(slide, 0)
+        if tp is not None:
+            tp.text = str(ttl)
+    if st == 'cover':
+        if sl.get('subtitle'):
+            put_sub(slide, sl['subtitle'])
+    elif st in ('content', 'toc'):
+        bullets = [str(b) for b in (sl.get('bullets') or [])]
+        if st == 'toc' and not bullets:
+            bullets = ['%02d  %s' % (i, s.get('title', ''))
+                       for i, s in enumerate(slides_in, 1) if s.get('type') != 'cover']
+        if bullets:
+            bp = ph_by_idx(slide, 1) or first_body_ph(slide)
+            if bp is not None:
+                tf = bp.text_frame
+                for i, line in enumerate(bullets):
+                    para = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+                    para.text = line
+    elif st == 'table':
+        rows = sl.get('rows') or []
+        if rows:
+            nr, nc = len(rows), max(len(r) for r in rows)
+            w = prs.slide_width - Inches(0.9) * 2
+            h = Inches(0.35) * nr
+            gfx = slide.shapes.add_table(nr, nc, Inches(0.9), Inches(1.8), w, h)
+            tbl = gfx.table
+            for ri, row in enumerate(rows):
+                for ci in range(nc):
+                    cell = tbl.cell(ri, ci)
+                    cell.text = str(row[ci]) if ci < len(row) else ''
+                    if ri == 0:   # 表头加粗；底纹/颜色随母版表格样式
+                        for para in cell.text_frame.paragraphs:
+                            for r in para.runs:
+                                r.font.bold = True
+    else:                         # section / closing 副标题
+        if sl.get('subtitle'):
+            put_sub(slide, sl['subtitle'])
+    if sl.get('notes'):
+        slide.notes_slide.notes_text_frame.text = str(sl['notes'])
 
-def page_number(s, idx, total):
-    textbox(s, W - Inches(1.2), H - Inches(0.5), Inches(0.9), Inches(0.3),
-            f'{idx} / {total}', 10, T['sub'], align=PP_ALIGN.RIGHT)
-
-def bullet_font_size(n):
-    if n <= 5: return 20
-    if n <= 8: return 16
-    return 13
-
-total = len(slides)
-
-def render_cover(sl):
-    s = prs.slides.add_slide(BLANK)
-    rect(s, 0, 0, W, H, T['bg'])
-    rect(s, 0, 0, Inches(0.28), H, T['accent'])
-    main = sl.get('title') or title or '演示文稿'
-    sub = sl.get('subtitle', '')
-    textbox(s, Inches(1.1), Inches(2.4), Inches(11), Inches(1.6),
-            main, 48, T['text'], bold=True)
-    if sub:
-        textbox(s, Inches(1.15), Inches(4.2), Inches(11), Inches(0.8),
-                sub, 20, T['sub'])
-    textbox(s, Inches(1.15), Inches(6.5), Inches(6), Inches(0.5),
-            datetime.date.today().strftime('%Y年%m月%d日'), 12, T['sub'])
-
-def render_toc(sl):
-    s = prs.slides.add_slide(BLANK)
-    rect(s, 0, 0, W, H, T['bg'])
-    rect(s, 0, 0, W, Inches(1.1), T['band'])
-    textbox(s, Inches(0.9), Inches(0.25), Inches(11.5), Inches(0.7),
-            sl.get('title', '目录'), 30, T['bandtext'], bold=True)
-    items = sl.get('items') or [b.get('title', '') for b in slides if b.get('type') != 'cover']
-    y = Inches(1.7)
-    for i, it in enumerate(items, 1):
-        textbox(s, Inches(1.5), y, Inches(10.3), Inches(0.55),
-                f'{i:02d}   {it}', 18, T['text'], bold=(i <= 9))
-        y += Inches(0.62)
-
-def render_section(sl):
-    s = prs.slides.add_slide(BLANK)
-    rect(s, 0, 0, W, H, T['band'])
-    textbox(s, Inches(1.0), Inches(2.8), Inches(11.3), Inches(1.4),
-            sl.get('title', ''), 40, T['bandtext'], bold=True, align=PP_ALIGN.CENTER)
-    sub = sl.get('subtitle', '')
-    if sub:
-        textbox(s, Inches(1.0), Inches(4.5), Inches(11.3), Inches(0.7),
-                sub, 18, T['bandtext'], align=PP_ALIGN.CENTER)
-
-def render_content(sl):
-    s = prs.slides.add_slide(BLANK)
-    rect(s, 0, 0, W, H, T['bg'])
-    rect(s, 0, 0, Inches(0.18), H, T['accent'])
-    textbox(s, Inches(0.85), Inches(0.5), Inches(11.6), Inches(0.9),
-            sl.get('title', ''), 32, T['text'], bold=True)
-    bullets = sl.get('bullets', [])
-    n = len(bullets)
-    size = bullet_font_size(n)
-    two_col = n > 7
-    if not two_col:
-        textbox(s, Inches(1.05), Inches(1.7), Inches(11.3), Inches(5.1),
-                bullets, size, T['text'], line_spacing=1.35)
-    else:
-        half = (n + 1) // 2
-        for col, part in enumerate([bullets[:half], bullets[half:]]):
-            x = Inches(1.05) + col * Inches(5.75)
-            textbox(s, x, Inches(1.7), Inches(5.5), Inches(5.1),
-                    part, size, T['text'], line_spacing=1.3)
-
-def render_table(sl):
-    s = prs.slides.add_slide(BLANK)
-    rect(s, 0, 0, W, H, T['bg'])
-    rect(s, 0, 0, Inches(0.18), H, T['accent'])
-    textbox(s, Inches(0.85), Inches(0.5), Inches(11.6), Inches(0.9),
-            sl.get('title', ''), 32, T['text'], bold=True)
-    rows = sl.get('rows', [])
-    if not rows:
-        return
-    nr, nc = len(rows), max(len(r) for r in rows)
-    from pptx.util import Inches as I_
-    tbl_w, tbl_h = Inches(11.6), Inches(4.9)
-    x, y = Inches(0.9), Inches(1.7)
-    gfx = s.shapes.add_table(nr, nc, x, y, tbl_w, tbl_h)
-    table = gfx.table
-    for ri, row in enumerate(rows):
-        for ci in range(nc):
-            cell = table.cell(ri, ci)
-            cell.text = str(row[ci]) if ci < len(row) else ''
-            for para in cell.text_frame.paragraphs:
-                for r in para.runs:
-                    r.font.size = Pt(14 if ri else 15)
-                    r.font.bold = (ri == 0)
-                    r.font.color.rgb = C(T['bandtext'] if ri == 0 else T['text'])
-                    r.font.name = 'Microsoft YaHei'
-            cell.fill.solid()
-            cell.fill.fore_color.rgb = C(T['band'] if ri == 0 else T['alt'])
-
-def render_closing(sl):
-    s = prs.slides.add_slide(BLANK)
-    rect(s, 0, 0, W, H, T['bg'])
-    rect(s, 0, H - Inches(0.28), W, Inches(0.28), T['accent'])
-    textbox(s, Inches(1.0), Inches(2.9), Inches(11.3), Inches(1.2),
-            sl.get('title', '谢谢'), 40, T['accent'], bold=True, align=PP_ALIGN.CENTER)
-    sub = sl.get('subtitle', '')
-    if sub:
-        textbox(s, Inches(1.0), Inches(4.4), Inches(11.3), Inches(0.6),
-                sub, 16, T['sub'], align=PP_ALIGN.CENTER)
-
-def render_slide(sl):
-    stype = sl.get('type', 'content')
-    if stype == 'cover':
-        render_cover(sl)
-    elif stype == 'toc':
-        render_toc(sl)
-    elif stype == 'section':
-        render_section(sl)
-    elif stype == 'table':
-        render_table(sl)
-    elif stype == 'closing':
-        render_closing(sl)
-    else:
-        render_content(sl)
-
-body = [s for s in slides if s.get('type') != 'cover']
-total_pages = len(body) + 1
-cover = next((s for s in slides if s.get('type') == 'cover'),
-             {'type': 'cover', 'title': title or '演示文稿', 'subtitle': ''})
-render_slide(cover)
-page_number(prs.slides[-1], 1, total_pages)
-for i, sl in enumerate(body):
-    render_slide(sl)
-    page_number(prs.slides[-1], i + 2, total_pages)
+long = [b for sl in expanded for b in (sl.get('bullets') or [])
+        if len(str(b)) > 40]
+if long:
+    print('注意：%d 条要点超过 40 字，建议精简或拆页（规范：每条 ≤40 字）' % len(long))
 
 prs.save(out)
 print('已生成：' + out)
-
 "#;
 
 // 对外命令
@@ -1141,34 +1044,19 @@ pub async fn doc_make_ppt(
     title: String,
     slides: Vec<serde_json::Value>,
     filename: Option<String>,
-    theme: Option<String>,
-    custom_colors: Option<serde_json::Value>,
+    template: Option<String>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "pptx")?;
-    let theme = theme
-        .map(|t| t.trim().to_lowercase())
-        .filter(|t| {
-            matches!(
-                t.as_str(),
-                "blue"
-                    | "navy"
-                    | "teal"
-                    | "forest"
-                    | "wine"
-                    | "sky"
-                    | "plum"
-                    | "coral"
-                    | "dark"
-                    | "green"
-            )
-        })
-        .unwrap_or_else(|| "blue".into());
+    // 版式随母版：显式模板 → _default 标记 → 内置母版，永不为空
+    let template = match pptx_template_resolve(&app, template.as_deref()) {
+        Some(p) => p,
+        None => builtin_pptx_master(&app)?,
+    };
     let input = serde_json::json!({
         "title": title,
         "slides": slides,
         "out": out,
-        "theme": theme,
-        "customColors": custom_colors.unwrap_or(serde_json::json!({})),
+        "template": template,
     })
     .to_string();
     let r = run_doc_script(&app, "doc_make_ppt", MAKE_PPTX_SCRIPT, input).await?;
@@ -1391,6 +1279,59 @@ pub fn word_template_set_default(app: AppHandle, name: String) -> CommandResult<
     Ok(())
 }
 
+// ── PPT 模板（create_ppt 版式随母版；无用户模板时回退内置母版）──
+
+/// 内置母版（午夜商务主题，16:9，封面/章节版式深底白字）：python-pptx 默认模板
+/// 改 theme 配色/字体（含 eastAsia 雅黑）+ 版式深底生成，随二进制分发
+const BUILTIN_PPTX_MASTER: &[u8] = include_bytes!("../../assets/pptx-master/default.pptx");
+
+fn pptx_templates_dir(app: &AppHandle) -> std::path::PathBuf {
+    crate::db::data_dir(app).join("pptx_templates")
+}
+
+/// 内置母版缓存路径（app 拥有的缓存：字节与内嵌资产不一致即覆盖，无删除语义；
+/// 用户自传模板在 pptx_templates/，两套目录互不干扰）
+fn builtin_pptx_master(app: &AppHandle) -> CommandResult<String> {
+    let dir = crate::db::data_dir(app).join("builtin_templates");
+    builtin_pptx_master_in(&dir)
+}
+
+fn builtin_pptx_master_in(dir: &std::path::Path) -> CommandResult<String> {
+    std::fs::create_dir_all(dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    let dest = dir.join("pptx-default.pptx");
+    let stale = std::fs::read(&dest)
+        .map(|bytes| bytes != BUILTIN_PPTX_MASTER)
+        .unwrap_or(true);
+    if stale {
+        std::fs::write(&dest, BUILTIN_PPTX_MASTER)
+            .map_err(|e| CommandError::IoError(e.to_string()))?;
+    }
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// 模板解析：显式名优先（不存在 → None），否则默认模板（不存在 → None）。
+/// None = 无用户模板可用，调用方回退内置母版。
+pub fn pptx_template_resolve(app: &AppHandle, name: Option<&str>) -> Option<String> {
+    pptx_template_resolve_in(&pptx_templates_dir(app), name)
+}
+
+fn pptx_template_resolve_in(dir: &std::path::Path, name: Option<&str>) -> Option<String> {
+    let explicit = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .map(|n| dir.join(format!("{n}.pptx")));
+    let candidate = match explicit {
+        Some(p) => p,
+        None => {
+            let def = std::fs::read_to_string(default_marker_path(dir)).ok()?;
+            dir.join(format!("{def}.pptx"))
+        }
+    };
+    candidate
+        .exists()
+        .then(|| candidate.to_string_lossy().to_string())
+}
+
 // py_exec_sync / spawn_blocking_map / run_doc_*
 
 pub async fn spawn_blocking_map<F, T>(f: F) -> Result<T, String>
@@ -1580,5 +1521,64 @@ mod word_template_tests {
     fn resolve_without_marker_returns_none() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(word_template_resolve_in(tmp.path(), None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod pptx_template_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_prefers_explicit_then_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.pptx"), b"x").unwrap();
+        std::fs::write(dir.join("b.pptx"), b"x").unwrap();
+        std::fs::write(default_marker_path(dir), "b").unwrap();
+
+        assert!(pptx_template_resolve_in(dir, Some("a")).is_some());
+        // 显式名不存在 → None（不回退默认，调用方拿内置母版顶）
+        assert!(pptx_template_resolve_in(dir, Some("nope")).is_none());
+        assert_eq!(
+            pptx_template_resolve_in(dir, None).unwrap(),
+            dir.join("b.pptx").to_string_lossy().to_string()
+        );
+        std::fs::remove_file(dir.join("b.pptx")).unwrap();
+        assert!(pptx_template_resolve_in(dir, None).is_none());
+    }
+
+    #[test]
+    fn builtin_master_materializes_idempotent_and_self_heals() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 空资产不合法：内嵌母版必须是 zip（pptx = zip 容器，PK 魔数）
+        assert!(BUILTIN_PPTX_MASTER.len() > 1000);
+        assert_eq!(&BUILTIN_PPTX_MASTER[..2], b"PK");
+
+        let first = builtin_pptx_master_in(tmp.path()).unwrap();
+        let written = std::fs::read(&first).unwrap();
+        assert_eq!(written, BUILTIN_PPTX_MASTER);
+        // 幂等：二次调用字节不变不再写（mtime 不变）
+        let meta1 = std::fs::metadata(&first).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let again = builtin_pptx_master_in(tmp.path()).unwrap();
+        assert_eq!(again, first);
+        let meta2 = std::fs::metadata(&again).unwrap().modified().unwrap();
+        assert_eq!(meta1, meta2, "字节一致时不得重写");
+        // 自愈：缓存损坏后重写
+        std::fs::write(&first, b"corrupted").unwrap();
+        builtin_pptx_master_in(tmp.path()).unwrap();
+        assert_eq!(std::fs::read(&first).unwrap(), BUILTIN_PPTX_MASTER);
+    }
+
+    #[test]
+    fn script_fills_placeholders_without_theme_code() {
+        // 回归锁：v2 脚本走母版占位符填充，主题/自定义配色代码不得回流
+        assert!(MAKE_PPTX_SCRIPT.contains("Presentation(p['template'])"));
+        assert!(!MAKE_PPTX_SCRIPT.contains("THEMES"));
+        assert!(!MAKE_PPTX_SCRIPT.contains("customColors"));
+        assert!(
+            MAKE_PPTX_SCRIPT.contains("MAX_BULLETS = 5"),
+            "密度拆页闸必须在"
+        );
     }
 }

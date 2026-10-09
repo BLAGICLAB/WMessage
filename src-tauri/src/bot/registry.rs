@@ -243,19 +243,17 @@ pub const SCHEMA_CREATE_EXCEL: &str = r##"{"type":"function","function":{"name":
     "description":"工作表列表：name 表名、rows 二维数组"},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["sheets"]}}}"##;
-pub const SCHEMA_CREATE_PPT: &str = r##"{"type":"function","function":{"name":"create_ppt","description":"生成专业排版 PPT 到 AI_Gen_Files（多版式：封面/目录/章节页/内容页/表格页/结束页 + 10 套配色主题，可用 customColors 自定义覆盖）","parameters":{"type":"object","properties":{
+pub const SCHEMA_CREATE_PPT: &str = r##"{"type":"function","function":{"name":"create_ppt","description":"生成排版统一的 PPT 到 AI_Gen_Files（版式/配色/字体随模板：设置页可导入 .pptx 母版设默认；未导入时用内置专业母版，封面/章节页深底、内容页浅底、中文雅黑）。多版式：封面/目录/章节页/内容页/表格页/结束页；要点超 5 条自动拆页。需要设计感更强的自由版式（图表/双栏/大数字）时，若已安装 ppt 设计类技能（见技能清单）优先用技能","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"演示文稿主标题"},
-    "theme":{"type":"string","enum":["blue","navy","teal","forest","wine","sky","plum","coral","dark","green"],"description":"配色主题（按场合选）：blue 商务与权威（默认，汇报/金融）/ navy 科技与夜景（深色发布会）/ teal 现代与健康（医疗/护肤）/ forest 自然与户外（环保/农业）/ wine 复古与学院（学术/历史）/ sky 纯净科技蓝（AI/云计算）/ plum 轻奢与神秘（珠宝/高端咨询）/ coral 海岸珊瑚（旅游/夏日）/ dark 深色通用 / green 清新绿"},
-    "customColors":{"type":"object","description":"可选：自定义配色覆盖主题（6 位 hex 如 1E40AF，可带 #）。键：bg 背景 / accent 强调色 / text 正文 / sub 次要文字 / band 大面积色块（必深色）/ bandtext 色块上文字 / alt 表格斑马纹。用户给了 VI 色/品牌色时用","properties":{
-      "bg":{"type":"string"},"accent":{"type":"string"},"text":{"type":"string"},"sub":{"type":"string"},"band":{"type":"string"},"bandtext":{"type":"string"},"alt":{"type":"string"}
-    }},
+    "template":{"type":"string","description":"模板名（设置页已导入的 .pptx 母版名，不含扩展名），可选；缺省用默认模板，未设默认时用内置母版。用户给过公司模板/指定过模板名时用"},
     "slides":{"type":"array","description":"幻灯片列表，按展示顺序；每页一个 type","items":{"type":"object","properties":{
-      "type":{"type":"string","enum":["cover","toc","section","content","table","closing"],"description":"页面类型：cover 封面（title+subtitle）/ toc 目录（items 列表）/ section 章节分隔页 / content 内容要点页 / table 表格页（rows 二维数组首行表头）/ closing 结束页"},
-      "title":{"type":"string","description":"页面标题"},
+      "type":{"type":"string","enum":["cover","toc","section","content","table","closing"],"description":"页面类型：cover 封面（title+subtitle）/ toc 目录（items 列表，缺省自动取各页标题）/ section 章节分隔页 / content 内容要点页 / table 表格页（rows 二维数组首行表头）/ closing 结束页"},
+      "title":{"type":"string","description":"页面标题；content 页标题写结论式短句（如「营收同比 +23%」），禁「介绍」「概述」"},
       "subtitle":{"type":"string","description":"副标题（cover/section/closing 用）"},
-      "bullets":{"type":"array","items":{"type":"string"},"description":"要点列表（content 页；≤5 条大字号，6-8 条中号，8 条以上自动双栏）"},
+      "bullets":{"type":"array","items":{"type":"string"},"description":"要点列表（content 页；硬规范 ≤5 条/页、每条 ≤40 字，超限自动拆页）"},
       "items":{"type":"array","items":{"type":"string"},"description":"目录条目（toc 页）"},
-      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}},"description":"表格数据（table 页；第一行是表头）"}
+      "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}},"description":"表格数据（table 页；第一行是表头）"},
+      "notes":{"type":"string","description":"演讲者备注/讲稿（本页口播内容，放这里不放正文），可选"}
     },"required":["type","title"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["slides"]}}}"##;
