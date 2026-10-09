@@ -251,7 +251,16 @@ mod tests {
         )
         .unwrap();
         journal_committed(&conn, id).unwrap();
-        journal_cleared(&conn, id).unwrap();
+        // committed 行不允许被 cleared 降级（防同 id 双跑竞态），cleared 需另起 pending 行
+        let id2 = journal_pending(
+            &conn,
+            "move",
+            Path::new("/src/lock2"),
+            Some(Path::new("/dst/lock2")),
+            "task-lock",
+        )
+        .unwrap();
+        journal_cleared(&conn, id2).unwrap();
         let waited = start.elapsed();
         holder.join().unwrap();
         assert!(
@@ -265,7 +274,15 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(state, "cleared", "三次写在持锁串行下全部成功落库");
+        assert_eq!(state, "committed", "committed 不被后续 cleared 降级");
+        let state2: String = conn
+            .query_row(
+                "SELECT state FROM migration_journal WHERE id = ?1",
+                [id2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state2, "cleared", "写持锁串行下全部成功落库");
         std::fs::remove_dir_all(&dir).ok();
     }
 

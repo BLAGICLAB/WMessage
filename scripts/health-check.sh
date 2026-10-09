@@ -58,7 +58,7 @@ if [ -f "$PROPOSALS" ]; then
     if [ -n "$HAS_TS" ] && [ -n "$HAS_SID" ]; then
       ok "  最近一条带 timestamp/session: $HAS_TS $HAS_SID"
     else
-      fail "  最近一条缺 timestamp 或 session（ts=$HAS_TS sid=$HAS_SID）"
+      fail "  最近一条缺 timestamp 或 session（ts=$HAS_TS sid=${HAS_SID}）"
     fi
   else
     fail "proposals.jsonl 存在但 0 行（提取器没触发？）"
@@ -87,7 +87,7 @@ if [ -d "$EVOLUTION_DIR" ]; then
   DIR_MTIME=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$EVOLUTION_DIR" 2>/dev/null || stat -c "%y" "$EVOLUTION_DIR" 2>/dev/null | cut -d. -f1)
   NEWEST_FILE=$(ls -t "$EVOLUTION_DIR" 2>/dev/null | head -1)
   if [ -n "$NEWEST_FILE" ]; then
-    ok "evolution/ 目录 mtime $DIR_MTIME，最新文件：$NEWEST_FILE"
+    ok "evolution/ 目录 mtime ${DIR_MTIME}，最新文件：$NEWEST_FILE"
   else
     fail "evolution/ 目录存在但无文件"
   fi
@@ -145,12 +145,17 @@ DB_CANDIDATES=(
   "$HOME/Library/Application Support/wmessage/wmessage.db"
   "$HOME/.wmessage/memories.json"
 )
+DB_FOUND=""
 for db in "${DB_CANDIDATES[@]}"; do
   if [ -f "$db" ]; then
+    DB_FOUND="$db"
     DB_MTIME=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$db" 2>/dev/null || stat -c "%y" "$db" 2>/dev/null | cut -d. -f1)
-    ok "主记忆 $db mtime $DB_MTIME（与上一次对比；S0 下不应新写）"
+    ok "主记忆 $db mtime ${DB_MTIME}（与上一次对比；S0 下不应新写）"
   fi
 done
+if [ -z "$DB_FOUND" ]; then
+  fail "主记忆库三候选全 miss（环 6 断：落盘路径错或库未创建）"
+fi
 
 echo ""
 echo "=== ⑦ synthetic 隔离（不应混入真数据） ==="

@@ -336,7 +336,17 @@ impl CommandError {
                 status,
                 body_preview,
             } => {
-                format!("大模型 API 错误 {status}：{body_preview}")
+                // 剥控制字符（保留 \t\n\r）：上游错误体可能混入脏字节，防 toast/日志串行
+                format!(
+                    "大模型 API 错误 {status}：{}",
+                    body_preview
+                        .chars()
+                        .filter(|c| !matches!(
+                            c,
+                            '\x00'..='\x08' | '\x0B' | '\x0C' | '\x0E'..='\x1F'
+                        ))
+                        .collect::<String>()
+                )
             }
             Self::ConfirmTimeout => "确认请求超时（默认 60s）".into(),
             Self::ConfirmRejected => "用户拒绝确认".into(),

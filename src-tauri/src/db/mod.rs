@@ -109,30 +109,35 @@ pub fn open_db<R: tauri::Runtime>(
             e.into_inner()
         });
         if !db_path.exists() {
-            if let Ok(legacy_dir) = app.path().app_data_dir() {
-                let legacy_db = legacy_dir.join("wmessage.db");
-                if legacy_db.exists() && legacy_db != db_path {
-                    match paths::copy_legacy_db(&legacy_db, &db_path) {
-                        Ok(warns) => {
-                            for w in warns {
+            match app.path().app_data_dir() {
+                Ok(legacy_dir) => {
+                    let legacy_db = legacy_dir.join("wmessage.db");
+                    if legacy_db.exists() && legacy_db != db_path {
+                        match paths::copy_legacy_db(&legacy_db, &db_path) {
+                            Ok(warns) => {
+                                for w in warns {
+                                    crate::audit::write_event(
+                                        app,
+                                        crate::audit::AuditLevel::Warn,
+                                        "legacy_db_copy",
+                                        &[("warn", w)],
+                                    );
+                                }
+                            }
+                            Err(e) => {
                                 crate::audit::write_event(
                                     app,
-                                    crate::audit::AuditLevel::Warn,
+                                    crate::audit::AuditLevel::Error,
                                     "legacy_db_copy",
-                                    &[("warn", w)],
+                                    &[("error", e.to_string())],
                                 );
+                                return Err(e.to_string());
                             }
                         }
-                        Err(e) => {
-                            crate::audit::write_event(
-                                app,
-                                crate::audit::AuditLevel::Error,
-                                "legacy_db_copy",
-                                &[("error", e.to_string())],
-                            );
-                            return Err(e.to_string());
-                        }
                     }
+                }
+                Err(e) => {
+                    eprintln!("[db] app_data_dir 解析失败，跳过 legacy db 拷贝：{e}");
                 }
             }
         }
@@ -421,13 +426,17 @@ pub fn open_db<R: tauri::Runtime>(
         }
     }
     {
-        let orphan: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM bot_messages WHERE session_id IS NULL",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+        let orphan: i64 = match conn.query_row(
+            "SELECT COUNT(*) FROM bot_messages WHERE session_id IS NULL",
+            [],
+            |r| r.get(0),
+        ) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("[db] orphan session_id 统计失败（按 0 跳过回填）：{e}");
+                0
+            }
+        };
         if orphan > 0 {
             let now = chrono::Utc::now().timestamp_millis();
             conn.execute(

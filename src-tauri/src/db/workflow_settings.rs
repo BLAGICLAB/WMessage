@@ -114,17 +114,23 @@ pub fn settings_set(
     audit_retention_runs: Option<u32>,
     review_model: Option<String>,
 ) -> CommandResult<WorkflowSettingsView> {
+    // 三键写入同事务：部分失败不落半套设置
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     if let Some(v) = node_acceptance {
-        set(conn, KEY_NODE_ACCEPTANCE, if v { "1" } else { "0" }).map_err(CommandError::DbError)?;
+        set(&tx, KEY_NODE_ACCEPTANCE, if v { "1" } else { "0" }).map_err(CommandError::DbError)?;
     }
     if let Some(v) = audit_retention_runs {
         let v = v.clamp(RETENTION_MIN, RETENTION_MAX);
-        set(conn, KEY_AUDIT_RETENTION, &v.to_string()).map_err(CommandError::DbError)?;
+        set(&tx, KEY_AUDIT_RETENTION, &v.to_string()).map_err(CommandError::DbError)?;
     }
     if let Some(v) = review_model.clone() {
         // 条目存在性不校验：条目可后删，运行期 summarize 侧降级兜底（spec 红线）
-        set(conn, KEY_REVIEW_MODEL, v.trim()).map_err(CommandError::DbError)?;
+        set(&tx, KEY_REVIEW_MODEL, v.trim()).map_err(CommandError::DbError)?;
     }
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok(settings_view(conn))
 }
 

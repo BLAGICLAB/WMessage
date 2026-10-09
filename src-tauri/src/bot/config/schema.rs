@@ -303,7 +303,10 @@ pub fn migrate_bot_config_schema(app: &AppHandle) -> Result<(), String> {
     // 让路不丢迁移：持锁写路径进段已先调 migrate_bot_config_schema_locked。
     let _g = match super::io::CONFIG_WRITE_LOCK.try_lock() {
         Ok(g) => super::io::ConfigWriteGuard::from_acquired(g),
-        Err(std::sync::TryLockError::WouldBlock) => return Ok(()),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            eprintln!("[bot] schema 迁移让路：CONFIG_WRITE_LOCK 持锁中，持锁写路径会补跑");
+            return Ok(());
+        }
         Err(std::sync::TryLockError::Poisoned(e)) => {
             eprintln!("[mutex_poisoned] bot::config::io::CONFIG_WRITE_LOCK: {e:?}");
             super::io::ConfigWriteGuard::from_acquired(e.into_inner())

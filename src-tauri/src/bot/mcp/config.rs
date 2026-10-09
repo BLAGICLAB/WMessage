@@ -383,7 +383,8 @@ fn is_reserved_ipv4(ip: std::net::Ipv4Addr) -> bool {
         || o[0] >= 240 // 240/4 reserved + broadcast
 }
 
-/// IPv6 保留段：未指定、环回、unique-local fc00::/7、link-local fe80::/10。
+/// IPv6 保留段：未指定、环回、unique-local fc00::/7、link-local fe80::/10、
+/// 组播 ff00::/8（与 v4 侧 is_multicast 对齐）。
 /// IPv4-mapped（::ffff:a.b.c.d，评审发现的 SSRF 绕过）先还原成 IPv4 判定；
 /// IPv4-compatible（::/96 已弃用段）整段按保留处理。
 /// 转换前缀（ 评审 M-10）：6to4 2002::/16、Teredo 2001::/32、NAT64 64:ff9b::/96
@@ -400,6 +401,7 @@ fn is_reserved_ipv6(ip: std::net::Ipv6Addr) -> bool {
         || ip.is_unspecified()
         || (s[0] & 0xfe00) == 0xfc00
         || (s[0] & 0xffc0) == 0xfe80
+        || (s[0] & 0xff00) == 0xff00           // 组播 ff00::/8（对齐 v4 侧 is_multicast）
         || s[0] == 0x2002                      // 6to4（嵌 IPv4，中继可达内网）
         || (s[0] == 0x2001 && s[1] == 0x0000)  // Teredo（嵌混淆 IPv4）
         || (s[0] == 0x0064 && s[1] == 0xff9b)  // NAT64 well-known /96（嵌 IPv4）

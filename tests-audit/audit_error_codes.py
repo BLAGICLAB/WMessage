@@ -31,8 +31,9 @@ def rust_codes():
     start = ERROR_RS.index(ENUM_HEADER) + len(ENUM_HEADER)
     end = ERROR_RS.index("\n}", start)
     body = ERROR_RS[start:end]
-    # #[serde(rename = "X")] 后跟变体名；顺序即声明顺序
-    return re.findall(r'#\[serde\(rename = "([A-Z_]+)"\)\]', body)
+    # #[serde(rename = "X")] 后跟变体名；顺序即声明顺序。
+    # 首字符后放行数字：HTTP_404 这类含数字错误码否则两侧同时漏抓
+    return re.findall(r'#\[serde\(rename = "([A-Z][A-Z0-9_]*)"\)\]', body)
 
 
 def ts_codes():
@@ -40,7 +41,7 @@ def ts_codes():
     start = ERROR_HANDLER_TS.index(TS_TYPE_HEADER) + len(TS_TYPE_HEADER)
     end = ERROR_HANDLER_TS.index(";", start)
     body = ERROR_HANDLER_TS[start:end]
-    return re.findall(r'"([A-Z_]+)"', body)
+    return re.findall(r'"([A-Z][A-Z0-9_]*)"', body)
 
 
 def ts_all_codes_const():
@@ -50,7 +51,7 @@ def ts_all_codes_const():
     # 必须锚定赋值号后的 `= [` 才是数组起点
     start = ERROR_HANDLER_TS.index("= [", start) + 2
     end = ERROR_HANDLER_TS.index("]", start)
-    return re.findall(r'"([A-Z_]+)"', ERROR_HANDLER_TS[start:end])
+    return re.findall(r'"([A-Z][A-Z0-9_]*)"', ERROR_HANDLER_TS[start:end])
 
 
 def test_rust_enum_has_codes_and_no_duplicates():

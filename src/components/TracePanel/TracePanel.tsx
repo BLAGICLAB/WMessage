@@ -295,6 +295,7 @@ export function TracePanel({
   const loadAudit = () => {
     if (!workflowId) return;
     setAuditErr(null);
+    setAuditRows(null); // 清旧 rows，防失败时旧数据与新报错并存
     listWorkflowAudit(workflowId, 300)
       .then(setAuditRows)
       .catch((e) => setAuditErr(String(e)));

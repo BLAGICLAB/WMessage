@@ -10,7 +10,8 @@ audit_evolution_layering.py — Evolution 域分层依赖方向守卫（批次 A
   3. 数据层文件（evolution/derive.rs、proposal.rs、change/、candidate/ 除
      conflict.rs）：禁止 use evolution::strategy（数据层不依赖策略层；
      conflict.rs 是登记在案的委托壳，豁免）。
-  4. evolution/ 全域禁止 thread_rng（随机源必须经 EvalContext 注入）。
+  4. evolution/ 全域禁止 thread_rng 与 rand::random/rng/seq/distributions、
+     Os/Small/Std/ThreadRng 家族（随机源必须经 EvalContext 注入）。
 
 误报处理（批复 §9.1）：剥离注释（// 与 /* */）与字符串字面量后匹配；
 跳过 #[cfg(test)] 模块体；排除本脚本自身。
@@ -92,14 +93,21 @@ RULES = [
         sorted(EVO.rglob("*.rs")),
         [
             (r"thread_rng", "thread_rng（随机源必须经 EvalContext 注入）"),
+            (r"\brand::(?:random|rng|seq|distributions)\b", "rand 随机 API（随机源必须经 EvalContext 注入）"),
+            (r"\b(?:Os|Small|Std|Thread)Rng\b", "rand Rng 家族（随机源必须经 EvalContext 注入）"),
         ],
     ),
 ]
 
 # ---- 文本预处理：剥注释与字符串，标记 cfg(test) 段 ----
 
+# 原始字符串：r"…"/r#"…"#/br##"…"## 任意 # 定界符（b?r 前缀）
+RAW_STR_RE = re.compile(r'(?:b?r)(#*)"')
+
 def strip_comments_and_strings(text: str) -> str:
-    """把注释与字符串字面量内容替换为空格，保留换行与长度（行号稳定）。"""
+    """把注释与字符串字面量内容替换为空格，保留换行与长度（行号稳定）。
+    原始字符串（含 r#"…"# 定界符）整体置空——内部引号不能当普通串边界，
+    否则串内容外泄成幽灵源码（误报/漏报双向失真）。"""
     out = []
     i, n = 0, len(text)
     in_line_comment = in_block_comment = in_string = in_char = False
@@ -138,7 +146,15 @@ def strip_comments_and_strings(text: str) -> str:
                     in_char = False
                 i += 1
         else:
-            if two == "//":
+            # 原始字符串（r#*/r##*/br#*）：左邻非标识符字符才尝试，
+            # 避免 our_string 这类词中 r 误启；未闭合的吞到文件尾
+            m = RAW_STR_RE.match(text, i)
+            if m and not (i and (text[i - 1].isalnum() or text[i - 1] == "_")):
+                em = re.compile(r'"' + re.escape(m.group(1))).search(text, m.end())
+                j = em.end() if em else n
+                out.append("".join("\n" if ch == "\n" else " " for ch in text[i:j]))
+                i = j
+            elif two == "//":
                 in_line_comment = True
                 out.append("  ")
                 i += 2
@@ -173,8 +189,15 @@ def strip_comments_and_strings(text: str) -> str:
 def strip_cfg_test_modules(text: str) -> str:
     """删掉 #[cfg(test)] 开头的 mod 块（花括号配对计数；测试内关键词不算违例）。"""
     # [^{}]*?（而非 \s*）：兼容单行/多行形态与夹层属性
-    # （`#[cfg(test)] #[allow(..)] pub mod tests {`），花括号为界不会跨语句误配
-    pattern = re.compile(r"#\[cfg\(test\)\][^{}]*?mod\s+\w+\s*\{")
+    # （`#[cfg(test)] #[allow(..)] pub mod tests {`），花括号为界不会跨语句误配。
+    # 谓词放宽覆盖组合形态：#[cfg(all(test, feature = "x"))] / #[cfg(any(test, …))]；
+    # 更深嵌套谓词不支持（方向为漏剥=可能误报，出现时再扩）
+    pattern = re.compile(
+        r"#\[cfg\s*\(\s*(?:"
+        r"(?:all|any)\s*\(\s*[^()]*\btest\b[^()]*\)"
+        r"|[^()]*\btest\b[^()]*"
+        r")\s*\)\s*\][^{}]*?mod\s+\w+\s*\{"
+    )
     while True:
         m = pattern.search(text)
         if not m:
@@ -235,8 +258,15 @@ use crate::evolution::proposal::ImpactLevel;
 pub struct DefaultEvolutionPolicy;
 // 注释里的 thread_rng 和 std::fs 不算违例
 const HINT: &str = "字符串里的 rand / Mutex / tauri:: 也不算";
+const RAW: &str = r#"原始串里 "thread_rng" 与 rand::random 不算"#;
+const RAW2: &str = br##"多井号 "rand::seq" 与 OsRng 同理"##;
 fn with_lifetime<'a>(x: &'a str) -> &'static str { "static" }
 #[cfg(test)] mod single_line { use rand::thread_rng; }
+#[cfg(all(test, feature = "evo"))] mod combo { use std::fs; }
+#[cfg(any(test, feature = "x"))]
+mod combo2 {
+    use rand::seq::index;
+}
 #[cfg(test)]
 mod tests {
     use std::fs; // 测试模块内的 std::fs 豁免
@@ -256,6 +286,11 @@ SELFTEST_FAIL_SAMPLES = [
     "impl<T> EvolutionPolicy for X {}",
     # group use 形态（规则 3 补洞后必须抓到）
     "use crate::evolution::{strategy, store};",
+    # rand 随机 API 与 Rng 家族（规则 4 补洞后必须抓到）
+    "let x = rand::random::<u8>();",
+    "let mut g = rand::rng();",
+    "let mut s = ThreadRng::default();",
+    "let seed = OsRng::new();",
 ]
 
 # 违例样例的抓取判定：与 RULES 里各禁入模式同源（新增模式必须同步进这里）
@@ -263,6 +298,8 @@ CAUGHT_RE = (
     r"\bstd::fs\b|chrono::Utc::now|thread_rng|\bMutex\b|tauri::"
     r"|impl\b[^;{]*?\bEvolutionPolicy\b"
     r"|evolution::strategy|evolution::\{[^}]*\bstrategy\b"
+    r"|rand::(?:random|rng|seq|distributions)\b"
+    r"|\b(?:Os|Small|Std|Thread)Rng\b"
 )
 
 
@@ -275,8 +312,12 @@ def selftest() -> int:
         probe.write_text(SELFTEST_PASS, encoding="utf-8")
         raw = probe.read_text(encoding="utf-8")
         cleaned = strip_cfg_test_modules(strip_comments_and_strings(raw))
-        if re.search(r"\bstd::fs\b|thread_rng|\bMutex\b|chrono::Utc::now", cleaned):
-            print("✗ selftest：正例被误判违例（注释/字符串/测试模块剥离失效）", file=sys.stderr)
+        if re.search(
+            r"\bstd::fs\b|thread_rng|\bMutex\b|chrono::Utc::now"
+            r"|rand::(?:random|rng|seq|distributions)\b|\b(?:Os|Small|Std|Thread)Rng\b",
+            cleaned,
+        ):
+            print("✗ selftest：正例被误判违例（注释/字符串/原始串/测试模块剥离失效）", file=sys.stderr)
             ok = False
         # cfg(test) 剥离保换行：剥离前后行数一致，违例行号不整体偏移
         line_probe = (
@@ -288,7 +329,8 @@ def selftest() -> int:
             print("✗ selftest：cfg(test) 剥离吞换行（违例行号会整体偏移）", file=sys.stderr)
             ok = False
         # 委托壳行级豁免：受认可形式放行、非认可 strategy 引用照抓
-        delegate_line = "let r = crate::evolution::strategy::DefaultEvolutionPolicy.resolve(a, b);"
+        # （样本须与白名单同源：批 2.2 后合法形态是 gate_decision/GateDecision）
+        delegate_line = "let r = crate::evolution::strategy::gate_decision(a, b);"
         if not DELEGATE_ALLOW.search(delegate_line):
             print("✗ selftest：委托允许正则失效", file=sys.stderr)
             ok = False

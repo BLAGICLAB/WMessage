@@ -156,10 +156,16 @@ impl EventHub {
             }
         }
         let msg = format!("id: {id}\ndata: {data}\n\n");
-        if let Ok(mut h) = self.history.lock() {
-            h.push_back((id, msg.clone()));
-            while h.len() > EVENT_HISTORY {
-                h.pop_front();
+        match self.history.lock() {
+            Ok(mut h) => {
+                h.push_back((id, msg.clone()));
+                while h.len() > EVENT_HISTORY {
+                    h.pop_front();
+                }
+            }
+            Err(e) => {
+                // 保持 if let Ok 语义：中毒不 into_inner 抢救，只留痕跳过入史
+                eprintln!("[mutex_poisoned] api_server::broadcast history: {e:?}");
             }
         }
         // A2: sync_channel(256) + try_send — 队列满时 try_send 立即返回 Err，广播不阻塞

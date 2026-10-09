@@ -5992,3 +5992,26 @@ outcomes 迭代天然可后接（upsert_skill_outcome 已有）。
 
 验证：manage 19 测试（含新增 7 分支）+ clippy 0（除 vendor）+
 scripts/test-all.sh 全绿。
+
+## 2026-10-09（周四）PARTIAL 顺手修批 — 分诊账本的 30 条一行修落地
+
+OCR-1009 S2 分诊出的 108 条 PARTIAL 中，一行级顺手修约 30 条本批落地
+（其余 70+ 条前提不可达/修法不成立，维持不修）。两边并行完成：守卫脚本
+8 条（并行会话）+ Rust/前端/杂项 22 处（本会话 3 代理），零重叠拼成全批。
+
+- 守卫收紧 8：error_codes 错误码正则放行数字、tauri_bridge Builder 形态 +
+  剥注释防幽灵事件、layering r#* 定界符/rand 家族/cfg 组合谓词、no_eval
+  别名与可选链、health-check 主记忆库三候选全 miss 补 fail + 变量花括号
+  （$VAR 紧跟全角字符会被 bash 吞进变量名——与 61 行同款坑）
+- 失败留痕 6：schema 迁移让路/workflow 落卡失败/migrations 并发跳过/
+  orphan 统计失败/api_server 中毒/orphan 查询失败 各补 eprintln
+- 并发事务 6：journal 翻转加 state='pending'、memory 淘汰+写入同事务、
+  schedule_jobs/workflow_settings 包事务、tasks 指纹补 ORDER BY、
+  bot_fs existed 只取 is_file
+- 其它：error message 剥控制字符、MCP IPv6 组播半边、proposal 非 ASCII
+  折叠、py io Url 转 file path、dotnet 行删除补 w:trPr/w:del、
+  mark_down 指纹防陈旧覆盖
+
+验证：audit 四脚本 pytest 全绿 + layering/no_eval selftest + 全仓扫描
+0 命中 + health-check 完整跑通 + cargo test（migration/memory/tasks/
+apply_edit 240+ 用例）+ clippy 0（除 vendor）+ scripts/test-all.sh 全绿。

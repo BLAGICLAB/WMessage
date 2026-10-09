@@ -275,18 +275,21 @@ pub fn record_job_run(
     summary: Option<&str>,
     card_id: Option<&str>,
 ) -> Result<(), String> {
-    conn.execute(
+    // 插入与裁剪同事务：裁剪失败不丢本次历史
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
         "INSERT INTO scheduled_job_runs (job_id, fired_at, status, duration_ms, summary, card_id) \
          VALUES (?1,?2,?3,?4,?5,?6)",
         rusqlite::params![job_id, fired_at, status, duration_ms, summary, card_id],
     )
     .map_err(|e| e.to_string())?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM scheduled_job_runs WHERE job_id = ?1 AND id NOT IN (\
            SELECT id FROM scheduled_job_runs WHERE job_id = ?1 ORDER BY id DESC LIMIT ?2)",
         rusqlite::params![job_id, JOB_RUNS_KEEP as i64],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 

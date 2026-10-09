@@ -1067,12 +1067,11 @@ pub async fn tool_write_file(
         Ok(p) => p,
         Err(e) => return ToolResult::ok(e, Vec::new()),
     };
-    let existed = is_dir_async(&canonical).await || {
-        let c = canonical.clone();
-        spawn_blocking_io(move || Ok(c.is_file()))
-            .await
-            .unwrap_or(false)
-    };
+    // existed 只认文件：目录目标不弹覆盖确认，直接写盘自然 IsADirectory 失败
+    let c = canonical.clone();
+    let existed = spawn_blocking_io(move || Ok(c.is_file()))
+        .await
+        .unwrap_or(false);
     if existed {
         // auto 档白名单内的覆盖写自动接受（resolve_writable 已过白名单闸；
         // acceptEdits 核心语义——白名单内的「文件编辑类操作」不再人工确认）。

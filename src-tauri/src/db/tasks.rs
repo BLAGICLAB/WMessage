@@ -622,7 +622,9 @@ pub fn load_tasks_by_workflow(
     conn: &rusqlite::Connection,
     workflow_id: &str,
 ) -> Result<Vec<super::Task>, String> {
-    let sql = format!("{TASK_SELECT_COLS} WHERE workflow_id = ?1 AND deleted_at IS NULL");
+    let sql = format!(
+        "{TASK_SELECT_COLS} WHERE workflow_id = ?1 AND deleted_at IS NULL ORDER BY ord, rowid"
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([workflow_id], task_from_row)

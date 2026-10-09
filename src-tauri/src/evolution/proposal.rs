@@ -143,7 +143,8 @@ pub fn normalize_for_hash(s: &str) -> String {
         let mapped = if c.is_numeric() {
             'N'
         } else if c.is_alphanumeric() {
-            c.to_ascii_lowercase()
+            // Unicode 大写折叠（全角Ａ、希腊/西里尔等）；to_ascii_lowercase 只折 ASCII
+            c.to_lowercase().next().unwrap_or(c)
         } else {
             ' '
         };

@@ -422,11 +422,22 @@ fn insert_new(
     now_ms: i64,
     p: &StoreParams,
 ) -> Result<InsertOutcome, String> {
-    if let Err(e) = evict_if_needed(conn, now_ms, p.capacity) {
+    // 淘汰与写入同事务，防 INSERT 失败白丢 victim；consolidate/panel/extract
+    // 会在外层事务里传 &tx 进来，此时直接并入外层，不重复 BEGIN
+    let local = if conn.is_autocommit() {
+        Some(conn.unchecked_transaction().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let c: &rusqlite::Connection = match &local {
+        Some(t) => t,
+        None => conn,
+    };
+    if let Err(e) = evict_if_needed(c, now_ms, p.capacity) {
         return Ok(InsertOutcome::RejectedFull(e));
     }
     let id = uuid::Uuid::new_v4().simple().to_string();
-    conn.execute(
+    c.execute(
         "INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at, embedding)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
         rusqlite::params![
@@ -441,6 +452,9 @@ fn insert_new(
         ],
     )
     .map_err(|e| e.to_string())?;
+    if let Some(t) = local {
+        t.commit().map_err(|e| e.to_string())?;
+    }
     Ok(InsertOutcome::Inserted(MemItem {
         id,
         kind: item.kind.clone(),

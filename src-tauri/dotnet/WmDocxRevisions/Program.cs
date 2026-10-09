@@ -326,6 +326,10 @@ static void DeleteUnit(Unit unit, Func<int> nextId)
             MarkParagraphDeleted(pu.Para, nextId);
             break;
         case RowUnit ru:
+            // 行删除需 w:trPr/w:del 结构化标记（无 trPr 则补建），Word 才按「删行」显示修订
+            var trPr = ru.Row.GetFirstChild<TableRowProperties>();
+            trPr ??= ru.Row.PrependChild(new TableRowProperties());
+            trPr.PrependChild(new Deleted { Id = nextId().ToString(), Author = Author });
             foreach (var cell in ru.Row.Elements<TableCell>())
                 foreach (var para in cell.Elements<Paragraph>())
                     MarkParagraphDeleted(para, nextId);

@@ -69,17 +69,70 @@ def plugin_calls():
 
 
 def registered_plugins():
-    """lib.rs .plugin(tauri_plugin_xxx::init(...)) 注册集合（plugin: 名用连字符）"""
+    """lib.rs .plugin(tauri_plugin_xxx::init(...)/::Builder::new()) 注册集合
+    （plugin: 名用连字符；Builder 形态如 global_shortcut::Builder::new()）"""
     return {
         m.group(1).replace("_", "-")
-        for m in re.finditer(r"tauri_plugin_(\w+)::init", LIB_RS)
+        for m in re.finditer(r"tauri_plugin_(\w+)::(?:init|Builder)\b", LIB_RS)
     }
 
 
+def strip_rs_comments(text: str) -> str:
+    """剥 // 与 /* */ 注释（字符串字面量原样保留，emit 字面量不受影响；
+    字符串内的 // 不启注释）。注释掉的 emit 不再算后端事件。"""
+    out = []
+    i, n = 0, len(text)
+    state = None  # None | "line" | "block" | 引号字符
+    while i < n:
+        c = text[i]
+        two = text[i:i + 2]
+        if state == "line":
+            out.append("\n" if c == "\n" else " ")
+            if c == "\n":
+                state = None
+            i += 1
+        elif state == "block":
+            out.append("\n" if c == "\n" else " ")
+            if two == "*/":
+                out.append("  ")
+                i += 2
+                state = None
+            else:
+                i += 1
+        elif state == '"':
+            if c == "\\":
+                out.append("  ")
+                i += 2
+            else:
+                out.append(c)
+                if c == '"':
+                    state = None
+                i += 1
+        else:
+            if two == "//":
+                state = "line"
+                out.append("  ")
+                i += 2
+            elif two == "/*":
+                state = "block"
+                out.append("  ")
+                i += 2
+            elif c == '"':
+                state = '"'
+                out.append(c)
+                i += 1
+            else:
+                out.append(c)
+                i += 1
+    return "".join(out)
+
+
 def emitted_events():
-    """后端 .emit(\"e\")/.emit_to(\"w\",\"e\") + 闭包 emit(\"e\") 与前端 emit/emitTo 的事件名"""
+    """后端 .emit(\"e\")/.emit_to(\"w\",\"e\") + 闭包 emit(\"e\") 与前端 emit/emitTo 的事件名
+    （Rust 侧先剥注释，注释掉的 emit 不算）"""
     backend = {}
-    for f, t in RUST_SRC.items():
+    for f, raw in RUST_SRC.items():
+        t = strip_rs_comments(raw)
         for m in re.finditer(r'\.emit\(\s*"([^"]+)"', t):
             backend.setdefault(m.group(1), f)
         for m in re.finditer(r'\.emit_to\(\s*"[^"]*"\s*,\s*"([^"]+)"', t):
@@ -184,6 +237,20 @@ def test_invoke_names_nested_generics():
 def test_invoke_names_real_sample_memory_tuning_get():
     """真实样本：MemoryPanel.tsx 的双层泛型调用曾被旧正则漏抓（实际已注册）"""
     assert "memory_tuning_get" in frontend_invokes()
+
+
+def test_registered_plugins_builder_form():
+    """Builder 形态注册须识别（真实样本：lib.rs tauri_plugin_global_shortcut::Builder::new()）"""
+    assert "global-shortcut" in registered_plugins()
+
+
+def test_emitted_events_ignores_commented_emit():
+    """注释掉的 emit 不算后端事件；字符串里的 // 不误吞注释"""
+    cleaned = strip_rs_comments('// .emit("ghost_a");\n/* .emit_to("w", "ghost_b") */\nx.emit("real_c");')
+    names = [m.group(1) for m in re.finditer(r'\.emit\(\s*"([^"]+)"', cleaned)]
+    assert names == ["real_c"]
+    # URL 里的 // 不启行注释（字符串内容原样保留）
+    assert 'emit("e", "https://a.dev")' == strip_rs_comments('emit("e", "https://a.dev")')
 
 
 def test_extractors_nonempty():

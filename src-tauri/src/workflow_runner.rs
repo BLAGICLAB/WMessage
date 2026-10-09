@@ -1392,17 +1392,18 @@ async fn load_upstream_brief(app: &AppHandle, upstream_ids: &[String]) -> Option
 /// 节点结构化结果落卡（RMW 合并，与 mark_note_prefix 同款；best-effort 不阻断收尾）
 async fn write_node_result(app: &AppHandle, task_id: &str, result: serde_json::Value) {
     if let Ok(cur) = crate::db::db_load(app.clone()).await {
-        if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) {
-            fresh.result = Some(result);
-            fresh.expected_updated_at = fresh.updated_at;
-            fresh.updated_at = Some(chrono::Utc::now().timestamp_millis());
-            if crate::db::db_upsert(app.clone(), vec![fresh.clone()])
-                .await
-                .is_ok()
-            {
-                crate::bot::broadcast_after_mutation(app, vec![fresh], vec![]);
-            }
+        let Some(mut fresh) = cur.into_iter().find(|t| t.id == task_id) else {
+            eprintln!("[workflow] write_node_result 跳过：卡不存在 id={task_id}");
+            return;
+        };
+        fresh.result = Some(result);
+        fresh.expected_updated_at = fresh.updated_at;
+        fresh.updated_at = Some(chrono::Utc::now().timestamp_millis());
+        if let Err(e) = crate::db::db_upsert(app.clone(), vec![fresh.clone()]).await {
+            eprintln!("[workflow] write_node_result 落卡失败（不阻断）id={task_id}: {e}");
+            return;
         }
+        crate::bot::broadcast_after_mutation(app, vec![fresh], vec![]);
     }
 }
 

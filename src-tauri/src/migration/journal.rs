@@ -82,12 +82,18 @@ pub(crate) fn journal_pending(
 }
 
 ///  inner: 标记 committed。replay 跳过该行。
+/// 仅允许 pending → committed：防同 id 双跑竞态把已 committed 行误降级。
 pub(crate) fn journal_committed_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
-    conn.execute(
-        "UPDATE migration_journal SET state = 'committed' WHERE id = ?1",
-        rusqlite::params![id],
-    )
-    .map_err(|e| e.to_string())?;
+    let n = conn
+        .execute(
+            "UPDATE migration_journal SET state = 'committed'
+             WHERE id = ?1 AND state = 'pending'",
+            rusqlite::params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        eprintln!("[journal] committed 翻转跳过：id={id} 非 pending（可能已 committed）");
+    }
     Ok(())
 }
 
@@ -99,12 +105,18 @@ pub(crate) fn journal_committed(conn: &rusqlite::Connection, id: i64) -> Result<
 }
 
 ///  inner: 清除（未启动 / 已明确失败）。
+/// 仅允许 pending → cleared：防双跑竞态把已 committed 行误降级（replay 会重扫）。
 pub(crate) fn journal_cleared_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
-    conn.execute(
-        "UPDATE migration_journal SET state = 'cleared' WHERE id = ?1",
-        rusqlite::params![id],
-    )
-    .map_err(|e| e.to_string())?;
+    let n = conn
+        .execute(
+            "UPDATE migration_journal SET state = 'cleared'
+             WHERE id = ?1 AND state = 'pending'",
+            rusqlite::params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        eprintln!("[journal] cleared 翻转跳过：id={id} 非 pending（可能已 committed）");
+    }
     Ok(())
 }
 

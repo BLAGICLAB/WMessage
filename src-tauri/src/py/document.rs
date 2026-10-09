@@ -954,7 +954,11 @@ pub fn script_fail_err(what: &str, stderr: &str) -> CommandError {
 pub fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
     match p {
         tauri_plugin_dialog::FilePath::Path(pb) => pb.to_str().map(|s| s.to_string()),
-        tauri_plugin_dialog::FilePath::Url(u) => Some(u.to_string()),
+        // 桌面端对话框可能给 file:// Url：转回本地路径；非文件 URL 返回 None（fail-closed）
+        tauri_plugin_dialog::FilePath::Url(u) => u
+            .to_file_path()
+            .ok()
+            .and_then(|pb| pb.to_str().map(String::from)),
     }
 }
 

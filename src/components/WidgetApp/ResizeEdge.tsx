@@ -35,6 +35,7 @@ export function ResizeEdge({
 
   const onDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    dragCleanupRef.current?.(); // 多点触控：新按下先清上一次拖动的监听，防叠栈
     e.preventDefault();
     e.stopPropagation();
     const sx = e.clientX, sy = e.clientY;

@@ -116,6 +116,7 @@ pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
+        eprintln!("[migrate] reset_bot_assigned_with：执行权已被并发调用持有，本次跳过");
         return Ok(());
     }
     match exec() {

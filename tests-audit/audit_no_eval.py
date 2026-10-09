@@ -12,7 +12,7 @@ audit_no_eval.py — 前端源码禁动态求值静态守卫（CSP 收紧配套�
   2. Function 构造器（new 形式 / 字符串首参形式）
   3. setTimeout/setInterval 字符串参数
   4. 动态 import(非字面量参数)
-  5. 间接调用形式（逗号运算符 / 全局对象属性访问）
+  5. 间接调用形式（逗号运算符 / 全局对象属性访问 / 别名赋值 / 可选链）
   6. Function 别名赋值启发式
 
 误报处理：剥离注释与字符串字面量后匹配；排除测试文件。
@@ -40,6 +40,10 @@ INDIRECT_RE = (
     r"|window\." + EVAL + r"\b"
     r"|globalThis\." + EVAL + r"\b"
     r"|self\." + EVAL + r"\b"
+    # 别名赋值：const myEval = eval;（后随 ( 的直接调用归动态求值模式管）
+    r"|\b\w+\s*=\s*" + EVAL + r"\b(?!\s*\()"
+    # 可选链调用：eval?.("…")
+    r"|\b" + EVAL + r"\s*\?\.\("
 )
 # 只认赋值别名（`\w+ = Function`，后随 `(` 的调用形态归构造器模式管）——
 # 旧写法 `[:=]` 的冒号分支会误伤 `x: Function` 类型注解
@@ -154,6 +158,9 @@ def selftest() -> int:
         "function wrap(f: Function): Function { return f; }",
         # INDIRECT 收紧后放行：同前缀长名不吃 \b 子串命中
         "window.evaluation.queue.push(task);",
+        # 别名/可选链收紧后放行：长名赋值与属性可选链调用不是动态求值
+        "let label = evaluated.name;",
+        "obj.evaluator?.run();",
     ])
     # 反例：六类真实形态必须全部抓到
     fail_fixtures = [
@@ -166,6 +173,9 @@ def selftest() -> int:
         "(0, " + EVAL + ')("x");',
         "window." + EVAL + '("y");',
         "const g = globalThis." + EVAL + ";",
+        # 别名赋值与可选链（INDIRECT 补洞后必须抓到）
+        "const myEval = " + EVAL + ";",
+        EVAL + '?.("z");',
     ]
     with tempfile.TemporaryDirectory() as td:
         probe = Path(td) / "probe.ts"

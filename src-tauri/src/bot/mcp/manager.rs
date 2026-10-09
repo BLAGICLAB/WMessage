@@ -524,21 +524,22 @@ impl McpManager {
         args: serde_json::Value,
     ) -> Result<CallToolResult, String> {
         self.ensure_connected(cfg).await?;
-        let service = self.connected_service(&cfg.id, fingerprint(cfg))?;
+        let fp = fingerprint(cfg);
+        let service = self.connected_service(&cfg.id, fp)?;
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = args.as_object().cloned();
         let timeout = Duration::from_secs(cfg.effective_timeout_secs());
         match tokio::time::timeout(timeout, service.call_tool_once(params)).await {
             Err(_) => Err(format!("工具调用超时（{}s）：{tool}", timeout.as_secs())),
             Ok(Err(rmcp::ServiceError::TransportClosed)) => {
-                self.mark_down(&cfg.id, "连接已断开".into());
+                self.mark_down(&cfg.id, fp, "连接已断开".into());
                 Err(self.format_with_stderr_tail(
                     &cfg.id,
                     "MCP 服务器连接已断开（已标记，下次调用自动重连）".into(),
                 ))
             }
             Ok(Err(e @ rmcp::ServiceError::TransportSend(_))) => {
-                self.mark_down(&cfg.id, e.to_string());
+                self.mark_down(&cfg.id, fp, e.to_string());
                 Err(self.format_with_stderr_tail(
                     &cfg.id,
                     format!("MCP 服务器连接异常（已标记，下次调用自动重连）：{e}"),
@@ -552,8 +553,16 @@ impl McpManager {
         }
     }
 
-    fn mark_down(&self, id: &str, error: String) {
-        self.slots().insert(id.to_string(), Slot::Down { error });
+    /// 连接级失败标记 Down。带调用方所见连接的指纹：槽位 Connected 但指纹已变
+    /// = 连接已被重建（新代），本次失败属陈旧代，不得覆盖新槽。
+    fn mark_down(&self, id: &str, fp: u64, error: String) {
+        let mut slots = self.slots();
+        if let Some(Slot::Connected { fingerprint, .. }) = slots.get(id) {
+            if *fingerprint != fp {
+                return;
+            }
+        }
+        slots.insert(id.to_string(), Slot::Down { error });
     }
 
     /// 退出清理：取消全部连接令牌并清空槽位。子进程 kill 由
