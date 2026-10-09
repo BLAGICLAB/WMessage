@@ -1,0 +1,24 @@
+6|WONTFIX|devDependencies 固定声明，响亮失败
+7|WONTFIX|裸栈族响亮失败
+8|WONTFIX|collect 期非零退出响亮 FAIL
+9|PARTIAL|[A-Z_]+ 漏数字码两侧同时失明；改 [A-Z][A-Z0-9_]*（35/43/53 三处）
+10|WONTFIX|响亮 mismatch FAIL 非静默漏报
+11|PARTIAL|Builder 形态已现役；tauri_plugin_(\w+)::(init|Builder)
+12|PARTIAL|注释 emit 幽灵事件；扫描前剥注释
+13|REAL|嵌套泛型 invoke 实测漏抓 memory_tuning_get；invoke(?:<(?:[^<>]|<[^<>]*>)*)?\(\s*"([^"]+)"
+14|PARTIAL|r#* 定界符识别；当前净效果零
+15|PARTIAL|规则 4 补 rand::random/rng/OsRng 等家族
+16|PARTIAL|组合谓词 cfg(all/any(test,…)) 放宽
+17|WONTFIX|脚本头已拍板局限族+运行时兜底
+18|PARTIAL|补别名与 eval?.( 两式
+304|FALSE_POSITIVE|nextest -j 参数合法
+305|FALSE_POSITIVE|macOS 12.3+ readlink -f 原生
+306|WONTFIX|人在环+--retry 已在
+307|WONTFIX|SHA256 pinning fail-closed 自愈
+308|PARTIAL|三候选全 miss 零断言；循环后补 fail
+309|FALSE_POSITIVE|紧凑 jsonl 前提不存在
+310|WONTFIX|事件名固定小写
+311|WONTFIX|audit-ok 是 opt-in 豁免手势
+312|WONTFIX|固定字面量实测匹配
+313|FALSE_POSITIVE|BSD grep 实测 \b 可用
+314|FALSE_POSITIVE|BSD find 原生 -maxdepth

@@ -1,0 +1,45 @@
+32|WONTFIX|keyring IO 持锁是显式拍板（拆锁重开竞态）
+33|WONTFIX|TUNING 双锁已登记 follow-up
+35|WONTFIX|穷举 match 假想场景
+37|WONTFIX|debug_assert 锁契约全仓惯例
+38|PARTIAL|flag 失败自愈；WouldBlock 可补 debug 日志
+39|WONTFIX|中毒恢复既定惯例
+40|FALSE_POSITIVE|manager 侧有 timeout
+41|FALSE_POSITIVE|tool_prefix 已把非 ASCII 映射 _
+42|WONTFIX|诊断文案粒度
+43|ALREADY_HANDLED|S1-8 已持锁
+44|PARTIAL|同信任域非对抗路径；可加 disk.verified 前置
+45|WONTFIX|后半成功已登记 B 类
+46|PARTIAL|renderer 同信任域；可加 https 校验
+47|WONTFIX|全局 key 回退是 doc 拍板
+48|WONTFIX|白名单闸仍必拒，无授权绕过
+49|WONTFIX|控制流已配平，RAII 属加固
+50|WONTFIX|审计 0600 已修+截断是设计
+51|WONTFIX|失败也走 ok 防 fatal 误判是拍板
+52|WONTFIX|MCP 本就运行任意代码，非沙箱承诺
+53|WONTFIX|无 {:?} 打印路径
+54|PARTIAL|重定向已禁；DNS rebinding 登记二期
+55|PARTIAL|组播不可利用；64:ff9b:1 已整段拦（半边误报）
+56|ALREADY_HANDLED|trim 冲突闸已前置
+57|ALREADY_HANDLED|S1-2 已无条件 0600
+58|FALSE_POSITIVE|load_config 返回值非 Result
+59|WONTFIX|N×M 有界，过早优化
+60|ALREADY_HANDLED|reload_from_config 内部已审计
+61|WONTFIX|编辑跳过补偿是拍板
+62|WONTFIX|竞态已文档化良性（瞬态自愈）
+63|PARTIAL|mark_down 覆盖新槽可懒重连恢复；修法比对指纹
+64|WONTFIX|Down 无指纹是文档化语义
+65|REAL|MCP 非对象 JSON 静默无参调用；mount.rs 解析后加 is_object 检查
+66|WONTFIX|仅连接级错误标 Down 是 doc 设计
+67|WONTFIX|into_inner 既定惯例（注释措辞可顺手改）
+68|WONTFIX|stderr 回显 env 是子进程合法持有
+69|PARTIAL|行帽 S1-5 已修；残余非 UTF-8 行 Err 应 continue
+70|WONTFIX|DNS 级校验登记二期
+71|REAL|override 条目回退拿 active 厂商 key 打自己 base_url，跨厂商泄漏；types.rs:583/585 改 read_api_key 全局主 key
+72|WONTFIX|无 {:?} 路径
+73|REAL|截图文件名秒级精度同秒覆盖；加毫秒/序号后缀
+74|PARTIAL|浏览器消费方同源策略已兜
+75|FALSE_POSITIVE|tool_call_failed 不看 name
+76|PARTIAL|existed 应只取 is_file 分支
+77|WONTFIX|allow 规则=单工具 yolo 是拍板
+78|WONTFIX|写侧同语义文档化

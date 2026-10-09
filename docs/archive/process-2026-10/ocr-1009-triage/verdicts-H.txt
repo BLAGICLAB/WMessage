@@ -1,0 +1,51 @@
+102|WONTFIX|中毒惯例
+108|WONTFIX|同 102
+109|WONTFIX|sync 命令单条语句微秒级
+113|PARTIAL|PRAGMA 未校验；query_row 断言 wal 否则 warn
+114|PARTIAL|并发写幂等；SELECT 移入 tx
+115|PARTIAL|文件保留自动重试；Err 分支补 eprintln
+116|WONTFIX|map_err to_string 全仓口径
+117|PARTIAL|导入 tx 内串行；可 INSERT OR IGNORE
+118|PARTIAL|task_id uuid4 无碰撞；可加注释钉契约
+122|PARTIAL|sidecar 非用户数据；可扩 guard 覆盖 -wal/-shm
+123|FALSE_POSITIVE|Windows rename 覆盖语义前提错误
+124|PARTIAL|prune 自愈；unchecked_transaction 包两语句
+125|FALSE_POSITIVE|清空在 INSERT 后，方向倒置
+130|PARTIAL|并发 open_db DDL 幂等自愈；迁移段收进初始化锁
+131|PARTIAL|fail-closed 已透出；orphan 查询失败补 eprintln
+132|PARTIAL|运行期失败不可达；可补 eprintln
+133|WONTFIX|debug_assert 锁契约惯例
+134|WONTFIX|成环指纹拒入库是有意设计
+137|PARTIAL|全部调用方经 DB_WRITE_LOCK 串行；可条件 UPDATE
+138|WONTFIX|同态重入幂等是拍板
+139|WONTFIX|降级读是文档化取舍
+140|WONTFIX|钳制契约钉在写口
+144|PARTIAL|全局计口径有意；跨工作流同毫秒概率可忽略
+145|REAL|workflow_audit 导出复用 wa_list 硬钳 500 静默截断；独立不分页查询
+146|PARTIAL|save-dialog 路径 KB 级；write 挪进同一 spawn_blocking
+147|PARTIAL|键独立重试收敛；unchecked_transaction 包裹
+148|PARTIAL|写口恒规范值；读侧补 clamp
+149|WONTFIX|fail-open 是模块头设计
+150|WONTFIX|尽力而为拍板
+151|REAL|审计记录未钳制值(1000)与实际生效(100)失真；Some 臂改 r.audit_retention_runs
+154|ALREADY_HANDLED|None => true 已是 S1-⑦ 修复后形态
+155|PARTIAL|import 路径用户对话框无外泄通道
+160|FALSE_POSITIVE|IPC &str 反序列化走 visit_borrowed_str
+161|REAL|delete_non_self_locked 绕过 brief_entries 级联留孤儿；DELETE 后循环 brief_delete_task
+162|PARTIAL|first-party 路径超出威胁模型；gate 返回 trimmed 复用
+163|PARTIAL|指纹与行序无关；补 ORDER BY ord,rowid
+164|WONTFIX|debug_assert 惯例
+19|REAL|body from_utf8_lossy 静默替换；String::from_utf8 失败归 Malformed
+20|WONTFIX|注释已明示对 MemStore 依赖
+21|WONTFIX|持锁 join 是注释明示拍板
+22|WONTFIX|rotate 恢复路径有意持锁
+23|WONTFIX|残余窗已声明拍板
+24|WONTFIX|同 23
+25|ALREADY_HANDLED|S1-③ 清理留痕已落地
+26|ALREADY_HANDLED|S1-③ chmod 留痕已落地
+27|WONTFIX|after_change 单一咽喉契约
+28|WONTFIX|panic 点名约定是有意设计
+29|PARTIAL|中毒前提近乎不可达；Err 臂 eprintln
+30|WONTFIX|中毒惯例原文模式
+34|WONTFIX|同仓库惯例
+36|PARTIAL|api_stop_locked 先 join 再扫描窗口极窄；注册时校验代际/stop 标志

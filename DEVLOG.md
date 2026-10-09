@@ -5928,3 +5928,29 @@ vendor）+ scripts/test-all.sh 全绿。
 （scope 严格等于 $APPDATA/**）。scope 移除后该测试翻新为
 `opener_path_scope_must_stay_absent`：钉「allow-open-path 必须不存在 +
 opener:default 必须存在」，防回退语义保留（恢复前端开路径需先改此测试说明理由）。
+
+## 2026-10-09（周四）OCR-1009 S2 批 — 420 条 crit/high 逐条分诊 + 38 处 REAL 修复
+
+**接手并行会话的全量扫描**（1339 条，其中 crit/high 420 条已录账本 + S1 批 10 项
+已修 + 补扫闭环）。本次完成剩余的逐条分诊与修复：
+
+- **分诊**：425 条（420 crit/high + 5 条 severity 空值按 high 对待）按域切 10 片，
+  10 个并行评审代理逐条对照现行代码核验（中途 4 片撞速率限制重试）。
+  结果：REAL 38 / PARTIAL 108 / 误报 49 / 已有防线 37 / 取舍不修 193。
+  逐条标记 + 处置统计已写入 docs/OCR-SCAN-TRIAGE-2026-10-09.md（基线），
+  分诊明细归档 docs/archive/process-2026-10/ocr-1009-triage/。
+- **S2 批修复 38 处 REAL**（8 个并行修复代理按域两波执行，文件零重叠），
+  择要：跨厂商 key 回退泄漏（types.rs 回退改全局主 key）、MCP 非对象参数
+  静默无参调用（mount.rs is_object 闸）、调度器一次性任务重启补跑/Err 搁浅/
+  失败状态未落库（scheduler 三处）、推理参数 override 族映射错位、
+  subagent 两写无事务、CR 复活竞态（panel 段③先取盘面状态）、双锁 RMW 丢
+  字段（policy 并单锁）、audit 导出 500 钳制截断、delete_non_self 绕过
+  brief 级联、dotnet 锚点插入位置与 DiffList 无上限、TASK_ID_RE 不匹配
+  simple() 32hex、audit_tauri_bridge 嵌套泛型漏抓（实测 memory_tuning_get
+  失明，正则支持两层嵌套后全库 131→134 命中）等。
+- PARTIAL 108 条含多条一行级顺手修建议，攒批另行评估（见 verdicts 归档）。
+- 误报代表性样本入基线：serde_json IndexMut 对 Null 自动对象化（critical 级
+  误报）、sort_by 稳定排序「非确定洗牌」、STORAGE_KEY「占位符」考古等。
+
+验证：cargo fmt / clippy --all-targets 0（除 vendor）/ scripts/test-all.sh
+全绿（nextest + tests-audit + vitest）/ 红线干净。回滚：git revert 本 commit。

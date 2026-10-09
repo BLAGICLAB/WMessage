@@ -1,0 +1,43 @@
+31|WONTFIX|frontend_event_report 是同步 fn，前提不成立；持锁是 BOT_LOG_LOCK 口径
+152|WONTFIX|全程持锁原子完成是有意设计
+153|WONTFIX|防轰炸取舍已留痕
+156|PARTIAL|300 字符截断已在；残余 resp.text() 整读+控制字符；流式截断+剥控制字符
+157|PARTIAL|body_preview 已截 300；message() 内剥控制字符
+158|WONTFIX|迁移辅助有意
+159|WONTFIX|同 158
+173|PARTIAL|eval/metrics 旧实现无生产调用方；启用再去重
+174|PARTIAL|同 173；saturating_sub
+175|WONTFIX|契约注释明示+无调用方
+209|WONTFIX|中毒惯例
+210|WONTFIX|同 209
+211|FALSE_POSITIVE|进程级 static FALLBACK 非临时实例
+212|FALSE_POSITIVE|CAS 基线标准，逐行比对在位
+219|REAL|meta_upsert_model 把 rusqlite 错压成可重试 DomainRule；返回 UpsertModelError::Db 走 CommandError::from
+220|ALREADY_HANDLED|下游各自先 migrate_locked
+221|WONTFIX|退出 best-effort 是设计
+222|WONTFIX|启动期致命路径无孤儿
+223|PARTIAL|剪贴板引用文件；可 canonicalize+白名单
+224|FALSE_POSITIVE|chunk extend 前已检查
+225|PARTIAL|两调用点都 await 到底；留 TODO
+226|PARTIAL|宽松词表是设计；可整词匹配+否定词
+227|PARTIAL|注入需 DB 有伪造标题且被选中；可遇非 `- ` 行即停
+231|PARTIAL|迁移单线程+双闸；db_load 后复检 exists
+232|WONTFIX|block_on 契约明示
+233|FALSE_POSITIVE|现行代码无此编译错误
+236|FALSE_POSITIVE|journal 走 SQLite 非 serde
+237|WONTFIX|String 枚举风格建议
+238|WONTFIX|同 237
+239|WONTFIX|Phase 6 TOCTOU 统一挂账
+240|PARTIAL|MigrationGuard 单跑；可 O_EXCL 占位
+241|FALSE_POSITIVE|Rust 侧无反序列化入口
+242|WONTFIX|调用方契约明示
+243|WONTFIX|replay 是收敛机制
+244|PARTIAL|UNC/file: 前缀补进拒绝清单（一行）
+245|WONTFIX|SAFETY 注释考据
+246|WONTFIX|纯 helper 提取建议
+249|PARTIAL|残余手改文件面；run.rs load 后补 validate_rules
+250|FALSE_POSITIVE|无 RMW，整文件替换
+251|ALREADY_HANDLED|现行已是 S1 后形态
+252|PARTIAL|lossy 自洽；None 路径拒绝并留痕
+253|FALSE_POSITIVE|两处刻意同形
+254|WONTFIX|无 stale id 路径，幂等

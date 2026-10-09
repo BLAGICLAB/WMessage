@@ -1,0 +1,31 @@
+206|REAL|format_candidates 行格式可被内容换行撑破；content replace 换行+转义 |
+207|WONTFIX|容量钳制+微秒级全表
+208|PARTIAL|并发双打 LLM；AtomicBool CAS 去重
+215|WONTFIX|None 降级是模块契约
+216|PARTIAL|刻意回 Inner 留痕；事务回滚兜底
+217|FALSE_POSITIVE|全部写路径同锁单写者
+218|REAL|裁决重复认领覆盖第一条；HashSet claimed 重复降级 New
+228|ALREADY_HANDLED|读取侧已 clamped
+229|PARTIAL|零向量路径不可达
+230|WONTFIX|i64 脏值需手工改库
+234|PARTIAL|DELETE+INSERT 失败丢 victim；包进同一事务
+235|ALREADY_HANDLED|读侧统一拒异形向量
+247|WONTFIX|跨 key 合并是拍板契约
+248|WONTFIX|拒写先于 UPDATE 非误绿
+258|WONTFIX|刻意回 Inner 留痕
+259|WONTFIX|尽力而为旁路
+263|ALREADY_HANDLED|启动清扫兜住
+264|WONTFIX|类型卫生
+265|WONTFIX|Err 路径不可达
+266|FALSE_POSITIVE|send 对 dropped receiver 立即 Err
+267|WONTFIX|无特权边界
+268|WONTFIX|整洁度建议
+269|WONTFIX|仅审计数字虚增
+270|FALSE_POSITIVE|xlsx 字符串不重解析
+271|PARTIAL|Url 变体移动端场景；u.to_file_path() 顺手修
+285|PARTIAL|幻影许可无实际后果；修法保持先减后还（回归锁形状）
+0|ALREADY_HANDLED|self-copy 守卫已修（S1-9）
+1|REAL|InsertBefore(sect)=文末与注释「正文开头」相反；改为首个非 sectPr 前插
+3|PARTIAL|行删除残留空行；RowUnit 分支补 w:trPr/w:del
+4|REAL|DiffList 无上限 OOM；同款 MaxCells 超限退化 replace
+2|WONTFIX|各损失点均为拍板

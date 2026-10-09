@@ -1,0 +1,47 @@
+165|PARTIAL|O(M*N) 无实际后果；load_all 可批前复用
+166|WONTFIX|拍板口径已留痕
+167|PARTIAL|read_all Err 应走 Warn 跳过
+168|ALREADY_HANDLED|生产调用点已持锁
+169|PARTIAL|重试去重+幂等 id 兜底
+170|ALREADY_HANDLED|is_reversible 路由过滤在位
+171|FALSE_POSITIVE|S2Active 只影响 shadow 标签
+172|ALREADY_HANDLED|防线在 shadow.rs 6 例测试
+176|ALREADY_HANDLED|kill_switch 入口已挂
+177|WONTFIX|O_APPEND+持锁+无 fsync 是既定取舍
+178|FALSE_POSITIVE|can_transition 在位会 Err
+179|WONTFIX|双重大前提不成立
+180|WONTFIX|TTL 不强制执行是既定形态
+181|WONTFIX|补测建议非缺陷
+182|PARTIAL|累计口径是文档化全局健康指标
+183|WONTFIX|零调用方+文档化约束
+184|WONTFIX|debug_assert 拍板
+185|WONTFIX|30 天窗口固定
+186|WONTFIX|口径与文档一致
+187|WONTFIX|首匹配语义有测试锁死
+188|WONTFIX|FIFO+cap5 是确定性契约
+189|FALSE_POSITIVE|uuid hex 不含 |
+190|FALSE_POSITIVE|同 189
+191|REAL|段③陈旧 status 复活并发回滚的 CR；先 load_changes 再 mark_human_applied
+192|REAL|delete_by_ids 与 rollback_applied 顺序致孤儿；调换顺序或事务
+193|PARTIAL|顺序半失败后果有限；可 cascade 前置
+194|WONTFIX|读侧持锁 spawn_blocking 内，前提不成立
+195|WONTFIX|中毒惯例
+196|WONTFIX|dedup 先于 audit 是拍板
+197|REAL|DERIVE_THRESHOLDS 与 APPLY_POLICY 双锁 RMW 同文件互相覆盖；并入单锁
+198|REAL|非 NotFound 读错静默映射 Auto 可旁路 confirm；仿 activation 补 eprintln
+199|FALSE_POSITIVE|kill switch 只管 auto 轨是头注释口径
+200|WONTFIX|建议性加固
+201|PARTIAL|无锁读撞写窗口极窄
+202|PARTIAL|命中面≈0；顺手 to_lowercase
+203|WONTFIX|MVP 两规则是契约
+204|WONTFIX|newtype 建议性
+205|WONTFIX|备份不覆盖+偏移是评审拍板
+213|WONTFIX|matches! 拒 = fail-closed 设计落点
+214|WONTFIX|saturating_sub 拍板
+283|WONTFIX|S1 已拍板闸门形态
+289|PARTIAL|重试 prompt 是校验专用；Err 时 continue 原样重发或改注释
+290|WONTFIX|建议性
+292|REAL|workflow attempts 两处中毒缺 [mutex_poisoned] eprintln；补
+293|PARTIAL|best-effort 已文档化；Err 补 eprintln
+298|PARTIAL|双击竞态重复落 brief；notif_resolve 改条件 UPDATE WHERE status='pending'
+421|WONTFIX|测试基线内无缺陷

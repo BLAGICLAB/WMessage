@@ -1,0 +1,484 @@
+[
+ {
+  "path": "src-tauri/src/evolution/apply.rs",
+  "content": "`apply_one` calls `store::load_all(conn)` and runs two linear scans of every memory row on each invocation. When called inside `apply_from_consolidation`'s per-proposal loop this becomes O(M*N) full-table scans plus 2*M extra sweeps. Either hoist the `load_all` into a single `OnceCell<HashMap<...>>`/batch prelude in `apply_from_consolidation` and reuse it across proposals, or replace with targeted SQL lookups (`find_by_key_tag` for the key check and a `SELECT ... WHERE kind='lesson' AND content = ?` for the content check) so each proposal does at most one indexed probe.",
+  "suggestion_code": "pub fn apply_one(\n    conn: &Connection,\n    p: &EvolutionProposal,\n    embedding: Option<&[f32]>,\n    now_ms: i64,\n    existing_keys: &mut std::collections::HashSet<String>,\n    existing_lesson_contents: &mut std::collections::HashSet<String>,\n) -> Result<ApplyOutcome, String> {\n    let key = evolution_key(&p.proposal_id);\n    if store::find_by_key_tag(conn, &key)?.is_some() || existing_keys.contains(&key) {\n        return Ok(ApplyOutcome::AlreadyPresent);\n    }\n    if existing_lesson_contents.contains(&p.suggestion.text) {\n        return Ok(ApplyOutcome::AlreadyPresent);\n    }",
+  "existing_code": "pub fn apply_one(\n    conn: &Connection,\n    p: &EvolutionProposal,\n    embedding: Option<&[f32]>,\n    now_ms: i64,\n) -> Result<ApplyOutcome, String> {\n    let key = evolution_key(&p.proposal_id);\n    let all = store::load_all(conn)?;\n    if all.iter().any(|m| m.tags.iter().any(|t| t == &key)) {\n        return Ok(ApplyOutcome::AlreadyPresent);\n    }\n    if all\n        .iter()\n        .any(|m| m.kind == \"lesson\" && m.content == p.suggestion.text)\n    {\n        return Ok(ApplyOutcome::AlreadyPresent);\n    }",
+  "start_line": 59,
+  "end_line": 75,
+  "category": "performance",
+  "severity": "high",
+  "idx": 165
+ },
+ {
+  "path": "src-tauri/src/evolution/apply.rs",
+  "content": "When `embed_text` returns `None`, `apply_one` is invoked with `embedding=None`, which makes `store::insert_item`'s cosine similarity merge gate inert. In that path a near-duplicate of `p.suggestion.text` against an existing foreign-keyed memory is never detected, so `ConflictRefused` is impossible and the lesson silently overwrites nothing — but the audit/apply path still records `Applied` and writes the ledger. The current `evolution.embed_failed` warn is not enough: either skip such proposals (don't apply at all) or surface them as a distinct `EmbeddingUnavailable` outcome so they cannot bypass the anti-hijack check.",
+  "suggestion_code": "// Embedding-required: skip any proposal whose embed failed, both to preserve\n            // semantic recall AND because insert_item's merge gate requires a vector to\n            // refuse foreign-key near-duplicates (anti-hijack). 记录跳过而非 silent apply。\n            let mut embs: Vec<Option<Vec<f32>>> = Vec::with_capacity(proposals.len());\n            for p in proposals.iter() {\n                embs.push(crate::memory::embed::embed_text(&p.suggestion.text));\n            }\n            let embed_failed: Vec<&str> = proposals\n                .iter()\n                .zip(embs.iter())\n                .filter_map(|(p, e)| e.is_none().then(|| p.proposal_id.as_str()))\n                .collect();\n            if !embed_failed.is_empty() {\n                crate::audit_event!(\n                    &app2,\n                    crate::audit::AuditLevel::Warn,\n                    \"evolution.apply_embedding_required_skip\",\n                    \"skipped\" => embed_failed.len().to_string(),\n                    \"proposal_ids\" => embed_failed.join(\",\"),\n                );\n            }",
+  "existing_code": "let embs: Vec<Option<Vec<f32>>> = proposals\n                .iter()\n                .map(|p| crate::memory::embed::embed_text(&p.suggestion.text))\n                .collect();\n            // embed_text 返回 None = 空文本或推理失败（调用侧不可区分）——\n            // 无向量的 lesson 永不可语义召回，留痕不静默（audit 落 bot.log）。\n            let embed_failed = embs.iter().filter(|e| e.is_none()).count();\n            if embed_failed > 0 {\n                crate::audit_event!(\n                    &app2,\n                    crate::audit::AuditLevel::Warn,\n                    \"evolution.embed_failed\",\n                    \"failed\" => embed_failed.to_string(),\n                    \"total\" => proposals.len().to_string(),\n                );\n            }",
+  "start_line": 214,
+  "end_line": 229,
+  "category": "security",
+  "severity": "high",
+  "idx": 166
+ },
+ {
+  "path": "src-tauri/src/evolution/apply.rs",
+  "content": "`super::change::read_all(&cr_path).unwrap_or_default()` silently swallows IO/parse failures into an empty `rows`, so `unique_change_id_for` derives `chg-<pid>` (or similar) without seeing existing entries. The local `EVOLUTION_STORE_LOCK` only serializes within this process; another instance, the panel write path, or an external tool can still race. Result: collisions are only surfaced as an `append_change` error, and the apply has already counted the proposal as `Applied` in `report`. At minimum log the read failure and treat as a Warn audit, or hold the read-and-derive-inside-lock pattern with explicit error propagation.",
+  "suggestion_code": "let _store = super::lock_evolution_store();\n                                // chg-<pid> 可能被 toggle/shadow 历史行占用，\n                                // 锁内读存量派生唯一 id 再落行。\n                                // 文件读失败必须显式告警：空 rows 会与既有 id 碰撞，\n                                // 而 process-local 锁挡不住面板/外部并发写者。\n                                match super::change::read_all(&cr_path) {\n                                    Ok(rows) => {\n                                        cr.change_id =\n                                            super::change::unique_change_id_for(&rows, &cr.proposal_id);\n                                    }\n                                    Err(e) => {\n                                        crate::audit_event!(\n                                            &app2,\n                                            crate::audit::AuditLevel::Warn,\n                                            \"evolution.apply_change_read_failed\",\n                                            \"proposal_id\" => p.proposal_id.clone(),\n                                            \"error\" => e,\n                                        );\n                                        // 不派生 id，留给 append_change 暴露\n                                    }\n                                }",
+  "existing_code": "let _store = super::lock_evolution_store();\n                                // chg-<pid> 可能被 toggle/shadow 历史行占用，\n                                // 锁内读存量派生唯一 id 再落行\n                                let rows = super::change::read_all(&cr_path).unwrap_or_default();\n                                cr.change_id =\n                                    super::change::unique_change_id_for(&rows, &cr.proposal_id);",
+  "start_line": 278,
+  "end_line": 283,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 167
+ },
+ {
+  "path": "src-tauri/src/evolution/candidate/mod.rs",
+  "content": "TOCTOU race on the JSONL append path. `entry::read_all(&path)` is followed by per-iteration `entry::append(&path, &entry)` with no file locking, so two concurrent callers — e.g. `evolution::post_consolidation` racing with the \"shadow 钩子\" the doc comment explicitly says depends on this file — can both read the same baseline, both find no duplicate, and both append, silently breaking the dedup invariant that this whole function exists to enforce. Add a process-local `Mutex` (cheap, covers the same-process case the comment describes) or, better, an OS-level advisory lock (e.g. `fs2`/`fd-lock`) taken around the read–append window; failing that, re-read and dedup per-entry right before each append (still racy but at least narrows the window).",
+  "existing_code": "let existing = entry::read_all(&path)?;\n    let existing_ids: HashSet<String> = existing.iter().map(|e| e.proposal_id.clone()).collect();\n    let mut written: Vec<ProposalEntry> = Vec::new();\n    let now_ms = chrono::Utc::now().timestamp_millis();\n    for p in proposals {\n        if existing_ids.contains(&p.proposal_id) {\n            continue;\n        }\n        let entry = derive::from_proposal(p, now_ms);\n        entry::append(&path, &entry)?;\n        written.push(entry);\n    }",
+  "start_line": 47,
+  "end_line": 58,
+  "category": "bug",
+  "severity": "high",
+  "idx": 168
+ },
+ {
+  "path": "src-tauri/src/evolution/candidate/mod.rs",
+  "content": "Partial-write semantics break the documented contract. If `entry::append` fails on the Nth proposal, entries 0..N-1 are already persisted on disk but the function returns `Err` with an incomplete `written` Vec (which is dropped at the `?`). The doc comment says \"通知中心按此逐条落消息\", so the caller (notification center) cannot tell which IDs were persisted: a naive retry can silently re-emit notifications for entries that already made it, and a naive rollback leaves the jsonl in a half-written state that may also trip the next call's `read_all`. Either build a tmp file in-memory and rename it onto `path` only after the whole batch succeeds (atomic-ish, also fixes the append-mid-line hazard), or document the partial-failure contract explicitly and return a typed error carrying the IDs that did get written.",
+  "existing_code": "for p in proposals {\n        if existing_ids.contains(&p.proposal_id) {\n            continue;\n        }\n        let entry = derive::from_proposal(p, now_ms);\n        entry::append(&path, &entry)?;\n        written.push(entry);\n    }",
+  "start_line": 51,
+  "end_line": 58,
+  "category": "bug",
+  "severity": "high",
+  "idx": 169
+ },
+ {
+  "path": "src-tauri/src/evolution/activation.rs",
+  "content": "evaluate_s2 unconditionally returns Allow and ignores the proposal (`_p`), so any proposal routed through this function — including irreversible ones — is approved. Safety relies entirely on an external caller-side filter that this function does not enforce or verify. Enforce the reversibility/impact invariant at the decision boundary itself (or at minimum, return a typed error/Result so callers must prove the pre-filter ran) rather than relying on a comment-documented invariant outside the API.",
+  "existing_code": "/// S2 evaluate 占位：恒 Allow。真 policy 填充后在此查表分流。\npub fn evaluate_s2(_p: &EvolutionProposal) -> S2Decision {\n    S2Decision::Allow {\n        reason: \"占位：真 policy 未填，默认 allow\".into(),\n    }\n}",
+  "start_line": 61,
+  "end_line": 66,
+  "category": "security",
+  "severity": "critical",
+  "idx": 170
+ },
+ {
+  "path": "src-tauri/src/evolution/activation.rs",
+  "content": "The loader honors externally configured `s2_active` even though evaluate_s2 is an allow-all placeholder. A misconfigured or tampered bot-config.json can flip the system into S2 and approve main-memory writes before any real policy exists. Either reject `s2_active` while the placeholder is in place, or require an explicit \"policy_implemented\" flag before honoring it.",
+  "existing_code": "    match s {\n        \"s0_observe\" => ActivationState::S0Observe,\n        \"s1_suggest\" => ActivationState::S1Suggest,\n        \"s2_active\" => ActivationState::S2Active,\n        unknown => {\n            eprintln!(\n                \"[evolution_activation] {path:?} 未知 activation_state \\\"{unknown}\\\"，用默认值\"\n            );\n            ActivationState::default()\n        }\n    }",
+  "start_line": 100,
+  "end_line": 110,
+  "category": "security",
+  "severity": "high",
+  "idx": 171
+ },
+ {
+  "path": "src-tauri/src/evolution/activation.rs",
+  "content": "This test explicitly asserts that high-impact proposals are approved by evaluate_s2. With the always-allow placeholder, any regression that removes the documented pre-filter would still pass. Add a test that exercises the irreversibility/impact guard at the actual decision boundary (or assert via a typed error/Result from evaluate_s2) so the safety invariant is enforced and verified, not just trusted.",
+  "existing_code": "    #[test]\n    fn evaluate_s2_always_allows_in_skeleton_phase() {\n        // 占位恒 Allow：可逆/不可逆/高风险同等待遇（is_reversible 在路由前已滤）\n        for (cat, impact) in [\n            (ProposalCategory::MemoryHint, ImpactLevel::Medium),\n            (ProposalCategory::ToolSchemaHint, ImpactLevel::Low),\n            (ProposalCategory::MemoryHint, ImpactLevel::High),\n        ] {\n            let p = mk_proposal(\"p1\", cat, impact);\n            let d = evaluate_s2(&p);\n            assert!(matches!(d, S2Decision::Allow { .. }));\n            assert_eq!(d.as_str(), \"allow\");\n            assert!(d.reason().contains(\"占位\"));\n        }\n    }",
+  "start_line": 176,
+  "end_line": 190,
+  "category": "test",
+  "severity": "high",
+  "idx": 172
+ },
+ {
+  "path": "src-tauri/src/evolution/change/status.rs",
+  "content": "Hard constraint ② (no sandbox bypass) depends entirely on the caller. `can_transition(Approved, Active)` unconditionally returns `true`, and `transition` does not consult any policy. The module doc itself flags this: \"调用方忘记挂策略门 = skip-canary 硬约束失守\". Every caller site that drives `Approved → Active` must independently consult a kill-switch / skip-canary config; this file provides no guard. Add an integration-level test (or a wrapper helper in this module) that asserts `transition(Approved, Active)` is rejected when the skip-canary flag is off, so the invariant cannot regress silently.",
+  "existing_code": "        // Approved\n        | (Approved, Canary)\n        | (Approved, Active)         // skip-canary 配置\n        | (Approved, Rejected)",
+  "start_line": 42,
+  "end_line": 45,
+  "category": "security",
+  "severity": "high",
+  "idx": 176
+ },
+ {
+  "path": "src-tauri/src/evolution/change/record.rs",
+  "content": "`append()` opens with `OpenOptions::create(true).append(true)` but never calls `sync_all()` / `sync_data()` and performs no explicit inter-process locking. Two concurrent appenders (e.g. Tauri command handler and a background worker) can interleave bytes mid-line and produce unparseable jsonl; a crash between `write_all` and flush can leave a truncated final line that silently halves the last record on the next read. The \"锁契约\" comment defers to an external contract — there is no defensive check, fsync, or temp-file rename-to-append here, so a single missing lock at any call site silently corrupts the file. Consider `fs2`/`fd_lock` for advisory locking, or append-and-rename via a sibling temp file.",
+  "existing_code": "pub fn append(path: &std::path::Path, record: &ChangeRecord) -> Result<(), String> {\n    use std::io::Write;\n    if let Some(parent) = path.parent() {\n        std::fs::create_dir_all(parent).map_err(|e| format!(\"建目录 {parent:?} 失败：{e}\"))?;\n    }\n    let mut f = std::fs::OpenOptions::new()\n        .create(true)\n        .append(true)\n        .open(path)\n        .map_err(|e| format!(\"打开 {path:?} 失败：{e}\"))?;",
+  "start_line": 183,
+  "end_line": 192,
+  "category": "bug",
+  "severity": "high",
+  "idx": 177
+ },
+ {
+  "path": "src-tauri/src/evolution/change/record.rs",
+  "content": "`ChangeStatus` is a bare 9-state enum with only `is_terminal()` / `as_str()`. There is no `can_transition_to(&self, next: ChangeStatus) -> bool` (or builder/setter enforcing one) — any caller can persist any state into any record. The 9-state machine contract (`Pending → Shadowing → ShadowPassed → Approved → Canary → Active`, with `Rejected` / `RolledBack` / `Expired` as terminals) lives only in doc comments. Nothing prevents e.g. `Active → Pending`, a backward jump after rollback, or `Expired → Active`. With a `Mutex<ChangeRecord>` + setter, or a simple `validate_transition` helper called at every write site, you can make these impossible states unrepresentable.",
+  "existing_code": "/// 9 态状态机\n///\n/// spec 硬约束 ②：必须 `Pending → Approved → Applied`，\n/// 本状态机对 `Approved → Canary → Active` 显式建模每一步，\n/// `AutoApplied` 和 `HumanApproved` 在 ApprovalSource 区分（不在 status 区分）。\n#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]\n#[serde(rename_all = \"snake_case\")]\npub enum ChangeStatus {\n    /// 候选刚产出（Pending — spec 用词）\n    Pending,\n    ///  影子测试中\n    Shadowing,",
+  "start_line": 74,
+  "end_line": 85,
+  "category": "bug",
+  "severity": "high",
+  "idx": 178
+ },
+ {
+  "path": "src-tauri/src/evolution/change/derive.rs",
+  "content": "The \"theoretically unreachable\" fallback uses `chrono::Utc::now().timestamp_millis()`, which is **not guaranteed unique** within the same millisecond. Two concurrent callers (panel toggle / shadow / apply CR all route through this per the docstring) can both exhaust 2..=9999 in the same millisecond and produce the **identical** `chg-<pid>-<ms>` suffix — reintroducing the exact \"二次回滚永久卡死\" bug class this function exists to prevent. Use a process-local `AtomicU64` counter, a UUID suffix, or `rand` — anything monotonic or with collision-grade randomness.",
+  "suggestion_code": "// 理论不可达兜底：原子计数器保证唯一（毫秒时间戳同毫秒内可碰撞）\n    use std::sync::atomic::{AtomicU64, Ordering};\n    static FALLBACK_COUNTER: AtomicU64 = AtomicU64::new(0);\n    let seq = FALLBACK_COUNTER.fetch_add(1, Ordering::Relaxed);\n    format!(\"{base}-{}-{}\", chrono::Utc::now().timestamp_millis(), seq)",
+  "existing_code": "// 理论不可达兜底：时间戳后缀保证唯一\n    format!(\"{base}-{}\", chrono::Utc::now().timestamp_millis())",
+  "start_line": 103,
+  "end_line": 104,
+  "category": "bug",
+  "severity": "high",
+  "idx": 179
+ },
+ {
+  "path": "src-tauri/src/evolution/candidate/ttl.rs",
+  "content": "The 14-day TTL is never enforced: this helper only stores a deadline, and the current production code does not read `expires_at_ms` to transition `Pooled` entries to `Expired` (or otherwise expire them). Consequently, every ordinary entry remains pooled indefinitely as well. Add an expiration predicate and invoke it on the production load/consume paths; computing the timestamp alone does not implement the documented TTL.",
+  "suggestion_code": "pub fn compute_expires_at(created_at_ms: i64) -> i64 {\n    created_at_ms.saturating_add(TTL_MS)\n}\n\npub fn is_expired(expires_at_ms: i64, now_ms: i64) -> bool {\n    now_ms >= expires_at_ms\n}",
+  "existing_code": "pub fn compute_expires_at(created_at_ms: i64) -> i64 {\n    created_at_ms.saturating_add(TTL_MS)\n}",
+  "start_line": 24,
+  "end_line": 26,
+  "category": "bug",
+  "severity": "high",
+  "idx": 180
+ },
+ {
+  "path": "src-tauri/src/evolution/observe/shadow.rs",
+  "content": "The production entry point `shadow_apply_for_batch_with_app` is the only production caller, but every `#[tokio::test]` in this module exercises only `shadow_apply_for_batch` with `new_for_test`. The S0/S1/S2 routing (`S2Active → evaluate_s2 → Allow/Block`), the in-lock dedup against `ChangeStatus::Pending|Shadowing|ShadowPassed`, `unique_change_id_for` derivation, the `spawn_blocking` window holding `lock_evolution_store`, and the `evolution.not_reversible / evolution.blocked / evolution.shadow_dedup_hit` audit branches are all uncovered. Given this is documented as the only production path and carries the documented safety invariants (「本入口是生产唯一入口」), a dedicated e2e covering at least one happy-path S0 batch, one S2 Block batch, one S2 Allow batch, and one `is_reversible=false` proposal is required.",
+  "existing_code": "pub async fn shadow_apply_for_batch_with_app(\n    proposals: Vec<EvolutionProposal>,\n    app: &AppHandle,\n) -> ShadowReport {",
+  "start_line": 237,
+  "end_line": 240,
+  "category": "test",
+  "severity": "critical",
+  "idx": 181
+ },
+ {
+  "path": "src-tauri/src/evolution/observe/shadow.rs",
+  "content": "Global `TOTAL_WRITES` / `FAILED_WRITES` are `static AtomicU64` shared by both `shadow_apply_for_batch` and `shadow_apply_for_batch_with_app`, never reset in production. The threshold check at the end of both functions uses `TOTAL_WRITES.load()` (cumulative ratio across all batches and across both call paths), so a single historical failure batch keeps the `evolution.shadow_warning` audit firing on every subsequent healthy batch (cumulative failed/total stays > 5% forever), and the very first batch can spuriously alert if the cumulative rate from earlier runs is already above threshold. The check should use per-batch counters (locally incremented, then compared against `FAILURE_THRESHOLD`) rather than the global atomics, or the atomics should be reset to zero on each batch's evaluation.",
+  "existing_code": "let total = TOTAL_WRITES.load(Ordering::Relaxed);\n    let failed_count = FAILED_WRITES.load(Ordering::Relaxed);\n    if total > 0 && (failed_count as f64 / total as f64) > FAILURE_THRESHOLD {",
+  "start_line": 211,
+  "end_line": 213,
+  "category": "bug",
+  "severity": "high",
+  "idx": 182
+ },
+ {
+  "path": "src-tauri/src/evolution/observe/shadow.rs",
+  "content": "`shadow_apply_for_batch` is `pub async` but performs synchronous filesystem IO (`sink.write_change` → `change::append_change`, an `open + writeln` syscall) directly on the calling task without `spawn_blocking`. The doc comment correctly flags it as test-only, but `pub async` exposes it to any future caller on the Tauri async runtime, which would pin a tokio worker exactly the way `shadow_apply_for_batch_with_app`'s comment warns against. Either downgrade it to a non-`async` synchronous `fn`, make it `pub(crate)`/`#[cfg(test)]`-gated, or wrap the write in `spawn_blocking` so the invariant holds regardless of caller.",
+  "existing_code": "pub async fn shadow_apply_for_batch<'a>(\n    proposals: Vec<EvolutionProposal>,\n    sink: &'a AppShadowSink<'a>,\n) -> ShadowReport {",
+  "start_line": 185,
+  "end_line": 188,
+  "category": "other",
+  "severity": "high",
+  "idx": 183
+ },
+ {
+  "path": "src-tauri/src/evolution/observe/metrics.rs",
+  "content": "Timestamp validation: reversed windows are only debug-asserted, so release builds silently report metrics for an end-before-start observation window. Additionally, `now_ms - window_start_ms` and `now_ms - app.applied_at_ms` are direct i64 subtractions on externally-sourced timestamps; corrupted JSONL values (or extreme system clock skew) can overflow in release (wrapping) or panic in debug, producing wildly misleading metrics. The public `compute` API takes raw timestamps and should validate/reject reversed windows explicitly (returning a `Result` or saturating with a documented error) rather than relying on `debug_assert!` and a `.max(1.0)` floor.",
+  "existing_code": "    debug_assert!(\n        now_ms >= window_start_ms,\n        \"metrics::compute: now_ms ({now_ms}) < window_start_ms ({window_start_ms})\"\n    );\n    let window_days = ((now_ms - window_start_ms) as f64 / 86_400_000.0).max(1.0);",
+  "start_line": 69,
+  "end_line": 73,
+  "category": "bug",
+  "severity": "high",
+  "idx": 184
+ },
+ {
+  "path": "src-tauri/src/evolution/observe/metrics.rs",
+  "content": "Sub-day window normalization: `.max(1.0)` forces any duration below one day to behave as a 1-day window, contradicting the documented formula `proposals_in_window / days_in_window`. A 1-hour window with 100 proposals reports ~100/day (correct: ~2400/day). Either drop the clamp (the division is already safe since the debug_assert guards the lower bound) or compute with millisecond precision and surface the actual fractional days; the current code systematically underreports candidate generation for sub-day observation windows.",
+  "existing_code": "    let window_days = ((now_ms - window_start_ms) as f64 / 86_400_000.0).max(1.0);",
+  "start_line": 73,
+  "end_line": 73,
+  "category": "bug",
+  "severity": "high",
+  "idx": 185
+ },
+ {
+  "path": "src-tauri/src/evolution/observe/metrics.rs",
+  "content": "Rate cohort / denominator mismatch: only `candidate_generation_rate` is filtered to the observation window. `approval_rate` divides `promoted_count` (all proposals, ever) by `proposal_total` (all proposals, ever), and `rollback_rate` divides `rolled_back_count` (all ChangeRecords, ever) by `promoted_count` (proposals, ever). When a proposal owns multiple ChangeRecords, `rollback_rate` can exceed 1.0, and the lifetime vs. window semantics are undocumented. Pick one cohort (window-scoped or lifetime) and apply it consistently to all four metrics; if lifetime is intentional, rename fields and document it.",
+  "existing_code": "    // 通过：proposal.status == Promoted\n    let promoted_count = proposals\n        .iter()\n        .filter(|p| p.status == ProposalStatus::Promoted)\n        .count();\n\n    // 回滚：ChangeRecord.status == RolledBack\n    let rolled_back_count = changes\n        .iter()\n        .filter(|c| c.status == ChangeStatus::RolledBack)\n        .count();",
+  "start_line": 75,
+  "end_line": 85,
+  "category": "bug",
+  "severity": "high",
+  "idx": 186
+ },
+ {
+  "path": "src-tauri/src/evolution/observe/metrics.rs",
+  "content": "Survival join key identity: applications are indexed only by `mem_key` and the first occurrence wins. `AppliedRecord` also carries `proposal_id`, and `ChangeRecord` carries `proposal_id` and `change_id` — yet none are used. When a `mem_key` is reused across proposals or re-applied, every active change sharing that key is attributed the first applied timestamp, skewing the survival average. Either join on `(proposal_id, change_id)`/application-event identity, or enforce uniqueness of `mem_key` at write time; relying on `iter().find`-equivalent \"first match\" semantics hides a real data-integrity hazard.",
+  "existing_code": "    let applied_by_key: std::collections::HashMap<&str, &AppliedRecord> = {\n        let mut m = std::collections::HashMap::with_capacity(applied.len());\n        for a in applied {\n            m.entry(a.mem_key.as_str()).or_insert(a);\n        }\n        m\n    };",
+  "start_line": 96,
+  "end_line": 102,
+  "category": "bug",
+  "severity": "high",
+  "idx": 187
+ },
+ {
+  "path": "src-tauri/src/evolution/derive.rs",
+  "content": "The 5-item cap is a raw input-order truncation, which lets a leading run of Low-impact Distill or Medium-impact Merge proposals starve High-impact Contradiction proposals that the severity model is supposed to surface. Test `derive_caps_at_five` only checks length, not impact ordering. Either sort/filter by `impact` before truncating (High > Medium > Low) or document explicitly that order is FIFO and severity is not considered.",
+  "suggestion_code": "// Produce all candidates, then truncate by severity (High > Medium > Low),\n    // preserving input order within each bucket.\n    let mut out: Vec<EvolutionProposal> = Vec::with_capacity(MAX_PROPOSALS_PER_ROUND);\n    let mut deferred: Vec<EvolutionProposal> = Vec::new();\n    for op in ops {\n        if let Some(p) = derive_one(op, now_ms, t) {\n            if p.impact == ImpactLevel::High && out.len() < MAX_PROPOSALS_PER_ROUND {\n                out.push(p);\n            } else if p.impact == ImpactLevel::Medium && out.len() < MAX_PROPOSALS_PER_ROUND {\n                out.push(p);\n            } else {\n                deferred.push(p);\n            }\n        }\n    }\n    out.extend(deferred.into_iter().take(MAX_PROPOSALS_PER_ROUND.saturating_sub(out.len())));",
+  "existing_code": "for op in ops {\n        if out.len() >= MAX_PROPOSALS_PER_ROUND {\n            break;\n        }\n        if let Some(p) = derive_one(op, now_ms, t) {\n            out.push(p);\n        }\n    }",
+  "start_line": 110,
+  "end_line": 117,
+  "category": "bug",
+  "severity": "high",
+  "idx": 188
+ },
+ {
+  "path": "src-tauri/src/evolution/derive.rs",
+  "content": "Proposal IDs are computed by joining arbitrary `String` ids with a literal `|` separator and no escaping, so two distinct sets can produce identical hash input. Example: `ids=[\"a|b\",\"c\"]` and `ids=[\"a\",\"b|c\"]` both sort to `[\"a\",\"b|c\"]` (different sort orders!) — `[\"a\",\"b|c\"]` joined with `|` is `\"a|b|c\"`, and `[\"a|b\",\"c\"]` joined is also `\"a|b|c\"`. The same hazard applies to Contradiction: `keep=\"a\", drop=\"b|c\"` collides with `keep=\"a|b\", drop=\"c\"`. This silently collapses distinct candidates under dedup. Fix by length-prefixing each ref or using a separator that cannot appear in id strings (e.g. `\\u{1F}`).",
+  "suggestion_code": "// Length-prefix each ref so delimiter-bearing ids cannot alias.\n            let mut refs = ids.clone();\n            refs.sort();\n            let mut buf = String::with_capacity(base_id.len() + refs.len() * 8);\n            buf.push_str(&base_id);\n            for r in &refs {\n                buf.push('|');\n                buf.push_str(&format!(\"{}:\", r.len()));\n                buf.push_str(r);\n            }\n            let id = short_hash(&buf);",
+  "existing_code": "let base_id = proposal_id(category, &target, &summary);\n            let mut refs = ids.clone();\n            refs.sort();\n            let id = short_hash(&format!(\"{base_id}|{}\", refs.join(\"|\")));",
+  "start_line": 169,
+  "end_line": 172,
+  "category": "bug",
+  "severity": "high",
+  "idx": 189
+ },
+ {
+  "path": "src-tauri/src/evolution/derive.rs",
+  "content": "Same delimiter-collision hazard on the Contradiction branch. Two keep/drop pairs that differ only by where a `|` falls inside an id produce identical hash input and collide in dedup.",
+  "suggestion_code": "let base_id = proposal_id(category, &target, &summary);\n            let id = short_hash(&format!(\n                \"{base_id}|{}:{}|{}:{}\",\n                keep.len(), keep, drop_id.len(), drop_id\n            ));",
+  "existing_code": "let base_id = proposal_id(category, &target, &summary);\n            let id = short_hash(&format!(\"{base_id}|{keep}|{drop_id}\"));",
+  "start_line": 210,
+  "end_line": 211,
+  "category": "bug",
+  "severity": "high",
+  "idx": 190
+ },
+ {
+  "path": "src-tauri/src/evolution/panel/commands.rs",
+  "content": "Segment ③ walks `mark_human_applied` using the `cr.status` captured back in segment ①, then unconditionally writes `changes[pos] = cr.clone()`. If another caller mutates the same CR during segment ②'s apply window (e.g., `rollback_change_locked` flips status to `RolledBack`, or shadow/auto-apply advances it past Pending), segment ③ will silently overwrite that external status and resurrect a rolled-back CR. The re-`load_changes` here only re-locates by `change_id` — it never copies the file-side `status` back into `cr` before calling `mark_human_applied`. Fix: after re-loading, take `cr.status = changes[pos].status` (or skip the transition path entirely) so the write-back reflects the freshest persisted state.",
+  "suggestion_code": "if cr.status != ChangeStatus::Active {\n            let _g = lock_evolution_store();\n            let mut changes = load_changes(app)?;\n            let pos = changes.iter().position(|c| c.change_id == cr.change_id).ok_or_else(|| {\n                format!(\n                    \"CR {} 落库后找不到对应行（可能已被并发删除），本次批准的记忆已生效但没有变更记录，请刷新面板核实\",\n                    cr.change_id\n                )\n            })?;\n            // 锁内复检：以文件侧最新 status 为准（段 ② 期间可能已被并发改）\n            cr.status = changes[pos].status.clone();\n            mark_human_applied(&mut cr)?;\n            changes[pos] = cr.clone();\n            rewrite_jsonl(&changes_path(app), &changes)?;\n        }",
+  "existing_code": "// ── 段 ③：锁内把 CR 流转到 Active——重新 load 定位（段 ② 期间文件\n        // 可能被并发改），仅状态真正变化才 rewrite（重复批 no-op 零写放大）。\n        // pending 的 CR 不可被回滚（rollback_precheck 拒绝），段 ② 窗口无竞争面。\n        if cr.status != ChangeStatus::Active {\n            let _g = lock_evolution_store();\n            mark_human_applied(&mut cr)?;\n            let mut changes = load_changes(app)?;\n            let pos = changes.iter().position(|c| c.change_id == cr.change_id).ok_or_else(|| {\n                // 落库已生效但 CR 行没了（段 ② 期间被并发删除）：fail-closed 响亮报错，\n                // 不静默返回 Active 成功——否则审计轨迹与现实脱节\n                format!(\n                    \"CR {} 落库后找不到对应行（可能已被并发删除），本次批准的记忆已生效但没有变更记录，请刷新面板核实\",\n                    cr.change_id\n                )\n            })?;\n            changes[pos] = cr.clone();\n            rewrite_jsonl(&changes_path(app), &changes)?;\n        }",
+  "start_line": 284,
+  "end_line": 301,
+  "category": "bug",
+  "severity": "critical",
+  "idx": 191
+ },
+ {
+  "path": "src-tauri/src/evolution/panel/commands.rs",
+  "content": "`delete_by_ids` runs first; if it succeeds and then `rollback_applied` errors, the source mem_items are already gone but the apply-side lesson (key_tag `evo:<id>`) is left orphaned. The function returns the partial count and the caller (`delete_inner`) writes the proposal/CR as deleted, then propagates the error — so the user sees a failure but the lesson is permanently orphaned (still surfaced via injection_block, referring to a deleted proposal). Either run `rollback_applied` first (lesson first, refs second; on lesson failure nothing is changed), or commit both inside a single SQLite transaction so a mid-failure rolls both back.",
+  "suggestion_code": "pub(crate) fn cascade_delete_mem_items(\n    conn: &rusqlite::Connection,\n    related_refs: &[String],\n    proposal_id: &str,\n) -> Result<usize, String> {\n    // 先删 lesson（apply 落下的痕迹），失败时无副作用；\n    // 再删 related_refs；两侧失败回滚成「无变更」，避免孤儿 lesson\n    let lesson_removed = crate::evolution::apply::rollback_applied(conn, proposal_id)?;\n    let refs_removed = if related_refs.is_empty() {\n        0\n    } else {\n        crate::memory::store::delete_by_ids(conn, related_refs)?\n    };\n    Ok(refs_removed + if lesson_removed { 1 } else { 0 })\n}",
+  "existing_code": "pub(crate) fn cascade_delete_mem_items(\n    conn: &rusqlite::Connection,\n    related_refs: &[String],\n    proposal_id: &str,\n) -> Result<usize, String> {\n    let mut n = if related_refs.is_empty() {\n        0\n    } else {\n        crate::memory::store::delete_by_ids(conn, related_refs)?\n    };\n    if crate::evolution::apply::rollback_applied(conn, proposal_id)? {\n        n += 1;\n    }\n    Ok(n)\n}",
+  "start_line": 458,
+  "end_line": 472,
+  "category": "bug",
+  "severity": "high",
+  "idx": 192
+ },
+ {
+  "path": "src-tauri/src/evolution/panel/commands.rs",
+  "content": "Step ordering in `delete_inner` deletes the proposal line and pending CR rows before the optional cascade_source runs. If cascade_source fails (DB locked, disk full, SQLite busy), the function returns Err but the proposal and CRs are already gone — the next retry returns \"proposal {id} 不存在\" while orphan mem_items (source refs + lesson) remain in the DB, and the user has no visible way to retry the cleanup. Either reorder so cascade runs before the jsonl rewrites, or make the cascade failure a non-fatal warning (log + propagate only the proposal/CR deletion result) since the orphan mem_items are still recoverable from the proposal_id key_tag.",
+  "existing_code": "// 1. 删 proposals.jsonl 行（废案：下次 consolidation / LLM 也不会执行）\n    let mut proposals = proposals;\n    proposals.retain(|e| e.proposal_id != proposal_id);\n    rewrite_jsonl(&p_path, &proposals)?;\n\n    // 2. 级联删 changes.jsonl：仅删 status=pending（其他状态走 Rollback）\n    let mut changes = load_changes(app)?;\n    let before = changes.len();\n    changes.retain(|c| !(c.proposal_id == proposal_id && c.status == ChangeStatus::Pending));\n    let cascaded = before - changes.len();\n    rewrite_jsonl(&c_path, &changes)?;\n\n    // 3. 可选 cascade 源记忆（默认关，复选框选）\n    //    mem_items 删除持 DB_WRITE_LOCK（此前裸连接写绕全局写锁）\n    let mut mem_deleted = 0usize;\n    if cascade_source {\n        let conn = crate::db::open_db(app)?;\n        let _db_write = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n            eprintln!(\"[mutex_poisoned] evolution::panel DB_WRITE_LOCK (cascade): {e:?}\");\n            e.into_inner()\n        });\n        mem_deleted = cascade_delete_mem_items(&conn, &related_refs, proposal_id)?;\n    }",
+  "start_line": 419,
+  "end_line": 441,
+  "category": "bug",
+  "severity": "high",
+  "idx": 193
+ },
+ {
+  "path": "src-tauri/src/evolution/panel/evidence.rs",
+  "content": "DB_WRITE_LOCK held across the entire snapshot read. The mutex is acquired before open_db() and only released when the function returns, so every other DB-using caller (read or write) is blocked for the full duration of open_db + ensure_table + load_all. Holding a synchronous lock across I/O is also a cancellation hazard — if the surrounding task is dropped mid-query the lock is held until the JoinHandle is dropped without running the guard's Drop. For a read-only snapshot, prefer a short-lived lock just around the I/O call, or split into open + (lock + read + unlock) so other writers are not stalled.",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "other",
+  "severity": "high",
+  "idx": 194
+ },
+ {
+  "path": "src-tauri/src/evolution/panel/evidence.rs",
+  "content": "Silent mutex poison recovery hides corruption. `e.into_inner()` after a poisoned MutexGuard unpoisons the lock and lets the function proceed as if the lock were healthy. The original panic may have occurred in the middle of a write transaction — at that point the on-disk state (or in-memory invariants protected by the same lock) can be inconsistent, and this recovery masks that fact from every later caller. At minimum, this should return an Err(\"mutex_poisoned\") instead of forging ahead and emitting only an eprintln line.",
+  "existing_code": "    let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] evolution::evidence DB_WRITE_LOCK: {e:?}\");\n        e.into_inner()\n    });",
+  "start_line": 171,
+  "end_line": 174,
+  "category": "other",
+  "severity": "high",
+  "idx": 195
+ },
+ {
+  "path": "src-tauri/src/evolution/emit.rs",
+  "content": "The proposal_id is inserted into the 24h dedup map and `EmitReport.written` is incremented BEFORE the AppHandle is checked and BEFORE `audit_event!` is invoked. As a result, a startup-order mistake (AppHandle not yet registered) or any audit-side failure silently drops the audit row while the proposal is permanently suppressed from re-emission for 24 hours. The public API exposes no audit outcome; `EmitReport.written` reflects \"claimed by dedup\" not \"audited\". Consider either (a) inserting the dedup record only after a successful audit, (b) extending `EmitReport` with a `not_audited`/`audit_failed` counter and returning a Result, or (c) at minimum reverting the dedup claim in a catch path so retries remain possible until the audit actually succeeds.",
+  "existing_code": "g.insert(p.proposal_id.clone(), now_ms);\n            report.written += 1;\n            to_emit.push(p);\n        }\n        to_emit\n    };\n\n    let app = APP_HANDLE.get(); // Option<&AppHandle<tauri::Wry>>\n\n    for p in &to_emit {\n        if let Some(app) = app {",
+  "start_line": 115,
+  "end_line": 125,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 196
+ },
+ {
+  "path": "src-tauri/src/evolution/policy.rs",
+  "content": "Lost-update race: this is a separate process-local mutex from APPLY_POLICY_WRITE_LOCK at line 63, yet both `set_apply_policy_at` and `set_derive_thresholds_at` RMW the same `bot-config.json`. If a caller (e.g., settings page) toggles the policy while another path writes thresholds, both threads can read the same baseline, each modify a different field, and the later `atomic_write` silently overwrites the other setter's changes — even though each individual replacement is atomic. Replace the two locks with a single shared mutex (or per-file lock) covering every writer to that file.",
+  "existing_code": "static DERIVE_THRESHOLDS_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());",
+  "start_line": 135,
+  "end_line": 135,
+  "category": "bug",
+  "severity": "high",
+  "idx": 197
+ },
+ {
+  "path": "src-tauri/src/evolution/policy.rs",
+  "content": "Fail-open governance on any read error: only JSON parse failure is logged; every other `std::io::Error` from `read_to_string` (PermissionDenied, IsADirectory, transient antivirus/backup lock, broken symlink, etc.) is silently mapped to `ApplyPolicy::Auto`. A user who has explicitly selected `confirm` can have their governance choice silently bypassed by a transient filesystem hiccup. Same pattern at lines 119-125 for derive thresholds. Consider distinguishing \"config truly unset\" (default Auto) from \"config present but unreadable\" (preserve last-known or fail-closed) and surface all read errors via `eprintln!` for diagnosability.",
+  "existing_code": "let Ok(raw) = std::fs::read_to_string(path) else {\n        return ApplyPolicy::Auto;\n    };",
+  "start_line": 41,
+  "end_line": 43,
+  "category": "bug",
+  "severity": "high",
+  "idx": 198
+ },
+ {
+  "path": "src-tauri/src/evolution/sandbox/kill_switch.rs",
+  "content": "Semantic contradiction with the documented header comment. The header says `all_auto_apply` only disables *automatic* apply and manual/human approval is still allowed, but `should_shadow_only()` is OR-true under `all_auto_apply`, so any downstream apply path that gates on `should_shadow_only()` (rather than on `should_auto_apply()` alone) will silently block the explicitly approved manual write too. Verify the manual apply entry only consults `should_auto_apply()`, or split the predicates so shadow-only and auto-suppression can be distinguished.",
+  "existing_code": "    pub fn should_shadow_only(&self) -> bool {\n        self.shadow_only || self.all_auto_apply\n    }",
+  "start_line": 46,
+  "end_line": 48,
+  "category": "bug",
+  "severity": "high",
+  "idx": 199
+ },
+ {
+  "path": "src-tauri/src/evolution/sandbox/kill_switch.rs",
+  "content": "Safety-critical configuration is permissive by default and accepts unknown fields. `#[serde(default)]` makes every missing field `false` (i.e. automation on, notifications on, shadow off) and unknown keys such as `all_auto_aply` are silently ignored, so an operator typo or partial `kill_switch: {}` block silently re-enables automatic apply. For a kill-switch, consider `#[serde(deny_unknown_fields)]`, a typed constructor, or a validation step that fails closed on empty/typo'd input.",
+  "existing_code": "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]\npub struct KillSwitch {\n    #[serde(default)]\n    pub all_auto_apply: bool,",
+  "start_line": 14,
+  "end_line": 17,
+  "category": "security",
+  "severity": "high",
+  "idx": 200
+ },
+ {
+  "path": "src-tauri/src/evolution/candidate/entry.rs",
+  "content": "`read_all` 与 `append` / `rewrite_jsonl` 之间没有任何同步。多个调用点（如 `panel::commands::load_proposals`、`precompute_human_apply_embedding`）在没有持 `EVOLUTION_STORE_LOCK` 的情况下调用 `read_all`，若与 `append`/`rewrite_jsonl` 并发执行会读到正在写入的半行 JSON，`read_jsonl` 会把这种行当作损坏并把整文件备份为 `.corrupt`，导致正在追加的条目永久丢失。请在文档中明确该函数必须在 `EVOLUTION_STORE_LOCK` 持有下调用，或把公开 API 改为内部并集中加锁。",
+  "suggestion_code": "/// 读全部 ProposalEntry。**必须**在 `EVOLUTION_STORE_LOCK` 持有下调用，避免与\n/// `append` / `rewrite_jsonl` 并发读到半行 JSON（`read_jsonl` 会把半行视为损坏并备份文件）。\n/// 建议改为 `pub(crate) fn read_all_locked` 并在调用方统一加锁，或在该函数内部获取锁后再调用\n/// `crate::evolution::read_jsonl(path, \"proposals\")`。",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "other",
+  "severity": "high",
+  "idx": 201
+ },
+ {
+  "path": "src-tauri/src/evolution/proposal.rs",
+  "content": "`c.to_ascii_lowercase()` only handles ASCII A-Z; non-ASCII uppercase letters (e.g. `Ä`, `É`, `Ω`, Cyrillic `М`) are returned unchanged. This silently breaks the documented \"uppercase → lowercase\" contract for any non-ASCII input — the same problem described with different casing/diacritics will produce different `proposal_id`s, defeating the cross-language dedup goal. The inline comment about `is_numeric` correctly switches to Unicode semantics, but the lowercasing branch did not. Either use `c.to_lowercase().next().unwrap_or(c)` (Unicode full-mapping) or apply `char::to_lowercase` and accept the iterator, and extend the test suite with cases such as `\"Ä\"` vs `\"ä\"` and `\"É\"` vs `\"é\"` to lock the behavior.",
+  "existing_code": "let mapped = if c.is_numeric() {\n            'N'\n        } else if c.is_alphanumeric() {\n            c.to_ascii_lowercase()\n        } else {\n            ' '\n        };",
+  "start_line": 143,
+  "end_line": 149,
+  "category": "bug",
+  "severity": "high",
+  "idx": 202
+ },
+ {
+  "path": "src-tauri/src/evolution/proposal.rs",
+  "content": "`is_reversible` is a coarse 2-rule predicate that ignores the actual mutation surface of the proposal. It returns `true` for any non-`ToolSchemaHint`/non-`High` proposal even when `Suggestion.structured_patch` is `Some(_)` (Phase 1 invariant is documented but not enforced at the type level — see `Suggestion` and its public `Option<String>`), and even when the target is `SkillDsl` or `MemoryPolicy`, which can rewrite executable DSL or persistent policy. Since shadow/activation routing \"depends on it\" (per the doc comment), a `true` here can authorize an irreversible action. Either include `structured_patch.is_none()` and target-kind checks in the predicate, return the patch-presence as a separate signal, or restrict the reversible branch via a newtype/constructor that statically forbids patches.",
+  "existing_code": "pub fn is_reversible(p: &EvolutionProposal) -> bool {\n    if matches!(p.category, ProposalCategory::ToolSchemaHint) {\n        return false;\n    }\n    if matches!(p.impact, ImpactLevel::High) {\n        return false;\n    }\n    true\n}",
+  "start_line": 178,
+  "end_line": 186,
+  "category": "bug",
+  "severity": "high",
+  "idx": 203
+ },
+ {
+  "path": "src-tauri/src/evolution/proposal.rs",
+  "content": "The doc comments assert a strict data-minimization contract (\"**不**存原始堆栈 / 文件路径 / 用户输入\" / \"**不**存原始路径 / 对话内容\"), but the fields are plain public `String`/`Vec<String>` with no validation, no newtype wrapping, and no constructor. Anyone constructing an `EvolutionProposal` (including a future `Deserialize` consumer if audit input is ever re-ingested) can persist absolute file paths, stack traces, or PII into the audit stream, and the type system will not complain. Either (a) wrap these fields in newtypes (`TraceId`, `ToolName`, `MemoryId`, `SanitizedSummary`) so callers cannot accidentally construct invalid values, or (b) add a validating constructor used by the audit writer that rejects/redacts the disallowed content before it ever reaches the public struct.",
+  "existing_code": "/// 一句话描述发现（自然语言，**不**存原始堆栈 / 文件路径 / 用户输入）。\n    pub summary: String,\n    /// 发生次数。Phase 1 语义：单次反思的 ops 内 ids 数（占位语义，非跨次累计）——\n    /// 见 HANDOFF.md，避免一周后误读为「同类失败出现 N 次」。\n    pub occurrence_count: u32,\n    /// 时间窗口（小时）。Phase 1 固定 24h。\n    pub window_hours: u32,\n    /// 关联引用：trace_id / tool_name / memory id（**不**存原始路径 / 对话内容）。\n    pub related_refs: Vec<String>,",
+  "start_line": 107,
+  "end_line": 115,
+  "category": "security",
+  "severity": "high",
+  "idx": 204
+ },
+ {
+  "path": "src-tauri/src/evolution/mod.rs",
+  "content": "TOCTOU race + overwrite violate the documented \"不覆盖\" invariant. `backup.exists()` returning false does not guarantee another concurrent reader hasn't just created it (or is about to); `std::fs::copy` always overwrites the destination, so whichever caller's copy runs second clobbers the original forensic snapshot. Additionally, the copy is non-atomic with concurrent appends — the snapshot can capture an arbitrarily torn intermediate state. Use a single atomic `create_new` (open with `O_CREAT|O_EXCL` semantics, e.g. `OpenOptions::new().write(true).create_new(true)` + manual copy, or `fs::rename` after writing to a unique tempfile), or guard the whole \"check + copy\" sequence under the store lock that the file's writer holds.",
+  "suggestion_code": "if !corrupt_backed_up {\n                    corrupt_backed_up = true;\n                    let backup = path.with_file_name(format!(\n                        \"{}.corrupt\",\n                        path.file_name()\n                            .map(|s| s.to_string_lossy().to_string())\n                            .unwrap_or_else(|| \"changes\".into())\n                    ));\n                    match std::fs::OpenOptions::new()\n                        .write(true)\n                        .create_new(true)\n                        .open(&backup)\n                    {\n                        Ok(mut dst) => {\n                            use std::io::Read;\n                            let mut src = match std::fs::File::open(path) {\n                                Ok(f) => f,\n                                Err(be) => {\n                                    eprintln!(\"[evolution] {label} jsonl 第 {} 行损坏（备份失败：{be}），跳过坏行：{e}\", i + 1);\n                                    continue;\n                                }\n                            };\n                            match std::io::copy(&mut src, &mut dst) {\n                                Ok(_) => eprintln!(\"[evolution] {label} jsonl 第 {} 行损坏（已整体备份到 {backup:?}），跳过坏行：{e}\", i + 1),\n                                Err(be) => eprintln!(\"[evolution] {label} jsonl 第 {} 行损坏（备份失败：{be}），跳过坏行：{e}\", i + 1),\n                            }\n                        }\n                        Err(be) if be.kind() == std::io::ErrorKind::AlreadyExists => {\n                            eprintln!(\"[evolution] {label} jsonl 第 {} 行损坏（备份已存在 {backup:?}），跳过坏行：{e}\", i + 1);\n                        }\n                        Err(be) => {\n                            eprintln!(\"[evolution] {label} jsonl 第 {} 行损坏（备份失败：{be}），跳过坏行：{e}\", i + 1);\n                        }\n                    }\n                } else {",
+  "existing_code": "if !corrupt_backed_up {\n                    corrupt_backed_up = true;\n                    let backup = path.with_file_name(format!(\n                        \"{}.corrupt\",\n                        path.file_name()\n                            .map(|s| s.to_string_lossy().to_string())\n                            .unwrap_or_else(|| \"changes\".into())\n                    ));\n                    if backup.exists() {\n                        eprintln!(\n                            \"[evolution] {label} jsonl 第 {} 行损坏（备份已存在 {backup:?}），跳过坏行：{e}\",\n                            i + 1\n                        );\n                    } else {\n                        match std::fs::copy(path, &backup) {",
+  "start_line": 66,
+  "end_line": 80,
+  "category": "bug",
+  "severity": "high",
+  "idx": 205
+ },
+ {
+  "path": "src-tauri/src/evolution/strategy.rs",
+  "content": "Gate whitelist uses `matches!` patterns on enums that are NOT `#[non_exhaustive]` (verified in `proposal.rs` lines 44-51 and 86-92: both `ProposalCategory` and `ImpactLevel` are plain enums). Adding a new variant — e.g. `ImpactLevel::Critical` or `ProposalCategory::LoggingHint` — will compile cleanly and silently reject the new variant (the `matches!` returns `false`), contradicting the doc's explicit \"未来新增 impact 变体必须显式 opt-in\" design intent. The type system will not flag missed updates. Consider marking both enums `#[non_exhaustive]` (forces update sites to be revisited), or — at minimum — adding a `#[test]` that asserts the patterns stay allow-lists (e.g. lock the discriminant count) so silent expansion is caught in CI.",
+  "suggestion_code": "// 配合 proposal.rs 给 ProposalCategory / ImpactLevel 加 `#[non_exhaustive]`，\n// 让 add-variant 触发编译错误，强制评审 gate 行为变化。\npub fn gate_decision(p: &EvolutionProposal) -> GateDecision {\n    if !matches!(p.category, ProposalCategory::MemoryHint) {\n        return GateDecision::Rejected {\n            reason: \"非记忆类提案（仅 MemoryHint 进自动轨）\",\n        };\n    }\n    if !matches!(p.impact, ImpactLevel::High | ImpactLevel::Medium) {\n        return GateDecision::Rejected {\n            reason: \"影响面不足（Low 不进自动轨）\",\n        };\n    }\n    GateDecision::Approved\n}",
+  "existing_code": "pub fn gate_decision(p: &EvolutionProposal) -> GateDecision {\n    if !matches!(p.category, ProposalCategory::MemoryHint) {\n        return GateDecision::Rejected {\n            reason: \"非记忆类提案（仅 MemoryHint 进自动轨）\",\n        };\n    }\n    if !matches!(p.impact, ImpactLevel::High | ImpactLevel::Medium) {\n        return GateDecision::Rejected {\n            reason: \"影响面不足（Low 不进自动轨）\",\n        };\n    }\n    GateDecision::Approved\n}",
+  "start_line": 74,
+  "end_line": 86,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 213
+ },
+ {
+  "path": "src-tauri/src/evolution/trace.rs",
+  "content": "Wall-clock forward jumps (NTP slew, manual clock adjustment, VM clock drift) inflate `duration_ms` and falsely trip the `> 60s` sampling rule. `saturating_sub` only neutralises negative durations; a forward jump of even a few minutes will over-record traces and distort audit signal. Consider clamping `duration_ms` to a sane upper bound before sampling, or capturing `started_at_ms` and `ended_at_ms` from a monotonic clock (`std::time::Instant`) for the duration measurement while still emitting the wall-clock timestamps in the audit record.",
+  "existing_code": "let duration_ms = ended_at_ms.saturating_sub(ctx.started_at_ms);",
+  "start_line": 187,
+  "end_line": 187,
+  "category": "bug",
+  "severity": "high",
+  "idx": 214
+ },
+ {
+  "path": "src-tauri/src/evolution/emit.rs",
+  "content": "`emit_dedup_works_without_app_handle` asserts that `AppHandle` is unregistered, but `register_app_handle` is a public function with no test-only guard; if any other test (in this crate or an integration test) ever registers a Wry handle, this assertion silently flips to passing `written` as a real audit count instead of the intended eprintln path. `EMIT_TEST_LOCK` only serializes tests within this module, so concurrent callers in other modules invoking `emit_proposals` (e.g. via `post_consolidation` or directly) can perturb the count-delta checks (`before`, `before + 1`, `after_first > before`). To make these tests deterministic, either make the dedup map and `APP_HANDLE` injectable (so each test builds a fresh state) or expose a `#[cfg(test)]` reset hook that drains `EMITTED` and clears `APP_HANDLE`.",
+  "existing_code": "#[test]\n    fn emit_ded",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "test",
+  "idx": 421
+ },
+ {
+  "path": "src-tauri/src/workflow_decompose.rs",
+  "content": "`validate_attach_path` (lines 409-428) canonicalizes the user-supplied path and inspects only the resolved extension — it does not verify that the canonical path lives under any allow-listed directory (e.g. user's home, app data dir, or a project root). The accompanying comment claims \"用户在对话框亲手选的文件 = 明确授权\", so the design trusts the caller; this assumption is fine for the chat-dialog picker, but the function is `fn` (no `pub`/`pub(crate)`) and is only invoked from `build_attachment_blocks`, whose input comes straight from the `attachments: Option<Vec<String>>` invoke parameter — which an attacker (or a malicious frontend module) can fabricate. The current behavior will happily open any readable .docx/.xlsx/.pptx/.pdf on the host (e.g. `/etc/shadow.docx`, `~/.ssh/id_ed25519.pdf`, browser cookies exports). At minimum, add a directory-containment check (e.g. `canon.starts_with(allowed_root)`) or take the allowed-root list as an argument from the trusted caller.",
+  "suggestion_code": "fn validate_attach_path(\n    path: &str,\n    allowed_roots: &[std::path::PathBuf],\n) -> Result<std::path::PathBuf, String> {\n    const SUPPORTED: [&str; 4] = [\"docx\", \"xlsx\", \"pptx\", \"pdf\"];\n    let trimmed = path.trim();\n    if trimmed.is_empty() {\n        return Err(\"路径为空\".into());\n    }\n    let canon = std::fs::canonicalize(trimmed).map_err(|e| format!(\"路径无法解析：{e}\"))?;\n    if !canon.is_file() {\n        return Err(\"不是常规文件\".into());\n    }\n    if !allowed_roots.iter().any(|root| canon.starts_with(root)) {\n        return Err(\"路径不在允许的目录下\".into());\n    }",
+  "existing_code": "fn validate_attach_path(path: &str) -> Result<std::path::PathBuf, String> {\n    const SUPPORTED: [&str; 4] = [\"docx\", \"xlsx\", \"pptx\", \"pdf\"];\n    let trimmed = path.trim();\n    if trimmed.is_empty() {\n        return Err(\"路径为空\".into());\n    }\n    let canon = std::fs::canonicalize(trimmed).map_err(|e| format!(\"路径无法解析：{e}\"))?;\n    if !canon.is_file() {\n        return Err(\"不是常规文件\".into());\n    }",
+  "start_line": 409,
+  "end_line": 418,
+  "category": "security",
+  "severity": "high",
+  "idx": 283
+ },
+ {
+  "path": "src-tauri/src/workflow_clarify.rs",
+  "content": "Retry loop only retries JSON validation failures; provider/network errors break immediately, contradicting the module doc \"失败重试 1 次\" and the function comment \"失败重试 1 次，再失败降级空 questions\". A single transient API/5xx error therefore permanently skips clarification instead of honouring the promised one retry.",
+  "suggestion_code": "        let raw = match crate::bot_chat::summarize_messages_with_model(\n            &app,\n            &system_prompt,\n            &[crate::bot_chat::ChatMsg {\n                role: \"user\".into(),\n                content: user_content.clone(),\n            }],\n            review_model.as_deref(),\n        )\n        .await\n        {\n            Ok(r) => r,\n            Err(e) => {\n                last_err = e.to_string();\n                // 与校验失败同等对待：第一次调用失败也再给一次机会\n                if attempts >= 2 {\n                    break;\n                }\n                user_content = format!(\n                    \"总目标：{goal_trimmed}{attach_blocks}\\n\\n上一次模型调用失败：{last_err}\\n请重新生成 JSON。\"\n                );\n                continue;\n            }\n        };",
+  "existing_code": "        let raw = match crate::bot_chat::summarize_messages_with_model(\n            &app,\n            &system_prompt,\n            &[crate::bot_chat::ChatMsg {\n                role: \"user\".into(),\n                content: user_content.clone(),\n            }],\n            review_model.as_deref(),\n        )\n        .await\n        {\n            Ok(r) => r,\n            Err(e) => {\n                last_err = e.to_string();\n                break;\n            }\n        };",
+  "start_line": 184,
+  "end_line": 200,
+  "category": "bug",
+  "severity": "high",
+  "idx": 289
+ },
+ {
+  "path": "src-tauri/src/workflow_clarify.rs",
+  "content": "Only the attachment *count* is bounded (≤10); each path string is forwarded as-is to `build_attachment_blocks` and then into the prompt / error messages. A renderer/XSS can ship a multi-MB single path that (a) bloats memory and (b) gets injected verbatim into the model prompt and audit error text, providing a free exfiltration / cost-amplification vector. Reject paths that exceed a sane limit (e.g. OS PATH_MAX, 4 KiB) before any further processing.",
+  "suggestion_code": "    const MAX_ATTACH_PATH_CHARS: usize = 4096;\n    let attachment_list = attachments.unwrap_or_default();\n    if attachment_list.len() > 10 {\n        return Err(CommandError::InvalidArgument {\n            field: \"attachments\".into(),\n            value: attachment_list.len().to_string(),\n            reason: \"附件最多 10 个\".into(),\n        });\n    }\n    if let Some(bad) = attachment_list\n        .iter()\n        .find(|p| p.chars().count() > MAX_ATTACH_PATH_CHARS)\n    {\n        return Err(CommandError::InvalidArgument {\n            field: \"attachments\".into(),\n            value: bad.chars().take(64).collect(),\n            reason: format!(\"附件路径不能超过 {MAX_ATTACH_PATH_CHARS} 字\"),\n        });\n    }",
+  "existing_code": "    let attachment_list = attachments.unwrap_or_default();\n    if attachment_list.len() > 10 {\n        return Err(CommandError::InvalidArgument {\n            field: \"attachments\".into(),\n            value: attachment_list.len().to_string(),\n            reason: \"附件最多 10 个\".into(),\n        });\n    }",
+  "start_line": 166,
+  "end_line": 173,
+  "category": "security",
+  "severity": "high",
+  "idx": 290
+ },
+ {
+  "path": "src-tauri/src/workflow_runner.rs",
+  "content": "Mutex poison recovery silently masks panics: `attempts.lock().unwrap_or_else(|e| e.into_inner())` extracts the inner value from a poisoned mutex without re-raising or logging. If a task panics while holding this lock (e.g. mid-update of the attempt counter), subsequent operations silently use the torn state, potentially writing inconsistent attempt counts (rework loop at line ~749 has the same pattern). Prefer `.unwrap_or_else(|e| { eprintln!(\"[workflow_runner] attempts mutex poisoned: {e:?}\"); e.into_inner() })` or propagate the poison to the controller's error path.\n\nSeverity: high — affects audit accuracy and rework accounting.",
+  "existing_code": "let mut m = attempts.lock().unwrap_or_else(|e| e.into_inner());\n                    let n = m.entry(id.clone()).or_insert(0);\n                    *n += 1;\n                    *n",
+  "start_line": 861,
+  "end_line": 864,
+  "category": "bug",
+  "severity": "high",
+  "idx": 292
+ },
+ {
+  "path": "src-tauri/src/workflow_runner.rs",
+  "content": "Best-effort DB writes silently dropped, leaving engine state inconsistent with DB. `write_node_result` only broadcasts on `db_upsert.is_ok()`; on failure the new `node_result` (with `status`, `acceptanceVerdict`, `attempt`, `ms`) is lost. But the controller then computes `let ok = column_done && !fused && result.is_ok() && !acceptance_failed;` from the pre-write in-memory state and emits a `NodeOutcome{ ok, .. }`. So the engine may report `ok=true` while the DB still shows `status=success` for an acceptance-failed node (or vice versa). The same TOCTOU pattern appears in `mark_note_prefix` (skip/熔断 notes can be lost) and `reset_node_for_rework` (column reset to Todo can be lost, causing rework loop to skip a node that is still Done and refused by `run_task_in_chat`). Document the invariant or surface write failures to the controller.\n\nSeverity: high — produces wrong audit/rework behavior.",
+  "existing_code": "if crate::db::db_upsert(app.clone(), vec![fresh.clone()])\n                .await\n                .is_ok()\n            {\n                crate::bot::broadcast_after_mutation(app, vec![fresh], vec![]);\n            }",
+  "start_line": 1393,
+  "end_line": 1398,
+  "category": "bug",
+  "severity": "high",
+  "idx": 293
+ },
+ {
+  "path": "src-tauri/src/workflow_questions.rs",
+  "content": "respond_core 的 notif_get 仅校验存在性、不检查当前 status。即便通知已被前一次应答置为 DONE、或被 invalidate_workflow_questions 置为 DISMISSED 后再次应答，仍会无条件 notif_resolve 并调用 brief_insert（卡级 + 全局级各一条）。这意味着：用户对同一问题双重点击 / 重试时会产生重复 brief 记录（一次应答多出 4 条 brief），与函数注释里「幂等 Ok(None)」的承诺不一致；亦会让「重跑生效」场景出现误写的担忧。建议把 notif_resolve 改为条件 UPDATE（`UPDATE ... WHERE id=? AND status='pending'` 并检查受影响行数），受影响为 0 时直接 Ok(None)，并相应把 brief_insert 也包进同一个事务。\n\n测试覆盖同样缺失：现有测试只对同一 qid 调用一次 respond_core，没有验证「重复应答」或「DISMISSED 之后应答」两条分支的幂等行为，建议补一个连答两次后断言 brief 计数为 1 的回归用例。",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "bug",
+  "severity": "high",
+  "idx": 298
+ }
+]

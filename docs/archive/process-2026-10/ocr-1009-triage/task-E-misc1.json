@@ -1,0 +1,444 @@
+[
+ {
+  "path": "src-tauri/src/audit.rs",
+  "content": "`write_event` reached from a `#[tauri::command]` violates the BOT_LOG_LOCK contract: the doc on `BOT_LOG_LOCK` says \"持锁跨越整段阻塞文件 IO（rotate + open + chmod + write），不得在 tokio worker / 延迟敏感路径上直接调用\", yet this command dispatches on Tauri's async runtime and synchronously runs `rotate_log_if_large` + `open` + `chmod` + `writeln` while holding the global mutex, blocking the worker. Either move the synchronous work into a `std::thread::spawn` (or `tauri::async_runtime::spawn_blocking`) before invoking `write_event`, or split write_event into a lock-free append path guarded by `spawn_blocking`. Same hazard applies to any caller of `audit_event!` / `write_event_with_error` from a `#[tauri::command]` or async task.",
+  "existing_code": "    write_event(\n        &app,\n        AuditLevel::Warn,\n        &format!(\"frontend.{event}\"),\n        &[(\"detail\", escape_for_log(&detail, MAX_DETAIL))],\n    );",
+  "start_line": 465,
+  "end_line": 470,
+  "category": "other",
+  "severity": "high",
+  "idx": 31
+ },
+ {
+  "path": "src-tauri/src/due_notify.rs",
+  "content": "Mutex held across notification dispatch, audit log, and file I/O. The guard from `notify_state().lock()` spans `app.notification().builder()...show()` (which may involve IPC on macOS), `crate::bot::audit_log(...)` (likely disk write), and `save_state(app, state)` (file write). All blocking work is serialized behind a global mutex even though no current caller races for it — this is a fragile invariant and any one slow dispatch stalls the entire notifier. Consider dropping the lock between `plan_round` returning and the dispatch loop, or restructure state ownership so the heavy work happens outside the critical section (e.g., snapshot pending + flags, release lock, dispatch, re-acquire to write back).",
+  "existing_code": "let mut guard = notify_state().lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] due_notify::notify_state: {e:?}\");\n        e.into_inner()\n    });\n    let state = guard.get_or_insert_with(|| load_state(app));\n    let pending = plan_round(state, &active, now);\n    for p in &pending {\n        let (title, body) = render(p);\n        match app.notification().builder().title(title).body(body).show() {",
+  "start_line": 235,
+  "end_line": 243,
+  "category": "other",
+  "severity": "high",
+  "idx": 152
+ },
+ {
+  "path": "src-tauri/src/due_notify.rs",
+  "content": "Flag is set before notification delivery is confirmed. `plan_round` mutates `entry.h1 = true; entry.t0 = true` synchronously and returns the Pending; if the subsequent `notification().show()` fails (permission denied on macOS, Focus Assist / DND suppression on Windows, IPC error, transient system failure), the dedup flag is already set and the notification will never be retried. The audit log records the failure but the user receives nothing, with no backoff or retry path. Consider only marking the flag after a successful `show()` (i.e., move the flag mutation out of `plan_round` and apply it per-delivery inside `run_round`).",
+  "existing_code": "} else if !entry.t0 {\n                entry.h1 = true;\n                entry.t0 = true;\n                pending.push(Pending {\n                    id: id.clone(),\n                    title: title.clone(),\n                    kind: NotifyKind::T0,\n                    has_time,\n                    due_dt,\n                });\n            }",
+  "start_line": 163,
+  "end_line": 173,
+  "category": "bug",
+  "severity": "high",
+  "idx": 153
+ },
+ {
+  "path": "src-tauri/src/error.rs",
+  "content": "`LlmApiError.body_preview: String` is whatever the upstream LLM provider sent back (multi-KB HTML pages, vendor-internal headers, possible echoed auth headers, stack traces from gateways). It is then concatenated verbatim into `message()` and the JSON payload with no length cap, redaction, control-character stripping, or header-line filter, creating both an info-leak path to the frontend/toast/log and an unbounded allocation on a remote-controlled error path. Cap it to a small fixed budget (e.g. 1 KiB UTF-8-truncated) on construction, strip control bytes, and ideally drop well-known secret-bearing header patterns before storing.",
+  "suggestion_code": "    /// 大模型 API 错误（HTTP 非 2xx）。`body_preview` 由构造侧截断/清洗，禁止直传上游原始字节。\n    LlmApiError { status: u16, body_preview: String },",
+  "existing_code": "    /// 大模型 API 错误（HTTP 非 2xx）\n    LlmApiError { status: u16, body_preview: String },",
+  "start_line": 215,
+  "end_line": 216,
+  "category": "security",
+  "severity": "critical",
+  "idx": 156
+ },
+ {
+  "path": "src-tauri/src/error.rs",
+  "content": "Same `body_preview` concern on the `message()` rendering side: the body is interpolated raw into a user-facing string. Even with a bounded variant, the `format!` here must apply the same truncation/sanitization before interpolation, otherwise the frontend toast/log can still receive unsanitized content.",
+  "suggestion_code": "            Self::LlmApiError { status, body_preview } => {\n                // 截断 + 过滤控制字符 + 头行过滤,避免把上游的原始字节/敏感 header 回吐给前端\n                format!(\"大模型 API 错误 {status}：{}\", sanitize_body_preview(&body_preview))\n            }",
+  "existing_code": "            Self::LlmApiError {\n                status,\n                body_preview,\n            } => {\n                format!(\"大模型 API 错误 {status}：{body_preview}\")\n            }",
+  "start_line": 335,
+  "end_line": 340,
+  "category": "security",
+  "severity": "critical",
+  "idx": 157
+ },
+ {
+  "path": "src-tauri/src/error.rs",
+  "content": "The blanket `From<String>` / `From<&str>` impls silently funnel every string-shaped error into `CommandError::Internal`, which (a) makes `recoverable=false` regardless of root cause, (b) loses every semantic code the rest of the file is built around, and (c) provides no compile-time nudge toward the precise variants. Combined with `From<CommandError> for String`, this enables a round-trip that erases all structure. The doc comment calls this a migration aid, but nothing (lint, deprecation, feature flag, audit test) prevents new code from using the shortcut, so once an Internal escapes into telemetry the original semantic (TaskNotFound / AuthMissing / BotDisabled / etc.) is permanently lost. Gate it behind `#[deprecated]` once migration is done, or remove the impls entirely and force call sites to spell out `CommandError::Internal(s)` / the precise variant.",
+  "existing_code": "/// String → CommandError (Internal)，便于从 Result<T, String> 机械迁移到 Result<T, CommandError>：\n/// 现有 `Err(format!(\"xxx\"))` （format! 返回 String）经 From<String> 自动转 CommandError::Internal。\n/// 后续可逐个改为精确变体（BotDisabled / ApiKeyMissing / TaskNotFound 等）。\nimpl From<String> for CommandError {\n    fn from(s: String) -> Self {\n        Self::Internal(s)\n    }\n}\n\n/// &str → CommandError (Internal)：保留现有 `Err(\"literal\".into())` 语法可继续使用。\nimpl From<&str> for CommandError {\n    fn from(s: &str) -> Self {\n        Self::Internal(s.to_string())\n    }\n}",
+  "start_line": 389,
+  "end_line": 403,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 158
+ },
+ {
+  "path": "src-tauri/src/error.rs",
+  "content": "`From<CommandError> for String` is a one-way lossy conversion that drops the stable code and recoverable flag and keeps only the human message. The doc comment acknowledges this and limits the use case to \"tool→model boundary\", but `From` impls are global and `?` will silently invoke this anywhere `Result<_, CommandError>` flows into `Result<_, String>`, erasing the very contract the rest of the file is built to enforce, with no compile-time guard. Prefer an explicit `into_message(self)` / `into_code(self)` API gated behind a feature flag, or at minimum `#[deprecated(note = \"Lossy; use .code()/.message()/.is_recoverable() explicitly\")]`.",
+  "existing_code": "/// CommandError → String (有损,仅 tool→model 边界用,丢失变体代码,仅保 message 文本)\n/// 让 `?` 在 Result<_, CommandError> → Result<_, String> 处自动转换\nimpl From<CommandError> for String {\n    fn from(e: CommandError) -> Self {\n        e.to_string()\n    }\n}",
+  "start_line": 405,
+  "end_line": 411,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 159
+ },
+ {
+  "path": "src-tauri/src/eval/metrics.rs",
+  "content": "rollback_count and pollution_survival_days assume each `mem_key` appears at most once in `applied` JSONL. Retries/reapplications silently inflate `rolled_back_total` (every absent row counts as a rollback) and `pollution_survival_days` only retains the last-seen timestamp per key in the HashMap. Either deduplicate by `mem_key` (keep latest `applied_at_ms`) or document that callers must guarantee uniqueness; current code has no enforcement and no test for this scenario.",
+  "suggestion_code": "pub fn rollback_count(applied: &[AppliedRecord], live_keys: &[String]) -> u64 {\n    // Deduplicate by mem_key; only the latest applied_at_ms is kept\n    let mut latest: HashMap<&str, &AppliedRecord> = HashMap::new();\n    for r in applied {\n        match latest.get(r.mem_key.as_str()) {\n            Some(prev) if prev.applied_at_ms >= r.applied_at_ms => {}\n            _ => { latest.insert(r.mem_key.as_str(), r); }\n        }\n    }\n    let live: HashSet<&str> = live_keys.iter().map(|k| k.as_str()).collect();\n    latest.values().filter(|r| !live.contains(r.mem_key.as_str())).count() as u64\n}",
+  "existing_code": "pub fn rollback_count(applied: &[AppliedRecord], live_keys: &[String]) -> u64 {\n    let live: HashMap<&str, ()> = live_keys.iter().map(|k| (k.as_str(), ())).collect();\n    applied\n        .iter()\n        .filter(|r| !live.contains_key(r.mem_key.as_str()))\n        .count() as u64\n}",
+  "start_line": 97,
+  "end_line": 103,
+  "category": "bug",
+  "severity": "high",
+  "idx": 173
+ },
+ {
+  "path": "src-tauri/src/eval/metrics.rs",
+  "content": "Unchecked i64 subtraction `(now_ms - *at)` panics under overflow checks or wraps in release builds. Corrupted JSON with extreme timestamps can therefore yield a plausible positive age and pass the `days >= 0.0` guard, polluting the survival metric. Use `i64::checked_sub` (or `.saturating_sub`) and decide on a documented policy for invalid/future records (e.g. skip silently, but never let wrap survive).",
+  "suggestion_code": "            let Some(delta_ms) = now_ms.checked_sub(*at) else {\n                continue; // corrupt timestamp: skip rather than wrap or panic\n            };\n            let days = delta_ms as f64 / 86_400_000.0;",
+  "existing_code": "            let days = (now_ms - *at) as f64 / 86_400_000.0;",
+  "start_line": 121,
+  "end_line": 121,
+  "category": "bug",
+  "severity": "high",
+  "idx": 174
+ },
+ {
+  "path": "src-tauri/src/eval/metrics.rs",
+  "content": "behavior_deviation trusts callers to validate inputs and enforce coverage. (a) Empty `hit_fractions` is treated as perfect 1.0 average, masking missing feedback. (b) `f64` fractions are not range/finite-checked — NaN propagates through `(1.0 - NaN).clamp(0.0, 1.0)` returning NaN, and values outside [0,1] silently bias the result (clamped). (c) `case_total` is only a zero-guard, so a short slice silently drops cases from the mean. Either validate inputs at the API boundary (reject non-finite / out-of-range, require `hit_fractions.len() == case_total` and unique case ids) or convert to `Result` and let the caller fix the upstream contract.",
+  "suggestion_code": "    if hit_fractions.len() != case_total {\n        return f64::NAN; // or return Err to enforce contract\n    }\n    let mut total = 0.0;\n    for (_, f) in hit_fractions {\n        if !f.is_finite() || !((0.0..=1.0).contains(f)) {\n            return f64::NAN;\n        }\n        total += f;\n    }\n    let avg = total / case_total as f64;\n    (1.0 - avg).clamp(0.0, 1.0)",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "bug",
+  "severity": "high",
+  "idx": 175
+ },
+ {
+  "path": "src-tauri/src/exec_steps.rs",
+  "content": "Mutex poison recovery masks state corruption: `e.into_inner()` after `eprintln!` silently continues with whatever state the panicking thread left behind in the `pending_map`. A panic while holding this lock (e.g. inside `park` after constructing `PendingExec`, or any future caller) means subsequent calls operate on a half-mutated map; the only signal is a stderr line. Consider returning `Result` (or panicking on poison) so the inconsistency surfaces instead of being silently absorbed — and do not duplicate the same recovery in three different functions.",
+  "existing_code": "pub fn has_pending_for<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Option<&str>) -> bool {\n    pending_map(app)\n        .lock()\n        .unwrap_or_else(|e| {\n            eprintln!(\"[mutex_poisoned] exec_steps::pending_map: {e:?}\");\n            e.into_inner()\n        })\n        .contains_key(&session_key(session_id))\n}",
+  "start_line": 49,
+  "end_line": 57,
+  "category": "bug",
+  "severity": "high",
+  "idx": 209
+ },
+ {
+  "path": "src-tauri/src/exec_steps.rs",
+  "content": "Same `e.into_inner()` poison-recovery pattern is repeated in `park` and `take_pending_for`. Combined with the comment \"（缺失时兜底实例）\" on `pending_map`, a future contributor is likely to copy the pattern again. Centralize the locking into one helper (`fn with_pending_map<R, T>(app, f) -> T`) that either fails loudly on poison or returns `Result`, so the recovery decision is made in one place rather than silently masked at every lock site.",
+  "existing_code": "fn park<R: tauri::Runtime>(app: &AppHandle<R>, p: PendingExec) {\n    let key = session_key(p.session_id.as_deref());\n    pending_map(app)\n        .lock()\n        .unwrap_or_else(|e| {\n            eprintln!(\"[mutex_poisoned] exec_steps::pending_map: {e:?}\");\n            e.into_inner()\n        })\n        .insert(key, p);\n}\n\nfn take_pending_for<R: tauri::Runtime>(\n    app: &AppHandle<R>,\n    session_id: Option<&str>,\n) -> Option<PendingExec> {\n    pending_map(app)\n        .lock()\n        .unwrap_or_else(|e| {\n            eprintln!(\"[mutex_poisoned] exec_steps::pending_map: {e:?}\");\n            e.into_inner()\n        })\n        .remove(&session_key(session_id))\n}",
+  "start_line": 59,
+  "end_line": 81,
+  "category": "bug",
+  "severity": "high",
+  "idx": 210
+ },
+ {
+  "path": "src-tauri/src/exec_steps.rs",
+  "content": "`pending_map(app)` is documented as returning a fallback instance when `AppState` is not managed. In production that means a fresh, throwaway `AppState` (and thus a throwaway pending map) is constructed on every call — `park` and `take_pending_for` end up writing/reading different maps, so pending state vanishes silently between calls. Either remove the fallback and panic/log loudly when `AppState` is missing, or have `pending_map` panic-once-and-cache so the bug is observable rather than invisible.",
+  "existing_code": "// PENDING 已迁入 `AppState.pending`，`pending_map(app)` 取注入实例\n// （缺失时兜底实例）；逐步执行的状态机与超时回收语义未动。\nuse crate::app_state::pending_map;",
+  "start_line": 37,
+  "end_line": 39,
+  "category": "bug",
+  "severity": "high",
+  "idx": 211
+ },
+ {
+  "path": "src-tauri/src/exec_steps.rs",
+  "content": "`mark_subtask_done` does a non-atomic load→mutate→upsert without verifying that the snapshot it loaded is still current: `expected_updated_at = t.updated_at` is set from the snapshot's own `updated_at`, not from the DB's current value, so `db_upsert` has no real baseline to check against and concurrent mutations (user toggling a different subtask during confirm) are silently overwritten. Additionally, a failed `db_upsert` only `audit_log`s and returns, so `advance_or_finish` proceeds as if the subtask was checked off and the next-step loop keeps moving. Either return `Result` so callers can react, or perform a proper compare-and-swap inside `db_upsert` using a fresh `expected_updated_at` read right before the write.",
+  "existing_code": "t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at\n    t.updated_at = Some(chrono::Utc::now().timestamp_millis());\n    if crate::db::db_upsert(app.clone(), vec![t.clone()])\n        .await\n        .is_ok()\n    {\n        crate::bot::audit_log(\n            app,\n            &format!(\n                \"exec_steps.subtask_done | task: {task_id} | 已勾选「{}」\",\n                crate::bot::truncate_for_log(&text, 60)\n            ),\n        );\n        crate::bot::broadcast_after_mutation(app, vec![t], vec![]);\n    } else {\n        // 落库失败响亮留痕：勾选未生效，下一步读到的仍是未勾状态——\n        // 不留日志的话「Continue 已消耗、勾选丢失」完全不可观测\n        crate::bot::audit_log(\n            app,\n            &format!(\n                \"exec_steps.subtask_done_failed | task: {task_id} | subtask: {subtask_id} | 「{}」落库失败（未勾选）\",\n                crate::bot::truncate_for_log(&text, 60)\n            ),\n        );\n    }\n}",
+  "start_line": 210,
+  "end_line": 235,
+  "category": "bug",
+  "severity": "high",
+  "idx": 212
+ },
+ {
+  "path": "src-tauri/src/meta/mod.rs",
+  "content": "`meta_upsert_model` maps every error from `upsert_model_user` into `CommandError::DomainRule`, including genuine `rusqlite::Error` values (SQLITE_BUSY, disk I/O, constraint failures) that `upsert_model_user` flattens via `.to_string()`. Downstream the frontend treats all of these as user-facing domain-rule errors, hiding infrastructure failures behind a misleading `meta: <rusqlite msg>`. Split the typed error inside `upsert_model_user` (or return `rusqlite::Error` for DB paths) so DB failures flow through `CommandError::from` and reserve `DomainRule` for the provider-missing check only.",
+  "suggestion_code": "match upsert_model_user(&conn, &m) {\n            Ok(()) => {}\n            Err(UpsertModelError::ProviderMissing) => {\n                return Err(CommandError::DomainRule {\n                    domain: \"meta\".into(),\n                    reason: format!(\"provider 不存在：{}，请先创建服务商\", m.provider_key),\n                });\n            }\n            Err(UpsertModelError::Db(e)) => return Err(CommandError::from(e)),\n        }",
+  "existing_code": "upsert_model_user(&conn, &m).map_err(|reason| CommandError::DomainRule {\n            domain: \"meta\".into(),\n            reason,\n        })?;",
+  "start_line": 502,
+  "end_line": 505,
+  "category": "bug",
+  "severity": "high",
+  "idx": 219
+ },
+ {
+  "path": "src-tauri/src/lib.rs",
+  "content": "Credential migration prerequisites are not enforced: the comment requires `migrate_bot_config_schema` to run before the secret-clearing migrations, but each step only logs on Err and unconditionally runs the next. If schema migration fails, the subsequent `migrate_legacy_key` / `migrate_search_keys` may rewrite an unmigrated config and lose credentials. Gate later migrations on the schema migration's success or have them refuse to operate when the schema version is missing.",
+  "existing_code": "                if let Err(e) = bot::migrate_bot_config_schema(&handle) {\n                    eprintln!(\"[bot] config schema migration failed: {e}\");\n                }\n                if let Err(e) = bot::migrate_legacy_key(&handle) {\n                    eprintln!(\"[bot] legacy key migration failed: {e}\");\n                }\n                if let Err(e) = bot::migrate_search_keys(&handle) {\n                    eprintln!(\"[bot] search key migration failed: {e}\");\n                }",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "bug",
+  "severity": "critical",
+  "idx": 220
+ },
+ {
+  "path": "src-tauri/src/lib.rs",
+  "content": "Cleanup is not a global admission gate: `stop_all_executions` only flags already-registered entries, the API is stopped afterward, and `bot_py::mark_exiting()` is invoked last. New API/scheduler work accepted between snapshot and `mark_exiting` is not in the snapshot and can spawn after `wait_executions_drained` returns, then be killed mid-write. Establish a single `app_exiting` flag set at the very start of cleanup, gate every producer on it, and check it inside `wait_executions_drained`/`mark_exiting`.",
+  "existing_code": "    // 第一步置位全部在途执行实例（含后台定时）的停止标志，\n    // 后续 API/Skill 清理的时间本身就是模型循环响应标志的窗口\n    let exec_stopped = bot_slash::stop_all_executions(app);\n    let api_stopped = match app.try_state::<api_server::ApiState>() {\n        Some(state) => api_handlers::api_stop_for_exit(app, &state).is_ok(),\n        None => false,\n    };\n    bot_skills::skill_terminate_all(app, \"应用退出\", None);\n    let exec_drained = wait_executions_drained(app, EXIT_DRAIN_GRACE);\n    // 先置退出标志再杀 Python——PY_RUN_GATE 上的排队者过锁后\n    // 复查标志直接拒绝，不会 spawn 出无人收割的孤儿进程\n    bot_py::mark_exiting();\n    let py_killed = kill_py();",
+  "start_line": 154,
+  "end_line": 166,
+  "category": "other",
+  "severity": "high",
+  "idx": 221
+ },
+ {
+  "path": "src-tauri/src/lib.rs",
+  "content": "Nonessential widget creation is fatal after services are already launched: `setup` registers API state, AppState, MCP, scheduler, trace sink, due notifier, DB pruning, memory, migration polling, meta sync, MCP reload, etc., before `WebviewWindowBuilder::build()?`. A widget build failure propagates out of `setup`, the later `expect` panics, and `cleanup_on_exit` never runs because `RunEvent::ExitRequested` is not emitted. Either move the widget build before background service starts, or downgrade widget failure to a logged warning like the tray/shortcut paths.",
+  "existing_code": "            // M4：系统侧边磁吸挂件窗口（贴边收起为触发条，悬停滑出）\n            tauri::WebviewWindowBuilder::new(\n                app,\n                \"widget\",\n                tauri::WebviewUrl::App(\"index.html#/widget\".into()),\n            )\n            .title(\"WMessage 挂件\")\n            .decorations(false)\n            .transparent(true)\n            .shadow(false)\n            .always_on_top(true)\n            .skip_taskbar(true)\n            .visible_on_all_workspaces(true)\n            .resizable(false)\n            .maximizable(false)\n            .minimizable(false)\n            .inner_size(44.0, 220.0)\n            .build()?;",
+  "start_line": 400,
+  "end_line": 417,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 222
+ },
+ {
+  "path": "src-tauri/src/lib.rs",
+  "content": "Untrusted IPC path with no boundary validation: `copy_file_with_title` takes `path: String` straight from the frontend and forwards it to the native clipboard helper without canonicalization or scope checks here. Given the deliberate removal of frontend `opener:allow-open-path` (see the capability_tests comment about XSS and `$HOME/**`), the clipboard route must enforce that the path is bound to the calling task and resolve to an allowlisted root. Add a guard in this command or confirm the helper strictly rejects unbound paths.",
+  "existing_code": "#[tauri::command]\nfn copy_file_with_title(path: String, title: String) -> error::CommandResult<()> {\n    #[cfg(target_os = \"macos\")]\n    {\n        // F2（Phase 6b）：平台 helper 仍为 Result<(), String>，经 From<String> → Internal 转换\n        platform::copy_file::copy_file_macos(&path, &title).map_err(error::CommandError::from)\n    }\n    #[cfg(windows)]\n    {\n        return platform::copy_file::copy_file_windows(&path, &title);\n    }\n    #[cfg(not(any(target_os = \"macos\", windows)))]\n    {\n        let _ = (path, title);\n        return Err(error::CommandError::DomainRule {\n            domain: \"platform\".to_string(),\n            reason: \"复制文件暂不支持当前平台\".to_string(),\n        });\n    }\n}",
+  "start_line": 61,
+  "end_line": 80,
+  "category": "security",
+  "severity": "high",
+  "idx": 223
+ },
+ {
+  "path": "src-tauri/src/meta/sync.rs",
+  "content": "16MB cap is enforced *after* the chunk is materialized. A single chunk larger than the cap (or many chunks each near-cap) is fully allocated before the check trips — OOM-by-network is still possible, defeating the comment's stated intent. Use `resp.take(MAX_BODY as u64)` (or `bytes_stream().take(...)`) so reqwest aborts reading once the cap is hit, and additionally reject any single chunk with `chunk.len() > MAX_BODY` to bound peak memory at roughly `2 * MAX_BODY`. The current `buf.len() + chunk.len() > MAX_BODY` check also can theoretically wrap on 32-bit targets if `chunk.len()` is large — `checked_add` or the `take()` approach removes that footgun.",
+  "suggestion_code": "let mut buf = Vec::new();\n    let mut stream = resp.bytes_stream().take(MAX_BODY as u64);\n    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {\n        let chunk = chunk.map_err(|e| format!(\"models.dev 读取响应失败：{e}\"))?;\n        if chunk.len() > MAX_BODY {\n            return Err(format!(\n                \"models.dev 单块超过 {}MB 上限，已中止\",\n                MAX_BODY / 1024 / 1024\n            ));\n        }\n        buf.extend_from_slice(&chunk);\n    }\n    if buf.len() >= MAX_BODY {\n        return Err(format!(\n            \"models.dev 响应达到 {}MB 上限，已中止\",\n            MAX_BODY / 1024 / 1024\n        ));\n    }",
+  "existing_code": "let mut buf = Vec::new();\n    let mut stream = resp.bytes_stream();\n    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {\n        let chunk = chunk.map_err(|e| format!(\"models.dev 读取响应失败：{e}\"))?;\n        if buf.len() + chunk.len() > MAX_BODY {\n            return Err(format!(\n                \"models.dev 响应超过 {}MB 上限，已中止\",\n                MAX_BODY / 1024 / 1024\n            ));\n        }\n        buf.extend_from_slice(&chunk);\n    }",
+  "start_line": 125,
+  "end_line": 136,
+  "category": "security",
+  "severity": "high",
+  "idx": 224
+ },
+ {
+  "path": "src-tauri/src/meta/sync.rs",
+  "content": "Cancellation-safety hole: after fetch+parse succeed the DB write is dispatched to `spawn_blocking` and only its `JoinHandle` is awaited. If the outer future is dropped (caller cancellation, manual-sync command timeout, app shutdown), the spawned thread still runs `apply_sync` to completion — the caller can no longer report success/failure, and shutdown may race with the in-flight write. Either run `apply_sync` synchronously after parse (no `spawn_blocking`), or hold the JoinHandle and ensure shutdown awaits outstanding syncs before closing the DB. Dropping a `Vec<MetaProvider>`/`Vec<MetaModel>` after parse but before commit also discards the work, so this is genuinely fire-and-forget today.",
+  "suggestion_code": "let body = fetch_models_dev(url).await?;\n    let (providers, models) = parse_models_dev(&body)?;\n    let app = app.clone();\n    tauri::async_runtime::spawn_blocking(move || {\n        let mut conn = crate::db::open_db(&app)?;\n        apply_sync(&mut conn, &providers, &models)\n    })\n    .await\n    .map_err(|e| format!(\"meta 同步落库线程 join 失败：{e}\"))?\n    // Note: dropping the JoinHandle here detaches the blocking task; cancellation\n    // of `sync_models_dev_with_url` will NOT abort the in-flight DB write.\n    // See file-level TODO: route the write through a shutdown-aware worker so\n    // outstanding syncs are awaited before the DB closes.",
+  "existing_code": "let body = fetch_models_dev(url).await?;\n    let (providers, models) = parse_models_dev(&body)?;\n    let app = app.clone();\n    tauri::async_runtime::spawn_blocking(move || {\n        let mut conn = crate::db::open_db(&app)?;\n        apply_sync(&mut conn, &providers, &models)\n    })\n    .await\n    .map_err(|e| format!(\"meta 同步落库线程 join 失败：{e}\"))?",
+  "start_line": 145,
+  "end_line": 153,
+  "category": "other",
+  "severity": "high",
+  "idx": 225
+ },
+ {
+  "path": "src-tauri/src/intent_router.rs",
+  "content": "A raw substring match is not a safe execution trigger. Messages such as `不要执行这些任务` or `暂时别运行` contain the trigger words and will directly execute the referenced cards. It also matches unrelated words and attachment paths (`/tmp/logo.png` contains `go`, and `.docx` contains `do`) because ASCII keywords are not word-bounded. Since this result bypasses the LLM and invokes batch task execution, require an explicit command/structured trigger and reject negated or incidental matches.",
+  "suggestion_code": "    // Prefer a validated UI/command field that explicitly represents an execute action.\n    // Do not authorize task execution from arbitrary prose substrings.\n    if !has_explicit_execute_intent(&user_cmd) {\n        return None;\n    }",
+  "existing_code": "    const KEYWORDS: &[&str] = &[\"完成\", \"执行\", \"搞定\", \"开干\", \"做掉\", \"go\", \"run\", \"do\"];\n    if !KEYWORDS.iter().any(|kw| user_cmd.contains(kw)) {\n        return None;\n    }",
+  "start_line": 104,
+  "end_line": 107,
+  "category": "bug",
+  "severity": "high",
+  "idx": 226
+ },
+ {
+  "path": "src-tauri/src/intent_router.rs",
+  "content": "The parser treats the entire remainder of the message as the selected-task block. Because titles are nested inside this line-oriented format and may themselves contain line breaks, a title such as `Review\\n- id=other，标题=...` injects an additional task ID; quoted text or a second example block after the marker has the same effect. Those IDs are then executed without going through the LLM. Use an escaped/structured payload (or an explicit end delimiter) and reject unexpected trailing content instead of scanning every later `- id=` line.",
+  "suggestion_code": "    let after = &content[idx + \"[已选任务]\".len()..];\n    // Decode one structured/escaped block rather than accepting arbitrary lines after the marker.\n    let Ok(items) = serde_json::from_str::<Vec<(String, String)>>(after.trim()) else {\n        return Vec::new();\n    };\n    let mut out = items\n        .into_iter()\n        .filter(|(id, _)| !id.trim().is_empty())\n        .collect::<Vec<_>>();",
+  "existing_code": "    let after = &content[idx + \"[已选任务]\".len()..];\n    let mut out = Vec::new();\n    for line in after.lines() {\n        let line = line.trim();",
+  "start_line": 54,
+  "end_line": 57,
+  "category": "bug",
+  "severity": "high",
+  "idx": 227
+ },
+ {
+  "path": "src-tauri/src/migration/recovery.rs",
+  "content": "TOCTOU race: src.exists()/d.exists() is checked in the main loop, then db_load → db_upsert runs inside `tauri::async_runtime::block_on`. Between the filesystem check and the upsert, a concurrent move/delete (user action, another migration) can make the repair write a stale or now-incorrect file_path. The `file_path_untouched` guard inside recover_move_db only protects against DB changes, not on-disk state. Consider re-checking `dst.exists()` after `db_load` (or holding the path inside the same transaction window) before calling db_upsert.\n\n(Severity is high because recovery is supposed to be the source of truth that converges inconsistent state; a stale write would silently corrupt DB-to-disk correspondence.)",
+  "existing_code": "                \"move\" => match (&dst, src.exists()) {\n                (Some(d), false) if d.exists() => {\n                    // move 成功但 DB 未更新\n                    match recover_move_db(app, &entry.task_id, &entry.src, d) {",
+  "start_line": 114,
+  "end_line": 117,
+  "category": "bug",
+  "severity": "high",
+  "idx": 231
+ },
+ {
+  "path": "src-tauri/src/migration/recovery.rs",
+  "content": "`tauri::async_runtime::block_on` is used inside `recover_move_db`/`recover_delete_db`. The comment claims these are only ever called from `spawn_polling`'s std::thread so block_on is safe, but that contract is not enforced at this layer—`journal_replay_pending` is `pub` and any future caller (or refactor that moves it inside an async context, a #[tauri::command], or another spawn) will silently deadlock on the runtime thread. Either gate the call site explicitly (`#[track_caller]` + runtime assertion), split the async DB into sync variants for recovery, or restructure so the recovery runs inside a dedicated runtime.",
+  "existing_code": "    // db_load/db_upsert 改 async 了；recover_* 在 spawn_polling 的 std::thread 里跑，\n    // 不在 tokio runtime 上 → 用 block_on 安全桥接（不会死锁）。\n    let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })",
+  "start_line": 220,
+  "end_line": 222,
+  "category": "bug",
+  "severity": "high",
+  "idx": 232
+ },
+ {
+  "path": "src-tauri/src/migration/mod.rs",
+  "content": "The last assertion references `&rf` but this function defines the variable as `bad`, not `rf`. There is no `rf` in scope here — `rf` is defined only in unrelated tests (e.g., `validate_rules_accepts_delete_without_archive_dir`). This is a hard compile error: no test in `migration::tests` can run until this is fixed. Replace `&rf` with `&bad`.",
+  "suggestion_code": "bad.rules = vec![rule(vec![\"a\"], \"delete\", \"\")];\n        assert!(validate_rules(&bad).is_ok());\n    }",
+  "existing_code": "bad.rules = vec![rule(vec![\"a\"], \"delete\", \"\")];\n        assert!(validate_rules(&rf).is_ok());\n    }",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "bug",
+  "severity": "critical",
+  "idx": 233
+ },
+ {
+  "path": "src-tauri/src/migration/types.rs",
+  "content": "JournalEntry cannot round-trip through the on-disk journal it is supposed to enable. The doc comment above explicitly states this table is replayed at startup to repair the DB after a crash, but the struct only derives `Debug, Clone` — no `Serialize`/`Deserialize`. Without these derives the journal rows cannot be persisted by `serde_json`/`bincode`/`rmp_serde` (whichever the migration layer uses), so the very lost-update/孤儿-file scenario this struct exists to prevent is the one that cannot be recovered. Add `Serialize, Deserialize` (and a `#[serde(rename_all = ...)]` if a stable on-disk schema matters).",
+  "existing_code": "#[derive(Debug, Clone)]\npub struct JournalEntry {\n    pub id: i64,\n    pub op: String, // 'move' | 'delete'\n    pub src: String,\n    pub dst: Option<String>,\n    pub task_id: String,\n}",
+  "start_line": 9,
+  "end_line": 16,
+  "category": "bug",
+  "severity": "high",
+  "idx": 236
+ },
+ {
+  "path": "src-tauri/src/migration/types.rs",
+  "content": "Two parallel `String` \"enum\" fields at critical data-integrity boundaries. `JournalEntry.op` and `MigrationRule.action` are both `String` with the allowed variants spelled out only in a comment (`'move' | 'delete'` / `\"move\" | \"delete\"`). This makes invalid states representable and forces every consumer (replay, apply, reporting) to re-parse and re-validate the same string. Model them as `enum JournalOp { Move, Delete }` and `enum RuleAction { Move, Delete }` (with `#[serde(rename_all = \"lowercase\")]`) so an unknown variant fails fast at the (de)serialize boundary and the rest of the code can exhaustively `match` without `unwrap`/default branches.",
+  "existing_code": "    pub op: String, // 'move' | 'delete'",
+  "start_line": 12,
+  "end_line": 12,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 237
+ },
+ {
+  "path": "src-tauri/src/migration/types.rs",
+  "content": "`MigrationRule.action` is a plain `String` instead of an enum. See the companion finding on `JournalEntry.op` — both fields encode the same `\"move\" | \"delete\"` invariant, and both should be modeled as `enum RuleAction` so the rule file cannot contain a typo like `\"deleted\"` or `\"move \"` that silently disables matching downstream.",
+  "existing_code": "    pub action: String, // \"move\" | \"delete\"",
+  "start_line": 25,
+  "end_line": 25,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 238
+ },
+ {
+  "path": "src-tauri/src/migration/ops.rs",
+  "content": "TOCTOU between resolve and create/verify: resolve_archive_dir_checked only canonicalizes the deepest *existing* ancestor; the residual window between this return and the subsequent create_dir_all (or verify_archive_dir_created) allows a concurrent symlink swap to redirect the archive outside the desktop base. The inline comment defers this to a Phase-6 follow-up, but in the meantime any caller that creates the resolved dir before the verify is exposed to a real path-escape. Consider performing create_dir_all *before* the verify (and re-checking), or hard-link the verify back into resolve so the caller cannot act on a stale result.",
+  "existing_code": "/// 纯函数内核（供单测直调）——三道闸：\n/// 1. `..` 组件拒绝（相对路径逃逸桌面基准；/tmp/../etc 形态表达同被拒，无能力损失）；\n/// 2. 绝对路径拒绝（存量「文档化特性」按收窄：归档位置必须相对基准目录，可审计可随库迁移）；\n/// 3. symlink 逃逸校验：沿目标最深已存在祖先 canonicalize，须仍位于 canonical 基准目录内\n///    （叶子通常尚不存在，只能校到最深已存在祖先——祖先在基准外即拒；新建叶层走\n///    create_dir_all 常规目录创建，落在 canonical 祖先之下；以符号链接充当新建叶层\n///    的场景超出本闸能力，与 exists→canonicalize 的 TOCTOU 残余同属文件系统原语限制，\n///    归既有「Phase 6 TOCTOU 统一策略」follow-up）。",
+  "start_line": 85,
+  "end_line": 92,
+  "category": "security",
+  "severity": "high",
+  "idx": 239
+ },
+ {
+  "path": "src-tauri/src/migration/ops.rs",
+  "content": "claim_dst_name → move_entry TOCTOU with cross-platform overwrite risk: claim_dst_name picks a non-existing name, but the actual fs::rename/fs::copy inside move_entry can race another worker that wins the same slot; fs::copy silently overwrites on Unix when the dst was created in the window, so the documented 99-iteration protection does not prevent data loss — only prevents a livelock. Either open dst with O_EXCL|O_CREAT (Unix) and treat AlreadyExists as retry, or place each move under a staging sibling like copy_dir_recursive does, so the final commit is an atomic rename.",
+  "existing_code": "///  TOCTOU 防护：conflict_free_name 选定与 move_entry 实际创建之间存在竞态窗口——\n/// 两个并发迁移任务可能选中同一 dst，后写覆盖前写。实际创建前再 exists 一次；\n/// 窗口内被并发抢占（文件已出现）则递增后缀重选（上限 99 轮防活锁）。\npub(crate) fn claim_dst_name(dir: &Path, file_name: &str) -> Option<PathBuf> {",
+  "start_line": 188,
+  "end_line": 191,
+  "category": "bug",
+  "severity": "high",
+  "idx": 240
+ },
+ {
+  "path": "src-tauri/src/mutation.rs",
+  "content": "The derived `Deserialize` only accepts the exact lowercase variants, but the doc comment at the top describes a `Widget/未标记` fallback — i.e. missing or unrecognized source values should be classified as `Widget`. With this derive, any incoming event whose `source` is absent or contains an unknown string will fail to deserialize into `MutationOrigin`, so the documented fallback must be implemented at the call site (e.g. `Option<MutationOrigin>` with a custom mapping). That contract is not enforced by the type system; consider `#[serde(other)]` on `Widget`, or a separate wrapper enum, to make the fallback explicit and impossible to forget.",
+  "existing_code": "#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]\n#[serde(rename_all = \"lowercase\")]\npub enum MutationOrigin {\n    Main,\n    Widget,\n    Bot,\n    Api,\n    Migration,\n}",
+  "start_line": 10,
+  "end_line": 18,
+  "category": "bug",
+  "severity": "high",
+  "idx": 241
+ },
+ {
+  "path": "src-tauri/src/migration/run.rs",
+  "content": "Each `tauri::async_runtime::block_on` creates a brand-new tokio runtime and tears it down on return; the comment above promises every caller goes through `spawn_blocking` or `std::thread`, but that invariant lives entirely in call-site discipline. The moment a future maintainer wires a UI command as `async fn` and awaits `run_migration` directly on a tokio worker thread, `block_on` will deadlock that worker and starve the runtime. Prefer making `run_migration_inner` `async` (and letting callers `.await` it) or move all DB I/O onto a dedicated blocking thread that owns its own runtime, instead of relying on a fragile \"never call me from a tokio thread\" contract.",
+  "existing_code": "    let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })\n        .map_err(|e| e.to_string())?;",
+  "start_line": 74,
+  "end_line": 75,
+  "category": "bug",
+  "severity": "high",
+  "idx": 242
+ },
+ {
+  "path": "src-tauri/src/migration/run.rs",
+  "content": "`journal_cleared` and `journal_committed` are the only thing closing the loop between filesystem state and DB state — discarding their errors with `.ok()` means a wedged journal row is silently ignored. On the next start, `journal_replay_pending` will re-attempt the move/delete: if the original move actually succeeded, replay will see src gone + dst present and re-issue the DB fix (wasted work); if the original move/delete failed and `journal_cleared` was the cleanup that didn't happen, every subsequent run repeats the same failing operation and can stack up duplicate copies in the archive dir. Log the failure (and/or surface a counter on `report`) so an operator can see \"5 journal commits failed this run\" instead of a forever-spinning recovery.",
+  "existing_code": "                                    journal_committed(&jconn, journal_id).ok();",
+  "start_line": 216,
+  "end_line": 216,
+  "category": "bug",
+  "severity": "high",
+  "idx": 243
+ },
+ {
+  "path": "src-tauri/src/ocr.rs",
+  "content": "Privacy invariant is \"识别绝不上传外网\" but the prefix check covers only `http://`, `https://`, and `data:`. `file://` URLs and Windows UNC paths (`\\\\server\\share\\file.png`) pass through to `resolve_with_perm`, whose `canonicalize` on Windows will attempt an SMB resolution of the UNC host — silently contradicting the no-network guarantee. Either block UNC/`file:` explicitly (e.g., also reject `\\\\` prefixes and `file:`/`ftp:`/etc. schemes) or document that UNC is in scope and gate it via the permission prompt path.",
+  "existing_code": "    // 隐私红线：只接受本地文件路径。网络图片一律不抓取（resolve_with_perm 也会因\n    // canonicalize 失败而拒，这里前置给出明确原因）\n    // RFC 3986 §3.1：scheme 大小写不敏感——小写归一后前缀比较\n    let lower = path.to_ascii_lowercase();\n    if lower.starts_with(\"http://\") || lower.starts_with(\"https://\") || lower.starts_with(\"data:\") {",
+  "start_line": 35,
+  "end_line": 39,
+  "category": "security",
+  "severity": "high",
+  "idx": 244
+ },
+ {
+  "path": "src-tauri/src/platform/copy_file.rs",
+  "content": "SAFETY comment is hand-wavy: it asserts that `NSPasteboardTypeString` is a stable Foundation global with no aliasing risk, but does not verify the actual `objc2_app_kit` declaration's lifetime. If that constant is exposed as `*const NSString` without an explicit `'static` lifetime (which is how several objc2_app_kit string constants are declared), the reborrow inside the `unsafe { ... }` extends a borrow past the actual lifetime of the static storage, which is unsound. The SAFETY rationale should either (a) cite the exact declaration site (`extern_api!` / `extern_const!` macro that pins it to `'static`), or (b) bind the pointer to a `let` of explicit `'static` type, or (c) use the constant via a safer API such as `NSPasteboardTypeString::constant()` if available in the current objc2_app_kit version.",
+  "existing_code": "// SAFETY: NSPasteboardTypeString 是 Foundation 公开常量，值稳定不释放、全局唯一无别名风险；unsafe 仅用于将 *const NSString 转为 &NSString。\n    if !pb.setString_forType(&text, unsafe { NSPasteboardTypeString }) {",
+  "start_line": 54,
+  "end_line": 55,
+  "category": "other",
+  "severity": "high",
+  "idx": 245
+ },
+ {
+  "path": "src-tauri/src/platform/copy_file.rs",
+  "content": "The three failure branches after `SetClipboardData(CF_HDROP, ...)` has committed (title `GlobalAlloc` failure, title `GlobalLock` null, title `SetClipboardData` failure) each independently have to remember to (a) `GlobalFree` the title handle on the title-handle paths, (b) `EmptyClipboard` so the clipboard does not silently retain a stale file, and (c) `CloseClipboard` so subsequent `OpenClipboard` calls do not stall. Today all three paths do this correctly, but the invariants are spread across three near-identical match arms with no shared helper — one missed `EmptyClipboard` would re-introduce the \"user sees 'copy failed' yet paste still delivers the file\" bug that the surrounding `//  #4` and `//  #119` comments specifically call out as historical regressions. Extracting a small `fn finalize_post_hdrop(th: Option<HGLOBAL>)` would localize the invariant and make regressions much harder.",
+  "existing_code": "// 2) 标题文本（CF_UNICODETEXT）\n        // CF_HDROP 已 commit：后续任何失败都要 EmptyClipboard + CloseClipboard，\n        // 否则剪贴板仍带文件但函数返 Err —— 用户看到「复制失败」但粘贴仍拿到文件\n        // （ #4：post-CF_HDROP failure paths must empty clipboard）。",
+  "start_line": 140,
+  "end_line": 143,
+  "category": "bug",
+  "severity": "high",
+  "idx": 246
+ },
+ {
+  "path": "src-tauri/src/migration/rules.rs",
+  "content": "FAIL-OPEN after deserialization: load_rules_from returns the deserialized RulesFile without calling validate_rules, so a persisted rule with action == \"move\" and an empty archiveDir passes load but `resolve_archive_dir` at runtime resolves the empty string to the desktop base directory — destructive files move to the wrong place. Additionally, RulesFile.version is read from the file but never compared against the supported version (currently 1); a future format with incompatible semantics would be silently accepted and acted on. Call validate_rules(&r)? after deserialization (mapping the validation error to CommandError::DomainRule) and reject unsupported versions before returning.",
+  "existing_code": "serde_json::from_str::<RulesFile>(&text).map_err(|e| CommandError::DomainRule {\n        domain: \"migration\".to_string(),\n        reason: format!(\n            \"规则文件解析失败（{}）：{e}。请修复或删除该文件后重试；应用不会以空规则静默替代\",\n            path.display()\n        ),\n    })\n}",
+  "start_line": 53,
+  "end_line": 60,
+  "category": "bug",
+  "severity": "high",
+  "idx": 249
+ },
+ {
+  "path": "src-tauri/src/migration/rules.rs",
+  "content": "Concurrent save race: there is no locking around the load → mutate → save cycle, and db::atomic_write writes to a fixed sibling tmp path (`<name>.tmp`). Two concurrent save_rules calls can interleave so that one writer's rename succeeds with the other writer's bytes (false Ok response) while the loser fails because its tmp is gone (false Err); user-authored rules can be silently overwritten. Wrap the RMW pair in a process-level mutex or OS file lock so that the read–modify–write cycle is serialized; pairing this with the load-side fix in load_rules_from closes the integrity gap end-to-end.",
+  "existing_code": "let text = serde_json::to_string_pretty(rules).map_err(|e| e.to_string())?;\n    crate::db::atomic_write(path, &text)\n}",
+  "start_line": 73,
+  "end_line": 75,
+  "category": "bug",
+  "severity": "high",
+  "idx": 250
+ },
+ {
+  "path": "src-tauri/src/paths.rs",
+  "content": "`OpenOptions::create(true).append(true)` on Unix does NOT set 0600 — the new file is created with mode `0666 & ~umask` (typically 0644), directly contradicting the comment \"创建即 0600（与 audit::open_log_append 一致）\" and `audit::open_log_append` (which explicitly chmods the freshly-created file to 0o600, per src-tauri/src/audit.rs:343). Concrete impact: the fallback `bot.log` here ends up world-readable while audit-created `bot.log` is owner-only; if both writers ever race (this file is opened without `BOT_LOG_LOCK` from a detached thread, while audit opens under the lock), the file ends up owned by this function's process but readable by all users, leaking `exe_dir`/`resolved` path info. Either set the mode explicitly (`OpenOptions::new().create(true).append(true).mode(0o600)` on Unix, or call `set_permissions(0o600)` after open — matching audit's pattern), or drop the comment claim. Also consider whether existing pre-existing files should be chmod'd on each write (audit does this on first open); at minimum, also chmod if `metadata().mode() != 0o600` so existing files from older, non-0600-aware runs get tightened.",
+  "suggestion_code": "// 与 audit::open_log_append 一致：新建文件 0600（防 fallback WARN 里的路径/原因\n    // 落到世界可读的日志）；已存在的旧文件如果权限过宽顺手收紧。\n    use std::os::unix::fs::OpenOptionsExt;\n    let open = std::fs::OpenOptions::new()\n        .create(true)\n        .append(true)\n        .mode(0o600)\n        .open(&p);",
+  "existing_code": "// 创建即 0600（与 audit::open_log_append 一致）；写失败 eprintln 不阻塞\n    let open = std::fs::OpenOptions::new()\n        .create(true)\n        .append(true)\n        .open(&p);",
+  "start_line": 270,
+  "end_line": 274,
+  "category": "security",
+  "severity": "high",
+  "idx": 251
+ },
+ {
+  "path": "src-tauri/src/migration/journal.rs",
+  "content": "Storing src/dst via `Path::to_string_lossy()` collapses any non‑UTF‑8 byte sequence to U+FFFD, so two distinct filesystem paths that only differ by invalid UTF‑8 bytes map to the same SQLite TEXT value. The journal is later queried by (task_id, src) during replay, so colliding entries will silently overwrite each other and recovery may operate on the wrong file. Validate that paths are valid UTF‑8 before writing, or store a lossless representation (e.g. escaped OsString) and reject non‑UTF‑8 paths outright.",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "security",
+  "severity": "high",
+  "idx": 252
+ },
+ {
+  "path": "src-tauri/src/migration/journal.rs",
+  "content": "The INSERT into migration_journal reuses `src.to_string_lossy()` for the src column; the same lossy conversion issue applies here. Combined with the SELECT above, a non‑UTF‑8 src path is silently mangled both when written and when read, masking duplicate entries. Use the validated UTF‑8 string from above (`src_s`) instead of calling `to_string_lossy()` again.",
+  "suggestion_code": "    conn.execute(\n        \"INSERT INTO migration_journal (op, src, dst, task_id, state, created_at)\n         VALUES (?1, ?2, ?3, ?4, 'pending', ?5)\",\n        rusqlite::params![op, src_s, dst_s, task_id, now_ms,],\n    )\n    .map_err(|e| e.to_string())?;",
+  "existing_code": "    conn.execute(\n        \"INSERT INTO migration_journal (op, src, dst, task_id, state, created_at)\n         VALUES (?1, ?2, ?3, ?4, 'pending', ?5)\",\n        rusqlite::params![op, src.to_string_lossy(), dst_s, task_id, now_ms,],\n    )\n    .map_err(|e| e.to_string())?;",
+  "start_line": 61,
+  "end_line": 66,
+  "category": "security",
+  "severity": "high",
+  "idx": 253
+ },
+ {
+  "path": "src-tauri/src/migration/journal.rs",
+  "content": "`journal_committed_inner` updates the state without checking that the row is currently `pending`, so a stale id (or a row that was already cleared) is silently flipped to `committed`. This breaks the pending→committed/cleared state machine and can resurrect rows whose underlying file operation never happened, causing replay to act on a ghost entry. Add the `state = 'pending'` predicate and verify rows_affected so callers see a hard error on stale ids.",
+  "suggestion_code": "pub(crate) fn journal_committed_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {\n    let n = conn\n        .execute(\n            \"UPDATE migration_journal SET state = 'committed' WHERE id = ?1 AND state = 'pending'\",\n            rusqlite::params![id],\n        )\n        .map_err(|e| e.to_string())?;\n    if n == 0 {\n        return Err(format!(\"journal_committed: no pending row with id {id}\"));\n    }\n    Ok(())\n}",
+  "existing_code": "pub(crate) fn journal_committed_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {\n    conn.execute(\n        \"UPDATE migration_journal SET state = 'committed' WHERE id = ?1\",\n        rusqlite::params![id],\n    )\n    .map_err(|e| e.to_string())?;\n    Ok(())\n}",
+  "start_line": 85,
+  "end_line": 92,
+  "category": "bug",
+  "severity": "high",
+  "idx": 254
+ }
+]

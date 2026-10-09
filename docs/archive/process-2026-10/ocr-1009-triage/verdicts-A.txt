@@ -1,0 +1,49 @@
+5|PARTIAL|focus-visible 改元素圆角属实，删 line108 border-radius
+317|PARTIAL|空 ref 路径现实不可达（调用点无条件渲染）
+318|WONTFIX|Escape 已实现，Arrow/Home 属 a11y 增强
+319|WONTFIX|原型链穿透无攻击面（键来自供应商枚举）
+320|WONTFIX|now 仅 duration 档消费，契约注释级
+321|PARTIAL|锚点只建有扇区组，弱边凝聚是可辩护取舍
+322|REAL|挂件锚点不夹取，拔显示器后永久出屏；clamp 进 screenSize
+323|ALREADY_HANDLED|Rust 侧已过滤 dependsOn 越界
+324|ALREADY_HANDLED|init effect 已先 await 配置
+325|PARTIAL|缺 completedAt 老卡两侧都不归档；applyArchiveRule 视为不适用
+326|WONTFIX|null 是文档化降级信号
+327|WONTFIX|判别联合属类型形态建议
+328|WONTFIX|zod 校验属投机加固
+329|WONTFIX|非空由 Rust 侧保证
+330|ALREADY_HANDLED|服务端已校验 action 枚举
+331|WONTFIX|handler 单次捕获是文档化契约
+332|PARTIAL|卸载后 setState 安全 no-op；可加 cancelled 检查
+333|ALREADY_HANDLED|UI 写入点已 maxLength
+334|ALREADY_HANDLED|唯一调用方已有错误呈现
+335|PARTIAL|按 gen 闸广播会破坏跨窗同步，修法不成立
+336|FALSE_POSITIVE|同 origin localStorage 共享，自愈语义成立
+337|FALSE_POSITIVE|STORAGE_KEY 是初始提交起的真实一致键名
+338|WONTFIX|锚定扩展名是有意取舍（CJK 路径）
+339|PARTIAL|尾标点瞬态，终渲染走 MarkdownText
+340|WONTFIX|测试专用 helper
+342|WONTFIX|shim 覆盖已用子集
+344|REAL|cancelledRef 泄留吞下一轮首次 blur；false→true 分支补 cancelledRef.current=false
+345|ALREADY_HANDLED|inflightRef 拦截在
+346|FALSE_POSITIVE|undefined=展开语义正确
+347|WONTFIX|调用点全非空 children
+348|REAL|删会话竞态渲染旧历史；captured sid 守卫（镜像 openExecSession 模式）
+349|PARTIAL|监听注册前 delta 本就收不到，固有窗口
+350|PARTIAL|流式瞬丢一字符；补 trailing span
+351|ALREADY_HANDLED|边界在 openTarget 自身
+352|WONTFIX|a11y 增强
+353|ALREADY_HANDLED|父级已有 confirm
+354|PARTIAL|失败仍关弹窗；改进需处理 remaining<=0 环路
+355|FALSE_POSITIVE|related_refs 必填，前提不成立
+356|ALREADY_HANDLED|busy finally 恒复位
+357|FALSE_POSITIVE|值对值匹配成立
+358|FALSE_POSITIVE|同 357
+359|PARTIAL|绕链可自愈于后续事件；套链属加固
+360|PARTIAL|同 359
+361|WONTFIX|reload 收敛固有属性
+362|WONTFIX|a11y 整体改造
+363|FALSE_POSITIVE|类型位 UMD 引用合法
+364|WONTFIX|双状态源是正确设计
+365|WONTFIX|注释即拍板
+366|FALSE_POSITIVE|animated 属性 sigma3 不存在，游离属性 no-op

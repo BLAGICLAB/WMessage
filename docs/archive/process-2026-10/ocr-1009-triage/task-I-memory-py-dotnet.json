@@ -1,0 +1,330 @@
+[
+ {
+  "path": "src-tauri/src/memory/consolidate.rs",
+  "content": "format_candidates is unsafe for multiline content. Memory entries are free text and can contain '\\n', which corrupts the `id | kind | importance | content` pipe-delimited format sent to the LLM. The LLM can then mis-attribute ids to contents and emit merge/contradiction/distill ops that target the wrong rows, which get applied to the DB. Replace newlines in m.content (and ideally also '|' collisions) before formatting, e.g. `m.content.replace('\\n', \" \").replace('\\r', \" \")`, or use a structured JSON/serde prompt instead of a plain-text pipe format.",
+  "suggestion_code": "fn format_candidates(items: &[MemItem]) -> String {\n    items\n        .iter()\n        .map(|m| {\n            let safe = m\n                .content\n                .replace(['\\n', '\\r'], \" \")\n                .replace('|', \"\\\\|\");\n            format!(\"{} | {} | {} | {}\", m.id, m.kind, m.importance, safe)\n        })\n        .collect::<Vec<_>>()\n        .join(\"\\n\")\n}",
+  "existing_code": "fn format_candidates(items: &[MemItem]) -> String {\n    items\n        .iter()\n        .map(|m| format!(\"{} | {} | {} | {}\", m.id, m.kind, m.importance, m.content))\n        .collect::<Vec<_>>()\n        .join(\"\\n\")\n}",
+  "start_line": 259,
+  "end_line": 265,
+  "category": "bug",
+  "severity": "high",
+  "idx": 206
+ },
+ {
+  "path": "src-tauri/src/memory/consolidate.rs",
+  "content": "gather_candidates loads the entire memory table into RAM on every tick. store::load_all is unbounded, then the OR-filter (updated_at_ms>=threshold || access_count>=N) is applied in memory before the LIMIT. Over months of use this becomes O(total_memories) per 10-minute tick, both CPU and heap. Push the WHERE clause into SQL (with the OR predicate) and apply LIMIT server-side; only fall back to in-memory filtering when an explicit ORDER BY + sort is needed.",
+  "suggestion_code": "let threshold = since_ms.unwrap_or(now_ms - CONSOLIDATE_DEFAULT_WINDOW_MS);\n    let mut items: Vec<MemItem> = store::load_filtered_candidates(conn, threshold, CONSOLIDATE_ACTIVE_ACCESS, limit)?;\n    items.sort_by(|a, b| {\n        store::evict_score(b, now_ms)\n            .partial_cmp(&store::evict_score(a, now_ms))\n            .unwrap_or(std::cmp::Ordering::Equal)\n    });\n    items.truncate(limit);",
+  "existing_code": "let threshold = since_ms.unwrap_or(now_ms - CONSOLIDATE_DEFAULT_WINDOW_MS);\n    let mut items: Vec<MemItem> = store::load_all(conn)?\n        .into_iter()\n        .filter(|m| m.updated_at_ms >= threshold || m.access_count >= CONSOLIDATE_ACTIVE_ACCESS)\n        .collect();\n    items.sort_by(|a, b| {\n        store::evict_score(b, now_ms)\n            .partial_cmp(&store::evict_score(a, now_ms))\n            .unwrap_or(std::cmp::Ordering::Equal)\n    });\n    items.truncate(limit);",
+  "start_line": 244,
+  "end_line": 254,
+  "category": "performance",
+  "severity": "high",
+  "idx": 207
+ },
+ {
+  "path": "src-tauri/src/memory/consolidate.rs",
+  "content": "Scheduler has no shutdown/cancellation and can overlap with manual runs. The spawned loop runs forever with no cancellation token, so on app exit it is dropped mid-LLM-call or mid-transaction (the inner spawn_blocking may still complete in background, producing orphaned DB writes). Independently, while the scheduler is awaiting run_consolidation (LLM call is not under DB_WRITE_LOCK), a manual memory_consolidate_now click issues a parallel LLM call against the same candidate snapshot — only the DB write path is serialized, so you waste API quota and can produce duplicate / interleaved ops that race at id resolution. Add a CancellationToken (or watch channel) the loop selects on alongside the ticker, and an in-flight flag (or DB-level advisory) to suppress the manual run while a scheduled run is active.",
+  "suggestion_code": "pub fn start_consolidation_scheduler(app: AppHandle, cancel: tokio_util::sync::CancellationToken) {\n    tauri::async_runtime::spawn(async move {\n        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(SCHED_TICK_SECS));\n        ticker.tick().await; // 消耗首个立即触发的 tick\n        loop {\n            tokio::select! {\n                _ = ticker.tick() => {}\n                _ = cancel.cancelled() => break,\n            }",
+  "existing_code": "pub fn start_consolidation_scheduler(app: AppHandle) {\n    tauri::async_runtime::spawn(async move {\n        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(SCHED_TICK_SECS));\n        ticker.tick().await; // 消耗首个立即触发的 tick\n        loop {\n            ticker.tick().await;\n            let cfg = crate::bot::load_config(&app)\n                .memory_consolidation\n                .unwrap_or_default();\n            match classify_due(&cfg, now_ms()) {\n                DueVerdict::Off => {}\n                DueVerdict::InitBaseline => persist_last_run(&app),\n                DueVerdict::Run => {\n                    match run_consolidation(&app).await {",
+  "start_line": 528,
+  "end_line": 541,
+  "category": "other",
+  "severity": "high",
+  "idx": 208
+ },
+ {
+  "path": "src-tauri/src/memory/embed.rs",
+  "content": "Every failure path inside `embed_text` collapses to `None` via `.ok()?` with zero logging: tokenizer encode errors, `Tensor::from_array` allocation errors, `Mutex` poisoning, `session.run` ONNX errors, `try_extract_tensor` shape/type mismatches, and the manual `data.len() != seq * EMBED_DIM` check. In production this makes silent embedding degradation completely invisible — the memory subsystem will quietly fall back to keyword-only recall with no telemetry to explain why. At minimum, gate a `log::debug!`/`eprintln!` (consistent with the existing init-time `eprintln!` style) on each path so failures are diagnosable.",
+  "start_line": 0,
+  "end_line": 0,
+  "category": "bug",
+  "severity": "high",
+  "idx": 215
+ },
+ {
+  "path": "src-tauri/src/memory/mod.rs",
+  "content": "Mutex poisoning recovery silently continues after a prior panic. `e.into_inner()` returns the locked guard without clearing the poison flag, so if any prior task panicked mid-transaction (e.g. inside `apply_reflection`'s tx before `commit()`), subsequent operations proceed on potentially inconsistent DB state with no integrity check. Consider treating a poisoned `DB_WRITE_LOCK` as a hard error for write paths (return Err) and only allow recovery for read paths, or at minimum require an admin-initiated reset before resuming writes.",
+  "existing_code": "pub(crate) fn store_lock() -> std::sync::MutexGuard<'static, ()> {\n    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] memory DB_WRITE_LOCK: {e:?}\");\n        e.into_inner()\n    })\n}",
+  "start_line": 117,
+  "end_line": 122,
+  "category": "bug",
+  "severity": "high",
+  "idx": 216
+ },
+ {
+  "path": "src-tauri/src/memory/mod.rs",
+  "content": "Check-then-act race violates the documented \"same key 覆盖\" invariant. `find_by_key_tag` followed by either `update_by_id` or `insert_item_with` runs outside any transaction; two concurrent `remember_fact` calls with the same key can both observe `Ok(None)` and both insert, producing duplicate rows whose `tags[0]` equals the same key. `insert_item_with`'s semantic dedup is by embedding cosine, not by `tags[0]`, so two near-identical simultaneous inserts bypass it. Either wrap find+update/insert in a transaction (with `BEGIN IMMEDIATE` to serialize writers) or enforce a UNIQUE index over `tags[0]` for fact kinds and surface the conflict error.",
+  "existing_code": "        // 同 key 覆盖（保持旧 remember_fact 语义：覆盖更新不堆积、不占新名额）\n        match store::find_by_key_tag(&conn, &key) {\n            Ok(Some(existing)) => {\n                if let Err(e) = store::update_by_id(\n                    &conn,\n                    &existing.id,\n                    &value,\n                    importance,\n                    source,\n                    category_to_kind(category),\n                    emb.as_deref(),\n                    now,\n                ) {\n                    return ToolResult::error(format!(\"失败：{e}\"), Vec::new());\n                }\n                // 「已记住」首字「已」非 error/warn 前缀 → ok\n                ToolResult::ok(format!(\"已记住「{key}」：{value}\"), Vec::new())\n            }\n            Ok(None) => {",
+  "start_line": 467,
+  "end_line": 485,
+  "category": "bug",
+  "severity": "high",
+  "idx": 217
+ },
+ {
+  "path": "src-tauri/src/memory/extract.rs",
+  "content": "Data-loss bug: two extracted facts can both be judged `update` against the same existing memory, causing the first update to be silently overwritten by the second one. `plan_adjudication` runs independently per fact, so a top-1 candidate can appear for multiple facts; `parse_adjudication` only validates the per-index `existing_id` against the candidate and never checks that the same `existing_id` has already been claimed by an earlier entry. `apply_adjudications` then runs two `find_by_id` + `update_by_id` on the same id in order, clobbering the first fact's content/embedding. Track the set of update targets that have already been claimed in this batch and fall back to `New` on a duplicate (semantic dedup at insert time then either merges or inserts a new row, preserving both facts).",
+  "suggestion_code": "            // 同一 existing_id 在本批里只能被 update 一次：先 claim 再判。\n            // 后续 claim 同一 id 降级 New，由 insert_item_with 语义去重兜底，\n            // 避免多条抽取事实判 update 同一目标而互相覆盖丢失。\n            let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();\n            candidates\n                .iter()\n                .enumerate()\n                .map(|(i, cand)| {\n                    let Some(m) = cand else { return Adjudication::New; };\n                    let Some(entry) = entries.iter().find(|e| e[\"index\"].as_u64() == Some(i as u64)) else {\n                        return Adjudication::New;\n                    };\n                    match entry[\"action\"].as_str().map(str::trim) {\n                        Some(\"skip\") => Adjudication::Skip,\n                        Some(\"update\") => match entry[\"existing_id\"].as_str() {\n                            Some(id) if id == m.id && claimed.insert(id.to_string()) => {\n                                Adjudication::Update(m.id.clone())\n                            }\n                            _ => Adjudication::New,\n                        },\n                        _ => Adjudication::New,\n                    }\n                })\n                .collect()",
+  "existing_code": "            match entry[\"action\"].as_str().map(str::trim) {\n                Some(\"skip\") => Adjudication::Skip,\n                Some(\"update\") => match entry[\"existing_id\"].as_str() {\n                    // id 必须精确等于该条候选（防幻觉 id 误改别条记忆）\n                    Some(id) if id == m.id => Adjudication::Update(m.id.clone()),\n                    _ => Adjudication::New,\n                },\n                _ => Adjudication::New, // new / 未知 / 缺 action → 回退 new\n            }",
+  "start_line": 426,
+  "end_line": 434,
+  "category": "bug",
+  "severity": "high",
+  "idx": 218
+ },
+ {
+  "path": "src-tauri/src/memory/rank.rs",
+  "content": "`decay_days` is a public `f64` with no validation. Zero produces `0.0/0.0 = NaN` for same-timestamp items (silently dropped by the `score > 0.0` filter); negative values invert the intended exponential decay and can overflow to `+inf`, letting a single item dominate ranking; `NaN`/`Inf` from upstream config corrupt every score. Either validate (`decay_days.is_finite() && decay_days > 0.0`) in `RankParams::of` or document and treat degenerate values explicitly (e.g. clamp the reciprocal).",
+  "suggestion_code": "pub fn hybrid_score_with(\n    query_kws: &[String],\n    query_emb: Option<&[f32]>,\n    item: &MemItem,\n    now_ms: i64,\n    decay_days: f64,\n) -> f64 {\n    debug_assert!(decay_days.is_finite() && decay_days > 0.0, \"decay_days must be a positive, finite f64\");\n    let decay_days = if decay_days.is_finite() && decay_days > 0.0 { decay_days } else { MEMORY_DECAY_DAYS };\n    let semantic = cosine(query_emb, item.embedding.as_deref()).unwrap_or(0.0);",
+  "existing_code": "pub fn hybrid_score_with(\n    query_kws: &[String],\n    query_emb: Option<&[f32]>,\n    item: &MemItem,\n    now_ms: i64,\n    decay_days: f64,\n) -> f64 {\n    let semantic = cosine(query_emb, item.embedding.as_deref()).unwrap_or(0.0);",
+  "start_line": 120,
+  "end_line": 127,
+  "category": "bug",
+  "severity": "high",
+  "idx": 228
+ },
+ {
+  "path": "src-tauri/src/memory/rank.rs",
+  "content": "`cosine(...).unwrap_or(0.0)` collapses every `None` to a legitimate zero similarity, while the later zero-match guard only checks `query_emb.is_none() || item.embedding.is_none()`. If `cosine` returns `None` for dimension mismatch, zero-norm vector, or non-finite embeddings (instead of \"missing\"), those items bypass the guard and can still receive positive `importance`/`recency` weights, breaking the documented \"zero match → recent fallback\" contract. Audit `cosine`'s `None` semantics and either widen the guard to mirror them or propagate the failure as a typed result.",
+  "suggestion_code": "let semantic = match cosine(query_emb, item.embedding.as_deref()) {\n        Some(s) if s.is_finite() => s,\n        _ => 0.0,\n    };",
+  "existing_code": "let semantic = cosine(query_emb, item.embedding.as_deref()).unwrap_or(0.0);",
+  "start_line": 127,
+  "end_line": 127,
+  "category": "bug",
+  "severity": "high",
+  "idx": 229
+ },
+ {
+  "path": "src-tauri/src/memory/rank.rs",
+  "content": "`(now_ms - base) as f64` performs a raw `i64` subtraction on two caller-supplied timestamps. Extreme or corrupted values from persistent storage can overflow: debug builds panic, release builds wrap and the subsequent `max(0.0)` cannot recover the original magnitude, yielding meaningless ages (and `exp` values). Use `checked_sub`/`saturating_sub` and decide on an explicit policy for invalid ages.",
+  "suggestion_code": "let base = item\n        .last_accessed_at_ms\n        .unwrap_or(item.updated_at_ms)\n        .max(item.updated_at_ms);\n    let age_ms = now_ms.saturating_sub(base).max(0) as f64;\n    let age_days = (age_ms / 86_400_000.0).max(0.0);",
+  "existing_code": "let base = item\n        .last_accessed_at_ms\n        .unwrap_or(item.updated_at_ms)\n        .max(item.updated_at_ms);\n    let age_days = ((now_ms - base) as f64 / 86_400_000.0).max(0.0);",
+  "start_line": 142,
+  "end_line": 146,
+  "category": "bug",
+  "severity": "high",
+  "idx": 230
+ },
+ {
+  "path": "src-tauri/src/memory/store.rs",
+  "content": "The victim DELETE runs in a separate statement before the INSERT, so an INSERT error irreversibly loses the evicted row; also removing only one row per insert never converges when the table already exceeds a lowered capacity (e.g. after tuning capacity is reduced). Wrap the count/victim selection, DELETE, and INSERT in a single transaction and trim down to capacity when needed.",
+  "suggestion_code": "let tx = conn.transaction()?;\nlet count: i64 = tx.query_row(\"SELECT COUNT(*) FROM mem_items\", [], |r| r.get(0))?;\nif count > p.capacity {\n    // remove rows until we are at capacity inside the same transaction\n    for _ in 0..(count - p.capacity) {\n        let victim = pick_victim(&tx, now_ms).ok_or_else(|| \"无可淘汰条目\".to_string())?;\n        tx.execute(\"DELETE FROM mem_items WHERE id = ?1\", [&victim])?;\n    }\n}\ntx.execute(\n    \"INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at, embedding)\n     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)\",\n    rusqlite::params![...],\n)?;\ntx.commit()?;",
+  "existing_code": "fn evict_if_needed(conn: &rusqlite::Connection, now_ms: i64, capacity: i64) -> Result<(), String> {\n    let count: i64 = conn\n        .query_row(\"SELECT COUNT(*) FROM mem_items\", [], |r| r.get(0))\n        .map_err(|e| e.to_string())?;\n    if count < capacity {\n        return Ok(());\n    }\n    let all = load_all(conn)?;\n    let victim = all\n        .iter()\n        .filter(|m| !is_protected(m))\n        .min_by(|a, b| {\n            evict_score(a, now_ms)\n                .partial_cmp(&evict_score(b, now_ms))\n                .unwrap_or(std::cmp::Ordering::Equal)\n        })\n        .map(|m| m.id.clone());\n    match victim {\n        Some(id) => {\n            conn.execute(\"DELETE FROM mem_items WHERE id = ?1\", [&id])\n                .map_err(|e| e.to_string())?;\n            Ok(())\n        }\n        None => Err(format!(\n            \"记忆已达 {MAX_MEM_ITEMS} 条上限且剩余全是受保护的重要记忆（importance=5 用户口述），请先删除不需要的\"\n        )),\n    }\n}",
+  "start_line": 240,
+  "end_line": 267,
+  "category": "bug",
+  "severity": "high",
+  "idx": 234
+ },
+ {
+  "path": "src-tauri/src/memory/store.rs",
+  "content": "Writers accept embeddings of any dimension, with NaN/Inf components, and zero vectors without validation, even though blob_to_embedding rejects malformed blobs on read. Such vectors are persisted and later returned by load_all, silently breaking semantic dedup (cosine returns None) and retrieval while the insert call reports success. Validate length == EMBED_DIM, finiteness, and non‑zero norm at the shared write boundary.",
+  "suggestion_code": "if let Some(v) = embedding {\n    if v.len() != crate::memory::embed::EMBED_DIM\n        || v.iter().any(|x| !x.is_finite())\n        || v.iter().map(|x| (*x as f64).powi(2)).sum::<f64>().sqrt() == 0.0\n    {\n        return Err(\"invalid embedding: wrong dimension, non‑finite, or zero norm\".into());\n    }\n}\n// then proceed with INSERT using the validated vector",
+  "existing_code": "conn.execute(\n        \"INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at, embedding)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)\",\n        rusqlite::params![\n            id,\n            item.kind,\n            item.content,\n            item.tags.join(\",\"),\n            item.importance.clamp(1, 5),\n            item.source,\n            ts_to_text(now_ms),\n            embedding.map(embedding_to_blob),\n        ],\n    )",
+  "start_line": 429,
+  "end_line": 442,
+  "category": "bug",
+  "severity": "high",
+  "idx": 235
+ },
+ {
+  "path": "src-tauri/src/memory/tests.rs",
+  "content": "Cross-key semantic merge overwrites `content` and the full `tags` list, destroying the original key reference (only surfaced via `orig_key`). A semantically-similar write with a different key can silently replace a distinct fact without any source/trust guard. Consider adding a same-key requirement (or stricter source/kind checks) before merge, or at minimum asserting that the target's key can still be looked up after merge.",
+  "suggestion_code": "    // 验证：合并后原 key 仍能查回（原条目应保留 key，不能被新 key 覆盖丢失）\n    let still = store::find_by_key_tag(&conn, \"口味\").unwrap();\n    assert!(still.is_none() || still.unwrap().id == first.id, \"合并丢失了原 key 的可检索性\");\n    // 断言：原 key 必须保留为可命中条目之一（防 hijack）\n    // assert!(store::find_by_key_tag(&conn, \"口味\").unwrap().is_some());",
+  "existing_code": "    let mut second = item(\"fact\", \"用户不吃辣，微辣也不行\");\n    second.tags = vec![\"忌口\".into()];\n    let (r2, hints) = store::insert_item(&conn, &second, Some(&onehot(0)), now + 1).unwrap();\n    assert!(hints.is_empty());\n    let InsertOutcome::Merged { item: m, orig_key } = r2 else {\n        panic!(\"应合并\")\n    };\n    assert_eq!(m.id, first.id, \"合并更新的是同一条\");\n    assert_eq!(m.content, \"用户不吃辣，微辣也不行\");\n    assert_eq!(m.access_count, 1, \"合并刷新访问计数\");\n    assert_eq!(\n        orig_key.as_deref(),\n        Some(\"口味\"),\n        \"orig_key 带出被合并原条目的 key（非新 key）\"\n    );\n    assert_eq!(m.tags, vec![\"忌口\"], \"条目本身 tags 已覆盖为新值\");",
+  "start_line": 50,
+  "end_line": 65,
+  "category": "security",
+  "severity": "high",
+  "idx": 247
+ },
+ {
+  "path": "src-tauri/src/memory/tests.rs",
+  "content": "Near-threshold refusal test only asserts `len == 1` and the outcome variant. It does NOT verify the target row's `content`/`tags` are unchanged. If the implementation performed the merge UPDATE before refusing, the row count stays 1 but the target is silently corrupted and the test would still pass. Add `content` and `tags` assertions on the surviving row.",
+  "suggestion_code": "    let (out, _) = store::insert_item(&conn, &lesson, Some(&tilted(0.95)), now + 1).unwrap();\n    match out {\n        InsertOutcome::RefusedForeignMerge { target_key } => {\n            assert_eq!(target_key, \"偏好\");\n        }\n        other => panic!(\"近阈值高相似也必须拒写防劫持，实得 {other:?}\"),\n    }\n    let all = store::load_all(&conn).unwrap();\n    assert_eq!(all.len(), 1, \"拒写不落库\");\n    assert_eq!(all[0].content, \"用户偏好简短回答\", \"拒写不能改写目标内容\");\n    assert_eq!(all[0].tags, vec![\"偏好\"], \"拒写不能改写目标 tags\");\n}",
+  "existing_code": "    let (out, _) = store::insert_item(&conn, &lesson, Some(&tilted(0.95)), now + 1).unwrap();\n    match out {\n        InsertOutcome::RefusedForeignMerge { target_key } => {\n            assert_eq!(target_key, \"偏好\");\n        }\n        other => panic!(\"近阈值高相似也必须拒写防劫持，实得 {other:?}\"),\n    }\n    assert_eq!(store::load_all(&conn).unwrap().len(), 1, \"拒写不落库\");\n}",
+  "start_line": 686,
+  "end_line": 694,
+  "category": "test",
+  "severity": "high",
+  "idx": 248
+ },
+ {
+  "path": "src-tauri/src/py/audit.rs",
+  "content": "Mutex poison is swallowed and the lock is salvaged via `e.into_inner()`, then execution continues as if nothing happened. If a previous thread panicked mid-write, the log file can be in an inconsistent state (partial line, missing flush, half-rotated file) yet subsequent audit entries will be appended on top of that corruption. For an audit/security log this is a data-integrity hazard — at minimum, log the poisoning to the audit log itself (or to a fallback sink) before recovering, and consider failing the write so the caller knows the audit line was not durably recorded.",
+  "existing_code": "let _g = crate::audit::BOT_LOG_LOCK.lock().unwrap_or_else(|e| {\n        eprintln!(\"[mutex_poisoned] py::audit BOT_LOG_LOCK: {e:?}\");\n        e.into_inner()\n    });",
+  "start_line": 14,
+  "end_line": 17,
+  "category": "other",
+  "severity": "high",
+  "idx": 258
+ },
+ {
+  "path": "src-tauri/src/py/audit.rs",
+  "content": "Both filesystem failures are silently dropped: `if let Ok(mut f) = open_log_append(path)` discards the open error, and `let _ = writeln!(f, \"[{ts}] {safe}\")` discards the write/flush error. For a security/audit trail this is a real data-loss bug — an audit line that fails to open or fails to flush vanishes with no signal to the caller and no fallback record. Surface the error (at least propagate a `Result`, or write a fallback entry to a secondary sink / `eprintln!` with structured context) instead of unconditionally returning `()`.",
+  "existing_code": "if let Ok(mut f) = crate::audit::open_log_append(path) {\n        let ts = chrono::Local::now().format(\"%Y-%m-%d %H:%M:%S\");\n        // 控制字符转义后再落盘：调用方常拼脚本 stdout/stderr（document.rs 的\n        // `out` 等），原文含 \\n 时可伪造审计行；与 api_handlers 访问日志同一 sanitize 口径\n        let safe = crate::api_handlers::ratelimit::sanitize_log_line(line);\n        let _ = writeln!(f, \"[{ts}] {safe}\");\n    }",
+  "start_line": 19,
+  "end_line": 25,
+  "category": "other",
+  "severity": "high",
+  "idx": 259
+ },
+ {
+  "path": "src-tauri/src/py/env.rs",
+  "content": "Per-call working directory is created under `py_runs_root` and never removed. Every successful or failed invocation of `run_dotnet_revisions` permanently leaks a UUID-named directory (plus `params.json`), so disk usage grows unboundedly for any user who triggers the .NET revisions path more than once. Use `tempfile::TempDir` (auto-cleans on drop), or explicitly `std::fs::remove_dir_all(&dir)` in both the success and error arms before returning, so cleanup happens even when `run_python_at` returns `Err`.",
+  "existing_code": "    let dir = crate::py::runtime::py_runs_root().join(uuid::Uuid::new_v4().simple().to_string());\n    if let Err(e) = std::fs::create_dir_all(&dir)\n        .and_then(|_| std::fs::write(dir.join(\"params.json\"), input_json))\n    {\n        crate::py::audit::py_audit(\n            app,\n            &format!(\"doc_revisions_dotnet err | kind=setup_fail | {e}\"),\n        );\n        return None;\n    }",
+  "start_line": 200,
+  "end_line": 209,
+  "category": "bug",
+  "severity": "high",
+  "idx": 263
+ },
+ {
+  "path": "src-tauri/src/py/io.rs",
+  "content": "`drain_output` uses stringly-typed dispatch (`if kind == \"out\"`) and returns a 4-tuple `(String, String, bool, bool)` of anonymous values. A typo or new variant on the producer side silently misroutes stdout into stderr, and the call sites must remember which bool is \"got==2\" vs \"truncated\". Replace the `&'static str` channel tag with a shared enum (e.g. `enum Stream { Stdout, Stderr }`) and return a small named struct so the contract is self-evident and type-checked.",
+  "existing_code": "pub fn drain_output(\n    rx: &std::sync::mpsc::Receiver<(&'static str, Vec<u8>, bool)>,\n    grace: Duration,\n) -> (String, String, bool, bool) {\n    let deadline = Instant::now() + grace;\n    let mut stdout = String::new();\n    let mut stderr = String::new();\n    let mut truncated = false;\n    let mut got = 0;\n    while got < 2 {\n        let remain = deadline.saturating_duration_since(Instant::now());\n        if remain.is_zero() {\n            break;\n        }\n        match rx.recv_timeout(remain) {\n            Ok((kind, buf, tr)) => {\n                got += 1;\n                truncated |= tr;\n                let text = String::from_utf8_lossy(&buf).into_owned();\n                if kind == \"out\" {\n                    stdout = text;\n                } else {\n                    stderr = text;\n                }\n            }\n            Err(_) => break,\n        }\n    }\n    (stdout, stderr, got == 2, truncated)\n}",
+  "start_line": 45,
+  "end_line": 74,
+  "category": "bug",
+  "severity": "high",
+  "idx": 264
+ },
+ {
+  "path": "src-tauri/src/py/io.rs",
+  "content": "`read_capped_drain` swallows the read error: when `read_to_end` fails mid-stream, `buf` is returned with `truncated == false`, so callers cannot distinguish a complete-but-truncated read from an interrupted read that left output incomplete (the comment explicitly warns about \"假完整\" output). Surface the failure — e.g. return `(Vec<u8>, TruncationStatus)` with a `Complete | Truncated | Interrupted` enum, or return `io::Result<(Vec<u8>, bool)>` — so the caller is forced to handle it instead of silently shipping partial output to the user.",
+  "existing_code": "if let Err(e) = probe.read_to_end(&mut buf) {\n        eprintln!(\"[py::io] read_capped_drain 读取中断（输出可能不完整）：{e}\");\n    }\n    let truncated = buf.len() > cap;\n    if truncated {\n        buf.truncate(cap);\n        let _ = std::io::copy(&mut probe.into_inner(), &mut std::io::sink());\n    }\n    (buf, truncated)",
+  "start_line": 14,
+  "end_line": 22,
+  "category": "bug",
+  "severity": "high",
+  "idx": 265
+ },
+ {
+  "path": "src-tauri/src/py/io.rs",
+  "content": "`join_reader_threads` silently detaches the reader thread on timeout: after logging the leak it drops the `JoinHandle` via the `for` loop iteration end, leaving the OS thread running. Because the reader typically owns the `Sender` end of an `mpsc::channel` (and the child's stdout/stderr pipes), a still-running reader will block forever on its next `send` once the receiver is dropped, and the child's pipe FDs / handles stay live in the kernel — producing exactly the kind of \"reader_leaked\" accumulation this function tries to surface. Either close the receiver-side explicitly before/after the timeout (so the sender errors out and the reader exits), or have the reader thread observe a shared shutdown signal so it actually terminates.",
+  "existing_code": "pub fn join_reader_threads(\n    out_handle: std::thread::JoinHandle<()>,\n    err_handle: std::thread::JoinHandle<()>,\n    audit: &mut dyn FnMut(&str),\n) {\n    let deadline = Instant::now() + READER_JOIN_TIMEOUT;\n    for (kind, h) in [(\"stdout\", out_handle), (\"stderr\", err_handle)] {\n        loop {\n            if h.is_finished() {\n                let _ = h.join();\n                break;\n            }\n            if Instant::now() >= deadline {\n                audit(&format!(\n                    \"run_python err | kind=reader_timeout | reader={kind} | join 超时（reader_leaked），已 detach\"\n                ));\n                break;\n            }\n            std::thread::sleep(Duration::from_millis(10));\n        }\n    }\n}",
+  "start_line": 78,
+  "end_line": 99,
+  "category": "bug",
+  "severity": "high",
+  "idx": 266
+ },
+ {
+  "path": "src-tauri/src/py/harvest.rs",
+  "content": "TOCTOU between the symlink check and the subsequent `rename`/`copy_rec`: `symlink_metadata(&src)` is consulted, then later `std::fs::rename(&src, &dest)` (or `copy_rec`) acts on the same path with no atomic guarantee. A concurrent writer can swap a regular file for a symlink inside that window — and the very comment above the check explicitly acknowledges that `rename` would then move the symlink itself into `AI_Gen_Files` while its target stays outside `dir`, defeating the defence. Resolve once and operate on the same handle (e.g. `DirEntry` + `renameat`/`renameat2` with `RENAME_NOREPLACE`, or open with `O_NOFOLLOW` and use `renameat` on the fd) instead of re-stat'ing the path.",
+  "existing_code": "let is_symlink = std::fs::symlink_metadata(&src)\n            .map(|m| m.file_type().is_symlink())\n            .unwrap_or(false);\n        if is_symlink {\n            audit(&format!(\n                \"run_python | harvest 跳过符号链接：{}\",\n                src.display()\n            ));\n            continue;\n        }\n        let dest = dedup_dest(gen_dir, &name);",
+  "start_line": 24,
+  "end_line": 34,
+  "category": "security",
+  "severity": "high",
+  "idx": 267
+ },
+ {
+  "path": "src-tauri/src/py/harvest.rs",
+  "content": "`copy_rec` aborts via `?` on the first failing child, but the just-created `dest` directory plus any successfully-copied siblings stay on disk. That contradicts the harvest-rollback path's whole rationale of \"no orphan copies\". Track whether `create_dir_all(dest)` ran and, on any recursion error, `remove_dir_all(dest)` before propagating the error so callers see a clean all-or-nothing copy.",
+  "existing_code": "if meta.is_dir() {\n        std::fs::create_dir_all(dest)?;\n        for e in std::fs::read_dir(src)? {\n            let e = e?;\n            copy_rec(&e.path(), &dest.join(e.file_name()))?;\n        }\n        Ok(())\n    } else {\n        std::fs::copy(src, dest).map(|_| ())\n    }",
+  "start_line": 90,
+  "end_line": 99,
+  "category": "bug",
+  "severity": "high",
+  "idx": 268
+ },
+ {
+  "path": "src-tauri/src/py/harvest.rs",
+  "content": "`sweep_stale_py_runs_in` reports a misleading count: `removed += 1` runs whether or not `std::fs::remove_dir_all(&p)` actually succeeded (the error is discarded by `let _`). Permission errors, locked files on Windows, or transient I/O issues are silently counted as successes and never reach `py_audit`. Increment only on `Ok`, and surface failures — either a second counter for `failed` or per-entry audit lines — so operators can see when stale dirs can't be reaped.",
+  "existing_code": "if stale {\n            let _ = std::fs::remove_dir_all(&p);\n            removed += 1;\n        }",
+  "start_line": 137,
+  "end_line": 140,
+  "category": "bug",
+  "severity": "high",
+  "idx": 269
+ },
+ {
+  "path": "src-tauri/src/py/document.rs",
+  "content": "Excel formula-injection guard is incomplete: the comment itself names the threat (WEBSERVICE/DDE on open), but the runtime check only catches cells whose openpyxl data_type is `'f'`. (1) When the model emits values like `'+1+1'`, `'-2+3'`, `'@SUM(...)'` Excel/Calc still evaluate them on open, and openpyxl may persist them as string `'s'` (or worse, as `'f'`) depending on value origin. (2) The guard inspects only the last appended row (`ws[ws.max_row]`); cells added via direct assignment, merges, or later `ws.append` calls later in the iteration are not re-scanned. Recommend sanitizing any string cell value whose first char is in `=+-@` (or its trimmed form starts with one) at write time, and applying the guard to every cell of the appended row (e.g. iterate `ws[ws.max_row]` after each append AND a final sweep over all populated cells).",
+  "suggestion_code": "# 仅最近追加的一行；扫描整行避免 ws.append 多列或后续 set 漏判\n        for c in ws[ws.max_row]:\n            v = c.value\n            if isinstance(v, str) and v.lstrip().startswith(('=', '+', '-', '@')):\n                c.value = \"'\" + v  # 加单引号强制文本，Excel 显示原样且不求值\n                c.data_type = 's'\n            elif c.data_type == 'f':\n                c.data_type = 's'",
+  "existing_code": "for c in ws[ws.max_row]:\n            if c.data_type == 'f':\n                c.data_type = 's'",
+  "start_line": 542,
+  "end_line": 544,
+  "category": "security",
+  "severity": "high",
+  "idx": 270
+ },
+ {
+  "path": "src-tauri/src/py/document.rs",
+  "content": "`file_path_to_string` returns the raw URL for the `Url` variant (e.g. `file:///home/u/a.docx`). That string is then handed to `EXTRACT_SCRIPT` and `MAKE_DOCX_REVISIONS_SCRIPT`, both of which call `os.path.exists(p)` / `docx.Document(p)` / `shutil.copyfile(path, out)`. On POSIX `os.path.exists(\"file:///...\")` is always False, so the script falls through to the \"缺少原文\" error path even when the user selected a real file via a system dialog that returns the URL form. Convert to a filesystem path (e.g. `url.to_file_path()` / strip the `file://` scheme) before returning, or only return `Some` for the `Path` variant.",
+  "suggestion_code": "pub fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {\n    match p {\n        tauri_plugin_dialog::FilePath::Path(pb) => pb.to_str().map(|s| s.to_string()),\n        tauri_plugin_dialog::FilePath::Url(u) => u\n            .to_file_path()\n            .ok()\n            .and_then(|pb| pb.to_str().map(|s| s.to_string())),\n    }\n}",
+  "existing_code": "pub fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {\n    match p {\n        tauri_plugin_dialog::FilePath::Path(pb) => pb.to_str().map(|s| s.to_string()),\n        tauri_plugin_dialog::FilePath::Url(u) => Some(u.to_string()),\n    }\n}",
+  "start_line": 954,
+  "end_line": 959,
+  "category": "bug",
+  "severity": "high",
+  "idx": 271
+ },
+ {
+  "path": "src-tauri/src/py/runtime.rs",
+  "content": "Latent bug in `py_gate_acquire_inner`: the second EXITING branch (`*avail += 1`) increments the permit count without a preceding decrement. The comment claims \"归还许可\" (return permit) but no permit was taken, so if this branch were ever reached under different locking semantics it would leak a phantom permit and let an extra task past the gate. Currently unreachable because both EXITING checks run under the same `PY_PERMITS` mutex guard (the atomic value cannot change between them), but the code does not match its documented intent and is a maintenance hazard.",
+  "suggestion_code": "        if *avail > 0 {\n            *avail -= 1; // tentatively acquire before final EXITING check\n            if check_exiting && EXITING.load(std::sync::atomic::Ordering::SeqCst) {\n                *avail += 1;\n                drop(avail);\n                PY_PERMITS_CV.notify_one();\n                return Err(CommandError::DomainRule {\n                    domain: \"python\".to_string(),\n                    reason: \"应用正在退出，不再启动新的 Python 任务\".to_string(),\n                });\n            }\n            return Ok(PyGateGuard { acquired: true });\n        }",
+  "existing_code": "        if *avail > 0 {\n            // EXITING 复查②（拿到许可后终检）：等待期间退出标志可能置位，\n            // 置位即归还许可并拒绝——不 spawn 无人收割的孤儿进程\n            if check_exiting && EXITING.load(std::sync::atomic::Ordering::SeqCst) {\n                *avail += 1;\n                drop(avail);\n                PY_PERMITS_CV.notify_one();\n                return Err(CommandError::DomainRule {\n                    domain: \"python\".to_string(),\n                    reason: \"应用正在退出，不再启动新的 Python 任务\".to_string(),\n                });\n            }\n            *avail -= 1;\n            return Ok(PyGateGuard { acquired: true });\n        }",
+  "start_line": 357,
+  "end_line": 371,
+  "category": "bug",
+  "severity": "high",
+  "idx": 285
+ },
+ {
+  "path": "src-tauri/dotnet/WmDocxRevisions/Program.cs",
+  "content": "Output safety / fallback cleanup bug: if `originalPath == outPath`, `File.Copy` throws (\"source and destination must not be the same\") and the catch then calls `File.Delete(outPath)` — which deletes the user's source document. Separately, when `ReviseInPlace` throws, the partially-edited `outPath` is left in place and `WordprocessingDocument.Create` refuses to overwrite existing files, so the documented \"guaranteed fallback\" silently fails. Guard against `PathsEqual(originalPath, outPath)` and delete the partial output in the second catch as well.",
+  "suggestion_code": "    if (string.Equals(Path.GetFullPath(originalPath),\n                       Path.GetFullPath(outPath),\n                       StringComparison.OrdinalIgnoreCase))\n    {\n        Console.Error.WriteLine(\"original_path 与 out 不可相同（避免就地破坏源文件）\");\n        canInPlace = false;\n    }\n    else if (canInPlace)\n    {\n        try { File.Copy(originalPath, outPath, overwrite: true); }\n        catch (Exception ex)\n        {\n            Console.Error.WriteLine($\"复制原文失败（回退新建模式）：{ex.Message}\");\n            try { if (File.Exists(outPath)) File.Delete(outPath); } catch { }\n            canInPlace = false;\n        }\n    }\n...\n    catch (Exception ex)\n    {\n        Console.Error.WriteLine($\"就地修订失败（回退新建模式）：{ex.Message}\");\n        try { if (File.Exists(outPath)) File.Delete(outPath); } catch { }\n    }",
+  "existing_code": "    try\n    {\n        File.Copy(originalPath, outPath, overwrite: true);\n    }\n    catch (Exception ex)\n    {\n        Console.Error.WriteLine($\"复制原文失败（回退新建模式）：{ex.Message}\");\n        // 拷贝半途失败会留下截断的 outPath，而 OpenXML Create 对已存在路径直接抛异常，\n        // 不清掉的话回退新建模式也会失败\n        try { if (File.Exists(outPath)) File.Delete(outPath); } catch { /* 尽力清理 */ }\n        canInPlace = false;\n    }\n}\nif (canInPlace)\n{\n    try\n    {\n        ReviseInPlace(outPath, revised, NextId);\n        Console.WriteLine($\"已生成（修订模式·保留原文格式，原文取自文件）：{outPath}\");\n        return 0;\n    }\n    catch (Exception ex)\n    {\n        // 就地失败（文件损坏/结构异常）不硬挂：回退新建模式，保证有产物\n        Console.Error.WriteLine($\"就地修订失败（回退新建模式）：{ex.Message}\");\n    }\n}",
+  "start_line": 60,
+  "end_line": 86,
+  "category": "bug",
+  "severity": "critical",
+  "idx": 0
+ },
+ {
+  "path": "src-tauri/dotnet/WmDocxRevisions/Program.cs",
+  "content": "Leading-insertion position bug: the comment claims a null anchor inserts at the body start, but `body.InsertBefore(para, sect)` puts the paragraph immediately before the section properties — which is the LAST direct child of the body, not the first. `body.Append` likewise appends to the end. New leading content silently lands at the document tail. Insert before the first body child instead.",
+  "suggestion_code": "    if (anchor == null)\n    {\n        var first = body.ChildElements\n            .FirstOrDefault(e => e is not SectionProperties);\n        if (first != null) body.InsertBefore(para, first);\n        else body.InsertAt(para, 0);\n    }\n    else\n    {\n        anchor.InsertAfterSelf(para);\n    }",
+  "existing_code": "    if (anchor == null)\n    {\n        var sect = body.Elements<SectionProperties>().FirstOrDefault();\n        if (sect != null) body.InsertBefore(para, sect);\n        else body.Append(para);\n    }\n    else\n    {\n        anchor.InsertAfterSelf(para);\n    }\n    return para;",
+  "start_line": 478,
+  "end_line": 488,
+  "category": "bug",
+  "severity": "high",
+  "idx": 1
+ },
+ {
+  "path": "src-tauri/dotnet/WmDocxRevisions/Program.cs",
+  "content": "Non-text run fidelity loss: `UnwrapHyperlinks` permanently removes `w:hyperlink` wrappers so rejecting a revision cannot restore hyperlink targets (only the rPr/Hyperlink style remains). `MarkParagraphDeleted` / `ReviseParagraph` also rebuild runs containing any text using `RunWithText`, which drops `w:sym`, `w:drawing`, `w:footnoteReference`, `w:noBreakHyphen` (mapped to plain `-`), `w:tab`/`w:posTab` distinctions, field-code runs (`w:instrText` / `w:fldChar`), and SDT/customXml content. `InnerRuns` likewise ignores existing `w:ins` / `w:del` wrappers, so the diff is computed against an \"accepted\" view of the source. Consider preserving hyperlink wrappers around the inserted/deleted runs (they are legal inside `w:ins`/`w:del`) and emitting untouched run children verbatim instead of reconstructing them from `RunText`.",
+  "suggestion_code": "static void MarkParagraphDeleted(Paragraph para, Func<int> nextId)\n{\n    // 保留 hyperlink 包裹，仅在每个直接 run 内部包 w:del\n    foreach (var h in para.Elements<Hyperlink>().ToList())\n        foreach (var r in h.Elements<Run>().Where(r => RunText(r).Length > 0).ToList())\n            h.ReplaceChild(MakeDel(RunText(r), r.RunProperties, nextId), r);\n    foreach (var r in para.Elements<Run>().Where(r => RunText(r).Length > 0).ToList())\n        para.ReplaceChild(MakeDel(RunText(r), r.RunProperties, nextId), r);\n}",
+  "existing_code": "static void MarkParagraphDeleted(Paragraph para, Func<int> nextId)\n{\n    UnwrapHyperlinks(para);\n    foreach (var child in para.ChildElements.ToList())\n    {\n        if (child is Run r && RunText(r).Length > 0)\n            para.ReplaceChild(MakeDel(RunText(r), r.RunProperties, nextId), r);\n    }\n}",
+  "start_line": 381,
+  "end_line": 389,
+  "category": "bug",
+  "severity": "high",
+  "idx": 2
+ },
+ {
+  "path": "src-tauri/dotnet/WmDocxRevisions/Program.cs",
+  "content": "Table-row revisions are not structural: a row \"deletion\" only wraps the text of each cell paragraph in `w:del` — the row itself is never marked via `<w:trPr><w:del .../>`, so accepting the revision leaves a visibly-empty row in the table. Conversely, row-count changes are emitted by `InsertRevisedParagraph` as ordinary body paragraphs (not new `w:tr` rows with cell paragraphs), and the cell-count mismatch fallback deletes the row and inserts a plain paragraph — destroying the table structure entirely. Use `w:trPr/w:del`/`w:ins` on the row for deletions, and construct real `w:tr` rows (with cells) when the diff asks for a new or replaced row.",
+  "suggestion_code": "        case RowUnit ru:\n            // 在 w:trPr 内加 w:del 才是真正的「行删除」修订\n            ru.Row.TableRowProperties ??= new TableRowProperties();\n            ru.Row.TableRowProperties.PrependChild(\n                new Deleted { Id = nextId().ToString(), Author = Author });\n            // 单元格内可见文本仍走 w:del，便于拒绝时回滚显示\n            foreach (var cell in ru.Row.Elements<TableCell>())\n                foreach (var para in cell.Elements<Paragraph>())\n                    MarkParagraphDeleted(para, nextId);\n            break;",
+  "existing_code": "static void DeleteUnit(Unit unit, Func<int> nextId)\n{\n    switch (unit)\n    {\n        case ParaUnit pu:\n            MarkParagraphDeleted(pu.Para, nextId);\n            break;\n        case RowUnit ru:\n            foreach (var cell in ru.Row.Elements<TableCell>())\n                foreach (var para in cell.Elements<Paragraph>())\n                    MarkParagraphDeleted(para, nextId);\n            break;\n    }\n}",
+  "start_line": 320,
+  "end_line": 333,
+  "category": "bug",
+  "severity": "high",
+  "idx": 3
+ },
+ {
+  "path": "src-tauri/dotnet/WmDocxRevisions/Program.cs",
+  "content": "Unbounded LCS allocation for paragraph-level diff: `DiffList` always materializes an `(n+1)*(m+1)` `int` matrix with no size cap, unlike `DiffText` which limits itself to 4M cells. With untrusted or large documents (paragraph counts in the tens of thousands), `int[n+1, m+1]` can exceed available memory and crash the process — also a denial-of-service surface if the CLI is fed arbitrary JSON. Apply the same `MaxCells` cap (or fall back to a coarse replace opcode) as `DiffText` does.",
+  "suggestion_code": "static List<Opcode> DiffList<T>(IReadOnlyList<T> a, IReadOnlyList<T> b) where T : IEquatable<T>\n{\n    int n = a.Count, m = b.Count;\n    const long MaxCells = 4_000_000; // 与 DiffText 同口径\n    if ((long)n * m > MaxCells)\n    {\n        Console.Error.WriteLine($\"warn: 段落数过多（{n}×{m}），段落级 diff 退化为整段替换\");\n        return new List<Opcode> { new Opcode(\"replace\", 0, n, 0, m) };\n    }\n    var dp = new int[n + 1, m + 1];\n    ...",
+  "existing_code": "static List<Opcode> DiffList<T>(IReadOnlyList<T> a, IReadOnlyList<T> b) where T : IEquatable<T>\n{\n    int n = a.Count, m = b.Count;\n    // LCS 长度表（从右下角往回递推）\n    var dp = new int[n + 1, m + 1];\n    for (int i = n - 1; i >= 0; i--)\n        for (int j = m - 1; j >= 0; j--)\n            dp[i, j] = a[i].Equals(b[j]) ? dp[i + 1, j + 1] + 1 : Math.Max(dp[i + 1, j], dp[i, j + 1]);",
+  "start_line": 614,
+  "end_line": 621,
+  "category": "performance",
+  "severity": "high",
+  "idx": 4
+ }
+]

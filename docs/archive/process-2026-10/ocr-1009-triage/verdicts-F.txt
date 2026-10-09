@@ -1,0 +1,42 @@
+255|PARTIAL|同 id 双跑竞态 committed 可清成 cleared；UPDATE 加 AND state='pending'
+256|PARTIAL|不成对代理项 U+FFFD；String::from_utf16 + map_err
+257|PARTIAL|同 256 BE 分支
+260|PARTIAL|唯一写入点只含 ids 键；clone 原 payload 仅改 ids
+261|WONTFIX|量级小且幂等自愈
+262|PARTIAL|N+1 规模小；单查建 HashSet
+272|ALREADY_HANDLED|S1-⑩ avatar 归一已修
+273|PARTIAL|清理环移到 rename 成功后
+274|PARTIAL|rename 提前+save 失败回滚
+275|REAL|锁内发现已有 person_id 仍用本地 pid 返回，双 is_self 行；取 data.person_id 为 canonical
+276|PARTIAL|同权限用户无越权边界；可选 symlink_metadata
+277|WONTFIX|无 fs 沙箱是文档化设计
+278|WONTFIX|规则条目即产品行为
+279|WONTFIX|持锁防缓存击穿拍板
+280|PARTIAL|ABA 前提不可达（裸 uuid session）
+281|WONTFIX|warn 覆盖既定策略
+282|WONTFIX|位置纪律注释明示
+284|WONTFIX|include! 双注册无共享状态
+286|WONTFIX|一次性事件无循环重试面
+287|PARTIAL|TOCTOU 后果仅标签失真；prelude 记 updated_at 锁内比对
+288|WONTFIX|广播未修改行现值无害
+291|ALREADY_HANDLED|0600 + gitignore 已修（S1-⑥）
+294|REAL|停止/超时在 trace 恒记 done；end_trace 加 stop 标志三态化
+295|PARTIAL|registry 移除挪到 trace_finish 成功后
+296|PARTIAL|单语句无 RMW，WAL 兜底
+297|WONTFIX|批小事务已串行化
+299|WONTFIX|纯理论窗口
+300|WONTFIX|current-thread 串行化是故意
+301|ALREADY_HANDLED|三场景合并单测试已对策
+302|PARTIAL|无外键顺序无碍；DELETE 包 lock_db_write
+303|PARTIAL|潜在误红陷阱；json! 构造或补转义
+315|WONTFIX|vendor 补丁有标记
+316|WONTFIX|sccache 前置已拍板留禁用法
+341|FALSE_POSITIVE|类型推导非隐式 any
+343|FALSE_POSITIVE|esbuild shim __dirname
+413|WONTFIX|hooksPath 由安装脚本保证
+414|FALSE_POSITIVE|根 gitignore 全局生效
+415|WONTFIX|/README.txt 锚定一行（整洁度）
+416|WONTFIX|清单按本仓定制
+417|FALSE_POSITIVE|同步源逐条一致
+418|WONTFIX|不存在的产物类型
+419|WONTFIX|非本仓 setup

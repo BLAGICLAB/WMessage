@@ -1,0 +1,263 @@
+[
+ {
+  "path": "scripts/sync-lobe-icons.mjs",
+  "content": "No error handling for missing vendor package: readdirSync(src) will throw an unhandled ENOENT when @lobehub/icons-static-svg is not installed (e.g., optional peer in CI, fresh clone without `npm install`, monorepo hoisting edge cases). Add an existence check (existsSync) and a friendly message, or wrap the whole script body in try/catch with a non-zero exit so CI fails loudly instead of with a raw stack trace.",
+  "suggestion_code": "import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from \"node:fs\";\n\nconst src = join(root, \"node_modules/@lobehub/icons-static-svg/icons\");\nconst dest = join(root, \"src/assets/providers/lobe\");\n\nif (!existsSync(src)) {\n  console.error(`sync-lobe-icons: source not found at ${src}; run \\`npm install\\` or check @lobehub/icons-static-svg version.`);\n  process.exit(1);\n}",
+  "existing_code": "const src = join(root, \"node_modules/@lobehub/icons-static-svg/icons\");\nconst dest = join(root, \"src/assets/providers/lobe\");",
+  "start_line": 10,
+  "end_line": 11,
+  "category": "bug",
+  "severity": "high",
+  "idx": 6
+ },
+ {
+  "path": "scripts/sync-version.mjs",
+  "content": "readFileSync and JSON.parse have no try/catch. If src-tauri/Cargo.toml or package.json is missing/unreadable, or package.json contains malformed JSON, the script aborts with a raw Node stack trace (e.g., `SyntaxError: Unexpected token ...`) instead of the friendly `[sync-version] ...` messages elsewhere in the script. Wrap the I/O + parse in try/catch and emit a clear localized error (e.g., `无法读取 <path>: <err.message>`) so contributors can diagnose without reading V8 internals.",
+  "suggestion_code": "let pkg;\ntry {\n  pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));\n} catch (err) {\n  console.error(`[sync-version] 无法读取或解析 ${pkgPath}: ${err.message}`);\n  process.exit(1);\n}",
+  "existing_code": "const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));",
+  "start_line": 29,
+  "end_line": 29,
+  "category": "bug",
+  "severity": "high",
+  "idx": 7
+ },
+ {
+  "path": "tests-audit/audit_error_codes.py",
+  "content": "Module-level `.read_text()` calls turn a missing or unreadable source file into a collection-time `FileNotFoundError` stack trace, defeating the careful per-test guidance the rest of the suite provides (\"Rust 侧改 src-tauri/src/error.rs, 前端同步 src/lib/errorHandler.ts\"). Move the reads inside helper functions (or wrap in a fixture with a clear skip/fail message) so a missing file produces a per-test failure with actionable diagnostics instead of crashing `pytest --collect`.",
+  "suggestion_code": "ROOT = Path(__file__).resolve().parent.parent\nERROR_RS_PATH = ROOT / \"src-tauri/src/error.rs\"\nERROR_HANDLER_TS_PATH = ROOT / \"src/lib/errorHandler.ts\"\n\n\ndef _read_or_skip(path: Path) -> str | None:\n    try:\n        return path.read_text()\n    except FileNotFoundError:\n        pytest.skip(f\"audit source missing: {path}\")\n        return None\n# reads moved into rust_codes()/ts_codes() via _read_or_skip()",
+  "existing_code": "ERROR_RS = (ROOT / \"src-tauri/src/error.rs\").read_text()\nERROR_HANDLER_TS = (ROOT / \"src/lib/errorHandler.ts\").read_text()",
+  "start_line": 22,
+  "end_line": 23,
+  "category": "maintainability",
+  "severity": "high",
+  "idx": 8
+ },
+ {
+  "path": "tests-audit/audit_error_codes.py",
+  "content": "All three regexes use `[A-Z_]+`, so any future code containing digits (e.g. `HTTP_404`, `INVALID_ARG_2`) or lowercase letters is silently dropped — `test_rust_enum_has_codes_and_no_duplicates` will still pass because `rust_codes()` only sees the partial set, and `test_frontend_union_matches_rust_enum` will then report a phantom \"Rust 独有 / 前端独有\" mismatch blaming the wrong side. This is a false negative on the cross-language gate; widen the character class (e.g. `[A-Z0-9_]+` or `r\"[A-Z][A-Z0-9_]*\"`) to match the actual wire-protocol naming policy.",
+  "suggestion_code": "return re.findall(r'#\\[serde\\(rename = \"([A-Z][A-Z0-9_]*)\"\\)\\]', body)",
+  "existing_code": "return re.findall(r'#\\[serde\\(rename = \"([A-Z_]+)\"\\)\\]', body)",
+  "start_line": 35,
+  "end_line": 35,
+  "category": "bug",
+  "severity": "high",
+  "idx": 9
+ },
+ {
+  "path": "tests-audit/audit_error_codes.py",
+  "content": "`ts_codes()` re-runs `re.findall(r'\"([A-Z_]+)\"', body)` over the raw slice between `export type CommandErrorCode =` and the next `;`, so a JSDoc or `// ...` comment inside that slice (e.g. `// legacy alias \"FOO_BAR\"`) is silently captured as a real code, polluting both the set comparison and the order assertion with no diagnostic hint that the extra string came from a comment. Strip `//` and `/* */` from the slice (or tokenize the TS body) before extracting literals.",
+  "suggestion_code": "body = ERROR_HANDLER_TS[start:end]\n    body = re.sub(r\"//[^\\n]*\", \"\", body)            # strip line comments\n    body = re.sub(r\"/\\*.*?\\*/\", \"\", body, flags=re.S)  # strip block comments\n    return re.findall(r'\"([A-Z][A-Z0-9_]*)\"', body)",
+  "existing_code": "body = ERROR_HANDLER_TS[start:end]\n    return re.findall(r'\"([A-Z_]+)\"', body)",
+  "start_line": 42,
+  "end_line": 43,
+  "category": "bug",
+  "severity": "high",
+  "idx": 10
+ },
+ {
+  "path": "tests-audit/audit_tauri_bridge.py",
+  "content": "`registered_plugins` only matches `tauri_plugin_xxx::init`. Modern tauri plugins are commonly registered with `tauri_plugin_xxx::Builder::new()...build()` (e.g. `tauri_plugin_log::Builder::new().build()`); those `.plugin(...)` calls will be silently dropped from the registered set, and `test_plugin_calls_have_registered_plugin` will then falsely fail with \"plugin not registered\" on a correct codebase. Either generalise the regex (e.g. accept `tauri_plugin_(\\w+)::(?:init|Builder)`) or also scan inside `.plugin(...)` argument lists.",
+  "suggestion_code": "def registered_plugins():\n    \"\"\"lib.rs .plugin(...) 注册的插件集合（plugin: 名用连字符）\"\"\"\n    return {\n        m.group(1).replace(\"_\", \"-\")\n        for m in re.finditer(r\"tauri_plugin_(\\w+)::(init|Builder)\", LIB_RS)\n    }",
+  "existing_code": "def registered_plugins():\n    \"\"\"lib.rs .plugin(tauri_plugin_xxx::init(...)) 注册集合（plugin: 名用连字符）\"\"\"\n    return {\n        m.group(1).replace(\"_\", \"-\")\n        for m in re.finditer(r\"tauri_plugin_(\\w+)::init\", LIB_RS)\n    }",
+  "start_line": 62,
+  "end_line": 67,
+  "category": "bug",
+  "severity": "high",
+  "idx": 11
+ },
+ {
+  "path": "tests-audit/audit_tauri_bridge.py",
+  "content": "The closure emit regex `(?<![\\w.])emit\\(\"...\"` has no awareness of comments, doc-comments (`/// calls emit(\"foo\") …`) or raw string literals (e.g. `r\"emit(\"foo\")\"`). All of those populate `backend` with events that are never actually emitted at runtime, so `test_listened_events_have_emitter` will pass even when a real `emit(...)` has been removed/commented out, masking listener-without-emitter bugs. Consider stripping Rust line/doc comments and raw strings before scanning, or restricting matches to inside `fn`/`let emit =` blocks.",
+  "existing_code": "# bot_model_loop 等处的注入闭包：let emit = |event, payload| ... emit(\"e\", ...)\n        for m in re.finditer(r'(?<![\\w.])emit\\(\\s*\"([^\"]+)\"', t):\n            backend.setdefault(m.group(1), f)",
+  "start_line": 78,
+  "end_line": 80,
+  "category": "bug",
+  "severity": "high",
+  "idx": 12
+ },
+ {
+  "path": "tests-audit/audit_tauri_bridge.py",
+  "content": "`frontend_invokes` only matches a hard-coded double-quoted literal with at most one generic level: `<[^>]*>` rejects nested generics such as `invoke<Promise<MyType>>(\"foo\")`; template literals (`invoke(\\`cmd_${id}\\`)`), single quotes, and indirect dispatch (`const c = \"foo\"; invoke(c)`) are all skipped. The whole point of this audit is to catch \"frontend calls an unregistered command\" at lint time, so silently dropping these patterns means real production invokes against unregistered commands become false negatives. Either broaden the regex to accept single quotes and template literals, or add a fallback AST-based scan.",
+  "existing_code": "def frontend_invokes():\n    \"\"\"src/ 里 invoke(\"...\") / invoke<T>(\"...\") 的字面量命令名\"\"\"\n    out = {}  # name -> file\n    for f, t in TS_SRC.items():\n        for m in re.finditer(r'\\binvoke(?:<[^>]*>)?\\(\\s*\"([^\"]+)\"', t):\n            out.setdefault(m.group(1), f)\n    return out",
+  "start_line": 44,
+  "end_line": 50,
+  "category": "bug",
+  "severity": "high",
+  "idx": 13
+ },
+ {
+  "path": "tests-audit/audit_evolution_layering.py",
+  "content": "Raw strings `r#\"...\"#` (and `r##\"...\"##`, `br#\"...\"#`) are not recognized. The handler enters string mode at the first `\"` and exits at the next, so embedded `\"` characters leak source text into the cleaned output. Example: `r#\"x \"thread_rng\" y\"#` becomes `r#` + stripped `\"x \"` + `thread_rng` + stripped `\" y\"` + `#`, leaving `thread_rng` in the cleaned text — this would produce a false positive for an audit gate whose entire purpose is to flag exactly this token. Same hazard for false negatives on `evolution::strategy` if a data-layer file wrapped a strategy reference inside a raw string to bypass the linter.",
+  "suggestion_code": "elif c == '\"':\n            # 识别 r\"/br\"/r#\"/br# 等原始字符串前缀（含任意数量 #）。\n            # 原字符进入字符串模式后，必须等到匹配的 \"#...#\" 才退出，\n            # 否则嵌入的 \" 会让后续源码泄漏到 cleaned 文本里。\n            prefix_start = i\n            j = i - 1\n            while j >= 0 and text[j] in ('r', 'b'):\n                j -= 1\n            raw_prefix = text[j + 1:i]\n            hash_count = 0\n            if raw_prefix and all(c in ('r', 'b') for c in raw_prefix) and 'r' in raw_prefix:\n                while i < n and text[i] == '#':\n                    hash_count += 1\n                    i += 1\n                closer = '\"' + '#' * hash_count\n                end = text.find(closer, i)\n                if end == -1:\n                    i = n\n                else:\n                    i = end + len(closer)\n                out.append(\"\\n\" if text[i - 1:i] == \"\\n\" else \" \")\n                continue\n            in_string = True\n            out.append(\" \")\n            i += 1",
+  "existing_code": "elif c == '\"':\n            in_string = True\n            out.append(\" \")\n            i += 1",
+  "start_line": 149,
+  "end_line": 152,
+  "category": "bug",
+  "severity": "high",
+  "idx": 14
+ },
+ {
+  "path": "tests-audit/audit_evolution_layering.py",
+  "content": "Rule 4 (\"全域禁随机源\") only matches the literal `thread_rng`, but the documented contract is \"随机源必须经 EvalContext 注入\". `rand::random()`, `rand::rng()`, `rand::rngs::OsRng/SmallRng/StdRng/ThreadRng`, `rand::seq::*`, and `rand::distributions::*` all bypass this gate silently, so a data-layer or strategy-layer file can introduce non-injected randomness without the audit complaining. This is a coverage gap in the only rule whose stated scope is \"全域\" (entire tree).",
+  "suggestion_code": "(\n        \"全域禁随机源\",\n        sorted(EVO.rglob(\"*.rs\")),\n        [\n            (r\"\\bthread_rng\\b\", \"thread_rng（随机源必须经 EvalContext 注入）\"),\n            (r\"\\brand::(random|thread_rng|rng|seq|distributions)\\b\",\n             \"rand::xxx（随机源必须经 EvalContext 注入）\"),\n            (r\"\\bOsRng\\b|\\bSmallRng\\b|\\bStdRng\\b|\\bThreadRng\\b\",\n             \"xxxRng（随机源必须经 EvalContext 注入）\"),\n        ],\n    ),",
+  "existing_code": "(\n        \"全域禁随机源\",\n        sorted(EVO.rglob(\"*.rs\")),\n        [\n            (r\"thread_rng\", \"thread_rng（随机源必须经 EvalContext 注入）\"),\n        ],\n    ),",
+  "start_line": 90,
+  "end_line": 96,
+  "category": "bug",
+  "severity": "high",
+  "idx": 15
+ },
+ {
+  "path": "tests-audit/audit_evolution_layering.py",
+  "content": "`strip_cfg_test_modules` only matches the exact attribute `#[cfg(test)]`. Real test modules frequently use `#[cfg(all(test, feature = \"...\"))]`, `#[cfg(any(test, debug_assertions))]`, or stack `#[cfg(test)]` after other attributes separated by other items, so legitimate test-only usages of forbidden identifiers will surface as false positives and either get suppressed by developers (who learn the audit is noisy) or block legitimate code. Either broaden the pattern to `cfg\\s*\\(\\s*(?:any|all)?\\([^)]*\\btest\\b[^)]*\\)` or document the limitation explicitly and exempt known combined-cfg test modules.",
+  "suggestion_code": "# 兼容 #[cfg(test)] / #[cfg(all(test, ...))] / #[cfg(any(test, ...))]\n    pattern = re.compile(\n        r\"#\\[cfg\\s*\\(\\s*(?:all|any)?\\s*\\([^)]*\\btest\\b[^)]*\\)\\s*\\]\\s*\"\n        r\"[^{}]*?mod\\s+\\w+\\s*\\{\"\n    )",
+  "existing_code": "pattern = re.compile(r\"#\\[cfg\\(test\\)\\][^{}]*?mod\\s+\\w+\\s*\\{\")",
+  "start_line": 177,
+  "end_line": 177,
+  "category": "bug",
+  "severity": "high",
+  "idx": 16
+ },
+ {
+  "path": "tests-audit/audit_no_eval.py",
+  "content": "strip_comments_and_strings treats everything between backticks as opaque string content and replaces it with spaces, including `${...}` interpolation expressions. Code like `` `result: ${eval(input)}` `` has the `eval(input)` body erased to whitespace, so EVAL_RE never matches it. Template-literal interpolation is very common in modern TS/TSX (dynamic class names, tagged-template helpers, error-format helpers, inline i18n), so this is a realistic false-negative path the audit does not catch. The header enumerates the regex-literal limitation but not this one — only WebView runtime CSP stands between an audit miss and a blocked execution. Consider tracking `${...}` nesting with a small stack inside the backtick branch and re-entering normal scanning for the expression body until the matching `}` closes it.",
+  "suggestion_code": "elif state in ('\"', \"'\", \"`\"):\n            if c == \"\\\\\":\n                out.append(\"  \")\n                i += 2\n            elif state == \"`\" and two == \"${\":\n                # 模板字面量插值表达式：恢复对内部表达式体的正常扫描\n                out.append(\"${\")\n                state = None  # 由下方的插值栈/深度计数在闭合 `}` 时还原为 \"`\"\n                i += 2\n            elif c == state:\n                out.append(c)  # 闭定界符保留\n                state = None\n                i += 1\n            else:\n                out.append(\" \")  # 字符串内部清空（内容不参与模式匹配）\n                i += 1",
+  "existing_code": "elif state in ('\"', \"'\", \"`\"):\n            if c == \"\\\\\":\n                out.append(\"  \")\n                i += 2\n            elif c == state:\n                out.append(c)  # 闭定界符保留\n                state = None\n                i += 1\n            else:\n                out.append(\" \")  # 字符串内部清空（内容不参与模式匹配）\n                i += 1",
+  "start_line": 82,
+  "end_line": 92,
+  "category": "bug",
+  "severity": "high",
+  "idx": 17
+ },
+ {
+  "path": "tests-audit/audit_no_eval.py",
+  "content": "INDIRECT_RE enumerates only `(0,eval)`, `window.eval`, `globalThis.eval`, `self.eval`, and there is no eval-side equivalent of ALIAS_RE (which exists only for `Function`). Real obfuscation routes that slip past the audit:\n1. `var e = eval; e('x')` — aliasing; `eval;` does not match EVAL_RE (needs `(`), and `e(` matches nothing.\n2. `globalThis['eval']('x')` / `window[\"eval\"]('x')` — computed access; the `'eval'`/`\"eval\"` literal is stripped to whitespace by the stripper, leaving `globalThis[  ]('x')` with no `eval` token at all, so neither EVAL_RE nor INDIRECT_RE fires.\n3. `eval?.('x')` — optional chaining; `\\beval\\s*\\(` requires `(` directly after `eval` and `\\s*` does not match `?.`.\n4. `Reflect.apply(eval, this, ['x'])` / `Function.prototype.constructor.call(...)` — reflective invocation.\nEach of these is a reachable way to execute `eval`, so the indirect-form detector under-covers relative to its stated goal. Consider adding patterns for `\\b\\w+\\s*=\\s*eval\\b` (alias), `(?:\\bwindow\\b|\\bglobalThis\\b|\\bself\\b|\\bglobal\\b)\\s*\\[\\s*['\"`]eval['\"`]\\s*\\]` (computed), `\\beval\\s*\\?\\s*\\(`, and `Reflect\\s*\\.\\s*(?:apply|construct)\\s*\\([^,]*\\beval\\b`.",
+  "suggestion_code": "EVAL_ALIAS_RE = r\"\\b\\w+\\s*=\\s*\" + EVAL + r\"\\b\"\nEVAL_COMPUTED_RE = (\n    r\"(?:\\bwindow\\b|\\bglobalThis\\b|\\bself\\b|\\bglobal\\b)\"\n    r\"\\s*\\[\\s*['\\\"`]\" + EVAL + r\"['\\\"`]\\s*\\]\"\n)\nEVAL_OPTCHAIN_RE = r\"\\b\" + EVAL + r\"\\s*\\?\\s*\\(\"\nEVAL_REFLECT_RE = (\n    r\"\\bReflect\\s*\\.\\s*(?:apply|construct)\\s*\\([^,]*\\b\" + EVAL + r\"\\b\"\n)\nINDIRECT_RE = (\n    r\"\\(0,\\s*\" + EVAL + r\"\\)\"\n    r\"|window\\.\" + EVAL + r\"\\b\"\n    r\"|globalThis\\.\" + EVAL + r\"\\b\"\n    r\"|self\\.\" + EVAL + r\"\\b\"\n    r\"|\" + EVAL_ALIAS_RE\n    r\"|\" + EVAL_COMPUTED_RE\n    r\"|\" + EVAL_OPTCHAIN_RE\n    r\"|\" + EVAL_REFLECT_RE\n)",
+  "existing_code": "INDIRECT_RE = (\n    r\"\\(0,\\s*\" + EVAL + r\"\\)\"\n    r\"|window\\.\" + EVAL + r\"\\b\"\n    r\"|globalThis\\.\" + EVAL + r\"\\b\"\n    r\"|self\\.\" + EVAL + r\"\\b\"\n)",
+  "start_line": 38,
+  "end_line": 43,
+  "category": "security",
+  "severity": "high",
+  "idx": 18
+ },
+ {
+  "path": "scripts/test-all.sh",
+  "content": "`-j num-cpus` passes the literal string `num-cpus` as the job count. `cargo nextest run` expects an integer for this option, so the CLI will reject the argument and this gate cannot proceed to the frontend tests. Unless the intention is to use a portable CPU-count command, remove `-j num-cpus` and let nextest choose its default number of test threads.",
+  "suggestion_code": "cargo nextest run --manifest-path src-tauri/Cargo.toml --no-fail-fast",
+  "existing_code": "cargo nextest run --manifest-path src-tauri/Cargo.toml --no-fail-fast -j num-cpus",
+  "start_line": 12,
+  "end_line": 12,
+  "category": "bug",
+  "severity": "high",
+  "idx": 304
+ },
+ {
+  "path": "scripts/install-hooks.sh",
+  "content": "`readlink -f` is a GNU coreutils extension and does not exist on BSD/macOS `readlink` (which exits with an error under `set -e`, aborting the script before the `cd` even happens). The fallback path on macOS would need `realpath`, a manual symlink loop, or a `python3 -c` one-liner. Without a portability shim, the documented install flow is unusable on macOS, which is one of the most common dev hosts.\n\nSuggestion: resolve via `BASH_SOURCE[0]` + manual symlink loop, or `command -v readlink >/dev/null && readlink -f \"$0\" || python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' \"$0\"`, then proceed.",
+  "suggestion_code": "SCRIPT_PATH=\"${BASH_SOURCE[0]}\"\nwhile [ -L \"$SCRIPT_PATH\" ]; do\n    SCRIPT_PATH=\"$(readlink \"$SCRIPT_PATH\")\"\ndone\ncd \"$(dirname \"$SCRIPT_PATH\")/..\"",
+  "existing_code": "cd \"$(dirname \"$(readlink -f \"$0\")\")/..\"",
+  "start_line": 6,
+  "end_line": 6,
+  "category": "bug",
+  "severity": "high",
+  "idx": 305
+ },
+ {
+  "path": "scripts/fetch_ocr_models.sh",
+  "content": "No curl timeout is set. A stalled TCP connection or a CDN node that completes the handshake but never sends bytes will hang the script forever — `--retry 3` only retries on error responses, not on hangs. Add `--connect-timeout` and `--max-time` so a single broken mirror cannot wedge the whole build.",
+  "suggestion_code": "if ! curl -fL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 30 --max-time 600 -o \"$tmp\" \"$MS_BASE/$rel\"; then",
+  "existing_code": "if ! curl -fL --retry 3 -o \"$tmp\" \"$MS_BASE/$rel\"; then",
+  "start_line": 83,
+  "end_line": 83,
+  "category": "bug",
+  "severity": "high",
+  "idx": 306
+ },
+ {
+  "path": "scripts/fetch_ocr_models.sh",
+  "content": "No concurrency guard on the `.partial` path. Two parallel invocations (CI matrix jobs, two terminals, etc.) will race: each may `rm -f \"$DEST/$out.partial\"` while the other is mid-download, then `mv` a half-written file into `$DEST/$out` — the SHA256 check on the existing file (lines above) has no lock either, so a TOCTOU window exists. Wrap the per-file download with `flock` over a `$DEST/.fetch.lock` (or a PID-based guard) before touching the partial.",
+  "existing_code": "local tmp=\"$DEST/$out.partial\"",
+  "start_line": 80,
+  "end_line": 80,
+  "category": "bug",
+  "severity": "high",
+  "idx": 307
+ },
+ {
+  "path": "scripts/health-check.sh",
+  "content": "The DB_CANDIDATES loop calls `ok` for EVERY candidate that exists, so if more than one of `$EVOLUTION_DIR/wmessage.db`, `~/Library/.../wmessage.db`, or `~/.wmessage/memories.json` is present (typical when dev/portable mode coexists with a prod install) the OK counter is inflated by one per extra match — the \"all OK\" verdict can no longer be trusted. The loop also has no baseline comparison, so it always \"passes\". Either `break` on first match and report once, or compare every found mtime against a recorded baseline timestamp.",
+  "suggestion_code": "DB_FOUND=\"\"\nfor db in \"${DB_CANDIDATES[@]}\"; do\n  if [ -f \"$db\" ]; then\n    DB_FOUND=\"$db\"\n    break\n  fi\ndone\nif [ -n \"$DB_FOUND\" ]; then\n  DB_MTIME=$(stat -f \"%Sm\" -t \"%Y-%m-%d %H:%M:%S\" \"$DB_FOUND\" 2>/dev/null || stat -c \"%y\" \"$DB_FOUND\" 2>/dev/null | cut -d. -f1)\n  ok \"主记忆 $DB_FOUND mtime $DB_MTIME（与上一次对比；S0 下不应新写）\"\nelse\n  fail \"未找到主记忆数据库（环 6 探针全 miss）\"\nfi",
+  "existing_code": "for db in \"${DB_CANDIDATES[@]}\"; do\n  if [ -f \"$db\" ]; then\n    DB_MTIME=$(stat -f \"%Sm\" -t \"%Y-%m-%d %H:%M:%S\" \"$db\" 2>/dev/null || stat -c \"%y\" \"$db\" 2>/dev/null | cut -d. -f1)\n    ok \"主记忆 $db mtime $DB_MTIME（与上一次对比；S0 下不应新写）\"\n  fi\ndone",
+  "start_line": 148,
+  "end_line": 153,
+  "category": "bug",
+  "severity": "high",
+  "idx": 308
+ },
+ {
+  "path": "scripts/health-check.sh",
+  "content": "The patterns `\"created_at_ms\":[0-9]+` and `\"session_id\":\"[^\"]+\"` forbid whitespace after `:` and any escaped quote inside `session_id`. Pretty-printed JSON (`\"created_at_ms\": 1234567890`), pretty-printed on-disk variants, or a session_id value containing `\\\"` will silently fail the assertion and report `缺 timestamp 或 session` on a healthy file. Also `[^\"]+` is greedy across fields if a value contains a colon. Use `jq` for reliable parsing, or at minimum allow `[[:space:]]*` after the colon and a proper escaped-string class.",
+  "suggestion_code": "    HAS_TS=$(echo \"$LAST_LINE\" | grep -oE '\"created_at_ms\"[[:space:]]*:[[:space:]]*[0-9]+' | head -1)\n    HAS_SID=$(echo \"$LAST_LINE\" | grep -oE '\"session_id\"[[:space:]]*:[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\"' | head -1)",
+  "existing_code": "    HAS_TS=$(echo \"$LAST_LINE\" | grep -oE '\"created_at_ms\":[0-9]+' | head -1)\n    HAS_SID=$(echo \"$LAST_LINE\" | grep -oE '\"session_id\":\"[^\"]+\"' | head -1)",
+  "start_line": 56,
+  "end_line": 57,
+  "category": "bug",
+  "severity": "high",
+  "idx": 309
+ },
+ {
+  "path": "scripts/health-check.sh",
+  "content": "The `no_policy_applied` branch is case-sensitive (`grep -q`) while the Allow/Block branches accept both casings (`grep -qE \"allow|Allow\"`). An audit line written as `No_Policy_Applied`, `ALLOW`, `BLOCK`, or any mixed casing (a different subsystem or a log normaliser that upper-cases events) will fall through to the \"⚠ 不含已知决策类型\" branch and silently skip the FAIL — defeating the whole purpose of ring ⑤, which is to catch state drift. Make all three checks case-insensitive (`grep -qi`).",
+  "suggestion_code": "  if echo \"$LAST_AUDIT\" | grep -qi \"no_policy_applied\"; then\n    ok \"最近 audit = no_policy_applied（S0 正确态）\"\n  elif echo \"$LAST_AUDIT\" | grep -qiE \"allow\"; then\n    fail \"最近 audit = Allow（误进 S2！状态跑偏）\"\n  elif echo \"$LAST_AUDIT\" | grep -qiE \"block\"; then",
+  "existing_code": "  if echo \"$LAST_AUDIT\" | grep -q \"no_policy_applied\"; then\n    ok \"最近 audit = no_policy_applied（S0 正确态）\"\n  elif echo \"$LAST_AUDIT\" | grep -qE \"allow|Allow\"; then\n    fail \"最近 audit = Allow（误进 S2！状态跑偏）\"\n  elif echo \"$LAST_AUDIT\" | grep -qE \"block|Block\"; then",
+  "start_line": 129,
+  "end_line": 133,
+  "category": "bug",
+  "severity": "high",
+  "idx": 310
+ },
+ {
+  "path": "scripts/test-fast.sh",
+  "content": "`grep -v 'audit-ok'` is a coarse, line-level substring exemption: any line containing the literal text `audit-ok` anywhere — including inside a string literal like `let id = \"P0-123 audit-ok\";` or a comment on a different subject — is exempted from the ticket-ID gate. This makes the bypass far wider than the documented intent (\"行内 audit-ok 放行\"). Tighten the marker so it has to be contextually anchored (e.g. trailing-only: `grep -vE 'audit-ok\\s*(//|$)'`, or only after a quoted ticket token).",
+  "suggestion_code": "| grep -vE 'audit-ok\\s*(//|$)' \\",
+  "existing_code": "| grep -v 'audit-ok' \\",
+  "start_line": 66,
+  "end_line": 66,
+  "category": "bug",
+  "severity": "high",
+  "idx": 311
+ },
+ {
+  "path": "scripts/test-fast.sh",
+  "content": "The trailing `|| true` swallows both the legitimate \"no match\" case AND a broken/regex-error case, so a buggy pattern (typo, unbalanced bracket, etc.) silently leaves `BAD_LINES` empty and the gate passes. Combined with `set -o pipefail`, the only signal is a stderr line that is easy to miss in a noisy pre-commit run. Validate the regex once at script start (e.g. `echo '' | grep -E '...'` and check the exit code) and/or capture stderr separately before declaring the gate green.",
+  "suggestion_code": "# validate regex once at script start, fail fast on errors\nif echo '' | grep -E '批次[0-9]+审计|\\bP[012]-[0-9]+\\b|\\bT[0-9]-[0-9]+\\b|\\bNEW-[A-Z]-[0-9]+\\b|\\bW[0-9]+-[A-Z0-9]+|\\bB[0-9]+-[0-9A-Z]|\\bOCR[ -][CcRr][0-9]|\\bAUDIT-[A-Z0-9]+|\\bSUBA-[0-9]+|拍板' >/dev/null 2>&1; then :; else echo '✗ ticket-id regex failed to compile'; exit 1; fi",
+  "existing_code": "| grep -E '批次[0-9]+审计|\\bP[012]-[0-9]+\\b|\\bT[0-9]-[0-9]+\\b|\\bNEW-[A-Z]-[0-9]+\\b|\\bW[0-9]+-[A-Z0-9]+|\\bB[0-9]+-[0-9A-Z]|\\bOCR[ -][CcRr][0-9]|\\bAUDIT-[A-Z0-9]+|\\bSUBA-[0-9]+|拍板' || true)",
+  "start_line": 67,
+  "end_line": 67,
+  "category": "bug",
+  "severity": "high",
+  "idx": 312
+ },
+ {
+  "path": "scripts/test-fast.sh",
+  "content": "The header comment explicitly says macOS is a target (PATH is augmented for `~/.cargo/bin` on macOS), but the ticket-ID patterns rely on GNU grep's `\\b` word-boundary. BSD grep shipped with macOS does NOT support `\\b`; without GNU grep installed (`brew install grep` / `ggrep`) the patterns silently fail to match and the ticket-ID gate is effectively disabled on the very platform the script claims to support. Either use POSIX-portable alternation (`([^A-Za-z0-9_]|^)TOKEN([^A-Za-z0-9_]|$)`), or invoke `${GREP:-grep}` and document requiring `ggrep`.",
+  "suggestion_code": "| ${GREP:-grep} -E '批次[0-9]+审计|(^|[^A-Za-z0-9_])P[012]-[0-9]+([^A-Za-z0-9_]|$)|...' || true)",
+  "existing_code": "| grep -E '批次[0-9]+审计|\\bP[012]-[0-9]+\\b|\\bT[0-9]-[0-9]+\\b|\\bNEW-[A-Z]-[0-9]+\\b|\\bW[0-9]+-[A-Z0-9]+|\\bB[0-9]+-[0-9A-Z]|\\bOCR[ -][CcRr][0-9]|\\bAUDIT-[A-Z0-9]+|\\bSUBA-[0-9]+|拍板' || true)",
+  "start_line": 67,
+  "end_line": 67,
+  "category": "bug",
+  "severity": "high",
+  "idx": 313
+ },
+ {
+  "path": "scripts/publish-docx-dotnet.sh",
+  "content": "`find -maxdepth` 是 GNU 扩展，macOS 自带的 BSD `find` 不识别该选项（`illegal option -- m`），与脚本头\"跨平台：macOS/Linux 直接跑\"的声明冲突。即便在 Linux 上，`-maxdepth 1 -type f` 也只拷贝顶层文件：self-contained publish 一旦引入 native 依赖（如 SQLite、SkiaSharp 放在 `runtimes/win-x64/native/`），文件会被静默丢弃，违反脚本头\"整目录拷贝\"的契约；末尾 `COUNT=$(find ... -maxdepth 1 ...)` 同样受此影响。",
+  "suggestion_code": "# 兼容 macOS/Linux 的 find，并保留 publish 子目录（runtimes/*/native、ref、cs 等）\nrm -rf -- \"$OUT_DIR\"\nmkdir -p -- \"$OUT_DIR\"\nrsync -a --exclude='*.pdb' \"$PUBLISH_DIR/\" \"$OUT_DIR/\"",
+  "existing_code": "find \"$PUBLISH_DIR\" -maxdepth 1 -type f ! -name '*.pdb' -exec cp -- {} \"$OUT_DIR/\" \\;",
+  "start_line": 34,
+  "end_line": 34,
+  "category": "bug",
+  "severity": "high",
+  "idx": 314
+ }
+]

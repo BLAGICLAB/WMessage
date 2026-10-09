@@ -1,0 +1,49 @@
+0|PARTIAL|tick 间差分运动代理成立；精确可改 Math.hypot
+1|PARTIAL|tasks-changed 回查自愈；可订阅 workflow-report 或兜底轮询
+2|REAL|读失败静默渲染空态；setLoaded(true) 只放成功分支
+3|FALSE_POSITIVE|resetBubbleStyle 内部已 apply
+4|FALSE_POSITIVE|subscribe 返回退订函数已正确返回
+5|WONTFIX|条件渲染卸载重拉是既有容错
+6|WONTFIX|乱序覆盖理论竞态自愈
+7|PARTIAL|连点窗口一次 IPC；patch 在途禁用按钮
+8|WONTFIX|启发式有注释留档
+9|ALREADY_HANDLED|isHttpUrl/isAbsPath 边界在位
+10|ALREADY_HANDLED|失败弹错在 openTarget 统一落实
+11|PARTIAL|下游全有守卫；可补 narrow
+12|WONTFIX|kind 单一来源同仓同步
+13|WONTFIX|纯风格
+14|REAL|ModelRow 假绿竞态；reset 时 ++seqRef，await 后校验
+15|ALREADY_HANDLED|后端双重公网闸在位
+16|PARTIAL|写成功+读失败双故障窄路径；reload 失败提示
+17|WONTFIX|类型约束全仓生效
+18|REAL|TracePanel reload 无竞态令牌；++detailSeqRef 守卫
+19|PARTIAL|跨工作流残留不可达（模态卸载）；loadAudit 开头 setAuditRows(null)
+20|REAL|回收站卡可进标题编辑违背只读约定；archived||trashed 禁编辑
+21|PARTIAL|提交路径现有视图不可达；可复位编辑态
+22|WONTFIX|alert 是刻意兜底
+23|FALSE_POSITIVE|类型位 UMD 合法
+24|PARTIAL|瞬态窗口自愈；sumByKey 加同样门
+25|PARTIAL|缺的只是再折叠；可加收起控制
+26|WONTFIX|a11y 打磨
+27|WONTFIX|性能优化空间
+28|WONTFIX|可维护性建议
+29|PARTIAL|多点触控才触发；onDown 开头清旧监听
+30|WONTFIX|setTimeout(0) 间隔远大于人手
+31|ALREADY_HANDLED|内部控件已 stopPropagation
+32|FALSE_POSITIVE|cast 只为 TS
+33|WONTFIX|a11y 建议
+34|WONTFIX|a11y 增强
+35|WONTFIX|场景不存在+打磨
+36|WONTFIX|有意取舍（镜像 ConfirmMap）
+37|WONTFIX|React flush 使 stale 窗不可达
+38|REAL|armedTimerRef 共用互相抹定时器一次点击即删；独立 timer ref+互复位
+39|REAL|同 38 反向
+40|PARTIAL|taskId 唯一键控不串；createBlank 可清 nodeLive
+41|PARTIAL|渲染按当前画布取值无污染；可加 workflowId 过滤
+42|PARTIAL|无 await 方无悬挂；finish 改读 reqRef.current
+43|WONTFIX|a11y 加固
+44|WONTFIX|失败已弹错，乐观态保留是既有约定
+45|FALSE_POSITIVE|离散事件同步 flush
+46|WONTFIX|一致性建议
+47|WONTFIX|假设性契约
+48|WONTFIX|与 47 重复

@@ -1,0 +1,44 @@
+79|PARTIAL|审计字段差一；replan() 改记 plan.replans_used
+80|REAL|spawn_subagent_locked 两写无事务；conn.transaction() 包住
+81|REAL|cancel_subagent_locked 同款；同上
+82|WONTFIX|中毒惯例
+83|WONTFIX|同 82
+84|WONTFIX|同 82
+85|WONTFIX|/stop 卡间生效是记录在案取舍
+86|WONTFIX|await 全有界
+87|WONTFIX|不变量注释已写明
+88|FALSE_POSITIVE|rustfmt 格式下断言边界精确
+89|WONTFIX|ms 级本地小 IO
+90|REAL|reasoning resolve 用 cfg 的 provider/model，override 错位；入参改用 resolved
+91|REAL|与 90 同根因；同修
+92|WONTFIX|上界表述成立
+93|REAL|过期 at: 重启后补跑；due 过滤排除过期超一个 tick 窗口
+94|PARTIAL|CAS 基线合法；残余毫秒级窗口
+95|REAL|Err 分支不回滚 sched_last 致一次性任务永久搁浅；Err 回滚 sched_last
+96|REAL|三处 let _ 丢弃结果，失败状态未落库；仿 sched_job_update_skip 落 audit
+97|WONTFIX|双相校验在位，inode 边界已留痕
+98|WONTFIX|工作区链接入集是既定口径
+99|WONTFIX|畸形 frontmatter 垃圾进垃圾出
+100|WONTFIX|同 99
+101|WONTFIX|与 92 重复
+103|WONTFIX|测试增强建议
+104|FALSE_POSITIVE|sort_by 稳定排序
+105|ALREADY_HANDLED|RollbackRestoreGuard 在位
+106|FALSE_POSITIVE|start_skill 入口已拒跨会话同名
+107|WONTFIX|pub test_hook 拍板
+110|FALSE_POSITIVE|serde_json IndexMut 对 Null 自动对象化
+111|WONTFIX|ok 包装教学文本是设计
+112|WONTFIX|窄竞态下放宽反而覆盖 /stop
+119|ALREADY_HANDLED|S1-4 brave 已 capped
+120|ALREADY_HANDLED|S1-4 bing
+121|ALREADY_HANDLED|S1-4 baidu
+126|WONTFIX|竞窗毫秒级且确认即授权
+127|WONTFIX|清扫窗口远低于人类延迟
+128|WONTFIX|中毒返 0 同口径
+129|WONTFIX|停止命令宁可报错是有意取舍
+135|REAL|unknown 与 steps 计数错比漏终止；改按主步逐条计数
+136|WONTFIX|上游已串行化
+141|REAL|TASK_ID_RE 不匹配 simple() 32hex 任务 id，${stepN.id} 失效；正则加 32hex 分支
+142|WONTFIX|启发式 wontfix 已确认且有回归锁
+143|PARTIAL|链式重扫是特性本身；可单趟组合
+420|WONTFIX|block_on 在同步外壳安全
