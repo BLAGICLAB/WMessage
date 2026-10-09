@@ -42,6 +42,7 @@ fn mutation_succeeded(name: &str, result: &str) -> bool {
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
 pub use crate::bot::registry::claims_mutation;
+use crate::bot::registry::fabricated_gen_path;
 
 // TOOLS schema（编译期字符串，运行期 JSON 解析）
 
@@ -1334,18 +1335,37 @@ where
         }
 
         if tool_calls.is_empty() {
-            // 防幻觉汇报守卫：声称完成变更但本轮没动过手 →
-            // 注入系统提醒补一轮，逼模型实际调工具或如实说明（最多补一次）
-            if !mutation_done && !claim_retry_used && claims_mutation(&final_text) {
+            // 防幻觉汇报守卫（前置：每轮无工具调用的文本产出点即检查，当场打回，
+            // 不等会话收尾）两个支柱：
+            // a) claims_mutation——声称完成变更但本轮没动过手；
+            // b) fabricated_gen_path——声称已生成文档且给出路径，但路径在磁盘上
+            //    不存在（编造的路径经不起存在性检查，实测窄词表漏检的话术靠它兜住）
+            let fake_gen_path = fabricated_gen_path(&final_text);
+            let claim_mutation = !mutation_done && claims_mutation(&final_text);
+            if !claim_retry_used && (claim_mutation || fake_gen_path.is_some()) {
                 claim_retry_used = true;
                 audit_log(&format!(
-                    "hallucination_guard | 声称变更但未调工具，补一轮: {}",
+                    "hallucination_guard | {}: {}",
+                    if fake_gen_path.is_some() {
+                        "声称已生成但路径不存在"
+                    } else {
+                        "声称变更但未调工具"
+                    },
                     crate::bot::truncate_for_log(&final_text, 100)
                 ));
+                let reason = match &fake_gen_path {
+                    Some(p) => {
+                        format!("你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。")
+                    }
+                    None => {
+                        "你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。"
+                            .to_string()
+                    }
+                };
                 msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
                 msgs.push(serde_json::json!({
                     "role": "user",
-                    "content": "【系统提示】你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。"
+                    "content": format!("【系统提示】{reason}请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。")
                 }));
                 continue;
             }
@@ -1698,6 +1718,36 @@ mod think_tests {
 #[cfg(test)]
 mod hallucination_guard_tests {
     use super::*;
+
+    #[test]
+    fn fabricated_gen_path_catches_fabricated_doc_path() {
+        // 实锤事故原话（trace 30）：窄词表漏检、路径是编造的——存在性校验兜住
+        let t = "已生成苏州两日游行程规划 Word，文件路径：\n\n`/tmp/wm-guard-test/苏州两日游行程规划.docx`";
+        assert_eq!(
+            fabricated_gen_path(t).as_deref(),
+            Some("/tmp/wm-guard-test/苏州两日游行程规划.docx")
+        );
+        // 已写入/已导出等变体触发词 + 无盘符相对路径不算（只认绝对路径）
+        assert_eq!(
+            fabricated_gen_path("已写入报告到 report.pdf，稍后可下载"),
+            None
+        );
+    }
+
+    #[test]
+    fn fabricated_gen_path_ignores_real_files_and_non_claims() {
+        // 真实存在的文件不拦
+        let real = std::env::temp_dir().join("wm-guard-real.docx");
+        std::fs::write(&real, b"x").unwrap();
+        assert_eq!(
+            fabricated_gen_path(&format!("已生成：{}", real.display())),
+            None
+        );
+        // 无路径 / 非文档扩展名不触发
+        assert_eq!(fabricated_gen_path("已生成完成，请查收"), None);
+        assert_eq!(fabricated_gen_path("报告.txt 已生成"), None);
+        std::fs::remove_file(&real).ok();
+    }
 
     #[test]
     fn claims_mutation_hits_common_claims() {

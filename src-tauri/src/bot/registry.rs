@@ -643,6 +643,35 @@ pub fn claims_mutation(text: &str) -> bool {
     false
 }
 
+/// 生成类谎报的路径存在性校验（幻觉守卫第二支柱，与 claims_mutation 同点位）：
+/// 文本出现「已生成/已保存/已写入/已导出」且给出文档绝对路径
+/// （docx/xlsx/pptx/pdf）时逐个校验磁盘真实性，返回第一个不存在的路径。
+/// 编造的路径经不起存在性检查——实测「已生成XX规划 Word，文件路径：…」
+/// 类话术带真实形态的假路径，绕过 claims_mutation 的窄词表，只能靠存在性拦。
+pub fn fabricated_gen_path(text: &str) -> Option<String> {
+    const DOC_EXTS: [&str; 4] = [".docx", ".xlsx", ".pptx", ".pdf"];
+    let claimed = ["已生成", "已保存", "已写入", "已导出"]
+        .iter()
+        .any(|w| text.contains(w));
+    if !claimed {
+        return None;
+    }
+    // 候选路径切分：空白/反引号/引号/括号/书名号/中英文标点都是路径边界
+    let boundaries: &[char] = &[
+        ' ', '\t', '\n', '\r', '`', '"', '\'', '「', '」', '（', '）', '(', ')', '，', '。', '；',
+        '、', ',', ';', ':', '：', '　',
+    ];
+    text.split(boundaries)
+        .map(|tok| tok.trim_matches(|c: char| matches!(c, '*' | '_' | '-' | '>' | '#')))
+        .filter(|tok| {
+            let low = tok.to_lowercase();
+            DOC_EXTS.iter().any(|e| low.ends_with(e))
+        })
+        .filter(|tok| tok.starts_with('/') || (tok.len() > 2 && tok.as_bytes()[1] == b':'))
+        .find(|tok| !std::path::Path::new(tok).exists())
+        .map(|tok| tok.to_string())
+}
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
