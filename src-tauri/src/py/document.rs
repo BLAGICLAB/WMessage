@@ -83,139 +83,74 @@ images = p.get('images', [])
 out = p['out']
 tpl = p.get('template', '')
 use_tpl = bool(tpl) and os.path.exists(tpl)
+PP = p.get('tpl_params') or {}
 d = docx.Document(tpl) if use_tpl else docx.Document()
 if use_tpl:
-    # 模板锚定 = 页面设置/页眉页脚随 sectPr 走 + 正文格式走原型收割。
-    # 公文/WPS 模板的排版大多不在样式表里，而在段落直接格式（仿宋三号/
-    # 行距/首行缩进逐段手排）或自定义名样式（如「Normal.0」）；样式表自带
-    # 的 Heading/Normal 只是 Office 通用款（蓝主题标题+五号正文），按命名
-    # 样式生成与模板视觉两回事——清空正文前先从模板段落抄格式原型，
-    # 加内容时逐段拷贝，模板示例正文整段清掉。
+    # 模板锚定双层口径：docx 管页面家具（sectPr 纸张/页边距/页眉页脚随打开
+    # 继承），文字排版按 tpl_params 参数构造——参数由上传/首次生成时从模板
+    # 正文收割（HARVEST_PROTO_SCRIPT，启发式单点），用户可在设置页编辑。
+    # 清空模板示例正文，保留 sectPr
     body = d.element.body
-    def para_len(p_el):
-        return sum(len(t.text or '') for t in p_el.iter(qn('w:t')))
-    def take_protos(p_el):
-        ppr = p_el.find(qn('w:pPr'))
-        rpr = None
-        for r in p_el.findall(qn('w:r')):
-            rr = r.find(qn('w:rPr'))
-            if rr is not None:
-                rpr = deepcopy(rr)
-                break
-        return (deepcopy(ppr) if ppr is not None else None, rpr)
-    def has_first_line_ind(p_el):
-        ppr = p_el.find(qn('w:pPr'))
-        ind = ppr.find(qn('w:ind')) if ppr is not None else None
-        if ind is None:
-            return False
-        return any((ind.get(qn(a)) or '').isdigit() and int(ind.get(qn(a))) > 0
-                   for a in ('w:firstLineChars', 'w:firstLine'))
-    def font_sig(rpr):
-        if rpr is None:
-            return None
-        f = rpr.find(qn('w:rFonts'))
-        s = rpr.find(qn('w:sz'))
-        return (f.get(qn('w:eastAsia')) if f is not None else None,
-                s.get(qn('w:val')) if s is not None else None)
-    body_ps = [el for el in body if el.tag == qn('w:p')]
-    # 正文原型：带首行缩进的最长段（公文正文定义特征）；全无缩进则取最长段
-    body_el = max([el for el in body_ps if has_first_line_ind(el)] or body_ps,
-                  key=para_len, default=None)
-    body_ppr, body_rpr = take_protos(body_el) if body_el is not None else (None, None)
-    # 模板示例段的列表编号是样例自身的，不随原型带走
-    if body_ppr is not None:
-        for e in body_ppr.findall(qn('w:numPr')):
-            body_ppr.remove(e)
-    # 标题级原型：模板正文真用了 Heading N 样式的段（每级取首个）
-    head_protos = {}
-    for para in d.paragraphs:
-        m = re.match(r'^heading ([1-3])$', para.style.name, re.I)
-        if m and para_len(para._p) > 0 and int(m.group(1)) not in head_protos:
-            head_protos[int(m.group(1))] = take_protos(para._p)
-    # 主标题原型：首个非空段——居中或字体字号异于正文才算
-    title_ppr = title_rpr = None
-    first_el = next((el for el in body_ps if para_len(el) > 0), None)
-    if first_el is not None:
-        f_ppr, f_rpr = take_protos(first_el)
-        f_jc = f_ppr.find(qn('w:jc')) if f_ppr is not None else None
-        if (f_jc is not None and f_jc.get(qn('w:val')) == 'center') \
-                or font_sig(f_rpr) != font_sig(body_rpr):
-            title_ppr, title_rpr = f_ppr, f_rpr
     for child in list(body):
         if not child.tag.endswith('}sectPr'):
             body.remove(child)
-    def stamp(para, ppr, rpr, text):
-        # pPr 是 w:p 首子元素、rPr 是 w:r 首子元素（schema 顺序）
-        if ppr is not None:
-            para._p.insert(0, deepcopy(ppr))
-        run = para.add_run(text)
-        if rpr is not None:
-            run._element.insert(0, deepcopy(rpr))
-    def ppr_outline(ppr, lvl):
-        for e in ppr.findall(qn('w:outlineLvl')):
-            ppr.remove(e)
-        ol = OxmlElement('w:outlineLvl')
-        ol.set(qn('w:val'), str(lvl))
-        anchor = ppr.find(qn('w:rPr'))
-        if anchor is not None:
-            ppr.insert(list(ppr).index(anchor), ol)
-        else:
+    def grp_of(key, fallback):
+        return PP.get(key) or PP.get(fallback) or {}
+    def mk_rpr(grp):
+        rpr = OxmlElement('w:rPr')
+        rf = OxmlElement('w:rFonts')
+        for a in ('w:ascii', 'w:hAnsi', 'w:cs'):
+            rf.set(qn(a), grp.get('font_ascii') or '宋体')
+        rf.set(qn('w:eastAsia'), grp.get('font_east') or '宋体')
+        rpr.append(rf)
+        if grp.get('bold'):
+            rpr.append(OxmlElement('w:b'))
+        sz = str(int(grp.get('size_half') or 32))
+        for tag in ('w:sz', 'w:szCs'):
+            e = OxmlElement(tag)
+            e.set(qn('w:val'), sz)
+            rpr.append(e)
+        return rpr
+    def mk_ppr(grp, outline):
+        ppr = OxmlElement('w:pPr')
+        sp = OxmlElement('w:spacing')
+        for src_tag, dst in (('before', 'w:before'), ('after', 'w:after')):
+            v = int(grp.get(src_tag) or 0)
+            if v:
+                sp.set(qn(dst), str(v))
+        line_line = int(grp.get('line_line') or 0)
+        if line_line:
+            sp.set(qn('w:line'), str(line_line))
+            sp.set(qn('w:lineRule'), grp.get('line_rule') or 'auto')
+        ppr.append(sp)
+        ind_ch = grp.get('indent_chars') or 0
+        if ind_ch:
+            ind = OxmlElement('w:ind')
+            ind.set(qn('w:firstLineChars'), str(int(round(ind_ch * 100))))
+            # firstLine 缇与字号联动（Chars 优先；WPS 旧版只认 firstLine）
+            ind.set(qn('w:firstLine'),
+                    str(int(round(ind_ch * int(grp.get('size_half') or 32) * 10))))
+            ppr.append(ind)
+        jc = OxmlElement('w:jc')
+        jc.set(qn('w:val'), grp.get('align') or 'both')
+        ppr.append(jc)
+        if outline is not None:
+            ol = OxmlElement('w:outlineLvl')
+            ol.set(qn('w:val'), str(outline))
             ppr.append(ol)
-    def force_font(rpr, name):
-        rf = rpr.find(qn('w:rFonts'))
-        if rf is None:
-            rf = OxmlElement('w:rFonts')
-            rpr.insert(0, rf)
-        for a in ('w:ascii', 'w:hAnsi', 'w:eastAsia', 'w:cs'):
-            rf.set(qn(a), name)
+        return ppr
+    def add_styled(text, grp, outline=None):
+        # pPr 是 w:p 首子元素、rPr 是 w:r 首子元素（schema 顺序）
+        para = d.add_paragraph()
+        para._p.insert(0, mk_ppr(grp, outline))
+        run = para.add_run(text)
+        run._element.insert(0, mk_rpr(grp))
     def add_heading_cjk(text, level):
-        if level in head_protos:
-            ppr, rpr = head_protos[level]
-            stamp(d.add_paragraph(), ppr, rpr, text)
-            return
-        h = d.add_paragraph()
-        if body_ppr is not None:
-            # 模板无可学的标题段：按公文惯例正文原型改黑体、去首行缩进
-            # （标题与正文同字号），outlineLvl 让导航窗格/目录按层级识别
-            ppr = deepcopy(body_ppr)
-            for e in ppr.findall(qn('w:ind')):
-                ppr.remove(e)
-            rpr = deepcopy(body_rpr) if body_rpr is not None else OxmlElement('w:rPr')
-            force_font(rpr, '黑体')
-            # 段落标记的 rPr（pPr 内）一并改黑体，整段字体口径一致
-            prf = ppr.find(qn('w:rPr'))
-            if prf is not None:
-                force_font(prf, '黑体')
-            stamp(h, ppr, rpr, text)
-        else:
-            # 空模板兜底：黑体+分级字号
-            r = h.add_run(text)
-            r.font.name = '黑体'
-            r.font.size = Pt({1: 16, 2: 14, 3: 12}.get(level, 12))
-            # font.name 只写 w:rFonts 的 ascii/hAnsi，中文字形要显式补 eastAsia
-            r._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'), '黑体')
-        ppr_outline(h._p.get_or_add_pPr(), level - 1)
+        add_styled(text, grp_of('h%d' % level, 'body'), outline=level - 1)
     def add_body_para(text):
-        stamp(d.add_paragraph(), body_ppr, body_rpr, text)
+        add_styled(text, PP.get('body') or {})
     if title:
-        tp = d.add_paragraph()
-        if title_ppr is not None or title_rpr is not None:
-            stamp(tp, title_ppr, title_rpr, title)
-        else:
-            # 模板没有可辨的标题段：正文原型改居中顶替
-            ppr = deepcopy(body_ppr) if body_ppr is not None else None
-            if ppr is not None:
-                jc = ppr.find(qn('w:jc'))
-                if jc is None:
-                    jc = OxmlElement('w:jc')
-                    anchor = ppr.find(qn('w:rPr'))
-                    if anchor is not None:
-                        ppr.insert(list(ppr).index(anchor), jc)
-                    else:
-                        ppr.append(jc)
-                jc.set(qn('w:val'), 'center')
-            stamp(tp, ppr, body_rpr, title)
-        ppr_outline(tp._p.get_or_add_pPr(), 0)
+        add_styled(title, grp_of('title', 'body'), outline=0)
 else:
     style = d.styles['Normal']
     style.font.name = '宋体'
@@ -269,6 +204,183 @@ for t in tables:
     d.add_paragraph('')
 d.save(out)
 print('已生成：' + out)
+"#;
+
+// HARVEST_PROTO_SCRIPT：模板文字排版参数提取（双层口径的提取端）。打开模板
+// 正文收割格式原型，折算成参数 JSON 单行打到 stdout（Rust 侧落 <模板名>.json
+// 旁车）。上传（word_template_import）、编辑面板（word_template_params_get /
+// reextract）、生成自愈（doc_make_word 旁车缺失时）三处共用这一个启发式——
+// MAKE_DOCX_SCRIPT 只按参数构造、绝不再收割，防止提取与生成两套口径漂移。
+pub const HARVEST_PROTO_SCRIPT: &str = r#"import json, re
+from copy import deepcopy
+import docx
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+p = json.load(open('params.json', encoding='utf-8'))
+d = docx.Document(p['template'])
+body = d.element.body
+
+def para_len(p_el):
+    return sum(len(t.text or '') for t in p_el.iter(qn('w:t')))
+def merge_layer(base_el, over_el):
+    """over 逐属性覆盖 base（OOXML 直排覆盖样式语义），over 独有子元素并入"""
+    if base_el is None:
+        return over_el
+    if over_el is None:
+        return base_el
+    out = deepcopy(base_el)
+    for child in over_el:
+        target = out.find(child.tag)
+        if target is None:
+            out.append(deepcopy(child))
+        else:
+            for k, v in child.attrib.items():
+                target.set(k, v)
+    return out
+
+# 段落对象索引（样式链要走 python-docx 的 base_style）
+by_el = {}
+for para in d.paragraphs:
+    by_el[para._p] = para
+
+def proto_of(p_el):
+    """段落生效格式：样式定义链（basedOn 根→叶）逐层覆盖，段落直排最优先。
+    自定义名样式模板（WPS 公文常态）的排版主体在样式里，直排只是局部覆盖，
+    只读直排会把样式里的字号/行距/对齐全丢掉"""
+    para = by_el.get(p_el)
+    if para is None:
+        ppr = p_el.find(qn('w:pPr'))
+        rpr = None
+        for r in p_el.findall(qn('w:r')):
+            rr = r.find(qn('w:rPr'))
+            if rr is not None:
+                rpr = rr
+                break
+        return (ppr, rpr)
+    chain = []
+    st = para.style
+    seen = set()
+    while st is not None and st.style_id not in seen:
+        seen.add(st.style_id)
+        el = st.element
+        chain.append((el.find(qn('w:pPr')), el.find(qn('w:rPr'))))
+        st = st.base_style
+    ppr = rpr = None
+    for l_ppr, l_rpr in reversed(chain):
+        ppr = merge_layer(ppr, l_ppr)
+        rpr = merge_layer(rpr, l_rpr)
+    d_ppr = p_el.find(qn('w:pPr'))
+    d_rpr = None
+    for r in p_el.findall(qn('w:r')):
+        rr = r.find(qn('w:rPr'))
+        if rr is not None:
+            d_rpr = rr
+            break
+    # 段落无直排 run 格式时，段落标记 rPr（pPr 内）兜底——公文模板常把字号写在那
+    if d_ppr is not None and d_rpr is None:
+        d_rpr = d_ppr.find(qn('w:rPr'))
+    return (merge_layer(ppr, d_ppr), merge_layer(rpr, d_rpr))
+
+def has_first_line_ind(p_el):
+    ppr = p_el.find(qn('w:pPr'))
+    ind = ppr.find(qn('w:ind')) if ppr is not None else None
+    if ind is None:
+        return False
+    return any((ind.get(qn(a)) or '').isdigit() and int(ind.get(qn(a))) > 0
+               for a in ('w:firstLineChars', 'w:firstLine'))
+def font_sig(rpr):
+    if rpr is None:
+        return None
+    f = rpr.find(qn('w:rFonts'))
+    s = rpr.find(qn('w:sz'))
+    return (f.get(qn('w:eastAsia')) if f is not None else None,
+            s.get(qn('w:val')) if s is not None else None)
+def is_on(el):
+    return el is not None and el.get(qn('w:val')) not in ('0', 'false', 'none')
+
+# 原型 (pPr, rPr) → 参数组。缺省值取公文常规（宋体三号/1.5 倍行距/两端对齐）；
+# 缩进优先 firstLineChars（百分之一字符），仅有 firstLine 缇值时按字号折算
+def style_of(ppr, rpr, default_align='both'):
+    rpr = rpr if rpr is not None else OxmlElement('w:rPr')
+    rf = rpr.find(qn('w:rFonts'))
+    east = (rf.get(qn('w:eastAsia')) if rf is not None else None) or '宋体'
+    ascii_f = (rf.get(qn('w:ascii')) if rf is not None else None) or east
+    sz = rpr.find(qn('w:sz'))
+    size_half = int(sz.get(qn('w:val'))) if sz is not None and (sz.get(qn('w:val')) or '').isdigit() else 32
+    jc = ppr.find(qn('w:jc')) if ppr is not None else None
+    sp = ppr.find(qn('w:spacing')) if ppr is not None else None
+    line_rule, line_line, before, after = 'auto', 360, 0, 0
+    if sp is not None:
+        lv = sp.get(qn('w:line'))
+        if lv and lv.isdigit():
+            line_line = int(lv)
+            line_rule = sp.get(qn('w:lineRule')) or 'auto'
+        bv, av = sp.get(qn('w:before')), sp.get(qn('w:after'))
+        if bv and bv.isdigit():
+            before = int(bv)
+        if av and av.isdigit():
+            after = int(av)
+    indent_chars = 0.0
+    ind = ppr.find(qn('w:ind')) if ppr is not None else None
+    if ind is not None:
+        fc = ind.get(qn('w:firstLineChars'))
+        if fc and fc.isdigit():
+            indent_chars = int(fc) / 100.0
+        else:
+            fl = ind.get(qn('w:firstLine'))
+            if fl and fl.isdigit() and size_half > 0:
+                indent_chars = round(int(fl) / (size_half * 10.0), 2)
+    return {'font_east': east, 'font_ascii': ascii_f, 'size_half': size_half,
+            'bold': is_on(rpr.find(qn('w:b'))),
+            'align': (jc.get(qn('w:val')) if jc is not None else None) or default_align,
+            'line_rule': line_rule, 'line_line': line_line,
+            'indent_chars': indent_chars, 'before': before, 'after': after}
+
+# 空模板兜底口径（与无模板内置口径一致：宋体 12pt 单倍行距首行缩进 2 字符）
+DEFAULT_BODY = {'font_east': '宋体', 'font_ascii': '宋体', 'size_half': 24,
+                'bold': False, 'align': 'both', 'line_rule': 'auto', 'line_line': 0,
+                'indent_chars': 2.0, 'before': 0, 'after': 0}
+
+body_ps = [el for el in body if el.tag == qn('w:p')]
+# 正文原型：带首行缩进的最长段（公文正文定义特征）；全无缩进则取最长段
+body_el = max([el for el in body_ps if has_first_line_ind(el)] or body_ps,
+              key=para_len, default=None)
+body_style = style_of(*proto_of(body_el)) if body_el is not None else dict(DEFAULT_BODY)
+
+# 主标题原型：首个非空段——居中或字体字号异于正文才算；没有则正文改居中顶替
+title_style = None
+first_el = next((el for el in body_ps if para_len(el) > 0), None)
+if first_el is not None:
+    f_ppr, f_rpr = proto_of(first_el)
+    f_jc = f_ppr.find(qn('w:jc')) if f_ppr is not None else None
+    body_sig = font_sig(proto_of(body_el)[1]) if body_el is not None else None
+    if (f_jc is not None and f_jc.get(qn('w:val')) == 'center') \
+            or font_sig(f_rpr) != body_sig:
+        title_style = style_of(f_ppr, f_rpr, 'center')
+if title_style is None:
+    title_style = dict(body_style)
+    title_style['align'] = 'center'
+    title_style['indent_chars'] = 0.0
+
+# 标题级原型：模板正文真用了 Heading N 样式的段（每级取首个）；
+# 缺该级原型时按公文惯例正文改黑体、去缩进、居左（与正文同字号）
+def heiti(grp):
+    g = dict(grp)
+    g['font_east'] = '黑体'
+    g['font_ascii'] = '黑体'
+    g['indent_chars'] = 0.0
+    g['align'] = 'left'
+    return g
+head_raw = {}
+for para in d.paragraphs:
+    m = re.match(r'^heading ([1-3])$', para.style.name, re.I)
+    if m and para_len(para._p) > 0 and int(m.group(1)) not in head_raw:
+        head_raw[int(m.group(1))] = proto_of(para._p)
+out = {'version': 1, 'body': body_style, 'title': title_style}
+for lvl in (1, 2, 3):
+    key = 'h%d' % lvl
+    out[key] = style_of(*head_raw[lvl], 'left') if lvl in head_raw else heiti(body_style)
+print(json.dumps(out, ensure_ascii=False))
 "#;
 
 // MAKE_DOCX_REVISIONS_SCRIPT：修订版 Word 的 Python 脚本——引擎优先 .NET，
@@ -1063,19 +1175,54 @@ pub async fn doc_make_word(
     template: Option<String>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
-    // 审计带模板文件名：模板锚定是否生效在产物里肉眼难辨（页面设置继承、
-    // 正文格式走收割），排障要先知道这次到底用没用模板
-    let tpl_note = template
+    // 参数层：旁车 <模板名>.json 优先；缺失（存量模板）时现场提取并落盘自愈，
+    // 启发式单点在 HARVEST_PROTO_SCRIPT。提取失败 = 模板打不开/损坏（与生成
+    // 脚本内打开模板同败因），直接上抛
+    let tpl_name = template
         .as_deref()
-        .and_then(|t| Path::new(t).file_name())
-        .map(|n| format!(" | tpl: {}", n.to_string_lossy()))
-        .unwrap_or_else(|| " | tpl: -".to_string());
+        .filter(|t| !t.is_empty())
+        .map(Path::new)
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string());
+    let (tpl_params, params_note) = match template.as_deref().filter(|t| !t.is_empty()) {
+        Some(tp) => {
+            let sidecar = Path::new(tp).with_extension("json");
+            match std::fs::read_to_string(&sidecar)
+                .ok()
+                .and_then(|s| serde_json::from_str::<WordTemplateParams>(&s).ok())
+            {
+                Some(v) => (Some(v), "params: saved"),
+                None => {
+                    let v = harvest_template_params(&app, Path::new(tp)).await?;
+                    if let Err(e) = word_template_params_write(&sidecar, &v) {
+                        // 落盘失败不阻断生成（参数已到手），下次生成重提
+                        py_audit(
+                            &app,
+                            &format!(
+                                "doc_make_word 旁车参数落盘失败 | {}",
+                                crate::audit::escape_for_log(&e, 120)
+                            ),
+                        );
+                    }
+                    (Some(v), "params: harvested")
+                }
+            }
+        }
+        None => (None, ""),
+    };
+    // 审计带模板名与参数来源：锚定是否生效在产物里肉眼难辨，排障先要知道
+    // 这次用没用模板、参数是存量旁车还是现场收割
+    let tpl_note = match &tpl_name {
+        Some(n) => format!(" | tpl: {n} {params_note}"),
+        None => " | tpl: -".to_string(),
+    };
     let input = serde_json::json!({
         "title": title,
         "paragraphs": paragraphs,
         "tables": tables.unwrap_or(serde_json::json!([])),
         "images": images,
         "template": template.unwrap_or_default(),
+        "tpl_params": tpl_params,
         "out": out,
     })
     .to_string();
@@ -1394,7 +1541,7 @@ pub fn word_template_list(app: AppHandle) -> CommandResult<Vec<WordTemplateInfo>
 }
 
 #[tauri::command]
-pub fn word_template_import(app: AppHandle, path: String) -> CommandResult<String> {
+pub async fn word_template_import(app: AppHandle, path: String) -> CommandResult<String> {
     let src = std::path::PathBuf::from(&path);
     if !src.is_file() {
         return Err(CommandError::InvalidArgument {
@@ -1430,10 +1577,24 @@ pub fn word_template_import(app: AppHandle, path: String) -> CommandResult<Strin
         });
     }
     std::fs::copy(&src, &dest).map_err(|e| CommandError::IoError(e.to_string()))?;
+    // 参数层：上传即提取——模板打不开/损坏在这里 fail-closed，拷贝一并回滚；
+    // 提取产物落旁车 json，生成与编辑面板都直接取参数
+    let params = match harvest_template_params(&app, &dest).await {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_file(&dest);
+            return Err(e);
+        }
+    };
+    if let Err(e) = word_template_params_save_in(&dir, &name, &params) {
+        let _ = std::fs::remove_file(&dest);
+        let _ = std::fs::remove_file(template_params_path_in(&dir, &name));
+        return Err(CommandError::IoError(format!("模板参数写入失败：{e}")));
+    }
     crate::bot::audit_log(
         &app,
         &format!(
-            "word_template_import | {}",
+            "word_template_import | {} | params: extracted",
             crate::bot::escape_for_log(&name, 100)
         ),
     );
@@ -1447,6 +1608,8 @@ pub fn word_template_delete(app: AppHandle, name: String) -> CommandResult<()> {
     if p.exists() {
         std::fs::remove_file(&p).map_err(|e| CommandError::IoError(e.to_string()))?;
     }
+    // 旁车参数一并删，不留孤儿 json
+    let _ = std::fs::remove_file(template_params_path_in(&dir, &name));
     if std::fs::read_to_string(default_marker_path(&dir))
         .map(|d| d == name)
         .unwrap_or(false)
@@ -1484,6 +1647,191 @@ pub fn word_template_set_default(app: AppHandle, name: String) -> CommandResult<
         ),
     );
     Ok(())
+}
+
+// ── Word 模板参数层（双层口径：<name>.docx 管页面家具，<name>.json 管文字排版）──
+
+/// 一组文字排版参数（title/body/h1/h2/h3 各一份）。字段名 snake_case：与
+/// HARVEST_PROTO_SCRIPT 的 stdout、MAKE_DOCX_SCRIPT 入参同键，不做 camelCase
+/// 改写；数值 = OOXML 原生单位，号数/磅/字符的人话换算在前端
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+pub struct WordTextStyle {
+    pub font_east: String,
+    pub font_ascii: String,
+    /// 字号，半磅（三号 = 32）
+    pub size_half: i32,
+    pub bold: bool,
+    /// left / center / right / both
+    pub align: String,
+    /// auto=倍数（line_line/240） / exact=固定值 / atLeast=最小值
+    pub line_rule: String,
+    /// 行距值：auto 时 240×倍数，exact/atLeast 时缇；0 = 不显式设置
+    pub line_line: i32,
+    /// 首行缩进字符数（0 = 不缩进）
+    pub indent_chars: f64,
+    /// 段前/段后，缇
+    pub before: i32,
+    pub after: i32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+pub struct WordTemplateParams {
+    pub version: i32,
+    pub title: WordTextStyle,
+    pub body: WordTextStyle,
+    pub h1: WordTextStyle,
+    pub h2: WordTextStyle,
+    pub h3: WordTextStyle,
+}
+
+fn template_params_path_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    dir.join(format!("{name}.json"))
+}
+
+fn word_template_params_write(
+    sidecar: &std::path::Path,
+    params: &WordTemplateParams,
+) -> Result<(), String> {
+    let s = serde_json::to_string_pretty(params).map_err(|e| e.to_string())?;
+    std::fs::write(sidecar, s).map_err(|e| e.to_string())
+}
+
+fn word_template_params_save_in(
+    dir: &std::path::Path,
+    name: &str,
+    params: &WordTemplateParams,
+) -> Result<(), String> {
+    word_template_params_write(&template_params_path_in(dir, name), params)
+}
+
+fn word_template_params_load_in(dir: &std::path::Path, name: &str) -> Option<WordTemplateParams> {
+    let s = std::fs::read_to_string(template_params_path_in(dir, name)).ok()?;
+    serde_json::from_str(&s).ok()
+}
+
+/// 跑提取脚本收割模板文字排版参数——上传、编辑面板、生成自愈三处共用，
+/// 启发式单点在 HARVEST_PROTO_SCRIPT
+async fn harvest_template_params(
+    app: &AppHandle,
+    docx_path: &Path,
+) -> CommandResult<WordTemplateParams> {
+    let input = serde_json::json!({ "template": docx_path.to_string_lossy() }).to_string();
+    let r = run_doc_script(app, "word_template_harvest", HARVEST_PROTO_SCRIPT, input).await?;
+    if r.exit_code != Some(0) {
+        py_audit(
+            app,
+            &format!(
+                "word_template_harvest failed | {}",
+                crate::audit::escape_for_log(&r.stderr, 200)
+            ),
+        );
+        return Err(script_fail_err("模板参数提取失败", &r.stderr));
+    }
+    serde_json::from_str(r.stdout.trim())
+        .map_err(|e| CommandError::Internal(format!("模板参数解析失败：{e}")))
+}
+
+/// 读模板参数；旁车缺失（存量模板）时现场提取并落盘补齐——与生成路径自愈同口径
+#[tauri::command]
+pub async fn word_template_params_get(
+    app: AppHandle,
+    name: String,
+) -> CommandResult<WordTemplateParams> {
+    let dir = word_templates_dir(&app);
+    if !dir.join(format!("{name}.docx")).exists() {
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name,
+            reason: "模板不存在".into(),
+        });
+    }
+    if let Some(p) = word_template_params_load_in(&dir, &name) {
+        return Ok(p);
+    }
+    let docx_path = dir.join(format!("{name}.docx"));
+    let params = harvest_template_params(&app, &docx_path).await?;
+    word_template_params_save_in(&dir, &name, &params).map_err(CommandError::IoError)?;
+    Ok(params)
+}
+
+#[tauri::command]
+pub fn word_template_params_update(
+    app: AppHandle,
+    old_name: String,
+    new_name: String,
+    params: WordTemplateParams,
+) -> CommandResult<()> {
+    let dir = word_templates_dir(&app);
+    word_template_params_update_in(&dir, &old_name, &new_name, &params)
+        .map_err(CommandError::IoError)?;
+    crate::bot::audit_log(
+        &app,
+        &format!(
+            "word_template_update | {} -> {}",
+            crate::bot::escape_for_log(&old_name, 100),
+            crate::bot::escape_for_log(&new_name, 100)
+        ),
+    );
+    Ok(())
+}
+
+/// update 内核（_in 后缀供测试）：改名连带 docx/旁车 json/_default 标记三处；
+/// 参数整体落盘（结构校验已由命令入参反序列化完成）
+fn word_template_params_update_in(
+    dir: &std::path::Path,
+    old_name: &str,
+    new_name: &str,
+    params: &WordTemplateParams,
+) -> Result<(), String> {
+    let new_name = new_name.trim();
+    if new_name.is_empty() {
+        return Err("模板名不能为空".to_string());
+    }
+    if new_name.contains('/') || new_name.contains('\\') || new_name.contains("..") {
+        return Err("模板名含非法字符".to_string());
+    }
+    let old_docx = dir.join(format!("{old_name}.docx"));
+    if !old_docx.exists() {
+        return Err(format!("模板不存在：{old_name}"));
+    }
+    if new_name != old_name {
+        let new_docx = dir.join(format!("{new_name}.docx"));
+        if new_docx.exists() {
+            return Err(format!("同名模板已存在：{new_name}"));
+        }
+        std::fs::rename(&old_docx, &new_docx).map_err(|e| format!("改名失败：{e}"))?;
+        let marker_matches = std::fs::read_to_string(default_marker_path(dir))
+            .map(|d| d == old_name)
+            .unwrap_or(false);
+        if marker_matches {
+            let _ = std::fs::write(default_marker_path(dir), new_name);
+        }
+    }
+    word_template_params_save_in(dir, new_name, params)?;
+    if new_name != old_name {
+        let _ = std::fs::remove_file(template_params_path_in(dir, old_name));
+    }
+    Ok(())
+}
+
+/// 重新提取：按当前 docx 收割参数覆盖旁车（提取启发式升级/模板被外部修改后用）
+#[tauri::command]
+pub async fn word_template_reextract(
+    app: AppHandle,
+    name: String,
+) -> CommandResult<WordTemplateParams> {
+    let dir = word_templates_dir(&app);
+    let docx_path = dir.join(format!("{name}.docx"));
+    if !docx_path.exists() {
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name,
+            reason: "模板不存在".into(),
+        });
+    }
+    let params = harvest_template_params(&app, &docx_path).await?;
+    word_template_params_save_in(&dir, &name, &params).map_err(CommandError::IoError)?;
+    Ok(params)
 }
 
 // ── PPT 模板（create_ppt 版式随母版；无用户模板时回退内置母版）──
@@ -1731,6 +2079,119 @@ mod word_template_tests {
     }
 }
 
+/// 取 `pub const NAME: &str = r#"…"#;` 的脚本体（测试用，锁脚本内容时切片）
+#[cfg(test)]
+fn const_script_body<'a>(src: &'a str, name: &str) -> &'a str {
+    let marker = format!("pub const {name}: &str = r#\"");
+    let pos = src
+        .find(&marker)
+        .unwrap_or_else(|| panic!("常量 {name} 不存在"));
+    let rest = &src[pos + marker.len()..];
+    rest.split("\"#;")
+        .next()
+        .unwrap_or_else(|| panic!("常量 {name} 未闭合"))
+}
+
+#[cfg(test)]
+mod word_template_params_tests {
+    use super::*;
+
+    fn sample_params() -> WordTemplateParams {
+        let style = |align: &str, indent: f64| WordTextStyle {
+            font_east: "仿宋".into(),
+            font_ascii: "仿宋".into(),
+            size_half: 32,
+            bold: false,
+            align: align.into(),
+            line_rule: "auto".into(),
+            line_line: 360,
+            indent_chars: indent,
+            before: 0,
+            after: 0,
+        };
+        WordTemplateParams {
+            version: 1,
+            title: style("center", 0.0),
+            body: style("both", 2.0),
+            h1: style("left", 0.0),
+            h2: style("left", 0.0),
+            h3: style("left", 0.0),
+        }
+    }
+
+    #[test]
+    fn params_serde_roundtrip_snake_keys() {
+        // 旁车 json / 提取脚本 stdout / 生成入参三方同键（snake_case），
+        // 字段名改写会让任何一方静默拿默认值
+        let p = sample_params();
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains("\"font_east\""), "键名不得改写：{s}");
+        assert!(s.contains("\"indent_chars\""), "键名不得改写：{s}");
+        let back: WordTemplateParams = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, p);
+    }
+
+    #[test]
+    fn update_renames_docx_json_and_default_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.docx"), b"x").unwrap();
+        std::fs::write(template_params_path_in(dir, "a"), "{}").unwrap();
+        std::fs::write(default_marker_path(dir), "a").unwrap();
+
+        word_template_params_update_in(dir, "a", "b", &sample_params()).unwrap();
+
+        assert!(dir.join("b.docx").exists(), "docx 未改名");
+        assert!(!dir.join("a.docx").exists());
+        assert!(dir.join("b.json").exists(), "旁车参数未随新名落盘");
+        assert!(!template_params_path_in(dir, "a").exists(), "旧旁车残留");
+        assert_eq!(
+            std::fs::read_to_string(default_marker_path(dir)).unwrap(),
+            "b",
+            "_default 标记未连带"
+        );
+        // 落盘的参数可读回且保真
+        assert_eq!(
+            word_template_params_load_in(dir, "b").unwrap(),
+            sample_params()
+        );
+    }
+
+    #[test]
+    fn update_without_rename_keeps_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.docx"), b"x").unwrap();
+        let mut params = sample_params();
+        params.body.size_half = 28;
+        word_template_params_update_in(dir, "a", "a", &params).unwrap();
+        assert!(dir.join("a.docx").exists());
+        assert_eq!(
+            word_template_params_load_in(dir, "a")
+                .unwrap()
+                .body
+                .size_half,
+            28
+        );
+    }
+
+    #[test]
+    fn update_rejects_bad_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.docx"), b"x").unwrap();
+        std::fs::write(dir.join("b.docx"), b"x").unwrap();
+        // 空名 / 非法字符 / 不存在的旧模板 / 同名冲突
+        assert!(word_template_params_update_in(dir, "a", "  ", &sample_params()).is_err());
+        assert!(word_template_params_update_in(dir, "a", "x/y", &sample_params()).is_err());
+        assert!(word_template_params_update_in(dir, "a", "..x", &sample_params()).is_err());
+        assert!(word_template_params_update_in(dir, "nope", "c", &sample_params()).is_err());
+        assert!(word_template_params_update_in(dir, "a", "b", &sample_params()).is_err());
+        // 上面全部失败：文件未被误动
+        assert!(dir.join("a.docx").exists() && dir.join("b.docx").exists());
+    }
+}
+
 #[cfg(test)]
 mod pptx_template_tests {
     use super::*;
@@ -1811,27 +2272,35 @@ mod fake_success_guard_tests {
         }
     }
 
-    /// MAKE_DOCX_SCRIPT 模板格式收割回归锁：公文/WPS 模板的排版在段落直接
-    /// 格式或自定义名样式里，样式表自带的 Heading/Normal 只是 Office 通用款
-    /// （用户模板实测：真模板零 Heading 段、生成物却套上样式表的蓝主题
-    /// heading 1）。脚本必须清空正文前收割格式原型（正文取带首行缩进的最长
-    /// 段），降级标题仍带 outlineLvl
+    /// 模板参数化回归锁：收割启发式单点在 HARVEST_PROTO_SCRIPT（上传/编辑
+    /// 面板/生成自愈三处共用），MAKE_DOCX_SCRIPT 只按 tpl_params 构造格式——
+    /// 启发式回流生成脚本会造成提取与生成两套口径漂移（用户模板实测过：
+    /// 提取对了、生成又走别的路，产物与参数对不上）
     #[test]
-    fn docx_script_harvests_template_format_protos() {
+    fn docx_template_params_single_source() {
         let src = include_str!("document.rs");
-        assert!(src.contains("def take_protos"), "格式原型收割被移除");
-        assert!(
-            src.contains("has_first_line_ind"),
-            "正文原型须取带首行缩进的最长段"
-        );
-        assert!(src.contains("head_protos"), "Heading 原型优先路径被移除");
-        assert!(src.contains("w:outlineLvl"), "降级标题 outlineLvl 被移除");
-        // 命名样式优先已被证伪：样式表有通用 heading 1 ≠ 模板真实版式，
-        // 模板模式不得再按样式名盲调 add_heading（KeyError 风险一并消除）。
+        let make = super::const_script_body(src, "MAKE_DOCX_SCRIPT");
+        let harvest = super::const_script_body(src, "HARVEST_PROTO_SCRIPT");
+        for marker in ["def take_protos", "has_first_line_ind", "def style_of"] {
+            assert!(harvest.contains(marker), "提取脚本缺启发式 {marker}");
+        }
+        for marker in ["tpl_params", "def mk_rpr", "def mk_ppr"] {
+            assert!(make.contains(marker), "生成脚本缺参数构造 {marker}");
+        }
         // 针线拼接写法：include_str 含测试自身源码，整串字面量会自命中
         assert!(
-            !src.contains(concat!("add_heading(text, level=", "=level)")),
-            "命名样式优先路径回流"
+            !make.contains(concat!("take_", "protos")),
+            "收割启发式回流生成脚本（两套口径漂移）"
         );
+        // 参数构造按 schema 序插 pPr/rPr 首子元素；标题补 outlineLvl 导航层级
+        assert!(
+            make.contains("para._p.insert(0, mk_ppr("),
+            "pPr 未按首子元素插入"
+        );
+        assert!(
+            make.contains("run._element.insert(0, mk_rpr("),
+            "rPr 未按首子元素插入"
+        );
+        assert!(make.contains("outlineLvl"), "生成脚本缺 outlineLvl");
     }
 }
