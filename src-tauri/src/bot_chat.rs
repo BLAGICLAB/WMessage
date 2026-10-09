@@ -1462,7 +1462,9 @@ pub struct TaskExecCtx {
 /// ask_user 工具按 session_id 查表；预算与开关在注册表条目上（AppState）。
 #[derive(Debug, Clone)]
 pub struct AskExecContext {
-    pub workflow_id: String,
+    /// 关联工作流（档案归组/审计）；None = 任务卡手动执行（无工作流档案，
+    /// 问答走通知中心 + 假设兜底，不落工作流审计）
+    pub workflow_id: Option<String>,
     /// 提问模式开关（false = 从不提问，工具直接返回假设）
     pub asks_enabled: bool,
     /// W10：run 分组键——问题 payload 带上它，应答端写审计行能归到正确的 run
@@ -1809,11 +1811,28 @@ where
     // 末尾无论成败都要 unregister_exec_session 清理。守卫成功后再登记——
     // acquire 失败的早退分支不应泄漏登记（无人 unregister）。
     crate::tool_guard::register_exec_session(&sid, origin);
-    // 工作流节点执行 → 注册提问上下文（ask_user 按 session_id 查表）。
-    // 与  同生命周期：此后到函数尾无早退分支，unregister 成对执行不泄漏。
-    let ask_registered = match ctx.and_then(|c| c.ask.as_ref()) {
-        Some(ask) if origin == TaskExecOrigin::Workflow => {
+    // 执行提问授权（ask_user 按 session_id 查表）：
+    // - 工作流节点：run 传入的 ask 配置（开关随 clarify_meta.askMode，run 起读一次）
+    // - 手动执行任务卡：默认开启（预算 2 问 + 假设兜底 + 可停止的等待）——
+    //   交互式技能的确认点（题材/书名等）在手动执行里也要有通道；
+    //   定时/批量保持无人值守自治（不注册，调用即回落假设）
+    let ask_registered = match ctx.as_ref().and_then(|c| c.ask.as_ref()) {
+        Some(ask) => {
             crate::workflow_questions::register_ask_context(app, &sid, ask, &task.id, &task.title);
+            true
+        }
+        None if origin == TaskExecOrigin::Manual => {
+            crate::workflow_questions::register_ask_context(
+                app,
+                &sid,
+                &AskExecContext {
+                    workflow_id: None,
+                    asks_enabled: true,
+                    run_started_at: chrono::Utc::now().timestamp_millis(),
+                },
+                &task.id,
+                &task.title,
+            );
             true
         }
         _ => false,

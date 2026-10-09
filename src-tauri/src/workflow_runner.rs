@@ -850,7 +850,7 @@ async fn run_controller(
                     // 执行提问授权clarify_meta.askMode，run 开始时读一次；
                     // 默认"关键决策才问"=开）
                     ask: Some(crate::bot_chat::AskExecContext {
-                        workflow_id: workflow_id.clone(),
+                        workflow_id: Some(workflow_id.clone()),
                         asks_enabled,
                         run_started_at,
                     }),
@@ -976,7 +976,7 @@ async fn run_controller(
                                 upstream_brief: load_upstream_brief(&app, &ups).await,
                                 brief: None, // 首轮注入过；返工重在证据，档案层不重复灌
                                 ask: Some(crate::bot_chat::AskExecContext {
-                                    workflow_id: workflow_id.clone(),
+                                    workflow_id: Some(workflow_id.clone()),
                                     asks_enabled,
                                     run_started_at,
                                 }),

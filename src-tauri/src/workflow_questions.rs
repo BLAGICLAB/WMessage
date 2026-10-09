@@ -216,8 +216,8 @@ pub async fn workflow_question_respond(
     let Some(outcome) = outcome else {
         return Ok(());
     };
-    // W10：问答日志入审计表（尽力而为）
-    {
+    // W10：问答日志入审计表（尽力而为）；任务卡提问（无 workflowId）不落工作流审计
+    if !outcome.workflow_id.is_empty() {
         let app2 = app.clone();
         let wf2 = outcome.workflow_id.clone();
         let tid2 = outcome.task_id.clone();
@@ -273,10 +273,19 @@ pub(crate) const MAX_ASKS_PER_NODE: u8 = 2;
 /// 提问等待上限
 pub(crate) const ASK_TIMEOUT_SECS: u64 = 24 * 3600;
 
+/// 提问通知标题主体：工作流问题挂工作流头衔，任务卡提问（manual）单列
+fn question_title(workflow: Option<&str>, node_title: &str) -> String {
+    match workflow {
+        Some(_) => format!("工作流任务「{node_title}」提问"),
+        None => format!("任务卡「{node_title}」提问"),
+    }
+}
+
 /// 会话级提问上下文（bot_chat 会话建立时注册、收尾注销；ask_user 查表）。
 /// 预算计数在条目上——同一把锁内检查+扣减，无竞态。
 pub struct AskRegistration {
-    pub workflow_id: String,
+    /// 关联工作流；None = 任务卡手动执行（无工作流档案与审计归组）
+    pub workflow_id: Option<String>,
     pub task_id: String,
     pub node_title: String,
     /// 提问模式开关
@@ -406,7 +415,7 @@ pub(crate) async fn engine_ask_user(
     };
     let Some(sid) = session_id else {
         return ToolResult::warn(
-            "ask_user 仅工作流节点执行可用，请按你的假设继续执行。",
+            "ask_user 仅任务执行中可用（工作流节点/手动执行的任务卡）；聊天中请直接文字提问。请按你的假设继续执行。",
             Vec::new(),
         );
     };
@@ -424,7 +433,7 @@ pub(crate) async fn engine_ask_user(
             });
         let Some(reg) = map.get_mut(sid) else {
             return ToolResult::warn(
-                "ask_user 仅工作流节点执行可用，请按你的假设继续执行。",
+                "ask_user 仅任务执行中可用（工作流节点/手动执行的任务卡）；聊天中请直接文字提问。请按你的假设继续执行。",
                 Vec::new(),
             );
         };
@@ -464,7 +473,7 @@ pub(crate) async fn engine_ask_user(
         "runStartedAt": run_started_at,
         "createdAt": chrono::Utc::now().timestamp_millis(),
     });
-    let title = format!("🔀 工作流任务「{node_title}」提问");
+    let title = question_title(wf_id.as_deref(), &node_title);
     let body = parsed.question.clone();
     let qid_insert = qid.clone();
     let app2 = app.clone();
@@ -522,19 +531,20 @@ pub(crate) async fn engine_ask_user(
             ("hasOptions", (!parsed.options.is_empty()).to_string()),
         ],
     );
-    // W10：问答日志入审计表（设计 §4.2 kinds 含 question_asked/answered）
-    {
+    // W10：问答日志入审计表（设计 §4.2 kinds 含 question_asked/answered）；
+    // 任务卡提问（无工作流）不落工作流审计——归组键不存在，硬写只会出孤儿行
+    if let Some(wf2) = wf_id.clone() {
         let app2 = app.clone();
-        let wf2 = wf_id.clone();
         let tid2 = task_id.clone();
         let q2 = parsed.question.clone();
         let a2 = parsed.assumption.clone();
+        let rsa = run_started_at;
         let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
             let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
             crate::db::workflow_audit::wa_insert(
                 &conn,
                 &wf2,
-                run_started_at,
+                rsa,
                 Some(&tid2),
                 crate::db::workflow_audit::KIND_QUESTION_ASKED,
                 "info",
@@ -556,7 +566,10 @@ pub(crate) async fn engine_ask_user(
     let _ = app
         .notification()
         .builder()
-        .title(format!("❓ 工作流任务「{node_title}」提问"))
+        .title(format!(
+            "❓ {}",
+            question_title(wf_id.as_deref(), &node_title)
+        ))
         .body(&parsed.question)
         .show();
     enum WaitOutcome {
@@ -746,5 +759,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ok.options, vec!["选项"]);
+    }
+
+    #[test]
+    fn manual_task_question_answers_without_workflow() {
+        // 任务卡手动执行的提问：payload 无 workflowId——应答照常走通，
+        // 不落工作流档案（brief 只属于工作流），outcome.workflow_id 为空
+        let conn = mem_conn();
+        let qid = "q-manual-t9";
+        let payload = serde_json::json!({
+            "questionId": qid,
+            "taskId": "t9",
+            "nodeTitle": "写一部10章左右武侠小说",
+            "question": "书名用《问剑录》还是《断剑记》？",
+            "assumption": "《问剑录》",
+        });
+        crate::notifications::notif_insert(
+            &conn,
+            &question_notif_id(qid),
+            crate::notifications::KIND_WORKFLOW_QUESTION,
+            &question_title(None, "写一部10章左右武侠小说"),
+            "书名用《问剑录》还是《断剑记》？",
+            &payload,
+        )
+        .unwrap();
+
+        let outcome = respond_core(&conn, qid, ACTION_ANSWER, Some("用《问剑录》"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.workflow_id, "", "任务卡提问无工作流归组");
+        assert_eq!(outcome.task_id.as_deref(), Some("t9"));
+        let notif = crate::notifications::notif_get(&conn, &question_notif_id(qid))
+            .unwrap()
+            .unwrap();
+        assert_eq!(notif.status, crate::notifications::STATUS_DONE);
+    }
+
+    #[test]
+    fn question_title_splits_workflow_from_task_card() {
+        // 标题口径：工作流问题与任务卡提问单列——通知中心里两种来源可辨
+        assert_eq!(
+            question_title(Some("wf1"), "写初稿"),
+            "工作流任务「写初稿」提问"
+        );
+        assert_eq!(question_title(None, "写初稿"), "任务卡「写初稿」提问");
     }
 }

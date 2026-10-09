@@ -22,10 +22,11 @@ export interface Clarification {
   answer: string;
 }
 
-/** 工作流执行提问通知 payload（notifications 表 kind=workflow_question） */
+/** 工作流执行提问通知 payload（notifications 表 kind=workflow_question；
+ *  workflowId 为空 = 任务卡手动执行的提问，无工作流档案） */
 export interface WorkflowQuestionPayload {
   questionId: string;
-  workflowId: string;
+  workflowId?: string | null;
   workflowName?: string;
   taskId?: string;
   nodeTitle?: string;

@@ -304,7 +304,7 @@ pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"us
     "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
   },"required":["name"]}}}"##;
 // 工作流执行提问（主可见）
-pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask_user","description":"向用户提一个问题并等待回答（仅工作流节点执行可用；提问会进通知中心，用户可能几小时后才回答）。必须携带 assumption=你的推荐假设：用户不回答时工作流按假设继续，给不出假设的问题不许问。仅当缺关键信息且无法从任务卡/上游产出/附件推断时才用；每张卡最多问 2 次，超预算会被直接按假设继续","parameters":{"type":"object","properties":{
+pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask_user","description":"向用户提一个问题并等待回答（仅任务执行中可用：工作流节点与手动执行的任务卡；聊天中不要用本工具，直接文字提问即可。提问会进通知中心，用户可能几小时后才回答）。必须携带 assumption=你的推荐假设：用户不回答时按假设继续，给不出假设的问题不许问。仅当缺关键信息且无法从任务卡/上游产出/附件推断时才用；每次执行最多问 2 次，超预算会被直接按假设继续","parameters":{"type":"object","properties":{
     "question":{"type":"string","description":"要问的问题，≤200 字，具体明确"},
     "why":{"type":"string","description":"一句话说明为什么要问，可选"},
     "options":{"type":"array","items":{"type":"string"},"description":"候选项（可选，≤4 个、每个 ≤40 字），用户可点选也可自由回答"},
