@@ -6080,3 +6080,14 @@ warning（与本次改动无关）。
 **待跑**：Windows Tauri 实机验收——macOS 下 `tauri dev` 起的 webview
 对手指 touch / mouse 捕获表现可能与 Win 不同。便携包（10-08 版）未
 含此改动，下一次 `wmessage-portable` 出包时一起携带。
+
+### 修正（同日）：进度环与按钮不同心
+
+初版环用 `position:absolute; inset:0; margin:auto` 居中，但环(44/48px) 比按钮
+(36/38px) 大 → 过约束；浏览器把 `margin:auto` 解成不对称值（实测编译后 computed
+`margin: -5px -8px -5px 0px`），环心偏移 4px。WKWebView 的不对称方向与 Chromium
+不同，故用户侧表现为偏左。
+
+修法：`left/top:50% + transform: translate(-50%,-50%) rotate(-90deg)`，宽高在 CSS
+显式给 48px（不依赖 SVG 属性）。验证：真实编译 CSS + getBoundingClientRect，环/按钮
+中心 dx=dy=0；对比图见会话。顺带 idle 按钮去 padding 变 36×36 正圆，done 态隐藏环。
