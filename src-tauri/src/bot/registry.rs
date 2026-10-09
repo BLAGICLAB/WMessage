@@ -349,10 +349,11 @@ pub const SCHEMA_CLIPBOARD_WRITE: &str = r##"{"type":"function","function":{"nam
   },"required":["text"]}}}"##;
 pub const SCHEMA_SCREENSHOT: &str = r##"{"type":"function","function":{"name":"screenshot","description":"截取主显示器画面。截图会直接作为图片附在工具结果之后，用你的视觉能力读取内容（PNG 同时落 AI_Gen_Files 留档；需要系统屏幕录制权限，macOS 未授权时会得到壁纸/黑图）","parameters":{"type":"object","properties":{}}}}"##;
 // ：文件编辑（写白名单 ≠ 读白名单，白名单外逐次确认）
-pub const SCHEMA_EDIT_FILE: &str = r##"{"type":"function","function":{"name":"edit_file","description":"对文本文件做精确字符串替换（小步修改首选；先 read_text_file 确认原文再改）。oldString 必须与文件内容一致且唯一（多处命中报错；行尾空白/CRLF 差异自动容错）。改完建议 read_text_file 复核","parameters":{"type":"object","properties":{
+pub const SCHEMA_EDIT_FILE: &str = r##"{"type":"function","function":{"name":"edit_file","description":"对文本文件做字符串替换（默认 literal 精确模式；可传 mode=regex 启用正则全部匹配替换；详见参数说明）。literal 模式小步修改首选（先 read_text_file 确认原文再改）：oldString 必须与文件内容一致且唯一（多处命中报错；行尾空白/CRLF 差异自动容错）。改完建议 read_text_file 复核","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径（仅限可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs；白名单外会弹确认）"},
-    "oldString":{"type":"string","description":"要替换的原文（精确匹配，须唯一；含足够上下文）"},
-    "newString":{"type":"string","description":"替换后的新文本（可为空串=删除该段）"}
+    "oldString":{"type":"string","description":"要替换的原文：literal 模式=精确匹配（须唯一；含足够上下文）；regex 模式=正则模式串（全部匹配替换）"},
+    "newString":{"type":"string","description":"替换后的新文本：literal 模式=可为空串=删除该段；regex 模式=可用 $1/$2 命名/编号捕获组引用，replace 语义与 sed g 一致"},
+    "mode":{"type":"string","enum":["literal","regex"],"default":"literal","description":"匹配模式：literal=精确（默认；oldString 须唯一；多处命中报错）；regex=正则（oldString 当作 Rust regex 模式串，newString 支持 $1/$2 捕获组，全部命中替换；非法 pattern 报错；空替换会把文件清空时拒绝并改用 write_file）"}
   },"required":["path","oldString","newString"]}}}"##;
 pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"write_file","description":"创建新文件或整体写入内容（仅限可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs；覆盖已存在文件需要用户确认）。修改已有文件优先用 edit_file（精确替换更安全）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"目标文件绝对路径（父目录必须已存在）"},

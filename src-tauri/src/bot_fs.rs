@@ -625,6 +625,8 @@ pub(crate) enum EditMode {
     Exact,
     /// 空白容错（逐行 trim_end 比较）命中
     WhitespaceTolerant,
+    /// regex 模式（oldString 作为 Rust regex 模式串、replace_all；$1/$2 捕获组）
+    Regex,
 }
 
 /// edit 失败类型（进审计的结构化字段，供自进化反思统计）
@@ -648,7 +650,42 @@ pub(crate) fn try_apply_edit(
     content: &str,
     old: &str,
     new: &str,
+    use_regex: bool,
 ) -> Result<(String, EditMode, i64), (EditErrorKind, String)> {
+    // regex 模式：oldString 当作 Rust regex 模式串、replace_all；$1/$2 由 regex crate 解析。
+    // fail-closed：非法 pattern 报错而非 panic；空替换会清空文件也拒（防呆）。
+    if use_regex {
+        use regex::Regex;
+        let re = match Regex::new(old) {
+            Ok(r) => r,
+            Err(e) => {
+                return Err((EditErrorKind::NotFound, format!("regex 模式串非法：{e}")));
+            }
+        };
+        let count = re.find_iter(content).count();
+        if count == 0 {
+            let head: Vec<&str> = content.lines().take(3).collect();
+            let head_show = if head.is_empty() {
+                "（空文件）".to_string()
+            } else {
+                head.join("\n")
+            };
+            return Err((
+                EditErrorKind::NotFound,
+                format!("regex 模式在文件中 0 处匹配。文件开头：\n{head_show}"),
+            ));
+        }
+        let applied = re.replace_all(content, new).into_owned();
+        if applied.is_empty() && !content.is_empty() {
+            return Err((
+                EditErrorKind::NotFound,
+                "regex 替换后文件会被清空，已拒绝（清空文件请用 write_file 显式写空内容）"
+                    .to_string(),
+            ));
+        }
+        let delta = applied.lines().count() as i64 - content.lines().count() as i64;
+        return Ok((applied, EditMode::Regex, delta));
+    }
     let exact_hits = content.matches(old).count();
     if exact_hits == 1 {
         let applied = content.replacen(old, new, 1);
@@ -870,6 +907,7 @@ fn edit_file_sync(
     canonical: PathBuf,
     old: String,
     new: String,
+    use_regex: bool,
 ) -> Result<(String, String, EditMode, i64), (EditErrorKind, String)> {
     let content = std::fs::read_to_string(&canonical).map_err(|e| {
         (
@@ -886,7 +924,7 @@ fn edit_file_sync(
             ),
         ));
     }
-    let (applied, mode, delta) = try_apply_edit(&content, &old, &new)?;
+    let (applied, mode, delta) = try_apply_edit(&content, &old, &new, use_regex)?;
     Ok((content, applied, mode, delta))
 }
 
@@ -922,6 +960,18 @@ pub async fn tool_edit_file(
             Vec::new(),
         );
     }
+    // mode 解析：默认 literal；显式传 "regex" 启用正则 replace_all
+    let mode_str = v["mode"].as_str().unwrap_or("literal");
+    let use_regex: bool = match mode_str {
+        "literal" => false,
+        "regex" => true,
+        other => {
+            return ToolResult::ok(
+                format!("edit_file 的 mode 非法：{other}（仅支持 literal|regex）"),
+                Vec::new(),
+            );
+        }
+    };
     let canonical = match resolve_writable(app, "edit_file", &path, interactive, session_id).await {
         Ok(p) => p,
         // resolve_writable Err 返 String，首字不定 → ok
@@ -930,10 +980,11 @@ pub async fn tool_edit_file(
     let log_path = crate::bot::truncate_for_log(&canonical.display().to_string(), 200);
     let shown = canonical.display().to_string();
     let write_target = canonical.clone();
-    let out =
-        crate::py::document::spawn_blocking_map(move || Ok(edit_file_sync(canonical, old, new)))
-            .await
-            .unwrap_or_else(|e| Err((EditErrorKind::NotFound, format!("编辑线程异常：{e}"))));
+    let out = crate::py::document::spawn_blocking_map(move || {
+        Ok(edit_file_sync(canonical, old, new, use_regex))
+    })
+    .await
+    .unwrap_or_else(|e| Err((EditErrorKind::NotFound, format!("编辑线程异常：{e}"))));
     match out {
         Ok((before, applied, mode, delta)) => {
             if let Err(e) = crate::db::atomic_write(&write_target, &applied) {
@@ -943,6 +994,7 @@ pub async fn tool_edit_file(
             let mode_note = match mode {
                 EditMode::Exact => "",
                 EditMode::WhitespaceTolerant => "（经空白容错匹配：行尾空白/CRLF 有差异）",
+                EditMode::Regex => "（regex 模式全部匹配替换）",
             };
             let delta_note = if delta > 0 {
                 format!("+{delta} 行")
@@ -959,6 +1011,7 @@ pub async fn tool_edit_file(
                     match mode {
                         EditMode::Exact => "exact",
                         EditMode::WhitespaceTolerant => "ws",
+                        EditMode::Regex => "regex",
                     }
                 ),
             );
@@ -1776,13 +1829,14 @@ mod tests {
     fn apply_edit_exact_unique_and_multi_hit() {
         let content = "fn a() {}\nfn b() {}\n";
         let old = "fn b() {}";
-        let (out, mode, delta) = try_apply_edit(content, old, "fn b() -> i32 { 1 }").unwrap();
+        let (out, mode, delta) =
+            try_apply_edit(content, old, "fn b() -> i32 { 1 }", false).unwrap();
         assert_eq!(mode, EditMode::Exact);
         assert_eq!(delta, 0);
         assert!(out.contains("fn b() -> i32 { 1 }"), "{out}");
         // 多处命中：两个相同函数体
         let dup = "x = 1;\nx = 1;\n";
-        let (kind, hint) = try_apply_edit(dup, "x = 1;", "x = 2;").unwrap_err();
+        let (kind, hint) = try_apply_edit(dup, "x = 1;", "x = 2;", false).unwrap_err();
         assert_eq!(kind, EditErrorKind::MultiHit);
         assert!(hint.contains("2 处"), "{hint}");
     }
@@ -1793,16 +1847,16 @@ mod tests {
         let content = "fn a() {\r\n    return 1;   \r\n}\r\n";
         let old = "fn a() {\n    return 1;\n}";
         let (out, mode, delta) =
-            try_apply_edit(content, old, "fn a() {\r\n    return 2;\r\n}").unwrap();
+            try_apply_edit(content, old, "fn a() {\r\n    return 2;\r\n}", false).unwrap();
         assert_eq!(mode, EditMode::WhitespaceTolerant);
         assert_eq!(delta, 0);
         assert!(out.contains("return 2;"), "{out}");
         // 空白容错也多处 → MultiHit
         let dup_ws = "x = 1;  \nx = 1;\n";
-        let (kind, _) = try_apply_edit(dup_ws, "x = 1;", "x = 2;").unwrap_err();
+        let (kind, _) = try_apply_edit(dup_ws, "x = 1;", "x = 2;", false).unwrap_err();
         assert_eq!(kind, EditErrorKind::MultiHit);
         // 全失败 → NotFound + reflection 提示带文件开头
-        let (kind, hint) = try_apply_edit("alpha\nbeta\n", "不存在的行", "x").unwrap_err();
+        let (kind, hint) = try_apply_edit("alpha\nbeta\n", "不存在的行", "x", false).unwrap_err();
         assert_eq!(kind, EditErrorKind::NotFound);
         assert!(hint.contains("read_text_file"), "{hint}");
         assert!(hint.contains("alpha"), "提示应带文件开头：{hint}");
@@ -1811,12 +1865,56 @@ mod tests {
     #[test]
     fn apply_edit_preserves_crlf_and_trailing_newline() {
         let content = "a\r\nold\r\nb\r\n";
-        let (out, _, _) = try_apply_edit(content, "old", "new").unwrap();
+        let (out, _, _) = try_apply_edit(content, "old", "new", false).unwrap();
         assert_eq!(out, "a\r\nnew\r\nb\r\n", "CRLF 文件替换后保持 CRLF");
         // 无结尾换行的文件重建后不引入结尾换行
         let content2 = "x\nold";
-        let (out2, _, _) = try_apply_edit(content2, "old", "new").unwrap();
+        let (out2, _, _) = try_apply_edit(content2, "old", "new", false).unwrap();
         assert_eq!(out2, "x\nnew");
+    }
+
+    // ：edit regex 模式（mode=regex 走 try_apply_edit use_regex=true 路径）
+
+    #[test]
+    fn apply_edit_regex_replace_all_and_capture_groups() {
+        // 全部命中 + 捕获组引用
+        let content = "foo 1 bar 2 foo 3\n";
+        let (out, mode, _delta) = try_apply_edit(content, r"(\w+)\s+(\d+)", "$1=$2", true).unwrap();
+        assert_eq!(mode, EditMode::Regex);
+        assert_eq!(out, "foo=1 bar=2 foo=3\n", "{out}");
+
+        // 单行命中一次（regex 模式不走 unique 强制，1 处也算 replace）
+        let single = "let x = 1;\n";
+        let (out2, mode2, _) = try_apply_edit(single, r"x\s*=\s*1", "x = 2", true).unwrap();
+        assert_eq!(mode2, EditMode::Regex);
+        assert_eq!(out2, "let x = 2;\n", "{out2}");
+    }
+
+    #[test]
+    fn apply_edit_regex_zero_match_and_invalid_pattern() {
+        // 0 命中 → NotFound + 提示带文件开头
+        let (kind, hint) = try_apply_edit("alpha\nbeta\n", r"zzz", "x", true).unwrap_err();
+        assert_eq!(kind, EditErrorKind::NotFound);
+        assert!(hint.contains("alpha"), "提示应带文件开头：{hint}");
+
+        // 非法 regex（未闭合括号）→ NotFound（不 panic）
+        let (kind, hint) = try_apply_edit("hello", r"(", "x", true).unwrap_err();
+        assert_eq!(kind, EditErrorKind::NotFound);
+        assert!(hint.contains("regex"), "提示应说明模式串非法：{hint}");
+    }
+
+    #[test]
+    fn apply_edit_regex_wipe_refused() {
+        // regex 全清空文件 → 拒（fail-closed，提示走 write_file）
+        let (kind, hint) = try_apply_edit("abc", r".*", "", true).unwrap_err();
+        assert_eq!(kind, EditErrorKind::NotFound);
+        assert!(hint.contains("清空"), "{hint}");
+        assert!(hint.contains("write_file"), "{hint}");
+
+        // 非空文件 regex 替换后非空 → 允许（即使删了大部分内容）
+        let (out, mode, _) = try_apply_edit("abc\n", r"abc", "", true).unwrap();
+        assert_eq!(mode, EditMode::Regex);
+        assert_eq!(out, "\n", "{out}");
     }
 
     #[test]
