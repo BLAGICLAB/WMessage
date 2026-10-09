@@ -257,9 +257,10 @@ pub const SCHEMA_CREATE_PPT: &str = r##"{"type":"function","function":{"name":"c
     },"required":["type","title"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["slides"]}}}"##;
-pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持，自动分页）。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
-    "title":{"type":"string","description":"文档标题，可选"},
-    "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表"},
+pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"create_pdf","description":"生成 PDF 到 AI_Gen_Files（中文支持，自动分页；自带页眉=文档标题与页脚页码）。生成是否成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
+    "title":{"type":"string","description":"文档标题，可选（同时用作每页页眉）"},
+    "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表；#/##/### 前缀标记一/二/三级标题（如「## 市场分析」）"},
+    "images":{"type":"array","items":{"type":"string"},"description":"要插入的图片绝对路径列表，可选（仅 AI_Gen_Files 目录内的已存在图片，其余被丢弃并提示；按顺序插在正文之后、表格之前；等比缩放到版心宽）"},
     "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{
       "title":{"type":"string","description":"表格标题，可选"},
       "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}

@@ -1755,10 +1755,26 @@ pub(crate) async fn tool_create_pdf(
     }
     let tables = v.get("tables").cloned();
     let title = v["title"].as_str().unwrap_or("").to_string();
-    match crate::bot_py::doc_make_pdf(app.clone(), title, paragraphs, tables, opt_filename(&v))
-        .await
+    // N3-4：images 与 create_word 同闸——仅放行 AI_Gen_Files 目录内的已存在图片
+    let (images, dropped_imgs) = sanitize_image_paths_arg(app, &v).await;
+    match crate::bot_py::doc_make_pdf(
+        app.clone(),
+        title,
+        paragraphs,
+        tables,
+        images,
+        opt_filename(&v),
+    )
+    .await
     {
         Ok(out) => {
+            let warn = if dropped_imgs > 0 {
+                format!(
+                    "（{dropped_imgs} 个图片路径被忽略：仅支持 AI_Gen_Files 目录内的已存在图片）"
+                )
+            } else {
+                String::new()
+            };
             // 真校验后的产物元信息：让模型必须把完整路径转告用户（防「说了生成却找不到文件」）
             let size_note = std::fs::metadata(&out)
                 .map(|m| format!("，{} KB", m.len() / 1024))
@@ -1766,7 +1782,7 @@ pub(crate) async fn tool_create_pdf(
             // 「已生成 PDF 文档」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
                 format!(
-                    "已生成 PDF 文档：{out}{size_note}。向用户报告时必须附上完整路径；用户找不到文件时可用 reveal_path 打开所在文件夹"
+                    "已生成 PDF 文档：{out}{size_note}{warn}。向用户报告时必须附上完整路径；用户找不到文件时可用 reveal_path 打开所在文件夹"
                 ),
                 Vec::new(),
             )
