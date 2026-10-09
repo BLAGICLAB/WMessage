@@ -174,9 +174,13 @@ mod tests {
     fn skips_when_version_same_even_if_content_edited() {
         let root = temp_root("seed-same");
         materialize_builtin_skills(&root);
+        // fixture 版本取自内置资产（硬编码会随版本升级漂移，实测踩过）
+        let version = bundled_version(&BUILTIN_SKILLS[0]).unwrap_or_default();
         std::fs::write(
             skill_md(&root),
-            "---\nname: pptx-design\ndescription: 本地修改版\nversion: 1.0.0\n---\n本地\n",
+            format!(
+                "---\nname: pptx-design\ndescription: 本地修改版\nversion: {version}\n---\n本地\n"
+            ),
         )
         .unwrap();
         let out = materialize_builtin_skills(&root);
@@ -203,7 +207,10 @@ mod tests {
             );
             assert!(meta.enabled, "内置技能须默认启用");
             assert!(!meta.intents.is_empty(), "无 intents 则路由失效");
-            // 自由文档式 skill：正文不得含 `## Step` 标题，否则误入 DSL 步骤模式
+            // 参考文档型技能：interactive 模式（LLM 驱动读文档执行），正文不得含
+            // `## Step` 标题。两个条件绑定锁死——mode 若改回 auto，调度器会因
+            // 「DSL 解析为空」直接终止技能（skill_dsl_empty，实测踩过）
+            assert_eq!(meta.mode, "interactive", "参考文档型技能必须 interactive");
             let (steps, rollback) = parse_skill_steps(text).unwrap_or_default();
             assert!(
                 steps.is_empty() && rollback.is_empty(),

@@ -1,9 +1,9 @@
 ---
 name: pptx-design
 description: PPT 设计规范 + python-pptx 自由绘制指南（配色系统/版式原型/中文排印/密度硬规范/完工自查）。用户要求设计感、品牌感，或需要图表/大数字/双栏/引用等高级版式时装载本技能；简单陈述型 PPT 直接用 create_ppt。
-version: 1.0.0
+version: 1.0.1
 risk_level: low
-mode: auto
+mode: interactive
 enabled: true
 intents: ["PPT", "ppt", "幻灯片", "演示文稿", "汇报", "slide", "deck"]
 ---
