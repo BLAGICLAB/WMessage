@@ -6,6 +6,27 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-10（周六）ask_user 提问预算改全局设置（默认 3、钳 1–5）
+
+为什么改：原预算硬编码 2 问，写死在 `MAX_ASKS_PER_NODE`——用户拍板「
+默认至少 3、至多 5」，让多确认点的技能（如武侠）有更宽通道。预算应跟其他
+工作流设置（节点验收/审计保留/评审模型）走同口径：DB 存「用户改过的值」、
+默认在代码、写时钳制、View 透给设置页。
+
+改法：workflow_settings 表新键 `ask_budget`（u8 文本，DEFAULT=3、MIN=1、
+MAX=5），非 u8 字符串落默认；`ask_budget_per_exec` 同步加（防直接读路径）、
+`load_ask_budget` 异步壳（bot_chat 注册提问上下文前读一次）。`AskRegistration`
+带 `asks_max` 字段锁注册时预算（防止中途改设置引发诡异），预算用尽提示用
+真实值。注册路径分两类：工作流节点照旧用 run 传入配置（开关随
+`clarify_meta.askMode`）、手动任务卡默认开；两者共用同一全局预算。
+`tauri workflow_settings_set` 加 `ask_budget?` 参（None=不改），审计行
+记钳制后的实际生效值（与 retention 一致）。`SCHEMA_ASK_USER` 描述里
+「每次执行 2 问」同步为「全局 1–5 默认 3」；前端 SettingsPage 复用 retention
+行布局加「执行提问预算」项。
+
+教训一条：预算类配置都会漂移，写死就该被时间打脸——统一走 settings 表
+是上一轮批 0–7 基线已经定下的口径，事后新加预算本该一次到位，不该写常量。
+
 ## 2026-10-10（周六）ask_user 放宽到手动任务卡执行（用户拍板选 a）
 
 为什么改：武侠技能实测暴露口径冲突——interactive 技能的确认点（题材/书名/
@@ -6164,3 +6185,37 @@ tsc 0 错；真实编译 CSS 渲染画廊 + getBoundingClientRect 量液面宽�
 doneCount/total 一致（50%→49.7%，100%→99.3%，差值为 1px 边框所致）。
 
 **未做**：Windows 实机验收；便携包下次出包携带。
+
+## 2026-10-10（周六）出包:Windows 绿色版 `wmessage-portable-2026-10-10.zip`（109 MB / 109,100,941 B / 含 205 项)
+
+**背景**: 老板要在 main 还在修整中的状态下出一份稳定版给 Windows 压测,基线选 `5184135` (feat(ask): ask_user 放宽到手动任务卡执行) 提交后的代码,不含未提交改动。
+
+**构建**:
+- 路径: `/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-10.zip`
+- `wmessage.exe`: 73,655,605 B (70 MiB / 70.3 MB,基于 main @ 5184135,mingw x86_64-pc-windows-gnu 交叉编译,55.30s 增量编完)
+- `onnxruntime.dll`: 15,809,848 B (ort 2.0.0-rc.13 配套,1.28.0 NuGet 拉取)
+- `WebView2Loader.dll`: 160,320 B (从 `packaging/wmessage-portable-staging/` 复用)
+- `MicrosoftEdgeWebview2Setup.exe`: 1,695,960 B (Win10 首次备用)
+- `dotnet/`: 189 文件 self-contained .NET 8 (wm-docx-revisions.exe + coreclr + hostfxr + OpenXml 等)
+- 模型: bge-small-zh-v1.5/ (23M) + pp-ocr-v6/ (31M)
+- 全程 macOS 交叉编译,无 Windows 机器参与
+
+**校验**:
+- `ZIP_OK 205 files, 顶层 9 项` (zipfile 完整 + 必需文件清单全在)
+- `objdump -p wmessage.exe | grep onnxruntime` → 空(ort 走 load-dynamic,运行时 LoadLibrary)
+- `file wmessage.exe` → PE32+ executable (GUI) x86-64 (stripped to external PDB)
+- 上一版 (2026-10-08,基于 b4130ad) 至本版 `5184135` 共 25 个 commit (见 zip 内 README.txt)
+
+**距上一版主要改动** (节选):
+- 5184135 feat(ask): ask_user 放宽到手动任务卡执行 — 交互技能确认点落地（用户拍板选 a）
+- efdab6b fix(test): 重生成 tools 基线 fixture + 参数化回归锁同步改名
+- eae3526 style(ui): 工作流工具栏视觉瘦身 — 执行罐减半/进度环内缘/图标缩小
+- 9174e8b feat(doc): Word 模板参数层 — 上传即提取、记录可编辑、生成按参数构造
+- 9d9b82c fix(doc): Word 模板锚定改格式原型收割 — 排版随模板正文而非样式表
+- 050ac01 docs(devlog): 工作流工具栏改版（保存键/执行罐子/双行）
+- 5fb1626 feat(ui): 工作流工具栏改版 — 圆形保存键 + 液面罐子执行键 + 双行布局
+- 068490c fix(guard): 生成类谎报前置拦截 — 路径存在性硬校验并入幻觉守卫
+- 1c6a1b7 fix(doc): 模板锚定缺 Heading 样式整单失败 — 公文/WPS 模板降级守卫
+- d954dbe docs(devlog): 补记长按删除进度环偏心根因与修法
+
+**收尾**: `git stash pop` 恢复 99 个未提交改动 (96 modified + 3 untracked) 回 main working tree。

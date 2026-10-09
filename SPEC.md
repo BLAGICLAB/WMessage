@@ -59,7 +59,7 @@ macOS），内置大模型机器人管理任务，向上长出工作流编排、
 - 多会话聊天：流式回复、思考/工具调用折叠、Markdown 渲染、斜杠命令 /stop /compact /retry /clean、删除确认（60s 超时自动拒）、审计日志 bot.log
 - **一次执行 = 一个新会话**：任务卡 🤖、定时任务、工作流节点执行统一走聊天会话
 - 双协议：OpenAI 兼容 + Anthropic 兼容；模型中心：厂商分类、内置模型库、厂商级 key（系统 keyring）、每模型推理参数与推理强度、可用性门禁、聊天内快切模型
-- 工具 30+：任务 CRUD/子任务/绑定、文档生成（Word 修订模式：.NET OpenXML 优先 + Python 兜底；Excel 公式注入过滤；PPT；PDF）、文件编辑（edit_file/write_file，Aider 式三级匹配）、文件读写+grep、本机 Python 沙箱（run_python，独立临时目录+60s 超时+产物回收）、联网（web_search：Tavily/Brave key 可配，未配置降级 Bing+百度抓取；fetch_url 公网白名单）、图片识字 ocr_image、截图直达模型视觉、电脑辅助 Tier1（reveal_path 等原生四件）、时间、记忆工具、use_skill、ask_user（任务执行中提问：工作流节点/手动执行任务卡，通知中心异步问答 + 假设兜底 + 每次执行 2 问预算；聊天直接文字提问不用此工具）
+- 工具 30+：任务 CRUD/子任务/绑定、文档生成（Word 修订模式：.NET OpenXML 优先 + Python 兜底；Excel 公式注入过滤；PPT；PDF）、文件编辑（edit_file/write_file，Aider 式三级匹配）、文件读写+grep、本机 Python 沙箱（run_python，独立临时目录+60s 超时+产物回收）、联网（web_search：Tavily/Brave key 可配，未配置降级 Bing+百度抓取；fetch_url 公网白名单）、图片识字 ocr_image、截图直达模型视觉、电脑辅助 Tier1（reveal_path 等原生四件）、时间、记忆工具、use_skill、ask_user（任务执行中提问：工作流节点/手动执行任务卡，通知中心异步问答 + 假设兜底 + 全局预算 1–5 默认 3，工作流与任务卡共用；聊天直接文字提问不用此工具）
 - **Word 模板双层口径**：设置页上传 .docx（管纸张/页边距/页眉页脚）+ 文字排版参数旁车 json（管正文/主标题/一二三级标题的字体字号行距缩进对齐，上传即从模板正文提取，启发式单点），参数记录可在面板编辑（含改名）；生成按参数构造版式，旁车缺失自动重提取；默认模板缺失时走内置版式
 - **语义记忆体 v2**：bge-small-zh 本地嵌入+混合打分；事实+教训两类；自动抽取、参数可调（设置页记忆区「检索参数」卡：注入预算/topN/recentN/lessonN/容量/衰减/去重阈值 8 项，留空=默认）、总开关、管理面板、导入导出、写入冲突裁决（改口即更新）、定时整理（consolidation）、黄金集评估器（recall@5 锁死）
 - **MCP 外部服务器**：stdio/HTTP 接入，env/headers 机密走系统钥匙串

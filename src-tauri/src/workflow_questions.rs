@@ -268,8 +268,6 @@ pub async fn workflow_question_respond(
 
 // ask 端（ §3.2）：注册表 + ask_user 引擎
 
-/// 每节点提问预算（≤2 问，超预算返回假设——防通知轰炸）
-pub(crate) const MAX_ASKS_PER_NODE: u8 = 2;
 /// 提问等待上限
 pub(crate) const ASK_TIMEOUT_SECS: u64 = 24 * 3600;
 
@@ -293,15 +291,19 @@ pub struct AskRegistration {
     /// W10：run 分组键（审计行归组 + 问题 payload 透传给应答端）
     pub run_started_at: i64,
     pub asks_left: std::sync::atomic::AtomicU8,
+    /// 注册时定死的预算上限（全局设置 ask_budget）——预算用尽提示用真实值
+    pub asks_max: u8,
 }
 
-/// 注册提问上下文（bot_chat 在 register_exec_session 之后调用）
+/// 注册提问上下文（bot_chat 在 register_exec_session 之后调用）。
+/// budget = 全局提问预算（workflow_settings.ask_budget，工作流与任务卡共用）
 pub(crate) fn register_ask_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: &str,
     ask: &crate::bot_chat::AskExecContext,
     task_id: &str,
     node_title: &str,
+    budget: u8,
 ) {
     crate::app_state::ask_contexts(app)
         .lock()
@@ -317,7 +319,8 @@ pub(crate) fn register_ask_context<R: tauri::Runtime>(
                 node_title: node_title.to_string(),
                 asks_enabled: ask.asks_enabled,
                 run_started_at: ask.run_started_at,
-                asks_left: std::sync::atomic::AtomicU8::new(MAX_ASKS_PER_NODE),
+                asks_left: std::sync::atomic::AtomicU8::new(budget),
+                asks_max: budget,
             },
         );
 }
@@ -424,7 +427,7 @@ pub(crate) async fn engine_ask_user(
         parsed.assumption
     );
     // 锁内一次取全量 owned 数据（含模式检查与预算扣减）——引用不出锁作用域
-    let (wf_id, task_id, node_title, run_started_at, budget_left) = {
+    let (wf_id, task_id, node_title, run_started_at, budget_left, asks_max) = {
         let mut map = crate::app_state::ask_contexts(app)
             .lock()
             .unwrap_or_else(|e| {
@@ -451,11 +454,12 @@ pub(crate) async fn engine_ask_user(
             reg.node_title.clone(),
             reg.run_started_at,
             left,
+            reg.asks_max,
         )
     };
     if budget_left == 0 {
         return ToolResult::warn(
-            format!("本节点提问预算（{MAX_ASKS_PER_NODE} 次）已用尽，{assumption_note}"),
+            format!("提问预算（{asks_max} 次）已用尽，{assumption_note}"),
             Vec::new(),
         );
     }

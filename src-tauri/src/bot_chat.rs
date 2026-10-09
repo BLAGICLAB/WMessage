@@ -1813,12 +1813,21 @@ where
     crate::tool_guard::register_exec_session(&sid, origin);
     // 执行提问授权（ask_user 按 session_id 查表）：
     // - 工作流节点：run 传入的 ask 配置（开关随 clarify_meta.askMode，run 起读一次）
-    // - 手动执行任务卡：默认开启（预算 2 问 + 假设兜底 + 可停止的等待）——
+    // - 手动执行任务卡：默认开启（预算 + 假设兜底 + 可停止的等待）——
     //   交互式技能的确认点（题材/书名等）在手动执行里也要有通道；
+    // - 预算走全局设置 ask_budget（默认 3、钳 1..=5），工作流与任务卡共用；
     //   定时/批量保持无人值守自治（不注册，调用即回落假设）
+    let ask_budget = crate::db::workflow_settings::load_ask_budget(app).await;
     let ask_registered = match ctx.as_ref().and_then(|c| c.ask.as_ref()) {
         Some(ask) => {
-            crate::workflow_questions::register_ask_context(app, &sid, ask, &task.id, &task.title);
+            crate::workflow_questions::register_ask_context(
+                app,
+                &sid,
+                ask,
+                &task.id,
+                &task.title,
+                ask_budget,
+            );
             true
         }
         None if origin == TaskExecOrigin::Manual => {
@@ -1832,6 +1841,7 @@ where
                 },
                 &task.id,
                 &task.title,
+                ask_budget,
             );
             true
         }

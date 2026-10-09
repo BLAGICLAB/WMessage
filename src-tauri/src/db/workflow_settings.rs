@@ -23,13 +23,18 @@ pub const KEY_NODE_ACCEPTANCE: &str = "node_acceptance";
 pub const KEY_AUDIT_RETENTION: &str = "audit_retention_runs";
 /// 轻量评审模型（W11）：模型库条目 id；空串/缺行 = 跟随全局 active
 pub const KEY_REVIEW_MODEL: &str = "review_model";
+/// ask_user 提问预算（全局：工作流节点与手动任务卡执行共用，注册时读一次）
+pub const KEY_ASK_BUDGET: &str = "ask_budget";
 
-/// 节点级验收默认开；审计保留默认 20 次 run
+/// 节点级验收默认开；审计保留默认 20 次 run；提问预算默认 3 问
 pub const DEFAULT_NODE_ACCEPTANCE: bool = true;
 pub const DEFAULT_AUDIT_RETENTION: u32 = 20;
 /// 保留次数钳制范围
 pub const RETENTION_MIN: u32 = 5;
 pub const RETENTION_MAX: u32 = 100;
+pub const DEFAULT_ASK_BUDGET: u8 = 3;
+pub const ASK_BUDGET_MIN: u8 = 1;
+pub const ASK_BUDGET_MAX: u8 = 5;
 
 fn get(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, String> {
     conn.query_row(
@@ -89,6 +94,31 @@ pub fn review_model_id(conn: &rusqlite::Connection) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
+/// ask_user 提问预算（ask_contexts 注册时读一次）；非法值落默认
+pub fn ask_budget_per_exec(conn: &rusqlite::Connection) -> u8 {
+    match get(conn, KEY_ASK_BUDGET) {
+        Ok(Some(v)) => v
+            .parse::<u8>()
+            .unwrap_or(DEFAULT_ASK_BUDGET)
+            .clamp(ASK_BUDGET_MIN, ASK_BUDGET_MAX),
+        _ => DEFAULT_ASK_BUDGET,
+    }
+}
+
+/// 提问预算异步壳（bot_chat 注册提问上下文前读；读失败降级默认）
+pub async fn load_ask_budget<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> u8 {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::db::open_db(&app)
+            .ok()
+            .and_then(|conn| Some(ask_budget_per_exec(&conn)))
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(DEFAULT_ASK_BUDGET)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowSettingsView {
@@ -96,6 +126,8 @@ pub struct WorkflowSettingsView {
     pub audit_retention_runs: u32,
     /// 模型库条目 id；空串 = 跟随全局 active
     pub review_model: String,
+    /// ask_user 提问预算（每次任务执行/工作流节点，1–5）
+    pub ask_budget: u8,
 }
 
 /// 读全量设置（设置页打开时）
@@ -104,15 +136,17 @@ pub fn settings_view(conn: &rusqlite::Connection) -> WorkflowSettingsView {
         node_acceptance: node_acceptance_enabled(conn),
         audit_retention_runs: audit_retention_runs(conn),
         review_model: review_model_id(conn).unwrap_or_default(),
+        ask_budget: ask_budget_per_exec(conn),
     }
 }
 
-/// 写设置；保留次数钳 5..=100。node_acceptance=None = 不改。
+/// 写设置；保留次数钳 5..=100，提问预算钳 1..=5。None = 不改。
 pub fn settings_set(
     conn: &rusqlite::Connection,
     node_acceptance: Option<bool>,
     audit_retention_runs: Option<u32>,
     review_model: Option<String>,
+    ask_budget: Option<u8>,
 ) -> CommandResult<WorkflowSettingsView> {
     // 三键写入同事务：部分失败不落半套设置
     let tx = conn
@@ -128,6 +162,10 @@ pub fn settings_set(
     if let Some(v) = review_model.clone() {
         // 条目存在性不校验：条目可后删，运行期 summarize 侧降级兜底（spec 红线）
         set(&tx, KEY_REVIEW_MODEL, v.trim()).map_err(CommandError::DbError)?;
+    }
+    if let Some(v) = ask_budget {
+        let v = v.clamp(ASK_BUDGET_MIN, ASK_BUDGET_MAX);
+        set(&tx, KEY_ASK_BUDGET, &v.to_string()).map_err(CommandError::DbError)?;
     }
     tx.commit()
         .map_err(|e| CommandError::DbError(e.to_string()))?;
@@ -147,13 +185,14 @@ pub async fn workflow_settings_get(app: AppHandle) -> CommandResult<WorkflowSett
     .map_err(|e| CommandError::from(format!("读工作流设置线程 join 失败：{e}")))?
 }
 
-/// 写工作流设置；两参均可选（None = 不改）；返回写后全量
+/// 写工作流设置；参数均可选（None = 不改）；返回写后全量
 #[tauri::command]
 pub async fn workflow_settings_set(
     app: AppHandle,
     node_acceptance: Option<bool>,
     audit_retention_runs: Option<u32>,
     review_model: Option<String>,
+    ask_budget: Option<u8>,
 ) -> CommandResult<WorkflowSettingsView> {
     let app2 = app.clone();
     // review_model 要在闭包外（审计事件）再用——闭包 move 捕获前先克隆一份
@@ -165,6 +204,7 @@ pub async fn workflow_settings_set(
             node_acceptance,
             audit_retention_runs,
             review_model_for_db,
+            ask_budget,
         )?;
         // 保留次数变更立即生效：超期 run 就地清理（尽力而为）
         if audit_retention_runs.is_some() {
@@ -206,6 +246,15 @@ pub async fn workflow_settings_set(
                     Some(v) => v.to_string(),
                 },
             ),
+            (
+                // 同 retention：记钳制后的实际生效值
+                "askBudget",
+                if ask_budget.is_some() {
+                    r.ask_budget.to_string()
+                } else {
+                    "-".to_string()
+                },
+            ),
         ],
     );
     Ok(r)
@@ -228,11 +277,25 @@ mod tests {
     #[test]
     fn retention_stored_and_viewed_clamped() {
         let conn = mem_conn();
-        let view = settings_set(&conn, None, Some(1000), None).unwrap();
+        let view = settings_set(&conn, None, Some(1000), None, None).unwrap();
         assert_eq!(view.audit_retention_runs, RETENTION_MAX);
         assert_eq!(audit_retention_runs(&conn), RETENTION_MAX);
-        let view = settings_set(&conn, None, Some(1), None).unwrap();
+        let view = settings_set(&conn, None, Some(1), None, None).unwrap();
         assert_eq!(view.audit_retention_runs, RETENTION_MIN);
         assert_eq!(audit_retention_runs(&conn), RETENTION_MIN);
+    }
+
+    /// 提问预算：默认 3、写超界钳到 1..=5、缺行落默认（全局口径：工作流与任务卡共用）
+    #[test]
+    fn ask_budget_default_and_clamped() {
+        let conn = mem_conn();
+        assert_eq!(ask_budget_per_exec(&conn), DEFAULT_ASK_BUDGET);
+        let view = settings_set(&conn, None, None, None, Some(9)).unwrap();
+        assert_eq!(view.ask_budget, ASK_BUDGET_MAX);
+        let view = settings_set(&conn, None, None, None, Some(0)).unwrap();
+        assert_eq!(view.ask_budget, ASK_BUDGET_MIN);
+        let view = settings_set(&conn, None, None, None, Some(4)).unwrap();
+        assert_eq!(view.ask_budget, 4);
+        assert_eq!(ask_budget_per_exec(&conn), 4);
     }
 }
