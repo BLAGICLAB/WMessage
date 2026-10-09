@@ -40,22 +40,28 @@ pub struct SkillInfo {
 /// 失败（罕见，仅限 sandbox 完全拒绝对系统应用数据目录的访问）回退 `data_dir()`，
 /// 保证 skills_import / skills_open_dir / load_skill_meta 永不报「路径不存在」。
 fn skills_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
-    skills_dir_from(app.path().app_data_dir().ok(), || crate::db::data_dir(app))
+    data_dir_subdir(
+        app.path().app_data_dir().ok(),
+        || crate::db::data_dir(app),
+        "skills",
+    )
 }
 
-/// 纯内核（可测，不依赖 AppHandle / mock 语义）：
-/// - 正常（`app_data_dir()` 可得）→ `app_data/skills`（**opener scope `$APPDATA/**` 覆盖**）
-/// - 失败回退 → `fallback_data_dir()/skills`（便携场景可能不在 `$APPDATA` 下 —— 见
-///   `docs/OCR-FIX-PLAN-2026-09-21.md` 的 C2a fallback 边缘 case）
+/// app_data 子目录定位内核（可测，不依赖 AppHandle / mock 语义）：
+/// - 正常（`app_data_dir()` 可得）→ `app_data/<subdir>`（用户 skills 的 opener
+///   scope `$APPDATA/**` 覆盖；builtin_skills 同父不同名）
+/// - 失败回退 → `fallback_data_dir()/<subdir>`（便携场景可能不在 `$APPDATA` 下 ——
+///   见 `docs/OCR-FIX-PLAN-2026-09-21.md` 的 C2a fallback 边缘 case）
 ///
 /// `fallback` 用闭包懒求值：正常模式绝不触碰 `data_dir()`（其探针/建目录副作用）。
-fn skills_dir_from(
+pub(super) fn data_dir_subdir(
     app_data: Option<std::path::PathBuf>,
     fallback_data_dir: impl FnOnce() -> std::path::PathBuf,
+    subdir: &str,
 ) -> std::path::PathBuf {
     match app_data {
-        Some(p) => p.join("skills"),
-        None => fallback_data_dir().join("skills"),
+        Some(p) => p.join(subdir),
+        None => fallback_data_dir().join(subdir),
     }
 }
 
@@ -84,16 +90,17 @@ fn dev_skills_dir_at(target_root: &std::path::Path) -> Option<std::path::PathBuf
     }
 }
 
-/// Skill 搜索路径列表：数据目录必选 + dev 模式追加 target/debug/skills。
-/// 数据目录在前 → scan_skill_dirs 用 HashSet seen 去重时数据目录优先。
+/// Skill 搜索路径列表：用户 skills 必选 + 内置 builtin_skills + dev 模式追加
+/// target/debug/skills。顺序即优先级（scan_skill_dirs 去重取先扫到的同名技能）：
+/// 用户导入/修改的版本压过内置版，内置版压过 dev mock。
 /// `#[cfg_attr(not(debug_assertions), allow(dead_code))]` —— release 模式 dev_skills_dir
-/// 不存在，整个函数仅返回一个目录（数据目录），避免 dead_code 警告。
+/// 不存在，避免 dead_code 警告。
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub(crate) fn skill_search_paths<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Vec<std::path::PathBuf> {
     #[allow(unused_mut)] // release 模式：dev_skills_dir 分支被排除，paths 不需要 mut
-    let mut paths = vec![skills_dir(app)];
+    let mut paths = vec![skills_dir(app), super::builtin::builtin_skills_dir(app)];
     #[cfg(debug_assertions)]
     {
         if let Some(dev) = dev_skills_dir() {
@@ -655,6 +662,8 @@ pub fn skills_delete(app: AppHandle, name: String) -> CommandResult<()> {
     };
     // 数据目录（用户装的 skill）
     try_remove(skills_dir(&app).join(&name))?;
+    // 内置技能物化副本（删除后运行期内不复活；应用更新带新版本号时重新物化）
+    try_remove(super::builtin::builtin_skills_dir(&app).join(&name))?;
     // dev mock 目录（debug build 下 dev_skills_dir 贡献列表）
     #[cfg(debug_assertions)]
     {
@@ -818,9 +827,10 @@ mod tests {
     /// 不依赖 mock app 语义（纯函数内核）。
     #[test]
     fn skills_dir_normal_mode_uses_app_data_dir() {
-        let got = skills_dir_from(
+        let got = data_dir_subdir(
             Some(std::path::PathBuf::from("/x/AppData/com.renshi.wmessage")),
             || panic!("正常模式不得调用 fallback（会触碰 data_dir 副作用）"),
+            "skills",
         );
         assert_eq!(
             got,
@@ -832,7 +842,7 @@ mod tests {
     /// 仅锁「回退目标 = data_dir/skills」这一事实；是否该扩大 scope 是 Phase 6 的产品决策。
     #[test]
     fn skills_dir_fallback_mode_uses_data_dir() {
-        let got = skills_dir_from(None, || std::path::PathBuf::from("/x/portable"));
+        let got = data_dir_subdir(None, || std::path::PathBuf::from("/x/portable"), "skills");
         assert_eq!(got, std::path::PathBuf::from("/x/portable/skills"));
     }
 

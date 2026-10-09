@@ -274,6 +274,11 @@ pub fn run() {
                 }
             }
 
+            // 内置技能物化：缺失/版本变化的内置技能写入 builtin_skills（尽力而为：
+            // 失败逐项审计不阻断启动）。须在 rebuild_intent_routes 之前——新物化的
+            // 技能当次启动就要进路由
+            bot_skills::materialize_at_startup(app.handle());
+
             // 动态技能路由：启动时按已安装技能的 frontmatter intents 建路由表；
             // 之后 skills_import / skills_delete 成功会各自重建
             bot_skills::rebuild_intent_routes(app.handle());

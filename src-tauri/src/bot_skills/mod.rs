@@ -5,6 +5,7 @@
 //! - 安装：设置页导入技能文件夹（拷贝进数据目录），或手动放入数据目录 skills/
 //! - 安全：技能名白名单字符集（防路径穿越）；正文读取有大小上限
 
+mod builtin;
 mod files;
 mod manage;
 mod parse;
@@ -14,6 +15,7 @@ mod scheduler;
 mod state;
 mod vars;
 
+pub use builtin::*;
 pub use files::*;
 pub use manage::*;
 pub use parse::*;
