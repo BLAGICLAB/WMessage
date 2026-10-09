@@ -72,6 +72,7 @@ else:
 pub const MAKE_DOCX_SCRIPT: &str = r#"import json, os, re
 import docx
 from docx.shared import Pt, Cm, Inches
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 p = json.load(open('params.json', encoding='utf-8'))
 title = p.get('title', '')
@@ -93,13 +94,35 @@ else:
     style.font.name = '宋体'
     style.font.size = Pt(12)
 if use_tpl:
-    # 模板模式：只用命名样式（Heading 1/Normal），版式随模板样式表走
-    if title:
-        d.add_heading(title, level=1)
+    # 模板模式：优先命名样式（Heading 1/Normal），版式随模板样式表走。
+    # 公文/WPS 导出的模板常缺 Heading 命名样式（styleId 是数字/字母缩写），
+    # add_heading 按名查样式 KeyError 会让整单失败——缺样式时降级为直接
+    # 格式化（黑体+分级字号）并补 w:outlineLvl，导航窗格/目录仍按标题层级识别
+    def has_style(name):
+        try:
+            d.styles[name]
+            return True
+        except KeyError:
+            return False
     def add_heading_cjk(text, level):
-        d.add_heading(text, level=level)
+        if has_style('Heading %d' % level):
+            d.add_heading(text, level=level)
+            return
+        h = d.add_paragraph()
+        r = h.add_run(text)
+        r.font.name = '黑体'
+        r.font.size = Pt({1: 16, 2: 14, 3: 12}.get(level, 12))
+        # font.name 只写 w:rFonts 的 ascii/hAnsi，中文字形要显式补 eastAsia
+        rpr = r._element.get_or_add_rPr()
+        rpr.rFonts.set(qn('w:eastAsia'), '黑体')
+        ppr = h._p.get_or_add_pPr()
+        ol = OxmlElement('w:outlineLvl')
+        ol.set(qn('w:val'), str(level - 1))
+        ppr.append(ol)
     def add_body_para(text):
         d.add_paragraph(text)
+    if title:
+        add_heading_cjk(title, 1)
 else:
     if title:
         h = d.add_heading('', level=1)
@@ -1683,5 +1706,19 @@ mod fake_success_guard_tests {
             let marker = format!("{name} 假成功拦截");
             assert!(src.contains(&marker), "{name} 缺少假成功拦截块");
         }
+    }
+
+    /// MAKE_DOCX_SCRIPT 的 Heading 样式守卫回归锁：公文/WPS 导出的模板常无
+    /// Heading 命名样式，add_heading 按名查样式 KeyError 会让整单失败（用户
+    /// 真实模板触发过）。脚本必须有样式存在性守卫 + outlineLvl 降级
+    #[test]
+    fn docx_script_guards_missing_heading_styles() {
+        let src = include_str!("document.rs");
+        assert!(src.contains("def has_style(name)"), "缺样式守卫被移除");
+        assert!(src.contains("w:outlineLvl"), "outlineLvl 降级被移除");
+        assert!(
+            src.contains("if has_style('Heading %d' % level)"),
+            "add_heading 未走样式守卫"
+        );
     }
 }
