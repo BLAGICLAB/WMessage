@@ -77,6 +77,7 @@ import {
 } from "./types";
 import { UI_FONT_SIZE_OPTIONS, type ApiProvider, type UiFontSize } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
+import { WordTemplatePanel } from "./WordTemplatePanel";
 import { BubbleStyleCard } from "./BubbleStyleCard";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
@@ -3114,6 +3115,7 @@ export function SettingsPage({ theme, onThemeChange, onExportTasks, onImportTask
       {mountedSections.has("skills") && (
       <section hidden={activeSection !== "skills"} className="space-y-4 pt-4">
       <SkillsPanel />
+      <WordTemplatePanel />
       </section>
       )}
       {mountedSections.has("mcp") && (

@@ -6015,3 +6015,31 @@ OCR-1009 S2 分诊出的 108 条 PARTIAL 中，一行级顺手修约 30 条本�
 验证：audit 四脚本 pytest 全绿 + layering/no_eval selftest + 全仓扫描
 0 命中 + health-check 完整跑通 + cargo test（migration/memory/tasks/
 apply_edit 240+ 用例）+ clippy 0（除 vendor）+ scripts/test-all.sh 全绿。
+
+## 2026-10-09（周四）Word 模板锚定 + 设置页模板管理（问题二）+ 假成功拦截（问题一）
+
+**为什么换方向**：用户反馈 create_word 两问题——①说生成了却找不到文件；
+②版式不一致不好看、希望设置页自定义。调研业界共识：LLM 只产内容、排版
+交给模板（Copilot 模板填充/Carbone/docxtpl 同口径）；Harvey 式内存 OOXML
+对本项目过重。
+
+**问题一（已单独提交 5e1a576）**：doc_make_word / revisions 退出码 0 ≠ 文件
+落盘，返回成功前真校验产物存在且非空，假成功在工具层终结。
+
+**问题二（本提交）模板锚定 + 设置页模板管理**：
+- 模板库：数据目录 word_templates/<name>.docx；四命令（list/import/
+  delete/set_default，默认模板走 _default 标记文件）；resolve 语义 =
+  显式名优先（不存在不回退）→ 默认模板 → 无（内置空白口径兜底）
+- 脚本模板分支：docx.Document(模板) 打开后清示例正文（保留 sectPr——
+  页面设置/页眉页脚/样式表全继承），内容只用命名样式（Heading 1/Normal）
+  填充，不做直接字体覆盖——版式随模板；Table Grid 缺失降级；无模板维持
+  原硬编码口径（零破坏）
+- create_word 加可选 template 参数；SCHEMA 指引「多模板且用户意图不明
+  先 ask_user 询问」；baseline fixture 随 schema 变更显式重生成
+- 设置页「机器人」区新增 Word 模板面板：上传/设默认/删除
+- 插曲：本批提交曾被误 amend 进已推送的批 1 提交致本地分叉——已回退到
+  origin 并以新提交恢复（无 force）；git 教训：amend 前必须先确认
+  HEAD 是否已推送（git log origin/main..HEAD）
+
+验证：word_template 单测 2 + registry 14（基线前缀契约）+ tsc +
+SettingsPage vitest 98 + scripts/test-all.sh 全绿 + clippy 0（除 vendor）。

@@ -219,7 +219,7 @@ pub const SCHEMA_EXTRACT_DOCUMENT: &str = r##"{"type":"function","function":{"na
     "offset":{"type":"integer","description":"字符偏移（可选，默认 0；返回里带『已截断』提示时用提示的 offset 值续读）"},
     "limit":{"type":"integer","description":"本页字符数（可选，默认 30000，上限 60000）"}
   }}}}"##;
-pub const SCHEMA_CREATE_WORD: &str = r##"{"type":"function","function":{"name":"create_word","description":"生成 Word 文档到 AI_Gen_Files（润色后的文本用这个落地；不覆盖任何已有文件）","parameters":{"type":"object","properties":{
+pub const SCHEMA_CREATE_WORD: &str = r##"{"type":"function","function":{"name":"create_word","description":"生成 Word 文档到 AI_Gen_Files（润色后的文本用这个落地；不覆盖任何已有文件）","parameters":{"type":"object","properties":{"template":{"type":"string","description":"模板名（设置页「Word 模板」已上传的）。用户指定了模板就传；未指定自动用默认模板（未设置默认则内置版式）；存在多个模板且用户意图不明时，先用 ask_user 问用户用哪个"},
     "title":{"type":"string","description":"文档标题，可选"},
     "paragraphs":{"type":"array","items":{"type":"string"},"description":"正文段落列表，每段一个字符串"},
     "tables":{"type":"array","description":"可选：表格列表，按顺序追加在段落之后；每个表 rows 二维数组、第一行当表头加粗","items":{"type":"object","properties":{
@@ -355,7 +355,7 @@ pub const SCHEMA_EDIT_FILE: &str = r##"{"type":"function","function":{"name":"ed
     "newString":{"type":"string","description":"替换后的新文本：literal 模式=可为空串=删除该段；regex 模式=可用 $1/$2 命名/编号捕获组引用，replace 语义与 sed g 一致"},
     "mode":{"type":"string","enum":["literal","regex"],"default":"literal","description":"匹配模式：literal=精确（默认；oldString 须唯一；多处命中报错）；regex=正则（oldString 当作 Rust regex 模式串，newString 支持 $1/$2 捕获组，全部命中替换；非法 pattern 报错；空替换会把文件清空时拒绝并改用 write_file）"}
   },"required":["path","oldString","newString"]}}}"##;
-pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"write_file","description":"创建新文件或整体写入内容（仅限可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs；覆盖已存在文件需要用户确认）。修改已有文件优先用 edit_file（精确替换更安全）","parameters":{"type":"object","properties":{
+pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"write_file","description":"创建新文件或整体写入内容（仅限可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs；覆盖已存在文件需要用户确认）。修改已有文件优先用 edit_file（精确替换更安全）。是否生成成功以本工具返回为准：返回 Err 就是没生成，不得向用户声称已生成；成功时必须把返回的完整路径告知用户","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"目标文件绝对路径（父目录必须已存在）"},
     "content":{"type":"string","description":"完整文件内容（UTF-8 文本；不能含 NUL 字节；上限 2MB）"}
   },"required":["path","content"]}}}"##;

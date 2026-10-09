@@ -79,22 +79,43 @@ paras = p.get('paragraphs', [])
 tables = p.get('tables', [])
 images = p.get('images', [])
 out = p['out']
-d = docx.Document()
-style = d.styles['Normal']
-style.font.name = '宋体'
-style.font.size = Pt(12)
-if title:
-    h = d.add_heading('', level=1)
-    r = h.add_run(title)
-    r.font.name = '黑体'
-    r.font.size = Pt(16)
-def add_heading_cjk(text, level):
-    h = d.add_heading('', level=level)
-    r = h.add_run(text)
-    r.font.name = '黑体'
-    # font.name 只写 w:rFonts 的 ascii/hAnsi，中文字形要显式补 eastAsia
-    rpr = r._element.get_or_add_rPr()
-    rpr.rFonts.set(qn('w:eastAsia'), '黑体')
+tpl = p.get('template', '')
+use_tpl = bool(tpl) and os.path.exists(tpl)
+d = docx.Document(tpl) if use_tpl else docx.Document()
+if use_tpl:
+    # 模板锚定：继承模板的样式表/页面设置/页眉页脚；清空示例正文（保留 sectPr）
+    body = d.element.body
+    for child in list(body):
+        if not child.tag.endswith('}sectPr'):
+            body.remove(child)
+else:
+    style = d.styles['Normal']
+    style.font.name = '宋体'
+    style.font.size = Pt(12)
+if use_tpl:
+    # 模板模式：只用命名样式（Heading 1/Normal），版式随模板样式表走
+    if title:
+        d.add_heading(title, level=1)
+    def add_heading_cjk(text, level):
+        d.add_heading(text, level=level)
+    def add_body_para(text):
+        d.add_paragraph(text)
+else:
+    if title:
+        h = d.add_heading('', level=1)
+        r = h.add_run(title)
+        r.font.name = '黑体'
+        r.font.size = Pt(16)
+    def add_heading_cjk(text, level):
+        h = d.add_heading('', level=level)
+        r = h.add_run(text)
+        r.font.name = '黑体'
+        # font.name 只写 w:rFonts 的 ascii/hAnsi，中文字形要显式补 eastAsia
+        rpr = r._element.get_or_add_rPr()
+        rpr.rFonts.set(qn('w:eastAsia'), '黑体')
+    def add_body_para(text):
+        pr = d.add_paragraph(text)
+        pr.paragraph_format.first_line_indent = Pt(24)
 for para in paras:
     m = re.match(r'^(#{1,3})\s+(.+)$', para)
     if m:
@@ -102,8 +123,7 @@ for para in paras:
     elif para == '':
         d.add_paragraph('')
     else:
-        pr = d.add_paragraph(para)
-        pr.paragraph_format.first_line_indent = Pt(24)
+        add_body_para(para)
 for img in images:
     if os.path.exists(img):
         d.add_picture(img, width=Inches(5.8))
@@ -116,7 +136,10 @@ for t in tables:
         tr = tp.add_run(t['title'])
         tr.font.bold = True
     tb = d.add_table(rows=len(rows), cols=len(rows[0]))
-    tb.style = 'Table Grid'
+    try:
+        tb.style = 'Table Grid'
+    except Exception:
+        pass  # 自定义模板可能没有该内置样式
     for i, row in enumerate(rows):
         for j, cell in enumerate(row):
             tb.cell(i, j).text = str(cell)
@@ -969,6 +992,7 @@ pub async fn doc_make_word(
     filename: Option<String>,
     tables: Option<serde_json::Value>,
     images: Vec<String>,
+    template: Option<String>,
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "docx")?;
     let input = serde_json::json!({
@@ -976,6 +1000,7 @@ pub async fn doc_make_word(
         "paragraphs": paragraphs,
         "tables": tables.unwrap_or(serde_json::json!([])),
         "images": images,
+        "template": template.unwrap_or_default(),
         "out": out,
     })
     .to_string();
@@ -1196,6 +1221,176 @@ pub fn gen_out_path_in(dir: &Path, filename: Option<&str>, ext: &str) -> Command
     Ok(candidate.to_string_lossy().to_string())
 }
 
+// ── Word 模板管理（设置页「Word 模板」面板 + create_word 模板锚定） ──
+//
+// 模板 = 数据目录 word_templates/<name>.docx，用户在 Word 里排好版式上传；
+// 生成时打开模板并清空正文示例（保留 sectPr 的页面设置/页眉页脚/样式表），
+// 内容按命名样式填充——「LLM 填内容、模板管排版」的确定性排版口径。
+
+fn word_templates_dir(app: &AppHandle) -> std::path::PathBuf {
+    crate::db::data_dir(app).join("word_templates")
+}
+
+fn default_marker_path(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join("_default")
+}
+
+/// 模板解析：显式名字优先（不存在 → None），否则默认模板（不存在 → None）。
+/// None = 无模板可用，生成走内置空白默认。
+pub fn word_template_resolve(app: &AppHandle, name: Option<&str>) -> Option<String> {
+    word_template_resolve_in(&word_templates_dir(app), name)
+}
+
+fn word_template_resolve_in(dir: &std::path::Path, name: Option<&str>) -> Option<String> {
+    let explicit = name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .map(|n| dir.join(format!("{n}.docx")));
+    let candidate = match explicit {
+        Some(p) => p,
+        None => {
+            let def = std::fs::read_to_string(default_marker_path(dir)).ok()?;
+            dir.join(format!("{def}.docx"))
+        }
+    };
+    candidate
+        .exists()
+        .then(|| candidate.to_string_lossy().to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WordTemplateInfo {
+    pub name: String,
+    pub mtime_ms: i64,
+    pub is_default: bool,
+}
+
+#[tauri::command]
+pub fn word_template_list(app: AppHandle) -> CommandResult<Vec<WordTemplateInfo>> {
+    let dir = word_templates_dir(&app);
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    let def = std::fs::read_to_string(default_marker_path(&dir)).unwrap_or_default();
+    let mut out: Vec<WordTemplateInfo> = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| CommandError::IoError(e.to_string()))? {
+        let entry = entry.map_err(|e| CommandError::IoError(e.to_string()))?;
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("docx") {
+            continue;
+        }
+        let Some(name) = p.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let mtime_ms = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        out.push(WordTemplateInfo {
+            name: name.to_string(),
+            mtime_ms,
+            is_default: def == name,
+        });
+    }
+    out.sort_by_key(|t| std::cmp::Reverse(t.mtime_ms));
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn word_template_import(app: AppHandle, path: String) -> CommandResult<String> {
+    let src = std::path::PathBuf::from(&path);
+    if !src.is_file() {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path,
+            reason: "请选择一个 .docx 模板文件".into(),
+        });
+    }
+    if src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| !e.eq_ignore_ascii_case("docx"))
+        .unwrap_or(true)
+    {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path,
+            reason: "模板必须是 .docx 文件".into(),
+        });
+    }
+    let dir = word_templates_dir(&app);
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    let name = src
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let dest = dir.join(format!("{name}.docx"));
+    if dest.exists() {
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name.clone(),
+            reason: "同名模板已存在：请先删除再上传".into(),
+        });
+    }
+    std::fs::copy(&src, &dest).map_err(|e| CommandError::IoError(e.to_string()))?;
+    crate::bot::audit_log(
+        &app,
+        &format!(
+            "word_template_import | {}",
+            crate::bot::escape_for_log(&name, 100)
+        ),
+    );
+    Ok(name)
+}
+
+#[tauri::command]
+pub fn word_template_delete(app: AppHandle, name: String) -> CommandResult<()> {
+    let dir = word_templates_dir(&app);
+    let p = dir.join(format!("{name}.docx"));
+    if p.exists() {
+        std::fs::remove_file(&p).map_err(|e| CommandError::IoError(e.to_string()))?;
+    }
+    if std::fs::read_to_string(default_marker_path(&dir))
+        .map(|d| d == name)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(default_marker_path(&dir));
+    }
+    crate::bot::audit_log(
+        &app,
+        &format!(
+            "word_template_delete | {}",
+            crate::bot::escape_for_log(&name, 100)
+        ),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub fn word_template_set_default(app: AppHandle, name: String) -> CommandResult<()> {
+    let dir = word_templates_dir(&app);
+    let p = dir.join(format!("{name}.docx"));
+    if !p.exists() {
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name,
+            reason: "模板不存在".into(),
+        });
+    }
+    std::fs::write(default_marker_path(&dir), &name)
+        .map_err(|e| CommandError::IoError(e.to_string()))?;
+    crate::bot::audit_log(
+        &app,
+        &format!(
+            "word_template_default | {}",
+            crate::bot::escape_for_log(&name, 100)
+        ),
+    );
+    Ok(())
+}
+
 // py_exec_sync / spawn_blocking_map / run_doc_*
 
 pub async fn spawn_blocking_map<F, T>(f: F) -> Result<T, String>
@@ -1354,3 +1549,36 @@ pub async fn py_exec_sync_async(
 }
 
 // 抑制 unused 警告
+
+#[cfg(test)]
+mod word_template_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_prefers_explicit_then_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("a.docx"), b"x").unwrap();
+        std::fs::write(dir.join("b.docx"), b"x").unwrap();
+        std::fs::write(default_marker_path(dir), "b").unwrap();
+
+        // 显式名命中（存在才返回）
+        assert!(word_template_resolve_in(dir, Some("a")).is_some());
+        // 显式名不存在 → None（不回退默认，用户点名了就不能拿别的顶）
+        assert!(word_template_resolve_in(dir, Some("nope")).is_none());
+        // 未指定 → 默认
+        assert_eq!(
+            word_template_resolve_in(dir, None).unwrap(),
+            dir.join("b.docx").to_string_lossy().to_string()
+        );
+        // 默认文件被删 → None
+        std::fs::remove_file(dir.join("b.docx")).unwrap();
+        assert!(word_template_resolve_in(dir, None).is_none());
+    }
+
+    #[test]
+    fn resolve_without_marker_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(word_template_resolve_in(tmp.path(), None).is_none());
+    }
+}

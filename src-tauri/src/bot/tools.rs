@@ -1496,6 +1496,8 @@ pub(crate) async fn tool_create_word(
     // N3-4：images 仅放行 AI_Gen_Files 目录内的已存在图片（防模型借参数探测/读任意路径），
     // 被拒条目审计并计入提示
     let (images, dropped_imgs) = sanitize_image_paths_arg(app, &v).await;
+    // 模板解析：显式名优先，否则设置页默认模板；都无 → 内置空白口径
+    let template = crate::bot_py::word_template_resolve(app, v["template"].as_str());
     match crate::bot_py::doc_make_word(
         app.clone(),
         title,
@@ -1503,6 +1505,7 @@ pub(crate) async fn tool_create_word(
         opt_filename(&v),
         tables,
         images,
+        template,
     )
     .await
     {
@@ -1514,8 +1517,17 @@ pub(crate) async fn tool_create_word(
             } else {
                 String::new()
             };
+            // 真校验后的产物元信息：让模型必须把完整路径转告用户（防「说了生成却找不到文件」）
+            let size_note = std::fs::metadata(&out)
+                .map(|m| format!("，{} KB", m.len() / 1024))
+                .unwrap_or_default();
             // 「已生成 Word 文档」首字「已」非 error/warn 前缀 → ok
-            ToolResult::ok(format!("已生成 Word 文档：{out}{warn}"), Vec::new())
+            ToolResult::ok(
+                format!(
+                    "已生成 Word 文档：{out}{size_note}{warn}。向用户报告时必须附上完整路径；用户找不到文件时可用 reveal_path 打开所在文件夹"
+                ),
+                Vec::new(),
+            )
         }
         // 「生成失败」首字「生」非「失败」前缀 → ok
         Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
