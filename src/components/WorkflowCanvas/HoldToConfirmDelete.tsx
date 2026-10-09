@@ -30,12 +30,14 @@ export const HOLD_MS = 1500;
 const SHAKE_MS = 360;
 /** "已删除" 状态展示时长（毫秒） */
 const DONE_HOLD_MS = 1200;
-/** 进度环 SVG 半径（44×44 viewBox） */
-const RING_R = 18;
+/** 进度环 SVG 半径（48×48 viewBox）——环中心线直径 44px，套在 36px 按钮外 */
+const RING_R = 22;
 /** 进度环周长（用于 strokeDasharray） */
 const RING_CIRC = 2 * Math.PI * RING_R;
-/** 圆按钮直径（px） */
-const BTN_SIZE = 36;
+/** 进度环 SVG 显示边长（px），比按钮大一圈 */
+const RING_SIZE = 48;
+/** 进度环 viewBox 中心坐标 */
+const RING_C = 24;
 
 type Phase = "idle" | "pressing" | "releasing" | "done";
 
@@ -262,23 +264,23 @@ export function HoldToConfirmDelete({
     >
       <svg
         className="hold-confirm-ring"
-        viewBox="0 0 44 44"
-        width={BTN_SIZE + 8}
-        height={BTN_SIZE + 8}
+        viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`}
+        width={RING_SIZE}
+        height={RING_SIZE}
         aria-hidden
       >
         {/* 底层轨道（淡灰） */}
         <circle
           className="hold-confirm-ring-track"
-          cx="22"
-          cy="22"
+          cx={RING_C}
+          cy={RING_C}
           r={RING_R}
         />
         {/* 进度环 */}
         <circle
           className="hold-confirm-ring-fg"
-          cx="22"
-          cy="22"
+          cx={RING_C}
+          cy={RING_C}
           r={RING_R}
           style={ringStyle}
         />

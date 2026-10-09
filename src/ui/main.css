@@ -527,9 +527,9 @@
   justify-content: center;
   gap: 0.375rem;
   height: 36px;
-  /* 最小宽度 = 圆形；done 态文案出现时自然撑开 */
+  /* 最小宽度 = 圆形；idle 无内边距 → 36×36 正圆；done 态文案撑开 */
   min-width: 36px;
-  padding: 0 10px;
+  padding: 0;
   border-radius: 9999px;
   background-color: var(--surface);
   border: 1px solid var(--edge);
@@ -575,14 +575,21 @@
   background-color: color-mix(in srgb, var(--success) 8%, var(--surface));
 }
 
-/* SVG 进度环：绝对定位铺满按钮 */
+/* SVG 进度环：绝对定位 + 显式居中，套在按钮外侧（比按钮大一圈）
+   坑：曾用 inset:0 + margin:auto 居中——元素 48px 大于按钮 36px 的
+   过约束场景下居中不可靠，环被推偏到按钮左下，与按钮不同心。
+   left/top:50% + translate(-50%,-50%) 把元素中心对回按钮中心，
+   再叠 rotate(-90deg)：旋转绕元素自身中心，不破坏居中。 */
 .hold-confirm-ring {
   position: absolute;
-  inset: 0;
-  margin: auto;
+  top: 50%;
+  left: 50%;
+  width: 48px;
+  height: 48px;
+  margin: 0;
   pointer-events: none;
-  /* 旋转 90° 让起点在 12 点方向，符合「顺时针」的视觉直觉 */
-  transform: rotate(-90deg);
+  overflow: visible;
+  transform: translate(-50%, -50%) rotate(-90deg);
 }
 .hold-confirm-ring-track {
   fill: none;
@@ -599,6 +606,11 @@
 }
 .hold-confirm.is-done .hold-confirm-ring-fg {
   stroke: var(--success);
+}
+/* done 态按钮变宽（对勾 + 「已删除」），进度环已完成使命——隐藏，
+   否则 48px 环会浮在宽按钮中间压在文案上 */
+.hold-confirm.is-done .hold-confirm-ring {
+  display: none;
 }
 
 /* 中心图标 / 文字层：相对定位在 ring 之上 */
