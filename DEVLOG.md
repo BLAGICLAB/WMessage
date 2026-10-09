@@ -5954,3 +5954,19 @@ opener:default 必须存在」，防回退语义保留（恢复前端开路径�
 
 验证：cargo fmt / clippy --all-targets 0（除 vendor）/ scripts/test-all.sh
 全绿（nextest + tests-audit + vitest）/ 红线干净。回滚：git revert 本 commit。
+
+## 2026-10-09（周四）读侧口径两处放宽 — fetch 传输闸 10MB + grep 跳过可见化/生成物排除
+
+**为什么换方向**：用户指出「读内容设 2MB 上限」口径过紧。网上调研结论
+（业界共识）：AI 代理的网页抓取应该「正文提取先行 + 截断可续读」，代码搜索
+应该「跳过可见 + 先排生成物」，而不是静默整体拒绝。
+
+- **fetch**：排查发现正文提取（extract_main_content + html2text + Jina 回退）
+  与 30K 字符切片 + offset 续读早已在位，唯一缺口是提取前的原始字节闸
+  （2MB 整体拒绝，续读机制根本没机会跑）。放宽为 10MB 传输闸（防内存打爆
+  的本意不变）；搜索三引擎 2MB 保持独立口径（JSON 体量小）。
+- **grep**：>2MB 静默跳过会让模型误信「搜了、没有」。改为：跳过可见化
+  （结果尾部附跳过数量与前 5 个文件名，提示改用 read_text_file 定点查看）+
+  生成物名字排除（min.*.js/css、*.map、各系 lockfile——GitHub 代码搜索同款
+  口径，命中行又长又无信息量）。2MB 阈值保留作 read_to_string 的内存兜底
+  （行截断 200 字符原本就在）。

@@ -1448,6 +1448,40 @@ fn render_context_hits(path: &str, lines: &[&str], hits: &[usize], context: usiz
     out
 }
 
+/// 生成物文件名排除：minified 产物与常见锁文件是 grep 噪声主体——命中行
+/// 又长又无信息量，还挤占命中配额（GitHub 代码搜索同款口径）。只影响
+/// grep_files；read_text_file 仍可定点读取这些文件。
+fn is_generated_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    if n.ends_with(".min.js") || n.ends_with(".min.mjs") || n.ends_with(".min.css") {
+        return true;
+    }
+    if n.ends_with(".map") {
+        return true; // source map 产物
+    }
+    matches!(
+        n.as_str(),
+        "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "composer.lock" | "cargo.lock"
+    )
+}
+
+/// 大文件跳过的可见化提示：静默跳过会让模型误信「搜了、没有」；
+/// 附前几个文件名，模型可改用 read_text_file 定点查看。total == 0 → None。
+fn format_skip_note(skipped: &[String], total: usize) -> Option<String> {
+    if total == 0 {
+        return None;
+    }
+    let names = skipped.join("、");
+    let more = if total > skipped.len() {
+        format!(" 等共 {total} 个")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "\n另有 {total} 个大文件（超过 2MB）未搜索{more}：{names}；如需查看请用 read_text_file 定点读取"
+    ))
+}
+
 pub async fn tool_grep_files(
     app: &AppHandle,
     args: &str,
@@ -1496,10 +1530,12 @@ pub async fn tool_grep_files(
     // 返回（渲染行, 匹配数）二元组：max 按匹配数计、行数随 context 放大，
     // 上限提示要看匹配数；spawn_blocking 'static 闭包只能带值回传。
     let dir_log = dir.display().to_string();
-    let (hits, found) =
-        crate::py::document::spawn_blocking_map(move || -> Result<(Vec<String>, usize), String> {
+    let (hits, found, skipped, skipped_total) = crate::py::document::spawn_blocking_map(
+        move || -> Result<(Vec<String>, usize, Vec<String>, usize), String> {
             let mut hits: Vec<String> = Vec::new();
             let mut found = 0usize;
+            let mut skipped: Vec<String> = Vec::new();
+            let mut skipped_total = 0usize;
             walk(&dir, &mut |path: &Path, is_dir: bool| {
                 if found >= max {
                     return false;
@@ -1514,12 +1550,20 @@ pub async fn tool_grep_files(
                 if !glob.is_empty() && !glob_match(&glob, &name) {
                     return true;
                 }
+                if is_generated_name(&name) {
+                    return true;
+                }
                 if path
                     .metadata()
                     .map(|m| m.len() > GREP_MAX_FILE_BYTES)
                     .unwrap_or(true)
                 {
-                    return true; // 超大文件跳过
+                    // 超大文件跳过必须可见（见 format_skip_note）
+                    skipped_total += 1;
+                    if skipped.len() < 5 {
+                        skipped.push(name);
+                    }
+                    return true;
                 }
                 if is_binary_file_sync(path) {
                     return true;
@@ -1551,10 +1595,11 @@ pub async fn tool_grep_files(
                 }
                 true
             });
-            Ok((hits, found))
-        })
-        .await
-        .unwrap_or_default();
+            Ok((hits, found, skipped, skipped_total))
+        },
+    )
+    .await
+    .unwrap_or_default();
     crate::bot::audit_log(
         app,
         &format!(
@@ -1565,9 +1610,10 @@ pub async fn tool_grep_files(
         ),
     );
     if hits.is_empty() {
-        // 「... 内没有匹配 ...」首字不定 → ok
+        // 「... 内没有匹配 ...」首字不定 → ok；跳过的大文件随提示可见
+        let skip_note = format_skip_note(&skipped, skipped_total).unwrap_or_default();
         return ToolResult::ok(
-            format!("{} 内没有匹配「{pattern}」的内容", dir_log),
+            format!("{} 内没有匹配「{pattern}」的内容{skip_note}", dir_log),
             Vec::new(),
         );
     }
@@ -1576,6 +1622,9 @@ pub async fn tool_grep_files(
         out.push_str(&format!(
             "\n…（已达 {max} 条匹配上限，缩小范围或加 glob 过滤）"
         ));
+    }
+    if let Some(note) = format_skip_note(&skipped, skipped_total) {
+        out.push_str(&note);
     }
     // 匹配结果文本，首字符任意 UTF-8 → ok
     ToolResult::ok(out, Vec::new())
@@ -2225,5 +2274,46 @@ mod file_change_tests {
             sha256_hex(""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn generated_name_excludes_minified_and_lockfiles() {
+        // minified 产物与锁文件（大小写不敏感）
+        assert!(is_generated_name("app.min.js"));
+        assert!(is_generated_name("App.MIN.CSS"));
+        assert!(is_generated_name("bundle.min.mjs"));
+        assert!(is_generated_name("sourcemap.map"));
+        assert!(is_generated_name("package-lock.json"));
+        assert!(is_generated_name("Cargo.lock"));
+        // 正常源码/文档不得误伤
+        assert!(!is_generated_name("main.js"));
+        assert!(!is_generated_name("sitemap.ts"));
+        assert!(!is_generated_name("lock.txt"));
+        assert!(!is_generated_name("readme.md"));
+    }
+
+    #[test]
+    fn skip_note_hidden_when_nothing_skipped() {
+        assert!(format_skip_note(&[], 0).is_none());
+    }
+
+    #[test]
+    fn skip_note_lists_names_under_cap() {
+        let skipped = vec!["a.log".to_string(), "b.bundle.js".to_string()];
+        let note = format_skip_note(&skipped, 2).expect("有跳过必有提示");
+        assert!(note.contains("2 个大文件"), "{note}");
+        assert!(note.contains("a.log、b.bundle.js"), "{note}");
+        assert!(note.contains("read_text_file"), "{note}");
+        assert!(
+            !note.contains("等共"),
+            "未超名单容量不得出现「等共」字样: {note}"
+        );
+    }
+
+    #[test]
+    fn skip_note_marks_total_beyond_name_cap() {
+        let skipped = vec!["a".to_string(); 5];
+        let note = format_skip_note(&skipped, 9).expect("有跳过必有提示");
+        assert!(note.contains("等共 9 个"), "{note}");
     }
 }
