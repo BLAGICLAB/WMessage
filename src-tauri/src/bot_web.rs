@@ -11,7 +11,9 @@ use std::time::Duration;
 
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-const FETCH_MAX_BYTES: usize = 2 * 1024 * 1024;
+// 传输闸：防恶意超大响应打爆内存（Content-Length 可撒谎，必须流式封顶）。
+// 不是内容门槛——正文提取后有 30K 字符切片 + offset 续读，大页面按段可读。
+const FETCH_MAX_BYTES: usize = 10 * 1024 * 1024;
 const SEARCH_OUTPUT_CAP: usize = 6000;
 
 /// reqwest 0.12+ 的错误 Display 只剩顶层一句（如「error sending request for url」），
@@ -1046,7 +1048,10 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
         if len > FETCH_MAX_BYTES as u64 {
             return Err(CommandError::DomainRule {
                 domain: "web".to_string(),
-                reason: "页面过大（超过 2MB）已拒绝".to_string(),
+                reason: format!(
+                    "页面过大（超过 {}MB）已拒绝",
+                    FETCH_MAX_BYTES / (1024 * 1024)
+                ),
             });
         }
     }
@@ -1154,7 +1159,10 @@ async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<Vec<u8>
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("读取失败：{}", err_chain(&e)))?;
         if buf.len() + chunk.len() > max {
-            return Err("页面过大（超过 2MB）已拒绝".into());
+            return Err(format!(
+                "内容超过 {}MB 大小上限，已中断读取",
+                max / (1024 * 1024)
+            ));
         }
         buf.extend_from_slice(&chunk);
     }
