@@ -6091,3 +6091,27 @@ warning（与本次改动无关）。
 修法：`left/top:50% + transform: translate(-50%,-50%) rotate(-90deg)`，宽高在 CSS
 显式给 48px（不依赖 SVG 属性）。验证：真实编译 CSS + getBoundingClientRect，环/按钮
 中心 dx=dy=0；对比图见会话。顺带 idle 按钮去 padding 变 36×36 正圆，done 态隐藏环。
+
+### 工作流工具栏改版：圆形保存键 + 液面罐子执行键（双行布局）
+
+**为什么换方向**：用户要求保存键做成圆形图标（与删除键同尺寸）、按下凹陷、
+成功直接显示「对勾 + 已保存」；执行键改成长条圆角「罐子」，内装绿色液面，
+每完成一张任务卡液面前进一格（有液体动态），任务与液体都满则禁用。
+保存/删除移第一行右侧，执行键第二行居中。
+
+**实现**：
+- `SaveButton.tsx`：圆形 36×36 图标键；`dirty` 时右上角品牌色小圆点；按下
+  `is-pressed`（凹陷）；保存中 `is-saving`（Loader 自旋）；成功 `is-done`
+  （对勾 + 已保存，撑宽泛绿，1.4s 回 idle）。`save()` 改为返回 boolean，
+  失败不冒充已保存。
+- `ExecuteBar.tsx`：长条圆角罐子 + 绿色液面；液面宽 = doneCount/total；
+  `.exec-bar__flow` 斜纹流光即「液体动态」；双份文案按液面 clip-path 裁切
+  保证跨液面时的文字对比度；running 点击 = 停止；全满禁用「已完成」。
+- `WorkflowPage.tsx`：工具栏拆两行；删 `runButtonTitle` 与旧开始/停止键。
+- `main.css`：+219 行（.save-btn* / .exec-bar* / keyframes）。
+
+**验证**：SaveButton 12 + ExecuteBar 11 单测；全量 61 文件 566 用例全绿；
+tsc 0 错；真实编译 CSS 渲染画廊 + getBoundingClientRect 量液面宽度与
+doneCount/total 一致（50%→49.7%，100%→99.3%，差值为 1px 边框所致）。
+
+**未做**：Windows 实机验收；便携包下次出包携带。
