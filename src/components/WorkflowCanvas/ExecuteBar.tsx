@@ -90,11 +90,11 @@ export function ExecuteBar({
   };
 
   const icon = running ? (
-    <Square size={13} className="exec-bar__icon" aria-hidden />
+    <Square size={10} className="exec-bar__icon" aria-hidden />
   ) : isFull ? (
-    <Check size={15} className="exec-bar__icon" aria-hidden />
+    <Check size={11} className="exec-bar__icon" aria-hidden />
   ) : (
-    <Play size={14} className="exec-bar__icon" aria-hidden />
+    <Play size={11} className="exec-bar__icon" aria-hidden />
   );
   const content = (
     <>

@@ -30,14 +30,14 @@ export const HOLD_MS = 1500;
 const SHAKE_MS = 360;
 /** "已删除" 状态展示时长（毫秒） */
 const DONE_HOLD_MS = 1200;
-/** 进度环 SVG 半径（48×48 viewBox）——环中心线直径 44px，套在 36px 按钮外 */
-const RING_R = 22;
+/** 进度环 SVG 半径（32×32 viewBox）——环中心线直径 30px，贴 36px 按钮内侧边缘（内圈约 1px 间隙） */
+const RING_R = 15;
 /** 进度环周长（用于 strokeDasharray） */
 const RING_CIRC = 2 * Math.PI * RING_R;
-/** 进度环 SVG 显示边长（px），比按钮大一圈 */
-const RING_SIZE = 48;
+/** 进度环 SVG 显示边长（px），缩到按钮内侧 */
+const RING_SIZE = 32;
 /** 进度环 viewBox 中心坐标 */
-const RING_C = 24;
+const RING_C = 16;
 
 type Phase = "idle" | "pressing" | "releasing" | "done";
 
