@@ -15,7 +15,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { Download, Loader2, Play, Plus, RefreshCw, Save, Square, Upload } from "lucide-react";
+import { Download, Loader2, Plus, RefreshCw, Upload } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { TracePanel } from "../TracePanel";
@@ -32,6 +32,8 @@ import { TaskNode, type TaskNodeData } from "./TaskNode";
 import { GoalNode, type GoalNodeData } from "./GoalNode";
 import { ClarifyCard } from "./ClarifyCard";
 import { HoldToConfirmDelete } from "./HoldToConfirmDelete";
+import { SaveButton } from "./SaveButton";
+import { ExecuteBar } from "./ExecuteBar";
 import {
   clarifyWorkflow,
   type Clarification,
@@ -51,19 +53,6 @@ function normalizeReport(r: WorkflowReport): WorkflowReport {
   return (KNOWN_VERDICTS as readonly string[]).includes(r.verdict)
     ? r
     : { ...r, verdict: "unknown" };
-}
-
-/** 开始/继续执行按钮的 title（dirty 优先级最高， *  续跑提示不得吞掉"先保存"警告） */
-function runButtonTitle(
-  dirty: boolean,
-  hasActive: boolean,
-  doneCount: number
-): string {
-  if (dirty) return "先保存再执行";
-  if (!hasActive) return "先选择或保存一个工作流";
-  if (doneCount > 0)
-    return `继续执行：已完成 ${doneCount} 个节点将跳过（断点续跑），失败/未跑的重新执行`;
-  return "执行整张图（已完成节点自动跳过 = 断点续跑）";
 }
 
 const nodeTypes = { task: TaskNode, goal: GoalNode };
@@ -747,8 +736,8 @@ function WorkflowPageInner({
 
   // 保存（指纹 diff 落库，设计 §7）
 
-  const save = async () => {
-    if (saving) return;
+  const save = async (): Promise<boolean> => {
+    if (saving) return false;
     setSaving(true);
     // 后端的 name/goal 会 trim，本地 state 同步成 trim 后的值——
     // 否则保存后 snapshot 用原值算 dirty 恒为 true（）
@@ -817,8 +806,10 @@ function WorkflowPageInner({
       invoke<Workflow[]>("workflow_list")
         .then(setWorkflows)
         .catch(() => {});
+      return true;
     } catch (e) {
       handleCommandError(e, "保存工作流", { onRetry: () => void save() });
+      return false;
     } finally {
       setSaving(false);
     }
@@ -929,7 +920,9 @@ function WorkflowPageInner({
   return (
     <div className="flex h-[calc(100vh-3rem)] flex-col">
       {/* 顶栏：工作流切换 + 工具栏（设计 §5.1） */}
-      <div className="flex shrink-0 flex-wrap items-center gap-2 pb-3">
+      {/* 顶栏两行：第一行 = 切换 + 工具 + 保存/删除（贴右）；第二行 = 执行罐子居中 */}
+      <div className="flex shrink-0 flex-col gap-2 pb-3">
+        <div className="flex flex-wrap items-center gap-2">
         <select
           aria-label="切换工作流"
           className="h-8 rounded-[var(--r-sm)] bg-transparent px-2 text-sm text-[var(--t2)] nm-outset"
@@ -1017,38 +1010,31 @@ function WorkflowPageInner({
         >
           🧾 审计
         </button>
-        <button
-          className={toolbarBtn}
-          onClick={() => void save()}
-          disabled={saving || !dirty}
-          title={dirty ? "保存工作流（指纹 diff，保留未变更节点的执行痕迹）" : "没有未保存的修改"}
-        >
-          <Save size={14} aria-hidden /> 保存{dirty ? " •" : ""}
-        </button>
-        {running ? (
-          <button
-            className={`${toolbarBtn} nm-inset text-[var(--danger,#ef4444)]`}
-            onClick={() => void stopRun()}
-            title="停止执行：未启动的节点将被跳过；运行中的会话请到挂件聊天区 ■ 停止"
-          >
-            <Square size={14} aria-hidden /> 停止
-          </button>
-        ) : (
-          <button
-            className={toolbarBtn}
-            onClick={() => void startRun()}
-            disabled={activeId === null || dirty || nodes.length === 0}
-            title={runButtonTitle(dirty, activeId !== null, doneCount)}
-          >
-            <Play size={14} aria-hidden /> {doneCount > 0 ? "继续执行" : "开始执行"}
-          </button>
-        )}
-        {activeId && (
-          <HoldToConfirmDelete
-            onConfirm={() => void deleteWorkflow()}
-            title="长按删除工作流（按住 1.5 秒，连带删除全部节点卡）"
+          <SaveButton
+            dirty={dirty}
+            saving={saving}
+            onSave={() => save()}
+            title={dirty ? "保存工作流（指纹 diff，保留未变更节点的执行痕迹）" : "没有未保存的修改"}
           />
-        )}
+          {activeId && (
+            <HoldToConfirmDelete
+              onConfirm={() => void deleteWorkflow()}
+              title="长按删除工作流（按住 1.5 秒，连带删除全部节点卡）"
+            />
+          )}
+        </div>
+        {/* 第二行：执行罐子（液面 = 已完成任务 / 总任务卡），居中 */}
+        <div className="flex justify-center">
+          <ExecuteBar
+            doneCount={doneCount}
+            total={nodes.length}
+            running={running}
+            dirty={dirty}
+            hasActive={activeId !== null}
+            onStart={() => void startRun()}
+            onStop={() => void stopRun()}
+          />
+        </div>
       </div>
       {/* 画布（编辑态）；hero 态显示引导（设计 §5.1） */}
       <div className="min-h-0 flex-1">
