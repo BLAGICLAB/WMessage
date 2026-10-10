@@ -6219,3 +6219,15 @@ doneCount/total 一致（50%→49.7%，100%→99.3%，差值为 1px 边框所致
 - d954dbe docs(devlog): 补记长按删除进度环偏心根因与修法
 
 **收尾**: `git stash pop` 恢复 99 个未提交改动 (96 modified + 3 untracked) 回 main working tree。
+
+## 2026-10-10（周六）OCR 评审批闭环 + 绿色版「带数据」根治
+
+为什么改（不是单 bug 修复，是一次口径调整）：
+
+**1. OCR 评审口径本身是值得持续投入的，但 10-09 范围评审的 14 条 D 批遗留里有 13 条是「真实现象在、前提或后果不成立」的 PARTIAL/WONTFIX——账面关闭不等于代码关闭**。本批按 14 条逐一核实：11 条上一轮 agent 已修（含 keyring NoEntry 分流、evolution spawn_blocking、io.rs 共用锁、EditMode replacements、注释损伤清零、main.css 4 组结构锁等），1 条本批新修（`api_server.rs:159` history 中毒改 fail-closed，与落盘对齐），剩余 2 条按价值/成本维持 WONTFIX（types.rs:582 已通过 keyring commit 拍板解除；剩余 14 条 medium 的 app_state 盘点、scheduler CAS 等保留）。
+
+**2. 绿色版「带数据」是真问题，但根因不是 docs 漏步骤**——是 `probe_log_dir` 命中分支 1（exe 旁可写 → 用 exe 同目录当 data_dir）的便携语义与「`cargo test` 把 db 写到 target/.../deps + `tauri build` 不清 target」的构建副产物撞车。`docs/PACKAGING-WINDOWS-PORTABLE.md` 加「出包前清 target/」是 5 分钟兜底，**真根治在代码**：`probe_log_dir` 加 `is_cargo_target_dir` 守卫——exe_dir 含 `target/.../{deps,debug,release}` 时直接旁路便携分支，data 走系统 app_data_dir。cargo test 不再污染 target/，下次 `tauri build` cp 的 release 目录干净，真实部署（`Downloads/wmessage-portable/`）仍命中便携分支——核心语义保留。docs 兜底段同步删除（不再需要人工清 target）。`bot.log` 测试的 read 路径同步修（之前硬编码 `current_exe().parent()` 在 cargo target 路径下读旧进程残留，根治后必须用 `probe_log_dir` 解析对齐生产写入路径）。
+
+**3. `window.confirm` 改 Tauri 2 dialog plugin 是「库内生态有就不自造」原则的体现**——11 个破坏性确认（删模型/删厂商/删模板/删工作区/删 MCP/删任务/清 key/旋转 token/清审计/启 Python 沙箱/启用回滚过的提案/立即执行桌面清理）原本全走 `window.confirm`，Tauri WebView 下行为不可靠且无 a11y。库内 `DeleteConfirmDialog` 留给「带元数据/级联选项」复杂场景（删除提案时是否连带源记忆），通用二次确认走 `useConfirm` hook 包 `plugin-dialog` 的 `ask`——11 处调用方零行为变化（kind:'warning' 默认 + ok/cancel 按钮文案统一）。库内调研（keyring 4.x Error 12 变体）同步记入 `memory/wmessage-keyring-error-semantics.md`，下次 keyring 升级或想动 NoEntry 兜底时直接调取。
+
+**不写横幅分隔线**（AGENTS.md 硬性禁令）；git log 是事实记录（10 个 commit 已推 origin/main：`efdab6b..5980056`，含 main.css 结构锁 / 绿色版根治 / 注释清零 / EditMode replacements / keyring NoEntry 分流 / registry tokenizer 测试 / evolution spawn_blocking / io.rs 共用锁 / api_server history 中毒 fix），本条只写三个换方向的口径。
