@@ -1,5 +1,5 @@
-// 图谱画布（G3-SIGMA 迁移）：Sigma.js v3 WebGL 渲染 + ForceAtlas2 worker 物理。
-// 旧 Canvas2D 自研渲染/物理已删除（docs/batches/G3-SIGMA.spec.md）。
+// 图谱画布（Sigma 迁移）：Sigma.js v3 WebGL 渲染 + ForceAtlas2 worker 物理。
+// 旧 Canvas2D 自研渲染/物理已删除。
 // 交互契约与旧版一致：hover 邻接高亮其余淡出、点选详情、空白拖拽平移、
 // 节点拖拽固定、滚轮指针锚缩放、双击 hub 打开工作流、搜索描环、双主题。
 // 配色读 CSS 变量（reducer 运行时解析，主题切换即重算），不硬编码色值。
@@ -36,11 +36,13 @@ interface Palette {
   edge: string;
   edgeStrong: string;
   danger: string;
-  /** 主题判定（html.dark），标签色阶按主题取专用值——文本 token 是给 UI 的，   *  画布标签需要自己的对比度策略（见 LABEL_COLORS 注释） */
+  /** 主题判定（html.dark），标签色阶按主题取专用值——文本 token 是给 UI 的，
+   *  画布标签需要自己的对比度策略（见 LABEL_COLORS 注释） */
   dark: boolean;
 }
 
-/** * 画布标签专用色阶（G3-SIGMA 视觉修订）：
+/**
+ * 画布标签专用色阶（视觉修订）：
  * 旧版直接用 --t1/--t2（近黑/近白文本 token）——亮色下黑字压在彩点上生硬，
  * 暗色下默认 labelColor #000 直接消失。
  * 设计原则：
@@ -73,7 +75,8 @@ const EDGE_WIDTH_SIZE: Record<GraphEdgeWidth, number> = {
   thick: 1.2,
 };
 
-function readPalette(): Palette {  const s = getComputedStyle(document.documentElement);
+function readPalette(): Palette {
+  const s = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) =>
     s.getPropertyValue(name).trim() || fallback;
   return {
@@ -96,9 +99,14 @@ function resolveColor(
   ownerKey: string,
   statusKey: string,
   palette: Palette,
-  colorMode: GraphColorMode
+  colorMode: GraphColorMode,
 ): string {
-  const cp = { brand: palette.brand, t3: palette.t3, t5: palette.t5, success: palette.success };
+  const cp = {
+    brand: palette.brand,
+    t3: palette.t3,
+    t5: palette.t5,
+    success: palette.success,
+  };
   return colorMode === "owner"
     ? resolveOwnerColor(ownerKey, cp)
     : resolveStatusColor(statusKey, cp);
@@ -117,11 +125,13 @@ export interface GraphCanvasProps {
   autoLayout: boolean;
   /** 布局松散度（R_MAX 系数）：切换即重建 */
   looseness: GraphLooseness;
-  /** 标签 → 同义组键（G6-SYNONYM；键缺失 = 独立组） */
+  /** 标签 → 同义组键（键缺失 = 独立组） */
   tagGroups?: Map<string, string>;
-  /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：   *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
+  /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
+   *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
   ownerOrder: Map<string, number>;
-  /** 「重新布局」触发信号（G4-G6 r2）：+1 启动一轮 FA2 短跑并自动停。   *  默认静态确定性布局——物理动画只作为手动增强，杜绝大图飞散 */
+  /** 「重新布局」触发信号：+1 启动一轮 FA2 短跑并自动停。
+   *  默认静态确定性布局——物理动画只作为手动增强，杜绝大图飞散 */
   relayoutSignal: number;
   selectedId: string | null;
   hoverId: string | null;
@@ -150,7 +160,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       props.ownerOrder,
       props.tagGroups,
       props.sizeMode,
-      props.looseness
+      props.looseness,
     );
 
     // 初始相机适配在 Sigma 首帧后自动进行；先关标签渲染由 reducer 控制
@@ -159,7 +169,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       renderEdgeLabels: false,
       labelDensity: props.graph.nodes.length > 400 ? 0.35 : 1,
       labelGridCellSize: 60,
-      labelFont: '500 12px ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
+      labelFont:
+        '500 12px ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
       labelWeight: "500",
       // 标签色由 reducer 写入节点属性（labelColor: { attribute: "labelColor" }）
       // ——主题切换经 palette 重读即时生效，无需重建 sigma
@@ -179,7 +190,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         context.fillStyle = lc.halo;
         context.fillRect(lx - 2, data.y - size / 2 - 1, textW + 5, size + 2);
         context.fillStyle =
-          (data as unknown as SigmaNodeAttrs).kind === "hub" ? lc.hub : lc.normal;
+          (data as unknown as SigmaNodeAttrs).kind === "hub"
+            ? lc.hub
+            : lc.normal;
         context.fillText(data.label, lx, data.y + 1);
       },
       // hover 底板：sigma 默认写死 #FFF 白底——暗色下突兀。几何照抄官方
@@ -199,7 +212,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         context.shadowOffsetX = 0;
         context.shadowOffsetY = palette.dark ? 2 : 1;
         context.shadowBlur = palette.dark ? 10 : 6;
-        context.shadowColor = palette.dark ? "rgba(0,0,0,0.55)" : "rgba(23,32,51,0.18)";
+        context.shadowColor = palette.dark
+          ? "rgba(0,0,0,0.55)"
+          : "rgba(23,32,51,0.18)";
         context.fillStyle = palette.dark ? "#232836" : "#ffffff";
         context.beginPath();
         // 从节点右侧展开的胶囊（与官方一致：含节点的圆头）
@@ -227,7 +242,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         const palette = paletteRef.current;
         const res: Attributes = { ...data };
         const attrs = data as SigmaNodeAttrs;
-        // 标签锚点恒隐藏（G4-CLUSTER：布局用伪节点，不入视觉/交互）
+        // 标签锚点恒隐藏（布局用伪节点，不入视觉/交互）
         if (attrs.kind === "anchor") {
           res.hidden = true;
           return res;
@@ -238,21 +253,23 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           attrs.ownerKey,
           attrs.statusKey,
           palette,
-          p.colorMode
+          p.colorMode,
         );
-        // ── 标签色（G3-SIGMA 视觉修订）：专用色阶 + 光晕，见 LABEL_COLORS 注释。
+        // ── 标签色：专用色阶 + 光晕，见 LABEL_COLORS 注释。
         // hub 高亮半档、常态灰阶、焦点提亮——经自定义 label draw 函数绘制光晕
         const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
         // 度数用建图值（不含锚点边，锚点边会虚增）
         const degree = attrs.degree ?? 0;
         const focusId = p.hoverId ?? p.selectedId;
         const isFocusNode =
-          node === p.selectedId || node === p.hoverId ||
+          node === p.selectedId ||
+          node === p.hoverId ||
           (p.searchMatchIds?.has(node) ?? false);
         const inFocusNeighborhood =
           focusId !== null &&
           (node === focusId || g.areNeighbors(node, focusId) || isFocusNode);
-        res.labelColor = isFocusNode || attrs.kind === "hub" ? lc.focus : lc.normal;
+        res.labelColor =
+          isFocusNode || attrs.kind === "hub" ? lc.focus : lc.normal;
         // 标签资格：密度三档（设置页）——少 = 仅 hub/焦点邻域；标准 = hub/高连接度/焦点；
         // 多 = 全部业务节点。done 在状态着色下常态压掉
         const isDoneFade = p.colorMode === "status" && attrs.status === "done";
@@ -292,8 +309,11 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           size: EDGE_WIDTH_SIZE[p.edgeWidth],
         };
         const [source, target] = g.extremities(edge);
-        // 标签锚点边恒隐藏（G4-CLUSTER）
-        if (source.startsWith(TAG_ANCHOR_PREFIX) || target.startsWith(TAG_ANCHOR_PREFIX)) {
+        // 标签锚点边恒隐藏
+        if (
+          source.startsWith(TAG_ANCHOR_PREFIX) ||
+          target.startsWith(TAG_ANCHOR_PREFIX)
+        ) {
           res.hidden = true;
           return res;
         }
@@ -319,7 +339,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       fa2: () => fa2Ref.current,
     };
 
-    // ── 视野自适应（G4-CLUSTER）：把可见节点包围盒动画适配到视口 ──
+    // ── 视野自适应：把可见节点包围盒动画适配到视口 ──
     // duration=0 时瞬时就位（rAF 节流/隐藏窗口下动画会被冻结，终态必须直接 set）。
     // 跳过非有限坐标——NaN 会把包围盒毒化成 NaN，相机状态随之报废（全屏空白）。
     // 相机态走归一化空间（computeCameraFit）：sigma 相机 x/y/ratio 不在图坐标系，
@@ -329,7 +349,10 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     let needsFit = true;
     const fitToContent = (duration = 0) => {
       if (g.order === 0) return;
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      let minX = Infinity,
+        maxX = -Infinity,
+        minY = Infinity,
+        maxY = -Infinity;
       g.forEachNode((_, attrs) => {
         if (!Number.isFinite(attrs.x) || !Number.isFinite(attrs.y)) return;
         if (attrs.x < minX) minX = attrs.x;
@@ -341,7 +364,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       const target = computeCameraFit(
         { minX, maxX, minY, maxY },
         normExtent,
-        size
+        size,
       );
       if (!target) {
         needsFit = true;
@@ -409,7 +432,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           g.setNodeAttribute(node, "vy", 0);
         }
         if (i++ % 5 !== 0) return; // 采样 1/5 节点算动能
-        sum += Math.abs(attrs.x - Math.round(attrs.x)) + Math.abs(attrs.y - Math.round(attrs.y));
+        sum +=
+          Math.abs(attrs.x - Math.round(attrs.x)) +
+          Math.abs(attrs.y - Math.round(attrs.y));
       });
       if (repaired > 0) {
         // 坏点已重置：重启 worker 让矩阵与图坐标同步，再暖跑收敛
@@ -508,7 +533,13 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // sizeMode 同理（大小参与 FA2 质量/碰撞，切换需重建写回图属性）；
     // looseness（R_MAX 系数）也是建图输入
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.graph, props.tagGroups, props.ownerOrder, props.sizeMode, props.looseness]);
+  }, [
+    props.graph,
+    props.tagGroups,
+    props.ownerOrder,
+    props.sizeMode,
+    props.looseness,
+  ]);
 
   // 「重新布局」信号：手动触发一轮 FA2 短跑（GraphCanvas 内部已自动停 + 终态适配）
   useEffect(() => {
@@ -518,7 +549,14 @@ export default function GraphCanvas(props: GraphCanvasProps) {
   // hover/选中/搜索/着色模式/标签密度/连线粗细变化 → reducer 已读 propsRef，只需 refresh
   useEffect(() => {
     sigmaRef.current?.refresh();
-  }, [props.hoverId, props.selectedId, props.searchMatchIds, props.colorMode, props.labelDensity, props.edgeWidth]);
+  }, [
+    props.hoverId,
+    props.selectedId,
+    props.searchMatchIds,
+    props.colorMode,
+    props.labelDensity,
+    props.edgeWidth,
+  ]);
 
   return (
     <div

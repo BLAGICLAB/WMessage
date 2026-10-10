@@ -70,7 +70,12 @@ describe("KanbanBoard.spliceMove", () => {
   });
 
   it("落到列空白区（overId 是列 id）：插到该列最后一个任务之后", () => {
-    const flat = [t("a", "todo"), t("d1", "doing"), t("d2", "doing"), t("z", "done")];
+    const flat = [
+      t("a", "todo"),
+      t("d1", "doing"),
+      t("d2", "doing"),
+      t("z", "done"),
+    ];
     const next = spliceMove(flat, "a", "doing", "doing", false);
     // doing 列最后一个任务是 d2 → 插到 d2 后、z 前
     expect(next.map((x) => x.id)).toEqual(["d1", "d2", "a", "z"]);

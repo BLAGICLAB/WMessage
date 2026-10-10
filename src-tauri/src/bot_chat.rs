@@ -428,7 +428,7 @@ fn attach_images_in(roots: &[std::path::PathBuf], content: &str) -> (serde_json:
     (v, skipped)
 }
 
-/// ：单个图片文件 → OpenAI image_url content part（data URL）。
+/// 单个图片文件 → OpenAI image_url content part（data URL）。
 /// 工具图片回传（screenshot）与附件链路共用同上限/同 mime 表；
 /// 不做白名单校验（调用方是工具自身产物，非用户不可信输入）。
 /// 文件缺失/超限/非图片扩展名返回 None（调用方跳过，不阻断）。
@@ -1208,7 +1208,7 @@ pub(crate) async fn summarize_messages(
     summarize_messages_with_model(app, system_prompt, messages, None).await
 }
 
-/// 轻量评审模型覆盖（W11：澄清/节点验收共用）：model_id = 模型库条目 id。
+/// 轻量评审模型覆盖（澄清/节点验收共用）：model_id = 模型库条目 id。
 /// 条目不存在/已停用/base_url 空 → **静默降级跟随全局**（评审是增强，
 /// 模型配置错误不挡 clarify/验收主流程）。
 pub(crate) async fn summarize_messages_with_model(
@@ -1454,7 +1454,7 @@ pub struct TaskExecCtx {
     pub brief: Option<crate::db::brief::BriefContext>,
     /// 执行提问授权：Some = 本节点可调 ask_user（workflow_id 关联档案与通知）
     pub ask: Option<AskExecContext>,
-    /// 验收返工证据（W10）：验收 fail 后重跑时带上轮 evidence，注入【验收返工】段
+    /// 验收返工证据：验收 fail 后重跑时带上轮 evidence，注入【验收返工】段
     pub rework_evidence: Option<String>,
 }
 
@@ -1467,7 +1467,7 @@ pub struct AskExecContext {
     pub workflow_id: Option<String>,
     /// 提问模式开关（false = 从不提问，工具直接返回假设）
     pub asks_enabled: bool,
-    /// W10：run 分组键——问题 payload 带上它，应答端写审计行能归到正确的 run
+    /// run 分组键——问题 payload 带上它，应答端写审计行能归到正确的 run
     pub run_started_at: i64,
 }
 
@@ -1496,7 +1496,7 @@ impl TaskExecCtx {
                 s.push_str(&format!("\n\n{c}"));
             }
         }
-        // 验收返工（W10）：放档案之后（最末端）——返工原因是对本轮最有指向性的指令
+        // 验收返工：放档案之后（最末端）——返工原因是对本轮最有指向性的指令
         if let Some(ev) = self
             .rework_evidence
             .as_deref()

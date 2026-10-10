@@ -14,7 +14,12 @@ type EmptyStateProps = {
   action?: { label: string; onClick: () => void };
 };
 
-export function EmptyState({ icon, title, description, action }: EmptyStateProps) {
+export function EmptyState({
+  icon,
+  title,
+  description,
+  action,
+}: EmptyStateProps) {
   return (
     <div className="flex flex-col items-center gap-1.5 py-10 text-center">
       <div

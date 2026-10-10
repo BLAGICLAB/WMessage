@@ -20,13 +20,55 @@ import {
 
 // 近 7 天窗口：开头 09-30~10-02 连续活跃 3 天（最长），尾部 10-05~06 连续 2 天（当前）
 const DAYS: UsageDay[] = [
-  { day: "2026-09-30", promptTokens: 500, completionTokens: 500, runs: 1, toolCalls: 1 },
-  { day: "2026-10-01", promptTokens: 500, completionTokens: 500, runs: 1, toolCalls: 1 },
-  { day: "2026-10-02", promptTokens: 500, completionTokens: 500, runs: 1, toolCalls: 1 },
-  { day: "2026-10-03", promptTokens: 0, completionTokens: 0, runs: 0, toolCalls: 0 },
-  { day: "2026-10-04", promptTokens: 0, completionTokens: 0, runs: 0, toolCalls: 0 },
-  { day: "2026-10-05", promptTokens: 900, completionTokens: 100, runs: 2, toolCalls: 5 },
-  { day: "2026-10-06", promptTokens: 4000, completionTokens: 1000, runs: 3, toolCalls: 8 },
+  {
+    day: "2026-09-30",
+    promptTokens: 500,
+    completionTokens: 500,
+    runs: 1,
+    toolCalls: 1,
+  },
+  {
+    day: "2026-10-01",
+    promptTokens: 500,
+    completionTokens: 500,
+    runs: 1,
+    toolCalls: 1,
+  },
+  {
+    day: "2026-10-02",
+    promptTokens: 500,
+    completionTokens: 500,
+    runs: 1,
+    toolCalls: 1,
+  },
+  {
+    day: "2026-10-03",
+    promptTokens: 0,
+    completionTokens: 0,
+    runs: 0,
+    toolCalls: 0,
+  },
+  {
+    day: "2026-10-04",
+    promptTokens: 0,
+    completionTokens: 0,
+    runs: 0,
+    toolCalls: 0,
+  },
+  {
+    day: "2026-10-05",
+    promptTokens: 900,
+    completionTokens: 100,
+    runs: 2,
+    toolCalls: 5,
+  },
+  {
+    day: "2026-10-06",
+    promptTokens: 4000,
+    completionTokens: 1000,
+    runs: 3,
+    toolCalls: 8,
+  },
 ];
 
 const MODELS: UsageModelRow[] = [
@@ -35,16 +77,32 @@ const MODELS: UsageModelRow[] = [
 ];
 
 const MODEL_DAYS: UsageDayModelRow[] = [
-  { day: "2026-10-05", model: "glm-5.3", promptTokens: 900, completionTokens: 100 },
-  { day: "2026-10-06", model: "glm-5.3", promptTokens: 4000, completionTokens: 1000 },
-  { day: "2026-10-05", model: "kimi-k3", promptTokens: 50, completionTokens: 50 },
+  {
+    day: "2026-10-05",
+    model: "glm-5.3",
+    promptTokens: 900,
+    completionTokens: 100,
+  },
+  {
+    day: "2026-10-06",
+    model: "glm-5.3",
+    promptTokens: 4000,
+    completionTokens: 1000,
+  },
+  {
+    day: "2026-10-05",
+    model: "kimi-k3",
+    promptTokens: 50,
+    completionTokens: 50,
+  },
 ];
 
 function mockOk() {
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "usage_stats_daily") return Promise.resolve(DAYS);
     if (cmd === "usage_stats_by_model") return Promise.resolve(MODELS);
-    if (cmd === "usage_stats_daily_by_model") return Promise.resolve(MODEL_DAYS);
+    if (cmd === "usage_stats_daily_by_model")
+      return Promise.resolve(MODEL_DAYS);
     return Promise.reject(new Error(`unexpected command: ${cmd}`));
   });
 }
@@ -69,7 +127,9 @@ describe("UsageStatsCard", () => {
     // 热力图底部月份标签：7 天窗口跨 9/30~10/06，仅月首 9月 获得标签（10月 距离过近被跳过）
     expect(screen.getByText("9月")).toBeTruthy();
     // 趋势图 SVG + 图例按模型命名（窗口内两个模型）
-    expect(container.querySelector("svg[aria-label=\"每日 Token 趋势图\"]")).toBeTruthy();
+    expect(
+      container.querySelector('svg[aria-label="每日 Token 趋势图"]'),
+    ).toBeTruthy();
     expect(screen.getAllByText("glm-5.3").length).toBeGreaterThanOrEqual(1); // 图例 + 模型用量榜
     expect(screen.getByText("kimi-k3")).toBeTruthy();
     // 模型用量榜
@@ -81,7 +141,9 @@ describe("UsageStatsCard", () => {
     await waitFor(() => expect(screen.getByText("9.0K")).toBeTruthy());
     expect(screen.getByText("每日").className).toContain("nm-inset");
     fireEvent.click(screen.getByText("累计"));
-    await waitFor(() => expect(screen.getByText("累计").className).toContain("nm-inset"));
+    await waitFor(() =>
+      expect(screen.getByText("累计").className).toContain("nm-inset"),
+    );
     expect(screen.getByText("每日").className).toContain("nm-outset");
   });
 
@@ -90,10 +152,14 @@ describe("UsageStatsCard", () => {
     await waitFor(() => expect(screen.getByText("9.0K")).toBeTruthy());
     expect(screen.getByText("近30日").className).toContain("nm-inset");
     fireEvent.click(screen.getByText("近7日"));
-    await waitFor(() => expect(screen.getByText("近7日").className).toContain("nm-inset"));
+    await waitFor(() =>
+      expect(screen.getByText("近7日").className).toContain("nm-inset"),
+    );
     expect(screen.getByText("近30日").className).toContain("nm-outset");
     await waitFor(() => {
-      const calls = invokeMock.mock.calls.filter((c) => c[0] === "usage_stats_daily_by_model");
+      const calls = invokeMock.mock.calls.filter(
+        (c) => c[0] === "usage_stats_daily_by_model",
+      );
       expect(calls.some((c) => c[1]?.days === 7)).toBe(true);
     });
   });
@@ -107,7 +173,9 @@ describe("UsageStatsCard", () => {
           : Promise.resolve([]),
     );
     render(<UsageStatsCard />);
-    await waitFor(() => expect(screen.getByText(/还没有词元用量/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/还没有词元用量/)).toBeTruthy(),
+    );
   });
 
   it("刷新按钮重拉全部三个统计命令", async () => {
@@ -115,9 +183,19 @@ describe("UsageStatsCard", () => {
     await waitFor(() => expect(screen.getByText("刷新")).toBeTruthy());
     fireEvent.click(screen.getByText("刷新"));
     await waitFor(() => {
-      expect(invokeMock.mock.calls.filter((c) => c[0] === "usage_stats_daily").length).toBe(2);
-      expect(invokeMock.mock.calls.filter((c) => c[0] === "usage_stats_by_model").length).toBe(2);
-      expect(invokeMock.mock.calls.filter((c) => c[0] === "usage_stats_daily_by_model").length).toBe(2);
+      expect(
+        invokeMock.mock.calls.filter((c) => c[0] === "usage_stats_daily")
+          .length,
+      ).toBe(2);
+      expect(
+        invokeMock.mock.calls.filter((c) => c[0] === "usage_stats_by_model")
+          .length,
+      ).toBe(2);
+      expect(
+        invokeMock.mock.calls.filter(
+          (c) => c[0] === "usage_stats_daily_by_model",
+        ).length,
+      ).toBe(2);
     });
   });
 
@@ -142,8 +220,18 @@ describe("UsageStatsCard", () => {
 
   it("buildTrendSeries：缺日记 0、按 tokens 降序取前 N、NULL 模型显示未知", () => {
     const rows: UsageDayModelRow[] = [
-      { day: "2026-10-06", model: "a-model", promptTokens: 300, completionTokens: 0 },
-      { day: "2026-10-06", model: null, promptTokens: 100, completionTokens: 0 },
+      {
+        day: "2026-10-06",
+        model: "a-model",
+        promptTokens: 300,
+        completionTokens: 0,
+      },
+      {
+        day: "2026-10-06",
+        model: null,
+        promptTokens: 100,
+        completionTokens: 0,
+      },
     ];
     const series = buildTrendSeries(DAYS, rows, 5);
     expect(series.length).toBe(2);

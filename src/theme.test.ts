@@ -24,7 +24,7 @@ const mockSystemDark = (dark: boolean) => {
         addEventListener: vi.fn(),
         removeEventListener: vi.fn(),
         dispatchEvent: vi.fn(),
-      }) as unknown as MediaQueryList
+      }) as unknown as MediaQueryList,
   );
 };
 
@@ -112,25 +112,25 @@ describe("theme 订阅", () => {
     const cb = vi.fn();
     const off = subscribeTheme(cb);
     window.dispatchEvent(
-      new StorageEvent("storage", { key: THEME_KEY, newValue: "dark" })
+      new StorageEvent("storage", { key: THEME_KEY, newValue: "dark" }),
     );
     expect(cb).toHaveBeenCalledWith("dark");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     // 无关 key 不触发
     window.dispatchEvent(
-      new StorageEvent("storage", { key: "other", newValue: "system" })
+      new StorageEvent("storage", { key: "other", newValue: "system" }),
     );
     expect(cb).toHaveBeenCalledTimes(1);
     // 非法 newValue 归一 light，class 同步撤掉
     window.dispatchEvent(
-      new StorageEvent("storage", { key: THEME_KEY, newValue: "weird" })
+      new StorageEvent("storage", { key: THEME_KEY, newValue: "weird" }),
     );
     expect(cb).toHaveBeenLastCalledWith("light");
     expect(document.documentElement.classList.contains("dark")).toBe(false);
     // 退订后不再回调
     off();
     window.dispatchEvent(
-      new StorageEvent("storage", { key: THEME_KEY, newValue: "dark" })
+      new StorageEvent("storage", { key: THEME_KEY, newValue: "dark" }),
     );
     expect(cb).toHaveBeenCalledTimes(2);
   });
@@ -150,7 +150,7 @@ describe("theme 订阅", () => {
       dispatchEvent: vi.fn(),
     };
     vi.spyOn(window, "matchMedia").mockReturnValue(
-      mql as unknown as MediaQueryList
+      mql as unknown as MediaQueryList,
     );
 
     // 非 system：系统变化不回调
@@ -182,7 +182,7 @@ describe("theme 订阅", () => {
       // 故意不提供 addEventListener/removeEventListener
     };
     vi.spyOn(window, "matchMedia").mockReturnValue(
-      mql as unknown as MediaQueryList
+      mql as unknown as MediaQueryList,
     );
     localStorage.setItem(THEME_KEY, "system");
     const off = subscribeSystem(vi.fn());

@@ -21,7 +21,15 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { FileText, Folder, FolderOpen, GripVertical, Link2, Pencil, Trash2 } from "lucide-react";
+import {
+  FileText,
+  Folder,
+  FolderOpen,
+  GripVertical,
+  Link2,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 import type { WorkspaceItem, WorkspaceLink } from "../types";
 import { basename } from "../format";
 import { IconButton } from "../ui/IconButton";
@@ -36,7 +44,8 @@ import { FoldToggle } from "./FoldToggle";
 
 const stop = (e: React.PointerEvent) => e.stopPropagation();
 
-/** 目标地址是否像网址（scheme 至少两字符—— *  旧正则单字符即匹配，「C:」被当成 URL scheme，Windows 路径被误存成网址链接） */
+/** 目标地址是否像网址（scheme 至少两字符——
+ *  旧正则单字符即匹配，「C:」被当成 URL scheme，Windows 路径被误存成网址链接） */
 const looksLikeUrl = (s: string) =>
   /^https?:\/\//i.test(s) || /^[a-z][a-z0-9+.-]+:/i.test(s);
 
@@ -126,7 +135,7 @@ export function WorkspacePage() {
   };
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
   /** 工作区上下排序：arrayMove 换位 → assignInsertOrder 分配 order → 行级落盘 + 广播挂件 */
@@ -140,18 +149,18 @@ export function WorkspacePage() {
     const byId = new Map(items.map((it) => [it.id, it]));
     const next0 = assignInsertOrder(
       arrayMove(ids, from, to).map((id) => byId.get(id)!),
-      String(active.id)
+      String(active.id),
     );
     // 不可变更新：先按内容 diff 出变化 id，再产副本写 updatedAt——
     // 不就地突变共享 state 对象（React 引用相等假设）
     const changedIds = new Set(
       next0
         .filter((it) => JSON.stringify(it) !== JSON.stringify(byId.get(it.id)))
-        .map((it) => it.id)
+        .map((it) => it.id),
     );
     const now = Date.now();
     const next = next0.map((it) =>
-      changedIds.has(it.id) ? { ...it, updatedAt: now } : it
+      changedIds.has(it.id) ? { ...it, updatedAt: now } : it,
     );
     setItems(next);
     if (changedIds.size) {
@@ -186,8 +195,8 @@ export function WorkspacePage() {
     if (!t) return;
     persist(
       items.map((it) =>
-        it.id === id ? { ...it, title: t, updatedAt: Date.now() } : it
-      )
+        it.id === id ? { ...it, title: t, updatedAt: Date.now() } : it,
+      ),
     );
   };
 
@@ -213,16 +222,16 @@ export function WorkspacePage() {
       items.map((it) =>
         it.id === id
           ? { ...it, collapsed: !it.collapsed, updatedAt: Date.now() }
-          : it
-      )
+          : it,
+      ),
     );
   };
 
   const updateLinks = (id: string, links: WorkspaceLink[]) => {
     persist(
       items.map((it) =>
-        it.id === id ? { ...it, links, updatedAt: Date.now() } : it
-      )
+        it.id === id ? { ...it, links, updatedAt: Date.now() } : it,
+      ),
     );
   };
 
@@ -256,9 +265,7 @@ export function WorkspacePage() {
     if (!targetUri) return;
     const displayName = draft.displayName.trim();
     const kind: WorkspaceLink["kind"] =
-      draft.kind === "url" && !looksLikeUrl(targetUri)
-        ? "file"
-        : draft.kind;
+      draft.kind === "url" && !looksLikeUrl(targetUri) ? "file" : draft.kind;
     updateLinks(id, [
       ...it.links,
       { id: crypto.randomUUID(), displayName, targetUri, kind },
@@ -282,8 +289,8 @@ export function WorkspacePage() {
       it.links.map((l) =>
         l.id === editingLink.linkId
           ? { ...l, displayName: editingLink.displayName.trim(), targetUri }
-          : l
-      )
+          : l,
+      ),
     );
     setEditingLink(null);
   };
@@ -298,12 +305,18 @@ export function WorkspacePage() {
   const removeLink = (id: string, linkId: string) => {
     const it = items.find((x) => x.id === id);
     if (!it) return;
-    updateLinks(id, it.links.filter((l) => l.id !== linkId));
+    updateLinks(
+      id,
+      it.links.filter((l) => l.id !== linkId),
+    );
   };
 
   return (
     <div className="space-y-3">
-      <button className="nm-btn w-full py-2 text-sm text-[var(--t3)]" onClick={addItem}>
+      <button
+        className="nm-btn w-full py-2 text-sm text-[var(--t3)]"
+        onClick={addItem}
+      >
         + 新建工作区
       </button>
 
@@ -328,234 +341,276 @@ export function WorkspacePage() {
               <SortableWorkspaceItem key={it.id} it={it}>
                 {(listeners) => (
                   <div>
-            {/* 标题行：☰ 拖拽手柄 + 标题 + 折叠开关 + 删除 */}
-            <div className="flex items-center gap-2">
-              <span
-                {...listeners}
-                title="拖拽排序"
-                className="shrink-0 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
-              >
-                <GripVertical size={12} aria-hidden />
-              </span>
-              {editingId === it.id ? (
-                <input
-                  autoFocus
-                  defaultValue={it.title}
-                  className="nm-inset min-w-0 flex-1 rounded-xl px-3 py-1.5 text-sm font-medium text-[var(--t1)] outline-none"
-                  onFocus={(e) => e.currentTarget.select()}
-                  onBlur={(e) => commitTitle(it.id, e.currentTarget.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter")
-                      commitTitle(it.id, (e.target as HTMLInputElement).value);
-                    if (e.key === "Escape") setEditingId(null);
-                  }}
-                />
-              ) : (
-                <button
-                  className="min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--t1)]"
-                  title="点击编辑标题"
-                  onClick={() => setEditingId(it.id)}
-                >
-                  {it.title}
-                </button>
-              )}
-              <FoldToggle collapsed={!!it.collapsed} onToggle={() => toggleCollapsed(it.id)} />
-              <IconButton
-                className="w-5 h-5 rounded-full text-xs hover:text-[var(--danger)]"
-                title="删除工作区"
-                onClick={() => removeItem(it.id)}
-              >
-                <Trash2 size={13} aria-hidden />
-              </IconButton>
-            </div>
-
-            {/* 折叠展开内容：链接三列网格，从左到右 */}
-            {!it.collapsed && (
-              <div className="mt-3">
-                {it.links.length === 0 && !editingLink && (
-                  <p className="text-xs text-[var(--t5)]">还没有链接</p>
-                )}
-
-                {it.links.length > 0 && (
-                  <div className="grid grid-cols-3 gap-2">
-                    {it.links.map((link) =>
-                      editingLink?.linkId === link.id ? (
-                        /* 编辑态：占满三列，双字段表单 */
-                        <div
-                          key={link.id}
-                          className="nm-inset col-span-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2"
-                        >
-                          <span className="text-[10px] text-[var(--t5)]">显示名称</span>
-                          <input
-                            autoFocus
-                            value={editingLink.displayName}
-                            placeholder="别名（可自由修改）"
-                            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
-                            onChange={(e) =>
-                              setEditingLink({ ...editingLink, displayName: e.target.value })
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.nativeEvent.isComposing) commitEditLink();
-                            }}
-                            onPointerDown={stop}
-                          />
-                          <span className="text-[10px] text-[var(--t5)]">目标地址</span>
-                          <input
-                            value={editingLink.targetUri}
-                            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
-                            onChange={(e) =>
-                              setEditingLink({ ...editingLink, targetUri: e.target.value })
-                            }
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter" && !e.nativeEvent.isComposing) commitEditLink();
-                            }}
-                            onPointerDown={stop}
-                          />
-                          <button
-                            className="nm-btn shrink-0 px-3 py-1 text-xs text-[var(--t3)]"
-                            onClick={commitEditLink}
-                            onPointerDown={stop}
-                          >
-                            保存
-                          </button>
-                          <button
-                            className="shrink-0 px-2 py-1 text-xs text-[var(--t5)]"
-                            onClick={() => setEditingLink(null)}
-                            onPointerDown={stop}
-                          >
-                            取消
-                          </button>
-                        </div>
+                    {/* 标题行：☰ 拖拽手柄 + 标题 + 折叠开关 + 删除 */}
+                    <div className="flex items-center gap-2">
+                      <span
+                        {...listeners}
+                        title="拖拽排序"
+                        className="shrink-0 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+                      >
+                        <GripVertical size={12} aria-hidden />
+                      </span>
+                      {editingId === it.id ? (
+                        <input
+                          autoFocus
+                          defaultValue={it.title}
+                          className="nm-inset min-w-0 flex-1 rounded-xl px-3 py-1.5 text-sm font-medium text-[var(--t1)] outline-none"
+                          onFocus={(e) => e.currentTarget.select()}
+                          onBlur={(e) =>
+                            commitTitle(it.id, e.currentTarget.value)
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter")
+                              commitTitle(
+                                it.id,
+                                (e.target as HTMLInputElement).value,
+                              );
+                            if (e.key === "Escape") setEditingId(null);
+                          }}
+                        />
                       ) : (
-                        <div
-                          key={link.id}
-                          className="nm-inset group/link relative rounded-xl px-2.5 py-2 cursor-pointer"
-                          onClick={() => openLink(link)}
+                        <button
+                          className="min-w-0 flex-1 truncate text-left text-sm font-medium text-[var(--t1)]"
+                          title="点击编辑标题"
+                          onClick={() => setEditingId(it.id)}
                         >
-                          <div className="flex items-center gap-1.5">
-                            <span className="shrink-0 text-xs inline-flex">
-                              {link.kind === "url" ? (
-                                <Link2 size={11} aria-hidden />
-                              ) : link.kind === "folder" ? (
-                                <Folder size={11} aria-hidden />
+                          {it.title}
+                        </button>
+                      )}
+                      <FoldToggle
+                        collapsed={!!it.collapsed}
+                        onToggle={() => toggleCollapsed(it.id)}
+                      />
+                      <IconButton
+                        className="w-5 h-5 rounded-full text-xs hover:text-[var(--danger)]"
+                        title="删除工作区"
+                        onClick={() => removeItem(it.id)}
+                      >
+                        <Trash2 size={13} aria-hidden />
+                      </IconButton>
+                    </div>
+
+                    {/* 折叠展开内容：链接三列网格，从左到右 */}
+                    {!it.collapsed && (
+                      <div className="mt-3">
+                        {it.links.length === 0 && !editingLink && (
+                          <p className="text-xs text-[var(--t5)]">还没有链接</p>
+                        )}
+
+                        {it.links.length > 0 && (
+                          <div className="grid grid-cols-3 gap-2">
+                            {it.links.map((link) =>
+                              editingLink?.linkId === link.id ? (
+                                /* 编辑态：占满三列，双字段表单 */
+                                <div
+                                  key={link.id}
+                                  className="nm-inset col-span-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2"
+                                >
+                                  <span className="text-[10px] text-[var(--t5)]">
+                                    显示名称
+                                  </span>
+                                  <input
+                                    autoFocus
+                                    value={editingLink.displayName}
+                                    placeholder="别名（可自由修改）"
+                                    className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
+                                    onChange={(e) =>
+                                      setEditingLink({
+                                        ...editingLink,
+                                        displayName: e.target.value,
+                                      })
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (
+                                        e.key === "Enter" &&
+                                        !e.nativeEvent.isComposing
+                                      )
+                                        commitEditLink();
+                                    }}
+                                    onPointerDown={stop}
+                                  />
+                                  <span className="text-[10px] text-[var(--t5)]">
+                                    目标地址
+                                  </span>
+                                  <input
+                                    value={editingLink.targetUri}
+                                    className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
+                                    onChange={(e) =>
+                                      setEditingLink({
+                                        ...editingLink,
+                                        targetUri: e.target.value,
+                                      })
+                                    }
+                                    onKeyDown={(e) => {
+                                      if (
+                                        e.key === "Enter" &&
+                                        !e.nativeEvent.isComposing
+                                      )
+                                        commitEditLink();
+                                    }}
+                                    onPointerDown={stop}
+                                  />
+                                  <button
+                                    className="nm-btn shrink-0 px-3 py-1 text-xs text-[var(--t3)]"
+                                    onClick={commitEditLink}
+                                    onPointerDown={stop}
+                                  >
+                                    保存
+                                  </button>
+                                  <button
+                                    className="shrink-0 px-2 py-1 text-xs text-[var(--t5)]"
+                                    onClick={() => setEditingLink(null)}
+                                    onPointerDown={stop}
+                                  >
+                                    取消
+                                  </button>
+                                </div>
                               ) : (
-                                <FileText size={11} aria-hidden />
-                              )}
-                            </span>
-                            <span
-                              className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--t2)]"
-                              title={linkDisplayName(link)}
-                            >
-                              {linkDisplayName(link)}
-                            </span>
+                                <div
+                                  key={link.id}
+                                  className="nm-inset group/link relative rounded-xl px-2.5 py-2 cursor-pointer"
+                                  onClick={() => openLink(link)}
+                                >
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="shrink-0 text-xs inline-flex">
+                                      {link.kind === "url" ? (
+                                        <Link2 size={11} aria-hidden />
+                                      ) : link.kind === "folder" ? (
+                                        <Folder size={11} aria-hidden />
+                                      ) : (
+                                        <FileText size={11} aria-hidden />
+                                      )}
+                                    </span>
+                                    <span
+                                      className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--t2)]"
+                                      title={linkDisplayName(link)}
+                                    >
+                                      {linkDisplayName(link)}
+                                    </span>
+                                  </div>
+                                  <p
+                                    className="mt-1 truncate text-[10px] text-[var(--t5)]"
+                                    title={link.targetUri}
+                                  >
+                                    {link.targetUri}
+                                  </p>
+                                  {/* 悬停操作：编辑别名 / 删除 */}
+                                  <div
+                                    className="absolute right-1 top-1 hidden group-hover/link:flex gap-0.5"
+                                    onPointerDown={stop}
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <IconButton
+                                      className="w-5 h-5 rounded-full text-[10px] hover:text-[var(--brand)]"
+                                      title="编辑显示名称/目标地址"
+                                      onClick={() =>
+                                        setEditingLink({
+                                          itemId: it.id,
+                                          linkId: link.id,
+                                          displayName: link.displayName,
+                                          targetUri: link.targetUri,
+                                          kind: link.kind,
+                                        })
+                                      }
+                                    >
+                                      <Pencil size={12} aria-hidden />
+                                    </IconButton>
+                                    <IconButton
+                                      className="w-5 h-5 rounded-full text-[10px] hover:text-[var(--danger)]"
+                                      title="删除链接"
+                                      onClick={() => removeLink(it.id, link.id)}
+                                    >
+                                      <Trash2 size={12} aria-hidden />
+                                    </IconButton>
+                                  </div>
+                                </div>
+                              ),
+                            )}
                           </div>
-                          <p
-                            className="mt-1 truncate text-[10px] text-[var(--t5)]"
-                            title={link.targetUri}
-                          >
-                            {link.targetUri}
-                          </p>
-                          {/* 悬停操作：编辑别名 / 删除 */}
-                          <div
-                            className="absolute right-1 top-1 hidden group-hover/link:flex gap-0.5"
-                            onPointerDown={stop}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <IconButton
-                              className="w-5 h-5 rounded-full text-[10px] hover:text-[var(--brand)]"
-                              title="编辑显示名称/目标地址"
-                              onClick={() =>
-                                setEditingLink({
-                                  itemId: it.id,
-                                  linkId: link.id,
-                                  displayName: link.displayName,
-                                  targetUri: link.targetUri,
-                                  kind: link.kind,
+                        )}
+
+                        {/* 添加链接区：显示名称 + 目标地址双字段 */}
+                        {draftFor === it.id ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <span className="text-[10px] text-[var(--t5)]">
+                              显示名称
+                            </span>
+                            <input
+                              autoFocus
+                              value={draft.displayName}
+                              placeholder="别名（选文件自动填文件名，可改）"
+                              className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
+                              onChange={(e) =>
+                                setDraft({
+                                  ...draft,
+                                  displayName: e.target.value,
                                 })
                               }
+                              onPointerDown={stop}
+                            />
+                            <span className="text-[10px] text-[var(--t5)]">
+                              目标地址
+                            </span>
+                            <input
+                              value={draft.targetUri}
+                              placeholder="网址或路径"
+                              className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
+                              onChange={(e) =>
+                                setDraft({
+                                  ...draft,
+                                  targetUri: e.target.value,
+                                })
+                              }
+                              onKeyDown={(e) => {
+                                if (
+                                  e.key === "Enter" &&
+                                  !e.nativeEvent.isComposing
+                                )
+                                  commitAddLink(it.id);
+                              }}
+                              onPointerDown={stop}
+                            />
+                            <button
+                              className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t3)]"
+                              title="选择文件（自动预填文件名到显示名称）"
+                              onClick={() => pickLocal(false)}
+                              onPointerDown={stop}
                             >
-                              <Pencil size={12} aria-hidden />
-                            </IconButton>
-                            <IconButton
-                              className="w-5 h-5 rounded-full text-[10px] hover:text-[var(--danger)]"
-                              title="删除链接"
-                              onClick={() => removeLink(it.id, link.id)}
+                              <FileText size={12} aria-hidden />
+                            </button>
+                            <button
+                              className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t3)]"
+                              title="选择文件夹"
+                              onClick={() => pickLocal(true)}
+                              onPointerDown={stop}
                             >
-                              <Trash2 size={12} aria-hidden />
-                            </IconButton>
+                              <FolderOpen size={12} aria-hidden />
+                            </button>
+                            <button
+                              className="nm-btn shrink-0 px-3 py-1 text-xs text-[var(--t3)]"
+                              onClick={() => commitAddLink(it.id)}
+                              onPointerDown={stop}
+                            >
+                              添加
+                            </button>
+                            <button
+                              className="shrink-0 px-2 py-1 text-xs text-[var(--t5)]"
+                              onClick={() => setDraftFor(null)}
+                              onPointerDown={stop}
+                            >
+                              取消
+                            </button>
                           </div>
-                        </div>
-                      )
+                        ) : (
+                          <button
+                            className="mt-2 text-xs text-[var(--brand)] hover:text-[var(--brand-strong)]"
+                            onClick={() => openAddForm(it.id)}
+                          >
+                            ＋ 添加链接
+                          </button>
+                        )}
+                      </div>
                     )}
-                  </div>
-                )}
-
-                {/* 添加链接区：显示名称 + 目标地址双字段 */}
-                {draftFor === it.id ? (
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <span className="text-[10px] text-[var(--t5)]">显示名称</span>
-                    <input
-                      autoFocus
-                      value={draft.displayName}
-                      placeholder="别名（选文件自动填文件名，可改）"
-                      className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
-                      onChange={(e) =>
-                        setDraft({ ...draft, displayName: e.target.value })
-                      }
-                      onPointerDown={stop}
-                    />
-                    <span className="text-[10px] text-[var(--t5)]">目标地址</span>
-                    <input
-                      value={draft.targetUri}
-                      placeholder="网址或路径"
-                      className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
-                      onChange={(e) => setDraft({ ...draft, targetUri: e.target.value })}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.nativeEvent.isComposing) commitAddLink(it.id);
-                      }}
-                      onPointerDown={stop}
-                    />
-                    <button
-                      className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t3)]"
-                      title="选择文件（自动预填文件名到显示名称）"
-                      onClick={() => pickLocal(false)}
-                      onPointerDown={stop}
-                    >
-                      <FileText size={12} aria-hidden />
-                    </button>
-                    <button
-                      className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t3)]"
-                      title="选择文件夹"
-                      onClick={() => pickLocal(true)}
-                      onPointerDown={stop}
-                    >
-                      <FolderOpen size={12} aria-hidden />
-                    </button>
-                    <button
-                      className="nm-btn shrink-0 px-3 py-1 text-xs text-[var(--t3)]"
-                      onClick={() => commitAddLink(it.id)}
-                      onPointerDown={stop}
-                    >
-                      添加
-                    </button>
-                    <button
-                      className="shrink-0 px-2 py-1 text-xs text-[var(--t5)]"
-                      onClick={() => setDraftFor(null)}
-                      onPointerDown={stop}
-                    >
-                      取消
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    className="mt-2 text-xs text-[var(--brand)] hover:text-[var(--brand-strong)]"
-                    onClick={() => openAddForm(it.id)}
-                  >
-                    ＋ 添加链接
-                  </button>
-                )}
-              </div>
-            )}
                   </div>
                 )}
               </SortableWorkspaceItem>
@@ -575,8 +630,14 @@ function SortableWorkspaceItem({
   it: WorkspaceItem;
   children: (listeners: DraggableSyntheticListeners | undefined) => ReactNode;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: it.id });
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: it.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   return (
     <div

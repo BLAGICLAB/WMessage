@@ -1,4 +1,4 @@
-//! ：MCP env/headers 机密存储——每台服务器一个 blob，存系统凭据
+//! MCP env/headers 机密存储——每台服务器一个 blob，存系统凭据
 //! 存储；bot-config.json 永不再落 env/headers 明文（`skip_serializing` 收口）。
 //!
 //! 设计（`docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md` §2）：

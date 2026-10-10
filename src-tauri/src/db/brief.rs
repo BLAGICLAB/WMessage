@@ -1,4 +1,4 @@
-//! 双层档案设计 docs/WORKFLOW-CLARIFY-AUDIT-DESIGN-2026-10-07.md §3.1）： audit-ok
+//! 双层档案（设计 docs/WORKFLOW-CLARIFY-AUDIT-DESIGN-2026-10-07.md §3.1）： audit-ok
 //! 工作流决策摘要（task_id IS NULL，注入**每个**后续节点——跨卡跑偏的解药）
 //! + 卡片档案（task_id 非空，本卡重跑时注入）。
 //!

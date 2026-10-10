@@ -43,7 +43,7 @@ describe("profile 缓存 / force 语义", () => {
   it("force：在飞期间 force=true 发起新 invoke（不返回旧 promise）", async () => {
     const resolvers: ((v: ProfileView) => void)[] = [];
     invokeMock.mockImplementation(
-      () => new Promise<ProfileView>((r) => resolvers.push(r))
+      () => new Promise<ProfileView>((r) => resolvers.push(r)),
     );
     const { loadProfile } = await importProfile();
     const p1 = loadProfile(); // gen1 在飞
@@ -60,7 +60,7 @@ describe("profile 缓存 / force 语义", () => {
   it("旧在飞 resolve 晚于 force 完成 → cache/notify 不被旧值覆盖", async () => {
     const resolvers: ((v: ProfileView) => void)[] = [];
     invokeMock.mockImplementation(
-      () => new Promise<ProfileView>((r) => resolvers.push(r))
+      () => new Promise<ProfileView>((r) => resolvers.push(r)),
     );
     const { loadProfile, getProfileCache, subscribeProfile } =
       await importProfile();

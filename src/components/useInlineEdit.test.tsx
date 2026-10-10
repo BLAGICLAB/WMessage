@@ -32,7 +32,7 @@ function Harness({
 describe("useInlineEdit", () => {
   it("进入编辑态（false→true）草稿重置为当前已提交值", () => {
     const { rerender } = render(
-      <Harness value="原标题" editing={false} onCommit={vi.fn()} />
+      <Harness value="原标题" editing={false} onCommit={vi.fn()} />,
     );
     const input = screen.getByTestId("edit") as HTMLInputElement;
     expect(input.value).toBe("原标题");
@@ -46,7 +46,7 @@ describe("useInlineEdit", () => {
 
   it("编辑中外部 value 变化不覆盖用户输入", () => {
     const { rerender } = render(
-      <Harness value="v1" editing={true} onCommit={vi.fn()} />
+      <Harness value="v1" editing={true} onCommit={vi.fn()} />,
     );
     const input = screen.getByTestId("edit") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "用户输入" } });
@@ -84,7 +84,7 @@ describe("useInlineEdit", () => {
         editing={true}
         onCommit={onCommit}
         onCancel={onCancel}
-      />
+      />,
     );
     const input = screen.getByTestId("edit") as HTMLInputElement;
     await user.type(input, "改");
@@ -104,7 +104,7 @@ describe("useInlineEdit", () => {
         editing={true}
         onCommit={onCommit}
         onCancel={vi.fn()}
-      />
+      />,
     );
     const input = screen.getByTestId("edit");
     await user.type(input, "改");

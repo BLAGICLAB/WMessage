@@ -51,7 +51,12 @@ describe("loadTasksFromDb", () => {
 describe("写路径错误传播（E1）", () => {
   const alertMock = vi.fn();
   const task: Task = { id: "t1", title: "x", column: "todo" };
-  const item: WorkspaceItem = { id: "w1", title: "w", collapsed: false, links: [] };
+  const item: WorkspaceItem = {
+    id: "w1",
+    title: "w",
+    collapsed: false,
+    links: [],
+  };
   const dbErr = { code: "DB_ERROR", message: "disk full", recoverable: false };
 
   beforeEach(() => {
@@ -149,7 +154,7 @@ describe("diffTaskRows 纯排序保留 updatedAt", () => {
 
   it("内容变更照常打 updatedAt=now（不受排序豁免影响）", () => {
     const next = base.map((t) =>
-      t.id === "t1" ? { ...t, title: "改名了" } : t
+      t.id === "t1" ? { ...t, title: "改名了" } : t,
     );
     const { upserts } = diffTaskRows(base, next, 999999);
     expect(upserts).toHaveLength(1);
@@ -171,11 +176,18 @@ describe("diffTaskRows 纯排序保留 updatedAt", () => {
     const { upserts } = diffTaskRows(base, next, 999999);
     expect(upserts[0].createdAt).toBe(999999);
     // 新行自带 createdAt（显式打戳入口）→ 以显式值为准
-    const next2 = [...base, { id: "t10", title: "新2", column: "todo" as const, createdAt: 12345 }];
+    const next2 = [
+      ...base,
+      { id: "t10", title: "新2", column: "todo" as const, createdAt: 12345 },
+    ];
     expect(diffTaskRows(base, next2, 999999).upserts[0].createdAt).toBe(12345);
     // 存量行内容变更 → 不补 createdAt（保持缺省/现值；后端 UPDATE 也不覆盖该列）
-    const prev: Task[] = [{ id: "t1", title: "旧", column: "todo" as const, createdAt: 111 }];
-    const changed: Task[] = [{ id: "t1", title: "旧-改", column: "todo" as const, createdAt: 111 }];
+    const prev: Task[] = [
+      { id: "t1", title: "旧", column: "todo" as const, createdAt: 111 },
+    ];
+    const changed: Task[] = [
+      { id: "t1", title: "旧-改", column: "todo" as const, createdAt: 111 },
+    ];
     expect(diffTaskRows(prev, changed, 999999).upserts[0].createdAt).toBe(111);
   });
 });
@@ -189,9 +201,7 @@ describe("diffTaskRows 携带 RMW 写回基线", () => {
   ];
 
   it("内容变更行：expectedUpdatedAt = prev.updatedAt，updatedAt 刷 now", () => {
-    const next = base.map((t) =>
-      t.id === "t1" ? { ...t, title: "甲改" } : t
-    );
+    const next = base.map((t) => (t.id === "t1" ? { ...t, title: "甲改" } : t));
     const { upserts } = diffTaskRows(base, next, 999999);
     expect(upserts).toHaveLength(1);
     expect(upserts[0].expectedUpdatedAt).toBe(1000);
@@ -217,8 +227,15 @@ describe("diffTaskRows 携带 RMW 写回基线", () => {
   it("prev 残留脏基线不击穿 taskEq 比较（基线是传输元数据非内容）", () => {
     // state 里的 prev 可能带着上次 diff 写入的 expectedUpdatedAt（对象复用）——
     // 不得因此把无变化行误判为变更
-    const dirtyPrev: Task[] = base.map((t) => ({ ...t, expectedUpdatedAt: 12345 }));
-    const { upserts } = diffTaskRows(dirtyPrev, base.map((t) => ({ ...t })), 999999);
+    const dirtyPrev: Task[] = base.map((t) => ({
+      ...t,
+      expectedUpdatedAt: 12345,
+    }));
+    const { upserts } = diffTaskRows(
+      dirtyPrev,
+      base.map((t) => ({ ...t })),
+      999999,
+    );
     expect(upserts).toHaveLength(0);
   });
 });
@@ -227,7 +244,11 @@ describe("diffTaskRows 携带 RMW 写回基线", () => {
 // storage 侧不再自行弹窗，否则 App.tsx 四个 caller 的 catch 会双弹。
 describe("导出/导入失败 throw（不静默返 0，alert 职责在 caller）", () => {
   const alertMock = vi.fn();
-  const ioErr = { code: "IO_ERROR", message: "permission denied", recoverable: false };
+  const ioErr = {
+    code: "IO_ERROR",
+    message: "permission denied",
+    recoverable: false,
+  };
 
   beforeEach(() => {
     invokeMock.mockReset();
@@ -255,7 +276,9 @@ describe("loadWorkspaceFromDb 判别式结果", () => {
   });
 
   it("invoke 正常返回时包装为 { ok: true, items }", async () => {
-    const items: WorkspaceItem[] = [{ id: "w1", title: "w", collapsed: false, links: [] }];
+    const items: WorkspaceItem[] = [
+      { id: "w1", title: "w", collapsed: false, links: [] },
+    ];
     invokeMock.mockResolvedValue(items);
     const res = await loadWorkspaceFromDb();
     expect(res).toEqual({ ok: true, items });

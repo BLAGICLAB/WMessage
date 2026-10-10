@@ -60,7 +60,10 @@ export type TraceDetail = TraceRow & {
 };
 
 /** 按任务卡查执行历史（startedAt 倒序） */
-export function traceListByTask(taskId: string, limit = 20): Promise<TraceRow[]> {
+export function traceListByTask(
+  taskId: string,
+  limit = 20,
+): Promise<TraceRow[]> {
   return invoke<TraceRow[]>("trace_list", { taskId, limit });
 }
 
@@ -74,7 +77,7 @@ export function fileRollback(changeId: number): Promise<string> {
   return invoke<string>("file_rollback", { changeId });
 }
 
-/** ：导出单次执行痕迹为 JSONL（落 data_dir/exports/，返回绝对路径） */
+/** 导出单次执行痕迹为 JSONL（落 data_dir/exports/，返回绝对路径） */
 export function traceExport(traceId: number): Promise<string> {
   return invoke<string>("trace_export", { traceId });
 }

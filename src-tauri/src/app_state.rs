@@ -98,12 +98,12 @@ pub(crate) struct AppState {
     pub(crate) pending: Mutex<HashMap<String, crate::exec_steps::PendingExec>>,
     /// 待确认请求（`ConfirmMap`：id → (oneshot 通道, 归属会话 id)）
     pub(crate) confirm_requests: ConfirmMap,
-    /// 工作流提问等待表`QuestionWaiters`：questionId → oneshot 通道）
+    /// 工作流提问等待表（`QuestionWaiters`：questionId → oneshot 通道）
     pub(crate) question_waiters: QuestionWaiters,
-    /// 工作流提问上下文表sessionId → AskRegistration；bot_chat 会话建立时
+    /// 工作流提问上下文表（sessionId → AskRegistration；bot_chat 会话建立时
     /// 注册/收尾注销，ask_user 工具按 session_id 查表，预算在条目上）
     pub(crate) ask_contexts: Mutex<HashMap<String, crate::workflow_questions::AskRegistration>>,
-    /// 子 agent 取消令牌表subagent_id → StopToken；
+    /// 子 agent 取消令牌表（subagent_id → StopToken；
     /// cancel_subagent 持有的句柄，runner 注册 / 收尾删除）
     pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>>,
     /// 执行痕迹注册表（Agent 透明化设计 §4.2）：session_id → 运行中 trace_id。

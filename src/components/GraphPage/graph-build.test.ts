@@ -28,7 +28,12 @@ const SAMPLE: Task[] = [
   t({ id: "w2", origin: "workflow", workflowId: "wf1" }),
   t({ id: "w3", origin: "workflow", workflowId: "wf2", dependsOn: ["gone"] }), // 悬空引用
   t({ id: "gone", deletedAt: 1 }), // 回收站：永不出图
-  t({ id: "arch", column: "done", archived: true, completedAt: new Date("2025-11-02").getTime() }),
+  t({
+    id: "arch",
+    column: "done",
+    archived: true,
+    completedAt: new Date("2025-11-02").getTime(),
+  }),
   t({ id: "zhang", ownerId: "p-zhang" }), // 外来卡
 ];
 
@@ -45,7 +50,9 @@ describe("buildTaskGraph", () => {
   it("悬空 dependsOn 丢边不丢节点", () => {
     const g = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
     expect(g.nodes.map((n) => n.id)).toContain("w3");
-    expect(g.links.filter((l) => l.kind === "dep" && l.target === "w3")).toHaveLength(0);
+    expect(
+      g.links.filter((l) => l.kind === "dep" && l.target === "w3"),
+    ).toHaveLength(0);
   });
 
   it("每个有成员的工作流一个 hub，成员边指向 hub", () => {
@@ -130,7 +137,9 @@ describe("buildTaskGraph", () => {
 
 describe("collect 聚合", () => {
   it("collectOwners：本人在前，外来含未知占位", () => {
-    const owners = collectOwners(SAMPLE, [{ id: SELF_OWNER, name: "我", isSelf: true }]);
+    const owners = collectOwners(SAMPLE, [
+      { id: SELF_OWNER, name: "我", isSelf: true },
+    ]);
     expect(owners[0]).toEqual({ id: SELF_OWNER, name: "我", isSelf: true });
     expect(owners.map((o) => o.id)).toContain("p-zhang");
   });

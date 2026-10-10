@@ -23,26 +23,26 @@ export function TrashPage({
 
   return (
     <div>
-        {trashed.length === 0 ? (
-          <EmptyState
-            icon={<Trash2 size={18} aria-hidden />}
-            title="回收站是空的"
-            description="软删除的任务会进回收站，可恢复或彻底删除"
-          />
-        ) : (
-          <div className="mt-3 grid grid-cols-3 gap-4 items-start">
-            {trashed.map((t) => (
-              <TodoCard
-                key={t.id}
-                task={t}
-                autoEdit={t.id === editingId}
-                onUpdate={onUpdate}
-                onDelete={onDelete}
-                trashed
-              />
-            ))}
-          </div>
-        )}
+      {trashed.length === 0 ? (
+        <EmptyState
+          icon={<Trash2 size={18} aria-hidden />}
+          title="回收站是空的"
+          description="软删除的任务会进回收站，可恢复或彻底删除"
+        />
+      ) : (
+        <div className="mt-3 grid grid-cols-3 gap-4 items-start">
+          {trashed.map((t) => (
+            <TodoCard
+              key={t.id}
+              task={t}
+              autoEdit={t.id === editingId}
+              onUpdate={onUpdate}
+              onDelete={onDelete}
+              trashed
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

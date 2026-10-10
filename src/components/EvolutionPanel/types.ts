@@ -7,19 +7,12 @@
 export type ProposalStatus = "pooled" | "promoted" | "expired" | "rejected";
 
 export type EvolutionLayer =
-  | "parameter"
-  | "policy"
-  | "prompt_hint"
-  | "tool_schema"
-  | "skill"
-  | "code";
+  "parameter" | "policy" | "prompt_hint" | "tool_schema" | "skill" | "code";
 
 export type ImpactLevel = "low" | "medium" | "high";
 
 type ProposalOrigin =
-  | "consolidation_reflection"
-  | "scheduler_audit"
-  | "user_triggered";
+  "consolidation_reflection" | "scheduler_audit" | "user_triggered";
 
 export type ProposalTarget =
   | { kind: "prompt_section"; name: string }
@@ -233,8 +226,11 @@ export function suggestedThresholds(total: number): {
   contradiction: number;
   tier: string;
 } {
-  if (total < 100) return { merge: 2, distill: 2, contradiction: 1, tier: "0–100" };
-  if (total < 500) return { merge: 3, distill: 3, contradiction: 1, tier: "100–500" };
-  if (total < 2000) return { merge: 3, distill: 4, contradiction: 1, tier: "500–2000" };
+  if (total < 100)
+    return { merge: 2, distill: 2, contradiction: 1, tier: "0–100" };
+  if (total < 500)
+    return { merge: 3, distill: 3, contradiction: 1, tier: "100–500" };
+  if (total < 2000)
+    return { merge: 3, distill: 4, contradiction: 1, tier: "500–2000" };
   return { merge: 4, distill: 5, contradiction: 1, tier: "2000+" };
 }

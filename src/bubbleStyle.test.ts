@@ -42,7 +42,10 @@ describe("getBubbleStyle", () => {
       KEY,
       JSON.stringify({ userBg: "#3563b0", botMaterial: "flat" }),
     );
-    expect(getBubbleStyle()).toEqual({ userBg: "#3563b0", botMaterial: "flat" });
+    expect(getBubbleStyle()).toEqual({
+      userBg: "#3563b0",
+      botMaterial: "flat",
+    });
   });
 });
 
@@ -90,9 +93,9 @@ describe("applyBubbleStyle", () => {
 
   it("applyBubbleStyleDom 只动 DOM 不落盘（订阅路径防 storage 回声）", () => {
     applyBubbleStyleDom({ userBg: "#6d5aa8", botMaterial: "card" });
-    expect(document.documentElement.style.getPropertyValue("--bubble-user-bg")).toBe(
-      "#6d5aa8",
-    );
+    expect(
+      document.documentElement.style.getPropertyValue("--bubble-user-bg"),
+    ).toBe("#6d5aa8");
     expect(localStorage.getItem(KEY)).toBeNull();
   });
 });
@@ -111,7 +114,10 @@ describe("subscribeBubbleStyle", () => {
         newValue: localStorage.getItem(KEY),
       }),
     );
-    expect(onChange).toHaveBeenCalledWith({ userBg: "#b04a6a", botMaterial: "flat" });
+    expect(onChange).toHaveBeenCalledWith({
+      userBg: "#b04a6a",
+      botMaterial: "flat",
+    });
     expect(document.documentElement.dataset.bubbleBot).toBe("flat");
 
     unsub();

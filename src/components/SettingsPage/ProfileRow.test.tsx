@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, act, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  act,
+  fireEvent,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProfileRow } from "./ProfileRow";
 
@@ -24,7 +30,8 @@ beforeEach(() => {
   mocks.setProfileNameMock.mockClear();
 });
 
-/** fake timers 下 findBy/waitFor 不自前进（testing-library 只认 jest fake）， *  故初始填充用真 timers + userEvent，开 fake 后只用 fireEvent + act 刷微任务 */
+/** fake timers 下 findBy/waitFor 不自前进（testing-library 只认 jest fake），
+ *  故初始填充用真 timers + userEvent，开 fake 后只用 fireEvent + act 刷微任务 */
 async function fillAndGetInput() {
   const user = userEvent.setup();
   const view = render(<ProfileRow kind="user" label="用户" defaultName="我" />);
@@ -92,7 +99,7 @@ describe("ProfileRow 保存计时器与 busy 契约", () => {
       () =>
         new Promise<null>((res) => {
           release = () => res(null);
-        })
+        }),
     );
     const { input } = await fillAndGetInput();
     fireEvent.click(screen.getByText("保存"));

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { scheduleToDatetime } from "../../format";
 
-/** * 定时编辑面板（SchedulePage 新建/修改共用）。
+/**
+ * 定时编辑面板（SchedulePage 新建/修改共用）。
  * 抽出自主窗口 TodoCard 原 ⏰ 面板：datetime-local 输入 + 一次/每天/每周/每月四档，
  * 保留 NaN 防御——无效日期一律不回调（历史事故：weekly:NaN 双端解析漂移死循环）。
  */

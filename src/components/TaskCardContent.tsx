@@ -3,13 +3,22 @@ import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { taskFiles } from "../lib/taskFiles";
 import { basename, formatCompletedAt, formatDue } from "../format";
-import { Bot, Folder, GripVertical, Paperclip, Puzzle, Timer, TriangleAlert } from "lucide-react";
+import {
+  Bot,
+  Folder,
+  GripVertical,
+  Paperclip,
+  Puzzle,
+  Timer,
+  TriangleAlert,
+} from "lucide-react";
 import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
 import { useInlineEdit } from "./useInlineEdit";
 
-/** * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
+/**
+ * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
  *
  * ⚠️ 字段与顺序必须与 TodoCard 一致：
  * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖 → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，老板）。
@@ -126,9 +135,12 @@ export function TaskCardContent({
           </h3>
         )}
         {/* 折叠/展开开关：挂件永远显示（包括新建空任务），复用现有 FoldToggle 不重新设计
-             */}
+         */}
         {onToggleCollapsed && (
-          <FoldToggle collapsed={!!task.collapsed} onToggle={onToggleCollapsed} />
+          <FoldToggle
+            collapsed={!!task.collapsed}
+            onToggle={onToggleCollapsed}
+          />
         )}
         {onToggleDone && (
           <DoneCircle done={task.column === "done"} onToggle={onToggleDone} />
@@ -143,7 +155,9 @@ export function TaskCardContent({
       {!task.collapsed && (
         <>
           {/* 标题下的小字备注 */}
-          {task.note && <p className="mt-1.5 text-xs text-[var(--t4)]">{task.note}</p>}
+          {task.note && (
+            <p className="mt-1.5 text-xs text-[var(--t4)]">{task.note}</p>
+          )}
 
           {/* 每卡验收标准（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准 */}
           {task.acceptance && (
@@ -189,7 +203,12 @@ export function TaskCardContent({
               {task.result && (
                 <details className="nm-inset rounded-lg px-2 py-1.5 text-xs">
                   <summary className="cursor-pointer select-none text-[var(--t4)]">
-                    <Puzzle size={11} aria-hidden className="inline-block align-[-2px]" /> 收尾结果
+                    <Puzzle
+                      size={11}
+                      aria-hidden
+                      className="inline-block align-[-2px]"
+                    />{" "}
+                    收尾结果
                     {typeof task.result.status === "string" && (
                       <span className="ml-1">
                         （{task.result.status}
@@ -206,14 +225,22 @@ export function TaskCardContent({
                   )}
                   {(task.result.blockers ?? []).length > 0 && (
                     <p className="mt-1 text-[var(--t4)]">
-                      <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" />{" "}
+                      <TriangleAlert
+                        size={11}
+                        aria-hidden
+                        className="inline-block align-[-2px]"
+                      />{" "}
                       未完成项 {(task.result.blockers ?? []).length} 条
                     </p>
                   )}
                   {(task.result.artifacts ?? []).length > 0 && (
                     <ul className="mt-1 list-inside list-disc text-[var(--t4)]">
                       {(task.result.artifacts ?? []).map((a, i) => (
-                        <li key={a.path ?? `artifact-${i}`} className="truncate" title={a.path}>
+                        <li
+                          key={a.path ?? `artifact-${i}`}
+                          className="truncate"
+                          title={a.path}
+                        >
                           {a.path}
                         </li>
                       ))}
@@ -242,7 +269,9 @@ export function TaskCardContent({
                   />
                   <span
                     className={`flex-1 min-w-0 truncate text-xs ${
-                      s.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
+                      s.done
+                        ? "text-[var(--t5)] line-through"
+                        : "text-[var(--t3)]"
                     }`}
                     title={s.text}
                   >
@@ -261,66 +290,87 @@ export function TaskCardContent({
               超过 5 个折叠为「还有 N 个」（点击按钮不触发卡片聚焦） */}
           {boundFiles.length > 0 && (
             <div className="mt-3 flex flex-col gap-1">
-              {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
-                <div
-                  key={f.path}
-                  className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
-                >
-                  {onOpenFilePath ? (
-                    <button
-                      className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
-                      title={`${f.path}（点击打开）`}
-                      onPointerDown={stop}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenFilePath(f.path);
-                      }}
-                    >
-                      {f.isDir ? (
-                        <Folder size={11} aria-hidden className="inline-block align-[-2px]" />
-                      ) : (
-                        <Paperclip size={11} aria-hidden className="inline-block align-[-2px]" />
-                      )}{" "}
-                      {basename(f.path)}
-                    </button>
-                  ) : (
-                    <p className="flex-1 min-w-0 text-[11px] text-[var(--t4)] truncate" title={f.path}>
-                      {f.isDir ? (
-                        <Folder size={11} aria-hidden className="inline-block align-[-2px]" />
-                      ) : (
-                        <Paperclip size={11} aria-hidden className="inline-block align-[-2px]" />
-                      )}{" "}
-                      {basename(f.path)}
-                    </p>
-                  )}
-                  {onCopyFilePath && (
-                    <button
-                      className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
-                      title="复制文件+标题"
-                      onPointerDown={stop}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onCopyFilePath(f.path);
-                      }}
-                    >
-                      复制
-                    </button>
-                  )}
-                  {onRemoveFile && (
-                    <button
-                      className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
-                      title="移除该文件"
-                      onPointerDown={stop}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRemoveFile(f.path);
-                      }}
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-              ))}
+              {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map(
+                (f) => (
+                  <div
+                    key={f.path}
+                    className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
+                  >
+                    {onOpenFilePath ? (
+                      <button
+                        className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
+                        title={`${f.path}（点击打开）`}
+                        onPointerDown={stop}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenFilePath(f.path);
+                        }}
+                      >
+                        {f.isDir ? (
+                          <Folder
+                            size={11}
+                            aria-hidden
+                            className="inline-block align-[-2px]"
+                          />
+                        ) : (
+                          <Paperclip
+                            size={11}
+                            aria-hidden
+                            className="inline-block align-[-2px]"
+                          />
+                        )}{" "}
+                        {basename(f.path)}
+                      </button>
+                    ) : (
+                      <p
+                        className="flex-1 min-w-0 text-[11px] text-[var(--t4)] truncate"
+                        title={f.path}
+                      >
+                        {f.isDir ? (
+                          <Folder
+                            size={11}
+                            aria-hidden
+                            className="inline-block align-[-2px]"
+                          />
+                        ) : (
+                          <Paperclip
+                            size={11}
+                            aria-hidden
+                            className="inline-block align-[-2px]"
+                          />
+                        )}{" "}
+                        {basename(f.path)}
+                      </p>
+                    )}
+                    {onCopyFilePath && (
+                      <button
+                        className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
+                        title="复制文件+标题"
+                        onPointerDown={stop}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCopyFilePath(f.path);
+                        }}
+                      >
+                        复制
+                      </button>
+                    )}
+                    {onRemoveFile && (
+                      <button
+                        className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
+                        title="移除该文件"
+                        onPointerDown={stop}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRemoveFile(f.path);
+                        }}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                ),
+              )}
               {boundFiles.length > 5 && (
                 <button
                   className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"

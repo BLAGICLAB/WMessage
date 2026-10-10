@@ -7,7 +7,17 @@
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Bot, FileText, Folder, FolderOpen, GripVertical, History, Paperclip, Trash2, Undo2 } from "lucide-react";
+import {
+  Bot,
+  FileText,
+  Folder,
+  FolderOpen,
+  GripVertical,
+  History,
+  Paperclip,
+  Trash2,
+  Undo2,
+} from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -16,7 +26,12 @@ import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
-import { taskFiles, filesPatch, mergeFiles, MAX_TASK_FILES } from "../../lib/taskFiles";
+import {
+  taskFiles,
+  filesPatch,
+  mergeFiles,
+  MAX_TASK_FILES,
+} from "../../lib/taskFiles";
 import {
   basename,
   formatCompletedAt,
@@ -47,7 +62,6 @@ export function TodoCardView({
   trashed = false,
   drag,
 }: TodoCardViewProps & { drag?: CardDrag }) {
-
   const [editing, setEditing] = useState(autoEdit && !archived && !trashed);
   const [dueEditing, setDueEditing] = useState(false);
   // 执行痕迹弹层（TracePanel 自带 portal，任务卡内点击「执行详情」打开）
@@ -91,7 +105,8 @@ export function TodoCardView({
 
   const commitNote = () => {
     const note = noteDraft.trim();
-    if (note !== (task.note ?? "")) onUpdate(task.id, { note: note || undefined });
+    if (note !== (task.note ?? ""))
+      onUpdate(task.id, { note: note || undefined });
     setNoteEditing(false);
   };
 
@@ -128,13 +143,19 @@ export function TodoCardView({
       const paths = Array.isArray(selected)
         ? selected
         : typeof selected === "string"
-        ? [selected]
-        : [];
+          ? [selected]
+          : [];
       if (paths.length === 0) return;
       // isDir 由 Rust 侧 fs::metadata 判定（前端无法 stat）
-      const added = await invoke<{ path: string; isDir: boolean }[]>("bind_files", { paths });
+      const added = await invoke<{ path: string; isDir: boolean }[]>(
+        "bind_files",
+        { paths },
+      );
       const { files, truncated } = mergeFiles(cur, added);
-      if (truncated) window.alert(`每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`);
+      if (truncated)
+        window.alert(
+          `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
+        );
       if (files.length !== cur.length) onUpdate(task.id, filesPatch(files));
     } catch (e) {
       handleCommandError(e, "pick file");
@@ -152,8 +173,13 @@ export function TodoCardView({
       const selected = await open({ directory: true });
       // 文件夹追加进绑定列表（不再替换掉已绑文件），去重保序
       if (typeof selected === "string") {
-        const { files, truncated } = mergeFiles(cur, [{ path: selected, isDir: true }]);
-        if (truncated) window.alert(`每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`);
+        const { files, truncated } = mergeFiles(cur, [
+          { path: selected, isDir: true },
+        ]);
+        if (truncated)
+          window.alert(
+            `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
+          );
         if (files.length !== cur.length) onUpdate(task.id, filesPatch(files));
       }
     } catch (e) {
@@ -162,7 +188,10 @@ export function TodoCardView({
   };
 
   const removeFile = (path: string) => {
-    onUpdate(task.id, filesPatch(taskFiles(task).filter((f) => f.path !== path)));
+    onUpdate(
+      task.id,
+      filesPatch(taskFiles(task).filter((f) => f.path !== path)),
+    );
   };
 
   // 标题右侧圆圈：待办/今日 → 完成（自动记完成时间）；完成 → 截止日期是今天回「今日」、否则回「待办」，完成时间删除
@@ -175,14 +204,23 @@ export function TodoCardView({
         onSetColumn(task.id, back);
         return;
       }
-      onUpdate(task.id, { column: back, completedAt: undefined, archived: undefined });
+      onUpdate(task.id, {
+        column: back,
+        completedAt: undefined,
+        archived: undefined,
+      });
     } else {
       if (onSetColumn) {
         onSetColumn(task.id, "done");
         return;
       }
       // 人完成：清机器人标记 → 显示用户头像
-      onUpdate(task.id, { column: "done", completedAt: Date.now(), archived: false, botAssigned: undefined });
+      onUpdate(task.id, {
+        column: "done",
+        completedAt: Date.now(),
+        archived: false,
+        botAssigned: undefined,
+      });
     }
   };
 
@@ -201,7 +239,7 @@ export function TodoCardView({
   // 点击无反应；Rust 侧命令不受 scope 限，且白名单已含任务卡绑定文件
   const openOneFile = (path: string) => {
     invoke("open_file_path", { path }).catch((e) =>
-      handleCommandError(e, "open file", { silent: true })
+      handleCommandError(e, "open file", { silent: true }),
     );
   };
 
@@ -209,7 +247,7 @@ export function TodoCardView({
   const copyOneFile = (path: string) => {
     invoke("copy_file_with_title", { path, title: task.title }).catch((e) =>
       // 复制失败：用户点了按钮，但失败通常不是关键操作（如源文件被删），不打扰
-      handleCommandError(e, "copy_file_with_title", { silent: true })
+      handleCommandError(e, "copy_file_with_title", { silent: true }),
     );
   };
 
@@ -269,15 +307,13 @@ export function TodoCardView({
                   ? task.title
                   : undefined
                 : task.collapsed
-                ? task.title
-                : "点击编辑"
+                  ? task.title
+                  : "点击编辑"
             }
             onPointerDown={stop}
             onClick={
               // 回收站/归档只读：trashed 卡也不得点进标题编辑（blur 会提交改写）
-              archived || trashed
-                ? undefined
-                : () => setEditing(true)
+              archived || trashed ? undefined : () => setEditing(true)
             }
           >
             {task.title}
@@ -297,441 +333,470 @@ export function TodoCardView({
       {/* 标题以下内容（可折叠） */}
       {!task.collapsed && (
         <>
-      {/* 标题下的小字备注 */}
-      {noteEditing ? (
-        <input
-          autoFocus
-          value={noteDraft}
-          onChange={(e) => setNoteDraft(e.target.value)}
-          onBlur={commitNote}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) commitNote();
-            if (e.key === "Escape") {
-              setNoteDraft(task.note ?? "");
-              setNoteEditing(false);
-            }
-          }}
-          onPointerDown={stop}
-          placeholder="备注…"
-          className="mt-1.5 w-full rounded-lg bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--t3)] outline-none"
-        />
-      ) : task.note ? (
-        <p
-          className={`mt-1.5 text-xs text-[var(--t4)] break-all ${archived || trashed ? "" : "cursor-text"}`}
-          title={archived || trashed ? undefined : "点击编辑备注"}
-          onPointerDown={stop}
-          onClick={
-            archived || trashed
-              ? undefined
-              : () => {
-                  setNoteDraft(task.note!);
-                  setNoteEditing(true);
+          {/* 标题下的小字备注 */}
+          {noteEditing ? (
+            <input
+              autoFocus
+              value={noteDraft}
+              onChange={(e) => setNoteDraft(e.target.value)}
+              onBlur={commitNote}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing)
+                  commitNote();
+                if (e.key === "Escape") {
+                  setNoteDraft(task.note ?? "");
+                  setNoteEditing(false);
                 }
-          }
-        >
-          {task.note}
-        </p>
-      ) : archived || trashed ? null : (
-        <button
-          className="mt-1.5 text-xs text-[var(--t6)] hover:text-[var(--t3)]"
-          onPointerDown={stop}
-          onClick={() => {
-            setNoteDraft("");
-            setNoteEditing(true);
-          }}
-        >
-          + 备注
-        </button>
-      )}
-
-      {/* 标签 */}
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {(task.tags ?? []).map((tag, i) => (
-          <span
-            // 键带序号防重复标签撞 key（标签可手输，非天然唯一）
-            // oxlint-disable-next-line react/no-array-index-key
-            key={`${tag}-${i}`}
-            className="nm-inset px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1"
-          >
-            {tag}
-            {!archived && !trashed && (
-              <button
-                className="text-[var(--t5)] hover:text-[var(--danger)] leading-none"
-                title="移除标签"
-                onPointerDown={stop}
-                onClick={() =>
-                  onUpdate(task.id, {
-                    tags: (task.tags ?? []).filter((_, j) => j !== i),
-                  })
-                }
-              >
-                ×
-              </button>
-            )}
-          </span>
-        ))}
-        {tagEditing ? (
-          <input
-            autoFocus
-            value={tagDraft}
-            onChange={(e) => setTagDraft(e.target.value)}
-            onBlur={() => addTag(true)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) addTag(false);
-              if (e.key === "Escape") {
-                setTagDraft("");
-                setTagEditing(false);
-              }
-            }}
-            onPointerDown={stop}
-            placeholder="标签名"
-            className="w-20 rounded-lg bg-[var(--input-bg)] px-2 py-0.5 text-xs text-[var(--t2)] outline-none"
-          />
-        ) : archived || trashed ? null : (
-          <button
-            className="text-xs text-[var(--t6)] hover:text-[var(--t3)]"
-            onPointerDown={stop}
-            onClick={() => {
-              setTagDraft("");
-              setTagEditing(true);
-            }}
-          >
-            + 标签
-          </button>
-        )}
-      </div>
-
-      {/* 子任务清单：文本完整显示不截断、点击文本内联编辑、
-          行间分割线淡化为半透明 --edge，避免抢眼 */}
-      {subtasks.length > 0 && (
-        <div className="mt-2 flex flex-col divide-y divide-[color-mix(in_srgb,var(--edge),transparent_55%)]">
-          {subtasks.map((s) => (
-            <SubtaskRow
-              key={s.id}
-              sub={s}
-              readOnly={archived || trashed}
-              onToggle={() =>
-                onUpdate(task.id, {
-                  subtasks: subtasks.map((x) =>
-                    x.id === s.id ? { ...x, done: !x.done } : x
-                  ),
-                })
-              }
-              onCommit={(text) =>
-                onUpdate(task.id, {
-                  subtasks: subtasks.map((x) =>
-                    x.id === s.id ? { ...x, text } : x
-                  ),
-                })
-              }
-              onDelete={() =>
-                onUpdate(task.id, {
-                  subtasks: subtasks.filter((x) => x.id !== s.id),
-                })
-              }
+              }}
+              onPointerDown={stop}
+              placeholder="备注…"
+              className="mt-1.5 w-full rounded-lg bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--t3)] outline-none"
             />
-          ))}
-        </div>
-      )}
+          ) : task.note ? (
+            <p
+              className={`mt-1.5 text-xs text-[var(--t4)] break-all ${archived || trashed ? "" : "cursor-text"}`}
+              title={archived || trashed ? undefined : "点击编辑备注"}
+              onPointerDown={stop}
+              onClick={
+                archived || trashed
+                  ? undefined
+                  : () => {
+                      setNoteDraft(task.note!);
+                      setNoteEditing(true);
+                    }
+              }
+            >
+              {task.note}
+            </p>
+          ) : archived || trashed ? null : (
+            <button
+              className="mt-1.5 text-xs text-[var(--t6)] hover:text-[var(--t3)]"
+              onPointerDown={stop}
+              onClick={() => {
+                setNoteDraft("");
+                setNoteEditing(true);
+              }}
+            >
+              + 备注
+            </button>
+          )}
 
-      {addingSubtask ? (
-        <input
-          autoFocus
-          value={subtaskDraft}
-          onChange={(e) => setSubtaskDraft(e.target.value)}
-          onBlur={commitSubtask}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) commitSubtask();
-            if (e.key === "Escape") {
-              setSubtaskDraft("");
-              setAddingSubtask(false);
-            }
-          }}
-          onPointerDown={stop}
-          placeholder="子任务…"
-          className="mt-2 w-full rounded-lg bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--t2)] outline-none"
-        />
-      ) : archived || trashed ? null : (
-        <button
-          className="mt-2 text-xs text-[var(--t5)] hover:text-[var(--t2)]"
-          onPointerDown={stop}
-          onClick={() => {
-            setSubtaskDraft("");
-            setAddingSubtask(true);
-          }}
-        >
-          + 添加子任务
-          {subtasks.length > 0 ? ` · ${doneCount}/${subtasks.length}` : ""}
-        </button>
-      )}
-
-      {boundFiles.length > 0 ? (
-        <div className="mt-3 flex flex-col gap-2">
-          {/* 绑定文件 chip 列表：点文件名/文件夹名直接打开；
-              每 chip「复制」字样（复制文件+标题）在解绑 × 前；chip 小字号 + 凹陷底色区分；
-              超过 5 个折叠为「还有 N 个」 */}
-          <div className="flex flex-col gap-1">
-            {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
-              <div
-                key={f.path}
-                className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
+          {/* 标签 */}
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {(task.tags ?? []).map((tag, i) => (
+              <span
+                // 键带序号防重复标签撞 key（标签可手输，非天然唯一）
+                // oxlint-disable-next-line react/no-array-index-key
+                key={`${tag}-${i}`}
+                className="nm-inset px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1"
               >
-                <button
-                  className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
-                  title={`${f.path}（点击打开）`}
-                  onPointerDown={stop}
-                  onClick={() => openOneFile(f.path)}
-                >
-                  {f.isDir ? (
-                    <Folder size={11} aria-hidden className="inline-block align-[-2px]" />
-                  ) : (
-                    <Paperclip size={11} aria-hidden className="inline-block align-[-2px]" />
-                  )}{" "}
-                  {basename(f.path)}
-                </button>
-                <button
-                  className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
-                  title="复制文件+标题"
-                  onPointerDown={stop}
-                  onClick={() => copyOneFile(f.path)}
-                >
-                  复制
-                </button>
+                {tag}
                 {!archived && !trashed && (
                   <button
-                    className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
-                    title="移除该文件"
+                    className="text-[var(--t5)] hover:text-[var(--danger)] leading-none"
+                    title="移除标签"
                     onPointerDown={stop}
-                    onClick={() => removeFile(f.path)}
+                    onClick={() =>
+                      onUpdate(task.id, {
+                        tags: (task.tags ?? []).filter((_, j) => j !== i),
+                      })
+                    }
                   >
                     ×
                   </button>
                 )}
-              </div>
+              </span>
             ))}
-            {boundFiles.length > 5 && (
-              <button
-                className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
+            {tagEditing ? (
+              <input
+                autoFocus
+                value={tagDraft}
+                onChange={(e) => setTagDraft(e.target.value)}
+                onBlur={() => addTag(true)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.nativeEvent.isComposing)
+                    addTag(false);
+                  if (e.key === "Escape") {
+                    setTagDraft("");
+                    setTagEditing(false);
+                  }
+                }}
                 onPointerDown={stop}
-                onClick={() => setFilesExpanded((v) => !v)}
+                placeholder="标签名"
+                className="w-20 rounded-lg bg-[var(--input-bg)] px-2 py-0.5 text-xs text-[var(--t2)] outline-none"
+              />
+            ) : archived || trashed ? null : (
+              <button
+                className="text-xs text-[var(--t6)] hover:text-[var(--t3)]"
+                onPointerDown={stop}
+                onClick={() => {
+                  setTagDraft("");
+                  setTagEditing(true);
+                }}
               >
-                {filesExpanded ? "收起" : `还有 ${boundFiles.length - 5} 个`}
+                + 标签
               </button>
             )}
           </div>
-          {/* 绑定操作行（只留绑定类按钮；打开=点文件名、复制=chip 内「复制」字样） */}
-          {!archived && !trashed && (
-            <div className="flex items-center gap-2">
-              {boundFiles.length < MAX_TASK_FILES && (
-                <button
-                  className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
-                  title="继续绑定文件"
-                  onPointerDown={stop}
-                  onClick={pickFile}
-                >
-                  ＋
-                </button>
+
+          {/* 子任务清单：文本完整显示不截断、点击文本内联编辑、
+          行间分割线淡化为半透明 --edge，避免抢眼 */}
+          {subtasks.length > 0 && (
+            <div className="mt-2 flex flex-col divide-y divide-[color-mix(in_srgb,var(--edge),transparent_55%)]">
+              {subtasks.map((s) => (
+                <SubtaskRow
+                  key={s.id}
+                  sub={s}
+                  readOnly={archived || trashed}
+                  onToggle={() =>
+                    onUpdate(task.id, {
+                      subtasks: subtasks.map((x) =>
+                        x.id === s.id ? { ...x, done: !x.done } : x,
+                      ),
+                    })
+                  }
+                  onCommit={(text) =>
+                    onUpdate(task.id, {
+                      subtasks: subtasks.map((x) =>
+                        x.id === s.id ? { ...x, text } : x,
+                      ),
+                    })
+                  }
+                  onDelete={() =>
+                    onUpdate(task.id, {
+                      subtasks: subtasks.filter((x) => x.id !== s.id),
+                    })
+                  }
+                />
+              ))}
+            </div>
+          )}
+
+          {addingSubtask ? (
+            <input
+              autoFocus
+              value={subtaskDraft}
+              onChange={(e) => setSubtaskDraft(e.target.value)}
+              onBlur={commitSubtask}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing)
+                  commitSubtask();
+                if (e.key === "Escape") {
+                  setSubtaskDraft("");
+                  setAddingSubtask(false);
+                }
+              }}
+              onPointerDown={stop}
+              placeholder="子任务…"
+              className="mt-2 w-full rounded-lg bg-[var(--input-bg)] px-2 py-1 text-xs text-[var(--t2)] outline-none"
+            />
+          ) : archived || trashed ? null : (
+            <button
+              className="mt-2 text-xs text-[var(--t5)] hover:text-[var(--t2)]"
+              onPointerDown={stop}
+              onClick={() => {
+                setSubtaskDraft("");
+                setAddingSubtask(true);
+              }}
+            >
+              + 添加子任务
+              {subtasks.length > 0 ? ` · ${doneCount}/${subtasks.length}` : ""}
+            </button>
+          )}
+
+          {boundFiles.length > 0 ? (
+            <div className="mt-3 flex flex-col gap-2">
+              {/* 绑定文件 chip 列表：点文件名/文件夹名直接打开；
+              每 chip「复制」字样（复制文件+标题）在解绑 × 前；chip 小字号 + 凹陷底色区分；
+              超过 5 个折叠为「还有 N 个」 */}
+              <div className="flex flex-col gap-1">
+                {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map(
+                  (f) => (
+                    <div
+                      key={f.path}
+                      className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
+                    >
+                      <button
+                        className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
+                        title={`${f.path}（点击打开）`}
+                        onPointerDown={stop}
+                        onClick={() => openOneFile(f.path)}
+                      >
+                        {f.isDir ? (
+                          <Folder
+                            size={11}
+                            aria-hidden
+                            className="inline-block align-[-2px]"
+                          />
+                        ) : (
+                          <Paperclip
+                            size={11}
+                            aria-hidden
+                            className="inline-block align-[-2px]"
+                          />
+                        )}{" "}
+                        {basename(f.path)}
+                      </button>
+                      <button
+                        className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
+                        title="复制文件+标题"
+                        onPointerDown={stop}
+                        onClick={() => copyOneFile(f.path)}
+                      >
+                        复制
+                      </button>
+                      {!archived && !trashed && (
+                        <button
+                          className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
+                          title="移除该文件"
+                          onPointerDown={stop}
+                          onClick={() => removeFile(f.path)}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ),
+                )}
+                {boundFiles.length > 5 && (
+                  <button
+                    className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
+                    onPointerDown={stop}
+                    onClick={() => setFilesExpanded((v) => !v)}
+                  >
+                    {filesExpanded
+                      ? "收起"
+                      : `还有 ${boundFiles.length - 5} 个`}
+                  </button>
+                )}
+              </div>
+              {/* 绑定操作行（只留绑定类按钮；打开=点文件名、复制=chip 内「复制」字样） */}
+              {!archived && !trashed && (
+                <div className="flex items-center gap-2">
+                  {boundFiles.length < MAX_TASK_FILES && (
+                    <button
+                      className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
+                      title="继续绑定文件"
+                      onPointerDown={stop}
+                      onClick={pickFile}
+                    >
+                      ＋
+                    </button>
+                  )}
+                  {/* 文件与文件夹不互斥：已绑文件但未绑文件夹时仍可绑定文件夹 */}
+                  {!boundFiles.some((f) => f.isDir) &&
+                    boundFiles.length < MAX_TASK_FILES && (
+                      <button
+                        className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
+                        title="绑定文件夹"
+                        onPointerDown={stop}
+                        onClick={pickFolder}
+                      >
+                        <FolderOpen size={11} aria-hidden />
+                      </button>
+                    )}
+                  <button
+                    className="text-[var(--t5)] hover:text-[var(--danger)] text-sm"
+                    title="解绑全部文件"
+                    onPointerDown={stop}
+                    onClick={() => onUpdate(task.id, filesPatch([]))}
+                  >
+                    ×
+                  </button>
+                </div>
               )}
-              {/* 文件与文件夹不互斥：已绑文件但未绑文件夹时仍可绑定文件夹 */}
-              {!boundFiles.some((f) => f.isDir) && boundFiles.length < MAX_TASK_FILES && (
-                <button
-                  className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
-                  title="绑定文件夹"
-                  onPointerDown={stop}
-                  onClick={pickFolder}
-                >
-                  <FolderOpen size={11} aria-hidden />
-                </button>
-              )}
+            </div>
+          ) : archived || trashed ? null : (
+            <div className="mt-3 flex items-center gap-3">
               <button
-                className="text-[var(--t5)] hover:text-[var(--danger)] text-sm"
-                title="解绑全部文件"
+                className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1 whitespace-nowrap"
                 onPointerDown={stop}
-                onClick={() => onUpdate(task.id, filesPatch([]))}
+                onClick={pickFile}
               >
-                ×
+                <span className="text-[11px] leading-none inline-flex">
+                  <Paperclip size={11} aria-hidden />
+                </span>{" "}
+                绑定文件
+              </button>
+              <button
+                className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1 whitespace-nowrap"
+                onPointerDown={stop}
+                onClick={pickFolder}
+              >
+                <span className="text-[11px] leading-none inline-flex">
+                  <FolderOpen size={11} aria-hidden />
+                </span>{" "}
+                绑定文件夹
               </button>
             </div>
           )}
-        </div>
-      ) : archived || trashed ? null : (
-        <div className="mt-3 flex items-center gap-3">
-          <button
-            className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1 whitespace-nowrap"
-            onPointerDown={stop}
-            onClick={pickFile}
-          >
-            <span className="text-[11px] leading-none inline-flex"><Paperclip size={11} aria-hidden /></span> 绑定文件
-          </button>
-          <button
-            className="nm-btn px-2 py-0.5 text-xs text-[var(--t4)] flex items-center gap-1 whitespace-nowrap"
-            onPointerDown={stop}
-            onClick={pickFolder}
-          >
-            <span className="text-[11px] leading-none inline-flex"><FolderOpen size={11} aria-hidden /></span> 绑定文件夹
-          </button>
-        </div>
-      )}
 
-      {archived && (
-        <button
-          className="nm-btn mt-3 px-3 py-1 text-xs text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
-          onPointerDown={stop}
-          onClick={() =>
-            onUpdate(task.id, { archived: false, completedAt: Date.now() })
-          }
-        >
-          <Undo2 size={11} aria-hidden />
-          恢复
-        </button>
-      )}
-
-      {trashed && (
-        <div className="mt-3 flex items-center gap-2">
-          <button
-            className="nm-btn px-3 py-1 text-xs text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
-            onPointerDown={stop}
-            onClick={() => onUpdate(task.id, { deletedAt: undefined })}
-          >
-            <Undo2 size={11} aria-hidden />
-            恢复
-          </button>
-          <button
-            className="nm-btn px-3 py-1 text-xs text-red-400 flex items-center gap-1 whitespace-nowrap"
-            onPointerDown={stop}
-            onClick={() => {
-              // 绑本地文件/文件夹时弹三选项：
-              //   全部删除 / 保留文件删除 / 取消
-              // 未绑文件时保持原两选项 confirm（无需三选）
-              if (boundFiles.length > 0) {
-                setPurgeOpen(true);
-                return;
+          {archived && (
+            <button
+              className="nm-btn mt-3 px-3 py-1 text-xs text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
+              onPointerDown={stop}
+              onClick={() =>
+                onUpdate(task.id, { archived: false, completedAt: Date.now() })
               }
-              if (!window.confirm(`确定彻底删除任务「${task.title}」？\n此操作不可撤销。`)) return;
-              onDelete(task.id);
-            }}
-          >
-            <Trash2 size={11} aria-hidden />
-            彻底删除
-          </button>
-        </div>
-      )}
+            >
+              <Undo2 size={11} aria-hidden />
+              恢复
+            </button>
+          )}
 
-      {/* 🤖 交给机器人执行（与挂件一致）；归档卡只读不显示。
+          {trashed && (
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                className="nm-btn px-3 py-1 text-xs text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
+                onPointerDown={stop}
+                onClick={() => onUpdate(task.id, { deletedAt: undefined })}
+              >
+                <Undo2 size={11} aria-hidden />
+                恢复
+              </button>
+              <button
+                className="nm-btn px-3 py-1 text-xs text-red-400 flex items-center gap-1 whitespace-nowrap"
+                onPointerDown={stop}
+                onClick={() => {
+                  // 绑本地文件/文件夹时弹三选项：
+                  //   全部删除 / 保留文件删除 / 取消
+                  // 未绑文件时保持原两选项 confirm（无需三选）
+                  if (boundFiles.length > 0) {
+                    setPurgeOpen(true);
+                    return;
+                  }
+                  if (
+                    !window.confirm(
+                      `确定彻底删除任务「${task.title}」？\n此操作不可撤销。`,
+                    )
+                  )
+                    return;
+                  onDelete(task.id);
+                }}
+              >
+                <Trash2 size={11} aria-hidden />
+                彻底删除
+              </button>
+            </div>
+          )}
+
+          {/* 🤖 交给机器人执行（与挂件一致）；归档卡只读不显示。
           定时设置已迁出卡片 → 「定时任务」模块（SchedulePage）统一管理 */}
-      {!archived && !trashed && (
-      <div className="mt-2 flex items-center gap-1.5">
-        <button
-          className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
-          onPointerDown={stop}
-          onClick={runWithBot}
-          title="交给机器人执行这张任务卡"
-        >
-          <Bot size={11} aria-hidden /> 交给机器人
-        </button>
-        {/* ：执行痕迹入口——时间线看每次工具调用（入参/结果/耗时/成败）+ 文件 diff/回滚 */}
-        <button
-          className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
-          onPointerDown={stop}
-          onClick={() => setTraceOpen(true)}
-          title="查看执行痕迹（工具调用时间线 / 文件 diff / 回滚）"
-        >
-          <History size={11} aria-hidden /> 执行详情
-        </button>
-      </div>
-      )}
+          {!archived && !trashed && (
+            <div className="mt-2 flex items-center gap-1.5">
+              <button
+                className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
+                onPointerDown={stop}
+                onClick={runWithBot}
+                title="交给机器人执行这张任务卡"
+              >
+                <Bot size={11} aria-hidden /> 交给机器人
+              </button>
+              {/* 执行痕迹入口——时间线看每次工具调用（入参/结果/耗时/成败）+ 文件 diff/回滚 */}
+              <button
+                className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
+                onPointerDown={stop}
+                onClick={() => setTraceOpen(true)}
+                title="查看执行痕迹（工具调用时间线 / 文件 diff / 回滚）"
+              >
+                <History size={11} aria-hidden /> 执行详情
+              </button>
+            </div>
+          )}
 
-      {/* 截止时间 + 状态行（两行布局统一，老板）：
+          {/* 截止时间 + 状态行（两行布局统一，老板）：
           第一行：截止时间（带 × 移除）。
           第二行：状态标签（未完成 / 完成 YYYY-MM-DD HH:mm）+ 删除按钮，两态布局一致；
             ml-2.5 空一个字符宽对齐截止时间文字，删除按钮 ml-auto 推到行尾 + text-[14px] 稳定 emoji。 */}
-      <div className="mt-2">
-        <div className="flex items-center gap-1">
-          {dueEditing && !archived && !trashed ? (
-            <input
-              type="datetime-local"
-              autoFocus
-              value={
-                task.due
-                  ? task.due.includes("T")
-                    ? task.due.slice(0, 16)
-                    : `${task.due}T09:00`
-                  : ""
-              }
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === "") {
-                  onUpdate(task.id, { due: undefined });
-                } else if (isValidDateTimeLocal(v)) {
-                  onUpdate(task.id, { due: v.slice(0, 16) });
-                }
-                // 不完整/非法值：不写库，blur 时回退已提交值
-              }}
-              onBlur={() => setDueEditing(false)}
-              onPointerDown={stop}
-              className="nm-inset px-2 py-1 text-xs text-[var(--t3)] flex-1 min-w-0"
-            />
-          ) : (
-            <>
-              {task.due ? (
-                <span className="flex items-center shrink-0">
-                  {archived || trashed ? (
-                    <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)]">
-                      {formatDue(task.due)}
-                    </span>
-                  ) : (
-                    <>
-                      <button
-                        className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
-                        onPointerDown={stop}
-                        onClick={() => setDueEditing(true)}
-                      >
-                        {formatDue(task.due)}
-                      </button>
-                      <button
-                        className="w-4 h-6 text-xs text-[var(--t5)] hover:text-[var(--danger)]"
-                        title="移除截止时间"
-                        onPointerDown={stop}
-                        onClick={() => onUpdate(task.id, { due: undefined })}
-                      >
-                        ×
-                      </button>
-                    </>
-                  )}
-                </span>
-              ) : archived || trashed ? null : (
-                <button
-                  className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
+          <div className="mt-2">
+            <div className="flex items-center gap-1">
+              {dueEditing && !archived && !trashed ? (
+                <input
+                  type="datetime-local"
+                  autoFocus
+                  value={
+                    task.due
+                      ? task.due.includes("T")
+                        ? task.due.slice(0, 16)
+                        : `${task.due}T09:00`
+                      : ""
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") {
+                      onUpdate(task.id, { due: undefined });
+                    } else if (isValidDateTimeLocal(v)) {
+                      onUpdate(task.id, { due: v.slice(0, 16) });
+                    }
+                    // 不完整/非法值：不写库，blur 时回退已提交值
+                  }}
+                  onBlur={() => setDueEditing(false)}
                   onPointerDown={stop}
-                  onClick={() => setDueEditing(true)}
-                >
-                  + 截止时间
-                </button>
+                  className="nm-inset px-2 py-1 text-xs text-[var(--t3)] flex-1 min-w-0"
+                />
+              ) : (
+                <>
+                  {task.due ? (
+                    <span className="flex items-center shrink-0">
+                      {archived || trashed ? (
+                        <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)]">
+                          {formatDue(task.due)}
+                        </span>
+                      ) : (
+                        <>
+                          <button
+                            className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
+                            onPointerDown={stop}
+                            onClick={() => setDueEditing(true)}
+                          >
+                            {formatDue(task.due)}
+                          </button>
+                          <button
+                            className="w-4 h-6 text-xs text-[var(--t5)] hover:text-[var(--danger)]"
+                            title="移除截止时间"
+                            onPointerDown={stop}
+                            onClick={() =>
+                              onUpdate(task.id, { due: undefined })
+                            }
+                          >
+                            ×
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  ) : archived || trashed ? null : (
+                    <button
+                      className="nm-inset px-2 py-1 text-xs text-[var(--t4)]"
+                      onPointerDown={stop}
+                      onClick={() => setDueEditing(true)}
+                    >
+                      + 截止时间
+                    </button>
+                  )}
+                </>
               )}
-            </>
-          )}
-        </div>
-        {/* 状态行：未完成 / 完成 YYYY-MM-DD HH:mm + 删除按钮（两态布局一致） */}
-        {!dueEditing && !trashed && (
-          <div className="mt-1 flex items-center gap-1">
-            <p className="ml-2.5 text-[10px] text-[var(--t5)]">
-              {task.column === "done" && task.completedAt
-                ? formatCompletedAt(task.completedAt)
-                : "未完成"}
-            </p>
-            {!archived && (
-              <button
-                className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center text-[var(--t5)] hover:text-[var(--danger)]"
-                title="删除任务"
-                onPointerDown={stop}
-                onClick={() => onDelete(task.id)}
-              >
-                <Trash2 size={12} aria-hidden />
-              </button>
+            </div>
+            {/* 状态行：未完成 / 完成 YYYY-MM-DD HH:mm + 删除按钮（两态布局一致） */}
+            {!dueEditing && !trashed && (
+              <div className="mt-1 flex items-center gap-1">
+                <p className="ml-2.5 text-[10px] text-[var(--t5)]">
+                  {task.column === "done" && task.completedAt
+                    ? formatCompletedAt(task.completedAt)
+                    : "未完成"}
+                </p>
+                {!archived && (
+                  <button
+                    className="ml-auto shrink-0 w-5 h-5 flex items-center justify-center text-[var(--t5)] hover:text-[var(--danger)]"
+                    title="删除任务"
+                    onPointerDown={stop}
+                    onClick={() => onDelete(task.id)}
+                  >
+                    <Trash2 size={12} aria-hidden />
+                  </button>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
         </>
       )}
 
@@ -739,99 +804,146 @@ export function TodoCardView({
           ⚠️ 必须用 createPortal 渲染到 document.body —— TodoCard 容器 hover 触发 transform: translateY(-3px) scale(1.01)
           (main.css .nm-card-hover:hover) + dnd-kit useSortable 的 transform style，二者都会创建 CSS 包含块，
           使 position:fixed 子元素不再相对视口定位而被裁缩到卡片边界内。 */}
-      {purgeOpen && boundFiles.length > 0 && createPortal(
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
-          onPointerDown={() => { if (!purgeBusy) setPurgeOpen(false); }}
-        >
+      {purgeOpen &&
+        boundFiles.length > 0 &&
+        createPortal(
           <div
-            className="nm-card w-full max-w-md p-5 flex flex-col gap-3"
-            onPointerDown={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
+            onPointerDown={() => {
+              if (!purgeBusy) setPurgeOpen(false);
+            }}
           >
-            <div className="flex items-center gap-1.5 text-sm font-medium text-[var(--t2)]">
-              <Trash2 size={13} aria-hidden className="text-[var(--danger)]" />
-              彻底删除任务卡
-            </div>
-            <div className="text-xs text-[var(--t3)] leading-relaxed">
-              任务卡「<span className="text-[var(--t2)] font-medium">{task.title}</span>」绑定了
-              {boundFiles.length > 1 ? (
-                <span className="text-[var(--t2)]"> {boundFiles.length} 个文件/文件夹</span>
-              ) : (
-                <>
-                  <span className="text-[var(--t2)]">{boundFiles[0].isDir ? "文件夹" : "文件"}</span>「
-                  <span className="text-[var(--t2)]">{basename(boundFiles[0].path)}</span>」
-                </>
-              )}。
-            </div>
             <div
-              className="text-[11px] text-[var(--t5)] break-all px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--bd)] max-h-28 overflow-y-auto whitespace-pre-line"
-              title={boundFiles.map((f) => f.path).join("\n")}
+              className="nm-card w-full max-w-md p-5 flex flex-col gap-3"
+              onPointerDown={(e) => e.stopPropagation()}
             >
-              完整路径：{boundFiles.length > 1 ? "\n" : ""}{boundFiles.map((f) => f.path).join("\n")}
-            </div>
-            <div className="text-[11px] text-[var(--t4)]">
-              此操作不可撤销，请选择：
-            </div>
-            <div className="flex flex-col gap-2 mt-1">
-              <button
-                className="nm-btn px-3 py-2 text-xs text-red-400 flex flex-col items-start gap-0.5 disabled:opacity-50"
-                disabled={purgeBusy}
-                onClick={async () => {
-                  setPurgeBusy(true);
-                  try {
-                    // 多文件绑定：逐个移入废纸篓/回收站
-                    //  #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
-                    for (const f of boundFiles) {
-                      // 顺序删除是有意为之（保持失败顺序可观测），不并行
-                      // oxlint-disable-next-line eslint/no-await-in-loop
-                      await invoke("delete_bound_file", {
-                        path: f.path,
-                      });
+              <div className="flex items-center gap-1.5 text-sm font-medium text-[var(--t2)]">
+                <Trash2
+                  size={13}
+                  aria-hidden
+                  className="text-[var(--danger)]"
+                />
+                彻底删除任务卡
+              </div>
+              <div className="text-xs text-[var(--t3)] leading-relaxed">
+                任务卡「
+                <span className="text-[var(--t2)] font-medium">
+                  {task.title}
+                </span>
+                」绑定了
+                {boundFiles.length > 1 ? (
+                  <span className="text-[var(--t2)]">
+                    {" "}
+                    {boundFiles.length} 个文件/文件夹
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-[var(--t2)]">
+                      {boundFiles[0].isDir ? "文件夹" : "文件"}
+                    </span>
+                    「
+                    <span className="text-[var(--t2)]">
+                      {basename(boundFiles[0].path)}
+                    </span>
+                    」
+                  </>
+                )}
+                。
+              </div>
+              <div
+                className="text-[11px] text-[var(--t5)] break-all px-2 py-1.5 rounded bg-[var(--bg)] border border-[var(--bd)] max-h-28 overflow-y-auto whitespace-pre-line"
+                title={boundFiles.map((f) => f.path).join("\n")}
+              >
+                完整路径：{boundFiles.length > 1 ? "\n" : ""}
+                {boundFiles.map((f) => f.path).join("\n")}
+              </div>
+              <div className="text-[11px] text-[var(--t4)]">
+                此操作不可撤销，请选择：
+              </div>
+              <div className="flex flex-col gap-2 mt-1">
+                <button
+                  className="nm-btn px-3 py-2 text-xs text-red-400 flex flex-col items-start gap-0.5 disabled:opacity-50"
+                  disabled={purgeBusy}
+                  onClick={async () => {
+                    setPurgeBusy(true);
+                    try {
+                      // 多文件绑定：逐个移入废纸篓/回收站
+                      //  #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
+                      for (const f of boundFiles) {
+                        // 顺序删除是有意为之（保持失败顺序可观测），不并行
+                        // oxlint-disable-next-line eslint/no-await-in-loop
+                        await invoke("delete_bound_file", {
+                          path: f.path,
+                        });
+                      }
+                      onDelete(task.id);
+                      setPurgeOpen(false);
+                    } catch (e) {
+                      // 删除失败：Toast 给完整 message + 下一步提示，任务卡仍保留在回收站可重试
+                      handleCommandError(e, "delete_bound_file");
+                      alert(
+                        `任务卡保留在回收站，可重试或手动从废纸篓/回收站清理后再试。\n\n${formatCommandError(e)}`,
+                      );
+                      setPurgeBusy(false);
                     }
+                  }}
+                >
+                  <span className="flex items-center gap-1 font-medium">
+                    <Trash2 size={11} aria-hidden />
+                    全部删除
+                  </span>
+                  <span className="text-[10px] text-[var(--t4)] font-normal">
+                    任务卡删除，并把绑定的本地
+                    {boundFiles.length > 1
+                      ? "文件/文件夹"
+                      : boundFiles[0].isDir
+                        ? "文件夹"
+                        : "文件"}
+                    移到废纸篓/回收站
+                  </span>
+                </button>
+                <button
+                  className="nm-btn px-3 py-2 text-xs text-[var(--t2)] flex flex-col items-start gap-0.5 disabled:opacity-50"
+                  disabled={purgeBusy}
+                  onClick={() => {
                     onDelete(task.id);
                     setPurgeOpen(false);
-                  } catch (e) {
-                    // 删除失败：Toast 给完整 message + 下一步提示，任务卡仍保留在回收站可重试
-                    handleCommandError(e, "delete_bound_file");
-                    alert(`任务卡保留在回收站，可重试或手动从废纸篓/回收站清理后再试。\n\n${formatCommandError(e)}`);
-                    setPurgeBusy(false);
-                  }
-                }}
-              >
-                <span className="flex items-center gap-1 font-medium">
-                  <Trash2 size={11} aria-hidden />
-                  全部删除
-                </span>
-                <span className="text-[10px] text-[var(--t4)] font-normal">任务卡删除，并把绑定的本地{boundFiles.length > 1 ? "文件/文件夹" : boundFiles[0].isDir ? "文件夹" : "文件"}移到废纸篓/回收站</span>
-              </button>
-              <button
-                className="nm-btn px-3 py-2 text-xs text-[var(--t2)] flex flex-col items-start gap-0.5 disabled:opacity-50"
-                disabled={purgeBusy}
-                onClick={() => {
-                  onDelete(task.id);
-                  setPurgeOpen(false);
-                }}
-              >
-                <span className="font-medium inline-flex items-center gap-1"><FileText size={11} aria-hidden /> 保留文件删除</span>
-                <span className="text-[10px] text-[var(--t4)] font-normal">只删除任务卡，本地{boundFiles.length > 1 ? "文件/文件夹" : boundFiles[0].isDir ? "文件夹" : "文件"}保留</span>
-              </button>
-              <button
-                className="nm-btn px-3 py-2 text-xs text-[var(--t3)] disabled:opacity-50"
-                disabled={purgeBusy}
-                onClick={() => setPurgeOpen(false)}
-              >
-                取消
-              </button>
+                  }}
+                >
+                  <span className="font-medium inline-flex items-center gap-1">
+                    <FileText size={11} aria-hidden /> 保留文件删除
+                  </span>
+                  <span className="text-[10px] text-[var(--t4)] font-normal">
+                    只删除任务卡，本地
+                    {boundFiles.length > 1
+                      ? "文件/文件夹"
+                      : boundFiles[0].isDir
+                        ? "文件夹"
+                        : "文件"}
+                    保留
+                  </span>
+                </button>
+                <button
+                  className="nm-btn px-3 py-2 text-xs text-[var(--t3)] disabled:opacity-50"
+                  disabled={purgeBusy}
+                  onClick={() => setPurgeOpen(false)}
+                >
+                  取消
+                </button>
+              </div>
             </div>
-          </div>
-        </div>,
-        document.body
-      )}
+          </div>,
+          document.body,
+        )}
 
       {/* 执行痕迹弹层：TracePanel 自带 portal 到 body——同 purge 弹窗的
           包含块裁缩问题，必须 portal 渲染 */}
       {traceOpen && (
-        <TracePanel taskId={task.id} taskTitle={task.title} onClose={() => setTraceOpen(false)} />
+        <TracePanel
+          taskId={task.id}
+          taskTitle={task.title}
+          onClose={() => setTraceOpen(false)}
+        />
       )}
     </div>
   );
@@ -839,18 +951,38 @@ export function TodoCardView({
 
 /** 归档/回收站版：普通可拖拽卡片（无排序上下文，保留原 useDraggable 行为） */
 export function TodoCard(props: TodoCardViewProps) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: props.task.id,
-  });
-  const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined;
-  return <TodoCardView {...props} drag={{ attributes, listeners, setNodeRef, style, isDragging }} />;
+  const { attributes, listeners, setNodeRef, transform, isDragging } =
+    useDraggable({
+      id: props.task.id,
+    });
+  const style = transform
+    ? { transform: CSS.Translate.toString(transform) }
+    : undefined;
+  return (
+    <TodoCardView
+      {...props}
+      drag={{ attributes, listeners, setNodeRef, style, isDragging }}
+    />
+  );
 }
 
 /** 看板版：列内/跨列排序卡片（必须渲染在 SortableContext 内） */
 export function SortableTodoCard(props: TodoCardViewProps) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
     id: props.task.id,
   });
   const style = { transform: CSS.Transform.toString(transform), transition };
-  return <TodoCardView {...props} drag={{ attributes, listeners, setNodeRef, style, isDragging }} />;
+  return (
+    <TodoCardView
+      {...props}
+      drag={{ attributes, listeners, setNodeRef, style, isDragging }}
+    />
+  );
 }

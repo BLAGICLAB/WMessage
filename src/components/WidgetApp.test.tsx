@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(cb);
       return () => {};
-    }
+    },
   );
   const emitMock = vi.fn(async () => {});
   const winMock = {
@@ -52,13 +52,13 @@ vi.mock("@tauri-apps/api/window", () => ({
   LogicalPosition: class LogicalPosition {
     constructor(
       public x: number,
-      public y: number
+      public y: number,
     ) {}
   },
   LogicalSize: class LogicalSize {
     constructor(
       public width: number,
-      public height: number
+      public height: number,
     ) {}
   },
 }));
@@ -67,7 +67,11 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
 
-const dbErr = { code: "DB_ERROR", message: "database is locked", recoverable: false };
+const dbErr = {
+  code: "DB_ERROR",
+  message: "database is locked",
+  recoverable: false,
+};
 const alertMock = vi.fn();
 
 beforeEach(() => {
@@ -167,17 +171,18 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     });
   };
 
-  /** 展开面板（含 ChatPanel 输入框的那个 .nm-sidebar-panel；另一个是触发条）   *  （UI-1 后 ChatPanel 输入框是 textarea，不再有 input） */
+  /** 展开面板（含 ChatPanel 输入框的那个 .nm-sidebar-panel；另一个是触发条）
+   *  （ChatPanel 输入框是 textarea，不再有 input） */
   const panelOf = (container: HTMLElement) =>
-    Array.from(container.querySelectorAll<HTMLElement>(".nm-sidebar-panel")).find(
-      (el) => el.querySelector("textarea")
-    )!;
+    Array.from(
+      container.querySelectorAll<HTMLElement>(".nm-sidebar-panel"),
+    ).find((el) => el.querySelector("textarea"))!;
 
   /** 触发条（不含输入框的 .nm-sidebar-panel） */
   const stripOf = (container: HTMLElement) =>
-    Array.from(container.querySelectorAll<HTMLElement>(".nm-sidebar-panel")).find(
-      (el) => !el.querySelector("textarea")
-    )!;
+    Array.from(
+      container.querySelectorAll<HTMLElement>(".nm-sidebar-panel"),
+    ).find((el) => !el.querySelector("textarea"))!;
 
   /** 展开/折叠是多段 await 的异步链，flush 两轮确保 setState 与被动 effect 都落地 */
   const flush = async () => {
@@ -193,7 +198,7 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     // ChatPanel 效应里 bot_sessions_load），不要靠固定次数的微任务 flush——
     // 那样会与相邻用例对 tick 数的要求互相打架（实测同一份 flush 改多改少都会挂另一个用例）。
     await vi.waitFor(() =>
-      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load")
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load"),
     );
     expect(screen.getByPlaceholderText(/和机器人说点什么/)).toBeInTheDocument();
     // 面板处于隐藏态（display:none），不是被卸载
@@ -227,7 +232,8 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     expect(screen.getByText("你好")).toBeInTheDocument();
     expect(screen.getByText("机器人回复")).toBeInTheDocument();
     expect(
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load")
+        .length,
     ).toBe(1);
   });
 });
@@ -265,7 +271,8 @@ describe("bot 开关不重挂 ChatPanel（2026-09-12）", () => {
     setupBotMocks();
     render(<WidgetApp />);
     const sessionsLoadCalls = () =>
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load").length;
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_sessions_load")
+        .length;
     // 初始：bot on。首帧加载是异步的（bot_get_enabled → enabled=true → ChatPanel 效应），
     // 用 vi.waitFor 显式等它落定，不赌固定 tick 数（同「折叠时 ChatPanel 仍挂载」）。
     await vi.waitFor(() => expect(sessionsLoadCalls()).toBe(1));

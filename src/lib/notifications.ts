@@ -3,7 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 /** Agent 通知中心消息（与 Rust notifications::NotificationView 对应） */
 export interface NotificationItem {
   id: string;
-  kind: "memory_proposal" | "evolution_proposal" | "artifact_bind" | "workflow_question";
+  kind:
+    | "memory_proposal"
+    | "evolution_proposal"
+    | "artifact_bind"
+    | "workflow_question";
   title: string;
   body: string;
   payload: Record<string, unknown> | null;
@@ -17,7 +21,7 @@ export const NOTIFICATIONS_CHANGED_EVENT = "notifications-changed";
 
 /** 列表（新→旧）；status 缺省全量 */
 export function listNotifications(
-  status?: NotificationItem["status"]
+  status?: NotificationItem["status"],
 ): Promise<NotificationItem[]> {
   return invoke<NotificationItem[]>("notifications_list", { status });
 }
@@ -57,7 +61,7 @@ export function enableEvolutionProposal(proposalId: string): Promise<void> {
 /** 任务卡绑定文件：绑定选中 → confirm_artifact_batch(taskId, paths) */
 export function confirmArtifactBatch(
   taskId: string,
-  paths: string[]
+  paths: string[],
 ): Promise<number> {
   return invoke("confirm_artifact_batch", { taskId, paths });
 }

@@ -2225,7 +2225,7 @@ mod background_dialog_tests {
     }
 }
 
-// ：query 工具族纯函数测试
+// query 工具族纯函数测试
 
 #[cfg(test)]
 mod query_tasks_tests {

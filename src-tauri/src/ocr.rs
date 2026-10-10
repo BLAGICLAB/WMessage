@@ -80,7 +80,7 @@ pub async fn tool_ocr_image(
             // 「失败：{e}」以「失败」开头 → error
             ToolResult::error(format!("失败：{e}"), Vec::new())
         }
-        // 「失败：：{e}」以「失败」开头 → error
+        // 「失败：OCR 线程异常：{e}」以「失败」开头 → error
         Err(e) => ToolResult::error(format!("失败：OCR 线程异常：{e}"), Vec::new()),
     }
 }
@@ -183,7 +183,7 @@ mod win {
     /// det 输入边长：等比缩放到最长边后 pad 成 DET_SIDE×DET_SIDE letterbox
     ///（det.onnx 的 H/W 实为动态维度，letterbox 只是为了对齐 Paddle）
     const DET_SIDE: u32 = 960;
-    /// rec 输入高度 / 宽度上限（PP- v5/v4 的 rec 前后处理配置一致：高 48、宽动态）
+    /// rec 输入高度 / 宽度上限（与 v5/v4 的 rec 前后处理配置一致：高 48、宽动态）
     const REC_H: u32 = 48;
     const REC_MAX_W: u32 = 320;
     /// cls 输入尺寸 / 旋转置信度阈值（v6 无独立 cls 模型，沿用 PP-；

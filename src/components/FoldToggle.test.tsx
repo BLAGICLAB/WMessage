@@ -6,7 +6,7 @@ import { FoldToggle } from "./FoldToggle";
 describe("FoldToggle 可达性与表单安全", () => {
   it("type=button + aria-expanded 随 collapsed 翻转 + aria-label", () => {
     const { rerender } = render(
-      <FoldToggle collapsed={false} onToggle={() => {}} />
+      <FoldToggle collapsed={false} onToggle={() => {}} />,
     );
     const btn = screen.getByRole("button", { name: "收起" });
     expect(btn).toHaveAttribute("type", "button");
@@ -23,7 +23,7 @@ describe("FoldToggle 可达性与表单安全", () => {
     render(
       <div onClick={onOuter}>
         <FoldToggle collapsed={false} onToggle={onToggle} />
-      </div>
+      </div>,
     );
     await user.click(screen.getByRole("button", { name: "收起" }));
     expect(onToggle).toHaveBeenCalledTimes(1);

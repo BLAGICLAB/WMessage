@@ -84,7 +84,9 @@ describe("ExecuteBar 状态与文案", () => {
   });
 
   it("液面宽度 style 跟随比例", () => {
-    const { container } = render(<ExecuteBar {...base} doneCount={3} total={6} />);
+    const { container } = render(
+      <ExecuteBar {...base} doneCount={3} total={6} />,
+    );
     const liquid = container.querySelector(".exec-bar__liquid") as HTMLElement;
     expect(liquid.style.width).toBe("50%");
   });
@@ -98,6 +100,9 @@ describe("ExecuteBar 状态与文案", () => {
 
   it("doneCount 超 total 时 pct 夹到 100", () => {
     render(<ExecuteBar {...base} doneCount={9} total={5} />);
-    expect(screen.getByTestId("exec-bar")).toHaveAttribute("data-pct", "100.00");
+    expect(screen.getByTestId("exec-bar")).toHaveAttribute(
+      "data-pct",
+      "100.00",
+    );
   });
 });

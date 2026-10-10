@@ -11,7 +11,8 @@ import { TracePanel } from "../TracePanel";
 import { ScheduleEditorPanel } from "./ScheduleEditorPanel";
 import type { ScheduleEntry, ScheduledJobRun, Workflow } from "../../types";
 
-/** * 定时任务模块：列表 = 状态面板（不是设置表单的集合）。
+/**
+ * 定时任务模块：列表 = 状态面板（不是设置表单的集合）。
  * 数据单源：schedule_overview（定时作业 + 工作流两源合并，nextRunAt/missed 由 Rust 端
  * 计算——不在前端重写 schedule 解析器，weekly:NaN 双端解析漂移是历史事故）。
  * 两类目标：
@@ -70,7 +71,7 @@ export function SchedulePage() {
     () => () => {
       if (armedTimerRef.current) clearTimeout(armedTimerRef.current);
     },
-    []
+    [],
   );
 
   // 竞态令牌：reload 由挂载/tasks-changed/sched-status 并发触发，慢的旧响应
@@ -85,14 +86,16 @@ export function SchedulePage() {
       setLoaded(true);
       setLoadError(null);
       // 工作流执行态逐个回查（数量少，逐个问比后端加聚合接口简单）
-      const wfIds = list.filter((e) => e.kind === "workflow").map((e) => e.targetId);
+      const wfIds = list
+        .filter((e) => e.kind === "workflow")
+        .map((e) => e.targetId);
       const running: Record<string, boolean> = {};
       await Promise.all(
         wfIds.map(async (id) => {
           running[id] = await invoke<boolean>("workflow_is_running", {
             workflowId: id,
           }).catch(() => false);
-        })
+        }),
       );
       if (seq !== reloadSeqRef.current) return;
       setWfRunning(running);
@@ -158,7 +161,7 @@ export function SchedulePage() {
           // 挂件窗口不存在（重启后未再开启）：必须给可见反馈，不能点了没反应
           handleCommandError(
             new Error("挂件窗口未开启，请先打开挂件窗口"),
-            "跳转执行会话"
+            "跳转执行会话",
           );
         }
       })
@@ -168,9 +171,12 @@ export function SchedulePage() {
   // 行操作
 
   /** 工作流定时落库（新建/修改/取消共用）：schedule=null 即取消 */
-  const setWorkflowSchedule = async (targetId: string, schedule: string | null) => {
-    await invoke("workflow_set_schedule", { id: targetId, schedule }).catch((e) =>
-      handleCommandError(e, "设置工作流定时")
+  const setWorkflowSchedule = async (
+    targetId: string,
+    schedule: string | null,
+  ) => {
+    await invoke("workflow_set_schedule", { id: targetId, schedule }).catch(
+      (e) => handleCommandError(e, "设置工作流定时"),
     );
     void reload();
   };
@@ -247,7 +253,7 @@ export function SchedulePage() {
     void (async () => {
       if (e.kind === "job") {
         await invoke("scheduled_job_delete", { id: e.targetId }).catch((err) =>
-          handleCommandError(err, "删除定时任务")
+          handleCommandError(err, "删除定时任务"),
         );
         void reload();
       } else {
@@ -260,7 +266,7 @@ export function SchedulePage() {
 
   // 已有定时的工作流标「已定时」禁用——防同一目标双配置
   const scheduledWfIds = new Set(
-    entries.filter((e) => e.kind === "workflow").map((e) => e.targetId)
+    entries.filter((e) => e.kind === "workflow").map((e) => e.targetId),
   );
 
   const startCreate = () =>
@@ -272,13 +278,24 @@ export function SchedulePage() {
     content: string,
     schedule: string,
     retryMax: number,
-    pauseOnFailure: boolean
+    pauseOnFailure: boolean,
   ): Promise<boolean> => {
     try {
       if (id === null) {
-        await invoke("scheduled_job_create", { content, schedule, retryMax, pauseOnFailure });
+        await invoke("scheduled_job_create", {
+          content,
+          schedule,
+          retryMax,
+          pauseOnFailure,
+        });
       } else {
-        await invoke("scheduled_job_update", { id, content, schedule, retryMax, pauseOnFailure });
+        await invoke("scheduled_job_update", {
+          id,
+          content,
+          schedule,
+          retryMax,
+          pauseOnFailure,
+        });
       }
       setCreating(null);
       setEditKey(null);
@@ -308,7 +325,8 @@ export function SchedulePage() {
 
   const renderEntry = (e: ScheduleEntry) => {
     const key = keyOf(e.kind, e.targetId);
-    const busy = busyKeys.has(key) || (e.kind === "workflow" && !!wfRunning[e.targetId]);
+    const busy =
+      busyKeys.has(key) || (e.kind === "workflow" && !!wfRunning[e.targetId]);
     return (
       <div
         key={key}
@@ -337,7 +355,7 @@ export function SchedulePage() {
               执行中
             </span>
           )}
-          {/* ：作业执行中（sched-status started → done/failed 移除） */}
+          {/* 作业执行中（sched-status started → done/failed 移除） */}
           {e.kind === "job" && liveJobIds.has(e.targetId) && (
             <span className="nm-inset shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--brand)]">
               执行中…
@@ -345,16 +363,23 @@ export function SchedulePage() {
           )}
         </div>
         {e.detail && (
-          <p className="mt-1 truncate text-[11px] text-[var(--t5)]" title={e.detail}>
+          <p
+            className="mt-1 truncate text-[11px] text-[var(--t5)]"
+            title={e.detail}
+          >
             {e.detail}
           </p>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[var(--t4)]">
-          <span className="text-[var(--brand)]">{formatSchedule(e.schedule)}</span>
+          <span className="text-[var(--brand)]">
+            {formatSchedule(e.schedule)}
+          </span>
           {e.enabled && e.nextRunAt !== null && (
             <span>下次 {untilTime(e.nextRunAt)}</span>
           )}
-          {e.schedLast !== null && <span>上次 {relativeTime(e.schedLast)}</span>}
+          {e.schedLast !== null && (
+            <span>上次 {relativeTime(e.schedLast)}</span>
+          )}
           {/* 最近执行结果徽标（仅 job 有此字段；null=从未跑不显示）：
               静默失败是调度器最大敌人，结果必须在列表一眼可见 */}
           {e.kind === "job" && e.lastStatus === "ok" && (
@@ -382,7 +407,9 @@ export function SchedulePage() {
           </button>
           <button
             className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)]"
-            title={e.enabled ? "暂停（保留配置，恢复后继续原节奏）" : "恢复定时"}
+            title={
+              e.enabled ? "暂停（保留配置，恢复后继续原节奏）" : "恢复定时"
+            }
             onClick={() => void toggleEnabled(e)}
           >
             {e.enabled ? "暂停" : "恢复"}
@@ -408,7 +435,11 @@ export function SchedulePage() {
                 : "text-[var(--danger)]"
             }`}
             aria-pressed={cancelArmed === key}
-            title={cancelArmed === key ? "再点一次确认取消（配置将被清除）" : "清除这条定时"}
+            title={
+              cancelArmed === key
+                ? "再点一次确认取消（配置将被清除）"
+                : "清除这条定时"
+            }
             onClick={() => cancelSchedule(e)}
           >
             {cancelArmed === key ? "确认取消？" : "取消定时"}
@@ -425,7 +456,13 @@ export function SchedulePage() {
                 initialPauseOnFailure={e.pauseOnFailure}
                 submitLabel="确认修改"
                 onSubmit={(content, schedule, retryMax, pauseOnFailure) =>
-                  void saveJob(e.targetId, content, schedule, retryMax, pauseOnFailure)
+                  void saveJob(
+                    e.targetId,
+                    content,
+                    schedule,
+                    retryMax,
+                    pauseOnFailure,
+                  )
                 }
                 onCancel={() => setEditKey(null)}
               />
@@ -445,11 +482,15 @@ export function SchedulePage() {
         {/* 执行历史（XXL-JOB 调度日志式排障视角）：倒序，最新在前 */}
         {e.kind === "job" && historyOpenId === e.targetId && (
           <div className="mt-2 nm-inset rounded-lg p-2">
-            <p className="text-[10px] text-[var(--t5)]">执行历史（最近 20 条）</p>
+            <p className="text-[10px] text-[var(--t5)]">
+              执行历史（最近 20 条）
+            </p>
             {historyLoadingId === e.targetId && !history[e.targetId] ? (
               <p className="mt-1 text-[11px] text-[var(--t5)]">加载中…</p>
             ) : (history[e.targetId] ?? []).length === 0 ? (
-              <p className="mt-1 text-[11px] text-[var(--t5)]">还没有执行记录</p>
+              <p className="mt-1 text-[11px] text-[var(--t5)]">
+                还没有执行记录
+              </p>
             ) : (
               <ul className="mt-1 flex flex-col divide-y divide-[color-mix(in_srgb,var(--edge),transparent_55%)]">
                 {(history[e.targetId] ?? []).map((r) => (
@@ -459,19 +500,26 @@ export function SchedulePage() {
                   >
                     <span
                       className={`shrink-0 ${
-                        r.status === "ok" ? "text-[var(--success)]" : "text-[var(--danger)]"
+                        r.status === "ok"
+                          ? "text-[var(--success)]"
+                          : "text-[var(--danger)]"
                       }`}
                     >
                       {r.status === "ok" ? "成功" : "失败"}
                     </span>
                     <span className="shrink-0">{relativeTime(r.firedAt)}</span>
-                    <span className="shrink-0 tabular-nums">{formatDuration(r.durationMs)}</span>
+                    <span className="shrink-0 tabular-nums">
+                      {formatDuration(r.durationMs)}
+                    </span>
                     {r.summary && (
-                      <span className="min-w-0 flex-1 truncate" title={r.summary}>
+                      <span
+                        className="min-w-0 flex-1 truncate"
+                        title={r.summary}
+                      >
                         {r.summary}
                       </span>
                     )}
-                    {/* ：执行痕迹（本次执行新建的卡）+ 会话跳转（挂件围观 ⏰ 会话） */}
+                    {/* 执行痕迹（本次执行新建的卡）+ 会话跳转（挂件围观 ⏰ 会话） */}
                     {r.cardId && (
                       <button
                         className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
@@ -570,7 +618,13 @@ export function SchedulePage() {
               <JobEditor
                 submitLabel="确认保存"
                 onSubmit={(content, schedule, retryMax, pauseOnFailure) =>
-                  void saveJob(null, content, schedule, retryMax, pauseOnFailure)
+                  void saveJob(
+                    null,
+                    content,
+                    schedule,
+                    retryMax,
+                    pauseOnFailure,
+                  )
                 }
                 onCancel={() => setCreating(null)}
               />
@@ -591,7 +645,8 @@ export function SchedulePage() {
               {creating.draftSchedule && (
                 <div className="mt-2 space-y-2">
                   <p className="nm-inset rounded-lg px-3 py-2 text-xs text-[var(--t3)]">
-                    {formatSchedule(creating.draftSchedule)}，到点自动执行该工作流
+                    {formatSchedule(creating.draftSchedule)}
+                    ，到点自动执行该工作流
                   </p>
                   <div className="flex gap-2">
                     <button
@@ -640,19 +695,27 @@ export function SchedulePage() {
         <>
           {jobEntries.length > 0 && (
             <section>
-              <p className="mb-2 text-xs font-medium text-[var(--t5)]">定时任务</p>
-              <div className="flex flex-col gap-2">{jobEntries.map(renderEntry)}</div>
+              <p className="mb-2 text-xs font-medium text-[var(--t5)]">
+                定时任务
+              </p>
+              <div className="flex flex-col gap-2">
+                {jobEntries.map(renderEntry)}
+              </div>
             </section>
           )}
           {wfEntries.length > 0 && (
             <section>
-              <p className="mb-2 text-xs font-medium text-[var(--t5)]">工作流</p>
-              <div className="flex flex-col gap-2">{wfEntries.map(renderEntry)}</div>
+              <p className="mb-2 text-xs font-medium text-[var(--t5)]">
+                工作流
+              </p>
+              <div className="flex flex-col gap-2">
+                {wfEntries.map(renderEntry)}
+              </div>
             </section>
           )}
         </>
       )}
-      {/* ：执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}
+      {/* 执行痕迹弹层（按本次执行新建的任务卡查 trace；TracePanel 自带 portal） */}
       {traceCardId && (
         <TracePanel taskId={traceCardId} onClose={() => setTraceCardId(null)} />
       )}
@@ -660,7 +723,8 @@ export function SchedulePage() {
   );
 }
 
-/** * 定时作业编辑器（新建/行内修改共用）：内容输入 + 频率面板 + 重试配置 + 预览确认。
+/**
+ * 定时作业编辑器（新建/行内修改共用）：内容输入 + 频率面板 + 重试配置 + 预览确认。
  * 到点语义：后端按内容新建任务卡并交给机器人执行——预览文案必须说清这一点。
  */
 function JobEditor({
@@ -685,13 +749,15 @@ function JobEditor({
     content: string,
     schedule: string,
     retryMax: number,
-    pauseOnFailure: boolean
+    pauseOnFailure: boolean,
   ) => void;
   onCancel: () => void;
 }) {
   const [content, setContent] = useState(initialContent);
   // 编辑态预填原规则：只改内容不换频率也能直接提交
-  const [draftSchedule, setDraftSchedule] = useState<string | null>(initialSchedule);
+  const [draftSchedule, setDraftSchedule] = useState<string | null>(
+    initialSchedule,
+  );
   const [retryMax, setRetryMax] = useState(initialRetryMax);
   const [pauseOnFailure, setPauseOnFailure] = useState(initialPauseOnFailure);
   const canSubmit = content.trim().length > 0 && draftSchedule !== null;
@@ -739,7 +805,8 @@ function JobEditor({
           失败自动暂停
         </label>
         <p className="w-full text-[10px] text-[var(--t5)]">
-          失败后 5 分钟自动重试；重试用尽仍失败时{pauseOnFailure ? "暂停此任务并通知" : "保持原节奏"}
+          失败后 5 分钟自动重试；重试用尽仍失败时
+          {pauseOnFailure ? "暂停此任务并通知" : "保持原节奏"}
         </p>
       </div>
       {/* 保存前预览：人话总结先确认再落库 */}
@@ -754,7 +821,12 @@ function JobEditor({
               disabled={!canSubmit}
               title={content.trim() ? undefined : "先填写要做什么"}
               onClick={() =>
-                onSubmit(content.trim(), draftSchedule, retryMax, pauseOnFailure)
+                onSubmit(
+                  content.trim(),
+                  draftSchedule,
+                  retryMax,
+                  pauseOnFailure,
+                )
               }
             >
               {submitLabel}

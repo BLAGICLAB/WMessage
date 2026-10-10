@@ -16,7 +16,7 @@ describe("DoneCircle", () => {
     render(
       <div onClick={onOuter}>
         <DoneCircle done={false} onToggle={onToggle} />
-      </div>
+      </div>,
     );
     await user.click(screen.getByTitle("标记完成"));
     expect(onToggle).toHaveBeenCalledTimes(1);

@@ -52,14 +52,15 @@ export function cycleSetting(): ThemeSetting {
 /** 全局快捷键：浅/深快速来回切（system 态下按当前生效值取反，落到具体模式） */
 export function toggleTheme(): ThemeSetting {
   const cur = getSetting();
-  const next: ThemeSetting =
-    effectiveTheme(cur) === "dark" ? "light" : "dark";
+  const next: ThemeSetting = effectiveTheme(cur) === "dark" ? "light" : "dark";
   applySetting(next);
   return next;
 }
 
 /** 监听其他窗口（挂件/主窗口）的主题变更并同步 */
-export function subscribeTheme(onChange: (s: ThemeSetting) => void): () => void {
+export function subscribeTheme(
+  onChange: (s: ThemeSetting) => void,
+): () => void {
   const handler = (e: StorageEvent) => {
     if (e.key !== THEME_KEY) return;
     const next: ThemeSetting =
@@ -72,7 +73,9 @@ export function subscribeTheme(onChange: (s: ThemeSetting) => void): () => void 
 }
 
 /** 跟随系统模式下，系统外观变化时自动切换并回调 */
-export function subscribeSystem(onChange: (s: ThemeSetting) => void): () => void {
+export function subscribeSystem(
+  onChange: (s: ThemeSetting) => void,
+): () => void {
   const m = mq();
   if (!m) return () => {};
   const handler = () => {

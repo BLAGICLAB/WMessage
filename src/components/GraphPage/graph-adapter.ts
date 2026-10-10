@@ -1,8 +1,8 @@
-// graphology 适配层（G3-SIGMA 迁移，设计 docs/TASK-GRAPH-DESIGN-2026-10-05.md §3）：
+// graphology 适配层（Sigma 迁移）：
 // graph-build 的渲染无关建图结果 → graphology 图 + Sigma 节点属性。
 // 纯函数，无 React/DOM 依赖（单测锚点）。
 //
-// 着色双轨（G3-SIGMA r1 修复）：建图时把 ownerKey（self/owner:N）与 statusKey
+// 着色双轨：建图时把 ownerKey（self/owner:N）与 statusKey
 // （hub/doing/done/todo）**同时**写入节点——着色模式切换不重建图，reducer 按
 // 当前模式现场选键。owner 序由调用方注入（GraphPage 基于 chips 全序计算，
 // 是 chips 色点与节点色的单一事实源，不随过滤器漂移）。
@@ -10,11 +10,7 @@
 import Graph from "graphology";
 import { inferSettings } from "graphology-layout-forceatlas2";
 import type { Attributes } from "graphology-types";
-import {
-  SELF_OWNER,
-  type BuiltGraph,
-  type GraphNode,
-} from "./graph-build";
+import { SELF_OWNER, type BuiltGraph, type GraphNode } from "./graph-build";
 
 /** Sigma 节点属性（nodeProgram 渲染需要的全部字段） */
 export interface SigmaNodeAttrs extends Attributes {
@@ -35,7 +31,10 @@ export interface SigmaNodeAttrs extends Attributes {
 }
 
 /** owner 语义键（ownerOrder 为调用方注入的单一事实源；本人不进 map → "self"） */
-export function ownerColorKey(node: GraphNode, ownerOrder: Map<string, number>): string {
+export function ownerColorKey(
+  node: GraphNode,
+  ownerOrder: Map<string, number>,
+): string {
   const owner = node.owner ?? SELF_OWNER;
   return owner === SELF_OWNER ? "self" : `owner:${ownerOrder.get(owner) ?? 0}`;
 }
@@ -59,7 +58,8 @@ const TAG_ANCHOR_MIN_CARDS = 2;
 /** 锚点节点 id 前缀（事件/渲染层隔离用） */
 export const TAG_ANCHOR_PREFIX = "taggrp:";
 
-/** 节点大小语义（图谱图例可切换）：degree = 连接度（√度数，Obsidian 经典隐喻）； *  duration = 耗时（完成−创建天数；doing 用已进行天数——拖得越久越大，钉子户可视化） */
+/** 节点大小语义（图谱图例可切换）：degree = 连接度（√度数，Obsidian 经典隐喻）；
+ *  duration = 耗时（完成−创建天数；doing 用已进行天数——拖得越久越大，钉子户可视化） */
 export type GraphSizeMode = "degree" | "duration";
 
 /** 布局松散度（设置页可切）→ R_MAX 系数 k（面密度恒定公式 R_MAX = k·√N 的 k） */
@@ -75,20 +75,27 @@ const DAY_MS = 86_400_000;
 /** 任务耗时天数：done = 完成−创建；doing = 现在−创建；todo 或缺创建时间（老数据）= null */
 export function durationDaysOf(
   n: Pick<GraphNode, "status" | "createdAt" | "completedAt">,
-  now: number
+  now: number,
 ): number | null {
   if (!n.createdAt) return null;
   if (n.status === "done")
-    return n.completedAt ? Math.max(0, (n.completedAt - n.createdAt) / DAY_MS) : null;
+    return n.completedAt
+      ? Math.max(0, (n.completedAt - n.createdAt) / DAY_MS)
+      : null;
   if (n.status === "doing") return Math.max(0, (now - n.createdAt) / DAY_MS);
   return null;
 }
 
-/** * 节点半径。duration 模式：3 + 1.5·√天数、15 封顶（平方根压缩——当天≈3、
+/**
+ * 节点半径。duration 模式：3 + 1.5·√天数、15 封顶（平方根压缩——当天≈3、
  * 3 天≈5.6、2 周≈8.6、1 月≈11.2、半年起封顶；天/月/年量纲差异大，线性会失控）。
  * 封顶也护住 FA2 adjustSizes：size 参与质量/碰撞，巨点会把周围推开过远。
  */
-export function nodeSize(n: GraphNode, mode: GraphSizeMode, now: number): number {
+export function nodeSize(
+  n: GraphNode,
+  mode: GraphSizeMode,
+  now: number,
+): number {
   if (n.kind === "hub") return 7 + Math.sqrt(n.degree);
   if (mode === "degree") return 3 + Math.sqrt(n.degree) * 2;
   const days = durationDaysOf(n, now);
@@ -106,7 +113,7 @@ export interface ColorPalette {
 /** 双模式取色（唯一入口：GraphPage chips 与 GraphCanvas reducer 共用，保证同色） */
 export function resolveOwnerColor(
   ownerKey: string,
-  palette: ColorPalette
+  palette: ColorPalette,
 ): string {
   if (ownerKey === "self") return palette.brand;
   if (ownerKey.startsWith("owner:")) {
@@ -118,7 +125,7 @@ export function resolveOwnerColor(
 
 export function resolveStatusColor(
   statusKey: string,
-  palette: ColorPalette
+  palette: ColorPalette,
 ): string {
   switch (statusKey) {
     case "hub":
@@ -132,9 +139,10 @@ export function resolveStatusColor(
   }
 }
 
-/** * 建图结果 → graphology 图（Sigma 直渲染）。
+/**
+ * 建图结果 → graphology 图（Sigma 直渲染）。
  *
- * 初始布局（G4-CLUSTER 分扇区 + G4-G6-r2 空间自适应）：布局外径随任务量
+ * 初始布局（分扇区 + 空间自适应）：布局外径随任务量
  * **√N 缩放（面密度恒定）**——千级任务小画布、万级任务大画布，节点密度
  * 不随规模变化，任何档位打开都是铺满视口的完整图。同标签（同义组）节点
  * 铺在专属扇区内形成聚簇初值，FA2（linLog 模式）从分团初值继续分离强化。
@@ -146,7 +154,7 @@ export function toGraphologyGraph(
   tagGroups?: Map<string, string>,
   sizeMode: GraphSizeMode = "degree",
   looseness: GraphLooseness = "standard",
-  now = Date.now()
+  now = Date.now(),
 ): Graph<SigmaNodeAttrs> {
   const graph = new Graph<SigmaNodeAttrs>({ multi: false, type: "directed" });
 
@@ -209,7 +217,8 @@ export function toGraphologyGraph(
     } else {
       // 无组节点：全域均匀圆盘（r ∝ √序号，黄金角散角度——铺满不挤环）
       const angle = (freeIdx + 0.5) * golden;
-      const r = GROUP_RING * 0.72 * Math.sqrt((freeIdx + 0.6) / Math.max(freeTotal, 1));
+      const r =
+        GROUP_RING * 0.72 * Math.sqrt((freeIdx + 0.6) / Math.max(freeTotal, 1));
       freeIdx++;
       x = Math.cos(angle) * r;
       y = Math.sin(angle) * r;
@@ -286,7 +295,7 @@ export function fa2Settings(nodeCount: number) {
   return {
     ...base,
     barnesHutOptimize: nodeCount > 1500,
-    // 权重参与吸引：dep/member=1 不变，标签锚点强边(3)把同组卡压成团（G4-CLUSTER）
+    // 权重参与吸引：dep/member=1 不变，标签锚点强边(3)把同组卡压成团
     edgeWeightInfluence: 1,
     // linLogMode **永久禁用**（两次真机回归定性）：LinLog 能量模型会把连通团
     // 无限坍缩成一个点、无连线孤点推到无穷远——与「所有任务可见铺开」的验收
@@ -326,9 +335,12 @@ export interface ContentBBox {
 
 /** 图节点坐标 → 参考 bbox（与 sigma graphExtent 同口径：全节点、含锚点） */
 export function graphBBox(
-  graph: Pick<Graph<SigmaNodeAttrs>, "forEachNode">
+  graph: Pick<Graph<SigmaNodeAttrs>, "forEachNode">,
 ): NormExtent {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  let minX = Infinity,
+    maxX = -Infinity,
+    minY = Infinity,
+    maxY = -Infinity;
   graph.forEachNode((_, a) => {
     if (!Number.isFinite(a.x) || !Number.isFinite(a.y)) return;
     if (a.x < minX) minX = a.x;
@@ -340,7 +352,8 @@ export function graphBBox(
   return { x: [minX, maxX], y: [minY, maxY] };
 }
 
-/** * 计算「把内容包围盒铺满视口」的相机态（归一化空间）。
+/**
+ * 计算「把内容包围盒铺满视口」的相机态（归一化空间）。
  * 返回 null = 视口退化/输入非有限——调用方不得写相机（写 Infinity/NaN ratio
  * 会把全部节点投影到同一屏幕点）。ratio 下限 0.05 防病态过放大。
  */
@@ -348,7 +361,7 @@ export function computeCameraFit(
   bbox: ContentBBox,
   norm: NormExtent,
   viewport: { width: number; height: number },
-  margin = 1.12
+  margin = 1.12,
 ): { x: number; y: number; ratio: number } | null {
   const { width, height } = viewport;
   const smallest = Math.min(width, height) - 2 * SIGMA_STAGE_PADDING;
@@ -358,7 +371,15 @@ export function computeCameraFit(
   const normR = Math.max(norm.x[1] - norm.x[0], norm.y[1] - norm.y[0]);
   const spanX = bbox.maxX - bbox.minX;
   const spanY = bbox.maxY - bbox.minY;
-  const nums = [normR, spanX, spanY, bbox.minX, bbox.maxX, bbox.minY, bbox.maxY];
+  const nums = [
+    normR,
+    spanX,
+    spanY,
+    bbox.minX,
+    bbox.maxX,
+    bbox.minY,
+    bbox.maxY,
+  ];
   if (normR <= 0 || nums.some((v) => !Number.isFinite(v))) return null;
   // correctionRatio：与 sigma getCorrectionRatio 同式，graphDims 取参考 bbox 维度
   const gw = norm.x[1] - norm.x[0] || 1;
@@ -366,20 +387,23 @@ export function computeCameraFit(
   const viewportRatio = height / width;
   const graphRatio = gh / gw;
   const cr =
-    (viewportRatio < 1 && graphRatio > 1) || (viewportRatio > 1 && graphRatio < 1)
+    (viewportRatio < 1 && graphRatio > 1) ||
+    (viewportRatio > 1 && graphRatio < 1)
       ? 1
       : Math.min(
           Math.max(graphRatio, 1 / graphRatio),
-          Math.max(1 / viewportRatio, viewportRatio)
+          Math.max(1 / viewportRatio, viewportRatio),
         );
   const ratio = Math.max(
     (spanX / normR) * (smallest / width) * cr,
-    (spanY / normR) * (smallest / height) * cr
+    (spanY / normR) * (smallest / height) * cr,
   );
   if (!Number.isFinite(ratio)) return null;
   return {
-    x: 0.5 + ((bbox.minX + bbox.maxX) / 2 - (norm.x[0] + norm.x[1]) / 2) / normR,
-    y: 0.5 + ((bbox.minY + bbox.maxY) / 2 - (norm.y[0] + norm.y[1]) / 2) / normR,
+    x:
+      0.5 + ((bbox.minX + bbox.maxX) / 2 - (norm.x[0] + norm.x[1]) / 2) / normR,
+    y:
+      0.5 + ((bbox.minY + bbox.maxY) / 2 - (norm.y[0] + norm.y[1]) / 2) / normR,
     ratio: Math.max(0.05, ratio * margin),
   };
 }

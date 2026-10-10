@@ -1,6 +1,13 @@
 /// <reference types="node" />
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent, within, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+  cleanup,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SettingsPage } from "./SettingsPage";
 import { ProviderLogo } from "./SettingsPage/ProviderLogo";
@@ -158,8 +165,12 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "MCP 服务" }));
     expect(screen.getByText("MCP 服务器（外部工具）")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "任务图谱" }));
-    expect(screen.getByRole("switch", { name: "只看我的任务" })).toBeInTheDocument();
-    expect(screen.getByRole("radiogroup", { name: "布局松散度" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "只看我的任务" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("radiogroup", { name: "布局松散度" }),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "自进化" }));
     expect(screen.getByText("自进化决策面板")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "桌面整理" }));
@@ -194,7 +205,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -212,7 +224,7 @@ describe("SettingsPage", () => {
         "bot_set_config",
         expect.objectContaining({
           config: expect.objectContaining({ archiveAfterDays: 30 }),
-        })
+        }),
       );
     });
     // 越界钳制：0 视为未配置（null → 后端回默认 7）；500 钳到 365
@@ -224,7 +236,7 @@ describe("SettingsPage", () => {
         "bot_set_config",
         expect.objectContaining({
           config: expect.objectContaining({ archiveAfterDays: 365 }),
-        })
+        }),
       );
     });
   });
@@ -278,7 +290,8 @@ describe("SettingsPage", () => {
           hasApiKey: false,
           bypassLlmOnPreStepHit: true,
         };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -287,7 +300,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -298,7 +312,9 @@ describe("SettingsPage", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_get_enabled");
     });
     // 「开启机器人聊天」行的描述文案作为锚点找所在行的 button
-    const botDesc = screen.getByText("在挂件下方显示聊天窗口，用大模型管理任务");
+    const botDesc = screen.getByText(
+      "在挂件下方显示聊天窗口，用大模型管理任务",
+    );
     const row = botDesc.closest("div")?.parentElement;
     const toggle = row?.querySelector("button");
     expect(toggle).not.toBeNull();
@@ -308,7 +324,7 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_enabled",
-        expect.objectContaining({ enabled: true })
+        expect.objectContaining({ enabled: true }),
       );
     });
     // 调用后开关按钮文案变成「已开启」
@@ -333,7 +349,8 @@ describe("SettingsPage", () => {
           pythonTimeoutSecs: null,
         };
       if (cmd === "bot_set_config") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -342,7 +359,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -370,7 +388,7 @@ describe("SettingsPage", () => {
             tavilyKey: null,
             braveKey: null,
           }),
-        })
+        }),
       );
     });
   });
@@ -390,7 +408,8 @@ describe("SettingsPage", () => {
           tavilyEnabled: true, // 开了但没 key
           pythonTimeoutSecs: null,
         };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -399,16 +418,15 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
     // 导航到「MCP 服务」分类
     fireEvent.click(screen.getByRole("button", { name: "MCP 服务" }));
-    expect(
-      await screen.findByText(/已开启但未填 key/)
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/已开启但未填 key/)).toBeInTheDocument();
   });
 
   it("Tavily key 输入：不回填已存 key；输入新 key 保存 → 顶层参数透传 + config 字段 null + 输入框清空", async () => {
@@ -427,7 +445,8 @@ describe("SettingsPage", () => {
           pythonTimeoutSecs: null,
         };
       if (cmd === "bot_set_config") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -436,7 +455,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -462,7 +482,7 @@ describe("SettingsPage", () => {
             tavilyKey: null,
             braveKey: null,
           }),
-        })
+        }),
       );
     });
     // 保存成功后输入框清空（与主 keyInput 同模式）
@@ -499,7 +519,8 @@ describe("SettingsPage", () => {
           hasApiKey: false,
           bypassLlmOnPreStepHit: true,
         };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -508,7 +529,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -533,7 +555,8 @@ describe("SettingsPage", () => {
           hasApiKey: false,
           bypassLlmOnPreStepHit: true,
         };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -542,7 +565,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -552,7 +576,9 @@ describe("SettingsPage", () => {
     await user.click(screen.getByRole("button", { name: "添加厂商" }));
     await user.click(screen.getByRole("button", { name: /Anthropic/ }));
     // 预设自带 claude 模型行
-    expect(await screen.findByText("claude-sonnet-4-20250514")).toBeInTheDocument();
+    expect(
+      await screen.findByText("claude-sonnet-4-20250514"),
+    ).toBeInTheDocument();
     // 点「＋ 添加模型」→ 新空行加入（紧凑行「（未命名）」）
     await user.click(screen.getByRole("button", { name: /添加模型/ }));
     expect(screen.getAllByText("（未命名）").length).toBe(1);
@@ -566,18 +592,34 @@ describe("SettingsPage", () => {
         return {
           modelsByProvider: {
             openai: [
-              { id: "m1", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash" },
-              { id: "m2", label: "Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3" },
+              {
+                id: "m1",
+                label: "DeepSeek",
+                baseUrl: "https://api.deepseek.com/v1",
+                model: "deepseek-v4-flash",
+              },
+              {
+                id: "m2",
+                label: "Kimi",
+                baseUrl: "https://api.moonshot.cn/v1",
+                model: "kimi-k3",
+              },
             ],
             anthropic: [
-              { id: "m3", label: "Claude Sonnet", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-5" },
+              {
+                id: "m3",
+                label: "Claude Sonnet",
+                baseUrl: "https://api.anthropic.com",
+                model: "claude-sonnet-4-5",
+              },
             ],
           },
           activeModelId: { openai: "m1", anthropic: "m3" },
           hasApiKey: true,
           bypassLlmOnPreStepHit: true,
         };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -586,7 +628,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -619,8 +662,18 @@ describe("SettingsPage", () => {
         return {
           modelsByProvider: {
             openai: [
-              { id: "m1", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash" },
-              { id: "m2", label: "Kimi", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3" },
+              {
+                id: "m1",
+                label: "DeepSeek",
+                baseUrl: "https://api.deepseek.com/v1",
+                model: "deepseek-v4-flash",
+              },
+              {
+                id: "m2",
+                label: "Kimi",
+                baseUrl: "https://api.moonshot.cn/v1",
+                model: "kimi-k3",
+              },
             ],
             anthropic: [],
           },
@@ -629,7 +682,8 @@ describe("SettingsPage", () => {
           bypassLlmOnPreStepHit: true,
         };
       if (cmd === "bot_set_config") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -638,7 +692,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -656,12 +711,19 @@ describe("SettingsPage", () => {
       expect(screen.getByText("Kimi")).toBeInTheDocument();
     });
     await waitFor(() => {
-      const setCalls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_set_config");
+      const setCalls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_set_config",
+      );
       expect(setCalls.length).toBeGreaterThan(0);
       const arg = setCalls[setCalls.length - 1]![1] as {
-        config: { modelsByProvider: { openai: { id: string }[] }; activeModelId: { openai: string | null } };
+        config: {
+          modelsByProvider: { openai: { id: string }[] };
+          activeModelId: { openai: string | null };
+        };
       };
-      expect(arg.config.modelsByProvider.openai.map((m) => m.id)).toEqual(["m2"]);
+      expect(arg.config.modelsByProvider.openai.map((m) => m.id)).toEqual([
+        "m2",
+      ]);
       expect(arg.config.activeModelId.openai).toBe("m2");
     });
     // 删 m2 → 进编辑态点删除，列表空回到「暂无模型」空态（厂商页保留）
@@ -684,7 +746,8 @@ describe("SettingsPage", () => {
           maxTokens: null,
         };
       if (cmd === "bot_set_config") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -693,7 +756,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -735,9 +799,9 @@ describe("SettingsPage", () => {
       };
       // 预设自带 claude 行 + 新加的 Claude Sonnet 行，共两条
       expect(arg.config.modelsByProvider.anthropic).toHaveLength(2);
-      expect(
-        arg.config.modelsByProvider.anthropic[1].label,
-      ).toBe("Claude Sonnet");
+      expect(arg.config.modelsByProvider.anthropic[1].label).toBe(
+        "Claude Sonnet",
+      );
       // activeModelId.anthropic 仍是预设首条（添加不抢 active）
       expect(arg.config.modelsByProvider.anthropic[1].vendor).toBe("Anthropic");
       expect(arg.config.activeModelId.anthropic).toBe(
@@ -762,7 +826,8 @@ describe("SettingsPage", () => {
       if (cmd === "plugin:autostart|is_enabled") return false;
       if (cmd === "plugin:autostart|enable") return null;
       if (cmd === "plugin:autostart|disable") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -771,7 +836,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       if (cmd === "bot_get_config")
         return {
@@ -817,8 +883,13 @@ describe("SettingsPage", () => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "plugin:autostart|is_enabled") return false;
       if (cmd === "plugin:autostart|enable")
-        throw { code: "AUTOSTART_FAILED", message: "系统拒绝写入", recoverable: false };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+        throw {
+          code: "AUTOSTART_FAILED",
+          message: "系统拒绝写入",
+          recoverable: false,
+        };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -827,7 +898,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       if (cmd === "bot_get_config")
         return {
@@ -856,7 +928,8 @@ describe("SettingsPage", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "plugin:autostart|is_enabled") return false;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -865,7 +938,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       if (cmd === "bot_get_config")
         return {
@@ -910,7 +984,7 @@ describe("SettingsPage", () => {
           config: expect.objectContaining({
             uiFontSize: "standard",
           }),
-        })
+        }),
       );
     });
     // 再点「特大」→ 同样立即落盘
@@ -926,7 +1000,7 @@ describe("SettingsPage", () => {
           config: expect.objectContaining({
             uiFontSize: "xlarge",
           }),
-        })
+        }),
       );
     });
   });
@@ -964,7 +1038,8 @@ describe("SettingsPage", () => {
   // 厂商详情页复刻改造（厂商头开关/⋯菜单、Key 显隐、获取 Key 外链、
   // 连接测试、能力徽标、ProviderLogo、updateModel 跨协议修复）
 
-  /** 厂商详情页用例的公共 mock：bot 开启 + 指定 bot_get_config 视图；   *  extra 可覆盖个别命令（如 bot_test_connection） */
+  /** 厂商详情页用例的公共 mock：bot 开启 + 指定 bot_get_config 视图；
+   *  extra 可覆盖个别命令（如 bot_test_connection） */
   const mockVendorConfig = (
     config: Record<string, unknown>,
     extra?: (cmd: string) => unknown,
@@ -975,7 +1050,8 @@ describe("SettingsPage", () => {
       if (cmd === "bot_get_enabled") return true;
       if (cmd === "bot_get_config") return config;
       if (cmd === "bot_set_config") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -984,7 +1060,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -1067,7 +1144,9 @@ describe("SettingsPage", () => {
       );
       expect(calls.length).toBeGreaterThan(0);
       const payload = calls[calls.length - 1][1] as {
-        config: { modelsByProvider: { openai: unknown[]; anthropic: unknown[] } };
+        config: {
+          modelsByProvider: { openai: unknown[]; anthropic: unknown[] };
+        };
       };
       expect(payload.config.modelsByProvider.openai).toEqual([]);
       expect(payload.config.modelsByProvider.anthropic).toEqual([]);
@@ -1253,7 +1332,8 @@ describe("SettingsPage", () => {
       if (cmd === "bot_get_config")
         return { ...deepseekVendorConfig, verifiedVendors: verified };
       if (cmd === "bot_set_config") return null;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
           user: { name: "我", avatarDataUrl: null },
@@ -1262,7 +1342,8 @@ describe("SettingsPage", () => {
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       if (cmd === "migration_log_read") return "";
       return null;
     });
@@ -1306,7 +1387,10 @@ describe("SettingsPage", () => {
       ...deepseekVendorConfig,
       modelsByProvider: {
         openai: [
-          { ...deepseekVendorConfig.modelsByProvider.openai[0], enabled: false },
+          {
+            ...deepseekVendorConfig.modelsByProvider.openai[0],
+            enabled: false,
+          },
         ],
         anthropic: [],
       },
@@ -1329,7 +1413,10 @@ describe("SettingsPage", () => {
 
   it("插头颜色持久化：厂商在 verifiedVendors 里 → 未点测试插头也显绿", async () => {
     const user = userEvent.setup();
-    mockVendorConfig({ ...deepseekVendorConfig, verifiedVendors: ["DeepSeek"] });
+    mockVendorConfig({
+      ...deepseekVendorConfig,
+      verifiedVendors: ["DeepSeek"],
+    });
     render(<SettingsPage {...defaultProps} />);
     await openVendorPage(user, "DeepSeek");
     const plug = await screen.findByRole("button", { name: "测试连接" });
@@ -1445,9 +1532,7 @@ describe("SettingsPage", () => {
     });
     render(<SettingsPage {...defaultProps} />);
     await openVendorPage(user, "Anthropic");
-    await user.click(
-      await screen.findByRole("button", { name: "编辑此模型" }),
-    );
+    await user.click(await screen.findByRole("button", { name: "编辑此模型" }));
     const labelInput = await screen.findByPlaceholderText(/DeepSeek \/ Kimi/);
     await user.clear(labelInput);
     await user.type(labelInput, "Claude Sonnet X");
@@ -1531,7 +1616,8 @@ describe("SettingsPage", () => {
     bypassLlmOnPreStepHit: true,
   };
 
-  /** 按命令路由的模型库 invoke mock；providers 传 null = meta_list_providers 抛错（降级内置预设）。   *  包一层当前 invokeMock 实现，只接管 meta_* 命令（其余命令保持调用方已设的实现） */
+  /** 按命令路由的模型库 invoke mock；providers 传 null = meta_list_providers 抛错（降级内置预设）。
+   *  包一层当前 invokeMock 实现，只接管 meta_* 命令（其余命令保持调用方已设的实现） */
   const stubMetaInvoke = (
     providers: unknown[] | null,
     modelsByKey: Record<string, unknown[]> = {},
@@ -1572,7 +1658,9 @@ describe("SettingsPage", () => {
     // 搜索过滤：输入 deepseek → 只剩 DeepSeek
     await user.type(screen.getByLabelText("搜索厂商"), "deepseek");
     expect(screen.queryByRole("button", { name: /OpenAI/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /DeepSeek/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /DeepSeek/ }),
+    ).toBeInTheDocument();
   });
 
   it("模型库可用：点选远程服务商 → bot_set_config 携带模型列表（首条 active+enabled、model 去前缀、推理参数映射）", async () => {
@@ -1582,9 +1670,7 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "添加厂商" }));
-    await user.click(
-      await screen.findByRole("button", { name: /OpenAI/ }),
-    );
+    await user.click(await screen.findByRole("button", { name: /OpenAI/ }));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_config",
@@ -1640,27 +1726,31 @@ describe("SettingsPage", () => {
   it("推理参数接线：编辑态填四参数 → 保存落盘 bot_set_config；重载后编辑态回显 + Anthropic 说明行", async () => {
     const user = userEvent.setup();
     let stored: Record<string, unknown> | null = null;
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "bot_get_enabled") return true;
-      if (cmd === "bot_get_config") return stored ?? deepseekVendorConfig;
-      if (cmd === "bot_set_config") {
-        stored = args!.config as Record<string, unknown>;
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_get_enabled") return true;
+        if (cmd === "bot_get_config") return stored ?? deepseekVendorConfig;
+        if (cmd === "bot_set_config") {
+          stored = args!.config as Record<string, unknown>;
+          return null;
+        }
+        if (cmd === "bot_test_connection") return { ok: true, status: 200 };
+        if (cmd === "api_status")
+          return { enabled: false, port: 4763, token: "" };
+        if (cmd === "profile_get")
+          return {
+            user: { name: "我", avatarDataUrl: null },
+            bot: { name: "机器人", avatarDataUrl: null },
+          };
+        if (cmd === "py_get_enabled") return false;
+        if (cmd === "skills_list") return [];
+        if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+        if (cmd === "migration_status")
+          return { rules_count: 0, poll_interval_secs: 600 };
+        if (cmd === "migration_log_read") return "";
         return null;
-      }
-      if (cmd === "bot_test_connection") return { ok: true, status: 200 };
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
-      if (cmd === "profile_get")
-        return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
-        };
-      if (cmd === "py_get_enabled") return false;
-      if (cmd === "skills_list") return [];
-      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
-      if (cmd === "migration_log_read") return "";
-      return null;
-    });
+      },
+    );
     render(<SettingsPage {...defaultProps} />);
     await openVendorPage(user, "DeepSeek");
     // 铅笔进编辑态（非受控输入 + onBlur 提交）
@@ -1677,9 +1767,11 @@ describe("SettingsPage", () => {
     // 厂商页「保存配置」→ bot_set_config 落盘
     await user.click(screen.getByRole("button", { name: "保存配置" }));
     await waitFor(() => expect(stored).not.toBeNull());
-    const saved = (stored as unknown as {
-      modelsByProvider: { openai: Array<Record<string, unknown>> };
-    }).modelsByProvider.openai[0];
+    const saved = (
+      stored as unknown as {
+        modelsByProvider: { openai: Array<Record<string, unknown>> };
+      }
+    ).modelsByProvider.openai[0];
     expect(saved).toMatchObject({
       temperature: 0.5,
       topP: 0.9,
@@ -1696,7 +1788,9 @@ describe("SettingsPage", () => {
     expect(screen.getByLabelText("max_tokens")).toHaveValue("16384");
     expect(screen.getByLabelText("system prompt")).toHaveValue("用中文回复");
     // 说明行：max_tokens 仅 Anthropic 格式生效（避免 OpenAI 格式用户填了没反应）
-    expect(screen.getByText(/max_tokens 仅 Anthropic 格式生效/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/max_tokens 仅 Anthropic 格式生效/),
+    ).toBeInTheDocument();
   });
 
   it("模型设置页首引导：有带 vendor 条目但 verifiedVendors 为空 → 显示升级引导；已验证或有条目无 vendor 不显示", async () => {
@@ -1716,14 +1810,21 @@ describe("SettingsPage", () => {
     });
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "模型设置" }));
-    expect(await screen.findByRole("button", { name: /DeepSeek/ })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: /DeepSeek/ }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("note", { name: "厂商可用性引导" })).toBeNull();
     cleanup();
     // 场景 3：条目无 vendor（老配置按协议名兜底分组）→ 不引导
     mockVendorConfig({
       modelsByProvider: {
         openai: [
-          { id: "m1", label: "DeepSeek Chat", model: "deepseek-chat", baseUrl: "https://api.deepseek.com" },
+          {
+            id: "m1",
+            label: "DeepSeek Chat",
+            model: "deepseek-chat",
+            baseUrl: "https://api.deepseek.com",
+          },
         ],
         anthropic: [],
       },
@@ -1734,7 +1835,9 @@ describe("SettingsPage", () => {
     });
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "模型设置" }));
-    await user.click(await screen.findByRole("button", { name: "OpenAI 兼容" }));
+    await user.click(
+      await screen.findByRole("button", { name: "OpenAI 兼容" }),
+    );
     expect(screen.queryByRole("note", { name: "厂商可用性引导" })).toBeNull();
   });
 
@@ -1742,10 +1845,9 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     mockVendorConfig(deepseekVendorConfig);
     // 模型库同名厂商：provider_name 与既有 vendor 仅大小写不同（归一化后同名）
-    stubMetaInvoke(
-      [{ ...metaDeepSeek, provider_name: "deepseek" }],
-      { deepseek: metaOpenAIModels },
-    );
+    stubMetaInvoke([{ ...metaDeepSeek, provider_name: "deepseek" }], {
+      deepseek: metaOpenAIModels,
+    });
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "添加厂商" }));
@@ -1761,7 +1863,9 @@ describe("SettingsPage", () => {
     );
     const arg = setCalls[setCalls.length - 1]![1] as {
       config: {
-        modelsByProvider: { openai: Array<Record<string, unknown> & { label: string }> };
+        modelsByProvider: {
+          openai: Array<Record<string, unknown> & { label: string }>;
+        };
       };
     };
     const list = arg.config.modelsByProvider.openai;
@@ -1783,7 +1887,9 @@ describe("SettingsPage", () => {
       await screen.findByText(/模型库为空或同步中——启动时自动同步 models\.dev/),
     ).toBeInTheDocument();
     // 内置预设网格保持可用
-    expect(screen.getByRole("button", { name: /DeepSeek/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /DeepSeek/ }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /MiniMax/ })).toBeInTheDocument();
     // 预设点选链路不破坏：选 DeepSeek → 预设模型行出现
     await user.click(screen.getByRole("button", { name: /DeepSeek/ }));
@@ -1798,21 +1904,29 @@ describe("SettingsPage", () => {
     mocks.invokeMock.mockImplementation(
       async (cmd: string, args?: Record<string, unknown>) => {
         if (cmd === "meta_list_providers")
-          throw { code: "META_QUERY_FAILED", message: "库查询失败", recoverable: true };
+          throw {
+            code: "META_QUERY_FAILED",
+            message: "库查询失败",
+            recoverable: true,
+          };
         return base(cmd, args);
       },
     );
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "模型设置" }));
     await user.click(screen.getByRole("button", { name: "添加厂商" }));
-    expect(
-      await screen.findByText(/模型库为空或同步中/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/模型库为空或同步中/)).toBeInTheDocument();
     // 内置预设网格完整呈现
-    expect(screen.getByRole("button", { name: /DeepSeek/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Anthropic/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /DeepSeek/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Anthropic/ }),
+    ).toBeInTheDocument();
     // 远程网格不出现；「更新模型库」按钮保留（空库/降级时它是唯一的手动同步入口）
-    expect(screen.getByRole("button", { name: /更新模型库/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /更新模型库/ }),
+    ).toBeInTheDocument();
     expect(screen.queryByLabelText("搜索厂商")).toBeNull();
   });
 
@@ -1844,9 +1958,13 @@ describe("SettingsPage", () => {
     await user.click(
       await screen.findByRole("button", { name: /从模型库添加/ }),
     );
-    const listbox = await screen.findByRole("listbox", { name: "从模型库添加" });
+    const listbox = await screen.findByRole("listbox", {
+      name: "从模型库添加",
+    });
     // 已添加的 gpt-4o 不出现，未添加的 GPT-4o mini 出现
-    expect(within(listbox).queryByRole("option", { name: "GPT-4o" })).toBeNull();
+    expect(
+      within(listbox).queryByRole("option", { name: "GPT-4o" }),
+    ).toBeNull();
     const option = within(listbox).getByRole("option", { name: "GPT-4o mini" });
     await user.click(option);
     await waitFor(() => {
@@ -1885,7 +2003,9 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("meta_sync_models_dev");
     });
-    expect(await screen.findByText(/已更新：7 个厂商 \/ 42 个模型/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/已更新：7 个厂商 \/ 42 个模型/),
+    ).toBeInTheDocument();
     // 同步完成后重新拉取服务商列表（首次挂载 1 次 + 同步后刷新 1 次）
     await waitFor(() => {
       const listCalls = mocks.invokeMock.mock.calls.filter(
@@ -1924,7 +2044,9 @@ describe("SettingsPage", () => {
     // 未命中且无 fallbackChar：取名称首字
     rerender(<ProviderLogo name="我的厂商" />);
     expect(container.querySelector("img")).toBeNull();
-    expect(within(container as HTMLElement).getByText("我")).toBeInTheDocument();
+    expect(
+      within(container as HTMLElement).getByText("我"),
+    ).toBeInTheDocument();
   });
 
   it("左栏厂商列表：models.dev 长名称厂商也显示 logo（providerKey 透传 + plan 后缀归一）", async () => {
@@ -1970,41 +2092,47 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("U15 记忆权限双开关：点选即时落盘 bot_set_config.memoryControl；缺字段默认全开", async () => {
+  it("记忆权限双开关：点选即时落盘 bot_set_config.memoryControl；缺字段默认全开", async () => {
     const user = userEvent.setup();
     const stored: Array<Record<string, unknown>> = [];
     // 有状态 mock：bot_set_config 存下的 memoryControl 在 bot_get_config 回读
     //（真实后端语义——saveConfig 完成后会 loadConfig 刷新界面）
     let savedCtrl: Record<string, unknown> | null = null;
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "bot_get_enabled") return true;
-      if (cmd === "bot_get_config") {
-        return {
-          hasApiKey: false,
-          bypassLlmOnPreStepHit: true,
-          // 初始不带 memoryControl → 老配置语义，前端按全开显示
-          ...(savedCtrl ? { memoryControl: savedCtrl } : {}),
-        };
-      }
-      if (cmd === "bot_set_config") {
-        const cfg = args!.config as { memoryControl?: Record<string, unknown> };
-        savedCtrl = cfg.memoryControl ?? null;
-        stored.push(cfg);
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_get_enabled") return true;
+        if (cmd === "bot_get_config") {
+          return {
+            hasApiKey: false,
+            bypassLlmOnPreStepHit: true,
+            // 初始不带 memoryControl → 老配置语义，前端按全开显示
+            ...(savedCtrl ? { memoryControl: savedCtrl } : {}),
+          };
+        }
+        if (cmd === "bot_set_config") {
+          const cfg = args!.config as {
+            memoryControl?: Record<string, unknown>;
+          };
+          savedCtrl = cfg.memoryControl ?? null;
+          stored.push(cfg);
+          return null;
+        }
+        if (cmd === "api_status")
+          return { enabled: false, port: 4763, token: "" };
+        if (cmd === "profile_get")
+          return {
+            user: { name: "我", avatarDataUrl: null },
+            bot: { name: "机器人", avatarDataUrl: null },
+          };
+        if (cmd === "py_get_enabled") return false;
+        if (cmd === "skills_list") return [];
+        if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+        if (cmd === "migration_status")
+          return { rules_count: 0, poll_interval_secs: 600 };
+        if (cmd === "migration_log_read") return "";
         return null;
-      }
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
-      if (cmd === "profile_get")
-        return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
-        };
-      if (cmd === "py_get_enabled") return false;
-      if (cmd === "skills_list") return [];
-      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
-      if (cmd === "migration_log_read") return "";
-      return null;
-    });
+      },
+    );
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "记忆" }));
     // 记忆权限卡：双开关缺字段默认开启（role=switch + aria-checked，同厂商总开关语义）
@@ -2026,10 +2154,9 @@ describe("SettingsPage", () => {
     });
     // 回读后开关态持久（有状态 mock 保存了保存值）
     await waitFor(() =>
-      expect(screen.getByRole("switch", { name: "聊天注入记忆" })).toHaveAttribute(
-        "aria-checked",
-        "false",
-      ),
+      expect(
+        screen.getByRole("switch", { name: "聊天注入记忆" }),
+      ).toHaveAttribute("aria-checked", "false"),
     );
     // 再关「模型自动记忆」→ 双关落盘
     await user.click(screen.getByRole("switch", { name: "模型自动记忆" }));
@@ -2049,38 +2176,46 @@ describe("SettingsPage", () => {
     const user = userEvent.setup();
     const stored: Array<Record<string, unknown>> = [];
     let savedCtrl: Record<string, unknown> | null = null;
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "bot_get_enabled") return true;
-      if (cmd === "bot_get_config") {
-        return {
-          hasApiKey: false,
-          bypassLlmOnPreStepHit: true,
-          ...(savedCtrl ? { memoryControl: savedCtrl } : {}),
-        };
-      }
-      if (cmd === "bot_set_config") {
-        const cfg = args!.config as { memoryControl?: Record<string, unknown> };
-        savedCtrl = cfg.memoryControl ?? null;
-        stored.push(cfg);
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_get_enabled") return true;
+        if (cmd === "bot_get_config") {
+          return {
+            hasApiKey: false,
+            bypassLlmOnPreStepHit: true,
+            ...(savedCtrl ? { memoryControl: savedCtrl } : {}),
+          };
+        }
+        if (cmd === "bot_set_config") {
+          const cfg = args!.config as {
+            memoryControl?: Record<string, unknown>;
+          };
+          savedCtrl = cfg.memoryControl ?? null;
+          stored.push(cfg);
+          return null;
+        }
+        if (cmd === "api_status")
+          return { enabled: false, port: 4763, token: "" };
+        if (cmd === "profile_get")
+          return {
+            user: { name: "我", avatarDataUrl: null },
+            bot: { name: "机器人", avatarDataUrl: null },
+          };
+        if (cmd === "py_get_enabled") return false;
+        if (cmd === "skills_list") return [];
+        if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+        if (cmd === "migration_status")
+          return { rules_count: 0, poll_interval_secs: 600 };
+        if (cmd === "migration_log_read") return "";
         return null;
-      }
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
-      if (cmd === "profile_get")
-        return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
-        };
-      if (cmd === "py_get_enabled") return false;
-      if (cmd === "skills_list") return [];
-      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
-      if (cmd === "migration_log_read") return "";
-      return null;
-    });
+      },
+    );
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "记忆" }));
     // 三档选择器：radio 语义；缺字段默认「关闭」高亮
-    const autoBtn = screen.getByRole("radio", { name: "自动记忆抽取：自动入库" });
+    const autoBtn = screen.getByRole("radio", {
+      name: "自动记忆抽取：自动入库",
+    });
     expect(autoBtn).toHaveAttribute("aria-checked", "false");
     // 切到「自动入库」→ 即时落盘
     await user.click(autoBtn);
@@ -2092,7 +2227,9 @@ describe("SettingsPage", () => {
     // 回读后高亮跟随（有状态 mock 持久化）
     await waitFor(() => expect(autoBtn.className).toContain("nm-inset"));
     // 再切「需确认」
-    await user.click(screen.getByRole("radio", { name: "自动记忆抽取：需确认" }));
+    await user.click(
+      screen.getByRole("radio", { name: "自动记忆抽取：需确认" }),
+    );
     await waitFor(() => {
       const last = stored[stored.length - 1] as {
         memoryControl: { autoExtract: string };
@@ -2102,7 +2239,9 @@ describe("SettingsPage", () => {
     // 总闸联动：关「模型自动记忆」后三档禁用（后端总闸优先，档位是静默 no-op）
     await user.click(screen.getByRole("switch", { name: "模型自动记忆" }));
     await waitFor(() =>
-      expect(screen.getByRole("radio", { name: "自动记忆抽取：自动入库" })).toBeDisabled(),
+      expect(
+        screen.getByRole("radio", { name: "自动记忆抽取：自动入库" }),
+      ).toBeDisabled(),
     );
   });
 });

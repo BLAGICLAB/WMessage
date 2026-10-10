@@ -1,4 +1,5 @@
-/** 聊天气泡外观：用户气泡颜色 + 机器人气泡材质。 *  纯前端视觉偏好，模式同 theme.ts：html 内联 CSS 变量 / data 属性即时生效 +
+/** 聊天气泡外观：用户气泡颜色 + 机器人气泡材质。
+ *  纯前端视觉偏好，模式同 theme.ts：html 内联 CSS 变量 / data 属性即时生效 +
  *  localStorage 持久化，双窗口（主窗/挂件）storage 事件同步，零后端改动。
  *  main.css 消费：--bubble-user-bg/--bubble-user-fg/.user-chip 三变量 + data-bubble-bot。 */
 
@@ -13,9 +14,13 @@ export type BubbleStyle = {
   botMaterial: BotBubbleMaterial;
 };
 
-export const BUBBLE_STYLE_DEFAULT: BubbleStyle = { userBg: null, botMaterial: "card" };
+export const BUBBLE_STYLE_DEFAULT: BubbleStyle = {
+  userBg: null,
+  botMaterial: "card",
+};
 
-/** 用户气泡颜色预设：全部对白字 ≥4.5:1（AA）； *  「跟随主题」（null）不在预设里，由设置卡单独渲染成首个色块 */
+/** 用户气泡颜色预设：全部对白字 ≥4.5:1（AA）；
+ *  「跟随主题」（null）不在预设里，由设置卡单独渲染成首个色块 */
 export const BUBBLE_USER_COLOR_PRESETS = [
   { value: "#3563b0", label: "蓝" },
   { value: "#1f7a6d", label: "青绿" },
@@ -34,14 +39,17 @@ export const BUBBLE_BOT_MATERIAL_OPTIONS = [
 ] as const;
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
-const MATERIALS: readonly BotBubbleMaterial[] = BUBBLE_BOT_MATERIAL_OPTIONS.map((o) => o.value);
+const MATERIALS: readonly BotBubbleMaterial[] = BUBBLE_BOT_MATERIAL_OPTIONS.map(
+  (o) => o.value,
+);
 
 /** 未知存储归一到合法值：任何脏数据都回退默认，不让设置页/启动路径抛错 */
 function normalize(input: unknown): BubbleStyle {
   if (!input || typeof input !== "object") return { ...BUBBLE_STYLE_DEFAULT };
   const o = input as { userBg?: unknown; botMaterial?: unknown };
   return {
-    userBg: typeof o.userBg === "string" && HEX_RE.test(o.userBg) ? o.userBg : null,
+    userBg:
+      typeof o.userBg === "string" && HEX_RE.test(o.userBg) ? o.userBg : null,
     botMaterial: MATERIALS.includes(o.botMaterial as BotBubbleMaterial)
       ? (o.botMaterial as BotBubbleMaterial)
       : "card",
@@ -57,7 +65,8 @@ export function getBubbleStyle(): BubbleStyle {
   }
 }
 
-/** 依底色相对亮度自动选气泡文字色（Telegram/Discord 式自动反白）： *  亮度阈值 0.2 —— 低于它的底色配白字 ≥4.5:1，高于它配深字。 */
+/** 依底色相对亮度自动选气泡文字色（Telegram/Discord 式自动反白）：
+ *  亮度阈值 0.2 —— 低于它的底色配白字 ≥4.5:1，高于它配深字。 */
 export function pickUserFg(bg: string): string {
   if (!HEX_RE.test(bg)) return "#ffffff";
   const lin = (h: string) => {
@@ -65,7 +74,9 @@ export function pickUserFg(bg: string): string {
     return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
   };
   const lum =
-    0.2126 * lin(bg.slice(1, 3)) + 0.7152 * lin(bg.slice(3, 5)) + 0.0722 * lin(bg.slice(5, 7));
+    0.2126 * lin(bg.slice(1, 3)) +
+    0.7152 * lin(bg.slice(3, 5)) +
+    0.0722 * lin(bg.slice(5, 7));
   return lum > 0.2 ? "#171d2b" : "#ffffff";
 }
 
@@ -87,7 +98,10 @@ export function applyBubbleStyleDom(style: BubbleStyle): BubbleStyle {
       "--bubble-chip-border",
       darkText ? "rgba(23, 32, 51, 0.2)" : "rgba(255, 255, 255, 0.3)",
     );
-    root.style.setProperty("--bubble-chip-fg", darkText ? "#26304a" : "rgba(255, 255, 255, 0.95)");
+    root.style.setProperty(
+      "--bubble-chip-fg",
+      darkText ? "#26304a" : "rgba(255, 255, 255, 0.95)",
+    );
   } else {
     for (const v of [
       "--bubble-user-bg",
@@ -120,7 +134,9 @@ export function resetBubbleStyle(): BubbleStyle {
 }
 
 /** 监听其他窗口（主窗/挂件）的气泡样式变更并同步到本窗口 DOM */
-export function subscribeBubbleStyle(onChange: (s: BubbleStyle) => void): () => void {
+export function subscribeBubbleStyle(
+  onChange: (s: BubbleStyle) => void,
+): () => void {
   const handler = (e: StorageEvent) => {
     if (e.key !== KEY) return;
     onChange(applyBubbleStyleDom(getBubbleStyle()));

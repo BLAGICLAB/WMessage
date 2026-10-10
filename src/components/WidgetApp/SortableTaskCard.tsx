@@ -44,14 +44,23 @@ export function SortableTaskCard({
   onRemoveFile: (path: string) => void;
   onBotExecute?: () => void;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: task.id });
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: task.id });
   // 拖拽守卫：拖拽结束后浏览器会在同一元素派发 click——selectMode 下不能误切选中。
   // end/cancel 用 setTimeout(0) 复位：click 在 pointerup 后、timeout 前派发，时序上守卫有效。
   const wasDragging = useRef(false);
   const resetIfSelf = useCallback(
     (id: string | number) => {
-      if (id === task.id) setTimeout(() => { wasDragging.current = false; }, 0);
+      if (id === task.id)
+        setTimeout(() => {
+          wasDragging.current = false;
+        }, 0);
     },
     [task.id],
   );

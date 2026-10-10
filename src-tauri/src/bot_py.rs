@@ -12,7 +12,7 @@
 // 显式 re-export 每个子模块的 pub 项（glob `pub use crate::py::*` 只展开
 // py 的顶层项即子模块声明本身，不递归 re-export 子模块内部 pub 项）
 // audit/env/io 三行「看似未用」是有意的 facade：测试模块经 super::X 解析
-// （ 教训：cargo fix 会误删它们，勿让自动 fix 碰本文件 use 区；
+// （教训：cargo fix 会误删它们，勿让自动 fix 碰本文件 use 区；
 // allow 显式压制警告，同时保住 re-export）
 #[allow(unused_imports)]
 pub use crate::py::audit::*;
@@ -1229,7 +1229,7 @@ mod tests {
 
 #[cfg(test)]
 mod exiting_tests {
-    /// 回归锁（ 改有界并发后平移）：EXITING 复查必须在许可闸门内完成——
+    /// 回归锁（改有界并发后平移）：EXITING 复查必须在许可闸门内完成——
     /// 排队者过闸（拿到许可）即复查，挡住「kill 完成后才排到」的请求。
     /// 全局标志不在测试里翻转（会污染并行测试的 run_python），源码锁防回退。
     #[test]

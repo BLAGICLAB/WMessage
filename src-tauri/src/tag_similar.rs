@@ -1,4 +1,4 @@
-//! 标签近义（G6-SYNONYM，设计 docs/TASK-GRAPH-AFFINITY-DEPS-2026-10-05.md §3）：
+//! 标签近义（设计 docs/TASK-GRAPH-AFFINITY-DEPS-2026-10-05.md §3）：
 //! 对前端下发的标签词表逐个取嵌入向量（memory::embed 引擎，bge-small-zh 512 维
 //! L2 归一化），两两余弦（归一化后点积）≥ 阈值判定为近义对，供图谱把同义标签
 //! 并入同一聚簇锚点。纯本地推理，无网络调用。

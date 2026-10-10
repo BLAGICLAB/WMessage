@@ -43,7 +43,8 @@ function fmtTokens(n: number): string {
 
 const dayTotal = (d: UsageDay) => d.promptTokens + d.completionTokens;
 
-/** 连续活跃天数（活跃 = 当日 tokens > 0）： *  当前 = 从今天（今天不活跃则从昨天）往前连续活跃日数；最长 = 窗口内最长活跃游程 */
+/** 连续活跃天数（活跃 = 当日 tokens > 0）：
+ *  当前 = 从今天（今天不活跃则从昨天）往前连续活跃日数；最长 = 窗口内最长活跃游程 */
 export function streakDays(days: UsageDay[]): [number, number] {
   const active = days.map((d) => dayTotal(d) > 0);
   let cur = 0;
@@ -89,15 +90,19 @@ function heatValues(
   return days.map((d) => (acc += dayTotal(d)));
 }
 
-/** GitHub contributions 式年宽热力图：列 = 周（首列对齐周日），每列 7 行圆角方格， *  底部月份标签按周列定位，title 即 tooltip */
+/** GitHub contributions 式年宽热力图：列 = 周（首列对齐周日），每列 7 行圆角方格，
+ *  底部月份标签按周列定位，title 即 tooltip */
 function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
-  const firstDowRaw = days.length ? new Date(`${days[0].day}T00:00:00`).getDay() : 0;
+  const firstDowRaw = days.length
+    ? new Date(`${days[0].day}T00:00:00`).getDay()
+    : 0;
   const firstDow = Number.isNaN(firstDowRaw) ? 0 : firstDowRaw;
   const numWeeks = Math.max(1, Math.ceil((firstDow + days.length) / 7));
   const weekOf = (i: number) => Math.floor((firstDow + i) / 7);
   const values = heatValues(days, mode, numWeeks, weekOf);
   const max = Math.max(1, ...values);
-  const levelOf = (v: number) => (v <= 0 ? 0 : Math.min(4, Math.ceil((v / max) * 4)));
+  const levelOf = (v: number) =>
+    v <= 0 ? 0 : Math.min(4, Math.ceil((v / max) * 4));
 
   // 月份标签：月首所在周列，与上一标签距离 < 3 列时跳过（避免挤压重叠）
   const labels: Array<{ col: number; text: string }> = [];
@@ -156,10 +161,12 @@ function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
 
 /* ───────────────────────── 每日趋势平滑曲线（按模型） ───────────────────────── */
 
-/** Catmull-Rom → 三次贝塞尔（相邻控制点取 1/6 差分），点少时退化为折线段。 *  控制点 y 钳制在绘图区内——尖锐谷底（近零日）差分过冲会把曲线顶出 0 线。 */
+/** Catmull-Rom → 三次贝塞尔（相邻控制点取 1/6 差分），点少时退化为折线段。
+ *  控制点 y 钳制在绘图区内——尖锐谷底（近零日）差分过冲会把曲线顶出 0 线。 */
 function smoothPath(pts: Array<[number, number]>): string {
   if (pts.length === 0) return "";
-  if (pts.length === 1) return `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  if (pts.length === 1)
+    return `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
   const yMin = PAD_T;
   const yMax = CHART_H - PAD_B;
   const clampY = (v: number) => Math.min(yMax, Math.max(yMin, v));
@@ -184,12 +191,25 @@ const PAD_R = 16;
 const PAD_T = 12;
 const PAD_B = 24;
 
-const MODEL_COLORS = ["#3563b0", "#35854a", "#b05f2f", "#6d5aa8", "#b04a6a", "#4a5568"];
+const MODEL_COLORS = [
+  "#3563b0",
+  "#35854a",
+  "#b05f2f",
+  "#6d5aa8",
+  "#b04a6a",
+  "#4a5568",
+];
 const TREND_TOP_N = 5;
 
-export type TrendSeries = { key: string; name: string; color: string; values: number[] };
+export type TrendSeries = {
+  key: string;
+  name: string;
+  color: string;
+  values: number[];
+};
 
-/** 稀疏 (day, model) 行 → 按模型分线：以补零日序列为 x 轴（缺日记 0）， *  按窗口内 tokens 降序取前 TREND_TOP_N 条（NULL 模型 = 「未知模型」参与排序） */
+/** 稀疏 (day, model) 行 → 按模型分线：以补零日序列为 x 轴（缺日记 0），
+ *  按窗口内 tokens 降序取前 TREND_TOP_N 条（NULL 模型 = 「未知模型」参与排序） */
 export function buildTrendSeries(
   days: UsageDay[],
   rows: UsageDayModelRow[],
@@ -221,7 +241,8 @@ export function buildTrendSeries(
     }));
 }
 
-/** 每模型一条平滑曲线：容器实测宽度渲染（ResizeObserver），jsdom 降级固定宽。 *  无 y 轴数字（仅虚线网格）；曲线无可见数据点，透明命中区承载逐点 tooltip */
+/** 每模型一条平滑曲线：容器实测宽度渲染（ResizeObserver），jsdom 降级固定宽。
+ *  无 y 轴数字（仅虚线网格）；曲线无可见数据点，透明命中区承载逐点 tooltip */
 function TokenTrendChart({
   days,
   series,
@@ -245,7 +266,8 @@ function TokenTrendChart({
   const n = days.length;
   const innerW = Math.max(10, width - PAD_L - PAD_R);
   const innerH = CHART_H - PAD_T - PAD_B;
-  const x = (i: number) => PAD_L + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
+  const x = (i: number) =>
+    PAD_L + (n <= 1 ? innerW / 2 : (i / (n - 1)) * innerW);
   const maxV = Math.max(1, ...series.flatMap((s) => s.values));
   const y = (v: number) => PAD_T + (1 - v / maxV) * innerH;
 
@@ -255,7 +277,12 @@ function TokenTrendChart({
   const labelStep = Math.max(1, Math.ceil(n / 6));
   return (
     <div ref={wrapRef}>
-      <svg width={width} height={CHART_H} role="img" aria-label="每日 Token 趋势图">
+      <svg
+        width={width}
+        height={CHART_H}
+        role="img"
+        aria-label="每日 Token 趋势图"
+      >
         {yTicks.map((k) => (
           <line
             key={k}
@@ -272,7 +299,13 @@ function TokenTrendChart({
           const pts = s.values.map((v, i) => [x(i), y(v)] as [number, number]);
           return (
             <g key={s.key}>
-              <path d={smoothPath(pts)} fill="none" stroke={s.color} strokeWidth="2" strokeLinecap="round" />
+              <path
+                d={smoothPath(pts)}
+                fill="none"
+                stroke={s.color}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
               {pts.map(([px, py], i) => (
                 <circle
                   key={i}
@@ -315,7 +348,8 @@ function TokenTrendChart({
 
 /** 占比堆叠条 + 图例行（palette 循环取色） */
 function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
-  const total = rows.reduce((a, r) => a + r.promptTokens + r.completionTokens, 0) || 1;
+  const total =
+    rows.reduce((a, r) => a + r.promptTokens + r.completionTokens, 0) || 1;
   return (
     <div>
       <div className="flex h-2.5 overflow-hidden rounded-full bg-[var(--inset-bg)]">
@@ -340,7 +374,9 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
             <div key={i} className="flex items-center gap-2 text-xs">
               <span
                 className="h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: MODEL_COLORS[i % MODEL_COLORS.length] }}
+                style={{
+                  backgroundColor: MODEL_COLORS[i % MODEL_COLORS.length],
+                }}
               />
               <span className="min-w-0 flex-1 truncate text-[var(--t2)]">
                 {r.model ?? "未知模型（旧数据）"}
@@ -425,7 +461,10 @@ export function UsageStatsCard() {
   const totalRuns = days.reduce((a, d) => a + d.runs, 0);
   const [curStreak, bestStreak] = useMemo(() => streakDays(days), [days]);
   const trendDays = useMemo(() => days.slice(-range), [days, range]);
-  const series = useMemo(() => buildTrendSeries(trendDays, modelDays), [trendDays, modelDays]);
+  const series = useMemo(
+    () => buildTrendSeries(trendDays, modelDays),
+    [trendDays, modelDays],
+  );
   const isEmpty = !loading && !error && totalTokens === 0 && totalRuns === 0;
 
   const rangeBtn = (r: 7 | 30, label: string) => (
@@ -454,7 +493,11 @@ export function UsageStatsCard() {
             onClick={refresh}
             disabled={loading}
           >
-            <RefreshCw size={12} aria-hidden className={loading ? "animate-spin" : ""} />
+            <RefreshCw
+              size={12}
+              aria-hidden
+              className={loading ? "animate-spin" : ""}
+            />
             {loading ? "读取中…" : "刷新"}
           </button>
         </div>
@@ -475,7 +518,9 @@ export function UsageStatsCard() {
               ["最长连续天数", `${bestStreak} 天`],
             ].map(([label, value]) => (
               <div key={label} className="px-2">
-                <p className="text-lg font-semibold tabular-nums text-[var(--t1)]">{value}</p>
+                <p className="text-lg font-semibold tabular-nums text-[var(--t1)]">
+                  {value}
+                </p>
                 <p className="mt-0.5 text-[10px] text-[var(--t5)]">{label}</p>
               </div>
             ))}
@@ -519,11 +564,16 @@ export function UsageStatsCard() {
 
           {/* 卡 C · 每日 Token 趋势图（按模型分线） */}
           <div className="nm-card p-5">
-            <p className="text-sm font-medium text-[var(--t2)]">每日 Token 趋势图</p>
+            <p className="text-sm font-medium text-[var(--t2)]">
+              每日 Token 趋势图
+            </p>
             <div className="mt-2 flex flex-wrap items-center gap-4 text-[10px] text-[var(--t4)]">
               {series.map((s) => (
                 <span key={s.key} className="inline-flex items-center gap-1">
-                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: s.color }} />
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: s.color }}
+                  />
                   {s.name}
                 </span>
               ))}
@@ -533,7 +583,9 @@ export function UsageStatsCard() {
                 <TokenTrendChart days={trendDays} series={series} />
               </div>
             ) : (
-              <p className="mt-4 text-center text-xs text-[var(--t5)]">窗口内暂无数据</p>
+              <p className="mt-4 text-center text-xs text-[var(--t5)]">
+                窗口内暂无数据
+              </p>
             )}
           </div>
 
@@ -548,8 +600,9 @@ export function UsageStatsCard() {
           )}
 
           <p className="px-1 text-[10px] leading-relaxed text-[var(--t5)]">
-            数据说明：本地 exec_traces 聚合（热力图窗口 1 年，实际范围受保留期限制）；
-            执行次数只计已收尾执行；OpenAI 兼容网关的流式用量暂未接入（仅 Anthropic 协议计统计）。
+            数据说明：本地 exec_traces 聚合（热力图窗口 1
+            年，实际范围受保留期限制）； 执行次数只计已收尾执行；OpenAI
+            兼容网关的流式用量暂未接入（仅 Anthropic 协议计统计）。
           </p>
         </>
       )}

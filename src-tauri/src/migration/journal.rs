@@ -1,9 +1,9 @@
-//! : 文件迁移操作 journal（防 lost-update / 孤儿文件）。
+//! 文件迁移操作 journal（防 lost-update / 孤儿文件）。
 //!
 //! 状态机：pending → committed（成功完成）/ cleared（未启动或明确失败）。
 //! 启动时 `journal_replay_pending` 检测 pending 条目修复 DB 一致性。
 //!
-//! : journal 写纳入 `DB_WRITE_LOCK` 临界区——与 db_upsert 等持锁写串行，
+//! journal 写纳入 `DB_WRITE_LOCK` 临界区——与 db_upsert 等持锁写串行，
 //! 不再靠 2s busy_timeout 兜底并发冲突。
 
 use std::path::Path;
@@ -17,15 +17,15 @@ use super::types::JournalEntry;
 /// 因此只在每次 journal 写时短临界区持锁。
 pub(crate) fn db_write_lock() -> std::sync::MutexGuard<'static, ()> {
     crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        // C3-1：poison 事件必须可见（同 db::lock_db_write 形态），恢复行为不变
+        // poison 事件必须可见（同 db::lock_db_write 形态），恢复行为不变
         eprintln!("[mutex_poisoned] migration::journal DB_WRITE_LOCK: {e:?}");
         e.into_inner()
     })
 }
 
-///  inner: 记录一个 pending 操作，返回 row id。
+/// 记录一个 pending 操作，返回 row id。
 /// 抽出来为方便单测（不需 AppHandle）。生产仍走 journal_pending 包一层。
-/// MI-04a：同一 (task_id, src) 至多一条 pending——重入/重试复用既有行
+/// 同一 (task_id, src) 至多一条 pending——重入/重试复用既有行
 /// （刷新 op/dst/created_at），不再制造 id DESC 下不可见、但仍被 replay 扫到的孤儿。
 /// 去重原子性依赖调用方持 db_write_lock（journal_pending 已持锁，见同文件 db_write_lock 注释）。
 pub(crate) fn journal_pending_inner(
@@ -81,7 +81,7 @@ pub(crate) fn journal_pending(
     journal_pending_inner(conn, op, src, dst, task_id, crate::migration::ops::now_ms())
 }
 
-///  inner: 标记 committed。replay 跳过该行。
+/// 标记 committed。replay 跳过该行。
 /// 仅允许 pending → committed：防同 id 双跑竞态把已 committed 行误降级。
 pub(crate) fn journal_committed_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
     let n = conn
@@ -104,7 +104,7 @@ pub(crate) fn journal_committed(conn: &rusqlite::Connection, id: i64) -> Result<
     journal_committed_inner(conn, id)
 }
 
-///  inner: 清除（未启动 / 已明确失败）。
+/// 清除（未启动 / 已明确失败）。
 /// 仅允许 pending → cleared：防双跑竞态把已 committed 行误降级（replay 会重扫）。
 pub(crate) fn journal_cleared_inner(conn: &rusqlite::Connection, id: i64) -> Result<(), String> {
     let n = conn
@@ -127,7 +127,7 @@ pub(crate) fn journal_cleared(conn: &rusqlite::Connection, id: i64) -> Result<()
     journal_cleared_inner(conn, id)
 }
 
-///  inner: 查某任务某源路径最新一条 pending journal（轮询中就地对账用）。
+/// 查某任务某源路径最新一条 pending journal（轮询中就地对账用）。
 /// 抽出来为方便单测（不需 AppHandle）。
 pub(crate) fn journal_find_pending_inner(
     conn: &rusqlite::Connection,

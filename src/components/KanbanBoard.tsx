@@ -51,7 +51,9 @@ function Column({
   return (
     <div className="flex-1 min-w-56 flex flex-col">
       <div className="nm-inset mb-3 px-4 py-2 flex items-baseline justify-between">
-        <h2 className="text-lg font-semibold tracking-wide text-[var(--t1)]">{label}</h2>
+        <h2 className="text-lg font-semibold tracking-wide text-[var(--t1)]">
+          {label}
+        </h2>
         <span className="text-xs font-medium tabular-nums text-[var(--t5)]">
           {tasks.length}
         </span>
@@ -89,7 +91,7 @@ export function spliceMove(
   activeId: string,
   targetCol: ColumnId,
   overId: string,
-  below: boolean
+  below: boolean,
 ): Task[] {
   const moved = flat.find((t) => t.id === activeId);
   if (!moved) return flat;
@@ -134,7 +136,7 @@ export function KanbanBoard({
   onOpenArchive: () => void;
 }) {
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
   // 拖拽期间的本地草稿：跨列实时移动走 draft，松手才提交
@@ -162,7 +164,7 @@ export function KanbanBoard({
     setDraft((prev) =>
       prev
         ? spliceMove(prev, String(active.id), overCol, String(over.id), false)
-        : prev
+        : prev,
     );
   };
 
@@ -192,7 +194,7 @@ export function KanbanBoard({
         : false;
     onReorder(
       String(active.id),
-      spliceMove(tasks, String(active.id), overCol, String(over.id), below)
+      spliceMove(tasks, String(active.id), overCol, String(over.id), below),
     );
   };
 
@@ -202,7 +204,7 @@ export function KanbanBoard({
   };
 
   const archivedCount = tasks.filter(
-    (t) => t.column === "done" && t.archived && !t.deletedAt
+    (t) => t.column === "done" && t.archived && !t.deletedAt,
   ).length;
   const activeTask = activeId ? live.find((t) => t.id === activeId) : undefined;
 
@@ -224,7 +226,7 @@ export function KanbanBoard({
               (t) =>
                 t.column === c.id &&
                 !t.deletedAt &&
-                (c.id !== "done" || !t.archived)
+                (c.id !== "done" || !t.archived),
             )}
             editingId={editingId}
             onUpdate={onUpdate}
@@ -236,7 +238,12 @@ export function KanbanBoard({
                   className="mt-2 text-xs text-[var(--t5)] hover:text-[var(--t2)] whitespace-nowrap"
                   onClick={onOpenArchive}
                 >
-                  <Archive size={11} aria-hidden className="inline-block align-[-2px]" /> 已归档 {archivedCount}
+                  <Archive
+                    size={11}
+                    aria-hidden
+                    className="inline-block align-[-2px]"
+                  />{" "}
+                  已归档 {archivedCount}
                 </button>
               ) : null
             }

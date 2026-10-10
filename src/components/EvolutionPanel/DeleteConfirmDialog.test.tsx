@@ -16,7 +16,12 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
     document.body.appendChild(trigger);
     trigger.focus();
     const { unmount } = render(
-      <DeleteConfirmDialog proposal={proposal} busy={false} onConfirm={() => {}} onCancel={() => {}} />
+      <DeleteConfirmDialog
+        proposal={proposal}
+        busy={false}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
     );
     expect(document.activeElement).toBe(screen.getByTestId("delete-cancel"));
     unmount();
@@ -27,7 +32,12 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
   it("backdrop 点击调 onCancel；点内卡不调；busy 时 backdrop 不调", () => {
     const onCancel = vi.fn();
     render(
-      <DeleteConfirmDialog proposal={proposal} busy={false} onConfirm={() => {}} onCancel={onCancel} />
+      <DeleteConfirmDialog
+        proposal={proposal}
+        busy={false}
+        onConfirm={() => {}}
+        onCancel={onCancel}
+      />,
     );
     // 内卡点击不外冒标题 emoji 改 lucide 图标，断言按文本）
     fireEvent.click(screen.getByText("彻底删除提案"));
@@ -40,7 +50,12 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
     const onCancel = vi.fn();
     const user = userEvent.setup();
     render(
-      <DeleteConfirmDialog proposal={proposal} busy={true} onConfirm={() => {}} onCancel={onCancel} />
+      <DeleteConfirmDialog
+        proposal={proposal}
+        busy={true}
+        onConfirm={() => {}}
+        onCancel={onCancel}
+      />,
     );
     fireEvent.click(screen.getByTestId("delete-confirm-modal"));
     await user.keyboard("{Escape}");
@@ -51,7 +66,12 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
     const onCancel = vi.fn();
     const user = userEvent.setup();
     render(
-      <DeleteConfirmDialog proposal={proposal} busy={false} onConfirm={() => {}} onCancel={onCancel} />
+      <DeleteConfirmDialog
+        proposal={proposal}
+        busy={false}
+        onConfirm={() => {}}
+        onCancel={onCancel}
+      />,
     );
     await user.keyboard("{Escape}");
     expect(onCancel).toHaveBeenCalledTimes(1);

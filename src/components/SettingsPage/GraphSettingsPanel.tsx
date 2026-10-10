@@ -97,11 +97,14 @@ function SegmentedRow<T extends string>({
 export default function GraphSettingsPanel() {
   const [onlyMine, setOnlyMine] = useState(getGraphOnlyMine);
   const [sizeMode, setSizeMode] = useState<GraphSizeMode>(getGraphSizeMode);
-  const [labelDensity, setLabelDensity] = useState<GraphLabelDensity>(getGraphLabelDensity);
+  const [labelDensity, setLabelDensity] =
+    useState<GraphLabelDensity>(getGraphLabelDensity);
   const [edgeWidth, setEdgeWidth] = useState<GraphEdgeWidth>(getGraphEdgeWidth);
   const [autoLayout, setAutoLayout] = useState(getGraphAutoLayout);
   const [looseness, setLooseness] = useState<GraphLooseness>(getGraphLooseness);
-  const [rememberFilters, setRememberFilters] = useState(getGraphRememberFilters);
+  const [rememberFilters, setRememberFilters] = useState(
+    getGraphRememberFilters,
+  );
 
   return (
     <div className="nm-card p-5">

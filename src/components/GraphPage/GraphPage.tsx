@@ -76,7 +76,8 @@ export default function GraphPage({
   }, [filters]);
   const [colorMode, setColorMode] = useState<GraphColorMode>("status");
   // 节点大小语义（连接度/耗时）：graphPrefs 持久化（图谱图例与设置页共用同一键）
-  const [sizeMode, setSizeModeState] = useState<GraphSizeMode>(getGraphSizeMode);
+  const [sizeMode, setSizeModeState] =
+    useState<GraphSizeMode>(getGraphSizeMode);
   const setSizeMode = (m: GraphSizeMode) => {
     setSizeModeState(m);
     setGraphSizeMode(m);
@@ -104,9 +105,12 @@ export default function GraphPage({
 
   const graph = useMemo(
     () => buildTaskGraph(tasks, workflows, filters),
-    [tasks, workflows, filters]
+    [tasks, workflows, filters],
   );
-  const ownerChips = useMemo(() => collectOwners(tasks, people), [tasks, people]);
+  const ownerChips = useMemo(
+    () => collectOwners(tasks, people),
+    [tasks, people],
+  );
   const tagList = useMemo(() => collectTags(tasks), [tasks]);
   const years = useMemo(() => collectYears(tasks), [tasks]);
 
@@ -181,13 +185,13 @@ export default function GraphPage({
 
   const selectedNode = useMemo(
     () => graph.nodes.find((n) => n.id === selectedId) ?? null,
-    [graph.nodes, selectedId]
+    [graph.nodes, selectedId],
   );
 
   // ── 依赖编辑（G5-DEPEDIT）：仅本人卡。环检测 + 候选过滤 + task_patch 通道 ──
   const [depSearch, setDepSearch] = useState("");
   const [depError, setDepError] = useState<string | null>(null);
-  // 「重新布局」信号（G4-G6 r2：默认静态布局，物理动画手动触发）
+  // 「重新布局」信号（默认静态布局，物理动画手动触发）
   const [relayoutSignal, setRelayoutSignal] = useState(0);
   const depsOfSelected = useMemo(() => {
     const self = selectedNode?.task;
@@ -211,7 +215,6 @@ export default function GraphPage({
     onPatchTask(self.id, { dependsOn: [...(self.dependsOn ?? []), depId] });
   };
 
-
   const removeDependency = (depId: string) => {
     const self = selectedNode?.task;
     if (!self) return;
@@ -230,25 +233,29 @@ export default function GraphPage({
     return tasks
       .filter(
         (t) =>
-          !t.ownerId &&
-          !t.deletedAt &&
-          t.id !== self.id &&
-          !existing.has(t.id)
+          !t.ownerId && !t.deletedAt && t.id !== self.id && !existing.has(t.id),
       )
       .filter((t) => !wouldCreateDepCycle(tasks, self.id, t.id))
       .filter((t) =>
-        depSearch.trim() ? t.title.toLowerCase().includes(depSearch.trim().toLowerCase()) : true
+        depSearch.trim()
+          ? t.title.toLowerCase().includes(depSearch.trim().toLowerCase())
+          : true,
       )
       .slice(0, 8);
   }, [tasks, selectedNode, depSearch]);
 
   const depsEditor = selectedNode?.task && !selectedNode.owner && (
     <div className="mb-3 nm-card rounded-[var(--r-md)] p-2.5">
-      <h3 className="mb-1.5 text-xs font-medium text-[var(--t5)]">依赖（完成后才能开始）</h3>
+      <h3 className="mb-1.5 text-xs font-medium text-[var(--t5)]">
+        依赖（完成后才能开始）
+      </h3>
       {depsOfSelected.length > 0 && (
         <ul className="mb-1.5 space-y-0.5">
           {depsOfSelected.map((d) => (
-            <li key={d.id} className="flex items-center justify-between gap-1.5 text-xs">
+            <li
+              key={d.id}
+              className="flex items-center justify-between gap-1.5 text-xs"
+            >
               <span className="truncate text-[var(--t3)]">{d.title}</span>
               <button
                 className="shrink-0 rounded px-1 text-[var(--t5)] hover:text-[var(--danger)]"
@@ -285,14 +292,18 @@ export default function GraphPage({
           ))}
         </ul>
       )}
-      {depError && <p className="mt-1 text-xs text-[var(--danger)]">{depError}</p>}
+      {depError && (
+        <p className="mt-1 text-xs text-[var(--danger)]">{depError}</p>
+      )}
     </div>
   );
 
   const toggleOwner = (id: string) => {
     setFilters((f) => {
       const cur = f.owners ?? ownerChips.map((o) => o.id);
-      const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+      const next = cur.includes(id)
+        ? cur.filter((x) => x !== id)
+        : [...cur, id];
       return { ...f, owners: next.length === ownerChips.length ? null : next };
     });
   };
@@ -300,7 +311,9 @@ export default function GraphPage({
   const toggleTag = (tag: string) => {
     setFilters((f) => {
       const cur = f.tags ?? [];
-      const next = cur.includes(tag) ? cur.filter((x) => x !== tag) : [...cur, tag];
+      const next = cur.includes(tag)
+        ? cur.filter((x) => x !== tag)
+        : [...cur, tag];
       return { ...f, tags: next.length === 0 ? null : next };
     });
   };
@@ -308,8 +321,13 @@ export default function GraphPage({
   const toggleWorkflow = (id: string) => {
     setFilters((f) => {
       const cur = f.workflowIds ?? workflows.map((w) => w.id);
-      const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
-      return { ...f, workflowIds: next.length === workflows.length ? null : next };
+      const next = cur.includes(id)
+        ? cur.filter((x) => x !== id)
+        : [...cur, id];
+      return {
+        ...f,
+        workflowIds: next.length === workflows.length ? null : next,
+      };
     });
   };
 
@@ -318,18 +336,23 @@ export default function GraphPage({
 
   const chipBase =
     "inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors";
-  const chipOn = "border-[var(--edge-strong)] bg-[var(--surface-raised)] text-[var(--t1)]";
+  const chipOn =
+    "border-[var(--edge-strong)] bg-[var(--surface-raised)] text-[var(--t1)]";
   const chipOff = "border-[var(--edge)] text-[var(--t5)] opacity-60";
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="graph-page">
       {/* 顶栏：标题 + 统计 + 搜索 + 侧栏开关 */}
       <div className="flex items-center gap-3 border-b border-[var(--edge)] px-4 py-2.5">
-        <Waypoints size={16} className="shrink-0 text-[var(--t3)]" aria-hidden />
+        <Waypoints
+          size={16}
+          className="shrink-0 text-[var(--t3)]"
+          aria-hidden
+        />
         <h2 className="text-sm font-semibold text-[var(--t2)]">任务图谱</h2>
         <span className="text-xs text-[var(--t5)]" data-testid="graph-stats">
-          {graph.nodes.filter((n) => n.kind === "task").length} 任务 · {depCount} 依赖 ·{" "}
-          {hubCount} 工作流 · {ownerChips.length} 成员
+          {graph.nodes.filter((n) => n.kind === "task").length} 任务 ·{" "}
+          {depCount} 依赖 · {hubCount} 工作流 · {ownerChips.length} 成员
         </span>
         <div className="flex-1" />
         <input
@@ -367,7 +390,7 @@ export default function GraphPage({
             onSelect={setSelectedId}
             onOpenHub={() => onOpenWorkflow()}
           />
-          {/* 图例 + 重新布局（G4-G6 r2：默认静态确定性布局，物理动画手动触发） */}
+          {/* 图例 + 重新布局（默认静态确定性布局，物理动画手动触发） */}
           <div className="nm-card absolute left-3 top-3 flex items-center gap-2 rounded-[var(--r-md)] px-2.5 py-1.5 text-xs">
             <button
               onClick={() => setRelayoutSignal((s) => s + 1)}
@@ -409,9 +432,12 @@ export default function GraphPage({
             </span>
             {colorMode === "status" && (
               <span className="flex items-center gap-2 pl-1 text-[var(--t5)]">
-                <i className="inline-block size-2 rounded-full bg-[var(--t5)]" />待办
-                <i className="inline-block size-2 rounded-full bg-[var(--brand)]" />进行中
-                <i className="inline-block size-2 rounded-full bg-[var(--success)]" />已完成
+                <i className="inline-block size-2 rounded-full bg-[var(--t5)]" />
+                待办
+                <i className="inline-block size-2 rounded-full bg-[var(--brand)]" />
+                进行中
+                <i className="inline-block size-2 rounded-full bg-[var(--success)]" />
+                已完成
               </span>
             )}
           </div>
@@ -435,8 +461,13 @@ export default function GraphPage({
         {showFilters && (
           <aside className="w-64 shrink-0 overflow-y-auto border-l border-[var(--edge)] p-3 text-sm">
             {selectedNode?.task && (
-              <div className="nm-card mb-3 rounded-[var(--r-md)] p-3" data-testid="graph-detail">
-                <p className="text-sm font-medium text-[var(--t1)]">{selectedNode.label}</p>
+              <div
+                className="nm-card mb-3 rounded-[var(--r-md)] p-3"
+                data-testid="graph-detail"
+              >
+                <p className="text-sm font-medium text-[var(--t1)]">
+                  {selectedNode.label}
+                </p>
                 <dl className="mt-2 space-y-1 text-xs text-[var(--t3)]">
                   <div className="flex justify-between gap-2">
                     <dt className="text-[var(--t5)]">状态</dt>
@@ -448,8 +479,9 @@ export default function GraphPage({
                   <div className="flex justify-between gap-2">
                     <dt className="text-[var(--t5)]">归属</dt>
                     <dd>
-                      {ownerChips.find((o) => o.id === (selectedNode.owner ?? SELF_OWNER))
-                        ?.name ?? "未知成员"}
+                      {ownerChips.find(
+                        (o) => o.id === (selectedNode.owner ?? SELF_OWNER),
+                      )?.name ?? "未知成员"}
                     </dd>
                   </div>
                   {selectedNode.task.due && (
@@ -462,14 +494,19 @@ export default function GraphPage({
                     <div className="flex justify-between gap-2">
                       <dt className="text-[var(--t5)]">完成于</dt>
                       <dd>
-                        {new Date(selectedNode.completedAt).toLocaleDateString()}
+                        {new Date(
+                          selectedNode.completedAt,
+                        ).toLocaleDateString()}
                       </dd>
                     </div>
                   )}
                   {(selectedNode.tags ?? []).length > 0 && (
                     <div className="flex flex-wrap justify-end gap-1 pt-0.5">
                       {selectedNode.tags!.map((t) => (
-                        <span key={t} className="nm-tag rounded-full px-1.5 text-[10px]">
+                        <span
+                          key={t}
+                          className="nm-tag rounded-full px-1.5 text-[10px]"
+                        >
                           {t}
                         </span>
                       ))}
@@ -510,22 +547,24 @@ export default function GraphPage({
             )}
             <FilterGroup title="状态">
               <div className="flex gap-1.5">
-                {(Object.keys(filters.status) as Array<keyof GraphFilters["status"]>).map(
-                  (s) => (
-                    <button
-                      key={s}
-                      onClick={() =>
-                        setFilters((f) => ({
-                          ...f,
-                          status: { ...f.status, [s]: !f.status[s] },
-                        }))
-                      }
-                      className={`${chipBase} ${filters.status[s] ? chipOn : chipOff}`}
-                    >
-                      {STATUS_LABELS[s]}
-                    </button>
-                  )
-                )}
+                {(
+                  Object.keys(filters.status) as Array<
+                    keyof GraphFilters["status"]
+                  >
+                ).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() =>
+                      setFilters((f) => ({
+                        ...f,
+                        status: { ...f.status, [s]: !f.status[s] },
+                      }))
+                    }
+                    className={`${chipBase} ${filters.status[s] ? chipOn : chipOff}`}
+                  >
+                    {STATUS_LABELS[s]}
+                  </button>
+                ))}
               </div>
             </FilterGroup>
 
@@ -536,7 +575,9 @@ export default function GraphPage({
                     key={o.id || "self"}
                     onClick={() => toggleOwner(o.id)}
                     className={`${chipBase} ${
-                      (filters.owners ?? ownerChips.map((x) => x.id)).includes(o.id)
+                      (filters.owners ?? ownerChips.map((x) => x.id)).includes(
+                        o.id,
+                      )
                         ? chipOn
                         : chipOff
                     }`}
@@ -566,7 +607,10 @@ export default function GraphPage({
                     <button
                       key={y}
                       onClick={() =>
-                        setFilters((f) => ({ ...f, year: f.year === y ? null : y }))
+                        setFilters((f) => ({
+                          ...f,
+                          year: f.year === y ? null : y,
+                        }))
                       }
                       className={`${chipBase} ${filters.year === y ? chipOn : chipOff}`}
                     >
@@ -589,7 +633,9 @@ export default function GraphPage({
                       }`}
                     >
                       {tag}
-                      <span className="text-[10px] text-[var(--t5)]">{count}</span>
+                      <span className="text-[10px] text-[var(--t5)]">
+                        {count}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -606,9 +652,9 @@ export default function GraphPage({
                     >
                       <input
                         type="checkbox"
-                        checked={
-                          (filters.workflowIds ?? workflows.map((x) => x.id)).includes(w.id)
-                        }
+                        checked={(
+                          filters.workflowIds ?? workflows.map((x) => x.id)
+                        ).includes(w.id)}
                         onChange={() => toggleWorkflow(w.id)}
                       />
                       <span className="truncate">{w.name}</span>
@@ -625,7 +671,10 @@ export default function GraphPage({
                   type="checkbox"
                   checked={filters.includeOrphans}
                   onChange={() =>
-                    setFilters((f) => ({ ...f, includeOrphans: !f.includeOrphans }))
+                    setFilters((f) => ({
+                      ...f,
+                      includeOrphans: !f.includeOrphans,
+                    }))
                   }
                 />
               </label>
@@ -644,7 +693,13 @@ export default function GraphPage({
   );
 }
 
-function FilterGroup({ title, children }: { title: string; children: ReactNode }) {
+function FilterGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) {
   return (
     <section className="mb-3">
       <h3 className="mb-1.5 text-xs font-medium text-[var(--t5)]">{title}</h3>

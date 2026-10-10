@@ -20,8 +20,7 @@ import type { Task } from "../types";
 type PaletteSession = { id: string; title: string };
 
 type Row =
-  | { kind: "task"; task: Task }
-  | { kind: "session"; session: PaletteSession };
+  { kind: "task"; task: Task } | { kind: "session"; session: PaletteSession };
 
 type CommandPaletteProps = {
   onClose: () => void;
@@ -40,9 +39,17 @@ function taskMeta(t: Task): string {
 }
 
 function TaskIcon({ task }: { task: Task }) {
-  if (task.deletedAt) return <Trash2 size={15} aria-hidden className="shrink-0 text-[var(--t4)]" />;
-  if (task.archived) return <Archive size={15} aria-hidden className="shrink-0 text-[var(--t4)]" />;
-  return <SquareKanban size={15} aria-hidden className="shrink-0 text-[var(--t4)]" />;
+  if (task.deletedAt)
+    return (
+      <Trash2 size={15} aria-hidden className="shrink-0 text-[var(--t4)]" />
+    );
+  if (task.archived)
+    return (
+      <Archive size={15} aria-hidden className="shrink-0 text-[var(--t4)]" />
+    );
+  return (
+    <SquareKanban size={15} aria-hidden className="shrink-0 text-[var(--t4)]" />
+  );
 }
 
 export function CommandPalette({
@@ -162,10 +169,14 @@ export function CommandPalette({
             return (
               <Fragment key={key}>
                 {i === 0 && taskCount > 0 && (
-                  <p className="px-2.5 pb-1 pt-2 text-[11px] text-[var(--t5)]">任务</p>
+                  <p className="px-2.5 pb-1 pt-2 text-[11px] text-[var(--t5)]">
+                    任务
+                  </p>
                 )}
                 {i === taskCount && i < rows.length && (
-                  <p className="px-2.5 pb-1 pt-2 text-[11px] text-[var(--t5)]">会话</p>
+                  <p className="px-2.5 pb-1 pt-2 text-[11px] text-[var(--t5)]">
+                    会话
+                  </p>
                 )}
                 <button
                   // 键盘导航集中在搜索框（↑↓/回车），结果行不进 Tab 序
@@ -182,7 +193,11 @@ export function CommandPalette({
                   {row.kind === "task" ? (
                     <TaskIcon task={row.task} />
                   ) : (
-                    <MessageSquare size={15} aria-hidden className="shrink-0 text-[var(--t4)]" />
+                    <MessageSquare
+                      size={15}
+                      aria-hidden
+                      className="shrink-0 text-[var(--t4)]"
+                    />
                   )}
                   <span className="min-w-0 flex-1 truncate">
                     {row.kind === "task"

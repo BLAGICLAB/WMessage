@@ -331,7 +331,7 @@ pub(crate) fn validate_decompose(
                 order.push(i);
                 for &d in &dependents[i] {
                     // done 节点不在（Kahn 已序）不减；重复减由 done_flags 屏蔽
-                    // （W7 r1 low：改为显式队列实现时须保留该守卫）
+                    // （改为显式队列实现时须保留该守卫）
                     if !done_flags[d] {
                         indegree[d] -= 1;
                     }

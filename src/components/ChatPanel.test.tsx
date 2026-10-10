@@ -18,7 +18,10 @@ const mocks = vi.hoisted(() => {
     (e: { payload: Record<string, unknown> }) => unknown
   > = [];
   // 按事件名捕获 listen 回调（chat-open-session 手动触发用）
-  const listeners: Record<string, Array<(e: { payload: Record<string, unknown> }) => void>> = {};
+  const listeners: Record<
+    string,
+    Array<(e: { payload: Record<string, unknown> }) => void>
+  > = {};
   return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners };
 });
 
@@ -39,7 +42,7 @@ const defaultInvoke = async (cmd: string) => {
       return null;
     case "bot_chat":
       return { text: "机器人回复", taskRefs: [] };
-    // MP-01：🧠 模型下拉的双命令（列表 + 窄口径切换）
+    // 双命令：🧠 模型下拉的列表 + 窄口径切换
     case "bot_get_config":
       return {
         baseUrl: "https://api.example.com/v1",
@@ -47,8 +50,18 @@ const defaultInvoke = async (cmd: string) => {
         apiProvider: "openai",
         modelsByProvider: {
           openai: [
-            { id: "m1", label: "MiniMax-M3", baseUrl: "https://api.example.com/v1", model: "MiniMax-M3" },
-            { id: "m2", label: "DeepSeek-V3", baseUrl: "https://api.deepseek.com", model: "deepseek-chat" },
+            {
+              id: "m1",
+              label: "MiniMax-M3",
+              baseUrl: "https://api.example.com/v1",
+              model: "MiniMax-M3",
+            },
+            {
+              id: "m2",
+              label: "DeepSeek-V3",
+              baseUrl: "https://api.deepseek.com",
+              model: "deepseek-chat",
+            },
           ],
           anthropic: [],
         },
@@ -89,7 +102,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     onDragDropEvent: async (
-      cb: (e: { payload: Record<string, unknown> }) => unknown
+      cb: (e: { payload: Record<string, unknown> }) => unknown,
     ) => {
       mocks.dragDropHandlers.push(cb);
       return () => {};
@@ -101,8 +114,6 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
-
-
 
 // navigator.clipboard.writeText
 const writeTextMock = vi.fn(async () => {});
@@ -136,7 +147,9 @@ describe("ChatPanel", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
     });
     expect(
-      await screen.findByText(/跟我说：新建任务|输入 \/ 看可用命令/, { exact: false })
+      await screen.findByText(/跟我说：新建任务|输入 \/ 看可用命令/, {
+        exact: false,
+      }),
     ).toBeInTheDocument();
     // 会话标题
     expect(screen.getByText("默认会话")).toBeInTheDocument();
@@ -163,7 +176,7 @@ describe("ChatPanel", () => {
           messages: expect.arrayContaining([
             expect.objectContaining({ role: "user", content: "你好" }),
           ]),
-        })
+        }),
       );
     });
     // 流式完成后机器人回复渲染
@@ -208,10 +221,14 @@ describe("ChatPanel", () => {
     await user.keyboard("{Enter}");
     // busy=true：发送键消失，红描边圆形停止键出现
     const stopBtn = await screen.findByTitle("停止当前回复");
-    expect(screen.queryByRole("button", { name: "发送" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "发送" }),
+    ).not.toBeInTheDocument();
     await user.click(stopBtn);
     // /stop 按会话停止——携带当前会话 id
-    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop", { sessionId: "s1" });
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop", {
+      sessionId: "s1",
+    });
   });
 
   it("推理强度：默认跟随后台（中·默认）随发送传入；会话覆盖只影响本会话且不回写（RE-1）", async () => {
@@ -232,32 +249,35 @@ describe("ChatPanel", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_chat",
-        expect.objectContaining({ reasoningEffort: "medium" })
+        expect.objectContaining({ reasoningEffort: "medium" }),
       );
     });
     expect(await screen.findByText("机器人回复")).toBeInTheDocument();
 
     // 打开覆盖下拉选「高」→ 按钮去掉「·默认」角标
     await user.click(
-      screen.getByTitle("推理强度：只影响当前会话的发送，不写入设置")
+      screen.getByTitle("推理强度：只影响当前会话的发送，不写入设置"),
     );
     await user.click(await screen.findByText("高"));
     expect(screen.getByText("高")).toBeInTheDocument();
 
     // 第二条发送：reasoningEffort 变为 high
-    await user.type(screen.getByPlaceholderText(/和机器人说点什么/), "再来一条");
+    await user.type(
+      screen.getByPlaceholderText(/和机器人说点什么/),
+      "再来一条",
+    );
     await user.keyboard("{Enter}");
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_chat",
-        expect.objectContaining({ reasoningEffort: "high" })
+        expect.objectContaining({ reasoningEffort: "high" }),
       );
     });
 
     // 覆盖不回写后台：全程不应出现 bot_set_config
     expect(mocks.invokeMock).not.toHaveBeenCalledWith(
       "bot_set_config",
-      expect.anything()
+      expect.anything(),
     );
   });
 
@@ -300,14 +320,15 @@ describe("ChatPanel", () => {
           messages: expect.arrayContaining([
             expect.objectContaining({ role: "user", content: "给一会的草稿" }),
           ]),
-        })
+        }),
       );
     });
   });
 
   it("确认弹窗按会话过滤：别的会话的 bot-confirm 不弹窗（2026-08-26 会话隔离）", async () => {
     // 捕获 ChatPanel 注册的 bot-confirm 监听器
-    let confirmHandler: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    let confirmHandler:
+      ((e: { payload: Record<string, unknown> }) => void) | null = null;
     mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
       if (event === "bot-confirm") confirmHandler = cb as typeof confirmHandler;
       return () => {};
@@ -320,22 +341,42 @@ describe("ChatPanel", () => {
     await act(async () => {});
     expect(confirmHandler).not.toBeNull();
     const fire = (payload: Record<string, unknown>) =>
-      (confirmHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });
+      (
+        confirmHandler as unknown as (e: {
+          payload: Record<string, unknown>;
+        }) => void
+      )({ payload });
     // 别的会话（sessionId 不匹配）→ 不弹
-    fire({ id: "c1", tool: "delete_task", detail: "别会话任务", sessionId: "other-session" });
+    fire({
+      id: "c1",
+      tool: "delete_task",
+      detail: "别会话任务",
+      sessionId: "other-session",
+    });
     expect(screen.queryByText(/别会话任务/)).not.toBeInTheDocument();
     // 无 sessionId（后台任务）→ 不弹
-    fire({ id: "c2", tool: "delete_task", detail: "后台任务", sessionId: null });
+    fire({
+      id: "c2",
+      tool: "delete_task",
+      detail: "后台任务",
+      sessionId: null,
+    });
     expect(screen.queryByText(/后台任务/)).not.toBeInTheDocument();
     // 当前会话（s1，初始加载的默认会话）→ 弹
-    fire({ id: "c3", tool: "delete_task", detail: "本会话任务", sessionId: "s1" });
+    fire({
+      id: "c3",
+      tool: "delete_task",
+      detail: "本会话任务",
+      sessionId: "s1",
+    });
     expect(await screen.findByText(/本会话任务/)).toBeInTheDocument();
   });
 
   it("流式事件按会话过滤：别会话的 bot-chat-delta 被忽略，本会话的才追加（2026-08-28 批次3审计 P0-2）", async () => {
     const user = userEvent.setup();
     // 捕获 ChatPanel 注册的 bot-chat-delta 监听器
-    let deltaHandler: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    let deltaHandler:
+      ((e: { payload: Record<string, unknown> }) => void) | null = null;
     mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
       if (event === "bot-chat-delta") deltaHandler = cb as typeof deltaHandler;
       return () => {};
@@ -355,9 +396,15 @@ describe("ChatPanel", () => {
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
     const fire = (payload: Record<string, unknown>) =>
-      (deltaHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });
+      (
+        deltaHandler as unknown as (e: {
+          payload: Record<string, unknown>;
+        }) => void
+      )({ payload });
     // 别的会话的增量 → 忽略（streaming 气泡内容不变）
-    await act(async () => fire({ text: "别会话输出", sessionId: "other-session" }));
+    await act(async () =>
+      fire({ text: "别会话输出", sessionId: "other-session" }),
+    );
     expect(screen.queryByText("别会话输出")).not.toBeInTheDocument();
     // 无归属（后台任务不推流，双保险）→ 忽略
     await act(async () => fire({ text: "无归属输出", sessionId: null }));
@@ -369,7 +416,8 @@ describe("ChatPanel", () => {
 
   it("流式增量 16ms 合并：同帧多条 delta 攒成一次写入，内容不丢且保持到达顺序", async () => {
     const user = userEvent.setup();
-    let deltaHandler: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    let deltaHandler:
+      ((e: { payload: Record<string, unknown> }) => void) | null = null;
     mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
       if (event === "bot-chat-delta") deltaHandler = cb as typeof deltaHandler;
       return () => {};
@@ -386,7 +434,11 @@ describe("ChatPanel", () => {
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
     const fire = (payload: Record<string, unknown>) =>
-      (deltaHandler as unknown as (e: { payload: Record<string, unknown> }) => void)({ payload });
+      (
+        deltaHandler as unknown as (e: {
+          payload: Record<string, unknown>;
+        }) => void
+      )({ payload });
 
     // 同一帧内连发三条：合并窗口内不立刻写 state（这是「合并」的直接证据）
     await act(async () => {
@@ -411,7 +463,9 @@ describe("ChatPanel", () => {
             content: "思考后的答案",
             refsJson: null,
             thinking: "我在想……",
-            toolsJson: JSON.stringify([{ id: "t1", name: "search", args: '{}', done: true }]),
+            toolsJson: JSON.stringify([
+              { id: "t1", name: "search", args: "{}", done: true },
+            ]),
           },
         ];
       }
@@ -433,7 +487,12 @@ describe("ChatPanel", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
       if (cmd === "bot_history_load") return [];
-      if (cmd === "bot_chat") throw { code: "LLM_API_ERROR", message: "API 配额超限", recoverable: true };
+      if (cmd === "bot_chat")
+        throw {
+          code: "LLM_API_ERROR",
+          message: "API 配额超限",
+          recoverable: true,
+        };
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
@@ -454,7 +513,7 @@ describe("ChatPanel", () => {
       async (event: string, cb: (e: { payload: unknown }) => void) => {
         listeners.set(event, cb);
         return () => {};
-      }
+      },
     );
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
@@ -462,7 +521,8 @@ describe("ChatPanel", () => {
       if (cmd === "bot_execute_task")
         throw {
           code: "TASK_INVALID_STATE",
-          message: "任务状态不允许该操作：该任务卡正在执行中，请等待完成后再触发",
+          message:
+            "任务状态不允许该操作：该任务卡正在执行中，请等待完成后再触发",
           recoverable: true,
         };
       return null;
@@ -473,11 +533,13 @@ describe("ChatPanel", () => {
         expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
       });
       await act(async () => {
-        listeners.get("execute-task")?.({ payload: { id: "t-reentry", title: "测试任务" } });
+        listeners.get("execute-task")?.({
+          payload: { id: "t-reentry", title: "测试任务" },
+        });
       });
       // 本地 ⏳ 提示（透传后端 message），不产生 ⚠️ 错误气泡
       expect(
-        await screen.findByText(/⏳ 任务状态不允许该操作：该任务卡正在执行中/)
+        await screen.findByText(/⏳ 任务状态不允许该操作：该任务卡正在执行中/),
       ).toBeInTheDocument();
       expect(screen.queryByText(/⚠️/)).not.toBeInTheDocument();
     } finally {
@@ -495,14 +557,22 @@ describe("ChatPanel", () => {
     // enter 悬停 → 提示层出现
     await act(async () => {
       await handler({
-        payload: { type: "enter", paths: ["/tmp/a.docx"], position: { x: 0, y: 0 } },
+        payload: {
+          type: "enter",
+          paths: ["/tmp/a.docx"],
+          position: { x: 0, y: 0 },
+        },
       });
     });
     expect(await screen.findByText("松开以添加文件")).toBeInTheDocument();
     // drop 在区内 → 加入附件芯片，提示层消失
     await act(async () => {
       await handler({
-        payload: { type: "drop", paths: ["/tmp/a.docx"], position: { x: 0, y: 0 } },
+        payload: {
+          type: "drop",
+          paths: ["/tmp/a.docx"],
+          position: { x: 0, y: 0 },
+        },
       });
     });
     expect(await screen.findByText(/a\.docx/)).toBeInTheDocument();
@@ -510,14 +580,22 @@ describe("ChatPanel", () => {
     // 同一路径再拖一次 → 去重，仍只有一个芯片
     await act(async () => {
       await handler({
-        payload: { type: "drop", paths: ["/tmp/a.docx"], position: { x: 0, y: 0 } },
+        payload: {
+          type: "drop",
+          paths: ["/tmp/a.docx"],
+          position: { x: 0, y: 0 },
+        },
       });
     });
     expect(screen.getAllByText(/a\.docx/)).toHaveLength(1);
     // drop 在聊天区外（任务列表区）→ 不添加
     await act(async () => {
       await handler({
-        payload: { type: "drop", paths: ["/tmp/b.pdf"], position: { x: 10, y: 10 } },
+        payload: {
+          type: "drop",
+          paths: ["/tmp/b.pdf"],
+          position: { x: 10, y: 10 },
+        },
       });
     });
     expect(screen.queryByText(/b\.pdf/)).not.toBeInTheDocument();
@@ -528,29 +606,52 @@ describe("ChatPanel", () => {
   it("chat-open-session 非 busy：直接切换到执行会话并加载其历史", async () => {
     // 前面的用例会把 listenMock 恢复成不记录的默认实现，这里显式重设
     mocks.listenMock.mockImplementation(
-      async (event: string, cb: (e: { payload: Record<string, unknown> }) => void) => {
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
         (mocks.listeners[event] ??= []).push(cb);
         return () => {};
-      }
+      },
     );
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
-      if (cmd === "bot_history_load")
-        return args?.sessionId === "s-exec"
-          ? [{ role: "user", content: "[任务卡执行]\nid=t1\n标题：写报告", refsJson: null, thinking: null, toolsJson: null }]
-          : [];
-      return null;
-    });
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_sessions_load")
+          return [{ id: "s1", title: "默认会话" }];
+        if (cmd === "bot_history_load")
+          return args?.sessionId === "s-exec"
+            ? [
+                {
+                  role: "user",
+                  content: "[任务卡执行]\nid=t1\n标题：写报告",
+                  refsJson: null,
+                  thinking: null,
+                  toolsJson: null,
+                },
+              ]
+            : [];
+        return null;
+      },
+    );
     render(<ChatPanel {...defaultProps} />);
     expect(await screen.findByText("默认会话")).toBeInTheDocument();
     await act(async () => {
       for (const cb of mocks.listeners["chat-open-session"] ?? []) {
-        cb({ payload: { sessionId: "s-exec", taskId: "t1", title: "📋 任务：写报告", origin: "manual" } });
+        cb({
+          payload: {
+            sessionId: "s-exec",
+            taskId: "t1",
+            title: "📋 任务：写报告",
+            origin: "manual",
+          },
+        });
       }
     });
     // 切到执行会话：加载其历史，任务块渲染出来
     await waitFor(() =>
-      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" })
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", {
+        sessionId: "s-exec",
+      }),
     );
     expect(await screen.findByText(/\[任务卡执行\]/)).toBeInTheDocument();
     // 会话列表已含新会话
@@ -559,24 +660,41 @@ describe("ChatPanel", () => {
 
   it("chat-open-session 迟到（execute-task 已收尾）：失败任务不自动跳转让用户决定；成功任务切过去只读查看", async () => {
     mocks.listenMock.mockImplementation(
-      async (event: string, cb: (e: { payload: Record<string, unknown> }) => void) => {
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
         (mocks.listeners[event] ??= []).push(cb);
         return () => {};
-      }
+      },
     );
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
-      if (cmd === "bot_execute_task") {
-        if (args?.taskId === "t-fail")
-          throw { code: "TASK_INVALID_STATE", message: "任务失败" } as unknown;
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_sessions_load")
+          return [{ id: "s1", title: "默认会话" }];
+        if (cmd === "bot_execute_task") {
+          if (args?.taskId === "t-fail")
+            throw {
+              code: "TASK_INVALID_STATE",
+              message: "任务失败",
+            } as unknown;
+          return null;
+        }
+        if (cmd === "bot_history_load")
+          return args?.sessionId === "s-done"
+            ? [
+                {
+                  role: "user",
+                  content: "[任务卡执行]\nid=t-done\n标题：已完成",
+                  refsJson: null,
+                  thinking: null,
+                  toolsJson: null,
+                },
+              ]
+            : [];
         return null;
-      }
-      if (cmd === "bot_history_load")
-        return args?.sessionId === "s-done"
-          ? [{ role: "user", content: "[任务卡执行]\nid=t-done\n标题：已完成", refsJson: null, thinking: null, toolsJson: null }]
-          : [];
-      return null;
-    });
+      },
+    );
     render(<ChatPanel {...defaultProps} />);
     expect(await screen.findByText("默认会话")).toBeInTheDocument();
     // 两张卡都收尾（一成一败）——收尾顺序在迟到事件之前
@@ -590,7 +708,9 @@ describe("ChatPanel", () => {
     // 迟到的失败任务 open-session：不自动切（历史不加载，用户自行决定是否重试/查看）
     await act(async () => {
       for (const cb of mocks.listeners["chat-open-session"] ?? []) {
-        cb({ payload: { sessionId: "s-fail", taskId: "t-fail", title: "失败任务" } });
+        cb({
+          payload: { sessionId: "s-fail", taskId: "t-fail", title: "失败任务" },
+        });
       }
     });
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_history_load", {
@@ -599,24 +719,34 @@ describe("ChatPanel", () => {
     // 迟到的成功任务 open-session：切过去查看最终历史
     await act(async () => {
       for (const cb of mocks.listeners["chat-open-session"] ?? []) {
-        cb({ payload: { sessionId: "s-done", taskId: "t-done", title: "成功任务" } });
+        cb({
+          payload: { sessionId: "s-done", taskId: "t-done", title: "成功任务" },
+        });
       }
     });
     await waitFor(() =>
-      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-done" })
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", {
+        sessionId: "s-done",
+      }),
     );
     expect(await screen.findByText(/\[任务卡执行\]/)).toBeInTheDocument();
   });
 
   it("chat-open-session busy：跳转排队，当前轮结束后出现「查看执行对话」按钮，点击切换", async () => {
     mocks.listenMock.mockImplementation(
-      async (event: string, cb: (e: { payload: Record<string, unknown> }) => void) => {
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
         (mocks.listeners[event] ??= []).push(cb);
         return () => {};
-      }
+      },
     );
     const user = userEvent.setup();
-    let releaseChat: (v: { text: string; taskRefs: never[] }) => void = () => {};
+    let releaseChat: (v: {
+      text: string;
+      taskRefs: never[];
+    }) => void = () => {};
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
       if (cmd === "bot_history_load") return [];
@@ -634,11 +764,20 @@ describe("ChatPanel", () => {
     // busy 中收到 chat-open-session → 不切换、不读执行会话历史
     await act(async () => {
       for (const cb of mocks.listeners["chat-open-session"] ?? []) {
-        cb({ payload: { sessionId: "s-exec", taskId: "t1", title: "📋 任务：写报告", origin: "scheduled" } });
+        cb({
+          payload: {
+            sessionId: "s-exec",
+            taskId: "t1",
+            title: "📋 任务：写报告",
+            origin: "scheduled",
+          },
+        });
       }
     });
     expect(screen.getByText("默认会话")).toBeInTheDocument();
-    expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" });
+    expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_history_load", {
+      sessionId: "s-exec",
+    });
     // 当前轮结束 → 排队跳转兑现为提示 + 按钮
     await act(async () => {
       releaseChat({ text: "回复", taskRefs: [] });
@@ -647,11 +786,13 @@ describe("ChatPanel", () => {
     const btn = await screen.findByText("查看执行对话");
     await user.click(btn);
     await waitFor(() =>
-      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", { sessionId: "s-exec" })
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", {
+        sessionId: "s-exec",
+      }),
     );
   });
 
-  // ── MP-01：🧠 模型下拉 ──
+  // ── 双命令：🧠 模型下拉 ──
 
   it("点 🧠 弹出当前协议模型列表，再点收起", async () => {
     const user = userEvent.setup();
@@ -687,9 +828,26 @@ describe("ChatPanel", () => {
           apiProvider: "openai",
           modelsByProvider: {
             openai: [
-              { id: "m1", label: "DeepSeek Chat", baseUrl: "https://api.deepseek.com", model: "deepseek-chat", vendor: "DeepSeek" },
-              { id: "m2", label: "Kimi K3", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k3", vendor: "Kimi" },
-              { id: "m3", label: "自建直连", baseUrl: "https://llm.example.com/v1", model: "my-model" },
+              {
+                id: "m1",
+                label: "DeepSeek Chat",
+                baseUrl: "https://api.deepseek.com",
+                model: "deepseek-chat",
+                vendor: "DeepSeek",
+              },
+              {
+                id: "m2",
+                label: "Kimi K3",
+                baseUrl: "https://api.moonshot.cn/v1",
+                model: "kimi-k3",
+                vendor: "Kimi",
+              },
+              {
+                id: "m3",
+                label: "自建直连",
+                baseUrl: "https://llm.example.com/v1",
+                model: "my-model",
+              },
             ],
             anthropic: [],
           },
@@ -716,12 +874,15 @@ describe("ChatPanel", () => {
   it("busy 中切换/新建/删除（拦回复中会话），回复仍落原会话", async () => {
     const user = userEvent.setup();
     // 捕获事件监听器（手动触发流式增量用）
-    const evListeners: Record<string, ((e: { payload: unknown }) => void)[]> = {};
+    const evListeners: Record<string, ((e: { payload: unknown }) => void)[]> =
+      {};
     const prevListenImpl = mocks.listenMock.getMockImplementation();
-    mocks.listenMock.mockImplementation(async (ev: string, cb: (e: { payload: unknown }) => void) => {
-      (evListeners[ev] ??= []).push(cb);
-      return () => {};
-    });
+    mocks.listenMock.mockImplementation(
+      async (ev: string, cb: (e: { payload: unknown }) => void) => {
+        (evListeners[ev] ??= []).push(cb);
+        return () => {};
+      },
+    );
     const historyLoads: unknown[] = [];
     const saves: Array<Record<string, unknown> | undefined> = [];
     let releaseChat!: (v: { text: string; taskRefs: [] }) => void;
@@ -729,27 +890,29 @@ describe("ChatPanel", () => {
       releaseChat = r;
     });
     const prevInvokeImpl = mocks.invokeMock.getMockImplementation();
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      switch (cmd) {
-        case "bot_sessions_load":
-          return [
-            { id: "s1", title: "默认会话" },
-            { id: "s2", title: "另一个" },
-          ];
-        case "bot_chat":
-          return chatGate;
-        case "bot_history_load":
-          historyLoads.push(args?.sessionId);
-          return [];
-        case "bot_history_save":
-          saves.push(args);
-          return null;
-        case "bot_session_create":
-          return { id: "s-new", title: "新对话" };
-        default:
-          return defaultInvoke(cmd);
-      }
-    });
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        switch (cmd) {
+          case "bot_sessions_load":
+            return [
+              { id: "s1", title: "默认会话" },
+              { id: "s2", title: "另一个" },
+            ];
+          case "bot_chat":
+            return chatGate;
+          case "bot_history_load":
+            historyLoads.push(args?.sessionId);
+            return [];
+          case "bot_history_save":
+            saves.push(args);
+            return null;
+          case "bot_session_create":
+            return { id: "s-new", title: "新对话" };
+          default:
+            return defaultInvoke(cmd);
+        }
+      },
+    );
     try {
       render(<ChatPanel {...defaultProps} />);
       await screen.findByText("默认会话");
@@ -760,7 +923,7 @@ describe("ChatPanel", () => {
       await waitFor(() => {
         expect(mocks.invokeMock).toHaveBeenCalledWith(
           "bot_chat",
-          expect.objectContaining({ sessionId: "s1" })
+          expect.objectContaining({ sessionId: "s1" }),
         );
       });
       // busy 中切换到 s2 → 允许（回归钉 1：不再被 busy 拦截）
@@ -782,19 +945,23 @@ describe("ChatPanel", () => {
       const s1Row = screen.getByText("默认会话").closest("div");
       await user.click(within(s1Row!).getByTitle("删除此对话"));
       expect(
-        mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_session_delete")
+        mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_session_delete"),
       ).toBe(false);
       confirmSpy.mockRestore();
       // 删除守卫返回后菜单仍开：busy 中新建对话 → 允许（回归钉 2）
       await user.click(screen.getByText("新建对话"));
       await waitFor(() => {
-        expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_create", { title: null });
+        expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_create", {
+          title: null,
+        });
       });
       // 切回 s1（回复仍在进行）→ 允许并补占位气泡（s1 的 history_load 比挂载时 +1）
       const s1LoadsBefore = historyLoads.filter((x) => x === "s1").length;
       await user.click(screen.getByTitle("切换会话"));
       await user.click(await screen.findByText("默认会话"));
-      expect(historyLoads.filter((x) => x === "s1").length).toBe(s1LoadsBefore + 1);
+      expect(historyLoads.filter((x) => x === "s1").length).toBe(
+        s1LoadsBefore + 1,
+      );
       // 收尾：回复落回原会话 s1（不串台核心钉 3），绝不写 s2
       await act(async () => {
         releaseChat({ text: "回复A", taskRefs: [] });
@@ -809,9 +976,9 @@ describe("ChatPanel", () => {
         sessionId: string;
         messages: { role: string; content: string }[];
       };
-      expect(
-        lastSave.messages[lastSave.messages.length - 1].content
-      ).toBe("回复A");
+      expect(lastSave.messages[lastSave.messages.length - 1].content).toBe(
+        "回复A",
+      );
     } finally {
       mocks.invokeMock.mockImplementation(prevInvokeImpl!);
       mocks.listenMock.mockImplementation(prevListenImpl!);
@@ -840,7 +1007,7 @@ describe("ChatPanel", () => {
     expect(mocks.emitMock).toHaveBeenCalledWith("bot-config-changed", null);
   });
 
-  it("模型下拉双协议同列：两组分组展示，跨协议选中连协议一起切（MP-02）", async () => {
+  it("模型下拉双协议同列：两组分组展示，跨协议选中连协议一起切", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_config")
@@ -850,10 +1017,20 @@ describe("ChatPanel", () => {
           apiProvider: "openai",
           modelsByProvider: {
             openai: [
-              { id: "m1", label: "GLM-5.3-Flash", baseUrl: "https://a.example/v1", model: "glm-5.3-flash" },
+              {
+                id: "m1",
+                label: "GLM-5.3-Flash",
+                baseUrl: "https://a.example/v1",
+                model: "glm-5.3-flash",
+              },
             ],
             anthropic: [
-              { id: "m2", label: "Claude Sonnet", baseUrl: "https://b.example", model: "claude-sonnet" },
+              {
+                id: "m2",
+                label: "Claude Sonnet",
+                baseUrl: "https://b.example",
+                model: "claude-sonnet",
+              },
             ],
           },
           activeModelId: { openai: "m1", anthropic: "m2" },
@@ -899,25 +1076,27 @@ describe("ChatPanel", () => {
     const chatCalls: Array<Record<string, unknown> | undefined> = [];
     const saves: Array<Record<string, unknown> | undefined> = [];
     const prevInvokeImpl = mocks.invokeMock.getMockImplementation();
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      switch (cmd) {
-        case "bot_sessions_load":
-          return [
-            { id: "s1", title: "默认会话" },
-            { id: "s2", title: "另一个" },
-          ];
-        case "bot_chat":
-          chatCalls.push(args);
-          return chatCalls.length === 1 ? gate1 : gate2;
-        case "bot_history_load":
-          return [];
-        case "bot_history_save":
-          saves.push(args);
-          return null;
-        default:
-          return defaultInvoke(cmd);
-      }
-    });
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        switch (cmd) {
+          case "bot_sessions_load":
+            return [
+              { id: "s1", title: "默认会话" },
+              { id: "s2", title: "另一个" },
+            ];
+          case "bot_chat":
+            chatCalls.push(args);
+            return chatCalls.length === 1 ? gate1 : gate2;
+          case "bot_history_load":
+            return [];
+          case "bot_history_save":
+            saves.push(args);
+            return null;
+          default:
+            return defaultInvoke(cmd);
+        }
+      },
+    );
     try {
       render(<ChatPanel {...defaultProps} />);
       await screen.findByText("默认会话");
@@ -955,11 +1134,146 @@ describe("ChatPanel", () => {
       const s2Save = saves.find((sv) => sv?.sessionId === "s2") as {
         messages: { role: string; content: string }[];
       };
-      expect(s2Save.messages.some((m) => m.content.includes("问题二"))).toBe(true);
-      expect(s2Save.messages.some((m) => m.content.includes("答二"))).toBe(true);
-      expect(s2Save.messages.some((m) => m.content.includes("答一"))).toBe(false);
+      expect(s2Save.messages.some((m) => m.content.includes("问题二"))).toBe(
+        true,
+      );
+      expect(s2Save.messages.some((m) => m.content.includes("答二"))).toBe(
+        true,
+      );
+      expect(s2Save.messages.some((m) => m.content.includes("答一"))).toBe(
+        false,
+      );
     } finally {
       mocks.invokeMock.mockImplementation(prevInvokeImpl!);
+    }
+  });
+
+  // ── sessionIdRef 镜像同步落：挂载恢复 / 删除末会话重建两条 await 窗口 ──
+
+  it("挂载恢复历史期间已切走：过期历史不得盖掉新会话视图（镜像同步落 + 守卫）", async () => {
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    let releaseHistory: (() => void) | null = null;
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_sessions_load")
+          return [{ id: "s1", title: "默认会话" }];
+        if (cmd === "bot_history_load") {
+          if (args?.sessionId === "s2") return [];
+          return new Promise((res) => {
+            releaseHistory = () =>
+              res([
+                {
+                  role: "user",
+                  content: "s1 的迟到历史",
+                  refsJson: null,
+                  thinking: null,
+                  toolsJson: null,
+                },
+              ]);
+          });
+        }
+        return defaultInvoke(cmd);
+      },
+    );
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      // 挂载流程停在 history_load 在途（镜像此刻必须已同步落，见 ChatPanel 挂载分支）
+      await vi.waitFor(() => expect(releaseHistory).not.toBeNull());
+      // 历史在途时跨窗口跳会话（⌘K）：switchSession 同步镜像 ref 到 s2
+      await act(async () => {
+        for (const cb of mocks.listeners["chat-focus-session"] ?? []) {
+          cb({ payload: { sessionId: "s2" } });
+        }
+      });
+      await act(async () => {
+        releaseHistory?.();
+      });
+      // s1 的迟到历史被守卫丢弃，不得盖掉 s2 的视图
+      expect(screen.queryByText("s1 的迟到历史")).not.toBeInTheDocument();
+    } finally {
+      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.listenMock.mockImplementation(async () => () => {});
+    }
+  });
+
+  it("删除末会话触发的重建：创建期间已切走则不抢占视图，镜像落在新会话", async () => {
+    const user = userEvent.setup();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    let releaseCreate: ((s: { id: string; title: string }) => void) | null =
+      null;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_session_create") {
+        return new Promise((res) => {
+          releaseCreate = (s) => res(s);
+        });
+      }
+      return defaultInvoke(cmd);
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findByText("默认会话");
+      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      await user.click(screen.getByTitle("切换会话"));
+      await user.click(screen.getByTitle("删除此对话"));
+      await waitFor(() =>
+        expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_create", {
+          title: null,
+        }),
+      );
+      // 创建在途：跨窗口跳到 s2
+      await act(async () => {
+        for (const cb of mocks.listeners["chat-focus-session"] ?? []) {
+          cb({ payload: { sessionId: "s2" } });
+        }
+      });
+      await act(async () => {
+        releaseCreate?.({ id: "s3", title: "重建会话" });
+      });
+      // 守卫生效：视图不被重建会话抢占，ref 仍指向 s2（s2 的确认弹窗能收到）
+      const fireConfirm = (payload: Record<string, unknown>) => {
+        for (const cb of mocks.listeners["bot-confirm"] ?? []) {
+          cb({ payload });
+        }
+      };
+      fireConfirm({
+        id: "c1",
+        tool: "delete_task",
+        detail: "s2 的确认",
+        sessionId: "s2",
+      });
+      expect(await screen.findByText(/s2 的确认/)).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "允许" }));
+      expect(screen.queryByText(/s2 的确认/)).not.toBeInTheDocument();
+      // s3 从未成为当前会话：镜像未被抢占改写
+      fireConfirm({
+        id: "c2",
+        tool: "delete_task",
+        detail: "s3 的确认",
+        sessionId: "s3",
+      });
+      expect(screen.queryByText(/s3 的确认/)).not.toBeInTheDocument();
+      confirmSpy.mockRestore();
+    } finally {
+      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.listenMock.mockImplementation(async () => () => {});
     }
   });
 });

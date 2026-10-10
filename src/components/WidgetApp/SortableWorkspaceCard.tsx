@@ -4,7 +4,10 @@
 
 import type { ReactNode } from "react";
 import { CSS } from "@dnd-kit/utilities";
-import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
+import type {
+  DraggableAttributes,
+  DraggableSyntheticListeners,
+} from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 
 import type { WorkspaceItem } from "../../types";
@@ -14,8 +17,7 @@ import type { WorkspaceItem } from "../../types";
 // 注：DraggableSyntheticListeners 的 index signature（Function）与 attributes 的 role: string
 // 不能干净相交，构造处用 as 断言（运行时就是普通 props 对象）。
 export type SortableHandleProps =
-  | (DraggableAttributes & DraggableSyntheticListeners)
-  | undefined;
+  (DraggableAttributes & DraggableSyntheticListeners) | undefined;
 
 export function SortableWorkspaceCard({
   it,
@@ -24,8 +26,14 @@ export function SortableWorkspaceCard({
   it: WorkspaceItem;
   children: (handleProps: SortableHandleProps) => ReactNode;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: it.id });
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: it.id });
   const style = { transform: CSS.Transform.toString(transform), transition };
   return (
     <div
@@ -35,8 +43,11 @@ export function SortableWorkspaceCard({
     >
       {children(
         listeners
-          ? ({ ...attributes, ...listeners } as NonNullable<SortableHandleProps>)
-          : undefined
+          ? ({
+              ...attributes,
+              ...listeners,
+            } as NonNullable<SortableHandleProps>)
+          : undefined,
       )}
     </div>
   );

@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
+import {
+  isPermissionGranted,
+  requestPermission,
+} from "@tauri-apps/plugin-notification";
 import {
   Activity as ActivityIcon,
   AlarmClock,
@@ -36,7 +39,21 @@ import {
   pendingNotificationCount,
 } from "./lib/notifications";
 import ConfirmMap from "./components/ConfirmMap";
-import { deleteTaskRows, diffTaskRows, loadTasksFromDb, taskEq, upsertTasks, exportTasksToFile, importTasksFromFile, exportWorkspaceToFile, importWorkspaceFromFile, STORAGE_KEY, sortByOrder, assignInsertOrder, upsertWorkspaceItems } from "./storage";
+import {
+  deleteTaskRows,
+  diffTaskRows,
+  loadTasksFromDb,
+  taskEq,
+  upsertTasks,
+  exportTasksToFile,
+  importTasksFromFile,
+  exportWorkspaceToFile,
+  importWorkspaceFromFile,
+  STORAGE_KEY,
+  sortByOrder,
+  assignInsertOrder,
+  upsertWorkspaceItems,
+} from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
 import { unlistenSafe } from "./lib/useTauriListen";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
@@ -51,7 +68,13 @@ import {
   WORKFLOW_VISIBILITY_EVENT,
 } from "./lib/workflowVisibility";
 
-import { applySetting, getSetting, subscribeSystem, subscribeTheme, toggleTheme } from "./theme";
+import {
+  applySetting,
+  getSetting,
+  subscribeSystem,
+  subscribeTheme,
+  toggleTheme,
+} from "./theme";
 import {
   applyBubbleStyle,
   applyBubbleStyleDom,
@@ -62,7 +85,7 @@ import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
 import type { Task, ColumnId, WorkspaceItem } from "./types";
 
-//  + 修：mutate 串行化队列必须在**模块作用域**（App() 内会被每
+// 修：mutate 串行化队列必须在**模块作用域**（App() 内会被每
 //   次 render 重建 → 跨 render 的并发 mutate 落到不同链 → 串行化失效）。
 //   抬到此处后全 App 实例共享同一链，跨 render 与 unmount/remount 都能衔接。
 const mutating: { chain: Promise<void> } = { chain: Promise.resolve() };
@@ -78,14 +101,19 @@ const SEED: Task[] = [
       { id: "s2", text: "定里程碑计划", done: false },
     ],
   },
-  { id: "t2", title: "过一遍新拟态样式细节", due: "2026-08-14T18:00", column: "doing" },
+  {
+    id: "t2",
+    title: "过一遍新拟态样式细节",
+    due: "2026-08-14T18:00",
+    column: "doing",
+  },
   { id: "t3", title: "完成看板拖拽原型", column: "done" },
 ];
 
 function localDateStr(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
+    d.getDate(),
   ).padStart(2, "0")}`;
 }
 
@@ -101,13 +129,14 @@ type RailView =
   | "workspace"
   | "trash"
   | "notifications";
-const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] = [
-  { key: "board", label: "首页", icon: SquareKanban },
-  { key: "graph", label: "图谱", icon: Waypoints },
-  { key: "archive", label: "归档", icon: Archive },
-  { key: "workspace", label: "工作区", icon: FolderOpen },
-  { key: "trash", label: "回收站", icon: Trash2 },
-];
+const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] =
+  [
+    { key: "board", label: "首页", icon: SquareKanban },
+    { key: "graph", label: "图谱", icon: Waypoints },
+    { key: "archive", label: "归档", icon: Archive },
+    { key: "workspace", label: "工作区", icon: FolderOpen },
+    { key: "trash", label: "回收站", icon: Trash2 },
+  ];
 const AGENT_ITEMS: {
   key: RailView;
   label: string;
@@ -123,9 +152,11 @@ const AGENT_ITEMS: {
   { key: "notifications", label: "通知", icon: Bell, badge: true },
 ];
 
-/** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。 *  userAgent 而非已废弃的 navigator.platform（后者在现代浏览器可能返回空串） */
+/** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。
+ *  userAgent 而非已废弃的 navigator.platform（后者在现代浏览器可能返回空串） */
 const IS_MAC =
-  typeof navigator !== "undefined" && /Mac|iP(hone|ad|od)/.test(navigator.userAgent);
+  typeof navigator !== "undefined" &&
+  /Mac|iP(hone|ad|od)/.test(navigator.userAgent);
 const KBD_NEW = IS_MAC ? "⌘N" : "Ctrl+N";
 const KBD_SEARCH = IS_MAC ? "⌘K" : "Ctrl+K";
 
@@ -136,7 +167,8 @@ function viewForTask(t: Pick<Task, "deletedAt" | "archived">): RailView {
   return "board";
 }
 
-/** 导航栏按钮：action=带边框动作钮（新建/搜索，可挂快捷键提示）； *  item=导航项（hover 淡底，选中走 nm-inset 凹陷语义） */
+/** 导航栏按钮：action=带边框动作钮（新建/搜索，可挂快捷键提示）；
+ *  item=导航项（hover 淡底，选中走 nm-inset 凹陷语义） */
 function RailButton({
   icon: Icon,
   label,
@@ -205,7 +237,7 @@ function applyTodayRule(tasks: Task[]): Task[] {
   return tasks.map((t) =>
     isDueToday(t.due) && t.column === "todo" && !t.deletedAt
       ? { ...t, column: "doing" }
-      : t
+      : t,
   );
 }
 
@@ -233,9 +265,12 @@ function App() {
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [paletteOpen, setPaletteOpen] = useState(false);
   // 工作流卡可见性开关（默认隐藏，设置页「工作流」分区控制，事件即时同步）
-  const [showWorkflowTasks, setShowWorkflowTasks] = useState(getShowWorkflowTasks);
+  const [showWorkflowTasks, setShowWorkflowTasks] =
+    useState(getShowWorkflowTasks);
   useEffect(() => {
-    const un = listen(WORKFLOW_VISIBILITY_EVENT, () => setShowWorkflowTasks(getShowWorkflowTasks()));
+    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
+      setShowWorkflowTasks(getShowWorkflowTasks()),
+    );
     return () => {
       unlistenSafe(un);
     };
@@ -267,7 +302,7 @@ function App() {
       if (t.column !== "done" || t.deletedAt || t.ownerId) continue;
       if (t.tags && t.tags.length > 0) continue;
       invoke("task_autotag", { id: t.id }).catch((e) =>
-        console.error("[task_autotag] failed", t.id, e)
+        console.error("[task_autotag] failed", t.id, e),
       );
     }
   }, [tasks]);
@@ -371,7 +406,8 @@ function App() {
           });
           return;
         }
-        let list = res.tasks;        if (list.length === 0) {
+        let list = res.tasks;
+        if (list.length === 0) {
           let migrated = false;
           let migrateFailed = false;
           try {
@@ -389,7 +425,10 @@ function App() {
             // 迁移失败：保留 legacy 待下次启动重试，并跳过种子落库——
             // 若照旧落 SEED，下次启动库非空不再进迁移分支，legacy 数据永久 orphan
             migrateFailed = true;
-            console.error("[init] legacy 迁移失败，保留 localStorage 待下次重试", e);
+            console.error(
+              "[init] legacy 迁移失败，保留 localStorage 待下次重试",
+              e,
+            );
           }
           if (!migrated && !migrateFailed) {
             await upsertTasks(SEED);
@@ -417,8 +456,8 @@ function App() {
     })();
   }, []);
 
-  //  + C4-r1-验证修复：mutate 串行化（并发保护）。
-  // 修法（r1 验证）：mutating 链已抬到模块作用域；此处只保留 mutate 闭包，
+  // 验证修复：mutate 串行化（并发保护）。
+  // 修法：mutating 链已抬到模块作用域；此处只保留 mutate 闭包，
   //   闭包每 render 新建但读到的 mutating 引用恒为模块同一对象 → 链跨 render 衔接。
   // 验证限于：机制与顺序（并发场景无确定性回归测试）。
   const mutate = (fn: (prev: Task[]) => Task[]) => {
@@ -448,7 +487,10 @@ function App() {
       }
     });
     // 推进链；then 空 catch 避免 unhandled rejection 阻塞后续
-    mutating.chain = p.then(() => undefined, () => undefined);
+    mutating.chain = p.then(
+      () => undefined,
+      () => undefined,
+    );
     return p;
   };
 
@@ -470,9 +512,9 @@ function App() {
           .then(() => emit("workspace-changed").catch(() => {}))
           // 写失败不再空 catch 吞掉——storage 层已 alert，这里 console 留痕不重复打扰
           .catch((e) =>
-            handleCommandError(e, "workspace-updated upsert", { silent: true })
+            handleCommandError(e, "workspace-updated upsert", { silent: true }),
           );
-      }
+      },
     );
     return () => {
       unlistenSafe(unlisten);
@@ -485,75 +527,84 @@ function App() {
     // 连续两个事件（bot 一轮多工具调用）都从同一个旧 tasksRef 出发合并、后完成者
     // 整体覆盖，先处理的事件在主窗口 state 里丢失（DB 不受影响）。Promise 链排队，逐个处理。
     // 单个事件失败 catch 住不阻断后续队列。
-    const handle = async (payload: { upserts?: Task[]; deletes?: string[]; source?: string }) => {
-        const upserts = payload?.upserts ?? [];
-        const deletes = payload?.deletes ?? [];
-        if (!upserts.length && !deletes.length) return;
-        // source = Bot/Api/Migration：已由后端线程落盘（mutation.rs MutationOrigin 协议，
-        // bot/tools.rs + api_handlers/commands.rs 实发），这里只合并 UI 状态，不回写，
-        // 否则主窗口的异步回写会用旧事件快照覆盖后端的新写入（归档/软删被回滚）。
-        // 非法 source（协议外字符串）：WARN 观测 + 按未落盘处理（宁可多写不丢数据）
-        const source = payload?.source;
-        const persisted = isBackendPersisted(source);
-        if (source !== undefined && !KNOWN_SOURCES.has(source)) {
-          console.warn(`[tasks-updated] unknown source: ${String(source)}，按未落盘处理`);
-        }
-        if (!persisted) {
-          // await 落盘完成后再合并/广播，避免挂件 db_load 读到未提交快照
-          await upsertTasks(upserts);
-          try {
-            await deleteTaskRows(deletes);
-          } catch (e) {
-            // delete 失败不阻断合并广播：行已从内存 map 移除（UI 消失）
-            // 但库中仍在——下次 db_load 会重新出现，后续事件自愈；storage 层已 alert
-            console.error("[tasks-updated] deleteTaskRows failed", e);
-          }
-        }
-        // 合并 + 套规则（在 setTasks 之外基于 tasksRef 计算，保证 updater 纯净）
-        const map = new Map(tasksRef.current.map((t) => [t.id, t]));
-        upserts.forEach((t) => map.set(t.id, t));
-        deletes.forEach((id) => map.delete(id));
-        const merged = sortByOrder([...map.values()]);
-        const next = applyArchiveRule(applyTodayRule(merged));
-        // 规则改动（今日归位/超时归档）也要落盘——
-        // 否则只改内存，重启/挂件读 db 又回到原始数据，三端长期不一致
-        const mergedMap = new Map(merged.map((t) => [t.id, t]));
-        const ruleChanged = next.filter((t) => !taskEq(mergedMap.get(t.id)!, t));
-        if (ruleChanged.length) {
-          const now = Date.now();
-          ruleChanged.forEach((t) => {
-            // RMW 基线 = 规则改动前的合并快照 updatedAt
-            t.expectedUpdatedAt = mergedMap.get(t.id)?.updatedAt;
-            t.updatedAt = now;
-          });
-          await upsertTasks(ruleChanged);
-          // 观测行（py_audit 是 Rust 内部函数、未暴露为前端命令，前端用 console 同格式记录）
-          console.info(`[tasks-updated] merge_tasks | ${ruleChanged.length} changed`);
-        }
-        tasksRef.current = next;
-        setTasks(next);
-        try {
-          await emit("tasks-changed");
-        } catch (err) {
-          console.error("emit tasks-changed failed", err);
-        }
-    };
-    const unlisten = listen<{ upserts?: Task[]; deletes?: string[]; source?: string }>(
-      "tasks-updated",
-      (e) => {
-        // SYNC-1：并入全局 mutating.chain（与 UI mutate/每分钟规则定时器同一条串行链）。
-        // 原先独立局部 queue 与 mutate 链互不感知：handle 的 await 让出窗口内，
-        // UI 写从另一条链读到旧 tasksRef，merge 落盘后该写基线过期 →
-        // db_upsert RMW 守卫拒写 →「写冲突」弹窗（实测：主窗完成列取消✅）。
-        // 合并后「读快照→落盘→更新 tasksRef」全窗口严格串行。单事件失败
-        // catch 住不阻断后续（落盘冲突靠下次事件/db_load 自愈）。
-        mutating.chain = mutating.chain
-          .then(() => handle(e.payload ?? {}))
-          .catch((err) => {
-            console.error("[tasks-updated] handler failed", err);
-          });
+    const handle = async (payload: {
+      upserts?: Task[];
+      deletes?: string[];
+      source?: string;
+    }) => {
+      const upserts = payload?.upserts ?? [];
+      const deletes = payload?.deletes ?? [];
+      if (!upserts.length && !deletes.length) return;
+      // source = Bot/Api/Migration：已由后端线程落盘（mutation.rs MutationOrigin 协议，
+      // bot/tools.rs + api_handlers/commands.rs 实发），这里只合并 UI 状态，不回写，
+      // 否则主窗口的异步回写会用旧事件快照覆盖后端的新写入（归档/软删被回滚）。
+      // 非法 source（协议外字符串）：WARN 观测 + 按未落盘处理（宁可多写不丢数据）
+      const source = payload?.source;
+      const persisted = isBackendPersisted(source);
+      if (source !== undefined && !KNOWN_SOURCES.has(source)) {
+        console.warn(
+          `[tasks-updated] unknown source: ${String(source)}，按未落盘处理`,
+        );
       }
-    );
+      if (!persisted) {
+        // await 落盘完成后再合并/广播，避免挂件 db_load 读到未提交快照
+        await upsertTasks(upserts);
+        try {
+          await deleteTaskRows(deletes);
+        } catch (e) {
+          // delete 失败不阻断合并广播：行已从内存 map 移除（UI 消失）
+          // 但库中仍在——下次 db_load 会重新出现，后续事件自愈；storage 层已 alert
+          console.error("[tasks-updated] deleteTaskRows failed", e);
+        }
+      }
+      // 合并 + 套规则（在 setTasks 之外基于 tasksRef 计算，保证 updater 纯净）
+      const map = new Map(tasksRef.current.map((t) => [t.id, t]));
+      upserts.forEach((t) => map.set(t.id, t));
+      deletes.forEach((id) => map.delete(id));
+      const merged = sortByOrder([...map.values()]);
+      const next = applyArchiveRule(applyTodayRule(merged));
+      // 规则改动（今日归位/超时归档）也要落盘——
+      // 否则只改内存，重启/挂件读 db 又回到原始数据，三端长期不一致
+      const mergedMap = new Map(merged.map((t) => [t.id, t]));
+      const ruleChanged = next.filter((t) => !taskEq(mergedMap.get(t.id)!, t));
+      if (ruleChanged.length) {
+        const now = Date.now();
+        ruleChanged.forEach((t) => {
+          // RMW 基线 = 规则改动前的合并快照 updatedAt
+          t.expectedUpdatedAt = mergedMap.get(t.id)?.updatedAt;
+          t.updatedAt = now;
+        });
+        await upsertTasks(ruleChanged);
+        // 观测行（py_audit 是 Rust 内部函数、未暴露为前端命令，前端用 console 同格式记录）
+        console.info(
+          `[tasks-updated] merge_tasks | ${ruleChanged.length} changed`,
+        );
+      }
+      tasksRef.current = next;
+      setTasks(next);
+      try {
+        await emit("tasks-changed");
+      } catch (err) {
+        console.error("emit tasks-changed failed", err);
+      }
+    };
+    const unlisten = listen<{
+      upserts?: Task[];
+      deletes?: string[];
+      source?: string;
+    }>("tasks-updated", (e) => {
+      // SYNC-1：并入全局 mutating.chain（与 UI mutate/每分钟规则定时器同一条串行链）。
+      // 原先独立局部 queue 与 mutate 链互不感知：handle 的 await 让出窗口内，
+      // UI 写从另一条链读到旧 tasksRef，merge 落盘后该写基线过期 →
+      // db_upsert RMW 守卫拒写 →「写冲突」弹窗（实测：主窗完成列取消✅）。
+      // 合并后「读快照→落盘→更新 tasksRef」全窗口严格串行。单事件失败
+      // catch 住不阻断后续（落盘冲突靠下次事件/db_load 自愈）。
+      mutating.chain = mutating.chain
+        .then(() => handle(e.payload ?? {}))
+        .catch((err) => {
+          console.error("[tasks-updated] handler failed", err);
+        });
+    });
     return () => {
       unlistenSafe(unlisten);
     };
@@ -590,7 +641,7 @@ function App() {
   useEffect(() => {
     const id = setInterval(
       () => mutateFire((prev) => applyArchiveRule(applyTodayRule(prev))),
-      60_000
+      60_000,
     );
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -752,11 +803,13 @@ function App() {
     for (const t of withOrder) {
       const p = prevMap.get(t.id);
       if (p && p.column !== t.column) {
-        invoke<Task>("task_set_column", { id: t.id, col: t.column }).catch((e) => {
-          handleCommandError(e, "移动任务");
-          // 乐观写被后端拒绝：重读 DB 收敛 UI，避免看板与库长期分叉
-          reloadTasks().catch(() => {});
-        });
+        invoke<Task>("task_set_column", { id: t.id, col: t.column }).catch(
+          (e) => {
+            handleCommandError(e, "移动任务");
+            // 乐观写被后端拒绝：重读 DB 收敛 UI，避免看板与库长期分叉
+            reloadTasks().catch(() => {});
+          },
+        );
       }
     }
     const items = withOrder
@@ -788,7 +841,9 @@ function App() {
   const applyRemoteRows = (rows: Task[]) => {
     const map = new Map(tasksRef.current.map((t) => [t.id, t]));
     rows.forEach((t) => map.set(t.id, t));
-    const next = applyArchiveRule(applyTodayRule(sortByOrder([...map.values()])));
+    const next = applyArchiveRule(
+      applyTodayRule(sortByOrder([...map.values()])),
+    );
     tasksRef.current = next;
     setTasks(next);
   };
@@ -797,10 +852,13 @@ function App() {
   // 不归一则「清空」语义静默丢失）；服务端同锁内读现值打基线，前端快照不参与
   const patchTask = async (taskId: string, patch: Partial<Task>) => {
     const normalized = Object.fromEntries(
-      Object.entries(patch).map(([k, v]) => [k, v === undefined ? null : v])
+      Object.entries(patch).map(([k, v]) => [k, v === undefined ? null : v]),
     );
     try {
-      const row = await invoke<Task>("task_patch", { id: taskId, patch: normalized });
+      const row = await invoke<Task>("task_patch", {
+        id: taskId,
+        patch: normalized,
+      });
       if (row) applyRemoteRows([row]);
     } catch (e) {
       handleCommandError(e, "更新任务");
@@ -948,7 +1006,9 @@ function App() {
               onUpdate={updateTask}
               onTasksReload={() => {
                 // 不 silent：保存/删除后重读失败必须让用户看到（errorHandler 默认弹窗）
-                void reloadTasks().catch((e) => handleCommandError(e, "重读任务"));
+                void reloadTasks().catch((e) =>
+                  handleCommandError(e, "重读任务"),
+                );
               }}
             />
           ) : view === "schedule" ? (

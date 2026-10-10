@@ -26,7 +26,12 @@ function t(partial: Partial<Task> & { id: string }): Task {
 
 const TASKS: Task[] = [
   t({ id: "a", column: "doing" }),
-  t({ id: "b", column: "done", tags: ["周报"], completedAt: new Date("2026-03-01").getTime() }),
+  t({
+    id: "b",
+    column: "done",
+    tags: ["周报"],
+    completedAt: new Date("2026-03-01").getTime(),
+  }),
   t({ id: "w1", origin: "workflow", workflowId: "wf1" }),
   t({ id: "z", ownerId: "p-1", title: "张三的任务" }),
 ];
@@ -53,7 +58,7 @@ const renderPage = (overrides?: Partial<Parameters<typeof GraphPage>[0]>) =>
       onOpenWorkflow={() => {}}
       onPatchTask={() => {}}
       {...overrides}
-    />
+    />,
   );
 
 describe("GraphPage", () => {
@@ -90,7 +95,14 @@ describe("GraphPage", () => {
   });
 
   it("空任务显示引导空态", async () => {
-    render(<GraphPage tasks={[]} onOpenTask={() => {}} onOpenWorkflow={() => {}} onPatchTask={() => {}} />);
+    render(
+      <GraphPage
+        tasks={[]}
+        onOpenTask={() => {}}
+        onOpenWorkflow={() => {}}
+        onPatchTask={() => {}}
+      />,
+    );
     await screen.findByTestId("graph-stats");
     expect(await screen.findByText("暂无任务")).toBeTruthy();
   });

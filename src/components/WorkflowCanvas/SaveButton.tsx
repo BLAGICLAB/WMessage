@@ -91,7 +91,9 @@ export function SaveButton({
     busyRef.current = true;
     // 保证「按下凹陷」至少可见 MIN_PRESS_MS
     const held =
-      pressedAtRef.current != null ? performance.now() - pressedAtRef.current : MIN_PRESS_MS;
+      pressedAtRef.current != null
+        ? performance.now() - pressedAtRef.current
+        : MIN_PRESS_MS;
     if (held < MIN_PRESS_MS) await delay(MIN_PRESS_MS - held);
     if (!mountedRef.current) {
       busyRef.current = false;
@@ -192,7 +194,13 @@ export function SaveButton({
         )}
       </span>
       {phase === "done" && <span className="save-btn__label">已保存</span>}
-      {showDot && <span className="save-btn__dot" data-testid="save-btn-dot" aria-hidden />}
+      {showDot && (
+        <span
+          className="save-btn__dot"
+          data-testid="save-btn-dot"
+          aria-hidden
+        />
+      )}
     </button>
   );
 }

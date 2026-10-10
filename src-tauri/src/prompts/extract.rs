@@ -1,6 +1,6 @@
 //! 自动记忆抽取提示词（memory::extract 会话收尾抽取用）：输出 JSON 数组，
 //! 解析失败/空数组都是合法出口，措辞是「宁缺勿滥」的第一道防线。
-//!  起抽取升级两段式：第一段 EXTRACT_PROMPT 抽事实，第二段
+//! 抽取升级两段式：第一段 EXTRACT_PROMPT 抽事实，第二段
 //! ADJUDICATE_PROMPT 对「与既有记忆语义相近」的条目逐条裁决
 //! new / update(existing_id) / skip——改口更新原条目，不堆积。
 

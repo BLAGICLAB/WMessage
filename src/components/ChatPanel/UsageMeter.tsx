@@ -23,7 +23,9 @@ export function UsageMeter({
   const fmt = (n: number) =>
     n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
   const ratio =
-    contextK && contextK > 0 && lastInput > 0 ? lastInput / (contextK * 1000) : null;
+    contextK && contextK > 0 && lastInput > 0
+      ? lastInput / (contextK * 1000)
+      : null;
   const high = ratio != null && ratio >= 0.8;
   // 显示口径与水位条一致：条已钳到 100% 封顶，标签/悬浮提示同样钳位（不出现 137%）
   const pct = ratio != null ? Math.min(100, ratio * 100).toFixed(0) : null;

@@ -292,7 +292,7 @@ pub fn run() {
             // 截止通知：每 30s 扫一次活跃任务卡，截止前 1 小时 / 截止时刻发系统通知
             due_notify::start_due_notifier(app.handle().clone());
 
-            // W10：启动时审计保留清理（设置项，默认最近 20 个 run；尽力而为）
+            // 启动时审计保留清理（设置项，默认最近 20 个 run；尽力而为）
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn_blocking(move || {

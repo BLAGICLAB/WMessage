@@ -8,7 +8,7 @@ import type { ScheduleEntry } from "../../types";
 
 // 返回值类型按命令而异，用 unknown 宽松签名（mockImplementation 分发各命令桩）
 const invokeMock = vi.hoisted(() =>
-  vi.fn(async (_cmd: string): Promise<unknown> => null)
+  vi.fn(async (_cmd: string): Promise<unknown> => null),
 );
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -76,7 +76,9 @@ describe("SchedulePage 列表渲染", () => {
     // 分组标题与两条目标（标题会同时出现在「即将执行」摘要条里，按行断言）
     const jobRow = await screen.findByTestId("schedule-row-job:j1");
     const wfRow = screen.getByTestId("schedule-row-workflow:w1");
-    expect(within(jobRow).getByText("整理昨日进展写站会稿")).toBeInTheDocument();
+    expect(
+      within(jobRow).getByText("整理昨日进展写站会稿"),
+    ).toBeInTheDocument();
     expect(within(wfRow).getByText("周报流水线")).toBeInTheDocument();
     // formatSchedule 人话文案
     expect(within(jobRow).getByText("每天 09:00")).toBeInTheDocument();
@@ -84,7 +86,7 @@ describe("SchedulePage 列表渲染", () => {
     // 即将执行摘要：取 nextRunAt 最近一条（作业 2 小时后 < 工作流 3 天后）
     // 倒计时档位随断言时刻漂移（floor），只钉前缀与单位
     expect(screen.getByText(/最近将执行：/)).toHaveTextContent(
-      /最近将执行：整理昨日进展写站会稿，\d+ 小时后/
+      /最近将执行：整理昨日进展写站会稿，\d+ 小时后/,
     );
   });
 
@@ -102,7 +104,9 @@ describe("SchedulePage 列表渲染", () => {
     stubInvoke([]);
     render(<SchedulePage />);
     expect(await screen.findByText("暂无定时任务")).toBeInTheDocument();
-    expect(screen.getByText(/写下要做什么，到点自动新建任务卡执行/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/写下要做什么，到点自动新建任务卡执行/),
+    ).toBeInTheDocument();
   });
 });
 
@@ -114,12 +118,15 @@ describe("SchedulePage 写通道", () => {
     // 空态时顶栏与 EmptyState 各有一个「新建定时」，点哪个都进创建流程
     await user.click((await screen.findAllByText("新建定时"))[0]);
     // 默认类型 = 定时任务，直接写内容
-    await user.type(screen.getByLabelText("定时任务内容"), "每天早上收集未完成任务");
+    await user.type(
+      screen.getByLabelText("定时任务内容"),
+      "每天早上收集未完成任务",
+    );
     // 面板选频率：每天（时间输入默认回填今天 09:00）
     await user.click(screen.getByText("每天"));
     // 保存前人话预览（说明到点语义：新建任务卡交机器人）
     expect(
-      screen.getByText(/每天 09:00，到点自动新建任务卡并交给机器人执行/)
+      screen.getByText(/每天 09:00，到点自动新建任务卡并交给机器人执行/),
     ).toBeInTheDocument();
     await user.click(screen.getByText("确认保存"));
     await waitFor(() =>
@@ -128,7 +135,7 @@ describe("SchedulePage 写通道", () => {
         schedule: "daily:09:00",
         retryMax: 0,
         pauseOnFailure: false,
-      })
+      }),
     );
   });
 
@@ -155,7 +162,7 @@ describe("SchedulePage 写通道", () => {
       expect(invokeMock).toHaveBeenCalledWith("workflow_set_schedule", {
         id: "w1",
         schedule: "daily:09:00",
-      })
+      }),
     );
   });
 
@@ -168,11 +175,13 @@ describe("SchedulePage 写通道", () => {
     // 第一次点击只 arm，不落库
     expect(invokeMock).not.toHaveBeenCalledWith(
       "scheduled_job_delete",
-      expect.anything()
+      expect.anything(),
     );
     await user.click(within(row).getByText("确认取消？"));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("scheduled_job_delete", { id: "j1" })
+      expect(invokeMock).toHaveBeenCalledWith("scheduled_job_delete", {
+        id: "j1",
+      }),
     );
   });
 
@@ -194,7 +203,7 @@ describe("SchedulePage 写通道", () => {
         schedule: "daily:09:00",
         retryMax: 0,
         pauseOnFailure: false,
-      })
+      }),
     );
   });
 
@@ -209,7 +218,7 @@ describe("SchedulePage 写通道", () => {
         kind: "job",
         id: "j1",
         enabled: false,
-      })
+      }),
     );
   });
 
@@ -220,12 +229,16 @@ describe("SchedulePage 写通道", () => {
     const jobRow = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(jobRow).getByText("立即执行"));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("scheduled_job_fire", { id: "j1" })
+      expect(invokeMock).toHaveBeenCalledWith("scheduled_job_fire", {
+        id: "j1",
+      }),
     );
     const wfRow = screen.getByTestId("schedule-row-workflow:w1");
     await user.click(within(wfRow).getByText("立即执行"));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("workflow_run", { workflowId: "w1" })
+      expect(invokeMock).toHaveBeenCalledWith("workflow_run", {
+        workflowId: "w1",
+      }),
     );
   });
 });
@@ -289,7 +302,9 @@ describe("SchedulePage 最近状态与执行历史", () => {
     const row = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(row).getByText("历史"));
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("scheduled_job_history", { id: "j1" })
+      expect(invokeMock).toHaveBeenCalledWith("scheduled_job_history", {
+        id: "j1",
+      }),
     );
     expect(await within(row).findByText("模型超时")).toBeInTheDocument();
     expect(within(row).getByText("3.2s")).toBeInTheDocument();
@@ -315,7 +330,10 @@ describe("SchedulePage 失败策略配置", () => {
     stubInvoke([]);
     render(<SchedulePage />);
     await user.click((await screen.findAllByText("新建定时"))[0]);
-    await user.type(screen.getByLabelText("定时任务内容"), "每周汇总失败也要通知我");
+    await user.type(
+      screen.getByLabelText("定时任务内容"),
+      "每周汇总失败也要通知我",
+    );
     await user.click(screen.getByText("每天"));
     // 失败重试选 2 次、打开自动暂停
     await user.selectOptions(screen.getByLabelText("失败重试次数"), "2");
@@ -327,7 +345,7 @@ describe("SchedulePage 失败策略配置", () => {
         schedule: "daily:09:00",
         retryMax: 2,
         pauseOnFailure: true,
-      })
+      }),
     );
   });
 
@@ -348,7 +366,7 @@ describe("SchedulePage 失败策略配置", () => {
         schedule: "daily:09:00",
         retryMax: 3,
         pauseOnFailure: true,
-      })
+      }),
     );
   });
 });

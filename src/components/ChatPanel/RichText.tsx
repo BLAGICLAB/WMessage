@@ -2,11 +2,7 @@
 // 链接/路径识别规则在 lib/openTarget（带空格路径不会截断成「C:\Program」）。
 
 import type { ReactNode } from "react";
-import {
-  LINK_OR_PATH_RE,
-  isHttpUrl,
-  openTarget,
-} from "../../lib/openTarget";
+import { LINK_OR_PATH_RE, isHttpUrl, openTarget } from "../../lib/openTarget";
 
 export function RichText({ text }: { text: string }) {
   const parts: ReactNode[] = [];
@@ -15,7 +11,8 @@ export function RichText({ text }: { text: string }) {
   for (const m of text.matchAll(LINK_OR_PATH_RE)) {
     const idx = m.index ?? 0;
     const token = m[0];
-    if (idx > last) parts.push(<span key={key++}>{text.slice(last, idx)}</span>);
+    if (idx > last)
+      parts.push(<span key={key++}>{text.slice(last, idx)}</span>);
     const isUrl = isHttpUrl(token);
     // 尾随 ASCII 标点 URL/路径统一剥离（与 extractFilePaths 同口径）：
     // 无扩展名路径分支（PATH_CHAR 含「.」）会把句末「…/app.」的句号带进路径
@@ -47,12 +44,13 @@ export function RichText({ text }: { text: string }) {
         }
       >
         {clean}
-      </a>
+      </a>,
     );
     // 剥掉的尾标点回填为纯文本：流式渲染瞬态不丢可见字符
     if (trailing) parts.push(<span key={key++}>{trailing}</span>);
     last = idx + token.length;
   }
-  if (last < text.length) parts.push(<span key={key++}>{text.slice(last)}</span>);
+  if (last < text.length)
+    parts.push(<span key={key++}>{text.slice(last)}</span>);
   return <>{parts}</>;
 }

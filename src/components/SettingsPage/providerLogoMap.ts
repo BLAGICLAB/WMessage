@@ -12,10 +12,16 @@ const modules = import.meta.glob("../../assets/providers/lobe/*.svg", {
 /** slug（不含 -color 后缀）→ 资产 url 表 */
 const LOBE_ICONS: Record<string, string> = {};
 for (const [path, url] of Object.entries(modules)) {
-  LOBE_ICONS[path.split("/").pop()!.replace(/\.svg$/, "")] = url;
+  LOBE_ICONS[
+    path
+      .split("/")
+      .pop()!
+      .replace(/\.svg$/, "")
+  ] = url;
 }
 
-/** models.dev provider_key / 常见厂商显示名（小写）→ lobehub slug。 *  仅登记命名不一致的项；key 本身即 slug 的靠直接命中，不入表。 */
+/** models.dev provider_key / 常见厂商显示名（小写）→ lobehub slug。
+ *  仅登记命名不一致的项；key 本身即 slug 的靠直接命中，不入表。 */
 const PROVIDER_ALIASES: Record<string, string> = {
   // ── models.dev provider_key 差异 ──
   moonshotai: "kimi",
@@ -103,7 +109,8 @@ function slugIcon(slug: string): string | null {
   return LOBE_ICONS[`${slug}-color`] ?? LOBE_ICONS[slug] ?? null;
 }
 
-/** 厂商名归一化：小写 + 循环剥尾部「括号备注 / 套餐后缀」直到稳定—— *  两种后缀的先后组合都能剥净（"MiniMax Token Plan (minimax.cn)" 先括号后套餐、
+/** 厂商名归一化：小写 + 循环剥尾部「括号备注 / 套餐后缀」直到稳定——
+ *  两种后缀的先后组合都能剥净（"MiniMax Token Plan (minimax.cn)" 先括号后套餐、
  *  "Alibaba (China) Token Plan" 先套餐后括号，单遍任一顺序都会漏一种） */
 export function normalizeVendorName(s: string): string {
   let out = s.trim().toLowerCase();
@@ -117,7 +124,10 @@ export function normalizeVendorName(s: string): string {
 }
 
 /** 厂商图标资产 URL；providerKey（models.dev key）优先，name 次之；未命中 → null */
-export function resolveLobeIcon(providerKey?: string, name?: string): string | null {
+export function resolveLobeIcon(
+  providerKey?: string,
+  name?: string,
+): string | null {
   for (const raw of [providerKey, name]) {
     const key = raw ? normalizeVendorName(raw) : "";
     if (!key) continue;

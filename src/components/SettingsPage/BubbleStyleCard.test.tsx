@@ -21,9 +21,9 @@ describe("BubbleStyleCard", () => {
     expect(screen.getByLabelText("用户气泡颜色：跟随主题")).toBeInTheDocument();
     expect(container.querySelector(".chat-bubble-user")).toBeInTheDocument();
     expect(container.querySelector(".chat-bubble-bot")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "卡片" }).className,
-    ).toContain("nm-inset");
+    expect(screen.getByRole("button", { name: "卡片" }).className).toContain(
+      "nm-inset",
+    );
     expect(
       document.documentElement.style.getPropertyValue("--bubble-user-bg"),
     ).toBe("");
@@ -78,7 +78,9 @@ describe("BubbleStyleCard", () => {
   it("自定义拾色器输入：按亮度自动反白（浅色 → 深字）", async () => {
     const user = userEvent.setup();
     render(<BubbleStyleCard />);
-    const input = screen.getByLabelText("用户气泡颜色：自定义") as HTMLInputElement;
+    const input = screen.getByLabelText(
+      "用户气泡颜色：自定义",
+    ) as HTMLInputElement;
     await user.click(input);
     // React 值跟踪会吞掉直接赋值的 input 事件，需走原生 setter 触发 onChange
     const setNativeValue = Object.getOwnPropertyDescriptor(

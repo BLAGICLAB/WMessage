@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Check, ClipboardList, Download, TriangleAlert, Upload } from "lucide-react";
+import {
+  Check,
+  ClipboardList,
+  Download,
+  TriangleAlert,
+  Upload,
+} from "lucide-react";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import { getArchiveAfterDays } from "../lib/archiveRule";
 import type { MigrationRule, MigrationReport } from "../types";
@@ -26,7 +32,7 @@ export function MigrationPanel() {
   const refresh = async () => {
     try {
       const loaded = await invoke<{ version: number; rules: MigrationRule[] }>(
-        "migration_rules_load"
+        "migration_rules_load",
       );
       setRules(loaded.rules ?? []);
       const st = await invoke<MigrationStatus>("migration_status");
@@ -81,7 +87,12 @@ export function MigrationPanel() {
 
   const runNow = async () => {
     // 上线安全审计：一键执行会按规则移动/删除已归档任务的绑定文件，先确认
-    if (!window.confirm("立即执行桌面清理？将按规则表对已归档任务的绑定文件执行移动/删除。")) return;
+    if (
+      !window.confirm(
+        "立即执行桌面清理？将按规则表对已归档任务的绑定文件执行移动/删除。",
+      )
+    )
+      return;
     if (running) return;
     setRunning(true);
     setError("");
@@ -103,11 +114,12 @@ export function MigrationPanel() {
     <div className="nm-card p-5">
       <h2 className="text-lg font-semibold text-[var(--t1)]">桌面清理</h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
-        任务完成满 {getArchiveAfterDays()} 天进入归档后，按规则自动迁移其绑定的桌面文件（看板任务附件不受影响）
+        任务完成满 {getArchiveAfterDays()}{" "}
+        天进入归档后，按规则自动迁移其绑定的桌面文件（看板任务附件不受影响）
       </p>
       <p className="mt-1 text-[11px] text-[var(--t5)]">
-        规则用表格管理：下载表格模版（CSV，Excel/WPS 可直接打开编辑），改完导入即生效。
-        规则顺序即优先级：靠前的行先匹配
+        规则用表格管理：下载表格模版（CSV，Excel/WPS
+        可直接打开编辑），改完导入即生效。 规则顺序即优先级：靠前的行先匹配
       </p>
 
       {/* 规则表 */}
@@ -122,24 +134,34 @@ export function MigrationPanel() {
             key={r.id}
             className="nm-inset flex items-center gap-2 rounded-xl px-3 py-1.5"
           >
-            <span className="w-5 shrink-0 text-xs text-[var(--t5)]">{i + 1}</span>
+            <span className="w-5 shrink-0 text-xs text-[var(--t5)]">
+              {i + 1}
+            </span>
             <span
               className={`shrink-0 text-xs ${r.enabled ? "text-[var(--success)]" : "text-[var(--t5)]"}`}
               title={r.enabled ? "已启用" : "已停用"}
             >
               {r.enabled ? <Check size={10} strokeWidth={3} /> : "—"}
             </span>
-            <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]" title={r.keywords.join("，")}>
+            <span
+              className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]"
+              title={r.keywords.join("，")}
+            >
               {r.keywords.join("，") || "（无关键字）"}
             </span>
             <span
               className={`shrink-0 text-xs ${
-                r.action === "delete" && r.enabled ? "text-[var(--danger)]" : "text-[var(--t4)]"
+                r.action === "delete" && r.enabled
+                  ? "text-[var(--danger)]"
+                  : "text-[var(--t4)]"
               }`}
             >
               {r.action === "move" ? "移动归档" : "删除文件"}
             </span>
-            <span className="min-w-0 flex-1 truncate text-xs text-[var(--t4)]" title={r.archiveDir}>
+            <span
+              className="min-w-0 flex-1 truncate text-xs text-[var(--t4)]"
+              title={r.archiveDir}
+            >
               {r.action === "move" ? r.archiveDir : ""}
             </span>
           </div>
@@ -177,7 +199,12 @@ export function MigrationPanel() {
 
       {deleteEnabled && (
         <p className="mt-2 text-xs text-[var(--danger)]">
-          <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" /> 有启用的删除规则：匹配的文件将被直接删除，请确认规则无误
+          <TriangleAlert
+            size={11}
+            aria-hidden
+            className="inline-block align-[-2px]"
+          />{" "}
+          有启用的删除规则：匹配的文件将被直接删除，请确认规则无误
         </p>
       )}
 
@@ -193,7 +220,8 @@ export function MigrationPanel() {
           {running ? "迁移中…" : "▶ 立即执行迁移"}
         </button>
         <p className="text-xs text-[var(--t5)]">
-          后台每 {Math.round((status?.poll_interval_secs ?? 600) / 60)} 分钟自动检测一次
+          后台每 {Math.round((status?.poll_interval_secs ?? 600) / 60)}{" "}
+          分钟自动检测一次
           {status ? ` · 现有规则 ${status.rules_count} 条` : ""}
         </p>
       </div>

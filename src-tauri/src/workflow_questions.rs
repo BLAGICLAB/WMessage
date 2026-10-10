@@ -32,7 +32,7 @@ pub const ACTION_DISMISS: &str = "dismiss";
 /// 应答核心（纯 DB 逻辑，与 AppHandle 解耦——单测锚点；command 包壳做唤醒/审计/广播）：
 /// ①resolve 通知 ②落档案条目（answer 原文，或"未答按假设"）。
 /// 返回要发给 waiter 的文本（answer 原文 / assumption）；通知不存在 → Ok(None)（幂等，什么都不做）。
-/// 应答结果：给 waiter 的文本 + 审计上下文（W10：answered 行归组用）
+/// 应答结果：给 waiter 的文本 + 审计上下文（answered 行归组用）
 #[derive(Debug)]
 pub(crate) struct RespondOutcome {
     pub text: String,
@@ -216,7 +216,7 @@ pub async fn workflow_question_respond(
     let Some(outcome) = outcome else {
         return Ok(());
     };
-    // W10：问答日志入审计表（尽力而为）；任务卡提问（无 workflowId）不落工作流审计
+    // 问答日志入审计表（尽力而为）；任务卡提问（无 workflowId）不落工作流审计
     if !outcome.workflow_id.is_empty() {
         let app2 = app.clone();
         let wf2 = outcome.workflow_id.clone();
@@ -288,7 +288,7 @@ pub struct AskRegistration {
     pub node_title: String,
     /// 提问模式开关
     pub asks_enabled: bool,
-    /// W10：run 分组键（审计行归组 + 问题 payload 透传给应答端）
+    /// run 分组键（审计行归组 + 问题 payload 透传给应答端）
     pub run_started_at: i64,
     pub asks_left: std::sync::atomic::AtomicU8,
     /// 注册时定死的预算上限（全局设置 ask_budget）——预算用尽提示用真实值
@@ -473,7 +473,7 @@ pub(crate) async fn engine_ask_user(
         "why": parsed.why,
         "options": parsed.options,
         "assumption": parsed.assumption,
-        // W10：run 分组键透传——应答端写审计行凭它归到正确的 run
+        // run 分组键透传——应答端写审计行凭它归到正确的 run
         "runStartedAt": run_started_at,
         "createdAt": chrono::Utc::now().timestamp_millis(),
     });
@@ -535,7 +535,7 @@ pub(crate) async fn engine_ask_user(
             ("hasOptions", (!parsed.options.is_empty()).to_string()),
         ],
     );
-    // W10：问答日志入审计表（设计 §4.2 kinds 含 question_asked/answered）；
+    // 问答日志入审计表（设计 §4.2 kinds 含 question_asked/answered）；
     // 任务卡提问（无工作流）不落工作流审计——归组键不存在，硬写只会出孤儿行
     if let Some(wf2) = wf_id.clone() {
         let app2 = app.clone();

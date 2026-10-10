@@ -82,7 +82,8 @@ function mockInvoke() {
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "trace_list") return Promise.resolve([TRACE]);
     if (cmd === "trace_detail") return Promise.resolve(DETAIL);
-    if (cmd === "file_rollback") return Promise.resolve("已回滚 /a/x.py（恢复到本次修改前）");
+    if (cmd === "file_rollback")
+      return Promise.resolve("已回滚 /a/x.py（恢复到本次修改前）");
     return Promise.reject(new Error(`unexpected command: ${cmd}`));
   });
 }
@@ -90,7 +91,7 @@ function mockInvoke() {
 describe("DiffView", () => {
   it("unified diff 按行着色：+/-/hunk 头各归其色", () => {
     const { container } = render(
-      <DiffView diff={"--- f\n+++ f\n@@ -1 +1 @@\n-old\n+new\n ctx"} />
+      <DiffView diff={"--- f\n+++ f\n@@ -1 +1 @@\n-old\n+new\n ctx"} />,
     );
     const rows = container.querySelectorAll("pre > div");
     expect(rows).toHaveLength(6);
@@ -114,7 +115,9 @@ describe("TracePanel", () => {
 
   it("渲染摘要头（轮数/工具/文件/tokens）与工具时间线（含失败标记）", async () => {
     render(<TracePanel taskId="t1" taskTitle="测试卡" onClose={() => {}} />);
-    await waitFor(() => expect(screen.getByText(/3 轮 · 2 次工具 · 1 个文件/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/3 轮 · 2 次工具 · 1 个文件/)).toBeTruthy(),
+    );
     expect(screen.getByText("read_text_file")).toBeTruthy();
     expect(screen.getByText("edit_file")).toBeTruthy();
     expect(screen.getByText("· 失败")).toBeTruthy();
@@ -133,7 +136,9 @@ describe("TracePanel", () => {
     expect(invokeMock).toHaveBeenCalledWith("file_rollback", { changeId: 9 });
     // 回滚成功触发 detail 重载
     await waitFor(() =>
-      expect(invokeMock.mock.calls.filter((c) => c[0] === "trace_detail").length).toBeGreaterThanOrEqual(2)
+      expect(
+        invokeMock.mock.calls.filter((c) => c[0] === "trace_detail").length,
+      ).toBeGreaterThanOrEqual(2),
     );
   });
 
@@ -142,13 +147,17 @@ describe("TracePanel", () => {
       if (cmd === "trace_list") return Promise.resolve([TRACE]);
       if (cmd === "trace_detail") return Promise.resolve(DETAIL);
       if (cmd === "file_rollback")
-        return Promise.reject("文件自本次修改后已被改动（指纹不符），拒绝回滚以免吞掉后续修改；请人工核对：/a/x.py");
+        return Promise.reject(
+          "文件自本次修改后已被改动（指纹不符），拒绝回滚以免吞掉后续修改；请人工核对：/a/x.py",
+        );
       return Promise.reject(new Error(`unexpected command: ${cmd}`));
     });
     render(<TracePanel taskId="t1" onClose={() => {}} />);
     await waitFor(() => expect(screen.getByText("回滚")).toBeTruthy());
     fireEvent.click(screen.getByText("回滚"));
-    await waitFor(() => expect(screen.getByText(/拒绝回滚以免吞掉后续修改/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/拒绝回滚以免吞掉后续修改/)).toBeTruthy(),
+    );
   });
 
   it("无执行痕迹时空态文案", async () => {
@@ -158,7 +167,7 @@ describe("TracePanel", () => {
     });
     render(<TracePanel taskId="t-empty" onClose={() => {}} />);
     await waitFor(() =>
-      expect(screen.getByText(/还没有执行痕迹/)).toBeTruthy()
+      expect(screen.getByText(/还没有执行痕迹/)).toBeTruthy(),
     );
   });
 });

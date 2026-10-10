@@ -29,5 +29,3 @@ export interface CardDrag {
   listeners: DraggableSyntheticListeners | undefined;
   isDragging: boolean;
 }
-
-

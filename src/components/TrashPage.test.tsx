@@ -43,34 +43,58 @@ vi.mock("../profile", () => ({
 describe("TrashPage 按 updatedAt 倒序", () => {
   it("3 个回收站任务按 updatedAt 倒序渲染", () => {
     const tasks: Task[] = [
-      { id: "a", title: "最老删除", column: "todo", deletedAt: 1, updatedAt: 100, order: 0 },
-      { id: "b", title: "最新删除", column: "todo", deletedAt: 3, updatedAt: 300, order: 1 },
-      { id: "c", title: "中间删除", column: "todo", deletedAt: 2, updatedAt: 200, order: 2 },
+      {
+        id: "a",
+        title: "最老删除",
+        column: "todo",
+        deletedAt: 1,
+        updatedAt: 100,
+        order: 0,
+      },
+      {
+        id: "b",
+        title: "最新删除",
+        column: "todo",
+        deletedAt: 3,
+        updatedAt: 300,
+        order: 1,
+      },
+      {
+        id: "c",
+        title: "中间删除",
+        column: "todo",
+        deletedAt: 2,
+        updatedAt: 200,
+        order: 2,
+      },
     ];
     const { container } = render(
-      <TrashPage
-        tasks={tasks}
-        onUpdate={vi.fn()}
-        onDelete={vi.fn()}
-      />
+      <TrashPage tasks={tasks} onUpdate={vi.fn()} onDelete={vi.fn()} />,
     );
-    const titles = [...container.querySelectorAll("h3")].map((h) => h.textContent);
+    const titles = [...container.querySelectorAll("h3")].map(
+      (h) => h.textContent,
+    );
     expect(titles).toEqual(["最新删除", "中间删除", "最老删除"]);
   });
 
   it("updatedAt 缺失按 0 处理（排最后），不崩溃", () => {
     const tasks: Task[] = [
       { id: "a", title: "无时间戳", column: "todo", deletedAt: 1, order: 0 },
-      { id: "b", title: "有时间戳", column: "todo", deletedAt: 2, updatedAt: 50, order: 1 },
+      {
+        id: "b",
+        title: "有时间戳",
+        column: "todo",
+        deletedAt: 2,
+        updatedAt: 50,
+        order: 1,
+      },
     ];
     const { container } = render(
-      <TrashPage
-        tasks={tasks}
-        onUpdate={vi.fn()}
-        onDelete={vi.fn()}
-      />
+      <TrashPage tasks={tasks} onUpdate={vi.fn()} onDelete={vi.fn()} />,
     );
-    const titles = [...container.querySelectorAll("h3")].map((h) => h.textContent);
+    const titles = [...container.querySelectorAll("h3")].map(
+      (h) => h.textContent,
+    );
     expect(titles).toEqual(["有时间戳", "无时间戳"]);
   });
 });

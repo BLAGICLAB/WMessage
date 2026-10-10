@@ -18,7 +18,10 @@ import {
   setGraphRememberFilters,
   setGraphSizeMode,
 } from "./graphPrefs";
-import { DEFAULT_FILTERS, type GraphFilters } from "../components/GraphPage/graph-build";
+import {
+  DEFAULT_FILTERS,
+  type GraphFilters,
+} from "../components/GraphPage/graph-build";
 
 describe("graphPrefs", () => {
   beforeEach(() => localStorage.clear());
@@ -72,7 +75,10 @@ describe("graphPrefs", () => {
     saveGraphFilters(f);
     localStorage.setItem(
       "wm.graph.filters",
-      JSON.stringify({ status: { todo: true, doing: true }, includeOrphans: true })
+      JSON.stringify({
+        status: { todo: true, doing: true },
+        includeOrphans: true,
+      }),
     );
     expect(loadGraphFilters()).toBeNull();
     // 关掉「记住」→ 已存过滤器清除

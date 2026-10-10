@@ -93,12 +93,14 @@ export interface Task {
   order?: number;
   /** 最后修改时间（epoch ms），合并导入时同 id 取更新者 */
   updatedAt?: number;
-  /**   * RMW 写回基线 = 读快照时该行的 updatedAt。
+  /**
+   * RMW 写回基线 = 读快照时该行的 updatedAt。
    * 仅随 db_upsert 上行（后端不落库、不在事件/导出中下发）；后端写前比对现行行，
    * 不一致 → 冲突拒写（防整行覆盖 lost-update）。新建/未读快照的写不带此字段。
    */
   expectedUpdatedAt?: number;
-  /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除）。   *  头像规则：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
+  /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除）。
+   *  头像规则：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
   botAssigned?: boolean;
   /** 定时执行规则：daily:HH:MM / weekly:D:HH:MM / at:YYYY-MM-DDTHH:MM（设置期间一直显示机器人头像） */
   schedule?: string | null;
@@ -109,7 +111,11 @@ export interface Task {
   /** 子 agent 编排（ 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
   assignee?: string | null;
   /** 预算三硬顶（上卡可见）：轮数 / 工具调用 / 墙钟秒 */
-  budget?: { maxTurns: number; maxToolCalls: number; maxWallSeconds: number } | null;
+  budget?: {
+    maxTurns: number;
+    maxToolCalls: number;
+    maxWallSeconds: number;
+  } | null;
   /** 收尾结构化结果（设计 §7）：卡片折叠展示 */
   result?: {
     status?: string;
@@ -117,16 +123,17 @@ export interface Task {
     artifacts?: Array<{ path?: string; description?: string }>;
     blockers?: unknown[];
     confidence?: number;
-    /** W10：节点级验收裁决（pass/partial/fail/unknown；fail 已终态 failed，不会以 success 出现） */
+    /** 节点级验收裁决（pass/partial/fail/unknown；fail 已终态 failed，不会以 success 出现） */
     acceptanceVerdict?: string;
-    /** W10：验收依据（≤100 字，TracePanel 展示） */
+    /** 验收依据（≤100 字，TracePanel 展示） */
     acceptanceEvidence?: string;
-    /** W10：含返工的累计执行次数（引擎写） */
+    /** 含返工的累计执行次数（引擎写） */
     attempt?: number;
-    /** W10：本卡耗时（墙钟 ms，引擎写） */
+    /** 本卡耗时（墙钟 ms，引擎写） */
     ms?: number;
   } | null;
-  /** 工作流画布归属设计 §3.1）：缺省 "user" = 看板任务；   *  "workflow" = 工作流节点卡（看板/挂件默认过滤，bot 工具不过滤） */
+  /** 工作流画布归属（设计 §3.1）：缺省 "user" = 看板任务；
+   *  "workflow" = 工作流节点卡（看板/挂件默认过滤，bot 工具不过滤） */
   origin?: "user" | "workflow";
   /** 所属工作流 id（origin="workflow" 时有值） */
   workflowId?: string;
@@ -138,7 +145,8 @@ export interface Task {
   model?: string;
   /** 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准；执行时注入并自检 */
   acceptance?: string | null;
-  /**   * 归属人 personId（任务图谱设计 §1.1）：undefined = 本人。
+  /**
+   * 归属人 personId（任务图谱设计 §1.1）：undefined = 本人。
    * 导入多人数据后，外来任务带其原主人的 pid；看板/归档/回收站/⌘K 默认只显示
    * undefined（本人）的卡，图谱/统计看全部。
    */

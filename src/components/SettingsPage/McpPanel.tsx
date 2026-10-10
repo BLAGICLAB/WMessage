@@ -81,8 +81,12 @@ const parseEnvLines = (text: string) => parseKeyValueLines(text, "=");
 /** Key: Value 行 → Record（HTTP 头格式） */
 const parseHeaderLines = (text: string) => parseKeyValueLines(text, ":");
 
-/** 命令行展示（ 评审 HIGH）：含空白的参数加引号，让展示 token 与实际 argv 对齐 *（argv 是单 token 的 "hello world" 不能被展示成两个 shell 形态的词） */
-function displayCommandLine(command: string | null | undefined, args: string[]): string {
+/** 命令行展示：含空白的参数加引号，让展示 token 与实际 argv 对齐
+ * （argv 是单 token 的 "hello world" 不能被展示成两个 shell 形态的词） */
+function displayCommandLine(
+  command: string | null | undefined,
+  args: string[],
+): string {
   return [command ?? "", ...args]
     .map((a) => (/\s/.test(a) ? JSON.stringify(a) : a))
     .join(" ");
@@ -94,8 +98,12 @@ function maskHeaderValue(v: string): string {
   return t.length <= 8 ? "••••" : `••••••${t.slice(-4)}`;
 }
 
-/** 超时输入解析：空 = 默认；非法/越界报错（后端 u64 反序列化对 * 负数/小数会裸抛 serde 错误，前端先钳为 5–600 整数） */
-function parseTimeoutSecs(raw: string): { value: number | null; error?: string } {
+/** 超时输入解析：空 = 默认；非法/越界报错（后端 u64 反序列化对
+ * 负数/小数会裸抛 serde 错误，前端先钳为 5–600 整数） */
+function parseTimeoutSecs(raw: string): {
+  value: number | null;
+  error?: string;
+} {
   const t = raw.trim();
   if (!t) return { value: null };
   const n = Number(t);
@@ -110,10 +118,15 @@ function StateDot({ status }: { status: McpServerStatus }) {
   const map: Record<string, { bg: string; tip: string }> = {
     connected: { bg: "bg-emerald-500", tip: "已连接" },
     down: { bg: "bg-red-500", tip: `不可用：${status.error ?? "未知错误"}` },
-    absent: { bg: "bg-neutral-400", tip: status.enabled ? "未连接（启动中或等待）" : "已禁用" },
+    absent: {
+      bg: "bg-neutral-400",
+      tip: status.enabled ? "未连接（启动中或等待）" : "已禁用",
+    },
   };
   const m = map[status.state] ?? map.absent;
-  return <span className={`size-2 shrink-0 rounded-full ${m.bg}`} title={m.tip} />;
+  return (
+    <span className={`size-2 shrink-0 rounded-full ${m.bg}`} title={m.tip} />
+  );
 }
 
 /** 行内错误摘要：stderr 尾巴可能有多行（评审口径），列表行只显示前 80 字符 */
@@ -149,7 +162,9 @@ function SaveConfirmDialog({
             : "wmessage 将通过 HTTP 连接该端点并调用其工具："}
         </p>
         <div className="mt-3 rounded bg-black/5 p-3 font-mono text-xs break-all text-[var(--t2)]">
-          {isStdio ? displayCommandLine(server.command, server.args ?? []) : server.url}
+          {isStdio
+            ? displayCommandLine(server.command, server.args ?? [])
+            : server.url}
         </div>
         {envEntries.length > 0 && (
           <div className="mt-2 text-xs text-[var(--t4)]">
@@ -172,11 +187,14 @@ function SaveConfirmDialog({
           </div>
         )}
         <p className="mt-2 text-xs text-[var(--t5)]">
-          该服务器的工具将进入机器人的工具清单，机器人可代你调用。env 与自定义头存系统钥匙串
-          （不再明文写配置文件），删除或关闭开关即停用。
+          该服务器的工具将进入机器人的工具清单，机器人可代你调用。env
+          与自定义头存系统钥匙串 （不再明文写配置文件），删除或关闭开关即停用。
         </p>
         <div className="mt-4 flex justify-end gap-2">
-          <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]" onClick={onCancel}>
+          <button
+            className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+            onClick={onCancel}
+          >
             取消
           </button>
           <button
@@ -209,7 +227,7 @@ export function McpPanel() {
     () => () => {
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
     },
-    []
+    [],
   );
 
   const flashNotice = useCallback((msg: string) => {
@@ -234,7 +252,7 @@ export function McpPanel() {
     () => () => {
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
     },
-    []
+    [],
   );
   const scheduleRefresh = useCallback(() => {
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
@@ -255,7 +273,8 @@ export function McpPanel() {
     };
   }, [refresh]);
 
-  /** 编辑回填 in-flight 闸（ 评审：连点两行会双 invoke 竞态 setForm——按钮的   * disabled 要等首个 invoke 落地才生效，ref 闸同步无窗口） */
+  /** 编辑回填 in-flight 闸（连点两行会双 invoke 竞态 setForm——按钮的
+   * disabled 要等首个 invoke 落地才生效，ref 闸同步无窗口） */
   const editLoadingRef = useRef(false);
   const startEdit = async (s: McpServerStatus) => {
     if (editLoadingRef.current || form !== null) return;
@@ -265,7 +284,9 @@ export function McpPanel() {
     // 从「编辑即整行覆盖」的角度只需回填用户可感知字段，args/env 留空会丢：
     // 因此编辑走 invoke bot_get_config 拿完整 mcpServers。
     try {
-      const cfg = await invoke<{ mcpServers?: McpServerConfig[] }>("bot_get_config");
+      const cfg = await invoke<{ mcpServers?: McpServerConfig[] }>(
+        "bot_get_config",
+      );
       const full = (cfg.mcpServers ?? []).find((x) => x.id === s.id);
       if (!full) {
         setError("找不到该服务器的完整配置");
@@ -322,7 +343,8 @@ export function McpPanel() {
       args: form.transport === "stdio" ? parseArgsLines(form.argsText) : [],
       env: form.transport === "stdio" ? parseEnvLines(form.envText) : {},
       url: form.transport === "http" ? form.url.trim() : null,
-      headers: form.transport === "http" ? parseHeaderLines(form.headersText) : {},
+      headers:
+        form.transport === "http" ? parseHeaderLines(form.headersText) : {},
       timeoutSecs: timeout.value,
       enabled: form.enabled,
     };
@@ -357,7 +379,12 @@ export function McpPanel() {
 
   const remove = async (s: McpServerStatus) => {
     if (busy) return;
-    if (!window.confirm(`删除 MCP 服务器「${s.name}」？其工具将立即从机器人清单消失。`)) return;
+    if (
+      !window.confirm(
+        `删除 MCP 服务器「${s.name}」？其工具将立即从机器人清单消失。`,
+      )
+    )
+      return;
     setBusy(true);
     setError("");
     try {
@@ -388,7 +415,8 @@ export function McpPanel() {
     }
   };
 
-  /** 展开/拉取工具：请求序号防串台（ 评审：连点两台服务器，慢响应会把   * A 的工具渲染进 B 的展开行）；失败在展开行内报错（此前只上顶栏，
+  /** 展开/拉取工具：请求序号防串台（连点两台服务器，慢响应会把
+   * A 的工具渲染进 B 的展开行）；失败在展开行内报错（此前只上顶栏，
    * 展开行一直显示「暂无工具」，分不清没工具还是拉取失败） */
   const toolsReqRef = useRef(0);
   const expandTools = async (s: McpServerStatus) => {
@@ -411,10 +439,12 @@ export function McpPanel() {
 
   return (
     <div className="nm-card p-5">
-      <h2 className="text-lg font-semibold text-[var(--t1)]">MCP 服务器（外部工具）</h2>
+      <h2 className="text-lg font-semibold text-[var(--t1)]">
+        MCP 服务器（外部工具）
+      </h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
-        连接外部 MCP 服务器，把它们的工具挂进机器人工具清单。启动器仅限
-        {" "}{MCP_STDIO_LAUNCHERS.join(" / ")}；添加前会展示完整命令让你确认
+        连接外部 MCP 服务器，把它们的工具挂进机器人工具清单。启动器仅限{" "}
+        {MCP_STDIO_LAUNCHERS.join(" / ")}；添加前会展示完整命令让你确认
       </p>
       <div className="mt-3 flex items-center gap-2">
         <button
@@ -427,7 +457,9 @@ export function McpPanel() {
         >
           ＋ 添加服务器
         </button>
-        {notice && <span className="text-xs text-[var(--success)]">{notice}</span>}
+        {notice && (
+          <span className="text-xs text-[var(--success)]">{notice}</span>
+        )}
         {error && <span className="text-xs text-[var(--danger)]">{error}</span>}
       </div>
 
@@ -448,7 +480,10 @@ export function McpPanel() {
       ) : (
         <div className="mt-3 flex flex-col gap-1.5">
           {servers.map((s) => (
-            <div key={s.id} className="rounded border border-black/5 px-2 py-1.5">
+            <div
+              key={s.id}
+              className="rounded border border-black/5 px-2 py-1.5"
+            >
               <div className="flex items-center gap-2">
                 <StateDot status={s} />
                 <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]">
@@ -457,7 +492,9 @@ export function McpPanel() {
                     {" "}
                     · {s.transport}
                     {s.enabled ? ` · ${s.toolCount} 个工具` : " · 已禁用"}
-                    {s.state === "down" && s.error ? ` · ${errorSummary(s.error)}` : ""}
+                    {s.state === "down" && s.error
+                      ? ` · ${errorSummary(s.error)}`
+                      : ""}
                   </span>
                 </span>
                 <button
@@ -501,15 +538,24 @@ export function McpPanel() {
               {expandedId === s.id && (
                 <div className="mt-1.5 border-t border-black/5 pt-1.5 text-xs text-[var(--t4)]">
                   {toolsError ? (
-                    <span className="text-[var(--danger)]">工具获取失败：{toolsError}</span>
+                    <span className="text-[var(--danger)]">
+                      工具获取失败：{toolsError}
+                    </span>
                   ) : tools.length === 0 ? (
-                    <span className="text-[var(--t5)]">暂无工具（未连接或服务器未提供）</span>
+                    <span className="text-[var(--t5)]">
+                      暂无工具（未连接或服务器未提供）
+                    </span>
                   ) : (
                     tools.map((t) => (
                       <div key={t.name} className="truncate">
-                        <span className="font-mono text-[var(--t3)]">{t.name}</span>
+                        <span className="font-mono text-[var(--t3)]">
+                          {t.name}
+                        </span>
                         {t.description && (
-                          <span className="text-[var(--t5)]"> — {t.description}</span>
+                          <span className="text-[var(--t5)]">
+                            {" "}
+                            — {t.description}
+                          </span>
                         )}
                       </div>
                     ))
@@ -558,7 +604,9 @@ export function McpPanel() {
                 <select
                   className="nm-input px-2 py-1 text-xs"
                   value={form.command}
-                  onChange={(e) => setForm({ ...form, command: e.target.value })}
+                  onChange={(e) =>
+                    setForm({ ...form, command: e.target.value })
+                  }
                 >
                   {MCP_STDIO_LAUNCHERS.map((c) => (
                     <option key={c} value={c}>
@@ -571,15 +619,21 @@ export function McpPanel() {
                   className="nm-input px-2 py-1 font-mono text-xs"
                   rows={3}
                   value={form.argsText}
-                  onChange={(e) => setForm({ ...form, argsText: e.target.value })}
-                  placeholder={"一行一个参数，如：\n-y\n@modelcontextprotocol/server-filesystem\n/Users/me/Documents"}
+                  onChange={(e) =>
+                    setForm({ ...form, argsText: e.target.value })
+                  }
+                  placeholder={
+                    "一行一个参数，如：\n-y\n@modelcontextprotocol/server-filesystem\n/Users/me/Documents"
+                  }
                 />
                 <label className="text-[var(--t4)]">环境变量</label>
                 <textarea
                   className="nm-input px-2 py-1 font-mono text-xs"
                   rows={2}
                   value={form.envText}
-                  onChange={(e) => setForm({ ...form, envText: e.target.value })}
+                  onChange={(e) =>
+                    setForm({ ...form, envText: e.target.value })
+                  }
                   placeholder={"一行一个 KEY=VALUE，可选"}
                 />
               </>
@@ -597,8 +651,12 @@ export function McpPanel() {
                   className="nm-input px-2 py-1 font-mono text-xs"
                   rows={2}
                   value={form.headersText}
-                  onChange={(e) => setForm({ ...form, headersText: e.target.value })}
-                  placeholder={"一行一个 Key: Value，鉴权头如：\nAuthorization: Bearer <token>"}
+                  onChange={(e) =>
+                    setForm({ ...form, headersText: e.target.value })
+                  }
+                  placeholder={
+                    "一行一个 Key: Value，鉴权头如：\nAuthorization: Bearer <token>"
+                  }
                 />
               </>
             )}
@@ -606,7 +664,9 @@ export function McpPanel() {
             <input
               className="nm-input px-2 py-1 text-xs"
               value={form.timeoutSecs}
-              onChange={(e) => setForm({ ...form, timeoutSecs: e.target.value })}
+              onChange={(e) =>
+                setForm({ ...form, timeoutSecs: e.target.value })
+              }
               placeholder="默认 60，可填 5–600"
             />
           </div>

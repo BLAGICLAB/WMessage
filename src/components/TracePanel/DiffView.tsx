@@ -4,7 +4,8 @@
 
 /** 单行着色类名：文件头弱化 / hunk 头高亮 / +/- 红绿 / 上下文原样 */
 function lineClass(line: string): string {
-  if (line.startsWith("+++") || line.startsWith("---")) return "text-[var(--t5)]";
+  if (line.startsWith("+++") || line.startsWith("---"))
+    return "text-[var(--t5)]";
   if (line.startsWith("@@")) return "text-[var(--info,#3b82f6)]";
   if (line.startsWith("+"))
     return "bg-[var(--ok,#22c55e)]/10 text-[var(--ok,#22c55e)]";
@@ -13,7 +14,13 @@ function lineClass(line: string): string {
   return "";
 }
 
-export function DiffView({ diff, truncated }: { diff: string; truncated?: boolean }) {
+export function DiffView({
+  diff,
+  truncated,
+}: {
+  diff: string;
+  truncated?: boolean;
+}) {
   const lines = diff.split("\n");
   return (
     <div>
@@ -26,7 +33,9 @@ export function DiffView({ diff, truncated }: { diff: string; truncated?: boolea
         ))}
       </pre>
       {truncated && (
-        <p className="mt-0.5 text-[10px] text-[var(--t5)]">diff 超长已截断（完整内容看文件）</p>
+        <p className="mt-0.5 text-[10px] text-[var(--t5)]">
+          diff 超长已截断（完整内容看文件）
+        </p>
       )}
     </div>
   );

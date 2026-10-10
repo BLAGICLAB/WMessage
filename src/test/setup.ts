@@ -68,11 +68,13 @@ if (typeof globalThis.crypto.randomUUID !== "function") {
 // （GraphPage.test 里 GraphCanvas 已 mock，App.test 只经过导航路径）
 if (typeof globalThis.WebGL2RenderingContext === "undefined") {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).WebGL2RenderingContext = function WebGL2RenderingContext() {};
+  (globalThis as any).WebGL2RenderingContext =
+    function WebGL2RenderingContext() {};
 }
 if (typeof globalThis.WebGLRenderingContext === "undefined") {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (globalThis as any).WebGLRenderingContext = function WebGLRenderingContext() {};
+  (globalThis as any).WebGLRenderingContext =
+    function WebGLRenderingContext() {};
 }
 
 // Node 26 自带 `localStorage` 全局，未传 `--localstorage-file` 时其值为 undefined，

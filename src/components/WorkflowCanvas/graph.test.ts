@@ -84,7 +84,13 @@ describe("draftFromTasks", () => {
 
   it("全部有坐标时不重排（保留用户手拖位置）", () => {
     const nodes = draftFromTasks([
-      { id: "t1", title: "A", dependsOn: [], canvasPos: { x: 1, y: 2 }, workflowId: "w1" },
+      {
+        id: "t1",
+        title: "A",
+        dependsOn: [],
+        canvasPos: { x: 1, y: 2 },
+        workflowId: "w1",
+      },
       {
         id: "t2",
         title: "B",

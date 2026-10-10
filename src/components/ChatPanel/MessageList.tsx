@@ -5,14 +5,29 @@
 // 长会话掉帧主因）。回调句柄由父级 useCallback 固定，memo 浅比较即可命中。
 
 import { memo, useMemo, useState, type ComponentType } from "react";
-import { Check, Copy, FileText, MessageCircle, MessagesSquare, Pin, Trash2, TriangleAlert } from "lucide-react";
+import {
+  Check,
+  Copy,
+  FileText,
+  MessageCircle,
+  MessagesSquare,
+  Pin,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
 import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import { MarkdownText } from "../MarkdownText";
 import { Fold } from "./Fold";
 import { RichText } from "./RichText";
 import { UserBubbleContent } from "./UserBubbleContent";
-import type { FileChangeLite, Msg, TaskRef, ToolCall, VerboseLevel } from "./types";
+import type {
+  FileChangeLite,
+  Msg,
+  TaskRef,
+  ToolCall,
+  VerboseLevel,
+} from "./types";
 
 /** 气泡回调（父级 useCallback 固定引用，memo 浅比较依赖这一点） */
 type BubbleCallbacks = {
@@ -33,11 +48,21 @@ type MsgBubbleProps = BubbleCallbacks & {
   isCopied: boolean;
   /** 视图会话是否有在途回复（驱动移除按钮禁用态） */
   busy: boolean;
-  /**  执行过程详细度：控制工具徽章展开级别（简洁/详细/调试） */
+  /** 执行过程详细度：控制工具徽章展开级别（简洁/详细/调试） */
   verboseLevel: VerboseLevel;
 };
 
-function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRemove, onOpenTask, onOpenExecSession }: MsgBubbleProps) {
+function MsgBubbleBase({
+  msg: m,
+  idx,
+  isCopied,
+  busy,
+  verboseLevel,
+  onCopy,
+  onRemove,
+  onOpenTask,
+  onOpenExecSession,
+}: MsgBubbleProps) {
   // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）；
   // 流式末条气泡每帧重渲染，useMemo 让路径正则只在内容变化时重跑
   const fps = useMemo(() => extractFilePaths(m.content), [m.content]);
@@ -46,7 +71,8 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
     m.role === "assistant" &&
     !m.streaming &&
     (hasContent || (m.refs?.length ?? 0) > 0 || fps.length > 0);
-  /** 气泡正文：用户消息走浅底渲染、流式走轻量富文本、完成走 markdown（拆分前的   *  嵌套三元提取成函数，渲染输出逐字不变） */
+  /** 气泡正文：用户消息走浅底渲染、流式走轻量富文本、完成走 markdown（拆分前的
+   *  嵌套三元提取成函数，渲染输出逐字不变） */
   function bubbleBody(msg: Msg) {
     if (!msg.content) return msg.streaming ? "…" : "";
     if (msg.role === "user") return <UserBubbleContent content={msg.content} />;
@@ -54,14 +80,29 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
     return <MarkdownText text={msg.content} />;
   }
   return (
-    <div className={m.role === "user" ? "max-w-[85%] ml-auto" : "max-w-full mr-auto"}>
+    <div
+      className={
+        m.role === "user" ? "max-w-[85%] ml-auto" : "max-w-full mr-auto"
+      }
+    >
       <div
         className={`chat-bubble text-xs leading-relaxed whitespace-pre-wrap break-words ${
           m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"
         }`}
       >
         {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
-          <Fold title={<span><MessageCircle size={11} aria-hidden className="inline-block align-[-2px]" /> 思考过程{m.streaming ? " …" : ""}</span>}>
+          <Fold
+            title={
+              <span>
+                <MessageCircle
+                  size={11}
+                  aria-hidden
+                  className="inline-block align-[-2px]"
+                />{" "}
+                思考过程{m.streaming ? " …" : ""}
+              </span>
+            }
+          >
             {m.thinking}
           </Fold>
         )}
@@ -78,7 +119,12 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
                     : "text-[var(--danger)]"
                 }
               >
-                <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" /> Skill 失败：{m.skillFailure.skillName}
+                <TriangleAlert
+                  size={11}
+                  aria-hidden
+                  className="inline-block align-[-2px]"
+                />{" "}
+                Skill 失败：{m.skillFailure.skillName}
                 {m.skillFailure.rollbackAttempted
                   ? "（已回滚）"
                   : "（未回滚，请人工核对）"}
@@ -98,13 +144,18 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
               </div>
               {!m.skillFailure.rollbackAttempted && (
                 <div className="text-[var(--danger)]">
-                  <TriangleAlert size={11} aria-hidden className="inline-block align-[-2px]" /> 已完成步骤未回滚，请检查任务卡状态。
+                  <TriangleAlert
+                    size={11}
+                    aria-hidden
+                    className="inline-block align-[-2px]"
+                  />{" "}
+                  已完成步骤未回滚，请检查任务卡状态。
                 </div>
               )}
             </div>
           </Fold>
         )}
-        {/* 工具调用（ 对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
+        {/* 工具调用（对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
         {(m.tools?.length ?? 0) > 0 && (
           <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
         )}
@@ -174,8 +225,9 @@ function MsgBubbleBase({ msg: m, idx, isCopied, busy, verboseLevel, onCopy, onRe
 /** memo 边界：流式更新时历史气泡 props 全等 → 跳过重渲染（见文件头注释） */
 const MsgBubble = memo(MsgBubbleBase);
 
-/** 工具调用（ 对齐截图）：mono pill 徽章行（名称 + ✓/✗/… 状态 + 调试档耗时）， *  折叠「进程 N/M」承载逐工具入参/结果详情。
- *  P2-b verbose 三档：简洁=隐藏详情折叠；详细=现状；调试=默认展开+耗时。
+/** 工具调用（对齐截图）：mono pill 徽章行（名称 + ✓/✗/… 状态 + 调试档耗时），
+ *  折叠「进程 N/M」承载逐工具入参/结果详情。
+ *  verbose 三档：简洁=隐藏详情折叠；详细=现状；调试=默认展开+耗时。
  *  memo：文本流式 tick 不改 tools 引用，跳过徽章行重渲染 */
 const ToolBadges = memo(function ToolBadges({
   tools,
@@ -196,8 +248,23 @@ const ToolBadges = memo(function ToolBadges({
             className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
           >
             {t.name || "tool"}
-            <span aria-hidden className={t.ok === false ? "text-[var(--danger,#ef4444)]" : t.done ? "text-[var(--success)]" : ""}>
-              {t.ok === false ? "✕" : t.done ? <Check size={10} strokeWidth={3} /> : "…"}
+            <span
+              aria-hidden
+              className={
+                t.ok === false
+                  ? "text-[var(--danger,#ef4444)]"
+                  : t.done
+                    ? "text-[var(--success)]"
+                    : ""
+              }
+            >
+              {t.ok === false ? (
+                "✕"
+              ) : t.done ? (
+                <Check size={10} strokeWidth={3} />
+              ) : (
+                "…"
+              )}
             </span>
           </span>
         ))}
@@ -213,8 +280,23 @@ const ToolBadges = memo(function ToolBadges({
             className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
           >
             {t.name || "tool"}
-            <span aria-hidden className={t.ok === false ? "text-[var(--danger,#ef4444)]" : t.done ? "text-[var(--success)]" : ""}>
-              {t.ok === false ? "✕" : t.done ? <Check size={10} strokeWidth={3} /> : "…"}
+            <span
+              aria-hidden
+              className={
+                t.ok === false
+                  ? "text-[var(--danger,#ef4444)]"
+                  : t.done
+                    ? "text-[var(--success)]"
+                    : ""
+              }
+            >
+              {t.ok === false ? (
+                "✕"
+              ) : t.done ? (
+                <Check size={10} strokeWidth={3} />
+              ) : (
+                "…"
+              )}
             </span>
           </span>
         ))}
@@ -223,8 +305,15 @@ const ToolBadges = memo(function ToolBadges({
         title={
           <span className="font-mono">
             进程 {done}/{tools.length}
-            {failed > 0 && <span className="text-[var(--danger,#ef4444)]"> · {failed} 失败</span>}
-            {verboseLevel === "debug" && totalMs > 0 && ` · Σ ${fmtMs(totalMs)}`}
+            {failed > 0 && (
+              <span className="text-[var(--danger,#ef4444)]">
+                {" "}
+                · {failed} 失败
+              </span>
+            )}
+            {verboseLevel === "debug" &&
+              totalMs > 0 &&
+              ` · Σ ${fmtMs(totalMs)}`}
           </span>
         }
         defaultOpen={verboseLevel === "debug"}
@@ -234,7 +323,9 @@ const ToolBadges = memo(function ToolBadges({
             <div key={t.id}>
               <span className="font-mono text-[10px] text-[var(--t4)]">
                 {t.name || "tool"}
-                {t.ms != null && <span className="ml-1 text-[var(--t5)]">{fmtMs(t.ms)}</span>}
+                {t.ms != null && (
+                  <span className="ml-1 text-[var(--t5)]">{fmtMs(t.ms)}</span>
+                )}
               </span>
               {t.args ? (
                 <pre className="opacity-80 whitespace-pre-wrap break-words font-mono text-[10px]">
@@ -243,7 +334,9 @@ const ToolBadges = memo(function ToolBadges({
               ) : null}
               {t.result ? (
                 <pre className="whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--t5)]">
-                  {t.result.length > 800 ? t.result.slice(0, 800) + "…" : t.result}
+                  {t.result.length > 800
+                    ? t.result.slice(0, 800) + "…"
+                    : t.result}
                 </pre>
               ) : null}
             </div>
@@ -259,10 +352,17 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** 文件变更摘要条（ 对齐截图）：≤2 个文件平铺 pill，更多则折叠为 *  「📄 N 个文件」摘要条（点击展开）。
+/** 文件变更摘要条（对齐截图）：≤2 个文件平铺 pill，更多则折叠为
+ *  「📄 N 个文件」摘要条（点击展开）。
  *  P2-b：优先用结构化 fileChanges（bot-file-changed 事件，带 ±行统计）；
  *  无结构化数据时回退正文正则抽取（主聊天无 trace，行为不变） */
-function FileSummary({ fps, changes }: { fps: string[]; changes?: FileChangeLite[] }) {
+function FileSummary({
+  fps,
+  changes,
+}: {
+  fps: string[];
+  changes?: FileChangeLite[];
+}) {
   const [open, setOpen] = useState(false);
   const structured = changes ?? [];
   const pillOf = (f: string) => (
@@ -277,7 +377,11 @@ function FileSummary({ fps, changes }: { fps: string[]; changes?: FileChangeLite
       }}
     >
       <span className="truncate max-w-[280px]">
-        <FileText size={11} aria-hidden className="mr-1 inline text-[var(--t4)]" />
+        <FileText
+          size={11}
+          aria-hidden
+          className="mr-1 inline text-[var(--t4)]"
+        />
         {basename(f)}
       </span>
     </button>
@@ -291,7 +395,11 @@ function FileSummary({ fps, changes }: { fps: string[]; changes?: FileChangeLite
       onClick={() => openTarget(c.path)}
     >
       <span className="truncate max-w-[240px]">
-        <FileText size={11} aria-hidden className="mr-1 inline text-[var(--t4)]" />
+        <FileText
+          size={11}
+          aria-hidden
+          className="mr-1 inline text-[var(--t4)]"
+        />
         {basename(c.path)}
       </span>
       <span className="shrink-0 font-mono tabular-nums">
@@ -300,7 +408,8 @@ function FileSummary({ fps, changes }: { fps: string[]; changes?: FileChangeLite
       </span>
     </button>
   );
-  const items = structured.length > 0 ? structured.map(structuredPillOf) : fps.map(pillOf);
+  const items =
+    structured.length > 0 ? structured.map(structuredPillOf) : fps.map(pillOf);
   // 统一 DOM 形状（w-full 容器），≤2 与 >2 只是容器内子元素不同
   return (
     <div className="w-full">
@@ -334,17 +443,30 @@ type MessageListProps = BubbleCallbacks & {
   viewedBusy: boolean;
   /** 「已复制」反馈的消息下标 */
   copiedIdx: number | null;
-  /**  执行过程详细度（透传给 ToolBadges） */
+  /** 执行过程详细度（透传给 ToolBadges） */
   verboseLevel: VerboseLevel;
 };
 
 /** 渲染体共享（memo / 非 memo 两个入口同一 JSX，性能测试做对照） */
 function renderMessageList(
-  { scrollRef, messages, viewedBusy, copiedIdx, verboseLevel, onCopy, onRemove, onOpenTask, onOpenExecSession }: MessageListProps,
+  {
+    scrollRef,
+    messages,
+    viewedBusy,
+    copiedIdx,
+    verboseLevel,
+    onCopy,
+    onRemove,
+    onOpenTask,
+    onOpenExecSession,
+  }: MessageListProps,
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
   return (
-    <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-0.5">
+    <div
+      ref={scrollRef}
+      className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-0.5"
+    >
       {messages.length === 0 ? (
         <p className="text-xs text-[var(--t5)] text-center mt-6">
           跟我说：新建任务、列出任务、完成某任务…（输入 / 看可用命令）

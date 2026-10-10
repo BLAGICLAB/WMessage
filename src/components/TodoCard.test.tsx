@@ -67,7 +67,7 @@ const completedTask: Task = {
 describe("TodoCardView", () => {
   it("默认渲染：标题、DoneCircle、FoldToggle 都可见", () => {
     render(
-      <TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />
+      <TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
     );
     expect(screen.getByText("默认任务")).toBeInTheDocument();
     expect(screen.getByTitle("标记完成")).toBeInTheDocument();
@@ -77,7 +77,9 @@ describe("TodoCardView", () => {
   it("点击标题进入编辑态：input 显示当前 title，按 Esc 取消恢复", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<TodoCardView task={baseTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={baseTask} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getByText("默认任务"));
     const input = screen.getByDisplayValue("默认任务");
     expect(input).toBeInTheDocument();
@@ -90,7 +92,9 @@ describe("TodoCardView", () => {
   it("编辑态输入新标题按 Enter 提交，trim 后非空才回调 onUpdate", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<TodoCardView task={baseTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={baseTask} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getByText("默认任务"));
     const input = screen.getByDisplayValue("默认任务");
     await user.clear(input);
@@ -102,7 +106,9 @@ describe("TodoCardView", () => {
   it("点击 FoldToggle 触发折叠回调：传入 collapsed: true", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<TodoCardView task={baseTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={baseTask} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getByTitle("收起"));
     expect(onUpdate).toHaveBeenCalledWith("t1", { collapsed: true });
   });
@@ -116,7 +122,7 @@ describe("TodoCardView", () => {
         task={taskWithBot}
         onUpdate={onUpdate}
         onDelete={vi.fn()}
-      />
+      />,
     );
     await user.click(screen.getByTitle("标记完成"));
     const call = onUpdate.mock.calls[0];
@@ -127,7 +133,9 @@ describe("TodoCardView", () => {
   });
 
   it("截止日期显示：formatDue 输出「截止 YYYY-MM-DD HH:mm」（2026-09-08 老板加年份）", () => {
-    render(<TodoCardView task={dueTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={dueTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     expect(screen.getByText(/截止 2026-08-18 15:30/)).toBeInTheDocument();
   });
 });
@@ -137,7 +145,12 @@ describe("TodoCard (归档/回收站版)", () => {
     const onUpdate = vi.fn();
     const onDelete = vi.fn();
     render(
-      <TodoCard task={baseTask} archived onUpdate={onUpdate} onDelete={onDelete} />
+      <TodoCard
+        task={baseTask}
+        archived
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+      />,
     );
     expect(screen.getByText("恢复")).toBeInTheDocument();
     expect(screen.queryByTitle("标记完成")).not.toBeInTheDocument();
@@ -149,7 +162,12 @@ describe("TodoCard (归档/回收站版)", () => {
     const onUpdate = vi.fn();
     const onDelete = vi.fn();
     render(
-      <TodoCard task={baseTask} trashed onUpdate={onUpdate} onDelete={onDelete} />
+      <TodoCard
+        task={baseTask}
+        trashed
+        onUpdate={onUpdate}
+        onDelete={onDelete}
+      />,
     );
     expect(screen.getByText("恢复")).toBeInTheDocument();
     expect(screen.getByText(/彻底删除/)).toBeInTheDocument();
@@ -157,9 +175,16 @@ describe("TodoCard (归档/回收站版)", () => {
 
   it("完成态：归档态显示完成时间（formatCompletedAt 在 due 区域下方，2026-09-08 老板）", () => {
     render(
-      <TodoCard task={completedTask} archived onUpdate={vi.fn()} onDelete={vi.fn()} />
+      <TodoCard
+        task={completedTask}
+        archived
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
     );
-    expect(screen.getByText(/完成 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/完成 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/),
+    ).toBeInTheDocument();
   });
 });
 
@@ -167,7 +192,9 @@ describe("TodoCard (归档/回收站版)", () => {
 describe("TodoCard useDraggable 集成", () => {
   it("渲染 TodoCard 不会抛错（useDraggable 在 jsdom 中可工作）", () => {
     expect(() =>
-      render(<TodoCard task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />)
+      render(
+        <TodoCard task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+      ),
     ).not.toThrow();
     // 验证整体结构存在
     expect(screen.getByText("默认任务")).toBeInTheDocument();
@@ -178,7 +205,7 @@ describe("TodoCard useDraggable 集成", () => {
 describe("TodoCard 测试环境", () => {
   it("toBeInTheDocument matcher 可用", () => {
     const { container } = render(
-      <TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />
+      <TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
     );
     expect(within(container).getByText("默认任务")).toBeInTheDocument();
   });
@@ -199,7 +226,9 @@ describe("TodoCardView 多文件绑定", () => {
   };
 
   it("多 chip 列表渲染：每个文件一行（图标 + basename + 移除按钮）", () => {
-    render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     expect(screen.getByText("a.pdf")).toBeInTheDocument();
     expect(screen.getByText("b.docx")).toBeInTheDocument();
     expect(screen.getByText("c.txt")).toBeInTheDocument();
@@ -207,15 +236,23 @@ describe("TodoCardView 多文件绑定", () => {
   });
 
   it("旧字段兜底：只有 filePath 的老数据也渲染单 chip", () => {
-    const legacy: Task = { ...baseTask, filePath: "/old/legacy.pdf", fileIsDir: false };
-    render(<TodoCardView task={legacy} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    const legacy: Task = {
+      ...baseTask,
+      filePath: "/old/legacy.pdf",
+      fileIsDir: false,
+    };
+    render(
+      <TodoCardView task={legacy} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     expect(screen.getByText("legacy.pdf")).toBeInTheDocument();
   });
 
   it("chip × 单独移除：files 去掉该条，旧字段双写首条", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<TodoCardView task={multiTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={multiTask} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getAllByTitle("移除该文件")[0]);
     const call = onUpdate.mock.calls[0];
     expect(call[0]).toBe("t1");
@@ -251,7 +288,9 @@ describe("TodoCardView 多文件绑定", () => {
       ...baseTask,
       files: [{ path: "/some/dir", isDir: true }],
     };
-    render(<TodoCardView task={dirTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={dirTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     expect(screen.getByText("dir")).toBeInTheDocument();
     expect(screen.getByTitle("继续绑定文件")).toBeInTheDocument();
     expect(screen.queryByTitle("绑定文件夹")).not.toBeInTheDocument();
@@ -266,7 +305,9 @@ describe("TodoCardView 多文件绑定", () => {
       files: [{ path: "/docs/a.pdf", isDir: false }],
     };
     vi.mocked(open).mockResolvedValueOnce("/some/dir" as never);
-    render(<TodoCardView task={oneFile} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={oneFile} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getByTitle("绑定文件夹"));
     expect(vi.mocked(open)).toHaveBeenCalledWith({ directory: true });
     const call = onUpdate.mock.calls[0];
@@ -288,12 +329,17 @@ describe("TodoCardView 多文件绑定", () => {
       ...baseTask,
       files: [{ path: "/docs/a.pdf", isDir: false }],
     };
-    vi.mocked(open).mockResolvedValueOnce(["/docs/a.pdf", "/docs/new.txt"] as never);
+    vi.mocked(open).mockResolvedValueOnce([
+      "/docs/a.pdf",
+      "/docs/new.txt",
+    ] as never);
     vi.mocked(invoke).mockResolvedValueOnce([
       { path: "/docs/a.pdf", isDir: false },
       { path: "/docs/new.txt", isDir: false },
     ] as never);
-    render(<TodoCardView task={oneFile} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={oneFile} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getByTitle("继续绑定文件"));
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("bind_files", {
       paths: ["/docs/a.pdf", "/docs/new.txt"],
@@ -338,7 +384,9 @@ describe("TodoCardView 多文件绑定", () => {
   it("chip 内「复制」字样：逐文件调 copy_file_with_title（2026-08-26 起替代 📋 按钮）", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
-    render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     const copies = screen.getAllByTitle("复制文件+标题");
     expect(copies).toHaveLength(3);
     await user.click(copies[1]);
@@ -351,7 +399,9 @@ describe("TodoCardView 多文件绑定", () => {
   it("点绑定文件名直接打开对应文件（2026-08-26 起不再有 📂 多选列表；走 Rust open_file_path，绕 opener scope 限 $HOME 导致的 Windows 静默失败）", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
-    render(<TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={multiTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getByText("b.docx"));
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("open_file_path", {
       path: "/docs/b.docx",
@@ -362,7 +412,9 @@ describe("TodoCardView 多文件绑定", () => {
 // —— 归属头像规则：定时设置后一直机器人头像；执行中机器人头像；执行完恢复用户头像 ——
 describe("TodoCardView 归属头像", () => {
   it("无定时未交机器人 → 用户头像（profile mock 无图时显示姓名首字）", () => {
-    render(<TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={baseTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     expect(screen.queryByAltText("Bot")).not.toBeInTheDocument();
     expect(screen.getByTitle("Test")).toBeInTheDocument();
   });
@@ -373,7 +425,7 @@ describe("TodoCardView 归属头像", () => {
         task={{ ...baseTask, botAssigned: true }}
         onUpdate={vi.fn()}
         onDelete={vi.fn()}
-      />
+      />,
     );
     expect(screen.getByAltText("Bot")).toBeInTheDocument();
     expect(screen.queryByTitle("Test")).not.toBeInTheDocument();
@@ -385,7 +437,7 @@ describe("TodoCardView 归属头像", () => {
         task={{ ...baseTask, schedule: "daily:09:00" }}
         onUpdate={vi.fn()}
         onDelete={vi.fn()}
-      />
+      />,
     );
     expect(screen.getByAltText("Bot")).toBeInTheDocument();
   });
@@ -397,7 +449,7 @@ describe("TodoCardView 归属头像", () => {
         task={{ ...baseTask, botAssigned: undefined }}
         onUpdate={vi.fn()}
         onDelete={vi.fn()}
-      />
+      />,
     );
     expect(screen.queryByAltText("Bot")).not.toBeInTheDocument();
     expect(screen.getByTitle("Test")).toBeInTheDocument();
@@ -415,7 +467,9 @@ describe("TodoCardView 子任务", () => {
   };
 
   it("子任务文本完整显示：不带 truncate 单行截断", () => {
-    render(<TodoCardView task={subTask} onUpdate={vi.fn()} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={subTask} onUpdate={vi.fn()} onDelete={vi.fn()} />,
+    );
     const el = screen.getByText("第一步子任务");
     expect(el.className).not.toContain("truncate");
     expect(el.className).toContain("whitespace-pre-wrap");
@@ -424,7 +478,9 @@ describe("TodoCardView 子任务", () => {
   it("点击子任务文本进入编辑，Enter 提交更新该条", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<TodoCardView task={subTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={subTask} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     await user.click(screen.getByText("第一步子任务"));
     const input = screen.getByDisplayValue("第一步子任务");
     await user.clear(input);
@@ -440,7 +496,9 @@ describe("TodoCardView 子任务", () => {
   it("子任务编辑：Escape 取消不写库；空提交保留原文", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    render(<TodoCardView task={subTask} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    render(
+      <TodoCardView task={subTask} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
     // Escape 取消
     await user.click(screen.getByText("第一步子任务"));
     await user.keyboard("改成别的{Escape}");
@@ -456,7 +514,12 @@ describe("TodoCardView 子任务", () => {
   it("归档态子任务只读：点击不进入编辑", async () => {
     const user = userEvent.setup();
     render(
-      <TodoCard task={subTask} archived onUpdate={vi.fn()} onDelete={vi.fn()} />
+      <TodoCard
+        task={subTask}
+        archived
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
     );
     await user.click(screen.getByText("第一步子任务"));
     expect(screen.queryByDisplayValue("第一步子任务")).not.toBeInTheDocument();

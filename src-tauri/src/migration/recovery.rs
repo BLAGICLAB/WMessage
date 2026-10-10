@@ -166,7 +166,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         );
                     }
                     Ok(false) => {
-                        // 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定 audit-ok
+                        // 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定
                         journal_cleared_inner(&conn, entry.id).ok();
                         log_line(
                             app,

@@ -30,9 +30,17 @@ export function UserBubbleContent({ content }: { content: string }) {
             >
               <span className="truncate max-w-[220px]">
                 {isImagePath(f) ? (
-                  <ImageIcon size={10} aria-hidden className="inline-block align-[-1px]" />
+                  <ImageIcon
+                    size={10}
+                    aria-hidden
+                    className="inline-block align-[-1px]"
+                  />
                 ) : (
-                  <Paperclip size={10} aria-hidden className="inline-block align-[-1px]" />
+                  <Paperclip
+                    size={10}
+                    aria-hidden
+                    className="inline-block align-[-1px]"
+                  />
                 )}{" "}
                 {basename(f)}
               </span>

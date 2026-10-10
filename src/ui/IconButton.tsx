@@ -5,7 +5,8 @@ type IconButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   children: ReactNode;
 };
 
-/** 图标按钮基件：.nm-icon-btn 扁平材质（无底色，hover 淡底提字）， *  尺寸/圆角/语义色由使用处 className 补充（如 rounded-full、hover:text-[var(--danger)]） */
+/** 图标按钮基件：.nm-icon-btn 扁平材质（无底色，hover 淡底提字），
+ *  尺寸/圆角/语义色由使用处 className 补充（如 rounded-full、hover:text-[var(--danger)]） */
 export function IconButton({
   className = "",
   type = "button",

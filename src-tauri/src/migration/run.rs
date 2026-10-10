@@ -519,7 +519,7 @@ mod cancel_tests {
 
     /// 取消存取器行为：request → requested=true；run 侧清零由
     /// CancelGuard（Drop）承担，run_migration 端到端行为依赖 AppHandle+DB
-    /// 不可轻量 mock，由 OCR/代码审查担保（r2 medium 登记）。测试后置清理，
+    /// 不可轻量 mock，由 OCR/代码审查担保。测试后置清理，
     /// 不向其他测试泄漏取消态。
     #[test]
     fn migration_cancel_accessor_roundtrip() {

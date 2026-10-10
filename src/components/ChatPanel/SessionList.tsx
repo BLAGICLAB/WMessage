@@ -48,7 +48,7 @@ export function SessionList({
   return (
     <>
       <div ref={topBarRef} className="flex items-center mb-2 shrink-0 gap-1">
-        {/* 左侧：会话切换器（U3b 会话栈入口：标题 + 会话数徽章）；
+        {/* 左侧：会话切换器（会话栈入口：标题 + 会话数徽章）；
             Esc 关闭挂触发钮（容器无焦点时键盘 Esc 仍可达） */}
         <button
           ref={menuRef}

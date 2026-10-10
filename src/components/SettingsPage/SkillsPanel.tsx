@@ -12,14 +12,35 @@ import type { SkillInfo, SkillOutcome, SkillOutcomeKind } from "./types";
 
 /** Skill 状态徽章颜色 + 图标 */
 function SkillOutcomeBadge({ outcome }: { outcome: SkillOutcome }) {
-  const map: Record<SkillOutcomeKind, { color: string; label: string; icon: string }> = {
-    done: { color: "text-emerald-600 bg-emerald-50", label: "完成", icon: "OK" },
-    await_user: { color: "text-blue-600 bg-blue-50", label: "等待确认", icon: "PAUSE" },
-    failed_recoverable: { color: "text-amber-600 bg-amber-50", label: "可恢复失败", icon: "WARN" },
-    terminated: { color: "text-red-600 bg-red-50", label: "已终止", icon: "STOP" },
+  const map: Record<
+    SkillOutcomeKind,
+    { color: string; label: string; icon: string }
+  > = {
+    done: {
+      color: "text-emerald-600 bg-emerald-50",
+      label: "完成",
+      icon: "OK",
+    },
+    await_user: {
+      color: "text-blue-600 bg-blue-50",
+      label: "等待确认",
+      icon: "PAUSE",
+    },
+    failed_recoverable: {
+      color: "text-amber-600 bg-amber-50",
+      label: "可恢复失败",
+      icon: "WARN",
+    },
+    terminated: {
+      color: "text-red-600 bg-red-50",
+      label: "已终止",
+      icon: "STOP",
+    },
   };
   const m = map[outcome.kind];
-  const tip = [m.label, outcome.reason, outcome.completedSummary].filter(Boolean).join(" | ");
+  const tip = [m.label, outcome.reason, outcome.completedSummary]
+    .filter(Boolean)
+    .join(" | ");
   return (
     <span
       className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${m.color}`}
@@ -42,7 +63,7 @@ export function SkillsPanel() {
     () => () => {
       if (noticeTimer.current) clearTimeout(noticeTimer.current);
     },
-    []
+    [],
   );
 
   const refresh = async () => {
@@ -113,10 +134,15 @@ export function SkillsPanel() {
     <div className="nm-card p-5">
       <h2 className="text-lg font-semibold text-[var(--t1)]">机器人技能</h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
-        技能 = 一个文件夹（SKILL.md + 可选脚本）。机器人对话时自动看到技能清单，需要时读取完整文档执行
+        技能 = 一个文件夹（SKILL.md +
+        可选脚本）。机器人对话时自动看到技能清单，需要时读取完整文档执行
       </p>
       <div className="mt-3 flex items-center gap-2">
-        <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap" onClick={importSkill} disabled={busy}>
+        <button
+          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
+          onClick={importSkill}
+          disabled={busy}
+        >
           {busy ? (
             "导入中…"
           ) : (
@@ -125,10 +151,15 @@ export function SkillsPanel() {
             </>
           )}
         </button>
-        <button className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap" onClick={openDir}>
+        <button
+          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
+          onClick={openDir}
+        >
           <FolderOpen size={12} aria-hidden /> 打开技能目录
         </button>
-        {notice && <span className="text-xs text-[var(--success)]">{notice}</span>}
+        {notice && (
+          <span className="text-xs text-[var(--success)]">{notice}</span>
+        )}
         {error && <span className="text-xs text-[var(--danger)]">{error}</span>}
       </div>
       {skills.length === 0 ? (
@@ -144,13 +175,21 @@ export function SkillsPanel() {
               <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]">
                 <span
                   className={`font-medium ${
-                    s.unknownTools?.length ? "text-[var(--danger)]" : "text-[var(--t2)]"
+                    s.unknownTools?.length
+                      ? "text-[var(--danger)]"
+                      : "text-[var(--t2)]"
                   }`}
-                  title={s.unknownTools?.length ? `引用了未内置工具：${s.unknownTools.join("、")}` : undefined}
+                  title={
+                    s.unknownTools?.length
+                      ? `引用了未内置工具：${s.unknownTools.join("、")}`
+                      : undefined
+                  }
                 >
                   {s.name}
                 </span>
-                {s.version && <span className="text-[var(--t5)]"> v{s.version}</span>}
+                {s.version && (
+                  <span className="text-[var(--t5)]"> v{s.version}</span>
+                )}
                 {s.description && (
                   <span className="text-[var(--t5)]"> — {s.description}</span>
                 )}

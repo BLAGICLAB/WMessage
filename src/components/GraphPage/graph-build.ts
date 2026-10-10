@@ -80,20 +80,28 @@ export function collectOwners(tasks: Task[], people: OwnerChip[]): OwnerChip[] {
     if (!t.deletedAt) present.add(t.ownerId ?? SELF_OWNER);
   }
   const known = new Map(people.map((p) => [p.id, p]));
-  const self = known.get(SELF_OWNER) ?? { id: SELF_OWNER, name: "我", isSelf: true };
+  const self = known.get(SELF_OWNER) ?? {
+    id: SELF_OWNER,
+    name: "我",
+    isSelf: true,
+  };
   const out: OwnerChip[] = present.has(SELF_OWNER)
     ? [{ ...self, isSelf: true }]
     : [];
   for (const id of present) {
     if (id === SELF_OWNER) continue;
     const p = known.get(id);
-    out.push(p ? { ...p, isSelf: false } : { id, name: "未知成员", isSelf: false });
+    out.push(
+      p ? { ...p, isSelf: false } : { id, name: "未知成员", isSelf: false },
+    );
   }
   return out;
 }
 
 /** 标签按使用计数降序（多人汇总后自动去重聚合） */
-export function collectTags(tasks: Task[]): Array<{ tag: string; count: number }> {
+export function collectTags(
+  tasks: Task[],
+): Array<{ tag: string; count: number }> {
   const counts = new Map<string, number>();
   for (const t of tasks) {
     if (t.deletedAt) continue;
@@ -127,7 +135,8 @@ function passTaskFilters(t: Task, f: GraphFilters): boolean {
     if (!f.tags.some((x) => tags.includes(x))) return false;
   }
   if (f.year !== null) {
-    if (!t.completedAt || new Date(t.completedAt).getFullYear() !== f.year) return false;
+    if (!t.completedAt || new Date(t.completedAt).getFullYear() !== f.year)
+      return false;
   }
   if (f.workflowIds && t.workflowId && !f.workflowIds.includes(t.workflowId)) {
     return false;
@@ -135,14 +144,15 @@ function passTaskFilters(t: Task, f: GraphFilters): boolean {
   return true;
 }
 
-/** * 依赖环检测（G5-DEPEDIT 纯函数锚点）：若把 `depId` 加入 `selfId` 的 dependsOn
+/**
+ * 依赖环检测（纯函数锚点）：若把 `depId` 加入 `selfId` 的 dependsOn
  * 是否成环。语义：A.dependsOn 含 B = B 是 A 的上游；因此从 depId 沿 dependsOn
  * 正向可达 selfId ⇒ 成环。含自环（depId === selfId）必拒；悬空 id 无环不拒。
  */
 export function wouldCreateDepCycle(
   tasks: Array<Pick<Task, "id" | "dependsOn" | "deletedAt">>,
   selfId: string,
-  depId: string
+  depId: string,
 ): boolean {
   if (selfId === depId) return true;
   const depsOf = new Map<string, string[]>();
@@ -166,7 +176,8 @@ export function wouldCreateDepCycle(
   return false;
 }
 
-/** * 建图（设计 §3.1）：节点 = 任务 + 工作流 hub；边 = dependsOn（有向 dep）+
+/**
+ * 建图（设计 §3.1）：节点 = 任务 + 工作流 hub；边 = dependsOn（有向 dep）+
  * 成员关系（member）。悬空 dependsOn / 被过滤端点 → 丢边；
  * hub 只为「有存活成员」的工作流创建。度数在成边后统计，
  * includeOrphans=false 时剪掉无边任务节点。
@@ -174,7 +185,7 @@ export function wouldCreateDepCycle(
 export function buildTaskGraph(
   tasks: Task[],
   workflows: Workflow[],
-  filters: GraphFilters
+  filters: GraphFilters,
 ): BuiltGraph {
   const kept = tasks.filter((t) => passTaskFilters(t, filters));
   const nodes = new Map<string, GraphNode>();
@@ -243,9 +254,7 @@ export function buildTaskGraph(
 
   return {
     nodes: [...nodes.values()],
-    links: links.filter(
-      (l) => nodes.has(l.source) && nodes.has(l.target)
-    ),
+    links: links.filter((l) => nodes.has(l.source) && nodes.has(l.target)),
     totalTasks: tasks.filter((t) => !t.deletedAt).length,
   };
 }

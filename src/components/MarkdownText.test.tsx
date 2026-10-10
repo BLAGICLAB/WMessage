@@ -38,7 +38,7 @@ describe("MarkdownText 链接识别", () => {
   it("裸 URL 由 GFM 自动链接成 <a>", async () => {
     render(<MarkdownText text={"详见 https://example.com/page 内"} />);
     expect(
-      screen.getByRole("link", { name: "https://example.com/page" })
+      screen.getByRole("link", { name: "https://example.com/page" }),
     ).toBeInTheDocument();
   });
 
@@ -58,7 +58,7 @@ describe("MarkdownText 链接识别", () => {
     render(
       <MarkdownText
         text={"[邮件](mailto:a@b.com) [锚点](#sec) [系统文件](/etc/passwd)"}
-      />
+      />,
     );
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     // 降级为 span 但文本保留
@@ -89,7 +89,9 @@ describe("MarkdownText 行内代码/代码块识别", () => {
   it("行内代码是 Windows 路径：渲染为 <a>，点击走 open_file_path", async () => {
     const user = userEvent.setup();
     render(<MarkdownText text={"文件在 `C:\\Users\\x\\a.txt`"} />);
-    const link = screen.getByRole("link", { name: String.raw`C:\Users\x\a.txt` });
+    const link = screen.getByRole("link", {
+      name: String.raw`C:\Users\x\a.txt`,
+    });
     expect(link.tagName).toBe("A");
     expect(link).toHaveAttribute("title", "打开文件/文件夹");
     await user.click(link);
@@ -107,7 +109,7 @@ describe("MarkdownText 行内代码/代码块识别", () => {
 
   it("围栏代码块里的 URL 不转链接（带语言标记 → className 判定为非行内）", () => {
     const { container } = render(
-      <MarkdownText text={"```text\nhttps://example.com/block\n```"} />
+      <MarkdownText text={"```text\nhttps://example.com/block\n```"} />,
     );
     const blockCode = container.querySelector("pre code");
     expect(blockCode).not.toBeNull();
@@ -119,7 +121,7 @@ describe("MarkdownText 行内代码/代码块识别", () => {
     // 修复点：react-markdown 剥掉围栏块内容的尾换行，文本启发式无法区分行内/块级，
     // 现用 node.position 跨行判定块级
     const { container } = render(
-      <MarkdownText text={"```\nhttps://example.com/block\n```"} />
+      <MarkdownText text={"```\nhttps://example.com/block\n```"} />,
     );
     const blockCode = container.querySelector("pre code");
     expect(blockCode).not.toBeNull();

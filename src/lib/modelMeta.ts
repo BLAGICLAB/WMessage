@@ -30,7 +30,8 @@ export type MetaModel = {
   source?: string;
 };
 
-/** 同步结果：与 Rust 侧 MetaSyncResult 的两种实际形态一一对应（判别联合）—— *  ok:true 时 providers/models 必有；ok:false 时 error 必有 */
+/** 同步结果：与 Rust 侧 MetaSyncResult 的两种实际形态一一对应（判别联合）——
+ *  ok:true 时 providers/models 必有；ok:false 时 error 必有 */
 export type MetaSyncResult =
   | { ok: true; providers: number; models: number }
   | { ok: false; error: string };
@@ -49,7 +50,9 @@ export async function fetchModelsByProvider(
   providerKey: string,
 ): Promise<MetaModel[] | null> {
   try {
-    return await invoke<MetaModel[]>("meta_models_by_provider", { providerKey });
+    return await invoke<MetaModel[]>("meta_models_by_provider", {
+      providerKey,
+    });
   } catch {
     return null;
   }

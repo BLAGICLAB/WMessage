@@ -33,7 +33,9 @@ const SESSIONS = [
 ];
 
 // 面板无 open prop：由使用方条件挂载（{open && <CommandPalette/>}），测试同构
-function renderPalette(overrides: Partial<Parameters<typeof CommandPalette>[0]> = {}) {
+function renderPalette(
+  overrides: Partial<Parameters<typeof CommandPalette>[0]> = {},
+) {
   const onClose = vi.fn();
   const onJumpTask = vi.fn();
   const onJumpSession = vi.fn();
@@ -100,7 +102,9 @@ describe("CommandPalette", () => {
     const { onJumpSession } = renderPalette();
     await screen.findByText("机器人闲聊");
     // 5 个任务行（含归档/回收站）后会话行为第 6 项（index 5）；连按 5 次下键
-    await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}");
+    await user.keyboard(
+      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}",
+    );
     await user.keyboard("{Enter}");
     expect(onJumpSession).toHaveBeenCalledWith("s1");
   });

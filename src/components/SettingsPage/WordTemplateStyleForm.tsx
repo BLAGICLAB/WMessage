@@ -85,7 +85,8 @@ function StyleGroup({
   style: WordTextStyle;
   onChange: (next: WordTextStyle) => void;
 }) {
-  const set = (patch: Partial<WordTextStyle>) => onChange({ ...style, ...patch });
+  const set = (patch: Partial<WordTextStyle>) =>
+    onChange({ ...style, ...patch });
   const pt = halfToPt(style.size_half);
   const inList = CN_SIZES.some(([, v]) => v === pt);
   const lineIsMultiple = style.line_rule === "auto";
@@ -114,14 +115,11 @@ function StyleGroup({
             className="nm-input px-2 py-1 text-xs"
             value={inList ? String(pt) : ""}
             onChange={(e) => {
-              if (e.target.value) set({ size_half: ptToHalf(Number(e.target.value)) });
+              if (e.target.value)
+                set({ size_half: ptToHalf(Number(e.target.value)) });
             }}
           >
-            {!inList && (
-              <option value="">
-                自定义（{pt} 磅）
-              </option>
-            )}
+            {!inList && <option value="">自定义（{pt} 磅）</option>}
             {CN_SIZES.map(([name, v]) => (
               <option key={v} value={v}>
                 {name}（{v} 磅）
@@ -164,7 +162,9 @@ function StyleGroup({
               className="nm-input px-2 py-1 text-xs w-16"
               value={lineToMultiple(style.line_line)}
               onChange={(e) =>
-                set({ line_line: multipleToLine(num(Number(e.target.value), 0.25)) })
+                set({
+                  line_line: multipleToLine(num(Number(e.target.value), 0.25)),
+                })
               }
             />
           ) : (
@@ -174,7 +174,9 @@ function StyleGroup({
               min={0}
               className="nm-input px-2 py-1 text-xs w-16"
               value={twipsToPt(style.line_line)}
-              onChange={(e) => set({ line_line: ptToTwips(num(Number(e.target.value), 0.5)) })}
+              onChange={(e) =>
+                set({ line_line: ptToTwips(num(Number(e.target.value), 0.5)) })
+              }
             />
           )}
         </label>
@@ -186,7 +188,9 @@ function StyleGroup({
             min={0}
             className="nm-input px-2 py-1 text-xs w-16"
             value={style.indent_chars}
-            onChange={(e) => set({ indent_chars: num(Number(e.target.value), 0.5) })}
+            onChange={(e) =>
+              set({ indent_chars: num(Number(e.target.value), 0.5) })
+            }
           />
           字符
         </label>
@@ -198,7 +202,9 @@ function StyleGroup({
             min={0}
             className="nm-input px-2 py-1 text-xs w-16"
             value={twipsToPt(style.before)}
-            onChange={(e) => set({ before: ptToTwips(num(Number(e.target.value), 0.5)) })}
+            onChange={(e) =>
+              set({ before: ptToTwips(num(Number(e.target.value), 0.5)) })
+            }
           />
           磅
         </label>
@@ -210,7 +216,9 @@ function StyleGroup({
             min={0}
             className="nm-input px-2 py-1 text-xs w-16"
             value={twipsToPt(style.after)}
-            onChange={(e) => set({ after: ptToTwips(num(Number(e.target.value), 0.5)) })}
+            onChange={(e) =>
+              set({ after: ptToTwips(num(Number(e.target.value), 0.5)) })
+            }
           />
           磅
         </label>
@@ -235,13 +243,18 @@ export function WordTemplateStyleForm({
   params: WordTemplateParams;
   onChange: (next: WordTemplateParams) => void;
 }) {
-  const setGroup = (key: keyof Omit<WordTemplateParams, "version">) => (next: WordTextStyle) =>
-    onChange({ ...params, [key]: next });
+  const setGroup =
+    (key: keyof Omit<WordTemplateParams, "version">) => (next: WordTextStyle) =>
+      onChange({ ...params, [key]: next });
   const [openGroup, setOpenGroup] = useState<string>("title");
   return (
     <div className="space-y-2">
       {GROUPS.map(([key, label]) => (
-        <details key={key} open={openGroup === key} onToggle={(e) => e.currentTarget.open && setOpenGroup(key)}>
+        <details
+          key={key}
+          open={openGroup === key}
+          onToggle={(e) => e.currentTarget.open && setOpenGroup(key)}
+        >
           <summary className="cursor-pointer select-none text-xs font-medium text-[var(--t2)] py-1">
             {label}
             <span className="ml-2 text-[var(--t5)] font-normal">
@@ -249,7 +262,11 @@ export function WordTemplateStyleForm({
               {params[key].bold ? "·加粗" : ""}
             </span>
           </summary>
-          <StyleGroup label={label} style={params[key]} onChange={setGroup(key)} />
+          <StyleGroup
+            label={label}
+            style={params[key]}
+            onChange={setGroup(key)}
+          />
         </details>
       ))}
     </div>

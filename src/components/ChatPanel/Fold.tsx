@@ -6,7 +6,7 @@ import { useId, useState, type ReactNode } from "react";
 export function Fold({
   title,
   children,
-  /**  verbose=debug 档：工具详情默认展开（Ctrl+O「临时全展开」语义落在档位上） */
+  /** verbose=debug 档：工具详情默认展开（Ctrl+O「临时全展开」语义落在档位上） */
   defaultOpen = false,
 }: {
   title: ReactNode;

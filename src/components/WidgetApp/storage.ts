@@ -53,10 +53,14 @@ export function loadSize(): WidgetSize | null {
       if (p !== null && typeof p === "object" && !Array.isArray(p)) {
         const s = p as Record<string, unknown>;
         if (
-          typeof s.w === "number" && Number.isFinite(s.w) &&
-          typeof s.h === "number" && Number.isFinite(s.h) &&
-          s.w >= PANEL_W_MIN && s.w <= PANEL_W_MAX &&
-          s.h >= PANEL_H_MIN && s.h <= PANEL_H_MAX
+          typeof s.w === "number" &&
+          Number.isFinite(s.w) &&
+          typeof s.h === "number" &&
+          Number.isFinite(s.h) &&
+          s.w >= PANEL_W_MIN &&
+          s.w <= PANEL_W_MAX &&
+          s.h >= PANEL_H_MIN &&
+          s.h <= PANEL_H_MAX
         ) {
           return { w: s.w, h: s.h };
         }
@@ -69,7 +73,11 @@ export function loadSize(): WidgetSize | null {
 }
 
 export function saveSize(s: WidgetSize) {
-  try { localStorage.setItem(SIZE_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(SIZE_KEY, JSON.stringify(s));
+  } catch {
+    /* ignore */
+  }
 }
 
 // 从 CSS 变量读/写任务区高度(Splitter 拖动用,不入 React state)
@@ -97,9 +105,12 @@ export function loadAnchor(): Anchor | null {
     if (p !== null && typeof p === "object" && !Array.isArray(p)) {
       const a = p as Record<string, unknown>;
       if (
-        typeof a.x === "number" && Number.isFinite(a.x) &&
-        typeof a.y === "number" && Number.isFinite(a.y) &&
-        typeof a.edge === "string" && (EDGES as readonly string[]).includes(a.edge)
+        typeof a.x === "number" &&
+        Number.isFinite(a.x) &&
+        typeof a.y === "number" &&
+        Number.isFinite(a.y) &&
+        typeof a.edge === "string" &&
+        (EDGES as readonly string[]).includes(a.edge)
       ) {
         return { x: a.x, y: a.y, edge: a.edge as Edge };
       }
@@ -124,7 +135,10 @@ export async function screenSize(): Promise<{ w: number; h: number }> {
   try {
     const m = await currentMonitor();
     if (m)
-      return { w: m.size.width / m.scaleFactor, h: m.size.height / m.scaleFactor };
+      return {
+        w: m.size.width / m.scaleFactor,
+        h: m.size.height / m.scaleFactor,
+      };
   } catch {
     /* ignore */
   }

@@ -71,7 +71,7 @@ describe("WorkspacePage", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_load");
     });
     const callsBefore = mocks.invokeMock.mock.calls.filter(
-      (c) => c[0] === "workspace_upsert"
+      (c) => c[0] === "workspace_upsert",
     ).length;
     await user.click(screen.getByText("+ 新建工作区"));
     // 标题行进入编辑态（input value = "新工作区"）
@@ -80,7 +80,7 @@ describe("WorkspacePage", () => {
     // workspace_upsert 至少被调用一次
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
-        (c) => c[0] === "workspace_upsert"
+        (c) => c[0] === "workspace_upsert",
       );
       expect(calls.length).toBeGreaterThan(callsBefore);
     });
@@ -113,12 +113,11 @@ describe("WorkspacePage", () => {
     // workspace_upsert 收到 items[0].collapsed = true
     await waitFor(() => {
       const upserts = mocks.invokeMock.mock.calls.filter(
-        (c) => c[0] === "workspace_upsert"
+        (c) => c[0] === "workspace_upsert",
       );
       // 最后一次 upsert 的 items 中应包含 collapsed: true
       const lastArgs = upserts[upserts.length - 1][1] as
-        | { items: { collapsed: boolean }[] }
-        | undefined;
+        { items: { collapsed: boolean }[] } | undefined;
       expect(lastArgs?.items?.[0]?.collapsed).toBe(true);
     });
   });
@@ -129,7 +128,7 @@ describe("WorkspacePage", () => {
       async (event: string, cb: () => void) => {
         handlers[event] = cb;
         return () => {};
-      }
+      },
     );
     let resolveUpsert: (() => void) | null = null;
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -197,7 +196,7 @@ describe("WorkspacePage", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "workspace_delete",
-        expect.objectContaining({ ids: ["w1"] })
+        expect.objectContaining({ ids: ["w1"] }),
       );
     });
     // 工作区从 UI 移除
@@ -235,7 +234,7 @@ describe("WorkspacePage", () => {
     // workspace_delete 不应被调用
     expect(mocks.invokeMock).not.toHaveBeenCalledWith(
       "workspace_delete",
-      expect.anything()
+      expect.anything(),
     );
     // 工作区还在
     expect(screen.getByText("保留工作区")).toBeInTheDocument();

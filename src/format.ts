@@ -7,11 +7,13 @@ export function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
-/** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
+/** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
+ *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;
 const IMAGE_EXT_SET = new Set<string>(IMAGE_EXTS);
 
-/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。 *  （U4 自 ChatPanel/UserBubbleContent 归位：纯路径谓词与 basename 同属此处） */
+/** 路径后缀是否图片类型（大小写不敏感）。无后缀或未知后缀按文件处理。
+ *  （自 ChatPanel/UserBubbleContent 归位：纯路径谓词与 basename 同属此处） */
 export function isImagePath(p: string): boolean {
   const m = p.toLowerCase().match(/\.([a-z0-9]+)$/);
   return m ? IMAGE_EXT_SET.has(m[1]) : false;
@@ -44,11 +46,12 @@ export function formatCompletedAt(ms: number): string {
   const d = new Date(ms);
   if (isNaN(d.getTime())) return "";
   return `完成 ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
-    d.getMinutes()
+    d.getMinutes(),
   )}`;
 }
 
-/** 相对时间共享内核：dir="past" 走「N 分钟前」档（ 会话栈）， *  dir="future" 走「N 分钟后」档（定时任务「下次执行」）。
+/** 相对时间共享内核：dir="past" 走「N 分钟前」档（会话栈），
+ *  dir="future" 走「N 分钟后」档（定时任务「下次执行」）。
  *  past 对未来时间戳、future 对已过期/非法时间戳一律回「刚刚」。now 可注入（测试）。 */
 function relTime(ms: number, dir: "past" | "future", now: number): string {
   const d = new Date(ms);
@@ -66,12 +69,14 @@ function relTime(ms: number, dir: "past" | "future", now: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** 相对时间（ 会话栈）：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天落日期。 *  now 可注入（测试）；非法/未来时间戳回「刚刚」。 */
+/** 相对时间（会话栈）：刚刚 / N 分钟前 / N 小时前 / N 天前 / 超过 7 天落日期。
+ *  now 可注入（测试）；非法/未来时间戳回「刚刚」。 */
 export function relativeTime(ms: number, now: number = Date.now()): string {
   return relTime(ms, "past", now);
 }
 
-/** 未来倒计时（定时任务模块「下次执行」）：刚刚 / N 分钟后 / N 小时后 / N 天后 / 超 7 天落日期。 *  已过期/非法时间戳回「刚刚」。 */
+/** 未来倒计时（定时任务模块「下次执行」）：刚刚 / N 分钟后 / N 小时后 / N 天后 / 超 7 天落日期。
+ *  已过期/非法时间戳回「刚刚」。 */
 export function untilTime(ms: number, now: number = Date.now()): string {
   return relTime(ms, "future", now);
 }
@@ -88,7 +93,8 @@ export function isValidDateTimeLocal(v: string): boolean {
   if (isNaN(d.getTime())) return false;
   const pad2 = (n: number) => String(n).padStart(2, "0");
   return (
-    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` === v.slice(0, 10)
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` ===
+    v.slice(0, 10)
   );
 }
 
@@ -103,7 +109,7 @@ export function scheduleToDatetime(s?: string | null): string {
   const fmt = (d: Date) => {
     if (isNaN(d.getTime())) return fallback();
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
-      d.getHours()
+      d.getHours(),
     )}:${pad(d.getMinutes())}`;
   };
   if (!s) return fallback();
@@ -114,18 +120,31 @@ export function scheduleToDatetime(s?: string | null): string {
   if (s.startsWith("daily:")) {
     const [h, m] = s.slice(6).split(":");
     return fmt(
-      new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(h), Number(m))
+      new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        Number(h),
+        Number(m),
+      ),
     );
   }
   if (s.startsWith("weekly:")) {
     // weekly:D:HH:MM —— 三段解构（此前 t 只拿到小时，分钟 NaN 导致回退）
     const [d, h, m] = s.slice(7).split(":");
     const target = Number(d);
-    if (!Number.isInteger(target) || target < 1 || target > 7) return fallback();
+    if (!Number.isInteger(target) || target < 1 || target > 7)
+      return fallback();
     const cur = ((now.getDay() + 6) % 7) + 1;
     const diff = (target + 7 - cur) % 7;
     return fmt(
-      new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff, Number(h), Number(m))
+      new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + diff,
+        Number(h),
+        Number(m),
+      ),
     );
   }
   if (s.startsWith("monthly:")) {
@@ -133,13 +152,31 @@ export function scheduleToDatetime(s?: string | null): string {
     const [dd, h, m] = s.slice(8).split(":");
     const day = Number(dd);
     if (!Number.isInteger(day) || day < 1 || day > 31) return fallback();
-    let date = new Date(now.getFullYear(), now.getMonth(), day, Number(h), Number(m));
+    let date = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      day,
+      Number(h),
+      Number(m),
+    );
     if (date.getTime() < now.getTime()) {
-      date = new Date(now.getFullYear(), now.getMonth() + 1, day, Number(h), Number(m));
+      date = new Date(
+        now.getFullYear(),
+        now.getMonth() + 1,
+        day,
+        Number(h),
+        Number(m),
+      );
     }
     // 下月无该日（如 2 月 31 日）→ 逐月顺延，上限 12 个月（防死循环）
     for (let i = 0; i < 12 && date.getDate() !== day; i++) {
-      date = new Date(date.getFullYear(), date.getMonth() + 1, day, Number(h), Number(m));
+      date = new Date(
+        date.getFullYear(),
+        date.getMonth() + 1,
+        day,
+        Number(h),
+        Number(m),
+      );
     }
     return fmt(date);
   }

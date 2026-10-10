@@ -5,13 +5,37 @@
 
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Brain, Image as ImageIcon, Paperclip, Plus, Search, Shield, Square, Zap } from "lucide-react";
+import {
+  Brain,
+  Image as ImageIcon,
+  Paperclip,
+  Plus,
+  Search,
+  Shield,
+  Square,
+  Zap,
+} from "lucide-react";
 import { basename, isImagePath } from "../../format";
-import { EFFORT_LABELS, PERM_LABELS, PROVIDER_LABELS, SLASH_COMMANDS, VERBOSE_LABELS } from "./constants";
-import type { ModelItem, PermMode, ReasoningLevel, VerboseLevel } from "./types";
+import {
+  EFFORT_LABELS,
+  PERM_LABELS,
+  PROVIDER_LABELS,
+  SLASH_COMMANDS,
+  VERBOSE_LABELS,
+} from "./constants";
+import type {
+  ModelItem,
+  PermMode,
+  ReasoningLevel,
+  VerboseLevel,
+} from "./types";
 
 /** 输入框占位文案：回复中 / 带附件 / 选任务 / 默认 四态（原嵌套三元提取） */
-function placeholderOf(viewedBusy: boolean, hasFiles: boolean, selecting: boolean): string {
+function placeholderOf(
+  viewedBusy: boolean,
+  hasFiles: boolean,
+  selecting: boolean,
+): string {
   if (viewedBusy) return "回复中…（点右侧停止键或输入 /stop 可停止）";
   if (hasFiles) return "输入指令，如：润色这个文件";
   if (selecting) return "输入操作指令，如：标记完成";
@@ -99,39 +123,38 @@ export function InputArea({
     <>
       {/* 斜杠命令 autocomplete：第一个字是 / 且无空格时浮出 picker。
           点选 / Tab / ↑↓ 选 / Esc 关；无匹配命令不渲染空壳容器 */}
-      {!slashDismissed && input.startsWith("/") && !input.includes(" ") && (
+      {!slashDismissed &&
+        input.startsWith("/") &&
+        !input.includes(" ") &&
         slashMatches(input).length > 0 && (
           <div className="mb-1.5 nm-card rounded-xl p-1 max-h-40 overflow-y-auto shrink-0">
-            {slashMatches(input).map(
-              (c, i) => (
-                <button
-                  key={c.cmd}
-                  type="button"
-                  className={`w-full flex flex-col items-start gap-0 px-2 py-1 rounded-lg text-left ${
-                    i === slashIdx ? "nm-inset" : "hover:bg-[var(--hover-bg)]"
-                  }`}
-                  onMouseEnter={() => setSlashIdx(i)}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setInput(c.cmd + " ");
-                    setSlashIdx(0);
-                    setSlashDismissed(false);
-                  }}
-                >
-                  <span className="text-xs text-[var(--t2)] font-medium">
-                    {c.cmd}
-                  </span>
-                  <span className="text-[10px] text-[var(--t4)]">
-                    {c.description}
-                  </span>
-                </button>
-              )
-            )}
+            {slashMatches(input).map((c, i) => (
+              <button
+                key={c.cmd}
+                type="button"
+                className={`w-full flex flex-col items-start gap-0 px-2 py-1 rounded-lg text-left ${
+                  i === slashIdx ? "nm-inset" : "hover:bg-[var(--hover-bg)]"
+                }`}
+                onMouseEnter={() => setSlashIdx(i)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setInput(c.cmd + " ");
+                  setSlashIdx(0);
+                  setSlashDismissed(false);
+                }}
+              >
+                <span className="text-xs text-[var(--t2)] font-medium">
+                  {c.cmd}
+                </span>
+                <span className="text-[10px] text-[var(--t4)]">
+                  {c.description}
+                </span>
+              </button>
+            ))}
           </div>
-        )
-      )}
+        )}
 
-      {/* 输入卡（U3b 换肤）：大圆角（20px）卡片一体式——上多行输入区（placeholder 左上、
+      {/* 输入卡（换肤版）：大圆角（20px）卡片一体式——上多行输入区（placeholder 左上、
           自动增高到 max-h-40 后内部滚动）、下工具栏（左 ➕ 附件，中 🛡 授权模式 +
           🧠 模型下拉 + ⚡ 推理强度，右圆形发送键）；斜杠 picker 仍浮在卡片上方 */}
       <div className="nm-card rounded-[20px] border border-[var(--edge)] p-2.5 shrink-0">
@@ -148,9 +171,17 @@ export function InputArea({
                   >
                     <span className="truncate max-w-[280px]">
                       {isImg ? (
-                        <ImageIcon size={10} aria-hidden className="inline-block align-[-1px]" />
+                        <ImageIcon
+                          size={10}
+                          aria-hidden
+                          className="inline-block align-[-1px]"
+                        />
                       ) : (
-                        <Paperclip size={10} aria-hidden className="inline-block align-[-1px]" />
+                        <Paperclip
+                          size={10}
+                          aria-hidden
+                          className="inline-block align-[-1px]"
+                        />
                       )}{" "}
                       {basename(f)}
                     </span>
@@ -158,7 +189,9 @@ export function InputArea({
                       type="button"
                       aria-label="移除附件"
                       className="text-[var(--t5)] hover:text-[var(--danger)]"
-                      onClick={() => setFiles((prev) => prev.filter((x) => x !== f))}
+                      onClick={() =>
+                        setFiles((prev) => prev.filter((x) => x !== f))
+                      }
                       title="移除"
                     >
                       ×
@@ -174,7 +207,8 @@ export function InputArea({
                       loading="lazy"
                       onError={(e) => {
                         // 资产协议未启用（403）时隐藏占位元素
-                        (e.currentTarget as HTMLImageElement).style.display = "none";
+                        (e.currentTarget as HTMLImageElement).style.display =
+                          "none";
                       }}
                       className="pointer-events-none absolute bottom-full left-0 mb-1 hidden group-hover:block max-w-[220px] max-h-[120px] rounded-lg border border-[var(--border)] bg-[var(--bg)] shadow-lg object-contain z-10"
                     />
@@ -228,7 +262,11 @@ export function InputArea({
             }
             // 与 TodoCard 一致：中文输入法组合态下回车确认候选词不应触发发送；
             // 多行输入（UI-1）：Shift+Enter 换行，Enter 发送（textarea 需手动阻止默认换行）
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            if (
+              e.key === "Enter" &&
+              !e.shiftKey &&
+              !e.nativeEvent.isComposing
+            ) {
               e.preventDefault();
               send();
             }
@@ -249,7 +287,7 @@ export function InputArea({
             <Plus size={15} aria-hidden />
           </button>
           <div className="flex-1 min-w-0" />
-          {/* 🛡 授权模式（U3b 只读展示）：读 bot-config 的 perm_mode，设置页维护；
+          {/* 🛡 授权模式（只读展示）：读 bot-config 的 perm_mode，设置页维护；
               与 🧠/⚡ 同排的静态 pill，不承载操作 */}
           <span
             className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)]"
@@ -269,7 +307,7 @@ export function InputArea({
                   ? "detailed"
                   : verbose.level === "detailed"
                     ? "debug"
-                    : "concise"
+                    : "concise",
               )
             }
           >
@@ -303,10 +341,12 @@ export function InputArea({
                     模型列表为空，去设置页添加
                   </p>
                 ) : (
-                  // MP-02：双协议同列——各协议一组（组头小字），当前协议下的
+                  // 双协议同列——各协议一组（组头小字），当前协议下的
                   // active 模型高亮；跨协议选中由后端连协议一起切
                   (["openai", "anthropic"] as const).map((prov) => {
-                    const list = model.models.filter((m) => m.provider === prov);
+                    const list = model.models.filter(
+                      (m) => m.provider === prov,
+                    );
                     if (!list.length) return null;
                     return (
                       <div key={prov}>

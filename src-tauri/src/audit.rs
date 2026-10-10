@@ -101,8 +101,8 @@ impl AuditLevel {
         }
     }
 
-    ///  ：从工具 status 派生 audit 级别，代替原 audit::classify_text 字符串匹配。
-    ///  起工具会显式声明 status，本映射是唯一从 status → audit 级别的入口。
+    /// 从工具 status 派生 audit 级别，代替原 audit::classify_text 字符串匹配。
+    /// 工具会显式声明 status，本映射是唯一从 status → audit 级别的入口。
     pub fn from_tool_status(s: crate::bot::registry::ToolStatus) -> Self {
         use crate::bot::registry::ToolStatus;
         match s {
@@ -441,7 +441,7 @@ pub fn write_event<R: tauri::Runtime>(
 static FRONTEND_REPORT_SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 const FRONTEND_REPORT_MAX_SIGNATURES: usize = 32;
 
-/// 前端事件上报 → 审计日志（批次 W1）。
+/// 前端事件上报 → 审计日志。
 /// 目前唯一来源：WebView 的 securitypolicyviolation（CSP 违规，生产 csp 已
 /// 收紧，运行时违规必须可感知）。签名去重防风暴；容量满后新签名静默丢弃
 ///（最早的重复依然会被去重，丢弃的是「全新违例」，可接受——审计非计量）。

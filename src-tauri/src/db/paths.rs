@@ -183,7 +183,7 @@ pub fn wal_sidecar(db: &std::path::Path, ext: &str) -> PathBuf {
 mod atomic_write_tmp_tests {
     use super::*;
 
-    /// rename 失败（dst 为目录）→ tmp 不残留（NEW-5：不留 .tmp 垃圾）
+    /// rename 失败（dst 为目录）→ tmp 不残留（不留 .tmp 垃圾）
     #[test]
     fn atomic_write_rename_failure_cleans_tmp() {
         let dir = std::env::temp_dir().join(format!("wm-aw-tmp-{}", uuid::Uuid::new_v4()));

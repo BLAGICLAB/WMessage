@@ -107,9 +107,7 @@ describe("App", () => {
       expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     });
     await user.click(screen.getByText("工作区"));
-    expect(
-      await screen.findByText("+ 新建工作区")
-    ).toBeInTheDocument();
+    expect(await screen.findByText("+ 新建工作区")).toBeInTheDocument();
     // 看板三列头消失
     expect(screen.queryByText("待办")).not.toBeInTheDocument();
   });
@@ -121,7 +119,7 @@ describe("App", () => {
       expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     });
     const callsBefore = mocks.invokeMock.mock.calls.filter(
-      (c) => c[0] === "db_upsert"
+      (c) => c[0] === "db_upsert",
     ).length;
     // 新建任务按钮迁入左侧导航栏（文案从「+ 新建任务」改为图标 + 「新建任务」）
     await user.click(screen.getByText("新建任务"));
@@ -130,7 +128,9 @@ describe("App", () => {
     expect(input).toBeInTheDocument();
     // mutate → upsertTasks → db_upsert 被多调用至少一次
     await waitFor(() => {
-      const calls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert");
+      const calls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "db_upsert",
+      );
       expect(calls.length).toBeGreaterThan(callsBefore);
     });
   });
@@ -143,7 +143,7 @@ describe("App", () => {
     });
     await user.click(screen.getByText("回收站"));
     expect(
-      await screen.findByText(/暂无回收站内容|回收站是空的/)
+      await screen.findByText(/暂无回收站内容|回收站是空的/),
     ).toBeInTheDocument();
     expect(screen.queryByText("待办")).not.toBeInTheDocument();
   });
@@ -159,14 +159,16 @@ describe("App", () => {
     expect(errDialog.textContent).toContain("database is locked");
     // 不触发种子/迁移写入，也不删除任何行
     expect(
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert")
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert"),
     ).toHaveLength(0);
     expect(
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_delete")
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_delete"),
     ).toHaveLength(0);
     // 看板仍渲染（内存空数组），种子标题不出现
     expect(screen.getByText("待办")).toBeInTheDocument();
-    expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("梳理 WMessage 需求清单"),
+    ).not.toBeInTheDocument();
   });
 
   // mutate 落盘失败必须抛错、tasksRef/state 不得先行更新——
@@ -182,7 +184,9 @@ describe("App", () => {
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert").length;
     const callsBefore = upsertCalls();
     // 捕获 tasks-updated 监听器回调
-    const lu = mocks.listenMock.mock.calls.find(([ev]) => ev === "tasks-updated");
+    const lu = mocks.listenMock.mock.calls.find(
+      ([ev]) => ev === "tasks-updated",
+    );
     expect(lu).toBeTruthy();
     const onTasksUpdated = lu![1] as (e: { payload: unknown }) => void;
     // 第一次 db_upsert（事件合并回写）挂起在门闩上
@@ -231,7 +235,11 @@ describe("App", () => {
 
   it("mutate 落盘失败：抛错 + UI 不更新（tasksRef 未先行赋值）", async () => {
     const user = userEvent.setup();
-    const dbErr = { code: "DB_ERROR", message: "disk full", recoverable: false };
+    const dbErr = {
+      code: "DB_ERROR",
+      message: "disk full",
+      recoverable: false,
+    };
     let failUpsert = false;
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "db_upsert" && failUpsert) throw dbErr;
@@ -254,7 +262,7 @@ describe("App", () => {
       await waitFor(() => expect(screen.getByRole("alertdialog")).toBeTruthy());
       // mutate 抛错（错误从 upsertTasks 一路抛到 call site 的 catch）
       await waitFor(() =>
-        expect(errSpy).toHaveBeenCalledWith("[mutate] persist failed", dbErr)
+        expect(errSpy).toHaveBeenCalledWith("[mutate] persist failed", dbErr),
       );
       // tasksRef 未先行赋值 → 新任务不进 UI（不会出现标题编辑 input）
       expect(screen.queryByDisplayValue("新任务")).not.toBeInTheDocument();
@@ -293,7 +301,7 @@ describe("App", () => {
     // TP-2：软删改走 task_patch 定向补丁（null=清空调度字段）
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
-        (c) => c[0] === "task_patch"
+        (c) => c[0] === "task_patch",
       );
       expect(calls.length).toBeGreaterThan(0);
       const args = calls[0][1] as {
@@ -315,7 +323,7 @@ describe("App", () => {
       async (event: string, cb: (e: unknown) => Promise<void>) => {
         handlers[event] = cb;
         return () => {};
-      }
+      },
     );
     render(<App />);
     await waitFor(() => {
@@ -338,7 +346,7 @@ describe("App", () => {
       });
     });
     const upsertCalls = mocks.invokeMock.mock.calls.filter(
-      (c) => c[0] === "db_upsert"
+      (c) => c[0] === "db_upsert",
     );
     // 第 1 次：事件原始行落盘；第 2 次：归档规则改动落盘（修复点）
     expect(upsertCalls.length).toBe(2);
@@ -347,7 +355,9 @@ describe("App", () => {
     expect(ruleWrite.tasks[0].id).toBe("w1");
     expect(ruleWrite.tasks[0].archived).toBe(true);
     // 观测行：merge_tasks | N changed
-    expect(infoSpy).toHaveBeenCalledWith("[tasks-updated] merge_tasks | 1 changed");
+    expect(infoSpy).toHaveBeenCalledWith(
+      "[tasks-updated] merge_tasks | 1 changed",
+    );
     infoSpy.mockRestore();
   });
 
@@ -363,23 +373,23 @@ describe("App", () => {
       STORAGE_KEY,
       JSON.stringify([
         { id: "legacy-1", title: "老数据一条", column: "todo", order: 0 },
-      ])
+      ]),
     );
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     render(<App />);
     await waitFor(() => {
       expect(errSpy).toHaveBeenCalledWith(
         "[init] legacy 迁移失败，保留 localStorage 待下次重试",
-        expect.any(Error)
+        expect.any(Error),
       );
     });
     // db_upsert 仅 1 次（失败的 legacy 迁移写入）；SEED 未落库
     const upsertCalls = mocks.invokeMock.mock.calls.filter(
-      (c) => c[0] === "db_upsert"
+      (c) => c[0] === "db_upsert",
     );
     expect(upsertCalls).toHaveLength(1);
     expect(JSON.stringify(upsertCalls[0][1])).not.toContain(
-      "梳理 WMessage 需求清单"
+      "梳理 WMessage 需求清单",
     );
     // legacy 保留（未 removeItem，下次启动重试）
     expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull();
@@ -394,7 +404,7 @@ describe("App", () => {
       async (event: string, cb: (e: unknown) => Promise<void>) => {
         handlers[event] = cb;
         return () => {};
-      }
+      },
     );
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "db_load") return [];
@@ -419,7 +429,7 @@ describe("App", () => {
     expect(screen.getByText("删失败仍上屏")).toBeInTheDocument();
     expect(errSpy).toHaveBeenCalledWith(
       "[tasks-updated] deleteTaskRows failed",
-      expect.any(Error)
+      expect.any(Error),
     );
     errSpy.mockRestore();
   });
@@ -457,7 +467,7 @@ describe("App", () => {
     await waitFor(() => {
       expect(errSpy).toHaveBeenCalledWith(
         "[mutate] deleteTaskRows failed",
-        expect.any(Error)
+        expect.any(Error),
       );
     });
     // UI 照常更新（mutate 未被 delete 失败阻断）：行从看板消失
@@ -475,7 +485,7 @@ describe("App", () => {
         async (event: string, cb: (e: unknown) => Promise<void>) => {
           handlers[event] = cb;
           return () => {};
-        }
+        },
       );
       render(<App />);
       await waitFor(() => {
@@ -493,7 +503,7 @@ describe("App", () => {
     });
     const dbWriteCalls = () =>
       mocks.invokeMock.mock.calls.filter(
-        (c) => c[0] === "db_upsert" || c[0] === "db_delete"
+        (c) => c[0] === "db_upsert" || c[0] === "db_delete",
       );
 
     it.each(["bot", "api", "migration"])(
@@ -508,7 +518,7 @@ describe("App", () => {
         expect(dbWriteCalls()).toHaveLength(0);
         // UI 仍合并：新行出现在看板
         expect(screen.getByText(`后端写入 ${source}1`)).toBeInTheDocument();
-      }
+      },
     );
 
     it("未知 source（协议外字符串）→ WARN + 按未落盘处理仍回写", async () => {
@@ -520,7 +530,7 @@ describe("App", () => {
         });
       });
       expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("unknown source: cron")
+        expect.stringContaining("unknown source: cron"),
       );
       expect(dbWriteCalls().length).toBeGreaterThan(0);
       warnSpy.mockRestore();
@@ -533,7 +543,13 @@ describe("App", () => {
   it("导入任务：tasks_import 成功后重新 db_load，UI 显示 fresh 数据", async () => {
     const user = userEvent.setup();
     const fresh: Task[] = [
-      { id: "imp1", title: "导入的 fresh 任务", column: "todo", order: 0, updatedAt: 1 },
+      {
+        id: "imp1",
+        title: "导入的 fresh 任务",
+        column: "todo",
+        order: 0,
+        updatedAt: 1,
+      },
     ];
     let dbLoadCount = 0;
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -543,7 +559,8 @@ describe("App", () => {
         return dbLoadCount === 1 ? [] : fresh;
       }
       if (cmd === "tasks_import") return 2;
-      if (cmd === "api_status") return { enabled: false, port: 4763, token: "" };
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
       if (cmd === "bot_get_config")
         return { baseUrl: "", model: "", hasApiKey: false };
       if (cmd === "bot_get_enabled" || cmd === "py_get_enabled") return false;
@@ -561,7 +578,9 @@ describe("App", () => {
     await user.click(screen.getByText("设置"));
     //  设置壳：任务数据面板在「任务与工作区」分类下（hidden 查不到 role，先导航）
     await user.click(screen.getByRole("button", { name: "数据管理" }));
-    const importBtn = (await screen.findAllByRole("button", { name: "导入" }))[0];
+    const importBtn = (
+      await screen.findAllByRole("button", { name: "导入" })
+    )[0];
     await user.click(importBtn);
     // 导入完成 alert（证明 importTasks 全流程走完）
     await waitFor(() => {
@@ -569,20 +588,23 @@ describe("App", () => {
     });
     // db_load 第二次调用必须发生在 tasks_import 之后（DB 是单一真源）
     const calls = mocks.invokeMock.mock.calls;
-    const importOrder = mocks.invokeMock.mock.invocationCallOrder[
-      calls.findIndex((c) => c[0] === "tasks_import")
-    ];
+    const importOrder =
+      mocks.invokeMock.mock.invocationCallOrder[
+        calls.findIndex((c) => c[0] === "tasks_import")
+      ];
     const secondLoadIdx = calls.reduce(
       (idx, c, i) => (c[0] === "db_load" && i > 0 ? i : idx),
-      -1
+      -1,
     );
     expect(secondLoadIdx).toBeGreaterThan(-1);
-    expect(mocks.invokeMock.mock.invocationCallOrder[secondLoadIdx]).toBeGreaterThan(
-      importOrder
-    );
+    expect(
+      mocks.invokeMock.mock.invocationCallOrder[secondLoadIdx],
+    ).toBeGreaterThan(importOrder);
     // setTasks 收到 fresh 数据：点设置壳「返回」回看板进入前视图 = 首页），fresh 任务在、种子任务不在
     await user.click(screen.getByRole("button", { name: /返回/ }));
     expect(await screen.findByText("导入的 fresh 任务")).toBeInTheDocument();
-    expect(screen.queryByText("梳理 WMessage 需求清单")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("梳理 WMessage 需求清单"),
+    ).not.toBeInTheDocument();
   });
 });

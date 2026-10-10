@@ -25,7 +25,8 @@ export function ApiProviderSelect({
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(e.target as Node))
+        setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -41,11 +42,13 @@ export function ApiProviderSelect({
       document.removeEventListener("keydown", onKey);
     };
   }, [open]);
-  const current =
-    options.find((o) => o.value === value) ?? options[0];
+  const current = options.find((o) => o.value === value) ?? options[0];
   const openList = () => {
     setActiveIdx(
-      Math.max(0, options.findIndex((o) => o.value === value))
+      Math.max(
+        0,
+        options.findIndex((o) => o.value === value),
+      ),
     );
     setOpen(true);
   };

@@ -1193,7 +1193,7 @@ pub async fn db_delete(app: AppHandle, ids: Vec<String>) -> CommandResult<()> {
     .map_err(|e| CommandError::from(format!("数据库删除线程 join 失败：{e}")))?
 }
 
-/// 导出/导入路径统一闸门（W11 加固，五调用方共用：workspace/tasks/workflow 导出导入 +
+/// 导出/导入路径统一闸门（五调用方共用：workspace/tasks/workflow 导出导入 +
 /// 审计导出）。path 直达自 invoke 参数，不能沿用「save dialog 亲手选 = 明确授权」假设
 /// （同 W8 附件边界校验口径）。检查链：
 /// ① 非空 → ② 词法拒 `..` 组件 → ③ 扩展名 .json（大小写不敏感）→ ④ 文件名合法

@@ -19,13 +19,15 @@ export function getDecomposeGuidance(): string {
   try {
     const stored = localStorage.getItem(GUIDANCE_KEY);
     // 空串/纯空白视作未配置（设置页 textarea 可清空后失焦落盘空串），回退默认防空指引
-    return stored && stored.trim().length > 0 ? stored : DEFAULT_DECOMPOSE_GUIDANCE;
+    return stored && stored.trim().length > 0
+      ? stored
+      : DEFAULT_DECOMPOSE_GUIDANCE;
   } catch {
     return DEFAULT_DECOMPOSE_GUIDANCE;
   }
 }
 
-/** @returns 是否成功持久化（false = 存储不可用，UI 不应显示"已保存"——OCR r1） */
+/** @returns 是否成功持久化（false = 存储不可用，UI 不应显示"已保存"） */
 export function setDecomposeGuidance(v: string): boolean {
   try {
     localStorage.setItem(GUIDANCE_KEY, v);

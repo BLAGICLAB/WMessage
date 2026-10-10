@@ -44,7 +44,7 @@ describe("NotificationsPage", () => {
   it("空列表：显示空状态文案", async () => {
     render(<NotificationsPage />);
     await waitFor(() =>
-      expect(screen.getByText("没有待处理的通知")).toBeTruthy()
+      expect(screen.getByText("没有待处理的通知")).toBeTruthy(),
     );
   });
 
@@ -59,9 +59,7 @@ describe("NotificationsPage", () => {
       return null;
     });
     const { container } = render(<NotificationsPage />);
-    await waitFor(() =>
-      expect(screen.getByText("待处理消息")).toBeTruthy()
-    );
+    await waitFor(() => expect(screen.getByText("待处理消息")).toBeTruthy());
     expect(screen.queryByText("已处理消息")).toBeNull();
     // 切「全部」页签
     await userEvent.click(screen.getByRole("tab", { name: "全部" }));
@@ -89,7 +87,7 @@ describe("NotificationsPage", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("mem_pending_approve", {
         ids: [7, 8],
-      })
+      }),
     );
   });
 
@@ -113,7 +111,7 @@ describe("NotificationsPage", () => {
       expect(invokeMock).toHaveBeenCalledWith("evolution_toggle_proposal", {
         proposalId: "abc123",
         enabled: true,
-      })
+      }),
     );
   });
 
@@ -131,13 +129,15 @@ describe("NotificationsPage", () => {
       return null;
     });
     render(<NotificationsPage />);
-    const bindBtn = await screen.findByRole("button", { name: "绑定选中（2）" });
+    const bindBtn = await screen.findByRole("button", {
+      name: "绑定选中（2）",
+    });
     await userEvent.click(bindBtn);
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("confirm_artifact_batch", {
         taskId: "t1",
         paths: ["/a/x.txt", "/a/y.txt"],
-      })
+      }),
     );
   });
 
@@ -161,7 +161,7 @@ describe("NotificationsPage", () => {
       expect(invokeMock).toHaveBeenCalledWith("notifications_resolve", {
         id: "a2",
         status: "dismissed",
-      })
+      }),
     );
   });
 });

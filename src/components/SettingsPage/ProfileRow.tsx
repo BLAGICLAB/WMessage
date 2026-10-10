@@ -5,7 +5,11 @@ import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Check, Image as ImageIcon } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
-import { setProfileName, setProfileAvatar, removeProfileAvatar } from "../../profile";
+import {
+  setProfileName,
+  setProfileAvatar,
+  removeProfileAvatar,
+} from "../../profile";
 import { useProfile } from "../ActorAvatar";
 import botLogo from "../../assets/main-logo.png";
 
@@ -31,7 +35,7 @@ export function ProfileRow({
     () => () => {
       if (savedTimer.current) clearTimeout(savedTimer.current);
     },
-    []
+    [],
   );
 
   // 资料加载/变更后回填姓名（编辑中不回填，避免覆盖输入）；
@@ -49,7 +53,9 @@ export function ProfileRow({
       const selected = await open({
         multiple: false,
         directory: false,
-        filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
+        filters: [
+          { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp"] },
+        ],
       });
       if (typeof selected === "string") {
         await setProfileAvatar(kind, selected);
@@ -111,14 +117,22 @@ export function ProfileRow({
         {src ? (
           <img src={src} alt={label} className="w-full h-full object-cover" />
         ) : kind === "bot" ? (
-          <img src={botLogo} alt={label} className="w-full h-full object-cover" />
+          <img
+            src={botLogo}
+            alt={label}
+            className="w-full h-full object-cover"
+          />
         ) : (
-          <span className="text-sm text-[var(--t4)]">{displayName.charAt(0)}</span>
+          <span className="text-sm text-[var(--t4)]">
+            {displayName.charAt(0)}
+          </span>
         )}
       </span>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <p className="w-10 shrink-0 text-xs font-medium text-[var(--t4)]">{label}</p>
+          <p className="w-10 shrink-0 text-xs font-medium text-[var(--t4)]">
+            {label}
+          </p>
           <input
             value={name}
             disabled={busy}

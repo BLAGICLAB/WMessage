@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, BrainCircuit, FolderInput, HelpCircle, Sparkles } from "lucide-react";
+import {
+  Bell,
+  BrainCircuit,
+  FolderInput,
+  HelpCircle,
+  Sparkles,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { EmptyState } from "../EmptyState";
 import { handleCommandError } from "../../lib/errorHandler";
@@ -27,7 +33,10 @@ function fmtTime(ms: number): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-const KIND_META: Record<NotificationItem["kind"], { icon: ReactNode; label: string }> = {
+const KIND_META: Record<
+  NotificationItem["kind"],
+  { icon: ReactNode; label: string }
+> = {
   memory_proposal: {
     icon: <BrainCircuit size={15} aria-hidden />,
     label: "记忆提案",
@@ -49,7 +58,9 @@ const KIND_META: Record<NotificationItem["kind"], { icon: ReactNode; label: stri
 /** 记忆提案 ids（payload.ids: number[]） */
 function memoryIds(n: NotificationItem): number[] {
   const ids = n.payload?.ids;
-  return Array.isArray(ids) ? ids.filter((v): v is number => typeof v === "number") : [];
+  return Array.isArray(ids)
+    ? ids.filter((v): v is number => typeof v === "number")
+    : [];
 }
 
 /** 自进化提案 proposalId（payload.proposalId: string） */
@@ -59,11 +70,16 @@ function evolutionProposalId(n: NotificationItem): string | null {
 }
 
 /** 产物绑定批次（payload.taskId/taskTitle/paths） */
-function artifactBatch(n: NotificationItem): { taskId: string; paths: string[] } | null {
+function artifactBatch(
+  n: NotificationItem,
+): { taskId: string; paths: string[] } | null {
   const taskId = n.payload?.taskId;
   const paths = n.payload?.paths;
   if (typeof taskId !== "string" || !Array.isArray(paths)) return null;
-  return { taskId, paths: paths.filter((p): p is string => typeof p === "string") };
+  return {
+    taskId,
+    paths: paths.filter((p): p is string => typeof p === "string"),
+  };
 }
 
 function StatusBadge({ status }: { status: NotificationItem["status"] }) {
@@ -72,14 +88,14 @@ function StatusBadge({ status }: { status: NotificationItem["status"] }) {
     status === "done"
       ? ["已处理", "text-[var(--t5)]"]
       : ["已忽略", "text-[var(--t5)]"];
-  return (
-    <span className={`shrink-0 text-[11px] ${cls}`}>{text}</span>
-  );
+  return <span className={`shrink-0 text-[11px] ${cls}`}>{text}</span>;
 }
 
 /** 通用操作按钮组 */
 function CardActions({ children }: { children: ReactNode }) {
-  return <div className="mt-3 flex items-center justify-end gap-2">{children}</div>;
+  return (
+    <div className="mt-3 flex items-center justify-end gap-2">{children}</div>
+  );
 }
 
 const btnPrimary =
@@ -105,10 +121,20 @@ function MemoryCard({ item }: { item: NotificationItem }) {
   return (
     <>
       <CardActions>
-        <button type="button" className={btnGhost} disabled={busy || ids.length === 0} onClick={() => act(false)}>
+        <button
+          type="button"
+          className={btnGhost}
+          disabled={busy || ids.length === 0}
+          onClick={() => act(false)}
+        >
           忽略
         </button>
-        <button type="button" className={btnPrimary} disabled={busy || ids.length === 0} onClick={() => act(true)}>
+        <button
+          type="button"
+          className={btnPrimary}
+          disabled={busy || ids.length === 0}
+          onClick={() => act(true)}
+        >
           全部收下（{ids.length}）
         </button>
       </CardActions>
@@ -143,10 +169,20 @@ function EvolutionCard({ item }: { item: NotificationItem }) {
   };
   return (
     <CardActions>
-      <button type="button" className={btnGhost} disabled={busy} onClick={dismiss}>
+      <button
+        type="button"
+        className={btnGhost}
+        disabled={busy}
+        onClick={dismiss}
+      >
         忽略
       </button>
-      <button type="button" className={btnPrimary} disabled={busy || !proposalId} onClick={enable}>
+      <button
+        type="button"
+        className={btnPrimary}
+        disabled={busy || !proposalId}
+        onClick={enable}
+      >
         启用
       </button>
     </CardActions>
@@ -156,9 +192,14 @@ function EvolutionCard({ item }: { item: NotificationItem }) {
 /** 产物绑定卡：内嵌复选列表（默认全选）+ 绑定选中 / 跳过 */
 function ArtifactCard({ item }: { item: NotificationItem }) {
   const batch = artifactBatch(item);
-  const [selected, setSelected] = useState<Set<string>>(() => new Set(batch?.paths ?? []));
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(batch?.paths ?? []),
+  );
   const [busy, setBusy] = useState(false);
-  if (!batch) return <p className="mt-2 text-xs text-[var(--t4)]">消息数据不完整，可忽略</p>;
+  if (!batch)
+    return (
+      <p className="mt-2 text-xs text-[var(--t4)]">消息数据不完整，可忽略</p>
+    );
   const toggle = (p: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -166,7 +207,8 @@ function ArtifactCard({ item }: { item: NotificationItem }) {
       else next.add(p);
       return next;
     });
-  const allChecked = batch.paths.length > 0 && batch.paths.every((p) => selected.has(p));
+  const allChecked =
+    batch.paths.length > 0 && batch.paths.every((p) => selected.has(p));
   const bind = async () => {
     if (selected.size === 0) return;
     setBusy(true);
@@ -218,15 +260,27 @@ function ArtifactCard({ item }: { item: NotificationItem }) {
               className="mt-0.5"
               aria-label={p}
             />
-            <span className="min-w-0 flex-1 break-all font-mono text-xs text-[var(--t3)]">{p}</span>
+            <span className="min-w-0 flex-1 break-all font-mono text-xs text-[var(--t3)]">
+              {p}
+            </span>
           </li>
         ))}
       </ul>
       <CardActions>
-        <button type="button" className={btnGhost} disabled={busy} onClick={skip}>
+        <button
+          type="button"
+          className={btnGhost}
+          disabled={busy}
+          onClick={skip}
+        >
           跳过
         </button>
-        <button type="button" className={btnPrimary} disabled={busy || selected.size === 0} onClick={bind}>
+        <button
+          type="button"
+          className={btnPrimary}
+          disabled={busy || selected.size === 0}
+          onClick={bind}
+        >
           {busy ? "绑定中…" : `绑定选中（${selected.size}）`}
         </button>
       </CardActions>
@@ -241,13 +295,17 @@ function workflowQuestion(n: NotificationItem): WorkflowQuestionPayload | null {
   return p as unknown as WorkflowQuestionPayload;
 }
 
-/** 工作流提问卡：选项 chips + 自由输入 + 按假设继续—— *  红线：忽略问题工作流也能走（assume 返回问题自带假设） */
+/** 工作流提问卡：选项 chips + 自由输入 + 按假设继续——
+ *  红线：忽略问题工作流也能走（assume 返回问题自带假设） */
 function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
   const q = workflowQuestion(item);
   const [picked, setPicked] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  if (!q) return <p className="mt-2 text-xs text-[var(--t4)]">消息数据不完整，可忽略</p>;
+  if (!q)
+    return (
+      <p className="mt-2 text-xs text-[var(--t4)]">消息数据不完整，可忽略</p>
+    );
   const options = Array.isArray(q.options) ? q.options : [];
   const answerText = text.trim() || picked;
   const respond = async (action: "answer" | "assume") => {
@@ -256,7 +314,7 @@ function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
       await respondWorkflowQuestion(
         q.questionId,
         action,
-        action === "answer" ? answerText || undefined : undefined
+        action === "answer" ? answerText || undefined : undefined,
       );
     } catch (e) {
       handleCommandError(e, "回答工作流提问");
@@ -266,9 +324,13 @@ function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
   };
   return (
     <>
-      {q.why && <p className="mt-2 text-[11px] text-[var(--t5)]">问这个：{q.why}</p>}
+      {q.why && (
+        <p className="mt-2 text-[11px] text-[var(--t5)]">问这个：{q.why}</p>
+      )}
       {q.nodeTitle && (
-        <p className="mt-1 text-[11px] text-[var(--t5)]">提问节点：{q.nodeTitle}</p>
+        <p className="mt-1 text-[11px] text-[var(--t5)]">
+          提问节点：{q.nodeTitle}
+        </p>
       )}
       {options.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
@@ -309,7 +371,11 @@ function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
           type="button"
           className={btnGhost}
           disabled={busy}
-          title={q.assumption ? `不回答，按 AI 假设继续：${q.assumption}` : "不回答，按继续处理"}
+          title={
+            q.assumption
+              ? `不回答，按 AI 假设继续：${q.assumption}`
+              : "不回答，按继续处理"
+          }
           onClick={() => void respond("assume")}
         >
           按假设继续
@@ -354,7 +420,8 @@ export function NotificationsPage() {
   }, [reload]);
   useTauriListen(NOTIFICATIONS_CHANGED_EVENT, reload);
 
-  const shown = tab === "pending" ? items.filter((n) => n.status === "pending") : items;
+  const shown =
+    tab === "pending" ? items.filter((n) => n.status === "pending") : items;
   const pendingCount = items.filter((n) => n.status === "pending").length;
 
   const clearDone = async () => {
@@ -369,14 +436,20 @@ export function NotificationsPage() {
     <div className="mx-auto max-w-3xl">
       <div className="flex items-center gap-3">
         <h1 className="text-xl font-semibold text-[var(--t1)]">通知</h1>
-        <span className="text-xs text-[var(--t4)]">{pendingCount} 条待处理</span>
+        <span className="text-xs text-[var(--t4)]">
+          {pendingCount} 条待处理
+        </span>
         <div className="flex-1" />
         {tab === "all" && items.some((n) => n.status !== "pending") && (
           <button type="button" className={btnGhost} onClick={clearDone}>
             清空已处理
           </button>
         )}
-        <div role="tablist" aria-label="通知筛选" className="flex items-center gap-1">
+        <div
+          role="tablist"
+          aria-label="通知筛选"
+          className="flex items-center gap-1"
+        >
           {(
             [
               ["pending", "待处理"],
@@ -423,13 +496,21 @@ export function NotificationsPage() {
               >
                 <header className="flex items-center gap-2">
                   <span className="text-[var(--t3)]">{meta.icon}</span>
-                  <span className="text-[11px] text-[var(--t5)]">{meta.label}</span>
-                  <span className="text-[11px] text-[var(--t5)]">· {fmtTime(n.createdAt)}</span>
+                  <span className="text-[11px] text-[var(--t5)]">
+                    {meta.label}
+                  </span>
+                  <span className="text-[11px] text-[var(--t5)]">
+                    · {fmtTime(n.createdAt)}
+                  </span>
                   <span className="flex-1" />
                   <StatusBadge status={n.status} />
                 </header>
-                <h2 className="mt-2 text-sm font-medium text-[var(--t1)]">{n.title}</h2>
-                {n.body && <p className="mt-1 text-xs text-[var(--t3)]">{n.body}</p>}
+                <h2 className="mt-2 text-sm font-medium text-[var(--t1)]">
+                  {n.title}
+                </h2>
+                {n.body && (
+                  <p className="mt-1 text-xs text-[var(--t3)]">{n.body}</p>
+                )}
                 {n.status === "pending" &&
                   (n.kind === "memory_proposal" ? (
                     <MemoryCard item={n} />

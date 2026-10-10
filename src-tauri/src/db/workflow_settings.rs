@@ -21,7 +21,7 @@ pub fn ensure_workflow_settings(conn: &rusqlite::Connection) -> Result<(), Strin
 
 pub const KEY_NODE_ACCEPTANCE: &str = "node_acceptance";
 pub const KEY_AUDIT_RETENTION: &str = "audit_retention_runs";
-/// 轻量评审模型（W11）：模型库条目 id；空串/缺行 = 跟随全局 active
+/// 轻量评审模型：模型库条目 id；空串/缺行 = 跟随全局 active
 pub const KEY_REVIEW_MODEL: &str = "review_model";
 /// ask_user 提问预算（全局：工作流节点与手动任务卡执行共用，注册时读一次）
 pub const KEY_ASK_BUDGET: &str = "ask_budget";
@@ -85,7 +85,7 @@ pub async fn load_review_model(app: &AppHandle) -> Option<String> {
     .flatten()
 }
 
-/// 轻量评审模型条目 id（W11：clarify 与节点验收核查共用）；空/缺 = None（跟随全局）
+/// 轻量评审模型条目 id（clarify 与节点验收核查共用）；空/缺 = None（跟随全局）
 pub fn review_model_id(conn: &rusqlite::Connection) -> Option<String> {
     get(conn, KEY_REVIEW_MODEL)
         .ok()

@@ -11,7 +11,7 @@
 //! - `bot_model_loop`  — 流式 SSE + 工具循环（run_model_loop / parse_sse_chunk / feed_think / TOOLS）
 //! - `bot_scheduler`   — ⏰ 定时任务卡自动执行（start_scheduler / occurrence_after / sched_tests）
 //! - `bot_slash`       — 旁路基础设施（bot_stop / 确认弹窗 / 机器人开关）
-//! - `bot_artifacts`   — 产物登记表bot 流程结束按 TaskExecOrigin 分流触发汇总弹窗）
+//! - `bot_artifacts`   — 产物登记表（bot 流程结束按 TaskExecOrigin 分流触发汇总弹窗）
 //!
 //! 安全性（对齐《Harness 安全网关》需求）：
 //! - 工具白名单：固定 TOOLS schema（单一来源 bot/registry.rs 的 TOOLS_TABLE 派生）

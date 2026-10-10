@@ -260,7 +260,7 @@ pub async fn workflow_audit_export(
     path: String,
 ) -> CommandResult<usize> {
     use crate::error::CommandResult;
-    // W11 ：路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
+    // 路径闸门的 fs 调用进阻塞线程（不占 Tokio worker）
     let path_gate = path.clone();
     crate::py::document::spawn_blocking_map(move || {
         crate::db::tasks::check_export_path(&path_gate).map_err(|e| e.to_string())

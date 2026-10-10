@@ -12,7 +12,11 @@ import {
 import type { Task } from "../types";
 
 // invoke 失败路径（loadArchiveDaysFromConfig 的 catch）不打扰断言
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => { throw new Error("no backend in unit tests"); }) }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async () => {
+    throw new Error("no backend in unit tests");
+  }),
+}));
 
 const day = 24 * 60 * 60 * 1000;
 
@@ -88,18 +92,42 @@ describe("applyArchiveRule", () => {
     const now = Date.now();
     const tasks: Task[] = [
       { id: "a", title: "待办", column: "todo", completedAt: now - 10 * day },
-      { id: "b", title: "进行中", column: "doing", completedAt: now - 10 * day },
-      { id: "c", title: "已归档", column: "done", completedAt: now - 10 * day, archived: true },
-      { id: "d", title: "回收站", column: "done", completedAt: now - 10 * day, deletedAt: now },
+      {
+        id: "b",
+        title: "进行中",
+        column: "doing",
+        completedAt: now - 10 * day,
+      },
+      {
+        id: "c",
+        title: "已归档",
+        column: "done",
+        completedAt: now - 10 * day,
+        archived: true,
+      },
+      {
+        id: "d",
+        title: "回收站",
+        column: "done",
+        completedAt: now - 10 * day,
+        deletedAt: now,
+      },
     ];
     const next = applyArchiveRule(tasks);
     // a/b 未到阈值不动；c 已归档保持；d 回收站不碰
-    expect(next.map((t) => t.archived ?? false)).toEqual([false, false, true, false]);
+    expect(next.map((t) => t.archived ?? false)).toEqual([
+      false,
+      false,
+      true,
+      false,
+    ]);
   });
 
   it("老数据缺 completedAt：补当前时间（不立即归档）", () => {
     setArchiveAfterDays(7);
-    const next = applyArchiveRule([{ id: "old", title: "老卡", column: "done" }]);
+    const next = applyArchiveRule([
+      { id: "old", title: "老卡", column: "done" },
+    ]);
     expect(next[0].completedAt).toBeTypeOf("number");
     expect(next[0].archived).toBeUndefined();
   });

@@ -32,7 +32,12 @@ describe("ResizeEdge listener 生命周期", () => {
     const onDelta = vi.fn();
     const { container } = render(<ResizeEdge side="e" onDelta={onDelta} />);
     const el = container.firstChild as HTMLElement;
-    fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+    fireEvent.pointerDown(el, {
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    });
     expect(widgetDragActive).toBe(true);
     await flush(); // Promise.all 落地，startPos 就位
     fireEvent.pointerMove(window, { clientX: 25, clientY: 20 });
@@ -45,9 +50,16 @@ describe("ResizeEdge listener 生命周期", () => {
 
   it("mid-drag unmount：widgetDragActive 复位，move 不再派发", async () => {
     const onDelta = vi.fn();
-    const { container, unmount } = render(<ResizeEdge side="e" onDelta={onDelta} />);
+    const { container, unmount } = render(
+      <ResizeEdge side="e" onDelta={onDelta} />,
+    );
     const el = container.firstChild as HTMLElement;
-    fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+    fireEvent.pointerDown(el, {
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    });
     await flush();
     unmount();
     expect(widgetDragActive).toBe(false);
@@ -61,7 +73,12 @@ describe("ResizeEdge listener 生命周期", () => {
     const onDelta = vi.fn();
     const { container } = render(<ResizeEdge side="e" onDelta={onDelta} />);
     const el = container.firstChild as HTMLElement;
-    fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+    fireEvent.pointerDown(el, {
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    });
     expect(widgetDragActive).toBe(true);
     await flush(); // Promise.all reject → .catch 分支
     expect(warn).toHaveBeenCalled();
@@ -87,9 +104,16 @@ describe("ResizeEdge listener 生命周期", () => {
 describe("SplitBar listener 生命周期", () => {
   it("正常拖动：move 派发 onSplit，pointerup 后复位且不再派发", () => {
     const onSplit = vi.fn();
-    const { container } = render(<SplitBar onSplit={onSplit} onArrow={() => {}} />);
+    const { container } = render(
+      <SplitBar onSplit={onSplit} onArrow={() => {}} />,
+    );
     const el = container.firstChild as HTMLElement;
-    fireEvent.pointerDown(el, { button: 0, clientX: 10, clientY: 10, pointerId: 1 });
+    fireEvent.pointerDown(el, {
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    });
     expect(widgetDragActive).toBe(true);
     fireEvent.pointerMove(window, { clientX: 10, clientY: 25 });
     expect(onSplit).toHaveBeenCalledWith(15);
@@ -102,7 +126,7 @@ describe("SplitBar listener 生命周期", () => {
   it("mid-drag unmount：widgetDragActive 复位，move 不再派发", () => {
     const onSplit = vi.fn();
     const { container, unmount } = render(
-      <SplitBar onSplit={onSplit} onArrow={() => {}} />
+      <SplitBar onSplit={onSplit} onArrow={() => {}} />,
     );
     fireEvent.pointerDown(container.firstChild as HTMLElement, {
       button: 0,
@@ -118,7 +142,9 @@ describe("SplitBar listener 生命周期", () => {
 
   it("pointerdown 落在 ▲/▼ 按钮上不起拖（保留按钮 onClick 路径）", () => {
     const onSplit = vi.fn();
-    const { getByTitle } = render(<SplitBar onSplit={onSplit} onArrow={() => {}} />);
+    const { getByTitle } = render(
+      <SplitBar onSplit={onSplit} onArrow={() => {}} />,
+    );
     fireEvent.pointerDown(getByTitle("聊天区变大"), {
       button: 0,
       clientX: 10,

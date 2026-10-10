@@ -95,7 +95,7 @@ describe("handleCommandError recoverable 驱动重试 UI", () => {
       throw ce("DB_ERROR", false, "重试时也挂了");
     });
     expect(() =>
-      handleCommandError(ce("BOT_DISABLED", true), "test", { onRetry })
+      handleCommandError(ce("BOT_DISABLED", true), "test", { onRetry }),
     ).not.toThrow();
     expect(onRetry).toHaveBeenCalledTimes(1);
     // 回收路径 silent：不再弹 alert/confirm；console 留痕（两条：原始 + 回收）
@@ -106,7 +106,8 @@ describe("handleCommandError recoverable 驱动重试 UI", () => {
   });
 });
 
-describe("空 message 兜底", () => {  let alertSpy: ReturnType<typeof vi.spyOn>;
+describe("空 message 兜底", () => {
+  let alertSpy: ReturnType<typeof vi.spyOn>;
   let confirmSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -167,13 +168,17 @@ describe("hintForCode 全覆盖（每个 code 必须有专属 hint）", () => {
   });
 
   it("TASK_INVALID_STATE hint 说明业务状态语义", () => {
-    handleCommandError(ce("TASK_INVALID_STATE", true, "任务状态不允许该操作：…"));
+    handleCommandError(
+      ce("TASK_INVALID_STATE", true, "任务状态不允许该操作：…"),
+    );
     const text = alertSpy.mock.calls[0][0] as string;
     expect(text).toContain("任务当前状态不允许该操作");
   });
 
   it("DOMAIN_RULE hint 给出「按提示调整后重试」指引", () => {
-    handleCommandError(ce("DOMAIN_RULE", true, "[web] 已拒绝访问本机/内网地址"));
+    handleCommandError(
+      ce("DOMAIN_RULE", true, "[web] 已拒绝访问本机/内网地址"),
+    );
     const text = alertSpy.mock.calls[0][0] as string;
     expect(text).toContain("💡");
     expect(text).toContain("按提示调整后重试");

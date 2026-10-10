@@ -8,20 +8,36 @@ describe("GraphSettingsPanel", () => {
 
   it("七项设置全部渲染，默认值正确", () => {
     render(<GraphSettingsPanel />);
-    expect(screen.getByRole("switch", { name: "只看我的任务" })).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByRole("switch", { name: "打开时自动播放布局动画" })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("switch", { name: "记住上次的过滤器" })).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByRole("radiogroup", { name: "节点大小" })).toBeInTheDocument();
-    expect(screen.getByRole("radiogroup", { name: "标签密度" })).toBeInTheDocument();
-    expect(screen.getByRole("radiogroup", { name: "连线粗细" })).toBeInTheDocument();
-    expect(screen.getByRole("radiogroup", { name: "布局松散度" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "只看我的任务" }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("switch", { name: "打开时自动播放布局动画" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      screen.getByRole("switch", { name: "记住上次的过滤器" }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(
+      screen.getByRole("radiogroup", { name: "节点大小" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("radiogroup", { name: "标签密度" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("radiogroup", { name: "连线粗细" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("radiogroup", { name: "布局松散度" }),
+    ).toBeInTheDocument();
   });
 
   it("开关与三档切换即时写入 localStorage", () => {
     render(<GraphSettingsPanel />);
     fireEvent.click(screen.getByRole("switch", { name: "只看我的任务" }));
     expect(localStorage.getItem("wm.graph.onlyMine")).toBe("1");
-    fireEvent.click(screen.getByRole("switch", { name: "打开时自动播放布局动画" }));
+    fireEvent.click(
+      screen.getByRole("switch", { name: "打开时自动播放布局动画" }),
+    );
     expect(localStorage.getItem("wm.graph.autoLayout")).toBe("0");
 
     const density = screen.getByRole("radiogroup", { name: "标签密度" });
@@ -38,7 +54,10 @@ describe("GraphSettingsPanel", () => {
   });
 
   it("记住过滤器：关 → 开 → 关 后已存过滤器被清除", () => {
-    localStorage.setItem("wm.graph.filters", '{"status":{"todo":true,"doing":true,"done":true},"includeOrphans":true}');
+    localStorage.setItem(
+      "wm.graph.filters",
+      '{"status":{"todo":true,"doing":true,"done":true},"includeOrphans":true}',
+    );
     render(<GraphSettingsPanel />);
     const sw = screen.getByRole("switch", { name: "记住上次的过滤器" });
     fireEvent.click(sw); // 开
@@ -53,8 +72,14 @@ describe("GraphSettingsPanel", () => {
     localStorage.setItem("wm.graph.edgeWidth", "thick");
     render(<GraphSettingsPanel />);
     const size = screen.getByRole("radiogroup", { name: "节点大小" });
-    expect(within(size).getByRole("radio", { name: "耗时" })).toHaveAttribute("aria-checked", "true");
+    expect(within(size).getByRole("radio", { name: "耗时" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
     const edge = screen.getByRole("radiogroup", { name: "连线粗细" });
-    expect(within(edge).getByRole("radio", { name: "粗" })).toHaveAttribute("aria-checked", "true");
+    expect(within(edge).getByRole("radio", { name: "粗" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
   });
 });

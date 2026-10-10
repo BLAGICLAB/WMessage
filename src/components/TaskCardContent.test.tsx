@@ -24,7 +24,7 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
         editingTitle
         onCommitTitle={onCommitTitle}
         onCancelTitle={onCancelTitle}
-      />
+      />,
     );
     const input = screen.getByDisplayValue("原始标题");
     await user.type(input, "改");
@@ -43,7 +43,7 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
         editingTitle
         onCommitTitle={onCommitTitle}
         onCancelTitle={vi.fn()}
-      />
+      />,
     );
     const input = screen.getByDisplayValue("原始标题");
     await user.type(input, "改");
@@ -60,7 +60,11 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
     const user = userEvent.setup();
     const onCommitTitle = vi.fn();
     render(
-      <TaskCardContent task={task} editingTitle onCommitTitle={onCommitTitle} />
+      <TaskCardContent
+        task={task}
+        editingTitle
+        onCommitTitle={onCommitTitle}
+      />,
     );
     const input = screen.getByDisplayValue("原始标题");
     await user.type(input, "改");
@@ -72,7 +76,11 @@ describe("TaskCardContent 标题编辑 Escape 取消（E4）", () => {
     const user = userEvent.setup();
     const onCommitTitle = vi.fn();
     render(
-      <TaskCardContent task={task} editingTitle onCommitTitle={onCommitTitle} />
+      <TaskCardContent
+        task={task}
+        editingTitle
+        onCommitTitle={onCommitTitle}
+      />,
     );
     const input = screen.getByDisplayValue("原始标题");
     await user.type(input, "改");
@@ -133,10 +141,7 @@ describe("TaskCardContent 多文件绑定", () => {
     const user = userEvent.setup();
     const onOpenFilePath = vi.fn();
     render(
-      <TaskCardContent
-        task={multiTask}
-        onOpenFilePath={onOpenFilePath}
-      />
+      <TaskCardContent task={multiTask} onOpenFilePath={onOpenFilePath} />,
     );
     await user.click(screen.getByText("b.docx"));
     expect(onOpenFilePath).toHaveBeenCalledWith("/docs/b.docx");
@@ -151,7 +156,7 @@ describe("TaskCardContent 多文件绑定", () => {
         task={multiTask}
         onCopyFilePath={onCopyFilePath}
         onRemoveFile={onRemoveFile}
-      />
+      />,
     );
     const copies = screen.getAllByText("复制");
     expect(copies).toHaveLength(2);
@@ -165,15 +170,20 @@ describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
   it("完成列任务显示「完成 YYYY-MM-DD HH:mm」", () => {
     render(
       <TaskCardContent
-        task={{ id: "t1", title: "x", column: "done", completedAt: new Date(2026, 8, 1, 18, 30).getTime() }}
-      />
+        task={{
+          id: "t1",
+          title: "x",
+          column: "done",
+          completedAt: new Date(2026, 8, 1, 18, 30).getTime(),
+        }}
+      />,
     );
     expect(screen.getByText("完成 2026-09-01 18:30")).toBeInTheDocument();
   });
 
   it("未完成 / 无完成时间不显示", () => {
     const { container } = render(
-      <TaskCardContent task={{ id: "t1", title: "x", column: "todo" }} />
+      <TaskCardContent task={{ id: "t1", title: "x", column: "todo" }} />,
     );
     expect(container.textContent).not.toContain("完成 ");
   });

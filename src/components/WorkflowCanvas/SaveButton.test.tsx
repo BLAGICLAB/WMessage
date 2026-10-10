@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { SaveButton } from "./SaveButton";
 
 beforeEach(() => {
@@ -123,7 +129,9 @@ describe("SaveButton 保存流", () => {
 
   it("保存中卸载不抛错、不泄漏定时器", async () => {
     const onSave = vi.fn(() => new Promise(() => {})); // 永不 resolve
-    const { unmount } = render(<SaveButton dirty saving={false} onSave={onSave} />);
+    const { unmount } = render(
+      <SaveButton dirty saving={false} onSave={onSave} />,
+    );
     const btn = screen.getByTestId("save-btn");
     fireEvent.pointerDown(btn, { button: 0, pointerId: 1 });
     fireEvent.pointerUp(btn, { pointerId: 1 });

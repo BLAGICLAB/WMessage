@@ -25,14 +25,9 @@ export function Toggle({
 }: Props) {
   const id = useId();
   // md: w-11 h-6 (44x24px)；sm: w-9 h-5 (36x20px)
-  const dims =
-    size === "sm"
-      ? "w-9 h-5"
-      : "w-11 h-6";
+  const dims = size === "sm" ? "w-9 h-5" : "w-11 h-6";
   const knobChecked =
-    size === "sm"
-      ? "translate-x-[18px]"
-      : "translate-x-[22px]";
+    size === "sm" ? "translate-x-[18px]" : "translate-x-[22px]";
 
   return (
     <button

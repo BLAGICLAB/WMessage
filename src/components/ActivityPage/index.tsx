@@ -101,7 +101,9 @@ export function ActivityPage() {
           <div>
             <h2 className="text-lg font-semibold text-[var(--t1)]">执行活动</h2>
             <p className="mt-1 text-xs text-[var(--t5)]">
-              最近 50 次执行的痕迹（对话/任务卡/定时/工作流）；点行看工具时间线与文件 diff
+              最近 50
+              次执行的痕迹（对话/任务卡/定时/工作流）；点行看工具时间线与文件
+              diff
             </p>
           </div>
           <button
@@ -112,9 +114,13 @@ export function ActivityPage() {
             <ExternalLink size={12} aria-hidden /> 唤起挂件
           </button>
         </div>
-        {widgetError && <p className="mt-2 text-xs text-[var(--danger)]">{widgetError}</p>}
+        {widgetError && (
+          <p className="mt-2 text-xs text-[var(--danger)]">{widgetError}</p>
+        )}
 
-        {!loaded && <p className="mt-6 text-center text-xs text-[var(--t5)]">加载中…</p>}
+        {!loaded && (
+          <p className="mt-6 text-center text-xs text-[var(--t5)]">加载中…</p>
+        )}
         {loaded && loadError && (
           <p className="mt-6 text-center text-xs text-[var(--danger)]">
             执行痕迹加载失败：{loadError}
@@ -141,9 +147,16 @@ export function ActivityPage() {
                       minute: "2-digit",
                     })}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-[var(--t2)]" title={t.title ?? undefined}>
+                  <span
+                    className="min-w-0 flex-1 truncate text-[var(--t2)]"
+                    title={t.title ?? undefined}
+                  >
                     {t.taskId ? (
-                      <Bot size={11} aria-hidden className="mr-1 inline text-[var(--t4)]" />
+                      <Bot
+                        size={11}
+                        aria-hidden
+                        className="mr-1 inline text-[var(--t4)]"
+                      />
                     ) : null}
                     {t.title || t.sessionId}
                   </span>
@@ -155,7 +168,11 @@ export function ActivityPage() {
                     title={t.error ?? undefined}
                   >
                     {t.status === "running" && (
-                      <Activity size={10} aria-hidden className="mr-1 inline animate-pulse" />
+                      <Activity
+                        size={10}
+                        aria-hidden
+                        className="mr-1 inline animate-pulse"
+                      />
                     )}
                     {STATUS_LABEL[t.status] ?? t.status}
                   </span>
@@ -173,9 +190,12 @@ export function ActivityPage() {
         )}
       </div>
 
-      {/* ：单次 trace 直查弹层（traceId 模式，无需 taskId 反查） */}
+      {/* 单次 trace 直查弹层（traceId 模式，无需 taskId 反查） */}
       {openTraceId !== null && (
-        <TracePanel traceId={openTraceId} onClose={() => setOpenTraceId(null)} />
+        <TracePanel
+          traceId={openTraceId}
+          onClose={() => setOpenTraceId(null)}
+        />
       )}
     </div>
   );

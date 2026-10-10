@@ -6,7 +6,10 @@ import { EmptyState } from "./EmptyState";
 describe("EmptyState", () => {
   it("渲染图标/标题/说明，缺省说明不渲染", () => {
     const { rerender } = render(
-      <EmptyState icon={<Archive size={18} aria-hidden />} title="暂无归档内容" />,
+      <EmptyState
+        icon={<Archive size={18} aria-hidden />}
+        title="暂无归档内容"
+      />,
     );
     expect(screen.getByText("暂无归档内容")).toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();

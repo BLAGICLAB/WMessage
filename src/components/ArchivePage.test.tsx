@@ -39,7 +39,9 @@ vi.mock("../profile", () => ({
   subscribeProfile: vi.fn(() => () => {}),
 }));
 
-const archivedTask = (over: Partial<Task> & { id: string; title: string }): Task => ({
+const archivedTask = (
+  over: Partial<Task> & { id: string; title: string },
+): Task => ({
   column: "done",
   archived: true,
   ...over,
@@ -47,17 +49,27 @@ const archivedTask = (over: Partial<Task> & { id: string; title: string }): Task
 
 const tasks: Task[] = [
   archivedTask({ id: "a", title: "买牛奶", tags: ["生活"], order: 0 }),
-  archivedTask({ id: "b", title: "Weekly Report", note: "周五截止", tags: ["工作"], order: 1 }),
-  archivedTask({ id: "e", title: "牛奶清单", tags: ["生活", "购物"], order: 2, collapsed: false }),
+  archivedTask({
+    id: "b",
+    title: "Weekly Report",
+    note: "周五截止",
+    tags: ["工作"],
+    order: 1,
+  }),
+  archivedTask({
+    id: "e",
+    title: "牛奶清单",
+    tags: ["生活", "购物"],
+    order: 2,
+    collapsed: false,
+  }),
   // 不应出现在归档页：未归档 / 已软删除
   { id: "c", title: "进行中任务", column: "todo", order: 3 },
   archivedTask({ id: "d", title: "已删除任务", deletedAt: 123, order: 4 }),
 ];
 
 const renderPage = (ts: Task[] = tasks) =>
-  render(
-    <ArchivePage tasks={ts} onUpdate={vi.fn()} onDelete={vi.fn()} />
-  );
+  render(<ArchivePage tasks={ts} onUpdate={vi.fn()} onDelete={vi.fn()} />);
 
 // 归档页过滤：搜索 + 标签 AND 叠加 + archived/deletedAt 前置过滤。
 describe("ArchivePage 过滤", () => {
@@ -88,7 +100,10 @@ describe("ArchivePage 过滤", () => {
   it("搜索无匹配：显示「没有匹配的归档」", async () => {
     const user = userEvent.setup();
     renderPage();
-    await user.type(screen.getByPlaceholderText("搜索归档内容…"), "不存在的关键词");
+    await user.type(
+      screen.getByPlaceholderText("搜索归档内容…"),
+      "不存在的关键词",
+    );
     expect(screen.getByText("没有匹配的归档")).toBeInTheDocument();
   });
 
@@ -128,6 +143,8 @@ describe("ArchivePage 过滤", () => {
   it("无归档任务：显示空态文案，不渲染搜索框", () => {
     renderPage([{ id: "x", title: "未归档", column: "todo" }]);
     expect(screen.getByText("暂无归档内容")).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("搜索归档内容…")).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("搜索归档内容…"),
+    ).not.toBeInTheDocument();
   });
 });

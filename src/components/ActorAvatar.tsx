@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import { getProfileCache, loadProfile, subscribeProfile, type ProfileView } from "../profile";
+import {
+  getProfileCache,
+  loadProfile,
+  subscribeProfile,
+  type ProfileView,
+} from "../profile";
 import botLogo from "../assets/main-logo.png";
 
 /** 订阅资料（轻量 hook，组件级缓存） */
@@ -25,7 +30,8 @@ export function useProfile(): ProfileView | null {
   return p;
 }
 
-/** * 归属头像：bot=true 显示机器人头像，否则用户头像。
+/**
+ * 归属头像：bot=true 显示机器人头像，否则用户头像。
  * 任务卡上只显示头像；鼠标悬停（title）显示姓名。
  */
 export function ActorAvatar({ bot }: { bot: boolean }) {
@@ -43,7 +49,9 @@ export function ActorAvatar({ bot }: { bot: boolean }) {
       ) : bot ? (
         <img src={botLogo} alt={name} className="w-full h-full object-cover" />
       ) : (
-        <span className="text-[9px] leading-none text-[var(--t4)]">{name.charAt(0)}</span>
+        <span className="text-[9px] leading-none text-[var(--t4)]">
+          {name.charAt(0)}
+        </span>
       )}
     </span>
   );

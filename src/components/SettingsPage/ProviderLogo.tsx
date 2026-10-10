@@ -31,7 +31,11 @@ export function ProviderLogo({
     <span
       aria-hidden
       className={`shrink-0 inline-flex items-center justify-center rounded-full text-white ${className}`}
-      style={{ background: fallbackColor ?? "#666666", fontSize: "10px", lineHeight: 1 }}
+      style={{
+        background: fallbackColor ?? "#666666",
+        fontSize: "10px",
+        lineHeight: 1,
+      }}
     >
       {/* || 而非 ??：调用方可能传空串（数据缺 fallback_char），空串同样回退首字；
           Array.from 按 CodePoint 取首字，代理对（emoji 起首的名称）不劈成半个 */}

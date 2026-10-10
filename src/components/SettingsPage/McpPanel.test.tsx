@@ -57,7 +57,7 @@ describe("McpPanel", () => {
 
   it("列表渲染：状态点 tooltip / 名称 / 工具数 / 禁用态", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "mcp_status" ? SAMPLE_STATUS : null
+      cmd === "mcp_status" ? SAMPLE_STATUS : null,
     );
     render(<McpPanel />);
     await flush();
@@ -85,10 +85,12 @@ describe("McpPanel", () => {
     await flush();
     // 确认弹窗：完整命令行（命令 + 参数 + env 值）必须全部可见
     expect(
-      screen.getByText(/npx -y @modelcontextprotocol\/server-filesystem/)
+      screen.getByText(/npx -y @modelcontextprotocol\/server-filesystem/),
     ).toBeInTheDocument();
     // env 在表单 textarea 和确认弹窗各出现一次（≥2 = 弹窗也展示了）
-    expect(screen.getAllByText(/HOME=\/tmp\/x/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(/HOME=\/tmp\/x/).length).toBeGreaterThanOrEqual(
+      2,
+    );
     fireEvent.click(screen.getByText("确认，保存并连接"));
     await flush();
     expect(mocks.invokeMock).toHaveBeenCalledWith("mcp_server_save", {
@@ -112,7 +114,7 @@ describe("McpPanel", () => {
     await flush();
     expect(screen.getByText("名称不能为空")).toBeInTheDocument();
     expect(
-      mocks.invokeMock.mock.calls.some(([c]) => c === "mcp_server_save")
+      mocks.invokeMock.mock.calls.some(([c]) => c === "mcp_server_save"),
     ).toBe(false);
   });
 
@@ -145,13 +147,13 @@ describe("McpPanel", () => {
     await flush();
     expect(screen.getByText("超时须为 5–600 的整数秒")).toBeInTheDocument();
     expect(
-      mocks.invokeMock.mock.calls.some(([c]) => c === "mcp_server_save")
+      mocks.invokeMock.mock.calls.some(([c]) => c === "mcp_server_save"),
     ).toBe(false);
   });
 
   it("删除：confirm 后按 id 调 mcp_server_delete", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "mcp_status" ? SAMPLE_STATUS : []
+      cmd === "mcp_status" ? SAMPLE_STATUS : [],
     );
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<McpPanel />);
@@ -167,7 +169,7 @@ describe("McpPanel", () => {
 
   it("启停：点复选框按 id 调 mcp_server_toggle", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "mcp_status" ? SAMPLE_STATUS : []
+      cmd === "mcp_status" ? SAMPLE_STATUS : [],
     );
     render(<McpPanel />);
     await flush();

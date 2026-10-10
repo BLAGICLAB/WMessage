@@ -37,7 +37,10 @@ export interface WorkflowQuestionPayload {
 }
 
 /** 拆解前澄清：失败时服务端已降级空 questions——增强非闸门 */
-export function clarifyWorkflow(goal: string, attachments: string[]): Promise<ClarifyResult> {
+export function clarifyWorkflow(
+  goal: string,
+  attachments: string[],
+): Promise<ClarifyResult> {
   return invoke<ClarifyResult>("workflow_clarify", {
     goal,
     attachments: attachments.length ? attachments : null,
@@ -48,7 +51,7 @@ export function clarifyWorkflow(goal: string, attachments: string[]): Promise<Cl
 export function respondWorkflowQuestion(
   questionId: string,
   action: "answer" | "assume" | "dismiss",
-  answer?: string
+  answer?: string,
 ): Promise<void> {
   return invoke("workflow_question_respond", {
     questionId,

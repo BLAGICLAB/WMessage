@@ -10,9 +10,19 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Download, FileText, History, ListChecks, TriangleAlert, X } from "lucide-react";
+import {
+  Download,
+  FileText,
+  History,
+  ListChecks,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { basename } from "../../format";
-import { listWorkflowAudit, type WorkflowAuditEntry } from "../../lib/workflowAudit";
+import {
+  listWorkflowAudit,
+  type WorkflowAuditEntry,
+} from "../../lib/workflowAudit";
 import { DiffView } from "./DiffView";
 import {
   fileRollback,
@@ -53,11 +63,14 @@ function SpanItem({ s }: { s: SpanRow }) {
       />
       <details className="min-w-0 flex-1">
         <summary className="cursor-pointer select-none list-none">
-          <span className="font-mono text-[11px] text-[var(--t3)]">{s.name}</span>
+          <span className="font-mono text-[11px] text-[var(--t3)]">
+            {s.name}
+          </span>
           <span className="ml-1.5 text-[10px] text-[var(--t5)]">
-            第{s.turn}轮
-            {s.durationMs != null && ` · ${fmtMs(s.durationMs)}`}
-            {!s.ok && <span className="text-[var(--danger,#ef4444)]"> · 失败</span>}
+            第{s.turn}轮{s.durationMs != null && ` · ${fmtMs(s.durationMs)}`}
+            {!s.ok && (
+              <span className="text-[var(--danger,#ef4444)]"> · 失败</span>
+            )}
           </span>
         </summary>
         {s.args && (
@@ -76,7 +89,13 @@ function SpanItem({ s }: { s: SpanRow }) {
 }
 
 /** 单条文件变更：路径 + ±行 + diff（可展开）+ 回滚（仅 modify 且有快照） */
-function FileChangeItem({ c, onRolledBack }: { c: FileChangeRow; onRolledBack: () => void }) {
+function FileChangeItem({
+  c,
+  onRolledBack,
+}: {
+  c: FileChangeRow;
+  onRolledBack: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const canRollback = c.kind === "modify" && !!c.beforeRef;
@@ -98,7 +117,10 @@ function FileChangeItem({ c, onRolledBack }: { c: FileChangeRow; onRolledBack: (
     <div className="rounded-lg nm-inset px-2 py-1.5">
       <div className="flex items-center gap-1.5">
         <FileText size={11} aria-hidden className="shrink-0 text-[var(--t4)]" />
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--t3)]" title={c.path}>
+        <span
+          className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--t3)]"
+          title={c.path}
+        >
           {basename(c.path)}
         </span>
         <span className="shrink-0 font-mono text-[10px] tabular-nums">
@@ -119,7 +141,9 @@ function FileChangeItem({ c, onRolledBack }: { c: FileChangeRow; onRolledBack: (
       {msg && <p className="mt-1 text-[10px] text-[var(--t3)]">{msg}</p>}
       {c.diff && (
         <details className="mt-1">
-          <summary className="cursor-pointer select-none text-[10px] text-[var(--t4)]">查看 diff</summary>
+          <summary className="cursor-pointer select-none text-[10px] text-[var(--t4)]">
+            查看 diff
+          </summary>
           <div className="mt-1">
             <DiffView diff={c.diff} truncated={c.truncated} />
           </div>
@@ -129,7 +153,7 @@ function FileChangeItem({ c, onRolledBack }: { c: FileChangeRow; onRolledBack: (
   );
 }
 
-/** W10：审计 kind → 展示标签（契约外值原样显示，不炸渲染） */
+/** 审计 kind → 展示标签（契约外值原样显示，不炸渲染） */
 const AUDIT_KIND_LABEL: Record<string, string> = {
   run_start: "▶ 开始",
   node_start: "· 节点开始",
@@ -194,7 +218,8 @@ function auditPayloadSummary(r: WorkflowAuditEntry): string {
       break;
     case "question_asked":
       if (typeof p.question === "string") parts.push(p.question);
-      if (typeof p.assumption === "string" && p.assumption) parts.push(`假设 ${p.assumption}`);
+      if (typeof p.assumption === "string" && p.assumption)
+        parts.push(`假设 ${p.assumption}`);
       break;
     case "question_answered":
       if (typeof p.question === "string") parts.push(p.question);
@@ -220,21 +245,22 @@ export function TracePanel({
   taskTitle?: string;
   /**  直查模式：活动页按 trace id 直接打开单条 */
   traceId?: number;
-  /** W10：所属工作流（有值才显示「运行审计」页签；看板任务无审计） */
+  /** 所属工作流（有值才显示「运行审计」页签；看板任务无审计） */
   workflowId?: string;
-  /** W10：本卡验收结论（节点级验收写入 result；有值显示验收行） */
+  /** 本卡验收结论（节点级验收写入 result；有值显示验收行） */
   acceptanceInfo?: { verdict: string; evidence: string } | null;
   onClose: () => void;
 }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
   const [selected, setSelected] = useState<TraceRow | null>(null);
-  const [detail, setDetail] = useState<Awaited<ReturnType<typeof traceDetail>>>(null);
+  const [detail, setDetail] =
+    useState<Awaited<ReturnType<typeof traceDetail>>>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // JSONL 导出（按钮态 + 结果路径/错误展示）
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
-  // W10：页签（trace=执行痕迹 / audit=运行审计）+ 审计数据
+  // 页签（trace=执行痕迹 / audit=运行审计）+ 审计数据
   const [tab, setTab] = useState<"trace" | "audit">("trace");
   const [auditRows, setAuditRows] = useState<WorkflowAuditEntry[] | null>(null);
   const [auditErr, setAuditErr] = useState<string | null>(null);
@@ -291,7 +317,7 @@ export function TracePanel({
     // eslint-disable-next-line react/exhaustive-deps -- taskId/traceId 挂载期一次性加载；回滚后手动 reload
   }, [taskId, traceId]);
 
-  // W10：运行审计按需加载（切到审计页签才拉，非工作流卡不拉）
+  // 运行审计按需加载（切到审计页签才拉，非工作流卡不拉）
   const loadAudit = () => {
     if (!workflowId) return;
     setAuditErr(null);
@@ -301,7 +327,8 @@ export function TracePanel({
       .catch((e) => setAuditErr(String(e)));
   };
 
-  const statusOf = (t: TraceRow | null) => (t ? STATUS_BADGE[t.status] ?? null : null);
+  const statusOf = (t: TraceRow | null) =>
+    t ? (STATUS_BADGE[t.status] ?? null) : null;
   const duration = (t: TraceRow): string =>
     t.finishedAt ? fmtMs(t.finishedAt - t.startedAt) : "进行中";
 
@@ -349,14 +376,20 @@ export function TracePanel({
             <X size={14} aria-hidden />
           </button>
         </div>
-        {exportMsg && <p className="mt-1 break-all text-[10px] text-[var(--t4)]">{exportMsg}</p>}
+        {exportMsg && (
+          <p className="mt-1 break-all text-[10px] text-[var(--t4)]">
+            {exportMsg}
+          </p>
+        )}
 
-        {/* W10：页签（工作流卡才有运行审计） */}
+        {/* 页签（工作流卡才有运行审计） */}
         {workflowId && (
           <div className="mt-2 flex gap-1">
             <button
               className={`nm-btn rounded-lg px-3 py-1 text-[11px] ${
-                tab === "trace" ? "text-[var(--t1)] nm-inset" : "text-[var(--t4)]"
+                tab === "trace"
+                  ? "text-[var(--t1)] nm-inset"
+                  : "text-[var(--t4)]"
               }`}
               onClick={() => setTab("trace")}
             >
@@ -364,7 +397,9 @@ export function TracePanel({
             </button>
             <button
               className={`nm-btn rounded-lg px-3 py-1 text-[11px] ${
-                tab === "audit" ? "text-[var(--t1)] nm-inset" : "text-[var(--t4)]"
+                tab === "audit"
+                  ? "text-[var(--t1)] nm-inset"
+                  : "text-[var(--t4)]"
               }`}
               onClick={() => {
                 setTab("audit");
@@ -386,7 +421,9 @@ export function TracePanel({
                 <button
                   key={t.id}
                   className={`nm-btn rounded-lg px-2 py-0.5 text-[10px] ${
-                    selected?.id === t.id ? "text-[var(--t1)]" : "text-[var(--t4)]"
+                    selected?.id === t.id
+                      ? "text-[var(--t1)]"
+                      : "text-[var(--t4)]"
                   }`}
                   onClick={() => {
                     setSelected(t);
@@ -410,14 +447,18 @@ export function TracePanel({
                   }}
                 >
                   {fmtTs(t.startedAt)}
-                  {badge && <span className={`ml-1 ${badge.cls}`}>{badge.label}</span>}
+                  {badge && (
+                    <span className={`ml-1 ${badge.cls}`}>{badge.label}</span>
+                  )}
                 </button>
               );
             })}
           </div>
         )}
 
-        {loading && <p className="mt-4 text-center text-xs text-[var(--t5)]">加载中…</p>}
+        {loading && (
+          <p className="mt-4 text-center text-xs text-[var(--t5)]">加载中…</p>
+        )}
         {error && (
           <p className="mt-4 text-xs text-[var(--danger,#ef4444)]">
             <TriangleAlert size={11} aria-hidden className="mr-1 inline" />
@@ -431,7 +472,7 @@ export function TracePanel({
           </p>
         )}
 
-        {/* W10：运行审计视图（仅工作流卡 + audit 页签——无 workflowId 时
+        {/* 运行审计视图（仅工作流卡 + audit 页签——无 workflowId 时
             auditRows 恒 null 会卡在"加载中"，必须与页签按钮同条件门控） */}
         {workflowId && tab === "audit" && (
           <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
@@ -442,11 +483,14 @@ export function TracePanel({
               </p>
             )}
             {!auditErr && auditRows === null && (
-              <p className="mt-2 text-center text-xs text-[var(--t5)]">加载中…</p>
+              <p className="mt-2 text-center text-xs text-[var(--t5)]">
+                加载中…
+              </p>
             )}
             {auditRows?.length === 0 && (
               <p className="mt-2 text-center text-xs text-[var(--t5)]">
-                还没有运行审计记录——执行一次工作流后这里会按 run 展示调度/验收/评审时间线。
+                还没有运行审计记录——执行一次工作流后这里会按 run
+                展示调度/验收/评审时间线。
               </p>
             )}
             {auditRows && auditRows.length > 0 && (
@@ -485,12 +529,17 @@ export function TracePanel({
               {(() => {
                 const badge = statusOf(detail);
                 return badge ? (
-                  <span className={`nm-inset px-2 py-0.5 ${badge.cls}`}>{badge.label}</span>
+                  <span className={`nm-inset px-2 py-0.5 ${badge.cls}`}>
+                    {badge.label}
+                  </span>
                 ) : null;
               })()}
-              <span className="nm-inset px-2 py-0.5 tabular-nums">{duration(detail)}</span>
               <span className="nm-inset px-2 py-0.5 tabular-nums">
-                {detail.turnCount} 轮 · {detail.toolCalls} 次工具 · {detail.filesChanged} 个文件
+                {duration(detail)}
+              </span>
+              <span className="nm-inset px-2 py-0.5 tabular-nums">
+                {detail.turnCount} 轮 · {detail.toolCalls} 次工具 ·{" "}
+                {detail.filesChanged} 个文件
               </span>
               {(detail.promptTokens > 0 || detail.completionTokens > 0) && (
                 <span className="nm-inset px-2 py-0.5 tabular-nums">
@@ -501,7 +550,7 @@ export function TracePanel({
                 <span className="nm-inset px-2 py-0.5">{detail.origin}</span>
               )}
             </div>
-            {/* W10：节点级验收结论（引擎写 result，这里只读展示） */}
+            {/* 节点级验收结论（引擎写 result，这里只读展示） */}
             {acceptanceInfo && (
               <p className="mt-2 rounded-[var(--r-sm)] px-2 py-1 text-[11px] nm-inset">
                 <span
@@ -516,7 +565,9 @@ export function TracePanel({
                   验收：{acceptanceInfo.verdict}
                 </span>
                 {acceptanceInfo.evidence && (
-                  <span className="ml-2 text-[var(--t4)]">{acceptanceInfo.evidence}</span>
+                  <span className="ml-2 text-[var(--t4)]">
+                    {acceptanceInfo.evidence}
+                  </span>
                 )}
               </p>
             )}
@@ -535,7 +586,11 @@ export function TracePanel({
                 </p>
                 <div className="mt-1 space-y-1.5">
                   {detail.fileChanges.map((c) => (
-                    <FileChangeItem key={c.id} c={c} onRolledBack={() => reload(detail.id)} />
+                    <FileChangeItem
+                      key={c.id}
+                      c={c}
+                      onRolledBack={() => reload(detail.id)}
+                    />
                   ))}
                 </div>
               </div>
@@ -560,6 +615,6 @@ export function TracePanel({
         )}
       </div>
     </div>,
-    document.body
+    document.body,
   );
 }

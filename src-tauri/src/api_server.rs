@@ -30,7 +30,7 @@ use crate::db;
 /// 1000 条窗口对实际断线重连足够；要彻底覆盖需持久化事件日志，暂不做。
 const EVENT_HISTORY: usize = 1000;
 
-/// 并发 worker 上限（A6：thread-per-request 无上限时，慢连接会无限堆积 OS 线程）
+/// 并发 worker 上限（thread-per-request 无上限时，慢连接会无限堆积 OS 线程）
 const MAX_WORKERS: usize = 64;
 
 /// Tauri 托管的 API 状态（`Mutex<Option<RunningApi>>`）
@@ -46,7 +46,7 @@ pub struct RunningApi {
     /// 调用方 Phase 1 从磁盘读到的 token 与此刻内存服务绑定的可能不同
     /// （中间插入过 api_rotate_token），返回旧值会让调用方拿到对不上活服务的凭证。
     pub token: String,
-    /// 在飞 worker 计数（A6 并发上限的同一个计数器）：退出路径排空等待用——
+    /// 在飞 worker 计数（并发上限的同一个计数器）：退出路径排空等待用——
     /// api_stop_for_exit 拒新请求后等它归零再放进程退出（F163）
     pub active: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -94,7 +94,7 @@ impl EventHub {
         })
     }
 
-    /// 带 id 持久化的中枢（A6）：启动时从文件恢复上次 id，保证跨重启单调递增。
+    /// 带 id 持久化的中枢：启动时从文件恢复上次 id，保证跨重启单调递增。
     /// 否则重启后 id 从 0 重计，客户端按 Last-Event-ID 去重会静默丢弃全部新事件。
     pub fn persisted(path: PathBuf) -> Arc<Self> {
         let start = std::fs::read_to_string(&path)
@@ -142,7 +142,7 @@ impl EventHub {
         });
         // SeqCst 与 last_id() 的锁外读保持一致（纯锁内序 Relaxed 也够，此处取一致性）
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
-        // A6: 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
+        // 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增
         // 用 atomic_write（tmp+rename）落盘——fs::write 直写崩溃会留半截文件，
         // 重启 id 归 0 → 客户端 Last-Event-ID 去重静默丢全部新事件。
         // 写失败拒推进：归还 id + 本事件不进历史不推送

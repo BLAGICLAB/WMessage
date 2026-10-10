@@ -1,4 +1,4 @@
-//! 工作流拆解前澄清设计 docs/WORKFLOW-CLARIFY-AUDIT-DESIGN-2026-10-07.md §3.4）： audit-ok
+//! 工作流拆解前澄清（设计 docs/WORKFLOW-CLARIFY-AUDIT-DESIGN-2026-10-07.md §3.4）： audit-ok
 //! goal + 附件 → 一次性 LLM → ≤3 个结构化问题（空 = 信息足够直接拆）。
 //!
 //! 红线：
@@ -179,7 +179,7 @@ pub async fn workflow_clarify(
     let mut last_err; // 循环内两条退出路径均先赋值再读，无需占位初值
     loop {
         attempts += 1;
-        // W11：轻量评审模型覆盖（设置键 review_model；条目缺失运行期降级跟随全局）
+        // 轻量评审模型覆盖（设置键 review_model；条目缺失运行期降级跟随全局）
         let review_model = crate::db::workflow_settings::load_review_model(&app).await;
         let raw = match crate::bot_chat::summarize_messages_with_model(
             &app,

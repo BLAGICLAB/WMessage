@@ -152,7 +152,7 @@ const UPSTREAM_PER_CAP: usize = 600;
 /// 上游简报总上限
 const UPSTREAM_TOTAL_CAP: usize = 2400;
 
-// W10：节点级验收（设计 §4.1，纯逻辑单测锚点）
+// 节点级验收（设计 §4.1，纯逻辑单测锚点）
 
 /// 验收返工独立预算（不与失败重试 C1 混用；status 与 verdict 分离）
 pub(crate) const ACCEPTANCE_REWORK_BUDGET: u32 = 2;
@@ -256,7 +256,7 @@ async fn check_acceptance(
     if !artifacts.is_empty() {
         user.push_str(&format!("\n产物文件：{}", artifacts.join("；")));
     }
-    // W11：轻量评审模型覆盖（设置键 review_model；条目缺失运行期降级跟随全局）
+    // 轻量评审模型覆盖（设置键 review_model；条目缺失运行期降级跟随全局）
     let review_model = crate::db::workflow_settings::load_review_model(app).await;
     match crate::bot_chat::summarize_messages_with_model(
         app,
@@ -288,7 +288,7 @@ async fn check_acceptance(
     }
 }
 
-// W10：run 级审计落库（尽力而为，尽力而为——写失败不阻断执行）
+// run 级审计落库（尽力而为，尽力而为——写失败不阻断执行）
 
 /// 审计表写入 helper（spawn_blocking + 失败 eprintln；bot.log 双写由调用方自行决定）
 async fn wa_log(
@@ -484,7 +484,7 @@ issues：只列有问题的节点，没有问题则为 []；needsRework=true 仅
 
 struct RunHandle {
     cancel: Arc<AtomicBool>,
-    /// W10：run 分组键的一半（审计表按 (workflow_id, run_started_at) 聚合；
+    /// run 分组键的一半（审计表按 (workflow_id, run_started_at) 聚合；
     /// stop 事件凭它定位自己属于哪次 run）
     run_started_at: i64,
 }
@@ -594,7 +594,7 @@ pub async fn workflow_run(
     let to_run = tasks.len() - already_done;
 
     let cancel = Arc::new(AtomicBool::new(false));
-    // W10：run 分组键（审计表 + RunHandle 共享同一时刻戳）
+    // run 分组键（审计表 + RunHandle 共享同一时刻戳）
     let run_started_at = chrono::Utc::now().timestamp_millis();
     runs().lock().map_err(|_| registry_poisoned())?.insert(
         workflow_id.clone(),
@@ -639,7 +639,7 @@ pub async fn workflow_run(
     let goal = load_workflow_goal(&app, &workflow_id).await;
     // 执行提问开关（clarify_meta.askMode，默认开）——run 开始时读一次
     let asks_enabled = load_asks_enabled(&app, &workflow_id).await;
-    // W10：节点级验收开关（workflow_settings，默认开）——run 开始时读一次
+    // 节点级验收开关（workflow_settings，默认开）——run 开始时读一次
     let acceptance_enabled = {
         let app2 = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
@@ -650,7 +650,7 @@ pub async fn workflow_run(
         .await
         .unwrap_or(crate::db::workflow_settings::DEFAULT_NODE_ACCEPTANCE)
     };
-    // W10：run_start 审计行（goal 摘要 ≤80 字/节点数/trigger）
+    // run_start 审计行（goal 摘要 ≤80 字/节点数/trigger）
     wa_log(
         &app,
         &workflow_id,
@@ -710,7 +710,7 @@ pub async fn workflow_stop(app: AppHandle, workflow_id: String) -> CommandResult
                 "workflow_stop",
                 &[("workflowId", workflow_id.clone())],
             );
-            // W10：stop 审计行（凭 RunHandle.run_started_at 归组到本次 run）
+            // stop 审计行（凭 RunHandle.run_started_at 归组到本次 run）
             wa_log(
                 &app,
                 &workflow_id,
@@ -747,9 +747,9 @@ async fn run_controller(
     goal: Option<String>,
     // 执行提问开关（workflow_run 开始时按 clarify_meta.askMode 读出）
     asks_enabled: bool,
-    // W10：节点级验收开关（workflow_settings，默认开）
+    // 节点级验收开关（workflow_settings，默认开）
     acceptance_enabled: bool,
-    // W10：run 分组键（审计表）
+    // run 分组键（审计表）
     run_started_at: i64,
     cancel: Arc<AtomicBool>,
 ) {
@@ -881,7 +881,7 @@ async fn run_controller(
                 let mut result =
                     run_task_in_chat_ctx(&app, &id, TaskExecOrigin::Workflow, model.clone(), ctx)
                         .await;
-                // W10：验收核查环（设计 §4.1）——首轮成功且 acceptance 非空且开关开
+                // 验收核查环（设计 §4.1）——首轮成功且 acceptance 非空且开关开
                 // 且未被取消才进；fail 带证据返工（独立预算 ≤2），用尽仍 fail 终态 failed。
                 // partial/unknown → status 保持 success 带徽标继续。
                 let mut acceptance_final: Option<(AcceptanceVerdict, String)> = None;
@@ -1288,7 +1288,7 @@ async fn run_controller(
             ("skipped", skipped_n.to_string()),
         ],
     );
-    // W10：run_done 审计行 + 保留清理（设置项，默认最近 20 个 run）
+    // run_done 审计行 + 保留清理（设置项，默认最近 20 个 run）
     wa_log(
         &app,
         &workflow_id,
@@ -1576,7 +1576,7 @@ async fn review_and_rework(
     cancel: &Arc<AtomicBool>,
     running: &Arc<Mutex<HashSet<String>>>,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<NodeOutcome>,
-    // W10：run 分组键（review/rework_round 审计行归组）
+    // run 分组键（review/rework_round 审计行归组）
     run_started_at: i64,
 ) {
     let tasks = load_workflow_tasks(app, workflow_id)
@@ -1587,7 +1587,7 @@ async fn review_and_rework(
     }
     // ① 全图评审
     let report = run_review(app, goal, &tasks, failed_ids, skipped_ids).await;
-    // W10：review 审计行（verdict + issues 数）
+    // review 审计行（verdict + issues 数）
     wa_log(
         app,
         workflow_id,
@@ -1773,7 +1773,7 @@ async fn review_and_rework(
                 .iter()
                 .filter_map(|id| name_by_id.get(id))
                 .collect::<Vec<_>>());
-            // W10：rework_round 审计行
+            // rework_round 审计行
             wa_log(
                 app,
                 workflow_id,
@@ -2021,7 +2021,7 @@ mod tests {
         assert!(!should_retry(true, false, false, 1)); // 成功不重试
     }
 
-    // W10：验收解析/返工决策（纯逻辑单测锚点）
+    // 验收解析/返工决策（纯逻辑单测锚点）
 
     #[test]
     fn acceptance_verdict_parses_and_degrades() {

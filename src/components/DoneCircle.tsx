@@ -15,7 +15,9 @@ export function DoneCircle({
     <button
       type="button"
       className={`shrink-0 w-5 h-5 rounded-full nm-inset flex items-center justify-center text-xs leading-none ${
-        done ? "text-[var(--success)]" : "text-transparent hover:text-[var(--t5)]"
+        done
+          ? "text-[var(--success)]"
+          : "text-transparent hover:text-[var(--t5)]"
       }`}
       title={title ?? (done ? "取消完成" : "标记完成")}
       aria-label={title ?? (done ? "取消完成" : "标记完成")}

@@ -13,7 +13,8 @@ export const MAX_ARCHIVE_DAYS = 365;
 
 let archiveDays = DEFAULT_ARCHIVE_DAYS;
 
-/** 钳制 + 取整（设置页输入与配置读取共用；非法值回退默认 7，与后端 *  resolve_archive_after_days 同规则：1..=365） */
+/** 钳制 + 取整（设置页输入与配置读取共用；非法值回退默认 7，与后端
+ *  resolve_archive_after_days 同规则：1..=365） */
 export function clampArchiveDays(n: number): number {
   if (!Number.isFinite(n)) return DEFAULT_ARCHIVE_DAYS;
   return Math.min(MAX_ARCHIVE_DAYS, Math.max(MIN_ARCHIVE_DAYS, Math.round(n)));
@@ -28,10 +29,13 @@ export function setArchiveAfterDays(days: number | null | undefined): void {
   archiveDays = days == null ? DEFAULT_ARCHIVE_DAYS : clampArchiveDays(days);
 }
 
-/** 从 bot-config.json 拉一次归档天数（失败保持现值——默认 7，不打扰）。 *  App 启动时在首套归档规则前调用，避免竞态：首屏就按配置阈值归档。 */
+/** 从 bot-config.json 拉一次归档天数（失败保持现值——默认 7，不打扰）。
+ *  App 启动时在首套归档规则前调用，避免竞态：首屏就按配置阈值归档。 */
 export async function loadArchiveDaysFromConfig(): Promise<void> {
   try {
-    const c = await invoke<{ archiveAfterDays?: number | null }>("bot_get_config");
+    const c = await invoke<{ archiveAfterDays?: number | null }>(
+      "bot_get_config",
+    );
     setArchiveAfterDays(c.archiveAfterDays);
   } catch (e) {
     console.error("[archiveRule] load failed, keep current value", e);
@@ -45,7 +49,8 @@ export function applyArchiveRule(tasks: Task[]): Task[] {
   return tasks.map((t) => {
     if (t.column !== "done" || t.archived || t.deletedAt) return t;
     const completedAt = t.completedAt ?? now; // 老数据补完成时间
-    if (now - completedAt >= afterMs) return { ...t, completedAt, archived: true };
+    if (now - completedAt >= afterMs)
+      return { ...t, completedAt, archived: true };
     return t.completedAt === completedAt ? t : { ...t, completedAt };
   });
 }

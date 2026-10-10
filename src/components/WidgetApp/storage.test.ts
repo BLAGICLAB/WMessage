@@ -29,7 +29,7 @@ describe("loadAnchor 形状校验", () => {
   it("x 为字符串 → null", () => {
     localStorage.setItem(
       POS_KEY,
-      JSON.stringify({ x: "100", y: 50, edge: "right" })
+      JSON.stringify({ x: "100", y: 50, edge: "right" }),
     );
     expect(loadAnchor()).toBeNull();
   });
@@ -42,7 +42,7 @@ describe("loadAnchor 形状校验", () => {
   it("未知 edge（bottom）→ null", () => {
     localStorage.setItem(
       POS_KEY,
-      JSON.stringify({ x: 100, y: 50, edge: "bottom" })
+      JSON.stringify({ x: 100, y: 50, edge: "bottom" }),
     );
     expect(loadAnchor()).toBeNull();
   });

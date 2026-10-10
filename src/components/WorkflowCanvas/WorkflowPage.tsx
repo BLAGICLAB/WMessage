@@ -21,7 +21,13 @@ import { useTauriListen } from "../../lib/useTauriListen";
 import { TracePanel } from "../TracePanel";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
 import { exportWorkflowAudit } from "../../lib/workflowAudit";
-import type { Task, Workflow, WorkflowReport, WorkflowSaveResult, ReviewVerdict } from "../../types";
+import type {
+  Task,
+  Workflow,
+  WorkflowReport,
+  WorkflowSaveResult,
+  ReviewVerdict,
+} from "../../types";
 import {
   draftFromDecompose,
   draftFromTasks,
@@ -42,10 +48,15 @@ import {
 
 /** 总目标卡在画布上的固定节点 id（绑定 workflows 元数据，非任务卡） */
 const GOAL_ID = "__goal__";
-/** 拆解自动命名的截取长度（OCR r1 low：魔法数字提升为具名常量） */
+/** 拆解自动命名的截取长度（魔法数字提升为具名常量） */
 const NAME_AUTO_LEN = 12;
 
-const KNOWN_VERDICTS: readonly ReviewVerdict[] = ["pass", "partial", "fail", "unknown"];
+const KNOWN_VERDICTS: readonly ReviewVerdict[] = [
+  "pass",
+  "partial",
+  "fail",
+  "unknown",
+];
 
 /** verdict 边界归一：后端 ReviewReport.verdict 是 String 直传，模型输出契约外 * 字符串现实可达——非四值一律落 unknown（与后端降级语义一致），类型层才能
  * 收紧成字面量 union 供穷尽检查 */
@@ -104,14 +115,15 @@ function WorkflowPageInner({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  /** 最新 props 镜像：useCallback 闭包里读 tasksRef 而非捕获 tasks，防过期。   *  经 useEffect 同步（render 期写 ref 会被 lint 拦；回调只在交互后触发，晚一拍无碍） */
+  /** 最新 props 镜像：useCallback 闭包里读 tasksRef 而非捕获 tasks，防过期。
+   *  经 useEffect 同步（render 期写 ref 会被 lint 拦；回调只在交互后触发，晚一拍无碍） */
   const tasksRef = useRef(tasks);
   const propsRef = useRef({ onSetColumn, onUpdate });
   useEffect(() => {
     tasksRef.current = tasks;
     propsRef.current = { onSetColumn, onUpdate };
   });
-  /** 打开竞态守卫：慢的旧 workflow_load 响应不得覆盖用户后来的选择（OCR r1 medium） */
+  /** 打开竞态守卫：慢的旧 workflow_load 响应不得覆盖用户后来的选择 */
   const openSeqRef = useRef(0);
   /** 重新生成的 3s 复位定时器：与删除各自独立——删除按钮已迁出为长按确认组件
    *  （HoldToConfirmDelete），无 armed 旗标，regenArmed 复位与删除无共用句柄 */
@@ -121,7 +133,9 @@ function WorkflowPageInner({
   /** 工作流执行中：开始执行/停止按钮切换 + 进度显示 */
   const [running, setRunning] = useState(false);
   /** 模型库条目：节点执行模型下拉选项 */
-  const [models, setModels] = useState<Array<{ id: string; label: string }>>([]);
+  const [models, setModels] = useState<Array<{ id: string; label: string }>>(
+    [],
+  );
   /** 拆解附件路径：随工作流持久化（重新生成可复用） */
   const [attachPaths, setAttachPaths] = useState<string[]>([]);
   /** AI 拆解进行中 + 竞态守卫（取消 = 递增序号丢弃在途响应） */
@@ -129,7 +143,9 @@ function WorkflowPageInner({
   const decomposeSeqRef = useRef(0);
   /** 拆解前澄清：clarify 调用进行中 + 返回的问题卡组（null = 未在澄清态） */
   const [clarifying, setClarifying] = useState(false);
-  const [clarifyState, setClarifyState] = useState<ClarifyQuestion[] | null>(null);
+  const [clarifyState, setClarifyState] = useState<ClarifyQuestion[] | null>(
+    null,
+  );
   /** 上次澄清回答（按问题文本匹配，重拆预填——的内存态部分） */
   const [lastAnswers, setLastAnswers] = useState<Record<string, string>>({});
   /** 拆解假设（：decompose 返回，GoalNode 折叠条展示） */
@@ -148,7 +164,7 @@ function WorkflowPageInner({
       decomposeSeqRef.current++; // 卸载时使在途拆解响应失效
       if (regenTimerRef.current) clearTimeout(regenTimerRef.current);
     },
-    []
+    [],
   );
 
   // 工作流列表（进入页面拉一次）
@@ -178,7 +194,7 @@ function WorkflowPageInner({
 
   const snapshot = useCallback(
     () => JSON.stringify({ name, goal, nodes, attachPaths }),
-    [name, goal, nodes, attachPaths]
+    [name, goal, nodes, attachPaths],
   );
   const dirty = savedSnapshot !== snapshot();
 
@@ -186,7 +202,7 @@ function WorkflowPageInner({
 
   const openWorkflow = async (id: string) => {
     const seq = ++openSeqRef.current;
-    decomposeSeqRef.current++; // 使在途拆解响应失效（OCR r1 critical）
+    decomposeSeqRef.current++; // 使在途拆解响应失效
     // seq 已作废 → 在途 finally 不会复位旗标，这里同步复位，否则 decomposing 卡死
     setDecomposing(false);
     try {
@@ -207,15 +223,19 @@ function WorkflowPageInner({
           goal: detail.goal,
           nodes: fresh,
           attachPaths: detail.attachments ?? [],
-        })
+        }),
       );
       setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖
       setRunning(false); // 先复位：A 在跑时切到 B，停止按钮不得跨工作流残留（全量对照 high）
       // W-QA：报告从 workflows 行恢复（review 结算写入 lastReport 列）
-      setWfReport(detail.lastReport ? safeParseReport(detail.lastReport) : null);
+      setWfReport(
+        detail.lastReport ? safeParseReport(detail.lastReport) : null,
+      );
       // 澄清元数据恢复（重拆预填上次回答 + 执行提问开关）
       {
-        const meta = detail.clarifyMeta ? safeParseClarifyMeta(detail.clarifyMeta) : null;
+        const meta = detail.clarifyMeta
+          ? safeParseClarifyMeta(detail.clarifyMeta)
+          : null;
         setLastAnswers(meta?.answers ?? {});
         setAsksEnabled(meta?.askMode !== "never");
       }
@@ -230,13 +250,15 @@ function WorkflowPageInner({
       setMode("edit");
       setRegenArmed(false);
     } catch (e) {
-      handleCommandError(e, "打开工作流", { onRetry: () => void openWorkflow(id) });
+      handleCommandError(e, "打开工作流", {
+        onRetry: () => void openWorkflow(id),
+      });
     }
   };
 
   const createBlank = () => {
     openSeqRef.current++; // 使在途的 workflow_load 失效
-    decomposeSeqRef.current++; // 同上（OCR r1 critical）
+    decomposeSeqRef.current++; // 同上
     setDecomposing(false); // 同 openWorkflow：seq 作废后旗标须就地复位
     setActiveId(null);
     setName(`工作流 ${new Date().toLocaleDateString()}`);
@@ -284,7 +306,11 @@ function WorkflowPageInner({
       if (!v || typeof v !== "object") return null;
       const answers: Record<string, string> = {};
       for (const a of Array.isArray(v.answers) ? v.answers : []) {
-        if (a && typeof a.question === "string" && typeof a.answer === "string") {
+        if (
+          a &&
+          typeof a.question === "string" &&
+          typeof a.answer === "string"
+        ) {
           answers[a.question] = a.answer;
         }
       }
@@ -310,11 +336,13 @@ function WorkflowPageInner({
       });
       alert(`导出完成：共 ${count} 个节点（导出的是已保存版本）`);
     } catch (e) {
-      handleCommandError(e, "导出工作流模板", { onRetry: () => void doExport() });
+      handleCommandError(e, "导出工作流模板", {
+        onRetry: () => void doExport(),
+      });
     }
   };
 
-  /** W10：运行审计导出 JSON（save dialog；审计表按 run 分组的全部条目） */
+  /** 运行审计导出 JSON（save dialog；审计表按 run 分组的全部条目） */
   const doAuditExport = async () => {
     if (!activeId) return;
     try {
@@ -326,7 +354,9 @@ function WorkflowPageInner({
       const count = await exportWorkflowAudit(activeId, path);
       alert(`审计导出完成：共 ${count} 条记录`);
     } catch (e) {
-      handleCommandError(e, "导出运行审计", { onRetry: () => void doAuditExport() });
+      handleCommandError(e, "导出运行审计", {
+        onRetry: () => void doAuditExport(),
+      });
     }
   };
 
@@ -346,10 +376,16 @@ function WorkflowPageInner({
       await openWorkflow(res.workflowId);
       invoke<Workflow[]>("workflow_list")
         .then(setWorkflows)
-        .catch((e) => handleCommandError(e, "读取工作流列表", { silent: true }));
-      alert(`导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`);
+        .catch((e) =>
+          handleCommandError(e, "读取工作流列表", { silent: true }),
+        );
+      alert(
+        `导入完成：实例化 ${res.created} 个节点（全新副本，与原模板互不影响）`,
+      );
     } catch (e) {
-      handleCommandError(e, "导入工作流模板", { onRetry: () => void doImport() });
+      handleCommandError(e, "导入工作流模板", {
+        onRetry: () => void doImport(),
+      });
     }
   };
 
@@ -396,7 +432,10 @@ function WorkflowPageInner({
     setClarifyState(null);
   };
 
-  const runDecompose = async (goalText: string, clarifications: Clarification[] = []) => {
+  const runDecompose = async (
+    goalText: string,
+    clarifications: Clarification[] = [],
+  ) => {
     if (decomposing) return;
     const seq = ++decomposeSeqRef.current;
     setClarifying(false);
@@ -445,7 +484,10 @@ function WorkflowPageInner({
       });
       const list = typeof picked === "string" ? [picked] : (picked ?? []);
       if (!list.length) return;
-      setAttachPaths((prev) => [...prev, ...list.filter((p) => !prev.includes(p))]);
+      setAttachPaths((prev) => [
+        ...prev,
+        ...list.filter((p) => !prev.includes(p)),
+      ]);
     } catch (e) {
       handleCommandError(e, "添加附件");
     }
@@ -477,7 +519,7 @@ function WorkflowPageInner({
   // 节点编辑
 
   const addNode = () => {
-    decomposeSeqRef.current++; // 手动加卡 = 放弃在途拆解结果（OCR r1 medium）
+    decomposeSeqRef.current++; // 手动加卡 = 放弃在途拆解结果
     setRegenArmed(false);
     // 视口中心落点（screenToFlowPosition 需画布 DOM 存在；空画布也有容器）
     const center = screenToFlowPosition({
@@ -498,7 +540,10 @@ function WorkflowPageInner({
     setNodes((prev) =>
       prev
         .filter((n) => n.localId !== localId)
-        .map((n) => ({ ...n, dependsOn: n.dependsOn.filter((d) => d !== localId) }))
+        .map((n) => ({
+          ...n,
+          dependsOn: n.dependsOn.filter((d) => d !== localId),
+        })),
     );
     setSelectedIds((prev) => prev.filter((s) => s !== localId));
   }, []);
@@ -509,7 +554,7 @@ function WorkflowPageInner({
       for (const c of changes) {
         if (c.type === "position" && c.position) {
           next = next.map((n) =>
-            n.localId === c.id ? { ...n, pos: c.position! } : n
+            n.localId === c.id ? { ...n, pos: c.position! } : n,
           );
         } else if (c.type === "remove") {
           next = next
@@ -526,9 +571,7 @@ function WorkflowPageInner({
       let next = prev;
       for (const c of changes) {
         if (c.type === "select") {
-          next = c.selected
-            ? [...next, c.id]
-            : next.filter((s) => s !== c.id);
+          next = c.selected ? [...next, c.id] : next.filter((s) => s !== c.id);
         } else if (c.type === "remove") {
           // 节点被键盘/程序删除时同步清理选中态，防悬空 id（）
           next = next.filter((s) => s !== c.id);
@@ -546,7 +589,7 @@ function WorkflowPageInner({
       if (target.dependsOn.includes(c.source)) return false;
       return !wouldCreateCycle(nodes, c.source, c.target);
     },
-    [nodes]
+    [nodes],
   );
 
   const onConnect = useCallback(
@@ -556,11 +599,11 @@ function WorkflowPageInner({
         prev.map((n) =>
           n.localId === c.target && !n.dependsOn.includes(c.source!)
             ? { ...n, dependsOn: [...n.dependsOn, c.source!] }
-            : n
-        )
+            : n,
+        ),
       );
     },
-    [isValidConnection]
+    [isValidConnection],
   );
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
@@ -577,10 +620,10 @@ function WorkflowPageInner({
               ? {
                   ...n,
                   dependsOn: n.dependsOn.filter(
-                    (d) => `${d}->${n.localId}` !== c.id
+                    (d) => `${d}->${n.localId}` !== c.id,
                   ),
                 }
-              : n
+              : n,
           );
         }
       }
@@ -596,16 +639,19 @@ function WorkflowPageInner({
   const changeModel = useCallback(
     (taskId: string, model: string | undefined) => {
       setNodes((prev) =>
-        prev.map((n) => (n.taskId === taskId ? { ...n, model } : n))
+        prev.map((n) => (n.taskId === taskId ? { ...n, model } : n)),
       );
-      propsRef.current.onUpdate(taskId, model ? { model } : { model: undefined });
+      propsRef.current.onUpdate(
+        taskId,
+        model ? { model } : { model: undefined },
+      );
     },
-    []
+    [],
   );
 
   const commitTitle = useCallback((taskId: string, title: string) => {
     setNodes((prev) =>
-      prev.map((n) => (n.taskId === taskId ? { ...n, title } : n))
+      prev.map((n) => (n.taskId === taskId ? { ...n, title } : n)),
     );
     propsRef.current.onUpdate(taskId, { title });
   }, []);
@@ -621,7 +667,7 @@ function WorkflowPageInner({
     if (!t?.subtasks) return;
     propsRef.current.onUpdate(taskId, {
       subtasks: t.subtasks.map((s) =>
-        s.id === subtaskId ? { ...s, done: !s.done } : s
+        s.id === subtaskId ? { ...s, done: !s.done } : s,
       ),
     });
   }, []);
@@ -633,7 +679,10 @@ function WorkflowPageInner({
     if (!activeId || running || startBusyRef.current) return;
     // 未保存修改先拦下（保存键未点时节点卡不存在）
     if (dirty) {
-      handleCommandError(new Error("先保存再执行：未保存的草稿还没有落库节点卡"), "开始执行");
+      handleCommandError(
+        new Error("先保存再执行：未保存的草稿还没有落库节点卡"),
+        "开始执行",
+      );
       return;
     }
     startBusyRef.current = true;
@@ -706,7 +755,13 @@ function WorkflowPageInner({
   // （workflow_runner 节点起跑/收尾/跳过时广播）驱动画布实时高亮与跳转；
   // 5s 轮询保留为兜底（running 布尔与节点级状态互补）
   const [nodeLive, setNodeLive] = useState<
-    Record<string, { status: "running" | "done" | "failed" | "skipped"; sessionId?: string | null }>
+    Record<
+      string,
+      {
+        status: "running" | "done" | "failed" | "skipped";
+        sessionId?: string | null;
+      }
+    >
   >({});
   useTauriListen<{
     taskId?: string;
@@ -717,7 +772,10 @@ function WorkflowPageInner({
     setNodeLive((prev) => {
       const next = {
         ...prev,
-        [payload.taskId!]: { status: payload.status!, sessionId: payload.sessionId },
+        [payload.taskId!]: {
+          status: payload.status!,
+          sessionId: payload.sessionId,
+        },
       };
       // done/failed/skipped 后保留 sessionId 供跳转；纯 running 期间不膨胀即可
       return next;
@@ -728,11 +786,15 @@ function WorkflowPageInner({
 
   // W-QA：收尾审校报告（workflow-report 事件实时更新；切工作流从 lastReport 恢复）
   const [wfReport, setWfReport] = useState<WorkflowReport | null>(null);
-  useTauriListen<{ workflowId?: string; report?: WorkflowReport }>("workflow-report", (payload) => {
-    if (!payload.report) return;
-    if (payload.workflowId && payload.workflowId !== activeIdRef.current) return;
-    setWfReport(normalizeReport(payload.report));
-  });
+  useTauriListen<{ workflowId?: string; report?: WorkflowReport }>(
+    "workflow-report",
+    (payload) => {
+      if (!payload.report) return;
+      if (payload.workflowId && payload.workflowId !== activeIdRef.current)
+        return;
+      setWfReport(normalizeReport(payload.report));
+    },
+  );
 
   // 保存（指纹 diff 落库，设计 §7）
 
@@ -766,12 +828,15 @@ function WorkflowPageInner({
             tags: n.tags ?? null,
             dependsOn: n.dependsOn,
             pos: n.pos,
-            // 保存链必须携带 model（W6 r1 critical：缺失会把下拉刚设的模型置空）
-            model: n.model ?? tasks.find((t) => t.id === n.taskId)?.model ?? null,
+            // 保存链必须携带 model（缺失会把下拉刚设的模型置空）
+            model:
+              n.model ?? tasks.find((t) => t.id === n.taskId)?.model ?? null,
             subtasks: n.subtasks ?? null,
             // W-QA 卡即契约：保存链必须携带 acceptance（改验收 = 指纹变更 = 换新卡）
             acceptance:
-              n.acceptance ?? tasks.find((t) => t.id === n.taskId)?.acceptance ?? null,
+              n.acceptance ??
+              tasks.find((t) => t.id === n.taskId)?.acceptance ??
+              null,
           })),
         },
       });
@@ -797,7 +862,7 @@ function WorkflowPageInner({
           goal: effectiveGoal,
           nodes: next,
           attachPaths,
-        })
+        }),
       );
       setActiveId(res.workflowId);
       setSelectedIds([]);
@@ -828,7 +893,9 @@ function WorkflowPageInner({
       createBlank();
       onTasksReload();
     } catch (e) {
-      handleCommandError(e, "删除工作流", { onRetry: () => void deleteWorkflow() });
+      handleCommandError(e, "删除工作流", {
+        onRetry: () => void deleteWorkflow(),
+      });
     }
   };
 
@@ -837,7 +904,8 @@ function WorkflowPageInner({
   // 已完成节点数（W5：驱动「继续执行」按钮态 + 总目标卡进度，单一数据源）
   const doneCount =
     activeId !== null
-      ? tasks.filter((t) => t.workflowId === activeId && t.column === "done").length
+      ? tasks.filter((t) => t.workflowId === activeId && t.column === "done")
+          .length
       : 0;
 
   const rfNodes = useMemo<Node<TaskNodeData | GoalNodeData>[]>(
@@ -864,7 +932,9 @@ function WorkflowPageInner({
         },
       },
       ...nodes.map((n) => {
-        const task = n.taskId ? tasks.find((t) => t.id === n.taskId) : undefined;
+        const task = n.taskId
+          ? tasks.find((t) => t.id === n.taskId)
+          : undefined;
         const data: TaskNodeData = {
           task,
           models,
@@ -874,7 +944,7 @@ function WorkflowPageInner({
           onSelectTrace: n.taskId ? () => setTraceTaskId(n.taskId!) : undefined,
           onDraftTitleCommit: (localId, title) =>
             setNodes((prev) =>
-              prev.map((m) => (m.localId === localId ? { ...m, title } : m))
+              prev.map((m) => (m.localId === localId ? { ...m, title } : m)),
             ),
           onDelete: deleteNode,
           onToggleDone: task ? toggleDone : undefined,
@@ -893,24 +963,40 @@ function WorkflowPageInner({
     ],
     // 依赖含全部 data 回调（deleteNode/toggle* 均为 useCallback 稳定引用，
     // 内部经 ref 读最新 tasks/props——此处完整列出是防过期闭包的兜底
-    [nodes, tasks, name, goal, savedSnapshot, selectedIds, deleteNode, toggleDone, commitTitle, toggleSubtask, running, activeId, doneCount, models, changeModel, nodeLive, wfReport, assumptions]
+    [
+      nodes,
+      tasks,
+      name,
+      goal,
+      savedSnapshot,
+      selectedIds,
+      deleteNode,
+      toggleDone,
+      commitTitle,
+      toggleSubtask,
+      running,
+      activeId,
+      doneCount,
+      models,
+      changeModel,
+      nodeLive,
+      wfReport,
+      assumptions,
+    ],
   );
 
-  const rfEdges = useMemo<Edge[]>(
-    () => {
-      const ids = new Set(nodes.map((n) => n.localId));
-      return nodes.flatMap((n) =>
-        n.dependsOn
-          .filter((d) => ids.has(d))
-          .map((d) => ({
-            id: `${d}->${n.localId}`,
-            source: d,
-            target: n.localId,
-          }))
-      );
-    },
-    [nodes]
-  );
+  const rfEdges = useMemo<Edge[]>(() => {
+    const ids = new Set(nodes.map((n) => n.localId));
+    return nodes.flatMap((n) =>
+      n.dependsOn
+        .filter((d) => ids.has(d))
+        .map((d) => ({
+          id: `${d}->${n.localId}`,
+          source: d,
+          target: n.localId,
+        })),
+    );
+  }, [nodes]);
 
   // 渲染
 
@@ -923,98 +1009,111 @@ function WorkflowPageInner({
       {/* 顶栏两行：第一行 = 切换 + 工具 + 保存/删除（贴右）；第二行 = 执行罐子居中 */}
       <div className="flex shrink-0 flex-col gap-2 pb-3">
         <div className="flex flex-wrap items-center gap-2">
-        <select
-          aria-label="切换工作流"
-          className="h-8 rounded-[var(--r-sm)] bg-transparent px-2 text-sm text-[var(--t2)] nm-outset"
-          value={activeId ?? ""}
-          onChange={(e) => {
-            const v = e.target.value;
-            if (v) void openWorkflow(v);
-            else createBlank();
-          }}
-        >
-          <option value="">（未选择）</option>
-          {workflows.map((w) => (
-            <option key={w.id} value={w.id}>
-              {w.name}
-            </option>
-          ))}
-        </select>
-        <button
-          className={toolbarBtn}
-          onClick={() => setMode("hero")}
-          title="新建工作流（空白画布或 AI 生成）"
-        >
-          <Plus size={14} aria-hidden /> 新建
-        </button>
-        {/* 执行提问开关——节点缺关键信息时可向用户提问
+          <select
+            aria-label="切换工作流"
+            className="h-8 rounded-[var(--r-sm)] bg-transparent px-2 text-sm text-[var(--t2)] nm-outset"
+            value={activeId ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v) void openWorkflow(v);
+              else createBlank();
+            }}
+          >
+            <option value="">（未选择）</option>
+            {workflows.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className={toolbarBtn}
+            onClick={() => setMode("hero")}
+            title="新建工作流（空白画布或 AI 生成）"
+          >
+            <Plus size={14} aria-hidden /> 新建
+          </button>
+          {/* 执行提问开关——节点缺关键信息时可向用户提问
             （走通知中心，未答按 AI 假设继续）；随保存落 clarify_meta.askMode */}
-        <button
-          className={toolbarBtn}
-          aria-pressed={asksEnabled}
-          onClick={() => setAsksEnabled((v) => !v)}
-          title={
-            asksEnabled
-              ? "执行提问：开——节点缺关键信息时会进通知中心提问（未答按 AI 假设继续）。点击关闭"
-              : "执行提问：关——节点遇缺一律按 AI 假设继续，不提问。点击开启"
-          }
-        >
-          ❓ {asksEnabled ? "提问 开" : "提问 关"}
-        </button>
-        <div className="flex-1" />
-        <button
-          className={toolbarBtn}
-          onClick={addNode}
-          disabled={mode !== "edit"}
-          title={
-            mode !== "edit"
-              ? "先新建或打开一个工作流进入编辑态后才能加卡"
-              : "向画布添加节点"
-          }
-        >
-          <Plus size={14} aria-hidden /> 加卡
-        </button>
-        <button
-          className={`${toolbarBtn} ${regenArmed ? "nm-inset text-[var(--t1)]" : ""}`}
-          aria-pressed={regenArmed}
-          onClick={regenerate}
-          disabled={decomposing || nodes.length === 0}
-          title={
-            regenArmed
-              ? "再点一次确认回到目标输入（当前画布在保存前保持不变）"
-              : "修改目标后重新拆解（当前画布在保存前保持不变）"
-          }
-        >
-          <RefreshCw size={14} aria-hidden /> {regenArmed ? "确认重生成？" : "重新生成"}
-        </button>
-        <button
-          className={toolbarBtn}
-          onClick={() => void doImport()}
-          title="从 .wflow.json 导入（实例化为全新工作流）"
-        >
-          <Upload size={14} aria-hidden /> 导入
-        </button>
-        <button
-          className={toolbarBtn}
-          onClick={() => void doExport()}
-          disabled={activeId === null}
-          title={activeId === null ? "先选择一个工作流" : "导出已保存版本为 .wflow.json 模板"}
-        >
-          <Download size={14} aria-hidden /> 导出
-        </button>
-        <button
-          className={toolbarBtn}
-          onClick={() => void doAuditExport()}
-          disabled={activeId === null}
-          title={activeId === null ? "先选择一个工作流" : "导出运行审计 JSON（按 run 分组的调度/验收/评审时间线）"}
-        >
-          🧾 审计
-        </button>
+          <button
+            className={toolbarBtn}
+            aria-pressed={asksEnabled}
+            onClick={() => setAsksEnabled((v) => !v)}
+            title={
+              asksEnabled
+                ? "执行提问：开——节点缺关键信息时会进通知中心提问（未答按 AI 假设继续）。点击关闭"
+                : "执行提问：关——节点遇缺一律按 AI 假设继续，不提问。点击开启"
+            }
+          >
+            ❓ {asksEnabled ? "提问 开" : "提问 关"}
+          </button>
+          <div className="flex-1" />
+          <button
+            className={toolbarBtn}
+            onClick={addNode}
+            disabled={mode !== "edit"}
+            title={
+              mode !== "edit"
+                ? "先新建或打开一个工作流进入编辑态后才能加卡"
+                : "向画布添加节点"
+            }
+          >
+            <Plus size={14} aria-hidden /> 加卡
+          </button>
+          <button
+            className={`${toolbarBtn} ${regenArmed ? "nm-inset text-[var(--t1)]" : ""}`}
+            aria-pressed={regenArmed}
+            onClick={regenerate}
+            disabled={decomposing || nodes.length === 0}
+            title={
+              regenArmed
+                ? "再点一次确认回到目标输入（当前画布在保存前保持不变）"
+                : "修改目标后重新拆解（当前画布在保存前保持不变）"
+            }
+          >
+            <RefreshCw size={14} aria-hidden />{" "}
+            {regenArmed ? "确认重生成？" : "重新生成"}
+          </button>
+          <button
+            className={toolbarBtn}
+            onClick={() => void doImport()}
+            title="从 .wflow.json 导入（实例化为全新工作流）"
+          >
+            <Upload size={14} aria-hidden /> 导入
+          </button>
+          <button
+            className={toolbarBtn}
+            onClick={() => void doExport()}
+            disabled={activeId === null}
+            title={
+              activeId === null
+                ? "先选择一个工作流"
+                : "导出已保存版本为 .wflow.json 模板"
+            }
+          >
+            <Download size={14} aria-hidden /> 导出
+          </button>
+          <button
+            className={toolbarBtn}
+            onClick={() => void doAuditExport()}
+            disabled={activeId === null}
+            title={
+              activeId === null
+                ? "先选择一个工作流"
+                : "导出运行审计 JSON（按 run 分组的调度/验收/评审时间线）"
+            }
+          >
+            🧾 审计
+          </button>
           <SaveButton
             dirty={dirty}
             saving={saving}
             onSave={() => save()}
-            title={dirty ? "保存工作流（指纹 diff，保留未变更节点的执行痕迹）" : "没有未保存的修改"}
+            title={
+              dirty
+                ? "保存工作流（指纹 diff，保留未变更节点的执行痕迹）"
+                : "没有未保存的修改"
+            }
           />
           {activeId && (
             <HoldToConfirmDelete
@@ -1085,7 +1184,7 @@ function WorkflowPageInner({
           </ReactFlow>
         )}
       </div>
-      {/* ：节点「执行详情」弹层（工作痕迹：工具时间线 + 文件 diff/回滚；W10：+运行审计页签/验收行） */}
+      {/* 节点「执行详情」弹层（工作痕迹：工具时间线 + 文件 diff/回滚；含运行审计页签/验收行） */}
       {traceTaskId && (
         <TracePanel
           taskId={traceTaskId}
@@ -1094,7 +1193,9 @@ function WorkflowPageInner({
           acceptanceInfo={(() => {
             const t = tasks.find((x) => x.id === traceTaskId);
             const v = t?.result?.acceptanceVerdict;
-            return v ? { verdict: v, evidence: t?.result?.acceptanceEvidence ?? "" } : null;
+            return v
+              ? { verdict: v, evidence: t?.result?.acceptanceEvidence ?? "" }
+              : null;
           })()}
           onClose={() => setTraceTaskId(null)}
         />
@@ -1103,7 +1204,8 @@ function WorkflowPageInner({
   );
 }
 
-/** 空态引导（设计 §5.1 空态）：一句话目标 → AI 生成（W2 点亮）/ 创建空白 + 已有工作流列表。 *  重新生成复用本组件：工具栏「重新生成」回到此态，goal 预填原目标 */
+/** 空态引导（设计 §5.1 空态）：一句话目标 → AI 生成/ 创建空白 + 已有工作流列表。
+ *  重新生成复用本组件：工具栏「重新生成」回到此态，goal 预填原目标 */
 function EmptyHero({
   goal,
   onGoalChange,
@@ -1187,17 +1289,21 @@ function EmptyHero({
           </button>
           {decomposing ? (
             <span className="flex items-center gap-1.5 text-xs text-[var(--t5)]">
-              <Loader2 size={13} className="animate-spin" aria-hidden /> AI 拆解中…
+              <Loader2 size={13} className="animate-spin" aria-hidden /> AI
+              拆解中…
             </span>
           ) : clarifying ? (
             <span className="flex items-center gap-1.5 text-xs text-[var(--t5)]">
-              <Loader2 size={13} className="animate-spin" aria-hidden /> AI 阅读目标…
+              <Loader2 size={13} className="animate-spin" aria-hidden /> AI
+              阅读目标…
             </span>
           ) : (
             <button
               className="nm-inset rounded-[var(--r-sm)] px-4 py-1.5 text-sm text-[var(--t1)] disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!goal.trim()}
-              title={goal.trim() ? "AI 拆解为任务卡并自动连线" : "先填写目标描述"}
+              title={
+                goal.trim() ? "AI 拆解为任务卡并自动连线" : "先填写目标描述"
+              }
               onClick={onDecompose}
             >
               {isRegenerate ? "AI 重新生成" : "AI 生成"}

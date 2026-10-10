@@ -26,7 +26,11 @@ export function SplitBar({
     const pointerId = e.pointerId;
     let acc = 0;
     const el = e.currentTarget as HTMLElement;
-    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
     setWidgetDragActive(true);
     const move = (ev: PointerEvent) => {
       const dy = ev.clientY - sy;
@@ -35,7 +39,11 @@ export function SplitBar({
       onSplit(inc);
     };
     const cleanup = () => {
-      try { el.releasePointerCapture(pointerId); } catch { /* ignore */ }
+      try {
+        el.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);
@@ -59,12 +67,16 @@ export function SplitBar({
           onClick={() => onArrow(-40)}
           title="聊天区变大"
           className="text-[10px] text-[var(--t5)] hover:text-[var(--t2)] leading-none px-0.5"
-        >▲</button>
+        >
+          ▲
+        </button>
         <button
           onClick={() => onArrow(+40)}
           title="任务区变大"
           className="text-[10px] text-[var(--t5)] hover:text-[var(--t2)] leading-none px-0.5"
-        >▼</button>
+        >
+          ▼
+        </button>
       </div>
     </div>
   );

@@ -107,7 +107,7 @@ mod tests {
     };
     use crate::bot::config::schema::{DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS};
 
-    // ── bot_set_active_model 纯逻辑（MP-01）：命中置 active，未命中响亮失败 ──
+    // ── bot_set_active_model 纯逻辑：命中置 active，未命中响亮失败 ──
 
     fn entry(id: &str, base_url: &str, model: &str) -> ModelEntry {
         ModelEntry {
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn apply_active_model_switch_cross_protocol_switches_provider() {
-        // MP-02 双协议同列：当前协议 openai，点 anthropic 列表里的模型 →
+        // 双协议同列：当前协议 openai，点 anthropic 列表里的模型 →
         // 连协议一起切（api_provider + 该协议 active），derive 后老字段跟过去
         let mut cfg = BotConfig {
             models_by_provider: Some(ModelsByProvider {

@@ -16,7 +16,11 @@ import {
   type CommandErrorPayload,
 } from "../lib/errorHandler";
 
-function ce(code: string, recoverable: boolean, message = "测试错误"): CommandErrorPayload {
+function ce(
+  code: string,
+  recoverable: boolean,
+  message = "测试错误",
+): CommandErrorPayload {
   return { code, message, recoverable };
 }
 
@@ -69,7 +73,9 @@ describe("ErrorDialogHost 接管路径（Host 已挂载）", () => {
   it("onRetry 同步抛错 → 回收进 errorHandler（silent，不二次弹窗）", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const onRetry = () => {
-      throw isCommandError(ce("DB_ERROR", false)) ? ce("DB_ERROR", false) : new Error("boom");
+      throw isCommandError(ce("DB_ERROR", false))
+        ? ce("DB_ERROR", false)
+        : new Error("boom");
     };
     render(<ErrorDialogHost />);
     handleCommandError(ce("HTTP_START_FAILED", true, "端口被占用"), "test", {
@@ -80,7 +86,7 @@ describe("ErrorDialogHost 接管路径（Host 已挂载）", () => {
     fireEvent.click(screen.getByTestId("error-dialog-primary"));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(
-      consoleSpy.mock.calls.some((c) => String(c[0]).includes("DB_ERROR"))
+      consoleSpy.mock.calls.some((c) => String(c[0]).includes("DB_ERROR")),
     ).toBe(true);
     consoleSpy.mockRestore();
   });

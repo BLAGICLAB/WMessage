@@ -2,7 +2,14 @@
 // 编辑保存 / 删除确认（含自进化条目文案）/ 取消删除。
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, cleanup } from "@testing-library/react";
+import {
+  render,
+  screen,
+  act,
+  cleanup,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   MemoryPanel,
@@ -71,19 +78,27 @@ function sampleStats(over: Partial<MemStats> = {}): MemStats {
 }
 
 /** 默认数据源：列表两条 + 统计 */
-function stubData(items: MemItemView[] = [sampleItem()], stats: MemStats = sampleStats()) {
-  mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "mem_list") return items;
-    if (cmd === "mem_stats") return stats;
-    if (cmd === "mem_update" || cmd === "mem_delete") return null;
-    void args;
-    return null;
-  });
+function stubData(
+  items: MemItemView[] = [sampleItem()],
+  stats: MemStats = sampleStats(),
+) {
+  mocks.invokeMock.mockImplementation(
+    async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "mem_list") return items;
+      if (cmd === "mem_stats") return stats;
+      if (cmd === "mem_update" || cmd === "mem_delete") return null;
+      void args;
+      return null;
+    },
+  );
 }
 
 describe("MemoryPanel", () => {
   it("空列表：显示空态引导", async () => {
-    stubData([], sampleStats({ total: 0, withEmbedding: 0, byKind: [], bySource: [] }));
+    stubData(
+      [],
+      sampleStats({ total: 0, withEmbedding: 0, byKind: [], bySource: [] }),
+    );
     render(<MemoryPanel />);
     expect(await screen.findByText(/还没有匹配的记忆/)).toBeInTheDocument();
   });
@@ -103,7 +118,9 @@ describe("MemoryPanel", () => {
     ]);
     render(<MemoryPanel />);
     expect(await screen.findByText("喜欢简洁的回复风格")).toBeInTheDocument();
-    expect(screen.getByText("执行任务前先检查文件是否存在")).toBeInTheDocument();
+    expect(
+      screen.getByText("执行任务前先检查文件是否存在"),
+    ).toBeInTheDocument();
     // 类型徽标 + 来源徽标 + 重要度
     expect(screen.getAllByText("偏好").length).toBeGreaterThan(0);
     expect(screen.getAllByText("教训").length).toBeGreaterThan(0);
@@ -118,10 +135,17 @@ describe("MemoryPanel", () => {
   });
 
   it("统计行与嵌入降级横幅：embedOk=false 显示原因；正常态不显示", async () => {
-    stubData([sampleItem()], sampleStats({ embedOk: false, embedError: "模型目录缺失" }));
+    stubData(
+      [sampleItem()],
+      sampleStats({ embedOk: false, embedError: "模型目录缺失" }),
+    );
     render(<MemoryPanel />);
-    expect(await screen.findByText(/3\/500 条 · 向量覆盖 1\/3/)).toBeInTheDocument();
-    expect(screen.getByText(/语义嵌入不可用，已降级为关键词检索：模型目录缺失/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/3\/500 条 · 向量覆盖 1\/3/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/语义嵌入不可用，已降级为关键词检索：模型目录缺失/),
+    ).toBeInTheDocument();
   });
 
   it("搜索防抖：停顿 300ms 后才带 query 打 mem_list", async () => {
@@ -138,13 +162,17 @@ describe("MemoryPanel", () => {
       await new Promise((r) => setTimeout(r, 100));
     });
     expect(
-      mocks.invokeMock.mock.calls.filter((c) => c[0] === "mem_list" && c[1]?.query).length,
+      mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "mem_list" && c[1]?.query,
+      ).length,
     ).toBe(listCallsBefore);
     // 停顿超过 300ms → 带 query 重查
     await act(async () => {
       await new Promise((r) => setTimeout(r, 400));
     });
-    const last = mocks.invokeMock.mock.calls.filter((c) => c[0] === "mem_list").pop();
+    const last = mocks.invokeMock.mock.calls
+      .filter((c) => c[0] === "mem_list")
+      .pop();
     expect(last?.[1]?.query).toBe("风格");
   });
 
@@ -188,7 +216,11 @@ describe("MemoryPanel", () => {
     await user.click(delBtns[0]);
     expect(confirmMock.mock.calls[0]?.[0]).not.toContain("自进化");
     await flush();
-    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "mem_delete" && c[1]?.id === "m1")).toBe(true);
+    expect(
+      mocks.invokeMock.mock.calls.some(
+        (c) => c[0] === "mem_delete" && c[1]?.id === "m1",
+      ),
+    ).toBe(true);
     // 自进化条目：确认文案点名影响
     await user.click(delBtns[1]);
     expect(confirmMock.mock.calls[1]?.[0]).toContain("自进化");
@@ -202,7 +234,9 @@ describe("MemoryPanel", () => {
     await screen.findByText("喜欢简洁的回复风格");
     await user.click(screen.getByRole("button", { name: "删除记忆" }));
     await flush();
-    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "mem_delete")).toBe(false);
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "mem_delete")).toBe(
+      false,
+    );
   });
 
   it("导出：save 对话框取路径 → mem_export 带路径调用 → 显示条数", async () => {
@@ -230,7 +264,9 @@ describe("MemoryPanel", () => {
     await screen.findByText("喜欢简洁的回复风格");
     await user.click(screen.getByRole("button", { name: "导出记忆" }));
     await flush();
-    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "mem_export")).toBe(false);
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "mem_export")).toBe(
+      false,
+    );
   });
 
   it("导入：open 取路径 → mem_import → 显示报告并刷新列表", async () => {
@@ -250,7 +286,9 @@ describe("MemoryPanel", () => {
     render(<MemoryPanel />);
     await screen.findByText("喜欢简洁的回复风格");
     await user.click(screen.getByRole("button", { name: "导入记忆" }));
-    expect(await screen.findByText("导入完成：新增 2 条、合并 1 条、跳过 0 条")).toBeInTheDocument();
+    expect(
+      await screen.findByText("导入完成：新增 2 条、合并 1 条、跳过 0 条"),
+    ).toBeInTheDocument();
     expect(importCalled).toBe(true);
   });
 
@@ -267,7 +305,9 @@ describe("MemoryPanel", () => {
     render(<MemoryPanel />);
     await screen.findByText("喜欢简洁的回复风格");
     await user.click(screen.getByRole("button", { name: "导入记忆" }));
-    expect(await screen.findByText(/导入失败：导入文件解析失败/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/导入失败：导入文件解析失败/),
+    ).toBeInTheDocument();
   });
 
   //  待确认队列（confirm 档自动抽取）
@@ -290,7 +330,10 @@ describe("MemoryPanel", () => {
       if (cmd === "mem_list") return [sampleItem()];
       if (cmd === "mem_stats") return sampleStats();
       if (cmd === "mem_pending_list")
-        return [samplePending(), samplePending({ id: 2, content: "每周三固定复盘", kind: "fact" })];
+        return [
+          samplePending(),
+          samplePending({ id: 2, content: "每周三固定复盘", kind: "fact" }),
+        ];
       return null;
     });
     render(<MemoryPanel />);
@@ -312,19 +355,26 @@ describe("MemoryPanel", () => {
   it("单条收下：mem_pending_approve 带 [id] 调用 + 显示入库提示 + 刷新列表", async () => {
     const user = userEvent.setup();
     stubData();
-    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === "mem_list") return [sampleItem()];
-      if (cmd === "mem_stats") return sampleStats();
-      if (cmd === "mem_pending_list")
-        return args?.ids ? [] : [samplePending()];
-      if (cmd === "mem_pending_approve") return { inserted: 1, merged: 0, skipped: 0 };
-      return null;
-    });
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "mem_list") return [sampleItem()];
+        if (cmd === "mem_stats") return sampleStats();
+        if (cmd === "mem_pending_list")
+          return args?.ids ? [] : [samplePending()];
+        if (cmd === "mem_pending_approve")
+          return { inserted: 1, merged: 0, skipped: 0 };
+        return null;
+      },
+    );
     render(<MemoryPanel />);
     await screen.findByText(/待确认记忆（1）/);
-    await user.click(screen.getByRole("button", { name: /收下：用户在做后端开发/ }));
+    await user.click(
+      screen.getByRole("button", { name: /收下：用户在做后端开发/ }),
+    );
     expect(await screen.findByText("已收下 1 条记忆入库")).toBeInTheDocument();
-    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "mem_pending_approve");
+    const call = mocks.invokeMock.mock.calls.find(
+      (c) => c[0] === "mem_pending_approve",
+    );
     expect(call?.[1]).toEqual({ ids: [1] });
   });
 
@@ -335,14 +385,19 @@ describe("MemoryPanel", () => {
       if (cmd === "mem_list") return [sampleItem()];
       if (cmd === "mem_stats") return sampleStats();
       if (cmd === "mem_pending_list")
-        return [samplePending(), samplePending({ id: 2, content: "每周三固定复盘", kind: "fact" })];
+        return [
+          samplePending(),
+          samplePending({ id: 2, content: "每周三固定复盘", kind: "fact" }),
+        ];
       return null;
     });
     render(<MemoryPanel />);
     await screen.findByText(/待确认记忆（2）/);
     await user.click(screen.getByRole("button", { name: "全部忽略" }));
     await flush();
-    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "mem_pending_reject");
+    const call = mocks.invokeMock.mock.calls.find(
+      (c) => c[0] === "mem_pending_reject",
+    );
     expect(call?.[1]).toEqual({ ids: [1, 2] });
   });
 
@@ -350,20 +405,27 @@ describe("MemoryPanel", () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "mem_list") return [];
-      if (cmd === "mem_stats") return { total: 0, capacity: 500, withEmbedding: 0 };
+      if (cmd === "mem_stats")
+        return { total: 0, capacity: 500, withEmbedding: 0 };
       if (cmd === "memory_tuning_get")
         return { topN: 7, injectionBudgetChars: 4000, capacity: 500 };
       return null;
     });
     render(<MemoryPanel />);
     const topN = await screen.findByTestId("tuning-topN");
+    // loaded 闸：GET 落地后保存才可用
+    await waitFor(() =>
+      expect(screen.getByTestId("btn-tuning-save")).toBeEnabled(),
+    );
     expect(topN).toHaveValue("7");
     // 改一个字段、清一个字段：只提交非空合法项
     await user.clear(topN);
     await user.type(topN, "9");
     await user.click(screen.getByTestId("btn-tuning-save"));
     await flush();
-    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "memory_tuning_set");
+    const call = mocks.invokeMock.mock.calls.find(
+      (c) => c[0] === "memory_tuning_set",
+    );
     expect(call?.[1]?.tuning).toMatchObject({
       topN: 9,
       injectionBudgetChars: 4000,
@@ -375,15 +437,64 @@ describe("MemoryPanel", () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "mem_list") return [];
-      if (cmd === "mem_stats") return { total: 0, capacity: 500, withEmbedding: 0 };
+      if (cmd === "mem_stats")
+        return { total: 0, capacity: 500, withEmbedding: 0 };
       if (cmd === "memory_tuning_get") return {};
       return null;
     });
     render(<MemoryPanel />);
     await screen.findByTestId("memory-tuning-card");
+    await waitFor(() =>
+      expect(screen.getByTestId("btn-tuning-save")).toBeEnabled(),
+    );
     await user.click(screen.getByTestId("btn-tuning-save"));
     await flush();
-    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "memory_tuning_set");
+    const call = mocks.invokeMock.mock.calls.find(
+      (c) => c[0] === "memory_tuning_set",
+    );
     expect(call?.[1]).toEqual({ tuning: null });
+  });
+
+  it("检索参数卡：GET 失败 → 输入与保存禁用、失败写进提示（不再纯静默）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [];
+      if (cmd === "mem_stats")
+        return { total: 0, capacity: 500, withEmbedding: 0 };
+      if (cmd === "memory_tuning_get") throw "后端命令失败";
+      return null;
+    });
+    render(<MemoryPanel />);
+    await screen.findByTestId("memory-tuning-card");
+    expect(await screen.findByText(/检索参数读取失败/)).toBeInTheDocument();
+    expect(screen.getByTestId("tuning-topN")).toBeDisabled();
+    const save = screen.getByTestId("btn-tuning-save");
+    expect(save).toBeDisabled();
+    // 禁用态点击（含事件级触发）也不得发出保存调用：空表 Save 会抹掉已调参数
+    fireEvent.click(save);
+    await flush();
+    expect(
+      mocks.invokeMock.mock.calls.some((c) => c[0] === "memory_tuning_set"),
+    ).toBe(false);
+  });
+
+  it("检索参数卡：同帧双击保存只 invoke 一次（ref 闸）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mem_list") return [];
+      if (cmd === "mem_stats")
+        return { total: 0, capacity: 500, withEmbedding: 0 };
+      if (cmd === "memory_tuning_get") return { topN: 5 };
+      return null;
+    });
+    render(<MemoryPanel />);
+    const save = await screen.findByTestId("btn-tuning-save");
+    await waitFor(() => expect(save).toBeEnabled());
+    // 同帧两次点击：busy state 尚未提交到 disabled，靠 ref 闸拦第二次
+    fireEvent.click(save);
+    fireEvent.click(save);
+    await flush();
+    const calls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "memory_tuning_set",
+    );
+    expect(calls).toHaveLength(1);
   });
 });

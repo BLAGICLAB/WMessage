@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Check, Loader2, Pencil, X } from "lucide-react";
 import type { Clarification, ClarifyQuestion } from "../../lib/workflowAsk";
 
-/** 澄清卡组（ 设计 §3.4，）：hero 态内联问答。 *  红线：**「开始拆解」永远可点**——未答题自动落 AI 假设（q.default），
+/** 澄清卡组（设计 §3.4）：hero 态内联问答。
+ *  红线：**「开始拆解」永远可点**——未答题自动落 AI 假设（q.default），
  *  忽略问题也能走；已答卡折叠为摘要行可重开编辑。 */
 export function ClarifyCard({
   goal,
@@ -57,14 +58,17 @@ export function ClarifyCard({
               answer={answers[q.id] ?? ""}
               collapsed={!!answers[q.id]?.trim() && !editing[q.id]}
               onAnswer={(a) => setAnswers((prev) => ({ ...prev, [q.id]: a }))}
-              onToggleEdit={() => setEditing((prev) => ({ ...prev, [q.id]: true }))}
+              onToggleEdit={() =>
+                setEditing((prev) => ({ ...prev, [q.id]: true }))
+              }
             />
           ))}
         </div>
         <div className="mt-5 flex items-center justify-end gap-2">
           {busy ? (
             <span className="flex items-center gap-1.5 text-xs text-[var(--t5)]">
-              <Loader2 size={13} className="animate-spin" aria-hidden /> AI 拆解中…
+              <Loader2 size={13} className="animate-spin" aria-hidden /> AI
+              拆解中…
             </span>
           ) : (
             <>
@@ -119,7 +123,11 @@ function QuestionRow({
   if (collapsed) {
     return (
       <div className="flex items-center gap-2 rounded-[var(--r-sm)] nm-inset px-3 py-2 text-xs">
-        <Check size={13} className="shrink-0 text-[var(--ok,#16a34a)]" aria-hidden />
+        <Check
+          size={13}
+          className="shrink-0 text-[var(--ok,#16a34a)]"
+          aria-hidden
+        />
         <span className="truncate text-[var(--t3)]">
           {q.question} → <span className="text-[var(--t1)]">{answer}</span>
         </span>
@@ -137,7 +145,9 @@ function QuestionRow({
   return (
     <div className="rounded-[var(--r-sm)] nm-inset p-3">
       <p className="text-sm text-[var(--t1)]">{q.question}</p>
-      {q.why && <p className="mt-0.5 text-[11px] text-[var(--t5)]">问这个：{q.why}</p>}
+      {q.why && (
+        <p className="mt-0.5 text-[11px] text-[var(--t5)]">问这个：{q.why}</p>
+      )}
       {q.options.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {q.options.map((opt) => (

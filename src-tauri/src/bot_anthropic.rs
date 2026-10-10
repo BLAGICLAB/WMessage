@@ -573,7 +573,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// ：工具附图序列 [assistant(tool_use), tool(文本), user(text+image_url)]
+    /// 工具附图序列 [assistant(tool_use), tool(文本), user(text+image_url)]
     /// → Anthropic 侧必须合并成单条 user 消息 [tool_result, text, image]
     ///（官方 tool_result 附图形态 + 严格交替约束）。
     #[test]

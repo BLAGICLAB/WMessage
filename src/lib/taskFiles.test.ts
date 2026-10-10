@@ -21,7 +21,7 @@ describe("taskFiles", () => {
         ...base,
         filePath: "/old.pdf",
         files: [{ path: "/new.pdf", isDir: false }],
-      })
+      }),
     ).toEqual([{ path: "/new.pdf", isDir: false }]);
     // files 空数组 → 回退旧字段
     expect(taskFiles({ ...base, files: [], filePath: "/a.pdf" })).toEqual([
@@ -88,7 +88,7 @@ describe("MAX_TASK_FILES 跨语言锁步", () => {
     const { resolve } = await import("node:path");
     const rustSrc = readFileSync(
       resolve(__dirname, "../../src-tauri/src/db/tasks.rs"),
-      "utf-8"
+      "utf-8",
     );
     const m = rustSrc.match(/MAX_TASK_FILES:\s*usize\s*=\s*(\d+)/);
     expect(m, "tasks.rs 里应能找到 MAX_TASK_FILES 常量定义").toBeTruthy();

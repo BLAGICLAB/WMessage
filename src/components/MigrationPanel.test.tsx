@@ -36,7 +36,14 @@ const defaultInvoke = async (cmd: string) => {
     case "migration_status":
       return { rules_count: 1, poll_interval_secs: 600 };
     case "migration_run":
-      return { ts: 1700000000000, archived: 2, moved: 3, deleted: 0, skipped: 1, log: ["moved a.txt"] };
+      return {
+        ts: 1700000000000,
+        archived: 2,
+        moved: 3,
+        deleted: 0,
+        skipped: 1,
+        log: ["moved a.txt"],
+      };
     case "migration_log_read":
       return "2026-09-01 移动 a.txt → 归档";
     case "migration_rules_import":
@@ -67,27 +74,30 @@ describe("MigrationPanel", () => {
     expect(screen.getByText("归档/{year}")).toBeInTheDocument();
     // 状态行：600s → 10 分钟
     expect(
-      screen.getByText(/后台每 10 分钟自动检测一次 · 现有规则 1 条/)
+      screen.getByText(/后台每 10 分钟自动检测一次 · 现有规则 1 条/),
     ).toBeInTheDocument();
   });
 
   it("空规则：显示「暂无规则」引导，不显示删除警告", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
-      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
       return null;
     });
     render(<MigrationPanel />);
     expect(
-      await screen.findByText(/暂无规则：下载表格模版/)
+      await screen.findByText(/暂无规则：下载表格模版/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/有启用的删除规则/)).not.toBeInTheDocument();
   });
 
   it("有启用的 delete 规则：显示 ⚠ 删除警告", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "migration_rules_load") return { version: 1, rules: [moveRule, deleteRule] };
-      if (cmd === "migration_status") return { rules_count: 2, poll_interval_secs: 600 };
+      if (cmd === "migration_rules_load")
+        return { version: 1, rules: [moveRule, deleteRule] };
+      if (cmd === "migration_status")
+        return { rules_count: 2, poll_interval_secs: 600 };
       return null;
     });
     render(<MigrationPanel />);
@@ -98,8 +108,12 @@ describe("MigrationPanel", () => {
   it("delete 规则停用时不显示删除警告", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "migration_rules_load")
-        return { version: 1, rules: [moveRule, { ...deleteRule, enabled: false }] };
-      if (cmd === "migration_status") return { rules_count: 2, poll_interval_secs: 600 };
+        return {
+          version: 1,
+          rules: [moveRule, { ...deleteRule, enabled: false }],
+        };
+      if (cmd === "migration_status")
+        return { rules_count: 2, poll_interval_secs: 600 };
       return null;
     });
     render(<MigrationPanel />);
@@ -123,7 +137,9 @@ describe("MigrationPanel", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("migration_run");
     });
-    expect(await screen.findByText(/移动 3 · 删除 0 · 跳过 1/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/移动 3 · 删除 0 · 跳过 1/),
+    ).toBeInTheDocument();
     expect(screen.getByText("moved a.txt")).toBeInTheDocument();
   });
 
@@ -132,14 +148,16 @@ describe("MigrationPanel", () => {
     render(<MigrationPanel />);
     await user.click(await screen.findByText("查看迁移日志"));
     await waitFor(() => {
-      expect(mocks.invokeMock).toHaveBeenCalledWith("migration_log_read", { limit: 500 });
+      expect(mocks.invokeMock).toHaveBeenCalledWith("migration_log_read", {
+        limit: 500,
+      });
     });
     expect(
-      await screen.findByText("2026-09-01 移动 a.txt → 归档")
+      await screen.findByText("2026-09-01 移动 a.txt → 归档"),
     ).toBeInTheDocument();
     await user.click(screen.getByText("关闭"));
     expect(
-      screen.queryByText("2026-09-01 移动 a.txt → 归档")
+      screen.queryByText("2026-09-01 移动 a.txt → 归档"),
     ).not.toBeInTheDocument();
   });
 
@@ -154,7 +172,7 @@ describe("MigrationPanel", () => {
     // 导入后 refresh：migration_rules_load 被调两次（初始 + 导入后）
     await waitFor(() => {
       const loads = mocks.invokeMock.mock.calls.filter(
-        (c) => c[0] === "migration_rules_load"
+        (c) => c[0] === "migration_rules_load",
       );
       expect(loads).toHaveLength(2);
     });
