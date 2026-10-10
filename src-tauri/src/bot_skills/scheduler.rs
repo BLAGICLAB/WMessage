@@ -231,7 +231,7 @@ pub async fn run_skill_scheduler(
     let (meta, body, dir) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
         reason: e.to_string(),
     })?;
-    // ：params 与 allowed-tools 从本会话活动 run 取（use_skill 启动时写入；
+    // params 与 allowed-tools 从本会话活动 run 取（use_skill 启动时写入；
     // pre-step 路由路径无 run → Null/空 = 不限制、无参数替换源）
     let (params, allowed_tools) = active_skill_run_for(app, session_id)
         .filter(|r| r.name == name)
@@ -263,6 +263,18 @@ pub async fn run_skill_scheduler(
         persist_outcome,
     )
     .await
+}
+
+/// 兼容门已知工具全集（纯函数，单测直打）：内置注册表 + 当前挂载 MCP 工具函数名。
+/// dispatch 对查表 miss 有 MCP 兜底路由（find_mounted 按 func_name 反查同名），
+/// 把挂载名并入后，主步全为 MCP 工具的纯外部技能不会被误判「全部未知」而终止。
+fn compat_known_tools(mounted_func_names: &[String]) -> std::collections::HashSet<String> {
+    let mut known: std::collections::HashSet<String> = crate::bot::registry::tools_index()
+        .keys()
+        .map(|s| s.to_string())
+        .collect();
+    known.extend(mounted_func_names.iter().cloned());
+    known
 }
 
 /// DSL 调度器核心（run_skill_scheduler 的实际调度逻辑）：
@@ -308,13 +320,14 @@ where
             reason: format!("技能「{name}」无可执行步骤（DSL 解析为空）"),
         });
     }
-    // N7-①：兼容审计——步骤/回滚引用了未内置的工具。全部未知 → 提前终止
+    // 兼容审计——步骤/回滚引用了未内置的工具。全部未知 → 提前终止
     // （几乎必然是工具改名后未同步的旧技能，逐步失败只会白烧回滚）；部分未知 →
     // 警告继续（可能混用 MCP 工具，dispatch 兜底可执行）。
-    let known: std::collections::HashSet<String> = crate::bot::registry::tools_index()
-        .keys()
-        .map(|s| s.to_string())
+    let mounted: Vec<String> = crate::bot::mcp::mount::mcp_mounted_tools()
+        .into_iter()
+        .map(|t| t.func_name)
         .collect();
+    let known = compat_known_tools(&mounted);
     let unknown = super::parse::unknown_tool_names(&steps, &rollback, &known);
     if !unknown.is_empty() {
         crate::bot::audit_log_hook(
@@ -1177,6 +1190,35 @@ mod tests {
         assert!(
             pv.iter().any(|(_, k)| k == "terminated"),
             "应落 terminated：{pv:?}"
+        );
+    }
+
+    /// 兼容门已知集并入挂载 MCP 工具名（与 dispatch 兜底 find_mounted 同一
+    /// func_name 名字空间）：主步全为挂载名时不再满足「全部未知」终止条件。
+    /// 挂载集读全局连接槽无法注入 → 集合构建抽成纯函数直打。
+    #[test]
+    fn compat_known_tools_includes_mounted_mcp_names() {
+        let builtin = crate::bot::registry::tools_index().len();
+        let mounted = vec!["mcp_fake_srv_echo".to_string()];
+        let known = compat_known_tools(&mounted);
+        assert!(known.contains("mcp_fake_srv_echo"), "挂载名必须在已知集内");
+        assert!(known.contains("query_tasks"), "内置工具不得被挤出");
+        assert_eq!(known.len(), builtin + 1, "已知集 = 内置 + 挂载");
+        // 纯 MCP 技能（主步全为挂载名）不满足「全部未知」终止条件
+        let body = "## Step 1: a\nmcp_fake_srv_echo({})\n\n## Step 2: b\nmcp_fake_srv_echo({})";
+        let (steps, rollback) = parse_skill_steps(body).unwrap();
+        assert!(rollback.is_empty());
+        let all_unknown = steps
+            .iter()
+            .filter(|s| !known.contains(&s.tool_name))
+            .count()
+            == steps.len();
+        assert!(!all_unknown, "主步全为挂载名不得被判全部未知");
+        // 回归锁：未挂载的编造名仍全未知（并入挂载名不得放松原有闸）
+        let known_without = compat_known_tools(&[]);
+        assert!(
+            steps.iter().all(|s| !known_without.contains(&s.tool_name)),
+            "无挂载时编造名仍应全未知"
         );
     }
 

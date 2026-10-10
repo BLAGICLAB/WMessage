@@ -168,7 +168,7 @@ pub(crate) fn sanitize_tool_rules(
 
 // bot_set_config
 
-///  回填内核（纯函数，单测直打）：**盘上值权威**。前端视图（BotConfigView）
+/// 回填内核（纯函数，单测直打）：**盘上值权威**。前端视图（BotConfigView）
 /// 不含 evolution 块，bot_set_config 是整体替换写——不回填则设置页任意一次保存
 /// 都把自进化块写丢（运行时配置上实际发生过）。即便前端理论上带了值也以盘上
 /// 为准：该块只归 evolution/ 模块读写，设置页没有编辑入口。
@@ -304,7 +304,7 @@ pub fn bot_set_config(
 // bot_set_active_model
 
 /// 纯逻辑（单测锚点）：校验 model_id 存在于**任一协议**的模型列表并置为 active。
-/// 聊天区 🧠 下拉双协议同列展示（MP-02）：命中**另一协议**的模型 → 连协议一起切
+/// 聊天区 🧠 下拉双协议同列展示：命中**另一协议**的模型 → 连协议一起切
 /// （api_provider + 该协议的 active_model_id），derive 老字段自然跟随新协议。
 /// 列表为空 / id 两边都不在（已删除）→ InvalidArgument 响亮失败，
 /// 不静默回退到 first——用户点的是哪一个就该切哪一个。
@@ -340,7 +340,7 @@ pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> Command
 }
 
 /// 窄口径切换 active 模型（聊天区/挂件 🧠 下拉专用）：读盘上最新配置（单一事实源），
-/// 只动目标协议的 active_model_id（MP-02 双协议同列：跨协议选中时连 api_provider
+/// 只动目标协议的 active_model_id（双协议同列：跨协议选中时连 api_provider
 /// 一起切），派生 base_url/model 老字段后落盘。
 /// **不做整份配置写回**——避免前端旧快照覆盖设置页并发修改的字段（白名单/开关等）。
 /// key 相关路径完全不触碰。返回切换后的 BotConfigView，前端免二次读取。
@@ -353,6 +353,9 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
     apply_active_model_switch(&mut cfg, &model_id)?;
     schema::derive_legacy_fields_from_active(&mut cfg);
     io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;
+    // bot_get_config 内 migrate_legacy_key/migrate_search_keys 会再取同一把非重入
+    // CONFIG_WRITE_LOCK——必须先放本函数的写锁再读，否则必然自锁死。
+    drop(_g);
     bot_get_config(app)
 }
 
@@ -399,7 +402,7 @@ pub fn bot_reload_config(app: AppHandle) -> CommandResult<bool> {
     Ok(shadow_enabled)
 }
 
-/// 记忆检索参数读取（ memoryTuning；已过 clamped，前端只见合法值）
+/// 记忆检索参数读取（memoryTuning；已过 clamped，前端只见合法值）
 #[tauri::command]
 pub fn memory_tuning_get(app: AppHandle) -> CommandResult<crate::memory::MemoryTuning> {
     Ok(io::read_memory_tuning(&app))
@@ -534,7 +537,7 @@ mod evolution_preserve_tests {
 
     #[test]
     fn preserve_evolution_disk_value_is_authoritative() {
-        //  回归：前端视图不含 evolution 块——盘上有则以盘上回填
+        // 回归：前端视图不含 evolution 块——盘上有则以盘上回填
         let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();
         assert!(incoming.evolution.is_none());
         let disk: BotConfig = serde_json::from_str(

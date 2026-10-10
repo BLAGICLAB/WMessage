@@ -316,7 +316,7 @@ impl Default for BotConfig {
             active_model_id: None,            // 未配置 = 两协议都没选 active
             ui_font_size: None,               // 未配置 = small
             memory_consolidation: None, // 未配置 = 启用 + daily（ConsolidationConfig::default）
-            memory_control: None,       // 未配置 = 注入/主动记忆全开（U15 前行为）
+            memory_control: None,       // 未配置 = 注入/主动记忆全开（与 Default 一致）
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             max_function_calls: None,   // 未配置 = 100 默认全域熔断上限）
@@ -536,7 +536,7 @@ pub struct ResolvedModel {
     pub api_provider: String,
     pub api_key: String,
     /// 条目级推理参数（温度/top_p/system_prompt/max_tokens 钳制按覆盖条目，
-    /// 防跨协议钳制错位——W6 r1 medium）
+    /// 防跨协议钳制错位）
     pub inference: crate::bot::EffectiveInference,
 }
 
@@ -545,8 +545,6 @@ pub struct ResolvedModel {
 /// key = 条目厂商 key（有则用）→ 全局主 key 兜底。不走 active 模型厂商回退：
 /// override 条目打自己的 base_url，借 active 厂商的 key 属跨厂商凭据泄漏。
 pub fn resolve_model_override(
-    _api_provider: Option<&str>,
-    _active_model_id: Option<&ActiveModelId>,
     models_by_provider: Option<&ModelsByProvider>,
     entry_id: &str,
     global_max_tokens: Option<u32>,
@@ -640,7 +638,7 @@ mod model_override_tests {
     }
 
     /// 钥匙串守卫：SecKeychainFindGenericPassword 在锁屏/无人授权时会无限挂起
-    /// （ 验收实录：两次全量验证被它卡死整轮）。3 秒无响应视为锁屏环境，
+    /// （验收实录：两次全量验证被它卡死整轮）。3 秒无响应视为锁屏环境，
     /// 调用方跳过本测。超时后工作线程泄漏为阻塞态——测试进程随 main 退出即回收，
     /// 不影响其余用例。
     fn run_with_keychain_guard<F, R>(f: F) -> Option<R>
@@ -657,9 +655,9 @@ mod model_override_tests {
 
     #[test]
     fn resolve_finds_entry_across_protocols() {
-        let Some(r) = run_with_keychain_guard(|| {
-            resolve_model_override(None, None, models().as_ref(), "glm", None)
-        }) else {
+        let Some(r) =
+            run_with_keychain_guard(|| resolve_model_override(models().as_ref(), "glm", None))
+        else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
@@ -677,16 +675,15 @@ mod model_override_tests {
     #[test]
     fn resolve_rejects_missing_and_disabled() {
         // 错误路径可能在读取 key 前就返回，但守卫兜底同款（锁屏环境不挂死）
-        let ghost = run_with_keychain_guard(|| {
-            resolve_model_override(None, None, models().as_ref(), "ghost", None)
-        });
+        let ghost =
+            run_with_keychain_guard(|| resolve_model_override(models().as_ref(), "ghost", None));
         let Some(m) = ghost else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
         assert!(m.is_err(), "不存在的 id 应报错");
         let disabled = run_with_keychain_guard(|| {
-            resolve_model_override(None, None, models().as_ref(), "disabled1", None)
+            resolve_model_override(models().as_ref(), "disabled1", None)
         });
         let Some(err) = disabled else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");

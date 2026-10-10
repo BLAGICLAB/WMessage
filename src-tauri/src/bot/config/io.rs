@@ -188,9 +188,6 @@ pub fn write_memory_tuning_at(
             obj.insert("memoryTuning".to_string(), val);
         }
         None => {
-            if let Some(evo) = obj.get_mut("memoryTuning") {
-                let _ = evo;
-            }
             obj.remove("memoryTuning");
         }
     }
@@ -217,7 +214,7 @@ pub(crate) fn read_memory_tuning_at(path: &Path) -> crate::memory::MemoryTuning 
 
 /// 可测内核（纯路径参数）：文件缺失 / 读失败 / JSON 损坏 / 缺字段 → true。
 /// 只有显式 `bypassLlmOnPreStepHit: false` 才关掉 bypass——老配置零迁移语义，
-/// 也是  的默认行为（默认走 bypass，避免命中 Skill 后还要多烧一次外层 LLM）。
+/// 默认走 bypass（避免命中 Skill 后还要多烧一次外层 LLM）。
 pub(crate) fn read_bypass_llm_switch_at(path: &Path) -> bool {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return true;
@@ -226,8 +223,6 @@ pub(crate) fn read_bypass_llm_switch_at(path: &Path) -> bool {
         .map(|c| c.bypass_llm_on_pre_step_hit)
         .unwrap_or(true)
 }
-
-// load_config / add_allowed_dir
 
 /// 读 bot-config.json（不存在/解析失败回默认）。内部共用（bot_fs 白名单等）
 pub(crate) fn load_config(app: &AppHandle) -> BotConfig {

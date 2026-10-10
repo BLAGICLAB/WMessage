@@ -57,7 +57,7 @@ fn materialize_one(dir: &std::path::Path, skill: &BuiltinSkill) -> SeedOutcome {
     let dest_dir = dir.join(skill.dir_name);
     let dest = dest_dir.join("SKILL.md");
     let existed = dest.exists();
-    if existed && disk_version(&dest, skill.dir_name) == bundled_version(skill) {
+    if existed && versions_match(disk_version(&dest, skill.dir_name), bundled_version(skill)) {
         return SeedOutcome::Unchanged;
     }
     if let Err(e) = std::fs::create_dir_all(&dest_dir) {
@@ -67,6 +67,16 @@ fn materialize_one(dir: &std::path::Path, skill: &BuiltinSkill) -> SeedOutcome {
         Ok(()) if existed => SeedOutcome::Updated,
         Ok(()) => SeedOutcome::Seeded,
         Err(e) => SeedOutcome::Failed(format!("write: {e}")),
+    }
+}
+
+/// 版本一致判定（纯函数，单测直打）：任一侧 None 都视为不一致——磁盘读不出/
+/// 解析不出 → 强制重写自愈；内置资产 version 解析不出 → 恒重写（资产修复前
+/// 每次启动覆盖）。None == None 相等跳过会让「双坏」状态永不自愈。
+fn versions_match(disk: Option<String>, bundled: Option<String>) -> bool {
+    match (disk, bundled) {
+        (Some(d), Some(b)) => d == b,
+        _ => false,
     }
 }
 
@@ -194,6 +204,41 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// 自愈语义：任一侧 None 都不得判「版本一致」——None == None 跳过会让
+    /// 磁盘副本与资产双坏的状态永不重写。
+    #[test]
+    fn versions_match_treats_any_none_as_mismatch() {
+        assert!(versions_match(Some("1.0.0".into()), Some("1.0.0".into())));
+        assert!(!versions_match(Some("1.0.0".into()), Some("2.0.0".into())));
+        assert!(
+            !versions_match(None, Some("1.0.0".into())),
+            "磁盘读不出 → 重写"
+        );
+        assert!(
+            !versions_match(Some("1.0.0".into()), None),
+            "资产无版本 → 恒重写"
+        );
+        assert!(!versions_match(None, None), "双坏不得相等跳过");
+    }
+
+    #[test]
+    fn updates_when_disk_version_missing() {
+        // 磁盘副本 frontmatter 丢 version（disk_version = None）→ 强制重写自愈
+        let root = temp_root("seed-disk-none");
+        let dest_dir = root.join("pptx-design");
+        std::fs::create_dir_all(&dest_dir).unwrap();
+        std::fs::write(dest_dir.join("SKILL.md"), "损坏内容，无 frontmatter\n").unwrap();
+        let out = materialize_builtin_skills(&root);
+        assert!(matches!(out[0].1, SeedOutcome::Updated), "out: {out:?}");
+        assert!(
+            std::fs::read_to_string(skill_md(&root))
+                .unwrap()
+                .contains("PPT 设计规范"),
+            "应覆盖为内置新版"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn builtin_assets_parse_clean() {
         for skill in BUILTIN_SKILLS {
@@ -207,6 +252,13 @@ mod tests {
             );
             assert!(meta.enabled, "内置技能须默认启用");
             assert!(!meta.intents.is_empty(), "无 intents 则路由失效");
+            // 版本必须恒可解析（bundled_version 恒 Some）：versions_match 的
+            // 自愈语义靠「资产侧 Some」区分正常比对与强制重写
+            assert!(
+                meta.version.is_some(),
+                "{} frontmatter 必须带 version",
+                skill.dir_name
+            );
             // 参考文档型技能：interactive 模式（LLM 驱动读文档执行），正文不得含
             // `## Step` 标题。两个条件绑定锁死——mode 若改回 auto，调度器会因
             // 「DSL 解析为空」直接终止技能（skill_dsl_empty，实测踩过）

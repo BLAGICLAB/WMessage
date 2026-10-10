@@ -3,11 +3,16 @@ use std::sync::LazyLock;
 
 // 变量替换
 
-/// 任务卡 UUID 提取正则：连字符 36 位（展示格式）+ 32 位 hex——任务/子任务 id
-/// 实际由 `Uuid::new_v4().simple()` 生成（32 位无连字符），只匹配 36 位会恒提取失败
+/// 任务卡 UUID 提取正则：连字符 36 位（展示格式）+ 32 位 simple 形态（收紧为
+/// UUIDv4：版本位 `4` + 变体位 `[89ab]`）——任务/子任务 id 实际由
+/// `Uuid::new_v4().simple()` 生成。simple 形态若不锁版本/变体位，裸
+/// `[0-9a-f]{32}` 会误配任意 32 位 hex（MD5/哈希前缀），最左匹配还会遮蔽
+/// 文本后方的真 UUID
 static TASK_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32}")
-        .unwrap()
+    Regex::new(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{15}",
+    )
+    .unwrap()
 });
 
 /// `${stepN.field}` 索引匹配（field ∈ {result, id}）
@@ -82,7 +87,7 @@ fn replace_ctx(
         // in_quotes 字节级启发式（设计边界，wontfix 确认）：只看占位符紧邻字节是否
         // 为 `"`，无法解析转义引号/多行结构——占位符模板本身构造上非合法 JSON，
         // 启发式是结构必然；错配时替换后由下游 serde_json 兜底拒绝（可诊断不静默）。
-        // 若未来误判引发安全/权限错误，再转结构化 JSON 处理（另）。
+        // 若未来误判引发安全/权限错误，再转结构化 JSON 处理。
         let in_quotes =
             m.start() > 0 && bytes[m.start() - 1] == b'"' && bytes.get(m.end()) == Some(&b'"');
         if in_quotes {
@@ -393,6 +398,32 @@ mod tests {
         );
         // 31 位不足 → 不匹配
         assert_eq!(extract_task_id("id=7c9e6679742540de944be07fc1f90ae"), None);
+    }
+
+    #[test]
+    fn extract_task_id_skips_non_v4_32_hex_before_real_v4() {
+        // 32 位非 v4 hex（MD5/哈希前缀形态）在前：旧正则裸 [0-9a-f]{32} 会误配它，
+        // 最左匹配遮蔽后面的真任务卡 UUID；收紧后必须跳过哈希提取真 v4
+        let text = "md5=deadbeefdeadbeefdeadbeefdeadbeef id=7c9e6679742540de944be07fc1f90ae7";
+        assert_eq!(
+            extract_task_id(text).as_deref(),
+            Some("7c9e6679742540de944be07fc1f90ae7")
+        );
+        // 纯哈希文本（无 v4）→ None
+        assert_eq!(
+            extract_task_id("md5=deadbeefdeadbeefdeadbeefdeadbeef"),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_task_id_matches_v4_simple_form() {
+        // v4 simple 形态（版本位 4 / 变体位 a）可提取：任务卡 id 实际生成格式
+        let text = "已创建 f47ac10b58cc4372a5670e02b2c3d479，请查收";
+        assert_eq!(
+            extract_task_id(text).as_deref(),
+            Some("f47ac10b58cc4372a5670e02b2c3d479")
+        );
     }
 
     #[test]

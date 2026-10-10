@@ -476,7 +476,7 @@ pub fn parse_skill_steps(body: &str) -> Result<(Vec<SkillStep>, Vec<SkillStep>),
     Ok((steps, rollback))
 }
 
-/// N7-①：技能步骤/回滚引用的工具名 vs 内置注册表 → 未知工具清单（去重保序）。
+/// 技能步骤/回滚引用的工具名 vs 内置注册表 → 未知工具清单（去重保序）。
 /// MCP 挂载的工具不在内置注册表内——调用方对未知项只警告不阻断（注明可能为 MCP 工具）。
 pub fn unknown_tool_names(
     steps: &[SkillStep],

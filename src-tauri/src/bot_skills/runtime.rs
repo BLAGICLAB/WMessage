@@ -160,7 +160,7 @@ pub fn start_skill(
 
 /// 工具 use_skill：读取技能文档全文返回给模型。
 /// session_id：透传给 start_skill 记录技能归属会话（会话隔离）。
-/// ：新增 params 对象透传（参数契约）；返回头部兼容警告（未知工具）+
+/// 新增 params 对象透传（参数契约）；返回头部兼容警告（未知工具）+
 /// 尾部第三层资料清单（references/*.md）。
 pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> ToolResult {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
@@ -185,7 +185,7 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                 meta.rollback
             );
             let mut out = hint + "\n\n" + &body;
-            // N7-①：兼容审计——DSL 步骤引用了未内置的工具 → 头部警告（MCP 工具可忽略）
+            // 兼容审计——DSL 步骤引用了未内置的工具 → 头部警告（MCP 工具可忽略）
             if meta.mode == "auto" {
                 if let Ok((steps, rollback)) = crate::bot_skills::parse_skill_steps(&body) {
                     let known: std::collections::HashSet<String> =

@@ -19,7 +19,7 @@ pub struct SkillInfo {
     /// N7-⑦：可选版本号（frontmatter version）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// N7-①：步骤/回滚引用了未内置工具的清单（设置页标红）
+    /// 步骤/回滚引用了未内置工具的清单（设置页标红）
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unknown_tools: Vec<String>,
 }
@@ -196,7 +196,7 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
         if validate_skill_name(dir_name).is_err() {
             return None;
         }
-        // N7-①：步骤/回滚引用的工具名 vs 内置注册表（MCP 挂载工具运行期可调，
+        // 步骤/回滚引用的工具名 vs 内置注册表（MCP 挂载工具运行期可调，
         // 这里按内置名单校验，未知项交设置页标红提示）
         let unknown = parse_skill_steps(strip_frontmatter(text))
             .map(|(steps, rb)| unknown_tool_names(&steps, &rb, &registry_known_tools()))
@@ -214,7 +214,7 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
     out
 }
 
-/// 内置注册表工具名集合（N7-① 兼容校验真相源）
+/// 内置注册表工具名集合（兼容校验真相源）
 pub(crate) fn registry_known_tools() -> std::collections::HashSet<String> {
     crate::bot::registry::tools_index()
         .keys()
@@ -449,6 +449,18 @@ fn create_skill_at(
         });
     }
     let meta = parse_meta(content, name);
+    // frontmatter name 必须与目录名一致：路由/清单用 meta.name，磁盘目录用参数名，
+    // 失配会产出「路由指 frontmatter 名、目录叫参数名」的僵尸技能（load/delete 都按目录名找）
+    if meta.name != name {
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name.to_string(),
+            reason: format!(
+                "SKILL.md frontmatter name「{}」与技能名「{name}」不一致——frontmatter name 必须与技能名完全一致",
+                meta.name
+            ),
+        });
+    }
     validate_created_meta(&meta).map_err(|reason| CommandError::InvalidArgument {
         field: "content".into(),
         value: String::new(),
@@ -548,8 +560,14 @@ fn create_skill_at(
         Ok(())
     };
     if let Err(e) = write_all() {
-        // 不留半拷贝残骸堵死重试
-        let _ = std::fs::remove_dir_all(&dest);
+        // 创建已失败，回滚（清理半拷贝）再失败时两层信息都要让调用方看到——
+        // 静默吞掉回滚失败会留下堵死重试的残骸且无迹可查
+        if let Err(rb) = std::fs::remove_dir_all(&dest) {
+            return Err(CommandError::IoError(format!(
+                "{e}（回滚清理目录 {} 也失败：{rb}，请手动删除后重试）",
+                dest.display()
+            )));
+        }
         return Err(e);
     }
     Ok(cleaned.len())
@@ -624,6 +642,14 @@ pub async fn tool_create_skill(app: &AppHandle, args: &str) -> crate::bot::regis
             )
         }
         Err(e) => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "skill_create_failed | {} | {}",
+                    crate::bot::escape_for_log(&name, 100),
+                    crate::bot::escape_for_log(&e, 200)
+                ),
+            );
             // 失败文本首字不定（错误消息可能任意） → ok
             ToolResult::ok(format!("创建失败：{e}"), Vec::new())
         }
@@ -725,6 +751,31 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, CommandError::SkillLoadFailed { .. }), "{err}");
+    }
+
+    /// 复现：frontmatter `name:` 与目录名失配时，旧实现照单全收——产出
+    /// 「路由/清单用 frontmatter 名、磁盘目录用参数名」的僵尸技能
+    ///（load/delete 都按目录名找，frontmatter 名指到的技能不存在）。
+    /// 修复后 create_skill_at 必须拒绝。
+    #[test]
+    fn create_skill_rejects_frontmatter_name_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = create_skill_at(
+            tmp.path(),
+            "dir-name",
+            "---\nname: frontmatter-name\ndescription: d\n---\nx",
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommandError::InvalidArgument { .. }), "{err}");
+        assert!(
+            err.to_string().contains("frontmatter"),
+            "错误信息须说清 frontmatter name 失配，got: {err}"
+        );
+        assert!(
+            !tmp.path().join("dir-name").exists(),
+            "拒绝时不得留下半份目录"
+        );
     }
 
     #[test]
