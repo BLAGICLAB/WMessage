@@ -275,6 +275,20 @@ pub fn open_db<R: tauri::Runtime>(
                 .map_err(|e| e.to_string())?;
         }
     }
+    // 迁移：计划起止 plan_start/plan_end（周时间网格排期；NULL = 未排期）
+    for (col, ty) in crate::db::tasks::PLAN_TASK_COLUMNS {
+        let has: bool = conn
+            .prepare("PRAGMA table_info(tasks)")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
+            })
+            .unwrap_or(false);
+        if !has {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .map_err(|e| e.to_string())?;
+        }
+    }
     // 迁移：子 agent 编排三字段设计 §4.1——assignee/budget/result 走
     // task_patch 既有通道；budget/result 存 JSON TEXT）
     for (col, ty) in [("assignee", "TEXT"), ("budget", "TEXT"), ("result", "TEXT")] {
@@ -743,6 +757,8 @@ mod tests {
 
     fn mk_task(id: &str, title: &str) -> Task {
         Task {
+            plan_start: None,
+            plan_end: None,
             acceptance: None,
             id: id.into(),
             title: title.into(),
@@ -895,7 +911,8 @@ mod tests {
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
         // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
         // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS +
-        // tasks::CREATED_AT_TASK_COLUMNS + tasks::SCHED_ENABLED_TASK_COLUMNS（勿手工镜像）
+        // tasks::CREATED_AT_TASK_COLUMNS + tasks::SCHED_ENABLED_TASK_COLUMNS +
+        // tasks::ACCEPTANCE_TASK_COLUMNS + tasks::PLAN_TASK_COLUMNS（勿手工镜像）
         for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
@@ -913,6 +930,10 @@ mod tests {
                 .unwrap();
         }
         for (col, ty) in crate::db::tasks::ACCEPTANCE_TASK_COLUMNS {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
+                .unwrap();
+        }
+        for (col, ty) in crate::db::tasks::PLAN_TASK_COLUMNS {
             conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
                 .unwrap();
         }

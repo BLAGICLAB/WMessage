@@ -1841,6 +1841,8 @@ mod tests {
 
     fn task(id: &str, deps: &[&str]) -> Task {
         Task {
+            plan_start: None,
+            plan_end: None,
             id: id.into(),
             title: format!("任务{id}"),
             due: None,

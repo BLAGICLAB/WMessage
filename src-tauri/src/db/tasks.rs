@@ -58,7 +58,9 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    owner_id     TEXT,
    created_at   INTEGER,
    enabled      INTEGER,
-   acceptance   TEXT
+   acceptance   TEXT,
+   plan_start   TEXT,
+   plan_end     TEXT
  );";
 
 /// 任务状态(三列看板：todo / doing / done)。
@@ -158,6 +160,11 @@ pub(crate) const SCHED_ENABLED_TASK_COLUMNS: [(&str, &str); 1] = [("enabled", "I
 /// 执行时注入提示词并要求对照自检。NULL = 无（旧卡/手动卡）。
 pub(crate) const ACCEPTANCE_TASK_COLUMNS: [(&str, &str); 1] = [("acceptance", "TEXT")];
 
+/// 计划起止列（周时间网格排期）：NULL = 未排期。
+/// 格式 "YYYY-MM-DDTHH:mm"（与 due 同）；plan_end 恒 > plan_start。
+pub(crate) const PLAN_TASK_COLUMNS: [(&str, &str); 2] =
+    [("plan_start", "TEXT"), ("plan_end", "TEXT")];
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -225,6 +232,14 @@ pub struct Task {
     /// （保留 schedule 配置不删）。读路径 None 视为启用。
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// 计划开始（周时间网格排期）：None = 未排期。
+    /// 格式 "YYYY-MM-DDTHH:mm"（与 due 同）；task_patch 写口校验单字段格式，
+    /// null = 清除排期；end > start 的跨字段一致性由 UI 成对提交保证。
+    #[serde(default)]
+    pub plan_start: Option<String>,
+    /// 计划结束，恒 > plan_start；None = 未排期
+    #[serde(default)]
+    pub plan_end: Option<String>,
     #[serde(default, skip_serializing)]
     pub expected_updated_at: Option<i64>,
 }
@@ -295,8 +310,9 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id, created_at, enabled, acceptance)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)
+                assignee, budget, result, origin, workflow_id, depends_on, canvas_x, canvas_y, model, owner_id, created_at, enabled, acceptance,
+                plan_start, plan_end)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags, file_path=excluded.file_path,
@@ -312,7 +328,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                depends_on=excluded.depends_on,
                canvas_x=excluded.canvas_x, canvas_y=excluded.canvas_y,
                model=excluded.model, owner_id=excluded.owner_id, enabled=excluded.enabled,
-               acceptance=excluded.acceptance
+               acceptance=excluded.acceptance,
+               plan_start=excluded.plan_start, plan_end=excluded.plan_end
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
         )
         .map_err(|e| e.to_string())?;
@@ -403,6 +420,8 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.created_at,
                 t.enabled.map(|b| b as i64),
                 t.acceptance,
+                t.plan_start,
+                t.plan_end,
             ])
             .map_err(|e| e.to_string())?;
         affected_total += affected;
@@ -474,6 +493,8 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let created_at: Option<i64> = row.get(29)?;
     let enabled: Option<i64> = row.get(30)?;
     let acceptance: Option<String> = row.get(31)?;
+    let plan_start: Option<String> = row.get(32)?;
+    let plan_end: Option<String> = row.get(33)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -584,6 +605,8 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         created_at,
         enabled: enabled.map(|v| v != 0),
         acceptance,
+        plan_start,
+        plan_end,
         expected_updated_at: None,
     })
 }
@@ -592,7 +615,8 @@ const TASK_SELECT_COLS: &str =
     "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
      bot_assigned, files, assignee, budget, result, origin, workflow_id, depends_on, \
-     canvas_x, canvas_y, model, owner_id, created_at, enabled, acceptance FROM tasks";
+     canvas_x, canvas_y, model, owner_id, created_at, enabled, acceptance, \
+     plan_start, plan_end FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -866,6 +890,25 @@ pub(crate) fn apply_task_patch(
         })?;
         Ok(())
     }
+    /// 计划时间格式校验：chrono 按定长 "%Y-%m-%dT%H:%M" 解析（月份/日期/时分越界
+    /// 一并拒绝）；None（null 清空）直接放行
+    fn validate_plan_time(
+        v: Option<&str>,
+        field: &str,
+        raw: &serde_json::Value,
+    ) -> CommandResult<()> {
+        let Some(s) = v else {
+            return Ok(());
+        };
+        if chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").is_err() {
+            return Err(CommandError::InvalidArgument {
+                field: field.into(),
+                value: raw.to_string(),
+                reason: "计划时间格式必须是 YYYY-MM-DDTHH:mm".into(),
+            });
+        }
+        Ok(())
+    }
     for (k, v) in obj {
         match k.as_str() {
             // TaskStatus 的自定义 Deserialize 只支持借用字符串，from_value 走不通——
@@ -901,6 +944,16 @@ pub(crate) fn apply_task_patch(
             "botAssigned" => set_from(&mut task.bot_assigned, v, k)?,
             // 定时启用开关（定时任务模块）：null/缺省 = 启用
             "enabled" => set_from(&mut task.enabled, v, k)?,
+            // 计划起止（周时间网格排期）：单字段格式校验，null = 清除排期；
+            // end > start 的跨字段一致性由 UI 成对提交保证
+            "planStart" => {
+                set_from(&mut task.plan_start, v, k)?;
+                validate_plan_time(task.plan_start.as_deref(), k, v)?;
+            }
+            "planEnd" => {
+                set_from(&mut task.plan_end, v, k)?;
+                validate_plan_time(task.plan_end.as_deref(), k, v)?;
+            }
             // 子 agent 编排三字段走 task_patch 既有通道；
             // null = 清空。assignee/budget/result 由服务端编排写，前端仅投影展示。
             // budget 落库前必须过 clamped()——硬顶契约在写口强制，防 task_patch
@@ -1869,6 +1922,85 @@ mod task_patch_tests {
             "完好的 budget 不受同行的损坏 result 影响"
         );
     }
+
+    /// 计划起止（周时间网格）：设值成对生效、null 清除、往返落库一致
+    #[test]
+    fn task_patch_plan_fields_set_null_clears_and_roundtrips() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('plan', '排期卡', 'todo', 1000)",
+            [],
+        )
+        .unwrap();
+        let row = run_patch(
+            &mut conn,
+            "plan",
+            serde_json::json!({
+                "planStart": "2026-10-07T09:30",
+                "planEnd": "2026-10-07T10:30"
+            }),
+        )
+        .unwrap();
+        assert_eq!(row.plan_start.as_deref(), Some("2026-10-07T09:30"));
+        assert_eq!(row.plan_end.as_deref(), Some("2026-10-07T10:30"));
+        // 往返：落库后重读一致（DB 列 TEXT 直存）
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "plan")
+            .unwrap();
+        assert_eq!(reloaded.plan_start.as_deref(), Some("2026-10-07T09:30"));
+        assert_eq!(reloaded.plan_end.as_deref(), Some("2026-10-07T10:30"));
+        // null = 清除排期（拖回任务池语义）
+        let row = run_patch(
+            &mut conn,
+            "plan",
+            serde_json::json!({"planStart": null, "planEnd": null}),
+        )
+        .unwrap();
+        assert_eq!(row.plan_start, None);
+        assert_eq!(row.plan_end, None);
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "plan")
+            .unwrap();
+        assert_eq!(reloaded.plan_start, None);
+        assert_eq!(reloaded.plan_end, None);
+    }
+
+    /// 计划起止：非法格式（错格式/越界月份）拒写且不落库
+    #[test]
+    fn task_patch_plan_fields_reject_invalid_format() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('badp', '排期卡', 'todo', 1000)",
+            [],
+        )
+        .unwrap();
+        for bad in ["明天下午", "2026-10-07", "2026-13-01T10:00", "2026-10-07T09:70"] {
+            let err = match run_patch(
+                &mut conn,
+                "badp",
+                serde_json::json!({ "planStart": bad, "planEnd": "2026-10-07T10:00" }),
+            ) {
+                Err(e) => e,
+                Ok(_) => panic!("{bad} 应被拒绝"),
+            };
+            assert!(
+                matches!(err, CommandError::InvalidArgument { .. }),
+                "{bad} 应 InvalidArgument，got {err:?}"
+            );
+        }
+        // 拒写后不产生半写状态：两字段都保持 NULL
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "badp")
+            .unwrap();
+        assert_eq!(reloaded.plan_start, None);
+        assert_eq!(reloaded.plan_end, None);
+    }
 }
 
 #[cfg(test)]
@@ -2031,6 +2163,8 @@ mod owner_graph_tests {
     /// 最小合法 Task 构造（全 None 缺省）
     fn min_task(owner: Option<&str>) -> Task {
         Task {
+            plan_start: None,
+            plan_end: None,
             acceptance: None,
             id: "x".into(),
             title: "t".into(),

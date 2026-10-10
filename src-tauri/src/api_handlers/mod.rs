@@ -66,6 +66,8 @@ mod tests {
 
     fn bare_task(title: &str) -> db::Task {
         db::Task {
+            plan_start: None,
+            plan_end: None,
             acceptance: None,
             id: "t1".into(),
             title: title.into(),

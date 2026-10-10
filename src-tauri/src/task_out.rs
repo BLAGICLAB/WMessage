@@ -32,6 +32,8 @@ mod tests {
 
     fn sample_task() -> db::Task {
         db::Task {
+            plan_start: None,
+            plan_end: None,
             acceptance: None,
             id: "t1".into(),
             title: "测试任务".into(),

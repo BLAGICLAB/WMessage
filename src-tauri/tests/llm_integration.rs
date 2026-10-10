@@ -1468,6 +1468,8 @@ fn t1_seed_task(
     column: wmessage_lib::db::TaskStatus,
 ) -> wmessage_lib::db::Task {
     wmessage_lib::db::Task {
+        plan_start: None,
+        plan_end: None,
         id: id.into(),
         title: title.into(),
         due: None,

@@ -628,6 +628,8 @@ pub(crate) fn workflow_save_locked(
                 .filter_map(|d| index.get(d.as_str()).map(|&j| real_id[j].clone()))
                 .collect();
             upserts.push(Task {
+                plan_start: None,
+                plan_end: None,
                 id: real_id[i].clone(),
                 title: node.title.trim().to_string(),
                 due: None,
