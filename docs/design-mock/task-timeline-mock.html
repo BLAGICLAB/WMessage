@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>任务页 · 周时间网格 — 视觉小样</title>
+<title>任务页 · 周时间网格 — 视觉小样 v2</title>
 <style>
   /* ══════ token（与 src/ui/main.css 对齐 + 方案 §5 新增） ══════ */
   :root {
@@ -16,6 +16,7 @@
     --brand: #5f6f94;
     --accent: #5b64d8;
     --glass-bg: rgba(255, 255, 255, 0.66);
+    --now: #e5484d;
     --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
   }
   html.dark {
@@ -28,11 +29,12 @@
     --brand: #a3b6dd;
     --accent: #8a91f0;
     --glass-bg: rgba(27, 31, 41, 0.60);
+    --now: #ff6b62;
   }
   /* 计划块色板（方案 §5.1） */
   :root, html.dark {
-    --plan-blue: #5b7fe8; --plan-teal: #2fa8a0; --plan-green: #4caf7d;
-    --plan-amber: #d9a13f; --plan-violet: #9a6fe0; --plan-slate: #7a86a0;
+    --plan-blue: #4f7cf5; --plan-teal: #2fb8ad; --plan-green: #46c283;
+    --plan-amber: #e89b3c; --plan-violet: #8b5cf6; --plan-slate: #7a86a0;
   }
 
   * { box-sizing: border-box; margin: 0; }
@@ -84,7 +86,7 @@
     padding: 6px 10px; border-radius: var(--r-sm);
     font-size: 13px; color: var(--t4);
   }
-  .rail .item .ico { width: 15px; text-align: center; opacity: 0.75; }
+  .rail .item .ico { flex: none; opacity: 0.8; }
   .rail .item.active { background: var(--surface-raised); border: 1px solid var(--edge); color: var(--t1); font-weight: 500; }
   .rail .spring { flex: 1; }
 
@@ -145,14 +147,11 @@
   /* ══════ 详情面板（左） ══════ */
   .detail {
     width: 292px; flex: none; padding: 18px; overflow-y: auto;
-    transition: margin 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
   }
   .body-row.no-detail .detail { display: none; }
-  .detail h3 { font-size: 15px; font-weight: 600; color: var(--t1); line-height: 1.4; }
   .detail .dtitle {
-    width: 100%; border: none; outline: none; background: transparent;
+    width: calc(100% - 30px); border: none; outline: none; background: transparent;
     font-size: 16px; font-weight: 600; color: var(--t1); line-height: 1.4;
-    border-bottom: 1px solid transparent; padding: 2px 0;
   }
   .detail .close { float: right; margin: -4px -6px 0 0; }
   .detail .sect { font-size: 11px; font-weight: 500; color: var(--t5); margin: 18px 0 8px; letter-spacing: 0.02em; }
@@ -167,7 +166,7 @@
     color: var(--t2); font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums;
     outline: none;
   }
-  .stepper { display: inline-flex; align-items: center; gap: 0; margin-top: 10px; }
+  .stepper { display: inline-flex; align-items: center; margin-top: 10px; }
   .stepper button {
     width: 26px; height: 26px; border: 1px solid var(--edge);
     color: var(--t3); font-size: 14px;
@@ -200,7 +199,7 @@
     border: 1px solid var(--edge-strong);
   }
   .sub.done { color: var(--t5); text-decoration: line-through; }
-  .sub.done .box { background: var(--success, #4caf7d); border-color: var(--success, #4caf7d); position: relative; }
+  .sub.done .box { background: var(--plan-green); border-color: var(--plan-green); position: relative; }
   .sub.done .box::after {
     content: ""; position: absolute; inset: 3px 3px 5px;
     border-left: 2px solid #fff; border-bottom: 2px solid #fff;
@@ -215,20 +214,30 @@
   .btn-del {
     width: 36px; border-radius: var(--r-sm); border: 1px solid var(--edge);
     color: var(--t5); font-size: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
   }
   .btn-del:hover { color: #dc2626; border-color: #dc2626; }
 
   /* ══════ 周网格 ══════ */
   .gridwrap { flex: 1; min-width: 0; position: relative; display: flex; }
   .well {
-    flex: 1; min-width: 0;
+    flex: 1; min-width: 0; position: relative;
     background: var(--inset-bg); border: 1px solid var(--edge);
     border-radius: var(--r-lg);
     padding: 0 0 8px 0;
     display: flex; flex-direction: column; overflow: hidden;
   }
+  /* 暗色氛围辉光：井内左下紫 / 右下青，两团低透明 radial（仅暗色） */
+  .dark .well::before {
+    content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+    border-radius: inherit;
+    background:
+      radial-gradient(480px 340px at 10% 100%, color-mix(in srgb, #7c5cff 13%, transparent), transparent 70%),
+      radial-gradient(520px 360px at 98% 96%, color-mix(in srgb, #2fb8ad 10%, transparent), transparent 70%);
+  }
   /* 列头行 */
   .dayhead {
+    position: relative; z-index: 1;
     display: grid; grid-template-columns: 52px repeat(7, 1fr);
     padding: 10px 8px 8px; gap: 0;
   }
@@ -247,55 +256,73 @@
   .dayhead .cell.today.weekend .dnum { color: #fff; opacity: 1; }
   html.dark .dayhead .cell.today.weekend .dnum { color: #101228; }
 
-  /* 网格主体：时刻轴 + 7 列 */
-  .gridbody { flex: 1; min-height: 0; display: grid; grid-template-columns: 52px repeat(7, 1fr); padding: 0 8px 0 0; }
-  .hours { position: relative; }
+  /* 网格主体：时刻轴 + 7 列（虚线刻度行由 JS 生成，垫在列下层） */
+  .gridbody { flex: 1; min-height: 0; position: relative; display: grid; grid-template-columns: 52px repeat(7, 1fr); padding: 0 8px 0 0; }
+  .hours { position: relative; z-index: 2; }
   .hours span {
     position: absolute; right: 10px; transform: translateY(-6px);
     font-size: 10.5px; color: var(--t5); font-variant-numeric: tabular-nums;
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
+    padding: 1px 3px; border-radius: 4px;
   }
+  .hline {
+    position: absolute; left: 52px; right: 8px; z-index: 0;
+    border-top: 1px dashed color-mix(in srgb, var(--edge-strong) 62%, transparent);
+    pointer-events: none;
+  }
+  .hline.hh { border-top-color: color-mix(in srgb, var(--edge-strong) 26%, transparent); }
   .col {
-    position: relative; border-left: 1px solid color-mix(in srgb, var(--edge) 55%, transparent);
-    /* 小时实线（55%）+ 半点淡虚线（30%） */
-    background-image:
-      repeating-linear-gradient(to bottom,
-        color-mix(in srgb, var(--edge) 55%, transparent) 0 1px, transparent 1px var(--hour)),
-      repeating-linear-gradient(to bottom,
-        color-mix(in srgb, var(--edge) 28%, transparent) 0 1px, transparent 1px calc(var(--hour) / 2));
-    background-origin: content-box;
+    position: relative; z-index: 1;
+    border-left: 1px solid color-mix(in srgb, var(--edge) 55%, transparent);
   }
   .col:first-of-type { border-left: none; }
   .col.weekend::before {
     content: ""; position: absolute; inset: 0;
-    background: var(--inset-bg); opacity: 0.45; pointer-events: none;
+    background: var(--inset-bg); opacity: 0.5; pointer-events: none;
   }
   .col.today::after {
     content: ""; position: absolute; inset: 0;
-    background: color-mix(in srgb, var(--accent) 5%, transparent); pointer-events: none;
+    background: color-mix(in srgb, var(--accent) 6%, transparent); pointer-events: none;
   }
-  /* 现在时刻线：整页唯一发光元素 */
+  /* 落点吸附指示：拖拽时的目标格 */
+  .slot {
+    position: absolute; z-index: 1; left: 3px; right: 3px;
+    border-radius: var(--r-md); pointer-events: none;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  /* 现在时刻线：珊瑚红 + 「现在」标签（整页唯一的活体信号） */
   .nowline {
-    position: absolute; left: -4px; right: 8px; height: 0; z-index: 3;
-    border-top: 2px solid var(--accent); pointer-events: none;
+    position: absolute; left: -4px; right: 8px; height: 0; z-index: 4;
+    border-top: 2px solid var(--now); pointer-events: none;
   }
   .nowline::before {
     content: ""; position: absolute; left: -3px; top: -5px;
     width: 8px; height: 8px; border-radius: 999px;
-    background: var(--accent);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
+    background: var(--now);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--now) 22%, transparent);
+  }
+  .nowline .lab {
+    position: absolute; left: 10px; top: -10px; line-height: 1;
+    font-size: 10.5px; font-weight: 600; color: #fff;
+    background: var(--now); padding: 3px 8px; border-radius: 999px;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--now) 40%, transparent);
+    font-variant-numeric: tabular-nums;
   }
 
-  /* ══════ 计划块 ══════ */
+  /* ══════ 计划块 ══════
+     亮色 = 粉彩淡底（14% 混色 + 左色条）
+     暗色 = 饱和渐变实色 + 色彩辉光投影 + 白字 + 起止锚点（参考图气质） */
   .blk {
-    position: absolute; left: 3px; right: 3px; z-index: 2;
-    border-radius: var(--r-sm);
-    padding: 5px 8px; overflow: hidden; cursor: pointer;
+    position: absolute; left: 3px; right: 3px; z-index: 3; cursor: grab;
+    border-radius: var(--r-md);
+    padding: 7px 10px 6px;
     background: color-mix(in srgb, var(--c) 14%, var(--surface-raised));
     border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
     box-shadow: var(--shadow-sm);
-    transition: background-color 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+    transition: box-shadow 0.12s ease, transform 0.12s ease, opacity 0.15s ease, filter 0.15s ease;
+    touch-action: none;
   }
-  .blk:hover { background: color-mix(in srgb, var(--c) 18%, var(--surface-raised)); transform: translateY(-1px); }
   .blk::before {
     content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
     background: var(--c); border-radius: 3px 0 0 3px;
@@ -305,30 +332,97 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .blk .tm {
-    position: absolute; right: 7px; bottom: 4px;
+    position: absolute; right: 9px; bottom: 5px;
     font-size: 10px; color: var(--t4); font-variant-numeric: tabular-nums; opacity: 0.85;
   }
+  .blk:hover { transform: translateY(-1px); }
   .blk.sel {
     border-color: var(--accent);
     box-shadow: var(--shadow-sm), 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
   }
+  /* 暗色：块成为主角 */
+  .dark .blk {
+    background: linear-gradient(150deg,
+      color-mix(in srgb, var(--c) 86%, white) 0%,
+      var(--c) 52%,
+      color-mix(in srgb, var(--c) 78%, black) 100%);
+    border: 1px solid color-mix(in srgb, var(--c) 55%, transparent);
+    box-shadow:
+      0 4px 16px color-mix(in srgb, var(--c) 32%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+  .dark .blk::before { display: none; }
+  .dark .blk .t { color: #fff; font-weight: 600; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); }
+  .dark .blk .tm { color: rgba(255, 255, 255, 0.85); }
+  .dark .blk:hover {
+    transform: translateY(-2px);
+    box-shadow:
+      0 8px 24px color-mix(in srgb, var(--c) 45%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+  .dark .blk.sel {
+    border-color: rgba(255, 255, 255, 0.85);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--c) 60%, transparent),
+      0 6px 20px color-mix(in srgb, var(--c) 48%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+  /* 起止锚点（仅暗色；落在块角外的「端点」） */
+  .blk .dot {
+    display: none; position: absolute; width: 7px; height: 7px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.95);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 38%, transparent);
+  }
+  .dark .blk .dot { display: block; }
+  .blk .dot.s { top: -3px; left: -3px; }
+  .blk .dot.e { bottom: -3px; right: -3px; }
+  /* 底缘拉伸握把：hover 浮现 */
+  .blk .grip {
+    position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%);
+    width: 22px; height: 5px; border-radius: 999px;
+    background: rgba(255, 255, 255, 0.6);
+    opacity: 0; transition: opacity 0.12s ease; cursor: ns-resize;
+  }
+  html:not(.dark) .blk .grip { background: color-mix(in srgb, var(--c) 55%, transparent); }
+  .blk:hover .grip { opacity: 1; }
   .blk.tiny .tm { display: none; }
+  .blk.fresh { animation: blk-pop 0.22s cubic-bezier(0.2, 1.4, 0.4, 1); }
+  @keyframes blk-pop {
+    0% { transform: scale(0.88); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+  /* 图例悬停过滤：不同色块退场 */
+  .gridbody.filtering .blk { opacity: 0.18; filter: saturate(0.25); }
+  .gridbody.filtering .blk.f-match { opacity: 1; filter: none; }
   /* 跨日分段：贴列底/列顶的开口 + 续接标记 */
-  .blk.tail { border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; border-bottom-color: transparent; }
-  .blk.head { border-top-left-radius: 2px; border-top-right-radius: 2px; border-top-color: transparent; }
+  .blk.tail { border-bottom-left-radius: 3px; border-bottom-right-radius: 3px; border-bottom-color: transparent; }
+  .blk.head { border-top-left-radius: 3px; border-top-right-radius: 3px; border-top-color: transparent; }
   .blk .cont {
     position: absolute; left: 0; right: 0; text-align: center;
-    font-size: 11px; font-weight: 600; color: var(--c); line-height: 1;
+    font-size: 11px; font-weight: 700; color: var(--c); line-height: 1;
   }
-  .blk.tail .cont { bottom: 1px; }
-  .blk.head .cont { top: 1px; }
+  .dark .blk .cont { color: rgba(255, 255, 255, 0.9); }
+  .blk.tail .cont { bottom: 2px; }
+  .blk.head .cont { top: 2px; }
   /* 同列重叠分栏 */
   .blk.half { width: calc(50% - 4px); }
   .blk.half.r { left: auto; }
+  /* 拖拽幽灵（跟指针，吸附 30 分钟） */
+  .ghost {
+    position: fixed; z-index: 50; pointer-events: none;
+    width: 180px; border-radius: var(--r-md); padding: 7px 10px;
+    background: color-mix(in srgb, var(--c) 82%, black);
+    border: 1px solid color-mix(in srgb, var(--c) 70%, transparent);
+    box-shadow: 0 12px 32px color-mix(in srgb, var(--c) 50%, transparent);
+    opacity: 0.92;
+  }
+  .ghost .t { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ghost .gt { font-size: 10px; color: rgba(255, 255, 255, 0.85); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .dragging-src { opacity: 0.35; }
 
   /* ══════ 任务池（毛玻璃悬浮层） ══════ */
   .pool {
-    position: absolute; top: 12px; right: 12px; bottom: 12px; width: 258px; z-index: 5;
+    position: absolute; top: 12px; right: 12px; bottom: 12px; width: 258px; z-index: 6;
     display: flex; flex-direction: column; overflow: hidden;
     transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
   }
@@ -338,31 +432,28 @@
     border-bottom: 1px solid color-mix(in srgb, var(--edge) 70%, transparent);
   }
   .pool .phead b { font-size: 13px; font-weight: 600; color: var(--t1); }
-  .pool .phead .count {
-    font-size: 11px; color: var(--t5); font-variant-numeric: tabular-nums;
-  }
+  .pool .phead .count { font-size: 11px; color: var(--t5); font-variant-numeric: tabular-nums; }
   .pool .phead .iconbtn { margin-left: auto; }
   .pool .plist { flex: 1; overflow-y: auto; padding: 9px; display: flex; flex-direction: column; gap: 6px; }
+  .pool .phint { font-size: 11px; color: var(--t5); text-align: center; padding: 2px 0 8px; }
   .pitem {
     flex: none; height: 34px; display: flex; align-items: center; gap: 9px;
     padding: 0 10px 0 0; border-radius: var(--r-sm); cursor: grab;
     background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
     border: 1px solid color-mix(in srgb, var(--edge) 80%, transparent);
+    touch-action: none;
   }
   .pitem:hover { border-color: var(--edge-strong); }
   .pitem::before { content: ""; width: 3px; height: 100%; border-radius: 3px 0 0 3px; background: var(--c); flex: none; }
-  .pitem .t {
-    font-size: 12px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
+  .pitem .t { font-size: 12px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pitem .chip {
     margin-left: auto; font-size: 10px; color: var(--t5);
     font-variant-numeric: tabular-nums; white-space: nowrap;
     padding: 1px 6px; border-radius: 999px; background: var(--inset-bg);
   }
-  .pitem.dragging { opacity: 0.35; }
   /* 折叠态右缘把手 */
   .poolhandle {
-    position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 4;
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 5;
     writing-mode: vertical-rl; padding: 14px 7px;
     border-radius: 10px 0 0 10px;
     background: var(--glass-bg); backdrop-filter: blur(20px) saturate(1.5);
@@ -380,6 +471,21 @@
   }
   html.dark .poolhandle .count { color: #101228; }
   .gridwrap:not(.pool-closed) .poolhandle { transform: translateY(-50%) translateX(120%); }
+
+  /* ══════ 图例（右下，悬停高亮同色块） ══════ */
+  .legend {
+    position: absolute; right: 14px; bottom: 12px; z-index: 6;
+    display: flex; gap: 4px; padding: 6px;
+    border-radius: 999px;
+  }
+  .legend .li {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px; cursor: default;
+    font-size: 11px; color: var(--t4);
+    transition: background-color 0.12s ease;
+  }
+  .legend .li:hover { background: var(--inset-bg); color: var(--t2); }
+  .legend .sw { width: 10px; height: 10px; border-radius: 3.5px; background: var(--c); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3); }
 
   /* ══════ 小样工具条（非应用 UI） ══════ */
   .mockbar {
@@ -429,7 +535,7 @@
       <button class="btn-primary">＋ 新建任务</button>
       <div class="weeknav">
         <button class="iconbtn">‹</button>
-        <span class="range" id="range">10月6日 – 10月12日</span>
+        <span class="range" id="range">10月5日 – 10月11日</span>
         <button class="iconbtn">›</button>
       </div>
       <button class="chip">今天</button>
@@ -466,11 +572,12 @@
         </div>
       </aside>
 
-      <!-- 右：周网格 + 任务池悬浮层 -->
+      <!-- 右：周网格 + 任务池悬浮层 + 图例 -->
       <section class="gridwrap" id="gridwrap">
         <div class="well">
           <div class="dayhead" id="dayhead"></div>
           <div class="gridbody" id="gridbody"></div>
+          <div class="legend glass" id="legend"></div>
         </div>
 
         <aside class="pool glass" id="pool">
@@ -478,6 +585,7 @@
             <b>任务池</b><span class="count num" id="poolSub">7 个未完成</span>
             <button class="iconbtn" id="poolClose">⇥</button>
           </div>
+          <div class="phint">拖我到左边时间轴排期 · 松手默认 60 分钟</div>
           <div class="plist" id="plist"></div>
         </aside>
         <button class="poolhandle" id="poolHandle">任务池 <span class="count num" id="handleCount">7</span></button>
@@ -488,12 +596,12 @@
 
 <!-- 小样工具条 -->
 <div class="mockbar">
-  <b>视觉小样</b><span>任务页 · 周时间网格</span>
+  <b>视觉小样 v2</b><span>任务页 · 周时间网格</span>
   <button class="tb" id="themeBtn">切换亮 / 暗</button>
   <button class="tb" id="poolBtn">任务池 开/合</button>
   <button class="tb" id="detailBtn">详情面板 开/合</button>
   <div class="spring"></div>
-  <span>静态原型 · 数据为示例 · 与 docs/TASK-TIMELINE-REDESIGN-2026-10-10.md §5 对照</span>
+  <span>可试：拖池中任务上轴（吸附 30 分）· 拖动/底缘拉伸已有块 · 图例悬停高亮</span>
 </div>
 
 <script>
@@ -518,28 +626,33 @@
     gear: '<path d="M4 20v-6M4 10V4M12 20v-9M12 7V4M20 20v-4M20 12V4M2 14h4M10 7h4M18 16h4"/>',
   };
   document.querySelectorAll(".rail .item").forEach((el) => {
-    const p = ICON_PATHS[el.dataset.ico];
     el.insertAdjacentHTML("afterbegin",
-      `<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`);
+      `<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[el.dataset.ico]}</svg>`);
   });
 
-  const PAL = { blue: "#5b7fe8", teal: "#2fa8a0", green: "#4caf7d", amber: "#d9a13f", violet: "#9a6fe0", slate: "#7a86a0" };
+  const PAL = { blue: "#4f7cf5", teal: "#2fb8ad", green: "#46c283", amber: "#e89b3c", violet: "#8b5cf6", slate: "#7a86a0" };
   const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  const DOW1 = "一二三四五六日";
+  const fmtT = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  const snap = (m) => Math.round(m / 30) * 30;
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
-  // 示例数据：[day, startMin, durMin, title, color, flags]
+  // 计划块数据（id 供拖拽定位）
+  let uid = 0;
+  const B = (d, s, e, t, c, x) => ({ id: ++uid, d, s, e, t, c, ...x });
   const blocks = [
-    { d: 0, s: 540, e: 630, t: "梳理需求清单", c: "blue", half: "l" },
-    { d: 0, s: 540, e: 630, t: "过一遍新拟态样式", c: "violet", half: "r" },
-    { d: 0, s: 840, e: 900, t: "写周报", c: "teal" },
-    { d: 1, s: 600, e: 720, t: "评审 OCR 分诊结论", c: "blue" },
-    { d: 1, s: 960, e: 1020, t: "更新简历", c: "amber" },
-    { d: 2, s: 570, e: 660, t: "任务页改版：周时间网格", c: "violet", sel: true },
-    { d: 2, s: 780, e: 810, t: "周末采购清单", c: "green" },
-    { d: 3, s: 660, e: 750, t: "准备周会演示", c: "amber" },
-    { d: 4, s: 1050, e: 1110, t: "准备异地演示材料", c: "blue", wrapTail: true },
-    { d: 5, s: 480, e: 510, t: "准备异地演示材料（续）", c: "blue", wrapHead: true },
-    { d: 5, s: 600, e: 690, t: "长跑 10 公里", c: "green" },
-    { d: 6, s: 900, e: 960, t: "规划下周", c: "slate" },
+    B(0, 540, 630, "梳理需求清单", "blue", { half: "l" }),
+    B(0, 540, 630, "过一遍新拟态样式", "violet", { half: "r" }),
+    B(0, 840, 900, "写周报", "teal"),
+    B(1, 600, 720, "评审 OCR 分诊结论", "blue"),
+    B(1, 960, 1020, "更新简历", "amber"),
+    B(2, 570, 660, "任务页改版：周时间网格", "violet", { sel: true }),
+    B(2, 780, 810, "周末采购清单", "green"),
+    B(3, 660, 750, "准备周会演示", "amber"),
+    B(4, 1050, 1110, "准备异地演示材料", "blue", { wrapTail: true }),
+    B(5, 480, 510, "准备异地演示材料（续）", "blue", { wrapHead: true }),
+    B(5, 600, 690, "长跑 10 公里", "green"),
+    B(6, 900, 960, "规划下周", "slate"),
   ];
 
   // 池：全部未完成（含已排期 → 时间角标）
@@ -552,65 +665,231 @@
     { t: "读 DDIA 架构章", c: "slate" },
     { t: "整理云端相册并清理重复照片", c: "teal" },
   ];
+  const TAGS = [
+    { label: "设计", c: "violet" }, { label: "开发", c: "blue" }, { label: "文档", c: "teal" },
+    { label: "健康", c: "green" }, { label: "日常", c: "slate" }, { label: "行政", c: "amber" },
+  ];
 
   const jsDay = DEMO.todayIdx;
   const dayDates = [5, 6, 7, 8, 9, 10, 11];        // 2026-10-05 那周的周一~周日
   document.getElementById("range").textContent = DEMO.weekLabel;
 
   // 列头
-  const dh = document.getElementById("dayhead");
-  dh.innerHTML = `<div class="cell"></div>` + DOW.map((w, i) => {
+  document.getElementById("dayhead").innerHTML = `<div class="cell"></div>` + DOW.map((w, i) => {
     const cls = ["cell", i === jsDay ? "today" : "", i >= 5 ? "weekend" : ""].join(" ");
     return `<div class="${cls}"><div class="dow">${w}</div><div class="dnum num">${dayDates[i]}</div></div>`;
   }).join("");
 
-  // 时刻轴
-  const hoursEl = document.getElementById("gridbody");
   const colH = HOUR * 10;
-  let hoursHtml = `<div class="hours" style="height:${colH}px">` +
-    Array.from({ length: 11 }, (_, i) =>
-      `<span class="num" style="top:${i * HOUR}px">${String(8 + i).padStart(2, "0")}:00</span>`).join("") +
-    `</div>`;
+  const gridbody = document.getElementById("gridbody");
 
-  // 7 列 + 计划块
-  const nowMin = DEMO.nowMin;
-  const nowVisible = nowMin >= startMin && nowMin <= startMin + DAY_MIN;
-  let bodyHtml = hoursHtml;
-  for (let d = 0; d < 7; d++) {
-    const cls = ["col", d === jsDay ? "today" : "", d >= 5 ? "weekend" : ""].join(" ");
-    let inner = "";
-    for (const b of blocks.filter((x) => x.d === d)) {
-      const top = ((b.s - startMin) / DAY_MIN) * colH;
-      const h = Math.max(((b.e - b.s) / DAY_MIN) * colH, 18);
-      const half = b.half === "l" ? "half" : b.half === "r" ? "half r" : "";
-      const seg = b.wrapTail ? "tail" : b.wrapHead ? "head" : "";
-      const tiny = h < 48 ? "tiny" : "";
-      const cont = b.wrapTail ? `<span class="cont">»</span>` : b.wrapHead ? `<span class="cont">«</span>` : "";
-      const tm = `${String(Math.floor(b.s / 60)).padStart(2, "0")}:${String(b.s % 60).padStart(2, "0")}`;
-      inner += `<div class="blk ${half} ${seg} ${tiny} ${b.sel ? "sel" : ""}" style="--c:${PAL[b.c]};top:${top}px;height:${h - 2}px">
-        <div class="t">${b.t}</div>${tiny ? "" : `<span class="tm num">${tm}</span>`}${cont}</div>`;
+  // 时刻轴 + 虚线刻度（小时实距虚线 + 半点淡虚线，垫在列下层）
+  function renderGrid() {
+    let html = `<div class="hours" style="height:${colH}px;grid-row:1">` +
+      Array.from({ length: 11 }, (_, i) =>
+        `<span class="num" style="top:${i * HOUR}px">${String(8 + i).padStart(2, "0")}:00</span>`).join("") + `</div>`;
+    html += `<div class="lines" style="position:absolute;left:0;top:0;right:0;height:${colH}px;z-index:0">`;
+    for (let i = 0; i <= 10; i++)
+      html += `<div class="hline" style="top:${i * HOUR}px"></div>`;
+    for (let i = 0; i < 10; i++)
+      html += `<div class="hline hh" style="top:${i * HOUR + HOUR / 2}px"></div>`;
+    html += `</div>`;
+    for (let d = 0; d < 7; d++) {
+      const cls = ["col", d === jsDay ? "today" : "", d >= 5 ? "weekend" : ""].join(" ");
+      html += `<div class="${cls} blocks" data-day="${d}" style="height:${colH}px"></div>`;
     }
-    if (d === jsDay && nowVisible) {
-      const top = ((nowMin - startMin) / DAY_MIN) * colH;
-      inner += `<div class="nowline" style="top:${top}px"></div>`;
-    }
-    bodyHtml += `<div class="${cls}" style="height:${colH}px">${inner}</div>`;
+    gridbody.innerHTML = html;
+    // 现在时刻线：挂进今天列（相对列宽定位）
+    const grid = document.getElementById("gridbody");
+    const nowTop = ((DEMO.nowMin - startMin) / DAY_MIN) * colH;
+    grid.querySelector(`.col.blocks[data-day="${jsDay}"]`).insertAdjacentHTML("beforeend", nowlineHtml());
   }
-  document.getElementById("gridbody").innerHTML = bodyHtml;
+
+  function blockHtml(b) {
+    const top = ((b.s - startMin) / DAY_MIN) * colH;
+    const h = Math.max(((b.e - b.s) / DAY_MIN) * colH, 20);
+    const half = b.half === "l" ? "half" : b.half === "r" ? "half r" : "";
+    const seg = b.wrapTail ? "tail" : b.wrapHead ? "head" : "";
+    const tiny = h < 48 ? "tiny" : "";
+    const cont = b.wrapTail ? `<span class="cont">»</span>` : b.wrapHead ? `<span class="cont">«</span>` : "";
+    return `<div class="blk ${half} ${seg} ${tiny} ${b.sel ? "sel" : ""} ${b.fresh ? "fresh" : ""}" data-id="${b.id}"
+      style="--c:${PAL[b.c]};top:${top}px;height:${h - 2}px">
+      <span class="dot s"></span><span class="dot e"></span>
+      <div class="t">${b.t}</div>
+      ${tiny ? "" : `<span class="tm num">${b.half ? fmtT(b.s) : `${fmtT(b.s)} – ${fmtT(b.e)}`}</span>`}
+      ${cont}<span class="grip" data-grip="${b.id}"></span></div>`;
+  }
+
+  function nowlineHtml() {
+    const nowTop = ((DEMO.nowMin - startMin) / DAY_MIN) * colH;
+    return `<div class="nowline" style="top:${nowTop}px"><span class="lab">现在 ${fmtT(DEMO.nowMin)}</span></div>`;
+  }
+
+  function renderBlocks(f, keepFresh) {
+    gridbody.querySelectorAll(".col.blocks").forEach((col) => {
+      const d = Number(col.dataset.day);
+      col.innerHTML = blocks.filter((b) => b.d === d && (!f || f(b))).map(blockHtml).join("")
+        + (d === jsDay ? nowlineHtml() : "");
+    });
+    blocks.forEach((b) => { delete b.fresh; });
+    bindBlockEvents();
+  }
 
   // 池
-  document.getElementById("plist").innerHTML = pool.map((p) =>
-    `<div class="pitem" style="--c:${PAL[p.c]}"><span class="t">${p.t}</span>${p.at ? `<span class="chip num">${p.at}</span>` : ""}</div>`).join("");
-  document.getElementById("poolSub").textContent = `${pool.length} 个未完成`;
-  document.getElementById("poolCount").textContent = pool.length;
-  document.getElementById("handleCount").textContent = pool.length;
+  function renderPool() {
+    document.getElementById("plist").innerHTML = pool.map((p, i) =>
+      `<div class="pitem" data-pool="${i}" style="--c:${PAL[p.c]}"><span class="t">${p.t}</span>${p.at ? `<span class="chip num">${p.at}</span>` : ""}</div>`).join("");
+    document.getElementById("poolSub").textContent = `${pool.length} 个未完成`;
+    ["poolCount", "handleCount"].forEach((id) => (document.getElementById(id).textContent = pool.length));
+    bindPoolEvents();
+  }
 
-  // 交互
+  // 图例
+  const legend = document.getElementById("legend");
+  legend.innerHTML = TAGS.map((t) =>
+    `<span class="li" data-c="${t.c}"><span class="sw" style="--c:${PAL[t.c]}"></span>${t.label}</span>`).join("");
+  legend.querySelectorAll(".li").forEach((li) => {
+    li.addEventListener("mouseenter", () => {
+      gridbody.classList.add("filtering");
+      gridbody.querySelectorAll(".blk").forEach((el) => {
+        const b = blocks.find((x) => String(x.id) === el.dataset.id);
+        el.classList.toggle("f-match", !!b && b.c === li.dataset.c);
+      });
+    });
+    li.addEventListener("mouseleave", () => gridbody.classList.remove("filtering"));
+  });
+
+  /* ══════ 交互：拖池上轴 / 移动块 / 底缘拉伸（pointer 实现，吸附 30 分钟） ══════ */
+  const gridwrapEl = document.getElementById("gridwrap");
+  let ghost = null, slotEl = null;
+
+  function colRects() {
+    return [...gridbody.querySelectorAll(".col.blocks")].map((c) => ({ d: Number(c.dataset.day), r: c.getBoundingClientRect() }));
+  }
+  function locate(x, y, rects) {
+    for (const { d, r } of rects)
+      if (x >= r.left && x <= r.right && y >= r.top - 20 && y <= r.bottom + 20)
+        return { d, min: clamp(snap(startMin + ((y - r.top) / r.height) * DAY_MIN), startMin, startMin + DAY_MIN - 30) };
+    return null;
+  }
+  function showGhost(x, y, c, t, min, dur, day) {
+    if (!ghost) { ghost = document.createElement("div"); ghost.className = "ghost"; document.body.appendChild(ghost); }
+    ghost.style.setProperty("--c", PAL[c]);
+    ghost.style.left = x + 14 + "px"; ghost.style.top = y - 14 + "px";
+    ghost.innerHTML = `<div class="t">${t}</div><div class="gt">${DOW1[day]} ${fmtT(min)} – ${fmtT(min + dur)}</div>`;
+  }
+  function showSlot(day, min, dur) {
+    if (!slotEl) { slotEl = document.createElement("div"); slotEl.className = "slot"; }
+    const col = gridbody.querySelector(`.col.blocks[data-day="${day}"]`);
+    col.appendChild(slotEl);
+    const top = ((min - startMin) / DAY_MIN) * colH;
+    const h = Math.max((dur / DAY_MIN) * colH, 20);
+    slotEl.style.top = top + "px"; slotEl.style.height = h - 2 + "px";
+  }
+  function clearDragFx() { ghost?.remove(); ghost = null; slotEl?.remove(); slotEl = null; }
+
+  function startDrag(e, payload) {
+    e.preventDefault();
+    const rects = colRects();
+    let last = null;
+    const move = (ev) => {
+      const hit = locate(ev.clientX, ev.clientY, rects);
+      last = hit;
+      if (hit) { showGhost(ev.clientX, ev.clientY, payload.c, payload.t, hit.min, payload.dur, hit.d); showSlot(hit.d, hit.min, payload.dur); }
+      else clearDragFx();
+    };
+    const up = (ev) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      clearDragFx();
+      const hit = locate(ev.clientX, ev.clientY, rects);
+      if (!hit) return;
+      payload.onDrop(hit.d, hit.min);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function bindPoolEvents() {
+    document.querySelectorAll(".pitem").forEach((el) => {
+      const p = pool[Number(el.dataset.pool)];
+      el.onpointerdown = (e) => {
+        el.classList.add("dragging-src");
+        startDrag(e, {
+          c: p.c, t: p.t, dur: 60,
+          onDrop: (d, min) => {
+            el.classList.remove("dragging-src");
+            blocks.push(B(d, min, min + 60, p.t, p.c, { fresh: true }));
+            p.at = `${DOW1[d]} ${fmtT(min)}`;
+            renderBlocks(); renderPool();
+          },
+        });
+        const clear = () => { el.classList.remove("dragging-src"); window.removeEventListener("pointerup", clear); };
+        window.addEventListener("pointerup", clear);
+      };
+    });
+  }
+
+  function bindBlockEvents() {
+    gridbody.querySelectorAll(".blk").forEach((el) => {
+      const b = blocks.find((x) => String(x.id) === el.dataset.id);
+      el.addEventListener("click", () => {
+        blocks.forEach((x) => (x.sel = false));
+        b.sel = true;
+        gridbody.querySelectorAll(".blk").forEach((n) => n.classList.remove("sel"));
+        el.classList.add("sel");
+      });
+      // 拖动整块（保持时长）
+      el.onpointerdown = (e) => {
+        if (e.target.dataset.grip) return;
+        e.preventDefault();
+        const dur = b.e - b.s;
+        el.classList.add("dragging-src");
+        startDrag(e, {
+          c: b.c, t: b.t, dur,
+          onDrop: (d, min) => {
+            el.classList.remove("dragging-src");
+            Object.assign(b, { d, s: min, e: min + dur, fresh: true, wrapTail: false, wrapHead: false, half: undefined });
+            renderBlocks();
+          },
+        });
+        const clear = () => { el.classList.remove("dragging-src"); window.removeEventListener("pointerup", clear); };
+        window.addEventListener("pointerup", clear);
+      };
+      // 底缘握把：拉伸结束时间
+      const grip = el.querySelector(".grip");
+      grip.onpointerdown = (e) => {
+        e.stopPropagation(); e.preventDefault();
+        const rects = colRects();
+        const move = (ev) => {
+          const hit = locate(ev.clientX, ev.clientY, rects);
+          if (hit && hit.d === b.d) showSlot(b.d, b.s, Math.max(hit.min - b.s, 30));
+        };
+        const up = (ev) => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+          slotEl?.remove(); slotEl = null;
+          const r = rects.find((x) => x.d === b.d).r;
+          const min = clamp(snap(startMin + ((ev.clientY - r.top) / r.height) * DAY_MIN), b.s + 30, startMin + DAY_MIN);
+          b.e = min; b.fresh = true;
+          renderBlocks();
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      };
+    });
+  }
+
+  renderGrid();
+  renderBlocks();
+  renderPool();
+
+  // 主题 / 池 / 详情切换
   const $ = (id) => document.getElementById(id);
   $("themeBtn").onclick = () => document.documentElement.classList.toggle("dark");
   $("poolToggle").onclick = $("poolClose").onclick = $("poolBtn").onclick = () =>
-    $("gridwrap").classList.toggle("pool-closed");
-  $("poolHandle").onclick = () => $("gridwrap").classList.remove("pool-closed");
+    gridwrapEl.classList.toggle("pool-closed");
+  $("poolHandle").onclick = () => gridwrapEl.classList.remove("pool-closed");
   $("detailBtn").onclick = () => $("bodyRow").classList.toggle("no-detail");
   $("detailClose").onclick = () => $("bodyRow").classList.add("no-detail");
 </script>
