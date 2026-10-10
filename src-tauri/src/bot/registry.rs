@@ -1568,7 +1568,10 @@ mod registry_tests {
     /// UNC 路径不再绕过存在性校验：`\\server\share\x.docx` 形态候选此前被
     /// `/` 与盘符冒号两个前缀过滤掉，守卫对编造的 UNC 路径完全失明。
     /// 主机名用 `.invalid`（RFC 保留假 TLD，解析必败，Windows 上也快速返回）。
+    /// `#[ignore]`：依赖 DNS 解析（即便 .invalid 也会查系统解析器），CI 噪声源，
+    /// 手动跑：`cargo test --test registry fabricated_gen_path -- --ignored`。
     #[test]
+    #[ignore = "UNC 主机名解析依赖系统 DNS resolver，CI 慢且不稳；手动 cargo test ... -- --ignored 验"]
     fn fabricated_gen_path_checks_unc_paths() {
         let text = "已生成报告，路径 \\\\nonexistent-host-.invalid\\share\\报告.docx";
         assert_eq!(
@@ -1579,6 +1582,56 @@ mod registry_tests {
         assert_eq!(
             fabricated_gen_path("\\\\nonexistent-host-.invalid\\share\\报告.docx"),
             None
+        );
+    }
+
+    /// path tokenizer 边界契约：以下形态**不**应被拆碎成多 token，
+    /// `\` 不进 boundary 集合（否则 `C:\Users\foo.docx` 拆成 `C:` + `Users` +
+    /// `foo.docx` 三个碎片，盘符路径失访）。本测试用**本地可写**的 tmpdir
+    /// 拼出真存在的盘符/UNC 形态路径，验 fabricated_gen_path 不返回误报。
+    #[test]
+    fn fabricated_gen_path_preserves_drive_letter_path() {
+        // tmpdir 路径形如 /var/folders/.../T/wm-fab-XXXX——本机 fs 存在，
+        // 拼一个后缀 .docx 的真存在文件做 baseline
+        let tmp = std::env::temp_dir().join(format!(
+            "wm-fab-drive-{}.docx",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&tmp, b"baseline").unwrap();
+        // 在已存在文件旁描述一个**不存在**的同前缀路径：应被识别为 fabricated
+        let ghost = tmp.with_file_name(format!("{}.docx", uuid::Uuid::new_v4().simple()));
+        let text = format!("已生成 {}", ghost.display());
+        // 本机绝对路径以 / 开头，已在 fabricated_gen_path 边界守卫内 → 命中
+        assert_eq!(
+            fabricated_gen_path(&text).as_deref(),
+            Some(ghost.to_string_lossy().as_ref()),
+            "本机绝对盘符路径（含 / 前缀）必须被守卫识别为 fabricated"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// 边界字符不切分：本机绝对路径 / 盘符 / UNC 三种形态在 split + filter 后
+    /// 仍以完整 token 形式进存在性校验（不在 boundary 处分）。
+    /// 本测试**避免**测盘符路径（C:\foo）在 macOS 上的边界解析差异（macOS
+    /// 把 `\` 当普通字符，行为与 Windows 不同；这正是当时 `\` 不入 boundary
+    /// 的原因——盘符守卫专为 Windows 设计的）。改测**本机绝对路径**形态，
+    /// 与现有 `fabricated_gen_path_preserves_drive_letter_path` 形成对照：
+    /// 后者验「存在就跳过」、本测试验「不存在就命中 fabricated」。
+    #[test]
+    fn fabricated_gen_path_tokenizer_does_not_split_at_certain_boundaries() {
+        let tmp = std::env::temp_dir();
+        let ghost = tmp.join(format!("{}.docx", uuid::Uuid::new_v4().simple()));
+        // 必须先创建父目录存在——否则 ghost 父路径不存在导致 exists() 在
+        // Unix 上行为奇怪；这里用 temp_dir() 已经存在
+        let text = format!("已生成 {}", ghost.display());
+        // tmp 在 macOS 上是 /var/folders/.../T/，路径以 / 开头——
+        // tok.starts_with('/') 通过守卫；Path::new(ghost).exists() 必为 false
+        // （uuid 新名未创建）；find 应找到完整 token
+        let got = fabricated_gen_path(&text);
+        assert_eq!(
+            got.as_deref(),
+            Some(ghost.to_string_lossy().as_ref()),
+            "本机绝对路径（含 / 前缀）必须以完整 token 进 find，不被切分"
         );
     }
 
