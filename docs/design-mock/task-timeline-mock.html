@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>任务页 · 周时间网格 — 视觉小样</title>
+<style>
+  /* ══════ token（与 src/ui/main.css 对齐 + 方案 §5 新增） ══════ */
+  :root {
+    --bg: #eef1f6; --surface: #fafbfd; --surface-raised: #ffffff;
+    --edge: #e2e7ef; --edge-strong: #cbd4e1;
+    --inset-bg: rgba(23, 32, 51, 0.075);
+    --shadow-sm: 0 1px 2px rgba(23, 32, 51, 0.06);
+    --shadow-lg: 0 8px 24px rgba(23, 32, 51, 0.14);
+    --t1: #182031; --t2: #2b3548; --t3: #45506a; --t4: #525e7a; --t5: #5d6984;
+    --brand: #5f6f94;
+    --accent: #5b64d8;
+    --glass-bg: rgba(255, 255, 255, 0.66);
+    --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
+  }
+  html.dark {
+    --bg: #14161d; --surface: #1b1f29; --surface-raised: #232836;
+    --edge: #272d3b; --edge-strong: #3a4254;
+    --inset-bg: rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.55);
+    --t1: #eef1f7; --t2: #dbe1ec; --t3: #b6bfd0; --t4: #8d97ac; --t5: #808a9e;
+    --brand: #a3b6dd;
+    --accent: #8a91f0;
+    --glass-bg: rgba(27, 31, 41, 0.60);
+  }
+  /* 计划块色板（方案 §5.1） */
+  :root, html.dark {
+    --plan-blue: #5b7fe8; --plan-teal: #2fa8a0; --plan-green: #4caf7d;
+    --plan-amber: #d9a13f; --plan-violet: #9a6fe0; --plan-slate: #7a86a0;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--t2);
+    transition: background-color 0.15s ease, color 0.15s ease;
+    overflow: hidden;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ══════ 应用框架 ══════ */
+  .app { display: flex; height: 100vh; }
+
+  /* 导航栏（简化复刻） */
+  .rail {
+    width: 208px; flex: none; display: flex; flex-direction: column; gap: 2px;
+    border-right: 1px solid var(--edge); padding: 12px;
+  }
+  .rail .logo { display: flex; align-items: center; gap: 8px; padding: 4px 8px 14px; }
+  .rail .logo .mark {
+    width: 22px; height: 22px; border-radius: 7px;
+    background: linear-gradient(135deg, var(--brand), var(--accent));
+    opacity: 0.9;
+  }
+  .rail .logo b { font-size: 13px; font-weight: 600; color: var(--t2); }
+  .rail .newtask {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    padding: 7px 10px; border-radius: var(--r-sm);
+    background: var(--accent); color: #fff; font-size: 13px; font-weight: 500;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+  html.dark .rail .newtask { color: #101228; }
+  .rail .search {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+    padding: 7px 10px; border-radius: var(--r-sm);
+    background: var(--inset-bg); border: 1px solid var(--edge);
+    color: var(--t5); font-size: 13px;
+  }
+  .rail .search kbd {
+    margin-left: auto; font-size: 10px; color: var(--t5);
+    border: 1px solid var(--edge); border-radius: 4px; padding: 1px 4px;
+  }
+  .rail .sect { font-size: 11px; color: var(--t5); padding: 10px 8px 4px; }
+  .rail .item {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px; border-radius: var(--r-sm);
+    font-size: 13px; color: var(--t4);
+  }
+  .rail .item .ico { width: 15px; text-align: center; opacity: 0.75; }
+  .rail .item.active { background: var(--surface-raised); border: 1px solid var(--edge); color: var(--t1); font-weight: 500; }
+  .rail .spring { flex: 1; }
+
+  /* 主区 */
+  main { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 20px 24px 24px; }
+
+  /* 页头 */
+  .pagehead { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+  .btn-primary {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 8px 14px; border-radius: var(--r-sm);
+    background: var(--accent); color: #fff; font-size: 13px; font-weight: 500;
+    box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 32%, transparent);
+  }
+  html.dark .btn-primary { color: #101228; }
+  .weeknav { display: inline-flex; align-items: center; gap: 4px; }
+  .weeknav .range { font-size: 15px; font-weight: 600; color: var(--t1); margin: 0 6px; }
+  .iconbtn {
+    width: 28px; height: 28px; border-radius: var(--r-sm);
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--t4); border: 1px solid transparent;
+  }
+  .iconbtn:hover { background: var(--inset-bg); color: var(--t2); }
+  .chip {
+    padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 500;
+    border: 1px solid var(--edge); color: var(--t3); background: var(--surface);
+  }
+  .chip:hover { border-color: var(--edge-strong); }
+  .pagehead .spring { flex: 1; }
+  .pool-toggle {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 6px 12px; border-radius: var(--r-sm); font-size: 12.5px;
+    border: 1px solid var(--edge); color: var(--t3); background: var(--surface);
+  }
+  .pool-toggle .count {
+    min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px;
+    background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  html.dark .pool-toggle .count { color: #101228; }
+
+  /* 内容行：详情面板（左，文档流） + 网格（右） */
+  .body-row { flex: 1; min-height: 0; display: flex; gap: 16px; }
+
+  /* ══════ 毛玻璃面板（任务池 / 详情共用） ══════ */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(1.5);
+    -webkit-backdrop-filter: blur(20px) saturate(1.5);
+    border: 1px solid var(--edge);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-lg);
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    .glass { background: var(--surface); }
+  }
+
+  /* ══════ 详情面板（左） ══════ */
+  .detail {
+    width: 292px; flex: none; padding: 18px; overflow-y: auto;
+    transition: margin 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+  }
+  .body-row.no-detail .detail { display: none; }
+  .detail h3 { font-size: 15px; font-weight: 600; color: var(--t1); line-height: 1.4; }
+  .detail .dtitle {
+    width: 100%; border: none; outline: none; background: transparent;
+    font-size: 16px; font-weight: 600; color: var(--t1); line-height: 1.4;
+    border-bottom: 1px solid transparent; padding: 2px 0;
+  }
+  .detail .close { float: right; margin: -4px -6px 0 0; }
+  .detail .sect { font-size: 11px; font-weight: 500; color: var(--t5); margin: 18px 0 8px; letter-spacing: 0.02em; }
+  .planbox {
+    border: 1px solid var(--edge); border-radius: var(--r-md);
+    background: var(--surface); padding: 12px;
+  }
+  .planbox .row { display: flex; align-items: center; gap: 8px; }
+  .planbox input[type="datetime-local"] {
+    flex: 1; padding: 6px 8px; border-radius: var(--r-sm);
+    border: 1px solid var(--edge); background: var(--inset-bg);
+    color: var(--t2); font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums;
+    outline: none;
+  }
+  .stepper { display: inline-flex; align-items: center; gap: 0; margin-top: 10px; }
+  .stepper button {
+    width: 26px; height: 26px; border: 1px solid var(--edge);
+    color: var(--t3); font-size: 14px;
+  }
+  .stepper button:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+  .stepper button:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+  .stepper button:hover { background: var(--inset-bg); }
+  .stepper .val {
+    min-width: 62px; text-align: center; padding: 4px 8px;
+    border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge);
+    font-size: 12.5px; font-weight: 500; color: var(--t1); font-variant-numeric: tabular-nums;
+  }
+  .quick { display: flex; gap: 6px; margin-top: 10px; }
+  .quick button {
+    padding: 4px 9px; border-radius: 999px; border: 1px solid var(--edge);
+    font-size: 11.5px; color: var(--t4); font-variant-numeric: tabular-nums;
+  }
+  .quick button.on { border-color: var(--accent); color: var(--accent); font-weight: 500; }
+  .planbox .clear { margin-top: 10px; font-size: 11.5px; color: var(--t5); }
+  .planbox .clear:hover { color: var(--t3); }
+  .detail .field { font-size: 12.5px; color: var(--t4); line-height: 1.55; }
+  .tagrow { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tag {
+    font-size: 11.5px; color: var(--t4); padding: 2px 9px;
+    border: 1px solid var(--edge); border-radius: 999px; background: var(--inset-bg);
+  }
+  .sub { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--t3); padding: 4px 0; }
+  .sub .box {
+    width: 14px; height: 14px; border-radius: 4px; flex: none;
+    border: 1px solid var(--edge-strong);
+  }
+  .sub.done { color: var(--t5); text-decoration: line-through; }
+  .sub.done .box { background: var(--success, #4caf7d); border-color: var(--success, #4caf7d); position: relative; }
+  .sub.done .box::after {
+    content: ""; position: absolute; inset: 3px 3px 5px;
+    border-left: 2px solid #fff; border-bottom: 2px solid #fff;
+    transform: rotate(-45deg) scale(0.8);
+  }
+  .detail .foot { display: flex; gap: 8px; margin-top: 20px; }
+  .btn-done {
+    flex: 1; padding: 8px 0; border-radius: var(--r-sm);
+    background: var(--accent); color: #fff; font-size: 13px; font-weight: 500;
+  }
+  html.dark .btn-done { color: #101228; }
+  .btn-del {
+    width: 36px; border-radius: var(--r-sm); border: 1px solid var(--edge);
+    color: var(--t5); font-size: 14px;
+  }
+  .btn-del:hover { color: #dc2626; border-color: #dc2626; }
+
+  /* ══════ 周网格 ══════ */
+  .gridwrap { flex: 1; min-width: 0; position: relative; display: flex; }
+  .well {
+    flex: 1; min-width: 0;
+    background: var(--inset-bg); border: 1px solid var(--edge);
+    border-radius: var(--r-lg);
+    padding: 0 0 8px 0;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  /* 列头行 */
+  .dayhead {
+    display: grid; grid-template-columns: 52px repeat(7, 1fr);
+    padding: 10px 8px 8px; gap: 0;
+  }
+  .dayhead .cell { text-align: center; position: relative; }
+  .dayhead .dow { font-size: 11px; color: var(--t5); margin-bottom: 3px; }
+  .dayhead .dnum {
+    font-size: 19px; font-weight: 600; color: var(--t3);
+    font-variant-numeric: tabular-nums; line-height: 1.15;
+    width: 28px; height: 28px; border-radius: 999px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .dayhead .cell.today .dow { color: var(--accent); font-weight: 500; }
+  .dayhead .cell.today .dnum { background: var(--accent); color: #fff; }
+  html.dark .dayhead .cell.today .dnum { color: #101228; }
+  .dayhead .cell.weekend .dow, .dayhead .cell.weekend .dnum { color: var(--t5); opacity: 0.8; }
+  .dayhead .cell.today.weekend .dnum { color: #fff; opacity: 1; }
+  html.dark .dayhead .cell.today.weekend .dnum { color: #101228; }
+
+  /* 网格主体：时刻轴 + 7 列 */
+  .gridbody { flex: 1; min-height: 0; display: grid; grid-template-columns: 52px repeat(7, 1fr); padding: 0 8px 0 0; }
+  .hours { position: relative; }
+  .hours span {
+    position: absolute; right: 10px; transform: translateY(-6px);
+    font-size: 10.5px; color: var(--t5); font-variant-numeric: tabular-nums;
+  }
+  .col {
+    position: relative; border-left: 1px solid color-mix(in srgb, var(--edge) 55%, transparent);
+    /* 小时实线（55%）+ 半点淡虚线（30%） */
+    background-image:
+      repeating-linear-gradient(to bottom,
+        color-mix(in srgb, var(--edge) 55%, transparent) 0 1px, transparent 1px var(--hour)),
+      repeating-linear-gradient(to bottom,
+        color-mix(in srgb, var(--edge) 28%, transparent) 0 1px, transparent 1px calc(var(--hour) / 2));
+    background-origin: content-box;
+  }
+  .col:first-of-type { border-left: none; }
+  .col.weekend::before {
+    content: ""; position: absolute; inset: 0;
+    background: var(--inset-bg); opacity: 0.45; pointer-events: none;
+  }
+  .col.today::after {
+    content: ""; position: absolute; inset: 0;
+    background: color-mix(in srgb, var(--accent) 5%, transparent); pointer-events: none;
+  }
+  /* 现在时刻线：整页唯一发光元素 */
+  .nowline {
+    position: absolute; left: -4px; right: 8px; height: 0; z-index: 3;
+    border-top: 2px solid var(--accent); pointer-events: none;
+  }
+  .nowline::before {
+    content: ""; position: absolute; left: -3px; top: -5px;
+    width: 8px; height: 8px; border-radius: 999px;
+    background: var(--accent);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+
+  /* ══════ 计划块 ══════ */
+  .blk {
+    position: absolute; left: 3px; right: 3px; z-index: 2;
+    border-radius: var(--r-sm);
+    padding: 5px 8px; overflow: hidden; cursor: pointer;
+    background: color-mix(in srgb, var(--c) 14%, var(--surface-raised));
+    border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
+    box-shadow: var(--shadow-sm);
+    transition: background-color 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+  }
+  .blk:hover { background: color-mix(in srgb, var(--c) 18%, var(--surface-raised)); transform: translateY(-1px); }
+  .blk::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--c); border-radius: 3px 0 0 3px;
+  }
+  .blk .t {
+    font-size: 12px; font-weight: 500; color: var(--t1); line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .blk .tm {
+    position: absolute; right: 7px; bottom: 4px;
+    font-size: 10px; color: var(--t4); font-variant-numeric: tabular-nums; opacity: 0.85;
+  }
+  .blk.sel {
+    border-color: var(--accent);
+    box-shadow: var(--shadow-sm), 0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+  .blk.tiny .tm { display: none; }
+  /* 跨日分段：贴列底/列顶的开口 + 续接标记 */
+  .blk.tail { border-bottom-left-radius: 2px; border-bottom-right-radius: 2px; border-bottom-color: transparent; }
+  .blk.head { border-top-left-radius: 2px; border-top-right-radius: 2px; border-top-color: transparent; }
+  .blk .cont {
+    position: absolute; left: 0; right: 0; text-align: center;
+    font-size: 11px; font-weight: 600; color: var(--c); line-height: 1;
+  }
+  .blk.tail .cont { bottom: 1px; }
+  .blk.head .cont { top: 1px; }
+  /* 同列重叠分栏 */
+  .blk.half { width: calc(50% - 4px); }
+  .blk.half.r { left: auto; }
+
+  /* ══════ 任务池（毛玻璃悬浮层） ══════ */
+  .pool {
+    position: absolute; top: 12px; right: 12px; bottom: 12px; width: 258px; z-index: 5;
+    display: flex; flex-direction: column; overflow: hidden;
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
+  }
+  .gridwrap.pool-closed .pool { transform: translateX(calc(100% + 24px)); opacity: 0; pointer-events: none; }
+  .pool .phead {
+    display: flex; align-items: center; gap: 8px; padding: 13px 14px 11px;
+    border-bottom: 1px solid color-mix(in srgb, var(--edge) 70%, transparent);
+  }
+  .pool .phead b { font-size: 13px; font-weight: 600; color: var(--t1); }
+  .pool .phead .count {
+    font-size: 11px; color: var(--t5); font-variant-numeric: tabular-nums;
+  }
+  .pool .phead .iconbtn { margin-left: auto; }
+  .pool .plist { flex: 1; overflow-y: auto; padding: 9px; display: flex; flex-direction: column; gap: 6px; }
+  .pitem {
+    flex: none; height: 34px; display: flex; align-items: center; gap: 9px;
+    padding: 0 10px 0 0; border-radius: var(--r-sm); cursor: grab;
+    background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+    border: 1px solid color-mix(in srgb, var(--edge) 80%, transparent);
+  }
+  .pitem:hover { border-color: var(--edge-strong); }
+  .pitem::before { content: ""; width: 3px; height: 100%; border-radius: 3px 0 0 3px; background: var(--c); flex: none; }
+  .pitem .t {
+    font-size: 12px; color: var(--t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pitem .chip {
+    margin-left: auto; font-size: 10px; color: var(--t5);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+    padding: 1px 6px; border-radius: 999px; background: var(--inset-bg);
+  }
+  .pitem.dragging { opacity: 0.35; }
+  /* 折叠态右缘把手 */
+  .poolhandle {
+    position: absolute; right: 0; top: 50%; transform: translateY(-50%); z-index: 4;
+    writing-mode: vertical-rl; padding: 14px 7px;
+    border-radius: 10px 0 0 10px;
+    background: var(--glass-bg); backdrop-filter: blur(20px) saturate(1.5);
+    border: 1px solid var(--edge); border-right: none;
+    box-shadow: var(--shadow-lg);
+    font-size: 12px; color: var(--t3); letter-spacing: 0.08em;
+    display: flex; align-items: center; gap: 8px;
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .poolhandle .count {
+    writing-mode: horizontal-tb; min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 999px; background: var(--accent); color: #fff;
+    font-size: 10px; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  html.dark .poolhandle .count { color: #101228; }
+  .gridwrap:not(.pool-closed) .poolhandle { transform: translateY(-50%) translateX(120%); }
+
+  /* ══════ 小样工具条（非应用 UI） ══════ */
+  .mockbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 99;
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 16px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--edge);
+    font-size: 12px; color: var(--t4);
+  }
+  .mockbar b { color: var(--t2); font-weight: 600; }
+  .mockbar .tb {
+    padding: 4px 12px; border-radius: 999px; border: 1px solid var(--edge);
+    color: var(--t3); font-size: 12px;
+  }
+  .mockbar .tb:hover { border-color: var(--edge-strong); color: var(--t1); }
+  .mockbar .spring { flex: 1; }
+  .app { padding-bottom: 37px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 导航栏 -->
+  <aside class="rail">
+    <div class="logo"><span class="mark"></span><b>WMessage</b></div>
+    <button class="newtask"><span>＋</span>新建任务</button>
+    <div class="search">搜索<kbd>⌘K</kbd></div>
+    <div class="sect">任务卡</div>
+    <button class="item active" data-ico="board">任务</button>
+    <button class="item" data-ico="graph">图谱</button>
+    <button class="item" data-ico="archive">归档</button>
+    <button class="item" data-ico="folder">工作区</button>
+    <button class="item" data-ico="trash">回收站</button>
+    <div class="sect">Agent能力</div>
+    <button class="item" data-ico="flow">工作流</button>
+    <button class="item" data-ico="clock">定时</button>
+    <button class="item" data-ico="pulse">活动</button>
+    <button class="item" data-ico="bell">通知</button>
+    <div class="spring"></div>
+    <button class="item" data-ico="gear">设置</button>
+  </aside>
+
+  <main>
+    <!-- 页头 -->
+    <div class="pagehead">
+      <button class="btn-primary">＋ 新建任务</button>
+      <div class="weeknav">
+        <button class="iconbtn">‹</button>
+        <span class="range" id="range">10月6日 – 10月12日</span>
+        <button class="iconbtn">›</button>
+      </div>
+      <button class="chip">今天</button>
+      <div class="spring"></div>
+      <button class="pool-toggle" id="poolToggle"><span>▤</span>任务池 <span class="count" id="poolCount">7</span></button>
+    </div>
+
+    <div class="body-row" id="bodyRow">
+      <!-- 左：任务卡详情（毛玻璃） -->
+      <aside class="detail glass" id="detail">
+        <button class="iconbtn close" id="detailClose">✕</button>
+        <input class="dtitle" value="任务页改版：周时间网格" />
+        <div class="sect">计划时间</div>
+        <div class="planbox">
+          <div class="row"><input type="datetime-local" value="2026-10-07T09:30" /></div>
+          <div class="stepper">
+            <button>−</button><span class="val">90 分钟</span><button>＋</button>
+          </div>
+          <div class="quick">
+            <button>30</button><button>60</button><button class="on">90</button><button>120</button>
+          </div>
+          <button class="clear">清除计划</button>
+        </div>
+        <div class="sect">备注</div>
+        <div class="field">周时间网格 + 毛玻璃任务池；坐标轴按日历惯例（星期=列、时刻=行）。</div>
+        <div class="sect">标签</div>
+        <div class="tagrow"><span class="tag">设计</span><span class="tag">改造</span></div>
+        <div class="sect">子任务</div>
+        <div class="sub done"><span class="box"></span>翻转坐标轴调研</div>
+        <div class="sub"><span class="box"></span>视觉小样评审</div>
+        <div class="foot">
+          <button class="btn-done">✓ 标记完成</button>
+          <button class="btn-del" title="删除"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5h16M9.5 6.5V4.8a1.3 1.3 0 0 1 1.3-1.3h2.4a1.3 1.3 0 0 1 1.3 1.3v1.7M6.5 6.5l.9 13a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4l.9-13"/></svg></button>
+        </div>
+      </aside>
+
+      <!-- 右：周网格 + 任务池悬浮层 -->
+      <section class="gridwrap" id="gridwrap">
+        <div class="well">
+          <div class="dayhead" id="dayhead"></div>
+          <div class="gridbody" id="gridbody"></div>
+        </div>
+
+        <aside class="pool glass" id="pool">
+          <div class="phead">
+            <b>任务池</b><span class="count num" id="poolSub">7 个未完成</span>
+            <button class="iconbtn" id="poolClose">⇥</button>
+          </div>
+          <div class="plist" id="plist"></div>
+        </aside>
+        <button class="poolhandle" id="poolHandle">任务池 <span class="count num" id="handleCount">7</span></button>
+      </section>
+    </div>
+  </main>
+</div>
+
+<!-- 小样工具条 -->
+<div class="mockbar">
+  <b>视觉小样</b><span>任务页 · 周时间网格</span>
+  <button class="tb" id="themeBtn">切换亮 / 暗</button>
+  <button class="tb" id="poolBtn">任务池 开/合</button>
+  <button class="tb" id="detailBtn">详情面板 开/合</button>
+  <div class="spring"></div>
+  <span>静态原型 · 数据为示例 · 与 docs/TASK-TIMELINE-REDESIGN-2026-10-10.md §5 对照</span>
+</div>
+
+<script>
+  const HOUR = 64;            // 每小时行高 px
+  const DAY_MIN = 10 * 60;    // 8:00–18:00
+  const startMin = 8 * 60;
+
+  // 小样固定演示周（2026-10-05 那周，今天 = 周三 10/7），保证截图可复现
+  const DEMO = { weekLabel: "10月5日 – 10月11日", todayIdx: 2, nowMin: 14 * 60 + 20 };
+
+  // 导航图标（内联 SVG，stroke 跟随文字色）
+  const ICON_PATHS = {
+    board: '<rect x="3" y="3" width="18" height="18" rx="2.5"/><path d="M9.5 3v18M14.5 3v13"/>',
+    graph: '<circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="5" r="2.2"/><circle cx="19" cy="19" r="2.2"/><path d="M7 11l10-5M7 13l10 5"/>',
+    archive: '<rect x="2.5" y="3.5" width="19" height="5" rx="1.5"/><path d="M4.5 8.5V19a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5V8.5M10 12.5h4"/>',
+    folder: '<path d="M3 8a2 2 0 0 1 2-2h4l2.2 2.5H19a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8z"/>',
+    trash: '<path d="M4 6.5h16M9.5 6.5V4.8a1.3 1.3 0 0 1 1.3-1.3h2.4a1.3 1.3 0 0 1 1.3 1.3v1.7M6.5 6.5l.9 13a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4l.9-13"/>',
+    flow: '<rect x="2.5" y="2.5" width="6.5" height="6.5" rx="1.5"/><rect x="15" y="15" width="6.5" height="6.5" rx="1.5"/><path d="M9 5.8h7a2 2 0 0 1 2 2V15M15 18.2H8a2 2 0 0 1-2-2V9"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.2"/>',
+    pulse: '<path d="M3 12h3.5l2.5-6.5 4.5 13 2.5-6.5H21"/>',
+    bell: '<path d="M6.3 9a5.7 5.7 0 0 1 11.4 0c0 6 1.8 7.5 1.8 7.5H4.5S6.3 15 6.3 9zM10 19.5a2.1 2.1 0 0 0 4 0"/>',
+    gear: '<path d="M4 20v-6M4 10V4M12 20v-9M12 7V4M20 20v-4M20 12V4M2 14h4M10 7h4M18 16h4"/>',
+  };
+  document.querySelectorAll(".rail .item").forEach((el) => {
+    const p = ICON_PATHS[el.dataset.ico];
+    el.insertAdjacentHTML("afterbegin",
+      `<svg class="ico" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`);
+  });
+
+  const PAL = { blue: "#5b7fe8", teal: "#2fa8a0", green: "#4caf7d", amber: "#d9a13f", violet: "#9a6fe0", slate: "#7a86a0" };
+  const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+
+  // 示例数据：[day, startMin, durMin, title, color, flags]
+  const blocks = [
+    { d: 0, s: 540, e: 630, t: "梳理需求清单", c: "blue", half: "l" },
+    { d: 0, s: 540, e: 630, t: "过一遍新拟态样式", c: "violet", half: "r" },
+    { d: 0, s: 840, e: 900, t: "写周报", c: "teal" },
+    { d: 1, s: 600, e: 720, t: "评审 OCR 分诊结论", c: "blue" },
+    { d: 1, s: 960, e: 1020, t: "更新简历", c: "amber" },
+    { d: 2, s: 570, e: 660, t: "任务页改版：周时间网格", c: "violet", sel: true },
+    { d: 2, s: 780, e: 810, t: "周末采购清单", c: "green" },
+    { d: 3, s: 660, e: 750, t: "准备周会演示", c: "amber" },
+    { d: 4, s: 1050, e: 1110, t: "准备异地演示材料", c: "blue", wrapTail: true },
+    { d: 5, s: 480, e: 510, t: "准备异地演示材料（续）", c: "blue", wrapHead: true },
+    { d: 5, s: 600, e: 690, t: "长跑 10 公里", c: "green" },
+    { d: 6, s: 900, e: 960, t: "规划下周", c: "slate" },
+  ];
+
+  // 池：全部未完成（含已排期 → 时间角标）
+  const pool = [
+    { t: "评审 OCR 分诊结论", c: "blue", at: "二 10:00" },
+    { t: "任务页改版：周时间网格", c: "violet", at: "三 9:30" },
+    { t: "更新简历", c: "amber", at: "二 16:00" },
+    { t: "周末采购清单", c: "green", at: "三 13:00" },
+    { t: "准备周会演示", c: "amber", at: "四 11:00" },
+    { t: "读 DDIA 架构章", c: "slate" },
+    { t: "整理云端相册并清理重复照片", c: "teal" },
+  ];
+
+  const jsDay = DEMO.todayIdx;
+  const dayDates = [5, 6, 7, 8, 9, 10, 11];        // 2026-10-05 那周的周一~周日
+  document.getElementById("range").textContent = DEMO.weekLabel;
+
+  // 列头
+  const dh = document.getElementById("dayhead");
+  dh.innerHTML = `<div class="cell"></div>` + DOW.map((w, i) => {
+    const cls = ["cell", i === jsDay ? "today" : "", i >= 5 ? "weekend" : ""].join(" ");
+    return `<div class="${cls}"><div class="dow">${w}</div><div class="dnum num">${dayDates[i]}</div></div>`;
+  }).join("");
+
+  // 时刻轴
+  const hoursEl = document.getElementById("gridbody");
+  const colH = HOUR * 10;
+  let hoursHtml = `<div class="hours" style="height:${colH}px">` +
+    Array.from({ length: 11 }, (_, i) =>
+      `<span class="num" style="top:${i * HOUR}px">${String(8 + i).padStart(2, "0")}:00</span>`).join("") +
+    `</div>`;
+
+  // 7 列 + 计划块
+  const nowMin = DEMO.nowMin;
+  const nowVisible = nowMin >= startMin && nowMin <= startMin + DAY_MIN;
+  let bodyHtml = hoursHtml;
+  for (let d = 0; d < 7; d++) {
+    const cls = ["col", d === jsDay ? "today" : "", d >= 5 ? "weekend" : ""].join(" ");
+    let inner = "";
+    for (const b of blocks.filter((x) => x.d === d)) {
+      const top = ((b.s - startMin) / DAY_MIN) * colH;
+      const h = Math.max(((b.e - b.s) / DAY_MIN) * colH, 18);
+      const half = b.half === "l" ? "half" : b.half === "r" ? "half r" : "";
+      const seg = b.wrapTail ? "tail" : b.wrapHead ? "head" : "";
+      const tiny = h < 48 ? "tiny" : "";
+      const cont = b.wrapTail ? `<span class="cont">»</span>` : b.wrapHead ? `<span class="cont">«</span>` : "";
+      const tm = `${String(Math.floor(b.s / 60)).padStart(2, "0")}:${String(b.s % 60).padStart(2, "0")}`;
+      inner += `<div class="blk ${half} ${seg} ${tiny} ${b.sel ? "sel" : ""}" style="--c:${PAL[b.c]};top:${top}px;height:${h - 2}px">
+        <div class="t">${b.t}</div>${tiny ? "" : `<span class="tm num">${tm}</span>`}${cont}</div>`;
+    }
+    if (d === jsDay && nowVisible) {
+      const top = ((nowMin - startMin) / DAY_MIN) * colH;
+      inner += `<div class="nowline" style="top:${top}px"></div>`;
+    }
+    bodyHtml += `<div class="${cls}" style="height:${colH}px">${inner}</div>`;
+  }
+  document.getElementById("gridbody").innerHTML = bodyHtml;
+
+  // 池
+  document.getElementById("plist").innerHTML = pool.map((p) =>
+    `<div class="pitem" style="--c:${PAL[p.c]}"><span class="t">${p.t}</span>${p.at ? `<span class="chip num">${p.at}</span>` : ""}</div>`).join("");
+  document.getElementById("poolSub").textContent = `${pool.length} 个未完成`;
+  document.getElementById("poolCount").textContent = pool.length;
+  document.getElementById("handleCount").textContent = pool.length;
+
+  // 交互
+  const $ = (id) => document.getElementById(id);
+  $("themeBtn").onclick = () => document.documentElement.classList.toggle("dark");
+  $("poolToggle").onclick = $("poolClose").onclick = $("poolBtn").onclick = () =>
+    $("gridwrap").classList.toggle("pool-closed");
+  $("poolHandle").onclick = () => $("gridwrap").classList.remove("pool-closed");
+  $("detailBtn").onclick = () => $("bodyRow").classList.toggle("no-detail");
+  $("detailClose").onclick = () => $("bodyRow").classList.add("no-detail");
+</script>
+</body>
+</html>
