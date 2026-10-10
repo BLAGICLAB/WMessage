@@ -24,24 +24,6 @@ CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++ \
 npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 ```
 
-> **必做：先清 build artifact 里的数据残留**。`probe_log_dir`（`src-tauri/src/paths.rs`）的便携语义命中分支 1（exe 旁有 `wmessage.db`）→ 直接用 exe 同目录当 data_dir。
-> `cargo test` 把 `wmessage.db` `AI_Gen_Files` `bot.log` 写到 `src-tauri/target/.../deps` 与 `src-tauri/target/.../debug`；
-> `tauri build --no-bundle` 产出 `wmessage.exe` 后，cargo 不会清这些文件——直接 cp 进绿色包就「带数据」。
-> **症状**：新绿色包解压到空目录也带上次 cargo test 写入的任务卡/bot.config/AI 产物。
-> 打包前必须删：
-
-```bash
-# Windows 目标 + macOS 主机 debug 路径下都清一遍（cargo test 可能落在任一）
-rm -f src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.db* 2>/dev/null
-rm -rf src-tauri/target/x86_64-pc-windows-gnu/release/AI_Gen_Files 2>/dev/null
-rm -f src-tauri/target/x86_64-pc-windows-gnu/release/bot.log* 2>/dev/null
-rm -f src-tauri/target/debug/wmessage.db* src-tauri/target/debug/wmessage.db-wal src-tauri/target/debug/wmessage.db-shm 2>/dev/null
-rm -rf src-tauri/target/debug/AI_Gen_Files 2>/dev/null
-rm -f src-tauri/target/debug/bot.log* 2>/dev/null
-```
-
-> 验证（应无输出）：`find src-tauri/target -name "wmessage.db*" -o -name "AI_Gen_Files" -o -name "bot.log*" 2>/dev/null`
-
 - 产物：`src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`（约 54 MB）
 - **必须走完整 `tauri build`**（它会先跑 `npm run build` 构建前端并嵌入资源）。
   直接 `cargo build` 出的 exe 缺内置页面资源，运行报「无法访问此页面」。
@@ -177,4 +159,5 @@ EOF
 | 用户机报「找不到 webview2loader.dll」 | 漏拷 WebView2Loader.dll，与 WebView2 Runtime 无关 |
 | Win10 白屏/起不来 | 让用户先跑包内 MicrosoftEdgeWebview2Setup.exe 装 WebView2 |
 | 用户不解压直接双击 zip 内 exe | 代码侧已兜底：exe 落 %TEMP% 时不在 temp 建数据，退化 app_data 并在 bot.log 记 `data_dir_fallback` WARN；仍应提醒用户解压后再运行（否则数据不随包走） |
+| 绿色包「带数据」/「带任务卡」 | 2026-10-10 已根治：`probe_log_dir` 识别 `target/.../{deps,debug,release}` 路径直接旁路便携分支（`is_cargo_target_dir`，见 `src-tauri/src/paths.rs`）——`cargo test` 写的 db 落系统 app_data_dir，不再污染 `target/`，下次 `tauri build` cp 的 release 目录干净。 |
 | dotnet/ 失效静默走 Python | dotnet/ 必须整目录随包；缺失时 Word 修订回退 Python（需用户机有 Python 3.10+） |

@@ -234,13 +234,13 @@ fn fixture_meta_body() -> (wmessage_lib::bot_skills::SkillMeta, String) {
 }
 
 /// bot.log 路径（probe_log_dir 在 cargo test 下 = current_exe 父目录，
-/// 见 audit.rs probe_log_dir_matches_exe_parent_in_cargo_test；middleware 测试同先例）
+/// 与生产写入路径一致：probe_log_dir 解析（2026-10-10 根治后 cargo target
+/// 路径下走 app_data_dir，不再命中 target/debug/deps 共享区——读路径必须用
+/// 同一函数，否则读会读到旧进程残留行）。`db::data_dir` 是 probe_log_dir 的
+/// 公开别名（pub 函数），测试包外用这一入口避免触及 `pub(crate)` 的 probe_log_dir。
 fn bot_log_path() -> PathBuf {
-    std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("bot.log")
+    let app = tauri::test::mock_app();
+    wmessage_lib::db::data_dir(app.handle()).join("bot.log")
 }
 
 /// 记录运行前 bot.log 长度，运行后只断言新增尾巴（别的测试/历史运行也会写该文件）
