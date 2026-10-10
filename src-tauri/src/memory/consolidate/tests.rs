@@ -105,8 +105,8 @@ fn parse_lesson_missing_or_empty_is_none() {
     assert!(parse_lesson("这不是 JSON").is_none(), "整体解析失败 → None");
 }
 
-#[test]
-fn empty_ops_with_lesson_still_flows_through_proposal_bridge() {
+#[tokio::test]
+async fn empty_ops_with_lesson_still_flows_through_proposal_bridge() {
     // 复现：LLM 输出 `{"ops":[],"lesson":"..."}` 时，早退分支若在提案桥之前
     // 直接 return，lesson 被静默丢弃、架空「反思双产物」。锁修复契约：
     // 空 ops + Some(lesson) 走 post_consolidation 空轨（修复后早退分支的
@@ -118,7 +118,7 @@ fn empty_ops_with_lesson_still_flows_through_proposal_bridge() {
     let lesson = parse_lesson(text);
     assert!(ops.is_empty(), "前置：ops 解析为空");
     let lesson = lesson.expect("lesson 应被解析出");
-    crate::evolution::post_consolidation(&[], &ConsolidateReport::default(), Some(&lesson));
+    crate::evolution::post_consolidation(&[], &ConsolidateReport::default(), Some(&lesson)).await;
     let proposal = crate::evolution::derive::derive_lesson_proposal(&lesson, 1_700_000_000_000)
         .expect("lesson 应派生出提案");
     assert!(
@@ -131,6 +131,16 @@ fn empty_ops_with_lesson_still_flows_through_proposal_bridge() {
     let report = crate::evolution::emit::emit_proposals(vec![proposal]);
     assert_eq!(report.deduped, 1, "lesson 提案应已被桥 emit 过一次");
     assert_eq!(report.written, 0, "不应有新写入（同 id 已在 dedup 表）");
+}
+
+/// post_consolidation 是 `async fn`——本测试在编译期（不返回 Future 不报错）
+/// 锁这一签名：未来若有人改回同步 fn，tokio worker 上同步执行整段阻塞 IO
+/// （jsonl RMW/sqlite/audit 直写）会再次把 runtime 卡顿，详见 commit history。
+#[test]
+fn post_consolidation_is_async_noop() {
+    // 拿空 args 调一下——async fn 必返回 Future，未 .await 编译过即可
+    let empty_report = crate::memory::consolidate::ConsolidateReport::default();
+    let _fut = crate::evolution::post_consolidation(&[], &empty_report, None);
 }
 
 #[test]

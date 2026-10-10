@@ -162,7 +162,32 @@ fn notify_evolution_proposals<R: tauri::Runtime>(
 /// 签名严格按 spec：不接收 AppHandle / session_id / 任何反向依赖 memory 内部的状态。
 /// emit 所需的 AppHandle 由 `emit::register_app_handle` 在 App 启动时注册一次，
 /// 本函数通过全局 OnceLock 取出——consolidate 侧 caller 无需关心。
-pub fn post_consolidation(ops: &[ConsolidateOp], report: &ConsolidateReport, lesson: Option<&str>) {
+///
+/// **2026-10-10 改 async + spawn_blocking**：函数体内 4 类阻塞 IO（jsonl RMW
+/// `write_proposals`、sqlite insert `notify_evolution_proposals`、bot.log
+/// `audit_event!`、可能的 effect apply）以前在 tokio worker 上同步跑——
+/// 杀软瞬时锁/AV 扫描/网络盘慢时整 runtime 卡顿。改 async 后 spawn_blocking
+/// 把整段丢进 blocking pool，await 不阻塞 worker。
+pub async fn post_consolidation(
+    ops: &[ConsolidateOp],
+    report: &ConsolidateReport,
+    lesson: Option<&str>,
+) {
+    let ops_owned: Vec<ConsolidateOp> = ops.to_vec();
+    let report_owned = report.clone();
+    let lesson_owned = lesson.map(str::to_string);
+    tauri::async_runtime::spawn_blocking(move || {
+        post_consolidation_blocking(&ops_owned, &report_owned, lesson_owned.as_deref())
+    })
+    .await
+    .expect("post_consolidation blocking 线程不应 panic")
+}
+
+fn post_consolidation_blocking(
+    ops: &[ConsolidateOp],
+    report: &ConsolidateReport,
+    lesson: Option<&str>,
+) {
     // 派生门槛：设置页可调（默认 2/2/1）；读失败/缺配置 = 默认
     let thresholds = emit::app_handle()
         .map(crate::evolution::policy::read_derive_thresholds)

@@ -466,7 +466,8 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
                 &[],
                 &ConsolidateReport::default(),
                 lesson.as_deref(),
-            );
+            )
+            .await;
         }
         return Ok(ConsolidateReport::default());
     }
@@ -510,7 +511,7 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
         .map_err(CommandError::DbError)?;
     // Phase 1 追加：基于本次反思产出演化提案（仅写 audit；不改反思逻辑、不调二次 LLM）。
     // 见 `crate::evolution::post_consolidation` 的依赖方向约束。
-    crate::evolution::post_consolidation(&ops_for_audit, &report, lesson.as_deref());
+    crate::evolution::post_consolidation(&ops_for_audit, &report, lesson.as_deref()).await;
     Ok(report)
 }
 
