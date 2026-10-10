@@ -24,6 +24,24 @@ CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++ \
 npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 ```
 
+> **必做：先清 build artifact 里的数据残留**。`probe_log_dir`（`src-tauri/src/paths.rs`）的便携语义命中分支 1（exe 旁有 `wmessage.db`）→ 直接用 exe 同目录当 data_dir。
+> `cargo test` 把 `wmessage.db` `AI_Gen_Files` `bot.log` 写到 `src-tauri/target/.../deps` 与 `src-tauri/target/.../debug`；
+> `tauri build --no-bundle` 产出 `wmessage.exe` 后，cargo 不会清这些文件——直接 cp 进绿色包就「带数据」。
+> **症状**：新绿色包解压到空目录也带上次 cargo test 写入的任务卡/bot.config/AI 产物。
+> 打包前必须删：
+
+```bash
+# Windows 目标 + macOS 主机 debug 路径下都清一遍（cargo test 可能落在任一）
+rm -f src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.db* 2>/dev/null
+rm -rf src-tauri/target/x86_64-pc-windows-gnu/release/AI_Gen_Files 2>/dev/null
+rm -f src-tauri/target/x86_64-pc-windows-gnu/release/bot.log* 2>/dev/null
+rm -f src-tauri/target/debug/wmessage.db* src-tauri/target/debug/wmessage.db-wal src-tauri/target/debug/wmessage.db-shm 2>/dev/null
+rm -rf src-tauri/target/debug/AI_Gen_Files 2>/dev/null
+rm -f src-tauri/target/debug/bot.log* 2>/dev/null
+```
+
+> 验证（应无输出）：`find src-tauri/target -name "wmessage.db*" -o -name "AI_Gen_Files" -o -name "bot.log*" 2>/dev/null`
+
 - 产物：`src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`（约 54 MB）
 - **必须走完整 `tauri build`**（它会先跑 `npm run build` 构建前端并嵌入资源）。
   直接 `cargo build` 出的 exe 缺内置页面资源，运行报「无法访问此页面」。
