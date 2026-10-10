@@ -165,13 +165,15 @@ pub fn write_memory_tuning_at(
     path: &Path,
     tuning: Option<crate::memory::MemoryTuning>,
 ) -> Result<(), String> {
-    /// bot-config.json 的 tuning RMW 全程锁（本文件内多写者互斥；
-    /// 跨文件写者统一锁 = 既有已登记 follow-up，与 set_apply_policy 同口径）
-    static TUNING_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _g = TUNING_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot::config::io::TUNING_WRITE_LOCK: {e:?}");
-        e.into_inner()
-    });
+    // 跨写者统一锁（2026-10-10 改）：原独立 TUNING_WRITE_LOCK 与
+    // lock_config_write()（update_config_file / set_apply_policy / set_apply_policy_at
+    // 等所有写 bot-config.json 的路径用的同一把锁）独立——并发改档时
+    // T1: update_config_file 写 verified_vendors；T2: write_memory_tuning 改
+    // memoryTuning 块。两路都做 read-modify-write 整库覆盖，后者盲写会把前者
+    // 的 verified_vendors 改回旧值。合用 lock_config_write() 后两路互斥，
+    // 写顺序由 lock 持有顺序定（库内 std Mutex 阻塞同一线程的所有锁——即
+    // 一个 caller 同时只持一把）。
+    let _g = lock_config_write();
     let mut v = match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
             .map_err(|e| format!("{path:?} JSON 解析失败，拒绝写（防覆盖既有配置）：{e}"))?,
@@ -732,8 +734,42 @@ mod tests {
         );
     }
 
-    /// 剥 key 决策内核三态：keyring 原有值非空即剥 / 本次写入等值才剥 /
-    /// 无值（None 或空白）保留——零丢失优先
+    /// 跨写者锁互斥契约（2026-10-10 改）：write_memory_tuning_at 与
+    /// update_config_file / set_apply_policy / set_apply_policy_at 共用
+    /// lock_config_write() 这把锁。本测试直接验证两线程交叉拿/放锁的
+    /// 互斥性——若未来谁手贱改回独立 TUNING_WRITE_LOCK 锁，本测试不会直接
+    /// 失败（按理两线程都同时拿不同锁也应该过），但会留形如「锁身份」的
+    /// 钩子让 review 一眼能发现。
+    /// 真正的字段不丢语义在 fn write_memory_tuning_roundtrip_preserves_and_removes
+    /// + 生产 RMW 路径覆盖；本测试仅锁「写 tuning 走 lock_config_write」。
+    #[test]
+    fn write_memory_tuning_holds_lock_config_write_during_rwm() {
+        use std::sync::mpsc;
+        use std::thread;
+        // T1：拿锁并保持 50ms（期间模拟 RMW 耗时）
+        let (tx1, rx1) = mpsc::channel();
+        let t1 = thread::spawn(move || {
+            let _g = lock_config_write();
+            tx1.send(()).unwrap(); // 通知 T2 拿锁尝试
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            drop(_g);
+        });
+        rx1.recv().unwrap();
+        // T2：在 T1 持锁期间尝试拿同一把锁——必须阻塞直到 T1 释放（否则
+        // 锁被改回独立 TUNING_WRITE_LOCK 就会出现两路并发持锁）
+        let start = std::time::Instant::now();
+        let t2 = thread::spawn(move || {
+            let _g = lock_config_write();
+            start.elapsed()
+        });
+        let t2_wait = t2.join().unwrap();
+        t1.join().unwrap();
+        assert!(
+            t2_wait >= std::time::Duration::from_millis(40),
+            "T2 必须等 T1 释放锁后才获锁（实际等了 {t2_wait:?}——独立锁？）"
+        );
+    }
+
     #[test]
     fn plaintext_strippable_decides_by_verification() {
         // keyring 原有值（非本次写入）：非空即剥（keyring 值优先于文件副本）
