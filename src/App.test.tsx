@@ -81,8 +81,8 @@ describe("App", () => {
     expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     expect(screen.getByText("过一遍新拟态样式细节")).toBeInTheDocument();
     expect(screen.getByText("完成看板拖拽原型")).toBeInTheDocument();
-    // 顶栏：首页 / 归档 / 工作区 / 回收站
-    expect(screen.getByText("首页")).toBeInTheDocument();
+    // 顶栏：任务 / 归档 / 工作区 / 回收站
+    expect(screen.getByText("任务")).toBeInTheDocument();
     expect(screen.getByText("归档")).toBeInTheDocument();
     expect(screen.getByText("工作区")).toBeInTheDocument();
     expect(screen.getByText("回收站")).toBeInTheDocument();
@@ -601,7 +601,7 @@ describe("App", () => {
     expect(
       mocks.invokeMock.mock.invocationCallOrder[secondLoadIdx],
     ).toBeGreaterThan(importOrder);
-    // setTasks 收到 fresh 数据：点设置壳「返回」回看板进入前视图 = 首页），fresh 任务在、种子任务不在
+    // setTasks 收到 fresh 数据：点设置壳「返回」回看板进入前视图 = 任务），fresh 任务在、种子任务不在
     await user.click(screen.getByRole("button", { name: /返回/ }));
     expect(await screen.findByText("导入的 fresh 任务")).toBeInTheDocument();
     expect(

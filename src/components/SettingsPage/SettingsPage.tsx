@@ -3931,7 +3931,7 @@ function WorkflowSettingsCard() {
       <div className="nm-card p-5">
         <h2 className="text-lg font-semibold text-[var(--t1)]">工作流任务</h2>
         <p className="mt-1 text-xs text-[var(--t5)]">
-          工作流画布的节点卡默认只在「工作流」栏目显示。开启后它们也会出现在首页看板、归档与挂件清单里。
+          工作流画布的节点卡默认只在「工作流」栏目显示。开启后它们也会出现在任务看板、归档与挂件清单里。
         </p>
         <div className="mt-4 flex items-center justify-between gap-4">
           <div className="min-w-0">

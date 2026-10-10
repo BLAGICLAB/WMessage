@@ -118,7 +118,7 @@ function localDateStr(): string {
 }
 
 // 左侧导航栏条目：视图切换职能自顶部工具条迁入；设置单独走底部入口。
-// 分区结构：「任务卡」组（首页/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时/通知）
+// 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时/通知）
 type RailView =
   | "board"
   | "workflow"
@@ -131,7 +131,7 @@ type RailView =
   | "notifications";
 const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] =
   [
-    { key: "board", label: "首页", icon: SquareKanban },
+    { key: "board", label: "任务", icon: SquareKanban },
     { key: "graph", label: "图谱", icon: Waypoints },
     { key: "archive", label: "归档", icon: Archive },
     { key: "workspace", label: "工作区", icon: FolderOpen },
