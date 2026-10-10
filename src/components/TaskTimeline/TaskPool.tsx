@@ -14,8 +14,18 @@ export function sortPoolTasks(tasks: Task[]): Task[] {
   });
 }
 
-/** 任务池（毛玻璃悬浮层）：列出全部未完成任务的统一标题块，可折叠成右缘把手 */
-export function TaskPool({ tasks }: { tasks: Task[] }) {
+/** 任务池（毛玻璃悬浮层）：列出全部未完成任务的统一标题块，可折叠成右缘把手。
+ *  onItemPointerDown 供页面发起「池→网格」拖拽；innerRef 供页面做「拖回池清除」
+ *  的落点判定（挂在本体 aside 上）。 */
+export function TaskPool({
+  tasks,
+  onItemPointerDown,
+  innerRef,
+}: {
+  tasks: Task[];
+  onItemPointerDown?: (task: Task, e: React.PointerEvent) => void;
+  innerRef?: React.Ref<HTMLElement>;
+}) {
   const [open, setOpen] = useState(() => localStorage.getItem(OPEN_KEY) !== "0");
   useEffect(() => {
     localStorage.setItem(OPEN_KEY, open ? "1" : "0");
@@ -39,6 +49,7 @@ export function TaskPool({ tasks }: { tasks: Task[] }) {
   }
   return (
     <aside
+      ref={innerRef}
       aria-label="任务池"
       className="glass absolute top-3 right-3 bottom-3 z-10 flex w-64 flex-col overflow-hidden"
     >
@@ -63,10 +74,14 @@ export function TaskPool({ tasks }: { tasks: Task[] }) {
           sorted.map((t) => (
             <div
               key={t.id}
-              className="flex h-[34px] items-center gap-2 rounded-lg border pr-2.5"
+              className="flex h-[34px] touch-none items-center gap-2 rounded-lg border pr-2.5"
               style={{
                 borderColor: "color-mix(in srgb, var(--edge) 80%, transparent)",
                 background: "color-mix(in srgb, var(--surface-raised) 72%, transparent)",
+              }}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                onItemPointerDown?.(t, e);
               }}
             >
               <span

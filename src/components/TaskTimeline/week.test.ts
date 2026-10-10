@@ -6,6 +6,7 @@ import {
   DAY_SPAN_MIN,
   SNAP_MIN,
   addDays,
+  addWindowMinutes,
   buildPlanDT,
   clampWindowMin,
   fmtMin,
@@ -13,9 +14,11 @@ import {
   parsePlanDT,
   planChip,
   planColorVar,
+  planPatchForDrop,
   segsForWeek,
   snapMin,
   startOfWeek,
+  windowMinutesBetween,
 } from "./week";
 
 const MON = new Date(2026, 9, 5); // 2026-10-05 周一
@@ -157,6 +160,68 @@ describe("颜色与角标", () => {
     expect(planChip("2026-10-07T09:30")).toBe("三 09:30");
     expect(planChip("2026-10-07T10:00")).toBe("三 10:00");
     expect(planChip("垃圾")).toBe("");
+  });
+});
+
+describe("窗口分钟与拖拽落点 patch", () => {
+  it("addWindowMinutes：同日内推进；溢出 18:00 折入次日 8:00；连跨多日", () => {
+    const same = addWindowMinutes(WED, 10 * 60, 60);
+    expect([same.day.getDate(), same.min]).toEqual([7, 11 * 60]);
+    const wrap = addWindowMinutes(WED, 17 * 60 + 30, 60);
+    expect([wrap.day.getDate(), wrap.min]).toEqual([8, 8 * 60 + 30]);
+    const multi = addWindowMinutes(WED, 17 * 60, 11 * 60); // 周三 17:00 + 11h 窗口分钟
+    // 周三 17:00-18:00(1h) + 周四 8:00-18:00(10h) = 11h → 恰好落在周四 18:00
+    expect([multi.day.getDate(), multi.min]).toEqual([8, 18 * 60]);
+  });
+
+  it("windowMinutesBetween：普通计划 = 墙钟差；跨午夜折行计划 = 窗口分钟和；脏数据 null", () => {
+    expect(windowMinutesBetween("2026-10-07T10:00", "2026-10-07T11:00")).toBe(60);
+    expect(windowMinutesBetween("2026-10-07T17:30", "2026-10-08T08:30")).toBe(60);
+    expect(windowMinutesBetween("2026-10-07T11:00", "2026-10-07T10:00")).toBeNull();
+    expect(windowMinutesBetween("垃圾", "2026-10-08T08:30")).toBeNull();
+  });
+
+  it("planPatchForDrop schedule：落点吸附 + 默认 60 分钟，溢出自动折日", () => {
+    const p = planPatchForDrop("schedule", { day: WED, min: 9 * 60 + 10 });
+    expect(p.planStart).toBe("2026-10-07T09:00");
+    expect(p.planEnd).toBe("2026-10-07T10:00");
+    const wrap = planPatchForDrop("schedule", { day: WED, min: 17 * 60 + 30 });
+    expect(wrap.planStart).toBe("2026-10-07T17:30");
+    expect(wrap.planEnd).toBe("2026-10-08T08:30");
+  });
+
+  it("planPatchForDrop move：保持原计划的窗口时长", () => {
+    const p = planPatchForDrop("move", {
+      day: new Date(2026, 9, 8),
+      min: 10 * 60 + 40,
+      prevPlanStart: "2026-10-07T17:30",
+      prevPlanEnd: "2026-10-08T08:30",
+    });
+    // 窗口时长 60 分钟 → 周四 10:30 吸附落位，同日 11:30 结束
+    expect(p.planStart).toBe("2026-10-08T10:30");
+    expect(p.planEnd).toBe("2026-10-08T11:30");
+  });
+
+  it("planPatchForDrop resize：end 随指针（可折日），钳最短 30 窗口分钟", () => {
+    const grow = planPatchForDrop("resize", {
+      day: WED,
+      min: 12 * 60,
+      prevPlanStart: "2026-10-07T10:00",
+    });
+    expect(grow.planStart).toBe("2026-10-07T10:00");
+    expect(grow.planEnd).toBe("2026-10-07T12:00");
+    const shrink = planPatchForDrop("resize", {
+      day: WED,
+      min: 9 * 60, // 指针早于起点 → 钳到 10:30
+      prevPlanStart: "2026-10-07T10:00",
+    });
+    expect(shrink.planEnd).toBe("2026-10-07T10:30");
+    const wrap = planPatchForDrop("resize", {
+      day: new Date(2026, 9, 8),
+      min: 9 * 60,
+      prevPlanStart: "2026-10-07T10:00",
+    });
+    expect(wrap.planEnd).toBe("2026-10-08T09:00");
   });
 });
 

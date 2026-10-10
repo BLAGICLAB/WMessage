@@ -1092,6 +1092,8 @@
     border-radius: var(--r-md);
     padding: 6px 10px 6px 12px;
     overflow: hidden;
+    cursor: grab;
+    touch-action: none;
     background: color-mix(in srgb, var(--c) 14%, var(--surface-raised));
     border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
     box-shadow: var(--shadow-sm);
@@ -1266,5 +1268,33 @@
       transform: scale(1);
       opacity: 1;
     }
+  }
+
+  /* 拖拽幽灵：跟随指针的半成品块（fixed 定位，位置内联注入） */
+  .drag-ghost {
+    position: fixed;
+    z-index: 50;
+    pointer-events: none;
+    width: 180px;
+    border-radius: var(--r-md);
+    padding: 7px 10px;
+    background: color-mix(in srgb, var(--c) 82%, black);
+    border: 1px solid color-mix(in srgb, var(--c) 70%, transparent);
+    box-shadow: 0 12px 32px color-mix(in srgb, var(--c) 50%, transparent);
+    opacity: 0.92;
+  }
+  .drag-ghost .drag-ghost-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .drag-ghost .drag-ghost-label {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.85);
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
   }
 }

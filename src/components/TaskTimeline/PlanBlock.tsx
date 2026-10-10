@@ -9,12 +9,20 @@ export function PlanBlockView({
   task,
   color,
   selected = false,
+  dimmed = false,
+  fresh = false,
+  onPointerDown,
 }: {
   seg: PlanSeg & { lane: number; lanes: number };
   task: Task;
   /** CSS color 值（planColorVar 产出），注入 --c 驱动 main.css 的块材质 */
   color: string;
   selected?: boolean;
+  /** 拖拽中的原块降透明（位置由 ghost/slot 占位） */
+  dimmed?: boolean;
+  /** 刚落位的块播弹入动画 */
+  fresh?: boolean;
+  onPointerDown?: (e: React.PointerEvent) => void;
 }) {
   const topPct = ((seg.startMin - DAY_START_MIN) / DAY_SPAN_MIN) * 100;
   const hPct = ((seg.endMin - seg.startMin) / DAY_SPAN_MIN) * 100;
@@ -22,7 +30,7 @@ export function PlanBlockView({
   const multi = seg.lanes > 1;
   return (
     <div
-      className={`plan-blk${selected ? " sel" : ""}${seg.tail ? " tail" : ""}${seg.head ? " head" : ""}`}
+      className={`plan-blk${selected ? " sel" : ""}${seg.tail ? " tail" : ""}${seg.head ? " head" : ""}${dimmed ? " opacity-35" : ""}${fresh ? " plan-fresh" : ""}`}
       style={
         {
           "--c": color,
@@ -33,6 +41,7 @@ export function PlanBlockView({
         } as React.CSSProperties
       }
       title={task.title}
+      onPointerDown={onPointerDown}
     >
       <span className="plan-dot plan-dot-s" aria-hidden />
       <span className="plan-dot plan-dot-e" aria-hidden />

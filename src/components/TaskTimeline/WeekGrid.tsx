@@ -19,16 +19,37 @@ function plannedTasks(tasks: Task[]): Task[] {
   );
 }
 
-/** 周时间网格只读渲染：列=周一..周日，行=8:00–18:00；跨日分段与重叠分栏在纯函数层。
- *  now 由页面注入（单一时间源），本组件不做定时。 */
+/** 拖拽反馈：吸附落点虚线框（网格坐标） */
+export interface SlotHint {
+  dayIdx: number;
+  startMin: number;
+  endMin: number;
+}
+
+/** 周时间网格渲染：列=周一..周日，行=8:00–18:00；跨日分段与重叠分栏在纯函数层。
+ *  now 由页面注入（单一时间源）；拖拽编排也在页面——本组件只上报表块手势、
+ *  渲染吸附反馈并交出网格 body 供指针反解。 */
 export function WeekGrid({
   tasks,
   weekStart,
   now,
+  slot = null,
+  draggingTaskId = null,
+  freshTaskId = null,
+  bodyRef,
+  onBlockPointerDown,
 }: {
   tasks: Task[];
   weekStart: Date;
   now: Date;
+  slot?: SlotHint | null;
+  /** 拖拽中的原块降透明（占位由 ghost/slot 承担） */
+  draggingTaskId?: string | null;
+  /** 刚落位的块播弹入动画 */
+  freshTaskId?: string | null;
+  /** 页面用于指针反解的网格 body 挂载点 */
+  bodyRef?: React.Ref<HTMLDivElement>;
+  onBlockPointerDown?: (task: Task, kind: "move" | "resize", e: React.PointerEvent) => void;
 }) {
   const planned = plannedTasks(tasks);
   const nowMin = now.getHours() * 60 + now.getMinutes();
@@ -73,6 +94,7 @@ export function WeekGrid({
 
       {/* 网格主体 */}
       <div
+        ref={bodyRef}
         className="relative z-1 grid min-h-0 flex-1 pr-2 pb-2"
         style={{ gridTemplateColumns: GRID_COLS }}
       >
@@ -130,12 +152,35 @@ export function WeekGrid({
                   aria-hidden
                 />
               )}
+              {slot && slot.dayIdx === i && (
+                <div
+                  className="plan-slot"
+                  style={{
+                    top: `${((slot.startMin - 480) / 600) * 100}%`,
+                    height: `calc(${((slot.endMin - slot.startMin) / 600) * 100}% - 2px)`,
+                  }}
+                  aria-hidden
+                />
+              )}
               {segs.map((s) => (
                 <PlanBlockView
                   key={`${s.task.id}-${s.startMin}`}
                   seg={s}
                   task={s.task}
                   color={planColorVar(s.task.tags)}
+                  dimmed={draggingTaskId === s.task.id}
+                  fresh={freshTaskId === s.task.id}
+                  onPointerDown={
+                    onBlockPointerDown
+                      ? (e) => {
+                          if (e.button !== 0) return;
+                          const kind = (e.target as HTMLElement).closest("[data-grip]")
+                            ? "resize"
+                            : "move";
+                          onBlockPointerDown(s.task, kind, e);
+                        }
+                      : undefined
+                  }
                 />
               ))}
               {isToday && nowInWindow && (

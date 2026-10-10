@@ -199,3 +199,95 @@ export function planChip(planStart: string): string {
   if (!p) return "";
   return `${"一二三四五六日"[(p.day.getDay() + 6) % 7]} ${fmtMin(p.min)}`;
 }
+
+/** 从 (day, min) 起沿「日窗口」推进 durMin 分钟：溢出 18:00 折入次日 8:00。
+ *  这是「穿透日分割线」的写入侧数学——planEnd 恒为物理墙钟时间
+ *  （如周三 17:30 + 60min = 周四 08:30），渲染层按窗口裁剪自然分成两段。 */
+export function addWindowMinutes(
+  day: Date,
+  min: number,
+  durMin: number,
+): { day: Date; min: number } {
+  let d = new Date(day);
+  let cur = min;
+  let rest = durMin;
+  // 防脏数据死循环：窗口分钟上限 = 366 天
+  for (let guard = 0; guard < 366 && rest > 0; guard++) {
+    const room = DAY_END_MIN - cur;
+    if (rest <= room) {
+      cur += rest;
+      rest = 0;
+      break;
+    }
+    rest -= room;
+    d = addDays(d, 1);
+    cur = DAY_START_MIN;
+  }
+  return { day: d, min: cur };
+}
+
+/** 两个 planDT 之间落在日窗口内的分钟数（移动既有计划时保持「窗口时长」用）。
+ *  脏数据（end <= start / 解析失败）返 null，调用方兜底 60。 */
+export function windowMinutesBetween(
+  planStart: string,
+  planEnd: string,
+): number | null {
+  const from = parsePlanDT(planStart);
+  const to = parsePlanDT(planEnd);
+  if (!from || !to) return null;
+  let startMs = from.day.getTime() + from.min * 60_000;
+  const endMs = to.day.getTime() + to.min * 60_000;
+  if (endMs <= startMs) return null;
+  let total = 0;
+  let day = from.day;
+  // 单调推进日窗口，最多走 366 天（防脏数据死循环）
+  for (let guard = 0; guard < 366 && startMs < endMs; guard++) {
+    const winStart = day.getTime() + DAY_START_MIN * 60_000;
+    const winEnd = day.getTime() + DAY_END_MIN * 60_000;
+    const s = Math.max(startMs, winStart);
+    const e = Math.min(endMs, winEnd);
+    if (e > s) total += Math.round((e - s) / 60_000);
+    startMs = Math.max(startMs, winEnd);
+    day = addDays(day, 1);
+  }
+  return total;
+}
+
+/** 拖拽落点的最小 patch 值（纯函数，UI 只管把结果发 task_patch）。
+ *  - schedule：落点起 + durMin（默认 60，跨 18:00 自动折日）；
+ *  - move：保持原计划的窗口时长；
+ *  - resize：end = 指针物理时刻，但不得短于起点 + 30 窗口分钟。 */
+export function planPatchForDrop(
+  kind: "schedule" | "move" | "resize",
+  opts: {
+    day: Date;
+    min: number;
+    durMin?: number;
+    prevPlanStart?: string | null;
+    prevPlanEnd?: string | null;
+  },
+): { planStart: string; planEnd: string } {
+  const startMin = clampWindowMin(snapMin(opts.min));
+  const durMin =
+    opts.durMin ??
+    (kind === "schedule"
+      ? DEFAULT_DURATION_MIN
+      : (opts.prevPlanStart && opts.prevPlanEnd
+          ? windowMinutesBetween(opts.prevPlanStart, opts.prevPlanEnd)
+          : null) ?? DEFAULT_DURATION_MIN);
+  if (kind === "resize" && opts.prevPlanStart) {
+    const from = parsePlanDT(opts.prevPlanStart);
+    if (from) {
+      // 指针相对起点的「窗口分钟」数（跨夜部分不计时长），钳到最短 30
+      const between = windowMinutesBetween(
+        opts.prevPlanStart,
+        buildPlanDT(opts.day, opts.min),
+      );
+      const winDur = between !== null ? Math.max(SNAP_MIN, snapMin(between)) : SNAP_MIN;
+      const end = addWindowMinutes(from.day, from.min, winDur);
+      return { planStart: opts.prevPlanStart, planEnd: buildPlanDT(end.day, end.min) };
+    }
+  }
+  const end = addWindowMinutes(opts.day, startMin, durMin);
+  return { planStart: buildPlanDT(opts.day, startMin), planEnd: buildPlanDT(end.day, end.min) };
+}

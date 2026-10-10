@@ -1,17 +1,40 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Task } from "../../types";
-import { addDays, startOfWeek } from "./week";
-import { WeekGrid } from "./WeekGrid";
+import {
+  DAY_END_MIN,
+  DAY_SPAN_MIN,
+  DAY_START_MIN,
+  addDays,
+  clampWindowMin,
+  fmtMin,
+  parsePlanDT,
+  planColorVar,
+  planPatchForDrop,
+  snapMin,
+  startOfWeek,
+  windowMinutesBetween,
+} from "./week";
+import { WeekGrid, type SlotHint } from "./WeekGrid";
 import { TaskPool } from "./TaskPool";
 
-/** 任务页：周时间网格 + 右侧毛玻璃任务池。
- *  批 2 为只读渲染（拖拽排期在批 3，详情面板在批 4）。 */
+const DOW1 = "一二三四五六日";
+
+type Drag =
+  | { kind: "create"; task: Task }
+  | { kind: "move"; task: Task }
+  | { kind: "resize"; task: Task };
+
+/** 拖拽编排（批 3）：池→网格排期、网格块移动、底缘拉伸改时长、拖回池清除。
+ *  写入恒发最小 patch（planStart/planEnd 或双 null），跨 18:00 折行数学在 week.ts。 */
 export function TaskTimelinePage({
   tasks,
   onNewTask,
+  onUpdate,
 }: {
   tasks: Task[];
   onNewTask?: () => void;
+  /** 任务字段定向补丁（task_patch 通道）；拖拽提交的最小写路径 */
+  onUpdate?: (taskId: string, patch: Partial<Task>) => void;
 }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   // 「现在」单一时间源：页头今天回跳与网格现在线共用，每分钟校准
@@ -20,13 +43,28 @@ export function TaskTimelinePage({
     const id = setInterval(() => setNow(new Date()), 60_000);
     return () => clearInterval(id);
   }, []);
+
+  const [slot, setSlot] = useState<SlotHint | null>(null);
+  const [ghost, setGhost] = useState<{
+    x: number;
+    y: number;
+    title: string;
+    color: string;
+    label: string;
+  } | null>(null);
+  const [dragTaskId, setDragTaskId] = useState<string | null>(null);
+  const [freshId, setFreshId] = useState<string | null>(null);
+  const gridBodyRef = useRef<HTMLDivElement | null>(null);
+  const poolRef = useRef<HTMLElement | null>(null);
+  const freshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const weekEnd = addDays(weekStart, 6);
   const rangeLabel = useMemo(() => {
     const fmt = (d: Date) => `${d.getMonth() + 1}月${d.getDate()}日`;
     return `${fmt(weekStart)} – ${fmt(weekEnd)}`;
   }, [weekStart, weekEnd]);
 
-  // 池口径：全部未完成（含已排期——已排期的带时间角标，双向拖拽在批 3 打通）
+  // 池口径：全部未完成（含已排期——已排期的带时间角标，双向拖拽）
   const poolTasks = useMemo(
     () => tasks.filter((t) => t.column !== "done" && !t.deletedAt && !t.archived),
     [tasks],
@@ -35,6 +73,149 @@ export function TaskTimelinePage({
     () => startOfWeek(now).getTime() === weekStart.getTime(),
     [now, weekStart],
   );
+
+  const markFresh = (id: string) => {
+    setFreshId(id);
+    if (freshTimer.current) clearTimeout(freshTimer.current);
+    freshTimer.current = setTimeout(() => setFreshId(null), 260);
+  };
+
+  /** 指针 → (dayIdx, 吸附分钟)；不在任何列内返 null */
+  const locate = (x: number, y: number) => {
+    const cols = gridBodyRef.current?.querySelectorAll<HTMLElement>("[data-day]");
+    if (!cols) return null;
+    for (const col of cols) {
+      const r = col.getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top - 24 && y <= r.bottom + 24) {
+        const dayIdx = Number(col.dataset.day);
+        const min = clampWindowMin(
+          snapMin(DAY_START_MIN + ((y - r.top) / r.height) * DAY_SPAN_MIN),
+        );
+        return { dayIdx, min, day: addDays(weekStart, dayIdx) };
+      }
+    }
+    return null;
+  };
+
+  const startDrag = (e: React.PointerEvent, drag: Drag) => {
+    e.preventDefault();
+    setDragTaskId(drag.task.id);
+    const durMin =
+      drag.kind === "create"
+        ? 60
+        : drag.kind === "move" && drag.task.planStart && drag.task.planEnd
+          ? (windowMinutesBetween(drag.task.planStart, drag.task.planEnd) ?? 60)
+          : 60;
+    const color = planColorVar(drag.task.tags);
+    let overPool = false;
+
+    const onMove = (ev: PointerEvent) => {
+      const hit = locate(ev.clientX, ev.clientY);
+      overPool =
+        drag.kind === "move" &&
+        (() => {
+          const r = poolRef.current?.getBoundingClientRect();
+          return !!r && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom;
+        })();
+      if (!hit || overPool) {
+        setSlot(null);
+        setGhost(
+          overPool
+            ? { x: ev.clientX, y: ev.clientY, title: drag.task.title, color, label: "松手清除排期" }
+            : null,
+        );
+        return;
+      }
+      if (drag.kind === "resize") {
+        const patch = planPatchForDrop("resize", {
+          day: hit.day,
+          min: hit.min,
+          prevPlanStart: drag.task.planStart,
+        });
+        const end = parsePlanDT(patch.planEnd);
+        const start = parsePlanDT(patch.planStart)!;
+        const sameDay = end!.day.getTime() === start.day.getTime();
+        setSlot({
+          dayIdx: hit.dayIdx,
+          startMin: sameDay ? start.min : DAY_START_MIN,
+          endMin: sameDay ? end!.min : DAY_END_MIN,
+        });
+        setGhost({
+          x: ev.clientX,
+          y: ev.clientY,
+          title: drag.task.title,
+          color,
+          label: `至 ${patch.planEnd.slice(11)}`,
+        });
+      } else {
+        const patch = planPatchForDrop(drag.kind === "create" ? "schedule" : "move", {
+          day: hit.day,
+          min: hit.min,
+          durMin,
+        });
+        const start = parsePlanDT(patch.planStart)!;
+        const end = parsePlanDT(patch.planEnd)!;
+        const sameDay = end.day.getTime() === start.day.getTime();
+        setSlot({
+          dayIdx: hit.dayIdx,
+          startMin: start.min,
+          endMin: sameDay ? end.min : DAY_END_MIN,
+        });
+        const sd = DOW1[(start.day.getDay() + 6) % 7];
+        const ed = DOW1[(end.day.getDay() + 6) % 7];
+        setGhost({
+          x: ev.clientX,
+          y: ev.clientY,
+          title: drag.task.title,
+          color,
+          label: sameDay
+            ? `${sd} ${fmtMin(start.min)} – ${fmtMin(end.min)}`
+            : `${sd} ${fmtMin(start.min)} – ${ed} ${fmtMin(end.min)}`,
+        });
+      }
+    };
+
+    const onUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setDragTaskId(null);
+      setSlot(null);
+      setGhost(null);
+      const hit = locate(ev.clientX, ev.clientY);
+      const poolR = poolRef.current?.getBoundingClientRect();
+      const droppedOnPool =
+        drag.kind === "move" &&
+        !!poolR &&
+        ev.clientX >= poolR.left &&
+        ev.clientX <= poolR.right &&
+        ev.clientY >= poolR.top &&
+        ev.clientY <= poolR.bottom;
+      if (droppedOnPool) {
+        onUpdate?.(drag.task.id, { planStart: null, planEnd: null });
+        return;
+      }
+      if (!hit) return;
+      if (drag.kind === "resize") {
+        const patch = planPatchForDrop("resize", {
+          day: hit.day,
+          min: hit.min,
+          prevPlanStart: drag.task.planStart,
+        });
+        onUpdate?.(drag.task.id, { planEnd: patch.planEnd });
+      } else {
+        const patch = planPatchForDrop(drag.kind === "create" ? "schedule" : "move", {
+          day: hit.day,
+          min: hit.min,
+          durMin,
+        });
+        onUpdate?.(drag.task.id, patch);
+        markFresh(drag.task.id);
+      }
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-view="task-timeline">
@@ -74,9 +255,43 @@ export function TaskTimelinePage({
         )}
       </div>
       <div className="relative flex min-h-0 flex-1">
-        <WeekGrid tasks={tasks} weekStart={weekStart} now={now} />
-        <TaskPool tasks={poolTasks} />
+        <WeekGrid
+          tasks={tasks}
+          weekStart={weekStart}
+          now={now}
+          slot={slot}
+          draggingTaskId={dragTaskId}
+          freshTaskId={freshId}
+          bodyRef={gridBodyRef}
+          onBlockPointerDown={(task, kind, e) => {
+            if (!onUpdate || !task.planStart || !task.planEnd) return;
+            startDrag(e, { kind, task });
+          }}
+        />
+        <TaskPool
+          tasks={poolTasks}
+          innerRef={poolRef}
+          onItemPointerDown={(task, e) => {
+            if (!onUpdate) return;
+            startDrag(e, { kind: "create", task });
+          }}
+        />
       </div>
+      {ghost && (
+        <div
+          className="drag-ghost"
+          style={
+            {
+              "--c": ghost.color,
+              left: ghost.x + 14,
+              top: ghost.y - 14,
+            } as React.CSSProperties
+          }
+        >
+          <div className="drag-ghost-title">{ghost.title}</div>
+          <div className="drag-ghost-label num">{ghost.label}</div>
+        </div>
+      )}
     </div>
   );
 }

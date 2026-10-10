@@ -945,7 +945,11 @@ function App() {
         </nav>
         <main className="min-w-0 flex-1 overflow-y-auto p-6">
           {view === "board" ? (
-            <TaskTimelinePage tasks={visibleTasks} onNewTask={addTask} />
+            <TaskTimelinePage
+              tasks={visibleTasks}
+              onNewTask={addTask}
+              onUpdate={updateTask}
+            />
           ) : view === "workflow" ? (
             <WorkflowPage
               tasks={tasks}

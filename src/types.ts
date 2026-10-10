@@ -108,10 +108,11 @@ export interface Task {
   schedLast?: number | null;
   /** 定时启用开关：undefined = 启用（暂停保留配置不丢节奏） */
   enabled?: boolean;
-  /** 计划开始（周时间网格排期）："YYYY-MM-DDTHH:mm"（与 due 同格式）；缺省 = 未排期 */
-  planStart?: string;
-  /** 计划结束，恒 > planStart；缺省 = 未排期。task_patch 单字段校验格式，null = 清除排期 */
-  planEnd?: string;
+  /** 计划开始（周时间网格排期）："YYYY-MM-DDTHH:mm"（与 due 同格式）；缺省 = 未排期。
+   *  null = 显式清除（task_patch 语义：null 落库清值，缺键 = 未提供保留旧值） */
+  planStart?: string | null;
+  /** 计划结束，恒 > planStart；null 语义同上 */
+  planEnd?: string | null;
   /** 子 agent 编排（ 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
   assignee?: string | null;
   /** 预算三硬顶（上卡可见）：轮数 / 工具调用 / 墙钟秒 */
