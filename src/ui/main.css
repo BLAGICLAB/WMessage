@@ -891,8 +891,7 @@
   width: 0%;
   /* 不继承圆角：由 .exec-bar 的 overflow:hidden + 圆角裁切，
      低液位时左端圆/右端直，更像「液体填充」而非孤立的圆球 */
-  /* 渐变跟随 --success token：浅色 #16a34a、深色 #4ade80，--success
-     在 :root/.dark 各自声明，避免硬编码色值脱离主题 */
+  /* 渐变跟随 --success token（在 :root/.dark 各自声明），避免硬编码色值脱离主题 */
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--success) 70%, white) 0%,
