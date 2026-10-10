@@ -164,8 +164,18 @@ impl EventHub {
                 }
             }
             Err(e) => {
-                // 保持 if let Ok 语义：中毒不 into_inner 抢救，只留痕跳过入史
-                eprintln!("[mutex_poisoned] api_server::broadcast history: {e:?}");
+                // 2026-10-10 改：与上方「落盘失败 → 归还 id + 早退」对齐
+                // ——「要么持久化要么不推进」语义统一。中毒意味着某线程在
+                // 持锁时 panic，VecDeque 内容状态不可信；into_inner 抢救会
+                // 让客户端（已被 broadcast 看到的）与历史不一致——
+                // 新客户端 reconnect 时 replay() 拿不到这条事件、Last-Event-ID
+                // 去重逻辑因此失效。归还 id + 早退 + 留痕：下次广播重新
+                // fetch_add 拿同一 id 重试（单写者临界区，无竞争）。
+                eprintln!(
+                    "[event_hub] history mutex poisoned, id {id} rolled back (fail-closed): {e:?}"
+                );
+                self.next_id.fetch_sub(1, Ordering::SeqCst);
+                return;
             }
         }
         // A2: sync_channel(256) + try_send — 队列满时 try_send 立即返回 Err，广播不阻塞
