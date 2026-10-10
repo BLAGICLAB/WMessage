@@ -142,6 +142,26 @@ describe("TaskTimelinePage", () => {
     expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
   });
 
+  it("从池拖出时池淡出让出视野（露出周末列），松手淡回", () => {
+    render(
+      <TaskTimelinePage
+        tasks={TASKS}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const pool = screen.getByLabelText("任务池");
+    expect(pool.className).not.toContain("opacity-0");
+    // 按下池项 + 移动 = 拖拽开始 → 池淡出
+    fireEvent.pointerDown(screen.getByText("未排期任务乙"), { button: 0 });
+    fireEvent.pointerMove(window, { clientX: 420, clientY: 320 });
+    expect(pool.className).toContain("opacity-0");
+    // 松手落位 → 淡回
+    fireEvent.pointerUp(window, { clientX: 420, clientY: 320 });
+    expect(pool.className).not.toContain("opacity-0");
+  });
+
   it("editingId 变化：面板打开并聚焦标题（⌘N 新建路径）", () => {
     const { rerender } = render(
       <TaskTimelinePage tasks={TASKS} onUpdate={vi.fn()} onSetColumn={vi.fn()} onDelete={vi.fn()} />,

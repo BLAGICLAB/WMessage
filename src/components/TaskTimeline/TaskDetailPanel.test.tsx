@@ -1,8 +1,18 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { emit } from "@tauri-apps/api/event";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import type { Task } from "../../types";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  WebviewWindow: { getByLabel: vi.fn().mockResolvedValue(null) },
+}));
 
 const base: Task = {
   id: "p1",
@@ -167,5 +177,69 @@ describe("TaskDetailPanel", () => {
     expect(document.activeElement).toBe(input);
     expect(input.selectionStart).toBe(0);
     expect(input.selectionEnd).toBe("新任务".length);
+  });
+
+  it("文件绑定：chip 显示、移除发 filesPatch([])、无文件时显示绑定按钮", async () => {
+    const user = userEvent.setup();
+    const { onUpdate } = setup({
+      files: [{ path: "/Users/me/桌面/报告.docx", isDir: false }],
+    });
+    expect(screen.getByText(/报告\.docx/)).toBeInTheDocument();
+    await user.click(screen.getByLabelText("移除 报告.docx"));
+    // filesPatch 同时清旧单文件字段（filePath/fileIsDir 迁移语义）
+    expect(onUpdate).toHaveBeenCalledWith({
+      files: [],
+      filePath: null,
+      fileIsDir: null,
+    });
+    // 清空后出现绑定入口
+    cleanup();
+    render(
+      <TaskDetailPanel
+        task={base}
+        onUpdate={onUpdate}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("绑定文件")).toBeInTheDocument();
+    expect(screen.getByText("绑定文件夹")).toBeInTheDocument();
+  });
+
+  it("交给机器人：发 execute-task 事件（id + 标题）", async () => {
+    const user = userEvent.setup();
+    setup();
+    await user.click(screen.getByRole("button", { name: "交给机器人" }));
+    expect(emit).toHaveBeenCalledWith("execute-task", {
+      id: base.id,
+      title: base.title,
+    });
+  });
+
+  it("状态行：完成卡显示完成时间；机器人执行中显示对应文案", () => {
+    const h = setup({ column: "done", completedAt: 1760000000000 });
+    cleanup();
+    render(
+      <TaskDetailPanel
+        task={{ ...base, column: "done", completedAt: 1760000000000 }}
+        onUpdate={h.onUpdate}
+        onSetColumn={h.onSetColumn}
+        onDelete={h.onDelete}
+        onClose={h.onClose}
+      />,
+    );
+    expect(screen.getByText(/完成 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/)).toBeInTheDocument();
+    cleanup();
+    render(
+      <TaskDetailPanel
+        task={{ ...base, botAssigned: true }}
+        onUpdate={h.onUpdate}
+        onSetColumn={h.onSetColumn}
+        onDelete={h.onDelete}
+        onClose={h.onClose}
+      />,
+    );
+    expect(screen.getByText("机器人执行中…")).toBeInTheDocument();
   });
 });

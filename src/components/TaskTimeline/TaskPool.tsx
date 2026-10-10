@@ -16,21 +16,25 @@ export function sortPoolTasks(tasks: Task[]): Task[] {
 
 /** 任务池（毛玻璃悬浮层）：列出全部未完成任务的统一标题块，可折叠成右缘把手。
  *  onItemPointerDown 供页面发起「池→网格」拖拽；innerRef 供页面做「拖回池清除」
- *  落点判定；doneTasks 折叠在池底「已完成 N」里（点开可选中进详情面板）。 */
+ *  落点判定；doneTasks 折叠在池底「已完成 N」里（点开可选中进详情面板）；
+ *  faded = 拖拽进行中让出视野（从池拖出时淡出，拖完淡回）。 */
 export function TaskPool({
   tasks,
   doneTasks = [],
   onItemPointerDown,
   onTaskClick,
   innerRef,
+  faded = false,
 }: {
   tasks: Task[];
   doneTasks?: Task[];
   onItemPointerDown?: (task: Task, e: React.PointerEvent) => void;
   onTaskClick?: (task: Task) => void;
   innerRef?: React.Ref<HTMLElement>;
+  faded?: boolean;
 }) {
   const [showDone, setShowDone] = useState(false);
+  const fadeCls = faded ? "opacity-0 pointer-events-none" : "opacity-100";
   const [open, setOpen] = useState(() => localStorage.getItem(OPEN_KEY) !== "0");
   useEffect(() => {
     localStorage.setItem(OPEN_KEY, open ? "1" : "0");
@@ -43,7 +47,7 @@ export function TaskPool({
         type="button"
         aria-label={`展开任务池（${sorted.length} 个未完成）`}
         onClick={() => setOpen(true)}
-        className="glass absolute top-1/2 right-0 z-10 flex -translate-y-1/2 flex-row-reverse items-center gap-2 rounded-r-none border-r-0 px-[7px] py-3.5 text-xs tracking-[0.08em] text-[var(--t3)]"
+        className={`glass absolute top-1/2 right-0 z-10 flex -translate-y-1/2 flex-row-reverse items-center gap-2 rounded-r-none border-r-0 px-[7px] py-3.5 text-xs tracking-[0.08em] text-[var(--t3)] transition-opacity duration-200 ${fadeCls}`}
       >
         任务池
         <span className="num inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-semibold text-white dark:text-[#101228]">
@@ -56,7 +60,7 @@ export function TaskPool({
     <aside
       ref={innerRef}
       aria-label="任务池"
-      className="glass absolute top-3 right-3 bottom-3 z-10 flex w-64 flex-col overflow-hidden"
+      className={`glass absolute top-3 right-3 bottom-3 z-10 flex w-64 flex-col overflow-hidden transition-opacity duration-200 ${fadeCls}`}
     >
       <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--edge)_70%,transparent)] px-3.5 pt-3 pb-2.5">
         <b className="text-[13px] font-semibold text-[var(--t1)]">任务池</b>

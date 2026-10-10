@@ -62,6 +62,8 @@ export function TaskTimelinePage({
     label: string;
   } | null>(null);
   const [dragTaskId, setDragTaskId] = useState<string | null>(null);
+  /** 池淡出只跟「从池拖出」（create）走——网格块拖回池时池是落点，必须可见 */
+  const [dragFromPool, setDragFromPool] = useState(false);
   const [freshId, setFreshId] = useState<string | null>(null);
   const gridBodyRef = useRef<HTMLDivElement | null>(null);
   const poolRef = useRef<HTMLElement | null>(null);
@@ -123,6 +125,7 @@ export function TaskTimelinePage({
   const startDrag = (e: React.PointerEvent, drag: Drag) => {
     e.preventDefault();
     setDragTaskId(drag.task.id);
+    setDragFromPool(drag.kind === "create");
     // 点 vs 拖区分：位移 ≤4px 视为点击（move/create → 选中开面板；resize 无点击语义）
     const startX = e.clientX;
     const startY = e.clientY;
@@ -209,6 +212,7 @@ export function TaskTimelinePage({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       setDragTaskId(null);
+      setDragFromPool(false);
       setSlot(null);
       setGhost(null);
       // 点击（未拖动）：选中任务打开详情面板（move/create 同义；resize 无点击语义）
@@ -321,6 +325,7 @@ export function TaskTimelinePage({
             tasks={poolTasks}
             doneTasks={doneTasks}
             innerRef={poolRef}
+            faded={dragFromPool}
             onItemPointerDown={(task, e) => {
               if (!onUpdate) return;
               startDrag(e, { kind: "create", task });
