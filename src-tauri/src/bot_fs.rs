@@ -26,9 +26,9 @@ const LIST_MAX_ENTRIES: usize = 200;
 const WALK_MAX_DEPTH: usize = 5;
 /// 遍历时跳过的大而杂目录（另跳过所有 . 开头隐藏目录）
 const SKIP_DIRS: [&str; 4] = ["node_modules", "target", "dist", "build"];
-/// ：edit_file 可编辑文件上限（对齐 read 的可处理量级，超出提示拆分）
+/// edit_file 可编辑文件上限（对齐 read 的可处理量级，超出提示拆分）
 const EDIT_MAX_FILE_BYTES: usize = 1024 * 1024;
-/// ：write_file 内容上限（对齐 GREP_MAX_FILE_BYTES 量级）
+/// write_file 内容上限（对齐 GREP_MAX_FILE_BYTES 量级）
 const WRITE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 // per-tool 权限规则（Agent 透明化设计 §9.2-1）
@@ -431,7 +431,7 @@ fn is_within_allowlist(canonical: &Path, dirs: &[PathBuf]) -> bool {
     dirs.iter().any(|d| canonical.starts_with(d))
 }
 
-// ：文件编辑（edit_file / write_file）
+// 文件编辑（edit_file / write_file）
 //
 // 写白名单 ≠ 读白名单（设计决策，spec ）：可写根 = AI_Gen_Files + 任务卡绑定文件夹
 // + 设置页 allowedDirs；桌面/下载/文档默认项**只读不可写**——用户没显式授权改家目录
@@ -663,6 +663,19 @@ pub(crate) fn try_apply_edit(
             }
         };
         let count = re.find_iter(content).count();
+        let applied = re.replace_all(content, new).into_owned();
+        // 输出体积护栏：与读侧 EDIT_MAX_FILE_BYTES 同一量级；1MB 输入若替换扩张
+        // 出数倍会塞爆 write 路径 + 后续 checkpoint 快照
+        if applied.len() > EDIT_MAX_FILE_BYTES {
+            return Err((
+                EditErrorKind::NotFound,
+                format!(
+                    "regex 替换后体积 {} 超过 {} 字节上限（匹配 {count} 处）。拆细替换或改用 write_file。",
+                    applied.len(),
+                    EDIT_MAX_FILE_BYTES
+                ),
+            ));
+        }
         if count == 0 {
             let head: Vec<&str> = content.lines().take(3).collect();
             let head_show = if head.is_empty() {
@@ -902,7 +915,7 @@ pub(crate) fn build_file_change_receipt(
 
 /// edit 同步内核（spawn_blocking 调用；独立函数便于单测）：
 /// 读文件（≤1MB、UTF-8）→ 三级匹配 → 返回替换结果。
-///  起同时带回**修改前全文**（diff 与回滚快照的证据源，避免再读一次盘）。
+/// 同时带回**修改前全文**（diff 与回滚快照的证据源，避免再读一次盘）。
 fn edit_file_sync(
     canonical: PathBuf,
     old: String,
@@ -1822,7 +1835,7 @@ mod tests {
         assert_eq!(out, vec!["/t/f.txt:1: only"], "窗口越界应夹到文件边界");
     }
 
-    // ：edit 三级匹配 / write 校验 / 可写根集合
+    // edit 三级匹配 / write 校验 / 可写根集合
 
     #[test]
     fn apply_edit_exact_unique_and_multi_hit() {
@@ -1872,7 +1885,7 @@ mod tests {
         assert_eq!(out2, "x\nnew");
     }
 
-    // ：edit regex 模式（mode=regex 走 try_apply_edit use_regex=true 路径）
+    // edit regex 模式（mode=regex 走 try_apply_edit use_regex=true 路径）
 
     #[test]
     fn apply_edit_regex_replace_all_and_capture_groups() {

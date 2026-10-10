@@ -329,7 +329,8 @@ static void DeleteUnit(Unit unit, Func<int> nextId)
             // 行删除需 w:trPr/w:del 结构化标记（无 trPr 则补建），Word 才按「删行」显示修订
             var trPr = ru.Row.GetFirstChild<TableRowProperties>();
             trPr ??= ru.Row.PrependChild(new TableRowProperties());
-            trPr.PrependChild(new Deleted { Id = nextId().ToString(), Author = Author });
+            // w:del 必须排在 trPr 布局属性（cantSplit/tblHeader 等）之后
+            trPr.AppendChild(new Deleted { Id = nextId().ToString(), Author = Author });
             foreach (var cell in ru.Row.Elements<TableCell>())
                 foreach (var para in cell.Elements<Paragraph>())
                     MarkParagraphDeleted(para, nextId);
@@ -623,12 +624,13 @@ static List<Opcode> DiffList<T>(IReadOnlyList<T> a, IReadOnlyList<T> b) where T 
 {
     int n = a.Count, m = b.Count;
     // LCS 是 O(n×m) 内存：大文档段落级对齐（同 DiffText 的 4M cells 口径）超限时
-    // dp 表可达 GB 级——统一退化成单个 replace（整删+整增，语义等价）
-    const int MaxCells = 4_000_000; // 4M int ≈ 16MB，超出则整体 replace
+    // dp 表可达 GB 级——退化为按行号粗对齐（单条 replace opcode 由下游按
+    // min(n,m) 段配对 + 字符级 diff 逐段消耗）
+    const int MaxCells = 4_000_000; // 4M int ≈ 16MB，超出则按行号粗对齐
     if ((long)n * m > MaxCells)
     {
-        // 退化必须有痕：否则用户只看到「整段删+整段增」，不知道为什么没有逐段对齐
-        Console.Error.WriteLine($"warn: 序列过长（{n}×{m} 项），LCS 对齐退化为整体替换");
+        // 退化必须有痕：否则用户只看到「满屏逐段改写」，不知道为什么没段级 LCS 对齐
+        Console.Error.WriteLine($"warn: 序列过长（{n}×{m} 项），LCS 对齐退化为按行号粗对齐（每段走字符级 diff）");
         return new List<Opcode> { new Opcode("replace", 0, n, 0, m) };
     }
     // LCS 长度表（从右下角往回递推）

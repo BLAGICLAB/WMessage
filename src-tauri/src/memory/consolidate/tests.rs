@@ -106,6 +106,34 @@ fn parse_lesson_missing_or_empty_is_none() {
 }
 
 #[test]
+fn empty_ops_with_lesson_still_flows_through_proposal_bridge() {
+    // 复现：LLM 输出 `{"ops":[],"lesson":"..."}` 时，早退分支若在提案桥之前
+    // 直接 return，lesson 被静默丢弃、架空「反思双产物」。锁修复契约：
+    // 空 ops + Some(lesson) 走 post_consolidation 空轨（修复后早退分支的
+    // 同一调用）——lesson 提案真实产出、过 gate（候选池可见 / auto 档可落库），
+    // 且已进 emit 的 24h dedup 面（同提案二次 emit 报 deduped=1；
+    // 早退丢失该提案时这里会得到 written=1）。
+    let text = r#"{"ops":[],"lesson":"回归验证：遇到重复记录先合并再回答"}"#;
+    let ops = parse_ops(text);
+    let lesson = parse_lesson(text);
+    assert!(ops.is_empty(), "前置：ops 解析为空");
+    let lesson = lesson.expect("lesson 应被解析出");
+    crate::evolution::post_consolidation(&[], &ConsolidateReport::default(), Some(&lesson));
+    let proposal = crate::evolution::derive::derive_lesson_proposal(&lesson, 1_700_000_000_000)
+        .expect("lesson 应派生出提案");
+    assert!(
+        matches!(
+            crate::evolution::strategy::gate_decision(&proposal),
+            crate::evolution::strategy::GateDecision::Approved
+        ),
+        "lesson 提案（MemoryHint+Medium）应过 gate"
+    );
+    let report = crate::evolution::emit::emit_proposals(vec![proposal]);
+    assert_eq!(report.deduped, 1, "lesson 提案应已被桥 emit 过一次");
+    assert_eq!(report.written, 0, "不应有新写入（同 id 已在 dedup 表）");
+}
+
+#[test]
 fn parse_skips_malformed_and_unknown_ops() {
     let text = r#"{"ops":[
       {"action":"unknown_action","ids":["a"]},
@@ -163,7 +191,7 @@ fn apply_merge_with_missing_ids_skipped() {
     assert_eq!(store::load_all(&conn).unwrap().len(), 1);
 }
 
-///  助手：插一条带 evo: key tag 的 lesson 行（apply 链路同款形态）
+/// 测试助手：插一条带 evo: key tag 的 lesson 行（apply 链路同款形态）
 fn insert_lesson(conn: &rusqlite::Connection, pid: &str, content: &str, now: i64) -> String {
     let item = NewItem {
         kind: "lesson".into(),

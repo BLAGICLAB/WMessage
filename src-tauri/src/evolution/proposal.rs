@@ -168,7 +168,7 @@ pub fn proposal_id(category: ProposalCategory, target: &ProposalTarget, summary:
     short_hash(&raw)
 }
 
-/// R7→A 简化（）：判断 proposal 是否可逆（pure，no IO）
+/// 判断 proposal 是否可逆（pure，no IO）
 ///
 /// 规则（MVP）：
 /// - ToolSchemaHint：不可逆（改 schema 可能破坏现有 tool 调用）
@@ -280,6 +280,22 @@ mod tests {
         // 中文是字母数字字符（unicode alnum），保留——这意味着 proposal_id
         // 对中文摘要天然 idempotent（同中文表述 → 同归一化）
         assert_eq!(normalize_for_hash("工具调用失败"), "工具调用失败");
+    }
+
+    #[test]
+    fn normalize_folds_non_ascii_uppercase_to_lowercase() {
+        // 大写折叠是 Unicode 级（char::to_lowercase），不止 ASCII：
+        // 全角字母、希腊大写都折到小写形——同义摘要跨全/半角、跨大小写
+        // 得同一归一化，id 才稳定（dedup 前提）
+        assert_eq!(normalize_for_hash("ＡＢＣ"), "ａｂｃ");
+        assert_eq!(
+            normalize_for_hash("Ａｂｃ"),
+            "ａｂｃ",
+            "全角大小写折叠到同一形"
+        );
+        assert_eq!(normalize_for_hash("ΣΟΦΙΑ"), "σοφια", "希腊大写折叠");
+        // 中文无大小写概念，直通
+        assert_eq!(normalize_for_hash("工具调用"), "工具调用");
     }
 
     // proposal_id 稳定性

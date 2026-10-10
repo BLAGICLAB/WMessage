@@ -336,14 +336,20 @@ impl CommandError {
                 status,
                 body_preview,
             } => {
-                // 剥控制字符（保留 \t\n\r）：上游错误体可能混入脏字节，防 toast/日志串行
+                // 剥控制字符（保留 \t\n\r；DEL 0x7F 与 C1 区 U+0080-U+009F
+                // 同属控制字符一并剥）：上游错误体可能混入脏字节，防 toast/日志串行
                 format!(
                     "大模型 API 错误 {status}：{}",
                     body_preview
                         .chars()
                         .filter(|c| !matches!(
                             c,
-                            '\x00'..='\x08' | '\x0B' | '\x0C' | '\x0E'..='\x1F'
+                            '\x00'..='\x08'
+                                | '\x0B'
+                                | '\x0C'
+                                | '\x0E'..='\x1F'
+                                | '\x7F'
+                                | '\u{80}'..='\u{9F}'
                         ))
                         .collect::<String>()
                 )
@@ -541,7 +547,7 @@ mod tests {
         }
     }
 
-    ///  #2 簇B：新 code 的 code()/recoverable/message/序列化契约。
+    /// 新增 code 的 code()/recoverable/message/序列化契约样例。
     #[test]
     fn invalid_workspace_link_kind_contract() {
         let e = CommandError::InvalidWorkspaceLinkKind {
@@ -600,6 +606,20 @@ mod tests {
     fn display_eq_message() {
         let err = CommandError::BotDisabled;
         assert_eq!(format!("{err}"), err.message());
+    }
+
+    #[test]
+    fn llm_api_error_message_strips_control_chars_keeps_tab_newline_cr() {
+        // 剥离契约与注释一致：C0 控制字符（除 \t\n\r）+ DEL(0x7F) +
+        // C1 区 U+0080-U+009F 全剥；\t\n\r 保留（audit 侧 escape_for_log 再转义）
+        let e = CommandError::LlmApiError {
+            status: 500,
+            body_preview: "a\u{0}b\u{7F}c\td\ne\rf\u{1}g\u{9F}h".into(),
+        };
+        assert_eq!(e.message(), "大模型 API 错误 500：abc\td\ne\rfgh");
+        let m = e.message();
+        assert!(!m.contains('\u{7F}'), "DEL 必须被剥离：{m:?}");
+        assert!(!m.contains('\u{9F}'), "C1 控制字符必须被剥离：{m:?}");
     }
 
     #[test]

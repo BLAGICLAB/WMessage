@@ -277,7 +277,7 @@ fn format_candidates(items: &[MemItem]) -> String {
 /// - distill：新建 kind=reflection、importance=4、source=system 条目。
 /// 指令引用的 id 不存在/不足以执行 → 跳过该条（计数不增）。
 /// embs 与 ops 平行（embs[i] = ops[i].content 的嵌入；None = 嵌入失败按降级处理）。
-/// 旧签名委托默认参数（ 契约：旧调用与测试零改动）
+/// 旧签名委托默认参数（契约：旧调用与测试零改动）
 pub fn apply_ops(
     conn: &mut rusqlite::Connection,
     ops: &[ConsolidateOp],
@@ -459,6 +459,15 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     let ops = parse_ops(&text);
     let lesson = parse_lesson(&text);
     if ops.is_empty() {
+        // lesson 是反思的第二产物：ops 空但 lesson 非空时仍要过提案桥，
+        // 否则 `{"ops":[],"lesson":"..."}` 形态的输出静默丢 lesson
+        if lesson.is_some() {
+            crate::evolution::post_consolidation(
+                &[],
+                &ConsolidateReport::default(),
+                lesson.as_deref(),
+            );
+        }
         return Ok(ConsolidateReport::default());
     }
     // 嵌入在持锁前批量算好（独立阻塞闭包、不持 DB 写锁，与 mod.rs「嵌入计算一律在

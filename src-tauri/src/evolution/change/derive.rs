@@ -1,4 +1,4 @@
-//!  L2 版本层 · 从 EvolutionProposal 派生 ChangeRecord
+//! L2 版本层 · 从 EvolutionProposal 派生 ChangeRecord
 //!
 //! 派生规则（按 DERIVABILITY.md）：
 //! - `change_id`           = `"chg-" + proposal_id`
@@ -27,15 +27,9 @@ pub fn derive_mem_key(proposal_id: &str) -> String {
 /// schema_version 默认值
 pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
 
-/// 自动应用门槛判定（构造时算，DERIVABILITY.md 字段 8）。
-///
-/// **只检硬约束 5/6**（仅 MemoryHint + High/Medium 可自动应用）——其余约束
-/// 由 apply 入口校验，本函数**不代表 9 条全合规**——这正是改名的原因
-///（旧名让调用方按名字推断成全合规，可能跳过下游复核）。
-/// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）
-///
+/// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）：
 /// 4/6 层映射；Parameter / Code 两层当前无 category 对应，
-/// / 触发后再扩展。
+/// 出现对应 category 时再扩展。
 pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
     match category {
         ProposalCategory::MemoryHint => EvolutionLayer::Policy,
@@ -47,7 +41,10 @@ pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
 
 /// 从 EvolutionProposal 构造 ChangeRecord
 ///
-/// 初始 status 由 compliance 决定：
+/// 合规判定直连策略层 gate_decision（构造时算，DERIVABILITY.md 字段 8）：
+/// **只检硬约束 5/6**（仅 MemoryHint + High/Medium 可自动应用），不代表
+/// 9 条全合规——其余约束由 apply 入口校验，调用方不得据本函数推断全合规
+/// 而跳过下游复核。初始 status 由 compliance 决定：
 /// - compliance=true  → Pending（待沙箱或批准）
 /// - compliance=false → Rejected（SystemRejected）
 pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {

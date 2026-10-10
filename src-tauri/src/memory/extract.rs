@@ -10,12 +10,12 @@
 //! - 仅交互式聊天（任务执行/定时/Skill 会话语料是任务指令，不是用户画像）；
 //! - `memoryControl.autoExtract`：off（默认）/ auto（直接入库）/ confirm（进
 //!   待确认队列 mem_pending，用户过目后入库）；
-//! - `memoryControl.autoWriteEnabled` = false 时抽取整体不跑（ 总闸优先）。
+//! - `memoryControl.autoWriteEnabled` = false 时抽取整体不跑（总闸优先）。
 //!
 //! 限频：每会话 [`EXTRACT_MIN_INTERVAL_SECS`] 内最多抽取一次（进程内
 //! check-and-set，gate 通过即占窗口——抽取失败也等下一窗口，防失败风暴）。
 //!
-//! 写入时冲突裁决（ 两段式，仅 Auto 档）：抽取解析后逐条与既有记忆比对
+//! 写入时冲突裁决（两段式，仅 Auto 档）：抽取解析后逐条与既有记忆比对
 //! 语义相似度，top-1 且 cos ≥ dedupHint 才算冲突候选；有候选才发第二次 LLM
 //! 逐条裁决 new（新信息照插入）/ update（改口 → update_by_id 更新原条目，
 //! 不堆积）/ skip（重复无增量丢弃）；坏输出整体回退全 new（照插入，语义去重
@@ -280,7 +280,7 @@ pub fn maybe_extract_from_session(app: AppHandle, session_id: Option<String>, in
     };
     let ctrl = crate::bot::read_memory_control(&app);
     if !auto_write_enabled(ctrl.as_ref()) {
-        return; // U15 总闸优先：模型主动记忆关 = 抽取也不跑
+        return; // 总闸优先：模型主动记忆关 = 抽取也不跑
     }
     let mode = auto_extract_mode(ctrl.as_ref());
     if mode == AutoExtract::Off {
@@ -336,7 +336,7 @@ struct AdjudicationCounts {
     updated: usize,
     /// Skip 丢弃（含容量满拒写/防劫持拒写——数据性拒收）
     skipped: usize,
-    /// 存储故障条数（聚合计数， 口径）
+    /// 存储故障条数（聚合计数）
     failed: usize,
 }
 
@@ -399,7 +399,9 @@ fn build_adjudication_msgs(
 /// 坏输出 / 缺项 / 未知 action / 幻觉 existing_id 一律回退 New——裁决失败只
 /// 降级为 v1 行为（照插入，insert_item_with 语义去重兜底），绝不丢数据。
 /// 同批多条事实命中同一候选都判 update 时，只有第一条放行 Update，
-/// 后续降级 New（顺序 update_by_id 会让后者覆盖前者，第一条内容丢失）。
+/// 后续降级 Skip：降级 New 会走 insert 的语义去重合并，拿第二事实覆盖首条
+/// 刚改写的内容并冲掉 tags/source/importance——Skip 与「重复无增量丢弃」
+/// 既有语义一致，首条事实与溯源完好。
 fn parse_adjudication(text: &str, candidates: &[Option<store::MemItem>]) -> Vec<Adjudication> {
     let t = text.trim();
     let t = t
@@ -435,10 +437,12 @@ fn parse_adjudication(text: &str, candidates: &[Option<store::MemItem>]) -> Vec<
             },
             _ => Adjudication::New, // new / 未知 / 缺 action → 回退 new
         };
-        // 候选已被本批更早的 update 认领 → 降级 New，防顺序覆盖丢内容
+        // 候选已被本批更早的 update 认领 → 降级 Skip。不降 New：第二条走
+        // insert 语义去重合并（cos≥0.92）会用第二事实覆盖首条刚改写的内容
+        // 并冲掉 tags/source/importance；Skip = 同候选重复无增量，丢弃
         if let Adjudication::Update(id) = &adj {
             if !claimed.insert(id.clone()) {
-                out.push(Adjudication::New);
+                out.push(Adjudication::Skip);
                 continue;
             }
         }
@@ -454,7 +458,7 @@ fn parse_adjudication(text: &str, candidates: &[Option<store::MemItem>]) -> Vec<
 /// 目标已消失（裁决在锁外、落库前被删）→ 回退 New；改写存储故障 → 计 failed
 /// 原条目未动（不做插入兜底：新条目带空 tags，语义去重可能 merge 到原行把
 /// key 覆盖掉）；Skip → 丢弃。
-/// 单条存储故障计 failed 聚合（ 口径），ensure_table 故障才 Err 上抛。
+/// 单条存储故障计 failed 聚合，ensure_table 故障才 Err 上抛。
 fn apply_adjudications(
     conn: &rusqlite::Connection,
     facts: &[ExtractedFact],
@@ -536,7 +540,7 @@ fn apply_insert(
 
 /// 抽取管线主体（消息已就位）：LLM 抽取 → 解析 →〔Auto 档〕预嵌入 → 既有记忆
 /// 快照 → 相似候选 →（有候选才）LLM 逐条裁决 new/update/skip → 应用；
-/// 〔Confirm 档〕进待确认队列（不经裁决，语义与  一致）。
+/// 〔Confirm 档〕进待确认队列（不经裁决，approve 时才真正入库）。
 /// LLM 调用方注入（pub 供集成测试直连 mock，同 run_model_loop_core /
 /// summarize_http 先例）：生产闭包 = summarize_messages 配置薄壳，测试闭包 =
 /// summarize_http 直连 mock。锁纪律：嵌入/LLM/解析全在锁外，DB 只在快照与
@@ -874,7 +878,7 @@ mod tests {
 
     #[test]
     fn serde_default_fills_auto_extract_off_for_old_blocks() {
-        //  时期落盘的 memoryControl 块无 autoExtract 字段 → 反序列化补 off
+        // 历史版本落盘的 memoryControl 块无 autoExtract 字段 → 反序列化补 off
         let ctrl: MemoryControl =
             serde_json::from_str(r#"{"injectionEnabled":true,"autoWriteEnabled":false}"#).unwrap();
         assert_eq!(ctrl.auto_extract, "off");
@@ -1083,6 +1087,62 @@ mod tests {
             ],
             "输出长度与 candidates 对齐，越界 index 忽略"
         );
+    }
+
+    #[test]
+    fn adjudication_duplicate_update_claim_skips_and_keeps_first_write() {
+        // 复现：同批两条高相似事实命中同一候选、都判 update——第二条降级 New
+        // 时走 insert 语义去重合并（与首条同向量 cos=1.0 ≥ 0.92），拿第二事实
+        // 覆盖首条刚改写的内容并冲掉 tags/source/importance；降级 Skip 后
+        // 首条事实与溯源完好。
+        let conn = fact_db();
+        let now = 10_000;
+        let orig_id = seeded_item(
+            &conn,
+            "fact",
+            "用户住在上海",
+            &["居住城市"],
+            Some(&onehot(0)),
+            1_000,
+        );
+        let existing = store::load_all(&conn).unwrap().remove(0);
+        let cands = vec![Some(existing.clone()), Some(existing)];
+        let facts = vec![
+            mkfact("用户已经搬到北京海淀", "fact", 2),
+            mkfact("用户已经搬到北京海淀区", "fact", 2),
+        ];
+        let reply = format!(
+            r#"[{{"index":0,"action":"update","existing_id":"{orig_id}"}},
+               {{"index":1,"action":"update","existing_id":"{orig_id}"}}]"#
+        );
+        let adjs = parse_adjudication(&reply, &cands);
+        assert_eq!(adjs[0], Adjudication::Update(orig_id.clone()));
+        assert_eq!(adjs[1], Adjudication::Skip, "同候选第二条 update 降级 Skip");
+
+        // 两条事实与原条目同向量（cos=1.0）：降级 New 时第二条必命中 merge 覆盖
+        let embs = vec![Some(onehot(0)), Some(onehot(0))];
+        let counts = apply_adjudications(
+            &conn,
+            &facts,
+            &embs,
+            &adjs,
+            now,
+            &store::StoreParams::default(),
+        )
+        .unwrap();
+        assert_eq!(counts.updated, 1, "首条照常改写原条目");
+        assert_eq!(counts.skipped, 1, "第二条按 Skip 丢弃");
+        assert_eq!(counts.inserted, 0, "第二条不落库");
+        let rows = store::load_all(&conn).unwrap();
+        assert_eq!(rows.len(), 1, "库里只有原条目一行");
+        assert_eq!(rows[0].id, orig_id);
+        assert_eq!(
+            rows[0].content, "用户已经搬到北京海淀",
+            "首条 content 不被第二条覆盖"
+        );
+        assert_eq!(rows[0].tags, vec!["居住城市"], "tags 不被第二条冲掉");
+        assert_eq!(rows[0].source, "user_stated", "source 不被第二条冲掉");
+        assert_eq!(rows[0].importance, 3, "importance 不被第二条冲掉");
     }
 
     #[test]

@@ -939,8 +939,12 @@ slides_in = p.get('slides', [])
 # 版式/颜色/字体全部继承母版（明暗三明治与主题色由母版承载），本脚本零颜色代码，
 # 只做占位符填充。模板路径由 Rust 侧 resolve（显式模板 → 默认标记 → 内置母版）保证可用。
 prs = Presentation(p['template'])
-prs.slide_width = Inches(13.333)   # 母版被外部改动时按 16:9 兜底
-prs.slide_height = Inches(7.5)
+# 仅在解析到的模板为内置母版时强制 16:9——用户自带模板保留其原尺寸（4:3 等）
+# 不被强行拉伸（占位符/版式随模板自身的 slide_width/slide_height 决定）
+import os as _os
+if 'builtin' in _os.path.basename(p['template']).lower() or 'default' in _os.path.basename(p['template']).lower():
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
 
 # ── 版式匹配：候选名精确匹配（忽略大小写）→ 包含匹配 → 索引兜底；中英文母版都认 ──
 LAYOUT_CANDIDATES = {
@@ -1391,9 +1395,22 @@ pub async fn doc_make_ppt(
 ) -> CommandResult<String> {
     let out = gen_out_path(&app, filename.as_deref(), "pptx")?;
     // 版式随母版：显式模板 → _default 标记 → 内置母版，永不为空
+    let user_requested = template.is_some();
     let template = match pptx_template_resolve(&app, template.as_deref()) {
         Some(p) => p,
-        None => builtin_pptx_master(&app)?,
+        None => {
+            // 显式给名但解析不到：落到内置母版 = 静默换版式，用户无可观；记审计
+            if user_requested {
+                py_audit(
+                    &app,
+                    &format!(
+                        "doc_make_ppt template_fallback | requested={} -> builtin",
+                        crate::audit::escape_for_log(template.as_deref().unwrap(), 200)
+                    ),
+                );
+            }
+            builtin_pptx_master(&app)?
+        }
     };
     let input = serde_json::json!({
         "title": title,
@@ -1487,6 +1504,7 @@ fn word_template_resolve_in(dir: &std::path::Path, name: Option<&str>) -> Option
     let explicit = name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
+        .filter(|n| !n.contains('/') && !n.contains('\\') && !n.contains(".."))
         .map(|n| dir.join(format!("{n}.docx")));
     let candidate = match explicit {
         Some(p) => p,
@@ -1874,6 +1892,7 @@ fn pptx_template_resolve_in(dir: &std::path::Path, name: Option<&str>) -> Option
     let explicit = name
         .map(|n| n.trim().to_string())
         .filter(|n| !n.is_empty())
+        .filter(|n| !n.contains('/') && !n.contains('\\') && !n.contains(".."))
         .map(|n| dir.join(format!("{n}.pptx")));
     let candidate = match explicit {
         Some(p) => p,

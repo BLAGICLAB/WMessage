@@ -1,4 +1,4 @@
-//! 治理开关 `evolution.applyPolicy`（ 治理归一）。
+//! 治理开关 `evolution.applyPolicy`（治理归一）。
 //!
 //! 二档：
 //! - `auto`（默认）：consolidate 后达门槛提案自动落库——引入前行为，零变化；
@@ -15,7 +15,7 @@
 use std::path::Path;
 use tauri::AppHandle;
 
-/// 应用策略二档——类型定义已迁策略层（批次 B-4，决策词汇归 strategy 所有），
+/// 应用策略二档——类型定义已迁策略层（决策词汇归 strategy 所有），
 /// 此处转发保持既有导入路径稳定；配置读写函数仍在上下文层本文件。
 pub use crate::evolution::strategy::ApplyPolicy;
 
@@ -124,11 +124,19 @@ pub fn read_derive_thresholds<R: tauri::Runtime>(
     read_derive_thresholds_at(&crate::db::paths::data_dir(app).join("bot-config.json"))
 }
 
-/// 可测内核：lenient 读取 + clamped。
+/// 可测内核：lenient 读取 + clamped。缺文件 = 未配置（常态静默）；
+/// 其余读/解析失败 stderr 留痕后仍回默认（同 read_apply_policy_at 口径）。
 pub fn read_derive_thresholds_at(path: &Path) -> crate::evolution::derive::DeriveThresholds {
     use crate::evolution::derive::DeriveThresholds;
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return DeriveThresholds::default();
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) => r,
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                // 手改配置读不出来要可诊断，不能静默落默认值零留痕
+                eprintln!("[evolution] 读 {path:?} 失败（{e}），派生门槛按默认");
+            }
+            return DeriveThresholds::default();
+        }
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
         eprintln!("[evolution] {path:?} JSON 解析失败，派生门槛按默认");
@@ -207,6 +215,23 @@ mod tests {
             read_derive_thresholds_at(Path::new("/tmp/no-such-thr-xyz.json")),
             DeriveThresholds::default()
         );
+    }
+
+    #[test]
+    fn derive_thresholds_unreadable_path_falls_back_default() {
+        // 非 NotFound 的读失败（路径是目录）同样回默认；行为不变，
+        // 留痕在 stderr（对齐 read_apply_policy_at 的非 NotFound 口径）
+        use crate::evolution::derive::DeriveThresholds;
+        let dir = std::env::temp_dir().join(format!(
+            "wm-evo-thr-dir-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            read_derive_thresholds_at(Path::new(&dir)),
+            DeriveThresholds::default()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

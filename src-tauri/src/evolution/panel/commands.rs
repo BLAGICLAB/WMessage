@@ -1,4 +1,4 @@
-//!  决策面板 · 后端 Tauri commands
+//! 决策面板 · 后端 Tauri commands
 //!
 //! 6 个 commands：
 //! 1. `evolution_list_proposals(status?)` — 候选池列表
@@ -8,13 +8,13 @@
 //! 5. `evolution_list_changes()` — ChangeRecord 列表（回滚 UI）
 //! 6. `evolution_rollback_change(id, interactive, session_id)` — 回滚（删 mem_item + status=RolledBack）
 //!
-//!  增量：
-//! - W1 人工批准执行器：policy 层（MemoryHint）提案 toggle ON 即 `apply_one`
+//! 增量：
+//! - 人工批准执行器：policy 层（MemoryHint）提案 toggle ON 即 `apply_one`
 //!   落库（幂等），CR pending→Active——此前批准只登记 pending、无执行器生效；
-//! - W2 治理开关：`evolution_get/set_apply_policy`（evolution.applyPolicy 二档）；
-//! - W3 冒烟：`evolution_metrics` 薄壳包 observe::compute_metrics。
+//! - 治理开关：`evolution_get/set_apply_policy`（evolution.applyPolicy 二档）；
+//! - 冒烟：`evolution_metrics` 薄壳包 observe::compute_metrics。
 //!
-//! 全部走 ask_user_confirm 复用 ConfirmMap（spec  #1 默认 A）。
+//! 全部走 ask_user_confirm 复用 ConfirmMap（spec 默认 A）。
 
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -86,7 +86,7 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
     }
 }
 
-// Toggle / Delete（）
+// Toggle / Delete
 //
 // 设计语义：
 // - toggle ON  → 写 ChangeRecord(status=pending)，dedup by proposal_id（已有 pending 不重写）
@@ -103,7 +103,7 @@ fn parse_status_filter(s: &str) -> Result<ProposalStatus, String> {
 /// 见 EvolutionPanel onToggle）——新 CR 拿行级唯一 change_id（next_unique_change_id），
 /// 回滚按 id 定位不再撞旧行。
 ///
-///  W1：policy 层（MemoryHint）提案 ON 即人工批准执行器落库——
+/// policy 层（MemoryHint）提案 ON 即人工批准执行器落库——
 /// `apply_one` 写 lesson（evo:<pid> 持久幂等，重复批零副作用）→ applied.jsonl
 /// 留痕 → CR pending 合法流转到 Active。落库被防劫持闸拒绝（ConflictRefused）
 /// 时 CR 保持 pending + 返回 Err（面板错误提示），可重试或停用。
@@ -122,7 +122,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
     proposal_id: &str,
     enabled: bool,
 ) -> Result<Option<ChangeRecord>, String> {
-    // W1：嵌入在持锁前算（同 apply_from_consolidation「嵌入不进锁」纪律）——
+    // 嵌入在持锁前算（同 apply_from_consolidation「嵌入不进锁」纪律）——
     // 无锁预读只为定位 suggestion 文本；预读落空（并发写/非 policy 层）= None，
     // lesson 照常落库仅无向量（auto 轨 embed_failed 同口径）。
     let pre_emb = if enabled {
@@ -133,7 +133,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
 
     // ── 段 ①：持 store 锁完成登记（CR pending + 提案晋升）──
     let (mut cr, apply_target) = {
-        let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
+        let _g = lock_evolution_store(); // 覆盖整个 load→mutate→rewrite 窗口
         let p_path = proposals_path(app);
         let c_path = changes_path(app);
 
@@ -182,7 +182,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
             ));
         }
         // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）。
-        //  W1 口径加 Active：已生效提案重复拨 ON 不再新开 CR 行（重复批准
+        // 人工批准口径加 Active：已生效提案重复拨 ON 不再新开 CR 行（重复批准
         // 零副作用），lesson 幂等由 apply_one 的 evo:<pid> 查重兜底。
         let existing = changes.iter().find(|c| {
             c.proposal_id == proposal_id
@@ -234,7 +234,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
         proposals[idx] = entry.clone();
         rewrite_jsonl(&p_path, &proposals)?;
 
-        //  W1：只有 policy 层（MemoryHint）落 lesson 记忆；落库本身在段 ②
+        // 只有 policy 层（MemoryHint）落 lesson 记忆；落库本身在段 ②
         // （锁外）执行——此处只把待落库提案带出锁。layer→category 双射反推，
         // Parameter/Code 两层（派生侧不产）防御性 Err。
         let apply_target = if entry.layer == EvolutionLayer::Policy {
@@ -266,7 +266,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
             }
             ApplyOutcome::AlreadyPresent => {}
             ApplyOutcome::ConflictRefused { target_key } => {
-                //  防劫持闸：响亮留痕 + 面板错误提示（CR 保持 pending）
+                // 防劫持闸：响亮留痕 + 面板错误提示（CR 保持 pending）
                 crate::audit_event!(
                     app,
                     AuditLevel::Warn,
@@ -312,7 +312,7 @@ pub fn toggle_inner<R: tauri::Runtime>(
     Ok(Some(cr))
 }
 
-/// W1 内核：ProposalEntry → EvolutionProposal 还原（apply_one 入参）。
+/// ProposalEntry → EvolutionProposal 还原（apply_one 入参）。
 /// layer ↔ category 按 candidate::derive_layer 的双射反推；Parameter/Code 两层
 /// 当前无 category 对应（派生侧只产 4 层），返 None（调用方跳过落库）。
 /// evidence/suggestion 从 entry 透传字段重组；structured_patch 未落盘，恒 None。
@@ -345,7 +345,7 @@ fn entry_to_proposal(entry: &ProposalEntry) -> Option<EvolutionProposal> {
     })
 }
 
-/// W1：toggle ON 落库前的嵌入预计算（锁外调用）。只对 policy 层提案算
+/// toggle ON 落库前的嵌入预计算（锁外调用）。只对 policy 层提案算
 ///（非 policy 不落库，白算几十 ms ONNX）；读失败/找不到条目返 None 不阻塞。
 fn precompute_human_apply_embedding<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -359,7 +359,7 @@ fn precompute_human_apply_embedding<R: tauri::Runtime>(
     crate::memory::embed::embed_text(&entry.suggestion_text)
 }
 
-/// W1 人工批准执行器内核：apply_one 写 lesson（幂等由 evo:<pid> key 查重承担）。
+/// 人工批准执行器内核：apply_one 写 lesson（幂等由 evo:<pid> key 查重承担）。
 /// 本函数只取 DB_WRITE_LOCK，**不持** EVOLUTION_STORE_LOCK（唯一调用方
 /// toggle_inner 段② = 锁外落库段）；store 锁与 DB 锁不同时嵌套持有
 ///（apply 轨先放 DB 锁再取 store 锁，两向无环），死锁面为零。
@@ -377,7 +377,7 @@ fn human_apply_one<R: tauri::Runtime>(
     apply::apply_one(&conn, p, embedding, crate::memory::now_ms())
 }
 
-/// W1：人工批准落库成功后 CR 合法流转到 Active——瞬时走完
+/// 人工批准落库成功后 CR 合法流转到 Active——瞬时走完
 /// Pending→Shadowing→ShadowPassed→Approved→Active（同 auto_applied_from_proposal；
 /// Pending→Active 直跳被 status.rs 硬约束②拦截，不裸写）。已 Active（重复批）
 /// 幂等跳过。CR 可能被 shadow 观察推进到中途态（Shadowing/ShadowPassed，段①
@@ -412,7 +412,7 @@ fn mark_human_applied(cr: &mut ChangeRecord) -> Result<(), String> {
 }
 
 fn delete_inner(app: &AppHandle, proposal_id: &str, cascade_source: bool) -> Result<(), String> {
-    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
+    let _g = lock_evolution_store(); // 覆盖整个 load→mutate→rewrite 窗口
     let p_path = proposals_path(app);
     let c_path = changes_path(app);
 
@@ -692,7 +692,7 @@ pub async fn evolution_keep_shadow(
     // 阻塞 fs IO（持锁 load→mutate→rewrite）移出 async worker；
     // store 锁随闭包走，不跨 await
     crate::py::document::spawn_blocking_map(move || {
-        let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
+        let _g = lock_evolution_store(); // 覆盖整个 load→mutate→rewrite 窗口
         let path = proposals_path(&app);
         let mut entries = load_proposals(&app)?;
 
@@ -746,14 +746,14 @@ pub async fn evolution_metrics(app: AppHandle) -> Result<ObserveMetrics, String>
     .await
 }
 
-///  W2：读应用策略档位（serde 小写序列化 "auto"/"confirm"；缺字段/读失败
+/// 读应用策略档位（serde 小写序列化 "auto"/"confirm"；缺字段/读失败
 /// = auto = 现状）。返回类型化枚举，非法值在读取层已归一 auto。
 #[tauri::command]
 pub async fn evolution_get_apply_policy(app: AppHandle) -> Result<ApplyPolicy, String> {
     crate::py::document::spawn_blocking_map(move || Ok(read_apply_policy(&app))).await
 }
 
-///  W2：点档即时落盘（设置页自进化头部 radiogroup，同记忆三档先例）。
+/// 点档即时落盘（设置页自进化头部 radiogroup，同记忆三档先例）。
 #[tauri::command]
 pub async fn evolution_set_apply_policy(app: AppHandle, policy: String) -> Result<(), String> {
     crate::py::document::spawn_blocking_map(move || {
@@ -835,7 +835,7 @@ fn rollback_precheck(record: &ChangeRecord, change_id: &str) -> Result<(), Strin
 /// 回滚的 RMW 部分（**同步**、持 store 锁）：load → 校验 → 删 mem_item → 改状态 → rewrite。
 /// 不含 `await` —— 故可安全被 async command 调用（锁不跨 await，future 保持 Send）。
 fn rollback_change_locked(app: &AppHandle, change_id: &str) -> Result<ChangeRecord, String> {
-    let _g = lock_evolution_store(); // OCR C3-4：覆盖整个 load→mutate→rewrite 窗口
+    let _g = lock_evolution_store(); // 覆盖整个 load→mutate→rewrite 窗口
     let path = changes_path(app);
     let mut records = load_changes(app)?;
 
@@ -882,16 +882,24 @@ fn delete_evolution_mem_item(app: &AppHandle, proposal_id: &str) -> Result<(), S
 
 // 单元测试（pure helpers）
 
-/// 派生门槛读取（设置页自进化区「提案派生门槛」卡；已过 clamped）
+/// 派生门槛读取（设置页自进化区「提案派生门槛」卡；已过 clamped）。
+/// 阻塞盘 IO 包 spawn_blocking 移出 async worker（同文件 evolution 命令先例）。
 #[tauri::command]
-pub fn evolution_get_thresholds(app: AppHandle) -> CommandResult<DeriveThresholds> {
-    Ok(read_derive_thresholds(&app))
+pub async fn evolution_get_thresholds(app: AppHandle) -> CommandResult<DeriveThresholds> {
+    crate::py::document::spawn_blocking_map(move || Ok(read_derive_thresholds(&app)))
+        .await
+        .map_err(CommandError::from)
 }
 
-/// 派生门槛写回（服务端 clamped 兜底）
+/// 派生门槛写回（服务端 clamped 兜底）。阻塞盘 IO 包 spawn_blocking 同上。
 #[tauri::command]
-pub fn evolution_set_thresholds(app: AppHandle, thresholds: DeriveThresholds) -> CommandResult<()> {
-    set_derive_thresholds(&app, thresholds).map_err(CommandError::from)
+pub async fn evolution_set_thresholds(
+    app: AppHandle,
+    thresholds: DeriveThresholds,
+) -> CommandResult<()> {
+    crate::py::document::spawn_blocking_map(move || set_derive_thresholds(&app, thresholds))
+        .await
+        .map_err(CommandError::from)
 }
 
 /// 提案决策证据（影子判定 + 冲突标注）——决策板逐卡渲染。

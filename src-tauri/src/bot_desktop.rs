@@ -162,18 +162,19 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
 
 // screenshot
 
-/// 截图文件名（纯函数，可测）：wm-screen-YYYYMMDD-HHMMSS-mmm.png。
-/// 毫秒后缀防并行 tool_call 同秒互相覆盖
-fn screenshot_filename(ts_ms: i64) -> String {
+/// 截图文件名（纯函数，可测）：wm-screen-YYYYMMDD-HHMMSS-mmm-nnnnnn.png。
+/// 毫秒后缀防并行 tool_call 同秒互相覆盖；毫秒内纳秒偏置防同毫秒内撞名
+fn screenshot_filename(ts_ms: i64, sub_ms_ns: u32) -> String {
     use chrono::TimeZone;
     let dt = chrono::Local
         .timestamp_millis_opt(ts_ms)
         .single()
         .unwrap_or_else(chrono::Local::now);
     format!(
-        "wm-screen-{}-{:03}.png",
+        "wm-screen-{}-{:03}-{:06}.png",
         dt.format("%Y%m%d-%H%M%S"),
-        ts_ms.rem_euclid(1000)
+        ts_ms.rem_euclid(1000),
+        sub_ms_ns.rem_euclid(1_000_000)
     )
 }
 
@@ -228,8 +229,20 @@ fn platform_capture(_out: &std::path::Path) -> Result<(), String> {
 /// 截取主显示器画面 → AI_Gen_Files/wm-screen-<时间戳>.png，返回路径。
 /// 模型拿到路径后可接着 ocr_image 读屏上文字（读屏上内容不需要视觉模型）。
 pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
-    let ts = chrono::Utc::now().timestamp_millis();
-    let name = screenshot_filename(ts);
+    // 纳秒时间戳防同毫秒并发同名覆盖（多核/线程池瞬间可撞同毫秒）
+    let ts_ns = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+    let ts_ms = if ts_ns != 0 {
+        ts_ns / 1_000_000
+    } else {
+        chrono::Utc::now().timestamp_millis()
+    };
+    // 毫秒内纳秒偏置（0–999999）后缀在文件名尾，并发同名 = 唯一
+    let sub_ms = if ts_ns != 0 {
+        (ts_ns.rem_euclid(1_000_000)) as u32
+    } else {
+        0
+    };
+    let name = screenshot_filename(ts_ms, sub_ms);
     let out = match crate::db::gen_dir(app) {
         Ok(d) => d.join(&name),
         Err(e) => {
@@ -253,7 +266,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
                 app,
                 &format!("desktop.screenshot | {} | {size} bytes", name),
             );
-            // ：图随 ToolResult 直接进对话（模型视觉读取），不再引导 。
+            // 图随 ToolResult 直接进对话（模型视觉读取），不再引导。
             // 「已截屏」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok_with_images(
                 format!(
@@ -292,12 +305,12 @@ mod tests {
 
     #[test]
     fn screenshot_filename_has_timestamp_shape() {
-        // 固定时间戳 → wm-screen-YYYYMMDD-HHMMSS-mmm.png
-        let name = screenshot_filename(1_759_000_000_000);
-        let re = regex::Regex::new(r"^wm-screen-\d{8}-\d{6}-\d{3}\.png$").unwrap();
+        // 固定时间戳 → wm-screen-YYYYMMDD-HHMMSS-mmm-nnnnnn.png
+        let name = screenshot_filename(1_759_000_000_000, 0);
+        let re = regex::Regex::new(r"^wm-screen-\d{8}-\d{6}-\d{3}-\d{6}\.png$").unwrap();
         assert!(re.is_match(&name), "{name}");
-        // 同秒两截屏文件名必须不同（毫秒后缀防并行覆盖）
-        let next = screenshot_filename(1_759_000_000_001);
+        // 同毫秒两截屏文件名必须不同（毫秒内纳秒偏置防并行覆盖）
+        let next = screenshot_filename(1_759_000_000_000, 1);
         assert_ne!(name, next, "{name}");
     }
 
