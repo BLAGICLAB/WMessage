@@ -124,9 +124,9 @@ describe("App", () => {
     ).length;
     // 新建任务按钮迁入左侧导航栏（文案从「+ 新建任务」改为图标 + 「新建任务」）
     await user.click(screen.getByText("新建任务"));
-    // 新建后立即进入任务页任务池（详情面板编辑态在批 4 接线）
-    const pooled = await screen.findByText("新任务");
-    expect(pooled).toBeInTheDocument();
+    // 新建后详情面板打开，标题自动聚焦进入编辑态
+    const input = await screen.findByDisplayValue("新任务");
+    expect(input).toBeInTheDocument();
     // mutate → upsertTasks → db_upsert 被多调用至少一次
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
@@ -276,9 +276,8 @@ describe("App", () => {
 
   // 软删除必须清调度字段——否则任务躺在回收站里 schedule
   // 仍到点触发（deletedAt 不挡调度读取）。
-  // SKIP：旧看板卡的删除键已随三列退役，新入口（任务详情面板删除键）批 4 落地时
-  // 恢复本用例（fixture + 断言原样保留）
-  it.skip("软删除进回收站：落盘行 schedule/schedLast 清空", async () => {
+  // 入口：任务页池项 → 详情面板删除键（批 4 起替代旧看板卡删除键）
+  it("软删除进回收站：落盘行 schedule/schedLast 清空", async () => {
     const user = userEvent.setup();
     const withSched: Task[] = [
       {
@@ -289,7 +288,6 @@ describe("App", () => {
         updatedAt: 1,
         schedule: "daily:09:00",
         schedLast: 123,
-        archived: true,
       },
     ];
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -297,12 +295,8 @@ describe("App", () => {
       return defaultInvokeImpl(cmd);
     });
     render(<App />);
-    await user.click(await screen.findByText("归档"));
-    await waitFor(() => {
-      expect(screen.getByText("定时任务")).toBeInTheDocument();
-    });
-    mocks.invokeMock.mockClear();
-    await user.click(screen.getByTitle("删除任务"));
+    await user.click(await screen.findByText("定时任务"));
+    await user.click(await screen.findByTitle("删除任务"));
     // TP-2：软删改走 task_patch 定向补丁（null=清空调度字段）
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(

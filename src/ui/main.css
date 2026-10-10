@@ -1010,6 +1010,17 @@
     }
   }
 
+  /* 详情面板滑入（expo-out 收尾不弹跳；reduced-motion 由全局降级兜底） */
+  .detail-panel {
+    animation: detail-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes detail-in {
+    from {
+      transform: translateX(-12px);
+      opacity: 0;
+    }
+  }
+
   /* 网格井：下陷容器（暗色叠两团低透明氛围辉光） */
   .week-well {
     position: relative;

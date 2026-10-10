@@ -16,16 +16,21 @@ export function sortPoolTasks(tasks: Task[]): Task[] {
 
 /** 任务池（毛玻璃悬浮层）：列出全部未完成任务的统一标题块，可折叠成右缘把手。
  *  onItemPointerDown 供页面发起「池→网格」拖拽；innerRef 供页面做「拖回池清除」
- *  的落点判定（挂在本体 aside 上）。 */
+ *  落点判定；doneTasks 折叠在池底「已完成 N」里（点开可选中进详情面板）。 */
 export function TaskPool({
   tasks,
+  doneTasks = [],
   onItemPointerDown,
+  onTaskClick,
   innerRef,
 }: {
   tasks: Task[];
+  doneTasks?: Task[];
   onItemPointerDown?: (task: Task, e: React.PointerEvent) => void;
+  onTaskClick?: (task: Task) => void;
   innerRef?: React.Ref<HTMLElement>;
 }) {
+  const [showDone, setShowDone] = useState(false);
   const [open, setOpen] = useState(() => localStorage.getItem(OPEN_KEY) !== "0");
   useEffect(() => {
     localStorage.setItem(OPEN_KEY, open ? "1" : "0");
@@ -66,7 +71,7 @@ export function TaskPool({
         </button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2.5">
-        {sorted.length === 0 ? (
+        {sorted.length === 0 && doneTasks.length === 0 ? (
           <p className="my-auto text-center text-xs text-[var(--t5)]">
             没有未完成的任务，⌘N 新建
           </p>
@@ -97,6 +102,31 @@ export function TaskPool({
               )}
             </div>
           ))
+        )}
+        {doneTasks.length > 0 && (
+          <div className="mt-auto border-t border-[color-mix(in_srgb,var(--edge)_70%,transparent)] pt-1.5">
+            <button
+              type="button"
+              className="flex w-full items-center gap-1 px-1 py-1 text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
+              onClick={() => setShowDone((v) => !v)}
+              aria-expanded={showDone}
+            >
+              {showDone ? "▾" : "▸"} 已完成 {doneTasks.length}
+            </button>
+            {showDone &&
+              doneTasks.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className="flex h-[30px] w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-[var(--hover-bg)]"
+                  onClick={() => onTaskClick?.(t)}
+                >
+                  <span className="truncate text-xs text-[var(--t5)] line-through">
+                    {t.title}
+                  </span>
+                </button>
+              ))}
+          </div>
         )}
       </div>
     </aside>

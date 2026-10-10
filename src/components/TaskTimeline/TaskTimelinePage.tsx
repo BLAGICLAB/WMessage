@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Task } from "../../types";
+import type { ColumnId, Task } from "../../types";
 import {
   DAY_END_MIN,
   DAY_SPAN_MIN,
@@ -16,6 +16,7 @@ import {
 } from "./week";
 import { WeekGrid, type SlotHint } from "./WeekGrid";
 import { TaskPool } from "./TaskPool";
+import { TaskDetailPanel } from "./TaskDetailPanel";
 
 const DOW1 = "一二三四五六日";
 
@@ -24,17 +25,25 @@ type Drag =
   | { kind: "move"; task: Task }
   | { kind: "resize"; task: Task };
 
-/** 拖拽编排（批 3）：池→网格排期、网格块移动、底缘拉伸改时长、拖回池清除。
+/** 拖拽编排（批 3）+ 详情面板（批 4）：池→网格排期、块移动、底缘拉伸、拖回池清除；
+ *  点块/点池项/⌘N 新建 → 左侧毛玻璃详情面板（编辑与完成入口）。
  *  写入恒发最小 patch（planStart/planEnd 或双 null），跨 18:00 折行数学在 week.ts。 */
 export function TaskTimelinePage({
   tasks,
   onNewTask,
   onUpdate,
+  onSetColumn,
+  onDelete,
+  editingId = null,
 }: {
   tasks: Task[];
   onNewTask?: () => void;
   /** 任务字段定向补丁（task_patch 通道）；拖拽提交的最小写路径 */
   onUpdate?: (taskId: string, patch: Partial<Task>) => void;
+  onSetColumn?: (taskId: string, col: ColumnId) => void;
+  onDelete?: (taskId: string) => void;
+  /** ⌘N/新建任务流程：App 侧 addTask 打上的编辑态 id，页面据此打开面板 */
+  editingId?: string | null;
 }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   // 「现在」单一时间源：页头今天回跳与网格现在线共用，每分钟校准
@@ -58,6 +67,15 @@ export function TaskTimelinePage({
   const poolRef = useRef<HTMLElement | null>(null);
   const freshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // 详情面板选中态：autoFocus 只在「新建任务」路径给（点选不抢焦点）。
+  // 不做「任务消失自动关面板」——addTask 的入列与 editingId 分两次更新，
+  // 中间态会把新选中误杀；面板的关闭走显式路径（Esc/X/删除）。
+  const [selected, setSelected] = useState<{ id: string; autoFocus: boolean } | null>(null);
+  useEffect(() => {
+    if (editingId) setSelected({ id: editingId, autoFocus: true });
+  }, [editingId]);
+  const selectedTask = selected ? (tasks.find((t) => t.id === selected.id) ?? null) : null;
+
   const weekEnd = addDays(weekStart, 6);
   const rangeLabel = useMemo(() => {
     const fmt = (d: Date) => `${d.getMonth() + 1}月${d.getDate()}日`;
@@ -67,6 +85,11 @@ export function TaskTimelinePage({
   // 池口径：全部未完成（含已排期——已排期的带时间角标，双向拖拽）
   const poolTasks = useMemo(
     () => tasks.filter((t) => t.column !== "done" && !t.deletedAt && !t.archived),
+    [tasks],
+  );
+  // 已完成（未归档未软删）：池底折叠区，点开可进面板恢复待办
+  const doneTasks = useMemo(
+    () => tasks.filter((t) => t.column === "done" && !t.deletedAt && !t.archived),
     [tasks],
   );
   const isCurrentWeek = useMemo(
@@ -100,6 +123,10 @@ export function TaskTimelinePage({
   const startDrag = (e: React.PointerEvent, drag: Drag) => {
     e.preventDefault();
     setDragTaskId(drag.task.id);
+    // 点 vs 拖区分：位移 ≤4px 视为点击（move/create → 选中开面板；resize 无点击语义）
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let moved = false;
     const durMin =
       drag.kind === "create"
         ? 60
@@ -110,6 +137,9 @@ export function TaskTimelinePage({
     let overPool = false;
 
     const onMove = (ev: PointerEvent) => {
+      if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) {
+        moved = true;
+      }
       const hit = locate(ev.clientX, ev.clientY);
       overPool =
         drag.kind === "move" &&
@@ -181,6 +211,11 @@ export function TaskTimelinePage({
       setDragTaskId(null);
       setSlot(null);
       setGhost(null);
+      // 点击（未拖动）：选中任务打开详情面板（move/create 同义；resize 无点击语义）
+      if (!moved) {
+        if (drag.kind !== "resize") setSelected({ id: drag.task.id, autoFocus: false });
+        return;
+      }
       const hit = locate(ev.clientX, ev.clientY);
       const poolR = poolRef.current?.getBoundingClientRect();
       const droppedOnPool =
@@ -254,28 +289,45 @@ export function TaskTimelinePage({
           </button>
         )}
       </div>
-      <div className="relative flex min-h-0 flex-1">
-        <WeekGrid
-          tasks={tasks}
-          weekStart={weekStart}
-          now={now}
-          slot={slot}
-          draggingTaskId={dragTaskId}
-          freshTaskId={freshId}
-          bodyRef={gridBodyRef}
-          onBlockPointerDown={(task, kind, e) => {
-            if (!onUpdate || !task.planStart || !task.planEnd) return;
-            startDrag(e, { kind, task });
-          }}
-        />
-        <TaskPool
-          tasks={poolTasks}
-          innerRef={poolRef}
-          onItemPointerDown={(task, e) => {
-            if (!onUpdate) return;
-            startDrag(e, { kind: "create", task });
-          }}
-        />
+      <div className="flex min-h-0 flex-1 gap-4">
+        {selectedTask && onUpdate && onSetColumn && onDelete && (
+          <TaskDetailPanel
+            task={selectedTask}
+            autoFocusTitle={selected?.autoFocus ?? false}
+            onUpdate={(patch) => onUpdate(selectedTask.id, patch)}
+            onSetColumn={(col) => onSetColumn(selectedTask.id, col)}
+            onDelete={() => {
+              setSelected(null);
+              onDelete(selectedTask.id);
+            }}
+            onClose={() => setSelected(null)}
+          />
+        )}
+        <div className="relative flex min-h-0 flex-1">
+          <WeekGrid
+            tasks={tasks}
+            weekStart={weekStart}
+            now={now}
+            slot={slot}
+            draggingTaskId={dragTaskId}
+            freshTaskId={freshId}
+            bodyRef={gridBodyRef}
+            onBlockPointerDown={(task, kind, e) => {
+              if (!onUpdate || !task.planStart || !task.planEnd) return;
+              startDrag(e, { kind, task });
+            }}
+          />
+          <TaskPool
+            tasks={poolTasks}
+            doneTasks={doneTasks}
+            innerRef={poolRef}
+            onItemPointerDown={(task, e) => {
+              if (!onUpdate) return;
+              startDrag(e, { kind: "create", task });
+            }}
+            onTaskClick={(t) => setSelected({ id: t.id, autoFocus: false })}
+          />
+        </div>
       </div>
       {ghost && (
         <div

@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskTimelinePage } from "./TaskTimelinePage";
 import { startOfWeek } from "./week";
 import type { Task } from "../../types";
@@ -106,5 +106,64 @@ describe("TaskTimelinePage", () => {
     render(<TaskTimelinePage tasks={[]} onNewTask={() => called++} />);
     await user.click(screen.getByRole("button", { name: "＋ 新建任务" }));
     expect(called).toBe(1);
+  });
+
+  it("点池项（按下即松，无位移）打开详情面板；Esc 关闭", () => {
+    render(
+      <TaskTimelinePage
+        tasks={TASKS}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
+    // 按下 → 原位松开 = 点击（无位移不构成拖拽）
+    fireEvent.pointerDown(screen.getByText("未排期任务乙"), { button: 0 });
+    fireEvent.pointerUp(screen.getByText("未排期任务乙"));
+    const panel = screen.getByLabelText("任务详情");
+    expect(panel).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
+  });
+
+  it("editingId 变化：面板打开并聚焦标题（⌘N 新建路径）", () => {
+    const { rerender } = render(
+      <TaskTimelinePage tasks={TASKS} onUpdate={vi.fn()} onSetColumn={vi.fn()} onDelete={vi.fn()} />,
+    );
+    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
+    rerender(
+      <TaskTimelinePage
+        tasks={[...TASKS, mk({ id: "new1", title: "新任务" })]}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+        editingId="new1"
+      />,
+    );
+    const panel = screen.getByLabelText("任务详情");
+    const title = within(panel).getByLabelText("任务标题") as HTMLInputElement;
+    expect(title.value).toBe("新任务");
+    expect(document.activeElement).toBe(title);
+  });
+
+  it("已完成折叠区：点开列 done 任务，点行进面板可恢复待办", async () => {
+    const user = userEvent.setup();
+    const onSetColumn = vi.fn();
+    render(
+      <TaskTimelinePage
+        tasks={[...TASKS, mk({ id: "t9", title: "完成任务庚", column: "done", completedAt: 1 })]}
+        onUpdate={vi.fn()}
+        onSetColumn={onSetColumn}
+        onDelete={vi.fn()}
+      />,
+    );
+    const pool = within(screen.getByLabelText("任务池"));
+    expect(pool.queryByText("完成任务庚")).not.toBeInTheDocument();
+    await user.click(pool.getByText(/已完成/));
+    await user.click(pool.getByText("完成任务庚"));
+    const panel = screen.getByLabelText("任务详情");
+    await user.click(within(panel).getByRole("button", { name: "✓ 恢复待办" }));
+    expect(onSetColumn).toHaveBeenCalledWith("t9", "todo");
   });
 });

@@ -949,6 +949,9 @@ function App() {
               tasks={visibleTasks}
               onNewTask={addTask}
               onUpdate={updateTask}
+              onSetColumn={setTaskColumn}
+              onDelete={deleteTask}
+              editingId={editingId}
             />
           ) : view === "workflow" ? (
             <WorkflowPage
