@@ -13,8 +13,10 @@
 //! 2. 同卡并发触发 → ExecGuard 拒绝
 //! 3. 定时路径源码锁：bot_scheduler 调 run_task_in_chat、绕开 exec_steps、发系统通知
 //!
-//! 环境说明：mock_app（MockRuntime）下 open_db 落 target/debug/deps/wmessage.db
-//! （probe_log_dir 探针行为），测试用 uuid 任务 id + 结束后清理行，不污染其他测试。
+//! 环境说明：mock_app（MockRuntime）下 data_dir 落系统 app_data_dir
+//! （probe_log_dir 在 cargo target 路径下旁路便携分支，见 paths.rs::is_cargo_target_dir
+//! 注释），与真实部署（exe 在 Downloads/wmessage-portable/）路径完全隔离——cargo
+//! test 不会污染 build artifact 的 target/ 目录。测试用 uuid 任务 id + 收尾清理行。
 
 mod mock_llm_shared {
     include!("mock_llm.rs");
@@ -28,8 +30,9 @@ use wmessage_lib::bot::{
 };
 use wmessage_lib::bot_chat::{chat_guard_is_held, run_task_in_chat_with, TaskExecOrigin};
 
-/// 三个用例共享 target/debug/deps 下的 wmessage.db 与 bot-enabled.flag——
-/// 串行执行防 flag 清理竞态（cargo 各测试二进制之间本就串行，本文件内并行用例需自锁）
+/// 三个用例共享 data_dir 下的 wmessage.db 与 bot-enabled.flag（data_dir 走系统
+/// app_data_dir 隔离，与 build artifact 完全分开）。串行执行防 flag 清理竞态
+/// （cargo 各测试二进制之间本就串行，本文件内并行用例需自锁）。
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn now_ms() -> i64 {

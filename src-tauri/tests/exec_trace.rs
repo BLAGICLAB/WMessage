@@ -5,8 +5,9 @@
 //!    done 行（session/task/origin 正确、finished_at 收尾）；失败执行 → failed 行 + error 留痕
 //! 2. 采集管道：trace_sink::init 后 record_span / record_file_change → 异步批量落库可见
 //!
-//! 环境说明：mock_app（MockRuntime）下 open_db 落 target/debug/deps/wmessage.db
-//! （probe_log_dir 探针行为）；任务/会话/痕迹行用 uuid 隔离 + 收尾清理。
+//! 环境说明：mock_app（MockRuntime）下 data_dir 落系统 app_data_dir
+//! （probe_log_dir 在 cargo target 路径下旁路便携分支，见 paths.rs::is_cargo_target_dir
+//! 注释），与真实部署隔离；任务/会话/痕迹行用 uuid 隔离 + 收尾清理。
 //!
 //! 边界说明：dispatch 层的 span 采集依赖 ToolCtx（AppHandle<Wry> 具型），MockRuntime
 //! 下不可达——span 的 dispatch 侧触发由真机冒烟验收（设计 §14.1 P1 ④），此处覆盖

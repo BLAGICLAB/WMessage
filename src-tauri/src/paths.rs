@@ -39,6 +39,16 @@ pub(crate) fn probe_dir(
     exe_dir: Option<&std::path::Path>,
     app_data: Option<std::path::PathBuf>,
 ) -> std::path::PathBuf {
+    // Cargo 构建/测试环境（exe 在 target/.../{deps,debug,release} 子目录）：
+    // 这些路径的「可写」是构建产物副作用，不是用户真数据目录。
+    // 命中此分支的进程 100% 是 cargo test / `tauri build` 后跑测试 exe
+    // ——直接把整个便携语义旁路，data 落系统 app_data（或 temp 兜底）。
+    // 否则 cargo test 写的 wmessage.db 残留在 target/，下次 `tauri build` cp 进绿色包就「带数据」。
+    if let Some(dir) = exe_dir {
+        if is_cargo_target_dir(dir) {
+            return app_data.unwrap_or_else(std::env::temp_dir);
+        }
+    }
     if let Some(dir) = exe_dir {
         if !is_macos_app_bundle_dir(dir) {
             if dir.join("wmessage.db").exists() || dir.join("AI_Gen_Files").exists() {
@@ -241,6 +251,23 @@ fn is_macos_app_bundle_dir(dir: &std::path::Path) -> bool {
         && comps
             .next()
             .is_some_and(|c| c.as_os_str().to_string_lossy().ends_with(".app"))
+}
+
+/// Cargo 构建/测试环境判定：路径含 `target/<...>` 且末段是 deps/debug/release。
+/// 命中此分支说明进程是 `cargo test` / `cargo run` / `tauri build` 后的可执行——
+/// 「可写」是构建副产物，不是用户真数据目录。probe_log_dir 必须旁路便携分支，
+/// 否则 cargo test 写的 wmessage.db 残留在 target/，下次 `tauri build` 把整个
+/// release 目录 cp 进绿色包就「带数据」（docs/PACKAGING-WINDOWS-PORTABLE.md
+/// 「坑位速查」新增一条：曾有用户解压新版本看到旧任务卡）。
+fn is_cargo_target_dir(dir: &std::path::Path) -> bool {
+    let s = dir.to_string_lossy();
+    if !s.contains("target/") && !s.contains("target\\") {
+        return false;
+    }
+    matches!(
+        dir.file_name().and_then(|n| n.to_str()),
+        Some("deps" | "debug" | "release")
+    )
 }
 
 // 内部：fallback WARN 内联
@@ -452,9 +479,13 @@ mod tests {
     }
 
     #[test]
-    fn probe_log_dir_matches_exe_parent_in_cargo_test() {
-        // 调用方一致性：cargo test 下 current_exe 父目录（target/debug/deps）可写，
-        // probe_log_dir 必须命中 exe 分支——与抽取前 db_dir/profile data_dir 行为一致
+    fn probe_log_dir_cargo_test_bypasses_portable_branch() {
+        // 修复（2026-10-10）：cargo test 下的 exe_parent = target/debug/deps，
+        // 但「可写」是构建副产物，不是用户真数据目录。若沿用便携分支，cargo test
+        // 写的 wmessage.db 残留在 target/，下次 `tauri build` cp 进绿色包就「带数据」。
+        // probe_log_dir 必须识别 cargo target 路径（target/.../{deps,debug,release}），
+        // 旁路便携分支，data 走 app_data_dir（系统应用数据）或 temp 兜底——与
+        // 真实部署场景（exe 在 Downloads/wmessage-portable/）互不干扰。
         let app = tauri::test::mock_app();
         let got = probe_log_dir(app.handle());
         let exe_parent = std::env::current_exe()
@@ -462,7 +493,14 @@ mod tests {
             .parent()
             .unwrap()
             .to_path_buf();
-        assert_eq!(got, exe_parent);
+        assert_ne!(
+            got, exe_parent,
+            "cargo target 路径下不应走便携分支（污染 build artifact）"
+        );
+        // 兜底：必须落到 app_data_dir（macOS/Linux 有；Windows 沙箱内可能 Err→temp）
+        let app_data = app.path().app_data_dir().ok();
+        let expected = app_data.unwrap_or_else(std::env::temp_dir);
+        assert_eq!(got, expected);
     }
 
     // ── fallback WARN 内联：行格式字符级一致 audit::write_at ──
