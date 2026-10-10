@@ -12,14 +12,18 @@ const mocks = vi.hoisted(() => ({
     return null;
   }),
   listenMock: vi.fn(async () => () => {}),
+  askMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listenMock }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: mocks.askMock }));
 
 beforeEach(() => {
   mocks.invokeMock.mockClear();
   mocks.listenMock.mockClear();
+  mocks.askMock.mockReset();
+  mocks.askMock.mockResolvedValue(true);
 });
 
 async function flush() {
@@ -155,16 +159,14 @@ describe("McpPanel", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) =>
       cmd === "mcp_status" ? SAMPLE_STATUS : [],
     );
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<McpPanel />);
     await flush();
     fireEvent.click(screen.getAllByTitle("删除")[0]);
     await flush();
-    expect(confirmSpy).toHaveBeenCalled();
+    expect(mocks.askMock).toHaveBeenCalled();
     expect(mocks.invokeMock).toHaveBeenCalledWith("mcp_server_delete", {
       id: "srv-1",
     });
-    confirmSpy.mockRestore();
   });
 
   it("启停：点复选框按 id 调 mcp_server_toggle", async () => {

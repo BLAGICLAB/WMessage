@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import { getArchiveAfterDays } from "../lib/archiveRule";
+import { useConfirm } from "../lib/useConfirm";
 import type { MigrationRule, MigrationReport } from "../types";
 
 type MigrationStatus = {
@@ -18,6 +19,7 @@ type MigrationStatus = {
 
 /** 桌面清理面板：规则表展示 + 模版下载/导入 + 手动触发迁移 + 日志 */
 export function MigrationPanel() {
+  const confirm = useConfirm();
   const [rules, setRules] = useState<MigrationRule[]>([]);
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<MigrationReport | null>(null);
@@ -88,9 +90,9 @@ export function MigrationPanel() {
   const runNow = async () => {
     // 上线安全审计：一键执行会按规则移动/删除已归档任务的绑定文件，先确认
     if (
-      !window.confirm(
+      !(await confirm(
         "立即执行桌面清理？将按规则表对已归档任务的绑定文件执行移动/删除。",
-      )
+      ))
     )
       return;
     if (running) return;

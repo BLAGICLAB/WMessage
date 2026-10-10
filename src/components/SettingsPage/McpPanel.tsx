@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
+import { useConfirm } from "../../lib/useConfirm";
 import { Pencil, Plug, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { IconButton } from "../../ui/IconButton";
@@ -212,6 +213,7 @@ function SaveConfirmDialog({
 
 /** MCP 服务器管理面板：列表（状态点/启停/工具）+ 表单（确认弹窗后保存） */
 export function McpPanel() {
+  const confirm = useConfirm();
   const [servers, setServers] = useState<McpServerStatus[]>([]);
   const [form, setForm] = useState<FormState | null>(null); // null = 表单收起
   const [pending, setPending] = useState<McpServerConfig | null>(null); // 确认弹窗
@@ -380,9 +382,9 @@ export function McpPanel() {
   const remove = async (s: McpServerStatus) => {
     if (busy) return;
     if (
-      !window.confirm(
+      !(await confirm(
         `删除 MCP 服务器「${s.name}」？其工具将立即从机器人清单消失。`,
-      )
+      ))
     )
       return;
     setBusy(true);

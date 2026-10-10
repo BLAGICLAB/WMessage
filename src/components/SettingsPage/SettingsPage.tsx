@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
+import { useConfirm } from "../../lib/useConfirm";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
@@ -355,6 +356,7 @@ export function SettingsPage({
   onImportWorkspace,
   onBack,
 }: Props) {
+  const confirm = useConfirm();
   const [activeSection, setActiveSection] = useState<SectionKey>("general");
   const [mountedSections, setMountedSections] = useState<
     ReadonlySet<SectionKey>
@@ -924,9 +926,9 @@ export function SettingsPage({
     const enabling = !pyEnabled;
     if (
       enabling &&
-      !window.confirm(
+      !(await confirm(
         "开启后机器人可执行 Python 代码（沙箱：独立临时目录 + 60 秒超时 + 审计留痕）。确认开启？",
-      )
+      ))
     )
       return;
     setPyBusy(true);
@@ -1175,7 +1177,7 @@ export function SettingsPage({
       (config.modelsByProvider[p] ?? []).some((m) => m.id === id),
     );
     if (!prov) return;
-    if (!window.confirm("删除该模型？删除后立即生效。")) return;
+    if (!(await confirm("删除该模型？删除后立即生效。"))) return;
     const list = (config.modelsByProvider[prov] ?? []).filter(
       (m) => m.id !== id,
     );
@@ -1708,9 +1710,9 @@ export function SettingsPage({
   const clearVendorKey = async () => {
     if (configBusy || !activeVendor) return;
     if (
-      !window.confirm(
+      !(await confirm(
         `清除厂商「${activeVendor}」已保存的 API Key？清除后该厂商的机器人调用将失败。`,
-      )
+      ))
     )
       return;
     setConfigBusy(true);
@@ -1854,9 +1856,9 @@ export function SettingsPage({
   const rotateToken = async () => {
     if (busy) return;
     if (
-      !window.confirm(
+      !(await confirm(
         "重新生成 token？旧 token 会立即失效，已授权的客户端需要换新 token。",
-      )
+      ))
     )
       return;
     setBusy(true);
@@ -3027,10 +3029,10 @@ export function SettingsPage({
                                         type="button"
                                         role="menuitem"
                                         className="w-full text-left px-3 py-1.5 text-xs rounded-lg text-[var(--danger)] hover:bg-[var(--hover-bg)]"
-                                        onClick={() => {
+                                        onClick={async () => {
                                           setVendorMenuOpen(false);
                                           if (
-                                            window.confirm(
+                                            await confirm(
                                               `删除厂商「${activeVendor}」？其全部模型条目将一并移除。`,
                                             )
                                           ) {
@@ -4114,9 +4116,9 @@ function WorkflowSettingsCard() {
             className="shrink-0 nm-outset rounded-[var(--r-sm)] px-3 py-1.5 text-xs text-[var(--t3)]"
             onClick={async () => {
               if (
-                !window.confirm(
+                !(await confirm(
                   "确定清空所有工作流的审计记录？此操作不可撤销。",
-                )
+                ))
               )
                 return;
               try {

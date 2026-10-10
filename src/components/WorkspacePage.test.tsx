@@ -9,7 +9,8 @@ const mocks = vi.hoisted(() => {
   const listenMock = vi.fn();
   const emitMock = vi.fn();
   const openMock = vi.fn();
-  return { invokeMock, listenMock, emitMock, openMock };
+  const askMock = vi.fn();
+  return { invokeMock, listenMock, emitMock, openMock, askMock };
 });
 
 // —— Tauri mocks ——
@@ -23,6 +24,7 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
 mocks.listenMock.mockImplementation(async () => () => {});
 mocks.emitMock.mockImplementation(async () => {});
 mocks.openMock.mockImplementation(async () => null);
+mocks.askMock.mockResolvedValue(true);
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mocks.invokeMock,
@@ -36,6 +38,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: mocks.openMock,
+  ask: mocks.askMock,
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -43,14 +46,14 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
 
-const confirmMock = vi.fn(() => true);
+const confirmMock = mocks.askMock;
 beforeEach(() => {
   mocks.invokeMock.mockClear();
   mocks.listenMock.mockClear();
   mocks.emitMock.mockClear();
   mocks.openMock.mockClear();
-  confirmMock.mockClear();
-  window.confirm = confirmMock;
+  confirmMock.mockReset();
+  confirmMock.mockResolvedValue(true);
 });
 
 describe("WorkspacePage", () => {
@@ -183,7 +186,7 @@ describe("WorkspacePage", () => {
       return null;
     });
     // confirm 返回 true（接受删除）
-    confirmMock.mockReturnValue(true);
+    confirmMock.mockResolvedValue(true);
     render(<WorkspacePage />);
     await waitFor(() => {
       expect(screen.getByText("待删工作区")).toBeInTheDocument();
@@ -223,7 +226,7 @@ describe("WorkspacePage", () => {
       if (cmd === "workspace_delete") return null;
       return null;
     });
-    confirmMock.mockReturnValue(false); // 取消
+    confirmMock.mockResolvedValue(false); // 取消
     render(<WorkspacePage />);
     await waitFor(() => {
       expect(screen.getByText("保留工作区")).toBeInTheDocument();

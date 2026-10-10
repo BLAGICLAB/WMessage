@@ -7,11 +7,15 @@ import type { MigrationRule } from "../types";
 // vi.mock 工厂提升到顶部，共享 mock 变量用 vi.hoisted（同 ChatPanel.test）
 const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
-  confirmMock: vi.fn(),
+  askMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mocks.invokeMock,
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  ask: mocks.askMock,
 }));
 
 const moveRule: MigrationRule = {
@@ -56,8 +60,8 @@ const defaultInvoke = async (cmd: string) => {
 beforeEach(() => {
   mocks.invokeMock.mockReset();
   mocks.invokeMock.mockImplementation(defaultInvoke);
-  mocks.confirmMock.mockReset();
-  window.confirm = mocks.confirmMock;
+  mocks.askMock.mockReset();
+  mocks.askMock.mockResolvedValue(true);
 });
 
 // 桌面清理面板覆盖渲染与关键交互：
@@ -127,12 +131,12 @@ describe("MigrationPanel", () => {
     const runBtn = await screen.findByText("▶ 立即执行迁移");
 
     // 取消 → 不触发迁移
-    mocks.confirmMock.mockReturnValue(false);
+    mocks.askMock.mockResolvedValue(false);
     await user.click(runBtn);
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("migration_run");
 
     // 确认 → 执行并渲染报告
-    mocks.confirmMock.mockReturnValue(true);
+    mocks.askMock.mockResolvedValue(true);
     await user.click(runBtn);
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("migration_run");

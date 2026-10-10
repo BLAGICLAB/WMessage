@@ -26,6 +26,7 @@ import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { useConfirm } from "../../lib/useConfirm";
 import {
   taskFiles,
   filesPatch,
@@ -63,6 +64,7 @@ export function TodoCardView({
   drag,
 }: TodoCardViewProps & { drag?: CardDrag }) {
   const [editing, setEditing] = useState(autoEdit && !archived && !trashed);
+  const confirm = useConfirm();
   const [dueEditing, setDueEditing] = useState(false);
   // 执行痕迹弹层（TracePanel 自带 portal，任务卡内点击「执行详情」打开）
   const [traceOpen, setTraceOpen] = useState(false);
@@ -657,7 +659,7 @@ export function TodoCardView({
               <button
                 className="nm-btn px-3 py-1 text-xs text-red-400 flex items-center gap-1 whitespace-nowrap"
                 onPointerDown={stop}
-                onClick={() => {
+                onClick={async () => {
                   // 绑本地文件/文件夹时弹三选项：
                   //   全部删除 / 保留文件删除 / 取消
                   // 未绑文件时保持原两选项 confirm（无需三选）
@@ -666,9 +668,9 @@ export function TodoCardView({
                     return;
                   }
                   if (
-                    !window.confirm(
+                    !(await confirm(
                       `确定彻底删除任务「${task.title}」？\n此操作不可撤销。`,
-                    )
+                    ))
                   )
                     return;
                   onDelete(task.id);

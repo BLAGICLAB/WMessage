@@ -27,7 +27,8 @@ const mocks = vi.hoisted(() => {
   const emitMock = vi.fn();
   const openMock = vi.fn();
   const openUrlMock = vi.fn();
-  return { invokeMock, emitMock, openMock, openUrlMock };
+  const askMock = vi.fn();
+  return { invokeMock, emitMock, openMock, openUrlMock, askMock };
 });
 
 mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -112,6 +113,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: mocks.openMock,
   save: vi.fn(async () => null),
+  ask: mocks.askMock,
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -129,6 +131,8 @@ beforeEach(() => {
   mocks.emitMock.mockClear();
   mocks.openMock.mockClear();
   mocks.openUrlMock.mockClear();
+  mocks.askMock.mockReset();
+  mocks.askMock.mockResolvedValue(true);
   confirmMock.mockClear();
   alertMock.mockClear();
   window.confirm = confirmMock;

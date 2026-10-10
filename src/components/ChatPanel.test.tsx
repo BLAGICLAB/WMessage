@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => {
     string,
     Array<(e: { payload: Record<string, unknown> }) => void>
   > = {};
-  return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners };
+  const askMock = vi.fn();
+  return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners, askMock };
 });
 
 // 默认实现（具名：beforeEach 只 mockClear 不重置 implementation，
@@ -115,6 +116,10 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  ask: (...args: unknown[]) => mocks.askMock(...args),
+}));
+
 // navigator.clipboard.writeText
 const writeTextMock = vi.fn(async () => {});
 Object.defineProperty(navigator, "clipboard", {
@@ -134,6 +139,8 @@ const defaultProps = {
 beforeEach(() => {
   mocks.invokeMock.mockClear();
   mocks.listenMock.mockClear();
+  mocks.askMock.mockReset();
+  mocks.askMock.mockResolvedValue(true);
   writeTextMock.mockClear();
   mocks.dragDropHandlers.length = 0;
   for (const k of Object.keys(mocks.listeners)) delete mocks.listeners[k];
@@ -940,14 +947,14 @@ describe("ChatPanel", () => {
       });
       expect(screen.queryByText(/串台密文/)).toBeNull();
       // busy 中删除正在回复的 s1 → 拦截（不弹 confirm、不调 delete）
-      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      mocks.askMock.mockReset();
       await user.click(screen.getByTitle("切换会话"));
       const s1Row = screen.getByText("默认会话").closest("div");
       await user.click(within(s1Row!).getByTitle("删除此对话"));
       expect(
         mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_session_delete"),
       ).toBe(false);
-      confirmSpy.mockRestore();
+      expect(mocks.askMock).not.toHaveBeenCalled();
       // 删除守卫返回后菜单仍开：busy 中新建对话 → 允许（回归钉 2）
       await user.click(screen.getByText("新建对话"));
       await waitFor(() => {
@@ -1230,7 +1237,7 @@ describe("ChatPanel", () => {
     try {
       render(<ChatPanel {...defaultProps} />);
       await screen.findByText("默认会话");
-      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+      mocks.askMock.mockResolvedValueOnce(true);
       await user.click(screen.getByTitle("切换会话"));
       await user.click(screen.getByTitle("删除此对话"));
       await waitFor(() =>
@@ -1270,7 +1277,6 @@ describe("ChatPanel", () => {
         sessionId: "s3",
       });
       expect(screen.queryByText(/s3 的确认/)).not.toBeInTheDocument();
-      confirmSpy.mockRestore();
     } finally {
       mocks.invokeMock.mockImplementation(defaultInvoke);
       mocks.listenMock.mockImplementation(async () => () => {});

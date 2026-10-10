@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { useConfirm } from "../../lib/useConfirm";
 import {
   FileText,
   Pencil,
@@ -37,6 +38,7 @@ export function WordTemplatePanel() {
     params: WordTemplateParams;
   } | null>(null);
   const [editName, setEditName] = useState("");
+  const confirm = useConfirm();
 
   const refresh = useCallback(async () => {
     try {
@@ -113,9 +115,9 @@ export function WordTemplatePanel() {
   const reextract = async () => {
     if (!editing) return;
     if (
-      !window.confirm(
+      !(await confirm(
         `按「${editing.name}.docx」重新提取参数？将覆盖当前编辑内容`,
-      )
+      ))
     )
       return;
     setBusy(true);
@@ -152,7 +154,7 @@ export function WordTemplatePanel() {
   };
 
   const remove = async (name: string) => {
-    if (!window.confirm(`删除模板「${name}」？`)) return;
+    if (!(await confirm(`删除模板「${name}」？`))) return;
     setBusy(true);
     setError("");
     try {

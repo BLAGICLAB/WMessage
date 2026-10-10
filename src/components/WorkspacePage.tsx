@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openTarget } from "../lib/openTarget";
+import { useConfirm } from "../lib/useConfirm";
 import { handleCommandError } from "../lib/errorHandler";
 import { unlistenSafe } from "../lib/useTauriListen";
 import {
@@ -59,6 +60,7 @@ export function linkDisplayName(link: WorkspaceLink): string {
 
 /** 工作区视图：类似任务卡的静态链接卡片（标题 + 右侧折叠开关 + 三列链接网格） */
 export function WorkspacePage() {
+  const confirm = useConfirm();
   const [items, setItems] = useState<WorkspaceItem[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   /** 编辑中的链接（显示名称 + 目标地址双字段） */
@@ -201,7 +203,7 @@ export function WorkspacePage() {
   };
 
   const removeItem = async (id: string) => {
-    if (!window.confirm("删除这个工作区？其中的链接也会被移除。")) return;
+    if (!(await confirm("删除这个工作区？其中的链接也会被移除。"))) return;
     // 与 persist 同一道写闸：删除在飞时 workspace-changed 触发的 reload 会排队，
     // 避免「重读旧库 → setItems 盖掉乐观过滤 → 已删项闪回」的窗口
     beginWrite();

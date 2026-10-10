@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { Pin } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
+import { useConfirm } from "../../lib/useConfirm";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import {
@@ -85,6 +86,7 @@ export function ChatPanel({
   /** 输入卡 textarea 引用：自动增高用（UI-1 单行 input 升级为多行 textarea） */
   const taRef = useRef<HTMLTextAreaElement>(null);
   /** 斜杠命令 autocomplete 选中项下标（输入「/」浮出后用 ↑↓ / Tab / 点选） */
+  const confirm = useConfirm();
   const [slashIdx, setSlashIdx] = useState(0);
   /** 斜杠命令 picker 被 Esc 关掉后，输入未变化前不再自动浮出 */
   const [slashDismissed, setSlashDismissed] = useState(false);
@@ -987,9 +989,9 @@ export function ChatPanel({
     }
     const target = sessions.find((s) => s.id === sid);
     if (
-      !window.confirm(
+      !(await confirm(
         `删除对话「${target?.title ?? "未命名"}」？消息记录一并删除。`,
-      )
+      ))
     )
       return;
     try {

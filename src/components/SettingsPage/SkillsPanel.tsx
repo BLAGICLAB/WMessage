@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderInput, FolderOpen, Trash2, Upload } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { useConfirm } from "../../lib/useConfirm";
 import { EmptyState } from "../EmptyState";
 import type { SkillInfo, SkillOutcome, SkillOutcomeKind } from "./types";
 
@@ -53,6 +54,7 @@ function SkillOutcomeBadge({ outcome }: { outcome: SkillOutcome }) {
 
 /** 机器人技能管理：导入/删除/打开目录（技能 = 数据目录 skills/<name>/SKILL.md） */
 export function SkillsPanel() {
+  const confirm = useConfirm();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -105,7 +107,7 @@ export function SkillsPanel() {
 
   const removeSkill = async (name: string) => {
     if (busy) return;
-    if (!window.confirm(`删除技能「${name}」？`)) return;
+    if (!(await confirm(`删除技能「${name}」？`))) return;
     setBusy(true);
     setError("");
     try {

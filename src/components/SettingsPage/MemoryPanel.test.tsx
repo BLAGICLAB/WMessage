@@ -22,12 +22,14 @@ const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   saveMock: vi.fn(),
   openMock: vi.fn(),
+  askMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invokeMock }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: mocks.saveMock,
   open: mocks.openMock,
+  ask: mocks.askMock,
 }));
 
 beforeEach(() => {
@@ -36,9 +38,10 @@ beforeEach(() => {
   // mockReset（而非 mockClear）：清掉上个用例 mockResolvedValue 残留的实现
   mocks.saveMock.mockReset();
   mocks.openMock.mockReset();
+  mocks.askMock.mockReset();
   mocks.saveMock.mockImplementation(async () => null);
   mocks.openMock.mockImplementation(async () => null);
-  window.confirm = vi.fn(() => true);
+  mocks.askMock.mockResolvedValue(true);
 });
 async function flush() {
   await act(async () => {});
@@ -203,8 +206,7 @@ describe("MemoryPanel", () => {
 
   it("删除：确认后调 mem_delete；普通条目与自进化条目确认文案不同", async () => {
     const user = userEvent.setup();
-    const confirmMock = vi.fn((_msg?: string) => true);
-    window.confirm = confirmMock;
+    const confirmMock = mocks.askMock;
     stubData([
       sampleItem(),
       sampleItem({ id: "m2", tags: ["evo:abc"], content: "提案教训" }),
@@ -228,7 +230,7 @@ describe("MemoryPanel", () => {
 
   it("取消删除：confirm 返回 false 不调 mem_delete", async () => {
     const user = userEvent.setup();
-    window.confirm = vi.fn(() => false);
+    mocks.askMock.mockResolvedValueOnce(false);
     stubData();
     render(<MemoryPanel />);
     await screen.findByText("喜欢简洁的回复风格");

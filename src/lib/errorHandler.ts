@@ -287,7 +287,8 @@ export function handleCommandError(
       ) {
         return;
       }
-      // 兜底：无 Host 的窗口走原生 confirm（旧 emoji 格式——原生弹窗无富文本能力）
+      // 兜底：无 Host 的窗口走原生 confirm（errorHandler 不在 React 树内，
+      // 没法用 useConfirm hook；这是测不到的回退路径，UI 上几乎不可达）
       if (window.confirm(`❌ ${legacyBody}\n\n🔁 是否重试？`)) retry();
       return;
     }

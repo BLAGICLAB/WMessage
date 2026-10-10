@@ -22,6 +22,7 @@ import { handleCommandError } from "../../lib/errorHandler";
 import { Toggle } from "../Toggle";
 import { IconButton } from "../../ui/IconButton";
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
+import { useConfirm } from "../../lib/useConfirm";
 import {
   type ApplyPolicy,
   type ChangeRecord,
@@ -281,14 +282,14 @@ export function EvolutionPanel() {
   // Toggle 入口（的主操作）
   // 有回滚历史的提案再点 ON → 二次确认「上次已回滚」——
   // 禁止会锁死重试路径，静默放行易误点循环，二次确认兼顾。
-  const onToggle = (id: string, enabled: boolean) => {
+  const onToggle = async (id: string, enabled: boolean) => {
     if (
       enabled &&
       changes.some(
         (c) => c.proposal_id === id && c.status === ROLLED_BACK_STATUS,
       )
     ) {
-      if (!window.confirm(`提案 ${id} 上次已回滚，确认再次启用？`)) return;
+      if (!(await confirm(`提案 ${id} 上次已回滚，确认再次启用？`))) return;
     }
     return void runCmd(
       "evolution_toggle_proposal",
@@ -349,6 +350,8 @@ export function EvolutionPanel() {
     },
     [changes],
   );
+
+  const confirm = useConfirm();
 
   const activeChanges = changes.filter((c) => c.status === "active");
   const hasActive = activeChanges.length > 0;

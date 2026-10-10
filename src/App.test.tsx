@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => {
   const listenMock = vi.fn();
   const openMock = vi.fn();
   const saveMock = vi.fn();
-  return { invokeMock, listenMock, openMock, saveMock };
+  const askMock = vi.fn();
+  return { invokeMock, listenMock, openMock, saveMock, askMock };
 });
 
 const defaultInvokeImpl = async (cmd: string) => {
@@ -28,6 +29,7 @@ mocks.invokeMock.mockImplementation(defaultInvokeImpl);
 mocks.listenMock.mockImplementation(async () => () => {});
 mocks.openMock.mockImplementation(async () => null);
 mocks.saveMock.mockImplementation(async () => null);
+mocks.askMock.mockResolvedValue(true);
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mocks.invokeMock,
@@ -42,6 +44,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: mocks.openMock,
   save: mocks.saveMock,
+  ask: mocks.askMock,
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -49,20 +52,18 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
 
-// alert / confirm：vitest 用 spy 替身，避免 jsdom 弹原生弹框卡住测试
+// alert：vitest 用 spy 替身，避免 jsdom 弹原生弹框卡住测试
 const alertMock = vi.fn();
-const confirmMock = vi.fn(() => true);
 beforeEach(() => {
   mocks.invokeMock.mockClear();
   mocks.invokeMock.mockImplementation(defaultInvokeImpl); // 恢复默认实现（个别用例会覆盖）
   mocks.listenMock.mockClear();
   mocks.openMock.mockClear();
   mocks.saveMock.mockClear();
+  mocks.askMock.mockReset();
+  mocks.askMock.mockResolvedValue(true);
   alertMock.mockClear();
-  confirmMock.mockClear();
-  // 直接覆盖 window 上的方法（jsdom 已实现 alert/confirm；stub 一下）
   window.alert = alertMock;
-  window.confirm = confirmMock;
 });
 
 describe("App", () => {

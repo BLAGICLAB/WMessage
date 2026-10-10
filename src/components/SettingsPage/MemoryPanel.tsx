@@ -18,6 +18,7 @@ import {
   Upload,
 } from "lucide-react";
 import { formatCommandError } from "../../lib/errorHandler";
+import { useConfirm } from "../../lib/useConfirm";
 import { IconButton } from "../../ui/IconButton";
 import { EmptyState } from "../EmptyState";
 
@@ -93,6 +94,7 @@ function fmtTime(ms: number): string {
 }
 
 export function MemoryPanel() {
+  const confirm = useConfirm();
   const [items, setItems] = useState<MemItemView[] | null>(null);
   const [stats, setStats] = useState<MemStats | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -313,7 +315,7 @@ export function MemoryPanel() {
     if (busyRef.current) return;
     // evo: 前缀条目来自自进化链路（提案回滚的教训），删除影响回滚后注入——确认文案点名
     const fromEvolution = (m.tags?.[0] ?? "").startsWith("evo:");
-    const ok = window.confirm(
+    const ok = await confirm(
       fromEvolution
         ? "该条目来自自进化链路，删除后相关提案回滚时不再注入该教训。确定删除？"
         : `删除这条记忆？\n\n${m.content.slice(0, 80)}`,
@@ -404,9 +406,9 @@ export function MemoryPanel() {
                 <button
                   type="button"
                   className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t5)]"
-                  onClick={() => {
+                  onClick={async () => {
                     if (
-                      window.confirm(
+                      await confirm(
                         `忽略全部 ${pending.length} 条待确认记忆？忽略后不会入库，无法恢复。`,
                       )
                     ) {
