@@ -73,14 +73,14 @@ describe("App", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
     });
-    // 看板三列：待办/今日/完成（KanbanBoard 渲染了三个列头）
-    expect(screen.getByText("待办")).toBeInTheDocument();
-    expect(screen.getByText("今日")).toBeInTheDocument();
-    expect(screen.getByText("完成")).toBeInTheDocument();
-    // 种子标题
+    // 任务页 = 周时间网格：列头 + 时刻刻度 + 任务池（批 2 只读渲染）
+    expect(screen.getByText("周一")).toBeInTheDocument();
+    expect(screen.getByText("08:00")).toBeInTheDocument();
+    expect(screen.getByText("任务池")).toBeInTheDocument();
+    // 种子标题（未完成的两个上池；done 种子不上任务页——完成列表入口随批 4 详情面板）
     expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     expect(screen.getByText("过一遍新拟态样式细节")).toBeInTheDocument();
-    expect(screen.getByText("完成看板拖拽原型")).toBeInTheDocument();
+    expect(screen.queryByText("完成看板拖拽原型")).not.toBeInTheDocument();
     // 顶栏：任务 / 归档 / 工作区 / 回收站
     expect(screen.getByText("任务")).toBeInTheDocument();
     expect(screen.getByText("归档")).toBeInTheDocument();
@@ -97,8 +97,8 @@ describe("App", () => {
     await user.click(screen.getByText("归档"));
     // 归档页：暂无归档内容（seed 任务都没 archived 标记）
     expect(await screen.findByText("暂无归档内容")).toBeInTheDocument();
-    // 看板三列头不再显示
-    expect(screen.queryByText("待办")).not.toBeInTheDocument();
+    // 任务页骨架不再显示
+    expect(screen.queryByText("任务池")).not.toBeInTheDocument();
   });
 
   it("点击「工作区」：视图切到 WorkspacePage（显示「+ 新建工作区」）", async () => {
@@ -109,8 +109,8 @@ describe("App", () => {
     });
     await user.click(screen.getByText("工作区"));
     expect(await screen.findByText("+ 新建工作区")).toBeInTheDocument();
-    // 看板三列头消失
-    expect(screen.queryByText("待办")).not.toBeInTheDocument();
+    // 任务页骨架消失
+    expect(screen.queryByText("任务池")).not.toBeInTheDocument();
   });
 
   it("mutate 流程：点击「新建任务」→ db_upsert 收到新任务 + 标题进入编辑态", async () => {
@@ -124,9 +124,9 @@ describe("App", () => {
     ).length;
     // 新建任务按钮迁入左侧导航栏（文案从「+ 新建任务」改为图标 + 「新建任务」）
     await user.click(screen.getByText("新建任务"));
-    // 新建后立即进入编辑态：input value = "新任务"
-    const input = await screen.findByDisplayValue("新任务");
-    expect(input).toBeInTheDocument();
+    // 新建后立即进入任务页任务池（详情面板编辑态在批 4 接线）
+    const pooled = await screen.findByText("新任务");
+    expect(pooled).toBeInTheDocument();
     // mutate → upsertTasks → db_upsert 被多调用至少一次
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
@@ -146,7 +146,7 @@ describe("App", () => {
     expect(
       await screen.findByText(/暂无回收站内容|回收站是空的/),
     ).toBeInTheDocument();
-    expect(screen.queryByText("待办")).not.toBeInTheDocument();
+    expect(screen.queryByText("任务池")).not.toBeInTheDocument();
   });
 
   it("db_load 读失败：不走种子/迁移分支、不写库、弹告警（error ≠ empty）", async () => {
@@ -165,8 +165,8 @@ describe("App", () => {
     expect(
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_delete"),
     ).toHaveLength(0);
-    // 看板仍渲染（内存空数组），种子标题不出现
-    expect(screen.getByText("待办")).toBeInTheDocument();
+    // 任务页仍渲染（内存空数组）：网格骨架 + 空池，种子标题不出现
+    expect(screen.getByText("任务池")).toBeInTheDocument();
     expect(
       screen.queryByText("梳理 WMessage 需求清单"),
     ).not.toBeInTheDocument();
@@ -275,8 +275,10 @@ describe("App", () => {
   });
 
   // 软删除必须清调度字段——否则任务躺在回收站里 schedule
-  // 仍到点触发（deletedAt 不挡调度读取）
-  it("软删除进回收站：落盘行 schedule/schedLast 清空", async () => {
+  // 仍到点触发（deletedAt 不挡调度读取）。
+  // SKIP：旧看板卡的删除键已随三列退役，新入口（任务详情面板删除键）批 4 落地时
+  // 恢复本用例（fixture + 断言原样保留）
+  it.skip("软删除进回收站：落盘行 schedule/schedLast 清空", async () => {
     const user = userEvent.setup();
     const withSched: Task[] = [
       {
@@ -287,6 +289,7 @@ describe("App", () => {
         updatedAt: 1,
         schedule: "daily:09:00",
         schedLast: 123,
+        archived: true,
       },
     ];
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -294,6 +297,7 @@ describe("App", () => {
       return defaultInvokeImpl(cmd);
     });
     render(<App />);
+    await user.click(await screen.findByText("归档"));
     await waitFor(() => {
       expect(screen.getByText("定时任务")).toBeInTheDocument();
     });

@@ -971,3 +971,300 @@
     filter: brightness(1.14);
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   周时间网格（TaskTimeline）：accent / 现在线 / 毛玻璃 / 计划块色板
+   纪律：accent 只给「现在/今天/选中/新建」；--now 是唯一的红色活体信号；
+   层次靠亮度分档，悬浮面板只许 --shadow-lg 一层投影
+   ═══════════════════════════════════════════════════════════════ */
+:root {
+  --accent: #5b64d8;
+  --now: #e5484d;
+  --glass-bg: rgba(255, 255, 255, 0.66);
+  --plan-blue: #4f7cf5;
+  --plan-teal: #2fb8ad;
+  --plan-green: #46c283;
+  --plan-amber: #e89b3c;
+  --plan-violet: #8b5cf6;
+  --plan-slate: #7a86a0;
+}
+.dark {
+  --accent: #8a91f0;
+  --now: #ff6b62;
+  --glass-bg: rgba(27, 31, 41, 0.6);
+}
+
+@layer components {
+  /* 毛玻璃悬浮面板（任务池/详情共用）；不支持 backdrop-filter 时退化实色保对比 */
+  .glass {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(1.5);
+    -webkit-backdrop-filter: blur(20px) saturate(1.5);
+    border: 1px solid var(--edge);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-lg);
+  }
+  @supports not (backdrop-filter: blur(1px)) {
+    .glass {
+      background: var(--surface);
+    }
+  }
+
+  /* 网格井：下陷容器（暗色叠两团低透明氛围辉光） */
+  .week-well {
+    position: relative;
+  }
+  .dark .week-well::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        480px 340px at 10% 100%,
+        color-mix(in srgb, #7c5cff 13%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        520px 360px at 98% 96%,
+        color-mix(in srgb, #2fb8ad 10%, transparent),
+        transparent 70%
+      );
+  }
+
+  /* 虚线时刻刻度：小时强、半点弱（弱线只是吸附提示，不抢内容） */
+  .week-hline {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 1px dashed color-mix(in srgb, var(--edge-strong) 62%, transparent);
+    pointer-events: none;
+  }
+  .week-hline-hh {
+    border-top-color: color-mix(in srgb, var(--edge-strong) 26%, transparent);
+  }
+
+  /* 现在时刻线：贯穿今天列的活体信号（整页唯一红色元素） */
+  .week-nowline {
+    position: absolute;
+    left: -4px;
+    right: 8px;
+    height: 0;
+    z-index: 4;
+    border-top: 2px solid var(--now);
+    pointer-events: none;
+  }
+  .week-nowline::before {
+    content: "";
+    position: absolute;
+    left: -3px;
+    top: -5px;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--now);
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--now) 22%, transparent);
+  }
+  .week-nowlab {
+    position: absolute;
+    left: 10px;
+    top: -10px;
+    line-height: 1;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--now);
+    padding: 3px 8px;
+    border-radius: 999px;
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--now) 40%, transparent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 计划块：亮色 = 粉彩淡底 + 左色条；暗色 = 饱和渐变实色 + 同色辉光。
+     --c 由组件内联注入（planColorVar）；定位（top/left/width）全部内联 */
+  .plan-blk {
+    position: absolute;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--r-md);
+    padding: 6px 10px 6px 12px;
+    overflow: hidden;
+    background: color-mix(in srgb, var(--c) 14%, var(--surface-raised));
+    border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
+    box-shadow: var(--shadow-sm);
+    transition:
+      box-shadow 0.12s ease,
+      transform 0.12s ease,
+      background-color 0.12s ease;
+  }
+  .plan-blk::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--c);
+    border-radius: 3px 0 0 3px;
+  }
+  .plan-blk:hover {
+    transform: translateY(-1px);
+  }
+  .dark .plan-blk {
+    background: linear-gradient(
+      150deg,
+      color-mix(in srgb, var(--c) 86%, white) 0%,
+      var(--c) 52%,
+      color-mix(in srgb, var(--c) 78%, black) 100%
+    );
+    border-color: color-mix(in srgb, var(--c) 55%, transparent);
+    box-shadow:
+      0 4px 16px color-mix(in srgb, var(--c) 32%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+  .dark .plan-blk::before {
+    display: none;
+  }
+  .dark .plan-blk:hover {
+    transform: translateY(-2px);
+    box-shadow:
+      0 8px 24px color-mix(in srgb, var(--c) 45%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+  .plan-blk.sel {
+    border-color: var(--accent);
+    box-shadow:
+      var(--shadow-sm),
+      0 0 0 3px color-mix(in srgb, var(--accent) 24%, transparent);
+  }
+  .dark .plan-blk.sel {
+    border-color: rgba(255, 255, 255, 0.85);
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--c) 60%, transparent),
+      0 6px 20px color-mix(in srgb, var(--c) 48%, transparent),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+  .plan-blk-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--t1);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .dark .plan-blk-title {
+    color: #fff;
+    font-weight: 600;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  }
+  .plan-blk-time {
+    font-size: 10px;
+    color: var(--t4);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+    margin-top: auto;
+    align-self: flex-end;
+  }
+  .dark .plan-blk-time {
+    color: rgba(255, 255, 255, 0.85);
+  }
+  /* 起止锚点：亮色隐藏；暗色 = 块角外的白点 + 同色光环（可拖拽的语义暗示） */
+  .plan-dot {
+    display: none;
+    position: absolute;
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.95);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 38%, transparent);
+  }
+  .dark .plan-dot {
+    display: block;
+  }
+  .plan-dot-s {
+    top: -3px;
+    left: -3px;
+  }
+  .plan-dot-e {
+    bottom: -3px;
+    right: -3px;
+  }
+  /* 底缘拉伸握把：hover 浮现（批 3 接线 ns-resize 拖拽） */
+  .plan-grip {
+    position: absolute;
+    left: 50%;
+    bottom: 2px;
+    transform: translateX(-50%);
+    width: 22px;
+    height: 5px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--c) 55%, transparent);
+    opacity: 0;
+    transition: opacity 0.12s ease;
+    cursor: ns-resize;
+  }
+  .dark .plan-grip {
+    background: rgba(255, 255, 255, 0.6);
+  }
+  .plan-blk:hover .plan-grip {
+    opacity: 1;
+  }
+  /* 跨日续接段：贴列底/列顶的开口角 + »« 标记 */
+  .plan-blk.tail {
+    border-bottom-left-radius: 3px;
+    border-bottom-right-radius: 3px;
+    border-bottom-color: transparent;
+  }
+  .plan-blk.head {
+    border-top-left-radius: 3px;
+    border-top-right-radius: 3px;
+    border-top-color: transparent;
+  }
+  .plan-cont {
+    position: absolute;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--c);
+    line-height: 1;
+  }
+  .dark .plan-cont {
+    color: rgba(255, 255, 255, 0.9);
+  }
+  .plan-blk.tail .plan-cont {
+    bottom: 2px;
+  }
+  .plan-blk.head .plan-cont {
+    top: 2px;
+  }
+  /* 落点吸附虚线框（批 3 拖拽反馈） */
+  .plan-slot {
+    position: absolute;
+    z-index: 1;
+    border-radius: var(--r-md);
+    pointer-events: none;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border: 1.5px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  /* 落位弹入（批 3：新排期块） */
+  .plan-fresh {
+    animation: plan-pop 0.22s cubic-bezier(0.2, 1.4, 0.4, 1);
+  }
+  @keyframes plan-pop {
+    0% {
+      transform: scale(0.88);
+      opacity: 0;
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+}

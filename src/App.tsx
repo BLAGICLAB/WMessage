@@ -20,7 +20,7 @@ import {
   Waypoints,
   Workflow as WorkflowIcon,
 } from "lucide-react";
-import { KanbanBoard } from "./components/KanbanBoard";
+import { TaskTimelinePage } from "./components/TaskTimeline/TaskTimelinePage";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { ErrorDialogHost } from "./ui/ErrorDialogHost";
@@ -51,7 +51,6 @@ import {
   importWorkspaceFromFile,
   STORAGE_KEY,
   sortByOrder,
-  assignInsertOrder,
   upsertWorkspaceItems,
 } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
@@ -782,50 +781,6 @@ function App() {
     }
   };
 
-  // 看板拖拽排序提交：TP-3——本地乐观计算（列语义 + assignInsertOrder 照旧），
-  // 落盘走定向命令：列变更 → task_set_column（服务端打 completedAt/archived 语义）；
-  // order 变更 → task_reorder（ord-only，内容零携带）。不再 upsertTasks 整行回写，
-  // 任何后台写者/实例并发都不可能再触发写冲突弹窗
-  const commitBoardOrder = (activeId: string, next: Task[]) => {
-    const prevMap = new Map(tasksRef.current.map((t) => [t.id, t]));
-    const arr = next.map((t) => {
-      const p = prevMap.get(t.id);
-      if (!p || p.column === t.column) return t;
-      if (t.column === "done")
-        // 进入完成列：记完成时间，取消归档
-        return { ...t, completedAt: Date.now(), archived: false };
-      // 拖出完成列：清除完成时间与归档标记
-      return { ...t, completedAt: undefined, archived: undefined };
-    });
-    const withOrder = assignInsertOrder(arr, activeId);
-    tasksRef.current = withOrder;
-    setTasks(withOrder);
-    for (const t of withOrder) {
-      const p = prevMap.get(t.id);
-      if (p && p.column !== t.column) {
-        invoke<Task>("task_set_column", { id: t.id, col: t.column }).catch(
-          (e) => {
-            handleCommandError(e, "移动任务");
-            // 乐观写被后端拒绝：重读 DB 收敛 UI，避免看板与库长期分叉
-            reloadTasks().catch(() => {});
-          },
-        );
-      }
-    }
-    const items = withOrder
-      .filter((t) => {
-        const p = prevMap.get(t.id);
-        return !p || p.order !== t.order;
-      })
-      .map((t) => ({ id: t.id, order: t.order ?? 0 }));
-    if (items.length) {
-      invoke<Task[]>("task_reorder", { items }).catch((e) => {
-        handleCommandError(e, "移动任务");
-        reloadTasks().catch(() => {});
-      });
-    }
-  };
-
   // TP-1：✅ 状态切换走服务端定向命令——服务端同一把 DB 写锁内读现值打基线写库，
   // 前端快照不参与，规则定时器/迁移/实例重启并发不再触发写冲突弹窗
   const setTaskColumn = async (taskId: string, col: ColumnId) => {
@@ -990,15 +945,7 @@ function App() {
         </nav>
         <main className="min-w-0 flex-1 overflow-y-auto p-6">
           {view === "board" ? (
-            <KanbanBoard
-              tasks={visibleTasks}
-              editingId={editingId}
-              onReorder={commitBoardOrder}
-              onUpdate={updateTask}
-              onSetColumn={setTaskColumn}
-              onDelete={deleteTask}
-              onOpenArchive={() => setView("archive")}
-            />
+            <TaskTimelinePage tasks={visibleTasks} onNewTask={addTask} />
           ) : view === "workflow" ? (
             <WorkflowPage
               tasks={tasks}
