@@ -304,11 +304,29 @@ pub(crate) fn delete_api_key_at(
     }
 }
 
-/// get_password 结果分类——任何失败都映射为 KeyringError 结构化变体，
+/// get_password 结果分类：
+/// - `NoEntry`（良性：key 存了/未存）→ `Ok("")`，调用方用 `!k.trim().is_empty()` 判
+///   fallback——这与原「未配置 fallback 全局」行为等价（keyring 4.x Error
+///   12 变体中 NoEntry 是唯一良性的，详见 `wmessage-keyring-error-semantics`）
+/// - 其他 11 个 Error 变体（`PlatformFailure` `NoStorageAccess` `BadDataFormat`
+///   `BadStoreFormat` 等）→ 映射为 `KeyringError` 结构化变体上抛——避免
+///   钥匙串锁/损坏/格式坏时被静默吞成「无 key」导致跨厂商兜底泄漏
+///
 /// 不走 String 逃生舱（同类故障产出两种 code，前端 hintForCode 失配）。
 /// 抽成纯函数便于单测（keyring 真实存储在测试环境不可用）。
 pub(crate) fn classify_get_password(r: Result<String, keyring::Error>) -> CommandResult<String> {
-    r.map_err(|e| CommandError::KeyringError(format!("读取 API Key 失败：{e}")))
+    use keyring::Error;
+    match r {
+        Ok(k) => Ok(k),
+        Err(Error::NoEntry) => Ok(String::new()),
+        Err(e) => {
+            // #[non_exhaustive] 兜底：keyring 4.x+ 未来新增的变体不静默吞——
+            // 全部当作真错误上抛，保持调用方语义
+            Err(CommandError::KeyringError(format!(
+                "读取 API Key 失败：{e}"
+            )))
+        }
+    }
 }
 
 /// 「key 不存在」（NoEntry）→ Ok(false)；
@@ -721,5 +739,56 @@ mod vendor_key_tests {
         // 无 active / 无列表 → None
         assert_eq!(active_vendor_of(Some("openai"), None, Some(&mbp)), None);
         assert_eq!(active_vendor_of(Some("openai"), Some(&active), None), None);
+    }
+
+    /// keyring::Error 分类（2026-10-10 修）：NoEntry 走 fallback（Ok("")），
+    /// 其他 11 个 Error 变体上抛（Err(KeyringError)）。锁住 NoEntry vs 真错误
+    /// 的分流——防未来重构又把 NoEntry 包成错误上抛，让「未配置」看起来像故障。
+    #[test]
+    fn classify_get_password_no_entry_maps_to_empty_string_for_fallback() {
+        let r: Result<String, keyring::Error> = Err(keyring::Error::NoEntry);
+        let got = classify_get_password(r).expect("NoEntry 必须不报错");
+        assert_eq!(
+            got, "",
+            "NoEntry → Ok(\"\") 触发调用方 !k.trim().is_empty() fallback"
+        );
+    }
+
+    #[test]
+    fn classify_get_password_real_errors_propagate_as_keyring_error() {
+        // 锁 4 个常见「真错误」变体：都不允许静默 fallback
+        for variant in [
+            keyring::Error::PlatformFailure("mock platform fail".into()),
+            keyring::Error::NoStorageAccess("mock locked keychain".into()),
+            keyring::Error::BadDataFormat(vec![0xff], "mock decrypt fail".into()),
+            keyring::Error::BadStoreFormat("mock store corrupt".into()),
+        ] {
+            let r: Result<String, keyring::Error> = Err(variant);
+            let err =
+                classify_get_password(r).expect_err("真错误必须上抛，不能 fallback 到空字符串");
+            // 错误包成结构化 KeyringError code（前端 hintForCode 能匹配）
+            // 而不是吞成空字符串让调用方误以为「未配置」走全局兜底泄漏
+            let s = err.to_string();
+            assert!(
+                s.contains("读取") || s.contains("Key"),
+                "KeyringError 错误信息应带上下文，得到：{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_get_password_keeps_ok_intact() {
+        // 正常返回（含前后空白、空字符串、非常规字符）都原样透传
+        let cases = [
+            "k1",
+            "  key with spaces  ",
+            "带有中文的 key 值",
+            "", // 空字符串：调用方用 !k.trim().is_empty() 判 fallback
+        ];
+        for k in cases {
+            let r: Result<String, keyring::Error> = Ok(k.into());
+            let got = classify_get_password(r).expect("Ok 永不报错");
+            assert_eq!(got, k, "Ok 透传不改写：input={k:?}");
+        }
     }
 }
