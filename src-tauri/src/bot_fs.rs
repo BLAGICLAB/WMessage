@@ -626,7 +626,12 @@ pub(crate) enum EditMode {
     /// 空白容错（逐行 trim_end 比较）命中
     WhitespaceTolerant,
     /// regex 模式（oldString 作为 Rust regex 模式串、replace_all；$1/$2 捕获组）
-    Regex,
+    /// `matches` = find_iter 计数（也是实际 replace_all 次数，0 表示试过但 0 处匹配
+    /// ——对应 caller 早退到 NotFound；非 0 表示已替换次数，audit/receipt 据此把
+    /// 「1 处替换」与「1 万处替换」区分开）
+    Regex {
+        matches: usize,
+    },
 }
 
 /// edit 失败类型（进审计的结构化字段，供自进化反思统计）
@@ -651,7 +656,7 @@ pub(crate) fn try_apply_edit(
     old: &str,
     new: &str,
     use_regex: bool,
-) -> Result<(String, EditMode, i64), (EditErrorKind, String)> {
+) -> Result<(String, EditMode, i64, usize), (EditErrorKind, String)> {
     // regex 模式：oldString 当作 Rust regex 模式串、replace_all；$1/$2 由 regex crate 解析。
     // fail-closed：非法 pattern 报错而非 panic；空替换会清空文件也拒（防呆）。
     if use_regex {
@@ -697,13 +702,13 @@ pub(crate) fn try_apply_edit(
             ));
         }
         let delta = applied.lines().count() as i64 - content.lines().count() as i64;
-        return Ok((applied, EditMode::Regex, delta));
+        return Ok((applied, EditMode::Regex { matches: count }, delta, count));
     }
     let exact_hits = content.matches(old).count();
     if exact_hits == 1 {
         let applied = content.replacen(old, new, 1);
         let delta = new.lines().count() as i64 - old.lines().count() as i64;
-        return Ok((applied, EditMode::Exact, delta));
+        return Ok((applied, EditMode::Exact, delta, 1));
     }
     if exact_hits > 1 {
         return Err((
@@ -748,7 +753,7 @@ pub(crate) fn try_apply_edit(
                 applied.push('\n');
             }
             let delta = new.lines().count() as i64 - n as i64;
-            Ok((applied, EditMode::WhitespaceTolerant, delta))
+            Ok((applied, EditMode::WhitespaceTolerant, delta, 1))
         }
         0 => {
             let head: Vec<&str> = content.lines().take(3).collect();
@@ -807,6 +812,12 @@ pub struct FileChangeReceipt {
     pub before_ref: Option<String>,
     pub before_sha: Option<String>,
     pub after_sha: Option<String>,
+    /// edit_file 的实际替换次数：Exact/WhitespaceTolerant = 1；regex = find_iter
+    /// 计数（也是 replace_all 实际次数）。0 用于「试过但 0 处匹配」/「write_file 全
+    /// 量写入」等场景——把「替换 1 处」与「替换 1 万处」/「新建 0 行」区分开
+    /// （2026-10-10 OCR 评审 D 批遗留：审计/receipt 原只记行数 delta，不区分
+    /// 单点替换与全清替换）。
+    pub replacements: usize,
 }
 
 /// unified diff 生成（纯函数可测）：similar 行级 diff → unified 文本 + ±行计数。
@@ -890,11 +901,14 @@ fn write_before_snapshot(app: &AppHandle, before: &str) -> Option<String> {
 
 /// 变更证据构建（纯函数可测；快照写盘由调用方另接 write_before_snapshot 回填 before_ref）：
 /// create（before=None）→ 全 + 行 diff、无 before_sha；modify → before/after diff + before_sha。
+/// `replacements` 0 用于「试过但 0 处匹配」/「全量写入」等场景——把「替换 1 处」
+/// 与「替换 1 万处」/「新建 0 行」区分开。
 pub(crate) fn build_file_change_receipt(
     path: &str,
     kind: &'static str,
     before: Option<&str>,
     after: &str,
+    replacements: usize,
 ) -> FileChangeReceipt {
     let (diff, added, deleted, truncated) = match before {
         Some(b) => build_unified_diff(b, after, path),
@@ -910,6 +924,7 @@ pub(crate) fn build_file_change_receipt(
         before_ref: None,
         before_sha: before.map(sha256_hex),
         after_sha: Some(sha256_hex(after)),
+        replacements,
     }
 }
 
@@ -921,7 +936,7 @@ fn edit_file_sync(
     old: String,
     new: String,
     use_regex: bool,
-) -> Result<(String, String, EditMode, i64), (EditErrorKind, String)> {
+) -> Result<(String, String, EditMode, i64, usize), (EditErrorKind, String)> {
     let content = std::fs::read_to_string(&canonical).map_err(|e| {
         (
             EditErrorKind::NotFound,
@@ -937,8 +952,8 @@ fn edit_file_sync(
             ),
         ));
     }
-    let (applied, mode, delta) = try_apply_edit(&content, &old, &new, use_regex)?;
-    Ok((content, applied, mode, delta))
+    let (applied, mode, delta, replacements) = try_apply_edit(&content, &old, &new, use_regex)?;
+    Ok((content, applied, mode, delta, replacements))
 }
 
 /// edit_file：对文本文件做精确字符串替换（三级匹配内核 + 写闸门 + 原子写回）
@@ -999,7 +1014,7 @@ pub async fn tool_edit_file(
     .await
     .unwrap_or_else(|e| Err((EditErrorKind::NotFound, format!("编辑线程异常：{e}"))));
     match out {
-        Ok((before, applied, mode, delta)) => {
+        Ok((before, applied, mode, delta, replacements)) => {
             if let Err(e) = crate::db::atomic_write(&write_target, &applied) {
                 // 「写回失败：」首字「写」非 error/warn 前缀 → ok
                 return ToolResult::ok(format!("写回失败：{e}"), Vec::new());
@@ -1007,7 +1022,7 @@ pub async fn tool_edit_file(
             let mode_note = match mode {
                 EditMode::Exact => "",
                 EditMode::WhitespaceTolerant => "（经空白容错匹配：行尾空白/CRLF 有差异）",
-                EditMode::Regex => "（regex 模式全部匹配替换）",
+                EditMode::Regex { .. } => "（regex 模式全部匹配替换）",
             };
             let delta_note = if delta > 0 {
                 format!("+{delta} 行")
@@ -1019,18 +1034,19 @@ pub async fn tool_edit_file(
             crate::bot::audit_log(
                 app,
                 &format!(
-                    "bot_fs.edit_file | {} | {} | {delta_note}",
+                    "bot_fs.edit_file | {} | {} | {delta_note} | replacements={replacements}",
                     log_path,
                     match mode {
                         EditMode::Exact => "exact",
                         EditMode::WhitespaceTolerant => "ws",
-                        EditMode::Regex => "regex",
+                        EditMode::Regex { .. } => "regex",
                     }
                 ),
             );
             //  变更证据（Agent 透明化设计 §4.2）：unified diff + before 快照。
             // 快照失败降级 before_ref=None（checkpoint.write_fail 审计），不翻转业务结果。
-            let mut receipt = build_file_change_receipt(&shown, "modify", Some(&before), &applied);
+            let mut receipt =
+                build_file_change_receipt(&shown, "modify", Some(&before), &applied, replacements);
             receipt.before_ref = write_before_snapshot(app, &before);
             // 「已修改」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
@@ -1137,6 +1153,9 @@ pub async fn tool_write_file(
                 kind,
                 before_content.as_deref(),
                 &content_after,
+                // write_file 是全量覆写/新建：replacements=0（kind="create"/"modify"
+                // 已隐含语义；edit 路径走 replacements=N 区分 1 处 vs 1 万处）
+                0,
             );
             if let Some(b) = before_content.as_deref() {
                 receipt.before_ref = write_before_snapshot(app, b);
@@ -1841,10 +1860,11 @@ mod tests {
     fn apply_edit_exact_unique_and_multi_hit() {
         let content = "fn a() {}\nfn b() {}\n";
         let old = "fn b() {}";
-        let (out, mode, delta) =
+        let (out, mode, delta, replacements) =
             try_apply_edit(content, old, "fn b() -> i32 { 1 }", false).unwrap();
         assert_eq!(mode, EditMode::Exact);
         assert_eq!(delta, 0);
+        assert_eq!(replacements, 1);
         assert!(out.contains("fn b() -> i32 { 1 }"), "{out}");
         // 多处命中：两个相同函数体
         let dup = "x = 1;\nx = 1;\n";
@@ -1858,10 +1878,11 @@ mod tests {
         // 原文行尾有尾随空格 + CRLF：精确失败、空白容错命中
         let content = "fn a() {\r\n    return 1;   \r\n}\r\n";
         let old = "fn a() {\n    return 1;\n}";
-        let (out, mode, delta) =
+        let (out, mode, delta, replacements) =
             try_apply_edit(content, old, "fn a() {\r\n    return 2;\r\n}", false).unwrap();
         assert_eq!(mode, EditMode::WhitespaceTolerant);
         assert_eq!(delta, 0);
+        assert_eq!(replacements, 1);
         assert!(out.contains("return 2;"), "{out}");
         // 空白容错也多处 → MultiHit
         let dup_ws = "x = 1;  \nx = 1;\n";
@@ -1877,11 +1898,11 @@ mod tests {
     #[test]
     fn apply_edit_preserves_crlf_and_trailing_newline() {
         let content = "a\r\nold\r\nb\r\n";
-        let (out, _, _) = try_apply_edit(content, "old", "new", false).unwrap();
+        let (out, _, _, _) = try_apply_edit(content, "old", "new", false).unwrap();
         assert_eq!(out, "a\r\nnew\r\nb\r\n", "CRLF 文件替换后保持 CRLF");
         // 无结尾换行的文件重建后不引入结尾换行
         let content2 = "x\nold";
-        let (out2, _, _) = try_apply_edit(content2, "old", "new", false).unwrap();
+        let (out2, _, _, _) = try_apply_edit(content2, "old", "new", false).unwrap();
         assert_eq!(out2, "x\nnew");
     }
 
@@ -1891,14 +1912,18 @@ mod tests {
     fn apply_edit_regex_replace_all_and_capture_groups() {
         // 全部命中 + 捕获组引用
         let content = "foo 1 bar 2 foo 3\n";
-        let (out, mode, _delta) = try_apply_edit(content, r"(\w+)\s+(\d+)", "$1=$2", true).unwrap();
-        assert_eq!(mode, EditMode::Regex);
+        let (out, mode, _delta, replacements) =
+            try_apply_edit(content, r"(\w+)\s+(\d+)", "$1=$2", true).unwrap();
+        assert_eq!(mode, EditMode::Regex { matches: 3 });
+        assert_eq!(replacements, 3);
         assert_eq!(out, "foo=1 bar=2 foo=3\n", "{out}");
 
         // 单行命中一次（regex 模式不走 unique 强制，1 处也算 replace）
         let single = "let x = 1;\n";
-        let (out2, mode2, _) = try_apply_edit(single, r"x\s*=\s*1", "x = 2", true).unwrap();
-        assert_eq!(mode2, EditMode::Regex);
+        let (out2, mode2, _, replacements2) =
+            try_apply_edit(single, r"x\s*=\s*1", "x = 2", true).unwrap();
+        assert_eq!(mode2, EditMode::Regex { matches: 1 });
+        assert_eq!(replacements2, 1);
         assert_eq!(out2, "let x = 2;\n", "{out2}");
     }
 
@@ -1924,8 +1949,8 @@ mod tests {
         assert!(hint.contains("write_file"), "{hint}");
 
         // 非空文件 regex 替换后非空 → 允许（即使删了大部分内容）
-        let (out, mode, _) = try_apply_edit("abc\n", r"abc", "", true).unwrap();
-        assert_eq!(mode, EditMode::Regex);
+        let (out, mode, _, _) = try_apply_edit("abc\n", r"abc", "", true).unwrap();
+        assert_eq!(mode, EditMode::Regex { matches: 1 });
         assert_eq!(out, "\n", "{out}");
     }
 
@@ -2339,11 +2364,15 @@ mod file_change_tests {
 
     #[test]
     fn receipt_create_has_no_before_evidence() {
-        let r = build_file_change_receipt("/x/new.txt", "create", None, "hello\n");
+        let r = build_file_change_receipt("/x/new.txt", "create", None, "hello\n", 0);
         assert_eq!(r.kind, "create");
         assert_eq!(r.path, "/x/new.txt");
         assert_eq!(r.added, 1);
         assert_eq!(r.deleted, 0);
+        assert_eq!(
+            r.replacements, 0,
+            "create 路径无 find_iter，replacements 恒 0"
+        );
         assert!(r.before_sha.is_none(), "create 无 before 证据");
         assert!(r.before_ref.is_none(), "快照由调用方回填，builder 恒 None");
         assert_eq!(r.after_sha.as_deref(), Some(sha256_hex("hello\n").as_str()));
@@ -2352,10 +2381,11 @@ mod file_change_tests {
 
     #[test]
     fn receipt_modify_carries_before_sha_and_diff() {
-        let r = build_file_change_receipt("/x/f.py", "modify", Some("old\n"), "new\n");
+        let r = build_file_change_receipt("/x/f.py", "modify", Some("old\n"), "new\n", 1);
         assert_eq!(r.kind, "modify");
         assert_eq!(r.added, 1);
         assert_eq!(r.deleted, 1);
+        assert_eq!(r.replacements, 1);
         assert_eq!(r.before_sha.as_deref(), Some(sha256_hex("old\n").as_str()));
         assert_eq!(r.after_sha.as_deref(), Some(sha256_hex("new\n").as_str()));
         assert!(r.diff.unwrap().contains("-old"));
@@ -2364,7 +2394,7 @@ mod file_change_tests {
     #[test]
     fn tool_result_carries_file_changes_and_defaults_empty() {
         let r = ToolResult::ok("x", Vec::new())
-            .with_file_change(build_file_change_receipt("/a", "create", None, "b\n"));
+            .with_file_change(build_file_change_receipt("/a", "create", None, "b\n", 0));
         assert_eq!(r.file_changes.len(), 1);
         assert_eq!(r.file_changes[0].path, "/a");
         // 其余构造器默认空——既有 33 工具零感知（加字段不改语义的兼容锁）
