@@ -7,7 +7,13 @@
 // - HumanApproved / AutoApplied 区分（硬约束 ②）
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  act,
+  fireEvent,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const invokeMock = vi.fn();
@@ -20,7 +26,7 @@ import type { ChangeRecord, ProposalEntry } from "./types";
 
 function mkProposal(
   id: string,
-  overrides: Partial<ProposalEntry> = {}
+  overrides: Partial<ProposalEntry> = {},
 ): ProposalEntry {
   return {
     proposal_id: id,
@@ -42,7 +48,10 @@ function mkProposal(
   };
 }
 
-function mkChange(id: string, overrides: Partial<ChangeRecord> = {}): ChangeRecord {
+function mkChange(
+  id: string,
+  overrides: Partial<ChangeRecord> = {},
+): ChangeRecord {
   return {
     change_id: id,
     parent_id: null,
@@ -99,7 +108,7 @@ describe("EvolutionPanel", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_list_proposals",
-        expect.objectContaining({ status: undefined })
+        expect.objectContaining({ status: undefined }),
       );
       expect(invokeMock).toHaveBeenCalledWith("evolution_list_changes");
     });
@@ -138,8 +147,8 @@ describe("EvolutionPanel", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_list_proposals",
-        expect.objectContaining({ status: undefined })
-      )
+        expect.objectContaining({ status: undefined }),
+      ),
     );
     invokeMock.mockClear();
 
@@ -150,7 +159,7 @@ describe("EvolutionPanel", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_list_proposals",
-        expect.objectContaining({ status: "pooled" })
+        expect.objectContaining({ status: "pooled" }),
       );
     });
   });
@@ -165,7 +174,7 @@ describe("EvolutionPanel", () => {
     });
     render(<EvolutionPanel />);
     await waitFor(() =>
-      expect(screen.queryByText(p.suggestion_text)).toBeTruthy()
+      expect(screen.queryByText(p.suggestion_text)).toBeTruthy(),
     );
 
     const user = userEvent.setup();
@@ -180,7 +189,7 @@ describe("EvolutionPanel", () => {
           proposalId: "p-promo",
           interactive: true,
           sessionId: null,
-        })
+        }),
       );
     });
   });
@@ -194,7 +203,7 @@ describe("EvolutionPanel", () => {
     });
     render(<EvolutionPanel />);
     await waitFor(() =>
-      expect(screen.queryByText(p.suggestion_text)).toBeTruthy()
+      expect(screen.queryByText(p.suggestion_text)).toBeTruthy(),
     );
 
     const user = userEvent.setup();
@@ -205,7 +214,7 @@ describe("EvolutionPanel", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_reject_proposal",
-        expect.objectContaining({ proposalId: "p-rej" })
+        expect.objectContaining({ proposalId: "p-rej" }),
       );
     });
   });
@@ -219,7 +228,7 @@ describe("EvolutionPanel", () => {
     });
     render(<EvolutionPanel />);
     await waitFor(() =>
-      expect(screen.queryByText(p.suggestion_text)).toBeTruthy()
+      expect(screen.queryByText(p.suggestion_text)).toBeTruthy(),
     );
 
     const user = userEvent.setup();
@@ -230,7 +239,7 @@ describe("EvolutionPanel", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_keep_shadow",
-        expect.objectContaining({ proposalId: "p-shadow" })
+        expect.objectContaining({ proposalId: "p-shadow" }),
       );
     });
   });
@@ -244,7 +253,7 @@ describe("EvolutionPanel", () => {
     });
     render(<EvolutionPanel />);
     await waitFor(() =>
-      expect(screen.getByText(/active ChangeRecord：1/)).toBeTruthy()
+      expect(screen.getByText(/active ChangeRecord：1/)).toBeTruthy(),
     );
 
     const user = userEvent.setup();
@@ -255,7 +264,7 @@ describe("EvolutionPanel", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_rollback_change",
-        expect.objectContaining({ changeId: "chg-rb" })
+        expect.objectContaining({ changeId: "chg-rb" }),
       );
     });
   });
@@ -269,7 +278,7 @@ describe("EvolutionPanel", () => {
     });
     render(<EvolutionPanel />);
     await waitFor(() =>
-      expect(screen.queryByText(p.suggestion_text)).toBeTruthy()
+      expect(screen.queryByText(p.suggestion_text)).toBeTruthy(),
     );
 
     const promoteBtn = screen.getByRole("button", { name: /启用/ });
@@ -277,8 +286,14 @@ describe("EvolutionPanel", () => {
   });
 
   it("distinguishes human_approved from auto_applied in change list", async () => {
-    const c1 = mkChange("chg-a", { approval_source: "auto_applied", human_approver: null });
-    const c2 = mkChange("chg-h", { approval_source: "human_approved", human_approver: "boss" });
+    const c1 = mkChange("chg-a", {
+      approval_source: "auto_applied",
+      human_approver: null,
+    });
+    const c2 = mkChange("chg-h", {
+      approval_source: "human_approved",
+      human_approver: "boss",
+    });
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "evolution_list_proposals") return [];
       if (cmd === "evolution_list_changes") return [c1, c2];
@@ -297,7 +312,7 @@ describe("EvolutionPanel", () => {
     const user = userEvent.setup();
     await user.click(switchBtn);
     expect(confirmSpy).toHaveBeenCalledWith(
-      expect.stringContaining("上次已回滚")
+      expect.stringContaining("上次已回滚"),
     );
     confirmSpy.mockRestore();
   });
@@ -312,7 +327,7 @@ describe("EvolutionPanel", () => {
     await waitFor(() => {
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_toggle_proposal",
-        expect.objectContaining({ proposalId: "p-rb", enabled: true })
+        expect.objectContaining({ proposalId: "p-rb", enabled: true }),
       );
     });
     confirmSpy.mockRestore();
@@ -327,7 +342,7 @@ describe("EvolutionPanel", () => {
     await user.click(switchBtn);
     expect(confirmSpy).toHaveBeenCalled();
     expect(
-      invokeMock.mock.calls.some(([c]) => c === "evolution_toggle_proposal")
+      invokeMock.mock.calls.some(([c]) => c === "evolution_toggle_proposal"),
     ).toBe(false);
     confirmSpy.mockRestore();
   });
@@ -341,14 +356,16 @@ describe("EvolutionPanel", () => {
       return null;
     });
     render(<EvolutionPanel />);
-    const switchBtn = await screen.findByRole("switch", { name: "切换 p-clean" });
+    const switchBtn = await screen.findByRole("switch", {
+      name: "切换 p-clean",
+    });
     const confirmSpy = vi.spyOn(window, "confirm");
     const user = userEvent.setup();
     await user.click(switchBtn);
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(invokeMock).toHaveBeenCalledWith(
       "evolution_toggle_proposal",
-      expect.objectContaining({ proposalId: "p-clean", enabled: true })
+      expect.objectContaining({ proposalId: "p-clean", enabled: true }),
     );
     confirmSpy.mockRestore();
   });
@@ -372,10 +389,10 @@ describe("EvolutionPanel U20 governance", () => {
     });
     expect(group).toBeTruthy();
     expect(
-      screen.getByRole("radio", { name: "应用策略：自动生效" })
+      screen.getByRole("radio", { name: "应用策略：自动生效" }),
     ).toHaveAttribute("aria-checked", "true");
     expect(
-      screen.getByRole("radio", { name: "应用策略：需我确认" })
+      screen.getByRole("radio", { name: "应用策略：需我确认" }),
     ).toHaveAttribute("aria-checked", "false");
 
     const user = userEvent.setup();
@@ -387,7 +404,7 @@ describe("EvolutionPanel U20 governance", () => {
       });
     });
     expect(
-      screen.getByRole("radio", { name: "应用策略：需我确认" })
+      screen.getByRole("radio", { name: "应用策略：需我确认" }),
     ).toHaveAttribute("aria-checked", "true");
   });
 
@@ -401,7 +418,7 @@ describe("EvolutionPanel U20 governance", () => {
     render(<EvolutionPanel />);
     await waitFor(() => {
       expect(
-        screen.getByRole("radio", { name: "应用策略：需我确认" })
+        screen.getByRole("radio", { name: "应用策略：需我确认" }),
       ).toHaveAttribute("aria-checked", "true");
     });
   });
@@ -427,14 +444,14 @@ describe("EvolutionPanel U20 governance", () => {
       return null;
     });
     render(<EvolutionPanel />);
-    expect(await screen.findByTestId("decision-badge-p-auto")).toHaveTextContent(
-      "已自动生效"
-    );
+    expect(
+      await screen.findByTestId("decision-badge-p-auto"),
+    ).toHaveTextContent("已自动生效");
     expect(screen.getByTestId("decision-badge-p-human")).toHaveTextContent(
-      "你已启用"
+      "你已启用",
     );
     expect(screen.getByTestId("decision-badge-p-pooled")).toHaveTextContent(
-      "待你决策"
+      "待你决策",
     );
   });
 
@@ -456,7 +473,7 @@ describe("EvolutionPanel U20 governance", () => {
     });
     await waitFor(() => {
       expect(screen.getByTestId("evolution-info")).toHaveTextContent(
-        "反思完成：合并 2 · 提炼 1 · 裁决 3"
+        "反思完成：合并 2 · 提炼 1 · 裁决 3",
       );
     });
   });
@@ -484,7 +501,7 @@ describe("EvolutionPanel U20 governance", () => {
     });
     const { unmount } = render(<EvolutionPanel />);
     expect(await screen.findByTestId("evolution-metrics")).toHaveTextContent(
-      /候选 0\.5 条\/天 · 通过 60% · 回滚 10% · 存活 5\.3 天/
+      /候选 0\.5 条\/天 · 通过 60% · 回滚 10% · 存活 5\.3 天/,
     );
     unmount();
 
@@ -519,12 +536,15 @@ describe("EvolutionPanel U20 governance", () => {
     });
     render(<EvolutionPanel />);
     await screen.findByText("text-p-ev");
-    expect(
-      screen.getByTestId("shadow-judgment-p-ev")
-    ).toHaveTextContent(/采纳后会进 lesson 槽位 top-3/);
+    expect(screen.getByTestId("shadow-judgment-p-ev")).toHaveTextContent(
+      /采纳后会进 lesson 槽位 top-3/,
+    );
     const badge = screen.getByTestId("conflict-badge-p-ev");
     expect(badge).toHaveTextContent(/同目标冲突 ×2/);
-    expect(badge).toHaveAttribute("title", expect.stringContaining("pool:p-other"));
+    expect(badge).toHaveAttribute(
+      "title",
+      expect.stringContaining("pool:p-other"),
+    );
   });
 
   it("evidence: 证据缺失时不渲染判定行（后端不可用降级）", async () => {
@@ -548,26 +568,132 @@ describe("EvolutionPanel U20 governance", () => {
       if (cmd === "evolution_proposal_evidence") return [];
       if (cmd === "evolution_get_thresholds")
         return { mergeMinIds: 2, distillMinIds: 2, contradictionMinIds: 1 };
-      if (cmd === "mem_stats") return { total: 320, capacity: 500, withEmbedding: 0 };
+      if (cmd === "mem_stats")
+        return { total: 320, capacity: 500, withEmbedding: 0 };
       return null;
     });
     render(<EvolutionPanel />);
     // 建议值：320 条落在 100–500 档 → 3/3/1
-    expect(await screen.findByTestId("thresholds-suggestion")).toHaveTextContent(
-      /记忆 320 条（100–500 档）→ 建议 合并 3 \/ 提炼 3 \/ 矛盾 1/
+    expect(
+      await screen.findByTestId("thresholds-suggestion"),
+    ).toHaveTextContent(
+      /记忆 320 条（100–500 档）→ 建议 合并 3 \/ 提炼 3 \/ 矛盾 1/,
     );
-    // 改合并门槛并保存
+    // 改合并门槛并保存（受控整数输入：fireEvent 直设目标值，免逐键中间态）
     const merge = screen.getByTestId("thresholds-mergeMinIds");
-    await user.clear(merge);
-    await user.type(merge, "3");
+    fireEvent.change(merge, { target: { value: "3" } });
+    expect(merge).toHaveValue(3);
     await user.click(screen.getByTestId("btn-thresholds-save"));
     await act(async () => {});
-    const call = invokeMock.mock.calls.find((c) => c[0] === "evolution_set_thresholds");
+    const call = invokeMock.mock.calls.find(
+      (c) => c[0] === "evolution_set_thresholds",
+    );
     expect(call?.[1]?.thresholds).toEqual({
       mergeMinIds: 3,
       distillMinIds: 2,
       contradictionMinIds: 1,
     });
+  });
+
+  it("派生门槛输入守卫：非整数不进 state、越界按元数据钳制、清空放行", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_proposal_evidence") return [];
+      if (cmd === "evolution_get_thresholds")
+        return { mergeMinIds: 2, distillMinIds: 2, contradictionMinIds: 1 };
+      if (cmd === "mem_stats") return null;
+      return null;
+    });
+    render(<EvolutionPanel />);
+    const merge = await screen.findByTestId("thresholds-mergeMinIds");
+    // 负数是整数但越下界 → 钳到 min(2)；99 越上界 → 钳到 max(20)
+    fireEvent.change(merge, { target: { value: "-1" } });
+    expect(merge).toHaveValue(2);
+    fireEvent.change(merge, { target: { value: "99" } });
+    expect(merge).toHaveValue(20);
+    // 1.5 非整数：不进 state（保存 payload 仍是上一个合法值 20）
+    fireEvent.change(merge, { target: { value: "1.5" } });
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("btn-thresholds-save"));
+    await act(async () => {});
+    const call = invokeMock.mock.calls.find(
+      (c) => c[0] === "evolution_set_thresholds",
+    );
+    expect(call?.[1]?.thresholds).toEqual({
+      mergeMinIds: 20,
+      distillMinIds: 2,
+      contradictionMinIds: 1,
+    });
+  });
+
+  it("派生门槛保存后回拉：输入框显示服务端钳制值而非本地发送值", async () => {
+    // 模拟服务端 clamp 与前端口径不同步：保存 3 → 服务端落 5
+    let stored = { mergeMinIds: 2, distillMinIds: 2, contradictionMinIds: 1 };
+    invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "evolution_list_proposals") return [];
+        if (cmd === "evolution_list_changes") return [];
+        if (cmd === "evolution_proposal_evidence") return [];
+        if (cmd === "mem_stats") return null;
+        if (cmd === "evolution_get_thresholds") return { ...stored };
+        if (cmd === "evolution_set_thresholds") {
+          stored = { ...(args?.thresholds as typeof stored) };
+          stored.mergeMinIds = 5;
+          return null;
+        }
+        return null;
+      },
+    );
+    render(<EvolutionPanel />);
+    const merge = await screen.findByTestId("thresholds-mergeMinIds");
+    expect(merge).toHaveValue(2);
+    fireEvent.change(merge, { target: { value: "3" } });
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId("btn-thresholds-save"));
+    // 回拉后输入框显示服务端权威值 5（修复前停留 3，与后端持久值分歧）
+    expect(await screen.findByTestId("thresholds-mergeMinIds")).toHaveValue(5);
+  });
+
+  it("保存提示 4s 自动清除；连续保存重置计时（旧计时器不得提前清掉新提示）", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "evolution_list_proposals") return [];
+      if (cmd === "evolution_list_changes") return [];
+      if (cmd === "evolution_proposal_evidence") return [];
+      if (cmd === "evolution_get_thresholds")
+        return { mergeMinIds: 2, distillMinIds: 2, contradictionMinIds: 1 };
+      if (cmd === "mem_stats") return null;
+      return null;
+    });
+    render(<EvolutionPanel />);
+    const saveBtn = await screen.findByTestId("btn-thresholds-save");
+    // 挂载/输入用真 timers 完成，计时窗口断言切 fake timers（ProfileRow 范式）
+    vi.useFakeTimers();
+    try {
+      const flush = async () => {
+        await act(async () => {});
+      };
+      fireEvent.click(saveBtn);
+      await flush();
+      expect(screen.getByText("已保存")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(3900);
+      });
+      expect(screen.getByText("已保存")).toBeInTheDocument();
+      // 第二次保存：计时从零重算
+      fireEvent.click(saveBtn);
+      await flush();
+      act(() => {
+        vi.advanceTimersByTime(3900);
+      });
+      expect(screen.getByText("已保存")).toBeInTheDocument();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(screen.queryByText("已保存")).not.toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rollback warning: 回滚达阈值显示预警，低于阈值隐藏", async () => {

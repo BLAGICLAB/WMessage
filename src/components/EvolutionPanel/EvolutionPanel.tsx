@@ -15,7 +15,7 @@
 // 6.  W2 头部应用策略二档 radiogroup（auto/confirm，点档即时落盘）；
 //    W3 空状态「立即反思」接 memory_consolidate_now + 四指标条 + 行内决策徽标
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, RefreshCw, Trash2 } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
@@ -61,19 +61,26 @@ const APPLY_POLICY_MODES = APPLY_POLICY_LABELS.map(({ value, label }) => ({
   value,
   label,
   aria: `应用策略：${label}`,
-}))
+}));
 
 /**  W3：行内决策徽标（优先级：已自动生效 > 你已启用 > 待你决策） */
-function decisionBadge(p: ProposalEntry, changes: ChangeRecord[]): string | null {
+function decisionBadge(
+  p: ProposalEntry,
+  changes: ChangeRecord[],
+): string | null {
   const mine = changes.filter((c) => c.proposal_id === p.proposal_id);
-  if (mine.some((c) => c.status === "active" && c.approval_source === "auto_applied")) {
+  if (
+    mine.some(
+      (c) => c.status === "active" && c.approval_source === "auto_applied",
+    )
+  ) {
     return "已自动生效";
   }
   if (
     mine.some(
       (c) =>
         c.approval_source === "human_approved" &&
-        (c.status === "active" || c.status === "pending")
+        (c.status === "active" || c.status === "pending"),
     )
   ) {
     return "你已启用";
@@ -98,7 +105,9 @@ export function EvolutionPanel() {
   //  W3 四指标（读失败 = 不显示，不阻塞面板）
   const [metrics, setMetrics] = useState<ObserveMetrics | null>(null);
   // 决策证据（影子判定 + 冲突标注；读失败 = 空表，面板照常工作）
-  const [evidence, setEvidence] = useState<Record<string, ProposalEvidence>>({});
+  const [evidence, setEvidence] = useState<Record<string, ProposalEvidence>>(
+    {},
+  );
   // 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
   const [reflecting, setReflecting] = useState(false);
   // 提案派生门槛（读失败 = 默认 2/2/1）；memTotal 用于建议值分档
@@ -109,6 +118,14 @@ export function EvolutionPanel() {
   });
   const [thresholdsBusy, setThresholdsBusy] = useState(false);
   const [thresholdsMsg, setThresholdsMsg] = useState("");
+  /** 提示自动消退计时器：重设前清旧（防连续保存时旧计时器提前清掉新提示），卸载清理 */
+  const thresholdsMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (thresholdsMsgTimer.current) clearTimeout(thresholdsMsgTimer.current);
+    },
+    [],
+  );
   const [memTotal, setMemTotal] = useState<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -120,10 +137,10 @@ export function EvolutionPanel() {
       setProposals(p ?? []);
       const c = await invoke<ChangeRecord[]>("evolution_list_changes");
       setChanges(c ?? []);
-      const ev = await invoke<ProposalEvidence[]>("evolution_proposal_evidence");
-      setEvidence(
-        Object.fromEntries((ev ?? []).map((e) => [e.proposalId, e]))
+      const ev = await invoke<ProposalEvidence[]>(
+        "evolution_proposal_evidence",
       );
+      setEvidence(Object.fromEntries((ev ?? []).map((e) => [e.proposalId, e])));
       setError("");
     } catch (e) {
       handleCommandError(e, "evolution-panel", { silent: true });
@@ -138,47 +155,56 @@ export function EvolutionPanel() {
   }, [refresh]);
 
   useEffect(() => {
-    // 挂载时拉一次治理开关与四指标（读失败静默降级，开关按 auto 显示）
+    // 挂载时并行拉治理开关 / 四指标 / 门槛 / 记忆总量（各项独立 catch：
+    // 单项读失败按各自降级口径处理，不拖垮其他项，也不打断面板）
     void (async () => {
-      try {
-        const p = await invoke<ApplyPolicy>("evolution_get_apply_policy");
-        if (p === "auto" || p === "confirm") setApplyPolicy(p);
-      } catch {
-        /* 读失败按 auto 显示（后端同口径），不打断面板 */
-      }
-      try {
-        const m = await invoke<ObserveMetrics>("evolution_metrics");
-        setMetrics(m ?? null);
-      } catch {
-        setMetrics(null);
-      }
-      try {
-        const t = await invoke<DeriveThresholds>("evolution_get_thresholds");
-        if (t) setThresholds(t);
-      } catch {
-        /* 读失败保持默认 2/2/1（后端同口径） */
-      }
-      try {
-        const st = await invoke<{ total: number } | null>("mem_stats");
-        if (st) setMemTotal(st.total);
-      } catch {
-        setMemTotal(null);
-      }
+      // 各 invoke 用 Promise.resolve 包一层：测试 mock 偶尔返回 undefined
+      // （命令未在 mockImplementation 表里），裸 .then 会抛 null.then；
+      // 包后无则跳到 catch，行为与真后端 throw 时的降级口径一致
+      await Promise.all([
+        Promise.resolve(invoke<ApplyPolicy>("evolution_get_apply_policy"))
+          .then((p) => {
+            if (p === "auto" || p === "confirm") setApplyPolicy(p);
+          })
+          .catch(() => {
+            /* 读失败按 auto 显示（后端同口径），不打断面板 */
+          }),
+        Promise.resolve(invoke<ObserveMetrics>("evolution_metrics"))
+          .then((m) => setMetrics(m ?? null))
+          .catch(() => setMetrics(null)),
+        Promise.resolve(invoke<DeriveThresholds>("evolution_get_thresholds"))
+          .then((t) => {
+            if (t) setThresholds(t);
+          })
+          .catch(() => {
+            /* 读失败保持默认 2/2/1（后端同口径） */
+          }),
+        Promise.resolve(invoke<{ total: number } | null>("mem_stats"))
+          .then((st) => {
+            if (st) setMemTotal(st.total);
+          })
+          .catch(() => setMemTotal(null)),
+      ]);
     })();
   }, []);
 
-  // 提案派生门槛保存（服务端 clamped 兜底；同点档先例先改 state 再落盘）
+  // 提案派生门槛保存（服务端 clamped 兜底；同点档先例先改 state 再落盘）。
+  // 保存成功后回拉权威值：服务端可能把越界输入改写（如 0 落库为 2），
+  // 不回拉会让输入框与服务端持久值长期分歧
   const onSaveThresholds = async () => {
     setThresholdsBusy(true);
     setThresholdsMsg("");
     try {
       await invoke("evolution_set_thresholds", { thresholds });
+      const t = await invoke<DeriveThresholds>("evolution_get_thresholds");
+      if (t) setThresholds(t);
       setThresholdsMsg("已保存");
     } catch (e) {
       setThresholdsMsg(String(e));
     } finally {
       setThresholdsBusy(false);
-      setTimeout(() => setThresholdsMsg(""), 4000);
+      if (thresholdsMsgTimer.current) clearTimeout(thresholdsMsgTimer.current);
+      thresholdsMsgTimer.current = setTimeout(() => setThresholdsMsg(""), 4000);
     }
   };
 
@@ -215,7 +241,9 @@ export function EvolutionPanel() {
         distilled: number;
         contradictions: number;
       }>("memory_consolidate_now");
-      setInfo(`反思完成：合并 ${r.merged} · 提炼 ${r.distilled} · 裁决 ${r.contradictions}`);
+      setInfo(
+        `反思完成：合并 ${r.merged} · 提炼 ${r.distilled} · 裁决 ${r.contradictions}`,
+      );
       await refresh();
     } catch (e) {
       handleCommandError(e, "evolution-panel", { silent: true });
@@ -229,7 +257,7 @@ export function EvolutionPanel() {
     async (
       cmd: string,
       args: Record<string, unknown>,
-      successMsg: string
+      successMsg: string,
     ): Promise<boolean> => {
       setBusy(true);
       setError("");
@@ -247,7 +275,7 @@ export function EvolutionPanel() {
         setBusy(false);
       }
     },
-    [refresh]
+    [refresh],
   );
 
   // Toggle 入口（的主操作）
@@ -256,14 +284,16 @@ export function EvolutionPanel() {
   const onToggle = (id: string, enabled: boolean) => {
     if (
       enabled &&
-      changes.some((c) => c.proposal_id === id && c.status === ROLLED_BACK_STATUS)
+      changes.some(
+        (c) => c.proposal_id === id && c.status === ROLLED_BACK_STATUS,
+      )
     ) {
       if (!window.confirm(`提案 ${id} 上次已回滚，确认再次启用？`)) return;
     }
     return void runCmd(
       "evolution_toggle_proposal",
       { proposalId: id, enabled },
-      enabled ? `已启用 ${id}` : `已停用 ${id}`
+      enabled ? `已启用 ${id}` : `已停用 ${id}`,
     );
   };
 
@@ -280,7 +310,7 @@ export function EvolutionPanel() {
       { proposalId: id, cascadeSource },
       cascadeSource
         ? `已删除 ${id}（连同 ${target.related_refs.length} 条源记忆）`
-        : `已删除 ${id}`
+        : `已删除 ${id}`,
     );
   };
 
@@ -289,37 +319,35 @@ export function EvolutionPanel() {
     void runCmd(
       "evolution_promote_proposal",
       { proposalId: id, interactive: true, sessionId: null },
-      `已启用 ${id}`
+      `已启用 ${id}`,
     );
   const onReject = (id: string) =>
     void runCmd(
       "evolution_reject_proposal",
       { proposalId: id, interactive: true, sessionId: null },
-      `已停用 ${id}`
+      `已停用 ${id}`,
     );
   const onKeepShadow = (id: string) =>
     void runCmd(
       "evolution_keep_shadow",
       { proposalId: id },
-      `已延长 shadow 期：${id}`
+      `已延长 shadow 期：${id}`,
     );
   const onRollback = (changeId: string) =>
     void runCmd(
       "evolution_rollback_change",
       { changeId, interactive: true, sessionId: null },
-      `已回滚 ${changeId}`
+      `已回滚 ${changeId}`,
     );
 
   // Toggle 状态：proposal 是否在 changes.jsonl 流水线中
   const isToggleOn = useCallback(
     (proposalId: string): boolean => {
       return changes.some(
-        (c) =>
-          c.proposal_id === proposalId &&
-          ACTIVE_STATUSES.has(c.status)
+        (c) => c.proposal_id === proposalId && ACTIVE_STATUSES.has(c.status),
       );
     },
-    [changes]
+    [changes],
   );
 
   const activeChanges = changes.filter((c) => c.status === "active");
@@ -365,9 +393,15 @@ export function EvolutionPanel() {
         <div className="space-y-1.5">
           <p className="text-[11px] text-[var(--t3)]">应用策略</p>
           <p className="text-[11px] text-[var(--t5)]">
-            「自动生效」= 反思产出的记忆建议直接写入，不用逐条过目；「需我确认」= 一律留在下方列表，等你拨开关才生效
+            「自动生效」=
+            反思产出的记忆建议直接写入，不用逐条过目；「需我确认」=
+            一律留在下方列表，等你拨开关才生效
           </p>
-          <div className="flex gap-2" role="radiogroup" aria-label="自进化应用策略">
+          <div
+            className="flex gap-2"
+            role="radiogroup"
+            aria-label="自进化应用策略"
+          >
             {APPLY_POLICY_MODES.map(({ value, label, aria }) => {
               const selected = applyPolicy === value;
               return (
@@ -408,8 +442,8 @@ export function EvolutionPanel() {
             className="inline-flex items-center gap-1 text-[11px] text-[var(--danger)]"
             data-testid="evolution-rollback-warning"
           >
-            <AlertTriangle size={11} aria-hidden />
-            近{Math.round(metrics.observation_window_days)}天回滚{" "}
+            <AlertTriangle size={11} aria-hidden />近
+            {Math.round(metrics.observation_window_days)}天回滚{" "}
             {metrics.rolled_back_count} 条（≥{ROLLBACK_WARN_THRESHOLD}）：
             建议把应用策略切到「需我确认」档
           </p>
@@ -417,11 +451,17 @@ export function EvolutionPanel() {
       </div>
 
       {/* 提案派生门槛（可设置项；按记忆总量给建议值） */}
-      <div className="nm-inset p-4 space-y-2" data-testid="evolution-thresholds-card">
+      <div
+        className="nm-inset p-4 space-y-2"
+        data-testid="evolution-thresholds-card"
+      >
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <p className="text-[11px] text-[var(--t3)]">提案派生门槛</p>
           {memTotal != null && (
-            <p className="text-[11px] text-[var(--t5)]" data-testid="thresholds-suggestion">
+            <p
+              className="text-[11px] text-[var(--t5)]"
+              data-testid="thresholds-suggestion"
+            >
               记忆 {memTotal} 条（{suggestedThresholds(memTotal).tier} 档）→
               建议 合并 {suggestedThresholds(memTotal).merge} / 提炼{" "}
               {suggestedThresholds(memTotal).distill} / 矛盾{" "}
@@ -437,11 +477,19 @@ export function EvolutionPanel() {
                 type="number"
                 min={f.min}
                 max={f.max}
-                value={thresholds[f.key]}
+                step={1}
+                value={thresholds[f.key] ?? ""}
                 onChange={(e) => {
-                  const n = Number(e.target.value);
-                  if (Number.isFinite(n))
-                    setThresholds((t) => ({ ...t, [f.key]: n }));
+                  // 门槛是整数（后端 serde usize）：清空放行（保留重输窗口），
+                  // 非整数拒绝，越界值按元数据区间钳制——原样写入会被后端打回
+                  const raw = e.target.value;
+                  if (raw === "") return;
+                  const n = Number(raw);
+                  if (!Number.isInteger(n)) return;
+                  setThresholds((t) => ({
+                    ...t,
+                    [f.key]: Math.min(f.max, Math.max(f.min, n)),
+                  }));
                 }}
                 data-testid={`thresholds-${f.key}`}
                 className="nm-inset mt-0.5 w-full px-2 py-1 text-xs text-[var(--t2)]"
@@ -462,7 +510,9 @@ export function EvolutionPanel() {
             保存门槛
           </button>
           {thresholdsMsg && (
-            <span className="text-[11px] text-[var(--t5)]">{thresholdsMsg}</span>
+            <span className="text-[11px] text-[var(--t5)]">
+              {thresholdsMsg}
+            </span>
           )}
         </div>
       </div>
@@ -479,16 +529,16 @@ export function EvolutionPanel() {
               onClick={() => setFilter(null)}
               label="全部"
             />
-            {(["pooled", "promoted", "expired", "rejected"] as ProposalStatus[]).map(
-              (s) => (
-                <FilterBtn
-                  key={s}
-                  active={filter === s}
-                  onClick={() => setFilter(s)}
-                  label={STATUS_LABEL[s]}
-                />
-              )
-            )}
+            {(
+              ["pooled", "promoted", "expired", "rejected"] as ProposalStatus[]
+            ).map((s) => (
+              <FilterBtn
+                key={s}
+                active={filter === s}
+                onClick={() => setFilter(s)}
+                label={STATUS_LABEL[s]}
+              />
+            ))}
           </div>
         </div>
 
@@ -508,7 +558,8 @@ export function EvolutionPanel() {
                 立即反思
               </button>
               <p className="text-[11px] text-[var(--t5)]">
-                对记忆库跑一轮反思（合并 / 提炼 / 裁决），反思产出会出现在这里等你决策
+                对记忆库跑一轮反思（合并 / 提炼 /
+                裁决），反思产出会出现在这里等你决策
               </p>
             </div>
           </div>
@@ -703,7 +754,9 @@ function ProposalCard({
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
           onClick={() => onPromote(proposal.proposal_id)}
           disabled={busy || !isPending}
-          title={isPending ? "启用（ConfirmMap 弹窗确认）" : "非 pooled 状态不可启用"}
+          title={
+            isPending ? "启用（ConfirmMap 弹窗确认）" : "非 pooled 状态不可启用"
+          }
           data-testid={`btn-enable-${proposal.proposal_id}`}
         >
           启用
@@ -721,7 +774,11 @@ function ProposalCard({
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
           onClick={() => onKeepShadow(proposal.proposal_id)}
           disabled={busy || !isPending}
-          title={isPending ? "延长 shadow 期（重置 TTL）" : "非 pooled 状态不可 keep shadow"}
+          title={
+            isPending
+              ? "延长 shadow 期（重置 TTL）"
+              : "非 pooled 状态不可 keep shadow"
+          }
           data-testid={`btn-keep-shadow-${proposal.proposal_id}`}
         >
           延长 shadow
@@ -758,8 +815,8 @@ function ChangeRow({
           {change.change_id}
         </div>
         <div className="text-xs text-[var(--t4)]">
-          proposal_id: {change.proposal_id} · status: {change.status} · approval:{" "}
-          {change.approval_source}
+          proposal_id: {change.proposal_id} · status: {change.status} ·
+          approval: {change.approval_source}
           {change.human_approver && ` · by ${change.human_approver}`}
         </div>
         <div className="text-xs text-[var(--t2)] mt-1">

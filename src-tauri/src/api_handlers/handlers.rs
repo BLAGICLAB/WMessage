@@ -222,6 +222,10 @@ fn create_task(
             let _ = req.respond(json_err(StatusCode(400), "malformed Content-Length header"));
             return;
         }
+        BodyRead::InvalidUtf8 => {
+            let _ = req.respond(json_err(StatusCode(400), "request body is not valid UTF-8"));
+            return;
+        }
     };
     let input: CreateReq = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -400,6 +404,10 @@ fn update_task(
         // 多 Content-Length / parse 失败 → 400 拒绝
         BodyRead::Malformed => {
             let _ = req.respond(json_err(StatusCode(400), "malformed Content-Length header"));
+            return;
+        }
+        BodyRead::InvalidUtf8 => {
+            let _ = req.respond(json_err(StatusCode(400), "request body is not valid UTF-8"));
             return;
         }
     };

@@ -299,7 +299,7 @@ pub fn accumulate_tool_call_delta(
 
 /// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一为 50）；
 /// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）；
-///  起配置 `maxRounds` 亦可覆盖默认（Skill 仍最优先），常量单源 bot/params.rs。
+/// 配置 `maxRounds` 亦可覆盖默认（Skill 仍最优先），常量单源 bot/params.rs。
 pub(crate) const DEFAULT_MAX_ROUNDS: usize = crate::bot::params::DEFAULT_MAX_ROUNDS as usize;
 
 /// 单轮 msgs 总字符软上限（仅 audit，不截断）。
@@ -308,7 +308,7 @@ pub(crate) const DEFAULT_MAX_ROUNDS: usize = crate::bot::params::DEFAULT_MAX_ROU
 pub(crate) const MSGS_BUDGET_CHARS: usize = 200_000;
 
 /// 本轮工具循环的轮数上限：Skill 自报 max_rounds 最优先，其次配置 maxRounds，
-/// 都没有 → DEFAULT_MAX_ROUNDS（ 单源 bot/params.rs）。
+/// 都没有 → DEFAULT_MAX_ROUNDS（单源 bot/params.rs）。
 pub(crate) fn resolve_max_rounds(
     skill_max_rounds: Option<usize>,
     config_max_rounds: usize,
@@ -319,7 +319,7 @@ pub(crate) fn resolve_max_rounds(
 // Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
 // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
 //
-// 上限默认 100从 50 上调）：工作流节点等长链任务
+// 上限默认 100：工作流节点等长链任务
 // 50 次不够用；更高上限的失控风险由幻觉守卫（claims_mutation）+ 软警告 +
 // /stop 兜底。可用 bot-config.json `maxFunctionCalls` 覆盖（None = 100）；
 // 子 agent 默认预算同源此值（resolve_subagent_budget），LLM 显式给的预算仍可覆盖。
@@ -456,7 +456,7 @@ pub fn shared_llm_client() -> &'static reqwest::Client {
 ///（旧实现的 300s **总**超时会掐掉合法长生成——长正文/长工具参数总时长可超 5 分钟）
 pub const STREAM_CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// send() 响应头超时ocr HIGH 采纳）：只覆盖连接+发请求+收到响应头，
+/// send() 响应头超时：只覆盖连接+发请求+收到响应头，
 /// 不含流式 body——服务端收下请求却挂起不回时兜底，防永久挂起
 pub const LLM_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -474,6 +474,27 @@ pub struct LoopTrace {
     pub completion_tokens: u64,
     /// 本轮实际使用的模型名（词元统计按模型聚合用；未发请求即失败时为 None）
     pub model: Option<String>,
+}
+
+/// 主循环推理参数选取：override 命中必须取覆盖条目的（resolve_model_override 已按
+/// 条目值 > 全局 max_tokens 兜底算好）；未命中才按 active 条目解析（active 条目 >
+/// 全局 > 内置默认，见 schema::effective_inference）。两路不可混用——覆盖端点打
+/// active 条目的 temperature/top_p/system_prompt 是参数张冠李戴。
+fn resolve_loop_inference(
+    resolved: Option<&crate::bot::config::ResolvedModel>,
+    api_provider: Option<&str>,
+    max_tokens: Option<u32>,
+    active_model_id: Option<&crate::bot::ActiveModelId>,
+    models_by_provider: Option<&crate::bot::ModelsByProvider>,
+) -> crate::bot::EffectiveInference {
+    resolved.map(|r| r.inference.clone()).unwrap_or_else(|| {
+        crate::bot::effective_inference(
+            api_provider,
+            max_tokens,
+            active_model_id,
+            models_by_provider,
+        )
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -495,8 +516,6 @@ pub async fn run_model_loop(
     // 每卡模型覆盖优先：命中模型库条目则整组替换 base_url/model/协议/key
     let resolved = match model_override.as_deref() {
         Some(id) => Some(crate::bot::resolve_model_override(
-            cfg.api_provider.as_deref(),
-            cfg.active_model_id.as_ref(),
             cfg.models_by_provider.as_ref(),
             id,
             cfg.max_tokens,
@@ -528,9 +547,10 @@ pub async fn run_model_loop(
         .as_ref()
         .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))
         .unwrap_or(provider);
-    // 条目级推理参数：active 条目 > 全局 > 内置默认（解析见 schema::effective_inference；
-    // cfg 是对外视图 BotConfigView，拆参传入与 keyring::read_llm_key 同风格）
-    let inference = crate::bot::effective_inference(
+    // 条目级推理参数：override 命中取覆盖条目的，未命中按 active 条目解析
+    // （cfg 是对外视图 BotConfigView，拆参传入与 keyring::read_llm_key 同风格）
+    let inference = resolve_loop_inference(
+        resolved.as_ref(),
         cfg.api_provider.as_deref(),
         cfg.max_tokens,
         cfg.active_model_id.as_ref(),
@@ -776,7 +796,7 @@ where
     // 子 agent 分支短路不受影响）。
     // 拼装结果含外部 MCP description（外部
     // 数据引入面），此处兜底改 fail-soft——解析失败记审计并回退「无 MCP 的
-    // 静态清单」（ 评审：内置 32 工具不陪 MCP 动态段陪葬；静态 base 恒合法，
+    // 静态清单」（内置 32 工具不陪 MCP 动态段陪葬；静态 base 恒合法，
     // 末层空表只为防御到底），不再 panic 打断模型循环。
     let tools: serde_json::Value = {
         let assembled = crate::bot::registry::tools_json_with_mcp(stop.session_id());
@@ -795,7 +815,7 @@ where
     };
 
     // 熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
-    // 其余 = bot-config maxFunctionCalls（缺省 100。软警阈值 = cap*7/10。
+    // 其余 = bot-config maxFunctionCalls（缺省 100）。软警阈值 = cap*7/10。
     // 派生链：子 agent 预算（默认与全域 maxFunctionCalls 同源，
     // 两条设置合一；LLM 显式给的仍可覆盖）→ bot-config maxFunctionCalls（钳 1..=500，
     // 防巨值实质关闭熔断）→ 默认 100
@@ -1503,7 +1523,7 @@ where
                 "tool_call_id": id,
                 "content": result
             }));
-            // ：工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
+            // 工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
             // OpenAI 协议 tool 消息只收文本，「工具后追加带图 user 消息」是官方视觉
             // 示例同款；Anthropic 转换器会把 [tool, user(图)] 合并成单条 user
             // [tool_result, image]（官方 tool_result 附图形态，满足严格交替）。
@@ -1666,6 +1686,77 @@ mod inference_param_tests {
         assert_eq!(body["top_p"], 1.0);
         assert_eq!(body["max_tokens"], 8_192);
     }
+
+    /// active 条目 temperature=0.9 / 覆盖条目 temperature=0.2：override 命中时
+    /// 主循环必须采用覆盖条目的推理参数（曾无条件走 active 条目解析，覆盖参数整组丢失）
+    #[test]
+    fn override_hit_takes_entry_inference_not_active() {
+        use crate::bot::{ActiveModelId, ModelEntry, ModelsByProvider};
+
+        fn entry(id: &str, temperature: f64, top_p: f64) -> ModelEntry {
+            ModelEntry {
+                id: id.into(),
+                label: id.into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: format!("{id}-model"),
+                vendor: None,
+                enabled: true,
+                context_k: None,
+                capabilities: None,
+                temperature: Some(temperature),
+                top_p: Some(top_p),
+                max_tokens: Some(1111),
+                system_prompt: Some(format!("{id}-system")),
+            }
+        }
+        let mbp = ModelsByProvider {
+            openai: vec![entry("active-e", 0.9, 0.95)],
+            anthropic: vec![],
+        };
+        let active_id = ActiveModelId {
+            openai: Some("active-e".into()),
+            anthropic: None,
+        };
+        let resolved = crate::bot::config::ResolvedModel {
+            base_url: "https://override.example.com/v1".into(),
+            model: "override-model".into(),
+            api_provider: "openai".into(),
+            api_key: "k".into(),
+            inference: crate::bot::EffectiveInference {
+                max_tokens: 4096,
+                temperature: Some(0.2),
+                top_p: Some(0.3),
+                system_prompt: Some("override-system".into()),
+            },
+        };
+
+        // 命中：temperature/top_p/max_tokens/system_prompt 全取覆盖条目，
+        // 不得混入 active 条目的 0.9/0.95/1111
+        let hit = resolve_loop_inference(
+            Some(&resolved),
+            Some("openai"),
+            Some(8192),
+            Some(&active_id),
+            Some(&mbp),
+        );
+        assert_eq!(hit.temperature, Some(0.2));
+        assert_eq!(hit.top_p, Some(0.3));
+        assert_eq!(hit.max_tokens, 4096);
+        assert_eq!(hit.system_prompt.as_deref(), Some("override-system"));
+
+        // 未命中：回落 active 条目解析（原路径不得回归）
+        let miss = resolve_loop_inference(
+            None,
+            Some("openai"),
+            Some(8192),
+            Some(&active_id),
+            Some(&mbp),
+        );
+        assert_eq!(miss.temperature, Some(0.9));
+        assert_eq!(miss.top_p, Some(0.95));
+        assert_eq!(miss.max_tokens, 1111);
+        assert_eq!(miss.system_prompt.as_deref(), Some("active-e-system"));
+    }
 }
 
 #[cfg(test)]
@@ -1721,11 +1812,17 @@ mod hallucination_guard_tests {
 
     #[test]
     fn fabricated_gen_path_catches_fabricated_doc_path() {
-        // 实锤事故原话（trace 30）：窄词表漏检、路径是编造的——存在性校验兜住
-        let t = "已生成苏州两日游行程规划 Word，文件路径：\n\n`/tmp/wm-guard-test/苏州两日游行程规划.docx`";
+        // 实锤事故原话（trace 30）：窄词表漏检、路径是编造的——存在性校验兜住。
+        // 前置路径用本测专属 tempdir（不存在即触发），不依赖外部 /tmp 状态
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("苏州两日游行程规划.docx");
+        let t = format!(
+            "已生成苏州两日游行程规划 Word，文件路径：\n\n`{}`",
+            fake.display()
+        );
         assert_eq!(
-            fabricated_gen_path(t).as_deref(),
-            Some("/tmp/wm-guard-test/苏州两日游行程规划.docx")
+            fabricated_gen_path(&t),
+            Some(fake.to_string_lossy().into_owned())
         );
         // 已写入/已导出等变体触发词 + 无盘符相对路径不算（只认绝对路径）
         assert_eq!(

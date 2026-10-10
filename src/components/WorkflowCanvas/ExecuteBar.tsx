@@ -41,7 +41,8 @@ export function ExecuteBar({
   onStop,
   className = "",
 }: Props) {
-  const pct = total > 0 ? Math.min(100, Math.max(0, (doneCount / total) * 100)) : 0;
+  const pct =
+    total > 0 ? Math.min(100, Math.max(0, (doneCount / total) * 100)) : 0;
   const empty = total === 0;
   const isFull = total > 0 && doneCount >= total;
 
@@ -51,12 +52,14 @@ export function ExecuteBar({
 
   let label: string;
   let phase: string;
-  if (empty) {
-    label = "请先添加任务卡";
-    phase = "empty";
-  } else if (running) {
+  if (running) {
+    // 执行中优先于 empty：执行中删空任务卡的瞬间，label 必须是停止语
+    // 义而非"请先添加任务卡"——否则按钮与 handleClick onStop 行为分裂
     label = "执行中…";
     phase = "running";
+  } else if (empty) {
+    label = "请先添加任务卡";
+    phase = "empty";
   } else if (!hasActive) {
     label = "先选择工作流";
     phase = "blocked";
@@ -122,11 +125,19 @@ export function ExecuteBar({
       data-phase={phase}
       data-pct={pct.toFixed(2)}
     >
-      <span className="exec-bar__liquid" style={{ width: `${pct}%` }} aria-hidden>
+      <span
+        className="exec-bar__liquid"
+        style={{ width: `${pct}%` }}
+        aria-hidden
+      >
         <span className="exec-bar__flow" />
       </span>
       <span className="exec-bar__inner">{content}</span>
-      <span className="exec-bar__inner exec-bar__inner--over" style={clip} aria-hidden>
+      <span
+        className="exec-bar__inner exec-bar__inner--over"
+        style={clip}
+        aria-hidden
+      >
         {content}
       </span>
     </button>

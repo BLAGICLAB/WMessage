@@ -14,8 +14,11 @@ import { Pin } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-
-import { handleCommandError, formatCommandError, isCommandError } from "../../lib/errorHandler";
+import {
+  handleCommandError,
+  formatCommandError,
+  isCommandError,
+} from "../../lib/errorHandler";
 import type { Task } from "../../types";
 
 import type {
@@ -31,18 +34,14 @@ import type {
   ToolCall,
   VerboseLevel,
 } from "./types";
-import {
-  DELTA_BATCH_MS,
-  execTaskDedup,
-  finishedExecTasks,
-} from "./constants";
+import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks } from "./constants";
 import { useAutoGrow, useDropdownTop, useOutsideClose } from "./useChatUi";
 import { SessionList } from "./SessionList";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
 
-/** 模型下拉条目集合协议（MP-02）：types.ModelItem 的来源协议收窄用 */
+/** 模型下拉条目集合协议：types.ModelItem 的来源协议收窄用 */
 type Props = {
   /** 是否处于选任务模式（点任务卡切换选中） */
   selecting: boolean;
@@ -91,12 +90,14 @@ export function ChatPanel({
   const [slashDismissed, setSlashDismissed] = useState(false);
   /** PAR-1 并行回复：每个会话独立在途。inflightSids 驱动 UI（按视图会话判定），   *  inflightRef 供事件监听同步判断（⚠️ 必须与 setInflightSids 同步更新，
    *  useEffect 镜像在同一帧内连按会有并发窗口） */
-  const [inflightSids, setInflightSids] = useState<ReadonlySet<string>>(new Set());
+  const [inflightSids, setInflightSids] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送）——按会话隔离（DRAFT-1） */
   const [filesBySession, setFilesBySession] = useState<Map<string, string[]>>(
-    new Map()
+    new Map(),
   );
   const files = filesBySession.get(draftKey) ?? [];
   const setFiles = (v: string[] | ((prev: string[]) => string[])) =>
@@ -104,7 +105,7 @@ export function ChatPanel({
       const next = new Map(prev);
       next.set(
         draftKey,
-        typeof v === "function" ? v(prev.get(draftKey) ?? []) : v
+        typeof v === "function" ? v(prev.get(draftKey) ?? []) : v,
       );
       return next;
     });
@@ -122,12 +123,14 @@ export function ChatPanel({
   const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const sessionDropdownRef = useRef<HTMLDivElement>(null);
-  // 🧠 模型下拉（MP-01）：同会话菜单三件套——开合 + 按钮 ref + 下拉 ref，
+  // 🧠 模型下拉：同会话菜单三件套——开合 + 按钮 ref + 下拉 ref，
   // 另带当前协议的模型列表与 active id（reload 里一并维护）
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [models, setModels] = useState<ModelItem[]>([]);
-  // 当前协议（MP-02）：双协议同列展示后，active 高亮只认本协议的 active 模型
-  const [apiProvider, setApiProvider] = useState<"openai" | "anthropic">("openai");
+  // 当前协议：双协议同列展示后，active 高亮只认本协议的 active 模型
+  const [apiProvider, setApiProvider] = useState<"openai" | "anthropic">(
+    "openai",
+  );
   const [activeModelId, setActiveModelId] = useState<string | null>(null);
   const modelBtnRef = useRef<HTMLButtonElement>(null);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
@@ -136,9 +139,9 @@ export function ChatPanel({
   // ⚡ 推理强度（RE-1）：后台默认基线（bot-config-changed 时刷新）+ 会话级覆盖。
   // 覆盖只存内存 Map，绝不回写 bot-config.json；会话切换后无覆盖的会话直接跟随后台。
   const [effortBase, setEffortBase] = useState<ReasoningLevel>("medium");
-  const [effortBySession, setEffortBySession] = useState<Map<string, ReasoningLevel>>(
-    new Map()
-  );
+  const [effortBySession, setEffortBySession] = useState<
+    Map<string, ReasoningLevel>
+  >(new Map());
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const effortBtnRef = useRef<HTMLButtonElement>(null);
   const effortDropdownRef = useRef<HTMLDivElement>(null);
@@ -213,7 +216,7 @@ export function ChatPanel({
         pendingExecRef.current = null;
         addHint(
           `${pending.title || "任务"}已在新会话执行，点击查看执行对话`,
-          pending.sid
+          pending.sid,
         );
       }
     }
@@ -222,7 +225,10 @@ export function ChatPanel({
   const viewedBusy = sessionId !== null && inflightSids.has(sessionId);
   /** 本地提示消息：只显示不持久化（不污染上下文） */
   const addHint = (content: string, actionSessionId?: string) => {
-    setMessages((prev) => [...prev, { role: "assistant", content, actionSessionId }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content, actionSessionId },
+    ]);
   };
   /** sessionId 镜像：异步收尾时判断会话是否已切换（竞态防护） */
   const sessionIdRef = useRef<string | null>(null);
@@ -264,7 +270,7 @@ export function ChatPanel({
       })),
     }).catch((e) =>
       // 后台持久化失败：UI 还能跑，不打断当前对话
-      handleCommandError(e, "bot_history_save", { silent: true })
+      handleCommandError(e, "bot_history_save", { silent: true }),
     );
   };
 
@@ -276,7 +282,7 @@ export function ChatPanel({
       refsJson?: string | null;
       thinking?: string | null;
       toolsJson?: string | null;
-    }[]
+    }[],
   ): Msg[] =>
     rows.map((r) => ({
       role: r.role === "user" ? "user" : "assistant",
@@ -295,12 +301,17 @@ export function ChatPanel({
       try {
         let list = await invoke<Session[]>("bot_sessions_load");
         if (!list.length) {
-          const s = await invoke<Session>("bot_session_create", { title: null });
+          const s = await invoke<Session>("bot_session_create", {
+            title: null,
+          });
           list = [s];
         }
         setSessions(list);
         const cur = list[0]; // 按 updated_at 倒序，第一个即最近会话
         setSessionId(cur.id);
+        // 镜像同步落（同 openExecSession/switchSession/deleteSession）：
+        // 流式事件过滤与过期守卫读的是 ref，不能等渲染后的 effect 补
+        sessionIdRef.current = cur.id;
         const rows = await invoke<
           {
             role: string;
@@ -310,6 +321,8 @@ export function ChatPanel({
             toolsJson?: string | null;
           }[]
         >("bot_history_load", { sessionId: cur.id });
+        // 历史加载期间用户已切走（如 ⌘K 跨窗口跳会话）：过期历史不得盖掉新会话视图
+        if (sessionIdRef.current !== cur.id) return;
         if (rows?.length) {
           setMessages(rowsToMsgs(rows));
         }
@@ -320,11 +333,26 @@ export function ChatPanel({
   }, [enabled]);
 
   // 点击会话菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
-  useOutsideClose(sessionMenuOpen, () => setSessionMenuOpen(false), menuRef, sessionDropdownRef);
+  useOutsideClose(
+    sessionMenuOpen,
+    () => setSessionMenuOpen(false),
+    menuRef,
+    sessionDropdownRef,
+  );
   // 点击模型下拉外关闭（镜像会话菜单：按钮与下拉不在同一 ref 容器，双 ref 检测）
-  useOutsideClose(modelMenuOpen, () => setModelMenuOpen(false), modelBtnRef, modelDropdownRef);
+  useOutsideClose(
+    modelMenuOpen,
+    () => setModelMenuOpen(false),
+    modelBtnRef,
+    modelDropdownRef,
+  );
   // 点击推理强度下拉外关闭（镜像模型菜单：双 ref 检测）
-  useOutsideClose(effortMenuOpen, () => setEffortMenuOpen(false), effortBtnRef, effortDropdownRef);
+  useOutsideClose(
+    effortMenuOpen,
+    () => setEffortMenuOpen(false),
+    effortBtnRef,
+    effortDropdownRef,
+  );
 
   // 挂载：读当前模型配置，输入卡底栏 🧠 下拉展示当前协议的模型列表 + active id；
   // 设置页/另一窗口保存配置后广播 bot-config-changed，这里同步刷新
@@ -338,7 +366,10 @@ export function ChatPanel({
           openai?: ChatModelEntry[];
           anthropic?: ChatModelEntry[];
         } | null;
-        activeModelId?: { openai: string | null; anthropic: string | null } | null;
+        activeModelId?: {
+          openai: string | null;
+          anthropic: string | null;
+        } | null;
         /** 被禁用的厂商名列表：其模型不进 🧠 下拉 */
         disabledVendors?: string[] | null;
         /** 连接测试通过的厂商名单：带 vendor 的模型仅当厂商已验证才进下拉 */
@@ -360,10 +391,12 @@ export function ChatPanel({
           const visible = (m: ChatModelEntry) =>
             m.enabled !== false &&
             (!m.vendor || (!disabled.has(m.vendor) && verified.has(m.vendor)));
-          // MP-02：双协议同列——两组模型都列出（带协议分组标签），
+          // 双协议同列——两组模型都列出（带协议分组标签），
           // 跨协议选中由后端 apply_active_model_switch 连协议一起切
           setModels([
-            ...(mbp.openai ?? []).filter(visible).map((m) => ({ ...m, provider: "openai" as const })),
+            ...(mbp.openai ?? [])
+              .filter(visible)
+              .map((m) => ({ ...m, provider: "openai" as const })),
             ...(mbp.anthropic ?? []).filter(visible).map((m) => ({
               ...m,
               provider: "anthropic" as const,
@@ -372,18 +405,18 @@ export function ChatPanel({
           setActiveModelId(
             (c.activeModelId ?? { openai: null, anthropic: null })[
               isOpenai ? "openai" : "anthropic"
-            ] ?? null
+            ] ?? null,
           );
           // RE-1 推理强度后台默认：缺字段/非法值回 medium（与后端 from_cfg 一致）。
           // 只刷新基线——已选过覆盖的会话保持覆盖（验收 3），没覆盖过的即时跟随新默认
           const raw = c.reasoningEffort;
           setEffortBase(
-            raw === "off" || raw === "low" || raw === "high" ? raw : "medium"
+            raw === "off" || raw === "low" || raw === "high" ? raw : "medium",
           );
           // 授权模式只读展示：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
           const pm = c.permMode;
           setPermMode(
-            pm === "strict" || pm === "yolo" || pm === "auto" ? pm : "ask"
+            pm === "strict" || pm === "yolo" || pm === "auto" ? pm : "ask",
           );
         })
         .catch(() => setModelLabel("未配置"));
@@ -403,16 +436,19 @@ export function ChatPanel({
       const c = await invoke<{
         model?: string;
         apiProvider?: string | null;
-        activeModelId?: { openai: string | null; anthropic: string | null } | null;
+        activeModelId?: {
+          openai: string | null;
+          anthropic: string | null;
+        } | null;
       }>("bot_set_active_model", { modelId: id });
       setModelLabel(c.model || "未配置");
-      // MP-02：跨协议选中时后端已连协议一起切，这里同步本地协议态
+      // 跨协议选中时后端已连协议一起切，这里同步本地协议态
       const isOpenai = (c.apiProvider ?? "openai") !== "anthropic";
       setApiProvider(isOpenai ? "openai" : "anthropic");
       setActiveModelId(
         (c.activeModelId ?? { openai: null, anthropic: null })[
           isOpenai ? "openai" : "anthropic"
-        ] ?? null
+        ] ?? null,
       );
       setModelMenuOpen(false);
       emit("bot-config-changed", null).catch(() => {});
@@ -451,7 +487,8 @@ export function ChatPanel({
           ...last,
           content: add ? last.content + add : last.content,
           thinking: thinkTouched
-            ? streamingMetaMapRef.current.get(sessionIdRef.current ?? "")?.thinking
+            ? streamingMetaMapRef.current.get(sessionIdRef.current ?? "")
+                ?.thinking
             : last.thinking,
         };
         return copy;
@@ -459,7 +496,9 @@ export function ChatPanel({
     };
     const schedule = () => {
       if (frame !== null) return;
-      frame = rafOk ? requestAnimationFrame(flush) : window.setTimeout(flush, DELTA_BATCH_MS);
+      frame = rafOk
+        ? requestAnimationFrame(flush)
+        : window.setTimeout(flush, DELTA_BATCH_MS);
     };
     const unlisten = listen<{ text?: string; sessionId?: string | null }>(
       "bot-chat-delta",
@@ -470,7 +509,7 @@ export function ChatPanel({
         if (!t) return;
         pending.text += t;
         schedule();
-      }
+      },
     );
     const unThink = listen<{ text?: string; sessionId?: string | null }>(
       "bot-think-delta",
@@ -480,63 +519,68 @@ export function ChatPanel({
         if (!t) return;
         // 权威副本按「回复所属会话」累加（SWITCH-1：不随视图切换丢失），
         // 仅展示走同帧合并且只进当前视图
-        if ((sid !== null && inflightRef.current.has(sid)) || sid === sessionIdRef.current) {
+        if (
+          (sid !== null && inflightRef.current.has(sid)) ||
+          sid === sessionIdRef.current
+        ) {
           const m = metaFor(sid);
           if (m) m.thinking = (m.thinking ?? "") + t;
         }
         if (sid !== sessionIdRef.current) return;
         pending.think = true;
         schedule();
-      }
+      },
     );
-    const unTool = listen<{ id?: string; name?: string; sessionId?: string | null }>(
-      "bot-tool",
-      (e) => {
-        const sid = e.payload?.sessionId ?? null;
-        // 元数据按回复所属会话累加（SWITCH-1）；视觉更新仅当前视图
-        if (sid === null) return;
-        if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-        const { id, name } = e.payload ?? {};
-        if (!id) return;
-        const m = metaFor(sid);
-        if (!m) return;
-        const tools = [...(m.tools ?? [])];
-        if (!tools.some((x) => x.id === id)) tools.push({ id, name: name ?? "" });
-        m.tools = tools;
-        if (sid !== sessionIdRef.current) return;
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last || !last.streaming) return prev;
-          const copy = [...prev];
-          copy[copy.length - 1] = { ...last, tools };
-          return copy;
-        });
-      }
-    );
-    const unToolName = listen<{ id?: string; name?: string; sessionId?: string | null }>(
-      "bot-tool-name",
-      (e) => {
-        const sid = e.payload?.sessionId ?? null;
-        if (sid === null) return;
-        if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-        const { id, name } = e.payload ?? {};
-        if (!id || !name) return;
-        const m = metaFor(sid);
-        if (!m) return;
-        const tools = (m.tools ?? []).map((x) =>
-          x.id === id ? { ...x, name } : x
-        );
-        m.tools = tools;
-        if (sid !== sessionIdRef.current) return;
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (!last || !last.streaming) return prev;
-          const copy = [...prev];
-          copy[copy.length - 1] = { ...last, tools };
-          return copy;
-        });
-      }
-    );
+    const unTool = listen<{
+      id?: string;
+      name?: string;
+      sessionId?: string | null;
+    }>("bot-tool", (e) => {
+      const sid = e.payload?.sessionId ?? null;
+      // 元数据按回复所属会话累加（SWITCH-1）；视觉更新仅当前视图
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+      const { id, name } = e.payload ?? {};
+      if (!id) return;
+      const m = metaFor(sid);
+      if (!m) return;
+      const tools = [...(m.tools ?? [])];
+      if (!tools.some((x) => x.id === id)) tools.push({ id, name: name ?? "" });
+      m.tools = tools;
+      if (sid !== sessionIdRef.current) return;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = { ...last, tools };
+        return copy;
+      });
+    });
+    const unToolName = listen<{
+      id?: string;
+      name?: string;
+      sessionId?: string | null;
+    }>("bot-tool-name", (e) => {
+      const sid = e.payload?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+      const { id, name } = e.payload ?? {};
+      if (!id || !name) return;
+      const m = metaFor(sid);
+      if (!m) return;
+      const tools = (m.tools ?? []).map((x) =>
+        x.id === id ? { ...x, name } : x,
+      );
+      m.tools = tools;
+      if (sid !== sessionIdRef.current) return;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = { ...last, tools };
+        return copy;
+      });
+    });
     const unToolDone = listen<{
       id?: string;
       name?: string;
@@ -555,8 +599,16 @@ export function ChatPanel({
       if (!m) return;
       const tools = (m.tools ?? []).map((x) =>
         x.id === id
-          ? { ...x, name: name ?? x.name, args, done: true, result: result ?? undefined, ms: ms ?? undefined, ok }
-          : x
+          ? {
+              ...x,
+              name: name ?? x.name,
+              args,
+              done: true,
+              result: result ?? undefined,
+              ms: ms ?? undefined,
+              ok,
+            }
+          : x,
       );
       m.tools = tools;
       if (sid !== sessionIdRef.current) return;
@@ -693,7 +745,7 @@ export function ChatPanel({
     try {
       const rows = await invoke<Parameters<typeof rowsToMsgs>[0]>(
         "bot_history_load",
-        { sessionId: sid }
+        { sessionId: sid },
       );
       // 围观期间用户已切走：丢弃过期历史，防旧会话消息刷进当前视图
       if (sessionIdRef.current !== sid) return;
@@ -706,7 +758,9 @@ export function ChatPanel({
     }
   };
   // openExecSession 经 ref 暴露给事件监听（避免闭包旧状态）
-  const openExecSessionRef = useRef<(sid: string, watch?: boolean) => void>(() => {});
+  const openExecSessionRef = useRef<(sid: string, watch?: boolean) => void>(
+    () => {},
+  );
   // latest-ref 模式：事件监听闭包要调到最新一帧实现（React 官方推荐转发法；
   // render 期写 ref 为既有语义，拆分批不改时机）
   // oxlint-disable-next-line react/refs
@@ -720,53 +774,62 @@ export function ChatPanel({
   // 只有「自动跳转查看」在围观流式回复时排队（exitChat 清空在途时 hint 提示）。
   useEffect(() => {
     // 去重表在模块级 execTaskDedup（泄漏的监听器实例间共享才有效，见文件头注释）
-    const unExec = listen<{ id?: string; title?: string }>("execute-task", (e) => {
-      const { id } = e.payload ?? {};
-      if (!id) return;
-      if (execTaskDedup.shouldSkip(id, Date.now())) return;
-      invoke("bot_execute_task", { taskId: id, sessionId: null })
-        .then(() => {
-          // 收尾登记（迟到 chat-open-session 防复活用）
-          finishedExecTasks.set(id, "success");
-          // 执行收尾：刷新会话列表（新会话入列）；若正围观该执行会话，
-          // 重载历史替换流式占位气泡为最终落库内容
-          const sid = execSessionByTaskRef.current.get(id);
-          execSessionByTaskRef.current.delete(id);
-          invoke<Session[]>("bot_sessions_load")
-            .then(setSessions)
-            .catch(() => {});
-          // 收尾 history_load 无条件发起：围观守卫的解除必须等它完成（早清会
-          // 重新打开「输入被最终历史冲掉」的窗）；UI 更新仅当用户仍在该会话
-          const load = sid
-            ? invoke<Parameters<typeof rowsToMsgs>[0]>("bot_history_load", { sessionId: sid })
-            : null;
-          if (load) {
-            load
-              .then((rows) => {
-                if (sessionIdRef.current === sid) setMessages(rowsToMsgs(rows));
-              })
+    const unExec = listen<{ id?: string; title?: string }>(
+      "execute-task",
+      (e) => {
+        const { id } = e.payload ?? {};
+        if (!id) return;
+        if (execTaskDedup.shouldSkip(id, Date.now())) return;
+        invoke("bot_execute_task", { taskId: id, sessionId: null })
+          .then(() => {
+            // 收尾登记（迟到 chat-open-session 防复活用）
+            finishedExecTasks.set(id, "success");
+            // 执行收尾：刷新会话列表（新会话入列）；若正围观该执行会话，
+            // 重载历史替换流式占位气泡为最终落库内容
+            const sid = execSessionByTaskRef.current.get(id);
+            execSessionByTaskRef.current.delete(id);
+            invoke<Session[]>("bot_sessions_load")
+              .then(setSessions)
               .catch(() => {});
-            // 独立订阅清守卫：先 catch 再 finally，避免 finally 链 unhandled rejection
-            load.catch(() => {}).finally(() => {
-              // 围观守卫解除——不论用户当前是否仍在该会话（切换后回来不得被永久拦截）
-              if (execWatchRef.current === sid) execWatchRef.current = null;
-            });
-          }
-        })
-        .catch((err) => {
-          // 收尾登记（含失败/业务拒）：失败任务的迟到跳转不自动切，停下让用户决定
-          finishedExecTasks.set(id, "failed");
-          // TASK_INVALID_STATE（执行中重复触发/已完成/已归档）按业务状态提示而非错误
-          addHint(
-            `${isCommandError(err) && err.code === "TASK_INVALID_STATE" ? "⏳" : "⚠️"} ${formatCommandError(err)}`
-          );
-          // 执行失败同样解除围观守卫（chat-open-session 已置值、.then 不会跑，
-          // 不清则该会话被永久拦 Send）
-          const sid = execSessionByTaskRef.current.get(id);
-          execSessionByTaskRef.current.delete(id);
-          if (sid && execWatchRef.current === sid) execWatchRef.current = null;
-        });
-    });
+            // 收尾 history_load 无条件发起：围观守卫的解除必须等它完成（早清会
+            // 重新打开「输入被最终历史冲掉」的窗）；UI 更新仅当用户仍在该会话
+            const load = sid
+              ? invoke<Parameters<typeof rowsToMsgs>[0]>("bot_history_load", {
+                  sessionId: sid,
+                })
+              : null;
+            if (load) {
+              load
+                .then((rows) => {
+                  if (sessionIdRef.current === sid)
+                    setMessages(rowsToMsgs(rows));
+                })
+                .catch(() => {});
+              // 独立订阅清守卫：先 catch 再 finally，避免 finally 链 unhandled rejection
+              load
+                .catch(() => {})
+                .finally(() => {
+                  // 围观守卫解除——不论用户当前是否仍在该会话（切换后回来不得被永久拦截）
+                  if (execWatchRef.current === sid) execWatchRef.current = null;
+                });
+            }
+          })
+          .catch((err) => {
+            // 收尾登记（含失败/业务拒）：失败任务的迟到跳转不自动切，停下让用户决定
+            finishedExecTasks.set(id, "failed");
+            // TASK_INVALID_STATE（执行中重复触发/已完成/已归档）按业务状态提示而非错误
+            addHint(
+              `${isCommandError(err) && err.code === "TASK_INVALID_STATE" ? "⏳" : "⚠️"} ${formatCommandError(err)}`,
+            );
+            // 执行失败同样解除围观守卫（chat-open-session 已置值、.then 不会跑，
+            // 不清则该会话被永久拦 Send）
+            const sid = execSessionByTaskRef.current.get(id);
+            execSessionByTaskRef.current.delete(id);
+            if (sid && execWatchRef.current === sid)
+              execWatchRef.current = null;
+          });
+      },
+    );
     return () => {
       unlistenSafe(unExec);
     };
@@ -789,7 +852,7 @@ export function ChatPanel({
       setSessions((prev) =>
         prev.some((s) => s.id === sid)
           ? prev
-          : [{ id: sid, title: title ?? "执行" }, ...prev]
+          : [{ id: sid, title: title ?? "执行" }, ...prev],
       );
       // 迟到防复活：execute-task 已收尾的任务不再以围观模式重开（重挂守卫会把
       // 已结束的会话永久拦输入）。成功 → 切过去只读查看；失败 → 不自动
@@ -815,17 +878,20 @@ export function ChatPanel({
   // sessionId 归属过滤（会话隔离）：只弹属于当前会话的确认，
   // 别的会话/后台任务的确认不弹（后端 60s 超时自动拒绝兜底）
   useEffect(() => {
-    const unConfirm = listen<{ id?: string; tool?: string; detail?: string; kind?: string; sessionId?: string | null }>(
-      "bot-confirm",
-      (e) => {
-        const { id, tool, detail, kind, sessionId: sid } = e.payload ?? {};
-        if (!id) return;
-        // 只弹明确属于当前会话的确认；别的会话 / 无归属（后台任务）不弹，
-        // 后端 60s 超时自动拒绝兜底
-        if (sid == null || sid !== sessionIdRef.current) return;
-        setConfirmReq({ id, tool: tool ?? "", detail: detail ?? "", kind });
-      }
-    );
+    const unConfirm = listen<{
+      id?: string;
+      tool?: string;
+      detail?: string;
+      kind?: string;
+      sessionId?: string | null;
+    }>("bot-confirm", (e) => {
+      const { id, tool, detail, kind, sessionId: sid } = e.payload ?? {};
+      if (!id) return;
+      // 只弹明确属于当前会话的确认；别的会话 / 无归属（后台任务）不弹，
+      // 后端 60s 超时自动拒绝兜底
+      if (sid == null || sid !== sessionIdRef.current) return;
+      setConfirmReq({ id, tool: tool ?? "", detail: detail ?? "", kind });
+    });
     return () => {
       unlistenSafe(unConfirm);
     };
@@ -838,7 +904,7 @@ export function ChatPanel({
       approved,
       always,
     }).catch((e) =>
-      handleCommandError(e, "bot_confirm_response", { silent: true })
+      handleCommandError(e, "bot_confirm_response", { silent: true }),
     );
     setConfirmReq(null);
   };
@@ -848,41 +914,44 @@ export function ChatPanel({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [messages]);
 
-  const switchSession = useCallback(async (sid: string) => {
-    // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（inflightRef），
-    // 切走不影响它在后台完成
-    if (sid === sessionId) {
-      setSessionMenuOpen(false);
-      return;
-    }
-    setSessionId(sid);
-    // 镜像同步落（同 openExecSession）：守卫在 await 之后读 ref，不能等渲染
-    sessionIdRef.current = sid;
-    setSessionMenuOpen(false);
-    setMessages([]);
-    try {
-      const rows = await invoke<
-        {
-          role: string;
-          content: string;
-          refsJson?: string | null;
-          thinking?: string | null;
-          toolsJson?: string | null;
-        }[]
-      >("bot_history_load", { sessionId: sid });
-      // 等待期间用户已切到别的会话：丢弃过期响应（后到的慢响应不得盖掉新会话的加载结果）
-      if (sessionIdRef.current !== sid) return;
-      let msgs = rowsToMsgs(rows);
-      // 切回正在回复的会话：补一个流式占位气泡承接后续增量（已错过的增量段
-      // 由收尾 full.text 整体校正，不会串进其他会话）
-      if (inflightRef.current.has(sid)) {
-        msgs = [...msgs, { role: "assistant", content: "", streaming: true }];
+  const switchSession = useCallback(
+    async (sid: string) => {
+      // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（inflightRef），
+      // 切走不影响它在后台完成
+      if (sid === sessionId) {
+        setSessionMenuOpen(false);
+        return;
       }
-      setMessages(msgs);
-    } catch (e) {
-      handleCommandError(e, "bot_history_load", { silent: true });
-    }
-  }, [sessionId]);
+      setSessionId(sid);
+      // 镜像同步落（同 openExecSession）：守卫在 await 之后读 ref，不能等渲染
+      sessionIdRef.current = sid;
+      setSessionMenuOpen(false);
+      setMessages([]);
+      try {
+        const rows = await invoke<
+          {
+            role: string;
+            content: string;
+            refsJson?: string | null;
+            thinking?: string | null;
+            toolsJson?: string | null;
+          }[]
+        >("bot_history_load", { sessionId: sid });
+        // 等待期间用户已切到别的会话：丢弃过期响应（后到的慢响应不得盖掉新会话的加载结果）
+        if (sessionIdRef.current !== sid) return;
+        let msgs = rowsToMsgs(rows);
+        // 切回正在回复的会话：补一个流式占位气泡承接后续增量（已错过的增量段
+        // 由收尾 full.text 整体校正，不会串进其他会话）
+        if (inflightRef.current.has(sid)) {
+          msgs = [...msgs, { role: "assistant", content: "", streaming: true }];
+        }
+        setMessages(msgs);
+      } catch (e) {
+        handleCommandError(e, "bot_history_load", { silent: true });
+      }
+    },
+    [sessionId],
+  );
 
   const newSession = async () => {
     // SWITCH-1：busy 期允许新建对话（进行中的回复继续落在原会话）
@@ -917,7 +986,12 @@ export function ChatPanel({
       return;
     }
     const target = sessions.find((s) => s.id === sid);
-    if (!window.confirm(`删除对话「${target?.title ?? "未命名"}」？消息记录一并删除。`)) return;
+    if (
+      !window.confirm(
+        `删除对话「${target?.title ?? "未命名"}」？消息记录一并删除。`,
+      )
+    )
+      return;
     try {
       await invoke("bot_session_delete", { id: sid });
       const rest = sessions.filter((s) => s.id !== sid);
@@ -958,9 +1032,17 @@ export function ChatPanel({
           if (sessionIdRef.current !== targetSid) return;
           setMessages(rowsToMsgs(rows));
         } else {
-          const s = await invoke<Session>("bot_session_create", { title: null });
+          // await 前记基线：创建期间用户已切走（如 chat-focus-session）则放弃
+          // 抢占视图——新建结果不强行切屏
+          const sidBefore = sessionIdRef.current;
+          const s = await invoke<Session>("bot_session_create", {
+            title: null,
+          });
+          if (sessionIdRef.current !== sidBefore) return;
           setSessions([s]);
           setSessionId(s.id);
+          // 镜像同步落（同 openExecSession）：监听器守卫在渲染前就要读到新会话
+          sessionIdRef.current = s.id;
           setMessages([]);
         }
       }
@@ -976,7 +1058,10 @@ export function ChatPanel({
     const sid = sessionId;
     if (!sid || inflightRef.current.has(sid)) return;
     enterChat(sid);
-    setMessages([...history, { role: "assistant", content: "", streaming: true }]);
+    setMessages([
+      ...history,
+      { role: "assistant", content: "", streaming: true },
+    ]);
     streamingMetaMapRef.current.set(sid, {});
     // RE-1 推理强度：生效档位 = 本会话覆盖 ?? 后台默认（具体值传后端，
     // 覆盖本身只存前端内存，不回写 bot-config.json）
@@ -988,7 +1073,7 @@ export function ChatPanel({
           messages: history.map((m) => ({ role: m.role, content: m.content })),
           sessionId: sid,
           reasoningEffort: effort,
-        }
+        },
       );
       // 把流式过程中累积的思考/工具行并入最终消息
       const meta = streamingMetaMapRef.current.get(sid) ?? {};
@@ -1015,11 +1100,11 @@ export function ChatPanel({
         invoke("bot_session_rename", { id: sid, title: short })
           .then(() =>
             setSessions((prev) =>
-              prev.map((s) => (s.id === sid ? { ...s, title: short } : s))
-            )
+              prev.map((s) => (s.id === sid ? { ...s, title: short } : s)),
+            ),
           )
           .catch((e) =>
-            handleCommandError(e, "bot_session_rename", { silent: true })
+            handleCommandError(e, "bot_session_rename", { silent: true }),
           );
       }
       onFinishSelection();
@@ -1047,11 +1132,17 @@ export function ChatPanel({
         if (isSubagentSession) {
           // 子 agent 会话 → cancel_subagent（状态机置 cancelled 并硬停）
           invoke("cancel_subagent", { key: sessionIdRef.current })
-            .catch((e) => handleCommandError(e, "cancel_subagent", { silent: true }))
-            .finally(() => invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(() => {}));
+            .catch((e) =>
+              handleCommandError(e, "cancel_subagent", { silent: true }),
+            )
+            .finally(() =>
+              invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(
+                () => {},
+              ),
+            );
         } else {
           invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-            handleCommandError(e, "bot_stop", { silent: true })
+            handleCommandError(e, "bot_stop", { silent: true }),
           );
         }
       } else {
@@ -1068,13 +1159,14 @@ export function ChatPanel({
       // 清空当前 session 消息 + 持久化
       setMessages([]);
       invoke("bot_history_clear", { sessionId }).catch((e) =>
-        handleCommandError(e, "bot_history_clear", { silent: true })
+        handleCommandError(e, "bot_history_clear", { silent: true }),
       );
       return true;
     }
     if (cmd === "/compact") {
       setInput("");
-      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId) return true;
+      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId)
+        return true;
       const sid = sessionId;
       const history = messages.filter((m) => !m.streaming && m.content.trim());
       if (history.length < 2) {
@@ -1102,7 +1194,10 @@ export function ChatPanel({
         persistHistory(sid, compacted);
         if (sessionIdRef.current === sid) setMessages(compacted);
       } catch (e) {
-        const note: Msg = { role: "assistant", content: `⚠️ 压缩失败：${formatCommandError(e)}` };
+        const note: Msg = {
+          role: "assistant",
+          content: `⚠️ 压缩失败：${formatCommandError(e)}`,
+        };
         const failed = [...history, note];
         persistHistory(sid, failed);
         if (sessionIdRef.current === sid) setMessages(failed);
@@ -1114,7 +1209,8 @@ export function ChatPanel({
     }
     if (cmd === "/retry") {
       setInput("");
-      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId) return true;
+      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId)
+        return true;
       const msgs = messages.filter((m) => !m.streaming);
       // 找到最后一条用户消息，砍掉它之后的所有内容，重新生成回复
       let lastUserIdx = -1;
@@ -1139,7 +1235,11 @@ export function ChatPanel({
     // 围观执行会话期拦发送——含 /retry /clean /compact 等斜杠命令（runChat 同样
     // 会往执行中的会话发消息，ChatGuard 只软拒不防交错）；/stop 例外：停执行是
     // 围观期的合法操作
-    if (execWatchRef.current !== null && execWatchRef.current === sessionId && text !== "/stop") {
+    if (
+      execWatchRef.current !== null &&
+      execWatchRef.current === sessionId &&
+      text !== "/stop"
+    ) {
       addHint("⏳ 执行进行中，围观模式暂不能发送");
       return;
     }
@@ -1150,7 +1250,9 @@ export function ChatPanel({
     if (!text && !files.length) return;
     // PAR-1：并行回复按会话隔离——本会话在途时拦重复发送（其他会话可自由发送）
     if (sessionId !== null && inflightRef.current.has(sessionId)) {
-      addHint("⏳ 本对话正在回复中：可切换到其他对话发送，或输入 /stop 停止本条");
+      addHint(
+        "⏳ 本对话正在回复中：可切换到其他对话发送，或输入 /stop 停止本条",
+      );
       return;
     }
     // 同步检查：state 重渲染前连续两次 Enter 也能拦下重复发送
@@ -1217,7 +1319,9 @@ export function ChatPanel({
         .catch(() => 1);
       const x = pos.x / scale;
       const y = pos.y / scale;
-      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+      return (
+        x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
+      );
     };
     try {
       getCurrentWindow()
@@ -1300,14 +1404,16 @@ export function ChatPanel({
       // 子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
       invoke("cancel_subagent", { key: sessionIdRef.current })
         .catch((e) =>
-          handleCommandError(e, "cancel_subagent", { silent: true })
+          handleCommandError(e, "cancel_subagent", { silent: true }),
         )
         .finally(() =>
-          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(() => {})
+          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(
+            () => {},
+          ),
         );
     } else {
       invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-        handleCommandError(e, "bot_stop", { silent: true })
+        handleCommandError(e, "bot_stop", { silent: true }),
       );
     }
   }, [isSubagentSession]);
@@ -1317,7 +1423,8 @@ export function ChatPanel({
   const effectiveEffort: ReasoningLevel =
     (sessionId != null ? effortBySession.get(sessionId) : undefined) ??
     effortBase;
-  const effortIsOverridden = sessionId != null && effortBySession.has(sessionId);
+  const effortIsOverridden =
+    sessionId != null && effortBySession.has(sessionId);
   /** 选档：写入会话覆盖 Map（内存）；选「后台默认」= 清除覆盖跟随后台 */
   const setEffortForSession = (level: ReasoningLevel | null) => {
     if (!sessionId) return;
@@ -1331,7 +1438,10 @@ export function ChatPanel({
   };
 
   return (
-    <div ref={rootRef} className="relative flex flex-col shrink-0 h-full min-h-0">
+    <div
+      ref={rootRef}
+      className="relative flex flex-col shrink-0 h-full min-h-0"
+    >
       {/* 拖放提示层：文件悬停在聊天区上时显示，松开即加入附件 */}
       {dragHover && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-[var(--brand)] bg-black/20">
@@ -1425,7 +1535,12 @@ export function ChatPanel({
               className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
             >
               <span className="truncate max-w-[280px]">
-                <Pin size={10} aria-hidden className="inline-block align-[-1px]" /> {t.title}
+                <Pin
+                  size={10}
+                  aria-hidden
+                  className="inline-block align-[-1px]"
+                />{" "}
+                {t.title}
               </span>
               <button
                 className="text-[var(--t5)] hover:text-[var(--danger)]"

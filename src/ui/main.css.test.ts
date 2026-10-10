@@ -20,11 +20,11 @@ describe("滚动条主题适配（main.css）", () => {
   it("webkit 细滚动条走主题变量（不硬编码颜色）", () => {
     expect(css).toContain("::-webkit-scrollbar-thumb");
     expect(css).toMatch(
-      /::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*var\(--t6\)/s
+      /::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*var\(--t6\)/s,
     );
     // 轨道透明（不遮挡新拟态背景层次）
     expect(css).toMatch(
-      /::-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/s
+      /::-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/s,
     );
   });
 });
@@ -33,7 +33,7 @@ describe("main.css nm-card-hover 过渡对称", () => {
   it("基类 transition 声明 hover 变化的属性（background/border），hover 块不引入 transform", () => {
     // 基类 .nm-card, .nm-card-hover 块：transition 覆盖 hover 全部变化属性
     expect(css).toMatch(
-      /transition:\s*background-color 0\.15s ease,\s*border-color 0\.15s ease;[\s\S]*?\.nm-card-hover:hover/
+      /transition:\s*background-color 0\.15s ease,\s*border-color 0\.15s ease;[\s\S]*?\.nm-card-hover:hover/,
     );
     // hover 块只改背景与边框（扁平悬停），不得引入 transform/shadow 跳变
     const hoverBlock = css.match(/\.nm-card-hover:hover\s*\{([^}]*?)\}/);

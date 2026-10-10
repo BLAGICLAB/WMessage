@@ -91,7 +91,11 @@ export function ModelRow({
     try {
       const r = await invoke<{ ok: boolean; status?: number; error?: string }>(
         "bot_test_connection",
-        { baseUrl: model.baseUrl, apiFormat: apiProvider, vendor: model.vendor ?? null },
+        {
+          baseUrl: model.baseUrl,
+          apiFormat: apiProvider,
+          vendor: model.vendor ?? null,
+        },
       );
       // await 期间改了 baseUrl/格式：结果属于旧配置，只通知父级、不污染本行状态
       if (seq === testSeqRef.current) {
@@ -103,14 +107,17 @@ export function ModelRow({
           setTestMsg(r.error ?? (r.status ? `HTTP ${r.status}` : "连接失败"));
         }
       }
+      // 后端已把可用性落盘（ok 进 verified_vendors / 受控失败移出）：
+      // 通知父级刷新——r.ok === false 也要回调
+      onTested?.();
     } catch (e) {
       if (seq === testSeqRef.current) {
         setTestState("fail");
         setTestMsg(formatCommandError(e));
       }
+      // invoke 异常 = 命令失败，后端没写 verified_vendors：不触发父级刷新
+      return;
     }
-    // 后端已把可用性落盘（ok 进 verified_vendors / 失败移出）：通知父级刷新
-    onTested?.();
   };
 
   if (!editing) {
@@ -290,8 +297,8 @@ export function ModelRow({
         {/* U13：max_tokens 只在 Anthropic 格式请求体发送（OpenAI 兼容网关多不认识该字段），
             说明行避免用户填了没反应；temperature/top_p 两种格式都生效 */}
         <p className="text-[10px] leading-4 text-[var(--t5)]">
-          temperature / top_p 留空跟随默认；max_tokens 仅 Anthropic 格式生效（留空 =
-          全局/8192 默认）
+          temperature / top_p 留空跟随默认；max_tokens 仅 Anthropic
+          格式生效（留空 = 全局/8192 默认）
         </p>
       </div>
     </div>

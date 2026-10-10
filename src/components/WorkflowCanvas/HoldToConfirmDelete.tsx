@@ -71,6 +71,8 @@ export function HoldToConfirmDelete({
   const startProgressRef = useRef(0); // 反向时记录的起点进度
   // 走满→震动→done 的过渡计时器
   const shakeTimerRef = useRef<number | null>(null);
+  // 键盘路径的延后触发计时器（无震动窗）
+  const keyConfirmTimerRef = useRef<number | null>(null);
   // 已触发的 onConfirm 引用：避免 done→idle 复位路径里重复触发
   const confirmFiredRef = useRef(false);
 
@@ -95,7 +97,12 @@ export function HoldToConfirmDelete({
       const elapsed = now - startedAtRef.current;
       const cur = phaseRef.current;
       if (cur === "pressing") {
-        const p = Math.min(1, elapsed / HOLD_MS);
+        // 从 startProgressRef 起算（与 releasing 对称：倒退中重按 / 前进中重按
+        // 都从当前进度续上，而不是从 0 重来）
+        const p = Math.min(
+          1,
+          startProgressRef.current + elapsed / HOLD_MS,
+        );
         setProgress(p);
         if (p >= 1) {
           // 走满：取消循环、进入震动态
@@ -103,12 +110,13 @@ export function HoldToConfirmDelete({
           startedAtRef.current = null;
           setProgress(1);
           setShaking(true);
-          // 震动后切到 done + 触发 onConfirm
+          setPhase("done");
+          // 震动后切掉震动态 + 触发 onConfirm（phase 已在上面置 done，
+          // 避免 is-done pointer-events:none 在震动窗 360ms 内失效）
           clearShakeTimer();
           shakeTimerRef.current = window.setTimeout(() => {
             shakeTimerRef.current = null;
             setShaking(false);
-            setPhase("done");
             if (!confirmFiredRef.current) {
               confirmFiredRef.current = true;
               void onConfirm();
@@ -135,7 +143,7 @@ export function HoldToConfirmDelete({
       }
       rafRef.current = requestAnimationFrame(tick);
     },
-    [cancelRaf, clearShakeTimer, onConfirm]
+    [cancelRaf, clearShakeTimer, onConfirm],
   );
 
   // phaseRef 镜像：tick 闭包避免每帧重建
@@ -153,7 +161,7 @@ export function HoldToConfirmDelete({
       setPhase(initialPhase);
       rafRef.current = requestAnimationFrame(tick);
     },
-    [cancelRaf, tick]
+    [cancelRaf, tick],
   );
 
   // pointer 处理
@@ -177,8 +185,12 @@ export function HoldToConfirmDelete({
     if (disabled) return;
     if (phaseRef.current !== "pressing") return;
     try {
-      if ((e.currentTarget as HTMLButtonElement).hasPointerCapture(e.pointerId)) {
-        (e.currentTarget as HTMLButtonElement).releasePointerCapture(e.pointerId);
+      if (
+        (e.currentTarget as HTMLButtonElement).hasPointerCapture(e.pointerId)
+      ) {
+        (e.currentTarget as HTMLButtonElement).releasePointerCapture(
+          e.pointerId,
+        );
       }
     } catch {
       // ignore
@@ -192,6 +204,10 @@ export function HoldToConfirmDelete({
     return () => {
       cancelRaf();
       clearShakeTimer();
+      if (keyConfirmTimerRef.current !== null) {
+        window.clearTimeout(keyConfirmTimerRef.current);
+        keyConfirmTimerRef.current = null;
+      }
     };
   }, [cancelRaf, clearShakeTimer]);
 
@@ -199,6 +215,10 @@ export function HoldToConfirmDelete({
     if (disabled) {
       cancelRaf();
       clearShakeTimer();
+      if (keyConfirmTimerRef.current !== null) {
+        window.clearTimeout(keyConfirmTimerRef.current);
+        keyConfirmTimerRef.current = null;
+      }
       startedAtRef.current = null;
       if (phaseRef.current !== "done") {
         setShaking(false);
@@ -229,8 +249,14 @@ export function HoldToConfirmDelete({
     confirmFiredRef.current = true;
     setProgress(1);
     setPhase("done");
-    // 跳过震动——键盘用户不需要
-    window.setTimeout(() => void onConfirm(), 80);
+    // 跳过震动——键盘用户不需要；用 ref 跟踪以防卸载/disabled 切换时泄漏
+    if (keyConfirmTimerRef.current !== null) {
+      window.clearTimeout(keyConfirmTimerRef.current);
+    }
+    keyConfirmTimerRef.current = window.setTimeout(() => {
+      keyConfirmTimerRef.current = null;
+      void onConfirm();
+    }, 80);
   };
 
   // 计算 ring stroke-dashoffset（进度 0 = 全空；1 = 全满）
@@ -292,9 +318,7 @@ export function HoldToConfirmDelete({
           <Trash2 size={16} />
         )}
       </span>
-      {phase === "done" && (
-        <span className="hold-confirm-label">已删除</span>
-      )}
+      {phase === "done" && <span className="hold-confirm-label">已删除</span>}
     </button>
   );
 }

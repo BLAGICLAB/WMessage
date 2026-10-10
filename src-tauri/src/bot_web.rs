@@ -2,7 +2,7 @@
 //!
 //! 安全设计（对齐 Harness 网关）：
 //! - fetch_url 只允许 http/https；拒绝本机/内网地址（loopback/私网 IP 段/本地域名后缀）
-//! - 超时：connect 15s / 总 30s；响应体上限 2MB；只处理 HTML/文本类内容
+//! - 超时：connect 15s / 总 30s；页面响应体上限 10MB（搜索结果体另有 2MB 线）；只处理 HTML/文本类内容
 //! - 输出截断在工具层做（搜索结果 6000 字、网页正文 30000 字）；审计由 bot.rs 留痕
 
 use crate::error::CommandError;
@@ -14,6 +14,9 @@ const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 // 传输闸：防恶意超大响应打爆内存（Content-Length 可撒谎，必须流式封顶）。
 // 不是内容门槛——正文提取后有 30K 字符切片 + offset 续读，大页面按段可读。
 const FETCH_MAX_BYTES: usize = 10 * 1024 * 1024;
+/// 搜索引擎结果体上限：与 FETCH_MAX_BYTES 是两条不同用途的容量线——
+/// 这条封引擎结果体（正常远小于此），FETCH_MAX_BYTES 封页面抓取传输。
+const SEARCH_BODY_CAP_BYTES: usize = 2 * 1024 * 1024;
 const SEARCH_OUTPUT_CAP: usize = 6000;
 
 /// reqwest 0.12+ 的错误 Display 只剩顶层一句（如「error sending request for url」），
@@ -141,7 +144,7 @@ fn http_client() -> reqwest::Client {
                 .build()
                 // builder 失败（TLS 后端等）≠ 放弃约束：降级 client 仍钉硬超时 +
                 // 禁自动重定向（无约束 client 会架空 SSRF 逐跳校验与 30s 超时）；
-                // 再失败 = panic loud（ a——无超时 client 比 panic 更危险）
+                // 再失败 = panic loud（无超时 client 比 panic 更危险）
                 .unwrap_or_else(|e| {
                     eprintln!("[bot_web] http_client builder 失败（{e}），降级：60s 硬超时 + 禁自动重定向");
                     reqwest::Client::builder()
@@ -347,12 +350,11 @@ async fn search_brave(key: &str, query: &str, opts: &SearchOpts) -> Result<Strin
     if !resp.status().is_success() {
         return Err(format!("Brave 返回 HTTP {}", resp.status()));
     }
-    let body = String::from_utf8(
-        read_body_capped(resp, 2 * 1024 * 1024)
+    let body = decode_search_body(
+        &read_body_capped(resp, SEARCH_BODY_CAP_BYTES)
             .await
             .map_err(|e| format!("Brave 响应读取失败：{e}"))?,
-    )
-    .map_err(|_| "Brave 响应不是有效 UTF-8 文本".to_string())?;
+    );
     let results = parse_brave_results(&body)?;
     if results.is_empty() {
         return Err("Brave 没有返回结果".into());
@@ -501,12 +503,11 @@ async fn search_bing(query: &str) -> Result<Vec<(String, String, String)>, Comma
             reason: format!("Bing 返回 HTTP {}", resp.status()),
         });
     }
-    let body = String::from_utf8(
-        read_body_capped(resp, 2 * 1024 * 1024)
+    let body = decode_search_body(
+        &read_body_capped(resp, SEARCH_BODY_CAP_BYTES)
             .await
             .map_err(|e| format!("读取 Bing 结果失败：{e}"))?,
-    )
-    .map_err(|_| "Bing 响应不是有效 UTF-8 文本".to_string())?;
+    );
     let results = parse_bing(&body);
     if results.is_empty() {
         return Err(CommandError::DomainRule {
@@ -536,12 +537,11 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Comm
             reason: format!("百度返回 HTTP {}", resp.status()),
         });
     }
-    let body = String::from_utf8(
-        read_body_capped(resp, 2 * 1024 * 1024)
+    let body = decode_search_body(
+        &read_body_capped(resp, SEARCH_BODY_CAP_BYTES)
             .await
             .map_err(|e| format!("读取百度结果失败：{e}"))?,
-    )
-    .map_err(|_| "百度响应不是有效 UTF-8 文本".to_string())?;
+    );
     let results = parse_baidu(&body);
     if results.is_empty() {
         return Err(CommandError::DomainRule {
@@ -554,7 +554,7 @@ async fn search_baidu(query: &str) -> Result<Vec<(String, String, String)>, Comm
 
 /// 开标签精确匹配：`<a` 这类前缀 `find` 会误中 `<abbr>`/`<address>`/`<pre>`
 /// 等同前缀标签——开标签后一个字符必须是空白 / `>` / `/` 才算该标签
-///abbr 前置时标题与链接来自不同 DOM 节点）。
+/// （abbr 前置时标题与链接来自不同 DOM 节点）。
 /// 扫描全部命中取第一个合格位置。
 fn find_tag_open(s: &str, pat: &str) -> Option<usize> {
     let mut from = 0;
@@ -1102,7 +1102,7 @@ fn jina_reader_url(raw_url: &str) -> String {
     format!("https://r.jina.ai/{}", raw_url.trim())
 }
 
-/// ：open_url 工具的 URL 准入门——parse + 仅 http/https + 与 fetch 同一公网闸
+/// open_url 工具的 URL 准入门——parse + 仅 http/https + 与 fetch 同一公网闸
 /// （DNS 解析后拒绝本机/内网/保留地址）。返回校验过的 URL 供打开与日志。
 pub(crate) async fn ensure_public_http_url(raw: &str) -> Result<url::Url, String> {
     let trimmed = raw.trim();
@@ -1167,6 +1167,12 @@ async fn read_body_capped(resp: reqwest::Response, max: usize) -> Result<Vec<u8>
         buf.extend_from_slice(&chunk);
     }
     Ok(buf)
+}
+
+/// 搜索引擎结果体解码：lossy 而非严格 UTF-8——结果页混入个别非 UTF-8 字节时，
+/// 严格解码让整个引擎假失败「无结果」（与 fetch_jina_reader / decode_html 同一策略）
+fn decode_search_body(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// IPv4 是否为内网/本机段
@@ -1405,6 +1411,17 @@ mod tests {
     fn parse_brave_results_bad_json() {
         let err = parse_brave_results("not json").unwrap_err();
         assert!(err.contains("Brave 响应解析失败"), "应明确报错：{err}");
+    }
+
+    #[test]
+    fn search_body_decodes_lossily_not_fails() {
+        // 结果体混入非法 UTF-8 字节（\xFF、GB 码半字）：lossy 替换为 U+FFFD 继续，
+        // 不得让整个引擎假失败「无结果」
+        let text = decode_search_body(b"\xEF\xBB\xBF{\xFF\"json\"\xB0}");
+        assert!(text.contains("\"json\""));
+        assert!(text.contains('\u{FFFD}'));
+        // 合法 UTF-8 原样通过（含 BOM 不剥——调用方解析器自处理）
+        assert_eq!(decode_search_body("中文ok".as_bytes()), "中文ok");
     }
 
     #[test]

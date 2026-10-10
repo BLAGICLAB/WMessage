@@ -15,7 +15,14 @@ export function ResizeEdge({
   onDelta: (
     dx: number,
     dy: number,
-    startPos: { x: number; y: number; w: number; h: number; sw: number; sh: number }
+    startPos: {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      sw: number;
+      sh: number;
+    },
   ) => void;
 }) {
   // mid-drag unmount 兜底：组件卸载时强制结束进行中的拖动
@@ -25,10 +32,10 @@ export function ResizeEdge({
     side === "n"
       ? "top-0 left-0 right-0 h-2 cursor-n-resize"
       : side === "s"
-      ? "bottom-0 left-0 right-0 h-2 cursor-s-resize"
-      : side === "e"
-      ? "top-0 right-0 bottom-0 w-2 cursor-e-resize"
-      : "top-0 left-0 bottom-0 w-2 cursor-w-resize";
+        ? "bottom-0 left-0 right-0 h-2 cursor-s-resize"
+        : side === "e"
+          ? "top-0 right-0 bottom-0 w-2 cursor-e-resize"
+          : "top-0 left-0 bottom-0 w-2 cursor-w-resize";
   const linePos = isH
     ? "left-0 right-0 top-1/2 -translate-y-1/2 h-px"
     : "top-0 bottom-0 left-1/2 -translate-x-1/2 w-px";
@@ -38,11 +45,23 @@ export function ResizeEdge({
     dragCleanupRef.current?.(); // 多点触控：新按下先清上一次拖动的监听，防叠栈
     e.preventDefault();
     e.stopPropagation();
-    const sx = e.clientX, sy = e.clientY;
+    const sx = e.clientX,
+      sy = e.clientY;
     const el = e.currentTarget as HTMLElement;
-    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
     // 起始外框位置/尺寸/屏幕尺寸(异步读取;未就绪前的 move 一律忽略)
-    let startPos: { x: number; y: number; w: number; h: number; sw: number; sh: number } | null = null;
+    let startPos: {
+      x: number;
+      y: number;
+      w: number;
+      h: number;
+      sw: number;
+      sh: number;
+    } | null = null;
     const win = getCurrentWindow();
     void Promise.all([
       win.outerPosition(),
@@ -71,9 +90,18 @@ export function ResizeEdge({
       if (!sp) return;
       onDelta(ev.clientX - sx, ev.clientY - sy, sp);
     };
+    const activePointerId = e.pointerId;
     const cleanup = (ev?: PointerEvent) => {
-      if (ev) {
-        try { el.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+      // 真事件走传入的 pointerId；卸载/无参路径走 activePointerId
+      // ——多点触控 cleanup() 无参不释放旧 capture 会被浏览器隐式释放兜底，
+      // 这里主动 hasPointerCapture 检查后 release 避免后续重按被无 capture 状态接住
+      const pid = ev?.pointerId ?? activePointerId;
+      try {
+        if (el.hasPointerCapture(pid)) {
+          el.releasePointerCapture(pid);
+        }
+      } catch {
+        /* ignore */
       }
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", cleanup);
@@ -88,8 +116,13 @@ export function ResizeEdge({
   };
 
   return (
-    <div className={`absolute z-30 ${pos} bg-transparent`} onPointerDown={onDown}>
-      <div className={`absolute ${linePos} bg-[var(--edge)] opacity-30 hover:opacity-80 active:opacity-100 transition-opacity`} />
+    <div
+      className={`absolute z-30 ${pos} bg-transparent`}
+      onPointerDown={onDown}
+    >
+      <div
+        className={`absolute ${linePos} bg-[var(--edge)] opacity-30 hover:opacity-80 active:opacity-100 transition-opacity`}
+      />
     </div>
   );
 }

@@ -138,6 +138,15 @@ pub fn open_db<R: tauri::Runtime>(
                 }
                 Err(e) => {
                     eprintln!("[db] app_data_dir 解析失败，跳过 legacy db 拷贝：{e}");
+                    crate::audit::write_event(
+                        app,
+                        crate::audit::AuditLevel::Warn,
+                        "legacy_db_copy",
+                        &[(
+                            "warn",
+                            format!("app_data_dir 解析失败，跳过 legacy db 拷贝：{e}"),
+                        )],
+                    );
                 }
             }
         }
@@ -147,7 +156,7 @@ pub fn open_db<R: tauri::Runtime>(
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
     migrations::apply_conn_pragmas(&conn)?;
-    // tasks 表单源 DDL（ 抽取）：完整 29 列 schema，老库缺列由下方幂等 ALTER 补齐
+    // tasks 表单源 DDL（从 tasks.rs 抽取）：完整 29 列 schema，老库缺列由下方幂等 ALTER 补齐
     conn.execute_batch(crate::db::tasks::TASKS_DDL)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(
@@ -882,7 +891,7 @@ mod tests {
              );",
         )
         .unwrap();
-        //  起进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
+        // 进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
         // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
         // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS +

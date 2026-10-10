@@ -6,7 +6,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FileText, Pencil, RotateCw, Star, Trash2, Upload, X } from "lucide-react";
+import {
+  FileText,
+  Pencil,
+  RotateCw,
+  Star,
+  Trash2,
+  Upload,
+  X,
+} from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { EmptyState } from "../EmptyState";
 import {
@@ -24,9 +32,10 @@ export function WordTemplatePanel() {
   const [items, setItems] = useState<WordTemplateInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [editing, setEditing] = useState<{ name: string; params: WordTemplateParams } | null>(
-    null,
-  );
+  const [editing, setEditing] = useState<{
+    name: string;
+    params: WordTemplateParams;
+  } | null>(null);
   const [editName, setEditName] = useState("");
 
   const refresh = useCallback(async () => {
@@ -44,14 +53,15 @@ export function WordTemplatePanel() {
   }, [refresh]);
 
   const importTemplate = async () => {
-    const picked = await open({
-      multiple: false,
-      filters: [{ name: "Word 模板", extensions: ["docx"] }],
-    });
-    if (!picked || Array.isArray(picked)) return;
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
+      const picked = await open({
+        multiple: false,
+        filters: [{ name: "Word 模板", extensions: ["docx"] }],
+      });
+      if (!picked || Array.isArray(picked)) return;
       await invoke("word_template_import", { path: picked });
       await refresh();
     } catch (e) {
@@ -66,7 +76,10 @@ export function WordTemplatePanel() {
     setBusy(true);
     setError("");
     try {
-      const params = await invoke<WordTemplateParams>("word_template_params_get", { name });
+      const params = await invoke<WordTemplateParams>(
+        "word_template_params_get",
+        { name },
+      );
       setEditing({ name, params });
       setEditName(name);
     } catch (e) {
@@ -99,13 +112,21 @@ export function WordTemplatePanel() {
 
   const reextract = async () => {
     if (!editing) return;
-    if (!window.confirm(`按「${editing.name}.docx」重新提取参数？将覆盖当前编辑内容`)) return;
+    if (
+      !window.confirm(
+        `按「${editing.name}.docx」重新提取参数？将覆盖当前编辑内容`,
+      )
+    )
+      return;
     setBusy(true);
     setError("");
     try {
-      const params = await invoke<WordTemplateParams>("word_template_reextract", {
-        name: editing.name,
-      });
+      const params = await invoke<WordTemplateParams>(
+        "word_template_reextract",
+        {
+          name: editing.name,
+        },
+      );
       setEditing({ ...editing, params });
     } catch (e) {
       handleCommandError(e, "word_template_reextract");
@@ -116,6 +137,7 @@ export function WordTemplatePanel() {
   };
 
   const setDefault = async (name: string) => {
+    if (busy) return;
     setBusy(true);
     setError("");
     try {
@@ -149,7 +171,8 @@ export function WordTemplatePanel() {
     <div className="nm-card p-5">
       <h2 className="text-lg font-semibold text-[var(--t1)]">Word 模板</h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
-        上传排好版的 .docx 作为模板：docx 管页面设置/页眉页脚，文字排版（字体/字号/行距/缩进）
+        上传排好版的 .docx 作为模板：docx
+        管页面设置/页眉页脚，文字排版（字体/字号/行距/缩进）
         上传时自动提取为参数，可编辑后生效。未设默认时使用内置版式
       </p>
       {error && <p className="mt-2 text-xs text-[var(--danger)]">{error}</p>}
@@ -204,13 +227,16 @@ export function WordTemplatePanel() {
               <Upload size={13} aria-hidden /> 上传模板
             </button>
           </div>
-          {items.length === 0 ? (
+          {error ? null : items.length === 0 ? (
             <div className="mt-3">
               <EmptyState
                 icon={<FileText size={20} aria-hidden />}
                 title="还没有模板"
                 description="上传排好版的 .docx；机器人生成 Word 时版式随模板"
-                action={{ label: "上传模板", onClick: () => void importTemplate() }}
+                action={{
+                  label: "上传模板",
+                  onClick: () => void importTemplate(),
+                }}
               />
             </div>
           ) : (
@@ -220,7 +246,11 @@ export function WordTemplatePanel() {
                   key={t.name}
                   className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-[var(--t2)] hover:bg-[var(--hover)]"
                 >
-                  <FileText size={14} aria-hidden className="shrink-0 text-[var(--t4)]" />
+                  <FileText
+                    size={14}
+                    aria-hidden
+                    className="shrink-0 text-[var(--t4)]"
+                  />
                   <span className="truncate">{t.name}</span>
                   {t.isDefault && (
                     <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-[var(--t5)]">

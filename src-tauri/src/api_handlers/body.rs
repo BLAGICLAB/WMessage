@@ -25,6 +25,8 @@ pub(crate) enum BodyRead {
     IoFailed,
     /// 头部格式非法(多 Content-Length / parse 失败) → 400 Bad Request
     Malformed,
+    /// body 字节不是合法 UTF-8 → 400（与头部格式错误分开回，排障不误导）
+    InvalidUtf8,
 }
 
 /// 读请求体（上限 `MAX_BODY_BYTES`，总时长 `BODY_READ_DEADLINE`）。
@@ -92,10 +94,10 @@ pub(crate) fn read_body_limited(req: &mut Request) -> BodyRead {
         }
     }
     // JSON 边界必须严格 UTF-8：from_utf8_lossy 会把非法字节静默替换成 U+FFFD，
-    // 损坏内容入库比当场拒绝更糟 → 归入 Malformed（调用方回 400）
+    // 损坏内容入库比当场拒绝更糟 → 拒绝（400），且不得与头部错误混报
     match String::from_utf8(buf) {
         Ok(s) => BodyRead::Ok(s),
-        Err(_) => BodyRead::Malformed,
+        Err(_) => BodyRead::InvalidUtf8,
     }
 }
 
@@ -104,7 +106,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// 起真实 loopback server 收原始字节请求（tiny_http 的 TestRequest body 是
+    /// 真实 loopback server 收原始字节请求（tiny_http 的 TestRequest body 是
     /// &'static str，带不了非法 UTF-8 字节）；返回的 server/stream 须活到 body 读完
     fn request_with_raw_body(body: &[u8]) -> (tiny_http::Server, Request, std::net::TcpStream) {
         let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
@@ -121,10 +123,26 @@ mod tests {
         (server, req, stream)
     }
 
-    /// 非法 UTF-8 body → Malformed（调用方回 400），不得 lossy 替换成 U+FFFD 入库
+    /// 非法 UTF-8 body → InvalidUtf8（调用方回 400，文案与头部错误区分），
+    /// 不得 lossy 替换成 U+FFFD 入库，也不得误报成 Content-Length 头错误
     #[test]
-    fn invalid_utf8_body_is_malformed() {
+    fn invalid_utf8_body_is_invalid_utf8() {
         let (_server, mut req, _stream) = request_with_raw_body(&[0x7b, 0xff, 0x7d]);
+        assert!(matches!(read_body_limited(&mut req), BodyRead::InvalidUtf8));
+    }
+
+    /// 多 Content-Length 头 → Malformed（与 body 编码错误是两条路径）
+    #[test]
+    fn duplicate_content_length_is_malformed() {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = server.server_addr().to_ip().unwrap();
+        let mut stream = std::net::TcpStream::connect(addr).unwrap();
+        stream
+            .write_all(b"POST / HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 3\r\n\r\n")
+            .unwrap();
+        stream.write_all(b"abc").unwrap();
+        stream.flush().unwrap();
+        let mut req = server.recv().unwrap();
         assert!(matches!(read_body_limited(&mut req), BodyRead::Malformed));
     }
 

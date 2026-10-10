@@ -13,8 +13,8 @@
   --task-h: 280px;
 
   /* 三层表面：页面底 < 面板 < 悬浮，逐档提亮 */
-  --bg: #eef1f6;            /* 页面底色 */
-  --surface: #fafbfd;       /* 卡片/面板表面 */
+  --bg: #eef1f6; /* 页面底色 */
+  --surface: #fafbfd; /* 卡片/面板表面 */
   --surface-raised: #ffffff; /* 悬浮卡/选中项（hover 抬升目标） */
   /* 1px 边框语义：--edge 默认结构线，--edge-strong hover/强调 */
   --edge: #e2e7ef;
@@ -94,7 +94,9 @@
   }
   /* 主题切换平滑过渡（背景/文字，不影响 transform 动画）；150ms 与组件层同步 */
   body {
-    transition: background-color 0.15s ease, color 0.15s ease;
+    transition:
+      background-color 0.15s ease,
+      color 0.15s ease;
   }
   input::placeholder,
   textarea::placeholder {
@@ -166,7 +168,9 @@
     background-color: var(--surface);
     border: 1px solid var(--edge);
     box-shadow: var(--shadow-sm);
-    transition: background-color 0.15s ease, border-color 0.15s ease;
+    transition:
+      background-color 0.15s ease,
+      border-color 0.15s ease;
   }
 
   .nm-card-hover {
@@ -188,7 +192,9 @@
     border-radius: var(--r-md);
     background-color: var(--inset-bg);
     border: 1px solid var(--edge);
-    transition: background-color 0.1s ease, border-color 0.1s ease;
+    transition:
+      background-color 0.1s ease,
+      border-color 0.1s ease;
   }
 
   /* === 抬升胶囊（未选中）：面板底 + 边线，与 .nm-inset 的对比承载「选中」语义 === */
@@ -196,7 +202,9 @@
     border-radius: var(--r-md);
     background-color: var(--surface);
     border: 1px solid var(--edge);
-    transition: background-color 0.1s ease, border-color 0.1s ease;
+    transition:
+      background-color 0.1s ease,
+      border-color 0.1s ease;
   }
   .nm-outset:hover:not(:disabled) {
     background-color: var(--hover-bg);
@@ -218,7 +226,9 @@
     border-radius: var(--r-sm);
     background-color: var(--surface);
     border: 1px solid var(--edge);
-    transition: background-color 0.1s ease, border-color 0.1s ease;
+    transition:
+      background-color 0.1s ease,
+      border-color 0.1s ease;
   }
   .nm-btn:hover:not(:disabled) {
     background-color: var(--hover-bg);
@@ -242,7 +252,9 @@
     @apply inline-flex shrink-0 items-center justify-center;
     color: var(--t4);
     border-radius: var(--r-sm);
-    transition: background-color 0.1s ease, color 0.1s ease;
+    transition:
+      background-color 0.1s ease,
+      color 0.1s ease;
   }
   .nm-icon-btn:hover:not(:disabled) {
     color: var(--t2);
@@ -267,7 +279,9 @@
     border: 1px solid var(--edge);
     border-radius: var(--r-sm);
     color: var(--t2);
-    transition: background-color 0.1s ease, border-color 0.1s ease;
+    transition:
+      background-color 0.1s ease,
+      border-color 0.1s ease;
   }
   .nm-input:focus {
     outline: none;
@@ -386,9 +400,15 @@
     line-height: 1.3;
     margin: 0;
   }
-  .md-body h1 { font-size: 1.25em; }
-  .md-body h2 { font-size: 1.15em; }
-  .md-body h3 { font-size: 1.08em; }
+  .md-body h1 {
+    font-size: 1.25em;
+  }
+  .md-body h2 {
+    font-size: 1.15em;
+  }
+  .md-body h3 {
+    font-size: 1.08em;
+  }
   .md-body h4,
   .md-body h5,
   .md-body h6 {
@@ -470,7 +490,6 @@
   }
 }
 
-
 /* ═══════════════════════════════════════════════════════════════
    字体大小（2026-09-08 老板拍板）：四档 small/standard/large/xlarge
    - 默认 small = 当前渲染状态（"目前字号为小"），不动
@@ -480,15 +499,33 @@
    - 没覆盖到的 text-[13/14/15px] 等其他任意值走 text-[10/11/12px]
      附近的归一化（差 1-2px 不影响阅读，够用先）
    ═══════════════════════════════════════════════════════════════ */
-[data-font-size="standard"] .text-\[10px\] { font-size: 11px; }
-[data-font-size="standard"] .text-\[11px\] { font-size: 12px; }
-[data-font-size="standard"] .text-\[12px\] { font-size: 13px; }
-[data-font-size="large"] .text-\[10px\] { font-size: 12px; }
-[data-font-size="large"] .text-\[11px\] { font-size: 13px; }
-[data-font-size="large"] .text-\[12px\] { font-size: 14px; }
-[data-font-size="xlarge"] .text-\[10px\] { font-size: 13px; }
-[data-font-size="xlarge"] .text-\[11px\] { font-size: 14px; }
-[data-font-size="xlarge"] .text-\[12px\] { font-size: 15px; }
+[data-font-size="standard"] .text-\[10px\] {
+  font-size: 11px;
+}
+[data-font-size="standard"] .text-\[11px\] {
+  font-size: 12px;
+}
+[data-font-size="standard"] .text-\[12px\] {
+  font-size: 13px;
+}
+[data-font-size="large"] .text-\[10px\] {
+  font-size: 12px;
+}
+[data-font-size="large"] .text-\[11px\] {
+  font-size: 13px;
+}
+[data-font-size="large"] .text-\[12px\] {
+  font-size: 14px;
+}
+[data-font-size="xlarge"] .text-\[10px\] {
+  font-size: 13px;
+}
+[data-font-size="xlarge"] .text-\[11px\] {
+  font-size: 14px;
+}
+[data-font-size="xlarge"] .text-\[12px\] {
+  font-size: 15px;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    字体大小 — Tailwind 标准类 + input 覆盖（2026-09-08 Bugfix）
@@ -498,21 +535,43 @@
    - small = 默认不动（老板拍板「目前字号为小」）
    - text-xs/sm/base 各档放大一档；input/textarea 防 macOS Safari 自动 zoom
    ═══════════════════════════════════════════════════════════════ */
-[data-font-size="standard"] .text-xs  { font-size: 13px; }
-[data-font-size="large"]     .text-xs  { font-size: 14px; }
-[data-font-size="xlarge"]    .text-xs  { font-size: 16px; }
-[data-font-size="standard"] .text-sm   { font-size: 15px; }
-[data-font-size="large"]     .text-sm   { font-size: 16px; }
-[data-font-size="xlarge"]    .text-sm   { font-size: 18px; }
-[data-font-size="standard"] .text-base { font-size: 17px; }
-[data-font-size="large"]     .text-base { font-size: 18px; }
-[data-font-size="xlarge"]    .text-base { font-size: 20px; }
+[data-font-size="standard"] .text-xs {
+  font-size: 13px;
+}
+[data-font-size="large"] .text-xs {
+  font-size: 14px;
+}
+[data-font-size="xlarge"] .text-xs {
+  font-size: 16px;
+}
+[data-font-size="standard"] .text-sm {
+  font-size: 15px;
+}
+[data-font-size="large"] .text-sm {
+  font-size: 16px;
+}
+[data-font-size="xlarge"] .text-sm {
+  font-size: 18px;
+}
+[data-font-size="standard"] .text-base {
+  font-size: 17px;
+}
+[data-font-size="large"] .text-base {
+  font-size: 18px;
+}
+[data-font-size="xlarge"] .text-base {
+  font-size: 20px;
+}
 
 /* input/textarea：保 16px 起跳防 macOS Safari 自动 zoom；small 不动 */
-[data-font-size="large"]  input,
-[data-font-size="large"]  textarea { font-size: 17px; }
+[data-font-size="large"] input,
+[data-font-size="large"] textarea {
+  font-size: 17px;
+}
 [data-font-size="xlarge"] input,
-[data-font-size="xlarge"] textarea { font-size: 19px; }
+[data-font-size="xlarge"] textarea {
+  font-size: 19px;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    长按确认删除按钮（HoldToConfirmDelete）
@@ -558,7 +617,8 @@
   cursor: not-allowed;
   opacity: 0.5;
 }
-.hold-confirm.is-active {
+/* 提升特异性到与 hover 同级：长按期间鼠标必悬停，hover 规则会盖掉 is-active 边色 */
+.hold-confirm.is-active.hold-confirm {
   color: var(--danger);
   border-color: var(--danger);
 }
@@ -639,12 +699,24 @@
 
 /* 走满触发左右震动（一次）：keyframes + 临时类（React 端不直接管） */
 @keyframes hold-confirm-shake {
-  0%   { transform: translateX(0); }
-  20%  { transform: translateX(-3px); }
-  40%  { transform: translateX(3px); }
-  60%  { transform: translateX(-2px); }
-  80%  { transform: translateX(1.5px); }
-  100% { transform: translateX(0); }
+  0% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-3px);
+  }
+  40% {
+    transform: translateX(3px);
+  }
+  60% {
+    transform: translateX(-2px);
+  }
+  80% {
+    transform: translateX(1.5px);
+  }
+  100% {
+    transform: translateX(0);
+  }
 }
 /* 用 :not(.is-done) 配合临时抖动：父组件在「走满那一刻→done」中间
    用内联动画类触发一次；这里只定义 keyframe。React 端通过
@@ -653,9 +725,17 @@
   animation: hold-confirm-shake 360ms ease-in-out;
 }
 @keyframes hold-confirm-pop {
-  0%   { transform: scale(0.6); opacity: 0; }
-  60%  { transform: scale(1.15); opacity: 1; }
-  100% { transform: scale(1); }
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -704,8 +784,9 @@
   cursor: not-allowed;
   opacity: 0.5;
 }
-/* 按下：轻微凹陷 */
-.save-btn.is-pressed {
+/* 按下：轻微凹陷（提升特异性到与 .save-btn:hover 同级，避免按压时 hover
+   规则覆盖底色/文字色——鼠标按压期间 :hover 必然为真）*/
+.save-btn.save-btn.is-pressed {
   background-color: var(--inset-bg);
   box-shadow: inset 0 2px 4px rgba(23, 32, 51, 0.2);
   color: var(--t1);
@@ -782,7 +863,10 @@
   overflow: hidden;
   cursor: pointer;
   isolation: isolate;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    filter 0.15s ease;
 }
 .exec-bar:hover:not(:disabled) {
   border-color: var(--edge-strong);
@@ -807,9 +891,17 @@
   width: 0%;
   /* 不继承圆角：由 .exec-bar 的 overflow:hidden + 圆角裁切，
      低液位时左端圆/右端直，更像「液体填充」而非孤立的圆球 */
-  background: linear-gradient(180deg, #34d399 0%, #22c55e 44%, #16a34a 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45),
-    inset 0 -3px 6px rgba(6, 78, 59, 0.28);
+  /* 渐变跟随 --success token：浅色 #16a34a、深色 #4ade80，--success
+     在 :root/.dark 各自声明，避免硬编码色值脱离主题 */
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--success) 70%, white) 0%,
+    var(--success) 60%,
+    color-mix(in srgb, var(--success) 70%, black) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -3px 6px color-mix(in srgb, var(--success) 35%, transparent);
   transition: width 0.65s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
   will-change: width;
@@ -823,9 +915,13 @@
     rgba(255, 255, 255, 0) 10px 26px
   );
   background-size: 200% 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+/* 仅在液面出现（has-liquid）时播放流光动画；空态/无进度免 GPU 占位 */
+.exec-bar.has-liquid .exec-bar__flow {
   animation: exec-flow 1.5s linear infinite;
   opacity: 0.6;
-  pointer-events: none;
 }
 @keyframes exec-flow {
   from {

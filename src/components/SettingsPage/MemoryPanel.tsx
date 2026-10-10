@@ -7,7 +7,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Brain, Download, Info, Pencil, RefreshCw, Star, Trash2, Upload } from "lucide-react";
+import {
+  Brain,
+  Download,
+  Info,
+  Pencil,
+  RefreshCw,
+  Star,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { formatCommandError } from "../../lib/errorHandler";
 import { IconButton } from "../../ui/IconButton";
 import { EmptyState } from "../EmptyState";
@@ -157,11 +166,14 @@ export function MemoryPanel() {
       });
       if (typeof path !== "string" || !path) return;
       setBusy(true);
-      const r = await invoke<{ inserted: number; merged: number; skipped: number }>(
-        "mem_import",
-        { path },
+      const r = await invoke<{
+        inserted: number;
+        merged: number;
+        skipped: number;
+      }>("mem_import", { path });
+      showIoMsg(
+        `导入完成：新增 ${r.inserted} 条、合并 ${r.merged} 条、跳过 ${r.skipped} 条`,
       );
-      showIoMsg(`导入完成：新增 ${r.inserted} 条、合并 ${r.merged} 条、跳过 ${r.skipped} 条`);
       await reload(debouncedQuery, kindFilter);
     } catch (e) {
       showIoMsg(`导入失败：${formatCommandError(e)}`);
@@ -243,7 +255,10 @@ export function MemoryPanel() {
             { ids },
           );
           showIoMsg(`已收下 ${r.inserted + r.merged} 条记忆入库`);
-          await Promise.all([reloadPending(), reload(debouncedQuery, kindFilter)]);
+          await Promise.all([
+            reloadPending(),
+            reload(debouncedQuery, kindFilter),
+          ]);
         } else {
           await invoke("mem_pending_reject", { ids });
           showIoMsg(`已忽略 ${ids.length} 条`);
@@ -322,293 +337,328 @@ export function MemoryPanel() {
     <>
       <MemoryTuningCard />
       <div className="nm-card p-5">
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-[var(--t4)]">记忆库</p>
-            {/* 统计行：总数/容量 + 向量覆盖（覆盖低 = 部分条目靠关键词模式检索） */}
-            <p className="mt-1 text-[11px] text-[var(--t5)]">
-              {stats
-                ? `${stats.total}/${stats.capacity} 条 · 向量覆盖 ${stats.withEmbedding}/${stats.total}`
-                : "加载中…"}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {/* 导出/导入：向量随 JSON 带出，导入走语义去重只增不删；
-                低风险的导出在左，导入紧随，刷新贴列表侧 */}
-            <IconButton
-              aria-label="导出记忆"
-              title="导出全部记忆到 JSON 文件（含语义向量）"
-              className="text-[var(--t5)] hover:text-[var(--t2)]"
-              onClick={exportMemories}
-              disabled={busy}
-            >
-              <Download size={13} aria-hidden />
-            </IconButton>
-            <IconButton
-              aria-label="导入记忆"
-              title="从 JSON 文件导入记忆（与现有记忆语义重复的会自动合并）"
-              className="text-[var(--t5)] hover:text-[var(--t2)]"
-              onClick={importMemories}
-              disabled={busy}
-            >
-              <Upload size={13} aria-hidden />
-            </IconButton>
-            <IconButton
-              aria-label="刷新记忆列表"
-              title="刷新记忆列表"
-              className="text-[var(--t5)] hover:text-[var(--t2)]"
-              onClick={() => reload(debouncedQuery, kindFilter)}
-              disabled={busy}
-            >
-              <RefreshCw size={13} aria-hidden />
-            </IconButton>
-          </div>
-        </div>
-        {ioMsg && <p className="text-[11px] text-[var(--t4)]">{ioMsg}</p>}
-        {/*  待确认队列（confirm 档抽取的条目在此过目） */}
-        {pending.length > 0 && (
-          <div className="rounded-xl nm-inset px-3 py-2">
-            <div className="flex items-center gap-2">
-              <p
-                className="min-w-0 flex-1 text-[11px] font-medium text-[var(--t3)]"
-              >
-                待确认记忆（{pending.length}）——来自自动抽取，收下后进入记忆库
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-[var(--t4)]">记忆库</p>
+              {/* 统计行：总数/容量 + 向量覆盖（覆盖低 = 部分条目靠关键词模式检索） */}
+              <p className="mt-1 text-[11px] text-[var(--t5)]">
+                {stats
+                  ? `${stats.total}/${stats.capacity} 条 · 向量覆盖 ${stats.withEmbedding}/${stats.total}`
+                  : "加载中…"}
               </p>
-              <button
-                type="button"
-                className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t2)]"
-                onClick={() => actOnPending(pending.map((p) => p.id), "approve")}
-                disabled={pendingBusy}
-              >
-                全部收下
-              </button>
-              <button
-                type="button"
-                className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t5)]"
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      `忽略全部 ${pending.length} 条待确认记忆？忽略后不会入库，无法恢复。`,
-                    )
-                  ) {
-                    actOnPending(pending.map((p) => p.id), "reject");
-                  }
-                }}
-                disabled={pendingBusy}
-              >
-                全部忽略
-              </button>
             </div>
-            <div className="mt-1.5 max-h-60 space-y-1 overflow-y-auto">
-              {pending.map((p) => (
-                <div key={p.id} className="flex items-center gap-2">
-                  <span className="nm-tag shrink-0 text-[10px]">
-                    {KIND_LABELS[p.kind] ?? p.kind}
+            <div className="flex shrink-0 items-center gap-1">
+              {/* 导出/导入：向量随 JSON 带出，导入走语义去重只增不删；
+                低风险的导出在左，导入紧随，刷新贴列表侧 */}
+              <IconButton
+                aria-label="导出记忆"
+                title="导出全部记忆到 JSON 文件（含语义向量）"
+                className="text-[var(--t5)] hover:text-[var(--t2)]"
+                onClick={exportMemories}
+                disabled={busy}
+              >
+                <Download size={13} aria-hidden />
+              </IconButton>
+              <IconButton
+                aria-label="导入记忆"
+                title="从 JSON 文件导入记忆（与现有记忆语义重复的会自动合并）"
+                className="text-[var(--t5)] hover:text-[var(--t2)]"
+                onClick={importMemories}
+                disabled={busy}
+              >
+                <Upload size={13} aria-hidden />
+              </IconButton>
+              <IconButton
+                aria-label="刷新记忆列表"
+                title="刷新记忆列表"
+                className="text-[var(--t5)] hover:text-[var(--t2)]"
+                onClick={() => reload(debouncedQuery, kindFilter)}
+                disabled={busy}
+              >
+                <RefreshCw size={13} aria-hidden />
+              </IconButton>
+            </div>
+          </div>
+          {ioMsg && <p className="text-[11px] text-[var(--t4)]">{ioMsg}</p>}
+          {/*  待确认队列（confirm 档抽取的条目在此过目） */}
+          {pending.length > 0 && (
+            <div className="rounded-xl nm-inset px-3 py-2">
+              <div className="flex items-center gap-2">
+                <p className="min-w-0 flex-1 text-[11px] font-medium text-[var(--t3)]">
+                  待确认记忆（{pending.length}）——来自自动抽取，收下后进入记忆库
+                </p>
+                <button
+                  type="button"
+                  className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t2)]"
+                  onClick={() =>
+                    actOnPending(
+                      pending.map((p) => p.id),
+                      "approve",
+                    )
+                  }
+                  disabled={pendingBusy}
+                >
+                  全部收下
+                </button>
+                <button
+                  type="button"
+                  className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t5)]"
+                  onClick={() => {
+                    if (
+                      window.confirm(
+                        `忽略全部 ${pending.length} 条待确认记忆？忽略后不会入库，无法恢复。`,
+                      )
+                    ) {
+                      actOnPending(
+                        pending.map((p) => p.id),
+                        "reject",
+                      );
+                    }
+                  }}
+                  disabled={pendingBusy}
+                >
+                  全部忽略
+                </button>
+              </div>
+              <div className="mt-1.5 max-h-60 space-y-1 overflow-y-auto">
+                {pending.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2">
+                    <span className="nm-tag shrink-0 text-[10px]">
+                      {KIND_LABELS[p.kind] ?? p.kind}
+                    </span>
+                    <span
+                      className="min-w-0 flex-1 truncate text-[11px] text-[var(--t2)]"
+                      title={p.content}
+                    >
+                      {p.content}
+                    </span>
+                    <span
+                      className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+                      title={`重要度 ${p.importance}/5`}
+                    >
+                      <Star
+                        size={10}
+                        aria-hidden
+                        className="inline-block align-[-1px]"
+                      />
+                      {p.importance}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={`收下：${p.content}`}
+                      title="收下入库"
+                      className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t2)]"
+                      onClick={() => actOnPending([p.id], "approve")}
+                      disabled={pendingBusy}
+                    >
+                      收下
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`忽略：${p.content}`}
+                      title="忽略并丢弃"
+                      className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t5)]"
+                      onClick={() => actOnPending([p.id], "reject")}
+                      disabled={pendingBusy}
+                    >
+                      忽略
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* 嵌入引擎降级横幅：界面照常可用（关键词检索），但语义相似度缺位 */}
+          {stats && !stats.embedOk && (
+            <p
+              className="flex items-start gap-1.5 text-[11px] text-[var(--t3)]"
+              role="note"
+              aria-label="嵌入引擎状态"
+            >
+              <Info
+                size={13}
+                className="mt-0.5 shrink-0 text-[var(--brand)]"
+                aria-hidden
+              />
+              <span>
+                语义嵌入不可用，已降级为关键词检索
+                {stats.embedError ? `：${stats.embedError}` : ""}
+              </span>
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索记忆…"
+              aria-label="搜索记忆"
+              className="nm-inset min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-xs text-[var(--t3)] outline-none"
+            />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {KIND_FILTERS.map((k) => (
+              <button
+                key={k}
+                type="button"
+                className={`rounded-full px-2.5 py-1 text-[10px] text-[var(--t3)] ${
+                  kindFilter === k ? "nm-inset" : "nm-outset"
+                }`}
+                onClick={() => setKindFilter(k)}
+              >
+                {k === "all" ? "全部" : KIND_LABELS[k]}
+              </button>
+            ))}
+          </div>
+          {loadError && (
+            <p className="text-[11px] text-[var(--danger)]">{loadError}</p>
+          )}
+          {rowError && (
+            <p className="text-[11px] text-[var(--danger)]">{rowError}</p>
+          )}
+          {items !== null && items.length === 0 && (
+            <EmptyState
+              icon={<Brain size={18} aria-hidden />}
+              title="还没有匹配的记忆"
+              description="在聊天里让机器人「记住…」，它会把偏好和事实存进这里；记忆整理也会定期归纳。"
+            />
+          )}
+          <div className="space-y-1">
+            {(items ?? []).map((m) =>
+              editingId === m.id ? (
+                <div key={m.id} className="rounded-xl nm-inset px-3 py-2">
+                  <textarea
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    rows={3}
+                    aria-label="编辑记忆内容"
+                    className="nm-inset w-full rounded-lg px-2.5 py-1.5 text-xs text-[var(--t3)] outline-none"
+                  />
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--t3)]">
+                      重要度
+                      <select
+                        value={editImportance}
+                        onChange={(e) =>
+                          setEditImportance(Number(e.target.value))
+                        }
+                        aria-label="记忆重要度"
+                        className="nm-inset rounded-lg px-1.5 py-1 text-[11px] text-[var(--t3)] outline-none"
+                      >
+                        {[1, 2, 3, 4, 5].map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--t3)]">
+                      类型
+                      <select
+                        value={editKind}
+                        onChange={(e) => setEditKind(e.target.value)}
+                        aria-label="记忆类型"
+                        className="nm-inset rounded-lg px-1.5 py-1 text-[11px] text-[var(--t3)] outline-none"
+                      >
+                        {Object.entries(KIND_LABELS).map(([k, label]) => (
+                          <option key={k} value={k}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <span className="flex-1" />
+                    <button
+                      type="button"
+                      className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t2)]"
+                      onClick={saveEdit}
+                      disabled={busy}
+                    >
+                      保存
+                    </button>
+                    <button
+                      type="button"
+                      className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t5)]"
+                      onClick={() => setEditingId(null)}
+                      disabled={busy}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  key={m.id}
+                  className="flex items-center gap-2 rounded-xl px-3 py-2 nm-outset"
+                >
+                  <span
+                    className={`nm-tag shrink-0 text-[10px]${m.hasEmbedding ? "" : " opacity-50"}`}
+                    title={
+                      m.hasEmbedding
+                        ? "语义向量可用"
+                        : "无向量（关键词模式检索）"
+                    }
+                  >
+                    {KIND_LABELS[m.kind] ?? m.kind}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--t2)]" title={p.content}>
-                    {p.content}
+                  <span
+                    className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]"
+                    title={m.content}
+                  >
+                    {m.content}
                   </span>
                   <span
                     className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
-                    title={`重要度 ${p.importance}/5`}
+                    title={`重要度 ${m.importance}/5`}
                   >
-                    <Star size={10} aria-hidden className="inline-block align-[-1px]" />
-                    {p.importance}
+                    <Star
+                      size={10}
+                      aria-hidden
+                      className="inline-block align-[-1px]"
+                    />
+                    {m.importance}
                   </span>
-                  <button
-                    type="button"
-                    aria-label={`收下：${p.content}`}
-                    title="收下入库"
-                    className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t2)]"
-                    onClick={() => actOnPending([p.id], "approve")}
-                    disabled={pendingBusy}
+                  <span className="nm-tag shrink-0 text-[10px]">
+                    {SOURCE_LABELS[m.source] ?? m.source}
+                  </span>
+                  {/* 被想起次数：行内直显（= 聊天注入命中的累计次数；面板搜索不计入） */}
+                  {m.accessCount > 0 && (
+                    <span
+                      className="shrink-0 text-[10px] text-[var(--t6)]"
+                      title="被聊天注入命中的次数"
+                    >
+                      想起 {m.accessCount}
+                    </span>
+                  )}
+                  <span
+                    className="shrink-0 text-[10px] text-[var(--t6)]"
+                    title={`更新于 ${fmtTime(m.updatedAt)}`}
                   >
-                    收下
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`忽略：${p.content}`}
-                    title="忽略并丢弃"
-                    className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t5)]"
-                    onClick={() => actOnPending([p.id], "reject")}
-                    disabled={pendingBusy}
+                    {fmtTime(m.updatedAt)}
+                  </span>
+                  <IconButton
+                    aria-label="编辑记忆"
+                    title="编辑记忆"
+                    className="shrink-0 text-[var(--t5)] hover:text-[var(--t2)]"
+                    onClick={() => startEdit(m)}
+                    disabled={busy}
                   >
-                    忽略
-                  </button>
+                    <Pencil size={13} aria-hidden />
+                  </IconButton>
+                  <IconButton
+                    aria-label="删除记忆"
+                    title="删除记忆"
+                    className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
+                    onClick={() => removeItem(m)}
+                    disabled={busy}
+                  >
+                    <Trash2 size={13} aria-hidden />
+                  </IconButton>
                 </div>
-              ))}
-            </div>
+              ),
+            )}
           </div>
-        )}
-        {/* 嵌入引擎降级横幅：界面照常可用（关键词检索），但语义相似度缺位 */}
-        {stats && !stats.embedOk && (
-          <p
-            className="flex items-start gap-1.5 text-[11px] text-[var(--t3)]"
-            role="note"
-            aria-label="嵌入引擎状态"
-          >
-            <Info size={13} className="mt-0.5 shrink-0 text-[var(--brand)]" aria-hidden />
-            <span>
-              语义嵌入不可用，已降级为关键词检索{stats.embedError ? `：${stats.embedError}` : ""}
-            </span>
-          </p>
-        )}
-        <div className="flex items-center gap-2">
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索记忆…"
-            aria-label="搜索记忆"
-            className="nm-inset min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-xs text-[var(--t3)] outline-none"
-          />
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {KIND_FILTERS.map((k) => (
-            <button
-              key={k}
-              type="button"
-              className={`rounded-full px-2.5 py-1 text-[10px] text-[var(--t3)] ${
-                kindFilter === k ? "nm-inset" : "nm-outset"
-              }`}
-              onClick={() => setKindFilter(k)}
-            >
-              {k === "all" ? "全部" : KIND_LABELS[k]}
-            </button>
-          ))}
-        </div>
-        {loadError && <p className="text-[11px] text-[var(--danger)]">{loadError}</p>}
-        {rowError && <p className="text-[11px] text-[var(--danger)]">{rowError}</p>}
-        {items !== null && items.length === 0 && (
-          <EmptyState
-            icon={<Brain size={18} aria-hidden />}
-            title="还没有匹配的记忆"
-            description="在聊天里让机器人「记住…」，它会把偏好和事实存进这里；记忆整理也会定期归纳。"
-          />
-        )}
-        <div className="space-y-1">
-          {(items ?? []).map((m) =>
-            editingId === m.id ? (
-              <div key={m.id} className="rounded-xl nm-inset px-3 py-2">
-                <textarea
-                  value={editContent}
-                  onChange={(e) => setEditContent(e.target.value)}
-                  rows={3}
-                  aria-label="编辑记忆内容"
-                  className="nm-inset w-full rounded-lg px-2.5 py-1.5 text-xs text-[var(--t3)] outline-none"
-                />
-                <div className="mt-1.5 flex items-center gap-2">
-                  <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--t3)]">
-                    重要度
-                    <select
-                      value={editImportance}
-                      onChange={(e) => setEditImportance(Number(e.target.value))}
-                      aria-label="记忆重要度"
-                      className="nm-inset rounded-lg px-1.5 py-1 text-[11px] text-[var(--t3)] outline-none"
-                    >
-                      {[1, 2, 3, 4, 5].map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--t3)]">
-                    类型
-                    <select
-                      value={editKind}
-                      onChange={(e) => setEditKind(e.target.value)}
-                      aria-label="记忆类型"
-                      className="nm-inset rounded-lg px-1.5 py-1 text-[11px] text-[var(--t3)] outline-none"
-                    >
-                      {Object.entries(KIND_LABELS).map(([k, label]) => (
-                        <option key={k} value={k}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <span className="flex-1" />
-                  <button
-                    type="button"
-                    className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t2)]"
-                    onClick={saveEdit}
-                    disabled={busy}
-                  >
-                    保存
-                  </button>
-                  <button
-                    type="button"
-                    className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t5)]"
-                    onClick={() => setEditingId(null)}
-                    disabled={busy}
-                  >
-                    取消
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div
-                key={m.id}
-                className="flex items-center gap-2 rounded-xl px-3 py-2 nm-outset"
-              >
-                <span
-                  className={`nm-tag shrink-0 text-[10px]${m.hasEmbedding ? "" : " opacity-50"}`}
-                  title={m.hasEmbedding ? "语义向量可用" : "无向量（关键词模式检索）"}
-                >
-                  {KIND_LABELS[m.kind] ?? m.kind}
-                </span>
-                <span
-                  className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]"
-                  title={m.content}
-                >
-                  {m.content}
-                </span>
-                <span
-                  className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
-                  title={`重要度 ${m.importance}/5`}
-                >
-                  <Star size={10} aria-hidden className="inline-block align-[-1px]" />
-                  {m.importance}
-                </span>
-                <span className="nm-tag shrink-0 text-[10px]">
-                  {SOURCE_LABELS[m.source] ?? m.source}
-                </span>
-                {/* 被想起次数：行内直显（= 聊天注入命中的累计次数；面板搜索不计入） */}
-                {m.accessCount > 0 && (
-                  <span className="shrink-0 text-[10px] text-[var(--t6)]" title="被聊天注入命中的次数">
-                    想起 {m.accessCount}
-                  </span>
-                )}
-                <span
-                  className="shrink-0 text-[10px] text-[var(--t6)]"
-                  title={`更新于 ${fmtTime(m.updatedAt)}`}
-                >
-                  {fmtTime(m.updatedAt)}
-                </span>
-                <IconButton
-                  aria-label="编辑记忆"
-                  title="编辑记忆"
-                  className="shrink-0 text-[var(--t5)] hover:text-[var(--t2)]"
-                  onClick={() => startEdit(m)}
-                  disabled={busy}
-                >
-                  <Pencil size={13} aria-hidden />
-                </IconButton>
-                <IconButton
-                  aria-label="删除记忆"
-                  title="删除记忆"
-                  className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
-                  onClick={() => removeItem(m)}
-                  disabled={busy}
-                >
-                  <Trash2 size={13} aria-hidden />
-                </IconButton>
-              </div>
-            ),
-          )}
-        </div>
-      </div>
       </div>
     </>
   );
@@ -626,19 +676,37 @@ interface MemoryTuningField {
 
 /** 8 个可调参数（默认值与后端 MemoryTuning::default / clamped 区间对齐； *  留空 = 该字段回落默认——serde 容器 default 兜底，服务端 clamped 二次钳制） */
 const MEMORY_TUNING_FIELDS: MemoryTuningField[] = [
-  { key: "injectionBudgetChars", label: "注入字符预算", def: 4000, step: 100, int: true },
+  {
+    key: "injectionBudgetChars",
+    label: "注入字符预算",
+    def: 4000,
+    step: 100,
+    int: true,
+  },
   { key: "topN", label: "相关记忆条数", def: 5, step: 1, int: true },
   { key: "recentN", label: "近期摘要条数", def: 3, step: 1, int: true },
   { key: "lessonN", label: "经验教训条数", def: 3, step: 1, int: true },
   { key: "capacity", label: "库容量上限", def: 500, step: 10, int: true },
   { key: "decayDays", label: "新近衰减天数", def: 30, step: 1, int: false },
-  { key: "dedupMergeCosine", label: "去重合并阈值", def: 0.92, step: 0.01, int: false },
-  { key: "dedupHintCosine", label: "冲突提示阈值", def: 0.75, step: 0.01, int: false },
+  {
+    key: "dedupMergeCosine",
+    label: "去重合并阈值",
+    def: 0.92,
+    step: 0.01,
+    int: false,
+  },
+  {
+    key: "dedupHintCosine",
+    label: "冲突提示阈值",
+    def: 0.75,
+    step: 0.01,
+    int: false,
+  },
 ];
 
 /** 表单字符串 → 后端 payload：只带非空合法字段；全空 = null（回落默认）。 */
 function parseMemoryTuningInput(
-  raw: Record<string, string>
+  raw: Record<string, string>,
 ): Record<string, number> | null {
   const out: Record<string, number> = {};
   for (const f of MEMORY_TUNING_FIELDS) {
@@ -653,8 +721,20 @@ function parseMemoryTuningInput(
 /** 检索参数卡：读 memory_tuning_get / 存 memory_tuning_set（None = 回默认）。 */
 function MemoryTuningCard() {
   const [tuning, setTuning] = useState<Record<string, string>>({});
+  /** GET 成功前禁存：空表 Save 会把 memoryTuning 块抹成默认还误报「已保存」 */
+  const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  /** 同帧双击闸（同 busyRef 先例）：state 要等重渲染提交，同帧两次点击都过不了 disabled 检查 */
+  const saveBusyRef = useRef(false);
+  /** 提示自动消退计时器：重设前清旧（防连续保存时旧计时器提前清掉新提示），卸载清理 */
+  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (msgTimer.current) clearTimeout(msgTimer.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     void (async () => {
@@ -665,13 +745,18 @@ function MemoryTuningCard() {
           next[f.key] = t?.[f.key] != null ? String(t[f.key]) : "";
         }
         setTuning(next);
-      } catch {
-        // 读失败保持空表 = 全默认（后端同口径），不打扰面板
+        setLoaded(true);
+      } catch (e) {
+        // 读失败保持空表（后端同口径默认），但保存必须禁用 + 提示可见：
+        // 纯静默会让用户对着空表点保存，抹掉全部已调参数
+        setMsg(`检索参数读取失败：${formatCommandError(e)}`);
       }
     })();
   }, []);
 
   const save = async () => {
+    if (saveBusyRef.current) return;
+    saveBusyRef.current = true;
     setBusy(true);
     setMsg("");
     try {
@@ -681,8 +766,10 @@ function MemoryTuningCard() {
     } catch (e) {
       setMsg(formatCommandError(e));
     } finally {
+      if (msgTimer.current) clearTimeout(msgTimer.current);
+      msgTimer.current = setTimeout(() => setMsg(""), 4000);
+      saveBusyRef.current = false;
       setBusy(false);
-      setTimeout(() => setMsg(""), 4000);
     }
   };
 
@@ -701,6 +788,7 @@ function MemoryTuningCard() {
               placeholder={`默认 ${f.def}`}
               inputMode={f.int ? "numeric" : "decimal"}
               step={f.step}
+              disabled={!loaded}
               onChange={(e) =>
                 setTuning((t) => ({ ...t, [f.key]: e.target.value }))
               }
@@ -714,7 +802,7 @@ function MemoryTuningCard() {
         <button
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
           onClick={() => void save()}
-          disabled={busy}
+          disabled={busy || !loaded}
           data-testid="btn-tuning-save"
         >
           保存检索参数
