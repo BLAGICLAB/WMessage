@@ -95,12 +95,12 @@ export interface PlanSeg {
 }
 
 export function segsForWeek(
-  planStart: string,
-  planEnd: string,
+  planStart: string | null | undefined,
+  planEnd: string | null | undefined,
   weekStart: Date,
 ): PlanSeg[] {
-  const from = parsePlanDT(planStart);
-  const to = parsePlanDT(planEnd);
+  const from = planStart ? parsePlanDT(planStart) : null;
+  const to = planEnd ? parsePlanDT(planEnd) : null;
   if (!from || !to) return [];
   const startMs = from.day.getTime() + from.min * 60_000;
   const endMs = to.day.getTime() + to.min * 60_000;

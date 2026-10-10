@@ -123,6 +123,12 @@ describe("segsForWeek 跨日分段与窗口裁剪", () => {
   it("planEnd <= planStart 的脏数据返空（不渲染）", () => {
     expect(segsForWeek("2026-10-07T11:00", "2026-10-07T10:00", MON)).toEqual([]);
   });
+
+  it("显式 null 的计划字段（拖回池/清除计划写入）返空，不炸", () => {
+    expect(segsForWeek(null, null, MON)).toEqual([]);
+    expect(segsForWeek(null, "2026-10-07T10:00", MON)).toEqual([]);
+    expect(segsForWeek("2026-10-07T10:00", undefined, MON)).toEqual([]);
+  });
 });
 
 describe("layoutLanes 重叠分栏", () => {

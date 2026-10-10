@@ -100,6 +100,21 @@ describe("TaskTimelinePage", () => {
     expect(screen.getByText(/没有未完成的任务/)).toBeInTheDocument();
   });
 
+  it("显式 null 计划字段（拖回池/清除计划写入）不上网格、不炸渲染", () => {
+    render(
+      <TaskTimelinePage
+        tasks={[
+          mk({ id: "n1", title: "已清除计划的任务", planStart: null, planEnd: null }),
+        ]}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    // 池里照常可见（未完成），网格无块（只有池 + 面板外共 1 处文本）
+    expect(screen.getAllByText("已清除计划的任务")).toHaveLength(1);
+  });
+
   it("onNewTask：页头新建按钮透传回调", async () => {
     const user = userEvent.setup();
     let called = 0;

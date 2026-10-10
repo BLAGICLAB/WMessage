@@ -12,10 +12,11 @@ const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日
 const HOURS = Array.from({ length: 11 }, (_, i) => 8 + i); // 8..18 刻度
 const GRID_COLS = "52px repeat(7, 1fr)";
 
-/** 已排期任务集：完成/软删/归档不上网格（完成走详情面板，软删/归档进回收站/归档页） */
+/** 已排期任务集：完成/软删/归档不上网格（完成走详情面板，软删/归档进回收站/归档页）。
+ *  plan 字段用真值判断——「拖回池/清除计划」写入的显式 null 不得进网格。 */
 function plannedTasks(tasks: Task[]): Task[] {
   return tasks.filter(
-    (t) => t.planStart !== undefined && t.planEnd !== undefined && t.column !== "done" && !t.deletedAt && !t.archived,
+    (t) => !!t.planStart && !!t.planEnd && t.column !== "done" && !t.deletedAt && !t.archived,
   );
 }
 
@@ -130,7 +131,7 @@ export function WeekGrid({
           const weekend = i >= 5;
           const segs = layoutLanes(
             planned.flatMap((t) =>
-              segsForWeek(t.planStart!, t.planEnd!, weekStart)
+              segsForWeek(t.planStart, t.planEnd, weekStart)
                 .filter((s) => s.dayIdx === i)
                 .map((s) => ({ ...s, task: t })),
             ),
