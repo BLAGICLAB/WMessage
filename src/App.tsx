@@ -251,7 +251,7 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [view, setView] = useState<RailView | "settings">("board");
+  const [view, setView] = useState<RailView | "settings">("home");
   // main 滚动容器 ref：首页吸顶头部的滚动进度源（useScroll container）
   const mainRef = useRef<HTMLElement>(null);
   // Agent 通知中心待处理数（导航角标；notifications-changed 广播驱动刷新）
@@ -854,7 +854,7 @@ function App() {
   };
 
   // 记录进入设置前的视图（ 设置壳）：「返回」跳回进入前的界面
-  const lastViewRef = useRef<RailView>("board");
+  const lastViewRef = useRef<RailView>("home");
   useEffect(() => {
     if (view !== "settings") lastViewRef.current = view;
   }, [view]);

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { STORAGE_KEY } from "./storage";
@@ -67,13 +67,16 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-  it("初始渲染：看板视图 + 注入种子任务（3 个 seed）", async () => {
+  it("初始渲染：首页视图 + 注入种子任务（3 个 seed）", async () => {
     render(<App />);
     // 等待 db_load → upsertTasks(SEED) → setTasks
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
     });
-    // 任务页 = 周时间网格：列头 + 时刻刻度 + 任务池（批 2 只读渲染）
+    // 启动默认定位首页
+    expect(screen.getByTestId("home-page")).toBeInTheDocument();
+    // 任务页 = 周时间网格：列头 + 时刻刻度 + 任务池（批 2 只读渲染）——点导航切换过去
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
     expect(screen.getByText("周一")).toBeInTheDocument();
     expect(screen.getByText("08:00")).toBeInTheDocument();
     expect(screen.getByLabelText("任务池")).toBeInTheDocument();
@@ -94,11 +97,11 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     });
-    await user.click(screen.getByText("归档"));
+    await user.click(screen.getByRole("button", { name: "归档" }));
     // 归档页：暂无归档内容（seed 任务都没 archived 标记）
     expect(await screen.findByText("暂无归档内容")).toBeInTheDocument();
-    // 任务页骨架不再显示
-    expect(screen.queryByLabelText("任务池")).not.toBeInTheDocument();
+    // 首页骨架不再显示
+    expect(screen.queryByTestId("home-page")).not.toBeInTheDocument();
   });
 
   it("点击「工作区」：视图切到 WorkspacePage（显示「+ 新建工作区」）", async () => {
@@ -165,6 +168,8 @@ describe("App", () => {
     expect(
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_delete"),
     ).toHaveLength(0);
+    // 启动默认在首页：切到任务页再验证空池
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
     // 任务页仍渲染（内存空数组）：网格骨架 + 空池，种子标题不出现
     expect(screen.getByLabelText("任务池")).toBeInTheDocument();
     expect(
@@ -295,6 +300,8 @@ describe("App", () => {
       return defaultInvokeImpl(cmd);
     });
     render(<App />);
+    // 启动默认在首页：切到任务页再操作池块
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
     // 池块点击纯拖拽（防误触）→ 编辑走块上 ✎ 钮
     await user.click(await screen.findByTitle("编辑任务"));
     await user.click(await screen.findByTitle("删除任务"));
