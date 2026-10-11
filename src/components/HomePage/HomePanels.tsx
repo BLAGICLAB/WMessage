@@ -18,7 +18,6 @@ function Panel({
   onMore,
   children,
   footer,
-  className,
 }: {
   dot: string;
   title: string;
@@ -26,11 +25,9 @@ function Panel({
   onMore: () => void;
   children: React.ReactNode;
   footer: React.ReactNode;
-  /** 不随行拉伸等布局特例（如通知卡半高） */
-  className?: string;
 }) {
   return (
-    <section className={`nm-card flex flex-col p-4 ${className ?? ""}`}>
+    <section className="nm-card flex flex-col p-4">
       <div className="mb-3 flex items-center gap-2">
         <span
           aria-hidden
@@ -185,7 +182,6 @@ export function NotifyPanel({
       title="通知"
       moreLabel="通知中心"
       onMore={onMore}
-      className="lg:self-start"
       footer={
         notifError ? (
           <span className="text-[var(--danger)]">{notifError}</span>
