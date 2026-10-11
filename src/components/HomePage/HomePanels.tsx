@@ -1,43 +1,14 @@
-// 首页三列面板：即将到期（任务）/ 机器人动态（执行痕迹）/ 通知中心。
-// 行为约定：到期/动态行点击跳对应模块，通知「去处理」跳通知中心——
+// 首页面板：机器人动态（执行痕迹）/ 通知中心。
+// 行为约定：动态行点击跳对应模块，通知「去处理」跳通知中心——
 // 首页只做聚合与跳转，完整操作（验收/回复/提案裁决）留在各自模块页。
 
-import type { Task } from "../../types";
 import type { TraceRow } from "../../lib/trace";
 import type { NotificationItem } from "../../lib/notifications";
-import { dueTimeOf, dueSoonTasks } from "./homeData";
 import { relativeTime } from "../../format";
-import { planColorVar } from "../TaskTimeline/week";
 
-const WEEKDAY = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-
-function fmtHM(min: number): string {
-  return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
-}
-
-/** 截止角标文案：逾期 n 天（红）/ 今天 / 明天 / 周X（7 天窗内） */
-function dueChipOf(t: Task, now: Date): { text: string; danger: boolean } {
-  const due = dueTimeOf(t)!;
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-  const dayOffset = Math.floor((due - startOfToday.getTime()) / 86_400_000);
-  const showTime = (t.due?.length ?? 0) > 10;
-  const hm = (ms: number) => {
-    const d = new Date(ms);
-    return fmtHM(d.getHours() * 60 + d.getMinutes());
-  };
-  if (due < startOfToday.getTime()) {
-    const overdueDays = Math.max(1, -dayOffset);
-    return { text: `逾期 ${overdueDays} 天`, danger: true };
-  }
-  if (dayOffset === 0)
-    return { text: `今天${showTime ? ` ${hm(due)}` : ""}`, danger: false };
-  if (dayOffset === 1)
-    return { text: `明天${showTime ? ` ${hm(due)}` : ""}`, danger: false };
-  return {
-    text: `${WEEKDAY[new Date(due).getDay()]}${showTime ? ` ${hm(due)}` : ""}`,
-    danger: false,
-  };
+function fmtDur(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 function Panel({
@@ -120,66 +91,6 @@ const ORIGIN_LABEL: Record<string, string> = {
   batch: "批量",
   workflow: "工作流",
 };
-
-function fmtDur(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
-export function DuePanel({
-  tasks,
-  now,
-  onMore,
-  onOpenTask,
-}: {
-  tasks: Task[];
-  now: Date;
-  onMore: () => void;
-  onOpenTask: (t: Task) => void;
-}) {
-  const due = dueSoonTasks(tasks, now);
-  const rows = due.slice(0, 5);
-  return (
-    <Panel
-      dot="var(--plan-blue)"
-      title="即将到期"
-      moreLabel="全部任务"
-      onMore={onMore}
-      footer={`截止日=今天的任务会自动进「今日」`}
-    >
-      {rows.length === 0 ? (
-        <p className="py-4 text-center text-[13px] text-[var(--t5)]">
-          未来 7 天没有要撞线的任务。
-        </p>
-      ) : (
-        rows.map((t) => {
-          const chip = dueChipOf(t, now);
-          return (
-            <Row key={t.id} onClick={() => onOpenTask(t)}>
-              <span
-                aria-hidden
-                className="h-[7px] w-[7px] shrink-0 rounded-full"
-                style={{ background: planColorVar(t.tags) }}
-              />
-              <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--t2)]">
-                {t.title}
-              </span>
-              <span
-                className={`num shrink-0 rounded-md border px-1.5 py-0.5 text-[11px] ${
-                  chip.danger
-                    ? "border-[color-mix(in_srgb,var(--danger)_40%,transparent)] font-semibold text-[var(--danger)]"
-                    : "border-[var(--edge)] text-[var(--t4)]"
-                }`}
-              >
-                {chip.text}
-              </span>
-            </Row>
-          );
-        })
-      )}
-    </Panel>
-  );
-}
 
 export function BotPanel({
   traces,

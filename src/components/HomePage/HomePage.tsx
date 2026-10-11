@@ -27,9 +27,10 @@ import {
 } from "./homeData";
 import { HomeHeader } from "./HomeHeader";
 import { BingCard } from "./BingCard";
+import { DueTicker } from "./DueTicker";
 import { WeeklyChart } from "./WeeklyChart";
 import { TrendCharts } from "./TrendCharts";
-import { BotPanel, DuePanel, NotifyPanel } from "./HomePanels";
+import { BotPanel, NotifyPanel } from "./HomePanels";
 
 const REFRESH_MS = 30_000;
 
@@ -130,23 +131,27 @@ export function HomePage({
       />
 
       <div className="mt-4 flex flex-col gap-3.5">
-        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)]">
-          <BingCard />
-          <WeeklyChart data={week} />
-          <NotifyPanel
-            notifications={notifications}
-            notifError={notifError}
-            onMore={() => onNavigate("notifications")}
-          />
+        {/* 左列 = 每日一图 + 到期横条（填满与周图列的缺口）；周图跨两行定行高 */}
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)] lg:grid-rows-[auto_minmax(44px,auto)]">
+          <div className="lg:col-start-1 lg:row-start-1">
+            <BingCard />
+          </div>
+          <div className="lg:col-start-1 lg:row-start-2">
+            <DueTicker tasks={tasks} now={now} onOpenTask={onOpenTask} />
+          </div>
+          <div className="lg:col-start-2 lg:row-start-1 lg:row-span-2">
+            <WeeklyChart data={week} />
+          </div>
+          <div className="lg:col-start-3 lg:row-start-1 lg:self-start">
+            <NotifyPanel
+              notifications={notifications}
+              notifError={notifError}
+              onMore={() => onNavigate("notifications")}
+            />
+          </div>
         </div>
         <TrendCharts data={trend} />
-        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
-          <DuePanel
-            tasks={tasks}
-            now={now}
-            onMore={() => onNavigate("board")}
-            onOpenTask={onOpenTask}
-          />
+        <div className="grid grid-cols-1">
           <BotPanel
             traces={traces}
             traceError={traceError}

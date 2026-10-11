@@ -62,6 +62,36 @@ export function dueTimeOf(t: Task): number | null {
   return new Date(y, m - 1, d, hh, mm).getTime();
 }
 
+const WEEKDAY_SHORT = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+/** 截止角标文案：逾期 n 天（红）/ 今天 / 明天 / 周X（7 天窗内） */
+export function dueChipOf(
+  t: Task,
+  now: Date,
+): { text: string; danger: boolean } {
+  const due = dueTimeOf(t)!;
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const dayOffset = Math.floor((due - startOfToday.getTime()) / 86_400_000);
+  const showTime = (t.due?.length ?? 0) > 10;
+  const hm = (ms: number) => {
+    const d = new Date(ms);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  if (due < startOfToday.getTime()) {
+    const overdueDays = Math.max(1, -dayOffset);
+    return { text: `逾期 ${overdueDays} 天`, danger: true };
+  }
+  if (dayOffset === 0)
+    return { text: `今天${showTime ? ` ${hm(due)}` : ""}`, danger: false };
+  if (dayOffset === 1)
+    return { text: `明天${showTime ? ` ${hm(due)}` : ""}`, danger: false };
+  return {
+    text: `${WEEKDAY_SHORT[new Date(due).getDay()]}${showTime ? ` ${hm(due)}` : ""}`,
+    danger: false,
+  };
+}
+
 /** 即将到期的时间窗（含逾期）：7 天内会撞线的事 */
 const DUE_HORIZON_DAYS = 7;
 

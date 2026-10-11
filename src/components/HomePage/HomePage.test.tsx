@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HomePage } from "./HomePage";
 import type { Task } from "../../types";
@@ -196,12 +196,29 @@ describe("HomePage 渲染", () => {
     ).toHaveLength(14);
   });
 
-  it("即将到期：逾期在前（OCR 分诊复核 逾期 1 天），已完成任务不出现", () => {
+  it("即将到期横条：逾期任务在前（1/2 计数），未轮到的任务不渲染", () => {
     renderHome();
+    expect(screen.getByText("即将到期")).toBeInTheDocument();
     expect(screen.getByText("OCR 分诊复核")).toBeInTheDocument();
     expect(screen.getByText("逾期 1 天")).toBeInTheDocument();
-    expect(screen.getByText("提交验收报告")).toBeInTheDocument();
-    expect(screen.queryByText("done-old")).not.toBeInTheDocument();
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    expect(screen.queryByText("提交验收报告")).not.toBeInTheDocument();
+  });
+
+  it("即将到期横条：4s 轮播到下一条（悬停暂停逻辑见组件）", async () => {
+    vi.useFakeTimers();
+    try {
+      renderHome();
+      expect(screen.getByText("OCR 分诊复核")).toBeInTheDocument();
+      // act 包裹：interval 里的 setIdx 必须在 act 内 flush 才落 DOM
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000);
+      });
+      expect(screen.getByText("提交验收报告")).toBeInTheDocument();
+      expect(screen.getByText("今天 18:00")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("机器人动态：执行中排最前，失败行也在", async () => {

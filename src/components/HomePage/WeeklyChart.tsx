@@ -16,7 +16,8 @@ import {
 import type { WeekBucket } from "./homeData";
 
 const FALLBACK_WIDTH = 480;
-const CHART_HEIGHT = 170;
+/** 卡随左列（图+横条）跨行总高拉伸，柱区加高填满避免卡内空洞 */
+const CHART_HEIGHT = 210;
 
 function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   const ref = useRef<HTMLDivElement>(null);
@@ -69,7 +70,7 @@ export function WeeklyChart({ data }: { data: WeekBucket[] }) {
 
   return (
     <section
-      className="nm-card flex flex-col p-4"
+      className="nm-card flex h-full flex-col p-4"
       aria-label="本周计划与完成"
     >
       <div className="flex items-baseline justify-between">
