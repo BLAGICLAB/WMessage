@@ -225,16 +225,8 @@ export function TaskDetailPanel({
   return (
     <aside
       aria-label="任务详情"
-      className="glass detail-panel relative z-10 w-[292px] shrink-0 overflow-y-auto p-4"
+      className="glass detail-panel relative z-10 w-[292px] shrink-0 overflow-y-auto px-4 pt-6 pb-4"
     >
-      <button
-        type="button"
-        aria-label="关闭详情"
-        onClick={onClose}
-        className="nm-icon-btn absolute top-3 right-3 h-6 w-6 text-xs"
-      >
-        ✕
-      </button>
       <div className="flex items-start gap-2">
         <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
         <input
@@ -254,6 +246,14 @@ export function TaskDetailPanel({
           }}
           aria-label="任务标题"
         />
+        <button
+          type="button"
+          aria-label="关闭详情"
+          onClick={onClose}
+          className="nm-icon-btn mt-0.5 h-6 w-6 shrink-0 text-xs"
+        >
+          ✕
+        </button>
       </div>
       <p className="mt-1 pl-8 text-[10px] text-[var(--t5)]">
         {task.column === "done" && task.completedAt
