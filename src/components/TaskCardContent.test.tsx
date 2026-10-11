@@ -189,6 +189,43 @@ describe("TaskCardContent 完成时间显示（与主窗口一致）", () => {
   });
 });
 
+// 状态行三态与逾期红标（对齐任务页详情面板 / 首页到期横条口径）
+describe("TaskCardContent 状态行三态与逾期红标", () => {
+  it("botAssigned 未完成显示「机器人执行中…」（无截止也显示）", () => {
+    render(<TaskCardContent task={{ ...task, botAssigned: true }} />);
+    expect(screen.getByText("机器人执行中…")).toBeInTheDocument();
+  });
+
+  it("botAssigned 优先级低于完成态：完成卡仍显示完成时间", () => {
+    render(
+      <TaskCardContent
+        task={{
+          ...task,
+          botAssigned: true,
+          column: "done",
+          completedAt: new Date(2026, 8, 1, 18, 30).getTime(),
+        }}
+      />,
+    );
+    expect(screen.getByText("完成 2026-09-01 18:30")).toBeInTheDocument();
+    expect(screen.queryByText("机器人执行中…")).toBeNull();
+  });
+
+  it("dueOverdue 时截止徽标标红；不传保持默认色", () => {
+    const overdue: Task = { ...task, due: "2020-01-01T09:00" };
+    const { container, rerender } = render(
+      <TaskCardContent task={overdue} dueOverdue />,
+    );
+    const chip = screen.getByText("截止 2020-01-01 09:00");
+    expect(chip.className).toContain("text-[var(--danger)]");
+    rerender(<TaskCardContent task={overdue} />);
+    expect(screen.getByText("截止 2020-01-01 09:00").className).not.toContain(
+      "text-[var(--danger)]",
+    );
+    expect(container.textContent).toContain("未完成");
+  });
+});
+
 // 子 agent 编排三字段投影
 describe("TaskCardContent 子 agent 编排投影", () => {
   it("普通任务卡（无 budget/result）不渲染编排区", () => {

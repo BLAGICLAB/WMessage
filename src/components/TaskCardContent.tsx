@@ -1,12 +1,10 @@
 import { useState } from "react";
-import type { DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Task } from "../types";
 import { taskFiles } from "../lib/taskFiles";
 import { basename, formatCompletedAt, formatDue } from "../format";
 import {
   Bot,
   Folder,
-  GripVertical,
   Paperclip,
   Puzzle,
   Timer,
@@ -20,13 +18,15 @@ import { useInlineEdit } from "./useInlineEdit";
 /**
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
  *
- * ⚠️ 字段与顺序必须与 TodoCard 一致：
- * 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断） → 备注 → 标签 → 子任务 → 文件 → 🤖 → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行，老板）。
- * 标题以下内容可折叠。改动 TodoCard 展示时记得同步这里。
+ * ⚠️ 字段与顺序必须与主窗口一致：
+ * 色条（左缘，TaskCard 外壳）→ 标题行（标题 + 折叠开关 + 打勾圆圈；折叠时标题单行截断）
+ * → 备注 → 标签 → 子任务 → 文件 → 🤖 → 截止时间 → 完成时间（截止永远最底，完成时间在截止时间下一行）。
+ * 标题以下内容可折叠。改动主窗口任务卡展示时记得同步这里。
  * 定时设置已迁出卡片 → 「定时任务」模块（SchedulePage）统一管理。
  */
 export function TaskCardContent({
   task,
+  dueOverdue = false,
   editingTitle = false,
   onTitleClick,
   onCommitTitle,
@@ -38,10 +38,10 @@ export function TaskCardContent({
   onCopyFilePath,
   onRemoveFile,
   onBotExecute,
-  /** 拖拽排序手柄的 dnd listeners（挂件排序；不传则手柄仅展示） */
-  handleListeners,
 }: {
   task: Task;
+  /** 截止时间已过且未完成：截止徽标标红（与首页到期横条同一判定，由父层传入） */
+  dueOverdue?: boolean;
   /** 标题编辑态（新建任务后自动进入） */
   editingTitle?: boolean;
   /** 提供时标题可点击进入编辑态（与主窗口一致） */
@@ -64,8 +64,6 @@ export function TaskCardContent({
   onRemoveFile?: (path: string) => void;
   /** 提供时显示 🤖 交给机器人按钮 */
   onBotExecute?: () => void;
-  /** 拖拽排序手柄的 dnd listeners（挂件排序；不传则手柄仅展示） */
-  handleListeners?: DraggableSyntheticListeners | undefined;
 }) {
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   const subtasks = task.subtasks ?? [];
@@ -74,7 +72,7 @@ export function TaskCardContent({
   const boundFiles = taskFiles(task);
   const [filesExpanded, setFilesExpanded] = useState(false);
 
-  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（与 TodoCard 共用）
+  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（与主窗口共用）
   const titleEdit = useInlineEdit({
     value: task.title,
     editing: editingTitle,
@@ -86,18 +84,8 @@ export function TaskCardContent({
 
   return (
     <>
-      {/* 标题行：标题（可编辑） + 打勾圆圈（☰ 拖拽手柄标题左侧占位） */}
+      {/* 标题行：标题（可编辑） + 打勾圆圈 */}
       <div className="flex items-start gap-2">
-        {/* ☰ 拖拽手柄：标题左侧占位，卡片悬停才显现；与标题保持间距 */}
-        {handleListeners && (
-          <span
-            {...handleListeners}
-            title="拖拽移动"
-            className="shrink-0 mt-0.5 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
-          >
-            <GripVertical size={12} aria-hidden />
-          </span>
-        )}
         {editingTitle ? (
           <input
             autoFocus
@@ -405,19 +393,29 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 截止时间 + 状态行（两行布局，老板与主窗口 TodoCard 一致）；
-              状态行统一显示「未完成」/「完成 YYYY-MM-DD HH:mm」，未完成时不带时间戳 */}
-          {(task.due || task.column === "done") && (
+          {/* 截止时间 + 状态行（两行布局，与主窗口一致）；
+              截止已过且未完成 → 徽标标红（与首页到期横条口径一致）；
+              状态行三态与任务页详情面板一致：
+              「未完成」/「机器人执行中…」/「完成 YYYY-MM-DD HH:mm」；
+              无截止未完成的普通卡不渲染状态行（保持挂件卡紧凑），
+              机器人认领（botAssigned）时强制显示执行中状态 */}
+          {(task.due || task.column === "done" || task.botAssigned) && (
             <div className="mt-2">
               {task.due && (
-                <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)] shrink-0">
+                <span
+                  className={`nm-inset px-2 py-1 text-xs shrink-0 ${
+                    dueOverdue ? "text-[var(--danger)]" : "text-[var(--t4)]"
+                  }`}
+                >
                   {formatDue(task.due)}
                 </span>
               )}
               <p className="mt-1 ml-2.5 text-[10px] text-[var(--t5)]">
                 {task.column === "done" && task.completedAt
                   ? formatCompletedAt(task.completedAt)
-                  : "未完成"}
+                  : task.botAssigned
+                    ? "机器人执行中…"
+                    : "未完成"}
               </p>
             </div>
           )}

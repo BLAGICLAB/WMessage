@@ -1,21 +1,11 @@
 import { useState } from "react";
 import { PenLine } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
-import { planChip, planColorVar } from "./week";
+import { planChip, planColorVar, sortPoolTasks } from "./week";
 import { DoneCircle } from "../DoneCircle";
 import { useHoverTitleTip } from "./HoverTitle";
 
 const OPEN_KEY = "wm-task-pool-open";
-
-/** 池内排序：已排期按 planStart 升序在前，未排期按 updatedAt 降序在后 */
-function sortPoolTasks(tasks: Task[]): Task[] {
-  return [...tasks].sort((a, b) => {
-    if (a.planStart && b.planStart) return a.planStart.localeCompare(b.planStart);
-    if (a.planStart) return -1;
-    if (b.planStart) return 1;
-    return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
-  });
-}
 
 /** 任务池开合状态（localStorage 记忆）——页面持有，页头开关与池内 ⇥ 共用 */
 export function loadPoolOpen(): boolean {

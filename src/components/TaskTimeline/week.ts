@@ -2,6 +2,8 @@
 // 时间格式契约与 due 一致："YYYY-MM-DDTHH:mm"（本地时区语义，无时区后缀）；
 // 解析失败一律返 null 由调用方兜底（同 col/subtasks 的「损坏按空读取」契约）。
 
+import type { Task } from "../../types";
+
 export const DAY_START_MIN = 8 * 60;
 export const DAY_END_MIN = 18 * 60;
 /** 可排期窗口宽度（分钟）：8:00–18:00 */
@@ -290,4 +292,15 @@ export function planPatchForDrop(
   }
   const end = addWindowMinutes(opts.day, startMin, durMin);
   return { planStart: buildPlanDT(opts.day, startMin), planEnd: buildPlanDT(end.day, end.min) };
+}
+
+/** 任务池口径排序（任务页任务池与挂件待办共用）：已排期按 planStart 升序在前，
+ *  未排期按 updatedAt 降序在后。 */
+export function sortPoolTasks(tasks: Task[]): Task[] {
+  return [...tasks].sort((a, b) => {
+    if (a.planStart && b.planStart) return a.planStart.localeCompare(b.planStart);
+    if (a.planStart) return -1;
+    if (b.planStart) return 1;
+    return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+  });
 }

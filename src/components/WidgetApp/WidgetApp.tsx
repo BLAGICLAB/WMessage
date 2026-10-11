@@ -39,7 +39,6 @@ import { ErrorBoundary } from "../../ui/ErrorBoundary";
 import { linkDisplayName } from "../WorkspacePage";
 
 import { handleCommandError } from "../../lib/errorHandler";
-import { isDueToday } from "../../format";
 import {
   loadTasksFromDb,
   loadWorkspaceFromDb,
@@ -96,8 +95,10 @@ import {
 } from "./storage";
 import { ResizeEdge } from "./ResizeEdge";
 import { SplitBar } from "./SplitBar";
-import { SortableTaskCard } from "./SortableTaskCard";
+import { TaskCard } from "./TaskCard";
 import { SortableWorkspaceCard } from "./SortableWorkspaceCard";
+import { sortPoolTasks } from "../TaskTimeline/week";
+import { dayKey, dueTimeOf } from "../HomePage/homeData";
 
 export default function WidgetApp() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -111,6 +112,12 @@ export default function WidgetApp() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [edge, setEdge] = useState<Edge>("right");
   const [botOn, setBotOn] = useState(false);
+  // 「今日」过滤与逾期判断的时间源：每分钟校准，跨天自动跟随（同任务页 now）
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // 老板挂件边框尺寸(唯一尺寸源,只控制外框；内部任务/聊天区 flex 自适应)
   const [size, setSize] = useState<WidgetSize>(
@@ -529,13 +536,13 @@ export default function WidgetApp() {
   };
 
   // TP-1：✅ 切换走服务端定向命令（同锁内读现值打基线写库）——不再 emit
-  // tasks-updated 整行回写（免快照竞态）；本地乐观更新 + tasks-changed 广播收敛
+  // tasks-updated 整行回写（免快照竞态）；本地乐观更新 + tasks-changed 广播收敛。
+  // 完成恢复落列与主窗口一致（任务页详情面板/任务池）：恒回待办（todo）
   const toggleDone = (t: Task) => {
-    const target: "todo" | "doing" | "done" =
-      t.column === "done" ? (isDueToday(t.due) ? "doing" : "todo") : "done";
-    // 事件回调内取时间戳（补 completedAt），非 render 路径
+    const target: "todo" | "done" = t.column === "done" ? "todo" : "done";
+    // 事件回调内取时间戳（补 completedAt），非 render 路径；不与组件级 now（日期源）混用
     // oxlint-disable-next-line react/purity
-    const now = Date.now();
+    const finishedAt = Date.now();
     const prevTasks = tasksRef.current;
     const next = prevTasks.map((x): Task =>
       x.id !== t.id
@@ -544,7 +551,7 @@ export default function WidgetApp() {
           ? {
               ...x,
               column: "done",
-              completedAt: now,
+              completedAt: finishedAt,
               archived: false,
               botAssigned: undefined,
             }
@@ -585,7 +592,8 @@ export default function WidgetApp() {
     });
   };
 
-  // 新建任务：今日视图直接进 doing（今日列），否则进 todo；创建后立即进入标题编辑态
+  // 新建任务：与主窗口一致恒进待办（todo）；今日视图（=今天排期）里未排期的
+  // 新任务不显示，创建后切回待办视图让新卡可见；创建后立即进入标题编辑态
   const addTask = () => {
     const id = crypto.randomUUID();
     applyAndSync((prev) => {
@@ -594,12 +602,13 @@ export default function WidgetApp() {
         {
           id,
           title: "新任务",
-          column: view === "today" ? "doing" : "todo",
+          column: "todo",
           order: min - 1,
         },
         ...prev,
       ];
     });
+    if (view === "today") setView("all");
     setEditingId(id);
   };
 
@@ -698,44 +707,6 @@ export default function WidgetApp() {
     });
   };
 
-  // 挂件可见列表排序结束：本地重排 + task_reorder（ord-only 定向写，免快照竞态）
-  const handleDragEnd = (e: DragEndEvent) => {
-    const { active, over } = e;
-    if (!over || active.id === over.id) return;
-    const ids = list.map((t) => t.id);
-    const from = ids.indexOf(String(active.id));
-    const to = ids.indexOf(String(over.id));
-    if (from < 0 || to < 0) return;
-    const newIds = arrayMove(ids, from, to);
-    const prevTasks = tasksRef.current;
-    const prevMap = new Map(prevTasks.map((t) => [t.id, t]));
-    applyLocal((prev) => {
-      const visibleSet = new Set(ids);
-      const byId = new Map(prev.map((t) => [t.id, t]));
-      const arr: Task[] = [];
-      let cursor = 0;
-      for (const t of prev) {
-        if (visibleSet.has(t.id)) arr.push(byId.get(newIds[cursor++])!);
-        else arr.push(t);
-      }
-      return assignInsertOrder(arr, String(active.id));
-    });
-    const optimistic = tasksRef.current;
-    const items = optimistic
-      .filter((t) => {
-        const p = prevMap.get(t.id);
-        return !p || p.order !== t.order;
-      })
-      .map((t) => ({ id: t.id, order: t.order ?? 0 }));
-    if (items.length) {
-      // 本地已乐观更新；服务端广播 tasks-changed → 挂件既有监听 db_load 收敛
-      invoke<Task[]>("task_reorder", { items }).catch((e) => {
-        handleCommandError(e, "排序任务");
-        rollbackOptimistic(prevTasks, optimistic);
-      });
-    }
-  };
-
   // 挂件「待办 / 今日」显示未完成；「完成」显示已完成列。
   // 工作流节点卡默认不在挂件清单混入（设计 §3.3），开关走 localStorage + Tauri 事件
   const [wfVisible, setWfVisible] = useState(getShowWorkflowTasks);
@@ -769,12 +740,29 @@ export default function WidgetApp() {
     )
     .slice()
     .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
+  // 今日口径与主窗口一致（任务页周网格 / 首页任务卡）：planStart 日期 == 本地今天，
+  // 页内按 planStart 升序；待办排序同任务池（已排期在前按 planStart 升序，
+  // 未排期按 updatedAt 降序）。列表顺序由数据决定，挂件不再有手动拖拽排序。
+  const todayKey = dayKey(now);
+  const byPlanStart = (a: Task, b: Task) =>
+    a.planStart && b.planStart
+      ? a.planStart.localeCompare(b.planStart)
+      : 0;
+  // 逾期红标口径：未完成且截止时刻已过（dueTimeOf 与首页到期横条同源）
+  const isOverdue = (t: Task) => {
+    if (t.column === "done" || !t.due) return false;
+    const due = dueTimeOf(t);
+    return due !== null && due < now.getTime();
+  };
   const list =
     view === "today"
-      ? visible.filter((t) => t.column === "doing")
+      ? visible
+          .filter((t) => t.planStart?.slice(0, 10) === todayKey)
+          .slice()
+          .sort(byPlanStart)
       : view === "done"
         ? doneList
-        : visible;
+        : sortPoolTasks(visible);
 
   // 圆角：贴屏幕那侧直角，对侧 rounded-2xl；悬浮（不贴边）四边全圆角
   const edgeClass =
@@ -1334,53 +1322,43 @@ export default function WidgetApp() {
               ) : list.length === 0 ? (
                 <p className="text-xs text-[var(--t5)] text-center mt-8">
                   {view === "today"
-                    ? "今日暂无任务"
+                    ? "今日没有排期任务"
                     : view === "done"
                       ? "暂无已完成任务"
                       : "暂无任务"}
                 </p>
               ) : (
-                <DndContext
-                  sensors={sensors}
-                  collisionDetection={closestCenter}
-                  onDragEnd={handleDragEnd}
-                >
-                  <SortableContext
-                    items={list.map((t) => t.id)}
-                    strategy={verticalListSortingStrategy}
-                  >
-                    {list.map((t) => (
-                      <SortableTaskCard
-                        key={t.id}
-                        task={t}
-                        editingTitle={editingId === t.id}
-                        selected={selectedTasks.some((x) => x.id === t.id)}
-                        selectMode={selecting}
-                        onSelect={() => toggleSelectTask(t)}
-                        onTitleClick={
-                          selecting ? undefined : () => openInMain(t)
-                        }
-                        onCommitTitle={(title) => commitTitle(t, title)}
-                        onCancelTitle={cancelTitle}
-                        onToggleDone={() => toggleDone(t)}
-                        onToggleCollapsed={() => toggleCollapsed(t)}
-                        onToggleSubtask={(sid) => toggleSubtask(t, sid)}
-                        onOpenFilePath={openFilePath}
-                        onCopyFilePath={(p) => copyFilePath(t, p)}
-                        onRemoveFile={(p) => removeFile(t, p)}
-                        onBotExecute={
-                          botOn
-                            ? () =>
-                                emit("execute-task", {
-                                  id: t.id,
-                                  title: t.title,
-                                }).catch(() => {})
-                            : undefined
-                        }
-                      />
-                    ))}
-                  </SortableContext>
-                </DndContext>
+                list.map((t) => (
+                  <TaskCard
+                    key={t.id}
+                    task={t}
+                    dueOverdue={isOverdue(t)}
+                    editingTitle={editingId === t.id}
+                    selected={selectedTasks.some((x) => x.id === t.id)}
+                    selectMode={selecting}
+                    onSelect={() => toggleSelectTask(t)}
+                    onTitleClick={
+                      selecting ? undefined : () => openInMain(t)
+                    }
+                    onCommitTitle={(title) => commitTitle(t, title)}
+                    onCancelTitle={cancelTitle}
+                    onToggleDone={() => toggleDone(t)}
+                    onToggleCollapsed={() => toggleCollapsed(t)}
+                    onToggleSubtask={(sid) => toggleSubtask(t, sid)}
+                    onOpenFilePath={openFilePath}
+                    onCopyFilePath={(p) => copyFilePath(t, p)}
+                    onRemoveFile={(p) => removeFile(t, p)}
+                    onBotExecute={
+                      botOn
+                        ? () =>
+                            emit("execute-task", {
+                              id: t.id,
+                              title: t.title,
+                            }).catch(() => {})
+                        : undefined
+                    }
+                  />
+                ))
               )}
             </div>
 

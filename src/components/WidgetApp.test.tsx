@@ -294,3 +294,152 @@ describe("bot 开关不重挂 ChatPanel（2026-09-12）", () => {
     expect(sessionsLoadCalls()).toBe(2);
   });
 });
+
+// —— 任务卡口径对齐主窗口（2026-10-12 验收）：今日=今天排期、池口径排序、
+// 完成恢复恒回待办、新建恒进待办。do/undo 循环里这些行为曾经各说各话。 ——
+describe("WidgetApp 任务卡口径对齐主窗口", () => {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  /** 相对今天偏移 offset 天的本地日期键 YYYY-MM-DD（与组件内 dayKey 同口径） */
+  const dayKeyOf = (offset: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  const setupTaskMocks = (rows: unknown[]) => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return rows;
+      if (cmd === "workspace_load") return [];
+      if (cmd === "bot_get_enabled") return false;
+      return null;
+    });
+  };
+
+  const titles = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll("h3")).map((h) => h.textContent);
+
+  /** 初始加载/交互后的微任务 flush：act 包裹让 React 状态刷新落 DOM（套件既有模式） */
+  const flush = async () => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  };
+
+  /** 展开面板（触发条 mouseenter → expand）：getByRole 只看可见元素，
+   *  折叠态面板 display:none 里的按钮对角色查询不可见 */
+  const expandPanel = async (container: HTMLElement) => {
+    const strip = Array.from(
+      container.querySelectorAll<HTMLElement>(".nm-sidebar-panel"),
+    ).find((el) => !el.querySelector("textarea"))!;
+    fireEvent.mouseOver(strip);
+    await flush();
+    await flush();
+  };
+
+  it("今日视图 = 今天排期（planStart），不再是 doing 列", async () => {
+    setupTaskMocks([
+      { id: "a", title: "doing列未排期", column: "doing", order: 0 },
+      {
+        id: "b",
+        title: "今天排期",
+        column: "todo",
+        order: 1,
+        planStart: `${dayKeyOf(0)}T09:00`,
+        planEnd: `${dayKeyOf(0)}T10:00`,
+      },
+      {
+        id: "c",
+        title: "明天排期",
+        column: "todo",
+        order: 2,
+        planStart: `${dayKeyOf(1)}T09:00`,
+      },
+    ]);
+    const { container } = render(<WidgetApp />);
+    await flush();
+    await expandPanel(container);
+    fireEvent.click(screen.getByTitle("今日"));
+    await flush();
+    expect(titles(container)).toEqual(["今天排期"]);
+  });
+
+  it("待办视图排序同任务池：已排期 planStart 升序在前，未排期 updatedAt 降序在后", async () => {
+    setupTaskMocks([
+      { id: "u1", title: "未排期旧", column: "todo", order: 0, updatedAt: 1000 },
+      {
+        id: "s2",
+        title: "已排期下午",
+        column: "todo",
+        order: 1,
+        planStart: `${dayKeyOf(0)}T15:00`,
+      },
+      { id: "u2", title: "未排期新", column: "todo", order: 2, updatedAt: 2000 },
+      {
+        id: "s1",
+        title: "已排期上午",
+        column: "doing",
+        order: 3,
+        planStart: `${dayKeyOf(0)}T09:00`,
+      },
+    ]);
+    const { container } = render(<WidgetApp />);
+    await flush();
+    expect(titles(container)).toEqual([
+      "已排期上午",
+      "已排期下午",
+      "未排期新",
+      "未排期旧",
+    ]);
+  });
+
+  it("完成卡恢复恒回待办（不看截止是否今天），走 task_set_column", async () => {
+    setupTaskMocks([
+      {
+        id: "d1",
+        title: "今天截止的完成卡",
+        column: "done",
+        order: 0,
+        due: dayKeyOf(0),
+        completedAt: 123,
+      },
+    ]);
+    const { container } = render(<WidgetApp />);
+    await flush();
+    await expandPanel(container);
+    fireEvent.click(screen.getByTitle("完成"));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "取消完成" }));
+    await flush();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("task_set_column", {
+      id: "d1",
+      col: "todo",
+    });
+  });
+
+  it("今日视图新建任务：恒进待办列并切回待办视图让新卡可见", async () => {
+    setupTaskMocks([
+      {
+        id: "b",
+        title: "今天排期",
+        column: "todo",
+        order: 0,
+        planStart: `${dayKeyOf(0)}T09:00`,
+      },
+    ]);
+    render(<WidgetApp />);
+    await flush();
+    fireEvent.click(screen.getByTitle("今日"));
+    await flush();
+    fireEvent.click(screen.getByText("+ 新建任务"));
+    await flush();
+    // 上报主窗口的新任务恒为 todo 列（不再因今日视图进 doing）
+    const emitCalls = mocks.emitMock.mock.calls as unknown as Array<
+      [string, { upserts: Array<{ column: string }> }]
+    >;
+    const upsertCall = emitCalls.find((c) => c[0] === "tasks-updated");
+    expect(upsertCall).toBeDefined();
+    expect(upsertCall![1].upserts[0].column).toBe("todo");
+    // 视图已切回待办：新任务卡进入编辑态可见（今日视图里未排期卡本不显示）
+    expect(screen.getByDisplayValue("新任务")).toBeInTheDocument();
+  });
+});

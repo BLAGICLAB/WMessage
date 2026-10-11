@@ -8,7 +8,7 @@ vi.mock("../TaskCardContent", () => ({
 }));
 
 import { SortableWorkspaceCard } from "./SortableWorkspaceCard";
-import { SortableTaskCard } from "./SortableTaskCard";
+import { TaskCard } from "./TaskCard";
 import type { Task, WorkspaceItem } from "../../types";
 
 const wsItem: WorkspaceItem = { id: "w1", title: "默认", links: [] };
@@ -44,26 +44,26 @@ describe("SortableWorkspaceCard 键盘可达性", () => {
   });
 });
 
-describe("SortableTaskCard 拖拽守卫", () => {
-  it("selectMode 下普通 click（非拖拽衍生）仍调 onSelect——守卫不误伤", () => {
+// 挂件任务卡已无拖拽排序（列表顺序随主窗口任务池口径），selectMode 整卡单击选中等行为保留
+describe("TaskCard 选任务模式", () => {
+  const base = {
+    task,
+    editingTitle: false,
+    selected: false,
+    onCommitTitle: () => {},
+    onCancelTitle: () => {},
+    onToggleDone: () => {},
+    onToggleCollapsed: () => {},
+    onToggleSubtask: () => {},
+    onOpenFilePath: () => {},
+    onCopyFilePath: () => {},
+    onRemoveFile: () => {},
+  };
+
+  it("selectMode 下整卡单击调 onSelect", () => {
     const onSelect = vi.fn();
-    const { container } = wrap(
-      ["t1"],
-      <SortableTaskCard
-        task={task}
-        editingTitle={false}
-        selected={false}
-        selectMode
-        onSelect={onSelect}
-        onCommitTitle={() => {}}
-        onCancelTitle={() => {}}
-        onToggleDone={() => {}}
-        onToggleCollapsed={() => {}}
-        onToggleSubtask={() => {}}
-        onOpenFilePath={() => {}}
-        onCopyFilePath={() => {}}
-        onRemoveFile={() => {}}
-      />,
+    const { container } = render(
+      <TaskCard {...base} selectMode onSelect={onSelect} />,
     );
     fireEvent.click(container.firstChild as HTMLElement);
     expect(onSelect).toHaveBeenCalledTimes(1);
@@ -71,25 +71,26 @@ describe("SortableTaskCard 拖拽守卫", () => {
 
   it("selectMode 关闭时不挂 onClick", () => {
     const onSelect = vi.fn();
-    const { container } = wrap(
-      ["t1"],
-      <SortableTaskCard
-        task={task}
-        editingTitle={false}
-        selected={false}
-        selectMode={false}
-        onSelect={onSelect}
-        onCommitTitle={() => {}}
-        onCancelTitle={() => {}}
-        onToggleDone={() => {}}
-        onToggleCollapsed={() => {}}
-        onToggleSubtask={() => {}}
-        onOpenFilePath={() => {}}
-        onCopyFilePath={() => {}}
-        onRemoveFile={() => {}}
-      />,
+    const { container } = render(
+      <TaskCard {...base} selectMode={false} onSelect={onSelect} />,
     );
     fireEvent.click(container.firstChild as HTMLElement);
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("左缘色条颜色 = planColorVar(首标签)，选中态带 ring", () => {
+    const { container } = render(
+      <TaskCard
+        {...base}
+        selectMode
+        selected
+        task={{ ...task, tags: ["设计"] }}
+      />,
+    );
+    const bar = (container.firstChild as HTMLElement).querySelector(
+      "span[aria-hidden]",
+    ) as HTMLElement;
+    expect(bar.style.background).toContain("--plan-");
+    expect(container.firstChild).toHaveClass("ring-2");
   });
 });
