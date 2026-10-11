@@ -21,6 +21,7 @@ export function DayGridMini({
   tasks,
   now,
   activeDay,
+  activeTaskId,
   onActiveDay,
   onHoverTask,
   onOpenTask,
@@ -29,6 +30,7 @@ export function DayGridMini({
   tasks: Task[];
   now: Date;
   activeDay: number | null;
+  activeTaskId: string | null;
   onActiveDay: (day: number | null) => void;
   onHoverTask: (task: Task | null) => void;
   onOpenTask: (t: Task) => void;
@@ -128,10 +130,13 @@ export function DayGridMini({
                     const top = ((seg.startMin - DAY_START_MIN) / DAY_SPAN_MIN) * 100;
                     const h = ((seg.endMin - seg.startMin) / DAY_SPAN_MIN) * 100;
                     const w = 100 / seg.lanes;
+                    const blockActive = activeTaskId === seg.task.id;
                     return (
                       <button
                         key={`${seg.task.id}-${si}`}
                         type="button"
+                        data-testid={`daygrid-block-${seg.task.id}`}
+                        data-active={blockActive || undefined}
                         className="absolute rounded-md"
                         style={
                           {
@@ -144,6 +149,12 @@ export function DayGridMini({
                               "color-mix(in srgb, var(--c) 14%, var(--surface-raised))",
                             border:
                               "1px solid color-mix(in srgb, var(--c) 26%, transparent)",
+                            // 联动指向该任务卡：accent 描边压过日常边框
+                            outline: blockActive
+                              ? "2px solid var(--accent)"
+                              : undefined,
+                            outlineOffset: blockActive ? "1px" : undefined,
+                            zIndex: blockActive ? 2 : undefined,
                           } as React.CSSProperties
                         }
                         title={`${seg.task.title} ${fmtMin(seg.startMin)}–${fmtMin(seg.endMin)}`}

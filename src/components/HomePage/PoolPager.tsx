@@ -14,6 +14,7 @@ export function PoolPager({
   tasks,
   now,
   activeDay,
+  activeTaskId,
   onActiveDay,
   onHoverTask,
   onOpenTask,
@@ -22,6 +23,7 @@ export function PoolPager({
   tasks: Task[];
   now: Date;
   activeDay: number | null;
+  activeTaskId: string | null;
   onActiveDay: (day: number | null) => void;
   onHoverTask: (task: Task | null) => void;
   onOpenTask: (t: Task) => void;
@@ -104,6 +106,7 @@ export function PoolPager({
         ) : (
           pageTasks.map((t) => {
             const seg = t.planStart ? parsePlanDT(t.planStart) : null;
+            const rowActive = activeTaskId === t.id;
             return (
               <button
                 key={t.id}
@@ -111,7 +114,12 @@ export function PoolPager({
                 onClick={() => onOpenTask(t)}
                 onMouseEnter={() => onHoverTask(t)}
                 onMouseLeave={() => onHoverTask(null)}
-                className="flex w-full items-center gap-2 rounded-md border border-[var(--edge)] px-2 py-1.5 text-left transition-colors hover:border-[var(--edge-strong)] hover:bg-[var(--hover-bg)]"
+                data-active={rowActive || undefined}
+                className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors ${
+                  rowActive
+                    ? "border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)]"
+                    : "border-[var(--edge)] hover:border-[var(--edge-strong)] hover:bg-[var(--hover-bg)]"
+                }`}
               >
                 <span
                   aria-hidden

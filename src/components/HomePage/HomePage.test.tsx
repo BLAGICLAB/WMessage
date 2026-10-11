@@ -296,4 +296,21 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     expect(dimmed.length).toBeGreaterThanOrEqual(1);
     fireEvent.mouseLeave(nodes[0]);
   });
+
+  it("任务卡级联动：日程块与任务卡行互相高亮", () => {
+    renderHome(WEEK_TASKS);
+    // 翻到周日页（列头联动）
+    fireEvent.mouseEnter(screen.getByTestId("daygrid-head-6"));
+    const list = screen.getByTestId("pool-page-list");
+    const row = within(list).getByText("首页模块小样").closest("button")!;
+    // 悬停任务卡行 → 日程里该任务块描边高亮
+    fireEvent.mouseEnter(row);
+    expect(screen.getByTestId("daygrid-block-p1")).toHaveAttribute("data-active");
+    expect(row).toHaveAttribute("data-active");
+    // 悬停日程块 → 任务卡行同样高亮（同一联动状态）
+    fireEvent.mouseLeave(row);
+    fireEvent.mouseEnter(screen.getByTestId("daygrid-block-p1"));
+    expect(row).toHaveAttribute("data-active");
+    fireEvent.mouseLeave(screen.getByTestId("daygrid-block-p1"));
+  });
 });

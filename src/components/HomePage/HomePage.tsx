@@ -182,6 +182,7 @@ export function HomePage({
               tasks={tasks}
               now={now}
               activeDay={hover.day}
+              activeTaskId={hover.taskId}
               onActiveDay={hoverDay}
               onHoverTask={hoverTask}
               onOpenTask={onOpenTask}
@@ -199,6 +200,7 @@ export function HomePage({
                 tasks={tasks}
                 now={now}
                 activeDay={hover.day}
+                activeTaskId={hover.taskId}
                 onActiveDay={hoverDay}
                 onHoverTask={hoverTask}
                 onOpenTask={onOpenTask}
