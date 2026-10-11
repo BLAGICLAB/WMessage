@@ -133,6 +133,7 @@ objc2-foundation = "0.3"
 objc2-vision = "0.3"
 
 [target.'cfg(windows)'.dependencies]
+# Threading：JobObjects 的 JOBOBJECT_EXTENDED_LIMIT_INFORMATION 挂在此 feature 下（py/runtime.rs）
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_DataExchange",
@@ -140,6 +141,7 @@ windows = { version = "0.61", features = [
     "Win32_Security",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
 
