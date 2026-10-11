@@ -110,7 +110,6 @@ function renderHome() {
       scrollRef={makeScrollRef()}
       onNavigate={vi.fn()}
       onOpenTask={vi.fn()}
-      onNewTask={vi.fn()}
       now={NOW}
     />,
   );
@@ -130,7 +129,8 @@ describe("HomePage 渲染", () => {
     renderHome();
     expect(screen.getByText("下午好，测试者")).toBeInTheDocument();
     expect(screen.getByText("10月11日 周日")).toBeInTheDocument();
-    expect(screen.getByText("今日计划 3 段，已完成 1")).toBeInTheDocument();
+    expect(screen.getByText("今日计划 3，已完成 1")).toBeInTheDocument();
+    expect(screen.queryByText("新建任务")).not.toBeInTheDocument();
   });
 
   it("今日完成率进度条 = 今日已完成/今日计划（1/3 → 33%）", () => {

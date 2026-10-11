@@ -36,14 +36,12 @@ export function HomePage({
   scrollRef,
   onNavigate,
   onOpenTask,
-  onNewTask,
   now: nowProp,
 }: {
   tasks: Task[];
   scrollRef: React.RefObject<HTMLElement | null>;
   onNavigate: (v: "board" | "activity" | "notifications") => void;
   onOpenTask: (t: Task) => void;
-  onNewTask: () => void;
   /** 时钟注入口（测试确定性；生产缺省走真实时间 + 30s 轮询） */
   now?: Date;
 }) {
@@ -126,7 +124,6 @@ export function HomePage({
         pools={pools}
         now={now}
         scrollRef={scrollRef}
-        onNewTask={onNewTask}
       />
 
       <div className="mt-4 flex flex-col gap-3.5">

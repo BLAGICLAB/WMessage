@@ -956,7 +956,6 @@ function App() {
               scrollRef={mainRef}
               onNavigate={setView}
               onOpenTask={jumpToTask}
-              onNewTask={addTask}
             />
           ) : view === "board" ? (
             <TaskTimelinePage

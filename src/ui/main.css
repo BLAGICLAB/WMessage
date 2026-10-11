@@ -1432,8 +1432,7 @@
     background: rgba(255, 255, 255, 0.22);
   }
   .home-progress {
-    margin-top: 8px;
-    height: 16px;
+    height: 20px;
     max-width: 460px;
     border-radius: 999px;
     border: 1px solid var(--edge);

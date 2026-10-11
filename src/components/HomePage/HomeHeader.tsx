@@ -54,14 +54,12 @@ export function HomeHeader({
   pools,
   now,
   scrollRef,
-  onNewTask,
 }: {
   name: string;
   phases: PlanPhases;
   pools: PoolCounts;
   now: Date;
   scrollRef: React.RefObject<HTMLElement | null>;
-  onNewTask: () => void;
 }) {
   const reduceMotion = useReducedMotion();
   const { scrollY } = useScroll({ container: scrollRef });
@@ -76,14 +74,15 @@ export function HomeHeader({
   const subOpacity = useTransform(progress, [0, 1], [1, 0]);
   const subHeight = useTransform(progress, [0, 1], [24, 0]);
   const barOpacity = useTransform(progress, [0, 1], [1, 0]);
-  const barHeight = useTransform(progress, [0, 1], [24, 0]);
+  // 收口容器 = pt-2(8px) + 条(20px)；高度必须与内容严格一致，否则 overflow 裁条
+  const barHeight = useTransform(progress, [0, 1], [28, 0]);
   const labelOpacity = useTransform(progress, [0, 1], [1, 0]);
   const labelHeight = useTransform(progress, [0, 1], [18, 0]);
   const borderOpacity = useTransform(progress, [0, 1], [0, 1]);
 
   const planned = phases.done + phases.doing + phases.todo;
   const summary = planned
-    ? `今日计划 ${planned} 段，已完成 ${phases.done}`
+    ? `今日计划 ${planned}，已完成 ${phases.done}`
     : "今天还没有排期，去任务页拖一段上来。";
   const kpis: { value: number; label: string }[] = [
     { value: pools.todo, label: "待办" },
@@ -114,12 +113,6 @@ export function HomeHeader({
             style={{ opacity: subOpacity, height: subHeight }}
           >
             {summary}
-            <button
-              onClick={onNewTask}
-              className="ml-2 text-[var(--brand)] underline-offset-2 hover:underline"
-            >
-              新建任务
-            </button>
           </motion.p>
           <motion.div
             className="overflow-hidden"
