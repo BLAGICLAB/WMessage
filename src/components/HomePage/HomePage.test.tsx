@@ -122,7 +122,9 @@ const WEEK_TASKS: Task[] = TASKS.concat(
       planStart: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T09:00`,
     });
   }),
-);
+  // 周六第二行：行间移动（不弹回今日）断言需要同页两行
+  [task({ id: "w5b", title: "w5b", planStart: "2026-10-10T14:00" })],
+).flat();
 
 function renderHome(tasks: Task[] = TASKS) {
   return render(
@@ -355,5 +357,19 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     fireEvent.mouseEnter(screen.getByTestId("daygrid-block-p1"));
     expect(row).toHaveAttribute("data-active");
     fireEvent.mouseLeave(screen.getByTestId("daygrid-block-p1"));
+  });
+
+  it("手动翻页后在行间移动指针不弹回今日", async () => {
+    const user = userEvent.setup();
+    renderHome(WEEK_TASKS);
+    fireEvent.click(screen.getByLabelText("上一页")); // 今日(7/8) ‹ → 周六 6/8
+    const list = screen.getByTestId("pool-page-list");
+    // 行间移动：relatedTarget 指向卡内下一行，组件 mouseLeave 不触发
+    await user.hover(within(list).getByText("w5").closest("button")!);
+    await user.hover(within(list).getByText("w5b").closest("button")!);
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("6/8");
+    // 指针离开小组件 → 恢复今日
+    await user.hover(screen.getByTestId("due-ticker"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
   });
 });

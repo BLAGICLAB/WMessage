@@ -1,10 +1,10 @@
 // 任务卡分页器：映射任务页任务池——本周 7 天各一页 + 未排期池一页，共 8 页。
 // 页码三层模型：默认页 = 今日（跨天自动跟随）；联动悬停与 ‹ › 手动翻页都是
-// 临时偏移——指针离开卡片或联动结束即淡出恢复今日。联动中按 ‹ › = 接管为
-// 手动模式（清除联动指向）。页内任务行 hover 上抛（图谱节点同步高亮）；
+// 临时偏移——恢复触发 = 指针离开本组件区域，或联动结束且指针不在本组件内
+// （行间移动指针时组件内不触发）。页内任务行 hover 上抛（图谱节点同步高亮）；
 // 点行跳任务页编辑态。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ChevronLeft, ChevronRight, Inbox } from "lucide-react";
 import { dayKey, plannedTasksByDay, unplannedTasks } from "./homeData";
@@ -34,19 +34,23 @@ export function PoolPager({
   const { days, keys } = plannedTasksByDay(tasks, now);
   const unplanned = unplannedTasks(tasks);
   const todayIdx = Math.max(0, keys.indexOf(dayKey(now)));
-  // null = 停在默认页（今日）；数字 = 用户手动翻到的临时页。
-  // 鼠标流里指针移向 ‹ › 时必先离开日程卡（联动清、回今日），点击时
-  // activeDay 恒为 null，故无「联动中接管」分支
+  // null = 停在默认页（今日）；数字 = 用户手动翻到的临时页
   const [tempPage, setTempPage] = useState<number | null>(null);
+  // 指针是否在本组件内：行间移动会短暂清掉共享 hover（activeDay→null），
+  // 指针仍在组件内时不得触发恢复，否则翻页后在行间移动就弹回今日
+  const pointerInRef = useRef(false);
   const page = activeDay !== null ? activeDay : tempPage ?? todayIdx;
-  // 联动结束（activeDay 非空 → null 的过渡）：丢弃手动偏移，恢复今日
+  // 联动结束（activeDay 非空 → null）且指针不在本组件内：恢复今日
   useEffect(() => {
-    if (activeDay === null) setTempPage(null);
+    if (activeDay === null && !pointerInRef.current) setTempPage(null);
   }, [activeDay]);
   const setPage = (p: number) => {
     setTempPage((p + PAGE_COUNT) % PAGE_COUNT);
   };
-  const restore = () => setTempPage(null);
+  const restore = () => {
+    pointerInRef.current = false;
+    setTempPage(null);
+  };
 
   const label = (p: number) => {
     if (p <= 6) {
@@ -61,6 +65,9 @@ export function PoolPager({
     <section
       className="nm-card flex h-full flex-col p-4"
       aria-label="任务卡"
+      onMouseEnter={() => {
+        pointerInRef.current = true;
+      }}
       onMouseLeave={restore}
     >
       <div className="flex items-center gap-2">
