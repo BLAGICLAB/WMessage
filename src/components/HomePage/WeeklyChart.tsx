@@ -16,8 +16,8 @@ import {
 import type { WeekBucket } from "./homeData";
 
 const FALLBACK_WIDTH = 480;
-/** 卡随左列（图+横条）跨行总高拉伸，柱区加高填满避免卡内空洞 */
-const CHART_HEIGHT = 210;
+/** 卡高与左列（16:9 图 + 间距 + 一行到期横条）精确对齐：横条紧贴图片不留空档 */
+const CHART_HEIGHT = 230;
 
 function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   const ref = useRef<HTMLDivElement>(null);
