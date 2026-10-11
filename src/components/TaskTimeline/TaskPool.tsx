@@ -3,6 +3,7 @@ import { PenLine } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
 import { planChip, planColorVar } from "./week";
 import { DoneCircle } from "../DoneCircle";
+import { useHoverTitleTip } from "./HoverTitle";
 
 const OPEN_KEY = "wm-task-pool-open";
 
@@ -57,6 +58,7 @@ export function TaskPool({
   liftedId?: string | null;
 }) {
   const [showDone, setShowDone] = useState(false);
+  const tip = useHoverTitleTip();
 
   const sorted = sortPoolTasks(tasks);
   const hidden = !open;
@@ -77,6 +79,7 @@ export function TaskPool({
       }}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
+        tip.hide();
         onItemPointerDown?.(t, e);
       }}
     >
@@ -85,7 +88,14 @@ export function TaskPool({
         style={{ background: planColorVar(t.tags) }}
         aria-hidden
       />
-      <span className="truncate text-xs text-[var(--t2)]">{t.title}</span>
+      <span
+        className="truncate text-xs text-[var(--t2)]"
+        onPointerEnter={tip.show(t.title)}
+        onPointerLeave={tip.hide}
+        onPointerDown={tip.hide}
+      >
+        {t.title}
+      </span>
       {t.planStart && (
         <span className="num ml-auto shrink-0 rounded-full bg-[var(--inset-bg)] px-1.5 py-px text-[10px] text-[var(--t5)]">
           {planChip(t.planStart)}
@@ -171,7 +181,11 @@ export function TaskPool({
                     onToggle={() => onSetColumn?.(t.id, "todo")}
                     title="恢复待办"
                   />
-                  <span className="truncate text-xs text-[var(--t2)]">
+                  <span
+                    className="truncate text-xs text-[var(--t2)]"
+                    onPointerEnter={tip.show(t.title)}
+                    onPointerLeave={tip.hide}
+                  >
                     {t.title}
                   </span>
                   <button
@@ -192,6 +206,7 @@ export function TaskPool({
           </div>
         )}
       </div>
+      {tip.chip}
     </aside>
   );
 }

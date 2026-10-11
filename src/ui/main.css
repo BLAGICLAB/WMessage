@@ -1318,4 +1318,30 @@
       0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
     cursor: grabbing;
   }
+
+  /* 悬停完整标题提示（portal 到 body）：深色玻璃小片，贴元素上方 */
+  .hover-tip {
+    position: fixed;
+    z-index: 60;
+    max-width: 264px;
+    padding: 5px 9px;
+    border-radius: var(--r-sm);
+    background: color-mix(in srgb, #101318 92%, transparent);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #fff;
+    font-size: 11.5px;
+    line-height: 1.4;
+    white-space: normal;
+    word-break: break-word;
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-100%);
+    pointer-events: none;
+    animation: hover-tip-in 0.15s ease-out;
+  }
+  @keyframes hover-tip-in {
+    from {
+      opacity: 0;
+      transform: translateY(calc(-100% + 3px));
+    }
+  }
 }

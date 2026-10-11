@@ -1,6 +1,8 @@
+import { useRef } from "react";
 import type { PlanSeg } from "./week";
 import { DAY_SPAN_MIN, DAY_START_MIN, fmtMin } from "./week";
 import type { Task } from "../../types";
+import { useHoverTitleTip } from "./HoverTitle";
 
 /** 计划块单段渲染：seg 决定几何（父列内绝对定位，百分比制），task 决定内容与颜色。
  *  lane/lanes 来自 layoutLanes，多栏重叠时横向均分且只显示开始时间。 */
@@ -28,6 +30,8 @@ export function PlanBlockView({
   const hPct = ((seg.endMin - seg.startMin) / DAY_SPAN_MIN) * 100;
   const tiny = seg.endMin - seg.startMin < 45;
   const multi = seg.lanes > 1;
+  const tip = useHoverTitleTip();
+  const skipTip = useRef(false);
   return (
     <div
       className={`plan-blk${selected ? " sel" : ""}${seg.tail ? " tail" : ""}${seg.head ? " head" : ""}${dimmed ? " opacity-35" : ""}${fresh ? " plan-fresh" : ""}`}
@@ -40,8 +44,18 @@ export function PlanBlockView({
           width: `calc((100% - 6px) / ${seg.lanes} - 4px)`,
         } as React.CSSProperties
       }
-      title={task.title}
-      onPointerDown={onPointerDown}
+      onPointerEnter={(e) => {
+        if (!skipTip.current) tip.show(task.title)(e);
+      }}
+      onPointerLeave={() => {
+        skipTip.current = false;
+        tip.hide();
+      }}
+      onPointerDown={(e) => {
+        skipTip.current = true;
+        tip.hide();
+        onPointerDown?.(e);
+      }}
     >
       <span className="plan-dot plan-dot-s" aria-hidden />
       <span className="plan-dot plan-dot-e" aria-hidden />
@@ -63,6 +77,7 @@ export function PlanBlockView({
         </span>
       )}
       <span className="plan-grip" aria-hidden data-grip={task.id} />
+      {tip.chip}
     </div>
   );
 }
