@@ -295,7 +295,8 @@ describe("App", () => {
       return defaultInvokeImpl(cmd);
     });
     render(<App />);
-    await user.click(await screen.findByText("定时任务"));
+    // 池块点击纯拖拽（防误触）→ 编辑走块上 ✎ 钮
+    await user.click(await screen.findByTitle("编辑任务"));
     await user.click(await screen.findByTitle("删除任务"));
     // TP-2：软删改走 task_patch 定向补丁（null=清空调度字段）
     await waitFor(() => {

@@ -1,6 +1,8 @@
 import { useState } from "react";
-import type { Task } from "../../types";
+import { PenLine } from "lucide-react";
+import type { ColumnId, Task } from "../../types";
 import { planChip, planColorVar } from "./week";
+import { DoneCircle } from "../DoneCircle";
 
 const OPEN_KEY = "wm-task-pool-open";
 
@@ -23,37 +25,52 @@ export function savePoolOpen(open: boolean) {
 }
 
 /** 任务池（毛玻璃悬浮层）：列出全部未完成任务的统一标题块。
- *  常驻挂载：开合走 transform+opacity 过渡（M3 emphasized 曲线，入 240ms/出 150ms），
- *  不再条件渲染——开关按钮在页头（与新建任务同行），折叠后完全让出网格。
+ *  块结构（惯例：整块=拖拽面，尾部常驻操作钮）：[色条|标题] [完成圆圈] [✎编辑]——
+ *  圆圈快速切换完成态、编辑钮开详情面板，其余区域只拖拽（防误触开编辑窗）。
+ *  常驻挂载：开合走 transform+opacity 过渡；evaded = 拖拽离池时整池滑出让出视野；
+ *  liftedId = 拖拽中的源块在池内悬浮（升起+光晕）。
  *  onItemPointerDown 供页面发起「池→网格」拖拽；innerRef 供「拖回池清除」落点判定；
- *  doneTasks 折叠在池底「已完成 N」；faded = 从池拖出时原位淡出让出视野。 */
+ *  doneTasks 折叠在池底「已完成 N」（打勾形式，圆圈可恢复待办）。 */
 export function TaskPool({
   tasks,
   doneTasks = [],
   open,
   onToggle,
   onItemPointerDown,
-  onTaskClick,
+  onSetColumn,
+  onEdit,
   innerRef,
-  faded = false,
+  evaded = false,
+  liftedId = null,
 }: {
   tasks: Task[];
   doneTasks?: Task[];
   open: boolean;
   onToggle: () => void;
   onItemPointerDown?: (task: Task, e: React.PointerEvent) => void;
-  onTaskClick?: (task: Task) => void;
+  onSetColumn?: (taskId: string, col: ColumnId) => void;
+  onEdit?: (task: Task) => void;
   innerRef?: React.Ref<HTMLElement>;
-  faded?: boolean;
+  /** 拖拽离池：整池滑出让出视野（回池内滑回） */
+  evaded?: boolean;
+  /** 拖拽中的源块 id（池内悬浮态） */
+  liftedId?: string | null;
 }) {
   const [showDone, setShowDone] = useState(false);
 
   const sorted = sortPoolTasks(tasks);
   const hidden = !open;
-  const shown = sorted.map((t) => (
+  const stopPointer = (e: React.PointerEvent) => e.stopPropagation();
+  const itemCls = (t: Task) =>
+    `flex h-[34px] touch-none items-center gap-2 rounded-lg border pr-1.5 ${
+      liftedId === t.id
+        ? "pool-lift relative z-10"
+        : "hover:border-[var(--edge-strong)]"
+    }`;
+  const item = (t: Task) => (
     <div
       key={t.id}
-      className="flex h-[34px] touch-none items-center gap-2 rounded-lg border pr-2.5"
+      className={itemCls(t)}
       style={{
         borderColor: "color-mix(in srgb, var(--edge) 80%, transparent)",
         background: "color-mix(in srgb, var(--surface-raised) 72%, transparent)",
@@ -74,8 +91,26 @@ export function TaskPool({
           {planChip(t.planStart)}
         </span>
       )}
+      <DoneCircle
+        done={false}
+        onToggle={() => onSetColumn?.(t.id, "done")}
+        title="标记完成"
+      />
+      <button
+        type="button"
+        aria-label={`编辑 ${t.title}`}
+        title="编辑任务"
+        className="nm-icon-btn h-5 w-5 shrink-0 text-[var(--t5)]"
+        onPointerDown={stopPointer}
+        onClick={(e) => {
+          e.stopPropagation();
+          onEdit?.(t);
+        }}
+      >
+        <PenLine size={11} aria-hidden />
+      </button>
     </div>
-  ));
+  );
 
   return (
     <aside
@@ -83,13 +118,14 @@ export function TaskPool({
       aria-label="任务池"
       aria-hidden={hidden}
       className={`glass absolute top-3 right-3 bottom-3 z-10 flex w-64 flex-col overflow-hidden ${
-        hidden ? "pointer-events-none opacity-0" : faded ? "opacity-0" : "opacity-100"
+        hidden || evaded ? "pointer-events-none opacity-0" : "opacity-100"
       }`}
       style={{
-        transform: hidden ? "translateX(calc(100% + 16px))" : "translateX(0)",
+        transform:
+          hidden || evaded ? "translateX(calc(100% + 16px))" : "translateX(0)",
         transitionProperty: "transform, opacity",
-        transitionDuration: hidden ? "150ms" : "240ms",
-        transitionTimingFunction: hidden
+        transitionDuration: hidden || evaded ? "150ms" : "240ms",
+        transitionTimingFunction: hidden || evaded
           ? "cubic-bezier(0.3, 0, 0.8, 0.15)"
           : "cubic-bezier(0.05, 0.7, 0.1, 1)",
       }}
@@ -112,7 +148,7 @@ export function TaskPool({
             没有未完成的任务，⌘N 新建
           </p>
         ) : (
-          shown
+          sorted.map(item)
         )}
         {doneTasks.length > 0 && (
           <div className="mt-auto border-t border-[color-mix(in_srgb,var(--edge)_70%,transparent)] pt-1.5">
@@ -126,16 +162,32 @@ export function TaskPool({
             </button>
             {showDone &&
               doneTasks.map((t) => (
-                <button
+                <div
                   key={t.id}
-                  type="button"
-                  className="flex h-[30px] w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-[var(--hover-bg)]"
-                  onClick={() => onTaskClick?.(t)}
+                  className="flex h-[30px] items-center gap-2 rounded-lg px-1.5"
                 >
-                  <span className="truncate text-xs text-[var(--t5)] line-through">
+                  <DoneCircle
+                    done
+                    onToggle={() => onSetColumn?.(t.id, "todo")}
+                    title="恢复待办"
+                  />
+                  <span className="truncate text-xs text-[var(--t2)]">
                     {t.title}
                   </span>
-                </button>
+                  <button
+                    type="button"
+                    aria-label={`编辑 ${t.title}`}
+                    title="编辑任务"
+                    className="nm-icon-btn ml-auto h-5 w-5 shrink-0 text-[var(--t5)]"
+                    onPointerDown={stopPointer}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEdit?.(t);
+                    }}
+                  >
+                    <PenLine size={11} aria-hidden />
+                  </button>
+                </div>
               ))}
           </div>
         )}

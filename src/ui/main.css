@@ -1309,4 +1309,13 @@
     margin-top: 2px;
     font-variant-numeric: tabular-nums;
   }
+
+  /* 池内拖拽源块悬浮：升起 + 同色光晕（拖住即悬浮，落位/取消才收回） */
+  .pool-lift {
+    transform: scale(1.04) translateY(-1px);
+    box-shadow:
+      var(--shadow-lg),
+      0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+    cursor: grabbing;
+  }
 }

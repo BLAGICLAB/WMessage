@@ -62,8 +62,9 @@ export function TaskTimelinePage({
     label: string;
   } | null>(null);
   const [dragTaskId, setDragTaskId] = useState<string | null>(null);
-  /** 池淡出只跟「从池拖出」（create）走——网格块拖回池时池是落点，必须可见 */
+  /** 拖拽源在池（create）：源块池内悬浮；指针离池 → 整池滑出让出视野 */
   const [dragFromPool, setDragFromPool] = useState(false);
+  const [dragEvade, setDragEvade] = useState(false);
   const [freshId, setFreshId] = useState<string | null>(null);
   const gridBodyRef = useRef<HTMLDivElement | null>(null);
   const poolRef = useRef<HTMLElement | null>(null);
@@ -145,50 +146,55 @@ export function TaskTimelinePage({
           ? (windowMinutesBetween(drag.task.planStart, drag.task.planEnd) ?? 60)
           : 60;
     const color = planColorVar(drag.task.tags);
-    let overPool = false;
 
     const onMove = (ev: PointerEvent) => {
       if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) {
         moved = true;
       }
       const hit = locate(ev.clientX, ev.clientY);
-      overPool =
-        drag.kind === "move" &&
-        (() => {
-          const r = poolRef.current?.getBoundingClientRect();
-          return !!r && ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom;
-        })();
-      if (!hit || overPool) {
-        setSlot(null);
-        setGhost(
-          overPool
-            ? { x: ev.clientX, y: ev.clientY, title: drag.task.title, color, label: "松手清除排期" }
-            : null,
-        );
-        return;
-      }
+      const poolR = poolRef.current?.getBoundingClientRect();
+      const inPool =
+        !!poolR &&
+        ev.clientX >= poolR.left &&
+        ev.clientX <= poolR.right &&
+        ev.clientY >= poolR.top &&
+        ev.clientY <= poolR.bottom;
+      // 池源拖拽：离池 → 整池滑出让出视野；回池内滑回
+      if (drag.kind === "create") setDragEvade(moved && !inPool);
+      // 幽灵常显：命中网格显时间段；池内显取消；网格外显引导文案
       if (drag.kind === "resize") {
-        const patch = planPatchForDrop("resize", {
-          day: hit.day,
-          min: hit.min,
-          prevPlanStart: drag.task.planStart,
-        });
-        const end = parsePlanDT(patch.planEnd);
-        const start = parsePlanDT(patch.planStart)!;
-        const sameDay = end!.day.getTime() === start.day.getTime();
-        setSlot({
-          dayIdx: hit.dayIdx,
-          startMin: sameDay ? start.min : DAY_START_MIN,
-          endMin: sameDay ? end!.min : DAY_END_MIN,
-        });
-        setGhost({
-          x: ev.clientX,
-          y: ev.clientY,
-          title: drag.task.title,
-          color,
-          label: `至 ${patch.planEnd.slice(11)}`,
-        });
-      } else {
+        if (hit) {
+          const patch = planPatchForDrop("resize", {
+            day: hit.day,
+            min: hit.min,
+            prevPlanStart: drag.task.planStart,
+          });
+          const end = parsePlanDT(patch.planEnd);
+          const start = parsePlanDT(patch.planStart)!;
+          const sameDay = end!.day.getTime() === start.day.getTime();
+          setSlot({
+            dayIdx: hit.dayIdx,
+            startMin: sameDay ? start.min : DAY_START_MIN,
+            endMin: sameDay ? end!.min : DAY_END_MIN,
+          });
+          setGhost({
+            x: ev.clientX,
+            y: ev.clientY,
+            title: drag.task.title,
+            color,
+            label: `至 ${patch.planEnd.slice(11)}`,
+          });
+        } else {
+          setSlot(null);
+          setGhost({
+            x: ev.clientX,
+            y: ev.clientY,
+            title: drag.task.title,
+            color,
+            label: "向下拉伸改时长",
+          });
+        }
+      } else if (hit) {
         const patch = planPatchForDrop(drag.kind === "create" ? "schedule" : "move", {
           day: hit.day,
           min: hit.min,
@@ -213,6 +219,15 @@ export function TaskTimelinePage({
             ? `${sd} ${fmtMin(start.min)} – ${fmtMin(end.min)}`
             : `${sd} ${fmtMin(start.min)} – ${ed} ${fmtMin(end.min)}`,
         });
+      } else {
+        setSlot(null);
+        setGhost({
+          x: ev.clientX,
+          y: ev.clientY,
+          title: drag.task.title,
+          color,
+          label: inPool ? "松手取消" : "拖到时间轴上排期",
+        });
       }
     };
 
@@ -221,11 +236,12 @@ export function TaskTimelinePage({
       window.removeEventListener("pointerup", onUp);
       setDragTaskId(null);
       setDragFromPool(false);
+      setDragEvade(false);
       setSlot(null);
       setGhost(null);
-      // 点击（未拖动）：选中任务打开详情面板（move/create 同义；resize 无点击语义）
+      // 点击（未拖动）：网格块 → 选中开面板；池块纯拖拽（编辑走块上 ✎，防误触）
       if (!moved) {
-        if (drag.kind !== "resize") setSelected({ id: drag.task.id, autoFocus: false });
+        if (drag.kind === "move") setSelected({ id: drag.task.id, autoFocus: false });
         return;
       }
       const hit = locate(ev.clientX, ev.clientY);
@@ -356,12 +372,14 @@ export function TaskTimelinePage({
             open={poolOpen}
             onToggle={togglePool}
             innerRef={poolRef}
-            faded={dragFromPool}
+            evaded={dragFromPool && dragEvade}
+            liftedId={dragFromPool ? dragTaskId : null}
+            onSetColumn={onSetColumn}
             onItemPointerDown={(task, e) => {
               if (!onUpdate) return;
               startDrag(e, { kind: "create", task });
             }}
-            onTaskClick={(t) => setSelected({ id: t.id, autoFocus: false })}
+            onEdit={(t) => setSelected({ id: t.id, autoFocus: false })}
           />
         </div>
       </div>

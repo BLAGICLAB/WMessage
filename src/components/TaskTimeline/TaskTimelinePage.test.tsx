@@ -138,26 +138,56 @@ describe("TaskTimelinePage", () => {
     expect(called).toBe(1);
   });
 
-  it("点池项（按下即松，无位移）打开详情面板；Esc 关闭", () => {
+  it("池块点击纯拖拽不开面板（防误触）；✎ 编辑钮开面板；圆圈快速打勾", async () => {
+    const user = userEvent.setup();
+    const onSetColumn = vi.fn();
     render(
       <TaskTimelinePage
         tasks={TASKS}
         onUpdate={vi.fn()}
-        onSetColumn={vi.fn()}
+        onSetColumn={onSetColumn}
         onDelete={vi.fn()}
       />,
     );
-    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
-    // 按下 → 原位松开 = 点击（无位移不构成拖拽）
+    // 原位按下松开 = 点击 → 不开面板
     fireEvent.pointerDown(screen.getByText("未排期任务乙"), { button: 0 });
     fireEvent.pointerUp(screen.getByText("未排期任务乙"));
-    const panel = screen.getByLabelText("任务详情");
-    expect(panel).toBeInTheDocument();
-    fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
+    // ✎ 编辑钮 → 开面板
+    await user.click(screen.getByRole("button", { name: "编辑 未排期任务乙" }));
+    expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    // 完成圆圈（该块尾部）→ set_column done
+    const row = screen.getByText("未排期任务乙").closest("div")!;
+    await user.click(
+      within(row as HTMLElement).getByRole("button", { name: "标记完成" }),
+    );
+    expect(onSetColumn).toHaveBeenCalledWith("t2", "done");
   });
 
-  it("从池拖出时池淡出让出视野（露出周末列），松手淡回", () => {
+  it("已完成区打勾形式（无划线）：圆圈恢复待办，✎ 编辑", async () => {
+    const user = userEvent.setup();
+    const onSetColumn = vi.fn();
+    render(
+      <TaskTimelinePage
+        tasks={[...TASKS, mk({ id: "t9", title: "完成任务庚", column: "done", completedAt: 1 })]}
+        onUpdate={vi.fn()}
+        onSetColumn={onSetColumn}
+        onDelete={vi.fn()}
+      />,
+    );
+    const pool = within(screen.getByLabelText("任务池"));
+    await user.click(pool.getByText(/已完成/));
+    const row = pool.getByText("完成任务庚").closest("div")!;
+    // 无划线（打勾形式承载完成语义）
+    expect(row.querySelector(".line-through")).toBeNull();
+    await user.click(within(row as HTMLElement).getByRole("button", { name: "恢复待办" }));
+    expect(onSetColumn).toHaveBeenCalledWith("t9", "todo");
+    await user.click(within(row as HTMLElement).getByRole("button", { name: "编辑 完成任务庚" }));
+    expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
+  });
+
+  it("从池拖出：源块池内悬浮，离池整池滑出（translateX 让出视野）", () => {
     render(
       <TaskTimelinePage
         tasks={TASKS}
@@ -167,14 +197,17 @@ describe("TaskTimelinePage", () => {
       />,
     );
     const pool = screen.getByLabelText("任务池");
-    expect(pool.className).not.toContain("opacity-0");
-    // 按下池项 + 移动 = 拖拽开始 → 池淡出
-    fireEvent.pointerDown(screen.getByText("未排期任务乙"), { button: 0 });
-    fireEvent.pointerMove(window, { clientX: 420, clientY: 320 });
-    expect(pool.className).toContain("opacity-0");
-    // 松手落位 → 淡回
-    fireEvent.pointerUp(window, { clientX: 420, clientY: 320 });
-    expect(pool.className).not.toContain("opacity-0");
+    expect(pool.style.transform).toBe("translateX(0)");
+    // 按住源块（悬浮）→ 拖离池（jsdom 无布局，池矩形恒 0 → 移动即离池）→ 池滑出
+    const poolItem = within(pool).getByText("未排期任务乙");
+    fireEvent.pointerDown(poolItem, { button: 0 });
+    fireEvent.pointerMove(window, { clientX: 1300, clientY: 400 });
+    expect(poolItem.closest(".pool-lift")).not.toBeNull();
+    expect(pool.style.transform).toContain("translateX(calc(100%");
+    // 松手 → 拖拽态复位
+    fireEvent.pointerUp(window, { clientX: 1300, clientY: 400 });
+    expect(poolItem.closest(".pool-lift")).toBeNull();
+    expect(pool.style.transform).toBe("translateX(0)");
   });
 
   it("editingId 变化：面板打开并聚焦标题（⌘N 新建路径）", () => {
@@ -195,25 +228,5 @@ describe("TaskTimelinePage", () => {
     const title = within(panel).getByLabelText("任务标题") as HTMLInputElement;
     expect(title.value).toBe("新任务");
     expect(document.activeElement).toBe(title);
-  });
-
-  it("已完成折叠区：点开列 done 任务，点行进面板可恢复待办", async () => {
-    const user = userEvent.setup();
-    const onSetColumn = vi.fn();
-    render(
-      <TaskTimelinePage
-        tasks={[...TASKS, mk({ id: "t9", title: "完成任务庚", column: "done", completedAt: 1 })]}
-        onUpdate={vi.fn()}
-        onSetColumn={onSetColumn}
-        onDelete={vi.fn()}
-      />,
-    );
-    const pool = within(screen.getByLabelText("任务池"));
-    expect(pool.queryByText("完成任务庚")).not.toBeInTheDocument();
-    await user.click(pool.getByText(/已完成/));
-    await user.click(pool.getByText("完成任务庚"));
-    const panel = screen.getByLabelText("任务详情");
-    await user.click(within(panel).getByRole("button", { name: "✓ 恢复待办" }));
-    expect(onSetColumn).toHaveBeenCalledWith("t9", "todo");
   });
 });
