@@ -6249,3 +6249,24 @@ doneCount/total 一致（50%→49.7%，100%→99.3%，差值为 1px 边框所致
 **3. `window.confirm` 改 Tauri 2 dialog plugin 是「库内生态有就不自造」原则的体现**——11 个破坏性确认（删模型/删厂商/删模板/删工作区/删 MCP/删任务/清 key/旋转 token/清审计/启 Python 沙箱/启用回滚过的提案/立即执行桌面清理）原本全走 `window.confirm`，Tauri WebView 下行为不可靠且无 a11y。库内 `DeleteConfirmDialog` 留给「带元数据/级联选项」复杂场景（删除提案时是否连带源记忆），通用二次确认走 `useConfirm` hook 包 `plugin-dialog` 的 `ask`——11 处调用方零行为变化（kind:'warning' 默认 + ok/cancel 按钮文案统一）。库内调研（keyring 4.x Error 12 变体）同步记入 `memory/wmessage-keyring-error-semantics.md`，下次 keyring 升级或想动 NoEntry 兜底时直接调取。
 
 **不写横幅分隔线**（AGENTS.md 硬性禁令）；git log 是事实记录（10 个 commit 已推 origin/main：`efdab6b..5980056`，含 main.css 结构锁 / 绿色版根治 / 注释清零 / EditMode replacements / keyring NoEntry 分流 / registry tokenizer 测试 / evolution spawn_blocking / io.rs 共用锁 / api_server history 中毒 fix），本条只写三个换方向的口径。
+## 2026-10-12（周一）出包:Windows 绿色版 `wmessage-portable-2026-10-12.zip`（104 MB / 109,445,751 B / 含 205 项)
+
+**背景**: 老板要最新绿色包，main 处于验收热修后的稳定点，按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程执行。
+
+**构建**:
+- 路径: `/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-12.zip`
+- `wmessage.exe`: 74,097,843 B（约 71 MB，基于 main @ c91c8d0，mingw x86_64-pc-windows-gnu 交叉编译）
+- `dotnet/`: 189 文件 self-contained .NET 8（侧车源码自上版出包后有改动，本次重新 publish，非复用）
+- `onnxruntime.dll`: 15,809,848 B（ort 2.0.0-rc.13 配套 1.28.0，/tmp 缓存复用）
+- 其余固定文件（WebView2Loader.dll / MicrosoftEdgeWebview2Setup.exe）从 `packaging/wmessage-portable-staging/` 复用
+
+**为什么有一笔出包前置修复（c91c8d0）**: windows 目标编译报 E0432——`py/runtime.rs` 的 `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` 在 windows 0.61 中挂在 `Win32_System_Threading` feature 下，而 Cargo.toml 只声明了 `Win32_System_JobObjects`。上一版能编过是因为 tauri 旧版依赖图透传了该 feature，c84ab2f 升 tauri 2.12.3 后透传消失、隐式可用变显式缺失。修法是显式声明 + 一行注释说明这个反直觉门控（结构体在 JobObjects 模块、feature 却在 Threading）。教训: 依赖图的 feature 合一是隐式契约，自用 API 必须自己声明全。macOS 侧 `cargo check` 通过（manifest 有 target 特异改动，按手册必跑）。
+
+**校验**:
+- `ZIP_OK 205 files, 顶层 9 项`（与 10-10 版完全同构）
+- `objdump -p wmessage.exe | grep -i onnxruntime` → 空（load-dynamic，运行时 LoadLibrary）
+- `file wmessage.exe` → PE32+ executable (GUI) x86-64
+
+**距上一版主要改动**（5184135..c91c8d0 共 60 commit，全量见 zip 内 README.txt）: 首页仪表盘模块（每日一图/周柱图/通知/图谱·日程·任务卡 + 跨组件联动）、任务页周时间网格改版（planStart/planEnd + 拖拽排期 + 详情面板，退役三列看板）、任务池交互重构、Word 模板参数层、切模型死锁等安全修复批。
+
+**未做**: Windows 实机验收（人工项——解压运行、记忆语义检索肉眼确认、ocr_image 实测），待老板真机过一遍。
