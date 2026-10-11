@@ -197,12 +197,6 @@ export function TaskDetailPanel({
     );
   };
 
-  const copyOneFile = (path: string) => {
-    invoke("copy_file_with_title", { path, title: task.title }).catch((e) =>
-      handleCommandError(e, "copy_file_with_title", { silent: true }),
-    );
-  };
-
   /* ── 🤖 交给机器人（与 TodoCard 同通道：execute-task 事件 + 唤起挂件窗口） ── */
   const runWithBot = () => {
     emit("execute-task", { id: task.id, title: task.title }).catch(() => {});
@@ -220,7 +214,56 @@ export function TaskDetailPanel({
   // 执行痕迹弹层（TracePanel 自带 portal 到 body）
   const [traceOpen, setTraceOpen] = useState(false);
 
+  // 复制反馈（惯例：原位瞬时换标 + aria-live 播报，~1.6s 还原）：
+  // 按文件路径记 ok/err，成功「✓ 已复制」、失败「复制失败」
+  const [copyState, setCopyState] = useState<Record<string, "ok" | "err">>({});
+  const copyTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(
+    () => () => {
+      for (const t of Object.values(copyTimers.current)) clearTimeout(t);
+    },
+    [],
+  );
+
   const basename = (p: string) => p.split(/[\\/]/).pop() || p;
+
+  const copyOneFile = (path: string) => {
+    invoke("copy_file_with_title", { path, title: task.title })
+      .then(() => {
+        setCopyState((m) => ({ ...m, [path]: "ok" }));
+        clearTimeout(copyTimers.current[path]);
+        copyTimers.current[path] = setTimeout(
+          () =>
+            setCopyState((m) => {
+              const { [path]: _drop, ...rest } = m;
+              return rest;
+            }),
+          1600,
+        );
+      })
+      .catch((e) => {
+        setCopyState((m) => ({ ...m, [path]: "err" }));
+        clearTimeout(copyTimers.current[path]);
+        copyTimers.current[path] = setTimeout(
+          () =>
+            setCopyState((m) => {
+              const { [path]: _drop, ...rest } = m;
+              return rest;
+            }),
+          1600,
+        );
+        handleCommandError(e, "copy_file_with_title", { silent: true });
+      });
+  };
+
+  // 标题自适应高度：内容全部可见（换行展示，不截断）；Enter 提交语义不变
+  const titleRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [titleDraft, task.id]);
 
   return (
     <aside
@@ -229,19 +272,24 @@ export function TaskDetailPanel({
     >
       <div className="flex items-start gap-2">
         <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
-        <input
-          className="min-w-0 flex-1 border-none bg-transparent text-base font-semibold text-[var(--t1)] outline-none"
+        <textarea
+          ref={titleRef}
+          rows={1}
+          className="min-w-0 flex-1 resize-none overflow-hidden border-none bg-transparent text-base font-semibold leading-snug text-[var(--t1)] outline-none"
           value={titleDraft}
           autoFocus={autoFocusTitle}
           onFocus={(e) => autoFocusTitle && e.target.select()}
           onChange={(e) => setTitleDraft(e.target.value)}
           onBlur={commitTitle}
           onKeyDown={(e) => {
-            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              (e.target as HTMLTextAreaElement).blur();
+            }
             if (e.key === "Escape") {
               skipTitleCommit.current = true;
               setTitleDraft(task.title);
-              (e.target as HTMLInputElement).blur();
+              (e.target as HTMLTextAreaElement).blur();
             }
           }}
           aria-label="任务标题"
@@ -427,7 +475,7 @@ export function TaskDetailPanel({
         文件
       </div>
       {boundFiles.length > 0 ? (
-        <div className="flex flex-col items-start gap-1">
+        <div className="flex flex-col items-start gap-1" aria-live="polite">
           {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
             <div
               key={f.path}
@@ -442,14 +490,26 @@ export function TaskDetailPanel({
                 {f.isDir ? "📁 " : "📄 "}
                 {basename(f.path)}
               </button>
-              <button
-                type="button"
-                className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t2)]"
-                title="复制到剪贴板"
-                onClick={() => copyOneFile(f.path)}
-              >
-                复制
-              </button>
+              {copyState[f.path] ? (
+                <span
+                  className={`shrink-0 text-[10px] font-medium ${
+                    copyState[f.path] === "ok"
+                      ? "text-[var(--success)]"
+                      : "text-[var(--danger)]"
+                  }`}
+                >
+                  {copyState[f.path] === "ok" ? "✓ 已复制" : "复制失败"}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t2)]"
+                  title="复制到剪贴板"
+                  onClick={() => copyOneFile(f.path)}
+                >
+                  复制
+                </button>
+              )}
               <button
                 type="button"
                 className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"

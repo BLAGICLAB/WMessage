@@ -2,10 +2,13 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { emit } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import type { Task } from "../../types";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
@@ -241,5 +244,30 @@ describe("TaskDetailPanel", () => {
       />,
     );
     expect(screen.getByText("机器人执行中…")).toBeInTheDocument();
+  });
+
+  it("标题自适应高度：textarea 承载全值不截断（长标题换行展示）", () => {
+    const long = "这是一个特别特别特别长的任务标题用来验证换行展示而不被截断的用例";
+    setup({ title: long });
+    const el = screen.getByLabelText("任务标题") as HTMLTextAreaElement;
+    expect(el.tagName).toBe("TEXTAREA");
+    expect(el.value).toBe(long);
+  });
+
+  it("复制反馈：成功换「✓ 已复制」1.6s 还原；失败换「复制失败」", async () => {
+    const path = "/Users/me/桌面/报告.docx";
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    setup({ files: [{ path, isDir: false }] });
+    fireEvent.click(screen.getByTitle("复制到剪贴板"));
+    expect(await screen.findByText("✓ 已复制")).toBeInTheDocument();
+    // ~1.6s 后还原为「复制」
+    await vi.waitFor(
+      () => expect(screen.getByTitle("复制到剪贴板")).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
+    // 失败态
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("denied"));
+    fireEvent.click(screen.getByTitle("复制到剪贴板"));
+    expect(await screen.findByText("复制失败")).toBeInTheDocument();
   });
 });
