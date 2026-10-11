@@ -67,7 +67,9 @@ const TASKS: Task[] = [
   task({ id: "c3", title: "c3", completedAt: NOW.getTime() - 3 * DAY, column: "done" }),
   task({ id: "c4", title: "c4", completedAt: NOW.getTime() - 2 * DAY, column: "done" }),
   task({ id: "c5", title: "c5", completedAt: NOW.getTime() - 1 * DAY, column: "done" }),
-  task({ id: "arch1", title: "归档样例", archived: true, completedAt: NOW.getTime() - 8 * DAY, column: "done" }),
+  task({ id: "arch1", title: "归档样例", archived: true, completedAt: NOW.getTime() - 8 * DAY, updatedAt: NOW.getTime() - 1 * DAY, tags: ["开发"], column: "done" }),
+  task({ id: "arch2", title: "归档样例 b", archived: true, completedAt: NOW.getTime() - 9 * DAY, updatedAt: NOW.getTime() - 2 * DAY, tags: ["设计"], column: "done" }),
+  task({ id: "arch3", title: "归档样例 c", archived: true, completedAt: NOW.getTime() - 10 * DAY, updatedAt: NOW.getTime() - 3 * DAY, column: "done" }),
 ];
 
 const TRACES: TraceRow[] = [
@@ -164,11 +166,35 @@ describe("HomePage 渲染", () => {
     expect(fill.textContent).toBe("33%");
   });
 
-  it("KPI 三池真实计数：待办 4 / 完成 7 / 归档 1", () => {
+  it("KPI 三池真实计数：待办 4 / 完成 7 / 归档 3", () => {
     renderHome();
     expect(kpiValue("待办")).toBe("4");
     expect(kpiValue("完成")).toBe("7");
-    expect(kpiValue("归档")).toBe("1");
+    expect(kpiValue("归档")).toBe("3");
+  });
+
+  it("归档脉搏：本周归档/打标率/阈值 + 标签 chips + 最近批次脚注", () => {
+    renderHome();
+    expect(screen.getByText("归档脉搏")).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument(); // 本周归档
+    expect(screen.getByText("67%")).toBeInTheDocument(); // 自动打标 2/3
+    expect(screen.getByText("7 天")).toBeInTheDocument(); // bot_get_config 阈值
+    expect(screen.getByText(/开发/)).toBeInTheDocument();
+    expect(screen.getByText(/设计/)).toBeInTheDocument();
+    expect(
+      screen.getByText("最近一批 1 天前归档，可在归档页恢复"),
+    ).toBeInTheDocument();
+  });
+
+  it("最近归档：按归档时间倒序的卡列表 + 总数脚注", () => {
+    renderHome();
+    expect(screen.getByText("最近归档")).toBeInTheDocument();
+    const list = screen.getByTestId("recent-archived-list");
+    const titles = within(list)
+      .getAllByText(/归档样例/)
+      .map((el) => el.textContent);
+    expect(titles).toEqual(["归档样例", "归档样例 b", "归档样例 c"]);
+    expect(screen.getByText("归档区共 3 张卡")).toBeInTheDocument();
   });
 
   it("必应每日一图卡：成功态铺图 + 标题版权", async () => {

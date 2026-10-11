@@ -22,6 +22,7 @@ import {
   subscribeProfile,
 } from "../../profile";
 import {
+  archivePulse,
   poolCounts,
   planPhases,
   weeklyBuckets,
@@ -34,7 +35,12 @@ import { WeeklyChart } from "./WeeklyChart";
 import { GraphMini } from "./GraphMini";
 import { DayGridMini } from "./DayGridMini";
 import { PoolPager } from "./PoolPager";
-import { BotPanel, NotifyPanel } from "./HomePanels";
+import {
+  ArchivePulsePanel,
+  BotPanel,
+  NotifyPanel,
+  RecentArchivedPanel,
+} from "./HomePanels";
 
 const REFRESH_MS = 30_000;
 
@@ -50,7 +56,9 @@ export function HomePage({
 }: {
   tasks: Task[];
   scrollRef: React.RefObject<HTMLElement | null>;
-  onNavigate: (v: "board" | "activity" | "notifications" | "graph") => void;
+  onNavigate: (
+    v: "board" | "activity" | "notifications" | "graph" | "archive",
+  ) => void;
   onOpenTask: (t: Task) => void;
   /** 时钟注入口（测试确定性；生产缺省走真实时间 + 30s 轮询） */
   now?: Date;
@@ -82,6 +90,20 @@ export function HomePage({
       alive = false;
       un();
     };
+  }, []);
+
+  // 归档阈值（设置页数据管理可改）：拉取失败沿用默认 7 天（App 启动已上报过错误）
+  const [archiveDays, setArchiveDays] = useState(7);
+  useEffect(() => {
+    let alive = true;
+    invoke<{ archiveAfterDays?: number | null }>("bot_get_config")
+      .then((c) => {
+        if (alive) setArchiveDays(c.archiveAfterDays ?? 7);
+      })
+      .catch(() => {
+        // 同 App 启动逻辑：拉取失败退化默认阈值（错误已在启动链路上报过）
+        setArchiveDays(7);
+      });
   }, []);
 
   // 执行痕迹：trace_list 全量来源（手动/定时/工作流/批量）；失败必须可见
@@ -125,6 +147,10 @@ export function HomePage({
   const { keys: dayKeys } = useMemo(
     () => plannedTasksByDay(tasks, now),
     [tasks, now],
+  );
+  const pulse = useMemo(
+    () => archivePulse(tasks, now, archiveDays),
+    [tasks, now, archiveDays],
   );
 
   // Linked Hover 共享状态：日期 + 任务卡（周图/日程/任务卡/图谱四组件共用）
@@ -209,12 +235,21 @@ export function HomePage({
           </div>
         </div>
 
-        <BotPanel
-          traces={traces}
-          traceError={traceError}
-          now={now}
-          onMore={() => onNavigate("activity")}
-        />
+        {/* 末行：归档脉搏｜最近归档｜机器人动态（右对齐任务卡列） */}
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)]">
+          <ArchivePulsePanel pulse={pulse} onMore={() => onNavigate("archive")} />
+          <RecentArchivedPanel
+            pulse={pulse}
+            onOpenTask={onOpenTask}
+            onMore={() => onNavigate("archive")}
+          />
+          <BotPanel
+            traces={traces}
+            traceError={traceError}
+            now={now}
+            onMore={() => onNavigate("activity")}
+          />
+        </div>
       </div>
     </div>
   );

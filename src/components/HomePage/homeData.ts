@@ -241,6 +241,61 @@ export function unplannedTasks(tasks: Task[]): Task[] {
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
+export type ArchivePulse = {
+  /** 本周归档数（归档时间无独立字段，以 updatedAt 落在本周近似） */
+  weekCount: number;
+  /** 归档区总数 */
+  total: number;
+  /** 自动打标率：带标签的归档卡占比；无归档时为 null */
+  autoTagPct: number | null;
+  /** 归档卡标签 Top 计数 */
+  topTags: Array<{ tag: string; count: number }>;
+  /** 最近一批归档距今天数（0 = 今天） */
+  lastBatchDaysAgo: number | null;
+  /** 最近归档的 10 张卡（按 updatedAt 倒序） */
+  recent: Task[];
+  /** 归档阈值（设置页数据管理的天数，透传展示） */
+  thresholdDays: number;
+};
+
+/** 归档脉搏聚合：归档总数、打标率、标签分布、最近归档批次与列表 */
+export function archivePulse(
+  tasks: Task[],
+  now: Date,
+  thresholdDays: number,
+): ArchivePulse {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const archived = tasks
+    .filter((t) => t.archived && !t.deletedAt)
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  const weekCount = archived.filter(
+    (t) => (t.updatedAt ?? 0) >= start.getTime(),
+  ).length;
+  const tagged = archived.filter((t) => (t.tags?.length ?? 0) > 0).length;
+  const tagCount = new Map<string, number>();
+  for (const t of archived) {
+    for (const tag of t.tags ?? []) tagCount.set(tag, (tagCount.get(tag) ?? 0) + 1);
+  }
+  const topTags = [...tagCount.entries()]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4);
+  const lastUpdated = archived[0]?.updatedAt;
+  return {
+    weekCount,
+    total: archived.length,
+    autoTagPct: archived.length ? Math.round((tagged / archived.length) * 100) : null,
+    topTags,
+    lastBatchDaysAgo: lastUpdated
+      ? Math.max(0, Math.floor((now.getTime() - lastUpdated) / 86_400_000))
+      : null,
+    recent: archived.slice(0, 10),
+    thresholdDays,
+  };
+}
+
 export function greetingOf(now: Date): string {
   const h = now.getHours();
   if (h < 5) return "夜深了";

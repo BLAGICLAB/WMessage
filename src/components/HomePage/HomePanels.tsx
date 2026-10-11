@@ -1,10 +1,13 @@
-// 首页面板：机器人动态（执行痕迹）/ 通知中心。
-// 行为约定：动态行点击跳对应模块，通知「去处理」跳通知中心——
-// 首页只做聚合与跳转，完整操作（验收/回复/提案裁决）留在各自模块页。
+// 首页面板：归档脉搏（映射归档页统计）/ 最近归档（归档卡列表）/
+// 机器人动态（执行痕迹）/ 通知中心。
+// 行为约定：面板只做聚合与跳转，完整操作（恢复/验收/提案裁决）留在各自模块页。
 
+import type { Task } from "../../types";
 import type { TraceRow } from "../../lib/trace";
 import type { NotificationItem } from "../../lib/notifications";
 import { relativeTime } from "../../format";
+import { planColorVar } from "../TaskTimeline/week";
+import type { ArchivePulse } from "./homeData";
 
 function fmtDur(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -213,6 +216,113 @@ export function NotifyPanel({
             </button>
           </Row>
         ))
+      )}
+    </Panel>
+  );
+}
+
+/** 归档脉搏：本周归档 / 自动打标率 / 归档阈值 + 标签分布 chips（映射归档页统计） */
+export function ArchivePulsePanel({
+  pulse,
+  onMore,
+}: {
+  pulse: ArchivePulse;
+  onMore: () => void;
+}) {
+  return (
+    <Panel
+      dot="var(--plan-slate)"
+      title="归档脉搏"
+      moreLabel="归档页"
+      onMore={onMore}
+      footer={
+        pulse.lastBatchDaysAgo === null
+          ? "还没有归档过任务"
+          : `最近一批 ${
+              pulse.lastBatchDaysAgo === 0 ? "今天" : `${pulse.lastBatchDaysAgo} 天前`
+            }归档，可在归档页恢复`
+      }
+    >
+      <div className="flex gap-5">
+        {[
+          { v: String(pulse.weekCount), l: "本周归档" },
+          {
+            v: pulse.autoTagPct === null ? "—" : `${pulse.autoTagPct}%`,
+            l: "自动打标",
+          },
+          { v: `${pulse.thresholdDays} 天`, l: "归档阈值" },
+        ].map((s) => (
+          <div key={s.l}>
+            <div className="num text-[19px] font-semibold leading-none text-[var(--t1)]">
+              {s.v}
+            </div>
+            <div className="mt-1 text-[11px] text-[var(--t5)]">{s.l}</div>
+          </div>
+        ))}
+      </div>
+      {pulse.topTags.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {pulse.topTags.map(({ tag, count }) => (
+            <span
+              key={tag}
+              className="rounded-lg px-2 py-0.5 text-[11.5px] text-[var(--t2)]"
+              style={
+                {
+                  "--c": planColorVar([tag]),
+                  background: "color-mix(in srgb, var(--c) 10%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--c) 32%, transparent)",
+                } as React.CSSProperties
+              }
+            >
+              {tag} <b className="num font-semibold">{count}</b>
+            </span>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+/** 最近归档：最近 10 张归档任务卡（按归档时间近似倒序），点行跳归档页编辑态 */
+export function RecentArchivedPanel({
+  pulse,
+  onOpenTask,
+  onMore,
+}: {
+  pulse: ArchivePulse;
+  onOpenTask: (t: Task) => void;
+  onMore: () => void;
+}) {
+  return (
+    <Panel
+      dot="var(--plan-slate)"
+      title="最近归档"
+      moreLabel="归档页"
+      onMore={onMore}
+      footer={`归档区共 ${pulse.total} 张卡`}
+    >
+      {pulse.recent.length === 0 ? (
+        <p className="py-4 text-center text-[13px] text-[var(--t5)]">
+          还没有归档的任务卡。
+        </p>
+      ) : (
+        <div className="max-h-[240px] space-y-1 overflow-y-auto" data-testid="recent-archived-list">
+          {pulse.recent.map((t) => (
+            <Row key={t.id} onClick={() => onOpenTask(t)}>
+              <span
+                aria-hidden
+                className="h-[7px] w-[7px] shrink-0 rounded-full"
+                style={{ background: planColorVar(t.tags) }}
+              />
+              <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--t2)]">
+                {t.title}
+              </span>
+              <span className="num shrink-0 text-[11px] text-[var(--t5)]">
+                {t.updatedAt ? relativeTime(t.updatedAt) : ""}
+              </span>
+            </Row>
+          ))}
+        </div>
       )}
     </Panel>
   );
