@@ -17,6 +17,18 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
 }));
 
+vi.mock("../../profile", () => ({
+  getProfileCache: vi.fn(() => ({
+    user: { name: "测试者", avatarDataUrl: null },
+    bot: { name: "机器人", avatarDataUrl: null },
+  })),
+  loadProfile: vi.fn(async () => ({
+    user: { name: "测试者", avatarDataUrl: null },
+    bot: { name: "机器人", avatarDataUrl: null },
+  })),
+  subscribeProfile: vi.fn(() => () => {}),
+}));
+
 // 固定时钟：2026-10-11（周日）15:42
 const NOW = new Date(2026, 9, 11, 15, 42);
 const DAY = 86_400_000;
@@ -55,6 +67,7 @@ const TASKS: Task[] = [
   task({ id: "c3", title: "c3", completedAt: NOW.getTime() - 3 * DAY, column: "done" }),
   task({ id: "c4", title: "c4", completedAt: NOW.getTime() - 2 * DAY, column: "done" }),
   task({ id: "c5", title: "c5", completedAt: NOW.getTime() - 1 * DAY, column: "done" }),
+  task({ id: "arch1", title: "归档样例", archived: true, completedAt: NOW.getTime() - 8 * DAY, column: "done" }),
 ];
 
 const TRACES: TraceRow[] = [
@@ -113,16 +126,26 @@ function kpiValue(label: string): string {
 }
 
 describe("HomePage 渲染", () => {
-  it("欢迎区：问候 + 日期 + KPI 数字（含 traces 加载后的机器人执行）", async () => {
+  it("欢迎区：问候带个人资料姓名 + 小字只统计今日计划/完成", () => {
     renderHome();
-    expect(screen.getByText(/下午好，Blagic/)).toBeInTheDocument();
+    expect(screen.getByText("下午好，测试者")).toBeInTheDocument();
     expect(screen.getByText("10月11日 周日")).toBeInTheDocument();
-    expect(kpiValue("今日计划")).toBe("3");
-    expect(kpiValue("已完成")).toBe("1");
-    expect(kpiValue("已逾期")).toBe("1");
-    // 机器人执行 = 今天启动的 trace 数（running + done 各 1），异步加载后出现
-    await screen.findByText("工作流 · 周报生成");
-    expect(kpiValue("机器人执行")).toBe("2");
+    expect(screen.getByText("今日计划 3 段，已完成 1")).toBeInTheDocument();
+  });
+
+  it("今日完成率进度条 = 今日已完成/今日计划（1/3 → 33%）", () => {
+    renderHome();
+    const fill = document.querySelector(".home-progress-fill") as HTMLElement;
+    expect(fill).not.toBeNull();
+    expect(fill.style.width).toBe("33%");
+    expect(fill.textContent).toBe("33%");
+  });
+
+  it("KPI 三池真实计数：待办 4 / 完成 7 / 归档 1", () => {
+    renderHome();
+    expect(kpiValue("待办")).toBe("4");
+    expect(kpiValue("完成")).toBe("7");
+    expect(kpiValue("归档")).toBe("1");
   });
 
   it("今日时间带：3 个今日排期块（1 个已完成）", () => {

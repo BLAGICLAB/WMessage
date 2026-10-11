@@ -8,6 +8,7 @@ import {
   dueTimeOf,
   greetingOf,
   planPhases,
+  poolCounts,
   todayPlanTasks,
 } from "./homeData";
 
@@ -115,6 +116,19 @@ describe("dailyTrend", () => {
     expect(got[5].completed).toBe(1);
     expect(got[4].botRuns).toBe(1);
     expect(got[6].botRuns).toBe(2);
+  });
+});
+
+describe("poolCounts", () => {
+  it("三池存量：已删不计，归档优先于完成判断", () => {
+    const tasks = [
+      task({ id: "1" }),
+      task({ id: "2", column: "doing" }),
+      task({ id: "3", completedAt: 1 }),
+      task({ id: "4", archived: true, completedAt: 1 }),
+      task({ id: "5", archived: true, completedAt: 1, deletedAt: 1 }),
+    ];
+    expect(poolCounts(tasks)).toEqual({ todo: 2, done: 1, archived: 1 });
   });
 });
 

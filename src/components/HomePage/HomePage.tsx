@@ -15,12 +15,16 @@ import {
 import { useTauriListen } from "../../lib/useTauriListen";
 import { formatCommandError } from "../../lib/errorHandler";
 import {
+  getProfileCache,
+  loadProfile,
+  subscribeProfile,
+} from "../../profile";
+import {
   dailyTrend,
-  dueSoonTasks,
-  dueTimeOf,
+  poolCounts,
   planPhases,
 } from "./homeData";
-import { HomeHeader, type HomeKpi } from "./HomeHeader";
+import { HomeHeader } from "./HomeHeader";
 import { TodayRibbon } from "./TodayRibbon";
 import { TrendCharts } from "./TrendCharts";
 import { BotPanel, DuePanel, NotifyPanel } from "./HomePanels";
@@ -50,6 +54,27 @@ export function HomePage({
     const iv = setInterval(() => setNowState(new Date()), REFRESH_MS);
     return () => clearInterval(iv);
   }, [nowProp]);
+
+  // 用户名（设置里个人资料）：缓存优先，变更广播同步；加载失败已由
+  // loadProfile 内 errorHandler 上报，这里降级为不带姓名的问候
+  const [userName, setUserName] = useState(
+    () => getProfileCache()?.user.name ?? "",
+  );
+  useEffect(() => {
+    let alive = true;
+    loadProfile()
+      .then((p) => {
+        if (alive) setUserName(p.user.name);
+      })
+      .catch(() => setUserName(getProfileCache()?.user.name ?? ""));
+    const un = subscribeProfile(() => {
+      setUserName(getProfileCache()?.user.name ?? "");
+    });
+    return () => {
+      alive = false;
+      un();
+    };
+  }, []);
 
   // 执行痕迹：trace_list 全量来源（手动/定时/工作流/批量）；失败必须可见
   const [traces, setTraces] = useState<TraceRow[] | null>(null);
@@ -87,36 +112,18 @@ export function HomePage({
   useTauriListen(NOTIFICATIONS_CHANGED_EVENT, loadNotifications);
 
   const phases = useMemo(() => planPhases(tasks, now), [tasks, now]);
-  const overdueCount = useMemo(
-    () =>
-      dueSoonTasks(tasks, now).filter(
-        (t) => (dueTimeOf(t) ?? Infinity) < now.getTime(),
-      ).length,
-    [tasks, now],
-  );
-  const botRunsToday = useMemo(() => {
-    if (traces === null) return 0;
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    return traces.filter((t) => t.startedAt >= start.getTime()).length;
-  }, [traces, now]);
+  const pools = useMemo(() => poolCounts(tasks), [tasks]);
   const trend = useMemo(
     () => dailyTrend(tasks, traces ?? [], now, 7),
     [tasks, traces, now],
   );
 
-  const kpis: HomeKpi[] = [
-    { value: phases.done + phases.doing + phases.todo, label: "今日计划" },
-    { value: phases.done, label: "已完成" },
-    { value: overdueCount, label: "已逾期", danger: true },
-    { value: botRunsToday, label: "机器人执行" },
-  ];
-
   return (
     <div className="pb-10" data-testid="home-page">
       <HomeHeader
+        name={userName}
         phases={phases}
-        kpis={kpis}
+        pools={pools}
         now={now}
         scrollRef={scrollRef}
         onNewTask={onNewTask}
