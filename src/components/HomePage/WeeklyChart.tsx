@@ -16,7 +16,7 @@ import {
 import type { WeekBucket } from "./homeData";
 
 const FALLBACK_WIDTH = 480;
-const CHART_HEIGHT = 150;
+const CHART_HEIGHT = 170;
 
 function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
   const ref = useRef<HTMLDivElement>(null);

@@ -47,6 +47,7 @@ function Panel({
   onMore,
   children,
   footer,
+  className,
 }: {
   dot: string;
   title: string;
@@ -54,9 +55,11 @@ function Panel({
   onMore: () => void;
   children: React.ReactNode;
   footer: React.ReactNode;
+  /** 不随行拉伸等布局特例（如通知卡半高） */
+  className?: string;
 }) {
   return (
-    <section className="nm-card flex flex-col p-4">
+    <section className={`nm-card flex flex-col p-4 ${className ?? ""}`}>
       <div className="mb-3 flex items-center gap-2">
         <span
           aria-hidden
@@ -271,6 +274,7 @@ export function NotifyPanel({
       title="通知"
       moreLabel="通知中心"
       onMore={onMore}
+      className="lg:self-start"
       footer={
         notifError ? (
           <span className="text-[var(--danger)]">{notifError}</span>
@@ -288,22 +292,20 @@ export function NotifyPanel({
           没有待处理的消息。
         </p>
       ) : (
-        <div className="flex h-full flex-col justify-evenly">
-          {rows.map((n) => (
-            <Row key={n.id}>
-              <span aria-hidden className="h-[7px] w-[7px] shrink-0 rounded-full bg-[var(--accent)]" />
-              <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--t2)]">
-                {KIND_LABEL[n.kind]} · {n.title}
-              </span>
-              <button
-                onClick={onMore}
-                className="shrink-0 rounded-md border border-[var(--edge-strong)] px-2 py-0.5 text-[11px] text-[var(--t2)] transition-colors hover:bg-[var(--hover-bg)]"
-              >
-                去处理
-              </button>
-            </Row>
-          ))}
-        </div>
+        rows.map((n) => (
+          <Row key={n.id}>
+            <span aria-hidden className="h-[7px] w-[7px] shrink-0 rounded-full bg-[var(--accent)]" />
+            <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--t2)]">
+              {KIND_LABEL[n.kind]} · {n.title}
+            </span>
+            <button
+              onClick={onMore}
+              className="shrink-0 rounded-md border border-[var(--edge-strong)] px-2 py-0.5 text-[11px] text-[var(--t2)] transition-colors hover:bg-[var(--hover-bg)]"
+            >
+              去处理
+            </button>
+          </Row>
+        ))
       )}
     </Panel>
   );

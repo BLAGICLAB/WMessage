@@ -35,7 +35,7 @@ export function BingCard() {
 
   return (
     <section
-      className="nm-card relative min-h-[220px] overflow-hidden"
+      className="nm-card relative aspect-video overflow-hidden"
       aria-label="必应每日一图"
     >
       {data ? (

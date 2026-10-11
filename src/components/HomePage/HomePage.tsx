@@ -130,11 +130,9 @@ export function HomePage({
       />
 
       <div className="mt-4 flex flex-col gap-3.5">
-        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-4">
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)]">
           <BingCard />
-          <div className="lg:col-span-2">
-            <WeeklyChart data={week} />
-          </div>
+          <WeeklyChart data={week} />
           <NotifyPanel
             notifications={notifications}
             notifError={notifError}
