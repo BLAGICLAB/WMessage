@@ -109,7 +109,7 @@ export function TodayRibbon({
             )}
             {blocks.map((b) => {
               const left = ((b.start - HOME_DAY_START) / HOME_SPAN) * 100;
-              const width = ((b.end - b.start) / HOME_SPAN) * 100;
+              const widthPct = ((b.end - b.start) / HOME_SPAN) * 100;
               return (
                 <button
                   key={b.task.id}
@@ -119,15 +119,17 @@ export function TodayRibbon({
                     {
                       "--c": planColorVar(b.task.tags),
                       left: `${left}%`,
-                      width: `calc(${width}% - 4px)`,
+                      width: `calc(${widthPct}% - 4px)`,
                     } as React.CSSProperties
                   }
                   onClick={() => onOpenTask(b.task)}
                   title={b.task.title}
                 >
                   <span className="home-ribbon-blk-title">{b.task.title}</span>
+                  {/* 窄块放不下完整区间：只显示开始时刻（任务页多车道重叠同口径） */}
                   <span className="home-ribbon-blk-time num">
-                    {fmtHM(b.start)}–{fmtHM(b.end)}
+                    {fmtHM(b.start)}
+                    {widthPct >= 8 ? `–${fmtHM(b.end)}` : ""}
                     {b.clipped ? " »" : ""}
                   </span>
                   {b.current && <span className="home-ribbon-blk-cur">进行中</span>}

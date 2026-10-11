@@ -122,7 +122,8 @@ export function TrendCharts({ data }: { data: DayBucket[] }) {
   const clear = () => setActive(null);
   const refLine =
     active !== null ? (
-      <ReferenceLine x={data[active].label} stroke="var(--now)" strokeWidth={1.5} />
+      // 参考线用 accent（选中语义）：红色保留给现在线/逾期，全页唯一活体信号不稀释
+      <ReferenceLine x={data[active].label} stroke="var(--accent)" strokeWidth={1.5} />
     ) : null;
 
   const axisTick = { fontSize: 11, fill: "var(--t5)" };

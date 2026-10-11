@@ -1377,10 +1377,10 @@
     font-weight: 600;
     color: var(--t1);
     line-height: 1.3;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     overflow: hidden;
+    max-width: 100%;
   }
   .home-ribbon-blk-time {
     font-size: 10px;
