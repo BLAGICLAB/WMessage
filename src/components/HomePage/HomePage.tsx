@@ -235,20 +235,20 @@ export function HomePage({
           </div>
         </div>
 
-        {/* 末行：归档脉搏｜最近归档｜机器人动态（右对齐任务卡列） */}
+        {/* 末行：机器人动态｜最近归档｜归档脉搏（右对齐任务卡列）；行高容纳 10 张归档卡 */}
         <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)]">
-          <ArchivePulsePanel pulse={pulse} onMore={() => onNavigate("archive")} />
-          <RecentArchivedPanel
-            pulse={pulse}
-            onOpenTask={onOpenTask}
-            onMore={() => onNavigate("archive")}
-          />
           <BotPanel
             traces={traces}
             traceError={traceError}
             now={now}
             onMore={() => onNavigate("activity")}
           />
+          <RecentArchivedPanel
+            pulse={pulse}
+            onOpenTask={onOpenTask}
+            onMore={() => onNavigate("archive")}
+          />
+          <ArchivePulsePanel pulse={pulse} onMore={() => onNavigate("archive")} />
         </div>
       </div>
     </div>

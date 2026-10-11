@@ -306,7 +306,7 @@ export function RecentArchivedPanel({
           还没有归档的任务卡。
         </p>
       ) : (
-        <div className="max-h-[240px] space-y-1 overflow-y-auto" data-testid="recent-archived-list">
+        <div className="space-y-1" data-testid="recent-archived-list">
           {pulse.recent.map((t) => (
             <Row key={t.id} onClick={() => onOpenTask(t)}>
               <span
