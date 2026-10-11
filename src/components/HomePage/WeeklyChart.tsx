@@ -1,0 +1,151 @@
+// 本周计划/完成柱状图：周一..周日两组柱（计划=灰蓝、完成=绿），
+// 当天高亮为 accent（参考案例「Camera hours」的当前日高亮语言）。
+// 卡头右侧图例 + 当天读数（今天计划 N / 完成 M）。
+
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Tooltip,
+  XAxis,
+  YAxis,
+  type TooltipPayloadEntry,
+} from "recharts";
+import type { WeekBucket } from "./homeData";
+
+const FALLBACK_WIDTH = 480;
+const CHART_HEIGHT = 150;
+
+function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(FALLBACK_WIDTH);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const apply = () => {
+      const cw = el.clientWidth;
+      if (cw > 0) setW(cw);
+    };
+    apply();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w];
+}
+
+function WeekTip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: readonly TooltipPayloadEntry[];
+}) {
+  const p = payload?.[0];
+  if (!active || !p) return null;
+  const b = p.payload as WeekBucket;
+  return (
+    <div className="rounded-[var(--r-sm)] border border-[var(--edge)] bg-[var(--surface-raised)] px-2.5 py-1.5 text-xs shadow-[var(--shadow-lg)]">
+      <span className="text-[var(--t3)]">{b.date}</span>
+      <b className="num ml-2 text-[var(--t1)]">
+        计划 {b.planned} · 完成 {b.done}
+      </b>
+    </div>
+  );
+}
+
+const axisTick = { fontSize: 11, fill: "var(--t5)" };
+
+export function WeeklyChart({ data }: { data: WeekBucket[] }) {
+  const [wrapRef, width] = useContainerWidth();
+  const [active, setActive] = useState<number | null>(null);
+  const today = useMemo(() => data.findIndex((b) => b.isToday), [data]);
+  const cur = active !== null ? data[active] : data[today] ?? data[0];
+  const cellOpacity = (i: number) =>
+    active === null || active === i ? 1 : 0.25;
+
+  return (
+    <section
+      className="nm-card flex flex-col p-4"
+      aria-label="本周计划与完成"
+    >
+      <div className="flex items-baseline justify-between">
+        <div>
+          <h3 className="text-[13px] font-semibold text-[var(--t3)]">
+            本周计划与完成
+          </h3>
+          <p className="mt-0.5 text-xs text-[var(--t5)]">
+            每日排期任务数与当日完成任务数
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="num text-[22px] font-semibold leading-none text-[var(--t1)]">
+            {cur.planned}
+            <span className="mx-1 text-[var(--t5)]">/</span>
+            {cur.done}
+          </div>
+          <div className="mt-1 flex items-center justify-end gap-3 text-xs text-[var(--t4)]">
+            <span>{cur.isToday ? "今天" : cur.date}</span>
+            <span className="flex items-center gap-1">
+              <span
+                aria-hidden
+                className="inline-block h-1.5 w-1.5 rounded-full"
+                style={{ background: "var(--plan-slate)" }}
+              />
+              计划
+            </span>
+            <span className="flex items-center gap-1">
+              <span
+                aria-hidden
+                className="inline-block h-1.5 w-1.5 rounded-full"
+                style={{ background: "var(--plan-green)" }}
+              />
+              完成
+            </span>
+          </div>
+        </div>
+      </div>
+      <div ref={wrapRef} className="mt-3 flex-1">
+        <BarChart
+          data={data}
+          width={width}
+          height={CHART_HEIGHT}
+          margin={{ top: 6, right: 4, left: 0, bottom: 0 }}
+          onMouseMove={(s) => {
+            const v = s.activeTooltipIndex;
+            setActive(typeof v === "number" ? v : null);
+          }}
+          onMouseLeave={() => setActive(null)}
+        >
+          <CartesianGrid vertical={false} stroke="var(--edge)" strokeDasharray="3 3" />
+          <XAxis dataKey="label" tickLine={false} axisLine={false} tick={axisTick} interval={0} />
+          <YAxis width={26} tickLine={false} axisLine={false} tick={axisTick} allowDecimals={false} />
+          <Tooltip cursor={false} content={(p) => <WeekTip {...p} />} />
+          <Bar dataKey="planned" radius={[4, 4, 0, 0]} barSize={11} isAnimationActive={false}>
+            {data.map((d, i) => (
+              <Cell
+                key={d.key}
+                data-testid={`week-plan-${i}`}
+                fill={d.isToday ? "var(--accent)" : "var(--plan-slate)"}
+                style={{ opacity: cellOpacity(i), transition: "opacity .15s ease" }}
+              />
+            ))}
+          </Bar>
+          <Bar dataKey="done" radius={[4, 4, 0, 0]} barSize={11} isAnimationActive={false}>
+            {data.map((d, i) => (
+              <Cell
+                key={d.key}
+                data-testid={`week-done-${i}`}
+                fill="var(--plan-green)"
+                style={{ opacity: cellOpacity(i), transition: "opacity .15s ease" }}
+              />
+            ))}
+          </Bar>
+        </BarChart>
+      </div>
+    </section>
+  );
+}

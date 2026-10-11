@@ -129,6 +129,53 @@ export function dailyTrend(
 }
 
 /** 按时段问候（凌晨/早上/上午/中午/下午/晚上） */
+export type WeekBucket = {
+  key: string;
+  /** 周一..周日 */
+  label: string;
+  /** tooltip 用完整日期（M月D日） */
+  date: string;
+  /** 当日排期数（planStart 落在当天，未删） */
+  planned: number;
+  /** 当日完成数（completedAt 落在当天） */
+  done: number;
+  isToday: boolean;
+};
+
+/** 本周（周一为起点）逐日「计划/完成」桶，供首页周柱状图 */
+export function weeklyBuckets(tasks: Task[], now: Date): WeekBucket[] {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const todayKey = dayKey(now);
+  const buckets: WeekBucket[] = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    buckets.push({
+      key: dayKey(d),
+      label: WEEKDAY[d.getDay()],
+      date: `${d.getMonth() + 1}月${d.getDate()}日`,
+      planned: 0,
+      done: 0,
+      isToday: dayKey(d) === todayKey,
+    });
+  }
+  const idxOf = new Map(buckets.map((b, i) => [b.key, i]));
+  for (const t of tasks) {
+    if (t.deletedAt) continue;
+    if (t.planStart) {
+      const i = idxOf.get(planDayOf(t.planStart));
+      if (i !== undefined) buckets[i].planned++;
+    }
+    if (t.completedAt) {
+      const i = idxOf.get(dayKey(new Date(t.completedAt)));
+      if (i !== undefined) buckets[i].done++;
+    }
+  }
+  return buckets;
+}
+
 export function greetingOf(now: Date): string {
   const h = now.getHours();
   if (h < 5) return "夜深了";

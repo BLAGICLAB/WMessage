@@ -9,6 +9,7 @@ mod api_handlers;
 mod api_server;
 mod app_state;
 mod audit;
+pub mod bing;
 pub mod bot;
 mod bot_anthropic;
 pub mod bot_artifacts;
@@ -504,6 +505,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            bing::bing_daily,
             copy_file_with_title,
             focus_main_window,
             audit::frontend_event_report,

@@ -23,9 +23,11 @@ import {
   dailyTrend,
   poolCounts,
   planPhases,
+  weeklyBuckets,
 } from "./homeData";
 import { HomeHeader } from "./HomeHeader";
-import { TodayRibbon } from "./TodayRibbon";
+import { BingCard } from "./BingCard";
+import { WeeklyChart } from "./WeeklyChart";
 import { TrendCharts } from "./TrendCharts";
 import { BotPanel, DuePanel, NotifyPanel } from "./HomePanels";
 
@@ -111,6 +113,7 @@ export function HomePage({
 
   const phases = useMemo(() => planPhases(tasks, now), [tasks, now]);
   const pools = useMemo(() => poolCounts(tasks), [tasks]);
+  const week = useMemo(() => weeklyBuckets(tasks, now), [tasks, now]);
   const trend = useMemo(
     () => dailyTrend(tasks, traces ?? [], now, 7),
     [tasks, traces, now],
@@ -127,9 +130,19 @@ export function HomePage({
       />
 
       <div className="mt-4 flex flex-col gap-3.5">
-        <TodayRibbon tasks={tasks} now={now} onOpenTask={onOpenTask} />
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-4">
+          <BingCard />
+          <div className="lg:col-span-2">
+            <WeeklyChart data={week} />
+          </div>
+          <NotifyPanel
+            notifications={notifications}
+            notifError={notifError}
+            onMore={() => onNavigate("notifications")}
+          />
+        </div>
         <TrendCharts data={trend} />
-        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-2">
           <DuePanel
             tasks={tasks}
             now={now}
@@ -141,11 +154,6 @@ export function HomePage({
             traceError={traceError}
             now={now}
             onMore={() => onNavigate("activity")}
-          />
-          <NotifyPanel
-            notifications={notifications}
-            notifError={notifError}
-            onMore={() => onNavigate("notifications")}
           />
         </div>
       </div>

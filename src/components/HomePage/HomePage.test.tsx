@@ -94,6 +94,14 @@ beforeEach(() => {
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "trace_list") return TRACES;
     if (cmd === "notifications_list") return NOTIFICATIONS;
+    if (cmd === "bing_daily")
+      return {
+        title: "秋冬菜单静物",
+        copyright: "© 摄影师（Bing 中国）",
+        dataUrl: "data:image/jpeg;base64,anBlZ2J5dGVz",
+        imageUrl: "https://cn.bing.com/th?id=OHR.X",
+        date: "2026-10-11",
+      };
     return null;
   });
 });
@@ -103,10 +111,10 @@ function makeScrollRef(): React.RefObject<HTMLElement | null> {
   return { current: document.createElement("main") };
 }
 
-function renderHome() {
+function renderHome(tasks: Task[] = TASKS) {
   return render(
     <HomePage
-      tasks={TASKS}
+      tasks={tasks}
       scrollRef={makeScrollRef()}
       onNavigate={vi.fn()}
       onOpenTask={vi.fn()}
@@ -148,12 +156,44 @@ describe("HomePage 渲染", () => {
     expect(kpiValue("归档")).toBe("1");
   });
 
-  it("今日时间带：3 个今日排期块（1 个已完成）", () => {
+  it("必应每日一图卡：成功态铺图 + 标题版权", async () => {
     renderHome();
-    const lane = screen.getByTestId("ribbon-lane");
-    const blocks = lane.querySelectorAll(".home-ribbon-blk");
-    expect(blocks).toHaveLength(3);
-    expect(lane.querySelector(".home-ribbon-blk.done")).not.toBeNull();
+    await screen.findByText("秋冬菜单静物");
+    expect(screen.getByText(/© 摄影师/)).toBeInTheDocument();
+    expect(document.querySelector("img[alt='秋冬菜单静物']")).not.toBeNull();
+  });
+
+  it("必应每日一图卡：失败显示友好占位 + 重试", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bing_daily") throw new Error("网络不可达");
+      if (cmd === "trace_list") return TRACES;
+      if (cmd === "notifications_list") return NOTIFICATIONS;
+      return null;
+    });
+    renderHome();
+    await screen.findByText("今日壁纸没拉到");
+    expect(screen.getByText("重试")).toBeInTheDocument();
+    expect(screen.queryByText("秋冬菜单静物")).not.toBeInTheDocument();
+  });
+
+  it("本周计划与完成：周一..周日两组柱（14 根）+ 图例", async () => {
+    // 每天都有排期（0 值柱 recharts 不渲染 rect，避免计数失真）
+    const day = (offset: number) => {
+      const d = new Date(2026, 9, 5 + offset);
+      const p = (n: number) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T09:00`;
+    };
+    const weekTasks = TASKS.concat(
+      Array.from({ length: 6 }, (_, i) =>
+        task({ id: `w${i}`, title: `w${i}`, planStart: day(i) }),
+      ),
+    );
+    renderHome(weekTasks);
+    await screen.findByText("本周计划与完成");
+    // 7 天 × 计划/完成 两根柱（以 Cell 的 testid 计数，绕开包装层类名）
+    expect(
+      document.querySelectorAll("[data-testid^='week-plan-'], [data-testid^='week-done-']"),
+    ).toHaveLength(14);
   });
 
   it("即将到期：逾期在前（OCR 分诊复核 逾期 1 天），已完成任务不出现", () => {
@@ -207,9 +247,8 @@ describe("Linked Hover 联动", () => {
     renderHome();
     await user.hover(screen.getByTestId("trend-chip-3"));
     expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(2);
-    await user.hover(screen.getByText("今日时间带"));
-    // 离开日期签容器 → 清除（onMouseLeave）
-    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(0);
+    // 指针移出日期签容器 → 清除（onMouseLeave）
+    await user.hover(screen.getByText("即将到期"));
     const bar0 = screen.getByTestId("trend-bar-0") as HTMLElement;
     expect(bar0.style.opacity).toBe("1");
   });

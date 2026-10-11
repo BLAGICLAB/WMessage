@@ -203,7 +203,7 @@ export function BotPanel({
   const rate = week.length ? Math.round((okCount / week.length) * 100) : null;
   return (
     <Panel
-      dot="var(--plan-green)"
+      dot="var(--plan-violet)"
       title="机器人动态"
       moreLabel="活动页"
       onMore={onMore}
@@ -288,20 +288,22 @@ export function NotifyPanel({
           没有待处理的消息。
         </p>
       ) : (
-        rows.map((n) => (
-          <Row key={n.id}>
-            <span aria-hidden className="h-[7px] w-[7px] shrink-0 rounded-full bg-[var(--accent)]" />
-            <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--t2)]">
-              {KIND_LABEL[n.kind]} · {n.title}
-            </span>
-            <button
-              onClick={onMore}
-              className="shrink-0 rounded-md border border-[var(--edge-strong)] px-2 py-0.5 text-[11px] text-[var(--t2)] transition-colors hover:bg-[var(--hover-bg)]"
-            >
-              去处理
-            </button>
-          </Row>
-        ))
+        <div className="flex h-full flex-col justify-evenly">
+          {rows.map((n) => (
+            <Row key={n.id}>
+              <span aria-hidden className="h-[7px] w-[7px] shrink-0 rounded-full bg-[var(--accent)]" />
+              <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--t2)]">
+                {KIND_LABEL[n.kind]} · {n.title}
+              </span>
+              <button
+                onClick={onMore}
+                className="shrink-0 rounded-md border border-[var(--edge-strong)] px-2 py-0.5 text-[11px] text-[var(--t2)] transition-colors hover:bg-[var(--hover-bg)]"
+              >
+                去处理
+              </button>
+            </Row>
+          ))}
+        </div>
       )}
     </Panel>
   );

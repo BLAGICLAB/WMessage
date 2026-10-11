@@ -1346,91 +1346,9 @@
   }
 }
 
-/* 首页（HomePage）：今日时间带的计划块材质与任务页 plan-blk 同配方；
-   现在线画在块下层（z-index 1 < 块 2），任何数据下都不遮块内文字 */
+
+/* 首页（HomePage）：欢迎区今日完成率进度条——实心段内嵌百分比，余量斜纹 */
 @layer components {
-  .home-ribbon-blk {
-    position: absolute;
-    top: 22px;
-    bottom: 2px;
-    z-index: 2;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    border-radius: var(--r-md);
-    padding: 5px 7px 5px 9px;
-    overflow: hidden;
-    cursor: pointer;
-    text-align: left;
-    background: color-mix(in srgb, var(--c) 14%, var(--surface-raised));
-    border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
-    box-shadow: var(--shadow-sm);
-    transition:
-      transform 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .home-ribbon-blk:hover {
-    transform: translateY(-2px);
-  }
-  .home-ribbon-blk-title {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--t1);
-    line-height: 1.3;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    overflow: hidden;
-    max-width: 100%;
-  }
-  .home-ribbon-blk-time {
-    font-size: 10px;
-    color: var(--t4);
-    margin-top: 2px;
-    white-space: nowrap;
-    font-variant-numeric: tabular-nums;
-  }
-  .dark .home-ribbon-blk {
-    background: linear-gradient(
-      150deg,
-      color-mix(in srgb, var(--c) 86%, white) 0%,
-      var(--c) 52%,
-      color-mix(in srgb, var(--c) 78%, black) 100%
-    );
-    border-color: color-mix(in srgb, var(--c) 55%, transparent);
-    box-shadow:
-      0 4px 16px color-mix(in srgb, var(--c) 32%, transparent),
-      inset 0 1px 0 rgba(255, 255, 255, 0.28);
-  }
-  .dark .home-ribbon-blk-title {
-    color: #fff;
-  }
-  .dark .home-ribbon-blk-time {
-    color: rgba(255, 255, 255, 0.82);
-  }
-  .home-ribbon-blk.done {
-    opacity: 0.5;
-  }
-  .home-ribbon-blk.done .home-ribbon-blk-title {
-    text-decoration: line-through;
-  }
-  .home-ribbon-blk.cur {
-    outline: 2px solid var(--accent);
-    outline-offset: 1.5px;
-  }
-  .home-ribbon-blk-cur {
-    position: absolute;
-    top: 5px;
-    right: 6px;
-    font-size: 10px;
-    color: var(--t2);
-    background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
-    border-radius: 6px;
-    padding: 1px 6px;
-  }
-  .dark .home-ribbon-blk-cur {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.22);
-  }
   .home-progress {
     height: 20px;
     max-width: 460px;
@@ -1459,34 +1377,5 @@
   }
   .dark .home-progress-fill span {
     color: var(--bg);
-  }
-  .home-now-line {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    z-index: 1;
-    pointer-events: none;
-  }
-  .home-now-line::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: var(--now);
-    border-radius: 1px;
-  }
-  .home-now-chip {
-    position: absolute;
-    top: 0;
-    left: 5px;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--now);
-    background: color-mix(in srgb, var(--now) 12%, var(--surface));
-    border: 1px solid color-mix(in srgb, var(--now) 35%, transparent);
-    border-radius: 6px;
-    padding: 0 5px;
-    font-variant-numeric: tabular-nums;
-    z-index: 3;
   }
 }

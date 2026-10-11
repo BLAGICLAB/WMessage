@@ -54,22 +54,25 @@ function idxOfNext(s: MouseHandlerDataParam): number | null {
   return null;
 }
 
-/** 面卡骨架：标题 + 大数字读数（随联动天变化）+ 图表 */
+/** 面卡骨架：标题 + 大数字读数（随联动天变化）+ 图表；外层共享一张卡，内部以分隔线分栏 */
 function TrendCard({
   title,
   unit,
   value,
   sub,
+  className,
   children,
 }: {
   title: string;
   unit: string;
   value: number;
   sub: string;
+  /** 右栏需自带左内边距，避免标题贴分隔线 */
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div className="nm-card p-4">
+    <div className={`flex flex-col ${className ?? ""}`}>
       <div className="flex items-baseline justify-between">
         <h3 className="text-[13px] font-semibold text-[var(--t3)]">{title}</h3>
         <div className="text-right">
@@ -82,7 +85,7 @@ function TrendCard({
           <div className="mt-1 text-xs text-[var(--t5)]">{sub}</div>
         </div>
       </div>
-      <div className="mt-3">{children}</div>
+      <div className="mt-3 flex-1">{children}</div>
     </div>
   );
 }
@@ -129,136 +132,139 @@ export function TrendCharts({ data }: { data: DayBucket[] }) {
   const axisTick = { fontSize: 11, fill: "var(--t5)" };
 
   return (
-    <section aria-label="近 7 天联动图表" className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
-      <TrendCard
-        title="每日完成"
-        unit="项"
-        value={cur.completed}
-        sub={active !== null ? cur.date : `本周合计 ${totalDone} 项`}
-      >
-        <div ref={wrapRef}>
-          <BarChart
-            data={data}
-            width={width}
-            height={CHART_HEIGHT}
-            margin={{ top: 6, right: 4, left: 0, bottom: 0 }}
-            onMouseMove={handleMove}
-            onMouseLeave={clear}
-          >
-            <CartesianGrid vertical={false} stroke="var(--edge)" strokeDasharray="3 3" />
-            <XAxis
-              dataKey="label"
-              tickLine={false}
-              axisLine={false}
-              tick={axisTick}
-              interval={0}
-            />
-            <YAxis
-              width={26}
-              tickLine={false}
-              axisLine={false}
-              tick={axisTick}
-              allowDecimals={false}
-            />
-            <Tooltip cursor={false} content={(p) => <TrendTip {...p} unit="项" />} />
-            {refLine}
-            <Bar
-              dataKey="completed"
-              fill="var(--plan-blue)"
-              radius={[5, 5, 0, 0]}
-              barSize={20}
-              isAnimationActive={false}
+    <section aria-label="近 7 天联动图表" className="nm-card p-4">
+      <div className="grid grid-cols-1 gap-x-6 gap-y-4 xl:grid-cols-2 xl:divide-x xl:divide-[var(--edge)]">
+        <TrendCard
+          title="每日完成"
+          unit="项"
+          value={cur.completed}
+          sub={active !== null ? cur.date : `本周合计 ${totalDone} 项`}
+        >
+          <div ref={wrapRef}>
+            <BarChart
+              data={data}
+              width={width}
+              height={CHART_HEIGHT}
+              margin={{ top: 6, right: 4, left: 0, bottom: 0 }}
+              onMouseMove={handleMove}
+              onMouseLeave={clear}
             >
-              {data.map((d, i) => (
-                <Cell
-                  key={d.key}
-                  data-testid={`trend-bar-${i}`}
-                  data-active={active === i || undefined}
-                  style={{
-                    opacity: active === null || active === i ? 1 : 0.22,
-                    transition: "opacity .15s ease",
-                  }}
-                />
-              ))}
-            </Bar>
-          </BarChart>
-        </div>
-      </TrendCard>
-
-      <TrendCard
-        title="每日机器人执行"
-        unit="次"
-        value={cur.botRuns}
-        sub={active !== null ? cur.date : `本周合计 ${totalRuns} 次`}
-      >
-        <div>
-          <AreaChart
-            data={data}
-            width={width}
-            height={CHART_HEIGHT}
-            margin={{ top: 6, right: 14, left: 0, bottom: 0 }}
-            onMouseMove={handleMove}
-            onMouseLeave={clear}
-          >
-            <defs>
-              <linearGradient id="home-bot-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="var(--plan-green)" stopOpacity={0.26} />
-                <stop offset="100%" stopColor="var(--plan-green)" stopOpacity={0.02} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid vertical={false} stroke="var(--edge)" strokeDasharray="3 3" />
-            <XAxis
-              dataKey="label"
-              tickLine={false}
-              axisLine={false}
-              tick={axisTick}
-              interval={0}
-            />
-            <YAxis
-              width={26}
-              tickLine={false}
-              axisLine={false}
-              tick={axisTick}
-              allowDecimals={false}
-            />
-            <Tooltip cursor={false} content={(p) => <TrendTip {...p} unit="次" />} />
-            {refLine}
-            <Area
-              type="monotone"
-              dataKey="botRuns"
-              stroke="var(--plan-green)"
-              strokeWidth={2}
-              fill="url(#home-bot-fill)"
-              strokeOpacity={active !== null ? 0.35 : 1}
-              fillOpacity={active !== null ? 0.4 : 1}
-              isAnimationActive={false}
-              activeDot={false}
-              dot={(p: DotItemDotProps) => {
-                const isActive = active === p.index;
-                return (
-                  <circle
-                    key={p.index}
-                    cx={p.cx}
-                    cy={p.cy}
-                    r={isActive ? 4.5 : 2.5}
-                    fill="var(--plan-green)"
-                    stroke="var(--surface)"
-                    strokeWidth={isActive ? 2 : 0}
-                    opacity={active === null || isActive ? 1 : 0.3}
-                    data-testid={`trend-dot-${p.index}`}
-                    data-active={isActive || undefined}
-                    style={{ transition: "opacity .15s ease" }}
+              <CartesianGrid vertical={false} stroke="var(--edge)" strokeDasharray="3 3" />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={axisTick}
+                interval={0}
+              />
+              <YAxis
+                width={26}
+                tickLine={false}
+                axisLine={false}
+                tick={axisTick}
+                allowDecimals={false}
+              />
+              <Tooltip cursor={false} content={(p) => <TrendTip {...p} unit="项" />} />
+              {refLine}
+              <Bar
+                dataKey="completed"
+                fill="var(--plan-green)"
+                radius={[5, 5, 0, 0]}
+                barSize={20}
+                isAnimationActive={false}
+              >
+                {data.map((d, i) => (
+                  <Cell
+                    key={d.key}
+                    data-testid={`trend-bar-${i}`}
+                    data-active={active === i || undefined}
+                    style={{
+                      opacity: active === null || active === i ? 1 : 0.22,
+                      transition: "opacity .15s ease",
+                    }}
                   />
-                );
-              }}
-            />
-          </AreaChart>
-        </div>
-      </TrendCard>
+                ))}
+              </Bar>
+            </BarChart>
+          </div>
+        </TrendCard>
 
-      {/* 日期签：图表 hover 的等价交互面（可点、可聚焦），焦点=高亮同一天 */}
+        <TrendCard
+          title="每日机器人执行"
+          unit="次"
+          value={cur.botRuns}
+          sub={active !== null ? cur.date : `本周合计 ${totalRuns} 次`}
+          className="xl:pl-6"
+        >
+          <div>
+            <AreaChart
+              data={data}
+              width={width}
+              height={CHART_HEIGHT}
+              margin={{ top: 6, right: 14, left: 0, bottom: 0 }}
+              onMouseMove={handleMove}
+              onMouseLeave={clear}
+            >
+              <defs>
+                <linearGradient id="home-bot-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--plan-violet)" stopOpacity={0.26} />
+                  <stop offset="100%" stopColor="var(--plan-violet)" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid vertical={false} stroke="var(--edge)" strokeDasharray="3 3" />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tick={axisTick}
+                interval={0}
+              />
+              <YAxis
+                width={26}
+                tickLine={false}
+                axisLine={false}
+                tick={axisTick}
+                allowDecimals={false}
+              />
+              <Tooltip cursor={false} content={(p) => <TrendTip {...p} unit="次" />} />
+              {refLine}
+              <Area
+                type="monotone"
+                dataKey="botRuns"
+                stroke="var(--plan-violet)"
+                strokeWidth={2}
+                fill="url(#home-bot-fill)"
+                strokeOpacity={active !== null ? 0.35 : 1}
+                fillOpacity={active !== null ? 0.4 : 1}
+                isAnimationActive={false}
+                activeDot={false}
+                dot={(p: DotItemDotProps) => {
+                  const isActive = active === p.index;
+                  return (
+                    <circle
+                      key={p.index}
+                      cx={p.cx}
+                      cy={p.cy}
+                      r={isActive ? 4.5 : 2.5}
+                      fill="var(--plan-violet)"
+                      stroke="var(--surface)"
+                      strokeWidth={isActive ? 2 : 0}
+                      opacity={active === null || isActive ? 1 : 0.3}
+                      data-testid={`trend-dot-${p.index}`}
+                      data-active={isActive || undefined}
+                      style={{ transition: "opacity .15s ease" }}
+                    />
+                  );
+                }}
+              />
+            </AreaChart>
+          </div>
+        </TrendCard>
+      </div>
+
+      {/* 日期签：图表 hover 的等价交互面（可点、可聚焦），焦点=高亮同一天；卡底归位不悬空 */}
       <div
-        className="xl:col-span-2 flex justify-center gap-1.5"
+        className="mt-2 flex justify-center gap-1.5 border-t border-[var(--edge)] pt-2"
         role="group"
         aria-label="按天联动选择"
         onMouseLeave={clear}
