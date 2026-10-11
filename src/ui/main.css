@@ -1010,13 +1010,14 @@
     }
   }
 
-  /* 详情面板滑入（expo-out 收尾不弹跳；reduced-motion 由全局降级兜底） */
+  /* 详情面板入场（M3 emphasized-decelerate：fade + 位移 + 轻缩放，250ms；
+     退场走卸载瞬时——exits 要快，不拖用户；reduced-motion 由全局降级兜底） */
   .detail-panel {
-    animation: detail-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    animation: detail-in 0.25s cubic-bezier(0.05, 0.7, 0.1, 1);
   }
   @keyframes detail-in {
     from {
-      transform: translateX(-12px);
+      transform: translateX(-16px) scale(0.985);
       opacity: 0;
     }
   }

@@ -15,7 +15,7 @@ import {
   windowMinutesBetween,
 } from "./week";
 import { WeekGrid, type SlotHint } from "./WeekGrid";
-import { TaskPool } from "./TaskPool";
+import { TaskPool, loadPoolOpen, savePoolOpen } from "./TaskPool";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 
 const DOW1 = "一二三四五六日";
@@ -68,6 +68,14 @@ export function TaskTimelinePage({
   const gridBodyRef = useRef<HTMLDivElement | null>(null);
   const poolRef = useRef<HTMLElement | null>(null);
   const freshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 任务池开合：页头开关控制（折叠把手已移除——把手会挡住网格右下的任务块）
+  const [poolOpen, setPoolOpen] = useState(loadPoolOpen);
+  const togglePool = () =>
+    setPoolOpen((v) => {
+      savePoolOpen(!v);
+      return !v;
+    });
 
   // 详情面板选中态：autoFocus 只在「新建任务」路径给（点选不抢焦点）。
   // 不做「任务消失自动关面板」——addTask 的入列与 editingId 分两次更新，
@@ -292,6 +300,27 @@ export function TaskTimelinePage({
             今天
           </button>
         )}
+        <button
+          type="button"
+          className={`ml-auto inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${
+            poolOpen
+              ? "border-[var(--accent)] text-[var(--accent)]"
+              : "border-[var(--edge)] bg-[var(--surface)] text-[var(--t3)] hover:border-[var(--edge-strong)]"
+          }`}
+          onClick={togglePool}
+          aria-pressed={poolOpen}
+        >
+          <span aria-hidden>▤</span> 任务池
+          <span
+            className={`num inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
+              poolOpen
+                ? "bg-[var(--accent)] text-white dark:text-[#101228]"
+                : "bg-[var(--inset-bg)] text-[var(--t4)]"
+            }`}
+          >
+            {poolTasks.length}
+          </span>
+        </button>
       </div>
       <div className="flex min-h-0 flex-1 gap-4">
         {selectedTask && onUpdate && onSetColumn && onDelete && (
@@ -324,6 +353,8 @@ export function TaskTimelinePage({
           <TaskPool
             tasks={poolTasks}
             doneTasks={doneTasks}
+            open={poolOpen}
+            onToggle={togglePool}
             innerRef={poolRef}
             faded={dragFromPool}
             onItemPointerDown={(task, e) => {

@@ -76,7 +76,7 @@ describe("App", () => {
     // 任务页 = 周时间网格：列头 + 时刻刻度 + 任务池（批 2 只读渲染）
     expect(screen.getByText("周一")).toBeInTheDocument();
     expect(screen.getByText("08:00")).toBeInTheDocument();
-    expect(screen.getByText("任务池")).toBeInTheDocument();
+    expect(screen.getByLabelText("任务池")).toBeInTheDocument();
     // 种子标题（未完成的两个上池；done 种子不上任务页——完成列表入口随批 4 详情面板）
     expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
     expect(screen.getByText("过一遍新拟态样式细节")).toBeInTheDocument();
@@ -98,7 +98,7 @@ describe("App", () => {
     // 归档页：暂无归档内容（seed 任务都没 archived 标记）
     expect(await screen.findByText("暂无归档内容")).toBeInTheDocument();
     // 任务页骨架不再显示
-    expect(screen.queryByText("任务池")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("任务池")).not.toBeInTheDocument();
   });
 
   it("点击「工作区」：视图切到 WorkspacePage（显示「+ 新建工作区」）", async () => {
@@ -110,7 +110,7 @@ describe("App", () => {
     await user.click(screen.getByText("工作区"));
     expect(await screen.findByText("+ 新建工作区")).toBeInTheDocument();
     // 任务页骨架消失
-    expect(screen.queryByText("任务池")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("任务池")).not.toBeInTheDocument();
   });
 
   it("mutate 流程：点击「新建任务」→ db_upsert 收到新任务 + 标题进入编辑态", async () => {
@@ -146,7 +146,7 @@ describe("App", () => {
     expect(
       await screen.findByText(/暂无回收站内容|回收站是空的/),
     ).toBeInTheDocument();
-    expect(screen.queryByText("任务池")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("任务池")).not.toBeInTheDocument();
   });
 
   it("db_load 读失败：不走种子/迁移分支、不写库、弹告警（error ≠ empty）", async () => {
@@ -166,7 +166,7 @@ describe("App", () => {
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_delete"),
     ).toHaveLength(0);
     // 任务页仍渲染（内存空数组）：网格骨架 + 空池，种子标题不出现
-    expect(screen.getByText("任务池")).toBeInTheDocument();
+    expect(screen.getByLabelText("任务池")).toBeInTheDocument();
     expect(
       screen.queryByText("梳理 WMessage 需求清单"),
     ).not.toBeInTheDocument();

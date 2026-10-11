@@ -40,7 +40,7 @@ describe("TaskTimelinePage", () => {
     expect(screen.getByText("周日")).toBeInTheDocument();
     expect(screen.getByText("08:00")).toBeInTheDocument();
     expect(screen.getByText("18:00")).toBeInTheDocument();
-    expect(screen.getByText("任务池")).toBeInTheDocument();
+    expect(screen.getByLabelText("任务池")).toBeInTheDocument();
   });
 
   it("池列出全部未完成（含已排期），done/软删/归档不上池", () => {
@@ -69,15 +69,30 @@ describe("TaskTimelinePage", () => {
     expect(screen.getAllByText("已排期任务甲").length).toBe(2);
   });
 
-  it("折叠任务池：列表收成右缘把手，状态记忆进 localStorage；展开复原", async () => {
+  it("任务池开合：页头开关切换，池滑出/滑入带过渡类，状态记忆进 localStorage", async () => {
     const user = userEvent.setup();
-    render(<TaskTimelinePage tasks={TASKS} />);
-    await user.click(screen.getByRole("button", { name: "折叠任务池" }));
-    expect(screen.queryByText("未排期任务乙")).not.toBeInTheDocument();
+    render(
+      <TaskTimelinePage
+        tasks={TASKS}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const pool = screen.getByLabelText("任务池");
+    expect(pool.className).toContain("opacity-100");
+    // 页头开关（与新建任务同行）：点后池滑出（transform + opacity 过渡态）
+    await user.click(screen.getByRole("button", { name: /任务池\d/ }));
+    expect(pool.className).toContain("opacity-0");
+    expect(pool.style.transform).toContain("translateX");
     expect(localStorage.getItem("wm-task-pool-open")).toBe("0");
-    await user.click(screen.getByRole("button", { name: /展开任务池/ }));
-    expect(screen.getByText("未排期任务乙")).toBeInTheDocument();
+    // 再点滑回
+    await user.click(screen.getByRole("button", { name: /任务池\d/ }));
+    expect(pool.className).toContain("opacity-100");
     expect(localStorage.getItem("wm-task-pool-open")).toBe("1");
+    // 池内 ⇥ 也能折叠（与页头开关同状态）
+    await user.click(within(pool).getByRole("button", { name: "折叠任务池" }));
+    expect(screen.getByLabelText("任务池").className).toContain("opacity-0");
   });
 
   it("周导航：‹ 翻到上周出现「今天」，点「今天」回当前周；当前周不显示「今天」", async () => {
@@ -96,7 +111,7 @@ describe("TaskTimelinePage", () => {
 
   it("空任务：页面骨架照常渲染（网格 + 空池提示）", () => {
     render(<TaskTimelinePage tasks={[]} />);
-    expect(screen.getByText("任务池")).toBeInTheDocument();
+    expect(screen.getByLabelText("任务池")).toBeInTheDocument();
     expect(screen.getByText(/没有未完成的任务/)).toBeInTheDocument();
   });
 
