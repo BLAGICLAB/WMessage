@@ -12,6 +12,7 @@ import {
   Archive,
   Bell,
   FolderOpen,
+  LayoutDashboard,
   Plus,
   Search,
   Settings as SettingsIcon,
@@ -21,6 +22,7 @@ import {
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import { TaskTimelinePage } from "./components/TaskTimeline/TaskTimelinePage";
+import { HomePage } from "./components/HomePage/HomePage";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { ErrorDialogHost } from "./ui/ErrorDialogHost";
@@ -119,6 +121,7 @@ function localDateStr(): string {
 // 左侧导航栏条目：视图切换职能自顶部工具条迁入；设置单独走底部入口。
 // 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时/通知）
 type RailView =
+  | "home"
   | "board"
   | "workflow"
   | "schedule"
@@ -130,6 +133,7 @@ type RailView =
   | "notifications";
 const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] =
   [
+    { key: "home", label: "首页", icon: LayoutDashboard },
     { key: "board", label: "任务", icon: SquareKanban },
     { key: "graph", label: "图谱", icon: Waypoints },
     { key: "archive", label: "归档", icon: Archive },
@@ -248,6 +252,8 @@ function App() {
   const tasksRef = useRef<Task[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [view, setView] = useState<RailView | "settings">("board");
+  // main 滚动容器 ref：首页吸顶头部的滚动进度源（useScroll container）
+  const mainRef = useRef<HTMLElement>(null);
   // Agent 通知中心待处理数（导航角标；notifications-changed 广播驱动刷新）
   const [notifCount, setNotifCount] = useState(0);
   useEffect(() => {
@@ -943,8 +949,16 @@ function App() {
             onClick={() => setView("settings")}
           />
         </nav>
-        <main className="min-w-0 flex-1 overflow-y-auto p-6">
-          {view === "board" ? (
+        <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto p-6">
+          {view === "home" ? (
+            <HomePage
+              tasks={visibleTasks}
+              scrollRef={mainRef}
+              onNavigate={setView}
+              onOpenTask={jumpToTask}
+              onNewTask={addTask}
+            />
+          ) : view === "board" ? (
             <TaskTimelinePage
               tasks={visibleTasks}
               onNewTask={addTask}
