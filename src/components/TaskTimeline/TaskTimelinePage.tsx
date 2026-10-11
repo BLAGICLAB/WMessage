@@ -338,7 +338,9 @@ export function TaskTimelinePage({
           </span>
         </button>
       </div>
-      <div className="flex min-h-0 flex-1 gap-4">
+      {/* overflow-hidden：池收起/拖拽让位时面板被平移到容器右外侧，必须裁剪，
+          否则撑出整页横向滚动条 */}
+      <div className="relative flex min-h-0 flex-1 gap-4 overflow-hidden">
         {selectedTask && onUpdate && onSetColumn && onDelete && (
           <TaskDetailPanel
             task={selectedTask}
