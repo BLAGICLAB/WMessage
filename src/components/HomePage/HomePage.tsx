@@ -149,13 +149,26 @@ export function HomePage({
       />
 
       <div className="mt-4 flex flex-col gap-3.5">
-        {/* 首行：左列 = 每日一图 + 到期横条（填满与周图列的缺口）；周图跨两行定行高 */}
-        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)] lg:grid-rows-[auto_minmax(44px,auto)]">
+        {/* 三行网格：r1 图+通知，r2 到期横条+（周图跨 r1-r2），r3 图谱+日程。
+            右列整列是一个纵向 flex（通知 + 任务卡 flex-1）：任务卡上沿贴通知
+            下沿、下沿与周图/日程底边齐平，中段空档由任务卡吃掉 */}
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)] lg:grid-rows-[auto_minmax(44px,auto)_auto]">
           <div className="lg:col-start-1 lg:row-start-1">
             <BingCard />
           </div>
           <div className="lg:col-start-1 lg:row-start-2">
             <DueTicker tasks={tasks} now={now} onOpenTask={onOpenTask} />
+          </div>
+          <div className="lg:col-start-1 lg:row-start-3">
+            <GraphMini
+              tasks={tasks}
+              dayKeys={dayKeys}
+              activeDay={hover.day}
+              activeTaskId={hover.taskId}
+              onHoverTask={hoverTask}
+              onOpenTask={onOpenTask}
+              onMore={() => onNavigate("graph")}
+            />
           </div>
           <div className="lg:col-start-2 lg:row-start-1 lg:row-span-2">
             <WeeklyChart
@@ -164,44 +177,35 @@ export function HomePage({
               onActiveDay={hoverDay}
             />
           </div>
-          <div className="lg:col-start-3 lg:row-start-1 lg:row-span-2 lg:self-start">
+          <div className="lg:col-start-2 lg:row-start-3">
+            <DayGridMini
+              tasks={tasks}
+              now={now}
+              activeDay={hover.day}
+              onActiveDay={hoverDay}
+              onHoverTask={hoverTask}
+              onOpenTask={onOpenTask}
+              onMore={() => onNavigate("board")}
+            />
+          </div>
+          <div className="flex flex-col gap-3.5 lg:col-start-3 lg:row-start-1 lg:row-span-3">
             <NotifyPanel
               notifications={notifications}
               notifError={notifError}
               onMore={() => onNavigate("notifications")}
             />
+            <div className="min-h-0 flex-1">
+              <PoolPager
+                tasks={tasks}
+                now={now}
+                activeDay={hover.day}
+                onActiveDay={hoverDay}
+                onHoverTask={hoverTask}
+                onOpenTask={onOpenTask}
+                onMore={() => onNavigate("board")}
+              />
+            </div>
           </div>
-        </div>
-
-        {/* 第二行：三个映射小组件，与周图按「日期 + 任务卡」联动 */}
-        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)]">
-          <GraphMini
-            tasks={tasks}
-            dayKeys={dayKeys}
-            activeDay={hover.day}
-            activeTaskId={hover.taskId}
-            onHoverTask={hoverTask}
-            onOpenTask={onOpenTask}
-            onMore={() => onNavigate("graph")}
-          />
-          <DayGridMini
-            tasks={tasks}
-            now={now}
-            activeDay={hover.day}
-            onActiveDay={hoverDay}
-            onHoverTask={hoverTask}
-            onOpenTask={onOpenTask}
-            onMore={() => onNavigate("board")}
-          />
-          <PoolPager
-            tasks={tasks}
-            now={now}
-            activeDay={hover.day}
-            onActiveDay={hoverDay}
-            onHoverTask={hoverTask}
-            onOpenTask={onOpenTask}
-            onMore={() => onNavigate("board")}
-          />
         </div>
 
         <BotPanel
