@@ -8,6 +8,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  ReferenceLine,
   Tooltip,
   XAxis,
   YAxis,
@@ -68,14 +69,31 @@ function WeekTip({
 
 const axisTick = { fontSize: 11, fill: "var(--t5)" };
 
-export function WeeklyChart({ data }: { data: WeekBucket[] }) {
+/** 受控联动：activeDay 由首页统一下发（周图悬停 / 日程列头 / 任务卡翻页 / 图谱节点共用） */
+export function WeeklyChart({
+  data,
+  activeDay,
+  onActiveDay,
+}: {
+  data: WeekBucket[];
+  activeDay: number | null;
+  onActiveDay: (day: number | null) => void;
+}) {
   const [wrapRef, width, measuredH] = useContainerSize();
   const chartH = Math.max(MIN_CHART_HEIGHT, measuredH);
-  const [active, setActive] = useState<number | null>(null);
   const today = useMemo(() => data.findIndex((b) => b.isToday), [data]);
-  const cur = active !== null ? data[active] : data[today] ?? data[0];
+  const cur = activeDay !== null ? data[activeDay] : data[today] ?? data[0];
   const cellOpacity = (i: number) =>
-    active === null || active === i ? 1 : 0.25;
+    activeDay === null || activeDay === i ? 1 : 0.25;
+  const refLine =
+    activeDay !== null ? (
+      // 橙色竖向参考线：跨小组件按天对齐的共用信号（用户指定的警示橙）
+      <ReferenceLine
+        x={data[activeDay].label}
+        stroke="var(--plan-amber)"
+        strokeWidth={2}
+      />
+    ) : null;
 
   return (
     <section
@@ -129,14 +147,15 @@ export function WeeklyChart({ data }: { data: WeekBucket[] }) {
           margin={{ top: 6, right: 4, left: 0, bottom: 0 }}
           onMouseMove={(s) => {
             const v = s.activeTooltipIndex;
-            setActive(typeof v === "number" ? v : null);
+            onActiveDay(typeof v === "number" ? v : null);
           }}
-          onMouseLeave={() => setActive(null)}
+          onMouseLeave={() => onActiveDay(null)}
         >
           <CartesianGrid vertical={false} stroke="var(--edge)" strokeDasharray="3 3" />
           <XAxis dataKey="label" tickLine={false} axisLine={false} tick={axisTick} interval={0} />
           <YAxis width={26} tickLine={false} axisLine={false} tick={axisTick} allowDecimals={false} />
           <Tooltip cursor={false} content={(p) => <WeekTip {...p} />} />
+          {refLine}
           <Bar dataKey="planned" radius={[4, 4, 0, 0]} barSize={11} isAnimationActive={false}>
             {data.map((d, i) => (
               <Cell

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HomePage } from "./HomePage";
 import type { Task } from "../../types";
@@ -111,6 +111,19 @@ function makeScrollRef(): React.RefObject<HTMLElement | null> {
   return { current: document.createElement("main") };
 }
 
+/** 每天都有排期的任务集（0 值柱 recharts 不渲染 rect，周图联动断言要用它） */
+const WEEK_TASKS: Task[] = TASKS.concat(
+  Array.from({ length: 6 }, (_, i) => {
+    const d = new Date(2026, 9, 5 + i);
+    const p = (n: number) => String(n).padStart(2, "0");
+    return task({
+      id: `w${i}`,
+      title: `w${i}`,
+      planStart: `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T09:00`,
+    });
+  }),
+);
+
 function renderHome(tasks: Task[] = TASKS) {
   return render(
     <HomePage
@@ -178,17 +191,7 @@ describe("HomePage 渲染", () => {
 
   it("本周计划与完成：周一..周日两组柱（14 根）+ 图例", async () => {
     // 每天都有排期（0 值柱 recharts 不渲染 rect，避免计数失真）
-    const day = (offset: number) => {
-      const d = new Date(2026, 9, 5 + offset);
-      const p = (n: number) => String(n).padStart(2, "0");
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T09:00`;
-    };
-    const weekTasks = TASKS.concat(
-      Array.from({ length: 6 }, (_, i) =>
-        task({ id: `w${i}`, title: `w${i}`, planStart: day(i) }),
-      ),
-    );
-    renderHome(weekTasks);
+    renderHome(WEEK_TASKS);
     await screen.findByText("本周计划与完成");
     // 7 天 × 计划/完成 两根柱（以 Cell 的 testid 计数，绕开包装层类名）
     expect(
@@ -198,24 +201,26 @@ describe("HomePage 渲染", () => {
 
   it("即将到期横条：逾期任务在前（1/2 计数），未轮到的任务不渲染", () => {
     renderHome();
-    expect(screen.getByText("即将到期")).toBeInTheDocument();
-    expect(screen.getByText("OCR 分诊复核")).toBeInTheDocument();
-    expect(screen.getByText("逾期 1 天")).toBeInTheDocument();
-    expect(screen.getByText("1/2")).toBeInTheDocument();
-    expect(screen.queryByText("提交验收报告")).not.toBeInTheDocument();
+    const ticker = within(screen.getByTestId("due-ticker"));
+    expect(ticker.getByText("即将到期")).toBeInTheDocument();
+    expect(ticker.getByText("OCR 分诊复核")).toBeInTheDocument();
+    expect(ticker.getByText("逾期 1 天")).toBeInTheDocument();
+    expect(ticker.getByText("1/2")).toBeInTheDocument();
+    expect(ticker.queryByText("提交验收报告")).not.toBeInTheDocument();
   });
 
   it("即将到期横条：4s 轮播到下一条（悬停暂停逻辑见组件）", async () => {
     vi.useFakeTimers();
     try {
       renderHome();
-      expect(screen.getByText("OCR 分诊复核")).toBeInTheDocument();
+      const ticker = within(screen.getByTestId("due-ticker"));
+      expect(ticker.getByText("OCR 分诊复核")).toBeInTheDocument();
       // act 包裹：interval 里的 setIdx 必须在 act 内 flush 才落 DOM
       await act(async () => {
         await vi.advanceTimersByTimeAsync(4_000);
       });
-      expect(screen.getByText("提交验收报告")).toBeInTheDocument();
-      expect(screen.getByText("今天 18:00")).toBeInTheDocument();
+      expect(ticker.getByText("提交验收报告")).toBeInTheDocument();
+      expect(ticker.getByText("今天 18:00")).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -236,44 +241,59 @@ describe("HomePage 渲染", () => {
   });
 });
 
-describe("Linked Hover 联动", () => {
-  it("悬停日期签：两张图共用参考线，其余柱降透明，卡头读数切到该天", async () => {
+describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => {
+  it("悬停日程列头：周图出橙色参考线、非当日柱降透明，任务卡翻到该天页", async () => {
     const user = userEvent.setup();
-    renderHome();
-    // 悬停前：无参考线，卡头显示本周合计
+    renderHome(WEEK_TASKS);
+    // 悬停前：无参考线，任务卡停在第 1 页（周一，无排期 → 空态）
     expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(0);
-    expect(screen.getAllByText(/本周合计/)).toHaveLength(2);
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("1/8");
 
-    await user.hover(screen.getByTestId("trend-chip-2"));
+    await user.hover(screen.getByTestId("daygrid-head-2"));
 
-    // 两张图各一条竖向参考线（共用同一天）
-    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(2);
-    // 非悬停柱降透明，悬停柱不降
-    const bar0 = screen.getByTestId("trend-bar-0") as HTMLElement;
-    const bar2 = screen.getByTestId("trend-bar-2") as HTMLElement;
-    expect(bar0.style.opacity).toBe("0.22");
+    // 周图：橙色竖向参考线落在该天，非当日柱降透明
+    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(1);
+    const bar0 = screen.getByTestId("week-plan-0") as HTMLElement;
+    const bar2 = screen.getByTestId("week-plan-2") as HTMLElement;
+    expect(bar0.style.opacity).toBe("0.25");
     expect(bar2.style.opacity).toBe("1");
-    // 两张卡的读数都切到悬停天（10月7日）
-    expect(screen.getAllByText("10月7日")).toHaveLength(2);
-    // 日期签高亮
-    expect(screen.getByTestId("trend-chip-2")).toHaveAttribute("data-active");
+    // 任务卡自动翻到该天页（周三 10/7）
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("3/8");
+    expect(screen.getByTestId("pool-page-label")).toHaveTextContent("周三 10/7");
+    // 列头高亮
+    expect(screen.getByTestId("daygrid-head-2")).toHaveAttribute("data-active");
   });
 
-  it("移开后还原：参考线消失、透明度回满", async () => {
+  it("移开后还原：参考线消失、任务卡回到第 1 页、柱透明度回满", async () => {
     const user = userEvent.setup();
-    renderHome();
-    await user.hover(screen.getByTestId("trend-chip-3"));
-    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(2);
-    // 指针移出日期签容器 → 清除（onMouseLeave）
-    await user.hover(screen.getByText("即将到期"));
-    const bar0 = screen.getByTestId("trend-bar-0") as HTMLElement;
+    renderHome(WEEK_TASKS);
+    await user.hover(screen.getByTestId("daygrid-head-3"));
+    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(1);
+    // 指针移出日程卡 → 清除（onMouseLeave）
+    await user.hover(screen.getByTestId("due-ticker"));
+    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(0);
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("1/8");
+    const bar0 = screen.getByTestId("week-plan-0") as HTMLElement;
     expect(bar0.style.opacity).toBe("1");
   });
 
-  it("键盘可达：focus 日期签同样联动（a11y 等价交互面）", () => {
+  it("键盘可达：聚焦日程列头同样联动（a11y 等价交互面）", () => {
     renderHome();
-    fireEvent.focus(screen.getByTestId("trend-chip-4"));
-    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(2);
-    expect(screen.getByTestId("trend-chip-4")).toHaveAttribute("data-active");
+    fireEvent.focus(screen.getByTestId("daygrid-head-4"));
+    expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(1);
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("5/8");
+  });
+
+  it("图谱速览：任务节点渲染，联动指向节点时无关节点降透明", () => {
+    renderHome();
+    const nodes = document.querySelectorAll("[data-testid^='graph-node-']");
+    expect(nodes.length).toBeGreaterThanOrEqual(5);
+    fireEvent.mouseEnter(nodes[0]);
+    // 指向节点后，图谱内出现降透明的无关节点（Dim）
+    const dimmed = document.querySelectorAll(
+      "[data-testid^='graph-node-'][opacity='0.22']",
+    );
+    expect(dimmed.length).toBeGreaterThanOrEqual(1);
+    fireEvent.mouseLeave(nodes[0]);
   });
 });

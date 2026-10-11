@@ -206,6 +206,41 @@ export function weeklyBuckets(tasks: Task[], now: Date): WeekBucket[] {
   return buckets;
 }
 
+/** 本周逐日的排期任务（未删，按 planStart 升序）——任务卡分页器的 7 个日页 */
+export function plannedTasksByDay(
+  tasks: Task[],
+  now: Date,
+): { days: Task[][]; keys: string[] } {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const keys: string[] = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    keys.push(dayKey(d));
+  }
+  const days: Task[][] = keys.map(() => []);
+  for (const t of tasks) {
+    if (t.deletedAt || !t.planStart) continue;
+    const i = keys.indexOf(planDayOf(t.planStart));
+    if (i !== -1) days[i].push(t);
+  }
+  days.forEach((list) =>
+    list.sort((a, b) => (a.planStart! < b.planStart! ? -1 : 1)),
+  );
+  return { days, keys };
+}
+
+/** 未排期池：无排期、未完成、未归档未删（调用方传入已过滤归属的任务列表） */
+export function unplannedTasks(tasks: Task[]): Task[] {
+  return tasks
+    .filter(
+      (t) => !t.deletedAt && !t.archived && !t.completedAt && !t.planStart,
+    )
+    .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+}
+
 export function greetingOf(now: Date): string {
   const h = now.getHours();
   if (h < 5) return "夜深了";

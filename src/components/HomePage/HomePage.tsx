@@ -1,6 +1,8 @@
 // 首页：单机个人任务助手的落地仪表盘。
-// 结构 = 吸顶收缩头部（滚动驱动，HomeHeader）→ 今日时间带 → 近 7 天联动
-// 图表（Linked Hover）→ 三列面板（到期/机器人/通知）。
+// 结构 = 吸顶收缩头部（HomeHeader）→ 首行（每日一图+到期横条｜本周计划完成
+// 柱状图｜通知）→ 第二行（图谱速览｜本周日程｜任务卡分页器）→ 机器人动态。
+// 四个小组件按「日期 + 任务卡」做 Linked Hover：共享 hover 状态（activeDay /
+// activeTaskId），周图橙色竖线、日程列参考线、任务卡自动翻页、图谱节点高亮。
 // 数据：tasks 由 App 下发；执行痕迹/通知本页拉取（30s 轻轮询 + 变更广播）。
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,19 +22,24 @@ import {
   subscribeProfile,
 } from "../../profile";
 import {
-  dailyTrend,
   poolCounts,
   planPhases,
   weeklyBuckets,
+  plannedTasksByDay,
 } from "./homeData";
 import { HomeHeader } from "./HomeHeader";
 import { BingCard } from "./BingCard";
 import { DueTicker } from "./DueTicker";
 import { WeeklyChart } from "./WeeklyChart";
-import { TrendCharts } from "./TrendCharts";
+import { GraphMini } from "./GraphMini";
+import { DayGridMini } from "./DayGridMini";
+import { PoolPager } from "./PoolPager";
 import { BotPanel, NotifyPanel } from "./HomePanels";
 
 const REFRESH_MS = 30_000;
+
+/** 跨小组件联动状态：指向的周内天（0=周一）与具体任务卡（可空） */
+export type HomeHover = { day: number | null; taskId: string | null };
 
 export function HomePage({
   tasks,
@@ -43,7 +50,7 @@ export function HomePage({
 }: {
   tasks: Task[];
   scrollRef: React.RefObject<HTMLElement | null>;
-  onNavigate: (v: "board" | "activity" | "notifications") => void;
+  onNavigate: (v: "board" | "activity" | "notifications" | "graph") => void;
   onOpenTask: (t: Task) => void;
   /** 时钟注入口（测试确定性；生产缺省走真实时间 + 30s 轮询） */
   now?: Date;
@@ -115,10 +122,21 @@ export function HomePage({
   const phases = useMemo(() => planPhases(tasks, now), [tasks, now]);
   const pools = useMemo(() => poolCounts(tasks), [tasks]);
   const week = useMemo(() => weeklyBuckets(tasks, now), [tasks, now]);
-  const trend = useMemo(
-    () => dailyTrend(tasks, traces ?? [], now, 7),
-    [tasks, traces, now],
+  const { keys: dayKeys } = useMemo(
+    () => plannedTasksByDay(tasks, now),
+    [tasks, now],
   );
+
+  // Linked Hover 共享状态：日期 + 任务卡（周图/日程/任务卡/图谱四组件共用）
+  const [hover, setHover] = useState<HomeHover>({ day: null, taskId: null });
+  const hoverDay = (day: number | null) => setHover({ day, taskId: null });
+  const hoverTask = (task: Task | null) => {
+    if (!task) return setHover({ day: null, taskId: null });
+    const day = task.planStart
+      ? dayKeys.findIndex((k) => k === task.planStart!.slice(0, 10))
+      : -1;
+    setHover({ day: day === -1 ? null : day, taskId: task.id });
+  };
 
   return (
     <div className="pb-10" data-testid="home-page">
@@ -131,7 +149,7 @@ export function HomePage({
       />
 
       <div className="mt-4 flex flex-col gap-3.5">
-        {/* 左列 = 每日一图 + 到期横条（填满与周图列的缺口）；周图跨两行定行高 */}
+        {/* 首行：左列 = 每日一图 + 到期横条（填满与周图列的缺口）；周图跨两行定行高 */}
         <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)] lg:grid-rows-[auto_minmax(44px,auto)]">
           <div className="lg:col-start-1 lg:row-start-1">
             <BingCard />
@@ -140,7 +158,11 @@ export function HomePage({
             <DueTicker tasks={tasks} now={now} onOpenTask={onOpenTask} />
           </div>
           <div className="lg:col-start-2 lg:row-start-1 lg:row-span-2">
-            <WeeklyChart data={week} />
+            <WeeklyChart
+              data={week}
+              activeDay={hover.day}
+              onActiveDay={hoverDay}
+            />
           </div>
           <div className="lg:col-start-3 lg:row-start-1 lg:row-span-2 lg:self-start">
             <NotifyPanel
@@ -150,15 +172,44 @@ export function HomePage({
             />
           </div>
         </div>
-        <TrendCharts data={trend} />
-        <div className="grid grid-cols-1">
-          <BotPanel
-            traces={traces}
-            traceError={traceError}
+
+        {/* 第二行：三个映射小组件，与周图按「日期 + 任务卡」联动 */}
+        <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[minmax(0,37fr)_minmax(0,37fr)_minmax(0,26fr)]">
+          <GraphMini
+            tasks={tasks}
+            dayKeys={dayKeys}
+            activeDay={hover.day}
+            activeTaskId={hover.taskId}
+            onHoverTask={hoverTask}
+            onOpenTask={onOpenTask}
+            onMore={() => onNavigate("graph")}
+          />
+          <DayGridMini
+            tasks={tasks}
             now={now}
-            onMore={() => onNavigate("activity")}
+            activeDay={hover.day}
+            onActiveDay={hoverDay}
+            onHoverTask={hoverTask}
+            onOpenTask={onOpenTask}
+            onMore={() => onNavigate("board")}
+          />
+          <PoolPager
+            tasks={tasks}
+            now={now}
+            activeDay={hover.day}
+            onActiveDay={hoverDay}
+            onHoverTask={hoverTask}
+            onOpenTask={onOpenTask}
+            onMore={() => onNavigate("board")}
           />
         </div>
+
+        <BotPanel
+          traces={traces}
+          traceError={traceError}
+          now={now}
+          onMore={() => onNavigate("activity")}
+        />
       </div>
     </div>
   );
