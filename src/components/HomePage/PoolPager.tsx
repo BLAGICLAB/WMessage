@@ -1,10 +1,13 @@
 // 任务卡分页器：映射任务页任务池——本周 7 天各一页 + 未排期池一页，共 8 页。
-// 联动：周图/日程指向某天时自动翻到该页；页内任务行 hover 上抛（图谱节点
-// 同步高亮）；‹ › 手动翻页；点行跳任务页编辑态。
+// 页码三层模型：默认页 = 今日（跨天自动跟随）；联动悬停与 ‹ › 手动翻页都是
+// 临时偏移——指针离开卡片或联动结束即淡出恢复今日。联动中按 ‹ › = 接管为
+// 手动模式（清除联动指向）。页内任务行 hover 上抛（图谱节点同步高亮）；
+// 点行跳任务页编辑态。
 
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ChevronLeft, ChevronRight, Inbox } from "lucide-react";
-import { plannedTasksByDay, unplannedTasks } from "./homeData";
+import { dayKey, plannedTasksByDay, unplannedTasks } from "./homeData";
 import { planColorVar, parsePlanDT, fmtMin } from "../TaskTimeline/week";
 import type { Task } from "../../types";
 
@@ -15,7 +18,6 @@ export function PoolPager({
   now,
   activeDay,
   activeTaskId,
-  onActiveDay,
   onHoverTask,
   onOpenTask,
   onMore,
@@ -24,24 +26,27 @@ export function PoolPager({
   now: Date;
   activeDay: number | null;
   activeTaskId: string | null;
-  onActiveDay: (day: number | null) => void;
   onHoverTask: (task: Task | null) => void;
   onOpenTask: (t: Task) => void;
   onMore: () => void;
 }) {
+  const reduceMotion = useReducedMotion();
   const { days, keys } = plannedTasksByDay(tasks, now);
   const unplanned = unplannedTasks(tasks);
-  // 联动翻页：外部指向某天时显示该天页；无联动时用本地页码
-  const [localPage, setLocalPage] = useState(0);
-  const page = activeDay !== null ? activeDay : localPage;
+  const todayIdx = Math.max(0, keys.indexOf(dayKey(now)));
+  // null = 停在默认页（今日）；数字 = 用户手动翻到的临时页。
+  // 鼠标流里指针移向 ‹ › 时必先离开日程卡（联动清、回今日），点击时
+  // activeDay 恒为 null，故无「联动中接管」分支
+  const [tempPage, setTempPage] = useState<number | null>(null);
+  const page = activeDay !== null ? activeDay : tempPage ?? todayIdx;
+  // 联动结束（activeDay 非空 → null 的过渡）：丢弃手动偏移，恢复今日
   useEffect(() => {
-    setLocalPage((p) => Math.min(p, PAGE_COUNT - 1));
-  }, []);
+    if (activeDay === null) setTempPage(null);
+  }, [activeDay]);
   const setPage = (p: number) => {
-    const wrapped = (p + PAGE_COUNT) % PAGE_COUNT;
-    setLocalPage(wrapped);
-    onActiveDay(wrapped <= 6 ? wrapped : null);
+    setTempPage((p + PAGE_COUNT) % PAGE_COUNT);
   };
+  const restore = () => setTempPage(null);
 
   const label = (p: number) => {
     if (p <= 6) {
@@ -53,7 +58,11 @@ export function PoolPager({
   const pageTasks: Task[] = page <= 6 ? days[page] : unplanned;
 
   return (
-    <section className="nm-card flex h-full flex-col p-4" aria-label="任务卡">
+    <section
+      className="nm-card flex h-full flex-col p-4"
+      aria-label="任务卡"
+      onMouseLeave={restore}
+    >
       <div className="flex items-center gap-2">
         <span
           aria-hidden
@@ -95,7 +104,17 @@ export function PoolPager({
         </button>
       </div>
 
-      <div className="mt-2 min-h-0 flex-1 space-y-1 overflow-y-auto" data-testid="pool-page-list">
+      {/* 页内容淡入淡出：联动翻页/恢复今日的切换不生硬（reduced-motion 直切） */}
+      <div className="mt-2 min-h-0 flex-1 overflow-y-auto" data-testid="pool-page-list">
+        <AnimatePresence mode="popLayout" initial={false}>
+          <motion.div
+            key={page}
+            className="space-y-1"
+            initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
+            transition={{ duration: 0.18 }}
+          >
         {pageTasks.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 py-4 text-center">
             <Inbox size={18} className="text-[var(--t5)]" aria-hidden />
@@ -142,6 +161,8 @@ export function PoolPager({
             );
           })
         )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </section>
   );

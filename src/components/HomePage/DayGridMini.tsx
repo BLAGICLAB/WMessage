@@ -57,6 +57,11 @@ export function DayGridMini({
       className="nm-card flex h-full flex-col p-4"
       aria-label="本周日程"
       onMouseLeave={() => onActiveDay(null)}
+      // 焦点真正离开整卡才清联动：列内 blur（如点翻页按钮）不清，避免与接管竞态
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+          onActiveDay(null);
+      }}
     >
       <div className="flex items-center gap-2">
         <span
@@ -84,7 +89,6 @@ export function DayGridMini({
               data-active={activeDay === col.dayIdx || undefined}
               onMouseEnter={() => onActiveDay(col.dayIdx)}
               onFocus={() => onActiveDay(col.dayIdx)}
-              onBlur={() => onActiveDay(null)}
               onClick={() => onActiveDay(col.dayIdx)}
               className={`rounded-md py-1 text-center text-[11px] transition-colors ${
                 activeDay === col.dayIdx

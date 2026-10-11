@@ -201,7 +201,6 @@ export function HomePage({
                 now={now}
                 activeDay={hover.day}
                 activeTaskId={hover.taskId}
-                onActiveDay={hoverDay}
                 onHoverTask={hoverTask}
                 onOpenTask={onOpenTask}
                 onMore={() => onNavigate("board")}

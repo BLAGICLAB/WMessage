@@ -242,12 +242,18 @@ describe("HomePage 渲染", () => {
 });
 
 describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => {
+  it("默认页 = 今日（fixture 今天是周日 → 7/8）", () => {
+    renderHome(WEEK_TASKS);
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
+    expect(screen.getByTestId("pool-page-label")).toHaveTextContent("周日 10/11");
+  });
+
   it("悬停日程列头：周图出橙色参考线、非当日柱降透明，任务卡翻到该天页", async () => {
     const user = userEvent.setup();
     renderHome(WEEK_TASKS);
-    // 悬停前：无参考线，任务卡停在第 1 页（周一，无排期 → 空态）
+    // 悬停前：无参考线，任务卡停在今日页
     expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(0);
-    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("1/8");
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
 
     await user.hover(screen.getByTestId("daygrid-head-2"));
 
@@ -264,7 +270,7 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     expect(screen.getByTestId("daygrid-head-2")).toHaveAttribute("data-active");
   });
 
-  it("移开后还原：参考线消失、任务卡回到第 1 页、柱透明度回满", async () => {
+  it("移开后还原：参考线消失、任务卡回到今日页、柱透明度回满", async () => {
     const user = userEvent.setup();
     renderHome(WEEK_TASKS);
     await user.hover(screen.getByTestId("daygrid-head-3"));
@@ -272,7 +278,7 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     // 指针移出日程卡 → 清除（onMouseLeave）
     await user.hover(screen.getByTestId("due-ticker"));
     expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(0);
-    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("1/8");
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
     const bar0 = screen.getByTestId("week-plan-0") as HTMLElement;
     expect(bar0.style.opacity).toBe("1");
   });
@@ -282,6 +288,43 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     fireEvent.focus(screen.getByTestId("daygrid-head-4"));
     expect(document.querySelectorAll(".recharts-reference-line")).toHaveLength(1);
     expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("5/8");
+  });
+
+  it("手动翻页是临时偏移：指针离开卡片恢复今日", () => {
+    renderHome(WEEK_TASKS);
+    // 从今日（7/8）‹ 翻一页到周六
+    fireEvent.click(screen.getByLabelText("上一页"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("6/8");
+    expect(screen.getByTestId("pool-page-label")).toHaveTextContent("周六 10/10");
+    // 指针离开卡片 → 恢复今日
+    fireEvent.mouseLeave(screen.getByTestId("pool-page-list").closest("section")!);
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
+  });
+
+  it("联动中移向 ‹（离开日程卡回今日），点 ‹ 从今日起翻，离开任务卡恢复今日", async () => {
+    const user = userEvent.setup();
+    renderHome(WEEK_TASKS);
+    await user.hover(screen.getByTestId("daygrid-head-2"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("3/8");
+    // 指针移向 ‹：先离开日程卡 → 联动清除，任务卡回到今日页
+    await user.hover(screen.getByLabelText("上一页"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
+    // 从今日 ‹ 翻一页 → 周六
+    fireEvent.click(screen.getByLabelText("上一页"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("6/8");
+    // 指针离开任务卡 → 恢复今日
+    await user.hover(screen.getByTestId("due-ticker"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
+  });
+
+  it("未排期池是第 8 页，从今日 › 一次可达", () => {
+    renderHome(WEEK_TASKS);
+    fireEvent.click(screen.getByLabelText("下一页"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("8/8");
+    expect(screen.getByTestId("pool-page-label")).toHaveTextContent("未排期池");
+    // 再 › 环绕回第 1 页（周一）
+    fireEvent.click(screen.getByLabelText("下一页"));
+    expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("1/8");
   });
 
   it("图谱速览：任务节点渲染，联动指向节点时无关节点降透明", () => {
