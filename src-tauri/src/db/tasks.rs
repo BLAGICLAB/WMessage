@@ -1978,7 +1978,12 @@ mod task_patch_tests {
             [],
         )
         .unwrap();
-        for bad in ["明天下午", "2026-10-07", "2026-13-01T10:00", "2026-10-07T09:70"] {
+        for bad in [
+            "明天下午",
+            "2026-10-07",
+            "2026-13-01T10:00",
+            "2026-10-07T09:70",
+        ] {
             let err = match run_patch(
                 &mut conn,
                 "badp",
