@@ -68,6 +68,7 @@ export function TaskTimelinePage({
   const [freshId, setFreshId] = useState<string | null>(null);
   const gridBodyRef = useRef<HTMLDivElement | null>(null);
   const poolRef = useRef<HTMLElement | null>(null);
+  const ghostRef = useRef<HTMLDivElement | null>(null);
   const freshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 任务池开合：页头开关控制（折叠把手已移除——把手会挡住网格右下的任务块）
@@ -147,11 +148,25 @@ export function TaskTimelinePage({
           : 60;
     const color = planColorVar(drag.task.tags);
 
+    /** 池源拖拽专用：指针与幽灵钳制在泳道（网格 body）内——块的任意边到边缘即停。
+     *  指针在池内（拖回取消）不钳制；jsdom 矩形无尺寸时跳过（测试兼容）。 */
+    const gridRect = () => {
+      const r = gridBodyRef.current?.getBoundingClientRect();
+      return r && r.width > 0 && r.height > 0 ? r : null;
+    };
+    const clampToGrid = (x: number, y: number) => {
+      const r = gridRect();
+      if (!r) return { x, y };
+      return {
+        x: Math.min(Math.max(x, r.left), r.right),
+        y: Math.min(Math.max(y, r.top), r.bottom),
+      };
+    };
+
     const onMove = (ev: PointerEvent) => {
       if (!moved && Math.hypot(ev.clientX - startX, ev.clientY - startY) > 4) {
         moved = true;
       }
-      const hit = locate(ev.clientX, ev.clientY);
       const poolR = poolRef.current?.getBoundingClientRect();
       const inPool =
         !!poolR &&
@@ -161,6 +176,22 @@ export function TaskTimelinePage({
         ev.clientY <= poolR.bottom;
       // 池源拖拽：离池 → 整池滑出让出视野；回池内滑回
       if (drag.kind === "create") setDragEvade(moved && !inPool);
+      // 池源拖拽钳制在泳道内（回池取消不钳制）；网格块移动/拉伸保持指针语义
+      const p =
+        drag.kind === "create" && !inPool
+          ? clampToGrid(ev.clientX, ev.clientY)
+          : { x: ev.clientX, y: ev.clientY };
+      const hit = locate(p.x, p.y);
+      // 幽灵位置：跟随钳制点，且整块矩形钳在泳道内（任意边到边缘即停）
+      let gx = p.x + 14;
+      let gy = p.y - 14;
+      const gr = drag.kind === "create" ? gridRect() : null;
+      if (gr) {
+        const gw = ghostRef.current?.offsetWidth ?? 180;
+        const gh = ghostRef.current?.offsetHeight ?? 54;
+        gx = Math.min(Math.max(p.x + 14, gr.left + 2), Math.max(gr.left + 2, gr.right - gw - 2));
+        gy = Math.min(Math.max(p.y - 14, gr.top + 2), Math.max(gr.top + 2, gr.bottom - gh - 2));
+      }
       // 幽灵常显：命中网格显时间段；池内显取消；网格外显引导文案
       if (drag.kind === "resize") {
         if (hit) {
@@ -211,8 +242,8 @@ export function TaskTimelinePage({
         const sd = DOW1[(start.day.getDay() + 6) % 7];
         const ed = DOW1[(end.day.getDay() + 6) % 7];
         setGhost({
-          x: ev.clientX,
-          y: ev.clientY,
+          x: gx,
+          y: gy,
           title: drag.task.title,
           color,
           label: sameDay
@@ -222,8 +253,8 @@ export function TaskTimelinePage({
       } else {
         setSlot(null);
         setGhost({
-          x: ev.clientX,
-          y: ev.clientY,
+          x: drag.kind === "create" && !inPool ? gx : ev.clientX,
+          y: drag.kind === "create" && !inPool ? gy : ev.clientY,
           title: drag.task.title,
           color,
           label: inPool ? "松手取消" : "拖到时间轴上排期",
@@ -244,7 +275,12 @@ export function TaskTimelinePage({
         if (drag.kind === "move") setSelected({ id: drag.task.id, autoFocus: false });
         return;
       }
-      const hit = locate(ev.clientX, ev.clientY);
+      // 落点：池源拖拽按钳制点解析（贴边松手落在边缘格）；其余用指针
+      const p =
+        drag.kind === "create"
+          ? clampToGrid(ev.clientX, ev.clientY)
+          : { x: ev.clientX, y: ev.clientY };
+      const hit = locate(p.x, p.y);
       const poolR = poolRef.current?.getBoundingClientRect();
       const droppedOnPool =
         drag.kind === "move" &&
@@ -387,12 +423,13 @@ export function TaskTimelinePage({
       </div>
       {ghost && (
         <div
+          ref={ghostRef}
           className="drag-ghost"
           style={
             {
               "--c": ghost.color,
-              left: ghost.x + 14,
-              top: ghost.y - 14,
+              left: ghost.x,
+              top: ghost.y,
             } as React.CSSProperties
           }
         >
