@@ -1,8 +1,8 @@
 // TodoCard 主组件（orchestrator）。
-// 972 → 872 行：types / SubtaskRow 拆到同目录子文件，本文件保留 TodoCardView + TodoCard + SortableTodoCard。
+// 972 → 872 行：types / SubtaskRow 拆到同目录子文件，本文件保留 TodoCardView + TodoCard。
 //
 // 公开 import 路径保持稳定：外部 `import { TodoCard } from "./components/TodoCard"` /
-// `import { TodoCardView, SortableTodoCard } from "./components/TodoCard"`，
+// `import { TodoCardView } from "./components/TodoCard"`，
 // Vite 解析到 `./TodoCard/index.tsx` → 透传本目录各文件。
 
 import { useEffect, useState } from "react";
@@ -19,7 +19,6 @@ import {
   Undo2,
 } from "lucide-react";
 import { useDraggable } from "@dnd-kit/core";
-import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
@@ -968,23 +967,3 @@ export function TodoCard(props: TodoCardViewProps) {
   );
 }
 
-/** 看板版：列内/跨列排序卡片（必须渲染在 SortableContext 内） */
-export function SortableTodoCard(props: TodoCardViewProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({
-    id: props.task.id,
-  });
-  const style = { transform: CSS.Transform.toString(transform), transition };
-  return (
-    <TodoCardView
-      {...props}
-      drag={{ attributes, listeners, setNodeRef, style, isDragging }}
-    />
-  );
-}

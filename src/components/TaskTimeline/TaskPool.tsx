@@ -8,7 +8,7 @@ import { useHoverTitleTip } from "./HoverTitle";
 const OPEN_KEY = "wm-task-pool-open";
 
 /** 池内排序：已排期按 planStart 升序在前，未排期按 updatedAt 降序在后 */
-export function sortPoolTasks(tasks: Task[]): Task[] {
+function sortPoolTasks(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {
     if (a.planStart && b.planStart) return a.planStart.localeCompare(b.planStart);
     if (a.planStart) return -1;
