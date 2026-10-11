@@ -142,7 +142,7 @@ export function HomePage({
           <div className="lg:col-start-2 lg:row-start-1 lg:row-span-2">
             <WeeklyChart data={week} />
           </div>
-          <div className="lg:col-start-3 lg:row-start-1 lg:self-start">
+          <div className="lg:col-start-3 lg:row-start-1 lg:row-span-2 lg:self-start">
             <NotifyPanel
               notifications={notifications}
               notifError={notifError}

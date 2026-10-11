@@ -16,18 +16,26 @@ import {
 import type { WeekBucket } from "./homeData";
 
 const FALLBACK_WIDTH = 480;
-/** 卡高与左列（16:9 图 + 间距 + 一行到期横条）精确对齐：横条紧贴图片不留空档 */
-const CHART_HEIGHT = 230;
+/** 容器实测尺寸就绪前的兜底（首帧后 RO 立即覆盖） */
+const FALLBACK_HEIGHT = 220;
+/** 实测高度过小（极端布局）时的下限，保证柱图可读 */
+const MIN_CHART_HEIGHT = 140;
 
-function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
+/** 容器实测宽高（图表随左列「图+横条」定下的总高自适应，卡内不留空档） */
+function useContainerSize(): [
+  React.RefObject<HTMLDivElement | null>,
+  number,
+  number,
+] {
   const ref = useRef<HTMLDivElement>(null);
-  const [w, setW] = useState(FALLBACK_WIDTH);
+  const [size, setSize] = useState({ w: FALLBACK_WIDTH, h: FALLBACK_HEIGHT });
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const apply = () => {
-      const cw = el.clientWidth;
-      if (cw > 0) setW(cw);
+      const w = el.clientWidth;
+      const h = el.clientHeight;
+      if (w > 0 && h > 0) setSize({ w, h });
     };
     apply();
     if (typeof ResizeObserver === "undefined") return;
@@ -35,7 +43,7 @@ function useContainerWidth(): [React.RefObject<HTMLDivElement | null>, number] {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  return [ref, w];
+  return [ref, size.w, size.h];
 }
 
 function WeekTip({
@@ -61,7 +69,8 @@ function WeekTip({
 const axisTick = { fontSize: 11, fill: "var(--t5)" };
 
 export function WeeklyChart({ data }: { data: WeekBucket[] }) {
-  const [wrapRef, width] = useContainerWidth();
+  const [wrapRef, width, measuredH] = useContainerSize();
+  const chartH = Math.max(MIN_CHART_HEIGHT, measuredH);
   const [active, setActive] = useState<number | null>(null);
   const today = useMemo(() => data.findIndex((b) => b.isToday), [data]);
   const cur = active !== null ? data[active] : data[today] ?? data[0];
@@ -109,11 +118,14 @@ export function WeeklyChart({ data }: { data: WeekBucket[] }) {
           </div>
         </div>
       </div>
-      <div ref={wrapRef} className="mt-3 flex-1">
-        <BarChart
-          data={data}
-          width={width}
-          height={CHART_HEIGHT}
+      {/* 移动端定高可用；桌面端 flex-1 吃满卡内余量（卡高由左列图+横条决定）。
+          图表绝对定位铺满——不向网格贡献固有高度，行轨道才不会被 svg 撑高 */}
+      <div ref={wrapRef} className="relative mt-3 h-[220px] flex-1 lg:h-auto lg:min-h-0">
+        <div className="absolute inset-0">
+          <BarChart
+            data={data}
+            width={width}
+            height={chartH}
           margin={{ top: 6, right: 4, left: 0, bottom: 0 }}
           onMouseMove={(s) => {
             const v = s.activeTooltipIndex;
@@ -146,6 +158,7 @@ export function WeeklyChart({ data }: { data: WeekBucket[] }) {
             ))}
           </Bar>
         </BarChart>
+        </div>
       </div>
     </section>
   );
