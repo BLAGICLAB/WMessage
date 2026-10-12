@@ -86,14 +86,37 @@ mod tests {
 
     #[test]
     fn read_capped_drain_over_cap_truncates_and_drains() {
-        // 64KB+ 输出：内容截断到 cap、标记 truncated，且剩余部分被排空读完
-        //（排空的验证：Cursor 位置必须走到末尾，等价于管道读到 EOF，子进程不会吃 SIGPIPE）
+        // 64KB+ 输出：内容截断到 cap、标记 truncated，且剩余部分被排空读完。
+        // 计数 Read 适配器锁死「排空到 EOF」承诺：底层必须被读满 cap+100 字节——
+        // 若排空逻辑（io::copy 到 sink）被删，子进程写端会吃 SIGPIPE
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        struct CountingReader<R> {
+            inner: R,
+            total: Arc<AtomicUsize>,
+        }
+        impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.total.fetch_add(n, Ordering::SeqCst);
+                Ok(n)
+            }
+        }
         let cap = OUTPUT_CAP + 1024;
         let data = vec![b'x'; cap + 100];
-        let cursor = std::io::Cursor::new(data);
-        let (buf, truncated) = read_capped_drain(cursor, cap);
+        let total = Arc::new(AtomicUsize::new(0));
+        let reader = CountingReader {
+            inner: std::io::Cursor::new(data),
+            total: total.clone(),
+        };
+        let (buf, truncated) = read_capped_drain(reader, cap);
         assert!(truncated);
         assert_eq!(buf.len(), cap);
+        assert_eq!(
+            total.load(Ordering::SeqCst),
+            cap + 100,
+            "截断后底层必须被排空到 EOF（防 SIGPIPE）"
+        );
     }
 
     #[test]

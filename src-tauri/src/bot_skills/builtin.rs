@@ -63,7 +63,15 @@ fn materialize_one(dir: &std::path::Path, skill: &BuiltinSkill) -> SeedOutcome {
     if let Err(e) = std::fs::create_dir_all(&dest_dir) {
         return SeedOutcome::Failed(format!("create_dir_all: {e}"));
     }
-    match std::fs::write(&dest, skill.content) {
+    // 兄弟临时文件 + rename 覆盖：裸 fs::write 原地 truncate，中断留截断 SKILL.md
+    // （dest 要么完整旧版要么完整新版）。tmp 在技能目录内，扫描只认 SKILL.md，不碍事。
+    let tmp = dest_dir.join(".SKILL.md.tmp");
+    let write_result =
+        std::fs::write(&tmp, skill.content).and_then(|()| std::fs::rename(&tmp, &dest));
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    match write_result {
         Ok(()) if existed => SeedOutcome::Updated,
         Ok(()) => SeedOutcome::Seeded,
         Err(e) => SeedOutcome::Failed(format!("write: {e}")),
@@ -160,6 +168,34 @@ mod tests {
         );
         let again = materialize_builtin_skills(&root);
         assert!(matches!(again[0].1, SeedOutcome::Unchanged));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 原子写语义：落盘内容与内置资产逐字节一致（无截断）、目录无 tmp 残渣，
+    /// 且已存在同内容副本时幂等跳过。
+    #[test]
+    fn seeds_full_content_without_tmp_residue_and_is_idempotent() {
+        let root = temp_root("seed-atomic");
+        let out = materialize_builtin_skills(&root);
+        assert!(matches!(out[0].1, SeedOutcome::Seeded), "out: {out:?}");
+        let dest = skill_md(&root);
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            BUILTIN_SKILLS[0].content,
+            "落盘内容必须与内置资产逐字节一致"
+        );
+        assert!(
+            !root.join("pptx-design").read_dir().unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "原子写不得遗留 tmp 残渣"
+        );
+        // 已存在同内容文件：幂等跳过（不重写、不改内容）
+        let again = materialize_builtin_skills(&root);
+        assert!(matches!(again[0].1, SeedOutcome::Unchanged));
+        assert_eq!(std::fs::read(&dest).unwrap(), BUILTIN_SKILLS[0].content);
         std::fs::remove_dir_all(&root).ok();
     }
 

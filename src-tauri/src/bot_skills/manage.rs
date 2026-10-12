@@ -352,6 +352,26 @@ pub fn skills_open_dir(app: AppHandle) -> CommandResult<()> {
         .map_err(|e| CommandError::IoError(format!("打开技能目录失败：{e}")))
 }
 
+/// 导入源 SKILL.md 字节上限：导入口无上限 read_to_string 会把超大文件整读进内存。
+/// 256KB = 创建侧 `CREATE_MAX_SKILL_CHARS`（64K 字符）的 UTF-8 最坏字节数（4 B/char），
+/// 与既有创建侧策略对齐的宽松上界。
+const IMPORT_MAX_SKILL_MD_BYTES: u64 = 256 * 1024;
+
+/// 读入导入源的 SKILL.md：先过字节大小闸再读（纯路径参数，单测直打）。
+fn read_import_skill_md(src: &std::path::Path) -> Result<String, CommandError> {
+    let skill_md = src.join("SKILL.md");
+    let oversize = std::fs::metadata(&skill_md)
+        .map(|m| m.len() > IMPORT_MAX_SKILL_MD_BYTES)
+        .unwrap_or(false); // metadata 失败交给下方 read 的既有错误路径
+    if oversize {
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: format!("SKILL.md 超过 {IMPORT_MAX_SKILL_MD_BYTES} 字节上限，拒绝导入"),
+        });
+    }
+    std::fs::read_to_string(&skill_md).map_err(|_| "该文件夹没有 SKILL.md，不是有效技能".into())
+}
+
 /// 导入技能文件夹：校验含 SKILL.md，拷贝到数据目录 skills/<name>（重名拒绝，需先删）。
 #[tauri::command]
 pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
@@ -362,9 +382,7 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
             reason: "请选择技能文件夹".to_string(),
         });
     }
-    let skill_md = src.join("SKILL.md");
-    let text = std::fs::read_to_string(&skill_md)
-        .map_err(|_| "该文件夹没有 SKILL.md，不是有效技能".to_string())?;
+    let text = read_import_skill_md(&src)?;
     let dir_name = src
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -702,7 +720,25 @@ pub fn skills_delete(app: AppHandle, name: String) -> CommandResult<()> {
     Ok(())
 }
 
+/// 递归深度上限：skills_import 是 IPC 入口、拖入目录属不可信输入，
+/// 无界递归会在异常构造的深嵌套上耗尽栈
+const COPY_DIR_MAX_DEPTH: usize = 16;
+
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
+    copy_dir_all_at(src, dst, 0)
+}
+
+fn copy_dir_all_at(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    depth: usize,
+) -> Result<(), String> {
+    if depth >= COPY_DIR_MAX_DEPTH {
+        return Err(format!(
+            "目录嵌套超过 {COPY_DIR_MAX_DEPTH} 层上限，拒绝拷贝：{}",
+            src.display()
+        ));
+    }
     std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
     for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -713,9 +749,13 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<(), Stri
             continue; // 跳过符号链接，防拷贝越界
         }
         if ty.is_dir() {
-            copy_dir_all(&s, &d)?;
-        } else {
+            copy_dir_all_at(&s, &d, depth + 1)?;
+        } else if ty.is_file() {
             std::fs::copy(&s, &d).map_err(|e| e.to_string())?;
+        } else {
+            // 只放行普通文件：FIFO/socket/device 落 fs::copy 会以读端打开，
+            // FIFO 无写端时 read 永久挂起 IPC 线程——fail-closed 拒绝
+            return Err(format!("目录含不支持的特殊文件，拒绝拷贝：{}", s.display()));
         }
     }
     Ok(())
@@ -1101,5 +1141,82 @@ mod tests {
             "非法目录名必须被静默跳过（即使 frontmatter name 合法）"
         );
         assert_eq!(out[0].name, "valid-skill");
+    }
+
+    // ── copy_dir_all：不可信拖入目录的拷贝防线 ──
+
+    #[test]
+    fn copy_dir_all_copies_nested_files() {
+        let tmp = make_tempdir("copy-ok");
+        let src = tmp.0.join("src");
+        std::fs::create_dir_all(src.join("scripts/sub")).unwrap();
+        std::fs::write(src.join("SKILL.md"), b"m").unwrap();
+        std::fs::write(src.join("scripts/run.py"), b"p").unwrap();
+        std::fs::write(src.join("scripts/sub/a.txt"), b"a").unwrap();
+        let dst = tmp.0.join("dst");
+        copy_dir_all(&src, &dst).unwrap();
+        assert_eq!(std::fs::read(dst.join("SKILL.md")).unwrap(), b"m");
+        assert_eq!(std::fs::read(dst.join("scripts/run.py")).unwrap(), b"p");
+        assert_eq!(std::fs::read(dst.join("scripts/sub/a.txt")).unwrap(), b"a");
+    }
+
+    #[test]
+    fn copy_dir_all_rejects_deep_nesting() {
+        let tmp = make_tempdir("copy-deep");
+        let src = tmp.0.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let mut cursor = src.clone();
+        for i in 0..20 {
+            cursor = cursor.join(format!("d{i}"));
+            std::fs::create_dir_all(&cursor).unwrap();
+        }
+        let dst = tmp.0.join("dst");
+        let err = copy_dir_all(&src, &dst).unwrap_err();
+        assert!(err.contains("层"), "错误须说明深度上限，got: {err}");
+    }
+
+    /// FIFO 落 fs::copy 会以读端打开并无写端永久阻塞 IPC 线程：修复后必须
+    /// 快速报错（本测试能结束即证不挂起）且 FIFO 不出现在目标。
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_rejects_fifo_without_hanging() {
+        let tmp = make_tempdir("copy-fifo");
+        let src = tmp.0.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SKILL.md"), b"m").unwrap();
+        // std 的 mkfifo 尚未稳定，走 libc 造具名管道
+        let cpath = std::ffi::CString::new(src.join("pipe").to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) },
+            0,
+            "mkfifo 失败"
+        );
+        let dst = tmp.0.join("dst");
+        let r = copy_dir_all(&src, &dst);
+        assert!(r.is_err(), "含 FIFO 的目录必须被拒");
+        assert!(!dst.join("pipe").exists(), "FIFO 不得出现在目标");
+    }
+
+    // ── skills_import SKILL.md 大小闸 ──
+
+    #[test]
+    fn import_rejects_oversized_skill_md() {
+        let tmp = make_tempdir("import-oversize");
+        let src = tmp.0.join("big");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("SKILL.md"), vec![b'x'; 256 * 1024 + 1]).unwrap();
+        let err = read_import_skill_md(&src).unwrap_err();
+        assert!(matches!(err, CommandError::DomainRule { .. }), "{err}");
+        assert!(err.to_string().contains("上限"), "got: {err}");
+        // 边界内照常读入
+        let ok = tmp.0.join("ok");
+        std::fs::create_dir_all(&ok).unwrap();
+        std::fs::write(ok.join("SKILL.md"), "---\nname: ok\n---\nbody").unwrap();
+        assert!(read_import_skill_md(&ok).is_ok());
+        // 缺 SKILL.md 走既有错误形态
+        let missing = tmp.0.join("missing");
+        std::fs::create_dir_all(&missing).unwrap();
+        let err = read_import_skill_md(&missing).unwrap_err();
+        assert!(err.to_string().contains("SKILL.md"), "got: {err}");
     }
 }

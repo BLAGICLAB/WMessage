@@ -499,6 +499,37 @@ fn registry_poisoned() -> CommandError {
     CommandError::Internal("运行注册表中毒".into())
 }
 
+/// run 占位注册：contains_key 检查与 insert 必须同一临界区——此前两者之间隔着
+/// await（读节点/DAG 建图），并发双触发双双过闸，第二个 insert 静默顶掉首个
+/// RunHandle（stop/取消只作用于新 run，旧 run 失联）。占位后早期失败由调用方
+/// release_run_slot 回滚。
+fn claim_run_slot(
+    workflow_id: &str,
+    cancel: Arc<AtomicBool>,
+    run_started_at: i64,
+) -> CommandResult<()> {
+    let mut m = runs().lock().map_err(|_| registry_poisoned())?;
+    if m.contains_key(workflow_id) {
+        return Err(CommandError::TaskInvalidState {
+            reason: "该工作流已在执行中".into(),
+        });
+    }
+    m.insert(
+        workflow_id.to_string(),
+        Arc::new(RunHandle {
+            cancel,
+            run_started_at,
+        }),
+    );
+    Ok(())
+}
+
+/// 释放 run 占位（早期失败回滚与 run 收尾共用；锁中毒容忍——run 已结束/未开始，
+/// 残留条目随下次覆盖无害）
+fn release_run_slot(workflow_id: &str) {
+    let _ = runs().lock().map(|mut m| m.remove(workflow_id));
+}
+
 pub(crate) fn runner_is_running(workflow_id: &str) -> bool {
     runs()
         .lock()
@@ -575,34 +606,27 @@ pub async fn workflow_run(
         Some("schedule") => "schedule",
         _ => "manual",
     };
-    {
-        let m = runs().lock().map_err(|_| registry_poisoned())?;
-        if m.contains_key(&workflow_id) {
-            return Err(CommandError::TaskInvalidState {
-                reason: "该工作流已在执行中".into(),
-            });
-        }
-    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    // run 分组键（审计表 + RunHandle 共享同一时刻戳）
+    let run_started_at = chrono::Utc::now().timestamp_millis();
+    claim_run_slot(&workflow_id, cancel.clone(), run_started_at)?;
     let tasks = load_workflow_tasks(&app, &workflow_id).await?;
     if tasks.is_empty() {
+        release_run_slot(&workflow_id);
         return Err(CommandError::TaskInvalidState {
             reason: "工作流没有任何节点卡".into(),
         });
     }
-    let dag = build_dag(&tasks, &node_is_success).map_err(CommandError::Internal)?;
+    let dag = match build_dag(&tasks, &node_is_success) {
+        Ok(d) => d,
+        Err(e) => {
+            release_run_slot(&workflow_id);
+            return Err(CommandError::Internal(e));
+        }
+    };
     let already_done = tasks.iter().filter(|t| node_is_success(t)).count();
     let to_run = tasks.len() - already_done;
 
-    let cancel = Arc::new(AtomicBool::new(false));
-    // run 分组键（审计表 + RunHandle 共享同一时刻戳）
-    let run_started_at = chrono::Utc::now().timestamp_millis();
-    runs().lock().map_err(|_| registry_poisoned())?.insert(
-        workflow_id.clone(),
-        Arc::new(RunHandle {
-            cancel: cancel.clone(),
-            run_started_at,
-        }),
-    );
     crate::audit::write_event(
         &app,
         crate::audit::AuditLevel::Info,
@@ -1268,8 +1292,8 @@ async fn run_controller(
             crate::notifications::emit_changed(&app);
         }
     }
-    // 锁中毒时丢弃即可：run 已结束，map 容忍 Err 不影响收尾审计
-    let _ = runs().lock().map(|mut m| m.remove(&workflow_id));
+    // run 收尾释放占位（锁中毒容忍：run 已结束，残留条目不影响收尾审计）
+    release_run_slot(&workflow_id);
     let failed_n = failed_names.len();
     let skipped_n = total.saturating_sub(done_count + failed_n);
     crate::audit::write_event(
@@ -2021,6 +2045,32 @@ mod tests {
         assert!(!should_retry(false, true, false, 1)); // 取消不重试
         assert!(!should_retry(false, false, true, 1)); // 熔断不自动重试（需人工调上限）
         assert!(!should_retry(true, false, false, 1)); // 成功不重试
+    }
+
+    /// run 占位闸门（check-and-insert 同临界区）：同 id 二次触发必须被拒
+    ///（TaskInvalidState）且首个占位不被顶掉——此前检查与 insert 隔着 await，
+    /// 并发双触发会双双过闸、后 insert 静默顶掉先 run 的句柄。
+    #[test]
+    fn run_slot_claim_rejects_second_claim_without_evicting_first() {
+        let id = format!("wf-slot-{}", std::process::id());
+        release_run_slot(&id); // 并行测试可能留残留，先清场
+        claim_run_slot(&id, Arc::new(AtomicBool::new(false)), 1).unwrap();
+        let err = claim_run_slot(&id, Arc::new(AtomicBool::new(false)), 2).unwrap_err();
+        assert!(
+            matches!(err, CommandError::TaskInvalidState { .. }),
+            "{err}"
+        );
+        assert!(runner_is_running(&id));
+        {
+            let m = runs().lock().unwrap();
+            assert_eq!(
+                m.get(&id).map(|h| h.run_started_at),
+                Some(1),
+                "首个占位不得被二次触发覆盖"
+            );
+        }
+        release_run_slot(&id);
+        assert!(!runner_is_running(&id));
     }
 
     // 验收解析/返工决策（纯逻辑单测锚点）

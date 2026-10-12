@@ -193,10 +193,10 @@ pub fn write_memory_tuning_at(
             obj.remove("memoryTuning");
         }
     }
-    crate::db::paths::atomic_write(
-        path,
-        &serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?,
-    )
+    // 与同文件其余写路径同一落盘标准：tmp + fsync + rename（db::paths::atomic_write
+    // 无 fsync，半截写会让 load 静默回默认）；锁已在上文 lock_config_write() 持有
+    let raw = serde_json::to_string_pretty(&v).map_err(|e| format!("序列化：{e}"))?;
+    write_config_atomic(path, &raw).map_err(|e| format!("写 {path:?} 失败：{e}"))
 }
 
 /// 可测内核（纯路径参数）：文件缺失/读失败/JSON 损坏/缺字段 → 默认；
@@ -655,6 +655,36 @@ pub(crate) fn migrate_search_key_slot(
 
 #[cfg(test)]
 mod tests {
+    /// memoryTuning 写回走 write_config_atomic（tmp + fsync + rename）：
+    /// fsync 行为不可直接断言，此处锁「内容正确落盘 + 目录无 tmp 残渣」——
+    /// 裸 fs::write 原地 truncate 的旧路径一旦回归，残留/内容断言即红。
+    #[test]
+    fn write_memory_tuning_writes_complete_file_without_tmp_residue() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        std::fs::write(&p, r#"{"baseUrl":"https://x/v1"}"#).unwrap();
+        write_memory_tuning_at(
+            &p,
+            Some(crate::memory::MemoryTuning {
+                top_n: 3,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["memoryTuning"]["topN"], 3, "tuning 块完整写入");
+        assert_eq!(v["baseUrl"], "https://x/v1", "顶层字段保留");
+        assert!(
+            !dir.path().read_dir().unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "原子写路径不得遗留 tmp 残渣"
+        );
+    }
+
     #[test]
     fn write_memory_tuning_roundtrip_preserves_and_removes() {
         let dir = std::env::temp_dir().join(format!(

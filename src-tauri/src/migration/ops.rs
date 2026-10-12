@@ -244,13 +244,28 @@ pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), CommandEr
         reason: format!("dst 无 file_name：{}", dst.display()),
     })?;
     let staging = parent.join(format!("{}.copying", file_name.to_string_lossy()));
+    // 残留 staging 拒绝且不静默清——上次失败可能留下含用户数据的 .copying，
+    // 直接复用会把旧文件混进本次归档副本，报错让人处置
+    if staging.symlink_metadata().is_ok() {
+        return Err(CommandError::DomainRule {
+            domain: "migration".to_string(),
+            reason: format!(
+                "检测到残留暂存目录 {}，请确认无需保留后手动删除再重试",
+                staging.display()
+            ),
+        });
+    }
     // 4. 递归直写 staging，失败清 staging
     if let Err(e) = copy_dir_recursive_into(src, &staging) {
         let _ = fs::remove_dir_all(&staging);
         return Err(e);
     }
-    // 5. 顶层 fs::rename(staging, dst) 原子 commit
-    fs::rename(&staging, dst).map_err(|e| format!("staging 提交失败：{e}"))?;
+    // 5. 顶层 fs::rename(staging, dst) 原子 commit；失败时 staging 是本次新建，
+    //    可安全清掉，不留 .copying 残骸堵死重试
+    fs::rename(&staging, dst).map_err(|e| {
+        let _ = fs::remove_dir_all(&staging);
+        CommandError::Internal(format!("staging 提交失败：{e}"))
+    })?;
     Ok(())
 }
 
@@ -413,5 +428,27 @@ mod tests {
         assert!(err.contains("逃逸"), "got: {err}");
         std::fs::remove_dir_all(&base).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// 预置残留 .copying 暂存目录 → copy 报错拒绝：不静默清（可能含用户数据）、
+    /// 不产出混有旧文件的目标
+    #[test]
+    fn copy_dir_recursive_rejects_stale_staging() {
+        let base = tmp_dir("stale-staging");
+        let src = base.join("src");
+        let dst = base.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"new").unwrap();
+        let staging = base.join("dst.copying");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("old.txt"), b"stale").unwrap();
+        let err = copy_dir_recursive(&src, &dst).unwrap_err();
+        assert!(
+            err.to_string().contains("残留"),
+            "错误须指向残留暂存目录，got: {err}"
+        );
+        assert!(!dst.exists(), "残留存在时不得产出目标");
+        assert!(staging.exists(), "残留不得被静默清除");
+        std::fs::remove_dir_all(&base).ok();
     }
 }
