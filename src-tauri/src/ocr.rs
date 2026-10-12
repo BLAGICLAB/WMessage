@@ -1,7 +1,8 @@
 //!  原子工具（ocr_image）：本地识别图片文字，逐行返回。
 //!
 //! 隐私红线（硬约束）：图片字节只在内存里交给本地引擎，本模块没有任何网络调用，
-//! 识别过程绝不上传外网；网络路径（http/https/data:）在入口处直接拒。
+//! 识别过程绝不上传外网；网络路径（http/https/data:/file:）与 Windows UNC
+//! 在入口处直接拒。
 //!
 //! 平台分支：
 //! - macOS 13+：Apple Vision VNRecognizeTextRequest（系统内置，0 下载）
@@ -16,6 +17,18 @@ use tauri::AppHandle;
 use crate::bot::registry::ToolResult;
 
 /// ocr_image 工具：识别本地图片中的文字（路径白名单守卫复用 bot_fs::resolve_with_perm）。
+/// 非本地盘路径判定（隐私红线入口）：http/https/data:/file: 属 URL scheme，
+/// `\\` 开头是 Windows UNC（\\server\share，网络位置）——统一拒抓。
+/// RFC 3986 §3.1：scheme 大小写不敏感，小写归一后前缀比较。
+fn is_non_local_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("data:")
+        || lower.starts_with("file:")
+        || lower.starts_with("\\\\")
+}
+
 pub async fn tool_ocr_image(
     app: &AppHandle,
     args: &str,
@@ -34,9 +47,7 @@ pub async fn tool_ocr_image(
     }
     // 隐私红线：只接受本地文件路径。网络图片一律不抓取（resolve_with_perm 也会因
     // canonicalize 失败而拒，这里前置给出明确原因）
-    // RFC 3986 §3.1：scheme 大小写不敏感——小写归一后前缀比较
-    let lower = path.to_ascii_lowercase();
-    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("data:") {
+    if is_non_local_path(path) {
         // 「失败：ocr_image 只接受本地图片路径」以「失败」开头 → error
         return ToolResult::error(
             "失败：ocr_image 只接受本地图片路径，网络地址不予抓取（隐私红线：识别绝不上传外网）"
@@ -627,6 +638,24 @@ mod tests {
                 p.starts_with("http://") || p.starts_with("https://") || p.starts_with("data:"),
                 "{p} 应被识别为网络路径"
             );
+        }
+    }
+
+    #[test]
+    fn rejects_file_scheme_and_unc_before_permission() {
+        // file: scheme 与 Windows UNC（\\server\share，网络位置）同属非本地路径，
+        // 与 http/https/data 同款入口即拒；scheme 大小写不敏感；
+        // 本地绝对/相对路径不得被牵连误拒。直接打入口判定函数，删任一前缀分支必红。
+        for p in [
+            "file:///tmp/x.png",
+            "FILE:///C:/x.png",
+            "\\\\server\\share\\x.png",
+            "Data:text/html,x",
+        ] {
+            assert!(is_non_local_path(p), "{p} 应被识别为非本地路径");
+        }
+        for p in ["/tmp/x.png", "C:\\Users\\a\\x.png", "img/x.png"] {
+            assert!(!is_non_local_path(p), "{p} 是本地路径，不得误拒");
         }
     }
 

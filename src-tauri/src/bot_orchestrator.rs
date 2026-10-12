@@ -1209,7 +1209,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     if chat_guard.is_err() {
         // 此处行已是 Running——中止必须落终态，不能悬挂
         let sid_failed = row.id.clone();
-        let _ = db_locked(&app, move |conn| {
+        if let Err(e) = db_locked(&app, move |conn| {
             crate::db::update_subagent_status(
                 conn,
                 &sid_failed,
@@ -1219,7 +1219,15 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
             )
             .map_err(CommandError::DbError)
         })
-        .await;
+        .await
+        {
+            // 回滚留痕：行已 Cancelled 时 update_subagent_status 会拒绝置 Failed，
+            // 终态由 watcher 兜底——失败可见非静默（围观/审计设计保留会话行）
+            eprintln!(
+                "[subagent] session_busy 中止回滚失败（subagent: {}）：{e}",
+                row.id
+            );
+        }
         crate::bot::audit_log(
             &app,
             &format!("subagent_runner_abort | id: {} | err: session_busy", row.id),

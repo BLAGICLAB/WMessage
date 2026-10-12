@@ -399,6 +399,34 @@ pub(crate) fn parse_ask_args(args: &str) -> Result<AskArgs, String> {
     })
 }
 
+/// 摘除提问 waiter：insert 失败注销与等待结束防泄漏共用（应答端 remove 幂等，
+/// 双方摘除只对先到者生效，晚到者拿到 None）
+fn remove_question_waiter<R: tauri::Runtime>(app: &tauri::AppHandle<R>, qid: &str) {
+    crate::app_state::question_waiters(app)
+        .lock()
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] question_waiters: {e:?}");
+            e.into_inner()
+        })
+        .remove(qid);
+}
+
+/// 提问队列写入失败时回冲预算：原子回冲到本调用扣减前值。fetch_max 只补不超发
+///（若已有人回冲/值更高则不动）；同一注册的 ask 串行，此处纯属防御；映射缺行 =
+/// 注册已随会话收尾注销，无需回冲。
+fn restore_ask_budget<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &str, prev: u8) {
+    let mut map = crate::app_state::ask_contexts(app)
+        .lock()
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] ask_contexts: {e:?}");
+            e.into_inner()
+        });
+    if let Some(reg) = map.get_mut(sid) {
+        reg.asks_left
+            .fetch_max(prev, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// ask_user 工具入口（registry TOOLS_TABLE 挂载；timeout 参数化供测试用短值）：
 /// 未注册上下文（非工作流链路）→ warn 引导自行继续；模式关闭/超预算 → 不落队列直接回落假设；
 /// 正常路径：落通知队列（wfq:{qid}）+ 系统通知门铃 → oneshot 等待 → 回答/假设作为工具结果。
@@ -479,6 +507,18 @@ pub(crate) async fn engine_ask_user(
     });
     let title = question_title(wf_id.as_deref(), &node_title);
     let body = parsed.question.clone();
+    // waiter 先于 notif_insert 注册：通知落库后用户随时可从通知中心/应答入口进来，
+    // 应答端写完档案才查 waiter——晚注册的窗口里回答会「档案落了回答、引擎按假设
+    // 继续」两层不一致。qid 是本次新造的 uuid，落库前无人能引用，提前注册无重复
+    // 消费面（应答端 remove 单次消费）；insert 失败路径负责注销防泄漏。
+    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    crate::app_state::question_waiters(app)
+        .lock()
+        .unwrap_or_else(|e| {
+            eprintln!("[mutex_poisoned] question_waiters: {e:?}");
+            e.into_inner()
+        })
+        .insert(qid.clone(), tx);
     let qid_insert = qid.clone();
     let app2 = app.clone();
     let inserted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
@@ -497,11 +537,17 @@ pub(crate) async fn engine_ask_user(
     .and_then(|r| r);
     match inserted {
         Ok(true) => {}
-        // 同 qid 重复（uuid 冲突现实不可达）或写库失败：不阻塞节点，回落假设
+        // 同 qid 重复（uuid 冲突现实不可达）或写库失败：不阻塞节点，回落假设；
+        // waiter 已提前注册，必须注销防泄漏；预算先扣后写，写失败原路回冲
+        // （不回冲 = 队列故障白扣一次提问额度）
         Ok(false) => {
+            remove_question_waiter(app, &qid);
+            restore_ask_budget(app, sid, budget_left);
             return ToolResult::warn(format!("提问队列写入冲突，{assumption_note}"), Vec::new());
         }
         Err(e) => {
+            remove_question_waiter(app, &qid);
+            restore_ask_budget(app, sid, budget_left);
             crate::audit::write_event(
                 app,
                 crate::audit::AuditLevel::Warn,
@@ -514,18 +560,7 @@ pub(crate) async fn engine_ask_user(
             return ToolResult::warn(format!("提问队列暂不可用，{assumption_note}"), Vec::new());
         }
     }
-    // 等待应答；超时/通道关闭/用户停止 → 回落假设（红线：忽略问题工作流也能走）。
-    // waiter 必须先于 audit/emit_changed/OS 门铃注册emit/通知会把
-    // 用户引到通知页应答，若 waiter 未就位，应答端找不到通道 → 档案落了回答而
-    // 引擎按假设继续，两层记录不一致）。
-    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-    crate::app_state::question_waiters(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] question_waiters: {e:?}");
-            e.into_inner()
-        })
-        .insert(qid.clone(), tx);
+    // 等待应答；超时/通道关闭/用户停止 → 回落假设（红线：忽略问题工作流也能走）
     crate::audit::write_event(
         app,
         crate::audit::AuditLevel::Info,
@@ -598,13 +633,7 @@ pub(crate) async fn engine_ask_user(
         } => WaitOutcome::Expired,
     };
     // 无论结果都摘除 waiter（应答端 remove 幂等；超时/停止路径靠这里防泄漏）
-    crate::app_state::question_waiters(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] question_waiters: {e:?}");
-            e.into_inner()
-        })
-        .remove(&qid);
+    remove_question_waiter(app, &qid);
     match waited {
         WaitOutcome::Answered(answer) => {
             ToolResult::ok(format!("用户回答了你的提问：{answer}"), Vec::new())
@@ -807,5 +836,124 @@ mod tests {
             "工作流任务「写初稿」提问"
         );
         assert_eq!(question_title(None, "写初稿"), "任务卡「写初稿」提问");
+    }
+
+    // ── 引擎窗口语义（mock AppState 注入，见 bot_slash::test_handle 先例）──
+
+    fn test_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        app.manage(crate::app_state::AppState::default());
+        app.handle().clone()
+    }
+
+    fn seed_ask_registration(
+        app: &tauri::AppHandle<tauri::test::MockRuntime>,
+        sid: &str,
+        budget: u8,
+    ) {
+        crate::app_state::ask_contexts(app).lock().unwrap().insert(
+            sid.to_string(),
+            AskRegistration {
+                workflow_id: Some("wf1".into()),
+                task_id: "t1".into(),
+                node_title: "写初稿".into(),
+                asks_enabled: true,
+                run_started_at: 1,
+                asks_left: std::sync::atomic::AtomicU8::new(budget),
+                asks_max: budget,
+            },
+        );
+    }
+
+    fn asks_left(app: &tauri::AppHandle<tauri::test::MockRuntime>, sid: &str) -> u8 {
+        crate::app_state::ask_contexts(app)
+            .lock()
+            .unwrap()
+            .get(sid)
+            .unwrap()
+            .asks_left
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn ask_budget_restore_refunds_exactly_and_never_inflates() {
+        // 引擎先扣减后 insert；insert 失败必须把预算原路回冲——回冲后值等于
+        // 扣减前值，重复回冲/未知会话都不得超发或误伤
+        let app = test_handle();
+        seed_ask_registration(&app, "s1", 3);
+        // 引擎同款扣减（left=3 → store 2）
+        {
+            let mut map = crate::app_state::ask_contexts(&app).lock().unwrap();
+            let reg = map.get_mut("s1").unwrap();
+            let left = reg.asks_left.load(std::sync::atomic::Ordering::SeqCst);
+            reg.asks_left
+                .store(left - 1, std::sync::atomic::Ordering::SeqCst);
+        }
+        assert_eq!(asks_left(&app, "s1"), 2, "setup: 已扣减");
+        restore_ask_budget(&app, "s1", 3);
+        assert_eq!(asks_left(&app, "s1"), 3, "insert 失败预算须回冲到调用前值");
+        restore_ask_budget(&app, "s1", 3);
+        assert_eq!(asks_left(&app, "s1"), 3, "重复回冲不得超发");
+        restore_ask_budget(&app, "s-gone", 9);
+        assert_eq!(asks_left(&app, "s1"), 3, "未知会话回冲是无害 no-op");
+        // 预算耗尽（0）时的失败回冲同样成立
+        seed_ask_registration(&app, "s2", 1);
+        {
+            let mut map = crate::app_state::ask_contexts(&app).lock().unwrap();
+            map.get_mut("s2")
+                .unwrap()
+                .asks_left
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+        restore_ask_budget(&app, "s2", 1);
+        assert_eq!(asks_left(&app, "s2"), 1, "最后一次预算的失败回冲");
+    }
+
+    #[test]
+    fn waiter_window_answerable_and_insert_failure_deregisters() {
+        // 注释承诺的顺序契约：waiter 注册先于 notif_insert。窗口语义锁定两点——
+        // ① 提前注册后应答端照常单次消费（remove + send），引擎侧 rx 收得到；
+        // ② insert 失败路径注销后通道关闭、表内无泄漏条目。
+        let app = test_handle();
+        let qid = "q-window";
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<String>();
+        crate::app_state::question_waiters(&app)
+            .lock()
+            .unwrap()
+            .insert(qid.into(), tx);
+        // 应答端同款消费（remove 单次）
+        let got = crate::app_state::question_waiters(&app)
+            .lock()
+            .unwrap()
+            .remove(qid);
+        got.expect("提前注册的 waiter 应答端必须找得到")
+            .send("知乎".into())
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap(), "知乎");
+        assert!(
+            crate::app_state::question_waiters(&app)
+                .lock()
+                .unwrap()
+                .get(qid)
+                .is_none(),
+            "应答端 remove 后无残留"
+        );
+        // insert 失败路径：注销防泄漏
+        let (tx2, mut rx2) = tokio::sync::oneshot::channel::<String>();
+        crate::app_state::question_waiters(&app)
+            .lock()
+            .unwrap()
+            .insert(qid.into(), tx2);
+        remove_question_waiter(&app, qid);
+        assert!(
+            crate::app_state::question_waiters(&app)
+                .lock()
+                .unwrap()
+                .get(qid)
+                .is_none(),
+            "insert 失败注销后表内不得残留 waiter"
+        );
+        assert!(rx2.try_recv().is_err(), "注销后通道应关闭（tx 已 drop）");
     }
 }

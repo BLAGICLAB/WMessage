@@ -269,18 +269,19 @@ pub async fn workflow_audit_export(
     .map_err(|e| crate::error::CommandError::from(format!("审计路径校验线程 join 失败：{e}")))?;
     let app2 = app.clone();
     let wid2 = workflow_id.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || -> CommandResult<(usize, String)> {
+    let path_write = path.clone();
+    let n = tauri::async_runtime::spawn_blocking(move || -> CommandResult<usize> {
         let conn = crate::db::open_db(&app2)?;
         let rows = wa_export_list(&conn, &wid2).map_err(crate::error::CommandError::DbError)?;
-        let n = rows.len();
         let json = serde_json::to_string_pretty(&rows)
             .map_err(|e| crate::error::CommandError::from(e.to_string()))?;
-        Ok((n, json))
+        // 写盘与取数同一 blocking 闭包：外层是 async task，裸 fs::write 会占 Tokio worker
+        std::fs::write(&path_write, json)
+            .map_err(|e| crate::error::CommandError::from(e.to_string()))?;
+        Ok(rows.len())
     })
     .await
     .map_err(|e| crate::error::CommandError::from(format!("审计导出线程 join 失败：{e}")))??;
-    let (n, json) = r;
-    std::fs::write(&path, json).map_err(|e| crate::error::CommandError::from(e.to_string()))?;
     crate::audit::write_event(
         &app,
         crate::audit::AuditLevel::Info,

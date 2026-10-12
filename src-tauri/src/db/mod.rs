@@ -744,6 +744,45 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// 上次拷贝在边车 rename（2a/2b）后、主库提交（2c）前崩溃会在目标路径留下
+    /// 孤儿 -wal/-shm；新主库落位前必须清场，否则新库恰与无关 WAL 配对（回放即
+    /// 损坏）。本测试预置孤儿边车，走完拷贝断言：无残留边车、主库可用且数据完整。
+    #[test]
+    fn copy_legacy_db_clears_orphan_sidecars_at_target() {
+        let dir = std::env::temp_dir().join(format!("wm-legacy-orphan-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        // 老 journal 模式库：checkpoint 干净，拷贝本身不产生边车
+        let legacy = dir.join("wmessage.db");
+        {
+            let c = rusqlite::Connection::open(&legacy).unwrap();
+            c.execute_batch("CREATE TABLE t (id TEXT); INSERT INTO t VALUES ('x');")
+                .unwrap();
+        }
+        let dst = dir.join("wmessage-copy.db");
+        // 预置孤儿边车（主库不在、边车在 = 2a/2b 后崩溃的现场）
+        fs::write(wal_sidecar(&dst, "wal"), b"stale-wal").unwrap();
+        fs::write(wal_sidecar(&dst, "shm"), b"stale-shm").unwrap();
+
+        let warns = copy_legacy_db(&legacy, &dst).unwrap();
+
+        assert!(warns.is_empty(), "干净老库不应产生 warn；got: {warns:?}");
+        assert!(dst.exists(), "主库必须落地");
+        assert!(
+            !wal_sidecar(&dst, "wal").exists(),
+            "孤儿 -wal 必须在主库落位前清场"
+        );
+        assert!(
+            !wal_sidecar(&dst, "shm").exists(),
+            "孤儿 -shm 必须在主库落位前清场"
+        );
+        let c = rusqlite::Connection::open(&dst).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "清场后主库可用且数据完整");
+        fs::remove_dir_all(&dir).ok();
+    }
+
     // ── migrate_data_json 触发条件：json 含库缺失 id 即补回 ──
 
     fn setup_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {

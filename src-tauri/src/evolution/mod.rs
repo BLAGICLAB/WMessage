@@ -176,11 +176,22 @@ pub async fn post_consolidation(
     let ops_owned: Vec<ConsolidateOp> = ops.to_vec();
     let report_owned = report.clone();
     let lesson_owned = lesson.map(str::to_string);
-    tauri::async_runtime::spawn_blocking(move || {
+    let joined = tauri::async_runtime::spawn_blocking(move || {
         post_consolidation_blocking(&ops_owned, &report_owned, lesson_owned.as_deref())
     })
-    .await
-    .expect("post_consolidation blocking 线程不应 panic")
+    .await;
+    if let Err(e) = joined {
+        // blocking 线程 panic 不连带打崩调用方（本函数是 consolidate 收尾的后台
+        // 环节，panic 传播会拖垮整条反思链）；留痕保证失败可见非静默。提案 id 在
+        // blocking 内部才派生，此处以 ops 规模 + report 计数定位这一批。
+        eprintln!(
+            "[evolution] post_consolidation 后台线程 panic（提案未落库/未通知，ops: {} 条，merged: {}，distilled: {}，contradictions: {}）：{e:?}",
+            ops.len(),
+            report.merged,
+            report.distilled,
+            report.contradictions
+        );
+    }
 }
 
 fn post_consolidation_blocking(

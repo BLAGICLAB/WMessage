@@ -847,7 +847,9 @@ where
     let mut collected_refs: Vec<TaskRef> = Vec::new();
     let mut function_calls_total: usize = 0;
     let mut soft_warn_sent: bool = false;
-    // 防幻觉汇报守卫：本轮是否实际执行过变更类工具；补一轮机会每次对话只用一次
+    // 防幻觉汇报守卫：本次对话是否实际执行过变更类工具（会话级一次置位、不按轮
+    // 重置——后续正常汇报轮靠它放行，按轮重置会把改完再汇报的正常轮误判为幻觉）；
+    // 补一轮机会（claim_retry）同样每次对话只用一次
     let mut mutation_done: bool = false;
     let mut claim_retry_used: bool = false;
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）

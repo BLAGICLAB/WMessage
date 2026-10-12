@@ -510,6 +510,23 @@ fn apply_adjudications(
     Ok(counts)
 }
 
+/// 应用裁决（整批事务化，Auto 分支锁内调用）：与 Confirm 分支的队列写入同款
+/// 原子性——中途硬故障（Err 上抛路径）时整批回滚不留半态；单条存储软故障仍按
+/// failed 计数提交（不炸批）。事务包在独立函数里，内存库可直测回滚语义。
+fn apply_adjudications_tx(
+    conn: &mut rusqlite::Connection,
+    facts: &[ExtractedFact],
+    fact_embs: &[Option<Vec<f32>>],
+    adjs: &[Adjudication],
+    now_ms: i64,
+    sp: &store::StoreParams,
+) -> Result<AdjudicationCounts, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let counts = apply_adjudications(&tx, facts, fact_embs, adjs, now_ms, sp)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(counts)
+}
+
 /// 插入单条抽取事实并计数（New/消失目标兜底共用）
 fn apply_insert(
     conn: &rusqlite::Connection,
@@ -604,8 +621,8 @@ where
             // 第四段（锁内）：应用（new 入库 / update 改写 / skip 丢弃）
             let counts = {
                 let _g = super::store_lock();
-                let conn = crate::db::open_db(app).map_err(|e| e.to_string())?;
-                apply_adjudications(&conn, &facts, &embs, &adjs, super::now_ms(), &sp)?
+                let mut conn = crate::db::open_db(app).map_err(|e| e.to_string())?;
+                apply_adjudications_tx(&mut conn, &facts, &embs, &adjs, super::now_ms(), &sp)?
             };
             if counts.failed > 0 {
                 crate::audit_event!(
@@ -1143,6 +1160,101 @@ mod tests {
         assert_eq!(rows[0].tags, vec!["居住城市"], "tags 不被第二条冲掉");
         assert_eq!(rows[0].source, "user_stated", "source 不被第二条冲掉");
         assert_eq!(rows[0].importance, 3, "importance 不被第二条冲掉");
+    }
+
+    #[test]
+    fn apply_adjudications_tx_commits_whole_batch() {
+        // 多裁决整批事务化：New + Update + Skip 一批，commit 后全部生效
+        let conn = fact_db();
+        let orig_id = seeded_item(
+            &conn,
+            "fact",
+            "用户住在上海",
+            &["居住城市"],
+            Some(&onehot(0)),
+            1_000,
+        );
+        let facts = vec![
+            mkfact("新增一条独立事实", "fact", 2),
+            mkfact("用户已经搬到北京", "fact", 2),
+            mkfact("跳过条不落库", "fact", 2),
+        ];
+        let embs = vec![Some(onehot(3)), Some(onehot(0)), None];
+        let adjs = vec![
+            Adjudication::New,
+            Adjudication::Update(orig_id.clone()),
+            Adjudication::Skip,
+        ];
+        let mut conn = conn;
+        let counts = apply_adjudications_tx(
+            &mut conn,
+            &facts,
+            &embs,
+            &adjs,
+            10_000,
+            &store::StoreParams::default(),
+        )
+        .unwrap();
+        assert_eq!(counts.inserted, 1);
+        assert_eq!(counts.updated, 1);
+        assert_eq!(counts.skipped, 1);
+        let rows = store::load_all(&conn).unwrap();
+        assert_eq!(rows.len(), 2, "New 与 Update 落库，Skip 不落");
+        assert!(
+            rows.iter()
+                .any(|r| r.id == orig_id && r.content == "用户已经搬到北京"),
+            "Update 改写原条目"
+        );
+        assert!(rows.iter().any(|r| r.content == "新增一条独立事实"));
+    }
+
+    #[test]
+    fn apply_adjudications_tx_rolls_back_whole_batch_on_mid_failure() {
+        // 复现：auto 分支逐条 autocommit 落库时，中途硬失败留半态（首条已落、
+        // 失败条丢失）。注入手段：预建带 FK 的 mem_items（kind 引用 fk_kind）+
+        // defer_foreign_keys，第二条的 kind 违约被推迟到 COMMIT 才爆——事务化后
+        // 整批回滚且 Err 上抛；逐条 autocommit 的旧实现首条已残留（本断言必红）。
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE fk_kind (kind TEXT PRIMARY KEY);
+             INSERT INTO fk_kind VALUES ('fact');
+             CREATE TABLE mem_items(
+               id TEXT PRIMARY KEY,
+               kind TEXT NOT NULL REFERENCES fk_kind(kind),
+               content TEXT NOT NULL,
+               tags TEXT NOT NULL DEFAULT '',
+               importance INTEGER NOT NULL DEFAULT 3,
+               source TEXT NOT NULL DEFAULT 'model_inferred',
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               access_count INTEGER NOT NULL DEFAULT 0,
+               last_accessed_at TEXT,
+               embedding BLOB
+             );
+             PRAGMA defer_foreign_keys = ON;",
+        )
+        .unwrap();
+        let facts = vec![
+            mkfact("首条正常入库", "fact", 2),
+            mkfact("次条 kind 违约", "ghost-kind", 2),
+        ];
+        let embs = vec![None, None];
+        let adjs = vec![Adjudication::New, Adjudication::New];
+        let mut conn = conn;
+        let r = apply_adjudications_tx(
+            &mut conn,
+            &facts,
+            &embs,
+            &adjs,
+            10_000,
+            &store::StoreParams::default(),
+        );
+        assert!(r.is_err(), "COMMIT 期 FK 违约必须整批上抛，实际 {r:?}");
+        assert!(
+            store::load_all(&conn).unwrap().is_empty(),
+            "中途失败必须整体回滚，首条不得残留（半态）"
+        );
     }
 
     #[test]

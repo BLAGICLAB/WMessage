@@ -7,6 +7,7 @@
 //! - `base_url_is_safe` SSRF / 明文传输警告
 //! - `migrate_legacy_key` / `migrate_search_keys` 老配置明文 → keyring
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -324,14 +325,8 @@ pub(crate) fn migrate_mcp_server_secrets_locked(app: &AppHandle) -> Result<(), S
     }
     // 逐台写 keyring + 读回比对（secrets::store 内含读回校验）
     for (id, name, blob_val) in &pending {
-        let env = blob_val
-            .get("env")
-            .and_then(|x| serde_json::from_value(x.clone()).unwrap_or_default())
-            .unwrap_or_default();
-        let headers = blob_val
-            .get("headers")
-            .and_then(|x| serde_json::from_value(x.clone()).unwrap_or_default())
-            .unwrap_or_default();
+        let env = secret_map_from_value(blob_val.get("env"), id, name, "env")?;
+        let headers = secret_map_from_value(blob_val.get("headers"), id, name, "headers")?;
         if let Err(e) = crate::bot::mcp::secrets::store_server_secrets(app, id, &env, &headers) {
             // 任一台失败 → 整体不写回（明文原样），调用方中止本次写，下次重试
             crate::audit::write_event(
@@ -366,6 +361,25 @@ pub(crate) fn migrate_mcp_server_secrets_locked(app: &AppHandle) -> Result<(), S
         &[("count", pending.len().to_string())],
     );
     Ok(())
+}
+
+/// 迁移段单台 env/headers 解析：字段缺失/JSON null = 该段无机密 → 空 map；
+/// 类型错配（如 env 写成了字符串）→ Err 上抛——静默回退空 map 会把「解析不出」
+/// 当成「无机密」传给 store_server_secrets，keyring 里该台的既有条目被当成
+/// 空机密清掉（零丢失红线），宁可不迁移留待下次重试。纯函数便于单测
+/// （keyring/AppHandle 真实环境不可用，同 keyring.rs classify_* 先例）。
+fn secret_map_from_value(
+    val: Option<&serde_json::Value>,
+    id: &str,
+    name: &str,
+    field: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    match val {
+        None | Some(serde_json::Value::Null) => Ok(BTreeMap::new()),
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| {
+            format!("mcp 机密迁移失败（id: {id}，name: {name}）：{field} 字段类型异常：{e}")
+        }),
+    }
 }
 
 /// 授权弹窗「始终允许该目录」落盘：把目录追加进 allowedDirs 并写回
@@ -856,5 +870,35 @@ mod tests {
         assert!(!serde_json::to_string(&cfg3)
             .unwrap()
             .contains("\"evolution\""));
+    }
+
+    #[test]
+    fn secret_map_parse_rejects_type_mismatch_but_keeps_normal_fields() {
+        // env 段写成字符串（类型错配）：必须报错——静默回退空 map 会把 keyring
+        // 既有条目当空机密清掉；错误要带得上 id/name/field 以便定位坏段
+        let blob: serde_json::Value =
+            serde_json::from_str(r#"{"env": "HOME=/tmp", "headers": [1, 2]}"#).unwrap();
+        for (field, val) in [("env", blob.get("env")), ("headers", blob.get("headers"))] {
+            let err = secret_map_from_value(val, "srv-1", "我的服务", field)
+                .expect_err("类型错配必须上抛，不得回退空 map");
+            assert!(
+                err.contains("srv-1") && err.contains("我的服务") && err.contains(field),
+                "错误应带服务器名与字段名：{err}"
+            );
+        }
+        // 正常段不受影响：对象照常解析、null/缺失 = 空 map（该段本就无机密）
+        let ok: serde_json::Value =
+            serde_json::from_str(r#"{"env": {"A": "1"}, "headers": null}"#).unwrap();
+        let env = secret_map_from_value(ok.get("env"), "srv-1", "我的服务", "env").unwrap();
+        assert_eq!(env.get("A").map(String::as_str), Some("1"));
+        assert!(
+            secret_map_from_value(ok.get("headers"), "srv-1", "我的服务", "headers")
+                .unwrap()
+                .is_empty(),
+            "null 段 = 无机密，不是类型错配"
+        );
+        assert!(secret_map_from_value(None, "srv-1", "我的服务", "env")
+            .unwrap()
+            .is_empty());
     }
 }

@@ -294,7 +294,15 @@ fn copy_dir_recursive_into(src: &Path, dst: &Path) -> Result<(), CommandError> {
 
 /// 移动文件/目录：先 rename（同卷）；失败（如跨卷 EXDEV）退化 copy+remove
 pub(crate) fn move_entry(src: &Path, dst: &Path) -> Result<(), String> {
-    if let Err(_e) = fs::rename(src, dst) {
+    if let Err(e) = fs::rename(src, dst) {
+        // 回退会替代掉 rename 的原始错误，失败原因必须留痕（EXDEV 跨卷属预期，
+        // 权限/占用类异常只有这里看得到）；不可收紧为仅 EXDEV 回退——dst 父目录
+        // 缺失等场景靠 copy 回退补建
+        eprintln!(
+            "[migration] rename 失败，回退 copy（src: {}，dst: {}）：{e}",
+            src.display(),
+            dst.display()
+        );
         // 跨卷回退：文件 copy+remove；目录递归拷贝后再删源
         if src.is_dir() {
             copy_dir_recursive(src, dst).map_err(|e| format!("跨卷复制失败：{e}"))?;

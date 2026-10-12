@@ -188,14 +188,26 @@ pub struct WorkflowDetail {
 // workflows 行 CRUD
 
 fn workflow_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workflow> {
+    let id: String = r.get(0)?;
     let attachments: Option<String> = r.get(5)?;
+    // 列写入端只存 JSON 数组或 NULL；解析失败 = 行内数据损坏，留痕后按无附件
+    // 处理（列表/详情照常出，重新保存即自愈）——静默 .ok() 会让损坏不可见
+    let attachments = attachments.and_then(|s| {
+        serde_json::from_str::<Vec<String>>(&s)
+            .inspect_err(|e| {
+                eprintln!(
+                    "[workflow] attachments 列不是合法 JSON（workflow: {id}），按无附件处理：{e}"
+                );
+            })
+            .ok()
+    });
     Ok(Workflow {
-        id: r.get(0)?,
+        id,
         name: r.get(1)?,
         goal: r.get(2)?,
         created_at: r.get(3)?,
         updated_at: r.get(4)?,
-        attachments: attachments.and_then(|s| serde_json::from_str(&s).ok()),
+        attachments,
         // clarify_meta 列在 SELECT 尾列（index 11），老库经幂等 ALTER 保证存在
         clarify_meta: r.get(11)?,
         schedule: r.get(6)?,

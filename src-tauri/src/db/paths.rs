@@ -76,6 +76,23 @@ pub fn copy_legacy_db(
             db_path.display()
         )));
     }
+    // 孤儿边车清场：上次拷贝在 Phase 2a/2b（rename 边车）之后、2c（rename 主库）
+    // 之前崩溃，会留下无主 -wal/-shm——不清场则本次新主库 rename 进来后恰与无关
+    // WAL 配对（SQLite 按本库日志回放 = 损坏）。此处 db_path 必不存在（上方守卫），
+    // 目标路径上任何边车都是孤儿，无保留价值；删除失败 fail-closed 拒拷贝
+    // （静默放行会把巧合链原样留给 2c）。须在 2a 之前：2a/2b 之后目标边车已是
+    // 本次新拷的，删了会把 BUSY 场景未 checkpoint 的 WAL 一并丢掉。
+    for ext in ["wal", "shm"] {
+        let orphan = wal_sidecar(db_path, ext);
+        if orphan.exists() {
+            std::fs::remove_file(&orphan).map_err(|e| {
+                CommandError::IoError(format!(
+                    "目标路径存在孤儿边车（{}）且删除失败，为防新库与无关 WAL 配对已拒绝拷贝：{e}",
+                    orphan.display()
+                ))
+            })?;
+        }
+    }
     let mut warns = Vec::new();
 
     // checkpoint section（不变）
