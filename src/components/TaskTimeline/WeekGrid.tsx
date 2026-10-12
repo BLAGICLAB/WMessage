@@ -1,4 +1,4 @@
-import type { Task } from "../../types";
+import type { ColumnId, Task } from "../../types";
 import {
   addDays,
   isSameDay,
@@ -12,11 +12,12 @@ const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日
 const HOURS = Array.from({ length: 11 }, (_, i) => 8 + i); // 8..18 刻度
 const GRID_COLS = "52px repeat(7, 1fr)";
 
-/** 已排期任务集：完成/软删/归档不上网格（完成走详情面板，软删/归档进回收站/归档页）。
+/** 已排期任务集：软删/归档不上网格（回收站/归档页看）。
+ *  已完成原位保留在原时间区间（降饱和 + 绿勾，无划线，点勾恢复待办）。
  *  plan 字段用真值判断——「拖回池/清除计划」写入的显式 null 不得进网格。 */
 function plannedTasks(tasks: Task[]): Task[] {
   return tasks.filter(
-    (t) => !!t.planStart && !!t.planEnd && t.column !== "done" && !t.deletedAt && !t.archived,
+    (t) => !!t.planStart && !!t.planEnd && !t.deletedAt && !t.archived,
   );
 }
 
@@ -39,6 +40,7 @@ export function WeekGrid({
   freshTaskId = null,
   bodyRef,
   onBlockPointerDown,
+  onSetColumn,
 }: {
   tasks: Task[];
   weekStart: Date;
@@ -51,6 +53,8 @@ export function WeekGrid({
   /** 页面用于指针反解的网格 body 挂载点 */
   bodyRef?: React.Ref<HTMLDivElement>;
   onBlockPointerDown?: (task: Task, kind: "move" | "resize", e: React.PointerEvent) => void;
+  /** 块对勾的完成/恢复通道（缺省不渲染对勾） */
+  onSetColumn?: (taskId: string, col: ColumnId) => void;
 }) {
   const planned = plannedTasks(tasks);
   const nowMin = now.getHours() * 60 + now.getMinutes();
@@ -136,6 +140,38 @@ export function WeekGrid({
                 .map((s) => ({ ...s, task: t })),
             ),
           );
+          // 重叠簇内分组：lanes ≥ 3 时第 3 张（lane ≥ 2）起塌缩为头像 + 对勾，
+          // 前两张保持完整卡并按半区均分（lanes 覆盖为 2）
+          const clusters = new Map<number, typeof segs>();
+          for (const s of segs) {
+            const g = clusters.get(s.cluster);
+            if (g) g.push(s);
+            else clusters.set(s.cluster, [s]);
+          }
+          const blk = (s: (typeof segs)[number], collapsed = false) => (
+            <PlanBlockView
+              key={`${s.task.id}-${s.startMin}`}
+              seg={s}
+              task={s.task}
+              color={planColorVar(s.task.tags)}
+              dimmed={draggingTaskId === s.task.id}
+              fresh={freshTaskId === s.task.id}
+              done={s.task.column === "done"}
+              collapsed={collapsed}
+              onSetColumn={onSetColumn}
+              onPointerDown={
+                onBlockPointerDown
+                  ? (e) => {
+                      if (e.button !== 0) return;
+                      const kind = (e.target as HTMLElement).closest("[data-grip]")
+                        ? "resize"
+                        : "move";
+                      onBlockPointerDown(s.task, kind, e);
+                    }
+                  : undefined
+              }
+            />
+          );
           return (
             <div
               key={day.toDateString()}
@@ -163,27 +199,14 @@ export function WeekGrid({
                   aria-hidden
                 />
               )}
-              {segs.map((s) => (
-                <PlanBlockView
-                  key={`${s.task.id}-${s.startMin}`}
-                  seg={s}
-                  task={s.task}
-                  color={planColorVar(s.task.tags)}
-                  dimmed={draggingTaskId === s.task.id}
-                  fresh={freshTaskId === s.task.id}
-                  onPointerDown={
-                    onBlockPointerDown
-                      ? (e) => {
-                          if (e.button !== 0) return;
-                          const kind = (e.target as HTMLElement).closest("[data-grip]")
-                            ? "resize"
-                            : "move";
-                          onBlockPointerDown(s.task, kind, e);
-                        }
-                      : undefined
-                  }
-                />
-              ))}
+              {[...clusters.values()].flatMap((group) => {
+                if (group[0].lanes < 3) return group.map((s) => blk(s));
+                const visible = group.filter((s) => s.lane <= 1).map((s) => ({ ...s, lanes: 2 }));
+                return [
+                  ...visible.map((s) => blk(s)),
+                  ...group.filter((s) => s.lane > 1).map((s) => blk(s, true)),
+                ];
+              })}
               {isToday && nowInWindow && (
                 <div className="week-nowline" style={{ top: `${((nowMin - 480) / 600) * 100}%` }}>
                   <span className="week-nowlab num">现在 {String(now.getHours()).padStart(2, "0")}:{String(now.getMinutes()).padStart(2, "0")}</span>

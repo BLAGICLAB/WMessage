@@ -5,20 +5,24 @@ export function DoneCircle({
   done,
   onToggle,
   title,
+  size = 20,
 }: {
   done: boolean;
   onToggle: () => void;
   title?: string;
+  /** 缺省 20（历史调用方不变）；周网格计划块按块高给 24/18/14 */
+  size?: number;
 }) {
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   return (
     <button
       type="button"
-      className={`shrink-0 w-5 h-5 rounded-full nm-inset flex items-center justify-center text-xs leading-none ${
+      className={`shrink-0 rounded-full nm-inset flex items-center justify-center text-xs leading-none ${
         done
           ? "text-[var(--success)]"
           : "text-transparent hover:text-[var(--t5)]"
       }`}
+      style={{ width: size, height: size }}
       title={title ?? (done ? "取消完成" : "标记完成")}
       aria-label={title ?? (done ? "取消完成" : "标记完成")}
       aria-pressed={done}
@@ -28,7 +32,7 @@ export function DoneCircle({
         onToggle();
       }}
     >
-      <Check size={12} strokeWidth={3} aria-hidden />
+      <Check size={Math.max(8, Math.round(size * 0.6))} strokeWidth={3} aria-hidden />
     </button>
   );
 }

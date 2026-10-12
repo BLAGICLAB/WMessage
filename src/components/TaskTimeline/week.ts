@@ -51,6 +51,21 @@ export function fmtMin(min: number): string {
   return `${pad2(Math.floor(min / 60))}:${pad2(min % 60)}`;
 }
 
+/** 分钟 → 小时（去尾零）：90 → "1.5"，60 → "1"，30 → "0.5"。时间行统一「起点 + N 小时」。 */
+export function fmtHours(min: number): string {
+  return String(Number((min / 60).toFixed(2)));
+}
+
+/** 标题行数（块像素高 ≈ 窗口分钟数：网格体 600 分钟铺满视口高）：
+ *  矮块 1 行（与首行同行退化），1–2 小时 2 行，2–4.5 小时 4 行，4.5 小时+ 6 行封顶。 */
+export function titleRows(startMin: number, endMin: number): 1 | 2 | 4 | 6 {
+  const dur = endMin - startMin;
+  if (dur < 60) return 1;
+  if (dur < 120) return 2;
+  if (dur < 280) return 4;
+  return 6;
+}
+
 const PLAN_DT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 
 /** 解析 "YYYY-MM-DDTHH:mm" → 当日本地 Date（00:00 基）+ 日内分钟；非法返 null。
@@ -139,10 +154,11 @@ export function segsForWeek(
 }
 
 /** 同日分段的重叠分栏（Google Calendar 式）：贪心分配 lane，重叠簇内
- *  lanes = 簇内最大 lane + 1（传递闭包：链式重叠也算同簇，栏数对齐）。 */
+ *  lanes = 簇内最大 lane + 1（传递闭包：链式重叠也算同簇，栏数对齐）。
+ *  cluster = 传递闭包簇号（并查集根下标）：lanes ≥ 3 的簇第 3 张（lane ≥ 2）起塌缩。 */
 export function layoutLanes<T extends { startMin: number; endMin: number }>(
   segs: T[],
-): Array<T & { lane: number; lanes: number }> {
+): Array<T & { lane: number; lanes: number; cluster: number }> {
   const sorted = [...segs].sort((a, b) => a.startMin - b.startMin);
   const laneEnds: number[] = [];
   const lane = sorted.map((s) => {
@@ -175,6 +191,7 @@ export function layoutLanes<T extends { startMin: number; endMin: number }>(
     ...s,
     lane: lane[i],
     lanes: clusterLanes.get(find(i)) ?? 1,
+    cluster: find(i),
   }));
 }
 

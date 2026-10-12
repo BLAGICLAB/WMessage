@@ -1258,6 +1258,62 @@
   .plan-blk.head .plan-cont {
     top: 2px;
   }
+  /* ═══ 计划块 v2：首行 = 头像最左 + 完成对勾最右（顶隙 4px），标题第二行起；
+     标题行数按块高 1/2/4/6；时间行 = 「起点 + N 小时」；矮块同行退化；
+     簇第 3 张起塌缩（头像+对勾上下排）；已完成原位保留（降饱和 + 绿勾，无划线） ═══ */
+  .plan-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 3px;
+    flex: none;
+  }
+  .plan-blk-title[data-rows="4"],
+  .plan-blk-title[data-rows="6"] {
+    flex: 1;
+    min-height: 0;
+  }
+  .plan-blk-title[data-rows="4"] {
+    -webkit-line-clamp: 4;
+  }
+  .plan-blk-title[data-rows="6"] {
+    -webkit-line-clamp: 6;
+  }
+  .plan-blk-time {
+    flex: none;
+    margin-top: 4px;
+    align-self: flex-start;
+  }
+  /* 矮块（< 1 小时）：头像 · 标题 · 对勾 同一行 */
+  .plan-blk.thin {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px 4px 12px;
+  }
+  .plan-blk.thin .plan-blk-title {
+    flex: 1;
+    min-width: 0;
+    -webkit-line-clamp: 1;
+  }
+  /* 塌缩块（簇 lane ≥ 2）：头像（上）+ 对勾（下）居中，尺寸随块高三档 */
+  .plan-blk.plan-stack {
+    padding: 5px 4px;
+    align-items: center;
+  }
+  .plan-stack-bar {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+  /* 已完成：原位保留，降饱和次要化；完成语义 = 对勾变绿（DoneCircle），无划线 */
+  .plan-blk.is-done {
+    opacity: 0.68;
+    filter: saturate(0.35);
+  }
   /* 落点吸附虚线框（批 3 拖拽反馈） */
   .plan-slot {
     position: absolute;

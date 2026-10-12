@@ -33,8 +33,9 @@ export function useProfile(): ProfileView | null {
 /**
  * 归属头像：bot=true 显示机器人头像，否则用户头像。
  * 任务卡上只显示头像；鼠标悬停（title）显示姓名。
+ * size 缺省 18（历史调用方不变）；周网格计划块按块高给 24/18/14。
  */
-export function ActorAvatar({ bot }: { bot: boolean }) {
+export function ActorAvatar({ bot, size = 18 }: { bot: boolean; size?: number }) {
   const profile = useProfile();
   const entry = bot ? profile?.bot : profile?.user;
   const name = entry?.name || (bot ? "机器人" : "我");
@@ -42,14 +43,18 @@ export function ActorAvatar({ bot }: { bot: boolean }) {
   return (
     <span
       title={name}
-      className="shrink-0 w-[18px] h-[18px] rounded-full overflow-hidden nm-inset flex items-center justify-center"
+      className="shrink-0 rounded-full overflow-hidden nm-inset flex items-center justify-center"
+      style={{ width: size, height: size }}
     >
       {src ? (
         <img src={src} alt={name} className="w-full h-full object-cover" />
       ) : bot ? (
         <img src={botLogo} alt={name} className="w-full h-full object-cover" />
       ) : (
-        <span className="text-[9px] leading-none text-[var(--t4)]">
+        <span
+          className="leading-none text-[var(--t4)]"
+          style={{ fontSize: Math.max(8, Math.round(size * 0.5)) }}
+        >
           {name.charAt(0)}
         </span>
       )}

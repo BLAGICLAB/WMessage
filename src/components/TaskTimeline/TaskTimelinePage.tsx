@@ -412,6 +412,7 @@ export function TaskTimelinePage({
             draggingTaskId={dragTaskId}
             freshTaskId={freshId}
             bodyRef={gridBodyRef}
+            onSetColumn={onSetColumn}
             onBlockPointerDown={(task, kind, e) => {
               if (!onUpdate || !task.planStart || !task.planEnd) return;
               startDrag(e, { kind, task });

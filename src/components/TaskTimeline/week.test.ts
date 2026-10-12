@@ -9,6 +9,7 @@ import {
   addWindowMinutes,
   buildPlanDT,
   clampWindowMin,
+  fmtHours,
   fmtMin,
   layoutLanes,
   parsePlanDT,
@@ -18,6 +19,7 @@ import {
   segsForWeek,
   snapMin,
   startOfWeek,
+  titleRows,
   windowMinutesBetween,
 } from "./week";
 
@@ -152,6 +154,33 @@ describe("layoutLanes 重叠分栏", () => {
       { startMin: 600, endMin: 660 },
     ]);
     expect(out.every((o) => o.lanes === 2)).toBe(true);
+  });
+
+  it("cluster 簇号：同簇相同、异簇不同", () => {
+    const out = layoutLanes([
+      { startMin: 540, endMin: 630 },
+      { startMin: 540, endMin: 630 },
+      { startMin: 800, endMin: 860 },
+    ]);
+    expect(out[0].cluster).toBe(out[1].cluster);
+    expect(out[2].cluster).not.toBe(out[0].cluster);
+  });
+});
+
+describe("fmtHours / titleRows（v2 计划块契约）", () => {
+  it("fmtHours：分钟 → 小时去尾零", () => {
+    expect(fmtHours(30)).toBe("0.5");
+    expect(fmtHours(60)).toBe("1");
+    expect(fmtHours(90)).toBe("1.5");
+    expect(fmtHours(180)).toBe("3");
+  });
+
+  it("titleRows：矮块 1 行，1–2 小时 2 行，2–4.5 小时 4 行，4.5 小时+ 6 行封顶", () => {
+    expect(titleRows(540, 570)).toBe(1);
+    expect(titleRows(540, 600)).toBe(2);
+    expect(titleRows(540, 660)).toBe(4);
+    expect(titleRows(540, 820)).toBe(6);
+    expect(titleRows(480, DAY_END_MIN)).toBe(6);
   });
 });
 

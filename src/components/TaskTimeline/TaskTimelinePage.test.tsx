@@ -69,6 +69,143 @@ describe("TaskTimelinePage", () => {
     expect(screen.getAllByText("已排期任务甲").length).toBe(2);
   });
 
+  it("块首行：头像最左 + 完成对勾最右；点对勾标记完成且不开面板", async () => {
+    const user = userEvent.setup();
+    const onSetColumn = vi.fn();
+    render(
+      <TaskTimelinePage
+        tasks={TASKS}
+        onUpdate={vi.fn()}
+        onSetColumn={onSetColumn}
+        onDelete={vi.fn()}
+      />,
+    );
+    const blk = screen
+      .getAllByText("已排期任务甲")
+      .map((el) => el.closest(".plan-blk"))
+      .find(Boolean)! as HTMLElement;
+    const bar = blk.querySelector(".plan-topbar")!;
+    // 头像在首行最左、对勾最右
+    expect(bar.firstElementChild).not.toBeNull();
+    const check = within(blk).getByRole("button", { name: "标记完成" });
+    expect(bar.contains(check)).toBe(true);
+    await user.click(check);
+    expect(onSetColumn).toHaveBeenCalledWith("t1", "done");
+    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
+  });
+
+  it("标题行数与时间格式：90 分钟 2 行 + 「+ 1.5 小时」，3 小时 6 行内、30 分钟矮块同行退化", () => {
+    render(
+      <TaskTimelinePage
+        tasks={[
+          mk({ id: "v1", title: "一个半小时任务", planStart: dt(day(1), "09:00"), planEnd: dt(day(1), "10:30") }),
+          mk({ id: "v2", title: "三小时长任务标题很长很长很长很长很长很长很长很长很长很长很长很长", planStart: dt(day(1), "11:00"), planEnd: dt(day(1), "14:00") }),
+          mk({ id: "v3", title: "半小时任务", planStart: dt(day(1), "15:00"), planEnd: dt(day(1), "15:30") }),
+        ]}
+      />,
+    );
+    const blkOf = (title: string) =>
+      screen
+        .getAllByText(title)
+        .map((el) => el.closest(".plan-blk"))
+        .find(Boolean)!;
+    const half = blkOf("一个半小时任务") as HTMLElement;
+    expect(half.querySelector(".plan-blk-title")!.textContent).toContain(
+      "一个半小时任务",
+    );
+    expect(half.textContent).toContain("09:00 + 1.5 小时");
+    const longTitle = "三小时长任务标题很长很长很长很长很长很长很长很长很长很长很长很长";
+    const long = blkOf(longTitle);
+    expect(long.querySelector(".plan-blk-title")).toBeTruthy();
+    expect(long.textContent).toContain("11:00 + 3 小时");
+    const thin = blkOf("半小时任务") as HTMLElement;
+    expect(thin.className).toContain("thin");
+    expect(thin.querySelector(".plan-topbar")).toBeNull();
+    expect(thin.textContent).not.toContain("+ 0.5 小时");
+  });
+
+  it("双卡重叠：两张都是完整卡（半区并显，不塌缩）", () => {
+    render(
+      <TaskTimelinePage
+        tasks={[
+          mk({ id: "p1", title: "双卡甲", planStart: dt(day(4), "10:00"), planEnd: dt(day(4), "11:00") }),
+          mk({ id: "p2", title: "双卡乙", planStart: dt(day(4), "10:30"), planEnd: dt(day(4), "11:30") }),
+        ]}
+      />,
+    );
+    const jia = screen
+      .getAllByText("双卡甲")
+      .map((el) => el.closest(".plan-blk"))
+      .find(Boolean)! as HTMLElement;
+    const yi = screen
+      .getAllByText("双卡乙")
+      .map((el) => el.closest(".plan-blk"))
+      .find(Boolean)! as HTMLElement;
+    expect(jia.className).not.toContain("plan-stack");
+    expect(yi.className).not.toContain("plan-stack");
+    expect(jia.textContent).toContain("10:00 + 1 小时");
+  });
+
+  it("同簇 3+ 重叠：前两张完整半区，第 3 张起塌缩为头像 + 对勾（无标题无时间）", () => {
+    const four = [
+      mk({ id: "s1", title: "重叠甲", planStart: dt(day(3), "10:00"), planEnd: dt(day(3), "11:00") }),
+      mk({ id: "s2", title: "重叠乙", planStart: dt(day(3), "10:00"), planEnd: dt(day(3), "11:00") }),
+      mk({ id: "s3", title: "重叠丙", planStart: dt(day(3), "10:00"), planEnd: dt(day(3), "11:00") }),
+      mk({ id: "s4", title: "重叠丁", planStart: dt(day(3), "10:00"), planEnd: dt(day(3), "11:00") }),
+    ];
+    render(<TaskTimelinePage tasks={four} />);
+    const gridText = [...document.querySelectorAll(".plan-blk")]
+      .map((el) => el.textContent)
+      .join();
+    expect(gridText).toContain("重叠甲");
+    expect(gridText).toContain("重叠乙");
+    expect(gridText).not.toContain("重叠丙");
+    expect(gridText).not.toContain("重叠丁");
+    // 塌缩块：头像 + 对勾上下排（plan-stack-bar），无标题无时间
+    const stacks = document.querySelectorAll(".plan-blk.plan-stack");
+    expect(stacks.length).toBe(2);
+    for (const st of stacks) {
+      expect(st.querySelector(".plan-stack-bar")).not.toBeNull();
+      expect(st.querySelector(".plan-blk-title")).toBeNull();
+      expect(st.textContent).not.toContain("+ 1 小时");
+    }
+  });
+
+  it("已完成任务保留网格原位（无划线，对勾恢复待办），池收进已完成折叠区", async () => {
+    const user = userEvent.setup();
+    const onSetColumn = vi.fn();
+    render(
+      <TaskTimelinePage
+        tasks={[
+          mk({
+            id: "d1",
+            title: "完成也留位",
+            column: "done",
+            completedAt: 1,
+            tags: ["设计"],
+            planStart: dt(day(1), "09:00"),
+            planEnd: dt(day(1), "10:00"),
+          }),
+        ]}
+        onUpdate={vi.fn()}
+        onSetColumn={onSetColumn}
+        onDelete={vi.fn()}
+      />,
+    );
+    const blk = screen
+      .getAllByText("完成也留位")
+      .map((el) => el.closest(".plan-blk"))
+      .find(Boolean)! as HTMLElement;
+    expect(blk.className).toContain("is-done");
+    // 完成语义 = 绿勾；不划线（无 line-through 类）
+    expect(blk.querySelector(".line-through")).toBeNull();
+    expect(blk.textContent).toContain("完成也留位");
+    await user.click(within(blk).getByRole("button", { name: "恢复待办" }));
+    expect(onSetColumn).toHaveBeenCalledWith("d1", "todo");
+    const pool = within(screen.getByLabelText("任务池"));
+    expect(pool.getByText(/已完成 1/)).toBeInTheDocument();
+  });
+
   it("任务池开合：页头开关切换，池滑出/滑入带过渡类，状态记忆进 localStorage", async () => {
     const user = userEvent.setup();
     render(
