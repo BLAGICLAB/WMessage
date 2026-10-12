@@ -6,6 +6,43 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-13（周一）出包：Windows 绿色版 `wmessage-portable-2026-10-13.zip`（104 MB）
+
+**背景**：老板要最新绿色包，main 处于浮窗改造落地的稳定点，按
+`docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程执行。
+
+**构建**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-13.zip`
+  （109,397,373 B / 205 项 / 顶层 9 项，与 10-12 版同构）
+- `wmessage.exe`：73,883,478 B（约 70 MB，基于 main @ 5b757b7，mingw 交叉编译，
+  完整 tauri build）
+- `dotnet/`：189 文件 self-contained .NET 8。10-12 的 zip 已删、staging 里的
+  dotnet/ 还是 09-05 老货，虽然侧车源码自 c91c8d0 零改动（git log 核过），
+  复用无处可取就重新 publish——产物与 10-12 同规模，不留 vintage 悬念
+- `onnxruntime.dll`：ort 2.0.0-rc.13 未变，/tmp 缓存复用
+- 固定文件（WebView2Loader.dll / MicrosoftEdgeWebview2Setup.exe）从
+  `packaging/wmessage-portable-staging/` 复用
+
+**过程坑**：shell 工作目录跨调用残留——`cd src-tauri && cargo check` 后直接跑
+打包 heredoc，zip 落在 src-tauri/ 且只有 22 字节（os.walk 找不到目录就静默出
+空包）。修脚本时如果手册命令依赖「在仓库根执行」的前提，相对路径要么显式
+cd 要么改绝对路径；空产物靠第 7 步校验清单兜住（22 字节连 testzip 都过不了
+顶层断言）。
+
+**校验**：
+- `ZIP_OK 205 files, 顶层 9 项`
+- `objdump -p wmessage.exe | grep -i onnxruntime` → 空（load-dynamic）
+- `file wmessage.exe` → PE32+ executable (GUI) x86-64
+- macOS 侧 `cargo check` 通过
+
+**距上一版主要改动**（c91c8d0..5b757b7 共 21 commit，全量见 zip 内 README.txt）：
+任务页计划块 v2（首行布局/行数自适应/整簇塌缩/完成原位）+ 真机热修、子任务卡
+（一键生成/↗ 跳转/× 解关联/删母卡询问/图谱连线）、双击开详情、新建/编辑任务
+改全局毛玻璃浮窗（任意页左滑出不切页）、同卡二次整行写冲突根治、OCR 审计修复批。
+
+**未做**：Windows 实机验收（人工项——解压运行、记忆语义检索肉眼确认、
+ocr_image 实测；本版可顺带看毛玻璃浮窗）。
+
 ## 2026-10-12（周一）计划块 v2：首行头像/对勾 + 行数自适应 + 完成原位保留
 
 为什么改：计划块只有一种排版，3 小时长计划的标题和 30 分钟块一样只有两行，
