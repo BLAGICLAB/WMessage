@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { Bot, FolderOpen, History, Paperclip } from "lucide-react";
+import { ArrowUpRight, Bot, FolderOpen, History, Paperclip, Plus } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
 import {
   MAX_TASK_FILES,
@@ -48,6 +48,8 @@ export function TaskDetailPanel({
   onSetColumn,
   onDelete,
   onClose,
+  onCreateSubtaskCard,
+  onOpenTask,
 }: {
   task: Task;
   /** 新建任务打开时聚焦标题并全选（自动进入编辑态） */
@@ -56,6 +58,10 @@ export function TaskDetailPanel({
   onSetColumn: (col: ColumnId) => void;
   onDelete: () => void;
   onClose: () => void;
+  /** 子任务行一键生成子任务卡（按钮悬停显现；接线缺省 = 不显示按钮） */
+  onCreateSubtaskCard?: (subId: string, title: string) => void;
+  /** 子任务行 ↗ 跳转到已生成的任务卡 */
+  onOpenTask?: (id: string) => void;
 }) {
   // 标题本地草稿：任务切换/外部改名时回填，blur/Enter 提交，Esc 还原
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -439,24 +445,49 @@ export function TaskDetailPanel({
       </div>
       <div className="flex flex-col">
         {(task.subtasks ?? []).map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            className={`flex items-center gap-2 py-1 text-left text-xs ${
-              s.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
-            }`}
-            onClick={() => toggleSubtask(s.id)}
-          >
-            <span
-              className={`h-3.5 w-3.5 shrink-0 rounded border ${
-                s.done
-                  ? "border-[var(--success)] bg-[var(--success)]"
-                  : "border-[var(--edge-strong)]"
+          <div key={s.id} className="group flex items-center gap-1 py-1">
+            <button
+              type="button"
+              className={`flex min-w-0 flex-1 items-center gap-2 text-left text-xs ${
+                s.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
               }`}
-              aria-hidden
-            />
-            {s.text}
-          </button>
+              onClick={() => toggleSubtask(s.id)}
+            >
+              <span
+                className={`h-3.5 w-3.5 shrink-0 rounded border ${
+                  s.done
+                    ? "border-[var(--success)] bg-[var(--success)]"
+                    : "border-[var(--edge-strong)]"
+                }`}
+                aria-hidden
+              />
+              {s.text}
+            </button>
+            {/* 行尾动作：已生成卡 → ↗ 跳转；未生成 → ＋ 生成为任务卡（悬停显现） */}
+            {s.taskId ? (
+              <button
+                type="button"
+                title="打开生成的任务卡"
+                aria-label={`打开子任务「${s.text}」生成的任务卡`}
+                className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--t2)] group-hover:opacity-100"
+                onClick={() => {
+                  if (s.taskId) onOpenTask?.(s.taskId);
+                }}
+              >
+                <ArrowUpRight size={12} aria-hidden />
+              </button>
+            ) : onCreateSubtaskCard ? (
+              <button
+                type="button"
+                title="生成为任务卡"
+                aria-label={`把子任务「${s.text}」生成为任务卡`}
+                className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--t2)] group-hover:opacity-100"
+                onClick={() => onCreateSubtaskCard(s.id, s.text)}
+              >
+                <Plus size={12} aria-hidden />
+              </button>
+            ) : null}
+          </div>
         ))}
         <input
           className="mt-1 w-full bg-transparent text-xs text-[var(--t2)] outline-none placeholder:text-[var(--t6)]"

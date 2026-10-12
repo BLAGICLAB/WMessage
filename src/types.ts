@@ -53,6 +53,8 @@ interface Subtask {
   id: string;
   text: string;
   done: boolean;
+  /** 该子任务行一键生成的任务卡 id（行上 ↗ 跳转标记的指向）；缺省 = 未生成 */
+  taskId?: string;
 }
 
 /** 画布坐标（工作流卡专用，与 Rust db::CanvasPos 对应） */
@@ -113,6 +115,10 @@ export interface Task {
   planStart?: string | null;
   /** 计划结束，恒 > planStart；null 语义同上 */
   planEnd?: string | null;
+  /** 子任务卡出身：子任务行一键生成的卡记母卡 id；普通卡缺省。
+   *  仅作关联键（详情面板 ↗ 跳转、母卡删除连带询问），无级联语义；
+   *  经 db_upsert 整行写入，不走 task_patch（白名单不含此字段） */
+  parentId?: string | null;
   /** 子 agent 编排（ 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
   assignee?: string | null;
   /** 预算三硬顶（上卡可见）：轮数 / 工具调用 / 墙钟秒 */

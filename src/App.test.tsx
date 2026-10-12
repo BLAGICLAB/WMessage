@@ -322,6 +322,100 @@ describe("App", () => {
     });
   });
 
+  // 子任务卡：删除有子卡的母卡时先询问是否连带（okLabel=一并删除）
+  const motherWithChildren: Task[] = [
+    { id: "m1", title: "母卡", column: "todo", order: 0, updatedAt: 1 },
+    // 子卡放完成列：不上任务池，池内只有母卡一个「编辑任务」入口
+    {
+      id: "c1",
+      title: "子卡一",
+      column: "done",
+      order: 1,
+      updatedAt: 1,
+      parentId: "m1",
+    },
+    {
+      id: "c2",
+      title: "子卡二",
+      column: "done",
+      order: 2,
+      updatedAt: 1,
+      parentId: "m1",
+    },
+  ];
+  const patchedIds = () =>
+    mocks.invokeMock.mock.calls
+      .filter((c) => c[0] === "task_patch")
+      .map((c) => (c[1] as { id: string }).id);
+
+  it("删除母卡询问子卡：选「一并删除」→ 母卡与全部子卡都收 task_patch", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return motherWithChildren;
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    await user.click(await screen.findByTitle("编辑任务"));
+    await user.click(await screen.findByTitle("删除任务"));
+    expect(mocks.askMock).toHaveBeenCalledTimes(1);
+    expect(mocks.askMock).toHaveBeenCalledWith(
+      expect.stringContaining("有 2 张子任务卡"),
+      expect.objectContaining({ okLabel: "一并删除子卡", cancelLabel: "仅删母卡" }),
+    );
+    await waitFor(() => {
+      expect(patchedIds().sort()).toEqual(["c1", "c2", "m1"]);
+    });
+  });
+
+  it("删除母卡询问子卡：选「仅删母卡」→ 子卡不动", async () => {
+    const user = userEvent.setup();
+    mocks.askMock.mockResolvedValue(false);
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return motherWithChildren;
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    await user.click(await screen.findByTitle("编辑任务"));
+    await user.click(await screen.findByTitle("删除任务"));
+    await waitFor(() => {
+      expect(patchedIds()).toEqual(["m1"]);
+    });
+  });
+
+  it("子任务行一键生成任务卡：新卡带 parentId 进待办，原行回写 taskId", async () => {
+    const user = userEvent.setup();
+    const mother: Task = {
+      id: "m1",
+      title: "母卡",
+      column: "todo",
+      order: 0,
+      updatedAt: 1,
+      subtasks: [{ id: "s1", text: "待生成", done: false }],
+    };
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return [mother];
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    await user.click(await screen.findByTitle("编辑任务"));
+    await user.click(await screen.findByTitle("生成为任务卡"));
+    await waitFor(() => {
+      const calls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "db_upsert",
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      const { tasks } = calls[calls.length - 1][1] as { tasks: Task[] };
+      const child = tasks.find((t) => t.parentId === "m1");
+      expect(child?.column).toBe("todo");
+      expect(child?.title).toBe("待生成");
+      const motherRow = tasks.find((t) => t.id === "m1");
+      expect(motherRow?.subtasks?.[0]?.taskId).toBe(child?.id);
+    });
+  });
+
   // tasks-updated 事件合并后，规则改动（今日归位/超时归档）
   // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
   it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {

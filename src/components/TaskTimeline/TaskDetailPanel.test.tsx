@@ -29,7 +29,13 @@ const base: Task = {
   ],
 };
 
-const setup = (over: Partial<Task> = {}) => {
+const setup = (
+  over: Partial<Task> = {},
+  extra: {
+    onCreateSubtaskCard?: (subId: string, title: string) => void;
+    onOpenTask?: (id: string) => void;
+  } = {},
+) => {
   const onUpdate = vi.fn();
   const onSetColumn = vi.fn();
   const onDelete = vi.fn();
@@ -41,6 +47,8 @@ const setup = (over: Partial<Task> = {}) => {
       onSetColumn={onSetColumn}
       onDelete={onDelete}
       onClose={onClose}
+      onCreateSubtaskCard={extra.onCreateSubtaskCard}
+      onOpenTask={extra.onOpenTask}
     />,
   );
   return { onUpdate, onSetColumn, onDelete, onClose };
@@ -163,6 +171,39 @@ describe("TaskDetailPanel", () => {
     const { onClose } = setup();
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("子任务行一键生成任务卡：悬停 ＋ 点击回传 (subId, text)；行不消失", async () => {
+    const user = userEvent.setup();
+    const onCreateSubtaskCard = vi.fn();
+    setup(
+      { subtasks: [{ id: "s1", text: "子任务甲", done: false }] },
+      { onCreateSubtaskCard },
+    );
+    await user.click(screen.getByTitle("生成为任务卡"));
+    expect(onCreateSubtaskCard).toHaveBeenCalledTimes(1);
+    expect(onCreateSubtaskCard).toHaveBeenCalledWith("s1", "子任务甲");
+    expect(screen.getByText("子任务甲")).toBeInTheDocument();
+  });
+
+  it("已生成的子任务行：＋ 换成 ↗，点击跳转到生成卡", async () => {
+    const user = userEvent.setup();
+    const onCreateSubtaskCard = vi.fn();
+    const onOpenTask = vi.fn();
+    setup(
+      { subtasks: [{ id: "s1", text: "已生成行", done: false, taskId: "child-1" }] },
+      { onCreateSubtaskCard, onOpenTask },
+    );
+    expect(screen.queryByTitle("生成为任务卡")).not.toBeInTheDocument();
+    await user.click(screen.getByTitle("打开生成的任务卡"));
+    expect(onOpenTask).toHaveBeenCalledWith("child-1");
+    expect(onCreateSubtaskCard).not.toHaveBeenCalled();
+  });
+
+  it("未接生成回调时行尾无动作按钮", () => {
+    setup();
+    expect(screen.queryByTitle("生成为任务卡")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("打开生成的任务卡")).not.toBeInTheDocument();
   });
 
   it("autoFocusTitle：新建路径聚焦标题并全选", () => {

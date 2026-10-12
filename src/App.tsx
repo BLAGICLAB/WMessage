@@ -56,6 +56,7 @@ import {
   upsertWorkspaceItems,
 } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
+import { useConfirm } from "./lib/useConfirm";
 import { unlistenSafe } from "./lib/useTauriListen";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
 import {
@@ -698,6 +699,40 @@ function App() {
     setView(viewForTask(t));
     setEditingId(t.id);
   };
+  // 子任务行 ↗ 跳转：按 id 定位（卡可能已被彻底删除 → 静默不动）
+  const jumpToTaskId = (id: string) => {
+    const t = tasksRef.current.find((x) => x.id === id);
+    if (t) jumpToTask(t);
+  };
+
+  // 子任务行一键生成子任务卡：新卡进待办（todo）带 parentId 指回母卡；
+  // 同一 mutate 内原子回写子任务行的 taskId（行上 ↗ 标记），写失败整批不落
+  const createSubtaskCard = (motherId: string, subId: string, title: string) => {
+    const childId = crypto.randomUUID();
+    mutateFire((prev) => {
+      const max = prev.reduce((m, t) => Math.max(m, t.order ?? 0), 0);
+      const child: Task = {
+        id: childId,
+        title,
+        column: "todo",
+        order: max + 1,
+        parentId: motherId,
+      };
+      return [
+        ...prev.map((t) =>
+          t.id === motherId
+            ? {
+                ...t,
+                subtasks: (t.subtasks ?? []).map((s) =>
+                  s.id === subId ? { ...s, taskId: childId } : s,
+                ),
+              }
+            : t,
+        ),
+        child,
+      ];
+    });
+  };
   const jumpToSession = (sessionId: string) => {
     emit("chat-focus-session", { sessionId }).catch((e) => {
       console.error("emit chat-focus-session failed", e);
@@ -839,13 +874,34 @@ function App() {
 
   // 软删除：进回收站
   // 软删必须清调度字段——否则任务躺在回收站里 schedule 仍到点触发
-  const deleteTask = (taskId: string) => {
-    void patchTask(taskId, {
-      deletedAt: Date.now(),
-      schedule: null,
-      schedLast: null,
+  // 有子任务卡时先询问：一并软删 or 仅删母卡（子卡保留，parentId 悬挂不清理——
+  // 母卡从回收站恢复后关联仍成立）
+  const confirm = useConfirm();
+  const deleteTask = async (taskId: string) => {
+    const children = tasksRef.current.filter(
+      (t) => t.parentId === taskId && !t.deletedAt,
+    );
+    let deleteIds = [taskId];
+    if (children.length > 0) {
+      const withChildren = await confirm({
+        title: "删除任务卡",
+        message: `任务卡「${
+          tasksRef.current.find((t) => t.id === taskId)?.title ?? ""
+        }」有 ${children.length} 张子任务卡，是否一并移入回收站？`,
+        okLabel: "一并删除子卡",
+        cancelLabel: "仅删母卡",
+      });
+      if (withChildren) deleteIds = deleteIds.concat(children.map((c) => c.id));
+    }
+    const now = Date.now();
+    deleteIds.forEach((id) => {
+      void patchTask(id, {
+        deletedAt: now,
+        schedule: null,
+        schedLast: null,
+      });
     });
-    setEditingId((cur) => (cur === taskId ? null : cur));
+    setEditingId((cur) => (cur !== null && deleteIds.includes(cur) ? null : cur));
   };
 
   // 彻底删除（回收站，逐卡删除）
@@ -965,6 +1021,8 @@ function App() {
               onSetColumn={setTaskColumn}
               onDelete={deleteTask}
               editingId={editingId}
+              onCreateSubtaskCard={createSubtaskCard}
+              onOpenTask={jumpToTaskId}
             />
           ) : view === "workflow" ? (
             <WorkflowPage
