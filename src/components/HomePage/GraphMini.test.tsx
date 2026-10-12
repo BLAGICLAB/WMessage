@@ -12,12 +12,12 @@ function task(partial: Partial<Task> & { id: string }): Task {
   return { column: "done", ...partial } as Task;
 }
 
-function renderMini(tasks: Task[], dayKeys: string[]) {
+function renderMini(tasks: Task[], dayKeys: string[], activeDay: number | null = 0) {
   return render(
     <GraphMini
       tasks={tasks}
       dayKeys={dayKeys}
-      activeDay={0}
+      activeDay={activeDay}
       activeTaskId={null}
       onHoverTask={vi.fn()}
       onOpenTask={vi.fn()}
@@ -28,6 +28,9 @@ function renderMini(tasks: Task[], dayKeys: string[]) {
 
 const opacityOf = (id: string) =>
   document.querySelector(`[data-testid='graph-node-${id}']`)!.getAttribute("opacity");
+
+const fillOf = (id: string) =>
+  document.querySelector(`[data-testid='graph-node-${id}']`)!.getAttribute("fill");
 
 afterEach(cleanup);
 
@@ -46,5 +49,29 @@ describe("GraphMini 完成日匹配（本地时区口径）", () => {
       ["2026-10-10"],
     );
     expect(opacityOf("t2")).toBe("0.22");
+  });
+});
+
+describe("GraphMini 节点状态着色", () => {
+  it("无联动时已完成节点填 --success（与图谱页完成色一致），未完成保持 --plan-slate", () => {
+    renderMini(
+      [
+        task({ id: "d1", completedAt: Date.UTC(2026, 9, 10, 12, 0) }),
+        task({ id: "w1", column: "todo" }),
+      ],
+      ["2026-10-10"],
+      null,
+    );
+    expect(fillOf("d1")).toBe("var(--success)");
+    expect(fillOf("w1")).toBe("var(--plan-slate)");
+  });
+
+  it("联动高亮仍优先于状态色（lit 节点是 accent，不因完成改色）", () => {
+    renderMini(
+      [task({ id: "d2", completedAt: Date.UTC(2026, 9, 10, 12, 0) })],
+      ["2026-10-10"],
+      0,
+    );
+    expect(fillOf("d2")).toBe("var(--accent)");
   });
 });

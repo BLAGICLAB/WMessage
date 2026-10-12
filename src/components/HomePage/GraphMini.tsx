@@ -159,13 +159,19 @@ export function GraphMini({
               const hot = activeTaskId === node.id;
               const lit = !dim && (activeTaskId !== null || activeDay !== null);
               const r = 2.2 + Math.min(node.degree, 8) * 0.55;
+              // 已完成与图谱页状态着色同源（resolveStatusColor done → --success），
+              // 两处颜色必须一起改
+              const fill =
+                node.status === "done"
+                  ? "var(--success)"
+                  : "var(--plan-slate)";
               return (
                 <circle
                   key={node.id}
                   cx={x}
                   cy={y}
                   r={hot ? r + 0.8 : r}
-                  fill={lit ? "var(--accent)" : "var(--plan-slate)"}
+                  fill={lit ? "var(--accent)" : fill}
                   opacity={dim ? 0.22 : 1}
                   stroke={hot ? "var(--accent)" : "var(--surface)"}
                   strokeWidth={hot ? 0.9 : 0.4}
