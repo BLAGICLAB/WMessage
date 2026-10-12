@@ -10,7 +10,6 @@ import type { ColumnId, Task } from "../../types";
 
 export interface TodoCardViewProps {
   task: Task;
-  autoEdit?: boolean;
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
   /** TP-1：列状态定向迁移（服务端命令，免快照竞态）；缺省回落 onUpdate 整行写 */

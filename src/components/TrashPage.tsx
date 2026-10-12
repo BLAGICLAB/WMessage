@@ -5,13 +5,10 @@ import { EmptyState } from "./EmptyState";
 
 export function TrashPage({
   tasks,
-  editingId,
   onUpdate,
   onDelete,
 }: {
   tasks: Task[];
-  /** 机器人 📌 引用跳转：命中任务卡自动进入标题编辑态 */
-  editingId?: string | null;
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
 }) {
@@ -35,7 +32,6 @@ export function TrashPage({
             <TodoCard
               key={t.id}
               task={t}
-              autoEdit={t.id === editingId}
               onUpdate={onUpdate}
               onDelete={onDelete}
               trashed

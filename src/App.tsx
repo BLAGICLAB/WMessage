@@ -22,6 +22,7 @@ import {
   Workflow as WorkflowIcon,
 } from "lucide-react";
 import { TaskTimelinePage } from "./components/TaskTimeline/TaskTimelinePage";
+import { TaskEditorOverlay } from "./components/TaskTimeline/TaskEditorOverlay";
 import { HomePage } from "./components/HomePage/HomePage";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
@@ -164,13 +165,6 @@ const IS_MAC =
 const KBD_NEW = IS_MAC ? "⌘N" : "Ctrl+N";
 const KBD_SEARCH = IS_MAC ? "⌘K" : "Ctrl+K";
 
-/** 任务所在视图：回收站 > 归档 > 看板（edit-task 事件与 ⌘K 跳转共用一套映射） */
-function viewForTask(t: Pick<Task, "deletedAt" | "archived">): RailView {
-  if (t.deletedAt) return "trash";
-  if (t.archived) return "archive";
-  return "board";
-}
-
 /** 导航栏按钮：action=带边框动作钮（新建/搜索，可挂快捷键提示）；
  *  item=导航项（hover 淡底，选中走 nm-inset 凹陷语义） */
 function RailButton({
@@ -248,10 +242,14 @@ function applyTodayRule(tasks: Task[]): Task[] {
 // 归档规则（applyArchiveRule + 归档天数配置）在 lib/archiveRule.ts：
 // 天数存 bot-config.json，后端 migration 兜底归档同源读取（设置页数据管理可改）
 
+/** 任务编辑浮窗的打开态：id + 焦点模式 + 退场标记（单原子，防退场定时器
+ *  与「切换任务重开」竞态——dismiss 只清 closing 态）。null = 关闭。 */
+type EditorState = { id: string; autoFocus: boolean; closing: boolean };
+
 function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editor, setEditor] = useState<EditorState | null>(null);
   const [view, setView] = useState<RailView | "settings">("home");
   // main 滚动容器 ref：首页吸顶头部的滚动进度源（useScroll container）
   const mainRef = useRef<HTMLElement>(null);
@@ -621,24 +619,18 @@ function App() {
     };
   }, []);
 
-  // 挂件点标题 → 打开该任务编辑态（切回看板视图 + 标题自动进入编辑）；
-  // 机器人搜出的归档任务点 📌 → 跳归档页（归档任务不在看板）
+  // 挂件点标题 → 打开该任务的全局编辑浮窗（覆盖当前页滑出，不切视图）
   useEffect(() => {
     const unlisten = listen<{ id?: string }>("edit-task", (e) => {
       const id = e.payload?.id;
-      if (id) {
-        const t = tasksRef.current.find((x) => x.id === id);
-        // 按任务实际所在位置跳转：回收站 → trash；归档 → archive；其余 → 看板
-        setView(t ? viewForTask(t) : "board");
-        setEditingId(id);
-      }
+      if (id) setEditor({ id, autoFocus: false, closing: false });
     });
     return () => {
       unlistenSafe(unlisten);
     };
   }, []);
 
-  // 全局快捷键快速新建（Rust 侧 Cmd+Ctrl+N / Ctrl+Alt+N）：切回看板 + 新建任务进入编辑态
+  // 全局快捷键快速新建（Rust 侧 Cmd+Ctrl+N / Ctrl+Alt+N）：当前页上层滑出新建浮窗
   useEffect(() => {
     const unlisten = listen("quick-add", () => {
       startNewTaskRef.current();
@@ -660,25 +652,27 @@ function App() {
 
   const addTask = () => {
     const id = crypto.randomUUID();
-    mutateFire((prev) => {
+    // 落盘完成后才开浮窗：浮窗按 tasks 快照解析任务，先开窗会撞「任务未入列」空窗
+    void mutate((prev) => {
       const max = prev.reduce((m, t) => Math.max(m, t.order ?? 0), 0);
       return [...prev, { id, title: "新任务", column: "todo", order: max + 1 }];
-    });
-    setEditingId(id); // 新建后自动进入编辑态
+    }).then(
+      () => setEditor({ id, autoFocus: true, closing: false }),
+      (e) => console.error("[mutate] persist failed", e),
+    );
   };
 
-  // 快捷新建（⌘/Ctrl+N 与 quick-add 事件共用）：关面板 + 切看板 + 新建进编辑态
+  // 快捷新建（⌘/Ctrl+N 与 quick-add 事件共用）：关面板 + 当前页上层滑出新建浮窗
   const startNewTaskRef = useRef<() => void>(() => {});
   useEffect(() => {
     startNewTaskRef.current = () => {
       setPaletteOpen(false);
-      setView("board");
       addTaskRef.current();
     };
   });
 
   // 全局快捷键纯前端 keydown 实现，不碰 Rust 全局注册）：
-  // ⌘/Ctrl+N 新建任务（切回看板）、⌘/Ctrl+K 命令面板开合。
+  // ⌘/Ctrl+N 新建任务、⌘/Ctrl+K 命令面板开合。
   // isComposing 跳过：中文输入法组合期不得触发（防选词按到修饰键误新建）
   const addTaskRef = useRef(addTask);
   addTaskRef.current = addTask;
@@ -721,12 +715,12 @@ function App() {
     });
   };
 
-  // ⌘K 跳转：任务按所在位置切视图并进入编辑；会话发事件让挂件展开并切会话
+  // ⌘K 跳转 / 图谱与首页点卡：当前页上层滑出该任务的编辑浮窗（不切视图）；
+  // 找不到（已被彻底删除）静默不动
   const jumpToTask = (t: Task) => {
-    setView(viewForTask(t));
-    setEditingId(t.id);
+    setEditor({ id: t.id, autoFocus: false, closing: false });
   };
-  // 子任务行 ↗ 跳转：按 id 定位（卡可能已被彻底删除 → 静默不动）
+  // 子任务行 ↗ 跳转：按 id 定位
   const jumpToTaskId = (id: string) => {
     const t = tasksRef.current.find((x) => x.id === id);
     if (t) jumpToTask(t);
@@ -896,7 +890,6 @@ function App() {
       if (cur && cur.column === "todo") p.column = "doing";
     }
     void patchTask(taskId, p);
-    setEditingId(null);
   };
 
   // 软删除：进回收站
@@ -928,13 +921,36 @@ function App() {
         schedLast: null,
       });
     });
-    setEditingId((cur) => (cur !== null && deleteIds.includes(cur) ? null : cur));
+    // 删的是正在编辑的任务 → 浮窗跟着关（走退场动画）
+    setEditor((cur) =>
+      cur && deleteIds.includes(cur.id) ? { ...cur, closing: true } : cur,
+    );
   };
 
   // 彻底删除（回收站，逐卡删除）
   const hardDeleteTask = (taskId: string) => {
     mutateFire((prev) => prev.filter((t) => t.id !== taskId));
   };
+
+  // 编辑中的任务被彻底删除（如回收站硬删）→ 浮窗无内容可显，直接收起；
+  // 软删走 deleteTask 的 closing 路径（带退场动画），这里只兜硬删的「任务消失」
+  useEffect(() => {
+    if (
+      editor &&
+      !editor.closing &&
+      !tasks.some((t) => t.id === editor.id)
+    ) {
+      setEditor(null);
+    }
+  }, [editor, tasks]);
+  const editorTask = editor
+    ? (tasks.find((t) => t.id === editor.id) ?? null)
+    : null;
+  // 关浮窗 = 进退场动画（结束后 overlay 回调 dismiss 才真正卸载）
+  const closeEditor = () =>
+    setEditor((cur) => (cur && !cur.closing ? { ...cur, closing: true } : cur));
+  // 只清退场态：退场途中若已切换/重开任务（closing=false），本次 dismiss 是陈旧定时器，不吞
+  const dismissEditor = () => setEditor((cur) => (cur?.closing ? null : cur));
 
   // 记录进入设置前的视图（ 设置壳）：「返回」跳回进入前的界面
   const lastViewRef = useRef<RailView>("home");
@@ -991,10 +1007,7 @@ function App() {
             icon={Plus}
             label="新建任务"
             kbd={KBD_NEW}
-            onClick={() => {
-              setView("board");
-              addTask();
-            }}
+            onClick={addTask}
           />
           <RailButton
             variant="action"
@@ -1046,11 +1059,7 @@ function App() {
               onNewTask={addTask}
               onUpdate={updateTask}
               onSetColumn={setTaskColumn}
-              onDelete={deleteTask}
-              editingId={editingId}
-              onCreateSubtaskCard={createSubtaskCard}
               onOpenTask={jumpToTaskId}
-              onDeleteSubtask={deleteSubtaskRow}
             />
           ) : view === "workflow" ? (
             <WorkflowPage
@@ -1078,7 +1087,6 @@ function App() {
           ) : view === "archive" ? (
             <ArchivePage
               tasks={visibleTasks}
-              editingId={editingId}
               onUpdate={updateTask}
               onDelete={deleteTask}
             />
@@ -1087,7 +1095,6 @@ function App() {
           ) : view === "trash" ? (
             <TrashPage
               tasks={visibleTasks}
-              editingId={editingId}
               onUpdate={updateTask}
               onDelete={hardDeleteTask}
             />
@@ -1099,6 +1106,27 @@ function App() {
           {/* 应用内错误弹窗宿主（批 4：接管 errorHandler，替代原生 alert/confirm） */}
           <ErrorDialogHost />
         </main>
+        {/* 全局任务编辑浮窗：任何页面上层滑出（新建/编辑统一入口） */}
+        {editor && editorTask && (
+          <TaskEditorOverlay
+            task={editorTask}
+            autoFocusTitle={editor.autoFocus}
+            closing={editor.closing}
+            onClosed={dismissEditor}
+            onClose={closeEditor}
+            onUpdate={(patch) => updateTask(editorTask.id, patch)}
+            onSetColumn={(col) => setTaskColumn(editorTask.id, col)}
+            onDelete={() => {
+              closeEditor();
+              deleteTask(editorTask.id);
+            }}
+            onCreateSubtaskCard={(subId, title) =>
+              createSubtaskCard(editorTask.id, subId, title)
+            }
+            onOpenTask={jumpToTaskId}
+            onDeleteSubtask={(subId) => deleteSubtaskRow(editorTask.id, subId)}
+          />
+        )}
         {paletteOpen && (
           <CommandPalette
             onClose={() => setPaletteOpen(false)}

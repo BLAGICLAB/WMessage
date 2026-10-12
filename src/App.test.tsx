@@ -127,7 +127,9 @@ describe("App", () => {
     ).length;
     // 新建任务按钮迁入左侧导航栏（文案从「+ 新建任务」改为图标 + 「新建任务」）
     await user.click(screen.getByText("新建任务"));
-    // 新建后详情面板打开，标题自动聚焦进入编辑态
+    // 不切视图：浮窗覆盖当前页（首页骨架仍在场），从左滑出新建编辑浮窗
+    expect(screen.getByTestId("home-page")).toBeInTheDocument();
+    // 新建后详情浮窗打开，标题自动聚焦进入编辑态
     const input = await screen.findByDisplayValue("新任务");
     expect(input).toBeInTheDocument();
     // mutate → upsertTasks → db_upsert 被多调用至少一次

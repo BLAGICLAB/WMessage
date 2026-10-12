@@ -37,10 +37,10 @@ const pad2 = (n: number) => String(n).padStart(2, "0");
 const toLocalDT = (day: Date, min: number) =>
   `${day.getFullYear()}-${pad2(day.getMonth() + 1)}-${pad2(day.getDate())}T${fmtMin(min)}`;
 
-/** 任务卡详情面板（毛玻璃，左侧文档流列）。
+/** 任务卡详情面板（毛玻璃内容体，由 TaskEditorOverlay 悬浮宿主承载）。
  *  字段与旧看板卡（TodoCard）能力对齐：标题/备注/标签/子任务/文件绑定（多文件+
- *  文件夹，点开/复制/移除）/🤖 交给机器人/执行详情/截止时间/完成状态 + 本页新增的
- *  计划时间编辑与完成入口。所有编辑走最小 task_patch。 */
+ *  文件夹，点开/复制/移除）/🤖 交给机器人/执行详情/截止时间/完成状态 + 计划时间
+ *  编辑与完成入口。所有编辑走最小 task_patch。 */
 export function TaskDetailPanel({
   task,
   autoFocusTitle = false,
@@ -277,7 +277,7 @@ export function TaskDetailPanel({
   return (
     <aside
       aria-label="任务详情"
-      className="glass detail-panel relative z-10 w-[292px] shrink-0 overflow-y-auto px-4 pt-6 pb-4"
+      className="glass h-full w-full overflow-y-auto px-4 pt-6 pb-4"
     >
       <div className="flex items-start gap-2">
         <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />

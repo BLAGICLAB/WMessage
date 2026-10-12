@@ -69,15 +69,16 @@ describe("TaskTimelinePage", () => {
     expect(screen.getAllByText("已排期任务甲").length).toBe(2);
   });
 
-  it("块首行：头像最左 + 完成对勾最右；点对勾标记完成且不开面板", async () => {
+  it("块首行：头像最左 + 完成对勾最右；点对勾标记完成且不开浮窗", async () => {
     const user = userEvent.setup();
     const onSetColumn = vi.fn();
+    const onOpenTask = vi.fn();
     render(
       <TaskTimelinePage
         tasks={TASKS}
         onUpdate={vi.fn()}
         onSetColumn={onSetColumn}
-        onDelete={vi.fn()}
+        onOpenTask={onOpenTask}
       />,
     );
     const blk = screen
@@ -91,7 +92,7 @@ describe("TaskTimelinePage", () => {
     expect(bar.contains(check)).toBe(true);
     await user.click(check);
     expect(onSetColumn).toHaveBeenCalledWith("t1", "done");
-    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
+    expect(onOpenTask).not.toHaveBeenCalled();
   });
 
   it("标题行数与时间格式：90 分钟 2 行 + 时长「1.5 小时」，3 小时长卡、30 分钟矮块同行退化", () => {
@@ -193,7 +194,6 @@ describe("TaskTimelinePage", () => {
         ]}
         onUpdate={vi.fn()}
         onSetColumn={onSetColumn}
-        onDelete={vi.fn()}
       />,
     );
     const blk = screen
@@ -217,7 +217,6 @@ describe("TaskTimelinePage", () => {
         tasks={TASKS}
         onUpdate={vi.fn()}
         onSetColumn={vi.fn()}
-        onDelete={vi.fn()}
       />,
     );
     const pool = screen.getByLabelText("任务池");
@@ -264,7 +263,6 @@ describe("TaskTimelinePage", () => {
         ]}
         onUpdate={vi.fn()}
         onSetColumn={vi.fn()}
-        onDelete={vi.fn()}
       />,
     );
     // 池里照常可见（未完成），网格无块（只有池 + 面板外共 1 处文本）
@@ -279,25 +277,25 @@ describe("TaskTimelinePage", () => {
     expect(called).toBe(1);
   });
 
-  it("池块单击纯拖拽不开面板（防误触）；双击池项开面板；圆圈快速打勾", async () => {
+  it("池块单击纯拖拽不开浮窗（防误触）；双击池项回传 onOpenTask；圆圈快速打勾", async () => {
     const user = userEvent.setup();
     const onSetColumn = vi.fn();
+    const onOpenTask = vi.fn();
     render(
       <TaskTimelinePage
         tasks={TASKS}
         onUpdate={vi.fn()}
         onSetColumn={onSetColumn}
-        onDelete={vi.fn()}
+        onOpenTask={onOpenTask}
       />,
     );
-    // 原位按下松开 = 单击 → 不开面板
+    // 原位按下松开 = 单击 → 不开浮窗
     fireEvent.pointerDown(screen.getByText("未排期任务乙"), { button: 0 });
     fireEvent.pointerUp(screen.getByText("未排期任务乙"));
-    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
-    // 双击池项 → 开面板
+    expect(onOpenTask).not.toHaveBeenCalled();
+    // 双击池项 → 打开浮窗（App 侧按 id 解析）
     await user.dblClick(screen.getByText("未排期任务乙"));
-    expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
-    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onOpenTask).toHaveBeenCalledWith("t2");
     // 完成圆圈（该块尾部）→ set_column done
     const row = screen.getByText("未排期任务乙").closest("div")!;
     await user.click(
@@ -306,35 +304,40 @@ describe("TaskTimelinePage", () => {
     expect(onSetColumn).toHaveBeenCalledWith("t2", "done");
   });
 
-  it("网格块双击开面板；单击与对勾双击都不开", async () => {
+  it("网格块双击回传 onOpenTask；单击与对勾双击都不回传", async () => {
     const user = userEvent.setup();
+    const onOpenTask = vi.fn();
     render(
       <TaskTimelinePage
         tasks={TASKS}
         onUpdate={vi.fn()}
         onSetColumn={vi.fn()}
-        onDelete={vi.fn()}
+        onOpenTask={onOpenTask}
       />,
     );
-    const blk = document.querySelector(".plan-blk")!;
-    // 单击（原位按下松开）→ 不开面板
+    const blk = screen
+      .getAllByText("已排期任务己")
+      .map((el) => el.closest(".plan-blk"))
+      .find(Boolean)!;
+    // 单击（原位按下松开）→ 不开浮窗
     fireEvent.pointerDown(blk, { button: 0 });
     fireEvent.pointerUp(window);
-    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
-    // 双击块身 → 开面板
+    expect(onOpenTask).not.toHaveBeenCalled();
+    // 双击块身 → 打开浮窗
     await user.dblClick(blk);
-    expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
+    expect(onOpenTask).toHaveBeenCalledWith("t6");
   });
 
-  it("已完成区打勾形式（无划线）：圆圈恢复待办，双击开面板", async () => {
+  it("已完成区打勾形式（无划线）：圆圈恢复待办，双击回传 onOpenTask", async () => {
     const user = userEvent.setup();
     const onSetColumn = vi.fn();
+    const onOpenTask = vi.fn();
     render(
       <TaskTimelinePage
         tasks={[...TASKS, mk({ id: "t9", title: "完成任务庚", column: "done", completedAt: 1 })]}
         onUpdate={vi.fn()}
         onSetColumn={onSetColumn}
-        onDelete={vi.fn()}
+        onOpenTask={onOpenTask}
       />,
     );
     const pool = within(screen.getByLabelText("任务池"));
@@ -345,7 +348,7 @@ describe("TaskTimelinePage", () => {
     await user.click(within(row as HTMLElement).getByRole("button", { name: "恢复待办" }));
     expect(onSetColumn).toHaveBeenCalledWith("t9", "todo");
     await user.dblClick(pool.getByText("完成任务庚"));
-    expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
+    expect(onOpenTask).toHaveBeenCalledWith("t9");
   });
 
   it("从池拖出：源块池内悬浮，离池整池滑出（translateX 让出视野）", () => {
@@ -354,7 +357,6 @@ describe("TaskTimelinePage", () => {
         tasks={TASKS}
         onUpdate={vi.fn()}
         onSetColumn={vi.fn()}
-        onDelete={vi.fn()}
       />,
     );
     const pool = screen.getByLabelText("任务池");
@@ -399,7 +401,6 @@ describe("TaskTimelinePage", () => {
           tasks={TASKS}
           onUpdate={vi.fn()}
           onSetColumn={vi.fn()}
-          onDelete={vi.fn()}
         />,
       );
       const poolItem = within(screen.getByLabelText("任务池")).getByText(
@@ -419,25 +420,5 @@ describe("TaskTimelinePage", () => {
     } finally {
       addSpy.mockRestore();
     }
-  });
-
-  it("editingId 变化：面板打开并聚焦标题（⌘N 新建路径）", () => {
-    const { rerender } = render(
-      <TaskTimelinePage tasks={TASKS} onUpdate={vi.fn()} onSetColumn={vi.fn()} onDelete={vi.fn()} />,
-    );
-    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
-    rerender(
-      <TaskTimelinePage
-        tasks={[...TASKS, mk({ id: "new1", title: "新任务" })]}
-        onUpdate={vi.fn()}
-        onSetColumn={vi.fn()}
-        onDelete={vi.fn()}
-        editingId="new1"
-      />,
-    );
-    const panel = screen.getByLabelText("任务详情");
-    const title = within(panel).getByLabelText("任务标题") as HTMLInputElement;
-    expect(title.value).toBe("新任务");
-    expect(document.activeElement).toBe(title);
   });
 });

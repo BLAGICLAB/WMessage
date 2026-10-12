@@ -54,7 +54,6 @@ const stop = (e: React.PointerEvent) => e.stopPropagation();
 /** 视图本体：所有拖拽能力由外部 hook 注入（TodoCard / SortableTodoCard 调用） */
 export function TodoCardView({
   task,
-  autoEdit = false,
   onUpdate,
   onDelete,
   onSetColumn,
@@ -62,7 +61,7 @@ export function TodoCardView({
   trashed = false,
   drag,
 }: TodoCardViewProps & { drag?: CardDrag }) {
-  const [editing, setEditing] = useState(autoEdit && !archived && !trashed);
+  const [editing, setEditing] = useState(false);
   const confirm = useConfirm();
   const [dueEditing, setDueEditing] = useState(false);
   // 执行痕迹弹层（TracePanel 自带 portal，任务卡内点击「执行详情」打开）
@@ -77,20 +76,14 @@ export function TodoCardView({
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [purgeBusy, setPurgeBusy] = useState(false);
 
-  // autoEdit 切到 true 时进入编辑态（草稿同步由 useInlineEdit 在 editing false→true 时负责：
-  // 挂件新建/改名后主窗口的 TodoCardView 因 key 不变不会重挂，hook 会把草稿重置为
-  // 当前 task.title，不会显示成旧的"新任务"）；props→state 受控同步保直写
+  // 卡片转入归档/回收站（只读）时退出编辑态：
+  // 留在编辑态会绕过归档/回收站的只读交互继续提交改动
   useEffect(() => {
-    if (autoEdit && !archived && !trashed) {
-      // oxlint-disable-next-line react/set-state-in-effect
-      setEditing(true);
-    } else {
-      // autoEdit 撤销，或卡片转入归档/回收站（只读）：一律退出编辑态，
-      // 留在编辑态会绕过归档/回收站的只读交互继续提交改动
+    if (archived || trashed) {
       // oxlint-disable-next-line react/set-state-in-effect
       setEditing(false);
     }
-  }, [autoEdit, archived, trashed]);
+  }, [archived, trashed]);
 
   // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（与 TaskCardContent 共用）
   const titleEdit = useInlineEdit({

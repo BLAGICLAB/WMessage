@@ -16,7 +16,6 @@ import {
 } from "./week";
 import { WeekGrid, type SlotHint } from "./WeekGrid";
 import { TaskPool, loadPoolOpen, savePoolOpen } from "./TaskPool";
-import { TaskDetailPanel } from "./TaskDetailPanel";
 
 const DOW1 = "一二三四五六日";
 
@@ -25,34 +24,24 @@ type Drag =
   | { kind: "move"; task: Task }
   | { kind: "resize"; task: Task };
 
-/** 拖拽编排（批 3）+ 详情面板（批 4）：池→网格排期、块移动、底缘拉伸、拖回池清除；
- *  双击块/池项/⌘N 新建 → 左侧毛玻璃详情面板（单击纯拖拽面，防误触）。
+/** 拖拽编排（批 3）：池→网格排期、块移动、底缘拉伸、拖回池清除；
+ *  双击块/池项/⌘N 新建 → 全局毛玻璃编辑浮窗（TaskEditorOverlay，App 侧承载），
+ *  本页只回传 onOpenTask。单击纯拖拽面，防误触。
  *  写入恒发最小 patch（planStart/planEnd 或双 null），跨 18:00 折行数学在 week.ts。 */
 export function TaskTimelinePage({
   tasks,
   onNewTask,
   onUpdate,
   onSetColumn,
-  onDelete,
-  editingId = null,
-  onCreateSubtaskCard,
   onOpenTask,
-  onDeleteSubtask,
 }: {
   tasks: Task[];
   onNewTask?: () => void;
   /** 任务字段定向补丁（task_patch 通道）；拖拽提交的最小写路径 */
   onUpdate?: (taskId: string, patch: Partial<Task>) => void;
   onSetColumn?: (taskId: string, col: ColumnId) => void;
-  onDelete?: (taskId: string) => void;
-  /** ⌘N/新建任务流程：App 侧 addTask 打上的编辑态 id，页面据此打开面板 */
-  editingId?: string | null;
-  /** 详情面板子任务行一键生成子任务卡（App 侧统一建卡 + 回写行标记） */
-  onCreateSubtaskCard?: (motherId: string, subId: string, title: string) => void;
-  /** 子任务行 ↗ 跳转到已生成的任务卡 */
+  /** 双击块/池项 → 打开全局编辑浮窗（App 侧按 id 解析） */
   onOpenTask?: (id: string) => void;
-  /** 子任务行 × 删除该行；已生成子任务卡时 App 侧解除关联并保留子卡 */
-  onDeleteSubtask?: (motherId: string, subId: string) => void;
 }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   // 「现在」单一时间源：页头今天回跳与网格现在线共用，每分钟校准
@@ -96,15 +85,6 @@ export function TaskTimelinePage({
       savePoolOpen(!v);
       return !v;
     });
-
-  // 详情面板选中态：autoFocus 只在「新建任务」路径给（点选不抢焦点）。
-  // 不做「任务消失自动关面板」——addTask 的入列与 editingId 分两次更新，
-  // 中间态会把新选中误杀；面板的关闭走显式路径（Esc/X/删除）。
-  const [selected, setSelected] = useState<{ id: string; autoFocus: boolean } | null>(null);
-  useEffect(() => {
-    if (editingId) setSelected({ id: editingId, autoFocus: true });
-  }, [editingId]);
-  const selectedTask = selected ? (tasks.find((t) => t.id === selected.id) ?? null) : null;
 
   const weekEnd = addDays(weekStart, 6);
   const rangeLabel = useMemo(() => {
@@ -393,34 +373,9 @@ export function TaskTimelinePage({
           </span>
         </button>
       </div>
-      {/* overflow-hidden：池收起/拖拽让位时面板被平移到容器右外侧，必须裁剪，
+      {/* overflow-hidden：池收起/拖拽让位时池被平移到容器右外侧，必须裁剪，
           否则撑出整页横向滚动条 */}
       <div className="relative flex min-h-0 flex-1 gap-4 overflow-hidden">
-        {selectedTask && onUpdate && onSetColumn && onDelete && (
-          <TaskDetailPanel
-            task={selectedTask}
-            autoFocusTitle={selected?.autoFocus ?? false}
-            onUpdate={(patch) => onUpdate(selectedTask.id, patch)}
-            onSetColumn={(col) => onSetColumn(selectedTask.id, col)}
-            onDelete={() => {
-              setSelected(null);
-              onDelete(selectedTask.id);
-            }}
-            onClose={() => setSelected(null)}
-            onCreateSubtaskCard={
-              onCreateSubtaskCard
-                ? (subId, title) =>
-                    onCreateSubtaskCard(selectedTask.id, subId, title)
-                : undefined
-            }
-            onOpenTask={onOpenTask}
-            onDeleteSubtask={
-              onDeleteSubtask
-                ? (subId) => onDeleteSubtask(selectedTask.id, subId)
-                : undefined
-            }
-          />
-        )}
         <div className="relative flex min-h-0 flex-1">
           <WeekGrid
             tasks={tasks}
@@ -431,7 +386,7 @@ export function TaskTimelinePage({
             freshTaskId={freshId}
             bodyRef={gridBodyRef}
             onSetColumn={onSetColumn}
-            onBlockDoubleClick={(t) => setSelected({ id: t.id, autoFocus: false })}
+            onBlockDoubleClick={(t) => onOpenTask?.(t.id)}
             onBlockPointerDown={(task, kind, e) => {
               if (!onUpdate || !task.planStart || !task.planEnd) return;
               startDrag(e, { kind, task });
@@ -450,7 +405,7 @@ export function TaskTimelinePage({
               if (!onUpdate) return;
               startDrag(e, { kind: "create", task });
             }}
-            onEdit={(t) => setSelected({ id: t.id, autoFocus: false })}
+            onEdit={(t) => onOpenTask?.(t.id)}
           />
         </div>
       </div>
