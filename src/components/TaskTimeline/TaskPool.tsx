@@ -79,7 +79,7 @@ export function TaskPool({
         aria-hidden
       />
       <span
-        className="truncate text-xs text-[var(--t2)]"
+        className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]"
         onPointerEnter={tip.show(t.title)}
         onPointerLeave={tip.hide}
         onPointerDown={tip.hide}
@@ -87,15 +87,10 @@ export function TaskPool({
         {t.title}
       </span>
       {t.planStart && (
-        <span className="num ml-auto shrink-0 rounded-full bg-[var(--inset-bg)] px-1.5 py-px text-[10px] text-[var(--t5)]">
+        <span className="num shrink-0 rounded-full bg-[var(--inset-bg)] px-1.5 py-px text-[10px] text-[var(--t5)]">
           {planChip(t.planStart)}
         </span>
       )}
-      <DoneCircle
-        done={false}
-        onToggle={() => onSetColumn?.(t.id, "done")}
-        title="标记完成"
-      />
       <button
         type="button"
         aria-label={`编辑 ${t.title}`}
@@ -109,6 +104,11 @@ export function TaskPool({
       >
         <PenLine size={11} aria-hidden />
       </button>
+      <DoneCircle
+        done={false}
+        onToggle={() => onSetColumn?.(t.id, "done")}
+        title="标记完成"
+      />
     </div>
   );
 
@@ -166,13 +166,8 @@ export function TaskPool({
                   key={t.id}
                   className="flex h-[30px] items-center gap-2 rounded-lg px-1.5"
                 >
-                  <DoneCircle
-                    done
-                    onToggle={() => onSetColumn?.(t.id, "todo")}
-                    title="恢复待办"
-                  />
                   <span
-                    className="truncate text-xs text-[var(--t2)]"
+                    className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]"
                     onPointerEnter={tip.show(t.title)}
                     onPointerLeave={tip.hide}
                   >
@@ -182,7 +177,7 @@ export function TaskPool({
                     type="button"
                     aria-label={`编辑 ${t.title}`}
                     title="编辑任务"
-                    className="nm-icon-btn ml-auto h-5 w-5 shrink-0 text-[var(--t5)]"
+                    className="nm-icon-btn h-5 w-5 shrink-0 text-[var(--t5)]"
                     onPointerDown={stopPointer}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -191,6 +186,11 @@ export function TaskPool({
                   >
                     <PenLine size={11} aria-hidden />
                   </button>
+                  <DoneCircle
+                    done
+                    onToggle={() => onSetColumn?.(t.id, "todo")}
+                    title="恢复待办"
+                  />
                 </div>
               ))}
           </div>
