@@ -277,11 +277,13 @@ mod tests {
                     id: "1".into(),
                     text: "收集数据".into(),
                     done: true,
+                    task_id: None,
                 },
                 crate::db::Subtask {
                     id: "2".into(),
                     text: "  ".into(),
                     done: false,
+                    task_id: None,
                 },
             ],
         );

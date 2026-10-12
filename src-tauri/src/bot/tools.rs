@@ -544,6 +544,7 @@ pub(crate) async fn tool_create_task(
         plan_start: None,
         plan_end: None,
         acceptance: None,
+        parent_id: None,
         id: uuid::Uuid::new_v4().simple().to_string(),
         title: title.to_string(),
         due: v["due"].as_str().map(|s| s.to_string()),
@@ -984,6 +985,7 @@ pub(crate) async fn tool_add_subtask(
         id: uuid::Uuid::new_v4().simple().to_string(),
         text: text.to_string(),
         done: false,
+        task_id: None,
     });
     next.subtasks = Some(subs);
     prepare_for_upsert(&mut next);
@@ -2113,6 +2115,7 @@ mod task_files_arg_tests {
             plan_start: None,
             plan_end: None,
             acceptance: None,
+            parent_id: None,
             id: "t".to_string(),
             title: "x".to_string(),
             due: None,
@@ -2245,6 +2248,7 @@ mod query_tasks_tests {
             plan_start: None,
             plan_end: None,
             acceptance: None,
+            parent_id: None,
             id: format!("id-{title}"),
             title: title.to_string(),
             due: None,
@@ -2333,6 +2337,7 @@ mod query_tasks_tests {
             id: "s1".into(),
             text: "核对配色变量".into(),
             done: false,
+            task_id: None,
         }]);
         assert!(keyword_hit("配色", &t));
         // 空关键词恒命中（清单模式）
@@ -2386,11 +2391,13 @@ mod query_tasks_tests {
                 id: "sub-a".into(),
                 text: "买牛奶".into(),
                 done: false,
+                task_id: None,
             },
             crate::db::Subtask {
                 id: "sub-b".into(),
                 text: "买面包".into(),
                 done: true,
+                task_id: None,
             },
         ];
         // id 精确优先（即使 text 关键词也能命中别的条）

@@ -884,6 +884,7 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         plan_start: None,
         plan_end: None,
         acceptance: None,
+        parent_id: None,
         id: uuid::Uuid::new_v4().simple().to_string(),
         title: title.clone(),
         due: None,

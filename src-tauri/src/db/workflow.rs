@@ -642,6 +642,7 @@ pub(crate) fn workflow_save_locked(
             upserts.push(Task {
                 plan_start: None,
                 plan_end: None,
+                parent_id: None,
                 id: real_id[i].clone(),
                 title: node.title.trim().to_string(),
                 due: None,
@@ -669,6 +670,7 @@ pub(crate) fn workflow_save_locked(
                                 id: uuid::Uuid::new_v4().simple().to_string(),
                                 text: t.trim().to_string(),
                                 done: false,
+                                task_id: None,
                             })
                             .collect()
                     }),

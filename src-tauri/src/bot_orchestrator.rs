@@ -145,6 +145,7 @@ pub(crate) fn spawn_subagent_locked(
         plan_start: None,
         plan_end: None,
         acceptance: None,
+        parent_id: None,
         id: task_id.clone(),
         title: format!(
             "子任务：{}",
@@ -1856,6 +1857,7 @@ mod orchestrator_tests {
             plan_start: None,
             plan_end: None,
             acceptance: None,
+            parent_id: None,
             id: "parent-1".into(),
             title: "主编排卡".into(),
             due: None,
@@ -2264,11 +2266,13 @@ mod orchestrator_tests {
                 id: "st1".into(),
                 text: "第一步".into(),
                 done: true,
+                task_id: None,
             },
             crate::db::Subtask {
                 id: "st2".into(),
                 text: "第二步".into(),
                 done: false,
+                task_id: None,
             },
         ]);
         card.expected_updated_at = card.updated_at;

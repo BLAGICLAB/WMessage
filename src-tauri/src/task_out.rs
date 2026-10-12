@@ -35,6 +35,7 @@ mod tests {
             plan_start: None,
             plan_end: None,
             acceptance: None,
+            parent_id: None,
             id: "t1".into(),
             title: "测试任务".into(),
             due: None,

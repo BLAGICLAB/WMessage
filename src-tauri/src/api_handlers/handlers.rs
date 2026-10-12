@@ -308,6 +308,7 @@ fn create_task(
             plan_start: None,
             plan_end: None,
             acceptance: None,
+            parent_id: None,
             id: uuid::Uuid::new_v4().to_string(),
             title,
             // due 与 note 同规则：trim 后存储，首尾空白不进库

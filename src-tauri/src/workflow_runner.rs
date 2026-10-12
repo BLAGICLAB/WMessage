@@ -1867,6 +1867,7 @@ mod tests {
         Task {
             plan_start: None,
             plan_end: None,
+            parent_id: None,
             id: id.into(),
             title: format!("任务{id}"),
             due: None,

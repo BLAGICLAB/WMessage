@@ -1470,6 +1470,7 @@ fn t1_seed_task(
     wmessage_lib::db::Task {
         plan_start: None,
         plan_end: None,
+        parent_id: None,
         id: id.into(),
         title: title.into(),
         due: None,
@@ -1621,6 +1622,7 @@ async fn t1_db_roundtrip_new_columns_and_rmw_edit() {
         id: "t1e2e-sub-1".into(),
         text: "核对参数".into(),
         done: false,
+        task_id: None,
     }]);
     {
         let conn = wmessage_lib::db::open_db(&app).unwrap();
