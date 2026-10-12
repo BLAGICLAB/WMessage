@@ -1281,20 +1281,32 @@
   }
   .plan-blk-time {
     flex: none;
-    margin-top: 4px;
+    margin-top: 3px;
     align-self: flex-start;
+    font-size: 9px;
   }
   /* 矮块（< 1 小时）：头像 · 标题 · 对勾 同一行 */
   .plan-blk.thin {
     flex-direction: row;
     align-items: center;
-    gap: 6px;
-    padding: 4px 6px 4px 12px;
+    gap: 5px;
+    padding: 4px 5px 4px 10px;
   }
   .plan-blk.thin .plan-blk-title {
     flex: 1;
     min-width: 0;
     -webkit-line-clamp: 1;
+  }
+  /* 半区卡（双卡/3+ 簇前两张）：紧凑排版保标题空间 */
+  .plan-blk.narrow {
+    padding: 4px 5px 5px 8px;
+  }
+  .plan-blk.narrow .plan-topbar {
+    margin-bottom: 2px;
+  }
+  .plan-blk.narrow .plan-blk-title {
+    font-size: 11px;
+    line-height: 1.3;
   }
   /* 塌缩块（簇 lane ≥ 2）：头像（上）+ 对勾（下）居中，尺寸随块高三档 */
   .plan-blk.plan-stack {

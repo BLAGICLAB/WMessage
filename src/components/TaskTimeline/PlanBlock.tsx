@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import type { PlanSeg } from "./week";
-import { DAY_SPAN_MIN, DAY_START_MIN, fmtHours, fmtMin, titleRows } from "./week";
+import { DAY_SPAN_MIN, DAY_START_MIN, fmtHours, titleRows } from "./week";
 import type { Task } from "../../types";
 import { useHoverTitleTip } from "./HoverTitle";
 import { ActorAvatar } from "../ActorAvatar";
@@ -8,16 +8,17 @@ import { DoneCircle } from "../DoneCircle";
 
 /** 重叠簇第 3 张（lane ≥ 2）起的塌缩档：内容只剩头像（上）+ 对勾（下），
  *  尺寸随块高（≈窗口分钟数）三档。 */
-function stackSize(durMin: number): { size: 24 | 18 | 14; cls: string } {
-  if (durMin >= 90) return { size: 24, cls: " s-lg" };
-  if (durMin >= 40) return { size: 18, cls: " s-md" };
-  return { size: 14, cls: " s-sm" };
+function stackSize(durMin: number): { size: 16 | 12 | 10; cls: string } {
+  if (durMin >= 90) return { size: 16, cls: " s-lg" };
+  if (durMin >= 40) return { size: 12, cls: " s-md" };
+  return { size: 10, cls: " s-sm" };
 }
 
 /** 计划块单段渲染（v2 规格）：首行 = 头像最左 + 完成对勾最右（顶隙 4px），
  *  标题第二行起、行数按块高 1/2/4/6 封顶；矮块（< 1 小时）退化为同一行
- *  「头像 · 标题 · 对勾」。时间行 = 「起点 + N 小时」，位于底部左侧。
- *  重叠簇第 3 张起塌缩（collapsed）：只渲染头像 + 对勾上下排列，无标题无时间。
+ *  「头像 · 标题 · 对勾」。时间行 = 时长「N 小时」，位于底部左侧（9px）。
+ *  半区卡（lanes > 1）走 narrow 紧凑排版；重叠簇第 3 张起塌缩（collapsed）：
+ *  只渲染头像 + 对勾上下排列，无标题无时间。
  *  已完成任务原位保留（done）：整块降饱和，对勾变绿，不划线，点勾恢复待办。 */
 export function PlanBlockView({
   seg,
@@ -52,6 +53,7 @@ export function PlanBlockView({
   const dur = seg.endMin - seg.startMin;
   const rows = titleRows(seg.startMin, seg.endMin);
   const thin = rows === 1;
+  const narrow = seg.lanes > 1;
   const bot = !!task.botAssigned || !!task.schedule;
   const stack = collapsed ? stackSize(dur) : null;
   const toggle = () => onSetColumn?.(task.id, done ? "todo" : "done");
@@ -60,12 +62,12 @@ export function PlanBlockView({
       done={done}
       onToggle={toggle}
       title={done ? "恢复待办" : "标记完成"}
-      size={stack ? stack.size : thin ? 18 : 20}
+      size={stack ? stack.size : 10}
     />
   );
   const tip = useHoverTitleTip();
   const skipTip = useRef(false);
-  const cls = `plan-blk${stack ? ` plan-stack${stack.cls}` : ""}${thin ? " thin" : ""}${selected ? " sel" : ""}${seg.tail ? " tail" : ""}${seg.head ? " head" : ""}${dimmed ? " opacity-35" : ""}${fresh ? " plan-fresh" : ""}${done ? " is-done" : ""}`;
+  const cls = `plan-blk${stack ? ` plan-stack${stack.cls}` : ""}${thin ? " thin" : ""}${narrow && !stack ? " narrow" : ""}${selected ? " sel" : ""}${seg.tail ? " tail" : ""}${seg.head ? " head" : ""}${dimmed ? " opacity-35" : ""}${fresh ? " plan-fresh" : ""}${done ? " is-done" : ""}`;
   return (
     <div
       className={cls}
@@ -100,22 +102,20 @@ export function PlanBlockView({
         </div>
       ) : thin ? (
         <>
-          <ActorAvatar bot={bot} size={18} />
+          <ActorAvatar bot={bot} size={10} />
           <div className="plan-blk-title">{task.title}</div>
           {doneBtn}
         </>
       ) : (
         <>
           <div className="plan-topbar">
-            <ActorAvatar bot={bot} size={20} />
+            <ActorAvatar bot={bot} size={10} />
             {doneBtn}
           </div>
           <div className="plan-blk-title" data-rows={rows}>
             {task.title}
           </div>
-          <span className="plan-blk-time num">
-            {fmtMin(seg.startMin)} + {fmtHours(dur)} 小时
-          </span>
+          <span className="plan-blk-time num">{fmtHours(dur)} 小时</span>
         </>
       )}
       {seg.tail && (

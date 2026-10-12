@@ -94,7 +94,7 @@ describe("TaskTimelinePage", () => {
     expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
   });
 
-  it("标题行数与时间格式：90 分钟 2 行 + 「+ 1.5 小时」，3 小时 6 行内、30 分钟矮块同行退化", () => {
+  it("标题行数与时间格式：90 分钟 2 行 + 时长「1.5 小时」，3 小时长卡、30 分钟矮块同行退化", () => {
     render(
       <TaskTimelinePage
         tasks={[
@@ -113,15 +113,17 @@ describe("TaskTimelinePage", () => {
     expect(half.querySelector(".plan-blk-title")!.textContent).toContain(
       "一个半小时任务",
     );
-    expect(half.textContent).toContain("09:00 + 1.5 小时");
+    // 时间行只显时长（小时），不显开始时间
+    expect(half.textContent).toContain("1.5 小时");
+    expect(half.textContent).not.toContain("09:00");
     const longTitle = "三小时长任务标题很长很长很长很长很长很长很长很长很长很长很长很长";
     const long = blkOf(longTitle);
     expect(long.querySelector(".plan-blk-title")).toBeTruthy();
-    expect(long.textContent).toContain("11:00 + 3 小时");
+    expect(long.textContent).toContain("3 小时");
     const thin = blkOf("半小时任务") as HTMLElement;
     expect(thin.className).toContain("thin");
     expect(thin.querySelector(".plan-topbar")).toBeNull();
-    expect(thin.textContent).not.toContain("+ 0.5 小时");
+    expect(thin.textContent).not.toContain("0.5 小时");
   });
 
   it("双卡重叠：两张都是完整卡（半区并显，不塌缩）", () => {
@@ -143,7 +145,9 @@ describe("TaskTimelinePage", () => {
       .find(Boolean)! as HTMLElement;
     expect(jia.className).not.toContain("plan-stack");
     expect(yi.className).not.toContain("plan-stack");
-    expect(jia.textContent).toContain("10:00 + 1 小时");
+    expect(jia.className).toContain("narrow");
+    expect(yi.className).toContain("narrow");
+    expect(jia.textContent).toContain("1 小时");
   });
 
   it("同簇 3+ 重叠：前两张完整半区，第 3 张起塌缩为头像 + 对勾（无标题无时间）", () => {
@@ -167,7 +171,7 @@ describe("TaskTimelinePage", () => {
     for (const st of stacks) {
       expect(st.querySelector(".plan-stack-bar")).not.toBeNull();
       expect(st.querySelector(".plan-blk-title")).toBeNull();
-      expect(st.textContent).not.toContain("+ 1 小时");
+      expect(st.textContent).not.toContain("小时");
     }
   });
 
