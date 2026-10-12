@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>时间泳道任务卡 · 设计小样 v2</title>
+<style>
+  /* ═══════ token（与 task-timeline-mock.html / main.css 对齐） ═══════ */
+  :root {
+    --bg: #eef1f6; --surface: #fafbfd; --surface-raised: #ffffff;
+    --edge: #e2e7ef; --edge-strong: #cbd4e1;
+    --inset-bg: rgba(23, 32, 51, 0.075);
+    --shadow-sm: 0 1px 2px rgba(23, 32, 51, 0.06);
+    --shadow-md: 0 4px 12px rgba(23, 32, 51, 0.08);
+    --t1: #182031; --t2: #2b3548; --t3: #45506a; --t4: #525e7a; --t5: #5d6984;
+    --accent: #5b64d8;
+    --now: #e5484d;
+    --success: #16a34a;
+    --r-sm: 8px; --r-md: 12px;
+  }
+  html.dark {
+    --bg: #14161d; --surface: #1b1f29; --surface-raised: #232836;
+    --edge: #272d3b; --edge-strong: #3a4254;
+    --inset-bg: rgba(0, 0, 0, 0.3);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+    --t1: #eef1f7; --t2: #dbe1ec; --t3: #b6bfd0; --t4: #8d97ac; --t5: #808a9e;
+    --accent: #8a91f0;
+    --now: #ff6b62;
+    --success: #4ade80;
+  }
+  :root, html.dark {
+    --plan-blue: #4f7cf5; --plan-teal: #2fb8ad; --plan-green: #46c283;
+    --plan-amber: #e89b3c; --plan-violet: #8b5cf6; --plan-slate: #7a86a0;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--t2);
+    overflow-x: hidden;
+  }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* ═══════ 文档骨架 ═══════ */
+  .doc { max-width: 1320px; margin: 0 auto; padding: 36px 32px 80px; }
+  .hd h1 { font-size: 22px; font-weight: 700; color: var(--t1); letter-spacing: -0.01em; }
+  .hd .meta { font-size: 12px; color: var(--t5); margin-top: 4px; }
+  .hd .meta b { color: var(--t2); font-weight: 600; }
+  .lede { margin: 18px 0 24px; max-width: 740px; font-size: 13.5px; line-height: 1.65; color: var(--t3); }
+  .lede b { color: var(--t2); }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 24px; }
+  .toolbar .seg { display: inline-flex; padding: 2px; border-radius: 999px; background: var(--inset-bg); }
+  .toolbar .seg b { padding: 5px 12px; border-radius: 999px; font-size: 12px; color: var(--t3); cursor: pointer; user-select: none; }
+  .toolbar .seg b.on { background: var(--surface-raised); color: var(--t1); box-shadow: var(--shadow-sm); }
+
+  .sec { margin-top: 36px; }
+  .sec h2 {
+    font-size: 15px; font-weight: 600; color: var(--t1);
+    padding-bottom: 8px; margin-bottom: 12px; border-bottom: 1px solid var(--edge);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .sec h2 .tag { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 999px; background: var(--inset-bg); color: var(--t4); }
+  .sec .why {
+    font-size: 12.5px; color: var(--t4); line-height: 1.6;
+    background: var(--inset-bg); border-radius: var(--r-md);
+    padding: 12px 14px; margin-bottom: 16px;
+  }
+  .sec .why b { color: var(--t2); }
+  .sec .why code { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; padding: 1px 5px; border-radius: 3px; background: var(--bg); }
+
+  /* ═══════ 场景画布 ═══════ */
+  .scene { background: var(--surface); border: 1px solid var(--edge); border-radius: 16px; padding: 16px 20px 20px; box-shadow: var(--shadow-sm); }
+  .scene + .scene { margin-top: 14px; }
+  .scene-label { font-size: 11px; color: var(--t5); margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .scene-label .pill { padding: 2px 8px; border-radius: 999px; background: var(--inset-bg); font-size: 10.5px; color: var(--t3); }
+  .gridwrap {
+    position: relative; display: grid; grid-template-columns: 44px 1fr;
+    border-top: 1px solid var(--edge); border-bottom: 1px solid var(--edge);
+    border-radius: var(--r-md); background: var(--surface); padding-top: 22px;
+  }
+  .gridwrap .axis { position: relative; border-right: 1px solid var(--edge); }
+  .gridwrap .axis span {
+    position: absolute; right: 6px; transform: translateY(-50%);
+    font-size: 10.5px; color: var(--t5); background: var(--surface); padding: 0 4px;
+  }
+  .gridwrap .day { position: relative; }
+  .gridwrap .hline { position: absolute; left: 0; right: 0; border-top: 1px dashed color-mix(in srgb, var(--edge) 55%, transparent); }
+  .gridwrap.multi { grid-template-columns: 44px repeat(3, 1fr); }
+  .gridwrap.multi .day { border-left: 1px dashed color-mix(in srgb, var(--edge) 60%, transparent); }
+
+  /* ═══════════════════════════════════════════════════
+     任务卡 v2：首行 = 头像(左) + 对勾(右)，顶留 4px；次行起 = 标题
+     ═══════════════════════════════════════════════════ */
+  .blk {
+    position: absolute; z-index: 3; display: flex; flex-direction: column;
+    border-radius: 10px; padding: 4px 8px 6px 10px;
+    background: color-mix(in srgb, var(--c) 14%, var(--surface-raised));
+    border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
+    box-shadow: var(--shadow-sm); overflow: hidden; cursor: grab;
+  }
+  .blk::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--c); border-radius: 3px 0 0 3px;
+  }
+  .dark .blk {
+    background: linear-gradient(150deg,
+      color-mix(in srgb, var(--c) 86%, white) 0%, var(--c) 52%,
+      color-mix(in srgb, var(--c) 78%, black) 100%);
+    border-color: color-mix(in srgb, var(--c) 55%, transparent);
+    box-shadow: 0 4px 16px color-mix(in srgb, var(--c) 32%, transparent), inset 0 1px 0 rgba(255,255,255,.28);
+  }
+  .dark .blk::before { display: none; }
+
+  /* 首行：头像最左 + 对勾最右，两端撑开 */
+  .blk .bar {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 3px; flex: none;
+  }
+  .blk .av {
+    width: 20px; height: 20px; border-radius: 999px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: #fff;
+    background: var(--c); border: 1.5px solid color-mix(in srgb, var(--surface-raised) 70%, transparent);
+  }
+  .dark .blk .av { border-color: rgba(0,0,0,.35); }
+  .blk .av.bot { background: linear-gradient(135deg, var(--brand, #5f6f94), var(--accent)); }
+  .blk .done {
+    width: 20px; height: 20px; border-radius: 999px; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    border: 1.5px solid color-mix(in srgb, var(--c) 45%, var(--t5));
+    background: transparent; color: transparent; cursor: pointer;
+    transition: all .12s ease;
+  }
+  .blk .done svg { width: 11px; height: 11px; }
+  .blk .done:hover { border-color: var(--c); background: color-mix(in srgb, var(--c) 14%, transparent); }
+  .blk .done.on { background: var(--success); border-color: var(--success); color: #fff; }
+  .dark .blk .done { border-color: rgba(255,255,255,.55); }
+  .dark .blk .done:hover { border-color: #fff; background: rgba(255,255,255,.15); }
+  .dark .blk .done.on { background: var(--success); border-color: var(--success); }
+
+  /* 标题：从第二行起，行数随块高 1→6 行封顶 */
+  .blk .t {
+    font-size: 12px; font-weight: 500; color: var(--t1); line-height: 1.4;
+    display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .dark .blk .t { color: #fff; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,.18); }
+  .blk .t.l1 { -webkit-line-clamp: 1; }
+  .blk .t.l2 { -webkit-line-clamp: 2; }
+  .blk .t.l4 { -webkit-line-clamp: 4; }
+  .blk .t.l6 { -webkit-line-clamp: 6; }
+
+  /* 时间：底部小字（沿用现状能力，位置随新布局挪到底部左侧） */
+  .blk .tm {
+    margin-top: auto; padding-top: 4px;
+    font-size: 10px; color: var(--t4); font-variant-numeric: tabular-nums;
+  }
+  .dark .blk .tm { color: rgba(255,255,255,.85); }
+
+  /* 矮块退化（30 分钟块两行放不下）：头像 + 标题 + 对挤同一行 */
+  .blk.thin { flex-direction: row; align-items: center; gap: 6px; padding: 4px 6px 4px 10px; }
+  .blk.thin .bar { margin: 0; flex: none; gap: 6px; }
+  .blk.thin .t { flex: 1; min-width: 0; }
+  .blk.thin .tm { display: none; }
+
+  /* ═══════ 双卡重叠（延用 v1 半区并显） ═══════ */
+  .blk.narrow { padding: 4px 6px 5px 8px; }
+  .blk.narrow .av, .blk.narrow .done { width: 16px; height: 16px; }
+  .blk.narrow .done svg { width: 9px; height: 9px; }
+  .blk.narrow .t { font-size: 11.5px; line-height: 1.3; }
+  .blk.narrow .tm { font-size: 9.5px; padding-top: 2px; }
+
+  /* ═══════ 3+ 重叠：只留头像 + 对勾，上下排列，大小随块高 ═══════ */
+  .blk.stack { padding: 5px 4px; align-items: center; gap: 6px; }
+  .blk.stack .bar { flex-direction: column; justify-content: center; gap: 6px; margin: 0; flex: 1; }
+  .blk.stack .t, .blk.stack .tm { display: none; }
+  /* 大小三档（随块高切换） */
+  .blk.stack.s-lg .av, .blk.stack.s-lg .done { width: 24px; height: 24px; }
+  .blk.stack.s-lg .done svg { width: 13px; height: 13px; }
+  .blk.stack.s-lg .av { font-size: 11px; }
+  .blk.stack.s-md .av, .blk.stack.s-md .done { width: 18px; height: 18px; }
+  .blk.stack.s-md .done svg { width: 10px; height: 10px; }
+  .blk.stack.s-sm .av, .blk.stack.s-sm .done { width: 14px; height: 14px; }
+  .blk.stack.s-sm .done svg { width: 8px; height: 8px; }
+  .blk.stack.s-sm .av { font-size: 8px; }
+
+  /* ═══════ 完成态：原位保留，绿勾，无删除线 ═══════ */
+  .blk.done-st { opacity: .62; filter: saturate(.35); }
+  .blk.done-st .t { text-decoration: none; }
+
+  /* ═══════ 契约表 ═══════ */
+  table.contract { width: 100%; border-collapse: collapse; font-size: 12.5px; background: var(--surface); border: 1px solid var(--edge); border-radius: var(--r-md); overflow: hidden; margin-top: 14px; }
+  table.contract th, table.contract td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--edge); vertical-align: top; }
+  table.contract thead th { background: var(--inset-bg); color: var(--t3); font-size: 11px; font-weight: 600; }
+  table.contract tbody tr:last-child td { border-bottom: none; }
+  table.contract td code { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; padding: 1px 5px; border-radius: 3px; background: var(--inset-bg); }
+  table.contract td.k { color: var(--t3); width: 26%; font-weight: 500; }
+  table.contract td.v { color: var(--t1); }
+
+  .mockbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 99;
+    display: flex; align-items: center; gap: 10px; padding: 8px 16px;
+    background: color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter: blur(12px); border-top: 1px solid var(--edge);
+    font-size: 12px; color: var(--t4);
+  }
+  .mockbar b { color: var(--t2); }
+  .mockbar .spring { flex: 1; }
+  body { padding-bottom: 48px; }
+</style>
+</head>
+<body>
+<div class="doc">
+  <header class="hd">
+    <h1>时间泳道任务卡 · 设计小样 v2</h1>
+    <div class="meta">2026-10-12 · 按五点新规格重做 · v1 实现已回滚（main 回到 142d388）</div>
+  </header>
+  <p class="lede">
+    v1 的「右上角锚点 + 聚合条 + 浮层」全部废弃。v2 严格按你的五点：
+    <b>① 卡首行头像居左、对勾居右（顶部留 4px），标题另起一行</b>；
+    <b>② 标题行数随块高自适应，最长 6 行</b>；<b>③ 双卡重叠延用半区并显</b>；
+    <b>④ 3+ 重叠第 3 张起只显头像 + 对勾（上下排列、大小随块），前两张完整半区，无任何浮层</b>；
+    <b>⑤ 完成原位保留，文字不加删除线</b>。三点补充（矮块同行退化 / 时间「起点 + N 小时」/
+    第 3 张起塌缩）已拍板，见 §5。
+  </p>
+
+  <div class="toolbar">
+    <div class="seg" id="theme">
+      <b class="on" data-mode="dark">暗色</b>
+      <b data-mode="light">亮色</b>
+    </div>
+  </div>
+
+  <!-- ═══════ §1 首行布局 + 时长梯度 ═══════ -->
+  <section class="sec">
+    <h2>§ 1 卡首行 + 标题自适应 <span class="tag">单卡</span></h2>
+    <p class="why">
+      首行：<code>4px 顶隙</code> + <b>头像最左 / 对勾最右</b>两端撑开；标题从第二行起。
+      行数随块高：<b>3 小时 → 4~6 行</b>，6 行封顶（6 小时块也只到 6 行）。
+      时间行 = <b>「起点 + N 小时」</b>（单位一律小时），在底部左侧。
+      <b>矮块退化（已拍板）</b>：30 分钟块只有 ~30px 高，首行 + 标题两行放不下，
+      退化为同一行「头像 · 标题 · 对勾」——否则短任务只剩头像没标题。
+    </p>
+
+    <div class="scene">
+      <div class="scene-label"><span class="pill">周三</span><span>9:00 – 16:00 · 四档时长 · 列宽按真实网格 1:1（260px）</span></div>
+      <div class="gridwrap" style="height: 620px; grid-template-columns: 44px 260px;">
+        <div class="axis">
+          <span style="top:0%">09:00</span><span style="top:14.3%">10:00</span>
+          <span style="top:28.6%">11:00</span><span style="top:42.9%">12:00</span>
+          <span style="top:57.2%">13:00</span><span style="top:71.5%">14:00</span>
+          <span style="top:85.8%">15:00</span>
+        </div>
+        <div class="day">
+          <div class="hline" style="top:0%"></div><div class="hline" style="top:14.3%"></div>
+          <div class="hline" style="top:28.6%"></div><div class="hline" style="top:42.9%"></div>
+          <div class="hline" style="top:57.2%"></div><div class="hline" style="top:71.5%"></div>
+          <div class="hline" style="top:85.8%"></div><div class="hline" style="top:100%"></div>
+
+          <!-- 30 分钟：矮块退化单行（09:30–10:00） -->
+          <div class="blk thin" style="--c: var(--plan-blue); left:6px; right:6px; top:7.2%; height:44px;">
+            <div class="bar"><span class="av">我</span></div>
+            <div class="t l1">回复 Alex 邮件</div>
+            <button class="done" aria-label="标记完成">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+          </div>
+
+          <!-- 90 分钟：首行 + 2 行标题 + 时间（10:30–12:00） -->
+          <div class="blk" style="--c: var(--plan-teal); left:6px; right:6px; top:21.5%; height:118px;">
+            <div class="bar">
+              <span class="av bot">🤖</span>
+              <button class="done" aria-label="标记完成">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>
+            </div>
+            <div class="t l2">审阅 PRD v3 的检索字段提案：doc_id 提主表，避免首页 join 变慢</div>
+            <div class="tm num">10:30 + 1.5 小时</div>
+          </div>
+
+          <!-- 1 小时（12:00–13:00）：1~2 行标题 -->
+          <div class="blk" style="--c: var(--plan-violet); left:6px; right:6px; top:43%; height:80px;">
+            <div class="bar">
+              <span class="av">我</span>
+              <button class="done" aria-label="标记完成">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>
+            </div>
+            <div class="t l2">周报整理与下周计划草拟</div>
+            <div class="tm num">12:00 + 1 小时</div>
+          </div>
+
+          <!-- 3 小时：4 行标题封顶演示（13:00–16:00） -->
+          <div class="blk" style="--c: var(--plan-amber); left:6px; right:6px; top:57.3%; height:220px;">
+            <div class="bar">
+              <span class="av">我</span>
+              <button class="done" aria-label="标记完成">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>
+            </div>
+            <div class="t l4">
+              写 OCR 审计报告 v2 复盘：把 10-12 那 30 条 PARTIAL 的来源分清，
+              12 条前端、12 条后端、6 条维持原判，每条做一张裁决路径表挂到 docs 目录；
+              完工前把并发解决路径与 BLAGICLAB 对一遍，结论回写账本
+            </div>
+            <div class="tm num">13:00 + 3 小时</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <table class="contract">
+      <thead><tr><th style="width:24%">块高（≈时长）</th><th>标题行数</th><th>布局</th></tr></thead>
+      <tbody>
+        <tr><td class="k"><code>&lt; 60px</code>（30 分钟）</td><td class="v">1 行</td>
+          <td class="v">矮块退化：头像 · 标题 · 对勾同行（已拍板）</td></tr>
+        <tr><td class="k"><code>60–120px</code>（1–2 小时）</td><td class="v">≤ 2 行</td>
+          <td class="v">首行头像/对勾 → 标题 → 底部时间</td></tr>
+        <tr><td class="k"><code>120–280px</code>（2–4 小时）</td><td class="v">≤ 4 行</td>
+          <td class="v">同上，标题充分展开</td></tr>
+        <tr><td class="k"><code>≥ 280px</code>（4 小时+）</td><td class="v"><b>6 行封顶</b></td>
+          <td class="v">超出截断（悬停完整标题的气泡沿用现状）</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ═══════ §2 双卡重叠（延用） ═══════ -->
+  <section class="sec">
+    <h2>§ 2 双卡重叠 · 延用半区并显 <span class="tag">lanes = 2</span></h2>
+    <p class="why">
+      方案延用 v1：两卡各占一半宽度并排，标题 2 行、时间显「起点 + N 小时」。
+      头像/对勾换成 <b>v2 的新首行布局</b>（头像左、对勾右，16px 缩小号）。
+    </p>
+    <div class="scene">
+      <div class="scene-label"><span class="pill">周四</span><span>10:00 – 12:00 · 列宽真实 1:1</span></div>
+      <div class="gridwrap" style="height: 300px; grid-template-columns: 44px 260px;">
+        <div class="axis">
+          <span style="top:0%">10:00</span><span style="top:33.3%">11:00</span><span style="top:66.6%">12:00</span>
+        </div>
+        <div class="day">
+          <div class="hline" style="top:0%"></div><div class="hline" style="top:33.3%"></div>
+          <div class="hline" style="top:66.6%"></div><div class="hline" style="top:100%"></div>
+          <div class="blk narrow" style="--c: var(--plan-blue); left:5px; width: calc(50% - 8px); top:2%; height:110px;">
+            <div class="bar">
+              <span class="av">我</span>
+              <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+            <div class="t" style="-webkit-line-clamp:2">教 wmessage OCR 配对优先级：先比哈希再比对</div>
+            <div class="tm num">10:30 + 1.5 小时</div>
+          </div>
+          <div class="blk narrow" style="--c: var(--plan-violet); left: calc(50% + 3px); width: calc(50% - 8px); top:2%; height:80px;">
+            <div class="bar">
+              <span class="av">A</span>
+              <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+            <div class="t" style="-webkit-line-clamp:2">Lark doc 批量导出</div>
+            <div class="tm num">10:30 + 1 小时</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ §3 3+ 重叠：只留头像 + 对勾 ═══════ -->
+  <section class="sec">
+    <h2>§ 3 超过 2 个任务卡 · 第 3 张起塌缩 <span class="tag">已拍板 · 无浮层</span></h2>
+    <p class="why">
+      <b>已拍板</b>：同簇 3 卡以上，<b>前两张保持完整半区卡</b>（新首行布局），
+      <b>第 3 张（lane ≥ 2）起塌缩</b>为头像（上）+ 对勾（下）上下排列，尺寸随块高
+      （高块 24px / 中块 18px / 矮块 14px），无标题无时间；点塌缩卡身仍开详情面板看标题。
+      v1 的聚合条、浮层、×N 徽章全部废弃。下图为同时段 4 个任务的真实并排形态：
+    </p>
+    <div class="scene">
+      <div class="scene-label"><span class="pill">周五</span><span>14:00 – 15:00 · 同时段 4 个任务 · 列宽真实 1:1</span></div>
+      <div class="gridwrap" style="height: 300px; grid-template-columns: 44px 260px;">
+        <div class="axis">
+          <span style="top:0%">14:00</span><span style="top:33.3%">14:30</span><span style="top:66.6%">15:00</span>
+        </div>
+        <div class="day">
+          <div class="hline" style="top:0%"></div><div class="hline" style="top:33.3%"></div>
+          <div class="hline" style="top:66.6%"></div><div class="hline" style="top:100%"></div>
+          <!-- 前两张：完整半区卡 -->
+          <div class="blk narrow" style="--c: var(--plan-blue); left:5px; width: calc(50% - 8px); top:2%; height:185px;">
+            <div class="bar">
+              <span class="av">我</span>
+              <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+            <div class="t" style="-webkit-line-clamp:2">审计分诊账本</div>
+            <div class="tm num">14:00 + 1 小时</div>
+          </div>
+          <div class="blk narrow" style="--c: var(--plan-teal); left: calc(50% + 3px); width: calc(50% - 8px); top:2%; height:185px;">
+            <div class="bar">
+              <span class="av bot">🤖</span>
+              <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+            <div class="t" style="-webkit-line-clamp:2">bot 跑回归</div>
+            <div class="tm num">14:00 + 1 小时</div>
+          </div>
+        </div>
+      </div>
+      <p class="why" style="margin-top:14px;">
+        第 3、4 张的塌缩形态（实际网格中四张并排各占 1/4 栏，此处放大单看）：
+      </p>
+      <div class="gridwrap" style="height: 300px; grid-template-columns: 44px 260px;">
+        <div class="axis">
+          <span style="top:0%">14:00</span><span style="top:33.3%">14:30</span><span style="top:66.6%">15:00</span>
+        </div>
+        <div class="day">
+          <div class="hline" style="top:0%"></div><div class="hline" style="top:33.3%"></div>
+          <div class="hline" style="top:66.6%"></div><div class="hline" style="top:100%"></div>
+          <div class="blk stack s-lg" style="--c: var(--plan-amber); left:5px; width: calc(50% - 8px); top:2%; height:185px;">
+            <div class="bar">
+              <span class="av">A</span>
+              <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+          </div>
+          <div class="blk stack s-lg" style="--c: var(--plan-green); left: calc(50% + 3px); width: calc(50% - 8px); top:2%; height:185px;">
+            <div class="bar">
+              <span class="av">L</span>
+              <button class="done on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="why" style="margin-top:14px;">
+      <b>矮块下的塌缩</b>（30 分钟同时段挤 3 个）：块高只有 ~44px，头像 + 对勾缩到 14px 仍上下排。
+    </p>
+    <div class="scene">
+      <div class="scene-label"><span class="pill">周五</span><span>16:00 – 16:30 · 同时段 3 个任务 · 矮块 · 列宽真实 1:1</span></div>
+      <div class="gridwrap" style="height: 200px; grid-template-columns: 44px 260px;">
+        <div class="axis">
+          <span style="top:0%">16:00</span><span style="top:33.3%">16:15</span><span style="top:66.6%">16:30</span>
+        </div>
+        <div class="day">
+          <div class="hline" style="top:0%"></div><div class="hline" style="top:33.3%"></div>
+          <div class="hline" style="top:66.6%"></div><div class="hline" style="top:100%"></div>
+          <div class="blk stack s-sm" style="--c: var(--plan-violet); left:5px; width: calc(33.3% - 8px); top:2%; height:56px;">
+            <div class="bar"><span class="av">我</span><button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button></div>
+          </div>
+          <div class="blk stack s-sm" style="--c: var(--plan-blue); left: calc(33.3% + 1px); width: calc(33.3% - 8px); top:2%; height:56px;">
+            <div class="bar"><span class="av">A</span><button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button></div>
+          </div>
+          <div class="blk stack s-sm" style="--c: var(--plan-amber); left: calc(66.6% + 0px); width: calc(33.3% - 8px); top:2%; height:56px;">
+            <div class="bar"><span class="av bot">🤖</span><button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ §4 完成态 ═══════ -->
+  <section class="sec">
+    <h2>§ 4 已完成 · 原位保留 · 无删除线 <span class="tag">完成语义 = 绿勾</span></h2>
+    <p class="why">
+      标记完成后卡片<b>不动、不隐藏、不过滤</b>：仍在原时间区间原位置。
+      完成语义由<b>对勾变绿色实心</b>承载，整块轻微降饱和降透明做次要化，
+      <b>标题不划线</b>。再点绿勾恢复待办。下图三张卡都已完成：
+    </p>
+    <div class="scene">
+      <div class="scene-label"><span class="pill">周三 · 已完成的一天示例</span><span>列宽真实 1:1</span></div>
+      <div class="gridwrap" style="height: 420px; grid-template-columns: 44px 260px;">
+        <div class="axis">
+          <span style="top:0%">09:00</span><span style="top:25%">11:00</span>
+          <span style="top:50%">13:00</span><span style="top:75%">15:00</span>
+        </div>
+        <div class="day">
+          <div class="hline" style="top:0%"></div><div class="hline" style="top:25%"></div>
+          <div class="hline" style="top:50%"></div><div class="hline" style="top:75%"></div><div class="hline" style="top:100%"></div>
+          <div class="blk done-st" style="--c: var(--plan-blue); left:6px; right:6px; top:2%; height:60px;">
+            <div class="bar">
+              <span class="av">我</span>
+              <button class="done on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+            <div class="t l1">回复 Alex 邮件</div>
+          </div>
+          <div class="blk done-st" style="--c: var(--plan-amber); left:6px; right:6px; top:29%; height:180px;">
+            <div class="bar">
+              <span class="av">我</span>
+              <button class="done on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+            </div>
+            <div class="t l4">
+              写 OCR 审计报告 v2 复盘：30 条 PARTIAL 来源分清，裁决路径表挂 docs，
+              并发解决路径与 BLAGICLAB 对完，结论已回写账本
+            </div>
+            <div class="tm num">11:00 + 3 小时</div>
+          </div>
+          <div class="blk done-st thin" style="--c: var(--plan-teal); left:6px; right:6px; top:76%; height:44px;">
+            <div class="bar"><span class="av bot">🤖</span></div>
+            <div class="t l1">bot 跑挂件回归</div>
+            <button class="done on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════ §5 拍板记录 ═══════ -->
+  <section class="sec">
+    <h2>§ 5 拍板记录（2026-10-12，已全部落实现）</h2>
+    <table class="contract">
+      <thead><tr><th style="width:30%">点</th><th>拍板</th></tr></thead>
+      <tbody>
+        <tr>
+          <td class="k">矮块（30 分钟）放不下两行</td>
+          <td class="v">同意退化为同一行「头像 · 标题 · 对勾」——头像对勾仍分居左右，标题 1 行截断。</td>
+        </tr>
+        <tr>
+          <td class="k">时间文字</td>
+          <td class="v">统一「起点 + N 小时」，单位一律小时（如 09:30 + 1.5 小时、13:00 + 3 小时）；
+              矮块与塌缩块不显示时间。</td>
+        </tr>
+        <tr>
+          <td class="k">3+ 重叠塌缩范围</td>
+          <td class="v">第 3 张起才塌缩——前两张保持完整半区卡，第 3 张（lane ≥ 2）起
+              只显头像 + 对勾上下排列，无浮层。</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<div class="mockbar">
+  <b>任务卡 v2 小样</b><span>2026-10-12 · v1 已回滚</span>
+  <span class="spring"></span>
+  <span>暗 / 亮切换在顶部</span>
+</div>
+
+<script>
+  document.getElementById('theme').addEventListener('click', (e) => {
+    const t = e.target.closest('b');
+    if (!t) return;
+    document.querySelectorAll('#theme b').forEach((b) => b.classList.remove('on'));
+    t.classList.add('on');
+    document.documentElement.classList.toggle('dark', t.dataset.mode === 'dark');
+  });
+  // 对勾 demo：点击切换绿勾 + 完成态（小样演示用）
+  document.querySelectorAll('.blk .done').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      btn.classList.toggle('on');
+      btn.closest('.blk')?.classList.toggle('done-st', btn.classList.contains('on'));
+    });
+  });
+</script>
+</body>
+</html>
