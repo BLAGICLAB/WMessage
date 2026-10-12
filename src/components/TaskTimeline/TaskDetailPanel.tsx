@@ -50,6 +50,7 @@ export function TaskDetailPanel({
   onClose,
   onCreateSubtaskCard,
   onOpenTask,
+  onDeleteSubtask,
 }: {
   task: Task;
   /** 新建任务打开时聚焦标题并全选（自动进入编辑态） */
@@ -62,6 +63,8 @@ export function TaskDetailPanel({
   onCreateSubtaskCard?: (subId: string, title: string) => void;
   /** 子任务行 ↗ 跳转到已生成的任务卡 */
   onOpenTask?: (id: string) => void;
+  /** 子任务行 × 删除该行；已生成子任务卡时由接线方解除关联并保留子卡 */
+  onDeleteSubtask?: (subId: string) => void;
 }) {
   // 标题本地草稿：任务切换/外部改名时回填，blur/Enter 提交，Esc 还原
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -463,7 +466,8 @@ export function TaskDetailPanel({
               />
               {s.text}
             </button>
-            {/* 行尾动作：已生成卡 → ↗ 跳转；未生成 → ＋ 生成为任务卡（悬停显现） */}
+            {/* 行尾动作：已生成卡 → ↗ 跳转，未生成 → ＋ 生成为任务卡；× 删行
+                （已生成行 × = 解除关联保留子卡，语义在 App 侧接线）；悬停显现 */}
             {s.taskId ? (
               <button
                 type="button"
@@ -487,6 +491,17 @@ export function TaskDetailPanel({
                 <Plus size={12} aria-hidden />
               </button>
             ) : null}
+            {onDeleteSubtask && (
+              <button
+                type="button"
+                title="删除子任务"
+                aria-label={`删除子任务「${s.text}」`}
+                className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--danger)] group-hover:opacity-100"
+                onClick={() => onDeleteSubtask(s.id)}
+              >
+                ×
+              </button>
+            )}
           </div>
         ))}
         <input

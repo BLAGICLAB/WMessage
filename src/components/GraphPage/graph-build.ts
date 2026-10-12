@@ -57,7 +57,8 @@ export interface GraphNode {
 interface GraphLink {
   source: string;
   target: string;
-  kind: "dep" | "member";
+  /** dep = dependsOn 依赖；member = 工作流归属；parent = 子任务卡出身（母→子） */
+  kind: "dep" | "member" | "parent";
 }
 
 export interface BuiltGraph {
@@ -178,8 +179,8 @@ export function wouldCreateDepCycle(
 
 /**
  * 建图（设计 §3.1）：节点 = 任务 + 工作流 hub；边 = dependsOn（有向 dep）+
- * 成员关系（member）。悬空 dependsOn / 被过滤端点 → 丢边；
- * hub 只为「有存活成员」的工作流创建。度数在成边后统计，
+ * 子任务卡出身（parent，母→子）+ 成员关系（member）。悬空 dependsOn /
+ * 被过滤端点 → 丢边；hub 只为「有存活成员」的工作流创建。度数在成边后统计，
  * includeOrphans=false 时剪掉无边任务节点。
  */
 export function buildTaskGraph(
@@ -232,6 +233,10 @@ export function buildTaskGraph(
   for (const t of kept) {
     for (const d of t.dependsOn ?? []) {
       if (idSet.has(d)) links.push({ source: d, target: t.id, kind: "dep" });
+    }
+    // 子任务卡出身边（母 → 子）：同口径，两端被过滤/悬空即丢
+    if (t.parentId && idSet.has(t.parentId)) {
+      links.push({ source: t.parentId, target: t.id, kind: "parent" });
     }
   }
 

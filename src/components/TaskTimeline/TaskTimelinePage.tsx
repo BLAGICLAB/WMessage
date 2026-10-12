@@ -37,6 +37,7 @@ export function TaskTimelinePage({
   editingId = null,
   onCreateSubtaskCard,
   onOpenTask,
+  onDeleteSubtask,
 }: {
   tasks: Task[];
   onNewTask?: () => void;
@@ -50,6 +51,8 @@ export function TaskTimelinePage({
   onCreateSubtaskCard?: (motherId: string, subId: string, title: string) => void;
   /** 子任务行 ↗ 跳转到已生成的任务卡 */
   onOpenTask?: (id: string) => void;
+  /** 子任务行 × 删除该行；已生成子任务卡时 App 侧解除关联并保留子卡 */
+  onDeleteSubtask?: (motherId: string, subId: string) => void;
 }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   // 「现在」单一时间源：页头今天回跳与网格现在线共用，每分钟校准
@@ -414,6 +417,11 @@ export function TaskTimelinePage({
                 : undefined
             }
             onOpenTask={onOpenTask}
+            onDeleteSubtask={
+              onDeleteSubtask
+                ? (subId) => onDeleteSubtask(selectedTask.id, subId)
+                : undefined
+            }
           />
         )}
         <div className="relative flex min-h-0 flex-1">

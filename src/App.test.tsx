@@ -416,6 +416,48 @@ describe("App", () => {
     });
   });
 
+  it("子任务行 ×：删行 + 子卡解除关联保留（parentId 清空，卡不删）", async () => {
+    const user = userEvent.setup();
+    const mother: Task = {
+      id: "m1",
+      title: "母卡",
+      column: "todo",
+      order: 0,
+      updatedAt: 1,
+      subtasks: [{ id: "s1", text: "已生成", done: false, taskId: "c1" }],
+    };
+    const child: Task = {
+      id: "c1",
+      title: "已生成",
+      column: "todo",
+      order: 1,
+      updatedAt: 1,
+      parentId: "m1",
+    };
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return [mother, child];
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    await user.click(await screen.findByLabelText("编辑 母卡"));
+    await user.click(await screen.findByTitle("删除子任务"));
+    await waitFor(() => {
+      const calls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "db_upsert",
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      const { tasks } = calls[calls.length - 1][1] as { tasks: Task[] };
+      // 行删除：母卡 subtasks 清空
+      const motherRow = tasks.find((t) => t.id === "m1");
+      expect(motherRow?.subtasks ?? []).toHaveLength(0);
+      // 子卡保留但解除关联
+      const childRow = tasks.find((t) => t.id === "c1");
+      expect(childRow).toBeDefined();
+      expect(childRow?.parentId).toBeNull();
+    });
+  });
+
   // tasks-updated 事件合并后，规则改动（今日归位/超时归档）
   // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
   it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {

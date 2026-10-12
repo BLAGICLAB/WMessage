@@ -34,6 +34,7 @@ const setup = (
   extra: {
     onCreateSubtaskCard?: (subId: string, title: string) => void;
     onOpenTask?: (id: string) => void;
+    onDeleteSubtask?: (subId: string) => void;
   } = {},
 ) => {
   const onUpdate = vi.fn();
@@ -49,6 +50,7 @@ const setup = (
       onClose={onClose}
       onCreateSubtaskCard={extra.onCreateSubtaskCard}
       onOpenTask={extra.onOpenTask}
+      onDeleteSubtask={extra.onDeleteSubtask}
     />,
   );
   return { onUpdate, onSetColumn, onDelete, onClose };
@@ -204,6 +206,29 @@ describe("TaskDetailPanel", () => {
     setup();
     expect(screen.queryByTitle("生成为任务卡")).not.toBeInTheDocument();
     expect(screen.queryByTitle("打开生成的任务卡")).not.toBeInTheDocument();
+  });
+
+  it("子任务行 ×：未生成行删除该行；已生成行也有 ×（解关联语义在 App 侧）", async () => {
+    const user = userEvent.setup();
+    const onDeleteSubtask = vi.fn();
+    setup(
+      {
+        subtasks: [
+          { id: "s1", text: "普通行", done: false },
+          { id: "s2", text: "已生成行", done: false, taskId: "child-1" },
+        ],
+      },
+      { onDeleteSubtask },
+    );
+    // × 在 ＋ / ↗ 右侧（DOM 序），且已生成行同样有 ×（aria-label 带行文本）
+    await user.click(screen.getByLabelText('删除子任务「普通行」'));
+    expect(onDeleteSubtask).toHaveBeenCalledWith("s1");
+    await user.click(screen.getByLabelText('删除子任务「已生成行」'));
+    expect(onDeleteSubtask).toHaveBeenLastCalledWith("s2");
+    // 未接删除回调时不显示 ×（与 ＋ 同门控）
+    cleanup();
+    setup();
+    expect(screen.queryByTitle("删除子任务")).not.toBeInTheDocument();
   });
 
   it("autoFocusTitle：新建路径聚焦标题并全选", () => {

@@ -133,6 +133,41 @@ describe("buildTaskGraph", () => {
     expect(hubIds).toEqual(["wf:wf1"]);
     expect(g.nodes.map((n) => n.id)).not.toContain("w3");
   });
+
+  it("子任务卡出身边：母 → 子成 parent 边，计入度数救孤儿", () => {
+    const tasks: Task[] = [
+      t({ id: "mother" }),
+      t({ id: "child", parentId: "mother" }),
+    ];
+    const g = buildTaskGraph(tasks, WFS, DEFAULT_FILTERS);
+    expect(g.links).toContainEqual({
+      source: "mother",
+      target: "child",
+      kind: "parent",
+    });
+    const byId = new Map(g.nodes.map((n) => [n.id, n]));
+    expect(byId.get("mother")?.degree).toBe(1);
+    expect(byId.get("child")?.degree).toBe(1);
+    // parent 边连接的卡不算孤儿
+    const pruned = buildTaskGraph(tasks, WFS, {
+      ...DEFAULT_FILTERS,
+      includeOrphans: false,
+    });
+    expect(pruned.nodes.map((n) => n.id).sort()).toEqual(["child", "mother"]);
+  });
+
+  it("子任务卡出身边：母被过滤/回收站 → 丢边不丢子节点", () => {
+    const tasks: Task[] = [
+      t({ id: "mother", deletedAt: 1 }),
+      t({ id: "child", parentId: "mother" }),
+      t({ id: "child2", parentId: "dangling" }),
+    ];
+    const g = buildTaskGraph(tasks, WFS, DEFAULT_FILTERS);
+    expect(g.links.filter((l) => l.kind === "parent")).toHaveLength(0);
+    const ids = g.nodes.map((n) => n.id);
+    expect(ids).toContain("child");
+    expect(ids).toContain("child2");
+  });
 });
 
 describe("collect 聚合", () => {

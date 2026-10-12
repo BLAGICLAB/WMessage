@@ -694,6 +694,28 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // 子任务行 ×：删行；若该行已生成子任务卡，两边解除关联（parentId 清空）但
+  // 保留子卡（退化为普通卡）。同一 mutate 原子提交，删行/解关联不会半截落库
+  const deleteSubtaskRow = (motherId: string, subId: string) => {
+    mutateFire((prev) => {
+      const childId = prev
+        .find((t) => t.id === motherId)
+        ?.subtasks?.find((s) => s.id === subId)?.taskId;
+      return prev.map((t) => {
+        if (t.id === motherId) {
+          return {
+            ...t,
+            subtasks: (t.subtasks ?? []).filter((s) => s.id !== subId),
+          };
+        }
+        if (childId && t.id === childId) {
+          return { ...t, parentId: null };
+        }
+        return t;
+      });
+    });
+  };
+
   // ⌘K 跳转：任务按所在位置切视图并进入编辑；会话发事件让挂件展开并切会话
   const jumpToTask = (t: Task) => {
     setView(viewForTask(t));
@@ -1023,6 +1045,7 @@ function App() {
               editingId={editingId}
               onCreateSubtaskCard={createSubtaskCard}
               onOpenTask={jumpToTaskId}
+              onDeleteSubtask={deleteSubtaskRow}
             />
           ) : view === "workflow" ? (
             <WorkflowPage
