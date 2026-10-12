@@ -267,6 +267,48 @@ describe("HomePage 渲染", () => {
     expect(screen.getByText("去处理")).toBeInTheDocument();
     expect(screen.getByText("1 条待处理")).toBeInTheDocument();
   });
+
+  it("通知加载中：footer 与 body 同口径，不提前显示「都处理完了」", () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "trace_list") return TRACES;
+      if (cmd === "notifications_list") return new Promise(() => {}); // 挂起 = 加载中
+      if (cmd === "bing_daily")
+        return {
+          title: "秋冬菜单静物",
+          copyright: "© 摄影师（Bing 中国）",
+          dataUrl: "data:image/jpeg;base64,anBlZ2J5dGVz",
+          imageUrl: "https://cn.bing.com/th?id=OHR.X",
+          date: "2026-10-11",
+        };
+      return null;
+    });
+    renderHome();
+    const panel = screen.getByText("通知", { selector: "h3" }).closest("section")!;
+    // body 与 footer 同口径：都是加载中，不提前报「都处理完了」
+    expect(within(panel).getAllByText("加载中…")).toHaveLength(2);
+    expect(within(panel).queryByText("都处理完了")).not.toBeInTheDocument();
+  });
+
+  it("通知与执行痕迹同模式 30s 轻轮询：挂载窗口期丢事件可自愈", async () => {
+    vi.useFakeTimers();
+    try {
+      renderHome();
+      const notifCalls = () =>
+        invokeMock.mock.calls.filter(([cmd]) => cmd === "notifications_list")
+          .length;
+      expect(notifCalls()).toBe(1); // 挂载即拉一次
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(notifCalls()).toBe(2); // 30s 后再拉（轮询自愈）
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(notifCalls()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => {

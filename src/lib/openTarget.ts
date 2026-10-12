@@ -17,6 +17,9 @@ import { handleCommandError } from "./errorHandler";
 const FILE_EXTS =
   "(?:docx?|xlsx?|pptx?|pdf|markdown|md|txt|csv|json|xml|ya?ml|log|html?|png|jpe?g|gif|webp|svg|bmp|zip|rar|7z|tar|gz|mp[34]|wav|mov)";
 
+/** 可选压缩层后缀：复合扩展名（archive.tar.gz / report.pdf.gz）不再在首个扩展名处截断 */
+const COMPRESSED_SUFFIX = "(?:\\.(?:gz|bz2|xz|zst))?";
+
 /** 路径前缀：Windows 盘符 或 常见 unix 绝对路径根 */
 const PATH_PREFIX =
   "(?:[A-Za-z]:[\\\\/]|\\/(?:Users|home|var|tmp|Library|Applications|opt)\\b)";
@@ -30,12 +33,13 @@ const PATH_CHAR_SPACE = "[^<>\"'`，。；、（）【】！!？?*|\\n]";
  * 文本内 URL / 绝对路径识别（全局匹配）。
  * URL 分支允许 ASCII ? !（查询串不再被截断；句尾标点由 normalizeUrl/clean 剥离），
  * 全角标点仍作边界。
- * 路径两个分支：带空格路径惰性锚定到已知扩展名；无空格路径（文件夹/无扩展名）保持旧行为。
- * 带扩展名的无空格路径会优先命中第二分支（首个扩展名处截断），行为一致。
+ * 路径两个分支：带空格路径惰性锚定到已知扩展名（含压缩层后缀）；
+ * 无空格路径（文件夹/无扩展名）保持旧行为。
+ * 带扩展名的无空格路径会优先命中第二分支（扩展名处锚定），行为一致。
  */
 export const LINK_OR_PATH_RE = new RegExp(
   "(https?:\\/\\/[^\\s<>\"'，。；、（）【】！？`*]+)" +
-    `|(${PATH_PREFIX}${PATH_CHAR_SPACE}*?\\.${FILE_EXTS}\\b)` +
+    `|(${PATH_PREFIX}${PATH_CHAR_SPACE}*?\\.${FILE_EXTS}${COMPRESSED_SUFFIX}\\b)` +
     `|(${PATH_PREFIX}${PATH_CHAR_NOSPACE}*)`,
   "gi",
 );

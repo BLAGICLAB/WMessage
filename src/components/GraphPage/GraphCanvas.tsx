@@ -491,8 +491,6 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       const pos = sigma.viewportToGraph({ x: e.clientX, y: e.clientY });
       g.setNodeAttribute(draggedId, "x", pos.x);
       g.setNodeAttribute(draggedId, "y", pos.y);
-      // 阻止画布平移
-      (sigma.getCamera() as unknown as { animated?: boolean }).animated = false;
     };
     const onUp = () => {
       if (!draggedId) return;

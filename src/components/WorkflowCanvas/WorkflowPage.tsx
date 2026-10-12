@@ -192,9 +192,19 @@ function WorkflowPageInner({
       .catch((e) => handleCommandError(e, "读取模型库", { silent: true }));
   }, []);
 
+  // 已保存口径指纹：字段集与字段序必须与 openWorkflow / save 两处 savedSnapshot
+  // 的序列化完全一致（dirty 是字符串严格比较）；新增随保存落库的字段三处同步
   const snapshot = useCallback(
-    () => JSON.stringify({ name, goal, nodes, attachPaths }),
-    [name, goal, nodes, attachPaths],
+    () =>
+      JSON.stringify({
+        name,
+        goal,
+        nodes,
+        attachPaths,
+        asksEnabled,
+        lastAnswers,
+      }),
+    [name, goal, nodes, attachPaths, asksEnabled, lastAnswers],
   );
   const dirty = savedSnapshot !== snapshot();
 
@@ -217,12 +227,18 @@ function WorkflowPageInner({
       setGoal(detail.goal);
       setNodes(fresh);
       setSelectedIds([]);
+      // 澄清元数据先解析：恢复进 state 的值与 savedSnapshot 必须同源，否则打开即脏
+      const meta = detail.clarifyMeta
+        ? safeParseClarifyMeta(detail.clarifyMeta)
+        : null;
       setSavedSnapshot(
         JSON.stringify({
           name: detail.name,
           goal: detail.goal,
           nodes: fresh,
           attachPaths: detail.attachments ?? [],
+          asksEnabled: meta?.askMode !== "never",
+          lastAnswers: meta?.answers ?? {},
         }),
       );
       setNameAuto(false); // 打开的是已保存工作流：名称是作者起的，拆解不得覆盖
@@ -232,13 +248,8 @@ function WorkflowPageInner({
         detail.lastReport ? safeParseReport(detail.lastReport) : null,
       );
       // 澄清元数据恢复（重拆预填上次回答 + 执行提问开关）
-      {
-        const meta = detail.clarifyMeta
-          ? safeParseClarifyMeta(detail.clarifyMeta)
-          : null;
-        setLastAnswers(meta?.answers ?? {});
-        setAsksEnabled(meta?.askMode !== "never");
-      }
+      setLastAnswers(meta?.answers ?? {});
+      setAsksEnabled(meta?.askMode !== "never");
       setAssumptions([]); // 假设属于拆解现场，重开画布不恢复（v1 口径）
       const iseq = openSeqRef.current;
       invoke<boolean>("workflow_is_running", { workflowId: id })
@@ -862,6 +873,8 @@ function WorkflowPageInner({
           goal: effectiveGoal,
           nodes: next,
           attachPaths,
+          asksEnabled,
+          lastAnswers,
         }),
       );
       setActiveId(res.workflowId);

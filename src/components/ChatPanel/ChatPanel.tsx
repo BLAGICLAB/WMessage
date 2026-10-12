@@ -1079,7 +1079,6 @@ export function ChatPanel({
       );
       // 把流式过程中累积的思考/工具行并入最终消息
       const meta = streamingMetaMapRef.current.get(sid) ?? {};
-      streamingMetaMapRef.current.delete(sid);
       const done: Msg[] = [
         ...history,
         {
@@ -1120,6 +1119,9 @@ export function ChatPanel({
       // 流式错误已经写进消息气泡了，不重复弹 alert
       handleCommandError(e, "bot_chat", { silent: true });
     } finally {
+      // 成功已并入消息、失败已丢弃——两种收尾条目都失效，统一在此清理，
+      // 防失败路径的累积 thinking 滞留到下次 runChat 或重启
+      streamingMetaMapRef.current.delete(sid);
       exitChat(sid);
     }
   };

@@ -188,6 +188,9 @@ export function NotifyPanel({
       footer={
         notifError ? (
           <span className="text-[var(--danger)]">{notifError}</span>
+        ) : notifications === null ? (
+          // 加载中与 body 同口径：pending 用 null 表达未加载，不能落到「都处理完了」
+          "加载中…"
         ) : pending ? (
           `${pending} 条待处理`
         ) : (

@@ -90,8 +90,13 @@ export const GoalNode = memo(function GoalNode({
             🤖 拆解假设（{data.assumptions.length}）
           </summary>
           <ul className="mt-1 list-inside list-disc text-[var(--t4)]">
-            {data.assumptions.map((a) => (
-              <li key={a} className="break-words">
+            {data.assumptions.map((a, i) => (
+              <li
+                // 只读列表无重排；LLM 自由文本可重复，文本作 key 反而撞 key
+                // oxlint-disable-next-line react/no-array-index-key
+                key={i}
+                className="break-words"
+              >
                 {a}
               </li>
             ))}

@@ -14,6 +14,7 @@ import {
   type GraphNode,
 } from "../GraphPage/graph-build";
 import { fa2Settings } from "../GraphPage/graph-adapter";
+import { dayKey as localDayKey } from "./homeData";
 
 const VIEW_W = 100;
 const VIEW_H = 56;
@@ -67,7 +68,12 @@ function nodeMatchesDay(node: GraphNode, dayKey: string): boolean {
   const t = node.task;
   if (!t) return false;
   if (t.planStart && t.planStart.slice(0, 10) === dayKey) return true;
-  return !!t.completedAt && new Date(t.completedAt).toDateString() === new Date(dayKey).toDateString();
+  return (
+    !!t.completedAt &&
+    // 完成日按本地日键比较：new Date(dayKey) 按 UTC 解析，配 toDateString
+    // 在西半球时区会整体偏一天，与 homeData 的本地 dayKey 口径冲突
+    localDayKey(new Date(t.completedAt)) === dayKey
+  );
 }
 
 export function GraphMini({

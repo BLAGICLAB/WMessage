@@ -138,6 +138,9 @@ export function HomePage({
   }, []);
   useEffect(() => {
     loadNotifications();
+    // 与执行痕迹同模式的轻轮询：挂载窗口期漏掉广播事件后可自愈
+    const iv = setInterval(loadNotifications, REFRESH_MS);
+    return () => clearInterval(iv);
   }, [loadNotifications]);
   useTauriListen(NOTIFICATIONS_CHANGED_EVENT, loadNotifications);
 

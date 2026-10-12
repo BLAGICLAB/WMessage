@@ -513,6 +513,51 @@ describe("ChatPanel", () => {
     expect(await screen.findByText(/⚠️ API 配额超限/)).toBeInTheDocument();
   });
 
+  it("runChat 失败后清理本会话的流式元数据条目（不滞留到下次收尾或重启）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_history_save") return null;
+      if (cmd === "bot_chat")
+        throw {
+          code: "LLM_API_ERROR",
+          message: "API 配额超限",
+          recoverable: true,
+        };
+      return null;
+    });
+    // streamingMetaMap 是组件内部 ref，UI 无观测面。借 Map.prototype.delete
+    // 记录调用，证明失败路径也执行了与流开始 set(sid,{}) 对称的清理。
+    // inflightRef 是 Set（走 Set.prototype.delete），不会混进记录。
+    const deletes: unknown[][] = [];
+    const origDelete = Map.prototype.delete;
+    const spy = vi
+      .spyOn(Map.prototype, "delete")
+      .mockImplementation(function (
+        this: Map<unknown, unknown>,
+        key: unknown,
+      ) {
+        deletes.push([key]);
+        return origDelete.call(this, key);
+      });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findByText("默认会话");
+      const mark = deletes.length;
+      const input = screen.getByPlaceholderText(/和机器人说点什么/);
+      await user.type(input, "会失败的一条");
+      await user.keyboard("{Enter}");
+      // 失败收尾完成（⚠️ 气泡渲染 = catch + finally 已跑完）
+      expect(await screen.findByText(/⚠️ API 配额超限/)).toBeInTheDocument();
+      expect(
+        deletes.slice(mark).some(([key]) => key === "s1"),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("任务卡执行被 TASK_INVALID_STATE 拒绝：按结构化 code 识别，⏳ 本地提示而非 ⚠️ 气泡（批次7 P2-2）", async () => {
     // 捕获 listen 回调以手动触发 execute-task 事件
     const listeners = new Map<string, (e: { payload: unknown }) => void>();

@@ -59,6 +59,27 @@ describe("LINK_OR_PATH_RE 带空格路径", () => {
   });
 });
 
+describe("复合扩展名（archive.tar.gz 这类压缩层后缀）", () => {
+  it("tar.gz / tar.bz2 / pdf.gz 完整提取，不在首个扩展名处截断", () => {
+    expect(extractFilePaths("打包在 /Users/x/archive.tar.gz 了")).toEqual([
+      "/Users/x/archive.tar.gz",
+    ]);
+    expect(extractFilePaths("C:\\backup\\x.tar.bz2")).toEqual([
+      "C:\\backup\\x.tar.bz2",
+    ]);
+    expect(extractFilePaths("产物 /Users/x/report.pdf.gz 已压缩")).toEqual([
+      "/Users/x/report.pdf.gz",
+    ]);
+  });
+
+  it("纯 tar / 纯 gz 单扩展名行为不变", () => {
+    expect(extractFilePaths("/Users/x/x.tar 和 /Users/x/x.gz")).toEqual([
+      "/Users/x/x.tar",
+      "/Users/x/x.gz",
+    ]);
+  });
+});
+
 describe("extractFilePaths", () => {
   it("带空格路径完整提取、URL 跳过、去重保序、反引号穿透", () => {
     const content =
