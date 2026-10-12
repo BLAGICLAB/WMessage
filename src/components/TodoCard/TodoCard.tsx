@@ -5,7 +5,7 @@
 // `import { TodoCardView } from "./components/TodoCard"`，
 // Vite 解析到 `./TodoCard/index.tsx` → 透传本目录各文件。
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Bot,
@@ -136,9 +136,15 @@ export function TodoCardView({
     setAddingSubtask(false);
   };
 
+  // 最新 task 镜像：绑定对话框挂起期间 files 可能被别处改动（另一窗口/机器人），
+  // 合并基线必须取对话框返回后的现值，而非点击时的快照（ref 写放 effect，同 ChatPanel 先例）
+  const taskRef = useRef(task);
+  useEffect(() => {
+    taskRef.current = task;
+  });
+
   const pickFile = async () => {
     try {
-      const cur = taskFiles(task);
       // 文件与文件夹不互斥：已绑文件夹也可继续添加文件
       const selected = await open({ multiple: true, directory: false });
       const paths = Array.isArray(selected)
@@ -152,6 +158,8 @@ export function TodoCardView({
         "bind_files",
         { paths },
       );
+      // await 期间可能有并发绑定：以最新 files 为合并基线，别丢掉那批改动
+      const cur = taskFiles(taskRef.current);
       const { files, truncated } = mergeFiles(cur, added);
       if (truncated)
         window.alert(
@@ -165,15 +173,20 @@ export function TodoCardView({
 
   const pickFolder = async () => {
     try {
-      const cur = taskFiles(task);
       // 文件夹仍单选（最多一个文件夹）；文件与文件夹不互斥
-      if (cur.some((f) => f.isDir)) {
+      if (taskFiles(task).some((f) => f.isDir)) {
         window.alert("该任务已绑定文件夹，请先移除再重新绑定");
         return;
       }
       const selected = await open({ directory: true });
-      // 文件夹追加进绑定列表（不再替换掉已绑文件），去重保序
+      // 文件夹追加进绑定列表（不再替换掉已绑文件），去重保序；
+      // 对话框挂起期间可能有并发绑定：isDir 复查与合并基线都取最新 files
       if (typeof selected === "string") {
+        const cur = taskFiles(taskRef.current);
+        if (cur.some((f) => f.isDir)) {
+          window.alert("该任务已绑定文件夹，请先移除再重新绑定");
+          return;
+        }
         const { files, truncated } = mergeFiles(cur, [
           { path: selected, isDir: true },
         ]);

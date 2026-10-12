@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Loader2, Pencil, X } from "lucide-react";
+import { Check, ChevronUp, Loader2, Pencil, X } from "lucide-react";
 import type { Clarification, ClarifyQuestion } from "../../lib/workflowAsk";
 
 /** 澄清卡组（设计 §3.4）：hero 态内联问答。
@@ -59,7 +59,9 @@ export function ClarifyCard({
               collapsed={!!answers[q.id]?.trim() && !editing[q.id]}
               onAnswer={(a) => setAnswers((prev) => ({ ...prev, [q.id]: a }))}
               onToggleEdit={() =>
-                setEditing((prev) => ({ ...prev, [q.id]: true }))
+                // 双向 toggle：摘要行 ✎ 进入编辑态，编辑态「收起」回到摘要行
+                //（摘要行展示已存回答；单向置 true 会让编辑态永不回收）
+                setEditing((prev) => ({ ...prev, [q.id]: !prev[q.id] }))
               }
             />
           ))}
@@ -197,7 +199,7 @@ function QuestionRow({
           <span />
         )}
         {has && (
-          <span className="text-[var(--ok,#16a34a)]">
+          <span className="flex items-center gap-2 text-[var(--ok,#16a34a)]">
             已回答
             <X
               size={11}
@@ -210,6 +212,14 @@ function QuestionRow({
                 setCustomOpen(false);
               }}
             />
+            <button
+              aria-label={`收起回答：${q.question}`}
+              title="收起为摘要行"
+              className="ml-1 inline cursor-pointer text-[var(--t5)] hover:text-[var(--t1)]"
+              onClick={onToggleEdit}
+            >
+              <ChevronUp size={11} aria-hidden />
+            </button>
           </span>
         )}
       </div>

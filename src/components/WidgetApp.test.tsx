@@ -443,3 +443,53 @@ describe("WidgetApp 任务卡口径对齐主窗口", () => {
     expect(screen.getByDisplayValue("新任务")).toBeInTheDocument();
   });
 });
+
+// —— settle 位置钳制（拖动停止 500ms 后吸附）：拖出屏底的 y 必须钳回屏内，
+// 与挂载恢复同口径（按窗口自身高度收口）——否则悬浮/侧贴边吸附只修正 x，
+// 整窗留在屏外永远够不着。screenSize 走 currentMonitor=null 的回退屏 1920×1080。 ——
+describe("WidgetApp settle 位置钳制", () => {
+  it("拖出屏底（y=5000）后 settle 落点钳回屏底内：y = 屏高 1080 - 窗高 220", async () => {
+    const prevPos = mocks.winMock.outerPosition.getMockImplementation();
+    const prevOnMoved = mocks.winMock.onMoved.getMockImplementation();
+    let moved: (() => void) | undefined;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return [];
+      if (cmd === "workspace_load") return [];
+      if (cmd === "bot_get_enabled") return false;
+      return null;
+    });
+    mocks.winMock.outerPosition.mockResolvedValue({ x: 100, y: 5000 });
+    mocks.winMock.onMoved.mockImplementation(async (...args: unknown[]) => {
+      moved = args[0] as () => void;
+      return () => {};
+    });
+    try {
+      render(<WidgetApp />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      if (typeof moved !== "function") throw new Error("onMoved 未注册");
+      const fireMoved = moved;
+      mocks.winMock.setPosition.mockClear();
+      act(() => {
+        fireMoved();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600); // settle 去抖 500ms + 余量
+      });
+      // LogicalPosition 类实例（测试内 mock 构造器只存 x/y）；mock 声明无参，
+      // 调用参数形状按实际断言需要收窄
+      const calls = mocks.winMock.setPosition.mock.calls as unknown as Array<
+        [{ x: number; y: number }]
+      >;
+      expect(calls.length).toBeGreaterThan(0);
+      const last = calls[calls.length - 1][0];
+      expect(last.x).toBe(100); // 悬浮（不贴边）：x 不动
+      expect(last.y).toBe(860); // 1080 - 220：钳回屏内
+    } finally {
+      // 复位默认实现，不向相邻用例泄漏超界 y / onMoved 捕获
+      mocks.winMock.outerPosition.mockImplementation(prevPos!);
+      mocks.winMock.onMoved.mockImplementation(prevOnMoved!);
+    }
+  });
+});

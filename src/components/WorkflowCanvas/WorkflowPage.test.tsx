@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -136,5 +137,89 @@ describe("WorkflowPage dirty 快照", () => {
         { question: "缺哪张表？", answer: "users 表" },
       ]);
     });
+  });
+});
+
+describe("WorkflowPage startRun 竞态", () => {
+  it("切换后晚到的 run 失败：不压新画布 running 态、不误弹错误（只留痕）", async () => {
+    const user = userEvent.setup();
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+    // 受控 promise：workflow_run 挂起，测试内手动 reject 模拟晚到失败
+    let rejectRun!: (e: unknown) => void;
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        switch (cmd) {
+          case "workflow_list":
+            return [
+              { id: "wf1", name: "工作流一", goal: "" },
+              { id: "wf2", name: "工作流二", goal: "" },
+            ];
+          case "workflow_load":
+            return {
+              id: args?.id,
+              name: args?.id === "wf2" ? "工作流二" : "工作流一",
+              goal: "",
+              // wf1 带节点让执行键可用（空画布执行键禁用）；wf2 只需要执行态
+              tasks:
+                args?.id === "wf2"
+                  ? []
+                  : [{ id: "n1", title: "节点一", dependsOn: [] }],
+              attachments: null,
+              clarifyMeta: null,
+            };
+          case "workflow_run":
+            return new Promise((_resolve, reject) => {
+              rejectRun = reject;
+            });
+          case "workflow_is_running":
+            // 新画布 wf2 处于执行态：running=true 是晚到失败不得压掉的状态
+            return args?.workflowId === "wf2";
+          case "bot_get_config":
+            return { modelsByProvider: null };
+          default:
+            return null;
+        }
+      },
+    );
+    renderPage();
+    const select = screen.getByLabelText("切换工作流");
+    await waitFor(() => {
+      expect(
+        within(select).getByRole("option", { name: "工作流二" }),
+      ).toBeInTheDocument();
+    });
+    await user.selectOptions(select, "wf1");
+    // wf1 打开且不脏：执行键就绪
+    await waitFor(() => {
+      expect(screen.getByTestId("exec-bar")).toHaveAttribute(
+        "data-phase",
+        "ready",
+      );
+    });
+    await user.click(screen.getByTestId("exec-bar"));
+    expect(typeof rejectRun).toBe("function"); // workflow_run 已挂起
+    // 切到 wf2：is_running=true → 新画布进入执行态
+    await user.selectOptions(select, "wf2");
+    await waitFor(() => {
+      expect(screen.getByTestId("exec-bar")).toHaveAttribute(
+        "data-phase",
+        "running",
+      );
+    });
+    // wf1 的 run 晚到失败：不得置新画布 running=false，不得误弹错误归属
+    rejectRun(new Error("stale run failed"));
+    await act(async () => {}); // flush：让 catch 分支跑完
+    expect(screen.getByTestId("exec-bar")).toHaveAttribute(
+      "data-phase",
+      "running",
+    );
+    expect(alertSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    // 跳过的失败仍留痕（console），不静默吞掉
+    expect(errSpy).toHaveBeenCalledWith(
+      expect.stringContaining("旧画布开始执行失败"),
+      expect.anything(),
+    );
   });
 });

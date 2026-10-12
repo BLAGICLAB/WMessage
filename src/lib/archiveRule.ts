@@ -48,9 +48,12 @@ export function applyArchiveRule(tasks: Task[]): Task[] {
   const afterMs = archiveDays * 24 * 60 * 60 * 1000;
   return tasks.map((t) => {
     if (t.column !== "done" || t.archived || t.deletedAt) return t;
-    const completedAt = t.completedAt ?? now; // 老数据补完成时间
-    if (now - completedAt >= afterMs)
-      return { ...t, completedAt, archived: true };
-    return t.completedAt === completedAt ? t : { ...t, completedAt };
+    // 缺 completedAt 的遗留 done 卡不参与按完成时间的归档：补当前时间会把
+    // 规则调用时刻伪造成完成时间（调用方持久化返回克隆即成假事实）。与后端
+    // migration 兜底归档同口径：completed_at 缺失即跳过，不归档也不改写；
+    // 已带 completedAt 的卡行为不变（到期归档，未到期原样返回）
+    if (t.completedAt === undefined) return t;
+    if (now - t.completedAt >= afterMs) return { ...t, archived: true };
+    return t;
   });
 }

@@ -129,21 +129,30 @@ export function EvolutionPanel() {
   );
   const [memTotal, setMemTotal] = useState<number | null>(null);
 
+  // 竞态令牌：换筛选/连点刷新时，慢的旧响应不得覆盖新筛选的列表
+  //（镜像 TracePanel detailSeqRef 模式；每次 refresh 开头作废在途响应）
+  const refreshSeqRef = useRef(0);
+
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeqRef.current;
     try {
       const statusArg = filter ?? undefined;
       const p = await invoke<ProposalEntry[]>("evolution_list_proposals", {
         status: statusArg,
       });
+      if (seq !== refreshSeqRef.current) return;
       setProposals(p ?? []);
       const c = await invoke<ChangeRecord[]>("evolution_list_changes");
+      if (seq !== refreshSeqRef.current) return;
       setChanges(c ?? []);
       const ev = await invoke<ProposalEvidence[]>(
         "evolution_proposal_evidence",
       );
+      if (seq !== refreshSeqRef.current) return;
       setEvidence(Object.fromEntries((ev ?? []).map((e) => [e.proposalId, e])));
       setError("");
     } catch (e) {
+      if (seq !== refreshSeqRef.current) return;
       handleCommandError(e, "evolution-panel", { silent: true });
       setError(String(e));
     }

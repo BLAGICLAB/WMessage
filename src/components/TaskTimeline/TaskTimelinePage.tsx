@@ -70,6 +70,15 @@ export function TaskTimelinePage({
   const poolRef = useRef<HTMLElement | null>(null);
   const ghostRef = useRef<HTMLDivElement | null>(null);
   const freshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 拖拽 window 监听生命周期：拖拽中途卸载组件时 abort 统一清掉
+   *  pointermove/pointerup（onUp 内的 removeEventListener 是正常收尾路径，幂等并存） */
+  const dragAbortRef = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      dragAbortRef.current?.abort();
+    },
+    [],
+  );
 
   // 任务池开合：页头开关控制（折叠把手已移除——把手会挡住网格右下的任务块）
   const [poolOpen, setPoolOpen] = useState(loadPoolOpen);
@@ -312,8 +321,12 @@ export function TaskTimelinePage({
       }
     };
 
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    // 挂 signal：卸载 cleanup abort 时两个监听一并移除（正常收尾走 onUp 移除）
+    const ac = new AbortController();
+    dragAbortRef.current = ac;
+
+    window.addEventListener("pointermove", onMove, { signal: ac.signal });
+    window.addEventListener("pointerup", onUp, { signal: ac.signal });
   };
 
   return (

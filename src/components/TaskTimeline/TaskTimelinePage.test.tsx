@@ -210,6 +210,56 @@ describe("TaskTimelinePage", () => {
     expect(pool.style.transform).toBe("translateX(0)");
   });
 
+  it("拖拽中卸载组件：window 拖拽监听被清理（pointermove 不再触发处理，不抛错）", () => {
+    // 包一层注册：记录真实 onMove 的调用次数（卸载后派发事件不得再进入处理）
+    let moveCalls = 0;
+    const originalAdd = window.addEventListener;
+    const addSpy = vi
+      .spyOn(window, "addEventListener")
+      .mockImplementation(function (
+        this: Window,
+        type: string,
+        fn: EventListenerOrEventListenerObject | null,
+        opts?: boolean | AddEventListenerOptions,
+      ) {
+        const target =
+          type === "pointermove" && fn
+            ? function (this: EventTarget, ev: Event) {
+                moveCalls++;
+                (fn as EventListener).call(this, ev);
+              }
+            : fn;
+        // 空监听按规范本就不注册，跳过
+        if (target) originalAdd.call(window, type, target, opts);
+      });
+    try {
+      const { unmount } = render(
+        <TaskTimelinePage
+          tasks={TASKS}
+          onUpdate={vi.fn()}
+          onSetColumn={vi.fn()}
+          onDelete={vi.fn()}
+        />,
+      );
+      const poolItem = within(screen.getByLabelText("任务池")).getByText(
+        "未排期任务乙",
+      );
+      fireEvent.pointerDown(poolItem, { button: 0 });
+      // 拖拽中：move 进入处理（拖拽幽灵渲染）
+      fireEvent.pointerMove(window, { clientX: 1300, clientY: 400 });
+      expect(moveCalls).toBe(1);
+      expect(document.querySelector(".drag-ghost")).not.toBeNull();
+      // 中途卸载 → 捕获的 onMove 不再被调用（监听已清理），派发也不抛错
+      unmount();
+      expect(() =>
+        fireEvent.pointerMove(window, { clientX: 1300, clientY: 400 }),
+      ).not.toThrow();
+      expect(moveCalls).toBe(1);
+    } finally {
+      addSpy.mockRestore();
+    }
+  });
+
   it("editingId 变化：面板打开并聚焦标题（⌘N 新建路径）", () => {
     const { rerender } = render(
       <TaskTimelinePage tasks={TASKS} onUpdate={vi.fn()} onSetColumn={vi.fn()} onDelete={vi.fn()} />,

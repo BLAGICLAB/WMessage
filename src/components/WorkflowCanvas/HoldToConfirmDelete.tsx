@@ -11,7 +11,9 @@
 //! - 反向动画用同一 rAF 回路：phase 切到 "releasing"，从当前 progress 倒推到 0
 //! - 走满→震动→done 的过渡用 window.setTimeout；句柄 ref 跟踪，卸载时清
 //! - 键盘 Enter/Space：单次直接确认（键盘无"持续按住"语义，不强加手势）
-//! - "done" 状态 ~1.2s 后自动复位 idle，给父组件以未卸载时回退的机会
+//! - "done" 状态 ~1.2s 后自动复位 idle——只是视觉复位：确认一次性（触发后
+//!   保持 fired 直到组件卸载），父组件 onConfirm 未决/失败时不得重复触发；
+//!   重试走父级自己的错误处理，重挂载（activeId 变化）才会拿到新的一次确认
 
 import {
   useCallback,
@@ -73,7 +75,9 @@ export function HoldToConfirmDelete({
   const shakeTimerRef = useRef<number | null>(null);
   // 键盘路径的延后触发计时器（无震动窗）
   const keyConfirmTimerRef = useRef<number | null>(null);
-  // 已触发的 onConfirm 引用：避免 done→idle 复位路径里重复触发
+  // 确认一次性标志：onConfirm 触发后保持 true 直到组件卸载（父级 activeId
+  // 变化才重挂载）——done 的 1.2s 视觉复位不回收它，防止父组件 onConfirm
+  // 未决窗口内二次长按/按键重复触发
   const confirmFiredRef = useRef(false);
 
   const cancelRaf = useCallback(() => {
@@ -170,7 +174,7 @@ export function HoldToConfirmDelete({
     // 仅主键（鼠标左键 / 触摸 / 笔）触发——避免右键/中间键
     // 触摸/笔的 button 恒为 0，鼠标右键=2 中键=1，故单一按 button 判断足够
     if (e.button !== 0) return;
-    if (phaseRef.current === "done") return; // done 态期间不重开
+    if (phaseRef.current === "done" || confirmFiredRef.current) return; // 已确认/确认中不重开
     // 防止文字被选中 / 滚动
     e.preventDefault();
     try {
@@ -228,13 +232,13 @@ export function HoldToConfirmDelete({
     }
   }, [disabled, cancelRaf, clearShakeTimer]);
 
-  // done 状态展示 DONE_HOLD_MS 后复位 idle
+  // done 状态展示 DONE_HOLD_MS 后复位 idle——只复位视觉态；confirmFiredRef
+  // 不随墙钟回收（确认一次性，见其声明处注释），卸载即整体回收
   useEffect(() => {
     if (phase !== "done") return;
     const t = window.setTimeout(() => {
       setPhase("idle");
       setProgress(0);
-      confirmFiredRef.current = false;
     }, DONE_HOLD_MS);
     return () => window.clearTimeout(t);
   }, [phase]);

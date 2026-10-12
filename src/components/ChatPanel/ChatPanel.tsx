@@ -276,6 +276,27 @@ export function ChatPanel({
     );
   };
 
+  /** 历史行 JSON 列安全解析：损坏数据（旧版本写入/库被手改）不得炸掉整个
+   *  会话加载——该字段按缺失处理，console.error 留痕（带字段名/行序/会话）定位 */
+  const parseHistoryJson = <T,>(
+    raw: string | null | undefined,
+    field: string,
+    rowIdx: number,
+    sid: string | null,
+  ): T[] | undefined => {
+    if (!raw) return undefined;
+    try {
+      const v = JSON.parse(raw) as T[];
+      return Array.isArray(v) ? v : undefined;
+    } catch (e) {
+      console.error(
+        `[chat] 历史行 ${field} 解析失败（会话 ${sid ?? "?"} 第 ${rowIdx + 1} 行），按缺失处理:`,
+        e,
+      );
+      return undefined;
+    }
+  };
+
   /** 历史行 → 消息（回填思考/工具折叠行） */
   const rowsToMsgs = (
     rows: {
@@ -285,13 +306,14 @@ export function ChatPanel({
       thinking?: string | null;
       toolsJson?: string | null;
     }[],
+    sid?: string | null,
   ): Msg[] =>
-    rows.map((r) => ({
+    rows.map((r, i) => ({
       role: r.role === "user" ? "user" : "assistant",
       content: r.content,
-      refs: r.refsJson ? (JSON.parse(r.refsJson) as TaskRef[]) : undefined,
+      refs: parseHistoryJson<TaskRef>(r.refsJson, "refsJson", i, sid ?? null),
       thinking: r.thinking ?? undefined,
-      tools: r.toolsJson ? (JSON.parse(r.toolsJson) as ToolCall[]) : undefined,
+      tools: parseHistoryJson<ToolCall>(r.toolsJson, "toolsJson", i, sid ?? null),
     }));
 
   // 挂载：加载会话列表（空则新建一个），选中最近更新的会话并恢复其消息
@@ -326,7 +348,7 @@ export function ChatPanel({
         // 历史加载期间用户已切走（如 ⌘K 跨窗口跳会话）：过期历史不得盖掉新会话视图
         if (sessionIdRef.current !== cur.id) return;
         if (rows?.length) {
-          setMessages(rowsToMsgs(rows));
+          setMessages(rowsToMsgs(rows, cur.id));
         }
       } catch (e) {
         handleCommandError(e, "chat init", { silent: true });
@@ -752,7 +774,7 @@ export function ChatPanel({
       // 围观期间用户已切走：丢弃过期历史，防旧会话消息刷进当前视图
       if (sessionIdRef.current !== sid) return;
       setMessages([
-        ...rowsToMsgs(rows),
+        ...rowsToMsgs(rows, sid),
         { role: "assistant", content: "", streaming: true },
       ]);
     } catch (e) {
@@ -804,7 +826,7 @@ export function ChatPanel({
               load
                 .then((rows) => {
                   if (sessionIdRef.current === sid)
-                    setMessages(rowsToMsgs(rows));
+                    setMessages(rowsToMsgs(rows, sid ?? undefined));
                 })
                 .catch(() => {});
               // 独立订阅清守卫：先 catch 再 finally，避免 finally 链 unhandled rejection
@@ -941,7 +963,7 @@ export function ChatPanel({
         >("bot_history_load", { sessionId: sid });
         // 等待期间用户已切到别的会话：丢弃过期响应（后到的慢响应不得盖掉新会话的加载结果）
         if (sessionIdRef.current !== sid) return;
-        let msgs = rowsToMsgs(rows);
+        let msgs = rowsToMsgs(rows, sid);
         // 切回正在回复的会话：补一个流式占位气泡承接后续增量（已错过的增量段
         // 由收尾 full.text 整体校正，不会串进其他会话）
         if (inflightRef.current.has(sid)) {
@@ -1014,6 +1036,13 @@ export function ChatPanel({
         next.delete(sid);
         return next;
       });
+      // 水位累计与草稿/附件同族：被删会话的条目一并清掉，防内存积攒
+      //（也防同 id 会话重建后误继承旧水位）
+      setSessionUsage((prev) => {
+        const next = { ...prev };
+        delete next[sid];
+        return next;
+      });
       if (sid === sessionId) {
         // 删的是当前会话：切到剩余第一个；没有则新建
         if (rest.length) {
@@ -1032,7 +1061,7 @@ export function ChatPanel({
           >("bot_history_load", { sessionId: targetSid });
           // 等待期用户已切走：丢弃过期历史，防旧会话消息刷进新视图
           if (sessionIdRef.current !== targetSid) return;
-          setMessages(rowsToMsgs(rows));
+          setMessages(rowsToMsgs(rows, targetSid));
         } else {
           // await 前记基线：创建期间用户已切走（如 chat-focus-session）则放弃
           // 抢占视图——新建结果不强行切屏

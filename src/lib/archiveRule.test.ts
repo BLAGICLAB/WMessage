@@ -123,12 +123,23 @@ describe("applyArchiveRule", () => {
     ]);
   });
 
-  it("老数据缺 completedAt：补当前时间（不立即归档）", () => {
+  it("老数据缺 completedAt：不伪造完成时间、不归档（原样返回同一引用）", () => {
     setArchiveAfterDays(7);
-    const next = applyArchiveRule([
-      { id: "old", title: "老卡", column: "done" },
-    ]);
-    expect(next[0].completedAt).toBeTypeOf("number");
+    const legacy: Task = { id: "old", title: "老卡", column: "done" };
+    const next = applyArchiveRule([legacy]);
+    expect(next[0]).toBe(legacy); // 原样返回：不被补时间，也不会被调用方落盘
+    expect(next[0].completedAt).toBeUndefined();
     expect(next[0].archived).toBeUndefined();
+  });
+
+  it("已带 completedAt 的卡行为不变：未到期原样返回，到期归档且完成时间保持原值", () => {
+    setArchiveAfterDays(7);
+    const now = Date.now();
+    const recent = doneTask(now - 2 * day);
+    const due = doneTask(now - 8 * day);
+    const next = applyArchiveRule([recent, due]);
+    expect(next[0]).toBe(recent);
+    expect(next[1].archived).toBe(true);
+    expect(next[1].completedAt).toBe(due.completedAt);
   });
 });

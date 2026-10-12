@@ -357,13 +357,18 @@ export default function WidgetApp() {
       const pos = await win.outerPosition();
       const size = await win.outerSize();
       const scale = await win.scaleFactor();
-      const { w: sw } = await screenSize();
+      const { w: sw, h: sh } = await screenSize();
       const x = pos.x / scale;
       const y = pos.y / scale;
       const w = size.width / scale;
-      const anchor = anchorFromRect(x, y, w, sw);
+      const h = size.height / scale;
+      // y 先钳回屏内（clampedY；同挂载恢复口径：按窗口自身高度收口、无额外
+      // 边距）——拖出屏底后吸附只修正 x（右/左贴边）或 ny=0（顶边），悬浮
+      // 会把整窗留在屏外；ny 与原始 y 比较才能检出差值并落 setPosition
+      const clampedY = Math.min(Math.max(y, 0), Math.max(0, sh - h));
+      const anchor = anchorFromRect(x, clampedY, w, sw);
       let nx = x;
-      let ny = y;
+      let ny = clampedY;
       if (anchor.edge === "right") nx = sw - w;
       else if (anchor.edge === "left") nx = 0;
       else if (anchor.edge === "top") ny = 0;

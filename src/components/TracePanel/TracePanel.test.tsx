@@ -1,6 +1,6 @@
 // TracePanel 组件测试：mock trace 命令，覆盖摘要头/时间线/diff 着色/回滚。
 // invoke mock 模式对齐 ArchivePage.test.tsx（vi.mock("@tauri-apps/api/core")）。
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const invokeMock = vi.fn();
@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { DiffView } from "./DiffView";
 import { TracePanel } from "./TracePanel";
 import type { TraceDetail, TraceRow } from "../../lib/trace";
+import type { WorkflowAuditEntry } from "../../lib/workflowAudit";
 
 const TRACE: TraceRow = {
   id: 7,
@@ -169,5 +170,49 @@ describe("TracePanel", () => {
     await waitFor(() =>
       expect(screen.getByText(/还没有执行痕迹/)).toBeTruthy(),
     );
+  });
+
+  it("审计刷新乱序：慢的旧响应不覆盖新结果（auditSeqRef 守卫）", async () => {
+    const entry = (id: number, trigger: string): WorkflowAuditEntry => ({
+      id,
+      workflowId: "wf1",
+      runStartedAt: 0,
+      nodeTaskId: null,
+      kind: "run_start",
+      level: "info",
+      payload: { trigger },
+      createdAt: Date.now(),
+    });
+    // 按调用顺序挂起 workflow_audit_list 响应：模拟重复刷新时旧响应后到
+    const gates: Array<(v: WorkflowAuditEntry[]) => void> = [];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "trace_list") return Promise.resolve([TRACE]);
+      if (cmd === "trace_detail") return Promise.resolve(DETAIL);
+      if (cmd === "workflow_audit_list")
+        return new Promise<WorkflowAuditEntry[]>((resolve) =>
+          gates.push(resolve),
+        );
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+    render(<TracePanel taskId="t1" workflowId="wf1" onClose={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByText(/3 轮 · 2 次工具 · 1 个文件/)).toBeTruthy(),
+    );
+    // 进审计页签（响应挂起）→ 再点一次刷新（第二个响应也挂起）
+    fireEvent.click(screen.getByText("运行审计"));
+    await waitFor(() => expect(screen.getByText("加载中…")).toBeTruthy());
+    fireEvent.click(screen.getByText("运行审计"));
+    expect(gates.length).toBe(2);
+    // 新响应先到并渲染
+    await act(async () => {
+      gates[1]([entry(2, "新的")]);
+    });
+    expect(await screen.findByText(/触发 新的/)).toBeTruthy();
+    // 旧响应后到：不得覆盖新结果
+    await act(async () => {
+      gates[0]([entry(1, "旧的")]);
+    });
+    expect(screen.getByText(/触发 新的/)).toBeTruthy();
+    expect(screen.queryByText(/触发 旧的/)).toBeNull();
   });
 });

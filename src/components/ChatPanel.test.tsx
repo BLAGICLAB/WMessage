@@ -1037,6 +1037,124 @@ describe("ChatPanel", () => {
     }
   });
 
+  it("删除会话后清掉该会话的水位累计（sessionUsage 条目随会话删除）", async () => {
+    const user = userEvent.setup();
+    const listeners = new Map<string, (e: { payload: unknown }) => void>();
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        listeners.set(event, cb);
+        return () => {};
+      },
+    );
+    let releaseChat!: (v: { text: string; taskRefs: [] }) => void;
+    const chatGate = new Promise<{ text: string; taskRefs: [] }>((r) => {
+      releaseChat = r;
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [
+          { id: "s1", title: "默认会话" },
+          { id: "s2", title: "另一个" },
+        ];
+      if (cmd === "bot_chat") return chatGate;
+      // 新建会话返回与被删会话相同的 id：模拟观测面上 id 复用，
+      // 让「水位条目未清理」变成可见回归（新会话继承旧水位）
+      if (cmd === "bot_session_create") return { id: "s2", title: "复生会话" };
+      return defaultInvoke(cmd);
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findByText("默认会话");
+      // 切到 s2 发消息（挂起 → inflight），推一轮 usage → 水位条出现
+      await user.click(screen.getByTitle("切换会话"));
+      await user.click(await screen.findByText("另一个"));
+      const input = screen.getByPlaceholderText(/和机器人说点什么/);
+      await user.type(input, "你好");
+      await user.keyboard("{Enter}");
+      await act(async () => {
+        listeners.get("bot-usage-delta")?.({
+          payload: { sessionId: "s2", inputTokens: 100, outputTokens: 50 },
+        });
+      });
+      expect(screen.getByText(/Σ 150/)).toBeInTheDocument();
+      // 回复收尾（解除 inflight），切回 s1 后删除 s2
+      await act(async () => {
+        releaseChat({ text: "回复A", taskRefs: [] });
+      });
+      await screen.findByText("回复A");
+      await user.click(screen.getByTitle("切换会话"));
+      await user.click(await screen.findByText("默认会话"));
+      await user.click(screen.getByTitle("切换会话"));
+      const s2Row = screen.getByText("另一个").closest("div");
+      await user.click(within(s2Row!).getByTitle("删除此对话"));
+      await waitFor(() => {
+        expect(
+          mocks.invokeMock.mock.calls.some(
+            (c) => c[0] === "bot_session_delete",
+          ),
+        ).toBe(true);
+      });
+      // 菜单仍开：新建对话（id 复用 s2）→ 陈旧水位不得泄漏进新会话
+      await user.click(screen.getByText("新建对话"));
+      await screen.findByText("复生会话");
+      expect(screen.queryByText(/Σ 150/)).toBeNull();
+    } finally {
+      mocks.listenMock.mockImplementation(async () => () => {});
+    }
+  });
+
+  it("历史行 refsJson 损坏不抛错：该字段按缺失处理，其余消息照常渲染", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return [
+          {
+            role: "user",
+            content: "损坏引用的问题",
+            refsJson: "{oops-not-json",
+            thinking: null,
+            toolsJson: null,
+          },
+          {
+            role: "assistant",
+            content: "引用也损坏的回答",
+            refsJson: "[{truncated",
+            thinking: null,
+            toolsJson: null,
+          },
+          {
+            role: "assistant",
+            content: "正常回答",
+            refsJson: '[{"id":"t1","title":"引用任务"}]',
+            thinking: null,
+            toolsJson: null,
+          },
+        ];
+      return defaultInvoke(cmd);
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      // 损坏行不炸整个会话加载：三条消息都渲染出来
+      expect(await screen.findByText("损坏引用的问题")).toBeInTheDocument();
+      expect(screen.getByText("引用也损坏的回答")).toBeInTheDocument();
+      expect(screen.getByText("正常回答")).toBeInTheDocument();
+      // 损坏字段按缺失处理（不出引用按钮）；同批合法 refsJson 行为不变（照常出引用）
+      expect(screen.queryByTitle("打开任务：引用也损坏的回答")).toBeNull();
+      expect(
+        screen.getByTitle("打开任务：引用任务"),
+      ).toBeInTheDocument();
+      // 留痕：解析失败打了带字段标识的错误日志
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("refsJson 解析失败"),
+        expect.anything(),
+      );
+    } finally {
+      errorSpy.mockRestore();
+      mocks.invokeMock.mockImplementation(defaultInvoke);
+    }
+  });
+
   it("点选模型调用 bot_set_active_model（窄口径）并广播同步", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(defaultInvoke);

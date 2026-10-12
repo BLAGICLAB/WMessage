@@ -170,6 +170,41 @@ describe("EvolutionPanel", () => {
     });
   });
 
+  it("换筛选后慢的旧筛选响应不覆盖新列表（乱序丢弃）", async () => {
+    const pAll = mkProposal("p-all", { suggestion_text: "全量提案" });
+    const pPooled = mkProposal("p-pool", { suggestion_text: "候选提案" });
+    // 按 status 参数挂起响应：模拟旧筛选响应晚于新筛选响应到达
+    const gates = new Map<string, (v: ProposalEntry[]) => void>();
+    invokeMock.mockImplementation(
+      (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "evolution_list_proposals") {
+          const key = String(args?.status ?? "all");
+          return new Promise<ProposalEntry[]>((resolve) =>
+            gates.set(key, resolve),
+          );
+        }
+        if (cmd === "evolution_list_changes") return [];
+        return null;
+      },
+    );
+    render(<EvolutionPanel />);
+    await waitFor(() => expect(gates.has("all")).toBe(true));
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "候选" })[0]);
+    await waitFor(() => expect(gates.has("pooled")).toBe(true));
+    // 新筛选的响应先到并渲染
+    await act(async () => {
+      gates.get("pooled")!([pPooled]);
+    });
+    expect(await screen.findByText("候选提案")).toBeInTheDocument();
+    // 旧筛选（全量）的慢响应后到：不得覆盖新筛选列表
+    await act(async () => {
+      gates.get("all")!([pAll]);
+    });
+    expect(screen.getByText("候选提案")).toBeInTheDocument();
+    expect(screen.queryByText("全量提案")).toBeNull();
+  });
+
   it("calls evolution_promote_proposal on Promote click", async () => {
     const p = mkProposal("p-promo", { status: "pooled" });
     invokeMock.mockImplementation((cmd: string) => {

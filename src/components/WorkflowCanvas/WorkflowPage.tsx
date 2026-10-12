@@ -705,8 +705,14 @@ function WorkflowPageInner({
       if (seq !== openSeqRef.current) return;
       setRunning(true);
     } catch (e) {
-      setRunning(false);
-      handleCommandError(e, "开始执行", { onRetry: () => void startRun() });
+      // seq 守卫：执行期间用户新建/切换画布时，晚到的失败响应只留痕——
+      // 不得压掉新画布的 running 态，也不得把错误弹窗归属到新画布
+      if (seq !== openSeqRef.current) {
+        console.error("[workflow] 旧画布开始执行失败（已切换，忽略）", e);
+      } else {
+        setRunning(false);
+        handleCommandError(e, "开始执行", { onRetry: () => void startRun() });
+      }
     } finally {
       startBusyRef.current = false;
     }

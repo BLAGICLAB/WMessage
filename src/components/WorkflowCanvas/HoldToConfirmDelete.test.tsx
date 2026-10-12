@@ -160,6 +160,28 @@ describe("HoldToConfirmDelete 长按流程", () => {
     // onConfirm 仍只触发一次
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
+
+  it("确认触发 1.2s 复位 idle 后，二次长按/按键均不再触发 onConfirm（确认一次性）", async () => {
+    const onConfirm = vi.fn();
+    render(<HoldToConfirmDelete onConfirm={onConfirm} />);
+    const btn = screen.getByTestId("hold-confirm-delete");
+    fireEvent.pointerDown(btn, { button: 0, pointerId: 1 });
+    await advance(HOLD_MS);
+    await advance(360 + 80);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    // done 展示窗结束 → 视觉复位 idle，但确认标志不回收
+    await advance(1300);
+    expect(btn).toHaveAttribute("data-phase", "idle");
+    // 二次长按：不进入 pressing（不假装可以再确认），走满也不触发
+    fireEvent.pointerDown(btn, { button: 0, pointerId: 2 });
+    expect(btn).toHaveAttribute("data-phase", "idle");
+    await advance(HOLD_MS + 360 + 80);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    // 键盘路径同样被一次性标志拦下
+    fireEvent.keyDown(btn, { key: "Enter" });
+    await advance(200);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("HoldToConfirmDelete 键盘可达", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TodoCard, TodoCardView } from "./TodoCard";
 import type { Task } from "../types";
@@ -379,6 +379,105 @@ describe("TodoCardView 多文件绑定", () => {
     expect(call[1].files).toHaveLength(10);
     expect(alertSpy).toHaveBeenCalled();
     alertSpy.mockRestore();
+  });
+
+  it("pickFile 对话框挂起期间 task.files 被并发改动：合并基线取最新，两批文件都不丢", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    // 挂起 open：点击「＋」后停在对话框，模拟用户选文件期间别处（另一窗口/机器人）动了绑定
+    let releaseOpen!: (v: string[]) => void;
+    vi.mocked(open).mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          releaseOpen = resolve;
+        }) as never,
+    );
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { path: "/docs/new.txt", isDir: false },
+    ] as never);
+    const before: Task = {
+      ...baseTask,
+      files: [{ path: "/docs/a.pdf", isDir: false }],
+    };
+    const { rerender } = render(
+      <TodoCardView task={before} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
+    await user.click(screen.getByTitle("继续绑定文件"));
+    // 对话框挂起期间：并发进来一个绑定（task.files 多了 concurrent.txt）
+    rerender(
+      <TodoCardView
+        task={{
+          ...before,
+          files: [
+            { path: "/docs/a.pdf", isDir: false },
+            { path: "/docs/concurrent.txt", isDir: false },
+          ],
+        }}
+        onUpdate={onUpdate}
+        onDelete={vi.fn()}
+      />,
+    );
+    // 放行对话框 → bind_files → 合并
+    await act(async () => {
+      releaseOpen(["/docs/new.txt"]);
+    });
+    const call = onUpdate.mock.calls[0];
+    expect(call[0]).toBe("t1");
+    // 点击时的快照（只有 a.pdf）不得当基线：并发批 concurrent.txt 必须保留
+    expect(call[1].files).toEqual([
+      { path: "/docs/a.pdf", isDir: false },
+      { path: "/docs/concurrent.txt", isDir: false },
+      { path: "/docs/new.txt", isDir: false },
+    ]);
+  });
+
+  it("pickFolder 对话框挂起期间 task.files 被并发改动：isDir 复查与合并都取最新，两批文件都不丢", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    let releaseOpen!: (v: string) => void;
+    vi.mocked(open).mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          releaseOpen = resolve;
+        }) as never,
+    );
+    const before: Task = {
+      ...baseTask,
+      files: [{ path: "/docs/a.pdf", isDir: false }],
+    };
+    const { rerender } = render(
+      <TodoCardView task={before} onUpdate={onUpdate} onDelete={vi.fn()} />,
+    );
+    await user.click(screen.getByTitle("绑定文件夹"));
+    // 对话框挂起期间：并发绑进一个文件（文件夹与文件不互斥，不拦）
+    rerender(
+      <TodoCardView
+        task={{
+          ...before,
+          files: [
+            { path: "/docs/a.pdf", isDir: false },
+            { path: "/docs/concurrent.txt", isDir: false },
+          ],
+        }}
+        onUpdate={onUpdate}
+        onDelete={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      releaseOpen("/some/dir");
+    });
+    const call = onUpdate.mock.calls[0];
+    // 陈旧基线（只有 a.pdf）会丢掉 concurrent.txt；文件夹追加在后
+    expect(call[1].files).toEqual([
+      { path: "/docs/a.pdf", isDir: false },
+      { path: "/docs/concurrent.txt", isDir: false },
+      { path: "/some/dir", isDir: true },
+    ]);
+    expect(call[1].filePath).toBe("/docs/a.pdf");
+    expect(call[1].fileIsDir).toBe(false);
   });
 
   it("chip 内「复制」字样：逐文件调 copy_file_with_title（2026-08-26 起替代 📋 按钮）", async () => {

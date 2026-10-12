@@ -318,13 +318,22 @@ export function TracePanel({
   }, [taskId, traceId]);
 
   // 运行审计按需加载（切到审计页签才拉，非工作流卡不拉）
+  // 竞态令牌：重复刷新审计时，慢的旧响应不得覆盖新结果（镜像 detailSeqRef）
+  const auditSeqRef = useRef(0);
   const loadAudit = () => {
     if (!workflowId) return;
+    const seq = ++auditSeqRef.current;
     setAuditErr(null);
     setAuditRows(null); // 清旧 rows，防失败时旧数据与新报错并存
     listWorkflowAudit(workflowId, 300)
-      .then(setAuditRows)
-      .catch((e) => setAuditErr(String(e)));
+      .then((rows) => {
+        if (seq !== auditSeqRef.current) return;
+        setAuditRows(rows);
+      })
+      .catch((e) => {
+        if (seq !== auditSeqRef.current) return;
+        setAuditErr(String(e));
+      });
   };
 
   const statusOf = (t: TraceRow | null) =>
