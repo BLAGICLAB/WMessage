@@ -10,14 +10,14 @@ export function DoneCircle({
   done: boolean;
   onToggle: () => void;
   title?: string;
-  /** 缺省 20（历史调用方不变）；周网格计划块按块高给 24/18/14 */
+  /** 视觉直径，缺省 20；小尺寸（如计划块 12px）时点击热区由 .done-circle::after 扩展 */
   size?: number;
 }) {
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   return (
     <button
       type="button"
-      className={`shrink-0 rounded-full nm-inset flex items-center justify-center text-xs leading-none ${
+      className={`done-circle shrink-0 rounded-full nm-inset relative flex items-center justify-center text-xs leading-none ${
         done
           ? "text-[var(--success)]"
           : "text-transparent hover:text-[var(--t5)]"

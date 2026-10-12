@@ -217,7 +217,7 @@
     v1 的「右上角锚点 + 聚合条 + 浮层」全部废弃。v2 严格按你的五点：
     <b>① 卡首行头像居左、对勾居右（顶部留 4px），标题另起一行</b>；
     <b>② 标题行数随块高自适应，最长 6 行</b>；<b>③ 双卡重叠延用半区并显</b>；
-    <b>④ 3+ 重叠第 3 张起只显头像 + 对勾（上下排列、大小随块），前两张完整半区，无任何浮层</b>；
+    <b>④ 3+ 重叠整簇塌缩：所有卡只显头像 + 对勾（上下排列、大小随块），无任何浮层</b>；
     <b>⑤ 完成原位保留，文字不加删除线</b>。三点补充（矮块同行退化 / 时间只显时长 / 第 3 张起塌缩）已拍板，见 §5。
   </p>
 
@@ -326,7 +326,7 @@
     <h2>§ 2 双卡重叠 · 延用半区并显 <span class="tag">lanes = 2</span></h2>
     <p class="why">
       方案延用 v1：两卡各占一半宽度并排，标题 2 行、时间只显时长「N 小时」。
-      头像/对勾为 <b>v2 的新首行布局</b>（头像左、对勾右，10px）。
+      头像/对勾为 <b>v2 的新首行布局</b>（头像左、对勾右，12px 视觉 + 22px 点击热区）。
     </p>
     <div class="scene">
       <div class="scene-label"><span class="pill">周四</span><span>10:00 – 12:00 · 列宽真实 1:1</span></div>
@@ -360,15 +360,15 @@
 
   <!-- ═══════ §3 3+ 重叠：只留头像 + 对勾 ═══════ -->
   <section class="sec">
-    <h2>§ 3 超过 2 个任务卡 · 第 3 张起塌缩 <span class="tag">已拍板 · 无浮层</span></h2>
+    <h2>§ 3 超过 2 个任务卡 · 整簇塌缩 <span class="tag">已拍板 · 无浮层</span></h2>
     <p class="why">
-      <b>已拍板</b>：同簇 3 卡以上，<b>前两张保持完整半区卡</b>（新首行布局），
-      <b>第 3 张（lane ≥ 2）起塌缩</b>为头像（上）+ 对勾（下）上下排列，尺寸随块高
-      （高块 16px / 中块 12px / 矮块 10px），无标题无时间；点塌缩卡身仍开详情面板看标题。
+      <b>已拍板（真机复验后修订）</b>：第三卡进入同一时间时，<b>该时段所有卡整簇塌缩</b>为
+      头像（上）+ 对勾（下）上下排列，尺寸随块高（高块 16px / 中块 12px / 矮块 10px），
+      无标题无时间；点塌缩卡身仍开详情面板看标题；对勾 12px 视觉 + 22px 点击热区。
       v1 的聚合条、浮层、×N 徽章全部废弃。下图为同时段 4 个任务的真实并排形态：
     </p>
     <div class="scene">
-      <div class="scene-label"><span class="pill">周五</span><span>14:00 – 15:00 · 同时段 4 个任务 · 列宽真实 1:1</span></div>
+      <div class="scene-label"><span class="pill">周五</span><span>14:00 – 15:00 · 同时段 4 个任务 · 整簇塌缩 · 列宽真实 1:1</span></div>
       <div class="gridwrap" style="height: 300px; grid-template-columns: 44px 260px;">
         <div class="axis">
           <span style="top:0%">14:00</span><span style="top:33.3%">14:30</span><span style="top:66.6%">15:00</span>
@@ -376,42 +376,25 @@
         <div class="day">
           <div class="hline" style="top:0%"></div><div class="hline" style="top:33.3%"></div>
           <div class="hline" style="top:66.6%"></div><div class="hline" style="top:100%"></div>
-          <!-- 前两张：完整半区卡 -->
-          <div class="blk narrow" style="--c: var(--plan-blue); left:5px; width: calc(50% - 8px); top:2%; height:185px;">
+          <div class="blk stack s-lg" style="--c: var(--plan-blue); left:5px; width: calc(25% - 8px); top:2%; height:185px;">
             <div class="bar">
               <span class="av">我</span>
               <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
             </div>
-            <div class="t" style="-webkit-line-clamp:2">审计分诊账本</div>
-            <div class="tm num">1 小时</div>
           </div>
-          <div class="blk narrow" style="--c: var(--plan-teal); left: calc(50% + 3px); width: calc(50% - 8px); top:2%; height:185px;">
+          <div class="blk stack s-lg" style="--c: var(--plan-teal); left: calc(25% + 2px); width: calc(25% - 8px); top:2%; height:185px;">
             <div class="bar">
               <span class="av bot">🤖</span>
               <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
             </div>
-            <div class="t" style="-webkit-line-clamp:2">bot 跑回归</div>
-            <div class="tm num">1 小时</div>
           </div>
-        </div>
-      </div>
-      <p class="why" style="margin-top:14px;">
-        第 3、4 张的塌缩形态（实际网格中四张并排各占 1/4 栏，此处放大单看）：
-      </p>
-      <div class="gridwrap" style="height: 300px; grid-template-columns: 44px 260px;">
-        <div class="axis">
-          <span style="top:0%">14:00</span><span style="top:33.3%">14:30</span><span style="top:66.6%">15:00</span>
-        </div>
-        <div class="day">
-          <div class="hline" style="top:0%"></div><div class="hline" style="top:33.3%"></div>
-          <div class="hline" style="top:66.6%"></div><div class="hline" style="top:100%"></div>
-          <div class="blk stack s-lg" style="--c: var(--plan-amber); left:5px; width: calc(50% - 8px); top:2%; height:185px;">
+          <div class="blk stack s-lg" style="--c: var(--plan-amber); left: calc(50% + 0px); width: calc(25% - 6px); top:2%; height:185px;">
             <div class="bar">
               <span class="av">A</span>
               <button class="done"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
             </div>
           </div>
-          <div class="blk stack s-lg" style="--c: var(--plan-green); left: calc(50% + 3px); width: calc(50% - 8px); top:2%; height:185px;">
+          <div class="blk stack s-lg" style="--c: var(--plan-green); left: calc(75% - 2px); width: calc(25% - 6px); top:2%; height:185px;">
             <div class="bar">
               <span class="av">L</span>
               <button class="done on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></button>
@@ -420,8 +403,9 @@
         </div>
       </div>
     </div>
+    </div>
     <p class="why" style="margin-top:14px;">
-      <b>矮块下的塌缩</b>（30 分钟同时段挤 3 个）：块高只有 ~44px，头像 + 对勾缩到 14px 仍上下排。
+      <b>矮块下的塌缩</b>（30 分钟同时段挤 3 个）：块高只有 ~44px，头像 + 对勾缩到 10px 仍上下排。
     </p>
     <div class="scene">
       <div class="scene-label"><span class="pill">周五</span><span>16:00 – 16:30 · 同时段 3 个任务 · 矮块 · 列宽真实 1:1</span></div>
@@ -509,8 +493,8 @@
         </tr>
         <tr>
           <td class="k">3+ 重叠塌缩范围</td>
-          <td class="v">第 3 张起才塌缩——前两张保持完整半区卡，第 3 张（lane ≥ 2）起
-              只显头像 + 对勾上下排列，无浮层。</td>
+          <td class="v">真机复验后修订：<b>整簇塌缩</b>——第三卡进入同一时间时，该时段
+              所有卡都只显头像 + 对勾上下排列（各保持 1/N 分栏），无浮层。</td>
         </tr>
       </tbody>
     </table>

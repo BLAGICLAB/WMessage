@@ -140,8 +140,7 @@ export function WeekGrid({
                 .map((s) => ({ ...s, task: t })),
             ),
           );
-          // 重叠簇内分组：lanes ≥ 3 时第 3 张（lane ≥ 2）起塌缩为头像 + 对勾，
-          // 前两张保持完整卡并按半区均分（lanes 覆盖为 2）
+          // 重叠簇内分组：lanes ≥ 3 时整簇塌缩为头像 + 对勾（所有卡），保持各自分栏几何
           const clusters = new Map<number, typeof segs>();
           for (const s of segs) {
             const g = clusters.get(s.cluster);
@@ -199,14 +198,10 @@ export function WeekGrid({
                   aria-hidden
                 />
               )}
-              {[...clusters.values()].flatMap((group) => {
-                if (group[0].lanes < 3) return group.map((s) => blk(s));
-                const visible = group.filter((s) => s.lane <= 1).map((s) => ({ ...s, lanes: 2 }));
-                return [
-                  ...visible.map((s) => blk(s)),
-                  ...group.filter((s) => s.lane > 1).map((s) => blk(s, true)),
-                ];
-              })}
+              {[...clusters.values()].flatMap((group) =>
+                // lanes ≥ 3：整簇塌缩（所有卡只显头像 + 对勾），不是只有第 3 张
+                group.map((s) => blk(s, group[0].lanes >= 3)),
+              )}
               {isToday && nowInWindow && (
                 <div className="week-nowline" style={{ top: `${((nowMin - 480) / 600) * 100}%` }}>
                   <span className="week-nowlab num">现在 {String(now.getHours()).padStart(2, "0")}:{String(now.getMinutes()).padStart(2, "0")}</span>

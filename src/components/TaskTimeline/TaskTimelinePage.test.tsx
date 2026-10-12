@@ -150,7 +150,7 @@ describe("TaskTimelinePage", () => {
     expect(jia.textContent).toContain("1 小时");
   });
 
-  it("同簇 3+ 重叠：前两张完整半区，第 3 张起塌缩为头像 + 对勾（无标题无时间）", () => {
+  it("同簇 3+ 重叠：整簇塌缩（所有卡只显头像 + 对勾，无标题无时间），保持分栏几何", () => {
     const four = [
       mk({ id: "s1", title: "重叠甲", planStart: dt(day(3), "10:00"), planEnd: dt(day(3), "11:00") }),
       mk({ id: "s2", title: "重叠乙", planStart: dt(day(3), "10:00"), planEnd: dt(day(3), "11:00") }),
@@ -161,13 +161,13 @@ describe("TaskTimelinePage", () => {
     const gridText = [...document.querySelectorAll(".plan-blk")]
       .map((el) => el.textContent)
       .join();
-    expect(gridText).toContain("重叠甲");
-    expect(gridText).toContain("重叠乙");
+    expect(gridText).not.toContain("重叠甲");
+    expect(gridText).not.toContain("重叠乙");
     expect(gridText).not.toContain("重叠丙");
     expect(gridText).not.toContain("重叠丁");
-    // 塌缩块：头像 + 对勾上下排（plan-stack-bar），无标题无时间
+    // 全部 4 张都塌缩：头像 + 对勾上下排（plan-stack-bar），无标题无时间
     const stacks = document.querySelectorAll(".plan-blk.plan-stack");
-    expect(stacks.length).toBe(2);
+    expect(stacks.length).toBe(4);
     for (const st of stacks) {
       expect(st.querySelector(".plan-stack-bar")).not.toBeNull();
       expect(st.querySelector(".plan-blk-title")).toBeNull();

@@ -1326,6 +1326,13 @@
     opacity: 0.68;
     filter: saturate(0.35);
   }
+  /* 小尺寸对勾的点击热区：视觉 12px、可点 ~22px，扩展区不占布局 */
+  .done-circle::after {
+    content: "";
+    position: absolute;
+    inset: -5px;
+    border-radius: 999px;
+  }
   /* 落点吸附虚线框（批 3 拖拽反馈） */
   .plan-slot {
     position: absolute;

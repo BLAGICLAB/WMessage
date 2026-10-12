@@ -62,7 +62,7 @@ export function PlanBlockView({
       done={done}
       onToggle={toggle}
       title={done ? "恢复待办" : "标记完成"}
-      size={stack ? stack.size : 10}
+      size={stack ? stack.size : 12}
     />
   );
   const tip = useHoverTitleTip();
@@ -102,14 +102,14 @@ export function PlanBlockView({
         </div>
       ) : thin ? (
         <>
-          <ActorAvatar bot={bot} size={10} />
+          <ActorAvatar bot={bot} size={12} />
           <div className="plan-blk-title">{task.title}</div>
           {doneBtn}
         </>
       ) : (
         <>
           <div className="plan-topbar">
-            <ActorAvatar bot={bot} size={10} />
+            <ActorAvatar bot={bot} size={12} />
             {doneBtn}
           </div>
           <div className="plan-blk-title" data-rows={rows}>
