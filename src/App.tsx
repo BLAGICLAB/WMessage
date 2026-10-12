@@ -482,8 +482,13 @@ function App() {
         // 失败行仍留在库中，下次 db_load 自愈回来
         console.error("[mutate] deleteTaskRows failed", e);
       }
-      tasksRef.current = next;
-      setTasks(next);
+      // 快照必须存「已落库」的行：diffTaskRows 给变更行打了新 updatedAt（= DB 真值），
+      // next 里还是旧值——不换的话同一行第二次整行写的基线必落后于库，
+      // RMW 守卫拒写（生成子任务卡 → × 实测复现的写冲突根因）
+      const stamped = new Map(upserts.map((u) => [u.id, u]));
+      const persisted = next.map((t) => stamped.get(t.id) ?? t);
+      tasksRef.current = persisted;
+      setTasks(persisted);
       if (upserts.length || deletes.length) {
         try {
           await emit("tasks-changed");

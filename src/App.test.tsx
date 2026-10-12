@@ -458,6 +458,68 @@ describe("App", () => {
     });
   });
 
+  // 写冲突回归钉（真机复现：＋ 生成子卡后点 × 拒写）：
+  // mutate 落盘后 tasksRef 必须换成已打戳的行，否则同一行第二次整行写
+  // 的基线落后于库，RMW 守卫拒写
+  it("同一母卡连续整行写（＋ 生成子卡 → × 删行）不触发 RMW 写冲突", async () => {
+    const user = userEvent.setup();
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    // 模拟后端 RMW 守卫：expected 与库内现行 updated_at 不符即拒写
+    const dbUpdatedAt = new Map<string, number>();
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "db_load") {
+        return [
+          {
+            id: "m1",
+            title: "母卡",
+            column: "todo",
+            order: 0,
+            updatedAt: 1,
+            subtasks: [{ id: "s1", text: "待生成", done: false }],
+          } as Task,
+        ];
+      }
+      if (cmd === "db_upsert") {
+        for (const t of (args as { tasks: Task[] }).tasks) {
+          const cur = dbUpdatedAt.get(t.id);
+          if (
+            t.expectedUpdatedAt !== undefined &&
+            cur !== undefined &&
+            cur !== t.expectedUpdatedAt
+          ) {
+            throw new Error(`写冲突：任务 ${t.id} 基线过期`);
+          }
+          dbUpdatedAt.set(t.id, t.updatedAt ?? 0);
+        }
+        return null;
+      }
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    await user.click(await screen.findByLabelText("编辑 母卡"));
+    await user.click(await screen.findByTitle("生成为任务卡"));
+    await waitFor(() => expect(dbUpdatedAt.has("m1")).toBe(true));
+    await user.click(await screen.findByTitle("删除子任务"));
+    // 第二批整行写（子卡 id 运行时生成，按批次断言）：母卡行已删 + 某行 parentId 清空
+    await waitFor(() => {
+      const calls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "db_upsert",
+      );
+      expect(calls.length).toBe(2);
+      const { tasks } = calls[1][1] as { tasks: Task[] };
+      const motherRow = tasks.find((t) => t.id === "m1");
+      expect(motherRow?.subtasks ?? []).toHaveLength(0);
+      expect(tasks.some((t) => t.parentId === null)).toBe(true);
+    });
+    // 写冲突会走 mutateFire 的 console.error("[mutate] persist failed") 兜底——不应出现
+    expect(errSpy).not.toHaveBeenCalledWith(
+      "[mutate] persist failed",
+      expect.anything(),
+    );
+    errSpy.mockRestore();
+  });
+
   // tasks-updated 事件合并后，规则改动（今日归位/超时归档）
   // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
   it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {
