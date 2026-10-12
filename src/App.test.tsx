@@ -302,8 +302,8 @@ describe("App", () => {
     render(<App />);
     // 启动默认在首页：切到任务页再操作池块
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
-    // 池块点击纯拖拽（防误触）→ 编辑走块上 ✎ 钮
-    await user.click(await screen.findByTitle("编辑任务"));
+    // 池块单击纯拖拽（防误触）→ 双击池项开详情面板
+    await user.dblClick(await screen.findByText("定时任务"));
     await user.click(await screen.findByTitle("删除任务"));
     // TP-2：软删改走 task_patch 定向补丁（null=清空调度字段）
     await waitFor(() => {
@@ -325,7 +325,7 @@ describe("App", () => {
   // 子任务卡：删除有子卡的母卡时先询问是否连带（okLabel=一并删除）
   const motherWithChildren: Task[] = [
     { id: "m1", title: "母卡", column: "todo", order: 0, updatedAt: 1 },
-    // 子卡放完成列：不上任务池，池内只有母卡一个「编辑任务」入口
+    // 子卡放完成列：不上任务池（已完成区折叠），池内只有母卡一个双击入口
     {
       id: "c1",
       title: "子卡一",
@@ -356,7 +356,7 @@ describe("App", () => {
     });
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
-    await user.click(await screen.findByTitle("编辑任务"));
+    await user.dblClick(await screen.findByText("母卡"));
     await user.click(await screen.findByTitle("删除任务"));
     expect(mocks.askMock).toHaveBeenCalledTimes(1);
     expect(mocks.askMock).toHaveBeenCalledWith(
@@ -377,7 +377,7 @@ describe("App", () => {
     });
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
-    await user.click(await screen.findByTitle("编辑任务"));
+    await user.dblClick(await screen.findByText("母卡"));
     await user.click(await screen.findByTitle("删除任务"));
     await waitFor(() => {
       expect(patchedIds()).toEqual(["m1"]);
@@ -400,7 +400,7 @@ describe("App", () => {
     });
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
-    await user.click(await screen.findByTitle("编辑任务"));
+    await user.dblClick(await screen.findByText("母卡"));
     await user.click(await screen.findByTitle("生成为任务卡"));
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
@@ -440,7 +440,7 @@ describe("App", () => {
     });
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
-    await user.click(await screen.findByLabelText("编辑 母卡"));
+    await user.dblClick(await screen.findByText("母卡"));
     await user.click(await screen.findByTitle("删除子任务"));
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
@@ -497,7 +497,7 @@ describe("App", () => {
     });
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
-    await user.click(await screen.findByLabelText("编辑 母卡"));
+    await user.dblClick(await screen.findByText("母卡"));
     await user.click(await screen.findByTitle("生成为任务卡"));
     await waitFor(() => expect(dbUpdatedAt.has("m1")).toBe(true));
     await user.click(await screen.findByTitle("删除子任务"));

@@ -26,7 +26,7 @@ type Drag =
   | { kind: "resize"; task: Task };
 
 /** 拖拽编排（批 3）+ 详情面板（批 4）：池→网格排期、块移动、底缘拉伸、拖回池清除；
- *  点块/点池项/⌘N 新建 → 左侧毛玻璃详情面板（编辑与完成入口）。
+ *  双击块/池项/⌘N 新建 → 左侧毛玻璃详情面板（单击纯拖拽面，防误触）。
  *  写入恒发最小 patch（planStart/planEnd 或双 null），跨 18:00 折行数学在 week.ts。 */
 export function TaskTimelinePage({
   tasks,
@@ -288,11 +288,8 @@ export function TaskTimelinePage({
       setDragEvade(false);
       setSlot(null);
       setGhost(null);
-      // 点击（未拖动）：网格块 → 选中开面板；池块纯拖拽（编辑走块上 ✎，防误触）
-      if (!moved) {
-        if (drag.kind === "move") setSelected({ id: drag.task.id, autoFocus: false });
-        return;
-      }
+      // 未拖动 = 单击：不开面板（防误触）——详情面板走块/池项双击（原生 dblclick）
+      if (!moved) return;
       // 落点：池源拖拽按钳制点解析（贴边松手落在边缘格）；其余用指针
       const p =
         drag.kind === "create"
@@ -434,6 +431,7 @@ export function TaskTimelinePage({
             freshTaskId={freshId}
             bodyRef={gridBodyRef}
             onSetColumn={onSetColumn}
+            onBlockDoubleClick={(t) => setSelected({ id: t.id, autoFocus: false })}
             onBlockPointerDown={(task, kind, e) => {
               if (!onUpdate || !task.planStart || !task.planEnd) return;
               startDrag(e, { kind, task });

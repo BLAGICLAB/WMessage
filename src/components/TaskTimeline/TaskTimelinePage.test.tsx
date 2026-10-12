@@ -279,7 +279,7 @@ describe("TaskTimelinePage", () => {
     expect(called).toBe(1);
   });
 
-  it("池块点击纯拖拽不开面板（防误触）；✎ 编辑钮开面板；圆圈快速打勾", async () => {
+  it("池块单击纯拖拽不开面板（防误触）；双击池项开面板；圆圈快速打勾", async () => {
     const user = userEvent.setup();
     const onSetColumn = vi.fn();
     render(
@@ -290,12 +290,12 @@ describe("TaskTimelinePage", () => {
         onDelete={vi.fn()}
       />,
     );
-    // 原位按下松开 = 点击 → 不开面板
+    // 原位按下松开 = 单击 → 不开面板
     fireEvent.pointerDown(screen.getByText("未排期任务乙"), { button: 0 });
     fireEvent.pointerUp(screen.getByText("未排期任务乙"));
     expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
-    // ✎ 编辑钮 → 开面板
-    await user.click(screen.getByRole("button", { name: "编辑 未排期任务乙" }));
+    // 双击池项 → 开面板
+    await user.dblClick(screen.getByText("未排期任务乙"));
     expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     // 完成圆圈（该块尾部）→ set_column done
@@ -306,7 +306,27 @@ describe("TaskTimelinePage", () => {
     expect(onSetColumn).toHaveBeenCalledWith("t2", "done");
   });
 
-  it("已完成区打勾形式（无划线）：圆圈恢复待办，✎ 编辑", async () => {
+  it("网格块双击开面板；单击与对勾双击都不开", async () => {
+    const user = userEvent.setup();
+    render(
+      <TaskTimelinePage
+        tasks={TASKS}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    const blk = document.querySelector(".plan-blk")!;
+    // 单击（原位按下松开）→ 不开面板
+    fireEvent.pointerDown(blk, { button: 0 });
+    fireEvent.pointerUp(window);
+    expect(screen.queryByLabelText("任务详情")).not.toBeInTheDocument();
+    // 双击块身 → 开面板
+    await user.dblClick(blk);
+    expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
+  });
+
+  it("已完成区打勾形式（无划线）：圆圈恢复待办，双击开面板", async () => {
     const user = userEvent.setup();
     const onSetColumn = vi.fn();
     render(
@@ -324,7 +344,7 @@ describe("TaskTimelinePage", () => {
     expect(row.querySelector(".line-through")).toBeNull();
     await user.click(within(row as HTMLElement).getByRole("button", { name: "恢复待办" }));
     expect(onSetColumn).toHaveBeenCalledWith("t9", "todo");
-    await user.click(within(row as HTMLElement).getByRole("button", { name: "编辑 完成任务庚" }));
+    await user.dblClick(pool.getByText("完成任务庚"));
     expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
   });
 

@@ -30,6 +30,7 @@ export function PlanBlockView({
   done = false,
   collapsed = false,
   onPointerDown,
+  onDoubleClick,
   onSetColumn,
 }: {
   seg: PlanSeg & { lane: number; lanes: number };
@@ -46,6 +47,8 @@ export function PlanBlockView({
   /** 重叠簇 lane ≥ 2：塌缩为头像 + 对勾 */
   collapsed?: boolean;
   onPointerDown?: (e: React.PointerEvent) => void;
+  /** 双击块身开详情面板（对勾上的双击不算——那是两次完成切换） */
+  onDoubleClick?: () => void;
   onSetColumn?: (taskId: string, col: "todo" | "done") => void;
 }) {
   const topPct = ((seg.startMin - DAY_START_MIN) / DAY_SPAN_MIN) * 100;
@@ -91,6 +94,12 @@ export function PlanBlockView({
         skipTip.current = true;
         tip.hide();
         onPointerDown?.(e);
+      }}
+      onDoubleClick={(e) => {
+        // 完成对勾上的双击 = 两次切换，不开面板（click 已 stopPropagation，
+        // 但 dblclick 是独立事件仍会冒泡到块身）
+        if ((e.target as HTMLElement).closest("button")) return;
+        onDoubleClick?.();
       }}
     >
       <span className="plan-dot plan-dot-s" aria-hidden />

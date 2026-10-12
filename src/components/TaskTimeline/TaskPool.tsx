@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { PenLine } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
 import { planChip, planColorVar, sortPoolTasks } from "./week";
 import { DoneCircle } from "../DoneCircle";
@@ -16,8 +15,8 @@ export function savePoolOpen(open: boolean) {
 }
 
 /** 任务池（毛玻璃悬浮层）：列出全部未完成任务的统一标题块。
- *  块结构（惯例：整块=拖拽面，尾部常驻操作钮）：[色条|标题] [完成圆圈] [✎编辑]——
- *  圆圈快速切换完成态、编辑钮开详情面板，其余区域只拖拽（防误触开编辑窗）。
+ *  块结构（惯例：整块=拖拽面）：[色条|标题] [完成圆圈]——圆圈快速切换完成态，
+ *  双击块开详情面板（单击/拖拽不开，防误触）。
  *  常驻挂载：开合走 transform+opacity 过渡；evaded = 拖拽离池时整池滑出让出视野；
  *  liftedId = 拖拽中的源块在池内悬浮（升起+光晕）。
  *  onItemPointerDown 供页面发起「池→网格」拖拽；innerRef 供「拖回池清除」落点判定；
@@ -40,6 +39,7 @@ export function TaskPool({
   onToggle: () => void;
   onItemPointerDown?: (task: Task, e: React.PointerEvent) => void;
   onSetColumn?: (taskId: string, col: ColumnId) => void;
+  /** 双击池项开详情面板 */
   onEdit?: (task: Task) => void;
   innerRef?: React.Ref<HTMLElement>;
   /** 拖拽离池：整池滑出让出视野（回池内滑回） */
@@ -52,13 +52,18 @@ export function TaskPool({
 
   const sorted = sortPoolTasks(tasks);
   const hidden = !open;
-  const stopPointer = (e: React.PointerEvent) => e.stopPropagation();
   const itemCls = (t: Task) =>
     `flex h-[34px] touch-none items-center gap-2 rounded-lg border pr-1.5 ${
       liftedId === t.id
         ? "pool-lift relative z-10"
         : "hover:border-[var(--edge-strong)]"
     }`;
+  // 对勾上的双击 = 两次完成切换，不开面板（click 已 stopPropagation，
+  // 但 dblclick 是独立事件仍会冒泡到块身）
+  const openOnDblClick = (t: Task) => (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+    onEdit?.(t);
+  };
   const item = (t: Task) => (
     <div
       key={t.id}
@@ -72,6 +77,7 @@ export function TaskPool({
         tip.hide();
         onItemPointerDown?.(t, e);
       }}
+      onDoubleClick={openOnDblClick(t)}
     >
       <span
         className="h-full w-[3px] shrink-0 rounded-l-lg"
@@ -91,19 +97,6 @@ export function TaskPool({
           {planChip(t.planStart)}
         </span>
       )}
-      <button
-        type="button"
-        aria-label={`编辑 ${t.title}`}
-        title="编辑任务"
-        className="nm-icon-btn h-5 w-5 shrink-0 text-[var(--t5)]"
-        onPointerDown={stopPointer}
-        onClick={(e) => {
-          e.stopPropagation();
-          onEdit?.(t);
-        }}
-      >
-        <PenLine size={11} aria-hidden />
-      </button>
       <DoneCircle
         done={false}
         onToggle={() => onSetColumn?.(t.id, "done")}
@@ -165,6 +158,7 @@ export function TaskPool({
                 <div
                   key={t.id}
                   className="flex h-[30px] items-center gap-2 rounded-lg px-1.5"
+                  onDoubleClick={openOnDblClick(t)}
                 >
                   <span
                     className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]"
@@ -173,19 +167,6 @@ export function TaskPool({
                   >
                     {t.title}
                   </span>
-                  <button
-                    type="button"
-                    aria-label={`编辑 ${t.title}`}
-                    title="编辑任务"
-                    className="nm-icon-btn h-5 w-5 shrink-0 text-[var(--t5)]"
-                    onPointerDown={stopPointer}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEdit?.(t);
-                    }}
-                  >
-                    <PenLine size={11} aria-hidden />
-                  </button>
                   <DoneCircle
                     done
                     onToggle={() => onSetColumn?.(t.id, "todo")}

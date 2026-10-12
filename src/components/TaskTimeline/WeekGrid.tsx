@@ -40,6 +40,7 @@ export function WeekGrid({
   freshTaskId = null,
   bodyRef,
   onBlockPointerDown,
+  onBlockDoubleClick,
   onSetColumn,
 }: {
   tasks: Task[];
@@ -53,6 +54,8 @@ export function WeekGrid({
   /** 页面用于指针反解的网格 body 挂载点 */
   bodyRef?: React.Ref<HTMLDivElement>;
   onBlockPointerDown?: (task: Task, kind: "move" | "resize", e: React.PointerEvent) => void;
+  /** 双击块身开详情面板（单击/拖拽不再开，防误触） */
+  onBlockDoubleClick?: (task: Task) => void;
   /** 块对勾的完成/恢复通道（缺省不渲染对勾） */
   onSetColumn?: (taskId: string, col: ColumnId) => void;
 }) {
@@ -168,6 +171,9 @@ export function WeekGrid({
                       onBlockPointerDown(s.task, kind, e);
                     }
                   : undefined
+              }
+              onDoubleClick={
+                onBlockDoubleClick ? () => onBlockDoubleClick(s.task) : undefined
               }
             />
           );
