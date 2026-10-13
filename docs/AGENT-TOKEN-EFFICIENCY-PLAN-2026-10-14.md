@@ -5,6 +5,21 @@
 > 都重付整段历史的输入费，所以省 token 的主战场是**输入侧**；而「先缓存后减法」
 > 是次序铁律（压缩会打穿缓存前缀）。
 
+## 实施进度（2026-10-14）
+
+| 项 | 状态 | 提交 | 备注 |
+|---|---|---|---|
+| P0-1 工具输出默认截断 30K | ✅ | `078e545` | cap_tool_output 头 24K + 尾 6K，按字符计 |
+| P0-2 终稿自检侧调小模型 | ✅ | `e5291dc` + `fc978d6` | selfcheck_model_id 配置；侧调走 summarize_http |
+| P0-3 历史滚动降密度 | ✅ | `263109f` | AGE_SOFT_ROUNDS=5 / HARD=15，compact_one 单条核 |
+| P1-4 Anthropic 第三断点 + 动段位 | ✅ | `dc11dc1` + `986567c` | 断点 2/2 → 3/3；VerifierRetryTail 末位槽 |
+| P1-5 cache 命中/写入观测 | ✅ | 随 P0-2/P1-4 落库 | AnthropicUsage 4 字段 + cache_hit_pct 审计 + 挂件 bot-usage-delta 扩字段 |
+| P2-2 复诵计划 | ⏸ 待拍板 | — | 等真机观察长任务目标漂移再启 |
+| P2-3/4/5 不做 | ✅ | — | LLMLingua/并行多 agent 写/激进压缩已附理由 |
+| Wave2 escape/truncate + lock_ok | ⏸ 排期 | — | 审计 P1 项，工作量各 ~300 行 |
+
+**全量测试 1630 测全绿（基线 1619 + 新增 11 测）。**
+
 ## 一、wmessage 现状 vs 业界对照
 
 | 业界实践 | wmessage 现状 | 判定 |

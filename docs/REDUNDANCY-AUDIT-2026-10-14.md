@@ -6,6 +6,27 @@
 > 口径：只算冗余 / 功能重复 / 死重——行为 bug 不在本报告（见同日修复批
 > 7b9247e..3a697c6）。行数为估算，动手前以实际 diff 为准。
 
+## 处置进度（2026-10-14 当日完成）
+
+| 项 | 提交 | 备注 |
+|---|---|---|
+| Rust#1 db 迁移样板 16 份 → `ensure_columns` | `8fb5807` | 行为修正：PRAGMA 失败不再吞、duplicate-column 竞态容错覆盖全部补列点 |
+| Rust#4 addendum 三份角色定义去重 | `04799c4` | 删 38 行内嵌、每次主对话省 1.16KB token，加防回归断言 |
+| Rust#5/Addendum 同上 | `04799c4` | — |
+| Rust#6 死常量 6 行 | `548764a` | brief.rs / trace.rs 全仓零引用删 |
+| Rust#7 now_ms 六合一 → `db::now_ms` | `81e538f` | 15 文件；pre-epoch 负值替换 0 哨兵（修正非漂移） |
+| Rust#8 配置钳制单源 | `5bc3fc6` | 4 个 clamp 函数为唯一来源；max_tool_calls 单点调用按 YAGNI 留内联 |
+| Rust#9 audit 分类器单一化 | `f3c6dc9` | ToolFailureClass 枚举 + classify_tool_failure；is_tool_failure_text 转发包装随删 |
+| 前端#5-#9 五项 | `2e08ac3` | bot_get_config 9 处 / 导入导出四合一 / 日期工具 / runWithBot / 停止分派 |
+| 前端#1 TodoCard 只读化 | ⏸ 待拍板 | 报告写明需你定「归档/回收站卡还要不要恢复编辑」 |
+| 前端#2/3/4 文件 chip×3 / 子任务×3 / 乐观更新×4 | ⏸ 排期 | — |
+| Rust#2 DB 样板全仓 183 处 mutex_poisoned → `lock_ok` + `with_write_conn` | ⏸ Wave2 | 报告 P1，工作量 ~300 行 |
+| Rust#3 转义/截断家族 8 个实现 + 同名 `escape_for_log` 行为分叉 | ⏸ Wave2 | 报告 P1，含真实分叉隐患 |
+| 前端#10-14 微项 | ⏸ Wave2 | 10-50 行小批 |
+| 双自检状态机合并 | ⏸ P3 | 两套刚各自跑稳，合并属可选 shrink |
+
+**已净删 ~700 行（Rust 5 项 + 前端 1 项 + 死常量 + 角色去重）。**
+
 ## 总览
 
 | 端 | 可净删 | 最大单项 |
