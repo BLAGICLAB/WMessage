@@ -37,6 +37,11 @@ pub enum PromptSlot {
     Recovery,
     /// plan_block（动态计划步骤，PREVR 第二层）
     Plan,
+    /// 动态设置项：放末尾的会话级可变值（当前仅 verifier_retry_max）。
+    /// 静态段（Base/GenDir/SkillCatalog）必须无会话级变动才能让 Anthropic
+    /// prompt cache 命中——把会话级可变值推到最末，缓存断点
+    ///（cache_control ephemeral）打在它之后，前缀稳定性最大化
+    VerifierRetryTail,
 }
 
 /// System prompt 多段拼接器。push 顺序自由，build 时按 `PromptSlot` 排序。
@@ -112,6 +117,37 @@ mod tests {
     #[test]
     fn builds_in_declared_order() {
         // 故意乱序 push 6 段
+        let mut b = SystemPromptBuilder::new();
+        b.push(PromptSlot::Recovery, "RECOVERY");
+        b.push(PromptSlot::Base, "BASE");
+        b.push(PromptSlot::Plan, "PLAN");
+        b.push(PromptSlot::GenDir, "GENDIR");
+        b.push(PromptSlot::SkillCatalog, "SKILLS");
+        b.push(PromptSlot::VerifierRetryTail, "RETRY_TAIL");
+        assert_eq!(b.build(), "BASEGENDIRSKILLSRECOVERYPLANRETRY_TAIL");
+    }
+
+    #[test]
+    fn verifier_retry_tail_appends_after_static_prefix() {
+        // 动态设置项必须拼在静态段（Base/GenDir/SkillCatalog）之后——
+        // 静态段字字节节稳定 Anthropic prompt cache 才能命中前缀。
+        // 顺序：Base → GenDir → SkillCatalog → ... → VerifierRetryTail（末位）
+        let mut b = SystemPromptBuilder::new();
+        b.push(PromptSlot::Base, "BASE");
+        b.push(PromptSlot::GenDir, "GENDIR");
+        b.push(PromptSlot::SkillCatalog, "SKILLS");
+        b.push(PromptSlot::VerifierRetryTail, "TAIL");
+        let out = b.build();
+        let base_end = out.find("BASE").unwrap() + 4;
+        let gendir_pos = out.find("GENDIR").unwrap();
+        let skills_pos = out.find("SKILLS").unwrap();
+        let tail_pos = out.find("TAIL").unwrap();
+        assert!(base_end <= gendir_pos && gendir_pos < skills_pos && skills_pos < tail_pos);
+    }
+
+    #[test]
+    fn six_segments_ordered_after_additions() {
+        // 故意乱序 push 6 段（不含 VerifierRetryTail，验证旧排序不回归）
         let mut b = SystemPromptBuilder::new();
         b.push(PromptSlot::Plan, "[Plan]");
         b.push(PromptSlot::Base, "[Base]");
