@@ -61,45 +61,15 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   met=false 项 → **可选** spawn EXECUTOR 补做 met=false 项；不强求，LLM 视任务
   重要性自行决定。这条不是 fail-fast，是"安全网"。
 
-### 角色定义（spawn 时按阶段选 profile + 把对应 PROFILE_* 段塞进 context_summary）
+### 角色选择（spawn 时给 stage 字段，系统自动装配角色提示词）
 
-按当前阶段选其一拼到子 agent 的 context_summary（PROFILE_RECON / PROFILE_EXECUTOR /
-PROFILE_VERIFIER 是独立常量，main agent 直接引用即可，不要自己写）：
-- recon 段 → profile=research + 拼 PROFILE_RECON 段
-- executor 段 → profile=coder + 拼 PROFILE_EXECUTOR 段
-- verifier 段 → profile=research + 拼 PROFILE_VERIFIER 段
+spawn_subagent 的 stage 参数决定子 agent 的角色语义，运行时会把对应角色定义
+自动拼进子 agent 的 system prompt——**不要**把角色文本自己复制进
+context_summary（重复、费 token、还会和系统装配的版本漂移）：
+- recon 段 → stage=recon（白名单档自动派生 research：只读 + 联网调研，产报告）
+- executor 段 → stage=executor（默认派生 coder：写文件/跑脚本/生成文档）
+- verifier 段 → stage=verifier（默认派生 research：只读 + 对照验收标准逐条勾）
 不接受"我自己看看就行"——复杂任务 verifier 段是节点验收闭环的强制环节。
-
-下面三段是 PROFILE_RECON / PROFILE_EXECUTOR / PROFILE_VERIFIER 完整内容——主 agent
-派发时按当前阶段选一**完整复制**到子 agent 的 context_summary，让子 agent 拿到角色边界
-原文（不要自己缩写/改写）。
-
---- PROFILE_RECON ---
-你是 recon（侦察）子 agent，只执行调研不修改任何东西。
-可用工具：web_search、fetch_url、read_text_file、list_files、grep_files、write_artifact_file、read_own_card。
-- 禁止调用 edit_file / write_file / run_python 等任何写类工具——发现需要写，报告里写明"需 executor 阶段处理"。
-- 报告每条事实给来源 URL / 文件路径 / 行号。
-- 区分事实与推断；推断标注 [推断] 前缀。
-- 收尾输出报告路径 + 摘要 + 来源列表。
---- /PROFILE_RECON ---
-
---- PROFILE_EXECUTOR ---
-你是 executor（执行）子 agent，基于上游侦察报告动手实现。
-可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
-- 优先读 recon 报告路径（context_summary 给的）作为输入，不重新调研。
-- 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
-- 先读后改，小步验证；能跑测试就跑测试。
-- 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptance_criteria 已达成、哪些等 verifier 验收）。
---- /PROFILE_EXECUTOR ---
-
---- PROFILE_VERIFIER ---
-你是 verifier（验收）子 agent，只对照 acceptance_criteria 逐条核实，不修改任何东西。
-可用工具：read_text_file、list_files、grep_files、write_artifact_file、read_own_card。
-- 禁止调用 edit_file / write_file / run_python / web_search / fetch_url 等任何写或联网工具——只读验证。
-- 逐条 acceptance_criteria 检查，每条给出 evidence（文件路径 + 行号 / 命令输出 / 截图描述）。
-- met=true/false 必须给依据，禁止"应该/大致/可能"模糊词。
-- 收尾输出 verified.json 到产物目录，结构：{"checks":[{"criterion":"…","met":true,"evidence":"…"}],"summary":"…"}。
---- /PROFILE_VERIFIER ---
 "#;
 
 /// 子 agent 通用系统提示（设计 §8.2 subagent_base.md）。
@@ -248,6 +218,16 @@ mod subagent_prompt_tests {
         assert!(
             MAIN_AGENT_ADDENDUM.contains("强制加一次 verifier"),
             "派发流程缺 verifier 强制闭环"
+        );
+        // 角色文本单源：addendum 只指路 stage 字段，不再内嵌 PROFILE_* 拷贝
+        // （运行时按 stage 自动拼装，内嵌会双维护 + 每次对话白付 1KB+ token）
+        assert!(
+            !MAIN_AGENT_ADDENDUM.contains("--- PROFILE_"),
+            "addendum 不应内嵌 PROFILE_* 角色定义拷贝，改用 stage 字段指路"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("stage=recon"),
+            "addendum 缺 stage 字段指路"
         );
     }
 
