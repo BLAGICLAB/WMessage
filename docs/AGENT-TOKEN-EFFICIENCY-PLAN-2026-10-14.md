@@ -28,11 +28,13 @@
 
 ### P0-1：工具输出默认截断（最低成本，当天可做）
 
-- **做什么**：`maxToolOutputChars` 默认从 None（不截断）改为 30,000 字符
-  （对齐 Claude Code 默认）；截断方式从「只留头部」改为 头 24K + 尾 6K
-  （复用 bot/compaction 的头尾保留思路，错误堆栈/总结性尾部不丢）。
-- **依据**：一次大 fetch / 大文件读取现在可以无上限吃进上下文；业界全线都设
-  硬顶。机制已存在（708-740 行），只补默认值和头尾保留。
+- **做什么**：`maxToolOutputChars` 默认从 None（不截断）改为 30,000 字符；
+  截断方式从「只留头部」改为 头 24K + 尾 6K（复用 bot/compaction 的头尾
+  保留思路，错误堆栈/总结性尾部不丢）。
+- **依据**：一次大 fetch / 大文件读取现在可以无上限吃进上下文；业界全线设
+  硬顶——Claude Code 文件读 25K token、Bash 30K 字符，Gemini CLI 40K 字符
+  外加蒸馏（10K token）/摘要（20K token）两道二级闸。机制已存在
+  （708-740 行），只补默认值和头尾保留。
 - **收益**：单条大输出的预算占比从「上不封顶」锁到 ~15%（200K 预算口径）；
   配合已有 compaction，长会话峰值显著下降。
 - **风险**：极低——截断带说明文字 + trace span 存原文（已实现），需要全文走
@@ -45,8 +47,11 @@
   models_by_provider 配置机制加一个 `selfcheck` 槽位；未配置 = 保持现状）。
 - **依据**：输入/输出比 100:1 → 主循环里多一轮 = **整段历史重付一次输入费**；
   而判定 prompt 本来就只看 500 字 snippet（循环内外信息量几乎相同）。
-  业界把这类「摘要/分类/判定」固定槽位路由到 1/3 价小模型（Haiku 级）是
-  标准做法；RouteLLM 实测小模型守门可省 85% 成本保 95% 表现。
+  业界把「摘要/分类/判定」固定槽位路由到小模型是标准做法：Claude Code 用
+  Haiku 跑后台子任务（`SUBAGENT_MODEL`），Cognition 为「历史压缩」专门微调
+  了小模型（「hard to get right but rewards the investment」），OpenHands
+  摘要 LLM 明说「often cheaper model than reasoning LLM」；RouteLLM 实测
+  省 85% 成本保 95% 表现。
 - **收益**：每 8 轮一次的全史输入重付变为一次几百字符的请求；长会话下这是
   本方案里省得最多的一项。Y 判定不写审计的现有语义不变。
 - **风险**：小模型判定略弱——业界数据二元判定对「不一致」样本漏报 30-60%，
@@ -56,32 +61,41 @@
 ### P0-3：历史降密度从「阈值触发」改为「滚动降密度」
 
 - **做什么**：compaction 保留 70%/85% 阈值作为兜底，另加滚动策略：距今
-  >N 轮（建议 6）的 tool 结果自动软压（头尾保留 + sidecar 指针），>2N 轮的
-  硬压。即把「预算告急时全员压」改成「随年龄持续降密度」。
-- **依据**：Anthropic context editing（陈旧工具结果清除）内部评测：单独使用
-  token -84%、agentic search 表现 +29%——「老结果降密度」不但省钱还**提效**
-  （context rot：性能随窗口填充非单调退化，旧细节是噪音）。机制全部现成
-  （compaction 模块 + ⟦c: 标记 + 指针回看），只改触发策略。
+  >N 轮（N=5，对齐 Claude Code microcompact「只保留最近 5 条工具结果」）
+  的 tool 结果自动软压（头尾保留 + sidecar 指针），更早的硬压。
+- **依据**（三条独立实证，都指向「老结果降密度不但省钱还提效」）：
+  - Anthropic context editing（清陈旧工具结果）：token -84%、agentic
+    search 表现 +29%；官方称这是「最安全的轻量压缩」；
+  - SWE-agent 消融（SWE-bench Lite）：只保留最近 5 条观察 **18.0%** vs
+    全历史 **15.0%**——丢老观察反而高 3 分；文件视窗 100 行 > 30 行 >
+    全文，太多太少都掉分（context rot 的直接证据）；
+  - OpenHands condenser：质量 54% vs 53% 基本持平，每轮成本 **不到一半**，
+    成本曲线从二次方变线性。
 - **收益**：上下文曲线从锯齿悬崖变缓坡；每轮输入都更小（不只告急轮）；
   模型注意力集中在最近 K 轮的高信号内容上。
 - **风险**：模型需要回看老结果时多一次 read_text_file——sidecar 指针 +
-  已修好的硬压缩保指针（f9d03f5）就是为这条路铺的。滚动参数做成配置项，
-  默认保守（6 轮）。
+  已修好的硬压缩保指针（f9d03f5）就是为这条路铺的。滚动参数做成配置项；
+  借鉴 Claude Code 的防抖设计：连续几轮压完又满则停止并报错，不空转。
 
 ### P1-4：缓存精细化（省 50-90% 输入费的零质量损失项）
 
 - **做什么**：
   1. 审计 system prompt 的动态段位置：`## 当前设置` 等每会话可变内容固定
-     注入到 system 尾部（OpenAI/Gemini/DeepSeek 自动前缀缓存要求前缀
-     逐字节稳定，开头一个 token 变动整条作废）；
-  2. Anthropic 断点从 2 个加到 3 个：最后一个 user 消息再打一个 ephemeral，
-     实现「system+工具+旧历史」三级增量缓存（上限 4 个断点，还剩余量）；
-  3. compaction 会原地改写历史消息、打穿其后所有缓存前缀——属低频一次性
-     代价，可接受，但滚动降密度（P0-3）上线后触发频率下降，缓存命中率
-     反而上升，两项互相成全。
-- **依据**：Anthropic 缓存命中 0.1×（省 90%）、OpenAI 自动缓存 50-95%、
-  Gemini 2.5 隐式缓存 90% 折扣、DeepSeek ~90-98%——业界公认唯一零质量
-  损失的省钱手段，Manus 把命中率列为第一指标。
+     注入到 system 尾部（OpenAI 官方 best practice 原话「Place stable
+     content at the beginning, dynamic content at the end, keep context
+     append-only」；Claude Code 甚至为此默认关闭插件后台刷新——「changes
+     the system prompt mid-session, invalidates prompt caching」）；
+  2. Anthropic 断点从 2 个加到 3 个：最后一个 user 消息再打一个 ephemeral
+     （SWE-agent 的 CacheControlHistoryProcessor 默认就在最后 2 条消息上
+     打断点），实现「system+工具+旧历史」增量缓存；
+  3. compaction 原地改写历史消息会作废其后全部缓存前缀——Claude Code 把
+     这笔账记为「expected rebuild」，属低频一次性代价，可接受；Anthropic
+     API 侧已有 context editing 能力可按 tool_use_id 删结果而不动前缀
+     （cache_edits），若走 Anthropic 原生协议可评估切换到该机制。
+- **依据**：Anthropic 缓存命中 0.1×（省 90% 成本 + 85% 延迟）、OpenAI
+  GPT-5 命中价 0.1×（GPT-5.6 起写价 1.25×）、Gemini 隐式缓存 90% 折扣、
+  DeepSeek ~90-98%；Manus 把命中率列为「生产级 agent 的唯一最重要指标」
+  （实测 10× 价差）。
 - **收益**：多轮会话的大头输入费直接打折；不改任何行为语义。
 - **风险**：断点位置不当反而降低命中（写入费 1.25×）——需要 P1-5 的观测
   数据先行验证。
@@ -104,14 +118,21 @@
 
 ### P2（暂缓/不做，记录理由）
 
+- **计划复诵（recitation）**：候选。Manus 平均任务 ~50 次工具调用，靠不断
+  重写 todo.md 把目标推到上下文末端对抗 lost-in-the-middle；wmessage 已有
+  plan_state 与 PREVR replan，但计划只在重规划时重注入——若真机观测到
+  长任务目标漂移，把「当前计划/剩余步骤」周期性追加为 user 提示是现成
+  机制的轻量扩展。
 - **LLMLingua 类提示压缩**：不做。研究一致结论——对代码/配置等事实密集
   内容不可靠（丢一个标识符即错），2026 生产风向是 compaction+外置记忆，
   不是压缩重写（ACE 论文更点名「压缩式重写」导致 context collapse）。
 - **并行多 agent 写操作**：不做。Cognition《Don't Build Multi-Agents》：
   编码任务每个动作隐含设计决策，缺共享上下文的并行写产出的集成结果差；
-  wmessage 三段式串行 + recon/verifier 只读隔离已是共识形态。
-- **无差别提高 compaction 频率**：等 P1-5 数据说话；「20% 就手动压」的
-  激进派主张样本少，先用滚动策略（P0-3）观察。
+  wmessage 三段式串行 + recon/verifier 只读隔离已是共识形态（Claude Code
+  自身也只把子代理用于「回答边界清晰的问题」，并给出多代理 15× token、
+  agent teams 7× token 的成本警示）。
+- **无差别提高 compaction 频率**：等 P1-5 数据说话；Gemini CLI 默认 0.5
+  触发线说明激进派存在，但 wmessage 的滚动策略（P0-3）已覆盖其收益主体。
 
 ## 三、预期合计
 
