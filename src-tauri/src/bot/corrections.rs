@@ -416,6 +416,10 @@ pub(crate) struct ClusterLessonStats {
     pub scanned: usize,
     pub clusters_above_threshold: usize,
     pub lessons_written: usize,
+    /// Merged 路径 kind 升格（fact → lesson）成功的行数：store 语义去重合并
+    /// 不动 kind，靠这里定点 UPDATE 补齐；失败不阻塞主路径但计数可见，
+    /// 不再是静默吞错
+    pub kind_promotions: usize,
 }
 
 /// 聚类同步内核：从 mem_items 拉所有 tags 含 "correction" 的条目，按 cos ≥ 阈值 Union-Find
@@ -515,11 +519,17 @@ pub(crate) fn cluster_correction_lessons_blocking(
             // 看到 kind=lesson。不改 store 语义，接触面最小。
             // 校正失败不阻塞主路径：store 已至少把 tags/source/importance 覆盖成
             // lesson 口径，kind 不一致已不再阻塞 lesson 召回——降级模式；
-            // 不引审计通道（pure 函数无 AppHandle）。
-            let _ = conn.execute(
-                "UPDATE mem_items SET kind = 'lesson'                  WHERE kind = 'fact' AND content = ?1                    AND instr(tags, 'lesson') > 0                    AND instr(tags, 'user_correction') > 0",
-                rusqlite::params![rep.content],
-            );
+            // 升格行数进 stats（薄壳审计可见），失败计 0 不静默丢失
+            let promoted = conn
+                .execute(
+                    "UPDATE mem_items SET kind = 'lesson'
+                     WHERE kind = 'fact' AND content = ?1
+                       AND instr(tags, 'lesson') > 0
+                       AND instr(tags, 'user_correction') > 0",
+                    rusqlite::params![rep.content],
+                )
+                .unwrap_or(0);
+            stats.kind_promotions += promoted;
         }
         // "失败"/"冲突提示"等其他分支由 record_lesson_core 自身处理；不校正。
     }
@@ -561,6 +571,7 @@ pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(
                 "scanned" => stats.scanned.to_string(),
                 "clusters" => stats.clusters_above_threshold.to_string(),
                 "lessons" => stats.lessons_written.to_string(),
+                "kind_promotions" => stats.kind_promotions.to_string(),
             );
         }
         Ok(Ok(_)) => {} // 没聚到 ≥3 不打扰日志
