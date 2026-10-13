@@ -1,10 +1,10 @@
 use super::parse::parse_skill_steps;
 use super::runtime::{advance_dsl, DslAdvanceAction};
 use super::state::{
-    active_skill_run_for, clear_terminal_skill_runs, load_skill_meta, now_ms, skill_runs,
-    SkillState,
+    active_skill_run_for, clear_terminal_skill_runs, load_skill_meta, skill_runs, SkillState,
 };
 use super::vars::{extract_task_id, substitute_vars, substitute_vars_with_params, CompletedStep};
+use crate::db::now_ms;
 use tauri::AppHandle;
 
 /// persist DslOutcome to DB after run_skill_scheduler finishes (quiet failure)
@@ -85,14 +85,6 @@ pub fn format_completed_summary(ctx: &[CompletedStep]) -> String {
     out
 }
 
-/// 工具执行结果文本的失败判定（调度器生产路径与测试同步循环共用）。
-/// 委托 `audit::tool_call_failed`（全链路统一口径）：熔断「已强制终止」/ 门禁拦截「⚠️」/
-/// 用户拒绝 等文案以「技能」/「用户」开头、不被前缀清单认，但都必须判失败，
-/// 否则末步熔断会误报「✅ 完成」。
-pub(crate) fn is_tool_failure_text(text: &str) -> bool {
-    crate::audit::tool_call_failed("", text)
-}
-
 /// 跑 `## Rollback` 段（step 失败 / 状态机 FailWithRollback 两处共用）：
 /// 回滚步骤同样走变量替换（失败前的步骤都已入 ctx）。
 /// 返回值契约（SKILL_DSL.md §4.3.2）：true = 段存在且全部回滚步骤无失败——
@@ -159,7 +151,7 @@ where
         let rb_args = substitute_vars(&rb.args_json, ctx);
         let tool_outcome = execute_tool(rb.tool_name.clone(), rb_args).await;
         let text = tool_outcome.text;
-        if is_tool_failure_text(&text) {
+        if crate::audit::tool_call_failed("", &text) {
             failed_steps += 1;
             crate::bot::audit_log_hook(
                 app,
@@ -511,7 +503,7 @@ where
         }
         let tool_outcome = execute_tool(step.tool_name.clone(), resolved_args).await;
         let text = tool_outcome.text;
-        let failed = is_tool_failure_text(&text);
+        let failed = crate::audit::tool_call_failed("", &text);
         if failed {
             let rb_attempted = run_rollback_segment_core(
                 app,
@@ -640,7 +632,7 @@ mod tests {
             let resolved_args = substitute_vars(&step.args_json, ctx);
             let text = exec(&step.tool_name, &resolved_args);
             // 失败判定：与生产 run_skill_scheduler 共用同一判定函数（不再手写镜像）
-            let failed = is_tool_failure_text(&text);
+            let failed = crate::audit::tool_call_failed("", &text);
             if failed {
                 for rb in rollback {
                     let rb_args = substitute_vars(&rb.args_json, ctx);

@@ -113,6 +113,49 @@ impl AuditLevel {
     }
 }
 
+/// 工具失败单一分类器：tool_call_failed 与 classify_error_class 共用同一份
+/// 判定，杜绝「判定一处、归类另一处各测一遍前缀」的口径漂移。
+/// 判定臂依序：未知工具 / 门禁「⚠️」/ 用户拒绝 / 技能已暂停 / 已强制终止（contains）/
+/// 「失败/错误」关键词后置分隔符 / error: 系行首；都不命中 = 非失败。
+fn classify_tool_failure(text: &str) -> Option<ToolFailureClass> {
+    if text.starts_with("未知工具") {
+        Some(ToolFailureClass::UnknownTool)
+    } else if text.starts_with("⚠️") {
+        // 门禁拦截（原子工具裸调等）
+        Some(ToolFailureClass::GateDenied)
+    } else if text.starts_with("用户拒绝") {
+        // 确认弹窗被拒绝/超时
+        Some(ToolFailureClass::UserDenied)
+    } else if text.starts_with("技能已暂停") {
+        // step_check 暂停态拒绝
+        Some(ToolFailureClass::SkillPaused)
+    } else if text.contains("已强制终止") {
+        // step_check 步数/超时熔断
+        Some(ToolFailureClass::ForcedTerminated)
+    } else if failure_keyword_after_separator(text) {
+        Some(ToolFailureClass::Keyword)
+    } else if text.starts_with("error:") || text.starts_with("Error:") || text.starts_with("ERROR:")
+    {
+        Some(ToolFailureClass::ErrorPrefix)
+    } else {
+        None
+    }
+}
+
+/// 工具失败类别（[classify_tool_failure] 的判定臂一一对应）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolFailureClass {
+    UnknownTool,
+    GateDenied,
+    UserDenied,
+    SkillPaused,
+    ForcedTerminated,
+    /// 「失败/错误」关键词后紧跟分隔符
+    Keyword,
+    /// error: / Error: / ERROR: 行首
+    ErrorPrefix,
+}
+
 /// 工具调用是否失败/被拒（统一判定口径，全链路唯一真相源）。
 /// 熔断「已强制终止」、暂停「技能已暂停」、门禁拦截「⚠️」、用户拒绝「用户拒绝」
 /// 四类文案与常规失败前缀都要判失败；否则会出现末步熔断误报「✅ 完成」、门禁拦截
@@ -129,43 +172,35 @@ impl AuditLevel {
 ///    避免「Error handling guide」这种标题被误判
 pub fn tool_call_failed(name: &str, text: &str) -> bool {
     let _ = name;
-    text.starts_with("未知工具")
-        || text.starts_with("⚠️") // 门禁拦截（原子工具裸调等）
-        || text.starts_with("用户拒绝") // 确认弹窗被拒绝/超时
-        || text.starts_with("技能已暂停") // step_check 暂停态拒绝
-        || text.contains("已强制终止") // step_check 步数/超时熔断
-        || failure_keyword_after_separator(text)
-        || text.starts_with("error:")
-        || text.starts_with("Error:")
-        || text.starts_with("ERROR:")
+    classify_tool_failure(text).is_some()
 }
 
-/// 错误分类器（与 tool_call_failed 同源口径，供 trace span error_class /
-/// evolution ToolCallSummary.error_kind，两处不再各写一份口径）。
-/// 成功文本返回 None；失败按可识别模式归类，未识别失败统一 "exec_error"。
+/// 错误分类器（与 tool_call_failed 同走 [classify_tool_failure] 单一来源，供
+/// trace span error_class / evolution ToolCallSummary.error_kind，两处不再各写
+/// 一份口径）。成功文本返回 None；五个具名失败直接映射，关键词/错误前缀两类
+/// 失败再按内容细分（超时/不存在/权限），未识别失败统一 "exec_error"。
 pub fn classify_error_class(text: &str) -> Option<&'static str> {
-    if !tool_call_failed("", text) {
-        return None;
-    }
-    if text.starts_with("未知工具") {
-        Some("unknown_tool")
-    } else if text.starts_with("⚠️") {
-        Some("gate_denied")
-    } else if text.starts_with("用户拒绝") {
-        Some("user_denied")
-    } else if text.starts_with("技能已暂停") {
-        Some("skill_paused")
-    } else if text.contains("已强制终止") {
-        Some("fused")
-    } else if text.contains("超时") || text.contains("timeout") || text.contains("Timeout") {
-        Some("timeout")
-    } else if text.contains("不存在") || text.contains("没有找到") || text.contains("not found")
-    {
-        Some("not_found")
-    } else if text.contains("权限") || text.contains("白名单") || text.contains("未授权") {
-        Some("permission")
-    } else {
-        Some("exec_error")
+    match classify_tool_failure(text)? {
+        ToolFailureClass::UnknownTool => Some("unknown_tool"),
+        ToolFailureClass::GateDenied => Some("gate_denied"),
+        ToolFailureClass::UserDenied => Some("user_denied"),
+        ToolFailureClass::SkillPaused => Some("skill_paused"),
+        ToolFailureClass::ForcedTerminated => Some("fused"),
+        ToolFailureClass::Keyword | ToolFailureClass::ErrorPrefix => {
+            if text.contains("超时") || text.contains("timeout") || text.contains("Timeout") {
+                Some("timeout")
+            } else if text.contains("不存在")
+                || text.contains("没有找到")
+                || text.contains("not found")
+            {
+                Some("not_found")
+            } else if text.contains("权限") || text.contains("白名单") || text.contains("未授权")
+            {
+                Some("permission")
+            } else {
+                Some("exec_error")
+            }
+        }
     }
 }
 
