@@ -341,6 +341,27 @@ pub(crate) const FINAL_SELFCHECK_SNIPPET_CHARS: usize = 500;
 /// 终稿自检默认轮次间隔（设置项为 None 时启用）：8 轮 1 次。
 const DEFAULT_FINAL_SELFCHECK_ROUND_GAP: u32 = 8;
 
+/// 单条工具结果回灌默认上限（字符）：业界对齐——Claude Code 文件读 25K token /
+/// Bash 30K 字符、Gemini CLI 40K 字符。配置 Some(0) = 显式关闭截断。
+pub(crate) const DEFAULT_TOOL_OUTPUT_CAP: usize = 30_000;
+/// 截断时尾部保留字符数：错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息。
+const TOOL_OUTPUT_TAIL_KEEP: usize = 6_000;
+
+/// 截断到 cap 字符：头 (cap-tail) + 截断说明 + 尾 tail。不超 cap 原样返回。
+/// 纯函数便于单测；调用方（薄壳 execute_tool）负责审计留痕。
+pub(crate) fn cap_tool_output(text: &str, cap: usize) -> String {
+    let total = text.chars().count();
+    if total <= cap {
+        return text.to_string();
+    }
+    // 小 cap 时尾部保留退化为 cap 的 1/5，保证头部至少 4/5
+    let tail_keep = TOOL_OUTPUT_TAIL_KEEP.min(cap / 5).min(total / 2);
+    let head_keep = cap - tail_keep;
+    let head: String = text.chars().take(head_keep).collect();
+    let tail: String = text.chars().skip(total - tail_keep).collect();
+    format!("{head}\n…（已按 maxToolOutputChars={cap} 截断，原文 {total} 字符，头 {head_keep} + 尾 {tail_keep} 保留）…\n{tail}")
+}
+
 /// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
 pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
 
@@ -702,13 +723,13 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
-    // 配置化工具结果截断（设计 §3.2 maxToolOutputChars）——默认 None = 不截断
-    //（现状零变更）；Some(n>0) 时单条工具结果钳 n 字符再回灌消息栈，防上下文膨胀。
-    // 截断只影响回灌文本；trace span（dispatch 内采集）仍存原文。审计留痕。
-    let tool_output_cap: Option<usize> = cfg
-        .max_tool_output_chars
-        .filter(|c| *c > 0)
-        .map(|c| (c as usize).min(200_000));
+    // 配置化工具结果截断（设计 §3.2 maxToolOutputChars）——None = 默认 30K 字符
+    //（业界对齐，截断只影响回灌文本；trace span 仍存原文）；Some(0) = 显式关闭。
+    let tool_output_cap: Option<usize> = match cfg.max_tool_output_chars {
+        Some(0) => None,
+        Some(n) => Some((n as usize).min(200_000)),
+        None => Some(DEFAULT_TOOL_OUTPUT_CAP),
+    };
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();
         let sink = tool_trace_for_exec.clone();
@@ -719,15 +740,13 @@ pub async fn run_model_loop(
             // 用户拒绝/执行失败都算失败）；error_class 分类器  接线（同源口径）
             let failed = crate::audit::tool_call_failed(&name, &out.text);
             let error_class = crate::audit::classify_error_class(&out.text);
-            // 配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）
+            // 配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）；
+            // 头尾保留——错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息
             let mut text = out.text;
             if let Some(cap) = tool_output_cap {
                 let char_count = text.chars().count();
                 if char_count > cap {
-                    text = text.chars().take(cap).collect::<String>()
-                        + &format!(
-                            "\n…（已按 maxToolOutputChars={cap} 截断，原文 {char_count} 字符）"
-                        );
+                    text = cap_tool_output(&text, cap);
                     crate::audit::write_event(
                         &app,
                         crate::audit::AuditLevel::Info,
@@ -2138,6 +2157,55 @@ mod hallucination_guard_tests {
         // 「保存/记住」动词覆盖落盘/记偏好话术
         assert!(claims_mutation("已保存到 AI_Gen_Files"));
         assert!(claims_mutation("已记住你的偏好"));
+    }
+
+    #[test]
+    fn cap_tool_output_under_cap_unchanged() {
+        assert_eq!(cap_tool_output("hello", 30_000), "hello");
+        // 恰好等于 cap 也不截
+        assert_eq!(cap_tool_output(&"x".repeat(100), 100), "x".repeat(100));
+    }
+
+    #[test]
+    fn cap_tool_output_keeps_head_and_tail() {
+        let text = format!(
+            "{}{}{}",
+            "H".repeat(20_000),
+            "M".repeat(20_000),
+            "T".repeat(10_000)
+        );
+        let out = cap_tool_output(&text, 30_000);
+        let total = text.chars().count();
+        assert!(out.contains("已按 maxToolOutputChars=30000 截断，原文 50000 字符"));
+        // 头部保留 cap - 6K = 24K（原文头 20K 全 H + 中段 4K M）；尾部保留 6K
+        assert!(out.starts_with(&format!("{}{}", "H".repeat(20_000), "M".repeat(4_000))));
+        assert!(out.ends_with(&"T".repeat(6_000)));
+        // 中段被替身说明取代
+        assert!(!out.contains(&"M".repeat(1000)));
+        let _ = total;
+    }
+
+    #[test]
+    fn cap_tool_output_small_cap_degrades_tail() {
+        // cap < 5×6K：尾部保留退化为 cap/5，头部仍占大头
+        let text = "A".repeat(1_000);
+        let out = cap_tool_output(&text, 100);
+        assert!(
+            out.starts_with(&"A".repeat(80)),
+            "头应保留 80：{}",
+            &out[..90]
+        );
+        assert!(out.ends_with(&"A".repeat(20)));
+        assert!(out.contains("已按 maxToolOutputChars=100 截断"));
+    }
+
+    #[test]
+    fn cap_tool_output_counts_chars_not_bytes() {
+        // 中文按字符计：30 个汉字 = 30 字符，60 字节——按字节截会误伤
+        let text = "中".repeat(50);
+        let out = cap_tool_output(&text, 30);
+        assert!(out.contains("原文 50 字符"));
+        assert!(out.starts_with(&"中".repeat(24)));
     }
 
     #[test]

@@ -351,7 +351,8 @@ fn param_value(key: &str, cfg: &BotConfig) -> (String, &'static str) {
         },
         "tools.max_output_chars" => match cfg.max_tool_output_chars {
             Some(v) if v > 0 => (v.to_string(), "config"),
-            _ => ("不截断".into(), "default"),
+            Some(_) => ("不截断（显式关闭）".into(), "config"),
+            None => ("30000".into(), "default"),
         },
         // 只读硬编码区
         "subagent.max_running" => ("3".into(), "hardcoded"),

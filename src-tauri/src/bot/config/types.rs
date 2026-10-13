@@ -238,8 +238,9 @@ pub struct BotConfig {
     /// web_search 默认结果条数（模型未传 count 时）：None = 8；钳 1..=10（后端硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
-    /// 单条工具结果回填消息栈的截断字符数（ 落行为）：None/0 = 不截断（现状）。
-    /// 本期仅入 bot_effective_params 参数表可见，行为接线留 P4（设计 §3.2）。
+    /// 单条工具结果回填消息栈的截断字符数。None = 默认 30000（业界对齐：
+    /// Claude Code 文件读 25K token / Bash 30K 字符、Gemini CLI 40K 字符）；
+    /// 0 = 显式关闭截断（逃生口，长会话请依赖上下文压缩兜底）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_chars: Option<u32>,
     /// per-tool 权限规则表：deny/ask/allow 首中即停，无命中走全局 perm_mode。
