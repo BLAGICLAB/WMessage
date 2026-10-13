@@ -408,6 +408,7 @@ impl CoreHarness {
             skill_finish: &*self.skill_finish,
             active_skill_run: &*self.active_skill_run,
             final_selfcheck_round_gap: Some(0),
+            final_selfcheck_http: None,
         }
     }
 
@@ -422,7 +423,16 @@ impl CoreHarness {
             skill_finish: &*self.skill_finish,
             active_skill_run: &*self.active_skill_run,
             final_selfcheck_round_gap: gap,
+            final_selfcheck_http: None,
         }
+    }
+
+    /// 侧调终稿自检：gap=1（首次满足即触发），自检请求打到独立的
+    /// selfcheck server（非流式 JSON，同 summarize_http 路径）
+    fn deps_with_selfcheck<'a>(&'a self, selfcheck: &'a LlmHttp) -> ModelLoopDeps<'a> {
+        let mut deps = self.deps_with_gap(Some(1));
+        deps.final_selfcheck_http = Some(selfcheck);
+        deps
     }
 
     fn events(&self) -> Vec<&'static str> {
@@ -2275,5 +2285,111 @@ async fn core_age_based_rolling_compaction_fires() {
     assert!(
         events.contains(&"loop.msgs.age_compacted"),
         "round-0 的工具结果轮龄应到 5 触发软压：{events:?}"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// 终稿自检侧调（final_selfcheck_http）：自检走独立小请求（非流式 JSON，
+// summarize_http 同路径），主循环不多跑一轮——主服务器请求数 = 3 tool +
+// 1 终文，判定打到独立的 side server。
+// ────────────────────────────────────────────────────────────────────
+
+/// 侧调小模型连接：复用 core_http 的连接参数（鉴权走同一 mock 口径），
+/// 只换端点与模型名
+fn selfcheck_http(server: &MockLlmServer) -> LlmHttp {
+    LlmHttp {
+        client: reqwest::Client::new(),
+        base_url: server.base_url.clone(),
+        model: "mock-small".into(),
+        ..core_http(server)
+    }
+}
+
+const SIDE_LONG_TEXT: &str = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。任务列表展示在文档中，每一条都核对过状态与期限，没有遗漏任何待办事项，可以放心进入下一阶段的安排，若有需要我可以继续细化每个条目。";
+
+/// 侧调 Y：原文还原、无 ⚠️；主服务器 4 次请求（3 tool + 终文），侧服务器 1 次。
+#[tokio::test]
+async fn core_final_selfcheck_sidecall_y_no_extra_main_round() {
+    let main = MockLlmServer::start();
+    let side = MockLlmServer::start();
+    for _ in 0..3 {
+        main.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+            name: "list_tasks".into(),
+            arguments: "{}".into(),
+        }));
+    }
+    main.push_behavior(MockBehavior::TextReply(SIDE_LONG_TEXT.into()));
+    side.push_behavior(MockBehavior::OpenAiJsonReply("Y".into()));
+
+    let h = CoreHarness::new();
+    let sc = selfcheck_http(&side);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&main),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_selfcheck(&sc),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("侧调 Y 路径应 Ok");
+    assert!(text.contains("已完成 3 项工作"), "Y 应还原原文：{text:?}");
+    assert!(!text.contains("⚠️"), "Y 不应追加警告：{text:?}");
+    assert_eq!(main.request_count(), 4, "侧调不占主循环轮次");
+    assert_eq!(side.request_count(), 1, "自检请求应打到侧调服务器");
+}
+
+/// 侧调 N（附解释「N，……」）：宽松前缀判定命中 N → 原文 + ⚠️ + 审计。
+#[tokio::test]
+async fn core_final_selfcheck_sidecall_n_appends_warning() {
+    let main = MockLlmServer::start();
+    let side = MockLlmServer::start();
+    for _ in 0..3 {
+        main.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+            name: "list_tasks".into(),
+            arguments: "{}".into(),
+        }));
+    }
+    main.push_behavior(MockBehavior::TextReply(SIDE_LONG_TEXT.into()));
+    // 非流式应答带解释——宽松前缀解析取首字符判 N
+    side.push_behavior(MockBehavior::OpenAiJsonReply(
+        "N，报告中把完成日期写错了".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sc = selfcheck_http(&side);
+    let mut deps = h.deps_with_selfcheck(&sc);
+    deps.audit_log = {
+        let logs2 = logs.clone();
+        Box::leak(Box::new(move |line: &str| {
+            logs2.lock().unwrap().push(line.to_string());
+        }))
+    };
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&main),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("侧调 N 路径应 Ok");
+    assert!(text.contains("已完成 3 项工作"), "N 应保留原文：{text:?}");
+    assert!(text.contains("⚠️ 自检未达预期"), "N 应追加警告：{text:?}");
+    assert_eq!(main.request_count(), 4, "侧调不占主循环轮次");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|l| l.contains("final_selfcheck.fail")),
+        "应记 final_selfcheck.fail 审计：{lines:?}"
     );
 }

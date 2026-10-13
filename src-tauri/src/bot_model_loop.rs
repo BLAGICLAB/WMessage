@@ -349,6 +349,9 @@ const AGE_SOFT_ROUNDS: usize = 5;
 /// （见 docs/AGENT-TOKEN-EFFICIENCY-PLAN.md 滚动降密度一节）。
 const AGE_HARD_ROUNDS: usize = 15;
 
+/// 终稿自检 N 判定追加到原文尾部的警告（in-loop 与侧调两条路径共用）。
+const FINAL_SELFCHECK_WARN: &str = "\n\n⚠️ 自检未达预期，请人工核对";
+
 /// 单条工具结果回灌默认上限（字符）：业界对齐——Claude Code 文件读 25K token /
 /// Bash 30K 字符、Gemini CLI 40K 字符。配置 Some(0) = 显式关闭截断。
 pub(crate) const DEFAULT_TOOL_OUTPUT_CAP: usize = 30_000;
@@ -485,6 +488,11 @@ pub struct ModelLoopDeps<'a> {
     /// 薄壳从 bot-config `finalSelfcheckRoundGap` 读入。core 据此判断是否在主
     /// 出口前置触发 LLM 自检（FINAL_SELFCHECK_PROMPT）。
     pub final_selfcheck_round_gap: Option<u32>,
+    /// 终稿自检侧调模型连接（可选）：Some = 自检走独立小请求（只带 snippet，
+    /// 省主循环整段历史重付），core 在触发点直调并在主出口前拿到 verdict；
+    /// None = 现状（注入 prompt 主循环内多跑一轮）。薄壳从 bot-config
+    /// `selfcheckModelId` 解析模型库条目装配，解析失败回落 None 并审计。
+    pub final_selfcheck_http: Option<&'a LlmHttp>,
 }
 
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
@@ -608,6 +616,39 @@ pub async fn run_model_loop(
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     );
+    // 终稿自检侧调模型槽位：cfg 给了模型库条目 id 就整组解析（base_url/
+    // model/协议/key）；解析失败 → 响亮审计 + 回落主循环内自检，不阻断。
+    // 必须在主 http 构造前完成——那里会 move cfg 的字段。
+    let selfcheck_http = cfg.selfcheck_model_id.as_ref().and_then(|entry_id| {
+        match crate::bot::resolve_model_override(
+            cfg.models_by_provider.as_ref(),
+            entry_id,
+            cfg.max_tokens,
+        ) {
+            Ok(r) => Some(LlmHttp {
+                client: shared_llm_client().clone(),
+                base_url: r.base_url,
+                api_key: r.api_key,
+                model: r.model,
+                provider: crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())),
+                // 判定 prompt 要求「仅回答 Y/N」——32 token 足够首字符判定
+                max_tokens: 32,
+                reasoning: crate::bot::reasoning::ReasoningWire::None,
+                temperature: None,
+                top_p: None,
+                system_prompt: None,
+            }),
+            Err(e) => {
+                crate::audit::write_event(
+                    &app,
+                    crate::audit::AuditLevel::Warn,
+                    "final_selfcheck.model_resolve_failed",
+                    &[("entry", entry_id.clone()), ("err", e.to_string())],
+                );
+                None
+            }
+        }
+    });
     let http = LlmHttp {
         client,
         base_url: resolved
@@ -659,11 +700,16 @@ pub async fn run_model_loop(
     // （声明在 deps 之前：deps 的 audit 闭包要引用轮数计数器）
     let round_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let round_for_audit = round_count.clone();
-    // llm.usage 审计事件累计（trace token 统计数据源）
+    // 缓存命中/写入累计（仅 Anthropic 协议会变；OpenAI 协议保持 0）。
+    // 前端按 (cache_read) / (read + creation + input) 算命中率展示
     let prompt_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completion_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let cache_read_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let cache_creation_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let usage_pt = prompt_tokens.clone();
     let usage_ct = completion_tokens.clone();
+    let usage_cr = cache_read_tokens.clone();
+    let usage_cc = cache_creation_tokens.clone();
     let tool_trace: std::sync::Arc<
         std::sync::Mutex<Vec<crate::evolution::trace::ToolCallSummary>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -683,6 +729,7 @@ pub async fn run_model_loop(
         // 终稿自检轮次间隔：cfg 有值用之（已落盘前钳 0..=100），None = 默认 8。
         // 0 = 关闭 final 自检的 kill switch 直接透传。
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
+        final_selfcheck_http: selfcheck_http.as_ref(),
         emit: &emit,
         audit: &|level, event, kv| {
             // llm.request 事件计数 = 轮数（trace turn_count 的数据源）
@@ -696,16 +743,28 @@ pub async fn run_model_loop(
             if event == "llm.usage" {
                 let mut input_opt: Option<u64> = None;
                 let mut output_opt: Option<u64> = None;
+                let mut cache_read_opt: Option<u64> = None;
+                let mut cache_creation_opt: Option<u64> = None;
                 for (k, v) in &kv {
                     match *k {
                         "input_tokens" => input_opt = v.parse::<u64>().ok(),
                         "output_tokens" => output_opt = v.parse::<u64>().ok(),
+                        "cache_read_tokens" => cache_read_opt = v.parse::<u64>().ok(),
+                        "cache_creation_tokens" => cache_creation_opt = v.parse::<u64>().ok(),
                         _ => {}
                     }
                 }
                 if let (Some(i), Some(o)) = (input_opt, output_opt) {
                     usage_pt.fetch_add(i, std::sync::atomic::Ordering::Relaxed);
                     usage_ct.fetch_add(o, std::sync::atomic::Ordering::Relaxed);
+                    let cr = cache_read_opt.unwrap_or(0);
+                    let cc = cache_creation_opt.unwrap_or(0);
+                    if cr > 0 {
+                        usage_cr.fetch_add(cr, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if cc > 0 {
+                        usage_cc.fetch_add(cc, std::sync::atomic::Ordering::Relaxed);
+                    }
                     if stream_to_widget {
                         let _ = app.emit_to(
                             "widget",
@@ -714,6 +773,8 @@ pub async fn run_model_loop(
                                 "sessionId": session_id,
                                 "inputTokens": i,
                                 "outputTokens": o,
+                                "cacheReadTokens": cr,
+                                "cacheCreationTokens": cc,
                             }),
                         );
                     }
@@ -1270,6 +1331,10 @@ where
         // output，parse_anthropic_event 顺带捞出），回合结束写 llm.usage 审计
         let mut usage_input: u64 = 0;
         let mut usage_output: u64 = 0;
+        // 缓存命中/写入累计（仅 Anthropic 协议会变；OpenAI 协议保持 0）。
+        // 前端按 (cache_read) / (read + creation + input) 算命中率展示
+        let mut usage_cache_read: u64 = 0;
+        let mut usage_cache_creation: u64 = 0;
         // Anthropic 模式 content block index → 工具槽位重映射：
         // Anthropic 的块序号连文本块一起数，直接当工具序号累积会留下
         // 幽灵空条目，严格 API 会 400（详见 bot_anthropic::ToolSlotMapper 注释）
@@ -1291,6 +1356,8 @@ where
                                 if let Some(u) = ev.usage {
                                     usage_input += u.input_tokens;
                                     usage_output += u.output_tokens;
+                                    usage_cache_read += u.cache_read_tokens;
+                                    usage_cache_creation += u.cache_creation_tokens;
                                 }
                                 // content block index → 稠密工具槽位（防幽灵条目）
                                 for d in &mut ev.chunk.tool_calls {
@@ -1431,18 +1498,29 @@ where
             }
         }
 
-        // Anthropic 模式：回合结束把流内捞到的 token 用量写审计
+        // Anthropic 模式：回合结束把流内捞到的 token 用量 + 缓存命中写审计。
+        // 缓存字段（cache_read / cache_creation）拼到 llm.usage 事件里——
+        // bot.log 落盘可做命中率回看（业界把命中率列为生产 agent 第一指标）。
         if http.provider == crate::bot::ApiProvider::Anthropic
             && (usage_input > 0 || usage_output > 0)
         {
-            audit(
-                crate::audit::AuditLevel::Info,
-                "llm.usage",
-                vec![
-                    ("input_tokens", usage_input.to_string()),
-                    ("output_tokens", usage_output.to_string()),
-                ],
-            );
+            let mut kv = vec![
+                ("input_tokens", usage_input.to_string()),
+                ("output_tokens", usage_output.to_string()),
+            ];
+            if usage_cache_read > 0 || usage_cache_creation > 0 {
+                kv.push(("cache_read_tokens", usage_cache_read.to_string()));
+                kv.push(("cache_creation_tokens", usage_cache_creation.to_string()));
+                // 命中率 = read / (read + creation + input)，缓存写入一次占新前缀
+                // 后续轮都是 read；creation 仅在「上一轮窗口写满 + 重新构造前缀」
+                // 时出现。计算时 input 含未被缓存的尾部 token，命中看 read 占比
+                let total = usage_cache_read + usage_cache_creation + usage_input;
+                if total > 0 {
+                    let pct = usage_cache_read * 100 / total;
+                    kv.push(("cache_hit_pct", pct.to_string()));
+                }
+            }
+            audit(crate::audit::AuditLevel::Info, "llm.usage", kv);
         }
 
         // 200 流内错误载荷——显式报错 + 审计，不返回空白回复
@@ -1656,15 +1734,72 @@ where
                     .chars()
                     .take(FINAL_SELFCHECK_SNIPPET_CHARS)
                     .collect();
-                final_selfcheck_snapshot = Some(final_text.clone());
-                msgs.push(serde_json::json!({
-                    "role": "user",
-                    "content": crate::prompts::FINAL_SELFCHECK_PROMPT
-                        .replace("{snippet}", &snippet),
-                }));
                 last_final_selfcheck_round = Some(round);
-                expecting_final_selfcheck = true;
-                continue;
+                if let Some(sc_http) = deps.final_selfcheck_http {
+                    // 侧调路径：独立小请求只带 snippet（几百字符）——省主循环
+                    // 整段历史重付（agent 输入输出比 ~100:1，主循环多一轮 =
+                    // 全史重付一次）。判定失败/请求错误 → 视作通过原文照常
+                    // 返回（与 in-loop 附解释语义一致），只留审计。
+                    final_selfcheck_snapshot = Some(final_text.clone());
+                    let prompt =
+                        crate::prompts::FINAL_SELFCHECK_PROMPT.replace("{snippet}", &snippet);
+                    let side_msgs = [crate::bot_chat::ChatMsg {
+                        role: "user".to_string(),
+                        content: prompt,
+                    }];
+                    let sidecall = crate::bot_chat::summarize_http(
+                        &sc_http.client,
+                        &sc_http.base_url,
+                        &sc_http.api_key,
+                        &sc_http.model,
+                        "",
+                        &side_msgs,
+                        sc_http.provider,
+                        // 判定 prompt 要求「仅回答 Y/N」——32 token 足够首字
+                        // 符判定，截断不影响宽松前缀解析
+                        32,
+                        None,
+                        None,
+                    )
+                    .await;
+                    match sidecall {
+                        Ok(v) => {
+                            if crate::prompts::parse_selfcheck_reply_lenient(v.trim())
+                                == Some(false)
+                            {
+                                if let Some(snapshot) = final_selfcheck_snapshot.take() {
+                                    final_text = format!("{snapshot}{FINAL_SELFCHECK_WARN}");
+                                    emit(
+                                        "bot-chat-delta",
+                                        serde_json::json!({ "text": FINAL_SELFCHECK_WARN }),
+                                    );
+                                    audit_log(&format!(
+                                        "final_selfcheck.fail | {}",
+                                        crate::bot::truncate_for_log(&snapshot, 200)
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => (deps.audit)(
+                            crate::audit::AuditLevel::Warn,
+                            "final_selfcheck.sidecall_failed",
+                            vec![("err", e.to_string())],
+                        ),
+                    }
+                    final_selfcheck_snapshot = None;
+                    // fall through：主出口照常返回，侧调不占主循环轮次
+                } else {
+                    // in-loop 路径（未配置侧调模型）：注入 prompt 续跑一轮，
+                    // 模型响应在下一轮迭代末尾解析后还原
+                    final_selfcheck_snapshot = Some(final_text.clone());
+                    msgs.push(serde_json::json!({
+                        "role": "user",
+                        "content": crate::prompts::FINAL_SELFCHECK_PROMPT
+                            .replace("{snippet}", &snippet),
+                    }));
+                    expecting_final_selfcheck = true;
+                    continue;
+                }
             }
             // 终稿自检 verdict 解析：本轮是上一轮触发的 final 自检响应
             // （expecting_final_selfcheck=true），Y/N 字样已被流式跳 emit，
@@ -1676,11 +1811,11 @@ where
                 match crate::prompts::parse_selfcheck_reply_lenient(final_text.trim()) {
                     Some(false) => {
                         if let Some(snapshot) = final_selfcheck_snapshot.take() {
-                            const WARN: &str = "
-
-⚠️ 自检未达预期，请人工核对";
-                            final_text = format!("{snapshot}{WARN}");
-                            emit("bot-chat-delta", serde_json::json!({ "text": WARN }));
+                            final_text = format!("{snapshot}{FINAL_SELFCHECK_WARN}");
+                            emit(
+                                "bot-chat-delta",
+                                serde_json::json!({ "text": FINAL_SELFCHECK_WARN }),
+                            );
                             audit_log(&format!(
                                 "final_selfcheck.fail | {}",
                                 crate::bot::truncate_for_log(&snapshot, 200)
@@ -2238,8 +2373,8 @@ mod hallucination_guard_tests {
         // 头部保留 cap - 6K = 24K（原文头 20K 全 H + 中段 4K M）；尾部保留 6K
         assert!(out.starts_with(&format!("{}{}", "H".repeat(20_000), "M".repeat(4_000))));
         assert!(out.ends_with(&"T".repeat(6_000)));
-        // 中段被替身说明取代
-        assert!(!out.contains(&"M".repeat(1000)));
+        // 中段被替身说明取代（头部只含 4K 个 M，连续 5K M 必来自被替身的中段）
+        assert!(!out.contains(&"M".repeat(5_000)));
         let _ = total;
     }
 
