@@ -862,6 +862,9 @@ where
     // Replan 预算耗尽审计只记一次（耗尽后每轮连续失败仍会发生，不刷屏）
     let mut replan_exhausted_logged: bool = false;
     let mut fail_hint_queued: Option<String> = None;
+    // 自检节流：每 5 轮最多一次；本轮 pending 待本轮 tool 响应回填后 push
+    let mut last_selfcheck_round: Option<usize> = None;
+    let mut pending_selfcheck: Option<(String, String)> = None;
     let mut plan_state = plan_state;
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
@@ -1406,6 +1409,29 @@ where
             // a) claims_mutation——声称完成变更但本轮没动过手；
             // b) fabricated_gen_path——声称已生成文档且给出路径，但路径在磁盘上
             //    不存在（编造的路径经不起存在性检查，实测窄词表漏检的话术靠它兜住）
+            // 自检回复解析：模型刚被注入 SELFCHECK_PROMPT，本轮 final_text
+            // 若 trim 后纯是单字符 Y/N，按 selfcheck 通过/未通过走 PREVR 失败路径。
+            // 失败时 fail_hint_queued 推到本轮 tool 响应回填后统一注入。
+            // final_text 含 Y/N 字样保留进历史——这是有意的视觉反馈。
+            if let Some((sc_name, _sc_snippet)) = pending_selfcheck.as_ref() {
+                match crate::prompts::parse_selfcheck_response(final_text.trim()) {
+                    Some(false) => {
+                        fail_hint_queued = Some(format!(
+                            "【系统提示】你对工具 {sc_name} 的自检回复了「未达预期」。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。",
+                        ));
+                        pending_selfcheck = None;
+                    }
+                    Some(true) => {
+                        // Y 路径不污染 fail_hint，清空 pending 让下一轮走正常流
+                        pending_selfcheck = None;
+                    }
+                    None => {
+                        // 模型附了解释说明（说明自检外还有别的回答），pending 不清空
+                        // 也不重复注入——pending 状态只在本轮 tool 响应回填后取一次
+                        pending_selfcheck = None;
+                    }
+                }
+            }
             let fake_gen_path = fabricated_gen_path(&final_text);
             let claim_mutation = !mutation_done && claims_mutation(&final_text);
             if !claim_retry_used && (claim_mutation || fake_gen_path.is_some()) {
@@ -1516,6 +1542,21 @@ where
             // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
             if mutation_succeeded(name, result) {
                 mutation_done = true;
+                // 自检触发：变更类工具 + 非子 agent 路径 + 节流(5 轮 1 次)
+                // 失败路径写 last_failed_tool/consec_failures/fail_hint_queued，
+                // 复用 PREVR 第 1 层既有「换策略」注入
+                if crate::bot::registry::mutating_tools()
+                    .iter()
+                    .any(|t| *t == name)
+                    && stop
+                        .session_id()
+                        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+                        .is_none()
+                    && last_selfcheck_round.is_none_or(|r| round.saturating_sub(r) >= 5)
+                {
+                    let snippet: String = result.chars().take(80).collect();
+                    pending_selfcheck = Some((name.clone(), snippet));
+                }
             }
             // 成败口径与全链路统一（audit::tool_call_failed）——bot-tool-done 的 ok 字段同源
             let failed = crate::audit::tool_call_failed(name, result);
@@ -1654,6 +1695,15 @@ where
             }
         }
         // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法
+        if let Some((sc_name, sc_snippet)) = pending_selfcheck.take() {
+            last_selfcheck_round = Some(round);
+            msgs.push(serde_json::json!({
+                "role": "user",
+                "content": crate::prompts::SELFCHECK_PROMPT
+                    .replace("{tool_name}", &sc_name)
+                    .replace("{snippet}", &sc_snippet),
+            }));
+        }
         if let Some(hint) = fail_hint_queued.take() {
             msgs.push(serde_json::json!({
                 "role": "user",
