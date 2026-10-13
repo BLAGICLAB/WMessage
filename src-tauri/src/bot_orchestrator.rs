@@ -648,6 +648,13 @@ pub(crate) fn classify_outcome(
         .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok());
     match parsed {
         Some(v) => {
+            // verifier 子 agent 输出独有 schema：含 checks 数组的 verified.json
+            // ——只看 status 会漏掉「逐条 acceptance_criteria 验收」的真实语义。
+            // 此处按结构识别走独立分支判定，不依赖 stage 字段（verifier 输出已经
+            // 结构化，从结构出发比从 stage 出发的耦合面小）。
+            if let Some(checks) = v.get("checks").and_then(|c| c.as_array()) {
+                return classify_verifier_outcome(&v, checks);
+            }
             let claimed = v
                 .get("status")
                 .and_then(|s| s.as_str())
@@ -681,6 +688,71 @@ pub(crate) fn classify_outcome(
             })),
         ),
     }
+}
+
+/// verifier 路径判定：按 `checks[*].met` 综合决定子 agent 终态。
+/// - checks 空：summary 含明确否决词（未通过/fail/reject/failed/否决）→ Failed；
+///   否则视为 N/A 走 Succeeded（verifier 没排到检查项极少，fail-safe 默认放行）
+/// - 全部 met=true → Succeeded
+/// - 全部 met=false → Failed + 错误 reason 拼未通过条目的 criterion 列表（≤3 项）
+///   给主 agent 看到「到底哪里没通过」的最小信号
+/// - 部分 met=true → Succeeded（主 agent 看 result_json 自己决策下一步）
+fn classify_verifier_outcome(
+    v: &serde_json::Value,
+    checks: &[serde_json::Value],
+) -> (SubagentStatus, Option<String>, Option<serde_json::Value>) {
+    let total = checks.len();
+    let passed = checks
+        .iter()
+        .filter(|c| c.get("met").and_then(|m| m.as_bool()) == Some(true))
+        .count();
+    let summary = v.get("summary").and_then(|s| s.as_str()).unwrap_or("");
+    if total == 0 {
+        // checks 为空：按 summary 显式否决词判定
+        let reject_keywords = ["未通过", "fail", "failed", "reject", "否决", "驳回"];
+        let explicit_reject = reject_keywords
+            .iter()
+            .any(|kw| summary.to_lowercase().contains(&kw.to_lowercase()));
+        if explicit_reject {
+            return (
+                SubagentStatus::Failed,
+                Some(format!(
+                    "verifier_summary_rejected: {}",
+                    crate::bot::truncate_for_log(summary, 80)
+                )),
+                Some(v.clone()),
+            );
+        }
+        return (SubagentStatus::Succeeded, None, Some(v.clone()));
+    }
+    if passed == total {
+        return (SubagentStatus::Succeeded, None, Some(v.clone()));
+    }
+    if passed == 0 {
+        // 全部未通过：把失败 criterion 列表（前 3 项）拼进 error reason 给主 agent 看
+        let failed_list: Vec<String> = checks
+            .iter()
+            .take(3)
+            .filter_map(|c| {
+                let criterion = c.get("criterion").and_then(|s| s.as_str())?;
+                Some(format!("{criterion}=false"))
+            })
+            .collect();
+        let reason = if failed_list.is_empty() {
+            "verifier_all_checks_failed".to_string()
+        } else {
+            format!("verifier_all_checks_failed: {}", failed_list.join("; "))
+        };
+        return (
+            SubagentStatus::Failed,
+            Some(crate::bot::truncate_for_log(&reason, 280)),
+            Some(v.clone()),
+        );
+    }
+    // 部分通过：判定 Succeeded（主 agent 看 result_json.checks 自行决策下一步）；
+    // 这里保持纯函数不写审计——非关键信号，让 caller 在 run_subagent 收尾路径里
+    // 决定是否打点（partical-pass 不是错误，重复审计反而拖累日志）。
+    (SubagentStatus::Succeeded, None, Some(v.clone()))
 }
 
 /// 任务包装（设计 §8.5）：orchestrator 从子卡渲染，不接受 LLM 自由拼接。
@@ -2149,6 +2221,81 @@ mod orchestrator_tests {
         assert_eq!(err.as_deref(), Some("result_json_unparseable"));
         let res = res.unwrap();
         assert!(res["summary"].as_str().unwrap().contains("纯文本收尾"));
+    }
+
+    /// verifier 输出 verified.json schema 的判定分支覆盖。
+    /// checks 数组结构而非 status 字段是 verifier 路径的真正信号源。
+    #[test]
+    fn classify_outcome_verifier_paths() {
+        use SubagentStatus::*;
+        // 全部 met=true → Succeeded
+        let (st, err, _) = classify_outcome(
+            None,
+            false,
+            Some(r#"{"checks":[{"criterion":"c1","met":true,"evidence":"x"}],"summary":"all ok"}"#),
+        );
+        assert_eq!(st, Succeeded);
+        assert_eq!(err, None);
+        // 全部 met=false → Failed + reason 列前 3 项 criterion
+        let (st, err, res) = classify_outcome(
+            None,
+            false,
+            Some(
+                r#"{"checks":[{"criterion":"导出 PDF","met":false,"evidence":"缺依赖"},
+                              {"criterion":"样式对齐","met":false,"evidence":"字体不一致"}],
+                   "summary":"全部失败"}"#,
+            ),
+        );
+        assert_eq!(st, Failed);
+        let err_str = err.unwrap();
+        assert!(
+            err_str.starts_with("verifier_all_checks_failed:"),
+            "actual: {err_str}"
+        );
+        assert!(err_str.contains("导出 PDF=false"), "actual: {err_str}");
+        assert!(err_str.contains("样式对齐=false"), "actual: {err_str}");
+        assert_eq!(res.unwrap()["summary"], "全部失败");
+        // 部分 met=true → Succeeded（主 agent 看 checks 自己决策）
+        let (st, err, _) = classify_outcome(
+            None,
+            false,
+            Some(
+                r#"{"checks":[{"criterion":"c1","met":true,"evidence":"x"},
+                              {"criterion":"c2","met":false,"evidence":"y"}],
+                   "summary":"部分通过"}"#,
+            ),
+        );
+        assert_eq!(st, Succeeded);
+        assert_eq!(err, None);
+        // checks 空 + summary 含「未通过」 → Failed
+        let (st, err, _) = classify_outcome(
+            None,
+            false,
+            Some(r#"{"checks":[],"summary":"未通过：缺关键证据"}"#),
+        );
+        assert_eq!(st, Failed);
+        let err_str = err.unwrap();
+        assert!(
+            err_str.starts_with("verifier_summary_rejected:"),
+            "actual: {err_str}"
+        );
+        assert!(err_str.contains("缺关键证据"), "actual: {err_str}");
+        // checks 空 + summary 不含否决词 → Succeeded（fail-safe 放行）
+        let (st, err, _) = classify_outcome(
+            None,
+            false,
+            Some(r#"{"checks":[],"summary":"没有可检查项，跳过验证"}"#),
+        );
+        assert_eq!(st, Succeeded);
+        assert_eq!(err, None);
+        // status=succeeded 的普通收尾无 checks → 走现有路径不受影响
+        let (st, err, _) = classify_outcome(
+            None,
+            false,
+            Some(r#"{"status":"succeeded","summary":"ok"}"#),
+        );
+        assert_eq!(st, Succeeded);
+        assert_eq!(err, None);
     }
 
     #[test]
