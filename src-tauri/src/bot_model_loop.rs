@@ -1593,10 +1593,12 @@ where
             }
             // 终稿自检 verdict 解析：本轮是上一轮触发的 final 自检响应
             // （expecting_final_selfcheck=true），Y/N 字样已被流式跳 emit，
-            // 据 verdict 决定还原 final_text：Y/附解释→原文；N→原文+⚠️+emit+audit。
+            // 据 verdict 决定还原 final_text：Y→原文；N→原文+⚠️+emit+audit。
+            // 判定用宽松前缀版 parse_selfcheck_reply_lenient——模型答「N，…」
+            // 带解释时整段严格匹配得 None，幻觉自白会被当通过静默丢弃。
             // Y 路径不写 audit_log（成功是常态、记了会刷屏）。
             if expecting_final_selfcheck {
-                match crate::prompts::parse_selfcheck_response(final_text.trim()) {
+                match crate::prompts::parse_selfcheck_reply_lenient(final_text.trim()) {
                     Some(false) => {
                         if let Some(snapshot) = final_selfcheck_snapshot.take() {
                             const WARN: &str = "

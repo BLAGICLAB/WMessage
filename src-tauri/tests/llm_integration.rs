@@ -1910,6 +1910,52 @@ async fn core_final_selfcheck_n_appends_warning_and_audits() {
     );
 }
 
+/// 自检响应附解释（"N，……"非纯 Y/N）：宽松前缀判定应识别出 N——原文 + ⚠️ 追加。
+/// 修复前走严格整段匹配得到 None → 当通过处理，幻觉自白被静默丢弃。
+#[tokio::test]
+async fn core_final_selfcheck_explained_n_appends_warning() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。所有条目都逐条核对过状态、期限与负责人，异常项已单独标注，完整清单以文档形式存档，随时可以复查或导出。";
+    server.push_behavior(MockBehavior::TextReply(long_text.into()));
+    // 第 5 轮：模型答「N + 解释」——幻觉自白不能因为不是纯 N 就被丢弃
+    server.push_behavior(MockBehavior::TextReply(
+        "N，报告中把完成日期写错了，实际是下周".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_gap(Some(1)),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("附解释 N 路径应 Ok");
+    assert!(text.contains(long_text), "原文应保留：{text:?}");
+    assert!(
+        text.contains("⚠️ 自检未达预期"),
+        "附解释的 N 也应追加警告，实际：{text:?}"
+    );
+}
+
 /// gap=0（关闭）：长文 + 3 function_calls 也不触发 final 自检，无额外 LLM 请求。
 #[tokio::test]
 async fn core_final_selfcheck_disabled_with_gap_zero() {

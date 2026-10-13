@@ -28,6 +28,18 @@ pub(crate) fn parse_selfcheck_response(trimmed: &str) -> Option<bool> {
     }
 }
 
+/// 宽松判定：取首个非空白字符是 Y/N 即认 verdict。终稿自检的 verdict 解析专用
+/// ——模型常在单字判定后附加解释（"N，日期写错了"），整段严格匹配会把它当
+/// 通过处理，幻觉自白被静默丢弃。空串 / 首字符非 Y/N → None（无法判定）。
+/// 工具自检不用此函数：附解释的回复在那条链路里应当作正常答案展示给用户。
+pub(crate) fn parse_selfcheck_reply_lenient(trimmed: &str) -> Option<bool> {
+    match trimmed.chars().next() {
+        Some('Y' | 'y') => Some(true),
+        Some('N' | 'n') => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +130,25 @@ mod tests {
         assert_eq!(parse_selfcheck_response(" N "), None); // 没 trim
         assert_eq!(parse_selfcheck_response("Yes"), None);
         assert_eq!(parse_selfcheck_response("Done"), None);
+    }
+
+    #[test]
+    fn parse_selfcheck_reply_lenient_prefix_y_n() {
+        assert_eq!(parse_selfcheck_reply_lenient("Y"), Some(true));
+        assert_eq!(parse_selfcheck_reply_lenient("n"), Some(false));
+        // 附解释：首字符即 verdict——幻觉自白不能因为不是纯 N 就被丢弃
+        assert_eq!(
+            parse_selfcheck_reply_lenient("N，报告中把日期写错了"),
+            Some(false)
+        );
+        assert_eq!(
+            parse_selfcheck_reply_lenient("Y —— 检查过路径，文件确实存在"),
+            Some(true)
+        );
+        // 无法判定：空串 / 首字符非 Y/N
+        assert_eq!(parse_selfcheck_reply_lenient(""), None);
+        assert_eq!(parse_selfcheck_reply_lenient("我觉得还行"), None);
+        // 首字符带空白：调用方负责 trim（与 parse_selfcheck_response 同约定）
+        assert_eq!(parse_selfcheck_reply_lenient(" N "), None);
     }
 }
