@@ -7,8 +7,11 @@
 //!
 //! sidecar 写盘可选：None = 不写盘，压缩文本里留"原文未保留"标记（信息丢失，
 //! 但接口仍可用；侧车路径稳定存在时效果最好，模型可通过 read_text_file 回看）。
+//!
+//! 已压缩消息带 ⟦c:…⟧ 标记：软压缩跳过（避免对替身文本重复压缩）；硬压缩
+//! 允许再压，但沿用原指针（盘上原文还在，不写第二个 sidecar）。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -16,8 +19,10 @@ const SOFT_KEEP_HEAD: usize = 200;
 const SOFT_KEEP_TAIL: usize = 100;
 const HARD_KEEP_HEAD: usize = 30;
 const HARD_KEEP_TAIL: usize = 30;
-/// 软/硬压缩的"最小可节省"门槛：原始文本 ≤ 此值不压缩（替身文本本身就比原文长，省不下）
-const MIN_SAVING_CHARS: usize = 30;
+
+/// 压缩标记前缀：替身文本尾部带 ⟦{uid8}⟧，识别"这条消息已压过"。
+/// uid8 每次随机，普通工具输出不可能撞上；content 里出现它 = 我们自己写的。
+const COMPACT_MARK: &str = "⟦c:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionLevel {
@@ -60,6 +65,7 @@ pub fn soft_compact(
         session_id,
         SOFT_KEEP_HEAD,
         SOFT_KEEP_TAIL,
+        false,
     )
 }
 
@@ -74,7 +80,36 @@ pub fn hard_compact(
         session_id,
         HARD_KEEP_HEAD,
         HARD_KEEP_TAIL,
+        true,
     )
+}
+
+/// 替身标记 uid（8 位随机）：同毫秒批量压缩也不撞、跨轮可识别已压缩消息。
+fn mark_uid() -> String {
+    let u = uuid::Uuid::new_v4().simple().to_string();
+    u[..8].to_string()
+}
+
+/// 从已压缩文本里提取原 sidecar 指针路径（"原文见 " 到 "）" 之间）。
+fn extract_pointer(text: &str) -> Option<String> {
+    let start = text.find("原文见 ")? + "原文见 ".len();
+    let rest = &text[start..];
+    let end = rest.find('）')?;
+    let p = &rest[..end];
+    (!p.is_empty()).then(|| p.to_string())
+}
+
+/// sidecar 文件路径：毫秒时间戳 + 8 位随机后缀——同一轮批量压缩落在同一毫秒
+/// 也不会同名互覆（旧版只有时间戳，前一条的指针会被后一条的原文覆盖）。
+fn sidecar_file_path(dir: &Path, session_id: Option<&str>) -> PathBuf {
+    let ts = chrono::Utc::now().timestamp_millis();
+    let sid_raw = session_id.unwrap_or("anon");
+    let safe_sid: String = sid_raw
+        .chars()
+        .take(32)
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
+    dir.join(format!("conv-{safe_sid}-{ts}-{}.md", mark_uid()))
 }
 
 fn compact_internal(
@@ -83,6 +118,7 @@ fn compact_internal(
     session_id: Option<&str>,
     head_keep: usize,
     tail_keep: usize,
+    recompact_marked: bool,
 ) -> Result<CompactionReport, String> {
     let mut report = CompactionReport {
         before_chars: count_chars(msgs),
@@ -97,7 +133,15 @@ fn compact_internal(
             continue;
         };
         let total = text.chars().count();
-        if total <= head_keep + tail_keep + MIN_SAVING_CHARS {
+        // 已压缩消息：软压缩跳过（对替身文本再压省不了多少、还叠标记）；
+        // 硬压缩允许再压——预算告急时已压消息也要再降密度，但沿用原指针
+        let mut pointer: Option<String> = None;
+        if text.contains(COMPACT_MARK) {
+            if !recompact_marked {
+                continue;
+            }
+            pointer = extract_pointer(text);
+        } else if total <= head_keep + tail_keep {
             continue;
         }
         let original = text.to_string();
@@ -111,43 +155,44 @@ fn compact_internal(
             .rev()
             .collect();
         let middle = total - head_keep - tail_keep;
-        let sidecar_path = write_sidecar(sidecar_dir, session_id, &original)?;
-        let placeholder = match &sidecar_path {
-            Some(p) => format!("\n…（已压缩 {middle} 字符 · 原文见 {p}）…"),
-            None => format!("\n…（已压缩 {middle} 字符 · 原文未保留）…"),
+        // 先定路径、后写盘：替身不比原文短就整条跳过（sidecar 也不落）——
+        // 指针里的绝对路径可能比省下的字符还长，压了白压还孤儿一个文件
+        let sidecar_path: Option<PathBuf> = match (sidecar_dir, &pointer) {
+            (Some(dir), None) => Some(sidecar_file_path(dir, session_id)),
+            _ => None,
         };
-        let new_text = format!("{head}{placeholder}{tail}");
-        m["content"] = Value::String(new_text);
-        if let Some(p) = sidecar_path {
-            report.sidecar_paths.push(p);
+        let placeholder = match (&sidecar_path, &pointer) {
+            (Some(p), _) => format!(
+                "\n…（已压缩 {middle} 字符 · 原文见 {}）…{COMPACT_MARK}{}⟧",
+                p.display(),
+                mark_uid()
+            ),
+            (None, Some(path)) => format!(
+                "\n…（已压缩 {middle} 字符 · 原文见 {path}）…{COMPACT_MARK}{}⟧",
+                mark_uid()
+            ),
+            (None, None) => format!(
+                "\n…（已压缩 {middle} 字符 · 原文未保留）…{COMPACT_MARK}{}⟧",
+                mark_uid()
+            ),
+        };
+        if head_keep + tail_keep + placeholder.chars().count() >= total {
+            continue;
         }
+        if let (Some(p), Some(dir)) = (&sidecar_path, sidecar_dir) {
+            std::fs::create_dir_all(dir).map_err(|e| format!("创建 sidecar 目录失败：{e}"))?;
+            let mut content = String::with_capacity(original.len() + 64);
+            content.push_str("<!-- compressed tool output, see bot::compaction -->\n\n");
+            content.push_str(&original);
+            std::fs::write(p, content).map_err(|e| format!("写入 sidecar 失败：{e}"))?;
+            report.sidecar_paths.push(p.display().to_string());
+        }
+        m["content"] = Value::String(format!("{head}{placeholder}{tail}"));
         report.tool_msgs_compacted += 1;
     }
 
     report.after_chars = count_chars(msgs);
     Ok(report)
-}
-
-fn write_sidecar(
-    dir: Option<&Path>,
-    session_id: Option<&str>,
-    original: &str,
-) -> Result<Option<String>, String> {
-    let Some(dir) = dir else { return Ok(None) };
-    std::fs::create_dir_all(dir).map_err(|e| format!("创建 sidecar 目录失败：{e}"))?;
-    let ts = chrono::Utc::now().timestamp_millis();
-    let sid_raw = session_id.unwrap_or("anon");
-    let safe_sid: String = sid_raw
-        .chars()
-        .take(32)
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .collect();
-    let path = dir.join(format!("conv-{safe_sid}-{ts}.md"));
-    let mut content = String::with_capacity(original.len() + 64);
-    content.push_str("<!-- compressed tool output, see bot::compaction -->\n\n");
-    content.push_str(original);
-    std::fs::write(&path, content).map_err(|e| format!("写入 sidecar 失败：{e}"))?;
-    Ok(Some(path.display().to_string()))
 }
 
 fn count_chars(msgs: &[Value]) -> usize {
@@ -172,6 +217,10 @@ mod tests {
 
     fn mk_assistant_msg(text: &str) -> Value {
         json!({ "role": "assistant", "content": text })
+    }
+
+    fn tmp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("wm-compact-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
@@ -234,7 +283,7 @@ mod tests {
 
     #[test]
     fn sidecar_writes_file_and_is_referenced() {
-        let dir = std::env::temp_dir().join(format!("wm-compact-{}", uuid::Uuid::new_v4()));
+        let dir = tmp_dir();
         let original: String = "X".repeat(1000);
         let mut msgs = vec![mk_tool_msg(&original)];
         let report = soft_compact(&mut msgs, Some(&dir), Some("sess-42")).unwrap();
@@ -245,6 +294,71 @@ mod tests {
         let written = std::fs::read_to_string(path).unwrap();
         assert!(written.contains(&original));
         assert!(msgs[0]["content"].as_str().unwrap().contains(path_str));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sidecar_paths_unique_across_messages() {
+        let dir = tmp_dir();
+        let mut msgs = vec![mk_tool_msg(&"X".repeat(800)), mk_tool_msg(&"Y".repeat(800))];
+        let report = soft_compact(&mut msgs, Some(&dir), Some("s")).unwrap();
+        assert_eq!(report.sidecar_paths.len(), 2, "两条都应落盘");
+        assert_ne!(
+            report.sidecar_paths[0], report.sidecar_paths[1],
+            "同毫秒批量压缩也不允许同名互覆"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compaction_skipped_when_placeholder_would_grow_text() {
+        let dir = tmp_dir();
+        // 330 字符：进得了候选（>300），但替身含真实 sidecar 路径后必比原文长
+        let mut msgs = vec![mk_tool_msg(&"Z".repeat(330))];
+        let report = soft_compact(&mut msgs, Some(&dir), Some("s")).unwrap();
+        assert_eq!(report.tool_msgs_compacted, 0, "替身比原文长时应跳过");
+        assert_eq!(report.sidecar_paths.len(), 0, "跳过时不应落盘孤儿文件");
+        assert_eq!(msgs[0]["content"].as_str().unwrap(), "Z".repeat(330));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn soft_pass_skips_already_compacted() {
+        let dir = tmp_dir();
+        let mut msgs = vec![mk_tool_msg(&"W".repeat(800))];
+        let first = soft_compact(&mut msgs, Some(&dir), Some("s")).unwrap();
+        assert_eq!(first.tool_msgs_compacted, 1);
+        let after_first = msgs[0]["content"].as_str().unwrap().to_string();
+        // 第二轮软压缩：已压缩消息跳过——不二次落盘、不叠标记
+        let second = soft_compact(&mut msgs, Some(&dir), Some("s")).unwrap();
+        assert_eq!(second.tool_msgs_compacted, 0);
+        assert_eq!(msgs[0]["content"].as_str().unwrap(), after_first);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "不写第二个 sidecar"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn hard_recompact_preserves_sidecar_pointer() {
+        let dir = tmp_dir();
+        let mut msgs = vec![mk_tool_msg(&"V".repeat(1000))];
+        soft_compact(&mut msgs, Some(&dir), Some("s")).unwrap();
+        let soft_text = msgs[0]["content"].as_str().unwrap().to_string();
+        let soft_pointer = extract_pointer(&soft_text).expect("软压缩替身应带指针");
+        // 硬压缩再压：指针必须保留（原文还在盘上），且不新增 sidecar 文件
+        let report = hard_compact(&mut msgs, Some(&dir), Some("s")).unwrap();
+        assert_eq!(report.tool_msgs_compacted, 1);
+        assert_eq!(report.sidecar_paths.len(), 0, "再压不写第二个 sidecar");
+        let hard_text = msgs[0]["content"].as_str().unwrap();
+        assert_eq!(
+            extract_pointer(hard_text).as_deref(),
+            Some(soft_pointer.as_str()),
+            "硬压缩后指针应与软压缩一致"
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
