@@ -335,6 +335,43 @@ scheduler 兜底才走增量。两条路最终汇到 `cluster_correction_lessons
 扫描 IO 升级」已在本批一 commit 落地。批 VII 末观察性挂账
 （`verifier_retry_max` 真实数据）等真实使用后再说。
 
+## 2026-10-14（周二）agent 行为收紧批 IX：resolve_model_override 空 key 校验
+
+一条独立 commit（不打 squash）：
+
+- `3d524fd` `resolve_model_override` 末尾加空 key 校验 → 返回
+  `CommandError::ApiKeyMissing` 而非 `Ok("")`；函数签名同步从
+  `Result<ResolvedModel, String>` 改为 `Result<ResolvedModel, CommandError>`，
+  保住 ApiKeyMissing 结构化变体（避免 From<String> 把「key 缺失」降级成 Internal）。
+  测试 `resolve_finds_entry_across_protocols` 拆 Ok/Err(ApiKeyMissing) 双分支：
+  本机有 key 走 Ok 字段断言，sandbox / 未配 key 走 Err 验证修复后 fail-fast 契约。
+
+**Bug 现象与根因**：基线 19 个预存失败里唯一一条不是 sandbox 网络端口被拒的
+真实 bug——`bot::config::types::model_override_tests::resolve_finds_entry_across_protocols`
+测试断言 `!r.api_key.is_empty()` 在 keychain NoEntry 时拿 Ok("") 而失败。
+生产路径也会撞同坑：用户没配 key 时 LLM 拿空 key 打 API 拿 401，错误信息不友好。
+
+**为什么改签名为 CommandError 不是改 format! 文本**：现有 `format!("...")`
+走 `From<String> for CommandError::Internal` 把所有 Err 都降级成 Internal——
+意味着即便末尾改 return `Err(format!("..."))`，调用方拿到 Internal 而不是
+ApiKeyMissing 结构化变体，前端的 hintForCode 分流失配。改签名为 CommandError
+是让 ApiKeyMissing 真正结构化传播的最小代价。`From<CommandError> for String`
+只用于 tool→model 边界的有损转换，主链路应保持结构化。
+
+**为什么 API break 1 处可以接受**：`resolve_model_override` 在 production
+只被 `bot_model_loop.rs:541` 调一次，`?` 自动走 `From<CommandError> for CommandError`
+Identity 无需调用方改动；3 处测试断言调 `.to_string()` 适配。Impact 范围：1 个
+prod 调用方 + 3 处测试。`bot_model_loop.rs:556` 的冗余空 key 校验保留作
+defense-in-depth——resolved=None 路径不经过本函数，那里的校验不可去。
+
+**为什么测试拆 Ok/Err 双分支不是统一 assert**：sandbox 跑 `cargo test --lib`
+是 CI 默认链路，不该卡这条测试。`Err(CommandError::ApiKeyMissing) => {}` 是
+沉默通过 + 注释锁死 fix 契约（拿变体断言为 fix 正确性背书），本机有 key 时
+走 Ok 分支不失效。
+
+**已知 follow-up（不挂账到日程，挂账到下批）**：无新增技术挂账。批 VII 末
+观察性挂账（`verifier_retry_max` 真实数据）延续。
+
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
 
 两条独立 commit，不合并：
