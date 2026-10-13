@@ -1628,9 +1628,12 @@ where
 
         // 模型请求工具：进程内执行，结果回填后继续下一轮。
         // 模型以工具调用回应自检提示 = 以行动代回答：丢弃工具自检态，
-        // 后续轮流式不再被抑制（终稿自检快照的释放在终稿自检态一并处理）。
+        // 后续轮流式不再被抑制；终稿自检快照一并释放——最终回答以
+        // 模型核验后的新产出为准，不能把旧快照顶回去。
         expecting_selfcheck = false;
         pending_selfcheck = None;
+        expecting_final_selfcheck = false;
+        final_selfcheck_snapshot = None;
         msgs.push(serde_json::json!({
             "role": "assistant",
             "content": serde_json::Value::Null,

@@ -1956,6 +1956,62 @@ async fn core_final_selfcheck_explained_n_appends_warning() {
     );
 }
 
+/// 终稿自检响应轮带工具调用（以行动代回答）：应释放快照与流抑制，
+/// 最终返回模型新的正常回答——而不是把旧快照原样顶回去（修复前行为）。
+#[tokio::test]
+async fn core_final_selfcheck_tool_reply_releases_snapshot() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 4 轮长文触发 final 自检（gap 默认 8，首次满足即触发）
+    server.push_behavior(MockBehavior::TextReply(
+        "已完成全部工作：本轮列出并逐条核对了所有任务条目，统计了完成与遗留情况，生成了汇总报告并写入文档，任务列表与统计结果均已在会话中展示完毕，没有遗漏任何步骤与细节，可以放心查阅。"
+            .into(),
+    ));
+    // 第 5 轮：模型不答 Y/N 而是继续调工具核验（以行动代回答）
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 6 轮：核验后的新最终回答——不应被第 4 轮快照顶掉
+    // （gap=8：第 6 轮距上次触发仅 2 轮，不会二次触发；字数 <80 双保险）
+    server.push_behavior(MockBehavior::TextReply(
+        "复核完成：所有条目与报告一致，任务全部就绪。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_gap(None),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("以行动代回答路径应 Ok");
+    assert!(
+        text.contains("复核完成"),
+        "应返回核验后的新回答，实际（旧快照被顶回）：{text:?}"
+    );
+    // 6 次 LLM 请求：3 tool + 长文 + 行动代答 + 新回答
+    assert_eq!(server.request_count(), 6);
+}
+
 /// gap=0（关闭）：长文 + 3 function_calls 也不触发 final 自检，无额外 LLM 请求。
 #[tokio::test]
 async fn core_final_selfcheck_disabled_with_gap_zero() {
