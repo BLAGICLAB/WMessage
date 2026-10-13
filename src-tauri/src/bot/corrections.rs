@@ -276,7 +276,7 @@ mod correction_tests {
     /// [0.9, sqrt(1-0.81), 0, ..., 0] but with the secondary component at axis `axis`.
     /// All such vectors share v[0]=0.9 → pairwise cos = 0.9^2 + remainder = 0.81.
     fn topic_vec(axis: usize) -> Vec<f32> {
-        let dim = crate::memory::embed::EMBED_DIM as usize;
+        let dim = crate::memory::embed::EMBED_DIM;
         let mut v = vec![0f32; dim];
         v[0] = 0.9_f32;
         v[axis.min(dim - 1)] = (1.0_f32 - 0.81_f32).sqrt();
@@ -285,7 +285,7 @@ mod correction_tests {
 
     /// one-hot at index `axis`, length EMBED_DIM — orthogonal to topic vectors.
     fn noise_vec(axis: usize) -> Vec<f32> {
-        let dim = crate::memory::embed::EMBED_DIM as usize;
+        let dim = crate::memory::embed::EMBED_DIM;
         let mut v = vec![0f32; dim];
         v[axis.min(dim - 1)] = 1.0;
         v
@@ -332,6 +332,7 @@ mod correction_tests {
         let l = &lesson_tagged[0];
         assert_eq!(l.source, "system", "lesson 来源应是 system（自动聚类生成）");
         assert_eq!(l.importance, 4, "lesson 默认 importance=4");
+        assert_eq!(l.kind, "lesson", "Merged 路径应被校正成 kind=lesson");
     }
 
     #[test]
@@ -454,9 +455,21 @@ pub(crate) fn cluster_correction_lessons_blocking(
         );
         if msg.starts_with("已记录教训") {
             stats.lessons_written += 1;
+            // store dedup-on-write 合并没有动 kind（store.rs:360-380 明示）——
+            // 当 lesson 与同 embedding 的 fact 行 cos ≥0.92 合并时，目标行
+            // content/tags/source/importance 都已覆盖成 lesson 口径，唯 kind 留 fact。
+            // 这里追加 1 次定点 UPDATE 校正：tags 已含 lesson/user_correction 但
+            // kind=fact 的行升格为 lesson，保证后续聚类查询与 lesson 召回一致
+            // 看到 kind=lesson。不改 store 语义，接触面最小。
+            // 校正失败不阻塞主路径：store 已至少把 tags/source/importance 覆盖成
+            // lesson 口径，kind 不一致已不再阻塞 lesson 召回——降级模式；
+            // 不引审计通道（pure 函数无 AppHandle）。
+            let _ = conn.execute(
+                "UPDATE mem_items SET kind = 'lesson'                  WHERE kind = 'fact' AND content = ?1                    AND instr(tags, 'lesson') > 0                    AND instr(tags, 'user_correction') > 0",
+                rusqlite::params![rep.content],
+            );
         }
-        // "失败"/"合并"/"冲突提示" 等其他分支由 record_lesson_core 自身处理语义去重，
-        // 这里不强求 Inserted——单条 fact 句已合并、并入既有 lesson 同样算「沉淀过」
+        // "失败"/"冲突提示"等其他分支由 record_lesson_core 自身处理；不校正。
     }
     Ok(stats)
 }
