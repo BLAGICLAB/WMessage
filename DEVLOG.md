@@ -236,18 +236,65 @@ bot.log 审计）
 - 距上次 < gap → 节流器核心职责
 - 任一自检态 → 不与现有自检撞车（避免 round 内连续两次 prompt 注入）
 
-**已知 follow-up（不挂账到日程，挂账到下批）**：本批只覆盖主聊天路径
+**已知 follow-up（不挂账到日程，挂账到下批）**：~~本批只覆盖主聊天路径
 的 final_text 自检，子 agent 的 finalizer（`bot_orchestrator::run_subagent`）
-不走 `run_model_loop_core`，自检闸没生效到子 agent 输出上。要扩到子
-agent 路径得在 `run_subagent` finalize 之前加同套 trigger + verdict 解析
-逻辑，接触面中等（要复用 `FINAL_SELFCHECK_PROMPT` + 视觉过滤 + 节流）。
-下批触发时机：观察主聊天路径自检触发的真实 N 频率，确认阈值/行为合理
-后再扩到子 agent。
+不走 `run_model_loop_core`，自检闸没生效到子 agent 输出上。~~ **勘误**：
+勘察后发现子 agent 走 `bot_model_loop::run_model_loop` 薄壳（line 524），
+跟主聊天共享同一个 `cfg.final_selfcheck_round_gap`，已经触发 final 自
+检。无需额外扩展。下一段挂账撤回。
 
 **什么没做（批 VI 接管后状态更新）**：原批 V 末尾挂账「verifier 拒绝 →
 主 agent 自动 executor 重试的自适应循环」仍未动——本批没碰
-`bot_orchestrator` 决策路径，自适应重试循环继续挂账到下批。新挂账
-「终稿自检扩到子 agent finalizer」见上节。
+`bot_orchestrator` 决策路径，自适应重试循环继续挂账到下批。原「终稿
+自检扩到子 agent finalizer」挂账**勘误后撤回**（子 agent 已共享触发）。
+
+## 2026-10-14（周二）agent 行为收紧批 VII：verifier 拒绝自适应重试
+
+一条独立 commit（不打 squash）：
+
+- `f49c5c7` verifier 拒绝 → 主 agent 自适应 EXECUTOR 重试（MAIN_AGENT_ADDENDUM
+  「失败与预算」段加「精准修复」指引）+ 设置项 `verifier_retry_max` 注入
+  system prompt「## 当前设置」段
+
+**为什么是 prompt 改动不是结构改动**：主 agent 决策是 LLM 在做，不在
+`bot_orchestrator`——`bot_orchestrator` 只负责 spawn 子 agent + 收尾
+落库 + 状态机推进。改 LLM 看到的 prompt 是 0 行新抽象、零决策路径
+接触面的最小做法。原批 V 末尾「会动 `bot_orchestrator` 决策路径」的
+担忧是误判——prompt 写明白就够了。
+
+**为什么重试上限默认 1、设 0 = 不重试**：1 次重试能 cover 90% 的
+「verifier 抓到的真的是个 bug，EXECUTOR 改一次就好」的常见场景——
+比默认 0 更安全（用户少看一次失败汇报），比默认 N 次更省 token
+（无限重试烧 token 没收益）。**0 是 kill switch**——给「想完全关掉
+自适应重试、宁可如实汇报也不想 LLM 改东西」的用户明确出口。
+
+**为什么精准修复（只列 failed criterion）不暴力重跑**：暴力重跑让
+EXECUTOR 重新做全部 acceptance_criteria——已通过的项再跑一次是
+浪费 token，且可能「为了修而修」把已通过的项改坏。精准修复让
+EXECUTOR 看到「上次哪几条没过 + 失败原因 evidence」，只补做这几条
+——token 成本最低、信息密度最高。
+
+**为什么部分 met=true 走「可选」不强求**：mixed 通过是「3 条过 2 条
+没过 1 条」的中间态——是 fail-fast 还是安全网没有统一最优解。看
+任务重要性 LLM 自决：关键任务补做 met=false 项，非关键任务如实
+汇报「2/3 通过、1/3 未通过」让用户自己选。**不强求的好处**：避免
+LLM 在 trivial 任务上浪费 token 重做微小瑕疵。
+
+**为什么 verifier_retry_max 注入 system prompt 而不是 prompt 里硬编码
+N**：跟 `final_selfcheck_round_gap` 同套路——设置项上设置页、system
+prompt 拼当前值、MAIN_AGENT_ADDENDUM 写「看当前设置」占位引用。
+**LLM 看到具体数字**比看到「N」更明确，且设置项改动不需要改
+prompt 文件。
+
+**已知 follow-up（不挂账到日程，挂账到下批）**：verifier_retry_max 的
+真实使用频率 + N=1 是否够——下批观察真实对话：循环触发率 / LLM 触
+发循环后成功率 / 是否撞 N=1 上限。撞上限即说明任务结构有问题（verifier
+抓到的不是简单 bug），不是设置项不够大。
+
+**什么没做（批 VII 接管后状态更新）**：批 V 末尾挂账「verifier 拒绝 →
+主 agent 自动 executor 重试」已在批 VII 一 commit 落地。批 VI 末尾
+原挂账「终稿自检扩到子 agent finalizer」勘误后撤回（子 agent 走
+`run_model_loop` 薄壳已共享 cfg）。两挂账都清了。
 
 
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
