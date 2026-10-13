@@ -310,12 +310,40 @@ pub fn build_anthropic_body(
     max_tokens: u32,
     stream: bool,
 ) -> Result<serde_json::Value, String> {
-    let (system, messages) = openai_msgs_to_anthropic(msgs)?;
+    let (system, mut messages) = openai_msgs_to_anthropic(msgs)?;
     let mut tools = convert_tools(tools_openai);
     // prompt caching 断点 2/2：最后一个工具打 ephemeral 标记
-    //（工具 schema 是仅次于 system 的静态前缀；断点 ≤4 个限制内，本项目用 2 个）
+    //（工具 schema 是仅次于 system 的静态前缀；断点 ≤4 个限制内，本项目用 3 个）
     if let Some(last) = tools.last_mut() {
         last["cache_control"] = serde_json::json!({"type": "ephemeral"});
+    }
+    // prompt caching 断点 3/3：最后一个 user 消息打 ephemeral——把增量对话
+    // 也纳入缓存（SWE-agent 同款：断点打在最后几条消息上）。多轮会话每轮
+    // 命中前缀、只重付最后一条；缓存写 1.25×、读 0.1×，长会话净赚。
+    // content 是字符串 → 包成单 text 块打标；已是块数组（tool_result/图）→
+    // 只对末尾的 text/tool_result 块打标，其余结构不动。
+    if let Some(last_msg) = messages.last_mut() {
+        if last_msg["role"] == "user" {
+            match last_msg.get_mut("content") {
+                Some(serde_json::Value::String(s)) => {
+                    let text = std::mem::take(s);
+                    last_msg["content"] = serde_json::json!([{
+                        "type": "text",
+                        "text": text,
+                        "cache_control": {"type": "ephemeral"},
+                    }]);
+                }
+                Some(serde_json::Value::Array(blocks)) => {
+                    if let Some(last_block) = blocks.last_mut() {
+                        let ty = last_block.get("type").and_then(|t| t.as_str());
+                        if matches!(ty, Some("text") | Some("tool_result")) {
+                            last_block["cache_control"] = serde_json::json!({"type": "ephemeral"});
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
     let mut body = serde_json::json!({
         "model": model,
@@ -372,10 +400,14 @@ pub fn apply_anthropic_auth(
 // SSE 解析（入站）
 
 /// 流内捞到的 token 用量（message_start 的 input_tokens / message_delta 的 output_tokens）
+/// prompt caching 命中/写入 tokens：cache_read_input_tokens（命中）、cache_creation_input_tokens（写入）
+/// 仅 Anthropic 协议有；其他协议下为 0。前端按会话累计展示缓存命中率 = read / (read + creation + input)
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AnthropicUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
 }
 
 /// 一个 Anthropic SSE 事件的解析结果：复用 OpenAI 形状的 ParsedChunk
@@ -453,16 +485,19 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
     };
     match ty {
         "message_start" => {
-            // 顺带捞 usage（input_tokens 只在 message_start 里）
+            // 顺带捞 usage（input_tokens / cache_*_tokens 只在 message_start 里）
             let u = &v["message"]["usage"];
-            let (i, o) = (
-                u["input_tokens"].as_u64().unwrap_or(0),
-                u["output_tokens"].as_u64().unwrap_or(0),
-            );
-            if i > 0 || o > 0 {
+            let input = u["input_tokens"].as_u64().unwrap_or(0);
+            let cache_read = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+            let cache_creation = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            // output_tokens 此时通常为 0；保持现有「非零才报」以免空 usage 噪音
+            let output = u["output_tokens"].as_u64().unwrap_or(0);
+            if input > 0 || output > 0 || cache_read > 0 || cache_creation > 0 {
                 ev.usage = Some(AnthropicUsage {
-                    input_tokens: i,
-                    output_tokens: o,
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_read_tokens: cache_read,
+                    cache_creation_tokens: cache_creation,
                 });
             }
             Some(ev)
@@ -524,12 +559,19 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
             if let Some(sr) = v["delta"]["stop_reason"].as_str() {
                 ev.chunk.finish_reason = Some(map_stop_reason(sr).to_string());
             }
-            // usage（output_tokens 在 message_delta 里）
-            let o = v["usage"]["output_tokens"].as_u64().unwrap_or(0);
-            if o > 0 {
+            // output_tokens 在 message_delta 里；cache_*_tokens 某些版本也在
+            // 此处补登一次（Anthropic 当前仅 message_start 带 cache 字段，保留
+            // 兜底便于未来扩展）
+            let u = &v["usage"];
+            let o = u["output_tokens"].as_u64().unwrap_or(0);
+            let cr = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
+            let cc = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            if o > 0 || cr > 0 || cc > 0 {
                 ev.usage = Some(AnthropicUsage {
                     input_tokens: 0,
                     output_tokens: o,
+                    cache_read_tokens: cr,
+                    cache_creation_tokens: cc,
                 });
             }
             Some(ev)
@@ -1034,8 +1076,23 @@ mod tests {
             ev.usage,
             Some(AnthropicUsage {
                 input_tokens: 12,
-                output_tokens: 1
+                output_tokens: 1,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })
+        );
+        // message_start 带 cache_*_tokens：解析四项而非仅 input/output
+        let ev = parse(r#"data: {"type":"message_start","message":{"id":"m2","usage":{"input_tokens":50,"output_tokens":5,"cache_read_input_tokens":4000,"cache_creation_input_tokens":1500}}}"#)
+            .expect("带缓存的 message_start 应解析");
+        assert_eq!(
+            ev.usage,
+            Some(AnthropicUsage {
+                input_tokens: 50,
+                output_tokens: 5,
+                cache_read_tokens: 4000,
+                cache_creation_tokens: 1500,
+            }),
+            "cache 字段必须被捕获，否则命中率不可算"
         );
         assert!(ev.chunk.content.is_none());
         // message_delta 带 stop_reason + usage
@@ -1046,7 +1103,9 @@ mod tests {
             ev.usage,
             Some(AnthropicUsage {
                 input_tokens: 0,
-                output_tokens: 7
+                output_tokens: 7,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
             })
         );
         // message_stop
