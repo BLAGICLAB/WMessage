@@ -32,43 +32,63 @@ pub const DEFAULT_SUBAGENT_MAX_WALL_SECS: u64 = 600;
 /// web_search 默认结果条数（原 bot_web SEARCH_MAX_RESULTS 同值）
 pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 8;
 
+// 钳制单源：写侧落盘（bot_set_config）与读侧生效（下方 resolve_*）共用同一组
+// 边界——字面量只落在这里，防两边各自改数后静默漂移。子 agent 轮数的边界是
+// subagents 域不变量，单源在 db::subagents::clamp_subagent_max_turns。
+
+/// 模型循环轮数钳 5..=200
+pub fn clamp_max_rounds(n: u32) -> u32 {
+    n.clamp(5, MAX_ROUNDS_CAP)
+}
+
+/// 会话历史字符预算钳 20K..=500K
+pub fn clamp_history_budget_chars(n: u32) -> u32 {
+    n.clamp(HISTORY_BUDGET_MIN, HISTORY_BUDGET_MAX)
+}
+
+/// 子 agent 墙钟秒数钳 30..=3600
+pub fn clamp_subagent_max_wall_secs(n: u64) -> u64 {
+    n.clamp(30, 3600)
+}
+
+/// 联网搜索结果条数钳 1..=10
+pub fn clamp_search_max_results(n: u32) -> u32 {
+    n.clamp(1, 10)
+}
+
 // 解析辅助（读取口唯一）
 
 pub fn resolve_max_rounds_cfg(cfg: &BotConfig) -> u32 {
-    cfg.max_rounds
-        .unwrap_or(DEFAULT_MAX_ROUNDS)
-        .clamp(5, MAX_ROUNDS_CAP)
+    clamp_max_rounds(cfg.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS))
 }
 
 pub fn resolve_history_budget_chars(cfg: &BotConfig) -> u32 {
-    cfg.history_budget_chars
-        .unwrap_or(DEFAULT_HISTORY_BUDGET_CHARS)
-        .clamp(HISTORY_BUDGET_MIN, HISTORY_BUDGET_MAX)
+    clamp_history_budget_chars(
+        cfg.history_budget_chars
+            .unwrap_or(DEFAULT_HISTORY_BUDGET_CHARS),
+    )
 }
 
 pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
     crate::db::SubagentBudget {
-        max_turns: cfg
-            .subagent_max_turns
-            .unwrap_or(DEFAULT_SUBAGENT_MAX_TURNS)
-            .clamp(1, crate::db::MAX_TURNS_HARD_CAP),
+        max_turns: crate::db::clamp_subagent_max_turns(
+            cfg.subagent_max_turns.unwrap_or(DEFAULT_SUBAGENT_MAX_TURNS),
+        ),
         // 工具调用上限全域统一（合并两条设置）：子 agent 与主循环同源
         // max_function_calls（缺省 100，钳 1..=500）；LLM 显式给的预算仍可覆盖
         max_tool_calls: cfg
             .max_function_calls
             .unwrap_or(DEFAULT_SUBAGENT_MAX_TOOL_CALLS)
             .clamp(1, 500),
-        max_wall_seconds: cfg
-            .subagent_max_wall_secs
-            .unwrap_or(DEFAULT_SUBAGENT_MAX_WALL_SECS)
-            .clamp(30, 3600),
+        max_wall_seconds: clamp_subagent_max_wall_secs(
+            cfg.subagent_max_wall_secs
+                .unwrap_or(DEFAULT_SUBAGENT_MAX_WALL_SECS),
+        ),
     }
 }
 
 pub fn resolve_search_max_results(cfg: &BotConfig) -> u32 {
-    cfg.search_max_results
-        .unwrap_or(DEFAULT_SEARCH_MAX_RESULTS)
-        .clamp(1, 10)
+    clamp_search_max_results(cfg.search_max_results.unwrap_or(DEFAULT_SEARCH_MAX_RESULTS))
 }
 
 use crate::bot::config::types::BotConfig;

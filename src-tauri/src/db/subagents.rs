@@ -18,6 +18,13 @@ pub const MAX_TURNS_HARD_CAP: u32 = 50;
 pub const DEFAULT_MAX_TOOL_CALLS: u32 = 100;
 pub const DEFAULT_MAX_WALL_SECONDS: u64 = 600;
 
+/// 子 agent 轮数钳制（1..=硬顶 50）——单一来源：config 落盘（bot_set_config）、
+/// bot 读侧 resolver、预算持久化（[SubagentBudget::clamped]）三处共用，
+/// 边界只认这里的 `MAX_TURNS_HARD_CAP`，防改一处漏两处。
+pub fn clamp_subagent_max_turns(n: u32) -> u32 {
+    n.clamp(1, MAX_TURNS_HARD_CAP)
+}
+
 /// 子 agent 生命周期六态（设计 §3 状态机）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,7 +131,7 @@ impl SubagentBudget {
     /// **所有持久化写口（spawn / task_patch）必须过本函数**——字段是 pub 的，
     /// 构造侧不受限，钳制契约靠两个写口强制（防 task_patch 旁路）。
     pub fn clamped(mut self) -> Self {
-        self.max_turns = self.max_turns.clamp(1, MAX_TURNS_HARD_CAP);
+        self.max_turns = clamp_subagent_max_turns(self.max_turns);
         self.max_tool_calls = self.max_tool_calls.max(1);
         self.max_wall_seconds = self.max_wall_seconds.max(1);
         self
