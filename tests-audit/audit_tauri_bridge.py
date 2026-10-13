@@ -50,11 +50,108 @@ def invoke_names(text):
     return [m.group(1) for m in INVOKE_RE.finditer(text)]
 
 
+# 本地包装函数：签名形如 `const NAME = useCallback((FIRST: string, ...) => { invoke(FIRST, ...) })`
+# 把命令名以运行期参数传入 invoke 时（如 EvolutionPanel 的 runCmd），需要在调用点提取字面量。
+# 形态检测：(1) 首参类型为 string；(2) body 内确实调用 invoke(FIRST_PARAM, ...)
+# 第二个条件用括号配平扫描函数体，try/catch/嵌套闭包/await chain 都能跨过。
+_WRAPPER_SIG_RE = re.compile(
+    r'(?:const|let|var)\s+(\w+)\s*=\s*(?:useCallback\s*\()?\s*'
+    r'(?:async\s+)?\(?\s*'
+    r'(\w+)\s*:\s*string\b',
+    re.DOTALL,
+)
+
+
+def _find_arrow_body(text, start):
+    """从签名尾部起找箭头函数的 body 范围（平衡花括号）。返回 (body_start, body_end) 或 None。"""
+    i = start
+    paren_depth = 0
+    while i < len(text):
+        c = text[i]
+        if c == '(':
+            paren_depth += 1
+        elif c == ')':
+            paren_depth -= 1
+            if paren_depth < 0:
+                # 越过参数结束：跳过类型注解/空白，找 =>
+                j = i + 1
+                while j < len(text) and text[j].isspace():
+                    j += 1
+                # 跳过返回类型 : Promise<X>
+                if j < len(text) and text[j] == ':':
+                    # 平衡 < > 跳到下一个顶层 token
+                    depth = 0
+                    j += 1
+                    while j < len(text):
+                        if text[j] == '<':
+                            depth += 1
+                        elif text[j] == '>':
+                            depth -= 1
+                        elif text[j] in '( {' and depth == 0:
+                            break
+                        j += 1
+                    while j < len(text) and text[j].isspace():
+                        j += 1
+                # 现在应看到 =>
+                arrow = text.find('=>', j)
+                if arrow == -1 or arrow > j + 60:
+                    return None
+                k = arrow + 2
+                while k < len(text) and text[k].isspace():
+                    k += 1
+                if k >= len(text) or text[k] != '{':
+                    # 表达式体不展开（风险大），跳过
+                    return None
+                # 平衡花括号
+                depth = 1
+                end = k + 1
+                while end < len(text) and depth > 0:
+                    cc = text[end]
+                    if cc == '{':
+                        depth += 1
+                    elif cc == '}':
+                        depth -= 1
+                    end += 1
+                return (k, end) if depth == 0 else None
+        i += 1
+    return None
+
+
+def discover_invoke_wrappers(text):
+    """找出文本中所有把命令名作为首参传给 invoke 的本地包装函数名。
+    例：`const runCmd = useCallback((cmd: string, args) => { invoke(cmd, args) })`
+    返回 wrapper 名字集合（按文件级扫描，每个 wrapper 自己负责检查 body）。"""
+    wrappers = set()
+    for m in _WRAPPER_SIG_RE.finditer(text):
+        name, first_param = m.group(1), m.group(2)
+        body_range = _find_arrow_body(text, m.end())
+        if not body_range:
+            continue
+        body = text[body_range[0]:body_range[1]]
+        # body 内必须真的 invoke(first_param, ...)——避免误把同名局部函数当包装器
+        if re.search(rf'\binvoke\(\s*{re.escape(first_param)}\s*,', body):
+            wrappers.add(name)
+    return wrappers
+
+
+def wrapper_call_names(text, wrappers):
+    """扫所有 `WRAPPER_NAME("literal", ...)` 调用，提取首参字面量（命令名）。"""
+    if not wrappers:
+        return []
+    alt = '|'.join(re.escape(w) for w in wrappers)
+    pattern = re.compile(rf'\b(?:{alt})\(\s*"([^"]+)"')
+    return [m.group(1) for m in pattern.finditer(text)]
+
+
 def frontend_invokes():
-    """src/ 里 invoke("...") / invoke<T>("...") 的字面量命令名"""
+    """src/ 里 invoke("...") / invoke<T>("...") 的字面量命令名
+    + 通过包装函数（如 runCmd）间接调 invoke 的命令名（首参是字面量）"""
     out = {}  # name -> file
-    for f, t in TS_SRC.items():
-        for name in invoke_names(t):
+    for f, text in TS_SRC.items():
+        for name in invoke_names(text):
+            out.setdefault(name, f)
+        wrappers = discover_invoke_wrappers(text)
+        for name in wrapper_call_names(text, wrappers):
             out.setdefault(name, f)
     return out
 
@@ -309,3 +406,75 @@ def test_extractors_nonempty():
     backend, frontend = emitted_events()
     assert backend and frontend, "事件 emit 提取异常"
     assert listened_events(), "事件 listen 提取异常"
+
+
+# ───────────────────────── 包装函数发现 ─────────────────────────
+
+
+def test_discover_invoke_wrappers_basic():
+    """典型形态：const NAME = useCallback((cmd: string, args) => { invoke(cmd, args) })"""
+    src = '''
+const runCmd = useCallback(
+  async (cmd: string, args: Record<string, unknown>): Promise<boolean> => {
+    try {
+      await invoke(cmd, args);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+  []
+);
+'''
+    assert discover_invoke_wrappers(src) == {"runCmd"}
+
+
+def test_discover_invoke_wrappers_no_invoke_in_body():
+    """首参 typed string 但 body 内不 invoke(FIRST, ...) → 不是包装器"""
+    src = '''
+const format = (s: string, prefix: string) => {
+  return prefix + s.toUpperCase();
+};
+'''
+    assert discover_invoke_wrappers(src) == set()
+
+
+def test_discover_invoke_wrappers_wrong_param_name():
+    """invoke 调用的不是首参 → 不是包装器"""
+    src = '''
+const buggy = useCallback(async (a: string, b: string) => {
+  await invoke(b, {});
+});
+'''
+    assert discover_invoke_wrappers(src) == set()
+
+
+def test_wrapper_call_names_extracts_literals():
+    """`runCmd("literal", ...)` 字面量首参全部提取"""
+    src = '''
+await runCmd("evolution_promote_proposal", { id: 1 });
+await runCmd("evolution_reject_proposal", { id: 2 });
+// 非字面量跳过：
+const name = "dynamic";
+runCmd(name, {});
+'''
+    assert sorted(wrapper_call_names(src, {"runCmd"})) == [
+        "evolution_promote_proposal",
+        "evolution_reject_proposal",
+    ]
+
+
+def test_wrapper_call_names_no_match():
+    """空 wrappers 集合 → 立即返回空列表（不要白做工）"""
+    assert wrapper_call_names("runCmd('bar')", set()) == []
+
+
+def test_frontend_invokes_picks_up_runCmd_calls():
+    """端到端——EvolutionPanel 实际形态必须被 frontend_invokes 抓到"""
+    invokes = frontend_invokes()
+    assert "evolution_promote_proposal" in invokes
+    assert "evolution_reject_proposal" in invokes
+    assert "evolution_keep_shadow" in invokes
+    assert "evolution_rollback_change" in invokes
+    assert "evolution_delete_proposal" in invokes
+    assert "EvolutionPanel" in invokes["evolution_promote_proposal"]
