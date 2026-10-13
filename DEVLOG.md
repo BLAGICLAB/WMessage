@@ -33,11 +33,64 @@ commit 让「写提示词」与「接提示词」可独立 review、独立回滚
 迁移、不破 `SubagentProfile` 枚举、不动 DDL。门槛——「多一行 stage 比少一个迁移
 列价值大吗」——回答是大，所以走 in-memory。这条是「YAGNI」原则的应用，不是疏忽。
 
-**什么没做（round 4 学习闭环推迟）**：bot.log 加 `user.correction` 事件 + 聚类
-定时任务 + 同类 ≥3 次自动 record_lesson 是更大动作——需要先看 audit::write_event
-的现有写点（落点审计 + 端到端语义都需要新约束）和 record_lesson 工具入口
-（memory 模块签名确认）。这一批的「纪律密度」已经够高了，分散开两次「我先看
-现有代码再上」的回合比硬塞五件更稳——挂账到下一批，DEVLOG 不留空头承诺。
+## 2026-10-13（周一）agent 行为收紧批 III：correction 学习闭环封顶
+
+三条独立 commit（不打 squash）：
+
+- `ae9e7a0` 用户纠正信号检测 + `user.correction` 事件打点（`CORRECTION_PATTERNS` 13 个多字短语 + `detect_correction` 纯函数）
+- `825823f` correction 持久化（`record_correction_fact` spawn_blocking 写 mem_items + `record_correction` 单入口 + bot_chat 调用点改造）
+- `92eff76` 聚类阈值触发 lesson（`cluster_correction_lessons_blocking` Union-Find cos ≥0.78、同簇 ≥3 自动 `record_lesson_core`、bot_chat 同步挂触发点）
+
+**为什么三 phase 拆 commit 而不是一次大提交**：事件打点 → 持久化 → 触发同层
+依赖但语义递进。事件源先稳定（审计行肉眼可验），再谈入库（schema
+可独立检），最后谈触发（业务闭环可独立回归）。一次 WIP 大提交阻塞
+bisect——「哪儿坏」不能精确到 phase；拆开后「聚类逻辑错了」只回滚
+`92eff76`，不动 P1/P2 的稳定状态。子 agent 角色化的 P3/P5 拆 commit（批 II）
+用过的同一纪律。
+
+**为什么 pattern 用白名单多字短语不接单字**：单字「不」「别」覆盖中文里
+大量中性句——会话收束（「不要紧」）、否定疑问（「不行吗」）、自检回应
+（用户重读 agent 输出）。这些打散簇阈值（同一簇噪声远超真信号），3 条
+trigger 的语义承诺（"用户稳定偏好"）就被水掉。多字"错了/搞反/应该用"
+是 push-back 语言学共性，自然区分典型反馈与中性对话。**噪声比漏检
+贵**——这是聚类阈值的逆问题，先压住误判再说召回。
+
+**为什么不造新基础设施，借 store 现成 dedup 承担聚类前置**：Phase 2 写入
+故意走 `insert_item_with` 而不是 raw INSERT——已有的 cos ≥0.92 语义去重
+天然做"反复说同一件事折叠成单条目"，Phase 3 扫的"剩下的不同条目"就是
+真信号。等于把"同主题聚合"这个责任完全外包给 store，避免引入第二套
+去重逻辑（`dedup_merge` + 我的 cluster 阈值在同维空间里竞争、debug 看
+出来要追两套语义）。**复用现有契约是新功能上线最快的方式**。
+
+**为什么不挂 scheduler，聚类跟 in-memory spawn**：定时调度涉及
+`bot_scheduler` 行级 lock 与定时器，跟"事件驱动"两种时序模型——前者
+靠 cron / tick，后者靠 `record_correction` 触发的 spawn。当前选 spawn，
+因为每条 correction 是低频信号（用户不是 syslog），时间间隔不构成
+压力。代价：同一会话短时间内连发 N 条 correction 会触发 N 次聚类扫描
+（依然只走 DB_WRITE_LOCK 串行，cost 在 1k-1w 条二级）。scheduler 是
+优化不是必需，挂账在最末。
+
+**为什么 auto_write_allowed 也覆盖聚类**：与持久化同门禁。关自动记忆
+即拒绝一切自动入库——审计行不写，**不留后门**。如果只关持久化不关聚类，
+用户以为「不再自动记忆」实际还在写 lesson（更隐蔽），隐私决策的"信任成本"
+就泄漏到不该泄漏的地方。**双闸同步**。
+
+**为什么阈值 3 + cos 0.78 这个数**：3 是经验值——1 太敏感（用户偶尔口误
+也算）、5 太少信号、3 像"用户稳定偏好"的最小证据集。0.78 卡在 store 的
+"冲突提示线" (0.75) 与"自动合并线" (0.92) 之间——够激进把同语义入同簇
+（`v[0]=0.9, v[1..3]=√0.19` 这种"主轴相同+辅轴分散"的近邻抓得到），够保守不踩
+冲突提示。**两阈值分层**：0.92 是「这是同一件事」，0.78 是「这是同一话题」，
+0.75 是「相似但需要提示」。三层各司其职，不必再发明第四条。
+
+**已知 follow-up（不挂账到日程，挂账到下批）**：聚类现在是事件触发，
+不是定时扫描。scheduler/定时兜底暂不上线——批 III 的入参已经够密，定时器
+风险（行级 lock / 崩溃重试 / 不重发 lesson）不在本批额度内。下次想触发
+时再决定挂 `bot_scheduler.tick` 还是新建独立 tokio task。lesson 写 store
+时若 embedding 与既有 fact 行碰撞会「合并」到 fact 而 kind 留 fact——是
+store dedup-on-write 的已知语义（`src/memory/store.rs` 行 360-380 注释明示），
+非本批范围。
+
+**什么没做（批 III 接管后状态更新）**：原批 II 末尾挂账的「round 4 学习闭环」已在批 III 三 commit 落地。剩余 follow-up（聚类 scheduler/兜底、lesson-dedup 与 fact 撞行的已知行为）见上节「已知 follow-up」。
 
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
 
