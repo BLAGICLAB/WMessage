@@ -366,6 +366,10 @@ pub fn run() {
             // 首轮 consolidate emit 会因 AppHandle 未就绪而丢弃。
             crate::evolution::emit::register_app_handle(app.handle().clone());
             memory::consolidate::start_consolidation_scheduler(app.handle().clone());
+            // correction 聚类兜底定时器：5 min 一轮；事件驱动（同条 correction
+            // 立即路径触发）的空隙补漏，主要服务「崩溃重启漏最后一条」「用户离线
+            // 期间攒 N 条」两种场景。幂等同 cluster_correction_lessons_blocking。
+            bot::corrections::start_correction_cluster_scheduler(app.handle().clone());
 
             // 模型元数据：启动后台同步 models.dev（网络失败只记审计、用库内缓存，
             // 不 panic 不阻断启动；手动同步走 meta_sync_models_dev 命令）

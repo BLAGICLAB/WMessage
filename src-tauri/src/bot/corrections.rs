@@ -7,12 +7,17 @@
 //! 3. 聚类任务读库按 cos ≥0.78 分簇，同簇 ≥3 自动 record_lesson（fire-and-forget，
 //!    与 record_correction 同节流，不阻塞 bot_chat 主路径）
 //!
-//! 范围：三段流水（事件 / 持久化 / 聚类触发 lesson）。不引入调度/批处理——
-//!「事件落盘」与「聚合触发」解耦；调度层未来挂在 scheduler，现版本按需即时触发。
+//! 范围：三段流水（事件 / 持久化 / 聚类触发 lesson）+ scheduler 兜底定时器。
+//! 即时触发（事件驱动）与定时扫描（兜底）并存：高频 correction 跟即时路径，
+//! 低频或被运行时抖动（崩溃/离线）漏掉的 cluster 由 scheduler tick 补漏。
+//! 两者最终都走 `cluster_correction_lessons_blocking` 同个 DB 串行段 + store
+//! 语义去重（cos ≥0.92 merge）+ 阈值触发，幂等互不破坏。
 //!
 //! 模式选择：白名单多字短语（"错了"/"重做"/"搞反" 等），避单字歧义
 //!（"不"/"别" 单独出现命中太宽）。模糊宁可漏检不要误判——审计信号噪
 //! 声太大会让聚类阈值失效（见 Round 4 设计）。新增模式须补单测。
+
+use futures_util::FutureExt;
 
 /// 推回模式白名单：命中其一即视为用户纠正信号。
 /// 多字短语优先；单字歧义词（"不"/"别"）单独出现不在此列。
@@ -505,4 +510,44 @@ pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(app: &taur
             );
         }
     }
+}
+
+/// scheduler 兜底周期：5 分钟一轮。correction 是低频信号（用户不是 syslog），
+/// 远长于 store 语义去重的 cos 阈值合并间隔；同 cluster 短时间高频 correction
+/// 即时路径会触发，立即覆盖不到 scheduler 周期内的也算无意义。5 min 主要服务
+/// 「崩溃后重启漏掉最后一条」与「用户离线期间攒了 N 条 correction」两种场景。
+pub(crate) const CLUSTER_SCHED_TICK_SECS: u64 = 300;
+
+/// 启动 correction 聚类定时器（App 启动调用；与 start_consolidation_scheduler
+/// 同模式）：每 5 分钟一轮跑 `try_cluster_correction_lessons` 做兜底扫描。
+///
+/// panic recovery 与静默审计失败参照 bot_scheduler::start_scheduler 与
+/// memory::consolidate::start_consolidation_scheduler —— 单轮 panic 不杀循环。
+/// 幂等由 store dedup + cluster 阈值 ≥ 共同保障；同一条 cluster 多次 tick 落
+/// 多次 lesson 的概率由 record_lesson_core 的 cos ≥0.92 合并机制压到 0。
+pub(crate) fn start_correction_cluster_scheduler(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(CLUSTER_SCHED_TICK_SECS));
+        ticker.tick().await; // 消耗首个立即触发的 tick
+        loop {
+            ticker.tick().await;
+            // AssertUnwindSafe 安全依据：单轮只读 db + 调一次聚类扫描；
+            // panic 后无可破坏状态；下一轮从头开始。
+            let app2 = app.clone();
+            let tick = std::panic::AssertUnwindSafe(async move {
+                try_cluster_correction_lessons(&app2).await;
+            });
+            if let Err(panic) = tick.catch_unwind().await {
+                let msg = crate::audit::panic_message(panic);
+                crate::bot::audit_log(
+                    &app,
+                    &format!(
+                        "correction_cluster_tick_panic | {} | 单轮 panic 已兜底，调度器继续",
+                        crate::bot::truncate_for_log(&msg, 200)
+                    ),
+                );
+            }
+        }
+    });
 }
