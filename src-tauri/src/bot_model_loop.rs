@@ -874,6 +874,9 @@ where
     // 自检节流：每 5 轮最多一次；本轮 pending 待本轮 tool 响应回填后 push
     let mut last_selfcheck_round: Option<usize> = None;
     let mut pending_selfcheck: Option<(String, String)> = None;
+    // 自检视觉过滤：pending 推入 prompt 后置 true，本轮 SSE 流式 emit 不输出 Y/N，
+    // 改在 final_text 解析时统一 emit 视觉提示（✅ / ⚠️）
+    let mut expecting_selfcheck = false;
     let mut plan_state = plan_state;
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
@@ -1210,7 +1213,11 @@ where
                     }
                     if !normal.is_empty() {
                         final_text.push_str(&normal);
-                        emit("bot-chat-delta", serde_json::json!({ "text": normal }));
+                        // 自检回复（Y/N）整段隐藏：流式不 emit，final_text 解析后
+                        // 统一 emit ✅/⚠️ 视觉提示，避免用户先看到 Y 又被覆盖
+                        if !expecting_selfcheck {
+                            emit("bot-chat-delta", serde_json::json!({ "text": normal }));
+                        }
                     }
                 }
                 for tc_delta in parsed.tool_calls {
@@ -1349,7 +1356,9 @@ where
                 emit("bot-think-delta", serde_json::json!({ "text": tail }));
             } else {
                 final_text.push_str(&tail);
-                emit("bot-chat-delta", serde_json::json!({ "text": tail }));
+                if !expecting_selfcheck {
+                    emit("bot-chat-delta", serde_json::json!({ "text": tail }));
+                }
             }
         }
 
@@ -1426,6 +1435,22 @@ where
             // 若 trim 后纯是单字符 Y/N，按 selfcheck 通过/未通过走 PREVR 失败路径。
             // 失败时 fail_hint_queued 推到本轮 tool 响应回填后统一注入。
             // final_text 含 Y/N 字样保留进历史——这是有意的视觉反馈。
+            if expecting_selfcheck {
+                let hint_text = match crate::prompts::parse_selfcheck_response(final_text.trim()) {
+                    Some(true) => "✅ 自检通过",
+                    Some(false) => "⚠️ 自检未达预期,换策略中…",
+                    // 模型附了解释：正常显示原 final_text（已被上面 emit 跳过，
+                    // 这里手动 emit 一次），不再加视觉提示
+                    None => "",
+                };
+                if !hint_text.is_empty() {
+                    emit("bot-chat-delta", serde_json::json!({ "text": hint_text }));
+                } else {
+                    // 模型附了解释说明：emit 原 final_text（之前 SSE 已跳 emit）
+                    emit("bot-chat-delta", serde_json::json!({ "text": final_text }));
+                }
+                expecting_selfcheck = false;
+            }
             if let Some((sc_name, _sc_snippet)) = pending_selfcheck.as_ref() {
                 match crate::prompts::parse_selfcheck_response(final_text.trim()) {
                     Some(false) => {
@@ -1710,6 +1735,7 @@ where
         // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法
         if let Some((sc_name, sc_snippet)) = pending_selfcheck.take() {
             last_selfcheck_round = Some(round);
+            expecting_selfcheck = true;
             msgs.push(serde_json::json!({
                 "role": "user",
                 "content": crate::prompts::SELFCHECK_PROMPT
