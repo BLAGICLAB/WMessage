@@ -8,6 +8,7 @@
 //!
 //! 无 IO / 无锁 / 无依赖子模块——bot/config/ 的基础层。
 
+use crate::error::CommandError;
 use serde::{Deserialize, Serialize};
 
 // KeySlot
@@ -569,7 +570,7 @@ pub fn resolve_model_override(
     models_by_provider: Option<&ModelsByProvider>,
     entry_id: &str,
     global_max_tokens: Option<u32>,
-) -> Result<ResolvedModel, String> {
+) -> Result<ResolvedModel, CommandError> {
     let lists = models_by_provider;
     fn find<'a>(items: &'a [ModelEntry], entry_id: &str) -> Option<&'a ModelEntry> {
         items.iter().find(|e| e.id == entry_id)
@@ -582,16 +583,21 @@ pub fn resolve_model_override(
     let (entry, provider) = match found {
         Some((e, p)) => (e, p),
         None => {
+            // 保留 format! 由 From<String> for CommandError 转 Internal（与既有
+            // resolve_rejects_missing_and_disabled 测试的 .contains("停用") 同口径；
+            // 后续若需要前端的精确变体分流，再逐条改 InvalidArgument 等结构化变体）
             return Err(format!(
                 "模型条目 {entry_id} 不存在：请到 设置→模型设置 确认（条目可能已删除）"
-            ));
+            )
+            .into());
         }
     };
     if !entry.enabled {
         return Err(format!(
             "模型条目「{}」已停用：请到 设置→模型设置 启用后重试",
             entry.label
-        ));
+        )
+        .into());
     }
     // key：厂商 key 优先，缺 → 全局主 key 兜底（仅全局，不走 active 模型厂商——
     // 该 key 会打 override 条目自己的 base_url，跨厂商回退是凭据泄漏）。
@@ -605,6 +611,13 @@ pub fn resolve_model_override(
         },
         None => crate::bot::config::keyring::read_api_key()?,
     };
+    // 兜底拿不到 key（NoEntry → classify_get_password 把 NoEntry 映射成 Ok("")）
+    // 直接返回 ApiKeyMissing 而非包成 Ok("")——后者会被调用方拿空 key 去打 API 拿 401，
+    // fail-fast 引导用户去设置页配 key。bot_model_loop.rs:556 / bot_chat.rs:1110
+    // （require_api_key）同口径，已是现有惯例；本函数末尾补齐避免调用方各自重复。
+    if api_key.trim().is_empty() {
+        return Err(CommandError::ApiKeyMissing);
+    }
     Ok(ResolvedModel {
         base_url: entry.base_url.clone(),
         model: entry.model.clone(),
@@ -682,15 +695,25 @@ mod model_override_tests {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
-        let r = r.unwrap();
-        assert!(r.inference.max_tokens >= 256);
-        assert_eq!(r.base_url, "https://open.bigmodel.cn/api/paas/v4");
-        assert_eq!(r.model, "glm-4.6");
-        assert_eq!(r.api_provider, "openai");
-        assert!(
-            !r.api_key.is_empty(),
-            "key 回退全局（default 配置有占位或空）"
-        );
+        // 本机 keychain 配了 key → 正常解析；sandbox / 未配 key → 触发 ApiKeyMissing
+        // （修复后 resolve_model_override 末尾校验空 key，与 require_api_key 同口径；
+        // 修复前函数返回 Ok("") 让 LLM 拿空 key 打 API 拿 401）
+        match r {
+            Ok(resolved) => {
+                assert!(resolved.inference.max_tokens >= 256);
+                assert_eq!(resolved.base_url, "https://open.bigmodel.cn/api/paas/v4");
+                assert_eq!(resolved.model, "glm-4.6");
+                assert_eq!(resolved.api_provider, "openai");
+                assert!(
+                    !resolved.api_key.is_empty(),
+                    "本机 keychain 配了 key 不应为空"
+                );
+            }
+            Err(CommandError::ApiKeyMissing) => {
+                // keychain 跑通但未存 key（sandbox 典型场景）—— 验证修复后的 fail-fast 契约
+            }
+            Err(e) => panic!("unexpected resolve error: {e}"),
+        }
     }
 
     #[test]
@@ -710,6 +733,6 @@ mod model_override_tests {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
-        assert!(err.unwrap_err().contains("停用"));
+        assert!(err.unwrap_err().to_string().contains("停用"));
     }
 }
