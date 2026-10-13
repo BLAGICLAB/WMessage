@@ -3,7 +3,6 @@
 //! - `bot_get_config` 设置页读取（含老配置迁移兜底）
 //! - `bot_set_config` 设置页保存（key 走 keyring，配置文件强制剥 key）
 //! - `bot_set_active_model` 聊天区/挂件 🧠 下拉窄口径切 active 模型
-//! - `bot_clear_api_key` 设置页清除主 LLM key
 //! - `bot_log_read` 设置页读 bot.log 审计日志
 //! - `bot_test_connection` 厂商详情页模型行「测试连接」（只判 HTTP 状态）
 //! - `perm_mode` 当前授权模式（chat 入口用）
@@ -359,18 +358,6 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
     bot_get_config(app)
 }
 
-// bot_clear_api_key / bot_log_read
-
-/// 清除已保存的 API Key
-#[tauri::command]
-pub fn bot_clear_api_key() -> CommandResult<()> {
-    keyring::delete_api_key_at(
-        keyring::key_backend(),
-        &keyring::plaintext_key_path_for(super::types::KeySlot::Llm),
-        super::types::KeySlot::Llm,
-    )
-}
-
 /// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；
 /// 先把厂商移出已验证名单（配置落盘成功）再删 key——顺序保证失败时
 /// fail-closed（宁可用不了，不留「key 没了但还显示已验证」的假绿）。
@@ -387,20 +374,6 @@ pub fn bot_clear_vendor_key(app: AppHandle, vendor: String) -> CommandResult<()>
 }
 
 pub use super::audit::bot_log_read;
-
-// bot_reload_config
-
-/// 显式 reload bot-config.json（决策 c：最小 reload endpoint，避免依赖重启）
-///
-/// io::load_config() 每次调用已重读文件 → 此命令作显式触发点。
-/// 返回当前 shadow flag 状态便于诊断。
-#[tauri::command]
-pub fn bot_reload_config(app: AppHandle) -> CommandResult<bool> {
-    let _cfg = io::load_config(&app);
-    let shadow_enabled = crate::evolution::observe::shadow::is_enabled(&app);
-    eprintln!("[bot] config reload: shadow_enabled={shadow_enabled}");
-    Ok(shadow_enabled)
-}
 
 /// 记忆检索参数读取（memoryTuning；已过 clamped，前端只见合法值）
 #[tauri::command]

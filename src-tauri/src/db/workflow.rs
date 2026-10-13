@@ -1172,25 +1172,6 @@ pub async fn workflow_load(app: AppHandle, id: String) -> CommandResult<Workflow
     .map_err(|e| CommandError::from(format!("工作流读取线程 join 失败：{e}")))?
 }
 
-#[tauri::command]
-pub async fn workflow_rename(app: AppHandle, id: String, name: String) -> CommandResult<Workflow> {
-    let app_emit = app.clone();
-    let row = async_runtime::spawn_blocking(move || -> CommandResult<Workflow> {
-        let _g = super::lock_db_write();
-        let conn = super::open_db(&app)?;
-        let mut wf = load_workflow(&conn, &id)?.ok_or(CommandError::TaskNotFound(id.clone()))?;
-        let name = check_len(&name, MAX_WORKFLOW_NAME, "工作流名称", "name")?;
-        wf.name = name;
-        wf.updated_at = Some(chrono::Utc::now().timestamp_millis());
-        upsert_workflow(&conn, &wf).map_err(CommandError::from)?;
-        Ok(wf)
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("工作流重命名线程 join 失败：{e}")))??;
-    audit_event(&app_emit, "workflow_rename", &row.id, &[]);
-    Ok(row)
-}
-
 /// 设置/取消工作流定时（定时任务模块）。schedule=None = 取消；
 /// 非法格式（bot_scheduler::validate_schedule 不认）响亮拒绝。
 /// 只动 schedule 字段；sched_last 由调度器维护（与任务卡 task_patch 通道同语义）。

@@ -231,27 +231,6 @@ pub async fn workflow_audit_list(
         .map_err(crate::error::CommandError::DbError)
 }
 
-/// 清空某工作流审计（设置页手动）；返回删除行数
-#[tauri::command]
-pub async fn workflow_audit_clear(app: AppHandle, workflow_id: String) -> CommandResult<usize> {
-    let app2 = app.clone();
-    let wid2 = workflow_id.clone();
-    let n = tauri::async_runtime::spawn_blocking(move || -> Result<usize, String> {
-        let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
-        wa_clear_workflow(&conn, &wid2)
-    })
-    .await
-    .map_err(|e| crate::error::CommandError::from(format!("清空审计线程 join 失败：{e}")))?
-    .map_err(crate::error::CommandError::DbError)?;
-    crate::audit::write_event(
-        &app,
-        crate::audit::AuditLevel::Info,
-        "workflow_audit_cleared",
-        &[("workflowId", workflow_id), ("rows", n.to_string())],
-    );
-    Ok(n)
-}
-
 /// 审计导出 JSON（画布工具栏「审计导出」→ save dialog 路径）
 #[tauri::command]
 pub async fn workflow_audit_export(

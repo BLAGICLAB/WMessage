@@ -2413,8 +2413,7 @@ export function SettingsPage({
               </div>
 
               {/* Agent 运行参数卡（Agent 透明化设计）——
-          可调项逐行输入（空 = 内置默认，title 带调参代价说明）；
-          系统固定参数折叠区来自 bot_effective_params（硬编码只读 + 当前默认） */}
+          可调项逐行输入（空 = 内置默认，title 带调参代价说明） */}
               <div className="nm-card p-5">
                 <h2 className="text-lg font-semibold text-[var(--t1)]">
                   Agent 运行参数

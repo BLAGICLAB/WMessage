@@ -172,7 +172,9 @@ src-tauri/src/
 ├── bot_py.rs (3682)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网
-│
+├── bing.rs              必应每日一图（首页小部件数据源）：cn.bing.com 官方 API + 按日落
+│                        `{data_dir}/runtime/bing/`（图片先 / 元数据后提交标记；保留 7 天，
+│                        过期随拉取清理）；base64 data URL 单 IPC 返回（免配 asset 协议）
 │─ 技能系统 bot_skills/（技能 = 数据目录 skills/<name>/SKILL.md，YAML frontmatter）
 ├── bot_skills/mod.rs            门面：全量 re-export 子模块
 ├── bot_skills/parse.rs          SKILL.md frontmatter/正文解析 → SkillMeta（mode/intents/steps）
@@ -184,6 +186,9 @@ src-tauri/src/
 │                                （Done/AwaitUser/FailedButRecoverable → LLM 兜底）
 ├── bot_skills/vars.rs           步骤变量替换（${stepN.field} / ${prev…} 嵌套路径）
 ├── bot_skills/manage.rs         技能安装/列表/删除，路由表重建触发点
+├── bot_skills/builtin.rs        内置技能预装：`assets/skills/` include_bytes! 烘进二进制，启动时
+│                                物化到 builtin_skills/（与用户 skills 同父不同名，导入/删除语义互不干扰）；
+│                                物化幂等（Seeded/Updated/Unchanged）；搜索优先级：用户 > 内置 > dev mock
 ├── bot_skills/files.rs          open_file_path/delete_bound_file 路径白名单校验（防 XSS→RCE）
 │
 │─ 路由/守卫

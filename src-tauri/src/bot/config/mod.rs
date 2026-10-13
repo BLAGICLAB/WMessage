@@ -25,7 +25,7 @@
 //! - `audit`    bot.log 审计写入（audit_log/audit_log_hook/append_bot_log_line）
 //!  + escape_for_log/truncate_for_log + read_log_tail
 //! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/
-//!  bot_clear_api_key/bot_log_read/bot_reload_config/bot_test_connection）+ perm_mode helper
+//!  bot_log_read/bot_test_connection）+ perm_mode helper
 
 pub mod audit;
 pub mod commands;
@@ -41,8 +41,8 @@ pub mod types;
 pub use crate::memory::MemoryTuning;
 pub use audit::{audit_log, audit_log_hook, bot_log_read};
 pub use commands::{
-    apply_active_model_switch, archive_after_days, bot_clear_api_key, bot_get_config,
-    bot_set_active_model, bot_set_config, memory_tuning_get, memory_tuning_set, perm_mode,
+    apply_active_model_switch, archive_after_days, bot_get_config, bot_set_active_model,
+    bot_set_config, memory_tuning_get, memory_tuning_set, perm_mode,
 };
 pub use io::{
     config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
@@ -71,9 +71,8 @@ pub(crate) use io::{add_allowed_dir, load_config, update_config_file};
 // tauri 命令宏生成物（__cmd__* / __tauri_command_name_*）：在 commands.rs 里
 // #[tauri::command] 函数旁边自动生成；同样 re-export 以让 bot.rs 的 facade 一行不动。
 pub use commands::{
-    __cmd__bot_clear_api_key, __cmd__bot_get_config, __cmd__bot_set_active_model,
-    __cmd__bot_set_config, __cmd__memory_tuning_get, __cmd__memory_tuning_set,
-    __tauri_command_name_bot_clear_api_key, __tauri_command_name_bot_get_config,
+    __cmd__bot_get_config, __cmd__bot_set_active_model, __cmd__bot_set_config,
+    __cmd__memory_tuning_get, __cmd__memory_tuning_set, __tauri_command_name_bot_get_config,
     __tauri_command_name_bot_set_active_model, __tauri_command_name_bot_set_config,
     __tauri_command_name_memory_tuning_get, __tauri_command_name_memory_tuning_set,
 };
@@ -98,8 +97,8 @@ mod tests {
         read_memory_control_at, read_memory_tuning_at, write_bot_config_file_locked,
     };
     use crate::bot::config::keyring::{
-        backend_for, classify_get_password, classify_has_key, delete_api_key_at, has_api_key_at,
-        read_api_key_at, secret_service_available_with, write_api_key_at, KeyBackend,
+        backend_for, classify_get_password, classify_has_key, has_api_key_at, read_api_key_at,
+        secret_service_available_with, write_api_key_at, KeyBackend,
     };
     use crate::bot::config::schema::{
         derive_legacy_fields_from_active, migrate_config_file, resolve_max_tokens,
@@ -706,37 +705,6 @@ mod tests {
             secret_service_available_with(false, Some(d)),
             "XDG_RUNTIME_DIR/bus 存在即可用"
         );
-    }
-
-    #[test]
-    fn plaintext_backend_roundtrip_and_delete() {
-        let tmp = tempfile::tempdir().unwrap();
-        let f = tmp.path().join("bot-api-key.txt");
-        // has：文件缺失 → Ok(false)（对齐 NoEntry 语义，不吞错）
-        assert!(!has_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap());
-        // read：缺失 → KeyringError（与 System 路径 NoEntry 同 code，前端 hint 一致）
-        let e = read_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap_err();
-        assert_eq!(e.code(), crate::error::CommandErrorCode::KeyringError);
-        // write → 文件落盘 + Unix 0600（与 api-token.txt 同策略）
-        write_api_key_at(KeyBackend::PlaintextFile, &f, "***", KeySlot::Llm).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
-                0o600,
-                "降级 key 文件必须 0600"
-            );
-        }
-        assert_eq!(
-            read_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap(),
-            "***"
-        );
-        assert!(has_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap());
-        // delete：删后不存在；再删幂等 Ok
-        delete_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap();
-        assert!(!f.exists());
-        delete_api_key_at(KeyBackend::PlaintextFile, &f, KeySlot::Llm).unwrap();
     }
 
     #[test]

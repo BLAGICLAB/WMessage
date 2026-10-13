@@ -388,14 +388,6 @@ pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
         .collect()
 }
 
-#[tauri::command]
-pub fn bot_effective_params(app: tauri::AppHandle) -> CommandResult<Vec<ParamView>> {
-    let cfg = crate::bot::config::io::load_config(&app);
-    Ok(effective_params(&cfg))
-}
-
-use crate::error::CommandResult;
-
 #[cfg(test)]
 mod tests {
     use super::*;

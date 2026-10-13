@@ -140,6 +140,13 @@ def emitted_events():
         # bot_model_loop 等处的注入闭包：let emit = |event, payload| ... emit("e", ...)
         for m in re.finditer(r'(?<![\w.])emit\(\s*"([^"]+)"', t):
             backend.setdefault(m.group(1), f)
+        # emit(CONST_NAME, ...) / app.emit(CONST_NAME, ...) 字面量常量名：去
+        # src-tauri/src/**/*.rs 找 `pub const NAME: &str = "value"`（剥注释后扫）
+        for m in re.finditer(r'\bemit\(\s*([A-Z][A-Z0-9_]+)\b', t):
+            const_name = m.group(1)
+            resolved = resolve_rust_str_const(const_name)
+            if resolved:
+                backend.setdefault(resolved, f)
     frontend = {}
     for f, t in TS_SRC.items():
         for m in re.finditer(r'(?<![\w.])emit(?:To)?\(\s*"([^"]+)"', t):
@@ -150,9 +157,51 @@ def emitted_events():
 def listened_events():
     out = {}
     for f, t in TS_SRC.items():
+        # 直接 listen<T>("evt", ...) 形式
         for m in re.finditer(r'\blisten(?:<[^>]*>)?\(\s*"([^"]+)"', t):
             out.setdefault(m.group(1), f)
+        # useTauriListen<T>("evt", ...) 包装钩子：事件名是首参字面量
+        for m in re.finditer(r'\buseTauriListen(?:<[^>]*>)?\(\s*"([^"]+)"', t):
+            out.setdefault(m.group(1), f)
+        # useTauriListen<T>(CONST_NAME, ...) 字面量常量名：去对应 lib 文件查 const 值
+        for m in re.finditer(r'\buseTauriListen(?:<[^>]*>)?\(\s*([A-Z][A-Z0-9_]+)\b', t):
+            const_name = m.group(1)
+            resolved = resolve_string_constant(const_name)
+            if resolved:
+                out.setdefault(resolved, f)
     return out
+
+
+_STRING_CONST_CACHE = {}
+_RUST_CONST_CACHE = {}
+
+
+def resolve_string_constant(name):
+    """在 src/lib/*.ts 里找 `export const NAME = "value";` 的字面量值；找不到返回 None。"""
+    if name in _STRING_CONST_CACHE:
+        return _STRING_CONST_CACHE[name]
+    pattern = re.compile(rf'^export\s+const\s+{re.escape(name)}\s*=\s*"([^"]+)"', re.MULTILINE)
+    for lib in (ROOT / "src" / "lib").glob("*.ts"):
+        m = pattern.search(lib.read_text())
+        if m:
+            _STRING_CONST_CACHE[name] = m.group(1)
+            return m.group(1)
+    _STRING_CONST_CACHE[name] = None
+    return None
+
+
+def resolve_rust_str_const(name):
+    """在 src-tauri/src/**/*.rs 里找 `pub const NAME: &str = "value";` 字面量值；找不到返回 None。"""
+    if name in _RUST_CONST_CACHE:
+        return _RUST_CONST_CACHE[name]
+    pattern = re.compile(rf'^pub\s+const\s+{re.escape(name)}\s*:\s*&str\s*=\s*"([^"]+)"', re.MULTILINE)
+    for f in (ROOT / "src-tauri" / "src").rglob("*.rs"):
+        m = pattern.search(f.read_text())
+        if m:
+            _RUST_CONST_CACHE[name] = m.group(1)
+            return m.group(1)
+    _RUST_CONST_CACHE[name] = None
+    return None
 
 
 # ───────────────────────── 命令一致性 ─────────────────────────

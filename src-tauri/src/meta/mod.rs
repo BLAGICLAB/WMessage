@@ -46,7 +46,7 @@ pub struct MetaModel {
     pub source: String,
 }
 
-/// meta_model JOIN meta_provider 的结果（meta_list_models / meta_get_model）
+/// meta_model JOIN meta_provider 的结果
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetaModelJoined {
     pub model_key: String,
@@ -407,29 +407,6 @@ pub async fn meta_list_providers(app: AppHandle) -> CommandResult<Vec<MetaProvid
 }
 
 #[tauri::command]
-pub async fn meta_get_provider(
-    app: AppHandle,
-    provider_key: String,
-) -> CommandResult<MetaProvider> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = crate::db::open_db(&app)?;
-        get_provider_or_fallback(&conn, &provider_key).map_err(CommandError::from)
-    })
-    .await
-    .map_err(join_err)?
-}
-
-#[tauri::command]
-pub async fn meta_list_models(app: AppHandle) -> CommandResult<Vec<MetaModelJoined>> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = crate::db::open_db(&app)?;
-        list_models_joined(&conn).map_err(CommandError::from)
-    })
-    .await
-    .map_err(join_err)?
-}
-
-#[tauri::command]
 pub async fn meta_models_by_provider(
     app: AppHandle,
     provider_key: String,
@@ -437,91 +414,6 @@ pub async fn meta_models_by_provider(
     tauri::async_runtime::spawn_blocking(move || {
         let conn = crate::db::open_db(&app)?;
         models_by_provider(&conn, &provider_key).map_err(CommandError::from)
-    })
-    .await
-    .map_err(join_err)?
-}
-
-#[tauri::command]
-pub async fn meta_get_model(app: AppHandle, model_key: String) -> CommandResult<MetaModelJoined> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = crate::db::open_db(&app)?;
-        get_model_or_fallback(&conn, &model_key).map_err(CommandError::from)
-    })
-    .await
-    .map_err(join_err)?
-}
-
-#[tauri::command]
-pub async fn meta_upsert_provider(
-    app: AppHandle,
-    provider_key: String,
-    provider_name: String,
-    logo_url: Option<String>,
-    fallback_color: Option<String>,
-    fallback_char: Option<String>,
-    default_base_url: Option<String>,
-    timeout: Option<i64>,
-) -> CommandResult<MetaProvider> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = crate::db::open_db(&app)?;
-        let _g = crate::db::lock_db_write();
-        let p = MetaProvider {
-            provider_key: provider_key.clone(),
-            provider_name,
-            logo_url,
-            fallback_color: fallback_color.unwrap_or_else(|| FALLBACK_COLOR.into()),
-            fallback_char: fallback_char.unwrap_or_default(),
-            default_base_url,
-            timeout,
-            source: "user_custom".into(),
-        };
-        upsert_provider_user(&conn, &p).map_err(CommandError::from)?;
-        query_provider(&conn, &provider_key)
-            .map_err(CommandError::from)?
-            .ok_or_else(|| CommandError::Internal("meta_upsert_provider 写后读不到行".into()))
-    })
-    .await
-    .map_err(join_err)?
-}
-
-#[tauri::command]
-pub async fn meta_upsert_model(
-    app: AppHandle,
-    model_key: String,
-    provider_key: String,
-    display_name: String,
-    context_length: Option<i64>,
-    temperature: Option<f64>,
-    top_p: Option<f64>,
-    max_tokens: Option<i64>,
-    default_system_prompt: Option<String>,
-) -> CommandResult<MetaModelJoined> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = crate::db::open_db(&app)?;
-        let _g = crate::db::lock_db_write();
-        let m = MetaModel {
-            model_key: model_key.clone(),
-            provider_key,
-            display_name,
-            context_length,
-            temperature,
-            top_p,
-            max_tokens,
-            default_system_prompt,
-            source: "user_custom".into(),
-        };
-        upsert_model_user(&conn, &m).map_err(|e| match e {
-            UpsertModelUserError::ProviderMissing(reason) => CommandError::DomainRule {
-                domain: "meta".into(),
-                reason,
-            },
-            // 数据库错误按 Db 口径（不可重试），不再伪装成业务规则
-            UpsertModelUserError::Db(e) => CommandError::from(e),
-        })?;
-        query_model_joined(&conn, &model_key)
-            .map_err(CommandError::from)?
-            .ok_or_else(|| CommandError::Internal("meta_upsert_model 写后读不到行".into()))
     })
     .await
     .map_err(join_err)?

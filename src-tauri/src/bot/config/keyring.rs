@@ -271,39 +271,6 @@ pub(crate) fn write_api_key_at(
     }
 }
 
-/// 按后端分发删除（幂等：文件不存在 = Ok）
-pub(crate) fn delete_api_key_at(
-    backend: KeyBackend,
-    file: &std::path::Path,
-    slot: KeySlot,
-) -> CommandResult<()> {
-    match backend {
-        KeyBackend::System => {
-            let r = key_entry(slot)?
-                .delete_credential()
-                .map_err(|e| CommandError::KeyringError(format!("清除 API Key 失败：{e}")));
-            // 顺带清 v0 遗留条目：否则下次读取会把它当作「可迁移的旧 key」搬回新条目，
-            // 用户「清除」后 key 复活。主删除成功才清（主删除失败时遗留原样保留，
-            // 避免「主 key 没删成、旧条目反被清」的半清状态）；清理失败记日志不阻断
-            if r.is_ok() {
-                if let Ok(old) = key_entry_for_service(LEGACY_KEYRING_SERVICE, slot) {
-                    if let Err(e) = old.delete_credential() {
-                        eprintln!("[keyring] legacy entry cleanup failed: {e}");
-                    }
-                }
-            }
-            r
-        }
-        KeyBackend::PlaintextFile => match std::fs::remove_file(file) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(CommandError::KeyringError(format!(
-                "清除 API Key 失败（降级文件存储）：{e}"
-            ))),
-        },
-    }
-}
-
 /// get_password 结果分类：
 /// - `NoEntry`（良性：key 存了/未存）→ `Ok("")`，调用方用 `!k.trim().is_empty()` 判
 ///   fallback——这与原「未配置 fallback 全局」行为等价（keyring 4.x Error
