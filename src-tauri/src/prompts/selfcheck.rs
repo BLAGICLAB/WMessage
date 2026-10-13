@@ -7,6 +7,15 @@ pub(crate) const SELFCHECK_PROMPT: &str = "\
 【自检】上一条工具调用 {tool_name} 返回成功（开头摘要：{snippet}）。\
 请仅用一个字回答：Y=符合预期，N=未达预期。回答后不要解释。";
 
+/// 终稿自检：主出口前置触发，让模型对 final_text 做一次「无幻觉/包含幻觉」判定。
+/// 节流由 bot_model_loop 控制（设置项 final_selfcheck_round_gap，默认 8 轮一次，
+/// 0 = 关闭；trigger 条件 final_text ≥ 80 字 + function_calls ≥ 3 硬编码常量）；
+/// N 路径不改写 final_text，只追加 ⚠️ 警告 + 写 bot.log 审计。
+/// 复用 parse_selfcheck_response（纯 Y/N 视觉提示同 SELFCHECK）。
+pub(crate) const FINAL_SELFCHECK_PROMPT: &str = "\
+【终稿自检】本轮回复（开头 500 字）：{snippet}。\
+仅回答：Y=无幻觉，N=包含幻觉或虚构事实。回答后不要解释。";
+
 /// final_text 整段 trim 后是否是纯 Y/N 字样。
 /// - Some(true) = Y（自检通过）
 /// - Some(false) = N（自检失败，按 PREVR 第 1 层失败路径处理）
@@ -55,6 +64,38 @@ mod tests {
         assert!(out.contains("create_task"));
         assert!(out.contains("taskId=42"));
         assert!(!out.contains("{tool_name}"));
+        assert!(!out.contains("{snippet}"));
+    }
+
+    #[test]
+    fn final_prompt_contains_required_placeholder() {
+        assert!(FINAL_SELFCHECK_PROMPT.contains("{snippet}"));
+    }
+
+    #[test]
+    fn final_prompt_chinese_uses_full_width_punctuation() {
+        // 与 SELFCHECK_PROMPT 同锁：终稿自检也走中文标点规则，前端样式一致
+        assert!(FINAL_SELFCHECK_PROMPT.contains('（'));
+        assert!(FINAL_SELFCHECK_PROMPT.contains('）'));
+        assert!(FINAL_SELFCHECK_PROMPT.contains('：'));
+        assert!(FINAL_SELFCHECK_PROMPT.contains('。'));
+    }
+
+    #[test]
+    fn final_prompt_stays_under_one_hundred_chars() {
+        // 自检类 prompt 必须轻量：每 8 轮一次跑、每次 prompt 注入 + 字符增量 ×
+        // 长对话的 N 次触发 = 直接放大 token 成本，长度上限锁死
+        let len = FINAL_SELFCHECK_PROMPT.chars().count();
+        assert!(
+            len < 100,
+            "FINAL_SELFCHECK_PROMPT 过长（{len} 字符）应 < 100，疑似内容漂移"
+        );
+    }
+
+    #[test]
+    fn final_prompt_placeholder_substitution_works() {
+        let out = FINAL_SELFCHECK_PROMPT.replace("{snippet}", "已完成报告生成");
+        assert!(out.contains("已完成报告生成"));
         assert!(!out.contains("{snippet}"));
     }
 

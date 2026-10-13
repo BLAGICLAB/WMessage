@@ -326,6 +326,21 @@ pub(crate) fn resolve_max_rounds(
 // 软警告阈值动态 = cap*7/10（保持 ~30% buffer），钳 [1, cap-1]。
 const MAX_FUNCTION_CALLS_PER_REQUEST: usize = 100;
 
+/// 终稿自检 trigger 条件：final_text 字符数下限。trivial 回复不值得跑自检——
+/// 调小（50）会让「好的/收到」这种短回复也触发，刷 token；调大（200）会漏
+/// 短答复+长声明的混合回复。硬编码常量，不暴露设置。
+pub(crate) const MIN_FINAL_SELFCHECK_CHARS: usize = 80;
+/// 终稿自检 trigger 条件：本会话累计函数调用次数下限。无真实工作量的对话
+/// 不该触发——调小（1）会让刚开聊两句就触发，调大（5）会漏掉小工作量对话。
+/// 硬编码常量，不暴露设置。
+pub(crate) const MIN_FINAL_SELFCHECK_FUNCTION_CALLS: usize = 3;
+/// 终稿自检截断注入长度：截 final_text 开头 N 字注入 prompt，覆盖主要声明段
+/// （"已完成/已生成"等口胡多数在段首）。N=500 与 SELFCHECK_PROMPT 的 snippet 同
+/// 截断逻辑，对齐视觉口径。
+pub(crate) const FINAL_SELFCHECK_SNIPPET_CHARS: usize = 500;
+/// 终稿自检默认轮次间隔（设置项为 None 时启用）：8 轮 1 次。
+const DEFAULT_FINAL_SELFCHECK_ROUND_GAP: u32 = 8;
+
 /// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
 pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
 
@@ -437,6 +452,10 @@ pub struct ModelLoopDeps<'a> {
     /// 薄壳从 db::gen_dir(app) 派生；None = 不写盘（压缩文本留"原文未保留"标记）。
     /// 核心不依赖 AppHandle，路径借用由薄壳层保证生命周期。
     pub conv_sidecar_dir: Option<&'a std::path::Path>,
+    /// 终稿自检轮次间隔（可选）：None = 默认 8 轮；0 = 关闭 final 自检。
+    /// 薄壳从 bot-config `finalSelfcheckRoundGap` 读入。core 据此判断是否在主
+    /// 出口前置触发 LLM 自检（FINAL_SELFCHECK_PROMPT）。
+    pub final_selfcheck_round_gap: Option<u32>,
 }
 
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
@@ -632,6 +651,9 @@ pub async fn run_model_loop(
                 .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
         ),
         conv_sidecar_dir: conv_sidecar_path.as_deref(),
+        // 终稿自检轮次间隔：cfg 有值用之（已落盘前钳 0..=100），None = 默认 8。
+        // 0 = 关闭 final 自检的 kill switch 直接透传。
+        final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         emit: &emit,
         audit: &|level, event, kv| {
             // llm.request 事件计数 = 轮数（trace turn_count 的数据源）
@@ -877,6 +899,17 @@ where
     // 自检视觉过滤：pending 推入 prompt 后置 true，本轮 SSE 流式 emit 不输出 Y/N，
     // 改在 final_text 解析时统一 emit 视觉提示（✅ / ⚠️）
     let mut expecting_selfcheck = false;
+    // 终稿自检视觉过滤：本轮已被注入 FINAL_SELFCHECK_PROMPT、下一轮 SSE 流式
+    // emit 跳过 Y/N 字样（用户已在主出口前看到 final_text 自检运行属于机器内部
+    // 信号，不该再叠一层 Y/N 字样）；终态在主出口解析后还原 final_text。
+    let mut expecting_final_selfcheck = false;
+    // 终稿自检 snapshot：触发时拍下 final_text 本体，下一轮 LLM 响应解析后
+    // 据 verdict 还原（Y/N/附解释均回滚到原文，N 路径在末尾追加 ⚠️）
+    let mut final_selfcheck_snapshot: Option<String> = None;
+    // 终稿自检节流：与 last_selfcheck_round 同模式但独立计数——SELFCHECK 节流
+    // 算的是「工具变更类自检」、final_selfcheck 算的是「终稿整体自检」，
+    // 两条路径不互相抑制。
+    let mut last_final_selfcheck_round: Option<usize> = None;
     let mut plan_state = plan_state;
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
@@ -1215,7 +1248,9 @@ where
                         final_text.push_str(&normal);
                         // 自检回复（Y/N）整段隐藏：流式不 emit，final_text 解析后
                         // 统一 emit ✅/⚠️ 视觉提示，避免用户先看到 Y 又被覆盖
-                        if !expecting_selfcheck {
+                        // 终稿自检响应（Y/N）同样整段隐藏：用户已在主出口前看到
+                        // final_text 全文，不该再叠一层 Y/N 字样
+                        if !expecting_selfcheck && !expecting_final_selfcheck {
                             emit("bot-chat-delta", serde_json::json!({ "text": normal }));
                         }
                     }
@@ -1356,7 +1391,7 @@ where
                 emit("bot-think-delta", serde_json::json!({ "text": tail }));
             } else {
                 final_text.push_str(&tail);
-                if !expecting_selfcheck {
+                if !expecting_selfcheck && !expecting_final_selfcheck {
                     emit("bot-chat-delta", serde_json::json!({ "text": tail }));
                 }
             }
@@ -1509,6 +1544,63 @@ where
                     final_text = "（回复被服务商的内容过滤拦截，请换个方式提问）".into();
                 }
                 _ => {}
+            }
+            // 终稿自检节流闸：final_text 不在工具自检态、不在 final 自检态、
+            // 字数 ≥ 80、累计函数调用 ≥ 3、距上次 ≥ gap（默认 8 轮；0 = 关闭）→
+            // 拍 final_text snapshot + 注入 FINAL_SELFCHECK_PROMPT + 续跑一轮
+            // 让模型判 Y/N；本轮不走主出口，模型响应在下一轮迭代末尾解析后还原。
+            let final_selfcheck_gap =
+                deps.final_selfcheck_round_gap
+                    .unwrap_or(DEFAULT_FINAL_SELFCHECK_ROUND_GAP) as usize;
+            if final_selfcheck_gap > 0
+                && !expecting_selfcheck
+                && !expecting_final_selfcheck
+                && final_text.chars().count() >= MIN_FINAL_SELFCHECK_CHARS
+                && function_calls_total >= MIN_FINAL_SELFCHECK_FUNCTION_CALLS
+                && last_final_selfcheck_round
+                    .is_none_or(|r| round.saturating_sub(r) >= final_selfcheck_gap)
+            {
+                let snippet: String = final_text
+                    .chars()
+                    .take(FINAL_SELFCHECK_SNIPPET_CHARS)
+                    .collect();
+                final_selfcheck_snapshot = Some(final_text.clone());
+                msgs.push(serde_json::json!({
+                    "role": "user",
+                    "content": crate::prompts::FINAL_SELFCHECK_PROMPT
+                        .replace("{snippet}", &snippet),
+                }));
+                last_final_selfcheck_round = Some(round);
+                expecting_final_selfcheck = true;
+                continue;
+            }
+            // 终稿自检 verdict 解析：本轮是上一轮触发的 final 自检响应
+            // （expecting_final_selfcheck=true），Y/N 字样已被流式跳 emit，
+            // 据 verdict 决定还原 final_text：Y/附解释→原文；N→原文+⚠️+emit+audit。
+            // Y 路径不写 audit_log（成功是常态、记了会刷屏）。
+            if expecting_final_selfcheck {
+                match crate::prompts::parse_selfcheck_response(final_text.trim()) {
+                    Some(false) => {
+                        if let Some(snapshot) = final_selfcheck_snapshot.take() {
+                            const WARN: &str = "
+
+⚠️ 自检未达预期，请人工核对";
+                            final_text = format!("{snapshot}{WARN}");
+                            emit("bot-chat-delta", serde_json::json!({ "text": WARN }));
+                            audit_log(&format!(
+                                "final_selfcheck.fail | {}",
+                                crate::bot::truncate_for_log(&snapshot, 200)
+                            ));
+                        }
+                    }
+                    Some(true) | None => {
+                        if let Some(snapshot) = final_selfcheck_snapshot.take() {
+                            final_text = snapshot;
+                        }
+                    }
+                }
+                // expecting_final_selfcheck 在此处置 false 之后立即 return，flag 不
+                // 再被任何流式 emit 检查读取——下次循环触发由 trigger 分支重新置 true。
             }
             let _ = skill_finish(true, "");
             collected_refs = merge_task_refs_dedup(collected_refs);

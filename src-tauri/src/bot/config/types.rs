@@ -145,6 +145,13 @@ pub struct BotConfig {
     /// 工作流节点等长链任务可调大；软警阈值 = cap*7/10 自动跟随。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_function_calls: Option<u32>,
+    /// 终稿自检节流轮次间隔（可选）：final_text 主出口前置触发 LLM 自检的
+    /// 轮次下限。None = 默认 8 轮；0 = 关闭 final 自检（设 kill switch）；
+    /// 落盘前钳制 0..=100。设置页「Agent 运行参数」区域显示。
+    /// 80 字 / 3 次 function_calls 两个 trigger 条件是硬编码常量（不暴露）——
+    /// 「省 token vs 漏判」二元权衡没有中间值更优，调了反而引入认知噪音。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub final_selfcheck_round_gap: Option<u32>,
     /// 任务卡归档天数（可选）：任务完成满 N 天自动归档。前端看板规则
     /// （applyArchiveRule）与 migration 兜底归档同源读取，两侧阈值恒一致。
     /// None = 默认 7 天；读取侧 resolve_archive_after_days 钳制 1..=365。
@@ -320,6 +327,7 @@ impl Default for BotConfig {
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             max_function_calls: None,   // 未配置 = 100 默认全域熔断上限）
+            final_selfcheck_round_gap: None, // 未配置 = 8 默认终稿自检间隔（0 = 关闭）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
@@ -449,6 +457,9 @@ pub struct BotConfigView {
     /// 单次请求 Function 调用熔断上限（ 全域统一）：None = 默认 100；
     /// 子 agent 默认预算同源此值
     pub max_function_calls: Option<u32>,
+    /// 终稿自检轮次间隔原样透传（None = 8 默认；0 = 关闭；设置页「Agent
+    /// 运行参数」可调，后端钳 0..=100）
+    pub final_selfcheck_round_gap: Option<u32>,
     /// 任务卡归档天数原样透传（None = 7 默认；设置页「数据管理」卡编辑）
     pub archive_after_days: Option<u32>,
     /// 授权模式原样透传给设置页（None = ask 默认；非法值前端按 ask 显示）

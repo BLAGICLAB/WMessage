@@ -409,6 +409,7 @@ mod tests {
             max_tokens: None,
             reasoning_effort: None,
             max_function_calls: None,
+            final_selfcheck_round_gap: None,
             archive_after_days: None,
             models_by_provider: None,
             active_model_id: None,

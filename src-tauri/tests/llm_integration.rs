@@ -398,13 +398,30 @@ impl CoreHarness {
     }
 
     fn deps(&self) -> ModelLoopDeps<'_> {
+        // 默认关 final 自检（避免对历史用例产生回归干扰）；新自检测试用 deps_with_gap(opt) opt-in
         ModelLoopDeps {
             fuse_cap_override: None,
+            conv_sidecar_dir: None,
             emit: &*self.emit,
             audit: &*self.audit,
             audit_log: &*self.audit_log,
             skill_finish: &*self.skill_finish,
             active_skill_run: &*self.active_skill_run,
+            final_selfcheck_round_gap: Some(0),
+        }
+    }
+
+    /// opt-in final 自检：gap 传入 None 走默认 8 轮；Some(N) 走 N；Some(0) 关闭
+    fn deps_with_gap(&self, gap: Option<u32>) -> ModelLoopDeps<'_> {
+        ModelLoopDeps {
+            fuse_cap_override: None,
+            conv_sidecar_dir: None,
+            emit: &*self.emit,
+            audit: &*self.audit,
+            audit_log: &*self.audit_log,
+            skill_finish: &*self.skill_finish,
+            active_skill_run: &*self.active_skill_run,
+            final_selfcheck_round_gap: gap,
         }
     }
 
@@ -1768,4 +1785,207 @@ async fn n5_tool_image_appended_as_user_message() {
     assert!(user_img_pos > tool_pos, "图应出现在 tool 消息之后");
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// D-Y/N selfcheck 扩到 final_text 层（Round 7 final-selfcheck 节流闸）：
+// 主出口前置触发 LLM 自检，Y 路径静默还原 final_text；N 路径追加 ⚠️ +
+// emit + audit_log。节流：final_text 字数 ≥ 80 + function_calls ≥ 3 +
+// 距上次 ≥ gap 轮。gap=0 = 关闭。Y/N 字样走 expecting_final_selfcheck
+// 视觉过滤（与 SELFCHECK 同套 expecting_selfcheck 流式跳 emit 套路）。
+// ────────────────────────────────────────────────────────────────────
+
+/// 长文 + 3 function_calls + Y 响应：trigger 触发后还原 final_text（Y 路径），
+/// 原文本保留，Y 字样因视觉过滤不展示给用户。
+#[tokio::test]
+async fn core_final_selfcheck_y_restores_final_text() {
+    let server = MockLlmServer::start();
+    // 3 个 tool_calls 让 function_calls_total 凑够 3
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 4 轮模型给长文 final_text（≥ 80 字触发 final 自检 trigger）
+    server.push_behavior(MockBehavior::TextReply(
+        "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。任务列表展示在文档中。"
+            .into(),
+    ));
+    // 第 5 轮 final 自检响应：模型判 Y
+    server.push_behavior(MockBehavior::TextReply("Y".into()));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_gap(Some(1)), // gap=1：第 4 轮首次满足即触发
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("Y 路径应 Ok");
+    // Y 路径：final_text 还原到原文（Y 字样被丢弃，无 ⚠️ 追加）
+    assert!(
+        text.contains("已完成 3 项工作"),
+        "Y 路径应保留原文：{text:?}"
+    );
+    assert!(
+        !text.contains("⚠️ 自检未达预期"),
+        "Y 路径不应追加警告：{text:?}"
+    );
+    // 5 次 LLM 请求（3 tool + 1 final text + 1 selfcheck response）
+    assert_eq!(server.request_count(), 5);
+}
+
+/// 长文 + 3 function_calls + N 响应：trigger 触发后追加 ⚠️ + 写 audit_log。
+#[tokio::test]
+async fn core_final_selfcheck_n_appends_warning_and_audits() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。";
+    server.push_behavior(MockBehavior::TextReply(long_text.into()));
+    // 第 5 轮 final 自检响应：模型判 N
+    server.push_behavior(MockBehavior::TextReply("N".into()));
+
+    let h = CoreHarness::new();
+    // 收集 audit_log 行（h.audit_log 默认 noop，自己包一个捕获版）
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let logs2 = logs.clone();
+    // 直接用 deps() 但覆盖 audit_log 闭包捕获 final_selfcheck.fail 行
+    let mut deps = h.deps_with_gap(Some(1));
+    deps.audit_log = {
+        let logs2 = logs2.clone();
+        Box::leak(Box::new(move |line: &str| {
+            logs2.lock().unwrap().push(line.to_string());
+        }))
+    };
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("N 路径应 Ok");
+    // N 路径：原文保留 + ⚠️ 追加
+    assert!(text.contains(long_text), "N 路径应保留原文：{text:?}");
+    assert!(
+        text.contains("⚠️ 自检未达预期"),
+        "N 路径应追加警告：{text:?}"
+    );
+    // audit_log 应记 final_selfcheck.fail
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|l| l.contains("final_selfcheck.fail")),
+        "应记 final_selfcheck.fail 审计：{lines:?}"
+    );
+}
+
+/// gap=0（关闭）：长文 + 3 function_calls 也不触发 final 自检，无额外 LLM 请求。
+#[tokio::test]
+async fn core_final_selfcheck_disabled_with_gap_zero() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。";
+    server.push_behavior(MockBehavior::TextReply(long_text.into()));
+    // **不**推第 5 个行为：若 trigger 触发会因无响应挂死或 panic
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_gap(Some(0)), // 关闭
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("关闭路径应 Ok");
+    // 关闭：原文保留，无 ⚠️
+    assert_eq!(text, long_text);
+    // 4 次 LLM 请求（3 tool + 1 final text），无第 5 次自检
+    assert_eq!(server.request_count(), 4);
+}
+
+/// final_text < 80 字 + 3 function_calls + gap=1：不触发（trigger 硬条件字数不过）。
+#[tokio::test]
+async fn core_final_selfcheck_skips_short_final_text() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 短 final_text（< 80 字，触发硬条件不过）
+    server.push_behavior(MockBehavior::TextReply("完成了".into()));
+    // **不**推第 5 个行为：若 trigger 触发会因无响应挂死或 panic
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_gap(Some(1)), // gap=1，但字数不过也不会触发
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("短文应 Ok");
+    assert_eq!(text, "完成了");
+    assert_eq!(server.request_count(), 4);
 }

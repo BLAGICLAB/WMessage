@@ -110,6 +110,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
         max_function_calls: cfg.max_function_calls,
+        final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         archive_after_days: cfg.archive_after_days,
         perm_mode: cfg.perm_mode,
         api_provider: cfg.api_provider,
@@ -288,6 +289,9 @@ pub fn bot_set_config(
         .map(|n| n.clamp(1, crate::db::MAX_TURNS_HARD_CAP));
     config.subagent_max_wall_secs = config.subagent_max_wall_secs.map(|n| n.clamp(30, 3600));
     config.search_max_results = config.search_max_results.map(|n| n.clamp(1, 10));
+    // 终稿自检间隔落盘前钳制（0..=100：0 = 关闭；上限放宽到 100 留充足调整空间，
+    // 真实触发频率受 final_text 字数 / function_calls / round gap 共同约束）
+    config.final_selfcheck_round_gap = config.final_selfcheck_round_gap.map(|n| n.clamp(0, 100));
     // tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None
     config.tool_rules = sanitize_tool_rules(config.tool_rules.take());
     // 前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**

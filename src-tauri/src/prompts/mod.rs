@@ -32,7 +32,7 @@ pub(crate) use execute::{EXECUTE_SYSTEM_PROMPT, STEPWISE_ADDENDUM};
 pub(crate) use extract::{ADJUDICATE_PROMPT, EXTRACT_PROMPT};
 pub(crate) use planner::{PLANNER_PROMPT, REPLANNER_PROMPT};
 pub(crate) use reflection::REFLECTION_SYSTEM_PROMPT;
-pub(crate) use selfcheck::{parse_selfcheck_response, SELFCHECK_PROMPT};
+pub(crate) use selfcheck::{parse_selfcheck_response, FINAL_SELFCHECK_PROMPT, SELFCHECK_PROMPT};
 pub(crate) use subagent::{
     MAIN_AGENT_ADDENDUM, PROFILE_CODER, PROFILE_GENERAL, PROFILE_RESEARCH, RESULT_SCHEMA_HINT,
     SUBAGENT_BASE,
