@@ -90,7 +90,46 @@ trigger 的语义承诺（"用户稳定偏好"）就被水掉。多字"错了/�
 store dedup-on-write 的已知语义（`src/memory/store.rs` 行 360-380 注释明示），
 非本批范围。
 
-**什么没做（批 III 接管后状态更新）**：原批 II 末尾挂账的「round 4 学习闭环」已在批 III 三 commit 落地。剩余 follow-up（聚类 scheduler/兜底、lesson-dedup 与 fact 撞行的已知行为）见上节「已知 follow-up」。
+## 2026-10-14（周二）agent 行为收紧批 IV：scheduler 兜底 + lesson-dedup 校正
+
+两条独立 commit（不打 squash）：
+
+- `e1c8a67` correction 聚类定时器兜底（`start_correction_cluster_scheduler` 5 min 一轮 + panic recovery）
+- `59a7f02` lesson-dedup 撞 fact 校正（`cluster_correction_lessons_blocking` 内 1 次定点 UPDATE 把合并目标行 kind 提到 lesson）
+
+**为什么 scheduler 跟事件路径不冲突而是互补**：事件路径（每条 correction 触发）服务
+「高频」，scheduler（5 min）服务两个具体场景——崩溃重启漏最后一条、用户离线攒 N 条
+correction 上线后没人触发。两条路都走 `cluster_correction_lessons_blocking` 同段 DB 串
+行代码 + 同 store 语义去重，幂等互不破坏。多路汇聚是「多层兜底」的常见做法（每层覆盖
+不同失败模式），不是「重复劳动」。
+
+**为什么 5 min 不是 10 min / 不是 1 min**：10 min 是 `consolidation_scheduler` 的合理节奏
+（LLM 调用频率低 + 配置驱动），correction 5 min 是经验值——correction 是低频信号
+（用户不是 syslog），scheduler 主要作用是补偿事件路径的漏网之鱼，5 min 跟「典型用户
+思考间隔」同量级，离得太长会让离线攒 2-3 条的窗口扩太久，太短又是对事件路径的双
+重无谓扫描。**不是越短越安全**。
+
+**为什么不引新锁机制**：DB_WRITE_LOCK 已经串行所有 mem_items 写，scheduler tick 之间
+无并发无锁竞争。`start_consolidation_scheduler` 用 10 年都没引入新锁，照搬——加新锁
+是复杂度零收益。
+
+**为什么 R5-B 修复不动 store 而在 cluster 函数内 UPDATE**：`store.rs:360-380`
+注释明示「merge-on-write 只覆盖 content/tags/importance/source/embedding，kind 不动」——
+这不只是我们这一个场景的特征，是整个 store 的有意边界。如果改 store 加「lesson 撞 fact
+不同处理」分支，会接触 `RefusedForeignMerge` / `RefusedForeignMerge` 保护逻辑等
+既有不变量——改 idempotent 行为的接触面远超 bug 本身的 30 行修复。cluster 阶段又是
+「lesson 写入事实上下文」已经具备的唯一节点，最小接触面就是在这里加 1 次定点 UPDATE。
+**store 是供应商语义、消费方能做后处理**：修复责任归消费方。
+
+**已知 follow-up（不挂账到日程，挂账到下批）**：scheduler tick 现在每次扫全表
+（load_all 全表），correction 累积到 1k+ 后单 tick ≥100ms。下批可加「按
+`updated_at` 增量扫描」（store 加 `updated_at` 索引或 `WHERE updated_at > last_tick`）
+降低 IO。但本批还没接到量级信号（correction 实际日均估计几十条），不加。下批触发
+时机：correction 累计打千或运营数据提示后台 CPU 占用上升。
+
+**什么没做（批 IV 接管后状态更新）**：原批 III 末尾挂账「聚类 scheduler 兜底」「
+lesson-dedup 撞 fact 已知行为」已在批 IV 两 commit 落地。剩余 follow-up（scheduler tick
+全表扫描在 correction ≥1k 时的 IO 升级）见上节。
 
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
 
