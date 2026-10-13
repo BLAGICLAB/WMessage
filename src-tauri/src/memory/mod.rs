@@ -109,7 +109,7 @@ fn injection_allowed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
 }
 
 /// 写入门禁（模型主动记忆工具开头调用）
-fn auto_write_allowed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+pub(crate) fn auto_write_allowed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     auto_write_enabled(control_of_view(app).as_ref())
 }
 

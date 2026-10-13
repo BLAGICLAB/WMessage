@@ -754,9 +754,9 @@ pub async fn bot_chat(
             "content" => last.content.chars().take(300).collect::<String>(),
         );
         // 用户纠正信号检测（Round 4 学习闭环入口）：push-back 模式命中 →
-        // 写 user.correction 事件供后续聚类消费；主流程零阻塞零成本（纯字符串 contains）。
+        // 写 user.correction 事件 + 持久化为记忆 item（fire-and-forget）。主流程零阻塞。
         if let Some(pat) = crate::bot::corrections::detect_correction(&last.content) {
-            crate::bot::corrections::emit_user_correction(
+            crate::bot::corrections::record_correction(
                 &app,
                 session_id.as_deref(),
                 &last.content,
