@@ -127,9 +127,71 @@ correction 上线后没人触发。两条路都走 `cluster_correction_lessons_b
 降低 IO。但本批还没接到量级信号（correction 实际日均估计几十条），不加。下批触发
 时机：correction 累计打千或运营数据提示后台 CPU 占用上升。
 
-**什么没做（批 IV 接管后状态更新）**：原批 III 末尾挂账「聚类 scheduler 兜底」「
+**什么没做（批 V 接管后状态更新）**：原批 III 末尾挂账「聚类 scheduler 兜底」「
 lesson-dedup 撞 fact 已知行为」已在批 IV 两 commit 落地。剩余 follow-up（scheduler tick
-全表扫描在 correction ≥1k 时的 IO 升级）见上节。
+全表扫描在 correction ≥1k 时的 IO 升级）见上节。另：verifier 拒绝 → 主 agent 自动
+executor 重试的自适应循环挂账在批 V。
+
+## 2026-10-14（周二）agent 行为收紧批 V：verifier 子 agent 真正落地
+
+两条独立 commit（不打 squash）：
+
+- `aaf19b3` verifier 子 agent 输出真正落库——`classify_outcome` 加 verified.json schema 识别（`classify_verifier_outcome` 独立分支：checks 全 false → Failed、checks 空 + summary 含否决词 → Failed、否则 Succeeded）
+- `cc28a1f` 子 agent Failed / BudgetExceeded 自动沉淀 lesson——`run_subagent` finalize 之后 fire-and-forget 调 `auto_lesson_on_task_failure`（与 `run_task_in_chat` 同口径）
+
+**为什么按 verified.json 结构识别不按 stage 字段**：verifier 的输出本来就
+是结构化 JSON（PROFILE_VERIFIER prompt 早要求写 `verified.json`，含
+`checks[]`），从结构出发最直白——识别面只是「`checks` 数组是否存在」
+一个特征。`SubagentProfile` 枚举也好、`stage` 字段也好都是「按调用方身份
+归类」的间接信号，跟输出形态无关，硬按 stage 判定等于「verifier 改
+字段名整个识别路径就要动」。**结构识别让 verifier 调整 prompt 增字段时
+识别路径零回归**。
+
+**为什么部分 met=true 算 Succeeded 不写 audit_log**：verifier 的设计
+意图是「全 check 通过才算 Succeeded，缺则要重走」——这条不破。问题
+是「部分 met=true」这个分支，主 agent 实际看到的是「verifier 给了
+折中结果」，不是「verifier 完全失败」。直接打 Failed 会逼主 agent
+重发同一子 agent，但折中结果对当前决策可能够用。判定路径只动
+status、不动 audit_log，主 agent 看 `result_json.checks` 自行决定
+下一步——**判定函数单职责，决策权留主 agent**。
+
+**为什么 R6-B 复用 auto_lesson_on_task_failure 不开 subagent 专属 helper**：
+现有 helper 的入参（标题 / 错误描述 / source / scenario / tags）刚好
+就是子 agent finalize 路径能填齐的——`row.objective` 当标题、
+`row_error` 当错误（含 R6-A 已提供的 enriched reason）、`source=system /
+scenario=task_exec / tags=[lesson, task_exec]` 与 `run_task_in_chat` 路径
+完全同口径。helper 内部走 store 时语义去重（embedding cos ≥0.92 合并到
+同 lesson 行）天然跨路径合并——子 agent 的「同类失败」会被自动归到
+同一条 lesson。再开 subagent 专属 helper 等于「给同一语义另写一份
+并行调用点」，dedup 边界要从 1 处扩到 2 处合并接触面——**复用比另写
+更小**。
+
+**为什么 Cancelled / Succeeded 不沉淀**：Cancelled 是用户主动停的
+（与失败无关），沉淀成 lesson 会污染「该避开的失败模式」记忆库；
+Succeeded 是无失败，沉淀违背 lesson 的语义（lesson 是「避坑信号」
+不是「成功记录」）。Failed / BudgetExceeded 才是真正的失败事件。
+**沉淀 = 避坑信号，不是运行日志**。
+
+**为什么 fire-and-forget 不 await**：lesson 写库是异步、不属于
+finalize 关键路径——audit_log / emit_to 主 agent / 更新 row 状态都已
+在 finalize 同步执行完成，lesson 写入失败也不影响主路径语义。
+`tokio::spawn` 把 lesson 写入丢到后台，主 agent 下一轮 LLM 调用不被
+lesson 写入延迟阻塞。**lesson 是事后避坑信号，不该卡当前任务**。
+
+**为什么不开 subagent_verifier 表**：verifier 的逐条验收结果本来就
+进 `result_json` + 已有 `audit_log`（task_exec stage 行已记 verifier
+子），单独建表只是「给一段 JSON 另找一个家」，没有新增语义、没有新
+查询维度——只是把同一个事实拆成两处记录，**迁就比不动更费**。
+
+**已知 follow-up（不挂账到日程，挂账到下批）**：verifier 现在是
+「判定 + 给主 agent 建议」的只读信号源，主 agent 拿到
+`verifier_all_checks_failed` 错误后能不能自动用 EXECUTOR 子 agent
+重跑失败项是个开放问题。本批先把 verifier 输出真正落地（结构识别
++ lesson 沉淀），自适应重试循环留到下批——涉及主 agent 自适应调度，
+会动 `bot_orchestrator` 决策路径，本批接触面已经收得很紧，不该再多
+塞一条决策线。下批触发时机：真实对话中观察到 verifier 拒绝后主
+agent 没主动重试。
+
 
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
 
