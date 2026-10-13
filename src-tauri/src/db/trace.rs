@@ -28,7 +28,6 @@ pub const TRACE_STATUS_RUNNING: &str = "running";
 pub const TRACE_STATUS_DONE: &str = "done";
 pub const TRACE_STATUS_FAILED: &str = "failed";
 pub const TRACE_STATUS_STOPPED: &str = "stopped";
-pub const TRACE_STATUS_TIMEOUT: &str = "timeout";
 
 pub const EXEC_TRACE_DDL: &str = "
 CREATE TABLE IF NOT EXISTS exec_traces (

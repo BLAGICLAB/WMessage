@@ -24,12 +24,7 @@ pub const CARD_INJECT_CHARS: usize = 800;
 
 pub const KIND_QA: &str = "qa";
 pub const KIND_REWORK: &str = "rework";
-pub const KIND_MANUAL: &str = "manual";
-pub const KIND_CLARIFY: &str = "clarify";
 pub const SOURCE_USER: &str = "user";
-pub const SOURCE_AGENT: &str = "agent";
-pub const SOURCE_QA: &str = "qa";
-pub const SOURCE_SYSTEM: &str = "system";
 
 /// 单源 DDL：open_db 与测试建表共用，防两处 schema 漂移
 pub const BRIEF_DDL: &str = "CREATE TABLE IF NOT EXISTS brief_entries (
