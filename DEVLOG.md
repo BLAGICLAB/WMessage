@@ -6,6 +6,39 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-13（周一）agent 行为收紧批 II：四 commit 闭环 sidecar / Y/N 视觉 / 子 agent 三段式
+
+四条独立 commit（不打 squash）：
+
+- `26afb59` 上下文压缩 sidecar 落盘（`ModelLoopDeps` 加 `conv_sidecar_dir` + 薄壳派生 AI_Gen_Files/conv-history，878 行从 None 改 deps 字段）
+- `bb388ff` 自检 Y/N 视觉过滤（SSE emit 跳过纯 Y/N + final_text 解析时发 ✅/⚠️/原内容）
+- `df3f52a` 子 agent 角色化（`prompts::subagent` 加 PROFILE_RECON/EXECUTOR/VERIFIER + MAIN_AGENT_ADDENDUM 派发流程改三段式）
+- `485d00a` 子 agent stage 装配（`SubagentStage` 枚举 + in-memory 闭包 move 进 runner + spawn schema 暴露 stage 字段）
+
+**为什么 round 1+2 是「看不见但必要」的基线**：sidecar 把会话历史从内存压缩转移到
+AI_Gen_Files 落盘，长会话不再是「进程一关全没」的脆弱状态；Y/N 视觉过滤让
+selfcheck 不再把自检过程泄露给用户。两件事都是「不修就一直在那里渗漏」的隐性债，
+单看不显眼，叠在一起就是 agent 体感从「毛糙」到「干净」的分水岭。
+
+**为什么 round 3+5 拆两次**：profile prompt 写好是一回事、真的在 spawn 路径上
+按阶段拼出来是另一回事。中间状态——常量在 `prompts/subagent.rs` 声明了、
+`prompts/mod.rs` 登记了、测试锁了，但 `bot_orchestrator` 的 `profile_prompt = match
+row.profile` 那一行还在选 `PROFILE_RESEARCH`——是「写了等于没写」的陷阱。分两次
+commit 让「写提示词」与「接提示词」可独立 review、独立回滚：profile 设计改了
+（语义层）不影响装配层（拼装层），反之亦然。
+
+**stage 不落库是有意降级**：SubagentStage 走 in-memory 闭包（spawn 触发 runner
+是同步启动，闭包 move 进 runner），崩溃后 queued 行重启降级到基线 PROFILE_*
+（profile 仍存表）。代价：极端崩溃场景少一次角色语义强化；收益：不加 DB schema
+迁移、不破 `SubagentProfile` 枚举、不动 DDL。门槛——「多一行 stage 比少一个迁移
+列价值大吗」——回答是大，所以走 in-memory。这条是「YAGNI」原则的应用，不是疏忽。
+
+**什么没做（round 4 学习闭环推迟）**：bot.log 加 `user.correction` 事件 + 聚类
+定时任务 + 同类 ≥3 次自动 record_lesson 是更大动作——需要先看 audit::write_event
+的现有写点（落点审计 + 端到端语义都需要新约束）和 record_lesson 工具入口
+（memory 模块签名确认）。这一批的「纪律密度」已经够高了，分散开两次「我先看
+现有代码再上」的回合比硬塞五件更稳——挂账到下一批，DEVLOG 不留空头承诺。
+
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
 
 两条独立 commit，不合并：
