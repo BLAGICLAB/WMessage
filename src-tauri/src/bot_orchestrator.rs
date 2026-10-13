@@ -1650,6 +1650,27 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             crate::bot::truncate_for_log(&row_error, 120)
         ),
     );
+    // Failed / BudgetExceeded 自动沉淀 lesson：与 run_task_in_chat 的
+    // auto_lesson_on_task_failure 同口径（source=system, scenario=task_exec,
+    // tags=[lesson, task_exec]）——store 语义去重自动合并同类失败教训。
+    // 走 fire-and-forget，不阻塞 finalize 返回路径。
+    // Cancelled 是用户选择不沉淀，Succeeded 无失败不沉淀。
+    if matches!(
+        status,
+        SubagentStatus::Failed | SubagentStatus::BudgetExceeded
+    ) {
+        let app_for_lesson = app.clone();
+        let lesson_title = row.objective.clone();
+        let lesson_error = row_error.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::memory::auto_lesson_on_task_failure(
+                &app_for_lesson,
+                &lesson_title,
+                &lesson_error,
+            )
+            .await;
+        });
+    }
     if let Some(card) = card {
         crate::bot::broadcast_after_mutation(&app, vec![card], Vec::new());
     }
