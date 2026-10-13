@@ -433,6 +433,10 @@ pub struct ModelLoopDeps<'a> {
     /// 结构上无法改生命周期；写操作（收尾 / 暂停 / 入口清理）留在核心之外或已有回调里。
     pub active_skill_run:
         &'a (dyn Fn(Option<&str>) -> Option<crate::bot_skills::SkillRun> + Send + Sync),
+    /// 上下文压缩 sidecar 落盘目录（AI_Gen_Files/conv-history）。
+    /// 薄壳从 db::gen_dir(app) 派生；None = 不写盘（压缩文本留"原文未保留"标记）。
+    /// 核心不依赖 AppHandle，路径借用由薄壳层保证生命周期。
+    pub conv_sidecar_dir: Option<&'a std::path::Path>,
 }
 
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
@@ -616,6 +620,10 @@ pub async fn run_model_loop(
         std::sync::Mutex<Vec<crate::evolution::trace::ToolCallSummary>>,
     > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let tool_trace_for_exec = tool_trace.clone();
+    // 上下文压缩 sidecar 目录（AI_Gen_Files/conv-history）；gen_dir 失败时降级 None
+    let conv_sidecar_path = crate::db::gen_dir(&app)
+        .ok()
+        .map(|d| d.join("conv-history"));
     let deps = ModelLoopDeps {
         // 全域熔断上限：config 有值用之（钳 1..=500），None = 默认 100
         fuse_cap_override: Some(
@@ -623,6 +631,7 @@ pub async fn run_model_loop(
                 .map(|v| v.clamp(1, 500) as usize)
                 .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
         ),
+        conv_sidecar_dir: conv_sidecar_path.as_deref(),
         emit: &emit,
         audit: &|level, event, kv| {
             // llm.request 事件计数 = 轮数（trace turn_count 的数据源）
@@ -895,7 +904,11 @@ where
                     }
                     _ => unreachable!(),
                 };
-                match compact_fn(&mut msgs, None, session_id_owned.as_deref()) {
+                match compact_fn(
+                    &mut msgs,
+                    deps.conv_sidecar_dir,
+                    session_id_owned.as_deref(),
+                ) {
                     Ok(report) => (deps.audit)(
                         crate::audit::AuditLevel::Info,
                         "loop.msgs.compacted",
