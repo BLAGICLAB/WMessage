@@ -1466,41 +1466,58 @@ where
             // a) claims_mutation——声称完成变更但本轮没动过手；
             // b) fabricated_gen_path——声称已生成文档且给出路径，但路径在磁盘上
             //    不存在（编造的路径经不起存在性检查，实测窄词表漏检的话术靠它兜住）
-            // 自检回复解析：模型刚被注入 SELFCHECK_PROMPT，本轮 final_text
-            // 若 trim 后纯是单字符 Y/N，按 selfcheck 通过/未通过走 PREVR 失败路径。
-            // 失败时 fail_hint_queued 推到本轮 tool 响应回填后统一注入。
-            // final_text 含 Y/N 字样保留进历史——这是有意的视觉反馈。
+            // 自检回复解析：上一轮注入了 SELFCHECK_PROMPT（pending 仍在场、
+            // expecting_selfcheck 为真）。纯 Y/N 不是给用户的答案：
+            // Y → ✅ 视觉提示后续跑一轮，让模型产出正常汇报（否则回合被自检
+            //     终结，用户的请求得不到真实答复）；
+            // N → ⚠️ 视觉提示 + 直接 push 换策略提示后续跑（PREVR 第 1 层同源
+            //     文案；fail_hint_queued 的注入点在工具回填之后，自检回复轮
+            //     没有工具调用到不了那里，只能就地 push）；
+            // 附解释 → 自检外还有真实回答，按正常答案走主出口终结回合。
             if expecting_selfcheck {
-                let hint_text = match crate::prompts::parse_selfcheck_response(final_text.trim()) {
-                    Some(true) => "✅ 自检通过",
-                    Some(false) => "⚠️ 自检未达预期,换策略中…",
-                    // 模型附了解释：正常显示原 final_text（已被上面 emit 跳过，
-                    // 这里手动 emit 一次），不再加视觉提示
-                    None => "",
-                };
-                if !hint_text.is_empty() {
-                    emit("bot-chat-delta", serde_json::json!({ "text": hint_text }));
-                } else {
-                    // 模型附了解释说明：emit 原 final_text（之前 SSE 已跳 emit）
-                    emit("bot-chat-delta", serde_json::json!({ "text": final_text }));
-                }
-                expecting_selfcheck = false;
-            }
-            if let Some((sc_name, _sc_snippet)) = pending_selfcheck.as_ref() {
+                let sc_name = pending_selfcheck
+                    .as_ref()
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_default();
                 match crate::prompts::parse_selfcheck_response(final_text.trim()) {
-                    Some(false) => {
-                        fail_hint_queued = Some(format!(
-                            "【系统提示】你对工具 {sc_name} 的自检回复了「未达预期」。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。",
-                        ));
-                        pending_selfcheck = None;
-                    }
                     Some(true) => {
-                        // Y 路径不污染 fail_hint，清空 pending 让下一轮走正常流
+                        emit(
+                            "bot-chat-delta",
+                            serde_json::json!({ "text": "✅ 自检通过\n\n" }),
+                        );
+                        msgs.push(
+                            serde_json::json!({ "role": "assistant", "content": final_text }),
+                        );
+                        msgs.push(serde_json::json!({
+                            "role": "user",
+                            "content": "【系统提示】自检通过。请继续：完成剩余步骤，或直接向用户汇报结果。"
+                        }));
+                        expecting_selfcheck = false;
                         pending_selfcheck = None;
+                        continue;
+                    }
+                    Some(false) => {
+                        emit(
+                            "bot-chat-delta",
+                            serde_json::json!({ "text": "⚠️ 自检未达预期,换策略中…\n\n" }),
+                        );
+                        msgs.push(
+                            serde_json::json!({ "role": "assistant", "content": final_text }),
+                        );
+                        msgs.push(serde_json::json!({
+                            "role": "user",
+                            "content": format!(
+                                "【系统提示】你对工具 {sc_name} 的自检回复了「未达预期」。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
+                            )
+                        }));
+                        expecting_selfcheck = false;
+                        pending_selfcheck = None;
+                        continue;
                     }
                     None => {
-                        // 模型附了解释说明（说明自检外还有别的回答），pending 不清空
-                        // 也不重复注入——pending 状态只在本轮 tool 响应回填后取一次
+                        // 模型附了解释说明：emit 原 final_text（之前 SSE 已跳 emit）
+                        emit("bot-chat-delta", serde_json::json!({ "text": final_text }));
+                        expecting_selfcheck = false;
                         pending_selfcheck = None;
                     }
                 }
@@ -1607,7 +1624,11 @@ where
             return Ok((final_text.clone(), collected_refs));
         }
 
-        // 模型请求工具：进程内执行，结果回填后继续下一轮
+        // 模型请求工具：进程内执行，结果回填后继续下一轮。
+        // 模型以工具调用回应自检提示 = 以行动代回答：丢弃工具自检态，
+        // 后续轮流式不再被抑制（终稿自检快照的释放在终稿自检态一并处理）。
+        expecting_selfcheck = false;
+        pending_selfcheck = None;
         msgs.push(serde_json::json!({
             "role": "assistant",
             "content": serde_json::Value::Null,
@@ -1824,16 +1845,20 @@ where
                 }
             }
         }
-        // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法
-        if let Some((sc_name, sc_snippet)) = pending_selfcheck.take() {
-            last_selfcheck_round = Some(round);
-            expecting_selfcheck = true;
-            msgs.push(serde_json::json!({
-                "role": "user",
-                "content": crate::prompts::SELFCHECK_PROMPT
-                    .replace("{tool_name}", &sc_name)
-                    .replace("{snippet}", &sc_snippet),
-            }));
+        // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法。
+        // pending 保持 Some 直到回复轮消费——在这里 take() 提前清空，回复轮的解析
+        // 就会永远扑空（N 换策略路径整段死代码的根因）；expecting 守卫防重复注入。
+        if let Some((sc_name, sc_snippet)) = pending_selfcheck.as_ref() {
+            if !expecting_selfcheck {
+                last_selfcheck_round = Some(round);
+                expecting_selfcheck = true;
+                msgs.push(serde_json::json!({
+                    "role": "user",
+                    "content": crate::prompts::SELFCHECK_PROMPT
+                        .replace("{tool_name}", sc_name)
+                        .replace("{snippet}", sc_snippet),
+                }));
+            }
         }
         if let Some(hint) = fail_hint_queued.take() {
             msgs.push(serde_json::json!({

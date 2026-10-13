@@ -1989,3 +1989,148 @@ async fn core_final_selfcheck_skips_short_final_text() {
     assert_eq!(text, "完成了");
     assert_eq!(server.request_count(), 4);
 }
+
+// ────────────────────────────────────────────────────────────────────
+// 工具语义自检（SELFCHECK）回复接线：纯 Y/N 不是给用户的答案。
+// 修复前两处断裂：注入点 take() 提前消费 pending → 回复轮解析永远扑空
+// （N 换策略路径死代码）；纯 Y/N 无工具调用走主出口直接 return → 回合被
+// 自检终结（Y 顶掉正常汇报 / N 的「换策略中」后无任何动作）。
+// 修复后：Y → 续跑让模型产出正常汇报；N → 注入换策略提示后续跑；
+// 附解释 → 按正常答案终结回合。
+// ────────────────────────────────────────────────────────────────────
+
+/// 捕获 bot-chat-delta 事件的 deps（emit 默认 noop，视觉提示断言需要捕获版）
+fn deps_capturing_chat_deltas(h: &CoreHarness) -> (ModelLoopDeps<'_>, Arc<Mutex<Vec<String>>>) {
+    let deltas: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deltas2 = deltas.clone();
+    let mut deps = h.deps();
+    deps.emit = Box::leak(Box::new(move |event: &str, v: serde_json::Value| {
+        if event == "bot-chat-delta" {
+            if let Some(t) = v.get("text").and_then(|t| t.as_str()) {
+                deltas2.lock().unwrap().push(t.to_string());
+            }
+        }
+    }));
+    (deps, deltas)
+}
+
+/// create_task 成功触发工具自检，模型答 N：应发出 ⚠️ 视觉提示、注入换策略
+/// 提示并续跑一轮拿到恢复汇报——而不是以 "N" 终结回合。
+#[tokio::test]
+async fn core_tool_selfcheck_n_switches_strategy_and_continues() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 2 轮：模型对自检答 N（纯 Y/N 不是给用户的答案）
+    server.push_behavior(MockBehavior::TextReply("N".into()));
+    // 第 3 轮：收到换策略提示后的恢复汇报
+    server.push_behavior(MockBehavior::TextReply(
+        "已换用正确参数重新创建任务成功".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let (deps, deltas) = deps_capturing_chat_deltas(&h);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("N 换策略路径应 Ok");
+    assert_eq!(
+        text.trim(),
+        "已换用正确参数重新创建任务成功",
+        "N 后应续跑并返回恢复汇报，实际：{text:?}"
+    );
+    // 3 次 LLM 请求：tool → 自检回复 N → 换策略后的恢复汇报
+    assert_eq!(server.request_count(), 3, "N 应触发续跑而非终结回合");
+    // 视觉：⚠️ 提示发给用户；N 字样本身不外露
+    let joined = deltas.lock().unwrap().join("");
+    assert!(
+        joined.contains("⚠️ 自检未达预期"),
+        "应发出 ⚠️ 视觉提示：{joined:?}"
+    );
+}
+
+/// create_task 成功触发工具自检，模型答 Y：应续跑一轮拿到正常汇报，
+/// 而不是以 "Y"（或孤零零的 ✅）终结回合把汇报顶掉。
+#[tokio::test]
+async fn core_tool_selfcheck_y_continues_to_report() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply("Y".into()));
+    server.push_behavior(MockBehavior::TextReply(
+        "任务已创建，可在任务页查看详情".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let (deps, deltas) = deps_capturing_chat_deltas(&h);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("Y 续跑路径应 Ok");
+    assert_eq!(
+        text.trim(),
+        "任务已创建，可在任务页查看详情",
+        "Y 后应续跑返回正常汇报，实际：{text:?}"
+    );
+    assert_eq!(server.request_count(), 3, "Y 应触发续跑而非终结回合");
+    let joined = deltas.lock().unwrap().join("");
+    assert!(
+        joined.contains("✅ 自检通过"),
+        "应发出 ✅ 视觉提示：{joined:?}"
+    );
+}
+
+/// 自检回复附解释（非纯 Y/N）：当正常答案走主出口终结回合，不额外注入提示。
+#[tokio::test]
+async fn core_tool_selfcheck_explanation_treated_as_final_answer() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    let explained = "Y，文件已写入项目根目录，无需调整";
+    server.push_behavior(MockBehavior::TextReply(explained.into()));
+    // **不**推第 3 个行为：若续跑被误触发会因无响应挂死/panic
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("附解释路径应 Ok");
+    assert_eq!(text, explained, "附解释应作为正常答案返回");
+    assert_eq!(server.request_count(), 2, "附解释不续跑");
+}
