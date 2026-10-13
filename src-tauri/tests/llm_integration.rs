@@ -1815,7 +1815,7 @@ async fn core_final_selfcheck_y_restores_final_text() {
     }));
     // 第 4 轮模型给长文 final_text（≥ 80 字触发 final 自检 trigger）
     server.push_behavior(MockBehavior::TextReply(
-        "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。任务列表展示在文档中。"
+        "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。任务列表展示在文档中，每一条都核对过状态与期限，没有遗漏任何待办事项，可以放心进入下一阶段的安排，若有需要我可以继续细化每个条目。"
             .into(),
     ));
     // 第 5 轮 final 自检响应：模型判 Y
@@ -1865,7 +1865,7 @@ async fn core_final_selfcheck_n_appends_warning_and_audits() {
         name: "list_tasks".into(),
         arguments: "{}".into(),
     }));
-    let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。";
+    let long_text = "已完成 3 项工作：列出了所有任务、统计了完成情况、生成了汇总报告。所有条目都逐条核对过状态、期限与负责人，异常项已单独标注，完整清单以文档形式存档，随时可以复查或导出。";
     server.push_behavior(MockBehavior::TextReply(long_text.into()));
     // 第 5 轮 final 自检响应：模型判 N
     server.push_behavior(MockBehavior::TextReply("N".into()));

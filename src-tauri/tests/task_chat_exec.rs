@@ -176,11 +176,13 @@ async fn run_task_in_chat_full_chain_manual_origin() {
             };
             let deps = ModelLoopDeps {
                 fuse_cap_override: None,
+                conv_sidecar_dir: None,
                 emit: &|_, _| {},
                 audit: &|_: AuditLevel, _: &'static str, _| {},
                 audit_log: &|_| {},
                 skill_finish: &|_, _| String::new(),
                 active_skill_run: &active_skill_run,
+                final_selfcheck_round_gap: Some(0),
             };
             run_model_loop_core(&http, msgs, 10, &stop, None, &deps, exec, noop_replan).await
         }
