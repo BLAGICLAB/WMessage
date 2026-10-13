@@ -2236,3 +2236,44 @@ async fn core_tool_selfcheck_explanation_treated_as_final_answer() {
     assert_eq!(text, explained, "附解释应作为正常答案返回");
     assert_eq!(server.request_count(), 2, "附解释不续跑");
 }
+
+/// 滚动降密度：连续 7 轮工具调用后，round-0 的工具结果轮龄 ≥5
+/// → 触发 `loop.msgs.age_compacted` 软压审计事件；随后文本轮正常收尾。
+#[tokio::test]
+async fn core_age_based_rolling_compaction_fires() {
+    let server = MockLlmServer::start();
+    for _ in 0..7 {
+        server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+            name: "list_tasks".into(),
+            arguments: "{}".into(),
+        }));
+    }
+    server.push_behavior(MockBehavior::TextReply("全部查完了".into()));
+
+    let h = CoreHarness::new();
+    // 长工具结果：太短（≤300 字符）压缩器会跳过，滚动降密度就没有可压对象
+    let long_result = "X".repeat(1500);
+    let exec = |_n: String, _a: String, _t: ToolCallTrace| {
+        let long_result = long_result.clone();
+        async move { ToolResult::ok(long_result, Vec::new()) }
+    };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        12,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("滚动降密度路径应 Ok");
+    assert_eq!(text, "全部查完了");
+    assert_eq!(server.request_count(), 8);
+    let events = h.events();
+    assert!(
+        events.contains(&"loop.msgs.age_compacted"),
+        "round-0 的工具结果轮龄应到 5 触发软压：{events:?}"
+    );
+}

@@ -341,6 +341,14 @@ pub(crate) const FINAL_SELFCHECK_SNIPPET_CHARS: usize = 500;
 /// 终稿自检默认轮次间隔（设置项为 None 时启用）：8 轮 1 次。
 const DEFAULT_FINAL_SELFCHECK_ROUND_GAP: u32 = 8;
 
+/// 滚动降密度：轮龄 ≥ 此值的 tool 结果软压（头 200 + 尾 100 + sidecar 指针）。
+/// N=5 对齐业界——SWE-agent 消融只留最近 5 条观察比全历史高 3 分，
+/// Claude Code microcompact 亦为最近 5 条工具结果。
+const AGE_SOFT_ROUNDS: usize = 5;
+/// 轮龄 ≥ 此值再降硬档（30+30+指针）。保守默认，config 化挂账
+/// （见 docs/AGENT-TOKEN-EFFICIENCY-PLAN.md 滚动降密度一节）。
+const AGE_HARD_ROUNDS: usize = 15;
+
 /// 单条工具结果回灌默认上限（字符）：业界对齐——Claude Code 文件读 25K token /
 /// Bash 30K 字符、Gemini CLI 40K 字符。配置 Some(0) = 显式关闭截断。
 pub(crate) const DEFAULT_TOOL_OUTPUT_CAP: usize = 30_000;
@@ -918,6 +926,9 @@ where
     // 自检视觉过滤：pending 推入 prompt 后置 true，本轮 SSE 流式 emit 不输出 Y/N，
     // 改在 final_text 解析时统一 emit 视觉提示（✅ / ⚠️）
     let mut expecting_selfcheck = false;
+    // 滚动降密度：每条 tool 消息的 (入栈轮次, msgs 下标)。msgs 循环内只追加
+    // 不删（压缩原位改写），下标恒稳定。
+    let mut tool_msg_ages: Vec<(usize, usize)> = Vec::new();
     // 终稿自检视觉过滤：本轮已被注入 FINAL_SELFCHECK_PROMPT、下一轮 SSE 流式
     // emit 跳过 Y/N 字样（用户已在主出口前看到 final_text 自检运行属于机器内部
     // 信号，不该再叠一层 Y/N 字样）；终态在主出口解析后还原 final_text。
@@ -999,6 +1010,51 @@ where
                     ],
                 );
             }
+        }
+        // 滚动降密度：老工具结果随轮龄降档。业界实证旧细节是噪音——SWE-agent
+        // 只留最近 5 条观察比全历史高 3 分；Anthropic context editing 实测
+        // token -84%、表现 +29%。70/85% 阈值压缩保留作预算兜底；⟦c:⟧ 标记
+        // 防软压重复、硬压沿用指针。无消息到龄时零开销（只遍历下标表）。
+        let session_id_owned = stop.session_id().map(|s| s.to_string());
+        let mut age_soft = 0usize;
+        let mut age_hard = 0usize;
+        for (born_round, idx) in &tool_msg_ages {
+            let age = round.saturating_sub(*born_round);
+            if age < AGE_SOFT_ROUNDS {
+                continue;
+            }
+            let hard = age >= AGE_HARD_ROUNDS;
+            match crate::bot::compaction::compact_one(
+                &mut msgs[*idx],
+                hard,
+                deps.conv_sidecar_dir,
+                session_id_owned.as_deref(),
+            ) {
+                Ok((true, _)) => {
+                    if hard {
+                        age_hard += 1;
+                    } else {
+                        age_soft += 1;
+                    }
+                }
+                Ok((false, _)) => {}
+                Err(e) => (deps.audit)(
+                    crate::audit::AuditLevel::Warn,
+                    "loop.msgs.compact_failed",
+                    vec![("err", e)],
+                ),
+            }
+        }
+        if age_soft + age_hard > 0 {
+            (deps.audit)(
+                crate::audit::AuditLevel::Info,
+                "loop.msgs.age_compacted",
+                vec![
+                    ("round", round.to_string()),
+                    ("soft", age_soft.to_string()),
+                    ("hard", age_hard.to_string()),
+                ],
+            );
         }
         if stop.stopped() {
             let hint = skill_finish(false, "用户停止");
@@ -1675,6 +1731,7 @@ where
                     "tool_call_id": id,
                     "content": "⏹ 已停止，该工具未执行"
                 }));
+                tool_msg_ages.push((round, msgs.len() - 1));
                 continue;
             }
             function_calls_total += 1;
@@ -1785,6 +1842,7 @@ where
                 "tool_call_id": id,
                 "content": result
             }));
+            tool_msg_ages.push((round, msgs.len() - 1));
             // 工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
             // OpenAI 协议 tool 消息只收文本，「工具后追加带图 user 消息」是官方视觉
             // 示例同款；Anthropic 转换器会把 [tool, user(图)] 合并成单条 user

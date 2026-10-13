@@ -112,6 +112,87 @@ fn sidecar_file_path(dir: &Path, session_id: Option<&str>) -> PathBuf {
     dir.join(format!("conv-{safe_sid}-{ts}-{}.md", mark_uid()))
 }
 
+/// 对单条 tool 消息按档位压缩，返回 (是否实际压缩, 新落盘的 sidecar 路径)。
+/// - hard=false（软档）：未压过的压软档；已压过（带 ⟦c:⟧ 标记）的跳过——
+///   对替身文本再压省不了多少、还叠标记。
+/// - hard=true（硬档）：未压过的压硬档；已压过的再压但沿用原指针、不写
+///   第二个 sidecar（盘上原文还在，二次落盘只是复制品）。
+/// 非 tool 消息 / content 非字符串：原样返回 false。
+pub(crate) fn compact_one(
+    m: &mut Value,
+    hard: bool,
+    sidecar_dir: Option<&Path>,
+    session_id: Option<&str>,
+) -> Result<(bool, Vec<String>), String> {
+    if m.get("role").and_then(|r| r.as_str()) != Some("tool") {
+        return Ok((false, Vec::new()));
+    }
+    let Some(text) = m.get("content").and_then(|c| c.as_str()) else {
+        return Ok((false, Vec::new()));
+    };
+    let (head_keep, tail_keep) = if hard {
+        (HARD_KEEP_HEAD, HARD_KEEP_TAIL)
+    } else {
+        (SOFT_KEEP_HEAD, SOFT_KEEP_TAIL)
+    };
+    let total = text.chars().count();
+    let mut pointer: Option<String> = None;
+    if text.contains(COMPACT_MARK) {
+        if !hard {
+            return Ok((false, Vec::new()));
+        }
+        pointer = extract_pointer(text);
+    } else if total <= head_keep + tail_keep {
+        return Ok((false, Vec::new()));
+    }
+    let original = text.to_string();
+    let head: String = original.chars().take(head_keep).collect();
+    let tail: String = original
+        .chars()
+        .rev()
+        .take(tail_keep)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let middle = total - head_keep - tail_keep;
+    // 先定路径、后写盘：替身不比原文短就整条跳过（sidecar 也不落）——
+    // 指针里的绝对路径可能比省下的字符还长，压了白压还孤儿一个文件
+    let sidecar_path: Option<PathBuf> = match (sidecar_dir, &pointer) {
+        (Some(dir), None) => Some(sidecar_file_path(dir, session_id)),
+        _ => None,
+    };
+    let placeholder = match (&sidecar_path, &pointer) {
+        (Some(p), _) => format!(
+            "\n…（已压缩 {middle} 字符 · 原文见 {}）…{COMPACT_MARK}{}⟧",
+            p.display(),
+            mark_uid()
+        ),
+        (None, Some(path)) => format!(
+            "\n…（已压缩 {middle} 字符 · 原文见 {path}）…{COMPACT_MARK}{}⟧",
+            mark_uid()
+        ),
+        (None, None) => format!(
+            "\n…（已压缩 {middle} 字符 · 原文未保留）…{COMPACT_MARK}{}⟧",
+            mark_uid()
+        ),
+    };
+    if head_keep + tail_keep + placeholder.chars().count() >= total {
+        return Ok((false, Vec::new()));
+    }
+    let mut written: Vec<String> = Vec::new();
+    if let (Some(p), Some(dir)) = (&sidecar_path, sidecar_dir) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建 sidecar 目录失败：{e}"))?;
+        let mut content = String::with_capacity(original.len() + 64);
+        content.push_str("<!-- compressed tool output, see bot::compaction -->\n\n");
+        content.push_str(&original);
+        std::fs::write(p, content).map_err(|e| format!("写入 sidecar 失败：{e}"))?;
+        written.push(p.display().to_string());
+    }
+    m["content"] = Value::String(format!("{head}{placeholder}{tail}"));
+    Ok((true, written))
+}
+
 fn compact_internal(
     msgs: &mut [Value],
     sidecar_dir: Option<&Path>,
@@ -124,71 +205,14 @@ fn compact_internal(
         before_chars: count_chars(msgs),
         ..Default::default()
     };
+    let hard = recompact_marked;
 
     for m in msgs.iter_mut() {
-        if m.get("role").and_then(|r| r.as_str()) != Some("tool") {
-            continue;
+        let (compacted, paths) = compact_one(m, hard, sidecar_dir, session_id)?;
+        if compacted {
+            report.sidecar_paths.extend(paths);
+            report.tool_msgs_compacted += 1;
         }
-        let Some(text) = m.get("content").and_then(|c| c.as_str()) else {
-            continue;
-        };
-        let total = text.chars().count();
-        // 已压缩消息：软压缩跳过（对替身文本再压省不了多少、还叠标记）；
-        // 硬压缩允许再压——预算告急时已压消息也要再降密度，但沿用原指针
-        let mut pointer: Option<String> = None;
-        if text.contains(COMPACT_MARK) {
-            if !recompact_marked {
-                continue;
-            }
-            pointer = extract_pointer(text);
-        } else if total <= head_keep + tail_keep {
-            continue;
-        }
-        let original = text.to_string();
-        let head: String = original.chars().take(head_keep).collect();
-        let tail: String = original
-            .chars()
-            .rev()
-            .take(tail_keep)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-        let middle = total - head_keep - tail_keep;
-        // 先定路径、后写盘：替身不比原文短就整条跳过（sidecar 也不落）——
-        // 指针里的绝对路径可能比省下的字符还长，压了白压还孤儿一个文件
-        let sidecar_path: Option<PathBuf> = match (sidecar_dir, &pointer) {
-            (Some(dir), None) => Some(sidecar_file_path(dir, session_id)),
-            _ => None,
-        };
-        let placeholder = match (&sidecar_path, &pointer) {
-            (Some(p), _) => format!(
-                "\n…（已压缩 {middle} 字符 · 原文见 {}）…{COMPACT_MARK}{}⟧",
-                p.display(),
-                mark_uid()
-            ),
-            (None, Some(path)) => format!(
-                "\n…（已压缩 {middle} 字符 · 原文见 {path}）…{COMPACT_MARK}{}⟧",
-                mark_uid()
-            ),
-            (None, None) => format!(
-                "\n…（已压缩 {middle} 字符 · 原文未保留）…{COMPACT_MARK}{}⟧",
-                mark_uid()
-            ),
-        };
-        if head_keep + tail_keep + placeholder.chars().count() >= total {
-            continue;
-        }
-        if let (Some(p), Some(dir)) = (&sidecar_path, sidecar_dir) {
-            std::fs::create_dir_all(dir).map_err(|e| format!("创建 sidecar 目录失败：{e}"))?;
-            let mut content = String::with_capacity(original.len() + 64);
-            content.push_str("<!-- compressed tool output, see bot::compaction -->\n\n");
-            content.push_str(&original);
-            std::fs::write(p, content).map_err(|e| format!("写入 sidecar 失败：{e}"))?;
-            report.sidecar_paths.push(p.display().to_string());
-        }
-        m["content"] = Value::String(format!("{head}{placeholder}{tail}"));
-        report.tool_msgs_compacted += 1;
     }
 
     report.after_chars = count_chars(msgs);
@@ -279,6 +303,35 @@ mod tests {
         assert_eq!(report.tool_msgs_compacted, 1);
         // 中间被替身，不应有大段 M
         assert!(!compressed.contains(&"M".repeat(100)));
+    }
+
+    #[test]
+    fn compact_one_soft_skips_marked_hard_recompacts_with_pointer() {
+        let dir = tmp_dir();
+        let mut m = mk_tool_msg(&"V".repeat(1000));
+        // 软档首压：落一个 sidecar
+        let (ok, paths) = compact_one(&mut m, false, Some(&dir), Some("s")).unwrap();
+        assert!(ok && paths.len() == 1);
+        let soft_text = m["content"].as_str().unwrap().to_string();
+        // 软档再压：跳过（不叠标记、不再落盘）
+        let (ok2, p2) = compact_one(&mut m, false, Some(&dir), Some("s")).unwrap();
+        assert!(!ok2 && p2.is_empty());
+        assert_eq!(m["content"].as_str().unwrap(), soft_text);
+        // 硬档再压：沿用原指针、不新增 sidecar、文本更短
+        let (ok3, p3) = compact_one(&mut m, true, Some(&dir), Some("s")).unwrap();
+        assert!(ok3 && p3.is_empty());
+        let hard_text = m["content"].as_str().unwrap();
+        assert_eq!(extract_pointer(hard_text), extract_pointer(&soft_text));
+        assert!(hard_text.chars().count() < soft_text.chars().count());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compact_one_ignores_non_tool_and_short_text() {
+        let mut u = mk_user_msg("用户消息不压");
+        assert!(!compact_one(&mut u, true, None, None).unwrap().0);
+        let mut t = mk_tool_msg("短结果");
+        assert!(!compact_one(&mut t, true, None, None).unwrap().0);
     }
 
     #[test]
