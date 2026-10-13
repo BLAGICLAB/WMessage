@@ -1,12 +1,14 @@
-//! 用户纠正信号检测（Round 4 学习闭环的入口）。
+//! 用户纠正信号检测（Round 4 学习闭环）。
 //!
 //! 用户消息含 push-back 模式 →
 //! 1. 写 `user.correction` 审计事件到 bot.log（debug 可见）
-//! 2. 持久化为 memory item（kind=fact, tags=[correction, pattern]）——后续聚类任务
-//!    读记忆库走现有语义去重自动完成同类聚合，≥3 自动 record_lesson（Phase 3 接入）
+//! 2. 持久化为 memory item（kind=fact, tags=[correction, pattern]）——已有 insert_item_with
+//!    语义去重（cos ≥0.92 自动合并）天然承担同类聚合
+//! 3. 聚类任务读库按 cos ≥0.78 分簇，同簇 ≥3 自动 record_lesson（fire-and-forget，
+//!    与 record_correction 同节流，不阻塞 bot_chat 主路径）
 //!
-//! 范围（Commit 2）：事件打点 + 持久化。Phase 3 才接「聚类阈值触发 lesson」流。
-//! 不在本模块引入调度/批处理——单点职责，「事件落盘」与「聚合」解耦。
+//! 范围：三段流水（事件 / 持久化 / 聚类触发 lesson）。不引入调度/批处理——
+//!「事件落盘」与「聚合触发」解耦；调度层未来挂在 scheduler，现版本按需即时触发。
 //!
 //! 模式选择：白名单多字短语（"错了"/"重做"/"搞反" 等），避单字歧义
 //!（"不"/"别" 单独出现命中太宽）。模糊宁可漏检不要误判——审计信号噪
@@ -233,6 +235,274 @@ mod correction_tests {
         for s in ["不要", "别说了", "不行啊", "不能这样"] {
             // 单字歧义短语不应命中（宁可漏检）
             assert_eq!(detect_correction(s), None, "{s} 不应误判");
+        }
+    }
+
+    /// 在内存库预设 3 条同主题 corrections + 1 条远处噪音，验证聚类触发 lesson。
+    ///
+    /// 向量策略：3 条 corrections 共享 v[0]=0.9，但 2 维分量分布在不同下标上，
+    /// 成对 cos=0.81——卡在 [CLUSTER_COSINE_THRESHOLD=0.78, DEDUP_MERGE_COSINE=0.92)
+    /// 区间。cluster 阶段把它们并成一簇（≥3 触发 lesson），store 阶段保留 3 行不合并。
+    /// 噪音 v_noise 在 v[0]=0 与三条 corrections 完全正交，独立成一簇 1 条进不了阈值。
+    fn write_fact(
+        conn: &rusqlite::Connection,
+        content: &str,
+        emb: Option<&[f32]>,
+        now: i64,
+        scenario_tag: &str,
+    ) {
+        let item = crate::memory::store::NewItem {
+            kind: "fact".to_string(),
+            content: content.to_string(),
+            tags: vec!["correction".to_string(), scenario_tag.to_string()],
+            importance: 3,
+            source: "user_correction".to_string(),
+        };
+        let _ = crate::memory::store::insert_item_with(
+            conn,
+            &item,
+            emb,
+            now,
+            &crate::memory::store::StoreParams::default(),
+        )
+        .unwrap();
+    }
+
+    /// [0.9, sqrt(1-0.81), 0, ..., 0] but with the secondary component at axis `axis`.
+    /// All such vectors share v[0]=0.9 → pairwise cos = 0.9^2 + remainder = 0.81.
+    fn topic_vec(axis: usize) -> Vec<f32> {
+        let dim = crate::memory::embed::EMBED_DIM as usize;
+        let mut v = vec![0f32; dim];
+        v[0] = 0.9_f32;
+        v[axis.min(dim - 1)] = (1.0_f32 - 0.81_f32).sqrt();
+        v
+    }
+
+    /// one-hot at index `axis`, length EMBED_DIM — orthogonal to topic vectors.
+    fn noise_vec(axis: usize) -> Vec<f32> {
+        let dim = crate::memory::embed::EMBED_DIM as usize;
+        let mut v = vec![0f32; dim];
+        v[axis.min(dim - 1)] = 1.0;
+        v
+    }
+
+    #[test]
+    fn cluster_three_similar_writes_one_lesson() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::memory::store::ensure_table(&conn).unwrap();
+        let now = 1_000_000i64;
+        // 3 条同主题 corrections，content 各异，tags[1] 区分但都含 correction
+        for (axis, content) in [
+            (1usize, "用户搞错了,应该用 Y"),
+            (2, "用户弄错了, 应该是 Z"),
+            (3, "用户反了，应该是 W"),
+        ] {
+            write_fact(&conn, content, Some(&topic_vec(axis)), now, "错了");
+        }
+        // 1 条远处噪音（cos=0 与三条 corrections）
+        write_fact(&conn, "远端噪音", Some(&noise_vec(7)), now, "错了");
+
+        let stats = cluster_correction_lessons_blocking(
+            &conn,
+            &crate::memory::store::StoreParams::default(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(stats.scanned, 4, "4 条 correction 都能扫到");
+        assert_eq!(stats.clusters_above_threshold, 1, "近端 3 条成一簇");
+        assert_eq!(stats.lessons_written, 1, "≥3 触发 lesson");
+
+        let all = crate::memory::store::load_all(&conn).unwrap();
+        // lesson 痕迹：tags 同时含 "lesson" 与 "user_correction"（store 语义去重时
+        // 可能并入既有 correction 行，导致 kind 仍是 fact——但 tags/source 已被 lesson 覆盖，
+        // 等价于「correction 提升为 lesson」。这里按 tags 口径校验而不是 kind。
+        let lesson_tagged: Vec<_> = all
+            .iter()
+            .filter(|m| {
+                m.tags.iter().any(|t| t == "lesson")
+                    && m.tags.iter().any(|t| t == "user_correction")
+            })
+            .collect();
+        assert_eq!(lesson_tagged.len(), 1, "lesson 痕迹行（合并也算）");
+        let l = &lesson_tagged[0];
+        assert_eq!(l.source, "system", "lesson 来源应是 system（自动聚类生成）");
+        assert_eq!(l.importance, 4, "lesson 默认 importance=4");
+    }
+
+    #[test]
+    fn cluster_below_threshold_writes_no_lesson() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::memory::store::ensure_table(&conn).unwrap();
+        let now = 1_000_000i64;
+        // 2 条同主题（不到 3 不触发）
+        for (axis, content) in [(1usize, "第一条"), (2, "第二条")] {
+            write_fact(&conn, content, Some(&topic_vec(axis)), now, "错了");
+        }
+        let stats = cluster_correction_lessons_blocking(
+            &conn,
+            &crate::memory::store::StoreParams::default(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(stats.scanned, 2);
+        assert_eq!(stats.clusters_above_threshold, 0);
+        assert_eq!(stats.lessons_written, 0);
+        let all = crate::memory::store::load_all(&conn).unwrap();
+        assert!(all.iter().all(|m| m.kind != "lesson"));
+    }
+}
+
+/// 聚类阈值：同簇 correction 数量 ≥ 此值 → 触发 lesson 自动沉淀。
+/// 选 3 是经验值——单条太敏感（用户偶尔口误也算），3 条才像稳定偏好。
+pub(crate) const CLUSTER_LESSON_THRESHOLD: usize = 3;
+
+/// 聚类相似度阈值（余弦）：超过视作同主题聚合。
+/// 0.78 在 0.75（store 的冲突提示线）和 0.92（自动合并线）之间；偏激进保证同语义入同簇。
+pub(crate) const CLUSTER_COSINE_THRESHOLD: f64 = 0.78;
+
+/// 聚类触发 lesson 的统计结果（供审计）
+#[derive(Debug, Default)]
+pub(crate) struct ClusterLessonStats {
+    pub scanned: usize,
+    pub clusters_above_threshold: usize,
+    pub lessons_written: usize,
+}
+
+/// 聚类同步内核：从 mem_items 拉所有 tags 含 "correction" 的条目，按 cos ≥ 阈值 Union-Find
+/// 聚簇，簇 ≥ 阈值即视为稳定模式，调 record_lesson_core 沉淀教训。
+///
+/// 用纯函数 + 借用 conn，便于单测；薄壳 `try_cluster_correction_lessons` 拿 AppHandle 时
+/// 再加 auto_write_allowed 闸 + spawn_blocking。
+///
+/// 代表条目取簇内 `id` 最小的（确定性，避免每次重排漂移让 lesson content 反复换面）。
+pub(crate) fn cluster_correction_lessons_blocking(
+    conn: &rusqlite::Connection,
+    sp: &crate::memory::store::StoreParams,
+    now_ms: i64,
+) -> Result<ClusterLessonStats, String> {
+    let mut stats = ClusterLessonStats::default();
+    let all = crate::memory::store::load_all(conn)?;
+    let corrections: Vec<&crate::memory::store::MemItem> = all
+        .iter()
+        .filter(|m| m.kind == "fact" && m.tags.iter().any(|t| t == "correction"))
+        .collect();
+    stats.scanned = corrections.len();
+    if corrections.is_empty() {
+        return Ok(stats);
+    }
+
+    // Union-Find 聚类：成对 cos ≥ 阈值则并入同簇
+    let n = corrections.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            parent[ra] = rb;
+        }
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let cos = crate::memory::store::cosine(
+                corrections[i].embedding.as_deref(),
+                corrections[j].embedding.as_deref(),
+            );
+            if let Some(c) = cos {
+                if c >= CLUSTER_COSINE_THRESHOLD {
+                    union(&mut parent, i, j);
+                }
+            }
+        }
+    }
+
+    // 按根分组
+    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+
+    for (_, mut idxs) in groups {
+        if idxs.len() < CLUSTER_LESSON_THRESHOLD {
+            continue;
+        }
+        stats.clusters_above_threshold += 1;
+        // 代表条目：簇内 id 字典序最小（确定性）
+        idxs.sort_by_key(|&i| &corrections[i].id);
+        let rep = corrections[idxs[0]];
+        let msg = crate::memory::record_lesson_core(
+            conn,
+            &rep.content,
+            "user_correction",
+            "system",
+            rep.embedding.as_deref(),
+            now_ms,
+            sp,
+        );
+        if msg.starts_with("已记录教训") {
+            stats.lessons_written += 1;
+        }
+        // "失败"/"合并"/"冲突提示" 等其他分支由 record_lesson_core 自身处理语义去重，
+        // 这里不强求 Inserted——单条 fact 句已合并、并入既有 lesson 同样算「沉淀过」
+    }
+    Ok(stats)
+}
+
+/// 异步壳：bot_chat 在 record_correction 之后调一次（fire-and-forget）。
+/// auto_write_allowed 关闭不触发（与持久化同门禁）。
+pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if !crate::memory::auto_write_allowed(app) {
+        return;
+    }
+    let app2 = app.clone();
+    let res =
+        tauri::async_runtime::spawn_blocking(move || -> Result<ClusterLessonStats, String> {
+            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
+                eprintln!("[mutex_poisoned] corrections cluster DB_WRITE_LOCK: {e:?}");
+                e.into_inner()
+            });
+            let conn = crate::db::open_db(&app2)?;
+            crate::memory::store::ensure_table(&conn)?;
+            let tuning = crate::bot::read_memory_tuning(&app2);
+            let sp = crate::memory::store::StoreParams::of(&tuning);
+            cluster_correction_lessons_blocking(&conn, &sp, crate::memory::now_ms())
+        })
+        .await;
+    match res {
+        Ok(Ok(stats)) if stats.clusters_above_threshold > 0 => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Info,
+                "correction.cluster_lesson",
+                "scanned" => stats.scanned.to_string(),
+                "clusters" => stats.clusters_above_threshold.to_string(),
+                "lessons" => stats.lessons_written.to_string(),
+            );
+        }
+        Ok(Ok(_)) => {} // 没聚到 ≥3 不打扰日志
+        Ok(Err(e)) => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "correction.cluster_lesson_failed",
+                "error" => e,
+            );
+        }
+        Err(e) => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "correction.cluster_lesson_failed",
+                "error" => format!("correction 聚类线程 join 失败：{e}"),
+            );
         }
     }
 }

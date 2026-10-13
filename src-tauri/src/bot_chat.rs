@@ -753,8 +753,10 @@ pub async fn bot_chat(
             // write_event 已统一转义 kv 值，这里只做长度截断，避免二次转义
             "content" => last.content.chars().take(300).collect::<String>(),
         );
-        // 用户纠正信号检测（Round 4 学习闭环入口）：push-back 模式命中 →
-        // 写 user.correction 事件 + 持久化为记忆 item（fire-and-forget）。主流程零阻塞。
+        // 用户纠正信号检测（Round 4 学习闭环）：push-back 模式命中 →
+        // (a) 写 user.correction 事件 + 持久化为记忆 item（fire-and-forget）；
+        // (b) 即时触发一次聚类判定：簇 ≥3 → record_lesson（同样 fire-and-forget）。
+        //     二者均不 await，主流程零阻塞。
         if let Some(pat) = crate::bot::corrections::detect_correction(&last.content) {
             crate::bot::corrections::record_correction(
                 &app,
@@ -762,6 +764,10 @@ pub async fn bot_chat(
                 &last.content,
                 pat,
             );
+            let app3 = app.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::bot::corrections::try_cluster_correction_lessons(&app3).await;
+            });
         }
     }
     let mut msgs: Vec<serde_json::Value> = Vec::new();
