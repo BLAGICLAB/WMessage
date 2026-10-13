@@ -152,6 +152,12 @@ pub struct BotConfig {
     /// 「省 token vs 漏判」二元权衡没有中间值更优，调了反而引入认知噪音。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub final_selfcheck_round_gap: Option<u32>,
+    /// verifier 拒绝重试预算上限（可选）：同一任务（同一 task_id）verifier
+    /// 拒绝 → EXECUTOR 精准修复 → 再 verifier 循环最多此数。None = 默认 1；
+    /// 0 = 不重试（直接如实汇报用户）；落盘前钳 0..=3。设置页「Agent
+    /// 运行参数」区域显示。MAIN_AGENT_ADDENDUM 注入当前值给 LLM 看。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub verifier_retry_max: Option<u32>,
     /// 任务卡归档天数（可选）：任务完成满 N 天自动归档。前端看板规则
     /// （applyArchiveRule）与 migration 兜底归档同源读取，两侧阈值恒一致。
     /// None = 默认 7 天；读取侧 resolve_archive_after_days 钳制 1..=365。
@@ -328,6 +334,7 @@ impl Default for BotConfig {
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             max_function_calls: None,   // 未配置 = 100 默认全域熔断上限）
             final_selfcheck_round_gap: None, // 未配置 = 8 默认终稿自检间隔（0 = 关闭）
+            verifier_retry_max: None,   // 未配置 = 1 默认 verifier 拒绝重试上限（0 = 不重试）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
@@ -460,6 +467,9 @@ pub struct BotConfigView {
     /// 终稿自检轮次间隔原样透传（None = 8 默认；0 = 关闭；设置页「Agent
     /// 运行参数」可调，后端钳 0..=100）
     pub final_selfcheck_round_gap: Option<u32>,
+    /// verifier 拒绝重试预算上限原样透传（None = 1 默认；0 = 不重试；后端
+    /// 钳 0..=3；设置页「Agent 运行参数」可调）
+    pub verifier_retry_max: Option<u32>,
     /// 任务卡归档天数原样透传（None = 7 默认；设置页「数据管理」卡编辑）
     pub archive_after_days: Option<u32>,
     /// 授权模式原样透传给设置页（None = ask 默认；非法值前端按 ask 显示）

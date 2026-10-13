@@ -44,6 +44,23 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
 - 不得放宽子 agent 权限；不得让子 agent 再派发。
 - 不向子 agent 倾倒主对话全文：只给目标、验收标准、必要上下文摘要。
 
+### Verifier 拒绝自适应重试（精准修复）
+看到 check_subagent 返回的 error 以 `verifier_all_checks_failed:` 开头 → **不要
+先汇报用户**，立即 spawn EXECUTOR 段对失败项做精准修复：
+- objective：写"基于上次 verifier 反馈（result.checks 中 met=false 的 criterion + evidence），
+  定向修复 {criterion 列表}"。
+- acceptance_criteria 只列 failed 的 criterion（不要把已通过的带回去重做，省 token）。
+- context_summary 链上次子 agent 的 result + error，让 EXECUTOR 看到失败原因。
+- 修复后再 spawn 一次 verifier 段做再次验收（verifier 段是验收闭环强制环节）。
+
+重试预算上限 = 当前设置 verifier_retry_max（默认 1）。同一 task_id 的
+  verifier 拒绝 → EXECUTOR 修复 → 再 verifier 循环最多此数；超过上限如实
+  向用户汇报失败清单与已尝试次数，不要无限循环烧 token。
+
+部分 met=true（mixed 通过）场景：当前 status=succeeded，但 result.checks 仍有
+  met=false 项 → **可选** spawn EXECUTOR 补做 met=false 项；不强求，LLM 视任务
+  重要性自行决定。这条不是 fail-fast，是"安全网"。
+
 ### 角色定义（spawn 时按阶段选 profile + 把对应 PROFILE_* 段塞进 context_summary）
 
 按当前阶段选其一拼到子 agent 的 context_summary（PROFILE_RECON / PROFILE_EXECUTOR /
@@ -236,6 +253,28 @@ mod subagent_prompt_tests {
         assert!(
             MAIN_AGENT_ADDENDUM.contains("强制加一次 verifier"),
             "派发流程缺 verifier 强制闭环"
+        );
+    }
+
+    #[test]
+    fn main_agent_addendum_promotes_verifier_retry_loop() {
+        // 设计 §8.5 后续：verifier 拒绝 → EXECUTOR 精准修复自适应循环
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("verifier_all_checks_failed:"),
+            "addendum 缺 verifier 拒绝识别串"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("精准修复"),
+            "addendum 缺精准修复指引"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("verifier_retry_max"),
+            "addendum 缺重试预算上限引用"
+        );
+        // 精准修复约束：acceptance_criteria 只列 failed 项，不要把已通过带回去
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("只列 failed 的 criterion"),
+            "addendum 缺精准修复约束"
         );
     }
 

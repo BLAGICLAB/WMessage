@@ -784,6 +784,18 @@ pub async fn bot_chat(
         PromptSlot::Base,
         format!("\n\n{}", crate::prompts::MAIN_AGENT_ADDENDUM.trim_start()),
     );
+    // verifier 拒绝自适应重试：把当前设置项 verifier_retry_max 注入 system prompt
+    // 让 LLM 知道循环上限。bot_get_config 拿 view——这里只读一个字段，开销可忽略
+    let verifier_retry_max_cfg = crate::bot::bot_get_config(app.clone())
+        .map(|c| c.verifier_retry_max.unwrap_or(1).clamp(0, 3))
+        .unwrap_or(1);
+    prompt.push(
+        PromptSlot::Base,
+        format!(
+            "\n\n## 当前设置\nverifier 拒绝重试预算上限 = {verifier_retry_max_cfg}\
+             （0 = 不重试；循环同一任务 verifier → executor 修复 → 再 verifier 最多此数）"
+        ),
+    );
     prompt.push(PromptSlot::GenDir, format!("\n\n{}", gen_dir_rule(&app)));
     prompt.push(
         PromptSlot::SkillCatalog,
