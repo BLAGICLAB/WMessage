@@ -14,7 +14,7 @@ use crate::error::CommandError;
 
 use super::journal::{journal_cleared, journal_committed, journal_find_pending, journal_pending};
 use super::ops::{
-    emit_upserts, filename_matches, log_line, move_entry, move_remove_permanently_failed, now_ms,
+    emit_upserts, filename_matches, log_line, move_entry, move_remove_permanently_failed,
     resolve_archive_dir, verify_archive_dir_created, MigrationGuard, MAX_MOVE_REMOVE_FAILURES,
 };
 use super::recovery::{decide_src_missing, journal_replay_pending, SrcMissingAction};
@@ -38,7 +38,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     // db_load/db_upsert 改 async 了；run_migration_inner 在 spawn_polling 的 std::thread
     // 或 spawn_blocking(migration_run) 线程里跑，不在 tokio runtime 上 → 用 block_on 桥接。
     let mut report = MigrationReport {
-        ts: now_ms(),
+        ts: db::now_ms(),
         ..Default::default()
     };
     // 规则不可读（损坏/权限）→ 本轮迁移中止：绝不以空规则执行任何 move/delete。
@@ -53,7 +53,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     // 本轮所有 journal 读写复用同一条连接（原来每次 journal 调用各 open_db 一次，
     // 迁一个文件付 3 次全套 schema 检查）；journal 写由 journal_* 内部持 DB_WRITE_LOCK 串行。
     let jconn = db::open_db(app).map_err(|e| e.to_string())?;
-    let now = now_ms();
+    let now = db::now_ms();
     let mut changed: Vec<db::Task> = vec![];
     // 解绑时确认关闭的 pending journal id——在 changed 批量落盘成功后统一提交，
     // 避免「journal 已提交但解绑未落盘」对账空洞。

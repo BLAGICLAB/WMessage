@@ -1,6 +1,6 @@
 //! 文件操作公用 + 迁移 ops（路径解析 / 冲突命名 / 跨卷 move / 日志）。
 //!
-//! 跨模块复用的小工具（now_ms / now_str）也放这里——是 IO 侧工具，迁移引擎
+//! 跨模块复用的小工具（now_str）也放这里——是 IO 侧工具，迁移引擎
 //! 和 journal 都按需调用，避免在 mod.rs 堆小工具。
 
 use std::fs;
@@ -41,15 +41,6 @@ impl Drop for MigrationGuard {
     fn drop(&mut self) {
         RUNNING.store(false, Ordering::SeqCst);
     }
-}
-
-pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        // 时钟被拨到 1970 前：回退 chrono 现值（可为负），不伪造 ts=0——
-        // 0 哨兵会跟合法 epoch-zero 记录撞时间戳、搅乱 journal 排序
-        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
 }
 
 pub(crate) fn now_str() -> String {

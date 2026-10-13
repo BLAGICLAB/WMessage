@@ -1,4 +1,4 @@
-//! 公用小工具：时间戳、字段长度上限、状态校验、日志行拼接、
+//! 公用小工具：字段长度上限、状态校验、日志行拼接、
 //! 错误响应分流、变更后回调。
 //!
 //! CreateReq / UpdateReq 也放此处——是任务操作请求体形状，
@@ -12,18 +12,6 @@ use tiny_http::{Request, StatusCode};
 
 use crate::api::TaskStore;
 use crate::db;
-
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or_else(|e| {
-            // 系统时钟回拨到 epoch 前：留痕后取 0（旧行为），调用方拿到的
-            // 零值时间戳可被这条日志解释
-            eprintln!("[api] 系统时钟异常（pre-epoch），now_ms 取 0：{e}");
-            0
-        })
-}
 
 // 字段长度上限：单源引用 bot.rs 工具侧 MAX_*（值对齐由定义处保证）
 pub(crate) const API_MAX_TITLE: usize = crate::bot::MAX_TITLE;

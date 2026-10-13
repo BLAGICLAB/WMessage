@@ -191,9 +191,7 @@ impl MemoryTuning {
 /// 内容 上限（表契约 ≤800 字；remember_fact 工具侧 value ≤500 更严，在入参校验处拦）
 pub(crate) const MAX_CONTENT_CHARS: usize = 800;
 
-pub(crate) fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
+pub(crate) use crate::db::now_ms;
 
 pub(crate) fn truncate_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()

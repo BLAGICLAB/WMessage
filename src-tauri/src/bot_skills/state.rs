@@ -84,11 +84,6 @@ impl SkillRun {
 
 // SKILL_RUNS 已迁入 `AppState.skill_runs`（再导出见文件头 use）。
 
-/// 当前会话是否有 Skill 处于 Running 状态（按会话过滤，别的会话的 Skill 不算本会话活动）
-pub(crate) fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
 /// 回滚窗口临时重开：回滚段执行时 run 已是 Failed，
 /// 而 AtomicGuard 只认 Running —— 回滚段里的原子工具（link_file_to_task 等）会被自家门禁拦截。
 /// 把本会话该技能的 Failed run 临时置回 Running（回滚期间门禁放行），返回是否实际切换。

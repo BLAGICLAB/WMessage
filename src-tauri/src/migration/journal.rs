@@ -78,7 +78,7 @@ pub(crate) fn journal_pending(
     task_id: &str,
 ) -> Result<i64, String> {
     let _g = db_write_lock();
-    journal_pending_inner(conn, op, src, dst, task_id, crate::migration::ops::now_ms())
+    journal_pending_inner(conn, op, src, dst, task_id, crate::db::now_ms())
 }
 
 /// 标记 committed。replay 跳过该行。

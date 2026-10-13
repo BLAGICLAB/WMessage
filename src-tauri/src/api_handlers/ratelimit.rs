@@ -20,7 +20,7 @@ static LOG_WRITE: Mutex<()> = Mutex::new(());
 
 /// 每分钟最多 `RATE_LIMIT_PER_MIN` 次；窗口基于毫秒时间戳
 pub(crate) fn rate_check() -> bool {
-    let now = crate::api_handlers::util::now_ms() as u64;
+    let now = crate::db::now_ms() as u64;
     // 锁 poisoning:持有 RATE 的线程 panic 会让 state 半修改。
     // 仍然 into_inner() 恢复锁访问(stop-the-world 不接受),
     // 但 eprintln! 一行标记,日志聚合 / 监控能据此告警。

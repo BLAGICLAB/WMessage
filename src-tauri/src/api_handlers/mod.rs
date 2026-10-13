@@ -22,7 +22,7 @@
 //! - `types`    公共返回类型（ApiInfo / ApiStatus）
 //! - `body`     请求体读取（上限 + 总时长 + 滴注防护）
 //! - `ratelimit` 速率限制 + 访问/变更日志
-//! - `util`     公用工具（now_ms / 字段上限 / 状态校验 / 错误分流 / 变更后回调）
+//! - `util`     公用工具（字段上限 / 状态校验 / 错误分流 / 变更后回调）
 //! - `handlers` HTTP 路由 + 任务 CRUD 处理器 + 序列化锁
 //! - `sse`      SSE writer 生命周期 + 单客户端接入
 //! - `commands` 5 个 tauri 命令（api_start/_stop/_status/_rotate_token）+ api_stop_for_exit（透传）

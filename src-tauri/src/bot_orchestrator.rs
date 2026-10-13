@@ -14,7 +14,7 @@
 //! 结构约定（同 task_patch / task_patch_locked 先例）：纯 DB 核心 `*_locked` 可在
 //! in-memory conn 上单测；异步包装负责 spawn_blocking + DB_WRITE_LOCK + 审计 + 广播。
 
-use crate::db::{SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus, Task};
+use crate::db::{now_ms, SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus, Task};
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
@@ -540,10 +540,6 @@ use crate::bot_chat::{ChatGuard, ExecGuard};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::Emitter;
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
 
 /// 持 DB_WRITE_LOCK 的阻塞 DB 操作辅助（runner 链路各步共用）。
 async fn db_locked<R, F, T>(app: &AppHandle<R>, f: F) -> CommandResult<T>

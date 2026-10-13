@@ -39,6 +39,12 @@ pub mod workspace;
 
 // RMW helpers
 
+/// 当前 Unix 毫秒时间戳（全仓单一实现）：时钟拨到 1970 前返回负值，
+/// 不伪造 0 哨兵——0 会跟合法 epoch-zero 记录撞时间戳、搅乱排序。
+pub(crate) fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
 /// 写库前的标准接线：把当前 `updated_at` 作为下次 RMW 读快照基线，
 /// 然后把 `updated_at` 戳成"现在"。任何写库前的 mutate 路径都必须调。
 ///

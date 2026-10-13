@@ -14,6 +14,7 @@
 //! 注意：广播由各落库/回写调用方在成功后自行触发（见 emit_changed 调用点），
 //! 本模块的 notif_insert / notif_resolve 等纯 DB 内核不发事件。
 
+use crate::db::now_ms;
 use crate::error::{CommandError, CommandResult};
 use serde::Serialize;
 use serde_json::Value;
@@ -44,10 +45,6 @@ pub struct NotificationView {
     pub status: String,
     pub created_at: i64,
     pub resolved_at: Option<i64>,
-}
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
 }
 
 fn ensure_table(conn: &rusqlite::Connection) -> Result<(), String> {

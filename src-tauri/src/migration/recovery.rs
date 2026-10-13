@@ -13,7 +13,7 @@ use tauri::AppHandle;
 use crate::db;
 
 use super::journal::{journal_cleared_inner, journal_committed_inner};
-use super::ops::{log_line, now_ms};
+use super::ops::log_line;
 use super::types::JournalEntry;
 
 /// replay 修复前提——任务 file_path 仍指向 journal 记录的 src，
@@ -229,7 +229,7 @@ fn recover_move_db(
     }
     t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
     t.file_path = Some(dst.to_string_lossy().to_string());
-    t.updated_at = Some(now_ms());
+    t.updated_at = Some(db::now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
         .map_err(|e| e.to_string())?;
     Ok(true)
@@ -247,7 +247,7 @@ fn recover_delete_db(app: &AppHandle, task_id: &str, expected_src: &str) -> Resu
     t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
     t.file_path = None;
     t.file_is_dir = None;
-    t.updated_at = Some(now_ms());
+    t.updated_at = Some(db::now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
         .map_err(|e| e.to_string())?;
     Ok(true)
