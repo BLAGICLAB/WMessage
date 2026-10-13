@@ -875,15 +875,59 @@ where
             .filter_map(|m| m["content"].as_str())
             .map(|s| s.chars().count())
             .sum();
-        if msgs_chars > MSGS_BUDGET_CHARS {
-            (deps.audit)(
-                crate::audit::AuditLevel::Info,
-                "loop.msgs.over_budget",
-                vec![
-                    ("chars", msgs_chars.to_string()),
-                    ("max", MSGS_BUDGET_CHARS.to_string()),
-                ],
-            );
+        match crate::bot::compaction::classify_level(msgs_chars, MSGS_BUDGET_CHARS) {
+            crate::bot::compaction::CompactionLevel::None => {}
+            level @ (crate::bot::compaction::CompactionLevel::Soft
+            | crate::bot::compaction::CompactionLevel::Hard) => {
+                // 70%/85% 软/硬压缩：tool 消息按比例降密度。
+                // sidecar 暂未注入（核心循环不依赖 AppHandle），压缩文本留"原文未保留"
+                // 标记——后续单独 PR 在 ModelLoopDeps 加 conv_sidecar_dir 字段注入 AI_Gen_Files
+                let session_id_owned = stop.session_id().map(|s| s.to_string());
+                let compact_fn = match level {
+                    crate::bot::compaction::CompactionLevel::Soft => {
+                        crate::bot::compaction::soft_compact
+                    }
+                    crate::bot::compaction::CompactionLevel::Hard => {
+                        crate::bot::compaction::hard_compact
+                    }
+                    _ => unreachable!(),
+                };
+                match compact_fn(&mut msgs, None, session_id_owned.as_deref()) {
+                    Ok(report) => (deps.audit)(
+                        crate::audit::AuditLevel::Info,
+                        "loop.msgs.compacted",
+                        vec![
+                            (
+                                "level",
+                                match level {
+                                    crate::bot::compaction::CompactionLevel::Soft => "soft",
+                                    _ => "hard",
+                                }
+                                .to_string(),
+                            ),
+                            ("before", report.before_chars.to_string()),
+                            ("after", report.after_chars.to_string()),
+                            ("tools", report.tool_msgs_compacted.to_string()),
+                        ],
+                    ),
+                    Err(e) => (deps.audit)(
+                        crate::audit::AuditLevel::Warn,
+                        "loop.msgs.compact_failed",
+                        vec![("err", e.clone())],
+                    ),
+                }
+            }
+            crate::bot::compaction::CompactionLevel::Fuse => {
+                // 100% 熔断：仅 audit，soft_warn_queued 由 70% soft_warn_at 路径另起一行
+                (deps.audit)(
+                    crate::audit::AuditLevel::Info,
+                    "loop.msgs.over_budget",
+                    vec![
+                        ("chars", msgs_chars.to_string()),
+                        ("max", MSGS_BUDGET_CHARS.to_string()),
+                    ],
+                );
+            }
         }
         if stop.stopped() {
             let hint = skill_finish(false, "用户停止");

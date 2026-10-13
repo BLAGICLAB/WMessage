@@ -41,6 +41,7 @@ pub use crate::audit::AuditLevel;
 pub use crate::db::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
 
 // 子模块声明
+pub mod compaction;
 pub mod config;
 pub mod dispatch;
 pub mod format;
