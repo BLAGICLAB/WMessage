@@ -753,6 +753,16 @@ pub async fn bot_chat(
             // write_event 已统一转义 kv 值，这里只做长度截断，避免二次转义
             "content" => last.content.chars().take(300).collect::<String>(),
         );
+        // 用户纠正信号检测（Round 4 学习闭环入口）：push-back 模式命中 →
+        // 写 user.correction 事件供后续聚类消费；主流程零阻塞零成本（纯字符串 contains）。
+        if let Some(pat) = crate::bot::corrections::detect_correction(&last.content) {
+            crate::bot::corrections::emit_user_correction(
+                &app,
+                session_id.as_deref(),
+                &last.content,
+                pat,
+            );
+        }
     }
     let mut msgs: Vec<serde_json::Value> = Vec::new();
     // 技能清单动态注入：系统提示词 + 已安装技能的「名称+描述」（progressive disclosure 第一层；
