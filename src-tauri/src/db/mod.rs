@@ -68,6 +68,8 @@ pub fn prepare_for_upsert(t: &mut Task) {
 ///
 /// 幂等补列（schema 演进的共享内核）：查 `PRAGMA table_info(table)`，
 /// 缺列则 `ALTER TABLE ADD COLUMN`。各 `ensure_*` 列补丁统一走这里。
+/// 探测与 ALTER 之间没有库级锁，并发连接可能已把列加上：
+/// ALTER 报「duplicate column」即目的已达成，返 Ok 不算错误。
 pub(crate) fn ensure_columns(
     conn: &rusqlite::Connection,
     table: &str,
@@ -82,8 +84,12 @@ pub(crate) fn ensure_columns(
             })
             .map_err(|e| e.to_string())?;
         if !has {
-            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
+            let altered = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"), []);
+            match altered {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("duplicate column") => {}
+                Err(e) => return Err(e.to_string()),
+            }
         }
     }
     Ok(())
@@ -240,185 +246,48 @@ pub fn open_db<R: tauri::Runtime>(
     // （含旧库 model 列迁移，词元统计按模型聚合依赖）
     crate::db::trace::ensure_trace_tables(&conn).map_err(|e| e.to_string())?;
     // 迁移：定时任务卡
-    for (col, ty) in [("schedule", "TEXT"), ("sched_last", "INTEGER")] {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(
+        &conn,
+        "tasks",
+        &[("schedule", "TEXT"), ("sched_last", "INTEGER")],
+    )?;
     // 迁移：定时启用开关（定时任务模块；NULL = 启用，0 = 暂停不删配置）
-    for (col, ty) in crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(
+        &conn,
+        "tasks",
+        &crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS,
+    )?;
     // 迁移（W-QA 卡即契约）：每卡验收标准 acceptance（AI 拆解生成，执行时注入自检）
-    for (col, ty) in crate::db::tasks::ACCEPTANCE_TASK_COLUMNS {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(&conn, "tasks", &crate::db::tasks::ACCEPTANCE_TASK_COLUMNS)?;
     // 迁移：计划起止 plan_start/plan_end（周时间网格排期；NULL = 未排期）
-    for (col, ty) in crate::db::tasks::PLAN_TASK_COLUMNS {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(&conn, "tasks", &crate::db::tasks::PLAN_TASK_COLUMNS)?;
     // 迁移：子任务卡出身 parent_id（子任务行一键生成的关联键；NULL = 普通卡）
-    for (col, ty) in crate::db::tasks::PARENT_ID_TASK_COLUMNS {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(&conn, "tasks", &crate::db::tasks::PARENT_ID_TASK_COLUMNS)?;
     // 迁移：子 agent 编排三字段设计 §4.1——assignee/budget/result 走
     // task_patch 既有通道；budget/result 存 JSON TEXT）
-    for (col, ty) in [("assignee", "TEXT"), ("budget", "TEXT"), ("result", "TEXT")] {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(
+        &conn,
+        "tasks",
+        &[("assignee", "TEXT"), ("budget", "TEXT"), ("result", "TEXT")],
+    )?;
     // 迁移设计 §3.1）：工作流四字段 + 画布坐标。
     // origin 缺省 NULL 视作 "user"（读路径归一），不加 DEFAULT 避免 ALTER 语义分叉
-    for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(&conn, "tasks", &crate::db::tasks::W1_TASK_COLUMNS)?;
     // 迁移（任务图谱设计 §1.1）：任务归属人 owner_id，NULL = 本人
-    for (col, ty) in crate::db::tasks::OWNER_TASK_COLUMNS {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(&conn, "tasks", &crate::db::tasks::OWNER_TASK_COLUMNS)?;
     // 迁移：任务创建时间 created_at（epoch ms）。老数据 ALTER 后为 NULL（= 未知），不回填
-    for (col, ty) in crate::db::tasks::CREATED_AT_TASK_COLUMNS {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(tasks)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(&conn, "tasks", &crate::db::tasks::CREATED_AT_TASK_COLUMNS)?;
     // 迁移（U20D 批 5）：bot_sessions.is_subagent 结构化子 agent 标记——
     // 会话路由从「标题 🧩 前缀」升级为字段（runner 建会话时置 1；
     // 存量旧会话默认 0，前端按旧标题前缀兜底）
-    {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(bot_sessions)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == "is_subagent"))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(
-                "ALTER TABLE bot_sessions ADD COLUMN is_subagent INTEGER NOT NULL DEFAULT 0",
-                [],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
-    let has_ba: bool = conn
-        .prepare("PRAGMA table_info(tasks)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "bot_assigned"))
-        })
-        .unwrap_or(false);
-    if !has_ba {
-        conn.execute("ALTER TABLE tasks ADD COLUMN bot_assigned INTEGER", [])
-            .map_err(|e| e.to_string())?;
-    }
-    let has_ord: bool = conn
-        .prepare("PRAGMA table_info(tasks)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "ord"))
-        })
-        .unwrap_or(false);
-    if !has_ord {
-        conn.execute("ALTER TABLE tasks ADD COLUMN ord REAL", [])
-            .map_err(|e| e.to_string())?;
-    }
-    let has_ua: bool = conn
-        .prepare("PRAGMA table_info(tasks)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "updated_at"))
-        })
-        .unwrap_or(false);
-    if !has_ua {
-        conn.execute("ALTER TABLE tasks ADD COLUMN updated_at INTEGER", [])
-            .map_err(|e| e.to_string())?;
-    }
+    ensure_columns(
+        &conn,
+        "bot_sessions",
+        &[("is_subagent", "INTEGER NOT NULL DEFAULT 0")],
+    )?;
+    ensure_columns(&conn, "tasks", &[("bot_assigned", "INTEGER")])?;
+    ensure_columns(&conn, "tasks", &[("ord", "REAL")])?;
+    ensure_columns(&conn, "tasks", &[("updated_at", "INTEGER")])?;
     migrations::ensure_files_column(&conn)?;
     let migrated = migrations::migrate_legacy_file_bindings(&mut conn)?;
     if migrated > 0 {
@@ -431,7 +300,7 @@ pub fn open_db<R: tauri::Runtime>(
     }
     // 老数据迁移（定时任务模块）：tasks.schedule「现有卡定时」→ scheduled_jobs
     // 内容型作业（content = 卡标题），搬完清空任务卡调度字段，此后单源本表。
-    // 必须在 tasks.schedule 列迁移之后（上面 ALTER 循环已保证列存在）。
+    // 必须在 tasks.schedule 列迁移之后（上面的 tasks 补列已保证列存在）。
     let sched_migrated = crate::db::schedule_jobs::migrate_legacy_task_schedules(&conn)?;
     if sched_migrated > 0 {
         crate::audit::write_event(
@@ -441,33 +310,12 @@ pub fn open_db<R: tauri::Runtime>(
             &[("migrated", sched_migrated.to_string())],
         );
     }
-    let has_sid: bool = conn
-        .prepare("PRAGMA table_info(bot_messages)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "session_id"))
-        })
-        .unwrap_or(false);
-    if !has_sid {
-        conn.execute("ALTER TABLE bot_messages ADD COLUMN session_id TEXT", [])
-            .map_err(|e| e.to_string())?;
-    }
-    for col in ["thinking", "tools"] {
-        let has: bool = conn
-            .prepare("PRAGMA table_info(bot_messages)")
-            .and_then(|mut stmt| {
-                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-                Ok(rows.filter_map(|n| n.ok()).any(|n| n == col))
-            })
-            .unwrap_or(false);
-        if !has {
-            conn.execute(
-                &format!("ALTER TABLE bot_messages ADD COLUMN {col} TEXT"),
-                [],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-    }
+    ensure_columns(&conn, "bot_messages", &[("session_id", "TEXT")])?;
+    ensure_columns(
+        &conn,
+        "bot_messages",
+        &[("thinking", "TEXT"), ("tools", "TEXT")],
+    )?;
     {
         let orphan: i64 = match conn.query_row(
             "SELECT COUNT(*) FROM bot_messages WHERE session_id IS NULL",

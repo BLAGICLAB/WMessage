@@ -17,23 +17,7 @@ pub fn apply_conn_pragmas(conn: &rusqlite::Connection) -> Result<(), String> {
 
 /// 多文件绑定：tasks 补 files 列（老库 ALTER 幂等）
 pub fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
-    let has: bool = conn
-        .prepare("PRAGMA table_info(tasks)")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
-            Ok(rows.filter_map(|n| n.ok()).any(|n| n == "files"))
-        })
-        .unwrap_or(false);
-    if !has {
-        return match conn.execute("ALTER TABLE tasks ADD COLUMN files TEXT", []) {
-            Ok(_) => Ok(()),
-            // 探测与 ALTER 之间没有库级锁，并发连接可能已把列加上：
-            // 「列已存在」即目的已达成，不算错误
-            Err(e) if e.to_string().contains("duplicate column") => Ok(()),
-            Err(e) => Err(e.to_string()),
-        };
-    }
-    Ok(())
+    super::ensure_columns(conn, "tasks", &[("files", "TEXT")])
 }
 
 /// 多文件绑定：老单绑定 file_path/file_is_dir → files JSON
