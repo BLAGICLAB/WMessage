@@ -17,6 +17,7 @@ import "@xyflow/react/dist/style.css";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { Download, Loader2, Plus, RefreshCw, Upload } from "lucide-react";
 import { handleCommandError } from "../../lib/errorHandler";
+import { getBotConfig } from "../../lib/botConfig";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { TracePanel } from "../TracePanel";
 import { getDecomposeGuidance } from "../../lib/workflowPrompt";
@@ -175,12 +176,7 @@ function WorkflowPageInner({
   }, []);
   // 模型库条目：每卡执行模型下拉
   useEffect(() => {
-    invoke<{
-      modelsByProvider?: {
-        openai?: Array<{ id: string; label: string; enabled?: boolean }>;
-        anthropic?: Array<{ id: string; label: string; enabled?: boolean }>;
-      } | null;
-    }>("bot_get_config")
+    getBotConfig()
       .then((c) => {
         const m = c.modelsByProvider;
         // 停用条目不进下拉（与聊天面板 enabled 过滤同规则）

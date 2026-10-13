@@ -77,6 +77,19 @@ export function normalizeUrl(raw: string): string | null {
 }
 
 /**
+ * 绑定文件打开（任务卡 chip / 详情面板共用）：绝对路径直走 Rust open_file_path
+ * （前端 opener scope 限 $HOME/$APPDATA，Windows 上绑定 D:\ 等非用户目录的
+ * 文件夹会被静默拒绝，Rust 侧命令不受 scope 限，白名单已含任务卡绑定文件）。
+ * 与 openTarget 的差异：入参来自任务绑定、恒为本地路径不做 URL 识别；
+ * 失败 silent——chip 上已呈现路径，弹窗属重复打扰。
+ */
+export function openFilePath(path: string): void {
+  invoke("open_file_path", { path }).catch((e) =>
+    handleCommandError(e, "open file", { silent: true }),
+  );
+}
+
+/**
  * 统一打开入口（按内容判定，不信任存储的 kind——历史数据可能 kind 错配）：
  * URL（裸域名补 scheme）→ 浏览器；绝对路径 → Rust open_file_path（绕 opener scope）。
  * 失败弹错不静默——「看到原因」比「点了没反应」可排查。

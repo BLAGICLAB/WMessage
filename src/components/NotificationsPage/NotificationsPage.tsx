@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { EmptyState } from "../EmptyState";
+import { formatMonthDayTime } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import {
   respondWorkflowQuestion,
@@ -25,13 +26,6 @@ import {
 } from "../../lib/notifications";
 import type { NotificationItem } from "../../lib/notifications";
 import { useTauriListen } from "../../lib/useTauriListen";
-
-/** 时间显示：MM-DD HH:mm（通知消息不需要跨年精度） */
-function fmtTime(ms: number): string {
-  const d = new Date(ms);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-}
 
 const KIND_META: Record<
   NotificationItem["kind"],
@@ -500,7 +494,7 @@ export function NotificationsPage() {
                     {meta.label}
                   </span>
                   <span className="text-[11px] text-[var(--t5)]">
-                    · {fmtTime(n.createdAt)}
+                    · {formatMonthDayTime(n.createdAt)}
                   </span>
                   <span className="flex-1" />
                   <StatusBadge status={n.status} />

@@ -12,6 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { Pin } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
+import { getBotConfig } from "../../lib/botConfig";
 import { useConfirm } from "../../lib/useConfirm";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -382,27 +383,7 @@ export function ChatPanel({
   // 设置页/另一窗口保存配置后广播 bot-config-changed，这里同步刷新
   useEffect(() => {
     const reload = () =>
-      invoke<{
-        baseUrl?: string;
-        model?: string;
-        apiProvider?: string | null;
-        modelsByProvider?: {
-          openai?: ChatModelEntry[];
-          anthropic?: ChatModelEntry[];
-        } | null;
-        activeModelId?: {
-          openai: string | null;
-          anthropic: string | null;
-        } | null;
-        /** 被禁用的厂商名列表：其模型不进 🧠 下拉 */
-        disabledVendors?: string[] | null;
-        /** 连接测试通过的厂商名单：带 vendor 的模型仅当厂商已验证才进下拉 */
-        verifiedVendors?: string[] | null;
-        reasoningEffort?: string | null;
-        /** 授权模式（ 只读展示）：strict/ask/yolo，None = ask。         *  ⚠️ BotConfigView 序列化为 camelCase（rename_all），线字段是 permMode */
-        permMode?: string | null;
-        /**  水位条：模型条目 contextK（千 token）随 modelsByProvider 条目透传 */
-      }>("bot_get_config")
+      getBotConfig()
         .then((c) => {
           setModelLabel(c.model || "未配置");
           const isOpenai = (c.apiProvider ?? "openai") !== "anthropic";
@@ -1155,6 +1136,35 @@ export function ChatPanel({
     }
   };
 
+  const currentSession = sessions.find((s) => s.id === sessionId);
+  const currentTitle = currentSession?.title ?? "新对话";
+  // 视图会话是子 agent 执行会话——runner 建会话时写
+  // bot_sessions.is_subagent 结构化标记，停止按钮/斜杠 /stop 走
+  // cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop。
+  // 数据清空后无旧前缀会话，无需标题兜底（U20D-A）
+  const isSubagentSession = currentSession?.isSubagent === true;
+
+  // 停止分派唯一实现（发送/停止一体键的 busy 分支 + /stop 斜杠命令共用）：
+  // 子 agent 会话走 cancel_subagent（与任务卡按钮同 API），普通会话走 bot_stop
+  const stopCurrent = useCallback(() => {
+    if (isSubagentSession) {
+      // 子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
+      invoke("cancel_subagent", { key: sessionIdRef.current })
+        .catch((e) =>
+          handleCommandError(e, "cancel_subagent", { silent: true }),
+        )
+        .finally(() =>
+          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(
+            () => {},
+          ),
+        );
+    } else {
+      invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
+        handleCommandError(e, "bot_stop", { silent: true }),
+      );
+    }
+  }, [isSubagentSession]);
+
   // 斜杠快捷命令（/stop 在机器人回复中也能生效）
   const runSlashCommand = async (raw: string): Promise<boolean> => {
     const cmd = raw.split(/\s+/)[0].toLowerCase();
@@ -1162,22 +1172,7 @@ export function ChatPanel({
       setInput("");
       // PAR-1：/stop 停「当前视图会话」的在途回复（并行回复按会话隔离）
       if (inflightRef.current.has(sessionIdRef.current ?? "")) {
-        if (isSubagentSession) {
-          // 子 agent 会话 → cancel_subagent（状态机置 cancelled 并硬停）
-          invoke("cancel_subagent", { key: sessionIdRef.current })
-            .catch((e) =>
-              handleCommandError(e, "cancel_subagent", { silent: true }),
-            )
-            .finally(() =>
-              invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(
-                () => {},
-              ),
-            );
-        } else {
-          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-            handleCommandError(e, "bot_stop", { silent: true }),
-          );
-        }
+        stopCurrent();
       } else {
         addHint("当前对话没有进行中的回复");
       }
@@ -1421,35 +1416,6 @@ export function ChatPanel({
     emit("edit-task", { id: ref.id }).catch(() => {});
     invoke("focus_main_window").catch(() => {});
   }, []);
-
-  const currentSession = sessions.find((s) => s.id === sessionId);
-  const currentTitle = currentSession?.title ?? "新对话";
-  // 视图会话是子 agent 执行会话——runner 建会话时写
-  // bot_sessions.is_subagent 结构化标记，停止按钮/斜杠 /stop 走
-  // cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop。
-  // 数据清空后无旧前缀会话，无需标题兜底（U20D-A）
-  const isSubagentSession = currentSession?.isSubagent === true;
-
-  // 停止键点击（发送/停止一体键的 busy 分支）：子 agent 会话走 cancel_subagent，
-  // 普通会话走 bot_stop——与 /stop 斜杠命令同一套分派
-  const stopCurrent = useCallback(() => {
-    if (isSubagentSession) {
-      // 子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
-      invoke("cancel_subagent", { key: sessionIdRef.current })
-        .catch((e) =>
-          handleCommandError(e, "cancel_subagent", { silent: true }),
-        )
-        .finally(() =>
-          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(
-            () => {},
-          ),
-        );
-    } else {
-      invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-        handleCommandError(e, "bot_stop", { silent: true }),
-      );
-    }
-  }, [isSubagentSession]);
 
   // RE-1 推理强度：底栏按钮显示的生效档位 = 本会话覆盖 ?? 后台默认；
   // effortIsOverridden 决定要不要缀「·默认」角标

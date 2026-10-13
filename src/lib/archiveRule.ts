@@ -4,7 +4,7 @@
 // （主窗口关闭时照常到期）读同一份配置，两侧阈值恒一致——所以不能像
 // workflowVisibility 那样只存 localStorage，后端线程读不到。
 // 前端内存缓存 + bot-config-changed 事件同步（设置页保存后广播）。
-import { invoke } from "@tauri-apps/api/core";
+import { getBotConfig } from "./botConfig";
 import type { Task } from "../types";
 
 export const DEFAULT_ARCHIVE_DAYS = 7;
@@ -33,9 +33,7 @@ export function setArchiveAfterDays(days: number | null | undefined): void {
  *  App 启动时在首套归档规则前调用，避免竞态：首屏就按配置阈值归档。 */
 export async function loadArchiveDaysFromConfig(): Promise<void> {
   try {
-    const c = await invoke<{ archiveAfterDays?: number | null }>(
-      "bot_get_config",
-    );
+    const c = await getBotConfig();
     setArchiveAfterDays(c.archiveAfterDays);
   } catch (e) {
     console.error("[archiveRule] load failed, keep current value", e);

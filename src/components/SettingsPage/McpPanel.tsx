@@ -12,6 +12,7 @@ import { unlistenSafe } from "../../lib/useTauriListen";
 import { useConfirm } from "../../lib/useConfirm";
 import { Pencil, Plug, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { getBotConfig } from "../../lib/botConfig";
 import { IconButton } from "../../ui/IconButton";
 import { EmptyState } from "../EmptyState";
 import {
@@ -284,11 +285,9 @@ export function McpPanel() {
     setError("");
     // 表单回填需要原始配置字段——status 视图没有 args/env，
     // 从「编辑即整行覆盖」的角度只需回填用户可感知字段，args/env 留空会丢：
-    // 因此编辑走 invoke bot_get_config 拿完整 mcpServers。
+    // 因此编辑走 bot_get_config（getBotConfig）拿完整 mcpServers。
     try {
-      const cfg = await invoke<{ mcpServers?: McpServerConfig[] }>(
-        "bot_get_config",
-      );
+      const cfg = await getBotConfig();
       const full = (cfg.mcpServers ?? []).find((x) => x.id === s.id);
       if (!full) {
         setError("找不到该服务器的完整配置");

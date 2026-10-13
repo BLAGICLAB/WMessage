@@ -1,17 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { ArrowUpRight, Bot, FolderOpen, History, Paperclip, Plus } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
+import { runWithBot } from "../../lib/botRun";
+import { openFilePath } from "../../lib/openTarget";
 import {
   MAX_TASK_FILES,
   filesPatch,
   mergeFiles,
   taskFiles,
 } from "../../lib/taskFiles";
-import { formatCompletedAt } from "../../format";
+import { DOW1, basename, formatCompletedAt } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import { ActorAvatar } from "../ActorAvatar";
 import { TracePanel } from "../TracePanel";
@@ -19,12 +19,12 @@ import {
   DAY_END_MIN,
   DAY_START_MIN,
   addWindowMinutes,
+  buildPlanDT,
   fmtMin,
   parsePlanDT,
   windowMinutesBetween,
 } from "./week";
 
-const DOW1 = "一二三四五六日";
 const QUICK_DUR = [30, 60, 90, 120];
 
 /** 计划时长（窗口分钟）：脏数据兜底 60 */
@@ -32,10 +32,6 @@ function planDuration(task: Task): number {
   if (!task.planStart || !task.planEnd) return 60;
   return windowMinutesBetween(task.planStart, task.planEnd) ?? 60;
 }
-
-const pad2 = (n: number) => String(n).padStart(2, "0");
-const toLocalDT = (day: Date, min: number) =>
-  `${day.getFullYear()}-${pad2(day.getMonth() + 1)}-${pad2(day.getDate())}T${fmtMin(min)}`;
 
 /** 任务卡详情面板（毛玻璃内容体，由 TaskEditorOverlay 悬浮宿主承载）。
  *  字段与旧看板卡（TodoCard）能力对齐：标题/备注/标签/子任务/文件绑定（多文件+
@@ -107,8 +103,8 @@ export function TaskDetailPanel({
     }
     const end = addWindowMinutes(start.day, start.min, duration);
     onUpdate({
-      planStart: toLocalDT(start.day, start.min),
-      planEnd: toLocalDT(end.day, end.min),
+      planStart: buildPlanDT(start.day, start.min),
+      planEnd: buildPlanDT(end.day, end.min),
     });
   };
 
@@ -199,26 +195,9 @@ export function TaskDetailPanel({
     onUpdate(filesPatch(boundFiles.filter((f) => f.path !== path)));
   };
 
-  // 点文件名直接打开：走 Rust open_file_path（前端 opener scope 限 $HOME/$APPDATA）
-  const openOneFile = (path: string) => {
-    invoke("open_file_path", { path }).catch((e) =>
-      handleCommandError(e, "open file", { silent: true }),
-    );
-  };
+  // 点文件名直接打开：走 lib/openTarget 的 openFilePath（失败 silent 理由见彼处）
 
-  /* ── 🤖 交给机器人（与 TodoCard 同通道：execute-task 事件 + 唤起挂件窗口） ── */
-  const runWithBot = () => {
-    emit("execute-task", { id: task.id, title: task.title }).catch(() => {});
-    WebviewWindow.getByLabel("widget")
-      .then((w) => {
-        if (w) {
-          w.show()
-            .then(() => w.setFocus())
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
-  };
+  /* ── 🤖 交给机器人（与 TodoCard 同通道，实现见 lib/botRun） ── */
 
   // 执行痕迹弹层（TracePanel 自带 portal 到 body）
   const [traceOpen, setTraceOpen] = useState(false);
@@ -233,8 +212,6 @@ export function TaskDetailPanel({
     },
     [],
   );
-
-  const basename = (p: string) => p.split(/[\\/]/).pop() || p;
 
   const copyOneFile = (path: string) => {
     invoke("copy_file_with_title", { path, title: task.title })
@@ -531,7 +508,7 @@ export function TaskDetailPanel({
                 type="button"
                 className="max-w-40 truncate text-[var(--t4)] hover:text-[var(--t2)]"
                 title={f.path}
-                onClick={() => openOneFile(f.path)}
+                onClick={() => openFilePath(f.path)}
               >
                 {f.isDir ? "📁 " : "📄 "}
                 {basename(f.path)}
@@ -651,7 +628,7 @@ export function TaskDetailPanel({
           className="nm-btn flex w-9 items-center justify-center text-[var(--t3)]"
           title="交给机器人执行这张任务卡"
           aria-label="交给机器人"
-          onClick={runWithBot}
+          onClick={() => runWithBot(task)}
         >
           <Bot size={14} aria-hidden />
         </button>

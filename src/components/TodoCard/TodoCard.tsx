@@ -21,10 +21,10 @@ import {
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { runWithBot } from "../../lib/botRun";
+import { openFilePath } from "../../lib/openTarget";
 import { useConfirm } from "../../lib/useConfirm";
 import {
   taskFiles,
@@ -240,36 +240,13 @@ export function TodoCardView({
   // 绑定文件折叠：超过 5 个收起到「还有 N 个」
   const [filesExpanded, setFilesExpanded] = useState(false);
 
-  // 点绑定文件名/文件夹名直接打开（不再有 📂 按钮和多选列表）
-  // 走 Rust 侧 open_file_path（与挂件窗口同方案）：前端 openPath 受 opener scope 限
-  // （仅 $HOME/$APPDATA），Windows 上绑定 D:\ 等非用户目录的文件夹会被静默拒绝，
-  // 点击无反应；Rust 侧命令不受 scope 限，且白名单已含任务卡绑定文件
-  const openOneFile = (path: string) => {
-    invoke("open_file_path", { path }).catch((e) =>
-      handleCommandError(e, "open file", { silent: true }),
-    );
-  };
-
-  // 单个文件复制（chip 内「复制」字样）：复制文件+标题，与原 📋 单文件行为一致
+  // 点绑定文件名/文件夹名直接打开（不再有 📂 按钮和多选列表）：走 lib/openTarget
+  // 的 openFilePath（Rust 侧命令不受前端 opener scope 限；失败 silent 理由见彼处）
   const copyOneFile = (path: string) => {
     invoke("copy_file_with_title", { path, title: task.title }).catch((e) =>
       // 复制失败：用户点了按钮，但失败通常不是关键操作（如源文件被删），不打扰
       handleCommandError(e, "copy_file_with_title", { silent: true }),
     );
-  };
-
-  // 交给机器人执行：发事件给挂件聊天区（ChatPanel 监听），并唤起挂件窗口
-  const runWithBot = () => {
-    emit("execute-task", { id: task.id, title: task.title }).catch(() => {});
-    WebviewWindow.getByLabel("widget")
-      .then((w) => {
-        if (w) {
-          w.show()
-            .then(() => w.setFocus())
-            .catch(() => {});
-        }
-      })
-      .catch(() => {});
   };
 
   const subtasks = task.subtasks ?? [];
@@ -527,7 +504,7 @@ export function TodoCardView({
                         className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
                         title={`${f.path}（点击打开）`}
                         onPointerDown={stop}
-                        onClick={() => openOneFile(f.path)}
+                        onClick={() => openFilePath(f.path)}
                       >
                         {f.isDir ? (
                           <Folder
@@ -694,7 +671,7 @@ export function TodoCardView({
               <button
                 className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
                 onPointerDown={stop}
-                onClick={runWithBot}
+                onClick={() => runWithBot(task)}
                 title="交给机器人执行这张任务卡"
               >
                 <Bot size={11} aria-hidden /> 交给机器人

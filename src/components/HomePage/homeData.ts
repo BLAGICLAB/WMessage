@@ -4,6 +4,7 @@
 
 import type { Task } from "../../types";
 import type { TraceRow } from "../../lib/trace";
+import { startOfWeek } from "../TaskTimeline/week";
 
 /** 本地日期键 YYYY-MM-DD（与 App.tsx 的 localDateStr 同口径） */
 export function dayKey(d: Date): string {
@@ -174,9 +175,7 @@ export type WeekBucket = {
 
 /** 本周（周一为起点）逐日「计划/完成」桶，供首页周柱状图 */
 export function weeklyBuckets(tasks: Task[], now: Date): WeekBucket[] {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const start = startOfWeek(now);
   const todayKey = dayKey(now);
   const buckets: WeekBucket[] = [];
   for (let i = 0; i < 7; i++) {
@@ -211,9 +210,7 @@ export function plannedTasksByDay(
   tasks: Task[],
   now: Date,
 ): { days: Task[][]; keys: string[] } {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const start = startOfWeek(now);
   const keys: string[] = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(start);
@@ -264,9 +261,7 @@ export function archivePulse(
   now: Date,
   thresholdDays: number,
 ): ArchivePulse {
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const start = startOfWeek(now);
   const archived = tasks
     .filter((t) => t.archived && !t.deletedAt)
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));

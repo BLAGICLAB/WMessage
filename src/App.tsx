@@ -57,6 +57,8 @@ import {
   upsertWorkspaceItems,
 } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
+import { applyFontSizeSync } from "./lib/botConfig";
+import { dayKey } from "./components/HomePage/homeData";
 import { useConfirm } from "./lib/useConfirm";
 import { unlistenSafe } from "./lib/useTauriListen";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
@@ -112,13 +114,6 @@ const SEED: Task[] = [
   },
   { id: "t3", title: "完成看板拖拽原型", column: "done" },
 ];
-
-function localDateStr(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate(),
-  ).padStart(2, "0")}`;
-}
 
 // 左侧导航栏条目：视图切换职能自顶部工具条迁入；设置单独走底部入口。
 // 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时/通知）
@@ -324,51 +319,18 @@ function App() {
   }, []);
   useEffect(() => subscribeBubbleStyle(applyBubbleStyleDom), []);
 
-  // 字体大小：启动从 bot config 拉值，套到
-  // documentElement[data-font-size]；设置页保存后会发 bot-config-changed，
-  // 这里重新拉一次同步点选未保存也会被广播（预防设置页直接改 state 预览）。
-  useEffect(() => {
-    let cancelled = false;
-    let unlistenCfg: (() => void) | undefined;
-    (async () => {
-      const applyFromConfig = async () => {
-        try {
-          const c = await invoke<{
-            uiFontSize?: string | null;
-            archiveAfterDays?: number | null;
-          }>("bot_get_config");
-          const v =
-            c.uiFontSize === "standard" ||
-            c.uiFontSize === "large" ||
-            c.uiFontSize === "xlarge"
-              ? c.uiFontSize
-              : "small";
-          document.documentElement.dataset.fontSize = v;
-          // 归档天数同步刷新（设置页数据管理保存后广播）；阈值变小 → 立即重套
-          // 规则把已到期任务归档落盘，不等下一分钟定时器。规则幂等 + mutate 链
-          // 串行，启动期并发多套一次无害（任务未加载时为空 no-op）。
-          setArchiveAfterDays(c.archiveAfterDays);
-          mutateFire((prev) => applyArchiveRule(applyTodayRule(prev)));
-        } catch {
-          // 拉取失败也套上默认值，避免界面还没应用就被卡
-          document.documentElement.dataset.fontSize = "small";
-        }
-      };
-      await applyFromConfig();
-      try {
-        const u = await listen("bot-config-changed", applyFromConfig);
-        // 卸载早于 resolve 时自注销，防监听泄漏（同 useTauriListen 的 cancelled 模式）
-        if (cancelled) unlistenSafe(u);
-        else unlistenCfg = u;
-      } catch {
-        // listen 失败只丢后续广播同步，启动值已套
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (unlistenCfg) unlistenSafe(unlistenCfg);
-    };
-  }, []);
+  // 字体大小：启动从 bot config 拉值套用 + 监听广播重拉（共享体见 lib/botConfig）；
+  // 主窗口额外同步归档天数——阈值变小 → 立即重套规则把已到期任务归档落盘，
+  // 不等下一分钟定时器。规则幂等 + mutate 链串行，启动期并发多套一次无害
+  // （任务未加载时为空 no-op）。
+  useEffect(
+    () =>
+      applyFontSizeSync((c) => {
+        setArchiveAfterDays(c.archiveAfterDays);
+        mutateFire((prev) => applyArchiveRule(applyTodayRule(prev)));
+      }),
+    [],
+  );
 
   // 系统通知权限（任务卡截止提醒由 Rust 侧 due_notify 经 tauri-plugin-notification 发送）。
   // 平台差异：macOS 必须显式授权（UNUserNotificationCenter），未授权时通知静默失败，
@@ -760,41 +722,68 @@ function App() {
     });
   };
 
-  // 导出任务数据：全量任务卡（含归档、回收站）写 JSON 文件
-  const exportTasks = async () => {
-    try {
-      const path = await save({
-        defaultPath: `wmessage-tasks-${localDateStr()}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (!path) return; // 用户取消
-      const count = await exportTasksToFile(path);
-      alert(`导出完成：共 ${count} 条任务卡`);
-    } catch (e) {
-      handleCommandError(e, "tasks_export", {
-        onRetry: () => void exportTasks(),
-      });
-    }
+  // 导入导出四胞胎（任务/工作区 × 导出/导入）同形：save/open JSON 对话框 →
+  // 传输（返回条数）→ 成功提示 → 失败可重试。差异全部参数化；导入侧的
+  // 落库/刷新动作并进 transfer（任务=重读全量套规则广播挂件；工作区=广播
+  // workspace-changed 让挂件+子视图自刷）。
+  const jsonTransfer = (opts: {
+    kind: "export" | "import";
+    /** 默认文件名词干（导出对话框，自动拼本地日期后缀） */
+    stem: string;
+    /** 路径 → 条数 */
+    transfer: (path: string) => Promise<number>;
+    done: (count: number) => void;
+    /** handleCommandError 命令名（错误弹窗标签 + 重试） */
+    label: string;
+  }) => {
+    const run = async () => {
+      try {
+        if (opts.kind === "export") {
+          const path = await save({
+            defaultPath: `${opts.stem}-${dayKey(new Date())}.json`,
+            filters: [{ name: "JSON", extensions: ["json"] }],
+          });
+          if (!path) return; // 用户取消
+          opts.done(await opts.transfer(path));
+        } else {
+          const selected = await open({
+            multiple: false,
+            directory: false,
+            filters: [{ name: "JSON", extensions: ["json"] }],
+          });
+          if (typeof selected !== "string") return; // 用户取消
+          opts.done(await opts.transfer(selected));
+        }
+      } catch (e) {
+        handleCommandError(e, opts.label, { onRetry: () => void run() });
+      }
+    };
+    return run();
   };
 
+  // 导出任务数据：全量任务卡（含归档、回收站）写 JSON 文件
+  const exportTasks = () =>
+    jsonTransfer({
+      kind: "export",
+      stem: "wmessage-tasks",
+      transfer: exportTasksToFile,
+      done: (count) => alert(`导出完成：共 ${count} 条任务卡`),
+      label: "tasks_export",
+    });
+
   // 导入任务数据：JSON 文件按 id 合并，同 id 保留更晚修改；导入后重读全量 + 套规则 + 广播挂件
-  const importTasks = async () => {
-    try {
-      const selected = await open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (typeof selected !== "string") return; // 用户取消
-      const merged = await importTasksFromFile(selected);
-      await reloadTasks();
-      alert(`导入完成：本次写入 ${merged} 条任务卡`);
-    } catch (e) {
-      handleCommandError(e, "tasks_import", {
-        onRetry: () => void importTasks(),
-      });
-    }
-  };
+  const importTasks = () =>
+    jsonTransfer({
+      kind: "import",
+      stem: "wmessage-tasks",
+      transfer: async (path) => {
+        const merged = await importTasksFromFile(path);
+        await reloadTasks();
+        return merged;
+      },
+      done: (count) => alert(`导入完成：本次写入 ${count} 条任务卡`),
+      label: "tasks_import",
+    });
 
   // 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件
   const reloadTasks = async () => {
@@ -807,41 +796,28 @@ function App() {
   };
 
   // 导出工作区链接：全量 WorkspaceItem 写 JSON 文件（与任务数据管理风格一致；workspace 数据独立存于 workspace_items 表）
-  const exportWorkspace = async () => {
-    try {
-      const path = await save({
-        defaultPath: `wmessage-workspace-${localDateStr()}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (!path) return; // 用户取消
-      const count = await exportWorkspaceToFile(path);
-      alert(`导出完成：共 ${count} 个工作区条目`);
-    } catch (e) {
-      handleCommandError(e, "workspace_export", {
-        onRetry: () => void exportWorkspace(),
-      });
-    }
-  };
+  const exportWorkspace = () =>
+    jsonTransfer({
+      kind: "export",
+      stem: "wmessage-workspace",
+      transfer: exportWorkspaceToFile,
+      done: (count) => alert(`导出完成：共 ${count} 个工作区条目`),
+      label: "workspace_export",
+    });
 
-  // 导入工作区链接：JSON 文件按 id 合并，同 id 保留更晚修改；导入后重读全量并广播挂件
-  const importWorkspace = async () => {
-    try {
-      const selected = await open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: "JSON", extensions: ["json"] }],
-      });
-      if (typeof selected !== "string") return; // 用户取消
-      const merged = await importWorkspaceFromFile(selected);
-      // App.tsx 不持 workspace 顶层 state（子组件 WorkspaceView 自管），广播事件让挂件+子视图刷新
-      emit("workspace-changed").catch(() => {});
-      alert(`导入完成：本次写入 ${merged} 个工作区条目`);
-    } catch (e) {
-      handleCommandError(e, "workspace_import", {
-        onRetry: () => void importWorkspace(),
-      });
-    }
-  };
+  // 导入工作区链接：JSON 文件按 id 合并，同 id 保留更晚修改；导入后广播（App.tsx 不持 workspace 顶层 state，子组件 WorkspaceView 自管）
+  const importWorkspace = () =>
+    jsonTransfer({
+      kind: "import",
+      stem: "wmessage-workspace",
+      transfer: async (path) => {
+        const merged = await importWorkspaceFromFile(path);
+        emit("workspace-changed").catch(() => {});
+        return merged;
+      },
+      done: (count) => alert(`导入完成：本次写入 ${count} 个工作区条目`),
+      label: "workspace_import",
+    });
 
   // TP-1：✅ 状态切换走服务端定向命令——服务端同一把 DB 写锁内读现值打基线写库，
   // 前端快照不参与，规则定时器/迁移/实例重启并发不再触发写冲突弹窗

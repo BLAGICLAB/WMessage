@@ -15,6 +15,7 @@ import {
   type NotificationItem,
 } from "../../lib/notifications";
 import { useTauriListen } from "../../lib/useTauriListen";
+import { getBotConfig } from "../../lib/botConfig";
 import { formatCommandError } from "../../lib/errorHandler";
 import {
   getProfileCache,
@@ -96,7 +97,7 @@ export function HomePage({
   const [archiveDays, setArchiveDays] = useState(7);
   useEffect(() => {
     let alive = true;
-    invoke<{ archiveAfterDays?: number | null }>("bot_get_config")
+    getBotConfig()
       .then((c) => {
         if (alive) setArchiveDays(c.archiveAfterDays ?? 7);
       })

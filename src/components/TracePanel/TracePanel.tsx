@@ -18,7 +18,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
-import { basename } from "../../format";
+import { basename, formatMonthDayTime } from "../../format";
 import {
   listWorkflowAudit,
   type WorkflowAuditEntry,
@@ -45,12 +45,6 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
 function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function fmtTs(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** 单条 span：一行摘要 + <details> 展开入参/结果 */
@@ -455,7 +449,7 @@ export function TracePanel({
                       });
                   }}
                 >
-                  {fmtTs(t.startedAt)}
+                  {formatMonthDayTime(t.startedAt)}
                   {badge && (
                     <span className={`ml-1 ${badge.cls}`}>{badge.label}</span>
                   )}

@@ -7,6 +7,16 @@ export function basename(p: string): string {
   return parts[parts.length - 1] || p;
 }
 
+/** 周几单字标签（"一二三四五六日"，下标 = (getDay()+6)%7，周一为 0）：
+ *  时间网格角标 / 定时每周文案共用 */
+export const DOW1 = "一二三四五六日";
+
+/** 时间戳 → "MM-DD HH:mm"（执行痕迹列表 / 通知列表：不需要跨年精度） */
+export function formatMonthDayTime(ms: number): string {
+  const d = new Date(ms);
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 /** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
  *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;
@@ -194,8 +204,7 @@ export function formatSchedule(s: string): string {
     const parts = s.slice(7).split(":");
     if (parts.length < 3) return s;
     const [d, h, m] = parts;
-    const names = ["一", "二", "三", "四", "五", "六", "日"];
-    const n = names[Number(d) - 1] ?? "?";
+    const n = DOW1[Number(d) - 1] ?? "?";
     return `每周${n} ${h}:${m}`;
   }
   if (s.startsWith("monthly:")) {

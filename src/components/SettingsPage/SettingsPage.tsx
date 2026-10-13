@@ -58,6 +58,7 @@ import {
 } from "../../lib/workflowAudit";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { getBotConfig } from "../../lib/botConfig";
 import { DEFAULT_ARCHIVE_DAYS, MAX_ARCHIVE_DAYS } from "../../lib/archiveRule";
 import {
   fetchProviders,
@@ -703,67 +704,19 @@ export function SettingsPage({
 
   const loadConfig = async () => {
     try {
-      const c = await invoke<{
-        hasApiKey: boolean;
-        bypassLlmOnPreStepHit?: boolean;
-        allowedDirs?: string[];
-        // view 不含 key 本体，只有 has 标志
-        hasTavilyKey?: boolean;
-        tavilyEnabled?: boolean | null;
-        hasBraveKey?: boolean;
-        braveEnabled?: boolean | null;
-        pythonTimeoutSecs?: number | null;
-        maxFunctionCalls?: number | null;
-        // 任务卡归档天数（None = 后端默认 7）
-        archiveAfterDays?: number | null;
-        permMode?: string | null;
-        apiProvider?: string | null;
-        maxTokens?: number | null;
-        // 推理强度后台默认（RE-1）：off/low/medium/high；缺字段/非法值 → 前端按 medium 显示
-        reasoningEffort?: string | null;
-        // 每协议下的大模型列表 + active 模型 id
-        // 老后端版本（无这俩字段）→ undefined → 前端按空列表处理（"不设置默认厂商"）
-        modelsByProvider?: ModelsByProvider | null;
-        activeModelId?: ActiveModelId | null;
-        // 被禁用的厂商名列表（老后端版本没返 → 空）
-        disabledVendors?: string[] | null;
-        // 已存 API Key 的厂商名列表（老后端版本没返 → 空）
-        vendorKeys?: string[] | null;
-        // 连接测试通过的厂商名列表（老后端版本没返 → 空）
-        verifiedVendors?: string[] | null;
-        // 界面字体大小（small/standard/large/xlarge）
-        // 老后端版本没返 → 前端按 small 回退（默认）
-        uiFontSize?: string | null;
-        // 定时记忆整理配置（老后端没返 → 默认启用 + 每天）
-        memoryConsolidation?: {
-          enabled?: boolean;
-          interval?: string;
-          lastRunAt?: number | null;
-        } | null;
-        //  记忆可控开关（老后端没返 → 全开）； 抽取档位（缺字段/非法值 → off）
-        memoryControl?: {
-          injectionEnabled?: boolean;
-          autoWriteEnabled?: boolean;
-          autoExtract?: AutoExtractMode | string | null;
-        } | null;
-        //  记忆参数（老后端没返 → null；原样回传）
-        memoryTuning?: Record<string, number> | null;
-        //  Agent 运行参数（老后端没返 → null = 内置默认）
-        maxRounds?: number | null;
-        historyBudgetChars?: number | null;
-        subagentMaxTurns?: number | null;
-        subagentMaxWallSecs?: number | null;
-        searchMaxResults?: number | null;
-        maxToolOutputChars?: number | null;
-        // 规则表（老后端没返 → 空）
-        toolRules?: Array<{ tool: string; action: string }> | null;
-      }>("bot_get_config");
+      const c = await getBotConfig();
       setConfig({
         // 老配置缺字段/非法值 → openai（与后端 ApiProvider::from_cfg 回退一致）
         apiProvider: c.apiProvider === "anthropic" ? "anthropic" : "openai",
         // 老后端版本没返 modelsByProvider → 空列表（无默认厂商）
-        modelsByProvider: c.modelsByProvider ?? { openai: [], anthropic: [] },
-        activeModelId: c.activeModelId ?? { openai: null, anthropic: null },
+        modelsByProvider: {
+          openai: c.modelsByProvider?.openai ?? [],
+          anthropic: c.modelsByProvider?.anthropic ?? [],
+        },
+        activeModelId: {
+          openai: c.activeModelId?.openai ?? null,
+          anthropic: c.activeModelId?.anthropic ?? null,
+        },
         disabledVendors: c.disabledVendors ?? [],
         // 连接测试通过的厂商名单（老后端没返 → 空）
         verifiedVendors: c.verifiedVendors ?? [],
@@ -3880,13 +3833,8 @@ function WorkflowSettingsCard() {
         setAskBudgetDraft(String(s.askBudget));
       })
       .catch((e) => setAuditMsg(String(e)));
-    // 模型库下拉（与画布每卡模型同源：bot_get_config，停用条目不进列表）
-    invoke<{
-      modelsByProvider?: {
-        openai?: Array<{ id: string; label: string; enabled?: boolean }>;
-        anthropic?: Array<{ id: string; label: string; enabled?: boolean }>;
-      } | null;
-    }>("bot_get_config")
+    // 模型库下拉（与画布每卡模型同源：getBotConfig，停用条目不进列表）
+    getBotConfig()
       .then((c) => {
         const m = c.modelsByProvider;
         setModelOptions(

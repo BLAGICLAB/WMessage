@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ColumnId, Task } from "../../types";
+import { DOW1 } from "../../format";
 import {
   DAY_END_MIN,
   DAY_SPAN_MIN,
@@ -16,8 +17,6 @@ import {
 } from "./week";
 import { WeekGrid, type SlotHint } from "./WeekGrid";
 import { TaskPool, loadPoolOpen, savePoolOpen } from "./TaskPool";
-
-const DOW1 = "一二三四五六日";
 
 type Drag =
   | { kind: "create"; task: Task }

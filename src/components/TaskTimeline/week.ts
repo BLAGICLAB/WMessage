@@ -2,6 +2,7 @@
 // 时间格式契约与 due 一致："YYYY-MM-DDTHH:mm"（本地时区语义，无时区后缀）；
 // 解析失败一律返 null 由调用方兜底（同 col/subtasks 的「损坏按空读取」契约）。
 
+import { DOW1 } from "../../format";
 import type { Task } from "../../types";
 
 export const DAY_START_MIN = 8 * 60;
@@ -216,7 +217,7 @@ export function planColorVar(tags: string[] | undefined): string {
 export function planChip(planStart: string): string {
   const p = parsePlanDT(planStart);
   if (!p) return "";
-  return `${"一二三四五六日"[(p.day.getDay() + 6) % 7]} ${fmtMin(p.min)}`;
+  return `${DOW1[(p.day.getDay() + 6) % 7]} ${fmtMin(p.min)}`;
 }
 
 /** 从 (day, min) 起沿「日窗口」推进 durMin 分钟：溢出 18:00 折入次日 8:00。

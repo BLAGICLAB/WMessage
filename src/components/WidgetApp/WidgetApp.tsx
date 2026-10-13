@@ -39,6 +39,8 @@ import { ErrorBoundary } from "../../ui/ErrorBoundary";
 import { linkDisplayName } from "../WorkspacePage";
 
 import { handleCommandError } from "../../lib/errorHandler";
+import { applyFontSizeSync } from "../../lib/botConfig";
+import { emitExecuteTask } from "../../lib/botRun";
 import {
   loadTasksFromDb,
   loadWorkspaceFromDb,
@@ -155,44 +157,10 @@ export default function WidgetApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [botOn, expanded]);
 
-  // 字体大小同步（）：挂件 webview 独立 document
-  // 需要拉 config 设 data-font-size；设置页保存后广播 bot-config-changed，
-  // Tauri emit 全局广播挂件也能收到。失败也套默认 small，避免渲染前空抳。
-  useEffect(() => {
-    let cancelled = false;
-    let unlistenCfg: (() => void) | undefined;
-    (async () => {
-      const applyFromConfig = async () => {
-        try {
-          const c = await invoke<{ uiFontSize?: string | null }>(
-            "bot_get_config",
-          );
-          const v =
-            c.uiFontSize === "standard" ||
-            c.uiFontSize === "large" ||
-            c.uiFontSize === "xlarge"
-              ? c.uiFontSize
-              : "small";
-          document.documentElement.dataset.fontSize = v;
-        } catch {
-          document.documentElement.dataset.fontSize = "small";
-        }
-      };
-      await applyFromConfig();
-      try {
-        const u = await listen("bot-config-changed", applyFromConfig);
-        // 卸载早于 resolve 时自注销，防监听泄漏（同 useTauriListen 的 cancelled 模式）
-        if (cancelled) unlistenSafe(u);
-        else unlistenCfg = u;
-      } catch {
-        // listen 失败只丢后续广播同步，启动值已套
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (unlistenCfg) unlistenSafe(unlistenCfg);
-    };
-  }, []);
+  // 字体大小同步：挂件 webview 独立 document，需拉 config 设 data-font-size；
+  // 设置页保存后广播 bot-config-changed，Tauri emit 全局广播挂件也能收到。
+  // 失败也套默认 small（共享体见 lib/botConfig）。
+  useEffect(() => applyFontSizeSync(), []);
 
   // 主题：启动时应用 + 监听主窗口切换 + 跟随系统模式监听系统外观变化
   useEffect(() => {
@@ -1354,13 +1322,7 @@ export default function WidgetApp() {
                     onCopyFilePath={(p) => copyFilePath(t, p)}
                     onRemoveFile={(p) => removeFile(t, p)}
                     onBotExecute={
-                      botOn
-                        ? () =>
-                            emit("execute-task", {
-                              id: t.id,
-                              title: t.title,
-                            }).catch(() => {})
-                        : undefined
+                      botOn ? () => emitExecuteTask(t) : undefined
                     }
                   />
                 ))

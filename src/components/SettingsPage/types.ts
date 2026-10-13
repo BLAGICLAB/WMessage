@@ -1,5 +1,7 @@
 // SettingsPage 子模块：纯类型定义 + 工具函数（无 React / 无 IO）。
-// 由 SettingsPage 目录内其他子文件 import，外部不直接引用。
+// 由 SettingsPage 目录内其他子文件 import，外部不直接引用；
+// 例外：lib/botConfig.ts 的 BotConfigView（bot_get_config 线格式单源）
+// 引用 ModelEntry / McpServerConfig——线格式本就与 wire 同形。
 
 /** 单个大模型条目：label / baseUrl / model 三元组 + 稳定 id。
  *  id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active，
