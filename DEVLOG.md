@@ -127,6 +127,9 @@ correction 上线后没人触发。两条路都走 `cluster_correction_lessons_b
 降低 IO。但本批还没接到量级信号（correction 实际日均估计几十条），不加。下批触发
 时机：correction 累计打千或运营数据提示后台 CPU 占用上升。
 
+**批 VIII 接管后状态更新**：上节 IO 升级挂账已在批 VIII 落地（commit
+`965ce13`，详见下节）。
+
 **什么没做（批 V 接管后状态更新）**：原批 III 末尾挂账「聚类 scheduler 兜底」「
 lesson-dedup 撞 fact 已知行为」已在批 IV 两 commit 落地。剩余 follow-up（scheduler tick
 全表扫描在 correction ≥1k 时的 IO 升级）见上节。另：verifier 拒绝 → 主 agent 自动
@@ -296,6 +299,41 @@ prompt 文件。
 原挂账「终稿自检扩到子 agent finalizer」勘误后撤回（子 agent 走
 `run_model_loop` 薄壳已共享 cfg）。两挂账都清了。
 
+## 2026-10-14（周二）agent 行为收紧批 VIII：scheduler 增量扫描 IO 升级
+
+一条独立 commit（不打 squash）：
+
+- `965ce13` scheduler tick 全表扫描改增量——`store::load_corrections_since`
+  新增按 `updated_at > since_ms` 加载 correction 行（RFC3339 字典序 = 时间序，
+  `ts_to_text` 写入统一保证）；`cluster_correction_lessons_blocking` 加
+  `since_ms` 参数分叉全表 / 增量；`start_correction_cluster_scheduler` 维护
+  `Arc<Mutex<i64>>` `last_tick_ms` 每轮结束刷新到 now_ms；即时路径
+  `bot_chat:766` 传 since=0 行为不变。承接批 IV 末挂账。
+
+**为什么 since_ms <= 0 走全表不直接走增量**：即时路径（用户在 bot_chat 写一条
+correction 后立刻 fire-and-forget 触发聚类）需要全表扫描——刚写的 correction
+可能跟几小时前的同源 correction 撞同源，不能因 since_ms 偏大漏掉历史同源。
+scheduler 兜底才走增量。两条路最终汇到 `cluster_correction_lessons_blocking`
+同一段 DB 串行代码 + 同 store 语义去重，幂等互不破坏。
+
+**为什么 last_tick_ms 用 `Arc<Mutex<i64>>` 不引新锁机制**：`DB_WRITE_LOCK`
+已经串行所有 mem_items 写。`last_tick_ms` 只在 scheduler loop tick 之间更新
+（5 min 一次），无高频竞争——`Mutex<i64>` 单变量天然合适，`RwLock` 反而过度。
+如果未来要扩到多调度器共享，再升级。
+
+**为什么 panic 路径也推进 last_tick_ms**：避免 panic 之后下次 tick 又
+全表扫一遍违背「兜底为增量」的初衷；推进略快于实际聚类完成的瞬间，下轮
+扫到的 correction 子集可能漏掉聚类进行时新写的——该子集会被下下轮
+（5 min × 2）兜住，仍可接受。
+
+**已知 follow-up（不挂账到日程，挂账到下批）**：`verifier_retry_max` 真实使用
+频率 / N=1 是否够——下批观察真实对话：循环触发率 / LLM 触发循环后成功率 /
+是否撞 N=1 上限（撞上限即说明任务结构有问题、不是设置项不够大）。批 VII 末
+挂账延续。批 IV 末 IO 升级挂账本批落地，无新增技术挂账。
+
+**什么没做（批 VIII 接管后状态更新）**：批 IV 末挂账「scheduler tick 全表
+扫描 IO 升级」已在本批一 commit 落地。批 VII 末观察性挂账
+（`verifier_retry_max` 真实数据）等真实使用后再说。
 
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
 
