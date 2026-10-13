@@ -192,6 +192,63 @@ lesson 写入延迟阻塞。**lesson 是事后避坑信号，不该卡当前任�
 塞一条决策线。下批触发时机：真实对话中观察到 verifier 拒绝后主
 agent 没主动重试。
 
+## 2026-10-14（周二）agent 行为收紧批 VI：final_text 自检节流闸
+
+一条独立 commit（不打 squash）：
+
+- `fc480a3` final_text 自检节流闸——主出口前置 LLM 自检 + 设置项 + 视觉过滤
+（`classify_verifier_outcome` 之外再加一道幻觉防线：final_text 主出口
+前置触发 LLM 自检，Y 路径静默还原原文，N 路径追加 ⚠️ + emit + 写
+bot.log 审计）
+
+**为什么节流门槛是 80 字 / 3 function_calls**：两者都是「省 token vs 漏
+判」的二元权衡，无中间值更优——80 字往下调到 50 会让「好的/收到」这种
+短回复也触发自检、刷 token；往上到 200 会漏短答复+长声明的混合。
+3 function_calls 往下调到 1 会让刚开聊两句就触发，往上到 5 会漏掉小
+工作量对话。**调这两个数的收益是零、引入的认知噪音是 1**——硬编码常量
+不暴露设置。
+
+**为什么节流轮次间隔放设置项**：8 轮一次是省 token 的「甜点」，但每个
+人对话节奏不同——长任务链用户想拉长到 16 轮省 token、密集交互用户想
+压到 4 轮抓更多幻觉。设置项「Agent 运行参数 → 终稿自检轮次间隔」0 = 关闭
+的 kill switch 给了极致省 token 的明确出口。**硬条件（字数/调用）放设置
+反而坏事**——见上段。
+
+**为什么 N 路径不调 LLM 改写 final_text**：再调 1 轮 LLM = 数 K token
+成本 + 1 轮延迟翻倍，且让 LLM 看到自己刚才的 final_text 然后改写——
+可能「为了改写而改写」、把真实正确回答改坏。**诚实做法是让用户看到原文
++ ⚠️ 警告，由人自己判断**：自检是事后避坑信号不是事后修订，误判的代价
+（用户多看一眼警告）远小于误改写的代价（真实信息被污染）。
+
+**为什么 Y 路径不写 audit_log**：成功是常态——长对话每 8 轮触发一次自
+检、Y 占绝大多数。记 audit_log 会让 bot.log 刷屏、捞真问题变难。
+**只记 fail 路径** 才能从审计里直接捞出「该改 prompt」的样本。
+
+**为什么复用 SELFCHECK 的视觉过滤套路加 expecting_final_selfcheck 而
+不开新机制**：现有 `expecting_selfcheck` 流式跳 emit 是 bb388ff 已经
+锁好的纯函数路径——`if !expecting_selfcheck { emit(...) }` 加个 AND
+条件 `&& !expecting_final_selfcheck` 是 0 行新抽象。复用期望状态机
+比另起一套 `skip_final_selfcheck_emit` 之类小。
+
+**为什么 4 条节流条件 AND 而不 OR**：任一不过就跳过——
+- 字数 < 80 → trivial 回复不值得跑（刷 token 没价值）
+- function_calls < 3 → 没真干活的对话不该触发（刚开聊两句就自检是浪费）
+- 距上次 < gap → 节流器核心职责
+- 任一自检态 → 不与现有自检撞车（避免 round 内连续两次 prompt 注入）
+
+**已知 follow-up（不挂账到日程，挂账到下批）**：本批只覆盖主聊天路径
+的 final_text 自检，子 agent 的 finalizer（`bot_orchestrator::run_subagent`）
+不走 `run_model_loop_core`，自检闸没生效到子 agent 输出上。要扩到子
+agent 路径得在 `run_subagent` finalize 之前加同套 trigger + verdict 解析
+逻辑，接触面中等（要复用 `FINAL_SELFCHECK_PROMPT` + 视觉过滤 + 节流）。
+下批触发时机：观察主聊天路径自检触发的真实 N 频率，确认阈值/行为合理
+后再扩到子 agent。
+
+**什么没做（批 VI 接管后状态更新）**：原批 V 末尾挂账「verifier 拒绝 →
+主 agent 自动 executor 重试的自适应循环」仍未动——本批没碰
+`bot_orchestrator` 决策路径，自适应重试循环继续挂账到下批。新挂账
+「终稿自检扩到子 agent finalizer」见上节。
+
 
 ## 2026-10-13（周一）agent 行为收紧批：上下文主动压缩 + 工具语义自检
 
