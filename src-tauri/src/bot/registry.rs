@@ -313,7 +313,8 @@ pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask
 // 子 agent 编排三工具（主 agent 可见）
 pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/taskId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
     "objective":{"type":"string","description":"单一目标（一句话说清做什么）"},
-    "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集"},
+    "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集（与 stage 同给时白名单档优先，stage 只换角色语义层）"},
+    "stage":{"type":"string","enum":["recon","executor","verifier"],"description":"三段式派发阶段（可选）：recon=只读调研 / executor=基于报告动手实现 / verifier=逐条验收。不给 stage 时仅按 profile 走基线提示词；只给 stage 不给 profile 时按默认派生（recon/verifier→research，executor→coder）"},
     "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验"},
     "contextSummary":{"type":"string","description":"必要上下文摘要（可选；不含主对话全文）"},
     "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限，默认 100"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选，默认值见上；上卡可见）"},
@@ -1283,7 +1284,38 @@ mod registry_tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// spawn_subagent schema 暴露 stage 字段（recon/executor/verifier）——锁住
+    /// 三段式派发对 LLM 的契约入口；字段丢失即等于功能对模型不可见。
     #[test]
+    fn spawn_subagent_schema_exposes_stage_field() {
+        let v: serde_json::Value = serde_json::from_str(SCHEMA_SPAWN_SUBAGENT)
+            .expect("SCHEMA_SPAWN_SUBAGENT 必须是合法 JSON");
+        let stage = v
+            .pointer("/function/parameters/properties/stage")
+            .expect("spawn schema 必须声明 stage 字段");
+        // 枚举与字符串类型 + 三档全部可枚举
+        assert_eq!(stage["type"], "string");
+        let enums: Vec<&str> = stage["enum"]
+            .as_array()
+            .expect("stage enum 必须是数组")
+            .iter()
+            .filter_map(|x| x.as_str())
+            .collect();
+        for v in ["recon", "executor", "verifier"] {
+            assert!(enums.contains(&v), "stage enum 缺 {v}");
+        }
+        // stage 不在 required 里（与 profile 可同时给，也可只给一个）
+        let required: Vec<&str> = v
+            .pointer("/function/parameters/required")
+            .and_then(|r| r.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            !required.contains(&"stage"),
+            "stage 是可选字段，不应进 required"
+        );
+    }
+
     fn tools_table_contains_39_main_visible_tools() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");

@@ -28,11 +28,62 @@ pub const CHECK_WAIT_MS_CAP: u64 = 5_000;
 /// wait 轮询步长。
 const CHECK_POLL_INTERVAL_MS: u64 = 150;
 
+/// 三段式派发阶段（设计 §8.5）——主 agent 在 recon/executor/verifier 三段闭环中
+/// 选定当前阶段的角色语义。**不破坏 SubagentProfile 枚举**——profile 仍是工具白名单
+/// 档（Research/Coder/General），stage 在 prompt 装配层额外拼一段角色 prompt：
+/// - Recon → 拼 PROFILE_RECON（只读 + 联网调研）
+/// - Executor → 拼 PROFILE_EXECUTOR（写文件/跑脚本/生成文档）
+/// - Verifier → 拼 PROFILE_VERIFIER（只读 + 逐条 acceptance_criteria 验收）
+/// 阶段不落库——spawn 触发 runner 的 in-memory 闭包 move 进 runner，崩溃重启的
+/// queued 行降级到基线 PROFILE_*（profile 仍存表），属可控降级。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentStage {
+    Recon,
+    Executor,
+    Verifier,
+}
+
+impl SubagentStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SubagentStage::Recon => "recon",
+            SubagentStage::Executor => "executor",
+            SubagentStage::Verifier => "verifier",
+        }
+    }
+
+    // 有意不实现 std::str::FromStr：解析失败返回 Option 而非 Err
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "recon" => SubagentStage::Recon,
+            "executor" => SubagentStage::Executor,
+            "verifier" => SubagentStage::Verifier,
+            _ => return None,
+        })
+    }
+
+    /// stage → 默认 profile 档（设计 §8.5 映射）：
+    /// - recon/verifier → research（只读工具足够）
+    /// - executor → coder（写类工具必需）
+    /// 调用方未显式给 profile 时按此派生；显式给了的 profile 仍优先（角色与白名单解耦）。
+    pub fn default_profile(self) -> SubagentProfile {
+        match self {
+            SubagentStage::Recon | SubagentStage::Verifier => SubagentProfile::Research,
+            SubagentStage::Executor => SubagentProfile::Coder,
+        }
+    }
+}
+
 /// spawn 入参（设计 §5 工具签名的内部形态）。
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
     pub objective: String,
     pub profile: SubagentProfile,
+    /// 三段式派发阶段（设计 §8.5）：None = 走基线 PROFILE_*（单段派发兼容路径）。
+    /// 拼装阶段：runner 启动时随闭包 in-memory 传过去（详见 `spawn_subagent`）。
+    pub stage: Option<SubagentStage>,
     /// **spawn 必填**，每条可检验（设计 §4.2 双写：子卡 note + 任务包装）
     pub acceptance_criteria: Vec<String>,
     /// 上下文摘要（设计 §8.5「上下文摘要」段）：只给必要背景，不倒主对话全文。
@@ -354,6 +405,9 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     let audit_parent_session = req.parent_session_id.clone();
     let audit_profile = req.profile;
     let audit_model = req.model_profile.clone();
+    // stage 走 in-memory 闭包——spawn 触发 runner 是同步启动，闭包 move 进 runner；
+    // 不落库（详见 SubagentStage 注释）。SubagentStage 是 Copy，所以这里直接搬走。
+    let runner_stage = req.stage;
     let app2 = app.clone();
     let (ack, card) =
         tauri::async_runtime::spawn_blocking(move || -> CommandResult<(SpawnAck, Task)> {
@@ -396,7 +450,9 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     // 非阻塞派发 runner（设计 §5：spawn 立即返回；执行在后台推进状态机）
     let runner_app = app.clone();
     let runner_sid = ack.subagent_id.clone();
-    tauri::async_runtime::spawn(async move { run_subagent(runner_app, runner_sid).await });
+    tauri::async_runtime::spawn(
+        async move { run_subagent(runner_app, runner_sid, runner_stage).await },
+    );
     Ok(ack)
 }
 
@@ -911,7 +967,7 @@ impl SubagentGate {
 /// 具体化 `tauri::AppHandle`（= Wry）：run_model_loop 生产壳即该签名
 /// （mock 链路走 run_model_loop_core，同 llm_integration 分层）。
 #[allow(clippy::too_many_lines)]
-async fn run_subagent(app: AppHandle, subagent_id: String) {
+async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<SubagentStage>) {
     let sid_for_load = subagent_id.clone();
     let row = match db_locked(&app, move |conn| {
         crate::db::load_subagent(conn, &sid_for_load)
@@ -1293,10 +1349,19 @@ async fn run_subagent(app: AppHandle, subagent_id: String) {
     });
 
     // 消息装配：system = 子 agent 通用提示 + profile 段 + 产物目录规则；user = 任务包装
-    let profile_prompt = match row.profile {
-        SubagentProfile::Research => crate::prompts::PROFILE_RESEARCH,
-        SubagentProfile::Coder => crate::prompts::PROFILE_CODER,
-        SubagentProfile::General => crate::prompts::PROFILE_GENERAL,
+    // stage 在场：拼 PROFILE_RECON/EXECUTOR/VERIFIER 替代基线 PROFILE_*（设计 §8.5）。
+    // profile 仍决定工具白名单档——stage 只换角色语义层。两层解耦，允许调用方：
+    // 1) 仅给 stage（profile 自动按 default_profile 派生）；或
+    // 2) 同时给 stage + profile（白名单与角色互不干扰，如 verifier=research 的只读够用）。
+    let profile_prompt = match stage {
+        Some(SubagentStage::Recon) => crate::prompts::PROFILE_RECON,
+        Some(SubagentStage::Executor) => crate::prompts::PROFILE_EXECUTOR,
+        Some(SubagentStage::Verifier) => crate::prompts::PROFILE_VERIFIER,
+        None => match row.profile {
+            SubagentProfile::Research => crate::prompts::PROFILE_RESEARCH,
+            SubagentProfile::Coder => crate::prompts::PROFILE_CODER,
+            SubagentProfile::General => crate::prompts::PROFILE_GENERAL,
+        },
     };
     // wrapper 已由 setup 渲染返回（同一文本：LLM 输入 = 历史落库 = 收尾覆盖源）
     let system = format!(
@@ -1561,14 +1626,21 @@ pub async fn tool_spawn_subagent(
     }
     let v = parse_tool_args(args);
     let objective = v["objective"].as_str().unwrap_or_default().to_string();
+    // stage 可选：recon/executor/verifier 三段式派发阶段（设计 §8.5）。
+    // 给了 stage 但没给 profile 时按 default_profile 派生（recon/verifier→research，
+    // executor→coder）；都给了的 profile 仍优先——角色语义与白名单解耦。
+    let stage = v["stage"].as_str().and_then(SubagentStage::from_str);
     let profile = match v["profile"].as_str().and_then(SubagentProfile::from_str) {
         Some(p) => p,
-        None => {
-            return ToolResult::warn(
-                "spawn 失败：profile 必须是 research / coder / general 之一",
-                Vec::new(),
-            );
-        }
+        None => match stage {
+            Some(s) => s.default_profile(),
+            None => {
+                return ToolResult::warn(
+                    "spawn 失败：profile 必须是 research / coder / general 之一；或给 stage=recon/executor/verifier 让系统按默认派生",
+                    Vec::new(),
+                );
+            }
+        },
     };
     let criteria: Vec<String> = v["acceptanceCriteria"]
         .as_array()
@@ -1605,6 +1677,7 @@ pub async fn tool_spawn_subagent(
     let req = SpawnRequest {
         objective,
         profile,
+        stage,
         acceptance_criteria: criteria,
         context_summary: v["contextSummary"].as_str().map(str::to_string),
         budget,
@@ -2103,6 +2176,7 @@ mod orchestrator_tests {
         SpawnRequest {
             objective: "调研五个竞品并输出报告".into(),
             profile: SubagentProfile::Research,
+            stage: None,
             acceptance_criteria: vec!["覆盖至少 5 个产品".into(), "每条含官网 URL".into()],
             context_summary: None,
             budget: None,
@@ -2328,5 +2402,54 @@ mod orchestrator_tests {
         let state = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
         assert_eq!(state.status, SubagentStatus::Succeeded);
         assert_eq!(state.result.unwrap()["summary"], "结论");
+    }
+
+    // stage enum 字符串映射（设计 §8.5；调用方传入 stage=recon/executor/verifier）
+    #[test]
+    fn subagent_stage_roundtrips_string() {
+        for (s, expected) in [
+            (SubagentStage::Recon, "recon"),
+            (SubagentStage::Executor, "executor"),
+            (SubagentStage::Verifier, "verifier"),
+        ] {
+            assert_eq!(s.as_str(), expected);
+            assert_eq!(SubagentStage::from_str(expected), Some(s));
+        }
+        assert_eq!(SubagentStage::from_str("unknown"), None);
+    }
+
+    // stage → 默认 profile 派生（设计 §8.5 映射）
+    #[test]
+    fn stage_default_profile_is_research_or_coder() {
+        // recon/verifier 只读足够 → research
+        assert_eq!(
+            SubagentStage::Recon.default_profile(),
+            SubagentProfile::Research
+        );
+        assert_eq!(
+            SubagentStage::Verifier.default_profile(),
+            SubagentProfile::Research
+        );
+        // executor 写类必需 → coder
+        assert_eq!(
+            SubagentStage::Executor.default_profile(),
+            SubagentProfile::Coder
+        );
+    }
+
+    // spawn 行上 profile 仍按显式值落库（stage 不进 DB 表）
+    #[test]
+    fn stage_is_not_persisted_and_profile_field_unaffected() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let mut r = req(None);
+        r.profile = SubagentProfile::Coder;
+        r.stage = Some(SubagentStage::Executor);
+        let (ack, _card) = spawn_subagent_locked(&mut conn, &r, 5_000).unwrap();
+        let row = crate::db::load_subagent(&conn, &ack.subagent_id)
+            .unwrap()
+            .unwrap();
+        // 行 profile 是显式给的 Coder（stage 在内存里走闭包，不落表）
+        assert_eq!(row.profile, SubagentProfile::Coder);
     }
 }
