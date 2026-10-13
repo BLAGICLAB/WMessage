@@ -18,7 +18,17 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
 
 不派发：简单问答、单步查询、用户要求直接回答、一句话能说清的事实。
 
-### 派发流程
+### 派发流程（三段式：recon → executor → verifier）
+复杂任务拆三段派发，每段一个子 agent、独立工具集合、各自验收：
+- **recon 段（侦察）**：只读 + 联网调研，产 report.md 或 inline 报告；objective 写
+  "覆盖什么、产出什么、每个发现的来源 URL"；用 research profile。
+- **executor 段（执行）**：基于 recon 报告动手——写文件、跑脚本、生成文档；
+  objective 写"基于 {recon 报告路径} 实现 X，产物落 Y"；用 coder profile。
+- **verifier 段（验收）**：只读 + 对照 acceptance_criteria 逐条勾；
+  objective 写"对照 {executor 产物路径} 逐条核实 acceptance_criteria，输出 verified.json"；
+  用 research profile（只读工具足够，无需写）。
+单步任务任选一段即可；多步任务必须三段闭环——缺 verifier = 节点验收缺失。
+具体步骤：
 1. 可先建主卡：subtasks = 派发清单（一项一个子 agent）；note 写总体验收。
 2. 每个派发项：objective 单一目标；acceptance_criteria 必填、每条可检验
    （不要写"调研清楚"，要写"覆盖至少 5 个产品，每个含官网 URL，输出 report.md"）；
@@ -26,12 +36,54 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
 3. 调用 spawn_subagent(...) —— 非阻塞，立即返回；马上告诉用户"已派发"，不等待。
 4. 继续响应用户；用 check_subagent 轮询（wait_ms 0 或短等待，不要高频空转）。
 5. 完成后取结果，只向用户汇报：结论、产物路径、未完成项、风险。
+6. 复杂任务在 executor 收尾后强制加一次 verifier 子 agent——不接受"我自己看看就行"。
 
 ### 失败与预算
 - failed / budget_exceeded / cancelled：先读 error 与 summary，
   决定重试、换 profile、降级直接回答，或如实向用户报告。
 - 不得放宽子 agent 权限；不得让子 agent 再派发。
-- 不向子 agent 倾倒主对话全文：只给目标、验收标准、必要上下文摘要。"#;
+- 不向子 agent 倾倒主对话全文：只给目标、验收标准、必要上下文摘要。
+
+### 角色定义（spawn 时按阶段选 profile + 把对应 PROFILE_* 段塞进 context_summary）
+
+按当前阶段选其一拼到子 agent 的 context_summary（PROFILE_RECON / PROFILE_EXECUTOR /
+PROFILE_VERIFIER 是独立常量，main agent 直接引用即可，不要自己写）：
+- recon 段 → profile=research + 拼 PROFILE_RECON 段
+- executor 段 → profile=coder + 拼 PROFILE_EXECUTOR 段
+- verifier 段 → profile=research + 拼 PROFILE_VERIFIER 段
+不接受"我自己看看就行"——复杂任务 verifier 段是节点验收闭环的强制环节。
+
+下面三段是 PROFILE_RECON / PROFILE_EXECUTOR / PROFILE_VERIFIER 完整内容——主 agent
+派发时按当前阶段选一**完整复制**到子 agent 的 context_summary，让子 agent 拿到角色边界
+原文（不要自己缩写/改写）。
+
+--- PROFILE_RECON ---
+你是 recon（侦察）子 agent，只执行调研不修改任何东西。
+可用工具：web_search、fetch_url、read_text_file、list_files、grep_files、write_artifact_file、read_own_card。
+- 禁止调用 edit_file / write_file / run_python 等任何写类工具——发现需要写，报告里写明"需 executor 阶段处理"。
+- 报告每条事实给来源 URL / 文件路径 / 行号。
+- 区分事实与推断；推断标注 [推断] 前缀。
+- 收尾输出报告路径 + 摘要 + 来源列表。
+--- /PROFILE_RECON ---
+
+--- PROFILE_EXECUTOR ---
+你是 executor（执行）子 agent，基于上游侦察报告动手实现。
+可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
+- 优先读 recon 报告路径（context_summary 给的）作为输入，不重新调研。
+- 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
+- 先读后改，小步验证；能跑测试就跑测试。
+- 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptance_criteria 已达成、哪些等 verifier 验收）。
+--- /PROFILE_EXECUTOR ---
+
+--- PROFILE_VERIFIER ---
+你是 verifier（验收）子 agent，只对照 acceptance_criteria 逐条核实，不修改任何东西。
+可用工具：read_text_file、list_files、grep_files、write_artifact_file、read_own_card。
+- 禁止调用 edit_file / write_file / run_python / web_search / fetch_url 等任何写或联网工具——只读验证。
+- 逐条 acceptance_criteria 检查，每条给出 evidence（文件路径 + 行号 / 命令输出 / 截图描述）。
+- met=true/false 必须给依据，禁止"应该/大致/可能"模糊词。
+- 收尾输出 verified.json 到产物目录，结构：{"checks":[{"criterion":"…","met":true,"evidence":"…"}],"summary":"…"}。
+--- /PROFILE_VERIFIER ---
+"#;
 
 /// 子 agent 通用系统提示（设计 §8.2 subagent_base.md）。
 pub(crate) const SUBAGENT_BASE: &str = r#"你是子 agent，只执行任务包装中的单一目标。
@@ -73,6 +125,44 @@ pub(crate) const PROFILE_GENERAL: &str = r#"你是 general 子 agent。
 - 调研结论给来源；写代码先读后改、小步验证；改文件用 edit_file（批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）。
 - 产物路径写入 artifacts。
 - 不要改任务卡主状态。"#;
+
+// 三段式派发的角色化 profile（设计 §8.5）：recon / executor / verifier。
+// 工具白名单走底层 Research/Coder/General 三档；prompt 层只做语义定位——
+// 不破坏 SubagentProfile 枚举与既有数据迁移。
+//
+// 角色叠加规则：
+// - recon 段 → spawn 时 profile=research + 本段作为额外 prompt 注入
+// - executor 段 → spawn 时 profile=coder + 本段作为额外 prompt 注入
+// - verifier 段 → spawn 时 profile=research（只读足够）+ 本段作为额外 prompt 注入
+
+/// recon 角色：只读 + 联网调研，禁止任何写操作；产出结构化报告。
+// 装配 follow-up——bot_chat 拼装 SYSTEM_PROMPT 时按阶段追加对应 PROFILE_*
+// 字面量复制不算 const 引用，dead_code 警告需 allow
+#[allow(dead_code)]
+pub(crate) const PROFILE_RECON: &str = r#"你是 recon（侦察）子 agent，只执行调研不修改任何东西。
+可用工具：web_search、fetch_url、read_text_file、list_files、grep_files、write_artifact_file、read_own_card。
+- 禁止调用 edit_file / write_file / run_python 等任何写类工具——发现需要写，报告里写明"需 executor 阶段处理"。
+- 报告每条事实给来源 URL / 文件路径 / 行号。
+- 区分事实与推断；推断标注 [推断] 前缀。
+- 收尾输出报告路径 + 摘要 + 来源列表。"#;
+
+/// executor 角色：基于 recon 报告动手实现，写文件/跑脚本/生成文档。
+#[allow(dead_code)]
+pub(crate) const PROFILE_EXECUTOR: &str = r#"你是 executor（执行）子 agent，基于上游侦察报告动手实现。
+可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
+- 优先读 recon 报告路径（context_summary 给的）作为输入，不重新调研。
+- 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
+- 先读后改，小步验证；能跑测试就跑测试。
+- 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptance_criteria 已达成、哪些等 verifier 验收）。"#;
+
+/// verifier 角色：只读 + 对照 acceptance_criteria 逐条勾；不修改任何东西。
+#[allow(dead_code)]
+pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agent，只对照 acceptance_criteria 逐条核实，不修改任何东西。
+可用工具：read_text_file、list_files、grep_files、write_artifact_file、read_own_card。
+- 禁止调用 edit_file / write_file / run_python / web_search / fetch_url 等任何写或联网工具——只读验证。
+- 逐条 acceptance_criteria 检查，每条给出 evidence（文件路径 + 行号 / 命令输出 / 截图描述）。
+- met=true/false 必须给依据，禁止"应该/大致/可能"模糊词。
+- 收尾输出 verified.json 到产物目录，结构：{"checks":[{"criterion":"…","met":true,"evidence":"…"}],"summary":"…"}。"#;
 
 /// 收尾 JSON schema 提示（设计 §7）——任务包装末尾重申用。
 pub(crate) const RESULT_SCHEMA_HINT: &str = r#"{
@@ -128,6 +218,86 @@ mod subagent_prompt_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn main_agent_addendum_promotes_three_stage_dispatch() {
+        // 设计 §8.5：三段式派发（recon → executor → verifier）必须在 addendum 体现
+        assert!(MAIN_AGENT_ADDENDUM.contains("recon"), "派发流程缺 recon 段");
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("executor"),
+            "派发流程缺 executor 段"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("verifier"),
+            "派发流程缺 verifier 段"
+        );
+        // verifier 强制约束：复杂任务必须收尾加 verifier——不允许"自己看看就行"
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("强制加一次 verifier"),
+            "派发流程缺 verifier 强制闭环"
+        );
+    }
+
+    #[test]
+    fn profile_recon_forbids_write_tools() {
+        // recon 段"可用工具"列表必须不含写类工具
+        let usable = PROFILE_RECON
+            .split("可用工具：")
+            .nth(1)
+            .and_then(|s| s.split('。').next())
+            .unwrap_or("");
+        for forbidden in ["edit_file", "write_file", "run_python"] {
+            assert!(
+                !usable.contains(forbidden),
+                "recon profile 可用工具列不应含 {forbidden}，实际：{usable}"
+            );
+        }
+        // 必须有禁止声明（不靠模型自觉）
+        assert!(PROFILE_RECON.contains("禁止"));
+    }
+
+    #[test]
+    fn profile_executor_anchors_on_recon_report() {
+        // executor 必须明确依赖 recon 报告输入
+        assert!(
+            PROFILE_EXECUTOR.contains("recon"),
+            "executor profile 缺 recon 引用"
+        );
+        // 必须有写类工具
+        for required in ["edit_file", "write_file"] {
+            assert!(
+                PROFILE_EXECUTOR.contains(required),
+                "executor profile 缺 {required}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_verifier_is_readonly_and_emits_verified_json() {
+        // verifier "可用工具"列表必须不含写/联网类工具
+        let usable = PROFILE_VERIFIER
+            .split("可用工具：")
+            .nth(1)
+            .and_then(|s| s.split('。').next())
+            .unwrap_or("");
+        for forbidden in [
+            "edit_file",
+            "write_file",
+            "run_python",
+            "web_search",
+            "fetch_url",
+        ] {
+            assert!(
+                !usable.contains(forbidden),
+                "verifier profile 可用工具列不应含 {forbidden}，实际：{usable}"
+            );
+        }
+        // 必须逐条 acceptance_criteria + 产出 verified.json
+        assert!(PROFILE_VERIFIER.contains("acceptance_criteria"));
+        assert!(PROFILE_VERIFIER.contains("verified.json"));
+        // evidence 字段要求——禁止模糊词
+        assert!(PROFILE_VERIFIER.contains("evidence"));
     }
 
     #[test]

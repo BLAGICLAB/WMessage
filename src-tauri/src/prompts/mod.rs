@@ -37,6 +37,13 @@ pub(crate) use subagent::{
     MAIN_AGENT_ADDENDUM, PROFILE_CODER, PROFILE_GENERAL, PROFILE_RESEARCH, RESULT_SCHEMA_HINT,
     SUBAGENT_BASE,
 };
+// 装配 follow-up——bot_chat 阶段按需拼装 PROFILE_RECON/EXECUTOR/VERIFIER
+#[allow(unused_imports)]
+pub(crate) use subagent::PROFILE_EXECUTOR;
+#[allow(unused_imports)]
+pub(crate) use subagent::PROFILE_RECON;
+#[allow(unused_imports)]
+pub(crate) use subagent::PROFILE_VERIFIER;
 pub(crate) use summary::{COMPACT_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT};
 pub(crate) use system::SYSTEM_PROMPT;
 
@@ -63,12 +70,15 @@ mod tests {
         ("PROFILE_RESEARCH", PROFILE_RESEARCH),
         ("PROFILE_CODER", PROFILE_CODER),
         ("PROFILE_GENERAL", PROFILE_GENERAL),
+        ("PROFILE_RECON", PROFILE_RECON),
+        ("PROFILE_EXECUTOR", PROFILE_EXECUTOR),
+        ("PROFILE_VERIFIER", PROFILE_VERIFIER),
         ("RESULT_SCHEMA_HINT", RESULT_SCHEMA_HINT),
     ];
 
     #[test]
     fn all_prompts_are_registered_and_non_empty() {
-        assert_eq!(ALL.len(), 18, "prompt 清单与实际常量数不一致（新增请登记）");
+        assert_eq!(ALL.len(), 21, "prompt 清单与实际常量数不一致（新增请登记）");
         for (name, p) in ALL {
             assert!(
                 p.chars().count() >= 30,
