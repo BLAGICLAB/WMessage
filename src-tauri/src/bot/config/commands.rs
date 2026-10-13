@@ -111,6 +111,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         python_timeout_secs: cfg.python_timeout_secs,
         max_function_calls: cfg.max_function_calls,
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
+        selfcheck_model_id: cfg.selfcheck_model_id,
         verifier_retry_max: cfg.verifier_retry_max,
         archive_after_days: cfg.archive_after_days,
         perm_mode: cfg.perm_mode,
@@ -293,6 +294,12 @@ pub fn bot_set_config(
     // 终稿自检间隔落盘前钳制（0..=100：0 = 关闭；上限放宽到 100 留充足调整空间，
     // 真实触发频率受 final_text 字数 / function_calls / round gap 共同约束）
     config.final_selfcheck_round_gap = config.final_selfcheck_round_gap.map(|n| n.clamp(0, 100));
+    // 侧调模型条目 id：trim + 空串归一 None（设置页清空输入框 = 关闭侧调）
+    config.selfcheck_model_id = config
+        .selfcheck_model_id
+        .take()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     // verifier 重试上限落盘前钳制（0..=3：0 = 不重试；上限 3 防止无限循环
     // 烧 token——真实 3 次还失败的任务属于硬阻塞不如直接如实汇报用户）
     config.verifier_retry_max = config.verifier_retry_max.map(|n| n.clamp(0, 3));

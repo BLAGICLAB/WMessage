@@ -431,6 +431,7 @@ mod tests {
             reasoning_effort: None,
             max_function_calls: None,
             final_selfcheck_round_gap: None,
+            selfcheck_model_id: None,
             verifier_retry_max: None,
             archive_after_days: None,
             models_by_provider: None,

@@ -183,6 +183,7 @@ async fn run_task_in_chat_full_chain_manual_origin() {
                 skill_finish: &|_, _| String::new(),
                 active_skill_run: &active_skill_run,
                 final_selfcheck_round_gap: Some(0),
+                final_selfcheck_http: None,
             };
             run_model_loop_core(&http, msgs, 10, &stop, None, &deps, exec, noop_replan).await
         }

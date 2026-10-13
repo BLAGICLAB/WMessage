@@ -153,6 +153,12 @@ pub struct BotConfig {
     /// 「省 token vs 漏判」二元权衡没有中间值更优，调了反而引入认知噪音。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub final_selfcheck_round_gap: Option<u32>,
+    /// 终稿自检侧调模型条目 id（可选）：Some = 终稿自检改独立小请求打该
+    /// 模型库条目（只带 500 字 snippet，省主循环整段历史重付）；None = 现状
+    /// （自检在主循环内多跑一轮）。条目不存在/禁用/key 缺失时回落主循环
+    /// 路径并响亮审计，不阻断主链路。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub selfcheck_model_id: Option<String>,
     /// verifier 拒绝重试预算上限（可选）：同一任务（同一 task_id）verifier
     /// 拒绝 → EXECUTOR 精准修复 → 再 verifier 循环最多此数。None = 默认 1；
     /// 0 = 不重试（直接如实汇报用户）；落盘前钳 0..=3。设置页「Agent
@@ -336,6 +342,7 @@ impl Default for BotConfig {
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
             max_function_calls: None,   // 未配置 = 100 默认全域熔断上限）
             final_selfcheck_round_gap: None, // 未配置 = 8 默认终稿自检间隔（0 = 关闭）
+            selfcheck_model_id: None,   // 未配置 = 自检在主循环内跑（现状）
             verifier_retry_max: None,   // 未配置 = 1 默认 verifier 拒绝重试上限（0 = 不重试）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
             evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
@@ -469,6 +476,9 @@ pub struct BotConfigView {
     /// 终稿自检轮次间隔原样透传（None = 8 默认；0 = 关闭；设置页「Agent
     /// 运行参数」可调，后端钳 0..=100）
     pub final_selfcheck_round_gap: Option<u32>,
+    /// 终稿自检侧调模型条目 id 原样透传（None = 自检在主循环内跑；Some =
+    /// 独立小请求打该模型库条目；条目解析失败回落主循环路径并审计）
+    pub selfcheck_model_id: Option<String>,
     /// verifier 拒绝重试预算上限原样透传（None = 1 默认；0 = 不重试；后端
     /// 钳 0..=3；设置页「Agent 运行参数」可调）
     pub verifier_retry_max: Option<u32>,
