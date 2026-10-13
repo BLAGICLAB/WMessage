@@ -311,6 +311,7 @@ mod correction_tests {
             &conn,
             &crate::memory::store::StoreParams::default(),
             now,
+            0,
         )
         .unwrap();
         assert_eq!(stats.scanned, 4, "4 条 correction 都能扫到");
@@ -348,6 +349,7 @@ mod correction_tests {
             &conn,
             &crate::memory::store::StoreParams::default(),
             now,
+            0,
         )
         .unwrap();
         assert_eq!(stats.scanned, 2);
@@ -355,6 +357,48 @@ mod correction_tests {
         assert_eq!(stats.lessons_written, 0);
         let all = crate::memory::store::load_all(&conn).unwrap();
         assert!(all.iter().all(|m| m.kind != "lesson"));
+    }
+
+    #[test]
+    fn cluster_since_ms_filters_older_corrections() {
+        // since_ms > 0 走 load_corrections_since 增量；老 correction 不应被扫到，
+        // 单 tick 不再 O(N) 全表 IO。修正前这条线会让 scheduler 在 correction ≥1k
+        // 时单 tick ≥100ms（Round 5 末挂账，本测试锁死升级路径）。
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::memory::store::ensure_table(&conn).unwrap();
+        let now = 1_000_000i64;
+        // 3 条 correction 用不同 updated_at 写入：t=100/200/300
+        write_fact(&conn, "老 correction A", Some(&topic_vec(1)), 100, "错了");
+        write_fact(&conn, "老 correction B", Some(&topic_vec(2)), 200, "错了");
+        write_fact(&conn, "新 correction C", Some(&topic_vec(3)), 300, "错了");
+
+        // since=150 → 只命中 200/300 两条；3 条同源近邻不够到 threshold=3
+        // 不写 lesson，但 stats.scanned 应等于 2（不是 3）。
+        let stats = cluster_correction_lessons_blocking(
+            &conn,
+            &crate::memory::store::StoreParams::default(),
+            now,
+            150,
+        )
+        .unwrap();
+        assert_eq!(
+            stats.scanned, 2,
+            "since=150 应只扫到 updated_at > 150 的两条"
+        );
+        assert_eq!(stats.clusters_above_threshold, 0);
+        assert_eq!(stats.lessons_written, 0);
+
+        // since=0 全表 → 3 条同源近邻成簇到 threshold，触发 1 个 lesson。
+        let stats = cluster_correction_lessons_blocking(
+            &conn,
+            &crate::memory::store::StoreParams::default(),
+            now,
+            0,
+        )
+        .unwrap();
+        assert_eq!(stats.scanned, 3);
+        assert_eq!(stats.clusters_above_threshold, 1);
+        assert_eq!(stats.lessons_written, 1);
     }
 }
 
@@ -385,13 +429,21 @@ pub(crate) fn cluster_correction_lessons_blocking(
     conn: &rusqlite::Connection,
     sp: &crate::memory::store::StoreParams,
     now_ms: i64,
+    since_ms: i64,
 ) -> Result<ClusterLessonStats, String> {
     let mut stats = ClusterLessonStats::default();
-    let all = crate::memory::store::load_all(conn)?;
-    let corrections: Vec<&crate::memory::store::MemItem> = all
-        .iter()
-        .filter(|m| m.kind == "fact" && m.tags.iter().any(|t| t == "correction"))
-        .collect();
+    // since_ms <= 0 走全表 load_all（保留原即时路径语义：刚写一条 correction 就
+    // 立刻触发聚类不能漏历史同源）；since_ms > 0 走 store 的 load_corrections_since
+    // 增量加载，避免 scheduler 每 tick 把全表加载进内存。
+    let corrections_owned: Vec<crate::memory::store::MemItem> = if since_ms <= 0 {
+        crate::memory::store::load_all(conn)?
+            .into_iter()
+            .filter(|m| m.kind == "fact" && m.tags.iter().any(|t| t == "correction"))
+            .collect()
+    } else {
+        crate::memory::store::load_corrections_since(conn, since_ms)?
+    };
+    let corrections: Vec<&crate::memory::store::MemItem> = corrections_owned.iter().collect();
     stats.scanned = corrections.len();
     if corrections.is_empty() {
         return Ok(stats);
@@ -476,7 +528,13 @@ pub(crate) fn cluster_correction_lessons_blocking(
 
 /// 异步壳：bot_chat 在 record_correction 之后调一次（fire-and-forget）。
 /// auto_write_allowed 关闭不触发（与持久化同门禁）。
-pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+/// since_ms > 0 走 store::load_corrections_since 增量（scheduler tick 用，
+/// 每轮只扫上次 tick 之后的 correction 行）；since_ms <= 0 走全表（bot_chat
+/// 即时路径用，刚写一条立刻触发不能漏历史同源）。
+pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    since_ms: i64,
+) {
     if !crate::memory::auto_write_allowed(app) {
         return;
     }
@@ -491,7 +549,7 @@ pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(app: &taur
             crate::memory::store::ensure_table(&conn)?;
             let tuning = crate::bot::read_memory_tuning(&app2);
             let sp = crate::memory::store::StoreParams::of(&tuning);
-            cluster_correction_lessons_blocking(&conn, &sp, crate::memory::now_ms())
+            cluster_correction_lessons_blocking(&conn, &sp, crate::memory::now_ms(), since_ms)
         })
         .await;
     match res {
@@ -543,15 +601,28 @@ pub(crate) fn start_correction_cluster_scheduler(app: tauri::AppHandle) {
         let mut ticker =
             tokio::time::interval(std::time::Duration::from_secs(CLUSTER_SCHED_TICK_SECS));
         ticker.tick().await; // 消耗首个立即触发的 tick
+                             // last_tick_ms: 上一轮 tick 的 now_ms，用于给 try_cluster_correction_lessons
+                             // 传 since_ms 走 load_corrections_since 增量加载，避免每 tick 全表 IO。
+                             // 初值 0 → 首轮走全表（与历史行为一致），之后每轮结束刷新到 now_ms。
+        let last_tick_ms = std::sync::Arc::new(std::sync::Mutex::new(0i64));
         loop {
             ticker.tick().await;
+            let since_ms = *last_tick_ms.lock().unwrap_or_else(|e| e.into_inner());
+            let now_ms = crate::memory::now_ms();
             // AssertUnwindSafe 安全依据：单轮只读 db + 调一次聚类扫描；
             // panic 后无可破坏状态；下一轮从头开始。
             let app2 = app.clone();
+            let last_tick_ms_2 = last_tick_ms.clone();
             let tick = std::panic::AssertUnwindSafe(async move {
-                try_cluster_correction_lessons(&app2).await;
+                try_cluster_correction_lessons(&app2, since_ms).await;
             });
-            if let Err(panic) = tick.catch_unwind().await {
+            let outcome = tick.catch_unwind().await;
+            // 不论成功还是 panic，都推进 last_tick_ms；否则 panic 之后下次 tick 又
+            // 全表扫一遍，违背「兜底为增量」的初衷。since_ms 推进略快于实际聚类
+            // 完成的瞬间，下轮扫到的 correction 子集可能漏掉聚类进行时新写的；该
+            // 子集会被下一轮之后的下下轮兜住（5 min × 2 仍可接受）。
+            *last_tick_ms_2.lock().unwrap_or_else(|e| e.into_inner()) = now_ms;
+            if let Err(panic) = outcome {
                 let msg = crate::audit::panic_message(panic);
                 crate::bot::audit_log(
                     &app,

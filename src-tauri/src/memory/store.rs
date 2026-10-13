@@ -200,6 +200,80 @@ pub fn find_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<MemIte
     }
 }
 
+/// 按 updated_at > since_ms 增量加载 correction 行（用于 scheduler tick 替代
+/// 全表 load_all 减少 IO）。RFC3339 字典序 = 时间序，依赖 ts_to_text 写入统一；
+/// since_ms <= 0 时返回空（调用方应改走 load_all 拿全表，避免传 0 误撞空集）。
+pub fn load_corrections_since(
+    conn: &rusqlite::Connection,
+    since_ms: i64,
+) -> Result<Vec<MemItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, content, tags, importance, source, created_at, updated_at,
+                    access_count, last_accessed_at, embedding FROM mem_items
+             WHERE kind = 'fact' AND instr(tags, 'correction') > 0
+               AND updated_at > ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let since_text = ts_to_text(since_ms);
+    let rows = stmt
+        .query_map([since_text], item_from_row)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::{params, Connection};
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn correction_row(conn: &Connection, content: &str, updated_ms: i64) {
+        conn.execute(
+            "INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at)
+             VALUES (?1, 'fact', ?2, 'correction', 3, 'user_correction', ?3, ?3)",
+            params![Uuid::new_v4().simple().to_string(), content, ts_to_text(updated_ms)],
+        )
+        .unwrap();
+    }
+
+    fn non_correction(conn: &Connection, content: &str, updated_ms: i64) {
+        conn.execute(
+            "INSERT INTO mem_items (id, kind, content, tags, importance, source, created_at, updated_at)
+             VALUES (?1, 'fact', ?2, 'normal', 3, 'model_inferred', ?3, ?3)",
+            params![Uuid::new_v4().simple().to_string(), content, ts_to_text(updated_ms)],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn load_corrections_since_filters_by_updated_at() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_table(&conn).unwrap();
+        correction_row(&conn, "旧 correction", 100);
+        correction_row(&conn, "中 correction", 200);
+        correction_row(&conn, "新 correction", 300);
+        non_correction(&conn, "非 correction", 300);
+
+        // since=150 应只命中中、新两条
+        let v = load_corrections_since(&conn, 150).unwrap();
+        assert_eq!(v.len(), 2);
+        let mut contents: Vec<&str> = v.iter().map(|m| m.content.as_str()).collect();
+        contents.sort();
+        assert_eq!(contents, vec!["中 correction", "新 correction"]);
+
+        // since=300 严格大于 → 空集
+        assert!(load_corrections_since(&conn, 300).unwrap().is_empty());
+
+        // since=0 → ts_to_text(0) 返空串，updated_at > '' 全真 → 命中全部 correction 行
+        // (非 correction 行因 tags 不含 'correction' 被 SQL 过滤掉)
+        let v0 = load_corrections_since(&conn, 0).unwrap();
+        assert_eq!(v0.len(), 3);
+    }
+}
+
 /// 余弦相似度（向量均假定已 L2 归一化；维度不齐/缺失 → None）
 pub fn cosine(a: Option<&[f32]>, b: Option<&[f32]>) -> Option<f64> {
     let (a, b) = (a?, b?);

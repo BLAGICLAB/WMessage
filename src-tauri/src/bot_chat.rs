@@ -766,7 +766,8 @@ pub async fn bot_chat(
             );
             let app3 = app.clone();
             tauri::async_runtime::spawn(async move {
-                crate::bot::corrections::try_cluster_correction_lessons(&app3).await;
+                // 即时路径：刚写一条 correction，立刻尝试聚类不能漏历史同源 → since=0 走全表
+                crate::bot::corrections::try_cluster_correction_lessons(&app3, 0).await;
             });
         }
     }
