@@ -168,6 +168,13 @@ describe("HomePage 渲染", () => {
     expect(screen.getByTestId("kpi-value-largeDoneRate")).toHaveTextContent("—");
   });
 
+  it("三池计数回到首行右侧：待办 4 / 完成 7 / 归档 3", () => {
+    renderHome();
+    expect(screen.getByTestId("pool-todo")).toHaveTextContent("4");
+    expect(screen.getByTestId("pool-done")).toHaveTextContent("7");
+    expect(screen.getByTestId("pool-archived")).toHaveTextContent("3");
+  });
+
   it("首页 KPI 涨跌角标：对比上一次变动前的快照基线，向好=绿", () => {
     const last = {
       completionRate: 70,

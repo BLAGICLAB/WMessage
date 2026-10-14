@@ -40,6 +40,20 @@ export function planPhases(tasks: Task[], now: Date): PlanPhases {
   return phases;
 }
 
+export type PoolCounts = { todo: number; done: number; archived: number };
+
+/** 三个池子的存量：待办（未完成未归档）/ 完成（已完成未归档）/ 归档 */
+export function poolCounts(tasks: Task[]): PoolCounts {
+  const c: PoolCounts = { todo: 0, done: 0, archived: 0 };
+  for (const t of tasks) {
+    if (t.deletedAt) continue;
+    if (t.archived) c.archived++;
+    else if (t.completedAt) c.done++;
+    else c.todo++;
+  }
+  return c;
+}
+
 /** 截止时间戳：纯日期按当天 23:59 计，日期时间精确到分；无 due 返回 null */
 export function dueTimeOf(t: Task): number | null {
   if (!t.due) return null;

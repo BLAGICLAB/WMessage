@@ -25,6 +25,7 @@ import {
 } from "../../profile";
 import {
   archivePulse,
+  poolCounts,
   planPhases,
   weeklyBuckets,
   plannedTasksByDay,
@@ -154,6 +155,7 @@ export function HomePage({
   useTauriListen(NOTIFICATIONS_CHANGED_EVENT, loadNotifications);
 
   const phases = useMemo(() => planPhases(tasks, now), [tasks, now]);
+  const pools = useMemo(() => poolCounts(tasks), [tasks]);
   const week = useMemo(() => weeklyBuckets(tasks, now), [tasks, now]);
 
   // 首页 KPI（8 选 4，选择在设置页数据管理）：口径纯计算；涨跌基线 =
@@ -210,6 +212,7 @@ export function HomePage({
       <HomeHeader
         name={userName}
         phases={phases}
+        pools={pools}
         kpis={kpiBlocks}
         now={now}
         scrollRef={scrollRef}
