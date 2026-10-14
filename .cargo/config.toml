@@ -1,16 +1,20 @@
-# Cargo 配置（sccache 编译缓存）
+# Cargo 配置（sccache 编译缓存，2026-10-14 临时禁用）
 # 第二次 cargo check/build 应该 < 10s（vs 首次 30-60s）
 # sccache: https://github.com/mozilla/sccache
 #
 # 改动（2026-08-19, Kimi Code P0-8B 修复）：
 # 1. rustc-wrapper 改走 PATH（不再硬编码 /Users/renshi/.cargo/bin/sccache）
-#    - 注意：cargo 不会静默回退——本机没装 sccache 时 cargo 会直接报错
-#      （could not find executable for rustc-wrapper "sccache"）并中止构建。
-#      sccache 是硬前置：请 cargo install sccache，或临时注释掉下方 rustc-wrapper
 # 2. 补 [target.x86_64-pc-windows-gnu] mingw-w64 linker 配置
 #    - Mac 上需 brew install mingw-w64 才能用，但配置就绪
-[build]
-rustc-wrapper = "sccache"
+#
+# 2026-10-14：sccache 0.17 客户端在 macOS Sequoia 上 connect server 报
+# `Operation not permitted (os error 1)`——launchd GUI domain 持久化服务、
+# 强制纯 TCP 4226、pkill 残留进程重启三种方案均复现。属 sccache 0.17 客户端
+# socket init bug（与权限/路径/sandbox 无关）。临禁用 wrapper，cargo 走直编；
+# plist com.local.sccache.plist 与 ~/.config/sccache/config (10G 限速) 保留
+# 就绪——sccache 0.18 修 macOS 26 socket 兼容后直接 uncomment 即可恢复。
+# [build]
+# rustc-wrapper = "sccache"
 
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
