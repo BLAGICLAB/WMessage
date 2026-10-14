@@ -2,7 +2,9 @@
 // + 展示选择（8 选 4，数组顺序即展示顺序）。
 // 数据源 = App 全量下发的 tasks（含归档/回收站）。任务间关联 = parentId（父子）
 // 与 dependsOn（依赖），与图谱 buildTaskGraph 同口径：两端都未删才成边；
-// 工作流成员关系连的是 hub 不是「别的任务」，不计入大型任务。
+// 工作流成员关系连的是 hub 不是「别的任务」，不计入。
+// 大型任务 = 关联簇：边连成的连通分量（≥2 张卡）算 1 个大型任务，簇内关联
+// 再多只计 1；簇的「已完成」= 簇内全部卡都有完成时间。
 // 选择与快照是主窗口本地偏好，localStorage 持久化（同 bubbleStyle 模式），
 // 设置页改动经自定义事件即时同步首页。
 
@@ -36,7 +38,7 @@ export const HOME_KPIS: readonly KpiDef[] = [
   {
     id: "largeCount",
     name: "大型任务数",
-    desc: "与其他任务存在关联（依赖 / 父子）的任务个数，有任一关联只算一次",
+    desc: "依赖 / 父子关联连成的任务簇，一簇算 1 个（簇内关联再多只计 1）",
     unit: "count",
   },
   {
@@ -48,7 +50,7 @@ export const HOME_KPIS: readonly KpiDef[] = [
   {
     id: "largeDoneRate",
     name: "大型任务完成率",
-    desc: "已完成的大型任务 ÷ 全部大型任务 ×100%",
+    desc: "簇内全部卡都已完成的大型任务 ÷ 全部大型任务 ×100%",
     unit: "pct",
   },
   {
@@ -120,23 +122,49 @@ export function computeHomeKpis(tasks: Task[], now: Date): KpiValues {
 
   const completionRate = ratio(completed.length, valid.length);
 
-  // 大型任务：任一有效关联（父子/依赖，双向）命中即记一次
-  const linked = new Set<string>();
-  for (const t of valid) {
-    if (t.parentId && byId.has(t.parentId)) {
-      linked.add(t.id);
-      linked.add(t.parentId);
+  // 大型任务 = 关联簇（连通分量）：parentId/dependsOn 两端未删才成边（同图谱
+  // 口径），≥2 张卡的簇算 1 个大型任务；簇内全部卡完成才算这簇完成
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let root = x;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    let cur = x;
+    while (cur !== root) {
+      const next = parent.get(cur)!;
+      parent.set(cur, root);
+      cur = next;
     }
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    for (const x of [a, b]) if (!parent.has(x)) parent.set(x, x);
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const t of valid) {
+    if (!parent.has(t.id)) parent.set(t.id, t.id);
+    if (t.parentId && byId.has(t.parentId)) union(t.id, t.parentId);
     for (const d of t.dependsOn ?? []) {
-      if (byId.has(d)) {
-        linked.add(t.id);
-        linked.add(d);
-      }
+      if (byId.has(d)) union(t.id, d);
     }
   }
-  const largeCount = linked.size;
+  const clusters = new Map<string, { size: number; done: number }>();
+  for (const t of valid) {
+    const root = find(t.id);
+    const c = clusters.get(root) ?? { size: 0, done: 0 };
+    c.size++;
+    if (t.completedAt != null) c.done++;
+    clusters.set(root, c);
+  }
+  let largeCount = 0;
+  let largeDone = 0;
+  for (const c of clusters.values()) {
+    if (c.size < 2) continue;
+    largeCount++;
+    if (c.done === c.size) largeDone++;
+  }
   const largeRatio = ratio(largeCount, valid.length);
-  const largeDone = completed.filter((t) => linked.has(t.id)).length;
   const largeDoneRate = ratio(largeDone, largeCount);
 
   // 逾期：进行区内（未完成未归档未删）且截止时刻已过

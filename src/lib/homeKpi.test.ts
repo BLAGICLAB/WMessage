@@ -48,10 +48,12 @@ describe("computeHomeKpis · 任务完成率 / 大型任务占比", () => {
     expect(computeHomeKpis([], NOW).largeRatio).toBeNull();
   });
 
-  it("大型任务：父子/依赖双向都算，多关联只算一次，悬空与已删关联不成边", () => {
+  it("大型任务 = 关联簇：连通分量 ≥2 卡算 1，悬空与已删不成边，孤卡不算", () => {
     const tasks = [
-      t({ id: "mom" }),
-      t({ id: "kid", parentId: "mom" }),
+      // 簇 1（母子，全部完成 → 簇完成）
+      t({ id: "mom", completedAt: 1 }),
+      t({ id: "kid", parentId: "mom", completedAt: 2 }),
+      // 簇 2（a→b、multi→b、multi→a：multi 关联再多整簇只计 1；未全完成）
       t({ id: "a", dependsOn: ["b"] }),
       t({ id: "b", completedAt: 5, column: "done" }),
       t({ id: "multi", dependsOn: ["b", "a", "ghost"] }),
@@ -59,10 +61,28 @@ describe("computeHomeKpis · 任务完成率 / 大型任务占比", () => {
       t({ id: "lone" }),
     ];
     const got = computeHomeKpis(tasks, NOW);
-    // linked = mom,kid,a,b,multi；有效 6 个
-    expect(got.largeCount).toBe(5);
-    expect(got.largeRatio).toBeCloseTo(83.333, 2);
-    expect(got.largeDoneRate).toBe(20);
+    expect(got.largeCount).toBe(2);
+    expect(got.largeRatio).toBeCloseTo(33.333, 2); // 2 簇 / 6 张有效卡
+    expect(got.largeDoneRate).toBe(50); // 簇 1 全完成，簇 2 未全完成
+  });
+
+  it("关联链合并成 1 簇；两对互不相连算 2；无关联全为 0", () => {
+    const chain = [
+      t({ id: "c1", dependsOn: ["c2"] }),
+      t({ id: "c2", dependsOn: ["c3"] }),
+      t({ id: "c3", dependsOn: ["c4"] }),
+      t({ id: "c4" }),
+    ];
+    expect(computeHomeKpis(chain, NOW).largeCount).toBe(1);
+    const pairs = [
+      t({ id: "p1", dependsOn: ["p2"] }),
+      t({ id: "p2" }),
+      t({ id: "q1", parentId: "q2" }),
+      t({ id: "q2" }),
+    ];
+    expect(computeHomeKpis(pairs, NOW).largeCount).toBe(2);
+    expect(computeHomeKpis([], NOW).largeCount).toBe(0);
+    expect(computeHomeKpis([], NOW).largeDoneRate).toBeNull();
   });
 });
 
