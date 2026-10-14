@@ -25,7 +25,7 @@
 | 前端#10-14 微项 | ⏸ Wave2 | 10-50 行小批 |
 | 双自检状态机合并 | ⏸ P3 | 两套刚各自跑稳，合并属可选 shrink |
 | Rust#2 DB 样板 mutex_poisoned 183 → 43 | ✅ `33a386d` | 140 处替换；43 处按语义保留（map_err/TryLock/Condvar/profile ENV_LOCK 等） |
-| Rust#3 escape/truncate 8 实现 + 同名分叉 | ✅ `6d8b526`（接线漏项补于 `a6fe2ad`） | log_sanitize 单源——原提交漏声明 bot.rs 模块，204 行实现+14 测试一直是死文件；a6fe2ad 补声明 + config/audit.rs 强版改转发（逐字符臂逐字节一致）。仍存：audit.rs 弱版（迁强版是行为变更待拍板）、paths.rs 内联等价版、ratelimit sanitize_log_line（自含） |
+| Rust#3 escape/truncate 8 实现 + 同名分叉 | ✅ `6d8b526`（接线漏项补于 `a6fe2ad`，收官 `ec7f85e`） | log_sanitize 单源——原提交漏声明 bot.rs 模块成死文件；a6fe2ad 补接线；ec7f85e 收官（用户拍板）：audit.rs 弱版迁强版（bot.log 控制字符由放行改显式 `\u{N}`，历史断言值不变作回归锁）+ paths.rs 内联版 fold + sanitize_log_line 原样迁入作行级纪律——值级/行级两级转义语义刻意分立（混用会打弯 py_audit 结构分隔符，实测抓到） |
 | 续扫 Rust#1 profile 测试侧 22 处 ENV_LOCK | ✅ `041727b` | Wave2 漏改的测试侧粘贴补齐（lock_or_recover），-66 行 |
 | 续扫 前端#1 SettingsPage 工具按钮类 21 处 | ✅ `10d56f5` | main.css `.btn-sm-action` @apply 单源，4 种子形态统一 |
 | 续扫 Rust#2 三件套样板迁 `with_write_conn` | ✅ `194c826` | 36 处中 12 处精确匹配迁移（净 -113 行）；24 处有据保留（嵌入持锁前算好 7 / 无锁纯读 11 / 类型化错误 1 / 非 DB 1 / 形态不合 4）|
