@@ -204,6 +204,15 @@ pub fn open_db<R: tauri::Runtime>(
            created_at INTEGER NOT NULL,
            updated_at INTEGER NOT NULL,
            is_subagent INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE IF NOT EXISTS tag_merge_history (
+           run_id        TEXT PRIMARY KEY,
+           merged_to     TEXT NOT NULL,
+           merged_from   TEXT NOT NULL,
+           previous_tags_json TEXT NOT NULL,
+           affected_task_count INTEGER NOT NULL,
+           rolled_back_at INTEGER,
+           created_at    INTEGER NOT NULL
          );",
     )
     .map_err(|e| e.to_string())?;

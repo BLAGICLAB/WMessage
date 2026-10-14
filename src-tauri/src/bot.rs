@@ -50,6 +50,7 @@ pub mod mcp;
 pub mod params;
 pub mod reasoning;
 pub mod registry;
+pub mod tags_consolidate;
 pub mod tools;
 
 // config re-export
