@@ -1356,23 +1356,25 @@
   .dark .plan-blk.is-archived:hover {
     box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent);
   }
-  /* 已归档印章：红底白描边内圈 + 微旋转（盖章隐喻）；薄块平贴不转 */
+  /* 已归档印章：红底白描边内圈 + 微旋转（盖章隐喻）；薄块平贴不转。
+     整体严格 12px 高——与头像/对勾同行不撑行，标题行数不受挤占 */
   .plan-stamp {
     display: inline-flex;
     align-items: center;
     flex: none;
-    font-size: 9px;
+    font-size: 8px;
     font-weight: 600;
-    letter-spacing: 1.5px;
+    line-height: 1;
+    letter-spacing: 0.5px;
     color: #fff;
     background: #d9463e;
     border: 1px solid rgba(255, 255, 255, 0.9);
     box-shadow:
-      inset 0 0 0 1.5px #d9463e,
+      inset 0 0 0 1px #d9463e,
       0 1px 2px rgba(0, 0, 0, 0.2);
-    border-radius: 4px;
-    padding: 0.5px 4px 0.5px 5.5px;
-    transform: rotate(-4deg);
+    border-radius: 3px;
+    padding: 1px 2px 1px 3.5px;
+    transform: rotate(-3deg);
   }
   .plan-stamp.is-flat {
     transform: none;
