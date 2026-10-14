@@ -398,6 +398,18 @@ pub fn holding_db_write() -> bool {
     HOLDING_DB_WRITE.with(|f| f.get())
 }
 
+/// 测试用内存库连接：open_in_memory 后按序执行给定 DDL 批。
+/// 各模块测试 `setup_conn` 的单源——表依赖（tasks 先于 people/workflows）
+/// 由调用方排序；建表失败 unwrap 直接炸测试，不扩散错误路径。
+#[cfg(test)]
+pub(crate) fn test_conn(ddl: &[&str]) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    for d in ddl {
+        conn.execute_batch(d).unwrap();
+    }
+    conn
+}
+
 // 抑制 unused warnings
 #[cfg(test)]
 mod tests {

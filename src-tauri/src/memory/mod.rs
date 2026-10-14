@@ -190,9 +190,10 @@ pub(crate) const MAX_CONTENT_CHARS: usize = 800;
 
 pub(crate) use crate::db::now_ms;
 
-pub(crate) fn truncate_chars(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
-}
+// 字符截断单源在 crate::bot::log_sanitize（带 ellipsis 开关）；按 now_ms 同款
+// re-export 供本模块与 extract/consolidate 引用。本模块族截的是内容字段硬上限，
+// 不留省略号，全走 false。
+pub(crate) use crate::bot::log_sanitize::truncate_chars;
 
 // 记忆块拼装（四段式）
 
@@ -672,7 +673,7 @@ pub fn record_lesson_core(
     };
     match store::insert_item_with(conn, &item, embedding, now_ms, sp) {
         Ok((InsertOutcome::Inserted(_), hints)) => {
-            let msg = format!("已记录教训：{}", truncate_chars(lesson, 60));
+            let msg = format!("已记录教训：{}", truncate_chars(lesson, 60, false));
             if hints.is_empty() {
                 msg
             } else {
@@ -685,7 +686,7 @@ pub fn record_lesson_core(
         Ok((InsertOutcome::Merged { .. }, _)) => {
             format!(
                 "已记录教训（与已有教训语义重复，已合并更新）：{}",
-                truncate_chars(lesson, 60)
+                truncate_chars(lesson, 60, false)
             )
         }
         //  防劫持闸：record_lesson 的 key 是 "lesson" 前缀正常不触发；
@@ -758,13 +759,13 @@ pub async fn tool_record_lesson<R: tauri::Runtime>(
 /// 任务执行失败的教训文案（纯函数，不调 LLM 保持轻量）：
 /// content 含任务标题 + 失败原因截断，tags 带 task_exec 场景。
 pub(crate) fn task_failure_lesson(title: &str, error: &str) -> (String, Vec<String>) {
-    let err = truncate_chars(error.trim(), 200);
+    let err = truncate_chars(error.trim(), 200, false);
     let content = format!(
         "执行任务「{}」失败：{err}。下次执行同类任务前应先排查该原因或改用替代做法。",
-        truncate_chars(title.trim(), 50)
+        truncate_chars(title.trim(), 50, false)
     );
     (
-        truncate_chars(&content, MAX_CONTENT_CHARS),
+        truncate_chars(&content, MAX_CONTENT_CHARS, false),
         vec!["lesson".to_string(), "task_exec".to_string()],
     )
 }
@@ -825,7 +826,7 @@ pub async fn save_summary(
 ) -> CommandResult<Vec<(String, String)>> {
     let app = app.clone();
     let session_id = session_id.map(|s| s.to_string());
-    let summary = truncate_chars(summary.trim(), MAX_CONTENT_CHARS);
+    let summary = truncate_chars(summary.trim(), MAX_CONTENT_CHARS, false);
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<(String, String)>, String> {
         let emb = embed::embed_text(&summary);
         let _g = crate::db::lock::lock_or_recover(
@@ -878,7 +879,7 @@ pub async fn apply_reflection(
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let item = NewItem {
             kind: "reflection".to_string(),
-            content: truncate_chars(text.trim(), MAX_CONTENT_CHARS),
+            content: truncate_chars(text.trim(), MAX_CONTENT_CHARS, false),
             tags: vec!["reflection".to_string()],
             importance: 3,
             source: "model_inferred".to_string(),

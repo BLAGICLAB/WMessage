@@ -1290,10 +1290,7 @@ mod tests {
     use super::*;
 
     fn setup_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(super::super::tasks::TASKS_DDL).unwrap();
-        conn.execute_batch(WORKFLOWS_DDL).unwrap();
-        conn
+        super::super::test_conn(&[super::super::tasks::TASKS_DDL, WORKFLOWS_DDL])
     }
 
     fn node(local_id: &str, title: &str, deps: &[&str]) -> WorkflowNodeDraft {

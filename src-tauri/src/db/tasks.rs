@@ -1524,9 +1524,7 @@ mod task_set_column_tests {
     use super::*;
 
     fn setup_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(TASKS_DDL).unwrap();
-        conn
+        super::super::test_conn(&[TASKS_DDL])
     }
 
     fn insert_task(conn: &rusqlite::Connection, id: &str, col: &str, bot: Option<bool>) {
@@ -1688,9 +1686,7 @@ mod task_patch_tests {
     use super::*;
 
     fn setup_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(TASKS_DDL).unwrap();
-        conn
+        super::super::test_conn(&[TASKS_DDL])
     }
 
     fn run_patch(
@@ -2027,11 +2023,7 @@ mod owner_graph_tests {
     use super::*;
 
     fn setup_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(TASKS_DDL).unwrap();
-        conn.execute_batch(super::super::people::PEOPLE_DDL)
-            .unwrap();
-        conn
+        super::super::test_conn(&[TASKS_DDL, super::super::people::PEOPLE_DDL])
     }
 
     const SELF: &str = "self-pid";

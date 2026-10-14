@@ -166,12 +166,7 @@ impl ConsolidateOp {
 
 /// 剥 ```json 围栏 / 截取首个 { 到末个 } 并解析（健壮优先：失败 → None）。
 fn extract_json(text: &str) -> Option<serde_json::Value> {
-    let t = text.trim();
-    let t = t
-        .strip_prefix("```json")
-        .or_else(|| t.strip_prefix("```"))
-        .unwrap_or(t);
-    let t = t.strip_suffix("```").unwrap_or(t).trim();
+    let t = crate::workflow_decompose::strip_fences(text);
     let start = t.find('{');
     let end = t.rfind('}');
     let (s, e) = start.zip(end).filter(|(s, e)| s < e)?;
@@ -337,7 +332,7 @@ pub fn apply_ops_with(
                 let rows = store::update_by_id(
                     &tx,
                     &target.id,
-                    &truncate_chars(content, MAX_CONTENT_CHARS),
+                    &truncate_chars(content, MAX_CONTENT_CHARS, false),
                     target.importance,
                     &target.source,
                     &target.kind,
@@ -382,7 +377,7 @@ pub fn apply_ops_with(
                 let rows = store::update_by_id(
                     &tx,
                     &keep_item.id,
-                    &truncate_chars(content, MAX_CONTENT_CHARS),
+                    &truncate_chars(content, MAX_CONTENT_CHARS, false),
                     keep_item.importance,
                     &keep_item.source,
                     &keep_item.kind,
@@ -410,7 +405,7 @@ pub fn apply_ops_with(
                 }
                 let item = NewItem {
                     kind: "reflection".to_string(),
-                    content: truncate_chars(content, MAX_CONTENT_CHARS),
+                    content: truncate_chars(content, MAX_CONTENT_CHARS, false),
                     tags: vec!["reflection".to_string(), "consolidation".to_string()],
                     importance: 4,
                     source: "system".to_string(),

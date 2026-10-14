@@ -998,9 +998,7 @@ mod tests {
     use super::*;
 
     fn setup_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(EXEC_TRACE_DDL).unwrap();
-        conn
+        super::super::test_conn(&[EXEC_TRACE_DDL])
     }
 
     fn mk_trace<'a>(

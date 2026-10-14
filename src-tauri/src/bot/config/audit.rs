@@ -54,35 +54,9 @@ pub(crate) fn append_bot_log_line(p: &Path, line: &str) -> bool {
 
 // 转义 + 截断
 
-/// 审计日志安全转义 + 截断：剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
-/// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
-/// 转义后按字符数截到 max 加省略号。与 bot_py::escape_for_log 同一规则。
-pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
-    // \n/\r 保留短形式；其余控制字符（\t/\0/ESC 等）与 U+2028/U+2029 显式转义
-    //（与 api 域 sanitize_log_line 全集对齐）。`|` 逐字符倍增 + 前置 "| "→"|  "
-    // 预替换保持既有表格转义输出逐字符不变
-    let mut escaped = String::with_capacity(s.len());
-    for ch in s.replace("| ", "|  ").chars() {
-        match ch {
-            '|' => escaped.push_str("||"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\u{2028}' => escaped.push_str("\\u{2028}"),
-            '\u{2029}' => escaped.push_str("\\u{2029}"),
-            c if c.is_control() => escaped.extend(c.escape_default()),
-            c => escaped.push(c),
-        }
-    }
-    // 旧实现的 "| " → "|  " 双空格补位在逐字符臂下由 `|`→`||` 语义覆盖（表格列仍不被 | 破坏）
-    let count = escaped.chars().count();
-    if count <= max {
-        escaped
-    } else {
-        let mut out: String = escaped.chars().take(max).collect();
-        out.push('…');
-        out
-    }
-}
+// 强版转义单源在 crate::bot::log_sanitize（逐字符臂与本地旧实现完全一致：
+// "| "→"|  " 预替换 + |倍增 + \n\r 短形式 + 控制字符/U+2028/2029 escape_default）。
+pub(crate) use crate::bot::log_sanitize::escape_for_log;
 
 /// 向后兼容别名：bot_chat / bot_model_loop / bot_scheduler 仍用旧名，
 /// 行为即 escape_for_log（同族日志伪造问题一并修复）；新代码请直接用 escape_for_log。

@@ -34,6 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::bot::log_sanitize::truncate_chars;
 use crate::memory::consolidate::{ConsolidateOp, ConsolidateReport};
 
 use super::proposal::{
@@ -124,7 +125,7 @@ pub fn derive_proposals_with(
 /// 后者只是 ops 复述，曾因此被语义查重拒绝）。Medium：可进自动轨；
 /// 稳定 id（内容归一化哈希）——同一准则反复产出时 dedup 幂等。
 pub fn derive_lesson_proposal(lesson: &str, now_ms: i64) -> Option<EvolutionProposal> {
-    let text = truncate_chars(lesson.trim(), SUGGESTION_MAX_CHARS);
+    let text = truncate_chars(lesson.trim(), SUGGESTION_MAX_CHARS, true);
     if text.is_empty() {
         return None;
     }
@@ -187,7 +188,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64, t: &DeriveThresholds) -> Option<E
                     text: format!(
                         "LLM suggested merging {} entries: {}",
                         ids.len(),
-                        truncate_chars(content, SUGGESTION_MAX_CHARS)
+                        truncate_chars(content, SUGGESTION_MAX_CHARS, true)
                     ),
                     structured_patch: None,
                 },
@@ -225,7 +226,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64, t: &DeriveThresholds) -> Option<E
                 suggestion: Suggestion {
                     text: format!(
                         "LLM resolved contradiction (keep vs drop): {}",
-                        truncate_chars(content, SUGGESTION_MAX_CHARS)
+                        truncate_chars(content, SUGGESTION_MAX_CHARS, true)
                     ),
                     structured_patch: None,
                 },
@@ -260,7 +261,7 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64, t: &DeriveThresholds) -> Option<E
                     text: format!(
                         "LLM distilled {} entries into a rule: {}",
                         ids.len(),
-                        truncate_chars(content, SUGGESTION_MAX_CHARS)
+                        truncate_chars(content, SUGGESTION_MAX_CHARS, true)
                     ),
                     structured_patch: None,
                 },
@@ -268,19 +269,6 @@ fn derive_one(op: &ConsolidateOp, now_ms: i64, t: &DeriveThresholds) -> Option<E
         }
         // 门槛不达标的 op（单条 ids 的 merge/distill）静默忽略
         _ => None,
-    }
-}
-
-/// 字符级截断（中文友好）。中文一字 3 字节，按 chars 计数。
-/// 截断到 `max` 字符 + 省略号 `…`。
-fn truncate_chars(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max).collect();
-        out.push('…');
-        out
     }
 }
 

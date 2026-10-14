@@ -128,9 +128,7 @@ mod tests {
     use super::*;
 
     fn setup_conn() -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(PEOPLE_DDL).unwrap();
-        conn
+        super::super::test_conn(&[PEOPLE_DDL])
     }
 
     #[test]
