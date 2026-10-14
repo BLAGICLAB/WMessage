@@ -42,8 +42,7 @@ import {
   assignInsertOrder,
 } from "../storage";
 import { FoldToggle } from "./FoldToggle";
-
-const stop = (e: React.PointerEvent) => e.stopPropagation();
+import { stopPointer as stop } from "../lib/stopPointer";
 
 /** 目标地址是否像网址（scheme 至少两字符——
  *  旧正则单字符即匹配，「C:」被当成 URL scheme，Windows 路径被误存成网址链接） */

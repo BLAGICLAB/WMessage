@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { Modal } from "../../ui/Modal";
+import { stopPointer } from "../../lib/stopPointer";
 import { basename, formatMonthDayTime } from "../../format";
 import {
   listWorkflowAudit,
@@ -343,7 +344,7 @@ export function TracePanel({
     >
       <div
         className="nm-card flex max-h-[80vh] w-full max-w-2xl flex-col p-4"
-        onPointerDown={(e) => e.stopPropagation()}
+        onPointerDown={stopPointer}
       >
         {/* 头部：标题 + 导出 + 关闭 */}
         <div className="flex items-center gap-2">

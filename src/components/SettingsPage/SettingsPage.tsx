@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
 import { useConfirm } from "../../lib/useConfirm";
+import { useDismissable } from "../../lib/useDismissable";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
@@ -1163,25 +1164,7 @@ export function SettingsPage({
   /** 厂商头「⋯」菜单开合（浮层/点外部/Esc 收起，同 ApiProviderSelect 模式） */
   const [vendorMenuOpen, setVendorMenuOpen] = useState(false);
   const vendorMenuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!vendorMenuOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (
-        vendorMenuRef.current &&
-        !vendorMenuRef.current.contains(e.target as Node)
-      )
-        setVendorMenuOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setVendorMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [vendorMenuOpen]);
+  useDismissable(vendorMenuOpen, vendorMenuRef, () => setVendorMenuOpen(false));
 
   /** 条目归属厂商名：有 vendor 用 vendor，老条目按所在列表协议名兜底。
    *  prov 必须传「条目所在列表」的协议——不能用活的 apiProvider（会漂）。
@@ -1501,25 +1484,7 @@ export function SettingsPage({
     null,
   );
   const metaPickerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!metaPickerOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (
-        metaPickerRef.current &&
-        !metaPickerRef.current.contains(e.target as Node)
-      )
-        setMetaPickerOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMetaPickerOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [metaPickerOpen]);
+  useDismissable(metaPickerOpen, metaPickerRef, () => setMetaPickerOpen(false));
 
   /** 开/收「从模型库添加」下拉；打开时拉该厂商的模型库模型 */
   const toggleMetaPicker = async () => {

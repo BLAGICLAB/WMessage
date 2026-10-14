@@ -8,6 +8,7 @@ import {
   type TagCluster,
 } from "../lib/botConsolidate";
 import { handleCommandError } from "../lib/errorHandler";
+import { stopPointer } from "../lib/stopPointer";
 import { Modal } from "../ui/Modal";
 
 interface Props {
@@ -112,7 +113,7 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
     >
       <div
         className="nm-card w-full max-w-2xl max-h-[85vh] flex flex-col"
-        onPointerDown={(e) => e.stopPropagation()}
+        onPointerDown={stopPointer}
       >
         <div className="flex items-center gap-2 p-4 border-b border-[var(--bd)]">
           <Tags size={14} aria-hidden className="text-[var(--t3)]" />

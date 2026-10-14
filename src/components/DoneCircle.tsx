@@ -1,5 +1,6 @@
 // 任务卡标题右侧的完成圆圈 —— 主窗口 TodoCard 与挂件 TaskCardContent 共用（保持一致）
 import { Check } from "lucide-react";
+import { stopPointer as stop } from "../lib/stopPointer";
 
 export function DoneCircle({
   done,
@@ -13,7 +14,6 @@ export function DoneCircle({
   /** 视觉直径，缺省 20；小尺寸（如计划块 12px）时点击热区由 .done-circle::after 扩展 */
   size?: number;
 }) {
-  const stop = (e: React.PointerEvent) => e.stopPropagation();
   return (
     <button
       type="button"

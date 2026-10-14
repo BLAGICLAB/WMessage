@@ -3,6 +3,7 @@ import { Folder, Paperclip } from "lucide-react";
 import type { Task } from "../../types";
 import { basename } from "../../format";
 import { taskFiles } from "../../lib/taskFiles";
+import { stopPointer } from "../../lib/stopPointer";
 
 /** 任务卡绑定文件 chip 列表——三处复用的统一渲染：
  *  - compact：挂件（TaskCardContent）/ 主窗口卡片（TodoCard），lucide 小图标 + 11px 字号
@@ -44,8 +45,6 @@ export function TaskFileChips({
   if (boundFiles.length === 0) return null;
 
   const isSpacious = variant === "spacious";
-  // pointerdown 阻断（卡片场景防止冒泡触发外层交互，详情面板无需）
-  const stopPointer = (e: React.PointerEvent) => e.stopPropagation();
   // click 阻断（widget 卡片需要；详情面板直接挂载不需要）
   const maybeStopClick = (e: React.MouseEvent) => {
     if (stopClickPropagation) e.stopPropagation();

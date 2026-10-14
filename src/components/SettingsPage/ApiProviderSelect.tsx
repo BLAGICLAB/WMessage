@@ -3,8 +3,9 @@
 // 自绘下拉：触发钮 + 浮层全部走主题变量（nm-inset/nm-outset/var(--t*)），
 // 深浅色自动生效。交互：点触发钮开合；点外部 / Esc 收起；点选项即选即收。
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { API_PROVIDER_OPTIONS, type ApiProvider } from "./constants";
+import { useDismissable } from "../../lib/useDismissable";
 
 export function ApiProviderSelect({
   value,
@@ -22,26 +23,16 @@ export function ApiProviderSelect({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listboxId = useId();
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node))
-        setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        // 焦点归还触发钮（选项卸载后焦点会掉到 body）
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  useDismissable(
+    open,
+    rootRef,
+    () => setOpen(false),
+    () => {
+      setOpen(false);
+      // 焦点归还触发钮（选项卸载后焦点会掉到 body）；点外部收起不归还
+      triggerRef.current?.focus();
+    },
+  );
   const current = options.find((o) => o.value === value) ?? options[0];
   const openList = () => {
     setActiveIdx(

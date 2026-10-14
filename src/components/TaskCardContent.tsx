@@ -11,6 +11,7 @@ import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
 import { useInlineEdit } from "./useInlineEdit";
 import { planWindowLabel } from "./TaskTimeline/week";
+import { stopPointer as stop } from "../lib/stopPointer";
 import { TaskFileChips } from "./task/TaskFileChips";
 import { SubtaskRow } from "./task/SubtaskRow";
 
@@ -67,7 +68,6 @@ export function TaskCardContent({
   /** 子任务行已生成任务卡（sub.taskId 在场）时显示 ↗；点击跳主窗口编辑页 */
   onOpenSubtaskCard?: (cardId: string) => void;
 }) {
-  const stop = (e: React.PointerEvent) => e.stopPropagation();
   const subtasks = task.subtasks ?? [];
   const doneCount = subtasks.filter((s) => s.done).length;
 

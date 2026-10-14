@@ -11,9 +11,7 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, Plus } from "lucide-react";
 import { useInlineEdit } from "../useInlineEdit";
-
-/** 阻止拖拽手柄/卡片点击等冒泡 */
-const stop = (e: React.PointerEvent) => e.stopPropagation();
+import { stopPointer as stop } from "../../lib/stopPointer";
 
 export type Subtask = {
   id: string;

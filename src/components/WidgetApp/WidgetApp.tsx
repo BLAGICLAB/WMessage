@@ -64,6 +64,8 @@ import type { ThemeSetting } from "../../theme";
 import type { Task, WorkspaceItem } from "../../types";
 import { taskFiles, filesPatch } from "../../lib/taskFiles";
 import { isActiveTask, isDoneTask } from "../../lib/taskScope";
+import { useNowTick } from "../../lib/useNowTick";
+import { stopPointer } from "../../lib/stopPointer";
 import { ChatPanel } from "../ChatPanel";
 import { FoldToggle } from "../FoldToggle";
 import { ErrorDialogHost } from "../../ui/ErrorDialogHost";
@@ -117,11 +119,7 @@ export default function WidgetApp() {
   const [edge, setEdge] = useState<Edge>("right");
   const [botOn, setBotOn] = useState(false);
   // 「今日」过滤与逾期判断的时间源：每分钟校准，跨天自动跟随（同任务页 now）
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 60_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNowTick();
 
   // 老板挂件边框尺寸(唯一尺寸源,只控制外框；内部任务/聊天区 flex 自适应)
   const [size, setSize] = useState<WidgetSize>(
@@ -812,7 +810,7 @@ export default function WidgetApp() {
               </div>
               <div
                 className="flex items-center gap-1"
-                onPointerDown={(e) => e.stopPropagation()}
+                onPointerDown={stopPointer}
               >
                 {/* 待办 / 今日 / 完成 / 工作区 / 锁定 五个按钮（SVG 内容省略以保持简洁，原始一致） */}
                 <button

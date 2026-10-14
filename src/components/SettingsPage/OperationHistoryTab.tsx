@@ -10,13 +10,7 @@ import {
   type TagMergeRunSummary,
 } from "../../lib/botConsolidate";
 import { handleCommandError } from "../../lib/errorHandler";
-
-function fmtTs(ms: number): string {
-  const d = new Date(ms);
-  // 形如 2026-10-14 08:23
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
+import { formatDateTime } from "../../format";
 
 export function OperationHistoryTab() {
   const [loading, setLoading] = useState(true);
@@ -109,7 +103,7 @@ export function OperationHistoryTab() {
                   )}
                 </div>
                 <div className="text-[10px] text-[var(--t5)] mt-0.5">
-                  {fmtTs(r.created_at)} · run_id: {r.run_id}
+                  {formatDateTime(r.created_at)} · run_id: {r.run_id}
                 </div>
                 <div className="text-[10px] text-[var(--t5)] mt-0.5 truncate">
                   来源别名: {r.merged_from}

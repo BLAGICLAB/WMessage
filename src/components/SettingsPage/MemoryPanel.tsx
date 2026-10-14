@@ -20,6 +20,7 @@ import {
 import { formatCommandError } from "../../lib/errorHandler";
 import { useConfirm } from "../../lib/useConfirm";
 import { IconButton } from "../../ui/IconButton";
+import { formatShortDateTime } from "../../format";
 import { EmptyState } from "../EmptyState";
 
 export type MemItemView = {
@@ -83,15 +84,6 @@ const SOURCE_LABELS: Record<string, string> = {
   model_inferred: "推断",
   system: "系统",
 };
-
-function fmtTime(ms: number): string {
-  return new Date(ms).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 export function MemoryPanel() {
   const confirm = useConfirm();
@@ -634,9 +626,9 @@ export function MemoryPanel() {
                   )}
                   <span
                     className="shrink-0 text-[10px] text-[var(--t6)]"
-                    title={`更新于 ${fmtTime(m.updatedAt)}`}
+                    title={`更新于 ${formatShortDateTime(m.updatedAt)}`}
                   >
-                    {fmtTime(m.updatedAt)}
+                    {formatShortDateTime(m.updatedAt)}
                   </span>
                   <IconButton
                     aria-label="编辑记忆"

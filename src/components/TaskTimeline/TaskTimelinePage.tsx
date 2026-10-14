@@ -18,6 +18,7 @@ import {
 import { WeekGrid, type SlotHint } from "./WeekGrid";
 import { TaskPool, loadPoolOpen, savePoolOpen } from "./TaskPool";
 import { isActiveTask, isDoneTask } from "../../lib/taskScope";
+import { useNowTick } from "../../lib/useNowTick";
 
 type Drag =
   | { kind: "create"; task: Task }
@@ -45,11 +46,7 @@ export function TaskTimelinePage({
 }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   // 「现在」单一时间源：页头今天回跳与网格现在线共用，每分钟校准
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 60_000);
-    return () => clearInterval(id);
-  }, []);
+  const now = useNowTick();
 
   const [slot, setSlot] = useState<SlotHint | null>(null);
   const [ghost, setGhost] = useState<{

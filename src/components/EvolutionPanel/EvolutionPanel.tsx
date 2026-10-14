@@ -39,9 +39,9 @@ import {
   ROLLBACK_WARN_THRESHOLD,
   SHADOW_VERDICT_LABEL,
   STATUS_LABEL,
-  formatTs,
   suggestedThresholds,
 } from "./types";
+import { formatTimestamp } from "../../format";
 
 type StatusFilter = ProposalStatus | null;
 
@@ -742,9 +742,9 @@ function ProposalCard({
         </div>
         <div>
           <span className="font-semibold">created_at：</span>
-          {formatTs(proposal.created_at_ms)}
+          {formatTimestamp(proposal.created_at_ms)}
           <span className="ml-2 font-semibold">expires_at：</span>
-          {formatTs(proposal.expires_at_ms)}
+          {formatTimestamp(proposal.expires_at_ms)}
         </div>
         {proposal.related_refs.length > 0 && (
           <div>

@@ -87,11 +87,6 @@ export interface ChangeRecord {
   rollback_reason: string | null;
 }
 
-/** 后端相对时间戳（epoch ms） → 可读字符串 */
-export function formatTs(ms: number): string {
-  return new Date(ms).toLocaleString();
-}
-
 /** ProposalStatus 中文标签 */
 export const STATUS_LABEL: Record<ProposalStatus, string> = {
   pooled: "候选",

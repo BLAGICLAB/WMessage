@@ -17,6 +17,28 @@ export function formatMonthDayTime(ms: number): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 时间戳 → "YYYY-MM-DD HH:mm"（操作历史列表 / 完成时间前缀：跨年可读）。
+ *  非法时间戳产 "NaN-…" 串，调用方自行判守（formatCompletedAt 有守卫）。 */
+export function formatDateTime(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 时间戳 → locale 短式 "MM/DD HH:mm"（记忆条目「更新于」提示） */
+export function formatShortDateTime(ms: number): string {
+  return new Date(ms).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** 时间戳 → locale 全格式（提案时间轴的创建/过期时刻，含年月日时分秒） */
+export function formatTimestamp(ms: number): string {
+  return new Date(ms).toLocaleString();
+}
+
 /** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
  *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;
@@ -53,11 +75,8 @@ export function isDueToday(due?: string): boolean {
 // （老板加年份，避免跨年任务识别不出是哪一年的完成时间；
 // 显示在截止日期下方；取消完成即清除）
 export function formatCompletedAt(ms: number): string {
-  const d = new Date(ms);
-  if (isNaN(d.getTime())) return "";
-  return `完成 ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(
-    d.getMinutes(),
-  )}`;
+  if (isNaN(new Date(ms).getTime())) return "";
+  return `完成 ${formatDateTime(ms)}`;
 }
 
 /** 相对时间共享内核：dir="past" 走「N 分钟前」档（会话栈），

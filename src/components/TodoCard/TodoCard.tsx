@@ -48,9 +48,7 @@ import { Modal } from "../../ui/Modal";
 
 import type { CardDrag, TodoCardViewProps } from "./types";
 import { SubtaskRow } from "../task/SubtaskRow";
-
-/** 阻止拖拽手柄触发卡片点击编辑（在拖拽手柄 span 上设 pointerdown） */
-const stop = (e: React.PointerEvent) => e.stopPropagation();
+import { stopPointer as stop } from "../../lib/stopPointer";
 
 /** 视图本体：所有拖拽能力由外部 hook 注入（TodoCard / SortableTodoCard 调用） */
 export function TodoCardView({
@@ -769,7 +767,7 @@ export function TodoCardView({
           >
             <div
               className="nm-card w-full max-w-md p-5 flex flex-col gap-3"
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={stop}
             >
               <div className="flex items-center gap-1.5 text-sm font-medium text-[var(--t2)]">
                 <Trash2

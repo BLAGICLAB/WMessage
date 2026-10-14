@@ -15,6 +15,7 @@ import {
   type NotificationItem,
 } from "../../lib/notifications";
 import { useTauriListen } from "../../lib/useTauriListen";
+import { useNowTick } from "../../lib/useNowTick";
 import { getBotConfig } from "../../lib/botConfig";
 import { formatCommandError } from "../../lib/errorHandler";
 import {
@@ -64,13 +65,9 @@ export function HomePage({
   /** 时钟注入口（测试确定性；生产缺省走真实时间 + 30s 轮询） */
   now?: Date;
 }) {
-  const [nowState, setNowState] = useState(() => new Date());
+  // nowProp 注入时本页不走表（测试确定性，见 props 注释）
+  const nowState = useNowTick(nowProp ? null : REFRESH_MS);
   const now = nowProp ?? nowState;
-  useEffect(() => {
-    if (nowProp) return;
-    const iv = setInterval(() => setNowState(new Date()), REFRESH_MS);
-    return () => clearInterval(iv);
-  }, [nowProp]);
 
   // 用户名（设置里个人资料）：缓存优先，变更广播同步；加载失败已由
   // loadProfile 内 errorHandler 上报，这里降级为不带姓名的问候
