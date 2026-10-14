@@ -24,6 +24,8 @@
 | Rust#3 转义/截断家族 8 个实现 + 同名 `escape_for_log` 行为分叉 | ⏸ Wave2 | 报告 P1，含真实分叉隐患 |
 | 前端#10-14 微项 | ⏸ Wave2 | 10-50 行小批 |
 | 双自检状态机合并 | ⏸ P3 | 两套刚各自跑稳，合并属可选 shrink |
+| Rust#2 DB 样板 mutex_poisoned 183 → 43 | ✅ `33a386d` | 140 处替换；43 处按语义保留（map_err/TryLock/Condvar/profile ENV_LOCK 等） |
+| Rust#3 escape/truncate 8 实现 + 同名分叉 | ✅ `d6c8c9e` | log_sanitize 单源；弱版 → 强版升级（控制字符 + U+2028/2029 显式转义）+ ratelimit typo 顺手修 |
 
 **已净删 ~700 行（Rust 5 项 + 前端 1 项 + 死常量 + 角色去重）。**
 
