@@ -663,7 +663,7 @@ export function SettingsPage({
     <div className={cls}>
       <button
         aria-label="保存配置"
-        className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+        className={`btn-sm-action ${
           configBusy ? "nm-inset" : "nm-outset"
         }`}
         onClick={() => saveConfig()}
@@ -1628,7 +1628,7 @@ export function SettingsPage({
           role="switch"
           aria-checked={on}
           aria-label={label}
-          className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+          className={`btn-sm-action ${
             on ? "nm-inset" : "nm-outset"
           }`}
           onClick={() => setMemoryControl({ [field]: !on })}
@@ -1980,7 +1980,7 @@ export function SettingsPage({
                       )}
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                      className={`btn-sm-action ${
                         autostartEnabled ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={toggleAutostart}
@@ -2021,7 +2021,7 @@ export function SettingsPage({
                       </p>
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                      className={`btn-sm-action ${
                         exporting ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={runExport}
@@ -2047,7 +2047,7 @@ export function SettingsPage({
                       </p>
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                      className={`btn-sm-action ${
                         importing ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={runImport}
@@ -2153,7 +2153,7 @@ export function SettingsPage({
                     />
                     <span className="text-[11px] text-[var(--t5)]">天前</span>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                      className={`btn-sm-action ${
                         traceClearBusy ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={clearTraces}
@@ -2191,7 +2191,7 @@ export function SettingsPage({
                       </p>
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                      className={`btn-sm-action ${
                         exportingWs ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={runExportWs}
@@ -2217,7 +2217,7 @@ export function SettingsPage({
                       </p>
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                      className={`btn-sm-action ${
                         importingWs ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={runImportWs}
@@ -2257,7 +2257,7 @@ export function SettingsPage({
                     </p>
                   </div>
                   <button
-                    className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    className={`btn-sm-action ${
                       botEnabled ? "nm-inset" : "nm-outset"
                     }`}
                     onClick={toggleBot}
@@ -2285,7 +2285,7 @@ export function SettingsPage({
                     </p>
                   </div>
                   <button
-                    className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    className={`btn-sm-action ${
                       pyEnabled ? "nm-inset" : "nm-outset"
                     }`}
                     onClick={togglePy}
@@ -2312,7 +2312,7 @@ export function SettingsPage({
                     </p>
                   </div>
                   <button
-                    className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    className={`btn-sm-action ${
                       pyEnvBusy ? "nm-inset" : "nm-outset"
                     }`}
                     onClick={checkPyEnv}
@@ -2358,7 +2358,7 @@ export function SettingsPage({
                     </p>
                   </div>
                   <button
-                    className="shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] nm-outset"
+                    className="btn-sm-action nm-outset"
                     onClick={openLog}
                     disabled={logBusy}
                   >
@@ -2543,7 +2543,7 @@ export function SettingsPage({
                       </p>
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                      className={`btn-sm-action ${
                         config.memoryConsolidation.enabled
                           ? "nm-inset"
                           : "nm-outset"
@@ -2598,7 +2598,7 @@ export function SettingsPage({
                             : "从未"}
                         </p>
                         <button
-                          className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                          className={`btn-sm-action ${
                             consolidateBusy ? "nm-inset" : "nm-outset"
                           }`}
                           onClick={consolidateNow}
@@ -3251,7 +3251,7 @@ export function SettingsPage({
                               )}
                               <button
                                 aria-label="保存配置"
-                                className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                                className={`btn-sm-action ${
                                   configBusy || vendorTestBusy
                                     ? "nm-inset"
                                     : "nm-outset"
@@ -3455,7 +3455,7 @@ export function SettingsPage({
                       </p>
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                      className={`btn-sm-action ${
                         config.tavilyEnabled ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={toggleTavily}
@@ -3512,7 +3512,7 @@ export function SettingsPage({
                       </p>
                     </div>
                     <button
-                      className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                      className={`btn-sm-action ${
                         config.braveEnabled ? "nm-inset" : "nm-outset"
                       }`}
                       onClick={toggleBrave}
@@ -3618,7 +3618,7 @@ export function SettingsPage({
                     </p>
                   </div>
                   <button
-                    className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+                    className={`btn-sm-action ${
                       status.enabled ? "nm-inset" : "nm-outset"
                     }`}
                     onClick={toggle}
@@ -3908,7 +3908,7 @@ function WorkflowSettingsCard() {
             role="switch"
             aria-checked={showTasks}
             aria-label="在看板中显示工作流任务"
-            className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] ${
+            className={`btn-sm-action ${
               showTasks ? "nm-inset" : "nm-outset"
             }`}
             onClick={() => {
@@ -3944,7 +3944,7 @@ function WorkflowSettingsCard() {
             aria-checked={nodeAcceptance === true}
             aria-label="节点级验收"
             disabled={nodeAcceptance === null || acceptBusy}
-            className={`shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] disabled:opacity-50 ${
+            className={`btn-sm-action disabled:opacity-50 ${
               nodeAcceptance ? "nm-inset" : "nm-outset"
             }`}
             onClick={async () => {

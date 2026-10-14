@@ -181,6 +181,16 @@
     border-color: var(--edge-strong);
   }
 
+  /* === 设置页小动作按钮（SettingsPage 21+ 处 verbatim 重复类串抽出）
+       基础三件套：尺寸固定 + 字体 + 颜色；
+       nm-inset / nm-outset 走 Tailwind 原子叠加，color 由调用方决定；
+       不要再单独加 min-w-[76px] px-4 py-1.5 等原子。 */
+  .btn-sm-action {
+    @apply shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)]
+           inline-flex items-center justify-center gap-1.5 whitespace-nowrap
+           disabled:opacity-50;
+  }
+
   /* === 任务卡标题排版（共用） === */
   .nm-task-title {
     @apply text-sm font-medium;

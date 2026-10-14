@@ -489,7 +489,7 @@ export function UsageStatsCard() {
             </p>
           </div>
           <button
-            className="shrink-0 min-w-[76px] px-4 py-1.5 text-sm text-[var(--t3)] nm-outset inline-flex items-center justify-center gap-1"
+            className="btn-sm-action nm-outset"
             onClick={refresh}
             disabled={loading}
           >
