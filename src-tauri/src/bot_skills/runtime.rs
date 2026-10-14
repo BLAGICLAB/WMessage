@@ -104,10 +104,7 @@ pub fn start_skill(
     run.params = params;
     run.dir = Some(dir);
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     // 同名 run 属于别的会话且仍在活动 → 拒绝启动，
     // 否则 insert 会把对方的步数/超时熔断、动作记录、收尾整个顶掉。
     // 同会话同名重启（覆盖语义）与终态 run 不拦截。
@@ -302,10 +299,7 @@ pub fn skill_on_step(
     session_id: Option<&str>,
 ) -> Result<(), CommandError> {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     // 会话隔离：只管归属当前会话的活动 Skill，别的会话的不计数不熔断
     let Some(run) = runs.values_mut().find(|r| {
         (r.state == SkillState::Running || r.state == SkillState::Paused)
@@ -345,10 +339,7 @@ pub fn skill_on_step_post(
     session_id: Option<&str>,
 ) {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     // 会话隔离：只记录归属当前会话的 Running 技能
     let Some(run) = runs
         .values_mut()
@@ -411,10 +402,7 @@ fn confirm_state(run: &mut SkillRun, approved: bool) {
 /// 会话隔离：只暂停归属当前会话的 Running 技能，不动别的会话。
 pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     let mut log_line: Option<String> = None;
     if let Some(run) = runs
         .values_mut()
@@ -438,10 +426,7 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) 
 /// 会话隔离：只作用于归属该会话的 Paused 技能（session 从 ConfirmMap 条目取回）。
 pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<&str>) {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     let mut log_line: Option<String> = None;
     if let Some(run) = runs
         .values_mut()
@@ -539,10 +524,7 @@ pub fn skill_finish<R: tauri::Runtime>(
 ) -> String {
     let mut rollback_hint = String::new();
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     // 锁内只做状态迁移 + 收集审计/回滚载荷；load_skill_meta（逐技能读 SKILL.md
     // 磁盘 IO）与 audit_log_hook（写盘）移到锁外——持锁跨 IO 会把全部并发
     // start/step/confirm 串行到磁盘速度，钩子重入 registry 即死锁。
@@ -739,10 +721,10 @@ mod tests {
     #[test]
     fn skill_finish_no_transition_audits_only_when_reason_non_empty() {
         // 读写共享 bot.log，必须持测试串行锁（与 audit / bot::config 同名用例互斥）
-        let _serial = crate::audit::BOT_LOG_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] bot_skills::runtime::skill_runs: {e:?}");
-            e.into_inner()
-        });
+        let _serial = crate::db::lock::lock_or_recover(
+            &crate::audit::BOT_LOG_TEST_LOCK,
+            "bot_skills::runtime::skill_runs",
+        );
         let app = tauri::test::mock_app();
         let bot_log = crate::db::data_dir(app.handle()).join("bot.log");
         let read = || std::fs::read_to_string(&bot_log).unwrap_or_default();

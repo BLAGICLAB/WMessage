@@ -115,10 +115,7 @@ pub(crate) fn auto_write_allowed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -
 
 /// DB 写闸获取（毒锁回 Inner；memory 子模块共用——连接在闸内现开）
 pub(crate) fn store_lock() -> std::sync::MutexGuard<'static, ()> {
-    crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] memory DB_WRITE_LOCK: {e:?}");
-        e.into_inner()
-    })
+    crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "memory DB_WRITE_LOCK")
 }
 
 // 参数化
@@ -340,10 +337,10 @@ pub async fn injection_block<R: tauri::Runtime>(
         move || -> Result<(MemInjection, MemoryTuning), String> {
             // 嵌入在持锁前算（ONNX 推理 ~数十 ms，不占 DB 写锁临界区）
             let emb = embed::embed_text(&query);
-            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
-                e.into_inner()
-            });
+            let _g = crate::db::lock::lock_or_recover(
+                &crate::db::DB_WRITE_LOCK,
+                "memory::mod DB_WRITE_LOCK",
+            );
             let conn = crate::db::open_db(&app2)?;
             store::ensure_table(&conn)?;
             let items = store::load_all(&conn)?;
@@ -442,7 +439,7 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
         } else {
             embed::embed_text(&value)
         };
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] db::DB_WRITE_LOCK: {e:?}"); e.into_inner() });
+        let _g = crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "db::DB_WRITE_LOCK");
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
             // 「失败：打开数据库出错」以「失败」开头 → error
@@ -556,10 +553,10 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
         } else {
             embed::embed_text(&query)
         };
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(
+            &crate::db::DB_WRITE_LOCK,
+            "memory::mod DB_WRITE_LOCK",
+        );
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
             // 「失败：打开数据库出错」以「失败」开头 → error
@@ -721,10 +718,10 @@ pub async fn tool_record_lesson<R: tauri::Runtime>(
     // 闭包返 String（不动 record_lesson_core 签名）；outer 首字符判定 → ToolResult
     let r = tauri::async_runtime::spawn_blocking(move || -> String {
         let emb = embed::embed_text(&lesson);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(
+            &crate::db::DB_WRITE_LOCK,
+            "memory::mod DB_WRITE_LOCK",
+        );
         let conn = match crate::db::open_db(&app2) {
             Ok(c) => c,
             // 「失败：打开数据库出错」以「失败」开头
@@ -783,10 +780,10 @@ pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(
     let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let emb = embed::embed_text(&content);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(
+            &crate::db::DB_WRITE_LOCK,
+            "memory::mod DB_WRITE_LOCK",
+        );
         let conn = crate::db::open_db(&app2)?;
         store::ensure_table(&conn)?;
         let msg = record_lesson_core(
@@ -831,10 +828,10 @@ pub async fn save_summary(
     let summary = truncate_chars(summary.trim(), MAX_CONTENT_CHARS);
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<(String, String)>, String> {
         let emb = embed::embed_text(&summary);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(
+            &crate::db::DB_WRITE_LOCK,
+            "memory::mod DB_WRITE_LOCK",
+        );
         let conn = crate::db::open_db(&app)?;
         store::ensure_table(&conn)?;
         let item = NewItem {
@@ -872,10 +869,10 @@ pub async fn apply_reflection(
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let emb = embed::embed_text(&text);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] memory::mod DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(
+            &crate::db::DB_WRITE_LOCK,
+            "memory::mod DB_WRITE_LOCK",
+        );
         let mut conn = crate::db::open_db(&app)?;
         store::ensure_table(&conn)?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;

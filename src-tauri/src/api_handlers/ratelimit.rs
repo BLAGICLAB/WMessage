@@ -24,10 +24,7 @@ pub(crate) fn rate_check() -> bool {
     // 锁 poisoning:持有 RATE 的线程 panic 会让 state 半修改。
     // 仍然 into_inner() 恢复锁访问(stop-the-world 不接受),
     // 但 eprintln! 一行标记,日志聚合 / 监控能据此告警。
-    let mut g = RATE.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] api_handlers::ratelimit::RATE: {e:?}");
-        e.into_inner()
-    });
+    let mut g = crate::db::lock::lock_or_recover(&RATE, "api_handlers::ratelimit::RATE");
     // 时钟回拨（NTP 步进/手动改时）时 now < g.0，saturating_sub 得 0 会把窗口
     // 冻死（计数只增不清，回环 API 全被拒直到时钟追回）；回拨视同窗口过期直接重开
     if now.checked_sub(g.0).is_none_or(|d| d > 60_000) {
@@ -43,10 +40,7 @@ pub(crate) fn rate_check() -> bool {
 /// 追加一行访问/变更日志（`None` 时不写；open/writeln 失败 eprintln 留痕）
 pub(crate) fn log_line(path: &Option<PathBuf>, line: &str) {
     let Some(p) = path else { return };
-    let _g = LOG_WRITE.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] api_handlers::ratelimit::LOG_WRITE: {e:?}");
-        e.into_inner()
-    });
+    let _g = crate::db::lock::lock_or_recover(&LOG_WRITE, "api_handlers::ratelimit::LOG_WRITE");
     crate::db::rotate_log_if_large(p, 5 * 1024 * 1024);
     match std::fs::OpenOptions::new()
         .create(true)
