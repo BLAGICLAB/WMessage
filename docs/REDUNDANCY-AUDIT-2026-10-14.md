@@ -26,8 +26,13 @@
 | 双自检状态机合并 | ⏸ P3 | 两套刚各自跑稳，合并属可选 shrink |
 | Rust#2 DB 样板 mutex_poisoned 183 → 43 | ✅ `33a386d` | 140 处替换；43 处按语义保留（map_err/TryLock/Condvar/profile ENV_LOCK 等） |
 | Rust#3 escape/truncate 8 实现 + 同名分叉 | ✅ `d6c8c9e` | log_sanitize 单源；弱版 → 强版升级（控制字符 + U+2028/2029 显式转义）+ ratelimit typo 顺手修 |
+| 续扫 Rust#1 profile 测试侧 22 处 ENV_LOCK | ✅ `041727b` | Wave2 漏改的测试侧粘贴补齐（lock_or_recover），-66 行 |
+| 续扫 前端#1 SettingsPage 工具按钮类 21 处 | ✅ `10d56f5` | main.css `.btn-sm-action` @apply 单源，4 种子形态统一 |
+| 续扫 Rust#2 三件套样板 ~28 处迁 `with_write_conn` | ⏸ 未完 | helper 已存在仅 2 处在用；agent 因 Token Plan 配额中断在 part B——**下次接力点** |
+| 续扫 Rust 杂 mutex 毒化 5 处（audit×2 / config×2 / corrections×2） | ⏸ 未完 | 同上批，~30 行 |
+| 续扫 前端 modal 模板 9 处 / tasks filter 8 处 / 中 ROI 散点 7 项 | ⏸ 待拍板 | 合计 ~285 行，中风险（z-index/关闭策略/8 业务口径） |
 
-**已净删 ~700 行（Rust 5 项 + 前端 1 项 + 死常量 + 角色去重）。**
+**累计净删 ~1,070+ 行**（Wave2 两批 + Wave3 P1-A + 前端 #2-#4）。
 
 ## 总览
 
