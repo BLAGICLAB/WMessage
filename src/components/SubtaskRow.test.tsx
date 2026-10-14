@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SubtaskRow } from "./TodoCard/SubtaskRow";
+import { SubtaskRow } from "./task/SubtaskRow";
 
 const base = () => ({
   sub: { id: "s1", text: "子任务一", done: false },
