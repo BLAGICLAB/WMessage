@@ -579,10 +579,7 @@ mod tests {
 
     #[test]
     fn profile_missing_returns_default_view() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let view = profile_get(app.handle().clone());
         assert_eq!(view.user.name, "我");
@@ -593,10 +590,7 @@ mod tests {
 
     #[test]
     fn profile_save_and_load_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -612,10 +606,7 @@ mod tests {
 
     #[test]
     fn profile_set_name_trims_whitespace() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -627,10 +618,7 @@ mod tests {
 
     #[test]
     fn profile_set_name_rejects_empty_after_trim() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -642,10 +630,7 @@ mod tests {
 
     #[test]
     fn profile_set_name_rejects_too_long() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -657,10 +642,7 @@ mod tests {
 
     #[test]
     fn profile_set_name_rejects_invalid_kind() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -674,10 +656,7 @@ mod tests {
 
     #[test]
     fn profile_set_avatar_and_remove_roundtrip() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
@@ -716,10 +695,7 @@ mod tests {
 
     #[test]
     fn profile_remove_avatar_noop_when_never_set() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -731,10 +707,7 @@ mod tests {
 
     #[test]
     fn profile_remove_avatar_rejects_invalid_kind() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -744,10 +717,7 @@ mod tests {
 
     #[test]
     fn profile_set_avatar_rejects_bad_extension() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -766,10 +736,7 @@ mod tests {
 
     #[test]
     fn profile_set_avatar_rejects_missing_source() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -781,10 +748,7 @@ mod tests {
 
     #[test]
     fn profile_set_avatar_rejects_too_large() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -804,10 +768,7 @@ mod tests {
 
     #[test]
     fn profile_overwrite_replaces_old_avatar() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
@@ -851,10 +812,7 @@ mod tests {
 
     #[test]
     fn profile_user_and_bot_avatars_are_isolated() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
@@ -937,10 +895,7 @@ mod tests {
 
     #[test]
     fn set_avatar_save_failure_same_ext_keeps_live_avatar() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
@@ -973,10 +928,7 @@ mod tests {
 
     #[test]
     fn set_avatar_save_failure_new_ext_removes_orphan() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
@@ -1012,10 +964,7 @@ mod tests {
 
     #[test]
     fn remove_avatar_save_failure_keeps_avatar_file() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
@@ -1083,10 +1032,7 @@ mod tests {
 
     #[test]
     fn entry_view_malicious_avatar_returns_none() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         // 手改 profile.json：avatar 指向数据目录内的敏感文件（相对跳一级）
@@ -1111,10 +1057,7 @@ mod tests {
 
     #[test]
     fn entry_view_oversized_avatar_returns_none_and_audits() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let data_dir = data_dir(&handle);
@@ -1165,10 +1108,7 @@ mod tests {
 
     #[test]
     fn save_data_atomic_leaves_complete_json_and_no_tmp() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -1187,10 +1127,7 @@ mod tests {
 
     #[test]
     fn load_data_corrupt_json_backs_up_and_returns_default() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
 
@@ -1225,10 +1162,7 @@ mod tests {
 
     #[test]
     fn profile_concurrent_set_name_no_lost_update() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| {
-            eprintln!("[mutex_poisoned] profile::ENV_LOCK: {p:?}");
-            p.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(&ENV_LOCK, "profile::ENV_LOCK");
         let app = fresh_app();
         let handle = app.handle().clone();
         let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
