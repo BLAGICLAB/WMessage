@@ -25,6 +25,7 @@ export function TaskCard({
   onCopyFilePath,
   onRemoveFile,
   onBotExecute,
+  onOpenSubtaskCard,
 }: {
   task: Task;
   /** 截止时间已过且未完成：截止徽标标红（与首页到期横条同一判定口径） */
@@ -44,6 +45,8 @@ export function TaskCard({
   onCopyFilePath: (path: string) => void;
   onRemoveFile: (path: string) => void;
   onBotExecute?: () => void;
+  /** 子任务行已生成任务卡时显示 ↗；点击跳主窗口编辑页 */
+  onOpenSubtaskCard?: (cardId: string) => void;
 }) {
   return (
     <div
@@ -78,6 +81,7 @@ export function TaskCard({
           onCopyFilePath={onCopyFilePath}
           onRemoveFile={onRemoveFile}
           onBotExecute={onBotExecute}
+          onOpenSubtaskCard={onOpenSubtaskCard}
         />
       </div>
     </div>

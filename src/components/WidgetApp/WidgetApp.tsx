@@ -1321,9 +1321,18 @@ export default function WidgetApp() {
                     onOpenFilePath={openFilePath}
                     onCopyFilePath={(p) => copyFilePath(t, p)}
                     onRemoveFile={(p) => removeFile(t, p)}
+                    // 完成卡不在机器人工具作用域内（active_tasks 过滤
+                    // column != Done），交机器人必返回「未找到未完成任务」
+                    // → 完成卡不显示按钮
                     onBotExecute={
-                      botOn ? () => emitExecuteTask(t) : undefined
+                      botOn && t.column !== "done"
+                        ? () => emitExecuteTask(t)
+                        : undefined
                     }
+                    onOpenSubtaskCard={(cardId) => {
+                      emit("edit-task", { id: cardId }).catch(() => {});
+                      invoke("focus_main_window").catch(() => {});
+                    }}
                   />
                 ))
               )}

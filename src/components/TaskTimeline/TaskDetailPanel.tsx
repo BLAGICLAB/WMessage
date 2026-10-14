@@ -402,6 +402,17 @@ export function TaskDetailPanel({
         }}
       />
 
+      {/* 每卡验收标准（W-QA 卡即契约）：拆解生成，只读——编辑走重新拆解；
+          与挂件卡同款 📌 展示（此前仅挂件可见，主窗口两套渲染器缺失） */}
+      {task.acceptance && (
+        <p
+          className="mt-1.5 text-xs text-[var(--t4)]"
+          title="验收标准：机器人执行时会对照此项自检"
+        >
+          <span aria-hidden>📌</span> 验收：{task.acceptance}
+        </p>
+      )}
+
       <div className="mt-3 mb-1.5 text-[11px] font-medium tracking-wide text-[var(--t5)]">
         标签
       </div>

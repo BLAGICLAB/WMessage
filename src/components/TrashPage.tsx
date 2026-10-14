@@ -7,10 +7,13 @@ export function TrashPage({
   tasks,
   onUpdate,
   onDelete,
+  onOpenSubtaskCard,
 }: {
   tasks: Task[];
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
+  /** 子任务行已生成任务卡时显示 ↗；点击跳主窗口编辑页 */
+  onOpenSubtaskCard?: (cardId: string) => void;
 }) {
   // 回收站按删除时间倒序（新删的在前面），原 filter 不打排序
   // 导致顺序依赖任务数组原始 order，删除时间与展示位置对不上
@@ -34,6 +37,7 @@ export function TrashPage({
               task={t}
               onUpdate={onUpdate}
               onDelete={onDelete}
+              onOpenSubtaskCard={onOpenSubtaskCard}
               trashed
             />
           ))}

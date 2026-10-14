@@ -18,6 +18,9 @@ export interface TodoCardViewProps {
   archived?: boolean;
   /** 回收站视图：显示「恢复 / 彻底删除」按钮 */
   trashed?: boolean;
+  /** 子任务行已生成任务卡（sub.taskId 在场）时显示 ↗；点击跳主窗口编辑页。
+   *  归档/回收站卡的只读动作（同点开/复制），缺省不显示 ↗ */
+  onOpenSubtaskCard?: (cardId: string) => void;
 }
 
 /** 拖拽能力由外部 hook（useDraggable / useSortable）注入，View 本体不关心排序上下文 */

@@ -39,6 +39,7 @@ export function TaskCardContent({
   onCopyFilePath,
   onRemoveFile,
   onBotExecute,
+  onOpenSubtaskCard,
 }: {
   task: Task;
   /** 截止时间已过且未完成：截止徽标标红（与首页到期横条同一判定，由父层传入） */
@@ -65,6 +66,8 @@ export function TaskCardContent({
   onRemoveFile?: (path: string) => void;
   /** 提供时显示 🤖 交给机器人按钮 */
   onBotExecute?: () => void;
+  /** 子任务行已生成任务卡（sub.taskId 在场）时显示 ↗；点击跳主窗口编辑页 */
+  onOpenSubtaskCard?: (cardId: string) => void;
 }) {
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   const subtasks = task.subtasks ?? [];
@@ -266,6 +269,20 @@ export function TaskCardContent({
                   >
                     {s.text}
                   </span>
+                  {s.taskId && onOpenSubtaskCard && (
+                    <button
+                      className="shrink-0 text-[11px] leading-none text-[var(--t5)] hover:text-[var(--t2)]"
+                      title={`打开子任务「${s.text}」生成的任务卡`}
+                      aria-label={`打开子任务「${s.text}」生成的任务卡`}
+                      onPointerDown={stop}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onOpenSubtaskCard(s.taskId!);
+                      }}
+                    >
+                      ↗
+                    </button>
+                  )}
                 </div>
               ))}
               <p className="text-[10px] text-[var(--t5)] tabular-nums">

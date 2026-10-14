@@ -58,6 +58,7 @@ export function TodoCardView({
   onUpdate,
   onDelete,
   onSetColumn,
+  onOpenSubtaskCard,
   archived = false,
   trashed = false,
   drag,
@@ -366,6 +367,16 @@ export function TodoCardView({
             </button>
           )}
 
+          {/* 每卡验收标准（W-QA 卡即契约）：与挂件卡同款只读展示 */}
+          {task.acceptance && (
+            <p
+              className="mt-1.5 text-xs text-[var(--t4)]"
+              title="验收标准：机器人执行时会对照此项自检"
+            >
+              <span aria-hidden>📌</span> 验收：{task.acceptance}
+            </p>
+          )}
+
           {/* 标签 */}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {(task.tags ?? []).map((tag, i) => (
@@ -433,6 +444,7 @@ export function TodoCardView({
                   key={s.id}
                   sub={s}
                   readOnly={archived || trashed}
+                  onOpenCard={onOpenSubtaskCard}
                   onToggle={() =>
                     onUpdate(task.id, {
                       subtasks: subtasks.map((x) =>

@@ -1065,6 +1065,7 @@ function App() {
               tasks={visibleTasks}
               onUpdate={updateTask}
               onDelete={deleteTask}
+              onOpenSubtaskCard={jumpToTaskId}
             />
           ) : view === "workspace" ? (
             <WorkspacePage />
@@ -1073,6 +1074,7 @@ function App() {
               tasks={visibleTasks}
               onUpdate={updateTask}
               onDelete={hardDeleteTask}
+              onOpenSubtaskCard={jumpToTaskId}
             />
           ) : view === "notifications" ? (
             <NotificationsPage />

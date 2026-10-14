@@ -16,12 +16,15 @@ export function SubtaskRow({
   onToggle,
   onCommit,
   onDelete,
+  onOpenCard,
 }: {
-  sub: { id: string; text: string; done: boolean };
+  sub: { id: string; text: string; done: boolean; taskId?: string };
   readOnly: boolean;
   onToggle: () => void;
   onCommit: (text: string) => void;
   onDelete: () => void;
+  /** 该行已生成子任务卡（taskId 在场）时显示 ↗；点击跳主窗口任务编辑页 */
+  onOpenCard?: (cardId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const edit = useInlineEdit({
@@ -80,6 +83,17 @@ export function SubtaskRow({
         >
           {sub.text}
         </span>
+      )}
+      {sub.taskId && onOpenCard && (
+        <button
+          className="shrink-0 text-[11px] leading-none text-[var(--t5)] hover:text-[var(--t2)]"
+          title={`打开子任务「${sub.text}」生成的任务卡`}
+          aria-label={`打开子任务「${sub.text}」生成的任务卡`}
+          onPointerDown={stop}
+          onClick={() => onOpenCard(sub.taskId!)}
+        >
+          ↗
+        </button>
       )}
       {!readOnly && !editing && (
         <button
