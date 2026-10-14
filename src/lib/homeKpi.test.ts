@@ -148,13 +148,13 @@ describe("kpiTrendOf / kpiTrendTitle", () => {
     if (!d) throw new Error(`unknown kpi: ${id}`);
     return d;
   }
-  it("方向与好坏色：完成率涨=好，逾期涨=坏，大型任务数=中性", () => {
-    expect(kpiTrendOf(def("completionRate"), 80, 70)).toEqual({ dir: "up", tone: "good" });
-    expect(kpiTrendOf(def("overdueCount"), 5, 3)).toEqual({ dir: "up", tone: "bad" });
-    expect(kpiTrendOf(def("overdueCount"), 3, 5)).toEqual({ dir: "down", tone: "good" });
-    expect(kpiTrendOf(def("largeCount"), 10, 5)).toEqual({ dir: "up", tone: "neutral" });
-    expect(kpiTrendOf(def("completionRate"), 80, 80)).toBeNull();
-    expect(kpiTrendOf(def("completionRate"), 80, null)).toBeNull();
+  it("涨跌只给方向（红涨绿跌在渲染层映射），未变/无基线 → null", () => {
+    expect(kpiTrendOf(80, 70)).toEqual({ dir: "up" });
+    expect(kpiTrendOf(5, 3)).toEqual({ dir: "up" });
+    expect(kpiTrendOf(10, 5)).toEqual({ dir: "up" });
+    expect(kpiTrendOf(70, 80)).toEqual({ dir: "down" });
+    expect(kpiTrendOf(80, 80)).toBeNull();
+    expect(kpiTrendOf(80, null)).toBeNull();
   });
   it("增减量文案带符号与单位", () => {
     expect(kpiTrendTitle(def("completionRate"), 71.428, 70)).toBe("较上次变动 +1.4%");

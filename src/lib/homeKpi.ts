@@ -24,8 +24,6 @@ export interface KpiDef {
   /** 口径说明（设置面板就地展示） */
   desc: string;
   unit: "pct" | "count" | "duration";
-  /** 涨跌的「好方向」：up=涨为绿 / down=跌为绿；null=结构性指标，中性灰 */
-  goodWhen: "up" | "down" | null;
 }
 
 export const HOME_KPIS: readonly KpiDef[] = [
@@ -34,56 +32,48 @@ export const HOME_KPIS: readonly KpiDef[] = [
     name: "任务完成率",
     desc: "已完成任务 ÷ 全部有效任务（未删，含归档）×100%",
     unit: "pct",
-    goodWhen: "up",
   },
   {
     id: "largeCount",
     name: "大型任务数",
     desc: "与其他任务存在关联（依赖 / 父子）的任务个数，有任一关联只算一次",
     unit: "count",
-    goodWhen: null,
   },
   {
     id: "largeRatio",
     name: "大型任务占比",
     desc: "大型任务数 ÷ 全部有效任务 ×100%",
     unit: "pct",
-    goodWhen: null,
   },
   {
     id: "largeDoneRate",
     name: "大型任务完成率",
     desc: "已完成的大型任务 ÷ 全部大型任务 ×100%",
     unit: "pct",
-    goodWhen: "up",
   },
   {
     id: "onTimeRate",
     name: "按期完成率",
     desc: "有截止时间的任务里，完成时间不晚于截止的占比",
     unit: "pct",
-    goodWhen: "up",
   },
   {
     id: "overdueCount",
     name: "逾期任务数",
     desc: "已过截止时间仍未完成的任务数（进行区内）",
     unit: "count",
-    goodWhen: "down",
   },
   {
     id: "planRate",
     name: "计划完成率",
     desc: "同时有排期开始与结束的任务里，完成时间不晚于排期结束的占比",
     unit: "pct",
-    goodWhen: "up",
   },
   {
     id: "shelfDuration",
     name: "平均搁置时长",
     desc: "同时有排期起止的任务，从创建到排期开始的平均等待时长",
     unit: "duration",
-    goodWhen: "down",
   },
 ];
 
@@ -218,22 +208,18 @@ export function formatKpiValue(def: KpiDef, v: number | null): string {
 
 export type KpiTrend = {
   dir: "up" | "down";
-  tone: "good" | "bad" | "neutral";
 };
 
-/** 较上次变动前快照的涨跌；无基线或数值未变 → null（不显示角标） */
+/** 较上次变动前快照的涨跌；无基线或数值未变 → null（不显示角标）。
+ *  颜色口径 = 红涨绿跌（渲染层按 dir 映射，涨红/跌绿，数字同色） */
 export function kpiTrendOf(
-  def: KpiDef,
   v: number | null,
   prev: number | null,
 ): KpiTrend | null {
   if (v == null || prev == null) return null;
   const d = v - prev;
   if (Math.abs(d) < 1e-9) return null;
-  const dir = d > 0 ? "up" : "down";
-  const tone =
-    def.goodWhen === null ? "neutral" : def.goodWhen === dir ? "good" : "bad";
-  return { dir, tone };
+  return { dir: d > 0 ? "up" : "down" };
 }
 
 /** 角标 tooltip / 无障碍文案：较上次记录的增减量（带符号与单位） */

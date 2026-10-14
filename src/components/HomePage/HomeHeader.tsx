@@ -3,7 +3,8 @@
 // 进度源 = main 滚动容器的 scrollY（0 → COLLAPSE_PX 线性映射 + spring 平滑）；
 // 颜色不参与插值（motion 无法混 CSS 变量），分隔线用独立元素的透明度渐入。
 // 首行 = 问候（姓名/日期/今日摘要/完成率条）｜右侧三池（待办/完成/归档，
-// 文字在上数字在下）；第二行 = 自定义 KPI 横排（8 选 4，标签在上、36px 大字）。
+// 文字在上数字在下）；第二行 = 自定义 KPI 横排（8 选 4，标签在上、数字居中
+// 于其下、36px 大字）。涨跌颜色 = 红涨绿跌（涨=红/跌=绿，数字同色）。
 // 收缩时 KPI 横排整行压平，首行正中的镜像条渐入承接四个数字（姓名/日期与
 // 三池之间，页面居中）；两处数字共用同一尺寸插值，交叉时无大小跳变。
 // 镜像条 aria-hidden + pointer-events-none：纯视觉承接，防读屏重复朗读。
@@ -38,8 +39,12 @@ function dateChipOf(now: Date): string {
   return `${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAY[now.getDay()]}`;
 }
 
-/** 涨跌角标：折线箭头指向上一次变动后的走向，颜色 = 好(绿)/坏(红)/中性(灰)；
- *  无基线或数值未变时不渲染。testId 仅横排行传入（镜像条是 aria-hidden 副本） */
+/** 涨跌角标：折线箭头指向上一次变动后的走向，红涨绿跌；无基线或数值未变时
+ *  不渲染。testId 仅横排行传入（镜像条是 aria-hidden 副本） */
+function trendTone(dir: "up" | "down"): string {
+  return dir === "up" ? "text-[var(--danger)]" : "text-[var(--success)]";
+}
+
 function TrendBadge({
   kpi,
   testId,
@@ -47,19 +52,13 @@ function TrendBadge({
   kpi: HomeKpiBlock;
   testId?: string;
 }) {
-  const trend = kpiTrendOf(kpi.def, kpi.value, kpi.prev);
+  const trend = kpiTrendOf(kpi.value, kpi.prev);
   if (!trend || kpi.value == null || kpi.prev == null) return null;
-  const tone =
-    trend.tone === "good"
-      ? "text-[var(--success)]"
-      : trend.tone === "bad"
-        ? "text-[var(--danger)]"
-        : "text-[var(--t5)]";
   const Icon = trend.dir === "up" ? TrendingUp : TrendingDown;
   const text = kpiTrendTitle(kpi.def, kpi.value, kpi.prev);
   return (
     <span
-      className={`inline-flex ${tone}`}
+      className={`inline-flex ${trendTone(trend.dir)}`}
       title={text}
       aria-label={text}
       data-testid={testId}
@@ -69,7 +68,8 @@ function TrendBadge({
   );
 }
 
-/** KPI 数字 + 涨跌角标：横排行与居中镜像条共用，字号由调用方的插值传入 */
+/** KPI 数字 + 涨跌角标：横排行与居中镜像条共用，字号由调用方的插值传入；
+ *  有涨跌时数字同色渲染（红涨绿跌），无基线/未变动保持正文色 */
 function KpiNumber({
   kpi,
   size,
@@ -81,10 +81,13 @@ function KpiNumber({
   testIdPrefix: string;
   badgeTestIdPrefix?: string;
 }) {
+  const trend = kpiTrendOf(kpi.value, kpi.prev);
   return (
     <div className="flex items-baseline gap-1.5">
       <motion.div
-        className="num font-semibold leading-none text-[var(--t1)]"
+        className={`num font-semibold leading-none ${
+          trend ? trendTone(trend.dir) : "text-[var(--t1)]"
+        }`}
         style={{ fontSize: size }}
         data-testid={`${testIdPrefix}-${kpi.def.id}`}
       >
@@ -158,7 +161,7 @@ export function HomeHeader({
   const barHeight = useTransform(progress, [0, 1], [28, 0]);
   const labelOpacity = useTransform(progress, [0, 1], [1, 0]);
   const labelHeight = useTransform(progress, [0, 1], [18, 0]);
-  // KPI 横排行收口高度 = pt-3(12) + 标签行 16 + mt-1(4) + 数字行 36 = 68，
+  // KPI 横排行收口高度 = pt-3(12) + 标签行 16 + gap-1(4) + 数字行 36 = 68，
   // 必须与内容严格一致，否则 overflow 裁字/留白
   const bandHeight = useTransform(progress, [0, 1], [68, 0]);
   const bandOpacity = useTransform(progress, [0, 1], [1, 0]);
@@ -247,23 +250,23 @@ export function HomeHeader({
         </motion.div>
       </div>
 
-      {/* KPI 横排行：初始全宽展开，滚动时整行压平收进上方居中镜像条 */}
+      {/* KPI 横排行：初始全宽展开，滚动时整行压平收进上方居中镜像条。
+          px-4 = 相对头部 24px 内缩再让出 16px，首末格不贴窗口边框；
+          收口高度 = pt-3(12) + 标签行 16 + gap-1(4) + 数字行 36 = 68 */}
       <motion.div
         className="overflow-hidden"
         style={{ opacity: bandOpacity, height: bandHeight }}
       >
-        <div className="flex items-end justify-between pt-3">
+        <div className="flex items-start justify-between gap-6 px-4 pt-3">
           {kpis.map((k) => (
-            <div key={k.def.id}>
+            <div key={k.def.id} className="flex flex-col items-center gap-1">
               <div className="text-xs text-[var(--t4)]">{k.def.name}</div>
-              <div className="mt-1">
-                <KpiNumber
-                  kpi={k}
-                  size={kpiBigSize}
-                  testIdPrefix="kpi-value"
-                  badgeTestIdPrefix="kpi-trend"
-                />
-              </div>
+              <KpiNumber
+                kpi={k}
+                size={kpiBigSize}
+                testIdPrefix="kpi-value"
+                badgeTestIdPrefix="kpi-trend"
+              />
             </div>
           ))}
         </div>

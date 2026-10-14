@@ -175,7 +175,7 @@ describe("HomePage 渲染", () => {
     expect(screen.getByTestId("pool-archived")).toHaveTextContent("3");
   });
 
-  it("首页 KPI 涨跌角标：对比上一次变动前的快照基线，向好=绿", () => {
+  it("首页 KPI 涨跌角标：对比上一次变动前的快照基线，红涨绿跌且数字同色", () => {
     const last = {
       completionRate: 70,
       largeCount: 0,
@@ -190,9 +190,15 @@ describe("HomePage 渲染", () => {
     renderHome();
     const badge = screen.getByTestId("kpi-trend-completionRate");
     expect(badge).toHaveAttribute("title", "较上次变动 +1.4%");
-    expect(badge.className).toContain("text-[var(--success)]");
-    // 数值没变的指标不出角标
+    // 涨 = 红，且数字同色
+    expect(badge.className).toContain("text-[var(--danger)]");
+    const num = screen.getByTestId("kpi-value-completionRate");
+    expect(num.className).toContain("text-[var(--danger)]");
+    // 数值没变的指标不出角标、数字保持正文色
     expect(screen.queryByTestId("kpi-trend-largeCount")).not.toBeInTheDocument();
+    expect(screen.getByTestId("kpi-value-largeCount").className).toContain(
+      "text-[var(--t1)]",
+    );
   });
 
   it("归档脉搏：本周归档/打标率/阈值 + 标签 chips + 最近批次脚注", () => {
