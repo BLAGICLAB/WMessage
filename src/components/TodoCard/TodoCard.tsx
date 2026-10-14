@@ -10,7 +10,6 @@ import { createPortal } from "react-dom";
 import {
   Bot,
   FileText,
-  Folder,
   FolderOpen,
   GripVertical,
   History,
@@ -45,9 +44,10 @@ import { FoldToggle } from "../FoldToggle";
 import { ActorAvatar } from "../ActorAvatar";
 import { TracePanel } from "../TracePanel";
 import { useInlineEdit } from "../useInlineEdit";
+import { TaskFileChips } from "../task/TaskFileChips";
 
 import type { CardDrag, TodoCardViewProps } from "./types";
-import { SubtaskRow } from "./SubtaskRow";
+import { SubtaskRow } from "../task/SubtaskRow";
 
 /** 阻止拖拽手柄触发卡片点击编辑（在拖拽手柄 span 上设 pointerdown） */
 const stop = (e: React.PointerEvent) => e.stopPropagation();
@@ -238,9 +238,9 @@ export function TodoCardView({
     onUpdate(task.id, { collapsed: !task.collapsed });
   };
 
+  // 折叠/展开内部封进 TaskFileChips；此处仍需 boundFiles 用于回收站彻底删除的
+  // 三选项弹窗（绑了本地文件时弹「全部删除/保留文件/取消」）
   const boundFiles = taskFiles(task);
-  // 绑定文件折叠：超过 5 个收起到「还有 N 个」
-  const [filesExpanded, setFilesExpanded] = useState(false);
 
   // 点绑定文件名/文件夹名直接打开（不再有 📂 按钮和多选列表）：走 lib/openTarget
   // 的 openFilePath（Rust 侧命令不受前端 opener scope 限；失败 silent 理由见彼处）
@@ -503,70 +503,16 @@ export function TodoCardView({
 
           {boundFiles.length > 0 ? (
             <div className="mt-3 flex flex-col gap-2">
-              {/* 绑定文件 chip 列表：点文件名/文件夹名直接打开；
-              每 chip「复制」字样（复制文件+标题）在解绑 × 前；chip 小字号 + 凹陷底色区分；
-              超过 5 个折叠为「还有 N 个」 */}
-              <div className="flex flex-col gap-1">
-                {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map(
-                  (f) => (
-                    <div
-                      key={f.path}
-                      className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
-                    >
-                      <button
-                        className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
-                        title={`${f.path}（点击打开）`}
-                        onPointerDown={stop}
-                        onClick={() => openFilePath(f.path)}
-                      >
-                        {f.isDir ? (
-                          <Folder
-                            size={11}
-                            aria-hidden
-                            className="inline-block align-[-2px]"
-                          />
-                        ) : (
-                          <Paperclip
-                            size={11}
-                            aria-hidden
-                            className="inline-block align-[-2px]"
-                          />
-                        )}{" "}
-                        {basename(f.path)}
-                      </button>
-                      <button
-                        className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
-                        title="复制文件+标题"
-                        onPointerDown={stop}
-                        onClick={() => copyOneFile(f.path)}
-                      >
-                        复制
-                      </button>
-                      {!archived && !trashed && (
-                        <button
-                          className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
-                          title="移除该文件"
-                          onPointerDown={stop}
-                          onClick={() => removeFile(f.path)}
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
-                  ),
-                )}
-                {boundFiles.length > 5 && (
-                  <button
-                    className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
-                    onPointerDown={stop}
-                    onClick={() => setFilesExpanded((v) => !v)}
-                  >
-                    {filesExpanded
-                      ? "收起"
-                      : `还有 ${boundFiles.length - 5} 个`}
-                  </button>
-                )}
-              </div>
+              {/* chip 列表（与挂件/详情面板共用 TaskFileChips）：折叠态、复制/打开/× 按钮统一走组件 */}
+              <TaskFileChips
+                task={task}
+                variant="compact"
+                onOpenPath={openFilePath}
+                onCopyPath={copyOneFile}
+                onRemovePath={
+                  archived || trashed ? undefined : removeFile
+                }
+              />
               {/* 绑定操作行（只留绑定类按钮；打开=点文件名、复制=chip 内「复制」字样） */}
               {!archived && !trashed && (
                 <div className="flex items-center gap-2">

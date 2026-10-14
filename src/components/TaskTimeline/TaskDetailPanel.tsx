@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUpRight, Bot, FolderOpen, History, Paperclip, Plus } from "lucide-react";
+import { Bot, FolderOpen, History, Paperclip } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
 import { runWithBot } from "../../lib/botRun";
 import { openFilePath } from "../../lib/openTarget";
@@ -11,10 +11,12 @@ import {
   mergeFiles,
   taskFiles,
 } from "../../lib/taskFiles";
-import { DOW1, basename, formatCompletedAt } from "../../format";
+import { DOW1, formatCompletedAt } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import { ActorAvatar } from "../ActorAvatar";
 import { TracePanel } from "../TracePanel";
+import { TaskFileChips } from "../task/TaskFileChips";
+import { SubtaskRow } from "../task/SubtaskRow";
 import {
   DAY_END_MIN,
   DAY_START_MIN,
@@ -142,7 +144,6 @@ export function TaskDetailPanel({
 
   /* ── 文件绑定（与 TodoCard 同通道：bind_files / open_file_path / copy_file_with_title） ── */
   const boundFiles = taskFiles(task);
-  const [filesExpanded, setFilesExpanded] = useState(false);
 
   const pickFile = async () => {
     try {
@@ -436,61 +437,19 @@ export function TaskDetailPanel({
       </div>
       <div className="flex flex-col">
         {(task.subtasks ?? []).map((s) => (
-          <div key={s.id} className="group flex items-center gap-1 py-1">
-            <button
-              type="button"
-              className={`flex min-w-0 flex-1 items-center gap-2 text-left text-xs ${
-                s.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
-              }`}
-              onClick={() => toggleSubtask(s.id)}
-            >
-              <span
-                className={`h-3.5 w-3.5 shrink-0 rounded border ${
-                  s.done
-                    ? "border-[var(--success)] bg-[var(--success)]"
-                    : "border-[var(--edge-strong)]"
-                }`}
-                aria-hidden
-              />
-              {s.text}
-            </button>
-            {/* 行尾动作：已生成卡 → ↗ 跳转，未生成 → ＋ 生成为任务卡；× 删行
-                （已生成行 × = 解除关联保留子卡，语义在 App 侧接线）；悬停显现 */}
-            {s.taskId ? (
-              <button
-                type="button"
-                title="打开生成的任务卡"
-                aria-label={`打开子任务「${s.text}」生成的任务卡`}
-                className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--t2)] group-hover:opacity-100"
-                onClick={() => {
-                  if (s.taskId) onOpenTask?.(s.taskId);
-                }}
-              >
-                <ArrowUpRight size={12} aria-hidden />
-              </button>
-            ) : onCreateSubtaskCard ? (
-              <button
-                type="button"
-                title="生成为任务卡"
-                aria-label={`把子任务「${s.text}」生成为任务卡`}
-                className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--t2)] group-hover:opacity-100"
-                onClick={() => onCreateSubtaskCard(s.id, s.text)}
-              >
-                <Plus size={12} aria-hidden />
-              </button>
-            ) : null}
-            {onDeleteSubtask && (
-              <button
-                type="button"
-                title="删除子任务"
-                aria-label={`删除子任务「${s.text}」`}
-                className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--danger)] group-hover:opacity-100"
-                onClick={() => onDeleteSubtask(s.id)}
-              >
-                ×
-              </button>
-            )}
-          </div>
+          <SubtaskRow
+            key={s.id}
+            sub={s}
+            variant="detail"
+            onToggle={() => toggleSubtask(s.id)}
+            onDelete={onDeleteSubtask ? () => onDeleteSubtask(s.id) : undefined}
+            onOpenCard={onOpenTask ? (cardId) => onOpenTask(cardId) : undefined}
+            onGenerateCard={
+              onCreateSubtaskCard
+                ? () => onCreateSubtaskCard(s.id, s.text)
+                : undefined
+            }
+          />
         ))}
         <input
           className="mt-1 w-full bg-transparent text-xs text-[var(--t2)] outline-none placeholder:text-[var(--t6)]"
@@ -509,61 +468,17 @@ export function TaskDetailPanel({
         文件
       </div>
       {boundFiles.length > 0 ? (
-        <div className="flex flex-col items-start gap-1" aria-live="polite">
-          {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map((f) => (
-            <div
-              key={f.path}
-              className="nm-inset flex max-w-full items-center gap-1 px-2 py-0.5 text-xs"
-            >
-              <button
-                type="button"
-                className="max-w-40 truncate text-[var(--t4)] hover:text-[var(--t2)]"
-                title={f.path}
-                onClick={() => openFilePath(f.path)}
-              >
-                {f.isDir ? "📁 " : "📄 "}
-                {basename(f.path)}
-              </button>
-              {copyState[f.path] ? (
-                <span
-                  className={`shrink-0 text-[10px] font-medium ${
-                    copyState[f.path] === "ok"
-                      ? "text-[var(--success)]"
-                      : "text-[var(--danger)]"
-                  }`}
-                >
-                  {copyState[f.path] === "ok" ? "✓ 已复制" : "复制失败"}
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t2)]"
-                  title="复制到剪贴板"
-                  onClick={() => copyOneFile(f.path)}
-                >
-                  复制
-                </button>
-              )}
-              <button
-                type="button"
-                className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
-                title="移除绑定"
-                aria-label={`移除 ${basename(f.path)}`}
-                onClick={() => removeFile(f.path)}
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          {boundFiles.length > 5 && (
-            <button
-              type="button"
-              className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
-              onClick={() => setFilesExpanded((v) => !v)}
-            >
-              {filesExpanded ? "收起" : `还有 ${boundFiles.length - 5} 个`}
-            </button>
-          )}
+        <div className="flex flex-col items-start gap-1">
+          {/* chip 列表（与主窗口卡片/挂件共用 TaskFileChips，spacious = 详情面板风格：emoji + 复制反馈） */}
+          <TaskFileChips
+            task={task}
+            variant="spacious"
+            onOpenPath={openFilePath}
+            onCopyPath={copyOneFile}
+            onRemovePath={removeFile}
+            removeTitle="移除绑定"
+            copyState={copyState}
+          />
           <div className="flex items-center gap-2">
             {boundFiles.length < MAX_TASK_FILES && (
               <button

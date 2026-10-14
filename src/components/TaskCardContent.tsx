@@ -1,11 +1,7 @@
-import { useState } from "react";
 import type { Task } from "../types";
-import { taskFiles } from "../lib/taskFiles";
-import { basename, formatCompletedAt, formatDue } from "../format";
+import { formatCompletedAt, formatDue } from "../format";
 import {
   Bot,
-  Folder,
-  Paperclip,
   Puzzle,
   Timer,
   TriangleAlert,
@@ -15,6 +11,8 @@ import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
 import { useInlineEdit } from "./useInlineEdit";
 import { planWindowLabel } from "./TaskTimeline/week";
+import { TaskFileChips } from "./task/TaskFileChips";
+import { SubtaskRow } from "./task/SubtaskRow";
 
 /**
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
@@ -72,9 +70,6 @@ export function TaskCardContent({
   const stop = (e: React.PointerEvent) => e.stopPropagation();
   const subtasks = task.subtasks ?? [];
   const doneCount = subtasks.filter((s) => s.done).length;
-  // 绑定文件：点名直开，不再有 📂 多选列表；超过 5 个折叠「还有 N 个」
-  const boundFiles = taskFiles(task);
-  const [filesExpanded, setFilesExpanded] = useState(false);
 
   // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（与主窗口共用）
   const titleEdit = useInlineEdit({
@@ -247,43 +242,13 @@ export function TaskCardContent({
           {subtasks.length > 0 && (
             <div className="mt-2 flex flex-col divide-y divide-[var(--edge)]">
               {subtasks.map((s) => (
-                <div key={s.id} className="flex items-center gap-2 py-1">
-                  <input
-                    type="checkbox"
-                    checked={s.done}
-                    disabled={!onToggleSubtask}
-                    onChange={() => onToggleSubtask?.(s.id)}
-                    onPointerDown={stop}
-                    onClick={(e) => e.stopPropagation()}
-                    className={`shrink-0 w-3.5 h-3.5 accent-[var(--brand)] ${
-                      onToggleSubtask ? "cursor-pointer" : ""
-                    }`}
-                  />
-                  <span
-                    className={`flex-1 min-w-0 truncate text-xs ${
-                      s.done
-                        ? "text-[var(--t5)] line-through"
-                        : "text-[var(--t3)]"
-                    }`}
-                    title={s.text}
-                  >
-                    {s.text}
-                  </span>
-                  {s.taskId && onOpenSubtaskCard && (
-                    <button
-                      className="shrink-0 text-[11px] leading-none text-[var(--t5)] hover:text-[var(--t2)]"
-                      title={`打开子任务「${s.text}」生成的任务卡`}
-                      aria-label={`打开子任务「${s.text}」生成的任务卡`}
-                      onPointerDown={stop}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenSubtaskCard(s.taskId!);
-                      }}
-                    >
-                      ↗
-                    </button>
-                  )}
-                </div>
+                <SubtaskRow
+                  key={s.id}
+                  sub={s}
+                  variant="compact"
+                  onToggle={onToggleSubtask ? () => onToggleSubtask(s.id) : undefined}
+                  onOpenCard={onOpenSubtaskCard}
+                />
               ))}
               <p className="text-[10px] text-[var(--t5)] tabular-nums">
                 {doneCount}/{subtasks.length}
@@ -291,106 +256,18 @@ export function TaskCardContent({
             </div>
           )}
 
-          {/* 绑定文件 chip 列表（与主窗口一致）：点文件名/文件夹名
-              直接打开；每 chip「复制」字样在解绑 × 前；chip 小字号 + 凹陷底色区分；
-              超过 5 个折叠为「还有 N 个」（点击按钮不触发卡片聚焦） */}
-          {boundFiles.length > 0 && (
-            <div className="mt-3 flex flex-col gap-1">
-              {(filesExpanded ? boundFiles : boundFiles.slice(0, 5)).map(
-                (f) => (
-                  <div
-                    key={f.path}
-                    className="nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5"
-                  >
-                    {onOpenFilePath ? (
-                      <button
-                        className="flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate"
-                        title={`${f.path}（点击打开）`}
-                        onPointerDown={stop}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onOpenFilePath(f.path);
-                        }}
-                      >
-                        {f.isDir ? (
-                          <Folder
-                            size={11}
-                            aria-hidden
-                            className="inline-block align-[-2px]"
-                          />
-                        ) : (
-                          <Paperclip
-                            size={11}
-                            aria-hidden
-                            className="inline-block align-[-2px]"
-                          />
-                        )}{" "}
-                        {basename(f.path)}
-                      </button>
-                    ) : (
-                      <p
-                        className="flex-1 min-w-0 text-[11px] text-[var(--t4)] truncate"
-                        title={f.path}
-                      >
-                        {f.isDir ? (
-                          <Folder
-                            size={11}
-                            aria-hidden
-                            className="inline-block align-[-2px]"
-                          />
-                        ) : (
-                          <Paperclip
-                            size={11}
-                            aria-hidden
-                            className="inline-block align-[-2px]"
-                          />
-                        )}{" "}
-                        {basename(f.path)}
-                      </p>
-                    )}
-                    {onCopyFilePath && (
-                      <button
-                        className="shrink-0 text-[10px] text-[var(--t5)] hover:text-[var(--t3)]"
-                        title="复制文件+标题"
-                        onPointerDown={stop}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onCopyFilePath(f.path);
-                        }}
-                      >
-                        复制
-                      </button>
-                    )}
-                    {onRemoveFile && (
-                      <button
-                        className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)] text-sm"
-                        title="移除该文件"
-                        onPointerDown={stop}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRemoveFile(f.path);
-                        }}
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                ),
-              )}
-              {boundFiles.length > 5 && (
-                <button
-                  className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
-                  onPointerDown={stop}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setFilesExpanded((v) => !v);
-                  }}
-                >
-                  {filesExpanded ? "收起" : `还有 ${boundFiles.length - 5} 个`}
-                </button>
-              )}
-            </div>
-          )}
+          {/* 绑定文件 chip 列表（与主窗口共用 TaskFileChips）：点文件名/文件夹名
+              直接打开；每 chip「复制」字样在解绑 × 前；超过 5 个折叠「还有 N 个」 */}
+          <div className="mt-3">
+            <TaskFileChips
+              task={task}
+              variant="compact"
+              onOpenPath={onOpenFilePath}
+              onCopyPath={onCopyFilePath}
+              onRemovePath={onRemoveFile}
+              stopClickPropagation
+            />
+          </div>
 
           {/* 🤖 交给机器人：在折叠段内，复用现有 FoldToggle
               （老板指令：不重新设计折叠窗口，折叠态只露标题，
