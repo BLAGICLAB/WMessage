@@ -17,6 +17,7 @@ import {
 } from "./week";
 import { WeekGrid, type SlotHint } from "./WeekGrid";
 import { TaskPool, loadPoolOpen, savePoolOpen } from "./TaskPool";
+import { isActiveTask, isDoneTask } from "../../lib/taskScope";
 
 type Drag =
   | { kind: "create"; task: Task }
@@ -92,15 +93,9 @@ export function TaskTimelinePage({
   }, [weekStart, weekEnd]);
 
   // 池口径：全部未完成（含已排期——已排期的带时间角标，双向拖拽）
-  const poolTasks = useMemo(
-    () => tasks.filter((t) => t.column !== "done" && !t.deletedAt && !t.archived),
-    [tasks],
-  );
+  const poolTasks = useMemo(() => tasks.filter(isActiveTask), [tasks]);
   // 已完成（未归档未软删）：池底折叠区，点开可进面板恢复待办
-  const doneTasks = useMemo(
-    () => tasks.filter((t) => t.column === "done" && !t.deletedAt && !t.archived),
-    [tasks],
-  );
+  const doneTasks = useMemo(() => tasks.filter(isDoneTask), [tasks]);
   const isCurrentWeek = useMemo(
     () => startOfWeek(now).getTime() === weekStart.getTime(),
     [now, weekStart],

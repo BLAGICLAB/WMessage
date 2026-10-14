@@ -3,6 +3,7 @@ import { Archive, Tags } from "lucide-react";
 import type { Task } from "../types";
 import { sortByOrder } from "../storage";
 import { getArchiveAfterDays } from "../lib/archiveRule";
+import { isArchived } from "../lib/taskScope";
 import { TodoCard } from "./TodoCard";
 import { EmptyState } from "./EmptyState";
 import { TagConsolidateModal } from "./TagConsolidateModal";
@@ -29,7 +30,7 @@ export function ArchivePage({
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [consolidateOpen, setConsolidateOpen] = useState(false);
 
-  const archived = tasks.filter((t) => t.archived && !t.deletedAt);
+  const archived = tasks.filter(isArchived);
 
   // 标签计数（降序）：多标签任务在每个标签下各计一次
   const tagCounts = useMemo(() => {

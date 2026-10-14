@@ -7,6 +7,7 @@ import {
   segsForWeek,
 } from "./week";
 import { PlanBlockView } from "./PlanBlock";
+import { isLive } from "../../lib/taskScope";
 
 const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const HOURS = Array.from({ length: 11 }, (_, i) => 8 + i); // 8..18 刻度
@@ -16,9 +17,7 @@ const GRID_COLS = "52px repeat(7, 1fr)";
  *  已完成原位保留在原时间区间（降饱和 + 绿勾，无划线，点勾恢复待办）。
  *  plan 字段用真值判断——「拖回池/清除计划」写入的显式 null 不得进网格。 */
 function plannedTasks(tasks: Task[]): Task[] {
-  return tasks.filter(
-    (t) => !!t.planStart && !!t.planEnd && !t.deletedAt && !t.archived,
-  );
+  return tasks.filter((t) => !!t.planStart && !!t.planEnd && isLive(t));
 }
 
 /** 拖拽反馈：吸附落点虚线框（网格坐标） */

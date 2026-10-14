@@ -5,6 +5,7 @@
 import type { Task } from "../../types";
 import type { TraceRow } from "../../lib/trace";
 import { startOfWeek } from "../TaskTimeline/week";
+import { isTrashed, isPending, isArchived } from "../../lib/taskScope";
 
 /** 本地日期键 YYYY-MM-DD（与 App.tsx 的 localDateStr 同口径） */
 export function dayKey(d: Date): string {
@@ -22,7 +23,7 @@ function planDayOf(v: string): string {
 export function todayPlanTasks(tasks: Task[], now: Date): Task[] {
   const today = dayKey(now);
   return tasks
-    .filter((t) => !t.deletedAt && t.planStart && planDayOf(t.planStart) === today)
+    .filter((t) => !isTrashed(t) && t.planStart && planDayOf(t.planStart) === today)
     .sort((a, b) => (a.planStart! < b.planStart! ? -1 : 1));
 }
 
@@ -100,7 +101,7 @@ const DUE_HORIZON_DAYS = 7;
 export function dueSoonTasks(tasks: Task[], now: Date): Task[] {
   const horizon = now.getTime() + DUE_HORIZON_DAYS * 86_400_000;
   return tasks
-    .filter((t) => !t.completedAt && !t.archived && !t.deletedAt)
+    .filter(isPending)
     .map((t) => ({ t, due: dueTimeOf(t) }))
     .filter((x): x is { t: Task; due: number } => x.due !== null)
     .filter((x) => x.due <= horizon)
@@ -263,7 +264,7 @@ export function archivePulse(
 ): ArchivePulse {
   const start = startOfWeek(now);
   const archived = tasks
-    .filter((t) => t.archived && !t.deletedAt)
+    .filter(isArchived)
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   const weekCount = archived.filter(
     (t) => (t.updatedAt ?? 0) >= start.getTime(),

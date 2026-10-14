@@ -2,6 +2,7 @@ import { Trash2 } from "lucide-react";
 import type { Task } from "../types";
 import { TodoCard } from "./TodoCard";
 import { EmptyState } from "./EmptyState";
+import { isTrashed } from "../lib/taskScope";
 
 export function TrashPage({
   tasks,
@@ -18,7 +19,7 @@ export function TrashPage({
   // 回收站按删除时间倒序（新删的在前面），原 filter 不打排序
   // 导致顺序依赖任务数组原始 order，删除时间与展示位置对不上
   const trashed = tasks
-    .filter((t) => t.deletedAt)
+    .filter(isTrashed)
     .sort((a, b) => (b.deletedAt ?? 0) - (a.deletedAt ?? 0));
 
   return (

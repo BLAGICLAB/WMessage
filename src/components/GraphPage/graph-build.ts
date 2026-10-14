@@ -4,6 +4,7 @@
 // （默认 7 天，设置页可改）后的存储状态，按归档时间会把跨年完成的任务记错年份（设计 §3.1）。
 
 import type { ColumnId, Task, Workflow } from "../../types";
+import { isTrashed } from "../../lib/taskScope";
 
 export type GraphColorMode = "status" | "owner";
 
@@ -260,6 +261,6 @@ export function buildTaskGraph(
   return {
     nodes: [...nodes.values()],
     links: links.filter((l) => nodes.has(l.source) && nodes.has(l.target)),
-    totalTasks: tasks.filter((t) => !t.deletedAt).length,
+    totalTasks: tasks.filter((t) => !isTrashed(t)).length,
   };
 }

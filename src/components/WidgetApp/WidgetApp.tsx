@@ -63,6 +63,7 @@ import {
 import type { ThemeSetting } from "../../theme";
 import type { Task, WorkspaceItem } from "../../types";
 import { taskFiles, filesPatch } from "../../lib/taskFiles";
+import { isActiveTask, isDoneTask } from "../../lib/taskScope";
 import { ChatPanel } from "../ChatPanel";
 import { FoldToggle } from "../FoldToggle";
 import { ErrorDialogHost } from "../../ui/ErrorDialogHost";
@@ -662,22 +663,10 @@ export default function WidgetApp() {
   const notMine = (t: Task) => Boolean(t.ownerId);
   const notWorkflow = (t: Task) => wfVisible || !isWorkflowTask(t);
   const visible = tasks.filter(
-    (t) =>
-      !notMine(t) &&
-      notWorkflow(t) &&
-      !t.archived &&
-      !t.deletedAt &&
-      t.column !== "done",
+    (t) => !notMine(t) && notWorkflow(t) && isActiveTask(t),
   );
   const doneList = tasks
-    .filter(
-      (t) =>
-        !notMine(t) &&
-        notWorkflow(t) &&
-        !t.archived &&
-        !t.deletedAt &&
-        t.column === "done",
-    )
+    .filter((t) => !notMine(t) && notWorkflow(t) && isDoneTask(t))
     .slice()
     .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
   // 今日口径与主窗口一致（任务页周网格 / 首页任务卡）：planStart 日期 == 本地今天，
