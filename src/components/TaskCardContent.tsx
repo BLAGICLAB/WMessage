@@ -14,6 +14,7 @@ import { DoneCircle } from "./DoneCircle";
 import { FoldToggle } from "./FoldToggle";
 import { ActorAvatar } from "./ActorAvatar";
 import { useInlineEdit } from "./useInlineEdit";
+import { planWindowLabel } from "./TaskTimeline/week";
 
 /**
  * 任务卡展示内容 —— 供挂件（WidgetApp）使用。
@@ -395,12 +396,25 @@ export function TaskCardContent({
 
           {/* 截止时间 + 状态行（两行布局，与主窗口一致）；
               截止已过且未完成 → 徽标标红（与首页到期横条口径一致）；
+              排期窗口 chip：与待办/今日过滤同源的 planStart，只读展示
+              （挂件不排期——排期编辑在任务页详情面板）；
               状态行三态与任务页详情面板一致：
               「未完成」/「机器人执行中…」/「完成 YYYY-MM-DD HH:mm」；
               无截止未完成的普通卡不渲染状态行（保持挂件卡紧凑），
               机器人认领（botAssigned）时强制显示执行中状态 */}
-          {(task.due || task.column === "done" || task.botAssigned) && (
+          {(task.due ||
+            task.planStart ||
+            task.column === "done" ||
+            task.botAssigned) && (
             <div className="mt-2">
+              {(() => {
+                const plan = planWindowLabel(task.planStart, task.planEnd);
+                return plan ? (
+                  <span className="nm-inset px-2 py-1 text-xs shrink-0 mr-1.5 text-[var(--t4)]">
+                    📅 {plan}
+                  </span>
+                ) : null;
+              })()}
               {task.due && (
                 <span
                   className={`nm-inset px-2 py-1 text-xs shrink-0 ${

@@ -220,6 +220,26 @@ export function planChip(planStart: string): string {
   return `${DOW1[(p.day.getDay() + 6) % 7]} ${fmtMin(p.min)}`;
 }
 
+/** 只读排期标签（TodoCard 归档卡 / 挂件卡共用，任务页详情面板有自己的编辑器）：
+ *  "三 09:30–10:30"；planEnd 跨日时附星期 "三 17:30–四 08:30"；无 planStart → null。
+ *  与 planChip 同一套 DOW1/fmtMin 口径，别处不要再手拼排期文案。 */
+export function planWindowLabel(
+  planStart: string | null | undefined,
+  planEnd: string | null | undefined,
+): string | null {
+  if (!planStart) return null;
+  const from = parsePlanDT(planStart);
+  if (!from) return null;
+  const start = `${DOW1[(from.day.getDay() + 6) % 7]} ${fmtMin(from.min)}`;
+  const to = planEnd ? parsePlanDT(planEnd) : null;
+  if (!to) return start;
+  const sameDay = isSameDay(from.day, to.day);
+  const end = sameDay
+    ? fmtMin(to.min)
+    : `${DOW1[(to.day.getDay() + 6) % 7]} ${fmtMin(to.min)}`;
+  return `${start}–${end}`;
+}
+
 /** 从 (day, min) 起沿「日窗口」推进 durMin 分钟：溢出 18:00 折入次日 8:00。
  *  这是「穿透日分割线」的写入侧数学——planEnd 恒为物理墙钟时间
  *  （如周三 17:30 + 60min = 周四 08:30），渲染层按窗口裁剪自然分成两段。 */

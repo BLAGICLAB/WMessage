@@ -15,6 +15,7 @@ import {
   parsePlanDT,
   planChip,
   planColorVar,
+  planWindowLabel,
   planPatchForDrop,
   segsForWeek,
   snapMin,
@@ -195,6 +196,22 @@ describe("颜色与角标", () => {
     expect(planChip("2026-10-07T09:30")).toBe("三 09:30");
     expect(planChip("2026-10-07T10:00")).toBe("三 10:00");
     expect(planChip("垃圾")).toBe("");
+  });
+
+  it("planWindowLabel：无排期 null；同日只带结束时刻；跨日附结束星期", () => {
+    expect(planWindowLabel(null, null)).toBeNull();
+    expect(planWindowLabel(undefined, undefined)).toBeNull();
+    expect(planWindowLabel("垃圾", null)).toBeNull();
+    // 仅开始（无 planEnd）：退化为 planChip 同款
+    expect(planWindowLabel("2026-10-07T09:30", null)).toBe("三 09:30");
+    // 同日窗口
+    expect(planWindowLabel("2026-10-07T09:30", "2026-10-07T10:30")).toBe(
+      "三 09:30–10:30",
+    );
+    // 跨日窗口（周三 17:30 + 60min 折入周四 08:30）
+    expect(planWindowLabel("2026-10-07T17:30", "2026-10-08T08:30")).toBe(
+      "三 17:30–四 08:30",
+    );
   });
 });
 

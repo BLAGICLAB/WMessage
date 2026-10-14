@@ -25,6 +25,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { runWithBot } from "../../lib/botRun";
 import { openFilePath } from "../../lib/openTarget";
+import { planWindowLabel } from "../TaskTimeline/week";
 import { useConfirm } from "../../lib/useConfirm";
 import {
   taskFiles,
@@ -693,6 +694,17 @@ export function TodoCardView({
           第二行：状态标签（未完成 / 完成 YYYY-MM-DD HH:mm）+ 删除按钮，两态布局一致；
             ml-2.5 空一个字符宽对齐截止时间文字，删除按钮 ml-auto 推到行尾 + text-[14px] 稳定 emoji。 */}
           <div className="mt-2">
+            {/* 排期窗口（只读，归档/回收站回看用）：与任务页详情面板同一数据、同一文案口径 */}
+            {(() => {
+              const plan = planWindowLabel(task.planStart, task.planEnd);
+              return plan ? (
+                <div className="mb-1.5">
+                  <span className="nm-inset px-2 py-1 text-xs text-[var(--t4)]">
+                    📅 {plan}
+                  </span>
+                </div>
+              ) : null;
+            })()}
             <div className="flex items-center gap-1">
               {dueEditing && !archived && !trashed ? (
                 <input
