@@ -88,6 +88,7 @@ import {
 import { SkillsPanel } from "./SkillsPanel";
 import { WordTemplatePanel } from "./WordTemplatePanel";
 import { BubbleStyleCard } from "./BubbleStyleCard";
+import { HomeKpiPanel } from "./HomeKpiPanel";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { MemoryPanel } from "./MemoryPanel";
@@ -2087,6 +2088,9 @@ export function SettingsPage({
                 {/* 归档天数等 setConfig 字段靠本卡保存钮落盘（同机器人卡模式） */}
                 {renderSaveButton("mt-3 flex justify-end")}
               </div>
+
+              {/* 首页 KPI 指标：8 选 4 + 调序，localStorage 即点即生效（首页事件同步） */}
+              <HomeKpiPanel />
 
               {/* 执行痕迹清理（trace 三表 + 回滚快照保留期；trace_clear_before 命令） */}
               <div className="nm-card p-5">

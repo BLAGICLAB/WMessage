@@ -3,7 +3,9 @@
 // 进度源 = main 滚动容器的 scrollY（0 → COLLAPSE_PX 线性映射 + spring 平滑）；
 // 颜色不参与插值（motion 无法混 CSS 变量），分隔线用独立元素的透明度渐入。
 // 欢迎区：姓名取设置里个人资料的用户名；小字只统计今日计划/今日完成，
-// 其下进度条 = 今日完成率（参考案例的分段条语言：实心段 + 斜纹余量）。
+// 其下进度条 = 今日完成率。右侧 = 自定义 KPI 横排（8 选 4，选择在设置页
+// 数据管理）：标签在上大数字在下，涨跌角标对比上一次变动前的快照基线，
+// 红/绿 = 变坏/变好（口径见 homeKpi.ts goodWhen），收缩时随标签一并隐去。
 
 import {
   motion,
@@ -11,8 +13,16 @@ import {
   useScroll,
   useSpring,
   useTransform,
+  type MotionValue,
 } from "framer-motion";
-import { greetingOf, type PlanPhases, type PoolCounts } from "./homeData";
+import { TrendingDown, TrendingUp } from "lucide-react";
+import { greetingOf, type PlanPhases } from "./homeData";
+import {
+  formatKpiValue,
+  kpiTrendOf,
+  kpiTrendTitle,
+  type HomeKpiBlock,
+} from "../../lib/homeKpi";
 
 /** 从顶部滚动多少 px 完成收缩 */
 const COLLAPSE_PX = 150;
@@ -21,6 +31,38 @@ const WEEKDAY = ["周日", "周一", "周二", "周三", "周四", "周五", "�
 
 function dateChipOf(now: Date): string {
   return `${now.getMonth() + 1}月${now.getDate()}日 ${WEEKDAY[now.getDay()]}`;
+}
+
+/** 涨跌角标：折线箭头指向上一次变动后的走向，颜色 = 好(绿)/坏(红)/中性(灰)；
+ *  无基线或数值未变时不渲染。收缩时随 opacity 渐隐 */
+function TrendBadge({
+  kpi,
+  opacity,
+}: {
+  kpi: HomeKpiBlock;
+  opacity: MotionValue<number>;
+}) {
+  const trend = kpiTrendOf(kpi.def, kpi.value, kpi.prev);
+  if (!trend || kpi.value == null || kpi.prev == null) return null;
+  const tone =
+    trend.tone === "good"
+      ? "text-[var(--success)]"
+      : trend.tone === "bad"
+        ? "text-[var(--danger)]"
+        : "text-[var(--t5)]";
+  const Icon = trend.dir === "up" ? TrendingUp : TrendingDown;
+  const text = kpiTrendTitle(kpi.def, kpi.value, kpi.prev);
+  return (
+    <motion.span
+      className={`inline-flex ${tone}`}
+      style={{ opacity }}
+      title={text}
+      aria-label={text}
+      data-testid={`kpi-trend-${kpi.def.id}`}
+    >
+      <Icon size={13} strokeWidth={2.2} aria-hidden />
+    </motion.span>
+  );
 }
 
 /** 今日完成率进度条（实心段内嵌百分比，余量斜纹）；参考案例的同款语言 */
@@ -51,13 +93,13 @@ function ProgressBar({ done, planned }: { done: number; planned: number }) {
 export function HomeHeader({
   name,
   phases,
-  pools,
+  kpis,
   now,
   scrollRef,
 }: {
   name: string;
   phases: PlanPhases;
-  pools: PoolCounts;
+  kpis: HomeKpiBlock[];
   now: Date;
   scrollRef: React.RefObject<HTMLElement | null>;
 }) {
@@ -69,7 +111,7 @@ export function HomeHeader({
   const progress = reduceMotion ? raw : spring;
 
   const titleSize = useTransform(progress, [0, 1], [24, 14.5]);
-  const kpiSize = useTransform(progress, [0, 1], [26, 16]);
+  const kpiSize = useTransform(progress, [0, 1], [28, 15.5]);
   const kpiGap = useTransform(progress, [0, 1], [26, 14]);
   const subOpacity = useTransform(progress, [0, 1], [1, 0]);
   const subHeight = useTransform(progress, [0, 1], [24, 0]);
@@ -84,11 +126,6 @@ export function HomeHeader({
   const summary = planned
     ? `今日计划 ${planned}，已完成 ${phases.done}`
     : "今天还没有排期，去任务页拖一段上来。";
-  const kpis: { value: number; label: string }[] = [
-    { value: pools.todo, label: "待办" },
-    { value: pools.done, label: "完成" },
-    { value: pools.archived, label: "归档" },
-  ];
 
   return (
     // 吸附矩形按规范内缩滚动容器的 padding（main 的 p-6）：top/-mt/pt 三者用
@@ -127,23 +164,27 @@ export function HomeHeader({
         </div>
 
         <motion.div
-          className="flex shrink-0 items-baseline"
+          className="flex shrink-0 items-end"
           style={{ gap: kpiGap }}
         >
           {kpis.map((k) => (
-            <div key={k.label} className="text-right">
-              <motion.div
-                className="num font-semibold leading-none text-[var(--t1)]"
-                style={{ fontSize: kpiSize }}
-              >
-                {k.value}
-              </motion.div>
+            <div key={k.def.id} className="text-right">
               <motion.div
                 className="overflow-hidden text-xs text-[var(--t4)]"
                 style={{ opacity: labelOpacity, height: labelHeight }}
               >
-                {k.label}
+                {k.def.name}
               </motion.div>
+              <div className="flex items-baseline justify-end gap-1">
+                <motion.div
+                  className="num font-semibold leading-none text-[var(--t1)]"
+                  style={{ fontSize: kpiSize }}
+                  data-testid={`kpi-value-${k.def.id}`}
+                >
+                  {formatKpiValue(k.def, k.value)}
+                </motion.div>
+                <TrendBadge kpi={k} opacity={labelOpacity} />
+              </div>
             </div>
           ))}
         </motion.div>

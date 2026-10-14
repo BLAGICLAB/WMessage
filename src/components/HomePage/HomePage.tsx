@@ -25,11 +25,22 @@ import {
 } from "../../profile";
 import {
   archivePulse,
-  poolCounts,
   planPhases,
   weeklyBuckets,
   plannedTasksByDay,
 } from "./homeData";
+import {
+  computeHomeKpis,
+  getHomeKpiSelection,
+  kpiDefById,
+  readKpiSnapshot,
+  rollKpiSnapshot,
+  subscribeHomeKpiSelection,
+  writeKpiSnapshot,
+  type HomeKpiBlock,
+  type KpiId,
+  type KpiValues,
+} from "../../lib/homeKpi";
 import { HomeHeader } from "./HomeHeader";
 import { BingCard } from "./BingCard";
 import { DueTicker } from "./DueTicker";
@@ -143,8 +154,37 @@ export function HomePage({
   useTauriListen(NOTIFICATIONS_CHANGED_EVENT, loadNotifications);
 
   const phases = useMemo(() => planPhases(tasks, now), [tasks, now]);
-  const pools = useMemo(() => poolCounts(tasks), [tasks]);
   const week = useMemo(() => weeklyBuckets(tasks, now), [tasks, now]);
+
+  // 首页 KPI（8 选 4，选择在设置页数据管理）：口径纯计算；涨跌基线 =
+  // 本地快照里的「上一次变动前」，数值变动时滚动（旧值升格为基线）
+  const kpiValues = useMemo(() => computeHomeKpis(tasks, now), [tasks, now]);
+  // 基线惰性取自快照（同 getProfileCache 先例），首帧即有涨跌角标不闪烁
+  const [kpiPrev, setKpiPrev] = useState<KpiValues | null>(() =>
+    rollKpiSnapshot(readKpiSnapshot(), kpiValues).prev,
+  );
+  useEffect(() => {
+    const { prev, next } = rollKpiSnapshot(readKpiSnapshot(), kpiValues);
+    setKpiPrev(prev);
+    if (next) writeKpiSnapshot(next);
+  }, [kpiValues]);
+  const [kpiSelection, setKpiSelection] = useState<KpiId[]>(() =>
+    getHomeKpiSelection(),
+  );
+  useEffect(
+    () => subscribeHomeKpiSelection(() => setKpiSelection(getHomeKpiSelection())),
+    [],
+  );
+  const kpiBlocks = useMemo<HomeKpiBlock[]>(
+    () =>
+      kpiSelection.flatMap((id) => {
+        const def = kpiDefById.get(id);
+        return def
+          ? [{ def, value: kpiValues[id], prev: kpiPrev?.[id] ?? null }]
+          : [];
+      }),
+    [kpiSelection, kpiValues, kpiPrev],
+  );
   const { keys: dayKeys } = useMemo(
     () => plannedTasksByDay(tasks, now),
     [tasks, now],
@@ -170,7 +210,7 @@ export function HomePage({
       <HomeHeader
         name={userName}
         phases={phases}
-        pools={pools}
+        kpis={kpiBlocks}
         now={now}
         scrollRef={scrollRef}
       />

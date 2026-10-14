@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { HomePage } from "./HomePage";
 import type { Task } from "../../types";
 import type { TraceRow } from "../../lib/trace";
+import { writeKpiSnapshot } from "../../lib/homeKpi";
 
 // —— Tauri mocks：invoke 按 command 名路由（trace_list / notifications_list）——
 const invokeMock = vi.fn();
@@ -92,6 +93,7 @@ const NOTIFICATIONS = [
 ];
 
 beforeEach(() => {
+  localStorage.clear();
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "trace_list") return TRACES;
@@ -140,15 +142,6 @@ function renderHome(tasks: Task[] = TASKS) {
   );
 }
 
-/** KPI 大数字：KPI 标签在 text-right 块里（阶段条也有「已完成」字样，按容器区分） */
-function kpiValue(label: string): string {
-  const el = screen
-    .getAllByText(label)
-    .find((e) => e.closest(".text-right"));
-  expect(el).toBeDefined();
-  return el!.previousElementSibling!.textContent ?? "";
-}
-
 describe("HomePage 渲染", () => {
   it("欢迎区：问候带个人资料姓名 + 小字只统计今日计划/完成", () => {
     renderHome();
@@ -166,11 +159,33 @@ describe("HomePage 渲染", () => {
     expect(fill.textContent).toBe("33%");
   });
 
-  it("KPI 三池真实计数：待办 4 / 完成 7 / 归档 3", () => {
+  it("首页 KPI 默认 4 项真实计数：完成率 10/14、大型任务族 0", () => {
     renderHome();
-    expect(kpiValue("待办")).toBe("4");
-    expect(kpiValue("完成")).toBe("7");
-    expect(kpiValue("归档")).toBe("3");
+    // 14 张有效卡（未删，含归档）里 10 张有完成时间；fixture 无任何关联关系
+    expect(screen.getByTestId("kpi-value-completionRate")).toHaveTextContent("71.4%");
+    expect(screen.getByTestId("kpi-value-largeCount")).toHaveTextContent("0");
+    expect(screen.getByTestId("kpi-value-largeRatio")).toHaveTextContent("0%");
+    expect(screen.getByTestId("kpi-value-largeDoneRate")).toHaveTextContent("—");
+  });
+
+  it("首页 KPI 涨跌角标：对比上一次变动前的快照基线，向好=绿", () => {
+    const last = {
+      completionRate: 70,
+      largeCount: 0,
+      largeRatio: 0,
+      largeDoneRate: 0,
+      onTimeRate: 0,
+      overdueCount: 0,
+      planRate: 0,
+      shelfDuration: null,
+    };
+    writeKpiSnapshot({ last, prev: null });
+    renderHome();
+    const badge = screen.getByTestId("kpi-trend-completionRate");
+    expect(badge).toHaveAttribute("title", "较上次变动 +1.4%");
+    expect(badge.className).toContain("text-[var(--success)]");
+    // 数值没变的指标不出角标
+    expect(screen.queryByTestId("kpi-trend-largeCount")).not.toBeInTheDocument();
   });
 
   it("归档脉搏：本周归档/打标率/阈值 + 标签 chips + 最近批次脚注", () => {
