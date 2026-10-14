@@ -25,15 +25,18 @@
 | 前端#10-14 微项 | ⏸ Wave2 | 10-50 行小批 |
 | 双自检状态机合并 | ⏸ P3 | 两套刚各自跑稳，合并属可选 shrink |
 | Rust#2 DB 样板 mutex_poisoned 183 → 43 | ✅ `33a386d` | 140 处替换；43 处按语义保留（map_err/TryLock/Condvar/profile ENV_LOCK 等） |
-| Rust#3 escape/truncate 8 实现 + 同名分叉 | ✅ `d6c8c9e` | log_sanitize 单源；弱版 → 强版升级（控制字符 + U+2028/2029 显式转义）+ ratelimit typo 顺手修 |
+| Rust#3 escape/truncate 8 实现 + 同名分叉 | ✅ `6d8b526`（接线漏项补于 `a6fe2ad`） | log_sanitize 单源——原提交漏声明 bot.rs 模块，204 行实现+14 测试一直是死文件；a6fe2ad 补声明 + config/audit.rs 强版改转发（逐字符臂逐字节一致）。仍存：audit.rs 弱版（迁强版是行为变更待拍板）、paths.rs 内联等价版、ratelimit sanitize_log_line（自含） |
 | 续扫 Rust#1 profile 测试侧 22 处 ENV_LOCK | ✅ `041727b` | Wave2 漏改的测试侧粘贴补齐（lock_or_recover），-66 行 |
 | 续扫 前端#1 SettingsPage 工具按钮类 21 处 | ✅ `10d56f5` | main.css `.btn-sm-action` @apply 单源，4 种子形态统一 |
 | 续扫 Rust#2 三件套样板迁 `with_write_conn` | ✅ `194c826` | 36 处中 12 处精确匹配迁移（净 -113 行）；24 处有据保留（嵌入持锁前算好 7 / 无锁纯读 11 / 类型化错误 1 / 非 DB 1 / 形态不合 4）|
 | 续扫 Rust 杂 mutex 毒化 5 处（audit×2 / config×2 / corrections×2） | ✅ `6292ae3` | part C 收尾；corrections 2 处原无 eprintln，lock_or_recover 补齐审计纪律（规范化） |
 | 续扫 前端#4 modal 模板 9 处 | ✅ `f1d0e7e` | src/ui/Modal.tsx 单组件（backdrop 类串调用方全给 + cloneElement 注入 stopProp + onClose/closeOnOutside/closeOnEsc/portal 四开关）；ErrorDialogHost 与 DeleteConfirmDialog 关闭触发 click→pointerdown（dismissal-only）；Esc effect 并入 |
-| 续扫 前端 tasks filter 8 处 / 中 ROI 散点 7 项 | ⏸ 待拍板 | ~215 行，中风险（8 个独立业务口径需细颗粒 predicate） |
+| 续扫 前端 tasks filter 8 处 | ✅ `af728b9` | lib/taskScope.ts 六原子谓词（isTrashed/isLive/isArchived/isActiveTask/isDoneTask/isPending）+6 测；9 调用点收口：时间线池×2 / 挂件双列表 / 周网格 / 首页×3 / 归档页 / 回收站 / 图谱统计；到期按 completedAt 与完成列两口径差异注释显式保留 |
+| 续扫 中 ROI 散点 7 项 | ✅ `260d752` + `a6fe2ad` | 前端：useNowTick 时钟×3 / useDismissable 浮层双监听×3 / stopPointer 本地定义×7+内联×4 / 时间戳格式三形态入 format.ts（各处显示逐字不变）；Rust：fence×3 归 strip_fences / setup_conn×6 归 db::test_conn / truncate_chars 归 log_sanitize（连带接线修复） |
 
-**累计净删 ~1,070+ 行**（Wave2 两批 + Wave3 P1-A + 前端 #2-#4）。
+**累计净删 ~1,070+ 行**（Wave2 两批 + Wave3 P1-A + 前端 #2-#4）。收官的
+tasks filter/散点两笔是单源化而非净删：新增测试与共享 hook 文件抵消了删除行，
+收益在口径/实现单源 + log_sanitize 死文件复活（原 6d8b526 漏声明模块）。
 
 ## 总览
 
