@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, Tags } from "lucide-react";
 import type { Task } from "../types";
 import { sortByOrder } from "../storage";
@@ -19,18 +19,51 @@ export function ArchivePage({
   onUpdate,
   onDelete,
   onOpenSubtaskCard,
+  highlightTaskId,
+  onClearHighlight,
 }: {
   tasks: Task[];
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
   /** 子任务行已生成任务卡时显示 ↗；点击跳主窗口编辑页 */
   onOpenSubtaskCard?: (cardId: string) => void;
+  /** 时间泳道双击归档卡的定位目标：滚动居中 + 紫边框标记（点卡/改筛选/切页即清） */
+  highlightTaskId?: string | null;
+  /** 任一归档区交互后清除定位态（App 侧清 archiveFocus） */
+  onClearHighlight?: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [consolidateOpen, setConsolidateOpen] = useState(false);
+  const locateRef = useRef<HTMLDivElement | null>(null);
 
   const archived = tasks.filter(isArchived);
+
+  // 跳转定位：目标卡被当前搜索/标签筛选隐藏时清掉对应筛选，保证卡可见。
+  // 用渲染期派生调整（React 推荐模式）而非 effect——effect 里 setState 会级联渲染；
+  // 清筛选后的滚动由下方 effect 在下一轮 commit 补跑
+  const target = highlightTaskId
+    ? archived.find((x) => x.id === highlightTaskId)
+    : undefined;
+  const q = query.trim().toLowerCase();
+  const targetHidden =
+    !!target &&
+    ((q !== "" && !`${target.title} ${target.note ?? ""}`.toLowerCase().includes(q)) ||
+      (activeTag !== null && !(target.tags ?? []).includes(activeTag)));
+  const [prevFocus, setPrevFocus] = useState<string | null>(null);
+  const focusKey = highlightTaskId ?? null;
+  if (focusKey !== prevFocus) {
+    setPrevFocus(focusKey);
+    if (focusKey && targetHidden) {
+      setQuery("");
+      setActiveTag(null);
+    }
+  }
+  useEffect(() => {
+    if (highlightTaskId) {
+      locateRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [highlightTaskId, query, activeTag]);
 
   // 标签计数（降序）：多标签任务在每个标签下各计一次
   const tagCounts = useMemo(() => {
@@ -67,7 +100,10 @@ export function ArchivePage({
         <div className="flex items-center gap-2">
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              onClearHighlight?.();
+            }}
             placeholder="搜索归档内容…"
             className="nm-inset flex-1 rounded-xl px-4 py-2.5 text-sm text-[var(--t2)] outline-none"
           />
@@ -115,7 +151,10 @@ export function ArchivePage({
                     ? "nm-inset text-[var(--t1)] font-medium"
                     : "nm-outset text-[var(--t4)] hover:text-[var(--t2)]"
                 }`}
-                onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+                onClick={() => {
+                  setActiveTag(activeTag === tag ? null : tag);
+                  onClearHighlight?.();
+                }}
               >
                 # {tag}
                 <span className="ml-1 tabular-nums text-[var(--t5)]">
@@ -139,16 +178,26 @@ export function ArchivePage({
         </p>
       ) : (
         <div className="mt-4 grid grid-cols-3 gap-4 items-start">
-          {filtered.map((t) => (
-            <TodoCard
-              key={t.id}
-              task={displayTask(t)}
-              onUpdate={onUpdate}
-              onDelete={onDelete}
-              onOpenSubtaskCard={onOpenSubtaskCard}
-              archived
-            />
-          ))}
+          {filtered.map((t) => {
+            const located = t.id === highlightTaskId;
+            return (
+              <div
+                key={t.id}
+                data-task-id={t.id}
+                ref={located ? locateRef : undefined}
+                className={located ? "archive-locate" : undefined}
+                onClick={onClearHighlight}
+              >
+                <TodoCard
+                  task={displayTask(t)}
+                  onUpdate={onUpdate}
+                  onDelete={onDelete}
+                  onOpenSubtaskCard={onOpenSubtaskCard}
+                  archived
+                />
+              </div>
+            );
+          })}
         </div>
       )}
 

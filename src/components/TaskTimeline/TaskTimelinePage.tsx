@@ -35,6 +35,7 @@ export function TaskTimelinePage({
   onUpdate,
   onSetColumn,
   onOpenTask,
+  onOpenArchived,
 }: {
   tasks: Task[];
   onNewTask?: () => void;
@@ -43,6 +44,8 @@ export function TaskTimelinePage({
   onSetColumn?: (taskId: string, col: ColumnId) => void;
   /** 双击块/池项 → 打开全局编辑浮窗（App 侧按 id 解析） */
   onOpenTask?: (id: string) => void;
+  /** 双击已归档块 → 跳归档区定位该卡（App 侧切视图 + 高亮） */
+  onOpenArchived?: (id: string) => void;
 }) {
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   // 「现在」单一时间源：页头今天回跳与网格现在线共用，每分钟校准
@@ -378,6 +381,7 @@ export function TaskTimelinePage({
             bodyRef={gridBodyRef}
             onSetColumn={onSetColumn}
             onBlockDoubleClick={(t) => onOpenTask?.(t.id)}
+            onArchivedDoubleClick={(t) => onOpenArchived?.(t.id)}
             onBlockPointerDown={(task, kind, e) => {
               if (!onUpdate || !task.planStart || !task.planEnd) return;
               startDrag(e, { kind, task });

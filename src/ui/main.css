@@ -1324,6 +1324,94 @@
     opacity: 0.68;
     filter: saturate(0.35);
   }
+  /* 已归档：封存态原位保留（双击跳归档区，无拖拽无对勾）。
+     虚线边 = 封存信号（实线块都是「活的」）；置于 is-done 之后，
+     「已完成满 N 天自动归档」的卡两态并存时归档样式胜出 */
+  .plan-blk.is-archived {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--c) 42%, var(--edge));
+    background: color-mix(in srgb, var(--c) 7%, var(--inset-bg));
+    box-shadow: none;
+    opacity: 0.88;
+    filter: saturate(0.32);
+    cursor: pointer;
+  }
+  .plan-blk.is-archived::before {
+    background: color-mix(in srgb, var(--c) 45%, var(--edge));
+  }
+  .plan-blk.is-archived:hover {
+    transform: translateY(-1px);
+    filter: saturate(0.5);
+    box-shadow: 0 3px 8px color-mix(in srgb, var(--c) 14%, transparent);
+  }
+  .dark .plan-blk.is-archived {
+    background: linear-gradient(
+      150deg,
+      color-mix(in srgb, var(--c) 26%, var(--inset-bg)) 0%,
+      var(--inset-bg) 75%
+    );
+    border-color: color-mix(in srgb, var(--c) 35%, var(--edge));
+    box-shadow: none;
+  }
+  .dark .plan-blk.is-archived:hover {
+    box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent);
+  }
+  /* 已归档印章：红底白描边内圈 + 微旋转（盖章隐喻）；薄块平贴不转 */
+  .plan-stamp {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    color: #fff;
+    background: #d9463e;
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    box-shadow:
+      inset 0 0 0 1.5px #d9463e,
+      0 1px 2px rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    padding: 0.5px 4px 0.5px 5.5px;
+    transform: rotate(-4deg);
+  }
+  .plan-stamp.is-flat {
+    transform: none;
+    letter-spacing: 1px;
+  }
+  /* 塌缩簇（lane ≥ 3）里放不下文字，印章退化为红点（白内圈沿用） */
+  .plan-stamp-dot {
+    width: 10px;
+    height: 10px;
+    flex: none;
+    border-radius: 999px;
+    background: #d9463e;
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    box-shadow: inset 0 0 0 1px #d9463e;
+  }
+  /* 归档定位态：时间泳道双击归档卡跳转过来，目标卡紫边框 + 到达脉冲。
+     保留到下一次交互（点卡/改筛选/切页即清，清逻辑在 ArchivePage/App） */
+  .archive-locate {
+    border-radius: var(--r-lg);
+    outline: 2px solid var(--plan-violet);
+    outline-offset: 3px;
+    animation: archive-locate-pulse 0.85s ease-out 2;
+  }
+  @keyframes archive-locate-pulse {
+    0% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--plan-violet) 32%, transparent);
+    }
+    60% {
+      box-shadow: 0 0 0 10px color-mix(in srgb, var(--plan-violet) 0%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .archive-locate {
+      animation: none;
+    }
+  }
   /* 小尺寸对勾的点击热区：视觉 12px、可点 ~22px，扩展区不占布局 */
   .done-circle::after {
     content: "";

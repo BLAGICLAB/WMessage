@@ -7,17 +7,17 @@ import {
   segsForWeek,
 } from "./week";
 import { PlanBlockView } from "./PlanBlock";
-import { isLive } from "../../lib/taskScope";
+import { isArchived, isTrashed } from "../../lib/taskScope";
 
 const DOW = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 const HOURS = Array.from({ length: 11 }, (_, i) => 8 + i); // 8..18 刻度
 const GRID_COLS = "52px repeat(7, 1fr)";
 
-/** 已排期任务集：软删/归档不上网格（回收站/归档页看）。
- *  已完成原位保留在原时间区间（降饱和 + 绿勾，无划线，点勾恢复待办）。
+/** 已排期任务集：软删不上网格（回收站看）；归档卡原位保留在原时间区间
+ *  （封存态渲染，双击跳归档区定位——已完成的先例：历史不消失）。
  *  plan 字段用真值判断——「拖回池/清除计划」写入的显式 null 不得进网格。 */
 function plannedTasks(tasks: Task[]): Task[] {
-  return tasks.filter((t) => !!t.planStart && !!t.planEnd && isLive(t));
+  return tasks.filter((t) => !!t.planStart && !!t.planEnd && !isTrashed(t));
 }
 
 /** 拖拽反馈：吸附落点虚线框（网格坐标） */
@@ -40,6 +40,7 @@ export function WeekGrid({
   bodyRef,
   onBlockPointerDown,
   onBlockDoubleClick,
+  onArchivedDoubleClick,
   onSetColumn,
 }: {
   tasks: Task[];
@@ -55,6 +56,8 @@ export function WeekGrid({
   onBlockPointerDown?: (task: Task, kind: "move" | "resize", e: React.PointerEvent) => void;
   /** 双击块身开详情面板（单击/拖拽不再开，防误触） */
   onBlockDoubleClick?: (task: Task) => void;
+  /** 双击已归档块 → 跳归档区定位该卡（归档块无拖拽无对勾，其余不可操作） */
+  onArchivedDoubleClick?: (task: Task) => void;
   /** 块对勾的完成/恢复通道（缺省不渲染对勾） */
   onSetColumn?: (taskId: string, col: ColumnId) => void;
 }) {
@@ -149,33 +152,43 @@ export function WeekGrid({
             if (g) g.push(s);
             else clusters.set(s.cluster, [s]);
           }
-          const blk = (s: (typeof segs)[number], collapsed = false) => (
-            <PlanBlockView
-              key={`${s.task.id}-${s.startMin}`}
-              seg={s}
-              task={s.task}
-              color={planColorVar(s.task.tags)}
-              dimmed={draggingTaskId === s.task.id}
-              fresh={freshTaskId === s.task.id}
-              done={s.task.column === "done"}
-              collapsed={collapsed}
-              onSetColumn={onSetColumn}
-              onPointerDown={
-                onBlockPointerDown
-                  ? (e) => {
-                      if (e.button !== 0) return;
-                      const kind = (e.target as HTMLElement).closest("[data-grip]")
-                        ? "resize"
-                        : "move";
-                      onBlockPointerDown(s.task, kind, e);
-                    }
-                  : undefined
-              }
-              onDoubleClick={
-                onBlockDoubleClick ? () => onBlockDoubleClick(s.task) : undefined
-              }
-            />
-          );
+          const blk = (s: (typeof segs)[number], collapsed = false) => {
+            const arch = isArchived(s.task);
+            return (
+              <PlanBlockView
+                key={`${s.task.id}-${s.startMin}`}
+                seg={s}
+                task={s.task}
+                color={planColorVar(s.task.tags)}
+                dimmed={draggingTaskId === s.task.id}
+                fresh={freshTaskId === s.task.id}
+                done={s.task.column === "done"}
+                archived={arch}
+                collapsed={collapsed}
+                onSetColumn={arch ? undefined : onSetColumn}
+                onPointerDown={
+                  !arch && onBlockPointerDown
+                    ? (e) => {
+                        if (e.button !== 0) return;
+                        const kind = (e.target as HTMLElement).closest("[data-grip]")
+                          ? "resize"
+                          : "move";
+                        onBlockPointerDown(s.task, kind, e);
+                      }
+                    : undefined
+                }
+                onDoubleClick={
+                  arch
+                    ? onArchivedDoubleClick
+                      ? () => onArchivedDoubleClick(s.task)
+                      : undefined
+                    : onBlockDoubleClick
+                      ? () => onBlockDoubleClick(s.task)
+                      : undefined
+                }
+              />
+            );
+          };
           return (
             <div
               key={day.toDateString()}

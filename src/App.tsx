@@ -246,6 +246,12 @@ function App() {
   const tasksRef = useRef<Task[]>([]);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [view, setView] = useState<RailView | "settings">("home");
+  // 归档定位目标（时间泳道双击归档卡 → 归档区滚动定位 + 紫边框）。
+  // 切出归档视图即清（定位态只活在当下这次跳转）。
+  const [archiveFocus, setArchiveFocus] = useState<string | null>(null);
+  useEffect(() => {
+    if (view !== "archive") setArchiveFocus(null);
+  }, [view]);
   // main 滚动容器 ref：首页吸顶头部的滚动进度源（useScroll container）
   const mainRef = useRef<HTMLElement>(null);
   // Agent 通知中心待处理数（导航角标；notifications-changed 广播驱动刷新）
@@ -687,6 +693,11 @@ function App() {
     const t = tasksRef.current.find((x) => x.id === id);
     if (t) jumpToTask(t);
   };
+  // 时间泳道双击已归档卡：切到归档区并定位该卡（ArchivePage 滚动 + 紫边框）
+  const jumpToArchive = (id: string) => {
+    setArchiveFocus(id);
+    setView("archive");
+  };
 
   // 子任务行一键生成子任务卡：新卡进待办（todo）带 parentId 指回母卡；
   // 同一 mutate 内原子回写子任务行的 taskId（行上 ↗ 标记），写失败整批不落
@@ -1036,6 +1047,7 @@ function App() {
               onUpdate={updateTask}
               onSetColumn={setTaskColumn}
               onOpenTask={jumpToTaskId}
+              onOpenArchived={jumpToArchive}
             />
           ) : view === "workflow" ? (
             <WorkflowPage
@@ -1066,6 +1078,8 @@ function App() {
               onUpdate={updateTask}
               onDelete={deleteTask}
               onOpenSubtaskCard={jumpToTaskId}
+              highlightTaskId={archiveFocus}
+              onClearHighlight={() => setArchiveFocus(null)}
             />
           ) : view === "workspace" ? (
             <WorkspacePage />

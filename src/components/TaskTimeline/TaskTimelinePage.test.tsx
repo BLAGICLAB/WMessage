@@ -27,6 +27,7 @@ const TASKS: Task[] = [
   mk({ id: "t4", title: "已删除任务丁", deletedAt: 5 }),
   mk({ id: "t5", title: "已归档任务戊", archived: true }),
   mk({ id: "t6", title: "已排期任务己", tags: ["开发"], planStart: dt(day(0), "14:00"), planEnd: dt(day(0), "15:00") }),
+  mk({ id: "t7", title: "已归档排期任务庚", archived: true, planStart: dt(day(3), "09:00"), planEnd: dt(day(3), "10:30") }),
 ];
 
 beforeEach(() => {
@@ -326,6 +327,47 @@ describe("TaskTimelinePage", () => {
     // 双击块身 → 打开浮窗
     await user.dblClick(blk);
     expect(onOpenTask).toHaveBeenCalledWith("t6");
+  });
+
+  it("已归档排期卡原位保留在网格：封存态（印章、无对勾、无拖拽把手），不进池", () => {
+    render(<TaskTimelinePage tasks={TASKS} />);
+    const blk = screen
+      .getAllByText("已归档排期任务庚")
+      .map((el) => el.closest(".plan-blk"))
+      .find(Boolean) as HTMLElement;
+    // 原位保留（网格上渲染）+ 封存态标识
+    expect(blk).toHaveClass("is-archived");
+    expect(blk.querySelector(".plan-stamp")?.textContent).toBe("已归档");
+    // 不可操作面：无对勾按钮、无拖拽把手
+    expect(within(blk).queryByRole("button", { name: /标记完成|恢复待办/ })).toBeNull();
+    expect(blk.querySelector(".plan-grip")).toBeNull();
+    // 不进任务池
+    expect(within(screen.getByLabelText("任务池")).queryByText("已归档排期任务庚")).toBeNull();
+  });
+
+  it("已归档块仅双击跳归档区：双击回传 onOpenArchived，单击/拖拽面不回传", () => {
+    const onOpenArchived = vi.fn();
+    const onOpenTask = vi.fn();
+    render(
+      <TaskTimelinePage
+        tasks={TASKS}
+        onUpdate={vi.fn()}
+        onOpenTask={onOpenTask}
+        onOpenArchived={onOpenArchived}
+      />,
+    );
+    const blk = screen
+      .getAllByText("已归档排期任务庚")
+      .map((el) => el.closest(".plan-blk"))
+      .find(Boolean)!;
+    // 单击（原位按下松开）→ 不跳转
+    fireEvent.pointerDown(blk, { button: 0 });
+    fireEvent.pointerUp(window);
+    expect(onOpenArchived).not.toHaveBeenCalled();
+    // 双击 → 跳归档区（且不误触 onOpenTask 编辑浮窗）
+    fireEvent.doubleClick(blk);
+    expect(onOpenArchived).toHaveBeenCalledWith("t7");
+    expect(onOpenTask).not.toHaveBeenCalled();
   });
 
   it("已完成区打勾形式（无划线）：圆圈恢复待办，双击回传 onOpenTask", async () => {
