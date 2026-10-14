@@ -109,6 +109,72 @@ fn focus_main_window(app: tauri::AppHandle) {
     }
 }
 
+// ── 归档卡标签整理（手动触发，0 后台）──
+// 入口：ArchivePage 「整理标签」按钮 → 弹窗显示簇 + 用户选主 → 改源
+// 落 tag_merge_history 表 → 设置页「操作历史」可按 run_id 撤销
+#[tauri::command]
+fn tags_consolidate_scan(
+    app: tauri::AppHandle,
+) -> Result<crate::bot::tags_consolidate::ClusterScanResult, String> {
+    let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+    crate::bot::tags_consolidate::cluster_archived_tags(&conn, None)
+}
+
+#[tauri::command]
+fn tags_consolidate_merge(
+    app: tauri::AppHandle,
+    main: String,
+    members: Vec<String>,
+) -> Result<crate::bot::tags_consolidate::RunRecord, String> {
+    let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+    let member_refs: Vec<&str> = members.iter().map(String::as_str).collect();
+    crate::bot::tags_consolidate::merge_tag_cluster(&conn, &main, &member_refs)
+}
+
+#[tauri::command]
+fn tags_consolidate_rollback(
+    app: tauri::AppHandle,
+    run_id: String,
+) -> Result<crate::bot::tags_consolidate::RollbackResult, String> {
+    let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+    crate::bot::tags_consolidate::rollback_tag_merge(&app, &conn, &run_id)
+}
+
+#[tauri::command]
+fn tags_consolidate_list_runs(app: tauri::AppHandle) -> Result<Vec<TagMergeRunSummary>, String> {
+    let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT run_id, merged_to, merged_from, affected_task_count, created_at, rolled_back_at
+             FROM tag_merge_history ORDER BY created_at DESC LIMIT 50",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(TagMergeRunSummary {
+                run_id: row.get(0)?,
+                merged_to: row.get(1)?,
+                merged_from: row.get(2)?,
+                affected_task_count: row.get(3)?,
+                created_at: row.get(4)?,
+                rolled_back_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+struct TagMergeRunSummary {
+    run_id: String,
+    merged_to: String,
+    merged_from: String,
+    affected_task_count: i64,
+    created_at: i64,
+    rolled_back_at: Option<i64>,
+}
+
 // 平台相关 copy_file_* helper 已迁到 `platform/copy_file.rs`。
 // `copy_file_with_title`（本文件顶层 tauri command）按平台 cfg 调
 // `platform::copy_file::copy_file_macos` / `copy_file_windows`。
@@ -509,6 +575,10 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            tags_consolidate_scan,
+            tags_consolidate_merge,
+            tags_consolidate_rollback,
+            tags_consolidate_list_runs,
             bing::bing_daily,
             copy_file_with_title,
             focus_main_window,
