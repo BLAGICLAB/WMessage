@@ -872,9 +872,11 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
     }
     // 根据内容新建任务卡（标题 = 内容首行截断，全文进 note 不丢语义）
     let (title, note) = job_card_title_note(&job.content);
+    // 排期 = 定时触发时刻（向下吸附 30 分钟）起 30 分钟块；窗口外不设排期
+    let plan_window = scheduled_plan_window(now);
     let mut card = crate::db::Task {
-        plan_start: None,
-        plan_end: None,
+        plan_start: plan_window.as_ref().map(|(s, _)| s.clone()),
+        plan_end: plan_window.as_ref().map(|(_, e)| e.clone()),
         acceptance: None,
         parent_id: None,
         id: uuid::Uuid::new_v4().simple().to_string(),
@@ -1213,6 +1215,36 @@ async fn jobs_tick(app: &AppHandle) {
             DueVerdict::NotDue => {}
         }
     }
+}
+
+/// 定时作业建卡的排期窗口常量——与前端 `TaskTimeline/week.ts` 的
+/// DAY_START_MIN / DAY_END_MIN / SNAP_MIN 三常量镜像（改一处必须同步
+/// 另一处，否则网格裁剪/吸附口径漂移）：日窗口 8:00–18:00、吸附 30 分钟、
+/// 定时卡默认时长 30 分钟。
+const SCHED_PLAN_DAY_START_MIN: i64 = 8 * 60;
+const SCHED_PLAN_DAY_END_MIN: i64 = 18 * 60;
+const SCHED_PLAN_SNAP_MIN: i64 = 30;
+const SCHED_PLAN_DUR_MIN: i64 = 30;
+
+/// 定时作业生成卡的排期窗口：触发时刻向下吸附 30 分钟为块起点，
+/// +30 分钟为块终点；起点或终点越出日窗口（8:00–18:00）→ None——
+/// 窗口外不设排期，照旧建卡+执行（网格只画窗口内，越界块会被裁剪不可见，
+/// 设了反而产生「看不见的排期」）。返回格式 "YYYY-MM-DDTHH:mm"
+///（与 due / 前端 buildPlanDT 同构）。
+fn scheduled_plan_window(now: chrono::DateTime<chrono::Local>) -> Option<(String, String)> {
+    use chrono::Timelike;
+    let minute_of_day = (now.hour() as i64) * 60 + (now.minute() as i64);
+    let start_min = (minute_of_day / SCHED_PLAN_SNAP_MIN) * SCHED_PLAN_SNAP_MIN;
+    let end_min = start_min + SCHED_PLAN_DUR_MIN;
+    if start_min < SCHED_PLAN_DAY_START_MIN || end_min > SCHED_PLAN_DAY_END_MIN {
+        return None;
+    }
+    let date = now.format("%Y-%m-%d").to_string();
+    let hm = |m: i64| format!("{:02}:{:02}", m / 60, m % 60);
+    Some((
+        format!("{date}T{}", hm(start_min)),
+        format!("{date}T{}", hm(end_min)),
+    ))
 }
 
 /// 立即执行一个内容型定时作业（定时任务模块「立即执行」入口）：不等到点，
@@ -2006,5 +2038,53 @@ mod sched_guard_tests {
         drop(gb);
         assert_eq!(len_of(&b), 0, "Drop b 的守卫只应该清 b 的表");
         assert_eq!(len_of(&a), 1, "a 的登记不得被 b 的守卫清掉");
+    }
+}
+
+#[cfg(test)]
+mod plan_window_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at(h: u32, mi: u32) -> chrono::DateTime<chrono::Local> {
+        chrono::Local
+            .with_ymd_and_hms(2026, 10, 14, h, mi, 0)
+            .single()
+            .expect("valid local time")
+    }
+
+    #[test]
+    fn in_window_snaps_and_sets_30min_block() {
+        // 09:07 → 吸附 09:00–09:30
+        let (s, e) = scheduled_plan_window(at(9, 7)).unwrap();
+        assert_eq!(s, "2026-10-14T09:00");
+        assert_eq!(e, "2026-10-14T09:30");
+        // 17:50 → 吸附 17:30–18:00（终点恰在窗口边界，算入）
+        let (s, e) = scheduled_plan_window(at(17, 50)).unwrap();
+        assert_eq!(s, "2026-10-14T17:30");
+        assert_eq!(e, "2026-10-14T18:00");
+        // 08:00 整点即窗口起点
+        assert!(scheduled_plan_window(at(8, 0)).is_some());
+    }
+
+    #[test]
+    fn out_of_window_returns_none() {
+        // 07:50 → 吸附 07:30，早于窗口起点 08:00
+        assert!(scheduled_plan_window(at(7, 50)).is_none());
+        // 18:05 → 吸附 18:00，终点 18:30 越出窗口终点
+        assert!(scheduled_plan_window(at(18, 5)).is_none());
+        // 凌晨 / 深夜作业（窗口外不设排期，照旧建卡+执行）
+        assert!(scheduled_plan_window(at(0, 15)).is_none());
+        assert!(scheduled_plan_window(at(22, 0)).is_none());
+    }
+
+    #[test]
+    fn format_matches_build_plan_dt() {
+        let (s, e) = scheduled_plan_window(at(9, 7)).unwrap();
+        // 与前端 buildPlanDT 同格式：YYYY-MM-DDTHH:mm
+        assert_eq!(s.len(), 16);
+        assert_eq!(&s[4..5], "-");
+        assert_eq!(&s[10..11], "T");
+        assert_eq!(e.len(), 16);
     }
 }
