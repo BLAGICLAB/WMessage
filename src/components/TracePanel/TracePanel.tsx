@@ -5,11 +5,10 @@
 // - 时间线：每次工具调用一行（入参/结果/耗时/成败，<details> 展开）
 // - 文件变更：±行 + unified diff 着色（DiffView）+ 「回滚」按钮（漂移闸拒绝时展示原因）
 //
-// 弹层用 createPortal 渲染到 body——TodoCard 容器的 hover transform 会创建 CSS
-// 包含块，position:fixed 子元素会被裁缩到卡片内（同 purge 弹窗的既有教训）。
+// 弹层 portal 到 body——TodoCard 容器的 hover transform 会创建 CSS
+// 包含块，position:fixed 子元素会被裁缩到卡片内（Modal 的 portal prop）。
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Download,
   FileText,
@@ -18,6 +17,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { Modal } from "../../ui/Modal";
 import { basename, formatMonthDayTime } from "../../format";
 import {
   listWorkflowAudit,
@@ -335,10 +335,11 @@ export function TracePanel({
   const duration = (t: TraceRow): string =>
     t.finishedAt ? fmtMs(t.finishedAt - t.startedAt) : "进行中";
 
-  return createPortal(
-    <div
+  return (
+    <Modal
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
-      onPointerDown={onClose}
+      onClose={onClose}
+      portal
     >
       <div
         className="nm-card flex max-h-[80vh] w-full max-w-2xl flex-col p-4"
@@ -617,7 +618,6 @@ export function TracePanel({
           </>
         )}
       </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }

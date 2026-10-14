@@ -10,6 +10,7 @@ import {
 import { handleCommandError, formatCommandError } from "../lib/errorHandler";
 import { getArchiveAfterDays } from "../lib/archiveRule";
 import { useConfirm } from "../lib/useConfirm";
+import { Modal } from "../ui/Modal";
 import type { MigrationRule, MigrationReport } from "../types";
 
 type MigrationStatus = {
@@ -249,7 +250,7 @@ export function MigrationPanel() {
 
       {/* 迁移日志弹窗（日志可能很大，新框滚动查看） */}
       {logOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+        <Modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
           <div className="nm-card w-full max-w-2xl h-[70vh] flex flex-col p-4">
             <div className="flex items-center justify-between mb-2 shrink-0">
               <p className="text-sm font-medium text-[var(--t2)]">
@@ -274,7 +275,7 @@ export function MigrationPanel() {
               {logText}
             </pre>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

@@ -14,6 +14,7 @@ import {
   ERROR_DIALOG_EVENT,
   type ErrorDialogRequest,
 } from "../lib/errorHandler";
+import { Modal } from "./Modal";
 
 export function ErrorDialogHost() {
   const [req, setReq] = useState<ErrorDialogRequest | null>(null);
@@ -47,9 +48,9 @@ export function ErrorDialogHost() {
   };
 
   return (
-    <div
+    <Modal
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
-      onClick={() => finish(false)}
+      onClose={() => finish(false)}
       data-testid="error-dialog-overlay"
     >
       <div
@@ -96,6 +97,6 @@ export function ErrorDialogHost() {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

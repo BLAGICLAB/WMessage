@@ -29,7 +29,7 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
     document.body.removeChild(trigger);
   });
 
-  it("backdrop 点击调 onCancel；点内卡不调；busy 时 backdrop 不调", () => {
+  it("backdrop 按下调 onCancel；点内卡不调", () => {
     const onCancel = vi.fn();
     render(
       <DeleteConfirmDialog
@@ -39,14 +39,15 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
         onCancel={onCancel}
       />,
     );
-    // 内卡点击不外冒标题 emoji 改 lucide 图标，断言按文本）
+    // 内卡点击不外冒（Modal 注入 pointerdown stopProp）；断言按文本
     fireEvent.click(screen.getByText("彻底删除提案"));
     expect(onCancel).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByTestId("delete-confirm-modal"));
+    // backdrop 关闭走 pointerdown（与多数弹窗一致），不再是 click
+    fireEvent.pointerDown(screen.getByTestId("delete-confirm-modal"));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("busy 时 backdrop 与 Esc 都不调 onCancel", async () => {
+  it("busy 时 backdrop 按下与 Esc 都不调 onCancel", async () => {
     const onCancel = vi.fn();
     const user = userEvent.setup();
     render(
@@ -57,7 +58,7 @@ describe("DeleteConfirmDialog 焦点管理与关闭路径", () => {
         onCancel={onCancel}
       />,
     );
-    fireEvent.click(screen.getByTestId("delete-confirm-modal"));
+    fireEvent.pointerDown(screen.getByTestId("delete-confirm-modal"));
     await user.keyboard("{Escape}");
     expect(onCancel).not.toHaveBeenCalled();
   });

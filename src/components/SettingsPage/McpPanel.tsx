@@ -14,6 +14,7 @@ import { Pencil, Plug, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { getBotConfig } from "../../lib/botConfig";
 import { IconButton } from "../../ui/IconButton";
+import { Modal } from "../../ui/Modal";
 import { EmptyState } from "../EmptyState";
 import {
   MCP_STDIO_LAUNCHERS,
@@ -153,7 +154,7 @@ function SaveConfirmDialog({
   const envEntries = Object.entries(server.env ?? {});
   const headerEntries = Object.entries(server.headers ?? {});
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+    <Modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
       <div className="nm-card w-full max-w-lg p-5">
         <h3 className="text-sm font-semibold text-[var(--t1)]">
           {server.id ? "保存修改" : "添加"} MCP 服务器「{server.name}」
@@ -208,7 +209,7 @@ function SaveConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

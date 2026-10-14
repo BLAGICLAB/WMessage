@@ -6,7 +6,6 @@
 // Vite 解析到 `./TodoCard/index.tsx` → 透传本目录各文件。
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Bot,
   FileText,
@@ -45,6 +44,7 @@ import { ActorAvatar } from "../ActorAvatar";
 import { TracePanel } from "../TracePanel";
 import { useInlineEdit } from "../useInlineEdit";
 import { TaskFileChips } from "../task/TaskFileChips";
+import { Modal } from "../../ui/Modal";
 
 import type { CardDrag, TodoCardViewProps } from "./types";
 import { SubtaskRow } from "../task/SubtaskRow";
@@ -755,17 +755,17 @@ export function TodoCardView({
       )}
 
       {/* 回收站彻底删除·绑文件三选项弹窗：全部删除 / 保留文件删除 / 取消
-          ⚠️ 必须用 createPortal 渲染到 document.body —— TodoCard 容器 hover 触发 transform: translateY(-3px) scale(1.01)
+          portal 必须开：TodoCard 容器 hover 触发 transform: translateY(-3px) scale(1.01)
           (main.css .nm-card-hover:hover) + dnd-kit useSortable 的 transform style，二者都会创建 CSS 包含块，
           使 position:fixed 子元素不再相对视口定位而被裁缩到卡片边界内。 */}
       {purgeOpen &&
-        boundFiles.length > 0 &&
-        createPortal(
-          <div
+        boundFiles.length > 0 && (
+          <Modal
             className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
-            onPointerDown={() => {
+            onClose={() => {
               if (!purgeBusy) setPurgeOpen(false);
             }}
+            portal
           >
             <div
               className="nm-card w-full max-w-md p-5 flex flex-col gap-3"
@@ -886,8 +886,7 @@ export function TodoCardView({
                 </button>
               </div>
             </div>
-          </div>,
-          document.body,
+          </Modal>
         )}
 
       {/* 执行痕迹弹层：TracePanel 自带 portal 到 body——同 purge 弹窗的

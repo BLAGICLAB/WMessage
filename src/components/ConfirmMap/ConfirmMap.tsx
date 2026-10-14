@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTauriListen } from "../../lib/useTauriListen";
+import { Modal } from "../../ui/Modal";
 
 /// 与后端 emit 的 payload 字段对齐（bot_slash.rs:301 附近）
 type BotConfirmPayload = {
@@ -97,7 +98,7 @@ export default function ConfirmMap() {
   if (!pending) return null;
 
   return (
-    <div
+    <Modal
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
       data-testid="confirm-map-modal"
     >
@@ -153,6 +154,6 @@ export default function ConfirmMap() {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

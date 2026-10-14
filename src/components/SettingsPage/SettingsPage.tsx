@@ -69,6 +69,7 @@ import {
   type MetaModel,
 } from "../../lib/modelMeta";
 import type { ThemeSetting } from "../../theme";
+import { Modal } from "../../ui/Modal";
 import { MigrationPanel } from "../MigrationPanel";
 
 import {
@@ -3782,7 +3783,7 @@ export function SettingsPage({
 
       {/* 机器人审计日志弹窗 */}
       {logOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
+        <Modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
           <div className="nm-card w-full max-w-2xl h-[70vh] flex flex-col p-4">
             <div className="flex items-center justify-between mb-2 shrink-0">
               <p className="text-sm font-medium text-[var(--t2)]">
@@ -3807,7 +3808,7 @@ export function SettingsPage({
               {logText}
             </pre>
           </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

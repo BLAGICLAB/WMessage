@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Trash2, TriangleAlert } from "lucide-react";
 import type { ProposalEntry } from "./types";
+import { Modal } from "../../ui/Modal";
 
 type Props = {
   proposal: ProposalEntry;
@@ -38,26 +39,18 @@ export function DeleteConfirmDialog({
     return () => prev?.focus();
   }, []);
 
-  // Esc 关闭
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !busy) onCancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [busy, onCancel]);
-
   return (
-    <div
+    <Modal
       className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-6"
       data-testid="delete-confirm-modal"
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-confirm-title"
-      onClick={() => {
-        // backdrop 点击 = 取消（与 Esc 一致；取消是无害路径，busy 时忽略）
+      onClose={() => {
+        // backdrop 按下 = 取消（与 Esc 一致；取消是无害路径，busy 时忽略）
         if (!busy) onCancel();
       }}
+      closeOnEsc
     >
       <div
         className="nm-card w-full max-w-md p-5 space-y-4"
@@ -134,6 +127,6 @@ export function DeleteConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

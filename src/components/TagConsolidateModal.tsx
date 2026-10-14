@@ -1,7 +1,6 @@
 // 归档卡标签整理弹窗：portal-to-body 渲染，簇列表 + select 主标签。
 // 入口在 ArchivePage 「整理标签」按钮；点关闭按钮或遮罩外部关闭。
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { Tags, X, Loader2 } from "lucide-react";
 import {
   tagsConsolidateScan,
@@ -9,6 +8,7 @@ import {
   type TagCluster,
 } from "../lib/botConsolidate";
 import { handleCommandError } from "../lib/errorHandler";
+import { Modal } from "../ui/Modal";
 
 interface Props {
   onClose: () => void;
@@ -104,10 +104,11 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
     }
   };
 
-  return createPortal(
-    <div
+  return (
+    <Modal
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
-      onPointerDown={close}
+      onClose={close}
+      portal
     >
       <div
         className="nm-card w-full max-w-2xl max-h-[85vh] flex flex-col"
@@ -267,7 +268,6 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
           </button>
         </div>
       </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }
