@@ -19,7 +19,7 @@
 | Rust#9 audit 分类器单一化 | `f3c6dc9` | ToolFailureClass 枚举 + classify_tool_failure；is_tool_failure_text 转发包装随删 |
 | 前端#5-#9 五项 | `2e08ac3` | bot_get_config 9 处 / 导入导出四合一 / 日期工具 / runWithBot / 停止分派 |
 | 前端#1 TodoCard 只读化 | ✅ 已隐含达成 | 现状已点开+复制保留（`TodoCard.tsx:503-531` 包裹在 chip 块里不受 `!archived && !trashed` 守卫）— 用户拍板 A' 后核对代码无须改动（X2 范式已是当前状态） |
-| 前端#2/3/4 文件 chip×3 / 子任务×3 / 乐观更新×4 | ⏸ 排期 | — |
+| 前端#2/3/4 文件 chip×3 / 子任务×3 / 乐观更新×4 | ✅ 三笔提交 | 9d0c766 后 3 提交 | TaskFileChips 3 处合一（-262 行）/ SubtaskRow 3 处合一（-110 行）/ patchTaskOptimistic 4 处样板去重（toggleDone 因 task_set_column 保留原 path）|
 | Rust#2 DB 样板全仓 183 处 mutex_poisoned → `lock_ok` + `with_write_conn` | ⏸ Wave2 | 报告 P1，工作量 ~300 行 |
 | Rust#3 转义/截断家族 8 个实现 + 同名 `escape_for_log` 行为分叉 | ⏸ Wave2 | 报告 P1，含真实分叉隐患 |
 | 前端#10-14 微项 | ⏸ Wave2 | 10-50 行小批 |
