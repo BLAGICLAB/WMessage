@@ -16,7 +16,21 @@
 | P1-5 cache 命中/写入观测 | ✅ | 随 P0-2/P1-4 落库 | AnthropicUsage 4 字段 + cache_hit_pct 审计 + 挂件 bot-usage-delta 扩字段 |
 | P2-2 复诵计划 | ⏸ 待拍板 | — | 等真机观察长任务目标漂移再启 |
 | P2-3/4/5 不做 | ✅ | — | LLMLingua/并行多 agent 写/激进压缩已附理由 |
-| Wave2 escape/truncate + lock_ok | ⏸ 排期 | — | 审计 P1 项，工作量各 ~300 行 |
+| Wave2 escape/truncate + lock_ok | ✅ | `6d8b526` + `33a386d` | log_sanitize 单源 + 同名 escape_for_log 分叉修复；lock_or_recover 收敛 140 处 mutex_poisoned |
+
+## 标签整理功能（2026-10-14 单独决策）
+
+按归档页「整理标签」入口，扫归档卡 tags 按余弦相似度聚类（union-find 复用
+corrections 闭环模式），用户选主后改源 + 落 `tag_merge_history` 表 + 设置页
+操作历史可按 run_id 撤销。拍板阈值 0.92 起步 / 仅归档卡 / 0 后台 / 完整
+保留撤销机制在设置页「操作历史」tab。
+
+| 阶段 | 提交 | 备注 |
+|---|---|---|
+| 后端内核 + DDL + 7 单元测 | `bca9d12` | cluster_archived_tags / merge_tag_cluster / rollback_tag_merge；AND/OR 优先级踩坑（fix 注释） |
+| 4 个 tauri command 注册 | `a2d18fc` | tags_consolidate_scan / merge / rollback / list_runs |
+| 前端 Modal + ArchivePage 按钮 + chips 折叠 + Settings tab | (本批) | portal 渲染 + select 选主 + 「合并 N 个簇」动态文案；details 折叠 |
+| e2e 串联测试 | (本批) | 9 步 scan→merge→rollback→二次拒绝 |
 
 **全量测试 1630 测全绿（基线 1619 + 新增 11 测）。**
 
