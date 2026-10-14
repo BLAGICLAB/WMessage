@@ -24,6 +24,7 @@ use tauri::Manager;
 pub mod bot_history;
 pub mod bot_sessions;
 pub mod brief;
+pub mod lock;
 pub mod migrations;
 pub mod paths;
 pub mod people;
@@ -116,10 +117,8 @@ pub fn open_db<R: tauri::Runtime>(
         // 锁内复检查让后到者直接跳过；锁仅护首装一次性窗口，常态零代价
         // （外层 exists 不进锁）。照 BOT_ASSIGNED_RESET_DONE / DB_WRITE_LOCK 先例。
         static LEGACY_COPY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LEGACY_COPY_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] db::open_db LEGACY_COPY_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&LEGACY_COPY_LOCK, "db::open_db LEGACY_COPY_LOCK");
         if !db_path.exists() {
             match app.path().app_data_dir() {
                 Ok(legacy_dir) => {
@@ -380,10 +379,7 @@ impl Drop for DbWriteGuard {
 /// 取 `DB_WRITE_LOCK` 并标记「本线程持锁」。poison 走仓库既有 `[mutex_poisoned]` 约定
 /// （`into_inner` 后照样置位，不让 poisoned 断掉标记语义。
 pub fn lock_db_write() -> DbWriteGuard {
-    let g = DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] db::DB_WRITE_LOCK: {e:?}");
-        e.into_inner()
-    });
+    let g = crate::db::lock::lock_or_recover(&DB_WRITE_LOCK, "db::DB_WRITE_LOCK");
     HOLDING_DB_WRITE.with(|f| f.set(true));
     DbWriteGuard { _g: g }
 }

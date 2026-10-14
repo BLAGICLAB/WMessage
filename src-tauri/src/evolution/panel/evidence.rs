@@ -168,10 +168,10 @@ pub fn build(
 pub fn load_lesson_snapshots<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Vec<LessonSnapshot>, String> {
-    let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] evolution::evidence DB_WRITE_LOCK: {e:?}");
-        e.into_inner()
-    });
+    let _g = crate::db::lock::lock_or_recover(
+        &crate::db::DB_WRITE_LOCK,
+        "evolution::evidence DB_WRITE_LOCK",
+    );
     let conn = crate::db::open_db(app)?;
     crate::memory::store::ensure_table(&conn)?;
     Ok(crate::memory::store::load_all(&conn)?

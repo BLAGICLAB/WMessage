@@ -51,10 +51,7 @@ pub(crate) fn register_sse_writer(
     handle: std::thread::JoinHandle<()>,
 ) {
     // 锁 poisoning 审计:同 ratelimit::RATE 注释
-    let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
-        e.into_inner()
-    });
+    let mut g = crate::db::lock::lock_or_recover(&SSE_WRITERS, "api_handlers::sse::SSE_WRITERS");
     // 顺手收割已退出（客户端断开）的 writer，防注册表无界增长
     g.retain(|w| !w.handle.is_finished());
     g.push(SseWriterReg {
@@ -69,10 +66,8 @@ pub(crate) fn register_sse_writer(
 pub(crate) fn stop_sse_writers(hub_key: u64, timeout: Duration, audit: &mut dyn FnMut(&str)) {
     let writers = {
         // 锁 poisoning 审计:同 ratelimit::RATE 注释
-        let mut g = SSE_WRITERS.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
-            e.into_inner()
-        });
+        let mut g =
+            crate::db::lock::lock_or_recover(&SSE_WRITERS, "api_handlers::sse::SSE_WRITERS");
         let mut taken = Vec::new();
         let mut i = 0;
         while i < g.len() {
@@ -130,10 +125,8 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
     let alive = Arc::new(());
     {
         // 锁 poisoning 审计:同 SSE_WRITERS 注释
-        let mut clients = hub.clients.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] api_handlers::sse::hub.clients: {e:?}");
-            e.into_inner()
-        });
+        let mut clients =
+            crate::db::lock::lock_or_recover(&hub.clients, "api_handlers::sse::hub.clients");
         clients.retain(|(_, token)| token.upgrade().is_some());
         // SSE 连接数上限——超限 503，防连接洪泛耗尽线程
         if clients.len() >= MAX_SSE_CLIENTS {
@@ -152,10 +145,8 @@ pub(crate) fn sse_connect(req: Request, store: &Arc<dyn TaskStore>, query: &str)
     // 扫空注册表——该 writer 的 stop 永远不会被置位、handle 永远不被 join
     // （线程随 hub 存活而泄漏）。writer 线程自身不碰 SSE_WRITERS，
     // 持锁跨 spawn 无重入风险。
-    let mut writers_reg = SSE_WRITERS.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] api_handlers::sse::SSE_WRITERS: {e:?}");
-        e.into_inner()
-    });
+    let mut writers_reg =
+        crate::db::lock::lock_or_recover(&SSE_WRITERS, "api_handlers::sse::SSE_WRITERS");
     // 注册前顺手收割已退出（客户端断开）的 writer，防注册表无界增长
     writers_reg.retain(|w| !w.handle.is_finished());
     let handle = std::thread::spawn(move || {

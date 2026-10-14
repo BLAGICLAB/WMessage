@@ -83,10 +83,7 @@ pub static PY_PROBE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::A
 
 pub fn cached_python() -> Option<String> {
     {
-        let g = PY_CACHE.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}");
-            e.into_inner()
-        });
+        let g = crate::db::lock::lock_or_recover(&PY_CACHE, "py::env::PY_CACHE");
         if let Some(cached) = &*g {
             return cached.clone();
         }
@@ -95,10 +92,7 @@ pub fn cached_python() -> Option<String> {
     // 持锁探测会让这段时间内所有 cached_python 调用方白等一轮
     PY_PROBE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let detected = detect_python();
-    let mut g = PY_CACHE.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}");
-        e.into_inner()
-    });
+    let mut g = crate::db::lock::lock_or_recover(&PY_CACHE, "py::env::PY_CACHE");
     // 竞态兜底：别的线程可能已在我们探测期间填好缓存，直接复用其结果
     if let Some(cached) = &*g {
         return cached.clone();
@@ -108,10 +102,7 @@ pub fn cached_python() -> Option<String> {
 }
 
 pub fn invalidate_python_cache() {
-    *PY_CACHE.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] py::env::PY_CACHE: {e:?}");
-        e.into_inner()
-    }) = None;
+    *crate::db::lock::lock_or_recover(&PY_CACHE, "py::env::PY_CACHE") = None;
 }
 
 /// 检测本机 dotnet 运行时（修订版 Word 的 .NET 生成路径前置条件）：
@@ -138,20 +129,14 @@ pub static DOTNET_CACHE: std::sync::Mutex<Option<Option<String>>> = std::sync::M
 
 pub fn cached_dotnet() -> Option<String> {
     {
-        let g = DOTNET_CACHE.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] py::env::DOTNET_CACHE: {e:?}");
-            e.into_inner()
-        });
+        let g = crate::db::lock::lock_or_recover(&DOTNET_CACHE, "py::env::DOTNET_CACHE");
         if let Some(cached) = &*g {
             return cached.clone();
         }
     }
     // 同 cached_python：探测不持锁，填缓存前复查竞态
     let detected = detect_dotnet();
-    let mut g = DOTNET_CACHE.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] py::env::DOTNET_CACHE: {e:?}");
-        e.into_inner()
-    });
+    let mut g = crate::db::lock::lock_or_recover(&DOTNET_CACHE, "py::env::DOTNET_CACHE");
     if let Some(cached) = &*g {
         return cached.clone();
     }

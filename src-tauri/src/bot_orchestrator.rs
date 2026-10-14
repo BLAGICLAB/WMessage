@@ -519,14 +519,12 @@ pub async fn cancel_subagent_async(
             crate::bot::broadcast_after_mutation(app, vec![card], Vec::new());
         }
         // 远程停止 runner 工具循环（令牌在 runner 注册；watcher 2s 兜底轮询）
-        let token = crate::app_state::subagent_stops(app)
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] app_state::subagent_stops: {e:?}");
-                e.into_inner()
-            })
-            .get(&ack.subagent_id)
-            .cloned();
+        let token = crate::db::lock::lock_or_recover(
+            &crate::app_state::subagent_stops(app),
+            "app_state::subagent_stops",
+        )
+        .get(&ack.subagent_id)
+        .cloned();
         if let Some(token) = token {
             token.stop();
         }
@@ -913,10 +911,7 @@ pub(crate) struct GateTicket {
 
 impl Drop for GateTicket {
     fn drop(&mut self) {
-        let mut st = gate().state.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] subagent gate: {e:?}");
-            e.into_inner()
-        });
+        let mut st = crate::db::lock::lock_or_recover(&gate().state, "subagent gate");
         st.global_running = st.global_running.saturating_sub(1);
         if let Some(k) = &self.parent_session {
             if let Some(c) = st.per_session.get_mut(k) {
@@ -939,10 +934,7 @@ struct WaitingGuard {
 impl Drop for WaitingGuard {
     fn drop(&mut self) {
         if let Some(k) = &self.parent_session {
-            let mut st = gate().state.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] subagent gate: {e:?}");
-                e.into_inner()
-            });
+            let mut st = crate::db::lock::lock_or_recover(&gate().state, "subagent gate");
             if let Some(c) = st.waiting.get_mut(k) {
                 *c = c.saturating_sub(1);
                 if *c == 0 {
@@ -963,10 +955,7 @@ impl SubagentGate {
     ) -> Option<GateTicket> {
         // 登记等待席位（RAII：无论从哪条路径退出，计数都会被递减）
         {
-            let mut st = gate().state.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] subagent gate: {e:?}");
-                e.into_inner()
-            });
+            let mut st = crate::db::lock::lock_or_recover(&gate().state, "subagent gate");
             if let Some(k) = &parent_session {
                 *st.waiting.entry(k.clone()).or_insert(0) += 1;
             }
@@ -979,10 +968,7 @@ impl SubagentGate {
                 return None;
             }
             let outcome = {
-                let mut st = gate().state.lock().unwrap_or_else(|e| {
-                    eprintln!("[mutex_poisoned] subagent gate: {e:?}");
-                    e.into_inner()
-                });
+                let mut st = crate::db::lock::lock_or_recover(&gate().state, "subagent gate");
                 let global_ok = st.global_running < MAX_GLOBAL_RUNNING;
                 let sess_running = parent_session
                     .as_deref()
@@ -1016,10 +1002,7 @@ impl SubagentGate {
     /// 排队位次（check progress 用）：同会话前面还有几个等待者；
     /// None = 不在等待（运行中或无关会话）。
     pub(crate) fn queue_position(parent_session: Option<&str>) -> Option<usize> {
-        let st = gate().state.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] subagent gate: {e:?}");
-            e.into_inner()
-        });
+        let st = crate::db::lock::lock_or_recover(&gate().state, "subagent gate");
         let n = parent_session
             .and_then(|k| st.waiting.get(k).copied())
             .unwrap_or(0);
@@ -1363,13 +1346,11 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     // 取消令牌登记：cancel_subagent 持句柄远程停止。已知窗口（可接受：
     // ChatGuard 成功到令牌登记之间收到的 cancel 落不到令牌——由 2s watcher 兜底
     // （行已 cancelled → watcher 置 stop）。
-    crate::app_state::subagent_stops(&app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] app_state::subagent_stops: {e:?}");
-            e.into_inner()
-        })
-        .insert(row.id.clone(), stop.token());
+    crate::db::lock::lock_or_recover(
+        &crate::app_state::subagent_stops(&app),
+        "app_state::subagent_stops",
+    )
+    .insert(row.id.clone(), stop.token());
 
     // 软删/取消 watcher（设计 §4.3 硬停）：2s 轮询子卡 deletedAt 与行状态
     let watcher_app = app.clone();
@@ -1472,13 +1453,11 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     // StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
     let _watcher = AbortOnDrop(watcher);
     // tool_guard 注册走 RAII 守卫（_session_guard Drop 反注册）
-    crate::app_state::subagent_stops(&app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] app_state::subagent_stops: {e:?}");
-            e.into_inner()
-        })
-        .remove(&row.id);
+    crate::db::lock::lock_or_recover(
+        &crate::app_state::subagent_stops(&app),
+        "app_state::subagent_stops",
+    )
+    .remove(&row.id);
     drop(chat_guard);
     drop(_exec_guard);
 

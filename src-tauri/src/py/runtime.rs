@@ -230,12 +230,7 @@ pub struct ChildRegGuard(u32);
 
 impl ChildRegGuard {
     pub fn register(child: &Child) -> Self {
-        py_children()
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] py::runtime PY_CHILDREN: {e:?}");
-                e.into_inner()
-            })
+        crate::db::lock::lock_or_recover(&py_children(), "py::runtime PY_CHILDREN")
             .insert(child.id());
         Self(child.id())
     }
@@ -243,13 +238,7 @@ impl ChildRegGuard {
 
 impl Drop for ChildRegGuard {
     fn drop(&mut self) {
-        py_children()
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] py::runtime PY_CHILDREN: {e:?}");
-                e.into_inner()
-            })
-            .remove(&self.0);
+        crate::db::lock::lock_or_recover(&py_children(), "py::runtime PY_CHILDREN").remove(&self.0);
     }
 }
 
@@ -280,15 +269,11 @@ pub fn kill_py_children(pids: &[u32]) -> usize {
 }
 
 pub fn kill_all_py_children() -> usize {
-    let pids: Vec<u32> = py_children()
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] py::runtime PY_CHILDREN: {e:?}");
-            e.into_inner()
-        })
-        .iter()
-        .copied()
-        .collect();
+    let pids: Vec<u32> =
+        crate::db::lock::lock_or_recover(&py_children(), "py::runtime PY_CHILDREN")
+            .iter()
+            .copied()
+            .collect();
     kill_py_children(&pids)
 }
 
@@ -322,10 +307,8 @@ pub struct PyGateGuard {
 impl Drop for PyGateGuard {
     fn drop(&mut self) {
         if self.acquired {
-            let mut avail = PY_PERMITS.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] py::runtime::PY_PERMITS: {e:?}");
-                e.into_inner()
-            });
+            let mut avail =
+                crate::db::lock::lock_or_recover(&PY_PERMITS, "py::runtime::PY_PERMITS");
             *avail += 1;
             drop(avail);
             PY_PERMITS_CV.notify_one();
@@ -342,10 +325,7 @@ pub(crate) fn py_gate_acquire() -> Result<PyGateGuard, CommandError> {
 }
 
 fn py_gate_acquire_inner(check_exiting: bool) -> Result<PyGateGuard, CommandError> {
-    let mut avail = PY_PERMITS.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] py::runtime::PY_PERMITS: {e:?}");
-        e.into_inner()
-    });
+    let mut avail = crate::db::lock::lock_or_recover(&PY_PERMITS, "py::runtime::PY_PERMITS");
     loop {
         // EXITING 复查①：本轮循环顶（= 等待前 / 每轮唤醒后）
         if check_exiting && EXITING.load(std::sync::atomic::Ordering::SeqCst) {

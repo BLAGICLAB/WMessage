@@ -168,11 +168,8 @@ pub async fn workspace_upsert(app: AppHandle, items: Vec<WorkspaceItem>) -> Comm
         if items.is_empty() {
             return Ok(());
         }
-        let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] db::workspace DB_WRITE_LOCK: {e:?}");
-
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::workspace DB_WRITE_LOCK");
         let mut conn = super::open_db(&app)?;
         upsert_workspace(&mut conn, &items)
     })
@@ -186,11 +183,8 @@ pub async fn workspace_delete(app: AppHandle, ids: Vec<String>) -> CommandResult
         if ids.is_empty() {
             return Ok(());
         }
-        let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] db::workspace DB_WRITE_LOCK: {e:?}");
-
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::workspace DB_WRITE_LOCK");
         let mut conn = super::open_db(&app)?;
         delete_workspace(&mut conn, &ids).map_err(CommandError::from)
     })
@@ -294,11 +288,8 @@ pub async fn workspace_import(app: AppHandle, path: String) -> CommandResult<usi
         if ext.is_empty() {
             return Ok(0);
         }
-        let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] db::workspace DB_WRITE_LOCK: {e:?}");
-
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::workspace DB_WRITE_LOCK");
         let mut conn = super::open_db(&app)?;
         workspace_import_merge(&mut conn, &ext)
     })

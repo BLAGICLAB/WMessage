@@ -436,10 +436,10 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     let app2 = app.clone();
     let candidates =
         tauri::async_runtime::spawn_blocking(move || -> Result<Vec<MemItem>, String> {
-            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] memory::consolidate DB_WRITE_LOCK: {e:?}");
-                e.into_inner()
-            });
+            let _g = crate::db::lock::lock_or_recover(
+                &crate::db::DB_WRITE_LOCK,
+                "memory::consolidate DB_WRITE_LOCK",
+            );
             let conn = crate::db::open_db(&app2)?;
             store::ensure_table(&conn)?;
             gather_candidates(&conn, cfg.last_run_at, now_ms(), CONSOLIDATE_BATCH_LIMIT)
@@ -492,10 +492,10 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     let tuning = crate::bot::read_memory_tuning(app);
     let report =
         tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {
-            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] memory::consolidate DB_WRITE_LOCK: {e:?}");
-                e.into_inner()
-            });
+            let _g = crate::db::lock::lock_or_recover(
+                &crate::db::DB_WRITE_LOCK,
+                "memory::consolidate DB_WRITE_LOCK",
+            );
             let mut conn = crate::db::open_db(&app3)?;
             store::ensure_table(&conn)?;
             apply_ops_with(

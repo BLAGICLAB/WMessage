@@ -83,26 +83,22 @@ pub(crate) async fn record_correction_fact<R: tauri::Runtime>(
     }
     let text_owned = text.to_string();
     let pattern_owned = pattern.to_string();
+    // 嵌入在持锁前算好（持锁内 ONNX 推理会让其他写者干等）
+    let emb = crate::memory::embed::embed_text(&text_owned);
     let app2 = app.clone();
-    let res = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let emb = crate::memory::embed::embed_text(&text_owned);
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] corrections DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
-        let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
-        crate::memory::store::ensure_table(&conn).map_err(|e| e.to_string())?;
+    let res = crate::db::lock::with_write_conn(app, move |conn| {
+        crate::memory::store::ensure_table(conn).map_err(|e| e.to_string())?;
         let item = crate::memory::store::NewItem {
             kind: "fact".to_string(),
-            content: text_owned.clone(),
-            tags: vec!["correction".to_string(), pattern_owned.clone()],
+            content: text_owned,
+            tags: vec!["correction".to_string(), pattern_owned],
             importance: 3,
             source: "user_correction".to_string(),
         };
         let tuning = crate::bot::read_memory_tuning(&app2);
         let sp = crate::memory::store::StoreParams::of(&tuning);
         match crate::memory::store::insert_item_with(
-            &conn,
+            conn,
             &item,
             emb.as_deref(),
             crate::memory::now_ms(),
@@ -123,26 +119,14 @@ pub(crate) async fn record_correction_fact<R: tauri::Runtime>(
         }
     })
     .await;
-    match res {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            crate::audit_event!(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "memory.correction_save_failed",
-                "pattern" => pattern,
-                "error" => e,
-            );
-        }
-        Err(e) => {
-            crate::audit_event!(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "memory.correction_save_failed",
-                "pattern" => pattern,
-                "error" => format!("correction 写入线程 join 失败：{e}"),
-            );
-        }
+    if let Err(e) = res {
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "memory.correction_save_failed",
+            "pattern" => pattern,
+            "error" => e,
+        );
     }
 }
 
@@ -549,21 +533,15 @@ pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(
         return;
     }
     let app2 = app.clone();
-    let res =
-        tauri::async_runtime::spawn_blocking(move || -> Result<ClusterLessonStats, String> {
-            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] corrections cluster DB_WRITE_LOCK: {e:?}");
-                e.into_inner()
-            });
-            let conn = crate::db::open_db(&app2)?;
-            crate::memory::store::ensure_table(&conn)?;
-            let tuning = crate::bot::read_memory_tuning(&app2);
-            let sp = crate::memory::store::StoreParams::of(&tuning);
-            cluster_correction_lessons_blocking(&conn, &sp, crate::memory::now_ms(), since_ms)
-        })
-        .await;
+    let res = crate::db::lock::with_write_conn(app, move |conn| {
+        crate::memory::store::ensure_table(conn)?;
+        let tuning = crate::bot::read_memory_tuning(&app2);
+        let sp = crate::memory::store::StoreParams::of(&tuning);
+        cluster_correction_lessons_blocking(conn, &sp, crate::memory::now_ms(), since_ms)
+    })
+    .await;
     match res {
-        Ok(Ok(stats)) if stats.clusters_above_threshold > 0 => {
+        Ok(stats) if stats.clusters_above_threshold > 0 => {
             crate::audit_event!(
                 app,
                 crate::audit::AuditLevel::Info,
@@ -574,21 +552,13 @@ pub(crate) async fn try_cluster_correction_lessons<R: tauri::Runtime>(
                 "kind_promotions" => stats.kind_promotions.to_string(),
             );
         }
-        Ok(Ok(_)) => {} // 没聚到 ≥3 不打扰日志
-        Ok(Err(e)) => {
-            crate::audit_event!(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "correction.cluster_lesson_failed",
-                "error" => e,
-            );
-        }
+        Ok(_) => {} // 没聚到 ≥3 不打扰日志
         Err(e) => {
             crate::audit_event!(
                 app,
                 crate::audit::AuditLevel::Warn,
                 "correction.cluster_lesson_failed",
-                "error" => format!("correction 聚类线程 join 失败：{e}"),
+                "error" => e,
             );
         }
     }

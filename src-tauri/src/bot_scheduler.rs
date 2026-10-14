@@ -87,10 +87,7 @@ impl SchedGuard {
     fn acquire<R: tauri::Runtime>(app: &tauri::AppHandle<R>, task_id: &str) -> Option<Self> {
         let running = sched_running(app);
         {
-            let mut set = running.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] app_state::sched_running: {e:?}");
-                e.into_inner()
-            });
+            let mut set = crate::db::lock::lock_or_recover(&running, "app_state::sched_running");
             if set.contains(task_id) {
                 return None;
             }
@@ -105,12 +102,7 @@ impl SchedGuard {
 
 impl Drop for SchedGuard {
     fn drop(&mut self) {
-        self.running
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] bot_scheduler::SchedGuard::running: {e:?}");
-                e.into_inner()
-            })
+        crate::db::lock::lock_or_recover(&self.running, "bot_scheduler::SchedGuard::running")
             .remove(&self.task_id);
     }
 }
@@ -1974,13 +1966,11 @@ mod sched_guard_tests {
     }
 
     fn len_of(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> usize {
-        crate::app_state::sched_running(app)
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] bot_scheduler::tests::sched_running (test): {e:?}");
-                e.into_inner()
-            })
-            .len()
+        crate::db::lock::lock_or_recover(
+            &crate::app_state::sched_running(app),
+            "bot_scheduler::tests::sched_running (test)",
+        )
+        .len()
     }
 
     #[test]

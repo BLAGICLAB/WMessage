@@ -136,10 +136,8 @@ impl EventHub {
         // 才能保住「落盘序 = id 序」，代价大于收益）。
         // Value 序列化在锁外先做（payload KB 级），锁内只剩拼接。
         let data = event.to_string();
-        let mut clients = self.clients.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] api_server::broadcast clients: {e:?}");
-            e.into_inner()
-        });
+        let mut clients =
+            crate::db::lock::lock_or_recover(&self.clients, "api_server::broadcast clients");
         // SeqCst 与 last_id() 的锁外读保持一致（纯锁内序 Relaxed 也够，此处取一致性）
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
         // 每次广播落盘当前 id（事件频率为人级，开销可忽略），重启后接续递增

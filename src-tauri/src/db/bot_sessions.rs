@@ -99,11 +99,8 @@ pub fn bot_session_create(app: AppHandle, title: Option<String>) -> CommandResul
     // open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，放在写锁外——
     // 临界区只覆盖 SQL 写，别让建连耗时串行化其他写者（同 evolution::apply 先例）
     let conn = super::open_db(&app)?;
-    let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
-
-        e.into_inner()
-    });
+    let _g =
+        crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::bot_sessions DB_WRITE_LOCK");
     bot_session_create_inner(&conn, title).map_err(CommandError::DbError)
 }
 
@@ -122,11 +119,10 @@ pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Co
 #[tauri::command]
 pub async fn bot_session_delete(app: AppHandle, id: String) -> CommandResult<()> {
     async_runtime::spawn_blocking(move || {
-        let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
-
-            e.into_inner()
-        });
+        let _g = crate::db::lock::lock_or_recover(
+            &super::DB_WRITE_LOCK,
+            "db::bot_sessions DB_WRITE_LOCK",
+        );
         let mut conn = super::open_db(&app)?;
         bot_session_delete_inner(&mut conn, &id)
     })
@@ -146,11 +142,8 @@ pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandR
     }
     // 同 bot_session_create：open_db 在写锁外，临界区只覆盖 UPDATE
     let conn = super::open_db(&app)?;
-    let _g = super::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] db::bot_sessions DB_WRITE_LOCK: {e:?}");
-
-        e.into_inner()
-    });
+    let _g =
+        crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::bot_sessions DB_WRITE_LOCK");
     let now = chrono::Utc::now().timestamp_millis();
     let rows = conn
         .execute(

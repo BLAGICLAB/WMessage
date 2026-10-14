@@ -446,10 +446,7 @@ mod tests {
 
     static COUNTER_LOCK: Mutex<()> = Mutex::new(());
     fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
-        COUNTER_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::observe::shadow::COUNTER_LOCK: {e:?}");
-            e.into_inner()
-        })
+        crate::db::lock::lock_or_recover(&COUNTER_LOCK, "evolution::observe::shadow::COUNTER_LOCK")
     }
 
     fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {

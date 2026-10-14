@@ -119,10 +119,7 @@ pub(crate) static EVOLUTION_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex:
 /// 取 evolution 存储锁（poison 走仓库既有 `[mutex_poisoned]` 约定）。
 /// 临界区必须覆盖**完整 RMW 窗口**（load → mutate → rewrite），不是只锁 rewrite。
 pub(crate) fn lock_evolution_store() -> std::sync::MutexGuard<'static, ()> {
-    EVOLUTION_STORE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] evolution::EVOLUTION_STORE_LOCK: {e:?}");
-        e.into_inner()
-    })
+    crate::db::lock::lock_or_recover(&EVOLUTION_STORE_LOCK, "evolution::EVOLUTION_STORE_LOCK")
 }
 
 /// 提案入池后向通知中心逐条落持久化消息（幂等 id：evo:{proposal_id}）。

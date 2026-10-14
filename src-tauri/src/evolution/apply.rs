@@ -234,10 +234,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
             let ledger = crate::db::paths::data_dir(&app2).join("evolution-applied.jsonl");
             // DDL 单独一个短临界区
             {
-                let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                    eprintln!("[mutex_poisoned] evolution::apply DB_WRITE_LOCK: {e:?}");
-                    e.into_inner()
-                });
+                let _g = crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "evolution::apply DB_WRITE_LOCK");
                 store::ensure_table(&conn)?;
             }
             let mut report = ApplyReport::default();
@@ -245,10 +242,7 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                 // 临界区仅覆盖 SQL 写；jsonl append + audit emit 在锁外——
                 // 无关 DB 写者不再被整条流水线（syscall/emit）串行化
                 let outcome = {
-                    let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                        eprintln!("[mutex_poisoned] evolution::apply DB_WRITE_LOCK: {e:?}");
-                        e.into_inner()
-                    });
+                    let _g = crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "evolution::apply DB_WRITE_LOCK");
                     apply_one(&conn, p, emb.as_deref(), now)?
                 };
                 match outcome {

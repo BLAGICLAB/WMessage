@@ -100,10 +100,8 @@ pub fn emit_proposals(proposals: Vec<EvolutionProposal>) -> EmitReport {
     // 行为权衡：dedup 标记先于 audit 写（崩溃窗口对称互换：旧=写了没标记，
     // 新=标记了没写；两者都是单条 audit 行级别，可接受）。
     let to_emit: Vec<EvolutionProposal> = {
-        let mut g = emitted_map().lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::emit::emitted_map: {e:?}");
-            e.into_inner()
-        });
+        let mut g =
+            crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit::emitted_map");
         // 清掉超过 24h 的 id（防止 map 无限增长）
         g.retain(|_, ts| now_ms - *ts < EMIT_DEDUP_TTL_MS);
         let mut to_emit = Vec::new();
@@ -192,32 +190,19 @@ mod tests {
 
     /// 当前 dedup 表大小（仅测试可见）。
     fn emitted_count() -> usize {
-        emitted_map()
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] evolution::emit emitted_map: {e:?}");
-                e.into_inner()
-            })
-            .len()
+        crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit emitted_map").len()
     }
 
     /// 当前 dedup 表是否含某 id（仅测试可见）。
     fn emitted_contains(id: &str) -> bool {
-        emitted_map()
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] evolution::emit emitted_map: {e:?}");
-                e.into_inner()
-            })
+        crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit emitted_map")
             .contains_key(id)
     }
 
     #[test]
     fn emit_empty_vec_is_noop() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _serial =
+            crate::db::lock::lock_or_recover(&EMIT_TEST_LOCK, "evolution::emit::EMIT_TEST_LOCK");
         let before = emitted_count();
         let report = emit_proposals(vec![]);
         assert_eq!(report, EmitReport::default());
@@ -226,10 +211,8 @@ mod tests {
 
     #[test]
     fn emit_first_time_writes_to_dedup() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _serial =
+            crate::db::lock::lock_or_recover(&EMIT_TEST_LOCK, "evolution::emit::EMIT_TEST_LOCK");
         // 用 nanos 戳确保 id 唯一（OnceLock 表无法 reset）
         let unique = format!(
             "emit_first_{}",
@@ -249,10 +232,8 @@ mod tests {
 
     #[test]
     fn emit_deduplicates_within_window() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _serial =
+            crate::db::lock::lock_or_recover(&EMIT_TEST_LOCK, "evolution::emit::EMIT_TEST_LOCK");
         let unique = format!(
             "emit_dedup_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -276,10 +257,8 @@ mod tests {
 
     #[test]
     fn emit_dedup_resets_after_24h() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _serial =
+            crate::db::lock::lock_or_recover(&EMIT_TEST_LOCK, "evolution::emit::EMIT_TEST_LOCK");
         // 直接操作 dedup 表的 TTL 清理路径：插入一个 25h 之前的 id，
         // 下次 emit 应能再次写入。
         let unique = format!(
@@ -289,12 +268,7 @@ mod tests {
         let p = make_proposal(&unique);
         // 手工塞一个过期 id 进表
         let stale_ts = chrono::Utc::now().timestamp_millis() - (25 * 3_600_000);
-        emitted_map()
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] evolution::emit emitted_map: {e:?}");
-                e.into_inner()
-            })
+        crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit emitted_map")
             .insert(p.proposal_id.clone(), stale_ts);
         // 同 id emit：触发 retain 清理后再写
         let r = emit_proposals(vec![p.clone()]);
@@ -304,10 +278,8 @@ mod tests {
 
     #[test]
     fn emit_mixed_dedup_and_new() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _serial =
+            crate::db::lock::lock_or_recover(&EMIT_TEST_LOCK, "evolution::emit::EMIT_TEST_LOCK");
         let unique_new = format!(
             "emit_mixed_new_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -326,10 +298,8 @@ mod tests {
 
     #[test]
     fn emit_dedup_works_without_app_handle() {
-        let _serial = EMIT_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] evolution::emit::EMIT_TEST_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _serial =
+            crate::db::lock::lock_or_recover(&EMIT_TEST_LOCK, "evolution::emit::EMIT_TEST_LOCK");
         // AppHandle 未注册时：dedup 仍正常执行；audit 被跳过但不 panic
         let unique = format!(
             "emit_no_app_{}",

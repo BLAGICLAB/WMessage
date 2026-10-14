@@ -792,12 +792,7 @@ mod tests {
         {
             let _guard = ChildRegGuard::register(&child);
             assert!(
-                py_children()
-                    .lock()
-                    .unwrap_or_else(|e| {
-                        eprintln!("[mutex_poisoned] bot_py::tests py_children: {e:?}");
-                        e.into_inner()
-                    })
+                crate::db::lock::lock_or_recover(&py_children(), "bot_py::tests py_children")
                     .contains(&pid),
                 "注册后必须能查到 pid"
             );
@@ -806,12 +801,7 @@ mod tests {
             assert!(!status.success(), "子进程应已被强杀");
         }
         assert!(
-            !py_children()
-                .lock()
-                .unwrap_or_else(|e| {
-                    eprintln!("[mutex_poisoned] bot_py::tests py_children: {e:?}");
-                    e.into_inner()
-                })
+            !crate::db::lock::lock_or_recover(&py_children(), "bot_py::tests py_children")
                 .contains(&pid),
             "守卫 Drop 后必须注销（防 pid 复用误杀）"
         );

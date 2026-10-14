@@ -532,10 +532,7 @@ impl ChatGuard {
             });
         };
         {
-            let mut set = running.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] app_state::chat_running: {e:?}");
-                e.into_inner()
-            });
+            let mut set = crate::db::lock::lock_or_recover(&running, "app_state::chat_running");
             if !set.insert(sid.to_string()) {
                 return Err(());
             }
@@ -550,12 +547,7 @@ impl ChatGuard {
 impl Drop for ChatGuard {
     fn drop(&mut self) {
         if let Some(sid) = &self.session_id {
-            self.running
-                .lock()
-                .unwrap_or_else(|e| {
-                    eprintln!("[mutex_poisoned] bot_chat::ChatGuard::running: {e:?}");
-                    e.into_inner()
-                })
+            crate::db::lock::lock_or_recover(&self.running, "bot_chat::ChatGuard::running")
                 .remove(sid);
         }
     }
@@ -566,12 +558,7 @@ impl Drop for ChatGuard {
 /// 生产代码不调用。表随 `AppState` 走，故取注入实例（缺失时兜底实例，
 /// 与生产路径用的是同一个——集成测试的 mock handle 没注入时两边都落到兜底）。
 pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
-    chat_running(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] bot_chat::chat_running: {e:?}");
-            e.into_inner()
-        })
+    crate::db::lock::lock_or_recover(&chat_running(app), "bot_chat::chat_running")
         .contains(session_id)
 }
 
@@ -1391,10 +1378,7 @@ impl ExecGuard {
     ) -> Option<Self> {
         let running = exec_running(app);
         {
-            let mut set = running.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] app_state::exec_running: {e:?}");
-                e.into_inner()
-            });
+            let mut set = crate::db::lock::lock_or_recover(&running, "app_state::exec_running");
             if set.contains(task_id) {
                 return None;
             }
@@ -1409,12 +1393,7 @@ impl ExecGuard {
 
 impl Drop for ExecGuard {
     fn drop(&mut self) {
-        self.running
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] bot_chat::DB_WRITE_LOCK: {e:?}");
-                e.into_inner()
-            })
+        crate::db::lock::lock_or_recover(&self.running, "bot_chat::DB_WRITE_LOCK")
             .remove(&self.task_id);
     }
 }
@@ -1563,10 +1542,10 @@ async fn create_exec_session<R: tauri::Runtime>(
     let app2 = app.clone();
     let session =
         tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::BotSession, String> {
-            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] bot_chat::DB_WRITE_LOCK: {e:?}");
-                e.into_inner()
-            });
+            let _g = crate::db::lock::lock_or_recover(
+                &crate::db::DB_WRITE_LOCK,
+                "bot_chat::DB_WRITE_LOCK",
+            );
             let conn = crate::db::open_db(&app2)?;
             let s = crate::db::bot_session_create_inner(&conn, Some(title))?;
             crate::db::bot_history_save_inner(
@@ -1615,10 +1594,8 @@ async fn persist_exec_reply<R: tauri::Runtime>(
     let app2 = app.clone();
     let sid = sid.to_string();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] bot_chat::DB_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "bot_chat::DB_WRITE_LOCK");
         let mut conn = crate::db::open_db(&app2)?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         crate::db::bot_history_save_inner(

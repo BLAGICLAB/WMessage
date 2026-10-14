@@ -246,13 +246,11 @@ pub async fn workflow_question_respond(
         }
     }
     // 唤醒 waiter（run 存活才有；run 已死 → 档案已落，重跑生效，此处静默跳过）
-    if let Some(tx) = crate::app_state::question_waiters(&app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] question_waiters: {e:?}");
-            e.into_inner()
-        })
-        .remove(&question_id)
+    if let Some(tx) = crate::db::lock::lock_or_recover(
+        &crate::app_state::question_waiters(&app),
+        "question_waiters",
+    )
+    .remove(&question_id)
     {
         let _ = tx.send(outcome.text);
     }
@@ -305,24 +303,18 @@ pub(crate) fn register_ask_context<R: tauri::Runtime>(
     node_title: &str,
     budget: u8,
 ) {
-    crate::app_state::ask_contexts(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] ask_contexts: {e:?}");
-            e.into_inner()
-        })
-        .insert(
-            session_id.to_string(),
-            AskRegistration {
-                workflow_id: ask.workflow_id.clone(),
-                task_id: task_id.to_string(),
-                node_title: node_title.to_string(),
-                asks_enabled: ask.asks_enabled,
-                run_started_at: ask.run_started_at,
-                asks_left: std::sync::atomic::AtomicU8::new(budget),
-                asks_max: budget,
-            },
-        );
+    crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts").insert(
+        session_id.to_string(),
+        AskRegistration {
+            workflow_id: ask.workflow_id.clone(),
+            task_id: task_id.to_string(),
+            node_title: node_title.to_string(),
+            asks_enabled: ask.asks_enabled,
+            run_started_at: ask.run_started_at,
+            asks_left: std::sync::atomic::AtomicU8::new(budget),
+            asks_max: budget,
+        },
+    );
 }
 
 /// 注销（bot_chat 收尾与 unregister_exec_session 成对调用）
@@ -330,12 +322,7 @@ pub(crate) fn unregister_ask_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: &str,
 ) {
-    crate::app_state::ask_contexts(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] ask_contexts: {e:?}");
-            e.into_inner()
-        })
+    crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts")
         .remove(session_id);
 }
 
@@ -402,12 +389,7 @@ pub(crate) fn parse_ask_args(args: &str) -> Result<AskArgs, String> {
 /// 摘除提问 waiter：insert 失败注销与等待结束防泄漏共用（应答端 remove 幂等，
 /// 双方摘除只对先到者生效，晚到者拿到 None）
 fn remove_question_waiter<R: tauri::Runtime>(app: &tauri::AppHandle<R>, qid: &str) {
-    crate::app_state::question_waiters(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] question_waiters: {e:?}");
-            e.into_inner()
-        })
+    crate::db::lock::lock_or_recover(&crate::app_state::question_waiters(app), "question_waiters")
         .remove(qid);
 }
 
@@ -415,12 +397,8 @@ fn remove_question_waiter<R: tauri::Runtime>(app: &tauri::AppHandle<R>, qid: &st
 ///（若已有人回冲/值更高则不动）；同一注册的 ask 串行，此处纯属防御；映射缺行 =
 /// 注册已随会话收尾注销，无需回冲。
 fn restore_ask_budget<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &str, prev: u8) {
-    let mut map = crate::app_state::ask_contexts(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] ask_contexts: {e:?}");
-            e.into_inner()
-        });
+    let mut map =
+        crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts");
     if let Some(reg) = map.get_mut(sid) {
         reg.asks_left
             .fetch_max(prev, std::sync::atomic::Ordering::SeqCst);
@@ -456,12 +434,8 @@ pub(crate) async fn engine_ask_user(
     );
     // 锁内一次取全量 owned 数据（含模式检查与预算扣减）——引用不出锁作用域
     let (wf_id, task_id, node_title, run_started_at, budget_left, asks_max) = {
-        let mut map = crate::app_state::ask_contexts(app)
-            .lock()
-            .unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] ask_contexts: {e:?}");
-                e.into_inner()
-            });
+        let mut map =
+            crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts");
         let Some(reg) = map.get_mut(sid) else {
             return ToolResult::warn(
                 "ask_user 仅任务执行中可用（工作流节点/手动执行的任务卡）；聊天中请直接文字提问。请按你的假设继续执行。",
@@ -512,12 +486,7 @@ pub(crate) async fn engine_ask_user(
     // 继续」两层不一致。qid 是本次新造的 uuid，落库前无人能引用，提前注册无重复
     // 消费面（应答端 remove 单次消费）；insert 失败路径负责注销防泄漏。
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-    crate::app_state::question_waiters(app)
-        .lock()
-        .unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] question_waiters: {e:?}");
-            e.into_inner()
-        })
+    crate::db::lock::lock_or_recover(&crate::app_state::question_waiters(app), "question_waiters")
         .insert(qid.clone(), tx);
     let qid_insert = qid.clone();
     let app2 = app.clone();

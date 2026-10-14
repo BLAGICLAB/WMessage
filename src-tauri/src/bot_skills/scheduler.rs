@@ -20,10 +20,10 @@ fn persist_outcome_quiet(
         return;
     };
     // 纳入 DB_WRITE_LOCK：主窗长事务期间锁外直写会 SQLITE_BUSY 静默丢记录
-    let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::scheduler::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let _g = crate::db::lock::lock_or_recover(
+        &crate::db::DB_WRITE_LOCK,
+        "bot_skills::scheduler::skill_runs",
+    );
     let outcome = crate::db::PersistedSkillOutcome {
         skill_name: name.to_string(),
         kind: kind.to_string(),
@@ -188,10 +188,7 @@ pub fn skill_terminate_all<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) {
     let registry = skill_runs(app);
-    let mut runs = registry.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] bot_skills::scheduler::skill_runs: {e:?}");
-        e.into_inner()
-    });
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::scheduler::skill_runs");
     for (name, run) in runs.iter_mut() {
         if run.state == SkillState::Running || run.state == SkillState::Paused {
             if let Some(sid) = session_id {

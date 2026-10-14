@@ -86,10 +86,10 @@ pub fn set_apply_policy<R: tauri::Runtime>(
 /// 可测内核（纯路径参数）：RMW 只改 evolution.applyPolicy，其余字段原样保留；
 /// 文件缺失从 `{}` 起步；JSON 解析失败拒绝写（Err，不覆盖坏文件防丢配置）。
 pub fn set_apply_policy_at(path: &Path, policy: ApplyPolicy) -> Result<(), String> {
-    let _g = APPLY_POLICY_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] evolution::policy::APPLY_POLICY_WRITE_LOCK: {e:?}");
-        e.into_inner()
-    });
+    let _g = crate::db::lock::lock_or_recover(
+        &APPLY_POLICY_WRITE_LOCK,
+        "evolution::policy::APPLY_POLICY_WRITE_LOCK",
+    );
     let mut v = match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
             .map_err(|e| format!("{path:?} JSON 解析失败，拒绝写（防覆盖既有配置）：{e}"))?,
@@ -157,10 +157,10 @@ pub fn set_derive_thresholds_at(
     path: &Path,
     t: crate::evolution::derive::DeriveThresholds,
 ) -> Result<(), String> {
-    let _g = APPLY_POLICY_WRITE_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] evolution::policy::APPLY_POLICY_WRITE_LOCK: {e:?}");
-        e.into_inner()
-    });
+    let _g = crate::db::lock::lock_or_recover(
+        &APPLY_POLICY_WRITE_LOCK,
+        "evolution::policy::APPLY_POLICY_WRITE_LOCK",
+    );
     let mut v = match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
             .map_err(|e| format!("{path:?} JSON 解析失败，拒绝写（防覆盖既有配置）：{e}"))?,

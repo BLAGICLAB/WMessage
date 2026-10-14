@@ -864,12 +864,10 @@ mod exit_cleanup_tests {
             )
             .expect("API 应启动成功");
             let state = app.state::<crate::api_server::ApiState>();
-            *state.0.lock().unwrap_or_else(|e| {
-                eprintln!(
-                    "[mutex_poisoned] lib::cleanup_on_exit_releases_api_and_skill::state.0: {e:?}"
-                );
-                e.into_inner()
-            }) = Some(running);
+            *crate::db::lock::lock_or_recover(
+                &state.0,
+                "lib::cleanup_on_exit_releases_api_and_skill::state.0",
+            ) = Some(running);
         }
         // mock 一个活动 Skill（Paused：terminate_all 覆盖 Running+Paused；
         // 不用 Running 是避免污染并行测试的 is_skill_active 全局断言）
@@ -911,7 +909,11 @@ mod exit_cleanup_tests {
         {
             let state = app.state::<crate::api_server::ApiState>();
             assert!(
-                state.0.lock().unwrap_or_else(|e| { eprintln!("[mutex_poisoned] lib::cleanup_on_exit_releases_api_and_skill::state.0: {e:?}"); e.into_inner() }).is_none(),
+                crate::db::lock::lock_or_recover(
+                    &state.0,
+                    "lib::cleanup_on_exit_releases_api_and_skill::state.0"
+                )
+                .is_none(),
                 "API 状态应已释放"
             );
         }

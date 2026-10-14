@@ -247,10 +247,8 @@ pub fn ensure_person_id<R: Runtime>(app: &AppHandle<R>) -> (String, String) {
     // 锁内重取 canonical pid：并发/多窗口下后来者发现已有 person_id 时必须沿用
     // 已有值——若仍用本地 pid 落 people 行并返回，会产生双 is_self 行 + 孤儿行
     let pid = {
-        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&PROFILE_WRITE_LOCK, "profile::PROFILE_WRITE_LOCK");
         let mut data = load_data(app);
         match data
             .person_id
@@ -323,10 +321,8 @@ pub fn profile_set_name<R: Runtime>(
     }
     // R-M-W（load → 改 → save）全程持锁，广播与 view 构造放锁外
     let data = {
-        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&PROFILE_WRITE_LOCK, "profile::PROFILE_WRITE_LOCK");
         let mut data = load_data(&app);
         let entry = if kind == "bot" {
             &mut data.bot
@@ -377,10 +373,8 @@ pub fn profile_set_avatar<R: Runtime>(
     }
     // 整个写路径（清旧文件 → 拷贝 → R-M-W json）持锁，防主窗 + 挂件并发丢更新
     let data = {
-        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&PROFILE_WRITE_LOCK, "profile::PROFILE_WRITE_LOCK");
         let dir = profile_dir(&app);
         std::fs::create_dir_all(&dir)?;
         let dest = dir.join(format!("avatar-{kind}.{ext}"));
@@ -445,10 +439,8 @@ pub fn profile_remove_avatar<R: Runtime>(
     // R-M-W + 删文件全程持锁——删文件也放锁内，
     // 否则并发 set_avatar 同扩展名时可能删掉对方刚拷好的新头像
     let (data, removed) = {
-        let _g = PROFILE_WRITE_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] profile::PROFILE_WRITE_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _g =
+            crate::db::lock::lock_or_recover(&PROFILE_WRITE_LOCK, "profile::PROFILE_WRITE_LOCK");
         let mut data = load_data(&app);
         let entry = if kind == "bot" {
             &mut data.bot
