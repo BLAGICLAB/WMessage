@@ -1,14 +1,17 @@
 import { useMemo, useState } from "react";
-import { Archive } from "lucide-react";
+import { Archive, Tags } from "lucide-react";
 import type { Task } from "../types";
 import { sortByOrder } from "../storage";
 import { getArchiveAfterDays } from "../lib/archiveRule";
 import { TodoCard } from "./TodoCard";
 import { EmptyState } from "./EmptyState";
+import { TagConsolidateModal } from "./TagConsolidateModal";
 
 /**
  * 归档页：搜索 → 标签计数（点击筛选，与搜索 AND 叠加）→ 三列卡片网格。
  * 归档任务按 order 从左列到右列依次排布，卡片默认折叠（展开后保持展开）。
+ * 标签行默认折叠（「标签不常看」——展开需要点 details）；
+ * 「整理标签」按钮始终显示，单击开 TagConsolidateModal 弹窗。
  */
 export function ArchivePage({
   tasks,
@@ -21,6 +24,7 @@ export function ArchivePage({
 }) {
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [consolidateOpen, setConsolidateOpen] = useState(false);
 
   const archived = tasks.filter((t) => t.archived && !t.deletedAt);
 
@@ -54,36 +58,69 @@ export function ArchivePage({
 
   return (
     <div>
-      {/* 搜索 */}
+      {/* 搜索 + 整理标签按钮（同一行） */}
       {archived.length > 0 && (
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索归档内容…"
-          className="nm-inset w-full rounded-xl px-4 py-2.5 text-sm text-[var(--t2)] outline-none"
-        />
+        <div className="flex items-center gap-2">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索归档内容…"
+            className="nm-inset flex-1 rounded-xl px-4 py-2.5 text-sm text-[var(--t2)] outline-none"
+          />
+          <button
+            type="button"
+            onClick={() => setConsolidateOpen(true)}
+            className="nm-btn shrink-0 px-3 py-2.5 text-xs text-[var(--t3)] flex items-center gap-1.5 whitespace-nowrap"
+            title="整理归档卡的相似标签"
+          >
+            <Tags size={12} aria-hidden />
+            整理标签
+          </button>
+        </div>
       )}
 
-      {/* 标签计数（点击筛选，再点取消） */}
+      {/* 标签计数（点击筛选，再点取消）—— 默认折叠，按需展开 */}
       {tagCounts.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {tagCounts.map(([tag, count]) => (
-            <button
-              key={tag}
-              className={`px-2.5 py-1 text-xs rounded-full transition-colors ${
-                activeTag === tag
-                  ? "nm-inset text-[var(--t1)] font-medium"
-                  : "nm-outset text-[var(--t4)] hover:text-[var(--t2)]"
-              }`}
-              onClick={() => setActiveTag(activeTag === tag ? null : tag)}
-            >
-              # {tag}
-              <span className="ml-1 tabular-nums text-[var(--t5)]">
-                {count}
+        <details className="mt-3 group">
+          <summary className="text-[11px] text-[var(--t5)] cursor-pointer select-none hover:text-[var(--t3)] flex items-center gap-1.5">
+            <span className="inline-block transition-transform group-open:rotate-90">
+              ▶
+            </span>
+            标签（{tagCounts.length}）{activeTag && (
+              <span className="ml-2 text-[var(--t2)]">
+                · 当前筛选 # {activeTag}
+                <button
+                  type="button"
+                  className="ml-1 text-[var(--t5)] hover:text-[var(--t2)]"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setActiveTag(null);
+                  }}
+                >
+                  ×
+                </button>
               </span>
-            </button>
-          ))}
-        </div>
+            )}
+          </summary>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {tagCounts.map(([tag, count]) => (
+              <button
+                key={tag}
+                className={`px-2.5 py-1 text-xs rounded-full transition-colors ${
+                  activeTag === tag
+                    ? "nm-inset text-[var(--t1)] font-medium"
+                    : "nm-outset text-[var(--t4)] hover:text-[var(--t2)]"
+                }`}
+                onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+              >
+                # {tag}
+                <span className="ml-1 tabular-nums text-[var(--t5)]">
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
+        </details>
       )}
 
       {archived.length === 0 ? (
@@ -108,6 +145,10 @@ export function ArchivePage({
             />
           ))}
         </div>
+      )}
+
+      {consolidateOpen && (
+        <TagConsolidateModal onClose={() => setConsolidateOpen(false)} />
       )}
     </div>
   );

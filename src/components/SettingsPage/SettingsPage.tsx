@@ -25,6 +25,7 @@ import {
   EyeOff,
   FolderOutput,
   GitBranch,
+  History,
   Info,
   Monitor,
   Moon,
@@ -93,6 +94,7 @@ import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
 import { UsageStatsCard } from "./UsageStatsCard";
+import { OperationHistoryTab } from "./OperationHistoryTab";
 import { Toggle } from "../Toggle/Toggle";
 import { ProviderLogo } from "./ProviderLogo";
 import { ApiProviderSelect } from "./ApiProviderSelect";
@@ -329,7 +331,8 @@ type SectionKey =
   | "desk"
   | "workflow"
   | "graph"
-  | "tokens";
+  | "tokens"
+  | "opsHistory";
 const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "general", label: "基础设置", icon: Settings2 },
   { key: "data", label: "数据管理", icon: DatabaseBackup },
@@ -343,6 +346,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "evolution", label: "自进化", icon: GitBranch },
   { key: "desk", label: "桌面整理", icon: FolderOutput },
   { key: "tokens", label: "词元统计", icon: BarChart3 },
+  { key: "opsHistory", label: "操作历史", icon: History },
 ];
 
 /** 设置壳（重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。
@@ -3760,6 +3764,17 @@ export function SettingsPage({
             >
               {/* 词元统计实装（原「规划中」占位）——exec_traces 按日聚合，纯本地 */}
               <UsageStatsCard />
+            </section>
+          )}
+
+          {mountedSections.has("opsHistory") && (
+            <section
+              hidden={activeSection !== "opsHistory"}
+              className="space-y-4 pt-4"
+            >
+              {/* 标签整理 / 未来其他破坏性操作的可回滚历史；列最近 50 条，
+                每条带「撤销」按钮（按 run_id 调 rollback 命令） */}
+              <OperationHistoryTab />
             </section>
           )}
         </div>

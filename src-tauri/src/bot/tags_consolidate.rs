@@ -430,16 +430,6 @@ mod tests {
     use crate::db::ensure_columns;
     use rusqlite::Connection;
 
-    fn mk_task(id: &str, tags: Vec<&str>) -> (String, String, String, bool) {
-        let tags_json = serde_json::to_string(&tags).unwrap();
-        (
-            id.to_string(),
-            tags_json,
-            "2000-01-01T00:00:00Z".to_string(),
-            true,
-        )
-    }
-
     fn conn() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         // tasks DDL：archived/deleted_at 字段必须存在
