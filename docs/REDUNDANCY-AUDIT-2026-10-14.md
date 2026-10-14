@@ -29,7 +29,7 @@
 | 续扫 Rust#1 profile 测试侧 22 处 ENV_LOCK | ✅ `041727b` | Wave2 漏改的测试侧粘贴补齐（lock_or_recover），-66 行 |
 | 续扫 前端#1 SettingsPage 工具按钮类 21 处 | ✅ `10d56f5` | main.css `.btn-sm-action` @apply 单源，4 种子形态统一 |
 | 续扫 Rust#2 三件套样板迁 `with_write_conn` | ✅ `194c826` | 36 处中 12 处精确匹配迁移（净 -113 行）；24 处有据保留（嵌入持锁前算好 7 / 无锁纯读 11 / 类型化错误 1 / 非 DB 1 / 形态不合 4）|
-| 续扫 Rust 杂 mutex 毒化 5 处（audit×2 / config×2 / corrections×2） | ⏸ 未完 | part C 未做（本轮只做 part B）；~30 行，下波顺手 |
+| 续扫 Rust 杂 mutex 毒化 5 处（audit×2 / config×2 / corrections×2） | ✅ `6292ae3` | part C 收尾；corrections 2 处原无 eprintln，lock_or_recover 补齐审计纪律（规范化） |
 | 续扫 前端 modal 模板 9 处 / tasks filter 8 处 / 中 ROI 散点 7 项 | ⏸ 待拍板 | 合计 ~285 行，中风险（z-index/关闭策略/8 业务口径） |
 
 **累计净删 ~1,070+ 行**（Wave2 两批 + Wave3 P1-A + 前端 #2-#4）。
