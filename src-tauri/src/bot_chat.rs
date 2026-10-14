@@ -1539,31 +1539,23 @@ async fn create_exec_session<R: tauri::Runtime>(
         crate::bot::truncate_for_log(task.title.trim(), 30)
     );
     let block = build_task_block(task, ctx);
-    let app2 = app.clone();
-    let session =
-        tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::BotSession, String> {
-            let _g = crate::db::lock::lock_or_recover(
-                &crate::db::DB_WRITE_LOCK,
-                "bot_chat::DB_WRITE_LOCK",
-            );
-            let conn = crate::db::open_db(&app2)?;
-            let s = crate::db::bot_session_create_inner(&conn, Some(title))?;
-            crate::db::bot_history_save_inner(
-                &conn,
-                &s.id,
-                &[crate::db::BotMsgRow {
-                    role: "user".into(),
-                    content: block,
-                    refs_json: None,
-                    thinking: None,
-                    tools_json: None,
-                }],
-            )?;
-            Ok(s)
-        })
-        .await
-        .map_err(|e| CommandError::from(format!("执行会话创建线程 join 失败：{e}")))?
-        .map_err(CommandError::DbError)?;
+    let session = crate::db::lock::with_write_conn(app, move |conn| {
+        let s = crate::db::bot_session_create_inner(conn, Some(title))?;
+        crate::db::bot_history_save_inner(
+            conn,
+            &s.id,
+            &[crate::db::BotMsgRow {
+                role: "user".into(),
+                content: block,
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            }],
+        )?;
+        Ok(s)
+    })
+    .await
+    .map_err(CommandError::DbError)?;
     let _ = app.emit_to(
         "widget",
         "chat-open-session",
@@ -1591,12 +1583,8 @@ async fn persist_exec_reply<R: tauri::Runtime>(
         Err(e) => (format!("⚠️ 执行失败：{}", e.message()), None),
     };
     let block = build_task_block(task, ctx);
-    let app2 = app.clone();
     let sid = sid.to_string();
-    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g =
-            crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "bot_chat::DB_WRITE_LOCK");
-        let mut conn = crate::db::open_db(&app2)?;
+    let r = crate::db::lock::with_write_conn(app, move |conn| {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         crate::db::bot_history_save_inner(
             &tx,
@@ -1622,14 +1610,10 @@ async fn persist_exec_reply<R: tauri::Runtime>(
     })
     .await;
     match r {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "task_exec.persist_failed",
-                "error" => e);
-        }
+        Ok(()) => {}
         Err(e) => {
             crate::audit_event!(app, crate::audit::AuditLevel::Warn, "task_exec.persist_failed",
-                "error" => format!("持久化线程 join 失败：{e}"));
+                "error" => e);
         }
     }
 }

@@ -484,12 +484,9 @@ async fn update_wf_schedule_fields(
     sched_last: Option<i64>,
     now_ms: i64,
 ) -> bool {
-    let app_cl = app.clone();
     let id = id.to_string();
     let id_cl = id.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g = crate::db::lock_db_write();
-        let conn = crate::db::open_db(&app_cl)?;
+    let outcome = crate::db::lock::with_write_conn(app, move |conn| {
         let n = conn
             .execute(
                 "UPDATE workflows SET schedule = ?1, sched_last = ?2, updated_at = ?3 \
@@ -504,23 +501,13 @@ async fn update_wf_schedule_fields(
     })
     .await;
     match outcome {
-        Ok(Ok(())) => true,
-        Ok(Err(e)) => {
+        Ok(()) => true,
+        Err(e) => {
             crate::bot::audit_log(
                 app,
                 &format!(
                     "sched_wf_update_skip | id: {id} | {}",
                     crate::bot::truncate_for_log(&e, 120)
-                ),
-            );
-            false
-        }
-        Err(e) => {
-            crate::bot::audit_log(
-                app,
-                &format!(
-                    "sched_wf_update_skip | id: {id} | join 失败：{}",
-                    crate::bot::truncate_for_log(&e.to_string(), 120)
                 ),
             );
             false
@@ -767,12 +754,9 @@ async fn update_job_sched_fields(
     sched_last: Option<i64>,
     now_ms: i64,
 ) -> bool {
-    let app_cl = app.clone();
     let id = id.to_string();
     let id_audit = id.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g = crate::db::lock_db_write();
-        let conn = crate::db::open_db(&app_cl)?;
+    let outcome = crate::db::lock::with_write_conn(app, move |conn| {
         let n = conn
             .execute(
                 "UPDATE scheduled_jobs SET sched_last = ?1, updated_at = ?2 \
@@ -786,7 +770,7 @@ async fn update_job_sched_fields(
         Ok(())
     })
     .await;
-    let ok = matches!(outcome, Ok(Ok(())));
+    let ok = outcome.is_ok();
     if !ok {
         crate::bot::audit_log(
             app,
@@ -796,33 +780,18 @@ async fn update_job_sched_fields(
     ok
 }
 
-/// spawn_blocking（返回 Result<(), String>）的失败文本归一：None = 成功，
-/// join 失败与业务 Err 都转文本（收尾三处落库共用同一审计口径）
-fn blocking_err_text<E: std::fmt::Display>(
-    outcome: &Result<Result<(), String>, E>,
-) -> Option<String> {
-    match outcome {
-        Ok(Ok(())) => None,
-        Ok(Err(e)) => Some(e.clone()),
-        Err(e) => Some(e.to_string()),
-    }
-}
-
 async fn delete_job_row(app: &AppHandle, id: &str) {
-    let app_cl = app.clone();
     let id = id.to_string();
     let id_audit = id.clone();
-    let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g = crate::db::lock_db_write();
-        let conn = crate::db::open_db(&app_cl)?;
-        crate::db::delete_scheduled_job(&conn, &id)
+    let outcome = crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::delete_scheduled_job(conn, &id)
             .map(|_| ())
             .map_err(|e| e.to_string())
     })
     .await;
     // 删除失败只留痕不重试：at: 的删除是「成功或最终失败都算已触发」的有意消费
     //（sched_last 已推进，残留行不会被再判到期），有意不加 CAS
-    if let Some(e) = blocking_err_text(&outcome) {
+    if let Err(e) = outcome {
         crate::bot::audit_log(
             app,
             &format!(
@@ -1015,7 +984,6 @@ async fn finalize_job_run(
 ) {
     // 1) 历史落库（成功记摘要，失败记错误；截断防长文本撑表）
     {
-        let app_cl = app.clone();
         let job_id = job.id.clone();
         let card_id = card_id.to_string();
         let (status, summary) = if ok {
@@ -1035,11 +1003,9 @@ async fn finalize_job_run(
                 ),
             )
         };
-        let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-            let _g = crate::db::lock_db_write();
-            let conn = crate::db::open_db(&app_cl)?;
+        let outcome = crate::db::lock::with_write_conn(app, move |conn| {
             crate::db::record_job_run(
-                &conn,
+                conn,
                 &job_id,
                 fired_at,
                 status,
@@ -1051,7 +1017,7 @@ async fn finalize_job_run(
         })
         .await;
         // 历史落库失败留痕：徽标/通知已发但历史缺行，静默丢会查不到执行记录
-        if let Some(e) = blocking_err_text(&outcome) {
+        if let Err(e) = outcome {
             crate::bot::audit_log(
                 app,
                 &format!(
@@ -1070,7 +1036,6 @@ async fn finalize_job_run(
     let auto_pause = final_fail && job.pause_on_failure == Some(true);
     let now_ms = chrono::Local::now().timestamp_millis();
     {
-        let app_cl = app.clone();
         let job_id = job.id.clone();
         let last_status = if ok { "ok" } else { "fail" };
         let last_error = if ok {
@@ -1083,11 +1048,9 @@ async fn finalize_job_run(
         } else {
             (None, None) // 成功或重试用尽：清零（下一周期从零计）
         };
-        let outcome = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-            let _g = crate::db::lock_db_write();
-            let conn = crate::db::open_db(&app_cl)?;
+        let outcome = crate::db::lock::with_write_conn(app, move |conn| {
             crate::db::update_job_run_state(
-                &conn,
+                conn,
                 &job_id,
                 Some(last_status),
                 last_error.as_deref(),
@@ -1101,7 +1064,7 @@ async fn finalize_job_run(
         .await;
         // 状态落库失败留痕：UI 已报「已排重试/已自动暂停」但状态未写中，
         // 重试不会触发、暂停不生效，必须可查
-        if let Some(e) = blocking_err_text(&outcome) {
+        if let Err(e) = outcome {
             crate::bot::audit_log(
                 app,
                 &format!(
@@ -1797,21 +1760,6 @@ mod sched_tests {
         assert!(!at_expired("daily:09:00", None, now));
         // 坏数据 → 放弃
         assert!(at_expired("at:junk", None, now));
-    }
-
-    #[test]
-    fn blocking_err_text_normalizes_inner_and_join_errors() {
-        // 成功 → None
-        assert_eq!(blocking_err_text(&Ok::<_, std::io::Error>(Ok(()))), None);
-        // 业务 Err（DB 写失败）→ 原文
-        assert_eq!(
-            blocking_err_text(&Ok::<_, std::io::Error>(Err("db 锁超时".into()))),
-            Some("db 锁超时".to_string())
-        );
-        // join 失败 → 转文本（不区分类型，统一进审计）
-        let join: Result<Result<(), String>, std::io::Error> =
-            Err(std::io::Error::other("join 失败"));
-        assert_eq!(blocking_err_text(&join), Some("join 失败".to_string()));
     }
 
     #[test]

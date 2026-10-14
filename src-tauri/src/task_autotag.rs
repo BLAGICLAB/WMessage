@@ -182,35 +182,29 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
     }
 
     // 回写：与 task_patch 同一持久化纪律（锁内重读现值 → 白名单 patch → 打戳 → upsert → 广播）
-    let row = {
-        let app3 = app.clone();
-        tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::Task, String> {
-            let _g = crate::db::lock_db_write();
-            let conn = crate::db::open_db(&app3)?;
-            let Some(mut t) = crate::db::load_task(&conn, &id)? else {
-                return Err("任务已不存在".into());
-            };
-            // 锁内重做完整守卫链（前置读只用于快速失败）：前置读到拿锁之间
-            // 任务可能被取消归档/认领/改状态，只复查 tags 会漏掉这些变化
-            let skip = t.column != TaskStatus::Done
-                || t.archived != Some(true)
-                || t.deleted_at.is_some()
-                || t.owner_id.is_some() // 只给自己的卡打标（外来卡只读）
-                || t.tags.as_ref().is_some_and(|v| !v.is_empty());
-            if skip {
-                // 并发窗口内守卫被打破或别人先写了标签：以先到者为准，不覆盖
-                return Ok(t);
-            }
-            crate::db::apply_task_patch(&mut t, &serde_json::json!({ "tags": tags }))
-                .map_err(|e| e.to_string())?;
-            crate::db::prepare_for_upsert(&mut t);
-            crate::db::upsert_tasks(&conn, std::slice::from_ref(&t))?;
-            Ok(t)
-        })
-        .await
-        .map_err(|e| crate::error::CommandError::from(format!("autotag 回写线程 join 失败：{e}")))?
-        .map_err(crate::error::CommandError::from)?
-    };
+    let row = crate::db::lock::with_write_conn(&app, move |conn| {
+        let Some(mut t) = crate::db::load_task(conn, &id)? else {
+            return Err("任务已不存在".into());
+        };
+        // 锁内重做完整守卫链（前置读只用于快速失败）：前置读到拿锁之间
+        // 任务可能被取消归档/认领/改状态，只复查 tags 会漏掉这些变化
+        let skip = t.column != TaskStatus::Done
+            || t.archived != Some(true)
+            || t.deleted_at.is_some()
+            || t.owner_id.is_some() // 只给自己的卡打标（外来卡只读）
+            || t.tags.as_ref().is_some_and(|v| !v.is_empty());
+        if skip {
+            // 并发窗口内守卫被打破或别人先写了标签：以先到者为准，不覆盖
+            return Ok(t);
+        }
+        crate::db::apply_task_patch(&mut t, &serde_json::json!({ "tags": tags }))
+            .map_err(|e| e.to_string())?;
+        crate::db::prepare_for_upsert(&mut t);
+        crate::db::upsert_tasks(conn, std::slice::from_ref(&t))?;
+        Ok(t)
+    })
+    .await
+    .map_err(crate::error::CommandError::from)?;
 
     // 广播：挂件 tasks-changed 重读收敛；主窗 tasks-updated 行级合并
     let _ = app.emit("tasks-changed", ());

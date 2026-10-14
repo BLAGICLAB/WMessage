@@ -1535,34 +1535,17 @@ async fn run_review(
 async fn persist_and_emit_report(app: &AppHandle, workflow_id: &str, report: &serde_json::Value) {
     let json = serde_json::to_string(report).unwrap_or_default();
     let at = chrono::Utc::now().timestamp_millis();
-    let app2 = app.clone();
     let wid = workflow_id.to_string();
     let stored = json.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let _g = crate::db::lock::lock_or_recover(
-            &crate::db::DB_WRITE_LOCK,
-            "workflow_runner::DB_WRITE_LOCK",
-        );
-        let conn = crate::db::open_db(&app2)?;
-        crate::db::workflow::workflow_set_report(&conn, &wid, &stored, at)
+    let r = crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::workflow::workflow_set_report(conn, &wid, &stored, at)
     })
     .await;
     match r {
-        Ok(Ok(())) => {
+        Ok(()) => {
             let _ = app.emit(
                 "workflow-report",
                 serde_json::json!({ "workflowId": workflow_id, "report": report }),
-            );
-        }
-        Ok(Err(e)) => {
-            crate::audit::write_event(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "workflow_review",
-                &[
-                    ("outcome", "persist_failed".to_string()),
-                    ("error", crate::audit::escape_for_log(&e, 200)),
-                ],
             );
         }
         Err(e) => {
@@ -1572,7 +1555,7 @@ async fn persist_and_emit_report(app: &AppHandle, workflow_id: &str, report: &se
                 "workflow_review",
                 &[
                     ("outcome", "persist_failed".to_string()),
-                    ("error", crate::audit::escape_for_log(&e.to_string(), 200)),
+                    ("error", crate::audit::escape_for_log(&e, 200)),
                 ],
             );
         }

@@ -433,20 +433,12 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     let cfg = crate::bot::load_config(app)
         .memory_consolidation
         .unwrap_or_default();
-    let app2 = app.clone();
-    let candidates =
-        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<MemItem>, String> {
-            let _g = crate::db::lock::lock_or_recover(
-                &crate::db::DB_WRITE_LOCK,
-                "memory::consolidate DB_WRITE_LOCK",
-            );
-            let conn = crate::db::open_db(&app2)?;
-            store::ensure_table(&conn)?;
-            gather_candidates(&conn, cfg.last_run_at, now_ms(), CONSOLIDATE_BATCH_LIMIT)
-        })
-        .await
-        .map_err(|e| CommandError::from(format!("记忆整理取数线程 join 失败：{e}")))?
-        .map_err(CommandError::DbError)?;
+    let candidates = crate::db::lock::with_write_conn(app, move |conn| {
+        store::ensure_table(conn)?;
+        gather_candidates(conn, cfg.last_run_at, now_ms(), CONSOLIDATE_BATCH_LIMIT)
+    })
+    .await
+    .map_err(CommandError::DbError)?;
     if candidates.len() < 2 {
         return Ok(ConsolidateReport::default()); // 少于 2 条无可整理
     }
@@ -487,28 +479,20 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     // Phase 1 追加：closure 拿走 ops 之前 clone 一份，留作 `evolution::post_consolidation` 审计信号源。
     // 不改反思逻辑：ops 被应用一次（apply_ops）+ 被审计一次（emit_proposals），结果一致。
     let ops_for_audit = ops.clone();
-    let app3 = app.clone();
     // 整理写入也走 memoryTuning（容量/去重阈值统一口径）
     let tuning = crate::bot::read_memory_tuning(app);
-    let report =
-        tauri::async_runtime::spawn_blocking(move || -> Result<ConsolidateReport, String> {
-            let _g = crate::db::lock::lock_or_recover(
-                &crate::db::DB_WRITE_LOCK,
-                "memory::consolidate DB_WRITE_LOCK",
-            );
-            let mut conn = crate::db::open_db(&app3)?;
-            store::ensure_table(&conn)?;
-            apply_ops_with(
-                &mut conn,
-                &ops,
-                &embs,
-                now_ms(),
-                &store::StoreParams::of(&tuning),
-            )
-        })
-        .await
-        .map_err(|e| CommandError::from(format!("记忆整理写入线程 join 失败：{e}")))?
-        .map_err(CommandError::DbError)?;
+    let report = crate::db::lock::with_write_conn(app, move |conn| {
+        store::ensure_table(conn)?;
+        apply_ops_with(
+            conn,
+            &ops,
+            &embs,
+            now_ms(),
+            &store::StoreParams::of(&tuning),
+        )
+    })
+    .await
+    .map_err(CommandError::DbError)?;
     // Phase 1 追加：基于本次反思产出演化提案（仅写 audit；不改反思逻辑、不调二次 LLM）。
     // 见 `crate::evolution::post_consolidation` 的依赖方向约束。
     crate::evolution::post_consolidation(&ops_for_audit, &report, lesson.as_deref()).await;

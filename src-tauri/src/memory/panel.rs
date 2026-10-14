@@ -271,14 +271,8 @@ pub async fn mem_update(
 /// 删除单条。返回是否真删到（false = 本来就不存在）。
 #[tauri::command]
 pub async fn mem_delete(app: AppHandle, id: String) -> CommandResult<bool> {
-    let r = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
-        let _g = lock_db();
-        let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-        delete_core(&conn, &id)
-    })
-    .await;
-    r.map_err(|e| CommandError::from(format!("记忆删除线程 join 失败：{e}")))?
-        .map_err(CommandError::DbError)
+    let r = crate::db::lock::with_write_conn(&app, move |conn| delete_core(conn, &id)).await;
+    r.map_err(CommandError::DbError)
 }
 
 // 导出 / 导入
