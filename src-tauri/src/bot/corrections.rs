@@ -588,7 +588,8 @@ pub(crate) fn start_correction_cluster_scheduler(app: tauri::AppHandle) {
         let last_tick_ms = std::sync::Arc::new(std::sync::Mutex::new(0i64));
         loop {
             ticker.tick().await;
-            let since_ms = *last_tick_ms.lock().unwrap_or_else(|e| e.into_inner());
+            let since_ms =
+                *crate::db::lock::lock_or_recover(&last_tick_ms, "bot::corrections::last_tick_ms");
             let now_ms = crate::memory::now_ms();
             // AssertUnwindSafe 安全依据：单轮只读 db + 调一次聚类扫描；
             // panic 后无可破坏状态；下一轮从头开始。
@@ -602,7 +603,8 @@ pub(crate) fn start_correction_cluster_scheduler(app: tauri::AppHandle) {
             // 全表扫一遍，违背「兜底为增量」的初衷。since_ms 推进略快于实际聚类
             // 完成的瞬间，下轮扫到的 correction 子集可能漏掉聚类进行时新写的；该
             // 子集会被下一轮之后的下下轮兜住（5 min × 2 仍可接受）。
-            *last_tick_ms_2.lock().unwrap_or_else(|e| e.into_inner()) = now_ms;
+            *crate::db::lock::lock_or_recover(&last_tick_ms_2, "bot::corrections::last_tick_ms") =
+                now_ms;
             if let Err(panic) = outcome {
                 let msg = crate::audit::panic_message(panic);
                 crate::bot::audit_log(

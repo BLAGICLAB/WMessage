@@ -442,10 +442,7 @@ fn write_at(
     event: &str,
     kv: &[(&str, &str)],
 ) -> bool {
-    let _g = BOT_LOG_LOCK.lock().unwrap_or_else(|e| {
-        eprintln!("[mutex_poisoned] audit::BOT_LOG_LOCK: {e:?}");
-        e.into_inner()
-    });
+    let _g = crate::db::lock::lock_or_recover(&BOT_LOG_LOCK, "audit::BOT_LOG_LOCK");
     crate::db::rotate_log_if_large(log_path, LOG_ROTATE_BYTES);
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let line = build_event_line(&ts.to_string(), level, event, kv);
@@ -844,10 +841,8 @@ mod tests {
     fn p2_6_1_zero_text_audit_kv_writes_to_bot_log() {
         // 不依赖 app 启动：mock app + write_event 真写盘 + 读回验格式
         // 删除/读全量共享 bot.log，必须持测试串行锁（与 bot::config 同名用例互斥）
-        let _serial = BOT_LOG_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] audit::BOT_LOG_TEST_LOCK: {e:?}");
-            e.into_inner()
-        });
+        let _serial =
+            crate::db::lock::lock_or_recover(&BOT_LOG_TEST_LOCK, "audit::BOT_LOG_TEST_LOCK");
         use crate::audit::write_event;
         let app = tauri::test::mock_app();
         let bot_log = crate::db::data_dir(app.handle()).join("bot.log");

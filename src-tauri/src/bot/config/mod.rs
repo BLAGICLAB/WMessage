@@ -879,11 +879,10 @@ mod tests {
         // 读路径必须与生产写入路径一致：probe_log_dir 解析（2026-10-10 根治后
         // 在 cargo target 路径下走 app_data_dir，不再用 target/debug/deps）。
         // 删除/读全量共享 bot.log，必须持测试串行锁（与 audit 模块同名用例互斥）
-        let _serial = crate::audit::BOT_LOG_TEST_LOCK.lock().unwrap_or_else(|e| {
-            eprintln!("[mutex_poisoned] bot::config::mod BOT_LOG_TEST_LOCK (test): {e:?}");
-
-            e.into_inner()
-        });
+        let _serial = crate::db::lock::lock_or_recover(
+            &crate::audit::BOT_LOG_TEST_LOCK,
+            "bot::config::mod::BOT_LOG_TEST_LOCK",
+        );
         let app = tauri::test::mock_app();
         crate::audit::write_error_audit(app.handle(), "bot_log_read_fail", &[("err", "boom")]);
         // 与 audit.rs:481（write_error_audit）一致：用 probe_log_dir 解析而非
