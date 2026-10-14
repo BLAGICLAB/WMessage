@@ -11,26 +11,12 @@
 use std::io::Write;
 use tauri::AppHandle;
 
-/// 审计日志安全转义 + 截断（bot 侧日志写入统一走这里）：
-/// 剥换行/管道符，防伪造「INFO |」前缀与多行撕裂。
-/// 规则：`| ` → `|  `（双空格），剩余裸 `|` → `||`，`\n` → `\\n`，`\r` → `\\r`；
-/// 转义后按字符数截到 max 加省略号。
-/// 例：`"a\nb| c"` → `"a\\nb||  c"`
-pub(crate) fn escape_for_log(s: &str, max: usize) -> String {
-    let escaped = s
-        .replace("| ", "|  ")
-        .replace('|', "||")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r");
-    let count = escaped.chars().count();
-    if count <= max {
-        escaped
-    } else {
-        let mut out: String = escaped.chars().take(max).collect();
-        out.push('…');
-        out
-    }
-}
+/// 审计日志安全转义 + 截断，单源在 [`crate::bot::log_sanitize::escape_for_log`]：
+/// `|` 倍增 + `| ` 双空格补位 + \n\r 短形式 + 控制字符全集（含 ESC/BEL/DEL/C1）
+/// 与 U+2028/2029 显式转义 + 转义后按字符数截断加省略号。
+/// 经此 re-export 保持 `crate::audit::escape_for_log` 路径不变
+/// （workflow_runner / workflow_questions / workflow_decompose / task_autotag 按此引用）。
+pub(crate) use crate::bot::log_sanitize::escape_for_log;
 
 /// kv 值写入日志前的长度上限
 const KV_VALUE_MAX: usize = 500;

@@ -287,11 +287,12 @@ fn write_fallback_warn(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) 
 
     let p = dir.join("bot.log");
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-    // 与 audit::build_event_line 同款拼装—— kv value 转义后 ` | ` 分隔
-    // （escape: 剥 \n / |，避免 value 里的换行/管道撕裂日志行）
+    // 与 audit::build_event_line 同款拼装—— kv value 过 log_sanitize::escape_for_log
+    // （强版：`|` 倍增 + 控制字符全集显式转义，防 value 撕裂/伪造日志行）
     let mut line = format!("[{}] WARN | {}", ts, event);
     for (k, v) in kv {
-        let esc = escape_for_log_inline(v);
+        // usize::MAX = 不截断：fallback 值本身短，截断语义留给调用方
+        let esc = crate::bot::log_sanitize::escape_for_log(v, usize::MAX);
         line.push_str(&format!(" | {}={}", k, esc));
     }
     // 创建即 0600（与 audit::open_log_append 一致）；写失败 eprintln 不阻塞
@@ -319,28 +320,6 @@ fn write_fallback_warn(dir: &std::path::Path, event: &str, kv: &[(&str, &str)]) 
             eprintln!("[paths] fallback_warn open fail: {e} path={}", p.display());
         }
     }
-}
-
-/// 与 audit::escape_for_log 等价的内联版：剥 value 里的 `\n` / `| `。
-/// 重复实现是因为这条路径不进 audit 模块（避免循环依赖），格式必须
-/// 与 audit::escape_for_log 字符级一致——单测 `kv_value_pipe_space_and_newline_stay_escaped`
-/// 锁住两路输出不可漂移。
-fn escape_for_log_inline(s: &str) -> String {
-    // 与 audit::escape_for_log 字符级一致（NEW-1345 后 = 控制字符全集 + U+2028/2029
-    // + `|` 倍增 + `| ` 预替换）。不直接复用是避免 db→bot/config 循环依赖。
-    let mut out = String::with_capacity(s.len());
-    for ch in s.replace("| ", "|  ").chars() {
-        match ch {
-            '|' => out.push_str("||"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\u{2028}' => out.push_str("\\u{2028}"),
-            '\u{2029}' => out.push_str("\\u{2029}"),
-            c if c.is_control() => out.extend(c.escape_default()),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -557,11 +536,13 @@ mod tests {
     }
 
     #[test]
-    fn escape_for_log_inline_strips_newline_and_pipe() {
-        // 与 audit::escape_for_log 同语义：value 里的 \n → \\n，"| " → "|| "
-        assert_eq!(escape_for_log_inline("a\nb"), "a\\nb");
-        assert_eq!(escape_for_log_inline("a| b"), "a||  b");
-        assert_eq!(escape_for_log_inline("clean"), "clean");
+    fn fallback_warn_kv_value_escapes_newline_and_pipe() {
+        // fallback_warn 的 kv value 走 log_sanitize::escape_for_log（usize::MAX 不截断）：
+        // \n → \\n，"| " → "||  "，与 bot.log 同一转义纪律
+        let esc = |s: &str| crate::bot::log_sanitize::escape_for_log(s, usize::MAX);
+        assert_eq!(esc("a\nb"), "a\\nb");
+        assert_eq!(esc("a| b"), "a||  b");
+        assert_eq!(esc("clean"), "clean");
     }
 
     // ── runtime/flags 收口 ──

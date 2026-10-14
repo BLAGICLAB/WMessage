@@ -1,27 +1,17 @@
-//! 共享的日志转义 + 字符级截断 helper（2026-10-14 收敛点）。
+//! 共享的日志转义 + 字符级截断 helper（单源收敛点）。
 //!
-//! 历史：8 份具名实现 + 同名 `escape_for_log` 行为分叉（audit.rs 弱版 vs
-//! bot/config/audit.rs 强版，调用方按文件随机吃到哪个），加上 paths.rs 第
-//! 三份内联拷贝 + api_handlers/ratelimit.rs 第四份 `sanitize_log_line`
-//! + memory/evolution 同名 `truncate_chars` 不同签名（有无省略号）。
-//! 详见冗余审计账本（docs/ 下 REDUNDANCY 前缀文件）。
+//! 转义分两级，语义刻意不同——按调用形态选，不可混用：
+//! - [`escape_for_log`]：**值级**。`|` 倍增 + `| ` 双空格补位（value 不得伪装
+//!   bot.log 的 ` | ` 字段分隔）+ 控制字符全集 + U+2028/2029 + 截断加省略号。
+//!   audit / config / paths 的 kv value 走这级。
+//! - [`sanitize_log_line`]：**行级**。只转义控制字符与 U+2028/2029，不碰 `|`、
+//!   不截断——用于「整行已在调用方按 ` | ` 拼好结构、value 可能已自行转义」的
+//!   场景（py_audit / api 访问日志），管道倍增会打弯结构分隔符或二次倍增。
+//! - [`truncate_chars`]：纯截断，不带转义（memory / evolution 内容字段与建议文案）。
 //!
-//! 此模块收敛到两件事：
-//! - [`escape_for_log`]：单源强版（控制字符全集 + U+2028/2029 + `|` 倍增 +
-//!   `| ` 双空格补位 + 字符数截断 + 省略号）
-//! - [`truncate_chars`]：单签名 `truncate_chars(s, n, ellipsis)`，按字符
-//!   计数（中文友好），可选追加 `…`。
-//!
-//! 调用方：
-//! - `crate::bot::log_sanitize::escape_for_log` / `truncate_chars`
-//! - 通过 `crate::bot::log_sanitize` 命名空间使用；旧路径
-//!   `crate::bot::escape_for_log` / `crate::bot::truncate_for_log`
-//!   仍由 `bot.rs` facade 转出，无外部改动。
-//!
-//! weak → strong 行为变更要点（已写进 commit message）：
-//! - `\0` / 其他控制字符 / `ESC` / `BEL` / `DEL` / C1 区 / U+2028 / U+2029：
-//!   弱版悄悄不处理 → 强版以 `\u{N}` 显式转义，避免伪造日志行的同时也避免
-//!   截断后误以为是省略号吞掉的内容。这是审计修复，非纯重构。
+//! 值级的强版与更早的弱版（仅 `\n\r|` 三件套）差异只在「含控制字符 / U+2028 /
+//! U+2029」的输入：弱版悄悄放行，强版显式 `\u{N}` 转义——既防伪造日志行也防
+//! 终端注入序列。audit.rs 保留的同名单测是弱版历史值的回归锁。
 
 /// 审计日志安全转义 + 字符级截断（bot 侧日志写入统一出口）：
 /// 剥换行 / 管道符 / 控制字符，防伪造「INFO |」前缀与多行撕裂，
@@ -84,6 +74,27 @@ pub fn truncate_chars(s: &str, n: usize, ellipsis: bool) -> String {
     let mut out: String = s.chars().take(n).collect();
     if ellipsis {
         out.push('…');
+    }
+    out
+}
+
+/// **行级**日志消毒（见模块头「两级转义」）：只把控制字符与 U+2028/2029 渲染成
+/// 可见转义，不碰 `|`、不截断。用于整行已由调用方按 ` | ` 拼好结构、value 可能
+/// 已自行过 [`escape_for_log`] 的写入路径（py_audit / api 访问日志）——
+/// 管道倍增会把结构分隔符打弯、把已转义的 value 二次倍增。
+pub fn sanitize_log_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len() * 2);
+    for c in line.chars() {
+        match c {
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            '\u{2028}' => out.push_str("\\u{2028}"),
+            '\u{2029}' => out.push_str("\\u{2029}"),
+            c if c.is_control() => out.extend(c.escape_default()),
+            c => out.push(c),
+        }
     }
     out
 }
@@ -199,5 +210,33 @@ mod tests {
         assert_eq!(truncate_chars("", 5, true), "");
         assert_eq!(truncate_chars("abc", 0, false), "");
         assert_eq!(truncate_chars("abc", 0, true), "…");
+    }
+
+    // ── sanitize_log_line（行级：控制字符转义，不碰 | 不截断）──
+
+    #[test]
+    fn sanitize_line_escapes_all_control_chars() {
+        assert_eq!(sanitize_log_line("a\u{1b}[31mb"), "a\\u{1b}[31mb");
+        assert_eq!(sanitize_log_line("\u{7}"), "\\u{7}");
+        assert_eq!(sanitize_log_line("\u{7f}"), "\\u{7f}");
+        assert_eq!(sanitize_log_line("\u{85}"), "\\u{85}");
+    }
+
+    #[test]
+    fn sanitize_line_keeps_short_forms_pipes_and_plain_text() {
+        // \r\n\t\0 保留短形式；`|` 原样（结构分隔符归调用方管）
+        assert_eq!(sanitize_log_line("a\rb\nc\td\0e"), "a\\rb\\nc\\td\\0e");
+        assert_eq!(sanitize_log_line("a | b | c"), "a | b | c");
+        assert_eq!(
+            sanitize_log_line("正常中文 /path?q=1"),
+            "正常中文 /path?q=1"
+        );
+        assert_eq!(sanitize_log_line(""), "");
+        // 不变式:输出绝不残留任何控制字符或行/段分隔符
+        assert!(
+            !sanitize_log_line("a\u{1b}\u{7}\u{7f}\u{85}\u{2028}\u{2029}\rb")
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        );
     }
 }

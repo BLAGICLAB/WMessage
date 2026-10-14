@@ -17,8 +17,9 @@ pub fn py_audit_to(path: &Path, line: &str) {
     if let Ok(mut f) = crate::audit::open_log_append(path) {
         let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
         // 控制字符转义后再落盘：调用方常拼脚本 stdout/stderr（document.rs 的
-        // `out` 等），原文含 \n 时可伪造审计行；与 api_handlers 访问日志同一 sanitize 口径
-        let safe = crate::api_handlers::ratelimit::sanitize_log_line(line);
+        // `out` 等），原文含 \n 时可伪造审计行。行级消毒——整行已按 ` | ` 拼好
+        // 结构、value 可能已自行过 escape_for_log，管道倍增会打弯结构分隔符
+        let safe = crate::bot::log_sanitize::sanitize_log_line(line);
         let _ = writeln!(f, "[{ts}] {safe}");
     }
 }
