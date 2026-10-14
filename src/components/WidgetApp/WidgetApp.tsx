@@ -98,6 +98,7 @@ import {
 import { ResizeEdge } from "./ResizeEdge";
 import { SplitBar } from "./SplitBar";
 import { TaskCard } from "./TaskCard";
+import { patchTaskOptimistic } from "./optimistic";
 import { SortableWorkspaceCard } from "./SortableWorkspaceCard";
 import { sortPoolTasks } from "../TaskTimeline/week";
 import { dayKey, dueTimeOf } from "../HomePage/homeData";
@@ -543,26 +544,14 @@ export default function WidgetApp() {
     });
   };
 
-  // TP-3：本地乐观更新（不 emit tasks-updated 整行回写）——配合各定向命令的
-  // tasks-changed 广播收敛三端
-  const applyLocal = (fn: (prev: Task[]) => Task[]) => {
-    tasksRef.current = fn(tasksRef.current);
-    setTasks(tasksRef.current);
-  };
-
   const toggleCollapsed = (t: Task) => {
-    const prevTasks = tasksRef.current;
-    applyLocal((prev) =>
-      prev.map((x) => (x.id === t.id ? { ...x, collapsed: !x.collapsed } : x)),
+    patchTaskOptimistic(
+      tasksRef,
+      setTasks,
+      t.id,
+      { collapsed: !t.collapsed },
+      "切换任务状态",
     );
-    const optimistic = tasksRef.current;
-    invoke<Task>("task_patch", {
-      id: t.id,
-      patch: { collapsed: !t.collapsed },
-    }).catch((e) => {
-      handleCommandError(e, "切换任务状态");
-      rollbackOptimistic(prevTasks, optimistic);
-    });
   };
 
   // 新建任务：与主窗口一致恒进待办（todo）；今日视图（=今天排期）里未排期的
@@ -587,17 +576,13 @@ export default function WidgetApp() {
 
   const commitTitle = (t: Task, title: string) => {
     const next = title.trim() || t.title;
-    const prevTasks = tasksRef.current;
-    applyLocal((prev) =>
-      prev.map((x) => (x.id === t.id ? { ...x, title: next } : x)),
-    );
     if (next !== t.title) {
-      const optimistic = tasksRef.current;
-      invoke<Task>("task_patch", { id: t.id, patch: { title: next } }).catch(
-        (e) => {
-          handleCommandError(e, "更新任务");
-          rollbackOptimistic(prevTasks, optimistic);
-        },
+      patchTaskOptimistic(
+        tasksRef,
+        setTasks,
+        t.id,
+        { title: next },
+        "更新任务",
       );
     }
     setEditingId(null);
@@ -631,29 +616,19 @@ export default function WidgetApp() {
   }, [editingId]);
 
   const toggleSubtask = (t: Task, subtaskId: string) => {
-    const prevTasks = tasksRef.current;
-    applyLocal((prev) =>
-      prev.map((x) =>
-        x.id !== t.id
-          ? x
-          : {
-              ...x,
-              subtasks: (x.subtasks ?? []).map((s) =>
-                s.id === subtaskId ? { ...s, done: !s.done } : s,
-              ),
-            },
-      ),
-    );
     const cur = tasksRef.current.find((x) => x.id === t.id);
     if (cur) {
-      const optimistic = tasksRef.current;
-      invoke<Task>("task_patch", {
-        id: t.id,
-        patch: { subtasks: cur.subtasks ?? [] },
-      }).catch((e) => {
-        handleCommandError(e, "更新任务");
-        rollbackOptimistic(prevTasks, optimistic);
-      });
+      patchTaskOptimistic(
+        tasksRef,
+        setTasks,
+        t.id,
+        {
+          subtasks: (cur.subtasks ?? []).map((s) =>
+            s.id === subtaskId ? { ...s, done: !s.done } : s,
+          ),
+        },
+        "更新任务",
+      );
     }
   };
 
@@ -669,15 +644,7 @@ export default function WidgetApp() {
 
   const removeFile = (t: Task, path: string) => {
     const patch = filesPatch(taskFiles(t).filter((f) => f.path !== path));
-    const prevTasks = tasksRef.current;
-    applyLocal((prev) =>
-      prev.map((x) => (x.id !== t.id ? x : { ...x, ...patch })),
-    );
-    const optimistic = tasksRef.current;
-    invoke<Task>("task_patch", { id: t.id, patch }).catch((e) => {
-      handleCommandError(e, "更新任务");
-      rollbackOptimistic(prevTasks, optimistic);
-    });
+    patchTaskOptimistic(tasksRef, setTasks, t.id, patch, "更新任务");
   };
 
   // 挂件「待办 / 今日」显示未完成；「完成」显示已完成列。
