@@ -872,7 +872,7 @@ async fn core_anthropic_text_reply_happy_path() {
     let v: serde_json::Value = serde_json::from_str(body).expect("请求体应为合法 JSON");
     assert_eq!(
         v["max_tokens"],
-        serde_json::json!(8192),
+        serde_json::json!(DEFAULT_MAX_TOKENS),
         "Anthropic 必填 max_tokens"
     );
     assert_eq!(v["stream"], serde_json::json!(true));
@@ -1096,6 +1096,82 @@ async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
         !bodies[1].contains("call_synth"),
         "请求体不得出现合成占位 id：{}",
         bodies[1]
+    );
+}
+
+/// stop_reason=max_tokens 不该把半截文本丢给用户：主循环应拿已生成部分作前缀
+/// 自动续跑一轮（新一轮是全新请求，带全新输出预算），用户无需手动打「继续」
+#[tokio::test]
+async fn core_anthropic_length_truncation_auto_continues() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicTruncatedText(
+        "好，我先确认环境：".into(),
+    ));
+    server.push_behavior(MockBehavior::AnthropicTextReply(
+        "已确认，开始执行。".into(),
+    ));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http_anthropic(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("截断后自动续跑应 Ok");
+
+    assert_eq!(server.request_count(), 2, "应发第二轮请求续跑");
+    assert!(
+        text.contains("好，我先确认环境：") && text.contains("已确认，开始执行。"),
+        "两段内容应拼成完整答复：{text}"
+    );
+    assert!(
+        !text.contains("因长度限制被截断"),
+        "已续跑成功就不该再挂截断提示：{text}"
+    );
+    let events = h.events();
+    assert!(
+        events.contains(&"llm.length_continued"),
+        "续跑应留审计事件：{events:?}"
+    );
+}
+
+/// 续跑有上限：模型持续撞上限时不能让循环无限自我续跑耗预算——
+/// 用尽配额后退回「追加截断提示」并终止
+#[tokio::test]
+async fn core_anthropic_length_truncation_continuation_is_bounded() {
+    let server = MockLlmServer::start();
+    for _ in 0..6 {
+        server.push_behavior(MockBehavior::AnthropicTruncatedText("又超了：".into()));
+    }
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http_anthropic(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("续跑用尽配额应照常 Ok 返回");
+
+    assert_eq!(
+        server.request_count(),
+        3,
+        "1 次原始 + 2 次续跑，用尽后不应再发请求"
+    );
+    assert!(
+        text.contains("因长度限制被截断"),
+        "配额用尽应退回截断提示：{text}"
     );
 }
 

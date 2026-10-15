@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { AlarmClock, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
@@ -31,7 +30,7 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function SchedulePage() {
+export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   /** 首次列表加载失败信息（null=正常）：失败不能伪装成「暂无定时任务」空态 */
@@ -52,7 +51,7 @@ export function SchedulePage() {
   const [creating, setCreating] = useState<boolean>(false);
   //  执行透明：sched-status 事件驱动的「执行中」作业（started 入集，done/failed 出集）
   const [liveJobIds, setLiveJobIds] = useState<Set<string>>(new Set());
-  /** job id → 最近一次执行会话（sched-status 携带；「会话」按钮跳挂件围观） */
+  /** job id → 最近一次执行会话（sched-status 携带；「会话」按钮跳聊天页围观） */
   const [jobSessions, setJobSessions] = useState<Record<string, string>>({});
   /** 执行痕迹弹层目标（本次执行新建的任务卡 id） */
   const [traceCardId, setTraceCardId] = useState<string | null>(null);
@@ -119,24 +118,10 @@ export function SchedulePage() {
     void reload();
   });
 
-  /** 「会话」跳转：发 chat-focus-session 给挂件聊天区并唤起挂件窗口 */
+  /** 「会话」跳转：切到主窗口聊天页，由 ChatPanel 切到该会话 */
   const jumpToSession = (sessionId: string) => {
+    onOpenChat();
     emit("chat-focus-session", { sessionId }).catch(() => {});
-    WebviewWindow.getByLabel("widget")
-      .then((w) => {
-        if (w) {
-          w.show()
-            .then(() => w.setFocus())
-            .catch(() => {});
-        } else {
-          // 挂件窗口不存在（重启后未再开启）：必须给可见反馈，不能点了没反应
-          handleCommandError(
-            new Error("挂件窗口未开启，请先打开挂件窗口"),
-            "跳转执行会话",
-          );
-        }
-      })
-      .catch(() => {});
   };
 
   // 行操作

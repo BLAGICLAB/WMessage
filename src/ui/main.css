@@ -9,9 +9,6 @@
    文字五级、品牌色统一管理。nm-* 类同名重实现，上层组件零改动换肤
    ═══════════════════════════════════════════════════════════════ */
 :root {
-  /* 挂件 Splitter 拖动实时变量(任务区高度)；不在 React state 里 */
-  --task-h: 280px;
-
   /* 三层表面：页面底 < 面板 < 悬浮，逐档提亮 */
   --bg: #eef1f6; /* 页面底色 */
   --surface: #fafbfd; /* 卡片/面板表面 */
@@ -376,11 +373,6 @@
     background-color: var(--surface);
     border-bottom: 1px solid var(--edge);
     transition: background-color 0.15s ease;
-  }
-
-  /* 深色模式：挂件深蓝 logo 提亮 */
-  .dark .widget-logo {
-    filter: brightness(1.9) saturate(0.85);
   }
 
   /* === 助手回复 Markdown 渲染（md-body 容器内） === */

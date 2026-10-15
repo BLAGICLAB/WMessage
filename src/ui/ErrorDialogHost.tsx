@@ -5,7 +5,7 @@
 // 用 nm 卡片渲染：CircleX 标题图标 + Lightbulb 提示行 + RotateCcw 重试键。
 // 未挂载 Host 的窗口走 errorHandler 的原生兜底（行为不变）。
 //
-// 主窗口与挂件窗口各挂一个（App.tsx / WidgetApp.tsx）；window 事件天然按
+// 主窗口挂一个（App.tsx）；window 事件天然按
 // webview 隔离，互不串扰。
 
 import { useEffect, useRef, useState } from "react";

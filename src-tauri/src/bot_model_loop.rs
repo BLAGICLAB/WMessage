@@ -151,7 +151,7 @@ pub struct ToolCallDelta {
 /// 解析一行 OpenAI 兼容 SSE（`data: <json>` 或 `data: [DONE]`）。
 /// 返回 None = 非 data 行 / JSON 解析失败 / choices 为空。
 ///
-/// 注意：纯函数，不产生任何 side effect（无 widget emit、无 think-block 处理、无 final_text push）。
+/// 注意：纯函数，不产生任何 side effect（无事件 emit、无 think-block 处理、无 final_text push）。
 /// 调用方（run_model_loop）负责 feed_think + emit + 累积。
 pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     let data = line.strip_prefix("data:")?.trim();
@@ -341,6 +341,17 @@ pub(crate) const FINAL_SELFCHECK_SNIPPET_CHARS: usize = 500;
 /// 终稿自检默认轮次间隔（设置项为 None 时启用）：8 轮 1 次。
 const DEFAULT_FINAL_SELFCHECK_ROUND_GAP: u32 = 8;
 
+/// stop_reason=max_tokens 后的自动续跑配额。续跑是全新请求、带全新输出预算，
+/// 一轮通常就够；留 2 是为「首轮续跑仍撞上限」再给一次机会，再多只白烧 token
+/// ——截断的成因不会因为多试几次而消失。
+const MAX_LENGTH_CONTINUATIONS: usize = 2;
+
+/// 截断续跑的注入文案。正文与工具调用在响应里排在思维链之后，撞上限时被砍掉
+/// 的总是它们，文案要同时覆盖「接着写」和「别只说要动手、直接调工具」两种断法。
+const LENGTH_CONTINUE_PROMPT: &str = "\
+【系统提示】上一条回复超出长度上限被截断。请从断处接着写，不要重复已写的内容。\
+如果你刚才正准备调用工具，现在就直接调用它，不要只用文字描述下一步。";
+
 /// 滚动降密度：轮龄 ≥ 此值的 tool 结果软压（头 200 + 尾 100 + sidecar 指针）。
 /// N=5 对齐业界——SWE-agent 消融只留最近 5 条观察比全历史高 3 分，
 /// Claude Code microcompact 亦为最近 5 条工具结果。
@@ -456,7 +467,7 @@ pub fn apply_inference_params(
 }
 
 /// run_model_loop_core 的同步副作用出口：
-/// widget 流式事件 / 结构化审计 / bot.log / Skill 收尾 4 个出口抽成注入回调，
+/// 流式事件 / 结构化审计 / bot.log / Skill 收尾 4 个出口抽成注入回调，
 /// 使核心循环不依赖 AppHandle；异步出口（execute_tool / replan）因 Rust 闭包生命周期
 /// 限制走泛型参数。生产薄壳 run_model_loop 传入 AppHandle 实现，测试传 stub。
 pub struct ModelLoopDeps<'a> {
@@ -496,7 +507,7 @@ pub struct ModelLoopDeps<'a> {
 }
 
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
-/// 读配置/Key、构 HTTP 客户端、把 widget emit / 审计 / skill_finish / execute_tool /
+/// 读配置/Key、构 HTTP 客户端、把事件 emit / 审计 / skill_finish / execute_tool /
 /// replan 包成回调，实际循环逻辑全在 run_model_loop_core（可注入 mock server 集成测试）。
 /// 全局共享 LLM HTTP 客户端（OnceLock 连接池复用）——每轮模型循环新建
 /// Client 会各建连接池/TLS 握手，且旧 Client drop 后连接粗暴关闭。**无默认总
@@ -679,20 +690,20 @@ pub async fn run_model_loop(
         ),
     };
     // 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
-    // 后台定时任务（interactive=false）不向挂件推流——否则后台执行的输出会
+    // 后台定时任务（interactive=false）不发流——否则后台执行的输出会
     // 串进用户当前会话的 streaming 气泡。Skill 归属同理按 session 过滤。
-    let stream_to_widget = stop.is_interactive();
+    let stream_to_main = stop.is_interactive();
     let session_id: Option<&str> = stop.session_id();
     // 流式事件出口统一收口（会话隔离）：非交互实例（后台定时任务）
-    // 不向挂件发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
+    // 不发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
     // payload 统一注入 sessionId，前端按当前会话过滤——
     // 事件不带会话标记时，两个会话并行跑 A 的流式增量会串进 B 正在显示的气泡。
     let emit = |event: &str, mut payload: serde_json::Value| {
-        if stream_to_widget {
+        if stream_to_main {
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("sessionId".into(), serde_json::json!(session_id));
             }
-            let _ = app.emit_to("widget", event, payload);
+            let _ = app.emit_to("main", event, payload);
         }
     };
     // 执行明细采集（薄壳层，真实分发路径零改动）——
@@ -765,9 +776,9 @@ pub async fn run_model_loop(
                     if cc > 0 {
                         usage_cc.fetch_add(cc, std::sync::atomic::Ordering::Relaxed);
                     }
-                    if stream_to_widget {
+                    if stream_to_main {
                         let _ = app.emit_to(
-                            "widget",
+                            "main",
                             "bot-usage-delta",
                             serde_json::json!({
                                 "sessionId": session_id,
@@ -994,6 +1005,10 @@ where
     // emit 跳过 Y/N 字样（用户已在主出口前看到 final_text 自检运行属于机器内部
     // 信号，不该再叠一层 Y/N 字样）；终态在主出口解析后还原 final_text。
     let mut expecting_final_selfcheck = false;
+    // 截断续跑已用次数（stop_reason=max_tokens 时自动接一轮，全会话共享配额）
+    let mut length_continuations: usize = 0;
+    // 被截断轮次的正文前缀：续跑轮只产出后半段，主出口拼接后才是一份完整答复
+    let mut length_prefix = String::new();
     // 终稿自检 snapshot：触发时拍下 final_text 本体，下一轮 LLM 响应解析后
     // 据 verdict 还原（Y/N/附解释均回滚到原文，N 路径在末尾追加 ⚠️）
     let mut final_selfcheck_snapshot: Option<String> = None;
@@ -1704,6 +1719,33 @@ where
                 }));
                 continue;
             }
+            // stop_reason=max_tokens：思维链把输出预算吃光时，正文和排在最后的
+            // tool_use 会整段被砍，用户只拿到半截甚至空回复，还得自己打「继续」。
+            // 续跑一轮拿的是全新输出预算，比把半截文本丢回去划算。
+            // 自检两态要排除：自检侧调用故意压极小 max_tokens，length 是它的正常
+            // 终止形态，在这里续跑只会对着 Y/N 空转。
+            if last_finish_reason.as_deref() == Some("length")
+                && !expecting_selfcheck
+                && !expecting_final_selfcheck
+                && length_continuations < MAX_LENGTH_CONTINUATIONS
+            {
+                length_continuations += 1;
+                length_prefix.push_str(&final_text);
+                audit(
+                    crate::audit::AuditLevel::Info,
+                    "llm.length_continued",
+                    vec![
+                        ("attempt", length_continuations.to_string()),
+                        ("chars", final_text.chars().count().to_string()),
+                    ],
+                );
+                msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                msgs.push(serde_json::json!({
+                    "role": "user",
+                    "content": LENGTH_CONTINUE_PROMPT
+                }));
+                continue;
+            }
             // finish_reason=length（token 截断）/content_filter 需要显式感知——
             // 否则半截回复会被当正常答案、空回复无解释
             match last_finish_reason.as_deref() {
@@ -1833,7 +1875,12 @@ where
             }
             let _ = skill_finish(true, "");
             collected_refs = merge_task_refs_dedup(collected_refs);
-            return Ok((final_text.clone(), collected_refs));
+            let answer = if length_prefix.is_empty() {
+                final_text.clone()
+            } else {
+                format!("{length_prefix}{final_text}")
+            };
+            return Ok((answer, collected_refs));
         }
 
         // 模型请求工具：进程内执行，结果回填后继续下一轮。

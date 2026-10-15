@@ -3,7 +3,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { STORAGE_KEY } from "./storage";
+import { stubScrollNoop } from "./test/scrollNoop";
 import type { Task } from "./types";
+
+// 聊天区常挂载在主窗口，自动滚动依赖 jsdom 未实现的 scrollTo/scrollIntoView
+stubScrollNoop();
 
 // vi.mock 工厂会被提升到顶部，因此共享 mock 变量必须用 vi.hoisted 包裹
 const mocks = vi.hoisted(() => {

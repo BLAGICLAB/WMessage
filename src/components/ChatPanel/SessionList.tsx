@@ -1,9 +1,9 @@
 // ChatPanel 子模块：会话切换器 + 顶部行（ 拆分； emoji 图标清尾 → lucide）。
-// 左侧会话切换按钮 + 会话下拉列表（切换/删除/新建），右侧选任务模式钮；
+// 左侧会话切换按钮 + 会话下拉列表（切换/删除/新建）；
 // 下拉内 Esc 关闭（键盘可达，a11y 基线）。
 
 import type { RefObject } from "react";
-import { Bot, Crosshair, Plus, Trash2 } from "lucide-react";
+import { Bot, Plus, Trash2 } from "lucide-react";
 import { relativeTime } from "../../format";
 import type { Session } from "./types";
 
@@ -22,8 +22,6 @@ type SessionListProps = {
   dropdownRef: RefObject<HTMLDivElement | null>;
   /** 下拉 top（紧贴 🤖 按钮底部，父级 useDropdownTop 测量） */
   dropdownTop: number;
-  selecting: boolean;
-  onToggleSelecting: () => void;
   onSelect: (sid: string) => void;
   onNew: () => void;
   onDelete: (sid: string) => void;
@@ -39,8 +37,6 @@ export function SessionList({
   menuRef,
   dropdownRef,
   dropdownTop,
-  selecting,
-  onToggleSelecting,
   onSelect,
   onNew,
   onDelete,
@@ -73,21 +69,6 @@ export function SessionList({
           <span className="shrink-0 text-[10px] text-[var(--t5)]">
             {sessionMenuOpen ? "▴" : "▾"}
           </span>
-        </button>
-        {/* 右侧：选任务模式钮 */}
-        <button
-          type="button"
-          aria-label="选任务模式"
-          aria-pressed={selecting}
-          className={`shrink-0 px-2 py-1 flex items-center justify-center ${
-            selecting
-              ? "nm-inset text-[var(--t1)] font-medium"
-              : "nm-outset text-[var(--t4)]"
-          }`}
-          onClick={onToggleSelecting}
-          title="选任务模式：点击下方任务卡选中，再输入操作指令"
-        >
-          <Crosshair size={14} aria-hidden />
         </button>
       </div>
       {/* 会话栈：作为 rootRef 直接子元素，absolute 横跨整个 panel 宽度；

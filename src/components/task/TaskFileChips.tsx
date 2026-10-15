@@ -5,15 +5,15 @@ import { basename } from "../../format";
 import { taskFiles } from "../../lib/taskFiles";
 import { stopPointer } from "../../lib/stopPointer";
 
-/** 任务卡绑定文件 chip 列表——三处复用的统一渲染：
- *  - compact：挂件（TaskCardContent）/ 主窗口卡片（TodoCard），lucide 小图标 + 11px 字号
+/** 任务卡绑定文件 chip 列表——两处复用的统一渲染：
+ *  - compact：主窗口卡片（TodoCard），lucide 小图标 + 11px 字号
  *  - spacious：任务页详情面板（TaskDetailPanel），emoji + 较大 padding + 复制反馈徽标
  *  - 折叠/展开「还有 N 个」按钮内置；绑定操作行（pickFile/解绑全部）由调用方挂在同一父容器里
  *  - 仅渲染 taskFiles(task).length>0；空数组由调用方决定是否渲染空态绑定按钮
  */
 export interface TaskFileChipsProps {
   task: Task;
-  /** 视觉样式；默认 compact（主窗口卡片/挂件都用 compact，详情面板用 spacious） */
+  /** 视觉样式；默认 compact（卡片用 compact，详情面板用 spacious） */
   variant?: "compact" | "spacious";
   /** 点 chip 名/文件夹名直接打开；不传则 chip 渲染为只读文件名 */
   onOpenPath?: (path: string) => void;
@@ -25,8 +25,6 @@ export interface TaskFileChipsProps {
   removeTitle?: string;
   /** 复制反馈态：路径 → ok/err；非空时显示徽标替代「复制」按钮（详情面板专用） */
   copyState?: Record<string, "ok" | "err">;
-  /** chip 内点击是否 stopPropagation（挂件卡片冒泡需要，详情面板不需要），默认 false */
-  stopClickPropagation?: boolean;
 }
 
 export function TaskFileChips({
@@ -37,7 +35,6 @@ export function TaskFileChips({
   onRemovePath,
   removeTitle = "移除该文件",
   copyState,
-  stopClickPropagation = false,
 }: TaskFileChipsProps) {
   const boundFiles = taskFiles(task);
   const [filesExpanded, setFilesExpanded] = useState(false);
@@ -45,10 +42,6 @@ export function TaskFileChips({
   if (boundFiles.length === 0) return null;
 
   const isSpacious = variant === "spacious";
-  // click 阻断（widget 卡片需要；详情面板直接挂载不需要）
-  const maybeStopClick = (e: React.MouseEvent) => {
-    if (stopClickPropagation) e.stopPropagation();
-  };
 
   return (
     <div
@@ -79,8 +72,7 @@ export function TaskFileChips({
                 className={openClass}
                 title={isSpacious ? f.path : `${f.path}（点击打开）`}
                 onPointerDown={isSpacious ? undefined : stopPointer}
-                onClick={(e) => {
-                  maybeStopClick(e);
+                onClick={() => {
                   onOpenPath!(f.path);
                 }}
               >
@@ -151,8 +143,7 @@ export function TaskFileChips({
                 }`}
                 title={isSpacious ? "复制到剪贴板" : "复制文件+标题"}
                 onPointerDown={isSpacious ? undefined : stopPointer}
-                onClick={(e) => {
-                  maybeStopClick(e);
+                onClick={() => {
                   onCopyPath!(f.path);
                 }}
               >
@@ -170,8 +161,7 @@ export function TaskFileChips({
                   ? { "aria-label": `移除 ${basename(f.path)}` }
                   : {})}
                 onPointerDown={isSpacious ? undefined : stopPointer}
-                onClick={(e) => {
-                  maybeStopClick(e);
+                onClick={() => {
                   onRemovePath!(f.path);
                 }}
               >
@@ -186,8 +176,7 @@ export function TaskFileChips({
           type="button"
           className="self-start text-[11px] text-[var(--t5)] hover:text-[var(--t3)]"
           onPointerDown={isSpacious ? undefined : stopPointer}
-          onClick={(e) => {
-            maybeStopClick(e);
+          onClick={() => {
             setFilesExpanded((v) => !v);
           }}
         >

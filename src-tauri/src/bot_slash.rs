@@ -252,15 +252,17 @@ async fn ask_confirm_inner(
     }
     // Skill 调度器联动：高危动作确认开始 → 本会话活动技能转入 Paused
     crate::bot_skills::skill_mark_paused(app, tool, session_id);
-    let widget_visible = app
-        .get_webview_window("widget")
+    // 确认弹窗只由主窗口的 ConfirmMap 呈现（bot-confirm 全窗广播 + ConfirmMap 挂主窗口）。
+    // 主窗口不可见时没人能点确认，等满超时只会白等一轮——直接按默认拒绝走。
+    let main_visible = app
+        .get_webview_window("main")
         .and_then(|w| w.is_visible().ok())
         .unwrap_or(false);
-    if !widget_visible {
+    if !main_visible {
         crate::bot::audit_log(
             app,
             &format!(
-                "confirm_skipped | {tool} | {} | 挂件不可见，默认拒绝",
+                "confirm_skipped | {tool} | {} | 主窗口不可见，默认拒绝",
                 crate::bot::truncate_for_log(detail, 120)
             ),
         );
@@ -271,8 +273,6 @@ async fn ask_confirm_inner(
     let id = uuid::Uuid::new_v4().simple().to_string();
     crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms")
         .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
-    // confirm 弹窗是主窗口的事，不走 widget 挂件
-    // （挂件窗口是屏幕边缘小条，不适合弹确认框；用户操作 Promote 时在主窗口，期待主窗口弹）
     let _ = app.emit(
         "bot-confirm",
         serde_json::json!({

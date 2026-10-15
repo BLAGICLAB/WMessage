@@ -2,11 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
-import WidgetApp from "./components/WidgetApp";
 import "./ui/main.css";
-
-// 挂件窗口通过 URL hash 区分（Rust 侧加载 index.html#/widget）
-const isWidget = window.location.hash.startsWith("#/widget");
 
 // CSP 违规上报（安全加固配套，docs/CSP-TIGHTEN-VERIFY-2026-10-07.md §8）：
 // securitypolicyviolation → Rust 审计日志（frontend.csp_violation），让运行时
@@ -34,5 +30,7 @@ if (!rootEl) {
 }
 
 ReactDOM.createRoot(rootEl).render(
-  <React.StrictMode>{isWidget ? <WidgetApp /> : <App />}</React.StrictMode>,
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
 );

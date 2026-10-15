@@ -1,11 +1,10 @@
 // 执行活动聚合页（Agent 透明化设计 §5.6）：主窗口的「执行活动」——
 // 最近全部执行痕迹（手动/定时/批量/工作流/主聊天）列表 + running 实时徽标，
-// 行点击看单次 trace（TracePanel traceId 直查模式）；顶部「唤起挂件」围观执行会话。
+// 行点击看单次 trace（TracePanel traceId 直查模式）；顶部「看聊天」跳执行会话。
 // 数据源 = exec_traces（trace_list 命令）；10s 轻轮询兜底（有 running 行时才转）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Activity, Bot, ExternalLink } from "lucide-react";
 import { TracePanel } from "../TracePanel";
 import { formatCommandError } from "../../lib/errorHandler";
@@ -37,13 +36,11 @@ function fmtDur(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function ActivityPage() {
+export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   /** 列表加载失败提示：非空时不渲染「还没有执行痕迹」空态（失败 ≠ 无数据） */
   const [loadError, setLoadError] = useState("");
-  /** 唤起挂件失败提示（按钮操作的结果反馈，与列表加载失败分开） */
-  const [widgetError, setWidgetError] = useState("");
   const [openTraceId, setOpenTraceId] = useState<number | null>(null);
 
   // 竞态令牌：10s 轮询 + 事件重入时，慢的旧 trace_list 响应不得覆盖新响应
@@ -78,21 +75,6 @@ export function ActivityPage() {
     return () => clearInterval(t);
   }, [hasRunning, reload]);
 
-  const showWidget = async () => {
-    try {
-      const w = await WebviewWindow.getByLabel("widget");
-      if (!w) {
-        setWidgetError("挂件窗口尚未创建，无法唤起");
-        return;
-      }
-      await w.show();
-      await w.setFocus();
-      setWidgetError("");
-    } catch (e) {
-      setWidgetError(`唤起挂件失败：${formatCommandError(e)}`);
-    }
-  };
-
   return (
     <div className="space-y-4">
       <div className="nm-card p-5">
@@ -107,15 +89,12 @@ export function ActivityPage() {
           </div>
           <button
             className="shrink-0 nm-btn px-3 py-1.5 text-xs text-[var(--t3)] inline-flex items-center gap-1"
-            title="唤起挂件窗口围观执行会话（流式输出）"
-            onClick={() => void showWidget()}
+            title="切到聊天页围观执行会话（流式输出）"
+            onClick={onOpenChat}
           >
-            <ExternalLink size={12} aria-hidden /> 唤起挂件
+            <ExternalLink size={12} aria-hidden /> 看聊天
           </button>
         </div>
-        {widgetError && (
-          <p className="mt-2 text-xs text-[var(--danger)]">{widgetError}</p>
-        )}
 
         {!loaded && (
           <p className="mt-6 text-center text-xs text-[var(--t5)]">加载中…</p>

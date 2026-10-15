@@ -3,7 +3,6 @@ import { render, screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
 import { stubScrollNoop } from "../test/scrollNoop";
-import type { Task } from "../types";
 
 // ChatPanel 自动滚动依赖 jsdom 未实现的 scrollTo/scrollIntoView（scoped noop）
 stubScrollNoop();
@@ -128,11 +127,6 @@ Object.defineProperty(navigator, "clipboard", {
 });
 
 const defaultProps = {
-  selecting: false,
-  onToggleSelecting: vi.fn(),
-  selectedTasks: [] as Task[],
-  onRemoveSelected: vi.fn(),
-  onFinishSelection: vi.fn(),
   enabled: true,
 };
 

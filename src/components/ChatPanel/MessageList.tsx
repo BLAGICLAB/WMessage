@@ -372,7 +372,7 @@ function FileSummary({
       className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
       title={`打开文件：${f}`}
       onClick={() => {
-        // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒）；失败弹错不静默
+        // Rust 侧打开（前端 openPath 权限可能被拒）；失败弹错不静默
         openTarget(f);
       }}
     >

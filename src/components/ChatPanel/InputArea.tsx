@@ -30,15 +30,10 @@ import type {
   VerboseLevel,
 } from "./types";
 
-/** 输入框占位文案：回复中 / 带附件 / 选任务 / 默认 四态（原嵌套三元提取） */
-function placeholderOf(
-  viewedBusy: boolean,
-  hasFiles: boolean,
-  selecting: boolean,
-): string {
+/** 输入框占位文案：回复中 / 带附件 / 默认 三态 */
+function placeholderOf(viewedBusy: boolean, hasFiles: boolean): string {
   if (viewedBusy) return "回复中…（点右侧停止键或输入 /stop 可停止）";
   if (hasFiles) return "输入指令，如：润色这个文件";
-  if (selecting) return "输入操作指令，如：标记完成";
   return "和机器人说点什么";
 }
 
@@ -60,10 +55,9 @@ type InputAreaProps = {
   setSlashDismissed: Dispatch<SetStateAction<boolean>>;
   send: () => void;
   pickFiles: () => void;
-  /** 停止当前回复（子 agent 会话由父级分派 cancel_subagent，见 WidgetApp 停止键语义） */
+  /** 停止当前回复（子 agent 会话由父级分派 cancel_subagent） */
   onStop: () => void;
   viewedBusy: boolean;
-  selecting: boolean;
   isSubagentSession: boolean;
   /** 🛡 授权模式只读展示：bot-config 的 permMode，设置页维护 */
   permMode: PermMode;
@@ -108,7 +102,6 @@ export function InputArea({
   pickFiles,
   onStop,
   viewedBusy,
-  selecting,
   isSubagentSession,
   permMode,
   verbose,
@@ -271,7 +264,7 @@ export function InputArea({
               send();
             }
           }}
-          placeholder={placeholderOf(viewedBusy, files.length > 0, selecting)}
+          placeholder={placeholderOf(viewedBusy, files.length > 0)}
           rows={1}
           className="w-full min-h-[48px] max-h-40 overflow-y-auto resize-none bg-transparent outline-none text-xs text-[var(--t2)] leading-relaxed placeholder:text-[var(--t4)]"
         />

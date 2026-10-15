@@ -205,7 +205,7 @@ export function CommandPalette({
                       : row.session.title || "未命名会话"}
                   </span>
                   <span className="shrink-0 text-[11px] text-[var(--t5)]">
-                    {row.kind === "task" ? taskMeta(row.task) : "挂件聊天"}
+                    {row.kind === "task" ? taskMeta(row.task) : "聊天"}
                   </span>
                 </button>
               </Fragment>

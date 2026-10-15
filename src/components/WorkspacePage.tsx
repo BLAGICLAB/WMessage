@@ -50,7 +50,7 @@ const looksLikeUrl = (s: string) =>
   /^https?:\/\//i.test(s) || /^[a-z][a-z0-9+.-]+:/i.test(s);
 
 /** 链接展示名：displayName 为空时回退（文件/文件夹用文件名，网址用地址本身） */
-export function linkDisplayName(link: WorkspaceLink): string {
+function linkDisplayName(link: WorkspaceLink): string {
   const alias = link.displayName?.trim();
   if (alias) return alias;
   if (link.kind === "url") return link.targetUri;
