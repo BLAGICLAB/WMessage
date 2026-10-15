@@ -46,6 +46,7 @@ pub async fn apps_preflight(
 
 /// 跑一个 app。表单模式把 `params` 传 JSON 串；文件夹模式传 None
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunArgs {
     pub id: String,
     pub params: Option<String>,
@@ -96,6 +97,7 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
 /// 上架（M1 走手工/未来 M2 走 AI）。注意：脚本文件必须已落在
 /// `{data_dir}/apps/<id>/` 下，命令只登记元数据 + 检查脚本可读
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateArgs {
     pub id: String,
     pub name: String,
@@ -121,6 +123,7 @@ pub async fn apps_create(app: AppHandle, args: CreateArgs) -> CommandResult<App>
 /// 改 description/icon/manual/status/script_path——脚本本体不重写
 /// （改本体走 M2 的 `apps_update_files`，AI 拿整文件集上来才稳）
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateArgs {
     pub id: String,
     pub name: Option<String>,
