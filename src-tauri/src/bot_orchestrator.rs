@@ -997,8 +997,12 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                             .unwrap_or_else(|| "db_read_failed".into()),
                     ),
                 );
-                // 拿到槽位后的复核撞上终态：行已由 cancel 写成 cancelled
-                emit_subagent_finished(&app, &row, None, SubagentStatus::Cancelled, "");
+                // 拿到槽位后的复核撞上终态：行已由 cancel 写成 cancelled；
+                // 读不到行（DB 失败/行已没）时不要谎报——只留审计，等启动清扫
+                match other {
+                    Some(s) => emit_subagent_finished(&app, &row, None, s, ""),
+                    None => {}
+                }
                 return;
             }
         }
@@ -1026,6 +1030,13 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     row.id
                 ),
             );
+            // 写 Running 被拒基本只有一种成因：cancel 已把行写成终态。回读
+            // 真实终态上报（直接写 Cancelled 会在「DB 抖动」这类非 cancel
+            // 失败上撒谎）；读不到行就只留审计，交给启动清扫收尸
+            let st = load_subagent_status(&app, &row.id).await;
+            if let Some(st) = st {
+                emit_subagent_finished(&app, &row, None, st, "");
+            }
             return;
         }
     }
@@ -1058,6 +1069,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     row.id
                 ),
             );
+            emit_subagent_finished(&app, &row, None, SubagentStatus::Failed, "");
             return;
         }
     };
@@ -1121,6 +1133,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         Ok(v) => v,
         Err(e) => {
             let msg = e.message();
+            let msg_for_db = msg.clone();
             let sid = row.id.clone();
             let _ = db_locked(&app, move |conn| {
                 crate::db::update_subagent_status(
@@ -1128,11 +1141,19 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     &sid,
                     SubagentStatus::Failed,
                     now_ms(),
-                    Some(&msg),
+                    Some(&msg_for_db),
                 )
                 .map_err(CommandError::DbError)
             })
             .await;
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_abort | id: {} | err: session_setup_failed | {msg}",
+                    row.id
+                ),
+            );
+            emit_subagent_finished(&app, &row, None, SubagentStatus::Failed, "");
             return;
         }
     };
@@ -1179,6 +1200,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             &app,
             &format!("subagent_runner_abort | id: {} | err: session_busy", row.id),
         );
+        emit_subagent_finished(&app, &row, None, SubagentStatus::Failed, "");
         return;
     }
     let stop = crate::bot_slash::StopGuard::new(&app, true, Some(session_id.clone()));
@@ -1505,7 +1527,7 @@ pub fn sweep_zombie_subagents(app: &AppHandle) {
                     return;
                 }
             };
-            crate::db::lock_db_write();
+            let _g = crate::db::lock_db_write();
             let mut cleaned = 0usize;
             // 终态按「事实」选：排队中的从未开跑，是被重启丢弃（cancelled）；
             // 已开跑的中途断掉才算失败（failed）。状态机也只放行这两条边
@@ -1568,6 +1590,20 @@ pub fn sweep_zombie_subagents(app: &AppHandle) {
 /// 收尾闭包自身失败拿不到行时才回落 classify 的观感值
 fn effective_status(row: Option<SubagentStatus>, classified: SubagentStatus) -> SubagentStatus {
     row.unwrap_or(classified)
+}
+
+/// 回读一行子 agent 的状态：读失败或行已不存在都返 None（调用方据此决定
+/// 「按真实状态上报」还是「只留审计」）
+async fn load_subagent_status(app: &AppHandle, id: &str) -> Option<SubagentStatus> {
+    let id = id.to_string();
+    db_locked(app, move |conn| {
+        Ok(crate::db::load_subagent(conn, &id)
+            .ok()
+            .flatten()
+            .map(|r| r.status))
+    })
+    .await
+    .unwrap_or(None)
 }
 
 /// `subagent-finished` 唯一出口：主会话视图据此刷新子 agent 列表 + 打完成提示。

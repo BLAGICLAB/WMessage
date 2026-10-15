@@ -43,8 +43,9 @@ const STATUS_ICON = {
   ),
 } as const;
 
-/** 六态 → 展示态。失败/取消/预算耗尽各有独立图标——都归「非运行」会让用户
- *  分不清是跑完了、被撤了，还是撞了预算 */
+/** 六态 → 展示态。取消有自己的 ✕，失败与预算耗尽共用警示图标（同属「没成」，
+ *  具体原因看 title 与右侧栏徽标）；都归「非运行」会让用户分不清是跑完了还是
+ *  被撤了 */
 function statusOf(s: SubagentChip): keyof typeof STATUS_ICON {
   if (s.status === "cancelled") return "cancelled";
   if (s.status === "failed" || (s.error && !s.running)) return "failed";

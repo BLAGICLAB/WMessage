@@ -248,7 +248,9 @@ pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
 /// 纳入删除范围（历史上曾误传 gen_dir 静默扩大删除范围，与注释不符，已修）。
 ///
 /// **修  #4 medium（is_dir 死参数）**：`is_dir` 已在 IPC 表面与前端同步删除
-/// （`TodoCard.tsx` 原传 `isDir`）；`delete_bound_file(path)` 只接 path。
+/// （`TodoCard.tsx` 原传 `isDir`）；`delete_bound_file` 不接 isDir。
+/// 归属闸：`task_id` 传了就判「这条路径是不是本卡的、还有没有别人绑着」
+/// （回收站三选项删除按卡传 id）；不传则退化为纯绑集判定。
 ///
 /// **修  H1（high，注释与实现不符 + 缺防御）**：`trash::delete` 不可逆，
 /// 必须在**紧邻调用前**做二次 `recheck_canonical`（fail-closed），并用其返回的
@@ -291,9 +293,10 @@ async fn other_holders(
     let handle = app.clone();
     let canon_for_ws = canon.clone();
     let ws: Vec<String> = crate::py::document::spawn_blocking_map(move || {
-        Ok(crate::db::open_db(&handle)
-            .and_then(|conn| crate::db::load_workspace(&conn))
-            .unwrap_or_default()
+        // 同样 fail-closed：读不到工作区就判不出「有没有人在用这个路径」
+        let items =
+            crate::db::open_db(&handle).and_then(|conn| crate::db::load_workspace(&conn))?;
+        Ok(items
             .into_iter()
             .filter(|it| {
                 it.links.iter().any(|l| {
@@ -311,9 +314,10 @@ async fn other_holders(
     Ok(holders)
 }
 
-/// 删除一张卡的绑定文件：先确认这条路径确实是**这张卡**的绑定，再确认没有
-/// 别的卡/工作区也在用它。前端「永久删除并删文件」按卡逐个调用本命令，
-/// 带 taskId 才能做归属判定——不传时退化为旧口径（全局绑集命中即放行）。
+/// **归属闸**：前端「永久删除并删文件」按卡逐个调用本命令，带 `taskId` 才判得
+/// 出归属——路径仍被别的卡/工作区引用就拒绝并指名持有者（绑集是全局的，只看
+/// 白名单会把别人的引用一起变成死链）。不传 `taskId` 时退化为旧口径（绑集
+/// 命中即放行）。
 #[tauri::command]
 pub async fn delete_bound_file(
     app: AppHandle,

@@ -116,7 +116,8 @@ pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Co
         .map_err(|e| CommandError::DbError(e.to_string()))?;
     // 子 agent 行随会话走：subagents 无外键，不清就成永久孤儿（会话都没了，
     // list_subagents 再也不会查它）。只清终态行——在途行的 runner 还要靠它
-    // 收尾，删了会让 finalize 找不到行（僵尸行由启动清扫兜底收掉）
+    // 收尾，删了会让 finalize 找不到行；这类行只能等下次启动的僵尸清扫收掉
+    //（本进程运行期内没有第二次清扫）
     tx.execute(
         "DELETE FROM subagents
           WHERE (parent_session_id = ?1 OR session_id = ?1)

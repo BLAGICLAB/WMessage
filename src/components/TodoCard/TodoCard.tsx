@@ -807,10 +807,13 @@ export function TodoCardView({
                   disabled={purgeBusy}
                   onClick={async () => {
                     setPurgeBusy(true);
-                    try {
-                      // 多文件绑定：逐个移入废纸篓/回收站
-                      //  #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
-                      for (const f of boundFiles) {
+                    // 多文件绑定：逐个移入废纸篓/回收站。全部尝试完再汇总——
+                    // 遇错就中断只会留下「删了一半」的任意前缀，用户既不知道
+                    // 哪些已经进了回收站，也没法只处理剩下那几个
+                    //  #4：删 is_dir 参数（trash::delete 内部递归）；Rust IPC 表面只接 path
+                    const failed: string[] = [];
+                    for (const f of boundFiles) {
+                      try {
                         // 顺序删除是有意为之（保持失败顺序可观测），不并行
                         // oxlint-disable-next-line eslint/no-await-in-loop
                         await invoke("delete_bound_file", {
@@ -820,17 +823,23 @@ export function TodoCardView({
                           // 别人的引用一起变成死链）
                           taskId: task.id,
                         });
+                      } catch (e) {
+                        failed.push(`${basename(f.path)}：${formatCommandError(e)}`);
                       }
+                    }
+                    if (failed.length === 0) {
                       onDelete(task.id);
                       setPurgeOpen(false);
-                    } catch (e) {
-                      // 删除失败：Toast 给完整 message + 下一步提示，任务卡仍保留在回收站可重试
-                      handleCommandError(e, "delete_bound_file");
-                      alert(
-                        `任务卡保留在回收站，可重试或手动从废纸篓/回收站清理后再试。\n\n${formatCommandError(e)}`,
-                      );
-                      setPurgeBusy(false);
+                      return;
                     }
+                    const doneCount = boundFiles.length - failed.length;
+                    // 有失败：一次说清「删了几个、哪些没删成、为什么」，任务卡保留
+                    // 在回收站可重试。不再叠一个 handleCommandError 弹窗——两份
+                    // 弹窗等于让用户对着同一件事点两次确认
+                    alert(
+                      `已移入回收站 ${doneCount}/${boundFiles.length} 个，任务卡保留在回收站可重试。\n\n未删除：\n${failed.join("\n")}`,
+                    );
+                    setPurgeBusy(false);
                   }}
                 >
                   <span className="flex items-center gap-1 font-medium">

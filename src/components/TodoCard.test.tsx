@@ -617,4 +617,46 @@ describe("TodoCardView 子任务", () => {
     );
     expect(onDelete).toHaveBeenCalledWith("t1");
   });
+
+  it("彻底删除：某个文件被拒（他人引用）不中断整批，卡片保留且报出每个失败项", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockReset();
+    invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      const p = (args as { path?: string } | undefined)?.path ?? "";
+      if (cmd === "delete_bound_file" && p.includes("b.pdf")) {
+        throw new Error("该文件仍被 任务「另一张卡」引用");
+      }
+      return null;
+    });
+    const onDelete = vi.fn();
+    const alerts: string[] = [];
+    vi.stubGlobal("alert", (msg: string) => alerts.push(msg));
+    render(
+      <TodoCard
+        task={{
+          ...baseTask,
+          files: [
+            { path: "/tmp/a.pdf", isDir: false },
+            { path: "/tmp/b.pdf", isDir: false },
+          ],
+        }}
+        trashed
+        onUpdate={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    await user.click(screen.getByText("彻底删除"));
+    await user.click(screen.getByText("全部删除").closest("button")!);
+    await waitFor(() => expect(alerts).toHaveLength(1));
+    // 两个文件都尝试过（不因第一个失败就跳过第二个）
+    const deleteCalls = invokeMock.mock.calls.filter(
+      (c) => c[0] === "delete_bound_file",
+    );
+    expect(deleteCalls).toHaveLength(2);
+    expect(alerts[0]).toContain("已移入回收站 1/2");
+    expect(alerts[0]).toContain("b.pdf");
+    // 卡不删：还有文件没处理完
+    expect(onDelete).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });
