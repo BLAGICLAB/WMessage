@@ -7,12 +7,13 @@
 // 公开 import 路径保持稳定：外部仍 `import { ChatPanel } from "./components/ChatPanel"`，
 // Vite 解析到 `./ChatPanel/index.tsx` → 透传 `./ChatPanel`。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
-import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightOpen } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getBotConfig } from "../../lib/botConfig";
+import type { Task } from "../../types";
 import { useConfirm } from "../../lib/useConfirm";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -38,6 +39,7 @@ import type {
 import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks } from "./constants";
 import { useAutoGrow, useOutsideClose } from "./useChatUi";
 import { SessionRail } from "./SessionRail";
+import { ContextRail } from "./ContextRail";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
@@ -47,10 +49,16 @@ type Props = {
   /** 机器人是否开启（主窗口读 bot_get_enabled + bot-changed 广播）。   *  false 时跳过会话加载/历史恢复与所有对外 invoke，容器仍挂载——主窗口里
    *  聊天页与其它页面靠 hidden 切换可见性，卸载会连带丢掉 messages 与全部监听器 */
   enabled: boolean;
+  /** 右侧上下文栏的任务池（App 侧已过滤归档/删除/他人任务） */
+  tasks: Task[];
+  /** 勾完成等任务改写（走 App 的 updateTask，后端广播 tasks-updated） */
+  onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
+  /** 交给 agent 执行：发 execute-task + 切聊天页（与任务卡 🤖 同通道） */
+  onRunTask: (t: { id: string; title: string }) => void;
 };
 
 /** 机器人聊天区：主窗口左导航「Agent 能力 → 聊天」整页；支持多会话 */
-export function ChatPanel({ enabled }: Props) {
+export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -157,6 +165,17 @@ export function ChatPanel({ enabled }: Props) {
       return !v;
     });
   };
+  // 右侧上下文栏：默认收起。左侧栏已占 200px，再常驻 220px 会把 1200px 窗口的
+  // 聊天正文挤到不足 500px——需要看任务/文件时按需展开
+  const [ctxOpen, setCtxOpen] = useState(
+    () => localStorage.getItem("chat-ctx-open") === "1",
+  );
+  const toggleCtx = () => {
+    setCtxOpen((v) => {
+      localStorage.setItem("chat-ctx-open", v ? "0" : "1");
+      return !v;
+    });
+  };
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
   useAutoGrow(taRef, input);
   /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
@@ -215,6 +234,22 @@ export function ChatPanel({ enabled }: Props) {
   };
   /** 视图会话是否有在途回复（驱动停止键/placeholder/禁用态） */
   const viewedBusy = sessionId !== null && inflightSids.has(sessionId);
+  /** 在途会话 → 会话行（右侧「子 Agent」面板：把「谁在跑」摊开成可点的列表，
+   *  否则用户只能靠猜——切走视图后不知道后台还有没有任务在执行） */
+  const inflightSessions = useMemo(
+    () =>
+      sessions.filter((s) => inflightSids.has(s.id) && s.id !== sessionId),
+    [sessions, inflightSids, sessionId],
+  );
+  /** 当前会话的文件变更累积（右侧「文件」面板）：去重按 path，保留最近一次统计。
+   *  取自消息而非 streamingMeta——后者收尾即删，面板要活到切会话为止 */
+  const sessionFileChanges = useMemo(() => {
+    const byPath = new Map<string, FileChangeLite>();
+    for (const m of messages) {
+      for (const f of m.fileChanges ?? []) byPath.set(f.path, f);
+    }
+    return [...byPath.values()].slice(-20);
+  }, [messages]);
   /** 本地提示消息：只显示不持久化（不污染上下文） */
   const addHint = (content: string, actionSessionId?: string) => {
     setMessages((prev) => [
@@ -1502,10 +1537,32 @@ export function ChatPanel({ enabled }: Props) {
             <PanelLeftOpen size={15} aria-hidden />
           )}
         </button>
+        {ctxOpen && (
+          <ContextRail
+            tasks={tasks}
+            onUpdateTask={onUpdateTask}
+            onRunTask={onRunTask}
+            fileChanges={sessionFileChanges}
+            inflightSessions={inflightSessions}
+            onOpenSession={switchSession}
+            onCollapse={toggleCtx}
+          />
+        )}
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
           <span className="sr-only">当前会话：</span>
           {currentTitle}
         </h2>
+        <button
+          type="button"
+          className="nm-icon-btn h-7 w-7"
+          aria-expanded={ctxOpen}
+          aria-controls="chat-context-rail"
+          title={ctxOpen ? "收起上下文栏" : "展开上下文栏"}
+          aria-label={ctxOpen ? "收起上下文栏" : "展开上下文栏"}
+          onClick={toggleCtx}
+        >
+          <PanelRightOpen size={15} aria-hidden />
+        </button>
         {viewedBusy && (
           <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-[var(--brand)]">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand)]" />

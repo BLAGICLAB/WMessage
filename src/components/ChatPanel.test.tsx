@@ -137,6 +137,11 @@ Object.defineProperty(navigator, "clipboard", {
 
 const defaultProps = {
   enabled: true,
+  // 右侧上下文栏的宿主回调（App 侧实现在 lib/botRun + updateTask），
+  // 这里只验 ChatPanel 内部的传递，不复现 App 的接线
+  tasks: [],
+  onUpdateTask: () => {},
+  onRunTask: () => {},
 };
 
 beforeEach(() => {
@@ -175,6 +180,39 @@ describe("ChatPanel", () => {
     expect(
       mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_chat"),
     ).toBe(false);
+  });
+
+  it("右侧上下文栏默认收起，展开后任务池可勾完成 / 交给 agent", async () => {
+    const user = userEvent.setup();
+    const onUpdateTask = vi.fn();
+    const onRunTask = vi.fn();
+    render(
+      <ChatPanel
+        {...defaultProps}
+        tasks={[
+          { id: "t1", title: "写周报", column: "todo" },
+          { id: "t2", title: "改文档", column: "todo" },
+        ]}
+        onUpdateTask={onUpdateTask}
+        onRunTask={onRunTask}
+      />,
+    );
+    await screen.findAllByText("默认会话");
+    // 默认收起：侧栏不在 DOM 里，入口在头部
+    expect(
+      screen.queryByRole("complementary", { name: "上下文侧栏" }),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "展开上下文栏" }));
+    const rail = within(
+      screen.getByRole("complementary", { name: "上下文侧栏" }),
+    );
+    expect(rail.getByText("写周报")).toBeInTheDocument();
+    // 勾完成 → 走宿主回调（App 侧接 updateTask），组件自己不碰后端
+    await user.click(rail.getByRole("button", { name: "完成 写周报" }));
+    expect(onUpdateTask).toHaveBeenCalledWith("t1", { column: "done" });
+    // 点标题 = 交给 agent 做
+    await user.click(rail.getByRole("button", { name: "交给机器人执行：改文档" }));
+    expect(onRunTask).toHaveBeenCalledWith({ id: "t2", title: "改文档" });
   });
 
   it("会话侧栏可折叠：收起后侧栏消失，入口仍在头部，再点展开", async () => {

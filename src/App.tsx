@@ -24,6 +24,8 @@ import {
 } from "lucide-react";
 import { TaskTimelinePage } from "./components/TaskTimeline/TaskTimelinePage";
 import { TaskEditorOverlay } from "./components/TaskTimeline/TaskEditorOverlay";
+import { sortPoolTasks } from "./components/TaskTimeline/week";
+import { runWithBot } from "./lib/botRun";
 import { HomePage } from "./components/HomePage/HomePage";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
@@ -279,6 +281,12 @@ function App() {
   // 任务图谱（设计 §1.5）：ownerId 非空 = 导入的外来任务，默认同样不混入（只看自己的）；
   // 图谱页拿全量 tasks 自行过滤
   const visibleTasks = useMemo(() => tasks.filter((t) => !t.ownerId), [tasks]);
+  // 聊天右侧栏「任务池」：未完成的自己的任务（已排期/未排期都列，排序直接复用
+  // 任务页任务池的 sortPoolTasks，避免同一批任务在两处顺序不同）
+  const openTasks = useMemo(
+    () => sortPoolTasks(visibleTasks.filter((t) => t.column !== "done" && !t.archived)),
+    [visibleTasks],
+  );
 
   // 归档自动打标（任务图谱设计 §2）：观测「已加载任务从未归档 → 归档且无标签」
   // 转变，fire-and-forget 调后端一次性 LLM 打标；失败仅留 console 痕迹。
@@ -1060,7 +1068,12 @@ function App() {
               事件无处可去（挂件时代的「折叠不丢聊天」诉求，同解）。
               切视图只切可见性，messages 与监听器全程存活。 */}
           <div className={view === "chat" ? "h-full" : "hidden"}>
-            <ChatPanel enabled={botOn} />
+            <ChatPanel
+              enabled={botOn}
+              tasks={openTasks}
+              onUpdateTask={updateTask}
+              onRunTask={runWithBot}
+            />
           </div>
           {/* 全局确认弹窗 */}
           <ConfirmMap />
