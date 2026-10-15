@@ -152,6 +152,9 @@ beforeEach(() => {
   writeTextMock.mockClear();
   mocks.dragDropHandlers.length = 0;
   for (const k of Object.keys(mocks.listeners)) delete mocks.listeners[k];
+  // 侧栏/水位档位等视图态持久化在 localStorage，jsdom 同一文件内跨用例共享——
+  // 不清会让「默认收起」这类用例被前一个用例写下的展开态污染
+  localStorage.clear();
 });
 
 describe("ChatPanel", () => {
@@ -219,6 +222,20 @@ describe("ChatPanel", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: "收起右侧栏" })).toBeVisible();
+  });
+
+  it("右侧栏是聊天主体的兄弟节点，不在 header 内（百分比宽度才参照聊天区）", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await user.click(screen.getByRole("button", { name: "展开右侧栏" }));
+    const rail = screen.getByRole("complementary", { name: "上下文侧栏" });
+    // 塞进 header（横向 flex）时，侧栏会变成 header 的 flex item、把整行拉垮
+    expect(rail.closest("header")).toBeNull();
+    // 与会话栏、聊天主体同属根容器那层
+    expect(rail.parentElement?.tagName).toBe("DIV");
+    const sibling = rail.parentElement as HTMLElement;
+    expect(sibling.querySelector("header")).not.toBeNull();
   });
 
   it("右侧上下文栏默认收起，展开后任务池可勾完成 / 交给 agent", async () => {

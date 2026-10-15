@@ -73,9 +73,9 @@ export function ContextRail({
     <aside
       id="chat-context-rail"
       aria-label="上下文侧栏"
-      // 1/3 宽度 + min/max 兜底：窗口极窄时不至于被挤成一条缝，
-      // 极宽时也不至于让正文失去存在感
-      className="flex w-[33.333%] min-w-[240px] max-w-[420px] shrink-0 flex-col overflow-y-auto pl-3"
+      // flex-1 与聊天主体的 flex-[2] 按 1:2 分剩余空间 → 侧栏 = 聊天区的 1/3；
+      // min/max 只在极端窗口兜底（窄窗不让侧栏挤成缝，宽窗不让正文消失）
+      className="flex min-w-[240px] max-w-[420px] flex-1 flex-col overflow-y-auto pl-3"
     >
       {/* 顶排：类别切换 + 收起。切类别不打断对话（工作面在侧栏，主对话留在原位） */}
       <div className="mb-2 flex shrink-0 items-center gap-1">
