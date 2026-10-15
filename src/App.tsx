@@ -13,6 +13,7 @@ import {
   Bell,
   FolderOpen,
   LayoutDashboard,
+  Package,
   Plus,
   Search,
   Settings as SettingsIcon,
@@ -28,6 +29,7 @@ import { ErrorBoundary } from "./ui/ErrorBoundary";
 import { ErrorDialogHost } from "./ui/ErrorDialogHost";
 import mainLogo from "./assets/main-logo.png";
 import { ArchivePage } from "./components/ArchivePage";
+import { AppsPage } from "./components/AppsPage/AppsPage";
 import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
@@ -119,6 +121,7 @@ type RailView =
   | "archive"
   | "workspace"
   | "trash"
+  | "apps"
   | "notifications";
 const NAV_ITEMS: { key: RailView; label: string; icon: typeof SquareKanban }[] =
   [
@@ -141,6 +144,8 @@ const AGENT_ITEMS: {
   { key: "activity", label: "活动", icon: ActivityIcon },
   // 通知中心（Agent 通知模块）：badge=true 渲染待处理数角标
   { key: "notifications", label: "通知", icon: Bell, badge: true },
+  // 程序模块（M1 起新增，apps 工具箱；详见 docs/APPS-DESIGN-2026-10-15.md）
+  { key: "apps", label: "程序", icon: Package },
 ];
 
 /** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。
@@ -1044,6 +1049,8 @@ function App() {
             />
           ) : view === "workspace" ? (
             <WorkspacePage />
+          ) : view === "apps" ? (
+            <AppsPage />
           ) : view === "trash" ? (
             <TrashPage
               tasks={visibleTasks}
