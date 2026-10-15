@@ -182,6 +182,45 @@ describe("ChatPanel", () => {
     ).toBe(false);
   });
 
+  it("聊天内嵌子 agent 区域：按主会话拉子 agent，点条目展开右侧栏到子 Agent 类别", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "list_subagents")
+        return [
+          { id: "sa_1", status: "running", objective: "整理周报" },
+          { id: "sa_2", status: "succeeded", objective: "改文档" },
+        ];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    // 按当前会话拉取：子 agent 靠 parent_session_id 归属
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("list_subagents", {
+        sessionId: "s1",
+        limit: 20,
+      });
+    });
+    // 折叠态只显示在途的
+    expect(screen.getByText("子 Agent")).toBeInTheDocument();
+    expect(screen.getByText("1 个执行中")).toBeInTheDocument();
+    // 展开后能看到已结束的
+    await user.click(screen.getByRole("button", { name: /子 Agent/ }));
+    expect(screen.getByText("改文档")).toBeInTheDocument();
+    // 点条目 → 侧栏展开且切到子 Agent 类别（不切视图，对话留在原位）
+    await user.click(screen.getByRole("button", { name: /整理周报/ }));
+    const rail = within(
+      screen.getByRole("complementary", { name: "上下文侧栏" }),
+    );
+    expect(rail.getByRole("button", { name: /子 Agent/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "收起右侧栏" })).toBeVisible();
+  });
+
   it("右侧上下文栏默认收起，展开后任务池可勾完成 / 交给 agent", async () => {
     const user = userEvent.setup();
     const onUpdateTask = vi.fn();
@@ -202,7 +241,7 @@ describe("ChatPanel", () => {
     expect(
       screen.queryByRole("complementary", { name: "上下文侧栏" }),
     ).toBeNull();
-    await user.click(screen.getByRole("button", { name: "展开上下文栏" }));
+    await user.click(screen.getByRole("button", { name: "展开右侧栏" }));
     const rail = within(
       screen.getByRole("complementary", { name: "上下文侧栏" }),
     );

@@ -1,78 +1,59 @@
-// ChatPanel 子模块：右侧上下文栏。
-// 三块面板：任务池（可选中交给 agent / 直接勾完成）、本会话文件变更、
-// 在途的子 agent 执行会话。三块各有真实数据源——「终端」「审查」这类
-// 需要从零做后端的能力没有数据源，故不在此处留空壳入口。
+// ChatPanel 子模块：右侧上下文栏（Agent workbench 式「对话锚点 + 工作面」）。
+// 三类工作面切换：任务池 / 文件 / 子 Agent。栏宽占聊天区 1/3——固定 px 在
+// 大窗口下显得局促，而这一栏要看的是任务标题与文件路径，宽一点才读得完。
+//
+// 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
+// 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import { useState } from "react";
+import type { ReactNode } from "react";
 import {
   Bot,
   Check,
   FileText,
   FolderOpen,
+  ListTodo,
   Loader2,
   PanelRightClose,
-  Sparkles,
 } from "lucide-react";
 import { basename } from "../../format";
 import type { Task } from "../../types";
-import type { FileChangeLite, Session } from "./types";
 
-type ContextRailProps = {
-  /** 未完成任务（App 侧已过滤归档/删除/他人任务） */
-  tasks: Task[];
-  /** 勾完成/改列（走 App 的 updateTask，后端广播 tasks-updated 刷新全局） */
-  onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
-  /** 交给 agent 做：发 execute-task + 切到聊天页（与任务卡 🤖 同通道） */
-  onRunTask: (t: { id: string; title: string }) => void;
-  /** 本会话累积的文件变更（bot-file-changed 累积） */
-  fileChanges: FileChangeLite[];
-  /** 在途执行会话（inflight），用于子 agent 面板 */
-  inflightSessions: Session[];
-  onOpenSession: (sid: string) => void;
-  onCollapse: () => void;
+/** 三类工作面。key 用窄口径字符串，不另立枚举 */
+export type ContextTab = "tasks" | "files" | "agents";
+
+type Tab = ContextTab;
+
+export type SubagentRun = {
+  /** 子 agent id（sa_ 前缀）——点开查详情/停止都用它 */
+  id: string;
+  title: string;
+  running: boolean;
+  error?: string | null;
 };
 
-/** 面板折叠态（组件内记忆，不落盘——三块的信息价值随会话变化，
- *  记住「哪块常看」不如记住栏本身的开关） */
-function usePanel(open: boolean) {
-  const [expanded, setExpanded] = useState(open);
-  return [expanded, () => setExpanded((v) => !v)] as const;
-}
+type ContextRailProps = {
+  tasks: Task[];
+  onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
+  onRunTask: (t: { id: string; title: string }) => void;
+  fileChanges: { path: string; added: number; deleted: number }[];
+  /** 子 agent 运行列表（含在途与刚结束），按新到旧 */
+  subagents: SubagentRun[];
+  /** 点子 agent 条目 → 右侧栏切到它的详情视图 */
+  onOpenSubagent: (id: string) => void;
+  onCollapse: () => void;
+  /** 当前工作面（受控）：内嵌子 agent 区域要点侧栏切类别，状态得在父级 */
+  tab: Tab;
+  onTabChange: (t: Tab) => void;
+};
 
-function PanelHeader({
-  icon,
-  label,
-  count,
-  expanded,
-  onToggle,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  count: number;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="flex w-full items-center gap-1.5 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--hover-bg)]"
-      aria-expanded={expanded}
-      onClick={onToggle}
-    >
-      <span className="shrink-0 text-[var(--t4)]">{icon}</span>
-      <span className="min-w-0 flex-1 text-xs font-medium text-[var(--t2)]">
-        {label}
-      </span>
-      {count > 0 && (
-        <span className="shrink-0 rounded-full border border-[var(--edge)] px-1.5 font-mono text-[10px] leading-4 text-[var(--t5)]">
-          {count}
-        </span>
-      )}
-      <span aria-hidden className="shrink-0 text-[10px] text-[var(--t5)]">
-        {expanded ? "▴" : "▾"}
-      </span>
-    </button>
-  );
+const TABS: { key: Tab; label: string; icon: ReactNode }[] = [
+  { key: "tasks", label: "任务", icon: <ListTodo size={14} /> },
+  { key: "files", label: "文件", icon: <FileText size={14} /> },
+  { key: "agents", label: "子 Agent", icon: <Bot size={14} /> },
+];
+
+function EmptyHint({ children }: { children: ReactNode }) {
+  return <p className="px-1.5 py-2 text-[11px] text-[var(--t5)]">{children}</p>;
 }
 
 export function ContextRail({
@@ -80,25 +61,55 @@ export function ContextRail({
   onUpdateTask,
   onRunTask,
   fileChanges,
-  inflightSessions,
-  onOpenSession,
+  subagents,
+  onOpenSubagent,
   onCollapse,
+  tab,
+  onTabChange,
 }: ContextRailProps) {
-  const [taskOpen, toggleTaskOpen] = usePanel(true);
-  const [fileOpen, toggleFileOpen] = usePanel(false);
-  const [agentOpen, toggleAgentOpen] = usePanel(true);
+  const runningCount = subagents.filter((s) => s.running).length;
 
   return (
     <aside
       id="chat-context-rail"
       aria-label="上下文侧栏"
-      className="flex w-[220px] shrink-0 flex-col overflow-y-auto pl-3"
+      // 1/3 宽度 + min/max 兜底：窗口极窄时不至于被挤成一条缝，
+      // 极宽时也不至于让正文失去存在感
+      className="flex w-[33.333%] min-w-[240px] max-w-[420px] shrink-0 flex-col overflow-y-auto pl-3"
     >
-      <div className="mb-1 flex shrink-0 items-center justify-between">
-        <span className="text-[10px] text-[var(--t5)]">上下文</span>
+      {/* 顶排：类别切换 + 收起。切类别不打断对话（工作面在侧栏，主对话留在原位） */}
+      <div className="mb-2 flex shrink-0 items-center gap-1">
+        <div className="flex min-w-0 flex-1 gap-1">
+          {TABS.map((t) => {
+            const on = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                aria-pressed={on}
+                className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] ${
+                  on
+                    ? "nm-inset text-[var(--t1)]"
+                    : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                }`}
+                onClick={() => onTabChange(t.key)}
+              >
+                {t.icon}
+                <span className="truncate">{t.label}</span>
+                {/* 在途计数常驻：切走类别也能看到后台还在跑几个 */}
+                {t.key === "agents" && runningCount > 0 && (
+                  <span
+                    aria-hidden
+                    className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--brand)]"
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
         <button
           type="button"
-          className="nm-icon-btn h-6 w-6"
+          className="nm-icon-btn h-7 w-7 shrink-0"
           aria-label="收起上下文栏"
           title="收起上下文栏"
           onClick={onCollapse}
@@ -107,74 +118,70 @@ export function ContextRail({
         </button>
       </div>
 
-      {/* 任务池：勾完成 = column 切 done；🤖 = 交给 agent（与任务卡同通道） */}
-      <section className="mb-1">
-        <PanelHeader
-          icon={<Sparkles size={12} />}
-          label="任务池"
-          count={tasks.length}
-          expanded={taskOpen}
-          onToggle={toggleTaskOpen}
-        />
-        {taskOpen &&
-          (tasks.length === 0 ? (
-            <p className="px-1.5 py-1 text-[10px] text-[var(--t5)]">
-              没有待办任务
-            </p>
+      {tab === "tasks" && (
+        <section aria-label="任务池">
+          <div className="mb-1 flex items-center gap-1.5 px-1.5">
+            <span className="text-[11px] font-medium text-[var(--t2)]">
+              待办任务
+            </span>
+            <span className="font-mono text-[10px] text-[var(--t5)]">
+              {tasks.length}
+            </span>
+          </div>
+          {tasks.length === 0 ? (
+            <EmptyHint>没有待办任务</EmptyHint>
           ) : (
-            <div className="mt-0.5 space-y-0.5">
+            <div className="space-y-0.5">
               {tasks.map((t) => (
                 <div key={t.id} className="group flex items-center gap-1">
                   <button
                     type="button"
-                    title={t.title}
-                    className="min-w-0 flex-1 truncate rounded-md py-1 pl-1.5 pr-1 text-left text-[11px] text-[var(--t3)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
-                    onClick={() => onRunTask({ id: t.id, title: t.title })}
                     aria-label={`交给机器人执行：${t.title}`}
+                    title={`交给机器人执行：${t.title}`}
+                    className="min-w-0 flex-1 truncate rounded-md py-1.5 pl-1.5 pr-1 text-left text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+                    onClick={() => onRunTask({ id: t.id, title: t.title })}
                   >
                     {t.title}
                   </button>
                   <button
                     type="button"
-                    className="shrink-0 rounded p-0.5 text-[var(--t5)] hover:text-[var(--success)] hover:bg-[var(--hover-bg)]"
+                    className="shrink-0 rounded p-1 text-[var(--t5)] hover:bg-[var(--hover-bg)] hover:text-[var(--success)]"
                     title="标记完成"
                     aria-label={`完成 ${t.title}`}
                     onClick={() => onUpdateTask(t.id, { column: "done" })}
                   >
-                    <Check size={11} aria-hidden />
+                    <Check size={12} aria-hidden />
                   </button>
                 </div>
               ))}
             </div>
-          ))}
-      </section>
+          )}
+        </section>
+      )}
 
-      {/* 文件：本会话 bot-file-changed 累积（主会话走正则兜底时此块为空，
-          那是既有口径——没有结构化数据就不编造） */}
-      <section className="mb-1">
-        <PanelHeader
-          icon={<FileText size={12} />}
-          label="文件"
-          count={fileChanges.length}
-          expanded={fileOpen}
-          onToggle={toggleFileOpen}
-        />
-        {fileOpen &&
-          (fileChanges.length === 0 ? (
-            <p className="px-1.5 py-1 text-[10px] text-[var(--t5)]">
-              本会话还没有文件改动
-            </p>
+      {tab === "files" && (
+        <section aria-label="文件变更">
+          <div className="mb-1 flex items-center gap-1.5 px-1.5">
+            <span className="text-[11px] font-medium text-[var(--t2)]">
+              本会话文件改动
+            </span>
+            <span className="font-mono text-[10px] text-[var(--t5)]">
+              {fileChanges.length}
+            </span>
+          </div>
+          {fileChanges.length === 0 ? (
+            <EmptyHint>本会话还没有文件改动</EmptyHint>
           ) : (
-            <div className="mt-0.5 space-y-0.5">
+            <div className="space-y-0.5">
               {fileChanges.map((f, i) => (
                 <div
                   // oxlint-disable-next-line react/no-array-index-key
                   key={`${f.path}-${i}`}
-                  className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px]"
+                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs"
                   title={`${f.path}（+${f.added} −${f.deleted}）`}
                 >
                   <FolderOpen
-                    size={11}
+                    size={12}
                     aria-hidden
                     className="shrink-0 text-[var(--t5)]"
                   />
@@ -190,44 +197,67 @@ export function ContextRail({
                 </div>
               ))}
             </div>
-          ))}
-      </section>
+          )}
+        </section>
+      )}
 
-      {/* 子 agent：在途执行会话。点条目跳过去围观 */}
-      <section>
-        <PanelHeader
-          icon={<Bot size={12} />}
-          label="子 Agent"
-          count={inflightSessions.length}
-          expanded={agentOpen}
-          onToggle={toggleAgentOpen}
-        />
-        {agentOpen &&
-          (inflightSessions.length === 0 ? (
-            <p className="px-1.5 py-1 text-[10px] text-[var(--t5)]">
-              当前没有执行中的任务
-            </p>
+      {tab === "agents" && (
+        <section aria-label="子 Agent">
+          <div className="mb-1 flex items-center gap-1.5 px-1.5">
+            <span className="text-[11px] font-medium text-[var(--t2)]">
+              子 Agent
+            </span>
+            {runningCount > 0 && (
+              <span className="text-[10px] text-[var(--brand)]">
+                {runningCount} 个执行中
+              </span>
+            )}
+          </div>
+          {subagents.length === 0 ? (
+            <EmptyHint>当前没有子 agent 执行</EmptyHint>
           ) : (
-            <div className="mt-0.5 space-y-0.5">
-              {inflightSessions.map((s) => (
+            <div className="space-y-0.5">
+              {subagents.map((s) => (
                 <button
                   key={s.id}
                   type="button"
-                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] text-[var(--t3)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
                   title={s.title}
-                  onClick={() => onOpenSession(s.id)}
+                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+                  onClick={() => onOpenSubagent(s.id)}
                 >
-                  <Loader2
-                    size={11}
-                    aria-hidden
-                    className="shrink-0 animate-spin text-[var(--brand)]"
-                  />
+                  {s.running ? (
+                    <Loader2
+                      size={12}
+                      aria-hidden
+                      className="shrink-0 animate-spin text-[var(--brand)]"
+                    />
+                  ) : (
+                    <Bot
+                      size={12}
+                      aria-hidden
+                      className={`shrink-0 ${
+                        s.error
+                          ? "text-[var(--danger)]"
+                          : "text-[var(--success)]"
+                      }`}
+                    />
+                  )}
                   <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                  {s.error ? (
+                    <span className="shrink-0 text-[10px] text-[var(--danger)]">
+                      失败
+                    </span>
+                  ) : !s.running ? (
+                    <span className="shrink-0 text-[10px] text-[var(--success)]">
+                      完成
+                    </span>
+                  ) : null}
                 </button>
               ))}
             </div>
-          ))}
-      </section>
+          )}
+        </section>
+      )}
     </aside>
   );
 }

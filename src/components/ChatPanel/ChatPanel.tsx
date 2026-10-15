@@ -32,6 +32,7 @@ import type {
   ReasoningLevel,
   Session,
   SkillFailure,
+  SubagentRow,
   TaskRef,
   ToolCall,
   VerboseLevel,
@@ -39,7 +40,8 @@ import type {
 import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks } from "./constants";
 import { useAutoGrow, useOutsideClose } from "./useChatUi";
 import { SessionRail } from "./SessionRail";
-import { ContextRail } from "./ContextRail";
+import { ContextRail, type ContextTab, type SubagentRun } from "./ContextRail";
+import { SubagentStrip } from "./SubagentStrip";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
@@ -170,12 +172,23 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
   const [ctxOpen, setCtxOpen] = useState(
     () => localStorage.getItem("chat-ctx-open") === "1",
   );
+  /** 当前工作面（tasks / files / agents）。提到父级是为了让聊天内嵌的子 agent
+   *  区域能驱动侧栏切到自己的类别——两处指同一块工作面 */
+  const [ctxTab, setCtxTab] = useState<ContextTab>("tasks");
+  /** 子 agent 内嵌区是否展开（折叠时只列在途，收起的执行记录不占对话空间） */
+  const [subagentStripOpen, setSubagentStripOpen] = useState(false);
   const toggleCtx = () => {
     setCtxOpen((v) => {
       localStorage.setItem("chat-ctx-open", v ? "0" : "1");
       return !v;
     });
   };
+  /** 点子 agent（内嵌区域或任务引用块）→ 展开右侧栏并切到「子 Agent」工作面。
+   *  对话是锚点、切类别不换视图：工作面在侧栏，主对话留在原位 */
+  const openSubagentDetail = useCallback(() => {
+    setCtxOpen(true);
+    setCtxTab("agents");
+  }, []);
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
   useAutoGrow(taRef, input);
   /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
@@ -234,12 +247,37 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
   };
   /** 视图会话是否有在途回复（驱动停止键/placeholder/禁用态） */
   const viewedBusy = sessionId !== null && inflightSids.has(sessionId);
-  /** 在途会话 → 会话行（右侧「子 Agent」面板：把「谁在跑」摊开成可点的列表，
-   *  否则用户只能靠猜——切走视图后不知道后台还有没有任务在执行） */
-  const inflightSessions = useMemo(
+  /** 子 agent 运行列表（右侧栏「子 Agent」工作面 + 聊天内嵌区域的同一份数据）。
+   *  随会话切换重拉：子 agent 是按 parent_session_id 归属的 */
+  const [subagents, setSubagents] = useState<SubagentRow[]>([]);
+  const refreshSubagents = useCallback(() => {
+    if (!enabled || !sessionId) {
+      setSubagents([]);
+      return;
+    }
+    invoke<SubagentRow[] | null>("list_subagents", { sessionId, limit: 20 })
+      .then((rows) => {
+        // 竞态：await 期间用户已切走，慢响应不得盖掉新会话的列表。
+        // 非数组（命令失败/旧版后端返回 null）当空列表，不让渲染炸掉
+        if (sessionIdRef.current === sessionId) {
+          setSubagents(Array.isArray(rows) ? rows : []);
+        }
+      })
+      .catch(() => setSubagents([]));
+  }, [enabled, sessionId]);
+  useEffect(() => {
+    refreshSubagents();
+  }, [refreshSubagents]);
+  /** 侧栏/内嵌区消费的视图模型：标题取 objective（子 agent 的目标即其身份） */
+  const subagentRuns = useMemo<SubagentRun[]>(
     () =>
-      sessions.filter((s) => inflightSids.has(s.id) && s.id !== sessionId),
-    [sessions, inflightSids, sessionId],
+      subagents.map((r) => ({
+        id: r.id,
+        title: r.objective,
+        running: r.status === "running" || r.status === "queued",
+        error: r.error ?? null,
+      })),
+    [subagents],
   );
   /** 当前会话的文件变更累积（右侧「文件」面板）：去重按 path，保留最近一次统计。
    *  取自消息而非 streamingMeta——后者收尾即删，面板要活到切会话为止 */
@@ -1543,9 +1581,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
             onUpdateTask={onUpdateTask}
             onRunTask={onRunTask}
             fileChanges={sessionFileChanges}
-            inflightSessions={inflightSessions}
-            onOpenSession={switchSession}
+            subagents={subagentRuns}
+            onOpenSubagent={openSubagentDetail}
             onCollapse={toggleCtx}
+            tab={ctxTab}
+            onTabChange={setCtxTab}
           />
         )}
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
@@ -1557,8 +1597,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
           className="nm-icon-btn h-7 w-7"
           aria-expanded={ctxOpen}
           aria-controls="chat-context-rail"
-          title={ctxOpen ? "收起上下文栏" : "展开上下文栏"}
-          aria-label={ctxOpen ? "收起上下文栏" : "展开上下文栏"}
+          title={ctxOpen ? "收起右侧栏" : "展开右侧栏"}
+          aria-label={ctxOpen ? "收起右侧栏" : "展开右侧栏"}
           onClick={toggleCtx}
         >
           <PanelRightOpen size={15} aria-hidden />
@@ -1579,6 +1619,14 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
         contextK={models.find((m) => m.id === activeModelId)?.contextK}
       />
 
+      {/* 子 agent 区域长在对话里（不另开对话框）——子 agent 不建独立会话后，
+          这里就是它唯一的常驻可见处；点条目把右侧栏切到详情 */}
+      <SubagentStrip
+        subagents={subagentRuns}
+        onOpen={openSubagentDetail}
+        expanded={subagentStripOpen}
+        onToggleExpanded={() => setSubagentStripOpen((v) => !v)}
+      />
       <MessageList
         scrollRef={scrollRef}
         messages={messages}

@@ -33,7 +33,11 @@ pub fn bot_sessions_load(app: AppHandle) -> CommandResult<Vec<BotSession>> {
     let conn = super::open_db(&app)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, created_at, updated_at, is_subagent FROM bot_sessions ORDER BY updated_at DESC",
+            // 子 agent 会话不列出：它是内部执行标识（tool_guard 的闸与流式路由
+            // 都以 session id 为键），对用户只以聊天内嵌的子 agent 区域呈现。
+            // 一堆执行现场混进对话列表会把真正的对话淹掉
+            "SELECT id, title, created_at, updated_at, is_subagent FROM bot_sessions \
+             WHERE is_subagent = 0 ORDER BY updated_at DESC",
         )
         .map_err(|e| CommandError::DbError(e.to_string()))?;
     let rows = stmt

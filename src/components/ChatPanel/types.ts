@@ -72,6 +72,20 @@ export type Session = {
   isSubagent?: boolean;
 };
 
+/** 子 agent 执行行（list_subagents 命令 = subagents 表行 camelCase）。
+ *  子 agent 不再建任务卡也不建独立会话——它的可见性完全落在聊天记录里，
+ *  这一行就是那条记录的数据源。taskId 仅老数据有（无卡行为 null）。 */
+export type SubagentRow = {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "budget_exceeded";
+  profile: string;
+  parentSessionId?: string | null;
+  sessionId?: string | null;
+  taskId?: string | null;
+  objective: string;
+  error?: string | null;
+};
+
 /** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。
  *  与设置页 ModelEntry 同形（id/label/model），但独立声明——SettingsPage/types.ts
  *  头部注明「外部不直接引用」，ChatPanel 不跨目录 import。 */
