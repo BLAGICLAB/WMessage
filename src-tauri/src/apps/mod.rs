@@ -86,6 +86,9 @@ pub fn run(
     let params_owned = params.map(|s| s.to_string());
     let params_for_py = params_owned.as_deref();
     let started = Instant::now();
+    // 契约：argv[1] = app 目录绝对路径。run_python 的子进程 cwd 在临时 run 目录
+    // （脚本源码被拷过去执行），脚本一律用 argv[1] 解析 data/ input/ output/
+    let app_dir_arg = vec![dir.to_string_lossy().to_string()];
     let PyRunResult {
         stdout,
         stderr,
@@ -96,7 +99,7 @@ pub fn run(
         app_handle,
         &script_text,
         params_for_py,
-        &[],
+        &app_dir_arg,
         timeout_secs,
         stop,
     )

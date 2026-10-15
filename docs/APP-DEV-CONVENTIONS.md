@@ -76,8 +76,9 @@ exe 根（便携模式）。app 目录由 `apps_create` 命令**原子化建好*
 ## 4. 脚本契约（运行器校验）
 
 脚本写在 `app.py`，python 3，**零依赖**为佳。运行时由 `py::run_python` 子进程启动，
-`cwd = {data_dir}/apps/<id>/`、`PATH` 继承、有 60s 超时（可调）。以下约定
-保证运行器能稳定采集结果：
+**`sys.argv[1]` = app 目录绝对路径**（runner 传入——子进程 cwd 在临时 run 目录，
+脚本解析 `data/ input/ output/` 一律基于 argv[1]，不要依赖 cwd）、`PATH` 继承、
+有 60s 超时（可调）。以下约定保证运行器能稳定采集结果：
 
 ### 4.1 开头校验段（强制）
 
