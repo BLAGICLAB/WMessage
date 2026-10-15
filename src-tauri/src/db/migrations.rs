@@ -114,9 +114,29 @@ pub fn cleanup_retired_workflow_tables(conn: &rusqlite::Connection) -> Result<()
     .map_err(|e| e.to_string())
 }
 
+/// 画布退役的 tasks 删列（幂等）：老库 DROP 掉 workflow_id / canvas_x / canvas_y
+/// 三列（数据已随行清理，列恒 NULL）；新库/已清库 pragma 查无此列即返回。
+/// 三列由同一次 W1 ALTER 成对添加，存在性以 workflow_id 一列代表。
+pub fn drop_retired_workflow_task_columns(conn: &rusqlite::Connection) -> Result<(), String> {
+    let has_col: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('tasks') WHERE name = 'workflow_id'")
+        .and_then(|mut stmt| stmt.query_row([], |r| r.get::<_, i64>(0)))
+        .map(|v| v == 1)
+        .unwrap_or(false);
+    if !has_col {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE tasks DROP COLUMN workflow_id;
+         ALTER TABLE tasks DROP COLUMN canvas_x;
+         ALTER TABLE tasks DROP COLUMN canvas_y;",
+    )
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod retired_cleanup_tests {
-    use super::cleanup_retired_workflow_tables;
+    use super::{cleanup_retired_workflow_tables, drop_retired_workflow_task_columns};
 
     /// 清扫涉及的最小表结构（tasks/notifications 是老库必有的共享表）
     fn setup_conn() -> rusqlite::Connection {
@@ -186,6 +206,47 @@ mod retired_cleanup_tests {
             .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn drops_retired_task_columns_once_and_keeps_other_data() {
+        let conn = setup_conn();
+        conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN workflow_id TEXT;
+             ALTER TABLE tasks ADD COLUMN canvas_x REAL;
+             ALTER TABLE tasks ADD COLUMN canvas_y REAL;
+             ALTER TABLE tasks ADD COLUMN depends_on TEXT;
+             INSERT INTO tasks (id, title, col, depends_on) VALUES ('t1', '普通卡', 'todo', '[\"a\"]');",
+        )
+        .unwrap();
+        drop_retired_workflow_task_columns(&conn).unwrap();
+        let col_names: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT name FROM pragma_table_info('tasks')")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(!col_names.contains(&"workflow_id".to_string()));
+        assert!(!col_names.contains(&"canvas_x".to_string()));
+        assert!(!col_names.contains(&"canvas_y".to_string()));
+        assert!(
+            col_names.contains(&"depends_on".to_string()),
+            "依赖列必须保留（图谱/KPI 数据源）"
+        );
+        let (title, deps): (String, String) = conn
+            .query_row(
+                "SELECT title, depends_on FROM tasks WHERE id = 't1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "普通卡");
+        assert_eq!(deps, "[\"a\"]", "既有列数据不受删列影响");
+        // 幂等：二跑列已不存在，直接返回
+        drop_retired_workflow_task_columns(&conn).unwrap();
     }
 }
 

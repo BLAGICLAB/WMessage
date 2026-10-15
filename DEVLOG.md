@@ -30,7 +30,11 @@ bot-config `tools.ask_budget`（默认 3、钳 1..=5 不变）。老库自定义
 老库 DROP 掉 workflows / brief_entries / workflow_audit / workflow_settings 四表、
 硬删 `origin='workflow'` 的任务卡与旧提问通知；已清库/新装库查一次 sqlite_master
 即返回。闸门用「workflows 表存在」而不是另立版本标记——表本身就是「清过没有」
-的天然标记，少一个迁移状态位。
+的天然标记，少一个迁移状态位。tasks 表里的三根画布列（workflow_id / canvas_x /
+canvas_y）随后由 `drop_retired_workflow_task_columns` 独立删列（闸 = pragma 查列
+存在；depends_on 列**保留**——图谱与首页 KPI 关联簇的数据源）。删列动了行映射
+列序号，`task_from_row` 的 get(23..34) 全段前移三位，靠 SELECT 列表与映射同文件
+单源防漂移。
 
 **kind 正名**：原计划 ask 通知沿用 `workflow_question` 遗留名（保历史行兼容），
 历史行既然删了，兼容理由不复存在——kind 改名 `task_question`，代码不再背

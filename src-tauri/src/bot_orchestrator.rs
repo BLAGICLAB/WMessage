@@ -226,9 +226,7 @@ pub(crate) fn spawn_subagent_locked(
         budget: Some(budget.clone()),
         result: None,
         origin: None,
-        workflow_id: None,
         depends_on: None,
-        canvas_pos: None,
         model: None,
         owner_id: None,        // 子 agent 派发卡 = 本人（任务图谱设计 §1.1）
         created_at: Some(now), // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
@@ -2022,9 +2020,7 @@ mod orchestrator_tests {
             budget: None,
             result: None,
             origin: None,
-            workflow_id: None,
             depends_on: None,
-            canvas_pos: None,
             model: None,
             owner_id: None,
             created_at: None,

@@ -231,6 +231,8 @@ pub fn open_db<R: tauri::Runtime>(
     migrations::ensure_meta_tables(&conn)?;
     // 画布工作流退役清扫（幂等）：老库删遗留表与数据行，已清/新库零成本跳过
     migrations::cleanup_retired_workflow_tables(&conn)?;
+    // 画布退役的 tasks 删列（幂等）：workflow_id / canvas_x / canvas_y
+    migrations::drop_retired_workflow_task_columns(&conn)?;
     // 执行痕迹三表（exec_traces/exec_spans/file_changes，Agent 透明化设计 §4.1），幂等
     // （含旧库 model 列迁移，词元统计按模型聚合依赖）
     crate::db::trace::ensure_trace_tables(&conn).map_err(|e| e.to_string())?;
@@ -689,9 +691,7 @@ mod tests {
             budget: None,
             result: None,
             origin: None,
-            workflow_id: None,
             depends_on: None,
-            canvas_pos: None,
             model: None,
             owner_id: None,
             created_at: None,
@@ -813,7 +813,7 @@ mod tests {
              );",
         )
         .unwrap();
-        // 进程内共有 5 个新列（origin/workflow_id/depends_on/canvas_x/canvas_y）——
+        // 进程内共有 2 个新列（origin/depends_on）——
         // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
         // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
         // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS +

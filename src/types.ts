@@ -55,12 +55,6 @@ interface Subtask {
   taskId?: string;
 }
 
-/** 画布坐标（工作流卡专用，与 Rust db::CanvasPos 对应） */
-interface CanvasPos {
-  x: number;
-  y: number;
-}
-
 export interface Task {
   id: string;
   title: string;
@@ -141,15 +135,10 @@ export interface Task {
     /** 本卡耗时（墙钟 ms，引擎写） */
     ms?: number;
   } | null;
-  /** 归属：缺省 "user" = 看板任务；遗留值 "workflow" = 画布节点卡（功能已退役，
-   *  仅老库数据行存在，按普通卡展示） */
+  /** 归属来源（画布退役后恒缺省；后端 patch 白名单只收 "user" 并归一为缺省） */
   origin?: "user" | "workflow";
-  /** 所属工作流 id（遗留字段，画布退役后仅老库数据行有值） */
-  workflowId?: string;
   /** 上游任务 id 列表（依赖边；图谱/KPI 关联簇数据源） */
   dependsOn?: string[];
-  /** 画布坐标（遗留字段，画布退役后仅老库数据行有值） */
-  canvasPos?: CanvasPos;
   /** 执行用大模型：模型库条目 id；缺省 = 跟随全局 active 模型 */
   model?: string;
   /** 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准；执行时注入并自检 */
