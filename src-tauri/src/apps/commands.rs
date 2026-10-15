@@ -1,8 +1,10 @@
-//! apps 模块 Tauri commands：list/get/run/create/update/archive + 运行历史/契约预检
+//! apps 模块 Tauri commands：list/run/create/archive/恢复 + 运行历史/版本回滚
 //!
 //! 入参字段名（camelCase）即 manifest 的字段名（name/description/icon/...）；
 //! manifest 字段约束是 AI 上架工具的合同（设计稿 `docs/APPS-DESIGN-2026-10-15.md`
 //! §2 与 M1 代码规范文档的 `docs/APP-DEV-CONVENTIONS.md`）。
+//! 修改/删除元数据的 bot 路径走 manage 核（apps_update_files），页面路径
+//! 只保留用户主动的归档/恢复/回滚——命令层不再有全量 update 口。
 
 use std::path::PathBuf;
 
@@ -25,27 +27,6 @@ pub async fn apps_list_active(app: AppHandle) -> CommandResult<Vec<App>> {
     db_apps::list_active_apps(&conn).map_err(CommandError::DbError)
 }
 
-/// 详情：管理面板/历史/试跑均用
-#[tauri::command]
-pub async fn apps_get(app: AppHandle, id: String) -> CommandResult<Option<App>> {
-    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    db_apps::get_app(&conn, &id).map_err(CommandError::DbError)
-}
-
-/// 契约预检：M1 仅校验脚本可读/非空；类型/schema 校验留给 M2
-#[tauri::command]
-pub async fn apps_preflight(
-    app: AppHandle,
-    app_id: String,
-    script_rel: Option<String>,
-) -> CommandResult<()> {
-    let a = db_apps::get_app(&open_db_or(&app)?, &app_id)
-        .map_err(CommandError::DbError)?
-        .ok_or_else(|| CommandError::TaskNotFound(app_id.clone()))?;
-    let rel = script_rel.as_deref().unwrap_or(&a.script_path);
-    apps_runner::preflight_script(&app, &a, rel).map_err(CommandError::DbError)
-}
-
 /// 跑一个 app。表单模式把 `params` 传 JSON 串；文件夹模式传 None
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,7 +42,7 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
         .map_err(CommandError::DbError)?
         .ok_or_else(|| CommandError::TaskNotFound(args.id.clone()))?;
     // M2 试跑闭环：草稿可运行（AI 创建后用户先试跑再上架）；归档不可运行
-    if a.status == "archived" {
+    if a.status == mc::STATUS_ARCHIVED {
         return Err(CommandError::InvalidArgument {
             field: "id".into(),
             value: a.status.clone(),
@@ -69,20 +50,30 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
         });
     }
     let (timeout, _) = resolve_timeout(args.timeout_secs);
-    // 跑（执行内部捕所有错误并回写 app_runs status=failed）
-    let res = apps_runner::run(
-        &a,
-        &a.script_path,
-        args.params.as_deref(),
-        Some(timeout),
-        &app,
-        None,
-    )
-    .map_err(CommandError::DbError)?;
+    // 执行内部阻塞等子进程至多 timeout 秒，必须挪进阻塞线程池（钉死 async
+    // worker 会拖垮其余命令）；不持全局写锁——60s 的子进程不能挡住别的写者，
+    // 内部两次短写靠 busy_timeout 兜底
+    let app_name = a.name.clone();
+    let res = {
+        let app2 = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            apps_runner::run(
+                &a,
+                &a.script_path,
+                args.params.as_deref(),
+                Some(timeout),
+                &app2,
+                None,
+            )
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("程序运行线程 join 失败：{e}")))?
+        .map_err(runner_err)?
+    };
     // 系统通知：跑完/失败给个轻提示（M1 不做结果面板里的丰富展示）
     let title = format!(
         "程序「{}」{}",
-        a.name,
+        app_name,
         match res.exit_code {
             Some(0) => "运行完成",
             _ => "运行失败",
@@ -117,108 +108,28 @@ pub struct CreateArgs {
 #[tauri::command]
 pub async fn apps_create(app: AppHandle, args: CreateArgs) -> CommandResult<App> {
     let a = build_app_from_create(&app, &args)?;
-    apps_runner::preflight_script(&app, &a, &a.script_path).map_err(CommandError::DbError)?;
-    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    let dir = apps_runner::app_dir(&app, &a.id);
-    // 落库 + 版本快照同一事务（口径同 manage 核）
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    db_apps::upsert_app(&tx, &a).map_err(CommandError::DbError)?;
-    crate::apps::manage::record_app_version(&tx, &dir, &a, "create", crate::db::now_ms())?;
-    tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    Ok(a)
-}
-
-/// 改 description/icon/manual/status/script_path——脚本本体不重写
-/// （改本体走 M2 的 `apps_update_files`，AI 拿整文件集上来才稳）
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateArgs {
-    pub id: String,
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub icon: Option<String>,
-    pub input_schema: Option<String>,
-    pub script_path: Option<String>,
-    pub manual: Option<String>,
-    pub status: Option<String>,
-}
-
-#[tauri::command]
-pub async fn apps_update(app: AppHandle, args: UpdateArgs) -> CommandResult<App> {
-    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    let cur = db_apps::get_app(&conn, &args.id)
-        .map_err(CommandError::DbError)?
-        .ok_or_else(|| CommandError::TaskNotFound(args.id.clone()))?;
-    // 状态只接受三态：命令层此前完全没校验，任意字符串能写进库里，
-    // 程序页的 status 判断与 apps_run 的 archived 判定随后全都失效
-    if let Some(s) = args.status.as_deref() {
-        if !matches!(
-            s,
-            mc::STATUS_DRAFT | mc::STATUS_ENABLED | mc::STATUS_ARCHIVED
-        ) {
-            return Err(CommandError::InvalidArgument {
-                field: "status".into(),
-                value: s.to_string(),
-                reason: "status 只接受 draft / enabled / archived".into(),
-            });
-        }
-    }
-    // 已归档程序不开放改元数据（与 bot 工具 apps_update_files 同口径：
-    // 归档的意图就是「先别动它」，要改先恢复）
-    if cur.status == mc::STATUS_ARCHIVED && args.status.as_deref() != Some(mc::STATUS_ARCHIVED) {
-        return Err(CommandError::DomainRule {
-            domain: "apps".into(),
-            reason: "已归档程序不开放修改；请用户先在程序页恢复".into(),
-        });
-    }
-    let status = args.status.clone().unwrap_or_else(|| cur.status.clone());
-    let next = App {
-        name: args.name.unwrap_or(cur.name),
-        description: args.description.unwrap_or(cur.description),
-        icon: args.icon.unwrap_or(cur.icon),
-        input_schema: args.input_schema.unwrap_or(cur.input_schema),
-        script_path: args.script_path.clone().unwrap_or(cur.script_path),
-        manual: args.manual.unwrap_or(cur.manual),
-        status,
-        ..cur
-    };
-    // script_path 若改，落盘前预检
-    if args.script_path.is_some() {
-        apps_runner::preflight_script(&app, &next, &next.script_path)
-            .map_err(CommandError::DbError)?;
-    }
-    // status 若改，enabled → 写 enabled_at
-    let now = crate::db::now_ms();
-    let next = if cur.status != "enabled" && next.status == "enabled" {
-        App {
-            enabled_at: Some(now),
-            updated_at: now,
-            ..next
-        }
-    } else {
-        App {
-            updated_at: now,
-            ..next
-        }
-    };
-    // 落库 + 版本快照同一事务（元数据改动也是一次内容变更）
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    db_apps::upsert_app(&tx, &next).map_err(CommandError::DbError)?;
-    crate::apps::manage::record_app_version(
-        &tx,
-        &apps_runner::app_dir(&app, &next.id),
-        &next,
-        "update",
-        now,
-    )?;
-    tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    Ok(next)
+    apps_runner::preflight_script(&app, &a, &a.script_path).map_err(runner_err)?;
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> CommandResult<App> {
+        // 与 bot 工具同款写闸：页面手工上架与 AI 改程序并发时串行化，
+        // 防 SQLITE_BUSY 与版本号竞态（db::DB_WRITE_LOCK 的约定）
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+        // upsert 语义会静默覆盖同 id 程序，重名必须先拒（与 bot 核同规）
+        crate::apps::manage::ensure_app_absent(&conn, &a.id)?;
+        let dir = apps_runner::app_dir(&app2, &a.id);
+        // 落库 + 版本快照同一事务（口径同 manage 核）
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        db_apps::upsert_app(&tx, &a.clone()).map_err(CommandError::DbError)?;
+        crate::apps::manage::record_app_version(&tx, &dir, &a, "create", crate::db::now_ms())?;
+        tx.commit()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        Ok(a)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("程序上架线程 join 失败：{e}")))?
 }
 
 /// 在系统文件管理器中打开程序的 output/ 目录（不存在则先创建）。
@@ -301,9 +212,22 @@ pub async fn apps_version_restore(
     app_id: String,
     version: i64,
 ) -> CommandResult<App> {
-    let conn = open_db_or(&app)?;
-    let dir = apps_runner::app_dir(&app, &app_id);
-    crate::apps::manage::restore_version_core(&dir, &conn, &app_id, version, crate::db::now_ms())
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> CommandResult<App> {
+        // fs 重写 + 事务落库，与其他写口同闸串行
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+        let dir = apps_runner::app_dir(&app2, &app_id);
+        crate::apps::manage::restore_version_core(
+            &dir,
+            &conn,
+            &app_id,
+            version,
+            crate::db::now_ms(),
+        )
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("程序回滚线程 join 失败：{e}")))?
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────
@@ -312,7 +236,34 @@ fn open_db_or(app: &AppHandle) -> Result<rusqlite::Connection, CommandError> {
     crate::db::open_db(app).map_err(CommandError::DbError)
 }
 
+/// runner/预检的 String 错误 → 领域错误：此前全装进 DbError，前端按
+/// 「数据库错误」归类展示，与真实成因（脚本缺失/启动失败）不符
+fn runner_err(e: String) -> CommandError {
+    CommandError::DomainRule {
+        domain: "apps".into(),
+        reason: e,
+    }
+}
+
 fn build_app_from_create(app: &AppHandle, args: &CreateArgs) -> Result<App, CommandError> {
+    // 状态只收上架二态：任意字符串入库会让程序页状态判断与 apps_run 的
+    // 归档判定全部失效；「归档」不是创建态，走 apps_archive
+    if !matches!(args.status.as_str(), mc::STATUS_DRAFT | mc::STATUS_ENABLED) {
+        return Err(CommandError::InvalidArgument {
+            field: "status".into(),
+            value: args.status.clone(),
+            reason: "status 只接受 draft / enabled".into(),
+        });
+    }
+    // 版本快照按 app.py 落盘读原文、bot 工具也恒写 app.py——放野值会让
+    // 快照记错脚本、回滚写回错误内容，命令层与全链路对齐
+    if args.script_path != "app.py" {
+        return Err(CommandError::InvalidArgument {
+            field: "scriptPath".into(),
+            value: args.script_path.clone(),
+            reason: "脚本路径恒为 app.py（相对 app 目录）".into(),
+        });
+    }
     let now = crate::db::now_ms();
     let enabled_at = if args.status == "enabled" {
         Some(now)

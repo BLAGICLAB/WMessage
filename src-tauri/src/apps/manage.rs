@@ -319,6 +319,23 @@ fn write_file_set(
 /// apps_create 领域核：防重名 → 校验 → 文件集落盘 → 落库草稿。
 /// status 固定 draft（上架 = 用户试跑满意后 update 置 enabled，设计稿 §4）。
 #[allow(clippy::too_many_arguments)]
+/// 重名拒绝：登记走 upsert（ON CONFLICT 覆盖），不先查会静默覆盖已有程序
+/// 的全部元数据。页面手工上架与 bot 创建同规
+pub fn ensure_app_absent(conn: &Connection, id: &str) -> Result<(), CommandError> {
+    if db_apps::get_app(conn, id)
+        .map_err(CommandError::DbError)?
+        .is_some()
+    {
+        return Err(CommandError::DomainRule {
+            domain: "apps".into(),
+            reason: format!(
+                "程序「{id}」已存在：改用 apps_update_files 修改，或先 apps_list 看现有程序换个 id"
+            ),
+        });
+    }
+    Ok(())
+}
+
 pub fn create_app_core(
     dir: &Path,
     conn: &Connection,
@@ -333,17 +350,7 @@ pub fn create_app_core(
     now_ms: i64,
 ) -> Result<App, CommandError> {
     validate_app_id(id)?;
-    if db_apps::get_app(conn, id)
-        .map_err(CommandError::DbError)?
-        .is_some()
-    {
-        return Err(CommandError::DomainRule {
-            domain: "apps".into(),
-            reason: format!(
-                "程序「{id}」已存在：改用 apps_update_files 修改，或先 apps_list 看现有程序换个 id"
-            ),
-        });
-    }
+    ensure_app_absent(conn, id)?;
     validate_manifest_meta(name, description, icon, manual)?;
     validate_input_schema(input_schema).map_err(reason_to_invalid())?;
     validate_script(script)?;
@@ -424,6 +431,14 @@ pub fn restore_version_core(
     let cur = db_apps::get_app(conn, app_id)
         .map_err(CommandError::DbError)?
         .ok_or_else(|| CommandError::TaskNotFound(app_id.to_string()))?;
+    // 归档 = 「先别动它」（update 双口同拒）：回滚会整体重写脚本与 manifest，
+    // 属内容变更，恢复后再做
+    if cur.status == mc::STATUS_ARCHIVED {
+        return Err(CommandError::DomainRule {
+            domain: "apps".into(),
+            reason: "已归档程序不开放回滚；请先在程序页恢复".into(),
+        });
+    }
     std::fs::create_dir_all(dir).map_err(|e| CommandError::IoError(e.to_string()))?;
     write_file_set(dir, Some(&snap.script), &[])?;
     let next = App {
@@ -555,12 +570,9 @@ pub fn update_app_core(
 
 // ── bot 工具包装层（AppHandle / 落盘目录解析只在这一段出现） ──
 
-/// 必填字符串字段：trim 后非空才返回
+/// 必填字符串字段：trim 后非空才返回（语义标记，实现同 optional_field）
 fn required_field(v: &serde_json::Value, key: &str) -> Option<String> {
-    v[key]
-        .as_str()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    optional_field(v, key)
 }
 
 /// 可选元数据字段：空串视同未传（更新语义 = 保持不变）
@@ -673,6 +685,8 @@ pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
     let dir_log = dir.display().to_string();
     let id_for_log = id.clone();
     let created = spawn_blocking_map(move || {
+        // fs + 事务写，与其他写口同闸串行（页面手工上架可并发）
+        let _g = crate::db::lock_db_write();
         let conn = db::open_db(&owned).map_err(|e| e.to_string())?;
         create_app_core(
             &dir,
@@ -759,6 +773,8 @@ pub async fn tool_apps_update_files(app: &AppHandle, args: &str) -> ToolResult {
     let dir = super::app_dir(app, &id);
     let id_for_log = id.clone();
     let updated = spawn_blocking_map(move || {
+        // fs 重写 + 事务落库，与其他写口同闸串行（页面回滚/手工上架可并发）
+        let _g = crate::db::lock_db_write();
         let conn = db::open_db(&owned).map_err(|e| e.to_string())?;
         update_app_core(
             &dir,
@@ -1280,6 +1296,25 @@ mod tests {
         assert!(matches!(err, CommandError::TaskNotFound(_)), "{err}");
         let err = restore_version_core(&dir, &conn, "ghost", 1, 2).unwrap_err();
         assert!(matches!(err, CommandError::TaskNotFound(_)), "{err}");
+    }
+
+    #[test]
+    fn restore_rejects_archived_app() {
+        // 归档 = 先别动它：回滚会整体重写脚本与 manifest，与 update 同拒；
+        // 恢复（unarchive）后才能回滚
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+        )
+        .unwrap();
+        archive_core(&conn, "wage", 2).unwrap();
+        let err = restore_version_core(&dir, &conn, "wage", 1, 3).unwrap_err();
+        assert!(matches!(err, CommandError::DomainRule { .. }), "{err}");
+        // 恢复后同一版本可回滚
+        unarchive_core(&conn, "wage", 4).unwrap();
+        restore_version_core(&dir, &conn, "wage", 1, 5).unwrap();
     }
 
     #[test]

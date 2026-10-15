@@ -16,11 +16,12 @@
 │   └── ...
 ├── input/             # 每次运行前放入（本月工资单等）
 │   └── ...
-└── output/            # 运行产物（脚本写入；按 run_id 子目录防覆盖）
-    └── <run_id>/
+└── output/            # 运行产物（脚本写入；运行器按 run_id 建子目录防覆盖）
+    └── <run_id>/      # 每次运行由运行器创建，路径经 argv[2] 传给脚本
         ├── ...
-        └── ##RESULT## 哨兵仅写 stdout/stderr
 ```
+
+`##RESULT##` 哨兵仅写 stdout（运行器只扫 stdout）。
 
 `data_dir` 在 macOS 是 `~/Library/Application Support/wmessage/`、Windows 绿色版跟随
 exe 根（便携模式）。app 目录由 `apps_create` 命令**原子化建好**——AI 写代码时
@@ -35,7 +36,7 @@ exe 根（便携模式）。app 目录由 `apps_create` 命令**原子化建好*
 | `id` | string | **必填**，路径分量，不能含 `/` `\` `..` | 同上：程序目录名 |
 | `name` | string | ≤ 200 字符 | 列表卡片标题 |
 | `description` | string | ≤ 500 字符 | 列表卡片副标题 |
-| `icon` | string | ≤ 4 字符（emoji） | 列表卡片图标 |
+| `icon` | string | ≤ 8 字符（emoji；表单输入框限 4） | 列表卡片图标 |
 | `inputSchema` | JSON 字符串 | **必填**合法 JSON | 见 §3 |
 | `scriptPath` | string | M1 恒 `app.py` | 相对 app 目录的脚本路径 |
 | `manual` | string | ≤ 8000 字符 | 程序页的「管理/说明」用 |
@@ -71,29 +72,31 @@ exe 根（便携模式）。app 目录由 `apps_create` 命令**原子化建好*
   ]
 }
 ```
-用户点运行后按 `fields` 顺序弹窗收集 → 拼成 JSON 写 `params.json` → 脚本读。
+用户点运行后按 `fields` 顺序弹窗收集 → 拼成 JSON 写 `params.json`（落在脚本
+进程 cwd 下）→ 脚本读。
 
 ## 4. 脚本契约（运行器校验）
 
 脚本写在 `app.py`，python 3，**零依赖**为佳。运行时由 `py::run_python` 子进程启动，
-**`sys.argv[1]` = app 目录绝对路径**（runner 传入——子进程 cwd 在临时 run 目录，
-脚本解析 `data/ input/ output/` 一律基于 argv[1]，不要依赖 cwd）、`PATH` 继承、
-有 60s 超时（可调）。以下约定保证运行器能稳定采集结果：
+**`sys.argv[1]` = app 目录绝对路径、`sys.argv[2]` = 本次运行的产物目录
+`output/<run_id>/`（运行器已建好，产物直接写这里）**（runner 传入——子进程 cwd
+在临时 run 目录，脚本解析 `data/ input/` 一律基于 argv[1]，产物写 argv[2]，
+不要依赖 cwd 找它们）、`PATH` 继承、有 60s 超时（可调）。以下约定保证运行器能
+稳定采集结果：
 
 ### 4.1 开头校验段（强制）
 
 ```python
 # 头三件事：参数/文件存在/列名齐全
 import sys, os, json
-params_path = os.environ.get("APPS_PARAMS", "")
-if params_path and os.path.exists(params_path):
-    with open(params_path, "r", encoding="utf-8") as f:
+# 表单模式：params.json 由运行器写在脚本进程 cwd 下；文件夹模式无此文件
+params = {}
+if os.path.exists("params.json"):
+    with open("params.json", "r", encoding="utf-8") as f:
         params = json.load(f)
-else:
-    params = {}
 # 校验 input/ 列名/存在性
 required = {"姓名列", "身份证列"}
-if not os.path.exists("input/本月.xlsx"):
+if not os.path.exists(sys.argv[1] + "/input/本月.xlsx"):
     print("❌ input/本月.xlsx 不存在", file=sys.stderr)
     sys.exit(2)
 ```
@@ -108,11 +111,12 @@ if not os.path.exists("input/本月.xlsx"):
 
 ```python
 # 推荐结构
+out_dir = sys.argv[2]  # 本次运行产物目录，运行器已建好
 result = {
     "summary": "匹配 42 条，未匹配 3 条",   # 必填；通知用
     "matched": 42,                            # 可选
     "unmatched_count": 3,                    # 可选
-    "unmatched_path": "output/<run_id>/未匹配.csv",  # 可选
+    "unmatched_path": out_dir + "/未匹配.csv",  # 可选
     # ... 任意字段
 }
 print("##RESULT## " + json.dumps(result, ensure_ascii=False))

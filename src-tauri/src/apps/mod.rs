@@ -76,8 +76,8 @@ fn script_rel_path(script_rel: &str) -> Result<std::path::PathBuf, String> {
 }
 
 /// 跑一个 app。脚本路径相对 app 目录（M1 恒为 `app.py`）
-/// 产物目录 = `{app_dir}/output/<run_id>/`，由本函数创建并返回
-/// 入参 params 是表单模式 JSON 串（写 `params.json`）；文件夹模式传 None
+/// 产物目录 = `{app_dir}/output/<run_id>/`，由本函数创建并经 argv[2] 传给脚本
+/// 入参 params 是表单模式 JSON 串（写进脚本进程 cwd 的 `params.json`）；文件夹模式传 None
 pub fn run(
     app: &App,
     script_rel: &str,
@@ -96,19 +96,25 @@ pub fn run(
             dir.display()
         ));
     }
-    std::fs::create_dir_all(dir.join("output")).map_err(|e| format!("建 output 目录失败：{e}"))?;
     let run_id = {
         let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
         db::record_app_run(&conn, &app.id, now_ms, "running").map_err(|e| e.to_string())?
     };
+    // 产物目录先建实：脚本经 argv[2] 直接写这里，不用自己拼 run_id（它无从得知）
+    let output_dir = dir.join("output").join(run_id.to_string());
+    std::fs::create_dir_all(&output_dir).map_err(|e| format!("建产物目录失败：{e}"))?;
     let script_text =
         std::fs::read_to_string(&script_abs).map_err(|e| format!("读脚本失败：{e}"))?;
     let params_owned = params.map(|s| s.to_string());
     let params_for_py = params_owned.as_deref();
     let started = Instant::now();
-    // 契约：argv[1] = app 目录绝对路径。run_python 的子进程 cwd 在临时 run 目录
-    // （脚本源码被拷过去执行），脚本一律用 argv[1] 解析 data/ input/ output/
-    let app_dir_arg = vec![dir.to_string_lossy().to_string()];
+    // 契约：argv[1] = app 目录绝对路径，argv[2] = 本次运行产物目录。
+    // run_python 的子进程 cwd 在临时 run 目录（脚本源码被拷过去执行），
+    // 脚本一律用 argv[1] 解析 data/ input/，产物写 argv[2]
+    let app_dir_arg = vec![
+        dir.to_string_lossy().to_string(),
+        output_dir.to_string_lossy().to_string(),
+    ];
     let PyRunResult {
         stdout,
         stderr,
@@ -149,6 +155,13 @@ pub fn run(
             .or_else(|| Some(v.to_string())),
         None => None,
     };
+    // 规范 §4.4「stderr 写 summary」：失败且无哨兵摘要时取 stderr 末个非空行，
+    // 否则历史行与通知正文是空白，用户看不到失败原因
+    let summary = if status == "failed" {
+        summary.or_else(|| last_stderr_line(&stderr))
+    } else {
+        summary
+    };
     // M2 摘要截断（`docs/APP-DEV-CONVENTIONS.md` §5）：>300 字符截断 + 标记，
     // 指回 output/<run_id>/ 看完整产物；库、通知、程序页历史同源生效
     let summary = bound_summary(summary, run_id);
@@ -164,7 +177,6 @@ pub fn run(
         )
         .map_err(|e| e.to_string())?;
     }
-    let output_dir = dir.join("output").join(run_id.to_string());
     Ok(AppRunResult {
         run_id,
         app_id: app.id.clone(),
@@ -190,6 +202,16 @@ pub fn recent_runs(
 
 /// summary 字符上限：超限截断 + 标记（M2，规范 §5「摘要截断」）
 pub const SUMMARY_MAX_CHARS: usize = 300;
+
+/// 失败运行无哨兵摘要时，取 stderr 末个非空行（脚本的「❌+中文原因」约定写在这）
+fn last_stderr_line(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
+}
 
 fn bound_summary(summary: Option<String>, run_id: i64) -> Option<String> {
     summary.map(|s| {
@@ -279,6 +301,16 @@ mod tests {
                 "路径 {bad:?} 应被拒（否则 run/preflight 会读走 app 目录外的文件）"
             );
         }
+    }
+
+    #[test]
+    fn last_stderr_line_takes_last_non_empty_and_skips_trailing_noise() {
+        assert_eq!(
+            last_stderr_line("Traceback …\n❌ input/本月.xlsx 不存在\n"),
+            Some("❌ input/本月.xlsx 不存在".into())
+        );
+        assert_eq!(last_stderr_line("\n \n"), None);
+        assert_eq!(last_stderr_line(""), None);
     }
 
     #[test]
