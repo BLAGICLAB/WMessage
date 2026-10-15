@@ -271,18 +271,21 @@ async fn other_holders(
             reason: "路径不存在或无法规范化".into(),
         }
     })?;
+    // 读不到卡表 = 判不出归属，必须 fail-closed：放行等于把「无法确认独占」
+    // 当成「确认独占」，正好毁掉这道闸的意义
+    let tasks = crate::db::db_load(app.clone())
+        .await
+        .map_err(|e| CommandError::Internal(format!("检查文件占用失败：{e}")))?;
     let mut holders: Vec<String> = Vec::new();
-    if let Ok(tasks) = crate::db::db_load(app.clone()).await {
-        for t in tasks {
-            if t.id == owner_task_id || t.deleted_at.is_some() {
-                continue;
-            }
-            if t.effective_files()
-                .iter()
-                .any(|f| canonical_string(std::path::Path::new(&f.path)).as_deref() == Some(&canon))
-            {
-                holders.push(format!("任务「{}」", t.title));
-            }
+    for t in tasks {
+        if t.id == owner_task_id || t.deleted_at.is_some() {
+            continue;
+        }
+        if t.effective_files()
+            .iter()
+            .any(|f| canonical_string(std::path::Path::new(&f.path)).as_deref() == Some(&canon))
+        {
+            holders.push(format!("任务「{}」", t.title));
         }
     }
     let handle = app.clone();

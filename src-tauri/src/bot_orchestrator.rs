@@ -1489,6 +1489,8 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
 /// 启动清扫：进程重启后没有任何 runner 在跑，库里 running/queued 的行是
 /// 上一世的僵尸——不收尾就在子 agent 面板里永远转圈（L1 排队恢复尚未接线，
 /// 这里只保证不留假在途）。逐行落终态 + 审计，谁被清的、可追溯。
+/// 前置前提：应用是单实例（tauri-plugin-single-instance），所以本进程启动时
+/// 不可能有另一个进程正跑着同一份库的子 agent——否则这里会误杀活跑的。
 pub fn sweep_zombie_subagents(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
