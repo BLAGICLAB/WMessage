@@ -341,6 +341,17 @@ pub(crate) const FINAL_SELFCHECK_SNIPPET_CHARS: usize = 500;
 /// 终稿自检默认轮次间隔（设置项为 None 时启用）：8 轮 1 次。
 const DEFAULT_FINAL_SELFCHECK_ROUND_GAP: u32 = 8;
 
+/// stop_reason=max_tokens 后的自动续跑配额。续跑是全新请求、带全新输出预算，
+/// 一轮通常就够；留 2 是为「首轮续跑仍撞上限」再给一次机会，再多只白烧 token
+/// ——截断的成因不会因为多试几次而消失。
+const MAX_LENGTH_CONTINUATIONS: usize = 2;
+
+/// 截断续跑的注入文案。正文与工具调用在响应里排在思维链之后，撞上限时被砍掉
+/// 的总是它们，文案要同时覆盖「接着写」和「别只说要动手、直接调工具」两种断法。
+const LENGTH_CONTINUE_PROMPT: &str = "\
+【系统提示】上一条回复超出长度上限被截断。请从断处接着写，不要重复已写的内容。\
+如果你刚才正准备调用工具，现在就直接调用它，不要只用文字描述下一步。";
+
 /// 滚动降密度：轮龄 ≥ 此值的 tool 结果软压（头 200 + 尾 100 + sidecar 指针）。
 /// N=5 对齐业界——SWE-agent 消融只留最近 5 条观察比全历史高 3 分，
 /// Claude Code microcompact 亦为最近 5 条工具结果。
@@ -994,6 +1005,10 @@ where
     // emit 跳过 Y/N 字样（用户已在主出口前看到 final_text 自检运行属于机器内部
     // 信号，不该再叠一层 Y/N 字样）；终态在主出口解析后还原 final_text。
     let mut expecting_final_selfcheck = false;
+    // 截断续跑已用次数（stop_reason=max_tokens 时自动接一轮，全会话共享配额）
+    let mut length_continuations: usize = 0;
+    // 被截断轮次的正文前缀：续跑轮只产出后半段，主出口拼接后才是一份完整答复
+    let mut length_prefix = String::new();
     // 终稿自检 snapshot：触发时拍下 final_text 本体，下一轮 LLM 响应解析后
     // 据 verdict 还原（Y/N/附解释均回滚到原文，N 路径在末尾追加 ⚠️）
     let mut final_selfcheck_snapshot: Option<String> = None;
@@ -1704,6 +1719,33 @@ where
                 }));
                 continue;
             }
+            // stop_reason=max_tokens：思维链把输出预算吃光时，正文和排在最后的
+            // tool_use 会整段被砍，用户只拿到半截甚至空回复，还得自己打「继续」。
+            // 续跑一轮拿的是全新输出预算，比把半截文本丢回去划算。
+            // 自检两态要排除：自检侧调用故意压极小 max_tokens，length 是它的正常
+            // 终止形态，在这里续跑只会对着 Y/N 空转。
+            if last_finish_reason.as_deref() == Some("length")
+                && !expecting_selfcheck
+                && !expecting_final_selfcheck
+                && length_continuations < MAX_LENGTH_CONTINUATIONS
+            {
+                length_continuations += 1;
+                length_prefix.push_str(&final_text);
+                audit(
+                    crate::audit::AuditLevel::Info,
+                    "llm.length_continued",
+                    vec![
+                        ("attempt", length_continuations.to_string()),
+                        ("chars", final_text.chars().count().to_string()),
+                    ],
+                );
+                msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                msgs.push(serde_json::json!({
+                    "role": "user",
+                    "content": LENGTH_CONTINUE_PROMPT
+                }));
+                continue;
+            }
             // finish_reason=length（token 截断）/content_filter 需要显式感知——
             // 否则半截回复会被当正常答案、空回复无解释
             match last_finish_reason.as_deref() {
@@ -1833,7 +1875,12 @@ where
             }
             let _ = skill_finish(true, "");
             collected_refs = merge_task_refs_dedup(collected_refs);
-            return Ok((final_text.clone(), collected_refs));
+            let answer = if length_prefix.is_empty() {
+                final_text.clone()
+            } else {
+                format!("{length_prefix}{final_text}")
+            };
+            return Ok((answer, collected_refs));
         }
 
         // 模型请求工具：进程内执行，结果回填后继续下一轮。
