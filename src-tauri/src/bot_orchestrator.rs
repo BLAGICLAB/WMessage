@@ -274,7 +274,10 @@ pub(crate) fn check_subagent_locked(
                         .count()
                 })
         })
-        .unwrap_or(0);
+        // 子 agent 重复报同一条验收标准时 done 会超过 total，进度小计不能出现
+        // 「3/2」这种自相矛盾的读数
+        .unwrap_or(0)
+        .min(subtasks_total);
     let result = row
         .result_json
         .as_deref()
@@ -965,6 +968,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     row.id
                 ),
             );
+            emit_subagent_finished(&app, &row, None, SubagentStatus::Cancelled, "");
             return;
         }
     };
@@ -993,6 +997,8 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                             .unwrap_or_else(|| "db_read_failed".into()),
                     ),
                 );
+                // 拿到槽位后的复核撞上终态：行已由 cancel 写成 cancelled
+                emit_subagent_finished(&app, &row, None, SubagentStatus::Cancelled, "");
                 return;
             }
         }
@@ -1337,7 +1343,10 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             )
             .map_err(CommandError::DbError)?;
             if already_terminal {
-                return Ok(None);
+                // 终态已被 cancel 抢先写入：不做任何状态/结果副作用，但把行本身
+                // 带回去——下游事件与教训要用行的真实终态（cancelled），不能用
+                // classify_outcome 的「执行被打断 → Failed」观感
+                return Ok(Some(current));
             }
             let tx = conn
                 .transaction()
@@ -1395,7 +1404,11 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
 
     // 审计 + 广播 + 前端事件（设计 §3 事件全链按 subagent_id 串链）
     let elapsed = started.elapsed().as_millis() as u64;
-    let event = match status {
+    // 行的真实终态优先于 classify_outcome：用户取消走到这里时 classify 只会给出
+    // Failed（执行被 StopToken 打断），照它上报 = 每次取消都记一条 subagent_failed
+    // 并沉淀「失败原因：」的空教训。收尾闭包整体失败（finalized=None）才回落到观感值
+    let effective_status = effective_status(finalized.as_ref().map(|r| r.status), status);
+    let event = match effective_status {
         SubagentStatus::Succeeded => "subagent_done",
         SubagentStatus::BudgetExceeded => "subagent_budget_exceeded",
         SubagentStatus::Cancelled => "subagent_cancelled",
@@ -1438,7 +1451,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             "{} | id: {} | status: {} | elapsed_ms: {} | error: {}",
             event,
             row.id,
-            status.as_str(),
+            effective_status.as_str(),
             elapsed,
             crate::bot::truncate_for_log(&row_error, 120)
         ),
@@ -1449,7 +1462,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     // 走 fire-and-forget，不阻塞 finalize 返回路径。
     // Cancelled 是用户选择不沉淀，Succeeded 无失败不沉淀。
     if matches!(
-        status,
+        effective_status,
         SubagentStatus::Failed | SubagentStatus::BudgetExceeded
     ) {
         let app_for_lesson = app.clone();
@@ -1464,6 +1477,30 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             .await;
         });
     }
+    emit_subagent_finished(
+        &app,
+        &row,
+        Some(&session_id),
+        effective_status,
+        summary.as_deref().unwrap_or_default(),
+    );
+}
+
+/// 上报用终态：行已写入终态时以行为准（cancel 抢先 → cancelled），
+/// 收尾闭包自身失败拿不到行时才回落 classify 的观感值
+fn effective_status(row: Option<SubagentStatus>, classified: SubagentStatus) -> SubagentStatus {
+    row.unwrap_or(classified)
+}
+
+/// `subagent-finished` 唯一出口：主会话视图据此刷新子 agent 列表 + 打完成提示。
+/// 排队期取消/启动中止也必须发——前端只认这个事件，不发就永远停在 queued
+fn emit_subagent_finished(
+    app: &AppHandle,
+    row: &SubagentRow,
+    session_id: Option<&str>,
+    status: SubagentStatus,
+    summary: &str,
+) {
     let _ = app.emit_to(
         "main",
         "subagent-finished",
@@ -1473,7 +1510,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             "parentSessionId": row.parent_session_id,
             "sessionId": session_id,
             "status": status.as_str(),
-            "summary": summary.unwrap_or_default(),
+            "summary": summary,
         }),
     );
 }
@@ -2363,6 +2400,21 @@ mod orchestrator_tests {
             Ok(_) => panic!("未知 id 必须失败"),
         };
         assert!(matches!(err, CommandError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn cancel_beats_classified_failure_when_reporting_terminal_state() {
+        // 用户取消 → StopToken 打断 → classify 只会给 Failed；上报必须用行上的
+        // cancelled，否则每次取消都记一条 subagent_failed + 空原因教训
+        assert_eq!(
+            effective_status(Some(SubagentStatus::Cancelled), SubagentStatus::Failed),
+            SubagentStatus::Cancelled
+        );
+        // 行没拿到（收尾闭包整体失败）才回落到观感值
+        assert_eq!(
+            effective_status(None, SubagentStatus::Failed),
+            SubagentStatus::Failed
+        );
     }
 
     #[test]
