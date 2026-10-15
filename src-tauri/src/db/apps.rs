@@ -1,0 +1,223 @@
+//! 程序模块：apps 表 + app_runs 表
+//!
+//! 「程序」= 大模型开发时写好的确定性小程序（脚本 + 输入声明），运行态点一下
+//! 跑、不连大模型。设计稿：`docs/APPS-DESIGN-2026-10-15.md`。
+//!
+//! 库内只存元数据；脚本文件落在 `{data_dir}/apps/<id>/app.py`（库存相对路径），
+//! 与技能系统同思路——版本控制、备份、迁移都跟文件走。
+//!
+//! status 三态：
+//! - `draft`     草稿，上架前 M2 由 AI 调用 `apps_create` 写入
+//! - `enabled`   程序页可见可运行，M1 起就支持（手工/AI 都能上架）
+//! - `archived`  主动隐藏，仍在数据目录里
+
+use serde::{Deserialize, Serialize};
+
+/// apps 表单源 DDL：生产建表（db::ensure）与集成测试建表共用，防手抄漂移
+pub const APPS_DDL: &str = "CREATE TABLE IF NOT EXISTS apps (
+   id              TEXT PRIMARY KEY,
+   name            TEXT NOT NULL,
+   description    TEXT NOT NULL,
+   icon            TEXT NOT NULL,
+   input_schema    TEXT NOT NULL,
+   script_path    TEXT NOT NULL,
+   manual          TEXT NOT NULL,
+   status          TEXT NOT NULL,
+   enabled_at     INTEGER,
+   created_at     INTEGER NOT NULL,
+   updated_at     INTEGER NOT NULL
+ );";
+
+/// app_runs 表单源 DDL：每次运行的元数据（产物路径在 `data_dir/apps/<id>/output/<run_id>/`）
+pub const APP_RUNS_DDL: &str = "CREATE TABLE IF NOT EXISTS app_runs (
+   id              INTEGER PRIMARY KEY AUTOINCREMENT,
+   app_id         TEXT NOT NULL,
+   started_at     INTEGER NOT NULL,
+   finished_at    INTEGER,
+   duration_ms    INTEGER,
+   status         TEXT NOT NULL,
+   summary        TEXT
+ );";
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct App {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    /// 输入声明 JSON：
+    /// - 文件夹模式 `{"kind":"folder"}`（约定 `data/ input/ output/`，无字段）
+    /// - 表单模式 `{"kind":"form","fields":[{"key","label","type","required","placeholder"}]}`
+    pub input_schema: String,
+    /// `{data_dir}/apps/<id>/` 之下的相对路径（M1 恒为 `app.py`）
+    pub script_path: String,
+    pub manual: String,
+    pub status: String,
+    pub enabled_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AppRun {
+    pub id: i64,
+    pub app_id: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub status: String,
+    pub summary: Option<String>,
+}
+
+pub fn upsert_app(conn: &rusqlite::Connection, a: &App) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO apps (
+            id, name, description, icon, input_schema, script_path, manual, status,
+            enabled_at, created_at, updated_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+         ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            description=excluded.description,
+            icon=excluded.icon,
+            input_schema=excluded.input_schema,
+            script_path=excluded.script_path,
+            manual=excluded.manual,
+            status=excluded.status,
+            enabled_at=excluded.enabled_at,
+            updated_at=excluded.updated_at",
+        rusqlite::params![
+            a.id,
+            a.name,
+            a.description,
+            a.icon,
+            a.input_schema,
+            a.script_path,
+            a.manual,
+            a.status,
+            a.enabled_at,
+            a.created_at,
+            a.updated_at,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn list_enabled_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, description, icon, input_schema, script_path, manual, status,
+                    enabled_at, created_at, updated_at
+             FROM apps WHERE status = 'enabled' ORDER BY updated_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(App {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                description: r.get(2)?,
+                icon: r.get(3)?,
+                input_schema: r.get(4)?,
+                script_path: r.get(5)?,
+                manual: r.get(6)?,
+                status: r.get(7)?,
+                enabled_at: r.get(8)?,
+                created_at: r.get(9)?,
+                updated_at: r.get(10)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn get_app(conn: &rusqlite::Connection, id: &str) -> Result<Option<App>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, description, icon, input_schema, script_path, manual, status,
+                    enabled_at, created_at, updated_at
+             FROM apps WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([id], |r| {
+            Ok(App {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                description: r.get(2)?,
+                icon: r.get(3)?,
+                input_schema: r.get(4)?,
+                script_path: r.get(5)?,
+                manual: r.get(6)?,
+                status: r.get(7)?,
+                enabled_at: r.get(8)?,
+                created_at: r.get(9)?,
+                updated_at: r.get(10)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.next().transpose().map_err(|e| e.to_string())
+}
+
+pub fn record_app_run(
+    conn: &rusqlite::Connection,
+    app_id: &str,
+    started_at: i64,
+    status: &str,
+) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO app_runs (app_id, started_at, status) VALUES (?1, ?2, ?3)",
+        rusqlite::params![app_id, started_at, status],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn finish_app_run(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+    finished_at: i64,
+    duration_ms: i64,
+    status: &str,
+    summary: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE app_runs SET finished_at = ?1, duration_ms = ?2, status = ?3, summary = ?4
+         WHERE id = ?5",
+        rusqlite::params![finished_at, duration_ms, status, summary, run_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn list_app_runs(
+    conn: &rusqlite::Connection,
+    app_id: &str,
+    limit: i64,
+) -> Result<Vec<AppRun>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, app_id, started_at, finished_at, duration_ms, status, summary
+             FROM app_runs WHERE app_id = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![app_id, limit], |r| {
+            Ok(AppRun {
+                id: r.get(0)?,
+                app_id: r.get(1)?,
+                started_at: r.get(2)?,
+                finished_at: r.get(3)?,
+                duration_ms: r.get(4)?,
+                status: r.get(5)?,
+                summary: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}

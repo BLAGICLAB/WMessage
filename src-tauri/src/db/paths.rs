@@ -11,8 +11,20 @@ pub fn db_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBu
 }
 
 /// 数据目录（供本地 HTTP API 存 token 等附属文件，便携模式跟随 exe）
-pub fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+pub fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     db_dir(app)
+}
+
+/// 程序模块根目录：data_dir/apps，apps 模块与 AI_Gen_Files 平级
+/// （用户数据一部分；设计稿 `docs/APPS-DESIGN-2026-10-15.md` §2）
+pub fn apps_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
+    data_dir(app).join("apps")
+}
+
+/// 程序模块单 app 目录：data_dir/apps/<app.id>/，与 `apps.rs::App` 字段
+/// 一一对应（M1 起即定，AI 写代码据此契约）
+pub fn app_dir_of<R: tauri::Runtime>(app: &tauri::AppHandle<R>, app_id: &str) -> PathBuf {
+    apps_root(app).join(app_id)
 }
 
 /// AI 产物目录唯一入口：data_dir/AI_Gen_Files，解析即建

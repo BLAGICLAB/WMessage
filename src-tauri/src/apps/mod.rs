@@ -1,0 +1,218 @@
+//! apps runner：跑 `{data_dir}/apps/<id>/<script_path>`，抓 `##RESULT##` 哨兵
+//!
+//! 与 `py::run_python` 区别：
+//! - `run_python` 接脚本源码串、cwd 在 temp run 目录；本 runner 接落盘 app.py
+//!   路径、cwd 在 `{data_dir}/apps/<id>/`（脚本能直接读 data/ input/）
+//! - 哨兵行 `##RESULT## {...}` 单独解析为结构化 summary（程序页用）
+//! - 产物路径固定为 `{data_dir}/apps/<id>/output/<run_id>/`
+//!
+//! 资源限额与并发闸：继承 `py::run_python` 的同款语义（通过它走）
+//! 详细设计：`docs/APPS-DESIGN-2026-10-15.md` §3-4 与 `docs/APP-DEV-CONVENTIONS.md`
+
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use tauri::AppHandle;
+
+use crate::bot_slash::StopToken;
+use crate::db;
+use crate::db::apps::{App, AppRun};
+use crate::py::runtime::{self, PyRunResult, OUTPUT_CAP};
+
+pub mod commands;
+
+/// runner 结果（含哨兵解析 + 产物路径）。serde camelCase 出给前端
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AppRunResult {
+    pub run_id: i64,
+    pub app_id: String,
+    pub output_dir: String,
+    pub result_json: Option<serde_json::Value>,
+    /// 哨兵解析的 summary 字符串（无哨兵时 = result_json 序列化）
+    pub summary: Option<String>,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub truncated: bool,
+    pub duration_ms: u128,
+}
+
+/// app 目录路径（与 `db::paths::app_dir_of` 一致来源）——程序页/命令共用
+pub fn app_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>, app_id: &str) -> std::path::PathBuf {
+    db::paths::app_dir_of(app, app_id)
+}
+
+/// 哨兵行匹配：stdout/stderr 中形如 `##RESULT## {...}` 的最后一行 JSON
+const RESULT_SENTINEL: &str = "##RESULT## ";
+
+fn parse_result_sentinel(stdout: &str) -> Option<serde_json::Value> {
+    stdout.lines().rev().find_map(|line| {
+        let trimmed = line.trim_start();
+        trimmed
+            .strip_prefix(RESULT_SENTINEL)
+            .and_then(|rest| serde_json::from_str::<serde_json::Value>(rest.trim()).ok())
+    })
+}
+
+/// 跑一个 app。脚本路径相对 app 目录（M1 恒为 `app.py`）
+/// 产物目录 = `{app_dir}/output/<run_id>/`，由本函数创建并返回
+/// 入参 params 是表单模式 JSON 串（写 `params.json`）；文件夹模式传 None
+pub fn run(
+    app: &App,
+    script_rel: &str,
+    params: Option<&str>,
+    timeout_secs: Option<u64>,
+    app_handle: &AppHandle,
+    stop: Option<&StopToken>,
+) -> Result<AppRunResult, String> {
+    let now_ms = db::now_ms();
+    let dir = app_dir(app_handle, &app.id);
+    let script_abs = dir.join(script_rel);
+    if !script_abs.exists() {
+        return Err(format!(
+            "脚本文件不存在：{}（app_dir={}）",
+            script_abs.display(),
+            dir.display()
+        ));
+    }
+    std::fs::create_dir_all(dir.join("output")).map_err(|e| format!("建 output 目录失败：{e}"))?;
+    let run_id = {
+        let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
+        db::record_app_run(&conn, &app.id, now_ms, "running").map_err(|e| e.to_string())?
+    };
+    let script_text =
+        std::fs::read_to_string(&script_abs).map_err(|e| format!("读脚本失败：{e}"))?;
+    let params_owned = params.map(|s| s.to_string());
+    let params_for_py = params_owned.as_deref();
+    let started = Instant::now();
+    let PyRunResult {
+        stdout,
+        stderr,
+        exit_code,
+        truncated,
+        ..
+    } = runtime::run_python(
+        app_handle,
+        &script_text,
+        params_for_py,
+        &[],
+        timeout_secs,
+        stop,
+    )
+    .map_err(|e| {
+        let conn = db::open_db(app_handle).ok();
+        if let Some(conn) = conn {
+            let _ = db::finish_app_run(
+                &conn,
+                run_id,
+                db::now_ms(),
+                0,
+                "failed",
+                Some(&format!("runner 启动失败：{e}")),
+            );
+        }
+        format!("运行启动失败：{e}")
+    })?;
+    let duration_ms = started.elapsed().as_millis();
+    let result_json = parse_result_sentinel(&stdout);
+    let status = if exit_code == Some(0) { "ok" } else { "failed" };
+    let summary = match &result_json {
+        Some(v) => v
+            .as_object()
+            .and_then(|o| o.get("summary"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| Some(v.to_string())),
+        None => None,
+    };
+    {
+        let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
+        db::finish_app_run(
+            &conn,
+            run_id,
+            now_ms.saturating_add(duration_ms as i64),
+            duration_ms as i64,
+            status,
+            summary.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let output_dir = dir.join("output").join(run_id.to_string());
+    Ok(AppRunResult {
+        run_id,
+        app_id: app.id.clone(),
+        output_dir: output_dir.to_string_lossy().to_string(),
+        result_json,
+        summary,
+        stdout,
+        stderr,
+        exit_code,
+        truncated,
+        duration_ms,
+    })
+}
+
+pub fn recent_runs(
+    app_handle: &AppHandle,
+    app_id: &str,
+    limit: i64,
+) -> Result<Vec<AppRun>, String> {
+    let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
+    db::list_app_runs(&conn, app_id, limit)
+}
+
+pub fn preflight_script<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    app: &App,
+    script_rel: &str,
+) -> Result<(), String> {
+    let p = app_dir(app_handle, &app.id).join(script_rel);
+    let meta = std::fs::metadata(&p).map_err(|e| format!("脚本 {} 不存在：{e}", p.display()))?;
+    if meta.len() == 0 {
+        return Err(format!("脚本 {} 为空", p.display()));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+const _OUTPUT_CAP_KEEP: usize = OUTPUT_CAP;
+#[allow(dead_code)]
+const _DURATION_ZERO: Duration = Duration::from_secs(0);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_result_sentinel_basic() {
+        let s = "1\n2\n##RESULT## {\"a\":1, \"summary\":\"ok\"}\n";
+        let v = parse_result_sentinel(s).unwrap();
+        assert_eq!(v["a"], 1);
+        assert_eq!(v["summary"], "ok");
+    }
+
+    #[test]
+    fn parse_result_sentinel_uses_last_match() {
+        let s = "##RESULT## {\"a\":1}\nmid\n##RESULT## {\"a\":2}\n";
+        let v = parse_result_sentinel(s).unwrap();
+        assert_eq!(v["a"], 2);
+    }
+
+    #[test]
+    fn parse_result_sentinel_handles_prefix_whitespace() {
+        let s = "  ##RESULT## {\"a\":3}\n";
+        let v = parse_result_sentinel(s).unwrap();
+        assert_eq!(v["a"], 3);
+    }
+
+    #[test]
+    fn parse_result_sentinel_no_match() {
+        assert!(parse_result_sentinel("hello\nworld\n").is_none());
+    }
+
+    #[test]
+    fn parse_result_sentinel_invalid_json_keeps_none() {
+        assert!(parse_result_sentinel("##RESULT## not json\n").is_none());
+    }
+}

@@ -8,6 +8,7 @@ mod api_auth;
 mod api_handlers;
 mod api_server;
 mod app_state;
+pub mod apps;
 pub mod ask_engine;
 mod audit;
 pub mod bing;
@@ -573,6 +574,14 @@ pub fn run() {
             crate::tag_similar::tag_similar_pairs,
             crate::task_autotag::task_autotag,
             crate::ask_engine::ask_respond,
+            crate::apps::commands::apps_list_enabled,
+            crate::apps::commands::apps_get,
+            crate::apps::commands::apps_run,
+            crate::apps::commands::apps_create,
+            crate::apps::commands::apps_update,
+            crate::apps::commands::apps_archive,
+            crate::apps::commands::apps_runs_list,
+            crate::apps::commands::apps_preflight,
             crate::bot_scheduler::schedule_overview,
             crate::bot_scheduler::schedule_set_enabled,
             crate::bot_scheduler::scheduled_job_fire,
