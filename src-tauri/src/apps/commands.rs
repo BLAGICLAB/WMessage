@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
