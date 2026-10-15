@@ -271,6 +271,48 @@ describe("ChatPanel", () => {
     expect(screen.getByText(/周报已出/)).toBeInTheDocument();
   });
 
+  it("subagent-spawned 到达就重拉：新派发的行收尾前就可见可取消", async () => {
+    const user = userEvent.setup();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    let spawned = false;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "list_subagents")
+        return spawned
+          ? [{ id: "sa_2", status: "queued", objective: "整理周报" }]
+          : [];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    // 空列表时条带不渲染，从右侧栏进「子 Agent」工作面
+    await user.click(screen.getByRole("button", { name: "展开右侧栏" }));
+    await user.click(await screen.findByRole("button", { name: /子 Agent/ }));
+    // 派发前：列表为空（侧栏显示 0 个执行中），没有这行的任何痕迹
+    expect(screen.queryByText("整理周报")).not.toBeInTheDocument();
+    spawned = true;
+    await act(async () => {
+      for (const cb of mocks.listeners["subagent-spawned"] ?? []) {
+        cb({ payload: { subagentId: "sa_2" } });
+      }
+    });
+    // queued 也算执行中：行到达即显示并带取消入口（条带与侧栏各一份计数/按钮）
+    expect((await screen.findAllByText("1 个执行中")).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByRole("button", { name: /取消子 agent：整理周报/ }))
+        .length,
+    ).toBeGreaterThan(0);
+  });
+
   it("在途子 agent 有取消入口：点它调 cancel_subagent 且 key 传子 agent id", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

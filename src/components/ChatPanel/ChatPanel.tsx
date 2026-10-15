@@ -362,6 +362,12 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     // running/queued——派发方会话里既看不到刚跑完的，也看不到刚派出的
     refreshSubagentsRef.current();
   });
+  // 子 agent 派发事件：行建好（queued）即到——只重拉列表，不打扰对话
+  // （收尾提示只走 subagent-finished）。没有这条，新派发的行在收尾前
+  // 全程隐身，长跑任务期间无处取消
+  useTauriListen<{ subagentId: string }>("subagent-spawned", () => {
+    refreshSubagentsRef.current();
+  });
 
   const persistHistory = (sid: string, msgs: Msg[]) => {
     invoke("bot_history_save", {

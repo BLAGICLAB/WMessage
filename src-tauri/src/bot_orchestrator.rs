@@ -2,12 +2,12 @@
 //!
 //! 与 bot_execute_task 的边界（设计 §2）：bot_execute_task 是「单发子 agent」（用户点执行，
 //! 无编排语义）；本模块是「受管子 agent」（主 agent 派发，orchestrator 管生命周期/预算/
-//! 审计/子卡绑定）。两者复用 exec 运行基建，但入口、存储、事件各自独立。
+//! 审计）。两者复用 exec 运行基建，但入口、存储、事件各自独立。
 //!
 //! 分批（设计 §11）：
 //! - `subagents` 表 + 生命周期状态机 + spawn/check/cancel 内部实现 +
-//!   子卡创建（一子 agent 一子卡）+ parent_task_id 关联 + acceptance 双写（note 侧）+
-//!   审计 subagent_spawned；预算字段落表。不暴露 LLM 工具、不注册 tauri 命令。
+//!   parent_task_id 关联（行上存派发时的主卡 id，不建子卡）+ 预算字段落表 +
+//!   审计 subagent_spawned。不暴露 LLM 工具、不注册 tauri 命令。
 //! - 三工具进 registry + 递归双保险 + 任务包装渲染 + 提示词 + runner + 收尾 JSON 解析。
 //! - 预算强制（turns/tool_calls/wall）+ 并发排队（per-session 2 / global 3）+ 前端。
 //!
@@ -307,7 +307,7 @@ pub(crate) fn check_subagent_locked(
 }
 
 /// cancel 纯 DB 核心：queued/running → cancelled（error=原因）；终态 no-op。
-/// 子 agent 无卡，取消只动行——前端经 subagent-finished 事件与轮询看状态。
+/// 子 agent 无卡，取消只动行——前端经 subagent-finished 事件看状态。
 pub(crate) fn cancel_subagent_locked(
     conn: &rusqlite::Connection,
     key: &str,
@@ -333,8 +333,8 @@ pub(crate) fn cancel_subagent_locked(
     })
 }
 
-/// spawn 异步包装：持锁执行核心 → 审计 subagent_spawned → 广播子卡。
-///  不启动执行（runner 在  接入）；行停在 queued 由后续批推进。
+/// spawn 异步包装：持锁执行核心 → 审计 subagent_spawned → 发 subagent-spawned
+/// 事件（行建好即通知前端重拉，收尾前就可见可取消）→ 派发 runner。
 pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult<SpawnAck> {
     // LLM 未显式给预算时用配置默认（config subagentMax* 三项，resolve 内钳制）；
     // 显式给了的仍走 clamp_budget 硬顶。Gate 并发数（max_running）保持常量不在本路径。
@@ -388,7 +388,9 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
             ack.trace_id,
         ),
     );
-    // 非阻塞派发 runner（设计 §5：spawn 立即返回；执行在后台推进状态机）
+    // 非阻塞派发 runner（设计 §5：spawn 立即返回；执行在后台推进状态机）。
+    // spawned 事件在派发前发：不与 runner 的收尾事件竞争先后，行建好即告知
+    emit_subagent_spawned(app, &ack.subagent_id, audit_parent_session.as_deref());
     let runner_app = app.clone();
     let runner_sid = ack.subagent_id.clone();
     tauri::async_runtime::spawn(
@@ -417,8 +419,9 @@ pub async fn check_subagent(app: &AppHandle, key: &str, wait_ms: u64) -> Command
     }
 }
 
-/// cancel 异步包装：置 cancelled + 审计 + 远程停 runner（前端经
-/// subagent-finished 事件与轮询即时感知）。
+/// cancel 异步包装：置 cancelled + 审计 + 远程停 runner。终态事件由 runner
+/// 补发（排队闸/槽后复核/收尾路径各自 emit）——本函数不发，避免与 runner
+/// 对同一行收尾双发、前端重复弹「子任务已取消」。
 pub async fn cancel_subagent_async(
     app: &AppHandle,
     key: &str,
@@ -913,11 +916,21 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     e.message()
                 ),
             );
+            // parent 会话未知（行没读到），发不带归属的收尾事件——前端只重拉不弹提示
+            emit_subagent_finished(&app, &subagent_id, None, SubagentStatus::Failed, "");
             return;
         }
     };
-    // 派发后、开跑前已被取消/终态 → 不启动
+    // 派发后、开跑前已被取消/终态 → 不启动。行已终态但事件没人发过（cancel
+    // 包装不 emit），这里补上，前端才不会把该行停在 queued
     if row.status != SubagentStatus::Queued {
+        emit_subagent_finished(
+            &app,
+            &row.id,
+            row.parent_session_id.as_deref(),
+            row.status,
+            "",
+        );
         return;
     }
     let budget: SubagentBudget = row
@@ -968,7 +981,13 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     row.id
                 ),
             );
-            emit_subagent_finished(&app, &row, None, SubagentStatus::Cancelled, "");
+            emit_subagent_finished(
+                &app,
+                &row.id,
+                row.parent_session_id.as_deref(),
+                SubagentStatus::Cancelled,
+                "",
+            );
             return;
         }
     };
@@ -999,9 +1018,8 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                 );
                 // 拿到槽位后的复核撞上终态：行已由 cancel 写成 cancelled；
                 // 读不到行（DB 失败/行已没）时不要谎报——只留审计，等启动清扫
-                match other {
-                    Some(s) => emit_subagent_finished(&app, &row, None, s, ""),
-                    None => {}
+                if let Some(s) = other {
+                    emit_subagent_finished(&app, &row.id, row.parent_session_id.as_deref(), s, "");
                 }
                 return;
             }
@@ -1035,7 +1053,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             // 失败上撒谎）；读不到行就只留审计，交给启动清扫收尸
             let st = load_subagent_status(&app, &row.id).await;
             if let Some(st) = st {
-                emit_subagent_finished(&app, &row, None, st, "");
+                emit_subagent_finished(&app, &row.id, row.parent_session_id.as_deref(), st, "");
             }
             return;
         }
@@ -1069,7 +1087,13 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     row.id
                 ),
             );
-            emit_subagent_finished(&app, &row, None, SubagentStatus::Failed, "");
+            emit_subagent_finished(
+                &app,
+                &row.id,
+                row.parent_session_id.as_deref(),
+                SubagentStatus::Failed,
+                "",
+            );
             return;
         }
     };
@@ -1153,7 +1177,13 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                     row.id
                 ),
             );
-            emit_subagent_finished(&app, &row, None, SubagentStatus::Failed, "");
+            emit_subagent_finished(
+                &app,
+                &row.id,
+                row.parent_session_id.as_deref(),
+                SubagentStatus::Failed,
+                "",
+            );
             return;
         }
     };
@@ -1200,7 +1230,13 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             &app,
             &format!("subagent_runner_abort | id: {} | err: session_busy", row.id),
         );
-        emit_subagent_finished(&app, &row, None, SubagentStatus::Failed, "");
+        emit_subagent_finished(
+            &app,
+            &row.id,
+            row.parent_session_id.as_deref(),
+            SubagentStatus::Failed,
+            "",
+        );
         return;
     }
     let stop = crate::bot_slash::StopGuard::new(&app, true, Some(session_id.clone()));
@@ -1501,8 +1537,8 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     }
     emit_subagent_finished(
         &app,
-        &row,
-        Some(&session_id),
+        &row.id,
+        row.parent_session_id.as_deref(),
         effective_status,
         summary.as_deref().unwrap_or_default(),
     );
@@ -1606,12 +1642,13 @@ async fn load_subagent_status(app: &AppHandle, id: &str) -> Option<SubagentStatu
     .unwrap_or(None)
 }
 
-/// `subagent-finished` 唯一出口：主会话视图据此刷新子 agent 列表 + 打完成提示。
-/// 排队期取消/启动中止也必须发——前端只认这个事件，不发就永远停在 queued
+/// `subagent-finished` 唯一收尾出口：主会话视图据此刷新子 agent 列表 + 打完成
+/// 提示。所有把行写成终态的路径都必须走到这里（含排队期取消、启动中止、
+/// 行加载失败的 ghost 路径）——前端只认事件，不发就永远停在 queued
 fn emit_subagent_finished(
     app: &AppHandle,
-    row: &SubagentRow,
-    session_id: Option<&str>,
+    subagent_id: &str,
+    parent_session_id: Option<&str>,
     status: SubagentStatus,
     summary: &str,
 ) {
@@ -1619,12 +1656,23 @@ fn emit_subagent_finished(
         "main",
         "subagent-finished",
         serde_json::json!({
-            "subagentId": row.id,
-            "taskId": row.task_id,
-            "parentSessionId": row.parent_session_id,
-            "sessionId": session_id,
+            "subagentId": subagent_id,
+            "parentSessionId": parent_session_id,
             "status": status.as_str(),
             "summary": summary,
+        }),
+    );
+}
+
+/// 行刚建好（queued）就发一条：子 agent 列表只靠事件驱动重拉，没有这条，
+/// 新行要等收尾才可见——长跑任务期间无处取消
+fn emit_subagent_spawned(app: &AppHandle, subagent_id: &str, parent_session_id: Option<&str>) {
+    let _ = app.emit_to(
+        "main",
+        "subagent-spawned",
+        serde_json::json!({
+            "subagentId": subagent_id,
+            "parentSessionId": parent_session_id,
         }),
     );
 }
