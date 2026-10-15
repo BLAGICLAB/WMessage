@@ -987,7 +987,6 @@ function App() {
               onClick={() => setView(item.key)}
             />
           ))}
-          <div aria-hidden className="h-[72px]" />
           <RailSection label="Agent能力" />
           {AGENT_ITEMS.map((item) => (
             <RailButton
