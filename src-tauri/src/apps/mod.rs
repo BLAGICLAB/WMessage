@@ -9,7 +9,7 @@
 //! 资源限额与并发闸：继承 `py::run_python` 的同款语义（通过它走）
 //! 详细设计：`docs/APPS-DESIGN-2026-10-15.md` §3-4 与 `docs/APP-DEV-CONVENTIONS.md`
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -17,7 +17,7 @@ use tauri::AppHandle;
 use crate::bot_slash::StopToken;
 use crate::db;
 use crate::db::apps::{App, AppRun};
-use crate::py::runtime::{self, PyRunResult, OUTPUT_CAP};
+use crate::py::runtime::{self, PyRunResult};
 
 pub mod commands;
 pub mod manage;
@@ -56,6 +56,25 @@ fn parse_result_sentinel(stdout: &str) -> Option<serde_json::Value> {
     })
 }
 
+/// 脚本相对路径闸：契约上 `script_path` 是 app 目录下的单个文件名
+/// （M1 恒 `app.py`）。这里只放行「一个普通文件名」——绝对路径、
+/// `..` 穿越、带分隔符的下钻全拒，否则 run/preflight 会把 app 目录外的
+/// 任意文件读走当脚本执行
+fn script_rel_path(script_rel: &str) -> Result<std::path::PathBuf, String> {
+    use std::path::{Component, Path};
+    let p = Path::new(script_rel);
+    let ok = !script_rel.is_empty()
+        && !p.is_absolute()
+        && p.components().count() == 1
+        && matches!(p.components().next(), Some(Component::Normal(_)));
+    if !ok {
+        return Err(format!(
+            "脚本路径非法：{script_rel}（只能是 app 目录下的单个文件名，如 app.py）"
+        ));
+    }
+    Ok(p.to_path_buf())
+}
+
 /// 跑一个 app。脚本路径相对 app 目录（M1 恒为 `app.py`）
 /// 产物目录 = `{app_dir}/output/<run_id>/`，由本函数创建并返回
 /// 入参 params 是表单模式 JSON 串（写 `params.json`）；文件夹模式传 None
@@ -69,7 +88,7 @@ pub fn run(
 ) -> Result<AppRunResult, String> {
     let now_ms = db::now_ms();
     let dir = app_dir(app_handle, &app.id);
-    let script_abs = dir.join(script_rel);
+    let script_abs = dir.join(script_rel_path(script_rel)?);
     if !script_abs.exists() {
         return Err(format!(
             "脚本文件不存在：{}（app_dir={}）",
@@ -187,18 +206,13 @@ pub fn preflight_script<R: tauri::Runtime>(
     app: &App,
     script_rel: &str,
 ) -> Result<(), String> {
-    let p = app_dir(app_handle, &app.id).join(script_rel);
+    let p = app_dir(app_handle, &app.id).join(script_rel_path(script_rel)?);
     let meta = std::fs::metadata(&p).map_err(|e| format!("脚本 {} 不存在：{e}", p.display()))?;
     if meta.len() == 0 {
         return Err(format!("脚本 {} 为空", p.display()));
     }
     Ok(())
 }
-
-#[allow(dead_code)]
-const _OUTPUT_CAP_KEEP: usize = OUTPUT_CAP;
-#[allow(dead_code)]
-const _DURATION_ZERO: Duration = Duration::from_secs(0);
 
 #[cfg(test)]
 mod tests {
@@ -234,6 +248,37 @@ mod tests {
     #[test]
     fn parse_result_sentinel_invalid_json_keeps_none() {
         assert!(parse_result_sentinel("##RESULT## not json\n").is_none());
+    }
+
+    #[test]
+    fn script_rel_accepts_plain_file_name() {
+        assert_eq!(
+            script_rel_path("app.py").unwrap(),
+            std::path::PathBuf::from("app.py")
+        );
+        assert_eq!(
+            script_rel_path("a b.py").unwrap(),
+            std::path::PathBuf::from("a b.py")
+        );
+    }
+
+    #[test]
+    fn script_rel_rejects_traversal_absolute_and_nested() {
+        for bad in [
+            "",
+            "..",
+            "../evil.py",
+            "../../evil.py",
+            "sub/app.py",
+            "./app.py",
+            "/etc/passwd",
+            "/tmp/evil.py",
+        ] {
+            assert!(
+                script_rel_path(bad).is_err(),
+                "路径 {bad:?} 应被拒（否则 run/preflight 会读走 app 目录外的文件）"
+            );
+        }
     }
 
     #[test]

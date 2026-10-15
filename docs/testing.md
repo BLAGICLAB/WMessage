@@ -60,7 +60,8 @@ cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（�
 ## 一致性对拍（tests-audit/，按需手跑）
 
 源码文本断言式检查（不跑业务代码，读源码断言结构/协议）。2026-10-08 基线收敛后
-**已移出门禁**，需要时手动跑：`python3 -m pytest tests-audit/<脚本>.py`。
+**已移出门禁**，需要时手动跑。前四个是 pytest 用例（`python3 -m pytest`），
+后两个是独立脚本（`python3 <脚本>`，用 pytest 跑会「no tests ran」静默放过）：
 
 - `audit_tauri_bridge.py`：Tauri 桥双向一致性（命令注册 ↔ 前端 invoke、emit ↔ listen）
 - `audit_error_codes.py`：错误码跨语言一致性（`error.rs::CommandErrorCode` ↔
@@ -69,12 +70,11 @@ cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（�
   `src-tauri/src/**/*.rs`：树条目必须指向真实文件，每个源码文件必须有条目）
 - `audit_evolution_layering.py`：evolution 分层依赖方向守卫
 - `audit_no_eval.py`：前端禁动态求值静态守卫（CSP 配套）
-- `audit_pre_step_pre_execute.py`：主调度循环与 pre-step/pre-execute 中间件联动规格锁
 
 Rust 侧另有编译期协议锁先例可参考：`bot/registry.rs` 的 `registry_tests`
 （schema ↔ `TOOLS_TABLE` ↔ baseline 三源一致 + `ToolDef.name` 与 schema 内名一致）、
 `bot_model_loop.rs` 的 `tools_schema_parses`、`lib.rs` 的 `dead_commands_not_registered`、
-`mutation.rs`/`consts.rs` 的协议漂移锁。
+`mutation.rs` 的协议漂移锁。
 
 ### 安全相关锁（改动判定逻辑时先看这里）
 

@@ -123,10 +123,6 @@ pub fn upsert_app(conn: &rusqlite::Connection, a: &App) -> Result<(), String> {
     Ok(())
 }
 
-pub fn list_enabled_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String> {
-    list_by_status(conn, "status = 'enabled'")
-}
-
 /// 非归档程序（草稿 + 已启用）：M2 程序页展示与 bot 工具 apps_list 共用
 pub fn list_active_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String> {
     list_by_status(conn, "status != 'archived'")

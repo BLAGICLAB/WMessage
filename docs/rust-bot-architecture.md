@@ -39,6 +39,8 @@ src-tauri/src/
 │   ├── db/trace.rs        执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）
+│   ├── db/apps.rs        程序 apps 表 CRUD + app_runs 运行史 + app_versions 版本快照
+│   │                     （滚动保留最近 100 版，见 docs/APPS-DESIGN-2026-10-15.md §5）
 │   └── workspace.rs      workspace / bind_files
 ├── task_out.rs          对外 TaskOut（Task flatten + status），api/api_handlers 共享
 ├── trace_sink.rs        执行痕迹采集管道（Agent 透明化设计 §4.2）：dispatch 工具调用 →
@@ -195,6 +197,16 @@ src-tauri/src/
 │                                物化到 builtin_skills/（与用户 skills 同父不同名，导入/删除语义互不干扰）；
 │                                物化幂等（Seeded/Updated/Unchanged）；搜索优先级：用户 > 内置 > dev mock
 ├── bot_skills/files.rs          open_file_path/delete_bound_file 路径白名单校验（防 XSS→RCE）
+│
+│─ 程序 apps/（聊天里写好的确定性小程序：落盘 app.py + manifest，点一下就跑）
+│                         设计见 docs/APPS-DESIGN-2026-10-15.md / docs/APP-DEV-CONVENTIONS.md
+├── apps/mod.rs          runner：跑 `{data_dir}/apps/<id>/<script_path>`（脚本路径只放行
+│                        app 目录下的单个文件名）、抓 stdout 的 `##RESULT## {json}` 哨兵、
+│                        产物落 `output/<run_id>/`、摘要 300 字截断；app_runs 运行史回写
+├── apps/commands.rs     程序页 tauri 命令：list_active/get/run/create/update/archive/
+│                        runs_list/versions_list/version_restore/preflight/open_output
+├── apps/manage.rs       领域核 + 三个 bot 工具（apps_list / apps_create / apps_update_files，
+│                        整文件集提交）+ manifest 校验 + 版本快照/回滚/滚动 100 版
 │
 │─ 路由/守卫
 ├── intent_router.rs     前置意图路由 RouteAction（Skill/ExecuteTasks/PassThrough）；

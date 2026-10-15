@@ -586,7 +586,6 @@ pub fn run() {
             crate::tag_similar::tag_similar_pairs,
             crate::task_autotag::task_autotag,
             crate::ask_engine::ask_respond,
-            crate::apps::commands::apps_list_enabled,
             crate::apps::commands::apps_list_active,
             crate::apps::commands::apps_get,
             crate::apps::commands::apps_run,

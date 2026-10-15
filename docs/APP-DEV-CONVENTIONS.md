@@ -145,8 +145,11 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
 
 **M1（当前）**：
 - 上架**手工**完成——你（或我）写 `app.py`、写 manifest 草稿、在程序页填表单上架
-- 三个 Tauri 命令已就位：`apps_list_enabled` / `apps_get` / `apps_run` / `apps_create` / `apps_update` / `apps_archive` / `apps_runs_list` / `apps_preflight`
-- 三个约束验证：脚本可读+非空、id 路径分隔符检查、status 枚举
+- Tauri 命令已就位：`apps_list_active` / `apps_get` / `apps_run` / `apps_create` /
+  `apps_update` / `apps_archive` / `apps_runs_list` / `apps_versions_list` /
+  `apps_version_restore` / `apps_preflight` / `apps_open_output`
+- 约束验证：脚本可读+非空（且必须是 app 目录下的单个文件名）、id 路径分隔符检查、
+  status 枚举
 
 **M2（2026-10-15 已落地）**：
 - 三个 bot 工具进 TOOLS_TABLE：`apps_list`（列非归档程序防重名）/ `apps_create`

@@ -16,13 +16,6 @@ use crate::db::apps::{App, AppRun};
 use crate::error::{CommandError, CommandResult};
 use crate::py::runtime::resolve_timeout;
 
-/// 程序页可见列表（status='enabled'，按 updated_at 倒序）
-#[tauri::command]
-pub async fn apps_list_enabled(app: AppHandle) -> CommandResult<Vec<App>> {
-    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    db_apps::list_enabled_apps(&conn).map_err(CommandError::DbError)
-}
-
 /// 程序页 M2 全量视图（草稿 + 已启用，按 updated_at 倒序）：
 /// 草稿卡带「草稿」徽章可试跑，归档不出现在程序页
 #[tauri::command]
