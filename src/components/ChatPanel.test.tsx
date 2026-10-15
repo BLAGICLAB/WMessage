@@ -177,6 +177,30 @@ describe("ChatPanel", () => {
     ).toBe(false);
   });
 
+  it("会话侧栏可折叠：收起后侧栏消失，入口仍在头部，再点展开", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    expect(railSession("默认会话")).toBeInTheDocument();
+    // 收起：侧栏整体卸载
+    await user.click(screen.getByRole("button", { name: "收起侧栏" }));
+    expect(
+      screen.queryByRole("complementary", { name: "会话列表" }),
+    ).toBeNull();
+    // 头部标题不受折叠影响——它是「当前在哪段对话」的唯一指示
+    expect(currentTitle()).toHaveTextContent("默认会话");
+    // 入口仍在，展开后侧栏回来
+    const expandBtn = screen.getByRole("button", { name: "展开会话栏" });
+    expect(expandBtn).toHaveAttribute("aria-expanded", "false");
+    await user.click(expandBtn);
+    expect(railSession("默认会话")).toBeInTheDocument();
+    // 两个折叠入口（侧栏内 + 头部）用不同的可访问名，屏幕阅读器能区分
+    expect(screen.getByRole("button", { name: "收起会话栏" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+  });
+
   it("会话侧栏常驻：切换会话不用先展开菜单，当前会话有 aria-current 标记", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

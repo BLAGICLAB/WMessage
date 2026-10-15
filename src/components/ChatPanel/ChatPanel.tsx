@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getBotConfig } from "../../lib/botConfig";
 import { useConfirm } from "../../lib/useConfirm";
@@ -144,6 +145,17 @@ export function ChatPanel({ enabled }: Props) {
   const setVerboseLevel = (l: VerboseLevel) => {
     setVerboseLevelState(l);
     localStorage.setItem("chat-verbose-level", l);
+  };
+  // 会话栏折叠态：localStorage 持久化（与 verboseLevel 同范式）。
+  // 默认展开——侧栏的价值就在于「历史会话始终可见」，收起来只为窄窗/专注阅读
+  const [railOpen, setRailOpen] = useState(
+    () => localStorage.getItem("chat-rail-open") !== "0",
+  );
+  const toggleRail = () => {
+    setRailOpen((v) => {
+      localStorage.setItem("chat-rail-open", v ? "0" : "1");
+      return !v;
+    });
   };
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
   useAutoGrow(taRef, input);
@@ -1400,13 +1412,16 @@ export function ChatPanel({ enabled }: Props) {
       ref={rootRef}
       className="relative flex h-full min-h-0 shrink-0 gap-4"
     >
-      <SessionRail
-        sessions={sessions}
-        sessionId={sessionId}
-        onSelect={switchSession}
-        onNew={newSession}
-        onDelete={deleteSession}
-      />
+      {railOpen && (
+        <SessionRail
+          sessions={sessions}
+          sessionId={sessionId}
+          onSelect={switchSession}
+          onNew={newSession}
+          onDelete={deleteSession}
+          onCollapse={toggleRail}
+        />
+      )}
       <div className="relative flex min-w-0 flex-1 flex-col">
       {/* 拖放提示层：文件悬停在聊天区上时显示，松开即加入附件 */}
       {dragHover && (
@@ -1470,8 +1485,23 @@ export function ChatPanel({ enabled }: Props) {
         </div>
       )}
       {/* 聊天主体头部：当前会话标题常驻可见——切到历史会话后，用户靠这一行
-          确认自己在哪一段对话里，而不是靠侧栏高亮反推 */}
+          确认自己在哪一段对话里，而不是靠侧栏高亮反推。
+          折叠钮固定在标题左侧：收起侧栏后它是唯一的展开入口，不能跟着侧栏一起消失 */}
       <header className="mb-2 flex shrink-0 items-center gap-2 border-b border-[var(--edge)] pb-2">
+        <button
+          type="button"
+          className="nm-icon-btn h-7 w-7"
+          aria-expanded={railOpen}
+          aria-controls="chat-session-rail"
+          title={railOpen ? "收起会话栏" : "展开会话栏"}
+          onClick={toggleRail}
+        >
+          {railOpen ? (
+            <PanelLeftClose size={15} aria-hidden />
+          ) : (
+            <PanelLeftOpen size={15} aria-hidden />
+          )}
+        </button>
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
           <span className="sr-only">当前会话：</span>
           {currentTitle}

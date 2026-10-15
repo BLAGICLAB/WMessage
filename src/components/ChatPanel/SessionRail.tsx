@@ -3,7 +3,7 @@
 // 「新建对话」提到栏顶独立按钮。对话类界面的通行做法（常驻侧栏而非
 // 点击展开的菜单）：下拉一旦折叠，入口就退回成一个不起眼的控件。
 
-import { MessageSquare, Plus, Trash2 } from "lucide-react";
+import { MessageSquare, PanelLeftClose, Plus, Trash2 } from "lucide-react";
 import { relativeTime } from "../../format";
 import type { Session } from "./types";
 
@@ -13,6 +13,8 @@ type SessionRailProps = {
   onSelect: (sid: string) => void;
   onNew: () => void;
   onDelete: (sid: string) => void;
+  /** 收起侧栏（父级控制，入口按钮在聊天头部，收起后仍在） */
+  onCollapse: () => void;
 };
 
 export function SessionRail({
@@ -21,22 +23,35 @@ export function SessionRail({
   onSelect,
   onNew,
   onDelete,
+  onCollapse,
 }: SessionRailProps) {
   return (
     <aside
+      id="chat-session-rail"
       aria-label="会话列表"
       // 窗口无最小宽度约束（tauri.conf.json），侧栏自身不缩：先压聊天主体
       className="flex w-[200px] shrink-0 flex-col border-r border-[var(--edge)] pr-3"
     >
-      <button
-        type="button"
-        className="nm-btn-brand mb-3 flex w-full shrink-0 items-center justify-center gap-1.5 px-3 py-2 text-sm"
-        title="新建对话"
-        onClick={onNew}
-      >
-        <Plus size={14} aria-hidden />
-        新建对话
-      </button>
+      <div className="mb-3 flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          className="nm-btn-brand flex min-w-0 flex-1 items-center justify-center gap-1.5 px-3 py-2 text-sm"
+          title="新建对话"
+          onClick={onNew}
+        >
+          <Plus size={14} aria-hidden />
+          新建对话
+        </button>
+        <button
+          type="button"
+          className="nm-icon-btn h-8 w-8"
+          aria-label="收起侧栏"
+          title="收起会话栏"
+          onClick={onCollapse}
+        >
+          <PanelLeftClose size={15} aria-hidden />
+        </button>
+      </div>
 
       <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
         {sessions.length === 0 ? (
