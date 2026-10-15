@@ -27,6 +27,52 @@ use crate::py::document::spawn_blocking_map;
 
 use super::commands::manifest_contract as mc;
 
+// ── 归档 / 恢复（纯函数核心，Tauri 命令直调，单测直打） ──
+
+/// 归档：程序页用户主动操作，bot 工具不受理（`apps_update_files` 的描述里
+/// 写明这条边界）。只改生命周期状态——脚本、附加文件、版本快照、运行历史
+/// 全部原地保留，所以这是一次可逆操作，不是删除。
+pub fn archive_core(conn: &Connection, id: &str, now_ms: i64) -> Result<App, CommandError> {
+    let cur = db_apps::get_app(conn, id)
+        .map_err(CommandError::DbError)?
+        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    if cur.status == mc::STATUS_ARCHIVED {
+        return Ok(cur); // 幂等：重复点归档不该报错
+    }
+    let next = App {
+        status: mc::STATUS_ARCHIVED.into(),
+        updated_at: now_ms,
+        ..cur
+    };
+    db_apps::upsert_app(conn, &next).map_err(CommandError::DbError)?;
+    Ok(next)
+}
+
+/// 恢复归档程序 → **草稿**（不是 enabled）：恢复只是把程序放回程序页让它能看见
+/// 能试跑，重新上架得用户满意后由 AI 走 `apps_update_files` 或程序页上架流程
+pub fn unarchive_core(conn: &Connection, id: &str, now_ms: i64) -> Result<App, CommandError> {
+    let cur = db_apps::get_app(conn, id)
+        .map_err(CommandError::DbError)?
+        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    if cur.status != mc::STATUS_ARCHIVED {
+        return Err(CommandError::DomainRule {
+            domain: "apps".into(),
+            reason: format!(
+                "程序「{id}」不在已归档状态，无需恢复（当前 {}）",
+                cur.status
+            ),
+        });
+    }
+    let next = App {
+        status: mc::STATUS_DRAFT.into(),
+        enabled_at: None,
+        updated_at: now_ms,
+        ..cur
+    };
+    db_apps::upsert_app(conn, &next).map_err(CommandError::DbError)?;
+    Ok(next)
+}
+
 // ── 上限（对齐 bot_skills::manage 的 create_skill 同款量级） ──
 
 /// app.py 源码字符上限（100K 字符 ≈ 常规脚本的百倍裕度）
@@ -774,6 +820,25 @@ mod tests {
 
     const SCRIPT: &str = "import sys\nprint('##RESULT## {\"summary\":\"hi\"}')\n";
 
+    /// 直接落一行已上架程序（归档/恢复测试只需要库里的行，不碰文件集）
+    fn seed_enabled(conn: &Connection, id: &str) -> App {
+        let app = App {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            icon: "📦".into(),
+            input_schema: r#"{"kind":"folder"}"#.into(),
+            script_path: "app.py".into(),
+            manual: String::new(),
+            status: mc::STATUS_ENABLED.into(),
+            enabled_at: Some(1000),
+            created_at: 1000,
+            updated_at: 1000,
+        };
+        db_apps::upsert_app(conn, &app).unwrap();
+        app
+    }
+
     fn create_args(
         id: &str,
     ) -> (
@@ -947,6 +1012,57 @@ mod tests {
         );
         // created_at 保留
         assert_eq!(next.created_at, 1);
+    }
+
+    #[test]
+    fn archive_hides_app_from_program_page_and_unarchive_brings_it_back_as_draft() {
+        let (_tmp, conn) = temp_db();
+        let app = seed_enabled(&conn, "salary");
+        // 归档：程序页列非归档，归档后不该在里面
+        let archived = archive_core(&conn, &app.id, 2000).unwrap();
+        assert_eq!(archived.status, mc::STATUS_ARCHIVED);
+        let active_ids: Vec<String> = db_apps::list_active_apps(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        assert!(
+            !active_ids.contains(&app.id.to_string()),
+            "归档后仍在程序页列表里"
+        );
+        let archived_ids: Vec<String> = db_apps::list_archived_apps(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        assert!(
+            archived_ids.contains(&app.id.to_string()),
+            "已归档视图里查不到"
+        );
+        // 恢复：回到草稿（不是直接上架——重新上架得用户满意后再定）
+        let back = unarchive_core(&conn, &app.id, 3000).unwrap();
+        assert_eq!(back.status, mc::STATUS_DRAFT);
+        assert_eq!(back.enabled_at, None, "恢复成草稿不该留着上架时间");
+        assert!(db_apps::list_active_apps(&conn)
+            .unwrap()
+            .iter()
+            .any(|a| a.id == app.id));
+    }
+
+    #[test]
+    fn archive_is_idempotent_and_unarchive_rejects_non_archived() {
+        let (_tmp, conn) = temp_db();
+        let app = seed_enabled(&conn, "roster");
+        archive_core(&conn, &app.id, 1000).unwrap();
+        // 重复点归档：幂等返回，不报错；且是 no-op 不该动 updated_at
+        //（动了会让「按最近更新排序」凭空跳一次）
+        let again = archive_core(&conn, &app.id, 1500).unwrap();
+        assert_eq!(again.status, mc::STATUS_ARCHIVED);
+        assert_eq!(again.updated_at, 1000);
+        // 未归档的程序不受理恢复（点了恢复但它本来就在页面上，是 bug 不是正常路径）
+        let other = seed_enabled(&conn, "other");
+        assert!(unarchive_core(&conn, &other.id, 2000).is_err());
+        assert!(unarchive_core(&conn, "no-such-app", 2000).is_err());
     }
 
     #[test]

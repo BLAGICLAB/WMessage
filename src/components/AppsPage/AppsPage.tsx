@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   Boxes,
   Check,
   FolderOpen,
@@ -7,6 +9,7 @@ import {
   Loader2,
   Play,
   Plus,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -14,14 +17,17 @@ import {
   AppInputField,
   AppRun,
   AppVersionMeta,
+  archiveApp,
   createApp,
   listActiveApps,
+  listArchivedApps,
   listAppRuns,
   listAppVersions,
   openAppOutput,
   parseInputSchema,
   restoreAppVersion,
   runApp,
+  unarchiveApp,
 } from "../../lib/apps";
 import { useConfirm } from "../../lib/useConfirm";
 import { formatMonthDayTime, relativeTime } from "../../format";
@@ -39,7 +45,11 @@ import {
 const tileColor = (id: string) => planColorVar([id]);
 
 export function AppsPage() {
+  const confirm = useConfirm();
   const [apps, setApps] = useState<App[]>([]);
+  const [archived, setArchived] = useState<App[]>([]);
+  /** 已归档视图：归档是程序页的用户动作，没有恢复入口就是单向门 */
+  const [showArchived, setShowArchived] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [lastRuns, setLastRuns] = useState<Record<string, AppRun | null>>({});
   const [createOpen, setCreateOpen] = useState(false);
@@ -61,17 +71,43 @@ export function AppsPage() {
   }, []);
 
   const reload = useCallback(() => {
-    listActiveApps()
-      .then((list) => {
+    Promise.all([listActiveApps(), listArchivedApps()])
+      .then(([list, archivedList]) => {
         setApps(list);
+        setArchived(archivedList);
         setLoaded(true);
-        list.forEach((a) => loadLastRun(a.id));
+        // 已归档视图不查上次运行：那行程序本来就不跑了，历史只在恢复后再看
+        if (!showArchived) list.forEach((a) => loadLastRun(a.id));
       })
       .catch((e) => handleCommandError(e, "加载程序列表", { silent: true }));
-  }, [loadLastRun]);
+  }, [loadLastRun, showArchived]);
   useEffect(() => {
     reload();
   }, [reload]);
+
+  const handleArchive = async (a: App) => {
+    const ok = await confirm({
+      title: "归档程序",
+      message: `把「${a.name}」移出程序页？脚本、数据与运行历史都保留，可在「已归档」里恢复。`,
+      okLabel: "归档",
+    });
+    if (!ok) return;
+    try {
+      await archiveApp(a.id);
+      reload();
+    } catch (e) {
+      handleCommandError(e, "归档程序");
+    }
+  };
+
+  const handleUnarchive = async (a: App) => {
+    try {
+      await unarchiveApp(a.id);
+      reload();
+    } catch (e) {
+      handleCommandError(e, "恢复程序");
+    }
+  };
 
   const handleRun = (a: App) => {
     setRunning(a.id);
@@ -104,6 +140,19 @@ export function AppsPage() {
           运行不连大模型，零成本
         </span>
         <div className="flex-1" />
+        {archived.length > 0 && (
+          <button
+            className={`nm-btn flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 text-xs ${
+              showArchived ? "text-[var(--t1)]" : "text-[var(--t4)]"
+            }`}
+            aria-pressed={showArchived}
+            onClick={() => setShowArchived((v) => !v)}
+            title="已归档的程序（可恢复）"
+          >
+            <Archive size={13} aria-hidden />
+            已归档 {archived.length}
+          </button>
+        )}
         <button
           className="nm-btn-brand flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap px-3 text-sm"
           onClick={() => setCreateOpen(true)}
@@ -119,7 +168,29 @@ export function AppsPage() {
         />
       )}
 
-      {loaded && apps.length === 0 && !createOpen ? (
+      {showArchived ? (
+        archived.length === 0 ? (
+          <EmptyState
+            icon={<Archive size={18} aria-hidden />}
+            title="没有已归档的程序"
+            description="在程序页点卡上的删除按钮，程序会移到这里（脚本与数据都保留）"
+          />
+        ) : (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3">
+            {archived.map((a) => (
+              <AppCard
+                key={a.id}
+                app={a}
+                lastRun={undefined}
+                archived
+                running={false}
+                onRestore={() => handleUnarchive(a)}
+                onChanged={reload}
+              />
+            ))}
+          </div>
+        )
+      ) : loaded && apps.length === 0 && !createOpen ? (
         <EmptyState
           icon={<Boxes size={18} aria-hidden />}
           title="还没有程序"
@@ -135,6 +206,7 @@ export function AppsPage() {
               lastRun={lastRuns[a.id]}
               running={running === a.id}
               onRun={() => handleRun(a)}
+              onArchive={() => handleArchive(a)}
               onChanged={reload}
             />
           ))}
@@ -158,13 +230,21 @@ function AppCard({
   app,
   lastRun,
   running,
+  archived,
   onRun,
+  onArchive,
+  onRestore,
   onChanged,
 }: {
   app: App;
   lastRun: AppRun | null | undefined;
   running: boolean;
-  onRun: () => void;
+  /** 已归档视图：不显示运行/删除，只给恢复 */
+  archived?: boolean;
+  onRun?: () => void;
+  /** 删除 = 归档（脚本与数据保留，可在「已归档」里恢复） */
+  onArchive?: () => void;
+  onRestore?: () => void;
   /** 卡内发生了内容变更（如版本回滚）：通知页级重载列表 */
   onChanged: () => void;
 }) {
@@ -200,19 +280,30 @@ function AppCard({
       </div>
 
       <div className="mt-auto flex items-center gap-1">
-        <button
-          className="nm-btn flex h-7 items-center gap-1.5 rounded-[var(--r-sm)] px-3 text-xs font-medium text-[var(--t1)]"
-          onClick={onRun}
-          disabled={running}
-          title="按 data_dir/apps/<id>/ 子进程跑脚本，零 LLM"
-        >
-          {running ? (
-            <Loader2 size={12} aria-hidden className="animate-spin" />
-          ) : (
-            <Play size={12} aria-hidden />
-          )}
-          {running ? "运行中…" : "运行"}
-        </button>
+        {archived ? (
+          <button
+            className="nm-btn flex h-7 items-center gap-1.5 rounded-[var(--r-sm)] px-3 text-xs font-medium text-[var(--t1)]"
+            onClick={onRestore}
+            title="恢复回程序页（草稿态，可试跑）"
+          >
+            <ArchiveRestore size={12} aria-hidden />
+            恢复
+          </button>
+        ) : (
+          <button
+            className="nm-btn flex h-7 items-center gap-1.5 rounded-[var(--r-sm)] px-3 text-xs font-medium text-[var(--t1)]"
+            onClick={onRun}
+            disabled={running}
+            title="按 data_dir/apps/<id>/ 子进程跑脚本，零 LLM"
+          >
+            {running ? (
+              <Loader2 size={12} aria-hidden className="animate-spin" />
+            ) : (
+              <Play size={12} aria-hidden />
+            )}
+            {running ? "运行中…" : "运行"}
+          </button>
+        )}
         <div className="flex-1" />
         <button
           className={`nm-icon-btn h-7 w-7 ${
@@ -225,6 +316,16 @@ function AppCard({
         >
           <History size={13} aria-hidden />
         </button>
+        {!archived && (
+          <button
+            className="nm-icon-btn h-7 w-7 text-[var(--t5)] hover:text-[var(--danger)]"
+            title="删除程序（移入已归档，可恢复）"
+            aria-label={`删除程序：${app.name}`}
+            onClick={onArchive}
+          >
+            <Trash2 size={13} aria-hidden />
+          </button>
+        )}
         <button
           className="nm-icon-btn h-7 w-7"
           title="在系统文件管理器中打开 output/"

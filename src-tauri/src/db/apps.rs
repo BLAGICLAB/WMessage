@@ -128,6 +128,12 @@ pub fn list_active_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String>
     list_by_status(conn, "status != 'archived'")
 }
 
+/// 已归档程序：程序页「已归档」视图 + 恢复入口的数据源。程序页只列非归档，
+/// 没有这份列表的话归档就是有去无回的单向门
+pub fn list_archived_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String> {
+    list_by_status(conn, "status = 'archived'")
+}
+
 fn list_by_status(conn: &rusqlite::Connection, where_clause: &str) -> Result<Vec<App>, String> {
     let sql = format!(
         "SELECT id, name, description, icon, input_schema, script_path, manual, status,

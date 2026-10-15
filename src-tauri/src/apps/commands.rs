@@ -10,6 +10,7 @@ use serde::Deserialize;
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
+use crate::apps::commands::manifest_contract as mc;
 use crate::apps::{self as apps_runner, AppRunResult};
 use crate::db::apps as db_apps;
 use crate::db::apps::{App, AppRun};
@@ -151,6 +152,28 @@ pub async fn apps_update(app: AppHandle, args: UpdateArgs) -> CommandResult<App>
     let cur = db_apps::get_app(&conn, &args.id)
         .map_err(CommandError::DbError)?
         .ok_or_else(|| CommandError::TaskNotFound(args.id.clone()))?;
+    // 状态只接受三态：命令层此前完全没校验，任意字符串能写进库里，
+    // 程序页的 status 判断与 apps_run 的 archived 判定随后全都失效
+    if let Some(s) = args.status.as_deref() {
+        if !matches!(
+            s,
+            mc::STATUS_DRAFT | mc::STATUS_ENABLED | mc::STATUS_ARCHIVED
+        ) {
+            return Err(CommandError::InvalidArgument {
+                field: "status".into(),
+                value: s.to_string(),
+                reason: "status 只接受 draft / enabled / archived".into(),
+            });
+        }
+    }
+    // 已归档程序不开放改元数据（与 bot 工具 apps_update_files 同口径：
+    // 归档的意图就是「先别动它」，要改先恢复）
+    if cur.status == mc::STATUS_ARCHIVED && args.status.as_deref() != Some(mc::STATUS_ARCHIVED) {
+        return Err(CommandError::DomainRule {
+            domain: "apps".into(),
+            reason: "已归档程序不开放修改；请用户先在程序页恢复".into(),
+        });
+    }
     let status = args.status.clone().unwrap_or_else(|| cur.status.clone());
     let next = App {
         name: args.name.unwrap_or(cur.name),
@@ -215,20 +238,37 @@ pub async fn apps_open_output(app: AppHandle, id: String) -> CommandResult<Strin
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// 归档（程序页可隐藏，但仍可查 + 试跑）
+/// 已归档程序列表（程序页「已归档」视图 + 恢复入口）
+#[tauri::command]
+pub async fn apps_list_archived(app: AppHandle) -> CommandResult<Vec<App>> {
+    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
+    db_apps::list_archived_apps(&conn).map_err(CommandError::DbError)
+}
+
+/// 归档（程序页用户动作；脚本/数据/版本/运行历史原地保留，可恢复）
 #[tauri::command]
 pub async fn apps_archive(app: AppHandle, id: String) -> CommandResult<App> {
-    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    let cur = db_apps::get_app(&conn, &id)
-        .map_err(CommandError::DbError)?
-        .ok_or_else(|| CommandError::TaskNotFound(id.clone()))?;
-    let next = App {
-        status: "archived".into(),
-        updated_at: crate::db::now_ms(),
-        ..cur
-    };
-    db_apps::upsert_app(&conn, &next).map_err(CommandError::DbError)?;
-    Ok(next)
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+        crate::apps::manage::archive_core(&conn, &id, crate::db::now_ms())
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("程序归档线程 join 失败：{e}")))?
+}
+
+/// 恢复归档程序 → 草稿态（回到程序页可试跑，重新上架由用户满意后再定）
+#[tauri::command]
+pub async fn apps_unarchive(app: AppHandle, id: String) -> CommandResult<App> {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+        crate::apps::manage::unarchive_core(&conn, &id, crate::db::now_ms())
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("程序恢复线程 join 失败：{e}")))?
 }
 
 /// 最近运行历史（程序页 + 管理面板）

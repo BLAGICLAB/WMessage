@@ -59,6 +59,23 @@ export function listActiveApps(): Promise<App[]> {
   return invoke<App[]>("apps_list_active");
 }
 
+/** 已归档程序（程序页「已归档」视图的数据源） */
+export function listArchivedApps(): Promise<App[]> {
+  return invoke<App[]>("apps_list_archived");
+}
+
+/** 归档：程序页用户动作，bot 工具不受理。脚本、数据、版本快照、运行历史
+ *  原地保留，只是不再出现在程序页——所以它是可逆的，不是删除。
+ *  重复点幂等。 */
+export function archiveApp(id: string): Promise<App> {
+  return invoke<App>("apps_archive", { id });
+}
+
+/** 恢复归档程序 → 草稿态：回到程序页可试跑，重新上架由用户满意后再定 */
+export function unarchiveApp(id: string): Promise<App> {
+  return invoke<App>("apps_unarchive", { id });
+}
+
 /** 跑一个 app。
  * - 文件夹模式：`params` = null
  * - 表单模式：`params` = 字段 JSON 串（与 `inputSchema` 的 `fields` 顺序一致）

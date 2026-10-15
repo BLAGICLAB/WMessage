@@ -145,9 +145,14 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
 
 **M1（当前）**：
 - 上架**手工**完成——你（或我）写 `app.py`、写 manifest 草稿、在程序页填表单上架
-- Tauri 命令已就位：`apps_list_active` / `apps_get` / `apps_run` / `apps_create` /
-  `apps_update` / `apps_archive` / `apps_runs_list` / `apps_versions_list` /
-  `apps_version_restore` / `apps_preflight` / `apps_open_output`
+- Tauri 命令已就位：`apps_list_active` / `apps_list_archived` / `apps_get` /
+  `apps_run` / `apps_create` / `apps_update` / `apps_archive` / `apps_unarchive` /
+  `apps_runs_list` / `apps_versions_list` / `apps_version_restore` /
+  `apps_preflight` / `apps_open_output`
+- 程序页「删除」= 归档（可逆）：`apps_archive` 只改生命周期状态，脚本与数据不动；
+  「已归档」视图走 `apps_list_archived`，恢复走 `apps_unarchive` → 草稿态。
+  已归档程序既不能运行（`apps_run` 拒）也不开放修改（`apps_update` 与 bot 工具
+  同口径拒绝），要改先恢复
 - 约束验证：脚本可读+非空（且必须是 app 目录下的单个文件名）、id 路径分隔符检查、
   status 枚举
 

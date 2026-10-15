@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AppsPage } from "./AppsPage";
 import type { App, AppRun, AppRunResult } from "../../lib/apps";
@@ -7,6 +7,12 @@ import type { App, AppRun, AppRunResult } from "../../lib/apps";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+// 归档走 useConfirm → Tauri 原生弹窗：mock 成「直接确认」
+const askMock = vi.fn(async () => true);
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  ask: (...args: unknown[]) => askMock(...(args as [])),
 }));
 
 const hourAgo = Date.now() - 3_600_000;
@@ -77,10 +83,28 @@ const RUN_RESULT: AppRunResult = {
   durationMs: 1200,
 };
 
+const ARCHIVED: App[] = [
+  {
+    id: "old-tool",
+    name: "旧工具",
+    description: "上季度用的，现在不用了",
+    icon: "🗄",
+    inputSchema: '{"kind":"folder"}',
+    scriptPath: "app.py",
+    manual: "",
+    status: "archived",
+    enabledAt: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  },
+];
+
 function routeInvoke(cmd: string, args: Record<string, unknown>) {
   switch (cmd) {
     case "apps_list_active":
       return Promise.resolve(APPS);
+    case "apps_list_archived":
+      return Promise.resolve(ARCHIVED);
     case "apps_runs_list":
       return Promise.resolve(args.appId === "wage-match" ? [RUN_OK] : []);
     case "apps_versions_list":
@@ -117,6 +141,8 @@ function routeInvoke(cmd: string, args: Record<string, unknown>) {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  askMock.mockClear();
+  askMock.mockResolvedValue(true);
   invokeMock.mockImplementation(
     (cmd: string, args?: Record<string, unknown>) =>
       routeInvoke(cmd, args ?? {}),
@@ -196,5 +222,40 @@ describe("AppsPage", () => {
         }),
       );
     });
+  });
+  it("删除按钮走归档：确认后调 apps_archive，卡片从程序页消失", async () => {
+    const user = userEvent.setup();
+    askMock.mockResolvedValue(true);
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await user.click(screen.getByRole("button", { name: "删除程序：工资单匹配" }));
+    expect(askMock).toHaveBeenCalled();
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("apps_archive", {
+        id: "wage-match",
+      }),
+    );
+    // 归档后重新拉两个列表（测试夹具里 active 恒有卡，故只断言命令被调）
+    await waitFor(() =>
+      expect(
+        invokeMock.mock.calls.filter((c) => c[0] === "apps_list_active").length,
+      ).toBeGreaterThan(1),
+    );
+  });
+
+  it("「已归档」视图：列出归档程序，点恢复调 apps_unarchive", async () => {
+    const user = userEvent.setup();
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await user.click(screen.getByRole("button", { name: /已归档/ }));
+    expect(screen.getByText("旧工具")).toBeInTheDocument();
+    // 归档视图里不显示运行/删除，只给恢复
+    expect(screen.queryByRole("button", { name: "运行" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "恢复" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("apps_unarchive", {
+        id: "old-tool",
+      }),
+    );
   });
 });
