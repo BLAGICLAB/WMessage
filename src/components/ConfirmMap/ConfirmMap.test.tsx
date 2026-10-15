@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 // Mock @tauri-apps/api/event + core BEFORE import
@@ -239,5 +239,54 @@ describe("ConfirmMap", () => {
     expect(screen.getByTestId("confirm-map-detail").textContent).toContain(
       "new request",
     );
+  });
+  it("file_access 三选一：始终允许该目录 → always=true", async () => {
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "fa-1",
+        tool: "read_text_file",
+        detail: "/Users/me/outside.txt",
+        kind: "file_access",
+        sessionId: null,
+      });
+    });
+    fireEvent.click(screen.getByTestId("confirm-map-always"));
+    await waitFor(() => {
+      const calls = invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_confirm_response",
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1]).toMatchObject({
+        requestId: "fa-1",
+        approved: true,
+        always: true,
+      });
+    });
+  });
+
+  it("file_access 三选一：允许一次 → always=false", async () => {
+    render(<ConfirmMap />);
+    await act(async () => {
+      emit({
+        id: "fa-2",
+        tool: "read_text_file",
+        detail: "/Users/me/outside.txt",
+        kind: "file_access",
+        sessionId: "s1",
+      });
+    });
+    fireEvent.click(screen.getByTestId("confirm-map-approve"));
+    await waitFor(() => {
+      const calls = invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_confirm_response",
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1]).toMatchObject({
+        requestId: "fa-2",
+        approved: true,
+        always: null,
+      });
+    });
   });
 });

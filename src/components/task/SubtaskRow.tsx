@@ -1,12 +1,10 @@
-// 共用子任务行组件 —— 三种 variant 适配三个调用方：
+// 共用子任务行组件 —— 两种 variant 适配两个调用方：
 //   - spacious: TodoCard（看板卡，预览/编辑一体；pre-wrap 文本 + hover ×）
-//   - compact:  TaskCardContent（widget 挂件；单行截断 + 原生 checkbox）
 //   - detail:   TaskDetailPanel（毛玻璃详情面板；按钮式勾选 + 图标动作）
 //
 // 动作显隐全部由可选回调决定：缺即不渲染对应按钮，
-// 调用方按场景选择性接线即可（widget 不传 onCommit/onDelete/onGenerateCard）。
-// spacious / compact 共用同一份 useInlineEdit（detail 永不入编辑态，
-// 故 hook 不会触发任何状态变更）。
+// 调用方按场景选择性接线即可。detail 永不入编辑态，
+// 故 useInlineEdit 在 detail 下不会触发任何状态变更。
 
 import { useEffect, useState } from "react";
 import { ArrowUpRight, Plus } from "lucide-react";
@@ -21,7 +19,7 @@ export type Subtask = {
   taskId?: string;
 };
 
-export type SubtaskRowVariant = "spacious" | "compact" | "detail";
+export type SubtaskRowVariant = "spacious" | "detail";
 
 export function SubtaskRow({
   sub,
@@ -35,7 +33,6 @@ export function SubtaskRow({
 }: {
   sub: Subtask;
   /** spacious: TodoCard 全文（pre-wrap + break-words） + 内联编辑 + hover ×
-   *  compact:  widget 单行截断 + 原生 checkbox 禁用即不可勾
    *  detail:   DetailPanel 按钮式勾选 + 图标 ↗/＋/× */
   variant?: SubtaskRowVariant;
   /** 只读契约：禁用 checkbox、屏蔽内联编辑、隐藏 × 删除按钮（spacious） */
@@ -51,10 +48,9 @@ export function SubtaskRow({
   /** ＋ 生成为任务卡（detail only；sub.taskId 不在场时显示）；undefined = 隐藏 ＋ */
   onGenerateCard?: () => void;
 }) {
-  const compact = variant === "compact";
   const detail = variant === "detail";
 
-  // spacious-only：内联编辑 hook（compact/detail 永不入编辑态）
+  // spacious-only：内联编辑 hook（detail 永不入编辑态）
   const [editing, setEditing] = useState(false);
   const edit = useInlineEdit({
     value: sub.text,
@@ -80,46 +76,6 @@ export function SubtaskRow({
     if (readOnly) setEditing(false);
   }, [readOnly]);
 
-  if (compact) {
-    // widget：原生 checkbox 禁用即不可勾，单行截断，无 ×/＋/编辑
-    return (
-      <div className="flex items-center gap-2 py-1">
-        <input
-          type="checkbox"
-          checked={sub.done}
-          disabled={!onToggle}
-          onChange={onToggle}
-          onPointerDown={stop}
-          onClick={(e) => e.stopPropagation()}
-          className={`shrink-0 w-3.5 h-3.5 accent-[var(--brand)] ${
-            onToggle ? "cursor-pointer" : ""
-          }`}
-        />
-        <span
-          className={`flex-1 min-w-0 truncate text-xs ${
-            sub.done ? "text-[var(--t5)] line-through" : "text-[var(--t3)]"
-          }`}
-          title={sub.text}
-        >
-          {sub.text}
-        </span>
-        {sub.taskId && onOpenCard && (
-          <button
-            className="shrink-0 text-[11px] leading-none text-[var(--t5)] hover:text-[var(--t2)]"
-            title={`打开子任务「${sub.text}」生成的任务卡`}
-            aria-label={`打开子任务「${sub.text}」生成的任务卡`}
-            onPointerDown={stop}
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenCard(sub.taskId!);
-            }}
-          >
-            ↗
-          </button>
-        )}
-      </div>
-    );
-  }
 
   if (detail) {
     // TaskDetailPanel：整行可点击 toggle（按钮式勾选），行尾 ↗/＋/× 悬停显现

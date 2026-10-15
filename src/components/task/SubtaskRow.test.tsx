@@ -1,5 +1,5 @@
 // 共用 SubtaskRow 测试：覆盖三个 variant × 五个可选回调的显隐组合。
-// 三个 variant：spacious (TodoCard)、compact (widget)、detail (DetailPanel)
+// 两个 variant：spacious (TodoCard)、detail (DetailPanel)
 // 五个回调：onToggle / onCommit / onDelete / onOpenCard / onGenerateCard
 
 import { describe, it, expect, vi } from "vitest";
@@ -91,51 +91,6 @@ describe("SubtaskRow spacious (TodoCard)", () => {
   });
 });
 
-describe("SubtaskRow compact (widget)", () => {
-  it("单行截断；原生 checkbox；无 ×、无编辑入口", async () => {
-    const user = userEvent.setup();
-    const onToggle = vi.fn();
-    render(
-      <SubtaskRow
-        sub={baseSub}
-        variant="compact"
-        onToggle={onToggle}
-        onOpenCard={vi.fn()}
-      />,
-    );
-    const text = screen.getByText("子任务一");
-    expect(text.className).toContain("truncate");
-    expect(text.className).not.toContain("whitespace-pre-wrap");
-    // checkbox 点击 = onToggle
-    await user.click(screen.getByRole("checkbox"));
-    expect(onToggle).toHaveBeenCalledTimes(1);
-    // 文本点击不进编辑
-    await user.click(text);
-    expect(screen.queryByDisplayValue("子任务一")).not.toBeInTheDocument();
-    // 无 ×
-    expect(screen.queryByTitle("删除子任务")).not.toBeInTheDocument();
-  });
-
-  it("无 onToggle 时 checkbox 禁用", () => {
-    render(<SubtaskRow sub={baseSub} variant="compact" />);
-    const cb = screen.getByRole("checkbox") as HTMLInputElement;
-    expect(cb.disabled).toBe(true);
-  });
-
-  it("无 taskId 时不显示 ↗", () => {
-    render(
-      <SubtaskRow
-        sub={baseSub}
-        variant="compact"
-        onToggle={vi.fn()}
-        onOpenCard={vi.fn()}
-      />,
-    );
-    expect(
-      screen.queryByLabelText("打开子任务「子任务一」生成的任务卡"),
-    ).not.toBeInTheDocument();
-  });
-});
 
 describe("SubtaskRow detail (DetailPanel)", () => {
   it("整行可点切换 done；按钮式勾选（无原生 checkbox）", async () => {
@@ -224,10 +179,6 @@ describe("SubtaskRow detail (DetailPanel)", () => {
 describe("SubtaskRow 全回调缺省", () => {
   it("不传任何回调：spacious 不抛错", () => {
     expect(() => render(<SubtaskRow sub={baseSub} />)).not.toThrow();
-  });
-  it("不传任何回调：compact 渲染空 ↗ 区", () => {
-    render(<SubtaskRow sub={baseSub} variant="compact" />);
-    expect(screen.getByText("子任务一")).toBeInTheDocument();
   });
   it("不传任何回调：detail 渲染空行（无 ↗/＋/×）", () => {
     render(<SubtaskRow sub={baseSub} variant="detail" />);

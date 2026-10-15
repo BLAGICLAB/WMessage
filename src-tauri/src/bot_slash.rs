@@ -3,7 +3,7 @@
 //! 主入口 `bot_chat`（在 bot_chat.rs）走 run_model_loop + 工具循环；
 //! 这里集中「停止执行实例」「危险操作确认」「机器人总开关」三类旁路能力：
 //! - `/stop` 快捷命令（bot_stop）：遍历 StopRegistry 把 interactive=true 的实例标志置位
-//! - 弹窗确认（ConfirmMap）：挂件删除任务等危险操作走 ask_user_confirm（两按钮）；
+//! - 弹窗确认（ConfirmMap）：删除任务等危险操作走 ask_user_confirm（两按钮）；
 //!   文件访问授权走 ask_path_confirm（三按钮：允许一次/始终允许该目录/拒绝）
 //! - 机器人总开关（bot_get_enabled / bot_set_enabled）：flag 文件持久化
 //!
@@ -25,7 +25,7 @@ use crate::app_state::{stop_registry, NEXT_STOP_ID};
 /// （interactive=true 表示由用户聊天/点 🤖 触发，/stop 只停这类实例，不动后台定时）
 /// 携带 session_id（触发会话；后台定时任务为 None），
 /// 供流式事件会话标记 / Skill 与确认按会话归属过滤；interactive 供流式广播开关
-/// （后台任务不向挂件发流式增量，防串进用户当前对话气泡）。
+/// （后台任务不发流式增量，防串进用户当前对话气泡）。
 pub struct StopGuard {
     pub(crate) id: u64,
     flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -207,7 +207,7 @@ pub enum ConfirmChoice {
     Once,
     /// 允许且把该目录写进 allowedDirs（仅 file_access 弹窗有此按钮）
     Always,
-    /// 拒绝 / 超时 / 挂件不可见 / 后台执行（安全兜底）
+    /// 拒绝 / 超时 / 主窗口不可见 / 后台执行（安全兜底）
     Deny,
 }
 
@@ -227,7 +227,7 @@ use crate::app_state::confirms;
 /// 带 sessionId 供前端按会话过滤），60s 超时默认拒绝（安全兜底）；
 /// 非交互执行（后台定时任务，interactive=false）直接拒绝不弹窗——
 /// 无人在场时弹窗只会串进用户当前会话且必然超时。
-/// 挂件不可见时同样直接拒绝，不白等 60s。
+/// 主窗口不可见时同样直接拒绝，不白等 60s。
 async fn ask_confirm_inner(
     app: &AppHandle,
     tool: &str,
@@ -309,7 +309,7 @@ async fn ask_confirm_inner(
     }
 }
 
-/// 请求用户在挂件确认危险操作（如删除任务）；60s 超时默认拒绝（安全兜底）
+/// 请求用户确认危险操作（如删除任务）；60s 超时默认拒绝（安全兜底）
 pub async fn ask_user_confirm(
     app: &AppHandle,
     tool: &str,
@@ -323,7 +323,7 @@ pub async fn ask_user_confirm(
 }
 
 /// 文件访问授权（Kimi CLI 风格）：白名单外路径弹三选一窗
-/// （允许一次 / 始终允许该目录 / 拒绝）。挂件不可见/超时/后台执行 → Deny。
+/// （允许一次 / 始终允许该目录 / 拒绝）。主窗口不可见/超时/后台执行 → Deny。
 pub async fn ask_path_confirm(
     app: &AppHandle,
     tool: &str,
@@ -344,7 +344,7 @@ pub async fn ask_path_confirm(
     }
 }
 
-/// 挂件确认响应：允许/拒绝（前端点击后回传）；always 仅 file_access 弹窗的
+/// 确认响应：允许/拒绝（前端点击后回传）；always 仅 file_access 弹窗的
 /// 「始终允许该目录」按钮会为 true，老调用（删任务两按钮）不传 → None → false。
 /// 会话归属从 ConfirmMap 条目取回：skill_confirm_result 按会话过滤。
 #[tauri::command]

@@ -136,13 +136,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   };
   /** 拖放悬停：文件拖到聊天区上时显示提示层 */
   const [dragHover, setDragHover] = useState(false);
-  /** 危险操作确认请求（机器人删任务前弹窗）；kind="file_access" 时为文件访问授权（三按钮） */
-  const [confirmReq, setConfirmReq] = useState<{
-    id: string;
-    tool: string;
-    detail: string;
-    kind?: string;
-  } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 聊天区根节点：拖放落点判定用（只接收落在聊天区矩形内的文件） */
   const rootRef = useRef<HTMLDivElement>(null);
@@ -961,41 +954,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     };
   }, []);
 
-  // 危险操作确认：机器人删任务前弹窗（60s 无响应后端自动拒绝）；
-  // kind="file_access"：文件访问授权，三按钮（允许一次/始终允许该目录/拒绝）；
-  // sessionId 归属过滤（会话隔离）：只弹属于当前会话的确认，
-  // 别的会话/后台任务的确认不弹（后端 60s 超时自动拒绝兜底）
-  useEffect(() => {
-    const unConfirm = listen<{
-      id?: string;
-      tool?: string;
-      detail?: string;
-      kind?: string;
-      sessionId?: string | null;
-    }>("bot-confirm", (e) => {
-      const { id, tool, detail, kind, sessionId: sid } = e.payload ?? {};
-      if (!id) return;
-      // 只弹明确属于当前会话的确认；别的会话 / 无归属（后台任务）不弹，
-      // 后端 60s 超时自动拒绝兜底
-      if (sid == null || sid !== sessionIdRef.current) return;
-      setConfirmReq({ id, tool: tool ?? "", detail: detail ?? "", kind });
-    });
-    return () => {
-      unlistenSafe(unConfirm);
-    };
-  }, []);
-
-  const answerConfirm = (approved: boolean, always = false) => {
-    if (!confirmReq) return;
-    invoke("bot_confirm_response", {
-      requestId: confirmReq.id,
-      approved,
-      always,
-    }).catch((e) =>
-      handleCommandError(e, "bot_confirm_response", { silent: true }),
-    );
-    setConfirmReq(null);
-  };
+  // 危险操作确认由 ConfirmMap 全窗独现（主窗口任何视图下都要看得见，
+  // 聊天窗常挂载只切 hidden，把弹窗放这里会在别的视图里不可见）。
+  // 本组件不再 listen bot-confirm——两个呈现者会为同一请求各弹一次。
 
   // 新消息自动滚到底
   useEffect(() => {
@@ -1536,61 +1497,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       {dragHover && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-[var(--brand)] bg-black/20">
           <span className="text-xs text-[var(--brand)]">松开以添加文件</span>
-        </div>
-      )}
-      {/* 危险操作确认弹窗：机器人删任务前等老板；file_access = 文件访问授权（三按钮） */}
-      {confirmReq && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 rounded-2xl">
-          <div className="nm-card p-3 w-64">
-            <p className="text-xs font-medium text-[var(--t2)] mb-1.5">
-              {confirmReq.kind === "file_access"
-                ? "📂 机器人要访问白名单外路径"
-                : `⚠️ 机器人要${confirmReq.tool === "delete_task" ? "删除任务" : "执行危险操作"}`}
-            </p>
-            <p className="text-xs text-[var(--t3)] mb-1 break-words">
-              「{confirmReq.detail}」
-            </p>
-            <p className="text-[10px] text-[var(--t5)] mb-3">
-              60 秒内不回复将自动拒绝
-            </p>
-            {confirmReq.kind === "file_access" ? (
-              <div className="flex flex-col gap-2">
-                <button
-                  className="nm-btn w-full px-2 py-1 text-xs text-[var(--t3)]"
-                  onClick={() => answerConfirm(true, false)}
-                >
-                  允许一次
-                </button>
-                <button
-                  className="nm-btn w-full px-2 py-1 text-xs text-[var(--t3)]"
-                  onClick={() => answerConfirm(true, true)}
-                >
-                  始终允许该目录
-                </button>
-                <button
-                  className="nm-btn w-full px-2 py-1 text-xs text-[var(--danger)]"
-                  onClick={() => answerConfirm(false)}
-                >
-                  拒绝
-                </button>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <button
-                  className="nm-btn flex-1 px-2 py-1 text-xs text-[var(--t3)]"
-                  onClick={() => answerConfirm(true)}
-                >
-                  允许
-                </button>
-                <button
-                  className="nm-btn flex-1 px-2 py-1 text-xs text-[var(--danger)]"
-                  onClick={() => answerConfirm(false)}
-                >
-                  拒绝
-                </button>
-              </div>
-            )}
-          </div>
         </div>
       )}
       {/* 聊天主体头部：当前会话标题常驻可见——切到历史会话后，用户靠这一行

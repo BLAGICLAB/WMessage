@@ -523,7 +523,7 @@ function App() {
       const merged = sortByOrder([...map.values()]);
       const next = applyArchiveRule(applyTodayRule(merged));
       // 规则改动（今日归位/超时归档）也要落盘——
-      // 否则只改内存，重启/挂件读 db 又回到原始数据，三端长期不一致
+      // 否则只改内存，重启后读 db 又回到原始数据，三端长期不一致
       const mergedMap = new Map(merged.map((t) => [t.id, t]));
       const ruleChanged = next.filter((t) => !taskEq(mergedMap.get(t.id)!, t));
       if (ruleChanged.length) {

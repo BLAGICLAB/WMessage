@@ -1,14 +1,16 @@
-//! ConfirmMap 挂件：监听后端 `bot-confirm` 事件，弹 modal 等用户确认/拒绝。
+//! 危险操作确认窗：监听后端 `bot-confirm` 事件，弹 modal 等用户确认/拒绝。
 //!
-//! 后端（bot_slash.rs::ask_confirm_inner）emit_to("widget", "bot-confirm", payload)：
+//! 后端（bot_slash.rs::ask_confirm_inner）向主窗口广播 `bot-confirm`：
 //!   payload = { id, tool, detail, kind, sessionId }
 //!
 //! 前端这里 listen 这个事件 → 弹 modal + 60s 倒计时 + 确认/拒绝按钮 → 调
-//!   invoke("bot_confirm_response", { request_id, approved, always })
+//!   invoke("bot_confirm_response", { requestId, approved, always })
 //!
-//! EvolutionPanel Promote/Reject/Keep Shadow 等走 confirm 流程的
-//! 危险操作，60s 无响应 → 后端自动拒绝（spec §12.7 fail-safe）。
-//! ConfirmMap 是 spec  #1 「复用 widget 弹窗」的前端实现。
+//! 这是全窗唯一的呈现者：确认可能在任何视图下发生（任务卡执行、evolution 面板
+//! 动作等），聊天窗只切 hidden 不卸载，弹窗放在聊天窗里会不可见。
+//!
+//! kind="file_access" 是白名单外路径授权，三选一（允许一次 / 始终允许该目录 / 拒绝）。
+//! 60s 无响应 → 后端自动拒绝（spec §12.7 fail-safe）。
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -70,7 +72,8 @@ export default function ConfirmMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, remaining]);
 
-  async function respond(approved: boolean) {
+  // always=null = 未指定（普通允许/拒绝）；true 只由「始终允许该目录」给出
+  async function respond(approved: boolean, always: boolean | null = null) {
     const cur = pendingRef.current;
     // busyRef 同步 check-and-set：state busy 下一渲染才提交，
     // 倒计时归零的 respond(false) 与按钮点击可同窗双发 bot_confirm_response
@@ -81,7 +84,7 @@ export default function ConfirmMap() {
       await invoke("bot_confirm_response", {
         requestId: cur.id,
         approved,
-        always: null,
+        always,
       });
     } catch (e) {
       // 不阻塞 UI；后端超时也会兜底
@@ -136,22 +139,53 @@ export default function ConfirmMap() {
         </pre>
 
         <div className="flex gap-2 justify-end">
-          <button
-            className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
-            disabled={busy}
-            onClick={() => void respond(false)}
-            data-testid="confirm-map-deny"
-          >
-            拒绝
-          </button>
-          <button
-            className="nm-btn px-3 py-1.5 text-xs text-[var(--t1)] bg-[var(--accent)]"
-            disabled={busy}
-            onClick={() => void respond(true)}
-            data-testid="confirm-map-approve"
-          >
-            确认
-          </button>
+          {pending.kind === "file_access" ? (
+            <>
+              <button
+                className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+                disabled={busy}
+                onClick={() => void respond(true, true)}
+                data-testid="confirm-map-always"
+              >
+                始终允许该目录
+              </button>
+              <button
+                className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+                disabled={busy}
+                onClick={() => void respond(true)}
+                data-testid="confirm-map-approve"
+              >
+                允许一次
+              </button>
+              <button
+                className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+                disabled={busy}
+                onClick={() => void respond(false)}
+                data-testid="confirm-map-deny"
+              >
+                拒绝
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
+                disabled={busy}
+                onClick={() => void respond(false)}
+                data-testid="confirm-map-deny"
+              >
+                拒绝
+              </button>
+              <button
+                className="nm-btn px-3 py-1.5 text-xs text-[var(--t1)] bg-[var(--accent)]"
+                disabled={busy}
+                onClick={() => void respond(true)}
+                data-testid="confirm-map-approve"
+              >
+                确认
+              </button>
+            </>
+          )}
         </div>
       </div>
     </Modal>

@@ -523,51 +523,19 @@ describe("ChatPanel", () => {
     });
   });
 
-  it("确认弹窗按会话过滤：别的会话的 bot-confirm 不弹窗（2026-08-26 会话隔离）", async () => {
-    // 捕获 ChatPanel 注册的 bot-confirm 监听器
-    let confirmHandler:
-      ((e: { payload: Record<string, unknown> }) => void) | null = null;
-    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
-      if (event === "bot-confirm") confirmHandler = cb as typeof confirmHandler;
+  it("确认弹窗不再由聊天窗呈现：bot-confirm 只有 ConfirmMap 一个监听者", async () => {
+    // 两个呈现者同窗挂载时同一请求会弹两次：ConfirmMap 答完，
+    // 聊天窗那份 z-50 残影还在，点它只会静默失败
+    const events: string[] = [];
+    mocks.listenMock.mockImplementation(async (event: string) => {
+      events.push(event);
       return () => {};
     });
     render(<ChatPanel {...defaultProps} />);
-    // 等初始会话加载完成（标题渲染 = sessionId 已 set），再显式 flush passive
-    // effects（sessionIdRef 镜像在 useEffect 里；findByText 走 MutationObserver，
-    // 全量慢机上可能在 effects 运行前解析——fire 时 ref 还是 null 会误过滤）
     expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     await act(async () => {});
-    expect(confirmHandler).not.toBeNull();
-    const fire = (payload: Record<string, unknown>) =>
-      (
-        confirmHandler as unknown as (e: {
-          payload: Record<string, unknown>;
-        }) => void
-      )({ payload });
-    // 别的会话（sessionId 不匹配）→ 不弹
-    fire({
-      id: "c1",
-      tool: "delete_task",
-      detail: "别会话任务",
-      sessionId: "other-session",
-    });
-    expect(screen.queryByText(/别会话任务/)).not.toBeInTheDocument();
-    // 无 sessionId（后台任务）→ 不弹
-    fire({
-      id: "c2",
-      tool: "delete_task",
-      detail: "后台任务",
-      sessionId: null,
-    });
-    expect(screen.queryByText(/后台任务/)).not.toBeInTheDocument();
-    // 当前会话（s1，初始加载的默认会话）→ 弹
-    fire({
-      id: "c3",
-      tool: "delete_task",
-      detail: "本会话任务",
-      sessionId: "s1",
-    });
-    expect(await screen.findByText(/本会话任务/)).toBeInTheDocument();
+    expect(events).not.toContain("bot-confirm");
+    expect(events).toContain("bot-chat-delta");
   });
 
   it("流式事件按会话过滤：别会话的 bot-chat-delta 被忽略，本会话的才追加（2026-08-28 批次3审计 P0-2）", async () => {
@@ -1604,31 +1572,15 @@ describe("ChatPanel", () => {
         }
       });
       await act(async () => {
-        releaseCreate?.({ id: "s3", title: "重建会话" });
+        releaseCreate?.({ id: "s4", title: "重建会话" });
       });
-      // 守卫生效：视图不被重建会话抢占，ref 仍指向 s2（s2 的确认弹窗能收到）
-      const fireConfirm = (payload: Record<string, unknown>) => {
-        for (const cb of mocks.listeners["bot-confirm"] ?? []) {
-          cb({ payload });
-        }
-      };
-      fireConfirm({
-        id: "c1",
-        tool: "delete_task",
-        detail: "s2 的确认",
-        sessionId: "s2",
-      });
-      expect(await screen.findByText(/s2 的确认/)).toBeInTheDocument();
-      await user.click(screen.getByRole("button", { name: "允许" }));
-      expect(screen.queryByText(/s2 的确认/)).not.toBeInTheDocument();
-      // s3 从未成为当前会话：镜像未被抢占改写
-      fireConfirm({
-        id: "c2",
-        tool: "delete_task",
-        detail: "s3 的确认",
-        sessionId: "s3",
-      });
-      expect(screen.queryByText(/s3 的确认/)).not.toBeInTheDocument();
+      // 守卫生效：重建出来的 s3 不进会话列表（视图已被 s2 接管）
+      await waitFor(() =>
+        expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", {
+          sessionId: "s2",
+        }),
+      );
+      expect(screen.queryByText("重建会话")).not.toBeInTheDocument();
     } finally {
       mocks.invokeMock.mockImplementation(defaultInvoke);
       mocks.listenMock.mockImplementation(async () => () => {});

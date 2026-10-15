@@ -10,13 +10,13 @@ import {
 import type { Task } from "../types";
 
 // ⌘K 命令面板：任务标题 + 会话标题聚合搜索，键盘上下选择 + 回车跳转。
-// 任务 → 主窗口切视图并进入编辑；会话 → 发 chat-focus-session 事件让挂件
+// 任务 → 主窗口切视图并进入编辑；会话 → 发 chat-focus-session 事件让聊天窗
 // 展开并切换（ChatPanel/WidgetApp 各自监听）。数据：tasks 来自 props 快照，
 // 会话在挂载时经 bot_sessions_load 现读（失败静默为空，面板仍可搜任务）。
 // 无 open prop：由使用方条件挂载（{open && <CommandPalette/>}），
 // 每次打开都是全新实例，输入/选中态天然复位。
 
-/** 挂件聊天会话（与 ChatPanel 的 Session 同形；独立声明避免跨目录耦合） */
+/** 聊天会话（与 ChatPanel 的 Session 同形；独立声明避免跨目录耦合） */
 type PaletteSession = { id: string; title: string };
 
 type Row =

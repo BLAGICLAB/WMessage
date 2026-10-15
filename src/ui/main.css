@@ -361,20 +361,6 @@
     color: var(--bubble-chip-fg, #26304a);
   }
 
-  /* === 挂件分栏面板：分缝处 1px 接缝线 === */
-  .nm-sidebar-panel {
-    @apply p-4;
-    background-color: var(--surface);
-    border-top: 1px solid var(--edge);
-    transition: background-color 0.15s ease;
-  }
-  .nm-sidebar-panel-top {
-    @apply p-4;
-    background-color: var(--surface);
-    border-bottom: 1px solid var(--edge);
-    transition: background-color 0.15s ease;
-  }
-
   /* === 助手回复 Markdown 渲染（md-body 容器内） === */
   /* 行距紧凑：气泡小字号下 leading-relaxed 过松，此处统一收紧 */
   .md-body {
