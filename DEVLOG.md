@@ -25,11 +25,17 @@ token、结果不确定。而真实需求（每月工资单匹配、学生名册
 bot-config `tools.ask_budget`（默认 3、钳 1..=5 不变）。老库自定义值不迁移——
 单用户、低频旋钮，回默认值的代价小于写一条迁移链。
 
-**数据留档口径**：workflows / brief_entries / workflow_audit / workflow_settings
-四张表与 `origin='workflow'` 的卡片**留而不删**——open_db 不再建表（新库无）、
-代码不再读写（老库冻结）；这些卡回到看板按普通卡展示（画布可见性开关随之删除）。
-ask 通知 kind 沿用 `workflow_question` 字符串——它是库内历史行的主键语义，改了
-旧通知就对不上应答端。
+**数据清扫口径**：开发阶段测试数据无保留价值，遗留数据**直接删**——open_db 挂
+一次性清扫（`cleanup_retired_workflow_tables`，幂等，以 workflows 表存在为闸）：
+老库 DROP 掉 workflows / brief_entries / workflow_audit / workflow_settings 四表、
+硬删 `origin='workflow'` 的任务卡与旧提问通知；已清库/新装库查一次 sqlite_master
+即返回。闸门用「workflows 表存在」而不是另立版本标记——表本身就是「清过没有」
+的天然标记，少一个迁移状态位。
+
+**kind 正名**：原计划 ask 通知沿用 `workflow_question` 遗留名（保历史行兼容），
+历史行既然删了，兼容理由不复存在——kind 改名 `task_question`，代码不再背
+画布时代的名。改名与清扫必须同一提交：先跑旧版再跑新版会出现「旧 kind 行
+永远无人应答」的悬挂窗口；同提交内老库升级即清即换，无中间态。
 
 **下一步**：工作流这个名字让位给「工具箱」——大模型开发的确定性小程序
 （脚本 + 输入声明，运行态零 LLM），开发态 = 聊天即 IDE（看真实文件问规格）。

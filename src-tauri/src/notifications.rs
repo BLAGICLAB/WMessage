@@ -31,10 +31,9 @@ pub const KIND_MEMORY: &str = "memory_proposal";
 pub const KIND_EVOLUTION: &str = "evolution_proposal";
 pub const KIND_ARTIFACT: &str = "artifact_bind";
 /// 任务执行提问（ask_user）：ask 端落队列、应答端 `ask_respond` 处理。
-/// kind 字符串是遗留名（库内历史行沿用，改了就对不上旧数据）；
 /// payload = {questionId, taskId, nodeTitle, question, why, options, assumption, createdAt}
-/// （旧行可能还带 workflowId/workflowName/runStartedAt，应答端按缺省容错）
-pub const KIND_WORKFLOW_QUESTION: &str = "workflow_question";
+/// （画布时代旧 kind=workflow_question 的历史行由 open_db 退役清扫一次性删除）
+pub const KIND_TASK_QUESTION: &str = "task_question";
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]

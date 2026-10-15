@@ -43,7 +43,7 @@ const KIND_META: Record<
     icon: <FolderInput size={15} aria-hidden />,
     label: "产物绑定",
   },
-  workflow_question: {
+  task_question: {
     icon: <HelpCircle size={15} aria-hidden />,
     label: "任务提问",
   },
@@ -510,7 +510,7 @@ export function NotificationsPage() {
                     <MemoryCard item={n} />
                   ) : n.kind === "evolution_proposal" ? (
                     <EvolutionCard item={n} />
-                  ) : n.kind === "workflow_question" ? (
+                  ) : n.kind === "task_question" ? (
                     <TaskQuestionCard item={n} />
                   ) : (
                     <ArtifactCard item={n} />

@@ -87,6 +87,108 @@ pub fn ensure_meta_tables(conn: &rusqlite::Connection) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// 画布工作流退役清扫（幂等）：以 `workflows` 表存在为闸——老库一次性删掉四张
+/// 遗留表、`origin='workflow'` 的任务卡和旧提问通知；已清库/新装库无此表，查一次
+/// sqlite_master 即返回，零成本。任务卡走硬删（绑定的文件清单存在行内 files 列，
+/// 无独立绑定表，不存在孤儿）。
+pub fn cleanup_retired_workflow_tables(conn: &rusqlite::Connection) -> Result<(), String> {
+    let had_workflows: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workflows'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|v| v == 1)
+        .unwrap_or(false);
+    if !had_workflows {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS workflows;
+         DROP TABLE IF EXISTS brief_entries;
+         DROP TABLE IF EXISTS workflow_audit;
+         DROP TABLE IF EXISTS workflow_settings;
+         DELETE FROM tasks WHERE origin = 'workflow';
+         DELETE FROM notifications WHERE kind = 'workflow_question';",
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod retired_cleanup_tests {
+    use super::cleanup_retired_workflow_tables;
+
+    /// 清扫涉及的最小表结构（tasks/notifications 是老库必有的共享表）
+    fn setup_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (
+               id     TEXT PRIMARY KEY,
+               title  TEXT NOT NULL,
+               col    TEXT NOT NULL,
+               origin TEXT
+             );
+             CREATE TABLE notifications (
+               id         TEXT PRIMARY KEY,
+               kind       TEXT NOT NULL,
+               title      TEXT NOT NULL,
+               body       TEXT NOT NULL,
+               payload    TEXT NOT NULL,
+               status     TEXT NOT NULL,
+               created_at INTEGER
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn drops_legacy_tables_and_rows_once() {
+        let conn = setup_conn();
+        // 老库形态：四表 + workflow 卡 + 旧 kind 通知 + 一张普通卡
+        conn.execute_batch(
+            "CREATE TABLE workflows (id TEXT PRIMARY KEY);
+             CREATE TABLE brief_entries (id TEXT PRIMARY KEY);
+             CREATE TABLE workflow_audit (id TEXT PRIMARY KEY);
+             CREATE TABLE workflow_settings (key TEXT PRIMARY KEY);
+             INSERT INTO workflows (id) VALUES ('wf1');
+             INSERT INTO notifications (id, kind, title, body, payload, status, created_at)
+               VALUES ('n1', 'workflow_question', 't', '', '{}', 'pending', 1);
+             INSERT INTO tasks (id, title, col, origin) VALUES ('t-wf', '画布卡', 'todo', 'workflow');
+             INSERT INTO tasks (id, title, col, origin) VALUES ('t-user', '普通卡', 'todo', NULL);",
+        )
+        .unwrap();
+        cleanup_retired_workflow_tables(&conn).unwrap();
+        let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('workflows','brief_entries','workflow_audit','workflow_settings')"), 0);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM tasks WHERE origin = 'workflow'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM notifications WHERE kind = 'workflow_question'"),
+            0
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM tasks WHERE id = 't-user'"),
+            1,
+            "普通卡不受影响"
+        );
+        // 幂等：二跑不再有可清对象，也不报错
+        cleanup_retired_workflow_tables(&conn).unwrap();
+    }
+
+    #[test]
+    fn fresh_db_without_workflows_table_is_noop() {
+        let conn = setup_conn();
+        cleanup_retired_workflow_tables(&conn).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+}
+
 /// 可重试的一次性执行——done 未置位时跑 exec，仅成功才置位
 pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
     done: &std::sync::atomic::AtomicBool,

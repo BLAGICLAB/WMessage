@@ -229,6 +229,8 @@ pub fn open_db<R: tauri::Runtime>(
         .map_err(|e| e.to_string())?;
     // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
     migrations::ensure_meta_tables(&conn)?;
+    // 画布工作流退役清扫（幂等）：老库删遗留表与数据行，已清/新库零成本跳过
+    migrations::cleanup_retired_workflow_tables(&conn)?;
     // 执行痕迹三表（exec_traces/exec_spans/file_changes，Agent 透明化设计 §4.1），幂等
     // （含旧库 model 列迁移，词元统计按模型聚合依赖）
     crate::db::trace::ensure_trace_tables(&conn).map_err(|e| e.to_string())?;

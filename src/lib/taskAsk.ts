@@ -1,11 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
-/** 任务执行提问通知 payload（notifications 表 kind=workflow_question，遗留名含库内
- *  历史行；旧行可能带 workflowId/workflowName，按可选容错） */
+/** 任务执行提问通知 payload（notifications 表 kind=task_question） */
 export interface TaskQuestionPayload {
   questionId: string;
-  workflowId?: string | null;
-  workflowName?: string;
   taskId?: string;
   nodeTitle?: string;
   question: string;

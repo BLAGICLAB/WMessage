@@ -7,7 +7,7 @@ export interface NotificationItem {
     | "memory_proposal"
     | "evolution_proposal"
     | "artifact_bind"
-    | "workflow_question";
+    | "task_question";
   title: string;
   body: string;
   payload: Record<string, unknown> | null;

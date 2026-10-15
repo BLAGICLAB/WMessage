@@ -354,7 +354,7 @@ pub(crate) async fn engine_ask_user(
         crate::notifications::notif_insert(
             &conn,
             &question_notif_id(&qid_insert),
-            crate::notifications::KIND_WORKFLOW_QUESTION,
+            crate::notifications::KIND_TASK_QUESTION,
             &title,
             &body,
             &payload,
@@ -473,7 +473,7 @@ mod tests {
         crate::notifications::notif_insert(
             conn,
             &question_notif_id(&qid),
-            crate::notifications::KIND_WORKFLOW_QUESTION,
+            crate::notifications::KIND_TASK_QUESTION,
             "任务卡提问",
             "投放哪个平台？",
             &payload,

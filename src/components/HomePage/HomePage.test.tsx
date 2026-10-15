@@ -82,7 +82,7 @@ const TRACES: TraceRow[] = [
 const NOTIFICATIONS = [
   {
     id: "n1",
-    kind: "workflow_question" as const,
+    kind: "task_question" as const,
     title: "「周报生成」问你：周报收件人是谁？",
     body: "",
     payload: null,
