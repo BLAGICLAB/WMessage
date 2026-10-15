@@ -80,7 +80,6 @@ import {
   PANEL_W_MAX,
   PANEL_W_MIN,
   SPLITTER_H,
-  STRIP_H,
   STRIP_W,
   TOP_Y,
   CHAT_H_MIN,
@@ -301,11 +300,10 @@ export default function WidgetApp() {
         y: TOP_Y,
         edge: "right",
       };
-      const top = anchor.edge === "top";
-      // 恢复前夹回当前屏内：拔掉第二显示器后存下的 x/y 会整窗出屏且永远够不着
-      // clamp 必须按窗口当前尺寸收口：top edge 横向条宽 STRIP_H，纵向条 STRIP_W
-      const winW = top ? STRIP_H : STRIP_W;
-      const winH = top ? STRIP_W : STRIP_H;
+      // 恢复前夹回当前屏内：拔掉第二显示器后存下的 x/y 会整窗出屏且永远够不着；
+      // 启动即收起态，尺寸必须与 collapse() 同口径（四边一致的 STRIP_W 方形）
+      const winW = STRIP_W;
+      const winH = STRIP_W;
       anchor.x = Math.min(Math.max(anchor.x, 0), Math.max(0, sw - winW));
       anchor.y = Math.min(Math.max(anchor.y, 0), Math.max(0, sh - winH));
       anchorRef.current = anchor;

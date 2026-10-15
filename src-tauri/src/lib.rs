@@ -448,7 +448,7 @@ pub fn run() {
                 );
             }
 
-            // M4：系统侧边磁吸挂件窗口（贴边收起为触发条，悬停滑出）
+            // M4：系统侧边磁吸挂件窗口（收起为 44×44 商标方块，点击展开）
             tauri::WebviewWindowBuilder::new(
                 app,
                 "widget",
@@ -464,7 +464,7 @@ pub fn run() {
             .resizable(false)
             .maximizable(false)
             .minimizable(false)
-            .inner_size(44.0, 220.0)
+            .inner_size(44.0, 44.0)
             .build()?;
 
             // M5 全局快捷键：唤起/隐藏主窗口 + 快速新建任务（键位见 run() 顶部注释）。

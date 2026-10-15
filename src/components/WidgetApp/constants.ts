@@ -1,9 +1,8 @@
 // WidgetApp 子模块：常量 + localStorage key。
 // 由同目录其他子文件 + 主文件 import。
 
-// 收起为触发条 / 展开为侧边面板
+// 收起为商标方块 / 展开为侧边面板
 export const STRIP_W = 44;
-export const STRIP_H = 220;
 export const PANEL_W = 480;
 export const PANEL_H = 560;
 export const TOP_Y = 140; // 默认贴右缘的初始 Y
