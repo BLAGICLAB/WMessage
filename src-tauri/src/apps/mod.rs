@@ -20,6 +20,7 @@ use crate::db::apps::{App, AppRun};
 use crate::py::runtime::{self, PyRunResult, OUTPUT_CAP};
 
 pub mod commands;
+pub mod manage;
 
 /// runner 结果（含哨兵解析 + 产物路径）。serde camelCase 出给前端
 #[derive(Serialize, Debug, Clone)]
@@ -129,6 +130,9 @@ pub fn run(
             .or_else(|| Some(v.to_string())),
         None => None,
     };
+    // M2 摘要截断（`docs/APP-DEV-CONVENTIONS.md` §5）：>300 字符截断 + 标记，
+    // 指回 output/<run_id>/ 看完整产物；库、通知、程序页历史同源生效
+    let summary = bound_summary(summary, run_id);
     {
         let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
         db::finish_app_run(
@@ -163,6 +167,19 @@ pub fn recent_runs(
 ) -> Result<Vec<AppRun>, String> {
     let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
     db::list_app_runs(&conn, app_id, limit)
+}
+
+/// summary 字符上限：超限截断 + 标记（M2，规范 §5「摘要截断」）
+pub const SUMMARY_MAX_CHARS: usize = 300;
+
+fn bound_summary(summary: Option<String>, run_id: i64) -> Option<String> {
+    summary.map(|s| {
+        if s.chars().count() <= SUMMARY_MAX_CHARS {
+            return s;
+        }
+        let head: String = s.chars().take(SUMMARY_MAX_CHARS).collect();
+        format!("{head}……（摘要超 {SUMMARY_MAX_CHARS} 字符已截断，完整产物见 output/{run_id}/）")
+    })
 }
 
 pub fn preflight_script<R: tauri::Runtime>(
@@ -217,5 +234,21 @@ mod tests {
     #[test]
     fn parse_result_sentinel_invalid_json_keeps_none() {
         assert!(parse_result_sentinel("##RESULT## not json\n").is_none());
+    }
+
+    #[test]
+    fn bound_summary_passes_short_and_truncates_long_with_pointer() {
+        assert_eq!(bound_summary(Some("短摘要".into()), 7).unwrap(), "短摘要");
+        assert!(bound_summary(None, 7).is_none());
+        let long = "长".repeat(SUMMARY_MAX_CHARS + 50);
+        let got = bound_summary(Some(long), 42).unwrap();
+        assert!(got.contains("已截断"), "{got}");
+        assert!(got.contains("output/42/"), "{got}");
+        // 截断后总长有界：300 正文 + 稳定后缀
+        assert!(
+            got.chars().count() < SUMMARY_MAX_CHARS + 80,
+            "{}",
+            got.chars().count()
+        );
     }
 }

@@ -14,8 +14,8 @@ import {
   AppInputField,
   AppRun,
   createApp,
+  listActiveApps,
   listAppRuns,
-  listEnabledApps,
   openAppOutput,
   parseInputSchema,
   runApp,
@@ -57,7 +57,7 @@ export function AppsPage() {
   }, []);
 
   const reload = useCallback(() => {
-    listEnabledApps()
+    listActiveApps()
       .then((list) => {
         setApps(list);
         setLoaded(true);
@@ -185,6 +185,7 @@ function AppCard({
       <div className="flex items-center gap-1.5 text-[10px] text-[var(--t5)]">
         <LastRunLine run={lastRun} />
         <span className="flex-1" />
+        {app.status === "draft" && <DraftBadge />}
         <span className="nm-tag text-[10px]">
           {inputKind === "form" ? "表单" : "文件夹"}
         </span>
@@ -253,6 +254,23 @@ function LastRunLine({ run }: { run: AppRun | null | undefined }) {
     <span className="inline-flex items-center gap-1.5">
       {dot(ok ? "bg-[var(--success)]" : "bg-[var(--danger)]")}
       {ok ? "上次成功" : "上次失败"} · {relativeTime(run.startedAt)}
+    </span>
+  );
+}
+
+/** 草稿徽章（M2）：AI 创建的草稿程序，可试跑、满意后由 AI 置 enabled 上架 */
+function DraftBadge() {
+  return (
+    <span
+      className="nm-tag text-[10px]"
+      title="AI 开发中的草稿程序：可试跑，满意后让 AI 上架"
+      style={{
+        color: "var(--plan-amber)",
+        borderColor: "color-mix(in srgb, var(--plan-amber) 40%, transparent)",
+        background: "color-mix(in srgb, var(--plan-amber) 10%, transparent)",
+      }}
+    >
+      草稿
     </span>
   );
 }

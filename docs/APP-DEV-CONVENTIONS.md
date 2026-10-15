@@ -148,10 +148,17 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
 - 三个 Tauri 命令已就位：`apps_list_enabled` / `apps_get` / `apps_run` / `apps_create` / `apps_update` / `apps_archive` / `apps_runs_list` / `apps_preflight`
 - 三个约束验证：脚本可读+非空、id 路径分隔符检查、status 枚举
 
-**M2**：
-- 三个 bot 工具进 TOOLS_TABLE：`apps_create`（落库草稿）/ `apps_update`（改脚本+manifest）/ `apps_list`（列已有防重名）
-- AI 改写时**整文件集提交**（不只单字段），避免与 LLM 增量编辑的复杂合并
-- 脚本类型校验：`inputSchema.form.fields` 类型必须是 `text` / `number` / `date` 三选一
+**M2（2026-10-15 已落地）**：
+- 三个 bot 工具进 TOOLS_TABLE：`apps_list`（列非归档程序防重名）/ `apps_create`
+  （落库**草稿** + 文件集落盘）/ `apps_update_files`（整文件集修改，定名取「整文件
+  集提交」语义；本节草案曾用名 `apps_update` 作废）
+- AI 改写时**整文件集提交**（不只单字段），避免与 LLM 增量编辑的复杂合并：
+  `script` 传了就整体重写 `app.py`（不收 diff/片段），其余字段不传 = 保持不变
+- 脚本类型校验：`inputSchema.form.fields` 类型必须是 `text` / `number` / `date`
+  三选一；§2 的 manifest 长度契约在 Tauri `apps_create` 与两个 bot 工具三口同校验
+- 试跑闭环：草稿在程序页可见（草稿徽章）且可运行，`apps_run` 只拒绝 archived；
+  上架 = AI 在用户明确满意后调 `apps_update_files` 传 `status="enabled"`
+- 附加文件边界：bot 工具只允许写 `data/` 之下（input/ 归用户、output/ 归运行）
 - 摘要截断：summary > 300 字符截断 + 标记截断，提示用户去 `output/<run_id>/` 看完整产物
 
 ## 6. 真机验收清单（M1 后）

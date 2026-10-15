@@ -39,6 +39,19 @@ const APPS: App[] = [
     createdAt: 1,
     updatedAt: 2,
   },
+  {
+    id: "ai-draft",
+    name: "竞品截图归档",
+    description: "AI 开发中的草稿",
+    icon: "📷",
+    inputSchema: '{"kind":"folder"}',
+    scriptPath: "app.py",
+    manual: "",
+    status: "draft",
+    enabledAt: null,
+    createdAt: 1,
+    updatedAt: 3,
+  },
 ];
 
 const RUN_OK: AppRun = {
@@ -66,7 +79,7 @@ const RUN_RESULT: AppRunResult = {
 
 function routeInvoke(cmd: string, args: Record<string, unknown>) {
   switch (cmd) {
-    case "apps_list_enabled":
+    case "apps_list_active":
       return Promise.resolve(APPS);
     case "apps_runs_list":
       return Promise.resolve(args.appId === "wage-match" ? [RUN_OK] : []);
@@ -86,17 +99,19 @@ beforeEach(() => {
 });
 
 describe("AppsPage", () => {
-  it("列表渲染：卡片名/输入模式徽章/上次运行状态线", async () => {
+  it("列表渲染：卡片名/输入模式徽章/上次运行状态线/草稿徽章", async () => {
     render(<AppsPage />);
     expect(await screen.findByText("工资单匹配")).toBeInTheDocument();
     expect(screen.getByText("日报汇总")).toBeInTheDocument();
-    // wage-match 有成功记录（1 小时前）；daily-report 无记录 → 尚未运行
+    // wage-match 有成功记录（1 小时前）；daily-report / ai-draft 无记录 → 尚未运行
     expect(screen.getByText("上次成功 · 1 小时前")).toBeInTheDocument();
-    expect(screen.getByText("尚未运行")).toBeInTheDocument();
-    expect(screen.getByText("文件夹")).toBeInTheDocument();
+    expect(screen.getAllByText("尚未运行")).toHaveLength(2);
+    expect(screen.getAllByText("文件夹")).toHaveLength(2);
     expect(screen.getByText("表单")).toBeInTheDocument();
+    // draft 程序带「草稿」徽章（M2 草稿可试跑）
+    expect(screen.getByText("草稿")).toBeInTheDocument();
     // 头部计数徽章
-    expect(screen.getByText("2 个")).toBeInTheDocument();
+    expect(screen.getByText("3 个")).toBeInTheDocument();
   });
 
   it("点「运行」调 apps_run 并显示完成横幅（含耗时与摘要）", async () => {

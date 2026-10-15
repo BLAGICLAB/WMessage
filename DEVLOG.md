@@ -6,6 +6,22 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-15（周三）程序 M2「聊天即 IDE」落地：三个 bot 工具 + 草稿试跑闭环
+
+- 工具定名 `apps_update_files`：设计稿 §4 与规范 §5 草案都写的是 `apps_update`，
+  采纳了规范 §7 验收清单里的名字——「整文件集提交」是这个工具的核心语义
+  （不收 diff/片段、script 给了就整体重写 app.py），名字里带 files 才不会
+  被模型当成普通字段编辑器。
+- 草稿要可见可跑，三工具才算闭环：设计稿 §4 只列了三个 bot 工具，但它的
+  草稿流（AI 落草稿 → 用户试跑 → 满意上架）隐含两个前置——草稿卡要在程序页
+  可见（新增 `apps_list_active` + 草稿徽章），草稿要能点运行（`apps_run` 的
+  「仅 enabled 可运行」守卫放行 draft、只拦 archived）。这不是给 AI 扩权：
+  试跑本来就是用户在程序页亲手点的，上架（draft→enabled）仍必须由 AI 在
+  用户明确满意后调 `apps_update_files` 完成。
+- manifest 契约从「文档」变「闸门」：M1 定义的长度/类型契约原本只在注释里，
+  现在 `apps_create`（Tauri）与两个 bot 工具三口同校验——手工上架与 AI 上架
+  同规，坏 schema 在门口被拒而不是在运行时炸。
+
 ## 2026-10-15（周三）工作流画布整体退役：从「LLM 每次跑」转向「LLM 写好程序跑」
 
 - `ccac16e` 后端：删 workflow_clarify/decompose/questions/runner + db 层四模块；提问引擎中立化为 `ask_engine`（ask_user + ask_respond），`strip_fences` 迁 `llm_text`，ask_budget 迁 bot 参数 `tools.ask_budget`

@@ -54,9 +54,9 @@ export interface AppRunResult {
   durationMs: number;
 }
 
-/** 程序页可见列表（status=enabled，按 updated_at 倒序） */
-export function listEnabledApps(): Promise<App[]> {
-  return invoke<App[]>("apps_list_enabled");
+/** 程序页 M2 全量视图（草稿 + 已启用，归档不返回），按 updated_at 倒序 */
+export function listActiveApps(): Promise<App[]> {
+  return invoke<App[]>("apps_list_active");
 }
 
 /** 跑一个 app。

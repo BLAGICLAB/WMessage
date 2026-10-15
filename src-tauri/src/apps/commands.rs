@@ -23,6 +23,14 @@ pub async fn apps_list_enabled(app: AppHandle) -> CommandResult<Vec<App>> {
     db_apps::list_enabled_apps(&conn).map_err(CommandError::DbError)
 }
 
+/// 程序页 M2 全量视图（草稿 + 已启用，按 updated_at 倒序）：
+/// 草稿卡带「草稿」徽章可试跑，归档不出现在程序页
+#[tauri::command]
+pub async fn apps_list_active(app: AppHandle) -> CommandResult<Vec<App>> {
+    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
+    db_apps::list_active_apps(&conn).map_err(CommandError::DbError)
+}
+
 /// 详情：管理面板/历史/试跑均用
 #[tauri::command]
 pub async fn apps_get(app: AppHandle, id: String) -> CommandResult<Option<App>> {
@@ -58,11 +66,12 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
     let a = db_apps::get_app(&open_db_or(&app)?, &args.id)
         .map_err(CommandError::DbError)?
         .ok_or_else(|| CommandError::TaskNotFound(args.id.clone()))?;
-    if a.status != "enabled" {
+    // M2 试跑闭环：草稿可运行（AI 创建后用户先试跑再上架）；归档不可运行
+    if a.status == "archived" {
         return Err(CommandError::InvalidArgument {
             field: "id".into(),
             value: a.status.clone(),
-            reason: "仅 enabled 状态可运行".into(),
+            reason: "已归档程序不可运行".into(),
         });
     }
     let (timeout, _) = resolve_timeout(args.timeout_secs);
@@ -94,8 +103,8 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
     Ok(res)
 }
 
-/// 上架（M1 走手工/未来 M2 走 AI）。注意：脚本文件必须已落在
-/// `{data_dir}/apps/<id>/` 下，命令只登记元数据 + 检查脚本可读
+/// 上架（手工路径；M2 起 AI 走 bot 工具 apps_create 落草稿，不走本命令）。
+/// 脚本文件必须已落在 `{data_dir}/apps/<id>/` 下，命令只登记元数据 + 检查脚本可读
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateArgs {
@@ -231,18 +240,22 @@ fn build_app_from_create(app: &AppHandle, args: &CreateArgs) -> Result<App, Comm
     } else {
         None
     };
-    // id 必须是合法相对路径分量（程序目录 `apps/<id>/`，id 里含 `/` 会乱）
-    if args.id.is_empty()
-        || args.id.contains('/')
-        || args.id.contains('\\')
-        || args.id.contains("..")
-    {
-        return Err(CommandError::InvalidArgument {
-            field: "id".into(),
-            value: args.id.clone(),
-            reason: "id 不能为空、不能含路径分隔符或 `..`".into(),
-        });
-    }
+    // M2 起 manifest 契约统一强制（id 分量 / 字段长度 / inputSchema 合法性），
+    // 手工上架与 AI 上架同规（`docs/APP-DEV-CONVENTIONS.md` §2）
+    crate::apps::manage::validate_app_id(&args.id)?;
+    crate::apps::manage::validate_manifest_meta(
+        &args.name,
+        &args.description,
+        &args.icon,
+        &args.manual,
+    )?;
+    crate::apps::manage::validate_input_schema(&args.input_schema).map_err(|reason| {
+        CommandError::InvalidArgument {
+            field: "inputSchema".into(),
+            value: String::new(),
+            reason,
+        }
+    })?;
     // 顺带建 app 目录（让上架=可试跑原子化）
     let dir: PathBuf = apps_runner::app_dir(app, &args.id);
     std::fs::create_dir_all(&dir).map_err(|e| CommandError::DbError(e.to_string()))?;

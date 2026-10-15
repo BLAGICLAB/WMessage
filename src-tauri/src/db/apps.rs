@@ -106,13 +106,21 @@ pub fn upsert_app(conn: &rusqlite::Connection, a: &App) -> Result<(), String> {
 }
 
 pub fn list_enabled_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, name, description, icon, input_schema, script_path, manual, status,
-                    enabled_at, created_at, updated_at
-             FROM apps WHERE status = 'enabled' ORDER BY updated_at DESC",
-        )
-        .map_err(|e| e.to_string())?;
+    list_by_status(conn, "status = 'enabled'")
+}
+
+/// 非归档程序（草稿 + 已启用）：M2 程序页展示与 bot 工具 apps_list 共用
+pub fn list_active_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String> {
+    list_by_status(conn, "status != 'archived'")
+}
+
+fn list_by_status(conn: &rusqlite::Connection, where_clause: &str) -> Result<Vec<App>, String> {
+    let sql = format!(
+        "SELECT id, name, description, icon, input_schema, script_path, manual, status,
+                enabled_at, created_at, updated_at
+         FROM apps WHERE {where_clause} ORDER BY updated_at DESC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| {
             Ok(App {

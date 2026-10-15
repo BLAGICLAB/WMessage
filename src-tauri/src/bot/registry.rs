@@ -303,6 +303,10 @@ pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"us
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"},
     "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
   },"required":["name"]}}}"##;
+// 程序 M2（聊天即 IDE）：apps_list 防重名 / apps_create 落草稿 / apps_update_files 整文件集修改
+pub const SCHEMA_APPS_LIST: &str = r##"{"type":"function","function":{"name":"apps_list","description":"列出当前所有程序（草稿+已启用，不含已归档），每条含 id/名称/状态/一句话说明。创建新程序前必调：防 id 重名、避免做出功能重复的程序","parameters":{"type":"object","properties":{}}}}"##;
+pub const SCHEMA_APPS_CREATE: &str = r####"{"type":"function","function":{"name":"apps_create","description":"把写好的确定性 Python 小程序登记为「程序」（草稿态）：脚本与附加文件落盘 data/apps/<id>/，用户在程序页试跑，满意后再上架。适合每月重复的固定流程（工资单匹配、名册查询等）。创建前先 apps_list 防重名；规格含糊先用 ask_user 问清、用 read_text_file 看用户给的真实样例。脚本契约（必须遵守）：python3 零依赖为佳；开头是校验段——检查 input/ 文件存在、期望列名齐全，对不上向 stderr 打「❌+中文原因」并 sys.exit(2)，宁可响亮失败不许静默空跑；用 sys.argv[1]（app 目录绝对路径）解析 data/ input/ output/，不依赖 cwd；最后一行必须是 print(\"##RESULT## \" + json.dumps({\"summary\":\"人话总结\"}, ensure_ascii=False))，哨兵行前必须有换行，summary 控制在 300 字内；禁联网；敏感数据（身份证号等）放 data/ 配置文件，不硬编码在脚本里","parameters":{"type":"object","properties":{"id":{"type":"string","description":"程序 id=目录名：仅字母/数字/-/_，不能含 / 或 .."},"name":{"type":"string","description":"程序页卡片标题，≤200 字"},"description":{"type":"string","description":"一句话说明（卡片副标题），≤500 字"},"icon":{"type":"string","description":"卡片 emoji 图标，1-4 字符，缺省 📦"},"input_schema":{"description":"输入声明：{\"kind\":\"folder\"}（文件夹模式，推荐）或 {\"kind\":\"form\",\"fields\":[{\"key\",\"label\",\"type\":\"text|number|date\",\"required\",\"placeholder\"}]}；缺省=文件夹模式"},"script":{"type":"string","description":"完整 app.py 源码全文（不许片段或 diff）"},"files":{"type":"array","description":"可选附加文件，只允许 data/ 之下（如姓名-身份证对照表 csv）","items":{"type":"object","properties":{"path":{"type":"string","description":"相对路径，如 data/roster.csv"},"content":{"type":"string","description":"文件全文"}}}},"manual":{"type":"string","description":"给用户看的使用说明：这个程序做什么、要放什么文件、点哪里、出什么，≤8000 字"}},"required":["id","name","script"]}}}"####;
+pub const SCHEMA_APPS_UPDATE_FILES: &str = r####"{"type":"function","function":{"name":"apps_update_files","description":"修改已有程序（整文件集提交）：改脚本必须传完整新 script 全文（不做增量合并、不收 diff）；也可改输入声明/名称/说明/图标/说明书。status=\"enabled\" 表示上架启用（务必等用户在聊天里明确满意后再传），status=\"draft\" 回草稿；归档是用户在程序页的主动操作，工具不受理。脚本契约同 apps_create（开头校验段 + ##RESULT## 哨兵收尾 + argv[1] 解析目录 + 禁联网）。程序不存在或已归档会被拒绝","parameters":{"type":"object","properties":{"id":{"type":"string","description":"要修改的程序 id（先 apps_list 查）"},"script":{"type":"string","description":"完整 app.py 源码全文；不传=脚本不动"},"files":{"type":"array","description":"附加文件（只允许 data/ 之下），同名整体覆盖","items":{"type":"object","properties":{"path":{"type":"string","description":"相对路径，如 data/roster.csv"},"content":{"type":"string","description":"文件全文"}}}},"name":{"type":"string","description":"新标题；不传=保持不变"},"description":{"type":"string","description":"新说明；不传=保持不变"},"icon":{"type":"string","description":"新 emoji 图标；不传=保持不变"},"input_schema":{"description":"输入声明（对象或 JSON 串）；不传=保持不变"},"manual":{"type":"string","description":"新使用说明；不传=保持不变"},"status":{"type":"string","description":"draft 或 enabled（enabled=上架启用，需用户先明确满意）"}},"required":["id"]}}}"####;
 // 工作流执行提问（主可见）
 pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask_user","description":"向用户提一个问题并等待回答（仅任务执行中可用：工作流节点与手动执行的任务卡；聊天中不要用本工具，直接文字提问即可。提问会进通知中心，用户可能几小时后才回答）。必须携带 assumption=你的推荐假设：用户不回答时按假设继续，给不出假设的问题不许问。仅当缺关键信息且无法从任务卡/上游产出/附件推断时才用；预算为全局设置（1–5，默认 3，工作流与任务卡共用），超预算直接按假设继续","parameters":{"type":"object","properties":{
     "question":{"type":"string","description":"要问的问题，≤200 字，具体明确"},
@@ -517,6 +521,18 @@ fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 
 fn call_create_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_create_skill(ctx.app, args).await })
+}
+
+fn call_apps_list<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::apps::manage::tool_apps_list(ctx.app, args).await })
+}
+
+fn call_apps_create<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::apps::manage::tool_apps_create(ctx.app, args).await })
+}
+
+fn call_apps_update_files<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::apps::manage::tool_apps_update_files(ctx.app, args).await })
 }
 
 fn call_use_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -1073,6 +1089,31 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_write_file,
     },
+    // 程序 M2（聊天即 IDE）：apps_list 防重名 / apps_create 落草稿 / apps_update_files 整文件集修改
+    ToolDef {
+        name: "apps_list",
+        schema: SCHEMA_APPS_LIST,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_apps_list,
+    },
+    ToolDef {
+        name: "apps_create",
+        schema: SCHEMA_APPS_CREATE,
+        mutating: true,
+        claims_patterns: &["已创建程序", "已新建程序", "已登记程序", "程序已创建"],
+        max_output_chars: 8192,
+        call: call_apps_create,
+    },
+    ToolDef {
+        name: "apps_update_files",
+        schema: SCHEMA_APPS_UPDATE_FILES,
+        mutating: true,
+        claims_patterns: &["已更新程序", "已修改程序", "程序已更新", "已上架"],
+        max_output_chars: 8192,
+        call: call_apps_update_files,
+    },
     // 子 agent 白名单工具（不进主 agent 默认 schema）
     ToolDef {
         name: "write_artifact_file",
@@ -1317,17 +1358,18 @@ mod registry_tests {
     }
 
     #[test]
-    fn tools_table_contains_39_main_visible_tools() {
+    fn tools_table_contains_42_main_visible_tools() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
         // 主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两 + ask_user
-        // + create_skill（机器人自建技能）；write_artifact_file / read_own_card 仅子 agent 可见
-        assert_eq!(arr.len(), 39, "主 agent 可见工具必须为 39");
+        // + create_skill（机器人自建技能）+ apps 三（程序 M2 聊天即 IDE）；
+        // write_artifact_file / read_own_card 仅子 agent 可见
+        assert_eq!(arr.len(), 42, "主 agent 可见工具必须为 42");
         assert_eq!(
             TOOLS_TABLE.len(),
-            41,
-            "TOOLS_TABLE 全量 41（含 2 个 subagent-only）"
+            44,
+            "TOOLS_TABLE 全量 44（含 2 个 subagent-only）"
         );
 
         let mut seen: HashSet<String> = HashSet::new();
@@ -1392,6 +1434,9 @@ mod registry_tests {
             "screenshot",
             "edit_file",
             "write_file",
+            "apps_list",
+            "apps_create",
+            "apps_update_files",
             "ask_user",
         ]
         .iter()
@@ -1448,6 +1493,9 @@ mod registry_tests {
             "screenshot",
             "edit_file",
             "write_file",
+            "apps_list",
+            "apps_create",
+            "apps_update_files",
             "ask_user",
         ]
         .iter()
@@ -1481,6 +1529,8 @@ mod registry_tests {
             "edit_file",
             "write_file",
             "create_skill",
+            "apps_create",
+            "apps_update_files",
         ]
         .into_iter()
         .collect();
@@ -1517,8 +1567,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 11,
-            "主可见应为 28+3+4+2+1+1（含 ask_user 与 create_skill）"
+            base_arr.len() + 14,
+            "主可见应为 28+3+4+2+1+1+3（含 ask_user、create_skill 与 apps 三工具）"
         );
     }
 
@@ -1867,12 +1917,12 @@ mod registry_tests {
         let arr = v.as_array().unwrap();
         assert_eq!(
             arr.len(),
-            40,
-            "39 内置（含 ask_user 与 create_skill）+ 1 假 MCP"
+            43,
+            "42 内置（含 ask_user、create_skill 与 apps 三工具）+ 1 假 MCP"
         );
-        assert_eq!(arr[39]["function"]["name"], "mcp_fake_x");
-        // 内置前 39 项顺序不变（增量挂载不漂移）
+        assert_eq!(arr[42]["function"]["name"], "mcp_fake_x");
+        // 内置前 42 项顺序不变（增量挂载不漂移）
         let base_arr = serde_json::from_str::<serde_json::Value>(base).unwrap();
-        assert_eq!(&arr[..39], base_arr.as_array().unwrap().as_slice());
+        assert_eq!(&arr[..42], base_arr.as_array().unwrap().as_slice());
     }
 }
