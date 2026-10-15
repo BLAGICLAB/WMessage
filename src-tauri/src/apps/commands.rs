@@ -175,6 +175,23 @@ pub async fn apps_update(app: AppHandle, args: UpdateArgs) -> CommandResult<App>
     Ok(next)
 }
 
+/// 在系统文件管理器中打开程序的 output/ 目录（不存在则先创建）。
+/// 返回打开的目录路径。路径由 id 派生（id 已是路径分量校验过的），
+/// 用户主动点击触发，无 LLM 参与——不走 bot 工具的白名单闸。
+#[tauri::command]
+pub async fn apps_open_output(app: AppHandle, id: String) -> CommandResult<String> {
+    db_apps::get_app(&open_db_or(&app)?, &id)
+        .map_err(CommandError::DbError)?
+        .ok_or_else(|| CommandError::TaskNotFound(id.clone()))?;
+    let dir = apps_runner::app_dir(&app, &id).join("output");
+    std::fs::create_dir_all(&dir).map_err(|e| CommandError::DbError(e.to_string()))?;
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .reveal_item_in_dir(&dir)
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /// 归档（程序页可隐藏，但仍可查 + 试跑）
 #[tauri::command]
 pub async fn apps_archive(app: AppHandle, id: String) -> CommandResult<App> {

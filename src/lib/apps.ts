@@ -99,6 +99,12 @@ export function listAppRuns(appId: string, limit = 20): Promise<AppRun[]> {
   return invoke<AppRun[]>("apps_runs_list", { appId, limit });
 }
 
+/** 在系统文件管理器中打开程序的 output/ 目录（不存在则先建）。
+ *  返回打开的目录绝对路径 */
+export function openAppOutput(appId: string): Promise<string> {
+  return invoke<string>("apps_open_output", { id: appId });
+}
+
 /** 解析 inputSchema JSON 串为对象（解析失败 = null，让 UI 走文件夹模式兜底） */
 export function parseInputSchema(
   raw: string,

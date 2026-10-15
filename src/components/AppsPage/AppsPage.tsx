@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Plus, Play, History, FileText } from "lucide-react";
+import { Plus, Play, History, FileText, FolderOpen } from "lucide-react";
 import {
   App,
   AppInputField,
@@ -7,6 +7,7 @@ import {
   createApp,
   listAppRuns,
   listEnabledApps,
+  openAppOutput,
   parseInputSchema,
   runApp,
 } from "../../lib/apps";
@@ -131,6 +132,18 @@ function AppCard({ app, running, onRun }: { app: App; running: boolean; onRun: (
           <History size={11} aria-hidden className="mr-1 inline" />
           {historyOpen ? "收起历史" : "历史"}
         </button>
+        <button
+          className="nm-btn rounded-lg px-3 py-1 text-xs text-[var(--t3)]"
+          title="在系统文件管理器中打开 output/"
+          onClick={() => {
+            openAppOutput(app.id).catch((e) =>
+              handleCommandError(e, "打开产物目录"),
+            );
+          }}
+        >
+          <FolderOpen size={11} aria-hidden className="mr-1 inline" />
+          产物
+        </button>
         <span className="ml-auto text-[10px] text-[var(--t5)]">
           {app.scriptPath}
         </span>
@@ -197,8 +210,19 @@ function ResultBanner({
     <div className="nm-inset flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-[var(--t3)]">
       <span className="shrink-0 text-[var(--success)]">✓</span>
       <span className="flex-1 truncate">
-        「{result.appName}」运行完成 — 详情见通知
+        「{result.appName}」运行完成
       </span>
+      <button
+        type="button"
+        className="shrink-0 text-[var(--t4)] hover:text-[var(--t2)] underline"
+        onClick={() => {
+          openAppOutput(result.appId).catch((e) =>
+            handleCommandError(e, "打开产物目录"),
+          );
+        }}
+      >
+        打开产物目录
+      </button>
       <button
         type="button"
         className="text-[var(--t5)] hover:text-[var(--t2)]"

@@ -582,6 +582,7 @@ pub fn run() {
             crate::apps::commands::apps_archive,
             crate::apps::commands::apps_runs_list,
             crate::apps::commands::apps_preflight,
+            crate::apps::commands::apps_open_output,
             crate::bot_scheduler::schedule_overview,
             crate::bot_scheduler::schedule_set_enabled,
             crate::bot_scheduler::scheduled_job_fire,
