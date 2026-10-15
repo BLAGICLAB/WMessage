@@ -2,7 +2,13 @@
 // 1260 → 900 行：constants / storage / ResizeEdge / SplitBar / SortableTaskCard /
 // SortableWorkspaceCard 拆到同目录子文件，本文件保留 hooks + handlers + JSX render。
 //
-import { FileText, Folder, GripVertical, Link2, Lock, Pin } from "lucide-react";
+import {
+  FileText,
+  Folder,
+  GripVertical,
+  Link2,
+  Minimize2,
+} from "lucide-react";
 //
 // 公开 import 路径保持稳定：外部 `import WidgetApp from "./components/WidgetApp"`
 // （默认导入），Vite 解析到 `./WidgetApp/index.tsx` → 透传 `./WidgetApp.tsx` 的 default。
@@ -106,7 +112,6 @@ export default function WidgetApp() {
   const tasksRef = useRef<Task[]>([]);
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [expanded, setExpanded] = useState(false);
-  const [locked, setLocked] = useState(false);
   const [view, setView] = useState<"all" | "today" | "done" | "workspace">(
     "all",
   );
@@ -364,7 +369,7 @@ export default function WidgetApp() {
   };
 
   const collapse = async () => {
-    if (locked || widgetDragActive) return;
+    if (widgetDragActive) return;
     const win = getCurrentWindow();
     const pos = await win.outerPosition();
     const size = await win.outerSize();
@@ -380,12 +385,8 @@ export default function WidgetApp() {
     setEdge(anchor.edge);
     saveAnchor(anchor);
     await win.setPosition(new LogicalPosition(anchor.x, anchor.y));
-    await win.setSize(
-      new LogicalSize(
-        anchor.edge === "top" ? STRIP_H : STRIP_W,
-        anchor.edge === "top" ? STRIP_W : STRIP_H,
-      ),
-    );
+    // 收起 = 商标大小的方形（44×44），四边一致；不再有 220 高触发条
+    await win.setSize(new LogicalSize(STRIP_W, STRIP_W));
     setExpanded(false);
   };
 
@@ -692,10 +693,9 @@ export default function WidgetApp() {
           <div
             className={`${
               edge === "top" ? "nm-sidebar-panel-top" : "nm-sidebar-panel"
-            } ${edgeClass} !p-2 w-full h-full flex ${
-              edge === "top" ? "flex-row" : "flex-col"
-            } items-center justify-center gap-2 cursor-pointer select-none`}
-            onMouseEnter={expand}
+            } ${edgeClass} !p-2 w-full h-full flex items-center justify-center cursor-pointer select-none`}
+            onClick={expand}
+            title="点击展开挂件"
           >
             <img
               src={widgetLogo}
@@ -703,14 +703,6 @@ export default function WidgetApp() {
               alt="WMessage"
               draggable={false}
             />
-            <span
-              className="text-[var(--t4)] text-xs tracking-widest"
-              style={
-                edge === "top" ? undefined : { writingMode: "vertical-rl" }
-              }
-            >
-              WMessage
-            </span>
           </div>
         )}
         {
@@ -721,7 +713,6 @@ export default function WidgetApp() {
               height: panelH(botOn),
               ...(expanded ? undefined : { display: "none" }),
             }}
-            onMouseLeave={collapse}
           >
             {expanded && (edge === "right" || edge === "left") && (
               <>
@@ -1124,19 +1115,11 @@ export default function WidgetApp() {
                   </svg>
                 </button>
                 <button
-                  className={`w-8 h-8 flex items-center justify-center text-[16px] ${
-                    locked
-                      ? "nm-inset text-[var(--t1)]"
-                      : "nm-outset text-[var(--t4)]"
-                  }`}
-                  title={locked ? "取消常驻" : "常驻锁定"}
-                  onClick={() => setLocked((v) => !v)}
+                  className="w-8 h-8 flex items-center justify-center nm-outset text-[var(--t4)] hover:text-[var(--t2)]"
+                  title="收起挂件"
+                  onClick={() => void collapse()}
                 >
-                  {locked ? (
-                    <Lock size={12} aria-hidden />
-                  ) : (
-                    <Pin size={12} aria-hidden />
-                  )}
+                  <Minimize2 size={12} aria-hidden />
                 </button>
               </div>
             </div>

@@ -209,8 +209,8 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     setupBotMocks();
     const { container } = render(<WidgetApp />);
     await flush();
-    // 鼠标划入触发条 → 展开（React 用 mouseover 合成 mouseenter）
-    fireEvent.mouseOver(stripOf(container));
+    // 点击触发条 → 展开（2026-10-15 起改点击展开 + 持久化，鼠标划入不再触发）
+    fireEvent.click(stripOf(container));
     await flush();
     const panel = panelOf(container);
     expect(panel.style.display).not.toBe("none");
@@ -221,12 +221,12 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     await flush();
     expect(screen.getByText("你好")).toBeInTheDocument();
     expect(screen.getByText("机器人回复")).toBeInTheDocument();
-    // 鼠标划出 → 折叠（非 busy，允许）
-    fireEvent.mouseOut(panel);
+    // 点「收起挂件」→ 折叠（鼠标划出不再自动折叠）
+    fireEvent.click(screen.getByTitle("收起挂件"));
     await flush();
     expect(panel.style.display).toBe("none");
-    // 再次展开：消息仍在，且 ChatPanel 未重新挂载（bot_sessions_load 只调一次）
-    fireEvent.mouseOver(stripOf(container));
+    // 再次点击触发条展开：消息仍在，且 ChatPanel 未重新挂载（bot_sessions_load 只调一次）
+    fireEvent.click(stripOf(container));
     await flush();
     expect(panel.style.display).not.toBe("none");
     expect(screen.getByText("你好")).toBeInTheDocument();
@@ -325,13 +325,13 @@ describe("WidgetApp 任务卡口径对齐主窗口", () => {
     });
   };
 
-  /** 展开面板（触发条 mouseenter → expand）：getByRole 只看可见元素，
+  /** 展开面板（点击触发条 → expand）：getByRole 只看可见元素，
    *  折叠态面板 display:none 里的按钮对角色查询不可见 */
   const expandPanel = async (container: HTMLElement) => {
     const strip = Array.from(
       container.querySelectorAll<HTMLElement>(".nm-sidebar-panel"),
     ).find((el) => !el.querySelector("textarea"))!;
-    fireEvent.mouseOver(strip);
+    fireEvent.click(strip);
     await flush();
     await flush();
   };
