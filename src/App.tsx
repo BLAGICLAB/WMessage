@@ -90,26 +90,6 @@ import type { Task, ColumnId, WorkspaceItem } from "./types";
 //   抬到此处后全 App 实例共享同一链，跨 render 与 unmount/remount 都能衔接。
 const mutating: { chain: Promise<void> } = { chain: Promise.resolve() };
 
-const SEED: Task[] = [
-  {
-    id: "t1",
-    title: "梳理 WMessage 需求清单",
-    due: "2026-08-14",
-    column: "todo",
-    subtasks: [
-      { id: "s1", text: "确认拖拽交互", done: true },
-      { id: "s2", text: "定里程碑计划", done: false },
-    ],
-  },
-  {
-    id: "t2",
-    title: "过一遍新拟态样式细节",
-    due: "2026-08-14T18:00",
-    column: "doing",
-  },
-  { id: "t3", title: "完成看板拖拽原型", column: "done" },
-];
-
 // 左侧导航栏条目：视图切换职能自顶部工具条迁入；设置单独走底部入口。
 // 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（定时/通知）
 type RailView =
@@ -344,7 +324,7 @@ function App() {
     };
   }, []);
 
-  // 初始加载：SQLite → 空库迁移（旧 data.json 在 Rust 侧处理；更早的 localStorage 在此处理）→ 种子
+  // 初始加载：SQLite → 空库时的 legacy 迁移（旧 data.json 在 Rust 侧处理；更早的 localStorage 在此处理）
   useEffect(() => {
     (async () => {
       try {
@@ -352,7 +332,7 @@ function App() {
         await loadArchiveDaysFromConfig();
         const res = await loadTasksFromDb();
         if (!res.ok) {
-          // 读失败 ≠ 空库：禁止走迁移/种子分支（避免覆盖真实数据），保持内存空数组并明确告警
+          // 读失败 ≠ 空库：禁止走迁移分支（避免覆盖真实数据），保持内存空数组并明确告警
           // recoverable=true 时 handleCommandError 会弹 confirm 提供「重试」（重载重新加载）
           handleCommandError(res.error, "db_load", {
             onRetry: () => window.location.reload(),
@@ -360,9 +340,12 @@ function App() {
           return;
         }
         let list = res.tasks;
+        // 空库分支只服务 legacy localStorage 迁移：空库既可能是首次使用，也可能是
+        // **读到了错误的库**（数据目录解析漂移 / 便携目录劫持 / 隔离目录串了）。
+        // 两种情况 db_load 都返回空数组，往里写任何东西都会在用户没察觉的库里
+        // 留下假数据，且用户无从分辨「我的任务卡呢」——所以此处只允许迁移真数据，
+        // 绝不注入演示任务卡。
         if (list.length === 0) {
-          let migrated = false;
-          let migrateFailed = false;
           try {
             const legacy = localStorage.getItem(STORAGE_KEY);
             if (legacy) {
@@ -370,22 +353,19 @@ function App() {
               if (parsed.length) {
                 await upsertTasks(parsed);
                 list = parsed;
-                migrated = true;
               }
               localStorage.removeItem(STORAGE_KEY);
             }
           } catch (e) {
-            // 迁移失败：保留 legacy 待下次启动重试，并跳过种子落库——
-            // 若照旧落 SEED，下次启动库非空不再进迁移分支，legacy 数据永久 orphan
-            migrateFailed = true;
+            // 迁移失败：保留 legacy 待下次启动重试。不弹窗会让用户以为数据没了，
+            // 故显式报错并给重试入口（重载重新走迁移）。
             console.error(
               "[init] legacy 迁移失败，保留 localStorage 待下次重试",
               e,
             );
-          }
-          if (!migrated && !migrateFailed) {
-            await upsertTasks(SEED);
-            list = SEED;
+            handleCommandError(e, "init legacy 迁移", {
+              onRetry: () => window.location.reload(),
+            });
           }
         }
         let next = applyArchiveRule(applyTodayRule(list));
@@ -404,7 +384,11 @@ function App() {
         tasksRef.current = next;
         setTasks(next);
       } catch (e) {
-        handleCommandError(e, "init load", { silent: true });
+        // 初始化失败不静默：setTasks 没跑到 → 界面停在空列表，用户会误判成
+        // 「任务卡全没了」而去做不可逆操作（导入/覆盖）。报错 + 重载重试。
+        handleCommandError(e, "init load", {
+          onRetry: () => window.location.reload(),
+        });
       }
     })();
   }, []);

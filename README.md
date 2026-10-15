@@ -147,7 +147,7 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 
 > 每项发布前在 Win10 测试机（已装 WebView2 Evergreen runtime）+ 任意 Win11 机器各过一遍。
 
-- [ ] 首次启动：种子任务出现、看板三列正常、无报错弹窗
+- [ ] 首次启动：任务页空池（无演示数据、无报错弹窗）；新建一张任务卡后正常上池
 - [ ] WebView2 依赖：Win10 未装 runtime 时便携包附带的安装器可补救；Win11 免装直接可跑
 - [ ] 便携模式：exe + WebView2Loader.dll 同目录启动；任务数据随目录走（U 盘换机器数据仍在）；exe 目录只读（如 Program Files）时兜底 app_data_dir；zip 内不解压直接双击运行时数据退化 app_data_dir（bot.log 有 WARN），AI_Gen_Files 不建到系统 temp
 - [ ] 挂件：贴右/左/顶三边吸附、悬停滑出、📌 锁定、拖动换边、圆角跟随边缘；重启后位置记忆

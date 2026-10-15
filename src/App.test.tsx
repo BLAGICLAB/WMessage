@@ -15,8 +15,19 @@ const mocks = vi.hoisted(() => {
   return { invokeMock, listenMock, openMock, saveMock, askMock };
 });
 
+// 夹具任务：多数用例拿它当「首屏已加载」的信号。用它而不是演示数据，是因为
+// 演示数据曾经既是 UI 的假卡来源、又是测试的同步信号——耦合一处，删假卡就断一片。
+const FIXTURE_TITLE = "夹具任务·甲";
+const FIXTURE: Task = {
+  id: "fx1",
+  title: FIXTURE_TITLE,
+  column: "todo",
+  order: 0,
+  updatedAt: 1,
+};
+
 const defaultInvokeImpl = async (cmd: string) => {
-  if (cmd === "db_load") return []; // 空库 → 走 SEED 注入
+  if (cmd === "db_load") return [FIXTURE]; // 空库由「不注入假卡」用例专门覆盖
   if (cmd === "db_upsert") return null;
   if (cmd === "db_delete") return null;
   if (cmd === "workspace_load") return []; // 工作区空列表
@@ -67,9 +78,8 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-  it("初始渲染：首页视图 + 注入种子任务（3 个 seed）", async () => {
+  it("初始渲染：首页视图 + 库内任务上任务池", async () => {
     render(<App />);
-    // 等待 db_load → upsertTasks(SEED) → setTasks
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
     });
@@ -80,10 +90,8 @@ describe("App", () => {
     expect(screen.getByText("周一")).toBeInTheDocument();
     expect(screen.getByText("08:00")).toBeInTheDocument();
     expect(screen.getByLabelText("任务池")).toBeInTheDocument();
-    // 种子标题（未完成的两个上池；done 种子不上任务页——完成列表入口随批 4 详情面板）
-    expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
-    expect(screen.getByText("过一遍新拟态样式细节")).toBeInTheDocument();
-    expect(screen.queryByText("完成看板拖拽原型")).not.toBeInTheDocument();
+    // 库内任务上池（UI 只渲染 db_load 给的数据，没有任何自带数据源）
+    expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
     // 顶栏：任务 / 归档 / 工作区 / 回收站
     expect(screen.getByText("任务")).toBeInTheDocument();
     expect(screen.getByText("归档")).toBeInTheDocument();
@@ -91,11 +99,33 @@ describe("App", () => {
     expect(screen.getByText("回收站")).toBeInTheDocument();
   });
 
+  // 回归锁：空库不得注入任何数据。
+  // 事故复现——数据目录被解析到另一个库（便携/隔离目录漂移）时 db_load 同样返回
+  // []，曾经的 SEED 分支会往那个库里写 3 张演示卡，用户看到「只剩 3 个任务」，
+  // 且真库里的数据一条没少却无从解释。空 = 空，写入只允许来自 legacy 迁移。
+  it("空库（db_load = []）：不写库、不注入任何任务卡", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load") return [];
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "任务" }));
+    expect(screen.getByLabelText("任务池")).toBeInTheDocument();
+    expect(screen.queryByText(FIXTURE_TITLE)).not.toBeInTheDocument();
+    // 关键断言：一次 db_upsert 都不该发生（无 legacy 数据可迁）
+    expect(
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert"),
+    ).toHaveLength(0);
+  });
+
   it("点击「归档」按钮：视图切到 ArchivePage（搜索框出现 / 列头消失）", async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
     });
     await user.click(screen.getByRole("button", { name: "归档" }));
     // 归档页：暂无归档内容（seed 任务都没 archived 标记）
@@ -108,7 +138,7 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
     });
     await user.click(screen.getByText("工作区"));
     expect(await screen.findByText("+ 新建工作区")).toBeInTheDocument();
@@ -120,7 +150,7 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
     });
     const callsBefore = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "db_upsert",
@@ -145,7 +175,7 @@ describe("App", () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
     });
     await user.click(screen.getByText("回收站"));
     expect(
@@ -154,7 +184,7 @@ describe("App", () => {
     expect(screen.queryByLabelText("任务池")).not.toBeInTheDocument();
   });
 
-  it("db_load 读失败：不走种子/迁移分支、不写库、弹告警（error ≠ empty）", async () => {
+  it("db_load 读失败：不走迁移分支、不写库、弹告警（error ≠ empty）", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "db_load") throw new Error("database is locked");
       return defaultInvokeImpl(cmd);
@@ -163,7 +193,7 @@ describe("App", () => {
     // 明确告警（批 4 起走应用内错误弹窗，ErrorDialogHost 随 App 挂载）
     const errDialog = await screen.findByRole("alertdialog");
     expect(errDialog.textContent).toContain("database is locked");
-    // 不触发种子/迁移写入，也不删除任何行
+    // 不触发迁移写入，也不删除任何行
     expect(
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert"),
     ).toHaveLength(0);
@@ -172,10 +202,10 @@ describe("App", () => {
     ).toHaveLength(0);
     // 启动默认在首页：切到任务页再验证空池
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
-    // 任务页仍渲染（内存空数组）：网格骨架 + 空池，种子标题不出现
+    // 任务页仍渲染（内存空数组）：网格骨架 + 空池，库内任务不出现
     expect(screen.getByLabelText("任务池")).toBeInTheDocument();
     expect(
-      screen.queryByText("梳理 WMessage 需求清单"),
+      screen.queryByText(FIXTURE_TITLE),
     ).not.toBeInTheDocument();
   });
 
@@ -184,7 +214,7 @@ describe("App", () => {
   it("SYNC-1：tasks-updated 合并与 UI mutate 共串行链（merge await 期间 UI 写排队，写冲突回归钉）", async () => {
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
     });
     // 排掉初始装载尾巴（规则回写等），避免占用 db_upsert 门闩
     await act(async () => {});
@@ -258,9 +288,9 @@ describe("App", () => {
     try {
       render(<App />);
       await waitFor(() => {
-        expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+        expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
       });
-      failUpsert = true; // 初始化种子落盘成功后，后续写入全部失败
+      failUpsert = true; // 初始化完成后，后续写入全部失败
       alertMock.mockClear();
       // emit mock 跨用例共享（beforeEach 不清），先清零再断言「失败不广播」
       const { emit } = await import("@tauri-apps/api/event");
@@ -530,7 +560,7 @@ describe("App", () => {
     );
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
     });
     expect(handlers["tasks-updated"]).toBeDefined();
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -565,8 +595,8 @@ describe("App", () => {
   });
 
   // 迁移失败：legacy localStorage 迁移抛错 → 保留 legacy 待下次
-  // 启动重试，跳过 SEED 落库——否则下次启动库非空不再进迁移分支，legacy 永久 orphan
-  it("legacy 迁移失败 → 跳过种子落库、legacy 保留", async () => {
+  // 启动重试，且不得有其他写入顶掉它——空库分支除迁移外无写入源
+  it("legacy 迁移失败 → 唯一写入是失败的迁移、legacy 保留", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "db_load") return [];
       if (cmd === "db_upsert") throw new Error("db unavailable");
@@ -586,14 +616,12 @@ describe("App", () => {
         expect.any(Error),
       );
     });
-    // db_upsert 仅 1 次（失败的 legacy 迁移写入）；SEED 未落库
+    // db_upsert 仅 1 次，且只能是那次失败的 legacy 迁移写入（无其他写入源）
     const upsertCalls = mocks.invokeMock.mock.calls.filter(
       (c) => c[0] === "db_upsert",
     );
     expect(upsertCalls).toHaveLength(1);
-    expect(JSON.stringify(upsertCalls[0][1])).not.toContain(
-      "梳理 WMessage 需求清单",
-    );
+    expect(JSON.stringify(upsertCalls[0][1])).toContain("老数据一条");
     // legacy 保留（未 removeItem，下次启动重试）
     expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull();
     errSpy.mockRestore();
@@ -692,7 +720,7 @@ describe("App", () => {
       );
       render(<App />);
       await waitFor(() => {
-        expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+        expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
       });
       mocks.invokeMock.mockClear();
       return handlers;
@@ -758,7 +786,7 @@ describe("App", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "db_load") {
         dbLoadCount++;
-        // 首次：空库 → 走 SEED；导入后：返回合并后的 fresh 数据
+        // 首次：空库（不注入任何数据）；导入后：返回合并后的 fresh 数据
         return dbLoadCount === 1 ? [] : fresh;
       }
       if (cmd === "tasks_import") return 2;
@@ -773,8 +801,9 @@ describe("App", () => {
     });
     mocks.openMock.mockResolvedValue("/tmp/import.json");
     render(<App />);
+    // 首屏是空库：等首次 db_load 落地即可（无注入数据可等）
     await waitFor(() => {
-      expect(screen.getByText("梳理 WMessage 需求清单")).toBeInTheDocument();
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
     });
     // 进设置页点「导入」（eefa78f 起有任务导入 + 工作区导入两个，取第一个 = 任务导入；U20B 图标化后 name 为纯文字）
     // 设置入口迁入左侧导航栏（icon + 文字「设置」，旧 ⚙️ 的 title 属性取消）
@@ -803,11 +832,11 @@ describe("App", () => {
     expect(
       mocks.invokeMock.mock.invocationCallOrder[secondLoadIdx],
     ).toBeGreaterThan(importOrder);
-    // setTasks 收到 fresh 数据：点设置壳「返回」回看板进入前视图 = 任务），fresh 任务在、种子任务不在
+    // setTasks 收到 fresh 数据：点设置壳「返回」回看板（fresh 任务在、导入前的库内任务已被 DB 真值取代）
     await user.click(screen.getByRole("button", { name: /返回/ }));
     expect(await screen.findByText("导入的 fresh 任务")).toBeInTheDocument();
     expect(
-      screen.queryByText("梳理 WMessage 需求清单"),
+      screen.queryByText(FIXTURE_TITLE),
     ).not.toBeInTheDocument();
   });
 });
