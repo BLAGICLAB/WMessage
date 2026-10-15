@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 源码共 52 个文件、约 3.8 万行，全部在 `src-tauri/src/`。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 源码共 160 个文件、约 8.7 万行，全部在 `src-tauri/src/`。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -425,7 +425,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 136 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 160 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 通过相对路径或文件名提及强制要求；任何新增模块请同步登记。
 
 ### 顶层
@@ -476,6 +476,7 @@ flowchart TD
 - `api_handlers/validate.rs`
 
 ### `bot/`
+- `bot/compaction.rs`
 - `bot/config/audit.rs`
 - `bot/config/commands.rs`
 - `bot/config/io.rs`
@@ -483,10 +484,13 @@ flowchart TD
 - `bot/config/mod.rs`
 - `bot/config/schema.rs`
 - `bot/config/types.rs`
+- `bot/corrections.rs`
 - `bot/dispatch.rs`
 - `bot/format.rs`
+- `bot/log_sanitize.rs`
 - `bot/params.rs`
 - `bot/registry.rs`
+- `bot/tags_consolidate.rs`
 - `bot/tools.rs`
 
 ### `bot_skills/`
@@ -502,6 +506,7 @@ flowchart TD
 ### `db/`
 - `db/bot_history.rs`
 - `db/bot_sessions.rs`
+- `db/lock.rs`
 - `db/migrations.rs`
 - `db/mod.rs`
 - `db/paths.rs`
@@ -573,9 +578,12 @@ flowchart TD
 ### `prompts/`
 - `prompts/consolidate.rs`
 - `prompts/execute.rs`
+- `prompts/extract.rs`
 - `prompts/mod.rs`
 - `prompts/planner.rs`
 - `prompts/reflection.rs`
+- `prompts/selfcheck.rs`
+- `prompts/subagent.rs`
 - `prompts/summary.rs`
 - `prompts/system.rs`
 
