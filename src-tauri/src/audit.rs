@@ -358,10 +358,18 @@ pub fn format_event_line(level: AuditLevel, event: &str, kv: &[(&str, &str)]) ->
 /// 普通 std::thread 再写。
 pub static BOT_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 日志文件打开：创建即 0600 + 已有文件补 chmod——
+/// 日志文件打开：先建父目录，再创建即 0600 + 已有文件补 chmod——
 /// bot.log 含用户指令/文件路径/工具输出，umask 默认 0644 下同机其他用户可读。
 /// 三处写入点（audit::append_line / bot::audit_log / bot_py::py_audit_to）共用。
+///
+/// 父目录必须在这里建：生产里数据目录由 open_db 建好，但审计写入不依赖 DB
+/// （故意如此：库坏了也要留痕），一旦目录不存在，写入会静默变成一行
+/// `[audit] write failed: No such file or directory`——审计在最该留痕的时候
+/// 恰恰没留痕。
 pub(crate) fn open_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let mut opts = std::fs::OpenOptions::new();
     opts.create(true).append(true);
     #[cfg(unix)]
@@ -821,6 +829,19 @@ mod tests {
                 "reply_preview 必须不存在（零原文设计）: {line}"
             );
         }
+    }
+
+    #[test]
+    fn open_log_append_creates_missing_parent_dir() {
+        // 审计写入刻意不依赖 DB（库坏了也要留痕），所以不能假设数据目录
+        // 已被 open_db 建好：目录不存在时必须自建，而不是静默丢一行
+        // `[audit] write failed: No such file or directory`
+        let dir = std::env::temp_dir().join(format!("wm-audit-mkdir-{}", uuid::Uuid::new_v4()));
+        let log = dir.join("nested").join("bot.log");
+        let f = open_log_append(&log).expect("缺父目录时应自建");
+        drop(f);
+        assert!(log.exists(), "bot.log 应已创建");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -22,7 +22,8 @@ use tauri::Manager;
 ///
 /// 分支：
 /// 0. exe 在 cargo target 的 **deps/** 子目录（= cargo test 测试进程）→
-///    隔离到 `{temp}/wm-cargo-data`——既不落 target/（防打包装箱带数据），
+///    隔离到 `{temp}/wm-cargo-data-<pid>`（每进程一个，防并行测试抢同一个
+///    SQLite 写锁）——既不落 target/（防打包装箱带数据），
 ///    也不落真实 app_data（mock runtime 的 app_data_dir 解析到真实用户数据根，
 ///    直接返回会把测试库写进用户数据目录旁，已实证泄漏）；
 ///    target/debug|release **本体**（cargo run / tauri dev / 手动运行）不隔离，
@@ -31,6 +32,42 @@ use tauri::Manager;
 /// 2. exe 目录不可写（如 Program Files） → 退 app_data_dir（系统应用数据目录）；
 /// 3. 全不可用 → 退 `std::env::temp_dir()`。
 ///
+/// 测试进程的隔离数据目录：**每个进程一个**。
+///
+/// 为什么按进程而不是全测试共用一个：nextest 是进程级并行，共用一个
+/// wmessage.db / bot-config.json 会互相抢 SQLite 写锁（busy_timeout 只有 2s），
+/// 表现为随机失败的 flaky 用例（实测 `memory_conflict` 改口裁决挂过一次）。
+///
+/// 顺带清陈旧目录：按进程建目录意味着每轮测试会留下上千个 temp 目录
+/// （每进程一个）。建目录时把 1 小时前的老目录删掉——单个测试进程活几秒、
+/// 一轮全量 30 秒内，1 小时前的必然是上一轮遗留的垃圾。
+fn test_data_dir() -> std::path::PathBuf {
+    use std::time::{Duration, SystemTime};
+    let root = std::env::temp_dir();
+    let mine = format!("wm-cargo-data-{}", std::process::id());
+    let dir = root.join(&mine);
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        let stale_before = SystemTime::now().checked_sub(Duration::from_secs(3600));
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("wm-cargo-data-") || name == mine {
+                continue;
+            }
+            let stale = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .zip(stale_before)
+                .map(|(m, cutoff)| m < cutoff)
+                .unwrap_or(false);
+            if stale {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    dir
+}
+
 /// 前置规则：
 /// 1. exe 旁已有 `wmessage.db` / `AI_Gen_Files` → 强制便携锚定 exe 目录；
 ///    写探针瞬时失败（杀软锁定/UAC 抖动）不得翻转已有数据目录。
@@ -59,7 +96,7 @@ pub(crate) fn probe_dir(
                 .map(|n| n == "deps")
                 .unwrap_or(false);
             if is_test_process {
-                return std::env::temp_dir().join("wm-cargo-data");
+                return test_data_dir();
             }
             return app_data.unwrap_or_else(std::env::temp_dir);
         }
@@ -498,8 +535,8 @@ mod tests {
         );
         assert_eq!(
             got,
-            std::env::temp_dir().join("wm-cargo-data"),
-            "必须钉在 temp 固定隔离子目录"
+            std::env::temp_dir().join(format!("wm-cargo-data-{}", std::process::id())),
+            "必须钉在 temp 的每进程隔离子目录（并行测试不能共用一个库）"
         );
     }
 

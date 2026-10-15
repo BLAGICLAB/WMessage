@@ -1425,9 +1425,10 @@ fn chat_msg(role: &str, content: &str) -> ChatMsg {
 // ───────────── U15 记忆可控开关：双门禁真路径（mock app 数据目录） ─────────────
 //
 // ⚠️ db::data_dir 在 cargo test 下解析到 target/debug/deps/——该目录的
-// bot-config.json 与 wmessage.db 被**所有测试进程共享**（paths.rs「测试期的
-// 跨进程共享」一段的既知地雷；本次实证：nextest 并行进程互踩配置文件 +
-// 共享库历史脏数据打穿绝对断言）。因此：
+// bot-config.json 与 wmessage.db 现按**测试进程**隔离（paths.rs「测试期隔离」
+// 一段；nextest 是进程级并行，共用一个库会互踩写锁——本次实证为偶发失败）。
+// 本测试原先的「共享库历史脏数据」顾虑随之消失，但断言口径保持增量不放松：
+// 进程内仍可能残留上轮同进程用例写入的行。因此：
 // - 三个门禁场景合并为一个测试（nextest 下即单进程，配置写读全程本进程有序）；
 // - DB 断言一律增量口径（共享库里有历史条目，不做绝对断言）；
 // - 结束时恢复共享现场（删本测试写的配置文件 + 清理种子条目与历史遗留）。
@@ -1535,6 +1536,9 @@ fn clean_gate_leftovers(app: &tauri::AppHandle<tauri::test::MockRuntime>) {
         }
     }
     let conn = wmessage_lib::db::open_db(app).unwrap();
+    // mem_items 建表：数据目录已按进程隔离（paths.rs），本进程的新库里这张表
+    // 还不存在——过去是蹭共享库里别的进程建好的表，换来的是跨进程依赖
+    wmessage_lib::memory::store::ensure_table(&conn).unwrap();
     let junk: Vec<String> = wmessage_lib::memory::store::load_all(&conn)
         .unwrap()
         .into_iter()
