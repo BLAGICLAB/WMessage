@@ -47,7 +47,7 @@ pub(crate) fn detect_correction(text: &str) -> Option<&'static str> {
 }
 
 /// 写入 `user.correction` 审计事件（Info 级，bot.log 单行追加）。
-/// session_id 缺省时记空串（用户从挂件/匿名入口发来的会话常见）。
+/// session_id 缺省时记空串（匿名入口发来的会话常见）。
 pub(crate) fn emit_user_correction_event<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: Option<&str>,

@@ -113,7 +113,7 @@ export function WorkspacePage() {
 
   useEffect(() => {
     reload();
-    // 挂件改工作区（折叠/排序）后同步刷新（此前只加载一次，挂件改动不回显）
+    // 工作区被别处改动（折叠/排序）后经 workspace-changed 同步刷新
     const unlisten = listen("workspace-changed", guardedReload);
     return () => {
       unlistenSafe(unlisten);
@@ -139,7 +139,7 @@ export function WorkspacePage() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  /** 工作区上下排序：arrayMove 换位 → assignInsertOrder 分配 order → 行级落盘 + 广播挂件 */
+  /** 工作区上下排序：arrayMove 换位 → assignInsertOrder 分配 order → 行级落盘 + 广播变更 */
   const handleSortEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     if (!over || active.id === over.id) return;

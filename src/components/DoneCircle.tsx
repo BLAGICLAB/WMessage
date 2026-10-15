@@ -1,4 +1,4 @@
-// 任务卡标题右侧的完成圆圈 —— 主窗口 TodoCard 与挂件 TaskCardContent 共用（保持一致）
+// 任务卡标题右侧的完成圆圈，各任务卡视图共用
 import { Check } from "lucide-react";
 import { stopPointer as stop } from "../lib/stopPointer";
 

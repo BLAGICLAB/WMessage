@@ -167,7 +167,7 @@ fn path_openable_in(path: &str, set: &std::collections::HashSet<String>) -> bool
 }
 
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
-/// 挂件窗口内聊天文件按钮点击直接走这里，失败返回可读错误、前端弹错提示（不静默）。
+/// 聊天文件按钮点击直接走这里，失败返回可读错误、前端弹错提示（不静默）。
 ///
 /// **口径变更（2026-10-08 用户）**：聊天里的文件/链接点开**不再要求绑定**——
 /// 原白名单（任务卡绑集 / 工作区链接 / AI_Gen_Files + TOCTOU 二次校验，
@@ -205,8 +205,8 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
         .map_err(|e| CommandError::IoError(format!("打开路径失败：{e}")))
 }
 
-/// 文件多选对话框（Rust 侧 spawn_blocking 弹框）：挂件窗口 ➕ 添加附件用。
-/// 此前前端 dialog.open 在挂件窗口可能不弹框，与 doc_extract 弹框同方案修复。
+/// 文件多选对话框（Rust 侧 spawn_blocking 弹框）：聊天 ➕ 添加附件用。
+/// 此前前端 dialog.open 在 webview 里可能不弹框，与 doc_extract 弹框同方案修复。
 #[tauri::command]
 pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
     let handle = app.clone();

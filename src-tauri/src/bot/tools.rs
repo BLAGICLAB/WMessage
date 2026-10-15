@@ -143,7 +143,7 @@ pub(crate) fn files_audit_kv(args: &str) -> Option<(usize, bool)> {
     Some((arr.len(), arr.len() > crate::db::MAX_TASK_FILES))
 }
 
-/// 改库后广播：挂件重读（tasks-changed）+ 主窗口合并 UI 不回写（tasks-updated, source: Bot）
+/// 改库后广播：各页重读（tasks-changed）+ App 合并 UI 不回写（tasks-updated, source: Bot）
 pub fn broadcast_after_mutation<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     upserts: Vec<crate::db::Task>,

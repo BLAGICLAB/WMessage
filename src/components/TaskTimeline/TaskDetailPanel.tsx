@@ -458,7 +458,7 @@ export function TaskDetailPanel({
       </div>
       {boundFiles.length > 0 ? (
         <div className="flex flex-col items-start gap-1">
-          {/* chip 列表（与主窗口卡片/挂件共用 TaskFileChips，spacious = 详情面板风格：emoji + 复制反馈） */}
+          {/* chip 列表（与任务卡共用 TaskFileChips，spacious = 详情面板风格：emoji + 复制反馈） */}
           <TaskFileChips
             task={task}
             variant="spacious"

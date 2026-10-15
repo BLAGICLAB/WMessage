@@ -1,7 +1,7 @@
-// bubbleStyle 单测：存储归一 / DOM 应用（CSS 变量 + data 属性）/ 文字色自动反白 /
-// storage 事件跨窗口同步。localStorage 走 src/test/setup.ts 的内存 shim。
+// bubbleStyle 单测：存储归一 / DOM 应用（CSS 变量 + data 属性）/ 文字色自动反白。
+// localStorage 走 src/test/setup.ts 的内存 shim。
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   applyBubbleStyle,
   applyBubbleStyleDom,
@@ -9,7 +9,6 @@ import {
   getBubbleStyle,
   pickUserFg,
   resetBubbleStyle,
-  subscribeBubbleStyle,
 } from "./bubbleStyle";
 
 const KEY = "wmessage-bubble-style";
@@ -97,42 +96,5 @@ describe("applyBubbleStyle", () => {
       document.documentElement.style.getPropertyValue("--bubble-user-bg"),
     ).toBe("#6d5aa8");
     expect(localStorage.getItem(KEY)).toBeNull();
-  });
-});
-
-describe("subscribeBubbleStyle", () => {
-  it("storage 事件（本 key）：同步 DOM 并回调解析后的样式", () => {
-    const onChange = vi.fn();
-    const unsub = subscribeBubbleStyle(onChange);
-    localStorage.setItem(
-      KEY,
-      JSON.stringify({ userBg: "#b04a6a", botMaterial: "flat" }),
-    );
-    window.dispatchEvent(
-      new StorageEvent("storage", {
-        key: KEY,
-        newValue: localStorage.getItem(KEY),
-      }),
-    );
-    expect(onChange).toHaveBeenCalledWith({
-      userBg: "#b04a6a",
-      botMaterial: "flat",
-    });
-    expect(document.documentElement.dataset.bubbleBot).toBe("flat");
-
-    unsub();
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: KEY, newValue: "{}" }),
-    );
-    expect(onChange).toHaveBeenCalledTimes(1);
-  });
-
-  it("其他 key 的 storage 事件不触发", () => {
-    const onChange = vi.fn();
-    subscribeBubbleStyle(onChange);
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: "wmessage-theme", newValue: "dark" }),
-    );
-    expect(onChange).not.toHaveBeenCalled();
   });
 });

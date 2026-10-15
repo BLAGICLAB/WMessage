@@ -138,7 +138,7 @@ pub struct BotConfig {
     /// None = "medium"（默认中）。这是**抽象档位**，发送前按具体模型族
     /// 映射到各 provider 的线上参数（glm 的 reasoning_effort/thinking、
     /// OpenAI 的 reasoning_effort、Anthropic 的 thinking.budget_tokens，
-    /// 映射表见 bot/reasoning.rs）。挂件聊天可按会话覆盖此值（不回写）。
+    /// 映射表见 bot/reasoning.rs）。聊天可按会话覆盖此值（不回写）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     /// 单次请求 Function 调用熔断上限（可选，全域统一）：None = 默认 100；

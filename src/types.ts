@@ -76,7 +76,7 @@ export interface Task {
   deletedAt?: number;
   column: ColumnId;
   subtasks?: Subtask[];
-  /** 标题以下内容是否折叠（主窗口/挂件共享，默认展开） */
+  /** 标题以下内容是否折叠（默认展开） */
   collapsed?: boolean;
   /** 拖拽排序用全局序号（越小越靠前） */
   order?: number;

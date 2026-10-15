@@ -73,7 +73,7 @@ export const sortByOrder = (tasks: Task[]) =>
   [...tasks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
 /**
- * 行级 diff + 打修改时间戳（主窗口 mutate 与挂件 applyAndSync 共用）。
+ * 行级 diff + 打修改时间戳（mutate 写路径与外部批量写共用）。
  * upserts = 新增/变化行，deletes = 消失行 id；变化行打 updatedAt=now。
  * 纯排序变更（除 order 外无字段差异）保留原 updatedAt——
  * 否则拖拽排序把被重排行的 updatedAt 全刷成 now，多客户端按 updatedAt 合并时

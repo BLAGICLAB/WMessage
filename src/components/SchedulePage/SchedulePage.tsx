@@ -423,7 +423,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
                         {r.summary}
                       </span>
                     )}
-                    {/* 执行痕迹（本次执行新建的卡）+ 会话跳转（挂件围观 ⏰ 会话） */}
+                    {/* 执行痕迹（本次执行新建的卡）+ 会话跳转（围观 ⏰ 会话） */}
                     {r.cardId && (
                       <button
                         className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
@@ -436,7 +436,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
                     {jobSessions[e.targetId] && (
                       <button
                         className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)]"
-                        title="跳转挂件，围观本次执行会话"
+                        title="跳转聊天页，围观本次执行会话"
                         onClick={() => jumpToSession(jobSessions[e.targetId])}
                       >
                         会话

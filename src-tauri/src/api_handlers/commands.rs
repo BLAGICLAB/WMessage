@@ -113,7 +113,7 @@ fn api_start_locked(
     let emit_app = app.clone();
     let emit: Option<Box<dyn Fn(&db::Task) + Send + Sync>> = Some(Box::new(
         move |task: &db::Task| {
-            // 复用挂件→主窗口的既有通道:主窗口合并状态并广播给挂件。
+            // 复用 tasks-changed/tasks-updated 既有通道：前端合并状态并刷新各页。
             // `source: Api` 告诉主窗口:数据已由 API 线程落盘,只合并 UI 状态,不要回写
             // (回写会用旧事件快照覆盖 API 的新写入,导致归档/软删被回滚的竞态)
             let payload = serde_json::json!({ "upserts": [task], "deletes": [], "source": crate::mutation::MutationOrigin::Api.as_str() });

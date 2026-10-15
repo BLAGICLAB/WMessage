@@ -1,4 +1,4 @@
-// 主窗口 TodoCard 与挂件 TaskCardContent 共用的展示格式化（保持两处显示一致）
+// TodoCard 等任务卡视图共用的展示格式化
 
 const pad = (n: number) => String(n).padStart(2, "0");
 

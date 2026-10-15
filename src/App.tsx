@@ -74,14 +74,11 @@ import {
   applySetting,
   getSetting,
   subscribeSystem,
-  subscribeTheme,
   toggleTheme,
 } from "./theme";
 import {
   applyBubbleStyle,
-  applyBubbleStyleDom,
   getBubbleStyle,
-  subscribeBubbleStyle,
 } from "./bubbleStyle";
 import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
@@ -313,14 +310,12 @@ function App() {
   useEffect(() => {
     applySetting(theme);
   }, [theme]);
-  useEffect(() => subscribeTheme(setTheme), []);
   useEffect(() => subscribeSystem(setTheme), []);
 
-  // 聊天气泡外观：启动应用 + 监听设置页（本窗口）或其他窗口的 storage 变更同步
+  // 聊天气泡外观：启动应用（单窗口，无跨页同步面；设置页改动即时落 DOM）
   useEffect(() => {
     applyBubbleStyle(getBubbleStyle());
   }, []);
-  useEffect(() => subscribeBubbleStyle(applyBubbleStyleDom), []);
 
   // 字体大小：启动从 bot config 拉值套用 + 监听广播重拉（共享体见 lib/botConfig）；
   // 主窗口额外同步归档天数——阈值变小 → 立即重套规则把已到期任务归档落盘，

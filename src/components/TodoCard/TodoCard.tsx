@@ -85,7 +85,7 @@ export function TodoCardView({
     }
   }, [archived, trashed]);
 
-  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit（与 TaskCardContent 共用）
+  // 标题内联编辑：草稿 + Enter/Escape/Blur 行为统一走 useInlineEdit
   const titleEdit = useInlineEdit({
     value: task.title,
     editing,
@@ -490,7 +490,7 @@ export function TodoCardView({
 
           {boundFiles.length > 0 ? (
             <div className="mt-3 flex flex-col gap-2">
-              {/* chip 列表（与挂件/详情面板共用 TaskFileChips）：折叠态、复制/打开/× 按钮统一走组件 */}
+              {/* chip 列表（与详情面板共用 TaskFileChips）：折叠态、复制/打开/× 按钮统一走组件 */}
               <TaskFileChips
                 task={task}
                 variant="compact"
@@ -610,7 +610,7 @@ export function TodoCardView({
             </div>
           )}
 
-          {/* 🤖 交给机器人执行（与挂件一致）；归档卡只读不显示。
+          {/* 🤖 交给机器人执行；归档卡只读不显示。
           定时设置已迁出卡片 → 「定时任务」模块（SchedulePage）统一管理 */}
           {!archived && !trashed && (
             <div className="mt-2 flex items-center gap-1.5">

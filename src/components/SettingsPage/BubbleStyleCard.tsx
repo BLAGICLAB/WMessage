@@ -1,25 +1,21 @@
 // SettingsPage 子模块：聊天气泡外观卡（基础设置分区）。
 // 用户气泡颜色（跟随主题/预设色板/自定义拾色器）+ 机器人气泡材质三选，
-// 即点即生效（html CSS 变量 / data 属性）+ localStorage 持久化（src/bubbleStyle.ts），
-// 其他窗口经 storage 事件同步。卡内迷你预览直接用真 .chat-bubble-* 类——
+// 即点即生效（html CSS 变量 / data 属性）+ localStorage 持久化（src/bubbleStyle.ts）。
+// 卡内迷你预览直接用真 .chat-bubble-* 类——
 // 全局 CSS 变量一变，预览即时跟着变，无需单独的预览状态。
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   applyBubbleStyle,
   BUBBLE_BOT_MATERIAL_OPTIONS,
   BUBBLE_USER_COLOR_PRESETS,
   getBubbleStyle,
   resetBubbleStyle,
-  subscribeBubbleStyle,
   type BubbleStyle,
 } from "../../bubbleStyle";
 
 export function BubbleStyleCard() {
   const [style, setStyle] = useState<BubbleStyle>(() => getBubbleStyle());
-
-  // 其他窗口（主窗/挂件）改了样式 → storage 事件同步回本页控件
-  useEffect(() => subscribeBubbleStyle(setStyle), []);
 
   const update = (patch: Partial<BubbleStyle>) =>
     setStyle((prev) => applyBubbleStyle({ ...prev, ...patch }));
@@ -116,7 +112,7 @@ export function BubbleStyleCard() {
         {/* 恢复默认 */}
         <div className="flex items-center justify-between gap-4 border-t border-[var(--edge)] pt-3">
           <p className="text-xs text-[var(--t5)]">
-            气泡样式即时生效并自动保存，主窗口与挂件同步。
+            气泡样式即时生效并自动保存。
           </p>
           <button
             type="button"

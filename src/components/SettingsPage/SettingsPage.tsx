@@ -898,7 +898,7 @@ export function SettingsPage({
         enabled: !botEnabled,
       });
       setBotEnabled(next);
-      // 广播给挂件：展开状态下同步调整窗口高度（加/减聊天区）
+      // 广播 bot-changed：各页（聊天区高度随开关调整）同步刷新
       emit("bot-changed", next).catch(() => {});
     } catch (e) {
       handleCommandError(e, "bot_set_enabled", { silent: true });
@@ -1034,7 +1034,7 @@ export function SettingsPage({
       if (!opts?.skipReload) {
         await loadConfig();
       }
-      // 广播给挂件聊天区：头部 🧠 模型标签同步刷新
+      // 广播 bot-config-changed：聊天头部 🧠 模型标签同步刷新
       emit("bot-config-changed", null).catch(() => {});
       setConfigSaved(true);
       setTimeout(() => setConfigSaved(false), 1500);
@@ -2647,7 +2647,7 @@ export function SettingsPage({
               {/* 页首：说明（原「刷新」按钮删除——bot_get_config 只合顶层字段，
           厂商列表不跟随刷新，点了像没反应，属于误导性按钮） */}
               <p className="text-xs text-[var(--t5)]">
-                管理模型供应商，配置后可在挂件聊天时选择使用。
+                管理模型供应商，配置后可在聊天时选择使用。
               </p>
               {/* 收尾引导：有带 vendor 的条目但 verifiedVendors 为空（可用性状态无自动迁移） */}
               {needVendorReVerify && (

@@ -575,7 +575,7 @@ pub async fn run_model_loop(
     max_rounds: usize,
     stop: &StopGuard,
     plan_state: Option<&mut crate::bot_plan::PlanState>,
-    // 推理强度单次覆盖（RE-1）：挂件聊天 bot_chat 传入具体档位（off/low/medium/high）；
+    // 推理强度单次覆盖（RE-1）：聊天 bot_chat 传入具体档位（off/low/medium/high）；
     // None = 任务执行/定时等后台链路，回落 bot-config.json 的全局默认。
     // 抽象档位 → 线上参数的按模型映射在 bot/reasoning.rs。
     reasoning_override: Option<String>,
@@ -748,7 +748,7 @@ pub async fn run_model_loop(
                 round_for_audit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             // llm.usage 累计（trace 汇总的 tokens 数据源）+  水位条事件
-            //（仅交互实例推挂件；前端按会话累计配合 contextK 显示水位。
+            //（仅交互实例推前端；前端按会话累计配合 contextK 显示水位。
             // OpenAI 兼容网关的流式 usage 需要 stream_options 参数（部分网关
             // 不认识会 400），暂不启用——水位仅 Anthropic 协议有数据，前端注明）
             if event == "llm.usage" {
@@ -1435,7 +1435,7 @@ where
                     }
                     let t = &tool_calls[tc_delta.index];
                     if first_id && !t.0.is_empty() {
-                        // 新工具调用开始：推折叠行给挂件
+                        // 新工具调用开始：推折叠行给前端
                         emit("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
                     }
                     if tc_delta

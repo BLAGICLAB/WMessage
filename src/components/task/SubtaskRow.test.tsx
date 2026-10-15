@@ -22,7 +22,7 @@ describe("SubtaskRow spacious (TodoCard)", () => {
         onCommit={onCommit}
       />,
     );
-    // 文本带 pre-wrap + break-words（widget 的 truncate 不在）
+    // 文本带 pre-wrap + break-words
     const text = screen.getByText("子任务一");
     expect(text.className).toContain("whitespace-pre-wrap");
     expect(text.className).not.toContain("truncate");

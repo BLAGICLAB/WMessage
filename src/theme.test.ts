@@ -5,7 +5,6 @@ import {
   applySetting,
   cycleSetting,
   toggleTheme,
-  subscribeTheme,
   subscribeSystem,
 } from "./theme";
 
@@ -107,34 +106,6 @@ describe("theme 切换", () => {
 });
 
 describe("theme 订阅", () => {
-  it("subscribeTheme：storage 事件同步其他窗口变更；无关 key 忽略；非法值归一 light；退订生效", () => {
-    mockSystemDark(false);
-    const cb = vi.fn();
-    const off = subscribeTheme(cb);
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: THEME_KEY, newValue: "dark" }),
-    );
-    expect(cb).toHaveBeenCalledWith("dark");
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    // 无关 key 不触发
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: "other", newValue: "system" }),
-    );
-    expect(cb).toHaveBeenCalledTimes(1);
-    // 非法 newValue 归一 light，class 同步撤掉
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: THEME_KEY, newValue: "weird" }),
-    );
-    expect(cb).toHaveBeenLastCalledWith("light");
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    // 退订后不再回调
-    off();
-    window.dispatchEvent(
-      new StorageEvent("storage", { key: THEME_KEY, newValue: "dark" }),
-    );
-    expect(cb).toHaveBeenCalledTimes(2);
-  });
-
   it("subscribeSystem：system 设置下系统外观变化触发回调并套用 class；非 system 不回调", () => {
     let handler: (() => void) | null = null;
     const mql = {

@@ -2,7 +2,7 @@
 //!
 //! - `bot_get_config` 设置页读取（含老配置迁移兜底）
 //! - `bot_set_config` 设置页保存（key 走 keyring，配置文件强制剥 key）
-//! - `bot_set_active_model` 聊天区/挂件 🧠 下拉窄口径切 active 模型
+//! - `bot_set_active_model` 聊天区 🧠 下拉窄口径切 active 模型
 //! - `bot_log_read` 设置页读 bot.log 审计日志
 //! - `bot_test_connection` 厂商详情页模型行「测试连接」（只判 HTTP 状态）
 //! - `perm_mode` 当前授权模式（chat 入口用）
@@ -355,7 +355,7 @@ pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> Command
     Ok(())
 }
 
-/// 窄口径切换 active 模型（聊天区/挂件 🧠 下拉专用）：读盘上最新配置（单一事实源），
+/// 窄口径切换 active 模型（聊天区 🧠 下拉专用）：读盘上最新配置（单一事实源），
 /// 只动目标协议的 active_model_id（双协议同列：跨协议选中时连 api_provider
 /// 一起切），派生 base_url/model 老字段后落盘。
 /// **不做整份配置写回**——避免前端旧快照覆盖设置页并发修改的字段（白名单/开关等）。

@@ -243,7 +243,7 @@ describe("App", () => {
       }
       return defaultInvokeImpl(cmd);
     });
-    // 模拟挂件上报（无 source → 主窗回写路径）
+    // 无 source 的协议外上报（→ 主窗回写路径）
     await act(async () => {
       onTasksUpdated({
         payload: {
@@ -308,7 +308,7 @@ describe("App", () => {
       );
       // tasksRef 未先行赋值 → 新任务不进 UI（不会出现标题编辑 input）
       expect(screen.queryByDisplayValue("新任务")).not.toBeInTheDocument();
-      // 失败不广播（挂件不得读到未落盘的中间态）
+      // 失败不广播（不得让别处读到未落盘的中间态）
       expect(emit).not.toHaveBeenCalledWith("tasks-changed");
     } finally {
       errSpy.mockRestore();
@@ -553,7 +553,7 @@ describe("App", () => {
   });
 
   // tasks-updated 事件合并后，规则改动（今日归位/超时归档）
-  // 必须落盘，否则只改内存 → 重启/挂件读 db 回到原始数据，三端长期不一致
+  // 必须落盘，否则只改内存 → 重启读 db 回到原始数据
   it("tasks-updated 合并：超时归档的规则改动落盘 db_upsert + console 观测行", async () => {
     const handlers: Record<string, (e: unknown) => Promise<void>> = {};
     mocks.listenMock.mockImplementation(
@@ -569,10 +569,10 @@ describe("App", () => {
     expect(handlers["tasks-updated"]).toBeDefined();
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     mocks.invokeMock.mockClear();
-    // 挂件上报：完成超过 7 天、未归档的任务 → applyArchiveRule 应标记 archived
+    // 完成超过 7 天、未归档的任务 → applyArchiveRule 应标记 archived
     const staleDone: Task = {
       id: "w1",
-      title: "挂件完成的老任务",
+      title: "早已完成的老任务",
       column: "done",
       completedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
       order: 99,

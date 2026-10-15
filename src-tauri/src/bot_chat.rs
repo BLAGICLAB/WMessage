@@ -495,7 +495,7 @@ enum PreStepRoute {
 }
 
 /// 聊天入口：messages 为完整历史（含最新的用户消息），返回最终完整回复。
-/// 流式片段经 bot-chat-delta 事件实时推给挂件窗口。
+/// 流式片段经 bot-chat-delta 事件实时推给前端聊天区。
 ///
 /// 主流程（五步严格按序、禁止抢跑/前置 return）：
 /// 1. exec_steps::resume（有挂起子任务时本条消息是执行流程的应答，优先于一切聊天路由）
@@ -651,7 +651,7 @@ async fn apply_skill_route(
             completed_summary,
             rollback_attempted,
         }) => {
-            // SSE 推 Skill 失败给挂件（让用户看到半成品 + rollback 状态）
+            // SSE 推 Skill 失败给前端（让用户看到半成品 + rollback 状态）
             // payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
             let _ = app.emit_to(
                 "main",
@@ -694,7 +694,7 @@ pub async fn bot_chat(
     app: AppHandle,
     messages: Vec<ChatMsg>,
     session_id: Option<String>,
-    // 推理强度单次覆盖（RE-1）：挂件输入框按会话选的抽象档位（off/low/medium/high），
+    // 推理强度单次覆盖（RE-1）：聊天输入框按会话选的抽象档位（off/low/medium/high），
     // 由前端解析「会话覆盖 ?? 后台默认」后传入具体值；None = 按后台默认。
     // 只影响本次聊天调用，不回写 bot-config.json。
     reasoning_effort: Option<String>,
@@ -1320,7 +1320,7 @@ pub async fn bot_compact(app: AppHandle, messages: Vec<ChatMsg>) -> CommandResul
 /// 任务执行聊天化：执行永远在**新会话**里（run_task_in_chat 统一入口），
 /// 前端经 chat-open-session 事件切过去围观；session_id 参数废弃（旧前端兼容保留，
 /// 不再使用）。会话级 ChatGuard 由 run_task_in_chat 对新会话持有（补上原先后端无锁的漏洞）。
-/// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件（带新会话 sessionId）推给挂件。
+/// 流式经 bot-chat-delta / bot-think-delta / bot-tool* 事件（带新会话 sessionId）推给前端。
 #[tauri::command]
 pub async fn bot_execute_task(
     app: AppHandle,
@@ -1447,7 +1447,7 @@ pub struct TaskChatRun {
 }
 
 /// 创建执行会话（标题 = 来源前缀 + 任务标题）并把任务块作为 user 消息落库，
-/// 广播 chat-open-session 给挂件（busy 时前端排队提示，见设计第 5 节）。
+/// 广播 chat-open-session 给前端（busy 时排队提示，见设计第 5 节）。
 async fn create_exec_session<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     task: &crate::db::Task,

@@ -1,6 +1,6 @@
 // 任务图谱页（任务图谱设计 §3）：全量任务（含归档、排除回收站）的 Obsidian 式
 // 关系图谱——力导向布局、依赖边、按状态/成员着色、过滤器侧栏、
-// hover 邻接高亮、点选详情。看板/挂件只看本人任务；这里看整个部门。
+// hover 邻接高亮、点选详情。看板只看本人任务；这里看整个部门。
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";

@@ -78,7 +78,7 @@ if (typeof globalThis.WebGLRenderingContext === "undefined") {
 }
 
 // Node 26 自带 `localStorage` 全局，未传 `--localstorage-file` 时其值为 undefined，
-// 会在 jsdom 环境里遮蔽 jsdom 的实现；theme / WidgetApp 等测试依赖它
+// 会在 jsdom 环境里遮蔽 jsdom 的实现；theme 等测试依赖它
 // （beforeEach 里 `localStorage.clear()`）。这里按需补一个内存实现，
 // 覆盖 Web Storage 的最小可用子集。
 if (typeof globalThis.localStorage === "undefined") {

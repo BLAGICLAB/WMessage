@@ -55,11 +55,11 @@ export function TaskFileChips({
         const showOpenBtn = !!onOpenPath;
         const showCopyBtn = !!onCopyPath && !(isSpacious && copyState?.[f.path]);
         const showRemoveBtn = !!onRemovePath;
-        // chip 容器：详情面板用更宽松 padding + text-xs；卡片/挂件用紧凑样式
+        // chip 容器：详情面板用更宽松 padding + text-xs；卡片用紧凑样式
         const chipClass = isSpacious
           ? "nm-inset flex max-w-full items-center gap-1 px-2 py-0.5 text-xs"
           : "nm-inset rounded-lg px-1.5 py-0.5 flex items-center gap-1.5";
-        // 打开按钮样式：详情面板限定宽度 10rem，卡片/挂件 flex-1 占满
+        // 打开按钮样式：详情面板限定宽度 10rem，卡片 flex-1 占满
         const openClass = isSpacious
           ? "max-w-40 truncate text-[var(--t4)] hover:text-[var(--t2)]"
           : "flex-1 min-w-0 text-left text-[11px] text-[var(--t4)] hover:text-[var(--t2)] truncate";
@@ -101,7 +101,7 @@ export function TaskFileChips({
                 )}
               </button>
             ) : (
-              // 卡片/挂件：未接线 onOpenPath 时退化为只读文字
+              // 卡片：未接线 onOpenPath 时退化为只读文字
               <p
                 className="flex-1 min-w-0 text-[11px] text-[var(--t4)] truncate"
                 title={f.path}

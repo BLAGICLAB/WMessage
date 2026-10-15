@@ -1,5 +1,5 @@
 // 任务可见域谓词单源：归档/回收站/进行区/完成列的组合判断原先散在
-// 时间线/挂件/首页/归档页/回收站/图谱各写一份，口径漂移无从发现。
+// 时间线/首页/归档页/回收站/图谱各写一份，口径漂移无从发现。
 // 细颗粒拆分是刻意的：各页面的业务口径本就不同（到期看 completedAt、
 // 时间线看 column），组合逻辑留在调用方，这里只供原子谓词。
 import type { Task } from "../types";
@@ -9,7 +9,7 @@ export function isTrashed(t: Task): boolean {
   return !!t.deletedAt;
 }
 
-/** 进行区口径：未删且未归档（时间网格 / 挂件 / 首页活卡的前提） */
+/** 进行区口径：未删且未归档（时间网格 / 首页活卡的前提） */
 export function isLive(t: Task): boolean {
   return !t.archived && !isTrashed(t);
 }
@@ -19,12 +19,12 @@ export function isArchived(t: Task): boolean {
   return !!t.archived && !isTrashed(t);
 }
 
-/** 待办卡口径：进行区且未进完成列（时间线待办池 / 挂件待办列表） */
+/** 待办卡口径：进行区且未进完成列（时间线待办池） */
 export function isActiveTask(t: Task): boolean {
   return isLive(t) && t.column !== "done";
 }
 
-/** 完成卡口径：进行区且已进完成列（时间线完成池 / 挂件完成列表，原位保留） */
+/** 完成卡口径：进行区且已进完成列（时间线完成池，原位保留） */
 export function isDoneTask(t: Task): boolean {
   return isLive(t) && t.column === "done";
 }

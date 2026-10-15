@@ -598,7 +598,7 @@ pub async fn tasks_delete_non_self(app: AppHandle) -> CommandResult<usize> {
         .await
         .map_err(|e| CommandError::from(format!("删除线程 join 失败：{e}")))??;
     if !deleted_ids.is_empty() {
-        // 后端已落盘 → source="api"（App.tsx 只合并 UI 不回写）；tasks-changed 让挂件重读
+        // 后端已落盘 → source="api"（App.tsx 只合并 UI 不回写）；tasks-changed 让各页重读
         use tauri::Emitter;
         let _ = app.emit("tasks-changed", ());
         let _ = app.emit(
@@ -718,7 +718,7 @@ pub async fn task_set_column(
     })
     .await
     .map_err(|e| CommandError::from(format!("数据库列状态线程 join 失败：{e}")))??;
-    // 广播：挂件 tasks-changed 重读收敛；主窗 tasks-updated（source=main 已落盘，只合并不回写）
+    // 广播：tasks-changed 让各页重读收敛；tasks-updated（source=main 已落盘，只合并不回写）
     {
         use tauri::Emitter;
         let _ = app_emit.emit("tasks-changed", ());
@@ -1418,7 +1418,7 @@ mod task_set_column_tests {
         assert_eq!(row.column, TaskStatus::Todo);
         assert_eq!(row.completed_at, None);
         assert_eq!(row.archived, None);
-        // bot_assigned 保留（挂件 toggleDone 语义）
+        // bot_assigned 保留（机器人代办的完成语义）
         assert_eq!(row.bot_assigned, Some(true));
         assert_eq!(row.updated_at, Some(5000));
         // 基线 = 锁内现读值，写后重新加载一致

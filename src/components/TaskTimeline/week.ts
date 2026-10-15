@@ -220,7 +220,7 @@ export function planChip(planStart: string): string {
   return `${DOW1[(p.day.getDay() + 6) % 7]} ${fmtMin(p.min)}`;
 }
 
-/** 只读排期标签（TodoCard 归档卡 / 挂件卡共用，任务页详情面板有自己的编辑器）：
+/** 只读排期标签（TodoCard 归档卡，任务页详情面板有自己的编辑器）：
  *  "三 09:30–10:30"；planEnd 跨日时附星期 "三 17:30–四 08:30"；无 planStart → null。
  *  与 planChip 同一套 DOW1/fmtMin 口径，别处不要再手拼排期文案。 */
 export function planWindowLabel(
@@ -332,7 +332,7 @@ export function planPatchForDrop(
   return { planStart: buildPlanDT(opts.day, startMin), planEnd: buildPlanDT(end.day, end.min) };
 }
 
-/** 任务池口径排序（任务页任务池与挂件待办共用）：已排期按 planStart 升序在前，
+/** 任务池口径排序（任务页任务池）：已排期按 planStart 升序在前，
  *  未排期按 updatedAt 降序在后。 */
 export function sortPoolTasks(tasks: Task[]): Task[] {
   return [...tasks].sort((a, b) => {

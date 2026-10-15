@@ -14,7 +14,7 @@ const MAX_NAME_CHARS: usize = 24;
 const AVATAR_EXTS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 /// profile read-modify-write 进程内串行锁（同 db::DB_WRITE_LOCK 模式）。
-/// 主窗 + 挂件并发改 profile 时，整条 ProfileData 覆写会让后写者覆盖前写者 → 丢更新；
+/// 并发改 profile 时，整条 ProfileData 覆写会让后写者覆盖前写者 → 丢更新；
 /// 所有写路径（set_name / set_avatar / remove_avatar）的 R-M-W 全程持锁。
 /// load_data / profile_get 读路径频繁，不持锁避免阻塞读。
 static PROFILE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -217,7 +217,7 @@ fn valid_kind(kind: &str) -> bool {
     kind == "user" || kind == "bot"
 }
 
-/// 资料变更后广播给所有窗口（主窗口 + 挂件）
+/// 资料变更后广播给前端（bot-config-changed 同款页面间同步）
 fn broadcast<R: Runtime>(app: &AppHandle<R>) {
     let data = load_data(app);
     let _ = app.emit("profile-changed", build_view(app, &data));
@@ -371,7 +371,7 @@ pub fn profile_set_avatar<R: Runtime>(
             reason: "头像图片不能超过 5MB".into(),
         });
     }
-    // 整个写路径（清旧文件 → 拷贝 → R-M-W json）持锁，防主窗 + 挂件并发丢更新
+    // 整个写路径（清旧文件 → 拷贝 → R-M-W json）持锁，防并发写丢更新
     let data = {
         let _g =
             crate::db::lock::lock_or_recover(&PROFILE_WRITE_LOCK, "profile::PROFILE_WRITE_LOCK");
@@ -1167,7 +1167,7 @@ mod tests {
         let handle = app.handle().clone();
         let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        // 模拟主窗改 user、挂件改 bot：两条 R-M-W 都覆写整条 ProfileData，
+        // 模拟两路并发各改 user / bot：两条 R-M-W 都覆写整条 ProfileData，
         // 无锁时两者都基于空快照改写 → 后写者覆盖前写者，必丢一个字段
         let mut joins = Vec::new();
         for (kind, name) in [("user", "线程A"), ("bot", "线程B")] {

@@ -1,4 +1,4 @@
-// bot_get_config 的统一入口：原先主窗/挂件/各页面各自 invoke 并内联 payload
+// bot_get_config 的统一入口：原先各页面各自 invoke 并内联 payload
 // 类型（9 份拷贝），线格式按 Rust BotConfigView（serde rename_all = camelCase，
 // 见 src-tauri/src/bot/config/types.rs）收敛于此。所有字段可选——后端
 // Option + skip_serializing_if 在 None/空时直接缺键，调用方按需兜底。
@@ -71,10 +71,10 @@ export function getBotConfig(): Promise<BotConfigView> {
   return invoke<BotConfigView>("bot_get_config");
 }
 
-/** 字号同步共享体：主窗口与挂件是两个 webview、各自独立 document，都要
+/** 字号同步共享体：页面各自独立 document，都要
  *  「启动拉一次 bot config 套 documentElement[data-font-size] + 监听
  *  bot-config-changed 重拉」（设置页保存会广播，点选未保存也会被广播）。
- *  onConfig 供主窗口挂额外同步（归档天数刷新），仅在拉取成功时回调。
+ *  onConfig 供 App 挂额外同步（归档天数刷新），仅在拉取成功时回调。
  *  拉取失败也套默认 small，避免界面还没应用就被卡。返回卸载清理函数；
  *  卸载早于 listen resolve 时自注销，防监听泄漏（同 useTauriListen 模式）。 */
 export function applyFontSizeSync(

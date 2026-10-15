@@ -1,4 +1,4 @@
-/** 主题管理：浅色/深色/跟随系统 三态，html.dark class + localStorage 持久化，双窗口 storage 事件同步 */
+/** 主题管理：浅色/深色/跟随系统 三态，html.dark class + localStorage 持久化 */
 
 const THEME_KEY = "wmessage-theme";
 
@@ -55,21 +55,6 @@ export function toggleTheme(): ThemeSetting {
   const next: ThemeSetting = effectiveTheme(cur) === "dark" ? "light" : "dark";
   applySetting(next);
   return next;
-}
-
-/** 监听主题变更并同步 */
-export function subscribeTheme(
-  onChange: (s: ThemeSetting) => void,
-): () => void {
-  const handler = (e: StorageEvent) => {
-    if (e.key !== THEME_KEY) return;
-    const next: ThemeSetting =
-      e.newValue === "dark" || e.newValue === "system" ? e.newValue : "light";
-    applyClass(effectiveTheme(next) === "dark");
-    onChange(next);
-  };
-  window.addEventListener("storage", handler);
-  return () => window.removeEventListener("storage", handler);
 }
 
 /** 跟随系统模式下，系统外观变化时自动切换并回调 */

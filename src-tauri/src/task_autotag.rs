@@ -206,7 +206,7 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
     .await
     .map_err(crate::error::CommandError::from)?;
 
-    // 广播：挂件 tasks-changed 重读收敛；主窗 tasks-updated 行级合并
+    // 广播：tasks-changed 让各页重读收敛；tasks-updated 行级合并
     let _ = app.emit("tasks-changed", ());
     let _ = app.emit_to(
         "main",

@@ -1,6 +1,6 @@
-// 标题行右侧的折叠/展开开关 —— 主窗口 TodoCard 与挂件 TaskCardContent 共用（保持一致）
+// 标题行右侧的折叠/展开开关，各任务卡视图共用
 // 位于标题与打勾圆圈之间；三角符号加大；未折叠时卡片悬停才显现，已折叠时强制可见（保证能点开）
-// alwaysVisible：始终显示（挂件窄面板用，避免 hover 才显现难找）
+// alwaysVisible：始终显示（窄面板用，避免 hover 才显现难找）
 import { stopPointer as stop } from "../lib/stopPointer";
 
 export function FoldToggle({

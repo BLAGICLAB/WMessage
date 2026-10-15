@@ -1440,7 +1440,7 @@ describe("ChatPanel", () => {
     });
     // 标签随返回 view 刷新（active 模型的 model 字段）
     expect(await screen.findByText(/deepseek-chat/)).toBeInTheDocument();
-    // 广播给另一窗口（主窗口 ↔ 挂件同步）
+    // 配置变更广播（各页面监听重拉）
     expect(mocks.emitMock).toHaveBeenCalledWith("bot-config-changed", null);
   });
 

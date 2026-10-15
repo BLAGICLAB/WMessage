@@ -100,7 +100,7 @@ pub fn bring_main_to_front<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) 
     });
 }
 
-/// Tauri 命令包装：供前端 src/focus.ts 调用，与 4 个 Rust 内部调用点同逻辑
+/// Tauri 命令包装：供前端 ChatPanel 调用，与 4 个 Rust 内部调用点同逻辑
 #[tauri::command]
 fn focus_main_window(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {

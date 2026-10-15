@@ -18,7 +18,7 @@ const MAX_SHOWN = 4;
 export function HomeKpiPanel() {
   const [sel, setSel] = useState<KpiId[]>(() => getHomeKpiSelection());
 
-  // 其他入口（未来挂件等）改了选择 → 事件同步回本页控件
+  // 其他入口改了选择 → 事件同步回本页控件
   useEffect(() => subscribeHomeKpiSelection(() => setSel(getHomeKpiSelection())), []);
 
   const toggle = (id: KpiId) => {
