@@ -197,8 +197,8 @@ fn compact_internal(
     msgs: &mut [Value],
     sidecar_dir: Option<&Path>,
     session_id: Option<&str>,
-    head_keep: usize,
-    tail_keep: usize,
+    _head_keep: usize,
+    _tail_keep: usize,
     recompact_marked: bool,
 ) -> Result<CompactionReport, String> {
     let mut report = CompactionReport {

@@ -539,7 +539,7 @@ mod tests {
             .unwrap();
         let after_parsed: Vec<String> = serde_json::from_str(&after).unwrap();
         assert_eq!(after_parsed, vec!["main".to_string()]);
-        let rb = rollback_tag_merge(&app, &c, &run.run_id).unwrap();
+        let rb = rollback_tag_merge(app, &c, &run.run_id).unwrap();
         assert_eq!(rb.restored_task_count, 1);
         let restored: String = c
             .query_row("SELECT tags FROM tasks WHERE id='t1'", [], |r| r.get(0))
@@ -559,7 +559,7 @@ mod tests {
     fn merge_rejects_empty_main() {
         let c = conn();
         let app_root = tauri::test::mock_app();
-        let app = app_root.handle();
+        let _app = app_root.handle();
         let err = merge_tag_cluster(&c, "", &["a", "b"]);
         assert!(err.is_err());
     }
@@ -568,7 +568,7 @@ mod tests {
     fn merge_rejects_when_only_main_in_members() {
         let c = conn();
         let app_root = tauri::test::mock_app();
-        let app = app_root.handle();
+        let _app = app_root.handle();
         let err = merge_tag_cluster(&c, "only", &["only"]);
         assert!(err.is_err());
     }

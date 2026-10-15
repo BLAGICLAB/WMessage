@@ -230,7 +230,7 @@ pub struct ChildRegGuard(u32);
 
 impl ChildRegGuard {
     pub fn register(child: &Child) -> Self {
-        crate::db::lock::lock_or_recover(&py_children(), "py::runtime PY_CHILDREN")
+        crate::db::lock::lock_or_recover(py_children(), "py::runtime PY_CHILDREN")
             .insert(child.id());
         Self(child.id())
     }
@@ -238,7 +238,7 @@ impl ChildRegGuard {
 
 impl Drop for ChildRegGuard {
     fn drop(&mut self) {
-        crate::db::lock::lock_or_recover(&py_children(), "py::runtime PY_CHILDREN").remove(&self.0);
+        crate::db::lock::lock_or_recover(py_children(), "py::runtime PY_CHILDREN").remove(&self.0);
     }
 }
 
@@ -269,11 +269,10 @@ pub fn kill_py_children(pids: &[u32]) -> usize {
 }
 
 pub fn kill_all_py_children() -> usize {
-    let pids: Vec<u32> =
-        crate::db::lock::lock_or_recover(&py_children(), "py::runtime PY_CHILDREN")
-            .iter()
-            .copied()
-            .collect();
+    let pids: Vec<u32> = crate::db::lock::lock_or_recover(py_children(), "py::runtime PY_CHILDREN")
+        .iter()
+        .copied()
+        .collect();
     kill_py_children(&pids)
 }
 

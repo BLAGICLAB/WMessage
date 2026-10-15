@@ -157,12 +157,12 @@ pub fn open_db<R: tauri::Runtime>(
             }
         }
     }
-    let mut conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
+    let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
     // busy_timeout **有意保留 2s，不调 5000ms**：进程内写者已由 DB_WRITE_LOCK 串行化
     conn.busy_timeout(Duration::from_secs(2))
         .map_err(|e| e.to_string())?;
     migrations::apply_conn_pragmas(&conn)?;
-    // tasks 表单源 DDL（从 tasks.rs 抽取）：完整 29 列 schema，老库缺列由下方幂等 ALTER 补齐
+    // tasks 表单源 DDL（从 tasks.rs 抽取）：完整 25 列 schema，老库缺列由下方幂等 ALTER 补齐
     conn.execute_batch(crate::db::tasks::TASKS_DDL)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(

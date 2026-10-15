@@ -16,7 +16,7 @@ fn session_origins() -> &'static std::sync::Mutex<HashMap<String, TaskExecOrigin
 /// 毒锁按全仓口径处理：into_inner 取回数据继续跑 + eprintln 留痕。
 /// 静默吞掉会让 unregister 变 no-op，注册条目永久泄漏（is_task_execution_flow 常真）。
 fn lock_session_origins() -> std::sync::MutexGuard<'static, HashMap<String, TaskExecOrigin>> {
-    crate::db::lock::lock_or_recover(&session_origins(), "tool_guard::SESSION_ORIGINS")
+    crate::db::lock::lock_or_recover(session_origins(), "tool_guard::SESSION_ORIGINS")
 }
 
 pub fn register_exec_session(session_id: &str, origin: TaskExecOrigin) {
@@ -66,7 +66,7 @@ fn subagent_sessions() -> &'static std::sync::Mutex<HashMap<String, SubagentSess
 /// 安全闸的锁不能 fail-open（中毒时把子会话当主会话 = 递归闸失守），
 /// 也不能 fail-closed 到吞掉注册/清理（泄漏更难查）——取回数据继续跑 + eprintln 留痕。
 fn lock_subagent_sessions() -> std::sync::MutexGuard<'static, HashMap<String, SubagentSessionCtx>> {
-    crate::db::lock::lock_or_recover(&subagent_sessions(), "tool_guard::SUBAGENT_SESSIONS")
+    crate::db::lock::lock_or_recover(subagent_sessions(), "tool_guard::SUBAGENT_SESSIONS")
 }
 
 /// 注册子 agent 会话上下文。同 id 已存在 = 上一 runner 泄漏或双跑 bug：

@@ -74,17 +74,17 @@ fn cache() -> &'static Mutex<std::collections::HashMap<String, Option<McpSecrets
 }
 
 fn cache_get(id: &str) -> Option<Option<McpSecrets>> {
-    crate::db::lock::lock_or_recover(&cache(), "mcp::secrets cache")
+    crate::db::lock::lock_or_recover(cache(), "mcp::secrets cache")
         .get(id)
         .cloned()
 }
 
 fn cache_put(id: &str, v: Option<McpSecrets>) {
-    crate::db::lock::lock_or_recover(&cache(), "mcp::secrets cache").insert(id.to_string(), v);
+    crate::db::lock::lock_or_recover(cache(), "mcp::secrets cache").insert(id.to_string(), v);
 }
 
 fn cache_remove(id: &str) {
-    crate::db::lock::lock_or_recover(&cache(), "mcp::secrets cache").remove(id);
+    crate::db::lock::lock_or_recover(cache(), "mcp::secrets cache").remove(id);
 }
 
 // 后端分发
@@ -103,7 +103,7 @@ fn fallback_lock() -> &'static Mutex<()> {
 }
 
 fn fallback_lock_guard() -> std::sync::MutexGuard<'static, ()> {
-    crate::db::lock::lock_or_recover(&fallback_lock(), "mcp::secrets fallback_lock")
+    crate::db::lock::lock_or_recover(fallback_lock(), "mcp::secrets fallback_lock")
 }
 
 static FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
@@ -334,8 +334,7 @@ pub(crate) fn hydrate_mcp_servers(app: &tauri::AppHandle, cfg: &mut crate::bot::
                         // 查重与写入在同一把锁内完成（check-then-act 原子化）：
                         // 键已存在（含并发 store 刚写入的新值）则不覆盖，
                         // 杜绝本线程读到的旧值把新值冲掉
-                        let mut g =
-                            crate::db::lock::lock_or_recover(&cache(), "mcp::secrets cache");
+                        let mut g = crate::db::lock::lock_or_recover(cache(), "mcp::secrets cache");
                         g.entry(s.id.clone()).or_insert(Some(secrets));
                     }
                     Ok(_) => cache_put(&s.id, None),

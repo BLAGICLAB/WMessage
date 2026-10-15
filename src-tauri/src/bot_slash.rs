@@ -161,7 +161,7 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String
     // 本会话在途确认弹窗立即按拒绝收尾——sender 随条目 drop，
     // 等待侧 rx 立即收到 Err 走超时拒绝分支；/stop 后迟到的确认点击不再放行危险动作
     {
-        let mut map = crate::db::lock::lock_or_recover(&confirms(&app), "app_state::confirms");
+        let mut map = crate::db::lock::lock_or_recover(confirms(&app), "app_state::confirms");
         let keys: Vec<String> = map
             .iter()
             .filter(|(_, (_, sid))| sid.as_deref() == session_id.as_deref())
@@ -269,7 +269,7 @@ async fn ask_confirm_inner(
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
     let id = uuid::Uuid::new_v4().simple().to_string();
-    crate::db::lock::lock_or_recover(&confirms(app), "bot_slash confirms")
+    crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms")
         .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
     // confirm 弹窗是主窗口的事，不走 widget 挂件
     // （挂件窗口是屏幕边缘小条，不适合弹确认框；用户操作 Promote 时在主窗口，期待主窗口弹）
@@ -294,7 +294,7 @@ async fn ask_confirm_inner(
     match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
         Ok(Ok(reply)) => reply,
         _ => {
-            crate::db::lock::lock_or_recover(&confirms(app), "bot_slash confirms").remove(&id);
+            crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms").remove(&id);
             // 确认超时默认拒绝留痕
             crate::bot::audit_log(
                 app,
@@ -381,7 +381,7 @@ fn take_confirm<R: tauri::Runtime>(
     app: &AppHandle<R>,
     request_id: &str,
 ) -> Result<(tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>), String> {
-    crate::db::lock::lock_or_recover(&confirms(app), "bot_slash confirms")
+    crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms")
         .remove(request_id)
         .ok_or_else(|| {
             format!(
@@ -497,14 +497,14 @@ mod command_result_tests {
         let a = mock_handle();
         let b = mock_handle();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        crate::db::lock::lock_or_recover(&super::confirms(&a), "bot_slash confirms")
+        crate::db::lock::lock_or_recover(super::confirms(&a), "bot_slash confirms")
             .insert("req-iso".into(), (tx, Some("sess-1".into())));
         assert_eq!(
-            crate::db::lock::lock_or_recover(&super::confirms(&a), "bot_slash confirms").len(),
+            crate::db::lock::lock_or_recover(super::confirms(&a), "bot_slash confirms").len(),
             1
         );
         assert_eq!(
-            crate::db::lock::lock_or_recover(&super::confirms(&b), "bot_slash confirms").len(),
+            crate::db::lock::lock_or_recover(super::confirms(&b), "bot_slash confirms").len(),
             0,
             "另一个注入实例不得看到该条目"
         );
@@ -512,7 +512,7 @@ mod command_result_tests {
         let taken = super::take_confirm(&a, "req-iso");
         assert!(taken.is_ok(), "注入实例内应能取到");
         assert_eq!(
-            crate::db::lock::lock_or_recover(&super::confirms(&a), "bot_slash confirms").len(),
+            crate::db::lock::lock_or_recover(super::confirms(&a), "bot_slash confirms").len(),
             0
         );
     }

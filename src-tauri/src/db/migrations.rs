@@ -130,6 +130,93 @@ pub fn drop_retired_workflow_task_columns(conn: &rusqlite::Connection) -> Result
     .map_err(|e| e.to_string())
 }
 
+/// 可重试的一次性执行——done 未置位时跑 exec，仅成功才置位
+pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
+    done: &std::sync::atomic::AtomicBool,
+    exec: F,
+) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    // CAS 抢占执行权：load/exec/store 三步分离时，两个并发调用可能都观察到
+    // false 而双双执行。compare_exchange 保证只有一个调用 false→true 成功；
+    // exec 失败要回滚标记——保留「失败可重试」语义（成功才消耗执行权）
+    if done
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        eprintln!("[migrate] reset_bot_assigned_with：执行权已被并发调用持有，本次跳过");
+        return Ok(());
+    }
+    match exec() {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            done.store(false, Ordering::SeqCst);
+            Err(e)
+        }
+    }
+}
+
+/// 迁移方案2 的 data.json：json 里有库里缺的任务就按 id 集合差补回
+/// legacy `data.json` 路径（供调用方在**取写锁前**做「是否需要迁移」的锁外早返回）。
+/// 与 `migrate_data_json` 共用同一路径推导，避免两处重复。
+pub fn legacy_data_json_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<std::path::PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("data.json"))
+}
+
+pub fn migrate_data_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    conn: &mut rusqlite::Connection,
+) {
+    let Some(path) = legacy_data_json_path(app) else {
+        return;
+    };
+    let _ = migrate_data_json_file(&path, conn);
+}
+
+/// 可测内核：返回是否执行了迁移
+pub fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connection) -> bool {
+    if !file.exists() {
+        return false;
+    }
+    let Ok(json) = std::fs::read_to_string(file) else {
+        return false;
+    };
+    let Ok(tasks) = serde_json::from_str::<Vec<super::Task>>(&json) else {
+        return false;
+    };
+    let existing: std::collections::HashSet<String> = {
+        let mut stmt = match conn.prepare("SELECT id FROM tasks") {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+        rows.filter_map(|r| r.ok()).collect()
+    };
+    let missing: Vec<super::Task> = tasks
+        .into_iter()
+        .filter(|t| !existing.contains(&t.id))
+        .collect();
+    let retire = |file: &std::path::Path| {
+        let _ = std::fs::rename(file, file.with_extension("json.migrated"));
+    };
+    if missing.is_empty() {
+        retire(file);
+        return false;
+    }
+    let Ok(tx) = conn.transaction() else {
+        return false;
+    };
+    if super::tasks::upsert_tasks(&tx, &missing).is_ok() && tx.commit().is_ok() {
+        retire(file);
+        return true;
+    }
+    false
+}
+
 #[cfg(test)]
 mod retired_cleanup_tests {
     use super::{cleanup_retired_workflow_tables, drop_retired_workflow_task_columns};
@@ -244,91 +331,4 @@ mod retired_cleanup_tests {
         // 幂等：二跑列已不存在，直接返回
         drop_retired_workflow_task_columns(&conn).unwrap();
     }
-}
-
-/// 可重试的一次性执行——done 未置位时跑 exec，仅成功才置位
-pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
-    done: &std::sync::atomic::AtomicBool,
-    exec: F,
-) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
-    // CAS 抢占执行权：load/exec/store 三步分离时，两个并发调用可能都观察到
-    // false 而双双执行。compare_exchange 保证只有一个调用 false→true 成功；
-    // exec 失败要回滚标记——保留「失败可重试」语义（成功才消耗执行权）
-    if done
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        eprintln!("[migrate] reset_bot_assigned_with：执行权已被并发调用持有，本次跳过");
-        return Ok(());
-    }
-    match exec() {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            done.store(false, Ordering::SeqCst);
-            Err(e)
-        }
-    }
-}
-
-/// 迁移方案2 的 data.json：json 里有库里缺的任务就按 id 集合差补回
-/// legacy `data.json` 路径（供调用方在**取写锁前**做「是否需要迁移」的锁外早返回）。
-/// 与 `migrate_data_json` 共用同一路径推导，避免两处重复。
-pub fn legacy_data_json_path<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Option<std::path::PathBuf> {
-    app.path().app_data_dir().ok().map(|d| d.join("data.json"))
-}
-
-pub fn migrate_data_json<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    conn: &mut rusqlite::Connection,
-) {
-    let Some(path) = legacy_data_json_path(app) else {
-        return;
-    };
-    let _ = migrate_data_json_file(&path, conn);
-}
-
-/// 可测内核：返回是否执行了迁移
-pub fn migrate_data_json_file(file: &std::path::Path, conn: &mut rusqlite::Connection) -> bool {
-    if !file.exists() {
-        return false;
-    }
-    let Ok(json) = std::fs::read_to_string(file) else {
-        return false;
-    };
-    let Ok(tasks) = serde_json::from_str::<Vec<super::Task>>(&json) else {
-        return false;
-    };
-    let existing: std::collections::HashSet<String> = {
-        let mut stmt = match conn.prepare("SELECT id FROM tasks") {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
-            Ok(r) => r,
-            Err(_) => return false,
-        };
-        rows.filter_map(|r| r.ok()).collect()
-    };
-    let missing: Vec<super::Task> = tasks
-        .into_iter()
-        .filter(|t| !existing.contains(&t.id))
-        .collect();
-    let retire = |file: &std::path::Path| {
-        let _ = std::fs::rename(file, file.with_extension("json.migrated"));
-    };
-    if missing.is_empty() {
-        retire(file);
-        return false;
-    }
-    let Ok(tx) = conn.transaction() else {
-        return false;
-    };
-    if super::tasks::upsert_tasks(&tx, &missing).is_ok() && tx.commit().is_ok() {
-        retire(file);
-        return true;
-    }
-    false
 }

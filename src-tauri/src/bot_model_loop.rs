@@ -1515,8 +1515,8 @@ where
                 // 后续轮都是 read；creation 仅在「上一轮窗口写满 + 重新构造前缀」
                 // 时出现。计算时 input 含未被缓存的尾部 token，命中看 read 占比
                 let total = usage_cache_read + usage_cache_creation + usage_input;
-                if total > 0 {
-                    let pct = usage_cache_read * 100 / total;
+                // checked_div：total=0（无任何 token）时整个键都不落，与旧守卫语义一致
+                if let Some(pct) = (usage_cache_read * 100).checked_div(total) {
                     kv.push(("cache_hit_pct", pct.to_string()));
                 }
             }

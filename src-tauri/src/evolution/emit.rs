@@ -100,8 +100,7 @@ pub fn emit_proposals(proposals: Vec<EvolutionProposal>) -> EmitReport {
     // 行为权衡：dedup 标记先于 audit 写（崩溃窗口对称互换：旧=写了没标记，
     // 新=标记了没写；两者都是单条 audit 行级别，可接受）。
     let to_emit: Vec<EvolutionProposal> = {
-        let mut g =
-            crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit::emitted_map");
+        let mut g = crate::db::lock::lock_or_recover(emitted_map(), "evolution::emit::emitted_map");
         // 清掉超过 24h 的 id（防止 map 无限增长）
         g.retain(|_, ts| now_ms - *ts < EMIT_DEDUP_TTL_MS);
         let mut to_emit = Vec::new();
@@ -190,12 +189,12 @@ mod tests {
 
     /// 当前 dedup 表大小（仅测试可见）。
     fn emitted_count() -> usize {
-        crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit emitted_map").len()
+        crate::db::lock::lock_or_recover(emitted_map(), "evolution::emit emitted_map").len()
     }
 
     /// 当前 dedup 表是否含某 id（仅测试可见）。
     fn emitted_contains(id: &str) -> bool {
-        crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit emitted_map")
+        crate::db::lock::lock_or_recover(emitted_map(), "evolution::emit emitted_map")
             .contains_key(id)
     }
 
@@ -268,7 +267,7 @@ mod tests {
         let p = make_proposal(&unique);
         // 手工塞一个过期 id 进表
         let stale_ts = chrono::Utc::now().timestamp_millis() - (25 * 3_600_000);
-        crate::db::lock::lock_or_recover(&emitted_map(), "evolution::emit emitted_map")
+        crate::db::lock::lock_or_recover(emitted_map(), "evolution::emit emitted_map")
             .insert(p.proposal_id.clone(), stale_ts);
         // 同 id emit：触发 retain 清理后再写
         let r = emit_proposals(vec![p.clone()]);

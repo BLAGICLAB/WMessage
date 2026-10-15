@@ -232,7 +232,7 @@ async fn run_round(app: &AppHandle) {
     let now = Local::now();
     // 全程持锁：状态加载 → 合并 → 发送 → 落盘 原子完成，防与其他路径交叉
     //（锁中毒按项目惯例 into_inner 继续，不让通知循环 panic 退出）
-    let mut guard = crate::db::lock::lock_or_recover(&notify_state(), "due_notify::notify_state");
+    let mut guard = crate::db::lock::lock_or_recover(notify_state(), "due_notify::notify_state");
     let state = guard.get_or_insert_with(|| load_state(app));
     let pending = plan_round(state, &active, now);
     for p in &pending {

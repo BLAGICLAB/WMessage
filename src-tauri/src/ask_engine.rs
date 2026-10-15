@@ -121,7 +121,7 @@ pub async fn ask_respond(
     };
     // 唤醒 waiter（执行存活才有；已结束 → 静默跳过，不自动拉起旧执行）
     if let Some(tx) = crate::db::lock::lock_or_recover(
-        &crate::app_state::question_waiters(&app),
+        crate::app_state::question_waiters(&app),
         "question_waiters",
     )
     .remove(&question_id)
@@ -169,7 +169,7 @@ pub(crate) fn register_ask_context<R: tauri::Runtime>(
     node_title: &str,
     budget: u8,
 ) {
-    crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts").insert(
+    crate::db::lock::lock_or_recover(crate::app_state::ask_contexts(app), "ask_contexts").insert(
         session_id.to_string(),
         AskRegistration {
             task_id: task_id.to_string(),
@@ -186,7 +186,7 @@ pub(crate) fn unregister_ask_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: &str,
 ) {
-    crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts")
+    crate::db::lock::lock_or_recover(crate::app_state::ask_contexts(app), "ask_contexts")
         .remove(session_id);
 }
 
@@ -253,7 +253,7 @@ pub(crate) fn parse_ask_args(args: &str) -> Result<AskArgs, String> {
 /// 摘除提问 waiter：insert 失败注销与等待结束防泄漏共用（应答端 remove 幂等，
 /// 双方摘除只对先到者生效，晚到者拿到 None）
 fn remove_question_waiter<R: tauri::Runtime>(app: &tauri::AppHandle<R>, qid: &str) {
-    crate::db::lock::lock_or_recover(&crate::app_state::question_waiters(app), "question_waiters")
+    crate::db::lock::lock_or_recover(crate::app_state::question_waiters(app), "question_waiters")
         .remove(qid);
 }
 
@@ -262,7 +262,7 @@ fn remove_question_waiter<R: tauri::Runtime>(app: &tauri::AppHandle<R>, qid: &st
 /// 注册已随会话收尾注销，无需回冲。
 fn restore_ask_budget<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &str, prev: u8) {
     let mut map =
-        crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts");
+        crate::db::lock::lock_or_recover(crate::app_state::ask_contexts(app), "ask_contexts");
     if let Some(reg) = map.get_mut(sid) {
         reg.asks_left
             .fetch_max(prev, std::sync::atomic::Ordering::SeqCst);
@@ -299,7 +299,7 @@ pub(crate) async fn engine_ask_user(
     // 锁内一次取全量 owned 数据（含模式检查与预算扣减）——引用不出锁作用域
     let (task_id, node_title, budget_left, asks_max) = {
         let mut map =
-            crate::db::lock::lock_or_recover(&crate::app_state::ask_contexts(app), "ask_contexts");
+            crate::db::lock::lock_or_recover(crate::app_state::ask_contexts(app), "ask_contexts");
         let Some(reg) = map.get_mut(sid) else {
             return ToolResult::warn(
                 "ask_user 仅任务执行中可用（手动执行任务卡）；聊天中请直接文字提问。请按你的假设继续执行。",
@@ -345,7 +345,7 @@ pub(crate) async fn engine_ask_user(
     // 继续」两层不一致。qid 是本次新造的 uuid，落库前无人能引用，提前注册无重复
     // 消费面（应答端 remove 单次消费）；insert 失败路径负责注销防泄漏。
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-    crate::db::lock::lock_or_recover(&crate::app_state::question_waiters(app), "question_waiters")
+    crate::db::lock::lock_or_recover(crate::app_state::question_waiters(app), "question_waiters")
         .insert(qid.clone(), tx);
     let qid_insert = qid.clone();
     let app2 = app.clone();

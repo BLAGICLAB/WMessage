@@ -47,20 +47,20 @@ fn session_key(session_id: Option<&str>) -> String {
 /// 会话 A 挂起时，会话 B 的消息走正常聊天路由，不被 resume 截胡）
 /// 挂起表已迁入 `AppState`，故取注入实例（缺失时兜底实例）。
 pub fn has_pending_for<R: tauri::Runtime>(app: &AppHandle<R>, session_id: Option<&str>) -> bool {
-    crate::db::lock::lock_or_recover(&pending_map(app), "exec_steps::pending_map")
+    crate::db::lock::lock_or_recover(pending_map(app), "exec_steps::pending_map")
         .contains_key(&session_key(session_id))
 }
 
 fn park<R: tauri::Runtime>(app: &AppHandle<R>, p: PendingExec) {
     let key = session_key(p.session_id.as_deref());
-    crate::db::lock::lock_or_recover(&pending_map(app), "exec_steps::pending_map").insert(key, p);
+    crate::db::lock::lock_or_recover(pending_map(app), "exec_steps::pending_map").insert(key, p);
 }
 
 fn take_pending_for<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Option<&str>,
 ) -> Option<PendingExec> {
-    crate::db::lock::lock_or_recover(&pending_map(app), "exec_steps::pending_map")
+    crate::db::lock::lock_or_recover(pending_map(app), "exec_steps::pending_map")
         .remove(&session_key(session_id))
 }
 

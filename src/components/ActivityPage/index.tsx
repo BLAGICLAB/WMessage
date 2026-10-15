@@ -70,7 +70,7 @@ export function ActivityPage() {
     reload();
   }, [reload]);
 
-  // 有执行中的痕迹时 10s 轻轮询（收尾后自然停转；sched/workflow 事件页各自消费）
+  // 有执行中的痕迹时 10s 轻轮询（收尾后自然停转）
   const hasRunning = traces.some((t) => t.status === "running");
   useEffect(() => {
     if (!hasRunning) return;

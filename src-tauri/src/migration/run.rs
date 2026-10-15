@@ -479,8 +479,3 @@ pub fn spawn_polling(app: AppHandle) {
         }
     });
 }
-
-#[cfg(test)]
-mod cancel_tests {
-    use super::*;
-}
