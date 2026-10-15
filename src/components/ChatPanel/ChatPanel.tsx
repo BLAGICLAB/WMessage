@@ -35,8 +35,8 @@ import type {
   VerboseLevel,
 } from "./types";
 import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks } from "./constants";
-import { useAutoGrow, useDropdownTop, useOutsideClose } from "./useChatUi";
-import { SessionList } from "./SessionList";
+import { useAutoGrow, useOutsideClose } from "./useChatUi";
+import { SessionRail } from "./SessionRail";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
@@ -52,7 +52,6 @@ type Props = {
 export function ChatPanel({ enabled }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
   // 输入窗口锁定对话（DRAFT-1）：草稿/附件按会话隔离——切走再切回各自保留，
   // 会话 A 打的字切到 B 不会误发给 B。input/files 是「当前会话」的派生值，
@@ -107,8 +106,6 @@ export function ChatPanel({ enabled }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 聊天区根节点：拖放落点判定用（只接收落在聊天区矩形内的文件） */
   const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLButtonElement>(null);
-  const sessionDropdownRef = useRef<HTMLDivElement>(null);
   // 🧠 模型下拉：同会话菜单三件套——开合 + 按钮 ref + 下拉 ref，
   // 另带当前协议的模型列表与 active id（reload 里一并维护）
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -148,9 +145,6 @@ export function ChatPanel({ enabled }: Props) {
     setVerboseLevelState(l);
     localStorage.setItem("chat-verbose-level", l);
   };
-  // 顶部行引用 + 下拉 top 定位（紧贴 🤖 按钮底部，0 间距）
-  const topBarRef = useRef<HTMLDivElement>(null);
-  const dropdownTop = useDropdownTop(rootRef, menuRef);
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
   useAutoGrow(taRef, input);
   /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
@@ -340,13 +334,6 @@ export function ChatPanel({ enabled }: Props) {
     })();
   }, [enabled]);
 
-  // 点击会话菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
-  useOutsideClose(
-    sessionMenuOpen,
-    () => setSessionMenuOpen(false),
-    menuRef,
-    sessionDropdownRef,
-  );
   // 点击模型下拉外关闭（镜像会话菜单：按钮与下拉不在同一 ref 容器，双 ref 检测）
   useOutsideClose(
     modelMenuOpen,
@@ -720,7 +707,6 @@ export function ChatPanel({ enabled }: Props) {
   const execWatchRef = useRef<string | null>(null);
   /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量。   * watch=false（收尾后迟到的跳转）：只读查看不挂围观守卫，输入立即可用 */
   const openExecSession = async (sid: string, watch = true) => {
-    setSessionMenuOpen(false);
     setSessionId(sid);
     // 镜像同步落（effect 渲染后才补）：await 期间守卫读到的必须已是新会话，
     // 否则快响应会被「过期」守卫误丢
@@ -907,13 +893,11 @@ export function ChatPanel({ enabled }: Props) {
       // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（inflightRef），
       // 切走不影响它在后台完成
       if (sid === sessionId) {
-        setSessionMenuOpen(false);
         return;
       }
       setSessionId(sid);
       // 镜像同步落（同 openExecSession）：守卫在 await 之后读 ref，不能等渲染
       sessionIdRef.current = sid;
-      setSessionMenuOpen(false);
       setMessages([]);
       try {
         const rows = await invoke<
@@ -946,7 +930,6 @@ export function ChatPanel({ enabled }: Props) {
     try {
       const s = await invoke<Session>("bot_session_create", { title: null });
       setSessions((prev) => [s, ...prev]);
-      setSessionMenuOpen(false);
       setSessionId(s.id);
       setMessages([]);
       // DRAFT-1：不再清 input——草稿按会话隔离，新会话天然是空的，
@@ -1415,8 +1398,16 @@ export function ChatPanel({ enabled }: Props) {
   return (
     <div
       ref={rootRef}
-      className="relative flex flex-col shrink-0 h-full min-h-0"
+      className="relative flex h-full min-h-0 shrink-0 gap-4"
     >
+      <SessionRail
+        sessions={sessions}
+        sessionId={sessionId}
+        onSelect={switchSession}
+        onNew={newSession}
+        onDelete={deleteSession}
+      />
+      <div className="relative flex min-w-0 flex-1 flex-col">
       {/* 拖放提示层：文件悬停在聊天区上时显示，松开即加入附件 */}
       {dragHover && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-[var(--brand)] bg-black/20">
@@ -1478,22 +1469,22 @@ export function ChatPanel({ enabled }: Props) {
           </div>
         </div>
       )}
-      <SessionList
-        sessions={sessions}
-        sessionId={sessionId}
-        currentTitle={currentTitle}
-        sessionMenuOpen={sessionMenuOpen}
-        onToggleMenu={() => setSessionMenuOpen((v) => !v)}
-        topBarRef={topBarRef}
-        menuRef={menuRef}
-        dropdownRef={sessionDropdownRef}
-        dropdownTop={dropdownTop}
-        onSelect={switchSession}
-        onNew={newSession}
-        onDelete={deleteSession}
-      />
+      {/* 聊天主体头部：当前会话标题常驻可见——切到历史会话后，用户靠这一行
+          确认自己在哪一段对话里，而不是靠侧栏高亮反推 */}
+      <header className="mb-2 flex shrink-0 items-center gap-2 border-b border-[var(--edge)] pb-2">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
+          <span className="sr-only">当前会话：</span>
+          {currentTitle}
+        </h2>
+        {viewedBusy && (
+          <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-[var(--brand)]">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand)]" />
+            正在回复
+          </span>
+        )}
+      </header>
 
-      {/*  上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
+      {/* 上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
       <UsageMeter
         input={sessionUsage[sessionId ?? ""]?.input ?? 0}
         output={sessionUsage[sessionId ?? ""]?.output ?? 0}
@@ -1507,6 +1498,7 @@ export function ChatPanel({ enabled }: Props) {
         viewedBusy={viewedBusy}
         copiedIdx={copiedIdx}
         verboseLevel={verboseLevel}
+        onPickStarter={setInput}
         onCopy={copyMessage}
         onRemove={removeMessage}
         onOpenTask={openTaskInMain}
@@ -1551,6 +1543,7 @@ export function ChatPanel({ enabled }: Props) {
           setForSession: setEffortForSession,
         }}
       />
+      </div>
     </div>
   );
 }

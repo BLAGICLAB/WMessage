@@ -7,6 +7,15 @@ import { stubScrollNoop } from "../test/scrollNoop";
 // ChatPanel 自动滚动依赖 jsdom 未实现的 scrollTo/scrollIntoView（scoped noop）
 stubScrollNoop();
 
+/** 会话标题在两处渲染：常驻侧栏（导航）与聊天头部（上下文指示）。
+ *  用例要定位时按所在区域限定作用域，否则 findByText 会命中两处报歧义。 */
+const rail = () =>
+  within(screen.getByRole("complementary", { name: "会话列表" }));
+/** 侧栏内按标题找会话行（切会话的点击目标） */
+const railSession = (title: string | RegExp) => rail().getByText(title);
+/** 头部标题：确认「当前在看哪一段对话」 */
+const currentTitle = () => screen.getByRole("heading", { level: 2 });
+
 // vi.mock 工厂会被提升到顶部，因此共享 mock 变量必须用 vi.hoisted 包裹
 const mocks = vi.hoisted(() => {
   const invokeMock = vi.fn();
@@ -148,12 +157,60 @@ describe("ChatPanel", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
     });
     expect(
-      await screen.findByText(/跟我说：新建任务|输入 \/ 看可用命令/, {
-        exact: false,
-      }),
+      await screen.findByText("和机器人说点什么", { exact: false }),
     ).toBeInTheDocument();
-    // 会话标题
-    expect(screen.getByText("默认会话")).toBeInTheDocument();
+    // 会话标题在侧栏与头部各渲染一处
+    expect(railSession("默认会话")).toBeInTheDocument();
+    expect(currentTitle()).toHaveTextContent("默认会话");
+  });
+
+  it("空状态起始短语：点一下填进输入框，不自动发送", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.click(screen.getByRole("button", { name: "列出我当前的任务" }));
+    expect(input).toHaveValue("列出我当前的任务");
+    // 措辞留用户过目：填入不等于发送
+    expect(
+      mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_chat"),
+    ).toBe(false);
+  });
+
+  it("会话侧栏常驻：切换会话不用先展开菜单，当前会话有 aria-current 标记", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [
+          { id: "s1", title: "默认会话" },
+          { id: "s2", title: "另一个" },
+        ];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    // 当前会话在侧栏里被标记出来，无需任何展开动作
+    expect(railSession("默认会话").closest("button")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(railSession("另一个").closest("button")).not.toHaveAttribute(
+      "aria-current",
+    );
+    // 一步直点即切换
+    await user.click(railSession("另一个"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_history_load", {
+        sessionId: "s2",
+      });
+    });
+    await waitFor(() => {
+      expect(railSession("另一个").closest("button")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+    });
+    expect(currentTitle()).toHaveTextContent("另一个");
   });
 
   it("空消息时输入框可以打字，回车后调用 bot_chat 并展示用户消息", async () => {
@@ -293,20 +350,18 @@ describe("ChatPanel", () => {
       return defaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("默认会话");
+    await screen.findAllByText("默认会话");
 
     // S1 打草稿 → 切到 S2：输入框清空（不带走 S1 的内容）
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "给一会的草稿");
-    await user.click(screen.getByTitle("切换会话"));
-    await user.click(await screen.findByText("另一个"));
+    await user.click(railSession("另一个"));
     const input2 = screen.getByPlaceholderText(/和机器人说点什么/);
     expect(input2).toHaveValue("");
 
     // S2 打自己的草稿 → 切回 S1：草稿原样恢复
     await user.type(input2, "给二会的草稿");
-    await user.click(screen.getByTitle("切换会话"));
-    await user.click(await screen.findByText("默认会话"));
+    await user.click(railSession("默认会话"));
     const input3 = screen.getByPlaceholderText(/和机器人说点什么/);
     expect(input3).toHaveValue("给一会的草稿");
 
@@ -338,7 +393,7 @@ describe("ChatPanel", () => {
     // 等初始会话加载完成（标题渲染 = sessionId 已 set），再显式 flush passive
     // effects（sessionIdRef 镜像在 useEffect 里；findByText 走 MutationObserver，
     // 全量慢机上可能在 effects 运行前解析——fire 时 ref 还是 null 会误过滤）
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     await act(async () => {});
     expect(confirmHandler).not.toBeNull();
     const fire = (payload: Record<string, unknown>) =>
@@ -391,7 +446,7 @@ describe("ChatPanel", () => {
     });
     render(<ChatPanel {...defaultProps} />);
     // 等初始会话加载完成（sessionIdRef 同步后再 fire，否则「本会话」用例会被误过滤）
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     expect(deltaHandler).not.toBeNull();
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
@@ -430,7 +485,7 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
@@ -537,7 +592,7 @@ describe("ChatPanel", () => {
       });
     try {
       render(<ChatPanel {...defaultProps} />);
-      await screen.findByText("默认会话");
+      await screen.findAllByText("默认会话");
       const mark = deletes.length;
       const input = screen.getByPlaceholderText(/和机器人说点什么/);
       await user.type(input, "会失败的一条");
@@ -596,7 +651,7 @@ describe("ChatPanel", () => {
 
   it("拖文件进聊天区：enter 显示提示层，drop 落在聊天区内加入附件（区外忽略、去重）", async () => {
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     const handler = mocks.dragDropHandlers[mocks.dragDropHandlers.length - 1];
     expect(handler).toBeDefined();
     // jsdom 的 getBoundingClientRect 全 0：position (0,0) 视为聊天区内，(10,10) 视为区外
@@ -680,7 +735,7 @@ describe("ChatPanel", () => {
       },
     );
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     await act(async () => {
       for (const cb of mocks.listeners["chat-open-session"] ?? []) {
         cb({
@@ -701,7 +756,8 @@ describe("ChatPanel", () => {
     );
     expect(await screen.findByText(/\[任务卡执行\]/)).toBeInTheDocument();
     // 会话列表已含新会话
-    expect(screen.getByText(/📋 任务：写报告/)).toBeInTheDocument();
+    expect(railSession(/📋 任务：写报告/)).toBeInTheDocument();
+    expect(currentTitle()).toHaveTextContent("📋 任务：写报告");
   });
 
   it("chat-open-session 迟到（execute-task 已收尾）：失败任务不自动跳转让用户决定；成功任务切过去只读查看", async () => {
@@ -742,7 +798,7 @@ describe("ChatPanel", () => {
       },
     );
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     // 两张卡都收尾（一成一败）——收尾顺序在迟到事件之前
     await act(async () => {
       for (const cb of mocks.listeners["execute-task"] ?? []) {
@@ -803,7 +859,7 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
     await user.type(input, "你好");
     await user.keyboard("{Enter}");
@@ -820,7 +876,7 @@ describe("ChatPanel", () => {
         });
       }
     });
-    expect(screen.getByText("默认会话")).toBeInTheDocument();
+    expect(railSession("默认会话")).toBeInTheDocument();
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_history_load", {
       sessionId: "s-exec",
     });
@@ -846,7 +902,7 @@ describe("ChatPanel", () => {
     // 先恢复默认实现拿到 bot_get_config / bot_set_active_model 的 mock
     mocks.invokeMock.mockImplementation(defaultInvoke);
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("默认会话");
+    await screen.findAllByText("默认会话");
     // 等 bot_get_config reload 完成（chip 标签与 setModels 同一个 .then 刷新）；
     // chip 与下拉项同名，一律在 chip 按钮内查询（findByText 作用于按钮本身）
     const chip = screen.getByTitle("切换模型");
@@ -906,7 +962,7 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("默认会话");
+    await screen.findAllByText("默认会话");
     const chip = screen.getByTitle("切换模型");
     await user.click(chip);
     // Kimi 已验证 → 显示；DeepSeek 未验证 → 不显示；无 vendor 的自建条目不受影响
@@ -961,7 +1017,7 @@ describe("ChatPanel", () => {
     );
     try {
       render(<ChatPanel {...defaultProps} />);
-      await screen.findByText("默认会话");
+      await screen.findAllByText("默认会话");
       // 发送 → bot_chat 挂起 → busy
       const input = screen.getByPlaceholderText(/和机器人说点什么/);
       await user.type(input, "你好");
@@ -973,8 +1029,7 @@ describe("ChatPanel", () => {
         );
       });
       // busy 中切换到 s2 → 允许（回归钉 1：不再被 busy 拦截）
-      await user.click(screen.getByTitle("切换会话"));
-      await user.click(await screen.findByText("另一个"));
+      await user.click(railSession("另一个"));
       await waitFor(() => {
         expect(historyLoads).toContain("s2");
       });
@@ -987,14 +1042,15 @@ describe("ChatPanel", () => {
       expect(screen.queryByText(/串台密文/)).toBeNull();
       // busy 中删除正在回复的 s1 → 拦截（不弹 confirm、不调 delete）
       mocks.askMock.mockReset();
-      await user.click(screen.getByTitle("切换会话"));
-      const s1Row = screen.getByText("默认会话").closest("div");
+      const s1Row = railSession("默认会话").closest("div");
+      // 删除键悬停才显形（列表不留白抖动），先 hover 再点
+      await user.hover(s1Row!);
       await user.click(within(s1Row!).getByTitle("删除此对话"));
       expect(
         mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_session_delete"),
       ).toBe(false);
       expect(mocks.askMock).not.toHaveBeenCalled();
-      // 删除守卫返回后菜单仍开：busy 中新建对话 → 允许（回归钉 2）
+      // 删除守卫返回后侧栏仍在：busy 中新建对话 → 允许（回归钉 2）
       await user.click(screen.getByText("新建对话"));
       await waitFor(() => {
         expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_create", {
@@ -1003,8 +1059,7 @@ describe("ChatPanel", () => {
       });
       // 切回 s1（回复仍在进行）→ 允许并补占位气泡（s1 的 history_load 比挂载时 +1）
       const s1LoadsBefore = historyLoads.filter((x) => x === "s1").length;
-      await user.click(screen.getByTitle("切换会话"));
-      await user.click(await screen.findByText("默认会话"));
+      await user.click(railSession("默认会话"));
       expect(historyLoads.filter((x) => x === "s1").length).toBe(
         s1LoadsBefore + 1,
       );
@@ -1058,10 +1113,9 @@ describe("ChatPanel", () => {
     });
     try {
       render(<ChatPanel {...defaultProps} />);
-      await screen.findByText("默认会话");
+      await screen.findAllByText("默认会话");
       // 切到 s2 发消息（挂起 → inflight），推一轮 usage → 水位条出现
-      await user.click(screen.getByTitle("切换会话"));
-      await user.click(await screen.findByText("另一个"));
+      await user.click(railSession("另一个"));
       const input = screen.getByPlaceholderText(/和机器人说点什么/);
       await user.type(input, "你好");
       await user.keyboard("{Enter}");
@@ -1076,10 +1130,9 @@ describe("ChatPanel", () => {
         releaseChat({ text: "回复A", taskRefs: [] });
       });
       await screen.findByText("回复A");
-      await user.click(screen.getByTitle("切换会话"));
-      await user.click(await screen.findByText("默认会话"));
-      await user.click(screen.getByTitle("切换会话"));
-      const s2Row = screen.getByText("另一个").closest("div");
+      await user.click(railSession("默认会话"));
+      const s2Row = railSession("另一个").closest("div");
+      await user.hover(s2Row!);
       await user.click(within(s2Row!).getByTitle("删除此对话"));
       await waitFor(() => {
         expect(
@@ -1088,9 +1141,9 @@ describe("ChatPanel", () => {
           ),
         ).toBe(true);
       });
-      // 菜单仍开：新建对话（id 复用 s2）→ 陈旧水位不得泄漏进新会话
+      // 侧栏常驻：新建对话（id 复用 s2）→ 陈旧水位不得泄漏进新会话
       await user.click(screen.getByText("新建对话"));
-      await screen.findByText("复生会话");
+      await screen.findAllByText("复生会话");
       expect(screen.queryByText(/Σ 150/)).toBeNull();
     } finally {
       mocks.listenMock.mockImplementation(async () => () => {});
@@ -1153,7 +1206,7 @@ describe("ChatPanel", () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(defaultInvoke);
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("默认会话");
+    await screen.findAllByText("默认会话");
     const chip = screen.getByTitle("切换模型");
     await waitFor(() => {
       expect(chip).toHaveTextContent("MiniMax-M3");
@@ -1208,7 +1261,7 @@ describe("ChatPanel", () => {
       return defaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
-    await screen.findByText("默认会话");
+    await screen.findAllByText("默认会话");
     await user.click(screen.getByTitle("切换模型"));
     // 两组都在：分组头 + 各自模型（openai 是当前协议 → GLM 高亮）
     expect(await screen.findByText("OpenAI 兼容")).toBeInTheDocument();
@@ -1263,7 +1316,7 @@ describe("ChatPanel", () => {
     );
     try {
       render(<ChatPanel {...defaultProps} />);
-      await screen.findByText("默认会话");
+      await screen.findAllByText("默认会话");
       // S1 发送 → 挂起（在途）
       const input = screen.getByPlaceholderText(/和机器人说点什么/);
       await user.type(input, "问题一");
@@ -1273,8 +1326,7 @@ describe("ChatPanel", () => {
         expect(chatCalls[0]?.sessionId).toBe("s1");
       });
       // 切到 S2 → 发送 → 第二个 bot_chat（并行，不拦）
-      await user.click(screen.getByTitle("切换会话"));
-      await user.click(await screen.findByText("另一个"));
+      await user.click(railSession("另一个"));
       const input2 = screen.getByPlaceholderText(/和机器人说点什么/);
       await user.type(input2, "问题二");
       await user.keyboard("{Enter}");
@@ -1393,10 +1445,11 @@ describe("ChatPanel", () => {
     });
     try {
       render(<ChatPanel {...defaultProps} />);
-      await screen.findByText("默认会话");
+      await screen.findAllByText("默认会话");
       mocks.askMock.mockResolvedValueOnce(true);
-      await user.click(screen.getByTitle("切换会话"));
-      await user.click(screen.getByTitle("删除此对话"));
+      const lastRow = railSession("默认会话").closest("div");
+      await user.hover(lastRow!);
+      await user.click(within(lastRow!).getByTitle("删除此对话"));
       await waitFor(() =>
         expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_create", {
           title: null,

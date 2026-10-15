@@ -114,6 +114,9 @@ export function InputArea({
 }: InputAreaProps) {
   return (
     <>
+      {/* 斜杠 picker 与输入卡共用 760px 限宽：与消息区同一条阅读带，
+          否则 picker 会比输入框宽出一截 */}
+      <div className="mx-auto w-full max-w-[760px]">
       {/* 斜杠命令 autocomplete：第一个字是 / 且无空格时浮出 picker。
           点选 / Tab / ↑↓ 选 / Esc 关；无匹配命令不渲染空壳容器 */}
       {!slashDismissed &&
@@ -464,6 +467,7 @@ export function InputArea({
             </button>
           )}
         </div>
+      </div>
       </div>
     </>
   );
