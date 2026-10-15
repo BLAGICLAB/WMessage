@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => {
     setSize: vi.fn(async () => {}),
     setPosition: vi.fn(async () => {}),
     outerPosition: vi.fn(async () => ({ x: 100, y: 100 })),
-    outerSize: vi.fn(async () => ({ width: 44, height: 220 })),
+    outerSize: vi.fn(async () => ({ width: 44, height: 44 })),
     scaleFactor: vi.fn(async () => 1),
     onMoved: vi.fn(async () => () => {}),
     onDragDropEvent: vi.fn(async () => () => {}),
@@ -66,6 +66,20 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(async () => {}),
 }));
+
+// jsdom 未实现 setPointerCapture（真实 WebView 都有）——收起态方块按下要捕获指针
+Element.prototype.setPointerCapture = vi.fn();
+
+/** 触发条「点击展开」走 pointer 手势（位移阈值区分拖拽）：按下 + 原位松手 = 点击 */
+const clickStrip = (strip: HTMLElement) => {
+  fireEvent.pointerDown(strip, {
+    button: 0,
+    clientX: 10,
+    clientY: 10,
+    pointerId: 1,
+  });
+  fireEvent.pointerUp(strip, { clientX: 10, clientY: 10, pointerId: 1 });
+};
 
 const dbErr = {
   code: "DB_ERROR",
@@ -210,7 +224,7 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     const { container } = render(<WidgetApp />);
     await flush();
     // 点击触发条 → 展开（2026-10-15 起改点击展开 + 持久化，鼠标划入不再触发）
-    fireEvent.click(stripOf(container));
+    clickStrip(stripOf(container));
     await flush();
     const panel = panelOf(container);
     expect(panel.style.display).not.toBe("none");
@@ -226,7 +240,7 @@ describe("挂件折叠不丢聊天（2026-08-19 修复）", () => {
     await flush();
     expect(panel.style.display).toBe("none");
     // 再次点击触发条展开：消息仍在，且 ChatPanel 未重新挂载（bot_sessions_load 只调一次）
-    fireEvent.click(stripOf(container));
+    clickStrip(stripOf(container));
     await flush();
     expect(panel.style.display).not.toBe("none");
     expect(screen.getByText("你好")).toBeInTheDocument();
@@ -331,7 +345,7 @@ describe("WidgetApp 任务卡口径对齐主窗口", () => {
     const strip = Array.from(
       container.querySelectorAll<HTMLElement>(".nm-sidebar-panel"),
     ).find((el) => !el.querySelector("textarea"))!;
-    fireEvent.click(strip);
+    clickStrip(strip);
     await flush();
     await flush();
   };
@@ -448,7 +462,7 @@ describe("WidgetApp 任务卡口径对齐主窗口", () => {
 // 与挂载恢复同口径（按窗口自身高度收口）——否则悬浮/侧贴边吸附只修正 x，
 // 整窗留在屏外永远够不着。screenSize 走 currentMonitor=null 的回退屏 1920×1080。 ——
 describe("WidgetApp settle 位置钳制", () => {
-  it("拖出屏底（y=5000）后 settle 落点钳回屏底内：y = 屏高 1080 - 窗高 220", async () => {
+  it("拖出屏底（y=5000）后 settle 落点钳回屏底内：y = 屏高 1080 - 窗高 44", async () => {
     const prevPos = mocks.winMock.outerPosition.getMockImplementation();
     const prevOnMoved = mocks.winMock.onMoved.getMockImplementation();
     let moved: (() => void) | undefined;
@@ -485,11 +499,110 @@ describe("WidgetApp settle 位置钳制", () => {
       expect(calls.length).toBeGreaterThan(0);
       const last = calls[calls.length - 1][0];
       expect(last.x).toBe(100); // 悬浮（不贴边）：x 不动
-      expect(last.y).toBe(860); // 1080 - 220：钳回屏内
+      expect(last.y).toBe(1036); // 1080 - 44：钳回屏内
     } finally {
       // 复位默认实现，不向相邻用例泄漏超界 y / onMoved 捕获
       mocks.winMock.outerPosition.mockImplementation(prevPos!);
       mocks.winMock.onMoved.mockImplementation(prevOnMoved!);
     }
+  });
+});
+
+// —— 收起态 44×44 方块手势：位移阈值区分「点击展开 / 原生拖窗」——
+// 按下后位移 <5px 松手 = 点击展开；≥5px 触发 startDragging 原生拖窗（接管后
+// webview 收不到后续事件），松手绝不能再展开。 ——
+describe("收起态方块拖拽阈值", () => {
+  // winMock 是文件级单例：startDragging 调用计数不清理会从相邻用例泄漏
+  beforeEach(() => {
+    mocks.winMock.startDragging.mockClear();
+  });
+
+  const setupBotMocks = () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "db_load")
+        return [{ id: "t1", title: "挂件任务", column: "todo", order: 0 }];
+      if (cmd === "workspace_load") return [];
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_history_save") return null;
+      return null;
+    });
+  };
+
+  const flush = async () => {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  };
+
+  /** 面板（含 ChatPanel 输入框）与触发条（不含），同文件既有口径 */
+  const panelOf = (container: HTMLElement) =>
+    Array.from(
+      container.querySelectorAll<HTMLElement>(".nm-sidebar-panel"),
+    ).find((el) => el.querySelector("textarea"))!;
+  const stripOf = (container: HTMLElement) =>
+    Array.from(
+      container.querySelectorAll<HTMLElement>(".nm-sidebar-panel"),
+    ).find((el) => !el.querySelector("textarea"))!;
+
+  /** 按下 (10,10) → 可选位移 → up/cancel 收尾 */
+  const gesture = (
+    strip: HTMLElement,
+    move: { dx: number; dy: number } | null,
+    end: "up" | "cancel",
+  ) => {
+    fireEvent.pointerDown(strip, {
+      button: 0,
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    });
+    if (move)
+      fireEvent.pointerMove(strip, {
+        clientX: 10 + move.dx,
+        clientY: 10 + move.dy,
+        pointerId: 1,
+      });
+    const at = {
+      clientX: 10 + (move?.dx ?? 0),
+      clientY: 10 + (move?.dy ?? 0),
+      pointerId: 1,
+    };
+    if (end === "up") fireEvent.pointerUp(strip, at);
+    else fireEvent.pointerCancel(strip, at);
+  };
+
+  it("位移不足阈值（<5px）松手 = 点击展开，startDragging 不调用", async () => {
+    setupBotMocks();
+    const { container } = render(<WidgetApp />);
+    await flush();
+    gesture(stripOf(container), { dx: 3, dy: 2 }, "up");
+    await flush();
+    expect(mocks.winMock.startDragging).not.toHaveBeenCalled();
+    expect(panelOf(container).style.display).not.toBe("none");
+  });
+
+  it("位移超阈值（≥5px）= 原生拖窗接管：startDragging 一次，松手不展开", async () => {
+    setupBotMocks();
+    const { container } = render(<WidgetApp />);
+    await flush();
+    gesture(stripOf(container), { dx: 20, dy: 0 }, "up");
+    await flush();
+    expect(mocks.winMock.startDragging).toHaveBeenCalledTimes(1);
+    expect(panelOf(container).style.display).toBe("none");
+  });
+
+  it("按下后 pointercancel（系统接管）不展开、不拖拽", async () => {
+    setupBotMocks();
+    const { container } = render(<WidgetApp />);
+    await flush();
+    gesture(stripOf(container), null, "cancel");
+    await flush();
+    expect(mocks.winMock.startDragging).not.toHaveBeenCalled();
+    expect(panelOf(container).style.display).toBe("none");
   });
 });

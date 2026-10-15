@@ -106,6 +106,10 @@ import { SortableWorkspaceCard } from "./SortableWorkspaceCard";
 import { sortPoolTasks } from "../TaskTimeline/week";
 import { dayKey, dueTimeOf } from "../HomePage/homeData";
 
+// 收起态方块拖拽阈值：位移超过它判为拖窗，否则松手算点击展开。
+// 与面板内任务卡拖拽排序的 PointerSensor distance 5 同值，手感统一。
+const COLLAPSE_DRAG_PX = 5;
+
 export default function WidgetApp() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
@@ -386,6 +390,40 @@ export default function WidgetApp() {
     // 收起 = 商标大小的方形（44×44），四边一致；不再有 220 高触发条
     await win.setSize(new LogicalSize(STRIP_W, STRIP_W));
     setExpanded(false);
+  };
+
+  // 收起态方块手势：位移超阈值 = 原生拖窗（startDragging 接管后 webview 收不到
+  // 后续指针事件，pointerup 不会回来，故无需清理）；未超阈值松手 = 点击展开。
+  // 不能沿用 onClick：拖完松手若仍派发 click 会「拖完即展开」。
+  const collapsePressRef = useRef<{
+    x: number;
+    y: number;
+    dragging: boolean;
+  } | null>(null);
+  const collapseDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    // 必须捕获指针：方块仅 44px，按下点距边缘可能不足阈值，不捕获则出块即丢事件
+    e.currentTarget.setPointerCapture(e.pointerId);
+    collapsePressRef.current = { x: e.clientX, y: e.clientY, dragging: false };
+  };
+  const collapseMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const press = collapsePressRef.current;
+    if (!press || press.dragging) return;
+    if (
+      Math.hypot(e.clientX - press.x, e.clientY - press.y) <
+      COLLAPSE_DRAG_PX
+    )
+      return;
+    press.dragging = true;
+    getCurrentWindow().startDragging().catch(() => {});
+  };
+  const collapseUp = () => {
+    const press = collapsePressRef.current;
+    collapsePressRef.current = null;
+    if (press && !press.dragging) expand().catch(() => {});
+  };
+  const collapseCancel = () => {
+    collapsePressRef.current = null;
   };
 
   // 产物绑定弹窗已迁移到主窗口通知中心（Agent 通知模块）：挂件不再弹窗、不再自动展开。
@@ -692,8 +730,11 @@ export default function WidgetApp() {
             className={`${
               edge === "top" ? "nm-sidebar-panel-top" : "nm-sidebar-panel"
             } ${edgeClass} !p-2 w-full h-full flex items-center justify-center cursor-pointer select-none`}
-            onClick={expand}
-            title="点击展开挂件"
+            onPointerDown={collapseDown}
+            onPointerMove={collapseMove}
+            onPointerUp={collapseUp}
+            onPointerCancel={collapseCancel}
+            title="点击展开，按住拖动"
           >
             <img
               src={widgetLogo}
