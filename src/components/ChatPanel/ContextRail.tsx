@@ -33,7 +33,11 @@ export type SubagentRun = {
 type ContextRailProps = {
   tasks: Task[];
   onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
-  onRunTask: (t: { id: string; title: string }) => void;
+  /** 点任务标题 = 把它引用进当前消息（同附件：摆进对话让机器人看着办），
+   *  不是「立刻让机器人去做」——那是任务卡 🤖 的活 */
+  onRefTask: (t: { id: string; title: string }) => void;
+  /** 已在待发引用里的任务 id（标出点过的项） */
+  refIds: string[];
   fileChanges: { path: string; added: number; deleted: number }[];
   /** 子 agent 运行列表（含在途与刚结束），按新到旧 */
   subagents: SubagentRun[];
@@ -57,7 +61,8 @@ function EmptyHint({ children }: { children: ReactNode }) {
 export function ContextRail({
   tasks,
   onUpdateTask,
-  onRunTask,
+  onRefTask,
+  refIds,
   fileChanges,
   subagents,
   onOpenSubagent,
@@ -118,14 +123,21 @@ export function ContextRail({
             <EmptyHint>没有待办任务</EmptyHint>
           ) : (
             <div className="space-y-0.5">
-              {tasks.map((t) => (
+              {tasks.map((t) => {
+                const referenced = refIds.includes(t.id);
+                return (
                 <div key={t.id} className="group flex items-center gap-1">
                   <button
                     type="button"
-                    aria-label={`交给机器人执行：${t.title}`}
-                    title={`交给机器人执行：${t.title}`}
-                    className="min-w-0 flex-1 truncate rounded-md py-1.5 pl-1.5 pr-1 text-left text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
-                    onClick={() => onRunTask({ id: t.id, title: t.title })}
+                    aria-label={`引用任务：${t.title}`}
+                    title={`引用「${t.title}」到对话`}
+                    className={`min-w-0 flex-1 truncate rounded-md py-1.5 pl-1.5 pr-1 text-left text-xs hover:bg-[var(--hover-bg)] ${
+                      referenced
+                        ? "text-[var(--t1)]"
+                        : "text-[var(--t3)] hover:text-[var(--t2)]"
+                    }`}
+                    aria-pressed={referenced}
+                    onClick={() => onRefTask({ id: t.id, title: t.title })}
                   >
                     {t.title}
                   </button>
@@ -139,7 +151,8 @@ export function ContextRail({
                     <Check size={12} aria-hidden />
                   </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>

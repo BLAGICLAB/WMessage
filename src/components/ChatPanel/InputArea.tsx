@@ -8,6 +8,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   Brain,
   Image as ImageIcon,
+  ListTodo,
   Paperclip,
   Plus,
   Search,
@@ -27,6 +28,7 @@ import type {
   ModelItem,
   PermMode,
   ReasoningLevel,
+  TaskRef,
   VerboseLevel,
 } from "./types";
 
@@ -47,6 +49,10 @@ type InputAreaProps = {
   setInput: (v: string) => void;
   files: string[];
   setFiles: (v: string[] | ((prev: string[]) => string[])) => void;
+  /** 待发任务引用（右侧栏点任务加入）：随消息发送，渲染成可移除的芯片。
+   *  命名避开 refs：那是 React 的特殊 prop 名，用作普通 prop 会触发 refs 语义 */
+  taskRefs: TaskRef[];
+  setTaskRefs: (v: TaskRef[] | ((prev: TaskRef[]) => TaskRef[])) => void;
   /** 输入卡 textarea 引用（父级 useAutoGrow 自动增高） */
   taRef: RefObject<HTMLTextAreaElement | null>;
   slashIdx: number;
@@ -93,6 +99,8 @@ export function InputArea({
   setInput,
   files,
   setFiles,
+  taskRefs,
+  setTaskRefs,
   taRef,
   slashIdx,
   setSlashIdx,
@@ -154,6 +162,31 @@ export function InputArea({
           自动增高到 max-h-40 后内部滚动）、下工具栏（左 ➕ 附件，中 🛡 授权模式 +
           🧠 模型下拉 + ⚡ 推理强度，右圆形发送键）；斜杠 picker 仍浮在卡片上方 */}
       <div className="nm-card rounded-[20px] border border-[var(--edge)] p-2.5 shrink-0">
+        {/* 待发任务引用：与附件同形态，但语义是「把卡摆进对话让机器人看着办」 */}
+        {taskRefs.length > 0 && (
+          <div className="mb-1.5 flex flex-wrap gap-1">
+            {taskRefs.map((r) => (
+              <span
+                key={r.id}
+                className="nm-inset inline-flex max-w-full items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
+                title={r.title}
+              >
+                <ListTodo size={10} aria-hidden className="shrink-0" />
+                <span className="truncate max-w-[220px]">{r.title}</span>
+                <button
+                  type="button"
+                  aria-label={`移除引用 ${r.title}`}
+                  className="text-[var(--t5)] hover:text-[var(--danger)]"
+                  onClick={() =>
+                    setTaskRefs((prev) => prev.filter((x) => x.id !== r.id))
+                  }
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {/* 已添加附件：随消息一起发送 */}
         {files.length > 0 && (
           <div className="mb-1.5 flex flex-wrap gap-1">

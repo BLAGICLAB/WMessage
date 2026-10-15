@@ -60,12 +60,10 @@ type Props = {
   tasks: Task[];
   /** 勾完成等任务改写（走 App 的 updateTask，后端广播 tasks-updated） */
   onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
-  /** 交给 agent 执行：发 execute-task + 切聊天页（与任务卡 🤖 同通道） */
-  onRunTask: (t: { id: string; title: string }) => void;
 };
 
 /** 机器人聊天区：主窗口左导航「Agent 能力 → 聊天」整页；支持多会话 */
-export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
+export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -110,6 +108,32 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
       );
       return next;
     });
+  /** 待发任务引用（右侧栏点任务加入，随消息一起发送）——按会话隔离，同附件口径。
+   *  语义是「把这张卡摆到对话里让机器人看着办」，不是「立刻让机器人去做」：
+   *  后者是任务卡 🤖 的活（runWithBot），两者的时机与代价完全不同 */
+  const [refsBySession, setRefsBySession] = useState<
+    Map<string, TaskRef[]>
+  >(new Map());
+  const refs = refsBySession.get(draftKey) ?? [];
+  const setRefs = (v: TaskRef[] | ((prev: TaskRef[]) => TaskRef[])) =>
+    setRefsBySession((prev) => {
+      const next = new Map(prev);
+      next.set(
+        draftKey,
+        typeof v === "function" ? v(prev.get(draftKey) ?? []) : v,
+      );
+      return next;
+    });
+  /** 右侧栏点任务 = 把它摆进当前消息（同附件）。与「立刻让机器人去做」
+   *  是两回事：后者会在新会话里开跑，这里只是让机器人看着这张卡回答。
+   *  重复点同一张卡不叠加——引用是集合不是列表。
+   *  不包 useCallback：setRefs 每次渲染都是新函数（它按 draftKey 定位会话），
+   *  空依赖的 useCallback 会把它固定在首帧那版，把引用写进错误的会话 key */
+  const refTask = (t: TaskRef) => {
+    setRefs((prev) =>
+      prev.some((x) => x.id === t.id) ? prev : [...prev, t],
+    );
+  };
   /** 拖放悬停：文件拖到聊天区上时显示提示层 */
   const [dragHover, setDragHover] = useState(false);
   /** 危险操作确认请求（机器人删任务前弹窗）；kind="file_access" 时为文件访问授权（三按钮） */
@@ -1330,7 +1354,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
     if (text.startsWith("/")) {
       if (await runSlashCommand(text)) return;
     }
-    if (!text && !files.length) return;
+    if (!text && !files.length && !refs.length) return;
     // PAR-1：并行回复按会话隔离——本会话在途时拦重复发送（其他会话可自由发送）
     if (sessionId !== null && inflightRef.current.has(sessionId)) {
       addHint(
@@ -1345,11 +1369,16 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
     const attach = files.length
       ? `[附件文件]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`
       : "";
-    const content = `${attach}${text}`;
+    // 任务引用同理：[引用任务] 块给机器人标题线索，refs 让气泡渲染成可点的卡引用
+    const refBlock = refs.length
+      ? `[引用任务]\n${refs.map((r) => `- ${r.title}`).join("\n")}\n\n`
+      : "";
+    const content = `${attach}${refBlock}${text}`;
     setFiles([]);
+    setRefs([]);
     const history: Msg[] = [
       ...messages.filter((m) => !m.streaming),
-      { role: "user", content },
+      { role: "user", content, refs },
     ];
     await runChat(history, text);
   };
@@ -1644,6 +1673,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
         setInput={setInput}
         files={files}
         setFiles={setFiles}
+        taskRefs={refs}
+        setTaskRefs={setRefs}
         taRef={taRef}
         slashIdx={slashIdx}
         setSlashIdx={setSlashIdx}
@@ -1685,7 +1716,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
         <ContextRail
           tasks={tasks}
           onUpdateTask={onUpdateTask}
-          onRunTask={onRunTask}
+          onRefTask={refTask}
+          refIds={refs.map((r) => r.id)}
           fileChanges={sessionFileChanges}
           subagents={subagentRuns}
           onOpenSubagent={openSubagentDetail}

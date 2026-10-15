@@ -137,11 +137,10 @@ Object.defineProperty(navigator, "clipboard", {
 
 const defaultProps = {
   enabled: true,
-  // 右侧上下文栏的宿主回调（App 侧实现在 lib/botRun + updateTask），
+  // 右侧上下文栏的任务数据与改写回调（App 侧接 updateTask），
   // 这里只验 ChatPanel 内部的传递，不复现 App 的接线
   tasks: [],
   onUpdateTask: () => {},
-  onRunTask: () => {},
 };
 
 beforeEach(() => {
@@ -238,10 +237,9 @@ describe("ChatPanel", () => {
     expect(sibling.querySelector("header")).not.toBeNull();
   });
 
-  it("右侧上下文栏默认收起，展开后任务池可勾完成 / 交给 agent", async () => {
+  it("右侧栏点任务是「引用进消息」而非「立刻执行」", async () => {
     const user = userEvent.setup();
     const onUpdateTask = vi.fn();
-    const onRunTask = vi.fn();
     render(
       <ChatPanel
         {...defaultProps}
@@ -250,7 +248,6 @@ describe("ChatPanel", () => {
           { id: "t2", title: "改文档", column: "todo" },
         ]}
         onUpdateTask={onUpdateTask}
-        onRunTask={onRunTask}
       />,
     );
     await screen.findAllByText("默认会话");
@@ -262,7 +259,6 @@ describe("ChatPanel", () => {
     const rail = within(
       screen.getByRole("complementary", { name: "上下文侧栏" }),
     );
-    // 侧栏渲染正常（渲染在聊天主体的兄弟位置，见下一条用例）
     expect(rail.getByText("写周报")).toBeInTheDocument();
     // 折叠钮只有头部这一个，侧栏内不放第二个
     expect(screen.getAllByRole("button", { name: "收起右侧栏" })).toHaveLength(
@@ -271,9 +267,31 @@ describe("ChatPanel", () => {
     // 勾完成 → 走宿主回调（App 侧接 updateTask），组件自己不碰后端
     await user.click(rail.getByRole("button", { name: "完成 写周报" }));
     expect(onUpdateTask).toHaveBeenCalledWith("t1", { column: "done" });
-    // 点标题 = 交给 agent 做
-    await user.click(rail.getByRole("button", { name: "交给机器人执行：改文档" }));
-    expect(onRunTask).toHaveBeenCalledWith({ id: "t2", title: "改文档" });
+    // 点标题 = 引用进消息：芯片落在输入区，且不发 bot_chat（不立刻执行）
+    await user.click(rail.getByRole("button", { name: "引用任务：改文档" }));
+    expect(screen.getByTitle("改文档")).toBeInTheDocument();
+    expect(
+      mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_execute_task"),
+    ).toBe(false);
+    // 发送时带出引用块与 refs，正文含任务标题
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "这两张卡先做哪张");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_chat",
+        expect.objectContaining({
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              role: "user",
+              content: expect.stringContaining("改文档"),
+            }),
+          ]),
+        }),
+      );
+    });
+    // 发送后芯片清空（与附件同口径）
+    expect(screen.queryByTitle("改文档")).toBeNull();
   });
 
   it("会话侧栏可折叠：收起后侧栏消失，入口仍在头部，再点展开", async () => {

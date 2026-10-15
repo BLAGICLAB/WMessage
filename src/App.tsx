@@ -25,7 +25,6 @@ import {
 import { TaskTimelinePage } from "./components/TaskTimeline/TaskTimelinePage";
 import { TaskEditorOverlay } from "./components/TaskTimeline/TaskEditorOverlay";
 import { sortPoolTasks } from "./components/TaskTimeline/week";
-import { runWithBot } from "./lib/botRun";
 import { HomePage } from "./components/HomePage/HomePage";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
@@ -1072,7 +1071,6 @@ function App() {
               enabled={botOn}
               tasks={openTasks}
               onUpdateTask={updateTask}
-              onRunTask={runWithBot}
             />
           </div>
           {/* 全局确认弹窗 */}
