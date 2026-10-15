@@ -124,12 +124,12 @@ const AGENT_ITEMS: {
   { key: "chat", label: "聊天", icon: MessageSquare },
   // 定时任务模块：任务卡到点自动执行的集中管理（列表=状态面板）
   { key: "schedule", label: "定时", icon: AlarmClock },
+  // 程序模块（M1 起新增，apps 工具箱；详见 docs/APPS-DESIGN-2026-10-15.md）
+  { key: "apps", label: "程序", icon: Package },
   //  执行活动聚合页：最近全部执行痕迹列表（Agent 透明化设计 §5.6）
   { key: "activity", label: "活动", icon: ActivityIcon },
   // 通知中心（Agent 通知模块）：badge=true 渲染待处理数角标
   { key: "notifications", label: "通知", icon: Bell, badge: true },
-  // 程序模块（M1 起新增，apps 工具箱；详见 docs/APPS-DESIGN-2026-10-15.md）
-  { key: "apps", label: "程序", icon: Package },
 ];
 
 /** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。
