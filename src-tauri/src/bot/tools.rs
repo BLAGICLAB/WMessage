@@ -131,10 +131,8 @@ fn sanitize_task_files_in(
     (out, dropped)
 }
 
-/// files 写回任务时的双写：新 files 列 + 旧 file_path/file_is_dir 首条（过渡期旧版本可读）
+/// files 写回任务：空列表归一 None（清除语义）
 pub fn apply_files_to_task(t: &mut crate::db::Task, files: Vec<crate::db::TaskFile>) {
-    t.file_path = files.first().map(|f| f.path.clone());
-    t.file_is_dir = files.first().map(|f| f.is_dir);
     t.files = if files.is_empty() { None } else { Some(files) };
 }
 
@@ -258,29 +256,6 @@ fn parse_limit(v: &serde_json::Value) -> usize {
         .as_u64()
         .map(|n| n.clamp(1, 200) as usize)
         .unwrap_or(50)
-}
-
-/// schedule 原始串 → 人性化展示（只读展示；不做编辑入口——定时在日程页做）。
-/// 格式单源见 bot_scheduler::occurrence_after（daily/weekly/monthly/at），未知格式原样返回。
-fn humanize_schedule(s: Option<&str>) -> Option<String> {
-    let s = s?;
-    if let Some(t) = s.strip_prefix("daily:") {
-        return Some(format!("每天 {t}"));
-    }
-    if let Some(t) = s.strip_prefix("weekly:") {
-        let (d, hm) = t.split_once(':')?;
-        let idx = d.parse::<usize>().ok()?.checked_sub(1)?;
-        let name = ["一", "二", "三", "四", "五", "六", "日"].get(idx)?;
-        return Some(format!("每周{name} {hm}"));
-    }
-    if let Some(t) = s.strip_prefix("monthly:") {
-        let (dd, hm) = t.split_once(':')?;
-        return Some(format!("每月{dd}日 {hm}"));
-    }
-    if let Some(t) = s.strip_prefix("at:") {
-        return Some(format!("一次性 {}", t.replace('T', " ")));
-    }
-    Some(s.to_string())
 }
 
 /// 任务行渲染（query_tasks 统一行格式：列/标题/归档/截止/标签/id）
@@ -430,8 +405,7 @@ pub(crate) async fn tool_query_single_task(
             lines.push(format!("  标签：{}", tags.join(", ")));
         }
     }
-    //  只读行：创建时间 / 定时 / 所属工作流 / 依赖（模型可感知新字段，但无写入口——
-    // schedule 编辑将来在工作流侧做，dependsOn 由工作流自动生成、普通卡手动维护）
+    // 只读行：创建时间 / 依赖（模型可感知字段，无写入口）
     if let Some(ca) = t.created_at {
         if let Some(dt) = chrono::DateTime::from_timestamp_millis(ca) {
             lines.push(format!(
@@ -439,9 +413,6 @@ pub(crate) async fn tool_query_single_task(
                 dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M")
             ));
         }
-    }
-    if let Some(s) = humanize_schedule(t.schedule.as_deref()) {
-        lines.push(format!("  定时：{s}"));
     }
     if let Some(deps) = &t.depends_on {
         if !deps.is_empty() {
@@ -518,7 +489,6 @@ pub(crate) async fn tool_create_task(
     let mut task = crate::db::Task {
         plan_start: None,
         plan_end: None,
-        acceptance: None,
         parent_id: None,
         id: uuid::Uuid::new_v4().simple().to_string(),
         title: title.to_string(),
@@ -526,8 +496,6 @@ pub(crate) async fn tool_create_task(
         note: v["note"].as_str().map(|s| s.to_string()),
         tags: None,
         files: None,
-        file_path: None,
-        file_is_dir: None,
         column: match v["column"].as_str() {
             Some("doing") => TaskStatus::Doing,
             _ => TaskStatus::Todo,
@@ -539,18 +507,14 @@ pub(crate) async fn tool_create_task(
         collapsed: None,
         order: None,
         updated_at: Some(now),
-        schedule: None,
-        sched_last: None,
         bot_assigned: None,
         assignee: None,
         budget: None,
         result: None,
-        origin: None,
         depends_on: None,
         model: None,
         owner_id: None,            // 机器人建卡 = 本人（任务图谱设计 §1.1）
         created_at: Some(now),     // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
-        enabled: None,             // 机器人建卡无定时配置
         expected_updated_at: None, // 新建任务：无读快照基线
     };
     // 多文件绑定：files 参数 [{path,isDir}]，超 10 截断 + 警告
@@ -2081,13 +2045,12 @@ mod task_files_arg_tests {
         assert!(kept.is_empty() && dropped == 1);
     }
 
-    /// 双写：files 首条同步进旧 file_path/file_is_dir；空列表清三字段
+    /// 绑定替换：写入整列表；空列表清除
     #[test]
-    fn apply_files_to_task_dual_writes_legacy_fields() {
+    fn apply_files_to_task_replaces_bindings_and_clears_on_empty() {
         let mut t = crate::db::Task {
             plan_start: None,
             plan_end: None,
-            acceptance: None,
             parent_id: None,
             id: "t".to_string(),
             title: "x".to_string(),
@@ -2095,8 +2058,6 @@ mod task_files_arg_tests {
             note: None,
             tags: None,
             files: None,
-            file_path: Some("/old.txt".into()),
-            file_is_dir: Some(false),
             column: TaskStatus::Todo,
             subtasks: None,
             completed_at: None,
@@ -2105,18 +2066,14 @@ mod task_files_arg_tests {
             collapsed: None,
             order: None,
             updated_at: None,
-            schedule: None,
-            sched_last: None,
             bot_assigned: None,
             assignee: None,
             budget: None,
             result: None,
-            origin: None,
             depends_on: None,
             model: None,
             owner_id: None,
             created_at: None,
-            enabled: None,
             expected_updated_at: None,
         };
         apply_files_to_task(
@@ -2132,12 +2089,10 @@ mod task_files_arg_tests {
                 },
             ],
         );
-        assert_eq!(t.file_path.as_deref(), Some("/n/1.pdf"), "旧字段=首条");
-        assert_eq!(t.file_is_dir, Some(false));
         assert_eq!(t.files.as_deref().unwrap().len(), 2);
 
         apply_files_to_task(&mut t, vec![]);
-        assert!(t.files.is_none() && t.file_path.is_none() && t.file_is_dir.is_none());
+        assert!(t.files.is_none());
     }
 
     /// tool.return 审计 kv：files_count=原始条数（截断前）、truncated 标记；无 files 不补 kv
@@ -2218,7 +2173,6 @@ mod query_tasks_tests {
         crate::db::Task {
             plan_start: None,
             plan_end: None,
-            acceptance: None,
             parent_id: None,
             id: format!("id-{title}"),
             title: title.to_string(),
@@ -2226,8 +2180,6 @@ mod query_tasks_tests {
             note: None,
             tags: None,
             files: None,
-            file_path: None,
-            file_is_dir: None,
             column,
             subtasks: None,
             completed_at: None,
@@ -2237,17 +2189,13 @@ mod query_tasks_tests {
             collapsed: None,
             order: None,
             updated_at: None,
-            schedule: None,
-            sched_last: None,
             bot_assigned: None,
             assignee: None,
             budget: None,
             result: None,
-            origin: None,
             depends_on: None,
             model: None,
             owner_id: None,
-            enabled: None,
             expected_updated_at: None,
         }
     }
@@ -2328,29 +2276,6 @@ mod query_tasks_tests {
         assert_eq!(parse_limit(&serde_json::json!({"limit": 10})), 10);
         assert_eq!(parse_limit(&serde_json::json!({"limit": 0})), 1);
         assert_eq!(parse_limit(&serde_json::json!({"limit": 9999})), 200);
-    }
-
-    #[test]
-    fn humanize_schedule_covers_all_four_formats() {
-        assert_eq!(
-            humanize_schedule(Some("daily:09:30")),
-            Some("每天 09:30".to_string())
-        );
-        assert_eq!(
-            humanize_schedule(Some("weekly:3:08:00")),
-            Some("每周三 08:00".to_string())
-        );
-        assert_eq!(
-            humanize_schedule(Some("monthly:1:10:00")),
-            Some("每月1日 10:00".to_string())
-        );
-        assert_eq!(
-            humanize_schedule(Some("at:2026-10-08T14:00")),
-            Some("一次性 2026-10-08 14:00".to_string())
-        );
-        // 未知格式原样展示；None 不产出行
-        assert_eq!(humanize_schedule(Some("weird")), Some("weird".to_string()));
-        assert_eq!(humanize_schedule(None), None);
     }
 
     #[test]

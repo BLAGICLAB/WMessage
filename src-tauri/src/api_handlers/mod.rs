@@ -68,7 +68,6 @@ mod tests {
         db::Task {
             plan_start: None,
             plan_end: None,
-            acceptance: None,
             parent_id: None,
             id: "t1".into(),
             title: title.into(),
@@ -76,8 +75,6 @@ mod tests {
             note: None,
             tags: None,
             files: None,
-            file_path: None,
-            file_is_dir: None,
             column: crate::db::TaskStatus::Todo,
             subtasks: None,
             completed_at: None,
@@ -86,18 +83,14 @@ mod tests {
             collapsed: None,
             order: None,
             updated_at: None,
-            schedule: None,
-            sched_last: None,
             bot_assigned: None,
             assignee: None,
             budget: None,
             result: None,
-            origin: None,
             depends_on: None,
             model: None,
             owner_id: None,
             created_at: None,
-            enabled: None,
             expected_updated_at: None,
         }
     }
@@ -504,9 +497,14 @@ mod tests {
         assert_eq!(st, 201);
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(v["note"], "备注内容", "note 应 trim 后存储: {body}");
+        // filePath 单绑定语义：trim 后作为唯一一条进 files
         assert_eq!(
-            v["filePath"], "/tmp/x.pdf",
-            "filePath 应 trim 后存储: {body}"
+            v["files"][0]["path"], "/tmp/x.pdf",
+            "filePath 应 trim 后进 files: {body}"
+        );
+        assert!(
+            v.get("filePath").is_none(),
+            "旧 filePath 字段应随列退役消失"
         );
     }
 

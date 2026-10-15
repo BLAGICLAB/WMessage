@@ -89,7 +89,6 @@ const ORIGIN_LABEL: Record<string, string> = {
   manual: "手动",
   scheduled: "定时",
   batch: "批量",
-  workflow: "工作流",
 };
 
 export function BotPanel({

@@ -233,23 +233,11 @@ pub fn open_db<R: tauri::Runtime>(
     migrations::cleanup_retired_workflow_tables(&conn)?;
     // 画布退役的 tasks 删列（幂等）：workflow_id / canvas_x / canvas_y
     migrations::drop_retired_workflow_task_columns(&conn)?;
+    // 历次改版退役列清扫（幂等）：file_path/file_is_dir/schedule/sched_last/enabled/origin/acceptance
+    migrations::drop_legacy_task_columns(&conn)?;
     // 执行痕迹三表（exec_traces/exec_spans/file_changes，Agent 透明化设计 §4.1），幂等
     // （含旧库 model 列迁移，词元统计按模型聚合依赖）
     crate::db::trace::ensure_trace_tables(&conn).map_err(|e| e.to_string())?;
-    // 迁移：定时任务卡
-    ensure_columns(
-        &conn,
-        "tasks",
-        &[("schedule", "TEXT"), ("sched_last", "INTEGER")],
-    )?;
-    // 迁移：定时启用开关（定时任务模块；NULL = 启用，0 = 暂停不删配置）
-    ensure_columns(
-        &conn,
-        "tasks",
-        &crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS,
-    )?;
-    // 迁移（W-QA 卡即契约）：每卡验收标准 acceptance（AI 拆解生成，执行时注入自检）
-    ensure_columns(&conn, "tasks", &crate::db::tasks::ACCEPTANCE_TASK_COLUMNS)?;
     // 迁移：计划起止 plan_start/plan_end（周时间网格排期；NULL = 未排期）
     ensure_columns(&conn, "tasks", &crate::db::tasks::PLAN_TASK_COLUMNS)?;
     // 迁移：子任务卡出身 parent_id（子任务行一键生成的关联键；NULL = 普通卡）
@@ -280,27 +268,6 @@ pub fn open_db<R: tauri::Runtime>(
     ensure_columns(&conn, "tasks", &[("ord", "REAL")])?;
     ensure_columns(&conn, "tasks", &[("updated_at", "INTEGER")])?;
     migrations::ensure_files_column(&conn)?;
-    let migrated = migrations::migrate_legacy_file_bindings(&mut conn)?;
-    if migrated > 0 {
-        crate::audit::write_event(
-            app,
-            crate::audit::AuditLevel::Info,
-            "task_files_migration",
-            &[("migrated", migrated.to_string())],
-        );
-    }
-    // 老数据迁移（定时任务模块）：tasks.schedule「现有卡定时」→ scheduled_jobs
-    // 内容型作业（content = 卡标题），搬完清空任务卡调度字段，此后单源本表。
-    // 必须在 tasks.schedule 列迁移之后（上面的 tasks 补列已保证列存在）。
-    let sched_migrated = crate::db::schedule_jobs::migrate_legacy_task_schedules(&conn)?;
-    if sched_migrated > 0 {
-        crate::audit::write_event(
-            app,
-            crate::audit::AuditLevel::Info,
-            "scheduled_jobs_legacy_migration",
-            &[("migrated", sched_migrated.to_string())],
-        );
-    }
     ensure_columns(&conn, "bot_messages", &[("session_id", "TEXT")])?;
     ensure_columns(
         &conn,
@@ -666,7 +633,6 @@ mod tests {
         Task {
             plan_start: None,
             plan_end: None,
-            acceptance: None,
             parent_id: None,
             id: id.into(),
             title: title.into(),
@@ -674,8 +640,6 @@ mod tests {
             note: None,
             tags: None,
             files: None,
-            file_path: None,
-            file_is_dir: None,
             column: crate::db::TaskStatus::Todo,
             subtasks: None,
             completed_at: None,
@@ -684,18 +648,14 @@ mod tests {
             collapsed: None,
             order: None,
             updated_at: Some(1),
-            schedule: None,
-            sched_last: None,
             bot_assigned: None,
             assignee: None,
             budget: None,
             result: None,
-            origin: None,
             depends_on: None,
             model: None,
             owner_id: None,
             created_at: None,
-            enabled: None,
             expected_updated_at: None,
         }
     }
@@ -793,64 +753,6 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    // ── 多文件绑定：files 列迁移 + 老数据回填 + 上限 ──
-
-    /// 老 schema（无 files 列）建库：files 迁移测试的「中间态」fixture——
-    /// 2026-08-19 前无 files 列 + 已含  三列（ 的 upsert 需要它们）。
-    /// 本组测试只针对 files 列迁移，新增列的存在不影响该前提。
-    fn setup_legacy_tasks_db() -> (std::path::PathBuf, rusqlite::Connection) {
-        let dir = std::env::temp_dir().join(format!("wm-files-mig-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        let conn = rusqlite::Connection::open(dir.join("t.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tasks (
-               id TEXT PRIMARY KEY, title TEXT NOT NULL, due TEXT, note TEXT,
-               tags TEXT, file_path TEXT, file_is_dir INTEGER, col TEXT NOT NULL,
-               subtasks TEXT, completed_at INTEGER, archived INTEGER,
-               deleted_at INTEGER, collapsed INTEGER, ord REAL, updated_at INTEGER,
-               schedule TEXT, sched_last INTEGER, bot_assigned INTEGER,
-               assignee TEXT, budget TEXT, result TEXT
-             );",
-        )
-        .unwrap();
-        // 进程内共有 2 个新列（origin/depends_on）——
-        // 与 files 列同为 open_db 幂等 ALTER 的一部分；fixture 保持「仅缺 files 列」的
-        // 被测前提不变，把其余列补齐，否则迁移后 load_all 查新列会炸。
-        // 列清单单源 = tasks::W1_TASK_COLUMNS + tasks::OWNER_TASK_COLUMNS +
-        // tasks::CREATED_AT_TASK_COLUMNS + tasks::SCHED_ENABLED_TASK_COLUMNS +
-        // tasks::ACCEPTANCE_TASK_COLUMNS + tasks::PLAN_TASK_COLUMNS +
-        // tasks::PARENT_ID_TASK_COLUMNS（勿手工镜像）
-        for (col, ty) in crate::db::tasks::W1_TASK_COLUMNS {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .unwrap();
-        }
-        for (col, ty) in crate::db::tasks::OWNER_TASK_COLUMNS {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .unwrap();
-        }
-        for (col, ty) in crate::db::tasks::CREATED_AT_TASK_COLUMNS {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .unwrap();
-        }
-        for (col, ty) in crate::db::tasks::SCHED_ENABLED_TASK_COLUMNS {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .unwrap();
-        }
-        for (col, ty) in crate::db::tasks::ACCEPTANCE_TASK_COLUMNS {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .unwrap();
-        }
-        for (col, ty) in crate::db::tasks::PLAN_TASK_COLUMNS {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .unwrap();
-        }
-        for (col, ty) in crate::db::tasks::PARENT_ID_TASK_COLUMNS {
-            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {col} {ty}"), [])
-                .unwrap();
-        }
-        (dir, conn)
-    }
-
     // ── APW-02a: copy_dir_recursive 防护 ──
 
     /// dst 已存在 → 返 Err（保守语义，不改现有“dst 不存在”行为）
@@ -885,97 +787,6 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// 老数据 → 新 schema 完整链路：ALTER 补 files 列 + file_path 回填 files + 读回解析。
-    /// 覆盖：文件绑定、文件夹绑定（is_dir=1）、未绑定不动、幂等重跑不重复迁移。
-    #[test]
-    fn legacy_file_binding_migrates_to_files_column() {
-        let (dir, mut conn) = setup_legacy_tasks_db();
-        conn.execute_batch(
-            "INSERT INTO tasks (id, title, file_path, file_is_dir, col) VALUES
-               ('t-file', '绑文件', '/tmp/a.pdf', 0, 'todo'),
-               ('t-dir',  '绑文件夹', '/tmp/dir', 1, 'todo'),
-               ('t-none', '没绑', NULL, NULL, 'todo');",
-        )
-        .unwrap();
-
-        ensure_files_column(&conn).unwrap();
-        assert_eq!(
-            migrate_legacy_file_bindings(&mut conn).unwrap(),
-            2,
-            "两条老绑定应迁移"
-        );
-
-        let tasks = load_all(&conn).unwrap();
-        let tf = tasks.iter().find(|t| t.id == "t-file").unwrap();
-        assert_eq!(
-            tf.files.as_deref(),
-            Some(
-                vec![TaskFile {
-                    path: "/tmp/a.pdf".into(),
-                    is_dir: false
-                }]
-                .as_slice()
-            ),
-            "文件绑定应迁进 files（isDir=false）"
-        );
-        let td = tasks.iter().find(|t| t.id == "t-dir").unwrap();
-        assert_eq!(
-            td.files.as_deref(),
-            Some(
-                vec![TaskFile {
-                    path: "/tmp/dir".into(),
-                    is_dir: true
-                }]
-                .as_slice()
-            ),
-            "文件夹绑定应迁进 files（isDir=true）"
-        );
-        let tn = tasks.iter().find(|t| t.id == "t-none").unwrap();
-        assert!(tn.files.is_none(), "未绑定任务不得产生 files");
-
-        // 老列保留（迁移过渡期旧版本仍可读 file_path/file_is_dir）
-        let fp: Option<String> = conn
-            .query_row("SELECT file_path FROM tasks WHERE id='t-file'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(fp.as_deref(), Some("/tmp/a.pdf"), "老列 file_path 保留不清");
-
-        // 幂等：再跑一次迁移条数为 0，files 不变
-        assert_eq!(
-            migrate_legacy_file_bindings(&mut conn).unwrap(),
-            0,
-            "重跑不得重复迁移"
-        );
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    /// 已有 files 的任务不被老列回填覆盖（files 非空 → 跳过）
-    #[test]
-    fn migration_skips_tasks_with_existing_files() {
-        let (dir, mut conn) = setup_legacy_tasks_db();
-        conn.execute_batch(
-            "INSERT INTO tasks (id, title, file_path, file_is_dir, col) VALUES
-               ('t1', '已迁移过', '/tmp/old.txt', 0, 'todo');",
-        )
-        .unwrap();
-        ensure_files_column(&conn).unwrap();
-        // 模拟已迁移/新写的数据：files 已有值
-        conn.execute(
-            "UPDATE tasks SET files = '[{\"path\":\"/tmp/new.txt\",\"isDir\":false}]' WHERE id='t1'",
-            [],
-        )
-        .unwrap();
-        assert_eq!(migrate_legacy_file_bindings(&mut conn).unwrap(), 0);
-        let t = &load_all(&conn).unwrap()[0];
-        assert_eq!(
-            t.files.as_deref().unwrap()[0].path,
-            "/tmp/new.txt",
-            "已有 files 不得被老 file_path 覆盖"
-        );
-        fs::remove_dir_all(&dir).ok();
-    }
-
     /// files 列读写回环：upsert 多文件 → load_all 原样读回
     #[test]
     fn files_roundtrip_via_upsert_load() {
@@ -999,21 +810,11 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// effective_files 兜底：files 空时回退旧 file_path/file_is_dir（迁移窗口内读旧数据）
+    /// effective_files：返回 files 绑定；未绑定为空
     #[test]
-    fn effective_files_falls_back_to_legacy_fields() {
+    fn effective_files_returns_bound_files() {
         let mut t = mk_task("t1", "x");
         assert!(t.effective_files().is_empty(), "都没绑 → 空");
-        t.file_path = Some("/tmp/legacy.pdf".into());
-        t.file_is_dir = Some(true);
-        assert_eq!(
-            t.effective_files(),
-            vec![TaskFile {
-                path: "/tmp/legacy.pdf".into(),
-                is_dir: true
-            }],
-            "files 空 → 回退旧字段"
-        );
         t.files = Some(vec![TaskFile {
             path: "/tmp/new.pdf".into(),
             is_dir: false,
@@ -1024,7 +825,7 @@ mod tests {
                 path: "/tmp/new.pdf".into(),
                 is_dir: false
             }],
-            "files 非空 → 优先 files"
+            "files 非空 → 原样返回"
         );
     }
 

@@ -41,7 +41,7 @@ function task(partial: Partial<Task> & { id: string }): Task {
 function trace(partial: Partial<TraceRow> & { id: number }): TraceRow {
   return {
     sessionId: "s",
-    origin: "workflow",
+    origin: "manual",
     title: "周报生成",
     status: "done",
     startedAt: NOW.getTime() - 3_600_000,
@@ -284,7 +284,7 @@ describe("HomePage 渲染", () => {
 
   it("机器人动态：执行中排最前，失败行也在", async () => {
     renderHome();
-    await screen.findByText("工作流 · 周报生成");
+    await screen.findByText("手动 · 周报生成");
     expect(screen.getAllByText("执行中")).toHaveLength(1);
     expect(screen.getByText("失败")).toBeInTheDocument();
   });

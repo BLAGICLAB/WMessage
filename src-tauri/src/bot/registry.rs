@@ -1316,6 +1316,7 @@ mod registry_tests {
         );
     }
 
+    #[test]
     fn tools_table_contains_39_main_visible_tools() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");

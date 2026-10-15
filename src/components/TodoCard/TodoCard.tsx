@@ -308,10 +308,9 @@ export function TodoCardView({
         {!archived && !trashed && (
           <DoneCircle done={task.column === "done"} onToggle={toggleDone} />
         )}
-        {/* 归属头像规则：设了定时 → 一直机器人头像；
-            🤖 交给机器人执行中 → 机器人头像；执行完（botAssigned 清除且无定时）→ 用户头像。
+        {/* 归属头像规则：🤖 交给机器人执行中 → 机器人头像；执行完（botAssigned 清除）→ 用户头像。
             悬停显示姓名。 */}
-        <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
+        <ActorAvatar bot={!!task.botAssigned} />
       </div>
 
       {/* 标题以下内容（可折叠） */}
@@ -363,16 +362,6 @@ export function TodoCardView({
             >
               + 备注
             </button>
-          )}
-
-          {/* 每卡验收标准（W-QA 卡即契约）：与挂件卡同款只读展示 */}
-          {task.acceptance && (
-            <p
-              className="mt-1.5 text-xs text-[var(--t4)]"
-              title="验收标准：机器人执行时会对照此项自检"
-            >
-              <span aria-hidden>📌</span> 验收：{task.acceptance}
-            </p>
           )}
 
           {/* 标签 */}

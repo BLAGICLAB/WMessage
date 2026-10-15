@@ -880,8 +880,6 @@ function App() {
     deleteIds.forEach((id) => {
       void patchTask(id, {
         deletedAt: now,
-        schedule: null,
-        schedLast: null,
       });
     });
     // 删的是正在编辑的任务 → 浮窗跟着关（走退场动画）

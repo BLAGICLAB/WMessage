@@ -102,7 +102,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
         if t.archived != Some(true) || t.deleted_at.is_some() {
             continue; // 保护：非归档/回收站任务一律不动
         }
-        let Some(src_str) = t.file_path.as_deref() else {
+        let bound = t.effective_files();
+        let Some(src_str) = bound.first().map(|f| f.path.as_str()) else {
             continue;
         };
         let src = PathBuf::from(src_str);
@@ -165,7 +166,11 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                         SrcMissingAction::RepairMove { dst, journal_id } => {
                             let mut nt = t.clone();
                             nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            nt.file_path = Some(dst.clone());
+                            let mut files = nt.effective_files();
+                            if let Some(first) = files.first_mut() {
+                                first.path = dst.clone();
+                            }
+                            nt.files = if files.is_empty() { None } else { Some(files) };
                             nt.updated_at = Some(now);
                             match tauri::async_runtime::block_on(async {
                                 db::db_upsert(app.clone(), vec![nt.clone()]).await
@@ -198,8 +203,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                             // 或 pending 为 delete（解绑本就是其终态）/ move 但 dst 也丢失。
                             let mut nt = t.clone();
                             nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            nt.file_path = None;
-                            nt.file_is_dir = None;
+                            nt.files = None;
                             nt.updated_at = Some(now);
                             changed.push(nt);
                             if let Some(id) = commit_journal {
@@ -264,7 +268,11 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                 }
                 let mut nt = t.clone();
                 nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                nt.file_path = Some(dst.to_string_lossy().to_string());
+                let mut files = nt.effective_files();
+                if let Some(first) = files.first_mut() {
+                    first.path = dst.to_string_lossy().to_string();
+                }
+                nt.files = if files.is_empty() { None } else { Some(files) };
                 nt.updated_at = Some(now);
                 if let Err(e) = tauri::async_runtime::block_on(async {
                     db::db_upsert(app.clone(), vec![nt.clone()]).await
@@ -302,7 +310,11 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                         SrcMissingAction::RepairMove { dst, journal_id } => {
                             let mut nt = t.clone();
                             nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            nt.file_path = Some(dst.clone());
+                            let mut files = nt.effective_files();
+                            if let Some(first) = files.first_mut() {
+                                first.path = dst.clone();
+                            }
+                            nt.files = if files.is_empty() { None } else { Some(files) };
                             nt.updated_at = Some(now);
                             match tauri::async_runtime::block_on(async {
                                 db::db_upsert(app.clone(), vec![nt.clone()]).await
@@ -333,8 +345,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                         SrcMissingAction::Unbind { commit_journal } => {
                             let mut nt = t.clone();
                             nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            nt.file_path = None;
-                            nt.file_is_dir = None;
+                            nt.files = None;
                             nt.updated_at = Some(now);
                             changed.push(nt);
                             if let Some(id) = commit_journal {
@@ -359,7 +370,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                         continue;
                     }
                 };
-                let res = if t.file_is_dir == Some(true) {
+                let res = if bound.first().map(|f| f.is_dir) == Some(true) {
                     fs::remove_dir_all(&src)
                 } else {
                     fs::remove_file(&src)
@@ -375,15 +386,13 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                 }
                 let mut nt = t.clone();
                 nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                nt.file_path = None;
-                nt.file_is_dir = None;
+                nt.files = None;
                 nt.updated_at = Some(now);
                 if let Err(e) = tauri::async_runtime::block_on(async {
                     db::db_upsert(app.clone(), vec![nt.clone()]).await
                 }) {
                     // delete 成功但 db_upsert 失败 → journal 保持 pending，
-                    // 下次启动 replay 时检测 src 不存在 + task 仍有 file_path，
-                    // 修复 DB 清 file_path
+                    // 下次启动 replay 时检测 src 不存在 + task 仍有绑定，修复 DB 清绑定
                     report.skipped += 1;
                     let line = format!(
                         "已删除「{name}」但 db_upsert 失败（{e}），journal={journal_id} 待修复"

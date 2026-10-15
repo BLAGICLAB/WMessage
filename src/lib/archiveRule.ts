@@ -1,8 +1,8 @@
 // 任务卡归档规则（设置页「数据管理 → 任务卡归档时间」）：
 // 任务完成满 N 天自动归档，从「完成」列隐藏，可在归档视图查看/恢复。
 // 天数配置存 bot-config.json（archiveAfterDays）：后端 migration 兜底归档
-// （主窗口关闭时照常到期）读同一份配置，两侧阈值恒一致——所以不能像
-// workflowVisibility 那样只存 localStorage，后端线程读不到。
+// （主窗口关闭时照常到期）读同一份配置，两侧阈值恒一致——不能只存
+// localStorage，后端线程读不到。
 // 前端内存缓存 + bot-config-changed 事件同步（设置页保存后广播）。
 import { getBotConfig } from "./botConfig";
 import type { Task } from "../types";

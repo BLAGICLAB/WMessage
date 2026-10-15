@@ -220,9 +220,6 @@ describe("TodoCardView 多文件绑定", () => {
       { path: "/docs/b.docx", isDir: false },
       { path: "/docs/c.txt", isDir: false },
     ],
-    // 双写旧字段（迁移过渡期一致）
-    filePath: "/docs/a.pdf",
-    fileIsDir: false,
   };
 
   it("多 chip 列表渲染：每个文件一行（图标 + basename + 移除按钮）", () => {
@@ -235,19 +232,7 @@ describe("TodoCardView 多文件绑定", () => {
     expect(screen.getAllByTitle("移除该文件")).toHaveLength(3);
   });
 
-  it("旧字段兜底：只有 filePath 的老数据也渲染单 chip", () => {
-    const legacy: Task = {
-      ...baseTask,
-      filePath: "/old/legacy.pdf",
-      fileIsDir: false,
-    };
-    render(
-      <TodoCardView task={legacy} onUpdate={vi.fn()} onDelete={vi.fn()} />,
-    );
-    expect(screen.getByText("legacy.pdf")).toBeInTheDocument();
-  });
-
-  it("chip × 单独移除：files 去掉该条，旧字段双写首条", async () => {
+  it("chip × 单独移除：files 去掉该条", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     render(
@@ -260,8 +245,6 @@ describe("TodoCardView 多文件绑定", () => {
       { path: "/docs/b.docx", isDir: false },
       { path: "/docs/c.txt", isDir: false },
     ]);
-    expect(call[1].filePath).toBe("/docs/b.docx");
-    expect(call[1].fileIsDir).toBe(false);
   });
 
   it("超过 5 个折叠为「还有 N 个」，点击展开/收起", async () => {
@@ -316,11 +299,9 @@ describe("TodoCardView 多文件绑定", () => {
       { path: "/docs/a.pdf", isDir: false },
       { path: "/some/dir", isDir: true },
     ]);
-    expect(call[1].filePath).toBe("/docs/a.pdf");
-    expect(call[1].fileIsDir).toBe(false);
   });
 
-  it("pickFile 多选追加：merge 去重保序 + bind_files 取 isDir + 双写旧字段", async () => {
+  it("pickFile 多选追加：merge 去重保序 + bind_files 取 isDir", async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
@@ -350,7 +331,6 @@ describe("TodoCardView 多文件绑定", () => {
       { path: "/docs/a.pdf", isDir: false },
       { path: "/docs/new.txt", isDir: false },
     ]);
-    expect(call[1].filePath).toBe("/docs/a.pdf");
   });
 
   it("pickFile 超上限：截断到 10 并弹提示", async () => {
@@ -476,8 +456,6 @@ describe("TodoCardView 多文件绑定", () => {
       { path: "/docs/concurrent.txt", isDir: false },
       { path: "/some/dir", isDir: true },
     ]);
-    expect(call[1].filePath).toBe("/docs/a.pdf");
-    expect(call[1].fileIsDir).toBe(false);
   });
 
   it("chip 内「复制」字样：逐文件调 copy_file_with_title（2026-08-26 起替代 📋 按钮）", async () => {
@@ -530,18 +508,7 @@ describe("TodoCardView 归属头像", () => {
     expect(screen.queryByTitle("Test")).not.toBeInTheDocument();
   });
 
-  it("设了定时（schedule）→ 一直显示机器人头像，即使 botAssigned 未置真", () => {
-    render(
-      <TodoCardView
-        task={{ ...baseTask, schedule: "daily:09:00" }}
-        onUpdate={vi.fn()}
-        onDelete={vi.fn()}
-      />,
-    );
-    expect(screen.getByAltText("Bot")).toBeInTheDocument();
-  });
-
-  it("机器人干完活（botAssigned 清除且无定时）→ 恢复用户头像", () => {
+  it("机器人干完活（botAssigned 清除）→ 恢复用户头像", () => {
     // botAssigned: undefined 模拟执行结束后的落库状态（后端 set_bot_assigned(false)）
     render(
       <TodoCardView

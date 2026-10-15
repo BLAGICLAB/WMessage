@@ -29,15 +29,13 @@ pub struct TaskFile {
 pub const MAX_TASK_FILES: usize = 10;
 
 /// tasks 表单源 DDL：open_db 建表用。
-/// 含全部 28 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
+/// 含全部 25 列——老库缺列由 open_db 的幂等 ALTER 迁移补齐，此处即最新完整 schema。
 pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    id           TEXT PRIMARY KEY,
    title        TEXT NOT NULL,
    due          TEXT,
    note         TEXT,
    tags         TEXT,
-   file_path    TEXT,
-   file_is_dir  INTEGER,
    col          TEXT NOT NULL,
    subtasks     TEXT,
    completed_at INTEGER,
@@ -46,20 +44,15 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    collapsed    INTEGER,
    ord          REAL,
    updated_at   INTEGER,
-   schedule     TEXT,
-   sched_last   INTEGER,
    bot_assigned INTEGER,
    files        TEXT,
    assignee     TEXT,
    budget       TEXT,
    result       TEXT,
-   origin       TEXT,
    depends_on   TEXT,
    model        TEXT,
    owner_id     TEXT,
    created_at   INTEGER,
-   enabled      INTEGER,
-   acceptance   TEXT,
    plan_start   TEXT,
    plan_end     TEXT,
    parent_id    TEXT
@@ -126,30 +119,16 @@ impl<'de> serde::Deserialize<'de> for TaskStatus {
     }
 }
 
-/// 任务卡归属值（task_patch 白名单校验用）：缺省视作用户看板卡。
-pub const TASK_ORIGIN_USER: &str = "user";
-
 ///  新增列清单（open_db 幂等迁移与 legacy 迁移测试 fixture 共用，防两处漂移——）
-pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 3] = [
-    ("origin", "TEXT"),
-    ("depends_on", "TEXT"),
-    ("model", "TEXT"),
-];
+pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 2] = [("depends_on", "TEXT"), ("model", "TEXT")];
 
 /// 任务归属人列（任务图谱设计 §1.1）：NULL 恒等于本人；
 /// 外来任务存导入信封里的 personId，渲染层据 `ownerId == null` 过滤自己的任务。
 pub(crate) const OWNER_TASK_COLUMNS: [(&str, &str); 1] = [("owner_id", "TEXT")];
 
-/// 任务创建时间列（epoch ms）：新建时打戳，UPDATE 永不覆盖（照 workflows.created_at
-/// 先例）；老数据 ALTER 后该列为 NULL（= 未知），不回填。
+/// 任务创建时间列（epoch ms）：新建时打戳，UPDATE 永不覆盖；老数据 ALTER 后该列为
+/// NULL（= 未知），不回填。
 pub(crate) const CREATED_AT_TASK_COLUMNS: [(&str, &str); 1] = [("created_at", "INTEGER")];
-
-/// 定时启用开关列（定时任务模块）：NULL 恒等于启用；0 = 暂停（保留 schedule 配置不删）
-pub(crate) const SCHED_ENABLED_TASK_COLUMNS: [(&str, &str); 1] = [("enabled", "INTEGER")];
-
-/// 每卡验收标准列（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准；
-/// 执行时注入提示词并要求对照自检。NULL = 无（旧卡/手动卡）。
-pub(crate) const ACCEPTANCE_TASK_COLUMNS: [(&str, &str); 1] = [("acceptance", "TEXT")];
 
 /// 计划起止列（周时间网格排期）：NULL = 未排期。
 /// 格式 "YYYY-MM-DDTHH:mm"（与 due 同）；plan_end 恒 > plan_start。
@@ -170,8 +149,6 @@ pub struct Task {
     pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub files: Option<Vec<TaskFile>>,
-    pub file_path: Option<String>,
-    pub file_is_dir: Option<bool>,
     pub column: TaskStatus,
     pub subtasks: Option<Vec<Subtask>>,
     pub completed_at: Option<i64>,
@@ -180,10 +157,6 @@ pub struct Task {
     pub collapsed: Option<bool>,
     pub order: Option<f64>,
     pub updated_at: Option<i64>,
-    #[serde(default)]
-    pub schedule: Option<String>,
-    #[serde(default)]
-    pub sched_last: Option<i64>,
     #[serde(default)]
     pub bot_assigned: Option<bool>,
     /// 子 agent 编排设计 §4.1）：子卡上 = 派发子 agent 的串链标识；
@@ -196,19 +169,12 @@ pub struct Task {
     /// 收尾结构化结果（设计 §7 schema）；存 JSON TEXT，卡片折叠展示
     #[serde(default)]
     pub result: Option<serde_json::Value>,
-    /// 归属来源（task_patch 白名单只收 "user" 并归一为 None；画布退役后恒 NULL）
-    #[serde(default)]
-    pub origin: Option<String>,
     /// 上游任务 id 列表（DAG 依赖）；存 JSON TEXT
     #[serde(default)]
     pub depends_on: Option<Vec<String>>,
     /// 执行用大模型：模型库条目 id；None = 跟随全局 active 模型
     #[serde(default)]
     pub model: Option<String>,
-    /// 每卡验收标准（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准（≤120 字）；
-    /// 执行时注入提示词并要求对照自检。None = 无（旧卡/手动卡）。
-    #[serde(default)]
-    pub acceptance: Option<String>,
     /// 归属人 personId（任务图谱设计 §1.1）：None = 本人（库内统一 NULL 存储）；
     /// 导入外来数据时由信封盖章。前端写入路径不感知（serde default），零改动兼容
     #[serde(default)]
@@ -217,10 +183,6 @@ pub struct Task {
     /// 老数据为 NULL（= 未知），不回填。序列化进导出信封，serde default 兼容旧信封。
     #[serde(default)]
     pub created_at: Option<i64>,
-    /// 定时启用开关（定时任务模块）：None/Some(true) = 启用，Some(false) = 暂停
-    /// （保留 schedule 配置不删）。读路径 None 视为启用。
-    #[serde(default)]
-    pub enabled: Option<bool>,
     /// 计划开始（周时间网格排期）：None = 未排期。
     /// 格式 "YYYY-MM-DDTHH:mm"（与 due 同）；task_patch 写口校验单字段格式，
     /// null = 清除排期；end > start 的跨字段一致性由 UI 成对提交保证。
@@ -238,18 +200,7 @@ pub struct Task {
 
 impl Task {
     pub fn effective_files(&self) -> Vec<TaskFile> {
-        if let Some(files) = &self.files {
-            if !files.is_empty() {
-                return files.clone();
-            }
-        }
-        match &self.file_path {
-            Some(p) if !p.is_empty() => vec![TaskFile {
-                path: p.clone(),
-                is_dir: self.file_is_dir.unwrap_or(false),
-            }],
-            _ => Vec::new(),
-        }
+        self.files.clone().unwrap_or_default()
     }
 }
 
@@ -300,25 +251,23 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
     let mut stmt = conn
         .prepare(
             "INSERT INTO tasks
-               (id, title, due, note, tags, file_path, file_is_dir, col, subtasks,
-                completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, bot_assigned, files,
-                assignee, budget, result, origin, depends_on, model, owner_id, created_at, enabled, acceptance,
+               (id, title, due, note, tags, col, subtasks,
+                completed_at, archived, deleted_at, collapsed, ord, updated_at, bot_assigned, files,
+                assignee, budget, result, depends_on, model, owner_id, created_at,
                 plan_start, plan_end, parent_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
-               tags=excluded.tags, file_path=excluded.file_path,
-               file_is_dir=excluded.file_is_dir, col=excluded.col,
+               tags=excluded.tags,
+               col=excluded.col,
                subtasks=excluded.subtasks, completed_at=excluded.completed_at,
                archived=excluded.archived, deleted_at=excluded.deleted_at,
                collapsed=excluded.collapsed, ord=excluded.ord,
                updated_at=excluded.updated_at,
-               schedule=excluded.schedule, sched_last=excluded.sched_last,
                bot_assigned=excluded.bot_assigned, files=excluded.files,
                assignee=excluded.assignee, budget=excluded.budget, result=excluded.result,
-               origin=excluded.origin, depends_on=excluded.depends_on,
-               model=excluded.model, owner_id=excluded.owner_id, enabled=excluded.enabled,
-               acceptance=excluded.acceptance,
+               depends_on=excluded.depends_on,
+               model=excluded.model, owner_id=excluded.owner_id,
                plan_start=excluded.plan_start, plan_end=excluded.plan_end,
                parent_id=excluded.parent_id
              WHERE tasks.updated_at IS NULL OR excluded.updated_at >= tasks.updated_at",
@@ -384,8 +333,6 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.due,
                 t.note,
                 tags,
-                t.file_path,
-                t.file_is_dir.map(|b| b as i64),
                 t.column.as_str(),
                 subtasks,
                 t.completed_at,
@@ -394,20 +341,15 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.collapsed.map(|b| b as i64),
                 t.order,
                 t.updated_at,
-                t.schedule,
-                t.sched_last,
                 t.bot_assigned.map(|b| b as i64),
                 files,
                 t.assignee,
                 budget,
                 result,
-                t.origin,
                 depends_on,
                 t.model,
                 t.owner_id,
                 t.created_at,
-                t.enabled.map(|b| b as i64),
-                t.acceptance,
                 t.plan_start,
                 t.plan_end,
                 t.parent_id,
@@ -447,33 +389,26 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let due: Option<String> = row.get(2)?;
     let note: Option<String> = row.get(3)?;
     let tags: Option<String> = row.get(4)?;
-    let file_path: Option<String> = row.get(5)?;
-    let file_is_dir: Option<i64> = row.get(6)?;
-    let col: String = row.get(7)?;
-    let subtasks: Option<String> = row.get(8)?;
-    let completed_at: Option<i64> = row.get(9)?;
-    let archived: Option<i64> = row.get(10)?;
-    let deleted_at: Option<i64> = row.get(11)?;
-    let collapsed: Option<i64> = row.get(12)?;
-    let order: Option<f64> = row.get(13)?;
-    let updated_at: Option<i64> = row.get(14)?;
-    let schedule: Option<String> = row.get(15)?;
-    let sched_last: Option<i64> = row.get(16)?;
-    let bot_assigned: Option<i64> = row.get(17)?;
-    let files: Option<String> = row.get(18)?;
-    let assignee: Option<String> = row.get(19)?;
-    let budget: Option<String> = row.get(20)?;
-    let result: Option<String> = row.get(21)?;
-    let origin: Option<String> = row.get(22)?;
-    let depends_on: Option<String> = row.get(23)?;
-    let model: Option<String> = row.get(24)?;
-    let owner_id: Option<String> = row.get(25)?;
-    let created_at: Option<i64> = row.get(26)?;
-    let enabled: Option<i64> = row.get(27)?;
-    let acceptance: Option<String> = row.get(28)?;
-    let plan_start: Option<String> = row.get(29)?;
-    let plan_end: Option<String> = row.get(30)?;
-    let parent_id: Option<String> = row.get(31)?;
+    let col: String = row.get(5)?;
+    let subtasks: Option<String> = row.get(6)?;
+    let completed_at: Option<i64> = row.get(7)?;
+    let archived: Option<i64> = row.get(8)?;
+    let deleted_at: Option<i64> = row.get(9)?;
+    let collapsed: Option<i64> = row.get(10)?;
+    let order: Option<f64> = row.get(11)?;
+    let updated_at: Option<i64> = row.get(12)?;
+    let bot_assigned: Option<i64> = row.get(13)?;
+    let files: Option<String> = row.get(14)?;
+    let assignee: Option<String> = row.get(15)?;
+    let budget: Option<String> = row.get(16)?;
+    let result: Option<String> = row.get(17)?;
+    let depends_on: Option<String> = row.get(18)?;
+    let model: Option<String> = row.get(19)?;
+    let owner_id: Option<String> = row.get(20)?;
+    let created_at: Option<i64> = row.get(21)?;
+    let plan_start: Option<String> = row.get(22)?;
+    let plan_end: Option<String> = row.get(23)?;
+    let parent_id: Option<String> = row.get(24)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -554,8 +489,6 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         note,
         tags,
         files,
-        file_path,
-        file_is_dir: file_is_dir.map(|v| v != 0),
         column: col,
         subtasks,
         completed_at,
@@ -564,19 +497,14 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         collapsed: collapsed.map(|v| v != 0),
         order,
         updated_at,
-        schedule,
-        sched_last,
         bot_assigned: bot_assigned.map(|v| v != 0),
         assignee,
         budget,
         result,
-        origin,
         depends_on,
         model,
         owner_id,
         created_at,
-        enabled: enabled.map(|v| v != 0),
-        acceptance,
         plan_start,
         plan_end,
         parent_id,
@@ -584,12 +512,10 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     })
 }
 
-const TASK_SELECT_COLS: &str =
-    "SELECT id, title, due, note, tags, file_path, file_is_dir, col, subtasks, \
-     completed_at, archived, deleted_at, collapsed, ord, updated_at, schedule, sched_last, \
-     bot_assigned, files, assignee, budget, result, origin, depends_on, \
-     model, owner_id, created_at, enabled, acceptance, \
-     plan_start, plan_end, parent_id FROM tasks";
+const TASK_SELECT_COLS: &str = "SELECT id, title, due, note, tags, col, subtasks, \
+     completed_at, archived, deleted_at, collapsed, ord, updated_at, \
+     bot_assigned, files, assignee, budget, result, depends_on, \
+     model, owner_id, created_at, plan_start, plan_end, parent_id FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {
     let sql = format!("{TASK_SELECT_COLS} ORDER BY ord, rowid");
@@ -882,14 +808,8 @@ pub(crate) fn apply_task_patch(
             "subtasks" => set_from(&mut task.subtasks, v, k)?,
             "due" => set_from(&mut task.due, v, k)?,
             "files" => set_from(&mut task.files, v, k)?,
-            "filePath" => set_from(&mut task.file_path, v, k)?,
-            "fileIsDir" => set_from(&mut task.file_is_dir, v, k)?,
             "order" => set_from(&mut task.order, v, k)?,
-            "schedule" => set_from(&mut task.schedule, v, k)?,
-            "schedLast" => set_from(&mut task.sched_last, v, k)?,
             "botAssigned" => set_from(&mut task.bot_assigned, v, k)?,
-            // 定时启用开关（定时任务模块）：null/缺省 = 启用
-            "enabled" => set_from(&mut task.enabled, v, k)?,
             // 计划起止（周时间网格排期）：单字段格式校验，null = 清除排期；
             // end > start 的跨字段一致性由 UI 成对提交保证
             "planStart" => {
@@ -924,23 +844,6 @@ pub(crate) fn apply_task_patch(
                 task.budget = task.budget.take().map(|b| b.clamped());
             }
             "result" => set_from(&mut task.result, v, k)?,
-            // origin 限枚举值：只收 "user"，归一为 None（缺省语义）
-            "origin" => {
-                set_from(&mut task.origin, v, k)?;
-                if let Some(o) = &task.origin {
-                    if o != TASK_ORIGIN_USER {
-                        return Err(CommandError::InvalidArgument {
-                            field: k.into(),
-                            value: v.to_string(),
-                            reason: format!("origin 只能是 {TASK_ORIGIN_USER}"),
-                        });
-                    }
-                    if o == TASK_ORIGIN_USER {
-                        // "user" 归一为 None（缺省语义），避免两种写法表示同一状态
-                        task.origin = None;
-                    }
-                }
-            }
             "dependsOn" => {
                 set_from(&mut task.depends_on, v, k)?;
                 if let Some(deps) = &task.depends_on {
@@ -1573,8 +1476,8 @@ mod task_patch_tests {
     fn task_patch_applies_fields_and_null_clears() {
         let mut conn = setup_conn();
         conn.execute(
-            "INSERT INTO tasks (id, title, col, completed_at, archived, schedule, sched_last, updated_at)
-             VALUES ('a', '任务A', 'done', 111, 1, 'daily:09:00', 222, 1000)",
+            "INSERT INTO tasks (id, title, col, completed_at, archived, updated_at)
+             VALUES ('a', '任务A', 'done', 111, 1, 1000)",
             [],
         )
         .unwrap();
@@ -1582,23 +1485,20 @@ mod task_patch_tests {
         let row = run_patch(&mut conn, "a", serde_json::json!({"archived": false})).unwrap();
         assert_eq!(row.archived, Some(false));
         assert_eq!(row.updated_at, Some(9000));
-        // null = 清空：deletedAt/schedule/schedLast（软删恢复/清调度语义）
+        // null = 清空：deletedAt（软删恢复语义）
         let row = run_patch(
             &mut conn,
             "a",
-            serde_json::json!({"deletedAt": 123, "schedule": null, "schedLast": null, "column": "todo"}),
+            serde_json::json!({"deletedAt": 123, "column": "todo"}),
         )
         .unwrap();
         assert_eq!(row.deleted_at, Some(123));
-        assert_eq!(row.schedule, None);
-        assert_eq!(row.sched_last, None);
         assert_eq!(row.column, TaskStatus::Todo);
         let reloaded = load_all(&conn)
             .unwrap()
             .into_iter()
             .find(|t| t.id == "a")
             .unwrap();
-        assert_eq!(reloaded.schedule, None);
         assert_eq!(reloaded.deleted_at, Some(123));
     }
 
@@ -1914,7 +1814,6 @@ mod owner_graph_tests {
         Task {
             plan_start: None,
             plan_end: None,
-            acceptance: None,
             parent_id: None,
             id: "x".into(),
             title: "t".into(),
@@ -1922,8 +1821,6 @@ mod owner_graph_tests {
             note: None,
             tags: None,
             files: None,
-            file_path: None,
-            file_is_dir: None,
             column: TaskStatus::Todo,
             subtasks: None,
             completed_at: None,
@@ -1932,18 +1829,14 @@ mod owner_graph_tests {
             collapsed: None,
             order: None,
             updated_at: None,
-            schedule: None,
-            sched_last: None,
             bot_assigned: None,
             assignee: None,
             budget: None,
             result: None,
-            origin: None,
             depends_on: None,
             model: None,
             owner_id: owner.map(str::to_string),
             created_at: None,
-            enabled: None,
             expected_updated_at: None,
         }
     }

@@ -224,11 +224,18 @@ fn recover_move_db(
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
-    if !file_path_untouched(t.file_path.as_deref(), expected_src) {
+    if !file_path_untouched(
+        t.effective_files().first().map(|f| f.path.as_str()),
+        expected_src,
+    ) {
         return Ok(false);
     }
     t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-    t.file_path = Some(dst.to_string_lossy().to_string());
+    let mut files = t.effective_files();
+    if let Some(first) = files.first_mut() {
+        first.path = dst.to_string_lossy().to_string();
+    }
+    t.files = if files.is_empty() { None } else { Some(files) };
     t.updated_at = Some(db::now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
         .map_err(|e| e.to_string())?;
@@ -241,12 +248,14 @@ fn recover_delete_db(app: &AppHandle, task_id: &str, expected_src: &str) -> Resu
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
-    if !file_path_untouched(t.file_path.as_deref(), expected_src) {
+    if !file_path_untouched(
+        t.effective_files().first().map(|f| f.path.as_str()),
+        expected_src,
+    ) {
         return Ok(false);
     }
     t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-    t.file_path = None;
-    t.file_is_dir = None;
+    t.files = None;
     t.updated_at = Some(db::now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
         .map_err(|e| e.to_string())?;

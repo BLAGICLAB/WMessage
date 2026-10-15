@@ -1,12 +1,12 @@
-//! 定时任务卡调度器：
+//! 定时任务调度器：
 //!
-//! 负责 ⏰ 到点自动执行任务卡（每日/每周/每月/一次性 at:），与 bot_chat.rs 的
+//! 负责 ⏰ 到点自动执行内容型定时作业（每日/每周/每月/一次性 at:），与 bot_chat.rs 的
 //! 用户交互流解耦：
 //! - 解析 schedule 字符串（parse_hm / occurrence_after / at_expired / sched_last_dt）
 //! - 防重入守卫（SchedGuard，Drop 自动清理，防止 panic 后任务卡死锁）
-//! - 30s 扫描循环（start_scheduler），到点调 run_task_in_chat（任务执行聊天化：
-//!   每次执行新建会话、流式可见、可按会话 /stop、完成/失败发系统通知）；
-//!   绕开 exec_steps 逐步确认（无人在场，直接整体执行）
+//! - 30s 扫描循环（start_scheduler），到点新建任务卡并交 run_task_in_chat
+//!  （任务执行聊天化：每次执行新建会话、流式可见、可按会话 /stop、完成/失败发
+//!   系统通知）；绕开 exec_steps 逐步确认（无人在场，直接整体执行）
 
 use chrono::Datelike;
 use futures_util::FutureExt;
@@ -62,18 +62,13 @@ fn notify_schedule_missed(app: &AppHandle, target_title: &str) {
 
 // 定时任务卡（阶段二：⏰ 到点自动执行）
 
-/// 单次定时执行的整体超时：最坏 50 轮 × LLM 300s 可跑
-/// 数小时，无上限会把调度循环堵死。30 分钟对正常任务足够宽松；超时 drop 执行流
-///（守卫 RAII 自动释放），记 sched_timeout 审计并兜底复位 bot_assigned 头像标记。
-const SCHED_TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-
 /// 正在执行的定时任务 id（防同一任务并发重复跑）
 // SCHED_RUNNING 的定义与 sched_running() 访问器已集中到 `crate::app_state`
 // （SchedGuard 本体与 Drop 清理语义未动）。
 use crate::app_state::sched_running;
 
 /// 调度防重入 RAII 守卫：Drop（含 panic 展开）时自动清理，保证任务 id 不残留
-/// （清理不能只放在 run_scheduled 末尾：panic 时该卡会永久失效）
+/// （清理不能只放在执行收尾处：panic 时该 id 会永久失效）
 ///
 /// 表已迁入 `AppState`。Drop 里拿不到 `app`，所以在 acquire 时把表句柄
 /// （`Arc<Mutex<HashSet<String>>>` 克隆）带进守卫，Drop 用手里这份清理——
@@ -285,26 +280,6 @@ const CATCHUP_WINDOW: chrono::Duration = chrono::Duration::hours(2);
 /// 调度扫描周期（秒），start_scheduler 的 interval 与 at: 首跑宽限共用同一常量防漂移
 const SCHED_TICK_SECS: u64 = 30;
 
-/// at: 一次性首跑宽限：2×tick。sched_last=None 且到点已超该窗口的 at: 不进 due
-///（交给 stale 清理）；窗口内视为「刚到点」，保留既有首跑语义。
-const AT_FIRST_RUN_GRACE: chrono::Duration =
-    chrono::Duration::seconds((SCHED_TICK_SECS * 2) as i64);
-
-/// at: 首跑宽限判定（纯函数，可测）：从未执行的 at: 到点已超宽限窗口 → true。
-/// 防 find_due_tasks 同帧双命中：classify_due 以远古基准判 at: 恒 Run，与
-/// stale_ids 清理同帧命中会把重启前早已过期的 at: 补跑。
-fn at_first_run_stale(
-    sched: &str,
-    sched_last: Option<i64>,
-    now: chrono::DateTime<chrono::Local>,
-) -> bool {
-    sched.starts_with("at:")
-        && sched_last.is_none()
-        && occurrence_after(sched, sched_last_dt(None))
-            .map(|occ| now - occ > AT_FIRST_RUN_GRACE)
-            .unwrap_or(false)
-}
-
 /// 到点判定（纯函数，可测）：
 /// - Run：触发点已到且未超补跑窗口（或新任务首跑），正常执行；
 /// - Missed：recurring 触发点已超 2h 窗口——不补跑，调用方消费掉该 occurrence
@@ -335,127 +310,6 @@ fn classify_due(
         }
         _ => DueVerdict::NotDue,
     }
-}
-
-/// 找出到点的定时任务（未删、未归档、未完成，且 sched_last < 触发点 ≤ now）。
-/// 顺带清理「错过的一次性任务」：at: 从未执行且时间已过 → 放弃并清掉 schedule
-///（否则重启后 30s 内会补执行过期任务）
-async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
-    let now = chrono::Local::now();
-    let all = crate::db::db_load(app.clone()).await.unwrap_or_default();
-    let stale_ids: Vec<String> = all
-        .iter()
-        .filter(|t| {
-            t.deleted_at.is_none()
-                && t.archived != Some(true)
-                && t.column != crate::db::TaskStatus::Done
-                && t.schedule
-                    .as_deref()
-                    .map(str::trim)
-                    .map(|s| at_expired(s, t.sched_last, now))
-                    .unwrap_or(false)
-        })
-        .map(|t| t.id.clone())
-        .collect();
-    let mut missed_ids: Vec<String> = Vec::new();
-    let due: Vec<crate::db::Task> = all
-        .into_iter()
-        .filter_map(|t| {
-            if t.deleted_at.is_some() || t.archived == Some(true) || t.column == crate::db::TaskStatus::Done {
-                return None;
-            }
-            let sched = t
-                .schedule
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())?;
-            // 过期超宽限的 at: 交给 stale_ids 清理，不进 due（防重启后补跑）
-            if at_first_run_stale(sched, t.sched_last, now) {
-                return None;
-            }
-            match classify_due(sched, t.sched_last, now) {
-                DueVerdict::Run => Some(t),
-                DueVerdict::Missed => {
-                    crate::bot::audit_log(
-                        app,
-                        &format!(
-                            "sched_missed | id: {} | schedule: {} | 到点已超 {}h 补跑窗口，跳过不补跑",
-                            t.id,
-                            crate::bot::truncate_for_log(sched, 40),
-                            CATCHUP_WINDOW.num_hours()
-                        ),
-                    );
-                    notify_schedule_missed(app, &t.title);
-                    missed_ids.push(t.id.clone());
-                    None
-                }
-                DueVerdict::NotDue => None,
-            }
-        })
-        .collect();
-    // 清理过期一次性任务的 schedule（基于最新数据合并，只清目标字段）。
-    // 单次加载处理全部 stale id（避免每个 id 各开一次库，O(n) 次 db_load）
-    if !stale_ids.is_empty() {
-        if let Ok(cur) = crate::db::db_load(app.clone()).await {
-            let fresh: Vec<crate::db::Task> = cur
-                .into_iter()
-                .filter(|t| stale_ids.contains(&t.id))
-                .map(|mut t| {
-                    t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
-                    t.schedule = None;
-                    t.updated_at = Some(now.timestamp_millis());
-                    t
-                })
-                .collect();
-            if !fresh.is_empty() {
-                // 调度器写库也要广播（主窗口无轮询，不广播会长期显示旧的 ⏰ 徽标/备注）
-                match crate::db::db_upsert(app.clone(), fresh.clone()).await {
-                    Ok(()) => crate::bot::broadcast_after_mutation(app, fresh, vec![]),
-                    // 乐观锁冲突 / IO 失败：清理静默丢失会反复重试同一批 stale id，留痕
-                    Err(e) => crate::bot::audit_log(
-                        app,
-                        &format!(
-                            "sched_stale_cleanup_failed | ids: {} | err: {}",
-                            crate::bot::truncate_for_log(&stale_ids.join(","), 200),
-                            crate::bot::truncate_for_log(&e.to_string(), 200)
-                        ),
-                    ),
-                }
-            }
-        }
-    }
-    // 消费超窗的 recurring occurrence（2h 补跑窗口见 CATCHUP_WINDOW）：
-    // 不补跑，sched_last 记为现在——下一个 occurrence 顺延到未来，下个 tick 不再误判到点。
-    // 与过期 at: 清理同模式：基于最新数据合并，只动 sched_last/updated_at。
-    if !missed_ids.is_empty() {
-        if let Ok(cur) = crate::db::db_load(app.clone()).await {
-            let fresh: Vec<crate::db::Task> = cur
-                .into_iter()
-                .filter(|t| missed_ids.contains(&t.id))
-                .map(|mut t| {
-                    t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
-                    t.sched_last = Some(now.timestamp_millis());
-                    t.updated_at = Some(now.timestamp_millis());
-                    t
-                })
-                .collect();
-            if !fresh.is_empty() {
-                match crate::db::db_upsert(app.clone(), fresh.clone()).await {
-                    Ok(()) => crate::bot::broadcast_after_mutation(app, fresh, vec![]),
-                    // 乐观锁冲突 / IO 失败：sched_last 未推进 → 下个 tick 重复判 missed，留痕
-                    Err(e) => crate::bot::audit_log(
-                        app,
-                        &format!(
-                            "sched_missed_mark_failed | ids: {} | err: {}",
-                            crate::bot::truncate_for_log(&missed_ids.join(","), 200),
-                            crate::bot::truncate_for_log(&e.to_string(), 200)
-                        ),
-                    ),
-                }
-            }
-        }
-    }
-    due
 }
 
 // 内容型定时作业（scheduled_jobs）
@@ -591,7 +445,6 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
     let mut card = crate::db::Task {
         plan_start: plan_window.as_ref().map(|(s, _)| s.clone()),
         plan_end: plan_window.as_ref().map(|(_, e)| e.clone()),
-        acceptance: None,
         parent_id: None,
         id: uuid::Uuid::new_v4().simple().to_string(),
         title: title.clone(),
@@ -599,8 +452,6 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         note,
         tags: None,
         files: None,
-        file_path: None,
-        file_is_dir: None,
         column: crate::db::TaskStatus::Todo,
         subtasks: None,
         completed_at: None,
@@ -609,18 +460,14 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         collapsed: None,
         order: None,
         updated_at: Some(now.timestamp_millis()),
-        schedule: None,
-        sched_last: None,
         bot_assigned: None,
         assignee: None,
         budget: None,
         result: None,
-        origin: None,
         depends_on: None,
         model: None,
         owner_id: None,
         created_at: Some(now.timestamp_millis()),
-        enabled: None,
         expected_updated_at: None,
     };
     // 插到列表顶部（与 bot 建卡同规则：当前最小 order - 1）
@@ -979,128 +826,18 @@ pub async fn scheduled_job_fire(app: AppHandle, id: String) -> CommandResult<()>
     Ok(())
 }
 
-/// 执行一张到点的定时任务卡：先记 sched_last（防重复触发），跑执行循环，结果落备注标记
-async fn run_scheduled(app: AppHandle, task: crate::db::Task) {
-    // 防重入守卫：作用域结束（含 panic 展开）自动清理
-    let Some(_sched_guard) = SchedGuard::acquire(&app, &task.id) else {
-        return;
-    };
-    // 机器人开关关闭时不执行定时任务（开关不能只管 UI，后端也要拦）
-    if !crate::bot_slash::bot_get_enabled(app.clone()) {
-        crate::bot::audit_log(
-            &app,
-            &format!("sched_skip | id: {} | 机器人开关未开启", task.id),
-        );
-        return;
-    }
-    let now = chrono::Local::now();
-    crate::bot::audit_log(
-        &app,
-        &format!(
-            "sched_run | id: {} | title: {} | schedule: {}",
-            task.id,
-            crate::bot::truncate_for_log(&task.title, 60),
-            task.schedule.as_deref().unwrap_or("")
-        ),
-    );
-
-    // 先记 sched_last：30s 扫描周期内不会重复触发。
-    // 基于库中最新数据合并（勿用扫描快照：会覆盖用户在扫描后的编辑）。
-    // 记录失败则放弃本次执行（否则下个 tick 会因 sched_last 未更新而重复触发）
-    let mut marked = false;
-    if let Ok(cur) = crate::db::db_load(app.clone()).await {
-        if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task.id) {
-            fresh.expected_updated_at = fresh.updated_at; // RMW 基线 = 快照 updated_at
-            fresh.sched_last = Some(now.timestamp_millis());
-            fresh.updated_at = Some(now.timestamp_millis());
-            marked = crate::db::db_upsert(app.clone(), vec![fresh.clone()])
-                .await
-                .is_ok();
-            if marked {
-                crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);
-            }
-        }
-    }
-    if !marked {
-        crate::bot::audit_log(
-            &app,
-            &format!(
-                "sched_skip | id: {} | 记录 sched_last 失败，放弃本次执行",
-                task.id
-            ),
-        );
-        return;
-    }
-
-    let result = crate::bot_chat::run_task_in_chat(
-        &app,
-        &task.id,
-        crate::bot_chat::TaskExecOrigin::Scheduled,
-        None,
-    )
-    .await;
-    let time_str = now.format("%m-%d %H:%M").to_string();
-    // 定时执行完成/失败发系统通知（执行过程在新会话里
-    // 流式可见、永久落库；通知只是提醒，点击拉起应用后按 ⏰ 前缀找到会话回看）。
-    notify_scheduled_done(&app, &task.title, &result);
-
-    // 执行结果写备注（模型可能已写摘要，这里前置 ⏰ 标记兜底）。
-    // ⚠️ 必须基于执行后的最新数据合并：旧快照会把机器人执行期间的修改
-    // （完成状态/摘要/子任务）整体回滚
-    let summary = match &result {
-        Ok(r) => format!(
-            "⏰ 自动执行 {time_str}：{}",
-            r.result.text.chars().take(300).collect::<String>()
-        ),
-        Err(e) => format!("⏰ 自动执行 {time_str} 失败：{e}"),
-    };
-    if let Ok(cur) = crate::db::db_load(app.clone()).await {
-        if let Some(mut fresh) = cur.into_iter().find(|t| t.id == task.id) {
-            let note = match fresh.note.as_deref().filter(|n| !n.trim().is_empty()) {
-                Some(n) => format!("{summary}\n{n}"),
-                None => summary,
-            };
-            fresh.note = Some(note);
-            // 一次性定时执行完清掉 schedule（⏰ 徽标消失）。
-            // 用执行后的 fresh.schedule 判断（执行期间用户改过定时，扫描快照会误清新设置）
-            if fresh
-                .schedule
-                .as_deref()
-                .is_some_and(|s| s.starts_with("at:"))
-            {
-                fresh.schedule = None;
-            }
-            fresh.expected_updated_at = fresh.updated_at; // RMW 基线 = 快照 updated_at
-            fresh.updated_at = Some(chrono::Local::now().timestamp_millis());
-            if crate::db::db_upsert(app.clone(), vec![fresh.clone()])
-                .await
-                .is_ok()
-            {
-                crate::bot::broadcast_after_mutation(&app, vec![fresh], vec![]);
-            }
-        }
-    }
-    crate::bot::audit_log(&app, &format!("sched_done | id: {}", task.id));
-}
-
-/// 同时执行的定时任务上限：burst 到点卡排队，不打爆 runtime。
-/// 取值 4 = 经验值（定时任务多为 LLM 调用 + 文档生成，重在外部等待不在 CPU；
-/// 4 路并发足够消化每日 burst，又不至于同时打满 LLM 配额）。
-const SCHED_MAX_CONCURRENT: usize = 4;
-
-/// 启动定时调度器：每 30s 扫一次到点任务卡并顺序执行（App 启动时调用）
+/// 启动定时调度器：每 30s 扫一次到点作业并执行（App 启动时调用）
 pub fn start_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(SCHED_TICK_SECS));
         ticker.tick().await; // 消耗首个立即触发的 tick
-        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(SCHED_MAX_CONCURRENT));
         loop {
             ticker.tick().await;
             // panic recovery：单轮 panic 不杀调度器，审计后续跑。
             // AssertUnwindSafe 安全依据：scheduler_tick 只读 db + spawn 任务，
             // 不持任何「跨 await 必须保持」的不变量，panic 后无可破坏状态。
             // 关闭信号不加：生命周期 = App，退出时 runtime 整体回收。
-            let tick = std::panic::AssertUnwindSafe(scheduler_tick(&app, &sem));
+            let tick = std::panic::AssertUnwindSafe(scheduler_tick(&app));
             if let Err(panic) = tick.catch_unwind().await {
                 let msg = crate::audit::panic_message(panic);
                 crate::bot::audit_log(
@@ -1116,62 +853,8 @@ pub fn start_scheduler(app: AppHandle) {
 }
 
 /// 单轮扫描 + 分发（从 start_scheduler 抽出以便 catch_unwind 兜底整轮）。
-async fn scheduler_tick(app: &AppHandle, sem: &std::sync::Arc<tokio::sync::Semaphore>) {
-    let due = find_due_tasks(app).await;
-    for t in due {
-        // 每张卡独立 spawn 且【不 await】：
-        // spawn 后立即 await 的话，单张长任务（最坏可跑数小时）会堵死调度循环，
-        // 后续所有到点任务排队。spawn 本身已隔离 panic（主循环不受影响）；
-        // 同卡重入由 SchedGuard/ExecGuard 防护；另加单任务整体超时兜底。
-        let app2 = app.clone();
-        let sem2 = sem.clone();
-        tauri::async_runtime::spawn(async move {
-            // 并发上限：permit 排队；acquire 失败仅当 semaphore 关闭（不关闭）→ 审计后放弃。
-            let Ok(_permit) = sem2.acquire().await else {
-                crate::bot::audit_log(
-                    &app2,
-                    &format!(
-                        "sched_permit_fail | id: {} | 并发许可获取失败，本轮放弃",
-                        t.id
-                    ),
-                );
-                return;
-            };
-            let id = t.id.clone();
-            // per-task panic 可见性（ r1）：spawn-and-forget 的 panic
-            // 只有 JoinError 无人观测——catch_unwind 落审计，不再静默死。
-            let body = std::panic::AssertUnwindSafe(async {
-                let timed_out =
-                    tokio::time::timeout(SCHED_TASK_TIMEOUT, run_scheduled(app2.clone(), t))
-                        .await
-                        .is_err();
-                if timed_out {
-                    crate::bot::audit_log(
-                        &app2,
-                        &format!(
-                            "sched_timeout | id: {id} | 超过 {} 分钟未完成，强制收尾",
-                            SCHED_TASK_TIMEOUT.as_secs() / 60
-                        ),
-                    );
-                    // 超时被 drop 的执行没走到 set_bot_assigned(false)，这里兜底复位
-                    crate::bot_chat::set_bot_assigned(&app2, &id, false).await;
-                }
-            });
-            if let Err(panic) = body.catch_unwind().await {
-                let msg = crate::audit::panic_message(panic);
-                crate::bot::audit_log(
-                    &app2,
-                    &format!(
-                        "sched_task_panic | id: {id} | {} | 任务 panic 已隔离",
-                        crate::bot::truncate_for_log(&msg, 200)
-                    ),
-                );
-                // panic 时 set_bot_assigned 兜底复位（同超时路径）
-                crate::bot_chat::set_bot_assigned(&app2, &id, false).await;
-            }
-        });
-    }
-    // 内容型定时作业同一循环扫描（到点新建任务卡并执行）
+async fn scheduler_tick(app: &AppHandle) {
+    // 内容型定时作业扫描（到点新建任务卡并执行）
     jobs_tick(app).await;
 }
 
@@ -1468,28 +1151,6 @@ mod sched_tests {
         );
     }
 
-    /// 回归锁：调度循环 spawn 后不得再立即 await
-    ///（串行执行回退 = 一张长任务卡堵死全部后续到点任务），且必须有单任务整体超时
-    #[test]
-    fn scheduler_loop_does_not_await_each_task() {
-        let text =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_scheduler.rs"))
-                .unwrap();
-        let pos = text
-            .find("let due = find_due_tasks")
-            .expect("调度循环必须存在");
-        // 字符安全截取（中文注释多字节，字节下标切片会 panic）
-        let scope: String = text[pos..].chars().take(1600).collect();
-        assert!(
-            !scope.contains("handle.await"),
-            "调度循环不得串行 await 每张卡: {scope:?}"
-        );
-        assert!(
-            scope.contains("SCHED_TASK_TIMEOUT"),
-            "单任务必须有整体超时: {scope:?}"
-        );
-    }
-
     #[test]
     fn invalid_schedule() {
         let after = dt(2026, 8, 16, 9, 0);
@@ -1563,43 +1224,12 @@ mod sched_tests {
     #[test]
     fn classify_due_at_never_missed() {
         // at: 一次性任务不走补跑窗口（由 at_expired 放弃逻辑处理）：
-        // 过去的一次性任务保持既有 Run 判定（find_due_tasks 的 stale 清理负责清场）
+        // 过去的一次性任务保持既有 Run 判定（jobs_tick 的 stale 清理负责清场）
         let now = dt(2026, 8, 16, 12, 0);
         assert_eq!(
             classify_due("at:2026-08-10T10:00", None, now),
             DueVerdict::Run
         );
-    }
-
-    #[test]
-    fn at_first_run_stale_respects_grace_window() {
-        // 到点 10:00，宽限 2×tick=60s：
-        // 恰到点 / 到点后 30s（宽限内）→ 刚到点首跑，不算 stale
-        let just_due = dt(2026, 8, 16, 10, 0);
-        assert!(!at_first_run_stale("at:2026-08-16T10:00", None, just_due));
-        assert!(!at_first_run_stale(
-            "at:2026-08-16T10:00",
-            None,
-            just_due + chrono::Duration::seconds(30)
-        ));
-        // 61s（超宽限）与 10:30（如重启后）→ stale，不进 due
-        assert!(at_first_run_stale(
-            "at:2026-08-16T10:00",
-            None,
-            just_due + chrono::Duration::seconds(61)
-        ));
-        let late = dt(2026, 8, 16, 10, 30);
-        assert!(at_first_run_stale("at:2026-08-16T10:00", None, late));
-        // 执行过（sched_last 有值）→ 不适用（由 occurrence_after 判不重跑）
-        assert!(!at_first_run_stale(
-            "at:2026-08-16T10:00",
-            Some(ms(2026, 8, 16, 10, 0)),
-            late
-        ));
-        // 非 at: → 不适用
-        assert!(!at_first_run_stale("daily:10:00", None, late));
-        // 坏格式 → 不适用（NotDue，stale 清理按 at_expired 放弃）
-        assert!(!at_first_run_stale("at:junk", None, late));
     }
 
     #[test]

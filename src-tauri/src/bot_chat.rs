@@ -1855,10 +1855,6 @@ pub(crate) fn build_task_block(task: &crate::db::Task) -> String {
     if let Some(n) = task.note.as_deref().filter(|n| !n.trim().is_empty()) {
         block.push_str(&format!("\n备注：{n}"));
     }
-    // W-QA 卡即契约：拆解生成的验收标准，EXECUTE 提示词要求完成后对照自检
-    if let Some(acc) = task.acceptance.as_deref().filter(|a| !a.trim().is_empty()) {
-        block.push_str(&format!("\n验收标准：{acc}"));
-    }
     if let Some(subs) = task.subtasks.as_deref().filter(|s| !s.is_empty()) {
         block.push_str("\n子任务：");
         for s in subs {

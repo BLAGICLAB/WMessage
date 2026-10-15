@@ -1,8 +1,8 @@
 // 任务图谱偏好：纯前端偏好，localStorage 持久化。
 // 图谱页只在主窗口存在，且设置页全屏接管时图谱必然已卸载——打开图谱页现读
-// 即最新值，无跨 webview 同步需求（workflowVisibility 的 Tauri emit 是为了
-// 挂件窗，这里不需要）。sizeMode 键由 G7-SIZEMODE 图谱图例切换先行落地，
-// 此处收为同一读写入口（图谱图例与设置页共用，永远同值）。
+// 即最新值，无跨 webview 同步需求（挂件窗不读图谱偏好）。sizeMode 键由
+// G7-SIZEMODE 图谱图例切换先行落地，此处收为同一读写入口（图谱图例与设置页
+// 共用，永远同值）。
 
 import type { GraphFilters } from "../components/GraphPage/graph-build";
 import type {

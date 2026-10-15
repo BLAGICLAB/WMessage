@@ -66,11 +66,6 @@ export interface Task {
   tags?: string[];
   /** 绑定文件列表（上限 10；isDir=true 为文件夹，文件夹仍单选独占） */
   files?: Array<{ path: string; isDir: boolean }>;
-  /** 旧单绑定字段：迁移过渡保留（启动时若 files 为空自动迁入 files）。   * null = 显式清空（task_patch 语义：null 落库清值，缺键 = 未提供保留旧值）；
-   * 直连 invoke 构造清空 patch 时必须传 null，不要传 undefined（会被 JSON 丢弃） */
-  filePath?: string | null;
-  /** 绑定的是否为文件夹（旧字段，见 filePath；null 语义同上） */
-  fileIsDir?: boolean | null;
   /** 完成时间（epoch ms） */
   completedAt?: number;
   /** 创建时间（epoch ms）；老数据缺省 = 未知（图谱「耗时」口径的依赖字段） */
@@ -94,14 +89,8 @@ export interface Task {
    */
   expectedUpdatedAt?: number;
   /** 已交给机器人执行（🤖 点击置真，执行结束无论成败清除）。
-   *  头像规则：botAssigned 或 schedule 任一存在 → 机器人头像；否则用户头像 */
+   *  头像规则：botAssigned 存在 → 机器人头像；否则用户头像 */
   botAssigned?: boolean;
-  /** 定时执行规则：daily:HH:MM / weekly:D:HH:MM / at:YYYY-MM-DDTHH:MM（设置期间一直显示机器人头像） */
-  schedule?: string | null;
-  /** 上次定时执行时间（epoch ms） */
-  schedLast?: number | null;
-  /** 定时启用开关：undefined = 启用（暂停保留配置不丢节奏） */
-  enabled?: boolean;
   /** 计划开始（周时间网格排期）："YYYY-MM-DDTHH:mm"（与 due 同格式）；缺省 = 未排期。
    *  null = 显式清除（task_patch 语义：null 落库清值，缺键 = 未提供保留旧值） */
   planStart?: string | null;
@@ -126,23 +115,11 @@ export interface Task {
     artifacts?: Array<{ path?: string; description?: string }>;
     blockers?: unknown[];
     confidence?: number;
-    /** 节点级验收裁决（pass/partial/fail/unknown；fail 已终态 failed，不会以 success 出现） */
-    acceptanceVerdict?: string;
-    /** 验收依据（≤100 字，TracePanel 展示） */
-    acceptanceEvidence?: string;
-    /** 含返工的累计执行次数（引擎写） */
-    attempt?: number;
-    /** 本卡耗时（墙钟 ms，引擎写） */
-    ms?: number;
   } | null;
-  /** 归属来源（画布退役后恒缺省；后端 patch 白名单只收 "user" 并归一为缺省） */
-  origin?: "user" | "workflow";
   /** 上游任务 id 列表（依赖边；图谱/KPI 关联簇数据源） */
   dependsOn?: string[];
   /** 执行用大模型：模型库条目 id；缺省 = 跟随全局 active 模型 */
   model?: string;
-  /** 每卡验收标准（W-QA 卡即契约）：拆解生成的一行可验证完成标准；执行时注入并自检 */
-  acceptance?: string | null;
   /**
    * 归属人 personId（任务图谱设计 §1.1）：undefined = 本人。
    * 导入多人数据后，外来任务带其原主人的 pid；看板/归档/回收站/⌘K 默认只显示

@@ -255,11 +255,8 @@ describe("TaskDetailPanel", () => {
     });
     expect(screen.getByText(/报告\.docx/)).toBeInTheDocument();
     await user.click(screen.getByLabelText("移除 报告.docx"));
-    // filesPatch 同时清旧单文件字段（filePath/fileIsDir 迁移语义）
     expect(onUpdate).toHaveBeenCalledWith({
       files: [],
-      filePath: null,
-      fileIsDir: null,
     });
     // 清空后出现绑定入口
     cleanup();

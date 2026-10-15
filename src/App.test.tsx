@@ -284,7 +284,7 @@ describe("App", () => {
   // 软删除必须清调度字段——否则任务躺在回收站里 schedule
   // 仍到点触发（deletedAt 不挡调度读取）。
   // 入口：任务页池项 → 详情面板删除键（批 4 起替代旧看板卡删除键）
-  it("软删除进回收站：落盘行 schedule/schedLast 清空", async () => {
+  it("软删除进回收站：task_patch 只带 deletedAt", async () => {
     const user = userEvent.setup();
     const withSched: Task[] = [
       {
@@ -293,8 +293,6 @@ describe("App", () => {
         column: "todo",
         order: 0,
         updatedAt: 1,
-        schedule: "daily:09:00",
-        schedLast: 123,
       },
     ];
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -307,7 +305,7 @@ describe("App", () => {
     // 池块单击纯拖拽（防误触）→ 双击池项开详情面板
     await user.dblClick(await screen.findByText("定时任务"));
     await user.click(await screen.findByTitle("删除任务"));
-    // TP-2：软删改走 task_patch 定向补丁（null=清空调度字段）
+    // TP-2：软删走 task_patch 定向补丁
     await waitFor(() => {
       const calls = mocks.invokeMock.mock.calls.filter(
         (c) => c[0] === "task_patch",
@@ -319,8 +317,6 @@ describe("App", () => {
       };
       expect(args.id).toBe("s1");
       expect(args.patch.deletedAt).toBeTruthy();
-      expect(args.patch.schedule).toBeNull();
-      expect(args.patch.schedLast).toBeNull();
     });
   });
 

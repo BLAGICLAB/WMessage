@@ -63,7 +63,7 @@ export function PlanBlockView({
   const rows = titleRows(seg.startMin, seg.endMin);
   const thin = rows === 1;
   const narrow = seg.lanes > 1;
-  const bot = !!task.botAssigned || !!task.schedule;
+  const bot = !!task.botAssigned;
   const stack = collapsed ? stackSize(dur) : null;
   const toggle = () => onSetColumn?.(task.id, done ? "todo" : "done");
   const doneBtn = !archived &&

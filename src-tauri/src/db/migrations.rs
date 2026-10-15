@@ -20,40 +20,36 @@ pub fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
     super::ensure_columns(conn, "tasks", &[("files", "TEXT")])
 }
 
-/// 多文件绑定：老单绑定 file_path/file_is_dir → files JSON
-pub fn migrate_legacy_file_bindings(conn: &mut rusqlite::Connection) -> Result<usize, String> {
-    let rows: Vec<(String, String, Option<i64>)> = {
+/// 历次改版退役的 tasks 列清扫（幂等）：file_path/file_is_dir（单绑定 → files JSON）、
+/// schedule/sched_last/enabled（定时单源 → scheduled_jobs）、origin（画布归属）、
+/// acceptance（画布验收）。逐列按 pragma 实际存在性删，跨版本老库缺哪列补删哪列。
+/// 前置：legacy 绑定/定时数据迁移已随列删除一并移除（在库数据均已迁移完毕）。
+pub fn drop_legacy_task_columns(conn: &rusqlite::Connection) -> Result<(), String> {
+    const RETIRED: [&str; 7] = [
+        "file_path",
+        "file_is_dir",
+        "schedule",
+        "sched_last",
+        "enabled",
+        "origin",
+        "acceptance",
+    ];
+    let existing: std::collections::HashSet<String> = {
         let mut stmt = conn
-            .prepare(
-                "SELECT id, file_path, file_is_dir FROM tasks
-                 WHERE file_path IS NOT NULL AND file_path <> ''
-                   AND (files IS NULL OR files = '' OR files = '[]')",
-            )
+            .prepare("SELECT name FROM pragma_table_info('tasks')")
             .map_err(|e| e.to_string())?;
-        let mapped = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
-        mapped
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
     };
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let mut n = 0;
-    for (id, path, is_dir) in rows {
-        let files = serde_json::to_string(&vec![super::TaskFile {
-            path,
-            is_dir: is_dir.map(|v| v != 0).unwrap_or(false),
-        }])
-        .map_err(|e| e.to_string())?;
-        tx.execute(
-            "UPDATE tasks SET files = ?1 WHERE id = ?2",
-            rusqlite::params![files, id],
-        )
-        .map_err(|e| e.to_string())?;
-        n += 1;
+    for col in RETIRED {
+        if existing.contains(col) {
+            conn.execute_batch(&format!("ALTER TABLE tasks DROP COLUMN {col}"))
+                .map_err(|e| e.to_string())?;
+        }
     }
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(n)
+    Ok(())
 }
 
 /// 模型元数据双表（meta_provider / meta_model）：models.dev 同步缓存 + 用户自建，

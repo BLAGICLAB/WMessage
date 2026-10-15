@@ -258,7 +258,7 @@ export function TaskDetailPanel({
       className="glass h-full w-full overflow-y-auto px-4 pt-6 pb-4"
     >
       <div className="flex items-start gap-2">
-        <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
+        <ActorAvatar bot={!!task.botAssigned} />
         <textarea
           ref={titleRef}
           rows={1}
@@ -402,17 +402,6 @@ export function TaskDetailPanel({
           if (v !== (task.note ?? "")) onUpdate({ note: v || undefined });
         }}
       />
-
-      {/* 每卡验收标准（W-QA 卡即契约）：拆解生成，只读——编辑走重新拆解；
-          与挂件卡同款 📌 展示（此前仅挂件可见，主窗口两套渲染器缺失） */}
-      {task.acceptance && (
-        <p
-          className="mt-1.5 text-xs text-[var(--t4)]"
-          title="验收标准：机器人执行时会对照此项自检"
-        >
-          <span aria-hidden>📌</span> 验收：{task.acceptance}
-        </p>
-      )}
 
       <div className="mt-3 mb-1.5 text-[11px] font-medium tracking-wide text-[var(--t5)]">
         标签

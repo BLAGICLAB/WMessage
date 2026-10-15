@@ -306,7 +306,6 @@ fn create_task(
         let task = db::Task {
             plan_start: None,
             plan_end: None,
-            acceptance: None,
             parent_id: None,
             id: uuid::Uuid::new_v4().to_string(),
             title,
@@ -320,7 +319,7 @@ fn create_task(
                 .map(|n| n.trim().to_string())
                 .filter(|n| !n.is_empty()),
             tags: input.tags,
-            // API 入参仍是单绑定字段，双写进 files 与多文件绑定保持一致
+            // API 入参仍是单绑定字段，进 files 与多文件绑定保持一致
             files: input
                 .file_path
                 .as_ref()
@@ -332,11 +331,6 @@ fn create_task(
                         is_dir: input.file_is_dir.unwrap_or(false),
                     }]
                 }),
-            file_path: input
-                .file_path
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty()),
-            file_is_dir: input.file_is_dir,
             column,
             subtasks: None,
             completed_at: if column == db::TaskStatus::Done {
@@ -353,18 +347,14 @@ fn create_task(
             collapsed: None,
             order: Some(max_order + 1.0),
             updated_at: Some(now),
-            schedule: None,
-            sched_last: None,
             bot_assigned: None,
             assignee: None,
             budget: None,
             result: None,
-            origin: None,
             depends_on: None,
             model: None,
             owner_id: None,            // API 建卡 = 本人（任务图谱设计 §1.1）
             created_at: Some(now),     // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
-            enabled: None,             // API 建卡无定时配置
             expected_updated_at: None, // 新建任务：无读快照基线
         };
         if let Err(e) = store.upsert(vec![task.clone()]) {
@@ -487,33 +477,15 @@ fn update_task(
             }
         }
         if let Some(fp) = input.file_path.as_deref() {
-            // trim 后存储，首尾空白不进库
+            // trim 后存储，首尾空白不进库；单绑定语义 = 唯一一条
             let fp = fp.trim();
             if fp.is_empty() {
-                t.file_path = None;
-                t.file_is_dir = None;
-                // 旧单绑定字段清空时同步清 files
                 t.files = None;
             } else {
-                t.file_path = Some(fp.to_string());
-                if let Some(fid) = input.file_is_dir {
-                    t.file_is_dir = Some(fid);
-                }
-                // 双写 files（旧单绑定语义 = 唯一一条）
                 t.files = Some(vec![db::TaskFile {
                     path: fp.to_string(),
-                    is_dir: t.file_is_dir.unwrap_or(false),
+                    is_dir: input.file_is_dir.unwrap_or(false),
                 }]);
-            }
-        } else if let Some(fid) = input.file_is_dir {
-            if t.file_path.is_some() {
-                t.file_is_dir = Some(fid);
-                if let Some(fp) = t.file_path.clone() {
-                    t.files = Some(vec![db::TaskFile {
-                        path: fp,
-                        is_dir: fid,
-                    }]);
-                }
             }
         }
         if input.due.is_some() {

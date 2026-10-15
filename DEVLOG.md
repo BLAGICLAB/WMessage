@@ -36,6 +36,19 @@ canvas_y）随后由 `drop_retired_workflow_task_columns` 独立删列（闸 = p
 列序号，`task_from_row` 的 get(23..34) 全段前移三位，靠 SELECT 列表与映射同文件
 单源防漂移。
 
+**旧定时链整体退役**：tasks 的 schedule/sched_last/enabled 三列在 T1 定时单源
+迁到 scheduled_jobs 时就该死，一直挂着「只会被清空、无人设值」。这次连同
+find_due_tasks 整条旧卡定时扫描路径、run_scheduled 执行器、SCHED_TASK_TIMEOUT/
+SCHED_MAX_CONCURRENT 并发件一起删——scheduler_tick 瘦身成纯 jobs_tick。
+at_first_run_stale（首跑宽限）是旧路径专属语义，jobs 用 at_expired 放弃，
+一并删。`to_doing` 语义分支保留（col 列数据契约还在，doing 枚举退役是下一批）。
+
+**七根死列一并删**：file_path/file_is_dir（单绑定 → files JSON 双写也停——
+`apply_files_to_task`、taskFiles.ts 的 filesPatch 双写、API 重建卡的双写全部
+收敛为只写 files）、schedule/sched_last/enabled、origin、acceptance（写入方
+随画布退役，EXECUTE 提示词的验收自检句一并删）。归档/恢复等读侧展示链同步
+清理。机器人头像判断从 `botAssigned || schedule` 收敛为 `botAssigned`。
+
 **kind 正名**：原计划 ask 通知沿用 `workflow_question` 遗留名（保历史行兼容），
 历史行既然删了，兼容理由不复存在——kind 改名 `task_question`，代码不再背
 画布时代的名。改名与清扫必须同一提交：先跑旧版再跑新版会出现「旧 kind 行

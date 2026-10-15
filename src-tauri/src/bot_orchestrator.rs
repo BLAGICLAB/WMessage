@@ -195,7 +195,6 @@ pub(crate) fn spawn_subagent_locked(
     let card = Task {
         plan_start: None,
         plan_end: None,
-        acceptance: None,
         parent_id: None,
         id: task_id.clone(),
         title: format!(
@@ -209,8 +208,6 @@ pub(crate) fn spawn_subagent_locked(
         )),
         tags: None,
         files: None,
-        file_path: None,
-        file_is_dir: None,
         column: crate::db::TaskStatus::Doing,
         subtasks: None,
         completed_at: None,
@@ -219,18 +216,14 @@ pub(crate) fn spawn_subagent_locked(
         collapsed: None,
         order: None,
         updated_at: Some(now),
-        schedule: None,
-        sched_last: None,
         bot_assigned: None,
         assignee: None,
         budget: Some(budget.clone()),
         result: None,
-        origin: None,
         depends_on: None,
         model: None,
         owner_id: None,        // 子 agent 派发卡 = 本人（任务图谱设计 §1.1）
         created_at: Some(now), // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
-        enabled: None,         // 派发卡无定时配置
         expected_updated_at: None,
     };
     // 两写包同一事务：卡与行任一失败都不留孤儿（同 setup/finalize 既有模式）
@@ -1995,7 +1988,6 @@ mod orchestrator_tests {
         let card = Task {
             plan_start: None,
             plan_end: None,
-            acceptance: None,
             parent_id: None,
             id: "parent-1".into(),
             title: "主编排卡".into(),
@@ -2003,8 +1995,6 @@ mod orchestrator_tests {
             note: None,
             tags: None,
             files: None,
-            file_path: None,
-            file_is_dir: None,
             column: crate::db::TaskStatus::Todo,
             subtasks: None,
             completed_at: None,
@@ -2013,18 +2003,14 @@ mod orchestrator_tests {
             collapsed: None,
             order: None,
             updated_at: Some(1_000),
-            schedule: None,
-            sched_last: None,
             bot_assigned: None,
             assignee: None,
             budget: None,
             result: None,
-            origin: None,
             depends_on: None,
             model: None,
             owner_id: None,
             created_at: None,
-            enabled: None,
             expected_updated_at: None,
         };
         crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).unwrap();

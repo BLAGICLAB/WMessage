@@ -5,50 +5,28 @@ import type { Task } from "../types";
 const base: Task = { id: "t1", title: "x", column: "todo" };
 
 describe("taskFiles", () => {
-  it("files 非空优先；空时回退旧 filePath/fileIsDir（迁移过渡兜底）", () => {
+  it("返回 files 绑定；未绑定为空", () => {
     expect(taskFiles(base)).toEqual([]);
-    // 旧数据（未迁移）：单文件
-    expect(taskFiles({ ...base, filePath: "/a.pdf" })).toEqual([
-      { path: "/a.pdf", isDir: false },
-    ]);
-    // 旧数据：文件夹
-    expect(taskFiles({ ...base, filePath: "/dir", fileIsDir: true })).toEqual([
-      { path: "/dir", isDir: true },
-    ]);
-    // 新字段优先
-    expect(
-      taskFiles({
-        ...base,
-        filePath: "/old.pdf",
-        files: [{ path: "/new.pdf", isDir: false }],
-      }),
-    ).toEqual([{ path: "/new.pdf", isDir: false }]);
-    // files 空数组 → 回退旧字段
-    expect(taskFiles({ ...base, files: [], filePath: "/a.pdf" })).toEqual([
+    expect(taskFiles({ ...base, files: [{ path: "/a.pdf", isDir: false }] })).toEqual([
       { path: "/a.pdf", isDir: false },
     ]);
   });
 });
 
-describe("filesPatch 双写", () => {
-  it("写 files 同时同步旧 filePath/fileIsDir 首条；空列表全清", () => {
+describe("filesPatch", () => {
+  it("写 files；空列表也整列表提交（后端契约：显式 null/[] = 清空，缺键 = 保留）", () => {
     const p = filesPatch([
       { path: "/a.pdf", isDir: false },
       { path: "/dir", isDir: true },
     ]);
     expect(p.files).toHaveLength(2);
-    expect(p.filePath).toBe("/a.pdf");
-    expect(p.fileIsDir).toBe(false);
 
     const empty = filesPatch([]);
     expect(empty.files).toEqual([]);
-    // 清空必须显式 null：undefined 键会被 JSON 序列化丢弃，后端按「未提供」
-    // 保留旧值 → 已解绑的旧路径复活。后端契约：显式 null = 清空，缺键 = 保留
-    expect(empty.filePath).toBeNull();
-    expect(empty.fileIsDir).toBeNull();
+    // 清空必须显式提交空数组：undefined 键会被 JSON 序列化丢弃，
+    // 后端按「未提供」保留旧值 → 已解绑的旧路径复活
     const wire = JSON.parse(JSON.stringify(empty));
-    expect(wire).toHaveProperty("filePath", null);
-    expect(wire).toHaveProperty("fileIsDir", null);
+    expect(wire).toHaveProperty("files", []);
   });
 });
 

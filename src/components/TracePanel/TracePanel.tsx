@@ -141,7 +141,6 @@ export function TracePanel({
   taskId,
   taskTitle,
   traceId,
-  acceptanceInfo,
   onClose,
 }: {
   /** 按任务卡查（执行历史列表 → 选一条）；与 traceId 二选一 */
@@ -149,8 +148,6 @@ export function TracePanel({
   taskTitle?: string;
   /**  直查模式：活动页按 trace id 直接打开单条 */
   traceId?: number;
-  /** 本卡验收结论（节点级验收写入 result；有值显示验收行） */
-  acceptanceInfo?: { verdict: string; evidence: string } | null;
   onClose: () => void;
 }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
@@ -359,27 +356,6 @@ export function TracePanel({
                 <span className="nm-inset px-2 py-0.5">{detail.origin}</span>
               )}
             </div>
-            {/* 节点级验收结论（引擎写 result，这里只读展示） */}
-            {acceptanceInfo && (
-              <p className="mt-2 rounded-[var(--r-sm)] px-2 py-1 text-[11px] nm-inset">
-                <span
-                  className={
-                    acceptanceInfo.verdict === "pass"
-                      ? "text-[var(--ok,#22c55e)]"
-                      : acceptanceInfo.verdict === "partial"
-                        ? "text-[var(--warn,#eab308)]"
-                        : "text-[var(--danger,#ef4444)]"
-                  }
-                >
-                  验收：{acceptanceInfo.verdict}
-                </span>
-                {acceptanceInfo.evidence && (
-                  <span className="ml-2 text-[var(--t4)]">
-                    {acceptanceInfo.evidence}
-                  </span>
-                )}
-              </p>
-            )}
             {detail.error && (
               <p className="mt-2 text-xs text-[var(--danger,#ef4444)]">
                 <TriangleAlert size={11} aria-hidden className="mr-1 inline" />

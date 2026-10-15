@@ -132,10 +132,9 @@ export function TaskCardContent({
         {onToggleDone && (
           <DoneCircle done={task.column === "done"} onToggle={onToggleDone} />
         )}
-        {/* 归属头像规则：设了定时 → 一直机器人头像；
-            🤖 执行中 → 机器人头像；执行完（botAssigned 清除且无定时）→ 用户头像。
+        {/* 归属头像规则：🤖 执行中 → 机器人头像；执行完（botAssigned 清除）→ 用户头像。
             悬停显示姓名（与主窗口一致） */}
-        <ActorAvatar bot={!!task.botAssigned || !!task.schedule} />
+        <ActorAvatar bot={!!task.botAssigned} />
       </div>
 
       {/* 标题以下内容（可折叠） */}
@@ -144,16 +143,6 @@ export function TaskCardContent({
           {/* 标题下的小字备注 */}
           {task.note && (
             <p className="mt-1.5 text-xs text-[var(--t4)]">{task.note}</p>
-          )}
-
-          {/* 每卡验收标准（W-QA 卡即契约）：AI 拆解生成的一行可验证完成标准 */}
-          {task.acceptance && (
-            <p
-              className="mt-1.5 text-xs text-[var(--t4)]"
-              title="验收标准：机器人执行时会对照此项自检"
-            >
-              <span aria-hidden>📌</span> 验收：{task.acceptance}
-            </p>
           )}
 
           {/* 标签 */}

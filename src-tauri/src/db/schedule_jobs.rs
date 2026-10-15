@@ -3,10 +3,6 @@
 //! 与任务卡定时的本质区别：作业在到点前**没有**对应的任务卡——用户只写
 //! 「要做什么」的内容，调度器到点才根据内容新建任务卡并交给机器人执行
 //! （设计取舍见 docs 侧方案：「新建任务卡」而非「给现有卡设定时」）。
-//!
-//! 老数据迁移：tasks.schedule 仍存旧的「现有卡定时」，由 open_db 的
-//! `migrate_legacy_task_schedules` 一次性搬进本表（content = 卡标题）后清空
-//! 任务卡字段，此后 UI 只经本模块读写。
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -332,56 +328,6 @@ pub fn delete_scheduled_job(conn: &rusqlite::Connection, id: &str) -> Result<boo
     Ok(n > 0)
 }
 
-// 老数据迁移：tasks.schedule → scheduled_jobs
-
-/// 一次性幂等迁移：把「现有卡定时」搬成内容型作业后清空任务卡调度字段。
-/// 迁移前后行为等价（原卡到点由机器人执行 → 作业到点新建卡并执行，
-/// 卡内容同为 title），搬完任务卡不再携带 schedule，UI 与调度器以本表单源。
-/// 幂等：搬完即清，重跑找不到带 schedule 的卡 → 0。
-pub fn migrate_legacy_task_schedules(conn: &rusqlite::Connection) -> Result<usize, String> {
-    let legacy: Vec<(String, String, String, Option<i64>)> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, COALESCE(TRIM(title), ''), schedule, sched_last FROM tasks \
-                 WHERE deleted_at IS NULL AND TRIM(COALESCE(schedule,'')) <> ''",
-            )
-            .map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?
-    };
-    if legacy.is_empty() {
-        return Ok(0);
-    }
-    let now = chrono::Utc::now().timestamp_millis();
-    let mut moved = 0usize;
-    for (task_id, title, schedule, sched_last) in legacy {
-        if title.is_empty() {
-            continue; // 无内容可搬（理论不可达：title NOT NULL），保守跳过。
-                      // 末尾的清空 UPDATE 带同样的 title 谓词，这类行的
-                      // schedule 原样保留，不会被无记录地抹掉
-        }
-        conn.execute(
-            "INSERT INTO scheduled_jobs (id, content, schedule, sched_last, enabled, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,NULL,?5,?5)
-             ON CONFLICT(id) DO NOTHING",
-            rusqlite::params![format!("job-{task_id}"), title, schedule, sched_last, now],
-        )
-        .map_err(|e| e.to_string())?;
-        moved += 1;
-    }
-    conn.execute(
-        "UPDATE tasks SET schedule = NULL, sched_last = NULL, enabled = NULL \
-         WHERE deleted_at IS NULL AND TRIM(COALESCE(schedule,'')) <> '' \
-         AND TRIM(COALESCE(title,'')) <> ''",
-        [],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(moved)
-}
-
 // Tauri commands
 
 fn validate_content(content: &str) -> CommandResult<String> {
@@ -569,63 +515,7 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEDULED_JOBS_DDL).unwrap();
         conn.execute_batch(SCHEDULED_JOB_RUNS_DDL).unwrap();
-        conn.execute_batch(crate::db::tasks::TASKS_DDL).unwrap();
         conn
-    }
-
-    #[test]
-    fn legacy_task_schedule_migrates_to_job_and_clears() {
-        let conn = mem_conn();
-        let _g = crate::db::lock_db_write();
-        let now = 1_000_000i64;
-        for (id, title, sched) in [
-            ("t1", "每天写日报", "daily:09:00"),
-            ("t2", "周一例会准备", "weekly:1:08:30"),
-        ] {
-            conn.execute(
-                "INSERT INTO tasks (id, title, col, schedule, sched_last, updated_at) \
-                 VALUES (?1, ?2, 'todo', ?3, 123, ?4)",
-                rusqlite::params![id, title, sched, now],
-            )
-            .unwrap();
-        }
-        // 软删卡不参与迁移（其调度字段语义上已被删除流程清掉，防御性跳过）
-        conn.execute(
-            "INSERT INTO tasks (id, title, col, schedule, deleted_at, updated_at) \
-             VALUES ('t3', '已删卡', 'todo', 'daily:10:00', 1, ?1)",
-            [now],
-        )
-        .unwrap();
-
-        let moved = migrate_legacy_task_schedules(&conn).unwrap();
-        assert_eq!(moved, 2, "两张未删卡迁移");
-
-        // 作业行：content=卡标题，schedule/sched_last 原样带过来
-        let jobs = load_scheduled_jobs(&conn).unwrap();
-        assert_eq!(jobs.len(), 2);
-        let t1 = jobs.iter().find(|j| j.id == "job-t1").unwrap();
-        assert_eq!(t1.content, "每天写日报");
-        assert_eq!(t1.schedule, "daily:09:00");
-        assert_eq!(t1.sched_last, Some(123));
-        assert!(t1.sched_enabled());
-
-        // 任务卡调度字段已清空（幂等前提），软删卡原样不动
-        let dirty: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM tasks WHERE deleted_at IS NULL \
-                 AND COALESCE(schedule,'') <> ''",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(dirty, 0);
-        let t3: Option<String> = conn
-            .query_row("SELECT schedule FROM tasks WHERE id='t3'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(t3.as_deref(), Some("daily:10:00"));
-
-        // 幂等：重跑 0
-        assert_eq!(migrate_legacy_task_schedules(&conn).unwrap(), 0);
     }
 
     #[test]
