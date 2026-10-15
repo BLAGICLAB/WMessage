@@ -13,6 +13,7 @@ import {
   FolderOpen,
   ListTodo,
   Loader2,
+  Square,
 } from "lucide-react";
 import { basename } from "../../format";
 import type { Task } from "../../types";
@@ -23,11 +24,27 @@ export type ContextTab = "tasks" | "files" | "agents";
 type Tab = ContextTab;
 
 export type SubagentRun = {
-  /** 子 agent id（sa_ 前缀）——点开查详情/停止都用它 */
+  /** 子 agent id（sa_ 前缀）——点开查详情/取消都用它 */
   id: string;
   title: string;
+  /** 行上六态原值 */
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "budget_exceeded";
   running: boolean;
   error?: string | null;
+};
+
+/** 六态 → 侧栏徽标。取消/预算耗尽各有自己的说法：都写成「失败」等于把
+ *  用户的选择说成系统出错 */
+const SUBAGENT_STATUS: Record<
+  SubagentRun["status"],
+  { label: string; color: string }
+> = {
+  queued: { label: "排队中", color: "text-[var(--t5)]" },
+  running: { label: "执行中", color: "text-[var(--brand)]" },
+  succeeded: { label: "完成", color: "text-[var(--success)]" },
+  failed: { label: "失败", color: "text-[var(--danger)]" },
+  cancelled: { label: "已取消", color: "text-[var(--t5)]" },
+  budget_exceeded: { label: "预算耗尽", color: "text-[var(--danger)]" },
 };
 
 type ContextRailProps = {
@@ -43,6 +60,8 @@ type ContextRailProps = {
   subagents: SubagentRun[];
   /** 点子 agent 条目 → 右侧栏切到它的详情视图 */
   onOpenSubagent: (id: string) => void;
+  /** 取消在途子 agent */
+  onCancelSubagent: (id: string) => void;
   /** 当前工作面（受控）：内嵌子 agent 区域要点侧栏切类别，状态得在父级 */
   tab: Tab;
   onTabChange: (t: Tab) => void;
@@ -66,6 +85,7 @@ export function ContextRail({
   fileChanges,
   subagents,
   onOpenSubagent,
+  onCancelSubagent,
   tab,
   onTabChange,
 }: ContextRailProps) {
@@ -217,41 +237,52 @@ export function ContextRail({
           ) : (
             <div className="space-y-0.5">
               {subagents.map((s) => (
-                <button
+                <div
                   key={s.id}
-                  type="button"
-                  title={s.title}
-                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
-                  onClick={() => onOpenSubagent(s.id)}
+                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)]"
                 >
-                  {s.running ? (
-                    <Loader2
-                      size={12}
-                      aria-hidden
-                      className="shrink-0 animate-spin text-[var(--brand)]"
-                    />
-                  ) : (
-                    <Bot
-                      size={12}
-                      aria-hidden
-                      className={`shrink-0 ${
-                        s.error
-                          ? "text-[var(--danger)]"
-                          : "text-[var(--success)]"
-                      }`}
-                    />
+                  <button
+                    type="button"
+                    title={s.title}
+                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-[var(--t2)]"
+                    onClick={() => onOpenSubagent(s.id)}
+                  >
+                    {s.running ? (
+                      <Loader2
+                        size={12}
+                        aria-hidden
+                        className="shrink-0 animate-spin text-[var(--brand)]"
+                      />
+                    ) : (
+                      <Bot
+                        size={12}
+                        aria-hidden
+                        className={`shrink-0 ${SUBAGENT_STATUS[s.status].color}`}
+                      />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                    <span
+                      className={`shrink-0 text-[10px] ${SUBAGENT_STATUS[s.status].color}`}
+                    >
+                      {SUBAGENT_STATUS[s.status].label}
+                    </span>
+                  </button>
+                  {s.running && (
+                    <button
+                      type="button"
+                      title="取消这个子 agent"
+                      aria-label={`取消子 agent：${s.title}`}
+                      className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
+                      onClick={(e) => {
+                        // 取消不是「看详情」，别顺手切侧栏
+                        e.stopPropagation();
+                        onCancelSubagent(s.id);
+                      }}
+                    >
+                      <Square size={10} aria-hidden className="fill-current" />
+                    </button>
                   )}
-                  <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                  {s.error ? (
-                    <span className="shrink-0 text-[10px] text-[var(--danger)]">
-                      失败
-                    </span>
-                  ) : !s.running ? (
-                    <span className="shrink-0 text-[10px] text-[var(--success)]">
-                      完成
-                    </span>
-                  ) : null}
-                </button>
+                </div>
               ))}
             </div>
           )}

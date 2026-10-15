@@ -5,11 +5,13 @@
 // 各自跑到哪一步。点条目把右侧栏切到「子 Agent」工作面看详情——
 // 区域负责「发生了什么」，侧栏负责「细节是什么」。
 
-import { Bot, Check, Loader2, TriangleAlert, X } from "lucide-react";
+import { Bot, Check, Loader2, Square, TriangleAlert, X } from "lucide-react";
 
 export type SubagentChip = {
   id: string;
   title: string;
+  /** 行上六态原值：取消/预算耗尽不是失败，分开显示才看得出发生了什么 */
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "budget_exceeded";
   running: boolean;
   error?: string | null;
 };
@@ -41,23 +43,27 @@ const STATUS_ICON = {
   ),
 } as const;
 
-/** 把子 agent 归到四个展示态。失败/取消各有独立图标——都归「非运行」会让用户
- *  分不清是跑完了还是挂了 */
+/** 六态 → 展示态。失败/取消/预算耗尽各有独立图标——都归「非运行」会让用户
+ *  分不清是跑完了、被撤了，还是撞了预算 */
 function statusOf(s: SubagentChip): keyof typeof STATUS_ICON {
+  if (s.status === "cancelled") return "cancelled";
+  if (s.status === "failed" || (s.error && !s.running)) return "failed";
   if (s.running) return "running";
-  if (s.error) return "failed";
   return "done";
 }
 
 export function SubagentStrip({
   subagents,
   onOpen,
+  onCancel,
   /** 已展开（点标题栏切换）——展开后列全部，折叠只显示在途数量 */
   expanded,
   onToggleExpanded,
 }: {
   subagents: SubagentChip[];
   onOpen: (id: string) => void;
+  /** 用户取消在途子 agent（卡删除那条取消入口随解绑下线后，这是唯一入口） */
+  onCancel: (id: string) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
 }) {
@@ -88,20 +94,39 @@ export function SubagentStrip({
       {shown.length > 0 && (
         <div className="mt-1 space-y-0.5">
           {shown.map((s) => (
-            <button
+            <div
               key={s.id}
-              type="button"
-              title={`${s.title}${s.error ? `（${s.error}）` : ""}`}
-              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] text-[var(--t3)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
-              onClick={() => onOpen(s.id)}
+              className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-[var(--t3)] hover:bg-[var(--hover-bg)]"
             >
-              {STATUS_ICON[statusOf(s)]}
-              <span className="min-w-0 flex-1 truncate">{s.title}</span>
-              {/* 侧栏入口提示：点它去哪儿，得让人看得见 */}
-              <span className="shrink-0 text-[10px] text-[var(--t6)]">
-                详情 ›
-              </span>
-            </button>
+              <button
+                type="button"
+                title={`${s.title}${s.error ? `（${s.error}）` : ""}`}
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-[var(--t2)]"
+                onClick={() => onOpen(s.id)}
+              >
+                {STATUS_ICON[statusOf(s)]}
+                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                {/* 侧栏入口提示：点它去哪儿，得让人看得见 */}
+                <span className="shrink-0 text-[10px] text-[var(--t6)]">
+                  详情 ›
+                </span>
+              </button>
+              {s.running && (
+                <button
+                  type="button"
+                  title="取消这个子 agent"
+                  aria-label={`取消子 agent：${s.title}`}
+                  className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
+                  onClick={(e) => {
+                    // 行内取消不是「看详情」，别顺手把侧栏也切过去
+                    e.stopPropagation();
+                    onCancel(s.id);
+                  }}
+                >
+                  <Square size={10} aria-hidden className="fill-current" />
+                </button>
+              )}
+            </div>
           ))}
         </div>
       )}

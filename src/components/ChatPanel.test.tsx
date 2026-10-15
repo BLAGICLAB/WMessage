@@ -212,7 +212,8 @@ describe("ChatPanel", () => {
     await user.click(screen.getByRole("button", { name: /子 Agent/ }));
     expect(screen.getByText("改文档")).toBeInTheDocument();
     // 点条目 → 侧栏展开且切到子 Agent 类别（不切视图，对话留在原位）
-    await user.click(screen.getByRole("button", { name: /整理周报/ }));
+    // 行内还有「取消」钮，其 aria-label 带同一标题，用 ^ 锚到详情钮本身
+    await user.click(screen.getByRole("button", { name: /^整理周报/ }));
     const rail = within(
       screen.getByRole("complementary", { name: "上下文侧栏" }),
     );
@@ -221,6 +222,73 @@ describe("ChatPanel", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: "收起右侧栏" })).toBeVisible();
+  });
+
+  it("subagent-finished 到达就重拉子 agent 行（行只有这块可见，不重拉永远停在 running）", async () => {
+    const user = userEvent.setup();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    let finished = false;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "list_subagents")
+        return finished
+          ? [{ id: "sa_1", status: "succeeded", objective: "整理周报" }]
+          : [{ id: "sa_1", status: "running", objective: "整理周报" }];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    // 子 agent 行是异步拉回来的：先等条带出现再展开（全量跑比单文件慢，
+    // getByRole 会抢在 list_subagents 返回前）
+    await user.click(await screen.findByRole("button", { name: /子 Agent/ }));
+    expect(screen.getByText("1 个执行中")).toBeInTheDocument();
+    finished = true;
+    await act(async () => {
+      for (const cb of mocks.listeners["subagent-finished"] ?? []) {
+        cb({
+          payload: {
+            subagentId: "sa_1",
+            parentSessionId: "s1",
+            status: "succeeded",
+            summary: "周报已出",
+          },
+        });
+      }
+    });
+    // 计数从「1 个执行中」变成「1 个」= 列表真重拉了
+    await waitFor(() =>
+      expect(screen.queryByText("1 个执行中")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText(/周报已出/)).toBeInTheDocument();
+  });
+
+  it("在途子 agent 有取消入口：点它调 cancel_subagent 且 key 传子 agent id", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "list_subagents")
+        return [{ id: "sa_9", status: "running", objective: "整理周报" }];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await user.click(await screen.findByRole("button", { name: /子 Agent/ }));
+    await user.click(
+      await screen.findByRole("button", { name: /取消子 agent：整理周报/ }),
+    );
+    expect(mocks.invokeMock).toHaveBeenCalledWith("cancel_subagent", {
+      key: "sa_9",
+    });
   });
 
   it("右侧栏是聊天主体的兄弟节点，不在 header 内（百分比宽度才参照聊天区）", async () => {

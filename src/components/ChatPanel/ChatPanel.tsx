@@ -272,6 +272,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   /** 子 agent 运行列表（右侧栏「子 Agent」工作面 + 聊天内嵌区域的同一份数据）。
    *  随会话切换重拉：子 agent 是按 parent_session_id 归属的 */
   const [subagents, setSubagents] = useState<SubagentRow[]>([]);
+  // 事件回调注册在 render 期，只能走 ref 拿最新实现，否则闭包冻在首帧的
+  // sessionId 上（切会话后事件会刷到旧会话的列表）
+  const refreshSubagentsRef = useRef<() => void>(() => {});
   const refreshSubagents = useCallback(() => {
     if (!enabled || !sessionId) {
       setSubagents([]);
@@ -288,19 +291,31 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       .catch(() => setSubagents([]));
   }, [enabled, sessionId]);
   useEffect(() => {
+    refreshSubagentsRef.current = refreshSubagents;
     refreshSubagents();
   }, [refreshSubagents]);
-  /** 侧栏/内嵌区消费的视图模型：标题取 objective（子 agent 的目标即其身份） */
+  /** 侧栏/内嵌区消费的视图模型：标题取 objective（子 agent 的目标即其身份）。
+   *  六态原样带下去——压成 running/error 两桶会让「已取消」「预算耗尽」都
+   *  显示成红色失败（子 agent 解绑任务卡后这两态不再有卡可对照） */
   const subagentRuns = useMemo<SubagentRun[]>(
     () =>
       subagents.map((r) => ({
         id: r.id,
         title: r.objective,
+        status: r.status,
         running: r.status === "running" || r.status === "queued",
         error: r.error ?? null,
       })),
     [subagents],
   );
+  /** 用户主动取消子 agent：子 agent 会话不在会话列表里（is_subagent=1 被
+   *  排除），停止键那条路永远够不着它，卡片删除那条取消入口又随解绑一起没了
+   *  ——这里是用户唯一的取消入口。key 传 subagent_id（sa_ 前缀直查行） */
+  const cancelSubagent = useCallback((id: string) => {
+    invoke("cancel_subagent", { key: id }).catch((e) =>
+      handleCommandError(e, "cancel_subagent"),
+    );
+  }, []);
   /** 当前会话的文件变更累积（右侧「文件」面板）：去重按 path，保留最近一次统计。
    *  取自消息而非 streamingMeta——后者收尾即删，面板要活到切会话为止 */
   const sessionFileChanges = useMemo(() => {
@@ -343,6 +358,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       const label = subagentStatusLabel[payload.status] ?? payload.status;
       addHint(`子任务${label}：${payload.summary || payload.subagentId}`);
     }
+    // 子 agent 行只有这里可见（不再有任务卡兜底）：不重拉就一直停在
+    // running/queued——派发方会话里既看不到刚跑完的，也看不到刚派出的
+    refreshSubagentsRef.current();
   });
 
   const persistHistory = (sid: string, msgs: Msg[]) => {
@@ -1558,6 +1576,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       <SubagentStrip
         subagents={subagentRuns}
         onOpen={openSubagentDetail}
+        onCancel={cancelSubagent}
         expanded={subagentStripOpen}
         onToggleExpanded={() => setSubagentStripOpen((v) => !v)}
       />
@@ -1627,6 +1646,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           fileChanges={sessionFileChanges}
           subagents={subagentRuns}
           onOpenSubagent={openSubagentDetail}
+          onCancelSubagent={cancelSubagent}
           tab={ctxTab}
           onTabChange={setCtxTab}
         />
