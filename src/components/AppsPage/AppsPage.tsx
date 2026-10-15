@@ -11,7 +11,10 @@ import {
   runApp,
 } from "../../lib/apps";
 import { EmptyState } from "../EmptyState";
-import { handleCommandError } from "../../lib/errorHandler";
+import {
+  formatCommandError,
+  handleCommandError,
+} from "../../lib/errorHandler";
 
 export function AppsPage() {
   const [apps, setApps] = useState<App[]>([]);
@@ -247,7 +250,7 @@ function CreateDialog({
     })
       .then(onCreated)
       .catch((e) => {
-        setErr(String(e));
+        setErr(formatCommandError(e));
         setBusy(false);
       });
   };

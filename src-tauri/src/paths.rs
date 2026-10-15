@@ -21,10 +21,12 @@ use tauri::Manager;
 /// 数据目录解析公共入口（db / profile / audit / bot 全靠它定版）。
 ///
 /// 分支：
-/// 0. exe 在 cargo target 目录（cargo test / 手动跑 target 内 exe）→
+/// 0. exe 在 cargo target 的 **deps/** 子目录（= cargo test 测试进程）→
 ///    隔离到 `{temp}/wm-cargo-data`——既不落 target/（防打包装箱带数据），
 ///    也不落真实 app_data（mock runtime 的 app_data_dir 解析到真实用户数据根，
 ///    直接返回会把测试库写进用户数据目录旁，已实证泄漏）；
+///    target/debug|release **本体**（cargo run / tauri dev / 手动运行）不隔离，
+///    数据目录 = 用户真实 app_data——dev 的数据就是用户数据，不得被劫走；
 /// 1. exe 目录可写 + 无数据痕迹 → 便携模式（数据随 exe 走，U盘/绿色包）；
 /// 2. exe 目录不可写（如 Program Files） → 退 app_data_dir（系统应用数据目录）；
 /// 3. 全不可用 → 退 `std::env::temp_dir()`。
@@ -43,15 +45,23 @@ pub(crate) fn probe_dir(
     exe_dir: Option<&std::path::Path>,
     app_data: Option<std::path::PathBuf>,
 ) -> std::path::PathBuf {
-    // Cargo 构建/测试环境（exe 在 target/.../{deps,debug,release} 子目录）：
-    // 这些路径的「可写」是构建产物副作用，不是用户真数据目录。
-    // 数据钉在 temp 固定子目录：不落 target/（防打包装箱带数据），也不落
-    // app_data（mock runtime / 手动跑 target exe 的 app_data 会解析到真实
-    // 用户数据根，测试库就写进用户数据目录旁了）。固定名让同进程多次调用
-    // 与旧口径的共享语义一致。
+    // Cargo 构建产物（exe 在 target/.../{deps,debug,release}）：旁路便携分支，
+    // 防 dev 数据落 target/（打包装箱可能带数据）。两级区分：
+    // - deps/ = cargo test 测试进程 → 数据隔离到 temp 固定子目录（mock runtime
+    //   的 app_data 解析到真实用户数据根，测试库就写进用户数据目录旁了）；
+    // - debug|release 本体 = cargo run / tauri dev / 手动运行 → 数据走真实
+    //   app_data（dev 的数据就是用户数据，不得被隔离劫走）。
     if let Some(dir) = exe_dir {
         if is_cargo_target_dir(dir) {
-            return std::env::temp_dir().join("wm-cargo-data");
+            let is_test_process = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "deps")
+                .unwrap_or(false);
+            if is_test_process {
+                return std::env::temp_dir().join("wm-cargo-data");
+            }
+            return app_data.unwrap_or_else(std::env::temp_dir);
         }
     }
     if let Some(dir) = exe_dir {
@@ -490,6 +500,29 @@ mod tests {
             got,
             std::env::temp_dir().join("wm-cargo-data"),
             "必须钉在 temp 固定隔离子目录"
+        );
+    }
+
+    #[test]
+    fn probe_dir_dev_binary_in_target_debug_is_not_isolated() {
+        // 回归：cargo run / tauri dev 的 exe 在 target/debug（非 deps），
+        // 数据目录必须是用户真实 app_data——隔离一刀切曾把 dev 数据目录
+        // 劫到 temp，程序页上架找不到脚本（AppRunResult 空跑）。
+        let debug_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let got = probe_dir(
+            Some(&debug_dir),
+            Some(std::path::PathBuf::from("/fake/app-data")),
+        );
+        assert_eq!(
+            got,
+            std::path::PathBuf::from("/fake/app-data"),
+            "dev 本体不得被隔离劫走"
         );
     }
 
