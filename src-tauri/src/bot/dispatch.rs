@@ -381,7 +381,7 @@ async fn execute_tool_impl(
         }
         let mut prog_kv: Vec<(&str, String)> = vec![
             ("subagent_id", ctx.subagent_id.clone()),
-            ("task_id", ctx.task_id.clone()),
+            ("task_id", ctx.task_id.clone().unwrap_or_default()),
         ];
         prog_kv.extend(trace_kv(trace, session_id));
         crate::audit::write_event(

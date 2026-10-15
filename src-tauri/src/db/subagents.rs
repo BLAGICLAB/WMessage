@@ -164,12 +164,14 @@ pub struct SubagentRow {
     pub parent_session_id: Option<String>,
     /// 子 agent 自己的执行会话 id（runner 建会话后回填）
     pub session_id: Option<String>,
-    /// 子任务卡 id（一子 agent 一子卡）
-    pub task_id: String,
+    /// 历史子任务卡 id：子 agent 不再建卡，新行为 NULL；老行保留原值供反查
+    pub task_id: Option<String>,
     pub objective: String,
     pub trace_id: String,
-    /// 验收标准 Vec<String> 的 JSON（双写机器侧；人可见侧在子卡 note）
+    /// 验收标准 Vec<String> 的 JSON（任务包装与 check 进度小计的唯一来源）
     pub acceptance_json: Option<String>,
+    /// 上下文摘要（设计 §8.5）：此前只落子卡 note，文本解析取回；无卡后独立成列
+    pub context_summary: Option<String>,
     /// SubagentBudget 的 JSON
     pub budget_json: Option<String>,
     /// 收尾结构化结果（设计 §7 schema）的 JSON；解析失败时缺省（原文在 error 侧链路）
@@ -182,8 +184,8 @@ pub struct SubagentRow {
 }
 
 /// subagents 表 DDL（单源真相：open_db 与各测试建表共用同一份，防 schema 漂移——
-/// ）。task_id UNIQUE 钉死「一子 agent 一子卡」不变式（并发 spawn 重试
-/// 也不可能双插）；status / parent_session_id 加索引（按状态扫队列、按主会话串链）。
+/// ）。子 agent 不再建任务卡，故 task_id 可空（无卡行写 NULL，老行保留原值）；
+/// status / parent_session_id 加索引（按状态扫队列、按主会话串链）。
 pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
            id                TEXT PRIMARY KEY,
            status            TEXT NOT NULL,
@@ -191,10 +193,11 @@ pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
            model             TEXT,
            parent_session_id TEXT,
            session_id        TEXT,
-           task_id           TEXT NOT NULL UNIQUE,
+           task_id           TEXT,
            objective         TEXT NOT NULL,
            trace_id          TEXT NOT NULL,
            acceptance_json   TEXT,
+           context_summary   TEXT,
            budget_json       TEXT,
            result_json       TEXT,
            error             TEXT,
@@ -205,12 +208,85 @@ pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
          CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents(status);
          CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_session_id);";
 
+/// 幂等迁移：task_id 从 `NOT NULL UNIQUE` 放宽为可空。
+/// SQLite 不支持 ALTER COLUMN，只能重建表——数据全量搬运，老行 task_id 原样保留
+/// （历史子 agent 仍可反查它当初那张卡是否还在），新行写 NULL。
+/// 先查 pragma：已是可空就直接返回，避免每次启动都重建。
+/// **前置条件**：context_summary 列已存在（重建的 INSERT..SELECT 搬运该列）；
+/// open_db 里必须先跑 [ensure_context_summary_column]。
+pub fn ensure_task_id_nullable(conn: &rusqlite::Connection) -> Result<(), String> {
+    let notnull: i64 = conn
+        .query_row(
+            "SELECT \"notnull\" FROM pragma_table_info('subagents') WHERE name = 'task_id'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if notnull == 0 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         BEGIN;
+         CREATE TABLE subagents_new (
+           id                TEXT PRIMARY KEY,
+           status            TEXT NOT NULL,
+           profile           TEXT NOT NULL,
+           model             TEXT,
+           parent_session_id TEXT,
+           session_id        TEXT,
+           task_id           TEXT,
+           objective         TEXT NOT NULL,
+           trace_id          TEXT NOT NULL,
+           acceptance_json   TEXT,
+           context_summary   TEXT,
+           budget_json       TEXT,
+           result_json       TEXT,
+           error             TEXT,
+           created_at        INTEGER NOT NULL,
+           started_at        INTEGER,
+           finished_at       INTEGER
+         );
+         INSERT INTO subagents_new
+           SELECT id, status, profile, model, parent_session_id, session_id, task_id,
+                  objective, trace_id, acceptance_json, context_summary, budget_json,
+                  result_json, error, created_at, started_at, finished_at
+           FROM subagents;
+         DROP TABLE subagents;
+         ALTER TABLE subagents_new RENAME TO subagents;
+         CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents(status);
+         CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_session_id);
+         CREATE INDEX IF NOT EXISTS idx_subagents_task ON subagents(task_id);
+         COMMIT;
+         PRAGMA foreign_keys=ON;",
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 幂等迁移：补 context_summary 列。老库该列不存在时新增（SQLite 的 ADD COLUMN
+/// 恒追加到列尾，故老行的 context_summary 为 NULL，与「摘要未回填」同形）。
+/// 先查 pragma：列已在就直接返回，避免每次启动都跑一遍 ALTER。
+pub fn ensure_context_summary_column(conn: &rusqlite::Connection) -> Result<(), String> {
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('subagents') WHERE name = 'context_summary'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists != 0 {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE subagents ADD COLUMN context_summary TEXT")
+        .map_err(|e| e.to_string())
+}
+
 pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(), String> {
     conn.execute(
         "INSERT INTO subagents (id, status, profile, model, parent_session_id, session_id,
-             task_id, objective, trace_id, acceptance_json, budget_json, result_json,
-             error, created_at, started_at, finished_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+             task_id, objective, trace_id, acceptance_json, context_summary, budget_json,
+             result_json, error, created_at, started_at, finished_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
         rusqlite::params![
             r.id,
             r.status.as_str(),
@@ -222,6 +298,7 @@ pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(
             r.objective,
             r.trace_id,
             r.acceptance_json,
+            r.context_summary,
             r.budget_json,
             r.result_json,
             r.error,
@@ -234,19 +311,32 @@ pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(
     Ok(())
 }
 
-const SQL_SELECT_BY_ID: &str = "SELECT id, status, profile, model, parent_session_id, session_id, \
-     task_id, objective, trace_id, acceptance_json, budget_json, result_json, error, \
+const SQL_SELECT_BY_ID: &str =
+    "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
      created_at, started_at, finished_at FROM subagents WHERE id = ?1";
-const SQL_SELECT_BY_TASK: &str = "SELECT id, status, profile, model, parent_session_id, session_id, \
-     task_id, objective, trace_id, acceptance_json, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE task_id = ?1 ORDER BY created_at DESC LIMIT 1";
-const SQL_SELECT_BY_SESSION: &str = "SELECT id, status, profile, model, parent_session_id, session_id, \
-     task_id, objective, trace_id, acceptance_json, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE session_id = ?1 ORDER BY created_at DESC LIMIT 1";
+const SQL_SELECT_BY_TASK: &str =
+    "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     created_at, started_at, finished_at FROM subagents WHERE task_id = ?1 \
+     ORDER BY created_at DESC LIMIT 1";
+const SQL_SELECT_BY_SESSION: &str =
+    "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     created_at, started_at, finished_at FROM subagents WHERE session_id = ?1 \
+     ORDER BY created_at DESC LIMIT 1";
 const SQL_SELECT_BY_STATUS: &str =
-    "SELECT id, status, profile, model, parent_session_id, session_id, \
-     task_id, objective, trace_id, acceptance_json, budget_json, result_json, error, \
+    "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
      created_at, started_at, finished_at FROM subagents WHERE status = ?1 ORDER BY created_at";
+/// 按派发者主会话取全部子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
+/// 「子 Agent」工作面的数据源：子 agent 不再建独立会话后，用户只能从这里
+/// 看到自己派出去的那些还活着/刚跑完。
+const SQL_SELECT_BY_PARENT: &str =
+    "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     created_at, started_at, finished_at FROM subagents WHERE parent_session_id = ?1 \
+     ORDER BY created_at DESC LIMIT ?2";
 
 fn row_to_subagent(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRow> {
     let id: String = row.get(0)?;
@@ -275,12 +365,13 @@ fn row_to_subagent(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRow> {
         objective: row.get(7)?,
         trace_id: row.get(8)?,
         acceptance_json: row.get(9)?,
-        budget_json: row.get(10)?,
-        result_json: row.get(11)?,
-        error: row.get(12)?,
-        created_at: row.get(13)?,
-        started_at: row.get(14)?,
-        finished_at: row.get(15)?,
+        context_summary: row.get(10)?,
+        budget_json: row.get(11)?,
+        result_json: row.get(12)?,
+        error: row.get(13)?,
+        created_at: row.get(14)?,
+        started_at: row.get(15)?,
+        finished_at: row.get(16)?,
     })
 }
 
@@ -290,7 +381,8 @@ pub fn load_subagent(conn: &rusqlite::Connection, id: &str) -> Result<Option<Sub
         .map_err(|e| e.to_string())
 }
 
-/// 按子任务卡 id 反查（一子 agent 一子卡；task_id 带 UNIQUE 约束兜底防双插）。
+/// 按子任务卡 id 反查。子 agent 不再建卡，新行 task_id 为 NULL 查不到——
+/// 该路径只服务有卡的历史行；`task_id = ?` 遇 NULL 永不为真，故无需特判。
 pub fn find_subagent_by_task(
     conn: &rusqlite::Connection,
     task_id: &str,
@@ -321,6 +413,25 @@ pub fn load_subagents_by_status(
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([status.as_str()], row_to_subagent)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 按派发者主会话列子 agent（新→旧）。`limit` 防长会话一次拉全量历史。
+pub fn load_subagents_by_parent(
+    conn: &rusqlite::Connection,
+    parent_session_id: &str,
+    limit: u32,
+) -> Result<Vec<SubagentRow>, String> {
+    let mut stmt = conn
+        .prepare(SQL_SELECT_BY_PARENT)
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![parent_session_id, limit], row_to_subagent)
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for r in rows {
@@ -424,10 +535,11 @@ mod subagent_db_tests {
             model: None,
             parent_session_id: Some("parent-1".into()),
             session_id: None,
-            task_id: format!("card-{id}"),
+            task_id: None,
             objective: "调研五个竞品".into(),
             trace_id: format!("trc-{id}"),
             acceptance_json: Some(r#"["覆盖5个产品"]"#.into()),
+            context_summary: None,
             budget_json: Some(r#"{"maxTurns":30,"maxToolCalls":100,"maxWallSeconds":600}"#.into()),
             result_json: None,
             error: None,
@@ -494,7 +606,8 @@ mod subagent_db_tests {
         assert_eq!(got.status, SubagentStatus::Queued);
         assert_eq!(got.profile, SubagentProfile::Research);
         assert_eq!(got.parent_session_id.as_deref(), Some("parent-1"));
-        assert_eq!(got.task_id, "card-sa_1");
+        // 无卡行 task_id 落 NULL（老行仍保留原值，由迁移保证）
+        assert!(got.task_id.is_none());
         assert_eq!(got.trace_id, "trc-sa_1");
         assert!(got.acceptance_json.is_some());
         assert!(got.budget_json.is_some());
@@ -511,12 +624,29 @@ mod subagent_db_tests {
     #[test]
     fn find_by_task_returns_the_row() {
         let conn = test_conn();
-        insert_subagent(&conn, &sample_row("sa_2", SubagentStatus::Running)).unwrap();
+        // 有卡的是历史行：新行 task_id 为 NULL，该路径只服务它们
+        let mut legacy = sample_row("sa_2", SubagentStatus::Running);
+        legacy.task_id = Some("card-sa_2".into());
+        insert_subagent(&conn, &legacy).unwrap();
         let got = find_subagent_by_task(&conn, "card-sa_2").unwrap().unwrap();
         assert_eq!(got.id, "sa_2");
         assert!(find_subagent_by_task(&conn, "no-such-card")
             .unwrap()
             .is_none());
+        // 无卡行按 NULL 天然查不到（SQL 里 `task_id = ?` 对 NULL 永不为真），
+        // 也不会污染老行的反查结果
+        insert_subagent(&conn, &sample_row("sa_2b", SubagentStatus::Running)).unwrap();
+        assert_eq!(
+            find_subagent_by_task(&conn, "card-sa_2")
+                .unwrap()
+                .unwrap()
+                .id,
+            "sa_2"
+        );
+        assert_eq!(
+            load_subagent(&conn, "sa_2b").unwrap().unwrap().task_id,
+            None
+        );
     }
 
     #[test]
@@ -615,16 +745,88 @@ mod subagent_db_tests {
         }
     }
 
-    /// task_id UNIQUE 钉死一子 agent 一子卡（并发/重试双插必炸）
+    /// 无卡行 task_id 全为 NULL：多子 agent 并存不得因撞键互斥（旧 DDL 的
+    /// UNIQUE 约束已随「不再建卡」移除，这是新行为而非回归）
     #[test]
-    fn duplicate_task_id_insert_is_rejected() {
+    fn multiple_cardless_rows_coexist_without_unique_conflict() {
         let conn = test_conn();
         insert_subagent(&conn, &sample_row("sa_a", SubagentStatus::Queued)).unwrap();
-        let mut dup = sample_row("sa_b", SubagentStatus::Queued);
-        dup.task_id = "card-sa_a".into();
-        assert!(
-            insert_subagent(&conn, &dup).is_err(),
-            "同 task_id 第二次插入必须失败"
+        insert_subagent(&conn, &sample_row("sa_b", SubagentStatus::Queued)).unwrap();
+        assert!(insert_subagent(&conn, &sample_row("sa_c", SubagentStatus::Queued)).is_ok());
+        let by_parent = load_subagents_by_parent(&conn, "parent-1", 10).unwrap();
+        assert_eq!(by_parent.len(), 3);
+    }
+
+    /// 老库（有卡、task_id NOT NULL UNIQUE）升级后：行数据全留，task_id 可空，
+    /// 新行能写 NULL
+    #[test]
+    fn migration_relaxes_task_id_and_keeps_legacy_rows() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE subagents (
+               id TEXT PRIMARY KEY, status TEXT NOT NULL, profile TEXT NOT NULL, model TEXT,
+               parent_session_id TEXT, session_id TEXT, task_id TEXT NOT NULL UNIQUE,
+               objective TEXT NOT NULL, trace_id TEXT NOT NULL, acceptance_json TEXT,
+               budget_json TEXT, result_json TEXT, error TEXT,
+               created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagents (id, status, profile, task_id, objective, trace_id, created_at)
+             VALUES ('sa_old','queued','research','card-old','老任务','trc-old',1)",
+            [],
+        )
+        .unwrap();
+        ensure_context_summary_column(&conn).unwrap();
+        ensure_task_id_nullable(&conn).unwrap();
+        let legacy = load_subagent(&conn, "sa_old").unwrap().unwrap();
+        assert_eq!(legacy.task_id.as_deref(), Some("card-old"));
+        assert_eq!(
+            find_subagent_by_task(&conn, "card-old")
+                .unwrap()
+                .unwrap()
+                .id,
+            "sa_old"
+        );
+        insert_subagent(&conn, &sample_row("sa_new", SubagentStatus::Queued)).unwrap();
+        assert!(load_subagent(&conn, "sa_new")
+            .unwrap()
+            .unwrap()
+            .task_id
+            .is_none());
+        // 幂等：再跑一次迁移不得炸也不得丢数据
+        ensure_task_id_nullable(&conn).unwrap();
+        assert_eq!(
+            load_subagent(&conn, "sa_old").unwrap().unwrap().id,
+            "sa_old"
+        );
+    }
+
+    #[test]
+    fn migration_adds_context_summary_column_idempotently() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE subagents (
+               id TEXT PRIMARY KEY, status TEXT NOT NULL, profile TEXT NOT NULL, model TEXT,
+               parent_session_id TEXT, session_id TEXT, task_id TEXT,
+               objective TEXT NOT NULL, trace_id TEXT NOT NULL, acceptance_json TEXT,
+               budget_json TEXT, result_json TEXT, error TEXT,
+               created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER);",
+        )
+        .unwrap();
+        ensure_context_summary_column(&conn).unwrap();
+        ensure_context_summary_column(&conn).unwrap();
+        let row = SubagentRow {
+            context_summary: Some("只给必要背景".into()),
+            ..sample_row("sa_ctx", SubagentStatus::Queued)
+        };
+        insert_subagent(&conn, &row).unwrap();
+        assert_eq!(
+            load_subagent(&conn, "sa_ctx")
+                .unwrap()
+                .unwrap()
+                .context_summary,
+            Some("只给必要背景".into())
         );
     }
 

@@ -45,7 +45,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct SubagentSessionCtx {
     pub subagent_id: String,
-    pub task_id: String,
+    /// 历史子任务卡 id：新行恒为 None（新行为无卡）；留字段是为了 dispatch 审计
+    /// 事件与 spawn 事件字段对齐，老消费方按该键反查不受影响
+    pub task_id: Option<String>,
     pub profile: SubagentProfile,
     pub budget: SubagentBudget,
     /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
@@ -174,7 +176,7 @@ mod tests {
     fn sample_ctx(subagent_id: &str) -> SubagentSessionCtx {
         SubagentSessionCtx {
             subagent_id: subagent_id.into(),
-            task_id: format!("card-{subagent_id}"),
+            task_id: None,
             profile: crate::db::SubagentProfile::Research,
             budget: crate::db::SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
@@ -190,7 +192,7 @@ mod tests {
         assert!(is_subagent_session(Some(sid)));
         let ctx = subagent_ctx(Some(sid)).expect("注册后必能取到 ctx");
         assert_eq!(ctx.subagent_id, "sa_rt1");
-        assert_eq!(ctx.task_id, "card-sa_rt1");
+        assert_eq!(ctx.task_id, None);
         assert_eq!(ctx.profile, crate::db::SubagentProfile::Research);
         assert_eq!(ctx.budget.max_turns, crate::db::DEFAULT_MAX_TURNS);
         unregister_subagent_session(sid);

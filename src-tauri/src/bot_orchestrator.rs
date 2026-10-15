@@ -14,7 +14,7 @@
 //! 结构约定（同 task_patch / task_patch_locked 先例）：纯 DB 核心 `*_locked` 可在
 //! in-memory conn 上单测；异步包装负责 spawn_blocking + DB_WRITE_LOCK + 审计 + 广播。
 
-use crate::db::{now_ms, SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus, Task};
+use crate::db::{now_ms, SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
@@ -104,7 +104,8 @@ pub struct SpawnRequest {
 #[serde(rename_all = "camelCase")]
 pub struct SpawnAck {
     pub subagent_id: String,
-    pub task_id: String,
+    /// 历史子任务卡 id：子 agent 不再建卡，新应答恒为 None（字段保留兼容旧消费方）
+    pub task_id: Option<String>,
     pub trace_id: String,
     pub status: SubagentStatus,
 }
@@ -114,11 +115,12 @@ pub struct SpawnAck {
 #[serde(rename_all = "camelCase")]
 pub struct CheckState {
     pub subagent_id: String,
-    pub task_id: String,
+    /// 历史子任务卡 id：无卡行恒为 None（字段保留兼容旧消费方）
+    pub task_id: Option<String>,
     /// 子 agent 执行会话（围观串链键；runner 建会话前为 None）
     pub session_id: Option<String>,
     pub status: SubagentStatus,
-    /// 进度小计：子卡 subtasks 勾选比 + 预算消耗（A3 起带 turns/tool_calls）
+    /// 进度小计：验收标准逐条达成数 + 预算消耗（A3 起带 turns/tool_calls）
     pub progress: serde_json::Value,
     /// 收尾结构化结果（§7），未收尾为 None
     pub result: Option<serde_json::Value>,
@@ -160,27 +162,14 @@ fn validate_request(req: &SpawnRequest) -> CommandResult<()> {
     Ok(())
 }
 
-fn acceptance_note(criteria: &[String], context_summary: Option<&str>) -> String {
-    let mut note = String::from("【验收标准】\n");
-    for c in criteria {
-        note.push_str(&format!("- {c}\n"));
-    }
-    if let Some(ctx) = context_summary.map(str::trim).filter(|s| !s.is_empty()) {
-        note.push_str(&format!("\n【上下文摘要】\n{ctx}\n"));
-    }
-    note.push_str(
-        "\n（子 agent 编排派发的执行契约卡：改 subtasks/补 note 即修改需求，软删本卡 = 取消派发）",
-    );
-    note
-}
-
-/// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 建子卡 → 插 queued 行。
-/// 返回 (ack, 子卡) —— 广播由异步包装做（锁内不做 IO 之外的事）。
+/// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 插 queued 行。
+/// 子 agent 不再建任务卡——执行契约全在行上（objective / acceptance_json /
+/// context_summary / budget_json），前端经 `list_subagents` 读行看进度。
 pub(crate) fn spawn_subagent_locked(
     conn: &mut rusqlite::Connection,
     req: &SpawnRequest,
     now: i64,
-) -> CommandResult<(SpawnAck, Task)> {
+) -> CommandResult<SpawnAck> {
     validate_request(req)?;
     if let Some(parent) = &req.parent_task_id {
         let exists = crate::db::task_exists(conn, parent).map_err(CommandError::DbError)?;
@@ -191,46 +180,9 @@ pub(crate) fn spawn_subagent_locked(
     let budget = clamp_budget(req.budget.clone());
     let subagent_id = format!("sa_{}", uuid::Uuid::new_v4().simple());
     let trace_id = format!("trc_{}", uuid::Uuid::new_v4().simple());
-    let task_id = uuid::Uuid::new_v4().simple().to_string();
-    let card = Task {
-        plan_start: None,
-        plan_end: None,
-        parent_id: None,
-        id: task_id.clone(),
-        title: format!(
-            "子任务：{}",
-            crate::bot::truncate_for_log(req.objective.trim(), 30)
-        ),
-        due: None,
-        note: Some(acceptance_note(
-            &req.acceptance_criteria,
-            req.context_summary.as_deref(),
-        )),
-        tags: None,
-        files: None,
-        column: crate::db::TaskStatus::Doing,
-        subtasks: None,
-        completed_at: None,
-        archived: Some(false),
-        deleted_at: None,
-        collapsed: None,
-        order: None,
-        updated_at: Some(now),
-        bot_assigned: None,
-        assignee: None,
-        budget: Some(budget.clone()),
-        result: None,
-        depends_on: None,
-        model: None,
-        owner_id: None,        // 子 agent 派发卡 = 本人（任务图谱设计 §1.1）
-        created_at: Some(now), // 创建时间打戳（与 updated_at 同值；此后 UPDATE 不覆盖）
-        expected_updated_at: None,
-    };
-    // 两写包同一事务：卡与行任一失败都不留孤儿（同 setup/finalize 既有模式）
     let tx = conn
         .transaction()
         .map_err(|e| CommandError::DbError(e.to_string()))?;
-    crate::db::upsert_tasks(&tx, std::slice::from_ref(&card)).map_err(CommandError::DbError)?;
     let row = SubagentRow {
         id: subagent_id.clone(),
         status: SubagentStatus::Queued,
@@ -238,13 +190,19 @@ pub(crate) fn spawn_subagent_locked(
         model: req.model_profile.clone(),
         parent_session_id: req.parent_session_id.clone(),
         session_id: None,
-        task_id: task_id.clone(),
+        task_id: None,
         objective: req.objective.trim().to_string(),
         trace_id: trace_id.clone(),
         acceptance_json: Some(
             serde_json::to_string(&req.acceptance_criteria)
                 .map_err(|e| CommandError::Internal(e.to_string()))?,
         ),
+        context_summary: req
+            .context_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         budget_json: Some(
             serde_json::to_string(&budget).map_err(|e| CommandError::Internal(e.to_string()))?,
         ),
@@ -257,15 +215,12 @@ pub(crate) fn spawn_subagent_locked(
     crate::db::insert_subagent(&tx, &row).map_err(CommandError::DbError)?;
     tx.commit()
         .map_err(|e| CommandError::DbError(e.to_string()))?;
-    Ok((
-        SpawnAck {
-            subagent_id,
-            task_id,
-            trace_id,
-            status: SubagentStatus::Queued,
-        },
-        card,
-    ))
+    Ok(SpawnAck {
+        subagent_id,
+        task_id: None,
+        trace_id,
+        status: SubagentStatus::Queued,
+    })
 }
 
 /// 按 subagent_id / task_id / 子会话 id 解析行（设计 §5 双键 +  会话键：
@@ -290,17 +245,36 @@ fn resolve_row(conn: &rusqlite::Connection, key: &str) -> CommandResult<Subagent
     })
 }
 
-/// check 纯 DB 核心：幂等读 + 进度小计（子卡 subtasks 勾选比）。
+/// check 纯 DB 核心：幂等读 + 进度小计（验收标准逐条达成比）。
+/// 进度口径：total = 行上 acceptance_json 条数（派发时写死，全生命周期不变）；
+/// done = 收尾 JSON 的 `acceptance_check` 里 met=true 的条数（该字段是收尾
+/// schema 明示要求模型输出的逐条验收结果，见 prompts::RESULT_SCHEMA_HINT）。
+/// 未收尾时 done 恒为 0。键名沿用 subtasksDone/subtasksTotal，前端契约不变。
 pub(crate) fn check_subagent_locked(
     conn: &rusqlite::Connection,
     key: &str,
 ) -> CommandResult<CheckState> {
     let row = resolve_row(conn, key)?;
-    let (subtasks_done, subtasks_total) = crate::db::load_task(conn, &row.task_id)
-        .map_err(CommandError::DbError)?
-        .and_then(|t| t.subtasks)
-        .map(|s| (s.iter().filter(|x| x.done).count(), s.len()))
-        .unwrap_or((0, 0));
+    let subtasks_total: usize = row
+        .acceptance_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .map(|c| c.len())
+        .unwrap_or(0);
+    let subtasks_done: usize = row
+        .result_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| {
+            v.get("acceptance_check")
+                .and_then(|c| c.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter(|x| x.get("met").and_then(|m| m.as_bool()) == Some(true))
+                        .count()
+                })
+        })
+        .unwrap_or(0);
     let result = row
         .result_json
         .as_deref()
@@ -330,55 +304,30 @@ pub(crate) fn check_subagent_locked(
 }
 
 /// cancel 纯 DB 核心：queued/running → cancelled（error=原因）；终态 no-op。
+/// 子 agent 无卡，取消只动行——前端经 subagent-finished 事件与轮询看状态。
 pub(crate) fn cancel_subagent_locked(
-    conn: &mut rusqlite::Connection,
+    conn: &rusqlite::Connection,
     key: &str,
     reason: &str,
     now: i64,
-) -> CommandResult<(CancelAck, Option<Task>)> {
+) -> CommandResult<CancelAck> {
     let row = resolve_row(conn, key)?;
     if row.status.is_terminal() {
-        return Ok((
-            CancelAck {
-                ok: true,
-                subagent_id: row.id,
-                status: row.status,
-                already_terminal: true,
-            },
-            None,
-        ));
-    }
-    // 两写包同一事务：行置 cancelled 与子卡回退任一失败都不留半成品
-    let tx = conn
-        .transaction()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    crate::db::update_subagent_status(&tx, &row.id, SubagentStatus::Cancelled, now, Some(reason))
-        .map_err(CommandError::DbError)?;
-    // 子卡同步回退 doing → todo：取消后卡片不能永远停在「进行中」
-    //（取消必须让前端可见，否则卡片悬挂在 doing）
-    let card = crate::db::load_task(&tx, &row.task_id).map_err(CommandError::DbError)?;
-    let card = match card {
-        Some(mut c) if c.column == crate::db::TaskStatus::Doing => {
-            c.column = crate::db::TaskStatus::Todo;
-            c.expected_updated_at = c.updated_at;
-            c.updated_at = Some(now);
-            crate::db::upsert_tasks(&tx, std::slice::from_ref(&c))
-                .map_err(CommandError::DbError)?;
-            Some(c)
-        }
-        other => other,
-    };
-    tx.commit()
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    Ok((
-        CancelAck {
+        return Ok(CancelAck {
             ok: true,
             subagent_id: row.id,
-            status: SubagentStatus::Cancelled,
-            already_terminal: false,
-        },
-        card,
-    ))
+            status: row.status,
+            already_terminal: true,
+        });
+    }
+    crate::db::update_subagent_status(conn, &row.id, SubagentStatus::Cancelled, now, Some(reason))
+        .map_err(CommandError::DbError)?;
+    Ok(CancelAck {
+        ok: true,
+        subagent_id: row.id,
+        status: SubagentStatus::Cancelled,
+        already_terminal: false,
+    })
 }
 
 /// spawn 异步包装：持锁执行核心 → 审计 subagent_spawned → 广播子卡。
@@ -400,23 +349,23 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     // 不落库（详见 SubagentStage 注释）。SubagentStage 是 Copy，所以这里直接搬走。
     let runner_stage = req.stage;
     let app2 = app.clone();
-    let (ack, card) =
-        tauri::async_runtime::spawn_blocking(move || -> CommandResult<(SpawnAck, Task)> {
-            let _g = crate::db::lock_db_write();
-            let mut conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
-            let now = chrono::Utc::now().timestamp_millis();
-            spawn_subagent_locked(&mut conn, &req, now)
-        })
-        .await
-        .map_err(|e| CommandError::from(format!("subagent spawn 线程 join 失败：{e}")))??;
-    // 审计：结构化 + 文本行（设计 §3 事件字段）
+    let ack = tauri::async_runtime::spawn_blocking(move || -> CommandResult<SpawnAck> {
+        let _g = crate::db::lock_db_write();
+        let mut conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        spawn_subagent_locked(&mut conn, &req, now)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("subagent spawn 线程 join 失败：{e}")))??;
+    // 审计：结构化 + 文本行（设计 §3 事件字段）。task_id 恒空（新行无卡），
+    // 字段仍留——老审计日志按该键反查的查询不受影响
     crate::audit::write_event(
         app,
         crate::audit::AuditLevel::Info,
         "subagent_spawned",
         &[
             ("subagent_id", ack.subagent_id.clone()),
-            ("task_id", ack.task_id.clone()),
+            ("task_id", ack.task_id.clone().unwrap_or_default()),
             (
                 "parent_session_id",
                 audit_parent_session.clone().unwrap_or_default(),
@@ -429,15 +378,13 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     crate::bot::audit_log(
         app,
         &format!(
-            "subagent_spawned | id: {} | task: {} | parent_session: {} | profile: {} | trace: {}",
+            "subagent_spawned | id: {} | parent_session: {} | profile: {} | trace: {}",
             ack.subagent_id,
-            ack.task_id,
             audit_parent_session.as_deref().unwrap_or("-"),
             audit_profile.as_str(),
             ack.trace_id,
         ),
     );
-    crate::bot::broadcast_after_mutation(app, vec![card], Vec::new());
     // 非阻塞派发 runner（设计 §5：spawn 立即返回；执行在后台推进状态机）
     let runner_app = app.clone();
     let runner_sid = ack.subagent_id.clone();
@@ -467,8 +414,8 @@ pub async fn check_subagent(app: &AppHandle, key: &str, wait_ms: u64) -> Command
     }
 }
 
-/// cancel 异步包装：置 cancelled + 子卡回退 + 审计 + 广播（前端即时感知，
-/// ）。 接 runner 后在此叠加 force_stop。
+/// cancel 异步包装：置 cancelled + 审计 + 远程停 runner（前端经
+/// subagent-finished 事件与轮询即时感知）。
 pub async fn cancel_subagent_async(
     app: &AppHandle,
     key: &str,
@@ -478,14 +425,12 @@ pub async fn cancel_subagent_async(
     let key = key.to_string();
     let reason = reason.to_string();
     let audit_reason = reason.clone();
-    let (ack, card) = tauri::async_runtime::spawn_blocking(
-        move || -> CommandResult<(CancelAck, Option<Task>)> {
-            let _g = crate::db::lock_db_write();
-            let mut conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
-            let now = chrono::Utc::now().timestamp_millis();
-            cancel_subagent_locked(&mut conn, &key, &reason, now)
-        },
-    )
+    let ack = tauri::async_runtime::spawn_blocking(move || -> CommandResult<CancelAck> {
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+        let now = chrono::Utc::now().timestamp_millis();
+        cancel_subagent_locked(&conn, &key, &reason, now)
+    })
     .await
     .map_err(|e| CommandError::from(format!("subagent cancel 线程 join 失败：{e}")))??;
     if !ack.already_terminal {
@@ -506,9 +451,6 @@ pub async fn cancel_subagent_async(
                 crate::bot::truncate_for_log(&audit_reason, 120)
             ),
         );
-        if let Some(card) = card {
-            crate::bot::broadcast_after_mutation(app, vec![card], Vec::new());
-        }
         // 远程停止 runner 工具循环（令牌在 runner 注册；watcher 2s 兜底轮询）
         let token = crate::db::lock::lock_or_recover(
             &crate::app_state::subagent_stops(app),
@@ -525,7 +467,7 @@ pub async fn cancel_subagent_async(
 
 // 工具实现 + runner + 收尾解析
 
-use crate::bot_chat::{ChatGuard, ExecGuard};
+use crate::bot_chat::ChatGuard;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::Emitter;
@@ -740,11 +682,10 @@ fn classify_verifier_outcome(
     (SubagentStatus::Succeeded, None, Some(v.clone()))
 }
 
-/// 任务包装（设计 §8.5）：orchestrator 从子卡渲染，不接受 LLM 自由拼接。
-/// 上下文摘要现读卡上 note（用户改 note = 改需求，卡即契约）。
+/// 任务包装（设计 §8.5）：orchestrator 从 subagents 行渲染，不接受 LLM 自由拼接。
+/// 目标 / 验收标准 / 上下文摘要 / 预算全部来自行上字段。
 pub(crate) fn render_task_wrapper(
     row: &SubagentRow,
-    card: &Task,
     budget: &SubagentBudget,
     artifact_dir: &std::path::Path,
 ) -> String {
@@ -758,23 +699,18 @@ pub(crate) fn render_task_wrapper(
     w.push_str(&format!("subagent_id: {}\n", row.id));
     w.push_str(&format!("objective: {}\n", row.objective));
     w.push_str("\nacceptance_criteria:\n");
-    if criteria.is_empty() {
-        w.push_str("- （子卡 note 中的验收标准）\n");
-    }
     for c in &criteria {
         w.push_str(&format!("- {c}\n"));
     }
-    // 上下文摘要：从卡 note 摘出【上下文摘要】段（无则跳过）
-    let note = card.note.as_deref().unwrap_or_default();
-    if let Some(begin) = note.find("【上下文摘要】") {
-        let rest = &note[begin + "【上下文摘要】".len()..];
-        let end = rest.find("\n（").unwrap_or(rest.len());
-        let ctx = rest[..end].trim();
-        if !ctx.is_empty() {
-            w.push_str("\n上下文摘要:\n");
-            w.push_str(ctx);
-            w.push('\n');
-        }
+    if let Some(ctx) = row
+        .context_summary
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        w.push_str("\n上下文摘要:\n");
+        w.push_str(ctx);
+        w.push('\n');
     }
     w.push_str(&format!(
         "\n预算:\nmax_turns={}, max_tool_calls={}, max_wall_seconds={}\n",
@@ -784,74 +720,6 @@ pub(crate) fn render_task_wrapper(
     w.push_str("\n完成后必须输出以下 JSON（confidence 取 0.0~1.0，按实际把握给值）：\n");
     w.push_str(crate::prompts::RESULT_SCHEMA_HINT);
     w
-}
-
-/// 收尾：解析结果 → 代勾 subtask → 产物 bind 回子卡 → result 写卡（锁内）。
-/// 返回更新后的子卡供广播。
-fn finalize_card_locked(
-    conn: &rusqlite::Connection,
-    row: &SubagentRow,
-    artifact_dir: &std::path::Path,
-    result: Option<serde_json::Value>,
-) -> CommandResult<Task> {
-    let mut card = crate::db::load_task(conn, &row.task_id)
-        .map_err(CommandError::DbError)?
-        .ok_or_else(|| CommandError::TaskNotFound(row.task_id.clone()))?;
-    // 1. 代勾 subtask（设计 §6：仅 orchestrator 代勾；按 id 对账，done 才勾）
-    if let Some(value) = &result {
-        if let Some(reported) = value.get("subtasks").and_then(|s| s.as_array()) {
-            if let Some(subtasks) = card.subtasks.as_mut() {
-                for st in subtasks.iter_mut() {
-                    let hit = reported.iter().any(|r| {
-                        r.get("id").and_then(|i| i.as_str()) == Some(st.id.as_str())
-                            && r.get("status").and_then(|s| s.as_str()) == Some("done")
-                    });
-                    if hit {
-                        st.done = true;
-                    }
-                }
-            }
-        }
-    }
-    // 2. 产物 bind 回卡（产物目录实存文件 + result.artifacts 路径，与既有 files
-    //    合并去重，上限 MAX_TASK_FILES——设计 §13）
-    let mut files = card.effective_files();
-    if let Ok(entries) = std::fs::read_dir(artifact_dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_file() {
-                let path = p.to_string_lossy().to_string();
-                if !files.iter().any(|f| f.path == path) {
-                    files.push(crate::db::TaskFile {
-                        path,
-                        is_dir: false,
-                    });
-                }
-            }
-        }
-    }
-    if let Some(value) = &result {
-        if let Some(arts) = value.get("artifacts").and_then(|a| a.as_array()) {
-            for a in arts {
-                if let Some(path) = a.get("path").and_then(|p| p.as_str()) {
-                    if !files.iter().any(|f| f.path == path) {
-                        files.push(crate::db::TaskFile {
-                            path: path.to_string(),
-                            is_dir: false,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    files.truncate(crate::db::MAX_TASK_FILES);
-    card.files = if files.is_empty() { None } else { Some(files) };
-    // 3. result 写卡
-    card.result = result;
-    card.expected_updated_at = card.updated_at;
-    card.updated_at = Some(now_ms());
-    crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).map_err(CommandError::DbError)?;
-    Ok(card)
 }
 
 /// 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/。
@@ -1055,27 +923,11 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
 
-    // 子卡防重入（与 🤖 手动执行互斥）；被占用 → failed（罕见：spawn 后立刻手动执行）
-    let Some(_exec_guard) = ExecGuard::acquire(&app, &row.task_id) else {
-        let sid = row.id.clone();
-        let _ = db_locked(&app, move |conn| {
-            crate::db::update_subagent_status(
-                conn,
-                &sid,
-                SubagentStatus::Failed,
-                now_ms(),
-                Some("subcard_busy"),
-            )
-            .map_err(CommandError::DbError)
-        })
-        .await;
-        return;
-    };
     // 并发闸global 3 / per-session 2，超限等待不失败）。
     // 排队时间不计墙钟：max_wall_seconds 的 timeout 从 run_model_loop 起算（下方），
     // 天然满足设计 §6。
-    // 排队可取消——每轮退避同时查行终态，取消即退队（ExecGuard RAII
-    // 释放）；Running 改在**拿到槽位并复核后**才写，排队中的行不再假挂运行中。
+    // 排队可取消——每轮退避同时查行终态，取消即退队；Running 改在**拿到槽位并复核后**
+    // 才写，排队中的行不再假挂运行中。
     let sid_gate_check = row.id.clone();
     let app_gate_check = app.clone();
     // 评审 M 采纳：节流 DB 读——open_db 含建目录+pragmas 文件 IO，不该 50ms
@@ -1239,37 +1091,27 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         let artifact_dir = artifact_dir.clone();
         let row = row.clone();
         let budget = budget.clone();
-        db_locked(&app, move |conn| -> CommandResult<(String, Task, String)> {
-            // 四写包同一事务，防部分成功留半成品
+        db_locked(&app, move |conn| -> CommandResult<(String, String)> {
+            // 建会话与回填 session_id 包同一事务，防出现「建了会话但行没记」的孤儿会话
             let tx = conn
                 .transaction()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
             let session = crate::db::bot_session_create_subagent_inner(&tx, Some(title.clone()))
                 .map_err(CommandError::DbError)?;
-            let card = crate::db::load_task(&tx, &row.task_id)
-                .map_err(CommandError::DbError)?
-                .ok_or_else(|| CommandError::TaskNotFound(row.task_id.clone()))?;
             // 包装文本仅返回（渲染一次，交 runner 供 LLM 与 finalize 复用）——
             // 历史落库统一在 finalize 全量覆盖写（setup 的
             // bot_history_save_inner 是半截写，会被 finalize DELETE+INSERT 覆盖，
             // 中途崩溃还留「只有任务块没有结论」的误导历史）
-            let wrapper = render_task_wrapper(&row, &card, &budget, &artifact_dir);
+            let wrapper = render_task_wrapper(&row, &budget, &artifact_dir);
             crate::db::set_subagent_session(&tx, &row.id, &session.id)
-                .map_err(CommandError::DbError)?;
-            // assignee = 子 agent 会话 id（设计 §4.1 串链围观/审计）
-            let mut card2 = card;
-            card2.assignee = Some(session.id.clone());
-            card2.expected_updated_at = card2.updated_at;
-            card2.updated_at = Some(now_ms());
-            crate::db::upsert_tasks(&tx, std::slice::from_ref(&card2))
                 .map_err(CommandError::DbError)?;
             tx.commit()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
-            Ok((session.id, card2, wrapper))
+            Ok((session.id, wrapper))
         })
     }
     .await;
-    let (session_id, _card, wrapper) = match setup {
+    let (session_id, wrapper) = match setup {
         Ok(v) => v,
         Err(e) => {
             let msg = e.message();
@@ -1343,11 +1185,12 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     )
     .insert(row.id.clone(), stop.token());
 
-    // 软删/取消 watcher（设计 §4.3 硬停）：2s 轮询子卡 deletedAt 与行状态
+    // 取消 watcher（设计 §4.3 硬停）：2s 轮询行状态，进终态即停工具循环。
+    // 子 agent 无卡，不再有「软删卡 = 取消派发」这条信号——cancel 置行终态，
+    // 这是唯一的外部取消入口
     let watcher_app = app.clone();
     let watcher_stop = stop.token();
     let watcher_sid = row.id.clone();
-    let watcher_task_id = row.task_id.clone();
     struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
     impl Drop for AbortOnDrop {
         fn drop(&mut self) {
@@ -1360,23 +1203,16 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             if watcher_stop.stopped() {
                 return;
             }
-            let task_id = watcher_task_id.clone();
             let sid = watcher_sid.clone();
-            // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿——）
+            // 只读轮询：直接开连接，不持 DB_WRITE_LOCK（防多子 agent 写锁互饿）
             let watcher_app2 = watcher_app.clone();
             let aborted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
                 let conn = crate::db::open_db(&watcher_app2)?;
-                let card_deleted = crate::db::load_task(&conn, &task_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|t| t.deleted_at)
-                    .is_some();
-                let row_terminal = crate::db::load_subagent(&conn, &sid)
+                Ok(crate::db::load_subagent(&conn, &sid)
                     .ok()
                     .flatten()
                     .map(|r| r.status.is_terminal())
-                    .unwrap_or(true);
-                Ok(card_deleted || row_terminal)
+                    .unwrap_or(true))
             })
             .await
             .unwrap_or(Ok(false))
@@ -1450,7 +1286,6 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     )
     .remove(&row.id);
     drop(chat_guard);
-    drop(_exec_guard);
 
     // 收尾判定（设计 §6/§7）
     let (status, error, result) = match &wall {
@@ -1466,17 +1301,15 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     let wrapper_for_db = wrapper.clone();
     let row_for_db = row.clone();
     let session_id_for_db = session_id.clone();
-    let artifact_dir_for_db = artifact_dir.clone();
     let status_for_db = status;
     let result_for_db = result.clone();
     let error_for_db = error.clone();
     let final_for_db = final_text.clone();
-    // 返回 (fresh row, card)——下游审计/广播直接用，免二次持锁查询
-    let finalized: Option<(SubagentRow, Task)> = db_locked(
-        &app,
-        move |conn| -> CommandResult<Option<(SubagentRow, Task)>> {
+    // 返回 fresh row——下游审计/事件直接用，免二次持锁查询
+    let finalized: Option<SubagentRow> =
+        db_locked(&app, move |conn| -> CommandResult<Option<SubagentRow>> {
             // 多写包同一事务 + cancel-vs-runner 竞态闸——
-            // 行已终态（cancel 先赢）时不做任何状态/结果/子卡副作用，只落历史
+            // 行已终态（cancel 先赢）时不做任何状态/结果副作用，只落历史
             let current = crate::db::load_subagent(conn, &row_for_db.id)
                 .map_err(CommandError::DbError)?
                 .ok_or_else(|| CommandError::TaskNotFound(row_for_db.id.clone()))?;
@@ -1524,44 +1357,41 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             let fresh = crate::db::load_subagent(&tx, &row_for_db.id)
                 .map_err(CommandError::DbError)?
                 .ok_or_else(|| CommandError::TaskNotFound(row_for_db.id.clone()))?;
-            let card =
-                finalize_card_locked(&tx, &fresh, &artifact_dir_for_db, result_for_db.clone())?;
             tx.commit()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
-            Ok(Some((fresh, card)))
-        },
-    )
-    .await
-    .unwrap_or_else(|e| {
-        let msg = crate::bot::truncate_for_log(&e.message(), 200);
-        // 收尾失败行会永挂 Running——best-effort 落 Failed
-        //（终态判定在收尾闭包内已做；此处只兜住闭包本身失败的情形）。
-        // 后台任务持 owned handle（spawn 要求 'static，不能借用 app）。
-        let sid_failed = row.id.clone();
-        let app_for_fail = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let _ = db_locked(&app_for_fail, move |conn| {
-                crate::db::update_subagent_status(
-                    conn,
-                    &sid_failed,
-                    SubagentStatus::Failed,
-                    now_ms(),
-                    Some(&msg),
-                )
-                .map_err(CommandError::DbError)
-            })
-            .await;
+            Ok(Some(fresh))
+        })
+        .await
+        .unwrap_or_else(|e| {
+            let msg = crate::bot::truncate_for_log(&e.message(), 200);
+            // 收尾失败行会永挂 Running——best-effort 落 Failed
+            //（终态判定在收尾闭包内已做；此处只兜住闭包本身失败的情形）。
+            // 后台任务持 owned handle（spawn 要求 'static，不能借用 app）。
+            let sid_failed = row.id.clone();
+            let app_for_fail = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = db_locked(&app_for_fail, move |conn| {
+                    crate::db::update_subagent_status(
+                        conn,
+                        &sid_failed,
+                        SubagentStatus::Failed,
+                        now_ms(),
+                        Some(&msg),
+                    )
+                    .map_err(CommandError::DbError)
+                })
+                .await;
+            });
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_finalize_error | id: {} | err: {}",
+                    row.id,
+                    crate::bot::truncate_for_log(&e.message(), 200)
+                ),
+            );
+            None
         });
-        crate::bot::audit_log(
-            &app,
-            &format!(
-                "subagent_finalize_error | id: {} | err: {}",
-                row.id,
-                crate::bot::truncate_for_log(&e.message(), 200)
-            ),
-        );
-        None
-    });
 
     // 审计 + 广播 + 前端事件（设计 §3 事件全链按 subagent_id 串链）
     let elapsed = started.elapsed().as_millis() as u64;
@@ -1571,10 +1401,8 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         SubagentStatus::Cancelled => "subagent_cancelled",
         _ => "subagent_failed",
     };
-    // fresh/card 直接取自收尾闭包返回值（不再二次持锁查询）
-    let fresh = finalized.as_ref().map(|(r, _)| r.clone());
-    let card = finalized.as_ref().map(|(_, c)| c.clone());
-    let summary = fresh
+    // fresh 直接取自收尾闭包返回值（不再二次持锁查询）
+    let summary = finalized
         .as_ref()
         .and_then(|r| r.result_json.as_deref())
         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
@@ -1583,7 +1411,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
                 .and_then(|s| s.as_str())
                 .map(str::to_string)
         });
-    let row_error = fresh
+    let row_error = finalized
         .as_ref()
         .and_then(|r| r.error.clone())
         .unwrap_or_default();
@@ -1593,7 +1421,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         event,
         &[
             ("subagent_id", row.id.clone()),
-            ("task_id", row.task_id.clone()),
+            ("task_id", row.task_id.clone().unwrap_or_default()),
             (
                 "parent_session_id",
                 row.parent_session_id.clone().unwrap_or_default(),
@@ -1607,10 +1435,9 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     crate::bot::audit_log(
         &app,
         &format!(
-            "{} | id: {} | task: {} | status: {} | elapsed_ms: {} | error: {}",
+            "{} | id: {} | status: {} | elapsed_ms: {} | error: {}",
             event,
             row.id,
-            row.task_id,
             status.as_str(),
             elapsed,
             crate::bot::truncate_for_log(&row_error, 120)
@@ -1636,9 +1463,6 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             )
             .await;
         });
-    }
-    if let Some(card) = card {
-        crate::bot::broadcast_after_mutation(&app, vec![card], Vec::new());
     }
     let _ = app.emit_to(
         "main",
@@ -1747,13 +1571,12 @@ pub async fn tool_spawn_subagent(
     match spawn_subagent(app, req).await {
         Ok(ack) => ToolResult::ok(
             format!(
-                "已派发子 agent（非阻塞）：subagentId={} taskId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
-                ack.subagent_id, ack.task_id, ack.status.as_str()
+                "已派发子 agent（非阻塞）：subagentId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
+                ack.subagent_id,
+                ack.status.as_str()
             ),
-            vec![crate::bot_chat::TaskRef {
-                id: ack.task_id.clone(),
-                title: format!("子任务 {}", ack.subagent_id),
-            }],
+            // 无卡：不挂 TaskRef（指向已不存在的卡，前端会渲染成死链）
+            Vec::new(),
         ),
         Err(e) => ToolResult::warn(format!("spawn 失败：{}", e.message()), Vec::new()),
     }
@@ -1934,7 +1757,29 @@ pub async fn cancel_subagent(
     cancel_subagent_async(&app, &key, reason.as_deref().unwrap_or("用户取消")).await
 }
 
-/// read_own_card 工具：只读自己的子卡（卡即契约——重读 note/subtasks/deletedAt）。
+/// 列某主会话派出的子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
+/// 「子 Agent」工作面的数据源——子 agent 不再建独立会话后，用户没有别的地方
+/// 能看见自己派出去的那些还活着/刚跑完。
+#[tauri::command]
+pub async fn list_subagents(
+    app: AppHandle,
+    session_id: String,
+    limit: Option<u32>,
+) -> CommandResult<Vec<crate::db::SubagentRow>> {
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
+        crate::db::load_subagents_by_parent(&conn, &session_id, limit)
+            .map_err(CommandError::DbError)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("subagent list 线程 join 失败：{e}")))?
+}
+
+/// read_own_card 工具：只读自己的执行契约。子 agent 不再建卡——契约在
+/// subagents 行上（objective / acceptance_json / context_summary / budget_json），
+/// 行不存在只可能是 runner 上下文串了会话，属真错误要响亮报出。
 pub async fn tool_read_own_card(
     app: &AppHandle,
     session_id: Option<String>,
@@ -1943,37 +1788,52 @@ pub async fn tool_read_own_card(
     let Some(ctx) = crate::tool_guard::subagent_ctx(session_id.as_deref()) else {
         return ToolResult::error("read_own_card 仅子 agent 执行会话可用。", Vec::new());
     };
-    let task_id = ctx.task_id.clone();
-    let card = db_locked(app, move |conn| {
-        crate::db::load_task(conn, &task_id)
-            .map_err(CommandError::DbError)?
-            .ok_or_else(|| CommandError::TaskNotFound(task_id.clone()))
+    let subagent_id = ctx.subagent_id.clone();
+    let loaded = db_locked(app, move |conn| {
+        crate::db::load_subagent(conn, &subagent_id).map_err(CommandError::DbError)
     })
     .await;
-    match card {
-        Ok(c) => {
-            let deleted = c.deleted_at.is_some();
-            ToolResult::ok(
-                serde_json::json!({
-                    "title": c.title,
-                    "note": c.note,
-                    "subtasks": c.subtasks,
-                    "budget": c.budget,
-                    "deletedAt": c.deleted_at,
-                    "deleted": deleted,
-                    "hint": if deleted { "卡片已被软删：立即停止新探索，输出收尾 JSON（status=cancelled）" } else { "" }
-                })
-                .to_string(),
-                Vec::new(),
-            )
+    let row = match loaded {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return ToolResult::warn("读契约失败：会话对应的 subagent 不在库中", Vec::new())
         }
-        Err(e) => ToolResult::warn(format!("读卡失败：{}", e.message()), Vec::new()),
-    }
+        Err(e) => return ToolResult::warn(format!("读契约失败：{}", e.message()), Vec::new()),
+    };
+    let criteria: Vec<String> = row
+        .acceptance_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    let budget: Option<SubagentBudget> = row
+        .budget_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+    let cancelled = row.status == SubagentStatus::Cancelled;
+    ToolResult::ok(
+        serde_json::json!({
+            "subagent_id": row.id,
+            "objective": row.objective,
+            "acceptanceCriteria": criteria,
+            "contextSummary": row.context_summary,
+            "budget": budget,
+            "status": row.status.as_str(),
+            "hint": if cancelled {
+                "派发已被取消：立即停止新探索，输出收尾 JSON（status=cancelled）"
+            } else {
+                "上面的验收标准与上下文摘要是本任务的全部契约，逐条对照完成后收尾"
+            }
+        })
+        .to_string(),
+        Vec::new(),
+    )
 }
 
 #[cfg(test)]
 mod orchestrator_tests {
     use super::*;
+    // 仅 parent_card 夹具用：子 agent 自己不再建卡，但派发仍可挂编排计划卡
+    use crate::db::Task;
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -2121,7 +1981,7 @@ mod orchestrator_tests {
     fn tool_call_counter_accumulates() {
         let ctx = crate::tool_guard::SubagentSessionCtx {
             subagent_id: "sa_c1".into(),
-            task_id: "card_c1".into(),
+            task_id: None,
             profile: SubagentProfile::Coder,
             budget: SubagentBudget {
                 max_turns: 5,
@@ -2280,21 +2140,38 @@ mod orchestrator_tests {
     fn task_wrapper_contains_all_sections() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let mut r = req(None);
+        r.context_summary = Some("上游已确认五个竞品清单".into());
+        let ack = spawn_subagent_locked(&mut conn, &r, 5_000).unwrap();
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)
             .unwrap()
             .unwrap();
         let budget = crate::db::SubagentBudget::default();
-        let w = render_task_wrapper(&row, &card, &budget, std::path::Path::new("/tmp/art"));
+        let w = render_task_wrapper(&row, &budget, std::path::Path::new("/tmp/art"));
         assert!(w.contains("[子任务派发]"));
         assert!(w.contains(&format!("subagent_id: {}", row.id)));
         assert!(w.contains("objective: 调研五个竞品并输出报告"));
         assert!(w.contains("- 覆盖至少 5 个产品"));
+        // 上下文摘要取自行上 context_summary（不再从子卡 note 文本解析）
+        assert!(w.contains("上下文摘要:\n上游已确认五个竞品清单"));
         assert!(w.contains("max_turns=30, max_tool_calls=100, max_wall_seconds=600"));
         assert!(w.contains("产物目录:"));
         assert!(w.contains("/tmp/art"));
         assert!(w.contains("完成后必须输出以下 JSON"));
         assert!(w.contains("\"succeeded|failed|cancelled|budget_exceeded\""));
+    }
+
+    /// 无上下文摘要时包装不带该段（不留空标题噪声）
+    #[test]
+    fn task_wrapper_omits_absent_context_summary() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let row = crate::db::load_subagent(&conn, &ack.subagent_id)
+            .unwrap()
+            .unwrap();
+        let w = render_task_wrapper(&row, &SubagentBudget::default(), std::path::Path::new("/a"));
+        assert!(!w.contains("上下文摘要"));
     }
 
     fn req(parent: Option<String>) -> SpawnRequest {
@@ -2312,49 +2189,64 @@ mod orchestrator_tests {
     }
 
     #[test]
-    fn spawn_creates_row_and_subcard_with_acceptance_note() {
+    fn spawn_creates_row_only_and_no_subcard() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
         let parent = parent_card(&conn);
-        let (ack, card) = spawn_subagent_locked(&mut conn, &req(Some(parent)), 5_000).unwrap();
+        let ack = spawn_subagent_locked(&mut conn, &req(Some(parent)), 5_000).unwrap();
         assert!(ack.subagent_id.starts_with("sa_"));
         assert_eq!(ack.status, SubagentStatus::Queued);
-        // 一子 agent 一子卡，且 parent_task_id 关联落在行上
-        let row = crate::db::find_subagent_by_task(&conn, &ack.task_id)
+        // 不再建卡：行上 task_id 为 NULL，tasks 表除 parent 外无新增
+        assert_eq!(ack.task_id, None);
+        let row = crate::db::load_subagent(&conn, &ack.subagent_id)
             .unwrap()
             .unwrap();
-        assert_eq!(row.id, ack.subagent_id);
+        assert_eq!(row.task_id, None);
         assert_eq!(row.parent_session_id.as_deref(), Some("main-sess"));
-        // 双写人可见侧：子卡 note 含每条验收标准
-        let note = card.note.unwrap_or_default();
-        assert!(note.contains("覆盖至少 5 个产品"));
-        assert!(note.contains("每条含官网 URL"));
-        // 预算上卡可见（默认值）
-        let budget = card.budget.expect("子卡必须带预算");
-        assert_eq!(budget.max_turns, DEFAULT_MAX_TURNS);
-        assert_eq!(budget.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
-        assert_eq!(budget.max_wall_seconds, DEFAULT_MAX_WALL_SECONDS);
-        assert!(card.title.starts_with("子任务："));
-        assert_eq!(card.column, crate::db::TaskStatus::Doing);
-        // 行侧 acceptance_json（机器侧双写）
+        let cards = crate::db::load_all(&conn).unwrap();
+        assert_eq!(cards.len(), 1, "只应有 parent 卡，子 agent 不建卡");
+        assert_eq!(cards[0].id, "parent-1");
+        // 验收标准与上下文摘要落在行上（机器侧，不再双写 note）
         let criteria: Vec<String> =
             serde_json::from_str(row.acceptance_json.as_deref().unwrap()).unwrap();
         assert_eq!(criteria.len(), 2);
+        assert!(row.context_summary.is_none());
+        // 预算上表可见（默认值）
+        let budget: SubagentBudget =
+            serde_json::from_str(row.budget_json.as_deref().unwrap()).unwrap();
+        assert_eq!(budget.max_turns, DEFAULT_MAX_TURNS);
+        assert_eq!(budget.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
+        assert_eq!(budget.max_wall_seconds, DEFAULT_MAX_WALL_SECONDS);
+    }
+
+    /// 空白上下文摘要不落库（否则包装会渲染一个空标题段）
+    #[test]
+    fn spawn_trims_blank_context_summary_to_none() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let mut r = req(None);
+        r.context_summary = Some("   \n  ".into());
+        let ack = spawn_subagent_locked(&mut conn, &r, 5_000).unwrap();
+        let row = crate::db::load_subagent(&conn, &ack.subagent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.context_summary, None);
     }
 
     #[test]
     fn spawn_without_parent_card_is_allowed() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
-        assert!(ack.task_id != ack.subagent_id);
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        assert!(ack.task_id.is_none());
+        assert!(!ack.trace_id.is_empty());
     }
 
     #[test]
     fn spawn_with_missing_parent_card_is_task_not_found() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        // Result 的 OK 侧 (SpawnAck, Task) 无 Debug——用 match 拆错误，不 unwrap_err
+        // Result 的 OK 侧 SpawnAck 无 Debug——用 match 拆错误，不 unwrap_err
         let err = match spawn_subagent_locked(&mut conn, &req(Some("ghost-card".into())), 5_000) {
             Err(e) => e,
             Ok(_) => panic!("缺卡 spawn 必须失败"),
@@ -2404,45 +2296,69 @@ mod orchestrator_tests {
     fn cancel_sets_cancelled_and_terminal_noop() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
-        let (c, card) =
-            cancel_subagent_locked(&mut conn, &ack.subagent_id, "用户取消", 6_000).unwrap();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let c = cancel_subagent_locked(&conn, &ack.subagent_id, "用户取消", 6_000).unwrap();
         assert!(c.ok);
         assert!(!c.already_terminal);
         assert_eq!(c.status, SubagentStatus::Cancelled);
-        // 取消必须让子卡离开 doing（前端可见），并返回卡片供广播
-        let card = card.expect("取消运行中的子 agent 必须回退其子卡");
-        assert_eq!(card.column, crate::db::TaskStatus::Todo);
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)
             .unwrap()
             .unwrap();
         assert_eq!(row.status, SubagentStatus::Cancelled);
         assert_eq!(row.error.as_deref(), Some("用户取消"));
         assert_eq!(row.finished_at, Some(6_000));
-        // 终态再取消 = no-op 幂等，不返回卡片（无变更可广播）
-        let (again, no_card) =
-            cancel_subagent_locked(&mut conn, &ack.subagent_id, "再取消", 7_000).unwrap();
+        // 取消不动 tasks 表（无卡可退）
+        assert!(crate::db::load_all(&conn).unwrap().is_empty());
+        // 终态再取消 = no-op 幂等
+        let again = cancel_subagent_locked(&conn, &ack.subagent_id, "再取消", 7_000).unwrap();
         assert!(again.already_terminal);
         assert_eq!(again.status, SubagentStatus::Cancelled);
-        assert!(no_card.is_none());
+        assert_eq!(
+            crate::db::load_subagent(&conn, &ack.subagent_id)
+                .unwrap()
+                .unwrap()
+                .finished_at,
+            Some(6_000),
+            "幂等重入不得改写首收尾时刻"
+        );
     }
 
+    /// 有卡的历史行仍能按 task_id 解析（子会话键之外的第二把键，降级路径不炸）
     #[test]
-    fn cancel_resolves_by_task_id_too() {
+    fn cancel_resolves_by_task_id_on_legacy_row() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
-        let (c, _) =
-            cancel_subagent_locked(&mut conn, &ack.task_id, "卡片停止按钮", 6_000).unwrap();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        // 模拟老库遗留：给行补一个 task_id
+        conn.execute(
+            "UPDATE subagents SET task_id = 'legacy-card' WHERE id = ?1",
+            [&ack.subagent_id],
+        )
+        .unwrap();
+        let c = cancel_subagent_locked(&conn, "legacy-card", "卡片停止按钮", 6_000).unwrap();
         assert_eq!(c.subagent_id, ack.subagent_id);
         assert_eq!(c.status, SubagentStatus::Cancelled);
     }
 
+    /// 新行 task_id 为 NULL，按卡键解析落到会话键探测后仍报「不存在」而非 panic
+    #[test]
+    fn cancel_by_task_key_on_cardless_row_is_invalid_argument() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let err = match cancel_subagent_locked(&conn, "no-such-card", "x", 6_000) {
+            Err(e) => e,
+            Ok(_) => panic!("无卡行的假卡键不得解析成功"),
+        };
+        assert!(matches!(err, CommandError::InvalidArgument { .. }));
+        assert_eq!(ack.task_id, None);
+    }
+
     #[test]
     fn cancel_unknown_id_is_invalid_argument() {
-        let mut conn = test_conn();
-        // OK 侧 (CancelAck, Option<Task>) 无 Debug——match 拆错误
-        let err = match cancel_subagent_locked(&mut conn, "sa_ghost", "x", 1) {
+        let conn = test_conn();
+        // OK 侧 CancelAck 无 Debug——match 拆错误
+        let err = match cancel_subagent_locked(&conn, "sa_ghost", "x", 1) {
             Err(e) => e,
             Ok(_) => panic!("未知 id 必须失败"),
         };
@@ -2450,44 +2366,35 @@ mod orchestrator_tests {
     }
 
     #[test]
-    fn check_resolves_both_keys_and_counts_progress() {
+    fn check_counts_progress_from_acceptance_and_result() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
-        // 给子卡补两个 subtask（勾一个）→ progress 小计 1/2
-        let mut card = crate::db::load_all(&conn)
-            .unwrap()
-            .into_iter()
-            .find(|t| t.id == ack.task_id)
-            .unwrap();
-        card.subtasks = Some(vec![
-            crate::db::Subtask {
-                id: "st1".into(),
-                text: "第一步".into(),
-                done: true,
-                task_id: None,
-            },
-            crate::db::Subtask {
-                id: "st2".into(),
-                text: "第二步".into(),
-                done: false,
-                task_id: None,
-            },
-        ]);
-        card.expected_updated_at = card.updated_at;
-        card.updated_at = Some(5_500);
-        crate::db::upsert_tasks(&conn, std::slice::from_ref(&card)).unwrap();
-
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        // 未收尾：total = 验收标准条数，done = 0
         let by_id = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
-        let by_task = check_subagent_locked(&conn, &ack.task_id).unwrap();
         assert_eq!(by_id.subagent_id, ack.subagent_id);
-        assert_eq!(by_task.subagent_id, ack.subagent_id);
         assert_eq!(by_id.status, SubagentStatus::Queued);
-        assert_eq!(by_id.progress["subtasksDone"], 1);
+        assert_eq!(by_id.progress["subtasksDone"], 0);
         assert_eq!(by_id.progress["subtasksTotal"], 2);
         assert!(by_id.result.is_none());
+        assert_eq!(by_id.task_id, None);
+        // 收尾后：done = result_json.acceptance_check 里 met=true 的条数
+        crate::db::set_subagent_result(
+            &conn,
+            &ack.subagent_id,
+            r#"{"acceptance_check":[{"criterion":"覆盖至少 5 个产品","met":true},{"criterion":"每条含官网 URL","met":false}]}"#,
+        )
+        .unwrap();
+        let done = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
+        assert_eq!(done.progress["subtasksDone"], 1);
+        assert_eq!(done.progress["subtasksTotal"], 2);
         // 幂等：两次 check 结果一致
-        assert_eq!(by_id.status, by_task.status);
+        assert_eq!(
+            check_subagent_locked(&conn, &ack.subagent_id)
+                .unwrap()
+                .progress,
+            done.progress
+        );
     }
 
     #[test]
@@ -2501,7 +2408,7 @@ mod orchestrator_tests {
     fn check_returns_parsed_result_json() {
         let mut conn = test_conn();
         let _g = crate::db::lock_db_write();
-        let (ack, _card) = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
         crate::db::set_subagent_result(
             &conn,
             &ack.subagent_id,
@@ -2570,7 +2477,7 @@ mod orchestrator_tests {
         let mut r = req(None);
         r.profile = SubagentProfile::Coder;
         r.stage = Some(SubagentStage::Executor);
-        let (ack, _card) = spawn_subagent_locked(&mut conn, &r, 5_000).unwrap();
+        let ack = spawn_subagent_locked(&mut conn, &r, 5_000).unwrap();
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)
             .unwrap()
             .unwrap();
