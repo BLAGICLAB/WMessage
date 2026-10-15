@@ -6,6 +6,35 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-15（周三）工作流画布整体退役：从「LLM 每次跑」转向「LLM 写好程序跑」
+
+- `ccac16e` 后端：删 workflow_clarify/decompose/questions/runner + db 层四模块；提问引擎中立化为 `ask_engine`（ask_user + ask_respond），`strip_fences` 迁 `llm_text`，ask_budget 迁 bot 参数 `tools.ask_budget`
+- `8efd47e` 前端：删 WorkflowCanvas 组件族与四个 workflow lib，导航/设置分区/图谱 hub/日程工作流源/TracePanel 审计页签全清，dagre/xyflow 依赖移除
+
+**为什么退役**：画布的本质是「每次运行都让 LLM 按依赖图逐卡执行」——慢、费
+token、结果不确定。而真实需求（每月工资单匹配、学生名册查询）是**固定流程
+重复执行**，要的是确定、秒级、离线。画布上线 11 天内已砍过一次方向（人机协作
+排期不做），适用域与真实痛点零重叠，单人维护面 ~1.1 万行不划算。
+
+**为什么保留提问引擎**：ask_user（通知中心异步问答 + 假设兜底 + 预算回冲）
+在画布退役前就已外溢成手动执行任务卡的共用能力。原 `workflow_questions` 里
+工作流专属的只有 brief 档案写入、workflow_audit 归组和按工作流批量失效三块，
+剥掉后引擎本体（注册/解析/等待/门铃/预算）原样保留，行为零变化。
+
+**为什么问预算迁移不保数据**：`workflow_settings.ask_budget` 随表退役，新家是
+bot-config `tools.ask_budget`（默认 3、钳 1..=5 不变）。老库自定义值不迁移——
+单用户、低频旋钮，回默认值的代价小于写一条迁移链。
+
+**数据留档口径**：workflows / brief_entries / workflow_audit / workflow_settings
+四张表与 `origin='workflow'` 的卡片**留而不删**——open_db 不再建表（新库无）、
+代码不再读写（老库冻结）；这些卡回到看板按普通卡展示（画布可见性开关随之删除）。
+ask 通知 kind 沿用 `workflow_question` 字符串——它是库内历史行的主键语义，改了
+旧通知就对不上应答端。
+
+**下一步**：工作流这个名字让位给「工具箱」——大模型开发的确定性小程序
+（脚本 + 输入声明，运行态零 LLM），开发态 = 聊天即 IDE（看真实文件问规格）。
+设计稿 `docs/TOOLBOX-DESIGN-2026-10-15.md`，未开工。
+
 ## 2026-10-13（周一）agent 行为收紧批 II：四 commit 闭环 sidecar / Y/N 视觉 / 子 agent 三段式
 
 四条独立 commit（不打 squash）：
