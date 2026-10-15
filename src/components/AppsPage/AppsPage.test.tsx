@@ -83,6 +83,31 @@ function routeInvoke(cmd: string, args: Record<string, unknown>) {
       return Promise.resolve(APPS);
     case "apps_runs_list":
       return Promise.resolve(args.appId === "wage-match" ? [RUN_OK] : []);
+    case "apps_versions_list":
+      return Promise.resolve(
+        args.appId === "wage-match"
+          ? [
+              {
+                id: 2,
+                appId: "wage-match",
+                version: 2,
+                name: "工资单匹配",
+                icon: "💰",
+                source: "update",
+                createdAt: hourAgo,
+              },
+              {
+                id: 1,
+                appId: "wage-match",
+                version: 1,
+                name: "工资单匹配",
+                icon: "💰",
+                source: "create",
+                createdAt: hourAgo - 86_400_000,
+              },
+            ]
+          : [],
+      );
     case "apps_run":
       return Promise.resolve(RUN_RESULT);
     default:
@@ -131,6 +156,18 @@ describe("AppsPage", () => {
     expect(await screen.findByText("匹配 32 行")).toBeInTheDocument();
     // 历史行时间走 MM-DD HH:mm
     expect(screen.getByText(/\d{2}-\d{2} \d{2}:\d{2}/)).toBeInTheDocument();
+  });
+
+  it("版本页签：列出快照，最新版无回滚钮、旧版可回滚", async () => {
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await userEvent.click(screen.getAllByRole("button", { name: "运行历史" })[0]);
+    await userEvent.click(await screen.findByRole("button", { name: "版本" }));
+    expect(await screen.findByText("v2")).toBeInTheDocument();
+    expect(screen.getByText("v1")).toBeInTheDocument();
+    expect(screen.getByText("创建")).toBeInTheDocument();
+    // 最新版（v2）就是当前内容不提供回滚；v1 有一个回滚钮
+    expect(screen.getAllByRole("button", { name: "回滚" })).toHaveLength(1);
   });
 
   it("无程序时空态引导上架（头部 CTA + 空态行动钮）", async () => {

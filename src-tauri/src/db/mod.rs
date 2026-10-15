@@ -230,10 +230,12 @@ pub fn open_db<R: tauri::Runtime>(
     // 成员注册表（任务图谱设计 §1.2）：多人汇总的归属人字典，幂等
     conn.execute_batch(people::PEOPLE_DDL)
         .map_err(|e| e.to_string())?;
-    // 程序模块（apps）：程序元数据 + 运行历史，幂等建表
+    // 程序模块（apps）：程序元数据 + 运行历史 + 版本快照，幂等建表
     conn.execute_batch(crate::db::apps::APPS_DDL)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(crate::db::apps::APP_RUNS_DDL)
+        .map_err(|e| e.to_string())?;
+    conn.execute_batch(crate::db::apps::APP_VERSIONS_DDL)
         .map_err(|e| e.to_string())?;
     // 模型元数据双表（meta_provider/meta_model，meta 模块的存储面），幂等
     migrations::ensure_meta_tables(&conn)?;

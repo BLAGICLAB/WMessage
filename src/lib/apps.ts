@@ -99,6 +99,28 @@ export function listAppRuns(appId: string, limit = 20): Promise<AppRun[]> {
   return invoke<AppRun[]>("apps_runs_list", { appId, limit });
 }
 
+/** 版本快照元数据（列表行，不含脚本全文） */
+export interface AppVersionMeta {
+  id: number;
+  appId: string;
+  version: number;
+  name: string;
+  icon: string;
+  /** create / update / restore */
+  source: string;
+  createdAt: number;
+}
+
+/** 版本快照列表（新→旧） */
+export function listAppVersions(appId: string, limit = 100): Promise<AppVersionMeta[]> {
+  return invoke<AppVersionMeta[]>("apps_versions_list", { appId, limit });
+}
+
+/** 回滚到历史版本：内容整体回旧版，回滚本身记为新版本（可再回滚撤销） */
+export function restoreAppVersion(appId: string, version: number): Promise<App> {
+  return invoke<App>("apps_version_restore", { appId, version });
+}
+
 /** 在系统文件管理器中打开程序的 output/ 目录（不存在则先建）。
  *  返回打开的目录绝对路径 */
 export function openAppOutput(appId: string): Promise<string> {

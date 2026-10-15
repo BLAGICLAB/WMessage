@@ -159,6 +159,11 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
 - 试跑闭环：草稿在程序页可见（草稿徽章）且可运行，`apps_run` 只拒绝 archived；
   上架 = AI 在用户明确满意后调 `apps_update_files` 传 `status="enabled"`
 - 附加文件边界：bot 工具只允许写 `data/` 之下（input/ 归用户、output/ 归运行）
+- 版本快照：程序本体（manifest 五项 + `app.py` 全文）在创建/更新/回滚时自动存
+  `app_versions` 表，每程序滚动保留 100 版；程序页「历史 → 版本」页签可回滚——
+  回滚 = 旧内容整体写回（生命周期状态保留），本身记为新版本、可再回滚撤销。
+  拍板口径：快照表而非 git（Windows 绿色版不带 git、`data/` 敏感数据不进历史）；
+  知识库级多文件语料将来走「独立数据目录 + 按需 git」，与本表正交
 - 摘要截断：summary > 300 字符截断 + 标记截断，提示用户去 `output/<run_id>/` 看完整产物
 
 ## 6. 真机验收清单（M1 后）

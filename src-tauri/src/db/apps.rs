@@ -39,6 +39,24 @@ pub const APP_RUNS_DDL: &str = "CREATE TABLE IF NOT EXISTS app_runs (
    summary        TEXT
  );";
 
+/// app_versions 表单源 DDL：程序本体版本快照（每次创建/更新/回滚存一份完整内容）。
+/// 选型理由（为何不用 git）：单脚本线性改、Windows 绿色版不带 git、
+/// data/ 敏感数据不进历史；回滚 = 旧内容整体写回，本身也记为新版本
+pub const APP_VERSIONS_DDL: &str = "CREATE TABLE IF NOT EXISTS app_versions (
+   id             INTEGER PRIMARY KEY AUTOINCREMENT,
+   app_id         TEXT NOT NULL,
+   version        INTEGER NOT NULL,
+   name           TEXT NOT NULL,
+   description    TEXT NOT NULL,
+   icon           TEXT NOT NULL,
+   input_schema   TEXT NOT NULL,
+   script         TEXT NOT NULL,
+   manual         TEXT NOT NULL,
+   source         TEXT NOT NULL,
+   created_at     INTEGER NOT NULL,
+   UNIQUE(app_id, version)
+ );";
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct App {
@@ -228,4 +246,150 @@ pub fn list_app_runs(
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())
+}
+
+// ── 版本快照（app_versions） ──
+
+/// 版本快照全文行（回滚/查看用；列表走 [`AppVersionMeta`] 防脚本大文本过 IPC）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AppVersion {
+    pub id: i64,
+    pub app_id: String,
+    /// 每程序单调递增（1 起），UNIQUE(app_id, version)
+    pub version: i64,
+    pub name: String,
+    pub description: String,
+    pub icon: String,
+    pub input_schema: String,
+    /// app.py 全文快照
+    pub script: String,
+    pub manual: String,
+    /// create / update / restore
+    pub source: String,
+    pub created_at: i64,
+}
+
+/// 版本列表行（不含 script/manual 大文本）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AppVersionMeta {
+    pub id: i64,
+    pub app_id: String,
+    pub version: i64,
+    pub name: String,
+    pub icon: String,
+    pub source: String,
+    pub created_at: i64,
+}
+
+/// 下一版本号 = 每程序当前最大版本 + 1（空 = 1）
+pub fn next_app_version(conn: &rusqlite::Connection, app_id: &str) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) + 1 FROM app_versions WHERE app_id = ?1",
+        [app_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub fn insert_app_version(conn: &rusqlite::Connection, v: &AppVersion) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO app_versions (
+            app_id, version, name, description, icon, input_schema, script, manual,
+            source, created_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        rusqlite::params![
+            v.app_id,
+            v.version,
+            v.name,
+            v.description,
+            v.icon,
+            v.input_schema,
+            v.script,
+            v.manual,
+            v.source,
+            v.created_at,
+        ],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// 版本列表（新→旧），不含脚本/说明书大文本
+pub fn list_app_version_metas(
+    conn: &rusqlite::Connection,
+    app_id: &str,
+    limit: i64,
+) -> Result<Vec<AppVersionMeta>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, app_id, version, name, icon, source, created_at
+             FROM app_versions WHERE app_id = ?1
+             ORDER BY version DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![app_id, limit], |r| {
+            Ok(AppVersionMeta {
+                id: r.get(0)?,
+                app_id: r.get(1)?,
+                version: r.get(2)?,
+                name: r.get(3)?,
+                icon: r.get(4)?,
+                source: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+/// 取某版本全文（无则 None）
+pub fn get_app_version(
+    conn: &rusqlite::Connection,
+    app_id: &str,
+    version: i64,
+) -> Result<Option<AppVersion>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, app_id, version, name, description, icon, input_schema, script,
+                    manual, source, created_at
+             FROM app_versions WHERE app_id = ?1 AND version = ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map(rusqlite::params![app_id, version], |r| {
+            Ok(AppVersion {
+                id: r.get(0)?,
+                app_id: r.get(1)?,
+                version: r.get(2)?,
+                name: r.get(3)?,
+                description: r.get(4)?,
+                icon: r.get(5)?,
+                input_schema: r.get(6)?,
+                script: r.get(7)?,
+                manual: r.get(8)?,
+                source: r.get(9)?,
+                created_at: r.get(10)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.next().transpose().map_err(|e| e.to_string())
+}
+
+/// 滚动保留每程序最近 `keep` 个版本（超出按版本号从小到大删）
+pub fn trim_app_versions(
+    conn: &rusqlite::Connection,
+    app_id: &str,
+    keep: i64,
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM app_versions WHERE app_id = ?1
+         AND version <= (SELECT MAX(version) FROM app_versions WHERE app_id = ?1) - ?2",
+        rusqlite::params![app_id, keep],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }

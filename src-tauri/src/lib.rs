@@ -326,6 +326,21 @@ pub fn run() {
                 });
             }
 
+            // 数据目录定版留痕：db / profile / log / 技能全靠 paths::data_dir 定版，
+            // 而它是「按 exe 位置推断」的——便携 / app_data / 测试隔离三条分支任一
+            // 判错，程序会对着另一个库读写（表现为「任务卡凭空消失」）。
+            // 每次启动记下本次真正用的目录：出事后 grep 一行即知该查哪个 wmessage.db，
+            // 不用再靠目录结构反推。
+            {
+                let dir = db::data_dir(app.handle());
+                crate::audit_event!(
+                    app.handle(),
+                    crate::audit::AuditLevel::Info,
+                    "app_data_dir",
+                    "path" => dir.to_string_lossy().to_string()
+                );
+            }
+
             // 运行期文件收口：老版本散在数据目录根的 flag/token 迁进 runtime/flags
             //（幂等 rename；移动成功才记 Info 审计）
             {
@@ -582,6 +597,8 @@ pub fn run() {
             crate::apps::commands::apps_update,
             crate::apps::commands::apps_archive,
             crate::apps::commands::apps_runs_list,
+            crate::apps::commands::apps_versions_list,
+            crate::apps::commands::apps_version_restore,
             crate::apps::commands::apps_preflight,
             crate::apps::commands::apps_open_output,
             crate::bot_scheduler::schedule_overview,

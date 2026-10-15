@@ -125,7 +125,15 @@ pub async fn apps_create(app: AppHandle, args: CreateArgs) -> CommandResult<App>
     let a = build_app_from_create(&app, &args)?;
     apps_runner::preflight_script(&app, &a, &a.script_path).map_err(CommandError::DbError)?;
     let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    db_apps::upsert_app(&conn, &a).map_err(CommandError::DbError)?;
+    let dir = apps_runner::app_dir(&app, &a.id);
+    // 落库 + 版本快照同一事务（口径同 manage 核）
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    db_apps::upsert_app(&tx, &a).map_err(CommandError::DbError)?;
+    crate::apps::manage::record_app_version(&tx, &dir, &a, "create", crate::db::now_ms())?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok(a)
 }
 
@@ -180,7 +188,20 @@ pub async fn apps_update(app: AppHandle, args: UpdateArgs) -> CommandResult<App>
             ..next
         }
     };
-    db_apps::upsert_app(&conn, &next).map_err(CommandError::DbError)?;
+    // 落库 + 版本快照同一事务（元数据改动也是一次内容变更）
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    db_apps::upsert_app(&tx, &next).map_err(CommandError::DbError)?;
+    crate::apps::manage::record_app_version(
+        &tx,
+        &apps_runner::app_dir(&app, &next.id),
+        &next,
+        "update",
+        now,
+    )?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok(next)
 }
 
@@ -225,6 +246,31 @@ pub async fn apps_runs_list(
     limit: Option<i64>,
 ) -> CommandResult<Vec<AppRun>> {
     apps_runner::recent_runs(&app, &app_id, limit.unwrap_or(20)).map_err(CommandError::DbError)
+}
+
+/// 版本快照列表（程序页「版本」页签；新→旧，不含脚本全文防 IPC 大载荷）
+#[tauri::command]
+pub async fn apps_versions_list(
+    app: AppHandle,
+    app_id: String,
+    limit: Option<i64>,
+) -> CommandResult<Vec<db_apps::AppVersionMeta>> {
+    let conn = open_db_or(&app)?;
+    db_apps::list_app_version_metas(&conn, &app_id, limit.unwrap_or(100))
+        .map_err(CommandError::DbError)
+}
+
+/// 回滚到历史版本（程序页用户动作）：内容整体回旧版、生命周期状态保留，
+/// 回滚本身记为新版本（可再回滚撤销）。无 LLM 参与，不走 bot 工具白名单闸
+#[tauri::command]
+pub async fn apps_version_restore(
+    app: AppHandle,
+    app_id: String,
+    version: i64,
+) -> CommandResult<App> {
+    let conn = open_db_or(&app)?;
+    let dir = apps_runner::app_dir(&app, &app_id);
+    crate::apps::manage::restore_version_core(&dir, &conn, &app_id, version, crate::db::now_ms())
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────

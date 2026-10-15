@@ -317,8 +317,90 @@ pub fn create_app_core(
         created_at: now_ms,
         updated_at: now_ms,
     };
-    db_apps::upsert_app(conn, &app).map_err(CommandError::DbError)?;
+    // 落库 + 版本快照同一事务：快照写不进去 = 整体没发生（库是真相源）
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    db_apps::upsert_app(&tx, &app).map_err(CommandError::DbError)?;
+    record_app_version(&tx, dir, &app, "create", now_ms)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok(app)
+}
+
+// ── 版本快照（为何不用 git 见 db::apps::APP_VERSIONS_DDL 注） ──
+
+/// 每程序滚动保留的快照数（单版 KB 级，100 版 ≈ 1MB 上界）
+pub const APP_VERSIONS_KEEP: i64 = 100;
+
+/// 记一条版本快照：读盘上 app.py 全文 + 当前 manifest，写入下一版本号并滚动裁剪。
+/// 必须在调用方事务内调用（Transaction 解引用为 Connection，直接传即可）
+pub fn record_app_version(
+    conn: &Connection,
+    dir: &Path,
+    a: &App,
+    source: &str,
+    now_ms: i64,
+) -> Result<(), CommandError> {
+    let script = std::fs::read_to_string(dir.join("app.py"))
+        .map_err(|e| CommandError::IoError(e.to_string()))?;
+    let version = db_apps::next_app_version(conn, &a.id).map_err(CommandError::DbError)?;
+    let v = db_apps::AppVersion {
+        id: 0,
+        app_id: a.id.clone(),
+        version,
+        name: a.name.clone(),
+        description: a.description.clone(),
+        icon: a.icon.clone(),
+        input_schema: a.input_schema.clone(),
+        script,
+        manual: a.manual.clone(),
+        source: source.to_string(),
+        created_at: now_ms,
+    };
+    db_apps::insert_app_version(conn, &v).map_err(CommandError::DbError)?;
+    db_apps::trim_app_versions(conn, &a.id, APP_VERSIONS_KEEP).map_err(CommandError::DbError)
+}
+
+/// 回滚核 = 历史快照内容整体写回：manifest 五项（名称/说明/图标/声明/说明书）
+/// 与脚本回旧版；**生命周期不动**（status/enabled_at 保持现状，回滚的是内容不是状态）。
+/// 回滚本身产出新版本（source="restore"），可再次回滚撤销。
+pub fn restore_version_core(
+    dir: &Path,
+    conn: &Connection,
+    app_id: &str,
+    version: i64,
+    now_ms: i64,
+) -> Result<App, CommandError> {
+    let snap = db_apps::get_app_version(conn, app_id, version)
+        .map_err(CommandError::DbError)?
+        .ok_or_else(|| CommandError::TaskNotFound(format!("{app_id}@v{version}")))?;
+    let cur = db_apps::get_app(conn, app_id)
+        .map_err(CommandError::DbError)?
+        .ok_or_else(|| CommandError::TaskNotFound(app_id.to_string()))?;
+    std::fs::create_dir_all(dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    write_file_set(dir, Some(&snap.script), &[])?;
+    let next = App {
+        id: cur.id.clone(),
+        name: snap.name.clone(),
+        description: snap.description.clone(),
+        icon: snap.icon.clone(),
+        input_schema: snap.input_schema.clone(),
+        script_path: "app.py".into(),
+        manual: snap.manual.clone(),
+        status: cur.status.clone(),
+        enabled_at: cur.enabled_at,
+        created_at: cur.created_at,
+        updated_at: now_ms,
+    };
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    db_apps::upsert_app(&tx, &next).map_err(CommandError::DbError)?;
+    record_app_version(&tx, dir, &next, "restore", now_ms)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    Ok(next)
 }
 
 // ── 更新（整文件集）核 ──
@@ -414,7 +496,14 @@ pub fn update_app_core(
         created_at: cur.created_at,
         updated_at: now_ms,
     };
-    db_apps::upsert_app(conn, &next).map_err(CommandError::DbError)?;
+    // 落库 + 版本快照同一事务（口径同创建核）
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
+    db_apps::upsert_app(&tx, &next).map_err(CommandError::DbError)?;
+    record_app_version(&tx, dir, &next, "update", now_ms)?;
+    tx.commit()
+        .map_err(|e| CommandError::DbError(e.to_string()))?;
     Ok(next)
 }
 
@@ -679,6 +768,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let conn = Connection::open(tmp.path().join("test.db")).unwrap();
         conn.execute(db_apps::APPS_DDL, []).unwrap();
+        conn.execute(db_apps::APP_VERSIONS_DDL, []).unwrap();
         (tmp, conn)
     }
 
@@ -1005,6 +1095,109 @@ mod tests {
             std::fs::read_to_string(dir.join("data/roster.csv")).unwrap(),
             "a,b\n1,2"
         );
+    }
+
+    // ── 版本快照 ──
+
+    #[test]
+    fn versions_captured_on_create_update_restore() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+        )
+        .unwrap();
+        let metas = db_apps::list_app_version_metas(&conn, "wage", 100).unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].version, 1);
+        assert_eq!(metas[0].source, "create");
+        update_app_core(
+            &dir,
+            &conn,
+            "wage",
+            Some("print('v2')"),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("enabled"),
+            2,
+        )
+        .unwrap();
+        let metas = db_apps::list_app_version_metas(&conn, "wage", 100).unwrap();
+        assert_eq!(metas.len(), 2);
+        assert_eq!(metas[0].version, 2);
+        assert_eq!(metas[0].source, "update");
+        // 回滚到 v1：内容回旧版、生命周期（enabled）保留、本身记 v3
+        restore_version_core(&dir, &conn, "wage", 1, 3).unwrap();
+        let cur = db_apps::get_app(&conn, "wage").unwrap().unwrap();
+        let v1 = db_apps::get_app_version(&conn, "wage", 1).unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("app.py")).unwrap(),
+            v1.script
+        );
+        assert_eq!(cur.name, v1.name);
+        assert_eq!(cur.status, "enabled", "回滚内容不回滚生命周期");
+        assert_eq!(cur.enabled_at, Some(2));
+        let metas = db_apps::list_app_version_metas(&conn, "wage", 100).unwrap();
+        assert_eq!(metas.len(), 3);
+        assert_eq!(metas[0].version, 3);
+        assert_eq!(metas[0].source, "restore");
+        // 回滚后可再取全文
+        let v3 = db_apps::get_app_version(&conn, "wage", 3).unwrap().unwrap();
+        assert_eq!(v3.script, v1.script);
+    }
+
+    #[test]
+    fn restore_rejects_missing_version_or_app() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+        )
+        .unwrap();
+        let err = restore_version_core(&dir, &conn, "wage", 99, 2).unwrap_err();
+        assert!(matches!(err, CommandError::TaskNotFound(_)), "{err}");
+        let err = restore_version_core(&dir, &conn, "ghost", 1, 2).unwrap_err();
+        assert!(matches!(err, CommandError::TaskNotFound(_)), "{err}");
+    }
+
+    #[test]
+    fn trim_keeps_recent_versions_and_version_number_keeps_growing() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+        )
+        .unwrap();
+        for i in 2..=5 {
+            update_app_core(
+                &dir,
+                &conn,
+                "wage",
+                Some(&format!("print('v{i}')")),
+                &[],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                i,
+            )
+            .unwrap();
+        }
+        db_apps::trim_app_versions(&conn, "wage", 3).unwrap();
+        let metas = db_apps::list_app_version_metas(&conn, "wage", 100).unwrap();
+        let versions: Vec<i64> = metas.iter().map(|m| m.version).collect();
+        assert_eq!(versions, vec![5, 4, 3], "滚动保留最近 3 版");
+        // 下一版本号继续增长，不因裁剪回退
+        assert_eq!(db_apps::next_app_version(&conn, "wage").unwrap(), 6);
     }
 
     // ── validate_input_schema ──

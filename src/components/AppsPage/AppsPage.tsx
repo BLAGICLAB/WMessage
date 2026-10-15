@@ -13,13 +13,17 @@ import {
   App,
   AppInputField,
   AppRun,
+  AppVersionMeta,
   createApp,
   listActiveApps,
   listAppRuns,
+  listAppVersions,
   openAppOutput,
   parseInputSchema,
+  restoreAppVersion,
   runApp,
 } from "../../lib/apps";
+import { useConfirm } from "../../lib/useConfirm";
 import { formatMonthDayTime, relativeTime } from "../../format";
 // 程序图标砖与时间网格计划块共用一套 --plan-* 色板 + 稳定哈希：
 // 同一 id 永远同色，重启/重排不变色
@@ -131,6 +135,7 @@ export function AppsPage() {
               lastRun={lastRuns[a.id]}
               running={running === a.id}
               onRun={() => handleRun(a)}
+              onChanged={reload}
             />
           ))}
         </div>
@@ -154,11 +159,14 @@ function AppCard({
   lastRun,
   running,
   onRun,
+  onChanged,
 }: {
   app: App;
   lastRun: AppRun | null | undefined;
   running: boolean;
   onRun: () => void;
+  /** 卡内发生了内容变更（如版本回滚）：通知页级重载列表 */
+  onChanged: () => void;
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const inputKind = parseInputSchema(app.inputSchema)?.kind ?? "folder";
@@ -231,7 +239,7 @@ function AppCard({
         </button>
       </div>
 
-      {historyOpen && <HistoryPanel appId={app.id} />}
+      {historyOpen && <HistoryPanel appId={app.id} onChanged={onChanged} />}
     </div>
   );
 }
@@ -275,49 +283,179 @@ function DraftBadge() {
   );
 }
 
-function HistoryPanel({ appId }: { appId: string }) {
+function HistoryPanel({
+  appId,
+  onChanged,
+}: {
+  appId: string;
+  onChanged: () => void;
+}) {
+  const [tab, setTab] = useState<"runs" | "versions">("runs");
+  return (
+    <div className="nm-inset flex flex-col gap-1.5 rounded-[var(--r-sm)] p-2.5">
+      <div className="flex items-center gap-0.5">
+        <TabChip active={tab === "runs"} onClick={() => setTab("runs")}>
+          运行
+        </TabChip>
+        <TabChip active={tab === "versions"} onClick={() => setTab("versions")}>
+          版本
+        </TabChip>
+      </div>
+      {tab === "runs" ? (
+        <RunsList appId={appId} />
+      ) : (
+        <VersionsList appId={appId} onChanged={onChanged} />
+      )}
+    </div>
+  );
+}
+
+function TabChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className={`rounded-[var(--r-sm)] px-2 py-0.5 text-[10px] transition-colors ${
+        active
+          ? "bg-[var(--hover-bg)] font-medium text-[var(--t1)]"
+          : "text-[var(--t5)] hover:text-[var(--t3)]"
+      }`}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+function RunsList({ appId }: { appId: string }) {
   const [runs, setRuns] = useState<AppRun[] | null>(null);
   useEffect(() => {
     listAppRuns(appId, 10)
       .then(setRuns)
       .catch(() => setRuns([]));
   }, [appId]);
+  if (runs === null) {
+    return <p className="text-[10px] text-[var(--t5)]">加载中…</p>;
+  }
+  if (runs.length === 0) {
+    return <p className="text-[10px] text-[var(--t5)]">还没有运行记录</p>;
+  }
   return (
-    <div className="nm-inset flex flex-col gap-1.5 rounded-[var(--r-sm)] p-2.5">
-      {runs === null ? (
-        <p className="text-[10px] text-[var(--t5)]">加载中…</p>
-      ) : runs.length === 0 ? (
-        <p className="text-[10px] text-[var(--t5)]">还没有运行记录</p>
-      ) : (
-        runs.map((r) => (
-          <div
-            key={r.id}
-            className="flex items-center gap-2 text-[10px] text-[var(--t4)]"
-          >
-            <span
-              aria-hidden
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                r.status === "ok"
-                  ? "bg-[var(--success)]"
-                  : "bg-[var(--danger)]"
-              }`}
-            />
-            <span className="shrink-0 tabular-nums">
-              {formatMonthDayTime(r.startedAt)}
+    <div className="flex flex-col gap-1.5">
+      {runs.map((r) => (
+        <div
+          key={r.id}
+          className="flex items-center gap-2 text-[10px] text-[var(--t4)]"
+        >
+          <span
+            aria-hidden
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+              r.status === "ok" ? "bg-[var(--success)]" : "bg-[var(--danger)]"
+            }`}
+          />
+          <span className="shrink-0 tabular-nums">
+            {formatMonthDayTime(r.startedAt)}
+          </span>
+          {r.durationMs != null && (
+            <span className="shrink-0 tabular-nums text-[var(--t5)]">
+              {(r.durationMs / 1000).toFixed(1)}s
             </span>
-            {r.durationMs != null && (
-              <span className="shrink-0 tabular-nums text-[var(--t5)]">
-                {(r.durationMs / 1000).toFixed(1)}s
-              </span>
-            )}
-            {r.summary && (
-              <span className="min-w-0 flex-1 truncate" title={r.summary}>
-                {r.summary}
-              </span>
-            )}
-          </div>
-        ))
-      )}
+          )}
+          {r.summary && (
+            <span className="min-w-0 flex-1 truncate" title={r.summary}>
+              {r.summary}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  create: "创建",
+  update: "更新",
+  restore: "回滚",
+};
+
+function VersionsList({
+  appId,
+  onChanged,
+}: {
+  appId: string;
+  onChanged: () => void;
+}) {
+  const [versions, setVersions] = useState<AppVersionMeta[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const confirm = useConfirm();
+  const reload = useCallback(() => {
+    listAppVersions(appId)
+      .then(setVersions)
+      .catch(() => setVersions([]));
+  }, [appId]);
+  useEffect(() => {
+    reload();
+  }, [reload]);
+  if (versions === null) {
+    return <p className="text-[10px] text-[var(--t5)]">加载中…</p>;
+  }
+  if (versions.length === 0) {
+    return <p className="text-[10px] text-[var(--t5)]">还没有版本快照</p>;
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      {versions.map((v, i) => (
+        <div
+          key={v.id}
+          className="flex items-center gap-2 text-[10px] text-[var(--t4)]"
+        >
+          <span className="shrink-0 font-medium tabular-nums text-[var(--t3)]">
+            v{v.version}
+          </span>
+          <span className="shrink-0 tabular-nums">
+            {formatMonthDayTime(v.createdAt)}
+          </span>
+          <span className="shrink-0">{SOURCE_LABELS[v.source] ?? v.source}</span>
+          <span className="min-w-0 flex-1 truncate" title={v.name}>
+            {v.name}
+          </span>
+          {/* 最新版（列表首位）就是当前内容，不提供回滚 */}
+          {i > 0 && (
+            <button
+              type="button"
+              className="nm-btn shrink-0 px-1.5 py-0.5 text-[10px] text-[var(--t3)] disabled:opacity-55"
+              disabled={busy}
+              onClick={async () => {
+                const ok = await confirm({
+                  title: "回滚版本",
+                  message: `回滚到 v${v.version}？当前内容会先存为新版本，可再次回滚撤销。`,
+                  okLabel: "回滚",
+                });
+                if (!ok) return;
+                setBusy(true);
+                try {
+                  await restoreAppVersion(appId, v.version);
+                  reload();
+                  onChanged();
+                } catch (e) {
+                  handleCommandError(e, "回滚版本");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              {busy ? "回滚中…" : "回滚"}
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   );
 }
