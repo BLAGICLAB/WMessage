@@ -107,7 +107,7 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 
 ### 6. 数据、集成与平台
 
-- SQLite（WAL + busy_timeout 2s）单写者行级增量读写；主窗 `mutate()` diff 落盘广播 `tasks-changed`，后端 diff 上报；迁移链自动导入 data.json/localStorage 旧数据
+- SQLite（WAL + busy_timeout 2s）单写者行级增量读写；主窗 `mutate()` diff 落盘广播 `tasks-changed`，后端 diff 上报；迁移链自动导入 data.json 旧数据（localStorage 迁移已删）
 - **本地 HTTP API**（tiny_http + SSE + token 鉴权）：启停/状态/换 token，供外部集成
 - 便携模式：数据库随 exe 走（exe 目录锚定，不可写兜底 app_data_dir）；Windows 绿色 zip + macOS dmg（Intel/Apple Silicon）
 - 桌面清理：CSV 规则表（模版下载/导入），`{year}` 占位，move/delete 两动作，10 分钟后台轮询，migration.log；看板/回收站附件绝不触碰

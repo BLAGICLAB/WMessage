@@ -1,7 +1,4 @@
-// 旧版 localStorage 键：方案B 起任务数据存 SQLite（wmessage.db），此键仅用于首次迁移
-export const STORAGE_KEY = "***";
-
-// —— 方案B：任务数据存 SQLite，行级增量读写 ——
+// 任务数据存 SQLite（wmessage.db），行级增量读写
 import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "./lib/errorHandler";
 import type { PeopleEntry, Task } from "./types";
@@ -12,7 +9,7 @@ export const taskEq = (a: Task, b: Task) =>
   JSON.stringify({ ...a, expectedUpdatedAt: undefined }) ===
   JSON.stringify({ ...b, expectedUpdatedAt: undefined });
 
-/** loadTasksFromDb 结果：区分「读失败」与「空库」，避免调用方把 error 当 empty 触发种子/迁移写入 */
+/** loadTasksFromDb 结果：区分「读失败」与「空库」——读失败必须显式告警，不得当空库继续 */
 export type LoadTasksResult =
   { ok: true; tasks: Task[] } | { ok: false; error: unknown };
 

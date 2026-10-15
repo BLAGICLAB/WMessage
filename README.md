@@ -73,7 +73,7 @@ src-tauri/
 - **数据源**：`wmessage.db`（便携模式在 exe 同目录；否则 app_data_dir；AI 产物目录 `AI_Gen_Files` 同目录，启动即预建）
 - `tasks`（tags/subtasks JSON 列 + schedule/bot_assigned/ord/updated_at）、`workspace_items`、`bot_messages`/`bot_sessions`、`subagents`、`apps`/`app_runs`/`app_versions`、`schedule_jobs` 等；**行级增量读写**（无全库覆盖写）
 - 主窗口 `mutate()`：diff 出 upserts/deletes → 行级落盘 → 广播 `tasks-changed`；后端改动走 diff 上报同通道
-- **迁移链**：空库自动导入旧版 data.json / localStorage 数据
+- **迁移链**：空库自动导入旧版 data.json（更早的 localStorage 迁移已随其占位键删除）
 - 运行期全局状态：`app_state.rs` 单一入口
 
 ## 开发

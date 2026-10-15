@@ -55,7 +55,6 @@ import {
   importTasksFromFile,
   exportWorkspaceToFile,
   importWorkspaceFromFile,
-  STORAGE_KEY,
   sortByOrder,
 } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
@@ -355,7 +354,7 @@ function App() {
     };
   }, []);
 
-  // 初始加载：SQLite → 空库时的 legacy 迁移（旧 data.json 在 Rust 侧处理；更早的 localStorage 在此处理）
+  // 初始加载：SQLite（旧 data.json 的迁移在 Rust 侧）
   useEffect(() => {
     (async () => {
       try {
@@ -363,42 +362,16 @@ function App() {
         await loadArchiveDaysFromConfig();
         const res = await loadTasksFromDb();
         if (!res.ok) {
-          // 读失败 ≠ 空库：禁止走迁移分支（避免覆盖真实数据），保持内存空数组并明确告警
+          // 读失败 ≠ 空库：保持内存空数组并明确告警，不往任何库里写
           // recoverable=true 时 handleCommandError 会弹 confirm 提供「重试」（重载重新加载）
           handleCommandError(res.error, "db_load", {
             onRetry: () => window.location.reload(),
           });
           return;
         }
-        let list = res.tasks;
-        // 空库分支只服务 legacy localStorage 迁移：空库既可能是首次使用，也可能是
-        // **读到了错误的库**（数据目录解析漂移 / 便携目录劫持 / 隔离目录串了）。
-        // 两种情况 db_load 都返回空数组，往里写任何东西都会在用户没察觉的库里
-        // 留下假数据，且用户无从分辨「我的任务卡呢」——所以此处只允许迁移真数据，
-        // 绝不注入演示任务卡。
-        if (list.length === 0) {
-          try {
-            const legacy = localStorage.getItem(STORAGE_KEY);
-            if (legacy) {
-              const parsed = JSON.parse(legacy) as Task[];
-              if (parsed.length) {
-                await upsertTasks(parsed);
-                list = parsed;
-              }
-              localStorage.removeItem(STORAGE_KEY);
-            }
-          } catch (e) {
-            // 迁移失败：保留 legacy 待下次启动重试。不弹窗会让用户以为数据没了，
-            // 故显式报错并给重试入口（重载重新走迁移）。
-            console.error(
-              "[init] legacy 迁移失败，保留 localStorage 待下次重试",
-              e,
-            );
-            handleCommandError(e, "init legacy 迁移", {
-              onRetry: () => window.location.reload(),
-            });
-          }
-        }
+        const list = res.tasks;
+        // 空库就是空库：不注入任何数据。空库也可能是**读到了错误的库**（数据目录
+        // 解析漂移 / 便携目录劫持），往里写的东西用户无从分辨「我的任务卡呢」
         let next = applyArchiveRule(applyTodayRule(list));
         // 老数据补 order / updatedAt（updatedAt 缺失视为最旧 0），一次性落盘
         if (

@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
-import { STORAGE_KEY } from "./storage";
 import { stubScrollNoop } from "./test/scrollNoop";
 import type { Task } from "./types";
 
@@ -106,7 +105,7 @@ describe("App", () => {
   // 回归锁：空库不得注入任何数据。
   // 事故复现——数据目录被解析到另一个库（便携/隔离目录漂移）时 db_load 同样返回
   // []，曾经的 SEED 分支会往那个库里写 3 张演示卡，用户看到「只剩 3 个任务」，
-  // 且真库里的数据一条没少却无从解释。空 = 空，写入只允许来自 legacy 迁移。
+  // 且真库里的数据一条没少却无从解释。空 = 空，写入只允许来自用户操作。
   it("空库（db_load = []）：不写库、不注入任何任务卡", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "db_load") return [];
@@ -119,7 +118,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "任务" }));
     expect(screen.getByLabelText("任务池")).toBeInTheDocument();
     expect(screen.queryByText(FIXTURE_TITLE)).not.toBeInTheDocument();
-    // 关键断言：一次 db_upsert 都不该发生（无 legacy 数据可迁）
+    // 关键断言：一次 db_upsert 都不该发生（空库没有可写的东西）
     expect(
       mocks.invokeMock.mock.calls.filter((c) => c[0] === "db_upsert"),
     ).toHaveLength(0);
@@ -596,39 +595,6 @@ describe("App", () => {
       "[tasks-updated] merge_tasks | 1 changed",
     );
     infoSpy.mockRestore();
-  });
-
-  // 迁移失败：legacy localStorage 迁移抛错 → 保留 legacy 待下次
-  // 启动重试，且不得有其他写入顶掉它——空库分支除迁移外无写入源
-  it("legacy 迁移失败 → 唯一写入是失败的迁移、legacy 保留", async () => {
-    mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "db_load") return [];
-      if (cmd === "db_upsert") throw new Error("db unavailable");
-      return null;
-    });
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify([
-        { id: "legacy-1", title: "老数据一条", column: "todo", order: 0 },
-      ]),
-    );
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    render(<App />);
-    await waitFor(() => {
-      expect(errSpy).toHaveBeenCalledWith(
-        "[init] legacy 迁移失败，保留 localStorage 待下次重试",
-        expect.any(Error),
-      );
-    });
-    // db_upsert 仅 1 次，且只能是那次失败的 legacy 迁移写入（无其他写入源）
-    const upsertCalls = mocks.invokeMock.mock.calls.filter(
-      (c) => c[0] === "db_upsert",
-    );
-    expect(upsertCalls).toHaveLength(1);
-    expect(JSON.stringify(upsertCalls[0][1])).toContain("老数据一条");
-    // legacy 保留（未 removeItem，下次启动重试）
-    expect(localStorage.getItem(STORAGE_KEY)).not.toBeNull();
-    errSpy.mockRestore();
   });
 
   // delete 失败不阻断合并广播：失败行暂留 UI，
