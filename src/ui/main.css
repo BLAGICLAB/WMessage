@@ -1510,6 +1510,60 @@
 }
 
 
+/* ═══════════════════════════════════════════════════════════════
+   程序页（AppsPage）
+   - nm-btn-brand：页面唯一主操作（上架程序 / 弹窗确认）——实底品牌色，
+     同用户聊天气泡（.chat-bubble-user）的填充词汇；全 app 灰阶体系中
+     唯一实底按钮，主次一眼可辨
+   - app-tile：程序图标砖（Apple Shortcuts 式视觉锚点）。--c 由组件注入
+     （planColorVar 稳定哈希取 --plan-* 六色）；配方同 .plan-blk——
+     亮色粉彩淡底 / 暗色饱和渐变实色，两处材质保持一致
+   ═══════════════════════════════════════════════════════════════ */
+@layer components {
+  .nm-btn-brand {
+    border-radius: var(--r-sm);
+    background-color: var(--brand);
+    border: 1px solid var(--brand);
+    color: #fff;
+    transition:
+      background-color 0.1s ease,
+      border-color 0.1s ease,
+      filter 0.1s ease;
+  }
+  .nm-btn-brand:hover:not(:disabled) {
+    background-color: var(--brand-strong);
+    border-color: var(--brand-strong);
+  }
+  .nm-btn-brand:active:not(:disabled) {
+    filter: brightness(0.92);
+  }
+  .dark .nm-btn-brand {
+    color: #171d2b;
+  }
+  .nm-btn-brand:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+  .nm-btn-brand:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .app-tile {
+    background: color-mix(in srgb, var(--c) 13%, var(--surface-raised));
+    border: 1px solid color-mix(in srgb, var(--c) 24%, transparent);
+  }
+  .dark .app-tile {
+    background: linear-gradient(
+      150deg,
+      color-mix(in srgb, var(--c) 86%, white) 0%,
+      var(--c) 52%,
+      color-mix(in srgb, var(--c) 78%, black) 100%
+    );
+    border-color: color-mix(in srgb, var(--c) 50%, transparent);
+  }
+}
+
 /* 首页（HomePage）：欢迎区今日完成率进度条——实心段内嵌百分比，余量斜纹 */
 @layer components {
   .home-progress {
