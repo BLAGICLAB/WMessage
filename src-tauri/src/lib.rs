@@ -8,6 +8,7 @@ mod api_auth;
 mod api_handlers;
 mod api_server;
 mod app_state;
+pub mod ask_engine;
 mod audit;
 pub mod bing;
 pub mod bot;
@@ -31,6 +32,7 @@ pub mod eval;
 pub mod evolution;
 mod exec_steps;
 pub mod intent_router;
+pub mod llm_text;
 pub mod memory;
 pub mod meta;
 mod migration;
@@ -48,10 +50,6 @@ pub mod task_autotag;
 pub mod task_out;
 pub mod tool_guard;
 pub mod trace_sink;
-pub mod workflow_clarify;
-pub mod workflow_decompose;
-pub mod workflow_questions;
-pub mod workflow_runner;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -359,30 +357,6 @@ pub fn run() {
             // 截止通知：每 30s 扫一次活跃任务卡，截止前 1 小时 / 截止时刻发系统通知
             due_notify::start_due_notifier(app.handle().clone());
 
-            // 启动时审计保留清理（设置项，默认最近 20 个 run；尽力而为）
-            {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    match db::open_db(&handle)
-                        .map_err(|e| e.to_string())
-                        .and_then(|conn| {
-                            let keep = db::workflow_settings::audit_retention_runs(&conn);
-                            db::workflow_audit::wa_prune(&conn, keep)
-                        }) {
-                        Ok(n) if n > 0 => {
-                            crate::audit::write_event(
-                                &handle,
-                                crate::audit::AuditLevel::Info,
-                                "workflow_audit_pruned",
-                                &[("rows", n.to_string()), ("phase", "startup".into())],
-                            );
-                        }
-                        Ok(_) => {}
-                        Err(e) => eprintln!("[workflow_audit] 启动清理失败（不阻断）：{e}"),
-                    }
-                });
-            }
-
             // 开关持久化：上次退出前 API 开启过，则自动恢复（写 api-enabled.flag）
             {
                 let handle = app.handle().clone();
@@ -598,11 +572,7 @@ pub fn run() {
             crate::db::people::people_list,
             crate::tag_similar::tag_similar_pairs,
             crate::task_autotag::task_autotag,
-            crate::db::workflow::workflow_save,
-            crate::db::workflow::workflow_load,
-            crate::db::workflow::workflow_list,
-            crate::db::workflow::workflow_delete,
-            crate::db::workflow::workflow_set_schedule,
+            crate::ask_engine::ask_respond,
             crate::bot_scheduler::schedule_overview,
             crate::bot_scheduler::schedule_set_enabled,
             crate::bot_scheduler::scheduled_job_fire,
@@ -618,19 +588,6 @@ pub fn run() {
             crate::db::schedule_jobs::scheduled_job_update,
             crate::db::schedule_jobs::scheduled_job_delete,
             crate::db::schedule_jobs::scheduled_job_history,
-            crate::workflow_clarify::workflow_clarify,
-            crate::workflow_decompose::workflow_decompose,
-            crate::workflow_questions::workflow_question_respond,
-            crate::db::workflow_audit::workflow_audit_list,
-            crate::db::workflow_audit::workflow_audit_clear_all,
-            crate::db::workflow_audit::workflow_audit_export,
-            crate::db::workflow_settings::workflow_settings_get,
-            crate::db::workflow_settings::workflow_settings_set,
-            crate::db::workflow::workflow_export,
-            crate::db::workflow::workflow_import,
-            crate::workflow_runner::workflow_run,
-            crate::workflow_runner::workflow_stop,
-            crate::workflow_runner::workflow_is_running,
             crate::db::workspace::workspace_load,
             crate::db::workspace::workspace_upsert,
             crate::db::workspace::workspace_delete,

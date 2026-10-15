@@ -134,6 +134,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         subagent_max_wall_secs: cfg.subagent_max_wall_secs,
         search_max_results: cfg.search_max_results,
         max_tool_output_chars: cfg.max_tool_output_chars,
+        ask_budget: cfg.ask_budget,
         tool_rules: cfg.tool_rules,
     })
 }
@@ -291,6 +292,7 @@ pub fn bot_set_config(
     config.search_max_results = config
         .search_max_results
         .map(crate::bot::params::clamp_search_max_results);
+    config.ask_budget = config.ask_budget.map(crate::bot::params::clamp_ask_budget);
     // 终稿自检间隔落盘前钳制（0..=100：0 = 关闭；上限放宽到 100 留充足调整空间，
     // 真实触发频率受 final_text 字数 / function_calls / round gap 共同约束）
     config.final_selfcheck_round_gap = config.final_selfcheck_round_gap.map(|n| n.clamp(0, 100));

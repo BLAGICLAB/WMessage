@@ -260,15 +260,7 @@ fn parse_limit(v: &serde_json::Value) -> usize {
         .unwrap_or(50)
 }
 
-/// 工作流 id→名称映射（fail-soft：读失败 = 空映射，行标记省略）
-async fn workflow_name_map(app: &AppHandle) -> std::collections::HashMap<String, String> {
-    match crate::db::workflow_list(app.clone()).await {
-        Ok(list) => list.into_iter().map(|w| (w.id, w.name)).collect(),
-        Err(_) => std::collections::HashMap::new(),
-    }
-}
-
-/// schedule 原始串 → 人性化展示（只读展示；不做编辑入口——定时将来在工作流侧做）。
+/// schedule 原始串 → 人性化展示（只读展示；不做编辑入口——定时在日程页做）。
 /// 格式单源见 bot_scheduler::occurrence_after（daily/weekly/monthly/at），未知格式原样返回。
 fn humanize_schedule(s: Option<&str>) -> Option<String> {
     let s = s?;
@@ -291,23 +283,14 @@ fn humanize_schedule(s: Option<&str>) -> Option<String> {
     Some(s.to_string())
 }
 
-/// 任务行渲染（query_tasks 统一行格式：列/标题/归档/工作流/截止/标签/id）
-fn render_task_line(
-    t: &crate::db::Task,
-    wf_names: &std::collections::HashMap<String, String>,
-) -> String {
+/// 任务行渲染（query_tasks 统一行格式：列/标题/归档/截止/标签/id）
+fn render_task_line(t: &crate::db::Task) -> String {
     let col = status_label(t.column);
     let arch = if t.archived == Some(true) {
         "（已归档）"
     } else {
         ""
     };
-    let wf = t
-        .workflow_id
-        .as_deref()
-        .and_then(|id| wf_names.get(id))
-        .map(|n| format!("（工作流：{n}）"))
-        .unwrap_or_default();
     let due = t
         .due
         .as_deref()
@@ -318,7 +301,7 @@ fn render_task_line(
         .as_deref()
         .map(|ts| format!("，标签：{}", ts.join("/")))
         .unwrap_or_default();
-    format!("- [{col}] {}{arch}{wf}{due}{tags}（id={}）", t.title, t.id)
+    format!("- [{col}] {}{arch}{due}{tags}（id={}）", t.title, t.id)
 }
 
 /// 查询任务（：原 list_tasks + search_tasks 合并）：
@@ -375,10 +358,9 @@ pub(crate) async fn tool_query_tasks(app: &AppHandle, args: &str) -> ToolResult 
         };
         return ToolResult::ok(msg, Vec::new());
     }
-    let wf_names = workflow_name_map(app).await;
     let mut lines: Vec<String> = Vec::new();
     for t in &hits {
-        lines.push(render_task_line(t, &wf_names));
+        lines.push(render_task_line(t));
     }
     if total > hits.len() {
         lines.push(format!(
@@ -460,13 +442,6 @@ pub(crate) async fn tool_query_single_task(
     }
     if let Some(s) = humanize_schedule(t.schedule.as_deref()) {
         lines.push(format!("  定时：{s}"));
-    }
-    if let Some(wid) = t.workflow_id.as_deref() {
-        let name = workflow_name_map(app).await.get(wid).cloned();
-        match name {
-            Some(n) => lines.push(format!("  所属工作流：{n}")),
-            None => lines.push(format!("  所属工作流：（id={wid}）")),
-        }
     }
     if let Some(deps) = &t.depends_on {
         if !deps.is_empty() {
@@ -2413,19 +2388,12 @@ mod query_tasks_tests {
     }
 
     #[test]
-    fn render_task_line_carries_workflow_tag() {
-        let mut t = task_with(TaskStatus::Doing, Some(true), None, "写周报");
-        t.workflow_id = Some("wf-1".into());
-        let mut names = std::collections::HashMap::new();
-        names.insert("wf-1".to_string(), "周报流水线".to_string());
-        let line = render_task_line(&t, &names);
+    fn render_task_line_basic_shape() {
+        let t = task_with(TaskStatus::Doing, Some(true), None, "写周报");
+        let line = render_task_line(&t);
         assert!(line.contains("[进行中]"), "{line}");
         assert!(line.contains("（已归档）"), "{line}");
-        assert!(line.contains("（工作流：周报流水线）"), "{line}");
         assert!(line.contains("（id=id-写周报）"), "{line}");
-        // 孤儿 workflowId（workflows 表无此行）→ 标记省略，不 panic
-        let line2 = render_task_line(&t, &std::collections::HashMap::new());
-        assert!(!line2.contains("工作流"), "{line2}");
     }
 }
 

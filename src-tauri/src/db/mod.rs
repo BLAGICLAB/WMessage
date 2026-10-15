@@ -16,14 +16,12 @@ pub use crate::db::skill_out::*;
 pub use crate::db::subagents::*;
 pub use crate::db::tasks::*;
 pub use crate::db::trace::*;
-pub use crate::db::workflow::*;
 pub use crate::db::workspace::*;
 use std::time::Duration;
 use tauri::Manager;
 
 pub mod bot_history;
 pub mod bot_sessions;
-pub mod brief;
 pub mod lock;
 pub mod migrations;
 pub mod paths;
@@ -33,9 +31,6 @@ pub mod skill_out;
 pub mod subagents;
 pub mod tasks;
 pub mod trace;
-pub mod workflow;
-pub mod workflow_audit;
-pub mod workflow_settings;
 pub mod workspace;
 
 // RMW helpers
@@ -229,22 +224,6 @@ pub fn open_db<R: tauri::Runtime>(
     crate::db::schedule_jobs::ensure_scheduled_jobs_columns(&conn).map_err(|e| e.to_string())?;
     conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOB_RUNS_DDL)
         .map_err(|e| e.to_string())?;
-    // workflows 表设计 §3.2）：工作流元数据 + 总目标文本；
-    // 节点卡存 tasks 表（origin='workflow' + workflow_id 外联），不在此表
-    conn.execute_batch(crate::db::workflow::WORKFLOWS_DDL)
-        .map_err(|e| e.to_string())?;
-    // 老库的 workflows 表补 attachments 列（拆解附件路径）
-    crate::db::workflow::ensure_workflows_attachments(&conn).map_err(|e| e.to_string())?;
-    // 老库的 workflows 表补 clarify_meta 列（澄清答案/粒度，重拆预填）
-    crate::db::workflow::ensure_workflows_clarify_meta(&conn).map_err(|e| e.to_string())?;
-    // 双层档案表（工作流决策摘要 + 卡片档案，跑偏防护）
-    crate::db::brief::ensure_brief_entries(&conn).map_err(|e| e.to_string())?;
-    // W10：run 级结构化审计 + 工作流偏好设置（验收开关/保留次数），幂等
-    crate::db::workflow_audit::ensure_workflow_audit(&conn).map_err(|e| e.to_string())?;
-    crate::db::workflow_settings::ensure_workflow_settings(&conn).map_err(|e| e.to_string())?;
-    // 定时任务模块：老库的 workflows 表补定时三列（到点自动执行整张工作流）
-    crate::db::workflow::ensure_workflows_schedule(&conn).map_err(|e| e.to_string())?;
-    crate::db::workflow::ensure_workflows_report(&conn).map_err(|e| e.to_string())?;
     // 成员注册表（任务图谱设计 §1.2）：多人汇总的归属人字典，幂等
     conn.execute_batch(people::PEOPLE_DDL)
         .map_err(|e| e.to_string())?;

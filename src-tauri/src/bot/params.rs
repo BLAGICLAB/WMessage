@@ -56,6 +56,11 @@ pub fn clamp_search_max_results(n: u32) -> u32 {
     n.clamp(1, 10)
 }
 
+/// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
+pub fn clamp_ask_budget(n: u8) -> u8 {
+    n.clamp(1, 5)
+}
+
 // 解析辅助（读取口唯一）
 
 pub fn resolve_max_rounds_cfg(cfg: &BotConfig) -> u32 {
@@ -89,6 +94,11 @@ pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
 
 pub fn resolve_search_max_results(cfg: &BotConfig) -> u32 {
     clamp_search_max_results(cfg.search_max_results.unwrap_or(DEFAULT_SEARCH_MAX_RESULTS))
+}
+
+/// 任务执行提问预算（原 workflow_settings.ask_budget，随工作流退役迁入 bot 参数）
+pub fn resolve_ask_budget_cfg(cfg: &BotConfig) -> u8 {
+    clamp_ask_budget(cfg.ask_budget.unwrap_or(3))
 }
 
 use crate::bot::config::types::BotConfig;
@@ -212,6 +222,14 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         category: "tools",
         hint: "单条工具结果回填模型上下文的截断上限；默认不截断（超大输出可能挤占上下文，P4 接线生效）",
         default: "不截断",
+        editable: true,
+    },
+    ParamDef {
+        key: "tools.ask_budget",
+        label: "任务提问预算（次）",
+        category: "tools",
+        hint: "ask_user 每次任务执行最多提问次数，超限按 AI 假设继续；钳 1..=5",
+        default: "3",
         editable: true,
     },
     // ── 硬编码只读区（调坏易出问题，仅展示） ──
@@ -369,6 +387,14 @@ fn param_value(key: &str, cfg: &BotConfig) -> (String, &'static str) {
             Some(v) => (v.to_string(), "config"),
             None => ("60".into(), "default"),
         },
+        "tools.ask_budget" => (
+            resolve_ask_budget_cfg(cfg).to_string(),
+            if cfg.ask_budget.is_some() {
+                "config"
+            } else {
+                "default"
+            },
+        ),
         "tools.max_output_chars" => match cfg.max_tool_output_chars {
             Some(v) if v > 0 => (v.to_string(), "config"),
             Some(_) => ("不截断（显式关闭）".into(), "config"),
@@ -452,6 +478,7 @@ mod tests {
             subagent_max_wall_secs: None,
             search_max_results: None,
             max_tool_output_chars: None,
+            ask_budget: None,
         }
     }
 

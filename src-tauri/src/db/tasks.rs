@@ -136,9 +136,9 @@ pub struct CanvasPos {
     pub y: f64,
 }
 
-/// 工作流卡归属值（task_patch 白名单校验用）：缺省视作用户看板卡
+/// 任务卡归属值（task_patch 白名单校验用）：缺省视作用户看板卡。
+/// 遗留值 "workflow"（画布节点卡，功能已退役）仅存在于老库数据行。
 pub const TASK_ORIGIN_USER: &str = "user";
-pub const TASK_ORIGIN_WORKFLOW: &str = "workflow";
 
 ///  新增列清单（open_db 幂等迁移与 legacy 迁移测试 fixture 共用，防两处漂移——）
 pub(crate) const W1_TASK_COLUMNS: [(&str, &str); 6] = [
@@ -460,14 +460,6 @@ pub fn delete_tasks(conn: &rusqlite::Connection, ids: &[String]) -> Result<(), S
     let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
     conn.execute(&sql, rusqlite::params_from_iter(params.iter()))
         .map_err(|e| e.to_string())?;
-    // 卡片档案级联（ critical——原实现泄漏 brief_entries 卡层行）。
-    // 工作流级条目（task_id NULL）不受影响；非工作流卡本就无档案，DELETE 0 行无害。
-    // 尽力而为：测试内建表等无 brief_entries 的连接上不炸主删除（与审计写失败同口径）
-    for id in ids {
-        if let Err(e) = crate::db::brief::brief_delete_task(conn, id) {
-            eprintln!("[brief] 卡片档案清理失败（不阻断删除）：{e}");
-        }
-    }
     Ok(())
 }
 
@@ -656,26 +648,6 @@ pub fn load_task(conn: &rusqlite::Connection, id: &str) -> Result<Option<super::
         .map_err(|e| e.to_string())
 }
 
-/// 工作流的节点卡定点读指纹 diff 保存用）。
-/// 只取未软删的行——回收站里的旧节点卡视为已消失，不参与指纹匹配。
-pub fn load_tasks_by_workflow(
-    conn: &rusqlite::Connection,
-    workflow_id: &str,
-) -> Result<Vec<super::Task>, String> {
-    let sql = format!(
-        "{TASK_SELECT_COLS} WHERE workflow_id = ?1 AND deleted_at IS NULL ORDER BY ord, rowid"
-    );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([workflow_id], task_from_row)
-        .map_err(|e| e.to_string())?;
-    let mut tasks = Vec::new();
-    for r in rows {
-        tasks.push(r.map_err(|e| e.to_string())?);
-    }
-    Ok(tasks)
-}
-
 /// 行存在性定点查spawn 的 parent 卡校验用——）。
 pub fn task_exists(conn: &rusqlite::Connection, id: &str) -> Result<bool, String> {
     conn.query_row("SELECT 1 FROM tasks WHERE id = ?1", [id], |_| Ok(()))
@@ -784,13 +756,6 @@ pub(crate) fn delete_non_self_locked(
             [self_pid],
         )
         .map_err(|e| CommandError::DbError(e.to_string()))?;
-    // 卡片档案级联（critical，与 delete_tasks 同口径）：硬删卡不留 brief_entries 孤儿行。
-    // 尽力而为：无 brief_entries 表的连接上不炸主删除
-    for id in &ids {
-        if let Err(e) = crate::db::brief::brief_delete_task(conn, id) {
-            eprintln!("[brief] 卡片档案清理失败（不阻断删除）：{e}");
-        }
-    }
     Ok((n, ids))
 }
 
@@ -995,17 +960,16 @@ pub(crate) fn apply_task_patch(
             }
             "result" => set_from(&mut task.result, v, k)?,
             // 工作流四字段走 task_patch 既有通道，null = 清空。
-            // origin 限枚举值；workflowId 拒空串（它和 workflows 表的 join 键，同 assignee 理由）
+            // origin 限枚举值（遗留值 "workflow" 仅老库数据行存在，新写不再放行）；
+            // workflowId 拒空串（它和 tasks.workflow_id 的数据键，同 assignee 理由）
             "origin" => {
                 set_from(&mut task.origin, v, k)?;
                 if let Some(o) = &task.origin {
-                    if o != TASK_ORIGIN_USER && o != TASK_ORIGIN_WORKFLOW {
+                    if o != TASK_ORIGIN_USER {
                         return Err(CommandError::InvalidArgument {
                             field: k.into(),
                             value: v.to_string(),
-                            reason: format!(
-                                "origin 只能是 {TASK_ORIGIN_USER}/{TASK_ORIGIN_WORKFLOW}"
-                            ),
+                            reason: format!("origin 只能是 {TASK_ORIGIN_USER}"),
                         });
                     }
                     if o == TASK_ORIGIN_USER {
@@ -1592,47 +1556,6 @@ mod task_set_column_tests {
         let (count, ids) = delete_non_self_locked(&conn, "self-pid").unwrap();
         assert_eq!((count, ids.len()), (0, 0));
         assert_eq!(load_all(&conn).unwrap().len(), 2);
-    }
-
-    /// 硬删同步级联卡片档案（critical，与 delete_tasks 同口径）：被删卡的
-    /// brief_entries 行一并清掉不留孤儿；本人卡与工作流级条目（task_id NULL）不动
-    #[test]
-    fn delete_non_self_cascades_brief_entries() {
-        let _g = crate::db::lock_db_write();
-        let conn = setup_conn();
-        crate::db::brief::ensure_brief_entries(&conn).unwrap();
-        insert_owned_task(&conn, "other", Some("someone-else"));
-        insert_owned_task(&conn, "mine", Some("self-pid"));
-        for tid in ["other", "mine"] {
-            conn.execute(
-                "INSERT INTO brief_entries (workflow_id, task_id, kind, source, text, created_at)
-                 VALUES ('wf1', ?1, 'node', 'manual', 'x', 1000)",
-                rusqlite::params![tid],
-            )
-            .unwrap();
-        }
-        conn.execute(
-            "INSERT INTO brief_entries (workflow_id, task_id, kind, source, text, created_at)
-             VALUES ('wf1', NULL, 'node', 'manual', 'x', 1000)",
-            [],
-        )
-        .unwrap();
-
-        let (count, _) = delete_non_self_locked(&conn, "self-pid").unwrap();
-        assert_eq!(count, 1);
-
-        let remaining: Vec<Option<String>> = {
-            let mut stmt = conn
-                .prepare("SELECT task_id FROM brief_entries ORDER BY id")
-                .unwrap();
-            stmt.query_map([], |r| r.get(0))
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-        };
-        assert_eq!(remaining.len(), 2, "仅留本人卡与工作流级档案行");
-        assert!(remaining.contains(&Some("mine".to_string())));
-        assert!(remaining.contains(&None), "task_id NULL 的工作流级条目不动");
     }
 
     #[test]

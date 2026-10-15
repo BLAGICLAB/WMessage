@@ -249,6 +249,10 @@ pub struct BotConfig {
     /// 0 = 显式关闭截断（逃生口，长会话请依赖上下文压缩兜底）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_chars: Option<u32>,
+    /// 任务执行提问预算（ask_user 每次执行可问次数）：None = 3；钳 1..=5。
+    /// 原 workflow_settings.ask_budget，随工作流退役迁入。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_budget: Option<u8>,
     /// per-tool 权限规则表：deny/ask/allow 首中即停，无命中走全局 perm_mode。
     /// None/空 = 无规则（现状）；清洗见 commands::sanitize_tool_rules。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -356,6 +360,7 @@ impl Default for BotConfig {
             subagent_max_wall_secs: None,
             search_max_results: None,
             max_tool_output_chars: None,
+            ask_budget: None,
             tool_rules: None,
         }
     }
@@ -534,6 +539,8 @@ pub struct BotConfigView {
     pub search_max_results: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_chars: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_budget: Option<u8>,
     /// per-tool 权限规则表原样透传（设置页授权卡编辑）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_rules: Option<Vec<ToolRule>>,

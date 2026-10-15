@@ -30,8 +30,10 @@ pub const STATUS_DISMISSED: &str = "dismissed";
 pub const KIND_MEMORY: &str = "memory_proposal";
 pub const KIND_EVOLUTION: &str = "evolution_proposal";
 pub const KIND_ARTIFACT: &str = "artifact_bind";
-/// 工作流执行提问：ask 端落队列、应答端 `workflow_question_respond` 处理；
-/// payload = {questionId, workflowId, workflowName, taskId, nodeTitle, question, why, options, assumption, createdAt}
+/// 任务执行提问（ask_user）：ask 端落队列、应答端 `ask_respond` 处理。
+/// kind 字符串是遗留名（库内历史行沿用，改了就对不上旧数据）；
+/// payload = {questionId, taskId, nodeTitle, question, why, options, assumption, createdAt}
+/// （旧行可能还带 workflowId/workflowName/runStartedAt，应答端按缺省容错）
 pub const KIND_WORKFLOW_QUESTION: &str = "workflow_question";
 
 #[derive(Serialize, Clone, Debug)]

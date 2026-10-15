@@ -166,7 +166,7 @@ impl ConsolidateOp {
 
 /// 剥 ```json 围栏 / 截取首个 { 到末个 } 并解析（健壮优先：失败 → None）。
 fn extract_json(text: &str) -> Option<serde_json::Value> {
-    let t = crate::workflow_decompose::strip_fences(text);
+    let t = crate::llm_text::strip_fences(text);
     let start = t.find('{');
     let end = t.rfind('}');
     let (s, e) = start.zip(end).filter(|(s, e)| s < e)?;

@@ -68,7 +68,6 @@ pub async fn peek<R: tauri::Runtime>(app: &AppHandle<R>, task_id: &str) -> Vec<R
 /// - Manual（🤖 按钮）：必须任务卡 column=done 才弹（用户主动点完成）
 /// - Scheduled（⏰ 定时）：不论 column 都弹（不能让 LLM 误切 status 杀定时）
 /// - Batch（📦 批量）：不论 column 都弹（同 Scheduled）
-/// - Workflow（🔀 工作流节点）：不论 column 都弹（无人值守语义同 Scheduled
 ///
 /// intermediate 不参与弹窗（schema 已说明：本会话在 AI_Gen_Files 目录
 /// 没新建过的路径不参与绑定——这是 LLM 自报 kind 时的兜底描述，
@@ -95,10 +94,8 @@ pub async fn should_emit<R: tauri::Runtime>(
                 None
             }
         }
-        // Workflow：工作流节点无人值守执行，产物登记语义同 Scheduled
-        TaskExecOrigin::Scheduled | TaskExecOrigin::Batch | TaskExecOrigin::Workflow => {
-            Some(finals)
-        }
+        // Scheduled/Batch：无人值守执行，产物登记语义相同
+        TaskExecOrigin::Scheduled | TaskExecOrigin::Batch => Some(finals),
     }
 }
 
@@ -225,19 +222,6 @@ mod tests {
         assert_eq!(v[0].path, "/a/y.txt");
         // 清理
         take_all(&app, "t2").await;
-    }
-
-    #[tokio::test]
-    async fn should_emit_workflow_same_as_scheduled() {
-        // 工作流节点无人值守 → 不论 column 都弹补 Workflow 臂覆盖）
-        let app = test_handle();
-        register(&app, "tw", "/a/w.txt".into(), ArtifactKind::Final).await;
-        assert!(
-            should_emit(&app, "tw", TaskExecOrigin::Workflow, Some("todo"))
-                .await
-                .is_some()
-        );
-        take_all(&app, "tw").await;
     }
 
     #[tokio::test]

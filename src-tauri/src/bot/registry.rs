@@ -496,7 +496,7 @@ fn call_record_lesson<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a>
     Box::pin(async move { crate::memory::tool_record_lesson(ctx.app, args).await })
 }
 
-/// 工作流执行提问——引擎在 workflow_questions（oneshot 等待 + 假设兜底），
+/// 任务执行提问——引擎在 ask_engine（oneshot 等待 + 假设兜底），
 /// 超时口径 ASK_TIMEOUT_SECS（默认 24h），测试可传短超时直打引擎。
 /// ctx.stop 透传/stop 必须能打断 24h 等待，不能挂死模型循环）。
 fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -504,11 +504,11 @@ fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let session_id = ctx.session_id;
     let stop = ctx.stop;
     Box::pin(async move {
-        crate::workflow_questions::engine_ask_user(
+        crate::ask_engine::engine_ask_user(
             app,
             session_id,
             args,
-            std::time::Duration::from_secs(crate::workflow_questions::ASK_TIMEOUT_SECS),
+            std::time::Duration::from_secs(crate::ask_engine::ASK_TIMEOUT_SECS),
             stop,
         )
         .await

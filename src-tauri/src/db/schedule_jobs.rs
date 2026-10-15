@@ -3,7 +3,6 @@
 //! 与任务卡定时的本质区别：作业在到点前**没有**对应的任务卡——用户只写
 //! 「要做什么」的内容，调度器到点才根据内容新建任务卡并交给机器人执行
 //! （设计取舍见 docs 侧方案：「新建任务卡」而非「给现有卡设定时」）。
-//! 工作流定时不在本表（沿用 workflows.schedule 列，到点跑整张已有工作流）。
 //!
 //! 老数据迁移：tasks.schedule 仍存旧的「现有卡定时」，由 open_db 的
 //! `migrate_legacy_task_schedules` 一次性搬进本表（content = 卡标题）后清空
@@ -64,7 +63,7 @@ pub fn ensure_scheduled_jobs_columns(conn: &rusqlite::Connection) -> Result<(), 
     )
 }
 
-/// 内容长度硬顶（与 workflow goal 同量级：一段「要做什么」的描述）
+/// 内容长度硬顶（一段「要做什么」的描述）
 pub const MAX_JOB_CONTENT: usize = 500;
 
 /// 失败重试上限（借鉴 XXL-JOB 失败重试次数；写入口硬顶，防配置成死循环重烧 LLM）

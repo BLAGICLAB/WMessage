@@ -17,6 +17,8 @@ src-tauri/src/
 ├── profile.rs           个人资料：用户/机器人 头像 + 姓名（profile.json + 头像拷进 profile/；读回 base64 data URL，
 │                        原子写 + 损坏备份 + 5MB/扩展名校验）
 ├── mutation.rs          任务变更来源枚举 MutationOrigin（Bot/Api/Widget…），tasks-updated 事件分流
+├── llm_text.rs          LLM 输出文本小工具：strip_fences 剥 ```json 围栏
+│                        （task_autotag / memory::extract / memory::consolidate 共用）
 │
 │─ 数据层
 ├── db/                  SQLite（wmessage.db）+ 迁移 + 产物 + 工作区（按表分文件）
@@ -161,6 +163,9 @@ src-tauri/src/
 ├── bot_skills/recommend.rs 语义化技能推荐（N7-②）：技能描述 embed（bge-small-zh 复用
 │                        memory/embed）+ 余弦排序截断 top5，embed 不可用降级全清单；
 │                        只影响 SkillCatalog 呈现顺序，不接管 IntentRule 路由
+├── ask_engine.rs        任务执行问答引擎：ask_user 工具（通知队列 wfq:{qid} + oneshot
+│                        等待 + 假设兜底 + 预算扣减/回冲）+ ask_respond 应答命令；
+│                        原.workflow_questions，随画布退役中立化保留（手动执行任务卡共用）
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
 ├── bot_fs.rs            只读工具 read_text_file/grep_files/list_files + 文件编辑
@@ -428,6 +433,7 @@ flowchart TD
 - `api_auth.rs`
 - `api_server.rs`
 - `app_state.rs`
+- `ask_engine.rs`
 - `audit.rs`
 - `bot.rs`
 - `bot_anthropic.rs`
@@ -445,6 +451,7 @@ flowchart TD
 - `exec_steps.rs`
 - `intent_router.rs`
 - `lib.rs`
+- `llm_text.rs`
 - `main.rs`
 - `mutation.rs`
 - `ocr.rs`
@@ -456,10 +463,6 @@ flowchart TD
 - `task_out.rs`
 - `trace_sink.rs`
 - `tool_guard.rs`
-- `workflow_clarify.rs`
-- `workflow_decompose.rs`
-- `workflow_questions.rs`
-- `workflow_runner.rs`
 
 ### `api_handlers/`
 - `api_handlers/body.rs`
@@ -499,9 +502,6 @@ flowchart TD
 ### `db/`
 - `db/bot_history.rs`
 - `db/bot_sessions.rs`
-- `db/brief.rs`
-- `db/workflow_audit.rs`
-- `db/workflow_settings.rs`
 - `db/migrations.rs`
 - `db/mod.rs`
 - `db/paths.rs`
@@ -511,7 +511,6 @@ flowchart TD
 - `db/subagents.rs`
 - `db/tasks.rs`
 - `db/trace.rs`
-- `db/workflow.rs`
 - `db/workspace.rs`
 
 ### `eval/`

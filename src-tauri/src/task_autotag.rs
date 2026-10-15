@@ -1,5 +1,5 @@
 //! 归档自动打标（任务图谱设计 §2）：任务进入归档且无标签时，一次性 LLM 生成
-//! ≤3 个标签回写 tags。复用 workflow_decompose 的一次性推理样板——不开会话、
+//! ≤3 个标签回写 tags。一次性推理样板——不开会话、
 //! 不写 bot_messages、不进聊天记录；失败静默（审计留痕，前端不打扰）。
 //!
 //! 触发方：前端观测「已加载任务从未归档 → 归档」转变后 fire-and-forget 调用；
@@ -32,7 +32,7 @@ const CONTRACT: &str = r#"
 /// 校验链（纯逻辑，单测锚点）：fences 剥离 → JSON → 数量/长度/去重/trim。
 /// 打标是增强功能——超限**截断**不整包拒绝（宁缺毋炸），仅结构非法才报错。
 pub(crate) fn parse_and_validate_tags(raw: &str) -> CommandResult<Vec<String>> {
-    let text = crate::workflow_decompose::strip_fences(raw);
+    let text = crate::llm_text::strip_fences(raw);
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| crate::error::CommandError::InvalidArgument {
             field: "output".into(),

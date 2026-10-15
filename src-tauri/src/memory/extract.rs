@@ -227,7 +227,7 @@ pub struct ExtractedFact {
 /// 解析抽取输出（容错同 parse_ops 风格：剥围栏 → 截取首尾方括号 →
 /// 逐条校验：content 非空（超长截断）、kind 白名单、importance 钳 1..=5）
 pub(crate) fn parse_extract(text: &str) -> Vec<ExtractedFact> {
-    let t = crate::workflow_decompose::strip_fences(text);
+    let t = crate::llm_text::strip_fences(text);
     let Some(start) = t.find('[') else {
         return Vec::new();
     };
@@ -398,7 +398,7 @@ fn build_adjudication_msgs(
 /// 刚改写的内容并冲掉 tags/source/importance——Skip 与「重复无增量丢弃」
 /// 既有语义一致，首条事实与溯源完好。
 fn parse_adjudication(text: &str, candidates: &[Option<store::MemItem>]) -> Vec<Adjudication> {
-    let t = crate::workflow_decompose::strip_fences(text);
+    let t = crate::llm_text::strip_fences(text);
     let parsed = t.find('[').and_then(|start| {
         t.rfind(']')
             .filter(|end| *end > start)

@@ -1001,7 +1001,7 @@ pub async fn bot_chat(
     // 词元统计（P4+）：主聊天也落 exec_traces——此前只有任务执行链落 trace，
     // 设置页「词元统计」对纯聊天用户恒为空（卡片副标题与事实不符的根因）。
     // begin 降级 None 不阻断；end 无论成败成对调用（loop_result 先落捕获再分流）。
-    // origin="chat" 与 manual/scheduled/batch/workflow 同列展示。
+    // origin="chat" 与 manual/scheduled/batch 同列展示。
     let trace_app = app.clone();
     let trace_capture = std::sync::Arc::new(std::sync::Mutex::new(
         crate::trace_sink::TraceCapture::default(),
@@ -1345,9 +1345,9 @@ pub async fn bot_execute_task(
                 .map(|s| s.iter().filter(|x| !x.done).count())
                 .unwrap_or(0);
             if undone >= 2 {
-                let sid = create_exec_session(&app, &task, TaskExecOrigin::Manual, None).await?;
+                let sid = create_exec_session(&app, &task, TaskExecOrigin::Manual).await?;
                 let r = crate::exec_steps::start(&app, &task, Some(&sid)).await;
-                persist_exec_reply(&app, &task, &sid, &r, None).await;
+                persist_exec_reply(&app, &task, &sid, &r).await;
                 return r;
             }
         }
@@ -1420,8 +1420,6 @@ pub enum TaskExecOrigin {
     Scheduled,
     /// 📦 聊天批量执行（每卡一个独立会话）
     Batch,
-    /// 🔀 工作流画布拓扑调度语义同 Scheduled 无人值守）
-    Workflow,
 }
 
 impl TaskExecOrigin {
@@ -1430,7 +1428,6 @@ impl TaskExecOrigin {
             TaskExecOrigin::Manual => "📋 任务：",
             TaskExecOrigin::Scheduled => "⏰ 定时：",
             TaskExecOrigin::Batch => "📦 批量：",
-            TaskExecOrigin::Workflow => "🔀 工作流：",
         }
     }
     pub fn as_str(self) -> &'static str {
@@ -1438,7 +1435,6 @@ impl TaskExecOrigin {
             TaskExecOrigin::Manual => "manual",
             TaskExecOrigin::Scheduled => "scheduled",
             TaskExecOrigin::Batch => "batch",
-            TaskExecOrigin::Workflow => "workflow",
         }
     }
 }
@@ -1450,95 +1446,19 @@ pub struct TaskChatRun {
     pub result: BotChatResult,
 }
 
-/// 工作流执行上下文（W-QA 结构化交接，handoff = typed-schema 策略）：
-/// 总目标 + 直接上游卡的实际产出简报 + 双层档案注入 + 执行提问授权。
-/// 仅工作流链路传入；手动/定时/批量 = None。
-#[derive(Debug, Clone, Default)]
-pub struct TaskExecCtx {
-    /// 工作流总目标（workflows.goal）
-    pub goal: Option<String>,
-    /// 直接上游产出简报（runner 装配：标题/状态/summary/验收标准/绑定文件，已裁剪）
-    pub upstream_brief: Option<String>,
-    /// 双层档案）：工作流决策摘要 + 本卡历史记录（runner 装配
-    /// brief_for_injection，段头已含在内；防跑偏——用户在其他卡的纠偏这里看得见）
-    pub brief: Option<crate::db::brief::BriefContext>,
-    /// 执行提问授权：Some = 本节点可调 ask_user（workflow_id 关联档案与通知）
-    pub ask: Option<AskExecContext>,
-    /// 验收返工证据：验收 fail 后重跑时带上轮 evidence，注入【验收返工】段
-    pub rework_evidence: Option<String>,
-}
-
-/// 执行提问授权上下文：bot_chat 在会话建立时凭它注册 ask_contexts，
-/// ask_user 工具按 session_id 查表；预算与开关在注册表条目上（AppState）。
-#[derive(Debug, Clone)]
-pub struct AskExecContext {
-    /// 关联工作流（档案归组/审计）；None = 任务卡手动执行（无工作流档案，
-    /// 问答走通知中心 + 假设兜底，不落工作流审计）
-    pub workflow_id: Option<String>,
-    /// 提问模式开关（false = 从不提问，工具直接返回假设）
-    pub asks_enabled: bool,
-    /// run 分组键——问题 payload 带上它，应答端写审计行能归到正确的 run
-    pub run_started_at: i64,
-}
-
-impl TaskExecCtx {
-    /// 追加到任务块末尾的注入段；全空 → None（不注入）
-    pub fn render(&self) -> Option<String> {
-        let mut s = String::new();
-        if let Some(g) = self.goal.as_deref().filter(|g| !g.trim().is_empty()) {
-            s.push_str(&format!("\n\n【工作流总目标】\n{g}"));
-        }
-        if let Some(b) = self
-            .upstream_brief
-            .as_deref()
-            .filter(|b| !b.trim().is_empty())
-        {
-            s.push_str(&format!(
-                "\n\n【上游产出】（以下是你直接上游任务卡的实际产出，直接引用，不要重做）：\n{b}"
-            ));
-        }
-        // 双层档案放最后——离对话末端最近，决策摘要的权重靠位置表达
-        if let Some(br) = &self.brief {
-            if let Some(g) = &br.global {
-                s.push_str(&format!("\n\n{g}"));
-            }
-            if let Some(c) = &br.card {
-                s.push_str(&format!("\n\n{c}"));
-            }
-        }
-        // 验收返工：放档案之后（最末端）——返工原因是对本轮最有指向性的指令
-        if let Some(ev) = self
-            .rework_evidence
-            .as_deref()
-            .filter(|e| !e.trim().is_empty())
-        {
-            s.push_str(&format!(
-                "\n\n【验收返工】{ev}。这是同一张卡的重新执行：先看上轮产出为什么没达标\
-（产物文件还在，可读取核对），针对性修正后重新完成本卡，不要重做无关步骤。"
-            ));
-        }
-        if s.is_empty() {
-            None
-        } else {
-            Some(s)
-        }
-    }
-}
-
 /// 创建执行会话（标题 = 来源前缀 + 任务标题）并把任务块作为 user 消息落库，
 /// 广播 chat-open-session 给挂件（busy 时前端排队提示，见设计第 5 节）。
 async fn create_exec_session<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     task: &crate::db::Task,
     origin: TaskExecOrigin,
-    ctx: Option<&TaskExecCtx>,
 ) -> CommandResult<String> {
     let title = format!(
         "{}{}",
         origin.title_prefix(),
         crate::bot::truncate_for_log(task.title.trim(), 30)
     );
-    let block = build_task_block(task, ctx);
+    let block = build_task_block(task);
     let session = crate::db::lock::with_write_conn(app, move |conn| {
         let s = crate::db::bot_session_create_inner(conn, Some(title))?;
         crate::db::bot_history_save_inner(
@@ -1576,13 +1496,12 @@ async fn persist_exec_reply<R: tauri::Runtime>(
     task: &crate::db::Task,
     sid: &str,
     reply: &CommandResult<BotChatResult>,
-    ctx: Option<&TaskExecCtx>,
 ) {
     let (content, refs) = match reply {
         Ok(r) => (r.text.clone(), serde_json::to_string(&r.task_refs).ok()),
         Err(e) => (format!("⚠️ 执行失败：{}", e.message()), None),
     };
-    let block = build_task_block(task, ctx);
+    let block = build_task_block(task);
     let sid = sid.to_string();
     let r = crate::db::lock::with_write_conn(app, move |conn| {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1627,18 +1546,7 @@ pub async fn run_task_in_chat(
     // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active
     model: Option<String>,
 ) -> CommandResult<TaskChatRun> {
-    run_task_in_chat_impl(app, task_id, origin, model, None).await
-}
-
-/// 工作流链路入口（W-QA 结构化交接）：额外携带总目标 + 上游产出简报
-pub async fn run_task_in_chat_ctx(
-    app: &AppHandle,
-    task_id: &str,
-    origin: TaskExecOrigin,
-    model: Option<String>,
-    ctx: TaskExecCtx,
-) -> CommandResult<TaskChatRun> {
-    run_task_in_chat_impl(app, task_id, origin, model, Some(ctx)).await
+    run_task_in_chat_impl(app, task_id, origin, model).await
 }
 
 async fn run_task_in_chat_impl(
@@ -1647,17 +1555,14 @@ async fn run_task_in_chat_impl(
     origin: TaskExecOrigin,
     // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active
     model: Option<String>,
-    // W-QA：工作流上下文（总目标 + 上游简报）；其他来源恒 None
-    ctx: Option<TaskExecCtx>,
 ) -> CommandResult<TaskChatRun> {
     // 执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
     // 内核（run_task_in_chat_with）填归属并收尾。
     // 轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
     let cfg_for_rounds = crate::bot::load_config(app);
-    // evolution 采样接线——任务执行链路（手动/定时/批量/工作流）此前未接
+    // evolution 采样接线——任务执行链路（手动/定时/批量）此前未接
     // maybe_record_trace（只有主聊天 hook）；LoopTrace 统计在闭包里顺手喂采样判定。
     let exec_started_at = chrono::Utc::now().timestamp_millis();
-    let origin_for_evo = origin;
     let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
         Default::default();
     let hook_for_run = hook.clone();
@@ -1666,7 +1571,7 @@ async fn run_task_in_chat_impl(
         task_id,
         origin,
         Some(hook),
-        ctx.as_ref(),
+        crate::bot::params::resolve_ask_budget_cfg(&cfg_for_rounds),
         |app2, msgs, stop| async move {
             let outcome = crate::bot_model_loop::run_model_loop(
                 app2,
@@ -1690,12 +1595,7 @@ async fn run_task_in_chat_impl(
                         crate::evolution::trace::TraceContext::new(
                             // 闭包内拿不到执行 sid（内核生成）——用 task_id 作稳定标识
                             task_id,
-                            match origin_for_evo {
-                                TaskExecOrigin::Manual
-                                | TaskExecOrigin::Scheduled
-                                | TaskExecOrigin::Batch
-                                | TaskExecOrigin::Workflow => crate::mutation::MutationOrigin::Bot,
-                            },
+                            crate::mutation::MutationOrigin::Bot,
                             exec_started_at,
                         )
                         .with_outcome(crate::evolution::trace::TraceOutcome::Success)
@@ -1735,8 +1635,9 @@ pub async fn run_task_in_chat_with<R: tauri::Runtime, Run, Fut>(
     // 执行 trace 挂钩（None = 不采集，测试与遗留路径用）。
     // 内核负责建 trace（begin）与收尾（end）——成对执行，中途无早退分支。
     trace_hook: Option<std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>>>,
-    // W-QA：工作流上下文（总目标 + 上游简报），None = 非工作流链路
-    ctx: Option<&TaskExecCtx>,
+    // ask_user 提问预算（Wry 壳从 bot 参数解析后传入；内核是泛型 Runtime，
+    // 读不了 Wry 绑定的 bot-config。测试传任意值即可）
+    ask_budget: u8,
     run: Run,
 ) -> CommandResult<TaskChatRun>
 where
@@ -1787,7 +1688,7 @@ where
         ),
     );
     // 1. 新会话 + 任务块 user 消息落库 + chat-open-session 广播
-    let sid = create_exec_session(app, &task, origin, ctx).await?;
+    let sid = create_exec_session(app, &task, origin).await?;
     // 2. ChatGuard（设计 3.4：bot_execute_task 纳入会话锁——执行期间同会话的
     // bot_chat 插话会被拒「稍候再发」，防流式/历史交错）。新会话正常不会冲突，
     // 冲突说明守卫串号，按内部错误处理。
@@ -1804,40 +1705,15 @@ where
     // acquire 失败的早退分支不应泄漏登记（无人 unregister）。
     crate::tool_guard::register_exec_session(&sid, origin);
     // 执行提问授权（ask_user 按 session_id 查表）：
-    // - 工作流节点：run 传入的 ask 配置（开关随 clarify_meta.askMode，run 起读一次）
     // - 手动执行任务卡：默认开启（预算 + 假设兜底 + 可停止的等待）——
     //   交互式技能的确认点（题材/书名等）在手动执行里也要有通道；
-    // - 预算走全局设置 ask_budget（默认 3、钳 1..=5），工作流与任务卡共用；
+    // - 预算 = bot 参数 tools.ask_budget（Wry 壳解析后传入）；
     //   定时/批量保持无人值守自治（不注册，调用即回落假设）
-    let ask_budget = crate::db::workflow_settings::load_ask_budget(app).await;
-    let ask_registered = match ctx.as_ref().and_then(|c| c.ask.as_ref()) {
-        Some(ask) => {
-            crate::workflow_questions::register_ask_context(
-                app,
-                &sid,
-                ask,
-                &task.id,
-                &task.title,
-                ask_budget,
-            );
-            true
-        }
-        None if origin == TaskExecOrigin::Manual => {
-            crate::workflow_questions::register_ask_context(
-                app,
-                &sid,
-                &AskExecContext {
-                    workflow_id: None,
-                    asks_enabled: true,
-                    run_started_at: chrono::Utc::now().timestamp_millis(),
-                },
-                &task.id,
-                &task.title,
-                ask_budget,
-            );
-            true
-        }
-        _ => false,
+    let ask_registered = if origin == TaskExecOrigin::Manual {
+        crate::ask_engine::register_ask_context(app, &sid, &task.id, &task.title, ask_budget);
+        true
+    } else {
+        false
     };
     // 建执行 trace + 注册 session→trace 映射（span/file_change 采集开关）。
     // 位置保证：此后到函数尾无早退分支，end_trace 必然成对执行。观测面失败降级 None。
@@ -1858,7 +1734,7 @@ where
     let stop = StopGuard::new(app, true, Some(sid.clone()));
     // 收尾判定停止用：stop 本体 move 进 run，先留只读令牌
     let stop_token = stop.token();
-    let block = build_task_block(&task, ctx);
+    let block = build_task_block(&task);
     let mut msgs = vec![
         serde_json::json!({"role": "system", "content": format!("{}\n\n{}\n\n{}", EXECUTE_SYSTEM_PROMPT, gen_dir_rule(app), build_skill_block_for(app, Some(&task.title)).await)}),
         serde_json::json!({"role": "user", "content": block}),
@@ -1897,12 +1773,12 @@ where
         .await;
     }
     // assistant 回复落库（失败也落 ⚠️ 行——会话即执行记录，留证可回看）
-    persist_exec_reply(app, &task, &sid, &outcome, ctx).await;
+    persist_exec_reply(app, &task, &sid, &outcome).await;
     //  收尾：解除 session 注册（无论成败），按 TaskExecOrigin 分流落绑定通知。
     crate::tool_guard::unregister_exec_session(&sid);
-    // 提问上下文成对注销（同  生命周期）
+    // 提问上下文成对注销（同执行会话生命周期）
     if ask_registered {
-        crate::workflow_questions::unregister_ask_context(app, &sid);
+        crate::ask_engine::unregister_ask_context(app, &sid);
     }
     let task_column = crate::db::db_load_for(app).await.ok().and_then(|tasks| {
         tasks
@@ -1921,7 +1797,6 @@ where
             TaskExecOrigin::Manual => "手动执行",
             TaskExecOrigin::Scheduled => "定时执行",
             TaskExecOrigin::Batch => "批量执行",
-            TaskExecOrigin::Workflow => "工作流执行",
         };
         let payload = serde_json::json!({
             "taskId": task_id,
@@ -1965,9 +1840,9 @@ where
     }
 }
 
-/// 任务卡执行上下文块（[任务卡执行] + 标题/状态/备注/验收标准/子任务/截止/绑定文件
-/// + 可选工作流注入段），整卡连续执行（run_task_in_chat）与逐步执行（exec_steps）共用
-pub(crate) fn build_task_block(task: &crate::db::Task, ctx: Option<&TaskExecCtx>) -> String {
+/// 任务卡执行上下文块（[任务卡执行] + 标题/状态/备注/验收标准/子任务/截止/绑定文件），
+/// 整卡连续执行（run_task_in_chat）与逐步执行（exec_steps）共用
+pub(crate) fn build_task_block(task: &crate::db::Task) -> String {
     let mut block = format!(
         "[任务卡执行]\nid={}\n标题：{}\n状态：{}",
         task.id,
@@ -2007,10 +1882,6 @@ pub(crate) fn build_task_block(task: &crate::db::Task, ctx: Option<&TaskExecCtx>
                 .collect::<Vec<_>>()
                 .join("；")
         ));
-    }
-    // W-QA：工作流总目标 + 上游产出简报（仅工作流链路有值）
-    if let Some(extra) = ctx.and_then(|c| c.render()) {
-        block.push_str(&extra);
     }
     block
 }

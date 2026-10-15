@@ -207,8 +207,7 @@ fn occurrence_after(
 }
 
 /// 定时串格式校验（写入口单源）：只验格式合法性，不判过去/未来——
-/// 过期的 at: 由调度器 at_expired 清理语义消费。workflow_set_schedule 与
-/// schedule_overview 等写路径共用，防格式规则漂移。
+/// 过期的 at: 由调度器 at_expired 清理语义消费。作业写路径共用，防格式规则漂移。
 pub(crate) fn validate_schedule(s: &str) -> Result<(), String> {
     if let Some(t) = s.strip_prefix("daily:") {
         return parse_hm(t)
@@ -457,260 +456,6 @@ async fn find_due_tasks(app: &AppHandle) -> Vec<crate::db::Task> {
         }
     }
     due
-}
-
-// 工作流定时（定时任务模块）
-
-/// 读取 workflows 行（调度扫描用）。失败按空表处理（同 find_due_tasks 的
-/// db_load unwrap_or_default 容错：扫描轮空转，下轮重试）
-async fn load_workflows_for_sched(app: &AppHandle) -> Vec<crate::db::workflow::Workflow> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::db::open_db(&app).and_then(|conn| crate::db::workflow::load_workflows(&conn))
-    })
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .unwrap_or_default()
-}
-
-/// workflows 行定时字段定点更新（RMW：updated_at 匹配 `IS` 才写，防覆盖并发编辑）。
-/// 返回 false = 没写中（行被删/期间被改），调用方放弃本次触发。
-async fn update_wf_schedule_fields(
-    app: &AppHandle,
-    id: &str,
-    expected_updated_at: Option<i64>,
-    schedule: Option<String>,
-    sched_last: Option<i64>,
-    now_ms: i64,
-) -> bool {
-    let id = id.to_string();
-    let id_cl = id.clone();
-    let outcome = crate::db::lock::with_write_conn(app, move |conn| {
-        let n = conn
-            .execute(
-                "UPDATE workflows SET schedule = ?1, sched_last = ?2, updated_at = ?3 \
-                 WHERE id = ?4 AND updated_at IS ?5",
-                rusqlite::params![schedule, sched_last, now_ms, id_cl, expected_updated_at],
-            )
-            .map_err(|e| e.to_string())?;
-        if n == 0 {
-            return Err("updated_at 不匹配（期间被删除或修改），放弃写入".to_string());
-        }
-        Ok(())
-    })
-    .await;
-    match outcome {
-        Ok(()) => true,
-        Err(e) => {
-            crate::bot::audit_log(
-                app,
-                &format!(
-                    "sched_wf_update_skip | id: {id} | {}",
-                    crate::bot::truncate_for_log(&e, 120)
-                ),
-            );
-            false
-        }
-    }
-}
-
-/// 到点触发整张工作流：先记 sched_last（防重复触发），再走 workflow_run 既有链路
-/// （防重入注册表 / 断点续跑 / 🔀 完成系统通知都在 workflow_runner 内，不重复造）。
-async fn run_scheduled_workflow(app: AppHandle, wf: crate::db::workflow::Workflow) {
-    // 防重入守卫：与任务卡共用 SchedGuard 表（id 空间不相交）
-    let Some(_sched_guard) = SchedGuard::acquire(&app, &wf.id) else {
-        return;
-    };
-    // 机器人开关关闭时不触发（与任务卡同语义）
-    if !crate::bot_slash::bot_get_enabled(app.clone()) {
-        crate::bot::audit_log(
-            &app,
-            &format!("sched_wf_skip | id: {} | 机器人开关未开启", wf.id),
-        );
-        return;
-    }
-    crate::bot::audit_log(
-        &app,
-        &format!(
-            "sched_wf_run | id: {} | name: {} | schedule: {}",
-            wf.id,
-            crate::bot::truncate_for_log(&wf.name, 60),
-            wf.schedule.as_deref().unwrap_or("")
-        ),
-    );
-    let now = chrono::Local::now();
-    // 先记 sched_last：30s 扫描周期内不会重复触发。记录失败放弃本次（同任务卡）
-    if !update_wf_schedule_fields(
-        &app,
-        &wf.id,
-        wf.updated_at,
-        wf.schedule.clone(),
-        Some(now.timestamp_millis()),
-        now.timestamp_millis(),
-    )
-    .await
-    {
-        crate::bot::audit_log(
-            &app,
-            &format!(
-                "sched_wf_skip | id: {} | 记录 sched_last 失败，放弃本次触发",
-                wf.id
-            ),
-        );
-        return;
-    }
-    let result =
-        crate::workflow_runner::workflow_run(app.clone(), wf.id.clone(), Some("schedule".into()))
-            .await;
-    match &result {
-        Ok(start) => {
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "sched_wf_started | id: {} | total: {} | toRun: {}",
-                    wf.id, start.total, start.to_run
-                ),
-            );
-            // 一次性 at: 触发即消费（workflow_run 是 spawn-and-forget，无法等收尾）。
-            // 用标记后的 updated_at 做 RMW 基线；期间用户改过定时则保留新配置。
-            if wf.schedule.as_deref().is_some_and(|s| s.starts_with("at:")) {
-                let clear_now = chrono::Local::now();
-                let _ = update_wf_schedule_fields(
-                    &app,
-                    &wf.id,
-                    Some(now.timestamp_millis()),
-                    None,
-                    Some(now.timestamp_millis()),
-                    clear_now.timestamp_millis(),
-                )
-                .await;
-            }
-        }
-        Err(e) => {
-            let tag = if matches!(e, crate::error::CommandError::TaskInvalidState { .. }) {
-                "sched_wf_busy"
-            } else {
-                "sched_wf_err"
-            };
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "{tag} | id: {} | {}",
-                    wf.id,
-                    crate::bot::truncate_for_log(&e.message(), 160)
-                ),
-            );
-            // spawn 失败回滚 sched_last 至原值（RMW 基线 = 首步写入的 updated_at）：
-            // 不回滚的话 at: 一次性工作流本次触发永久搁浅（既不再到期也不算过期），
-            // 周期工作流也要白等一整个周期；回滚后下轮 tick 重新判定
-            let rb_now = chrono::Local::now();
-            let reverted = update_wf_schedule_fields(
-                &app,
-                &wf.id,
-                Some(now.timestamp_millis()),
-                wf.schedule.clone(),
-                wf.sched_last,
-                rb_now.timestamp_millis(),
-            )
-            .await;
-            crate::bot::audit_log(
-                &app,
-                &format!(
-                    "sched_wf_rollback | id: {} | sched_last 回滚{}",
-                    wf.id,
-                    if reverted {
-                        "成功，下轮 tick 重判"
-                    } else {
-                        "失败，本次触发仍会丢弃"
-                    }
-                ),
-            );
-        }
-    }
-}
-
-/// 工作流定时单轮：过期 at: 清理 + 错过消费 + 到点分发（与 find_due_tasks 同语义）
-async fn workflows_tick(app: &AppHandle) {
-    let now = chrono::Local::now();
-    for wf in load_workflows_for_sched(app).await {
-        let Some(sched) = wf
-            .schedule
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            continue;
-        };
-        if wf.enabled == Some(false) {
-            continue; // 暂停（保留配置）
-        }
-        // 过期一次性（从未执行且已过点）→ 放弃并清掉 schedule（防重启后补跑；
-        // 必须在 classify_due 之前判，否则 occurrence_after(远古基准) 会误判到点）
-        if at_expired(sched, wf.sched_last, now) {
-            crate::bot::audit_log(
-                app,
-                &format!(
-                    "sched_wf_stale | id: {} | 过期一次性定时，放弃并清理",
-                    wf.id
-                ),
-            );
-            let _ = update_wf_schedule_fields(
-                app,
-                &wf.id,
-                wf.updated_at,
-                None,
-                wf.sched_last,
-                now.timestamp_millis(),
-            )
-            .await;
-            continue;
-        }
-        match classify_due(sched, wf.sched_last, now) {
-            DueVerdict::Run => {
-                let app2 = app.clone();
-                let app_audit = app.clone();
-                let wf_id = wf.id.clone();
-                tauri::async_runtime::spawn(async move {
-                    // per-task panic 可见性（同任务卡路径）：catch_unwind 落审计
-                    let body = std::panic::AssertUnwindSafe(run_scheduled_workflow(app2, wf));
-                    if let Err(panic) = body.catch_unwind().await {
-                        let msg = crate::audit::panic_message(panic);
-                        crate::bot::audit_log(
-                            &app_audit,
-                            &format!(
-                                "sched_wf_panic | id: {wf_id} | {} | 工作流触发 panic 已隔离",
-                                crate::bot::truncate_for_log(&msg, 200)
-                            ),
-                        );
-                    }
-                });
-            }
-            DueVerdict::Missed => {
-                crate::bot::audit_log(
-                    app,
-                    &format!(
-                        "sched_wf_missed | id: {} | schedule: {} | 到点已超 {}h 补跑窗口，跳过不补跑",
-                        wf.id,
-                        crate::bot::truncate_for_log(sched, 40),
-                        CATCHUP_WINDOW.num_hours()
-                    ),
-                );
-                notify_schedule_missed(app, &wf.name);
-                // 消费 occurrence：sched_last 记为现在，下个 tick 不再误判
-                let _ = update_wf_schedule_fields(
-                    app,
-                    &wf.id,
-                    wf.updated_at,
-                    wf.schedule.clone(),
-                    Some(now.timestamp_millis()),
-                    now.timestamp_millis(),
-                )
-                .await;
-            }
-            DueVerdict::NotDue => {}
-        }
-    }
 }
 
 // 内容型定时作业（scheduled_jobs）
@@ -1428,25 +1173,23 @@ async fn scheduler_tick(app: &AppHandle, sem: &std::sync::Arc<tokio::sync::Semap
             }
         });
     }
-    // 工作流定时同一循环扫描（任务卡 + 工作流共用 30s tick 与 panic 兜底）
-    workflows_tick(app).await;
     // 内容型定时作业同一循环扫描（到点新建任务卡并执行）
     jobs_tick(app).await;
 }
 
 // 定时任务模块命令
 
-/// 定时任务模块列表条目（schedule_overview 返回）：内容型作业 + 工作流两源合并。
+/// 定时任务模块列表条目（schedule_overview 返回）。
 /// nextRunAt 由 Rust 端 occurrence_after 单源计算（前端不重写解析器——
 /// weekly:NaN 双端解析漂移事故的教训，见 src/format.ts 注释）。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduleEntry {
-    /// "job"（内容型，到点新建任务卡并执行）| "workflow"（到点跑整张工作流）
+    /// "job"（内容型，到点新建任务卡并执行）
     pub kind: &'static str,
     pub target_id: String,
     pub title: String,
-    /// 工作流 goal 摘要 / 任务卡 note 截断
+    /// 任务卡 note 截断
     pub detail: Option<String>,
     pub schedule: String,
     pub sched_last: Option<i64>,
@@ -1494,7 +1237,7 @@ fn build_schedule_entry(
     }
 }
 
-/// 定时任务模块列表：合并 scheduled_jobs + workflows 两源。
+/// 定时任务模块列表（内容型作业）。
 #[tauri::command]
 pub async fn schedule_overview(app: AppHandle) -> CommandResult<Vec<ScheduleEntry>> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1522,26 +1265,6 @@ pub async fn schedule_overview(app: AppHandle) -> CommandResult<Vec<ScheduleEntr
             e.retry_max = j.retry_max_or_zero();
             e.pause_on_failure = j.pause_on_failure == Some(true);
             out.push(e);
-        }
-        for w in crate::db::workflow::load_workflows(&conn).map_err(CommandError::from)? {
-            let Some(sched) = w
-                .schedule
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
-            };
-            out.push(build_schedule_entry(
-                "workflow",
-                w.id.clone(),
-                w.name.clone(),
-                Some(w.goal.chars().take(160).collect::<String>()),
-                sched,
-                w.sched_last,
-                w.enabled != Some(false),
-                now,
-            ));
         }
         Ok(out)
     })
@@ -1584,39 +1307,10 @@ pub async fn schedule_set_enabled(
             );
             Ok(())
         }
-        "workflow" => {
-            let app_emit = app.clone();
-            let id_for_audit = id.clone();
-            tauri::async_runtime::spawn_blocking(move || -> CommandResult<()> {
-                let _g = crate::db::lock_db_write();
-                let conn = crate::db::open_db(&app)?;
-                let n = conn
-                    .execute(
-                        "UPDATE workflows SET enabled = ?1, updated_at = ?2 WHERE id = ?3",
-                        rusqlite::params![
-                            enabled as i64,
-                            chrono::Utc::now().timestamp_millis(),
-                            id
-                        ],
-                    )
-                    .map_err(|e| CommandError::from(e.to_string()))?;
-                if n == 0 {
-                    return Err(CommandError::TaskNotFound(id.clone()));
-                }
-                Ok(())
-            })
-            .await
-            .map_err(|e| CommandError::from(format!("定时开关线程 join 失败：{e}")))??;
-            crate::bot::audit_log(
-                &app_emit,
-                &format!("sched_enabled | workflow: {id_for_audit} | enabled: {enabled}"),
-            );
-            Ok(())
-        }
         other => Err(CommandError::InvalidArgument {
             field: "kind".into(),
             value: other.to_string(),
-            reason: "kind 只能是 task/workflow".into(),
+            reason: "kind 只能是 job".into(),
         }),
     }
 }

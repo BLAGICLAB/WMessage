@@ -46,10 +46,10 @@ type ConfirmMap = Mutex<
 
 // CONFIRMS 已迁入 `AppState.confirm_requests`（访问器 `confirms(app)` 见文件尾）。
 
-/// 工作流提问等待表：questionId → oneshot 通道。
-/// ask 端（runner）注册、应答端（`workflow_question_respond`）take 后发送。
+/// 任务执行提问等待表：questionId → oneshot 通道。
+/// ask 端（ask_user 工具）注册、应答端（`ask_respond`）take 后发送。
 /// 与 CONFIRMS 的区别：无 60s 超时默认拒——等待上限由 ask 端按提问超时配置兜底，
-/// 通道关闭/超时一律回落到问题自带的假设值（红线：忽略问题工作流也能走）。
+/// 通道关闭/超时一律回落到问题自带的假设值（红线：忽略问题执行也能走）。
 type QuestionWaiters = Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>;
 
 // 执行期 · 会话/任务防重入
@@ -98,11 +98,11 @@ pub(crate) struct AppState {
     pub(crate) pending: Mutex<HashMap<String, crate::exec_steps::PendingExec>>,
     /// 待确认请求（`ConfirmMap`：id → (oneshot 通道, 归属会话 id)）
     pub(crate) confirm_requests: ConfirmMap,
-    /// 工作流提问等待表（`QuestionWaiters`：questionId → oneshot 通道）
+    /// 任务执行提问等待表（`QuestionWaiters`：questionId → oneshot 通道）
     pub(crate) question_waiters: QuestionWaiters,
-    /// 工作流提问上下文表（sessionId → AskRegistration；bot_chat 会话建立时
+    /// 任务执行提问上下文表（sessionId → AskRegistration；bot_chat 会话建立时
     /// 注册/收尾注销，ask_user 工具按 session_id 查表，预算在条目上）
-    pub(crate) ask_contexts: Mutex<HashMap<String, crate::workflow_questions::AskRegistration>>,
+    pub(crate) ask_contexts: Mutex<HashMap<String, crate::ask_engine::AskRegistration>>,
     /// 子 agent 取消令牌表（subagent_id → StopToken；
     /// cancel_subagent 持有的句柄，runner 注册 / 收尾删除）
     pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>>,
@@ -163,15 +163,15 @@ pub(crate) fn confirms<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &Confirm
     &ext(app).confirm_requests
 }
 
-/// 工作流提问等待表访问器ask 端注册 / 应答端 take 走；无 RAII 守卫，同 confirms 口径）。
+/// 任务执行提问等待表访问器ask 端注册 / 应答端 take 走；无 RAII 守卫，同 confirms 口径）。
 pub(crate) fn question_waiters<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &QuestionWaiters {
     &ext(app).question_waiters
 }
 
-/// 工作流提问上下文表访问器注册/注销/ask_user 查表共用一把锁）。
+/// 任务执行提问上下文表访问器注册/注销/ask_user 查表共用一把锁）。
 pub(crate) fn ask_contexts<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> &Mutex<HashMap<String, crate::workflow_questions::AskRegistration>> {
+) -> &Mutex<HashMap<String, crate::ask_engine::AskRegistration>> {
     &ext(app).ask_contexts
 }
 

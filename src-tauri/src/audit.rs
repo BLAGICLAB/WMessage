@@ -15,7 +15,7 @@ use tauri::AppHandle;
 /// `|` 倍增 + `| ` 双空格补位 + \n\r 短形式 + 控制字符全集（含 ESC/BEL/DEL/C1）
 /// 与 U+2028/2029 显式转义 + 转义后按字符数截断加省略号。
 /// 经此 re-export 保持 `crate::audit::escape_for_log` 路径不变
-/// （workflow_runner / workflow_questions / workflow_decompose / task_autotag 按此引用）。
+/// （ask_engine / task_autotag 等按此引用）。
 pub(crate) use crate::bot::log_sanitize::escape_for_log;
 
 /// kv 值写入日志前的长度上限

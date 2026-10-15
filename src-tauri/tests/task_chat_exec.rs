@@ -189,16 +189,9 @@ async fn run_task_in_chat_full_chain_manual_origin() {
         }
     };
 
-    let run = run_task_in_chat_with(
-        &handle,
-        &task_id,
-        TaskExecOrigin::Manual,
-        None,
-        None,
-        runner,
-    )
-    .await
-    .expect("执行应成功");
+    let run = run_task_in_chat_with(&handle, &task_id, TaskExecOrigin::Manual, None, 3, runner)
+        .await
+        .expect("执行应成功");
     let sid = run.session_id.clone();
     assert_eq!(run.result.text, "任务已完成，报告已生成");
     // runner 内记录的会话 id 与返回值一致
@@ -266,7 +259,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
             &t1,
             TaskExecOrigin::Batch,
             None,
-            None,
+            3,
             move |_app, _msgs, _stop| async move {
                 let _ = entered_tx.send(());
                 let _ = release_rx.await;
@@ -283,7 +276,7 @@ async fn duplicate_trigger_rejected_by_exec_guard() {
         &task_id,
         TaskExecOrigin::Scheduled,
         None,
-        None,
+        3,
         move |_app, _msgs, _stop| async move { Ok(("不应执行到这里".to_string(), Vec::new())) },
     )
     .await;
@@ -328,7 +321,7 @@ async fn failure_persists_error_reply_in_session() {
         &task_id,
         TaskExecOrigin::Scheduled,
         None,
-        None,
+        3,
         runner,
     )
     .await
