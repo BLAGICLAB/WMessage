@@ -186,7 +186,7 @@ pub fn resolve_top_p(v: Option<f64>) -> Option<f64> {
 
 /// 条目级推理参数解析：优先级 条目值 > 全局值 > 内置默认。
 /// - max_tokens：条目值覆盖全局 BotConfig.max_tokens，再统一过 resolve_max_tokens
-///   （8192 兜底 + 256..=200000 钳制）；OpenAI 分支不发送（多数兼容网关不认识），
+///   （32768 兜底 + 256..=200000 钳制）；OpenAI 分支不发送（多数兼容网关不认识），
 ///   但有效值仍供 reasoning::resolve 夹紧 thinking budget 用。
 /// - temperature / top_p：配置无全局字段，条目有值才注入（否则用模型服务端默认），
 ///   注入前按协议钳制（resolve_temperature / resolve_top_p）。
@@ -211,12 +211,12 @@ pub fn effective_inference(
 
 // max_tokens
 
-/// max_tokens 默认值与合法范围（默认 8192；仅 Anthropic 模式发送）
-pub const DEFAULT_MAX_TOKENS: u32 = 8192;
+/// max_tokens 默认值与合法范围（默认 32768；仅 Anthropic 模式发送）
+pub const DEFAULT_MAX_TOKENS: u32 = 32_768;
 pub const MIN_MAX_TOKENS: u32 = 256;
 pub const MAX_MAX_TOKENS: u32 = 200_000;
 
-/// max_tokens 配置解析：None = 默认 8192；Some 钳制到 256..=200000
+/// max_tokens 配置解析：None = 默认 32768；Some 钳制到 256..=200000
 pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
     v.unwrap_or(DEFAULT_MAX_TOKENS)
         .clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)

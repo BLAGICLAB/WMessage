@@ -60,6 +60,9 @@ pub enum MockBehavior {
     /// ── Anthropic 协议应答（2026-09-05 Anthropic 兼容模式）──
     /// 流式文本回复（message_start/content_block_*/message_delta/message_stop 全套事件）
     AnthropicTextReply(String),
+    /// 流式文本回复但以 stop_reason=max_tokens 收尾（撞输出上限被截断，
+    /// 思维链耗尽预算导致正文为空是它的典型形态）
+    AnthropicTruncatedText(String),
     /// 流式 tool_use 回复（content_block_start tool_use + input_json_delta + stop_reason=tool_use）
     AnthropicToolCall(ToolCallResponse),
     /// 200 流内 error 事件（Anthropic 协议 {"type":"error",...}，对齐 OpenAI 侧 StreamError）
@@ -308,6 +311,9 @@ fn build_http_response(behavior: &MockBehavior) -> String {
                 MockBehavior::StreamError(msg) => sse_stream_error_reply(msg),
                 MockBehavior::RawSse(raw) => raw.clone(),
                 MockBehavior::AnthropicTextReply(content) => anthropic_sse_text_reply(content),
+                MockBehavior::AnthropicTruncatedText(content) => {
+                    anthropic_sse_truncated_text_reply(content)
+                }
                 MockBehavior::AnthropicToolCall(tc) => {
                     anthropic_sse_tool_call_reply(&tc.name, &tc.arguments)
                 }
@@ -411,6 +417,32 @@ fn anthropic_sse_text_reply(content: &str) -> String {
          \n\
          event: message_delta\n\
          data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":7}}}}\n\
+         \n\
+         event: message_stop\n\
+         data: {{\"type\":\"message_stop\"}}\n\
+         \n"
+    )
+}
+
+/// Anthropic 流式文本回复但撞上输出上限：事件序列同 anthropic_sse_text_reply，
+/// 只把 message_delta 的 stop_reason 换成 max_tokens
+fn anthropic_sse_truncated_text_reply(content: &str) -> String {
+    let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "event: message_start\n\
+         data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_mock\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mock-model\",\"stop_reason\":null,\"usage\":{{\"input_tokens\":12,\"output_tokens\":1}}}}}}\n\
+         \n\
+         event: content_block_start\n\
+         data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\
+         \n\
+         event: content_block_delta\n\
+         data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{escaped}\"}}}}\n\
+         \n\
+         event: content_block_stop\n\
+         data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\
+         \n\
+         event: message_delta\n\
+         data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"max_tokens\"}},\"usage\":{{\"output_tokens\":8192}}}}\n\
          \n\
          event: message_stop\n\
          data: {{\"type\":\"message_stop\"}}\n\
