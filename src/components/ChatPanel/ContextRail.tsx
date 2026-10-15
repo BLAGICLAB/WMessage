@@ -13,7 +13,6 @@ import {
   FolderOpen,
   ListTodo,
   Loader2,
-  PanelRightClose,
 } from "lucide-react";
 import { basename } from "../../format";
 import type { Task } from "../../types";
@@ -40,7 +39,6 @@ type ContextRailProps = {
   subagents: SubagentRun[];
   /** 点子 agent 条目 → 右侧栏切到它的详情视图 */
   onOpenSubagent: (id: string) => void;
-  onCollapse: () => void;
   /** 当前工作面（受控）：内嵌子 agent 区域要点侧栏切类别，状态得在父级 */
   tab: Tab;
   onTabChange: (t: Tab) => void;
@@ -63,7 +61,6 @@ export function ContextRail({
   fileChanges,
   subagents,
   onOpenSubagent,
-  onCollapse,
   tab,
   onTabChange,
 }: ContextRailProps) {
@@ -77,9 +74,8 @@ export function ContextRail({
       // min/max 只在极端窗口兜底（窄窗不让侧栏挤成缝，宽窗不让正文消失）
       className="flex min-w-[240px] max-w-[420px] flex-1 flex-col overflow-y-auto pl-3"
     >
-      {/* 顶排：类别切换 + 收起。切类别不打断对话（工作面在侧栏，主对话留在原位） */}
-      <div className="mb-2 flex shrink-0 items-center gap-1">
-        <div className="flex min-w-0 flex-1 gap-1">
+      {/* 类别切换：切类别不打断对话（工作面在侧栏，主对话留在原位） */}
+      <div className="mb-2 flex shrink-0 gap-1">
           {TABS.map((t) => {
             const on = tab === t.key;
             return (
@@ -106,16 +102,6 @@ export function ContextRail({
               </button>
             );
           })}
-        </div>
-        <button
-          type="button"
-          className="nm-icon-btn h-7 w-7 shrink-0"
-          aria-label="收起上下文栏"
-          title="收起上下文栏"
-          onClick={onCollapse}
-        >
-          <PanelRightClose size={14} aria-hidden />
-        </button>
       </div>
 
       {tab === "tasks" && (

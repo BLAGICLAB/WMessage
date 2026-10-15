@@ -262,7 +262,12 @@ describe("ChatPanel", () => {
     const rail = within(
       screen.getByRole("complementary", { name: "上下文侧栏" }),
     );
+    // 侧栏渲染正常（渲染在聊天主体的兄弟位置，见下一条用例）
     expect(rail.getByText("写周报")).toBeInTheDocument();
+    // 折叠钮只有头部这一个，侧栏内不放第二个
+    expect(screen.getAllByRole("button", { name: "收起右侧栏" })).toHaveLength(
+      1,
+    );
     // 勾完成 → 走宿主回调（App 侧接 updateTask），组件自己不碰后端
     await user.click(rail.getByRole("button", { name: "完成 写周报" }));
     expect(onUpdateTask).toHaveBeenCalledWith("t1", { column: "done" });
@@ -277,7 +282,7 @@ describe("ChatPanel", () => {
     await screen.findAllByText("默认会话");
     expect(railSession("默认会话")).toBeInTheDocument();
     // 收起：侧栏整体卸载
-    await user.click(screen.getByRole("button", { name: "收起侧栏" }));
+    await user.click(screen.getByRole("button", { name: "收起会话栏" }));
     expect(
       screen.queryByRole("complementary", { name: "会话列表" }),
     ).toBeNull();
@@ -288,11 +293,12 @@ describe("ChatPanel", () => {
     expect(expandBtn).toHaveAttribute("aria-expanded", "false");
     await user.click(expandBtn);
     expect(railSession("默认会话")).toBeInTheDocument();
-    // 两个折叠入口（侧栏内 + 头部）用不同的可访问名，屏幕阅读器能区分
     expect(screen.getByRole("button", { name: "收起会话栏" })).toHaveAttribute(
       "aria-expanded",
       "true",
     );
+    // 折叠钮只此一个：侧栏内不再放第二个，否则同一动作有两处入口
+    expect(screen.getAllByRole("button", { name: "收起会话栏" })).toHaveLength(1);
   });
 
   it("会话侧栏常驻：切换会话不用先展开菜单，当前会话有 aria-current 标记", async () => {

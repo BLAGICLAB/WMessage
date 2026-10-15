@@ -10,7 +10,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
-import { PanelLeftClose, PanelLeftOpen, PanelRightOpen } from "lucide-react";
+import {
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+} from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getBotConfig } from "../../lib/botConfig";
 import type { Task } from "../../types";
@@ -1492,7 +1497,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
           onSelect={switchSession}
           onNew={newSession}
           onDelete={deleteSession}
-          onCollapse={toggleRail}
         />
       )}
       {/* flex-[2]：与右侧栏的 flex-1 按 2:1 分剩余空间 —— 侧栏恰为聊天区的
@@ -1562,13 +1566,14 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
       )}
       {/* 聊天主体头部：当前会话标题常驻可见——切到历史会话后，用户靠这一行
           确认自己在哪一段对话里，而不是靠侧栏高亮反推。
-          折叠钮固定在标题左侧：收起侧栏后它是唯一的展开入口，不能跟着侧栏一起消失 */}
+          两端各一个折叠钮，是各自侧栏的唯一开关——侧栏内不再放第二个 */}
       <header className="mb-2 flex shrink-0 items-center gap-2 border-b border-[var(--edge)] pb-2">
         <button
           type="button"
           className="nm-icon-btn h-7 w-7"
           aria-expanded={railOpen}
           aria-controls="chat-session-rail"
+          aria-label={railOpen ? "收起会话栏" : "展开会话栏"}
           title={railOpen ? "收起会话栏" : "展开会话栏"}
           onClick={toggleRail}
         >
@@ -1591,7 +1596,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
           aria-label={ctxOpen ? "收起右侧栏" : "展开右侧栏"}
           onClick={toggleCtx}
         >
-          <PanelRightOpen size={15} aria-hidden />
+          {ctxOpen ? (
+            <PanelRightClose size={15} aria-hidden />
+          ) : (
+            <PanelRightOpen size={15} aria-hidden />
+          )}
         </button>
         {viewedBusy && (
           <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-[var(--brand)]">
@@ -1680,7 +1689,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, onRunTask }: Props) {
           fileChanges={sessionFileChanges}
           subagents={subagentRuns}
           onOpenSubagent={openSubagentDetail}
-          onCollapse={toggleCtx}
           tab={ctxTab}
           onTabChange={setCtxTab}
         />
