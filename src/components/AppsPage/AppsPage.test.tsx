@@ -243,6 +243,47 @@ describe("AppsPage", () => {
     );
   });
 
+  it("脚本失败（exit_code!=0）弹红色失败横幅，不谎报运行完成", async () => {
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "apps_run")
+        return Promise.resolve({
+          ...RUN_RESULT,
+          exitCode: 2,
+          summary: "❌ input/本月.xlsx 不存在",
+        });
+      return routeInvoke(cmd, args ?? {});
+    });
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await userEvent.click(screen.getAllByRole("button", { name: "运行" })[0]);
+    expect(await screen.findByText("「工资单匹配」运行失败")).toBeInTheDocument();
+    expect(screen.getByText(/❌ input\/本月\.xlsx 不存在/)).toBeInTheDocument();
+    expect(screen.queryByText("「工资单匹配」运行完成")).not.toBeInTheDocument();
+  });
+
+  it("恢复最后一条归档后仍能切回程序列表（视图开关不消失）", async () => {
+    const user = userEvent.setup();
+    let hasArchived = true;
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "apps_unarchive") {
+        hasArchived = false;
+        return Promise.resolve(null);
+      }
+      if (cmd === "apps_list_archived")
+        return Promise.resolve(hasArchived ? ARCHIVED : []);
+      return routeInvoke(cmd, args ?? {});
+    });
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await user.click(screen.getByRole("button", { name: /已归档/ }));
+    await user.click(await screen.findByRole("button", { name: "恢复" }));
+    // 恢复后归档列表清空：空态出现，但「已归档」开关必须还在（否则回不去）
+    expect(await screen.findByText("没有已归档的程序")).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: /已归档/ });
+    await user.click(toggle);
+    expect(await screen.findByText("工资单匹配")).toBeInTheDocument();
+  });
+
   it("「已归档」视图：列出归档程序，点恢复调 apps_unarchive", async () => {
     const user = userEvent.setup();
     render(<AppsPage />);

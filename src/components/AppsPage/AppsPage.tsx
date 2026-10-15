@@ -4,6 +4,7 @@ import {
   ArchiveRestore,
   Boxes,
   Check,
+  CircleX,
   FolderOpen,
   History,
   Loader2,
@@ -59,6 +60,7 @@ export function AppsPage() {
     appName: string;
     durationMs: number;
     summary: string | null;
+    failed: boolean;
   } | null>(null);
 
   // 每张卡一条「上次运行」状态线：limit=1 轻查询；单卡失败退「尚未运行」不阻塞整页
@@ -113,11 +115,14 @@ export function AppsPage() {
     setRunning(a.id);
     runApp(a.id, null, undefined)
       .then((r) => {
+        // 后端对脚本失败（exit_code != 0）也返回 Ok——横幅必须自己分状态，
+        // 否则失败也弹绿色「运行完成」，与系统通知的「运行失败」打架
         setLastResult({
           appId: a.id,
           appName: a.name,
           durationMs: r.durationMs,
           summary: r.summary,
+          failed: r.exitCode !== 0,
         });
         loadLastRun(a.id);
       })
@@ -140,7 +145,8 @@ export function AppsPage() {
           运行不连大模型，零成本
         </span>
         <div className="flex-1" />
-        {archived.length > 0 && (
+        {/* 已归档视图自己的空态没有其他出口——恢复最后一条后必须还能切回程序列表 */}
+        {(archived.length > 0 || showArchived) && (
           <button
             className={`nm-btn flex h-8 shrink-0 items-center gap-1.5 whitespace-nowrap px-2.5 text-xs ${
               showArchived ? "text-[var(--t1)]" : "text-[var(--t4)]"
@@ -305,17 +311,20 @@ function AppCard({
           </button>
         )}
         <div className="flex-1" />
-        <button
-          className={`nm-icon-btn h-7 w-7 ${
-            historyOpen ? "text-[var(--t1)]" : ""
-          }`}
-          title="运行历史"
-          aria-label="运行历史"
-          aria-expanded={historyOpen}
-          onClick={() => setHistoryOpen((v) => !v)}
-        >
-          <History size={13} aria-hidden />
-        </button>
+        {/* 归档卡不开历史面板：回滚属内容变更，后端对归档程序拒绝，别给死入口 */}
+        {!archived && (
+          <button
+            className={`nm-icon-btn h-7 w-7 ${
+              historyOpen ? "text-[var(--t1)]" : ""
+            }`}
+            title="运行历史"
+            aria-label="运行历史"
+            aria-expanded={historyOpen}
+            onClick={() => setHistoryOpen((v) => !v)}
+          >
+            <History size={13} aria-hidden />
+          </button>
+        )}
         {!archived && (
           <button
             className="nm-icon-btn h-7 w-7 text-[var(--t5)] hover:text-[var(--danger)]"
@@ -570,14 +579,25 @@ function ResultBanner({
     appName: string;
     durationMs: number;
     summary: string | null;
+    failed: boolean;
   };
   onDismiss: () => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-2 rounded-[var(--r-md)] border border-[color-mix(in_srgb,var(--success)_35%,transparent)] bg-[color-mix(in_srgb,var(--success)_9%,var(--surface))] px-3 py-2 text-xs">
-      <Check size={14} aria-hidden className="shrink-0 text-[var(--success)]" />
+    <div
+      className={`flex shrink-0 items-center gap-2 rounded-[var(--r-md)] border px-3 py-2 text-xs ${
+        result.failed
+          ? "border-[color-mix(in_srgb,var(--danger)_35%,transparent)] bg-[color-mix(in_srgb,var(--danger)_9%,var(--surface))]"
+          : "border-[color-mix(in_srgb,var(--success)_35%,transparent)] bg-[color-mix(in_srgb,var(--success)_9%,var(--surface))]"
+      }`}
+    >
+      {result.failed ? (
+        <CircleX size={14} aria-hidden className="shrink-0 text-[var(--danger)]" />
+      ) : (
+        <Check size={14} aria-hidden className="shrink-0 text-[var(--success)]" />
+      )}
       <span className="shrink-0 font-medium text-[var(--t1)]">
-        「{result.appName}」运行完成
+        「{result.appName}」{result.failed ? "运行失败" : "运行完成"}
       </span>
       <span className="shrink-0 tabular-nums text-[var(--t4)]">
         {(result.durationMs / 1000).toFixed(1)}s
