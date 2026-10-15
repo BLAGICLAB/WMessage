@@ -206,9 +206,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     });
   };
   /** 点子 agent（内嵌区域或任务引用块）→ 展开右侧栏并切到「子 Agent」工作面。
-   *  对话是锚点、切类别不换视图：工作面在侧栏，主对话留在原位 */
+   *  对话是锚点、切类别不换视图：工作面在侧栏，主对话留在原位。
+   *  展开态与手点开关同口径落 localStorage，否则程序化展开重启后丢失 */
   const openSubagentDetail = useCallback(() => {
     setCtxOpen(true);
+    localStorage.setItem("chat-ctx-open", "1");
     setCtxTab("agents");
   }, []);
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
@@ -1202,32 +1204,16 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
 
   const currentSession = sessions.find((s) => s.id === sessionId);
   const currentTitle = currentSession?.title ?? "新对话";
-  // 视图会话是子 agent 执行会话——runner 建会话时写
-  // bot_sessions.is_subagent 结构化标记，停止按钮/斜杠 /stop 走
-  // cancel_subagent（与任务卡停止按钮同 API），而非 bot_stop。
-  // 数据清空后无旧前缀会话，无需标题兜底（U20D-A）
-  const isSubagentSession = currentSession?.isSubagent === true;
+  // 子 agent 执行会话不进会话列表（bot_sessions_load 过滤 is_subagent=1，
+  // 只以聊天内嵌区域呈现），视图会话恒为普通对话——停止统一走 bot_stop；
+  // 子 agent 的取消入口在条带/侧栏的行上（cancelSubagent）
 
-  // 停止分派唯一实现（发送/停止一体键的 busy 分支 + /stop 斜杠命令共用）：
-  // 子 agent 会话走 cancel_subagent（与任务卡按钮同 API），普通会话走 bot_stop
+  // 停止分派唯一实现（发送/停止一体键的 busy 分支 + /stop 斜杠命令共用）
   const stopCurrent = useCallback(() => {
-    if (isSubagentSession) {
-      // 子 agent 会话停止键 = cancel_subagent（与任务卡按钮同 API）
-      invoke("cancel_subagent", { key: sessionIdRef.current })
-        .catch((e) =>
-          handleCommandError(e, "cancel_subagent", { silent: true }),
-        )
-        .finally(() =>
-          invoke("bot_stop", { sessionId: sessionIdRef.current }).catch(
-            () => {},
-          ),
-        );
-    } else {
-      invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-        handleCommandError(e, "bot_stop", { silent: true }),
-      );
-    }
-  }, [isSubagentSession]);
+    invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
+      handleCommandError(e, "bot_stop", { silent: true }),
+    );
+  }, []);
 
   // 斜杠快捷命令（/stop 在机器人回复中也能生效）
   const runSlashCommand = async (raw: string): Promise<boolean> => {
@@ -1615,7 +1601,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         pickFiles={pickFiles}
         onStop={stopCurrent}
         viewedBusy={viewedBusy}
-        isSubagentSession={isSubagentSession}
         permMode={permMode}
         modelBtnRef={modelBtnRef}
         modelDropdownRef={modelDropdownRef}

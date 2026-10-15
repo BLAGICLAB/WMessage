@@ -53,7 +53,7 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
 - context_summary 链上次子 agent 的 result + error，让 EXECUTOR 看到失败原因。
 - 修复后再 spawn 一次 verifier 段做再次验收（verifier 段是验收闭环强制环节）。
 
-重试预算上限 = 当前设置 verifier_retry_max（默认 1）。同一 task_id 的
+重试预算上限 = 当前设置 verifier_retry_max（默认 1）。同一目标的
   verifier 拒绝 → EXECUTOR 修复 → 再 verifier 循环最多此数；超过上限如实
   向用户汇报失败清单与已尝试次数，不要无限循环烧 token。
 
@@ -153,7 +153,6 @@ pub(crate) const RESULT_SCHEMA_HINT: &str = r#"{
   "summary": "…（摘要，不倒原文）",
   "acceptance_check": [{"criterion": "…", "met": true, "evidence": "…"}],
   "artifacts": [{"path": "…", "type": "…", "description": "…"}],
-  "subtasks": [{"id": "…", "status": "done|failed|pending"}],
   "blockers": [],
   "next_actions": [],
   "confidence": 0.0
@@ -322,6 +321,7 @@ mod subagent_prompt_tests {
         assert_eq!(v["status"], "succeeded|failed|cancelled|budget_exceeded");
         assert!(v["acceptance_check"].is_array());
         assert!(v["artifacts"].is_array());
-        assert!(v["subtasks"].is_array());
+        // 无卡契约后不再要 subtasks——进度小计只认 acceptance_check（verifier 行认 checks）
+        assert!(v.get("subtasks").is_none());
     }
 }

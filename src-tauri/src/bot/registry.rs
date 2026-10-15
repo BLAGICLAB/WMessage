@@ -315,24 +315,22 @@ pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask
     "assumption":{"type":"string","description":"你的推荐假设，必填——用户未回答时按它继续执行"}
   },"required":["question","assumption"]}}}"##;
 // 子 agent 编排三工具（主 agent 可见）
-pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/taskId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
+pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
     "objective":{"type":"string","description":"单一目标（一句话说清做什么）"},
     "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集（与 stage 同给时白名单档优先，stage 只换角色语义层）"},
     "stage":{"type":"string","enum":["recon","executor","verifier"],"description":"三段式派发阶段（可选）：recon=只读调研 / executor=基于报告动手实现 / verifier=逐条验收。不给 stage 时仅按 profile 走基线提示词；只给 stage 不给 profile 时按默认派生（recon/verifier→research，executor→coder）"},
     "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验"},
     "contextSummary":{"type":"string","description":"必要上下文摘要（可选；不含主对话全文）"},
-    "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限，默认 100"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选，默认值见上；上卡可见）"},
+    "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限，默认 100"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选，默认值见上）"},
     "modelProfile":{"type":"string","description":"指定模型名（可选；未指定/无效回退当前激活模型）"},
     "parentTaskId":{"type":"string","description":"主卡 id（可选；编排计划卡，缺卡报错）"}
   },"required":["objective","profile","acceptanceCriteria"]}}}"##;
 pub const SCHEMA_CHECK_SUBAGENT: &str = r##"{"type":"function","function":{"name":"check_subagent","description":"查询子 agent 状态（幂等可轮询）：status=queued|running|succeeded|failed|cancelled|budget_exceeded + 进度 + 收尾结果（summary/artifacts/blockers）。waitMs>0 时短等待至终态或超时（上限 5000，不要高频空转）","parameters":{"type":"object","properties":{
-    "subagentId":{"type":"string","description":"子 agent id（spawn 返回值），与 taskId 二选一"},
-    "taskId":{"type":"string","description":"子任务卡 id，与 subagentId 二选一"},
+    "subagentId":{"type":"string","description":"子 agent id（spawn 返回值）"},
     "waitMs":{"type":"integer","description":"短等待毫秒数（可选，0=立即返回，上限 5000）"}
   },"required":[]}}}"##;
-pub const SCHEMA_CANCEL_SUBAGENT: &str = r##"{"type":"function","function":{"name":"cancel_subagent","description":"取消子 agent（与任务卡停止按钮同 API）：置 cancelled 并停止其执行；已终态则 no-op","parameters":{"type":"object","properties":{
-    "subagentId":{"type":"string","description":"子 agent id，与 taskId 二选一"},
-    "taskId":{"type":"string","description":"子任务卡 id，与 subagentId 二选一"},
+pub const SCHEMA_CANCEL_SUBAGENT: &str = r##"{"type":"function","function":{"name":"cancel_subagent","description":"取消子 agent：置 cancelled 并停止其执行；已终态则 no-op。用户说「停掉/不用继续了」且能对应到在途子 agent 时用","parameters":{"type":"object","properties":{
+    "subagentId":{"type":"string","description":"子 agent id（spawn 返回值）"},
     "reason":{"type":"string","description":"取消原因（可选）"}
   },"required":[]}}}"##;
 // 子 agent 白名单内工具（不进主 agent schema）

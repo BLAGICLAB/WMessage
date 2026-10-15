@@ -61,10 +61,9 @@ type InputAreaProps = {
   setSlashDismissed: Dispatch<SetStateAction<boolean>>;
   send: () => void;
   pickFiles: () => void;
-  /** 停止当前回复（子 agent 会话由父级分派 cancel_subagent） */
+  /** 停止当前回复 */
   onStop: () => void;
   viewedBusy: boolean;
-  isSubagentSession: boolean;
   /** 🛡 授权模式只读展示：bot-config 的 permMode，设置页维护 */
   permMode: PermMode;
   /** 🔍 执行过程详细度（ verbose 三档）：localStorage 持久化，控制工具徽章展开档位 */
@@ -110,7 +109,6 @@ export function InputArea({
   pickFiles,
   onStop,
   viewedBusy,
-  isSubagentSession,
   permMode,
   verbose,
   modelBtnRef,
@@ -465,13 +463,9 @@ export function InputArea({
           {viewedBusy ? (
             <button
               type="button"
-              aria-label={isSubagentSession ? "取消子任务" : "停止当前回复"}
+              aria-label="停止当前回复"
               className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors"
-              title={
-                isSubagentSession
-                  ? "取消子任务（cancel_subagent）"
-                  : "停止当前回复"
-              }
+              title="停止当前回复"
               onClick={onStop}
             >
               <Square size={10} aria-hidden fill="currentColor" />

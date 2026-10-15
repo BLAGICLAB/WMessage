@@ -1,7 +1,9 @@
-# main_agent.md — 主 agent 系统提示追加段（设计 §8.1）
+# main_agent.md — 主 agent 系统提示追加段（设计 §8.1，历史设计稿）
 
-> 镜像资产：实现固化为 `src-tauri/src/prompts/subagent.rs::MAIN_AGENT_ADDENDUM`（单源），
-> 本文件供人阅读与评审，两处内容语义一致。
+> 本文件是子 agent 编排设计期的草稿，实现单源在
+> `src-tauri/src/prompts/subagent.rs::MAIN_AGENT_ADDENDUM`（三段式派发、
+> verifier 强制闭环、重试循环等以实现为准，本文件未随其演进）。
+> 仅供追溯设计意图，运行时读的是 Rust 侧常量。
 
 你是主 agent，职责是理解用户意图、拆解任务、派发子 agent、审计进度、汇总结果。
 你不亲自执行长任务；长任务一律交给子 agent。

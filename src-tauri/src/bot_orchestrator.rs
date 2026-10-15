@@ -84,11 +84,10 @@ pub struct SpawnRequest {
     /// 三段式派发阶段（设计 §8.5）：None = 走基线 PROFILE_*（单段派发兼容路径）。
     /// 拼装阶段：runner 启动时随闭包 in-memory 传过去（详见 `spawn_subagent`）。
     pub stage: Option<SubagentStage>,
-    /// **spawn 必填**，每条可检验（设计 §4.2 双写：子卡 note + 任务包装）
+    /// **spawn 必填**，每条可检验；落行上 acceptance_json，runner 渲染包装时现读
     pub acceptance_criteria: Vec<String>,
     /// 上下文摘要（设计 §8.5「上下文摘要」段）：只给必要背景，不倒主对话全文。
-    /// 落在子卡 note 的【上下文摘要】段——与验收标准同卡，用户改 note 即改需求
-    ///（卡即契约：runner 渲染包装时从卡上现读）。
+    /// 落行上 context_summary——runner 渲染包装时从行上现读。
     pub context_summary: Option<String>,
     pub budget: Option<SubagentBudget>,
     /// A 期参数透传：None/无效值回退当前 active model（设计 §5）
@@ -156,7 +155,7 @@ fn validate_request(req: &SpawnRequest) -> CommandResult<()> {
         return Err(CommandError::InvalidArgument {
             field: "acceptance_criteria".into(),
             value: format!("{:?}", req.acceptance_criteria),
-            reason: "验收标准必填且每条非空（spawn 双写契约，设计 §4.2）".into(),
+            reason: "验收标准必填且每条非空".into(),
         });
     }
     Ok(())
@@ -247,8 +246,9 @@ fn resolve_row(conn: &rusqlite::Connection, key: &str) -> CommandResult<Subagent
 
 /// check 纯 DB 核心：幂等读 + 进度小计（验收标准逐条达成比）。
 /// 进度口径：total = 行上 acceptance_json 条数（派发时写死，全生命周期不变）；
-/// done = 收尾 JSON 的 `acceptance_check` 里 met=true 的条数（该字段是收尾
-/// schema 明示要求模型输出的逐条验收结果，见 prompts::RESULT_SCHEMA_HINT）。
+/// done = 收尾 JSON 里 met=true 的条数——普通行读 `acceptance_check`
+/// （RESULT_SCHEMA_HINT 要求的逐条验收），verifier 行读 `checks`
+/// （verifier 独有 schema，与 classify 的结构识别同口径）。
 /// 未收尾时 done 恒为 0。键名沿用 subtasksDone/subtasksTotal，前端契约不变。
 pub(crate) fn check_subagent_locked(
     conn: &rusqlite::Connection,
@@ -261,13 +261,16 @@ pub(crate) fn check_subagent_locked(
         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
         .map(|c| c.len())
         .unwrap_or(0);
-    let subtasks_done: usize = row
+    let result: Option<serde_json::Value> = row
         .result_json
         .as_deref()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|s| serde_json::from_str(s).ok());
+    let subtasks_done: usize = result
+        .as_ref()
         .and_then(|v| {
             v.get("acceptance_check")
                 .and_then(|c| c.as_array())
+                .or_else(|| v.get("checks").and_then(|c| c.as_array()))
                 .map(|a| {
                     a.iter()
                         .filter(|x| x.get("met").and_then(|m| m.as_bool()) == Some(true))
@@ -278,10 +281,6 @@ pub(crate) fn check_subagent_locked(
         // 「3/2」这种自相矛盾的读数
         .unwrap_or(0)
         .min(subtasks_total);
-    let result = row
-        .result_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
     // 排队位次：queued 状态时给出 FIFO 前面还有几个
     let queue_position = if row.status == SubagentStatus::Queued {
         SubagentGate::queue_position(row.parent_session_id.as_deref())
@@ -1734,7 +1733,7 @@ pub async fn tool_spawn_subagent(
         .unwrap_or_default();
     if criteria.is_empty() {
         return ToolResult::warn(
-            "spawn 失败：acceptanceCriteria 必填且每条可检验（设计 §4.2 双写契约）",
+            "spawn 失败：acceptanceCriteria 必填且每条可检验",
             Vec::new(),
         );
     }
@@ -2609,6 +2608,25 @@ mod orchestrator_tests {
                 .progress,
             done.progress
         );
+    }
+
+    #[test]
+    fn verifier_row_progress_counts_checks_array_not_zero() {
+        // verifier 行的收尾 JSON 是 checks 数组（verifier 独有 schema）：
+        // done 若只认 acceptance_check，验收全过的 verifier 行也显示 0/N，
+        // 主 agent 会误判「没做成」而重派
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        crate::db::set_subagent_result(
+            &conn,
+            &ack.subagent_id,
+            r#"{"checks":[{"criterion":"覆盖至少 5 个产品","met":true},{"criterion":"每条含官网 URL","met":true}]}"#,
+        )
+        .unwrap();
+        let state = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
+        assert_eq!(state.progress["subtasksDone"], 2);
+        assert_eq!(state.progress["subtasksTotal"], 2);
     }
 
     #[test]

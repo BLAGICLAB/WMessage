@@ -223,8 +223,8 @@ pub fn open_db<R: tauri::Runtime>(
     // 上下文摘要独立成列（不再从子卡 note 文本解析取回）。必须排在
     // ensure_task_id_nullable 之前——后者的重建会搬运该列
     crate::db::subagents::ensure_context_summary_column(&conn).map_err(|e| e.to_string())?;
-    // 子 agent 不再建任务卡：task_id 由 NOT NULL UNIQUE 放宽为可空唯一索引，
-    // 老行保留原值（历史可查），新行写 NULL
+    // 子 agent 不再建任务卡：task_id 的 NOT NULL 解除、UNIQUE 索引移除
+    // （新行恒 NULL），老行保留原值（历史可按卡键反查）
     crate::db::subagents::ensure_task_id_nullable(&conn).map_err(|e| e.to_string())?;
     // 定时任务表（定时任务模块）：内容型定时作业，到点据此新建任务卡并执行
     conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOBS_DDL)

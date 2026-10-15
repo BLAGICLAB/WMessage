@@ -7,7 +7,7 @@
 //! 列对齐设计 §3，另加三列（增列不违设计，勘误已在批 spec 登记）：
 //! - `session_id`：子 agent 自己的执行会话（串链围观/审计；parent_session_id 是派发者主会话）
 //! - `trace_id`：贯穿 bot.log 的串链键
-//! - `acceptance_json`：验收标准机器侧副本（双写的另一面在子卡 note）
+//! - `acceptance_json`：验收标准机器侧副本（子 agent 不再建任务卡，行是唯一契约载体）
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -104,7 +104,7 @@ impl SubagentProfile {
     }
 }
 
-/// 预算三硬顶（设计 §6 默认值）。上卡可见（子卡 budget 字段），不是隐藏参数。
+/// 预算三硬顶（设计 §6 默认值）。落行上 budget_json（check 可查），不是隐藏参数。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubagentBudget {
@@ -393,7 +393,7 @@ pub fn find_subagent_by_task(
         .map_err(|e| e.to_string())
 }
 
-/// 按子 agent 执行会话 id 反查前端停止键只持有会话 id——
+/// 按子 agent 执行会话 id 反查行（前端停止键只持有会话 id——
 /// runner 的 set_subagent_session 回填后即可反查）。
 pub fn find_subagent_by_session(
     conn: &rusqlite::Connection,
