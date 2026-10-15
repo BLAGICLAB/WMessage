@@ -63,6 +63,7 @@ export interface BotConfigView {
   subagentMaxWallSecs?: number | null;
   searchMaxResults?: number | null;
   maxToolOutputChars?: number | null;
+  askBudget?: number | null;
   toolRules?: Array<{ tool: string; action: string }> | null;
 }
 

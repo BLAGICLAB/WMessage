@@ -1,9 +1,9 @@
-// 任务图谱构建（任务图谱设计 §3.1）：tasks + workflows → 节点/边/过滤器。
-// 纯函数，无 React/Tauri 依赖（对齐 WorkflowCanvas/graph.ts 惯例，单测锚点）。
+// 任务图谱构建（任务图谱设计 §3.1）：tasks → 节点/边/过滤器。
+// 纯函数，无 React/Tauri 依赖（单测锚点）。
 // 统计口径：一切按 completedAt（完成时间）归年——归档只是完成满归档天数
 // （默认 7 天，设置页可改）后的存储状态，按归档时间会把跨年完成的任务记错年份（设计 §3.1）。
 
-import type { ColumnId, Task, Workflow } from "../../types";
+import type { ColumnId, Task } from "../../types";
 import { isTrashed } from "../../lib/taskScope";
 
 export type GraphColorMode = "status" | "owner";
@@ -17,8 +17,6 @@ export interface GraphFilters {
   owners: string[] | null;
   /** 命中任一标签即保留；null = 不限 */
   tags: string[] | null;
-  /** 工作流白名单（只约束工作流卡）；null = 不限 */
-  workflowIds: string[] | null;
   /** completedAt 年份；null = 不限 */
   year: number | null;
   /** 无边任务节点是否显示（Obsidian 的 orphans） */
@@ -29,12 +27,11 @@ export const DEFAULT_FILTERS: GraphFilters = {
   status: { todo: true, doing: true, done: true },
   owners: null,
   tags: null,
-  workflowIds: null,
   year: null,
   includeOrphans: true,
 };
 
-type GraphNodeKind = "task" | "hub";
+type GraphNodeKind = "task";
 
 export interface GraphNode {
   id: string;
@@ -45,21 +42,20 @@ export interface GraphNode {
   /** ownerKey：undefined = 本人 */
   owner?: string;
   tags?: string[];
-  workflowId?: string;
   completedAt?: number;
   /** 创建时间（epoch ms）：「耗时」大小口径的依赖（缺省 = 未知 → 最小尺寸） */
   createdAt?: number;
   /** 任务节点的完整卡引用（详情面板/跳转用） */
   task?: Task;
-  /** 连接度数（dep 边 + member 边），驱动半径 */
+  /** 连接度数（dep 边 + parent 边），驱动半径 */
   degree: number;
 }
 
 interface GraphLink {
   source: string;
   target: string;
-  /** dep = dependsOn 依赖；member = 工作流归属；parent = 子任务卡出身（母→子） */
-  kind: "dep" | "member" | "parent";
+  /** dep = dependsOn 依赖；parent = 子任务卡出身（母→子） */
+  kind: "dep" | "parent";
 }
 
 export interface BuiltGraph {
@@ -140,9 +136,6 @@ function passTaskFilters(t: Task, f: GraphFilters): boolean {
     if (!t.completedAt || new Date(t.completedAt).getFullYear() !== f.year)
       return false;
   }
-  if (f.workflowIds && t.workflowId && !f.workflowIds.includes(t.workflowId)) {
-    return false;
-  }
   return true;
 }
 
@@ -179,14 +172,12 @@ export function wouldCreateDepCycle(
 }
 
 /**
- * 建图（设计 §3.1）：节点 = 任务 + 工作流 hub；边 = dependsOn（有向 dep）+
- * 子任务卡出身（parent，母→子）+ 成员关系（member）。悬空 dependsOn /
- * 被过滤端点 → 丢边；hub 只为「有存活成员」的工作流创建。度数在成边后统计，
- * includeOrphans=false 时剪掉无边任务节点。
+ * 建图（设计 §3.1）：节点 = 任务；边 = dependsOn（有向 dep）+
+ * 子任务卡出身（parent，母→子）。悬空 dependsOn / 被过滤端点 → 丢边。
+ * 度数在成边后统计，includeOrphans=false 时剪掉无边任务节点。
  */
 export function buildTaskGraph(
   tasks: Task[],
-  workflows: Workflow[],
   filters: GraphFilters,
 ): BuiltGraph {
   const kept = tasks.filter((t) => passTaskFilters(t, filters));
@@ -203,31 +194,11 @@ export function buildTaskGraph(
       archived: t.archived,
       owner: t.ownerId ?? undefined,
       tags: t.tags,
-      workflowId: t.workflowId,
       completedAt: t.completedAt,
       createdAt: t.createdAt,
       task: t,
       degree: 0,
     });
-  }
-
-  // hub：工作流卡 → wf:{id}（白名单生效时只建白名单内工作流的 hub）
-  const allowedWorkflows = filters.workflowIds;
-  const wfById = new Map(workflows.map((w) => [w.id, w]));
-  for (const t of kept) {
-    if (!t.workflowId) continue;
-    if (allowedWorkflows && !allowedWorkflows.includes(t.workflowId)) continue;
-    const hubId = `wf:${t.workflowId}`;
-    if (!nodes.has(hubId)) {
-      nodes.set(hubId, {
-        id: hubId,
-        kind: "hub",
-        label: wfById.get(t.workflowId)?.name ?? "未命名工作流",
-        workflowId: t.workflowId,
-        degree: 0,
-      });
-    }
-    links.push({ source: t.id, target: hubId, kind: "member" });
   }
 
   // 依赖边：两端都在图内才连（悬空引用/被过滤端点丢弃）
@@ -251,10 +222,6 @@ export function buildTaskGraph(
   if (!filters.includeOrphans) {
     for (const [id, n] of nodes) {
       if (n.kind === "task" && n.degree === 0) nodes.delete(id);
-    }
-    // 剪掉因剪枝而失去全部成员的 hub
-    for (const [id, n] of nodes) {
-      if (n.kind === "hub" && n.degree === 0) nodes.delete(id);
     }
   }
 

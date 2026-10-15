@@ -150,7 +150,6 @@ export function loadGraphFilters(): GraphFilters | null {
     status: f.status as GraphFilters["status"],
     owners: isStringArray(f.owners) ? f.owners : null,
     tags: isStringArray(f.tags) ? f.tags : null,
-    workflowIds: isStringArray(f.workflowIds) ? f.workflowIds : null,
     year: typeof f.year === "number" && Number.isFinite(f.year) ? f.year : null,
     includeOrphans: f.includeOrphans,
   };

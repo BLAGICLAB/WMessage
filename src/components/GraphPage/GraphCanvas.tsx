@@ -1,7 +1,7 @@
 // 图谱画布（Sigma 迁移）：Sigma.js v3 WebGL 渲染 + ForceAtlas2 worker 物理。
 // 旧 Canvas2D 自研渲染/物理已删除。
 // 交互契约与旧版一致：hover 邻接高亮其余淡出、点选详情、空白拖拽平移、
-// 节点拖拽固定、滚轮指针锚缩放、双击 hub 打开工作流、搜索描环、双主题。
+// 节点拖拽固定、滚轮指针锚缩放、搜索描环、双主题。
 // 配色读 CSS 变量（reducer 运行时解析，主题切换即重算），不硬编码色值。
 
 import { useEffect, useRef } from "react";
@@ -48,7 +48,6 @@ interface Palette {
  * 设计原则：
  *  - 常态标签 = 中性灰阶（--t3 系），比正文浅一档——图谱里标签是"路牌"不是正文，
  *    低对比才有"信息在背景里"的层次感（Obsidian 同款取向）
- *  - hub 标签 = 品牌色系，权重高半档（导航锚点）
  *  - 焦点态（hover/选中/搜索）= --t2 提亮一档，白底光晕（亮）/深色光晕（暗）保证
  *    压在任意节点色上都可读
  *  - labelColor 用 color-mode 探测而非硬编码，跟主题即时切换
@@ -56,13 +55,11 @@ interface Palette {
 const LABEL_COLORS = {
   light: {
     normal: "#6b7690", // 亮底上的雾蓝灰（比 --t3 浅、比 --t5 深）
-    hub: "#4a5879", // --brand-strong
     focus: "#2b3548", // --t2
     halo: "rgba(255, 255, 255, 0.75)",
   },
   dark: {
     normal: "#9aa5ba", // 暗底上的亮灰蓝（--t3/--t4 之间）
-    hub: "#c0cdea", // --brand-strong（暗色亮蓝）
     focus: "#eef1f7", // --t1
     halo: "rgba(20, 22, 29, 0.72)",
   },
@@ -117,7 +114,7 @@ export interface GraphCanvasProps {
   colorMode: GraphColorMode;
   /** 节点大小语义（连接度/耗时）：切换即重建（大小参与 FA2 质量/碰撞，需写回图属性） */
   sizeMode: GraphSizeMode;
-  /** 标签密度（少=仅 hub+焦点 / 标准 / 多=全部）：reducer 级，切换只需 refresh */
+  /** 标签密度（少=仅焦点 / 标准 / 多=全部）：reducer 级，切换只需 refresh */
   labelDensity: GraphLabelDensity;
   /** 连线粗细：reducer 级 */
   edgeWidth: GraphEdgeWidth;
@@ -138,8 +135,6 @@ export interface GraphCanvasProps {
   searchMatchIds: Set<string> | null;
   onHover: (id: string | null) => void;
   onSelect: (id: string | null) => void;
-  /** 双击 hub → 打开工作流 */
-  onOpenHub: (workflowId: string) => void;
 }
 
 export default function GraphCanvas(props: GraphCanvasProps) {
@@ -189,10 +184,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         // 光晕：与底色同色的半透明圆角衬底——把底下的点/线"抹掉"而不是盖住
         context.fillStyle = lc.halo;
         context.fillRect(lx - 2, data.y - size / 2 - 1, textW + 5, size + 2);
-        context.fillStyle =
-          (data as unknown as SigmaNodeAttrs).kind === "hub"
-            ? lc.hub
-            : lc.normal;
+        context.fillStyle = lc.normal;
         context.fillText(data.label, lx, data.y + 1);
       },
       // hover 底板：sigma 默认写死 #FFF 白底——暗色下突兀。几何照抄官方
@@ -256,7 +248,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           p.colorMode,
         );
         // ── 标签色：专用色阶 + 光晕，见 LABEL_COLORS 注释。
-        // hub 高亮半档、常态灰阶、焦点提亮——经自定义 label draw 函数绘制光晕
+        // 常态灰阶、焦点提亮——经自定义 label draw 函数绘制光晕
         const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
         // 度数用建图值（不含锚点边，锚点边会虚增）
         const degree = attrs.degree ?? 0;
@@ -268,17 +260,16 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         const inFocusNeighborhood =
           focusId !== null &&
           (node === focusId || g.areNeighbors(node, focusId) || isFocusNode);
-        res.labelColor =
-          isFocusNode || attrs.kind === "hub" ? lc.focus : lc.normal;
-        // 标签资格：密度三档（设置页）——少 = 仅 hub/焦点邻域；标准 = hub/高连接度/焦点；
+        res.labelColor = isFocusNode ? lc.focus : lc.normal;
+        // 标签资格：密度三档（设置页）——少 = 仅焦点邻域；标准 = 高连接度/焦点；
         // 多 = 全部业务节点。done 在状态着色下常态压掉
         const isDoneFade = p.colorMode === "status" && attrs.status === "done";
         let labelWorthy =
           p.labelDensity === "dense"
             ? true
             : p.labelDensity === "sparse"
-              ? attrs.kind === "hub" || inFocusNeighborhood
-              : attrs.kind === "hub" || degree >= 6 || inFocusNeighborhood;
+              ? inFocusNeighborhood
+              : degree >= 6 || inFocusNeighborhood;
         if (isDoneFade && !inFocusNeighborhood) labelWorthy = false;
         res.forceLabel = labelWorthy;
         // hover/选中：邻接集合之外的淡出
@@ -468,13 +459,6 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       if (isBusinessNode(node)) propsRef.current.onSelect(node);
     });
     sigma.on("clickStage", () => propsRef.current.onSelect(null));
-    sigma.on("doubleClickNode", ({ node }) => {
-      if (!isBusinessNode(node)) return;
-      const attrs = g.getNodeAttributes(node) as SigmaNodeAttrs;
-      if (attrs.kind === "hub" && node.startsWith("wf:")) {
-        propsRef.current.onOpenHub(node.slice(3));
-      }
-    });
 
     // 节点拖拽固定：down 锁定 → move 移动（graphology 坐标）→ up 释放；
     // 拖拽时暂停 FA2（松手续跑），fixed 节点不被物理推走

@@ -7,15 +7,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
-import { unlistenSafe } from "../../lib/useTauriListen";
+import { emit } from "@tauri-apps/api/event";
 import { useConfirm } from "../../lib/useConfirm";
 import { useDismissable } from "../../lib/useDismissable";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
   BarChart3,
-  Workflow,
   Bot,
   Brain,
   Check,
@@ -41,23 +39,6 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
-
-import {
-  getShowWorkflowTasks,
-  setShowWorkflowTasks,
-  WORKFLOW_VISIBILITY_EVENT,
-} from "../../lib/workflowVisibility";
-import {
-  getDecomposeGuidance,
-  MAX_GUIDANCE_CHARS,
-  resetDecomposeGuidance,
-  setDecomposeGuidance,
-} from "../../lib/workflowPrompt";
-import {
-  clearAllWorkflowAudit,
-  getWorkflowSettings,
-  setWorkflowSettings,
-} from "../../lib/workflowAudit";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { getBotConfig } from "../../lib/botConfig";
@@ -332,7 +313,6 @@ type SectionKey =
   | "mcp"
   | "evolution"
   | "desk"
-  | "workflow"
   | "graph"
   | "tokens"
   | "opsHistory";
@@ -343,7 +323,6 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "model", label: "模型设置", icon: Cpu },
   { key: "memory", label: "记忆", icon: Brain },
   { key: "skills", label: "技能", icon: Sparkles },
-  { key: "workflow", label: "工作流", icon: Workflow },
   { key: "graph", label: "任务图谱", icon: Waypoints },
   { key: "mcp", label: "MCP 服务", icon: Plug },
   { key: "evolution", label: "自进化", icon: GitBranch },
@@ -594,6 +573,7 @@ export function SettingsPage({
     subagentMaxWallSecs: "",
     searchMaxResults: "",
     maxToolOutputChars: "",
+    askBudget: "",
   });
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
   const [consolidateBusy, setConsolidateBusy] = useState(false);
@@ -813,6 +793,7 @@ export function SettingsPage({
           c.searchMaxResults != null ? String(c.searchMaxResults) : "",
         maxToolOutputChars:
           c.maxToolOutputChars != null ? String(c.maxToolOutputChars) : "",
+        askBudget: c.askBudget != null ? String(c.askBudget) : "",
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });
@@ -1018,6 +999,10 @@ export function SettingsPage({
           })(),
           maxToolOutputChars: (() => {
             const n = parseInt(c.maxToolOutputChars.trim(), 10);
+            return Number.isFinite(n) && n > 0 ? n : null;
+          })(),
+          askBudget: (() => {
+            const n = parseInt(c.askBudget.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
           // 规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
@@ -2460,6 +2445,12 @@ export function SettingsPage({
                       "默认不截断（填 0 或留空 = 不截断）；超大输出会挤占上下文，截断行为 P4 接线生效",
                       "不截断",
                     ],
+                    [
+                      "askBudget",
+                      "任务提问预算（次）",
+                      "默认 3（钳 1–5）；ask_user 每次任务执行最多提问次数，超限按 AI 假设继续",
+                      "3",
+                    ],
                   ] as const
                 ).map(([field, label, hint, def]) => (
                   <div
@@ -3702,15 +3693,6 @@ export function SettingsPage({
               <EvolutionPanel />
             </section>
           )}
-          {mountedSections.has("workflow") && (
-            <section
-              hidden={activeSection !== "workflow"}
-              className="space-y-4 pt-4"
-            >
-              {/*  迁移：熔断上限已入「Agent 运行参数」卡，本卡只剩可见开关与拆解提示词 */}
-              <WorkflowSettingsCard />
-            </section>
-          )}
           {mountedSections.has("graph") && (
             <section
               hidden={activeSection !== "graph"}
@@ -3783,327 +3765,3 @@ export function SettingsPage({
   );
 }
 
-/** 工作流设置卡：可见性开关 + 拆解提示词。
- *  提示词两段式：这里编辑的是「指引段」；「输出契约段」在后端代码硬拼，
- *  用户改指引段破坏不了 JSON 契约。 */
-function WorkflowSettingsCard() {
-  const [showTasks, setShowTasks] = useState(getShowWorkflowTasks);
-  const [guidance, setGuidance] = useState(getDecomposeGuidance);
-  const [guidanceSaved, setGuidanceSaved] = useState(false);
-  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const guidanceRef = useRef(guidance);
-  // 验收与审计设置（后端 workflow_settings 表，运行期读取）
-  const [nodeAcceptance, setNodeAcceptance] = useState<boolean | null>(null);
-  const [acceptBusy, setAcceptBusy] = useState(false);
-  const [retention, setRetention] = useState<number | null>(null);
-  const [retentionDraft, setRetentionDraft] = useState("");
-  const [auditMsg, setAuditMsg] = useState<string | null>(null);
-  // ask_user 提问预算（全局：工作流节点与手动任务卡执行共用）
-  const [askBudget, setAskBudget] = useState<number | null>(null);
-  const [askBudgetDraft, setAskBudgetDraft] = useState("");
-  // 轻量评审模型（模型库条目 id；空 = 跟随全局）
-  const [reviewModel, setReviewModel] = useState("");
-  const [modelBusy, setModelBusy] = useState(false);
-  const [modelOptions, setModelOptions] = useState<
-    Array<{ id: string; label: string }>
-  >([]);
-  useEffect(() => {
-    getWorkflowSettings()
-      .then((s) => {
-        setNodeAcceptance(s.nodeAcceptance);
-        setRetention(s.auditRetentionRuns);
-        setRetentionDraft(String(s.auditRetentionRuns));
-        setReviewModel(s.reviewModel ?? "");
-        setAskBudget(s.askBudget);
-        setAskBudgetDraft(String(s.askBudget));
-      })
-      .catch((e) => setAuditMsg(String(e)));
-    // 模型库下拉（与画布每卡模型同源：getBotConfig，停用条目不进列表）
-    getBotConfig()
-      .then((c) => {
-        const m = c.modelsByProvider;
-        setModelOptions(
-          [...(m?.openai ?? []), ...(m?.anthropic ?? [])]
-            .filter((e) => e.enabled !== false)
-            .map((e) => ({ id: e.id, label: e.label })),
-        );
-      })
-      .catch(() => {}); // 模型库读取失败：下拉只剩"跟随全局"，不挡设置页
-  }, []);
-  // 卸载时兜底持久化焦点在 textarea 时切走/关窗，onBlur 可能不触发）
-  useEffect(
-    () => () => {
-      setDecomposeGuidance(guidanceRef.current);
-      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-    },
-    [],
-  );
-  useEffect(() => {
-    guidanceRef.current = guidance;
-  }, [guidance]);
-  useEffect(() => {
-    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
-      setShowTasks(getShowWorkflowTasks()),
-    );
-    return () => {
-      unlistenSafe(un);
-    };
-  }, []);
-  const persistGuidance = (v: string) => {
-    const ok = setDecomposeGuidance(v);
-    setGuidanceSaved(ok);
-    if (ok) {
-      // 已保存提示 2.5s 自动隐藏不能一旦保存过就常亮）
-      if (savedTimerRef.current) clearTimeout(savedTimerRef.current);
-      savedTimerRef.current = setTimeout(() => setGuidanceSaved(false), 2500);
-    }
-  };
-  return (
-    <div className="space-y-4">
-      <div className="nm-card p-5">
-        <h2 className="text-lg font-semibold text-[var(--t1)]">工作流任务</h2>
-        <p className="mt-1 text-xs text-[var(--t5)]">
-          工作流画布的节点卡默认只在「工作流」栏目显示。开启后它们也会出现在任务看板、归档与挂件清单里。
-        </p>
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--t2)]">
-              在看板中显示工作流任务
-            </p>
-            <p className="mt-1 text-xs text-[var(--t5)]">
-              关闭时工作流节点卡只在画布编辑、执行与查看结果；开关改完即时生效
-            </p>
-          </div>
-          <button
-            role="switch"
-            aria-checked={showTasks}
-            aria-label="在看板中显示工作流任务"
-            className={`btn-sm-action ${
-              showTasks ? "nm-inset" : "nm-outset"
-            }`}
-            onClick={() => {
-              const next = !showTasks;
-              setShowTasks(next);
-              setShowWorkflowTasks(next);
-            }}
-          >
-            {showTasks ? "已开启" : "已关闭"}
-          </button>
-        </div>
-      </div>
-      {/* 调用工具上限（全域熔断）已并入「Agent 运行参数」卡（机器人 section）——
-          它管的是全域所有 agent 执行（含普通聊天），挂在工作流 section 语义错位 */}
-      <div className="nm-card p-5">
-        <h2 className="text-lg font-semibold text-[var(--t1)]">
-          验收与审计
-        </h2>
-        <p className="mt-1 text-xs text-[var(--t5)]">
-          节点级验收：执行成功的卡对照验收标准做轻量核查，不达标带证据自动返工（每卡最多
-          2 次，仍不达标标记失败）。审计：每次运行按 run
-          记录调度/验收/评审时间线，可在执行详情的「运行审计」页签查看。
-        </p>
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--t2)]">节点级验收</p>
-            <p className="mt-1 text-xs text-[var(--t5)]">
-              关闭后节点执行成功即完成，不做质量核查（验收调用会消耗额外 token）
-            </p>
-          </div>
-          <button
-            role="switch"
-            aria-checked={nodeAcceptance === true}
-            aria-label="节点级验收"
-            disabled={nodeAcceptance === null || acceptBusy}
-            className={`btn-sm-action disabled:opacity-50 ${
-              nodeAcceptance ? "nm-inset" : "nm-outset"
-            }`}
-            onClick={async () => {
-              if (acceptBusy) return; // in-flight 保护：连点不并发落盘
-              setAcceptBusy(true);
-              const next = !(nodeAcceptance === true);
-              try {
-                const s = await setWorkflowSettings({ nodeAcceptance: next });
-                setNodeAcceptance(s.nodeAcceptance);
-              } catch (e) {
-                setAuditMsg(String(e));
-              } finally {
-                setAcceptBusy(false);
-              }
-            }}
-          >
-            {nodeAcceptance ? "已开启" : "已关闭"}
-          </button>
-        </div>
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--t2)]">轻量评审模型</p>
-            <p className="mt-1 text-xs text-[var(--t5)]">
-              拆解前澄清与节点级验收核查用（这两步只是判断，不需要最强模型）；条目删除后自动回落全局模型
-            </p>
-          </div>
-          <select
-            aria-label="轻量评审模型"
-            className="shrink-0 max-w-[180px] rounded-[var(--r-sm)] bg-transparent px-2 py-1 text-xs nm-inset text-[var(--t3)] disabled:opacity-50"
-            disabled={modelBusy}
-            value={reviewModel}
-            onChange={async (e) => {
-              if (modelBusy) return; // in-flight 守卫：连改下拉不并发落盘
-              setModelBusy(true);
-              const v = e.target.value;
-              try {
-                // 以服务端返回值为准（不用乐观更新——落盘失败时 UI 不展示未持久化值）
-                const st = await setWorkflowSettings({ reviewModel: v });
-                setReviewModel(st.reviewModel ?? "");
-              } catch (err) {
-                setAuditMsg(String(err));
-              } finally {
-                setModelBusy(false);
-              }
-            }}
-          >
-            <option value="">⚙️ 跟随全局模型</option>
-            {reviewModel && !modelOptions.some((m) => m.id === reviewModel) && (
-              <option value={reviewModel}>{reviewModel}（条目已删除）</option>
-            )}
-            {modelOptions.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--t2)]">审计保留次数</p>
-            <p className="mt-1 text-xs text-[var(--t5)]">
-              每个工作流保留最近 N 次运行的审计记录（5–100，超出自动清理）
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <input
-              aria-label="审计保留次数"
-              className="w-16 rounded-[var(--r-sm)] px-2 py-1 text-right text-sm nm-inset text-[var(--t1)] outline-none"
-              inputMode="numeric"
-              value={retentionDraft}
-              onChange={(e) =>
-                setRetentionDraft(e.target.value.replace(/\D/g, ""))
-              }
-              onBlur={async () => {
-                const v = parseInt(retentionDraft, 10);
-                if (!Number.isFinite(v) || v === retention) return;
-                try {
-                  const s = await setWorkflowSettings({
-                    auditRetentionRuns: v,
-                  });
-                  setRetention(s.auditRetentionRuns);
-                  setRetentionDraft(String(s.auditRetentionRuns));
-                } catch (e) {
-                  setAuditMsg(String(e));
-                }
-              }}
-            />
-            <span className="text-xs text-[var(--t5)]">次 run</span>
-          </div>
-        </div>
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--t2)]">执行提问预算</p>
-            <p className="mt-1 text-xs text-[var(--t5)]">
-              ask_user 每次任务执行/工作流节点最多提问次数（1–5，默认
-              3；工作流与任务卡通用，超预算自动按假设继续）
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <input
-              aria-label="执行提问预算"
-              className="w-16 rounded-[var(--r-sm)] px-2 py-1 text-right text-sm nm-inset text-[var(--t1)] outline-none"
-              inputMode="numeric"
-              value={askBudgetDraft}
-              onChange={(e) =>
-                setAskBudgetDraft(e.target.value.replace(/\D/g, ""))
-              }
-              onBlur={async () => {
-                const v = parseInt(askBudgetDraft, 10);
-                if (!Number.isFinite(v) || v === askBudget) return;
-                try {
-                  const s = await setWorkflowSettings({ askBudget: v });
-                  setAskBudget(s.askBudget);
-                  setAskBudgetDraft(String(s.askBudget));
-                } catch (e) {
-                  setAuditMsg(String(e));
-                }
-              }}
-            />
-            <span className="text-xs text-[var(--t5)]">次</span>
-          </div>
-        </div>
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--t2)]">清空审计</p>
-            <p className="mt-1 text-xs text-[var(--t5)]">
-              删除所有工作流的审计记录（不影响任务卡与执行结果本身）
-            </p>
-          </div>
-          <button
-            className="shrink-0 nm-outset rounded-[var(--r-sm)] px-3 py-1.5 text-xs text-[var(--t3)]"
-            onClick={async () => {
-              if (
-                !(await confirm(
-                  "确定清空所有工作流的审计记录？此操作不可撤销。",
-                ))
-              )
-                return;
-              try {
-                const n = await clearAllWorkflowAudit();
-                setAuditMsg(`已清空 ${n} 条审计记录`);
-              } catch (e) {
-                setAuditMsg(String(e));
-              }
-            }}
-          >
-            清空全部
-          </button>
-        </div>
-        {auditMsg && (
-          <p className="mt-2 text-xs text-[var(--t4)]">{auditMsg}</p>
-        )}
-      </div>
-      <div className="nm-card p-5">
-        <h2 className="text-lg font-semibold text-[var(--t1)]">
-          AI 拆解提示词
-        </h2>
-        <p className="mt-1 text-xs text-[var(--t5)]">
-          「AI
-          生成」拆解目标时给模型的指引（拆解风格、粒度要求、领域偏好）。输出
-          JSON 格式约束由系统强制追加，不在此处、也无需配置。
-        </p>
-        <textarea
-          aria-label="AI 拆解提示词"
-          className="mt-3 h-40 w-full resize-y rounded-[var(--r-sm)] nm-inset p-3 text-sm leading-6 text-[var(--t1)] outline-none"
-          value={guidance}
-          maxLength={MAX_GUIDANCE_CHARS}
-          onChange={(e) => {
-            setGuidance(e.target.value);
-            setGuidanceSaved(false);
-          }}
-          onBlur={() => persistGuidance(guidance)}
-        />
-        <div className="mt-3 flex items-center justify-end gap-2">
-          {guidanceSaved && (
-            <span className="text-xs text-[var(--t5)]">已保存</span>
-          )}
-          <button
-            className="nm-outset rounded-[var(--r-sm)] px-3 py-1 text-xs text-[var(--t3)]"
-            onClick={() => {
-              const d = resetDecomposeGuidance();
-              setGuidance(d);
-              persistGuidance(d);
-            }}
-          >
-            恢复默认
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}

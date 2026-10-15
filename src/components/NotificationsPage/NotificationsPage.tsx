@@ -11,9 +11,9 @@ import { EmptyState } from "../EmptyState";
 import { formatMonthDayTime } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import {
-  respondWorkflowQuestion,
-  type WorkflowQuestionPayload,
-} from "../../lib/workflowAsk";
+  respondTaskQuestion,
+  type TaskQuestionPayload,
+} from "../../lib/taskAsk";
 import {
   NOTIFICATIONS_CHANGED_EVENT,
   approveMemoryProposals,
@@ -45,7 +45,7 @@ const KIND_META: Record<
   },
   workflow_question: {
     icon: <HelpCircle size={15} aria-hidden />,
-    label: "工作流提问",
+    label: "任务提问",
   },
 };
 
@@ -282,17 +282,17 @@ function ArtifactCard({ item }: { item: NotificationItem }) {
   );
 }
 
-/** 工作流提问 payload（payload.questionId 必有，缺失 = 数据不完整可忽略） */
-function workflowQuestion(n: NotificationItem): WorkflowQuestionPayload | null {
+/** 任务提问 payload（payload.questionId 必有，缺失 = 数据不完整可忽略） */
+function taskQuestion(n: NotificationItem): TaskQuestionPayload | null {
   const p = n.payload;
   if (!p || typeof p.questionId !== "string") return null;
-  return p as unknown as WorkflowQuestionPayload;
+  return p as unknown as TaskQuestionPayload;
 }
 
-/** 工作流提问卡：选项 chips + 自由输入 + 按假设继续——
- *  红线：忽略问题工作流也能走（assume 返回问题自带假设） */
-function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
-  const q = workflowQuestion(item);
+/** 任务提问卡：选项 chips + 自由输入 + 按假设继续——
+ *  红线：忽略问题执行也能走（assume 返回问题自带假设） */
+function TaskQuestionCard({ item }: { item: NotificationItem }) {
+  const q = taskQuestion(item);
   const [picked, setPicked] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -305,13 +305,13 @@ function WorkflowQuestionCard({ item }: { item: NotificationItem }) {
   const respond = async (action: "answer" | "assume") => {
     setBusy(true);
     try {
-      await respondWorkflowQuestion(
+      await respondTaskQuestion(
         q.questionId,
         action,
         action === "answer" ? answerText || undefined : undefined,
       );
     } catch (e) {
-      handleCommandError(e, "回答工作流提问");
+      handleCommandError(e, "回答任务提问");
     } finally {
       setBusy(false);
     }
@@ -511,7 +511,7 @@ export function NotificationsPage() {
                   ) : n.kind === "evolution_proposal" ? (
                     <EvolutionCard item={n} />
                   ) : n.kind === "workflow_question" ? (
-                    <WorkflowQuestionCard item={n} />
+                    <TaskQuestionCard item={n} />
                   ) : (
                     <ArtifactCard item={n} />
                   ))}

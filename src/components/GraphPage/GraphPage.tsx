@@ -1,5 +1,5 @@
 // 任务图谱页（任务图谱设计 §3）：全量任务（含归档、排除回收站）的 Obsidian 式
-// 关系图谱——力导向布局、依赖边 + 工作流 hub、按状态/成员着色、过滤器侧栏、
+// 关系图谱——力导向布局、依赖边、按状态/成员着色、过滤器侧栏、
 // hover 邻接高亮、点选详情。看板/挂件只看本人任务；这里看整个部门。
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
 import { Waypoints } from "lucide-react";
-import type { PeopleEntry, Task, Workflow } from "../../types";
+import type { PeopleEntry, Task } from "../../types";
 import { loadPeople } from "../../storage";
 import GraphCanvas from "./GraphCanvas";
 import { OWNER_PALETTE, type GraphSizeMode } from "./graph-adapter";
@@ -46,8 +46,6 @@ interface GraphPageProps {
   tasks: Task[];
   /** 详情面板「在看板打开」：App 的 jumpToTask（按任务位置切视图 + 编辑态） */
   onOpenTask: (t: Task) => void;
-  /** 双击工作流 hub → 打开工作流画布 */
-  onOpenWorkflow: () => void;
   /** 依赖编辑写路径（G5-DEPEDIT）：App 的 updateTask → task_patch 通道 */
   onPatchTask: (taskId: string, patch: Partial<Task>) => void;
 }
@@ -55,10 +53,8 @@ interface GraphPageProps {
 export default function GraphPage({
   tasks,
   onOpenTask,
-  onOpenWorkflow,
   onPatchTask,
 }: GraphPageProps) {
-  const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [people, setPeople] = useState<PeopleEntry[]>([]);
   // 过滤器初始化优先级（设置页偏好）：记住上次 > 只看我的 > 默认。
   // 「只看我的」= 成员过滤默认只留本人（SELF_OWNER），chip 仍可手动加回他人
@@ -88,9 +84,6 @@ export default function GraphPage({
   const [showFilters, setShowFilters] = useState(true);
 
   useEffect(() => {
-    invoke<Workflow[]>("workflow_list")
-      .then(setWorkflows)
-      .catch((e) => console.error("[graph] workflow_list failed", e));
     const refreshPeople = () =>
       loadPeople()
         .then(setPeople)
@@ -104,8 +97,8 @@ export default function GraphPage({
   }, []);
 
   const graph = useMemo(
-    () => buildTaskGraph(tasks, workflows, filters),
-    [tasks, workflows, filters],
+    () => buildTaskGraph(tasks, filters),
+    [tasks, filters],
   );
   const ownerChips = useMemo(
     () => collectOwners(tasks, people),
@@ -318,21 +311,7 @@ export default function GraphPage({
     });
   };
 
-  const toggleWorkflow = (id: string) => {
-    setFilters((f) => {
-      const cur = f.workflowIds ?? workflows.map((w) => w.id);
-      const next = cur.includes(id)
-        ? cur.filter((x) => x !== id)
-        : [...cur, id];
-      return {
-        ...f,
-        workflowIds: next.length === workflows.length ? null : next,
-      };
-    });
-  };
-
   const depCount = graph.links.filter((l) => l.kind === "dep").length;
-  const hubCount = graph.nodes.filter((n) => n.kind === "hub").length;
 
   const chipBase =
     "inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors";
@@ -352,7 +331,7 @@ export default function GraphPage({
         <h2 className="text-sm font-semibold text-[var(--t2)]">任务图谱</h2>
         <span className="text-xs text-[var(--t5)]" data-testid="graph-stats">
           {graph.nodes.filter((n) => n.kind === "task").length} 任务 ·{" "}
-          {depCount} 依赖 · {hubCount} 工作流 · {ownerChips.length} 成员
+          {depCount} 依赖 · {ownerChips.length} 成员
         </span>
         <div className="flex-1" />
         <input
@@ -388,7 +367,6 @@ export default function GraphPage({
             searchMatchIds={searchMatchIds}
             onHover={setHoverId}
             onSelect={setSelectedId}
-            onOpenHub={() => onOpenWorkflow()}
           />
           {/* 图例 + 重新布局（默认静态确定性布局，物理动画手动触发） */}
           <div className="nm-card absolute left-3 top-3 flex items-center gap-2 rounded-[var(--r-md)] px-2.5 py-1.5 text-xs">
@@ -532,14 +510,6 @@ export default function GraphPage({
                       在看板打开
                     </button>
                   )}
-                  {selectedNode.workflowId && (
-                    <button
-                      className="nm-btn flex-1 rounded-[var(--r-sm)] px-2 py-1 text-xs"
-                      onClick={onOpenWorkflow}
-                    >
-                      打开工作流
-                    </button>
-                  )}
                 </div>
                 {/* 依赖编辑（G5-DEPEDIT）：仅本人卡；写 task_patch dependsOn */}
                 {!selectedNode.owner && depsEditor}
@@ -637,28 +607,6 @@ export default function GraphPage({
                         {count}
                       </span>
                     </button>
-                  ))}
-                </div>
-              </FilterGroup>
-            )}
-
-            {workflows.length > 0 && (
-              <FilterGroup title={`工作流（${workflows.length}）`}>
-                <div className="flex flex-col gap-1">
-                  {workflows.map((w) => (
-                    <label
-                      key={w.id}
-                      className="flex cursor-pointer items-center gap-2 text-xs text-[var(--t3)]"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={(
-                          filters.workflowIds ?? workflows.map((x) => x.id)
-                        ).includes(w.id)}
-                        onChange={() => toggleWorkflow(w.id)}
-                      />
-                      <span className="truncate">{w.name}</span>
-                    </label>
                   ))}
                 </div>
               </FilterGroup>

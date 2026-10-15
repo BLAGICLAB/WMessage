@@ -2,7 +2,7 @@
 // 静默跳过绘制——画布逻辑由 physics/graph-build 纯函数单测覆盖）。
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import type { Task, Workflow } from "../../types";
+import type { Task } from "../../types";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -32,15 +32,12 @@ const TASKS: Task[] = [
     tags: ["周报"],
     completedAt: new Date("2026-03-01").getTime(),
   }),
-  t({ id: "w1", origin: "workflow", workflowId: "wf1" }),
+  t({ id: "c", dependsOn: ["a"] }),
   t({ id: "z", ownerId: "p-1", title: "张三的任务" }),
 ];
 
-const WFS: Workflow[] = [{ id: "wf1", name: "周报流水线", goal: "出周报" }];
-
 beforeEach(() => {
   invokeMock.mockImplementation((cmd: string) => {
-    if (cmd === "workflow_list") return Promise.resolve(WFS);
     if (cmd === "people_list")
       return Promise.resolve([
         { id: "", name: "我", isSelf: true },
@@ -55,18 +52,17 @@ const renderPage = (overrides?: Partial<Parameters<typeof GraphPage>[0]>) =>
     <GraphPage
       tasks={TASKS}
       onOpenTask={() => {}}
-      onOpenWorkflow={() => {}}
       onPatchTask={() => {}}
       {...overrides}
     />,
   );
 
 describe("GraphPage", () => {
-  it("渲染统计条（任务/依赖/工作流/成员）", async () => {
+  it("渲染统计条（任务/依赖/成员）", async () => {
     renderPage();
     const stats = await screen.findByTestId("graph-stats");
     expect(stats.textContent).toContain("4 任务");
-    expect(stats.textContent).toContain("1 工作流");
+    expect(stats.textContent).toContain("1 依赖");
     expect(stats.textContent).toContain("2 成员");
   });
 
@@ -99,7 +95,6 @@ describe("GraphPage", () => {
       <GraphPage
         tasks={[]}
         onOpenTask={() => {}}
-        onOpenWorkflow={() => {}}
         onPatchTask={() => {}}
       />,
     );

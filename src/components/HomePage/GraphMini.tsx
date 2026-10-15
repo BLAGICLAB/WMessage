@@ -25,7 +25,7 @@ function layoutGraph(tasks: Task[]): {
   edges: Array<{ source: string; target: string }>;
   byId: Map<string, { x: number; y: number }>;
 } {
-  const built = buildTaskGraph(tasks, [], DEFAULT_FILTERS);
+  const built = buildTaskGraph(tasks, DEFAULT_FILTERS);
   const g = new Graph({ type: "undirected" });
   for (const n of built.nodes) {
     // 圆盘初值帮助 FA2 收敛（与图谱页分扇区初值同思路的简化版）

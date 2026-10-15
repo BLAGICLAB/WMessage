@@ -16,13 +16,13 @@ import { SELF_OWNER, type BuiltGraph, type GraphNode } from "./graph-build";
 export interface SigmaNodeAttrs extends Attributes {
   /** owner 语义键："self" | "owner:N"（N = 注入序） */
   ownerKey: string;
-  /** 状态语义键："hub" | "doing" | "done" | "todo" | "anchor" */
+  /** 状态语义键："doing" | "done" | "todo" | "anchor" */
   statusKey: string;
   /** 渲染半径（世界单位） */
   size: number;
   label: string;
   /** 节点语义类型（详情面板/hover 逻辑用；Sigma 只认约定属性，多余字段无害） */
-  kind: "task" | "hub" | "anchor";
+  kind: "task" | "anchor";
   status?: string;
   /** 建图时的真实度数（不含标签锚点边——reducer 标签资格判定用） */
   degree: number;
@@ -51,7 +51,7 @@ export const OWNER_PALETTE = [
   "#8a6d3b",
 ];
 
-/** 标签锚点边权重（> dep/member 的 1：强拉力把同组卡压过互斥聚成团） */
+/** 标签锚点边权重（> dep 的 1：强拉力把同组卡压过互斥聚成团） */
 const TAG_EDGE_WEIGHT = 3;
 /** 组内成员不足此数不建锚点（单卡标签无聚簇意义） */
 const TAG_ANCHOR_MIN_CARDS = 2;
@@ -96,7 +96,6 @@ export function nodeSize(
   mode: GraphSizeMode,
   now: number,
 ): number {
-  if (n.kind === "hub") return 7 + Math.sqrt(n.degree);
   if (mode === "degree") return 3 + Math.sqrt(n.degree) * 2;
   const days = durationDaysOf(n, now);
   if (days === null) return 3;
@@ -128,8 +127,6 @@ export function resolveStatusColor(
   palette: ColorPalette,
 ): string {
   switch (statusKey) {
-    case "hub":
-      return palette.t3;
     case "doing":
       return palette.brand;
     case "done":
@@ -225,7 +222,7 @@ export function toGraphologyGraph(
     }
     graph.addNode(n.id, {
       ownerKey: ownerColorKey(n, ownerOrder),
-      statusKey: n.kind === "hub" ? "hub" : (n.status ?? "todo"),
+      statusKey: n.status ?? "todo",
       size: nodeSize(n, sizeMode, now),
       label: n.label,
       kind: n.kind,
@@ -289,13 +286,13 @@ export function toGraphologyGraph(
   return graph;
 }
 
-/** FA2 设置：万节点档的常见调优（barnesHut 省斥力、权重参与吸引防 hub 吸团） */
+/** FA2 设置：万节点档的常见调优（barnesHut 省斥力、权重参与吸引防大度数节点吸团） */
 export function fa2Settings(nodeCount: number) {
   const base = inferSettings(Math.min(nodeCount, 5000));
   return {
     ...base,
     barnesHutOptimize: nodeCount > 1500,
-    // 权重参与吸引：dep/member=1 不变，标签锚点强边(3)把同组卡压成团
+    // 权重参与吸引：dep=1 不变，标签锚点强边(3)把同组卡压成团
     edgeWeightInfluence: 1,
     // linLogMode **永久禁用**（两次真机回归定性）：LinLog 能量模型会把连通团
     // 无限坍缩成一个点、无连线孤点推到无穷远——与「所有任务可见铺开」的验收

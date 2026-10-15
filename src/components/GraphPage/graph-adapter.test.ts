@@ -1,7 +1,7 @@
 // graph-adapter 单测（Sigma 迁移 + r1 着色统一）：建图 → graphology 图的
 // 节点属性、边数守恒、owner 着色双轨键、重复边防御、FA2 设置推导。
 import { describe, expect, it } from "vitest";
-import type { Task, Workflow } from "../../types";
+import type { Task } from "../../types";
 import { buildTaskGraph, DEFAULT_FILTERS } from "./graph-build";
 import {
   computeCameraFit,
@@ -15,8 +15,6 @@ import {
 } from "./graph-adapter";
 import type { GraphNode } from "./graph-build";
 
-const WFS: Workflow[] = [{ id: "wf1", name: "周报流水线", goal: "出周报" }];
-
 function t(partial: Partial<Task> & { id: string }): Task {
   return { title: `任务-${partial.id}`, column: "todo", ...partial };
 }
@@ -27,16 +25,12 @@ const SAMPLE: Task[] = [
   t({
     id: "w1",
     column: "doing",
-    origin: "workflow",
-    workflowId: "wf1",
     dependsOn: ["w2"],
     tags: ["周报"],
   }),
   t({
     id: "w2",
     column: "done",
-    origin: "workflow",
-    workflowId: "wf1",
     tags: ["周报"],
   }),
   t({ id: "z", ownerId: "p-1" }),
@@ -51,7 +45,7 @@ const ORDER = new Map([
 
 describe("toGraphologyGraph", () => {
   it("节点/边数与建图结果守恒，属性齐备", () => {
-    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const built = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const g = toGraphologyGraph(built, ORDER);
     expect(g.order).toBe(built.nodes.length);
     expect(g.size).toBe(built.links.length);
@@ -60,14 +54,12 @@ describe("toGraphologyGraph", () => {
     expect(w1.ownerKey).toBe("self");
     expect(w1.statusKey).toBe("doing");
     expect(w1.size).toBeGreaterThan(0);
-    expect(g.getNodeAttribute("wf:wf1", "kind")).toBe("hub");
-    expect(g.getNodeAttribute("wf:wf1", "statusKey")).toBe("hub");
     // dep 边方向：w2 → w1
     expect(g.hasEdge("w2", "w1")).toBe(true);
   });
 
   it("owner 着色双轨键：外来按注入序，状态键独立", () => {
-    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const built = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const g = toGraphologyGraph(built, ORDER);
     // 双键共存：任一模式下另一维度的键不丢
     expect(g.getNodeAttribute("z", "ownerKey")).toBe("owner:0");
@@ -77,13 +69,13 @@ describe("toGraphologyGraph", () => {
   });
 
   it("重复边防御：同 source-target 只留一条", () => {
-    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const built = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const g = toGraphologyGraph(built, ORDER);
     expect(g.size).toBe(built.links.length);
   });
 
   it("标签锚点（分扇区）：组内 ≥2 卡建锚点 + 弱边，锚点 hidden", () => {
-    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const built = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const groups = new Map([
       ["周报", "周报"],
       ["客户", "客户"],
@@ -108,7 +100,7 @@ describe("toGraphologyGraph", () => {
   });
 
   it("无 tagGroups 时不建锚点（兼容旧调用）", () => {
-    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const built = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const g = toGraphologyGraph(built, ORDER);
     g.forEachNode((_, attrs) => {
       expect(attrs.kind).not.toBe("anchor");
@@ -219,10 +211,6 @@ describe("节点大小双模式（degree/duration）", () => {
         NOW,
       ),
     ).toBe(15);
-    // hub 不受模式影响
-    expect(
-      nodeSize(task({ kind: "hub", degree: 25 }), "duration", NOW),
-    ).toBeCloseTo(12, 6);
     // degree 模式保持原公式
     expect(nodeSize(task({ degree: 9 }), "degree", NOW)).toBeCloseTo(
       3 + 3 * 2,
@@ -240,7 +228,7 @@ describe("节点大小双模式（degree/duration）", () => {
         completedAt: NOW,
       }),
     ];
-    const built = buildTaskGraph(tasks, WFS, DEFAULT_FILTERS);
+    const built = buildTaskGraph(tasks, DEFAULT_FILTERS);
     const g = toGraphologyGraph(
       built,
       ORDER,
@@ -276,7 +264,7 @@ describe("fa2Settings", () => {
 describe("布局松散度（LOOSENESS_R_MAX）", () => {
   it("紧凑/标准/松散 → 坐标半径按 20/30/45 同比例缩放", () => {
     const tasks: Task[] = [t({ id: "a" }), t({ id: "b" }), t({ id: "c" })];
-    const built = buildTaskGraph(tasks, [], DEFAULT_FILTERS);
+    const built = buildTaskGraph(tasks, DEFAULT_FILTERS);
     const radiusOf = (mode: "compact" | "standard" | "loose") => {
       const g = toGraphologyGraph(built, ORDER, undefined, "degree", mode);
       let r = 0;
@@ -354,7 +342,7 @@ describe("computeCameraFit（归一化相机空间适配）", () => {
   });
 
   it("graphBBox 与图坐标一致，空图/非有限兜底 [0,1]", () => {
-    const built = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const built = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const g = toGraphologyGraph(built, ORDER);
     const bb = graphBBox(g);
     let minX = Infinity,

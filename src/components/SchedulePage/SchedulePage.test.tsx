@@ -1,5 +1,5 @@
-// SchedulePage 组件测试：mock invoke 按命令名分发（schedule_overview / workflow_list /
-// scheduled_job_* / workflow_set_schedule / schedule_set_enabled），验证分组渲染与写通道参数。
+// SchedulePage 组件测试：mock invoke 按命令名分发（schedule_overview /
+// scheduled_job_* / schedule_set_enabled），验证分组渲染与写通道参数。
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -32,33 +32,12 @@ const jobEntry: ScheduleEntry = {
   pauseOnFailure: false,
 };
 
-const wfEntry: ScheduleEntry = {
-  kind: "workflow",
-  targetId: "w1",
-  title: "周报流水线",
-  detail: "汇总本周任务出周报",
-  schedule: "weekly:5:18:30",
-  schedLast: null,
-  nextRunAt: Date.now() + 3 * 86_400_000,
-  missed: false,
-  enabled: true,
-  // workflow 条目恒为 null/0/false（只有 job 有意义）
-  lastStatus: null,
-  lastError: null,
-  retryMax: 0,
-  pauseOnFailure: false,
-};
-
-/** invoke 默认分发：overview 给入参列表，workflow_list 给一条工作流，其余 null */
+/** invoke 默认分发：overview 给入参列表，其余 null */
 function stubInvoke(overview: ScheduleEntry[]) {
   invokeMock.mockImplementation(async (cmd: string) => {
     switch (cmd) {
       case "schedule_overview":
         return overview;
-      case "workflow_list":
-        return [{ id: "w1", name: "周报流水线", goal: "汇总本周任务出周报" }];
-      case "workflow_is_running":
-        return false;
       default:
         return null;
     }
@@ -70,31 +49,24 @@ beforeEach(() => {
 });
 
 describe("SchedulePage 列表渲染", () => {
-  it("按定时任务/工作流分组，频率人话 + 下次倒计时 + 即将执行摘要", async () => {
-    stubInvoke([jobEntry, wfEntry]);
+  it("频率人话 + 下次倒计时 + 即将执行摘要", async () => {
+    stubInvoke([jobEntry]);
     render(<SchedulePage />);
-    // 分组标题与两条目标（标题会同时出现在「即将执行」摘要条里，按行断言）
+    // 标题会同时出现在「即将执行」摘要条里，按行断言
     const jobRow = await screen.findByTestId("schedule-row-job:j1");
-    const wfRow = screen.getByTestId("schedule-row-workflow:w1");
     expect(
       within(jobRow).getByText("整理昨日进展写站会稿"),
     ).toBeInTheDocument();
-    expect(within(wfRow).getByText("周报流水线")).toBeInTheDocument();
     // formatSchedule 人话文案
     expect(within(jobRow).getByText("每天 09:00")).toBeInTheDocument();
-    expect(within(wfRow).getByText("每周五 18:30")).toBeInTheDocument();
-    // 即将执行摘要：取 nextRunAt 最近一条（作业 2 小时后 < 工作流 3 天后）
-    // 倒计时档位随断言时刻漂移（floor），只钉前缀与单位
+    // 即将执行摘要：倒计时档位随断言时刻漂移（floor），只钉前缀与单位
     expect(screen.getByText(/最近将执行：/)).toHaveTextContent(
       /最近将执行：整理昨日进展写站会稿，\d+ 小时后/,
     );
   });
 
   it("missed →「已错过」警示徽标；enabled=false →「已暂停」置灰徽标", async () => {
-    stubInvoke([
-      { ...jobEntry, missed: true },
-      { ...wfEntry, enabled: false, nextRunAt: null },
-    ]);
+    stubInvoke([{ ...jobEntry, missed: true, enabled: false, nextRunAt: null }]);
     render(<SchedulePage />);
     expect(await screen.findByText("已错过")).toBeInTheDocument();
     expect(screen.getByText("已暂停")).toBeInTheDocument();
@@ -117,7 +89,7 @@ describe("SchedulePage 写通道", () => {
     render(<SchedulePage />);
     // 空态时顶栏与 EmptyState 各有一个「新建定时」，点哪个都进创建流程
     await user.click((await screen.findAllByText("新建定时"))[0]);
-    // 默认类型 = 定时任务，直接写内容
+    // 直接写内容
     await user.type(
       screen.getByLabelText("定时任务内容"),
       "每天早上收集未完成任务",
@@ -146,24 +118,6 @@ describe("SchedulePage 写通道", () => {
     await user.click((await screen.findAllByText("新建定时"))[0]);
     await user.click(screen.getByText("每天"));
     expect(screen.getByText("确认保存")).toBeDisabled();
-  });
-
-  it("新建工作流定时：选模板 + 选频率 → workflow_set_schedule(id, schedule)", async () => {
-    const user = userEvent.setup();
-    stubInvoke([]);
-    render(<SchedulePage />);
-    await user.click((await screen.findAllByText("新建定时"))[0]);
-    await user.selectOptions(screen.getByLabelText("定时目标类型"), "workflow");
-    await user.selectOptions(screen.getByLabelText("定时目标"), "w1");
-    await user.click(screen.getByText("每天"));
-    expect(screen.getByText(/到点自动执行该工作流/)).toBeInTheDocument();
-    await user.click(screen.getByText("确认保存"));
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("workflow_set_schedule", {
-        id: "w1",
-        schedule: "daily:09:00",
-      }),
-    );
   });
 
   it("取消作业定时：两步确认 → scheduled_job_delete(id)", async () => {
@@ -222,9 +176,9 @@ describe("SchedulePage 写通道", () => {
     );
   });
 
-  it("立即执行作业 → scheduled_job_fire(id)；工作流 → workflow_run", async () => {
+  it("立即执行作业 → scheduled_job_fire(id)", async () => {
     const user = userEvent.setup();
-    stubInvoke([jobEntry, wfEntry]);
+    stubInvoke([jobEntry]);
     render(<SchedulePage />);
     const jobRow = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(jobRow).getByText("立即执行"));
@@ -233,31 +187,17 @@ describe("SchedulePage 写通道", () => {
         id: "j1",
       }),
     );
-    const wfRow = screen.getByTestId("schedule-row-workflow:w1");
-    await user.click(within(wfRow).getByText("立即执行"));
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("workflow_run", {
-        workflowId: "w1",
-      }),
-    );
   });
 });
 
 describe("SchedulePage 最近状态与执行历史", () => {
-  it("lastStatus=fail → 失败徽标（title 带 lastError）；ok → 成功徽标；null 不显示", async () => {
-    stubInvoke([
-      { ...jobEntry, lastStatus: "fail", lastError: "模型超时" },
-      { ...wfEntry },
-    ]);
+  it("lastStatus=fail → 失败徽标（title 带 lastError）；ok → 成功徽标", async () => {
+    stubInvoke([{ ...jobEntry, lastStatus: "fail", lastError: "模型超时" }]);
     render(<SchedulePage />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     const failBadge = within(row).getByText("失败");
     expect(failBadge).toBeInTheDocument();
     expect(failBadge).toHaveAttribute("title", "模型超时");
-    // 工作流条目恒无状态徽标
-    const wfRow = screen.getByTestId("schedule-row-workflow:w1");
-    expect(within(wfRow).queryByText("成功")).not.toBeInTheDocument();
-    expect(within(wfRow).queryByText("失败")).not.toBeInTheDocument();
   });
 
   it("lastStatus=ok → 成功徽标", async () => {

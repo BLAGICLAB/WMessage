@@ -1,7 +1,7 @@
-// graph-build 单测（任务图谱设计 §3.1）：建图、丢悬空边、hub、度数、过滤器、
+// graph-build 单测（任务图谱设计 §3.1）：建图、丢悬空边、度数、过滤器、
 // 排除软删、含归档、孤立节点剪枝、成员/标签/年份聚合。
 import { describe, expect, it } from "vitest";
-import type { Task, Workflow } from "../../types";
+import type { Task } from "../../types";
 import {
   SELF_OWNER,
   buildTaskGraph,
@@ -12,11 +12,6 @@ import {
   wouldCreateDepCycle,
 } from "./graph-build";
 
-const WFS: Workflow[] = [
-  { id: "wf1", name: "周报流水线", goal: "出周报" },
-  { id: "wf2", name: "部署流水线", goal: "部署" },
-];
-
 function t(partial: Partial<Task> & { id: string }): Task {
   return { title: `任务-${partial.id}`, column: "todo", ...partial };
 }
@@ -24,9 +19,9 @@ function t(partial: Partial<Task> & { id: string }): Task {
 const SAMPLE: Task[] = [
   t({ id: "a", column: "doing" }), // 本人孤立卡
   t({ id: "b", column: "done", completedAt: new Date("2026-03-01").getTime() }),
-  t({ id: "w1", origin: "workflow", workflowId: "wf1", dependsOn: ["w2"] }),
-  t({ id: "w2", origin: "workflow", workflowId: "wf1" }),
-  t({ id: "w3", origin: "workflow", workflowId: "wf2", dependsOn: ["gone"] }), // 悬空引用
+  t({ id: "w1", dependsOn: ["w2"] }),
+  t({ id: "w2" }),
+  t({ id: "w3", dependsOn: ["gone"] }), // 悬空引用
   t({ id: "gone", deletedAt: 1 }), // 回收站：永不出图
   t({
     id: "arch",
@@ -39,7 +34,7 @@ const SAMPLE: Task[] = [
 
 describe("buildTaskGraph", () => {
   it("排除回收站、保留归档，依赖边双向成边", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const g = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const ids = g.nodes.map((n) => n.id);
     expect(ids).not.toContain("gone");
     expect(ids).toContain("arch");
@@ -48,90 +43,69 @@ describe("buildTaskGraph", () => {
   });
 
   it("悬空 dependsOn 丢边不丢节点", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+    const g = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     expect(g.nodes.map((n) => n.id)).toContain("w3");
     expect(
       g.links.filter((l) => l.kind === "dep" && l.target === "w3"),
     ).toHaveLength(0);
   });
 
-  it("每个有成员的工作流一个 hub，成员边指向 hub", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
-    const hubs = g.nodes.filter((n) => n.kind === "hub");
-    expect(hubs.map((h) => h.id).sort()).toEqual(["wf:wf1", "wf:wf2"]);
-    expect(hubs[0].label).toBe("周报流水线");
-    const member = g.links.filter((l) => l.kind === "member");
-    expect(member.filter((l) => l.target === "wf:wf1")).toHaveLength(2);
-  });
-
-  it("度数 = dep + member 边数", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, DEFAULT_FILTERS);
+  it("度数 = dep + parent 边数", () => {
+    const g = buildTaskGraph(SAMPLE, DEFAULT_FILTERS);
     const w1 = g.nodes.find((n) => n.id === "w1")!;
-    expect(w1.degree).toBe(2); // 1 dep + 1 member
-    const hub1 = g.nodes.find((n) => n.id === "wf:wf1")!;
-    expect(hub1.degree).toBe(2);
+    expect(w1.degree).toBe(1);
   });
 
   it("状态过滤器", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, {
+    const filtered = buildTaskGraph(SAMPLE, {
       ...DEFAULT_FILTERS,
       status: { todo: false, doing: true, done: false },
     });
-    const ids = g.nodes.filter((n) => n.kind === "task").map((n) => n.id);
+    const ids = filtered.nodes.map((n) => n.id);
     expect(ids).toContain("a");
     expect(ids).not.toContain("b");
   });
 
   it("成员过滤器（本人哨兵 + 外来 pid）", () => {
-    const onlySelf = buildTaskGraph(SAMPLE, WFS, {
+    const onlySelf = buildTaskGraph(SAMPLE, {
       ...DEFAULT_FILTERS,
       owners: [SELF_OWNER],
     });
     expect(onlySelf.nodes.map((n) => n.id)).not.toContain("zhang");
-    const onlyZhang = buildTaskGraph(SAMPLE, WFS, {
+    const onlyZhang = buildTaskGraph(SAMPLE, {
       ...DEFAULT_FILTERS,
       owners: ["p-zhang"],
     });
     expect(onlyZhang.nodes.map((n) => n.id)).toContain("zhang");
-    expect(onlyZhang.nodes.filter((n) => n.kind === "task")).toHaveLength(1);
+    expect(onlyZhang.nodes).toHaveLength(1);
   });
 
   it("标签过滤：任一命中保留", () => {
     const tagged = [...SAMPLE, t({ id: "tagged", tags: ["部署", "周报"] })];
-    const g = buildTaskGraph(tagged, WFS, {
+    const g = buildTaskGraph(tagged, {
       ...DEFAULT_FILTERS,
       tags: ["部署"],
     });
-    const ids = g.nodes.filter((n) => n.kind === "task").map((n) => n.id);
+    const ids = g.nodes.map((n) => n.id);
     expect(ids).toEqual(["tagged"]);
   });
 
   it("年份过滤按 completedAt", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, { ...DEFAULT_FILTERS, year: 2025 });
-    const ids = g.nodes.filter((n) => n.kind === "task").map((n) => n.id);
+    const g = buildTaskGraph(SAMPLE, { ...DEFAULT_FILTERS, year: 2025 });
+    const ids = g.nodes.map((n) => n.id);
     expect(ids).toEqual(["arch"]);
   });
 
-  it("includeOrphans=false 剪掉无边任务，保留有成员的 hub", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, {
+  it("includeOrphans=false 剪掉无边任务", () => {
+    const g = buildTaskGraph(SAMPLE, {
       ...DEFAULT_FILTERS,
       includeOrphans: false,
     });
     const ids = g.nodes.map((n) => n.id);
     expect(ids).not.toContain("a"); // 孤立本人卡被剪
     expect(ids).not.toContain("zhang");
-    expect(ids).toContain("wf:wf2"); // w3 仍有 member 边 → hub 保留
-    expect(ids).toContain("wf:wf1");
-  });
-
-  it("工作流白名单只保留对应 hub 与成员", () => {
-    const g = buildTaskGraph(SAMPLE, WFS, {
-      ...DEFAULT_FILTERS,
-      workflowIds: ["wf1"],
-    });
-    const hubIds = g.nodes.filter((n) => n.kind === "hub").map((n) => n.id);
-    expect(hubIds).toEqual(["wf:wf1"]);
-    expect(g.nodes.map((n) => n.id)).not.toContain("w3");
+    expect(ids).toContain("w1"); // 有 dep 边保留
+    expect(ids).toContain("w2");
   });
 
   it("子任务卡出身边：母 → 子成 parent 边，计入度数救孤儿", () => {
@@ -139,7 +113,7 @@ describe("buildTaskGraph", () => {
       t({ id: "mother" }),
       t({ id: "child", parentId: "mother" }),
     ];
-    const g = buildTaskGraph(tasks, WFS, DEFAULT_FILTERS);
+    const g = buildTaskGraph(tasks, DEFAULT_FILTERS);
     expect(g.links).toContainEqual({
       source: "mother",
       target: "child",
@@ -149,7 +123,7 @@ describe("buildTaskGraph", () => {
     expect(byId.get("mother")?.degree).toBe(1);
     expect(byId.get("child")?.degree).toBe(1);
     // parent 边连接的卡不算孤儿
-    const pruned = buildTaskGraph(tasks, WFS, {
+    const pruned = buildTaskGraph(tasks, {
       ...DEFAULT_FILTERS,
       includeOrphans: false,
     });
@@ -162,7 +136,7 @@ describe("buildTaskGraph", () => {
       t({ id: "child", parentId: "mother" }),
       t({ id: "child2", parentId: "dangling" }),
     ];
-    const g = buildTaskGraph(tasks, WFS, DEFAULT_FILTERS);
+    const g = buildTaskGraph(tasks, DEFAULT_FILTERS);
     expect(g.links.filter((l) => l.kind === "parent")).toHaveLength(0);
     const ids = g.nodes.map((n) => n.id);
     expect(ids).toContain("child");

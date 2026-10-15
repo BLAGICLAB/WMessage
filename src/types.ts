@@ -141,14 +141,14 @@ export interface Task {
     /** 本卡耗时（墙钟 ms，引擎写） */
     ms?: number;
   } | null;
-  /** 工作流画布归属（设计 §3.1）：缺省 "user" = 看板任务；
-   *  "workflow" = 工作流节点卡（看板/挂件默认过滤，bot 工具不过滤） */
+  /** 归属：缺省 "user" = 看板任务；遗留值 "workflow" = 画布节点卡（功能已退役，
+   *  仅老库数据行存在，按普通卡展示） */
   origin?: "user" | "workflow";
-  /** 所属工作流 id（origin="workflow" 时有值） */
+  /** 所属工作流 id（遗留字段，画布退役后仅老库数据行有值） */
   workflowId?: string;
-  /** 上游任务 id 列表（DAG 依赖 = 画布连线；工作流卡专用） */
+  /** 上游任务 id 列表（依赖边；图谱/KPI 关联簇数据源） */
   dependsOn?: string[];
-  /** 画布坐标（仅工作流卡使用） */
+  /** 画布坐标（遗留字段，画布退役后仅老库数据行有值） */
   canvasPos?: CanvasPos;
   /** 执行用大模型：模型库条目 id；缺省 = 跟随全局 active 模型 */
   model?: string;
@@ -169,57 +169,15 @@ export interface PeopleEntry {
   isSelf: boolean;
 }
 
-/** 工作流元数据（与 Rust db::Workflow 对应，存 workflows 表；节点 = origin="workflow" 的任务卡） */
-export interface Workflow {
-  id: string;
-  name: string;
-  /** 用户原始自然语言总目标（总目标卡展示文本） */
-  goal: string;
-  createdAt?: number;
-  updatedAt?: number;
-  /** 定时执行规则（同 Task.schedule 格式）：null/undefined = 未设 */
-  schedule?: string | null;
-  /** 上次定时执行时间（epoch ms） */
-  schedLast?: number | null;
-  /** 定时启用开关：undefined = 启用 */
-  enabled?: boolean;
-  /** 上轮执行的收尾审校报告（W-QA，JSON 字符串：verdict/overall/issues）；null = 从未评审 */
-  lastReport?: string | null;
-  /** 报告写入时间（epoch ms） */
-  lastReportAt?: number | null;
-  /** 澄清元数据JSON 串：{answers:[{question,answer}], askMode}）；null = 从未澄清 */
-  clarifyMeta?: string | null;
-}
-
-/** 评审裁决四值（Rust 契约）：pass/partial/fail = rubric 裁决；unknown = 评审 * 调用/解析失败降级。注意后端 ReviewReport.verdict 是 String 直传（模型输出
- * 契约外字符串现实可达），前端在解析边界归一成这四值后才落入本类型 */
-export type ReviewVerdict = "pass" | "partial" | "fail" | "unknown";
-
-/** 工作流收尾审校报告（W-QA，runner rubric 评审产出；workflow-report 事件与 lastReport 同构） */
-export interface WorkflowReport {
-  verdict: ReviewVerdict;
-  /** 两三句整体结论（降级时为评审原文） */
-  overall: string;
-  issues: Array<{
-    nodeTitle: string;
-    problem: string;
-    /** true = 评审判定需重做该节点（runner 已据此触发一轮有界返工） */
-    needsRework?: boolean;
-  }>;
-  /** true = 返工后的轻量终审（只覆盖返工节点） */
-  reworkRound?: boolean;
-  reworkedNodes?: string[];
-}
-
-/** schedule_overview 返回的条目（定时作业/工作流两源合并，字段与 Rust 侧 camelCase 对齐） */
+/** schedule_overview 返回的条目（定时作业，字段与 Rust 侧 camelCase 对齐） */
 export interface ScheduleEntry {
-  /** 目标类型：job = 定时作业（到点按内容新建任务卡交机器人）；workflow = 已有工作流模板 */
-  kind: "job" | "workflow";
-  /** 目标 id（作业 id / 工作流 id） */
+  /** 目标类型：job = 定时作业（到点按内容新建任务卡交机器人） */
+  kind: "job";
+  /** 作业 id */
   targetId: string;
-  /** 作业内容（即「要做什么」）/ 工作流名 */
+  /** 作业内容（即「要做什么」） */
   title: string;
-  /** 摘要（工作流 goal；作业恒为 null） */
+  /** 摘要（作业恒为 null） */
   detail: string | null;
   /** 定时规则串（daily:/weekly:/monthly:/at:） */
   schedule: string;
@@ -231,9 +189,9 @@ export interface ScheduleEntry {
   missed: boolean;
   /** 启用开关：false = 已暂停（保留配置） */
   enabled: boolean;
-  /** 最近一次执行结果（"ok"|"fail"，null=从未跑）；仅 job 条目有意义，workflow 恒 null */
+  /** 最近一次执行结果（"ok"|"fail"，null=从未跑） */
   lastStatus?: string | null;
-  /** 最近失败原因摘要（≤300 字）；仅 job 条目有意义 */
+  /** 最近失败原因摘要（≤300 字） */
   lastError?: string | null;
   /** 失败重试次数上限（0=不重试；失败 5 分钟后自动重试，用尽才算最终失败） */
   retryMax: number;
@@ -256,22 +214,4 @@ export interface ScheduledJobRun {
   summary: string | null;
   /** 本次执行新建的任务卡 id（前端可跳卡片，v1 先不接线） */
   cardId: string | null;
-}
-
-/** workflow_save 结果：本地节点 id → 真实任务 id 的绑定（画布据此挂接任务卡） */
-interface WorkflowSaveBinding {
-  /** 画布草稿节点本地 id */
-  localId: string;
-  /** 落库后的真实任务 id（保留的旧卡 = 原 id；新卡 = 新 uuid） */
-  taskId: string;
-  /** 是否新建（false = 指纹命中保留原卡） */
-  created: boolean;
-}
-
-export interface WorkflowSaveResult {
-  workflowId: string;
-  bindings: WorkflowSaveBinding[];
-  kept: number;
-  created: number;
-  deleted: number;
 }

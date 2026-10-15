@@ -19,7 +19,6 @@ import {
   SquareKanban,
   Trash2,
   Waypoints,
-  Workflow as WorkflowIcon,
 } from "lucide-react";
 import { TaskTimelinePage } from "./components/TaskTimeline/TaskTimelinePage";
 import { TaskEditorOverlay } from "./components/TaskTimeline/TaskEditorOverlay";
@@ -32,7 +31,6 @@ import { ArchivePage } from "./components/ArchivePage";
 import { TrashPage } from "./components/TrashPage";
 import { WorkspacePage } from "./components/WorkspacePage";
 import { SettingsPage } from "./components/SettingsPage";
-import { WorkflowPage } from "./components/WorkflowCanvas/WorkflowPage";
 import { SchedulePage } from "./components/SchedulePage/SchedulePage";
 import { ActivityPage } from "./components/ActivityPage";
 import GraphPage from "./components/GraphPage/GraphPage";
@@ -67,11 +65,6 @@ import {
   loadArchiveDaysFromConfig,
   setArchiveAfterDays,
 } from "./lib/archiveRule";
-import {
-  getShowWorkflowTasks,
-  isWorkflowTask,
-  WORKFLOW_VISIBILITY_EVENT,
-} from "./lib/workflowVisibility";
 
 import {
   applySetting,
@@ -116,11 +109,10 @@ const SEED: Task[] = [
 ];
 
 // 左侧导航栏条目：视图切换职能自顶部工具条迁入；设置单独走底部入口。
-// 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（工作流/定时/通知）
+// 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（定时/通知）
 type RailView =
   | "home"
   | "board"
-  | "workflow"
   | "schedule"
   | "activity"
   | "graph"
@@ -143,8 +135,7 @@ const AGENT_ITEMS: {
   icon: typeof SquareKanban;
   badge?: boolean;
 }[] = [
-  { key: "workflow", label: "工作流", icon: WorkflowIcon },
-  // 定时任务模块：任务卡/工作流到点自动执行的集中管理（列表=状态面板）
+  // 定时任务模块：任务卡到点自动执行的集中管理（列表=状态面板）
   { key: "schedule", label: "定时", icon: AlarmClock },
   //  执行活动聚合页：最近全部执行痕迹列表（Agent 透明化设计 §5.6）
   { key: "activity", label: "活动", icon: ActivityIcon },
@@ -269,26 +260,11 @@ function App() {
   }, []);
   const [theme, setTheme] = useState<ThemeSetting>(getSetting);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  // 工作流卡可见性开关（默认隐藏，设置页「工作流」分区控制，事件即时同步）
-  const [showWorkflowTasks, setShowWorkflowTasks] =
-    useState(getShowWorkflowTasks);
-  useEffect(() => {
-    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
-      setShowWorkflowTasks(getShowWorkflowTasks()),
-    );
-    return () => {
-      unlistenSafe(un);
-    };
-  }, []);
-  // 可见任务选择器：工作流卡只画在画布上，看板/归档/回收站/命令面板默认不混入（设计 §3.3）。
+  // 可见任务选择器。
   // tasks 已套今日/归档规则，这里只做归属过滤。
   // 任务图谱（设计 §1.5）：ownerId 非空 = 导入的外来任务，默认同样不混入（只看自己的）；
   // 图谱页拿全量 tasks 自行过滤
-  const visibleTasks = useMemo(() => {
-    let list = tasks.filter((t) => !t.ownerId);
-    if (!showWorkflowTasks) list = list.filter((t) => !isWorkflowTask(t));
-    return list;
-  }, [tasks, showWorkflowTasks]);
+  const visibleTasks = useMemo(() => tasks.filter((t) => !t.ownerId), [tasks]);
 
   // 归档自动打标（任务图谱设计 §2）：观测「已加载任务从未归档 → 归档且无标签」
   // 转变，fire-and-forget 调后端一次性 LLM 打标；失败仅留 console 痕迹。
@@ -1049,18 +1025,6 @@ function App() {
               onOpenTask={jumpToTaskId}
               onOpenArchived={jumpToArchive}
             />
-          ) : view === "workflow" ? (
-            <WorkflowPage
-              tasks={tasks}
-              onSetColumn={setTaskColumn}
-              onUpdate={updateTask}
-              onTasksReload={() => {
-                // 不 silent：保存/删除后重读失败必须让用户看到（errorHandler 默认弹窗）
-                void reloadTasks().catch((e) =>
-                  handleCommandError(e, "重读任务"),
-                );
-              }}
-            />
           ) : view === "schedule" ? (
             <SchedulePage />
           ) : view === "activity" ? (
@@ -1069,7 +1033,6 @@ function App() {
             <GraphPage
               tasks={tasks}
               onOpenTask={jumpToTask}
-              onOpenWorkflow={() => setView("workflow")}
               onPatchTask={updateTask}
             />
           ) : view === "archive" ? (

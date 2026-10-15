@@ -30,11 +30,6 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
 import { invoke } from "@tauri-apps/api/core";
 import { openTarget } from "../../lib/openTarget";
-import {
-  getShowWorkflowTasks,
-  isWorkflowTask,
-  WORKFLOW_VISIBILITY_EVENT,
-} from "../../lib/workflowVisibility";
 import { ErrorBoundary } from "../../ui/ErrorBoundary";
 import { linkDisplayName } from "../WorkspacePage";
 
@@ -647,24 +642,11 @@ export default function WidgetApp() {
   };
 
   // 挂件「待办 / 今日」显示未完成；「完成」显示已完成列。
-  // 工作流节点卡默认不在挂件清单混入（设计 §3.3），开关走 localStorage + Tauri 事件
-  const [wfVisible, setWfVisible] = useState(getShowWorkflowTasks);
-  useEffect(() => {
-    const un = listen(WORKFLOW_VISIBILITY_EVENT, () =>
-      setWfVisible(getShowWorkflowTasks()),
-    );
-    return () => {
-      unlistenSafe(un);
-    };
-  }, []);
   // 任务图谱（设计 §1.5）：ownerId 非空 = 导入的外来任务，挂件只显示本人的
   const notMine = (t: Task) => Boolean(t.ownerId);
-  const notWorkflow = (t: Task) => wfVisible || !isWorkflowTask(t);
-  const visible = tasks.filter(
-    (t) => !notMine(t) && notWorkflow(t) && isActiveTask(t),
-  );
+  const visible = tasks.filter((t) => !notMine(t) && isActiveTask(t));
   const doneList = tasks
-    .filter((t) => !notMine(t) && notWorkflow(t) && isDoneTask(t))
+    .filter((t) => !notMine(t) && isDoneTask(t))
     .slice()
     .sort((a, b) => (b.completedAt ?? 0) - (a.completedAt ?? 0));
   // 今日口径与主窗口一致（任务页周网格 / 首页任务卡）：planStart 日期 == 本地今天，
