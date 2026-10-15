@@ -1486,6 +1486,82 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
     );
 }
 
+/// 启动清扫：进程重启后没有任何 runner 在跑，库里 running/queued 的行是
+/// 上一世的僵尸——不收尾就在子 agent 面板里永远转圈（L1 排队恢复尚未接线，
+/// 这里只保证不留假在途）。逐行落终态 + 审计，谁被清的、可追溯。
+pub fn sweep_zombie_subagents(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let sweep = {
+            let conn = match crate::db::open_db(&app) {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::bot::audit_log(
+                        &app,
+                        &format!("subagent_zombie_sweep_db_fail | err: {e}"),
+                    );
+                    return;
+                }
+            };
+            crate::db::lock_db_write();
+            let mut cleaned = 0usize;
+            // 终态按「事实」选：排队中的从未开跑，是被重启丢弃（cancelled）；
+            // 已开跑的中途断掉才算失败（failed）。状态机也只放行这两条边
+            for (st, to) in [
+                (SubagentStatus::Queued, SubagentStatus::Cancelled),
+                (SubagentStatus::Running, SubagentStatus::Failed),
+            ] {
+                let rows = match crate::db::load_subagents_by_status(&conn, st) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        crate::bot::audit_log(
+                            &app,
+                            &format!(
+                                "subagent_zombie_sweep_load_fail | status: {} | err: {e}",
+                                st.as_str()
+                            ),
+                        );
+                        continue;
+                    }
+                };
+                for row in rows {
+                    let id = row.id.clone();
+                    let res = crate::db::update_subagent_status(
+                        &conn,
+                        &id,
+                        to,
+                        now_ms(),
+                        Some("应用重启，执行现场已不存在（僵尸行清理）"),
+                    );
+                    match res {
+                        Ok(_) => {
+                            cleaned += 1;
+                            crate::bot::audit_log(
+                                &app,
+                                &format!(
+                                    "subagent_zombie_cleared | id: {id} | was: {}",
+                                    st.as_str()
+                                ),
+                            );
+                        }
+                        Err(e) => crate::bot::audit_log(
+                            &app,
+                            &format!("subagent_zombie_clear_fail | id: {id} | err: {e}"),
+                        ),
+                    }
+                }
+            }
+            cleaned
+        };
+        if sweep > 0 {
+            crate::bot::audit_log(
+                &app,
+                &format!("subagent_zombie_sweep_done | count: {sweep}"),
+            );
+        }
+    });
+}
+
 /// 上报用终态：行已写入终态时以行为准（cancel 抢先 → cancelled），
 /// 收尾闭包自身失败拿不到行时才回落 classify 的观感值
 fn effective_status(row: Option<SubagentStatus>, classified: SubagentStatus) -> SubagentStatus {

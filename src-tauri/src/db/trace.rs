@@ -765,6 +765,9 @@ pub fn trace_detail(app: tauri::AppHandle, trace_id: i64) -> CommandResult<Optio
 /// 保留期清理（数据管理入口，后续可挂定时器）：默认 TRACE_RETENTION_DAYS 天，钳 1..=365
 #[tauri::command]
 pub fn trace_clear_before(app: tauri::AppHandle, days: Option<i64>) -> CommandResult<usize> {
+    // 全表 DELETE：与其它写口同一把写锁，避免和并发写者抢 busy_timeout
+    // （2s）后整条命令失败
+    let _g = super::lock_db_write();
     let conn = super::open_db(&app)?;
     let days = days.unwrap_or(TRACE_RETENTION_DAYS).clamp(1, 365);
     let before = chrono::Utc::now().timestamp_millis() - days * 86_400_000;

@@ -254,8 +254,69 @@ pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
 /// 必须在**紧邻调用前**做二次 `recheck_canonical`（fail-closed），并用其返回的
 /// canonical 路径去删——“删的就是刚校验的那条”。原注释声称有此二次校验但代码没有，
 /// 本次补上真实实现（不再是有断言无代码）。
+/// 这条路径除了本卡，还被谁绑着——返回人类可读的持有者名单（卡片标题 /
+/// 工作区条目名）。空 = 只此一卡绑定，可安全删。
+/// 删除是破坏性的：同一条路径可以同时被两张卡（或一张卡 + 一个工作区链接）
+/// 引用，绑集是全局的所以单看白名单无法区分「谁拥有它」，删 A 卡的文件会把
+/// B 卡的引用一起变成死链。
+async fn other_holders(
+    app: &AppHandle,
+    path: &str,
+    owner_task_id: &str,
+) -> Result<Vec<String>, CommandError> {
+    let canon = canonical_string(std::path::Path::new(path)).ok_or_else(|| {
+        CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path.to_string(),
+            reason: "路径不存在或无法规范化".into(),
+        }
+    })?;
+    let mut holders: Vec<String> = Vec::new();
+    if let Ok(tasks) = crate::db::db_load(app.clone()).await {
+        for t in tasks {
+            if t.id == owner_task_id || t.deleted_at.is_some() {
+                continue;
+            }
+            if t.effective_files()
+                .iter()
+                .any(|f| canonical_string(std::path::Path::new(&f.path)).as_deref() == Some(&canon))
+            {
+                holders.push(format!("任务「{}」", t.title));
+            }
+        }
+    }
+    let handle = app.clone();
+    let canon_for_ws = canon.clone();
+    let ws: Vec<String> = crate::py::document::spawn_blocking_map(move || {
+        Ok(crate::db::open_db(&handle)
+            .and_then(|conn| crate::db::load_workspace(&conn))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|it| {
+                it.links.iter().any(|l| {
+                    link_kind_contributes_path(&l.kind)
+                        && canonical_string(std::path::Path::new(&l.target_uri)).as_deref()
+                            == Some(canon_for_ws.as_str())
+                })
+            })
+            .map(|it| format!("工作区「{}」", it.title))
+            .collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("检查文件占用失败：{e}")))?;
+    holders.extend(ws);
+    Ok(holders)
+}
+
+/// 删除一张卡的绑定文件：先确认这条路径确实是**这张卡**的绑定，再确认没有
+/// 别的卡/工作区也在用它。前端「永久删除并删文件」按卡逐个调用本命令，
+/// 带 taskId 才能做归属判定——不传时退化为旧口径（全局绑集命中即放行）。
 #[tauri::command]
-pub async fn delete_bound_file(app: AppHandle, path: String) -> CommandResult<()> {
+pub async fn delete_bound_file(
+    app: AppHandle,
+    path: String,
+    task_id: Option<String>,
+) -> CommandResult<()> {
     if !std::path::Path::new(&path).exists() {
         return Ok(());
     }
@@ -275,6 +336,33 @@ pub async fn delete_bound_file(app: AppHandle, path: String) -> CommandResult<()
             value: path,
             reason: "仅允许删除任务卡绑定的文件/文件夹".into(),
         });
+    }
+    if let Some(tid) = task_id.as_deref().filter(|s| !s.is_empty()) {
+        let canon = canonical_string(std::path::Path::new(&path)).ok_or_else(|| {
+            CommandError::InvalidArgument {
+                field: "path".into(),
+                value: path.clone(),
+                reason: "路径不存在或无法规范化".into(),
+            }
+        })?;
+        let holders = other_holders(&app, &path, tid).await?;
+        if !holders.is_empty() {
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "delete_bound_file shared_refused | task: {tid} | held_by: {}",
+                    crate::audit::escape_for_log(&holders.join(", "), 200)
+                ),
+            );
+            return Err(CommandError::InvalidArgument {
+                field: "path".into(),
+                value: canon,
+                reason: format!(
+                    "该文件仍被 {} 引用，请先在那些位置解除绑定",
+                    holders.join("、")
+                ),
+            });
+        }
     }
     // H1：不可逆操作 → 紧邻 trash::delete 的二次 re-check（fail-closed）
     let canonical = recheck_canonical(&app, "delete_bound_file", &path, &set)?;

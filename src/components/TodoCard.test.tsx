@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { invoke } from "@tauri-apps/api/core";
 import { TodoCard, TodoCardView } from "./TodoCard";
 import type { Task } from "../types";
 
@@ -11,6 +12,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => null),
   convertFileSrc: vi.fn((p: string) => `tauri://localhost/${p}`),
 }));
+const invokeMock = vi.mocked(invoke);
 
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(async () => {}),
@@ -589,5 +591,30 @@ describe("TodoCardView 子任务", () => {
     );
     await user.click(screen.getByText("第一步子任务"));
     expect(screen.queryByDisplayValue("第一步子任务")).not.toBeInTheDocument();
+  });
+  it("永久删除带绑定文件时逐个删文件并传本卡 id（后端据此判归属、拒删他人引用的文件）", async () => {
+    const user = userEvent.setup();
+    invokeMock.mockClear();
+    const onDelete = vi.fn();
+    render(
+      <TodoCard
+        task={{
+          ...baseTask,
+          files: [{ path: "/tmp/a.pdf", isDir: false }],
+        }}
+        trashed
+        onUpdate={vi.fn()}
+        onDelete={onDelete}
+      />,
+    );
+    await user.click(screen.getByText("彻底删除"));
+    await user.click(screen.getByText("全部删除").closest("button")!);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("delete_bound_file", {
+        path: "/tmp/a.pdf",
+        taskId: "t1",
+      }),
+    );
+    expect(onDelete).toHaveBeenCalledWith("t1");
   });
 });

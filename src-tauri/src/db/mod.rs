@@ -918,6 +918,8 @@ mod tests {
             );",
         )
         .unwrap();
+        // 会话删除会顺带清子 agent 终态行，夹具得带上这张表（单源 DDL）
+        conn.execute_batch(subagents::SUBAGENTS_DDL).unwrap();
         (dir, conn)
     }
 
@@ -1130,6 +1132,37 @@ mod tests {
             .unwrap();
         assert_eq!(sess_count, 0, "提交后会话应被删除");
         assert_eq!(msg_count, 0, "提交后消息应被删除");
+
+        // 子 agent 行级联：终态随会话走，在途行留着（runner 还要靠它收尾）
+        conn.execute(
+            "INSERT INTO subagents (id, status, profile, parent_session_id, objective, trace_id, created_at)
+             VALUES ('sa_done', 'succeeded', 'research', 's1', 'o1', 't1', 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO subagents (id, status, profile, parent_session_id, objective, trace_id, created_at)
+             VALUES ('sa_live', 'running', 'research', 's1', 'o2', 't2', 1000)",
+            [],
+        )
+        .unwrap();
+        bot_session_delete_inner(&mut conn, "s1").unwrap();
+        let done_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM subagents WHERE id = 'sa_done'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let live_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM subagents WHERE id = 'sa_live'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(done_left, 0, "会话删除后终态子 agent 行不应残留");
+        assert_eq!(live_left, 1, "在途子 agent 行不能删——runner 还要靠它收尾");
 
         // 原子性反向验证：第二条 DELETE（会话）注入失败 → 第一条（消息）也必须回滚
         conn.execute(

@@ -206,7 +206,8 @@ pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
            finished_at       INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents(status);
-         CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_session_id);";
+         CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_session_id);
+         CREATE INDEX IF NOT EXISTS idx_subagents_task ON subagents(task_id);";
 
 /// 幂等迁移：task_id 从 `NOT NULL UNIQUE` 放宽为可空。
 /// SQLite 不支持 ALTER COLUMN，只能重建表——数据全量搬运，老行 task_id 原样保留

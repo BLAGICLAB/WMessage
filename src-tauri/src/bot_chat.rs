@@ -1904,9 +1904,19 @@ pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(
     t.bot_assigned = Some(assigned);
     t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
     t.updated_at = Some(chrono::Utc::now().timestamp_millis());
-    if crate::db::db_upsert_for(app, vec![t.clone()]).await.is_ok() {
-        crate::bot::broadcast_after_mutation(app, vec![t], vec![]);
+    if let Err(e) = crate::db::db_upsert_for(app, vec![t.clone()]).await {
+        // 写失败不能只当没发生过：头像与库里的归属会一直不一致，且无迹可查
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "bot_assigned_commit_failed | task_id: {} | err: {}",
+                task_id,
+                e.message()
+            ),
+        );
+        return;
     }
+    crate::bot::broadcast_after_mutation(app, vec![t], vec![]);
 }
 
 // 测试：图片附件纯函数 + 主编编排纯函数

@@ -469,6 +469,9 @@ fn update_task(
                 if new_status == crate::db::TaskStatus::Done {
                     t.completed_at = Some(now);
                     t.archived = Some(false);
+                    // 与 Tauri 侧 task_set_column 同口径：标完成即摘掉机器人
+                    // 归属头像（漏了会让完成卡继续显示「机器人在办」）
+                    t.bot_assigned = None;
                 } else if t.column == crate::db::TaskStatus::Done {
                     t.completed_at = None;
                     t.archived = None;

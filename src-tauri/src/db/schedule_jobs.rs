@@ -321,10 +321,17 @@ pub fn load_job_runs(
     Ok(out)
 }
 
-pub fn delete_scheduled_job(conn: &rusqlite::Connection, id: &str) -> Result<bool, String> {
-    let n = conn
+/// 删作业连同执行历史（同一事务，参照 bot_session_delete_inner 的级联写法）：
+/// 只删父行会让 scheduled_job_runs 变成永久孤儿——它既没有外键约束，也不会
+/// 被任何保留期清扫回收
+pub fn delete_scheduled_job(conn: &mut rusqlite::Connection, id: &str) -> Result<bool, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM scheduled_job_runs WHERE job_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    let n = tx
         .execute("DELETE FROM scheduled_jobs WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(n > 0)
 }
 
@@ -473,8 +480,8 @@ pub async fn scheduled_job_delete(app: AppHandle, id: String) -> CommandResult<b
     let id_for_audit = id.clone();
     let ok = tauri::async_runtime::spawn_blocking(move || -> CommandResult<bool> {
         let _g = super::lock_db_write();
-        let conn = super::open_db(&app)?;
-        delete_scheduled_job(&conn, &id).map_err(CommandError::from)
+        let mut conn = super::open_db(&app)?;
+        delete_scheduled_job(&mut conn, &id).map_err(CommandError::from)
     })
     .await
     .map_err(|e| CommandError::from(format!("定时作业删除线程 join 失败：{e}")))??;

@@ -452,6 +452,10 @@ pub fn run() {
             // 清扫残留的 py-runs 临时目录（spawn 失败/崩溃遗留，超 1 小时即删）
             bot_py::sweep_stale_py_runs(app.handle());
 
+            // 清扫上一世遗留的子 agent 僵尸行（running/queued）：进程重启后
+            // 没有 runner 会再收尾它们，不清就在子 agent 面板里永远转圈
+            bot_orchestrator::sweep_zombie_subagents(app.handle());
+
             // 启动即预建 AI 产物目录（解析即建，不等首次生成产物才懒建）；
             // 失败只记 WARN 不阻塞启动——生成产物时 gen_dir 还会再试
             if let Err(e) = db::gen_dir(app.handle()) {

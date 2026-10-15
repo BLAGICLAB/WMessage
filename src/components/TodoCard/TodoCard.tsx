@@ -815,6 +815,10 @@ export function TodoCardView({
                         // oxlint-disable-next-line eslint/no-await-in-loop
                         await invoke("delete_bound_file", {
                           path: f.path,
+                          // 带卡 id：后端据此判归属 + 拒绝删「别的卡/工作区
+                          // 也绑着」的文件（绑集是全局的，只看白名单会把
+                          // 别人的引用一起变成死链）
+                          taskId: task.id,
                         });
                       }
                       onDelete(task.id);

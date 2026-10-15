@@ -334,15 +334,15 @@ fn job_card_title_note(content: &str) -> (String, Option<String>) {
     (title, note)
 }
 
-async fn load_jobs_for_sched(app: &AppHandle) -> Vec<crate::db::ScheduledJob> {
+/// 读作业表：出错必须让调用方看见。吞成空表 = 整轮调度静默停摆，
+/// 且恢复后错过窗口的作业会被当「错过消费」吃掉（永远不执行、只留一条 missed）
+async fn load_jobs_for_sched(app: &AppHandle) -> Result<Vec<crate::db::ScheduledJob>, String> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         crate::db::open_db(&app).and_then(|conn| crate::db::load_scheduled_jobs(&conn))
     })
     .await
-    .ok()
-    .and_then(|r| r.ok())
-    .unwrap_or_default()
+    .map_err(|e| format!("读作业表线程 join 失败：{e}"))?
 }
 
 /// scheduled_jobs 行定点更新（RMW：updated_at 匹配 `IS` 才写，防覆盖并发编辑）
@@ -722,7 +722,14 @@ fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
 /// 内容型作业单轮：过期 at: 清理 + 重试触发 + 错过消费 + 到点分发（语义与任务卡/工作流一致）
 async fn jobs_tick(app: &AppHandle) {
     let now = chrono::Local::now();
-    for job in load_jobs_for_sched(app).await {
+    let jobs = match load_jobs_for_sched(app).await {
+        Ok(j) => j,
+        Err(e) => {
+            crate::bot::audit_log(app, &format!("sched_jobs_scan_failed | {e}"));
+            return;
+        }
+    };
+    for job in jobs {
         if !job.sched_enabled() {
             continue; // 暂停（保留配置）
         }
