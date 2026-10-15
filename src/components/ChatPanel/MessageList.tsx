@@ -6,6 +6,7 @@
 
 import { memo, useMemo, useState, type ComponentType } from "react";
 import {
+  Bot,
   Check,
   Copy,
   FileText,
@@ -372,7 +373,7 @@ function FileSummary({
       className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
       title={`打开文件：${f}`}
       onClick={() => {
-        // Rust 侧打开（挂件窗口 openPath 前端权限可能被拒）；失败弹错不静默
+        // Rust 侧打开（前端 openPath 权限可能被拒）；失败弹错不静默
         openTarget(f);
       }}
     >
@@ -445,7 +446,44 @@ type MessageListProps = BubbleCallbacks & {
   copiedIdx: number | null;
   /** 执行过程详细度（透传给 ToolBadges） */
   verboseLevel: VerboseLevel;
+  /** 空状态起始短语点击：把短语填进当前会话输入框（不自动发送） */
+  onPickStarter: (text: string) => void;
 };
+
+/** 空状态：一行灰字把「能做什么」全压在读者眼前最弱的位置。
+ *  改成引导卡 + 可点击起始短语——空会话是唯一能低成本教用户上手的时刻，
+ *  短语点一下直接落进输入框（不自动发送，措辞仍由用户过目） */
+const STARTERS = [
+  "列出我当前的任务",
+  "把今天的安排整理成清单",
+  "帮我写一条周报",
+];
+
+function EmptyState({ onPick }: { onPick: (text: string) => void }) {
+  return (
+    <div className="flex flex-col items-center px-4 pt-16 text-center">
+      <span className="nm-card mb-3 flex h-11 w-11 items-center justify-center rounded-2xl">
+        <Bot size={18} aria-hidden className="text-[var(--brand)]" />
+      </span>
+      <p className="text-sm font-medium text-[var(--t2)]">和机器人说点什么</p>
+      <p className="mt-1 text-xs text-[var(--t5)]">
+        问我任务、进度、安排，或直接让我动手（输入 / 看可用命令）
+      </p>
+      <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+        {STARTERS.map((s) => (
+          <button
+            key={s}
+            type="button"
+            className="nm-btn px-2.5 py-1 text-xs text-[var(--t3)]"
+            onClick={() => onPick(s)}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /** 渲染体共享（memo / 非 memo 两个入口同一 JSX，性能测试做对照） */
 function renderMessageList(
@@ -455,6 +493,7 @@ function renderMessageList(
     viewedBusy,
     copiedIdx,
     verboseLevel,
+    onPickStarter,
     onCopy,
     onRemove,
     onOpenTask,
@@ -463,35 +502,34 @@ function renderMessageList(
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
   return (
-    <div
-      ref={scrollRef}
-      className="flex-1 min-h-0 overflow-y-auto space-y-2.5 pr-0.5"
-    >
-      {messages.length === 0 ? (
-        <p className="text-xs text-[var(--t5)] text-center mt-6">
-          跟我说：新建任务、列出任务、完成某任务…（输入 / 看可用命令）
-        </p>
-      ) : (
-        messages.map((m, i) => {
-          return (
-            // 消息无稳定 id：流式追加语义依赖数组序（合成 id 会改消息数据流，
-            // 违反拆分红线），数组序即渲染序
-            <Bubble
-              // oxlint-disable-next-line react/no-array-index-key
-              key={i}
-              msg={m}
-              idx={i}
-              isCopied={copiedIdx === i}
-              busy={viewedBusy}
-              verboseLevel={verboseLevel}
-              onCopy={onCopy}
-              onRemove={onRemove}
-              onOpenTask={onOpenTask}
-              onOpenExecSession={onOpenExecSession}
-            />
-          );
-        })
-      )}
+    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+      {/* 内容限宽 760px 居中：通栏时正文行长在宽窗口下会拉长到难以扫读的行，
+          这里把阅读带约束在舒适行长内，滚动条仍占满容器宽 */}
+      <div className="mx-auto w-full max-w-[760px] space-y-2.5 px-0.5 pb-1">
+        {messages.length === 0 ? (
+          <EmptyState onPick={onPickStarter} />
+        ) : (
+          messages.map((m, i) => {
+            return (
+              // 消息无稳定 id：流式追加语义依赖数组序（合成 id 会改消息数据流，
+              // 违反拆分红线），数组序即渲染序
+              <Bubble
+                // oxlint-disable-next-line react/no-array-index-key
+                key={i}
+                msg={m}
+                idx={i}
+                isCopied={copiedIdx === i}
+                busy={viewedBusy}
+                verboseLevel={verboseLevel}
+                onCopy={onCopy}
+                onRemove={onRemove}
+                onOpenTask={onOpenTask}
+                onOpenExecSession={onOpenExecSession}
+              />
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }

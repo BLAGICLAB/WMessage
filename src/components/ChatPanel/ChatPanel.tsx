@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
-import { Pin } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getBotConfig } from "../../lib/botConfig";
 import { useConfirm } from "../../lib/useConfirm";
@@ -21,7 +21,6 @@ import {
   formatCommandError,
   isCommandError,
 } from "../../lib/errorHandler";
-import type { Task } from "../../types";
 
 import type {
   ChatModelEntry,
@@ -37,39 +36,23 @@ import type {
   VerboseLevel,
 } from "./types";
 import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks } from "./constants";
-import { useAutoGrow, useDropdownTop, useOutsideClose } from "./useChatUi";
-import { SessionList } from "./SessionList";
+import { useAutoGrow, useOutsideClose } from "./useChatUi";
+import { SessionRail } from "./SessionRail";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
 
 /** 模型下拉条目集合协议：types.ModelItem 的来源协议收窄用 */
 type Props = {
-  /** 是否处于选任务模式（点任务卡切换选中） */
-  selecting: boolean;
-  onToggleSelecting: () => void;
-  /** 已选中的任务（显示为可移除的引用块，发送时以 [已选任务] 附在消息后） */
-  selectedTasks: Task[];
-  onRemoveSelected: (id: string) => void;
-  /** 发送完成：清空选择 + 退出选任务模式 */
-  onFinishSelection: () => void;
-  /** 机器人是否开启（WidgetApp 透传 botOn）。   *  false 时跳过会话加载/历史恢复与所有对外 invoke，容器仍挂载以保住折叠展开循环里的 messages
-   *  与 listeners（详见 WidgetApp 折叠不丢聊天回归测试 + 16:30 bot 开关 resize 修法） */
+  /** 机器人是否开启（主窗口读 bot_get_enabled + bot-changed 广播）。   *  false 时跳过会话加载/历史恢复与所有对外 invoke，容器仍挂载——主窗口里
+   *  聊天页与其它页面靠 hidden 切换可见性，卸载会连带丢掉 messages 与全部监听器 */
   enabled: boolean;
 };
 
-/** 挂件聊天区：位于任务列表下方，机器人开关开启时显示；支持多会话 */
-export function ChatPanel({
-  selecting,
-  onToggleSelecting,
-  selectedTasks,
-  onRemoveSelected,
-  onFinishSelection,
-  enabled,
-}: Props) {
+/** 机器人聊天区：主窗口左导航「Agent 能力 → 聊天」整页；支持多会话 */
+export function ChatPanel({ enabled }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const [messages, setMessages] = useState<Msg[]>([]);
   // 输入窗口锁定对话（DRAFT-1）：草稿/附件按会话隔离——切走再切回各自保留，
   // 会话 A 打的字切到 B 不会误发给 B。input/files 是「当前会话」的派生值，
@@ -124,8 +107,6 @@ export function ChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 聊天区根节点：拖放落点判定用（只接收落在聊天区矩形内的文件） */
   const rootRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLButtonElement>(null);
-  const sessionDropdownRef = useRef<HTMLDivElement>(null);
   // 🧠 模型下拉：同会话菜单三件套——开合 + 按钮 ref + 下拉 ref，
   // 另带当前协议的模型列表与 active id（reload 里一并维护）
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -165,9 +146,17 @@ export function ChatPanel({
     setVerboseLevelState(l);
     localStorage.setItem("chat-verbose-level", l);
   };
-  // 顶部行引用 + 下拉 top 定位（紧贴 🤖 按钮底部，0 间距）
-  const topBarRef = useRef<HTMLDivElement>(null);
-  const dropdownTop = useDropdownTop(rootRef, menuRef);
+  // 会话栏折叠态：localStorage 持久化（与 verboseLevel 同范式）。
+  // 默认展开——侧栏的价值就在于「历史会话始终可见」，收起来只为窄窗/专注阅读
+  const [railOpen, setRailOpen] = useState(
+    () => localStorage.getItem("chat-rail-open") !== "0",
+  );
+  const toggleRail = () => {
+    setRailOpen((v) => {
+      localStorage.setItem("chat-rail-open", v ? "0" : "1");
+      return !v;
+    });
+  };
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
   useAutoGrow(taRef, input);
   /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
@@ -357,13 +346,6 @@ export function ChatPanel({
     })();
   }, [enabled]);
 
-  // 点击会话菜单外关闭（下拉与按钮不在同一个 ref 容器里，需同时检测两者）
-  useOutsideClose(
-    sessionMenuOpen,
-    () => setSessionMenuOpen(false),
-    menuRef,
-    sessionDropdownRef,
-  );
   // 点击模型下拉外关闭（镜像会话菜单：按钮与下拉不在同一 ref 容器，双 ref 检测）
   useOutsideClose(
     modelMenuOpen,
@@ -435,7 +417,7 @@ export function ChatPanel({
 
   // 🧠 下拉选中：走窄口径命令（后端读盘最新配置，只动 active + 派生老字段，
   // 不做整份写回——避免旧快照覆盖设置页并发修改）。成功后广播 bot-config-changed，
-  // 另一窗口（主窗口 ↔ 挂件）的 ChatPanel 靠既有 listener 刷新
+  // 设置页与本组件共用既有 listener 同步
   const switchModel = async (id: string) => {
     try {
       const c = await invoke<{
@@ -737,7 +719,6 @@ export function ChatPanel({
   const execWatchRef = useRef<string | null>(null);
   /** 切到执行会话围观：加载已落库历史 + 末尾 streaming 占位气泡承接后续流式增量。   * watch=false（收尾后迟到的跳转）：只读查看不挂围观守卫，输入立即可用 */
   const openExecSession = async (sid: string, watch = true) => {
-    setSessionMenuOpen(false);
     setSessionId(sid);
     // 镜像同步落（effect 渲染后才补）：await 期间守卫读到的必须已是新会话，
     // 否则快响应会被「过期」守卫误丢
@@ -773,7 +754,7 @@ export function ChatPanel({
     openExecSession(sid, watch);
   };
 
-  // 任务卡交给机器人执行（execute-task 事件：主窗口/挂件卡片 🤖 按钮触发）
+  // 任务卡交给机器人执行（execute-task 事件：任务卡 🤖 按钮触发）
   // 任务执行聊天化：不再在当前会话执行——后端建新会话跑（run_task_in_chat），
   // 前端收 chat-open-session 切过去围观。执行本身不吃 busy 锁（会话隔离天然并发），
   // 只有「自动跳转查看」在围观流式回复时排队（exitChat 清空在途时 hint 提示）。
@@ -924,13 +905,11 @@ export function ChatPanel({
       // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（inflightRef），
       // 切走不影响它在后台完成
       if (sid === sessionId) {
-        setSessionMenuOpen(false);
         return;
       }
       setSessionId(sid);
       // 镜像同步落（同 openExecSession）：守卫在 await 之后读 ref，不能等渲染
       sessionIdRef.current = sid;
-      setSessionMenuOpen(false);
       setMessages([]);
       try {
         const rows = await invoke<
@@ -963,7 +942,6 @@ export function ChatPanel({
     try {
       const s = await invoke<Session>("bot_session_create", { title: null });
       setSessions((prev) => [s, ...prev]);
-      setSessionMenuOpen(false);
       setSessionId(s.id);
       setMessages([]);
       // DRAFT-1：不再清 input——草稿按会话隔离，新会话天然是空的，
@@ -973,9 +951,9 @@ export function ChatPanel({
     }
   };
 
-  // ⌘K 跨窗口跳会话（ 命令面板）：主窗口发 chat-focus-session，复用 switchSession
-  // 走完整切换（清消息 + bot_history_load + inflight 占位），仅 setSessionId 不会加载历史；
-  // 面板展开由 WidgetApp 负责。ref 写放 effect（render 期写 ref 会新增 lint warn）
+  // ⌘K 跳会话（命令面板）：主窗口发 chat-focus-session，复用 switchSession
+  // 走完整切换（清消息 + bot_history_load + inflight 占位），仅 setSessionId 不会加载历史。
+  // ref 写放 effect（render 期写 ref 会新增 lint warn）
   const switchSessionRef = useRef<(sid: string) => void>(() => {});
   useEffect(() => {
     switchSessionRef.current = switchSession;
@@ -1118,7 +1096,6 @@ export function ChatPanel({
             handleCommandError(e, "bot_session_rename", { silent: true }),
           );
       }
-      onFinishSelection();
     } catch (e) {
       const failed: Msg[] = [
         ...history,
@@ -1286,17 +1263,11 @@ export function ChatPanel({
     // 同步检查：state 重渲染前连续两次 Enter 也能拦下重复发送
     if (!sessionId) return;
     setInput("");
-    // 已选任务以 [已选任务] 引用块附在消息后，模型按 taskId 精确操作
-    const block = selectedTasks
-      .map((t) => `- id=${t.id}，标题=${t.title}`)
-      .join("\n");
     // 附件以 [附件文件] 块附在消息前（模型用 extract_document 的 path 直读，不弹框）
     const attach = files.length
       ? `[附件文件]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`
       : "";
-    const content = `${attach}${text}${
-      selectedTasks.length ? `\n\n[已选任务]\n${block}` : ""
-    }`;
+    const content = `${attach}${text}`;
     setFiles([]);
     const history: Msg[] = [
       ...messages.filter((m) => !m.streaming),
@@ -1320,7 +1291,7 @@ export function ChatPanel({
   addFilesRef.current = addFiles;
 
   // ➕ 添加附件：选文件（文档或图片均可），与消息一起发送（如：加 Word 后输入「润色」）。
-  // Rust 侧弹框：此前前端 dialog.open 在挂件窗口不弹框（点击无反应）
+  // Rust 侧弹框：走原生对话框，前端 dialog.open 在部分平台不弹框
   // 注意：pick_files_dialog 当前 Rust 实现未暴露 filter 参数，不做硬过滤；
   //   图片识别靠 isImagePath(path)（后端 IMAGE_EXTS 同步），图片走多模态，文档走 extract_document。
   const pickFiles = async () => {
@@ -1335,7 +1306,7 @@ export function ChatPanel({
   // 拖文件进聊天区 → 加入附件（等同 ➕ 选文件）。
   // Tauri 窗口 dragDropEnabled 默认开启：OS 级拖放不触发 HTML5 drop，
   // 走窗口级 tauri 事件（onDragDropEvent）；position 为物理像素，需除缩放系数
-  // 转成 CSS 像素后与聊天区矩形比对——拖到挂件任务列表区的文件不归聊天管。
+  // 转成 CSS 像素后与聊天区矩形比对。
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -1410,8 +1381,8 @@ export function ChatPanel({
     persistHistory(sid, next);
   }, []);
 
-  // 点任务引用按钮：通知主窗口打开该任务编辑态 + 唤起主窗口并强制置顶
-  // （与挂件双击标题同一规则：主窗口要出现在桌面屏幕最顶层）
+  // 点任务引用按钮：打开该任务编辑态 + 把主窗口唤起并强制置顶
+  // （主窗口要出现在桌面屏幕最顶层才看得见浮窗）
   const openTaskInMain = useCallback(async (ref: TaskRef) => {
     emit("edit-task", { id: ref.id }).catch(() => {});
     invoke("focus_main_window").catch(() => {});
@@ -1439,8 +1410,19 @@ export function ChatPanel({
   return (
     <div
       ref={rootRef}
-      className="relative flex flex-col shrink-0 h-full min-h-0"
+      className="relative flex h-full min-h-0 shrink-0 gap-4"
     >
+      {railOpen && (
+        <SessionRail
+          sessions={sessions}
+          sessionId={sessionId}
+          onSelect={switchSession}
+          onNew={newSession}
+          onDelete={deleteSession}
+          onCollapse={toggleRail}
+        />
+      )}
+      <div className="relative flex min-w-0 flex-1 flex-col">
       {/* 拖放提示层：文件悬停在聊天区上时显示，松开即加入附件 */}
       {dragHover && (
         <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-2xl border-2 border-dashed border-[var(--brand)] bg-black/20">
@@ -1502,57 +1484,37 @@ export function ChatPanel({
           </div>
         </div>
       )}
-      <SessionList
-        sessions={sessions}
-        sessionId={sessionId}
-        currentTitle={currentTitle}
-        sessionMenuOpen={sessionMenuOpen}
-        onToggleMenu={() => setSessionMenuOpen((v) => !v)}
-        topBarRef={topBarRef}
-        menuRef={menuRef}
-        dropdownRef={sessionDropdownRef}
-        dropdownTop={dropdownTop}
-        selecting={selecting}
-        onToggleSelecting={onToggleSelecting}
-        onSelect={switchSession}
-        onNew={newSession}
-        onDelete={deleteSession}
-      />
+      {/* 聊天主体头部：当前会话标题常驻可见——切到历史会话后，用户靠这一行
+          确认自己在哪一段对话里，而不是靠侧栏高亮反推。
+          折叠钮固定在标题左侧：收起侧栏后它是唯一的展开入口，不能跟着侧栏一起消失 */}
+      <header className="mb-2 flex shrink-0 items-center gap-2 border-b border-[var(--edge)] pb-2">
+        <button
+          type="button"
+          className="nm-icon-btn h-7 w-7"
+          aria-expanded={railOpen}
+          aria-controls="chat-session-rail"
+          title={railOpen ? "收起会话栏" : "展开会话栏"}
+          onClick={toggleRail}
+        >
+          {railOpen ? (
+            <PanelLeftClose size={15} aria-hidden />
+          ) : (
+            <PanelLeftOpen size={15} aria-hidden />
+          )}
+        </button>
+        <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
+          <span className="sr-only">当前会话：</span>
+          {currentTitle}
+        </h2>
+        {viewedBusy && (
+          <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-[var(--brand)]">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand)]" />
+            正在回复
+          </span>
+        )}
+      </header>
 
-      {selecting && (
-        <p className="mb-1.5 text-[10px] text-[var(--brand)] shrink-0">
-          点击下方任务卡选择要操作的任务，选完输入指令（如：标记完成）
-        </p>
-      )}
-
-      {/* 已选任务引用块 */}
-      {selectedTasks.length > 0 && (
-        <div className="mb-1.5 flex flex-wrap gap-1 shrink-0">
-          {selectedTasks.map((t) => (
-            <span
-              key={t.id}
-              className="nm-inset inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-            >
-              <span className="truncate max-w-[280px]">
-                <Pin
-                  size={10}
-                  aria-hidden
-                  className="inline-block align-[-1px]"
-                />{" "}
-                {t.title}
-              </span>
-              <button
-                className="text-[var(--t5)] hover:text-[var(--danger)]"
-                onClick={() => onRemoveSelected(t.id)}
-                title="移除"
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {/*  上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
+      {/* 上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
       <UsageMeter
         input={sessionUsage[sessionId ?? ""]?.input ?? 0}
         output={sessionUsage[sessionId ?? ""]?.output ?? 0}
@@ -1566,6 +1528,7 @@ export function ChatPanel({
         viewedBusy={viewedBusy}
         copiedIdx={copiedIdx}
         verboseLevel={verboseLevel}
+        onPickStarter={setInput}
         onCopy={copyMessage}
         onRemove={removeMessage}
         onOpenTask={openTaskInMain}
@@ -1586,7 +1549,6 @@ export function ChatPanel({
         pickFiles={pickFiles}
         onStop={stopCurrent}
         viewedBusy={viewedBusy}
-        selecting={selecting}
         isSubagentSession={isSubagentSession}
         permMode={permMode}
         modelBtnRef={modelBtnRef}
@@ -1611,6 +1573,7 @@ export function ChatPanel({
           setForSession: setEffortForSession,
         }}
       />
+      </div>
     </div>
   );
 }

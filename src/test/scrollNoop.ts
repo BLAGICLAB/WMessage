@@ -1,8 +1,8 @@
 import { afterEach, beforeEach } from "vitest";
 
 /**
- * jsdom 不实现 Element.scrollTo / scrollIntoView；渲染 ChatPanel / WidgetApp 的
- * suite 在顶层调用一次本函数即可（scoped polyfill：beforeEach 装、afterEach 只删
+ * jsdom 不实现 Element.scrollTo / scrollIntoView；渲染 ChatPanel 的 suite 在顶层
+ * 调用一次本函数即可（scoped polyfill：beforeEach 装、afterEach 只删
  * 本套件装的，不再全局常驻）。
  *
  * 注意：这里有意在 **jsdom 测试环境** 内临时补 Element.prototype（仓规「禁止改原生

@@ -1,6 +1,6 @@
 /** 聊天气泡外观：用户气泡颜色 + 机器人气泡材质。
  *  纯前端视觉偏好，模式同 theme.ts：html 内联 CSS 变量 / data 属性即时生效 +
- *  localStorage 持久化，双窗口（主窗/挂件）storage 事件同步，零后端改动。
+ *  localStorage 持久化，storage 事件同步，零后端改动。
  *  main.css 消费：--bubble-user-bg/--bubble-user-fg/.user-chip 三变量 + data-bubble-bot。 */
 
 const KEY = "wmessage-bubble-style";
@@ -133,7 +133,7 @@ export function resetBubbleStyle(): BubbleStyle {
   return applyBubbleStyle({ ...BUBBLE_STYLE_DEFAULT });
 }
 
-/** 监听其他窗口（主窗/挂件）的气泡样式变更并同步到本窗口 DOM */
+/** 监听气泡样式变更并同步到本窗口 DOM */
 export function subscribeBubbleStyle(
   onChange: (s: BubbleStyle) => void,
 ): () => void {

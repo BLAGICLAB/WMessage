@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -13,6 +13,7 @@ import {
   Bell,
   FolderOpen,
   LayoutDashboard,
+  MessageSquare,
   Package,
   Plus,
   Search,
@@ -42,6 +43,7 @@ import {
   pendingNotificationCount,
 } from "./lib/notifications";
 import ConfirmMap from "./components/ConfirmMap";
+import { ChatPanel } from "./components/ChatPanel";
 import {
   deleteTaskRows,
   diffTaskRows,
@@ -54,7 +56,6 @@ import {
   importWorkspaceFromFile,
   STORAGE_KEY,
   sortByOrder,
-  upsertWorkspaceItems,
 } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
 import { applyFontSizeSync } from "./lib/botConfig";
@@ -83,7 +84,7 @@ import {
 } from "./bubbleStyle";
 import { isDueToday } from "./format";
 import type { ThemeSetting } from "./theme";
-import type { Task, ColumnId, WorkspaceItem } from "./types";
+import type { Task, ColumnId } from "./types";
 
 // 修：mutate 串行化队列必须在**模块作用域**（App() 内会被每
 //   次 render 重建 → 跨 render 的并发 mutate 落到不同链 → 串行化失效）。
@@ -91,11 +92,12 @@ import type { Task, ColumnId, WorkspaceItem } from "./types";
 const mutating: { chain: Promise<void> } = { chain: Promise.resolve() };
 
 // 左侧导航栏条目：视图切换职能自顶部工具条迁入；设置单独走底部入口。
-// 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（定时/通知）
+// 分区结构：「任务卡」组（任务/图谱/归档/工作区/回收站）+ 「Agent能力」组（聊天/定时/通知）
 type RailView =
   | "home"
   | "board"
   | "schedule"
+  | "chat"
   | "activity"
   | "graph"
   | "archive"
@@ -118,14 +120,16 @@ const AGENT_ITEMS: {
   icon: typeof SquareKanban;
   badge?: boolean;
 }[] = [
+  // 机器人聊天（挂件退役后收进主窗口）
+  { key: "chat", label: "聊天", icon: MessageSquare },
   // 定时任务模块：任务卡到点自动执行的集中管理（列表=状态面板）
   { key: "schedule", label: "定时", icon: AlarmClock },
+  // 程序模块（M1 起新增，apps 工具箱；详见 docs/APPS-DESIGN-2026-10-15.md）
+  { key: "apps", label: "程序", icon: Package },
   //  执行活动聚合页：最近全部执行痕迹列表（Agent 透明化设计 §5.6）
   { key: "activity", label: "活动", icon: ActivityIcon },
   // 通知中心（Agent 通知模块）：badge=true 渲染待处理数角标
   { key: "notifications", label: "通知", icon: Bell, badge: true },
-  // 程序模块（M1 起新增，apps 工具箱；详见 docs/APPS-DESIGN-2026-10-15.md）
-  { key: "apps", label: "程序", icon: Package },
 ];
 
 /** 快捷键提示文案：mac ⌘ / 其他平台 Ctrl（纯前端 keydown，两平台同实现）。
@@ -232,6 +236,31 @@ function App() {
   const mainRef = useRef<HTMLElement>(null);
   // Agent 通知中心待处理数（导航角标；notifications-changed 广播驱动刷新）
   const [notifCount, setNotifCount] = useState(0);
+  // 机器人总开关（设置页 bot_set_enabled 后广播 bot-changed）。
+  // ChatPanel 未开启时跳过全部对外 invoke，聊天页不给用户一个必然报错的界面。
+  const [botOn, setBotOn] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    invoke<boolean>("bot_get_enabled")
+      .then((v) => {
+        if (!cancelled) setBotOn(v);
+      })
+      .catch((e) => console.error("bot_get_enabled 失败:", e));
+    const un = listen<boolean>("bot-changed", (e) => setBotOn(e.payload));
+    return () => {
+      cancelled = true;
+      unlistenSafe(un);
+    };
+  }, []);
+  // 切到聊天页：托盘「打开聊天」、任务 🤖 按钮、命令行板 ⌘K 都走这条。
+  // chat-focus-session 带 sessionId 时由 ChatPanel 自己切会话，这里只管视图。
+  const openChat = useCallback(() => setView("chat"), []);
+  useEffect(() => {
+    const un = listen("chat-focus-session", () => setView("chat"));
+    return () => {
+      unlistenSafe(un);
+    };
+  }, []);
   useEffect(() => {
     const refresh = () =>
       pendingNotificationCount()
@@ -273,7 +302,7 @@ function App() {
     }
   }, [tasks]);
 
-  // 主题：启动时应用 + 监听其他窗口（挂件）切换 + 跟随系统模式监听系统外观变化
+  // 主题：启动时应用 + 跟随系统模式监听系统外观变化
   useEffect(() => {
     applySetting(theme);
   }, [theme]);
@@ -404,7 +433,7 @@ function App() {
       // 打最后修改时间戳（合并导入按此比较同 id 取舍）；
       // 纯排序变更保留原 updatedAt（diffTaskRows 内部判定）
       const { upserts, deletes } = diffTaskRows(prev, next, Date.now());
-      // 先落盘再广播：挂件收到 tasks-changed 后立刻 db_load，必须读到已提交的快照
+      // 先落盘再广播：收到 tasks-changed 的读取方必须读到已提交的快照
       await upsertTasks(upserts);
       try {
         await deleteTaskRows(deletes);
@@ -443,27 +472,8 @@ function App() {
     void mutate(fn).catch((e) => console.error("[mutate] persist failed", e));
   };
 
-  // 挂件上报工作区变更（workspace-updated：{upserts}），主窗口统一落盘后广播（单写者架构）
-  useEffect(() => {
-    const unlisten = listen<{ upserts?: WorkspaceItem[] }>(
-      "workspace-updated",
-      (e) => {
-        const upserts = e.payload?.upserts ?? [];
-        if (!upserts.length) return;
-        upsertWorkspaceItems(upserts)
-          .then(() => emit("workspace-changed").catch(() => {}))
-          // 写失败不再空 catch 吞掉——storage 层已 alert，这里 console 留痕不重复打扰
-          .catch((e) =>
-            handleCommandError(e, "workspace-updated upsert", { silent: true }),
-          );
-      },
-    );
-    return () => {
-      unlistenSafe(unlisten);
-    };
-  }, []);
-
-  // 挂件上报行级变更（tasks-updated：{upserts, deletes}），主窗口统一落盘后广播
+  // 后端（bot / api / migration）行级变更（tasks-updated：{upserts, deletes}），
+  // 主窗口统一落盘后广播（单写者架构）
   useEffect(() => {
     // 事件处理串行化——原先 async 监听器内有多个 await 让出点，
     // 连续两个事件（bot 一轮多工具调用）都从同一个旧 tasksRef 出发合并、后完成者
@@ -489,7 +499,7 @@ function App() {
         );
       }
       if (!persisted) {
-        // await 落盘完成后再合并/广播，避免挂件 db_load 读到未提交快照
+        // await 落盘完成后再合并/广播，避免其他读取方读到未提交快照
         await upsertTasks(upserts);
         try {
           await deleteTaskRows(deletes);
@@ -552,7 +562,7 @@ function App() {
     };
   }, []);
 
-  // 挂件点标题 → 打开该任务的全局编辑浮窗（覆盖当前页滑出，不切视图）
+  // 聊天区点任务引用 → 打开该任务的全局编辑浮窗（覆盖当前页滑出，不切视图）
   useEffect(() => {
     const unlisten = listen<{ id?: string }>("edit-task", (e) => {
       const id = e.payload?.id;
@@ -693,6 +703,7 @@ function App() {
     });
   };
   const jumpToSession = (sessionId: string) => {
+    setView("chat");
     emit("chat-focus-session", { sessionId }).catch((e) => {
       console.error("emit chat-focus-session failed", e);
     });
@@ -700,8 +711,8 @@ function App() {
 
   // 导入导出四胞胎（任务/工作区 × 导出/导入）同形：save/open JSON 对话框 →
   // 传输（返回条数）→ 成功提示 → 失败可重试。差异全部参数化；导入侧的
-  // 落库/刷新动作并进 transfer（任务=重读全量套规则广播挂件；工作区=广播
-  // workspace-changed 让挂件+子视图自刷）。
+  // 落库/刷新动作并进 transfer（任务=重读全量套规则广播；工作区=广播
+  // workspace-changed 让子视图自刷）。
   const jsonTransfer = (opts: {
     kind: "export" | "import";
     /** 默认文件名词干（导出对话框，自动拼本地日期后缀） */
@@ -747,7 +758,7 @@ function App() {
       label: "tasks_export",
     });
 
-  // 导入任务数据：JSON 文件按 id 合并，同 id 保留更晚修改；导入后重读全量 + 套规则 + 广播挂件
+  // 导入任务数据：JSON 文件按 id 合并，同 id 保留更晚修改；导入后重读全量 + 套规则 + 广播
   const importTasks = () =>
     jsonTransfer({
       kind: "import",
@@ -761,7 +772,7 @@ function App() {
       label: "tasks_import",
     });
 
-  // 重读全量任务（工作流保存/删除与任务导入共用）：套规则 → 排序 → 更新状态 → 广播挂件
+  // 重读全量任务：套规则 → 排序 → 更新状态 → 广播
   const reloadTasks = async () => {
     const res = await loadTasksFromDb();
     if (!res.ok) throw res.error;
@@ -976,7 +987,6 @@ function App() {
               onClick={() => setView(item.key)}
             />
           ))}
-          <div aria-hidden className="h-[72px]" />
           <RailSection label="Agent能力" />
           {AGENT_ITEMS.map((item) => (
             <RailButton
@@ -1013,9 +1023,9 @@ function App() {
               onOpenArchived={jumpToArchive}
             />
           ) : view === "schedule" ? (
-            <SchedulePage />
+            <SchedulePage onOpenChat={openChat} />
           ) : view === "activity" ? (
-            <ActivityPage />
+            <ActivityPage onOpenChat={openChat} />
           ) : view === "graph" ? (
             <GraphPage
               tasks={tasks}
@@ -1045,6 +1055,13 @@ function App() {
           ) : view === "notifications" ? (
             <NotificationsPage />
           ) : null}
+          {/* 聊天常挂载：execute-task / chat-open-session / chat-focus-session /
+              subagent-finished 全靠组件内监听器驱动，条件挂载会让切走页面期间的
+              事件无处可去（挂件时代的「折叠不丢聊天」诉求，同解）。
+              切视图只切可见性，messages 与监听器全程存活。 */}
+          <div className={view === "chat" ? "h-full" : "hidden"}>
+            <ChatPanel enabled={botOn} />
+          </div>
           {/* 全局确认弹窗 */}
           <ConfirmMap />
           {/* 应用内错误弹窗宿主（批 4：接管 errorHandler，替代原生 alert/confirm） */}

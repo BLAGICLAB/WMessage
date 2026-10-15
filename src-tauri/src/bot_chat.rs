@@ -654,7 +654,7 @@ async fn apply_skill_route(
             // SSE 推 Skill 失败给挂件（让用户看到半成品 + rollback 状态）
             // payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
             let _ = app.emit_to(
-                "widget",
+                "main",
                 "bot-skill-failed",
                 serde_json::json!({
                     "skillName": meta.name,
@@ -1477,7 +1477,7 @@ async fn create_exec_session<R: tauri::Runtime>(
     .await
     .map_err(CommandError::DbError)?;
     let _ = app.emit_to(
-        "widget",
+        "main",
         "chat-open-session",
         serde_json::json!({
             "sessionId": session.id,

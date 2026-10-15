@@ -557,7 +557,7 @@ pub async fn evolution_list_proposals(
 
 /// 晋升提案（Pooled → Promoted + 创建 ChangeRecord）
 ///
-/// 复用 ConfirmMap：弹出 widget 弹窗等用户确认。
+/// 复用 ConfirmMap：弹窗由主窗口呈现，等用户确认。
 /// 确认通过后：
 /// Promote/Reject 语义 = toggle ON/OFF（兼容老 UI/调用方）
 /// 仍走 ConfirmMap（高危操作需显式确认），内部转 toggle_inner

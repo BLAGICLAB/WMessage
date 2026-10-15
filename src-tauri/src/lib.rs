@@ -81,7 +81,7 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
 
 /// 唤起主窗口并强制置顶（单一真相）
 ///
-/// 规则：所有唤起主窗口的路径（widget 双击标题、聊天区 📌、
+/// 规则：所有唤起主窗口的路径（聊天区 📌、
 /// 全局快捷键、托盘点击/菜单）都必须把主窗口推到桌面屏幕最顶层才能看见。
 /// 仅 setFocus 在 Windows 上不一定推到 z-order 最顶层（其他窗口抢焦点时被遮住），
 /// 需 alwaysOnTop 短暂闪烁 80ms 强制重排后再恢复（不长驻，避免干扰用户正常使用电脑）。
@@ -301,7 +301,7 @@ pub fn run() {
                             let _ = app.emit("quick-add", ());
                         }
                         // 全局切换深/浅色主题（macOS: Cmd+Ctrl+T；Win/Linux: Ctrl+Alt+T）。
-                        // 只发给主窗口，由它写 localStorage，挂件靠 storage 事件同步，避免双窗口互相触发。
+                        // 只发给主窗口，由它写 localStorage，避免多窗口互相触发。
                         Code::KeyT => {
                             let _ = app.emit_to("main", "toggle-theme", ());
                         }
@@ -463,25 +463,6 @@ pub fn run() {
                 );
             }
 
-            // M4：系统侧边磁吸挂件窗口（收起为 44×44 商标方块，点击展开）
-            tauri::WebviewWindowBuilder::new(
-                app,
-                "widget",
-                tauri::WebviewUrl::App("index.html#/widget".into()),
-            )
-            .title("WMessage 挂件")
-            .decorations(false)
-            .transparent(true)
-            .shadow(false)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .visible_on_all_workspaces(true)
-            .resizable(false)
-            .maximizable(false)
-            .minimizable(false)
-            .inner_size(44.0, 44.0)
-            .build()?;
-
             // M5 全局快捷键：唤起/隐藏主窗口 + 快速新建任务（键位见 run() 顶部注释）。
             // 容错：快捷键被其他应用占用时只记日志，绝不让 App 启动失败
             let shortcut = app.global_shortcut();
@@ -494,7 +475,8 @@ pub fn run() {
                 }
             }
 
-            // 主窗口「关闭」改为隐藏（挂件随时能唤起它，否则关闭后挂件无法打开主窗口）。
+            // 主窗口「关闭」改为隐藏（托盘常驻：菜单与全局快捷键仍能把它唤回来，
+            // 直接退出会连后台定时任务一起停掉）。
             // 真正退出：macOS 走 Cmd+Q（见下方 RunEvent::ExitRequested）；
             // Windows 走托盘右键「退出」（见下方托盘菜单）。
             if let Some(main) = app.get_webview_window("main") {
@@ -518,8 +500,11 @@ pub fn run() {
 
                 let build_tray = || -> tauri::Result<()> {
                     let open = MenuItemBuilder::with_id("tray_open", "打开主窗口").build(&*app)?;
+                    let chat = MenuItemBuilder::with_id("tray_chat", "打开聊天").build(&*app)?;
                     let quit = MenuItemBuilder::with_id("tray_quit", "退出").build(&*app)?;
-                    let menu = MenuBuilder::new(&*app).items(&[&open, &quit]).build()?;
+                    let menu = MenuBuilder::new(&*app)
+                        .items(&[&open, &chat, &quit])
+                        .build()?;
 
                     let icon = Image::from_bytes(include_bytes!("../icons/tray-wm-32.png"))?;
 
@@ -532,6 +517,18 @@ pub fn run() {
                             "tray_open" => {
                                 if let Some(w) = app.get_webview_window("main") {
                                     bring_main_to_front(&w);
+                                }
+                            }
+                            // 聊天页无载荷：只切视图，ChatPanel 不动当前会话
+                            // （事件名沿用 chat-focus-session——带 sessionId 时才切会话）
+                            "tray_chat" => {
+                                if let Some(w) = app.get_webview_window("main") {
+                                    bring_main_to_front(&w);
+                                    let _ = app.emit_to(
+                                        "main",
+                                        "chat-focus-session",
+                                        serde_json::json!({}),
+                                    );
                                 }
                             }
                             "tray_quit" => {

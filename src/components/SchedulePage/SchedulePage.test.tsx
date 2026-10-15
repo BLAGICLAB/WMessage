@@ -48,10 +48,13 @@ beforeEach(() => {
   invokeMock.mockReset();
 });
 
+/** onOpenChat 是切视图的出口，列表渲染用例不关心它 */
+const noop = () => {};
+
 describe("SchedulePage 列表渲染", () => {
   it("频率人话 + 下次倒计时 + 即将执行摘要", async () => {
     stubInvoke([jobEntry]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     // 标题会同时出现在「即将执行」摘要条里，按行断言
     const jobRow = await screen.findByTestId("schedule-row-job:j1");
     expect(
@@ -67,14 +70,14 @@ describe("SchedulePage 列表渲染", () => {
 
   it("missed →「已错过」警示徽标；enabled=false →「已暂停」置灰徽标", async () => {
     stubInvoke([{ ...jobEntry, missed: true, enabled: false, nextRunAt: null }]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     expect(await screen.findByText("已错过")).toBeInTheDocument();
     expect(screen.getByText("已暂停")).toBeInTheDocument();
   });
 
   it("空态：引导文案 + 新建定时入口", async () => {
     stubInvoke([]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     expect(await screen.findByText("暂无定时任务")).toBeInTheDocument();
     expect(
       screen.getByText(/写下要做什么，到点自动新建任务卡执行/),
@@ -86,7 +89,7 @@ describe("SchedulePage 写通道", () => {
   it("新建定时任务：写内容 + 选频率 → 预览确认 → scheduled_job_create(content, schedule)", async () => {
     const user = userEvent.setup();
     stubInvoke([]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     // 空态时顶栏与 EmptyState 各有一个「新建定时」，点哪个都进创建流程
     await user.click((await screen.findAllByText("新建定时"))[0]);
     // 直接写内容
@@ -114,7 +117,7 @@ describe("SchedulePage 写通道", () => {
   it("内容为空时提交禁用", async () => {
     const user = userEvent.setup();
     stubInvoke([]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     await user.click((await screen.findAllByText("新建定时"))[0]);
     await user.click(screen.getByText("每天"));
     expect(screen.getByText("确认保存")).toBeDisabled();
@@ -123,7 +126,7 @@ describe("SchedulePage 写通道", () => {
   it("取消作业定时：两步确认 → scheduled_job_delete(id)", async () => {
     const user = userEvent.setup();
     stubInvoke([jobEntry]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(row).getByText("取消定时"));
     // 第一次点击只 arm，不落库
@@ -142,7 +145,7 @@ describe("SchedulePage 写通道", () => {
   it("修改作业：编辑内容提交 → scheduled_job_update(id, content, schedule)", async () => {
     const user = userEvent.setup();
     stubInvoke([jobEntry]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(row).getByText("修改"));
     const input = within(row).getByLabelText("定时任务内容");
@@ -164,7 +167,7 @@ describe("SchedulePage 写通道", () => {
   it("暂停作业 → schedule_set_enabled(kind=job, id, enabled=false)", async () => {
     const user = userEvent.setup();
     stubInvoke([jobEntry]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(row).getByText("暂停"));
     await waitFor(() =>
@@ -179,7 +182,7 @@ describe("SchedulePage 写通道", () => {
   it("立即执行作业 → scheduled_job_fire(id)", async () => {
     const user = userEvent.setup();
     stubInvoke([jobEntry]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const jobRow = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(jobRow).getByText("立即执行"));
     await waitFor(() =>
@@ -193,7 +196,7 @@ describe("SchedulePage 写通道", () => {
 describe("SchedulePage 最近状态与执行历史", () => {
   it("lastStatus=fail → 失败徽标（title 带 lastError）；ok → 成功徽标", async () => {
     stubInvoke([{ ...jobEntry, lastStatus: "fail", lastError: "模型超时" }]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     const failBadge = within(row).getByText("失败");
     expect(failBadge).toBeInTheDocument();
@@ -202,7 +205,7 @@ describe("SchedulePage 最近状态与执行历史", () => {
 
   it("lastStatus=ok → 成功徽标", async () => {
     stubInvoke([{ ...jobEntry, lastStatus: "ok" }]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     expect(within(row).getByText("成功")).toBeInTheDocument();
   });
@@ -238,7 +241,7 @@ describe("SchedulePage 最近状态与执行历史", () => {
       }
     });
     const user = userEvent.setup();
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(row).getByText("历史"));
     await waitFor(() =>
@@ -257,7 +260,7 @@ describe("SchedulePage 最近状态与执行历史", () => {
   it("空历史：显示「还没有执行记录」", async () => {
     stubInvoke([jobEntry]);
     const user = userEvent.setup();
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(row).getByText("历史"));
     expect(await within(row).findByText("还没有执行记录")).toBeInTheDocument();
@@ -268,7 +271,7 @@ describe("SchedulePage 失败策略配置", () => {
   it("新建带 retryMax=2 + 自动暂停 → create 参数携带 retryMax/pauseOnFailure", async () => {
     const user = userEvent.setup();
     stubInvoke([]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     await user.click((await screen.findAllByText("新建定时"))[0]);
     await user.type(
       screen.getByLabelText("定时任务内容"),
@@ -292,7 +295,7 @@ describe("SchedulePage 失败策略配置", () => {
   it("编辑作业时回填 retryMax/pauseOnFailure", async () => {
     const user = userEvent.setup();
     stubInvoke([{ ...jobEntry, retryMax: 3, pauseOnFailure: true }]);
-    render(<SchedulePage />);
+    render(<SchedulePage onOpenChat={noop} />);
     const row = await screen.findByTestId("schedule-row-job:j1");
     await user.click(within(row).getByText("修改"));
     expect(within(row).getByLabelText("失败重试次数")).toHaveValue("3");

@@ -317,7 +317,7 @@ describe("SettingsPage", () => {
     });
     // 「开启机器人聊天」行的描述文案作为锚点找所在行的 button
     const botDesc = screen.getByText(
-      "在挂件下方显示聊天窗口，用大模型管理任务",
+      "在主窗口「聊天」页与大模型对话，用它管理任务",
     );
     const row = botDesc.closest("div")?.parentElement;
     const toggle = row?.querySelector("button");

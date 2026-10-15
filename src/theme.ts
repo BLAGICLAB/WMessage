@@ -57,7 +57,7 @@ export function toggleTheme(): ThemeSetting {
   return next;
 }
 
-/** 监听其他窗口（挂件/主窗口）的主题变更并同步 */
+/** 监听主题变更并同步 */
 export function subscribeTheme(
   onChange: (s: ThemeSetting) => void,
 ): () => void {

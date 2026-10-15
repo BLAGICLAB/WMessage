@@ -31,6 +31,7 @@ const stableCallbacks = {
   onRemove: () => {},
   onOpenTask: () => {},
   onOpenExecSession: () => {},
+  onPickStarter: () => {},
 };
 
 /** 渲染 N 条消息 + UPDATES 次流式更新（只替换最后一条引用），返回每次更新的 actualDuration */

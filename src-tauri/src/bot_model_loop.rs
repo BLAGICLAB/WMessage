@@ -151,7 +151,7 @@ pub struct ToolCallDelta {
 /// 解析一行 OpenAI 兼容 SSE（`data: <json>` 或 `data: [DONE]`）。
 /// 返回 None = 非 data 行 / JSON 解析失败 / choices 为空。
 ///
-/// 注意：纯函数，不产生任何 side effect（无 widget emit、无 think-block 处理、无 final_text push）。
+/// 注意：纯函数，不产生任何 side effect（无事件 emit、无 think-block 处理、无 final_text push）。
 /// 调用方（run_model_loop）负责 feed_think + emit + 累积。
 pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     let data = line.strip_prefix("data:")?.trim();
@@ -467,7 +467,7 @@ pub fn apply_inference_params(
 }
 
 /// run_model_loop_core 的同步副作用出口：
-/// widget 流式事件 / 结构化审计 / bot.log / Skill 收尾 4 个出口抽成注入回调，
+/// 流式事件 / 结构化审计 / bot.log / Skill 收尾 4 个出口抽成注入回调，
 /// 使核心循环不依赖 AppHandle；异步出口（execute_tool / replan）因 Rust 闭包生命周期
 /// 限制走泛型参数。生产薄壳 run_model_loop 传入 AppHandle 实现，测试传 stub。
 pub struct ModelLoopDeps<'a> {
@@ -507,7 +507,7 @@ pub struct ModelLoopDeps<'a> {
 }
 
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
-/// 读配置/Key、构 HTTP 客户端、把 widget emit / 审计 / skill_finish / execute_tool /
+/// 读配置/Key、构 HTTP 客户端、把事件 emit / 审计 / skill_finish / execute_tool /
 /// replan 包成回调，实际循环逻辑全在 run_model_loop_core（可注入 mock server 集成测试）。
 /// 全局共享 LLM HTTP 客户端（OnceLock 连接池复用）——每轮模型循环新建
 /// Client 会各建连接池/TLS 握手，且旧 Client drop 后连接粗暴关闭。**无默认总
@@ -690,20 +690,20 @@ pub async fn run_model_loop(
         ),
     };
     // 会话隔离：流式事件（bot-chat-delta 等）只由交互实例广播；
-    // 后台定时任务（interactive=false）不向挂件推流——否则后台执行的输出会
+    // 后台定时任务（interactive=false）不发流——否则后台执行的输出会
     // 串进用户当前会话的 streaming 气泡。Skill 归属同理按 session 过滤。
-    let stream_to_widget = stop.is_interactive();
+    let stream_to_main = stop.is_interactive();
     let session_id: Option<&str> = stop.session_id();
     // 流式事件出口统一收口（会话隔离）：非交互实例（后台定时任务）
-    // 不向挂件发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
+    // 不发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
     // payload 统一注入 sessionId，前端按当前会话过滤——
     // 事件不带会话标记时，两个会话并行跑 A 的流式增量会串进 B 正在显示的气泡。
     let emit = |event: &str, mut payload: serde_json::Value| {
-        if stream_to_widget {
+        if stream_to_main {
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("sessionId".into(), serde_json::json!(session_id));
             }
-            let _ = app.emit_to("widget", event, payload);
+            let _ = app.emit_to("main", event, payload);
         }
     };
     // 执行明细采集（薄壳层，真实分发路径零改动）——
@@ -776,9 +776,9 @@ pub async fn run_model_loop(
                     if cc > 0 {
                         usage_cc.fetch_add(cc, std::sync::atomic::Ordering::Relaxed);
                     }
-                    if stream_to_widget {
+                    if stream_to_main {
                         let _ = app.emit_to(
-                            "widget",
+                            "main",
                             "bot-usage-delta",
                             serde_json::json!({
                                 "sessionId": session_id,

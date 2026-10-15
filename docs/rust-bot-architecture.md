@@ -16,7 +16,7 @@ src-tauri/src/
 ├── audit.rs             审计事件写 bot.log（audit_event! 宏、write_event、error_kv 带 code）
 ├── profile.rs           个人资料：用户/机器人 头像 + 姓名（profile.json + 头像拷进 profile/；读回 base64 data URL，
 │                        原子写 + 损坏备份 + 5MB/扩展名校验）
-├── mutation.rs          任务变更来源枚举 MutationOrigin（Bot/Api/Widget…），tasks-updated 事件分流
+├── mutation.rs          任务变更来源枚举 MutationOrigin（Main/Bot/Api/Migration），tasks-updated 事件分流
 ├── llm_text.rs          LLM 输出文本小工具：strip_fences 剥 ```json 围栏
 │                        （task_autotag / memory::extract / memory::consolidate 共用）
 │

@@ -12,7 +12,7 @@ import type {
 const EXEC_TASK_DEDUP_MS = 2000;
 
 /** execute-task 事件去重（模块级，跨组件实例/HMR 泄漏监听器共享）：
- *  dev 期间挂件 webview 多次重挂载会累积多个 execute-task 监听器，
+ *  dev 期间组件多次重挂载会累积多个 execute-task 监听器，
  *  一次点击被投递多次 → 同一秒多个 bot_execute_task 并发 → 后端防重入拦截，
  *  每个拒绝都弹「⚠️ 内部错误：该任务卡正在执行中」气泡，用户误以为执行失败。
  *  去重表必须放模块级：放 useEffect 闭包里则每个泄漏监听器各持一份，去重失效。

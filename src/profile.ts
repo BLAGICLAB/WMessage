@@ -1,5 +1,5 @@
 // 个人资料：用户/机器人 头像 + 姓名。与 Rust profile.rs 对应。
-// profile-changed 事件由 Rust 广播（主窗口 + 挂件都监听）；本模块维护单例缓存。
+// profile-changed 事件由 Rust 广播；本模块维护单例缓存。
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";

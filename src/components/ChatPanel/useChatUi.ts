@@ -1,42 +1,7 @@
 // ChatPanel 子模块：UI hooks（拆分自 ChatPanel.tsx，实现逐字搬移，行为等价）。
 // 只收「纯视图态」效果——数据流/流式事件监听仍留在 ChatPanel.tsx（orchestrator）。
 
-import { useEffect, useRef, useState, type RefObject } from "react";
-
-/** 下拉 top 定位：紧贴触发按钮底部（相对聊天区根节点），面板/窗口尺寸变化时重算。
- *  无 ResizeObserver 的环境退化为 window resize 监听 */
-export function useDropdownTop(
-  rootRef: RefObject<HTMLDivElement | null>,
-  btnRef: RefObject<HTMLButtonElement | null>,
-): number {
-  const [top, setTop] = useState(0);
-  useEffect(() => {
-    const update = () => {
-      const root = rootRef.current;
-      const btn = btnRef.current;
-      if (!root || !btn) return;
-      const br = btn.getBoundingClientRect();
-      const rr = root.getBoundingClientRect();
-      setTop(br.bottom - rr.top);
-    };
-    update();
-    if (
-      typeof ResizeObserver !== "undefined" &&
-      (rootRef.current || btnRef.current)
-    ) {
-      const ro = new ResizeObserver(update);
-      // 按钮自身尺寸变化（换图标/异步字体/宽度抖动）也要重算，只看根节点会拿到过期 top
-      if (rootRef.current) ro.observe(rootRef.current);
-      if (btnRef.current) ro.observe(btnRef.current);
-      return () => ro.disconnect();
-    }
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("resize", update);
-    };
-  }, [rootRef, btnRef]);
-  return top;
-}
+import { useEffect, useRef, type RefObject } from "react";
 
 /** 点击下拉区域外关闭：按钮与下拉不在同一个 ref 容器里，需同时检测两者（双 ref）。
  *  open 为 false 时不挂监听。close/refs 仅在订阅时捕获（经 ref 转发取最新值），

@@ -1563,7 +1563,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         None
     });
 
-    // 审计 + 广播 + widget 事件（设计 §3 事件全链按 subagent_id 串链）
+    // 审计 + 广播 + 前端事件（设计 §3 事件全链按 subagent_id 串链）
     let elapsed = started.elapsed().as_millis() as u64;
     let event = match status {
         SubagentStatus::Succeeded => "subagent_done",
@@ -1641,7 +1641,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         crate::bot::broadcast_after_mutation(&app, vec![card], Vec::new());
     }
     let _ = app.emit_to(
-        "widget",
+        "main",
         "subagent-finished",
         serde_json::json!({
             "subagentId": row.id,

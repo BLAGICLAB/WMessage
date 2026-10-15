@@ -2208,7 +2208,7 @@ export function SettingsPage({
                       开启机器人聊天
                     </p>
                     <p className="mt-1 text-xs text-[var(--t5)]">
-                      在挂件下方显示聊天窗口，用大模型管理任务
+                      在主窗口「聊天」页与大模型对话，用它管理任务
                     </p>
                   </div>
                   <button
