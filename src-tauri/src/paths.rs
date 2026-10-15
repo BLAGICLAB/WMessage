@@ -20,7 +20,11 @@ use tauri::Manager;
 
 /// 数据目录解析公共入口（db / profile / audit / bot 全靠它定版）。
 ///
-/// 三分支：
+/// 分支：
+/// 0. exe 在 cargo target 目录（cargo test / 手动跑 target 内 exe）→
+///    隔离到 `{temp}/wm-cargo-data`——既不落 target/（防打包装箱带数据），
+///    也不落真实 app_data（mock runtime 的 app_data_dir 解析到真实用户数据根，
+///    直接返回会把测试库写进用户数据目录旁，已实证泄漏）；
 /// 1. exe 目录可写 + 无数据痕迹 → 便携模式（数据随 exe 走，U盘/绿色包）；
 /// 2. exe 目录不可写（如 Program Files） → 退 app_data_dir（系统应用数据目录）；
 /// 3. 全不可用 → 退 `std::env::temp_dir()`。
@@ -41,12 +45,13 @@ pub(crate) fn probe_dir(
 ) -> std::path::PathBuf {
     // Cargo 构建/测试环境（exe 在 target/.../{deps,debug,release} 子目录）：
     // 这些路径的「可写」是构建产物副作用，不是用户真数据目录。
-    // 命中此分支的进程 100% 是 cargo test / `tauri build` 后跑测试 exe
-    // ——直接把整个便携语义旁路，data 落系统 app_data（或 temp 兜底）。
-    // 否则 cargo test 写的 wmessage.db 残留在 target/，下次 `tauri build` cp 进绿色包就「带数据」。
+    // 数据钉在 temp 固定子目录：不落 target/（防打包装箱带数据），也不落
+    // app_data（mock runtime / 手动跑 target exe 的 app_data 会解析到真实
+    // 用户数据根，测试库就写进用户数据目录旁了）。固定名让同进程多次调用
+    // 与旧口径的共享语义一致。
     if let Some(dir) = exe_dir {
         if is_cargo_target_dir(dir) {
-            return app_data.unwrap_or_else(std::env::temp_dir);
+            return std::env::temp_dir().join("wm-cargo-data");
         }
     }
     if let Some(dir) = exe_dir {
@@ -459,12 +464,12 @@ mod tests {
 
     #[test]
     fn probe_log_dir_cargo_test_bypasses_portable_branch() {
-        // 修复（2026-10-10）：cargo test 下的 exe_parent = target/debug/deps，
-        // 但「可写」是构建副产物，不是用户真数据目录。若沿用便携分支，cargo test
-        // 写的 wmessage.db 残留在 target/，下次 `tauri build` cp 进绿色包就「带数据」。
-        // probe_log_dir 必须识别 cargo target 路径（target/.../{deps,debug,release}），
-        // 旁路便携分支，data 走 app_data_dir（系统应用数据）或 temp 兜底——与
-        // 真实部署场景（exe 在 Downloads/wmessage-portable/）互不干扰。
+        // cargo test 下的 exe_parent = target/debug/deps，沿用便携分支会把
+        // wmessage.db 留在 target/（打包工作流可能带数据装箱），必须旁路。
+        // 隔离口径：也不得退真实 app_data——mock runtime 的 app_data_dir 解析到
+        // 真实 `~/Library/Application Support` 根（无 identifier），直接返回会把
+        // 测试库写进用户数据目录旁（已实证：trace 测试会话写满 wmessage.db）。
+        // 钉到 temp 固定子目录。
         let app = tauri::test::mock_app();
         let got = probe_log_dir(app.handle());
         let exe_parent = std::env::current_exe()
@@ -476,10 +481,16 @@ mod tests {
             got, exe_parent,
             "cargo target 路径下不应走便携分支（污染 build artifact）"
         );
-        // 兜底：必须落到 app_data_dir（macOS/Linux 有；Windows 沙箱内可能 Err→temp）
-        let app_data = app.path().app_data_dir().ok();
-        let expected = app_data.unwrap_or_else(std::env::temp_dir);
-        assert_eq!(got, expected);
+        assert_ne!(
+            got,
+            app.path().app_data_dir().unwrap_or_else(|_| got.clone()),
+            "不得退真实 app_data（测试库会写进用户数据目录旁）"
+        );
+        assert_eq!(
+            got,
+            std::env::temp_dir().join("wm-cargo-data"),
+            "必须钉在 temp 固定隔离子目录"
+        );
     }
 
     // ── fallback WARN 内联：行格式字符级一致 audit::write_at ──
