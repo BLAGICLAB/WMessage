@@ -14,7 +14,17 @@
 | 2 | **精准 AST 按需加载**，未挂载或语言不支持时降级 `grep_files` + `read_text_file` | `ast_inspect` 不再是「无对应的空名」，改为可选挂载能力 |
 | 3 | **per-onion 配置分两层**：轻量元配置进 `bot_sessions`（1–2 列），完整洋葱 YAML 放文件系统，不入库 | 原稿「每洋葱一份 yaml」未定存储面，现已定 |
 | 4 | **L4 `pre_tool` 只读**：只允许拦截/放行，禁止改写 `tool_call` 参数；payload 改写能力收到 L2/L3 | 原稿 L4 含「修改工具参数」，安全语义收紧 |
-| 5 | **工具名一律对齐现有 44 个工具**；`denied_skills` 取消 | 原稿 8 个 Skill 名里有 5 个不存在 |
+| 5 | **工具名一律以现行 `TOOLS_TABLE` 为准**，原稿那套名整条作废；`denied_skills` 取消 | 原稿 8 个 Skill 名里有 5 个不存在 |
+
+第二轮（同一会话追加）：
+
+| # | 决定 | 落点 |
+|---|---|---|
+| 6 | `RESEARCH_TOOLS` 增 `grep_files` 与 `extract_document`，不新增 profile | §3.3（已写明两处连带断言） |
+| 7 | **AST 不走 MCP** —— 外部 MCP 工具进不了子 agent（`registry.rs:1237` 短路），上一版建议作废 | §3.6 |
+| 8 | `onions/` 要设置页**导入 + 导出**；导出比现 Skill 机制多一步（Skill 只有导入） | §5.3 |
+| 9 | **子 agent 不改名**，沿用 recon / executor / verifier；`role` 字段承担可读性 | §5.5 |
+| 10 | 原稿工具名整体作废，不再做映射表 | §3.2 |
 
 另有一条前置决定沿用：**不引入脚本运行时**（先原生钩子注册表，Lua 的债见 §七）。
 
@@ -25,9 +35,10 @@
 七层里六层在本仓已有缝隙（L4 甚至已是完整闸），只有 L0 `pre_ingest` 是真新增。
 钩子运行时本质是把硬编码闸改成可注册扩展点。
 
-三子 Agent 的修订让设计与现行架构的冲突面明显收窄：**Probe / WriterEditor /
-Validator 正好一一对应现行 stage 机的 recon / executor / verifier**
-（`prompts/subagent.rs:27-31`），Planner 归主 agent 后不再需要第 4 个 profile。
+三子 Agent 的修订让设计与现行架构的冲突面明显收窄：三个角色**正好一一对应现行
+stage 机的 recon / executor / verifier**（`prompts/subagent.rs:27-31`），
+Planner 归主 agent 后不再需要第 4 个 profile。名字也沿用这一套（§5.5），
+不在设计稿再造第二套叫法。
 
 ---
 
@@ -54,46 +65,69 @@ Validator 正好一一对应现行 stage 机的 recon / executor / verifier**
 
 ### 3.1 三个子 Agent（Planner 归主 agent）
 
-| 子 Agent | 角色 | 对应现行 stage | 是否新增能力 |
-|---|---|---|---|
-| Probe | 资料与代码探查，只读，产出结构化素材 | recon | 是（代码检索需 grep_files，见 §3.3 缺口） |
-| WriterEditor | 公文/PPT/代码撰写与编辑 | executor | 否 |
-| Validator | 合规校验、代码评审与静态检查 | verifier | 部分（AST 视角可选） |
+| 运行时 stage（沿用） | yaml 模板名 | 角色 | profile | 是否新增能力 |
+|---|---|---|---|---|
+| `recon` | probe | 资料与代码探查，只读，产出结构化素材 | research | 是（代码检索/文档提取需扩白名单，见 §3.3） |
+| `executor` | writereditor | 公文/PPT/代码撰写与编辑 | coder | 否 |
+| `verifier` | validator | 合规校验、代码评审与静态检查 | coder（yaml 收紧掉写工具） | 部分（AST 视角可选） |
+
+列名的分工：**stage 是运行时身份**（落进提示词与 runner 闭包），**模板名是配置名**
+（`onions/<name>.yaml`，由 `bot_sessions.onion_config` 引用）。两套词各管各的域，
+不互相翻译——理由见 §5.5。
 
 **Planner 归主 agent 的理由**：现行主循环本身就有计划能力（`bot_plan`），
 把它独立成子 agent 只是多一层身份与提示词，不带来新工具集。任务拆解的产物
 （大纲/任务清单）由主 agent 在 L2 决定「是否需要三段流水线」时产出，
 作为 WriterEditor 的输入。
 
-### 3.2 工具名映射（对齐现有 44 个工具）
+### 3.2 工具名：原稿名作废，一律以现行工具表为准
 
-| 原稿名 | 本仓实际 | 处置 |
-|---|---|---|
-| `list_dir` | `list_files` | 改名 |
-| `read_file` | `read_text_file` | 改名 |
-| `write_file` | `write_file` | ✅ 直接对上 |
-| `shell` / `shell_sandbox` | `run_python`（受限解释器沙箱：独立临时目录 + 60s 超时 + 产物回收 + 开关默认关闭） | **不映射成 shell**；静态检查走受限脚本，不给裸 shell |
-| `vector_search` | `recall_facts` | 语义记忆检索（语义记忆体 v2），非通用向量库查询 |
-| `ast_inspect` | **按需挂载的新能力**（§3.6） | 默认不挂载 |
-| `delete` | 无对应（`delete_task` 只删任务卡） | 删除该条目 |
+原稿那套 `list_dir / read_file / shell / vector_search / ast_inspect / delete`
+**整条作废**——它们不是「待映射的别名」，是写错了的名字。本仓工具的唯一真相源是
+`bot/registry.rs` 的 `TOOLS_TABLE`（`BUILTIN_TOOL_COUNT` 个，见 `registry.rs:709`）；
+yaml 里出现的任何工具名都必须能在那张表里查到，否则视为配置错误（期 0 单测）。
 
-### 3.3 两个 profile 缺口（本仓侧待改，不在本轮）
+三条语义澄清（不是改名建议，是**别按字面理解**）：
 
-三份 yaml 的工具集要真正生效，前提是 profile 白名单覆盖它们。现状：
+1. **本仓不提供裸 shell**。`run_python` 是受限解释器沙箱：独立临时目录 + 60s
+   超时 + 产物回收 + 开关默认关闭。原稿 `shell` / `shell_sandbox` 的位置由它承担，
+   但它**不是** shell——没有进程管理、没有任意命令，静态检查只能写成受限脚本。
+2. **没有通用向量检索工具**。`recall_facts` 是语义记忆体 v2 的记忆召回，
+   不是可对任意语料做向量查询的检索层。
+3. **`delete` 不存在**。`delete_task` 只删任务卡，不删文件；需要动文件时走
+   `edit_file` / `write_file`（受 `bot_fs` 授权模式约束）。
+
+### 3.3 profile 缺口：已定（本轮不改代码，仅记录精确改法）
+
+三份 yaml 要真正生效，前提是 profile 白名单覆盖它们。现状：
 
 - `RESEARCH_TOOLS`（`bot/registry.rs:1179`）= `web_search / fetch_url / list_files /
   read_text_file / write_artifact_file / read_own_card` — **没有 `grep_files`**，
   而 Probe 必须检索代码。
 - `CODER_TOOLS`（`:1187`）= `read_text_file / list_files / grep_files / edit_file /
   write_file / run_python / write_artifact_file / read_own_card` — **没有联网工具**。
-- `GENERAL_TOOLS`（`:1197`）= 两者并集。
+- `GENERAL_TOOLS`（`:1197`）= 两者并集，且断言单测
+  `profile_whitelists_match_design_mapping`（`:1820`）锁死
+  `general = research ∪ coder 去重`。
 
-因此「探查资料 + 检索代码 + 只读」这件事**现行没有任何单个 profile 覆盖**。
-两个选项，需拍板：
+**已定**：给 `RESEARCH_TOOLS` 增 `grep_files` 与 `extract_document`（不新增 profile）。
+两者都不扩大安全面：
 
-- **A（推荐）**：给 `RESEARCH_TOOLS` 加 `grep_files`。它本来就是只读 profile，
-  加一个只读检索工具不扩大安全面，一行改动。
-- **B**：新增第 4 个 profile `probe`。身份更清晰，但多一套提示词与白名单维护面。
+- `grep_files` 只读检索；
+- `extract_document` 有独立红线——「Office/PDF 文本层提取」，扫描件转图走
+  **本地 OCR**（`ocr.rs:118`：字节全本地，不外传）。且它与 `run_python` 一样受
+  `bot_fs` 文件授权模式管辖（strict 硬拒 / ask 弹窗 / yolo），白名单外不会静默读盘。
+
+需要连带改的只有两处断言：
+
+1. `registry.rs:1820` `profile_whitelists_match_design_mapping` 里 RESEARCH 的
+   字面数组（加 `grep_files`、`extract_document`）；
+2. 同测试末尾的 `general = research ∪ coder 去重` 断言——并集会随之多出这两项，
+   但去重后仍是 research 的超集，改 RESEARCH 即自动满足（**改前必须重跑确认**，
+   不能想当然）。
+
+**在这次改动落地之前，Probe 的 yaml 不会完全生效**：交集计算（§3.4）会把
+`grep_files` 剔掉。这是已知且有意的，不是遗漏。
 
 ### 3.4 权限模型：只有收紧，没有 deny 列表
 
@@ -168,19 +202,26 @@ hooks:
 注意 validator 用 `coder` profile 但把 `edit_file`/`write_file` 收紧掉——
 这正是「只能收紧」模型的用例：profile 给的是上限，yaml 决定本次不用什么。
 
-### 3.6 AST：按需挂载 + 降级
+### 3.6 AST：内置能力（按需加载）+ 降级
 
-- **挂载方式复用现成的动态挂载先例**：MCP 外部工具就是「默认不在内置清单、
-  连接后由 `tools_json_with_mcp`（`bot/mcp/mount.rs:285`）动态追加」。
-  `ast_inspect` 走同一条路——**不进任何 profile 白名单**，只在会话 yaml 声明
-  `mounts` 且该能力可用时进 schema。
-- **实现选型待定**（不在本轮）：Rust 生态的 AST 能力大致两条路——
-  内嵌 `tree-sitter`（新增依赖、含多语言 grammar、编译期成本明显），
-  或走外部 MCP 服务器（零新增依赖，复用已有 mount 机制，但要求用户自己接一个）。
-  倾向后者：它同时解决了「按需加载」与「不给默认清单加负担」。
+**先纠正上一版的一处错误建议**：上一版推荐「AST 走 MCP 外部服务器」，这条路
+在本仓**走不通**——外部 MCP 工具**根本进不了子 agent**：
+`tools_json_with_mcp`（`bot/registry.rs:1237`）对子 agent 会话直接短路返回
+profile 白名单，注释写明「外部 MCP 工具不进子 agent，§5.1 边界不破」。
+而 AST 的使用方正是 Probe / Validator 两个**子 agent**，所以「AST 走 MCP」
+等于「给子 agent 配一个它们永远拿不到的工具」。
+
+因此 AST 只能是**内置能力**，只是不进默认清单：
+
+- **不进任何 profile 白名单**，由会话 yaml 的 `mounts: [ast_inspect]` 显式开；
+  挂载时机沿用 `tools_json_with_mcp` 的动态追加形态（静态清单字节不动，
+  只在声明了 mounts 的会话上拼装），保持「按需加载」且不给默认清单加负担。
+- **实现选型**（待拍板）：内嵌 `tree-sitter`（新增依赖 + 多语言 grammar，
+  编译期成本明显），或做成**可选编译特性**（默认不编译，启用时才带 grammar）。
+  两者都要给「stdlib / 现有依赖为何不行」的理由——现有依赖里没有任何解析器。
 - **降级是提示层行为，不是运行时拦截**：`mounts` 未声明 / 语言不支持时，
-  渲染给模型的包装里改写探查指引为「用 `grep_files` 定位 + `read_text_file` 精读」。
-  不做运行时拒绝——那只会把模型卡死在「工具不可用」上。
+  渲染给模型的包装里把探查指引改写为「用 `grep_files` 定位 + `read_text_file`
+  精读」。不做运行时拒绝——那只会把模型卡死在「工具不可用」上。
 
 ### 3.7 Layer2 调度（非阻塞，修订稿）
 
@@ -270,11 +311,57 @@ ALTER TABLE bot_sessions ADD COLUMN onion_max_turn INTEGER; -- 可选覆盖，NU
 一份。加载时机：会话创建/切换时读一次，缓存在进程内；文件变更不热重载
 （与现有 `BotConfig` 一样是启动时读）。
 
-### 5.3 身份命名
+### 5.3 设置页导入 / 导出（与 Skill 目录同机制，但多一步导出）
+
+现有 Skill 目录的管理面只有四个命令：`skills_list` / `skills_open_dir` /
+`skills_import`（`bot_skills/manage.rs:377`，选文件夹 → 拷贝进数据目录）/
+`skills_delete`——**没有导出**。前端同款面板在 `SkillsPanel.tsx:95`。
+
+onions/ 目录要**导入 + 导出**（本轮已定）。与 Skill 机制的差异只有一处，
+且是有意多出来的：导入复用 `skills_import` 的同一套交互（选文件夹 → 拷进
+`<数据目录>/onions/`），**导出需要新写一个** `onions_export`（把一份 yaml
+复制到用户选的位置）。
+
+为什么要导出：洋葱 yaml 是要被人手改的（钩子路径、`allowed` 收窄、role 描述），
+只进不出的话，改好的配置无法带走、也无法分享给同事——而 Skill 正文是只读的
+执行指令，导入一次就够。
+
+落地时要一起定的三件事：
+
+1. **导出粒度**：单份 yaml（默认）还是整个目录打包？倾向单份，与「一次导出一个
+   配置」的直觉一致，也不需要打包实现。
+2. **文件名与 `onion_id` 的一致性**：导出到别处后再导入，别名与 `onion_id` 不一致
+   时以哪个为准？倾向导入时以**文件名**为准并回写 `onion_id`，否则 `bot_sessions`
+   里存的那份引用会指错（§5.1 的 `onion_config` 存的就是文件名）。
+3. **导入时的校验**：名字必须在字符集白名单内（防路径穿越，与 Skill 同款闸），
+   且 `allowed` 里的工具名必须能在 `TOOLS_TABLE` 查到（§3.4 的硬约束前置到导入时，
+   报错要指出是哪一行哪个名字）。
+
+### 5.4 身份命名
 
 沿用 `session_id` 作为洋葱唯一键，**不再引入 `onion_key` 第二套标识**——
 与本轮 P0 把工具数收敛到单一常量的同一原则。yaml 里的 `onion_id` 只是
 **配置模板名**，不是运行时身份。
+
+### 5.5 子 Agent 要不要改名：不要，沿用 recon / executor / verifier
+
+原稿的 `Probe / WriterEditor / Validator` 与现行 `SubagentStage`
+（`bot_orchestrator.rs:41`：Recon / Executor / Verifier）是**一对一**的三段。
+同时保留两套叫法，等于凭空多一张永久映射表——这正是本轮 P0 在工具数上刚清掉的
+同类病（两个真相源必然漂移）。
+
+改名成本核对过，结论是「改名反而更贵」：
+
+- `SubagentStage` 是 **in-memory 枚举，不落库**（spawn 时随闭包进 runner，
+  注释见 `bot_orchestrator.rs:342`），所以它对用户**不可见**，没有迁移负担；
+- 但**提示词里已经全是这套词**（`prompts/subagent.rs:27-31` 的派发流程、
+  `PROFILE_RECON` / `PROFILE_EXECUTOR` / `PROFILE_VERIFIER` 三段提示），
+  换成 Probe/WriterEditor 要连带改三处提示常量 + 全部单测断言。
+
+因此：**运行时与提示词继续用 recon / executor / verifier**；想让提示词对模型
+更好读，用 `role` 字段的自由描述（「只读探查，产出结构化素材」），而不是新增枚举名。
+yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名**，
+不是运行时身份——两套词各管各的域，靠 §5.4 的 `onion_config` 引用连起来。
 
 ---
 
@@ -304,12 +391,12 @@ ALTER TABLE bot_sessions ADD COLUMN onion_max_turn INTEGER; -- 可选覆盖，NU
 
 | 期 | 交付 | 为什么这个顺序 |
 |---|---|---|
-| 0 | 工具名映射表做常量单测（§3.2 + §3.4 的硬约束） | 不写运行时代码就挡住「配置看着生效、实际落空」 |
-| 0.5 | profile 缺口二选一（§3.3 A/B） | Probe 的 yaml 要真正生效，前提是 research 有 `grep_files` |
+| 0 | 工具名硬约束单测（§3.2 + §3.4：yaml 里的名字必须能在 `TOOLS_TABLE` 查到） | 不写运行时代码就挡住「配置看着生效、实际落空」 |
+| 0.5 | **`RESEARCH_TOOLS` 增 `grep_files` + `extract_document`**（§3.3 已定）并同步 `registry.rs:1820` 断言 | Probe 的 yaml 要真正生效，前提是 research 覆盖代码检索与文档提取 |
 | 1 | **L4 `pre_tool` 原生注册表**：三道闸收进统一入口，钩子只读插在闸前后 | 唯一「已有实现且真有扩展价值」的一层，改动可控 |
 | 2 | L5 `post_tool` + L6 `post_turn` | 与 L4 同一条链，复用注册表与顺序纪律 |
 | 3 | L1/L2/L3：记忆块/摘要/埋点成为钩子链一环 | L4 的注册表与只读语义已稳定后再放宽 |
-| 4 | 两层配置落地（§五） | 需要前几期的 seam 稳定 |
+| 4 | 两层配置落地（§五），含设置页 `onions_export` 与导入校验（§5.3） | 需要前几期的 seam 稳定；导出比现 Skill 机制多一步，是有意为之 |
 | 5 | L0 `pre_ingest`：真新增能力（输入清洗、任务类型预判） | 设计稿唯一的新能力，但完全独立，可后置 |
 | 6 | 三子 Agent 流水线接线（§3.7） | 需要 0.5 与注册表都就位 |
 | 7 | AST 按需挂载（§3.6） | 独立能力，选型定了再动 |
@@ -320,12 +407,13 @@ ALTER TABLE bot_sessions ADD COLUMN onion_max_turn INTEGER; -- 可选覆盖，NU
 
 ## 九、仍需拍板
 
-1. **§3.3 的 profile 缺口**：给 `RESEARCH_TOOLS` 加 `grep_files`（推荐），
-   还是新增第 4 个 profile？
-2. **§3.6 的 AST 选型**：走 MCP 外部服务器（零新增依赖，推荐），
-   还是内嵌 `tree-sitter`（新增依赖 + 多语言 grammar 编译成本）？
-3. **yaml 的存放与分发**：数据目录下的 `onions/` 目录是否需要设置页的导入/导出
-   （与 Skill 目录的导入机制一致），还是只支持手放文件？
+1. **§3.6 的 AST 选型**：内嵌 `tree-sitter`（新增依赖 + 多语言 grammar 编译成本），
+   还是做成可选编译特性（默认不编译，启用时带 grammar）？
+   —— 上一版的「MCP 路线」已排除，理由见 §3.6。
+2. **§5.3 的导出粒度**：单份 yaml，还是整个 `onions/` 目录打包？倾向单份。
+
+（原稿的三个待拍板——profile 缺口、AST 走 MCP、导入导出机制——本轮已分别定下：
+增 `grep_files` + `extract_document`；AST 不走 MCP；导入 + 导出都要。）
 
 ---
 
@@ -334,7 +422,12 @@ ALTER TABLE bot_sessions ADD COLUMN onion_max_turn INTEGER; -- 可选覆盖，NU
 - 未写任何运行时代码。§二 的行号在后续改动后需重新校准。
 - 未验证钩子能否在现有 async 生命周期里安全挂载——期 1 的第一步应是
   「在 L4 挂一个内置钩子跑通全链」，而不是先设计注册表 API。
-- 未评估 `tree-sitter` 的实际依赖体积与多语言 grammar 的编译成本（§3.6 已建议
-  走 MCP 路线规避，但未实测）。
-- §3.3 的 profile 缺口意味着 **Probe 的 yaml 在改代码前不会完全生效**——
+- 未评估 `tree-sitter` 的实际依赖体积与多语言 grammar 的编译成本（§3.6）。
+- 未验证 §3.3 那次白名单改动的连带影响：断言单测
+  `profile_whitelists_match_design_mapping`（`registry.rs:1820`）锁死了
+  `general = research ∪ coder 去重`，改 RESEARCH 后并集与断言都要重跑确认——
+  文档只标了必须改，没实测改完是否仍然成立。
+- **Probe 的 yaml 在期 0.5 落地前不会完全生效**（交集计算会把 `grep_files` 剔掉）。
   这是已知且有意的，不是遗漏。
+- 子 agent 的中间产物不回传父上下文这一条，依赖现有 session 行隔离；未新增
+  机制，但也未新增测试锁它（若期 6 接线时动了 msgs 组装顺序，需补测）。
