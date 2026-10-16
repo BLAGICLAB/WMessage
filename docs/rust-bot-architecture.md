@@ -306,8 +306,12 @@ src-tauri/src/
          模型返回 tool_calls → bot::execute_tool_traced → execute_tool_impl   [bot/dispatch.rs]
              （turn + tool_call_id 随调用下传：tool.call / tool.return / 早退事件都带
                session_id / turn / tool_call_id，可按轮或按 id 整轮回放）
-             per-tool 规则闸（deny/ask）+ skill_on_step 钩子（拦截职责在
-                 工具内部与规则表，原原子黑名单/pre-execute 链已拆除）
+             L4 pre_tool 钩子层（bot/hooks.rs，进程级注册 + 会话级开关；只读，
+                 只能拒绝/放行，fail-open）→ per-tool 规则闸（deny/ask）+
+                 skill_on_step 钩子 → 子 agent 白名单闸 → 入参 JSON 闸
+             **TOOLS_TABLE 查表**分发内置工具，工具执行完、L5 post_tool 钩子层
+                 （可改结果，fail-open）之后，才进审计 preview 与结果回灌
+                 （拦截职责在工具内部与规则表，原原子黑名单/pre-execute 链已拆除）
              **TOOLS_TABLE 查表**分发内置工具（数目见 registry::BUILTIN_TOOL_COUNT，bot/registry.rs 单一来源）：
                  bot/tools.rs 内部 tool_* / bot_fs / bot_web / bot_py / ocr / memory / bot_skills::use_skill
              后置结构化审计 tool.return + skill_on_step_post
@@ -388,9 +392,10 @@ flowchart TD
     O --> P{返回 tool_calls?}
     P -- 有 --> Q[bot::execute_tool → execute_tool_impl<br/>前置闸（工具内部按 session 判）+ skill 钩子]
     Q --> R[TOOLS_TABLE 查表分发内置工具（数目见 registry::BUILTIN_TOOL_COUNT）:<br/>bot/tools.rs 内部 tool_* / bot_fs /<br/>bot_web / bot_py / ocr / memory / bot_skills]
-    R --> R1[后置审计 tool.return] --> R2[结果回灌 msgs] --> M
+    R --> R1[L5 post_tool 钩子层（可改结果）] --> R1b[后置审计 tool.return] --> R2[结果回灌 msgs] --> M
     P -- 无 --> S{熔断或结束}
-    S --> T{连续失败?}
+    S --> S1[L6 post_turn 钩子层（可改最终回复）]
+    S1 --> T{连续失败?}
     T -- 是 --> T1[bot_plan Replan ≤2 次] --> M
     T -- 否 --> U[返回 BotChatResult<br/>text + task_refs]
     U --> Z([结束])

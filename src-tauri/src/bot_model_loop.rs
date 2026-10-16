@@ -2069,11 +2069,41 @@ where
             }
             let _ = skill_finish(true, "");
             collected_refs = merge_task_refs_dedup(collected_refs);
-            let answer = if length_prefix.is_empty() {
+            let mut answer = if length_prefix.is_empty() {
                 final_text.clone()
             } else {
                 format!("{length_prefix}{final_text}")
             };
+            // L6 post_turn 钩子层：回合收尾、答案定稿（终稿自检已还原、
+            // 长度续跑已拼好）之后、回灌与 emit 之前。
+            // 与 L5 同理：放这里意味着钩子看到并能改的，就是用户真正会看到的
+            // 那一份文本。/stop 的早退出口（「⏹ 已停止」占位）不走本层——
+            // 那是系统占位串不是模型回复，钩子对它做归档/沉淀没有意义。
+            {
+                let run = crate::bot::hooks::registry().run_post_turn(
+                    stop.session_id(),
+                    &mut answer,
+                    round,
+                );
+                for f in &run.failures {
+                    let (kind, err) = match &f.kind {
+                        crate::bot::hooks::HookFailureKind::Returned(e) => {
+                            ("returned_err", e.as_str())
+                        }
+                        crate::bot::hooks::HookFailureKind::Panic(e) => ("panic", e.as_str()),
+                    };
+                    audit(
+                        crate::audit::AuditLevel::Warn,
+                        "post_turn.hook_failed",
+                        vec![
+                            ("hook", f.hook.to_string()),
+                            ("kind", kind.to_string()),
+                            ("err", err.to_string()),
+                            ("round", round.to_string()),
+                        ],
+                    );
+                }
+            }
             return Ok((answer, collected_refs));
         }
 
@@ -3326,5 +3356,33 @@ mod rounds_fuse_tests {
         // 边界：第 50 次放行，第 51 次熔断
         assert!(!should_fuse(50, 50));
         assert!(should_fuse(51, 50));
+    }
+}
+
+/// L6 接线守卫：`post_turn` 钩子层必须真被模型循环调到，且排在
+/// 「答案定稿」之后、「回灌与返回」之前。
+///
+/// 与 dispatch 里 L5 那条同款理由：注册表的行为测试验不到调用点是否存在。
+/// 变异实测把模型循环里那段调用删掉（最终回复再也不过钩子）时，全仓测试
+/// 照样全绿——所以这里钉「语句存在 + 两点相对位置」。
+#[cfg(test)]
+mod post_turn_layer_tests {
+    #[test]
+    fn post_turn_layer_is_wired_after_answer_is_final() {
+        let src = include_str!("bot_model_loop.rs");
+        let hook = src
+            .find("run_post_turn(")
+            .expect("模型循环必须调用 post_turn 钩子层");
+        let answer = src
+            .find("let mut answer = if length_prefix.is_empty()")
+            .expect("找不到答案定稿点");
+        let ret = src
+            .find("return Ok((answer, collected_refs));")
+            .expect("找不到主出口");
+        assert!(
+            answer < hook,
+            "钩子必须在答案定稿之后（改写的要是用户真会看到的那一份）"
+        );
+        assert!(hook < ret, "钩子必须在返回之前：否则改写不会到达用户");
     }
 }

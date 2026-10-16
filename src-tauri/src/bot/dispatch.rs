@@ -8,7 +8,7 @@
 
 use tauri::{AppHandle, Emitter};
 
-use crate::bot::hooks::{HookLayer, PreToolVerdict, ToolCallView};
+use crate::bot::hooks::{PreToolVerdict, ToolCallView};
 use crate::bot::registry::{tools_index, ToolCtx};
 use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
@@ -250,7 +250,7 @@ fn run_pre_tool_layer(
         session_id,
         trace,
     };
-    let run = crate::bot::hooks::registry().run_layer(HookLayer::PreTool, &call);
+    let run = crate::bot::hooks::registry().run_pre_tool(&call);
     for failure in &run.failures {
         let (kind, err) = match &failure.kind {
             crate::bot::hooks::HookFailureKind::Returned(e) => ("returned_err", e.as_str()),
@@ -559,7 +559,7 @@ async fn execute_tool_impl(
     // O(n) 线性扫描 → O(1) HashMap 查找；结果存 tool_def 供 post-execute 复用
     // （原先下方又走 TOOLS_TABLE.iter().find 线性扫，每次调用两次 name 查找）。
     let tool_def = tools_index().get(name).copied();
-    let result: crate::bot::registry::ToolResult = match tool_def {
+    let mut result: crate::bot::registry::ToolResult = match tool_def {
         Some(t) => (t.call)(&ctx, args).await,
         // 阶段 4（MCP 增量挂载）：查表 miss 先走外部工具兜底路由——
         // 反查挂载表命中则调远端；编造的 mcp_* 名在路由内仍回「未知工具」。
@@ -567,7 +567,34 @@ async fn execute_tool_impl(
         None => crate::bot::mcp::mount::execute_mcp_tool(app, name, args).await,
     };
 
-    // 3. post-execute 洋葱管线「出」钩子
+    // 3. L5 post_tool 钩子层：工具已跑完、结果落定但还没进审计与回灌之前。
+    //    放在这里的理由：审计的 preview 与回灌给模型的文本都应是**钩子改写后**
+    //    的那一份——先钩子后审计，反过来记的就是一份模型从没见过的内容。
+    {
+        let call = crate::bot::hooks::ToolCallView {
+            tool: name,
+            args,
+            session_id,
+            trace,
+        };
+        let mut text = std::mem::take(&mut result.text);
+        let run = crate::bot::hooks::registry().run_post_tool(&call, &mut text);
+        result.text = text;
+        for f in &run.failures {
+            let (kind, err) = match &f.kind {
+                crate::bot::hooks::HookFailureKind::Returned(e) => ("returned_err", e.as_str()),
+                crate::bot::hooks::HookFailureKind::Panic(e) => ("panic", e.as_str()),
+            };
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "post_tool.hook_failed",
+                &hook_failure_kv(f.hook, kind, err, name, session_id, trace),
+            );
+        }
+    }
+
+    // 4. post-execute 洋葱管线「出」钩子
     //    - 结构化审计事件（工具名/耗时/返回引用数/结果预览）写到 bot.log
     //    - 级别从 result.status 派生（代替原 classify_text 字符串匹配）
     //    - 镜像调用 skill_on_step_post：技能步骤结果/失败检测
@@ -860,6 +887,48 @@ mod early_return_events_tests {
 mod pre_tool_hook_tests {
     use super::*;
 
+    /// L5 接线守卫：钩子层必须**真被 `execute_tool_impl` 调到**，且排在
+    /// 「工具已执行」之后、「审计 preview 与结果回灌」之前。
+    ///
+    /// 变异实测把 dispatch 里那段调用整段删掉（工具结果再也过不了钩子）时，
+    /// hooks 模块 17 条 + registry 与 bot_onions 全部 57 条测试照样全绿——
+    /// 它们验的是注册表的行为，验不到 dispatch 有没有接线。所以这里钉住
+    /// 「语句存在 + 三点相对位置」，钉的是接线而不是中间量。
+    #[test]
+    fn post_tool_layer_is_wired_between_execution_and_audit() {
+        let body = include_str!("dispatch.rs")
+            .split_once("async fn execute_tool_impl(")
+            .expect("找不到 execute_tool_impl")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("execute_tool_impl 应以顶格 } 收尾");
+        let exec = body
+            .find("(t.call)(&ctx, args).await")
+            .expect("找不到工具执行点");
+        let hook = body
+            .find("run_post_tool(&call, &mut text)")
+            .expect("execute_tool_impl 必须调用 post_tool 钩子层：结果回灌前必须过钩子");
+        let audit = body
+            .find("tool.output.over_budget")
+            .expect("找不到输出预算审计");
+        let refill = body
+            .find("skill_on_step_post")
+            .expect("找不到结果回灌/技能后置钩子");
+        assert!(
+            exec < hook,
+            "钩子必须在工具执行之后（拿得到结果才谈得上改写）"
+        );
+        assert!(
+            hook < audit,
+            "钩子必须在审计 preview 之前：否则记的是一份模型从没见过的文本"
+        );
+        assert!(
+            hook < refill,
+            "钩子必须在结果回灌之前：否则改写不会到达模型"
+        );
+    }
+
     fn kv_get<'a>(kv: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
         kv.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str())
     }
@@ -1022,7 +1091,7 @@ mod pre_tool_hook_tests {
             session_id: None,
             trace: &trace,
         };
-        let run = crate::bot::hooks::registry().run_layer(HookLayer::PreTool, &call);
+        let run = crate::bot::hooks::registry().run_pre_tool(&call);
         assert_eq!(run.decision, PreToolVerdict::Continue);
         assert!(
             run.failures.is_empty(),

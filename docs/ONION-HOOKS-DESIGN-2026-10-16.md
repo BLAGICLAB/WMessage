@@ -363,24 +363,47 @@ L4 只读带来一条实现纪律：**钩子拿到的 `tool_call` 是 `&` 而非
 
 ## 四、原生钩子注册表设计（不引脚本 VM）
 
-```rust
-pub enum HookLayer { PreIngest, Ingest, Assemble, PreExecute, PreTool, PostTool, PostTurn }
+**已定稿并落地（期 1 + 期 2）**——与本节原先的草稿有一处实质偏离：
 
-pub trait Hook: Send + Sync {
-    fn name(&self) -> &'static str;
-    /// 返回 HookResult::Interrupt = 拒绝本次流转（对应原稿「返回 nil」）
-    fn on_event(&self, ctx: &HookCtx<'_>, input: HookInput<'_>) -> HookResult;
-}
+```rust
+pub enum HookLayer { PreTool, PostTool, PostTurn }   // 期 3/5 再加 L1/L2/L3、L0
+
+// 每层一个 trait（不是单 trait + HookInput 枚举）
+pub trait PreToolHook:   Send + Sync { fn name(&self) -> &'static str;
+    fn on_pre_tool(&self, call: &ToolCallView<'_>) -> Result<PreToolVerdict, String>; }
+pub trait PostToolHook: Send + Sync { fn name(&self) -> &'static str;
+    fn on_post_tool(&self, call: &ToolCallView<'_>, result: &mut String) -> Result<(), String>; }
+pub trait PostTurnHook: Send + Sync { fn name(&self) -> &'static str;
+    fn on_post_turn(&self, reply: &mut String, round: usize) -> Result<(), String>; }
+
+pub enum AnyHook { Pre(Box<dyn PreToolHook>), PostTool(Box<dyn PostToolHook>),
+                    PostTurn(Box<dyn PostTurnHook>) }
 ```
 
-`HookInput` 按层给不同只读/可写视图：L4 的 `tool_call` 视图是只读引用，
-L1/L2/L3 的 payload 视图是可变引用。三条纪律：
+**为什么偏离草稿的「单 trait + `HookInput` 枚举」**：三层签名本质不同——
+L4 只读且**可拒绝**，L5/L6 可改写且**不可拒绝**（工具/回合已经结束了，此时
+「拒绝」没有意义）。合成一个 trait 只会让每个实现都要 match 自己永远收不到的
+变体，并把别层的 payload 形状暴露在每个签名里；那恰好废掉 §3.8 用类型层面
+换来的只读纪律。分层 trait 让「L4 拿不到 `&mut`」「L5/L6 拒绝不了」成为
+**签名事实**而非文档约定——与期 1 钉 L4 只读用的是同一条纪律。
+
+L5/L6 的唯一实现约定：**要整体赋值**（`*result = new_text`），不要原地
+`clear()` 再 `push`。panic 的钩子是 fail-open 放行的，原地写留下的半成品会被
+当正常结果交给模型。
+
+四条纪律：
 
 1. **顺序固定、不可跳层**：注册表只决定同层内顺序（注册序）；层序由 Rust
    函数调用栈保证，比运行时配置更硬。
-2. **可单独禁用**：注册表提供 `enabled(layer)`，默认全开；yaml 里空值即禁用。
-3. **钩子不得吞错**：panic 或返回错误一律记审计并放行，不得让用户配置的 bug
-   变成主链路中断（与仓内既有纪律一致）。
+2. **可单独禁用**：注册表按会话提供 `disable_layer_for_session`，默认全开；
+   yaml 里空值即禁用。未接线的层名只记 `layer_not_wired` 审计、**不静默当
+   关掉了**。
+3. **钩子不得吞错**：panic 或返回错误一律记审计并放行（fail-open），不得让
+   用户配置的 bug 变成主链路中断（与仓内既有纪律一致）。
+4. **接线必须可测**：钩子行为单测验不到「调用点是否存在」。变异实测把
+   dispatch 的 L5 调用整段删掉、把模型循环的 L6 调用删掉，全仓测试照样全绿。
+   故两处各有一条源码文本守卫钉住「语句存在 + 相对位置」（L5 必须排在工具
+   执行之后、审计 preview 与结果回灌之前；L6 必须排在答案定稿之后、返回之前）。
 
 注册粒度：进程级注册 + 会话级开关覆盖。不做按文件注册（那是脚本层的事）。
 

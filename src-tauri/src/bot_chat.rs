@@ -1477,7 +1477,7 @@ async fn create_exec_session<R: tauri::Runtime>(
     .await
     .map_err(CommandError::DbError)?;
     // per-onion 配置绑定（两层配置的 DB 层）：见 bot_onions 模块头
-    crate::bot_onions::bind_session(&app, &session.id);
+    crate::bot_onions::bind_session(app, &session.id);
     let _ = app.emit_to(
         "main",
         "chat-open-session",

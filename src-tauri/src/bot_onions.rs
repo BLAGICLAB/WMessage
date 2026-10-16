@@ -87,11 +87,11 @@ impl OnionConfig {
 /// `design_layers_match_registry_plus_not_yet_wired` 单测钉在一起。
 pub const DESIGN_HOOK_LAYERS: &[&str] = &["pre_ingest", "pre_tool", "post_tool", "post_turn"];
 
-/// 设计里有、但尚未接线的层。期 2 的 L5/L6、期 5 的 L0 落地后从这里移走。
+/// 设计里有、但尚未接线的层。期 5 的 L0 落地后从这里移走。
 ///
 /// 单独列出而不是隐在 `DESIGN_HOOK_LAYERS - wired_names` 里算差集：差集算出来
 /// 是「碰巧还没做」，而这里是「有意还没做」，两者混同会让人以为漏了。
-pub const NOT_YET_WIRED_LAYERS: &[&str] = &["pre_ingest", "post_tool", "post_turn"];
+pub const NOT_YET_WIRED_LAYERS: &[&str] = &["pre_ingest"];
 
 /// 配置校验：工具名必须能在 `TOOLS_TABLE` 查到、profile 名要认识、层名要在白名单里。
 ///
