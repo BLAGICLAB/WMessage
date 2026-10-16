@@ -525,12 +525,48 @@ mod tests {
                 "视图字段只允许共享借用，不得持有可变引用或值副本：{line}"
             );
         }
+        // 视图字段「只读」的最终根据在 ToolCallTrace 自身：它是共享借用，
+        // 但若哪天给它塞进 Cell/RefCell/Mutex 或加 DerefMut，「类型层面
+        // 改不了」就是假的，而上面那条断言照样绿。只读必须钉在真正的可变源头上。
+        let trace_src = include_str!("dispatch.rs");
+        let trace_struct = trace_src
+            .split_once("pub struct ToolCallTrace {")
+            .expect("找不到 ToolCallTrace 定义")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("ToolCallTrace 应以顶格 } 收尾");
+        for bad in [
+            "Cell",
+            "RefCell",
+            "Mutex",
+            "RwLock",
+            "UnsafeCell",
+            "DerefMut",
+        ] {
+            assert!(
+                !trace_struct.contains(bad),
+                "ToolCallTrace 出现 {bad}：钩子拿到的 trace 就不是真只读了：{trace_struct}"
+            );
+        }
+        // 注意别把禁用词钉成「impl DerefMut for ToolCallTrace」这种带前缀的
+        // 完整写法——变异实测写成 `impl std::ops::DerefMut for ToolCallTrace`
+        // 就整条断言失效。只钉与限定路径无关的那一段。
+        for bad in ["Deref for ToolCallTrace", "DerefMut for ToolCallTrace"] {
+            assert!(
+                !trace_src.contains(bad),
+                "ToolCallTrace 实现了 {bad}：钩子拿到的 trace 就不是真只读了"
+            );
+        }
     }
 
     #[test]
     fn registry_has_no_way_to_configure_layer_order() {
         // 纪律 1 的结构锁：注册表不暴露任何「层顺序 / 层优先级」入口——
         // 层序只能来自调用栈。扫描范围排除测试段（禁用词本身是测试里的字面量）。
+        // 说清边界：这是**禁用词扫描**不是结构锁（仓内没有 trybuild 负向编译
+        // 测试，不为它新增依赖）。带 `sort_by*` / `impl Ord` / `rank` 字段的
+        // 排序入口一并列入，正是因为它们都能绕过前面几个名字。
         let src = include_str!("hooks.rs")
             .split("#[cfg(test)]")
             .next()
@@ -540,6 +576,13 @@ mod tests {
             "layer_priority",
             "sort_by_layer",
             "LAYER_ORDER",
+            "sort_by",
+            "sort_by_key",
+            "sort_unstable",
+            "impl Ord",
+            "impl PartialOrd",
+            "rank",
+            "priority",
         ] {
             assert!(
                 !src.contains(forbidden),

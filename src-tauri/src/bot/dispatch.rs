@@ -48,6 +48,29 @@ fn trace_kv(trace: &ToolCallTrace, session_id: Option<&str>) -> Vec<(&'static st
     kv
 }
 
+/// 所有「已发出 `tool.call` 但工具没真跑」的早退分支共用的 `tool.return` kv。
+///
+/// 抽成单一构造器而不是三处各写一份字面量：`tool.call` / `tool.return` 是按
+/// 会话整轮对齐的，键集漂一处就等于统计面板出现一条对不上的记录，而三份
+/// 手抄的形状没有任何机制保证它们一致。键集一致性由此**由构造保证**，
+/// 不再靠测试去比对三份副本。
+fn tool_return_kv(
+    name: &str,
+    reason: &str,
+    dur_ms: u64,
+    session_id: Option<&str>,
+    trace: &ToolCallTrace,
+) -> Vec<(&'static str, String)> {
+    let mut kv: Vec<(&'static str, String)> = vec![
+        ("tool", name.to_string()),
+        ("reason", reason.to_string()),
+        ("exit_code", "none".to_string()),
+        ("duration_ms", dur_ms.to_string()),
+    ];
+    kv.extend(trace_kv(trace, session_id));
+    kv
+}
+
 /// 早退路径（per-tool 规则闸拦截 / skill_on_step 熔断）的审计事件序列。
 /// `tool.call` 已在入口发出，这里按写入顺序补齐后续事件并以 `tool.return` 配平，
 /// 否则统计面板出现「悬挂调用」（call > return）。
@@ -89,12 +112,7 @@ fn early_return_events(
     events.push((
         crate::audit::AuditLevel::Warn,
         "tool.return",
-        with_ctx(vec![
-            ("tool", name.to_string()),
-            ("reason", reason.to_string()),
-            ("exit_code", "none".to_string()),
-            ("duration_ms", dur_ms.to_string()),
-        ]),
+        tool_return_kv(name, reason, dur_ms, session_id, trace),
     ));
     events
 }
@@ -179,13 +197,7 @@ fn hook_interrupt_events(
     let mut cause_kv: Vec<(&'static str, String)> =
         vec![("tool", name.to_string()), ("reason", reason.to_string())];
     cause_kv.extend(trace_kv(trace, session_id));
-    let mut ret_kv: Vec<(&'static str, String)> = vec![
-        ("tool", name.to_string()),
-        ("reason", "pre_tool_hook_interrupt".to_string()),
-        ("exit_code", "none".to_string()),
-        ("duration_ms", dur_ms.to_string()),
-    ];
-    ret_kv.extend(trace_kv(trace, session_id));
+    let ret_kv = tool_return_kv(name, "pre_tool_hook_interrupt", dur_ms, session_id, trace);
     vec![
         (
             crate::audit::AuditLevel::Warn,
@@ -433,13 +445,13 @@ async fn execute_tool_impl(
                 "subagent_whitelist_deny",
                 &deny_kv,
             );
-            let mut ret_kv: Vec<(&str, String)> = vec![
-                ("tool", name.to_string()),
-                ("reason", "subagent_whitelist_deny".to_string()),
-                ("exit_code", "none".to_string()),
-                ("duration_ms", start.elapsed().as_millis().to_string()),
-            ];
-            ret_kv.extend(trace_kv(trace, session_id));
+            let ret_kv = tool_return_kv(
+                name,
+                "subagent_whitelist_deny",
+                start.elapsed().as_millis() as u64,
+                session_id,
+                trace,
+            );
             crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
             return crate::bot::registry::ToolResult::warn(
                 format!(
@@ -895,6 +907,25 @@ mod pre_tool_hook_tests {
         a.sort_unstable();
         b.sort_unstable();
         assert_eq!(a, b, "tool.return 的 kv 键集必须与既有 early-return 一致");
+        // 第三处早退（子 agent 白名单）原先是手写字面量，与另两处没有任何
+        // 机制保证一致。现在三处都走 tool_return_kv 一致性由构造保证，
+        // 本断言只钉住「没有哪一处绕开它自己手搓 kv」。
+        let body = include_str!("dispatch.rs");
+        let sub_branch = body
+            .split_once("subagent_whitelist_deny\",")
+            .expect("找不到子 agent 白名单早退分支")
+            .1
+            .split("return crate::bot::registry::ToolResult::warn(")
+            .next()
+            .expect("白名单早退分支应在此处返回");
+        assert!(
+            sub_branch.contains("tool_return_kv("),
+            "子 agent 白名单分支必须走 tool_return_kv 构造 tool.return：{sub_branch}"
+        );
+        assert!(
+            !sub_branch.contains("exit_code"),
+            "子 agent 白名单分支不得自己手搓 tool.return 的 kv（键集只由 tool_return_kv 决定）：{sub_branch}"
+        );
         assert_eq!(kv_get(ret, "turn"), Some("4"));
         assert_eq!(kv_get(ret, "tool_call_id"), Some("call_hk"));
         assert_eq!(kv_get(ret, "session_id"), Some("sess-9"));
@@ -953,8 +984,15 @@ mod pre_tool_hook_tests {
             .expect("execute_tool_impl 应以顶格 } 收尾");
         let call = body.find("tool.call").expect("找不到 tool.call 审计");
         let hook = body
-            .find("run_pre_tool_layer(app, name, args, session_id, trace, &start)")
-            .expect("execute_tool_impl 必须调用 pre_tool 钩子层");
+            // 钉 `if let Some(...) = ` 而不只是调用本身：变异实测把它改成
+            // `let _ = run_pre_tool_layer(...)`（seam 彻底死亡、钩子永远不
+            // 影响任何工具调用）时，四条顺序断言照样全绿——只搜裸调用串会
+            // 给 B3 一份假保证。这里钉的是**返回值被消费**。
+            .find("if let Some(interrupted) = run_pre_tool_layer(")
+            .expect("execute_tool_impl 必须消费 pre_tool 钩子层的判定并早退");
+        let hook_return = body
+            .find("return interrupted;")
+            .expect("钩子 Interrupt 必须早退（否则拒绝判定被丢弃）");
         let rule_gate = body.find("tool_rule_gate(app, name").expect("找不到规则闸");
         let subagent_gate = body
             .find("crate::tool_guard::subagent_ctx(session_id)")
@@ -963,6 +1001,10 @@ mod pre_tool_hook_tests {
             .find("if let Some(msg) = invalid_args_message(name, args)")
             .expect("找不到入参 JSON 闸");
         assert!(call < hook, "钩子层在 tool.call 之后（否则审计不成对）");
+        assert!(
+            hook < hook_return,
+            "早退必须紧跟钩子层（中间插别的东西说明判定被丢弃或改写）"
+        );
         assert!(
             hook < rule_gate && hook < subagent_gate && hook < args_gate,
             "钩子层必须插在三道闸入口之前：规则闸 {rule_gate} / 子 agent 闸 {subagent_gate} / 入参闸 {args_gate}，钩子 {hook}"
