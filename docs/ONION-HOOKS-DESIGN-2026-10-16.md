@@ -30,9 +30,16 @@
 
 | # | 决定 | 落点 |
 |---|---|---|
-| 11 | AST 首批语言 **rust / typescript / python / go** | §3.6 |
-| 12 | 编译策略 **feature flag `ast-inspect`，默认关闭** | §3.6 |
-| 13 | **v1 严格只读**，符号级批量改写另开一轮 | §3.6 |
+| 11 | AST 首批语言 rust / typescript / python / go —— **已被 #14 取代** | §3.6 |
+| 12 | 编译策略 feature flag `ast-inspect` 默认关闭 —— **已被 #15 取代**（改走沙箱后无编译期） | §3.6 |
+| 13 | **v1 严格只读**，符号级批量改写另开一轮（仍然有效） | §3.6 |
+
+第四轮（同一会话追加）：
+
+| # | 决定 | 落点 |
+|---|---|---|
+| 14 | **只保留 Python**，砍掉 rust / typescript(+/tsx) | §3.6 |
+| 15 | **改走既有 `run_python` 沙箱 + stdlib `ast`**，不引 tree-sitter | §3.6 |
 
 另有一条前置决定沿用：**不引入脚本运行时**（先原生钩子注册表，Lua 的债见 §七）。
 
@@ -162,8 +169,8 @@ effective = profile_whitelist(profile) ∩ yaml.allowed
 ### 3.5 修订后的三份 yaml
 
 > `hooks` 各层为空串 = 不启用（对应「钩子可单独启用/关闭」）。
-> `mounts` 是按需挂载能力（§3.6），不进 profile 白名单。
 > `allowed` 是期望集，实际生效取交集（§3.4）。
+> AST 能力不进 yaml：`ast_inspect` 是普通内置工具，靠 profile 白名单约束（§3.6）。
 
 **probe.yaml**
 ```yaml
@@ -172,7 +179,6 @@ role: 资料与代码探查，只读，产出结构化素材
 profile: research
 allowed: [web_search, fetch_url, list_files, read_text_file, grep_files,
           write_artifact_file, read_own_card]
-mounts: [ast_inspect]        # 可选；未挂载/语言不支持时降级 grep_files + read_text_file
 max_turn: 6
 temperature: 0.1
 hooks:
@@ -186,7 +192,6 @@ role: 公文撰写、PPT 大纲与生成、代码编写与 diff 补丁
 profile: coder
 allowed: [read_text_file, list_files, grep_files, edit_file, write_file,
           run_python, write_artifact_file, read_own_card]
-mounts: []
 max_turn: 8
 temperature: 0.2
 hooks:
@@ -200,7 +205,6 @@ role: 公文合规校验、政策口径与指标一致性检查、代码评审�
 profile: coder              # 需要 run_python 跑检查；只靠 allowed 收紧去掉写工具
 allowed: [read_text_file, list_files, grep_files, run_python,
           write_artifact_file, read_own_card]
-mounts: [ast_inspect]
 max_turn: 4
 temperature: 0
 hooks:
@@ -210,102 +214,97 @@ hooks:
 注意 validator 用 `coder` profile 但把 `edit_file`/`write_file` 收紧掉——
 这正是「只能收紧」模型的用例：profile 给的是上限，yaml 决定本次不用什么。
 
-### 3.6 AST：内嵌 tree-sitter（已定）+ 按需挂载 + 降级
+### 3.6 Python AST：走既有 run_python 沙箱 + stdlib ast（零新增依赖）
 
-**选型已定：内嵌 tree-sitter。** 先记一条被排除的：上一版推荐「AST 走 MCP 外部
-服务器」，这条路在本仓**走不通**——外部 MCP 工具**根本进不了子 agent**：
-`tools_json_with_mcp`（`bot/registry.rs:1237`）对子 agent 会话直接短路返回
-profile 白名单，注释写明「外部 MCP 工具不进子 agent，§5.1 边界不破」。
-而 AST 的使用方正是 Probe / Validator 两个**子 agent**，走 MCP 等于给它们配一个
-永远拿不到的工具。
+**决定（第四轮）**：砍掉 tree-sitter，**只保留 Python**，实现走本仓已有的
+Python 沙箱 `run_python` + 标准库 `ast`。
 
-**依赖理由**（仓内规矩：新增依赖先写清 stdlib / 现有依赖为何不行）：
-- stdlib 没有源码解析能力；
-- 现有依赖里没有任何解析器——`regex`（关键词匹配）与 `grep_files`（行级检索）
-  拿不到语法树，只能做文本级近似；
-- native 依赖不是新风险类别：本仓已有 `rusqlite`（bundled，C）、
-  `ort`（ONNX Runtime，build 期 download-binaries）、`image`（C 解码）三个先例。
+**依赖理由**：新增依赖 **0 个**。stdlib 的 `ast` 就是 Python 官方解析器，给出
+精确语法树——比第三方 grammar 更贴 Python 语义（装饰器、推导式、海象、f-string
+全认），不需要任何新东西。
 
-#### 三条已定（第三轮拍板）
+#### 相对上一版能砍掉的
 
-| 项 | 决定 | 依据 |
+| 砍掉 | 原因 |
+|---|---|
+| tree-sitter 核心 + 5 套 grammar crate | 只留 Python，用 stdlib `ast` |
+| Cargo `[features]` 段（本仓从未用过） | 不需要编译期开关 |
+| Windows/macOS C 工具链风险 | grammar 是 C 代码，改走沙箱后消失 |
+| **`MOUNT_ONLY_TOOLS` 类别** | 它唯一的用途就是挂 `ast_inspect`；工具改为普通内置工具后不再需要引入 |
+| yaml 的 `mounts` 字段 | 没有了消费者。**不为未来预留**（MCP 有自己的动态挂载机制） |
+
+#### 四项能力 → stdlib `ast` 的对应
+
+| 能力 | `ast` 实现 |
+|---|---|
+| 符号树摘要 | `ast.walk` 收集 Module / ClassDef / FunctionDef + 行号 |
+| 定位定义 | 同上，按符号名匹配 |
+| 引用列表 | `ast.Name` / `ast.Attribute` 节点收集（按作用域过滤） |
+| 调用链片段 | `ast.Call.func` 收集调用边——**跨文件需先建索引** |
+
+**跨文件调用链是实现要点**：单文件 AST 只给语法不给语义，调用链必须基于一次索引
+（扫目录下所有 `.py` 建「模块 → 符号」表，再收集跨模块调用边）。tree-sitter 同样
+**不提供现成调用图**（它只有语法查询、没有语义解析），所以这条路并不比 tree-sitter
+差，不是新负担。
+
+#### 安全：必须由 Rust 侧先过授权闸（本轮发现的关键约束）
+
+`run_python` 的 schema 自己写着「**无文件系统隔离**」（`bot/registry.rs:270`），
+沙箱的 `stdin` 挂 `Stdio::null()`（`py/runtime.rs:588` / `:732`）不接受外部输入。
+于是两条偷懒路都是错的：
+
+- 让 ast 脚本自己 `open(path)` → 等于**教模型绕过 `bot_fs` 授权闸**读白名单外文件，
+  strict 模式直接失效；
+- 把文件内容内联进 `code` 参数 → 大文件撑爆参数，且等于把源码复制进对话历史。
+
+**处置**：`ast_inspect` 自己先走
+`resolve_with_perm(app, "ast_inspect", path, interactive, session_id)`
+（与 `tool_read_text_file` 同款闸，`bot_fs.rs:1402`）：白名单外直接拒，白名单内才把
+**canonical path** 交给沙箱脚本。授权判定留在 Rust 侧，沙箱侧不做判定——这正好补上
+`run_python` 缺的那一层，也是这条路线必须写死的设计约束。
+
+#### 可用性判定（替代原「编译/装配/语言」三重）
+
+没有编译期了，剩下四层：
+
+| 层 | 判据 | 不可用时的表现 |
 |---|---|---|
-| 首批语言 | **rust / typescript / python / go** | 仓库自身栈 Rust+TS；python 是用户自动化脚本高频语言；go 是常见后端工程语言。v1 不加其他语言，控制编译耗时与体积 |
-| 编译策略 | **feature flag `ast-inspect`，默认关闭** | 与 `tokenizers` 关 default-features 瘦身同思路：默认制品不含 tree-sitter 与 grammar；开启才引入核心 + 首批 grammar。加语言要改构建配置并重新编译 |
-| 能力边界 | **v1 严格只读**，不做结构化改写 | 符号级批量改写是独立工具、独立权限面，不塞进 v1，留作后续单独设计 |
+| 开关 | 设置页「允许机器人执行 Python」，或 `perm_mode == yolo`（`py/document.rs:2003-2010`，yolo 跳过会记 `py_exec \| yolo_bypass` 审计） | 返回「Python 编程未开启…」 |
+| 工具规则 | 规则表对 `run_python` / `ast_inspect` 的 deny/ask | 走现成 `tool_rule_gate` |
+| 语言 | 目标文件必须是 `.py` | 提示层降级（§末） |
+| 授权 | `resolve_with_perm` | strict 硬拒 / ask 弹窗 |
 
-#### 「按需加载」在内嵌方案下的真实含义
+#### 归属：Validator 专有，Probe 不给
 
-grammar 是 **C 代码，编译进二进制**，不是运行时加载。加上 feature flag 默认关闭，
-「可用」这件事变成**三重判定**，实现期必须能分清是哪一种（否则排查时分不清原因）：
+`RESEARCH_TOOLS`（`bot/registry.rs:1179`）里**没有 `run_python`**，而 yaml 只能
+收紧不能放宽（§3.4）——所以 Probe 用不了 AST。建议**不给 research profile 加
+`run_python`**：那会把「只读 profile」变成「可执行代码」，与已同意新增的
+`grep_files` / `extract_document`（都是只读）性质完全不同。
 
-| 层 | 判据 | 表现 | 处置 |
-|---|---|---|---|
-| 编译期 | feature `ast-inspect` 是否开 | 关闭则工具**根本不在 `TOOLS_TABLE`** | 默认路径；yaml 里出现 `mounts` 要在**导入时**就报错，别留到运行时 |
-| 装配期 | 会话 yaml 的 `mounts` 是否含它 | 未声明则不进 schema | 记审计 `ast.mount_skipped` |
-| 调用期 | 目标文件扩展名是否有对应 grammar | 不支持则本次调用不可用 | 记审计 `ast.language_unsupported` |
+分工因此更清晰：**Probe 做 grep 级检索**（已同意扩白名单），
+**Validator 做 ast 级深审**（coder profile 本就有 `run_python`）。
 
-**降级的精确语义**（避免实现期误解）：「非支持语言自动降级为 `grep_files` 文本
-检索」——这**不是运行时把 `ast_inspect` 的结果换成 grep 结果**（模型会分不清自己
-调的是哪个工具，参数语义也对不上）。降级发生在 schema 层：不可用时该工具压根
-不在清单里，模型只能看到 `grep_files` / `read_text_file`，自然会去用它们；
-提示层要做的只是把探查指引写成「本语言走文本检索」。
+#### 工具面与连带改动
 
-**两条连带约束**（实现期必须照做）：
+- 作为内置工具进 `TOOLS_TABLE`（`BUILTIN_TOOL_COUNT` **44 → 45**），
+  加入 `CODER_TOOLS` 与 `GENERAL_TOOLS`，**不进 `RESEARCH_TOOLS`**；
+- 进主 agent 默认清单——主 agent 直接被问「梳理这个项目的调用链」是最常见场景，
+  不该要求用户先配 mounts。这也是 **`MOUNT_ONLY_TOOLS` 与 yaml `mounts` 都不需要**
+  的原因：本轮最大的机制简化；
+- 连带要改的断言：`registry.rs:1820` 的 CODER / GENERAL 字面数组、
+  `BUILTIN_TOOL_COUNT`、`tools_baseline.json` 基线（主 agent 清单多一个工具，
+  字节会变）；
+- **跨文件索引暂不缓存**：每次调用现扫，先量实际耗时再决定是否缓存——
+  不为「以后可能要快」预留机制。
 
-1. **`MOUNT_ONLY_TOOLS` 与工具定义必须同 `cfg` 条件**。否则 feature 关闭时会出现
-   `MOUNT_ONLY_TOOLS` 里有一个 `TOOLS_TABLE` 中不存在的名字——这恰好违反 §3.4 自己
-   定的硬约束（名单里的名字必须能在 `TOOLS_TABLE` 查到），自己打自己的脸。
-2. **本仓目前没有 `[features]` 段**（`Cargo.toml` 从没用过 Cargo feature）。
-   新增 `ast-inspect` 是第一次引入，构建配置与 CI 命令都要跟着改一次。
+**v1 边界不变**：只读，不做符号级批量改写（属独立工具与独立权限面，另开一轮）。
 
-**一个未验证项**：grammar 是 C 代码，跨平台打包需要各平台 C 工具链。
-本机只能编译 macOS 分支，**Windows 打包路径未验证**——上链前需要在 Windows 上
-实跑一次带 grammar 的构建。
+#### 降级
 
-#### 挂载面：需要新增 `MOUNT_ONLY_TOOLS` 类别（本轮定的实现约束）
-
-现状：`tools_json()`（`bot/registry.rs:1153-1164`）遍历 `TOOLS_TABLE`，
-**只跳过 `SUBAGENT_ONLY_TOOLS`**。也就是说——**任何进了 TOOLS_TABLE 的工具都会
-自动出现在主 agent 的默认清单里**，这与「按需加载、不进默认清单」直接矛盾。
-
-处置：新增第二个排除类别 `MOUNT_ONLY_TOOLS`，语义是「谁在 yaml 里声明 `mounts`
-谁才看得到」：
-
-```rust
-/// 按需挂载工具：不进任何静态清单（含主 agent 默认清单），
-/// 只在会话 yaml 的 mounts 声明时由 tools_json_with_mcp 形态拼装进去。
-/// 与 SUBAGENT_ONLY_TOOLS 的区别：后者是「只有子 agent 可见」，
-/// 前者是「谁显式声明谁可见」——主会话也可以挂。
-pub const MOUNT_ONLY_TOOLS: &[&str] = &["ast_inspect"];
-```
-
-这条不是可选项：不加它，`ast_inspect` 会以第 45 个工具的身份出现在每个主会话的
-schema 里，与本轮 P0「工具数单一常量、清单按需裁剪」的方向相反。
-
-#### v1 的工具面（四项都是只读）
-
-| 能力 | 输入 | 输出 | 降级替代 |
-|---|---|---|---|
-| 符号树摘要 | 文件或目录 | 类/方法/顶层函数列表 + 行号 | `grep_files` 抓 `fn`/`def`/`class` 行 |
-| 定位定义 | 符号名 | 定义位置列表 | `grep_files` 精确匹配 |
-| 引用列表 | 符号名 | 引用点（文件:行） | `grep_files` 精确匹配 |
-| 调用链片段 | 符号名 + 深度 | 上游调用者 / 下游被调 | 无（这正是原稿「梳理调用链」要的能力） |
-
-前三项有等价降级，**第四项没有**——这是 AST 相对文本检索的净增量，也是它值得
-一份编译成本的唯一理由。
-
-#### 工程纪律
-
-- **解析必须走 `spawn_blocking`**：大文件语法树构建是 CPU 密集同步操作，
-  直接在 async 线程跑会占住 runtime worker。先例在 `bot_chat.rs` 的图片加载
-  （同理由、同解法）。
-- **输出体积复用现成机制**：`ToolDef` 已有 `max_output_chars` 字段，
-  dispatch 已有 `tool.output.over_budget` 审计——符号树很容易超限，
-  按既有机制钳制即可，不新造一套。
-- **降级是提示层行为，不是运行时拦截**：按扩展名判定语言；不支持或未挂载时，
-  渲染给模型的包装里把探查指引改写为「用 `grep_files` 定位 + `read_text_file`
-  精读」。不做运行时拒绝——那只会把模型卡死在「工具不可用」上。
+非 `.py` 文件（或开关/授权未通过）时：工具不可用，模型只能看到
+`grep_files` + `read_text_file`，提示层把探查指引写成「本文件走文本检索」。
+**不做运行时替换**——把 `ast_inspect` 的结果换成 grep 的结果，模型会分不清自己
+调的是哪个工具、参数语义也对不上。
 
 ### 3.7 Layer2 调度（非阻塞，修订稿）
 
@@ -473,6 +472,7 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 
 | 期 | 交付 | 为什么这个顺序 |
 |---|---|---|
+| **独立线 A** | **`ast_inspect`（Python，走 run_python + ast，零新增依赖）** | **不依赖任何钩子期**：它只是一个新内置工具 + profile 条目 + 一道授权闸。可与下面的主线并行，甚至先做 |
 | 0 | 工具名硬约束单测（§3.2 + §3.4：yaml 里的名字必须能在 `TOOLS_TABLE` 查到） | 不写运行时代码就挡住「配置看着生效、实际落空」 |
 | 0.5 | **`RESEARCH_TOOLS` 增 `grep_files` + `extract_document`**（§3.3 已定）并同步 `registry.rs:1820` 断言 | Probe 的 yaml 要真正生效，前提是 research 覆盖代码检索与文档提取 |
 | 1 | **L4 `pre_tool` 原生注册表**：三道闸收进统一入口，钩子只读插在闸前后 | 唯一「已有实现且真有扩展价值」的一层，改动可控 |
@@ -481,7 +481,7 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 | 4 | 两层配置落地（§五），含设置页 `onions_export` 与导入校验（§5.3） | 需要前几期的 seam 稳定；导出比现 Skill 机制多一步，是有意为之 |
 | 5 | L0 `pre_ingest`：真新增能力（输入清洗、任务类型预判） | 设计稿唯一的新能力，但完全独立，可后置 |
 | 6 | 三子 Agent 流水线接线（§3.7） | 需要 0.5 与注册表都就位 |
-| 7 | AST 按需挂载（§3.6） | 独立能力，选型定了再动 |
+| ~~7~~ | ~~AST 按需挂载~~ → **并入独立线 A** | 改为零依赖的内置工具后不再需要挂载机制 |
 
 每期一个提交、配单测、跑 `scripts/test-fast.sh`——与仓内既有纪律一致。
 
@@ -489,18 +489,20 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 
 ## 九、仍需拍板
 
-只剩一条，且是第 11 条的子问题：
+只剩两条，都是 Python-only 路线带来的新问题：
 
-1. **tsx 要不要算进「首批四种语言」**。tree-sitter 的 TypeScript 家族是两个
-   grammar：`typescript` 与 `tsx`，所以「四种语言」实际是**五套 grammar**
-   （rust / typescript / tsx / python / go）。这对本仓不是小事——前端是
-   React 19 + TSX，`src/` 下 **134 个 `.tsx` vs 68 个 `.ts`**，tsx 占三分之二。
-   不带 tsx grammar，分析本仓自己的前端会大面积落到降级路径。
-   倾向带上（多一套 grammar 的编译成本，换前端可分析）。
+1. **要不要给 `RESEARCH_TOOLS` 加 `run_python`**？加了就让 Probe 也能做 AST，
+   但那会把「只读 profile」变成「可执行代码」——与已同意新增的
+   `grep_files` / `extract_document`（都是只读）性质完全不同。
+   倾向**不加**：Probe 做 grep 级检索、Validator 做 ast 级深审，分工已经够清晰。
+2. **跨文件索引要不要缓存**：每次调用现扫目录（安全、简单），还是建一次索引复用
+   （快，但要处理文件变更失效）。倾向**先不缓存**，量过实际耗时再定——
+   不为「以后可能要快」预留机制。
 
-（其余待拍板均已定：profile 增 `grep_files` + `extract_document`；AST 内嵌
-tree-sitter 不走 MCP；导入 + 导出都要，导出粒度为单份 yaml；首批语言四选四；
-feature flag 默认关闭；v1 只读。）
+（此前的待拍板均已定：profile 增 `grep_files` + `extract_document`；
+AST 只留 Python，走 `run_python` + stdlib `ast`，不引 tree-sitter、无 feature flag、
+无 `MOUNT_ONLY_TOOLS`、yaml 无 `mounts`；导入 + 导出都要，粒度为单份 yaml；
+v1 只读。）
 
 ---
 
@@ -509,16 +511,19 @@ feature flag 默认关闭；v1 只读。）
 - 未写任何运行时代码。§二 的行号在后续改动后需重新校准。
 - 未验证钩子能否在现有 async 生命周期里安全挂载——期 1 的第一步应是
   「在 L4 挂一个内置钩子跑通全链」，而不是先设计注册表 API。
-- **未实测 tree-sitter 各语言 grammar 的实际编译时间与体积增量**——文档没给数字，
-  只给了「按语言数线性增长」的判断。语言集与 feature flag 已定，但**代价仍是未知的**。
-- **Windows 打包路径未验证**：grammar 是 C 代码，各平台 C 工具链不同；本机只能编译
-  macOS 分支，上 Windows 打包前需实跑一次带 grammar 的构建。
+- **跨文件调用的实际耗时未测**：每次调用现扫目录 `.py` 建索引，大仓库下可能很慢。
+  这是「要不要缓存」那条待拍板的依据所在——没有数字就不该预先设计缓存。
+- **沙箱内跑 ast 脚本的真实开销未测**：每次调用起一个 Python 进程，叠加
+  `run_python` 默认 60s 超时；大项目多文件调用是否够快未验证。
+- **ast_inspect 的输出体积未估**：符号树在大模块上可能爆 `max_output_chars`，
+  实际钳制阈值要等实现后量。
 - 未验证 §3.3 那次白名单改动的连带影响：断言单测
   `profile_whitelists_match_design_mapping`（`registry.rs:1820`）锁死了
   `general = research ∪ coder 去重`，改 RESEARCH 后并集与断言都要重跑确认——
   文档只标了必须改，没实测改完是否仍然成立。
-- 未验证 `MOUNT_ONLY_TOOLS` 与既有 `tools_baseline.json` 的关系：新增该类别后，
-  主 agent 清单的字节不该变，但基线断言是否还成立没跑过。
+- 未验证「新增 ast_inspect 后 `tools_baseline.json` 基线要重新生成」的具体影响：
+  按理主 agent 清单会多一个工具的 schema 字节，但基线文件比对的是全文还是逐项、
+  重生成流程是什么，都没跑过。
 - **Probe 的 yaml 在期 0.5 落地前不会完全生效**（交集计算会把 `grep_files` 剔掉）。
   这是已知且有意的，不是遗漏。
 - 子 agent 的中间产物不回传父上下文这一条，依赖现有 session 行隔离；未新增
