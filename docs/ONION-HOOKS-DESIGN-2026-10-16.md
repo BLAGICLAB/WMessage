@@ -41,6 +41,13 @@
 | 14 | **只保留 Python**，砍掉 rust / typescript(+/tsx) | §3.6 |
 | 15 | **改走既有 `run_python` 沙箱 + stdlib `ast`**，不引 tree-sitter | §3.6 |
 
+第五轮（同一会话追加，把最后两条待拍板也落定）：
+
+| # | 决定 | 落点 |
+|---|---|---|
+| 16 | **`RESEARCH_TOOLS` 不加 `run_python`** —— Probe 做 grep 级检索，AST 归 Validator | §3.6 |
+| 17 | **跨文件索引不缓存**，每次现扫 —— 没有耗时数字前不为「以后要快」预留机制 | §3.6 / §十 |
+
 另有一条前置决定沿用：**不引入脚本运行时**（先原生钩子注册表，Lua 的债见 §七）。
 
 ---
@@ -170,7 +177,11 @@ effective = profile_whitelist(profile) ∩ yaml.allowed
 
 > `hooks` 各层为空串 = 不启用（对应「钩子可单独启用/关闭」）。
 > `allowed` 是期望集，实际生效取交集（§3.4）。
-> AST 能力不进 yaml：`ast_inspect` 是普通内置工具，靠 profile 白名单约束（§3.6）。
+> AST 能力靠 profile 白名单约束（§3.6）：`ast_inspect` 在 `CODER_TOOLS` 里，
+> 所以 **validator.yaml 的 `allowed` 必须显式列出它**——`allowed` 是收窄清单，
+> 新增内置工具时不同步核对三份 yaml，工具会被交集悄悄收掉（正是 §3.4 说的
+> 「配置看着生效、实际落空」）。writereditor v1 **不给** `ast_inspect`
+> （撰写者按大纲写，不需要结构查询）。
 
 **probe.yaml**
 ```yaml
@@ -203,7 +214,7 @@ hooks:
 onion_id: validator
 role: 公文合规校验、政策口径与指标一致性检查、代码评审与静态检查，只读
 profile: coder              # 需要 run_python 跑检查；只靠 allowed 收紧去掉写工具
-allowed: [read_text_file, list_files, grep_files, run_python,
+allowed: [read_text_file, list_files, grep_files, run_python, ast_inspect,
           write_artifact_file, read_own_card]
 max_turn: 4
 temperature: 0
@@ -277,11 +288,13 @@ Python 沙箱 `run_python` + 标准库 `ast`。
 #### 归属：Validator 专有，Probe 不给
 
 `RESEARCH_TOOLS`（`bot/registry.rs:1179`）里**没有 `run_python`**，而 yaml 只能
-收紧不能放宽（§3.4）——所以 Probe 用不了 AST。建议**不给 research profile 加
-`run_python`**：那会把「只读 profile」变成「可执行代码」，与已同意新增的
-`grep_files` / `extract_document`（都是只读）性质完全不同。
+收紧不能放宽（§3.4）——所以 Probe 用不了 AST。
 
-分工因此更清晰：**Probe 做 grep 级检索**（已同意扩白名单），
+**已定：不给 research profile 加 `run_python`**。理由：加它会把「只读 profile」
+变成「可执行代码」，与已同意新增的 `grep_files` / `extract_document`（都是只读）
+性质完全不同——那两处扩白名单只是把「读」做得更细，这一处是给只读身份装上执行器。
+
+分工因此更清晰：**Probe 做 grep 级检索**（已扩白名单），
 **Validator 做 ast 级深审**（coder profile 本就有 `run_python`）。
 
 #### 工具面与连带改动
@@ -294,8 +307,9 @@ Python 沙箱 `run_python` + 标准库 `ast`。
 - 连带要改的断言：`registry.rs:1820` 的 CODER / GENERAL 字面数组、
   `BUILTIN_TOOL_COUNT`、`tools_baseline.json` 基线（主 agent 清单多一个工具，
   字节会变）；
-- **跨文件索引暂不缓存**：每次调用现扫，先量实际耗时再决定是否缓存——
-  不为「以后可能要快」预留机制。
+- **跨文件索引已定：不缓存，每次现扫**。理由是缓存必然带来失效问题（文件改了
+  索引要不要重建、重建何时），而我们还没有任何耗时数字能证明缓存值得那份复杂度。
+  代价见 §十——这是**已知代价**，不是待优化项。
 
 **v1 边界不变**：只读，不做符号级批量改写（属独立工具与独立权限面，另开一轮）。
 
@@ -487,22 +501,30 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 
 ---
 
-## 九、仍需拍板
+## 九、待拍板：清零
 
-只剩两条，都是 Python-only 路线带来的新问题：
+设计稿涉及的取舍已全部落定，逐条可查：
 
-1. **要不要给 `RESEARCH_TOOLS` 加 `run_python`**？加了就让 Probe 也能做 AST，
-   但那会把「只读 profile」变成「可执行代码」——与已同意新增的
-   `grep_files` / `extract_document`（都是只读）性质完全不同。
-   倾向**不加**：Probe 做 grep 级检索、Validator 做 ast 级深审，分工已经够清晰。
-2. **跨文件索引要不要缓存**：每次调用现扫目录（安全、简单），还是建一次索引复用
-   （快，但要处理文件变更失效）。倾向**先不缓存**，量过实际耗时再定——
-   不为「以后可能要快」预留机制。
+| 议题 | 决定 |
+|---|---|
+| 子 Agent 数量 | 三个（Planner 归主 agent） |
+| 子 Agent 命名 | 不改名，沿用 recon / executor / verifier（§5.5） |
+| 工具名 | 原稿那套作废，以 `TOOLS_TABLE` 为准（§3.2） |
+| 权限模型 | `effective = profile ∩ yaml.allowed`，无 deny 列表（§3.4） |
+| profile 缺口 | `RESEARCH_TOOLS` 增 `grep_files` + `extract_document`（§3.3） |
+| AST 语言 | 只保留 Python（§3.6） |
+| AST 实现 | `run_python` 沙箱 + stdlib `ast`，零新增依赖、不引 tree-sitter（§3.6） |
+| AST 归属 | Validator 专有；**不给 research 加 `run_python`**（§3.6） |
+| AST 索引 | **不缓存，每次现扫**（§3.6） |
+| AST 能力边界 | v1 严格只读，符号级改写另开一轮（§3.6） |
+| L4 权限 | 只读，只可拦截/放行（§3.8） |
+| per-onion 配置 | 两层：两列元配置 + 文件系统 YAML（§五） |
+| 导入/导出 | 都要，导出粒度为单份 yaml（§5.3） |
+| 子 Agent 流水线 | 非阻塞，spawn 后不等（§3.7） |
+| 脚本层 | 本轮不引入，债留在 §七 |
 
-（此前的待拍板均已定：profile 增 `grep_files` + `extract_document`；
-AST 只留 Python，走 `run_python` + stdlib `ast`，不引 tree-sitter、无 feature flag、
-无 `MOUNT_ONLY_TOOLS`、yaml 无 `mounts`；导入 + 导出都要，粒度为单份 yaml；
-v1 只读。）
+**主线（钩子注册表）第一期的验收口径**还没写死：建议是「在 L4 挂一个内置钩子
+跑通全链」——先证明 seam 成立，再设计 API（见 §十）。
 
 ---
 
@@ -511,8 +533,10 @@ v1 只读。）
 - 未写任何运行时代码。§二 的行号在后续改动后需重新校准。
 - 未验证钩子能否在现有 async 生命周期里安全挂载——期 1 的第一步应是
   「在 L4 挂一个内置钩子跑通全链」，而不是先设计注册表 API。
-- **跨文件调用的实际耗时未测**：每次调用现扫目录 `.py` 建索引，大仓库下可能很慢。
-  这是「要不要缓存」那条待拍板的依据所在——没有数字就不该预先设计缓存。
+- **跨文件调用的实际耗时未测**：已定不缓存、每次现扫目录 `.py` 建索引，大仓库下
+  可能很慢。这是**主动接受的代价**（缓存必然带来失效问题，而我们还没有数字证明
+  它值得），不是遗漏；但「有多慢」仍然未知——将来若实测不可接受，重新讨论的是
+  「实测数据」，不是当初的推理。
 - **沙箱内跑 ast 脚本的真实开销未测**：每次调用起一个 Python 进程，叠加
   `run_python` 默认 60s 超时；大项目多文件调用是否够快未验证。
 - **ast_inspect 的输出体积未估**：符号树在大模块上可能爆 `max_output_chars`，
