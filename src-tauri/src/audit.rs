@@ -11,6 +11,8 @@
 use std::io::Write;
 use tauri::AppHandle;
 
+use crate::error::CommandResult;
+
 /// 审计日志安全转义 + 截断，单源在 [`crate::bot::log_sanitize::escape_for_log`]：
 /// `|` 倍增 + `| ` 双空格补位 + \n\r 短形式 + 控制字符全集（含 ESC/BEL/DEL/C1）
 /// 与 U+2028/2029 显式转义 + 转义后按字符数截断加省略号。
@@ -474,6 +476,93 @@ fn mirror_error_log(bot_log_path: &std::path::Path, line: &str) -> bool {
     append_line(&error_path, line)
 }
 
+/// 诊断卡读 error.log 尾部（倒序最新在前；默认 200 行上限 2000）。
+/// NotFound → 占位文案（日志确实没东西）；其他 IO 错误 → Err + ERROR 审计。
+/// 复用 bot_log 的 read_log_tail（同一行导向格式，同一容错语义）。
+/// 泛型 Runtime：mock runtime 测试可直调（与 write_event 同先例）。
+#[tauri::command]
+pub fn error_log_read<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    limit: Option<usize>,
+) -> CommandResult<String> {
+    let p = crate::db::data_dir(&app).join(ERROR_LOG_NAME);
+    match crate::bot::config::audit::read_log_tail(&p, limit) {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            let err = e.to_string();
+            crate::audit_event!(
+                &app,
+                AuditLevel::Error,
+                "error_log_read_fail",
+                "err" => err
+            );
+            Err(e)
+        }
+    }
+}
+
+/// 「复制全部日志」单文件尾部上限：剪掉超出部分（按行对齐），防 12 份文件
+/// 全量拼接出几 MB 剪贴板文本
+const BUNDLE_FILE_CAP_BYTES: usize = 256 * 1024;
+
+/// 打包内核（路径参数化便于单测，tauri command 绑定 Runtime 后 mock 直调仍共享
+/// 数据目录，精确的顺序/截断断言需要 tempdir 隔离）
+fn bundle_text_from_dir(dir: &std::path::Path) -> String {
+    let names = [
+        "error.log",
+        "error.log.old",
+        "error.log.old.1",
+        "bot.log",
+        "bot.log.old",
+        "bot.log.old.1",
+        "api.log",
+        "api.log.old",
+        "api.log.old.1",
+        "migration.log",
+        "migration.log.old",
+        "migration.log.old.1",
+    ];
+    let mut out = String::new();
+    for name in names {
+        let p = dir.join(name);
+        let Ok(raw) = std::fs::read(&p) else {
+            continue; // 缺失（从未写过/刚轮转掉）直接跳过
+        };
+        out.push_str(&format!("===== {name} =====\n"));
+        let content = String::from_utf8_lossy(&raw);
+        if content.len() > BUNDLE_FILE_CAP_BYTES {
+            // 尾部按行对齐 + 字符边界对齐（日志含中文，字节切会劈开 UTF-8 码点）
+            let mut cut = content.len() - BUNDLE_FILE_CAP_BYTES;
+            while cut < content.len() && !content.is_char_boundary(cut) {
+                cut += 1;
+            }
+            let start = content[cut..]
+                .find('\n')
+                .map(|i| cut + i + 1)
+                .unwrap_or(content.len());
+            out.push_str("[已截断，仅含尾部]\n");
+            out.push_str(&content[start..]);
+        } else {
+            out.push_str(&content);
+        }
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        return "（暂无日志）".into();
+    }
+    out
+}
+
+/// 「复制全部日志」打包文本（诊断卡一键给开发者的全量账本）：
+/// error 镜像在前（信号优先），bot/api/migration 流水随后；文件缺失跳过。
+/// 泛型 Runtime：mock runtime 测试可直调。
+#[tauri::command]
+pub fn logs_bundle_text<R: tauri::Runtime>(app: AppHandle<R>) -> CommandResult<String> {
+    Ok(bundle_text_from_dir(&crate::db::data_dir(&app)))
+}
+
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）。
 /// 复用 `bot::audit_log` 的 rotate 阈值与文件路径，老日志兼容。
 /// 泛型 Runtime：mock runtime 测试可直调（与 write_error_audit 同先例）。
@@ -858,6 +947,85 @@ mod tests {
             "non-string panic payload",
             "非字符串 payload 不 panic、给占位文案"
         );
+    }
+
+    // ── 诊断卡命令（error_log_read / logs_bundle_text）──
+
+    #[test]
+    fn error_log_read_returns_tail_newest_first() {
+        let _serial =
+            crate::db::lock::lock_or_recover(&BOT_LOG_TEST_LOCK, "audit::BOT_LOG_TEST_LOCK");
+        let app = tauri::test::mock_app();
+        let dir = crate::db::data_dir(app.handle());
+        let err_log = dir.join("error.log");
+        let _ = std::fs::remove_file(&err_log);
+
+        // 无文件 → 占位文案
+        assert_eq!(
+            error_log_read(app.handle().clone(), None).unwrap(),
+            "（暂无日志）"
+        );
+
+        // 并行测试的其他模块 Error 审计也可能镜像进同一共享 data_dir/error.log，
+        // 断言按内容定位而非计数（抗并发污染）；事件名带独特后缀防子串误配
+        write_at(&err_log, AuditLevel::Warn, "w1-ord", &[]);
+        write_at(&err_log, AuditLevel::Error, "e2-ord", &[]);
+        let s = error_log_read(app.handle().clone(), None).unwrap();
+        let lines: Vec<&str> = s.lines().collect();
+        let i_w = lines
+            .iter()
+            .rposition(|l| l.contains("WARN | w1-ord"))
+            .expect("w1 应在");
+        let i_e = lines
+            .iter()
+            .rposition(|l| l.contains("ERROR | e2-ord"))
+            .expect("e2 应在");
+        assert!(i_e < i_w, "倒序最新在前: {s}");
+
+        std::fs::remove_file(&err_log).ok();
+    }
+
+    #[test]
+    fn logs_bundle_text_orders_signals_first_caps_and_skips_missing() {
+        let tmp = tempfile::tempdir().unwrap(); // tempdir 隔离：精确断言不受并行审计写入污染
+        let dir = tmp.path();
+
+        // 全缺 → 占位
+        assert_eq!(bundle_text_from_dir(dir), "（暂无日志）");
+
+        // error.log（信号）+ bot.log + api.log（流水）；migration.log 保持缺失
+        std::fs::write(dir.join("error.log"), "[t] ERROR | boom-main\n").unwrap();
+        std::fs::write(dir.join("bot.log"), "[t] tool line\n").unwrap();
+        std::fs::write(dir.join("api.log"), "[2026-01-01 00:00:00] GET /tasks\n").unwrap();
+
+        let s = bundle_text_from_dir(dir);
+        let err_pos = s.find("===== error.log =====").expect("error 段应在");
+        let bot_pos = s.find("===== bot.log =====").expect("bot 段应在");
+        let api_pos = s.find("===== api.log =====").expect("api 段应在");
+        assert!(
+            err_pos < bot_pos && bot_pos < api_pos,
+            "信号（error）先于流水（bot/api）: {s}"
+        );
+        assert!(
+            !s.contains("migration.log ====="),
+            "缺失文件跳过无段头: {s}"
+        );
+        assert!(s.contains("boom-main"));
+
+        // 截断路径：超 256KB 的文件只保留尾部（按行对齐）+ 注明截断
+        let big = "b".repeat(300 * 1024);
+        std::fs::write(dir.join("error.log"), format!("{big}\nlast-line\n")).unwrap();
+        let s2 = bundle_text_from_dir(dir);
+        let seg = s2.split("===== bot.log =====").next().unwrap();
+        assert!(seg.contains("[已截断，仅含尾部]"), "应注明截断");
+        assert!(seg.contains("last-line"), "尾部应完整保留");
+        assert!(!seg.contains(&big), "超界部分应剪掉");
+
+        // 多字节内容：按字节截断不得劈开 UTF-8 码点（panic 即回归）
+        let multi = "汉".repeat(200 * 1024);
+        std::fs::write(dir.join("migration.log"), format!("{multi}\n尾行\n")).unwrap();
+        let s3 = bundle_text_from_dir(dir);
+        assert!(s3.contains("尾行"), "多字节文件截断后尾部完整");
     }
 
     // ── kv 值统一转义（剥换行/管道符）──

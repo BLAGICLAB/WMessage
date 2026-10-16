@@ -76,6 +76,7 @@ import { MemoryPanel } from "./MemoryPanel";
 import GraphSettingsPanel from "./GraphSettingsPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
+import { DiagnosticsCard } from "./DiagnosticsCard";
 import { ModelRow } from "./ModelRow";
 import { UsageStatsCard } from "./UsageStatsCard";
 import { OperationHistoryTab } from "./OperationHistoryTab";
@@ -1843,6 +1844,9 @@ export function SettingsPage({
                   <ProfileRow kind="bot" label="机器人" defaultName="机器人" />
                 </div>
               </div>
+
+              {/* 诊断：error.log 最近错误 + 一键复制全部日志 */}
+              <DiagnosticsCard />
 
               {/* 基础设置：外观 + 开机自启动 wmessage */}
               <div className="nm-card p-5">

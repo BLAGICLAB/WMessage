@@ -578,6 +578,8 @@ pub fn run() {
             copy_file_with_title,
             focus_main_window,
             audit::frontend_event_report,
+            audit::error_log_read,
+            audit::logs_bundle_text,
             bot_skills::open_file_path,
             bot_skills::pick_files_dialog,
             bot_skills::delete_bound_file,

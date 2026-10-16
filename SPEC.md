@@ -111,6 +111,7 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 - **本地 HTTP API**（tiny_http + SSE + token 鉴权）：启停/状态/换 token，供外部集成
 - 便携模式：数据库随 exe 走（exe 目录锚定，不可写兜底 app_data_dir）；Windows 绿色 zip + macOS dmg（Intel/Apple Silicon）
 - 桌面清理：CSV 规则表（模版下载/导入），`{year}` 占位，move/delete 两动作，10 分钟后台轮询，migration.log；看板/回收站附件绝不触碰
+- **日志体系**：数据目录四个落盘日志——bot.log（全应用结构化审计，`[ts] LEVEL | event | k=v`）、error.log（WARN/ERROR 事件镜像账本，不被 Info 流水稀释）、api.log（HTTP API 访问+变更）、migration.log（迁移执行），全部 5MB 轮转保留两代（`.old`/`.old.1`）；全局 panic 钩子记 ERROR；前端 window error/unhandledrejection 与 CSP 违规经 frontend_event_report 上报（32 签名去重）；设置页「诊断」卡 = error.log 最近错误 + 一键复制全部日志（error 信号在前、流水在后，单文件超 256KB 尾部截断）
 - 全局快捷键：唤起/隐藏主窗口（macOS `Cmd+Ctrl+W` / Win `Ctrl+Alt+W`）、快速新建任务（`Cmd/Ctrl+Alt+N`，唤起并进入标题编辑）、切换深浅色（`Cmd/Ctrl+Alt+T`）；注册失败只记日志不影响启动
 - UI 体系：新拟态 nm 组件类 + 设计 token + 左导航壳 + lucide 图标 + a11y 基线 + 深浅色三态主题
 
