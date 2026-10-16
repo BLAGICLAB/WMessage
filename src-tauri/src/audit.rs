@@ -417,15 +417,26 @@ fn append_line(path: &std::path::Path, line: &str) -> bool {
 
 // 写入公共内核（三个写入点共用）
 
-/// bot.log rotate 阈值：超过 5 MB 改名为 .old（保留一份历史）。
+/// 日志 rotate 阈值：超过 5 MB 轮转让位（保留两代历史，见
+/// rotate_log_if_large）。bot.log / error.log 镜像共用同一阈值。
 /// 三个写入点（write_event / write_error_audit / write_warn_audit_to）共用，
 /// 由 `write_at` 统一调用，不再各自传常量。
 const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
 
-/// 写入公共内核：rotate + BOT_LOG_LOCK + 时间戳 + 行拼装 + 追加一行结构化事件。
+/// error.log 文件名（与所写 bot.log 同目录）：WARN/ERROR 结构化事件的镜像账本。
+/// 机器人工具流水（bot/py 写入点，无级别自由行）**不**镜像——那是上下文不是
+/// 信号；信号账本不被流水稀释，5MB 能覆盖数月，诊断卡与问题反推以它为准。
+const ERROR_LOG_NAME: &str = "error.log";
+
+/// error.log 写锁：与 BOT_LOG_LOCK 分离——镜像不必与 Info 流水互斥，
+/// 两文件独立 append 互不影响。rotate + write 同锁（同 bot.log 契约）。
+static ERROR_LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 写入公共内核：rotate + BOT_LOG_LOCK + 时间戳 + 行拼装 + 追加一行结构化事件，
+/// WARN/ERROR 镜像一份到同目录 error.log。
 ///
 /// 三个写入点（write_event / write_error_audit / write_warn_audit_to）都走这里，
-/// 行格式 `[ts] LEVEL | event | k=v | k=v` 字符级一致——加新写入点不需要再复制
+/// 行格式 `[ts] LEVEL | event | k=v` 字符级一致——加新写入点不需要再复制
 /// rotate/lock/format 那一坨，也不存在「忘了过 escape_for_log」漏路径。
 ///
 /// 返回 bool：成功 true / IO 失败 false。调用方一般不关心（IO 失败已 eprintln
@@ -440,7 +451,21 @@ fn write_at(
     crate::db::rotate_log_if_large(log_path, LOG_ROTATE_BYTES);
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let line = build_event_line(&ts.to_string(), level, event, kv);
-    append_line(log_path, &line)
+    let ok = append_line(log_path, &line);
+    // 镜像失败不回滚主文件写入（append_line 内已 eprintln 留痕）
+    if matches!(level, AuditLevel::Warn | AuditLevel::Error) {
+        let _ = mirror_error_log(log_path, &line);
+    }
+    ok
+}
+
+/// WARN/ERROR 行镜像到同目录 error.log（独立锁 + 独立轮转，见 ERROR_LOG_NAME）。
+/// 返回成功与否供测试断言。
+fn mirror_error_log(bot_log_path: &std::path::Path, line: &str) -> bool {
+    let error_path = bot_log_path.with_file_name(ERROR_LOG_NAME);
+    let _g = crate::db::lock::lock_or_recover(&ERROR_LOG_LOCK, "audit::ERROR_LOG_LOCK");
+    crate::db::rotate_log_if_large(&error_path, LOG_ROTATE_BYTES);
+    append_line(&error_path, line)
 }
 
 /// 写一条结构化审计事件到 `bot.log`（post-execute 钩子主入口）。
@@ -684,6 +709,73 @@ mod tests {
         assert!(!p.exists());
         // 恢复权限让 tempdir 清理不掉链子
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // ── error.log 镜像（WARN/ERROR 结构化事件，Info 不镜像）──
+
+    #[test]
+    fn warn_and_error_mirror_to_error_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bot = tmp.path().join("bot.log");
+        assert!(write_at(&bot, AuditLevel::Info, "tool_done", &[("k", "v")]));
+        assert!(write_at(&bot, AuditLevel::Warn, "degraded", &[]));
+        assert!(write_at(&bot, AuditLevel::Error, "boom", &[("err", "x")]));
+
+        let err_log = tmp.path().join("error.log");
+        let content = std::fs::read_to_string(&err_log).expect("WARN 应镜像出 error.log");
+        let mirrored: Vec<&str> = content.lines().collect();
+        assert_eq!(mirrored.len(), 2, "Info 不得进 error.log：{content}");
+        assert!(mirrored[0].contains("WARN | degraded"), "{}", mirrored[0]);
+        assert!(mirrored[1].contains("ERROR | boom"), "{}", mirrored[1]);
+
+        // bot.log 与 error.log 的对应行字符级一致（同一行文本两次落盘）
+        let bot_content = std::fs::read_to_string(&bot).unwrap();
+        let bot_lines: Vec<&str> = bot_content.lines().collect();
+        assert_eq!(bot_lines.len(), 3);
+        assert_eq!(bot_lines[1], mirrored[0]);
+        assert_eq!(bot_lines[2], mirrored[1]);
+    }
+
+    #[test]
+    fn mirror_error_log_rotates_with_two_generations() {
+        // KV 值有 500 字符上限，超大行走 mirror_error_log 直测（append_line 不截断）。
+        // 注意轮转时机：某笔写入使文件过限后，**下一笔**写入时才改名让位
+        let tmp = tempfile::tempdir().unwrap();
+        let bot = tmp.path().join("bot.log");
+        let small = |tag: &str| format!("{tag}-{}", "x".repeat(60));
+        let flood = || "f".repeat(5 * 1024 * 1024 + 16);
+
+        assert!(mirror_error_log(&bot, &small("a")));
+        assert!(!tmp.path().join("error.log.old").exists(), "未超限不轮转");
+
+        // 灌过限大行（此时只追加不轮转），下一笔才触发第一次轮转
+        assert!(mirror_error_log(&bot, &flood()));
+        assert!(mirror_error_log(&bot, &small("b")), "过限后的下一笔应轮转");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("error.log.old")).unwrap(),
+            format!("{}\n{}\n", small("a"), flood()),
+            ".old = 第一代（a + flood）"
+        );
+
+        // 第二次过限 → 下一笔把第一代挤到 .old.1
+        assert!(mirror_error_log(&bot, &flood()));
+        assert!(mirror_error_log(&bot, &small("c")));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("error.log.old.1")).unwrap(),
+            format!("{}\n{}\n", small("a"), flood()),
+            ".old.1 = 第一代（被挤出）"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("error.log.old")).unwrap(),
+            format!("{}\n{}\n", small("b"), flood()),
+            ".old = 第二代"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("error.log")).unwrap(),
+            format!("{}\n", small("c")),
+            "error.log 从头长"
+        );
+        assert!(!tmp.path().join("error.log.old.2").exists(), "只保两代");
     }
 
     // ── kv 值统一转义（剥换行/管道符）──

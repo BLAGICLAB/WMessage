@@ -36,11 +36,19 @@ pub fn gen_dir<R: tauri::Runtime>(
     Ok(dir)
 }
 
-/// 日志轮转：超过 size_limit 字节就改名 .old（旧 .old 覆盖）
+/// 日志轮转：超过 size_limit 字节就整体改名让位，保留两代历史
+/// （`X.log.old` → 再超限时挪到 `X.log.old.1`，最老一代被覆盖挤出）。
+/// bot/api/migration 日志与 py、bot-config 两个旁路写入点共用本函数，
+/// 代数提升对它们同时生效。rename 失败静默：双写者并发轮转最坏 =
+/// 当次不轮转下次调用补上，无数据破坏（与原单代版同容错契约）。
 pub fn rotate_log_if_large(path: &std::path::Path, size_limit: u64) {
     if let Ok(md) = std::fs::metadata(path) {
         if md.len() > size_limit {
             let old = path.with_extension("log.old");
+            if old.exists() {
+                let older = path.with_extension("log.old.1");
+                let _ = std::fs::rename(&old, &older);
+            }
             let _ = std::fs::rename(path, &old);
         }
     }
@@ -230,5 +238,53 @@ mod atomic_write_tmp_tests {
             .collect();
         assert!(residue.is_empty(), "tmp 不得残留：{residue:?}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod rotate_tests {
+    use super::*;
+
+    /// 未超限不轮转；超限后主文件让位 .old
+    #[test]
+    fn rotate_only_when_over_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("bot.log");
+        std::fs::write(&log, "small").unwrap();
+        rotate_log_if_large(&log, 100);
+        assert!(log.exists(), "未超限不得轮转");
+        assert!(!tmp.path().join("bot.log.old").exists());
+
+        std::fs::write(&log, "0123456789abcdef").unwrap(); // 16 > 10
+        rotate_log_if_large(&log, 10);
+        assert!(!log.exists(), "超限后主文件应让位");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("bot.log.old")).unwrap(),
+            "0123456789abcdef"
+        );
+    }
+
+    /// 连滚三次：.old 挪到 .old.1（第一代），.old 是上一代，最老一代被挤出
+    #[test]
+    fn rotate_keeps_two_history_generations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = tmp.path().join("bot.log");
+        for gen in ["gen0", "gen1", "gen2"] {
+            std::fs::write(&log, format!("{gen}-0123456789")).unwrap();
+            rotate_log_if_large(&log, 10);
+        }
+        assert!(!log.exists(), "轮转后主文件让位（下次写入重建）");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("bot.log.old")).unwrap(),
+            "gen2-0123456789"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("bot.log.old.1")).unwrap(),
+            "gen1-0123456789"
+        );
+        assert!(
+            !tmp.path().join("bot.log.old.2").exists(),
+            "只保两代，更早历史应被挤出"
+        );
     }
 }
