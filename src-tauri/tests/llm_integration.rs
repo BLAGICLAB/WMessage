@@ -804,6 +804,78 @@ async fn core_truncated_stream_partial_tool_calls_rejected() {
 }
 
 #[tokio::test]
+async fn core_sse_unparsable_chunk_logged_but_stream_survives() {
+    // 坏块可见化：data 载荷 JSON 解析失败曾被 `from_str(..).ok()?` 静默丢弃——
+    // 回复凭空少一段，日志里什么都不留。现在回合结束发一条 llm.sse_chunk_unparsable，
+    // 且不得中断流（其余 chunk 仍是好的，中断会把好回复一起丢掉）。
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"前半句\"}}]}\n\n"
+            .to_string()
+            + "data: {\"choices\":[{\"delta\":{\"cont\n\n" // 网关吐了半截 JSON
+            + "data: {\"choices\":[{\"delta\":{\"content\":\"后半句\"}}]}\n\n"
+            + "data: [DONE]\n\n",
+    ));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("单个坏块不得让整条流失败");
+
+    assert!(
+        text.contains("前半句") && text.contains("后半句"),
+        "got: {text}"
+    );
+    assert!(
+        h.events().contains(&"llm.sse_chunk_unparsable"),
+        "坏块应记审计：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
+async fn core_sse_clean_stream_has_no_unparsable_audit() {
+    // 反向：正常流不得误报降级（event: 行 / 空心跳 / [DONE] 都是协议正常成分）
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"干净回复\"},\"finish_reason\":\"stop\"}]}\n\n"
+            .to_string()
+            + ": keep-alive\n\n"
+            + "data:    [DONE]\n\n",
+    ));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("干净流应放行");
+
+    assert!(text.contains("干净回复"), "got: {text}");
+    assert!(
+        !h.events().contains(&"llm.sse_chunk_unparsable"),
+        "干净流不得记降级：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
 async fn core_truncated_stream_text_only_warns_but_returns() {
     // P1-1 防线另一支：干净 EOF 无 tool_calls 但有正文 → 不报错，
     // 正文追加「可能被截断」提示返回（用户已看到的内容不丢弃）

@@ -150,6 +150,8 @@ pub struct ToolCallDelta {
 
 /// 解析一行 OpenAI 兼容 SSE（`data: <json>` 或 `data: [DONE]`）。
 /// 返回 None = 非 data 行 / JSON 解析失败 / choices 为空。
+/// JSON 解析失败这一支由调用方用 `unparsable_sse_payload` 区分「协议正常成分」
+/// 与「真坏块」并留痕——解析不了本身仍按跳过处理，不中断流。
 ///
 /// 注意：纯函数，不产生任何 side effect（无事件 emit、无 think-block 处理、无 final_text push）。
 /// 调用方（run_model_loop）负责 feed_think + emit + 累积。
@@ -218,6 +220,25 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     }
 
     Some(chunk)
+}
+
+/// `parse_sse_chunk` 返回 None 时，判定这一行是不是「对端发了我们解析不了的
+/// 载荷」——纯函数，供调用方计数留痕（坏块曾经无声消失：网关吐半截 JSON /
+/// 非 OpenAI 形状，回复凭空少一段，日志里什么都不留）。
+///
+/// 返回 Some(载荷) = data 行 + 非空 + 非 `[DONE]` 且 **JSON 解析失败**，
+/// 即真坏块；返回 None = 非 data 行（`event:` / 注释 / 空行）、空心跳、
+/// `[DONE]`，以及合法 JSON 但 choices 为空（部分网关拿它当心跳，混进降级
+/// 计数只会把信号淹掉）。
+fn unparsable_sse_payload(line: &str) -> Option<&str> {
+    let data = line.strip_prefix("data:")?.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return None;
+    }
+    if serde_json::from_str::<serde_json::Value>(data).is_ok() {
+        return None;
+    }
+    Some(data)
 }
 
 /// 从流内 JSON 载荷提取错误消息（`{"error":{"message":...}}` 或 `{"error":"..."}`，截 200 字）
@@ -1357,6 +1378,9 @@ where
         let mut last_finish_reason: Option<String> = None;
         let mut stream_error: Option<String> = None;
         let mut tc_index_overflow_logged = false;
+        // 解析不掉的 data 载荷计数 + 首条样本：回合结束发一条审计，不逐块刷屏
+        let mut bad_sse_chunks: u32 = 0;
+        let mut bad_sse_sample: Option<String> = None;
         // Anthropic 模式 token 用量累积（message_start 的 input / message_delta 的
         // output，parse_anthropic_event 顺带捞出），回合结束写 llm.usage 审计
         let mut usage_input: u64 = 0;
@@ -1379,7 +1403,22 @@ where
                 // ParsedChunk 走同一消费逻辑（think 拆分 / 工具累积 / 流完整性 /
                 // finish_reason 处理全部两协议共享）
                 let parsed = match http.provider {
-                    crate::bot::ApiProvider::Openai => parse_sse_chunk(line)?,
+                    crate::bot::ApiProvider::Openai => match parse_sse_chunk(line) {
+                        Some(c) => c,
+                        None => {
+                            // 坏块留痕但不中断：跳过是原行为（脏网关偶发半截 JSON
+                            // 时其余 chunk 仍是好的，中断会把好回复一起丢掉），
+                            // 补的是「静默」——回合结束发一条计数 + 样本。
+                            if let Some(payload) = unparsable_sse_payload(line) {
+                                bad_sse_chunks += 1;
+                                if bad_sse_sample.is_none() {
+                                    bad_sse_sample =
+                                        Some(payload.chars().take(120).collect::<String>());
+                                }
+                            }
+                            return None;
+                        }
+                    },
                     crate::bot::ApiProvider::Anthropic => {
                         match crate::bot_anthropic::parse_anthropic_event(line) {
                             Some(mut ev) => {
@@ -1526,6 +1565,18 @@ where
                     }
                 }
             }
+        }
+
+        // 坏块可见化：整条流一条（逐块发会被脏网关刷屏），带首条样本供对拍
+        if bad_sse_chunks > 0 {
+            audit(
+                crate::audit::AuditLevel::Warn,
+                "llm.sse_chunk_unparsable",
+                vec![
+                    ("chunks", bad_sse_chunks.to_string()),
+                    ("sample", bad_sse_sample.take().unwrap_or_default()),
+                ],
+            );
         }
 
         // Anthropic 模式：回合结束把流内捞到的 token 用量 + 缓存命中写审计。
@@ -2630,6 +2681,24 @@ mod parse_sse_chunk_tests {
         // 网关异常：200 OK + choices:[] → 跳过
         let line = r#"data: {"choices":[]}"#;
         assert!(parse_sse_chunk(line).is_none());
+    }
+
+    #[test]
+    fn unparsable_payload_flags_only_bad_data_lines() {
+        use super::unparsable_sse_payload;
+        // 坏块：data 行 + 非空 + 解析不出来 → 计入降级
+        assert_eq!(unparsable_sse_payload("data: not-json{"), Some("not-json{"));
+        assert_eq!(unparsable_sse_payload("data: {半截"), Some("{半截"));
+        // 协议正常成分：一律不算坏块（否则正常流每次都记降级）
+        assert_eq!(unparsable_sse_payload("event: ping"), None);
+        assert_eq!(unparsable_sse_payload(""), None);
+        assert_eq!(unparsable_sse_payload(": keep-alive"), None);
+        assert_eq!(unparsable_sse_payload("data:"), None);
+        assert_eq!(unparsable_sse_payload("data:    "), None);
+        assert_eq!(unparsable_sse_payload("data: [DONE]"), None);
+        assert_eq!(unparsable_sse_payload("data:    [DONE]"), None);
+        // 合法 JSON 但 choices 为空：解析成功，不算坏块
+        assert_eq!(unparsable_sse_payload(r#"data: {"choices":[]}"#), None);
     }
 
     #[test]
