@@ -218,7 +218,7 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
    - Word 润色默认修订模式（track changes，w:ins/w:del，author=WMessage AI）；产物统一落 AI_Gen_Files（`db::gen_dir` 中心函数解析、启动即预建、同名 (n) 序号永不覆盖；系统提示词硬性约束产物/临时文件落点）
    - 流式回复；思考过程（<think>）与工具调用折叠行可展开；Markdown 渲染回复
    - 斜杠命令：/stop /compact（≤300 字摘要）/retry /clean（清空当前对话）
-   - 安全：删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log；参数上限；API Key 存系统凭据存储（keyring）；文件访问授权模式（2026-08-26）：strict 白名单硬拒 / ask 白名单外弹授权（默认，允许一次/始终允许该目录/拒绝）/ yolo 全放行（文件+Python）；extract_document path 校验（任务卡绑定文件 / AI_Gen_Files 静默放行，其余走授权分流）
+   - 安全：删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log；参数上限；API Key 存系统凭据存储（keyring）；文件访问授权模式（2026-08-26）：strict 白名单硬拒 / ask 白名单外弹授权（默认，允许一次/始终允许该目录/拒绝）/ yolo 全放行（文件+Python）；extract_document path 校验（任务卡绑定文件 / AI_Gen_Files 静默放行，其余走授权分流）；上下文超长（400 context_length_exceeded / prompt is too long 等形态）自动降级：砍掉最旧的会话消息后重发，至多两次；仍超长则回「请 /compact 或新建会话」的可操作报错
    - 挂件选任务模式（🎯 整卡单击选中，📌 引用块随消息发送）；任务卡 🤖 按钮一键执行（卡片显示机器人归属头像）
 
 ## 功能需求（追加 2026-08-16：定时任务卡 + 归属头像）

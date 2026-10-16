@@ -430,6 +430,78 @@ fn is_retryable_llm_status(status: u16) -> bool {
     status == 429 || (500..=599).contains(&status)
 }
 
+/// 上下文超长降级：保留的历史比例（砍掉一半再试）
+const CONTEXT_SHED_KEEP_RATIO: f64 = 0.5;
+/// 单次模型循环内的降级次数上限（防「砍一半仍超长 → 再砍 → 再超」打转）
+const CONTEXT_SHED_MAX: u8 = 2;
+
+/// 上下文超长判定：400/413 + 载荷特征。各家文案不一（OpenAI
+/// `context_length_exceeded`、Anthropic `prompt is too long`、中转网关
+/// `maximum context length`、国产网关中文「上下文超长」），故 code 与关键词
+/// 两类形态都认；只看状态码会把 400 的其它形态（鉴权、schema 错）误伤。
+fn is_context_overflow(status: u16, body: &str) -> bool {
+    if status != 400 && status != 413 {
+        return false;
+    }
+    let b = body.to_lowercase();
+    const MARKS: &[&str] = &[
+        "context_length_exceeded",
+        "maximum context length",
+        "context window",
+        "prompt is too long",
+        "input is too long",
+        "too many tokens",
+        "reduce the length",
+        "上下文超长",
+        "超出上下文",
+        "上下文长度",
+    ];
+    MARKS.iter().any(|m| b.contains(m))
+}
+
+/// 单条消息的字符数（序列化后计——比对的是请求体实际大小）
+fn msg_chars(m: &serde_json::Value) -> usize {
+    serde_json::to_string(m)
+        .map(|s| s.chars().count())
+        .unwrap_or(0)
+}
+
+/// 降级动作：砍掉最旧的会话消息，直到总量降到目标比例（纯函数，单测锚点）。
+///
+/// 只动 system 段之后、最后一条之前的消息：system 段是提示词/摘要/记忆块本体，
+/// 最后一条是本轮用户输入；本轮已执行的 tool 消息追加在本轮请求构造之后，
+/// 不落在可砍区间——砍它会破坏 tool_call/tool_result 配对，对端直接 400。
+/// 返回砍掉的条数，0 = 没得砍（历史已是空的）。
+fn shed_oldest_history(msgs: &mut Vec<serde_json::Value>, keep_ratio: f64) -> usize {
+    let is_system =
+        |m: &serde_json::Value| m.get("role").and_then(|r| r.as_str()) == Some("system");
+    let first = msgs
+        .iter()
+        .position(|m| !is_system(m))
+        .unwrap_or(msgs.len());
+    let mut used: usize = msgs.iter().map(msg_chars).sum();
+    let target = (used as f64 * keep_ratio) as usize;
+    let mut removable = msgs.len().saturating_sub(first).saturating_sub(1); // 最后一条本轮输入不可砍
+    let mut removed = 0usize;
+    while used > target && removable > 0 {
+        used = used.saturating_sub(msg_chars(&msgs[first + removed]));
+        removed += 1;
+        removable -= 1;
+    }
+    if removed == 0 {
+        return 0;
+    }
+    msgs.drain(first..first + removed);
+    msgs.insert(
+        first,
+        serde_json::json!({
+            "role": "system",
+            "content": "[上下文超限] 早前对话已因超出模型上下文窗口被裁剪，上文从本条之后开始。"
+        }),
+    );
+    removed
+}
+
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。
 /// cap 由会话派生：子 agent = 预算 max_tool_calls，其余 = 默认 100
 /// bot-config `maxFunctionCalls` 可覆盖，钳 1..=500）。
@@ -1067,6 +1139,8 @@ where
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
+    // 上下文超长降级次数（全循环共享）：超长时砍历史重发，至多两次
+    let mut context_sheds: u8 = 0;
     for round in 0..max_rounds {
         // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
         // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
@@ -1307,26 +1381,82 @@ where
             };
             match send_result {
                 Ok(r) => {
-                    if !r.status().is_success()
-                        && is_retryable_llm_status(r.status().as_u16())
-                        && attempt < MAX_LLM_ATTEMPTS
-                    {
-                        audit(
-                            crate::audit::AuditLevel::Warn,
-                            "llm.retry",
-                            vec![
-                                ("status", r.status().as_u16().to_string()),
-                                ("attempt", attempt.to_string()),
-                            ],
-                        );
-                        drop(r);
-                        // 重试等待期响应 /stop——不再发出下一次请求（与主循环停止口径一致）
-                        if stop.stopped() {
-                            let hint = skill_finish(false, "用户停止");
-                            return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                    if !r.status().is_success() {
+                        // 429/5xx 瞬时抖动：退避后重发同一请求（不读 body，drop 即弃）
+                        if is_retryable_llm_status(r.status().as_u16())
+                            && attempt < MAX_LLM_ATTEMPTS
+                        {
+                            audit(
+                                crate::audit::AuditLevel::Warn,
+                                "llm.retry",
+                                vec![
+                                    ("status", r.status().as_u16().to_string()),
+                                    ("attempt", attempt.to_string()),
+                                ],
+                            );
+                            drop(r);
+                            // 重试等待期响应 /stop——不再发出下一次请求（与主循环停止口径一致）
+                            if stop.stopped() {
+                                let hint = skill_finish(false, "用户停止");
+                                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                            }
+                            tokio::time::sleep(LLM_RETRY_DELAY).await;
+                            continue;
                         }
-                        tokio::time::sleep(LLM_RETRY_DELAY).await;
-                        continue;
+                        let st = r.status().as_u16();
+                        let text = r.text().await.unwrap_or_default();
+                        let overflow = is_context_overflow(st, &text);
+                        // 上下文超长：同一份 msgs 重发必然同样 400——砍掉最旧的
+                        // 会话消息后重发（请求尚未开始流式产出，本轮无副作用可重放）
+                        if overflow && context_sheds < CONTEXT_SHED_MAX {
+                            let before = msgs.iter().map(msg_chars).sum::<usize>();
+                            let dropped = shed_oldest_history(&mut msgs, CONTEXT_SHED_KEEP_RATIO);
+                            if dropped > 0 {
+                                context_sheds += 1;
+                                // body 在进循环前已序列化——砍完必须回填 messages，
+                                // 否则重发的是同一份旧 body，降级等于没做
+                                body["messages"] = serde_json::to_value(&msgs)
+                                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+                                let after = msgs.iter().map(msg_chars).sum::<usize>();
+                                audit(
+                                    crate::audit::AuditLevel::Warn,
+                                    "llm.context_overflow",
+                                    vec![
+                                        ("status", st.to_string()),
+                                        ("dropped", dropped.to_string()),
+                                        ("from_chars", before.to_string()),
+                                        ("to_chars", after.to_string()),
+                                        ("shed", context_sheds.to_string()),
+                                    ],
+                                );
+                                if stop.stopped() {
+                                    let hint = skill_finish(false, "用户停止");
+                                    return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                                }
+                                continue;
+                            }
+                        }
+                        // 没得砍（或本就不是超长）：回错误。超长时给出可操作指引，
+                        // 别把裸 400 抛给用户——它看不出该 /compact 还是换模型
+                        let hint = skill_finish(
+                            false,
+                            if overflow {
+                                "上下文超长：请 /compact 压缩历史或新建会话，也可在设置里调小历史预算"
+                            } else {
+                                "大模型 API 错误"
+                            },
+                        );
+                        let err = CommandError::LlmApiError {
+                            status: st,
+                            body_preview: format!(
+                                "{}{hint}",
+                                text.chars().take(300).collect::<String>()
+                            ),
+                        };
+                        let mut kv = crate::audit::error_kv(&err);
+                        kv.push(("status", st.to_string()));
+                        audit(crate::audit::AuditLevel::Warn, "llm.response", kv);
+                        return Err(err);
                     }
                     break r;
                 }
@@ -1353,24 +1483,12 @@ where
                 }
             }
         };
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            let hint = skill_finish(false, "大模型 API 错误");
-            let err = CommandError::LlmApiError {
-                status: status.as_u16(),
-                body_preview: format!("{}{hint}", text.chars().take(300).collect::<String>()),
-            };
-            // 带 code 的失败审计：`grep 'code=LLM_API_ERROR'` 即可统计网关侧失败
-            let mut kv = crate::audit::error_kv(&err);
-            kv.push(("status", status.as_u16().to_string()));
-            audit(crate::audit::AuditLevel::Warn, "llm.response", kv);
-            return Err(err);
-        }
+        // 非成功响应已在上面的请求循环内统一转 Err（429/5xx 退避重试、
+        // 上下文超长降级重发、其余直接带指引报错），走到这里必是 2xx
         audit(
             crate::audit::AuditLevel::Info,
             "llm.response",
-            vec![("status", status.as_u16().to_string())],
+            vec![("status", resp.status().as_u16().to_string())],
         );
 
         let mut stream = resp.bytes_stream();
@@ -2997,6 +3115,112 @@ mod stream_accumulate_tests {
         assert!(!is_retryable_llm_status(401));
         assert!(!is_retryable_llm_status(404));
         assert!(!is_retryable_llm_status(200));
+    }
+}
+
+#[cfg(test)]
+mod context_overflow_tests {
+    use super::*;
+
+    #[test]
+    fn overflow_detected_across_vendor_payload_shapes() {
+        // OpenAI 形态
+        assert!(is_context_overflow(
+            400,
+            r#"{"error":{"message":"This model's maximum context length is 8192 tokens","code":"context_length_exceeded"}}"#
+        ));
+        // Anthropic 形态
+        assert!(is_context_overflow(
+            400,
+            r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#
+        ));
+        // 国产网关中文形态 + 大小写不敏感
+        assert!(is_context_overflow(400, "错误：上下文超长，请缩短对话"));
+        assert!(is_context_overflow(
+            413,
+            "payload too large: context window"
+        ));
+        // 短 body 也认（关键词在）
+        assert!(is_context_overflow(400, "too many tokens"));
+    }
+
+    #[test]
+    fn other_400s_are_not_treated_as_overflow() {
+        // 400 的其它形态不得触发降级：砍历史治不好鉴权/参数错，白砍一轮还多花一次请求
+        assert!(!is_context_overflow(
+            400,
+            r#"{"error":{"message":"Invalid API key","code":"invalid_api_key"}}"#
+        ));
+        assert!(!is_context_overflow(
+            400,
+            r#"{"error":{"message":"tools[0].function.parameters: invalid schema"}}"#
+        ));
+        // 关键词出现在非超长语境也不误伤：只看 400/413 + 特征词，不做语义推理
+        assert!(!is_context_overflow(401, "invalid api key"));
+        assert!(!is_context_overflow(500, "internal error"));
+        assert!(!is_context_overflow(200, r#"{"choices":[]}"#));
+    }
+
+    fn m(role: &str, n: usize) -> serde_json::Value {
+        serde_json::json!({"role": role, "content": "x".repeat(n)})
+    }
+
+    #[test]
+    fn shed_keeps_system_block_and_current_turn() {
+        let mut msgs = vec![
+            m("system", 10),     // 系统提示词本体：不可砍
+            m("system", 5),      // 摘要/记忆块：不可砍
+            m("user", 400),      // 旧历史：可砍
+            m("assistant", 400), // 旧历史：可砍
+            m("user", 10),       // 本轮输入：不可砍
+        ];
+        let dropped = shed_oldest_history(&mut msgs, 0.5);
+        assert!(dropped > 0, "超预算必须真砍：{dropped}");
+        let roles: Vec<&str> = msgs.iter().filter_map(|x| x["role"].as_str()).collect();
+        assert_eq!(
+            roles.iter().filter(|r| **r == "system").count(),
+            3,
+            "两个原 system + 一条裁剪说明都要在：{roles:?}"
+        );
+        assert_eq!(
+            msgs.last().unwrap()["content"],
+            serde_json::json!("x".repeat(10)),
+            "最后一条（本轮用户输入）必须保留"
+        );
+        assert!(
+            !msgs
+                .iter()
+                .any(|x| x["content"] == serde_json::json!("x".repeat(400))),
+            "旧历史应被砍掉：{roles:?}"
+        );
+    }
+
+    #[test]
+    fn shed_is_noop_when_nothing_left_to_drop() {
+        // 只有 system + 本轮输入：没得砍，调用方据此走报错出口而非空转重发
+        let mut msgs = vec![m("system", 10), m("user", 10)];
+        assert_eq!(shed_oldest_history(&mut msgs, 0.5), 0);
+        assert_eq!(msgs.len(), 2, "空转不得插入裁剪说明");
+
+        let mut empty: Vec<serde_json::Value> = Vec::new();
+        assert_eq!(shed_oldest_history(&mut empty, 0.5), 0);
+    }
+
+    #[test]
+    fn shed_never_touches_messages_after_first_non_system() {
+        // 本轮 tool 消息（role=tool）必须原样保留：砍掉会破坏
+        // tool_call/tool_result 配对，对端直接 400（那就白降级了）
+        let mut msgs = vec![
+            m("system", 10),
+            m("user", 500),
+            serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "y".repeat(300)}),
+        ];
+        let dropped = shed_oldest_history(&mut msgs, 0.5);
+        assert_eq!(dropped, 1, "只砍 user 那条：{dropped}");
+        assert!(
+            msgs.iter().any(|x| x.get("tool_call_id").is_some()),
+            "tool 消息不得被砍"
+        );
     }
 }
 

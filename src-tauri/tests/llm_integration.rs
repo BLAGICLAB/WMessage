@@ -954,6 +954,163 @@ async fn core_openai_error_envelope_midstream_counted_as_bad_chunk() {
 }
 
 #[tokio::test]
+async fn core_context_overflow_sheds_history_and_retries() {
+    // 上下文超长（400 context_length_exceeded）：原先直接抛裸 400，用户看不出
+    // 该 /compact 还是换模型。现在砍掉最旧的会话消息降级重发一次。
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        400,
+        r#"{"error":{"message":"This model's maximum context length is 8192 tokens, however you requested 12000","type":"invalid_request_error","code":"context_length_exceeded"}}"#
+            .to_string(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("降级后正常回复".into()));
+    let h = CoreHarness::new();
+
+    // 多条历史才有可砍空间（只有一条时「没得砍」走报错出口，另有用例）
+    let msgs: Vec<serde_json::Value> = vec![
+        serde_json::json!({"role": "system", "content": "系统提示词"}),
+        serde_json::json!({"role": "user", "content": "旧问题一"}),
+        serde_json::json!({"role": "assistant", "content": "旧回答一"}),
+        serde_json::json!({"role": "user", "content": "旧问题二"}),
+        serde_json::json!({"role": "assistant", "content": "旧回答二"}),
+        serde_json::json!({"role": "user", "content": "本轮问题"}),
+    ];
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        msgs,
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("超长降级后应成功返回");
+
+    assert!(text.contains("降级后正常回复"), "got: {text}");
+    assert!(
+        h.events().contains(&"llm.context_overflow"),
+        "超长必须留痕：{:?}",
+        h.events()
+    );
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 2, "应重发一次：{bodies:?}");
+    // 不比 body 长度：44 个工具的 schema 就占 36KB，历史那几百字淹没在里面。
+    // 直接看历史消息还在不在
+    assert!(bodies[0].contains("旧回答二"), "首次请求应是完整历史");
+    assert!(
+        !bodies[1].contains("旧回答二") && !bodies[1].contains("旧回答一"),
+        "第二次请求应已砍掉旧历史：{}",
+        bodies[1]
+    );
+    assert!(
+        bodies[1].contains("本轮问题") && bodies[1].contains("系统提示词"),
+        "system 段与本轮输入必须保留：{}",
+        bodies[1]
+    );
+}
+
+#[tokio::test]
+async fn core_context_overflow_without_history_to_shed_reports_actionable_error() {
+    // 没得砍时（只有 system + 本轮输入）：不再空转重发，直接回带指引的错误
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        400,
+        r#"{"error":{"message":"prompt is too long: 210000 tokens > 200000 maximum","type":"invalid_request_error"}}"#
+            .to_string(),
+    ));
+    let h = CoreHarness::new();
+
+    let msgs: Vec<serde_json::Value> = vec![
+        serde_json::json!({"role": "system", "content": "系统提示词"}),
+        serde_json::json!({"role": "user", "content": "本轮问题"}),
+    ];
+
+    // 捕获 skill_finish 收到的文案（默认 stub 返回空串，指针进不了错误体）
+    let hint_seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let hs = hint_seen.clone();
+    let capture: &'static (dyn Fn(bool, &str) -> String + Send + Sync) =
+        Box::leak(Box::new(move |_ok: bool, msg: &str| {
+            *hs.lock().unwrap() = msg.to_string();
+            String::new()
+        }));
+    let mut deps = h.deps();
+    deps.skill_finish = capture;
+
+    let err = run_model_loop_core(
+        &core_http(&server),
+        msgs,
+        5,
+        &h.stop,
+        None,
+        &deps,
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect_err("无历史可砍时应报错而不是空转");
+
+    let msg = err.to_string();
+    assert!(msg.contains("prompt is too long"), "原始载荷应透出：{msg}");
+    // 指引文案经 skill_finish 拼进 body_preview，而 CoreHarness 的默认 stub
+    // 返回空串——单独接一个捕获版断言「用户真能拿到可操作指引」
+    let hints = hint_seen.lock().unwrap().clone();
+    assert!(
+        hints.contains("/compact") && hints.contains("上下文超长"),
+        "失败指引须可操作（当前：{hints:?}）"
+    );
+    assert_eq!(
+        server.request_bodies().len(),
+        1,
+        "没得砍就不该重发——空转只会多烧一次请求"
+    );
+}
+
+#[tokio::test]
+async fn core_plain_400_is_not_degraded() {
+    // 反向：非超长的 400（鉴权/参数错）不得触发砍历史重发
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        400,
+        r#"{"error":{"message":"Invalid API key","type":"auth_error"}}"#.to_string(),
+    ));
+    let h = CoreHarness::new();
+
+    let msgs: Vec<serde_json::Value> = vec![
+        serde_json::json!({"role": "system", "content": "系统提示词"}),
+        serde_json::json!({"role": "user", "content": "旧问题"}),
+        serde_json::json!({"role": "assistant", "content": "旧回答"}),
+        serde_json::json!({"role": "user", "content": "本轮问题"}),
+    ];
+
+    let err = run_model_loop_core(
+        &core_http(&server),
+        msgs,
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect_err("普通 400 应报错");
+
+    assert!(
+        !err.to_string().contains("/compact"),
+        "普通 400 不该带超长指引：{err}"
+    );
+    assert_eq!(server.request_bodies().len(), 1, "不该重发");
+    assert!(
+        !h.events().contains(&"llm.context_overflow"),
+        "普通 400 不得记超长：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
 async fn core_truncated_stream_text_only_warns_but_returns() {
     // P1-1 防线另一支：干净 EOF 无 tool_calls 但有正文 → 不报错，
     // 正文追加「可能被截断」提示返回（用户已看到的内容不丢弃）
