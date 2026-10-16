@@ -202,24 +202,73 @@ hooks:
 注意 validator 用 `coder` profile 但把 `edit_file`/`write_file` 收紧掉——
 这正是「只能收紧」模型的用例：profile 给的是上限，yaml 决定本次不用什么。
 
-### 3.6 AST：内置能力（按需加载）+ 降级
+### 3.6 AST：内嵌 tree-sitter（已定）+ 按需挂载 + 降级
 
-**先纠正上一版的一处错误建议**：上一版推荐「AST 走 MCP 外部服务器」，这条路
-在本仓**走不通**——外部 MCP 工具**根本进不了子 agent**：
+**选型已定：内嵌 tree-sitter。** 先记一条被排除的：上一版推荐「AST 走 MCP 外部
+服务器」，这条路在本仓**走不通**——外部 MCP 工具**根本进不了子 agent**：
 `tools_json_with_mcp`（`bot/registry.rs:1237`）对子 agent 会话直接短路返回
 profile 白名单，注释写明「外部 MCP 工具不进子 agent，§5.1 边界不破」。
-而 AST 的使用方正是 Probe / Validator 两个**子 agent**，所以「AST 走 MCP」
-等于「给子 agent 配一个它们永远拿不到的工具」。
+而 AST 的使用方正是 Probe / Validator 两个**子 agent**，走 MCP 等于给它们配一个
+永远拿不到的工具。
 
-因此 AST 只能是**内置能力**，只是不进默认清单：
+**依赖理由**（仓内规矩：新增依赖先写清 stdlib / 现有依赖为何不行）：
+- stdlib 没有源码解析能力；
+- 现有依赖里没有任何解析器——`regex`（关键词匹配）与 `grep_files`（行级检索）
+  拿不到语法树，只能做文本级近似；
+- native 依赖不是新风险类别：本仓已有 `rusqlite`（bundled，C）、
+  `ort`（ONNX Runtime，build 期 download-binaries）、`image`（C 解码）三个先例。
 
-- **不进任何 profile 白名单**，由会话 yaml 的 `mounts: [ast_inspect]` 显式开；
-  挂载时机沿用 `tools_json_with_mcp` 的动态追加形态（静态清单字节不动，
-  只在声明了 mounts 的会话上拼装），保持「按需加载」且不给默认清单加负担。
-- **实现选型**（待拍板）：内嵌 `tree-sitter`（新增依赖 + 多语言 grammar，
-  编译期成本明显），或做成**可选编译特性**（默认不编译，启用时才带 grammar）。
-  两者都要给「stdlib / 现有依赖为何不行」的理由——现有依赖里没有任何解析器。
-- **降级是提示层行为，不是运行时拦截**：`mounts` 未声明 / 语言不支持时，
+#### 「按需加载」在内嵌方案下的真实含义
+
+grammar 是 **C 代码，编译进二进制**，不是运行时加载。所以按需只有两种真实现：
+
+1. **Cargo feature flags 按语言开**——构建期决定，产物只含启用的 grammar；
+2. **全量编译**——一次编完，语言随用随加。
+
+运行时 dlopen grammar 等于回到动态库/外部进程路线，已排除。因此「按需」的落点是
+**构建期**而非运行期——这一条必须写进设计，否则实现期会误解成运行时加载。
+
+#### 挂载面：需要新增 `MOUNT_ONLY_TOOLS` 类别（本轮定的实现约束）
+
+现状：`tools_json()`（`bot/registry.rs:1153-1164`）遍历 `TOOLS_TABLE`，
+**只跳过 `SUBAGENT_ONLY_TOOLS`**。也就是说——**任何进了 TOOLS_TABLE 的工具都会
+自动出现在主 agent 的默认清单里**，这与「按需加载、不进默认清单」直接矛盾。
+
+处置：新增第二个排除类别 `MOUNT_ONLY_TOOLS`，语义是「谁在 yaml 里声明 `mounts`
+谁才看得到」：
+
+```rust
+/// 按需挂载工具：不进任何静态清单（含主 agent 默认清单），
+/// 只在会话 yaml 的 mounts 声明时由 tools_json_with_mcp 形态拼装进去。
+/// 与 SUBAGENT_ONLY_TOOLS 的区别：后者是「只有子 agent 可见」，
+/// 前者是「谁显式声明谁可见」——主会话也可以挂。
+pub const MOUNT_ONLY_TOOLS: &[&str] = &["ast_inspect"];
+```
+
+这条不是可选项：不加它，`ast_inspect` 会以第 45 个工具的身份出现在每个主会话的
+schema 里，与本轮 P0「工具数单一常量、清单按需裁剪」的方向相反。
+
+#### v1 的工具面（四项都是只读）
+
+| 能力 | 输入 | 输出 | 降级替代 |
+|---|---|---|---|
+| 符号树摘要 | 文件或目录 | 类/方法/顶层函数列表 + 行号 | `grep_files` 抓 `fn`/`def`/`class` 行 |
+| 定位定义 | 符号名 | 定义位置列表 | `grep_files` 精确匹配 |
+| 引用列表 | 符号名 | 引用点（文件:行） | `grep_files` 精确匹配 |
+| 调用链片段 | 符号名 + 深度 | 上游调用者 / 下游被调 | 无（这正是原稿「梳理调用链」要的能力） |
+
+前三项有等价降级，**第四项没有**——这是 AST 相对文本检索的净增量，也是它值得
+一份编译成本的唯一理由。
+
+#### 工程纪律
+
+- **解析必须走 `spawn_blocking`**：大文件语法树构建是 CPU 密集同步操作，
+  直接在 async 线程跑会占住 runtime worker。先例在 `bot_chat.rs` 的图片加载
+  （同理由、同解法）。
+- **输出体积复用现成机制**：`ToolDef` 已有 `max_output_chars` 字段，
+  dispatch 已有 `tool.output.over_budget` 审计——符号树很容易超限，
+  按既有机制钳制即可，不新造一套。
+- **降级是提示层行为，不是运行时拦截**：按扩展名判定语言；不支持或未挂载时，
   渲染给模型的包装里把探查指引改写为「用 `grep_files` 定位 + `read_text_file`
   精读」。不做运行时拒绝——那只会把模型卡死在「工具不可用」上。
 
@@ -326,10 +375,8 @@ onions/ 目录要**导入 + 导出**（本轮已定）。与 Skill 机制的差�
 只进不出的话，改好的配置无法带走、也无法分享给同事——而 Skill 正文是只读的
 执行指令，导入一次就够。
 
-落地时要一起定的三件事：
-
-1. **导出粒度**：单份 yaml（默认）还是整个目录打包？倾向单份，与「一次导出一个
-   配置」的直觉一致，也不需要打包实现。
+**导出粒度已定：单份 yaml**（不做整目录打包）——与「一次导出一个配置」的直觉
+一致，也不需要打包实现。落地时还要一起定的两件事：
 2. **文件名与 `onion_id` 的一致性**：导出到别处后再导入，别名与 `onion_id` 不一致
    时以哪个为准？倾向导入时以**文件名**为准并回写 `onion_id`，否则 `bot_sessions`
    里存的那份引用会指错（§5.1 的 `onion_config` 存的就是文件名）。
@@ -407,13 +454,18 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 
 ## 九、仍需拍板
 
-1. **§3.6 的 AST 选型**：内嵌 `tree-sitter`（新增依赖 + 多语言 grammar 编译成本），
-   还是做成可选编译特性（默认不编译，启用时带 grammar）？
-   —— 上一版的「MCP 路线」已排除，理由见 §3.6。
-2. **§5.3 的导出粒度**：单份 yaml，还是整个 `onions/` 目录打包？倾向单份。
+1. **§3.6 的首批语言集**：内嵌已定，但 grammar 是逐语言编译进来的，
+   支持哪几种直接决定构建时间与体积。建议首批 **rust / typescript / python / go**
+   （本仓自身栈是 Rust + TS，python 是用户自动化最常见的目标语言）。
+2. **§3.6 的构建策略**：Cargo feature flags 按语言开（产物小、构建要配置），
+   还是全量编译（一次编完、语言随用随加）？倾向 feature flags——
+   与 `tokenizers` 关 default-features 瘦身是同一思路。
+3. **AST 是否要支持结构化改写**：v1 定的是四项只读能力。若要给 WriterEditor
+   提供「按符号改写」的能力（如批量改调用点），那是第二个工具、另一套权限，
+   应单开一轮，不要塞进 v1。
 
-（原稿的三个待拍板——profile 缺口、AST 走 MCP、导入导出机制——本轮已分别定下：
-增 `grep_files` + `extract_document`；AST 不走 MCP；导入 + 导出都要。）
+（前面几轮的待拍板均已定：profile 增 `grep_files` + `extract_document`；
+AST 走内嵌 tree-sitter 不走 MCP；导入 + 导出都要，导出粒度为单份 yaml。）
 
 ---
 
@@ -422,11 +474,14 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 - 未写任何运行时代码。§二 的行号在后续改动后需重新校准。
 - 未验证钩子能否在现有 async 生命周期里安全挂载——期 1 的第一步应是
   「在 L4 挂一个内置钩子跑通全链」，而不是先设计注册表 API。
-- 未评估 `tree-sitter` 的实际依赖体积与多语言 grammar 的编译成本（§3.6）。
+- **未实测 tree-sitter 各语言 grammar 的实际编译时间与体积增量**。§九 的语言集
+  与构建策略两个问题正因此悬着——文档没给数字，只给了「按语言数线性增长」的判断。
 - 未验证 §3.3 那次白名单改动的连带影响：断言单测
   `profile_whitelists_match_design_mapping`（`registry.rs:1820`）锁死了
   `general = research ∪ coder 去重`，改 RESEARCH 后并集与断言都要重跑确认——
   文档只标了必须改，没实测改完是否仍然成立。
+- 未验证 `MOUNT_ONLY_TOOLS` 与既有 `tools_baseline.json` 的关系：新增该类别后，
+  主 agent 清单的字节不该变，但基线断言是否还成立没跑过。
 - **Probe 的 yaml 在期 0.5 落地前不会完全生效**（交集计算会把 `grep_files` 剔掉）。
   这是已知且有意的，不是遗漏。
 - 子 agent 的中间产物不回传父上下文这一条，依赖现有 session 行隔离；未新增
