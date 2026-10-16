@@ -15,7 +15,8 @@ use crate::error::CommandError;
 use super::journal::{journal_cleared, journal_committed, journal_find_pending, journal_pending};
 use super::ops::{
     emit_upserts, filename_matches, log_line, move_entry, move_remove_permanently_failed,
-    resolve_archive_dir, verify_archive_dir_created, MigrationGuard, MAX_MOVE_REMOVE_FAILURES,
+    path_inside, resolve_archive_dir, verify_archive_dir_created, MigrationGuard,
+    MAX_MOVE_REMOVE_FAILURES,
 };
 use super::recovery::{decide_src_missing, journal_replay_pending, SrcMissingAction};
 use super::rules::load_rules;
@@ -216,6 +217,13 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                             continue;
                         }
                     }
+                }
+                // 自搬防线：绑定已落在归档目录内 = 上轮已归档完成，而规则按文件名
+                // 匹配对已归档文件永远命中——不挡则每轮 claim_dst_name 递增 "(n)"
+                // 后缀在归档目录内自我改名（文件名逐轮膨胀，DB/UI 每轮空转）。
+                // 静默跳过：该命中此后每轮复现，记日志即 10min 刷屏。
+                if path_inside(&src, &dir) {
+                    continue;
                 }
                 // 跨卷 copy 成功但 remove 持续失败（Windows 占用）的 src 永久跳过，
                 // 不再每轮生成新冲突名再 copy（归档目录不累积副本）。首次越阈时已记 ERROR，

@@ -176,6 +176,17 @@ pub(crate) fn conflict_free_name(dir: &Path, file_name: &str) -> Option<PathBuf>
     None
 }
 
+/// 源路径是否已位于归档目录内（双方 canonicalize 后组件级前缀比较）。
+/// Windows 大小写、junction/符号链接拼写差异由 canonicalize 归一；任一侧
+/// canonicalize 失败（路径不存在/不可达）按「不在内」处理——调用方守卫宁可
+/// 放行一轮搬移，不得因判定失败误跳过待归档文件。
+pub(crate) fn path_inside(src: &Path, dir: &Path) -> bool {
+    match (src.canonicalize(), dir.canonicalize()) {
+        (Ok(s), Ok(d)) => s.starts_with(&d),
+        _ => false,
+    }
+}
+
 ///  TOCTOU 防护：conflict_free_name 选定与 move_entry 实际创建之间存在竞态窗口——
 /// 两个并发迁移任务可能选中同一 dst，后写覆盖前写。实际创建前再 exists 一次；
 /// 窗口内被并发抢占（文件已出现）则递增后缀重选（上限 99 轮防活锁）。
@@ -425,6 +436,38 @@ mod tests {
         assert!(err.contains("逃逸"), "got: {err}");
         std::fs::remove_dir_all(&base).ok();
         std::fs::remove_dir_all(&outside).ok();
+    }
+
+    /// 自搬防线内核：归档目录内的文件判内；组件级比较不吃字符串前缀陷阱
+    /// （`archx` 与 `arch` 是兄弟目录）；路径不存在按不在内处理
+    #[test]
+    fn path_inside_component_compare_not_string_prefix() {
+        let base = tmp_dir("inside");
+        let dir = base.join("arch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(path_inside(&f, &dir), "归档目录内 → 判内");
+
+        let trap = base.join("archx");
+        std::fs::create_dir_all(&trap).unwrap();
+        let tf = trap.join("b.txt");
+        std::fs::write(&tf, b"x").unwrap();
+        assert!(!path_inside(&tf, &dir), "archx 不是 arch 内（组件级比较）");
+
+        let sf = {
+            let s = base.join("other");
+            std::fs::create_dir_all(&s).unwrap();
+            let p = s.join("c.txt");
+            std::fs::write(&p, b"x").unwrap();
+            p
+        };
+        assert!(!path_inside(&sf, &dir), "同级目录 → 判外");
+        assert!(
+            !path_inside(&dir.join("nope.txt"), &dir),
+            "src 不存在 → canonicalize 失败 → 按不在内"
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     /// 预置残留 .copying 暂存目录 → copy 报错拒绝：不静默清（可能含用户数据）、
