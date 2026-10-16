@@ -83,7 +83,7 @@
 
 设计原则（对齐项目既有哲学）：
 
-- **单一真相源查表**：参数走 `PARAMS_TABLE`（仿 bot/registry.rs TOOLS_TABLE），采集点只挂在 dispatch/model_loop/bot_fs 三处咽喉，不在 33 个工具里各改。
+- **单一真相源查表**：参数走 `PARAMS_TABLE`（仿 bot/registry.rs TOOLS_TABLE），采集点只挂在 dispatch/model_loop/bot_fs 三处咽喉，不在每个工具里各改。
 - **落库为查询面服务，事件为实时面服务**，两者同源不双写业务逻辑：span 写库和 emit 在同一采集函数里。
 - **默认行为零变更**：所有新截断/新行为都有配置开关且默认关闭或保持现状；事件只加字段不改名（兼容 tests/fixtures/tools_baseline.json 锁测）。
 - **隐私**：diff 与工具结果含用户文件内容，只落本地 SQLite，不外发；提供清除。
@@ -319,7 +319,7 @@ emit 范围：流式三件维持只推 widget；新增三事件 `app.emit` 全�
    （ spans + diffs + usage），便于贴给开发者/存档；不引入外部上报通道。
 11. **明确不借**：多层设置文件（桌面单用户应用无团队共享诉求，单层 + PARAMS_TABLE + source 徽标已覆盖其可诊断性价值）；
     hooks 外部脚本执行（攻击面大，通知中心 + 系统通知已覆盖「执行结束告知」）；bare-name deny 移出工具上下文
-    （我们仅 33 工具，无上下文瘦身诉求）；OTel 外发遥测（隐私定位不符）。
+    （工具数十余个，无上下文瘦身诉求）；OTel 外发遥测（隐私定位不符）。
 
 ### 9.3 对前文分期的增补汇总
 

@@ -3,7 +3,7 @@
 //! 原 bot.rs 行 1195–1392 全部调度代码 +
 //! 行 3140–3193 (early_return_events_tests) 测试段搬入。
 //!
-//! 调度主表（execute_tool_impl via TOOLS_TABLE lookup）分发 29 个 tool_* 函数到 bot::tools。
+//! 调度主表（execute_tool_impl via TOOLS_TABLE lookup）分发内置工具（数目见 registry::BUILTIN_TOOL_COUNT）到 bot::tools。
 //! TOOLS_TABLE / tools_json() / mutating_tools() 都在 bot::registry（阶段 2 单源真相）。
 
 use tauri::{AppHandle, Emitter};
