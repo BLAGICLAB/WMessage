@@ -8,6 +8,7 @@
 
 use tauri::{AppHandle, Emitter};
 
+use crate::bot::hooks::{HookLayer, PreToolVerdict, ToolCallView};
 use crate::bot::registry::{tools_index, ToolCtx};
 use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
@@ -159,8 +160,121 @@ async fn traced_impl(
     execute_tool_impl(app, name, args, stop, interactive, session_id, trace).await
 }
 
-///  per-tool 规则闸（execute_tool_impl 的 0.5 步，抽离保持入口薄壳——
-/// 审计结构约束：skill_on_step 熔断检查紧跟工具调用入口）：
+/// 钩子 Interrupt 早退的审计事件序列（纯函数：事件名 + kv + 顺序可单测）。
+/// 形状与 `early_return_events` 同构（真实原因事件 → `tool.return` 配平，
+/// 后者带 `reason` / `exit_code=none` / `duration_ms` + trace），但原因事件名
+/// 独立：日志消费方要能分清拒绝来自规则表还是来自钩子，混用 `pre_execute.deny`
+/// 就把两种来源糊在一起了。
+fn hook_interrupt_events(
+    name: &str,
+    reason: &str,
+    dur_ms: u64,
+    session_id: Option<&str>,
+    trace: &ToolCallTrace,
+) -> Vec<(
+    crate::audit::AuditLevel,
+    &'static str,
+    Vec<(&'static str, String)>,
+)> {
+    let mut cause_kv: Vec<(&'static str, String)> =
+        vec![("tool", name.to_string()), ("reason", reason.to_string())];
+    cause_kv.extend(trace_kv(trace, session_id));
+    let mut ret_kv: Vec<(&'static str, String)> = vec![
+        ("tool", name.to_string()),
+        ("reason", "pre_tool_hook_interrupt".to_string()),
+        ("exit_code", "none".to_string()),
+        ("duration_ms", dur_ms.to_string()),
+    ];
+    ret_kv.extend(trace_kv(trace, session_id));
+    vec![
+        (
+            crate::audit::AuditLevel::Warn,
+            "pre_tool.hook_interrupt",
+            cause_kv,
+        ),
+        (crate::audit::AuditLevel::Warn, "tool.return", ret_kv),
+    ]
+}
+
+/// 钩子自身失败（返 Err / panic）的审计 kv（纯函数，形状可单测）。
+/// `kind` 区分两条 fail-open 分支——「返错误」和「炸了」排查时不是一回事。
+fn hook_failure_kv(
+    hook: &str,
+    kind: &str,
+    err: &str,
+    name: &str,
+    session_id: Option<&str>,
+    trace: &ToolCallTrace,
+) -> Vec<(&'static str, String)> {
+    let mut kv: Vec<(&'static str, String)> = vec![
+        ("hook", hook.to_string()),
+        ("kind", kind.to_string()),
+        ("err", err.to_string()),
+        ("tool", name.to_string()),
+    ];
+    kv.extend(trace_kv(trace, session_id));
+    kv
+}
+
+/// L4 pre_tool 钩子层（三道闸入口，调用点只有一个）：只读拦截——钩子只能放行或
+/// 拒绝，禁止改写入参（改写能力在 L2/L3，见 hooks 模块头纪律 2）。
+/// 两条容错口径：
+/// - 钩子返 Err / panic → 记 `pre_tool.hook_failed` 后**放行**（fail-open），
+///   钩子实现里的 bug 不能变成用户主对话中断；
+/// - 钩子 Interrupt → 早退并用 `tool.return` 配平 `tool.call`，否则统计面板出现悬挂调用。
+/// 层序由本函数在调用栈上的位置保证（钩子在规则闸 / skill 熔断 / 子 agent 白名单
+/// / 入参 JSON 闸之前），注册表不提供任何配置层序的入口。
+fn run_pre_tool_layer(
+    app: &AppHandle,
+    name: &str,
+    args: &str,
+    session_id: Option<&str>,
+    trace: &ToolCallTrace,
+    start: &std::time::Instant,
+) -> Option<crate::bot::registry::ToolResult> {
+    let call = ToolCallView {
+        tool: name,
+        args,
+        session_id,
+        trace,
+    };
+    let run = crate::bot::hooks::registry().run_layer(HookLayer::PreTool, &call);
+    for failure in &run.failures {
+        let (kind, err) = match &failure.kind {
+            crate::bot::hooks::HookFailureKind::Returned(e) => ("returned_err", e.as_str()),
+            crate::bot::hooks::HookFailureKind::Panic(e) => ("panic", e.as_str()),
+        };
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "pre_tool.hook_failed",
+            &hook_failure_kv(failure.hook, kind, err, name, session_id, trace),
+        );
+    }
+    match run.decision {
+        PreToolVerdict::Continue => None,
+        PreToolVerdict::Interrupt { reason } => {
+            for (level, event, kv) in hook_interrupt_events(
+                name,
+                &reason,
+                start.elapsed().as_millis() as u64,
+                session_id,
+                trace,
+            ) {
+                crate::audit::write_event(app, level, event, &kv);
+            }
+            // ⚠️ 前缀不是装饰：audit::classify_tool_failure 的门禁臂按它判失败，
+            // 不带前缀时 Skill DSL 调度器会把这次拒跑记成步骤成功。
+            Some(crate::bot::registry::ToolResult::warn(
+                format!("⚠️ {reason}"),
+                Vec::new(),
+            ))
+        }
+    }
+}
+
+///  per-tool 规则闸（execute_tool_impl 的 0.6 步，抽离保持入口薄壳——
+/// 审计结构约束：skill_on_step 熔断检查紧跟规则闸之后、L4 钩子层之后）：
 /// deny → 硬拒（配平 tool.return + tool_rule.hit 审计）；
 /// ask → 强制确认（拒绝同样配平）；allow/无命中 → None 放行。
 async fn tool_rule_gate(
@@ -264,7 +378,13 @@ async fn execute_tool_impl(
     ];
     call_kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, crate::audit::AuditLevel::Info, "tool.call", &call_kv);
-    // 0.5  per-tool 规则表（Agent 透明化设计 §9.2-1）：deny 硬拒 / ask 强制确认 /
+    // 0.5  L4 pre_tool 钩子层（本期唯一接线点）：三道闸的入口——规则表、子 agent
+    // 白名单、入参 JSON 闸都在它之后。只读拦截，钩子看不到可变入参；
+    // 钩子出错 fail-open（只记审计），只有 Interrupt 才拒绝本次工具调用。
+    if let Some(interrupted) = run_pre_tool_layer(app, name, args, session_id, trace, &start) {
+        return interrupted;
+    }
+    // 0.6  per-tool 规则表（Agent 透明化设计 §9.2-1）：deny 硬拒 / ask 强制确认 /
     // allow 到文件工具侧生效（bot_fs 两个 resolve 内接线）。Some = 已早退（配平完成），
     // None = 放行走后续全局档。use_skill 豁免。函数体抽离保持 execute_tool_impl 入口薄壳。
     if name != "use_skill" {
@@ -720,6 +840,152 @@ mod early_return_events_tests {
         assert!(
             kv_get(&kv, "tool_call_id").is_none(),
             "空 id 不写（合成 id 前的畸形流不该出现空值行）"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pre_tool_hook_tests {
+    use super::*;
+
+    fn kv_get<'a>(kv: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
+        kv.iter().find(|(k, _)| *k == key).map(|(_, v)| v.as_str())
+    }
+
+    fn keys(kv: &[(&'static str, String)]) -> Vec<&'static str> {
+        kv.iter().map(|(k, _)| *k).collect()
+    }
+
+    #[test]
+    fn hook_interrupt_balances_tool_call_with_same_shape_as_existing_early_returns() {
+        // 配平形状必须与既有两处 early-return 分支同口径（统计面板按
+        // tool.call / tool.return 配对，不配平 = 悬挂调用）。
+        let trace = ToolCallTrace {
+            turn: Some(4),
+            tool_call_id: Some("call_hk".into()),
+        };
+        let evs = hook_interrupt_events("write_file", "本轮不允许写盘", 7, Some("sess-9"), &trace);
+        let names: Vec<&str> = evs.iter().map(|(_, e, _)| *e).collect();
+        assert_eq!(names, ["pre_tool.hook_interrupt", "tool.return"]);
+        assert!(evs
+            .iter()
+            .all(|(l, _, _)| *l == crate::audit::AuditLevel::Warn));
+        assert_eq!(kv_get(&evs[0].2, "reason"), Some("本轮不允许写盘"));
+        // 与 early_return_events 的 tool.return 同键集：tool / reason / exit_code /
+        // duration_ms + trace 段。
+        let baseline = early_return_events(
+            "write_file",
+            "denied_by_rule",
+            7,
+            None,
+            Some("sess-9"),
+            &trace,
+        );
+        let baseline_ret = &baseline[1].2;
+        let ret = &evs[1].2;
+        assert_eq!(kv_get(ret, "exit_code"), Some("none"));
+        assert_eq!(kv_get(ret, "duration_ms"), Some("7"));
+        assert_eq!(
+            kv_get(ret, "reason"),
+            Some("pre_tool_hook_interrupt"),
+            "reason 要能区分拒绝来源（规则表 vs 钩子）"
+        );
+        let mut a = keys(baseline_ret);
+        let mut b = keys(ret);
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b, "tool.return 的 kv 键集必须与既有 early-return 一致");
+        assert_eq!(kv_get(ret, "turn"), Some("4"));
+        assert_eq!(kv_get(ret, "tool_call_id"), Some("call_hk"));
+        assert_eq!(kv_get(ret, "session_id"), Some("sess-9"));
+    }
+
+    #[test]
+    fn hook_interrupt_text_is_classified_as_tool_failure() {
+        // ⚠️ 前缀缺失时 Skill DSL 调度器会把拒跑记成步骤成功（scheduler 只看
+        // tool_call_failed 判定），拒跑必须被判失败。
+        let msg = format!("⚠️ {}", "本轮不允许写盘");
+        assert!(
+            crate::audit::tool_call_failed("write_file", &msg),
+            "钩子拒绝文案必须被判失败：{msg}"
+        );
+    }
+
+    #[test]
+    fn hook_failure_kv_names_hook_kind_and_error() {
+        // fail-open 的审计必须能定位到「哪个钩子、哪种失败、什么错」，
+        // 否则钩子里的 bug 在 bot.log 里无从排查。
+        let trace = ToolCallTrace {
+            turn: Some(1),
+            tool_call_id: Some("call_x".into()),
+        };
+        let kv = hook_failure_kv(
+            "builtin_observer",
+            "panic",
+            "boom",
+            "read_text_file",
+            Some("sess-2"),
+            &trace,
+        );
+        assert_eq!(kv_get(&kv, "hook"), Some("builtin_observer"));
+        assert_eq!(kv_get(&kv, "kind"), Some("panic"));
+        assert_eq!(kv_get(&kv, "err"), Some("boom"));
+        assert_eq!(kv_get(&kv, "tool"), Some("read_text_file"));
+        assert_eq!(kv_get(&kv, "session_id"), Some("sess-2"));
+        assert_eq!(kv_get(&kv, "turn"), Some("1"));
+        assert_eq!(kv_get(&kv, "tool_call_id"), Some("call_x"));
+    }
+
+    #[test]
+    fn pre_tool_layer_is_wired_at_the_entry_of_the_three_gates() {
+        // 纯函数单测钉不住「钩子层是否真接在三道闸入口」：把 run_pre_tool_layer
+        // 挪到闸后（或写成调用还在但不可达的形状），其余单测照样全绿——
+        // 而这一期的全部价值就是「每个工具调用都过一次钩子」。
+        // execute_tool_impl 需要 Wry AppHandle，单测够不到，故以源码文本钉住
+        // 调用位置（与 invalid_args_gate_is_wired_into_execute_tool_impl 同款理由）。
+        let src = include_str!("dispatch.rs");
+        let body = src
+            .split_once("async fn execute_tool_impl(")
+            .expect("找不到 execute_tool_impl")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("execute_tool_impl 应以顶格 } 收尾");
+        let call = body.find("tool.call").expect("找不到 tool.call 审计");
+        let hook = body
+            .find("run_pre_tool_layer(app, name, args, session_id, trace, &start)")
+            .expect("execute_tool_impl 必须调用 pre_tool 钩子层");
+        let rule_gate = body.find("tool_rule_gate(app, name").expect("找不到规则闸");
+        let subagent_gate = body
+            .find("crate::tool_guard::subagent_ctx(session_id)")
+            .expect("找不到子 agent 白名单闸");
+        let args_gate = body
+            .find("if let Some(msg) = invalid_args_message(name, args)")
+            .expect("找不到入参 JSON 闸");
+        assert!(call < hook, "钩子层在 tool.call 之后（否则审计不成对）");
+        assert!(
+            hook < rule_gate && hook < subagent_gate && hook < args_gate,
+            "钩子层必须插在三道闸入口之前：规则闸 {rule_gate} / 子 agent 闸 {subagent_gate} / 入参闸 {args_gate}，钩子 {hook}"
+        );
+    }
+
+    #[test]
+    fn pre_tool_layer_passes_through_when_registry_has_no_denial() {
+        // 无 AppHandle 的纯函数面：注册表默认全放行时判定为 Continue
+        // （fail-open 与「无钩子拒绝」两条路径在 dispatch 侧都落到 None）。
+        let trace = ToolCallTrace::default();
+        let call = ToolCallView {
+            tool: "read_text_file",
+            args: "{}",
+            session_id: None,
+            trace: &trace,
+        };
+        let run = crate::bot::hooks::registry().run_layer(HookLayer::PreTool, &call);
+        assert_eq!(run.decision, PreToolVerdict::Continue);
+        assert!(
+            run.failures.is_empty(),
+            "内置钩子不得自报错：{:?}",
+            run.failures
         );
     }
 }

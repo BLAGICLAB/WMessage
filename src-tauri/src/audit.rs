@@ -37,7 +37,9 @@ pub(crate) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 /// 引用版 panic 信息提取（panic 钩子的 PanicHookInfo 只给 &dyn Any，
 /// 不包装 Box）；Box 版委托这里，两种形态永不 drift。
-fn panic_payload_msg(payload: &(dyn std::any::Any + Send)) -> String {
+/// `pub(crate)`：catch_unwind 的 `Box<dyn Any + Send>` 取 `.as_ref()` 复用本函数，
+/// 不在钩子运行时另抄一份 payload 解析（两份各自 downcast 会漂移）。
+pub(crate) fn panic_payload_msg(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {

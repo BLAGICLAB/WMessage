@@ -102,6 +102,12 @@ src-tauri/src/
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (237)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
+├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
+│                        HookRegistry 进程级注册（OnceLock 单例，同层内按注册序；层序只由
+│                        dispatch 调用栈保证，注册表无任何层序配置入口）+ HookLayer 会话级禁用 +
+│                        ToolCallView 只读视图（字段全是共享借用，L4 无法改写入参）+ 内置观察钩子
+│                        （builtin_observer，计数 + bot.log 留痕）。接线点唯一：
+│                        dispatch.rs::run_pre_tool_layer（三道闸之前）
 ├── bot/mcp/             外部 MCP 服务器接入（stdio/HTTP，设置页 McpPanel 管理）：
 │   ├── bot/mcp/mod.rs   模块声明
 │   ├── bot/mcp/config.rs        McpServerConfig/校验（stdio 启动器白名单、URL 公网闸、
@@ -499,6 +505,7 @@ flowchart TD
 - `bot/corrections.rs`
 - `bot/dispatch.rs`
 - `bot/format.rs`
+- `bot/hooks.rs`
 - `bot/log_sanitize.rs`
 - `bot/params.rs`
 - `bot/registry.rs`
