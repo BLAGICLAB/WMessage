@@ -525,6 +525,10 @@ async fn execute_tool_impl(
 /// 模型收到的回报是「缺参数」，看不出是自己的 arguments 坏了；更糟的是
 /// 无参工具（query_tasks / list_files 等）会把 Null 当「不过滤、不指定」
 /// 真跑一遍——参数错配被当成用户本意执行了。返回 None 表示放行。
+///
+/// 文案前缀 ⚠️ 不是装饰：`audit::classify_tool_failure` 的「门禁拦截」臂按
+/// `starts_with("⚠️")` 判失败，不带前缀的话 Skill DSL 调度器会把这次拒跑
+/// 记成步骤成功（scheduler 靠 `tool_call_failed` 判定），技能对外报完成。
 fn invalid_args_message(name: &str, args: &str) -> Option<String> {
     if args.trim().is_empty() {
         return None;
@@ -532,7 +536,7 @@ fn invalid_args_message(name: &str, args: &str) -> Option<String> {
     match serde_json::from_str::<serde_json::Value>(args) {
         Ok(_) => None,
         Err(e) => Some(format!(
-            "工具「{name}」的 arguments 不是合法 JSON，已拒绝执行（未做任何改动）：{e}。\
+            "⚠️ 工具「{name}」的 arguments 不是合法 JSON，已拒绝执行（未做任何改动）：{e}。\
              请重新发起一次调用：arguments 必须是单个 JSON 对象（如 {{\"path\":\"a.txt\"}}），\
              不得有多余引号、裸换行或尾逗号。"
         )),
@@ -753,8 +757,54 @@ mod invalid_args_tests {
         );
         // serde 的真实错因带出来，模型才知道是截断还是引号坏
         assert!(
-            msg.contains("EOF") || msg.contains("expected"),
+            msg.contains("EOF while parsing"),
             "须带 serde 原始错因：{msg}"
+        );
+    }
+
+    #[test]
+    fn malformed_args_message_is_classified_as_failure() {
+        // 不带 ⚠️ 前缀就落不进 classify_tool_failure 的门禁臂：
+        // Skill DSL 调度器会把拒跑记成步骤成功（scheduler 只看 tool_call_failed）
+        let msg = invalid_args_message("create_task", "{坏}").expect("坏 JSON 必须拒");
+        assert!(
+            crate::audit::tool_call_failed("create_task", &msg),
+            "拒跑文案必须被判失败：{msg}"
+        );
+    }
+
+    #[test]
+    fn invalid_args_gate_is_wired_into_execute_tool_impl() {
+        // 纯函数单测钉不住「闸是否真接在执行路径上」：变异实测把闸改成不可达
+        // （if true { None } else { 闸 }），1511 个 lib 测试照样全绿——而这个提交
+        // 的全部价值就是「工具不再执行」。execute_tool_impl 需要 Wry AppHandle，
+        // 集成测试的 MockRuntime 够不到，故以源码文本钉住「语句形状 + 位置」。
+        let src = include_str!("dispatch.rs");
+        let body = src
+            .split_once("async fn execute_tool_impl(")
+            .expect("找不到 execute_tool_impl")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("execute_tool_impl 应以顶格 } 收尾");
+        // 钉语句本身而非函数名：写成 if true { None } else { 闸(...) } 这类
+        // 「调用还在但不可达」的形状也必须红
+        let gate = body
+            .find("if let Some(msg) = invalid_args_message(name, args)")
+            .expect("execute_tool_impl 必须以闸的 if let 直接调用：坏 JSON 不得进工具");
+        let hook = body
+            .find("skill_on_step(app, name, args, session_id)")
+            .expect("找不到 skill 步骤钩子");
+        let lookup = body
+            .find("tools_index().get(name)")
+            .expect("找不到工具查表");
+        assert!(
+            hook < gate,
+            "入参闸应在 skill 钩子之后（熔断原因比 JSON 错因更该先给模型）"
+        );
+        assert!(
+            gate < lookup,
+            "入参闸必须在工具查表与执行之前，否则等于没拦"
         );
     }
 
