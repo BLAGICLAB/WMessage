@@ -311,6 +311,10 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
+            // 全局 panic 钩子尽早装：panic 写 ERROR 审计（镜像 error.log），
+            // 线程静默死亡可反推。setup 前的 panic 只剩默认 stderr（GUI 下不可见）
+            crate::audit::install_panic_hook(db::data_dir(app.handle()));
+
             // 本地 HTTP API 状态（默认关闭，设置页开关控制）
             app.manage(api_server::ApiState::default());
             // 全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移

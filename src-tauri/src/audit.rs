@@ -30,6 +30,12 @@ const KV_VALUE_MAX: usize = 500;
 /// 从 catch_unwind payload 提取 panic 信息（&str / String / 其他三种情况）。
 /// 全仓唯一实现（middleware / api_server / migration 轮询 / bot_scheduler 共用）。
 pub(crate) fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    panic_payload_msg(payload.as_ref())
+}
+
+/// 引用版 panic 信息提取（panic 钩子的 PanicHookInfo 只给 &dyn Any，
+/// 不包装 Box）；Box 版委托这里，两种形态永不 drift。
+fn panic_payload_msg(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
     } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -540,6 +546,34 @@ pub(crate) fn write_warn_audit_to(dir: &std::path::Path, event: &str, kv: &[(&st
     write_at(&p, AuditLevel::Warn, event, kv);
 }
 
+/// 全局 panic 钩子（lib setup 安装一次）：panic 写 ERROR 审计（随 write_at
+/// 镜像 error.log），线程静默死亡从此可反推。目录在安装时解析固化——钩子内
+/// 不碰 AppHandle / 目录探测缓存：panic 时任何锁都可能正被持有，钩子只做
+/// 「拼行 + append」最小动作（锁被毒化时 lock_or_recover 自恢复）。
+/// 原默认钩子链式保留：dev 终端 stderr 输出行为不变。
+pub fn install_panic_hook(log_dir: std::path::PathBuf) {
+    let bot_log = log_dir.join("bot.log");
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = escape_for_log(&panic_payload_msg(info.payload()), 2000);
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("<unnamed>")
+            .to_string();
+        write_at(
+            &bot_log,
+            AuditLevel::Error,
+            "panic",
+            &[("thread", &thread), ("loc", &loc), ("msg", &msg)],
+        );
+        prev(info);
+    }));
+}
+
 /// 结构化审计事件宏（post-execute 钩子用）
 /// 用法：
 ///   audit_event!(app, AuditLevel::Info, "tool_done",
@@ -776,6 +810,54 @@ mod tests {
             "error.log 从头长"
         );
         assert!(!tmp.path().join("error.log.old.2").exists(), "只保两代");
+    }
+
+    // ── 全局 panic 钩子 ──
+
+    #[test]
+    fn panic_hook_writes_error_audit_and_mirrors() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 钩子是进程级全局：先存默认钩子，测完立即恢复（cargo test 并行线程
+        // 期间若有他测 panic，最坏多写本 tempdir 一行，无害）
+        let prev = std::panic::take_hook();
+        install_panic_hook(tmp.path().to_path_buf());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            panic!("hook-test-boom");
+        }));
+        std::panic::set_hook(prev);
+        assert!(r.is_err(), "panic 应被 catch_unwind 捕获");
+
+        // 按内容查找而非取最后一行：cargo test 并行下，他测的故意 panic
+        // （如 bot_py spawn_blocking panic 映射用例）也可能被钩子记进同一 tempdir
+        let content = std::fs::read_to_string(tmp.path().join("bot.log")).unwrap();
+        let line = content
+            .lines()
+            .find(|l| l.contains("msg=hook-test-boom"))
+            .expect("panic 行应写入 bot.log");
+        assert!(line.contains("ERROR | panic"), "{line}");
+        assert!(line.contains("thread="), "{line}");
+        assert!(line.contains("loc="), "{line}");
+
+        // ERROR 级随 write_at 镜像 error.log
+        let mirrored = std::fs::read_to_string(tmp.path().join("error.log")).unwrap();
+        assert!(
+            mirrored.contains("msg=hook-test-boom"),
+            "panic 行应镜像 error.log：{mirrored}"
+        );
+    }
+
+    #[test]
+    fn panic_payload_msg_covers_three_payload_kinds() {
+        assert_eq!(panic_payload_msg(&"str-payload"), "str-payload");
+        assert_eq!(
+            panic_payload_msg(&String::from("string-payload")),
+            "string-payload"
+        );
+        assert_eq!(
+            panic_payload_msg(&42u32),
+            "non-string panic payload",
+            "非字符串 payload 不 panic、给占位文案"
+        );
     }
 
     // ── kv 值统一转义（剥换行/管道符）──
