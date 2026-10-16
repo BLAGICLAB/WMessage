@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MigrationPanel } from "./MigrationPanel";
-import type { MigrationRule } from "../types";
+import type { MigrationRule, ScanSource } from "../types";
 
 // vi.mock 工厂提升到顶部，共享 mock 变量用 vi.hoisted（同 ChatPanel.test）
 const mocks = vi.hoisted(() => ({
@@ -33,12 +33,27 @@ const deleteRule: MigrationRule = {
   archiveDir: "",
 };
 
+const desktopSource: ScanSource = {
+  kind: "desktop",
+  path: "",
+  archiveRoot: "",
+  enabled: true,
+};
+const customSource: ScanSource = {
+  kind: "custom",
+  path: "/Users/t/Downloads",
+  archiveRoot: "",
+  enabled: true,
+};
+
 const defaultInvoke = async (cmd: string) => {
   switch (cmd) {
     case "migration_rules_load":
       return { version: 1, rules: [moveRule] };
     case "migration_status":
       return { rules_count: 1, poll_interval_secs: 600 };
+    case "migration_sources_load":
+      return { sources: [desktopSource] };
     case "migration_run":
       return {
         ts: 1700000000000,
@@ -48,10 +63,21 @@ const defaultInvoke = async (cmd: string) => {
         skipped: 1,
         log: ["moved a.txt"],
       };
+    case "migration_scan":
+      return {
+        ts: 1700000000001,
+        archived: 0,
+        moved: 2,
+        deleted: 0,
+        skipped: 1,
+        log: ["[扫描]已移动 b.txt"],
+      };
     case "migration_log_read":
       return "2026-09-01 移动 a.txt → 归档";
     case "migration_rules_import":
       return 3;
+    case "migration_sources_add_folder":
+      return { sources: [desktopSource, customSource] };
     default:
       return null;
   }
@@ -64,21 +90,26 @@ beforeEach(() => {
   mocks.askMock.mockResolvedValue(true);
 });
 
-// 桌面清理面板覆盖渲染与关键交互：
-// 规则表/状态行、删除规则警告、手动迁移 confirm 门、日志弹窗。
+// 文件整理面板覆盖渲染与关键交互：
+// 来源列表/规则表/状态行、删除规则警告、绑定整理与扫描整理双入口 confirm 门、
+// 来源启停与添加文件夹、共享整理记录弹窗。
 describe("MigrationPanel", () => {
-  it("初始渲染：加载规则与状态，规则行展示关键字/动作/归档目录", async () => {
+  it("初始渲染：加载规则、状态与来源，规则行展示关键字/动作/归档目录", async () => {
     render(<MigrationPanel />);
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("migration_rules_load");
     });
     expect(mocks.invokeMock).toHaveBeenCalledWith("migration_status");
+    expect(mocks.invokeMock).toHaveBeenCalledWith("migration_sources_load");
     expect(await screen.findByText("报表，周报")).toBeInTheDocument();
     expect(screen.getByText("移动归档")).toBeInTheDocument();
     expect(screen.getByText("归档/{year}")).toBeInTheDocument();
-    // 状态行：600s → 10 分钟
+    expect(screen.getByText("桌面（预设）")).toBeInTheDocument();
+    // 状态行：600s → 10 分钟；扫描整理仅手动
     expect(
-      screen.getByText(/后台每 10 分钟自动检测一次 · 现有规则 1 条/),
+      screen.getByText(
+        /绑定整理后台每 10 分钟随归档自动执行 · 扫描整理仅手动 · 现有规则 1 条/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -87,6 +118,8 @@ describe("MigrationPanel", () => {
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
         return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_sources_load")
+        return { sources: [desktopSource] };
       return null;
     });
     render(<MigrationPanel />);
@@ -102,6 +135,8 @@ describe("MigrationPanel", () => {
         return { version: 1, rules: [moveRule, deleteRule] };
       if (cmd === "migration_status")
         return { rules_count: 2, poll_interval_secs: 600 };
+      if (cmd === "migration_sources_load")
+        return { sources: [desktopSource] };
       return null;
     });
     render(<MigrationPanel />);
@@ -118,6 +153,8 @@ describe("MigrationPanel", () => {
         };
       if (cmd === "migration_status")
         return { rules_count: 2, poll_interval_secs: 600 };
+      if (cmd === "migration_sources_load")
+        return { sources: [desktopSource] };
       return null;
     });
     render(<MigrationPanel />);
@@ -125,10 +162,10 @@ describe("MigrationPanel", () => {
     expect(screen.queryByText(/有启用的删除规则/)).not.toBeInTheDocument();
   });
 
-  it("立即执行迁移：confirm 取消不调 migration_run；确认后执行并展示报告", async () => {
+  it("立即执行绑定整理：confirm 取消不调 migration_run；确认后执行并展示报告", async () => {
     const user = userEvent.setup();
     render(<MigrationPanel />);
-    const runBtn = await screen.findByText("▶ 立即执行迁移");
+    const runBtn = await screen.findByText("立即执行绑定整理");
 
     // 取消 → 不触发迁移
     mocks.askMock.mockResolvedValue(false);
@@ -147,10 +184,57 @@ describe("MigrationPanel", () => {
     expect(screen.getByText("moved a.txt")).toBeInTheDocument();
   });
 
-  it("查看迁移日志：点击后弹窗展示 migration_log_read 返回内容，可关闭", async () => {
+  it("扫描整理：confirm 取消不调 migration_scan；确认后执行并展示扫描报告", async () => {
     const user = userEvent.setup();
     render(<MigrationPanel />);
-    await user.click(await screen.findByText("查看迁移日志"));
+    const scanBtn = await screen.findByText("扫描整理");
+
+    mocks.askMock.mockResolvedValue(false);
+    await user.click(scanBtn);
+    expect(mocks.invokeMock).not.toHaveBeenCalledWith("migration_scan");
+
+    mocks.askMock.mockResolvedValue(true);
+    await user.click(scanBtn);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("migration_scan");
+    });
+    expect(
+      await screen.findByText(/上次扫描整理.*移动 2 · 删除 0 · 跳过 1/s),
+    ).toBeInTheDocument();
+    expect(screen.getByText("[扫描]已移动 b.txt")).toBeInTheDocument();
+  });
+
+  it("切换来源启用状态：调 migration_sources_save 提交翻转后的列表", async () => {
+    const user = userEvent.setup();
+    render(<MigrationPanel />);
+    const toggle = await screen.findByTitle("已启用，点击停用");
+    await user.click(toggle);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("migration_sources_save", {
+        sources: {
+          sources: [{ ...desktopSource, enabled: false }],
+        },
+      });
+    });
+  });
+
+  it("添加文件夹：调 migration_sources_add_folder 并渲染新来源行", async () => {
+    const user = userEvent.setup();
+    render(<MigrationPanel />);
+    await user.click(await screen.findByText("添加文件夹"));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "migration_sources_add_folder",
+      );
+    });
+    expect(await screen.findByText("Downloads")).toBeInTheDocument();
+    expect(screen.getByText("/Users/t/Downloads")).toBeInTheDocument();
+  });
+
+  it("查看整理记录：点击后弹窗展示 migration_log_read 返回内容，可关闭", async () => {
+    const user = userEvent.setup();
+    render(<MigrationPanel />);
+    await user.click(await screen.findByText("查看整理记录"));
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("migration_log_read", {
         limit: 500,

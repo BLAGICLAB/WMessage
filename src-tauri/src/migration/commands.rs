@@ -14,7 +14,8 @@ use crate::error::{CommandError, CommandResult};
 
 use super::rules::{load_rules, parse_rules_csv, save_rules, template_csv};
 use super::run::POLL_INTERVAL_SECS;
-use super::types::{MigrationReport, MigrationStatus, RulesFile};
+use super::sources::{load_sources, save_sources, source_scan_root, validate_sources};
+use super::types::{MigrationReport, MigrationStatus, RulesFile, ScanSource, SourcesFile};
 
 #[tauri::command]
 pub async fn migration_rules_load(app: AppHandle) -> CommandResult<RulesFile> {
@@ -209,6 +210,94 @@ pub async fn migration_run(app: AppHandle) -> CommandResult<MigrationReport> {
     tauri::async_runtime::spawn_blocking(move || super::run::run_migration(&app))
         .await
         .map_err(|e| CommandError::from(format!("迁移线程 join 失败：{e}")))?
+}
+
+/// 手动触发一次扫描整理（无主文件按来源归类）。不定时执行——只有这个按钮会跑
+#[tauri::command]
+pub async fn migration_scan(app: AppHandle) -> CommandResult<MigrationReport> {
+    tauri::async_runtime::spawn_blocking(move || super::scan::run_scan(&app))
+        .await
+        .map_err(|e| CommandError::from(format!("扫描线程 join 失败：{e}")))?
+}
+
+#[tauri::command]
+pub async fn migration_sources_load(app: AppHandle) -> CommandResult<SourcesFile> {
+    // 源表读含 fs IO（桌面解析 + 目录存在性检查）——同 rules_load 桥接 spawn_blocking
+    tauri::async_runtime::spawn_blocking(move || load_sources(&app))
+        .await
+        .map_err(|e| CommandError::Internal(format!("来源表读取线程 join 失败：{e}")))?
+}
+
+/// 全量保存来源表（前端改完列表一次性提交）：先校验后落盘
+#[tauri::command]
+pub async fn migration_sources_save(app: AppHandle, sources: SourcesFile) -> CommandResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_sources(&sources)?;
+        save_sources(&app, &sources).map_err(CommandError::from)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("来源表保存线程 join 失败：{e}")))?
+}
+
+/// 文件夹选择器添加自定义扫描源：选中即校验（存在 + 未重复）并保存，返回更新后的源表。
+/// ⚠️ blocking 对话框必须 spawn_blocking（主线程会死锁，同 rules_import 先例）
+#[tauri::command]
+pub async fn migration_sources_add_folder(app: AppHandle) -> CommandResult<SourcesFile> {
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        handle.dialog().file().blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("对话框线程失败：{e}")))?;
+    let Some(file) = picked else {
+        return Err(CommandError::ConfirmRejected); // 取消等同拒绝（无确认超时）
+    };
+    let path = file
+        .into_path()
+        .map_err(|e| CommandError::IoError(format!("对话框路径转换失败：{e}")))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut file = load_sources(&app)?;
+        validate_sources(&SourcesFile {
+            sources: vec![ScanSource {
+                kind: "custom".into(),
+                path: path.to_string_lossy().to_string(),
+                archive_root: String::new(),
+                enabled: true,
+            }],
+        })
+        .map_err(CommandError::from)?;
+        // 与现有源去重（小写比较；桌面源按运行时解析路径比对）
+        let lower = path.to_string_lossy().to_lowercase();
+        let dup_desktop = file
+            .sources
+            .iter()
+            .filter(|s| s.enabled && s.kind == "desktop")
+            .filter_map(|s| source_scan_root(&app, s).ok())
+            .any(|p| p.to_string_lossy().to_lowercase() == lower);
+        let dup_custom = file
+            .sources
+            .iter()
+            .any(|s| s.kind == "custom" && s.path.to_lowercase() == lower);
+        if dup_desktop || dup_custom {
+            return Err(CommandError::DomainRule {
+                domain: "migration".to_string(),
+                reason: format!("该文件夹已在整理来源中：{}", path.display()),
+            });
+        }
+        file.sources.push(ScanSource {
+            kind: "custom".into(),
+            path: path.to_string_lossy().to_string(),
+            archive_root: String::new(),
+            enabled: true,
+        });
+        validate_sources(&file).map_err(CommandError::from)?;
+        save_sources(&app, &file).map_err(CommandError::from)?;
+        super::ops::log_line(&app, &format!("添加扫描来源 {}", path.display()));
+        Ok(file)
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("来源表保存线程 join 失败：{e}")))?
 }
 
 /// 迁移日志读取：尾部 limit 行、最新在前（与机器人审计日志同模式，老板指定）

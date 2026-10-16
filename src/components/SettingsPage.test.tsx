@@ -181,8 +181,8 @@ describe("SettingsPage", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "自进化" }));
     expect(screen.getByText("自进化决策面板")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "桌面整理" }));
-    expect(screen.getByText("桌面清理")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "文件整理" }));
+    expect(screen.getByText("整理来源")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "词元统计" }));
     // 侧栏分类名与空态标题同文，取全量断言
     expect(screen.getAllByText("词元统计").length).toBeGreaterThan(0);

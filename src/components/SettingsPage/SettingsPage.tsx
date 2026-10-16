@@ -327,7 +327,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "graph", label: "任务图谱", icon: Waypoints },
   { key: "mcp", label: "MCP 服务", icon: Plug },
   { key: "evolution", label: "自进化", icon: GitBranch },
-  { key: "desk", label: "桌面整理", icon: FolderOutput },
+  { key: "desk", label: "文件整理", icon: FolderOutput },
   { key: "tokens", label: "词元统计", icon: BarChart3 },
   { key: "opsHistory", label: "操作历史", icon: History },
 ];

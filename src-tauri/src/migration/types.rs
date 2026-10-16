@@ -70,3 +70,36 @@ pub struct MigrationStatus {
     pub rules_count: usize,
     pub poll_interval_secs: u64,
 }
+
+/// 扫描整理来源。预设桌面源运行时解析真实桌面（已知文件夹 API，不落盘路径）；
+/// 自定义源存用户选定的绝对路径。archive_root 为相对 path 的归档根，空 = 文件夹本身
+/// （桌面预设固定空——规则归档目录相对桌面解析是与存量规则表的兼容契约）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanSource {
+    /// "desktop"（预设，path 忽略）| "custom"（path = 用户所选绝对路径）
+    pub kind: String,
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub archive_root: String,
+    pub enabled: bool,
+}
+
+impl Default for ScanSource {
+    fn default() -> Self {
+        Self {
+            kind: "desktop".into(),
+            path: String::new(),
+            archive_root: String::new(),
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcesFile {
+    #[serde(default)]
+    pub sources: Vec<ScanSource>,
+}

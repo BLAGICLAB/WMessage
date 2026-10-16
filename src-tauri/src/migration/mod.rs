@@ -11,14 +11,15 @@
 //! - `journal`   操作 journal：pending → committed / cleared，DB 一致性兜底
 //! - `recovery` 启动 replay：journal 仍 pending 时修复 DB 绑定
 //! - `rules`    规则表读写 / CSV 解析 / 路径常量
+//! - `sources`  扫描来源表读写 / 校验 / 地盘归属判定
 //! - `ops`      文件操作 + 日志 + 防重入 RAII
-//! - `run`      迁移引擎 + 后台轮询线程
-//! - `commands` 6 个 tauri 命令（lib.rs 用全路径 `migration::commands::migration_*`）
+//! - `run`      绑定整理引擎（任务卡归档自动整理，轮询）+ 后台轮询线程
+//! - `scan`     扫描整理引擎（无主文件按源归类，仅手动触发）
+//! - `commands` tauri 命令（lib.rs 用全路径 `migration::commands::migration_*`）
 //!
 //! 公开路径稳定（lib.rs / 其他模块引用）：
 //! - `migration::spawn_polling`    — 由本模块顶层 `pub use` 透传 run::spawn_polling
 //! - `migration::filename_matches` — ops 公开
-//! - `migration::resolve_archive_dir` — ops 公开
 //! - `migration::validate_rules`   — rules 公开
 //! - `migration::load_rules`       — rules 公开
 //! - `migration::journal_replay_pending` — recovery 公开
@@ -29,6 +30,8 @@ pub mod ops;
 pub mod recovery;
 pub mod rules;
 pub mod run;
+pub mod scan;
+pub mod sources;
 pub mod types;
 
 // lib.rs 调用 `migration::spawn_polling(handle)` 的路径必须保持稳定。

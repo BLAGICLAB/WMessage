@@ -15,11 +15,12 @@ use crate::error::CommandError;
 use super::journal::{journal_cleared, journal_committed, journal_find_pending, journal_pending};
 use super::ops::{
     emit_upserts, filename_matches, log_line, move_entry, move_remove_permanently_failed,
-    path_inside, resolve_archive_dir, verify_archive_dir_created, MigrationGuard,
+    path_inside, resolve_archive_dir_checked, verify_dir_within_base, MigrationGuard,
     MAX_MOVE_REMOVE_FAILURES,
 };
 use super::recovery::{decide_src_missing, journal_replay_pending, SrcMissingAction};
 use super::rules::load_rules;
+use super::sources::load_sources;
 use super::types::MigrationReport;
 
 pub(crate) const POLL_INTERVAL_SECS: u64 = 600;
@@ -46,6 +47,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     // 本调用点保持 CommandError 结构化直传（IoError/DomainRule 不塌回 Internal）；
     // 函数内 DB 类错误维持既有 String/Internal 口径，全量改造属独立批不做
     let rules = load_rules(app)?;
+    // 来源表不可读（损坏/权限）→ 本轮中止：与规则表同口径，绝不以空源表执行任何搬移
+    let sources = load_sources(app)?;
     let tasks = tauri::async_runtime::block_on(async { db::db_load(app.clone()).await })
         .map_err(|e| e.to_string())?;
     // 归档阈值随设置走（数据管理 → 任务卡归档时间，默认 7 天钳 1..=365）：
@@ -124,7 +127,20 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
 
             match rule.action.as_str() {
                 "move" => {
-                    let dir = match resolve_archive_dir(app, &rule.archive_dir) {
+                    // 规则归档基准跟源地盘走：绑定文件落在哪个启用源内就用该源的
+                    // 归档根，都不在 → 桌面（任意地址绑定物的兜底归位）
+                    let base = match super::sources::resolve_rule_base(app, &src, &sources) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            report.skipped += 1;
+                            let line = format!("跳过「{name}」：{e}");
+                            report.log.push(line.clone());
+                            log_line(app, &line);
+                            new_files.push(f);
+                            continue;
+                        }
+                    };
+                    let dir = match resolve_archive_dir_checked(&base, &rule.archive_dir) {
                         Ok(d) => d,
                         Err(e) => {
                             report.skipped += 1;
@@ -146,7 +162,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                     // 落地后复验：关闭 resolve→create 之间祖先被换成符号链接的窗口
                     // （canonicalize 终态目录比对基准前缀；残余窗缩至 create→verify 间，
                     // 文件系统原语限制归既有 follow-up）
-                    if let Err(e) = verify_archive_dir_created(app, &dir, &rule.archive_dir) {
+                    if let Err(e) = verify_dir_within_base(&base, &dir) {
                         report.skipped += 1;
                         let line = format!("跳过「{name}」：{e}");
                         report.log.push(line.clone());

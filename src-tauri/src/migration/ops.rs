@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use crate::db;
 use crate::error::CommandError;
@@ -63,17 +63,7 @@ pub(crate) fn expand_year_placeholder(template: &str) -> String {
     template.replace("{year}", &year)
 }
 
-/// 归档目录解析：{year} → 当前年份；相对路径基于桌面（AppHandle 供桌面目录定位）。
-/// 校验三道闸见 resolve_archive_dir_checked。
-pub fn resolve_archive_dir(app: &AppHandle, template: &str) -> Result<PathBuf, String> {
-    let desktop = app
-        .path()
-        .desktop_dir()
-        .map_err(|e| format!("无法定位桌面目录（规则：{template}）：{e}"))?;
-    resolve_archive_dir_checked(&desktop, template)
-}
-
-/// 纯函数内核（供单测直调）——三道闸：
+/// 归档目录解析纯函数内核（供调用方以任意基准直调）——三道闸：
 /// 1. `..` 组件拒绝（相对路径逃逸桌面基准；/tmp/../etc 形态表达同被拒，无能力损失）；
 /// 2. 绝对路径拒绝（存量「文档化特性」按收窄：归档位置必须相对基准目录，可审计可随库迁移）；
 /// 3. symlink 逃逸校验：沿目标最深已存在祖先 canonicalize，须仍位于 canonical 基准目录内
@@ -116,25 +106,18 @@ pub(crate) fn resolve_archive_dir_checked(base: &Path, template: &str) -> Result
     Ok(resolved)
 }
 
-/// 归档目录落地后复验（终态 canonicalize 前缀校验）：resolve 时只能校「最深已存在
-/// 祖先」，create_dir_all 之前祖先可能被并发换成基准外符号链接——创建完成后对
-/// 终态目录整链 canonicalize 复验，不落基准即拒。残余窗缩至 create→verify 之间
+/// 归档目录落地后复验（终态 canonicalize 前缀校验）纯核，基准无关——桌面模式
+/// 传桌面、扫描模式传该源的归档基准。resolve 时只能校「最深已存在祖先」，
+/// create_dir_all 之前祖先可能被并发换成基准外符号链接——创建完成后对终态目录
+/// 整链 canonicalize 复验，不落基准即拒。残余窗缩至 create→verify 之间
 /// （文件系统原语限制，归既有「Phase 6 TOCTOU 统一策略」follow-up）。
-pub fn verify_archive_dir_created(
-    app: &AppHandle,
-    dir: &Path,
-    template: &str,
-) -> Result<(), String> {
-    let desktop = app
-        .path()
-        .desktop_dir()
-        .map_err(|e| format!("无法定位桌面目录（规则：{template}）：{e}"))?;
+pub fn verify_dir_within_base(base: &Path, dir: &Path) -> Result<(), String> {
     let canon_dir = dir
         .canonicalize()
         .map_err(|e| format!("归档目录复验失败（{}）：{e}", dir.display()))?;
-    let canon_base = desktop
+    let canon_base = base
         .canonicalize()
-        .map_err(|e| format!("基准目录解析失败（{}）：{e}", desktop.display()))?;
+        .map_err(|e| format!("基准目录解析失败（{}）：{e}", base.display()))?;
     if !canon_dir.starts_with(&canon_base) {
         return Err(format!(
             "归档目录创建后逃逸基准目录（疑似符号链接指向基准外）：{} → {}",

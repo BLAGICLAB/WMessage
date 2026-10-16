@@ -47,6 +47,22 @@ export interface MigrationReport {
   log: string[];
 }
 
+/** 扫描整理来源（与 Rust migration::ScanSource 对应） */
+export interface ScanSource {
+  /** "desktop"（预设，path 忽略，运行时解析真实桌面）| "custom"（用户所选绝对路径） */
+  kind: "desktop" | "custom";
+  /** custom 的文件夹绝对路径；desktop 恒为空 */
+  path: string;
+  /** 归档根：相对 path；空 = 文件夹本身 */
+  archiveRoot: string;
+  enabled: boolean;
+}
+
+/** 来源表（与 Rust migration::SourcesFile 对应） */
+export interface SourcesFile {
+  sources: ScanSource[];
+}
+
 interface Subtask {
   id: string;
   text: string;
