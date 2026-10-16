@@ -397,6 +397,31 @@ async fn execute_tool_impl(
         interactive,
         session_id,
     };
+    // 入参 JSON 闸：坏 arguments 不进工具（模型拿回可自查的报错 + 审计留痕）。
+    // 位置在全部闸之后——规则 deny、子 agent 白名单、预算的拒绝原因比
+    // 「你的 JSON 坏了」更该先让模型看到，不因本次改动被抢答。
+    if let Some(msg) = invalid_args_message(name, args) {
+        let mut bad_kv: Vec<(&str, String)> = vec![
+            ("tool", name.to_string()),
+            ("args_preview", args.chars().take(80).collect::<String>()),
+        ];
+        bad_kv.extend(trace_kv(trace, session_id));
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "tool_args_invalid_json",
+            &bad_kv,
+        );
+        let mut ret_kv: Vec<(&str, String)> = vec![
+            ("tool", name.to_string()),
+            ("reason", "invalid_args_json".to_string()),
+            ("exit_code", "none".to_string()),
+            ("duration_ms", start.elapsed().as_millis().to_string()),
+        ];
+        ret_kv.extend(trace_kv(trace, session_id));
+        crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
+        return crate::bot::registry::ToolResult::warn(msg, Vec::new());
+    }
     // 工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
     //  cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。
     // O(n) 线性扫描 → O(1) HashMap 查找；结果存 tool_def 供 post-execute 复用
@@ -492,15 +517,39 @@ async fn execute_tool_impl(
     result
 }
 
+/// 工具入参 JSON 合法性闸（执行前，纯函数便于单测）：空/空白是「无参工具」
+/// 常态，放行；非空但解析失败 = 调用方（模型 arguments 或 Skill DSL 变量替换）
+/// 写坏了 JSON，回一条能让它自查的文案。
+///
+/// 为什么在 dispatch 拦而不是留给 `parse_args`：parse_args 落 Null 继续跑时，
+/// 模型收到的回报是「缺参数」，看不出是自己的 arguments 坏了；更糟的是
+/// 无参工具（query_tasks / list_files 等）会把 Null 当「不过滤、不指定」
+/// 真跑一遍——参数错配被当成用户本意执行了。返回 None 表示放行。
+fn invalid_args_message(name: &str, args: &str) -> Option<String> {
+    if args.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(args) {
+        Ok(_) => None,
+        Err(e) => Some(format!(
+            "工具「{name}」的 arguments 不是合法 JSON，已拒绝执行（未做任何改动）：{e}。\
+             请重新发起一次调用：arguments 必须是单个 JSON 对象（如 {{\"path\":\"a.txt\"}}），\
+             不得有多余引号、裸换行或尾逗号。"
+        )),
+    }
+}
+
 pub(crate) fn parse_args(args: &str) -> serde_json::Value {
     match serde_json::from_str(args) {
         Ok(v) => v,
-        // 空/空白入参是「无参工具」常态，按 Null 静默放行；非空但坏 JSON 才留痕
-        //（模型侧 schema 故障可诊断），下游仍按 Null 走缺参报错，行为不变
+        // 空/空白入参是「无参工具」常态，按 Null 静默放行；
+        // 非空但坏 JSON 由 dispatch 的入参闸先拦下（工具根本不执行），
+        // 走到这里说明绕过了闸——降级 Null 并记 bot.log 兜底。
         Err(_) if args.trim().is_empty() => serde_json::Value::Null,
         Err(e) => {
-            eprintln!(
-                "[bot] 工具参数 JSON 解析失败（按 Null 处理）：{e} | args: {}",
+            log::warn!(
+                target: "bot::dispatch",
+                "工具参数 JSON 解析失败（按 Null 处理）：{e} | args: {}",
                 crate::audit::escape_for_log(args, 200)
             );
             serde_json::Value::Null
@@ -667,6 +716,56 @@ mod early_return_events_tests {
         assert!(
             kv_get(&kv, "tool_call_id").is_none(),
             "空 id 不写（合成 id 前的畸形流不该出现空值行）"
+        );
+    }
+}
+
+#[cfg(test)]
+mod invalid_args_tests {
+    use super::*;
+
+    #[test]
+    fn empty_args_pass_as_no_arg_tools() {
+        // 无参工具常态：空串 / 纯空白 / 只有换行都放行
+        assert!(invalid_args_message("query_tasks", "").is_none());
+        assert!(invalid_args_message("query_tasks", "   ").is_none());
+        assert!(invalid_args_message("get_current_time", "\n\t ").is_none());
+    }
+
+    #[test]
+    fn parseable_args_pass_including_non_object_json() {
+        // 只拦「解析不了」，不越权改判定：合法 JSON 一律放行
+        // （部分网关/老模型会发 null / 数组形态，那是既有行为，不在本次收紧范围）
+        assert!(invalid_args_message("create_task", r#"{"title":"x"}"#).is_none());
+        assert!(invalid_args_message("create_task", "null").is_none());
+        assert!(invalid_args_message("create_task", "{}").is_none());
+    }
+
+    #[test]
+    fn malformed_args_return_actionable_message_for_model() {
+        let msg = invalid_args_message("create_task", r#"{"title":"x""#)
+            .expect("非空但坏 JSON 必须拒绝并回可解释错误");
+        assert!(msg.contains("create_task"), "文案须指名工具：{msg}");
+        assert!(msg.contains("不是合法 JSON"), "{msg}");
+        assert!(
+            msg.contains("已拒绝执行") && msg.contains("未做任何改动"),
+            "须说明未执行，模型才会换参数重试而不是以为已生效：{msg}"
+        );
+        // serde 的真实错因带出来，模型才知道是截断还是引号坏
+        assert!(
+            msg.contains("EOF") || msg.contains("expected"),
+            "须带 serde 原始错因：{msg}"
+        );
+    }
+
+    #[test]
+    fn skill_variable_breakage_is_rejected_not_silently_nulled() {
+        // bot_skills::vars 的已知限制（见该文件同名单测）：占位符紧邻转义引号时
+        // 原样插入，结果是非合法 JSON。这里必须拒绝（原先静默 Null 后按缺参跑工具）
+        let broken = r#"{"a": "say \"hi\" he said "no""}"#;
+        assert!(
+            invalid_args_message("create_task", broken).is_some(),
+            "DSL 变量替换破坏的 JSON 必须被闸挡住"
         );
     }
 }
