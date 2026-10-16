@@ -34,12 +34,12 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 // profile 子模块：返回基本用户/机器人资料即可
 vi.mock("../profile", () => ({
   getProfileCache: vi.fn(() => ({
-    user: { name: "Test", avatarDataUrl: null },
-    bot: { name: "Bot", avatarDataUrl: null },
+    user: { name: "Test", avatarId: null },
+    bot: { name: "Bot", avatarId: null },
   })),
   loadProfile: vi.fn(async () => ({
-    user: { name: "Test", avatarDataUrl: null },
-    bot: { name: "Bot", avatarDataUrl: null },
+    user: { name: "Test", avatarId: null },
+    bot: { name: "Bot", avatarId: null },
   })),
   subscribeProfile: vi.fn(() => () => {}),
 }));

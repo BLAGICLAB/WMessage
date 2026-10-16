@@ -20,12 +20,12 @@ vi.mock("@tauri-apps/api/event", () => ({
 
 vi.mock("../../profile", () => ({
   getProfileCache: vi.fn(() => ({
-    user: { name: "测试者", avatarDataUrl: null },
-    bot: { name: "机器人", avatarDataUrl: null },
+    user: { name: "测试者", avatarId: null },
+    bot: { name: "机器人", avatarId: null },
   })),
   loadProfile: vi.fn(async () => ({
-    user: { name: "测试者", avatarDataUrl: null },
-    bot: { name: "机器人", avatarDataUrl: null },
+    user: { name: "测试者", avatarId: null },
+    bot: { name: "机器人", avatarId: null },
   })),
   subscribeProfile: vi.fn(() => () => {}),
 }));

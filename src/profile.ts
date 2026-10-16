@@ -7,7 +7,9 @@ import { handleCommandError } from "./lib/errorHandler";
 
 type ProfileEntryView = {
   name: string;
-  avatarDataUrl: string | null;
+  /** 预设头像 ID（avatar-01~16）；null 用默认占位。图片在前端 assets，
+   * 按 ID 本地解析，不走 IPC 传图 */
+  avatarId: string | null;
 };
 
 export type ProfileView = {
@@ -88,14 +90,14 @@ export async function setProfileName(
   );
 }
 
-/** 上传头像（本地图片路径，Rust 拷贝进数据目录） */
+/** 选定预设头像（avatar-01~16，Rust 侧白名单校验） */
 export async function setProfileAvatar(
   kind: "user" | "bot",
-  path: string,
+  avatarId: string,
 ): Promise<ProfileView> {
   const gen = ++loadGen;
-  return invoke<ProfileView>("profile_set_avatar", { kind, path }).then((v) =>
-    adoptProfile(gen, v),
+  return invoke<ProfileView>("profile_set_avatar", { kind, avatarId }).then(
+    (v) => adoptProfile(gen, v),
   );
 }
 

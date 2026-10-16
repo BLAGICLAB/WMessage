@@ -35,8 +35,8 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
   switch (cmd) {
     case "profile_get":
       return {
-        user: { name: "我", avatarDataUrl: null },
-        bot: { name: "机器人", avatarDataUrl: null },
+        user: { name: "我", avatarId: null },
+        bot: { name: "机器人", avatarId: null },
       };
     case "bot_get_enabled":
       return false;
@@ -87,21 +87,21 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("../profile", () => ({
   getProfileCache: vi.fn(() => null),
   loadProfile: vi.fn(async () => ({
-    user: { name: "我", avatarDataUrl: null },
-    bot: { name: "机器人", avatarDataUrl: null },
+    user: { name: "我", avatarId: null },
+    bot: { name: "机器人", avatarId: null },
   })),
   subscribeProfile: vi.fn(() => () => {}),
   setProfileName: vi.fn(async () => ({
-    user: { name: "我", avatarDataUrl: null },
-    bot: { name: "机器人", avatarDataUrl: null },
+    user: { name: "我", avatarId: null },
+    bot: { name: "机器人", avatarId: null },
   })),
   setProfileAvatar: vi.fn(async () => ({
-    user: { name: "我", avatarDataUrl: null },
-    bot: { name: "机器人", avatarDataUrl: null },
+    user: { name: "我", avatarId: null },
+    bot: { name: "机器人", avatarId: null },
   })),
   removeProfileAvatar: vi.fn(async () => ({
-    user: { name: "我", avatarDataUrl: null },
-    bot: { name: "机器人", avatarDataUrl: null },
+    user: { name: "我", avatarId: null },
+    bot: { name: "机器人", avatarId: null },
   })),
 }));
 
@@ -202,8 +202,8 @@ describe("SettingsPage", () => {
       if (cmd === "bot_set_config") return null;
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "bot_get_enabled") return false;
       if (cmd === "py_get_enabled") return false;
@@ -298,8 +298,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -357,8 +357,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -416,8 +416,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -453,8 +453,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -527,8 +527,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -563,8 +563,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -626,8 +626,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -690,8 +690,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -754,8 +754,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -834,8 +834,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -896,8 +896,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -936,8 +936,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -1058,8 +1058,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -1340,8 +1340,8 @@ describe("SettingsPage", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "profile_get")
         return {
-          user: { name: "我", avatarDataUrl: null },
-          bot: { name: "机器人", avatarDataUrl: null },
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "py_get_enabled") return false;
       if (cmd === "skills_list") return [];
@@ -1743,8 +1743,8 @@ describe("SettingsPage", () => {
           return { enabled: false, port: 4763, token: "" };
         if (cmd === "profile_get")
           return {
-            user: { name: "我", avatarDataUrl: null },
-            bot: { name: "机器人", avatarDataUrl: null },
+            user: { name: "我", avatarId: null },
+            bot: { name: "机器人", avatarId: null },
           };
         if (cmd === "py_get_enabled") return false;
         if (cmd === "skills_list") return [];
@@ -2125,8 +2125,8 @@ describe("SettingsPage", () => {
           return { enabled: false, port: 4763, token: "" };
         if (cmd === "profile_get")
           return {
-            user: { name: "我", avatarDataUrl: null },
-            bot: { name: "机器人", avatarDataUrl: null },
+            user: { name: "我", avatarId: null },
+            bot: { name: "机器人", avatarId: null },
           };
         if (cmd === "py_get_enabled") return false;
         if (cmd === "skills_list") return [];
@@ -2202,8 +2202,8 @@ describe("SettingsPage", () => {
           return { enabled: false, port: 4763, token: "" };
         if (cmd === "profile_get")
           return {
-            user: { name: "我", avatarDataUrl: null },
-            bot: { name: "机器人", avatarDataUrl: null },
+            user: { name: "我", avatarId: null },
+            bot: { name: "机器人", avatarId: null },
           };
         if (cmd === "py_get_enabled") return false;
         if (cmd === "skills_list") return [];

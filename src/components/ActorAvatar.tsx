@@ -5,6 +5,7 @@ import {
   subscribeProfile,
   type ProfileView,
 } from "../profile";
+import { avatarSrc } from "../avatars";
 import botLogo from "../assets/main-logo.png";
 
 /** 订阅资料（轻量 hook，组件级缓存） */
@@ -39,7 +40,7 @@ export function ActorAvatar({ bot, size = 18 }: { bot: boolean; size?: number })
   const profile = useProfile();
   const entry = bot ? profile?.bot : profile?.user;
   const name = entry?.name || (bot ? "机器人" : "我");
-  const src = entry?.avatarDataUrl;
+  const src = avatarSrc(entry?.avatarId);
   return (
     <span
       title={name}

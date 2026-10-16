@@ -1,6 +1,7 @@
 //! 成员注册表（任务图谱设计 §1.2）：多人任务卡汇总的归属人字典。
 //! 本人 personId 由 profile::ensure_person_id 生成并在此表留 is_self=1 行；
-//! 外来成员随导入信封 upsert（最新 name 覆盖）。头像列预留（v1 信封不携带）。
+//! 外来成员随导入信封 upsert（最新 name/avatar 覆盖）。avatar 存预设头像 ID
+//! （profile::AVATAR_IDS），对端按 ID 解析回内置图；本人行不存（单一事实源在 profile）。
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -26,7 +27,8 @@ pub struct PeopleEntry {
     pub is_self: bool,
 }
 
-/// 信封里流转的最小成员卡（无 avatar / is_self；设计 §1.4）
+/// 信封成员列表里流转的最小成员卡（无 avatar / is_self；设计 §1.4）。
+/// 对方本人头像不走这里——随信封 profile 卡的 avatarId 落库
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PeopleCard {
@@ -56,25 +58,28 @@ pub fn people_load(conn: &rusqlite::Connection) -> Result<Vec<PeopleEntry>, Stri
 }
 
 /// 单条 upsert（存在则刷 name/avatar + 时间戳；is_self 只升不降——普通 upsert
-/// 不允许把本人行降级为成员）。调用方负责事务/写锁。
+/// 不允许把本人行降级为成员）。avatar 传预设头像 ID（调用方负责白名单过滤，
+/// 此处不校验）；None 表示该来源无头像信息，直接覆盖。调用方负责事务/写锁。
 pub fn people_upsert_entry(
     conn: &rusqlite::Connection,
     id: &str,
     name: &str,
     is_self: bool,
+    avatar: Option<&str>,
 ) -> Result<(), String> {
     let name = name.trim();
     if id.trim().is_empty() || name.is_empty() {
         return Ok(()); // 空卡防御：不写入也不报错（信封内容不可信任）
     }
     conn.execute(
-        "INSERT INTO people (id, name, is_self, updated_at) VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO people (id, name, avatar, is_self, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET
-           name=excluded.name, updated_at=excluded.updated_at,
+           name=excluded.name, avatar=excluded.avatar, updated_at=excluded.updated_at,
            is_self=CASE WHEN people.is_self THEN 1 ELSE excluded.is_self END",
         rusqlite::params![
             id,
             name,
+            avatar,
             is_self as i64,
             chrono::Utc::now().timestamp_millis()
         ],
@@ -89,7 +94,7 @@ pub fn people_upsert_cards(
     cards: &[PeopleCard],
 ) -> Result<(), String> {
     for c in cards {
-        people_upsert_entry(conn, &c.id, &c.name, false)?;
+        people_upsert_entry(conn, &c.id, &c.name, false, None)?;
     }
     Ok(())
 }
@@ -103,7 +108,7 @@ pub fn people_ensure_placeholder(conn: &rusqlite::Connection, id: &str) -> Resul
         })
         .map_err(|e| e.to_string())?;
     if count == 0 {
-        people_upsert_entry(conn, id, "未知成员", false)?;
+        people_upsert_entry(conn, id, "未知成员", false, None)?;
     }
     Ok(())
 }
@@ -134,9 +139,9 @@ mod tests {
     #[test]
     fn people_upsert_inserts_and_updates_name() {
         let conn = setup_conn();
-        people_upsert_entry(&conn, "p1", "张三", false).unwrap();
+        people_upsert_entry(&conn, "p1", "张三", false, None).unwrap();
         // 最新名覆盖
-        people_upsert_entry(&conn, "p1", "张三丰", false).unwrap();
+        people_upsert_entry(&conn, "p1", "张三丰", false, None).unwrap();
         let list = people_load(&conn).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "张三丰");
@@ -146,9 +151,9 @@ mod tests {
     #[test]
     fn people_upsert_never_demotes_self_row() {
         let conn = setup_conn();
-        people_upsert_entry(&conn, "me", "我", true).unwrap();
+        people_upsert_entry(&conn, "me", "我", true, None).unwrap();
         // 信封里捎带了本人的卡（is_self=false）→ 不得把本人行降级
-        people_upsert_entry(&conn, "me", "我", false).unwrap();
+        people_upsert_entry(&conn, "me", "我", false, None).unwrap();
         let list = people_load(&conn).unwrap();
         assert!(list[0].is_self, "is_self 只升不降");
     }
@@ -156,8 +161,8 @@ mod tests {
     #[test]
     fn people_upsert_rejects_blank_id_or_name() {
         let conn = setup_conn();
-        people_upsert_entry(&conn, "", "张三", false).unwrap();
-        people_upsert_entry(&conn, "p1", "   ", false).unwrap();
+        people_upsert_entry(&conn, "", "张三", false, None).unwrap();
+        people_upsert_entry(&conn, "p1", "   ", false, None).unwrap();
         assert!(people_load(&conn).unwrap().is_empty(), "空卡不写入");
     }
 
@@ -186,8 +191,8 @@ mod tests {
     #[test]
     fn people_load_orders_self_first() {
         let conn = setup_conn();
-        people_upsert_entry(&conn, "z", "张三", false).unwrap();
-        people_upsert_entry(&conn, "me", "我", true).unwrap();
+        people_upsert_entry(&conn, "z", "张三", false, None).unwrap();
+        people_upsert_entry(&conn, "me", "我", true, None).unwrap();
         let list = people_load(&conn).unwrap();
         assert_eq!(list[0].id, "me", "本人排最前（图例首列）");
     }

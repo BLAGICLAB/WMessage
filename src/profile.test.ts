@@ -12,12 +12,12 @@ vi.mock("./lib/errorHandler", () => ({
 }));
 
 type ProfileView = {
-  user: { name: string; avatarDataUrl: string | null };
-  bot: { name: string; avatarDataUrl: string | null };
+  user: { name: string; avatarId: string | null };
+  bot: { name: string; avatarId: string | null };
 };
 const mkView = (name: string): ProfileView => ({
-  user: { name, avatarDataUrl: null },
-  bot: { name: "bot", avatarDataUrl: null },
+  user: { name, avatarId: null },
+  bot: { name: "bot", avatarId: null },
 });
 
 const importProfile = () => import("./profile");
@@ -93,6 +93,16 @@ describe("profile 缓存 / force 语义", () => {
     await expect(loadProfile()).rejects.toBe(err);
     expect(handleCommandErrorMock).toHaveBeenCalledWith(err, "profile_get", {
       silent: true,
+    });
+  });
+
+  it("setProfileAvatar：invoke 参数用 avatarId（camelCase 映射 Rust avatar_id）", async () => {
+    invokeMock.mockResolvedValue(mkView("v"));
+    const { setProfileAvatar } = await importProfile();
+    await setProfileAvatar("user", "avatar-07");
+    expect(invokeMock).toHaveBeenCalledWith("profile_set_avatar", {
+      kind: "user",
+      avatarId: "avatar-07",
     });
   });
 });

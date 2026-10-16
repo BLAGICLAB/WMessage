@@ -1097,6 +1097,10 @@ pub fn check_export_path(path: &str) -> CommandResult<()> {
 pub struct ExportProfileCard {
     pub person_id: String,
     pub name: String,
+    /// 预设头像 ID（profile::AVATAR_IDS）：两端内置同一套图，导入端按 ID
+    /// 解析回同一张图落 people.avatar。旧信封无此字段 → None → 按无头像处理
+    #[serde(default)]
+    pub avatar_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1136,6 +1140,7 @@ pub fn export_tasks_json(
     conn: &rusqlite::Connection,
     self_pid: &str,
     self_name: &str,
+    self_avatar_id: Option<&str>,
 ) -> Result<(String, usize), String> {
     let mut tasks = load_all(conn)?;
     for t in tasks.iter_mut() {
@@ -1179,6 +1184,9 @@ pub fn export_tasks_json(
         profile: ExportProfileCard {
             person_id: self_pid.to_string(),
             name: self_name.to_string(),
+            avatar_id: self_avatar_id
+                .filter(|id| crate::profile::is_valid_avatar_id(id))
+                .map(str::to_string),
         },
         people,
         tasks,
@@ -1225,7 +1233,7 @@ pub fn import_tasks_conn(
             let profile = env.profile.ok_or_else(|| {
                 "信封缺少 profile 资料卡，无法确定任务归属（文件可能被手改损坏）".to_string()
             })?;
-            let card = (profile.person_id, profile.name);
+            let card = (profile.person_id, profile.name, profile.avatar_id);
             (env.tasks, Some(card), env.people)
         }
     };
@@ -1233,12 +1241,16 @@ pub fn import_tasks_conn(
     if self_pid.trim().is_empty() {
         return Err("本人 personId 未初始化".into());
     }
-    let envelope_pid = envelope.as_ref().map(|(pid, _)| pid.clone());
+    let envelope_pid = envelope.as_ref().map(|(pid, _, _)| pid.clone());
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     // 成员注册表先行落库（任务图谱设计 §1.4）：信封本人卡（= 对方；若对方 pid 恰为
-    // 本人——导自己的旧信封——is_self 只升不降语义保住本人行）+ 信封成员卡
-    if let Some((pid, name)) = &envelope {
-        super::people::people_upsert_entry(&tx, pid, name, false)?;
+    // 本人——导自己的旧信封——is_self 只升不降语义保住本人行）+ 信封成员卡。
+    // 头像 ID 白名单过滤后落 people.avatar（信封内容不可信任，垃圾 ID 不落库）
+    if let Some((pid, name, avatar_id)) = &envelope {
+        let avatar = avatar_id
+            .as_deref()
+            .filter(|id| crate::profile::is_valid_avatar_id(id));
+        super::people::people_upsert_entry(&tx, pid, name, false, avatar)?;
     }
     super::people::people_upsert_cards(&tx, &people_cards)?;
     // 任务引用但信封未携带资料的归属 → 占位行，图谱不出现悬空归属
@@ -1283,8 +1295,8 @@ pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> 
         // 调度器并发写产生「半新半旧」的撕裂信封（导出低频，锁竞争可接受）
         let _g = super::lock_db_write();
         let conn = super::open_db(&app)?;
-        let (pid, name) = crate::profile::export_profile_card(&app);
-        let (json, count) = export_tasks_json(&conn, &pid, &name)?;
+        let (pid, name, avatar_id) = crate::profile::export_profile_card(&app);
+        let (json, count) = export_tasks_json(&conn, &pid, &name, avatar_id.as_deref())?;
         super::paths::atomic_write(std::path::Path::new(&path), &json)
             .map_err(|e| format!("写入文件失败：{e}"))?;
         Ok(count)
@@ -1945,13 +1957,13 @@ mod owner_graph_tests {
             task_json("foreign", None, 100),
         );
         import_tasks_conn(&mut conn, &raw, SELF).unwrap();
-        super::super::people::people_upsert_entry(&conn, "zhang", "张三", false).unwrap();
+        super::super::people::people_upsert_entry(&conn, "zhang", "张三", false, None).unwrap();
         let mut mine = min_task(None);
         mine.id = "mine".into();
         mine.title = "我的卡".into();
         mine.updated_at = Some(100);
         upsert_tasks(&conn, &[mine]).unwrap();
-        let (json, count) = export_tasks_json(&conn, SELF, "我").unwrap();
+        let (json, count) = export_tasks_json(&conn, SELF, "我", None).unwrap();
         assert_eq!(count, 2);
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["version"], 2);
@@ -1983,7 +1995,7 @@ mod owner_graph_tests {
             task_json("t1", None, 100),
         );
         import_tasks_conn(&mut conn, &raw, SELF).unwrap();
-        let (json, _) = export_tasks_json(&conn, SELF, "我").unwrap();
+        let (json, _) = export_tasks_json(&conn, SELF, "我", None).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["tasks"][0]["ownerId"], "zhang", "往返后归属不串档");
     }
@@ -2003,6 +2015,65 @@ mod owner_graph_tests {
         let t = &load_all(&conn).unwrap()[0];
         assert_eq!(t.owner_id.as_deref(), Some("zhang"));
         assert_eq!(t.updated_at, Some(200));
+    }
+
+    // ── 信封头像 ID 往返（profile.avatarId ↔ people.avatar） ──
+
+    fn people_avatar(conn: &rusqlite::Connection, pid: &str) -> Option<String> {
+        conn.query_row("SELECT avatar FROM people WHERE id = ?1", [pid], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .unwrap()
+    }
+
+    /// 导出信封带头像 ID → 导入端按 ID 落 people.avatar（对端显示同一张内置图）
+    #[test]
+    fn envelope_avatar_id_roundtrips_into_people() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        let (json, _) = export_tasks_json(&conn, "zhang", "张三", Some("avatar-07")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["profile"]["avatarId"], "avatar-07");
+        // 对端（SELF 视角）导入张三的信封
+        import_tasks_conn(&mut conn, &json, SELF).unwrap();
+        assert_eq!(
+            people_avatar(&conn, "zhang"),
+            Some("avatar-07".into()),
+            "信封头像 ID 应落 people.avatar"
+        );
+    }
+
+    #[test]
+    fn envelope_without_avatar_imports_as_null() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        // 旧版信封无 avatarId 字段 → serde default None → avatar 列 NULL，不报错
+        let raw = r#"{"version":2,"profile":{"personId":"zhang","name":"张三"},"tasks":[]}"#;
+        import_tasks_conn(&mut conn, raw, SELF).unwrap();
+        assert_eq!(people_avatar(&conn, "zhang"), None);
+    }
+
+    #[test]
+    fn envelope_garbage_avatar_id_never_lands_in_people() {
+        let _g = crate::db::lock_db_write();
+        let mut conn = setup_conn();
+        // 手改信封塞非法 ID（旧版拷贝文件名 / 穿越串）→ 白名单过滤，不落库
+        let raw = r#"{"version":2,"profile":{"personId":"zhang","name":"张三","avatarId":"../../x"},"tasks":[]}"#;
+        import_tasks_conn(&mut conn, raw, SELF).unwrap();
+        assert_eq!(people_avatar(&conn, "zhang"), None, "非法 ID 不得落 people");
+    }
+
+    #[test]
+    fn export_filters_invalid_self_avatar_id() {
+        let _g = crate::db::lock_db_write();
+        let conn = setup_conn();
+        // 防御：调用方传垃圾 ID（正常路径 profile 侧已过滤）→ 信封不携带
+        let (json, _) = export_tasks_json(&conn, SELF, "我", Some("avatar-user.png")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v["profile"]["avatarId"].is_null(),
+            "非法 ID 不得进信封；实际 {v:?}"
+        );
     }
 
     // ── 子任务卡（parent_id 出身列 + 子任务行 taskId 跳转标记） ──

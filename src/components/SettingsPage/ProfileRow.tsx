@@ -1,9 +1,9 @@
 // SettingsPage 子模块：个人资料编辑行（头像 + 姓名）。
 // 用户/机器人共用：kind 决定用 profile.user 还是 profile.bot。
+// 头像为预设 ID 制：点头像弹选择器（16 选 1 即点即换），不再支持上传图片。
 
 import { useEffect, useRef, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
-import { Check, Image as ImageIcon } from "lucide-react";
+import { Check } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import {
   setProfileName,
@@ -11,6 +11,7 @@ import {
   removeProfileAvatar,
 } from "../../profile";
 import { useProfile } from "../ActorAvatar";
+import { AvatarPicker } from "./AvatarPicker";
 import botLogo from "../../assets/main-logo.png";
 
 export function ProfileRow({
@@ -45,40 +46,25 @@ export function ProfileRow({
     if (entry && !dirty) setName(entry.name);
   }, [entry, dirty]);
 
-  const pick = async () => {
+  const pickAvatar = async (id: string) => {
     if (busy) return;
-    setBusy(true);
     setError("");
     try {
-      const selected = await open({
-        multiple: false,
-        directory: false,
-        filters: [
-          { name: "图片", extensions: ["png", "jpg", "jpeg", "gif", "webp"] },
-        ],
-      });
-      if (typeof selected === "string") {
-        await setProfileAvatar(kind, selected);
-      }
+      await setProfileAvatar(kind, id);
     } catch (e) {
       handleCommandError(e, `profile_set_avatar:${kind}`, { silent: true });
       setError(formatCommandError(e));
-    } finally {
-      setBusy(false);
     }
   };
 
-  const remove = async () => {
+  const clearAvatar = async () => {
     if (busy) return;
-    setBusy(true);
     setError("");
     try {
       await removeProfileAvatar(kind);
     } catch (e) {
       handleCommandError(e, `profile_remove_avatar:${kind}`, { silent: true });
       setError(formatCommandError(e));
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -105,30 +91,31 @@ export function ProfileRow({
     }
   };
 
-  const src = entry?.avatarDataUrl;
   const displayName = entry?.name || defaultName;
 
   return (
     <div className="flex items-center gap-3">
-      <span
-        title={displayName}
-        className="shrink-0 w-11 h-11 rounded-full overflow-hidden nm-inset flex items-center justify-center"
-      >
-        {src ? (
-          <img src={src} alt={label} className="w-full h-full object-cover" />
-        ) : kind === "bot" ? (
-          <img
-            src={botLogo}
-            alt={label}
-            className="w-full h-full object-cover"
-          />
-        ) : (
-          <span className="text-sm text-[var(--t4)]">
-            {displayName.charAt(0)}
-          </span>
-        )}
-      </span>
-      <div className="flex-1 min-w-0">
+      <AvatarPicker
+        kindLabel={label}
+        avatarId={entry?.avatarId ?? null}
+        disabled={busy}
+        onPick={(id) => void pickAvatar(id)}
+        onClear={() => void clearAvatar()}
+        fallback={
+          kind === "bot" ? (
+            <img
+              src={botLogo}
+              alt={label}
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <span className="flex h-full w-full items-center justify-center text-sm text-[var(--t4)]">
+              {displayName.charAt(0)}
+            </span>
+          )
+        }
+      />
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <p className="w-10 shrink-0 text-xs font-medium text-[var(--t4)]">
             {label}
@@ -160,25 +147,9 @@ export function ProfileRow({
             )}
           </button>
         </div>
-        <div className="mt-1.5 flex items-center gap-2 pl-10">
-          <button
-            className="nm-btn px-2.5 py-1 text-[11px] text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
-            onClick={pick}
-            disabled={busy}
-          >
-            <ImageIcon size={11} aria-hidden /> 选择图片
-          </button>
-          {src && (
-            <button
-              className="nm-btn px-2.5 py-1 text-[11px] text-[var(--danger)]"
-              onClick={remove}
-              disabled={busy}
-            >
-              移除头像
-            </button>
-          )}
-          {error && <p className="text-[10px] text-[var(--danger)]">{error}</p>}
-        </div>
+        {error && (
+          <p className="mt-1 pl-12 text-[10px] text-[var(--danger)]">{error}</p>
+        )}
       </div>
     </div>
   );
