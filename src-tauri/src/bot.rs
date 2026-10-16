@@ -46,6 +46,7 @@ pub mod config;
 pub mod corrections;
 pub mod dispatch;
 pub mod format;
+pub mod hooks;
 pub mod log_sanitize;
 pub mod mcp;
 pub mod params;
