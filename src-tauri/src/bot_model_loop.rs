@@ -222,23 +222,34 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     Some(chunk)
 }
 
-/// `parse_sse_chunk` 返回 None 时，判定这一行是不是「对端发了我们解析不了的
-/// 载荷」——纯函数，供调用方计数留痕（坏块曾经无声消失：网关吐半截 JSON /
-/// 非 OpenAI 形状，回复凭空少一段，日志里什么都不留）。
+/// 协议解析失败时的坏块判定（纯函数，供调用方计数留痕）——坏块曾经无声
+/// 消失：网关吐半截 JSON 或非本协议形状的载荷，回复凭空少一段，日志里什么
+/// 都不留。两协议各有一条同样形态的 `.ok()?`（OpenAI parse_sse_chunk /
+/// Anthropic parse_anthropic_event），故按 provider 分派形状判定。
 ///
-/// 返回 Some(载荷) = data 行 + 非空 + 非 `[DONE]` 且 **JSON 解析失败**，
-/// 即真坏块；返回 None = 非 data 行（`event:` / 注释 / 空行）、空心跳、
-/// `[DONE]`，以及合法 JSON 但 choices 为空（部分网关拿它当心跳，混进降级
-/// 计数只会把信号淹掉）。
-fn unparsable_sse_payload(line: &str) -> Option<&str> {
+/// 返回 Some(载荷) = data 行 + 非空 + 非 `[DONE]` 且
+/// - JSON 解析失败，或
+/// - OpenAI 形状：JSON 合法却没有 choices 数组（中转网关的错误信封
+///   `{"code":401,...}`、外来载荷等——「解析成功但形状不对」同样会丢内容）；
+///
+/// 返回 None = 非 data 行（`event:` / 注释 / 空行）、空心跳、`[DONE]`、
+/// 标准形状（含 `{"choices":[]}` 空心跳），以及一切合法的 Anthropic 事件
+/// （Anthropic 载荷本就没有 choices 键，故该臂只对 Openai 生效）。
+fn unparsable_sse_payload(line: &str, provider: crate::bot::ApiProvider) -> Option<&str> {
     let data = line.strip_prefix("data:")?.trim();
     if data.is_empty() || data == "[DONE]" {
         return None;
     }
-    if serde_json::from_str::<serde_json::Value>(data).is_ok() {
-        return None;
+    let v = match serde_json::from_str::<serde_json::Value>(data) {
+        Ok(v) => v,
+        Err(_) => return Some(data),
+    };
+    if provider == crate::bot::ApiProvider::Openai
+        && !v.get("choices").is_some_and(|c| c.is_array())
+    {
+        return Some(data);
     }
-    Some(data)
+    None
 }
 
 /// 从流内 JSON 载荷提取错误消息（`{"error":{"message":...}}` 或 `{"error":"..."}`，截 200 字）
@@ -1403,22 +1414,7 @@ where
                 // ParsedChunk 走同一消费逻辑（think 拆分 / 工具累积 / 流完整性 /
                 // finish_reason 处理全部两协议共享）
                 let parsed = match http.provider {
-                    crate::bot::ApiProvider::Openai => match parse_sse_chunk(line) {
-                        Some(c) => c,
-                        None => {
-                            // 坏块留痕但不中断：跳过是原行为（脏网关偶发半截 JSON
-                            // 时其余 chunk 仍是好的，中断会把好回复一起丢掉），
-                            // 补的是「静默」——回合结束发一条计数 + 样本。
-                            if let Some(payload) = unparsable_sse_payload(line) {
-                                bad_sse_chunks += 1;
-                                if bad_sse_sample.is_none() {
-                                    bad_sse_sample =
-                                        Some(payload.chars().take(120).collect::<String>());
-                                }
-                            }
-                            return None;
-                        }
-                    },
+                    crate::bot::ApiProvider::Openai => parse_sse_chunk(line),
                     crate::bot::ApiProvider::Anthropic => {
                         match crate::bot_anthropic::parse_anthropic_event(line) {
                             Some(mut ev) => {
@@ -1432,11 +1428,23 @@ where
                                 for d in &mut ev.chunk.tool_calls {
                                     tool_slot_mapper.remap(d);
                                 }
-                                ev.chunk
+                                Some(ev.chunk)
                             }
-                            None => return None,
+                            None => None,
                         }
                     }
+                };
+                // 解析不出东西时的留痕（两协议共用一处）：跳过是原行为且是对的
+                // ——脏网关偶发半截 JSON 时其余 chunk 完好，中断会把好回复一起
+                // 丢掉；补的只是「静默」，回合结束发一条计数 + 首条样本。
+                let Some(parsed) = parsed else {
+                    if let Some(payload) = unparsable_sse_payload(line, http.provider) {
+                        bad_sse_chunks += 1;
+                        if bad_sse_sample.is_none() {
+                            bad_sse_sample = Some(payload.chars().take(120).collect::<String>());
+                        }
+                    }
+                    return None;
                 };
                 if parsed.is_done {
                     stream_end_seen = true;
@@ -2686,19 +2694,45 @@ mod parse_sse_chunk_tests {
     #[test]
     fn unparsable_payload_flags_only_bad_data_lines() {
         use super::unparsable_sse_payload;
-        // 坏块：data 行 + 非空 + 解析不出来 → 计入降级
-        assert_eq!(unparsable_sse_payload("data: not-json{"), Some("not-json{"));
-        assert_eq!(unparsable_sse_payload("data: {半截"), Some("{半截"));
+        use crate::bot::ApiProvider::{Anthropic, Openai};
+        // 坏块：data 行 + 非空 + 解析不出来 → 计入降级（两协议同一判）
+        for p in [Openai, Anthropic] {
+            assert_eq!(
+                unparsable_sse_payload("data: not-json{", p),
+                Some("not-json{")
+            );
+            assert_eq!(unparsable_sse_payload("data: {半截", p), Some("{半截"));
+        }
         // 协议正常成分：一律不算坏块（否则正常流每次都记降级）
-        assert_eq!(unparsable_sse_payload("event: ping"), None);
-        assert_eq!(unparsable_sse_payload(""), None);
-        assert_eq!(unparsable_sse_payload(": keep-alive"), None);
-        assert_eq!(unparsable_sse_payload("data:"), None);
-        assert_eq!(unparsable_sse_payload("data:    "), None);
-        assert_eq!(unparsable_sse_payload("data: [DONE]"), None);
-        assert_eq!(unparsable_sse_payload("data:    [DONE]"), None);
-        // 合法 JSON 但 choices 为空：解析成功，不算坏块
-        assert_eq!(unparsable_sse_payload(r#"data: {"choices":[]}"#), None);
+        for p in [Openai, Anthropic] {
+            assert_eq!(unparsable_sse_payload("event: ping", p), None);
+            assert_eq!(unparsable_sse_payload("", p), None);
+            assert_eq!(unparsable_sse_payload(": keep-alive", p), None);
+            assert_eq!(unparsable_sse_payload("data:", p), None);
+            assert_eq!(unparsable_sse_payload("data:    ", p), None);
+            assert_eq!(unparsable_sse_payload("data: [DONE]", p), None);
+            assert_eq!(unparsable_sse_payload("data:    [DONE]", p), None);
+            // 标准形状（含空心跳）
+            assert_eq!(unparsable_sse_payload(r#"data: {"choices":[]}"#, p), None);
+            assert_eq!(
+                unparsable_sse_payload(r#"data: {"choices":[{"delta":{}}]}"#, p),
+                None
+            );
+        }
+        // 合法 Anthropic 事件没有 choices 键，不得被 OpenAI 那条形状臂误伤
+        assert_eq!(
+            unparsable_sse_payload(r#"data: {"type":"message_start","message":{}}"#, Anthropic),
+            None
+        );
+        // OpenAI 形状缺失：错误信封 / 外来载荷照样丢内容，必须计入
+        assert_eq!(
+            unparsable_sse_payload(r#"data: {"code":401,"msg":"invalid api key"}"#, Openai),
+            Some(r#"{"code":401,"msg":"invalid api key"}"#)
+        );
+        assert_eq!(
+            unparsable_sse_payload(r#"data: {"id":"x","object":"unknown"}"#, Openai),
+            Some(r#"{"id":"x","object":"unknown"}"#)
+        );
     }
 
     #[test]

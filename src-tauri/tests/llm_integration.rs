@@ -876,6 +876,84 @@ async fn core_sse_clean_stream_has_no_unparsable_audit() {
 }
 
 #[tokio::test]
+async fn core_anthropic_sse_unparsable_chunk_logged() {
+    // Anthropic 分支的 parse_anthropic_event 与 OpenAI 侧同形态 `.ok()?`，
+    // 坏块计数必须两协议共用一处（否则这条路径上「回复少一段、日志无痕」原样存在）
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(
+        "event: message_start\n\
+         data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_mock\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"mock-model\",\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\
+         \n\
+         event: content_block_start\n\
+         data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\
+         \n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"te\n\
+         \n\
+         event: content_block_delta\n\
+         data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"半程回复\"}}\n\
+         \n\
+         event: message_stop\n\
+         data: {\"type\":\"message_stop\"}\n\
+         \n"
+            .into(),
+    ));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http_anthropic(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("Anthropic 单个坏块不得让整条流失败");
+
+    assert!(text.contains("半程回复"), "got: {text}");
+    assert!(
+        h.events().contains(&"llm.sse_chunk_unparsable"),
+        "Anthropic 坏块也应记审计：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
+async fn core_openai_error_envelope_midstream_counted_as_bad_chunk() {
+    // 中转网关（OneAPI 类）在流中间吐 `{"code":401,...}` 错误信封：JSON 合法但
+    // 没有 choices，解析器返回 None 后原本零痕迹消失——正文吐一半就没下文了
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"说到一半\"}}]}\n\n".to_string()
+            + "data: {\"code\":401,\"msg\":\"invalid api key\"}\n\n"
+            + "data: [DONE]\n\n",
+    ));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("错误信封不得让整条流崩掉");
+
+    assert!(text.contains("说到一半"), "已收到的正文不丢弃：{text}");
+    assert!(
+        h.events().contains(&"llm.sse_chunk_unparsable"),
+        "流中错误信封应计入坏块：{:?}",
+        h.events()
+    );
+}
+
+#[tokio::test]
 async fn core_truncated_stream_text_only_warns_but_returns() {
     // P1-1 防线另一支：干净 EOF 无 tool_calls 但有正文 → 不报错，
     // 正文追加「可能被截断」提示返回（用户已看到的内容不丢弃）
