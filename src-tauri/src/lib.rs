@@ -311,9 +311,14 @@ pub fn run() {
                 .build(),
         )
         .setup(move |app| {
-            // 全局 panic 钩子尽早装：panic 写 ERROR 审计（镜像 error.log），
-            // 线程静默死亡可反推。setup 前的 panic 只剩默认 stderr（GUI 下不可见）
-            crate::audit::install_panic_hook(db::data_dir(app.handle()));
+            // 日志两件套尽早就位：全局 panic 钩子（panic 写 ERROR 审计）+
+            // log 门面（log::warn! 等标准宏直落 bot.log）。之前的 log 宏调用
+            // 被静默丢弃（未初始化语义），最早期路径用 audit_event!
+            let log_dir = db::data_dir(app.handle());
+            crate::audit::install_panic_hook(log_dir.clone());
+            if log::set_boxed_logger(Box::new(crate::audit::AuditLogger::new(log_dir))).is_ok() {
+                log::set_max_level(log::LevelFilter::Info);
+            }
 
             // 本地 HTTP API 状态（默认关闭，设置页开关控制）
             app.manage(api_server::ApiState::default());
@@ -383,7 +388,7 @@ pub fn run() {
                 if api_auth::should_autostart(&handle) {
                     let state = app.state::<api_server::ApiState>();
                     if let Err(e) = api_handlers::commands::api_start(handle, state) {
-                        eprintln!("[api] auto-start failed: {e}");
+                        log::warn!(target: "api", "auto-start failed: {e}");
                     }
                 }
             }
@@ -394,14 +399,14 @@ pub fn run() {
                 // schema 版本先补：写回保留全部既有字段（含明文 key），
                 // 所以必须在下面两个「清明文」迁移之前跑，顺序反了会丢 key
                 if let Err(e) = bot::migrate_bot_config_schema(&handle) {
-                    eprintln!("[bot] config schema migration failed: {e}");
+                    log::warn!(target: "bot::migrate", "config schema migration failed: {e}");
                 }
                 if let Err(e) = bot::migrate_legacy_key(&handle) {
-                    eprintln!("[bot] legacy key migration failed: {e}");
+                    log::warn!(target: "bot::migrate", "legacy key migration failed: {e}");
                 }
                 // Tavily/Brave 搜索 key 同样从配置文件明文迁进 keyring
                 if let Err(e) = bot::migrate_search_keys(&handle) {
-                    eprintln!("[bot] search key migration failed: {e}");
+                    log::warn!(target: "bot::migrate", "search key migration failed: {e}");
                 }
                 // MCP env/headers 明文 → keyring/降级文件（幂等；
                 // 无机密 = 短路）。持 CONFIG_WRITE_LOCK（与其他迁移同款互斥）；
@@ -411,7 +416,7 @@ pub fn run() {
                     if let Err(e) =
                         crate::bot::config::io::migrate_mcp_server_secrets_locked(&handle)
                     {
-                        eprintln!("[bot] mcp secret migration failed: {e}");
+                        log::warn!(target: "bot::migrate", "mcp secret migration failed: {e}");
                     }
                     drop(g);
                 }
@@ -476,8 +481,9 @@ pub fn run() {
             let shortcut = app.global_shortcut();
             for (i, key) in [Code::KeyW, Code::KeyN, Code::KeyT].iter().enumerate() {
                 if let Err(e) = shortcut.register(Shortcut::new(Some(hotkey_mods), *key)) {
-                    eprintln!(
-                        "[shortcut] 注册快捷键 {} 失败（可能被其他应用占用）：{e}",
+                    log::warn!(
+                        target: "shortcut",
+                        "注册快捷键 {} 失败（可能被其他应用占用）：{e}",
                         ["W（唤起主窗口）", "N（快速新建）", "T（切换主题）"][i]
                     );
                 }
@@ -563,7 +569,10 @@ pub fn run() {
                     Ok(())
                 };
                 if let Err(e) = build_tray() {
-                    eprintln!("[tray] 系统托盘初始化失败（Linux 可能缺 libappindicator）：{e}");
+                    log::warn!(
+                        target: "tray",
+                        "系统托盘初始化失败（Linux 可能缺 libappindicator）：{e}"
+                    );
                 }
             }
 
@@ -805,7 +814,7 @@ mod capability_tests {
 #[cfg(test)]
 mod tray_tests {
     /// 托盘初始化不得限定 cfg(windows) —— tauri 2 tray-icon 三平台支持，
-    /// Linux/macOS 走同一初始化（Linux 缺 libappindicator 时降级 eprintln，不启动失败）。
+    /// Linux/macOS 走同一初始化（Linux 缺 libappindicator 时降级记日志，不启动失败）。
     /// 本测试锁死 lib.rs 防回退；编译通过即证明 macOS 平台托盘代码路径有效。
     #[test]
     fn tray_init_is_not_windows_gated() {
@@ -821,11 +830,11 @@ mod tray_tests {
             !tail.contains("#[cfg("),
             "托盘初始化不得被 cfg 平台门限制（P2-31 三平台）: {tail:?}"
         );
-        // 初始化失败必须降级（不得用 ? 让 setup 失败）
+        // 初始化失败必须降级记日志（stderr 或 log 门面，不得用 ? 让 setup 失败）
         let after = &text[pos..];
         let scope = &after[..after.len().min(2500)];
         assert!(
-            scope.contains("eprintln!"),
+            scope.contains("eprintln!") || scope.contains("log::warn!"),
             "托盘初始化失败必须降级记日志，不得中断启动: {scope:?}"
         );
     }

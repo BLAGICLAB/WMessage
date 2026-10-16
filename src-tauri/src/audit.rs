@@ -663,6 +663,52 @@ pub fn install_panic_hook(log_dir: std::path::PathBuf) {
     }));
 }
 
+/// `log` crate 门面（lib setup 安装一次）：新代码用标准宏 `log::warn!` 等
+/// 直接落 bot.log（行格式 `[ts] LEVEL | <target> | msg=<消息>`），不必再找
+/// 需要 AppHandle 的 audit_event!；WARN/ERROR 随 write_at 自动镜像 error.log。
+/// 两个纪律：
+/// - 门面在 setup 首行就位，之前的 log 宏调用被静默丢弃（log crate 未初始化
+///   语义）——启动最早期路径仍用 audit_event! / write_at；
+/// - 本实现写失败走 append_line 的 eprintln（日志自身失败禁止再发 log 宏，
+///   否则递归）。audit 自身的写失败 eprintln 因此永不迁移。
+pub struct AuditLogger {
+    dir: std::path::PathBuf,
+}
+
+impl AuditLogger {
+    pub fn new(dir: std::path::PathBuf) -> Self {
+        Self { dir }
+    }
+}
+
+impl log::Log for AuditLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let level = match record.level() {
+            log::Level::Error => AuditLevel::Error,
+            log::Level::Warn => AuditLevel::Warn,
+            log::Level::Info => AuditLevel::Info,
+            // max_level Info 已挡，这里双保险（防 enabled 语义被放宽）
+            log::Level::Debug | log::Level::Trace => return,
+        };
+        let msg = escape_for_log(&record.args().to_string(), 2000);
+        write_at(
+            &self.dir.join("bot.log"),
+            level,
+            record.target(),
+            &[("msg", &msg)],
+        );
+    }
+
+    fn flush(&self) {}
+}
+
 /// 结构化审计事件宏（post-execute 钩子用）
 /// 用法：
 ///   audit_event!(app, AuditLevel::Info, "tool_done",
@@ -947,6 +993,50 @@ mod tests {
             "non-string panic payload",
             "非字符串 payload 不 panic、给占位文案"
         );
+    }
+
+    // ── log crate 门面（AuditLogger）──
+
+    #[test]
+    fn audit_logger_maps_levels_targets_and_mirrors() {
+        use log::Log as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let logger = AuditLogger::new(tmp.path().to_path_buf());
+
+        // Record 借用 args，不能跨语句返回——宏保证构造与使用同语句
+        macro_rules! rec {
+            ($level:expr, $msg:expr) => {
+                log::Record::builder()
+                    .args(format_args!($msg))
+                    .level($level)
+                    .target("my_mod::path")
+                    .build()
+            };
+        }
+        logger.log(&rec!(log::Level::Info, "info-msg"));
+        logger.log(&rec!(log::Level::Warn, "warn-msg"));
+        logger.log(&rec!(log::Level::Error, "error-msg"));
+        logger.log(&rec!(log::Level::Debug, "debug-msg"));
+
+        let bot = std::fs::read_to_string(tmp.path().join("bot.log")).unwrap();
+        assert!(bot.contains("INFO | my_mod::path | msg=info-msg"), "{bot}");
+        assert!(bot.contains("WARN | my_mod::path | msg=warn-msg"), "{bot}");
+        assert!(
+            bot.contains("ERROR | my_mod::path | msg=error-msg"),
+            "{bot}"
+        );
+        assert!(!bot.contains("debug-msg"), "Debug 不得落盘: {bot}");
+
+        // WARN/ERROR 镜像 error.log，Info 不镜像
+        let err_log = std::fs::read_to_string(tmp.path().join("error.log")).unwrap();
+        let lines: Vec<&str> = err_log.lines().collect();
+        assert_eq!(lines.len(), 2, "Info 不镜像: {err_log}");
+        assert!(lines[0].contains("warn-msg"));
+        assert!(lines[1].contains("error-msg"));
+
+        let md = |level: log::Level| log::Metadata::builder().level(level).target("t").build();
+        assert!(logger.enabled(&md(log::Level::Info)), "Info 在门限内");
+        assert!(!logger.enabled(&md(log::Level::Debug)), "Debug 被门限挡下");
     }
 
     // ── 诊断卡命令（error_log_read / logs_bundle_text）──

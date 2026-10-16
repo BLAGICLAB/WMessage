@@ -23,6 +23,19 @@ bot.log 原来只有「当前 + 一份 .old」约 10MB 滚动窗口，且有个�
 - 保留期与发现速度互补：设置页诊断卡（读 error.log）把用户报障从「找文件
   发你」降到「点一下粘贴」，两者合起来才是「及时发现 + 能反推」的闭环。
 
+同批附带（证据捕获与门面）：
+
+- **panic 钩子 / 前端全局错误**：过去 162 处 eprintln 只进 stderr（GUI 下无人
+  接收），前端 console.error 只进没人开的 WebView 控制台——故障留痕的载体
+  本身不可见。全局 panic 钩子 + window error/unhandledrejection 上报把两条
+  断点都接进审计。
+- **选 log crate 不选 tracing**：span/异步追踪对单人桌面应用是依赖重、收益低；
+  `log` 宏是社区标准门面且已在依赖树里（零新增传递依赖）。纪律两条：audit
+  自身写失败保持 eprintln（发 log 宏会递归）；门面 setup 首行就位，之前的
+  log 宏被静默丢弃（log crate 语义），最早期路径仍用 audit_event!。
+- 坑：log 0.4.33 起移除 default feature，`log = "0.4"` 不带 std——
+  `set_boxed_logger` 编译期不存在，必须显式 `features = ["std"]`。
+
 ## 2026-10-16（周五）头像从「任意上传」改「内置 16 选 1」
 
 上传制头像有两个结构性问题，预设 ID 制一并解决：

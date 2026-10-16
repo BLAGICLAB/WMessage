@@ -53,17 +53,26 @@ pub(crate) fn log_line(path: &Option<PathBuf>, line: &str) {
             // 字符,会伪造日志行、隐藏真实活动、或在行导向工具里错位(ESC 还
             // 能注入终端转义序列)。行级消毒（控制字符全集，不碰 | 不截断）
             let sanitized = crate::bot::log_sanitize::sanitize_log_line(line);
-            // 审计行写失败可见化（磁盘满/权限）——访问日志静默丢失不可接受
+            // 审计行写失败可见化（磁盘满/权限）——访问日志静默丢失不可接受。
+            // log 门面落 bot.log（与 api.log 不同文件、不同写入路径，无递归）
             if let Err(e) = writeln!(
                 f,
                 "[{}] {sanitized}",
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
             ) {
-                eprintln!("[ratelimit] 访问日志写入失败（{}）：{e}", p.display());
+                log::warn!(
+                    target: "api_handlers::ratelimit",
+                    "访问日志写入失败（{}）：{e}",
+                    p.display()
+                );
             }
         }
         Err(e) => {
-            eprintln!("[ratelimit] 访问日志打开失败（{}）：{e}", p.display());
+            log::warn!(
+                target: "api_handlers::ratelimit",
+                "访问日志打开失败（{}）：{e}",
+                p.display()
+            );
         }
     }
 }

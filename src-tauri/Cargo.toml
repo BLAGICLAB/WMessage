@@ -49,6 +49,10 @@ tauri-plugin-clipboard-manager = "2"
 
 rusqlite = { version = "0.37", features = ["bundled"] }
 chrono = "0.4"
+# 日志门面（标准宏 log::warn! 等直落 audit bot.log）：stdlib 无此能力，
+# 自造宏是重复造轮子——log crate 零传递依赖、社区唯一事实标准。
+# std 必须显式开：0.4.33 起移除了 default feature（不开则 set_boxed_logger 不存在）
+log = { version = "0.4", features = ["std"] }
 
 # 本地 HTTP API（127.0.0.1 微服务 + SSE）
 tiny_http = "0.12"
