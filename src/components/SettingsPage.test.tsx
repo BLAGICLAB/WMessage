@@ -592,6 +592,213 @@ describe("SettingsPage", () => {
     expect(screen.getAllByText("（未命名）").length).toBe(1);
   });
 
+  it("大模型 API 配置：已有在用模型时点预设 → 只加条目不抢 active（未验证厂商不得接管全局）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          // 在用：anthropic MiniMax（已验证 active）；点 openai DeepSeek 预设不得顶掉
+          modelsByProvider: {
+            openai: [],
+            anthropic: [
+              {
+                id: "m-mm",
+                label: "MiniMax",
+                baseUrl: "https://api.minimaxi.com/anthropic",
+                model: "MiniMax-M3",
+                vendor: "MiniMax",
+                enabled: true,
+              },
+            ],
+          },
+          activeModelId: { openai: null, anthropic: "m-mm" },
+          apiProvider: "anthropic",
+          verifiedVendors: ["MiniMax"],
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    await user.click(screen.getByRole("button", { name: "添加厂商" }));
+    await user.click(screen.getByRole("button", { name: "DeepSeek" }));
+    // 预设立即落盘：条目进 openai 列表，但协议与 active 仍指 MiniMax
+    await waitFor(() => {
+      const setCalls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_set_config",
+      );
+      expect(setCalls.length).toBeGreaterThan(0);
+      const arg = setCalls[setCalls.length - 1]![1] as {
+        config: {
+          apiProvider?: string;
+          modelsByProvider: {
+            openai: { vendor?: string; enabled?: boolean }[];
+            anthropic: { id: string }[];
+          };
+          activeModelId: { openai: string | null; anthropic: string | null };
+        };
+      };
+      expect(arg.config.apiProvider).toBe("anthropic");
+      expect(arg.config.activeModelId.anthropic).toBe("m-mm");
+      expect(arg.config.activeModelId.openai).toBeNull();
+      expect(
+        arg.config.modelsByProvider.openai.some(
+          (m) => m.vendor === "DeepSeek" && m.enabled,
+        ),
+      ).toBe(true);
+      expect(arg.config.modelsByProvider.anthropic.map((m) => m.id)).toEqual([
+        "m-mm",
+      ]);
+    });
+  });
+
+  it("大模型 API 配置：空配置点预设 → 照旧接管协议与 active（首接语义不变）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          modelsByProvider: { openai: [], anthropic: [] },
+          activeModelId: { openai: null, anthropic: null },
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    await user.click(screen.getByRole("button", { name: "添加厂商" }));
+    await user.click(screen.getByRole("button", { name: /Anthropic/ }));
+    await waitFor(() => {
+      const setCalls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_set_config",
+      );
+      expect(setCalls.length).toBeGreaterThan(0);
+      const arg = setCalls[setCalls.length - 1]![1] as {
+        config: {
+          apiProvider?: string;
+          activeModelId: { anthropic: string | null };
+          modelsByProvider: { anthropic: { vendor?: string }[] };
+        };
+      };
+      expect(arg.config.apiProvider).toBe("anthropic");
+      expect(arg.config.activeModelId.anthropic).toBeTruthy();
+      expect(arg.config.modelsByProvider.anthropic[0]!.vendor).toBe(
+        "Anthropic",
+      );
+    });
+  });
+
+  it("设为当前使用：未验证厂商菜单项禁用（先测试连接）；已验证厂商可切换", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_get_config")
+        return {
+          // DeepSeek 未验证却占着 active（存量坏指针）；Kimi 已验证未启用
+          modelsByProvider: {
+            openai: [
+              {
+                id: "m-ds",
+                label: "DS",
+                baseUrl: "https://api.deepseek.com/v1",
+                model: "deepseek-v4-flash",
+                vendor: "DeepSeek",
+                enabled: true,
+              },
+            ],
+            anthropic: [
+              {
+                id: "m-kimi",
+                label: "K2",
+                baseUrl: "https://api.moonshot.cn/anthropic",
+                model: "kimi-k3",
+                vendor: "Kimi",
+                enabled: true,
+              },
+            ],
+          },
+          activeModelId: { openai: "m-ds", anthropic: null },
+          apiProvider: "openai",
+          verifiedVendors: ["Kimi"],
+          hasApiKey: true,
+          bypassLlmOnPreStepHit: true,
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "api_status")
+        return { enabled: false, port: 4763, token: "" };
+      if (cmd === "profile_get")
+        return {
+          user: { name: "我", avatarId: null },
+          bot: { name: "机器人", avatarId: null },
+        };
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status")
+        return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "模型设置" }));
+    // 左栏进 DeepSeek 厂商页（未验证）
+    await user.click(await screen.findByRole("button", { name: "DeepSeek" }));
+    expect(await screen.findByText("DS")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "厂商 DeepSeek 更多操作" }),
+    );
+    // DeepSeek 是当前使用厂商但未验证 → 菜单项禁用（重接管也要先过测试连接）
+    expect(
+      screen.getByRole("menuitem", { name: "当前使用 ✓" }),
+    ).toBeDisabled();
+    // 切到 Kimi（已验证）→ 菜单项可点，点击后接管全局（状态更新为「当前使用 ✓」）
+    await user.click(screen.getByRole("button", { name: "Kimi" }));
+    expect(await screen.findByText("K2")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "厂商 Kimi 更多操作" }),
+    );
+    const item = screen.getByRole("menuitem", { name: "设为当前使用" });
+    expect(item).toBeEnabled();
+    await user.click(item);
+    await user.click(
+      screen.getByRole("button", { name: "厂商 Kimi 更多操作" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", { name: "当前使用 ✓" }),
+    ).toBeInTheDocument();
+  });
+
   it("大模型 API 配置：切协议 → 列表整体切换（OpenAI 模型不在 Anthropic 协议下显示）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

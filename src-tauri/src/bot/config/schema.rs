@@ -145,6 +145,27 @@ pub fn active_model_entry<'a>(
         .or_else(|| list.first())
 }
 
+/// 厂商可用性守卫（请求装配前 / 切 active 前调用）：条目带 vendor（非空）且该
+/// 厂商不在 verified_vendors（连接测试未通过 / 失败被移出 / Base URL 或协议
+/// 变更后失效）→ Err 可行动文案。verified_vendors 此前只是聊天下拉的 UI 过滤，
+/// 设置页「设为当前使用」仍能让未验证厂商成为全局 active，任务执行/聊天带无效
+/// key 出门换 401——本守卫是请求侧的统一防线。
+/// 无 vendor 的老条目没有验证概念 → 放行（与聊天下拉过滤同口径）。
+pub fn ensure_vendor_verified(
+    vendor: Option<&str>,
+    verified_vendors: &[String],
+) -> Result<(), String> {
+    let Some(v) = vendor.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(());
+    };
+    if verified_vendors.iter().any(|x| x == v) {
+        return Ok(());
+    }
+    Err(format!(
+        "厂商「{v}」未通过连接测试，已拦截请求：请到 设置→模型厂商 完成「测试连接」后再试；或在聊天区 🧠 下拉切换到已验证的模型"
+    ))
+}
+
 /// 三处请求装配（聊天主循环 / 摘要 / Planner）共用的条目级推理参数解析结果。
 /// `max_tokens` 已过优先级与钳制，可直接用于 Anthropic 请求体与
 /// reasoning::resolve 的 thinking budget 夹紧。
@@ -360,6 +381,38 @@ pub fn inference_for_entry(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+    }
+}
+
+#[cfg(test)]
+mod vendor_guard_tests {
+    use super::*;
+
+    #[test]
+    fn guard_blocks_unverified_vendor_with_actionable_message() {
+        let err = ensure_vendor_verified(Some("DeepSeek"), &["MiniMax".into()])
+            .expect_err("未验证厂商必须拦截");
+        assert!(
+            err.contains("DeepSeek") && err.contains("测试连接"),
+            "{err}"
+        );
+        // 前后空白不影响判定：trim 后命中名单即放行
+        assert!(ensure_vendor_verified(Some(" MiniMax "), &["MiniMax".into()]).is_ok());
+    }
+
+    #[test]
+    fn guard_passes_vendorless_legacy_entries_and_empty_vendor() {
+        // 无 vendor 老条目 / 空 vendor / 空白 vendor 都没有验证概念 → 放行
+        assert!(ensure_vendor_verified(None, &[]).is_ok());
+        assert!(ensure_vendor_verified(Some(""), &[]).is_ok());
+        assert!(ensure_vendor_verified(Some("  "), &[]).is_ok());
+    }
+
+    #[test]
+    fn guard_blocks_when_verified_list_empty() {
+        // 迁移期存量：条目带 vendor 但从未点过测试连接 → 拦截（与聊天下拉
+        // 过滤同口径；收尾引导横幅已指路逐厂商补测）
+        assert!(ensure_vendor_verified(Some("MiniMax"), &[]).is_err());
     }
 }
 

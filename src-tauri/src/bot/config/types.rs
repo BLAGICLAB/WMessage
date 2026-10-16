@@ -575,6 +575,8 @@ pub struct ResolvedModel {
     pub model: String,
     pub api_provider: String,
     pub api_key: String,
+    /// 条目所属厂商（ensure_vendor_verified 判定用；老条目无 vendor → None）
+    pub vendor: Option<String>,
     /// 条目级推理参数（温度/top_p/system_prompt/max_tokens 钳制按覆盖条目，
     /// 防跨协议钳制错位）
     pub inference: crate::bot::EffectiveInference,
@@ -641,6 +643,7 @@ pub fn resolve_model_override(
         model: entry.model.clone(),
         api_provider: provider.to_string(),
         api_key,
+        vendor: entry.vendor.clone(),
         inference: super::schema::inference_for_entry(
             entry,
             crate::bot::ApiProvider::from_cfg(Some(provider)),

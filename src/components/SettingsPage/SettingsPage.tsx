@@ -84,9 +84,10 @@ import { Toggle } from "../Toggle/Toggle";
 import { ProviderLogo } from "./ProviderLogo";
 import { ApiProviderSelect } from "./ApiProviderSelect";
 
-/** 供应商预设（添加供应商网格）：点击 = 切协议 + 预填 baseUrl/模型列表，
- *  完全落在现有双协议数据模型内（同一协议仅一份配置，预设会覆盖该协议当前
- *  Base URL/模型列表——网格页注明）。模型名用户可改。
+/** 供应商预设（添加供应商网格）：点击 = 预填 baseUrl/模型列表（全局无 active
+ *  时连协议+active 一起接管，见 applyVendorModels），完全落在现有双协议数据
+ *  模型内（同一协议仅一份配置，预设会覆盖该协议当前同厂商条目——网格页注明）。
+ *  模型名用户可改。
  *  keyUrl = 厂商控制台的 API Key 获取页（详情页「获取 API Key」外链）。 */
 type PresetModel = { id: string; contextK?: number; capabilities?: string[] };
 type ProviderPreset = {
@@ -375,11 +376,16 @@ export function SettingsPage({
   const [metaSyncBusy, setMetaSyncBusy] = useState(false);
   const [metaSyncMsg, setMetaSyncMsg] = useState("");
   const [metaApplyBusy, setMetaApplyBusy] = useState(false);
-  /** 预设/模型库共用的写入逻辑：同协议下替换同名厂商旧条目、首条启用+active、
+  /** 预设/模型库共用的写入逻辑：同协议下替换同名厂商旧条目、首条启用、
    *  其余 enabled:false；覆盖后立即落盘（skipReload 同 toggleTavily 模式）。
    *  「同名」判定走 normalizeVendorName：预设名与模型库 provider_name
    *  的大小写/命名差异不再造成同厂商两条目并存；合并保留**既有厂商名**——
-   *  keyring vendor:{名} 条目与 verified_vendors 都按既有名登记，换成新名即丢 key。 */
+   *  keyring vendor:{名} 条目与 verified_vendors 都按既有名登记，换成新名即丢 key。
+   *  active 只在两情形下交给本厂商：全局本就由本厂商持有（条目刷新后重指首条，
+   *  防悬空）、或全局无任何 active（空配置首接）。否则只加条目不动
+   *  api_provider/active_model_id——点预设接入新厂商不该悄悄顶掉在用模型
+   *  （未验证厂商接管后任务执行/聊天全打未验证端点换 401）；换用走
+   *  「设为当前使用」，测试通过后才放行。 */
   const applyVendorModels = async (
     name: string,
     protocol: "openai" | "anthropic",
@@ -403,17 +409,29 @@ export function SettingsPage({
       vendor: existingName,
       enabled: i === 0,
     }));
+    const curActiveId = config.activeModelId[protocol] ?? null;
+    const activeIsMine =
+      config.apiProvider === protocol &&
+      curActiveId !== null &&
+      list.some(
+        (m) =>
+          m.id === curActiveId &&
+          normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) === norm,
+      );
+    const nothingActive =
+      !(config.activeModelId.openai ?? null) &&
+      !(config.activeModelId.anthropic ?? null);
+    const takeActive = activeIsMine || nothingActive;
     const next = {
       ...config,
-      apiProvider: protocol,
+      apiProvider: takeActive ? protocol : config.apiProvider,
       modelsByProvider: {
         ...config.modelsByProvider,
         [protocol]: [...kept, ...flagged],
       },
-      activeModelId: {
-        ...config.activeModelId,
-        [protocol]: flagged[0]?.id ?? null,
-      },
+      activeModelId: takeActive
+        ? { ...config.activeModelId, [protocol]: flagged[0]?.id ?? null }
+        : config.activeModelId,
     };
     setConfig(next);
     // skipReload：本地 state 已是合并后最新（loadConfig 会拿旧 mock/磁盘值覆盖刚点字段）
@@ -1312,7 +1330,9 @@ export function SettingsPage({
     });
   };
 
-  /** 厂商页「＋ 添加模型」：新条目带厂商名；该厂商首条 → 自动 active */
+  /** 厂商页「＋ 添加模型」：新条目带厂商名；该厂商首条且目标协议槽位尚无
+   *  active（空配置首接）→ 自动 active。槽位已有 active 时不抢——否则新加的
+   *  未验证厂商会悄悄顶掉在用模型，任务执行/聊天跟着打错端点 */
   const addModelToVendor = () => {
     setConfig((c) => {
       if (!activeVendor) return c;
@@ -1334,9 +1354,10 @@ export function SettingsPage({
       return {
         ...c,
         modelsByProvider: { ...c.modelsByProvider, [from]: [...list, entry] },
-        activeModelId: hadModels
-          ? c.activeModelId
-          : { ...c.activeModelId, [from]: entry.id },
+        activeModelId:
+          hadModels || c.activeModelId[from]
+            ? c.activeModelId
+            : { ...c.activeModelId, [from]: entry.id },
       };
     });
   };
@@ -1371,8 +1392,12 @@ export function SettingsPage({
     setActiveVendor((cur) => (cur === name ? null : cur));
   };
 
-  /** 厂商页「设为当前使用」：把该厂商 active 模型设为全局聊天所用 */
+  /** 厂商页「设为当前使用」：把该厂商 active 模型设为全局聊天所用。
+   *  只放行已通过连接测试的厂商——未验证厂商的 key 没验证过，设成全局后
+   *  任务执行/聊天会拿它打请求换 401（后端 ensure_vendor_verified 同口径兜底） */
   const makeVendorActive = () => {
+    if (!activeVendor) return;
+    if (!config.verifiedVendors.includes(activeVendor)) return;
     setConfig((c) => {
       if (!activeVendor) return c;
       const from = protocolOfVendorIn(c, activeVendor);
@@ -2935,8 +2960,19 @@ export function SettingsPage({
                                         type="button"
                                         role="menuitem"
                                         className="w-full text-left px-3 py-1.5 text-xs rounded-lg text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                                        disabled={!activeVendorEntries.length}
-                                        title="把该厂商的 active 模型设为聊天当前使用的模型"
+                                        disabled={
+                                          !activeVendorEntries.length ||
+                                          !config.verifiedVendors.includes(
+                                            activeVendor,
+                                          )
+                                        }
+                                        title={
+                                          config.verifiedVendors.includes(
+                                            activeVendor,
+                                          )
+                                            ? "把该厂商的 active 模型设为聊天当前使用的模型"
+                                            : "先点模型行插头通过「测试连接」，再设为当前使用"
+                                        }
                                         onClick={() => {
                                           setVendorMenuOpen(false);
                                           makeVendorActive();

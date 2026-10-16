@@ -593,6 +593,21 @@ pub async fn run_model_loop(
         )?),
         None => None,
     };
+    // 请求装配前厂商可用性守卫：实际命中条目（override 命中条目 / 全局 active
+    // 条目）带厂商且未通过连接测试 → 响亮拦截，不带未验证 key 出门换 401。
+    // 「设为当前使用」入口已挡未验证厂商，这里兜存量坏指针 / 测试失败撤绿 /
+    // Base URL 改动失效三种来源；聊天与任务执行（🤖/⏰/📦/逐步）共用本循环，
+    // 一处拦截全链路生效
+    let serving_vendor = match &resolved {
+        Some(r) => r.vendor.clone(),
+        None => crate::bot::active_model_entry(
+            cfg.api_provider.as_deref(),
+            cfg.active_model_id.as_ref(),
+            cfg.models_by_provider.as_ref(),
+        )
+        .and_then(|e| e.vendor.clone()),
+    };
+    crate::bot::ensure_vendor_verified(serving_vendor.as_deref(), &cfg.verified_vendors)?;
     let api_key = match &resolved {
         Some(r) => r.api_key.clone(),
         None => crate::bot::read_llm_key(
@@ -2238,6 +2253,7 @@ mod inference_param_tests {
             model: "override-model".into(),
             api_provider: "openai".into(),
             api_key: "k".into(),
+            vendor: None,
             inference: crate::bot::EffectiveInference {
                 max_tokens: 4096,
                 temperature: Some(0.2),

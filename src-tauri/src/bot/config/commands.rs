@@ -337,6 +337,16 @@ pub fn apply_active_model_switch(cfg: &mut BotConfig, model_id: &str) -> Command
             reason: "模型 id 不在任一协议的模型列表中".into(),
         });
     }
+    // 目标条目带厂商且未通过连接测试 → 拒绝切换（与请求侧 ensure_vendor_verified
+    // 同一不变量：active 只指向已验证厂商；聊天下拉已过滤，这里兜非下拉入口）
+    let target_vendor = mbp
+        .openai
+        .iter()
+        .chain(mbp.anthropic.iter())
+        .find(|e| e.id == model_id)
+        .and_then(|e| e.vendor.clone());
+    schema::ensure_vendor_verified(target_vendor.as_deref(), &cfg.verified_vendors)
+        .map_err(CommandError::from)?;
     // 跨协议命中 → 协议跟着模型走（id 是前端 UUID，两边同时命中理论不可达；
     // 真发生则保持当前协议不动，防御处理）
     if in_anthropic && !in_openai {

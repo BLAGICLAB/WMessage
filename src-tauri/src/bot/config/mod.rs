@@ -53,8 +53,9 @@ pub use keyring::{
     read_vendor_key, write_search_key,
 };
 pub use schema::{
-    active_model_entry, effective_inference, inference_for_entry, migrate_bot_config_schema,
-    resolve_max_tokens, EffectiveInference, DEFAULT_MAX_TOKENS, MAX_MAX_TOKENS, MIN_MAX_TOKENS,
+    active_model_entry, effective_inference, ensure_vendor_verified, inference_for_entry,
+    migrate_bot_config_schema, resolve_max_tokens, EffectiveInference, DEFAULT_MAX_TOKENS,
+    MAX_MAX_TOKENS, MIN_MAX_TOKENS,
 };
 pub use types::{
     check_len, resolve_archive_after_days, resolve_model_override, ActiveModelId, ApiProvider,
@@ -278,6 +279,40 @@ mod tests {
             ..Default::default()
         };
         assert!(apply_active_model_switch(&mut empty, "a").is_err());
+    }
+
+    #[test]
+    fn apply_active_model_switch_rejects_unverified_vendor() {
+        // 条目带厂商且未过连接测试 → 拒绝切换，active 指针不动
+        //（已验证厂商 / 无 vendor 老条目不受影响）
+        let vendor_entry = |id: &str, vendor: &str| ModelEntry {
+            vendor: Some(vendor.into()),
+            ..entry(id, "https://x.example", "m-x")
+        };
+        let mut cfg = BotConfig {
+            api_provider: Some("openai".into()),
+            models_by_provider: Some(ModelsByProvider {
+                openai: vec![vendor_entry("new", "DeepSeek"), entry("legacy", "u", "m")],
+                anthropic: vec![vendor_entry("mm", "MiniMax")],
+            }),
+            active_model_id: Some(ActiveModelId {
+                openai: Some("legacy".into()),
+                anthropic: None,
+            }),
+            verified_vendors: vec!["MiniMax".into()],
+            ..Default::default()
+        };
+        assert!(apply_active_model_switch(&mut cfg, "new").is_err());
+        assert_eq!(
+            cfg.active_model_id.as_ref().unwrap().openai.as_deref(),
+            Some("legacy"),
+            "拒绝后 active 不动"
+        );
+        // 已验证厂商（跨协议）照常切
+        apply_active_model_switch(&mut cfg, "mm").expect("已验证厂商应放行");
+        assert_eq!(cfg.api_provider.as_deref(), Some("anthropic"));
+        // 无 vendor 老条目无验证概念，照常切
+        apply_active_model_switch(&mut cfg, "legacy").expect("老条目应放行");
     }
 
     #[test]

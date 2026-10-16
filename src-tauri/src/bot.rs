@@ -81,6 +81,7 @@ pub use config::{
     check_len,
     config_path,
     effective_inference,
+    ensure_vendor_verified,
     has_api_key,
     has_search_key,
     memory_tuning_get,
