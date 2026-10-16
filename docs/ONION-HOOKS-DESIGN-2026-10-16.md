@@ -499,6 +499,37 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 
 每期一个提交、配单测、跑 `scripts/test-fast.sh`——与仓内既有纪律一致。
 
+### 8.1 两条线的验收条目
+
+**独立线 A（`ast_inspect`）** —— 零新增依赖，可先行：
+
+| # | 验收项 | 判定方式 |
+|---|---|---|
+| A1 | 新工具进 `TOOLS_TABLE`，`BUILTIN_TOOL_COUNT` 44 → 45，schema 是合法 JSON | `tools_json_matches_baseline` 基线同步更新后绿 |
+| A2 | `CODER_TOOLS` / `GENERAL_TOOLS` 含它；`RESEARCH_TOOLS` **不含** | `registry.rs:1820` 那条断言同步改 |
+| A3 | **调用前先过 `resolve_with_perm`**：strict 硬拒 / ask 弹窗，与 `tool_read_text_file` 同款 | 单测：未授权目录下 `ast_inspect` 被拒，且**沙箱脚本从未拿到该路径** |
+| A4 | run_python 开关未开且非 yolo → 返回「Python 编程未开启」 | 继承 `py_exec_sync` 的闸，**不重复实现**；单测断言文案透传 |
+| A5 | 非 `.py` 文件 → 明确不可用消息，提示走 `grep_files` | 单测：绝不静默换成文本检索结果 |
+| A6 | 四项能力各有用例：符号树 / 定义 / 引用 / 调用链 | fixture 小目录，跑真 `ast` |
+| A7 | 输出体积走 `ToolDef.max_output_chars` + 既有 `tool.output.over_budget` | 不新增钳制机制 |
+| A8 | **无新增依赖** | `Cargo.toml` 本次不动 |
+| A9 | SPEC 同步：工具清单 44 → 45、子 agent 验收形态 | 文档口径与代码一致 |
+
+**主线期 1（L4 钩子原型）** —— 先证明 seam 成立，再谈 API：
+
+| # | 验收项 | 判定方式 |
+|---|---|---|
+| B1 | 钩子注册表存在：进程级注册 + 会话级开关；**层序由调用栈保证**（不可跳层） | 结构上不存在「配置层序」这条路 |
+| B2 | **L4 只读**：钩子拿到的 `tool_call` 是只读引用 | 类型层面挡改写，不靠文档约定 |
+| B3 | 一个**内置**钩子跑通全链（真被 dispatch 三道闸入口调用） | 单测：钩子收到调用即计数 |
+| B4 | 钩子 panic 或返 Err → **记审计并放行**，不得中断主链路 | 单测：返 Err 的钩子不影响工具执行结果 |
+| B5 | 钩子返 Interrupt → 拒绝执行，且 `tool.call` / `tool.return` 配平 | 单测断言配平形状与既有两处 early-return 一致 |
+| B6 | 被禁用的层不触发 | 单测 |
+| B7 | **现有行为零回归** | `cargo nextest run` 全绿（当前 1665/1665） |
+
+两条线**互不阻塞**：A 只动 `registry.rs` + 新模块 + SPEC，B 只动 `dispatch.rs` +
+新 hooks 模块，无交叉写入；各自独立提交。
+
 ---
 
 ## 九、待拍板：清零
