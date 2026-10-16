@@ -1,0 +1,15 @@
+# validator.yaml — 公文合规校验、政策口径与指标一致性检查、代码评审与静态检查
+#
+# `profile: coder` 但把 edit_file / write_file 收掉：profile 给的是上限，
+# yaml 决定本次不用什么——这正是「只能收紧」模型的用例。
+# ast_inspect 必须显式列出：它是收窄清单里的一项，不列就会被交集收掉。
+
+onion_id: validator
+role: 公文合规校验、政策口径与指标一致性检查、代码评审与静态检查，只读
+profile: coder
+allowed: [read_text_file, list_files, grep_files, run_python, ast_inspect,
+          write_artifact_file, read_own_card]
+max_turn: 4
+temperature: 0
+hooks:
+  pre_tool: ""              # 只读钩子：只能拒绝，不能改参数

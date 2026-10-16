@@ -1,0 +1,15 @@
+# probe.yaml — 资料与代码探查，只读，产出结构化素材
+#
+# `allowed` 是**收窄清单**：实际生效取 profile 白名单 ∩ 本列表（只有收紧，
+# yaml 永远不能放宽 profile）。新增内置工具时不同步核对本文件，工具会被
+# 交集悄悄收掉——这是「配置看着生效、实际落空」最常见的一种。
+
+onion_id: probe
+role: 资料与代码探查，只读，产出结构化素材
+profile: research
+allowed: [web_search, fetch_url, list_files, read_text_file, grep_files, extract_document,
+          write_artifact_file, read_own_card]
+max_turn: 6
+temperature: 0.1
+hooks:
+  post_turn: ""             # 素材落产物目录由 write_artifact_file 承担，无需钩子

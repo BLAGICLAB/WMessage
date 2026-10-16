@@ -1399,6 +1399,11 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         },
     );
 
+    // per-onion 配置绑定（两层配置的 DB 层）：读会话的 onion_config 元列 + 落盘
+    // yaml，解析校验后进进程内缓存。放在守卫之后——守卫给的是运行时 profile
+    // 上限，本函数给的是「在上限内再收窄到 allowed」的那一层。
+    crate::bot_onions::bind_session(&app, &session_id);
+
     // 会话锁（用户向围观会话发消息 → 友好拒绝）+ 停止守卫（interactive=围观流式）
     let chat_guard = ChatGuard::acquire(&app, Some(session_id.as_str()));
     if chat_guard.is_err() {

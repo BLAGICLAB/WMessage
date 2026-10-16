@@ -19,6 +19,7 @@ pub mod bot_chat;
 mod bot_desktop;
 mod bot_fs;
 mod bot_model_loop;
+pub mod bot_onions;
 pub mod bot_orchestrator;
 mod bot_plan;
 mod bot_py;

@@ -15,6 +15,20 @@ pub fn apply_conn_pragmas(conn: &rusqlite::Connection) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// per-onion 配置的元列（幂等，老库补列）。
+///
+/// 只加两列，纪律是**能放进 yaml 的就别进 DB**：`onion_config` 存的是指向
+/// `<数据目录>/onions/<name>.yaml` 的文件名，`onion_max_turn` 是一处确实需要
+/// 每会话不同的覆盖。role / allowed / hooks 那类大文本一律不入库——会话列表
+/// 每次整表读进内存，且备份导出语义会变复杂。
+pub fn ensure_onion_config_columns(conn: &rusqlite::Connection) -> Result<(), String> {
+    super::ensure_columns(
+        conn,
+        "bot_sessions",
+        &[("onion_config", "TEXT"), ("onion_max_turn", "INTEGER")],
+    )
+}
+
 /// 多文件绑定：tasks 补 files 列（老库 ALTER 幂等）
 pub fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
     super::ensure_columns(conn, "tasks", &[("files", "TEXT")])

@@ -98,6 +98,58 @@ fn bot_session_create_with_kind_inner(
     })
 }
 
+/// 某会话的 per-onion 元配置（两层配置的 DB 侧）。
+///
+/// 独立小查询而不进 `bot_sessions_load` 的列表 SELECT：会话列表每次整表读进
+/// 内存，多两列是小事，但**子 agent 会话被 load 显式过滤掉**——真正用 onion
+/// 配置的就是它们，配置读不到等于这套配置没有消费者。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOnion {
+    /// 指向 `<数据目录>/onions/<name>.yaml` 的文件名（不含扩展名）
+    pub config: String,
+    /// 会话级 max_turn 覆盖；None = 用 yaml / 全局默认
+    pub max_turn: Option<i64>,
+}
+
+pub fn bot_session_onion(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Option<SessionOnion>, String> {
+    let mut stmt = conn
+        .prepare("SELECT onion_config, onion_max_turn FROM bot_sessions WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query(rusqlite::params![session_id])
+        .map_err(|e| e.to_string())?;
+    let Some(row) = rows.next().map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let config: Option<String> = row.get(0).map_err(|e| e.to_string())?;
+    let max_turn: Option<i64> = row.get(1).map_err(|e| e.to_string())?;
+    Ok(config
+        .filter(|c| !c.trim().is_empty())
+        .map(|config| SessionOnion { config, max_turn }))
+}
+
+/// 给会话绑定 per-onion 配置（设置页导入后调用；None = 解除绑定）。
+pub fn bot_session_set_onion(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    config: Option<&str>,
+    max_turn: Option<i64>,
+) -> Result<(), String> {
+    let n = conn
+        .execute(
+            "UPDATE bot_sessions SET onion_config = ?2, onion_max_turn = ?3 WHERE id = ?1",
+            rusqlite::params![session_id, config, max_turn],
+        )
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("会话 {session_id} 不存在"));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn bot_session_create(app: AppHandle, title: Option<String>) -> CommandResult<BotSession> {
     // open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，放在写锁外——

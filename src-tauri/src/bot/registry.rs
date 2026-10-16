@@ -1252,14 +1252,35 @@ pub fn profile_whitelist(profile: crate::db::SubagentProfile) -> &'static [&'sta
 
 /// 按会话选工具 schema：子 agent 会话 → profile 白名单 JSON；其他 → 默认全量。
 /// run_model_loop_core 每轮经此处取 tools（设计 §5.1 白名单 + §10 递归双保险①）。
-pub fn tools_json_for(session_id: Option<&str>) -> &'static str {
-    let profile = session_id
+///
+/// 绑了 per-onion 配置的会话走第三态：`运行时 profile ∩ yaml.allowed`。
+/// **运行时 profile 优先于 yaml 的 `profile:` 字段**——子 agent 会话的白名单
+/// 由派发时的 profile 决定，若让 yaml 的 profile 覆盖就成了「放宽」，与
+/// 「只有收紧、没有放宽」直接冲突。yaml 的 `profile` 只在没有子 agent 上下文的
+/// 会话上兜底，或作为「这份配置自称哪一档」被校验。
+///
+/// 返回 `Cow`：无配置时原样借静态串（热路径零分配不变），有配置收窄才现算 owned。
+pub fn tools_json_for(session_id: Option<&str>) -> std::borrow::Cow<'static, str> {
+    let runtime_profile = session_id
         .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
         .map(|c| c.profile);
-    match profile {
-        None => tools_json(),
-        Some(p) => profile_tools_json(p),
+    let cfg = crate::bot_onions::cached_for_session(session_id);
+    // 上限：运行时 profile 优先；都没有时用 yaml 自称的 profile 兜底
+    let profile = match (runtime_profile, cfg.as_ref().and_then(|c| c.profile_enum())) {
+        (Some(p), _) => Some(p),
+        (None, Some(p)) => Some(p),
+        (None, None) => None,
+    };
+    let Some(profile) = profile else {
+        return std::borrow::Cow::Borrowed(tools_json());
+    };
+    let allowed = cfg.as_ref().map(|c| c.allowed.as_slice()).unwrap_or(&[]);
+    let effective = crate::bot_onions::effective_tools(profile, allowed);
+    // 没有额外收窄 → 沿用按 profile 缓存的静态串，不重算
+    if effective.len() == profile_whitelist(profile).len() {
+        return std::borrow::Cow::Borrowed(profile_tools_json(profile));
     }
+    std::borrow::Cow::Owned(narrowed_tools_json(&effective))
 }
 
 /// 主 agent 的完整工具清单（阶段 3 MCP 挂载点，机制 A）：
@@ -1278,11 +1299,11 @@ pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static
     let base = tools_json_for(session_id);
     if is_subagent {
         // 子 agent 白名单：静态借用返回
-        return std::borrow::Cow::Borrowed(base);
+        return base;
     }
     let body = crate::bot::mcp::mount::mcp_tools_json_body();
     if body.is_empty() {
-        return std::borrow::Cow::Borrowed(base);
+        return base;
     }
     // base 恒以 "\n]" 收尾（tools_json 拼装格式）。契约破坏属"永不发生"态：
     // 每轮模型循环都走这里，告警限频防刷屏——第 1 次 + 之后每 100 次
@@ -1297,12 +1318,17 @@ pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static
             );
         }
     }
-    splice_mcp_body(base, &body)
+    // base 可能是 owned（本会话绑了 onion 配置、清单是现算的交集），
+    // 那种情况下没法借出去，只能再拷一份收尾
+    match base {
+        std::borrow::Cow::Borrowed(b) => splice_mcp_body(b, &body),
+        std::borrow::Cow::Owned(o) => std::borrow::Cow::Owned(splice_mcp_body_owned(o, &body)),
+    }
 }
 
 /// 摘尾拼接内核（纯函数，单测直打）：base 恒以 `"\n]"` 收尾、动态段恒以
 /// `",\n"` 起头（build_tools_json_body 构造保证），摘尾接段再补收尾；
-/// 任一侧契约破坏回退 base 原样返回（宁可本轮少挂 MCP 工具，不产出非法 JSON；
+/// 任一侧契约破坏回退 base 原样返回（宁可本轮少挂 MCP 工具，不产出非法 JSON;
 /// body 侧对偶检查为评审补充）。
 fn splice_mcp_body<'a>(base: &'a str, body: &str) -> std::borrow::Cow<'a, str> {
     let Some(head) = base.strip_suffix("\n]") else {
@@ -1316,6 +1342,23 @@ fn splice_mcp_body<'a>(base: &'a str, body: &str) -> std::borrow::Cow<'a, str> {
     s.push_str(body);
     s.push_str("\n]");
     std::borrow::Cow::Owned(s)
+}
+
+/// `splice_mcp_body` 的 owned 版：base 已持有所有权时借不出去，只能再拷一份。
+/// 契约判断与借用版逐条同源（都走 `strip_suffix` + body 前缀检查），
+/// 不另抄一份判定——抄一份就等于给了两处会各自漂的形状。
+fn splice_mcp_body_owned(base: String, body: &str) -> String {
+    let Some(head) = base.strip_suffix("\n]") else {
+        return base;
+    };
+    if !body.starts_with(",\n") {
+        return base;
+    }
+    let mut s = String::with_capacity(head.len() + body.len() + 2);
+    s.push_str(head);
+    s.push_str(body);
+    s.push_str("\n]");
+    s
 }
 
 pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
@@ -1348,6 +1391,29 @@ pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
         .get(profile.as_str())
         .map(|s| s.as_str())
         .unwrap_or_else(|| tools_json())
+}
+
+/// 按 `effective` 名字表拼一份收窄后的工具 JSON（owned）。
+///
+/// 与 `profile_tools_json` 同构（同样的 `[` / `,\n  ` / `\n]` 拼装与顺序），
+/// 区别只是过滤依据从「profile 静态白名单」换成「交集结果」。两者共用同一套
+/// 拼装形状，`splice_mcp_body` 那套契约（base 必须以 `\n]` 收尾）才成立。
+fn narrowed_tools_json(effective: &[&'static str]) -> String {
+    let mut s = String::with_capacity(4 * 1024);
+    s.push('[');
+    let mut first = true;
+    for tool in TOOLS_TABLE.iter() {
+        if !effective.contains(&tool.name) {
+            continue;
+        }
+        s.push_str(if first { "\n  " } else { ",\n  " });
+        first = false;
+        s.push_str(tool.schema);
+    }
+    s.push_str("\n]");
+    // 空集落成 `[\n]`：模型看到零工具时该收到空清单，而不是整份默认清单——
+    // 后者等于「配置看着生效、实际落空」的相反版本。
+    s
 }
 
 /// MUTATING_TOOLS 由 TOOLS_TABLE 过滤（mutating == true）。
@@ -1909,8 +1975,87 @@ mod registry_tests {
     /// 无会话上下文 → 默认全量（含编排三工具，不含 subagent-only）
     #[test]
     fn tools_json_for_plain_session_is_default() {
-        assert_eq!(tools_json_for(Some("not-a-subagent-session")), tools_json());
-        assert_eq!(tools_json_for(None), tools_json());
+        assert_eq!(
+            tools_json_for(Some("not-a-subagent-session")).as_ref(),
+            tools_json()
+        );
+        assert_eq!(tools_json_for(None).as_ref(), tools_json());
+    }
+
+    /// per-onion 收窄的**接线**守卫：绑了配置的会话，`tools_json_for` 真得少几个。
+    ///
+    /// 纯函数 `effective_tools` 的单测钉不住这条线——变异实测把
+    /// `tools_json_for` 里的 `allowed` 换成一个恒空的切片（配置完全不收窄、
+    /// 退回整份 profile 白名单），bot_onions 与本模块其余 32 条测试全绿，
+    /// 而这套配置的全部意义就是「收窄」失效了。所以这里直接断言**最终那份
+    /// JSON 里的工具名集合**，钉的是接线而不是中间量。
+    #[test]
+    fn tools_json_for_narrows_when_session_has_onion_config() {
+        fn names_of(session_id: Option<&str>) -> Vec<String> {
+            let v: serde_json::Value =
+                serde_json::from_str(tools_json_for(session_id).as_ref()).expect("清单须合法");
+            v.as_array()
+                .expect("顶层是数组")
+                .iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        }
+        let cfg = crate::bot_onions::parse(
+            "onion_id: validator\nprofile: coder\nallowed: [read_text_file, grep_files]\n",
+        )
+        .expect("配置应合法");
+
+        // 对照组：同一条会话，没绑配置时走默认全量清单
+        crate::bot_onions::bind_for_test("reg-onion-narrow", None);
+        let plain = names_of(Some("reg-onion-narrow"));
+        assert_eq!(
+            plain.len(),
+            tools_json_names().len(),
+            "未绑配置应拿默认全量"
+        );
+
+        // 实验组：绑一份只留两个工具的配置（yaml 的 profile=coder 提供上限）
+        crate::bot_onions::bind_for_test("reg-onion-narrow", Some(cfg));
+        let narrowed = names_of(Some("reg-onion-narrow"));
+        assert_eq!(
+            narrowed,
+            vec!["read_text_file".to_string(), "grep_files".to_string()],
+            "绑了 allowed=[read_text_file, grep_files] 的会话必须只拿到这两个"
+        );
+        assert!(narrowed.len() < plain.len(), "收窄必须真的变少");
+
+        // 解除绑定回到默认（设置页换配置/解绑的路径）
+        crate::bot_onions::bind_for_test("reg-onion-narrow", None);
+        assert_eq!(names_of(Some("reg-onion-narrow")), plain);
+    }
+
+    fn tools_json_names() -> Vec<String> {
+        let v: serde_json::Value = serde_json::from_str(tools_json()).expect("清单须合法");
+        v.as_array()
+            .expect("顶层是数组")
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// yaml 的 `profile:` 不得覆盖运行时的子 agent profile（否则就是「放宽」）。
+    #[test]
+    fn yaml_profile_cannot_widen_beyond_runtime_profile() {
+        fn names_of(session_id: Option<&str>) -> Vec<String> {
+            let v: serde_json::Value =
+                serde_json::from_str(tools_json_for(session_id).as_ref()).expect("清单须合法");
+            v.as_array()
+                .expect("顶层是数组")
+                .iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        }
+        // yaml 自称 coder（含写类工具），allowed 也不收窄
+        let cfg = crate::bot_onions::parse("onion_id: p\nprofile: coder\n").expect("配置应合法");
+        let sid = "reg-onion-widen";
+        crate::bot_onions::bind_for_test(sid, Some(cfg));
+        // 没有子 agent 上下文时 yaml 的 profile 兜底生效（配置本来的用法）
+        assert_eq!(names_of(Some(sid)).len(), CODER_TOOLS.len());
     }
 
     // 阶段 3：MCP 动态挂载点

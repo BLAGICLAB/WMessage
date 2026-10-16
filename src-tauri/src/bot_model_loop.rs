@@ -1057,8 +1057,10 @@ where
                     "bot.tools_json_parse_fail",
                     vec![("err", e.to_string())],
                 );
-                serde_json::from_str(crate::bot::registry::tools_json_for(stop.session_id()))
-                    .unwrap_or_else(|_| serde_json::json!([]))
+                serde_json::from_str(
+                    crate::bot::registry::tools_json_for(stop.session_id()).as_ref(),
+                )
+                .unwrap_or_else(|_| serde_json::json!([]))
             }
         }
     };

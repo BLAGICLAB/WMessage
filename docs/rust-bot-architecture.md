@@ -459,6 +459,7 @@ flowchart TD
 - `bot_chat.rs`
 - `bot_fs.rs`
 - `bot_model_loop.rs`
+- `bot_onions.rs`
 - `bot_plan.rs`
 - `bot_py.rs`
 - `bot_scheduler.rs`

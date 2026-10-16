@@ -27,6 +27,31 @@ pub enum HookLayer {
     PreTool,
 }
 
+impl HookLayer {
+    /// 已接线层的名（与配置层名一一对应）。
+    pub fn name(&self) -> &'static str {
+        match self {
+            HookLayer::PreTool => "pre_tool",
+        }
+    }
+
+    /// 配置层名 → 已接线层。返回 None = 该层在设计里存在但**尚未接线**，
+    /// 调用方必须把它当「没关成」记审计，不能静默当成功——一份配置写着
+    /// `post_tool: ""` 却没关掉任何东西，正是「配置看着生效、实际落空」。
+    pub fn from_name(name: &str) -> Option<HookLayer> {
+        match name {
+            "pre_tool" => Some(HookLayer::PreTool),
+            _ => None,
+        }
+    }
+
+    /// 注册表已接线的层名全集。
+    pub fn wired_names() -> &'static [&'static str] {
+        const WIRED: &[&str] = &["pre_tool"];
+        WIRED
+    }
+}
+
 /// L4 钩子看到的只读工具调用视图。
 ///
 /// 字段全是共享借用：`args` 是 `&str`、`trace` 是 `&ToolCallTrace`，

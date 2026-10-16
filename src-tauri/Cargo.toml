@@ -78,6 +78,16 @@ sha2 = "0.10"
 # 规则表 CSV 导入（Excel/WPS 表格模版）
 csv = "1"
 
+# per-onion 配置文件（<数据目录>/onions/<id>.yaml）解析。
+# 为什么不是 serde_json：这些 yaml 是要被人手改的，三份样例里全是行内说明注释，
+# JSON 承载不了注释，改好的配置会变成黑盒。
+# 为什么是 yaml_serde 而不是 serde_yaml / serde_yml：serde_yaml 0.9 已废弃
+# （RUSTSEC-2024-0320，2024-03-25 后无更新）；serde_yml 0.0.13 是同作者的兼容壳、
+# 其文档已指向自己的继任者 noyalib，而 noyalib 仍在 0.0.x（零 API 稳定性承诺）。
+# yaml_serde 是 YAML 官方组织（dtolnay 移交后）维护的分支，API 与 serde_yaml 同源，
+# 正常依赖只有 indexmap/itoa/libyaml-rs/ryu/serde 五个小库。
+yaml_serde = "0.10"
+
 # 危险操作确认：挂件弹窗等待用户批准/拒绝（oneshot 通道 + 超时）
 tokio = { version = "1", features = ["sync", "time", "rt"] }
 

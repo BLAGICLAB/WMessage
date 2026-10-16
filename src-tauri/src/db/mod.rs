@@ -201,7 +201,9 @@ pub fn open_db<R: tauri::Runtime>(
            title      TEXT NOT NULL,
            created_at INTEGER NOT NULL,
            updated_at INTEGER NOT NULL,
-           is_subagent INTEGER NOT NULL DEFAULT 0
+           is_subagent INTEGER NOT NULL DEFAULT 0,
+           onion_config TEXT,
+           onion_max_turn INTEGER
          );
          CREATE TABLE IF NOT EXISTS tag_merge_history (
            run_id        TEXT PRIMARY KEY,
