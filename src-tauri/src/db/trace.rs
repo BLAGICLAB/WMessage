@@ -9,7 +9,8 @@
 //! 钳制纪律（与审计 KV 500 字符同思路：本地库也防膨胀）：
 //! - `SPAN_TEXT_MAX`：args/result 单条 16KB（生成侧钳，本模块 `clamp_text` 单源）
 //! - `MAX_DIFF_LINES`：unified diff 行数上限（ 生成侧引用）
-//! - `TRACE_RETENTION_DAYS`：保留期默认 30 天（`retire_traces_before` 由命令/定时触发）
+//! - `TRACE_RETENTION_DAYS`：保留期默认 30 天（`retire_traces_before` 由设置页
+//!   手动命令与自动清扫 `spawn_retention_sweep` 两条触发）
 
 use rusqlite::OptionalExtension;
 use serde::Serialize;
@@ -22,6 +23,9 @@ pub const SPAN_TEXT_MAX: usize = 16 * 1024;
 pub const MAX_DIFF_LINES: usize = 2000;
 /// 执行痕迹保留期（天）；对齐 Claude Code checkpointing 的 cleanupPeriodDays 默认
 pub const TRACE_RETENTION_DAYS: i64 = 30;
+/// 自动清扫间隔（秒）：启动即跑一次，此后每天一次。保留期以「天」计，
+/// 每天一轮足够——早一轮晚一轮对 30 天的窗口没有可观察差别。
+const RETENTION_SWEEP_INTERVAL_SECS: u64 = 24 * 3600;
 
 /// trace 收尾状态值域（status 列；running 为起始态，其余四态只能由 trace_finish 写入）
 pub const TRACE_STATUS_RUNNING: &str = "running";
@@ -762,25 +766,66 @@ pub fn trace_detail(app: tauri::AppHandle, trace_id: i64) -> CommandResult<Optio
     }))
 }
 
-/// 保留期清理（数据管理入口，后续可挂定时器）：默认 TRACE_RETENTION_DAYS 天，钳 1..=365
-#[tauri::command]
-pub fn trace_clear_before(app: tauri::AppHandle, days: Option<i64>) -> CommandResult<usize> {
+/// 保留期截止时间戳（纯函数单测锚点）：days 先钳 1..=365 再折算成毫秒，
+/// 手动命令与自动清扫共用同一口径（钳制不一致会让「公示的保留期」与实际删的
+/// 范围在边界上对不上）。
+pub fn retention_cutoff_ms(days: i64, now_ms: i64) -> i64 {
+    now_ms - days.clamp(1, 365) * 86_400_000
+}
+
+/// 保留期清理内核：设置页手动命令与自动清扫共用。
+/// `days = None` 走 `TRACE_RETENTION_DAYS`（设置页公示的那个值）。
+pub fn retire_traces_before_days(
+    app: &tauri::AppHandle,
+    days: Option<i64>,
+) -> CommandResult<usize> {
     // 全表 DELETE：与其它写口同一把写锁，避免和并发写者抢 busy_timeout
     // （2s）后整条命令失败
     let _g = super::lock_db_write();
-    let conn = super::open_db(&app)?;
-    let days = days.unwrap_or(TRACE_RETENTION_DAYS).clamp(1, 365);
-    let before = chrono::Utc::now().timestamp_millis() - days * 86_400_000;
+    let conn = super::open_db(app)?;
+    let days = days.unwrap_or(TRACE_RETENTION_DAYS);
+    let before = retention_cutoff_ms(days, chrono::Utc::now().timestamp_millis());
     let removed = retire_traces_before(&conn, before)?;
     if removed > 0 {
         crate::audit::write_event(
-            &app,
+            app,
             crate::audit::AuditLevel::Info,
             "trace.retired",
             &[("removed", removed.to_string()), ("days", days.to_string())],
         );
     }
     Ok(removed)
+}
+
+/// 自动保留期清扫：启动即跑一次，此后每 24h 一次。
+///
+/// 为什么要有：设置页公示「执行痕迹保留期（天）30」，原先只有数据管理里的手动
+/// 按钮会删——公示的值与实际行为不符（长期不重启的应用等于永不清理）。
+/// 失败只记审计，不打断启动、不终止循环。
+pub fn spawn_retention_sweep(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            if let Err(e) = retire_traces_before_days(&handle, None) {
+                crate::audit::write_event(
+                    &handle,
+                    crate::audit::AuditLevel::Warn,
+                    "trace.retire_fail",
+                    &[("err", e.to_string())],
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(
+                RETENTION_SWEEP_INTERVAL_SECS,
+            ))
+            .await;
+        }
+    });
+}
+
+/// 保留期清理（数据管理手动入口；自动清扫走 spawn_retention_sweep）
+#[tauri::command]
+pub fn trace_clear_before(app: tauri::AppHandle, days: Option<i64>) -> CommandResult<usize> {
+    retire_traces_before_days(&app, days)
 }
 
 #[tauri::command]
@@ -1345,6 +1390,35 @@ mod tests {
             "未过期必须留"
         );
         assert_eq!(trace_query(&conn, None, None, None, 100).unwrap().len(), 2);
+    }
+
+    /// 保留期截止时间戳：钳制与折算（手动命令与自动清扫共用同一函数，
+    /// 口径分叉会让公示的保留期与实际删除范围在边界对不上）
+    #[test]
+    fn retention_cutoff_ms_clamps_and_converts() {
+        let now = 1_000_000_000_000i64;
+        assert_eq!(retention_cutoff_ms(30, now), now - 30 * 86_400_000);
+        // 越界钳到 1..=365：0/负数不解释成「删光」，999 也不放行
+        assert_eq!(retention_cutoff_ms(0, now), now - 86_400_000);
+        assert_eq!(retention_cutoff_ms(-7, now), now - 86_400_000);
+        assert_eq!(retention_cutoff_ms(999, now), now - 365 * 86_400_000);
+    }
+
+    /// 自动清扫必须真接在启动路径上，且走与手动命令同一个内核——
+    /// 「公示 30 天却没人删」正是本条要修的谎，只测函数存在等于没测接线。
+    /// 接线只能在 lib.rs 的 setup 里（AppHandle 型命令无法在单测里驱动），
+    /// 故以源码文本钉住，局限同 dispatch 的入参闸守卫。
+    #[test]
+    fn retention_sweep_is_wired_into_app_startup() {
+        assert_eq!(
+            TRACE_RETENTION_DAYS, 30,
+            "设置页公示的默认保留期，改它要连提示文案一起改"
+        );
+        let lib_src = include_str!("../lib.rs");
+        assert!(
+            lib_src.contains("db::trace::spawn_retention_sweep"),
+            "启动路径必须挂上保留期清扫，否则公示的保留期无人执行"
+        );
     }
 
     /// 保留期空转：无可删行返回 0，不 Err（定时器空跑是常态路径）

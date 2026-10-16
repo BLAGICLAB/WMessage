@@ -309,7 +309,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "trace.retention_days",
         label: "执行痕迹保留期（天）",
         category: "tools",
-        hint: "痕迹三表与回滚快照的保留期；数据管理可手动清理",
+        hint: "痕迹三表与回滚快照的保留期：启动即清理一次，此后每天一次；数据管理可手动清理",
         default: "30",
         editable: false,
     },
