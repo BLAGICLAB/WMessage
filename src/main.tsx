@@ -2,7 +2,12 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
+import { installGlobalErrorReport } from "./lib/globalErrorReport";
 import "./ui/main.css";
+
+// 全局 JS 错误上报：脚本崩溃 / 未处理 rejection → Rust 审计（frontend.js_error
+// / frontend.js_unhandled_rejection，签名去重 + error.log 镜像）
+installGlobalErrorReport();
 
 // CSP 违规上报（安全加固配套，docs/CSP-TIGHTEN-VERIFY-2026-10-07.md §8）：
 // securitypolicyviolation → Rust 审计日志（frontend.csp_violation），让运行时
