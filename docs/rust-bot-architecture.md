@@ -581,6 +581,8 @@ flowchart TD
 - `migration/recovery.rs`
 - `migration/rules.rs`
 - `migration/run.rs`
+- `migration/scan.rs`
+- `migration/sources.rs`
 - `migration/types.rs`
 
 ### `platform/`
