@@ -160,10 +160,10 @@ export function TaskDetailPanel({
         "bind_files",
         { paths },
       );
-      const { files, truncated } = mergeFiles(boundFiles, added);
+      const { files, truncated, applied } = mergeFiles(boundFiles, added);
       if (truncated)
         window.alert(`每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`);
-      if (files.length !== boundFiles.length) onUpdate(filesPatch(files));
+      if (applied > 0) onUpdate(filesPatch(files));
     } catch (e) {
       handleCommandError(e, "pick file");
     }
@@ -171,21 +171,18 @@ export function TaskDetailPanel({
 
   const pickFolder = async () => {
     try {
-      // 文件夹仍单选（最多一个文件夹）
-      if (boundFiles.some((f) => f.isDir)) {
-        window.alert("该任务已绑定文件夹，请先移除再重新绑定");
-        return;
-      }
+      // 文件夹单选（每卡一个文件夹槽）；文件与文件夹不互斥。
+      // 绑定一律加法：已有文件夹时新文件夹替换旧文件夹（占原位），不再拦截
       const selected = await open({ directory: true });
       if (typeof selected === "string") {
-        const { files, truncated } = mergeFiles(boundFiles, [
+        const { files, truncated, applied } = mergeFiles(boundFiles, [
           { path: selected, isDir: true },
         ]);
         if (truncated)
           window.alert(
             `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
           );
-        if (files.length !== boundFiles.length) onUpdate(filesPatch(files));
+        if (applied > 0) onUpdate(filesPatch(files));
       }
     } catch (e) {
       handleCommandError(e, "pick folder");
@@ -479,17 +476,19 @@ export function TaskDetailPanel({
                 ＋
               </button>
             )}
-            {!boundFiles.some((f) => f.isDir) &&
-              boundFiles.length < MAX_TASK_FILES && (
-                <button
-                  type="button"
-                  className="nm-btn px-2 py-0.5 text-[11px] text-[var(--t4)]"
-                  title="绑定文件夹"
-                  onClick={pickFolder}
-                >
-                  <FolderOpen size={11} aria-hidden />
-                </button>
-              )}
+            {/* 文件夹槽替换制：按钮常驻——已绑文件夹时再点即替换（占原位，
+                满员也可换槽不占新名额）；仅「满员且无文件夹槽」时隐藏 */}
+            {(boundFiles.some((f) => f.isDir) ||
+              boundFiles.length < MAX_TASK_FILES) && (
+              <button
+                type="button"
+                className="nm-btn px-2 py-0.5 text-[11px] text-[var(--t4)]"
+                title="绑定文件夹"
+                onClick={pickFolder}
+              >
+                <FolderOpen size={11} aria-hidden />
+              </button>
+            )}
             <button
               type="button"
               className="text-sm text-[var(--t5)] hover:text-[var(--danger)]"

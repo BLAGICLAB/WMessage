@@ -6,6 +6,7 @@
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
 import type { ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
   Check,
@@ -13,9 +14,18 @@ import {
   FolderOpen,
   ListTodo,
   Loader2,
+  Paperclip,
   Square,
 } from "lucide-react";
 import { basename } from "../../format";
+import { handleCommandError } from "../../lib/errorHandler";
+import {
+  MAX_TASK_FILES,
+  filesPatch,
+  mergeFiles,
+  taskFiles,
+  type TaskFile,
+} from "../../lib/taskFiles";
 import type { Task } from "../../types";
 
 /** 三类工作面。key 用窄口径字符串，不另立枚举 */
@@ -90,6 +100,26 @@ export function ContextRail({
   onTabChange,
 }: ContextRailProps) {
   const runningCount = subagents.filter((s) => s.running).length;
+
+  /** 聊天窗口直接把本地文件绑到任务卡：选文件 → bind_files 探测 isDir →
+   *  统一内核合并（去重/文件夹槽替换/10 上限）→ 走 onUpdateTask 既有落库通道。
+   *  绑定一律加法，不动卡上已有绑定 */
+  const bindFilesToTask = async (t: Task) => {
+    try {
+      const picked = await invoke<string[]>("pick_files_dialog");
+      if (!picked?.length) return;
+      const added = await invoke<TaskFile[]>("bind_files", { paths: picked });
+      const cur = taskFiles(t);
+      const { files, truncated, applied } = mergeFiles(cur, added);
+      if (truncated)
+        window.alert(
+          `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
+        );
+      if (applied > 0) onUpdateTask(t.id, filesPatch(files));
+    } catch (e) {
+      handleCommandError(e, "bind files to task", { silent: true });
+    }
+  };
 
   return (
     <aside
@@ -169,6 +199,15 @@ export function ContextRail({
                     onClick={() => onUpdateTask(t.id, { column: "done" })}
                   >
                     <Check size={12} aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded p-1 text-[var(--t5)] hover:bg-[var(--hover-bg)] hover:text-[var(--brand)]"
+                    title="绑定文件到此卡"
+                    aria-label={`绑定文件到 ${t.title}`}
+                    onClick={() => void bindFilesToTask(t)}
+                  >
+                    <Paperclip size={12} aria-hidden />
                   </button>
                 </div>
                 );

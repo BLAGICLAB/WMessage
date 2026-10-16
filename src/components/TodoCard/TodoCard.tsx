@@ -153,12 +153,12 @@ export function TodoCardView({
       );
       // await 期间可能有并发绑定：以最新 files 为合并基线，别丢掉那批改动
       const cur = taskFiles(taskRef.current);
-      const { files, truncated } = mergeFiles(cur, added);
+      const { files, truncated, applied } = mergeFiles(cur, added);
       if (truncated)
         window.alert(
           `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
         );
-      if (files.length !== cur.length) onUpdate(task.id, filesPatch(files));
+      if (applied > 0) onUpdate(task.id, filesPatch(files));
     } catch (e) {
       handleCommandError(e, "pick file");
     }
@@ -166,28 +166,20 @@ export function TodoCardView({
 
   const pickFolder = async () => {
     try {
-      // 文件夹仍单选（最多一个文件夹）；文件与文件夹不互斥
-      if (taskFiles(task).some((f) => f.isDir)) {
-        window.alert("该任务已绑定文件夹，请先移除再重新绑定");
-        return;
-      }
+      // 文件夹单选（每卡一个文件夹槽）；文件与文件夹不互斥。
+      // 绑定一律加法：已有文件夹时新文件夹替换旧文件夹（占原位），不再拦截
       const selected = await open({ directory: true });
-      // 文件夹追加进绑定列表（不再替换掉已绑文件），去重保序；
-      // 对话框挂起期间可能有并发绑定：isDir 复查与合并基线都取最新 files
+      // 对话框挂起期间可能有并发绑定：合并基线取最新 files
       if (typeof selected === "string") {
         const cur = taskFiles(taskRef.current);
-        if (cur.some((f) => f.isDir)) {
-          window.alert("该任务已绑定文件夹，请先移除再重新绑定");
-          return;
-        }
-        const { files, truncated } = mergeFiles(cur, [
+        const { files, truncated, applied } = mergeFiles(cur, [
           { path: selected, isDir: true },
         ]);
         if (truncated)
           window.alert(
             `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
           );
-        if (files.length !== cur.length) onUpdate(task.id, filesPatch(files));
+        if (applied > 0) onUpdate(task.id, filesPatch(files));
       }
     } catch (e) {
       handleCommandError(e, "pick folder");
@@ -513,9 +505,11 @@ export function TodoCardView({
                       ＋
                     </button>
                   )}
-                  {/* 文件与文件夹不互斥：已绑文件但未绑文件夹时仍可绑定文件夹 */}
-                  {!boundFiles.some((f) => f.isDir) &&
-                    boundFiles.length < MAX_TASK_FILES && (
+                  {/* 文件夹槽替换制：按钮常驻——已绑文件夹时再点即替换（占原位，
+                      满员也可换槽不占新名额）；仅「满员且无文件夹槽」时隐藏
+                      （点了也只会溢出提示） */}
+                  {(boundFiles.some((f) => f.isDir) ||
+                    boundFiles.length < MAX_TASK_FILES) && (
                       <button
                         className="nm-btn px-2 py-0.5 text-[11px] leading-none text-[var(--t4)]"
                         title="绑定文件夹"

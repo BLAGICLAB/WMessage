@@ -22,15 +22,32 @@ export function filesPatch(files: TaskFile[]): Partial<Task> {
   return { files };
 }
 
-/** 追加新绑定（去重保序），返回 null 表示无新增；超上限截断并标记 truncated */
+/**
+ * 追加绑定（统一绑定内核，与 Rust db::upsert_files_to_task 同语义）：
+ * 查重主键 = 路径（小写归一，同名不同路径视为不同条目）；文件追加；
+ * 文件夹槽替换——每卡最多一个文件夹，绑新文件夹占旧文件夹原位（文件条目与顺序不动），
+ * 同路径重复绑无操作。追加永不清除既有绑定。
+ * 返回 applied=实际生效条数（0 = 无变化，调用方免写库）；truncated=超上限截断标记。
+ */
 export function mergeFiles(
   cur: TaskFile[],
   added: TaskFile[],
-): { files: TaskFile[]; truncated: boolean } {
-  const merged = [...cur];
+): { files: TaskFile[]; truncated: boolean; applied: number } {
+  const files = [...cur];
+  let applied = 0;
   for (const f of added) {
-    if (!merged.some((m) => m.path === f.path)) merged.push(f);
+    if (files.some((m) => m.path.toLowerCase() === f.path.toLowerCase()))
+      continue;
+    if (f.isDir) {
+      const idx = files.findIndex((m) => m.isDir);
+      if (idx >= 0) files[idx] = f;
+      else files.push(f);
+    } else {
+      files.push(f);
+    }
+    applied++;
   }
-  const truncated = merged.length > MAX_TASK_FILES;
-  return { files: merged.slice(0, MAX_TASK_FILES), truncated };
+  const truncated = files.length > MAX_TASK_FILES;
+  if (truncated) files.length = MAX_TASK_FILES;
+  return { files, truncated, applied };
 }

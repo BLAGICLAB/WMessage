@@ -268,7 +268,7 @@ describe("TodoCardView 多文件绑定", () => {
     expect(screen.getByText("收起")).toBeInTheDocument();
   });
 
-  it("文件与文件夹不互斥：已绑文件夹时仍显示「＋」，但不再显示「绑定文件夹」", () => {
+  it("文件与文件夹不互斥：已绑文件夹时「＋」和「绑定文件夹」都常驻（点文件夹即替换）", () => {
     const dirTask: Task = {
       ...baseTask,
       files: [{ path: "/some/dir", isDir: true }],
@@ -278,7 +278,7 @@ describe("TodoCardView 多文件绑定", () => {
     );
     expect(screen.getByText("dir")).toBeInTheDocument();
     expect(screen.getByTitle("继续绑定文件")).toBeInTheDocument();
-    expect(screen.queryByTitle("绑定文件夹")).not.toBeInTheDocument();
+    expect(screen.getByTitle("绑定文件夹")).toBeInTheDocument();
   });
 
   it("已绑文件时显示「绑定文件夹」，pickFolder 追加文件夹而不是替换文件", async () => {
@@ -300,6 +300,31 @@ describe("TodoCardView 多文件绑定", () => {
     expect(call[1].files).toEqual([
       { path: "/docs/a.pdf", isDir: false },
       { path: "/some/dir", isDir: true },
+    ]);
+  });
+
+  it("已绑文件夹时再绑新文件夹：替换旧文件夹（占原位），文件条目保留", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    const withDir: Task = {
+      ...baseTask,
+      files: [
+        { path: "/docs/a.pdf", isDir: false },
+        { path: "/old/dir", isDir: true },
+        { path: "/docs/b.pdf", isDir: false },
+      ],
+    };
+    vi.mocked(open).mockResolvedValueOnce("/new/dir" as never);
+    render(<TodoCardView task={withDir} onUpdate={onUpdate} onDelete={vi.fn()} />);
+    await user.click(screen.getByTitle("绑定文件夹"));
+    expect(vi.mocked(open)).toHaveBeenCalledWith({ directory: true });
+    const call = onUpdate.mock.calls[0];
+    // 新文件夹占旧文件夹原位，文件条目不动
+    expect(call[1].files).toEqual([
+      { path: "/docs/a.pdf", isDir: false },
+      { path: "/new/dir", isDir: true },
+      { path: "/docs/b.pdf", isDir: false },
     ]);
   });
 
