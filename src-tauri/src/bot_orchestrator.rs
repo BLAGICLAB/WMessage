@@ -255,12 +255,8 @@ pub(crate) fn check_subagent_locked(
     key: &str,
 ) -> CommandResult<CheckState> {
     let row = resolve_row(conn, key)?;
-    let subtasks_total: usize = row
-        .acceptance_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-        .map(|c| c.len())
-        .unwrap_or(0);
+    let declared = acceptance_criteria_of(&row);
+    let subtasks_total: usize = declared.len();
     let result: Option<serde_json::Value> = row
         .result_json
         .as_deref()
@@ -271,14 +267,10 @@ pub(crate) fn check_subagent_locked(
             v.get("acceptance_check")
                 .and_then(|c| c.as_array())
                 .or_else(|| v.get("checks").and_then(|c| c.as_array()))
-                .map(|a| {
-                    a.iter()
-                        .filter(|x| x.get("met").and_then(|m| m.as_bool()) == Some(true))
-                        .count()
-                })
         })
-        // 子 agent 重复报同一条验收标准时 done 会超过 total，进度小计不能出现
-        // 「3/2」这种自相矛盾的读数
+        .map(|a| count_met_against_declared(&declared, a))
+        // 交叉核对后仍封顶：重复条目已被去重，这里再兜一层防御
+        // （子 agent 重复报同一条时 done 不得超过 total）
         .unwrap_or(0)
         .min(subtasks_total);
     // 排队位次：queued 状态时给出 FIFO 前面还有几个
@@ -694,11 +686,7 @@ pub(crate) fn render_task_wrapper(
     budget: &SubagentBudget,
     artifact_dir: &std::path::Path,
 ) -> String {
-    let criteria: Vec<String> = row
-        .acceptance_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
+    let criteria: Vec<String> = acceptance_criteria_of(row);
     let mut w = String::new();
     w.push_str("[子任务派发]\n");
     w.push_str(&format!("subagent_id: {}\n", row.id));
@@ -725,6 +713,216 @@ pub(crate) fn render_task_wrapper(
     w.push_str("\n完成后必须输出以下 JSON（confidence 取 0.0~1.0，按实际把握给值）：\n");
     w.push_str(crate::prompts::RESULT_SCHEMA_HINT);
     w
+}
+
+/// 行上已声明的验收标准（渲染包装 / 机器判定 / 进度统计三处共用一个读法）
+pub(crate) fn acceptance_criteria_of(row: &SubagentRow) -> Vec<String> {
+    row.acceptance_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
+}
+
+/// 机器可判定的验收谓词（相对子 agent 产物目录解析）：
+/// - `file_exists:<相对路径>`：该文件存在
+/// - `file_nonempty:<相对路径>`：该文件存在且非空
+///
+/// 为什么要有这一层：verifier 收尾里的 `met` 是**自述**，服务端无从核实——
+/// 模型写 `met:true` 就显示通过。而「产物文件到底在不在」这类标准恰好能机械
+/// 判定。不带前缀的条目维持原样由 verifier 自评（很多标准本来就得看内容）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MachineCheck {
+    FileExists(String),
+    FileNonEmpty(String),
+}
+
+/// 谓词前缀 → 判定种类
+const MACHINE_PREFIXES: &[(&str, u8)] = &[("file_exists:", 0), ("file_nonempty:", 1)];
+
+/// 相对路径闸：绝对路径、盘符、`..`/`.` 分量一律不解析——判定路径若能逃出
+/// 产物目录，「验收」就成了任意文件存在性探测器。
+pub(crate) fn safe_rel_path(raw: &str) -> Option<&str> {
+    let p = raw.trim();
+    if p.is_empty() || p.starts_with('/') || p.starts_with('\\') {
+        return None;
+    }
+    let b = p.as_bytes();
+    if b.len() >= 2 && b[1] == b':' {
+        return None; // C:\ / C:/ 盘符
+    }
+    if p.split(['/', '\\'])
+        .any(|c| c == ".." || c == "." || c.is_empty())
+    {
+        return None;
+    }
+    Some(p)
+}
+
+/// 解析一条验收标准里的机器可判定谓词；None = 自由文本条目（交给 verifier 自评）
+pub(crate) fn parse_machine_criterion(c: &str) -> Option<MachineCheck> {
+    let t = c.trim();
+    for (prefix, kind) in MACHINE_PREFIXES {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            let rel = safe_rel_path(rest)?;
+            return Some(match kind {
+                0 => MachineCheck::FileExists(rel.to_string()),
+                _ => MachineCheck::FileNonEmpty(rel.to_string()),
+            });
+        }
+    }
+    None
+}
+
+/// 单条机器判定结论
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MachineVerdict {
+    /// 原样保留已声明的 criteria 文本（回填/比对用）
+    pub criterion: String,
+    pub met: bool,
+    pub reason: String,
+}
+
+/// 逐条执行机器可判定谓词（纯 FS 读，不写）。
+/// 路径不合法（写了谓词但路径逃逸）判 false 并说明——fail-closed：
+/// 宁可记未通过，也不能把一条不可核验的标准当通过。
+pub(crate) fn eval_machine_criteria(
+    criteria: &[String],
+    dir: &std::path::Path,
+) -> Vec<MachineVerdict> {
+    let mut out = Vec::new();
+    for c in criteria {
+        let t = c.trim();
+        let Some(check) = parse_machine_criterion(t) else {
+            continue;
+        };
+        let (rel, want_nonempty) = match &check {
+            MachineCheck::FileExists(r) => (r.as_str(), false),
+            MachineCheck::FileNonEmpty(r) => (r.as_str(), true),
+        };
+        let path = dir.join(rel);
+        let (met, reason) = match std::fs::metadata(&path) {
+            Err(e) => (false, format!("产物不存在：{}", e.kind())),
+            Ok(md) => {
+                if md.is_dir() {
+                    (false, "路径是目录，不是产物文件".to_string())
+                } else if want_nonempty && md.len() == 0 {
+                    (false, "产物存在但为空文件".to_string())
+                } else {
+                    (
+                        true,
+                        format!("服务端核验：{} 存在（{} 字节）", rel, md.len()),
+                    )
+                }
+            }
+        };
+        out.push(MachineVerdict {
+            criterion: t.to_string(),
+            met,
+            reason,
+        });
+    }
+    out
+}
+
+/// 把机器判定并入收尾 JSON：以服务端结论覆盖 verifier 的自评，
+/// 找不到对应条目就补一条（不依赖模型主动上报这些条目）。
+pub(crate) fn merge_machine_verdicts(result: &mut serde_json::Value, verdicts: &[MachineVerdict]) {
+    if verdicts.is_empty() {
+        return;
+    }
+    let key = if result.get("checks").is_some() {
+        "checks"
+    } else {
+        "acceptance_check"
+    };
+    let arr = result
+        .as_object_mut()
+        .map(|o| o.entry(key).or_insert_with(|| serde_json::json!([])));
+    let Some(arr) = arr else { return };
+    if !arr.is_array() {
+        *arr = serde_json::json!([]);
+    }
+    let arr = arr.as_array_mut().expect("上一步已归一成数组");
+    for v in verdicts {
+        let mut found = false;
+        for item in arr.iter_mut() {
+            let same = item
+                .get("criterion")
+                .and_then(|c| c.as_str())
+                .map(|s| s.trim())
+                == Some(v.criterion.as_str());
+            if same {
+                item["met"] = serde_json::Value::Bool(v.met);
+                item["machine"] = serde_json::Value::Bool(true);
+                item["machine_reason"] = serde_json::Value::String(v.reason.clone());
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            arr.push(serde_json::json!({
+                "criterion": v.criterion,
+                "met": v.met,
+                "machine": true,
+                "machine_reason": v.reason,
+            }));
+        }
+    }
+}
+
+/// 进度统计的交叉核对：只认**已声明过**的验收标准，且每条最多计一次。
+/// 少了这层，模型报一条没派发过的 `met:true` 就能把 done 灌满
+/// （min(total) 只是封顶，不挡虚报）。
+fn count_met_against_declared(declared: &[String], reported: &[serde_json::Value]) -> usize {
+    let mut hit: Vec<&str> = Vec::new();
+    for item in reported {
+        if item.get("met").and_then(|m| m.as_bool()) != Some(true) {
+            continue;
+        }
+        let Some(c) = item
+            .get("criterion")
+            .and_then(|c| c.as_str())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        if declared.iter().any(|d| d.trim() == c) && !hit.contains(&c) {
+            hit.push(c);
+        }
+    }
+    hit.len()
+}
+
+/// 机器判定并入收尾产物（纯函数，单测锚点）：改写收尾 JSON 的验收结论，
+/// 并在最终正文末尾点名未通过项——正文是模型与用户唯一同时看得到的地方，
+/// 只写进 result_json 等于把结论藏起来。
+pub(crate) fn apply_machine_verdicts(
+    result: Option<serde_json::Value>,
+    final_text: String,
+    verdicts: &[MachineVerdict],
+) -> (Option<serde_json::Value>, String) {
+    if verdicts.is_empty() {
+        return (result, final_text);
+    }
+    let mut result = result;
+    if let Some(v) = result.as_mut() {
+        merge_machine_verdicts(v, verdicts);
+    }
+    let failed: Vec<String> = verdicts
+        .iter()
+        .filter(|v| !v.met)
+        .map(|v| format!("{}（{}）", v.criterion, v.reason))
+        .collect();
+    if failed.is_empty() {
+        return (result, final_text);
+    }
+    let mut t = final_text;
+    t.push_str(&format!(
+        "\n\n⚠️ 服务端机器验收未通过 {} 项：{}",
+        failed.len(),
+        failed.join("；")
+    ));
+    (result, t)
 }
 
 /// 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/。
@@ -1361,6 +1559,36 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         Ok(Err(e)) => format!("⚠️ 执行失败：{}", e.message()),
         Err(_) => "⏹ 墙钟预算触达，执行被强制停止（部分产物已保留）".into(),
     };
+    // 机器可判定验收：verifier 收尾里的 met 是自述，服务端对「产物文件在不在」
+    // 这类标准能自己判——判了才覆盖自评，并在正文里点名未通过项。
+    // 只在跑完（有收尾 JSON）时判：预算触顶/异常退出的行没有验收可言。
+    let machine_verdicts = if matches!(wall, Ok(Ok(_))) {
+        eval_machine_criteria(&acceptance_criteria_of(&row), &artifact_dir)
+    } else {
+        Vec::new()
+    };
+    let failed_machine = machine_verdicts.iter().filter(|v| !v.met).count();
+    if failed_machine > 0 {
+        crate::audit_event!(
+            &app,
+            crate::audit::AuditLevel::Warn,
+            "subagent.machine_check_failed",
+            "subagent_id" => row.id.clone(),
+            "failed" => failed_machine.to_string(),
+            "total" => machine_verdicts.len().to_string(),
+        );
+    } else if !machine_verdicts.is_empty() {
+        crate::audit_event!(
+            &app,
+            crate::audit::AuditLevel::Info,
+            "subagent.machine_check_passed",
+            "subagent_id" => row.id.clone(),
+            "total" => machine_verdicts.len().to_string(),
+        );
+    }
+    // 收尾 JSON 与最终正文都带上机器结论——正文这行是模型和用户唯一同时
+    // 看得到的地方，不能只躺在 result_json 里等人去查
+    let (result, final_text) = apply_machine_verdicts(result, final_text, &machine_verdicts);
     let wrapper_for_db = wrapper.clone();
     let row_for_db = row.clone();
     let session_id_for_db = session_id.clone();
@@ -2607,6 +2835,207 @@ mod orchestrator_tests {
                 .unwrap()
                 .progress,
             done.progress
+        );
+    }
+
+    /// 机器可判定谓词：只有带前缀的条目进机器核验，自由文本原样留给 verifier
+    #[test]
+    fn machine_criterion_parsed_only_for_known_prefixes() {
+        assert_eq!(
+            parse_machine_criterion("file_exists:report.md"),
+            Some(MachineCheck::FileExists("report.md".into()))
+        );
+        assert_eq!(
+            parse_machine_criterion("  file_nonempty: out/数据.xlsx "),
+            Some(MachineCheck::FileNonEmpty("out/数据.xlsx".into()))
+        );
+        assert_eq!(parse_machine_criterion("覆盖至少 5 个产品"), None);
+        assert_eq!(parse_machine_criterion("每条含官网 URL"), None);
+        assert_eq!(parse_machine_criterion(""), None);
+    }
+
+    /// 路径逃逸一律不解析：判定路径能跑出产物目录，验收就成了任意文件探测器
+    #[test]
+    fn machine_criterion_rejects_paths_escaping_artifact_dir() {
+        for bad in [
+            "file_exists:../../etc/passwd",
+            "file_exists:/etc/passwd",
+            "file_exists:C:\\Windows\\win.ini",
+            "file_exists:./report.md",
+            "file_exists:",
+            "file_nonempty:a//b.md",
+        ] {
+            assert_eq!(
+                parse_machine_criterion(bad),
+                None,
+                "逃逸路径必须不解析：{bad}"
+            );
+        }
+        assert_eq!(safe_rel_path("a/b/c.md"), Some("a/b/c.md"));
+    }
+
+    /// 机器判定真去 FS 看：存在/不存在/空文件三种形态
+    #[test]
+    fn eval_machine_criteria_reads_real_files() {
+        let dir = std::env::temp_dir().join(format!("wm-mc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.md"), "# 报告").unwrap();
+        std::fs::write(dir.join("empty.md"), "").unwrap();
+
+        let out = eval_machine_criteria(
+            &[
+                "file_exists:report.md".into(),
+                "file_nonempty:report.md".into(),
+                "file_nonempty:empty.md".into(),
+                "file_exists:missing.md".into(),
+                "自由文本标准".into(),
+            ],
+            &dir,
+        );
+        assert_eq!(out.len(), 4, "自由文本条目不进机器判定");
+        assert!(out[0].met && out[1].met);
+        assert!(!out[2].met, "空文件不满足 nonempty");
+        assert!(!out[3].met, "缺失文件不通过");
+        assert_eq!(out[3].criterion, "file_exists:missing.md");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 机器结论覆盖模型自评：模型说 met:true 而文件不存在 → 以服务端为准
+    #[test]
+    fn merge_machine_verdicts_overrides_self_report_and_fills_missing() {
+        let mut result = serde_json::json!({
+            "acceptance_check": [
+                {"criterion": "file_exists:report.md", "met": true, "evidence": "我写好了"},
+                {"criterion": "内容覆盖 5 个产品", "met": false}
+            ]
+        });
+        merge_machine_verdicts(
+            &mut result,
+            &[MachineVerdict {
+                criterion: "file_exists:report.md".into(),
+                met: false,
+                reason: "产物不存在：NotFound".into(),
+            }],
+        );
+        let arr = result["acceptance_check"].as_array().unwrap();
+        assert_eq!(arr[0]["met"], false, "自评必须被服务端结论覆盖");
+        assert_eq!(arr[0]["machine"], true);
+        assert!(arr[0]["machine_reason"]
+            .as_str()
+            .unwrap()
+            .contains("产物不存在"));
+        assert_eq!(arr[1]["met"], false, "非机器条目不受影响");
+
+        // 模型压根没报这条 → 服务端补一条（不依赖模型主动上报）
+        let mut only_free = serde_json::json!({"acceptance_check": []});
+        merge_machine_verdicts(
+            &mut only_free,
+            &[MachineVerdict {
+                criterion: "file_nonempty:out.xlsx".into(),
+                met: true,
+                reason: "服务端核验：out.xlsx 存在（12 字节）".into(),
+            }],
+        );
+        let arr = only_free["acceptance_check"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["met"], true);
+
+        // verifier 行用 checks 键，同样处理
+        let mut verifier = serde_json::json!({"checks": []});
+        merge_machine_verdicts(
+            &mut verifier,
+            &[MachineVerdict {
+                criterion: "file_exists:v.md".into(),
+                met: true,
+                reason: "ok".into(),
+            }],
+        );
+        assert_eq!(verifier["checks"].as_array().unwrap().len(), 1);
+    }
+
+    /// 机器判定落到用户可见的正文：未通过项必须点名，不能只躺在 result_json
+    #[test]
+    fn machine_failures_are_named_in_final_text() {
+        let verdict = |c: &str, met: bool| MachineVerdict {
+            criterion: c.into(),
+            met,
+            reason: "产物不存在：NotFound".into(),
+        };
+        // 全通过 → 正文不动
+        let (r, text) = apply_machine_verdicts(
+            Some(serde_json::json!({"acceptance_check": []})),
+            "干完了".into(),
+            &[verdict("file_exists:a.md", true)],
+        );
+        assert_eq!(text, "干完了");
+        assert_eq!(r.unwrap()["acceptance_check"].as_array().unwrap().len(), 1);
+
+        // 有未通过 → 正文点名 + 原因
+        let (r, text) = apply_machine_verdicts(
+            Some(serde_json::json!({"acceptance_check": []})),
+            "干完了".into(),
+            &[
+                verdict("file_exists:a.md", true),
+                verdict("file_exists:b.md", false),
+            ],
+        );
+        assert!(text.contains("机器验收未通过 1 项"), "{text}");
+        assert!(text.contains("file_exists:b.md"), "{text}");
+        assert!(text.contains("产物不存在"), "{text}");
+        assert!(text.starts_with("干完了"), "原正文必须保留：{text}");
+        assert_eq!(r.unwrap()["acceptance_check"].as_array().unwrap().len(), 2);
+
+        // 无机器条目 → 原样返回（不改 JSON、不动正文）
+        let (r, text) = apply_machine_verdicts(
+            Some(serde_json::json!({"acceptance_check": [{"criterion":"x","met":true}]})),
+            "干完了".into(),
+            &[],
+        );
+        assert_eq!(text, "干完了");
+        assert_eq!(r.unwrap()["acceptance_check"][0]["met"], true);
+        // 异常退出无收尾 JSON：不得凭空造一个
+        let (r, _) = apply_machine_verdicts(
+            None,
+            "执行失败".into(),
+            &[verdict("file_exists:a.md", false)],
+        );
+        assert!(r.is_none(), "没有收尾 JSON 时不应伪造");
+    }
+
+    /// 交叉核对：没派发过的标准、重复上报，都不得灌满进度
+    #[test]
+    fn progress_ignores_undeclared_and_duplicate_criteria() {
+        let declared = vec![
+            "覆盖至少 5 个产品".to_string(),
+            "每条含官网 URL".to_string(),
+        ];
+        // 虚报一条从未派发的标准 + 重复报同一条 → 只应计 1
+        let reported = vec![
+            serde_json::json!({"criterion": "覆盖至少 5 个产品", "met": true}),
+            serde_json::json!({"criterion": "覆盖至少 5 个产品", "met": true}),
+            serde_json::json!({"criterion": "我其实做了 10 个产品", "met": true}),
+        ];
+        assert_eq!(count_met_against_declared(&declared, &reported), 1);
+        // met 非 bool / 缺 criterion 的条目不计
+        assert_eq!(
+            count_met_against_declared(
+                &declared,
+                &[serde_json::json!({"criterion": "每条含官网 URL", "met": "yes"})]
+            ),
+            0
+        );
+        assert_eq!(
+            count_met_against_declared(&declared, &[serde_json::json!({"met": true})]),
+            0
+        );
+        // 白空格差异不算漏报（模型可能顺手加了空格）
+        assert_eq!(
+            count_met_against_declared(
+                &declared,
+                &[serde_json::json!({"criterion": " 每条含官网 URL ", "met": true})]
+            ),
+            1
         );
     }
 
