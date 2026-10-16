@@ -40,6 +40,7 @@ pub use run::spawn_polling;
 mod tests {
     // 测试跨 7 个子模块，super::* 只拿 mod.rs 顶层项，所以这里显式列每个子模块的入口。
     // 一并 use 上 ops::MAX_MOVE_REMOVE_FAILURES（pub(crate)）供永久跳过断言用。
+    use crate::db;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
@@ -53,7 +54,7 @@ mod tests {
         filename_matches, move_entry, move_remove_permanently_failed, record_move_remove_failure,
         MAX_MOVE_REMOVE_FAILURES,
     };
-    use crate::migration::recovery::{decide_src_missing, file_path_untouched, SrcMissingAction};
+    use crate::migration::recovery::{binding_untouched, decide_src_missing, SrcMissingAction};
     use crate::migration::rules::{parse_rules_csv, save_rules_to, validate_rules};
     use crate::migration::types::{JournalEntry, MigrationRule, RulesFile};
 
@@ -514,18 +515,31 @@ mod tests {
         }
     }
 
-    /// replay 防覆盖谓词——file_path 仍指向 src 才允许修复。
+    /// replay 防覆盖谓词——绑定列表仍含 src 才允许修复；多文件按条目匹配不限第一位
     #[test]
-    fn file_path_untouched_guard() {
+    fn binding_untouched_guard() {
+        let files = |paths: &[&str]| -> Vec<db::TaskFile> {
+            paths
+                .iter()
+                .map(|p| db::TaskFile {
+                    path: p.to_string(),
+                    is_dir: false,
+                })
+                .collect()
+        };
         assert!(
-            file_path_untouched(Some("/src/a"), "/src/a"),
+            binding_untouched(&files(&["/src/a"]), "/src/a"),
             "仍指向 src → 允许修复"
         );
         assert!(
-            !file_path_untouched(Some("/other/b"), "/src/a"),
+            binding_untouched(&files(&["/other/b", "/src/a"]), "/src/a"),
+            "多文件绑定下 src 在非首位 → 仍允许修复"
+        );
+        assert!(
+            !binding_untouched(&files(&["/other/b"]), "/src/a"),
             "用户重绑 → 禁止覆盖"
         );
-        assert!(!file_path_untouched(None, "/src/a"), "已解绑 → 禁止回写");
+        assert!(!binding_untouched(&[], "/src/a"), "已解绑 → 禁止回写");
     }
 
     #[test]

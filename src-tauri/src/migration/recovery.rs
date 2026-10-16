@@ -16,11 +16,10 @@ use super::journal::{journal_cleared_inner, journal_committed_inner};
 use super::ops::log_line;
 use super::types::JournalEntry;
 
-/// replay 修复前提——任务 file_path 仍指向 journal 记录的 src，
-/// 即 DB 自该文件操作后未被碰过。若用户期间重新绑定了别的文件 / 已解绑，
-/// 必须跳过修复，防止旧 journal 覆盖新绑定。
-pub(crate) fn file_path_untouched(current: Option<&str>, expected_src: &str) -> bool {
-    current == Some(expected_src)
+/// replay 修复前提——任务绑定列表仍包含 journal 记录的 src（未被用户重绑/解绑），
+/// 否则跳过修复，防止旧 journal 覆盖新绑定。多文件绑定按条目匹配，不限第一位。
+pub(crate) fn binding_untouched(files: &[db::TaskFile], expected_src: &str) -> bool {
+    files.iter().any(|f| f.path == expected_src)
 }
 
 /// replay 失败是否永久性（任务卡已删，修复永远没有对象）：
@@ -224,16 +223,13 @@ fn recover_move_db(
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
-    if !file_path_untouched(
-        t.effective_files().first().map(|f| f.path.as_str()),
-        expected_src,
-    ) {
+    let mut files = t.effective_files();
+    if !binding_untouched(&files, expected_src) {
         return Ok(false);
     }
     t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-    let mut files = t.effective_files();
-    if let Some(first) = files.first_mut() {
-        first.path = dst.to_string_lossy().to_string();
+    if let Some(f) = files.iter_mut().find(|f| f.path == expected_src) {
+        f.path = dst.to_string_lossy().to_string();
     }
     t.files = if files.is_empty() { None } else { Some(files) };
     t.updated_at = Some(db::now_ms());
@@ -248,14 +244,17 @@ fn recover_delete_db(app: &AppHandle, task_id: &str, expected_src: &str) -> Resu
     let Some(mut t) = tasks.into_iter().find(|x| x.id == task_id) else {
         return Err(format!("task {task_id} 不存在"));
     };
-    if !file_path_untouched(
-        t.effective_files().first().map(|f| f.path.as_str()),
-        expected_src,
-    ) {
+    let files = t.effective_files();
+    if !binding_untouched(&files, expected_src) {
         return Ok(false);
     }
     t.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-    t.files = None;
+                                          // 只移除目标条目：多文件绑定下其余文件不得陪绑清空
+    let rest: Vec<db::TaskFile> = files
+        .into_iter()
+        .filter(|f| f.path != expected_src)
+        .collect();
+    t.files = if rest.is_empty() { None } else { Some(rest) };
     t.updated_at = Some(db::now_ms());
     tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), vec![t]).await })
         .map_err(|e| e.to_string())?;

@@ -82,347 +82,280 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
     if !due.is_empty() {
         tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), due.clone()).await })
             .map_err(|e| e.to_string())?;
-        // due 已落盘（updated_at=now），changed 末尾统一重写的基线须重武装为
-        // 刚写入的值，否则二次 upsert 会被自己的基线比对拒写
-        for t in &mut due {
-            t.expected_updated_at = t.updated_at;
-        }
+        // 归档即刻落盘（后续阶段出错也不回退归档）；阶段二对 due 克隆的
+        // RMW 基线直接用 due.updated_at（= 刚写入的库内现值）
         report.archived = due.len();
         let line = format!("归档到期任务 {n} 个", n = due.len());
         report.log.push(line.clone());
         log_line(app, &line);
         emit_upserts(app, &due);
-        changed.extend(due);
     }
 
-    // 阶段二：对已归档任务执行规则迁移。
-    // 注意：遍历的是阶段一之前读的旧快照——本轮刚归档的任务不参与本轮迁移，
-    // 要到下一轮（10 分钟后）才会走规则。这是有意行为（审计  补注释）：
-    // 避免归档与迁移在同一次扫描里链式触发，用户看到的中间状态更少。
-    for t in tasks.iter() {
+    // 阶段二：对已归档任务按规则迁移绑定文件——存量归档任务 + 本轮刚归档的 due
+    // （归档与迁移同轮完成，不等下一个轮询周期）。due 任务在存量快照中尚未标记
+    // 归档，两段遍历天然不重叠。每个绑定文件独立按文件名匹配规则（多文件任务
+    // 的各文件可命中不同规则/目录），逐文件处理后整卡一次性落盘。
+    for t in tasks.iter().chain(due.iter()) {
         if t.archived != Some(true) || t.deleted_at.is_some() {
             continue; // 保护：非归档/回收站任务一律不动
         }
-        let bound = t.effective_files();
-        let Some(src_str) = bound.first().map(|f| f.path.as_str()) else {
-            continue;
-        };
-        let src = PathBuf::from(src_str);
-        let Some(name) = src.file_name().map(|s| s.to_string_lossy().to_string()) else {
-            report.skipped += 1;
-            let line = format!("跳过「{}」：路径无文件名", t.title);
-            report.log.push(line.clone());
-            log_line(app, &line);
-            continue;
-        };
-        // 规则顺序即优先级：取第一条命中
-        let Some(rule) = rules
-            .rules
-            .iter()
-            .find(|r| r.enabled && filename_matches(&name, r))
-        else {
-            continue; // 无命中规则：不动，也不记噪音日志
-        };
+        let mut new_files: Vec<db::TaskFile> = Vec::new();
+        let mut task_changed = false;
+        for mut f in t.effective_files() {
+            let src_str = f.path.clone();
+            let src = PathBuf::from(&src_str);
+            let Some(name) = src.file_name().map(|s| s.to_string_lossy().to_string()) else {
+                report.skipped += 1;
+                let line = format!("跳过「{}」：路径无文件名", t.title);
+                report.log.push(line.clone());
+                log_line(app, &line);
+                new_files.push(f);
+                continue;
+            };
+            // 规则顺序即优先级：该文件命中的第一条
+            let Some(rule) = rules
+                .rules
+                .iter()
+                .find(|r| r.enabled && filename_matches(&name, r))
+            else {
+                new_files.push(f); // 无命中规则：不动，也不记噪音日志
+                continue;
+            };
 
-        match rule.action.as_str() {
-            "move" => {
-                let dir = match resolve_archive_dir(app, &rule.archive_dir) {
-                    Ok(d) => d,
-                    Err(e) => {
+            match rule.action.as_str() {
+                "move" => {
+                    let dir = match resolve_archive_dir(app, &rule.archive_dir) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            report.skipped += 1;
+                            let line = format!("跳过「{name}」：{e}");
+                            report.log.push(line.clone());
+                            log_line(app, &line);
+                            new_files.push(f);
+                            continue;
+                        }
+                    };
+                    if let Err(e) = fs::create_dir_all(&dir) {
+                        report.skipped += 1;
+                        let line = format!("跳过「{name}」：创建归档目录失败：{e}");
+                        report.log.push(line.clone());
+                        log_line(app, &line);
+                        new_files.push(f);
+                        continue;
+                    }
+                    // 落地后复验：关闭 resolve→create 之间祖先被换成符号链接的窗口
+                    // （canonicalize 终态目录比对基准前缀；残余窗缩至 create→verify 间，
+                    // 文件系统原语限制归既有 follow-up）
+                    if let Err(e) = verify_archive_dir_created(app, &dir, &rule.archive_dir) {
                         report.skipped += 1;
                         let line = format!("跳过「{name}」：{e}");
                         report.log.push(line.clone());
                         log_line(app, &line);
+                        new_files.push(f);
                         continue;
                     }
-                };
-                if let Err(e) = fs::create_dir_all(&dir) {
-                    report.skipped += 1;
-                    let line = format!("跳过「{name}」：创建归档目录失败：{e}");
-                    report.log.push(line.clone());
-                    log_line(app, &line);
-                    continue;
-                }
-                // 落地后复验：关闭 resolve→create 之间祖先被换成符号链接的窗口
-                // （canonicalize 终态目录比对基准前缀；残余窗缩至 create→verify 间，
-                // 文件系统原语限制归既有 follow-up）
-                if let Err(e) = verify_archive_dir_created(app, &dir, &rule.archive_dir) {
-                    report.skipped += 1;
-                    let line = format!("跳过「{name}」：{e}");
-                    report.log.push(line.clone());
-                    log_line(app, &line);
-                    continue;
-                }
-                if !src.exists() {
-                    // 源不存在时先对账 journal——「上一轮 move 成功但 db_upsert 失败」
-                    // 时 journal 仍 pending 且 dst 存在，此时应就地修复绑定到 dst，而非解绑
-                    // （旧逻辑直接解绑 → 附件链接丢失一整个会话周期，要等重启 replay 才恢复）。
-                    let pending = journal_find_pending(&jconn, &t.id, &src)?;
-                    let dst_exists = pending
-                        .as_ref()
-                        .and_then(|e| e.dst.as_ref())
-                        .map(|d| PathBuf::from(d).exists())
-                        .unwrap_or(false);
-                    match decide_src_missing(pending, dst_exists) {
-                        SrcMissingAction::RepairMove { dst, journal_id } => {
-                            let mut nt = t.clone();
-                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            let mut files = nt.effective_files();
-                            if let Some(first) = files.first_mut() {
-                                first.path = dst.clone();
+                    if !src.exists() {
+                        // 源不存在时先对账 journal——「上一轮 move 成功但落库失败」
+                        // 时 journal 仍 pending 且 dst 存在，此时应就地修复绑定到 dst，而非解绑
+                        // （旧逻辑直接解绑 → 附件链接丢失一整个会话周期，要等重启 replay 才恢复）。
+                        let pending = journal_find_pending(&jconn, &t.id, &src)?;
+                        let dst_exists = pending
+                            .as_ref()
+                            .and_then(|e| e.dst.as_ref())
+                            .map(|d| PathBuf::from(d).exists())
+                            .unwrap_or(false);
+                        match decide_src_missing(pending, dst_exists) {
+                            SrcMissingAction::RepairMove { dst, journal_id } => {
+                                f.path = dst.clone();
+                                new_files.push(f);
+                                task_changed = true;
+                                journals_commit_after_batch.push(journal_id);
+                                report.moved += 1;
+                                let line = format!(
+                                    "修复绑定「{name}」→ {dst}（上轮 move 落库失败，journal={journal_id} 对账恢复）"
+                                );
+                                report.log.push(line.clone());
+                                log_line(app, &line);
                             }
-                            nt.files = if files.is_empty() { None } else { Some(files) };
-                            nt.updated_at = Some(now);
-                            match tauri::async_runtime::block_on(async {
-                                db::db_upsert(app.clone(), vec![nt.clone()]).await
-                            }) {
-                                Ok(()) => {
-                                    journal_committed(&jconn, journal_id).ok();
-                                    // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
-                                    nt.expected_updated_at = nt.updated_at;
-                                    changed.push(nt);
-                                    report.moved += 1;
-                                    let line = format!(
-                                        "修复绑定「{name}」→ {dst}（上轮 move 落库失败，journal={journal_id} 对账恢复）"
-                                    );
-                                    report.log.push(line.clone());
-                                    log_line(app, &line);
+                            SrcMissingAction::Unbind { commit_journal } => {
+                                // 确认解绑：无 pending（用户外部删除/文件本就不存在），
+                                // 或 pending 为 delete（解绑本就是其终态）/ move 但 dst 也丢失。
+                                // 不回收 f = 仅从绑定列表移除该文件，其余绑定不动
+                                task_changed = true;
+                                if let Some(id) = commit_journal {
+                                    journals_commit_after_batch.push(id);
                                 }
-                                Err(e) => {
-                                    report.skipped += 1;
-                                    let line = format!(
-                                        "跳过「{name}」：journal 修复落库失败（{e}），journal={journal_id} 待修复"
-                                    );
-                                    report.log.push(line.clone());
-                                    log_line(app, &line);
-                                }
+                                report.skipped += 1;
+                                let line =
+                                    format!("解除绑定「{name}」：源文件已不存在（{src_str}）");
+                                report.log.push(line.clone());
+                                log_line(app, &line);
                             }
-                            continue;
                         }
-                        SrcMissingAction::Unbind { commit_journal } => {
-                            // 确认解绑：无 pending（用户外部删除/文件本就不存在），
-                            // 或 pending 为 delete（解绑本就是其终态）/ move 但 dst 也丢失。
-                            let mut nt = t.clone();
-                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            nt.files = None;
-                            nt.updated_at = Some(now);
-                            changed.push(nt);
-                            if let Some(id) = commit_journal {
-                                journals_commit_after_batch.push(id);
-                            }
-                            report.skipped += 1;
-                            let line = format!("解除绑定「{name}」：源文件已不存在（{src_str}）");
-                            report.log.push(line.clone());
-                            log_line(app, &line);
-                            continue;
-                        }
+                        continue;
                     }
-                }
-                // 自搬防线：绑定已落在归档目录内 = 上轮已归档完成，而规则按文件名
-                // 匹配对已归档文件永远命中——不挡则每轮 claim_dst_name 递增 "(n)"
-                // 后缀在归档目录内自我改名（文件名逐轮膨胀，DB/UI 每轮空转）。
-                // 静默跳过：该命中此后每轮复现，记日志即 10min 刷屏。
-                if path_inside(&src, &dir) {
-                    continue;
-                }
-                // 跨卷 copy 成功但 remove 持续失败（Windows 占用）的 src 永久跳过，
-                // 不再每轮生成新冲突名再 copy（归档目录不累积副本）。首次越阈时已记 ERROR，
-                // 后续轮静默跳过（10min/轮不刷屏）。
-                if move_remove_permanently_failed(src_str) {
-                    report.skipped += 1;
-                    continue;
-                }
-                // 选定后落盘前复检（TOCTOU）——并发任务抢占同名时递增后缀重选
-                let Some(dst) = super::ops::claim_dst_name(&dir, &name) else {
-                    report.skipped += 1;
-                    let line = format!("跳过「{name}」：目标目录同名冲突过多（不覆盖、不删除）");
-                    report.log.push(line.clone());
-                    log_line(app, &line);
-                    continue;
-                };
-                // 写 journal pending → move_entry → db_upsert → journal_committed
-                // 如果中间任一步崩了，启动时 journal_replay_pending 修复 DB
-                let journal_id = match journal_pending(&jconn, "move", &src, Some(&dst), &t.id) {
-                    Ok(id) => id,
-                    Err(e) => {
+                    // 自搬防线：绑定已落在归档目录内 = 上轮已归档完成，而规则按文件名
+                    // 匹配对已归档文件永远命中——不挡则每轮 claim_dst_name 递增 "(n)"
+                    // 后缀在归档目录内自我改名（文件名逐轮膨胀，DB/UI 每轮空转）。
+                    // 静默跳过：该命中此后每轮复现，记日志即 10min 刷屏。
+                    if path_inside(&src, &dir) {
+                        new_files.push(f);
+                        continue;
+                    }
+                    // 跨卷 copy 成功但 remove 持续失败（Windows 占用）的 src 永久跳过，
+                    // 不再每轮生成新冲突名再 copy（归档目录不累积副本）。首次越阈时已记 ERROR，
+                    // 后续轮静默跳过（10min/轮不刷屏）。
+                    if move_remove_permanently_failed(&src_str) {
                         report.skipped += 1;
-                        let line = format!("跳过「{name}」：journal_pending 失败：{e}");
+                        new_files.push(f);
+                        continue;
+                    }
+                    // 选定后落盘前复检（TOCTOU）——并发任务抢占同名时递增后缀重选
+                    let Some(dst) = super::ops::claim_dst_name(&dir, &name) else {
+                        report.skipped += 1;
+                        let line =
+                            format!("跳过「{name}」：目标目录同名冲突过多（不覆盖、不删除）");
                         report.log.push(line.clone());
                         log_line(app, &line);
+                        new_files.push(f);
                         continue;
-                    }
-                };
-                if let Err(e) = move_entry(&src, &dst) {
-                    // move 未启动 / 明确失败 → clear journal，下次重试不需要修复
-                    journal_cleared(&jconn, journal_id).ok();
-                    // dst 已存在且 src 仍在 = copy 成功但 remove 失败
-                    // （区别于 copy 本身失败：此时 dst 不存在，不计数）。
-                    // 失败计数越阈 → 记 ERROR 审计并永久跳过该 src，防止归档副本累积。
-                    if src.exists() && dst.exists() {
-                        let n = super::ops::record_move_remove_failure(src_str);
-                        if n >= MAX_MOVE_REMOVE_FAILURES {
-                            let line = format!(
-                                "ERROR「{name}」：跨卷复制后删除源持续失败 {n} 次（{src_str}），已永久跳过该源；归档目录可能已有副本，请手动处理"
-                            );
-                            report.log.push(line.clone());
-                            log_line(app, &line);
-                        }
-                    }
-                    report.skipped += 1;
-                    let line = format!("跳过「{name}」：{e}");
-                    report.log.push(line.clone());
-                    log_line(app, &line);
-                    continue;
-                }
-                let mut nt = t.clone();
-                nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                let mut files = nt.effective_files();
-                if let Some(first) = files.first_mut() {
-                    first.path = dst.to_string_lossy().to_string();
-                }
-                nt.files = if files.is_empty() { None } else { Some(files) };
-                nt.updated_at = Some(now);
-                if let Err(e) = tauri::async_runtime::block_on(async {
-                    db::db_upsert(app.clone(), vec![nt.clone()]).await
-                }) {
-                    // move 成功但 db_upsert 失败 → journal 保持 pending，
-                    // 下次启动 replay 时检测 dst 存在 + src 不存在，修复 DB
-                    report.skipped += 1;
-                    let line = format!(
-                        "已移动「{name}」但 db_upsert 失败（{e}），journal={journal_id} 待修复"
-                    );
-                    report.log.push(line.clone());
-                    log_line(app, &line);
-                    continue;
-                }
-                journal_committed(&jconn, journal_id).ok();
-                // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
-                nt.expected_updated_at = nt.updated_at;
-                changed.push(nt);
-                report.moved += 1;
-                let line = format!("已移动「{name}」→ {}", dst.display());
-                report.log.push(line.clone());
-                log_line(app, &line);
-            }
-            "delete" => {
-                if !src.exists() {
-                    // 同 move 分支——先对账 journal。pending delete 的终态本就是
-                    // 解绑，落盘后提交 journal 关闭环路；pending move 且 dst 在 → 就地修复。
-                    let pending = journal_find_pending(&jconn, &t.id, &src)?;
-                    let dst_exists = pending
-                        .as_ref()
-                        .and_then(|e| e.dst.as_ref())
-                        .map(|d| PathBuf::from(d).exists())
-                        .unwrap_or(false);
-                    match decide_src_missing(pending, dst_exists) {
-                        SrcMissingAction::RepairMove { dst, journal_id } => {
-                            let mut nt = t.clone();
-                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            let mut files = nt.effective_files();
-                            if let Some(first) = files.first_mut() {
-                                first.path = dst.clone();
-                            }
-                            nt.files = if files.is_empty() { None } else { Some(files) };
-                            nt.updated_at = Some(now);
-                            match tauri::async_runtime::block_on(async {
-                                db::db_upsert(app.clone(), vec![nt.clone()]).await
-                            }) {
-                                Ok(()) => {
-                                    journal_committed(&jconn, journal_id).ok();
-                                    // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
-                                    nt.expected_updated_at = nt.updated_at;
-                                    changed.push(nt);
-                                    report.moved += 1;
-                                    let line = format!(
-                                        "修复绑定「{name}」→ {dst}（上轮 move 落库失败，journal={journal_id} 对账恢复）"
-                                    );
-                                    report.log.push(line.clone());
-                                    log_line(app, &line);
-                                }
-                                Err(e) => {
-                                    report.skipped += 1;
-                                    let line = format!(
-                                        "跳过「{name}」：journal 修复落库失败（{e}），journal={journal_id} 待修复"
-                                    );
-                                    report.log.push(line.clone());
-                                    log_line(app, &line);
-                                }
-                            }
-                            continue;
-                        }
-                        SrcMissingAction::Unbind { commit_journal } => {
-                            let mut nt = t.clone();
-                            nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                            nt.files = None;
-                            nt.updated_at = Some(now);
-                            changed.push(nt);
-                            if let Some(id) = commit_journal {
-                                journals_commit_after_batch.push(id);
-                            }
+                    };
+                    // 写 journal pending → move_entry → 末尾批量落盘 → 批后统一 committed；
+                    // 中途任一步崩了，启动时 journal_replay_pending 修复 DB
+                    let journal_id = match journal_pending(&jconn, "move", &src, Some(&dst), &t.id)
+                    {
+                        Ok(id) => id,
+                        Err(e) => {
                             report.skipped += 1;
-                            let line = format!("解除绑定「{name}」：源文件已不存在");
+                            let line = format!("跳过「{name}」：journal_pending 失败：{e}");
                             report.log.push(line.clone());
                             log_line(app, &line);
+                            new_files.push(f);
                             continue;
                         }
-                    }
-                }
-                // write journal pending → delete → db_upsert → committed
-                let journal_id = match journal_pending(&jconn, "delete", &src, None, &t.id) {
-                    Ok(id) => id,
-                    Err(e) => {
+                    };
+                    if let Err(e) = move_entry(&src, &dst) {
+                        // move 未启动 / 明确失败 → clear journal，下次重试不需要修复
+                        journal_cleared(&jconn, journal_id).ok();
+                        // dst 已存在且 src 仍在 = copy 成功但 remove 失败
+                        // （区别于 copy 本身失败：此时 dst 不存在，不计数）。
+                        // 失败计数越阈 → 记 ERROR 审计并永久跳过该 src，防止归档副本累积。
+                        if src.exists() && dst.exists() {
+                            let n = super::ops::record_move_remove_failure(&src_str);
+                            if n >= MAX_MOVE_REMOVE_FAILURES {
+                                let line = format!(
+                                    "ERROR「{name}」：跨卷复制后删除源持续失败 {n} 次（{src_str}），已永久跳过该源；归档目录可能已有副本，请手动处理"
+                                );
+                                report.log.push(line.clone());
+                                log_line(app, &line);
+                            }
+                        }
                         report.skipped += 1;
-                        let line = format!("跳过「{name}」：journal_pending 失败：{e}");
+                        let line = format!("跳过「{name}」：{e}");
                         report.log.push(line.clone());
                         log_line(app, &line);
+                        new_files.push(f);
                         continue;
                     }
-                };
-                let res = if bound.first().map(|f| f.is_dir) == Some(true) {
-                    fs::remove_dir_all(&src)
-                } else {
-                    fs::remove_file(&src)
-                };
-                if let Err(e) = res {
-                    // delete 失败 → clear journal，下次重试
-                    journal_cleared(&jconn, journal_id).ok();
-                    report.skipped += 1;
-                    let line = format!("删除「{name}」失败（可能被占用/权限不足）：{e}");
+                    f.path = dst.to_string_lossy().to_string();
+                    new_files.push(f);
+                    task_changed = true;
+                    journals_commit_after_batch.push(journal_id);
+                    report.moved += 1;
+                    let line = format!("已移动「{name}」→ {}", dst.display());
                     report.log.push(line.clone());
                     log_line(app, &line);
-                    continue;
                 }
-                let mut nt = t.clone();
-                nt.expected_updated_at = t.updated_at; // T1-1：RMW 基线 = 快照 updated_at
-                nt.files = None;
-                nt.updated_at = Some(now);
-                if let Err(e) = tauri::async_runtime::block_on(async {
-                    db::db_upsert(app.clone(), vec![nt.clone()]).await
-                }) {
-                    // delete 成功但 db_upsert 失败 → journal 保持 pending，
-                    // 下次启动 replay 时检测 src 不存在 + task 仍有绑定，修复 DB 清绑定
-                    report.skipped += 1;
-                    let line = format!(
-                        "已删除「{name}」但 db_upsert 失败（{e}），journal={journal_id} 待修复"
-                    );
+                "delete" => {
+                    if !src.exists() {
+                        // 同 move 分支——先对账 journal。pending delete 的终态本就是
+                        // 解绑，落盘后提交 journal 关闭环路；pending move 且 dst 在 → 就地修复。
+                        let pending = journal_find_pending(&jconn, &t.id, &src)?;
+                        let dst_exists = pending
+                            .as_ref()
+                            .and_then(|e| e.dst.as_ref())
+                            .map(|d| PathBuf::from(d).exists())
+                            .unwrap_or(false);
+                        match decide_src_missing(pending, dst_exists) {
+                            SrcMissingAction::RepairMove { dst, journal_id } => {
+                                f.path = dst.clone();
+                                new_files.push(f);
+                                task_changed = true;
+                                journals_commit_after_batch.push(journal_id);
+                                report.moved += 1;
+                                let line = format!(
+                                    "修复绑定「{name}」→ {dst}（上轮 move 落库失败，journal={journal_id} 对账恢复）"
+                                );
+                                report.log.push(line.clone());
+                                log_line(app, &line);
+                            }
+                            SrcMissingAction::Unbind { commit_journal } => {
+                                task_changed = true;
+                                if let Some(id) = commit_journal {
+                                    journals_commit_after_batch.push(id);
+                                }
+                                report.skipped += 1;
+                                let line = format!("解除绑定「{name}」：源文件已不存在");
+                                report.log.push(line.clone());
+                                log_line(app, &line);
+                            }
+                        }
+                        continue;
+                    }
+                    // write journal pending → delete → 末尾批量落盘 → 批后统一 committed
+                    let journal_id = match journal_pending(&jconn, "delete", &src, None, &t.id) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            report.skipped += 1;
+                            let line = format!("跳过「{name}」：journal_pending 失败：{e}");
+                            report.log.push(line.clone());
+                            log_line(app, &line);
+                            new_files.push(f);
+                            continue;
+                        }
+                    };
+                    let res = if f.is_dir {
+                        fs::remove_dir_all(&src)
+                    } else {
+                        fs::remove_file(&src)
+                    };
+                    if let Err(e) = res {
+                        // delete 失败 → clear journal，下次重试
+                        journal_cleared(&jconn, journal_id).ok();
+                        report.skipped += 1;
+                        let line = format!("删除「{name}」失败（可能被占用/权限不足）：{e}");
+                        report.log.push(line.clone());
+                        log_line(app, &line);
+                        new_files.push(f);
+                        continue;
+                    }
+                    // 不回收 f = 仅从绑定列表移除该文件，其余绑定不动
+                    task_changed = true;
+                    journals_commit_after_batch.push(journal_id);
+                    report.deleted += 1;
+                    let line = format!("已删除「{name}」（规则显式启用 delete）");
                     report.log.push(line.clone());
                     log_line(app, &line);
-                    continue;
                 }
-                journal_committed(&jconn, journal_id).ok();
-                // nt 已落盘，changed 末尾统一重写前基线重武装为刚写入值
-                nt.expected_updated_at = nt.updated_at;
-                changed.push(nt);
-                report.deleted += 1;
-                let line = format!("已删除「{name}」（规则显式启用 delete）");
-                report.log.push(line.clone());
-                log_line(app, &line);
+                _ => {
+                    new_files.push(f);
+                }
             }
-            _ => {}
+        }
+        if task_changed {
+            let mut nt = t.clone();
+            nt.expected_updated_at = t.updated_at; // RMW 基线 = 遍历项 updated_at（due 为刚落库值）
+            nt.files = if new_files.is_empty() {
+                None
+            } else {
+                Some(new_files)
+            };
+            nt.updated_at = Some(now);
+            changed.push(nt);
         }
     }
 
-    // 统一落盘（阶段一的 due 已包含在 changed 中，重复 upsert 幂等无害）
+    // 统一落盘：changed 每任务至多一条，逐文件改动已合并进该条的 files
     if !changed.is_empty() {
         tauri::async_runtime::block_on(async { db::db_upsert(app.clone(), changed.clone()).await })
             .map_err(|e| e.to_string())?;
