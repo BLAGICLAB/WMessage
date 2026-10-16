@@ -1202,11 +1202,17 @@ pub const SUBAGENT_ONLY_TOOLS: &[&str] = &["write_artifact_file", "read_own_card
 /// 禁止（所有 profile）：spawn_subagent / check_subagent / cancel_subagent /
 /// 任务卡主状态写（create_task/complete_task/edit_task/toggle_subtask 等全部不在列）/
 /// 任务执行 / 权限变更——白名单外一律由 dispatch 闸拒绝。
+///
+/// `grep_files` + `extract_document` 是只读扩展：Probe profile 的 yaml 要真正
+/// 能「搜代码 + 读文档」，否则那份配置看着生效、实际落空（收紧模型里
+/// profile 给上限、yaml 再收窄，所以上限不够就永远用不上）。
 pub const RESEARCH_TOOLS: &[&str] = &[
     "web_search",
     "fetch_url",
     "list_files",
     "read_text_file",
+    "grep_files",
+    "extract_document",
     "write_artifact_file",
     "read_own_card",
 ];
@@ -1227,6 +1233,7 @@ pub const GENERAL_TOOLS: &[&str] = &[
     "read_text_file",
     "list_files",
     "grep_files",
+    "extract_document",
     "edit_file",
     "write_file",
     "run_python",
@@ -1856,6 +1863,8 @@ mod registry_tests {
                 "fetch_url",
                 "list_files",
                 "read_text_file",
+                "grep_files",
+                "extract_document",
                 "write_artifact_file",
                 "read_own_card",
             ]
