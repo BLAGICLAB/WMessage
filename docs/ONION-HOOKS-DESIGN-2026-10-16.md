@@ -26,6 +26,14 @@
 | 9 | **子 agent 不改名**，沿用 recon / executor / verifier；`role` 字段承担可读性 | §5.5 |
 | 10 | 原稿工具名整体作废，不再做映射表 | §3.2 |
 
+第三轮（同一会话追加）：
+
+| # | 决定 | 落点 |
+|---|---|---|
+| 11 | AST 首批语言 **rust / typescript / python / go** | §3.6 |
+| 12 | 编译策略 **feature flag `ast-inspect`，默认关闭** | §3.6 |
+| 13 | **v1 严格只读**，符号级批量改写另开一轮 | §3.6 |
+
 另有一条前置决定沿用：**不引入脚本运行时**（先原生钩子注册表，Lua 的债见 §七）。
 
 ---
@@ -218,15 +226,42 @@ profile 白名单，注释写明「外部 MCP 工具不进子 agent，§5.1 边�
 - native 依赖不是新风险类别：本仓已有 `rusqlite`（bundled，C）、
   `ort`（ONNX Runtime，build 期 download-binaries）、`image`（C 解码）三个先例。
 
+#### 三条已定（第三轮拍板）
+
+| 项 | 决定 | 依据 |
+|---|---|---|
+| 首批语言 | **rust / typescript / python / go** | 仓库自身栈 Rust+TS；python 是用户自动化脚本高频语言；go 是常见后端工程语言。v1 不加其他语言，控制编译耗时与体积 |
+| 编译策略 | **feature flag `ast-inspect`，默认关闭** | 与 `tokenizers` 关 default-features 瘦身同思路：默认制品不含 tree-sitter 与 grammar；开启才引入核心 + 首批 grammar。加语言要改构建配置并重新编译 |
+| 能力边界 | **v1 严格只读**，不做结构化改写 | 符号级批量改写是独立工具、独立权限面，不塞进 v1，留作后续单独设计 |
+
 #### 「按需加载」在内嵌方案下的真实含义
 
-grammar 是 **C 代码，编译进二进制**，不是运行时加载。所以按需只有两种真实现：
+grammar 是 **C 代码，编译进二进制**，不是运行时加载。加上 feature flag 默认关闭，
+「可用」这件事变成**三重判定**，实现期必须能分清是哪一种（否则排查时分不清原因）：
 
-1. **Cargo feature flags 按语言开**——构建期决定，产物只含启用的 grammar；
-2. **全量编译**——一次编完，语言随用随加。
+| 层 | 判据 | 表现 | 处置 |
+|---|---|---|---|
+| 编译期 | feature `ast-inspect` 是否开 | 关闭则工具**根本不在 `TOOLS_TABLE`** | 默认路径；yaml 里出现 `mounts` 要在**导入时**就报错，别留到运行时 |
+| 装配期 | 会话 yaml 的 `mounts` 是否含它 | 未声明则不进 schema | 记审计 `ast.mount_skipped` |
+| 调用期 | 目标文件扩展名是否有对应 grammar | 不支持则本次调用不可用 | 记审计 `ast.language_unsupported` |
 
-运行时 dlopen grammar 等于回到动态库/外部进程路线，已排除。因此「按需」的落点是
-**构建期**而非运行期——这一条必须写进设计，否则实现期会误解成运行时加载。
+**降级的精确语义**（避免实现期误解）：「非支持语言自动降级为 `grep_files` 文本
+检索」——这**不是运行时把 `ast_inspect` 的结果换成 grep 结果**（模型会分不清自己
+调的是哪个工具，参数语义也对不上）。降级发生在 schema 层：不可用时该工具压根
+不在清单里，模型只能看到 `grep_files` / `read_text_file`，自然会去用它们；
+提示层要做的只是把探查指引写成「本语言走文本检索」。
+
+**两条连带约束**（实现期必须照做）：
+
+1. **`MOUNT_ONLY_TOOLS` 与工具定义必须同 `cfg` 条件**。否则 feature 关闭时会出现
+   `MOUNT_ONLY_TOOLS` 里有一个 `TOOLS_TABLE` 中不存在的名字——这恰好违反 §3.4 自己
+   定的硬约束（名单里的名字必须能在 `TOOLS_TABLE` 查到），自己打自己的脸。
+2. **本仓目前没有 `[features]` 段**（`Cargo.toml` 从没用过 Cargo feature）。
+   新增 `ast-inspect` 是第一次引入，构建配置与 CI 命令都要跟着改一次。
+
+**一个未验证项**：grammar 是 C 代码，跨平台打包需要各平台 C 工具链。
+本机只能编译 macOS 分支，**Windows 打包路径未验证**——上链前需要在 Windows 上
+实跑一次带 grammar 的构建。
 
 #### 挂载面：需要新增 `MOUNT_ONLY_TOOLS` 类别（本轮定的实现约束）
 
@@ -454,18 +489,18 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 
 ## 九、仍需拍板
 
-1. **§3.6 的首批语言集**：内嵌已定，但 grammar 是逐语言编译进来的，
-   支持哪几种直接决定构建时间与体积。建议首批 **rust / typescript / python / go**
-   （本仓自身栈是 Rust + TS，python 是用户自动化最常见的目标语言）。
-2. **§3.6 的构建策略**：Cargo feature flags 按语言开（产物小、构建要配置），
-   还是全量编译（一次编完、语言随用随加）？倾向 feature flags——
-   与 `tokenizers` 关 default-features 瘦身是同一思路。
-3. **AST 是否要支持结构化改写**：v1 定的是四项只读能力。若要给 WriterEditor
-   提供「按符号改写」的能力（如批量改调用点），那是第二个工具、另一套权限，
-   应单开一轮，不要塞进 v1。
+只剩一条，且是第 11 条的子问题：
 
-（前面几轮的待拍板均已定：profile 增 `grep_files` + `extract_document`；
-AST 走内嵌 tree-sitter 不走 MCP；导入 + 导出都要，导出粒度为单份 yaml。）
+1. **tsx 要不要算进「首批四种语言」**。tree-sitter 的 TypeScript 家族是两个
+   grammar：`typescript` 与 `tsx`，所以「四种语言」实际是**五套 grammar**
+   （rust / typescript / tsx / python / go）。这对本仓不是小事——前端是
+   React 19 + TSX，`src/` 下 **134 个 `.tsx` vs 68 个 `.ts`**，tsx 占三分之二。
+   不带 tsx grammar，分析本仓自己的前端会大面积落到降级路径。
+   倾向带上（多一套 grammar 的编译成本，换前端可分析）。
+
+（其余待拍板均已定：profile 增 `grep_files` + `extract_document`；AST 内嵌
+tree-sitter 不走 MCP；导入 + 导出都要，导出粒度为单份 yaml；首批语言四选四；
+feature flag 默认关闭；v1 只读。）
 
 ---
 
@@ -474,8 +509,10 @@ AST 走内嵌 tree-sitter 不走 MCP；导入 + 导出都要，导出粒度为�
 - 未写任何运行时代码。§二 的行号在后续改动后需重新校准。
 - 未验证钩子能否在现有 async 生命周期里安全挂载——期 1 的第一步应是
   「在 L4 挂一个内置钩子跑通全链」，而不是先设计注册表 API。
-- **未实测 tree-sitter 各语言 grammar 的实际编译时间与体积增量**。§九 的语言集
-  与构建策略两个问题正因此悬着——文档没给数字，只给了「按语言数线性增长」的判断。
+- **未实测 tree-sitter 各语言 grammar 的实际编译时间与体积增量**——文档没给数字，
+  只给了「按语言数线性增长」的判断。语言集与 feature flag 已定，但**代价仍是未知的**。
+- **Windows 打包路径未验证**：grammar 是 C 代码，各平台 C 工具链不同；本机只能编译
+  macOS 分支，上 Windows 打包前需实跑一次带 grammar 的构建。
 - 未验证 §3.3 那次白名单改动的连带影响：断言单测
   `profile_whitelists_match_design_mapping`（`registry.rs:1820`）锁死了
   `general = research ∪ coder 去重`，改 RESEARCH 后并集与断言都要重跑确认——
