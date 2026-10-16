@@ -108,7 +108,7 @@ impl ToolResult {
         }
     }
     /// 附一条文件变更证据（edit_file/write_file 成功路径）。
-    /// 只加字段不改语义——既有 33 工具不受影响（默认空 Vec）。
+    /// 只加字段不改语义——既有内置工具（BUILTIN_TOOL_COUNT 个）不受影响（默认空 Vec）。
     pub fn with_file_change(mut self, c: crate::bot_fs::FileChangeReceipt) -> Self {
         self.file_changes.push(c);
         self
@@ -706,7 +706,13 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
     TOOLS_INDEX.get_or_init(|| TOOLS_TABLE.iter().map(|t| (t.name, t)).collect())
 }
 
-// TOOLS_TABLE（33 工具单源真相：31 主可见 + 2 子 agent 专属）
+/// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
+/// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
+/// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
+pub const BUILTIN_TOOL_COUNT: usize = 44;
+
+// TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
+// 那几个仅子 agent 可见，主 agent 少这么多）
 pub static TOOLS_TABLE: &[ToolDef] = &[
     ToolDef {
         name: "query_tasks",
@@ -1143,7 +1149,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
 /// （合法性 + 与 baseline 的一致性由 registry_tests 锁死）。
 ///
 /// 仅子 agent 可见的工具（write_artifact_file / read_own_card）不出现在
-/// 主 agent 的默认清单里——主可见 = 28 核心 + 编排三 + 电脑辅助四（编排三后 31，电脑辅助四后 35）。
+/// 主 agent 的默认清单里——主可见数 = BUILTIN_TOOL_COUNT - SUBAGENT_ONLY_TOOLS.len()。
 pub fn tools_json() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
     CACHE.get_or_init(|| {
@@ -1222,7 +1228,7 @@ pub fn tools_json_for(session_id: Option<&str>) -> &'static str {
 }
 
 /// 主 agent 的完整工具清单（阶段 3 MCP 挂载点，机制 A）：
-/// 内置静态 JSON 尾部追加外部 MCP 工具（增量挂载，内置 31 工具 schema 字节不动）。
+/// 内置静态 JSON 尾部追加外部 MCP 工具（增量挂载，内置 BUILTIN_TOOL_COUNT 个工具的 schema 字节不动）。
 /// - 子 agent 会话：短路返回白名单（外部 MCP 工具不进子 agent，§5.1 边界不破）；
 /// - 无 MCP 连接：原样返回静态 &'static str（零分配，热路径不变）；
 /// - 有连接：Owned String = 静态 JSON 摘尾 + `mount::mcp_tools_json_body()` + 收尾。
@@ -1356,19 +1362,29 @@ mod registry_tests {
     }
 
     #[test]
-    fn tools_table_contains_42_main_visible_tools() {
+    fn tools_table_count_matches_constant() {
         let v: serde_json::Value =
             serde_json::from_str(tools_json()).expect("tools_json() 必须是合法 JSON");
         let arr = v.as_array().expect("TOOLS 顶层必须是数组");
-        // 主可见 = 28 核心 + 编排三 + 电脑辅助四 + 文件编辑两 + ask_user
-        // + create_skill（机器人自建技能）+ apps 三（程序 M2 聊天即 IDE）；
-        // write_artifact_file / read_own_card 仅子 agent 可见
-        assert_eq!(arr.len(), 42, "主 agent 可见工具必须为 42");
+        // 数目一律从 BUILTIN_TOOL_COUNT / SUBAGENT_ONLY_TOOLS 推导，全仓只此一处
+        // 硬编码工具数：注释、架构文档、本测试都引用它（数字失真过一次——
+        // 注释写 33 实为 44，正是因为断言与注释各写各的）。
         assert_eq!(
             TOOLS_TABLE.len(),
-            44,
-            "TOOLS_TABLE 全量 44（含 2 个 subagent-only）"
+            BUILTIN_TOOL_COUNT,
+            "TOOLS_TABLE 全量与 BUILTIN_TOOL_COUNT 不符：增删工具后请改该常量"
         );
+        assert_eq!(
+            arr.len(),
+            BUILTIN_TOOL_COUNT - SUBAGENT_ONLY_TOOLS.len(),
+            "主 agent 可见工具数（表全量减去 subagent-only）与常量不符"
+        );
+        for name in SUBAGENT_ONLY_TOOLS {
+            assert!(
+                tools_index().contains_key(*name),
+                "subagent-only 工具不在表里：{name}"
+            );
+        }
 
         let mut seen: HashSet<String> = HashSet::new();
         for t in arr.iter() {
@@ -1897,7 +1913,7 @@ mod registry_tests {
     }
 
     /// 动态拼装契约（纯格式）：拿 mount 的纯函数造一个假 body，
-    /// 拼装结果必须是合法 JSON 数组、内置 35 工具在前 + MCP 条目在后。
+    /// 拼装结果必须是合法 JSON 数组、内置 BUILTIN_TOOL_COUNT 个工具 schema 在前 + MCP 条目在后。
     /// （真实连接路径由 manager e2e 测试覆盖：连接后 with_mcp 含 mcp_echo_echo。）
     #[test]
     fn tools_json_with_mcp_assembly_contract() {

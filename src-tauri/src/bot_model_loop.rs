@@ -941,7 +941,7 @@ where
     // 子 agent 分支短路不受影响）。
     // 拼装结果含外部 MCP description（外部
     // 数据引入面），此处兜底改 fail-soft——解析失败记审计并回退「无 MCP 的
-    // 静态清单」（内置 32 工具不陪 MCP 动态段陪葬；静态 base 恒合法，
+    // 静态清单」（内置工具清单不陪 MCP 动态段陪葬；静态 base 恒合法，
     // 末层空表只为防御到底），不再 panic 打断模型循环。
     let tools: serde_json::Value = {
         let assembled = crate::bot::registry::tools_json_with_mcp(stop.session_id());

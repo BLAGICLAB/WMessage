@@ -2397,7 +2397,7 @@ mod file_change_tests {
             .with_file_change(build_file_change_receipt("/a", "create", None, "b\n", 0));
         assert_eq!(r.file_changes.len(), 1);
         assert_eq!(r.file_changes[0].path, "/a");
-        // 其余构造器默认空——既有 33 工具零感知（加字段不改语义的兼容锁）
+        // 其余构造器默认空——既有内置工具零感知（加字段不改语义的兼容锁）
         assert!(ToolResult::ok("o", Vec::new()).file_changes.is_empty());
         assert!(ToolResult::warn("w", Vec::new()).file_changes.is_empty());
         assert!(ToolResult::error("e", Vec::new()).file_changes.is_empty());

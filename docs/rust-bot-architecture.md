@@ -97,8 +97,8 @@ src-tauri/src/
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
 │                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
-├── bot/registry.rs (716)  **工具单源真相（阶段 2）**：33 个 schema 常量 + `TOOLS_TABLE`
-│                        （name/schema/mutating/call，33 工具=31 主可见+2 子 agent 专属）→
+├── bot/registry.rs (716)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+│                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (237)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
@@ -302,7 +302,7 @@ src-tauri/src/
                session_id / turn / tool_call_id，可按轮或按 id 整轮回放）
              per-tool 规则闸（deny/ask）+ skill_on_step 钩子（拦截职责在
                  工具内部与规则表，原原子黑名单/pre-execute 链已拆除）
-             **TOOLS_TABLE 查表**分发 29 个工具（bot/registry.rs 单一来源）：
+             **TOOLS_TABLE 查表**分发内置工具（数目见 registry::BUILTIN_TOOL_COUNT，bot/registry.rs 单一来源）：
                  bot/tools.rs 内部 tool_* / bot_fs / bot_web / bot_py / ocr / memory / bot_skills::use_skill
              后置结构化审计 tool.return + skill_on_step_post
          工具结果回灌 msgs 续聊，直到无 tool_calls 或熔断（MAX_FUNCTION_CALLS_PER_REQUEST）

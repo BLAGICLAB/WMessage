@@ -1,6 +1,6 @@
 //! MCP 外部工具挂载层（阶段 3，机制 A）：连接槽 × 工具快照 → agent 工具清单。
 //!
-//! 职责（纯增量，不动内置 32 工具的任何注册路径）：
+//! 职责（纯增量，不动内置工具（registry::BUILTIN_TOOL_COUNT 个）的任何注册路径）：
 //! - `mcp_mounted_tools()`：当前可挂载条目（函数名已消歧、schema 已整形）
 //! - `mcp_tools_json_body()`：拼进主 agent tools JSON 尾部的动态段
 //! - `find_mounted(func_name)`：阶段 4 dispatch 反查（函数名 → 服务器 id + 原始工具名）

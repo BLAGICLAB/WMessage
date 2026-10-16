@@ -8,7 +8,7 @@
 //!
 //! 边界：只做宿主侧——连接**外部** MCP 服务器；
 //! 不做 wmessage 自身作为 MCP Server 对外暴露（另开任务）。
-//! 接入方式：外部工具是「增量挂载」——不改既有 29+3 内置工具的注册机制，
+//! 接入方式：外部工具是「增量挂载」——不改既有内置工具（registry::BUILTIN_TOOL_COUNT 个）的注册机制，
 //! 工具发现/注入/调用路由见 registry / dispatch 的 mcp 钩子（阶段 3/4）。
 
 pub mod commands;
