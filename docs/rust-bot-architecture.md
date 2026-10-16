@@ -609,6 +609,7 @@ flowchart TD
 - `prompts/system.rs`
 
 ### `py/`
+- `py/ast.rs`
 - `py/audit.rs`
 - `py/commands.rs`
 - `py/document.rs`
