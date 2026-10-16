@@ -150,7 +150,7 @@ pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"
     "note":{"type":"string","description":"备注，可选"},
     "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DD HH:mm，可选"},
     "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"绑定文件列表（可选，最多 10 个；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
+    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}}"##;
 pub const SCHEMA_COMPLETE_TASK: &str = r##"{"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；任务卡带【验收标准】且未逐条达标时不要调用）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 list_tasks 输出），可选，优先于 title"},
@@ -168,7 +168,7 @@ pub const SCHEMA_EDIT_TASK: &str = r##"{"type":"function","function":{"name":"ed
     "due":{"type":"string","description":"新截止时间，可选；空串清除"},
     "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选"},
     "tags":{"type":"array","items":{"type":"string"},"description":"新标签列表，可选；空数组清除"},
-    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）"},
+    "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖已有绑定；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；空数组 = 无操作，本工具不能清空绑定；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃）"},
     "model":{"type":"string","description":"每卡执行模型（执行这张卡时覆盖全局激活模型），可选；空串清除=恢复跟随全局"},
     "owner":{"type":"string","description":"归属成员名或 personId（任务图谱按成员过滤用），可选；空串=归属本人；名字歧义时会返回候选名单，先向用户确认再重试"}
   },"required":[]}}}"##;
@@ -208,11 +208,11 @@ pub const SCHEMA_LIST_FILES: &str = r##"{"type":"function","function":{"name":"l
     "dir":{"type":"string","description":"目录绝对路径（支持 ~ 开头）"},
     "pattern":{"type":"string","description":"文件名过滤，如 *.pdf 或 报告*，可选"}
   },"required":["dir"]}}}"##;
-pub const SCHEMA_LINK_FILE_TO_TASK: &str = r##"{"type":"function","function":{"name":"link_file_to_task","description":"登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时系统会落一条「通知中心」消息让用户勾选绑定（默认全选，每个文件绑一次；不再弹窗）；任务未完成、中断、只有中间产物都不产生待绑定消息。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
-    "title":{"type":"string","description":"任务标题关键词，无 taskId 时使用"},
-    "path":{"type":"string","description":"产物文件绝对路径，必须在 AI_Gen_Files 目录内且文件已存在"},
-    "kind":{"type":"string","enum":["final","intermediate"],"default":"final","description":"final=最终产物，参与流程结束汇总弹窗；intermediate=中间产物，不参与弹窗。本会话在 AI_Gen_Files 目录没新建过的路径不参与绑定。"}
+pub const SCHEMA_LINK_FILE_TO_TASK: &str = r##"{"type":"function","function":{"name":"link_file_to_task","description":"把 AI_Gen_Files 目录内的文件或文件夹绑定到任务卡。任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内：登记到产物清单，流程结束、任务完成时落「通知中心」消息让用户勾选绑定（默认全选，每个文件绑一次）；任务未完成、中断、只有中间产物都不产生待绑定消息。普通对话内：直接绑定落卡，但必须指定一张已存在的任务卡（taskId 优先；title 需精确匹配唯一一张卡，本工具不能新建卡）。绑定一律追加，不覆盖卡上已有绑定；每卡最多一个文件夹（绑新文件夹会替换旧的），同一路径重复绑无效。","parameters":{"type":"object","properties":{
+    "taskId":{"type":"string","description":"任务 id，可选，优先于 title；普通对话内必须能命中已存在的卡"},
+    "title":{"type":"string","description":"任务标题，无 taskId 时使用，须精确匹配一张已存在的卡"},
+    "path":{"type":"string","description":"产物文件/文件夹绝对路径，必须在 AI_Gen_Files 目录内且已存在"},
+    "kind":{"type":"string","enum":["final","intermediate"],"default":"final","description":"final=最终产物，intermediate=中间产物。仅任务执行流程的登记分支生效（参与流程结束的待绑定汇总）；普通对话直接绑定，本参数无效果。"}
   },"required":["path"]}}}"##;
 pub const SCHEMA_EXTRACT_DOCUMENT: &str = r##"{"type":"function","function":{"name":"extract_document","description":"提取文档内容（不传 path 时弹系统选择框由用户选 Word/Excel/PPT/PDF；传 path 时直接读取该文件，如任务卡的绑定文件；长文档用 offset 参数续读后续部分；扫描版/图片型 PDF 文本层为空时自动转图走本地 OCR 兜底，前 20 页）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径，可选"},

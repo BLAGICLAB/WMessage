@@ -69,8 +69,9 @@ fn parse_task_files_arg(v: &serde_json::Value) -> Option<(Vec<crate::db::TaskFil
 /// 模型来源 files 的安全校验：create_task/edit_task 的
 /// files 参数直接来自模型，不加校验模型可把任意目录标 isDir=true 绑进任务卡，
 /// `allowed_dirs` 会把它并入文件白名单（且先于 permMode 分流），strict 模式也被架空。
-/// 收窄（对齐 link_file_to_task）：仅放行 AI_Gen_Files 目录内的已存在文件，强制 isDir=false；
-/// 被拒条目记审计。用户亲手绑定走 bind_file 系统弹框，不在此限。
+/// 白名单闸（对齐 link_file_to_task）：文件与文件夹一律要求 canonicalize 后落在
+/// AI_Gen_Files 内；is_dir 以真实 metadata 校正（不信模型自报）。被拒条目记审计。
+/// 用户亲手绑定走 bind_file 系统弹框，不在此限。
 async fn sanitize_task_files_arg(
     app: &AppHandle,
     v: &serde_json::Value,
@@ -106,9 +107,9 @@ async fn sanitize_task_files_arg(
     Some((out, truncated))
 }
 
-/// sanitize 的纯内核（单测可注入 gen 目录）：仅放行 gen_canon 目录内的已存在文件，
-/// 强制 isDir=false（目录绑定一律丢——目录绑定的授权只能来自用户手选）。
-/// 返回 (保留列表, 丢弃数)。
+/// sanitize 的纯内核（单测可注入 gen 目录）：文件与文件夹一律要求 canonicalize
+/// 后落在 gen_canon 内，is_dir 以真实 metadata 校正（不信模型自报——防把文件标成
+/// 目录绕过目录语义）；解析失败/stat 失败 → 丢。返回 (保留列表, 丢弃数)。
 fn sanitize_task_files_in(
     gen_canon: Option<&std::path::Path>,
     files: Vec<crate::db::TaskFile>,
@@ -116,24 +117,24 @@ fn sanitize_task_files_in(
     let mut out: Vec<crate::db::TaskFile> = Vec::new();
     let mut dropped = 0usize;
     for f in files {
-        let ok = !f.is_dir
-            && gen_canon.is_some_and(|g| {
-                std::fs::canonicalize(&f.path)
-                    .map(|c| c.starts_with(g))
-                    .unwrap_or(false)
-            });
-        if ok {
-            out.push(f);
-        } else {
-            dropped += 1;
+        let canon = std::fs::canonicalize(&f.path).ok();
+        let in_gen = canon
+            .as_deref()
+            .zip(gen_canon)
+            .is_some_and(|(c, g)| c.starts_with(g));
+        let real_is_dir = canon
+            .as_deref()
+            .and_then(|c| std::fs::metadata(c).ok())
+            .map(|m| m.is_dir());
+        match (in_gen, real_is_dir) {
+            (true, Some(is_dir)) => out.push(crate::db::TaskFile {
+                path: f.path,
+                is_dir,
+            }),
+            _ => dropped += 1,
         }
     }
     (out, dropped)
-}
-
-/// files 写回任务：空列表归一 None（清除语义）
-pub fn apply_files_to_task(t: &mut crate::db::Task, files: Vec<crate::db::TaskFile>) {
-    t.files = if files.is_empty() { None } else { Some(files) };
 }
 
 /// tool.return 审计补充 kv（create_task/edit_task 带 files 时）：(原始条数, 是否截断)
@@ -518,13 +519,14 @@ pub(crate) async fn tool_create_task(
         expected_updated_at: None, // 新建任务：无读快照基线
     };
     // 多文件绑定：files 参数 [{path,isDir}]，超 10 截断 + 警告
-    // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
+    // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件/文件夹）；新卡无历史绑定，
+    // 统一内核追加即落位
     let mut files_warn = "";
     if let Some((files, truncated)) = sanitize_task_files_arg(app, &v).await {
-        if truncated {
+        let (_, overflow) = crate::db::upsert_files_to_task(&mut task, files);
+        if truncated || overflow > 0 {
             files_warn = "（绑定文件超上限，已截断为前 10 个）";
         }
-        apply_files_to_task(&mut task, files);
     }
     // 插到列表顶部：取当前最小 order 减 1
     if let Ok(all) = crate::db::db_load(app.clone()).await {
@@ -813,15 +815,18 @@ pub(crate) async fn tool_edit_task(
         next.tags = if list.is_empty() { None } else { Some(list) };
         changed.push("标签");
     }
-    // 多文件绑定：files 参数 [{path,isDir}] 整体替换列表；空数组清除；超 10 截断 + 警告
-    // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件）
+    // 多文件绑定：files 参数 [{path,isDir}] 绑定一律加法——文件追加、文件夹槽替换
+    // （不覆盖既有文件绑定）；空数组 = 无操作。清空/减少绑定是 UI 专属操作，模型不可达。
+    // 模型来源 files 经安全校验（仅 AI_Gen_Files 内文件/文件夹）
     let mut files_warn = "";
     if let Some((files, truncated)) = sanitize_task_files_arg(app, &v).await {
-        if truncated {
+        let (applied, overflow) = crate::db::upsert_files_to_task(&mut next, files);
+        if truncated || overflow > 0 {
             files_warn = "（绑定文件超上限，已截断为前 10 个）";
         }
-        apply_files_to_task(&mut next, files);
-        changed.push("绑定文件");
+        if applied > 0 {
+            changed.push("绑定文件");
+        }
     }
     if let Some(c) = v["column"]
         .as_str()
@@ -1083,18 +1088,40 @@ pub(crate) async fn tool_remove_subtask(
 ///
 /// 路径白名单：仅接受 AI_Gen_Files 目录内的文件（产物必经此目录生成），
 /// 防止 LLM 借 bind_files 间接读 ~/.ssh/id_rsa 等敏感文件。
+/// 绑定目标解析（纯函数供单测）：taskId 直查；"title:X" 精确匹配标题。
+/// 必须命中恰一张未删除卡——0 张（不存在/回收站）→ Err（link_file_to_task
+/// 不能新建卡）；多张同名 → Err（改用 taskId 消歧）。
+pub(crate) fn resolve_task_key<'a>(
+    tasks: &'a [crate::db::Task],
+    key: &str,
+) -> Result<&'a crate::db::Task, String> {
+    if let Some(title) = key.strip_prefix("title:") {
+        let matched: Vec<&crate::db::Task> = tasks
+            .iter()
+            .filter(|t| t.deleted_at.is_none() && t.title == title)
+            .collect();
+        match matched.len() {
+            0 => Err(format!(
+                "没有找到名为「{title}」的任务卡。link_file_to_task 不能新建卡，请先建卡或改用 taskId"
+            )),
+            1 => Ok(matched[0]),
+            n => Err(format!(
+                "有 {n} 张同名任务卡「{title}」，请改用 taskId 指定"
+            )),
+        }
+    } else {
+        tasks
+            .iter()
+            .find(|t| t.id == key && t.deleted_at.is_none())
+            .ok_or_else(|| format!("任务卡不存在（或已在回收站）：{key}"))
+    }
+}
+
 pub(crate) async fn tool_link_file_to_task(
     app: &AppHandle,
     args: &str,
     session_id: Option<&str>,
 ) -> crate::bot::registry::ToolResult {
-    if !crate::tool_guard::is_task_execution_flow(session_id) {
-        // 「link_file_to_task 仅在...」首字「l」非 error/warn 前缀 → ok
-        return ToolResult::ok(
-            "link_file_to_task 仅在任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内有效；普通对话场景调用无效果（不报错也不绑），不要反复尝试".to_string(),
-            Vec::new(),
-        );
-    }
     let v = parse_args(args);
     let Some(path) = v["path"]
         .as_str()
@@ -1106,7 +1133,7 @@ pub(crate) async fn tool_link_file_to_task(
     };
     if !std::path::Path::new(&path).exists() {
         // 「路径不存在」首字「路」非 error/warn 前缀 → ok
-        return ToolResult::ok(format!("路径不存在，拒绝登记：{path}"), Vec::new());
+        return ToolResult::ok(format!("路径不存在，拒绝绑定：{path}"), Vec::new());
     }
     // canonicalize 失败不回退原路径（fail-closed）：白名单比对必须基于
     // 规范化后的真实落点，拿原始路径比 lexical starts_with 会给软链/竞态窗口留绕过面
@@ -1116,7 +1143,7 @@ pub(crate) async fn tool_link_file_to_task(
             // 「路径校验失败」首字「路」非 error/warn 前缀 → ok
             return ToolResult::ok(
                 format!(
-                    "路径校验失败，拒绝登记：{path}（无法解析真实路径，请确认文件仍然存在后重试）"
+                    "路径校验失败，拒绝绑定：{path}（无法解析真实路径，请确认文件仍然存在后重试）"
                 ),
                 Vec::new(),
             );
@@ -1127,9 +1154,9 @@ pub(crate) async fn tool_link_file_to_task(
         .and_then(|d| std::fs::canonicalize(d).ok())
         .is_some_and(|gen| canon.starts_with(&gen));
     if !in_gen {
-        // 「已拒绝登记」首字「已」非 error/warn 前缀 → ok（语义上其实是拒绝，机械规则降级）
+        // 「已拒绝绑定」首字「已」非 error/warn 前缀 → ok（语义上其实是拒绝，机械规则降级）
         return ToolResult::ok(
-            "已拒绝登记该路径：link_file_to_task 只能登记 AI_Gen_Files 目录内的产物；其他文件请在任务卡上手动「绑定文件」".to_string(),
+            "已拒绝绑定该路径：link_file_to_task 只能绑定 AI_Gen_Files 目录内的文件/文件夹；其他文件请在任务卡上手动「绑定文件」".to_string(),
             Vec::new(),
         );
     }
@@ -1155,15 +1182,68 @@ pub(crate) async fn tool_link_file_to_task(
         "intermediate" => crate::bot_artifacts::ArtifactKind::Intermediate,
         _ => crate::bot_artifacts::ArtifactKind::Final,
     };
-    crate::bot_artifacts::register(app, &key, path.clone(), kind).await;
-    let kind_label = match kind {
-        crate::bot_artifacts::ArtifactKind::Final => "最终产物",
-        crate::bot_artifacts::ArtifactKind::Intermediate => "中间产物",
+    // 双分支分流：任务执行流程走「登记 → 完成弹窗勾选 → 落库」；
+    // 普通对话没有收尾弹窗时机，直接落库绑定（同样只增不减）
+    if crate::tool_guard::is_task_execution_flow(session_id) {
+        crate::bot_artifacts::register(app, &key, path.clone(), kind).await;
+        let kind_label = match kind {
+            crate::bot_artifacts::ArtifactKind::Final => "最终产物",
+            crate::bot_artifacts::ArtifactKind::Intermediate => "中间产物",
+        };
+        // 「已登记{kind_label}」首字「已」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            format!(
+                "已登记{kind_label}「{path}」。流程结束、任务完成时会在通知中心生成待绑定消息让用户勾选；不要在此刻绑定——任务未完成或中断不绑定。"
+            ),
+            Vec::new(),
+        );
+    }
+    // 普通对话分支：白名单内 + 必须命中恰一张未删除卡（不能无中生有建卡）
+    let tasks = match crate::db::db_load(app.clone()).await {
+        Ok(t) => t,
+        Err(e) => {
+            return ToolResult::ok(format!("绑定失败：读取任务卡出错（{e}）"), Vec::new());
+        }
     };
-    // 「已登记{kind_label}」首字「已」非 error/warn 前缀 → ok
+    let target = match resolve_task_key(&tasks, &key) {
+        Ok(t) => t,
+        Err(reason) => return ToolResult::ok(reason, Vec::new()),
+    };
+    let is_dir = std::fs::metadata(&canon)
+        .map(|m| m.is_dir())
+        .unwrap_or(false);
+    let mut next = target.clone();
+    let type_label = if is_dir { "文件夹" } else { "文件" };
+    let (applied, overflow) = crate::db::upsert_files_to_task(
+        &mut next,
+        vec![crate::db::TaskFile {
+            path: path.clone(),
+            is_dir,
+        }],
+    );
+    if applied == 0 {
+        // 「该路径已」首字「该」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            format!("该路径已绑定在任务「{}」上，无需重复绑定", next.title),
+            Vec::new(),
+        );
+    }
+    next.expected_updated_at = next.updated_at;
+    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    if let Err(e) = crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
+        return ToolResult::ok(format!("绑定落库失败：{e}"), Vec::new());
+    }
+    crate::bot::broadcast_after_mutation(app, vec![next.clone()], vec![]);
+    // 「已绑定」首字「已」非 error/warn 前缀 → ok
     ToolResult::ok(
         format!(
-            "已登记{kind_label}「{path}」。流程结束、任务完成时会在通知中心生成待绑定消息让用户勾选；不要在此刻绑定——任务未完成或中断不绑定。"
+            "已绑定{type_label}「{path}」到任务「{}」{}",
+            next.title,
+            if overflow > 0 {
+                "（卡上绑定已满，超出上限的部分未生效）"
+            } else {
+                ""
+            }
         ),
         Vec::new(),
     )
@@ -1996,15 +2076,17 @@ mod task_files_arg_tests {
         assert!(files.is_empty() && !truncated);
     }
 
-    /// 模型来源 files 仅放行 AI_Gen_Files 内已存在文件，
-    /// 目录绑定一律丢（目录授权只能来自用户手选 bind_file）
+    /// 模型来源 files 仅放行 AI_Gen_Files 内已存在条目（文件+文件夹），
+    /// is_dir 以真实 metadata 校正；白名单外/解析失败一律丢
     #[test]
-    fn sanitize_task_files_drops_dirs_and_outside_paths() {
+    fn sanitize_task_files_whitelists_dirs_and_corrects_isdir() {
         let tmp = tempfile::tempdir().unwrap();
         let gen = tmp.path().join("AI_Gen_Files");
         std::fs::create_dir_all(&gen).unwrap();
         let inside = gen.join("report.docx");
         std::fs::write(&inside, b"x").unwrap();
+        let inside_dir = gen.join("bundle");
+        std::fs::create_dir_all(&inside_dir).unwrap();
         let outside = tmp.path().join("secret.txt");
         std::fs::write(&outside, b"s").unwrap();
         let gen_canon = std::fs::canonicalize(&gen).unwrap();
@@ -2014,13 +2096,23 @@ mod task_files_arg_tests {
                 path: inside.to_string_lossy().to_string(),
                 is_dir: false,
             },
+            // 白名单内目录：放行（模型此前不给绑目录）
+            crate::db::TaskFile {
+                path: inside_dir.to_string_lossy().to_string(),
+                is_dir: true,
+            },
+            // 文件谎报 isDir=true → 按 metadata 校正回 false（同路径重复项仅测 sanitize 不去重）
+            crate::db::TaskFile {
+                path: inside.to_string_lossy().to_string(),
+                is_dir: true,
+            },
             crate::db::TaskFile {
                 path: outside.to_string_lossy().to_string(),
                 is_dir: false,
             },
-            // 目录绑定（哪怕是 gen 目录本身）一律丢
+            // 白名单外目录：照旧丢
             crate::db::TaskFile {
-                path: gen.to_string_lossy().to_string(),
+                path: tmp.path().to_string_lossy().to_string(),
                 is_dir: true,
             },
             // 不存在的路径也丢
@@ -2030,8 +2122,10 @@ mod task_files_arg_tests {
             },
         ];
         let (kept, dropped) = sanitize_task_files_in(Some(&gen_canon), files);
-        assert_eq!(kept.len(), 1, "只有 AI_Gen_Files 内已存在文件保留");
-        assert!(kept[0].path.ends_with("report.docx"));
+        assert_eq!(kept.len(), 3, "白名单内文件+目录保留，谎报被校正");
+        assert!(!kept[0].is_dir, "文件 is_dir=false");
+        assert!(kept[1].is_dir, "白名单内目录保留");
+        assert!(!kept[2].is_dir, "谎报目录的文件被 metadata 校正为文件");
         assert_eq!(dropped, 3);
 
         // gen 目录不可用（None）→ 全丢（fail-closed）
@@ -2045,15 +2139,16 @@ mod task_files_arg_tests {
         assert!(kept.is_empty() && dropped == 1);
     }
 
-    /// 绑定替换：写入整列表；空列表清除
+    /// 绑定目标解析：taskId 直查、title 精确匹配唯一卡、0 张拒（不得新建）、
+    /// 多张同名拒（改用 taskId）、回收站卡不可达
     #[test]
-    fn apply_files_to_task_replaces_bindings_and_clears_on_empty() {
-        let mut t = crate::db::Task {
+    fn resolve_task_key_requires_existing_unique_card() {
+        let mk = |id: &str, title: &str, deleted: bool| crate::db::Task {
             plan_start: None,
             plan_end: None,
             parent_id: None,
-            id: "t".to_string(),
-            title: "x".to_string(),
+            id: id.to_string(),
+            title: title.to_string(),
             due: None,
             note: None,
             tags: None,
@@ -2062,7 +2157,7 @@ mod task_files_arg_tests {
             subtasks: None,
             completed_at: None,
             archived: None,
-            deleted_at: None,
+            deleted_at: if deleted { Some(1) } else { None },
             collapsed: None,
             order: None,
             updated_at: None,
@@ -2076,23 +2171,38 @@ mod task_files_arg_tests {
             created_at: None,
             expected_updated_at: None,
         };
-        apply_files_to_task(
-            &mut t,
-            vec![
-                crate::db::TaskFile {
-                    path: "/n/1.pdf".to_string(),
-                    is_dir: false,
-                },
-                crate::db::TaskFile {
-                    path: "/n/dir".to_string(),
-                    is_dir: true,
-                },
-            ],
+        let tasks = vec![
+            mk("t1", "写周报", false),
+            mk("t2", "写周报", false),
+            mk("t3", "已删的卡", true),
+        ];
+        // Task 未实现 Debug，unwrap_err 不可用——match 取错误
+        let expect_err = |r: Result<&crate::db::Task, String>| -> String {
+            match r {
+                Ok(_) => panic!("应拒绝"),
+                Err(e) => e,
+            }
+        };
+        // taskId 直查
+        assert_eq!(resolve_task_key(&tasks, "t1").unwrap().id, "t1");
+        // 回收站卡按不存在处理
+        let err = expect_err(resolve_task_key(&tasks, "t3"));
+        assert!(err.contains("不存在"), "got: {err}");
+        // 回收站卡不计入 title 匹配 → 0 张 → 拒（不能新建卡）
+        let err = expect_err(resolve_task_key(&tasks, "title:已删的卡"));
+        assert!(err.contains("不能新建卡"), "got: {err}");
+        // title 唯一命中
+        let tasks2 = vec![mk("t9", "唯一的卡", false)];
+        assert_eq!(
+            resolve_task_key(&tasks2, "title:唯一的卡").unwrap().id,
+            "t9"
         );
-        assert_eq!(t.files.as_deref().unwrap().len(), 2);
-
-        apply_files_to_task(&mut t, vec![]);
-        assert!(t.files.is_none());
+        // title 0 张 → 拒（不能新建卡）
+        let err = expect_err(resolve_task_key(&tasks, "title:不存在的卡"));
+        assert!(err.contains("不能新建卡"), "got: {err}");
+        // title 多张同名 → 拒（改用 taskId）
+        let err = expect_err(resolve_task_key(&tasks, "title:写周报"));
+        assert!(err.contains("taskId"), "got: {err}");
     }
 
     /// tool.return 审计 kv：files_count=原始条数（截断前）、truncated 标记；无 files 不补 kv

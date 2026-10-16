@@ -228,6 +228,58 @@ pub fn bind_files(paths: Vec<String>) -> Vec<TaskFile> {
     resolve_task_files(paths)
 }
 
+/// 统一绑定写入口（所有绑定渠道共用内核）：文件追加制 + 文件夹槽替换制。
+/// 查重主键 = 路径（小写归一——Windows 大小写差异/调用方拼写差异不产生重复绑定）；
+/// 同名不同路径视为不同条目，名字不拦截。文件夹绑定替换现有文件夹槽（占原位，
+/// 文件条目与列表顺序不动），同路径重复绑无操作。追加永不清除既有绑定，
+/// 空追加 = 无操作——清空/减少绑定是 UI 专属操作，模型不可达。
+/// 返回 (实际生效条数, 超上限溢出条数)。
+pub fn upsert_files_to_task(t: &mut Task, additions: Vec<TaskFile>) -> (usize, usize) {
+    let mut files = t.effective_files();
+    let mut applied = 0usize;
+    let mut overflow = 0usize;
+    for f in additions {
+        let path = f.path.trim().to_string();
+        if path.is_empty() {
+            continue;
+        }
+        let key = path.to_lowercase();
+        if files.iter().any(|e| e.path.to_lowercase() == key) {
+            continue; // 同路径已绑定：无操作
+        }
+        if f.is_dir {
+            match files.iter_mut().find(|e| e.is_dir) {
+                // 替换不占新名额：满员也可换槽
+                Some(slot) => {
+                    *slot = TaskFile { path, is_dir: true };
+                    applied += 1;
+                }
+                None => {
+                    if files.len() >= MAX_TASK_FILES {
+                        overflow += 1;
+                    } else {
+                        files.push(TaskFile { path, is_dir: true });
+                        applied += 1;
+                    }
+                }
+            }
+        } else if files.len() >= MAX_TASK_FILES {
+            overflow += 1;
+        } else {
+            files.push(TaskFile {
+                path,
+                is_dir: false,
+            });
+            applied += 1;
+        }
+    }
+    if applied > 0 {
+        // 只增不减：applied>0 时 files 必非空，绝不写回 None
+        t.files = Some(files);
+    }
+    (applied, overflow)
+}
+
 /// Reflection 触发阈值/批量：summary 攒够 10 条合成一条 reflection
 pub const REFLECTION_BATCH: i64 = 10;
 

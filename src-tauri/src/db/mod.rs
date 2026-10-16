@@ -873,6 +873,67 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// upsert_files_to_task 统一绑定内核：文件追加、文件夹槽替换、小写路径去重、
+    /// 10 封顶、空追加无操作、只增不减
+    #[test]
+    fn upsert_files_to_task_additive_with_folder_slot() {
+        let tf = |path: &str, is_dir: bool| TaskFile {
+            path: path.to_string(),
+            is_dir,
+        };
+        let mut t = mk_task("t1", "x");
+
+        // 空追加 = 无操作（files 仍 None，只增不减）
+        let (applied, overflow) = upsert_files_to_task(&mut t, vec![]);
+        assert_eq!((applied, overflow), (0, 0));
+        assert!(t.files.is_none(), "空追加不得写回空绑定");
+
+        // 文件追加 + 小写路径去重（同路径不同大小写 = 同一条目）
+        let (applied, overflow) = upsert_files_to_task(
+            &mut t,
+            vec![tf("/d/报.docx", false), tf("/D/报.DOCX", false)],
+        );
+        assert_eq!((applied, overflow), (1, 0), "小写归一去重");
+        assert_eq!(t.files.as_deref().unwrap().len(), 1);
+
+        // 文件夹槽：首个文件夹入列
+        let (applied, _) = upsert_files_to_task(&mut t, vec![tf("/d/归档", true)]);
+        assert_eq!(applied, 1);
+        // 不同路径文件夹 → 替换占原位，文件条目与顺序不动
+        let (applied, _) = upsert_files_to_task(&mut t, vec![tf("/e/其他", true)]);
+        assert_eq!(applied, 1, "文件夹替换计为生效");
+        let files = t.files.as_deref().unwrap();
+        assert_eq!(files.len(), 2, "文件夹替换不增长列表");
+        assert_eq!(files[1].path, "/e/其他", "新文件夹占原槽位");
+        assert_eq!(files[0].path, "/d/报.docx", "文件条目不动");
+        // 同路径文件夹重复绑 → 无操作
+        let (applied, overflow) = upsert_files_to_task(&mut t, vec![tf("/E/其他", true)]);
+        assert_eq!((applied, overflow), (0, 0));
+
+        // 10 封顶：文件溢出计数；满员时文件夹替换仍生效
+        let mut full = mk_task("t2", "y");
+        let fill: Vec<TaskFile> = (0..9)
+            .map(|i| tf(&format!("/f/{i}.txt", i = i), false))
+            .collect();
+        upsert_files_to_task(&mut full, fill);
+        upsert_files_to_task(&mut full, vec![tf("/f/-dir", true)]);
+        let (applied, overflow) = upsert_files_to_task(&mut full, vec![tf("/f/new.txt", false)]);
+        assert_eq!((applied, overflow), (0, 1), "满员文件溢出");
+        let (applied, overflow) = upsert_files_to_task(&mut full, vec![tf("/f/替换目录", true)]);
+        assert_eq!((applied, overflow), (1, 0), "满员文件夹替换仍生效");
+        assert_eq!(full.files.as_deref().unwrap().len(), 10, "替换不增长");
+        assert_eq!(
+            full.files
+                .as_deref()
+                .unwrap()
+                .iter()
+                .find(|f| f.is_dir)
+                .unwrap()
+                .path,
+            "/f/替换目录"
+        );
+    }
+
     /// 旧版本工作区链接存 label/target 字段，新版本 displayName/targetUri，
     /// serde alias 保证旧数据无缝读取。
     #[test]

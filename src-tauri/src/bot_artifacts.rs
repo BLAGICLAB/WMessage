@@ -123,33 +123,22 @@ pub async fn confirm_artifact_batch(
     let gen = crate::db::gen_dir(&app)
         .ok()
         .and_then(|d| std::fs::canonicalize(d).ok());
-    let mut files: Vec<crate::db::TaskFile> = Vec::new();
-    for p in &paths {
-        let Ok(canon) = std::fs::canonicalize(p) else {
-            eprintln!("[bot_artifacts] 绑定路径校验失败（不存在或无法解析），已跳过：{p}");
-            continue;
-        };
-        if gen.as_ref().is_some_and(|g| canon.starts_with(g)) {
-            files.push(crate::db::TaskFile {
-                path: p.clone(),
-                is_dir: false,
-            });
-        } else {
-            eprintln!("[bot_artifacts] 绑定路径不在 AI_Gen_Files 内，已拒绝：{p}");
-        }
-    }
+    let files = validate_artifact_paths(gen.as_deref(), &paths);
     if files.is_empty() {
         return Err(
             "没有可绑定的文件：所选路径均校验失败或不在产物目录 AI_Gen_Files 内".to_string(),
         );
     }
-    let bound = files.len();
-    crate::bot::apply_files_to_task(&mut next, files);
+    // 绑定一律加法：合并进既有绑定（文件追加/文件夹槽替换），不覆盖卡上已有绑定
+    let (bound, overflow) = crate::db::upsert_files_to_task(&mut next, files);
     next.expected_updated_at = next.updated_at;
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     crate::db::db_upsert(app.clone(), vec![next.clone()])
         .await
         .map_err(|e| format!("绑定失败：{e}"))?;
+    if overflow > 0 {
+        eprintln!("[bot_artifacts] 绑定超上限 {overflow} 条已忽略");
+    }
     crate::bot::broadcast_after_mutation(&app, vec![next.clone()], vec![]);
     // 弹窗已确认，清登记表。TOCTOU 兜底：take_all 返回里「弹窗快照后、确认前
     // 新登记」的产物不在用户勾选内——重新登记留下一轮弹窗，不静默丢弃。
@@ -178,6 +167,34 @@ pub async fn confirm_artifact_batch(
         crate::notifications::emit_changed(&app);
     }
     Ok(bound)
+}
+
+/// 产物路径校验内核（单测注入 gen 目录）：canonicalize → 白名单前缀 → 真实
+/// metadata 探测 is_dir（登记到确认之间文件可能被清/换型，不沿用登记时假设）。
+/// 不合规路径静默剔除（留痕由调用方 stderr 承担）。
+fn validate_artifact_paths(
+    gen: Option<&std::path::Path>,
+    paths: &[String],
+) -> Vec<crate::db::TaskFile> {
+    let mut files: Vec<crate::db::TaskFile> = Vec::new();
+    for p in paths {
+        let Ok(canon) = std::fs::canonicalize(p) else {
+            eprintln!("[bot_artifacts] 绑定路径校验失败（不存在或无法解析），已跳过：{p}");
+            continue;
+        };
+        if gen.is_some_and(|g| canon.starts_with(g)) {
+            let is_dir = std::fs::metadata(&canon)
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+            files.push(crate::db::TaskFile {
+                path: p.clone(),
+                is_dir,
+            });
+        } else {
+            eprintln!("[bot_artifacts] 绑定路径不在 AI_Gen_Files 内，已拒绝：{p}");
+        }
+    }
+    files
 }
 
 #[cfg(test)]

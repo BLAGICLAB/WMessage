@@ -72,7 +72,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "files": {
-            "description": "绑定文件列表（可选，最多 10 个；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）",
+            "description": "追加绑定文件/文件夹（可选，追加不覆盖；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）",
             "items": {
               "properties": {
                 "isDir": {
@@ -165,7 +165,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "files": {
-            "description": "新绑定文件列表（可选，整体替换，最多 10 个；空数组清除；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件）",
+            "description": "追加绑定文件/文件夹（可选，追加不覆盖已有绑定；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；空数组 = 无操作，本工具不能清空绑定；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃）",
             "items": {
               "properties": {
                 "isDir": {
@@ -408,13 +408,13 @@ const TOOLS: &str = r#"[
   },
   {
     "function": {
-      "description": "登记产物到本任务卡执行流程的产物清单。文件必须在 AI_Gen_Files 目录内。流程结束、任务完成、有产物时系统会落一条「通知中心」消息让用户勾选绑定（默认全选，每个文件绑一次；不再弹窗）；任务未完成、中断、只有中间产物都不产生待绑定消息。普通对话场景调用此工具不报错也不绑（不反复尝试）。仅任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内登记有效。",
+      "description": "把 AI_Gen_Files 目录内的文件或文件夹绑定到任务卡。任务卡执行流程（🤖 按钮 / ⏰ 定时 / 📦 批量）内：登记到产物清单，流程结束、任务完成时落「通知中心」消息让用户勾选绑定（默认全选，每个文件绑一次）；任务未完成、中断、只有中间产物都不产生待绑定消息。普通对话内：直接绑定落卡，但必须指定一张已存在的任务卡（taskId 优先；title 需精确匹配唯一一张卡，本工具不能新建卡）。绑定一律追加，不覆盖卡上已有绑定；每卡最多一个文件夹（绑新文件夹会替换旧的），同一路径重复绑无效。",
       "name": "link_file_to_task",
       "parameters": {
         "properties": {
           "kind": {
             "default": "final",
-            "description": "final=最终产物，参与流程结束汇总弹窗；intermediate=中间产物，不参与弹窗。本会话在 AI_Gen_Files 目录没新建过的路径不参与绑定。",
+            "description": "final=最终产物，intermediate=中间产物。仅任务执行流程的登记分支生效（参与流程结束的待绑定汇总）；普通对话直接绑定，本参数无效果。",
             "enum": [
               "final",
               "intermediate"
@@ -422,15 +422,15 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "path": {
-            "description": "产物文件绝对路径，必须在 AI_Gen_Files 目录内且文件已存在",
+            "description": "产物文件/文件夹绝对路径，必须在 AI_Gen_Files 目录内且已存在",
             "type": "string"
           },
           "taskId": {
-            "description": "任务 id，可选，优先于 title",
+            "description": "任务 id，可选，优先于 title；普通对话内必须能命中已存在的卡",
             "type": "string"
           },
           "title": {
-            "description": "任务标题关键词，无 taskId 时使用",
+            "description": "任务标题，无 taskId 时使用，须精确匹配一张已存在的卡",
             "type": "string"
           }
         },
