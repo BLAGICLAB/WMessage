@@ -271,6 +271,12 @@ pub const SCHEMA_RUN_PYTHON: &str = r##"{"type":"function","function":{"name":"r
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
     "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
   },"required":["code"]}}}"##;
+pub const SCHEMA_AST_INSPECT: &str = r##"{"type":"function","function":{"name":"ast_inspect","description":"对 Python 源码做符号级静态探查（走本机 Python 沙箱 + 标准库 ast，零新增依赖：资源受限、独立临时目录、默认 60s 超时，沙箱无文件系统隔离故调用前已过白名单闸；需设置页开启「允许机器人执行 Python」，或授权模式为 yolo 时免开关）。只支持 .py 文件，非 .py 会明确拒绝并让你改用 grep_files / read_text_file，不会静默退化成文本检索。四种模式：symbols 出符号树（类/函数/方法 + 行号）、defs 定位定义、refs 找全部引用（区分裸名与属性访问 + 所在函数）、callgraph 出调用链（按名字匹配，非作用域解析；depth 层）。调用链跨文件现扫不缓存：单次最多扫 200 个文件 / 2MB，跳过 .git/__pycache__/node_modules/venv 等目录，目录里指向外部的 symlink 一律排除；触及上限时返回 truncated=true，此时结果不完整","parameters":{"type":"object","properties":{
+    "op":{"type":"string","enum":["symbols","defs","refs","callgraph"],"description":"探查模式：symbols=符号树 / defs=定义位置 / refs=全部引用 / callgraph=调用链"},
+    "path":{"type":"string","description":"目标 .py 文件绝对路径（支持 ~ 开头）；op=callgraph 时可传目录，扫该目录下所有 .py"},
+    "symbol":{"type":"string","description":"符号名（op 为 defs/refs/callgraph 时必填；类方法可只写方法名，如 resolve_with_perm）"},
+    "depth":{"type":"integer","description":"callgraph 展开层数（可选，默认 1，上限 3）"}
+  },"required":["op","path"]}}}"##;
 pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
@@ -472,6 +478,15 @@ fn call_create_pdf<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 fn call_run_python<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let stop = ctx.stop;
     Box::pin(async move { tool_run_python(ctx.app, args, stop).await })
+}
+
+fn call_ast_inspect<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    let stop = ctx.stop;
+    Box::pin(async move {
+        crate::py::ast::tool_ast_inspect(ctx.app, args, interactive, session_id, stop).await
+    })
 }
 
 fn call_web_search<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -709,7 +724,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 44;
+pub const BUILTIN_TOOL_COUNT: usize = 45;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -1143,6 +1158,17 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_chars: 8192,
         call: call_ask_user,
     },
+    // Python AST 探查。追加在表尾：tools_json_matches_baseline 只比前 28 项
+    // 前缀，插在中间会无谓地改动基线前缀（基线是「核心工具集」的快照，不是
+    // 全量清单的镜像）。顺序只影响主 agent 看到工具的排列，无语义。
+    ToolDef {
+        name: "ast_inspect",
+        schema: SCHEMA_AST_INSPECT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_chars: 8192,
+        call: call_ast_inspect,
+    },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
@@ -1191,6 +1217,7 @@ pub const CODER_TOOLS: &[&str] = &[
     "edit_file",
     "write_file",
     "run_python",
+    "ast_inspect",
     "write_artifact_file",
     "read_own_card",
 ];
@@ -1203,6 +1230,7 @@ pub const GENERAL_TOOLS: &[&str] = &[
     "edit_file",
     "write_file",
     "run_python",
+    "ast_inspect",
     "write_artifact_file",
     "read_own_card",
 ];
@@ -1452,6 +1480,7 @@ mod registry_tests {
             "apps_create",
             "apps_update_files",
             "ask_user",
+            "ast_inspect",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1511,6 +1540,7 @@ mod registry_tests {
             "apps_create",
             "apps_update_files",
             "ask_user",
+            "ast_inspect",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -1581,8 +1611,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 14,
-            "主可见应为 28+3+4+2+1+1+3（含 ask_user、create_skill 与 apps 三工具）"
+            base_arr.len() + 15,
+            "主可见应为 28+3+4+2+1+1+3+1（末位 +1 = ast_inspect）"
         );
     }
 
@@ -1815,7 +1845,8 @@ mod registry_tests {
     }
 
     /// 白名单内容精确性：research 联网 + 读列；coder 读列 + edit/write + run_python；
-    /// general = research ∪ coder 去重。
+    /// general = research ∪ coder 去重。`ast_inspect` 随 run_python 一同进 coder/general，
+    /// 不进 research（只读 profile 不装执行器）。
     #[test]
     fn profile_whitelists_match_design_mapping() {
         assert_eq!(
@@ -1829,6 +1860,10 @@ mod registry_tests {
                 "read_own_card",
             ]
         );
+        assert!(
+            !RESEARCH_TOOLS.contains(&"ast_inspect"),
+            "research 是只读 profile，不得装 AST 执行器"
+        );
         assert_eq!(
             CODER_TOOLS,
             &[
@@ -1838,6 +1873,7 @@ mod registry_tests {
                 "edit_file",
                 "write_file",
                 "run_python",
+                "ast_inspect",
                 "write_artifact_file",
                 "read_own_card",
             ]
@@ -1929,14 +1965,19 @@ mod registry_tests {
         s.push_str("\n]");
         let v: serde_json::Value = serde_json::from_str(&s).expect("拼装结果必须合法");
         let arr = v.as_array().unwrap();
+        // 数目从常量推导而非写死：增删内置工具时这里跟着走，不会再漂
+        let main_visible = BUILTIN_TOOL_COUNT - SUBAGENT_ONLY_TOOLS.len();
         assert_eq!(
             arr.len(),
-            43,
-            "42 内置（含 ask_user、create_skill 与 apps 三工具）+ 1 假 MCP"
+            main_visible + 1,
+            "{main_visible} 内置主可见工具 + 1 假 MCP"
         );
-        assert_eq!(arr[42]["function"]["name"], "mcp_fake_x");
-        // 内置前 42 项顺序不变（增量挂载不漂移）
+        assert_eq!(arr[main_visible]["function"]["name"], "mcp_fake_x");
+        // 内置前 main_visible 项顺序不变（增量挂载不漂移）
         let base_arr = serde_json::from_str::<serde_json::Value>(base).unwrap();
-        assert_eq!(&arr[..42], base_arr.as_array().unwrap().as_slice());
+        assert_eq!(
+            &arr[..main_visible],
+            base_arr.as_array().unwrap().as_slice()
+        );
     }
 }

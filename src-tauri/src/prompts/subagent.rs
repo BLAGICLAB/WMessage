@@ -104,16 +104,17 @@ pub(crate) const PROFILE_RESEARCH: &str = r#"你是 research 子 agent。
 
 /// coder profile（设计 §8.4）。
 pub(crate) const PROFILE_CODER: &str = r#"你是 coder 子 agent。
-工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
+工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、ast_inspect、write_artifact_file、read_own_card。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
+- 摸清陌生 Python 代码结构用 ast_inspect（op=symbols 出符号树 / defs 定位定义 / refs 找引用 / callgraph 出调用链），别靠 grep 猜调用关系；只支持 .py。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 产物路径写入 artifacts。
 - 不要改任务卡主状态。"#;
 
 /// general profile：research ∪ coder 的通用段。
 pub(crate) const PROFILE_GENERAL: &str = r#"你是 general 子 agent。
-工具：web_search、fetch_url、read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
-- 调研结论给来源；写代码先读后改、小步验证；改文件用 edit_file（批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）。
+工具：web_search、fetch_url、read_text_file、list_files、grep_files、edit_file、write_file、run_python、ast_inspect、write_artifact_file、read_own_card。
+- 调研结论给来源；写代码先读后改、小步验证；改文件用 edit_file（批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；读陌生 Python 代码的结构用 ast_inspect，不要靠 grep 猜调用关系。
 - 产物路径写入 artifacts。
 - 不要改任务卡主状态。"#;
 
@@ -136,9 +137,10 @@ pub(crate) const PROFILE_RECON: &str = r#"你是 recon（侦察）子 agent，�
 
 /// executor 角色：基于 recon 报告动手实现，写文件/跑脚本/生成文档。
 pub(crate) const PROFILE_EXECUTOR: &str = r#"你是 executor（执行）子 agent，基于上游侦察报告动手实现。
-可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、write_artifact_file、read_own_card。
+可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、ast_inspect、write_artifact_file、read_own_card。
 - 优先读 recon 报告路径（context_summary 给的）作为输入，不重新调研。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
+- 动手前用 ast_inspect 摸清 recon 指到的 Python 代码结构（op=symbols/defs/refs/callgraph），别照着 grep 结果猜。
 - 先读后改，小步验证；能跑测试就跑测试。
 - 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptance_criteria 已达成、哪些等 verifier 验收）。"#;
 

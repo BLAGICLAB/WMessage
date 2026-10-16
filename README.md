@@ -5,7 +5,7 @@ Tauri 2 + React 19 + TypeScript 的个人任务与 AI 代理工作台，新拟�
 ## 功能特性
 
 - **任务页**：任务池 + 周时间网格（计划块排期、子任务卡、归档卡原位封存）；任务卡含标题/备注/标签/子任务/绑定文件/截止/验收标准，支持折叠、拖拽排序、完成圆圈一键勾
-- **内置机器人聊天**（左导航 Agent 能力组）：用大模型管理任务与文档（新建/完成/删除/搜索/编辑/子任务/绑定文件）；42 个主可见工具含文档处理（Word 润色修订模式/Excel 公式/PPT/PDF，产物统一落 AI_Gen_Files）、本机 Python 编程（默认关闭）、联网搜索（Tavily/Brave 可配置，未配置走 Bing+百度网页抓取）、网页抓取（公网白名单）、语义长期记忆（记忆体 v2）、技能（skill）系统；常驻会话侧栏 + 头部上下文 + 右侧上下文栏（任务池/文件/子 Agent 三面板）；斜杠命令 /stop /compact /retry /clean；删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log
+- **内置机器人聊天**（左导航 Agent 能力组）：用大模型管理任务与文档（新建/完成/删除/搜索/编辑/子任务/绑定文件）；43 个主可见工具含文档处理（Word 润色修订模式/Excel 公式/PPT/PDF，产物统一落 AI_Gen_Files）、本机 Python 编程（默认关闭）与 Python AST 静态探查 ast_inspect、联网搜索（Tavily/Brave 可配置，未配置走 Bing+百度网页抓取）、网页抓取（公网白名单）、语义长期记忆（记忆体 v2）、技能（skill）系统；常驻会话侧栏 + 头部上下文 + 右侧上下文栏（任务池/文件/子 Agent 三面板）；斜杠命令 /stop /compact /retry /clean；删除任务弹确认（60s 超时自动拒绝）；审计日志 bot.log
 - **受管子 agent**：主 agent `spawn_subagent` 派发长任务（research/coder/general 三档 + recon/executor/verifier 三段式），预算三硬顶（轮数/工具调用/墙钟）+ 并发闸，执行契约与状态全落 `subagents` 表（不建任务卡）；聊天内嵌子 agent 区域在途可见、行上可取消；verifier 拒绝触发精准修复重试闭环
 - **程序（apps）**：零 LLM 的确定性 Python 小程序——程序页画廊上架/试跑/运行历史/版本快照回滚/归档恢复；脚本契约（`##RESULT##` 哨兵 + argv 目录约定）见 `docs/APP-DEV-CONVENTIONS.md`；AI 走 bot 工具「聊天即 IDE」（apps_list/apps_create/apps_update_files 落草稿，用户试跑满意再上架）
 - **自动归档 + 桌面清理**：完成满 7 天自动归档（归档页搜索/标签筛选/三列网格）；归档后按 CSV 规则表自动迁移绑定文件（`{year}` 占位符、后台轮询、迁移日志 migration.log）
