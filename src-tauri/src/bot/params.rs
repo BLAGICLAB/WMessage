@@ -1,8 +1,10 @@
 //! Agent 运行参数注册表（Agent 透明化设计 §3）：
 //!
 //! **单一真相源查表**（仿 bot/registry.rs TOOLS_TABLE 哲学）——每个影响 agent
-//! 行为的参数一条 `ParamDef`，`bot_effective_params` 命令遍历出表，设置页参数卡
-//! 渲染生效值/默认值/来源。以后加参数 = 表里加一条，展示自动跟随。
+//! 行为的参数一条 `ParamDef`，元数据与生效值解析都在这一条里，
+//! `bot_effective_params` 命令遍历出表，设置页参数卡渲染生效值/默认值/来源。
+//! 以后加参数 = 表里加一条，展示自动跟随；解析函数也随条目一起给，
+//! 不存在「加了 key 忘了加解析分支」这种静默漏解析。
 //!
 //! 两区：
 //! - **可编辑区**（`editable=true`，config 驱动）：值 = config 字段解析（None →
@@ -14,6 +16,32 @@
 //! 否则「展示的默认值」与「实际生效值」会漂。
 
 use serde::Serialize;
+
+/// 硬编码只读条目的解析器：来源恒为 hardcoded。
+macro_rules! hardcoded_resolver {
+    ($v:expr) => {{
+        fn f(_cfg: &BotConfig) -> (String, &'static str) {
+            ($v.to_string(), "hardcoded")
+        }
+        f as fn(&BotConfig) -> (String, &'static str)
+    }};
+}
+
+/// 可编辑条目的解析器：值走 resolve_* 取运行时真值（避免「看到 999、实际
+/// 钳到 200」的脱节），来源按「config 里有没有这个字段」标注。
+macro_rules! cfg_resolver {
+    ($resolve:path, $field:ident) => {{
+        fn f(cfg: &BotConfig) -> (String, &'static str) {
+            let src = if cfg.$field.is_some() {
+                "config"
+            } else {
+                "default"
+            };
+            ($resolve(cfg).to_string(), src)
+        }
+        f as fn(&BotConfig) -> (String, &'static str)
+    }};
+}
 
 // 内置默认（单一事实源）
 
@@ -119,6 +147,12 @@ pub struct ParamDef {
     pub default: &'static str,
     /// true = bot-config.json 有对应字段可改；false = 硬编码只读
     pub editable: bool,
+    /// 生效值解析（值展示串, 来源）。
+    ///
+    /// 解析随表走，不另开一个 `match key` —— 那等于给「加参数」留了一条能静默
+    /// 漏掉的旁路：表里加了一条 key 而忘了加 match 臂，不编译失败、不测试失败，
+    /// 只在设置页显示字面量 `?subagent.foo` 并把来源标成 hardcoded。
+    resolve: fn(&BotConfig) -> (String, &'static str),
 }
 
 /// 生效值视图（serde camelCase 直出前端）
@@ -147,6 +181,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "单次对话/任务执行的 LLM 轮数上限；调大=更复杂任务但失控时更费 token。Skill 自报轮数优先于此值",
         default: "50",
         editable: true,
+        resolve: cfg_resolver!(resolve_max_rounds_cfg, max_rounds),
     },
     ParamDef {
         key: "loop.max_function_calls",
@@ -155,6 +190,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "全域工具调用熔断上限（子 agent 预算同源此值）；工作流节点等长链任务可调大；软警告在 70% 处自动触发",
         default: "100",
         editable: true,
+        resolve: cfg_resolver!(resolve_budget_tool_calls, max_function_calls),
     },
     ParamDef {
         key: "loop.history_budget_chars",
@@ -163,6 +199,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "超出后最旧消息先丢并生成摘要；调大=长对话记忆更好但上下文成本更高",
         default: "100000",
         editable: true,
+        resolve: cfg_resolver!(resolve_history_budget_chars, history_budget_chars),
     },
     // ── 可编辑：子 agent ──
     ParamDef {
@@ -172,6 +209,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "LLM 派发子 agent 未显式给预算时的默认轮数；硬顶 50",
         default: "30",
         editable: true,
+        resolve: cfg_resolver!(resolve_budget_turns, subagent_max_turns),
     },
     ParamDef {
         key: "subagent.max_wall_secs",
@@ -180,6 +218,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "子 agent 从起跑计的最长时长；排队不计入",
         default: "600",
         editable: true,
+        resolve: cfg_resolver!(resolve_budget_wall, subagent_max_wall_secs),
     },
     // ── 可编辑：搜索 ──
     ParamDef {
@@ -189,6 +228,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "web_search 未指定 count 时的结果条数；后端硬顶 10",
         default: "8",
         editable: true,
+        resolve: cfg_resolver!(resolve_search_max_results, search_max_results),
     },
     // ── 可编辑：模型（已有字段入表展示） ──
     ParamDef {
@@ -198,6 +238,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送。条目级设置优先于此全局值",
         default: "8192",
         editable: true,
+        resolve: cfg_resolver!(plain_max_tokens, max_tokens),
     },
     ParamDef {
         key: "model.reasoning_effort",
@@ -206,6 +247,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "off/low/medium/high；按模型族映射到线上参数（聊天输入栏 ⚡ 可按会话覆盖）",
         default: "medium",
         editable: true,
+        resolve: cfg_resolver!(plain_reasoning, reasoning_effort),
     },
     ParamDef {
         key: "tools.python_timeout_secs",
@@ -214,6 +256,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "run_python 默认超时；工具参数可单次覆盖，硬顶 300",
         default: "60",
         editable: true,
+        resolve: cfg_resolver!(plain_py_timeout, python_timeout_secs),
     },
     // ── 可编辑：工具输出截断（ 落行为，本期仅入表） ──
     ParamDef {
@@ -223,6 +266,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "单条工具结果回填模型上下文的截断上限；默认不截断（超大输出可能挤占上下文，P4 接线生效）",
         default: "不截断",
         editable: true,
+        resolve: resolve_max_output_chars,
     },
     ParamDef {
         key: "tools.ask_budget",
@@ -231,6 +275,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "ask_user 每次任务执行最多提问次数，超限按 AI 假设继续；钳 1..=5",
         default: "3",
         editable: true,
+        resolve: cfg_resolver!(resolve_ask_budget_cfg, ask_budget),
     },
     // ── 硬编码只读区（调坏易出问题，仅展示） ──
     ParamDef {
@@ -240,6 +285,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "同时运行的子 agent 上限（每会话 2）；排队在 SubagentGate",
         default: "3",
         editable: false,
+        resolve: hardcoded_resolver!("3"),
     },
     ParamDef {
         key: "subagent.turns_hard_cap",
@@ -248,6 +294,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "任何配置（含 LLM 自报）都不能超过的轮数硬顶",
         default: "50",
         editable: false,
+        resolve: hardcoded_resolver!("50"),
     },
     ParamDef {
         key: "search.count_cap",
@@ -256,6 +303,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "工具参数 count 的硬上限（防单次搜索拉爆上下文）",
         default: "10",
         editable: false,
+        resolve: hardcoded_resolver!("10"),
     },
     ParamDef {
         key: "search.output_chars",
@@ -264,6 +312,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "搜索结果合并渲染后的截断长度",
         default: "6000",
         editable: false,
+        resolve: hardcoded_resolver!("6000"),
     },
     ParamDef {
         key: "llm.stream_idle_secs",
@@ -272,6 +321,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "两个流式 chunk 间隔超过此值判定连接死亡；总时长不设限（长生成合法）",
         default: "120",
         editable: false,
+        resolve: hardcoded_resolver!("120"),
     },
     ParamDef {
         key: "llm.retry",
@@ -280,6 +330,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "429/5xx 自动重试次数与间隔",
         default: "2次/1.5s",
         editable: false,
+        resolve: hardcoded_resolver!("2次/1.5s"),
     },
     ParamDef {
         key: "schedule.scan_secs",
@@ -288,6 +339,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "定时任务/工作流调度的扫描周期（执行最早延迟该时长）",
         default: "30",
         editable: false,
+        resolve: hardcoded_resolver!("30"),
     },
     ParamDef {
         key: "trace.span_text_max",
@@ -296,6 +348,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "执行痕迹里单条工具入参/结果的落库钳制（超出留审计）",
         default: "16384",
         editable: false,
+        resolve: hardcoded_resolver!("16384"),
     },
     ParamDef {
         key: "trace.diff_max_lines",
@@ -304,6 +357,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "执行痕迹里 unified diff 的行数钳制（±行计数不随截断丢失）",
         default: "2000",
         editable: false,
+        resolve: hardcoded_resolver!("2000"),
     },
     ParamDef {
         key: "trace.retention_days",
@@ -312,106 +366,46 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "痕迹三表与回滚快照的保留期：启动即清理一次，此后每天一次；数据管理可手动清理",
         default: "30",
         editable: false,
+        resolve: hardcoded_resolver!("30"),
     },
 ];
 
 /// 生效值解析：可编辑项查 cfg 字段（None → 默认 / Some → 值），只读项出硬编码常量
-fn param_value(key: &str, cfg: &BotConfig) -> (String, &'static str) {
-    // 可编辑区一律过 resolve_* 取生效值：面板展示的就是运行时真值，避免
-    // 「看到 999、实际钳到 200」的脱节；来源仍按「是否配置了该字段」标注
-    match key {
-        "loop.max_rounds" => (
-            resolve_max_rounds_cfg(cfg).to_string(),
-            if cfg.max_rounds.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "loop.max_function_calls" => (
-            resolve_subagent_budget(cfg).max_tool_calls.to_string(),
-            if cfg.max_function_calls.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "loop.history_budget_chars" => (
-            resolve_history_budget_chars(cfg).to_string(),
-            if cfg.history_budget_chars.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "subagent.max_turns" => (
-            resolve_subagent_budget(cfg).max_turns.to_string(),
-            if cfg.subagent_max_turns.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "subagent.max_wall_secs" => (
-            resolve_subagent_budget(cfg).max_wall_seconds.to_string(),
-            if cfg.subagent_max_wall_secs.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "search.max_results" => (
-            resolve_search_max_results(cfg).to_string(),
-            if cfg.search_max_results.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "model.max_tokens" => match cfg.max_tokens {
-            Some(v) => (v.to_string(), "config"),
-            None => ("8192".into(), "default"),
-        },
-        // 推理强度无钳制但有静默回退：非法值下游一律按 medium 生效，展示同步取回退结果
-        "model.reasoning_effort" => (
-            crate::bot::reasoning::EffortLevel::from_cfg(cfg.reasoning_effort.as_deref())
-                .as_str()
-                .to_string(),
-            if cfg.reasoning_effort.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "tools.python_timeout_secs" => match cfg.python_timeout_secs {
-            Some(v) => (v.to_string(), "config"),
-            None => ("60".into(), "default"),
-        },
-        "tools.ask_budget" => (
-            resolve_ask_budget_cfg(cfg).to_string(),
-            if cfg.ask_budget.is_some() {
-                "config"
-            } else {
-                "default"
-            },
-        ),
-        "tools.max_output_chars" => match cfg.max_tool_output_chars {
-            Some(v) if v > 0 => (v.to_string(), "config"),
-            Some(_) => ("不截断（显式关闭）".into(), "config"),
-            None => ("30000".into(), "default"),
-        },
-        // 只读硬编码区
-        "subagent.max_running" => ("3".into(), "hardcoded"),
-        "subagent.turns_hard_cap" => ("50".into(), "hardcoded"),
-        "search.count_cap" => ("10".into(), "hardcoded"),
-        "search.output_chars" => ("6000".into(), "hardcoded"),
-        "llm.stream_idle_secs" => ("120".into(), "hardcoded"),
-        "llm.retry" => ("2次/1.5s".into(), "hardcoded"),
-        "schedule.scan_secs" => ("30".into(), "hardcoded"),
-        "trace.span_text_max" => ("16384".into(), "hardcoded"),
-        "trace.diff_max_lines" => ("2000".into(), "hardcoded"),
-        "trace.retention_days" => ("30".into(), "hardcoded"),
-        other => (format!("?{other}"), "hardcoded"),
+
+/// 子 agent 预算三个键共用同一份 `resolve_subagent_budget`，这里按需取字段。
+fn resolve_budget_tool_calls(cfg: &BotConfig) -> String {
+    resolve_subagent_budget(cfg).max_tool_calls.to_string()
+}
+
+fn resolve_budget_turns(cfg: &BotConfig) -> String {
+    resolve_subagent_budget(cfg).max_turns.to_string()
+}
+
+fn resolve_budget_wall(cfg: &BotConfig) -> String {
+    resolve_subagent_budget(cfg).max_wall_seconds.to_string()
+}
+
+fn plain_max_tokens(cfg: &BotConfig) -> String {
+    cfg.max_tokens.unwrap_or(8192).to_string()
+}
+
+fn plain_py_timeout(cfg: &BotConfig) -> String {
+    cfg.python_timeout_secs.unwrap_or(60).to_string()
+}
+
+/// 推理强度无钳制但有静默回退：非法值下游一律按 medium 生效，展示同步取回退结果
+fn plain_reasoning(cfg: &BotConfig) -> String {
+    crate::bot::reasoning::EffortLevel::from_cfg(cfg.reasoning_effort.as_deref())
+        .as_str()
+        .to_string()
+}
+
+/// max_output_chars 有第三态：Some(0) = 显式关闭截断，展示串不是数字
+fn resolve_max_output_chars(cfg: &BotConfig) -> (String, &'static str) {
+    match cfg.max_tool_output_chars {
+        Some(v) if v > 0 => (v.to_string(), "config"),
+        Some(_) => ("不截断（显式关闭）".into(), "config"),
+        None => ("30000".into(), "default"),
     }
 }
 
@@ -420,7 +414,7 @@ pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
     PARAMS_TABLE
         .iter()
         .map(|d| {
-            let (value, source) = param_value(d.key, cfg);
+            let (value, source) = (d.resolve)(cfg);
             ParamView {
                 key: d.key,
                 label: d.label,
@@ -438,6 +432,47 @@ pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 每条参数都必须能被表里自带的 resolver 解析出真值。
+    ///
+    /// 这条测试替代原来的兜底臂：解析曾经是一个独立的 `match key`，兜底是
+    /// `other => (format!("?{other}"), "hardcoded")` —— 表里加了一条 key 而忘了
+    /// 加 match 臂时，不编译失败、不测试失败，只在设置页显示字面量
+    /// `?subagent.foo`。解析收进表之后，漏解析根本构造不出来。
+    #[test]
+    fn every_param_resolves_to_a_real_value() {
+        for d in PARAMS_TABLE {
+            let (value, source) = (d.resolve)(&empty_cfg());
+            assert!(!value.is_empty(), "{} 解析出空值", d.key);
+            assert!(
+                !value.starts_with('?'),
+                "{} 落进了兜底（key 与 resolver 对不上）",
+                d.key
+            );
+            assert!(
+                matches!(source, "config" | "default" | "hardcoded"),
+                "{} 来源非法：{source}",
+                d.key
+            );
+            assert_eq!(
+                d.editable,
+                source != "hardcoded",
+                "{}：可编辑性与来源标注不一致（editable={} source={source}）",
+                d.key,
+                d.editable
+            );
+        }
+    }
+
+    /// key 不得重复：设置页按 key 定位，重复会静默遮蔽前一条。
+    #[test]
+    fn param_keys_are_unique() {
+        let mut keys: Vec<&str> = PARAMS_TABLE.iter().map(|d| d.key).collect();
+        keys.sort_unstable();
+        let before = keys.len();
+        keys.dedup();
+        assert_eq!(before, keys.len(), "参数表里有重复 key");
+    }
 
     fn empty_cfg() -> BotConfig {
         BotConfig {
