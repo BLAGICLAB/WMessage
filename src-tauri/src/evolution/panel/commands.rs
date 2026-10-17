@@ -174,18 +174,12 @@ pub fn toggle_inner<R: tauri::Runtime>(
                 entry.status
             ));
         }
-        // Toggle ON：dedup（已有 pending/shadowing/shadow_passed 不重写）。
+        // Toggle ON：dedup（已有 pending/active 不重写）。
         // 人工批准口径加 Active：已生效提案重复拨 ON 不再新开 CR 行（重复批准
         // 零副作用），lesson 幂等由 apply_one 的 evo:<pid> 查重兜底。
         let existing = changes.iter().find(|c| {
             c.proposal_id == proposal_id
-                && matches!(
-                    c.status,
-                    ChangeStatus::Pending
-                        | ChangeStatus::Shadowing
-                        | ChangeStatus::ShadowPassed
-                        | ChangeStatus::Active
-                )
+                && matches!(c.status, ChangeStatus::Pending | ChangeStatus::Active)
         });
         let cr = match existing {
             Some(c) => {
@@ -370,37 +364,16 @@ fn human_apply_one<R: tauri::Runtime>(
     apply::apply_one(&conn, p, embedding, crate::memory::now_ms())
 }
 
-/// 人工批准落库成功后 CR 合法流转到 Active——瞬时走完
-/// Pending→Shadowing→ShadowPassed→Approved→Active（同 auto_applied_from_proposal；
-/// Pending→Active 直跳被 status.rs 硬约束②拦截，不裸写）。已 Active（重复批）
-/// 幂等跳过。CR 可能被 shadow 观察推进到中途态（Shadowing/ShadowPassed，段①
-/// dedup 会复用既有行）——从当前态续走余下流转，同态重走会被 status.rs 判
-/// 「状态未变」报错。approval_source 保持 HumanApproved 不变（自动/人工来源显式区分）。
+/// 人工批准落库成功后 CR 流转到 Active（同 auto_applied_from_proposal）。
+/// 已 Active（重复批）幂等跳过；Rejected / RolledBack / Expired 终态由
+/// `transition` 拒绝并带上可操作的 status 名。
+/// approval_source 保持 HumanApproved 不变（自动/人工来源显式区分）。
 fn mark_human_applied(cr: &mut ChangeRecord) -> Result<(), String> {
-    use ChangeStatus::{Active, Approved, ShadowPassed, Shadowing};
-    if cr.status == Active {
+    if cr.status == ChangeStatus::Active {
         return Ok(()); // 幂等：重复批不 Err 不回退
     }
-    let path = [Shadowing, ShadowPassed, Approved, Active];
-    // 起点解析：Pending 走全路径；已在路径上的状态从**下一站**续走
-    //（含当前态会触发 status.rs 的「状态未变」拒绝）；
-    // 路径外的非终态（Rejected 等终态/异常态）给可操作中文报错，fail-closed。
-    let begin = match cr.status {
-        ChangeStatus::Pending => 0,
-        other => path
-            .iter()
-            .position(|s| *s == other)
-            .map(|i| i + 1)
-            .ok_or_else(|| {
-                format!(
-                    "CR 状态 {other:?} 不在 Pending→Active 路径上，无法流转到 Active（请刷新面板核实状态）"
-                )
-            })?,
-    };
-    for step in &path[begin..] {
-        change::transition(cr.status, *step)?;
-        cr.status = *step;
-    }
+    change::transition(cr.status, ChangeStatus::Active)?;
+    cr.status = ChangeStatus::Active;
     Ok(())
 }
 
@@ -1126,20 +1099,23 @@ mod tests {
         assert_eq!(cr.status, ChangeStatus::Active);
     }
 
-    /// 中途态 CR（shadow 观察推进到 Shadowing/ShadowPassed，段① dedup 复用）
-    /// 从当前状态续走到 Active，不因同态流转报「状态未变」
+    /// mark_human_applied 的三种真实起点：Pending 正常放行、Active 幂等
+    /// （重复批准零副作用）、终态 Rejected 必须拒绝而不是静默改写
     #[test]
-    fn w1_mark_human_applied_resumes_from_midflow_status() {
-        for start in [
-            ChangeStatus::Shadowing,
-            ChangeStatus::ShadowPassed,
-            ChangeStatus::Approved,
-        ] {
-            let mut cr = mk_change("chg-mid", start);
-            cr.approval_source = ApprovalSource::HumanApproved;
-            mark_human_applied(&mut cr)
-                .unwrap_or_else(|e| panic!("{start:?} 应能续走到 Active：{e}"));
-            assert_eq!(cr.status, ChangeStatus::Active, "{start:?} 终点应为 Active");
-        }
+    fn w1_mark_human_applied_start_states() {
+        let mut pending = mk_change("chg-pending", ChangeStatus::Pending);
+        pending.approval_source = ApprovalSource::HumanApproved;
+        mark_human_applied(&mut pending).expect("Pending 应能流转到 Active");
+        assert_eq!(pending.status, ChangeStatus::Active);
+
+        let mut already = mk_change("chg-active", ChangeStatus::Active);
+        already.approval_source = ApprovalSource::HumanApproved;
+        mark_human_applied(&mut already).expect("已 Active 应幂等放行");
+        assert_eq!(already.status, ChangeStatus::Active);
+
+        let mut rejected = mk_change("chg-rejected", ChangeStatus::Rejected);
+        let e = mark_human_applied(&mut rejected).expect_err("终态不得被改写成 Active");
+        assert!(e.contains("终态"), "错误信息应点明终态：{e}");
+        assert_eq!(rejected.status, ChangeStatus::Rejected, "失败不应改状态");
     }
 }

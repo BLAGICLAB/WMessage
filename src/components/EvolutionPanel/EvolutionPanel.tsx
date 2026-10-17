@@ -42,10 +42,6 @@ type StatusFilter = ProposalStatus | null;
 
 const ACTIVE_STATUSES: ReadonlySet<ChangeRecord["status"]> = new Set([
   "pending",
-  "shadowing",
-  "shadow_passed",
-  "approved",
-  "canary",
   "active",
 ]);
 

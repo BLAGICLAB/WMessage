@@ -71,24 +71,18 @@ pub struct EvalResult {
     pub evaluated_at_ms: i64,
 }
 
-/// 9 态状态机
+/// 5 态状态机
 ///
-/// spec 硬约束 ②：必须 `Pending → Approved → Applied`，
-/// 本状态机对 `Approved → Canary → Active` 显式建模每一步，
-/// `AutoApplied` 和 `HumanApproved` 在 ApprovalSource 区分（不在 status 区分）。
+/// 影子测试 / 批准 / 金丝雀四态已删——它们没有任何生产写入点：自动应用路径
+/// （MemoryHint lesson 直写记忆）把 `Pending → Active` 瞬时走完，候选路径只
+/// 产出 `Pending`。原先「`Pending → Active` 被硬约束②拦截」挡住的其实只有
+/// 那条瞬时路径；真正的门在 `ApprovalSource`（AutoApplied / HumanApproved）
+/// 与 `hard_constraint_compliance` 两个字段上，二者仍在，且能被直接断言。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeStatus {
     /// 候选刚产出（Pending — spec 用词）
     Pending,
-    ///  影子测试中
-    Shadowing,
-    /// 影子通过，待批准
-    ShadowPassed,
-    /// 已批准（待 canary 或 active）
-    Approved,
-    ///  金丝雀（5%）
-    Canary,
     /// 已全量生效
     Active,
     /// 拒绝（人工 / 系统 / 合规失败）
@@ -103,10 +97,6 @@ impl ChangeStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::Shadowing => "shadowing",
-            Self::ShadowPassed => "shadow_passed",
-            Self::Approved => "approved",
-            Self::Canary => "canary",
             Self::Active => "active",
             Self::Rejected => "rejected",
             Self::RolledBack => "rolled_back",
@@ -263,12 +253,8 @@ mod tests {
 
     #[test]
     fn status_strings_locked() {
-        // 锁死 grep 字符串
+        // 锁死 grep 字符串；前端 ChangeStatus union 依赖这几个 snake_case 串
         assert_eq!(ChangeStatus::Pending.as_str(), "pending");
-        assert_eq!(ChangeStatus::Shadowing.as_str(), "shadowing");
-        assert_eq!(ChangeStatus::ShadowPassed.as_str(), "shadow_passed");
-        assert_eq!(ChangeStatus::Approved.as_str(), "approved");
-        assert_eq!(ChangeStatus::Canary.as_str(), "canary");
         assert_eq!(ChangeStatus::Active.as_str(), "active");
         assert_eq!(ChangeStatus::Rejected.as_str(), "rejected");
         assert_eq!(ChangeStatus::RolledBack.as_str(), "rolled_back");

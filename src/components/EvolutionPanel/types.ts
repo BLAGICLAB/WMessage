@@ -40,10 +40,6 @@ export interface ProposalEntry {
 
 type ChangeStatus =
   | "pending"
-  | "shadowing"
-  | "shadow_passed"
-  | "approved"
-  | "canary"
   | "active"
   | "rejected"
   | "rolled_back"

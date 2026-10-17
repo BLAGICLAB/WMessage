@@ -105,21 +105,19 @@ pub fn unique_change_id_for(rows: &[ChangeRecord], proposal_id: &str) -> String 
 /// AutoApplied 经合法流转达成」这一不变量）。
 ///
 /// 自动应用（MemoryHint lesson 直写记忆）不经沙箱/影子——那是整改流水线的
-/// 门，不是 lesson 路径的门——但 CR 形态仍走满合法流转
-///（Pending → Shadowing → ShadowPassed → Approved → Active，中间态瞬时通过），
-/// 不裸写 status 绕状态机（Pending → Active 直跳被 status.rs 硬约束②显式拦截，
-/// 评审 HIGH）。入口提案须已过策略层 gate（compliance=false 的
-/// from_proposal 是终态 Rejected，流转即 Err）。
+/// 门，不是 lesson 路径的门——所以这里 `Pending → Active` 直跳。
+/// 「未经批准不得生效」这条硬约束由 `approval_source = AutoApplied` 与
+/// `hard_constraint_compliance = true` 两个字段承担（状态机已无批准中间态，
+/// 详见 status.rs 模块注释），并由本函数下方的单测直接断言字段而非流转路径。
+/// 入口提案须已过策略层 gate（compliance=false 的 from_proposal 是终态
+/// Rejected，流转即 Err）。
 pub fn auto_applied_from_proposal(
     p: &EvolutionProposal,
     now_ms: i64,
 ) -> Result<ChangeRecord, String> {
     let mut cr = from_proposal(p, now_ms);
-    use ChangeStatus::{Active, Approved, ShadowPassed, Shadowing};
-    for step in [Shadowing, ShadowPassed, Approved, Active] {
-        super::status::transition(cr.status, step)?;
-        cr.status = step;
-    }
+    super::status::transition(cr.status, ChangeStatus::Active)?;
+    cr.status = ChangeStatus::Active;
     cr.approval_source = ApprovalSource::AutoApplied;
     cr.hard_constraint_compliance = true;
     Ok(cr)
@@ -162,6 +160,18 @@ mod tests {
         // 锁死格式：chg- + proposal_id
         assert_eq!(derive_change_id("abc123"), "chg-abc123");
         assert_eq!(derive_mem_key("abc123"), "evo:abc123");
+    }
+
+    // 自动应用的不变量直接验字段：状态机已无批准中间态，
+    // 「谁批的 / 合不合规」只剩 approval_source 与 compliance 两个载体
+
+    #[test]
+    fn auto_applied_carries_source_and_compliance() {
+        let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Medium);
+        let cr = auto_applied_from_proposal(&p, 1_700_000_000_000).expect("合规提案应可自动应用");
+        assert_eq!(cr.status, ChangeStatus::Active);
+        assert_eq!(cr.approval_source, ApprovalSource::AutoApplied);
+        assert!(cr.hard_constraint_compliance);
     }
 
     // 自动应用门槛检查

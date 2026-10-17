@@ -38,13 +38,10 @@ pub fn to_change_record(entry: &ProposalEntry, hard_constraint_compliance: bool)
     // 逼出显式映射决策（而非被通配臂静默标成 Pending）。
     let approval_source = match status {
         ChangeStatus::Rejected => ApprovalSource::SystemRejected,
-        // Expired 保持 Pending：ApprovalSource 无 Expired 对应变体
-        //（从未批准也未被拒），见本函数 doc
+        // 其余（含 Active / RolledBack / Expired）一律 Pending：ApprovalSource
+        // 只区分「谁批的 / 谁拒的」，生效与回滚不改变批准来源，
+        // 见本函数 doc
         ChangeStatus::Pending
-        | ChangeStatus::Shadowing
-        | ChangeStatus::ShadowPassed
-        | ChangeStatus::Approved
-        | ChangeStatus::Canary
         | ChangeStatus::Active
         | ChangeStatus::Expired
         | ChangeStatus::RolledBack => ApprovalSource::Pending,
