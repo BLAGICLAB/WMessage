@@ -3,7 +3,7 @@
 // 覆盖：
 // - 加载 proposals / changes（mock invoke）
 // - 过滤切换
-// - Promote / Reject / Keep Shadow / Rollback 按钮调用 invoke
+// - Promote / Reject / Rollback 按钮调用 invoke
 // - HumanApproved / AutoApplied 区分（硬约束 ②）
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -255,31 +255,6 @@ describe("EvolutionPanel", () => {
       expect(invokeMock).toHaveBeenCalledWith(
         "evolution_reject_proposal",
         expect.objectContaining({ proposalId: "p-rej" }),
-      );
-    });
-  });
-
-  it("calls evolution_keep_shadow on Keep Shadow click", async () => {
-    const p = mkProposal("p-shadow", { status: "pooled" });
-    invokeMock.mockImplementation((cmd: string) => {
-      if (cmd === "evolution_list_proposals") return [p];
-      if (cmd === "evolution_list_changes") return [];
-      return null;
-    });
-    render(<EvolutionPanel />);
-    await waitFor(() =>
-      expect(screen.queryByText(p.suggestion_text)).toBeTruthy(),
-    );
-
-    const user = userEvent.setup();
-    invokeMock.mockClear();
-    const keepBtn = screen.getByRole("button", { name: /延长 shadow/ });
-    await user.click(keepBtn);
-
-    await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith(
-        "evolution_keep_shadow",
-        expect.objectContaining({ proposalId: "p-shadow" }),
       );
     });
   });

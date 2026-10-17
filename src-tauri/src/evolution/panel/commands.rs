@@ -4,7 +4,6 @@
 //! 1. `evolution_list_proposals(status?)` — 候选池列表
 //! 2. `evolution_promote_proposal(id, interactive, session_id)` — 晋升（Pooled → Promoted + 创建 ChangeRecord）
 //! 3. `evolution_reject_proposal(id, interactive, session_id)` — 拒绝（任意 → Rejected）
-//! 4. `evolution_keep_shadow(id)` — 延长 shadow 期（重置 TTL）
 //! 5. `evolution_list_changes()` — ChangeRecord 列表（回滚 UI）
 //! 6. `evolution_rollback_change(id, interactive, session_id)` — 回滚（删 mem_item + status=RolledBack）
 //!
@@ -675,44 +674,6 @@ fn notify_resolved<R: tauri::Runtime>(app: &AppHandle<R>, proposal_id: &str, sta
         Ok(()) => crate::notifications::emit_changed(app),
         Err(e) => eprintln!("[notifications] evolution 提案消息回写失败：{e}"),
     }
-}
-
-/// Keep Shadow：延长 shadow 期（重置 expires_at_ms = now + TTL）
-///
-/// 不修改 status（仍为 Pooled），仅刷新 TTL。
-#[tauri::command]
-pub async fn evolution_keep_shadow(
-    app: AppHandle,
-    proposal_id: String,
-) -> Result<ProposalEntry, String> {
-    // 阻塞 fs IO（持锁 load→mutate→rewrite）移出 async worker；
-    // store 锁随闭包走，不跨 await
-    crate::py::document::spawn_blocking_map(move || {
-        let _g = lock_evolution_store(); // 覆盖整个 load→mutate→rewrite 窗口
-        let path = proposals_path(&app);
-        let mut entries = load_proposals(&app)?;
-
-        let idx = entries
-            .iter()
-            .position(|e| e.proposal_id == proposal_id)
-            .ok_or_else(|| format!("proposal {proposal_id} 不存在"))?;
-        let mut entry = entries[idx].clone();
-
-        if entry.status != ProposalStatus::Pooled {
-            return Err(format!(
-                "proposal {proposal_id} 不在 Pooled 状态（当前 {:?}）",
-                entry.status
-            ));
-        }
-
-        // 重置 TTL（再续 14 天）
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        entry.expires_at_ms = candidate::compute_expires_at(now_ms);
-        entries[idx] = entry.clone();
-        rewrite_jsonl(&path, &entries)?;
-        Ok(entry)
-    })
-    .await
 }
 
 /// 列出 ChangeRecord（回滚 UI 用）

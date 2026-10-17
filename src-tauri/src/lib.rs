@@ -725,7 +725,6 @@ pub fn run() {
             evolution::panel::commands::evolution_reject_proposal,
             evolution::panel::commands::evolution_toggle_proposal,
             evolution::panel::commands::evolution_delete_proposal,
-            evolution::panel::commands::evolution_keep_shadow,
             evolution::panel::commands::evolution_list_changes,
             evolution::panel::commands::evolution_rollback_change,
             evolution::panel::commands::evolution_metrics,

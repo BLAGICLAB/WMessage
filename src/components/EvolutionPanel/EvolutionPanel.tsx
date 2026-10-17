@@ -6,7 +6,7 @@
 //    - 右侧：Toggle pill switch（视觉主入口，图片风格红/灰）
 //    - 中部：suggestion + 证据 + 影响
 //    - 左侧：proposal_id + status badge
-//    - 底部：[启用] [停用] [Keep Shadow] 中文按钮（兼容旧 Promote/Reject）
+//    - 底部：[启用] [停用] 中文按钮（兼容旧 Promote/Reject）
 //    - 右下：删除（图标+文字）
 // 3. 后端 toggle=true → 写 ChangeRecord + 人工批准执行器落库（ W1：
 //    policy 层提案 ON 即生效，幂等）；toggle=false → 移除 pending ChangeRecord
@@ -284,12 +284,6 @@ export function EvolutionPanel() {
       { proposalId: id, interactive: true, sessionId: null },
       `已停用 ${id}`,
     );
-  const onKeepShadow = (id: string) =>
-    void runCmd(
-      "evolution_keep_shadow",
-      { proposalId: id },
-      `已延长 shadow 期：${id}`,
-    );
   const onRollback = (changeId: string) =>
     void runCmd(
       "evolution_rollback_change",
@@ -469,7 +463,6 @@ export function EvolutionPanel() {
                 onDelete={onDeleteClick}
                 onPromote={onPromote}
                 onReject={onReject}
-                onKeepShadow={onKeepShadow}
               />
             ))}
           </div>
@@ -539,7 +532,6 @@ function ProposalCard({
   onDelete,
   onPromote,
   onReject,
-  onKeepShadow,
 }: {
   proposal: ProposalEntry;
   busy: boolean;
@@ -552,7 +544,6 @@ function ProposalCard({
   onDelete: (p: ProposalEntry) => void;
   onPromote: (id: string) => void;
   onReject: (id: string) => void;
-  onKeepShadow: (id: string) => void;
 }) {
   const isPending = proposal.status === "pooled";
   return (
@@ -661,19 +652,6 @@ function ProposalCard({
           data-testid={`btn-disable-${proposal.proposal_id}`}
         >
           停用
-        </button>
-        <button
-          className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
-          onClick={() => onKeepShadow(proposal.proposal_id)}
-          disabled={busy || !isPending}
-          title={
-            isPending
-              ? "延长 shadow 期（重置 TTL）"
-              : "非 pooled 状态不可 keep shadow"
-          }
-          data-testid={`btn-keep-shadow-${proposal.proposal_id}`}
-        >
-          延长 shadow
         </button>
         <div className="flex-1" />
         <button

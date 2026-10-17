@@ -4,7 +4,7 @@
 //! - `auto`（默认）：consolidate 后达门槛提案自动落库——引入前行为，零变化；
 //! - `confirm`：不再自动落库，全留候选池等决策板人工拨开关生效。
 //!
-//! 读取走轻量路径（同 shadow::ShadowConfig / activation loader 先例）：
+//! 读取走轻量路径（不整份反序列化 BotConfig）：
 //! bot-config.json 缺文件 / 缺块 / 缺字段 / 非法值 = auto = 现状零变化，
 //! 门禁绝不弄挂 consolidate 主链路；只有「文件存在但 JSON 坏掉」留 stderr 一行
 //! （手改配置改坏了要可诊断，同 read_memory_control_at 口径）。
@@ -147,7 +147,11 @@ mod tests {
             ApplyPolicy::Auto,
             "缺 evolution 块"
         );
-        std::fs::write(&p, r#"{"evolution":{"shadow":{"enabled":true}}}"#).unwrap();
+        std::fs::write(
+            &p,
+            r#"{"evolution":{"kill_switch":{"all_auto_apply":false}}}"#,
+        )
+        .unwrap();
         assert_eq!(
             read_apply_policy_at(&p),
             ApplyPolicy::Auto,
@@ -221,7 +225,7 @@ mod tests {
         let p = tmp_path("preserve");
         std::fs::write(
             &p,
-            r#"{"baseUrl":"https://x/v1","evolution":{"shadow":{"enabled":true},"applyPolicy":"auto"},"memoryControl":{"injectionEnabled":false}}"#,
+            r#"{"baseUrl":"https://x/v1","evolution":{"kill_switch":{"all_auto_apply":false},"applyPolicy":"auto"},"memoryControl":{"injectionEnabled":false}}"#,
         )
         .unwrap();
         set_apply_policy_at(&p, ApplyPolicy::Confirm).unwrap();
@@ -229,7 +233,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["evolution"]["applyPolicy"], "confirm", "目标字段已改");
         assert_eq!(
-            v["evolution"]["shadow"]["enabled"], true,
+            v["evolution"]["kill_switch"]["all_auto_apply"], false,
             "同块兄弟字段保留"
         );
         assert_eq!(v["baseUrl"], "https://x/v1", "顶层字段保留");
@@ -239,7 +243,7 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["evolution"]["applyPolicy"], "auto");
-        assert_eq!(v["evolution"]["shadow"]["enabled"], true);
+        assert_eq!(v["evolution"]["kill_switch"]["all_auto_apply"], false);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 

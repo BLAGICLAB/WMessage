@@ -1,9 +1,12 @@
 //!  L3 沙箱层 · kill_switch（spec ）
 //!
-//! 三开关：
+//! 两开关：
 //! - all_auto_apply: 全关自动应用（仍可手动/人工批准）
-//! - shadow_only: 只跑 shadow，不实际写入 mem_items
 //! - disable_notification: 关掉 apply 完成通知
+//!
+//! 原来的第三个开关 `shadow_only`（只跑影子轨、不真实写入）随影子轨一起删除：
+//! 影子轨在当前配置下从不执行 evaluate（恒 Allow，不阻断任何东西），它留着的
+//! 唯一作用是把「不写入」这件事说两遍。
 //!
 //! 优先级：kill_switch > 策略分层 > 默认
 //! 「立即生效」= 每次调用现读，无缓存
@@ -16,8 +19,6 @@ pub struct KillSwitch {
     #[serde(default)]
     pub all_auto_apply: bool,
     #[serde(default)]
-    pub shadow_only: bool,
-    #[serde(default)]
     pub disable_notification: bool,
 }
 
@@ -28,23 +29,13 @@ impl KillSwitch {
     }
 
     /// 是否允许自动应用（apply.rs 入口检查）
-    ///
-    /// 优先级：
-    /// - all_auto_apply=true → 全关
-    /// - shadow_only=true → 也不允许真实写入（只跑 shadow）
-    /// - 否则 → 允许
     pub fn should_auto_apply(&self) -> bool {
-        !self.all_auto_apply && !self.shadow_only
+        !self.all_auto_apply
     }
 
-    /// 是否只跑 shadow（apply.rs 入口检查）
-    ///
-    /// 优先级：
-    /// - shadow_only=true → 只 shadow
-    /// - all_auto_apply=true → 也只 shadow（隐含）
-    /// - 否则 → 正常 apply
-    pub fn should_shadow_only(&self) -> bool {
-        self.shadow_only || self.all_auto_apply
+    /// 是否因 kill switch 跳过了真实写入（apply.rs 入口检查）
+    pub fn should_skip_apply(&self) -> bool {
+        self.all_auto_apply
     }
 
     /// 是否禁用 apply 完成通知
@@ -64,10 +55,7 @@ pub fn default_off() -> KillSwitch {
 /// 1. 读 {path} 整体 JSON
 /// 2. 提取 evolution.kill_switch 子树
 /// 3. 反序列化为 KillSwitch（缺字段用默认 false）
-/// 4. 缺 evolution / 缺 kill_switch → 返 Err（强制显式）
-/// 5. 归一化矛盾组合：all_auto_apply=true 隐含 shadow_only（契约本由
-///    should_shadow_only 的 || 兜底；边界强制落盘值与语义一致，防配置
-///    写入方持久化「all_auto_apply=true + shadow_only=false」矛盾态）
+/// 4. 缺 evolution / 缺 kill_switch → 返 Err（强制显式，调用方按全关处理）
 pub fn load_from_file(path: &Path) -> Result<KillSwitch, String> {
     let raw = std::fs::read_to_string(path).map_err(|e| format!("读 {path:?} 失败：{e}"))?;
     let v: serde_json::Value =
@@ -78,15 +66,7 @@ pub fn load_from_file(path: &Path) -> Result<KillSwitch, String> {
     let kill_switch = evo
         .get("kill_switch")
         .ok_or_else(|| "evolution 块缺少 kill_switch 子块".to_string())?;
-    let mut k: KillSwitch = serde_json::from_value(kill_switch.clone())
-        .map_err(|e| format!("kill_switch 解析失败：{e}"))?;
-    if k.all_auto_apply && !k.shadow_only {
-        eprintln!(
-            "[evolution_kill_switch] 矛盾组合 all_auto_apply=true + shadow_only=false，归一化为 shadow_only=true"
-        );
-        k.shadow_only = true;
-    }
-    Ok(k)
+    serde_json::from_value(kill_switch.clone()).map_err(|e| format!("kill_switch 解析失败：{e}"))
 }
 
 #[cfg(test)]
@@ -97,124 +77,58 @@ mod tests {
     fn default_off_all_false() {
         let k = KillSwitch::default_off();
         assert!(!k.all_auto_apply);
-        assert!(!k.shadow_only);
         assert!(!k.disable_notification);
         assert!(k.should_auto_apply());
-        assert!(!k.should_shadow_only());
+        assert!(!k.should_skip_apply());
         assert!(!k.should_disable_notification());
     }
 
+    /// 全关自动应用 = 不写长期记忆，但仍可手动/人工批准
     #[test]
-    fn shadow_only_implies_no_real_apply() {
-        let k = KillSwitch {
-            all_auto_apply: false,
-            shadow_only: true,
-            disable_notification: false,
-        };
-        // shadow_only=true → should_auto_apply=false（只跑 shadow，不真实写入）
-        assert!(k.should_shadow_only());
-        assert!(!k.should_auto_apply());
-        assert!(!k.should_disable_notification());
-    }
-
-    #[test]
-    fn all_auto_apply_implies_shadow_only() {
-        // 硬约束语义：all_auto_apply=true 隐含 shadow_only
+    fn all_auto_apply_blocks_real_write() {
         let k = KillSwitch {
             all_auto_apply: true,
-            shadow_only: false,
             disable_notification: false,
         };
-        assert!(
-            k.should_shadow_only(),
-            "all_auto_apply=true 应隐含 shadow_only"
-        );
+        assert!(!k.should_auto_apply());
+        assert!(k.should_skip_apply());
     }
 
     #[test]
-    fn load_parses_kill_switch_block() {
+    fn missing_block_is_err_and_caller_falls_back_to_default_off() {
         let dir = std::env::temp_dir().join(format!(
-            "ks-ok-{}",
+            "wm-evo-kill-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("bot-config.json");
+        std::fs::write(&p, r#"{"baseUrl":"https://x/v1"}"#).unwrap();
+        assert!(
+            load_from_file(&p).is_err(),
+            "缺 evolution/kill_switch 块必须显式报错，让调用方走 default_off"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 落盘值直通：两个开关各自独立生效，不做隐含归一
+    #[test]
+    fn roundtrip_both_switches() {
+        let dir = std::env::temp_dir().join(format!(
+            "wm-evo-kill-rt-{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bot-config.json");
         std::fs::write(
             &p,
-            r#"{
-                "evolution": {
-                    "eval": {
-                        "eval_set_path": "x",
-                        "feedback_path": "y",
-                        "run_frequency": "daily"
-                    },
-                    "kill_switch": {
-                        "all_auto_apply": true,
-                        "shadow_only": false,
-                        "disable_notification": false
-                    }
-                }
-            }"#,
+            r#"{"evolution":{"kill_switch":{"all_auto_apply":true,"disable_notification":true}}}"#,
         )
         .unwrap();
-        let k = load_from_file(&p).unwrap();
+        let k = load_from_file(&p).expect("应能读出");
         assert!(k.all_auto_apply);
-        // 矛盾组合（all_auto_apply=true + shadow_only=false）边界归一化：
-        // all_auto_apply 隐含 shadow_only
-        assert!(k.shadow_only);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_missing_kill_switch_block_errors() {
-        let dir = std::env::temp_dir().join(format!(
-            "ks-no-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("bot-config.json");
-        std::fs::write(&p, r#"{"evolution":{"eval":{"eval_set_path":"x","feedback_path":"y","run_frequency":"daily"}}}"#).unwrap();
-        let e = load_from_file(&p).unwrap_err();
-        assert!(e.contains("kill_switch"), "应提示缺 kill_switch：{e}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_missing_evolution_block_errors() {
-        let dir = std::env::temp_dir().join(format!(
-            "ks-ne-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("bot-config.json");
-        std::fs::write(&p, r#"{"foo":"bar"}"#).unwrap();
-        let e = load_from_file(&p).unwrap_err();
-        assert!(e.contains("evolution"), "应提示缺 evolution：{e}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_partial_kill_switch_uses_defaults() {
-        // 只给 all_auto_apply → 归一化隐含 shadow_only=true（矛盾组合边界修正）；
-        // disable_notification 用默认 false
-        let dir = std::env::temp_dir().join(format!(
-            "ks-p-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("bot-config.json");
-        std::fs::write(
-            &p,
-            r#"{"evolution":{"kill_switch":{"all_auto_apply":true}}}"#,
-        )
-        .unwrap();
-        let k = load_from_file(&p).unwrap();
-        assert!(k.all_auto_apply);
-        assert!(
-            k.shadow_only,
-            "all_auto_apply=true 隐含 shadow_only（归一化）"
-        );
-        assert!(!k.disable_notification);
+        assert!(k.disable_notification);
+        assert!(!k.should_auto_apply());
+        assert!(k.should_disable_notification());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

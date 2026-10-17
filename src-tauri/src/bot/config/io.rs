@@ -838,7 +838,7 @@ mod tests {
             "baseUrl": "https://api.example.com/v1",
             "model": "m",
             "evolution": {
-                "shadow": {"enabled": true},
+                "kill_switch": {"all_auto_apply": false},
                 "activation": {"mode": "calibrating", "min_occurrences": null, "min_proposals": null},
                 "activation_state": "s0_observe"
             }
@@ -848,8 +848,8 @@ mod tests {
         let out = serde_json::to_string_pretty(&cfg).unwrap();
         let back: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
-            back["evolution"]["shadow"]["enabled"],
-            serde_json::json!(true)
+            back["evolution"]["kill_switch"]["all_auto_apply"],
+            serde_json::json!(false)
         );
         assert_eq!(
             back["evolution"]["activation"]["mode"],

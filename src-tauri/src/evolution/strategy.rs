@@ -55,7 +55,6 @@ pub struct EvalContext {
     /// kill_switch 只读快照（读取失败 = 全关默认，与现状一致）
     pub kill_switch: KillSwitch,
     /// shadow 观察是否开启
-    pub shadow_enabled: bool,
     /// 本周期基准时间
     pub now_ms: i64,
 }

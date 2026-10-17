@@ -6,6 +6,5 @@
 //! 不调 LLM；不写新数据库表；只读 evolution-proposals/changes/applied.jsonl。
 
 pub mod metrics;
-pub mod shadow;
 
 pub use metrics::{compute as compute_metrics, ObserveMetrics};

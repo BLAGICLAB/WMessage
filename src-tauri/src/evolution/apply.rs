@@ -161,26 +161,13 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
     // 配置缺 evolution.kill_switch 块 = Err → 全关默认（行为与无开关一致）
     let kill_cfg_path = crate::db::paths::data_dir(&app).join("bot-config.json");
 
-    // [ A] shadow 钩子（仅当 evolution.shadow.enabled=true 时）
-    // 克隆 proposals 供 shadow spawn（主 apply 仍用原 proposals）
-    let shadow_enabled = crate::evolution::observe::shadow::is_enabled(&app);
-    let shadow_proposals = if shadow_enabled {
-        Some(proposals.clone())
-    } else {
-        None
-    };
-    // [ A] 先 clone app 供 shadow spawn（主 spawn 会移走 app）
-    let app_for_shadow = app.clone();
-
     tauri::async_runtime::spawn(async move {
         let app2 = app.clone();
         let r = tauri::async_runtime::spawn_blocking(move || -> Result<ApplyReport, String> {
             // 决策输入收拢进 EvalContext，本轮 apply 一次构造——
             // kill 现读现判（spawn_blocking 内，不占 async worker）；
             // applyPolicy 与 kill 同源 bot-config.json 一并读出，频率与现状一致。
-            // - shadow_only / all_auto_apply=true → 主 apply 空转返回（lesson 不落库）；
-            //   shadow 钩子照常（kill 只停「写」不强制开「观察」，shadow 仍受
-            //   evolution.shadow.enabled 独立控制）
+            // - all_auto_apply=true → 主 apply 空转返回（lesson 不落库）
             // - disable_notification → apply 完成的 bot.log 摘要行静默
             // - 读取失败显式 WARN 后按全关默认（评审 HIGH 采纳：不再静默吞）
             // 配置缺 evolution.kill_switch 块 = Err → 全关默认（行为与无开关一致）
@@ -195,15 +182,14 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
             let ctx = crate::evolution::strategy::EvalContext {
                 apply_policy: crate::evolution::policy::read_apply_policy_at(&kill_cfg_path),
                 kill_switch: kill,
-                shadow_enabled,
                 now_ms: chrono::Utc::now().timestamp_millis(),
             };
-            if ctx.kill_switch.should_shadow_only() {
+            if ctx.kill_switch.should_skip_apply() {
                 crate::audit_event!(
                     &app2,
                     crate::audit::AuditLevel::Warn,
                     "evolution.apply_killed",
-                    "switch" => if ctx.kill_switch.all_auto_apply { "all_auto_apply" } else { "shadow_only" },
+                    "switch" => "all_auto_apply",
                     "notify_disabled" => ctx.kill_switch.should_disable_notification().to_string(),
                     "effect" => "main_apply_skipped",
                 );
@@ -234,7 +220,10 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
             let ledger = crate::db::paths::data_dir(&app2).join("evolution-applied.jsonl");
             // DDL 单独一个短临界区
             {
-                let _g = crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "evolution::apply DB_WRITE_LOCK");
+                let _g = crate::db::lock::lock_or_recover(
+                    &crate::db::DB_WRITE_LOCK,
+                    "evolution::apply DB_WRITE_LOCK",
+                );
                 store::ensure_table(&conn)?;
             }
             let mut report = ApplyReport::default();
@@ -242,7 +231,10 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
                 // 临界区仅覆盖 SQL 写；jsonl append + audit emit 在锁外——
                 // 无关 DB 写者不再被整条流水线（syscall/emit）串行化
                 let outcome = {
-                    let _g = crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "evolution::apply DB_WRITE_LOCK");
+                    let _g = crate::db::lock::lock_or_recover(
+                        &crate::db::DB_WRITE_LOCK,
+                        "evolution::apply DB_WRITE_LOCK",
+                    );
                     apply_one(&conn, p, emb.as_deref(), now)?
                 };
                 match outcome {
@@ -346,23 +338,6 @@ pub fn apply_from_consolidation(proposals: Vec<EvolutionProposal>) {
             }
         }
     });
-
-    // [ A] fire shadow（fire-and-forget；仅当 flag=true 时执行）
-    if let Some(proposals_shadow) = shadow_proposals {
-        let app_shadow = app_for_shadow;
-        // 并发语义（后补）：
-        // - app_for_shadow 是 Arc<Wry> 的克隆，廉价（reference count bump）
-        // - 此 spawn 失败（panic）由 tauri::async_runtime 捕获，不传播到主 spawn
-        // - 任务生命周期：spawn_blocking 不阻塞此 spawn；fire-and-forget 无超时（依赖外部观察）
-        // - 共享状态：main spawn 用 proposals 引用，shadow spawn 用 proposals_shadow 克隆——无共享 mutation
-        tauri::async_runtime::spawn(async move {
-            crate::evolution::observe::shadow::shadow_apply_for_batch_with_app(
-                proposals_shadow,
-                &app_shadow,
-            )
-            .await;
-        });
-    }
 }
 
 // 单元测试

@@ -541,7 +541,7 @@ mod evolution_preserve_tests {
         let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();
         assert!(incoming.evolution.is_none());
         let disk: BotConfig = serde_json::from_str(
-            r#"{"evolution":{"shadow":{"enabled":true},"activation_state":"s0_observe"}}"#,
+            r#"{"evolution":{"kill_switch":{"all_auto_apply":false},"activation_state":"s0_observe"}}"#,
         )
         .unwrap();
         preserve_evolution(&mut incoming, &disk);
