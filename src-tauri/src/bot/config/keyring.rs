@@ -708,7 +708,7 @@ mod vendor_key_tests {
         assert_eq!(active_vendor_of(Some("openai"), Some(&active), None), None);
     }
 
-    /// keyring::Error 分类（2026-10-10 修）：NoEntry 走 fallback（Ok("")），
+    /// keyring::Error 分类：NoEntry 走 fallback（Ok("")），
     /// 其他 11 个 Error 变体上抛（Err(KeyringError)）。锁住 NoEntry vs 真错误
     /// 的分流——防未来重构又把 NoEntry 包成错误上抛，让「未配置」看起来像故障。
     #[test]

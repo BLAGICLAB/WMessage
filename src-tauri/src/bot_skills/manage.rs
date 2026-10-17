@@ -341,7 +341,7 @@ pub fn skills_list(app: AppHandle) -> Vec<SkillInfo> {
 /// 打开技能目录（设置页「打开目录」按钮用；目录不存在则先创建）。
 /// Rust 侧 opener 直接打开——前端 openPath 受 capability 白名单（$APPDATA/**）
 /// 约束，便携模式下技能目录锚定在 exe 旁、不在 $APPDATA 内会被拒；
-/// 与 open_file_path 同方案（口径同 2026-10-08）。
+/// 与 open_file_path 同方案。
 #[tauri::command]
 pub fn skills_open_dir(app: AppHandle) -> CommandResult<()> {
     let dir = skills_dir(&app);

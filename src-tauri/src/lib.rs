@@ -774,15 +774,15 @@ mod f2_copy_file_tests {
 
 #[cfg(test)]
 mod capability_tests {
-    /// opener 路径 scope **必须整体不存在**（2026-10-08 口径）。
+    /// opener 路径 scope **必须整体不存在**。
     ///
-    /// 历史三段：dcb9275（2026-08-19）裸 `**` → `$APPDATA/** + $HOME/**`（当时主窗
-    /// openPath 打开任务绑定文件）；5eb0a27（2026-09-04）任务绑定文件改走 Rust
-    /// `open_file_path`； finding #3 摘除 `$HOME/**`（XSS 后可开 ~/.ssh）。
-    /// 2026-10-08 终态：全仓最后一个前端 `openPath()` 调用点（SkillsPanel 打开技能
-    /// 目录）也因便携模式（技能目录锚定 exe 旁，不在 $APPDATA 内）被 scope 拒绝，
-    /// 改走 Rust 侧 opener 直接打开（`skills_open_dir`，路径由 skills_dir() 决定）。
-    /// 前端不再有任何「开本地路径」的通路——scope 整条移除（收紧）。
+    /// 收口过程分四步（每步的 commit 见 git log）：scope 一度写成裸 `**`，后收窄
+    /// 成 `$APPDATA/** + $HOME/**`（当时主窗 openPath 还用来打开任务绑定文件）；
+    /// 任务绑定文件改走 Rust `open_file_path` 后摘除那部分；再摘除 `$HOME/**`
+    /// （XSS 后可开 ~/.ssh）；最后一个前端 `openPath()` 调用点（SkillsPanel 打开
+    /// 技能目录）因便携模式被拒——技能目录锚定在 exe 旁、不在 $APPDATA 内——也
+    /// 改走 Rust 侧 opener（`skills_open_dir`，路径由 skills_dir() 决定）。
+    /// 终态：前端不再有任何「开本地路径」的通路，scope 整条移除（只收紧不放松）。
     ///
     /// 本测试锁死 capabilities/default.json 防回退：
     /// - `opener:allow-open-path` 必须不存在（前端开路径一律走 Rust 命令）

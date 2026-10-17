@@ -126,7 +126,7 @@ pub(crate) fn probe_dir(
 /// `target/debug/deps/`，同 pid 的进程内并行测试会共享 bot.log/DB 等——
 /// 曾实证打中 profile.json（已按 pid 隔离），其余文件多轮全绿未处理。
 /// 若再现 flake：先定位具体调用点，再在「按测试隔离（治本）/窄串行锁（补丁）」
-/// 中选档；三档方案与实证记录见 git log（本注释 2026-10-08 压缩）。
+/// 中选档；三档方案与实证记录见 git log。
 pub(crate) fn probe_log_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     let exe_dir = std::env::current_exe()
         .ok()

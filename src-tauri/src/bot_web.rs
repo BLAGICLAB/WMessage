@@ -957,7 +957,7 @@ async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, C
 /// 解析结果重写成 URL 真实端口（显式端口优先，否则 scheme 默认 443/80）。
 /// reqwest 0.13 的 resolve_to_addrs 在 https 场景按 addr 自带端口连接（URL 端口
 /// 不覆盖）——曾因 addr 端口用 80 占位导致所有 https 抓取 TLS 发去 80 端口被回
-/// InvalidContentType、fetch_url 全挂（2026-10-07 实测定位）。
+/// InvalidContentType、fetch_url 全挂（实测定位）。
 fn with_url_port(addrs: Vec<std::net::SocketAddr>, url: &url::Url) -> Vec<std::net::SocketAddr> {
     let port = url.port_or_known_default().unwrap_or(80);
     addrs

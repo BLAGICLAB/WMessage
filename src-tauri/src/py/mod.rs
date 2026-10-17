@@ -1,4 +1,4 @@
-//! `bot_py` 切片层（2026-09-14 Sprint C）
+//! `bot_py` 切片层
 //!
 //! 原 `bot_py.rs`（3694 行）按 SRP 拆为 8 个子模块：
 //! - `env` — Python/dotnet 环境探测 + 缓存

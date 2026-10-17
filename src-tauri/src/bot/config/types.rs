@@ -199,7 +199,7 @@ pub struct BotConfig {
     /// None（老配置缺字段）= 全默认；读取侧 read_memory_tuning 统一钳制。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub memory_tuning: Option<crate::memory::MemoryTuning>,
-    /// 外部 MCP 服务器配置（MCP 宿主支持，2026-09-28 ）：
+    /// 外部 MCP 服务器配置（MCP 宿主支持）：
     /// None = 老配置无此字段 = 未配置任何服务器。结构见 bot::mcp::config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mcp_servers: Option<Vec<crate::bot::mcp::config::McpServerConfig>>,

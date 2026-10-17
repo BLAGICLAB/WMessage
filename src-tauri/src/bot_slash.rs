@@ -127,7 +127,7 @@ pub fn active_execution_count<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> u
     stop_registry(app).lock().map(|m| m.len()).unwrap_or(0)
 }
 
-// 阶段 3.3 撤锁（2026-09-13）：原 `STOP_TEST_LOCK` 已删除。
+// 原 `STOP_TEST_LOCK` 已删除。
 // 理由：表随 `AppState` 注入，`stop_all_executions` / `active_execution_count`
 // 都按传入的 app 取实例；相关用例（bot_slash 两个 + bot_py 一个 + lib.rs 退出清理）
 // 各自注入独立实例，且**没有任何调用方再对兜底实例做全局广播**

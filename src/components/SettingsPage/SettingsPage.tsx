@@ -2044,7 +2044,7 @@ export function SettingsPage({
                       )}
                     </button>
                   </div>
-                  {/* 删除非本人的任务卡（2026-10-06 用户需求）：导入带来的归属人为他人的统计用卡，
+                  {/* 删除非本人的任务卡：导入带来的归属人为他人的统计用卡，
               一键直接硬删（含回收站中的；本人 = 个人资料 personId，owner_id 为空的卡视为本人不动）。
               后端广播 tasks-updated 三端同步；结果在按钮文字上短暂反馈（不新增行防抖动） */}
                   <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">

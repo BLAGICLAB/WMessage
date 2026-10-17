@@ -1,4 +1,4 @@
-//! bot_test_connection 集成测试（2026-10-02 厂商详情页「测试连接」）
+//! bot_test_connection 集成测试（厂商详情页「测试连接」）
 //!
 //! 仿 llm_integration.rs 的 mock server 模式：tests/mock_llm.rs 本地 HTTP server
 //! + 真实 reqwest，直打可测内核 `bot::config::commands::probe_connection`

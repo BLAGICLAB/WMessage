@@ -14,8 +14,7 @@
 
 /// macOS 实现：NSPasteboard 写三类粘贴板
 ///
-/// 2026-09-14 Sprint ：从 `lib.rs:98-122` 搬过来，逻辑一字不动。
-/// 保留 `Result<(), String>` 是为了不破坏 F2（Phase 6b）已有的 From 转换链
+/// 保留 `Result<(), String>` 是为了不破坏既有的 From 转换链
 /// （`f2_copy_file_tests::string_error_converts_to_internal_with_message_preserved`）。
 #[cfg(target_os = "macos")]
 pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
@@ -61,8 +60,6 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
 }
 
 /// Windows 实现：CF_HDROP + CF_UNICODETEXT
-///
-/// 2026-09-14 Sprint ：从 `lib.rs:126-185` 搬过来，逻辑一字不动。
 #[cfg(windows)]
 pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::error::CommandError> {
     use std::ffi::OsStr;

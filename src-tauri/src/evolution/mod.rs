@@ -153,7 +153,7 @@ fn notify_evolution_proposals<R: tauri::Runtime>(
 /// emit 所需的 AppHandle 由 `emit::register_app_handle` 在 App 启动时注册一次，
 /// 本函数通过全局 OnceLock 取出——consolidate 侧 caller 无需关心。
 ///
-/// **2026-10-10 改 async + spawn_blocking**：函数体内 4 类阻塞 IO（jsonl RMW
+/// 函数体内 4 类阻塞 IO（jsonl RMW
 /// `write_proposals`、sqlite insert `notify_evolution_proposals`、bot.log
 /// `audit_event!`、可能的 effect apply）以前在 tokio worker 上同步跑——
 /// 杀软瞬时锁/AV 扫描/网络盘慢时整 runtime 卡顿。改 async 后 spawn_blocking

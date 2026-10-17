@@ -2,7 +2,7 @@
 // 可选的 contextK 百分比。数据源 = bot-usage-delta 事件（Anthropic 协议回合级
 // usage；OpenAI 兼容网关的流式 usage 需要 stream_options 参数暂未启用——
 // 没有数据时本条隐藏，不显示假数据）。
-// 水位语义（2026-10-06 修正）：每轮 input 是完整重发的 prompt，跨轮 Σ 会随轮数
+// 水位语义：每轮 input 是完整重发的 prompt，跨轮 Σ 会随轮数
 // 平方膨胀——百分比必须用「最近一轮 input」（即当前上下文体量）对窗口，Σ 只作
 // 累计展示。≥80% 时提示 /compact（对话场景）/ 结束后重开（执行场景）。
 

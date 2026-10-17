@@ -182,7 +182,7 @@ pub fn write_memory_tuning_at(
     path: &Path,
     tuning: Option<crate::memory::MemoryTuning>,
 ) -> Result<(), String> {
-    // 跨写者统一锁（2026-10-10 改）：原独立 TUNING_WRITE_LOCK 与
+    // 跨写者统一锁：原独立 TUNING_WRITE_LOCK 与
     // lock_config_write()（update_config_file / set_apply_policy / set_apply_policy_at
     // 等所有写 bot-config.json 的路径用的同一把锁）独立——并发改档时
     // T1: update_config_file 写 verified_vendors；T2: write_memory_tuning 改
@@ -787,7 +787,7 @@ mod tests {
         );
     }
 
-    /// 跨写者锁互斥契约（2026-10-10 改）：write_memory_tuning_at 与
+    /// 跨写者锁互斥契约：write_memory_tuning_at 与
     /// update_config_file / set_apply_policy / set_apply_policy_at 共用
     /// lock_config_write() 这把锁。本测试直接验证两线程交叉拿/放锁的
     /// 互斥性——若未来谁手贱改回独立 TUNING_WRITE_LOCK 锁，本测试不会直接

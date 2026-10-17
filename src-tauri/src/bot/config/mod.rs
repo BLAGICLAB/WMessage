@@ -951,7 +951,7 @@ mod tests {
     #[test]
     fn bot_log_read_fail_audit_line_written() {
         // ERROR 审计走 write_error_audit（泛型 Runtime，mock_app 跑同一条生产代码路径）。
-        // 读路径必须与生产写入路径一致：probe_log_dir 解析（2026-10-10 根治后
+        // 读路径必须与生产写入路径一致：probe_log_dir 解析（根治后
         // 在 cargo target 路径下走 app_data_dir，不再用 target/debug/deps）。
         // 删除/读全量共享 bot.log，必须持测试串行锁（与 audit 模块同名用例互斥）
         let _serial = crate::db::lock::lock_or_recover(
@@ -961,7 +961,7 @@ mod tests {
         let app = tauri::test::mock_app();
         crate::audit::write_error_audit(app.handle(), "bot_log_read_fail", &[("err", "boom")]);
         // 与 audit.rs:481（write_error_audit）一致：用 probe_log_dir 解析而非
-        // current_exe().parent()——后者在 probe_log_dir 2026-10-10 根治后不再
+        // current_exe().parent()——后者在 probe_log_dir 根治后不再
         // 命中 target/debug/deps 共享区，会读到旧进程的残留行。
         let log = crate::paths::probe_log_dir(app.handle()).join("bot.log");
         let content = std::fs::read_to_string(&log).unwrap();

@@ -14,7 +14,7 @@ fn link_kind_contributes_path(kind: &str) -> bool {
 /// 收集「允许直接删除」的**绑集**路径（canonical form）：
 /// 任务卡绑定文件/文件夹（含回收站卡——彻底删除场景需要）+ 工作区链接目标。
 /// **只服务 `delete_bound_file`**——删除是破坏性操作，仍限定绑集；
-/// `open_file_path` 已按 2026-10-08 口径放开（聊天里的文件/链接点开不再要求
+/// `open_file_path` 已放开（聊天里的文件/链接点开不再要求
 /// 绑定，任意存在的本地路径直接打开），不再查询本集合。
 ///
 /// **canonical 化策略（修  #3 high 归一化不一致）**：
@@ -169,7 +169,7 @@ fn path_openable_in(path: &str, set: &std::collections::HashSet<String>) -> bool
 /// 打开文件/文件夹（Rust 侧调用 opener 插件）：绕过前端窗口的 opener scope，
 /// 聊天文件按钮点击直接走这里，失败返回可读错误、前端弹错提示（不静默）。
 ///
-/// **口径变更（2026-10-08 用户）**：聊天里的文件/链接点开**不再要求绑定**——
+/// 聊天里的文件/链接点开**不再要求绑定**——
 /// 原白名单（任务卡绑集 / 工作区链接 / AI_Gen_Files + TOCTOU 二次校验，
 /// 系列）已整体移除，任意存在的本地路径直接打开。原防线承担的「前端 XSS → 打开
 /// 任意文件」风险随口径一并由用户接受；**删除侧不受影响**——`delete_bound_file`
@@ -243,7 +243,7 @@ pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
 /// **修  #6 medium（防御与 open 一致）**：不再 raw `set.contains(&path)`，
 /// 与 open_file_path 同走 `path_openable_in`（canonical 双侧）。
 ///
-/// **删除范围 = 绑集**（ high）：与已放开的 open 不同（2026-10-08 口径），
+/// **删除范围 = 绑集**（ high）：与已放开的 open 不同，
 /// 删除是破坏性操作，仍只允许删任务卡绑定文件/文件夹——**不**把 AI_Gen_Files
 /// 纳入删除范围（历史上曾误传 gen_dir 静默扩大删除范围，与注释不符，已修）。
 ///
@@ -388,7 +388,7 @@ pub async fn delete_bound_file(
 }
 
 /// 这两个命令（open_file_path / delete_bound_file）中，delete 仍限定绑集
-/// （破坏性操作）；open 已按 2026-10-08 口径放开（任意存在的路径直接打开）。
+/// （破坏性操作）；open 已放开（任意存在的路径直接打开）。
 /// 判定核测试锁住「绑集精确命中」的放行与 `..` / 软链逃逸 / 不存在路径的拒绝行为。
 #[cfg(test)]
 mod tests {
@@ -487,7 +487,7 @@ mod tests {
         );
     }
 
-    ///  high 的口径延续：删除范围只含绑集。open 已放开（2026-10-08），
+    ///  high 的口径延续：删除范围只含绑集。
     /// 但 delete 侧未命中绑集（即便落在 AI_Gen_Files 内）也不放行。
     #[test]
     fn delete_scope_requires_binding_hit() {

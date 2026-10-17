@@ -1,4 +1,4 @@
-/// F-6 step 2：Mock LLM HTTP server（2026-08-18）
+/// Mock LLM HTTP server
 ///
 /// 模拟 OpenAI 兼容的流式响应，跑通 wmessage bot.rs 的 SSE 解析路径。
 ///
@@ -14,7 +14,7 @@
 /// 3. tool_call 响应格式（interactive Skill 场景）
 /// 4. 普通文本响应（auto Skill 之外场景）
 ///
-/// 2026-09-03 T1-2 已完成：mock LLM server 已接到抽离后的 run_model_loop_core 真路径
+/// mock LLM server 已接到抽离后的 run_model_loop_core 真路径
 /// （见 tests/llm_integration.rs 的 core_* 用例）。
 ///
 /// 注：上面用 `///` 不用 `//!`，是因为 `llm_integration.rs` 用 `include!` 把本文件作为子模块引入，
@@ -53,11 +53,11 @@ pub enum MockBehavior {
     /// 正文按 N 字节切片逐片 write+flush（可在多字节 UTF-8 字符中间切断，
     /// 模拟真实 TCP 分片，批次3审计 T-2 / P1-2）；片间 sleep 5ms
     FragmentedTextReply(String, usize),
-    /// 原样 SSE body（2026-09-03 T1-2）：测试自己拼 data 行——用于干净 EOF 截断流
+    /// 原样 SSE body：测试自己拼 data 行——用于干净 EOF 截断流
     /// （无 [DONE] / 无 finish_reason 直接 Connection: close，批次3审计 P1-1 防线）
     /// 等预置变体表达不了的场景
     RawSse(String),
-    /// ── Anthropic 协议应答（2026-09-05 Anthropic 兼容模式）──
+    /// ── Anthropic 协议应答 ──
     /// 流式文本回复（message_start/content_block_*/message_delta/message_stop 全套事件）
     AnthropicTextReply(String),
     /// 流式文本回复但以 stop_reason=max_tokens 收尾（撞输出上限被截断，
@@ -71,7 +71,7 @@ pub enum MockBehavior {
     AnthropicJsonReply(String),
     /// 非流式 OpenAI chat.completion JSON 回复（摘要 OpenAI 分支走 stream:false + resp.json()）
     OpenAiJsonReply(String),
-    /// 文本块在前 + tool_use 块在后（2026-09-05 真实环境 400 回归基准）：
+    /// 文本块在前 + tool_use 块在后（真实环境 400 回归基准）：
     /// text 块占 index 0、tool_use 块 index 1——Anthropic 块序号连文本一起数，
     /// 重映射防线（bot_anthropic::ToolSlotMapper）必须把它归位到工具槽位 0
     AnthropicTextThenToolCall(String, ToolCallResponse),
@@ -84,11 +84,11 @@ pub struct MockLlmServer {
     #[allow(dead_code)] // 仅内部线程闭包通过 Arc 访问；Rust 静态分析看不到闭包内读
     consumed: Arc<AtomicUsize>,
     behaviors: Arc<Mutex<Vec<MockBehavior>>>,
-    /// 每个请求的 body 原文（2026-09-05 记忆回归基准）：断言「发给 LLM 的请求里
+    /// 每个请求的 body 原文（记忆回归基准）：断言「发给 LLM 的请求里
     /// 有什么」（记忆块 system 消息 / 工具结果回填）必须看真实出站请求，
     /// 不能只断言测试侧自拼的消息数组
     bodies: Arc<Mutex<Vec<String>>>,
-    /// 每个请求的请求行（2026-09-05 Anthropic 兼容模式）："POST /v1/messages HTTP/1.1"
+    /// 每个请求的请求行（Anthropic 兼容模式）："POST /v1/messages HTTP/1.1"
     /// ——断言协议分支打对了路径（/chat/completions vs /v1/messages）
     paths: Arc<Mutex<Vec<String>>>,
     _handle: Option<thread::JoinHandle<()>>,
@@ -232,13 +232,13 @@ impl MockLlmServer {
         self.request_count.load(Ordering::SeqCst)
     }
 
-    /// 已收到的全部请求 body 原文（按到达顺序；2026-09-05 记忆回归基准用）
+    /// 已收到的全部请求 body 原文（按到达顺序；记忆回归基准用）
     #[allow(dead_code)] // mock_llm.rs 同时被 include! 进 llm_integration.rs，那边不一定用
     pub fn request_bodies(&self) -> Vec<String> {
         self.bodies.lock().unwrap().clone()
     }
 
-    /// 已收到的全部请求行（按到达顺序；2026-09-05 Anthropic 协议路径断言用）
+    /// 已收到的全部请求行（按到达顺序；Anthropic 协议路径断言用）
     #[allow(dead_code)] // 同上：include! 进 llm_integration.rs，那边不一定用
     pub fn request_paths(&self) -> Vec<String> {
         self.paths.lock().unwrap().clone()
@@ -270,7 +270,7 @@ fn build_http_response(behavior: &MockBehavior) -> String {
     match behavior {
         MockBehavior::HttpError(status, body) => build_error_response(*status, body),
         MockBehavior::AnthropicJsonReply(content) => {
-            // 非流式 Anthropic message 单体响应（2026-09-05 Anthropic 兼容模式：
+            // 非流式 Anthropic message 单体响应（Anthropic 兼容模式：
             // Planner/摘要走 stream:false + resp.json()）
             let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
             let body = format!(
@@ -392,7 +392,7 @@ fn sse_stream_error_reply(message: &str) -> String {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// Anthropic 协议 SSE 构造（2026-09-05 Anthropic 兼容模式）
+// Anthropic 协议 SSE 构造
 // 与 bot_anthropic.rs 的 parse_anthropic_event 解析路径对齐：
 // 完整事件序列 message_start → content_block_start → content_block_delta →
 // content_block_stop → message_delta(stop_reason+usage) → message_stop，
@@ -485,7 +485,7 @@ fn anthropic_sse_error_reply(message: &str) -> String {
     )
 }
 
-/// 文本块在前 + tool_use 块在后（2026-09-05 真实环境 400 回归基准）：
+/// 文本块在前 + tool_use 块在后（真实环境 400 回归基准）：
 /// text 块占 index 0，tool_use 块占 index 1（块序号连文本一起数，与真实 Anthropic 一致）
 fn anthropic_sse_text_then_tool_call_reply(text: &str, name: &str, arguments: &str) -> String {
     let text_escaped = text.replace('\\', "\\\\").replace('"', "\\\"");

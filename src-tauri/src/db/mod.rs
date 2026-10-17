@@ -1267,7 +1267,7 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// 模拟 2026-08-14 前的任务行（updated_at IS NULL），验证 tasks_import
+    /// 模拟旧 schema 的任务行（updated_at IS NULL），验证 tasks_import
     /// 读取不崩：r.get::<_, Option<i64>>(0) + flatten + unwrap_or(0)。
     /// 直接 r.get::<_, i64>(0) 遇 NULL 报 InvalidColumnType，整次导入失败。
     #[test]
@@ -1338,7 +1338,7 @@ mod tests {
             conn.query_row("SELECT title FROM tasks WHERE id = ?1", [id], |r| r.get(0))
                 .unwrap()
         };
-        // 老 NULL 行（2026-08-14 前 schema 遗留）：生产 upsert 写全列，NULL 行只能 SQL 直插
+        // 老 NULL 行（早期 schema 遗留）：生产 upsert 写全列，NULL 行只能 SQL 直插
         conn.execute(
             "INSERT INTO tasks (id, title, col) VALUES ('legacy', 'legacy-row', 'todo')",
             [],

@@ -2,7 +2,7 @@
 //! 簇成员由用户在弹窗里选主标签后改源；改源前后在 audit_log 落 run_id +
 //! 旧 tags 快照 + 影响 task_ids 列表，支持按 run_id 回滚。
 //!
-//! 设计要点（2026-10-14 决策记录）：
+//! 设计要点：
 //! - 阈值复用 `memory::store::DEDUP_MERGE_COSINE`（0.92）——与 corrections
 //!   闭环同档，单一真相源。弹窗可在调用时传覆盖（未来扩展），不暴露
 //!   设置项（避免与 memory dedup 阈值漂移）。

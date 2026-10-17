@@ -1,4 +1,4 @@
-//! 执行痕迹（exec_trace）集成测试（2026-10-06，Agent 透明化设计 §4.2 / §14.1 P1-d 验收）
+//! 执行痕迹（exec_trace）集成测试（Agent 透明化设计 §4.2 / §14.1 验收）
 //!
 //! 覆盖：
 //! 1. trace 生命周期：run_task_in_chat_with 带 hook 跑一次成功执行 → exec_traces 落

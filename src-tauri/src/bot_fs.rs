@@ -815,7 +815,7 @@ pub struct FileChangeReceipt {
     /// edit_file 的实际替换次数：Exact/WhitespaceTolerant = 1；regex = find_iter
     /// 计数（也是 replace_all 实际次数）。0 用于「试过但 0 处匹配」/「write_file 全
     /// 量写入」等场景——把「替换 1 处」与「替换 1 万处」/「新建 0 行」区分开
-    /// （2026-10-10 OCR 评审 D 批遗留：审计/receipt 原只记行数 delta，不区分
+    /// （审计/receipt 原只记行数 delta，不区分
     /// 单点替换与全清替换）。
     pub replacements: usize,
 }

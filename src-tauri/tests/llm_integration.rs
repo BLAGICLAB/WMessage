@@ -1,9 +1,9 @@
-//! F-6 step 3 + step 4 refactor：Mock LLM + reqwest 端到端（2026-08-18）
+//! Mock LLM + reqwest 端到端
 //!
 //! 把 `tests/mock_llm.rs` 的 server 接到 reqwest::Client，
 //! 验证 SSE 响应能被生产同构的解析逻辑消费。
 //!
-//! F-6 step 4 refactor（2026-08-18 10:31）：测试改用 `wmessage_lib::bot::parse_sse_chunk`，
+//! 测试改用 `wmessage_lib::bot::parse_sse_chunk`，
 //! 消除与 `bot::run_model_loop` 的解析逻辑重复。OpenAI SSE 格式演化只改 bot.rs 一处。
 //!
 //! 设计要点：
@@ -24,7 +24,7 @@ use wmessage_lib::bot::{
     accumulate_tool_call_delta, drain_sse_lines, parse_sse_chunk, ToolCallDelta,
 };
 
-/// 中间件 API 的 AppHandle 首参占位（P2-13/14 签名扩展后测试适配，2026-08-19）。
+/// 中间件 API 的 AppHandle 首参占位（签名扩展后测试适配）。
 /// 这些用例只命中闸门判定，不触发 audit 落盘路径；App 泄漏给测试进程，退出即回收。
 fn mock_handle() -> tauri::AppHandle<tauri::test::MockRuntime> {
     Box::leak(Box::new(tauri::test::mock_app()))
@@ -310,7 +310,7 @@ fn accumulate_matches_production_merge_semantics() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// T1-2（2026-09-03，原审计 #3）：run_model_loop_core 真路径集成测试
+// run_model_loop_core 真路径集成测试
 //
 // 背景：P0-1/P0-5 等修复密集区（HTTP 错误包装 / 流截断防线 / 重试退避）
 // 原先沉在 run_model_loop 函数体内、直连 AppHandle，无法集成测试。
@@ -348,7 +348,7 @@ fn core_http(server: &MockLlmServer) -> LlmHttp {
     }
 }
 
-/// Anthropic 协议变体（2026-09-05 Anthropic 兼容模式）：同一 mock server，
+/// Anthropic 协议变体：同一 mock server，
 /// 主循环应打 /v1/messages 并用 x-api-key 鉴权
 fn core_http_anthropic(server: &MockLlmServer) -> LlmHttp {
     LlmHttp {
@@ -1138,7 +1138,7 @@ async fn core_truncated_stream_text_only_warns_but_returns() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 2026-09-05 Anthropic 兼容模式：run_model_loop_core 的 Anthropic 分支
+// run_model_loop_core 的 Anthropic 分支
 // 跑真路径（同一 mock server，Anthropic 协议应答变体）。
 // 覆盖：流式文本 + usage 审计 + 协议路径/请求体形态断言、
 //       一次工具调用全回路（tool_use 解析 → 执行 → tool_result 回填 → 续聊）、
@@ -1313,7 +1313,7 @@ async fn core_anthropic_stream_error_event_surfaced() {
 
 #[tokio::test]
 async fn core_anthropic_text_block_first_tool_use_remapped_no_ghost() {
-    // 2026-09-05 真实环境 400 回归（MiniMax Anthropic 端点
+    // 真实环境 400 回归（MiniMax Anthropic 端点
     // "tool result's tool id(call_synth_0) not found"）：text 块占 index 0、
     // tool_use 块占 index 1——ToolSlotMapper 必须把块序号重映射为稠密工具槽位，
     // 否则累积层在 index 0 留幽灵空条目，空 id 被合成 call_synth_0 并以

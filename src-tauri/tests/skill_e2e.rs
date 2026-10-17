@@ -1,4 +1,4 @@
-//! F-6 端到端测试（2026-08-18）
+//! 端到端测试
 //! B5-6：`#![allow(clippy::await_holding_lock)]`——测试串行锁（SERIAL/MutexGuard）
 //! **故意**持跨 await：#[tokio::test] 独立 current-thread runtime，guard 持有
 //! 至测试结束正是串行化语义，无真实死锁面（std Mutex 阻塞的是本测试线程）。
@@ -11,12 +11,12 @@
 //! - 真 Skill fixture 走 `tests/fixtures/` + `scan_skill_dirs` 直接加载
 //!
 //! 覆盖范围：
-//! 1. pre-step 路由（intent_router 直调；原 MiddlewareRegistry 链已于 2026-10-08 拆除为固定直调）
+//! 1. pre-step 路由（intent_router 直调；原 MiddlewareRegistry 链已拆除为固定直调）
 //! 2. 真 Skill fixture 解析（scan_skill_dirs + parse_meta）
 //! 3. 任务卡执行流程识别（tool_guard 纯函数）
 //! 4. 意图路由动态规则（intent_router 纯函数 + fixture 扫描，路由来自已安装技能 intents）
 //!
-//! 2026-09-03 T1-2 已完成：run_skill_scheduler_core（调度器本体，重构后泛型 Runtime +
+//! run_skill_scheduler_core（调度器本体，重构后泛型 Runtime +
 //! 注入 executor/persist）真路径 e2e 见本文件 scheduler_e2e_* 用例；run_model_loop_core
 //! 对 mock LLM server 的真路径见 llm_integration.rs 的 core_* 用例。
 
@@ -105,7 +105,7 @@ fn task_exec_flow_requires_session_context() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// 4. 意图路由：动态规则（2026-08-19 重构：路由 = 已安装技能的 intents 声明，
+// 4. 意图路由：动态规则（路由 = 已安装技能的 intents 声明，
 //    未安装的技能不得有路由；静态 INTENT_RULES 表已删除）
 // ────────────────────────────────────────────────────────────────────
 
@@ -182,7 +182,7 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
 }
 
 // ────────────────────────────────────────────────────────────────────
-// T1-2（2026-09-03，原审计 #2）：run_skill_scheduler_core 真路径 e2e
+// run_skill_scheduler_core 真路径 e2e
 //
 // 背景：P0-1（SKILL_RUNS 跨会话顶号 / Done 路径不收尾）/ P0-5（回滚窗口）
 // 修复密集区原先无法直测——run_skill_scheduler 直连 Wry AppHandle +
@@ -233,7 +233,7 @@ fn fixture_meta_body() -> (wmessage_lib::bot_skills::SkillMeta, String) {
 }
 
 /// bot.log 路径（probe_log_dir 在 cargo test 下 = current_exe 父目录，
-/// 与生产写入路径一致：probe_log_dir 解析（2026-10-10 根治后 cargo target
+/// 与生产写入路径一致：probe_log_dir 解析（根治后 cargo target
 /// 路径下走 app_data_dir，不再命中 target/debug/deps 共享区——读路径必须用
 /// 同一函数，否则读会读到旧进程残留行）。`db::data_dir` 是 probe_log_dir 的
 /// 公开别名（pub 函数），测试包外用这一入口避免触及 `pub(crate)` 的 probe_log_dir。
@@ -573,7 +573,7 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
 
 #[tokio::test]
 async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
-    // agent 假死回归（2026-08-18 事故根因）：上轮遗留的 Completed 终态 run
+    // agent 假死回归（事故根因）：上轮遗留的 Completed 终态 run
     // 若不清理，会在第 0 步被 advance_dsl 误判 Finish 直接 break（0 次工具调用）。
     // core 入口的 clear_terminal_skill_runs 必须清掉它，两步照常执行。
     let _serial = SKILL_SCHED_TEST_LOCK

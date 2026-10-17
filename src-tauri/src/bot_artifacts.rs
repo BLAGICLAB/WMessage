@@ -7,7 +7,6 @@
 //!
 //! 进程重启后登记表清空，但通知消息持久化——paths 随 payload 落库，
 //! 重启后仍可从通知中心完成绑定。
-//! 设计权衡见 workspace 内部讨论 2026-09-11
 use crate::bot_chat::TaskExecOrigin;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;

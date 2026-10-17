@@ -4,8 +4,8 @@
 //! 全局状态总表（SKILL_RUNS / STOP_REGISTRY / CONFIRMS / CHAT_RUNNING /
 //! EXEC_RUNNING / SCHED_RUNNING / PENDING / artifact_registry，及刻意留在
 //! 进程级的 NEXT_STOP_ID 与 tool_guard::SESSION_ORIGINS）的类型、生命周期、
-//! 清理责任人盘点：见 git log 本文件头的历史版本（2026-10-08 压缩——
-//! 行号快照注定漂移，盘点型内容不驻留源码）。
+//! 清理责任人盘点：见 git log 本文件头的历史版本——行号快照注定漂移，
+//! 盘点型内容不驻留源码。
 //!
 //! 刻意不收口的四类（SESSION_ORIGINS / ROUTES / API 专属 4 项 / 不可变缓存）
 //! 与「锁保持 std::sync::Mutex、不引新依赖」的取舍理由同样留档 git log；
