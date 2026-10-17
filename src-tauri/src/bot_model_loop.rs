@@ -657,8 +657,9 @@ pub const LLM_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 pub struct LoopTrace {
     /// LLM 轮数（llm.request 事件数）
     pub turn_count: u32,
-    /// 每次工具调用摘要（name + success + duration_ms）
-    pub tool_calls: Vec<crate::evolution::trace::ToolCallSummary>,
+    /// 本轮工具调用次数（exec_traces.tool_calls 列；逐次明细在 trace_steps 表，
+    /// 由 execute_tool_traced 的 span 写入，不在此重复采集）
+    pub tool_calls: u32,
     /// llm.usage 审计事件累计（Anthropic 协议现发；OpenAI usage 解析留 ）
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -873,9 +874,8 @@ pub async fn run_model_loop(
     let usage_ct = completion_tokens.clone();
     let usage_cr = cache_read_tokens.clone();
     let usage_cc = cache_creation_tokens.clone();
-    let tool_trace: std::sync::Arc<
-        std::sync::Mutex<Vec<crate::evolution::trace::ToolCallSummary>>,
-    > = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let tool_trace: std::sync::Arc<std::sync::Mutex<u32>> =
+        std::sync::Arc::new(std::sync::Mutex::new(0));
     let tool_trace_for_exec = tool_trace.clone();
     // 上下文压缩 sidecar 目录（AI_Gen_Files/conv-history）；gen_dir 失败时降级 None
     let conv_sidecar_path = crate::db::gen_dir(&app)
@@ -966,12 +966,7 @@ pub async fn run_model_loop(
         let app = app.clone();
         let sink = tool_trace_for_exec.clone();
         async move {
-            let t0 = std::time::Instant::now();
             let out = crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await;
-            // 成败口径与全链路统一（ToolStatus 是唯一真相源）；error_class 分类器
-            // 只做子类细分（timeout/permission/gate_denied…），不承担成败判定
-            let failed = !out.status.is_success();
-            let error_class = crate::audit::classify_error_class(&out.text);
             // 配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）；
             // 头尾保留——错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息
             let mut text = out.text;
@@ -991,13 +986,8 @@ pub async fn run_model_loop(
                     );
                 }
             }
-            if let Ok(mut sink) = sink.lock() {
-                sink.push(crate::evolution::trace::ToolCallSummary {
-                    name,
-                    success: !failed,
-                    duration_ms: t0.elapsed().as_millis() as u64,
-                    error_kind: error_class.map(str::to_string),
-                });
+            if let Ok(mut n) = sink.lock() {
+                *n += 1;
             }
             // 截断只换 text，其余字段（refs/status/images/file_changes）原样透传
             crate::bot::registry::ToolResult {
@@ -1028,7 +1018,7 @@ pub async fn run_model_loop(
         // 组装执行明细随返回值带出（trace 管道消费）
         let loop_trace = LoopTrace {
             turn_count: round_count.load(std::sync::atomic::Ordering::Relaxed) as u32,
-            tool_calls: tool_trace.lock().map(|m| m.clone()).unwrap_or_default(),
+            tool_calls: tool_trace.lock().map_or(0, |n| *n),
             prompt_tokens: prompt_tokens.load(std::sync::atomic::Ordering::Relaxed),
             completion_tokens: completion_tokens.load(std::sync::atomic::Ordering::Relaxed),
             model: Some(http.model.clone()),

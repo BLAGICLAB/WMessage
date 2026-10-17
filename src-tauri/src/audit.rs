@@ -189,7 +189,7 @@ pub fn tool_call_failed(name: &str, text: &str) -> bool {
 }
 
 /// 错误分类器（与 tool_call_failed 同走 [classify_tool_failure] 单一来源，供
-/// trace span error_class / evolution ToolCallSummary.error_kind，两处不再各写
+/// trace span error_class 用，两处不再各写
 /// 一份口径）。成功文本返回 None；五个具名失败直接映射，关键词/错误前缀两类
 /// 失败再按内容细分（超时/不存在/权限），未识别失败统一 "exec_error"。
 pub fn classify_error_class(text: &str) -> Option<&'static str> {

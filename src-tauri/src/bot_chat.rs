@@ -21,9 +21,7 @@
 use crate::bot_skills::{build_skill_block_for, SkillMeta};
 use crate::bot_slash::{bot_get_enabled, StopGuard};
 use crate::error::{CommandError, CommandResult};
-use crate::evolution::trace::{TraceContext, TraceOutcome};
 use crate::intent_router::RouteAction;
-use crate::mutation::MutationOrigin;
 use crate::prompt_builder::{PromptSlot, SystemPromptBuilder};
 use crate::prompts::{
     COMPACT_SYSTEM_PROMPT, EXECUTE_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT, SYSTEM_PROMPT,
@@ -754,8 +752,6 @@ pub async fn bot_chat(
     reasoning_effort: Option<String>,
 ) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
-    // Phase 1 追加：执行起点时间戳（trace 采集用；同步 < 1ms，不影响主流程）
-    let started_at_ms = chrono::Utc::now().timestamp_millis();
     // 会话级防重入：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
     let _chat_guard = match ChatGuard::acquire(&app, session_id.as_deref()) {
         Ok(g) => g,
@@ -1117,47 +1113,16 @@ pub async fn bot_chat(
         loop_result.as_ref().err().map(|e| e.to_string()),
     )
     .await;
-    let (text, refs, loop_trace) = match loop_result {
+    let (text, refs, _loop_trace) = match loop_result {
         Ok(v) => v,
         Err(e) => {
-            crate::evolution::trace::maybe_record_trace(
-                TraceContext::new(
-                    session_id.as_deref().unwrap_or("none"),
-                    MutationOrigin::Main,
-                    started_at_ms,
-                )
-                .with_outcome(TraceOutcome::Failure {
-                    reason: "model_loop_error".into(),
-                }),
-            );
             return Err(e);
         }
     };
-    // Phase 1 追加：trace 采集——同步、< 1ms、不记录对话原文。
-    // 仅在最终 return 处 hook：早期 return（ChatGuard 拦截 / chat_execute_tasks
-    // / skill auto-mode 终态）均不走 run_model_loop，不构成完整 bot 执行轨迹，
-    // spec 主流程的「收尾处」仅指此点。审计不命中即静默丢弃（不影响主流程）。
-    let aborted = stop.stopped();
-    crate::evolution::trace::maybe_record_trace(
-        TraceContext::new(
-            session_id.as_deref().unwrap_or("none"),
-            MutationOrigin::Main,
-            started_at_ms,
-        )
-        .with_outcome(if aborted {
-            TraceOutcome::Aborted
-        } else {
-            TraceOutcome::Success
-        })
-        .with_task_refs(refs.iter().map(|t| t.id.clone()).collect())
-        // turn 数 + 工具明细接真实数据（此前恒 0/空，trace.rs 既定计划）
-        .with_turn_count(loop_trace.turn_count)
-        .with_tool_calls(loop_trace.tool_calls),
-    );
     //  自动记忆抽取（fire-and-forget）：交互式会话收尾触发，抽取失败静默
     // 降级不冒泡；非交互（任务执行/定时）、/stop 中止的会话、非 off 档的判定
     // 在入口内完成。session_id 此后不再使用，按值转移。
-    if !aborted {
+    if !stop.stopped() {
         crate::memory::extract::maybe_extract_from_session(
             extract_app,
             session_id,
@@ -1599,9 +1564,6 @@ async fn run_task_in_chat_impl(
     // 内核（run_task_in_chat_with）填归属并收尾。
     // 轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
     let cfg_for_rounds = crate::bot::load_config(app);
-    // evolution 采样接线——任务执行链路（手动/定时/批量）此前未接
-    // maybe_record_trace（只有主聊天 hook）；LoopTrace 统计在闭包里顺手喂采样判定。
-    let exec_started_at = chrono::Utc::now().timestamp_millis();
     let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
         Default::default();
     let hook_for_run = hook.clone();
@@ -1625,36 +1587,9 @@ async fn run_task_in_chat_impl(
             )
             .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）
-            match &outcome {
-                Ok((_, _, trace)) => {
-                    if let Ok(mut c) = hook_for_run.lock() {
-                        c.stats = Some(trace.clone());
-                    }
-                    // 采样上报（Failure/长耗时/多工具命中才落审计，见 should_record_trace）
-                    crate::evolution::trace::maybe_record_trace(
-                        crate::evolution::trace::TraceContext::new(
-                            // 闭包内拿不到执行 sid（内核生成）——用 task_id 作稳定标识
-                            task_id,
-                            crate::mutation::MutationOrigin::Bot,
-                            exec_started_at,
-                        )
-                        .with_outcome(crate::evolution::trace::TraceOutcome::Success)
-                        .with_tool_calls(trace.tool_calls.clone()),
-                    );
-                }
-                Err(e) => {
-                    crate::evolution::trace::maybe_record_trace(
-                        crate::evolution::trace::TraceContext::new(
-                            task_id,
-                            crate::mutation::MutationOrigin::Bot,
-                            exec_started_at,
-                        )
-                        .with_outcome(
-                            crate::evolution::trace::TraceOutcome::Failure {
-                                reason: crate::bot::truncate_for_log(&e.to_string(), 120),
-                            },
-                        ),
-                    );
+            if let Ok((_, _, trace)) = &outcome {
+                if let Ok(mut c) = hook_for_run.lock() {
+                    c.stats = Some(trace.clone());
                 }
             }
             outcome.map(|(text, refs, _)| (text, refs))

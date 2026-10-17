@@ -9,7 +9,6 @@
 //! - 不接收 session_id / 不接收任何反向依赖 memory 内部的状态。
 //!
 //! 模块分层：
-//! - `trace`    数据结构：ExecutionTrace / ToolCallSummary / TraceOutcome（Phase 1.1）
 //! - `proposal` 数据结构：EvolutionProposal + 枚举 + proposal_id 归一化（Phase 1.2）
 //! - `derive`   纯函数：从 `[ConsolidateOp]` 启发式派生 proposals（Phase 1.3）
 //! - `emit`     副作用：写 audit + 进程内 24h dedup（Phase 1.4）
@@ -100,7 +99,6 @@ pub mod emit;
 pub mod panel;
 pub mod proposal;
 pub mod sandbox;
-pub mod trace;
 
 /// evolution 存储（proposals + changes 两个 jsonl）的**进程内单锁**。
 ///

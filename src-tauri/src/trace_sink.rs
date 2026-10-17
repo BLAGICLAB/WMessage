@@ -226,7 +226,7 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
     let (turn_count, tool_calls, prompt_tokens, completion_tokens) = match &stats {
         Some(t) => (
             t.turn_count as i64,
-            t.tool_calls.len() as i64,
+            t.tool_calls as i64,
             t.prompt_tokens as i64,
             t.completion_tokens as i64,
         ),
