@@ -370,8 +370,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
     },
 ];
 
-/// 生效值解析：可编辑项查 cfg 字段（None → 默认 / Some → 值），只读项出硬编码常量
-
+/// 生效值解析：可编辑项查 cfg 字段（None → 默认 / Some → 值），只读项出硬编码常量。
 /// 子 agent 预算三个键共用同一份 `resolve_subagent_budget`，这里按需取字段。
 fn resolve_budget_tool_calls(cfg: &BotConfig) -> String {
     resolve_subagent_budget(cfg).max_tool_calls.to_string()

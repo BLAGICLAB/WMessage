@@ -688,7 +688,6 @@ fn resolve_loop_inference(
     })
 }
 
-#[allow(clippy::too_many_lines)]
 /// 采样温度的优先级：**配置档 > 模型条目**。
 ///
 /// 与「权限只收紧、运行时优先」那条相反且是刻意的——采样温度不是权限，
@@ -702,6 +701,10 @@ pub fn resolve_temperature(config: Option<f64>, entry: Option<f64>) -> Option<f6
     config.or(entry)
 }
 
+// 主循环本体：入口装配（deps / 出口分流）+ 轮次循环 + 每轮七类钩子接线。
+// 长度本身就是这些接线堆在一起的结果，拆函数会把「钩子相对答案定稿的位置」
+// 这条不变量摊散到多个文件里——而那正是上面 post_turn_layer_tests 要守的。
+#[allow(clippy::too_many_lines)]
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
