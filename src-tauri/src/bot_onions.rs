@@ -87,10 +87,18 @@ impl OnionConfig {
 /// `design_layers_match_registry_plus_not_yet_wired` 单测钉在一起。
 pub const DESIGN_HOOK_LAYERS: &[&str] = &["pre_ingest", "pre_tool", "post_tool", "post_turn"];
 
-/// 设计里有、但尚未接线的层。期 5 的 L0 落地后从这里移走。
+/// 设计里有、但**不在钩子注册表里**的层。
 ///
 /// 单独列出而不是隐在 `DESIGN_HOOK_LAYERS - wired_names` 里算差集：差集算出来
 /// 是「碰巧还没做」，而这里是「有意还没做」，两者混同会让人以为漏了。
+///
+/// `pre_ingest` 要分清两件事：**它有实现**（`bot_chat::normalize_user_input`，
+/// 主会话输入侧唯一的改写点），但**不在注册表里**。所以配置写
+/// `pre_ingest: ""` 关不掉它——只记 `layer_not_wired` 审计。
+///
+/// 为什么不进注册表：注册表层的意义是「用户配置能关、能扩展」，而 L0 作用于
+/// 主会话输入，per-onion 配置目前只绑得到子 agent（主会话无绑定入口），
+/// 加进去也只是多一个谁也关不掉的层。等主会话也能绑配置时再谈（见 §十）。
 pub const NOT_YET_WIRED_LAYERS: &[&str] = &["pre_ingest"];
 
 /// 配置校验：工具名必须能在 `TOOLS_TABLE` 查到、profile 名要认识、层名要在白名单里。

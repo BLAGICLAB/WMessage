@@ -108,6 +108,104 @@ fn truncate_split_point(messages: &[ChatMsg], budget: usize) -> usize {
     keep_from
 }
 
+/// L0 `pre_ingest` 的规范化字符表（设计 §二：L0 是唯一的输入侧改写点）。
+///
+/// **只含「不可见且无语义」的字符**：每加一个字符都要能回答「删掉它会改变
+/// 任何语义吗」——回答不了就不进这张表。
+///
+/// **刻意不含 ZWJ(U+200D) 与 ZWNJ(U+200C)**：它们看着是零宽，实际有语义——
+/// ZWJ 拼合 emoji 序列（👨‍👩‍👧 是**一个**字符家族的合成图，删掉就拆成三个人），
+/// ZWNJ 在波斯语/印地语里表示字母不成形。把它们当噪音清掉是在制造新 bug。
+const INVISIBLE_JUNK: &[char] = &['\u{FEFF}', '\u{2060}', '\u{00AD}'];
+
+/// L0 输入规范化：把用户这一轮的原文归一成干净文本。
+///
+/// 只做四件无争议的事（返回清洗后的串）：
+/// 1. **删不可见垃圾字符**（BOM / word-joiner / soft-hyphen）：它们从网页、
+///    Word、PDF 复制时会混进来，肉眼完全看不见，但会让关键词匹配整个失效。
+/// 2. **零宽空格换成普通空格**（U+200B → U+0020）：它在中文排版里就是个空格，
+///    删掉会把「做\u{200B}PPT」粘成「做PPT」，反而更匹配不上。
+/// 3. **CRLF → LF**：Windows 来源的粘贴带 `\r`，会污染行尾比对。
+/// 4. **去首尾空白**：粘贴尾巴上的换行很常见。
+///
+/// **刻意不做**：空行折叠、代码块内容改写、大小写归一、繁简转换。前两者会
+/// 改掉用户的排版与代码缩进，后两者会改掉原话——收益抵不过「用户看到自己
+/// 说的话被程序动了」的代价。要做折叠，阈值得高到能区分「排版意图」与
+/// 「复制事故」，那已经是另一个判断题（见设计文档 §十）。
+///
+/// 返回值里带 `changed` 与统计，调用方据此决定要不要记审计——没变化就不该
+/// 在日志里多一条噪音。
+pub(crate) struct NormalizedInput {
+    pub text: String,
+    /// 原文是否被改过（false = 原样透传，零分配走 `Cow`）
+    pub changed: bool,
+    /// 被清掉的不可见字符数（审计用）
+    pub stripped: usize,
+}
+
+/// 纯函数核（不碰 DB / app），便于把每条规则分别钉住。
+fn normalize_user_input_core(raw: &str) -> NormalizedInput {
+    let mut text = String::with_capacity(raw.len());
+    let mut stripped = 0usize;
+    let mut changed = false;
+
+    // 先统一行尾，再逐字符过滤：顺序反了会把 `\r\n` 里的 `\r` 当垃圾删掉，
+    // 结果对、但审计里会记成「清掉了 1 个不可见字符」，误导排障。
+    let unified: std::borrow::Cow<'_, str> = if raw.contains('\r') {
+        changed = true;
+        std::borrow::Cow::Owned(raw.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        // 不含 \r 时借用原串，避免为绝大多数输入做一次全量分配
+        std::borrow::Cow::Borrowed(raw)
+    };
+
+    for c in unified.chars() {
+        if INVISIBLE_JUNK.contains(&c) {
+            stripped += 1;
+            changed = true;
+            continue;
+        }
+        if c == '\u{200B}' {
+            // 零宽空格是「有语义的空间」→ 归成真空格，而不是当垃圾删掉
+            text.push(' ');
+            changed = true;
+            continue;
+        }
+        text.push(c);
+    }
+
+    let trimmed = text.trim();
+    if trimmed.len() != text.len() {
+        changed = true;
+    }
+    NormalizedInput {
+        text: trimmed.to_string(),
+        changed,
+        stripped,
+    }
+}
+
+/// L0 入口：规范化本轮用户输入并就地改写（只动最后一条）。
+///
+/// 就地改 `messages` 而不是局部变量：这一轮之后，历史落库、记忆检索查询、
+/// 技能推荐全都读同一个 `messages`——只清洗局部变量会让「本轮看到的」和
+/// 「下一轮历史里的」不一致，于是下一轮又按原文重新判一遍，规范化等于没做。
+pub(crate) fn normalize_user_input(messages: &mut [ChatMsg]) -> Option<NormalizedInput> {
+    let last = messages.last_mut()?;
+    if last.role != "user" {
+        return None;
+    }
+    let out = normalize_user_input_core(&last.content);
+    if out.changed {
+        last.content = out.text.clone();
+    }
+    if out.changed {
+        Some(out)
+    } else {
+        None
+    }
+}
+
 /// 截断聊天历史到字符预算内：最旧的先丢，永远保留最后一条（本轮用户消息）。
 /// 返回 (保留的消息, 丢弃条数)。
 /// 生产路径走 truncate_chat_history_with_summary
@@ -719,6 +817,19 @@ pub async fn bot_chat(
             });
         }
     };
+    // L0 pre_ingest（设计 §二）：输入侧唯一改写点，在**所有**输入判定之前。
+    // 位置是刻意的——挂起恢复、技能路由、纠正检测、批量执行触发四处都扫
+    // 同一条原文，只要有一处读到未清洗的原文，规范化就只做了一半
+    // （「做\u{FEFF}PPT」照旧匹配不上技能）。
+    let mut messages = messages;
+    if let Some(n) = normalize_user_input(&mut messages) {
+        crate::audit_event!(
+            &app,
+            crate::audit::AuditLevel::Info,
+            "user.input_normalized",
+            "stripped" => n.stripped.to_string(),
+        );
+    }
     // 步骤 1：逐步执行挂起恢复：有子任务待确认时，本条消息是对执行流程的应答
     // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
     if let Some(last) = messages.last() {
@@ -2105,6 +2216,146 @@ mod bot_chat_pure_helpers_tests {
         let out = merge_task_refs_dedup(refs);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "X1");
+    }
+
+    // ── L0 pre_ingest：输入规范化 ──
+
+    #[test]
+    fn ingest_strips_invisible_junk_but_keeps_text_untouched() {
+        // 从 Word/网页复制的典型串：BOM + word-joiner + soft-hyphen 混在词中间，
+        // 肉眼完全看不出，关键词匹配却整个失效
+        let raw = "\u{FEFF}做\u{2060}一\u{00AD}份 PPT";
+        let out = normalize_user_input_core(raw);
+        assert_eq!(out.text, "做一份 PPT");
+        assert!(out.changed);
+        assert_eq!(out.stripped, 3, "三个不可见字符都要计数（审计靠它排障）");
+    }
+
+    #[test]
+    fn ingest_keeps_zwj_emoji_sequences_intact() {
+        // 本条是「不可见字符当垃圾清」最容易踩的坑：U+200D 把三个 emoji
+        // 拼成**一个**合成字形（家庭）。当噪音删掉，用户看到的家庭会变成
+        // 三个单独的人——这是程序在改坏用户的话，不是清洗。
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let out = normalize_user_input_core(&format!("我家是 {family}"));
+        assert!(
+            out.text.contains(family),
+            "ZWJ 序列必须原样保留：{:?}",
+            out.text
+        );
+        assert!(!out.changed, "含 ZWJ 的正常输入不应被判定为「已改写」");
+        // ZWNJ 同理：波斯语/印地语里它表示字母不成形
+        let persian = "\u{0641}\u{200C}\u{0645}";
+        assert!(
+            normalize_user_input_core(persian).text.contains('\u{200C}'),
+            "ZWNJ 有语言语义，不得清"
+        );
+    }
+
+    #[test]
+    fn ingest_maps_zero_width_space_to_real_space_not_away() {
+        // 零宽空格在中文排版里就是个空格。删掉会把「做\u{200B}PPT」粘成
+        // 「做PPT」；换回真空格才是「做 PPT」，匹配得上。
+        let out = normalize_user_input_core("做\u{200B}PPT");
+        assert_eq!(out.text, "做 PPT");
+    }
+
+    #[test]
+    fn ingest_unifies_crlf_without_counting_cr_as_stripped() {
+        // 顺序反了（先逐字符过滤再统一行尾）会把 \r 当垃圾删掉：结果对，
+        // 但审计会记「清掉 1 个不可见字符」，把排障引到错误方向。
+        let out = normalize_user_input_core("第一行\r\n第二行\r\n");
+        assert_eq!(out.text, "第一行\n第二行");
+        assert_eq!(out.stripped, 0, "CRLF 的 \\r 不该计入不可见字符");
+    }
+
+    #[test]
+    fn ingest_does_not_touch_code_blocks_or_blank_line_runs() {
+        // 刻意不做结构级改写：代码缩进与段落分隔都是 Markdown 语义。
+        let src = "```rust\nfn main() {\n\n\n    println!();\n}\n```";
+        let out = normalize_user_input_core(src);
+        assert_eq!(out.text, src, "代码块内容不得被折叠或改写");
+        assert!(!out.changed);
+        assert!(
+            normalize_user_input_core("A\n\n\n\nB")
+                .text
+                .contains("\n\n\n\n"),
+            "连续空行不做折叠（排版意图与复制事故分不开，阈值判断留给别的轮次）"
+        );
+    }
+
+    #[test]
+    fn ingest_leaves_clean_input_untouched() {
+        let out = normalize_user_input_core("帮我做一份 PPT");
+        assert_eq!(out.text, "帮我做一份 PPT");
+        assert!(!out.changed, "干净输入不该被判改写（否则日志全是噪音）");
+    }
+
+    #[test]
+    fn ingest_rewrites_only_the_last_user_message() {
+        let mut msgs = vec![
+            msg("user", "旧问题"),
+            msg("assistant", "旧回答"),
+            msg("user", "\u{FEFF}新问题\u{200B}来了"),
+        ];
+        let n = normalize_user_input(&mut msgs).expect("有改动才返回");
+        assert_eq!(n.text, "新问题 来了");
+        assert_eq!(msgs[0].content, "旧问题", "历史不得被就地改写");
+        assert_eq!(msgs[1].content, "旧回答");
+        assert_eq!(msgs[2].content, "新问题 来了", "本轮必须改到位");
+    }
+
+    #[test]
+    fn ingest_skips_non_user_last_message_and_reports_none_when_unchanged() {
+        // 只有 user 角色的最后一条是「本轮输入」；否则规范化它等于改写历史
+        let mut assistant_last = vec![msg("assistant", "回答\u{FEFF}")];
+        assert!(
+            normalize_user_input(&mut assistant_last).is_none(),
+            "最后一条不是用户消息时不得改写"
+        );
+        assert_eq!(assistant_last[0].content, "回答\u{FEFF}", "原样保留");
+
+        let mut clean = vec![msg("user", "普通输入")];
+        assert!(normalize_user_input(&mut clean).is_none());
+    }
+
+    /// 接线守卫：L0 必须在**所有**输入判定之前，且就地改 `messages`。
+    ///
+    /// 挪到任何一处判定之后，就出现「有的扫描读清洗后、有的读原文」——
+    /// 规范化做了一半，症状是「清洗了但路由还是不匹配」。锚点用 concat! 拆分
+    /// 防自匹配。
+    #[test]
+    fn ingest_runs_before_every_input_decision_and_mutates_in_place() {
+        // 限定在 bot_chat 函数体内搜：本文件前部还有好几个同名符号的定义与
+        // 文档提及，全文件搜第一个会命中它们，断言就变成在比谁先出现。
+        let whole = include_str!("bot_chat.rs");
+        let start = whole
+            .find("pub async fn bot_chat(")
+            .expect("bot_chat 函数体起点");
+        let body = &whole[start..];
+        let l0 = body
+            .find("normalize_user_input(&mut messages)")
+            .expect("bot_chat 必须调 L0 规范化");
+        // 五个输入侧判定各自扫 messages.last()，L0 必须排在它们之前
+        for (label, needle) in [
+            ("exec_steps 挂起恢复", "exec_steps::has_pending_for"),
+            ("纠正信号检测", "corrections::detect_correction"),
+            ("批量执行触发", "intent_router::is_chat_execute_trigger"),
+            ("意图路由", "intent_router::route_user_input"),
+            ("技能推荐", "build_skill_block_for"),
+        ] {
+            let at = body
+                .find(needle)
+                .unwrap_or_else(|| panic!("bot_chat 内找不到输入侧判定点：{label}"));
+            assert!(
+                l0 < at,
+                "L0 规范化必须排在「{label}」之前（现 l0={l0} {label}={at}）"
+            );
+        }
+        assert!(
+            body[..l0].contains("let mut messages"),
+            "入参必须先转成 mut 才能就地改写"
+        );
     }
 
     // ── 历史预算 / 图片窗口 / think 剥除 ──
