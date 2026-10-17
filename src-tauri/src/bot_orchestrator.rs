@@ -2101,8 +2101,14 @@ async fn run_subagent(
 }
 
 /// 启动清扫：进程重启后没有任何 runner 在跑，库里 running/queued 的行是
-/// 上一世的僵尸——不收尾就在子 agent 面板里永远转圈（L1 排队恢复尚未接线，
-/// 这里只保证不留假在途）。逐行落终态 + 审计，谁被清的、可追溯。
+/// 上一世的僵尸——不收尾就在子 agent 面板里永远转圈。逐行落终态 + 审计，
+/// 谁被清的、可追溯；取消原因写进行上的 error，`check` 回传给父 agent 与面板。
+///
+/// 排队中的行**不恢复**，是刻意的：恢复需要连 stage（角色语义层）与 onion
+/// （per-agent 配置）一起还原，而这两项没落在行上（行只有 profile / model）。
+/// 只按 profile 重投会跑出一个「用默认角色和默认配置完成」的成功结果，比取消
+/// 更难发现。真要恢复，先把 stage / onion 持久化，再谈重投。
+///
 /// 前置前提：应用是单实例（tauri-plugin-single-instance），所以本进程启动时
 /// 不可能有另一个进程正跑着同一份库的子 agent——否则这里会误杀活跑的。
 pub fn sweep_zombie_subagents(app: &AppHandle) {

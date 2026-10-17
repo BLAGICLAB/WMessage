@@ -1187,9 +1187,9 @@ where
             crate::bot::compaction::CompactionLevel::None => {}
             level @ (crate::bot::compaction::CompactionLevel::Soft
             | crate::bot::compaction::CompactionLevel::Hard) => {
-                // 70%/85% 软/硬压缩：tool 消息按比例降密度。
-                // sidecar 暂未注入（核心循环不依赖 AppHandle），压缩文本留"原文未保留"
-                // 标记——后续单独 PR 在 ModelLoopDeps 加 conv_sidecar_dir 字段注入 AI_Gen_Files
+                // 70%/85% 软/硬压缩：tool 消息按比例降密度，原文落 sidecar
+                //（AI_Gen_Files/conv-history，见 deps 构造处）；目录不可得时
+                // 压缩文本留「原文未保留」标记，那一条是真的丢原文
                 let session_id_owned = stop.session_id().map(|s| s.to_string());
                 let compact_fn = match level {
                     crate::bot::compaction::CompactionLevel::Soft => {
