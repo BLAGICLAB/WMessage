@@ -369,6 +369,12 @@ struct CoreHarness {
     /// 阶段 3.3：核心只读「活动技能快照」（等价 `bot_skills::active_skill_run_for`）
     active_skill_run:
         Box<dyn Fn(Option<&str>) -> Option<wmessage_lib::bot_skills::SkillRun> + Send + Sync>,
+    /// 子 agent 凭证归并的注入点（幻觉守卫用）：默认空 = 本次提问没有子 agent
+    /// 调过工具。要验「子 agent 真干过活、主 agent 据实汇报不被拦」的用例用
+    /// `set_subagent_tools` 填入子 agent 实际调过的工具名。
+    subagent_tools: Box<dyn Fn(Option<&str>) -> Vec<String> + Send + Sync>,
+    /// `subagent_tools` 闭包背后的数据，供测试写入
+    subagent_tools_data: Arc<Mutex<Vec<String>>>,
     audit_events: AuditEvents,
 }
 
@@ -376,6 +382,8 @@ impl CoreHarness {
     fn new() -> Self {
         let events: AuditEvents = Arc::new(Mutex::new(Vec::new()));
         let events2 = events.clone();
+        let sub_tools: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sub_tools2 = sub_tools.clone();
         Self {
             // 非交互实例：不发流式事件，stop 标志未置位
             stop: StopGuard::new(&mock_handle(), false, None),
@@ -393,6 +401,8 @@ impl CoreHarness {
                 let h = mock_handle();
                 Box::new(move |sid| wmessage_lib::bot_skills::active_skill_run_for(&h, sid))
             },
+            subagent_tools: Box::new(move |_| sub_tools2.lock().unwrap().clone()),
+            subagent_tools_data: sub_tools,
             audit_events: events,
         }
     }
@@ -413,6 +423,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
+            subagent_tools: Some(&*self.subagent_tools),
         }
     }
 
@@ -432,6 +443,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
+            subagent_tools: Some(&*self.subagent_tools),
         }
     }
 
@@ -445,6 +457,12 @@ impl CoreHarness {
 
     fn events(&self) -> Vec<&'static str> {
         self.audit_events.lock().unwrap().clone()
+    }
+
+    /// 声明本次提问派生的子 agent 成功用过这些工具（凭证归并的阳性输入）
+    fn set_subagent_tools(&self, names: &[&str]) {
+        let mut g = self.subagent_tools_data.lock().unwrap();
+        *g = names.iter().map(|s| s.to_string()).collect();
     }
 }
 
@@ -3248,4 +3266,126 @@ async fn core_advice_mentioning_tool_name_is_not_a_claim() {
     .expect("如实说明应直接 Ok");
     assert!(text.contains("没有文件访问权限"), "应原样返回：{text:?}");
     assert_eq!(server.request_count(), 1, "建议语气不得被拦");
+}
+
+/// 实机漏网一（trace 63，tools=0）：整句没有完成态词点，闸门压根没进判决。
+///
+/// 模型零工具调用却报出一次完整执行，而且连历史都是编的——那个会话只跑过
+/// time.sleep(2)，从来没有 print 100。
+#[tokio::test]
+async fn core_first_person_execution_narration_without_receipt_is_blocked() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "我跑了一个 print 100 的小任务，返回了 100。".into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply(
+        "我没有执行过任何脚本——刚才那句是错的。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert!(text.contains("没有执行过任何脚本"), "应改口：{text:?}");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("声称已执行但本次提问零凭证")),
+        "应记零凭证：{lines:?}"
+    );
+}
+
+/// 实机漏网二（trace 65，tools=0）：声称派了子 agent 并报了个实测值。
+///
+/// 双层都得在位才拦得住——「实测约」把话术引进判决，别名表把「子 agent」
+/// 映射成 spawn_subagent 让点名查询有键可查。缺任一层都是静默放行。
+#[tokio::test]
+async fn core_subagent_fabrication_is_blocked_via_alias() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "子 agent 跑 sleep(5) 实测约 5013 ms。".into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply(
+        "我没有派过子 agent，那是编的。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert!(text.contains("没有派过子 agent"), "应改口：{text:?}");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("声称已执行但无对应凭证: spawn_subagent")),
+        "审计应点名 spawn_subagent（别名映射的证据）：{lines:?}"
+    );
+}
+
+/// 子 agent 凭证归并的正路：主 agent 派过子 agent 并如实汇报它跑的活，不该被拦。
+///
+/// 子 agent 的 span 在自己的 trace 下，主池里没有 run_python——不做归并的话
+/// 这条正路每次汇报都会被当成凭空伪造。
+#[tokio::test]
+async fn core_subagent_receipts_credit_lets_truthful_report_through() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "spawn_subagent".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply(
+        "子 agent 已执行完毕，run_python 实测约 5013 ms。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    // 子 agent 真的用 run_python 跑出了那个数
+    h.set_subagent_tools(&["run_python"]);
+    let deps = h.deps();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("据实汇报应直接 Ok");
+    assert!(
+        text.contains("run_python 实测约 5013 ms"),
+        "应原样返回：{text:?}"
+    );
+    assert_eq!(server.request_count(), 2, "子 agent 归并后不得返工");
 }

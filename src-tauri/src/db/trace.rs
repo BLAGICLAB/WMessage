@@ -492,6 +492,35 @@ pub fn spans_for_trace(conn: &rusqlite::Connection, trace_id: i64) -> Result<Vec
     Ok(out)
 }
 
+/// 本次提问派生出的子 agent 实际成功用过的工具名。
+///
+/// 子 agent 的 span 记在它自己的 trace 下（`subagents.trace_id` 由 trace_registry
+/// 按子会话注册），主循环的凭证池里没有这些名字——幻觉守卫按主池查会认为主
+/// agent 在凭空叙述「子 agent 跑完了 X」。这里顺 `parent_session_id` 把它拉回来，
+/// 让主 agent 据实汇报子 agent 的工作能过闸。
+///
+/// 只取 `ok = 1`：失败的调用没产生结果，叙述它跟凭空叙述一样是假的。
+pub fn subagent_span_tools(
+    conn: &rusqlite::Connection,
+    parent_session_id: &str,
+) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT s.name FROM exec_spans s
+             JOIN subagents a ON s.trace_id = a.trace_id
+             WHERE a.parent_session_id = ?1 AND s.ok = 1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([parent_session_id], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 pub fn file_changes_for_trace(
     conn: &rusqlite::Connection,
     trace_id: i64,

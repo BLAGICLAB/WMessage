@@ -178,6 +178,8 @@ async fn run_task_in_chat_full_chain_manual_origin() {
                 fuse_cap_override: None,
                 conv_sidecar_dir: None,
                 emit: &|_, _| {},
+                // 测试直驱 core，不接 DB：本次提问没有子 agent 可归并
+                subagent_tools: None,
                 audit: &|_: AuditLevel, _: &'static str, _| {},
                 audit_log: &|_| {},
                 skill_finish: &|_, _| String::new(),

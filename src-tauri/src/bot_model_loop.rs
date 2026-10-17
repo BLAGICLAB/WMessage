@@ -630,6 +630,12 @@ pub struct ModelLoopDeps<'a> {
     pub on_round: &'a (dyn Fn(usize) + Send + Sync),
     /// 回合状态变化出口（见 emit_turn_status）。传 None = 不发（测试直驱 core）。
     pub turn_status: Option<&'a (dyn Fn(TurnStatus, &str) + Send + Sync)>,
+    /// 本次提问派生出的子 agent 成功用过的工具名（幻觉守卫的凭证归并用）。
+    ///
+    /// 入参是当前会话 id——主 agent 用它；子 agent 会话传 None 即可（子 agent
+    /// 不许派子 agent，没有可归并的对象）。None = 不归并，测试直驱 core 时
+    /// 不接 DB。
+    pub subagent_tools: Option<&'a (dyn Fn(Option<&str>) -> Vec<String> + Send + Sync)>,
 }
 
 /// 回合状态机。借鉴 ZCode 的 turn view model（`running` / `settling` /
@@ -970,6 +976,35 @@ pub async fn run_model_loop(
                 "bot-turn-status",
                 serde_json::json!({ "status": status.as_str(), "detail": detail }),
             );
+        }),
+        subagent_tools: Some(&|sid: Option<&str>| {
+            let Some(sid) = sid else {
+                return Vec::new();
+            };
+            let conn = match crate::db::open_db(&app) {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::audit::write_event(
+                        &app,
+                        crate::audit::AuditLevel::Warn,
+                        "bot.subagent_span_tools_open_fail",
+                        &[("error", e)],
+                    );
+                    return Vec::new();
+                }
+            };
+            match crate::db::trace::subagent_span_tools(&conn, sid) {
+                Ok(names) => names,
+                Err(e) => {
+                    crate::audit::write_event(
+                        &app,
+                        crate::audit::AuditLevel::Warn,
+                        "bot.subagent_span_tools_fail",
+                        &[("error", e)],
+                    );
+                    Vec::new()
+                }
+            }
         }),
         emit: &emit,
         audit: &|level, event, kv| {
@@ -2057,12 +2092,12 @@ where
             // 挡不住「本轮成功调了 A、却编造 B 的执行结果」——同一个提问里
             // 不同工具的凭证不能互相担保。
             let mentioned = mentioned_tool_names(&final_text);
-            let unsupported: Vec<&str> = mentioned
+            let mut unsupported: Vec<&str> = mentioned
                 .iter()
                 .filter(|t| !receipts.iter().any(|r| r == *t))
                 .copied()
                 .collect();
-            let claim_execution = claims_execution(&final_text)
+            let mut claim_execution = claims_execution(&final_text)
                 && if mentioned.is_empty() {
                     // 不点名工具（「执行完毕，工具真实返回…」）时无从按名查，
                     // 退回「整条提问一条凭证都没有」的粗判——这正是词表要顶住的那类。
@@ -2070,6 +2105,29 @@ where
                 } else {
                     !unsupported.is_empty()
                 };
+            // 子 agent 的凭证归并：它的 span 记在自己的 trace 下（subagents.trace_id），
+            // 不在主循环的凭证池里，所以主 agent 如实汇报「子 agent 跑完了 run_python」
+            // 会按主池查成伪造。只在初判要拦、且点名了工具时才拉这一趟——正常路径
+            // 零读库，真走到判决的那轮最多多一次同步查询。
+            //
+            // 口径差异要知道：子 agent 按 `parent_session_id` 认主会话，不按轮，
+            // 所以归并凭证的生命周期比主池长（主池是一次提问）。主池清零后子 agent
+            // 可能还在——这条是刻意放开的：跨消息引用上条消息派过的子 agent 是
+            // **真话**（它确实跑过），而误伤「子 agent 每次汇报都被拦」是常态。
+            // 粗判那一支（不点名工具、只看池空）不做归并：主 agent 要有子 agent
+            // 就得先调 spawn_subagent，主池不可能空，那条分支进来时池必然是空的，
+            // 归并只会把「本次没动手」放成「上条消息动过手」。
+            if claim_execution && !mentioned.is_empty() {
+                if let Some(fetch) = deps.subagent_tools {
+                    let sub = fetch(stop.session_id());
+                    if !sub.is_empty() {
+                        unsupported.retain(|t| !sub.iter().any(|n| n == *t));
+                        // 能进这个分支就意味着初判为真，而初判为真已经蕴含
+                        // claims_execution(&final_text) 为真——重判只剩凭证这一半。
+                        claim_execution = !unsupported.is_empty();
+                    }
+                }
+            }
             if !claim_retry_used
                 && (claim_mutation || claim_execution || fake_gen_path.is_some())
             {
@@ -2982,6 +3040,65 @@ mod hallucination_guard_tests {
         // 同一族的其他形态
         assert!(claims_execution("完成计划两步，结果如上"));
         assert!(claims_execution("已运行步骤，输出如下"));
+    }
+
+    #[test]
+    fn claims_execution_catches_first_person_and_subagent_fabrication() {
+        // 实机抓到的两条漏网原话，都是零凭证（tools=0）放行的：
+        // trace 63：「我跑了一个 print 100 的小任务，返回了 100」——整句没有
+        // 任何完成态词点（「我跑了」不匹配表里的「跑完了」，「返回了」刻意不收），
+        // 闸门完全没进判决。而且它编的不只是执行，连历史也是编的：这个会话
+        // 只跑过 time.sleep(2)，从没有 print 100。
+        assert!(claims_execution(
+            "我跑了一个 print 100 的小任务，返回了 100。"
+        ));
+        assert!(claims_execution("我执行了这个脚本，结果符合预期"));
+        assert!(claims_execution("我运行了测试，全部通过"));
+        // trace 65：声称派了子 agent 并照抄上一轮真实回复的格式报了个实测值
+        assert!(claims_execution("子 agent 跑 sleep(5) 实测约 5013 ms。"));
+        assert!(claims_execution("跑出来是 100"));
+    }
+
+    #[test]
+    fn claims_execution_passes_pasted_output_and_subagent_advice() {
+        // 「实测」这一族的收窄取舍：模型引用用户粘来的计时输出时照抄原文形态
+        // 「实测耗时: 2005.08 ms」，而编造时说的是「实测约 X」。收前者放行、
+        // 拦后者，代价是模型真编「实测耗时 5013 ms」时漏网——两种形态都是猜，
+        // 但照抄来自用户输入（可核对），编造来自零凭证轮（无凭证可对）。
+        assert!(!claims_execution(
+            "这行「实测耗时: 2005.08 ms」说明你的计时脚本跑了一次 sleep(2)。"
+        ));
+        // 子 agent 只是被讨论时不是执行断言——别名命中也不会进判决，
+        // 因为判决要 claims_execution 与凭证缺失同时成立
+        assert!(!claims_execution("子 agent 适合并行搜索这类任务。"));
+        assert!(!claims_execution(
+            "建议先派个子 agent 去探路，主线同时做别的。"
+        ));
+        // 「返回了 / 结果是」两支刻意不收：代码讲解与算术题里高频
+        assert!(!claims_execution("这个函数在空列表时返回了 None。"));
+        assert!(!claims_execution("1+1 的结果是 2。"));
+    }
+
+    #[test]
+    fn mentioned_tool_names_maps_chinese_subagent_alias() {
+        // 模型写不出 snake_case 的工具名——说「子 agent」，表里是 spawn_subagent。
+        // 映射不过去，点名判定会退化成「整条提问零凭证」的粗判。
+        assert_eq!(
+            crate::bot::registry::mentioned_tool_names("子 agent 跑完了，结果如下"),
+            vec!["spawn_subagent"]
+        );
+        assert_eq!(
+            crate::bot::registry::mentioned_tool_names("子代理那边返回了"),
+            vec!["spawn_subagent"]
+        );
+        // 原名照旧，别名不产生重复项
+        let mut both = crate::bot::registry::mentioned_tool_names(
+            "spawn_subagent 派了个子 agent 去跑 run_python",
+        );
+        both.sort_unstable();
+        assert_eq!(both, vec!["run_python", "spawn_subagent"]);
+        // 没提子 agent 时不该凭空带出工具名
+        assert!(crate::bot::registry::mentioned_tool_names("都搞定了").is_empty());
     }
 
     #[test]

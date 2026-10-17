@@ -744,10 +744,41 @@ const EXECUTION_CLAIM_PATTERNS: &[&str] = &[
     "完成计划",
     "已运行步骤",
     "仍输出",
+    // 第一人称完成态。实测绕过的原话（trace 63，零凭证放行）：
+    // 「我跑了一个 print 100 的小任务，返回了 100」——「我跑了」不匹配
+    // 「跑完了」，整句没有第二个触发词点，于是不进判决。与「跑完了」的差别
+    // 只在完成态后缀上，模型日常的说法反而是这一支。
+    "我跑了",
+    "我执行了",
+    "我运行了",
+    // 实测绕过的原话（trace 65，零凭证放行，且 spawn_subagent 也没调过）：
+    // 「子 agent 跑 sleep(5) 实测约 5013 ms」——数字照抄上一轮真实回复的
+    // 格式编的。刻意只收「约/为/结果」这几种结句，不收裸「实测」：模型引用
+    // 用户粘来的计时输出时说的是「实测耗时: 2005.08 ms」（照抄原文形态），
+    // 编造时说的是「实测约 X」（要显得可信又不绝对）。
+    "实测约",
+    "实测为",
+    "实测结果",
+    "跑出来",
     // 刻意不收的一批（各自都有正当讲解句，扩进来即误伤，见同文件测试）：
     // 「执行完成 / 运行完成」——「任务执行完成后会通知你」
     // 「步骤执行完成」——「每步骤执行完成后记录日志」
     // 「运行抛出 / 抛出异常」——「运行抛出异常时该脚本会非零退出」
+    // 「返回了 / 结果是」——「这个函数返回了 None」「1+1 的结果是 2」。
+    //   这两个词抓得住 trace 63 的后半句，但那半句的抓法在上面「我跑了」已经
+    //   覆盖，加进来等于拿代码讲解和算术题换一条冗余命中，不划算。
+];
+
+/// 中文/口语说法 → 工具名。
+///
+/// 模型写不出 snake_case 的工具名：它说「子 agent」而表里是 `spawn_subagent`，
+/// 于是点名扫描（`mentioned_tool_names`）认不出这是个工具调用，判决退到
+/// 「整条提问零凭证」的粗判。只靠粗判挡不住那句——模型照抄上一轮真实回复的
+/// 格式报了个子 agent 的实测值（trace 65），而它压根没派过子 agent。
+const TOOL_ALIASES: &[(&str, &str)] = &[
+    ("子 agent", "spawn_subagent"),
+    ("子代理", "spawn_subagent"),
+    ("subagent", "spawn_subagent"),
 ];
 
 /// 终稿是否在叙述一次「已完成的执行」。
@@ -764,12 +795,32 @@ pub fn claims_execution(text: &str) -> bool {
 /// 供幻觉守卫把「模型说调了哪个工具」映射到凭证表——这是判决要查的键。
 /// 返回全部命中而不是首个：模型一轮里常叙述多个工具，漏掉任何一个就等于
 /// 给它留了一条白拿凭证的路。
+///
+/// 再叠一层别名表（`TOOL_ALIASES`）：模型用中文称呼工具时写不出 snake_case 名，
+/// 「子 agent」按原样扫不出来，会让点名判定退化成粗判。
 pub fn mentioned_tool_names(text: &str) -> Vec<&'static str> {
-    TOOLS_TABLE
+    let mut hits: Vec<&'static str> = TOOLS_TABLE
         .iter()
         .map(|t| t.name)
         .filter(|name| text.contains(name))
-        .collect()
+        .collect();
+    for (alias, target) in TOOL_ALIASES {
+        if !text.contains(alias) {
+            continue;
+        }
+        // 别名指向的名字必须是真存在的工具——别名表写错工具名时静默跳过，
+        // 拼错的名字查不到凭证，会把每次提到它的诚实汇报都判成伪造。
+        if let Some(name) = TOOLS_TABLE
+            .iter()
+            .find(|t| t.name == *target)
+            .map(|t| t.name)
+        {
+            if !hits.contains(&name) {
+                hits.push(name);
+            }
+        }
+    }
+    hits
 }
 
 /// 生成类谎报的路径存在性校验（幻觉守卫第二支柱，与 claims_mutation 同点位）：
