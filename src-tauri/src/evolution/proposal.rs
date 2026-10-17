@@ -29,34 +29,28 @@ pub struct EvolutionProposal {
     pub suggestion: Suggestion,
 }
 
-/// 提案来源（Phase 1 仅 ConsolidationReflection 用得到；其余两种占位留 Phase 2 扩展）。
+/// 提案来源。反思是唯一的提案入口（`post_consolidation` 从 consolidate 反思
+/// 产出），另两种来源零构造点，已删；真出现第二种来源时再加变体。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalOrigin {
     ConsolidationReflection,
-    SchedulerAudit,
-    UserTriggered,
 }
 
-/// 提案类别。Phase 1 三类 consolidate ops 全部映射到 `MemoryHint`（最安全分类）——
-/// 见 `derive::derive_proposals` 注释。Phase 2 可根据一周数据决定是否拆分到
-/// `ToolSchemaHint` / `PromptHint` 等。
+/// 提案类别。`derive` 产出的三类 consolidate op 全部映射到 `MemoryHint`
+/// （见 `derive::derive_lesson_proposal`），另三类零构造点，已删——生产
+/// evolution-proposals.jsonl 里 category 字段也从未落盘。真要拆分类时，
+/// 先补上真正产生它们的数据源再加快照分支，否则只是提前写死映射。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalCategory {
     MemoryHint,
-    PromptHint,
-    ToolSchemaHint,
-    SkillHint,
 }
 
 impl ProposalCategory {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MemoryHint => "memory_hint",
-            Self::PromptHint => "prompt_hint",
-            Self::ToolSchemaHint => "tool_schema_hint",
-            Self::SkillHint => "skill_hint",
         }
     }
 }
@@ -166,24 +160,6 @@ pub fn proposal_id(category: ProposalCategory, target: &ProposalTarget, summary:
     let normalized = normalize_for_hash(summary);
     let raw = format!("{}|{}|{}", category.as_str(), target.tag(), normalized);
     short_hash(&raw)
-}
-
-/// 判断 proposal 是否可逆（pure，no IO）
-///
-/// 规则（MVP）：
-/// - ToolSchemaHint：不可逆（改 schema 可能破坏现有 tool 调用）
-/// - High impact：不可逆（高风险需人工确认）
-/// - 其他：可逆
-///
-/// 可逆性是 proposal 的本体属性，放 proposal.rs；应用侧按它决定是否需要人工确认。
-pub fn is_reversible(p: &EvolutionProposal) -> bool {
-    if matches!(p.category, ProposalCategory::ToolSchemaHint) {
-        return false;
-    }
-    if matches!(p.impact, ImpactLevel::High) {
-        return false;
-    }
-    true
 }
 
 /// 8 字节（16 hex 字符）短 hash。**算法 = 仓内固定 FNV-1a-64**（见 [`fnv1a`]）：
@@ -328,13 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn proposal_id_differs_across_categories() {
-        let p1 = proposal_id(ProposalCategory::MemoryHint, &target_tool("x"), "same");
-        let p2 = proposal_id(ProposalCategory::ToolSchemaHint, &target_tool("x"), "same");
-        assert_ne!(p1, p2);
-    }
-
-    #[test]
     fn proposal_id_differs_across_targets() {
         let p1 = proposal_id(cat(), &target_tool("a"), "same");
         let p2 = proposal_id(cat(), &target_tool("b"), "same");
@@ -445,12 +414,6 @@ mod tests {
     fn category_as_str_is_stable() {
         // 锁死：审计 grep 的稳定字符串
         assert_eq!(ProposalCategory::MemoryHint.as_str(), "memory_hint");
-        assert_eq!(ProposalCategory::PromptHint.as_str(), "prompt_hint");
-        assert_eq!(
-            ProposalCategory::ToolSchemaHint.as_str(),
-            "tool_schema_hint"
-        );
-        assert_eq!(ProposalCategory::SkillHint.as_str(), "skill_hint");
     }
 
     #[test]

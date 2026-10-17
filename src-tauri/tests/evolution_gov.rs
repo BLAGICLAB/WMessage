@@ -150,14 +150,13 @@ fn mk_proposal(
 #[test]
 fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     let app = mock_handle();
-    let nonpolicy_id = "u20-gov-nonpolicy";
     let conflict_id = "u20-gov-conflict";
     let cfg = paths::data_dir(&app).join("bot-config.json");
     let original_cfg = std::fs::read_to_string(&cfg).ok();
     // 清场守卫先立（panic 展开也清）；pid 段 0 派生后再补进 ids
     let guard = GovGuard {
         app: app.clone(),
-        ids: std::cell::RefCell::new(vec![nonpolicy_id.into(), conflict_id.into()]),
+        ids: std::cell::RefCell::new(vec![conflict_id.into()]),
         original_cfg: original_cfg.clone(),
         cfg: cfg.clone(),
     };
@@ -180,10 +179,7 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     let pid = proposals[0].proposal_id.clone();
     guard.add_id(&pid);
 
-    cleanup(
-        &app,
-        &[pid.clone(), nonpolicy_id.into(), conflict_id.into()],
-    );
+    cleanup(&app, &[pid.clone(), conflict_id.into()]);
 
     // ── 段 2：confirm 档接线（写真 bot-config.json，生产同一读取器）──
     // 共享目录上 llm_integration 的 U15 门禁用例会整文件覆写/删除 bot-config.json
@@ -263,38 +259,11 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     assert_eq!(changes.len(), 1, "dedup 含 Active：重复批不新开 CR 行");
     assert_eq!(changes[0].status, ChangeStatus::Active);
 
-    // ── 段 6：非 policy 层（PromptHint）toggle ON 维持旧口径 ──
-    let nonpolicy = mk_proposal(
-        nonpolicy_id,
-        ProposalCategory::PromptHint,
-        ImpactLevel::High,
-        &format!("prompt 建议文本 {nonpolicy_id}"),
-    );
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    candidate::append(
-        &proposals_path(&app),
-        &candidate::from_proposal(&nonpolicy, now_ms),
-    )
-    .unwrap();
-    let cr2 = wmessage_lib::evolution::panel::commands::toggle_inner(&app, nonpolicy_id, true)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        cr2.status,
-        ChangeStatus::Pending,
-        "非 policy 层只登记 pending"
-    );
-    assert!(
-        store::find_by_key_tag(&conn, &format!("evo:{nonpolicy_id}"))
-            .unwrap()
-            .is_none(),
-        "非 policy 层不落 lesson"
-    );
-
     // ── 段 7：防劫持拒写（ConflictRefused → Err + CR pending + 原行不劫持）──
     // 依赖真实嵌入引擎构造 cos=1.0 撞车；引擎不可用时跳过本段（不阻塞无模型环境）。
     let conflict_text = format!("u20-gov 防劫持语料 {conflict_id}");
     if let Some(emb) = embed::embed_text(&conflict_text) {
+        let now_ms = chrono::Utc::now().timestamp_millis();
         let conflict = mk_proposal(
             conflict_id,
             ProposalCategory::MemoryHint,
@@ -358,5 +327,5 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     );
 
     // ── 清场：段中显式清一次 + guard drop 兜底（幂等，panic 路径也生效）──
-    cleanup(&app, &[pid, nonpolicy_id.into(), conflict_id.into()]);
+    cleanup(&app, &[pid, conflict_id.into()]);
 }

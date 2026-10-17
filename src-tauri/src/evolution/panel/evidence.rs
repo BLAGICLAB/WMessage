@@ -327,7 +327,6 @@ mod tests {
             entry("me", EvolutionLayer::Policy, "dup-rule"), // 自身：不算
             entry("a", EvolutionLayer::Policy, "dup-rule"),  // 同层同 target
             entry("b", EvolutionLayer::Policy, "other-rule"), // 同层不同 target
-            entry("c", EvolutionLayer::PromptHint, "dup-rule"), // 不同层同 target
         ];
         let changes = vec![
             change(

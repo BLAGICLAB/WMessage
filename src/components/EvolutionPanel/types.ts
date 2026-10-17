@@ -6,13 +6,11 @@
 
 export type ProposalStatus = "pooled" | "promoted" | "expired" | "rejected";
 
-export type EvolutionLayer =
-  "parameter" | "policy" | "prompt_hint" | "tool_schema" | "skill" | "code";
+export type EvolutionLayer = "policy";
 
 export type ImpactLevel = "low" | "medium" | "high";
 
-type ProposalOrigin =
-  "consolidation_reflection" | "scheduler_audit" | "user_triggered";
+type ProposalOrigin = "consolidation_reflection";
 
 export type ProposalTarget =
   | { kind: "prompt_section"; name: string }
@@ -93,12 +91,7 @@ export const STATUS_LABEL: Record<ProposalStatus, string> = {
 
 /** EvolutionLayer 中文标签 */
 export const LAYER_LABEL: Record<EvolutionLayer, string> = {
-  parameter: "参数",
   policy: "策略",
-  prompt_hint: "PromptHint",
-  tool_schema: "ToolSchema",
-  skill: "技能",
-  code: "代码",
 };
 
 /** ImpactLevel 中文标签 */

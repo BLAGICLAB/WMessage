@@ -141,27 +141,19 @@ impl ApprovalSource {
     }
 }
 
-/// 六层（参数 / 策略 / PromptHint / ToolSchema / Skill / Code）
+/// 变更层。只有 `Policy`（记忆策略）有构造点——`derive` 与 `candidate::derive`
+/// 都只产这一层；参数 / PromptHint / ToolSchema / Skill / Code 五层零构造点，
+/// 其中 Code 在面板侧还被 `entry_to_proposal` 显式丢弃，已删。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum EvolutionLayer {
-    Parameter,
     Policy,
-    PromptHint,
-    ToolSchema,
-    Skill,
-    Code,
 }
 
 impl EvolutionLayer {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Parameter => "parameter",
             Self::Policy => "policy",
-            Self::PromptHint => "prompt_hint",
-            Self::ToolSchema => "tool_schema",
-            Self::Skill => "skill",
-            Self::Code => "code",
         }
     }
 }
@@ -272,15 +264,9 @@ mod tests {
 
     #[test]
     fn layer_strings_locked() {
-        assert_eq!(EvolutionLayer::Parameter.as_str(), "parameter");
+        // 落盘 / 前端 union 依赖；改枚举时要同步 EvolutionPanel/types.ts
         assert_eq!(EvolutionLayer::Policy.as_str(), "policy");
-        assert_eq!(EvolutionLayer::PromptHint.as_str(), "prompt_hint");
-        assert_eq!(EvolutionLayer::ToolSchema.as_str(), "tool_schema");
-        assert_eq!(EvolutionLayer::Skill.as_str(), "skill");
-        assert_eq!(EvolutionLayer::Code.as_str(), "code");
     }
-
-    // jsonl IO
 
     #[test]
     fn append_then_read_roundtrip() {

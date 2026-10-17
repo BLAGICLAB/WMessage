@@ -4,17 +4,16 @@
 
 use super::entry::{ProposalEntry, ProposalStatus};
 use super::ttl::compute_expires_at;
-use crate::evolution::change::derive_layer;
 use crate::evolution::proposal::EvolutionProposal;
 
 /// 从 EvolutionProposal 构造 ProposalEntry（默认状态：Pooled）。
-/// change_id / mem_key / layer 三件派生单源在 `change::derive`（原逐字重复件已收敛）。
+/// change_id / mem_key 派生单源在 `change::derive`（原逐字重复件已收敛）。
 pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ProposalEntry {
-    use crate::evolution::change::{derive_change_id, derive_mem_key};
+    use crate::evolution::change::{derive_change_id, derive_mem_key, EvolutionLayer};
     ProposalEntry {
         proposal_id: p.proposal_id.clone(),
         change_id: derive_change_id(&p.proposal_id),
-        layer: derive_layer(p.category),
+        layer: EvolutionLayer::Policy,
         impact: p.impact,
         origin: p.origin,
         target: p.target.clone(),
@@ -39,12 +38,12 @@ mod tests {
         Evidence, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget, Suggestion,
     };
 
-    fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
+    fn mk_proposal(id: &str, impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
             proposal_id: id.into(),
             created_at_ms: 1_700_000_000_000,
             origin: ProposalOrigin::ConsolidationReflection,
-            category: cat,
+            category: ProposalCategory::MemoryHint,
             target: ProposalTarget::MemoryPolicy {
                 policy: "test".into(),
             },
@@ -64,7 +63,7 @@ mod tests {
 
     #[test]
     fn from_proposal_populates_all_fields() {
-        let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High);
+        let p = mk_proposal("p1", ImpactLevel::High);
         let entry = from_proposal(&p, 2_000_000_000_000);
         assert_eq!(entry.proposal_id, "p1");
         assert_eq!(entry.change_id, "chg-p1");
@@ -85,14 +84,14 @@ mod tests {
 
     #[test]
     fn from_proposal_starts_pooled() {
-        let p = mk_proposal("p2", ProposalCategory::ToolSchemaHint, ImpactLevel::Medium);
+        let p = mk_proposal("p2", ImpactLevel::Medium);
         let entry = from_proposal(&p, 1_000_000_000_000);
         assert_eq!(entry.status, ProposalStatus::Pooled);
     }
 
     #[test]
     fn expires_at_now_plus_ttl() {
-        let p = mk_proposal("p3", ProposalCategory::PromptHint, ImpactLevel::Low);
+        let p = mk_proposal("p3", ImpactLevel::Low);
         let entry = from_proposal(&p, 5_000);
         assert_eq!(entry.expires_at_ms, 5_000 + TTL_MS);
     }

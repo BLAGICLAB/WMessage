@@ -25,7 +25,7 @@ use crate::evolution::candidate::{self, ProposalEntry, ProposalStatus};
 use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
 use crate::evolution::lock_evolution_store;
 use crate::evolution::policy::{read_apply_policy, set_apply_policy, ApplyPolicy};
-use crate::evolution::proposal::EvolutionProposal;
+use crate::evolution::proposal::{Evidence, EvolutionProposal, ProposalCategory, Suggestion};
 
 use super::evidence;
 
@@ -221,19 +221,8 @@ pub fn toggle_inner<R: tauri::Runtime>(
         proposals[idx] = entry.clone();
         rewrite_jsonl(&p_path, &proposals)?;
 
-        // 只有 policy 层（MemoryHint）落 lesson 记忆；落库本身在段 ②
-        // （锁外）执行——此处只把待落库提案带出锁。layer→category 双射反推，
-        // Parameter/Code 两层（派生侧不产）防御性 Err。
-        let apply_target = if entry.layer == EvolutionLayer::Policy {
-            Some(entry_to_proposal(&entry).ok_or_else(|| {
-                format!(
-                    "proposal {proposal_id} layer={:?} 无对应提案类别，无法落库",
-                    entry.layer
-                )
-            })?)
-        } else {
-            None
-        };
+        // 落库本身在段 ②（锁外）执行——此处只把待落库提案带出锁。
+        let apply_target = Some(entry_to_proposal(&entry));
         (cr, apply_target)
     };
 
@@ -300,23 +289,14 @@ pub fn toggle_inner<R: tauri::Runtime>(
 }
 
 /// ProposalEntry → EvolutionProposal 还原（apply_one 入参）。
-/// layer ↔ category 按 candidate::derive_layer 的双射反推；Parameter/Code 两层
-/// 当前无 category 对应（派生侧只产 4 层），返 None（调用方跳过落库）。
 /// evidence/suggestion 从 entry 透传字段重组；structured_patch 未落盘，恒 None。
-fn entry_to_proposal(entry: &ProposalEntry) -> Option<EvolutionProposal> {
-    use crate::evolution::proposal::{Evidence, ProposalCategory, Suggestion};
-    let category = match entry.layer {
-        EvolutionLayer::Policy => ProposalCategory::MemoryHint,
-        EvolutionLayer::PromptHint => ProposalCategory::PromptHint,
-        EvolutionLayer::ToolSchema => ProposalCategory::ToolSchemaHint,
-        EvolutionLayer::Skill => ProposalCategory::SkillHint,
-        EvolutionLayer::Parameter | EvolutionLayer::Code => return None,
-    };
-    Some(EvolutionProposal {
+/// `EvolutionLayer` / `ProposalCategory` 都收成单态后这里不再有失败分支。
+fn entry_to_proposal(entry: &ProposalEntry) -> EvolutionProposal {
+    EvolutionProposal {
         proposal_id: entry.proposal_id.clone(),
         created_at_ms: entry.created_at_ms,
         origin: entry.origin,
-        category,
+        category: ProposalCategory::MemoryHint,
         target: entry.target.clone(),
         impact: entry.impact,
         evidence: Evidence {
@@ -329,7 +309,7 @@ fn entry_to_proposal(entry: &ProposalEntry) -> Option<EvolutionProposal> {
             text: entry.suggestion_text.clone(),
             structured_patch: None,
         },
-    })
+    }
 }
 
 /// toggle ON 落库前的嵌入预计算（锁外调用）。只对 policy 层提案算
@@ -1045,42 +1025,15 @@ mod tests {
         e.occurrence_count = 7;
         e.window_hours = 48;
         e.related_refs = vec!["r1".into()];
-        let p = entry_to_proposal(&e).expect("policy 层应可还原");
+        let p = entry_to_proposal(&e);
         assert_eq!(p.proposal_id, e.proposal_id);
-        assert_eq!(
-            p.category,
-            crate::evolution::proposal::ProposalCategory::MemoryHint
-        );
+        assert_eq!(p.category, ProposalCategory::MemoryHint);
         assert_eq!(p.evidence.summary, "证据摘要");
         assert_eq!(p.evidence.occurrence_count, 7);
         assert_eq!(p.evidence.window_hours, 48);
         assert_eq!(p.evidence.related_refs, vec!["r1"]);
         assert_eq!(p.suggestion.text, e.suggestion_text);
         assert!(p.suggestion.structured_patch.is_none());
-
-        // layer ↔ category 双射的其余三角
-        for (layer, cat) in [
-            (
-                EvolutionLayer::PromptHint,
-                crate::evolution::proposal::ProposalCategory::PromptHint,
-            ),
-            (
-                EvolutionLayer::ToolSchema,
-                crate::evolution::proposal::ProposalCategory::ToolSchemaHint,
-            ),
-            (
-                EvolutionLayer::Skill,
-                crate::evolution::proposal::ProposalCategory::SkillHint,
-            ),
-        ] {
-            e.layer = layer;
-            assert_eq!(entry_to_proposal(&e).unwrap().category, cat);
-        }
-        // Parameter/Code 无 category 对应 → None（跳过落库）
-        e.layer = EvolutionLayer::Parameter;
-        assert!(entry_to_proposal(&e).is_none());
-        e.layer = EvolutionLayer::Code;
-        assert!(entry_to_proposal(&e).is_none());
     }
 
     #[test]

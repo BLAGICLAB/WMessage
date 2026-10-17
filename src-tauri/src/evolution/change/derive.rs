@@ -12,7 +12,7 @@
 //! rolled_back_at, rollback_reason, approval_source, human_approver
 
 use super::record::{ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
-use crate::evolution::proposal::{EvolutionProposal, ProposalCategory};
+use crate::evolution::proposal::EvolutionProposal;
 
 /// change_id 派生函数（DERIVABILITY.md 字段 2）
 pub fn derive_change_id(proposal_id: &str) -> String {
@@ -26,18 +26,6 @@ pub fn derive_mem_key(proposal_id: &str) -> String {
 
 /// schema_version 默认值
 pub const DEFAULT_SCHEMA_VERSION: u32 = 1;
-
-/// layer 从 category 派生（DERIVABILITY.md 字段 1，部分覆盖）：
-/// 4/6 层映射；Parameter / Code 两层当前无 category 对应，
-/// 出现对应 category 时再扩展。
-pub fn derive_layer(category: ProposalCategory) -> EvolutionLayer {
-    match category {
-        ProposalCategory::MemoryHint => EvolutionLayer::Policy,
-        ProposalCategory::PromptHint => EvolutionLayer::PromptHint,
-        ProposalCategory::ToolSchemaHint => EvolutionLayer::ToolSchema,
-        ProposalCategory::SkillHint => EvolutionLayer::Skill,
-    }
-}
 
 /// 从 EvolutionProposal 构造 ChangeRecord
 ///
@@ -62,7 +50,7 @@ pub fn from_proposal(p: &EvolutionProposal, now_ms: i64) -> ChangeRecord {
         change_id: derive_change_id(&p.proposal_id),
         parent_id: None, // 根节点；迭代版本后续设
         schema_version: DEFAULT_SCHEMA_VERSION,
-        layer: derive_layer(p.category),
+        layer: EvolutionLayer::Policy,
         origin: p.origin,
         proposal_id: p.proposal_id.clone(),
         target: p.target.clone(),
@@ -130,12 +118,12 @@ mod tests {
         Evidence, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget, Suggestion,
     };
 
-    fn mk_proposal(id: &str, cat: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
+    fn mk_proposal(id: &str, impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
             proposal_id: id.into(),
             created_at_ms: 1_700_000_000_000,
             origin: ProposalOrigin::ConsolidationReflection,
-            category: cat,
+            category: ProposalCategory::MemoryHint,
             target: ProposalTarget::MemoryPolicy {
                 policy: "test".into(),
             },
@@ -167,7 +155,7 @@ mod tests {
 
     #[test]
     fn auto_applied_carries_source_and_compliance() {
-        let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Medium);
+        let p = mk_proposal("p1", ImpactLevel::Medium);
         let cr = auto_applied_from_proposal(&p, 1_700_000_000_000).expect("合规提案应可自动应用");
         assert_eq!(cr.status, ChangeStatus::Active);
         assert_eq!(cr.approval_source, ApprovalSource::AutoApplied);
@@ -178,7 +166,7 @@ mod tests {
 
     #[test]
     fn gate_true_for_memory_high() {
-        let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High);
+        let p = mk_proposal("p1", ImpactLevel::High);
         assert!(matches!(
             crate::evolution::strategy::gate_decision(&p),
             crate::evolution::strategy::GateDecision::Approved
@@ -187,7 +175,7 @@ mod tests {
 
     #[test]
     fn gate_true_for_memory_medium() {
-        let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Medium);
+        let p = mk_proposal("p1", ImpactLevel::Medium);
         assert!(matches!(
             crate::evolution::strategy::gate_decision(&p),
             crate::evolution::strategy::GateDecision::Approved
@@ -196,7 +184,7 @@ mod tests {
 
     #[test]
     fn gate_false_for_memory_low() {
-        let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::Low);
+        let p = mk_proposal("p1", ImpactLevel::Low);
         assert!(!matches!(
             crate::evolution::strategy::gate_decision(&p),
             crate::evolution::strategy::GateDecision::Approved
@@ -204,42 +192,10 @@ mod tests {
     }
 
     #[test]
-    fn gate_false_for_non_memory_hint() {
-        for cat in [
-            ProposalCategory::PromptHint,
-            ProposalCategory::ToolSchemaHint,
-            ProposalCategory::SkillHint,
-        ] {
-            let p = mk_proposal("p1", cat, ImpactLevel::High);
-            assert!(
-                !matches!(
-                    crate::evolution::strategy::gate_decision(&p),
-                    crate::evolution::strategy::GateDecision::Approved
-                ),
-                "{cat:?} 不应合规"
-            );
-        }
-    }
-
-    // layer 派生（4/6 层覆盖）
-
-    #[test]
-    fn layer_mapping_partial() {
+    fn layer_is_always_policy() {
         assert_eq!(
-            derive_layer(ProposalCategory::MemoryHint),
+            from_proposal(&mk_proposal("p1", ImpactLevel::High), 1_700_000_000_000).layer,
             EvolutionLayer::Policy
-        );
-        assert_eq!(
-            derive_layer(ProposalCategory::PromptHint),
-            EvolutionLayer::PromptHint
-        );
-        assert_eq!(
-            derive_layer(ProposalCategory::ToolSchemaHint),
-            EvolutionLayer::ToolSchema
-        );
-        assert_eq!(
-            derive_layer(ProposalCategory::SkillHint),
-            EvolutionLayer::Skill
         );
     }
 
@@ -247,7 +203,7 @@ mod tests {
 
     #[test]
     fn from_compliant_proposal_starts_pending() {
-        let p = mk_proposal("p1", ProposalCategory::MemoryHint, ImpactLevel::High);
+        let p = mk_proposal("p1", ImpactLevel::High);
         let r = from_proposal(&p, 1000);
         assert_eq!(r.change_id, "chg-p1");
         assert_eq!(r.proposal_id, "p1");
@@ -264,8 +220,8 @@ mod tests {
 
     #[test]
     fn from_non_compliant_proposal_starts_rejected() {
-        // PromptHint + High：非 MemoryHint，compliance=false
-        let p = mk_proposal("p2", ProposalCategory::PromptHint, ImpactLevel::High);
+        // Low impact：唯一会被 gate 拒的组合 → compliance=false
+        let p = mk_proposal("p2", ImpactLevel::Low);
         let r = from_proposal(&p, 2000);
         assert_eq!(r.status, ChangeStatus::Rejected);
         assert_eq!(r.approval_source, ApprovalSource::SystemRejected);
@@ -275,7 +231,7 @@ mod tests {
     #[test]
     fn from_low_impact_memory_starts_rejected() {
         // MemoryHint + Low：合规失败
-        let p = mk_proposal("p3", ProposalCategory::MemoryHint, ImpactLevel::Low);
+        let p = mk_proposal("p3", ImpactLevel::Low);
         let r = from_proposal(&p, 3000);
         assert_eq!(r.status, ChangeStatus::Rejected);
         assert_eq!(r.approval_source, ApprovalSource::SystemRejected);

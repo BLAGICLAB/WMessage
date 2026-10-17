@@ -8,7 +8,7 @@
 //! resolve/order_entries 消解排序件已删——第二个策略实现出现时再抽象
 //! （历史实现见 git log）。
 
-use crate::evolution::proposal::{EvolutionProposal, ImpactLevel, ProposalCategory};
+use crate::evolution::proposal::{EvolutionProposal, ImpactLevel};
 use crate::evolution::sandbox::kill_switch::KillSwitch;
 use serde::{Deserialize, Serialize};
 
@@ -71,11 +71,6 @@ pub enum GateDecision {
 /// gate：proposal 是否够格自动轨。白名单形式——未来新增 impact 变体
 /// 必须显式 opt-in（沿 change/derive.rs 注释明示的设计）。
 pub fn gate_decision(p: &EvolutionProposal) -> GateDecision {
-    if !matches!(p.category, ProposalCategory::MemoryHint) {
-        return GateDecision::Rejected {
-            reason: "非记忆类提案（仅 MemoryHint 进自动轨）",
-        };
-    }
     if !matches!(p.impact, ImpactLevel::High | ImpactLevel::Medium) {
         return GateDecision::Rejected {
             reason: "影响面不足（Low 不进自动轨）",
@@ -99,13 +94,13 @@ mod tests {
     use super::*;
     use crate::evolution::proposal::{Evidence, ProposalOrigin, ProposalTarget, Suggestion};
 
-    /// EvolutionProposal 夹具（仅 category/impact 参与判定，其余取占位）
-    fn mk_proposal(category: ProposalCategory, impact: ImpactLevel) -> EvolutionProposal {
+    /// EvolutionProposal 夹具（仅 impact 参与判定，其余取占位）
+    fn mk_proposal(impact: ImpactLevel) -> EvolutionProposal {
         EvolutionProposal {
-            proposal_id: format!("p-{category:?}-{impact:?}"),
+            proposal_id: format!("p-{impact:?}"),
             created_at_ms: 1_700_000_000_000,
             origin: ProposalOrigin::ConsolidationReflection,
-            category,
+            category: crate::evolution::proposal::ProposalCategory::MemoryHint,
             target: ProposalTarget::MemoryPolicy {
                 policy: "strategy-test".into(),
             },
@@ -123,43 +118,27 @@ mod tests {
         }
     }
 
-    /// gate 真值表：3 impact × 4 category 全组合
+    /// gate 真值表：3 个 impact 全覆盖（category 收成单态后不再是入参维度）
     #[test]
-    fn gate_truth_table_all_impact_category_combinations() {
+    fn gate_truth_table_all_impacts() {
         let impacts = [ImpactLevel::Low, ImpactLevel::Medium, ImpactLevel::High];
-        let categories = [
-            ProposalCategory::MemoryHint,
-            ProposalCategory::PromptHint,
-            ProposalCategory::ToolSchemaHint,
-            ProposalCategory::SkillHint,
-        ];
         for impact in impacts {
-            for category in categories {
-                let p = mk_proposal(category, impact);
-                let expected = category == ProposalCategory::MemoryHint
-                    && matches!(impact, ImpactLevel::High | ImpactLevel::Medium);
-                assert_eq!(
-                    matches!(gate_decision(&p), GateDecision::Approved),
-                    expected,
-                    "{impact:?}×{category:?} 判定漂移"
-                );
-            }
+            let p = mk_proposal(impact);
+            let expected = matches!(impact, ImpactLevel::High | ImpactLevel::Medium);
+            assert_eq!(
+                matches!(gate_decision(&p), GateDecision::Approved),
+                expected,
+                "{impact:?} 判定漂移"
+            );
         }
     }
 
     #[test]
     fn gate_reject_reasons_are_actionable() {
-        let low = mk_proposal(ProposalCategory::MemoryHint, ImpactLevel::Low);
-        let offcategory = mk_proposal(ProposalCategory::PromptHint, ImpactLevel::High);
+        let low = mk_proposal(ImpactLevel::Low);
         match gate_decision(&low) {
             GateDecision::Rejected { reason } => assert!(reason.contains("Low"), "{reason}"),
             GateDecision::Approved => panic!("Low 应拒"),
-        }
-        match gate_decision(&offcategory) {
-            GateDecision::Rejected { reason } => {
-                assert!(reason.contains("MemoryHint"), "{reason}")
-            }
-            GateDecision::Approved => panic!("非 MemoryHint 应拒"),
         }
     }
 

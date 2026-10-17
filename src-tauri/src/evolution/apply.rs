@@ -6,8 +6,8 @@
 //!
 //! ## 设计约束
 //!
-//! - 只自动应用 `MemoryHint` 且 `impact ∈ {High, Medium}`；Low 与其余三类
-//!   （PromptHint / ToolSchemaHint / SkillHint）永不自动应用，只走 emit 的 audit；
+//! - 只自动应用 `impact ∈ {High, Medium}` 的提案；Low 不进自动轨
+//!   （`category` 枚举已收成单态 MemoryHint，不再有「非记忆类」这一类拒绝）；
 //! - 幂等：`tags[0] = "evo:<proposal_id>"`，写入前 `find_by_key_tag` 查重——
 //!   持久幂等，同时弥补 emit 层进程内 24h dedup 重启丢失的缺口；
 //! - 回滚 = `delete_by_key_tag("evo:<proposal_id>")`（见 `rollback_applied`）；
@@ -396,17 +396,6 @@ mod tests {
     #[test]
     fn gate_rejects_low() {
         assert!(!gate_approved(&make_proposal("l", ImpactLevel::Low)));
-    }
-
-    #[test]
-    fn gate_rejects_non_memory_hint() {
-        let mut p = make_proposal("p", ImpactLevel::High);
-        p.category = ProposalCategory::PromptHint;
-        assert!(!gate_approved(&p));
-        p.category = ProposalCategory::ToolSchemaHint;
-        assert!(!gate_approved(&p));
-        p.category = ProposalCategory::SkillHint;
-        assert!(!gate_approved(&p));
     }
 
     // 应用与幂等
