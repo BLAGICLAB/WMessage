@@ -1293,67 +1293,26 @@ pub async fn summarize_http(
     Ok(text)
 }
 
-/// 非流式摘要调用薄壳（截断即摘要 / Reflection / /compact 共用）：
+/// 非流式摘要调用（截断即摘要 / /compact / 记忆整理 / 会话抽取共用）：
 /// 配置获取路径与 bot_compact 原路径一致（bot_get_config 拿 base_url/model，
-/// read_api_key 拿 key，require_api_key 把空 key 映射为 ApiKeyMissing）。
+/// read_llm_key 拿 key，require_api_key 把空 key 映射为 ApiKeyMissing）。
+/// 摘要：跟随全局当前模型。
+///
+/// 不接受「用另一个模型跑这次摘要」的参数——没有调用方需要。摘要场景全走
+/// 当前模型：截断摘要（SUMMARY）、/compact（COMPACT）、记忆整理
+/// （consolidate）、会话抽取（extract）、标签归并（task_autotag）。
+/// 真要让某个任务走轻量模型，正确位置是模型条目本身（设置页配一个便宜条目
+/// 切过去），不是给每次调用加一个没人传的开关。
 pub(crate) async fn summarize_messages(
     app: &AppHandle,
     system_prompt: &str,
     messages: &[ChatMsg],
 ) -> CommandResult<String> {
-    summarize_messages_with_model(app, system_prompt, messages, None).await
-}
-
-/// 轻量评审模型覆盖（澄清/节点验收共用）：model_id = 模型库条目 id。
-/// 条目不存在/已停用/base_url 空 → **静默降级跟随全局**（评审是增强，
-/// 模型配置错误不挡 clarify/验收主流程）。
-pub(crate) async fn summarize_messages_with_model(
-    app: &AppHandle,
-    system_prompt: &str,
-    messages: &[ChatMsg],
-    model_id: Option<&str>,
-) -> CommandResult<String> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
-    // 覆盖条目解析：双列表按 id 查（ModelEntry 自足——base_url/model 随条目）
-    let override_entry = model_id
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .and_then(|id| {
-            let mbp = cfg.models_by_provider.as_ref()?;
-            let in_openai = mbp
-                .openai
-                .iter()
-                .find(|e| e.id == id && e.enabled)
-                .map(|e| (crate::bot::ApiProvider::Openai, e));
-            let in_anthropic = mbp
-                .anthropic
-                .iter()
-                .find(|e| e.id == id && e.enabled)
-                .map(|e| (crate::bot::ApiProvider::Anthropic, e));
-            in_openai.or(in_anthropic)
-        })
-        .filter(|(_, e)| !e.base_url.trim().is_empty() && !e.model.trim().is_empty());
-    let (provider, active_id, base_url, model) = match &override_entry {
-        Some((provider, e)) => {
-            // 合成 ActiveModelId：key/推理参数按覆盖条目解析（厂商级 key 优先回落全局）
-            let active_id = crate::bot::config::types::ActiveModelId {
-                openai: (*provider == crate::bot::ApiProvider::Openai).then(|| e.id.clone()),
-                anthropic: (*provider == crate::bot::ApiProvider::Anthropic).then(|| e.id.clone()),
-            };
-            (
-                *provider,
-                Some(active_id),
-                e.base_url.clone(),
-                e.model.clone(),
-            )
-        }
-        None => (
-            crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref()),
-            cfg.active_model_id.clone(),
-            cfg.base_url.clone(),
-            cfg.model.clone(),
-        ),
-    };
+    let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
+    let active_id = cfg.active_model_id.clone();
+    let base_url = cfg.base_url.clone();
+    let model = cfg.model.clone();
     let provider_str = provider.as_str();
     let api_key = crate::bot::read_llm_key(
         Some(provider_str),
