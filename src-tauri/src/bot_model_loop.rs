@@ -419,6 +419,11 @@ pub(crate) fn cap_tool_output(text: &str, cap: usize) -> String {
 /// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
 pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
 
+/// 轮数熔断标记。与 `FUSE_MARKER` 分开是因为两类熔断的下游语义不同：
+/// Function 熔断正文仍可被当普通回复展示，轮数熔断则要被子任务侧认出来
+/// 还原 `budget_exceeded`（见 bot_orchestrator::classify_outcome）。
+pub(crate) const ROUNDS_FUSE_MARKER: &str = "⏹ 已熔断（轮数上限）";
+
 /// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
@@ -513,6 +518,15 @@ fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
 fn fuse_message(final_text: &str, hint: &str, cap: usize) -> String {
     format!(
         "{final_text}\n\n{FUSE_MARKER}：本轮 Function 调用超过 {cap} 次上限（安全保护），已停止后续执行{hint}"
+    )
+}
+
+/// 轮数熔断返回消息：与 `fuse_message` 同源（都带上熔断前的正文），只是上限口径不同。
+/// `partial` 传 `last_streamed`（上一轮 streamed 快照）——循环体退出时本轮的
+/// final_text 尚未快照，能拿到的最新正文就是它。
+pub(crate) fn rounds_fuse_message(partial: &str, hint: &str, max_rounds: usize) -> String {
+    format!(
+        "{partial}\n\n{ROUNDS_FUSE_MARKER}：对话轮数超过 {max_rounds} 轮上限（安全保护），已停止后续执行{hint}"
     )
 }
 
@@ -1098,6 +1112,12 @@ where
     // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
     // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
     let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
+    // 轮数软警告阈值：与 soft_warn_at 同口径（7/10，留 30% 轮次收尾）。
+    // 轮数预算原先只有熔断、没有任何预警——子 agent 撞满 20 轮时往往一句收尾
+    // 都没说（全程只发工具调用），产出在 Err 里全丢。给足提前量后模型还有
+    // 几轮把已查到的东西写成收尾 JSON。钳位同 soft_warn_at：max_rounds 小到
+    // 7/10 塌成 0 时不注入失真的「已用 0 轮」。
+    let rounds_warn_at = (max_rounds * 7 / 10).clamp(1, max_rounds.saturating_sub(1).max(1));
     let mut msgs = msgs;
     // 条目级 system prompt：追加到消息栈末尾——OpenAI 直接多一条 system
     // 消息；Anthropic 分支 openai_msgs_to_anthropic 会把它归并进顶层 system 块。
@@ -1116,6 +1136,8 @@ where
     let mut collected_refs: Vec<TaskRef> = Vec::new();
     let mut function_calls_total: usize = 0;
     let mut soft_warn_sent: bool = false;
+    // 轮数软警告同款：只发一次，发完不再打扰后续轮次
+    let mut rounds_warn_sent: bool = false;
     // 防幻觉汇报守卫：本次对话是否实际执行过变更类工具（会话级一次置位、不按轮
     // 重置——后续正常汇报轮靠它放行，按轮重置会把改完再汇报的正常轮误判为幻觉）；
     // 补一轮机会（claim_retry）同样每次对话只用一次
@@ -2382,16 +2404,46 @@ where
                 ),
             }));
         }
+        // 轮数软警告：同样推迟到本轮 tool 响应全部回填后再注入（上面的 400 教训）。
+        // 剩最后一两轮时模型往往已经在连发工具调用——此刻不喊，它就只能撞熔断。
+        let rounds_left = max_rounds.saturating_sub(round + 1);
+        if !rounds_warn_sent && rounds_left <= max_rounds.saturating_sub(rounds_warn_at) {
+            rounds_warn_sent = true;
+            msgs.push(serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "【系统提示】对话已进行 {} / {max_rounds} 轮，最多还能跑 {rounds_left} 轮。请立刻停止展开新步骤：把已经拿到的结果整理出来收尾——子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。"
+                    , round + 1
+                ),
+            }));
+            audit_log(&format!(
+                "rounds_soft_warn | 对话已进行 {} 轮（上限 {}），剩余 {} 轮，追加收尾提醒",
+                round + 1,
+                max_rounds,
+                rounds_left
+            ));
+        }
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
         last_streamed = final_text.clone();
     }
     // 轮数熔断补审计（单轮工具熔断已有 fuse 日志，对称留痕）
     let hint = skill_finish(false, "对话轮数超限");
-    let err = CommandError::Internal(format!("对话轮数超限{hint}"));
-    let mut kv = crate::audit::error_kv(&err);
+    // 出口与单轮 Function 熔断同源：返回 Ok 并带上熔断前的正文，不做裸 Err。
+    // 早返回出口（已停止 / Skill 收尾 / 单轮熔断）都保正文，只有这里把正文连同
+    // 已跑完的那十几轮一起丢掉——子 agent 收不到收尾 JSON 时 result_json 写 NULL，
+    // 父 agent 回灌拿不到任何 summary，20 轮产出归零。熔断语义不靠返回类型表达
+    // （主聊天与子 agent 的下游处理不同），靠正文里的 ROUNDS_FUSE_MARKER 认。
+    let fuse = CommandError::Internal(format!("对话轮数超限{hint}"));
+    let mut kv = crate::audit::error_kv(&fuse);
     kv.push(("max_rounds", max_rounds.to_string()));
+    // partial_chars：熔断时带回了多少正文。恒为 0 说明模型全程只发工具调用、
+    // 没说一个字——那是子任务派发卡本身写歪了（该写 objective 的没写），信号留痕备用。
+    kv.push(("partial_chars", last_streamed.chars().count().to_string()));
     audit(crate::audit::AuditLevel::Warn, "fuse_rounds", kv);
-    Err(err)
+    Ok((
+        rounds_fuse_message(&last_streamed, &hint, max_rounds),
+        collected_refs,
+    ))
 }
 
 // 测试：feed_think / parse_sse_chunk / TOOLS schema
@@ -3355,6 +3407,47 @@ mod tools_schema_tests {
 #[cfg(test)]
 mod rounds_fuse_tests {
     use super::*;
+
+    /// 轮数熔断的出口必须带回熔断前的正文，且标记可被子任务侧识别。
+    ///
+    /// 回归背景：子任务撞满 20 轮时熔断走裸 Err，连同最后一轮 streamed 正文一起
+    /// 丢弃，子任务侧收不到收尾 JSON → result_json 写 NULL → 父 agent 回灌拿不到
+    /// summary，只能从零重跑（设计 §6「部分结果不丢弃」当时没兑现）。
+    #[test]
+    fn rounds_fuse_message_keeps_partial_text() {
+        let msg = rounds_fuse_message("已查到 det.onnx / rec.onnx 在 pp-ocr-v6/ 下", "", 20);
+        assert!(
+            msg.contains("已查到 det.onnx"),
+            "熔断必须保住熔断前正文：{msg}"
+        );
+        assert!(
+            msg.contains(ROUNDS_FUSE_MARKER),
+            "熔断正文须带子任务侧识别的标记：{msg}"
+        );
+        assert!(msg.contains("20 轮上限"), "熔断消息应带上限值：{msg}");
+        // 子任务侧按 rounds 标记判 max_turns，所以单轮 Function 熔断的正文绝不能
+        // 带这个标记——否则「工具调用超限」会被误报成「轮数超限」。
+        assert!(
+            !fuse_message("x", "", 100).contains(ROUNDS_FUSE_MARKER),
+            "单轮 Function 熔断不得带轮数标记"
+        );
+    }
+
+    /// 轮数软警告阈值与单轮软警告同口径：小 cap 不塌成 0，且留得出收尾轮次。
+    #[test]
+    fn rounds_warn_threshold_leaves_room_to_finish() {
+        let at =
+            |max_rounds: usize| (max_rounds * 7 / 10).clamp(1, max_rounds.saturating_sub(1).max(1));
+        // 子 agent 典型预算 20 → 第 14 轮起提醒，剩 6 轮够写收尾 JSON
+        assert_eq!(at(20), 14);
+        assert!(at(20) < 20, "阈值必须早于熔断，否则预警没有意义");
+        // 小 cap 整除塌到 0 时钳回 1（否则提示变成「已进行 0 轮」）；max_rounds=3
+        // 的 7/10 是 2，留 1 轮收尾——阈值贴着熔断正是小预算的固有代价
+        assert_eq!(at(3), 2);
+        assert_eq!(at(1), 1);
+        // 主聊天默认 50 同样留 15 轮
+        assert_eq!(at(50), 35);
+    }
 
     #[test]
     fn skill_frontmatter_max_rounds_overrides_default() {

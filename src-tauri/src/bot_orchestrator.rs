@@ -608,13 +608,6 @@ pub(crate) fn classify_outcome(
         );
     }
     if let Some(err) = run_err {
-        if err.contains("对话轮数超限") {
-            return (
-                SubagentStatus::BudgetExceeded,
-                Some("max_turns".into()),
-                None,
-            );
-        }
         return (
             SubagentStatus::Failed,
             Some(crate::bot::truncate_for_log(err, 300)),
@@ -622,6 +615,20 @@ pub(crate) fn classify_outcome(
         );
     }
     let text = final_text.unwrap_or_default();
+    // 轮数熔断：熔断出口返回 Ok，正文带 ROUNDS_FUSE_MARKER（见 bot_model_loop）。
+    // 终态仍是 budget_exceeded，但正文不是丢弃而是存进 result_json.summary——
+    // 跑完的那十几轮里查到的东西对父 agent 仍有价值（判断该不该原目标重试、
+    // 还是换 profile / 放宽验收），写 NULL 等于逼重试从零再来。
+    if text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER) {
+        return (
+            SubagentStatus::BudgetExceeded,
+            Some("max_turns".into()),
+            Some(serde_json::json!({
+                "summary": crate::bot::truncate_for_log(text, 800),
+                "note": "轮数预算熔断，未产出收尾 JSON；以上为熔断前保留的最后一段正文"
+            })),
+        );
+    }
     let parsed = extract_last_json_object(text)
         .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok());
     match parsed {
@@ -1871,6 +1878,11 @@ async fn run_subagent(
         Ok(Err(e)) => classify_outcome(Some(&e.message()), false, None),
         Ok(Ok((text, _refs, _loop_trace))) => classify_outcome(None, false, Some(text)),
     };
+    // 轮数熔断现在也走 Ok 出口（正文带 ROUNDS_FUSE_MARKER），机器验收必须把它
+    // 排除掉：熔断行没有收尾 JSON，等于没交答卷，拿产物文件判它「未通过」只会
+    // 在正文里凭空多出一段子 agent 没说过的话。
+    let fused_on_rounds = matches!(&wall, Ok(Ok((text, _, _)))
+        if text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER));
     let final_text: String = match &wall {
         Ok(Ok((text, _, _))) => text.clone(),
         Ok(Err(e)) => format!("⚠️ 执行失败：{}", e.message()),
@@ -1879,7 +1891,7 @@ async fn run_subagent(
     // 机器可判定验收：verifier 收尾里的 met 是自述，服务端对「产物文件在不在」
     // 这类标准能自己判——判了才覆盖自评，并在正文里点名未通过项。
     // 只在跑完（有收尾 JSON）时判：预算触顶/异常退出的行没有验收可言。
-    let machine_verdicts = if matches!(wall, Ok(Ok(_))) {
+    let machine_verdicts = if matches!(wall, Ok(Ok(_))) && !fused_on_rounds {
         eval_machine_criteria(&acceptance_criteria_of(&row), &artifact_dir)
     } else {
         Vec::new()
@@ -3031,8 +3043,9 @@ mod orchestrator_tests {
         let (st, err, _) = classify_outcome(None, true, None);
         assert_eq!(st, BudgetExceeded);
         assert_eq!(err.as_deref(), Some("max_wall_seconds"));
-        // 轮数熔断 → budget_exceeded
-        let (st, err, _) = classify_outcome(Some("对话轮数超限"), false, None);
+        // 轮数熔断 → budget_exceeded（标记在正文里，出口见 bot_model_loop 熔断）
+        let fused = crate::bot_model_loop::rounds_fuse_message("上轮正文", "", 20);
+        let (st, err, _) = classify_outcome(None, false, Some(&fused));
         assert_eq!(st, BudgetExceeded);
         assert_eq!(err.as_deref(), Some("max_turns"));
         // 其他错误 → failed
@@ -3058,6 +3071,27 @@ mod orchestrator_tests {
         assert_eq!(err.as_deref(), Some("result_json_unparseable"));
         let res = res.unwrap();
         assert!(res["summary"].as_str().unwrap().contains("纯文本收尾"));
+    }
+
+    /// 轮数熔断必须保住已跑完的那十几轮产出。
+    ///
+    /// 回归背景：recon 子任务 20 轮用尽、28 次工具调用查完后熔断，终态
+    /// budget_exceeded/max_turns 而 result_json 是 NULL——产出整段蒸发，父 agent
+    /// 回灌拿不到 summary，重试只能从零再来（设计 §6「部分结果不丢弃」）。
+    #[test]
+    fn classify_outcome_keeps_partial_output_on_rounds_fuse() {
+        use SubagentStatus::*;
+        let partial = "查到 pp-ocr-v6/ 下有 det.onnx / cls.onnx / rec.onnx + keys.txt";
+        let fused = crate::bot_model_loop::rounds_fuse_message(partial, "", 20);
+        let (st, err, res) = classify_outcome(None, false, Some(&fused));
+        assert_eq!(st, BudgetExceeded);
+        assert_eq!(err.as_deref(), Some("max_turns"));
+        let res = res.expect("轮数熔断不得写 NULL result_json");
+        let summary = res["summary"].as_str().expect("熔断行必须带 summary");
+        assert!(
+            summary.contains("det.onnx"),
+            "熔断前的正文应存进 summary 供父 agent 判断是否重试：{summary}"
+        );
     }
 
     /// verifier 输出 verified.json schema 的判定分支覆盖。

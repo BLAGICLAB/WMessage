@@ -6953,3 +6953,15 @@ doneCount/total 一致（50%→49.7%，100%→99.3%，差值为 1px 边框所致
 **迁移顺序是硬约束**: `ensure_task_id_nullable` 用重建表搬数据，它会连带搬 `context_summary`；先跑重建再补列就会报列数不符。顺序反了是一次实测踩到的，已在调用处注释固化。
 
 **进度字段名故意没改**: `check_subagent` 的 progress 里键名仍是 `subtasksDone`/`subtasksTotal`（数据源已换成验收），改键名要动 LLM 工具 schema 与提示词，收益不抵风险。
+
+## 2026-10-17（周六）轮数预算不再吞掉子 agent 已跑完的那部分产出
+
+**为什么换方向**: 子任务 `sa_a04c5f34f7514417b958fb8b413f2d7d`（recon 调研 PP-OCRv6 ONNX）20 轮烧完只留下一句 `error=max_turns`，`result_json` 是 NULL——28 次工具调用查到的模型文件清单、apps_create 契约、沙箱超时行为全部蒸发，父 agent 回灌拿不到任何 summary，只能从零重跑。设计 §6 早就写着「已产出的部分结果照常落库（部分结果不丢弃）」「软收敛优先于硬顶」，两条都没兑现。
+
+**两条预算的待遇差了一档**: `max_tool_calls` 早就配齐了软警告（7/10 注入收尾提醒）+ 熔断时用 `fuse_message` 把正文带回来；`max_rounds` 只有裸熔断，而且那个熔断是**唯一**一个 `return Err` 的出口——「已停止 / Skill 收尾 / 单轮 Function 熔断」全都 `Ok(..)` 并保住正文。子任务撞满轮数时模型往往还在连发工具调用，一句收尾都没说，出口一 Err 连 `last_streamed` 都没人看。所以不是「加个提醒」，是把轮数预算对齐到工具调用预算已有的那套口径。
+
+**为什么熔断改走 Ok 而不是塞错误载荷**: `run_model_loop` 的四个调用方对 Err 的处理各不相同（主聊天要记 Failure trace、逐步执行直接 `?` 上抛），把部分正文塞进 `CommandError` 等于给共享出口加一条人人要照顾的新通道。改成 Ok + 正文带 `ROUNDS_FUSE_MARKER`，熔断语义由标记表达而不是返回类型：主聊天照常展示「⏹ 已熔断（轮数上限）」，子任务侧 `classify_outcome` 按标记还原 `budget_exceeded/max_turns`，同时把正文存进 `result_json.summary`。终态一个字没变，变的是从「什么都没了」变成「父 agent 知道它查到了什么」。
+
+**顺带把标记拆成两个**: 原本只有 `FUSE_MARKER`（「⏹ 已熔断」）。两类熔断共用一个标记的话，子任务侧无法区分「工具调用超限」和「轮数超限」——而这两者的处置完全不同（前者调低 max_tool_calls 或换 profile，后者放宽 max_turns 或拆卡）。拆出 `ROUNDS_FUSE_MARKER` 后判据互不包含，单测锁住。
+
+**机器验收为什么要显式排除熔断行**: 轮数熔断改走 Ok 出口后，`matches!(wall, Ok(Ok(_)))` 这个闸会把它当「跑完了」放行——子任务压根没交收尾 JSON，拿产物文件判它「未通过」等于在正文里替它编一句它没说过的话。加 `fused_on_rounds` 排除，保持「预算触顶的行没有验收可言」的原意。
