@@ -18,14 +18,14 @@
 
 ## 派发流程
 1. 可先建主卡：subtasks = 派发清单（一项一个子 agent）；note 写总体验收。
-2. 每个派发项：objective 单一目标；acceptance_criteria 必填、每条可检验
+2. 每个派发项：objective 单一目标；acceptanceCriteria 必填、每条可检验
    （不要写"调研清楚"，要写"覆盖至少 5 个产品，每个含官网 URL，输出 report.md"）；
-   必要背景写进 context_summary（不要倒主对话全文）。
+   必要背景写进 contextSummary（不要倒主对话全文）。
    **产物类标准用机器可判定写法**（相对子 agent 产物目录）：`file_exists:report.md`
    要求文件存在、`file_nonempty:output.xlsx` 要求存在且非空——这类由服务端核验，
    子 agent 自己说"已产出"不作数。其余需要看内容的标准照常写自然语言。
 3. 调用 spawn_subagent(...) —— 非阻塞，立即返回；马上告诉用户"已派发"，不等待。
-4. 继续响应用户；用 check_subagent 轮询（wait_ms 0 或短等待，不要高频空转）。
+4. 继续响应用户；用 check_subagent 轮询（waitMs 0 或短等待，不要高频空转）。
 5. 完成后取结果，只向用户汇报：结论、产物路径、未完成项、风险。
 
 ## 失败与预算

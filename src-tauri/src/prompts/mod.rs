@@ -137,4 +137,66 @@ mod tests {
             assert!(p.contains("只输出"), "{name} 缺「只输出」约束");
         }
     }
+
+    /// camelCase → snake_case（只处理小写字母/数字接大写字母这一处断点）。
+    fn to_snake(name: &str) -> String {
+        let mut out = String::with_capacity(name.len() + 4);
+        for (i, c) in name.chars().enumerate() {
+            if c.is_ascii_uppercase() && i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        }
+        out
+    }
+
+    /// 提示词里点名工具入参时，**必须用 schema 里的属性名**。
+    ///
+    /// 模型同时收到两样东西：tools 载荷里的 schema（属性名 camelCase）与本目录的
+    /// 提示词正文。两边拼法不一致时模型可能任选一边，而入参解析是裸
+    /// `v["<属性名>"]` 取值（无 snake→camel 归一）——照提示词写就静默丢参：
+    /// `waitMs` 丢成不等待、`contextSummary` 丢成空背景，而
+    /// `acceptanceCriteria` 丢成「必填参数缺失」直接 spawn 失败。
+    ///
+    /// 这条锁挡住的就是那三处：subagent 提示词曾教模型写 snake_case，而 schema 与
+    /// 解析侧都是 camelCase，且同文件里 `read_own_card` 那段又写的是 camelCase——
+    /// 门禁全绿、模型两头猜。
+    #[test]
+    fn prompts_never_spell_schema_params_as_snake_case() {
+        let tools: serde_json::Value = serde_json::from_str(crate::bot::registry::tools_json())
+            .expect("tools_json 必须是合法 JSON");
+        let mut offenders = Vec::new();
+        for t in tools.as_array().into_iter().flatten() {
+            let fname = t["function"]["name"].as_str().unwrap_or("?");
+            let Some(props) = t["function"]["parameters"]["properties"].as_object() else {
+                continue;
+            };
+            for prop in props.keys() {
+                // 单段全小写的属性名两种拼法同形，无需检查
+                if !prop.chars().any(|c| c.is_ascii_uppercase()) {
+                    continue;
+                }
+                let snake = to_snake(prop);
+                for (name, prompt) in ALL {
+                    // 整词匹配：避免 `_` 前后另有字符时误判
+                    let hit = prompt.match_indices(&snake).any(|(i, _)| {
+                        let before = prompt[..i].chars().next_back();
+                        let after = prompt[i + snake.len()..].chars().next();
+                        !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                            && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                    });
+                    if hit {
+                        offenders.push(format!(
+                            "{name} 用了 {snake}（schema 属性名是 {prop}，工具 {fname}）"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "提示词用 snake_case 拼 schema 入参，模型照抄即静默丢参：\n{}",
+            offenders.join("\n")
+        );
+    }
 }

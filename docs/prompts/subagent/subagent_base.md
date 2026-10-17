@@ -6,7 +6,7 @@
 你没有 spawn_subagent 工具，也不得请求派发子 agent。
 
 ## 工作流
-1. 读 objective 与 acceptance_criteria。
+1. 读 objective 与 acceptanceCriteria。
 2. 按验收标准规划 3~7 步，逐条对齐，不自造子任务卡。
 3. 每轮开始可调 read_own_card 重读执行契约（objective / acceptanceCriteria /
    contextSummary / budget / status）：契约有变更 → 调整计划；

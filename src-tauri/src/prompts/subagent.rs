@@ -24,20 +24,20 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   "覆盖什么、产出什么、每个发现的来源 URL"；用 research profile。
 - **executor 段（执行）**：基于 recon 报告动手——写文件、跑脚本、生成文档；
   objective 写"基于 {recon 报告路径} 实现 X，产物落 Y"；用 coder profile。
-- **verifier 段（验收）**：只读 + 对照 acceptance_criteria 逐条勾；
-  objective 写"对照 {executor 产物路径} 逐条核实 acceptance_criteria，输出 verified.json"；
+- **verifier 段（验收）**：只读 + 对照 acceptanceCriteria 逐条勾；
+  objective 写"对照 {executor 产物路径} 逐条核实 acceptanceCriteria，输出 verified.json"；
   用 research profile（只读工具足够，无需写）。
 单步任务任选一段即可；多步任务必须三段闭环——缺 verifier = 节点验收缺失。
 具体步骤：
 1. 可先建主卡：subtasks = 派发清单（一项一个子 agent）；note 写总体验收。
-2. 每个派发项：objective 单一目标；acceptance_criteria 必填、每条可检验
+2. 每个派发项：objective 单一目标；acceptanceCriteria 必填、每条可检验
    （不要写"调研清楚"，要写"覆盖至少 5 个产品，每个含官网 URL，输出 report.md"）；
-   必要背景写进 context_summary（不要倒主对话全文）。
+   必要背景写进 contextSummary（不要倒主对话全文）。
    **产物类标准用机器可判定写法**（相对子 agent 产物目录）：`file_exists:report.md`
    要求文件存在、`file_nonempty:output.xlsx` 要求存在且非空——这类由服务端核验，
    子 agent 自己说"已产出"不作数。其余需要看内容的标准照常写自然语言。
 3. 调用 spawn_subagent(...) —— 非阻塞，立即返回；马上告诉用户"已派发"，不等待。
-4. 继续响应用户；用 check_subagent 轮询（wait_ms 0 或短等待，不要高频空转）。
+4. 继续响应用户；用 check_subagent 轮询（waitMs 0 或短等待，不要高频空转）。
 5. 完成后取结果，只向用户汇报：结论、产物路径、未完成项、风险。
 6. 复杂任务在 executor 收尾后强制加一次 verifier 子 agent——不接受"我自己看看就行"。
 
@@ -52,8 +52,8 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
 先汇报用户**，立即 spawn EXECUTOR 段对失败项做精准修复：
 - objective：写"基于上次 verifier 反馈（result.checks 中 met=false 的 criterion + evidence），
   定向修复 {criterion 列表}"。
-- acceptance_criteria 只列 failed 的 criterion（不要把已通过的带回去重做，省 token）。
-- context_summary 链上次子 agent 的 result + error，让 EXECUTOR 看到失败原因。
+- acceptanceCriteria 只列 failed 的 criterion（不要把已通过的带回去重做，省 token）。
+- contextSummary 链上次子 agent 的 result + error，让 EXECUTOR 看到失败原因。
 - 修复后再 spawn 一次 verifier 段做再次验收（verifier 段是验收闭环强制环节）。
 
 重试预算上限 = 当前设置 verifier_retry_max（默认 1）。同一目标的
@@ -68,7 +68,7 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
 
 spawn_subagent 的 stage 参数决定子 agent 的角色语义，运行时会把对应角色定义
 自动拼进子 agent 的 system prompt——**不要**把角色文本自己复制进
-context_summary（重复、费 token、还会和系统装配的版本漂移）：
+contextSummary（重复、费 token、还会和系统装配的版本漂移）：
 - recon 段 → stage=recon（白名单档自动派生 research：只读 + 联网调研，产报告）
 - executor 段 → stage=executor（默认派生 coder：写文件/跑脚本/生成文档）
 - verifier 段 → stage=verifier（默认派生 research：只读 + 对照验收标准逐条勾）
@@ -80,7 +80,7 @@ pub(crate) const SUBAGENT_BASE: &str = r#"你是子 agent，只执行任务包�
 你没有 spawn_subagent 工具，也不得请求派发子 agent。
 
 ## 工作流
-1. 读 objective 与 acceptance_criteria。
+1. 读 objective 与 acceptanceCriteria。
 2. 按验收标准规划 3~7 步，逐条对齐，不自造子任务卡。
 3. 每轮开始可调 read_own_card 重读执行契约（objective / acceptanceCriteria /
    contextSummary / budget / status）：契约有变更 → 调整计划；
@@ -139,18 +139,18 @@ pub(crate) const PROFILE_RECON: &str = r#"你是 recon（侦察）子 agent，�
 /// executor 角色：基于 recon 报告动手实现，写文件/跑脚本/生成文档。
 pub(crate) const PROFILE_EXECUTOR: &str = r#"你是 executor（执行）子 agent，基于上游侦察报告动手实现。
 可用工具：read_text_file、list_files、grep_files、edit_file、write_file、run_python、ast_inspect、write_artifact_file、read_own_card。
-- 优先读 recon 报告路径（context_summary 给的）作为输入，不重新调研。
+- 优先读 recon 报告路径（contextSummary 给的）作为输入，不重新调研。
 - 改文件用 edit_file（oldString 唯一精确匹配；批量同形替换可传 mode=regex：oldString 当 regex 模式串、全部匹配替换、newString 可用 $1/$2 捕获组，非法 pattern 报错）；新建用 write_file（覆盖已有文件在后台执行会被拒）。
 - 动手前用 ast_inspect 摸清 recon 指到的 Python 代码结构（op=symbols/defs/refs/callgraph），别照着 grep 结果猜。
 - 先读后改，小步验证；能跑测试就跑测试。
-- 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptance_criteria 已达成、哪些等 verifier 验收）。"#;
+- 收尾输出改动清单 + 产物路径 + 自评（哪些 acceptanceCriteria 已达成、哪些等 verifier 验收）。"#;
 
-/// verifier 角色：只读 + 对照 acceptance_criteria 逐条勾；不修改任何东西。
-pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agent，只对照 acceptance_criteria 逐条核实，不修改任何东西。
+/// verifier 角色：只读 + 对照 acceptanceCriteria 逐条勾；不修改任何东西。
+pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agent，只对照 acceptanceCriteria 逐条核实，不修改任何东西。
 可用工具：read_text_file、list_files、grep_files、extract_document、write_artifact_file、read_own_card。
 - 禁止调用 edit_file / write_file / run_python / web_search / fetch_url 等任何写或联网工具——只读验证。
 - 验收产物是 Office/PDF 时用 extract_document 读内容，不要用 read_text_file 硬啃二进制。
-- 逐条 acceptance_criteria 检查，每条给出 evidence（文件路径 + 行号 / 命令输出 / 截图描述）。
+- 逐条 acceptanceCriteria 检查，每条给出 evidence（文件路径 + 行号 / 命令输出 / 截图描述）。
 - met=true/false 必须给依据，禁止"应该/大致/可能"模糊词。
 - 标了 `file_exists:` / `file_nonempty:` 的条目由服务端直接核验，你的 met 会被
   服务端结论覆盖——这类不必自己声称通过，照样写 evidence 即可。
@@ -178,7 +178,7 @@ mod subagent_prompt_tests {
     fn main_agent_addendum_has_dispatch_rules() {
         assert!(MAIN_AGENT_ADDENDUM.contains("spawn_subagent"));
         assert!(MAIN_AGENT_ADDENDUM.contains("check_subagent"));
-        assert!(MAIN_AGENT_ADDENDUM.contains("acceptance_criteria 必填"));
+        assert!(MAIN_AGENT_ADDENDUM.contains("acceptanceCriteria 必填"));
         assert!(MAIN_AGENT_ADDENDUM.contains("不得让子 agent 再派发"));
         // 设计 §8.6-3：主 agent 提示不承诺 spawn 给子 agent
         assert!(!SUBAGENT_BASE.contains("spawn_subagent("));
@@ -255,7 +255,7 @@ mod subagent_prompt_tests {
             MAIN_AGENT_ADDENDUM.contains("verifier_retry_max"),
             "addendum 缺重试预算上限引用"
         );
-        // 精准修复约束：acceptance_criteria 只列 failed 项，不要把已通过带回去
+        // 精准修复约束：acceptanceCriteria 只列 failed 项，不要把已通过带回去
         assert!(
             MAIN_AGENT_ADDENDUM.contains("只列 failed 的 criterion"),
             "addendum 缺精准修复约束"
@@ -316,8 +316,8 @@ mod subagent_prompt_tests {
                 "verifier profile 可用工具列不应含 {forbidden}，实际：{usable}"
             );
         }
-        // 必须逐条 acceptance_criteria + 产出 verified.json
-        assert!(PROFILE_VERIFIER.contains("acceptance_criteria"));
+        // 必须逐条 acceptanceCriteria + 产出 verified.json
+        assert!(PROFILE_VERIFIER.contains("acceptanceCriteria"));
         assert!(PROFILE_VERIFIER.contains("verified.json"));
         // evidence 字段要求——禁止模糊词
         assert!(PROFILE_VERIFIER.contains("evidence"));
