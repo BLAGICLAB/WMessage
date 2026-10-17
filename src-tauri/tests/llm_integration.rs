@@ -2938,7 +2938,7 @@ async fn core_execution_claim_without_any_tool_call_is_pushed_back() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("声称已执行但本回合零工具调用")),
+            .any(|l| l.contains("声称已执行但本次提问零凭证")),
         "应记执行类谎报审计：{lines:?}"
     );
 }
@@ -3057,7 +3057,7 @@ async fn core_step_narrated_execution_fabrication_is_pushed_back() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("声称已执行但本回合零工具调用")),
+            .any(|l| l.contains("声称已执行但本次提问零凭证")),
         "应记执行类谎报审计：{lines:?}"
     );
 }
@@ -3127,4 +3127,125 @@ async fn core_code_explanation_without_tool_call_is_not_pushed_back() {
     .expect("讲解轮应直接 Ok");
     assert!(text.contains("ModuleNotFoundError"), "应原样返回讲解");
     assert_eq!(server.request_count(), 1, "代码讲解不该被守卫多打一轮");
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 凭证表判决：点名的工具逐个查本次提问的凭证池。
+//
+// 旧写法是一个布尔「本回合有没有任何工具成功」，同一次提问里不同工具的凭证能
+// 互相担保——本轮成功调了 A，编造 B 的执行结果照样放行。下面两条把两侧都钉死。
+// ────────────────────────────────────────────────────────────────────────────
+
+/// 本轮成功调了 list_tasks，终稿却声称调了 run_python —— 必须拦。
+/// 这是旧布尔写法漏掉的那一类：any_tool_succeeded 为真 → claim_execution 直接 false。
+#[tokio::test]
+async fn core_receipt_table_blocks_claiming_an_unrun_tool() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 编造：点名 run_python，但本次提问里从未调过它
+    server.push_behavior(MockBehavior::TextReply(
+        "已执行完毕，run_python 跑出来是 42。".into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply(
+        "抱歉，我并没有调用过 run_python——本次只列了任务清单。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert!(
+        text.contains("并没有调用过 run_python"),
+        "应改口承认没调过：{text:?}"
+    );
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("声称已执行但无对应凭证: run_python")),
+        "审计应点名缺失的工具：{lines:?}"
+    );
+}
+
+/// 跨轮据实汇报：凭证在上一轮、汇报在下一轮，必须放行且不多问一轮。
+///
+/// 真实事故：trace 53 的最终汇报「执行完毕：模块不存在…最终输出 done」是真话，
+/// 凭证落在上一轮。按轮清空凭证池会把它判成幻觉，再让模型重跑一个已完成的
+/// 动作——对 delete_task / link_file_to_task 这类就是重复的破坏性操作。
+#[tokio::test]
+async fn core_receipt_table_survives_cross_round_truthful_report() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"print('done')"}"#.into(),
+    }));
+    // 下一轮据实转述上一轮的凭证：点名 run_python，且凭证表里确有它
+    server.push_behavior(MockBehavior::TextReply(
+        "已执行完毕，run_python 输出 `done`。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let deps = h.deps();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("据实汇报应直接 Ok");
+    assert_eq!(
+        text.trim(),
+        "已执行完毕，run_python 输出 `done`。",
+        "跨轮据实转述不该被拦：{text:?}"
+    );
+    assert_eq!(server.request_count(), 2, "凭证表跨轮累积，不得多打一轮");
+}
+
+/// 建议语气里提到工具名（零工具调用）不该被当成「声称调过它」。
+#[tokio::test]
+async fn core_advice_mentioning_tool_name_is_not_a_claim() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "这个问题你可以用 grep_files 搜，但我这边没有文件访问权限，搜不了。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let deps = h.deps();
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("如实说明应直接 Ok");
+    assert!(text.contains("没有文件访问权限"), "应原样返回：{text:?}");
+    assert_eq!(server.request_count(), 1, "建议语气不得被拦");
 }

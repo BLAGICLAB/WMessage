@@ -759,6 +759,19 @@ pub fn claims_execution(text: &str) -> bool {
     EXECUTION_CLAIM_PATTERNS.iter().any(|p| text.contains(p))
 }
 
+/// 终稿里点名的工具（按 TOOLS_TABLE 扫，snake_case 标识符不会与中文话术撞车）。
+///
+/// 供幻觉守卫把「模型说调了哪个工具」映射到凭证表——这是判决要查的键。
+/// 返回全部命中而不是首个：模型一轮里常叙述多个工具，漏掉任何一个就等于
+/// 给它留了一条白拿凭证的路。
+pub fn mentioned_tool_names(text: &str) -> Vec<&'static str> {
+    TOOLS_TABLE
+        .iter()
+        .map(|t| t.name)
+        .filter(|name| text.contains(name))
+        .collect()
+}
+
 /// 生成类谎报的路径存在性校验（幻觉守卫第二支柱，与 claims_mutation 同点位）：
 /// 文本出现「已生成/已保存/已写入/已导出」且给出文档绝对路径
 /// （docx/xlsx/pptx/pdf）时逐个校验磁盘真实性，返回第一个不存在的路径。

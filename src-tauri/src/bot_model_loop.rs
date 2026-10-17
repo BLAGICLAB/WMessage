@@ -43,7 +43,7 @@ fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> 
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
 pub use crate::bot::registry::claims_mutation;
-use crate::bot::registry::{claims_execution, fabricated_gen_path};
+use crate::bot::registry::{claims_execution, fabricated_gen_path, mentioned_tool_names};
 
 // TOOLS schema（编译期字符串，运行期 JSON 解析）
 
@@ -1227,16 +1227,17 @@ where
     // 补一轮机会（claim_retry）同样每次对话只用一次
     let mut mutation_done: bool = false;
     let mut claim_retry_used: bool = false;
-    // 执行类谎报守卫的前置：本次**用户回合**内是否**有任何**工具成功返回过。
-    // 作用域是单次 run_model_loop_core 调用（bot_chat 每条用户消息调一次），
-    // 不是整个会话——会话级会让第一条消息跑过一次工具之后，之后每一条的零调用
-    // 谎报都永久放行。
-    // 口径比 mutation_done 宽：任意工具成功即置位，只有「本回合零工具成功」
-    // 这一种病态形态才拦，避免把「读了文件再汇报结果」这类正常轮次打回。
-    let mut any_tool_succeeded: bool = false;
-    // 本回合是否**发起过**工具调用（不论成败）。与 succeeded 配对才能分出
-    // 「从没调过工具」与「调了但全失败」——两者要给的返工指令不同。
-    let mut any_tool_attempted: bool = false;
+    // 执行类谎报守卫的凭证池：本次**用户提问**内所有工具调用的真实记录。
+    //
+    // 作用域是整条提问（= 一次 run_model_loop_core 调用 = exec_spans 的一条 trace_id），
+    // 跨轮累积、跨轮不清零。两个边界都是被真实数据逼出来的：
+    //
+    // · 不跨轮清零 —— trace 53 的最终汇报（msg 720「执行完毕：模块不存在…」）是真话，
+    //   但它的凭证在上一轮；按轮查会把真话判成幻觉，再让模型去重跑一个已完成的
+    //   动作（delete_task / link_file_to_task 这类就是重复的破坏性操作）。
+    // · 不跨提问共用 —— 下一条用户消息是新的 trace，池子自然清零，历史凭证查不到，
+    //   所以「本轮的成果不许冒充上一轮刚跑的」是默认行为，不需要额外规则。
+    let mut receipts: Vec<String> = Vec::new();
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
     // PREVR 第 1 层：工具失败检测——同工具连续失败计数，
@@ -2050,36 +2051,53 @@ where
             // 叙述——实测两起：原话一「执行完毕，sleep 120 秒后工具真实返回，打印了
             // done」，原话二「完成计划2 步：第一步触发 ModuleNotFoundError，第二步仍
             // 输出 done」，两条对应 trace 都是 turns=0 tools=0、耗时 1.9s/1.8s。
-            let claim_execution = !any_tool_succeeded && claims_execution(&final_text);
+            //
+            // 判决只看凭证表，不看轮次：终稿点名的工具逐个查本次提问的凭证池，
+            // 任何一个查不到就是伪造。旧的「本回合有没有任何工具成功」是个布尔，
+            // 挡不住「本轮成功调了 A、却编造 B 的执行结果」——同一个提问里
+            // 不同工具的凭证不能互相担保。
+            let mentioned = mentioned_tool_names(&final_text);
+            let unsupported: Vec<&str> = mentioned
+                .iter()
+                .filter(|t| !receipts.iter().any(|r| r == *t))
+                .copied()
+                .collect();
+            let claim_execution = claims_execution(&final_text)
+                && if mentioned.is_empty() {
+                    // 不点名工具（「执行完毕，工具真实返回…」）时无从按名查，
+                    // 退回「整条提问一条凭证都没有」的粗判——这正是词表要顶住的那类。
+                    receipts.is_empty()
+                } else {
+                    !unsupported.is_empty()
+                };
             if !claim_retry_used
                 && (claim_mutation || claim_execution || fake_gen_path.is_some())
             {
                 claim_retry_used = true;
-                // 返工指令按「为什么没有凭证」分岔（对应双凭证方案的状态分岔重试）：
-                // 从没发起过 vs 发起过但全失败，要说的不是同一句话。合并成一条
-                // 等于让模型猜自己该补哪一步。
                 audit_log(&format!(
                     "hallucination_guard | {}: {}",
-                    if claim_execution && !any_tool_attempted {
-                        "声称已执行但本回合零工具调用"
+                    if claim_execution && !unsupported.is_empty() {
+                        format!("声称已执行但无对应凭证: {}", unsupported.join(","))
                     } else if claim_execution {
-                        "声称已执行但工具全部失败"
+                        "声称已执行但本次提问零凭证".to_string()
                     } else if fake_gen_path.is_some() {
-                        "声称已生成但路径不存在"
+                        "声称已生成但路径不存在".to_string()
                     } else {
-                        "声称变更但未调工具"
+                        "声称变更但未调工具".to_string()
                     },
                     crate::bot::truncate_for_log(&final_text, 100)
                 ));
-                let reason = match (&fake_gen_path, claim_execution, any_tool_attempted) {
+                let reason = match (&fake_gen_path, claim_execution, unsupported.as_slice()) {
                     (Some(p), _, _) => {
                         format!("你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。")
                     }
-                    (None, true, false) => {
-                        "你刚才叙述了一次已完成的执行并给出了结果，但本回合你从未发起过任何工具调用——这个结果是编造的。".to_string()
+                    (None, true, [t, ..]) => {
+                        format!(
+                            "你刚才说调了 {t} 并给出了结果，但本次提问里没有任何 {t} 的成功调用记录——这个结果是编造的。"
+                        )
                     }
-                    (None, true, true) => {
-                        "你刚才叙述了一次已完成的执行并给出了结果，但本回合发起的工具调用全部失败，没有任何成功返回——这个结果不是真实执行得来的。".to_string()
+                    (None, true, _) => {
+                        "你刚才叙述了一次已完成的执行并给出了结果，但本次提问从头到尾没有任何工具调用成功——这个结果是编造的。".to_string()
                     }
                     (None, false, _) => {
                         "你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。"
@@ -2401,12 +2419,10 @@ where
             }
             // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
             let failed = !tool_outcome.status.is_success();
-            any_tool_attempted = true;
-            // 任意工具成功即置位（执行类谎报守卫的前置）。按结果而非按调用置位：
-            // 被门禁拦下/用户拒绝的调用没产出任何可转述的东西，模型若照着它
-            // 编结果，守卫还得拦得住。
+            // 只有成功返回的工具才算数：被门禁拦下 / 用户拒绝 / 执行失败的调用没产出
+            // 任何可转述的东西，模型若照着它编结果，凭证表还得拦得住。
             if !failed {
-                any_tool_succeeded = true;
+                receipts.push(name.clone());
             }
             emit(
                 "bot-tool-done",
