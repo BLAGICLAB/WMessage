@@ -1089,7 +1089,8 @@ pub async fn run_model_loop(
     //（业界对齐，截断只影响回灌文本；trace span 仍存原文）；Some(0) = 显式关闭。
     let tool_output_cap: Option<usize> = match cfg.max_tool_output_chars {
         Some(0) => None,
-        Some(n) => Some((n as usize).min(200_000)),
+        // 上限单源在 bot::params（与写侧钳制、设置页展示同一个数）
+        Some(n) => Some(crate::bot::params::clamp_max_tool_output_chars(n) as usize),
         None => Some(DEFAULT_TOOL_OUTPUT_CAP),
     };
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {

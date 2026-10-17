@@ -84,6 +84,17 @@ pub fn clamp_search_max_results(n: u32) -> u32 {
     n.clamp(1, 10)
 }
 
+/// 单条工具结果回填上限钳（上限 200K 字符）。
+///
+/// 这个上限原先只落在模型循环的生效点（`.min(200_000)`），而读侧 resolver 原样
+/// 把配置值透给设置页——用户设 500000，设置页显示 500000，运行时按 200000 走，
+/// 两边都不知道发生了什么。写侧钳制 + 读侧 + 生效点三处共用这一个边界。
+pub const MAX_TOOL_OUTPUT_CHARS_CAP: u32 = 200_000;
+
+pub fn clamp_max_tool_output_chars(n: u32) -> u32 {
+    n.min(MAX_TOOL_OUTPUT_CHARS_CAP)
+}
+
 /// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
 pub fn clamp_ask_budget(n: u8) -> u8 {
     n.clamp(1, 5)
@@ -263,8 +274,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "tools.max_output_chars",
         label: "工具结果截断字符数",
         category: "tools",
-        hint: "单条工具结果回填模型上下文的截断上限；默认不截断（超大输出可能挤占上下文，P4 接线生效）",
-        default: "不截断",
+        hint: "单条工具结果回填模型上下文的截断上限；超大输出会挤占上下文，设 0 = 显式关闭截断",
+        default: "30000",
         editable: true,
         resolve: resolve_max_output_chars,
     },
@@ -400,11 +411,17 @@ fn plain_reasoning(cfg: &BotConfig) -> String {
 }
 
 /// max_output_chars 有第三态：Some(0) = 显式关闭截断，展示串不是数字
+///
+/// 展示值必须等于生效值：这里显示的就是模型循环实际会用的那个数（同一个
+/// `clamp_max_tool_output_chars`），配置手改越过上限时设置页也能看出被钳到哪。
 fn resolve_max_output_chars(cfg: &BotConfig) -> (String, &'static str) {
     match cfg.max_tool_output_chars {
-        Some(v) if v > 0 => (v.to_string(), "config"),
+        Some(v) if v > 0 => (clamp_max_tool_output_chars(v).to_string(), "config"),
         Some(_) => ("不截断（显式关闭）".into(), "config"),
-        None => ("30000".into(), "default"),
+        None => (
+            crate::bot_model_loop::DEFAULT_TOOL_OUTPUT_CAP.to_string(),
+            "default",
+        ),
     }
 }
 
@@ -530,6 +547,30 @@ mod tests {
             "参数表 {} 项，疑似漏登记",
             PARAMS_TABLE.len()
         );
+    }
+
+    /// 参数表里的默认展示值必须等于代码里真正生效的那个数。
+    ///
+    /// `tools.max_output_chars` 的 `default` 曾写「不截断」，而空配置下 resolver
+    /// 返 30000、模型循环按 `DEFAULT_TOOL_OUTPUT_CAP` 走——表里自相矛盾，且没有任何
+    /// 测试把这两个数字绑在一起。这条把该绑的都绑上：改任一侧不同步即红。
+    #[test]
+    fn params_table_defaults_match_runtime_constants() {
+        let by_key = |k: &str| PARAMS_TABLE.iter().find(|d| d.key == k).unwrap();
+        assert_eq!(
+            by_key("tools.max_output_chars").default,
+            crate::bot_model_loop::DEFAULT_TOOL_OUTPUT_CAP.to_string(),
+            "参数表展示的默认截断字符数与模型循环实际生效的默认值不符"
+        );
+        // 越界配置：展示值必须已经是钳过的生效值，不能是用户填的原值
+        let mut cfg = empty_cfg();
+        cfg.max_tool_output_chars = Some(MAX_TOOL_OUTPUT_CHARS_CAP + 100_000);
+        let views = effective_params(&cfg);
+        let v = views
+            .iter()
+            .find(|v| v.key == "tools.max_output_chars")
+            .unwrap();
+        assert_eq!(v.value, MAX_TOOL_OUTPUT_CHARS_CAP.to_string());
     }
 
     /// 空配置 → 全部默认来源（可编辑区）；只读区恒 hardcoded
