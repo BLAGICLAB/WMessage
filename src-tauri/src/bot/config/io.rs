@@ -137,22 +137,38 @@ pub fn read_memory_control<R: tauri::Runtime>(
     read_memory_control_at(&config_path(app))
 }
 
-/// 可测内核（纯路径参数）：None = 无控制（全开）。
-/// 文件存在但解析失败 → stderr 一行告警（隐私开关静默失效要可诊断）。
-pub(crate) fn read_memory_control_at(path: &Path) -> Option<crate::memory::MemoryControl> {
-    let raw = std::fs::read_to_string(path).ok()?;
+/// 轻量读取内核：读一次 bot-config.json 交给 `pick` 取值。
+///
+/// 为什么不直接用 `load_config`：它会跑 schema 迁移 + MCP 机密水合，而调用方
+/// 只要其中一个字段——记忆开关 / 记忆参数 / bypass 开关都在热路径上，不该为
+/// 取一个 bool 付整份水合的代价。
+///
+/// 失败语义统一为「读失败 → fallback，解析失败 → fallback + stderr 一行」。
+/// 解析失败必须留痕：手改配置改坏了要可诊断，静默回默认会让人以为开关生效着。
+fn with_config<T, F>(path: &Path, label: &str, fallback: T, pick: F) -> T
+where
+    T: Clone,
+    F: FnOnce(BotConfig) -> T,
+{
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return fallback;
+    };
     match serde_json::from_str::<BotConfig>(&raw) {
-        Ok(cfg) => cfg.memory_control,
+        Ok(cfg) => pick(cfg),
         Err(e) => {
-            eprintln!("[memory] bot-config.json 解析失败，记忆开关按全开放行：{e}");
-            None
+            eprintln!("[bot-config] {label} 解析失败，按默认放行：{e}");
+            fallback
         }
     }
 }
 
+/// 可测内核（纯路径参数）：None = 无控制（全开）。
+pub(crate) fn read_memory_control_at(path: &Path) -> Option<crate::memory::MemoryControl> {
+    with_config(path, "记忆开关", None, |c| c.memory_control)
+}
+
 /// 记忆参数读取：文件缺失 / 读失败 / 解析失败 / 缺字段 / 超界值 →
-/// 默认或钳制（下游只见合法值）。解析失败时 stderr 告警——与
-/// read_memory_control_at 对称（手改配置改坏了要可诊断）。
+/// 默认或钳制（下游只见合法值）。
 pub fn read_memory_tuning<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::memory::MemoryTuning {
@@ -201,30 +217,24 @@ pub fn write_memory_tuning_at(
 }
 
 /// 可测内核（纯路径参数）：文件缺失/读失败/JSON 损坏/缺字段 → 默认；
-/// 超界值 → 钳制；解析失败 → stderr 一行告警 + 默认。
+/// 超界值 → 钳制。
 pub(crate) fn read_memory_tuning_at(path: &Path) -> crate::memory::MemoryTuning {
-    let Some(raw) = std::fs::read_to_string(path).ok() else {
-        return crate::memory::MemoryTuning::default();
-    };
-    match serde_json::from_str::<BotConfig>(&raw) {
-        Ok(cfg) => cfg.memory_tuning.unwrap_or_default().clamped(),
-        Err(e) => {
-            eprintln!("[memory] bot-config.json 解析失败，记忆参数按默认放行：{e}");
-            crate::memory::MemoryTuning::default()
-        }
-    }
+    with_config(
+        path,
+        "记忆参数",
+        crate::memory::MemoryTuning::default(),
+        |c| c.memory_tuning.unwrap_or_default(),
+    )
+    .clamped()
 }
 
 /// 可测内核（纯路径参数）：文件缺失 / 读失败 / JSON 损坏 / 缺字段 → true。
 /// 只有显式 `bypassLlmOnPreStepHit: false` 才关掉 bypass——老配置零迁移语义，
 /// 默认走 bypass（避免命中 Skill 后还要多烧一次外层 LLM）。
 pub(crate) fn read_bypass_llm_switch_at(path: &Path) -> bool {
-    let Ok(raw) = std::fs::read_to_string(path) else {
-        return true;
-    };
-    serde_json::from_str::<BotConfig>(&raw)
-        .map(|c| c.bypass_llm_on_pre_step_hit)
-        .unwrap_or(true)
+    with_config(path, "bypass 开关", true, |c| {
+        c.bypass_llm_on_pre_step_hit
+    })
 }
 
 /// 读 bot-config.json（不存在/解析失败回默认）。内部共用（bot_fs 白名单等）
@@ -232,18 +242,17 @@ pub(crate) fn load_config(app: &AppHandle) -> BotConfig {
     // 迁移钩子：老配置缺 schemaVersion → 补默认 + 写回（幂等，已迁移不写盘；
     // 失败不阻塞读取——本次仍按下面常规路径读，下次再试）
     let _ = schema::migrate_bot_config_schema(app);
-    let p = config_path(app);
-    if p.exists() {
-        if let Ok(raw) = std::fs::read_to_string(&p) {
-            if let Ok(mut cfg) = serde_json::from_str::<BotConfig>(&raw) {
-                // MCP env/headers 机密水合（文件里没有，值在 keyring/
-                // 降级文件；读失败留空 + stderr WARN，不炸配置加载）
-                crate::bot::mcp::secrets::hydrate_mcp_servers(app, &mut cfg);
-                return cfg;
-            }
-        }
-    }
-    BotConfig::default()
+    with_config(
+        &config_path(app),
+        "完整配置",
+        BotConfig::default(),
+        |mut cfg| {
+            // MCP env/headers 机密水合（文件里没有，值在 keyring/
+            // 降级文件；读失败留空 + stderr WARN，不炸配置加载）
+            crate::bot::mcp::secrets::hydrate_mcp_servers(app, &mut cfg);
+            cfg
+        },
+    )
 }
 
 /// MCP env/headers 明文 → keyring 迁移（设计

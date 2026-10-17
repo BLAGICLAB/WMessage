@@ -640,6 +640,46 @@ mod tests {
         assert_eq!(read_memory_control_at(&p), None, "损坏配置应全开而非 panic");
     }
 
+    /// 三个轻量读取器共用一个内核（`with_config`），失败语义必须一致：
+    /// 同一个坏文件上，三者各自回到文档承诺的默认值，不得有一个 panic、
+    /// 也不得有一个比另外两个更「聪明」——那正是合并前各写一份的漂移点。
+    #[test]
+    fn lightweight_readers_share_one_failure_semantics() {
+        use crate::memory::{MemoryControl, MemoryTuning};
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        // 文件缺失
+        assert_eq!(read_memory_control_at(&p), None);
+        assert_eq!(read_memory_tuning_at(&p), MemoryTuning::default());
+        assert!(read_bypass_llm_switch_at(&p));
+        // 同一个坏文件：三者都退回默认值
+        std::fs::write(&p, "{not json").unwrap();
+        assert_eq!(read_memory_control_at(&p), None);
+        assert_eq!(read_memory_tuning_at(&p), MemoryTuning::default());
+        assert!(read_bypass_llm_switch_at(&p));
+        // 同一份好文件：三者各取自己的字段，互不串味
+        std::fs::write(
+            &p,
+            r#"{"bypassLlmOnPreStepHit":false,"memoryControl":{"injectionEnabled":false},
+                "memoryTuning":{"injectionBudgetChars":99999999}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_memory_control_at(&p),
+            Some(MemoryControl {
+                injection_enabled: false,
+                ..MemoryControl::default()
+            })
+        );
+        // 超界值被钳到合法区间上沿（不是原值，也不是默认值）
+        let budget = read_memory_tuning_at(&p).injection_budget_chars;
+        assert!(
+            (MemoryTuning::default().injection_budget_chars..=8000).contains(&budget),
+            "99999999 应被钳制，实际 {budget}"
+        );
+        assert!(!read_bypass_llm_switch_at(&p));
+    }
+
     ///  记忆参数读取：缺字段/缺块/损坏 → 默认；超界值 → 钳制。
     #[test]
     fn read_memory_tuning_defaults_and_clamps() {
