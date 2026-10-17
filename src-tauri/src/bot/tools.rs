@@ -306,8 +306,7 @@ pub(crate) async fn tool_query_tasks(app: &AppHandle, args: &str) -> ToolResult 
     }
     let limit = parse_limit(&v);
     let Ok(tasks) = crate::db::db_load(app.clone()).await else {
-        // 「查询失败」首字是「查」，非 error/warn 前缀 → ok（与 query_single_task 同口径）
-        return ToolResult::ok("查询失败：数据库读取错误".to_string(), Vec::new());
+        return ToolResult::error("查询失败：数据库读取错误".to_string(), Vec::new());
     };
     let view = parse_view(v["view"].as_str(), has_query);
     let kw = raw_query.as_deref().unwrap_or("");
@@ -374,8 +373,7 @@ pub(crate) async fn tool_query_single_task(
         return ToolResult::ok("query_single_task id 不能为空".to_string(), Vec::new());
     }
     let Ok(tasks) = crate::db::db_load(app.clone()).await else {
-        // 「查询失败」首字是「查」，不是以「失败」开头；brief 要求机械首字符判定 → ok
-        return ToolResult::ok("查询失败：数据库读取错误".to_string(), Vec::new());
+        return ToolResult::error("查询失败：数据库读取错误".to_string(), Vec::new());
     };
     let Some(t) = tasks.iter().find(|t| t.id == id).cloned() else {
         return ToolResult::ok(format!("未找到 id={id} 的任务卡"), Vec::new());
@@ -1202,7 +1200,7 @@ pub(crate) async fn tool_link_file_to_task(
     let tasks = match crate::db::db_load(app.clone()).await {
         Ok(t) => t,
         Err(e) => {
-            return ToolResult::ok(format!("绑定失败：读取任务卡出错（{e}）"), Vec::new());
+            return ToolResult::error(format!("绑定失败：读取任务卡出错（{e}）"), Vec::new());
         }
     };
     let target = match resolve_task_key(&tasks, &key) {
@@ -1231,7 +1229,7 @@ pub(crate) async fn tool_link_file_to_task(
     next.expected_updated_at = next.updated_at;
     next.updated_at = Some(chrono::Utc::now().timestamp_millis());
     if let Err(e) = crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
-        return ToolResult::ok(format!("绑定落库失败：{e}"), Vec::new());
+        return ToolResult::error(format!("绑定落库失败：{e}"), Vec::new());
     }
     crate::bot::broadcast_after_mutation(app, vec![next.clone()], vec![]);
     // 「已绑定」首字「已」非 error/warn 前缀 → ok
@@ -1353,8 +1351,7 @@ pub(crate) async fn tool_extract_document(
                 Vec::new(),
             )
         }
-        // 「提取失败」首字「提」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("提取失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("提取失败：{e}"), Vec::new()),
     }
 }
 
@@ -1550,8 +1547,7 @@ pub(crate) async fn tool_create_word(
                 Vec::new(),
             )
         }
-        // 「生成失败」首字「生」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1676,8 +1672,7 @@ pub(crate) async fn tool_create_word_revisions(
             ),
             Vec::new(),
         ),
-        // 「生成失败」首字「生」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
 }
 pub(crate) async fn tool_create_excel(
@@ -1707,8 +1702,7 @@ pub(crate) async fn tool_create_excel(
                 Vec::new(),
             )
         }
-        // 「生成失败」首字「生」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1751,8 +1745,7 @@ pub(crate) async fn tool_create_ppt(
                 Vec::new(),
             )
         }
-        // 「生成失败」首字「生」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1808,8 +1801,7 @@ pub(crate) async fn tool_create_pdf(
                 Vec::new(),
             )
         }
-        // 「生成失败」首字「生」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("生成失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
 }
 
@@ -1848,8 +1840,7 @@ pub(crate) async fn tool_web_search(
     };
     match crate::bot_web::web_search_with_config(app, &query, &opts).await {
         Ok(results) => ToolResult::ok(results, Vec::new()),
-        // 「搜索失败」首字「搜」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("搜索失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("搜索失败：{e}"), Vec::new()),
     }
 }
 
@@ -1907,8 +1898,7 @@ pub(crate) async fn tool_fetch_url(
             // 抓取成功返回正文，首字符可能是任意 UTF-8 → ok
             ToolResult::ok(slice_fetch_output(&text, offset), Vec::new())
         }
-        // 「抓取失败」首字「抓」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("抓取失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("抓取失败：{e}"), Vec::new()),
     }
 }
 
@@ -1956,8 +1946,7 @@ pub(crate) async fn tool_run_python(
             // Python 执行输出，首字符可能是任意 UTF-8 → ok
             ToolResult::ok(out, Vec::new())
         }
-        // 「执行失败」首字「执」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("执行失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("执行失败：{e}"), Vec::new()),
     }
 }
 

@@ -668,8 +668,7 @@ pub async fn tool_create_skill(app: &AppHandle, args: &str) -> crate::bot::regis
                     crate::bot::escape_for_log(&e, 200)
                 ),
             );
-            // 失败文本首字不定（错误消息可能任意） → ok
-            ToolResult::ok(format!("创建失败：{e}"), Vec::new())
+            ToolResult::error(format!("创建失败：{e}"), Vec::new())
         }
     }
 }

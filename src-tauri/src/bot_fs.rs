@@ -1016,8 +1016,7 @@ pub async fn tool_edit_file(
     match out {
         Ok((before, applied, mode, delta, replacements)) => {
             if let Err(e) = crate::db::atomic_write(&write_target, &applied) {
-                // 「写回失败：」首字「写」非 error/warn 前缀 → ok
-                return ToolResult::ok(format!("写回失败：{e}"), Vec::new());
+                return ToolResult::error(format!("写回失败：{e}"), Vec::new());
             }
             let mode_note = match mode {
                 EditMode::Exact => "",
@@ -1175,7 +1174,7 @@ pub async fn tool_write_file(
             )
             .with_file_change(receipt)
         }
-        Err(e) => ToolResult::ok(format!("写入失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("写入失败：{e}"), Vec::new()),
     }
 }
 
@@ -1428,7 +1427,7 @@ pub async fn tool_read_text_file(
     let pre_ino = capture_pre_ino(&canonical).await;
     let (inode_check, is_binary) = match is_binary_file_with_ino_check(&canonical, pre_ino).await {
         Ok(r) => r,
-        Err(e) => return ToolResult::ok(format!("读取失败：{e}"), Vec::new()),
+        Err(e) => return ToolResult::error(format!("读取失败：{e}"), Vec::new()),
     };
     if inode_check == InodeCheckOutcome::Replaced {
         crate::bot::audit_log(
@@ -1458,8 +1457,7 @@ pub async fn tool_read_text_file(
         (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize).min(READ_MAX_LINES);
     let (raw, byte_truncated) = match read_capped_file(&canonical, READ_MAX_BYTES).await {
         Ok(r) => r,
-        // 「读取失败」首字「读」非「失败」前缀 → ok
-        Err(e) => return ToolResult::ok(format!("读取失败：{e}"), Vec::new()),
+        Err(e) => return ToolResult::error(format!("读取失败：{e}"), Vec::new()),
     };
     let text = String::from_utf8_lossy(&raw).to_string();
     let lines: Vec<&str> = text.lines().collect();

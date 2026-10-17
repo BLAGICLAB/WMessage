@@ -760,6 +760,77 @@ pub(crate) static BOT_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::ne
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归锁：文案会被 `classify_tool_failure` 判成失败的返回点，不得构造
+    /// `ok` / `warn` —— status 是成败唯一真相源，两者矛盾会让 Skill DSL 调度器、
+    /// trace span 与幻觉守卫把失败步骤记成成功。
+    ///
+    /// 「失败：/错误：」是这类文案的稳定形态（首字不必是「失败」，旧实现正是
+    /// 按首字机械判 ok 才积下这批矛盾）。跨行调用一并扫：多行 `format!` 的
+    /// 返回值同样落在构造器里，单行匹配会漏。
+    #[test]
+    fn failure_texted_results_never_use_ok_or_warn() {
+        fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            let Ok(rd) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    collect_rs(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        collect_rs(&root, &mut files);
+        assert!(!files.is_empty(), "应至少扫到一个 .rs 文件");
+
+        let mut offenders: Vec<String> = Vec::new();
+        for f in files {
+            let Ok(text) = std::fs::read_to_string(&f) else {
+                continue;
+            };
+            // 每个文件从首个 #[cfg(test)] 起是测试代码，不算生产调用点
+            let production = text
+                .split_once("#[cfg(test)]")
+                .map_or(text.as_str(), |(_, rest)| rest);
+            let lines: Vec<&str> = production.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                for ctor in ["ToolResult::ok(", "ToolResult::warn("] {
+                    if !line.contains(ctor) {
+                        continue;
+                    }
+                    let mut buf = (*line).to_string();
+                    let mut j = i;
+                    while buf.matches('(').count() > buf.matches(')').count()
+                        && j + 1 < lines.len()
+                        && j - i < 8
+                    {
+                        j += 1;
+                        buf.push('\n');
+                        buf.push_str(lines[j]);
+                    }
+                    if buf.contains("失败：") || buf.contains("错误：") {
+                        offenders.push(format!(
+                            "{}:{}: {}",
+                            f.strip_prefix(&root).unwrap_or(&f).display(),
+                            i + 1,
+                            buf.trim().lines().next().unwrap_or("").trim()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "文案含「失败：/错误：」的返回点不得构造 ok/warn，应改 ToolResult::error：\n{}",
+            offenders.join("\n")
+        );
+    }
+
     #[test]
     fn level_as_tag_three_levels() {
         assert_eq!(AuditLevel::Info.as_tag(), "INFO");

@@ -170,8 +170,7 @@ pub async fn tool_ast_inspect(
             // 探查结果首字符可能是任意 UTF-8 → ok
             ToolResult::ok(out, Vec::new())
         }
-        // 「探查失败」首字「探」非「失败」前缀 → ok
-        Err(e) => ToolResult::ok(format!("探查失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("探查失败：{e}"), Vec::new()),
     }
 }
 

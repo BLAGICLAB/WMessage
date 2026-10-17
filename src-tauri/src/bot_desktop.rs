@@ -58,10 +58,7 @@ pub async fn tool_reveal_path(
             // 「已在访达显示」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(format!("已在系统文件管理器中定位：{shown}"), Vec::new())
         }
-        Err(e) => {
-            // 「定位失败：」首字「定」非 error/warn 前缀 → ok
-            ToolResult::ok(format!("定位失败：{e}"), Vec::new())
-        }
+        Err(e) => ToolResult::error(format!("定位失败：{e}"), Vec::new()),
     }
 }
 
@@ -100,8 +97,7 @@ pub async fn tool_open_url(app: &AppHandle, args: &str) -> ToolResult {
             // 「已在浏览器打开」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(format!("已在默认浏览器打开：{shown}"), Vec::new())
         }
-        // 「打开失败：」首字「打」非 error/warn 前缀 → ok
-        Err(e) => ToolResult::ok(format!("打开失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("打开失败：{e}"), Vec::new()),
     }
 }
 
@@ -153,8 +149,7 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
                 Vec::new(),
             )
         }
-        // 「写入剪贴板失败：」首字「写」非 error/warn 前缀 → ok
-        Ok(Err(e)) => ToolResult::ok(format!("写入剪贴板失败：{e}"), Vec::new()),
+        Ok(Err(e)) => ToolResult::error(format!("写入剪贴板失败：{e}"), Vec::new()),
         // 「失败：剪贴板线程异常」以「失败」开头 → error（同截图线程异常口径）
         Err(e) => ToolResult::error(format!("失败：剪贴板线程异常：{e}"), Vec::new()),
     }
@@ -256,8 +251,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
         Ok(Ok(())) => {
             let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             if size == 0 {
-                // 「截图失败：产物为空」首字「截」非 error/warn 前缀 → ok
-                return ToolResult::ok(
+                return ToolResult::error(
                     "截图失败：产物文件为空（请检查屏幕录制权限）".to_string(),
                     Vec::new(),
                 );
@@ -277,7 +271,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
                 vec![out.display().to_string()],
             )
         }
-        Ok(Err(e)) => ToolResult::ok(format!("截图失败：{e}"), Vec::new()),
+        Ok(Err(e)) => ToolResult::error(format!("截图失败：{e}"), Vec::new()),
         // 「失败：截图线程异常」以「失败」开头 → error
         Err(e) => ToolResult::error(format!("失败：截图线程异常：{e}"), Vec::new()),
     }

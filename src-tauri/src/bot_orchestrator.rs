@@ -2272,7 +2272,7 @@ pub async fn tool_spawn_subagent(
     let onion_cfg = match v["onion"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
         Some(id) => match crate::bot_onions::load(app, id) {
             Ok(cfg) => Some(cfg),
-            Err(e) => return ToolResult::warn(format!("spawn 失败：{e}"), Vec::new()),
+            Err(e) => return ToolResult::error(format!("spawn 失败：{e}"), Vec::new()),
         },
         None => None,
     };
@@ -2283,7 +2283,7 @@ pub async fn tool_spawn_subagent(
     ) {
         Some(p) => p,
         None => {
-            return ToolResult::warn(
+            return ToolResult::error(
                 "spawn 失败：profile 必须是 research / coder / general 之一；或给 onion=配置档名；或给 stage=recon/executor/verifier 让系统按默认派生",
                 Vec::new(),
             );
@@ -2298,7 +2298,7 @@ pub async fn tool_spawn_subagent(
         })
         .unwrap_or_default();
     if criteria.is_empty() {
-        return ToolResult::warn(
+        return ToolResult::error(
             "spawn 失败：acceptanceCriteria 必填且每条可检验",
             Vec::new(),
         );
@@ -2346,7 +2346,7 @@ pub async fn tool_spawn_subagent(
             // 无卡：不挂 TaskRef（指向已不存在的卡，前端会渲染成死链）
             Vec::new(),
         ),
-        Err(e) => ToolResult::warn(format!("spawn 失败：{}", e.message()), Vec::new()),
+        Err(e) => ToolResult::error(format!("spawn 失败：{}", e.message()), Vec::new()),
     }
 }
 
@@ -2359,7 +2359,7 @@ pub async fn tool_check_subagent(app: &AppHandle, args: &str) -> crate::bot::reg
         .or_else(|| v["taskId"].as_str())
         .map(str::to_string);
     let Some(key) = key else {
-        return ToolResult::warn("check 失败：subagentId 与 taskId 至少提供一个", Vec::new());
+        return ToolResult::error("check 失败：subagentId 与 taskId 至少提供一个", Vec::new());
     };
     let wait_ms = v["waitMs"].as_u64().unwrap_or(0).min(CHECK_WAIT_MS_CAP);
     match check_subagent(app, &key, wait_ms).await {
@@ -2367,7 +2367,7 @@ pub async fn tool_check_subagent(app: &AppHandle, args: &str) -> crate::bot::reg
             serde_json::to_string(&state).unwrap_or_else(|_| state.status.as_str().to_string()),
             Vec::new(),
         ),
-        Err(e) => ToolResult::warn(format!("check 失败：{}", e.message()), Vec::new()),
+        Err(e) => ToolResult::error(format!("check 失败：{}", e.message()), Vec::new()),
     }
 }
 
@@ -2387,7 +2387,7 @@ pub async fn tool_cancel_subagent(
         .or_else(|| v["taskId"].as_str())
         .map(str::to_string);
     let Some(key) = key else {
-        return ToolResult::warn("cancel 失败：subagentId 与 taskId 至少提供一个", Vec::new());
+        return ToolResult::error("cancel 失败：subagentId 与 taskId 至少提供一个", Vec::new());
     };
     let reason = v["reason"].as_str().unwrap_or("主 agent 取消").to_string();
     match cancel_subagent_async(app, &key, &reason).await {
@@ -2403,7 +2403,7 @@ pub async fn tool_cancel_subagent(
             },
             Vec::new(),
         ),
-        Err(e) => ToolResult::warn(format!("cancel 失败：{}", e.message()), Vec::new()),
+        Err(e) => ToolResult::error(format!("cancel 失败：{}", e.message()), Vec::new()),
     }
 }
 
@@ -2424,7 +2424,7 @@ pub async fn tool_write_artifact_file(
     // 8MB 与 registry 长输出工具软上限同量级，报告/数据文件足够
     const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
     if content.len() > MAX_ARTIFACT_BYTES {
-        return ToolResult::warn(
+        return ToolResult::error(
             format!(
                 "写产物失败：content {} 字节超上限 {}（8MB）",
                 content.len(),
@@ -2454,7 +2454,7 @@ pub async fn tool_write_artifact_file(
         || filename.chars().any(|c| c.is_control())
         || WIN_RESERVED.contains(&stem_upper.as_str())
     {
-        return ToolResult::warn(
+        return ToolResult::error(
             "写产物失败：filename 必须是纯文件名（不含路径分隔符、`.`/`..`、控制字符；Windows 保留设备名亦拒绝）",
             Vec::new(),
         );
@@ -2470,7 +2470,7 @@ pub async fn tool_write_artifact_file(
     let dir = match canonical {
         Ok(p) => p,
         Err(e) => {
-            return ToolResult::warn(format!("写产物失败：产物目录不可用（{e}）"), Vec::new());
+            return ToolResult::error(format!("写产物失败：产物目录不可用（{e}）"), Vec::new());
         }
     };
     let filename = filename.to_string();
@@ -2509,8 +2509,8 @@ pub async fn tool_write_artifact_file(
             ),
             Vec::new(),
         ),
-        Ok(Err(e)) => ToolResult::warn(format!("写产物失败：{e}"), Vec::new()),
-        Err(e) => ToolResult::warn(format!("写产物失败：{e}"), Vec::new()),
+        Ok(Err(e)) => ToolResult::error(format!("写产物失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("写产物失败：{e}"), Vec::new()),
     }
 }
 
@@ -2564,9 +2564,9 @@ pub async fn tool_read_own_card(
     let row = match loaded {
         Ok(Some(r)) => r,
         Ok(None) => {
-            return ToolResult::warn("读契约失败：会话对应的 subagent 不在库中", Vec::new())
+            return ToolResult::error("读契约失败：会话对应的 subagent 不在库中", Vec::new())
         }
-        Err(e) => return ToolResult::warn(format!("读契约失败：{}", e.message()), Vec::new()),
+        Err(e) => return ToolResult::error(format!("读契约失败：{}", e.message()), Vec::new()),
     };
     let criteria: Vec<String> = row
         .acceptance_json

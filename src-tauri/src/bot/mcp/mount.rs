@@ -224,7 +224,7 @@ pub(crate) async fn execute_mcp_direct(
     match shared().call_tool(cfg, &mounted.tool_name, parsed).await {
         Ok(result) => {
             if result.is_error == Some(true) {
-                crate::bot::registry::ToolResult::warn(
+                crate::bot::registry::ToolResult::error(
                     format!("MCP 工具报告错误：\n{}", shape_result_text(&result)),
                     Vec::new(),
                 )
@@ -232,9 +232,7 @@ pub(crate) async fn execute_mcp_direct(
                 crate::bot::registry::ToolResult::ok(shape_result_text(&result), Vec::new())
             }
         }
-        // 失败走 ok 文本返回（severity classifier 误判 fatal 防御，与仓库惯例一致）；
-        // 首字「MCP」非 error/warn 前缀，机械判定按 ok 处理
-        Err(e) => crate::bot::registry::ToolResult::ok(format!("MCP 调用失败：{e}"), Vec::new()),
+        Err(e) => crate::bot::registry::ToolResult::error(format!("MCP 调用失败：{e}"), Vec::new()),
     }
 }
 

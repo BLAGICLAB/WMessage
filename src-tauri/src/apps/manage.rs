@@ -632,7 +632,7 @@ pub async fn tool_apps_list(app: &AppHandle, _args: &str) -> ToolResult {
             }
             ToolResult::ok(s, Vec::new())
         }
-        Err(e) => ToolResult::ok(format!("读取程序列表失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("读取程序列表失败：{e}"), Vec::new()),
     }
 }
 
@@ -726,7 +726,7 @@ pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::escape_for_log(&e, 200)
                 ),
             );
-            ToolResult::ok(format!("创建失败：{e}"), Vec::new())
+            ToolResult::error(format!("创建失败：{e}"), Vec::new())
         }
     }
 }
@@ -817,7 +817,7 @@ pub async fn tool_apps_update_files(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::escape_for_log(&e, 200)
                 ),
             );
-            ToolResult::ok(format!("更新失败：{e}"), Vec::new())
+            ToolResult::error(format!("更新失败：{e}"), Vec::new())
         }
     }
 }
