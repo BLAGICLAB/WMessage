@@ -443,17 +443,28 @@ pub(crate) fn import_items(
     Ok(report)
 }
 
-/// 导入便捷入口（单测用）：json → 解析 → 前置校验+预嵌入 → 逐条导入
-#[cfg(test)]
+/// 导入核心：json → 解析 → 条数上限校验 → 前置校验+预嵌入 → 逐条导入。
+///
+/// 生产和单测共用一份：`mem_import` 只多一层文件 IO 与体积上限，解析与落库全走这里。
+/// （此前这是两段各写一遍的代码——生产版多传 `StoreParams`、测试版硬编码
+/// `StoreParams::default()`，改导入语义要记得改两处。）
+/// 条数上限也收在这里：解析后立刻判，避免同一份 JSON 被解析两遍。
 pub(crate) fn import_core(
     conn: &rusqlite::Connection,
     json: &str,
     reembed: &dyn Fn(&str) -> Option<Vec<f32>>,
     now_ms: i64,
+    sp: &store::StoreParams,
 ) -> Result<MemImportReport, String> {
     let file = parse_import(json)?;
+    if file.items.len() > MEM_IMPORT_MAX_ITEMS {
+        return Err(format!(
+            "导入条目过多（{} 条，上限 {MEM_IMPORT_MAX_ITEMS} 条）",
+            file.items.len()
+        ));
+    }
     let (prepared, skipped) = prepare_import_items(&file.items, reembed);
-    let mut report = import_items(conn, &prepared, now_ms, &store::StoreParams::default())?;
+    let mut report = import_items(conn, &prepared, now_ms, sp)?;
     report.skipped += skipped;
     Ok(report)
 }
@@ -541,20 +552,10 @@ pub async fn mem_import(app: AppHandle, path: String) -> CommandResult<MemImport
             ));
         }
         let json = std::fs::read_to_string(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
-        let file = parse_import(&json)?;
-        if file.items.len() > MEM_IMPORT_MAX_ITEMS {
-            return Err(format!(
-                "导入条目过多（{} 条，上限 {MEM_IMPORT_MAX_ITEMS} 条）",
-                file.items.len()
-            ));
-        }
-        let (prepared, skipped) = prepare_import_items(&file.items, &|t| embed::embed_text(t));
         let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app));
         let _g = lock_db();
         let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-        let mut report = import_items(&conn, &prepared, now_ms(), &sp)?;
-        report.skipped += skipped;
-        Ok(report)
+        import_core(&conn, &json, &|t| embed::embed_text(t), now_ms(), &sp)
     })
     .await;
     r.map_err(|e| CommandError::from(format!("记忆导入线程 join 失败：{e}")))?
@@ -840,7 +841,14 @@ mod tests {
         let json = serde_json::to_string_pretty(&file).unwrap();
         // 导入端：空库首导 → 新增；原样重导同一文件 → 语义去重合并（幂等，不堆积）
         let dest = mem_db();
-        let report = import_core(&dest, &json, &|_| None, 6_000).unwrap();
+        let report = import_core(
+            &dest,
+            &json,
+            &|_| None,
+            6_000,
+            &store::StoreParams::default(),
+        )
+        .unwrap();
         assert_eq!(
             report,
             MemImportReport {
@@ -849,7 +857,14 @@ mod tests {
                 skipped: 0,
             }
         );
-        let report2 = import_core(&dest, &json, &|_| None, 7_000).unwrap();
+        let report2 = import_core(
+            &dest,
+            &json,
+            &|_| None,
+            7_000,
+            &store::StoreParams::default(),
+        )
+        .unwrap();
         assert_eq!(
             report2,
             MemImportReport {
@@ -964,6 +979,7 @@ mod tests {
                 Some(onehot(3 + n as usize))
             },
             2_000,
+            &store::StoreParams::default(),
         )
         .unwrap();
         assert_eq!(*reembed_calls.lock().unwrap(), 2, "预嵌入只收内容合法条目");
@@ -994,7 +1010,14 @@ mod tests {
             r#"{{"version":{},"exportedAt":1,"count":0,"items":[]}}"#,
             MEM_EXPORT_VERSION + 1
         );
-        let err = import_core(&conn, &file, &|_| None, 1_000).unwrap_err();
+        let err = import_core(
+            &conn,
+            &file,
+            &|_| None,
+            1_000,
+            &store::StoreParams::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("版本过新"), "{err}");
     }
 }

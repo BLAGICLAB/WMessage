@@ -26,8 +26,7 @@ use crate::intent_router::RouteAction;
 use crate::mutation::MutationOrigin;
 use crate::prompt_builder::{PromptSlot, SystemPromptBuilder};
 use crate::prompts::{
-    COMPACT_SYSTEM_PROMPT, EXECUTE_SYSTEM_PROMPT, REFLECTION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT,
-    SYSTEM_PROMPT,
+    COMPACT_SYSTEM_PROMPT, EXECUTE_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT, SYSTEM_PROMPT,
 };
 
 use base64::engine::general_purpose::STANDARD as B64;
@@ -206,19 +205,6 @@ pub(crate) fn normalize_user_input(messages: &mut [ChatMsg]) -> Option<Normalize
     }
 }
 
-/// 截断聊天历史到字符预算内：最旧的先丢，永远保留最后一条（本轮用户消息）。
-/// 返回 (保留的消息, 丢弃条数)。
-/// 生产路径走 truncate_chat_history_with_summary
-/// （截断即摘要），本函数仅剩单测使用——保留作为截断语义的回归基准。
-#[cfg(test)]
-pub(crate) fn truncate_chat_history(
-    messages: Vec<ChatMsg>,
-    budget: usize,
-) -> (Vec<ChatMsg>, usize) {
-    let keep_from = truncate_split_point(&messages, budget);
-    (messages.into_iter().skip(keep_from).collect(), keep_from)
-}
-
 /// 截断即摘要编排内核（注入摘要器，mock LLM 测试可全链路驱动）：
 /// 超预算时对「将被丢弃的消息」调一次摘要；返回 (保留的消息, 摘要, 丢弃条数)。
 /// 摘要失败/为空 → summary=None，调用方静默退回直接丢弃的原行为。
@@ -249,7 +235,7 @@ where
 }
 
 /// 截断即摘要（设计 5.2）生产薄壳：
-/// 超预算时先生成摘要并落库（含 Reflection 触发），返回 (保留的消息, 带
+/// 超预算时先生成摘要并落库，返回 (保留的消息, 带
 /// 「[早前对话摘要]」前缀的摘要内容, 丢弃条数)；LLM/落库任何一步失败都退回
 /// 直接丢弃，绝不阻塞或弄挂主对话流程。
 pub(crate) async fn truncate_chat_history_with_summary(
@@ -264,7 +250,7 @@ pub(crate) async fn truncate_chat_history_with_summary(
         })
         .await;
     if let Some(summary) = &summary {
-        persist_summary_and_reflect(app, session_id, summary).await;
+        persist_summary(app, session_id, summary).await;
     }
     (
         kept,
@@ -273,41 +259,11 @@ pub(crate) async fn truncate_chat_history_with_summary(
     )
 }
 
-/// 摘要落库 + Reflection 触发（设计 5.2/7.3）：全失败兜底——任何一步出错只记
-/// 审计不重试不影响对话（摘要已在本轮历史里，落库丢了下轮截断还会再摘要）。
-/// summary/reflection 写入 mem_items 并嵌入向量。
-async fn persist_summary_and_reflect(app: &AppHandle, session_id: Option<&str>, summary: &str) {
-    let batch = match crate::memory::save_summary(app, session_id, summary).await {
-        Ok(b) => b,
-        Err(e) => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.summary_save_failed",
-                "error" => e.message());
-            return;
-        }
-    };
-    // Reflection（设计 7.3）：summary 攒够 10 条 → 最旧 10 条合成一条 reflection
-    //（importance=3）后删原摘要；合成失败跳过，原摘要保留等下次
-    if batch.len() < crate::db::REFLECTION_BATCH as usize {
-        return;
-    }
-    let msgs: Vec<ChatMsg> = batch
-        .iter()
-        .map(|(_, v)| ChatMsg {
-            role: "user".into(),
-            content: v.clone(),
-        })
-        .collect();
-    let text = match summarize_messages(app, REFLECTION_SYSTEM_PROMPT, &msgs).await {
-        Ok(t) => t,
-        Err(e) => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.reflection_failed",
-                "error" => e.message());
-            return;
-        }
-    };
-    let ids: Vec<String> = batch.into_iter().map(|(id, _)| id).collect();
-    if let Err(e) = crate::memory::apply_reflection(app, ids, text).await {
-        crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.reflection_save_failed",
+/// 摘要落库（设计 5.2）：全失败兜底——出错只记审计不重试不影响对话
+/// （摘要已在本轮历史里，落库丢了下轮截断还会再摘要）。
+async fn persist_summary(app: &AppHandle, session_id: Option<&str>, summary: &str) {
+    if let Err(e) = crate::memory::save_summary(app, session_id, summary).await {
+        crate::audit_event!(app, crate::audit::AuditLevel::Warn, "memory.summary_save_failed",
             "error" => e.message());
     }
 }
@@ -2370,6 +2326,18 @@ mod bot_chat_pure_helpers_tests {
         }
     }
 
+    /// 不调摘要器的截断内核 = 纯截断语义（mock summarizer 返 Err）
+    async fn truncate_only(messages: Vec<ChatMsg>, budget: usize) -> (Vec<ChatMsg>, usize) {
+        let (kept, _summary, dropped) = truncate_with_summary_core(messages, budget, |_m| async {
+            Err(CommandError::DomainRule {
+                domain: "test".to_string(),
+                reason: "本测试不摘要".to_string(),
+            })
+        })
+        .await;
+        (kept, dropped)
+    }
+
     #[test]
     fn truncate_chat_history_within_budget_unchanged() {
         let msgs = vec![
@@ -2377,7 +2345,7 @@ mod bot_chat_pure_helpers_tests {
             msg("assistant", "在的"),
             msg("user", "列任务"),
         ];
-        let (kept, dropped) = truncate_chat_history(msgs, 100);
+        let (kept, dropped) = futures::executor::block_on(truncate_only(msgs, 100));
         assert_eq!(dropped, 0);
         assert_eq!(kept.len(), 3);
     }
@@ -2390,7 +2358,7 @@ mod bot_chat_pure_helpers_tests {
             msg("assistant", &long),
             msg("user", &long),
         ];
-        let (kept, dropped) = truncate_chat_history(msgs, 100);
+        let (kept, dropped) = futures::executor::block_on(truncate_only(msgs, 100));
         assert_eq!(dropped, 2, "超预算时最旧的先丢，dropped 数应正确");
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].role, "user");
@@ -2399,7 +2367,7 @@ mod bot_chat_pure_helpers_tests {
     #[test]
     fn truncate_chat_history_keeps_last_even_over_budget() {
         let msgs = vec![msg("user", &"x".repeat(200))];
-        let (kept, dropped) = truncate_chat_history(msgs, 10);
+        let (kept, dropped) = futures::executor::block_on(truncate_only(msgs, 10));
         assert_eq!(dropped, 0, "最后一条（本轮用户消息）永远保留");
         assert_eq!(kept.len(), 1);
     }

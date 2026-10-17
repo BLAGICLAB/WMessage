@@ -472,7 +472,14 @@ mod tests {
             ApplyOutcome::AlreadyPresent,
             "同 proposal_id 第二次应用必须幂等跳过"
         );
-        assert_eq!(store::count_by_kind(&conn, "lesson").unwrap(), 1);
+        let lesson_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM mem_items WHERE kind = 'lesson'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(lesson_count, 1, "幂等跳过时不应写出第二条 lesson");
     }
 
     // 回滚

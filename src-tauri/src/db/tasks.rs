@@ -280,9 +280,6 @@ pub fn upsert_files_to_task(t: &mut Task, additions: Vec<TaskFile>) -> (usize, u
     (applied, overflow)
 }
 
-/// Reflection 触发阈值/批量：summary 攒够 10 条合成一条 reflection
-pub const REFLECTION_BATCH: i64 = 10;
-
 /// 写冲突错误前缀——RMW 基线比对失败（lost-update 防护拒写）
 pub const CONFLICT_ERR_PREFIX: &str = "写冲突";
 

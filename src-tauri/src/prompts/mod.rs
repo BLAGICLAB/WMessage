@@ -21,7 +21,6 @@ mod consolidate;
 mod execute;
 mod extract;
 mod planner;
-mod reflection;
 mod selfcheck;
 mod subagent;
 mod summary;
@@ -31,7 +30,6 @@ pub(crate) use consolidate::CONSOLIDATE_PROMPT;
 pub(crate) use execute::{EXECUTE_SYSTEM_PROMPT, STEPWISE_ADDENDUM};
 pub(crate) use extract::{ADJUDICATE_PROMPT, EXTRACT_PROMPT};
 pub(crate) use planner::{PLANNER_PROMPT, REPLANNER_PROMPT};
-pub(crate) use reflection::REFLECTION_SYSTEM_PROMPT;
 pub(crate) use selfcheck::{
     parse_selfcheck_reply_lenient, parse_selfcheck_response, FINAL_SELFCHECK_PROMPT,
     SELFCHECK_PROMPT,
@@ -52,7 +50,6 @@ mod tests {
         ("SYSTEM_PROMPT", SYSTEM_PROMPT),
         ("SUMMARY_SYSTEM_PROMPT", SUMMARY_SYSTEM_PROMPT),
         ("COMPACT_SYSTEM_PROMPT", COMPACT_SYSTEM_PROMPT),
-        ("REFLECTION_SYSTEM_PROMPT", REFLECTION_SYSTEM_PROMPT),
         ("SELFCHECK_PROMPT", SELFCHECK_PROMPT),
         ("EXECUTE_SYSTEM_PROMPT", EXECUTE_SYSTEM_PROMPT),
         ("STEPWISE_ADDENDUM", STEPWISE_ADDENDUM),
@@ -74,7 +71,7 @@ mod tests {
 
     #[test]
     fn all_prompts_are_registered_and_non_empty() {
-        assert_eq!(ALL.len(), 21, "prompt 清单与实际常量数不一致（新增请登记）");
+        assert_eq!(ALL.len(), 20, "prompt 清单与实际常量数不一致（新增请登记）");
         for (name, p) in ALL {
             assert!(
                 p.chars().count() >= 30,

@@ -596,35 +596,7 @@ pub fn delete_by_key_tag(conn: &rusqlite::Connection, key: &str) -> Result<bool,
         .map_err(|e| e.to_string())
 }
 
-/// 指定 kind 条数（Reflection 触发判定）
-pub fn count_by_kind(conn: &rusqlite::Connection, kind: &str) -> Result<i64, String> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM mem_items WHERE kind = ?1",
-        rusqlite::params![kind],
-        |r| r.get(0),
-    )
-    .map_err(|e| e.to_string())
-}
-
-/// 最旧 n 条指定 kind（Reflection 取最旧 10 条 summary），返回 (id, content)
-pub fn oldest_by_kind(
-    conn: &rusqlite::Connection,
-    kind: &str,
-    n: i64,
-) -> Result<Vec<(String, String)>, String> {
-    conn.prepare(
-        "SELECT id, content FROM mem_items WHERE kind = ?1 ORDER BY created_at ASC LIMIT ?2",
-    )
-    .and_then(|mut s| {
-        s.query_map(rusqlite::params![kind, n], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })
-        .map(|iter| iter.filter_map(|r| r.ok()).collect::<Vec<_>>())
-    })
-    .map_err(|e| e.to_string())
-}
-
-/// 按 id 批量删除（Reflection 合成后清原摘要）
+/// 按 id 批量删除（记忆整理的 merge / contradiction 落空条目时清理）
 pub fn delete_by_ids(conn: &rusqlite::Connection, ids: &[String]) -> Result<usize, String> {
     let mut n = 0;
     for id in ids {

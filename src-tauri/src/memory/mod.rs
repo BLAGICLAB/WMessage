@@ -815,19 +815,23 @@ pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(
     }
 }
 
-// 摘要/反思流水线（截断即摘要 → mem_items）
+// 摘要落库（截断即摘要 → mem_items）
 
-/// 摘要落库（v2）：kind=summary, importance=2, source=model_inferred，带嵌入向量。
-/// 返回落库后最旧的 REFLECTION_BATCH 条 summary（id, content），供 Reflection 触发判定。
+/// 摘要落库：kind=summary, importance=2, source=model_inferred，带嵌入向量。
+///
+/// 落库后由 `rank::injection_snapshot_with` 的「近期摘要」段注入下轮上下文
+/// （最近 3 条 summary/reflection）。这里不再做二次合成——记忆整理
+/// （`consolidate::run_consolidation`）的 distill 已经覆盖「多条摘要 → 一条
+/// 反思」，而且做得更好（有幻觉 id 点查、事务化、且真的在跑）。
 pub async fn save_summary(
     app: &AppHandle,
     session_id: Option<&str>,
     summary: &str,
-) -> CommandResult<Vec<(String, String)>> {
+) -> CommandResult<()> {
     let app = app.clone();
     let session_id = session_id.map(|s| s.to_string());
     let summary = truncate_chars(summary.trim(), MAX_CONTENT_CHARS, false);
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<(String, String)>, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let emb = embed::embed_text(&summary);
         let _g = crate::db::lock::lock_or_recover(
             &crate::db::DB_WRITE_LOCK,
@@ -853,50 +857,10 @@ pub async fn save_summary(
             now_ms(),
             &store::StoreParams::of(&tuning),
         )?;
-        store::oldest_by_kind(&conn, "summary", crate::db::REFLECTION_BATCH)
+        Ok(())
     })
     .await
     .map_err(|e| CommandError::from(format!("记忆写入线程 join 失败：{e}")))?
-    .map_err(CommandError::DbError)
-}
-
-/// Reflection 落库（v2）：插入 kind=reflection, importance=3，与被合并的原 summary
-/// 删除放在同一事务（半完成不留中间态）。
-pub async fn apply_reflection(
-    app: &AppHandle,
-    delete_ids: Vec<String>,
-    text: String,
-) -> CommandResult<()> {
-    let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let emb = embed::embed_text(&text);
-        let _g = crate::db::lock::lock_or_recover(
-            &crate::db::DB_WRITE_LOCK,
-            "memory::mod DB_WRITE_LOCK",
-        );
-        let mut conn = crate::db::open_db(&app)?;
-        store::ensure_table(&conn)?;
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        let item = NewItem {
-            kind: "reflection".to_string(),
-            content: truncate_chars(text.trim(), MAX_CONTENT_CHARS, false),
-            tags: vec!["reflection".to_string()],
-            importance: 3,
-            source: "model_inferred".to_string(),
-        };
-        let tuning = crate::bot::read_memory_tuning(&app);
-        store::insert_item_with(
-            &tx,
-            &item,
-            emb.as_deref(),
-            now_ms(),
-            &store::StoreParams::of(&tuning),
-        )?;
-        store::delete_by_ids(&tx, &delete_ids)?;
-        tx.commit().map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("Reflection 写入线程 join 失败：{e}")))?
     .map_err(CommandError::DbError)
 }
 
