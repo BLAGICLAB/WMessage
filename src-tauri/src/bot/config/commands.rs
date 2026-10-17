@@ -541,7 +541,7 @@ mod evolution_preserve_tests {
         let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();
         assert!(incoming.evolution.is_none());
         let disk: BotConfig = serde_json::from_str(
-            r#"{"evolution":{"kill_switch":{"all_auto_apply":false},"activation_state":"s0_observe"}}"#,
+            r#"{"evolution":{"kill_switch":{"all_auto_apply":false,"max_per_day":5}}}"#,
         )
         .unwrap();
         preserve_evolution(&mut incoming, &disk);
@@ -549,9 +549,10 @@ mod evolution_preserve_tests {
             incoming
                 .evolution
                 .as_ref()
-                .and_then(|v| v.get("activation_state"))
-                .and_then(|v| v.as_str()),
-            Some("s0_observe")
+                .and_then(|v| v.get("kill_switch"))
+                .and_then(|v| v.get("max_per_day"))
+                .and_then(|v| v.as_i64()),
+            Some(5)
         );
         // 盘上没有 → 前端即便带了也清掉（该块只归 evolution 模块写，设置页无编辑入口）
         let mut incoming2: BotConfig = serde_json::from_str("{}").unwrap();

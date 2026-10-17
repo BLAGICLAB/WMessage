@@ -175,7 +175,7 @@ pub fn proposal_id(category: ProposalCategory, target: &ProposalTarget, summary:
 /// - High impact：不可逆（高风险需人工确认）
 /// - 其他：可逆
 ///
-/// shadow 路径和 activation 路由都依赖它；放 proposal.rs 是其本体属性。
+/// 可逆性是 proposal 的本体属性，放 proposal.rs；应用侧按它决定是否需要人工确认。
 pub fn is_reversible(p: &EvolutionProposal) -> bool {
     if matches!(p.category, ProposalCategory::ToolSchemaHint) {
         return false;

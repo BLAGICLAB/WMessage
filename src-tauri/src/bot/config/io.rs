@@ -839,8 +839,7 @@ mod tests {
             "model": "m",
             "evolution": {
                 "kill_switch": {"all_auto_apply": false},
-                "activation": {"mode": "calibrating", "min_occurrences": null, "min_proposals": null},
-                "activation_state": "s0_observe"
+                "unknown_block": {"nested": [1, 2]}
             }
         }"#;
         let cfg: BotConfig = serde_json::from_str(raw).unwrap();
@@ -851,13 +850,11 @@ mod tests {
             back["evolution"]["kill_switch"]["all_auto_apply"],
             serde_json::json!(false)
         );
+        // BotConfig 不解构 evolution 块（Option<Value> 原样透传），所以「未知 key
+        // 也会丢」正是这条回归要防的——用真会被解构器吃掉的 key 才有探测力
         assert_eq!(
-            back["evolution"]["activation"]["mode"],
-            serde_json::json!("calibrating")
-        );
-        assert_eq!(
-            back["evolution"]["activation_state"],
-            serde_json::json!("s0_observe")
+            back["evolution"]["unknown_block"]["nested"],
+            serde_json::json!([1, 2])
         );
         // RMW 语义（update_config_file/persist_last_run 同构：load → 改别处 → 写回）：
         // 二次反序列化再序列化，块仍不丢

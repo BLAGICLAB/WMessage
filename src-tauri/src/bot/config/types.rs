@@ -203,8 +203,7 @@ pub struct BotConfig {
     /// None = 老配置无此字段 = 未配置任何服务器。结构见 bot::mcp::config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mcp_servers: Option<Vec<crate::bot::mcp::config::McpServerConfig>>,
-    /// 自进化块原样透传：evolution/activation 配置由 evolution/ 模块
-    /// 自己的读取器解析（kill_switch / activation.mode / activation_state），
+    /// 自进化块原样透传：evolution/ 模块自己的读取器解析（kill_switch），
     /// BotConfig 不解构只保真——此前未知字段被 serde 静默丢弃，设置页任意一次
     /// 写盘（bot_set_config / update_config_file / persist_last_run）都会把
     /// evolution 块写丢。bot_set_config 是前端整体替换写（视图不含此块），
