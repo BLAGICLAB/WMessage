@@ -1227,11 +1227,16 @@ where
     // 补一轮机会（claim_retry）同样每次对话只用一次
     let mut mutation_done: bool = false;
     let mut claim_retry_used: bool = false;
-    // 执行类谎报守卫的会话级前置：本次对话是否**有任何**工具成功返回过。
-    // 与 mutation_done 同样的会话级一次置位、不按轮重置（工具结果跨轮转述是
-    // 常态），但口径更宽——任意工具成功即置位，只有「整场零工具调用」这一种
-    // 病态形态才拦，避免把「读了文件再汇报结果」这类正常轮次打回。
+    // 执行类谎报守卫的前置：本次**用户回合**内是否**有任何**工具成功返回过。
+    // 作用域是单次 run_model_loop_core 调用（bot_chat 每条用户消息调一次），
+    // 不是整个会话——会话级会让第一条消息跑过一次工具之后，之后每一条的零调用
+    // 谎报都永久放行。
+    // 口径比 mutation_done 宽：任意工具成功即置位，只有「本回合零工具成功」
+    // 这一种病态形态才拦，避免把「读了文件再汇报结果」这类正常轮次打回。
     let mut any_tool_succeeded: bool = false;
+    // 本回合是否**发起过**工具调用（不论成败）。与 succeeded 配对才能分出
+    // 「从没调过工具」与「调了但全失败」——两者要给的返工指令不同。
+    let mut any_tool_attempted: bool = false;
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
     // PREVR 第 1 层：工具失败检测——同工具连续失败计数，
@@ -2040,19 +2045,25 @@ where
             }
             let fake_gen_path = fabricated_gen_path(&final_text);
             let claim_mutation = !mutation_done && claims_mutation(&final_text);
-            // 执行类谎报：整场一次工具都没成功过，终稿却在叙述执行结果。此前守卫
-            // 只有 mutating 一档，run_python / fetch_url 这类非 mutating 工具可以
-            // 被凭空叙述——实测原话「执行完毕，sleep 120 秒后工具真实返回，
-            // 打印了 done」，对应 trace turns=0 tools=0、耗时 1.9 秒。
+            // 执行类谎报：本回合零工具成功，终稿却在叙述执行结果。此前守卫只有
+            // mutating 一档，run_python / fetch_url 这类非 mutating 工具可以被凭空
+            // 叙述——实测两起：原话一「执行完毕，sleep 120 秒后工具真实返回，打印了
+            // done」，原话二「完成计划2 步：第一步触发 ModuleNotFoundError，第二步仍
+            // 输出 done」，两条对应 trace 都是 turns=0 tools=0、耗时 1.9s/1.8s。
             let claim_execution = !any_tool_succeeded && claims_execution(&final_text);
             if !claim_retry_used
                 && (claim_mutation || claim_execution || fake_gen_path.is_some())
             {
                 claim_retry_used = true;
+                // 返工指令按「为什么没有凭证」分岔（对应双凭证方案的状态分岔重试）：
+                // 从没发起过 vs 发起过但全失败，要说的不是同一句话。合并成一条
+                // 等于让模型猜自己该补哪一步。
                 audit_log(&format!(
                     "hallucination_guard | {}: {}",
-                    if claim_execution {
-                        "声称已执行但整场零工具调用"
+                    if claim_execution && !any_tool_attempted {
+                        "声称已执行但本回合零工具调用"
+                    } else if claim_execution {
+                        "声称已执行但工具全部失败"
                     } else if fake_gen_path.is_some() {
                         "声称已生成但路径不存在"
                     } else {
@@ -2060,15 +2071,17 @@ where
                     },
                     crate::bot::truncate_for_log(&final_text, 100)
                 ));
-                let reason = match (&fake_gen_path, claim_execution) {
-                    (Some(p), _) => {
+                let reason = match (&fake_gen_path, claim_execution, any_tool_attempted) {
+                    (Some(p), _, _) => {
                         format!("你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。")
                     }
-                    (None, true) => {
-                        "你刚才叙述了一次已完成的执行并给出了结果，但本次对话从头到尾没有任何工具调用成功——这个结果是编造的。"
-                            .to_string()
+                    (None, true, false) => {
+                        "你刚才叙述了一次已完成的执行并给出了结果，但本回合你从未发起过任何工具调用——这个结果是编造的。".to_string()
                     }
-                    (None, false) => {
+                    (None, true, true) => {
+                        "你刚才叙述了一次已完成的执行并给出了结果，但本回合发起的工具调用全部失败，没有任何成功返回——这个结果不是真实执行得来的。".to_string()
+                    }
+                    (None, false, _) => {
                         "你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。"
                             .to_string()
                     }
@@ -2077,7 +2090,7 @@ where
                 // 执行类（含 run_python / bash / fetch_url）点不全也不该点名——
                 // 该做的是把工具真正调起来，拿不到结果就如实说拿不到。
                 let remedy = if claim_execution && fake_gen_path.is_none() {
-                    "请立即调用对应工具实际执行并如实转述它的真实返回；若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
+                    "请立即发起 tool_call 实际执行，禁止只改文字糊弄；拿到真实返回后再如实转述（失败就如实报失败）。若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
                 } else {
                     "请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。".to_string()
                 };
@@ -2388,6 +2401,7 @@ where
             }
             // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
             let failed = !tool_outcome.status.is_success();
+            any_tool_attempted = true;
             // 任意工具成功即置位（执行类谎报守卫的前置）。按结果而非按调用置位：
             // 被门禁拦下/用户拒绝的调用没产出任何可转述的东西，模型若照着它
             // 编结果，守卫还得拦得住。
@@ -2936,6 +2950,48 @@ mod hallucination_guard_tests {
         assert!(!claims_execution("分析已完成，结论如下"));
         assert!(!claims_execution("已完成搜索，找到 3 条结果"));
         assert!(!claims_execution(""));
+    }
+
+    #[test]
+    fn claims_execution_catches_step_narrated_fabrication() {
+        // 实机抓到的漏网原话（trace 51 turns=0 tools=0 ms=1852）：用户点名 run_python
+        // 要它 import 一个不存在的模块再打印，模型零工具调用，却报出完整的两步执行、
+        // ModuleNotFoundError 原文和 stdout。窄词表（「已执行」家族）全不命中，
+        // 分步叙述这一族才拦得住。
+        assert!(claims_execution(
+            "完成计划2 步：第一步 `import nosuchmodule_zzz` 触发 `ModuleNotFoundError: \
+             No module named 'nosuchmodule_zzz'`，第二步 `print(\"done\")` 仍输出 `done`\
+             （异常已捕获，未中断程序）。"
+        ));
+        // 同一族的其他形态
+        assert!(claims_execution("完成计划两步，结果如上"));
+        assert!(claims_execution("已运行步骤，输出如下"));
+    }
+
+    #[test]
+    fn claims_execution_passes_code_explanation_without_tool_call() {
+        // 零工具调用轮里最常见的正当内容：讲代码 / 讲步骤 / 讲将来时。这批是
+        // 扩词表后最可能被误伤的一类，逐条钉住——其中「运行抛出异常时…」是
+        // 扩词表当场被测试打回来才砍掉的（见 registry 词表末尾的不收清单）。
+        assert!(!claims_execution(
+            "这段代码在 `import nosuchmodule_zzz` 处会抛出 ModuleNotFoundError，\
+             因为环境里没装这个模块。"
+        ));
+        assert!(!claims_execution(
+            "可以分两步做：第一步安装依赖，第二步运行脚本即可。"
+        ));
+        assert!(!claims_execution(
+            "如果你在这里抛出异常，外层会捕获并继续。"
+        ));
+        assert!(!claims_execution("运行抛出异常时该脚本会非零退出。"));
+        assert!(!claims_execution("任务执行完成后会发通知给你。"));
+        assert!(!claims_execution("等运行完成后再刷新页面。"));
+        assert!(!claims_execution("每步骤执行完成后记录一条日志。"));
+        assert!(!claims_execution("计划分三步：需求分析、开发、测试。"));
+        assert!(!claims_execution("按这个计划完成后续两项工作。"));
+        assert!(!claims_execution(
+            "这段代码会打印 done 吗？不会，它只在导入失败时退出。"
+        ));
     }
 
     #[test]

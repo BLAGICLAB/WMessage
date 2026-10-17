@@ -2938,7 +2938,7 @@ async fn core_execution_claim_without_any_tool_call_is_pushed_back() {
     assert!(
         lines
             .iter()
-            .any(|l| l.contains("声称已执行但整场零工具调用")),
+            .any(|l| l.contains("声称已执行但本回合零工具调用")),
         "应记执行类谎报审计：{lines:?}"
     );
 }
@@ -3003,4 +3003,128 @@ async fn core_honest_refusal_without_tool_call_ends_immediately() {
     .expect("如实拒绝应直接 Ok");
     assert!(text.contains("不在白名单"), "应原样返回模型的拒绝说明");
     assert_eq!(server.request_count(), 1, "如实拒绝不该被守卫多打一轮");
+}
+
+/// 实机抓到的第二起漏网：模型零工具调用，却用「分步叙述」报出完整的两步执行、
+/// 异常原文和 stdout。窄词表（「已执行」家族）全不命中，扩表后必须打回。
+#[tokio::test]
+async fn core_step_narrated_execution_fabrication_is_pushed_back() {
+    let server = MockLlmServer::start();
+    // 第 1 轮：trace 51 的原话
+    server.push_behavior(MockBehavior::TextReply(
+        "完成计划2 步：第一步 `import nosuchmodule_zzz` 触发 `ModuleNotFoundError: No module named 'nosuchmodule_zzz'`，\
+         第二步 `print(\"done\")` 仍输出 `done`（异常已捕获，未中断程序）。"
+            .into(),
+    ));
+    // 第 2 轮：收到「必须发起 tool_call」的返工指令后，这次真去调
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"import nosuchmodule_zzz"}"#.into(),
+    }));
+    // 第 3 轮：拿到真实失败返回后才汇报
+    server.push_behavior(MockBehavior::TextReply(
+        "已执行完毕，确实失败了：ModuleNotFoundError: No module named 'nosuchmodule_zzz'。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec = |_n: String, _a: String, _t: ToolCallTrace| async {
+        ToolResult::ok("ModuleNotFoundError", Vec::new())
+    };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert!(
+        text.contains("ModuleNotFoundError"),
+        "应续跑到真实执行后的汇报，实际：{text:?}"
+    );
+    assert_eq!(
+        server.request_count(),
+        3,
+        "应「编造→打回→真调工具→据实汇报」三段"
+    );
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("声称已执行但本回合零工具调用")),
+        "应记执行类谎报审计：{lines:?}"
+    );
+}
+
+/// 工具发起过但全部失败：返工指令必须点明「调过了但没成功」，而不是笼统说
+/// 「你从未调用工具」——说错会让模型以为自己漏调了一次、转而去重复同一调用。
+#[tokio::test]
+async fn core_all_failed_tools_report_distinct_remedy() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"1/0"}"#.into(),
+    }));
+    // 工具失败后模型仍报成功（终稿含执行完成态）
+    server.push_behavior(MockBehavior::TextReply("已执行完毕，一切正常。".into()));
+    // 第 3 轮改口
+    server.push_behavior(MockBehavior::TextReply(
+        "执行失败了：ZeroDivisionError。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let deps = h.deps();
+    let exec = |_n: String, _a: String, _t: ToolCallTrace| async {
+        ToolResult::error("ZeroDivisionError: division by zero", Vec::new())
+    };
+    let (_text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("应 Ok");
+    assert_eq!(
+        server.request_count(),
+        3,
+        "工具失败后的成功汇报同样应打回一轮"
+    );
+}
+
+/// 零工具调用的代码讲解轮：不得被扩表后的守卫误伤（讲「会抛出什么」是正当回答）。
+#[tokio::test]
+async fn core_code_explanation_without_tool_call_is_not_pushed_back() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "这段代码在 `import nosuchmodule_zzz` 处会抛出 ModuleNotFoundError，因为环境里没装这个模块。"
+            .into(),
+    ));
+
+    let h = CoreHarness::new();
+    let deps = h.deps();
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("讲解轮应直接 Ok");
+    assert!(text.contains("ModuleNotFoundError"), "应原样返回讲解");
+    assert_eq!(server.request_count(), 1, "代码讲解不该被守卫多打一轮");
 }
