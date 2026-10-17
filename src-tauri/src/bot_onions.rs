@@ -21,6 +21,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::Deserialize;
 
 use crate::db::SubagentProfile;
+use crate::error::{CommandError, CommandResult};
 
 /// 配置文件名闸：仅 ASCII 字母/数字 + `-` / `_`，非空。
 ///
@@ -386,6 +387,189 @@ pub fn bind_session<R: tauri::Runtime>(app: &tauri::AppHandle<R>, session_id: &s
         .insert(session_id.to_string(), loaded);
 }
 
+/// 设置页：列出全部配置档（含正文摘要，供前端展示）。
+///
+/// 读正文而不只列文件名：设置页要显示「这份配置到底收掉了什么」，只给名字
+/// 用户没法判断该用哪份。任一份读/解析失败**不拖垮整表**——单独标出坏文件，
+/// 坏的那份也要出现在列表里（否则用户看不见自己哪份配置坏了，更没法导入新的替换）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnionSummary {
+    pub name: String,
+    /// 角色一句话（yaml 的 role），空则空串
+    pub role: String,
+    pub profile: String,
+    pub allowed_count: usize,
+    pub max_turn: Option<u32>,
+    /// 该文件坏在哪（读不到 / YAML 语法错 / 字段不合法）；None = 可用
+    pub broken: Option<String>,
+    /// 是否内置配置档（内置三份：启动时播种、不会被覆盖）
+    pub builtin: bool,
+}
+
+#[tauri::command]
+pub fn onions_list<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> CommandResult<Vec<OnionSummary>> {
+    Ok(collect_summaries(&app))
+}
+
+/// 列表内核（不依赖 command 宏，便于单测直接调）
+pub fn collect_summaries<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<OnionSummary> {
+    let dir = onions_dir(app);
+    let mut names: Vec<String> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".yaml"))
+            .map(|n| n.trim_end_matches(".yaml").to_string())
+            .collect(),
+        // 目录不存在 = 还没播种（首次启动前），当空表返回而不是报错
+        Err(_) => Vec::new(),
+    };
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let builtin = builtin_config_ids().any(|b| b == name);
+            match load(app, &name) {
+                Ok(cfg) => OnionSummary {
+                    role: cfg.role.trim().to_string(),
+                    profile: cfg.profile.clone(),
+                    allowed_count: cfg.allowed.len(),
+                    max_turn: cfg.max_turn,
+                    broken: None,
+                    name,
+                    builtin,
+                },
+                Err(e) => OnionSummary {
+                    role: String::new(),
+                    profile: String::new(),
+                    allowed_count: 0,
+                    max_turn: None,
+                    broken: Some(e),
+                    name,
+                    builtin,
+                },
+            }
+        })
+        .collect()
+}
+
+/// 导入契约的判定核：后缀 → 名字闸 → 解析校验 → 文件名与 `onion_id` 一致。
+///
+/// **命令与单测都走这一个函数**（不是「测试覆盖了它」，是「命令调它」）：
+/// 复制一份内联进命令的话，单测全绿而命令行为漂移。
+fn check_import_contract(file_name: &str, text: &str) -> Result<(String, OnionConfig), String> {
+    if !file_name.ends_with(".yaml") {
+        return Err(format!(
+            "请选择 .yaml 配置文件（当前选的是「{file_name}」）"
+        ));
+    }
+    let name = file_name.trim_end_matches(".yaml").to_string();
+    validate_onion_name(&name)?;
+    let cfg = parse(text)?;
+    if cfg.onion_id != name {
+        return Err(format!(
+            "文件名与配置内的 onion_id 不一致（文件名={name}，onion_id={}）——\
+             `bot_sessions.onion_config` 存的是文件名，两者不一致时列表显示的\
+             名字与实际生效的配置不是同一份。请把文件改名成 {}.yaml",
+            cfg.onion_id, cfg.onion_id
+        ));
+    }
+    Ok((name, cfg))
+}
+
+/// 设置页：导入一份配置档（选一个 `.yaml` 文件）。
+///
+/// **要求文件名（去扩展名）与文件内 `onion_id` 一致**，不一致直接拒。
+/// 两者不一致的害处不是「不好看」：`bot_sessions.onion_config` 存的是指针名，
+/// 而 `role/profile/allowed` 都从文件内读——两者打架时，列表显示的名字与实际
+/// 生效的配置不是同一份，且这个错要等到派发时才暴露。
+///
+/// 同名**不静默覆盖**：报错让用户先改名或先删旧的。静默覆盖 = 用户手改过的
+/// 配置档被换掉，且没有任何地方告诉他。
+#[tauri::command]
+pub fn onions_import<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    path: String,
+) -> CommandResult<String> {
+    let src = std::path::PathBuf::from(&path);
+    let file_name = src
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let text = std::fs::read_to_string(&src).map_err(|e| CommandError::DomainRule {
+        domain: "onion".into(),
+        reason: format!("读取配置失败：{e}"),
+    })?;
+    // 判定核（后缀 → 名字闸 → 解析校验 → 文件名与 onion_id 一致）在
+    // check_import_contract 里，命令与单测共用同一个——复制一份内联进来的话，
+    // 单测全绿而命令行为漂移。
+    let (name, _cfg) = check_import_contract(&file_name, &text).map_err(|reason| {
+        CommandError::InvalidArgument {
+            field: "path".into(),
+            value: file_name.clone(),
+            reason,
+        }
+    })?;
+    let dest = onions_dir(&app).join(format!("{name}.yaml"));
+    if dest.exists() {
+        return Err(CommandError::DomainRule {
+            domain: "onion".into(),
+            reason: format!("配置档「{name}」已存在：不会静默覆盖（你要的改动可能就在里面）"),
+        });
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| CommandError::DomainRule {
+            domain: "onion".into(),
+            reason: format!("建目录失败：{e}"),
+        })?;
+    }
+    std::fs::write(&dest, &text).map_err(|e| CommandError::DomainRule {
+        domain: "onion".into(),
+        reason: format!("写入配置失败：{e}"),
+    })?;
+    crate::bot::audit_log(&app, &format!("onions_import | name={name}"));
+    Ok(name)
+}
+
+/// 设置页：导出一份配置档到用户指定路径（选一个 `.yaml` 保存位置）。
+///
+/// 导出的是**落盘原文**而不是重新序列化的结果：配置档是要被人手改的
+/// （含行内注释，这是当初选 YAML 而不是 JSON 的唯一理由），重新序列化会把
+/// 注释全丢掉，导出一份读起来比原件更难编辑。
+#[tauri::command]
+pub fn onions_export<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    name: String,
+    path: String,
+) -> CommandResult<String> {
+    validate_onion_name(&name).map_err(|reason| CommandError::InvalidArgument {
+        field: "name".into(),
+        value: name.clone(),
+        reason,
+    })?;
+    let src = onions_dir(&app).join(format!("{name}.yaml"));
+    let text = std::fs::read_to_string(&src).map_err(|e| CommandError::DomainRule {
+        domain: "onion".into(),
+        reason: format!("读取配置 {name}.yaml 失败：{e}"),
+    })?;
+    let dest = std::path::PathBuf::from(&path);
+    if !dest.to_string_lossy().ends_with(".yaml") {
+        return Err(CommandError::DomainRule {
+            domain: "onion".into(),
+            reason: format!("导出文件名须以 .yaml 结尾（当前是「{path}」）"),
+        });
+    }
+    std::fs::write(&dest, &text).map_err(|e| CommandError::DomainRule {
+        domain: "onion".into(),
+        reason: format!("写入 {path} 失败：{e}"),
+    })?;
+    crate::bot::audit_log(&app, &format!("onions_export | name={name} -> {path}"));
+    Ok(path)
+}
+
 /// 测试/子 agent 换配置时用：直接塞一份已解析配置进缓存。
 #[cfg(test)]
 pub(crate) fn bind_for_test(session_id: &str, cfg: Option<OnionConfig>) {
@@ -741,6 +925,97 @@ hooks:
         assert!(
             e.contains("max_turn"),
             "max_turn=0 应被加载期拒掉（等于一次循环都不给）：{e}"
+        );
+    }
+
+    // ── 设置页导入/导出（期 5.5）──
+
+    /// 导入契约的两条硬线。测的是**生产那份** `check_import_contract`，
+    /// 不是复制品——命令若哪天不调它了，这条会跟着一起漂（见函数注释）。
+    #[test]
+    fn import_requires_filename_to_match_onion_id() {
+        let good = "onion_id: probe\nprofile: research\nallowed: [web_search]\n";
+        assert_eq!(
+            check_import_contract("probe.yaml", good).unwrap().0,
+            "probe",
+            "同名即通过"
+        );
+        // 不一致必须拒：列表显示的名字与实际生效的配置会不是同一份
+        let err = check_import_contract("mine.yaml", good).unwrap_err();
+        assert!(
+            err.contains("onion_id 不一致") && err.contains("probe.yaml"),
+            "要点名两个名字并给出改名建议：{err}"
+        );
+        // 后缀不对要在解析之前就拒（用户选了 .json 或目录）
+        let err = check_import_contract("probe.txt", good).unwrap_err();
+        assert!(err.contains(".yaml"), "非 yaml 后缀应被拒：{err}");
+        // 文件名含路径穿越字符 → 名字闸拦下（防写到 onions/ 之外）
+        let err = check_import_contract("../evil.yaml", good).unwrap_err();
+        assert!(err.contains("无效"), "路径穿越名应被名字闸拦下：{err}");
+        // 内容非法 → 解析期就拒，不落盘
+        let err = check_import_contract(
+            "bad.yaml",
+            "onion_id: bad\nprofile: coder\nallowed: [不存在]\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("TOOLS_TABLE"), "非法内容应在导入期就拒：{err}");
+    }
+
+    /// 接线守卫：`onions_import` 必须真的调 `check_import_contract`。
+    ///
+    /// 这条独立于上面那条行为测试：行为测试只保证「这个函数对」，不保证
+    /// 「命令用它」。命令内联一份复制品时上面照样全绿。
+    #[test]
+    fn onions_import_command_uses_the_shared_contract_check() {
+        let src = include_str!("bot_onions.rs");
+        let cmd = src
+            .split_once("pub fn onions_import<R: tauri::Runtime>(")
+            .expect("onions_import 命令")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("命令应按顶格 } 收尾");
+        assert!(
+            cmd.contains(concat!("check_import_contract", "(&file_name, &text)")),
+            "导入命令必须走共享判定核：{cmd}"
+        );
+        // 同名必须拒绝覆盖——静默覆盖 = 悄悄换掉用户手改过的配置
+        assert!(
+            cmd.contains("if dest.exists()"),
+            "导入命令必须先查同名存在：{cmd}"
+        );
+    }
+
+    /// 接线守卫：导出必须**原样搬运落盘原文**，不得重新序列化。
+    ///
+    /// 这条是替掉一个假绿：原先的「导出往返逐字一致」测试自己在测试里
+    /// write/read 一个字符串，根本没调命令——换成任何实现（包括每次
+    /// 重新序列化）都能过。命令要 AppHandle（`onions_dir`），真跑不了，
+    /// 所以只能钉住「它读的是原文、且写的就是读到的那个字符串」。
+    #[test]
+    fn onions_export_carries_the_file_text_verbatim() {
+        let src = include_str!("bot_onions.rs");
+        let cmd = src
+            .split_once("pub fn onions_export<R: tauri::Runtime>(")
+            .expect("onions_export 命令")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("命令应按顶格 } 收尾");
+        // 读：必须是 read_to_string 拿原文（不是 parse 再序列化）
+        assert!(
+            cmd.contains("std::fs::read_to_string(&src)"),
+            "导出必须读落盘原文：{cmd}"
+        );
+        // 写：写的必须是读到的那个变量，不是另拼的字符串
+        assert!(
+            cmd.contains("std::fs::write(&dest, &text)"),
+            "导出必须把原文写到目标路径：{cmd}"
+        );
+        // 反向：不得出现「按字段拼 yaml」的写法（重新序列化会丢注释）
+        assert!(
+            !cmd.contains("onion_id: {"),
+            "导出不得重新拼 yaml（行内注释会全丢，而配置是要被人手改的）：{cmd}"
         );
     }
 }

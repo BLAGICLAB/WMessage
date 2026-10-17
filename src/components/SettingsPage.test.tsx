@@ -58,6 +58,8 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
       return { enabled: false, port: 4763 };
     case "skills_list":
       return [];
+    case "onions_list":
+      return [];
     case "error_log_read":
       return "（暂无日志）";
     case "logs_bundle_text":

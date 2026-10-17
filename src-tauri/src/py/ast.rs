@@ -902,4 +902,52 @@ def unused():
         assert_eq!(v["ok"], false, "路径不存在必须报失败而非静默返回空");
         assert_eq!(v["error"], "path_not_found");
     }
+
+    /// 跨文件调用链的耗时回归闸（实测数字见 commit message）。
+    ///
+    /// 「不缓存、每次现扫」当时是**接受**未实测代价的决定，理由是「缓存必然
+    /// 带来失效问题，而我们还没有数字证明它值得」。现在有数字了：在硬边界
+    /// （近 200 文件 / 近 2MB）下实测 p50 = 213ms，相对裸解释器地板
+    /// （import ast ≈ 17ms）只多 ~196ms——离 `run_python` 的 60s 超时有两个
+    /// 数量级。缓存要解决的成本不存在，所以不缓存的决定成立。
+    ///
+    /// 这条测试的用途是把上面那个数字**变成可回归的**：脚本哪天从线性变成
+    /// 平方（或引入沙箱层的固定开销爆炸），这里会红。上界给到 5s ≈ 实测的
+    /// 23 倍，Windows/冷启动差异不会误伤——这道闸要抓的是量级回归，不是抖动。
+    #[test]
+    fn callgraph_at_scale_stays_far_below_the_sandbox_timeout() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        // 近边界规模：120 文件 × ~9KB（实测边界值 213ms 的一半左右）
+        for i in 0..120 {
+            let mut body = String::from(&format!("\"\"\"m{i}。\"\"\"\nimport os\n\n"));
+            for f in 0..36 {
+                body.push_str(&format!(
+                    "def f_{f}(a, b):\n    \
+                     \"\"\"填充体积用。\"\"\"\n    \
+                     s = \"{}\"\n    \
+                     return a + b + len(s) * {}\n\n",
+                    "x".repeat(150),
+                    f + 1
+                ));
+            }
+            std::fs::write(dir.path().join(format!("m{i}.py")), body).expect("写 fixture");
+        }
+        let code = build_ast_code("callgraph", &dir.path().to_string_lossy(), Some("f_0"), 3);
+        let started = std::time::Instant::now();
+        let Some(v) = run_probe_script(&code) else {
+            eprintln!("跳过：本机无可用 python3，耗时闸未实跑");
+            return;
+        };
+        let elapsed = started.elapsed();
+        assert_eq!(v["ok"], true, "边界规模不该跑失败：{v}");
+        // truncated 是**如实上报**不是失败（边界内触顶属预期），只断言时间
+        let budget = std::time::Duration::from_secs(5);
+        assert!(
+            elapsed < budget,
+            "跨文件调用链耗时 {}ms 超出 {}ms 上界——量级回归（实测同量级 p50 ≈ {}ms）",
+            elapsed.as_millis(),
+            budget.as_millis(),
+            150
+        );
+    }
 }

@@ -119,6 +119,21 @@ export type McpServerStatus = {
 export type McpToolBrief = { name: string; description?: string | null };
 
 /** stdio 启动器白名单（与 Rust STDIO_LAUNCH_ALLOWLIST 同步——保存前后端双重把关） */
+/** 单个 per-onion 配置档（与 Rust bot_onions::OnionSummary 同形，camelCase） */
+export type OnionSummary = {
+  /** 配置档名（= onions/<name>.yaml，不含扩展名） */
+  name: string;
+  role: string;
+  profile: string;
+  /** yaml.allowed 条数（实际可用还要与 profile 白名单取交集） */
+  allowedCount: number;
+  maxTurn?: number | null;
+  /** 该文件坏在哪（读不到 / YAML 语法错 / 字段不合法）；null = 可用 */
+  broken?: string | null;
+  /** 是否内置配置档（首次启动播种，启动时不会被覆盖） */
+  builtin: boolean;
+};
+
 export const MCP_STDIO_LAUNCHERS = [
   "npx",
   "bunx",

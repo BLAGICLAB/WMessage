@@ -67,6 +67,7 @@ import {
   type UiFontSize,
 } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
+import { OnionsPanel } from "./OnionsPanel";
 import { WordTemplatePanel } from "./WordTemplatePanel";
 import { BubbleStyleCard } from "./BubbleStyleCard";
 import { HomeKpiPanel } from "./HomeKpiPanel";
@@ -3714,6 +3715,7 @@ export function SettingsPage({
               className="space-y-4 pt-4"
             >
               <SkillsPanel />
+              <OnionsPanel />
               <WordTemplatePanel />
             </section>
           )}
