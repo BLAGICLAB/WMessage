@@ -178,12 +178,14 @@ mod tests {
                 }
                 let snake = to_snake(prop);
                 for (name, prompt) in ALL {
-                    // 整词匹配：避免 `_` 前后另有字符时误判
+                    // 整词匹配，且只判 ASCII：中文紧贴标识符是正常写法
+                    //（「写 contextSummary 时…」），按 Unicode 的 alphanumeric 判会
+                    // 把这类整段当成「不在词内」而漏报——锁必须比 bug 更严。
                     let hit = prompt.match_indices(&snake).any(|(i, _)| {
                         let before = prompt[..i].chars().next_back();
                         let after = prompt[i + snake.len()..].chars().next();
-                        !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
-                            && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                        !before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                            && !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
                     });
                     if hit {
                         offenders.push(format!(
