@@ -367,7 +367,7 @@ pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name
     "stage":{"type":"string","enum":["recon","executor","verifier"],"description":"三段式派发阶段（可选）：recon=只读调研 / executor=基于报告动手实现 / verifier=逐条验收。不给 stage 时仅按 profile 走基线提示词；只给 stage 不给 profile 时按默认派生（recon/verifier→research，executor→coder）"},
     "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验"},
     "contextSummary":{"type":"string","description":"必要上下文摘要（可选；不含主对话全文）"},
-    "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限，默认 100"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选，默认值见上）"},
+    "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限；整个 budget 不给时取全局熔断配置（设置页参数 loop.max_function_calls），此处显式给值才覆盖"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选；不给则按上示默认与全局配置取值）"},
     "modelProfile":{"type":"string","description":"指定模型名（可选；未指定/无效回退当前激活模型）"},
     "parentTaskId":{"type":"string","description":"主卡 id（可选；编排计划卡，缺卡报错）"}
   },"required":["objective","acceptanceCriteria"]}}}"##;
@@ -2007,6 +2007,30 @@ mod registry_tests {
         let baseline: serde_json::Value = serde_json::from_str(&fixture[r_str_marker..end])
             .expect("fixture 内 const TOOLS 正文必须是合法 JSON");
         baseline.as_array().unwrap().len()
+    }
+
+    /// spawn_subagent 的 maxToolCalls 描述不得写死默认条数。
+    ///
+    /// 真源是全局配置 maxFunctionCalls（budget 整个不给时由
+    /// params::resolve_subagent_budget 取，见 params 的 loop.max_function_calls
+    /// 条目），写死「默认 100」在用户改过配置后就是给模型的假信息——模型据此
+    /// 判断要不要给 budget。
+    #[test]
+    fn spawn_subagent_tool_calls_description_points_at_the_config() {
+        let v: serde_json::Value =
+            serde_json::from_str(SCHEMA_SPAWN_SUBAGENT).expect("schema 常量必须是合法 JSON");
+        let desc = v["function"]["parameters"]["properties"]["budget"]["properties"]
+            ["maxToolCalls"]["description"]
+            .as_str()
+            .expect("maxToolCalls 缺 description");
+        assert!(
+            desc.contains("loop.max_function_calls"),
+            "maxToolCalls 描述须指向全局熔断配置（设置页参数 loop.max_function_calls），实际：{desc}"
+        );
+        assert!(
+            !desc.contains("默认 100"),
+            "maxToolCalls 描述不得写死默认条数（改配置后即过期），实际：{desc}"
+        );
     }
 
     /// 单源真相的核心不变式：ToolDef.name 必须等于它自己 schema 里的 function.name。

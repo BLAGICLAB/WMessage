@@ -79,9 +79,39 @@ pub fn clamp_subagent_max_wall_secs(n: u64) -> u64 {
     n.clamp(30, 3600)
 }
 
-/// 联网搜索结果条数钳 1..=10
+/// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）
+pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;
+
+/// 联网搜索结果条数钳 1..=SEARCH_MAX_RESULTS_CAP
 pub fn clamp_search_max_results(n: u32) -> u32 {
-    n.clamp(1, 10)
+    n.clamp(1, SEARCH_MAX_RESULTS_CAP)
+}
+
+/// 单次请求工具调用熔断上限硬顶：写侧（子 agent 预算解析）与读侧（模型循环
+/// 派生链末端的 `.clamp`）共用这一个数，防「预算按 500 记账、循环按 999 放行」。
+pub const MAX_FUNCTION_CALLS_CAP: u32 = 500;
+
+pub fn clamp_max_function_calls(n: u32) -> u32 {
+    n.clamp(1, MAX_FUNCTION_CALLS_CAP)
+}
+
+/// verifier 拒绝后的修复重试预算：未配置时的默认次数。
+pub const DEFAULT_VERIFIER_RETRY_MAX: u32 = 1;
+/// verifier 重试预算上限（超过 3 次还失败的任务属硬阻塞，如实汇报比继续烧
+/// token 更省；与配置落盘前的写侧钳制共用）。
+pub const VERIFIER_RETRY_MAX_CAP: u32 = 3;
+
+pub fn clamp_verifier_retry_max(n: u32) -> u32 {
+    n.clamp(0, VERIFIER_RETRY_MAX_CAP)
+}
+
+/// verifier 重试预算生效值：读取点唯一入口。
+///
+/// 入参是「配置里有没有这一项」而不是整份 config——调用方
+/// （bot_chat 的提示词尾段）手上是 View，View 与 BotConfig 在这个可选字段上
+/// 同形，传 Option 才能让两边共用同一份「默认 + 钳制」。
+pub fn resolve_verifier_retry_max(configured: Option<u32>) -> u32 {
+    clamp_verifier_retry_max(configured.unwrap_or(DEFAULT_VERIFIER_RETRY_MAX))
 }
 
 /// 单条工具结果回填上限钳（上限 200K 字符）。
@@ -119,11 +149,12 @@ pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
             cfg.subagent_max_turns.unwrap_or(DEFAULT_SUBAGENT_MAX_TURNS),
         ),
         // 工具调用上限全域统一（合并两条设置）：子 agent 与主循环同源
-        // max_function_calls（缺省 100，钳 1..=500）；LLM 显式给的预算仍可覆盖
-        max_tool_calls: cfg
-            .max_function_calls
-            .unwrap_or(DEFAULT_SUBAGENT_MAX_TOOL_CALLS)
-            .clamp(1, 500),
+        // max_function_calls（缺省 100，钳 1..=MAX_FUNCTION_CALLS_CAP）；LLM 显式
+        // 给的预算仍可覆盖
+        max_tool_calls: clamp_max_function_calls(
+            cfg.max_function_calls
+                .unwrap_or(DEFAULT_SUBAGENT_MAX_TOOL_CALLS),
+        ),
         max_wall_seconds: clamp_subagent_max_wall_secs(
             cfg.subagent_max_wall_secs
                 .unwrap_or(DEFAULT_SUBAGENT_MAX_WALL_SECS),
@@ -293,10 +324,19 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "subagent.max_running",
         label: "子 agent 全局并发",
         category: "subagent",
-        hint: "同时运行的子 agent 上限（每会话 2）；排队在 SubagentGate",
+        hint: "全局同时运行的子 agent 上限；排队在 SubagentGate（单会话上限见「每会话并发」）",
         default: "3",
         editable: false,
-        resolve: hardcoded_resolver!("3"),
+        resolve: hardcoded_resolver!(crate::bot_orchestrator::MAX_GLOBAL_RUNNING),
+    },
+    ParamDef {
+        key: "subagent.per_session_running",
+        label: "子 agent 每会话并发",
+        category: "subagent",
+        hint: "同一个主会话同时运行的子 agent 上限；与全局上限取更紧者（全局见「全局并发」）",
+        default: "2",
+        editable: false,
+        resolve: hardcoded_resolver!(crate::bot_orchestrator::MAX_PER_SESSION_RUNNING),
     },
     ParamDef {
         key: "subagent.turns_hard_cap",
@@ -305,7 +345,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "任何配置（含 LLM 自报）都不能超过的轮数硬顶",
         default: "50",
         editable: false,
-        resolve: hardcoded_resolver!("50"),
+        resolve: hardcoded_resolver!(crate::db::MAX_TURNS_HARD_CAP),
     },
     ParamDef {
         key: "search.count_cap",
@@ -314,7 +354,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "工具参数 count 的硬上限（防单次搜索拉爆上下文）",
         default: "10",
         editable: false,
-        resolve: hardcoded_resolver!("10"),
+        resolve: hardcoded_resolver!(SEARCH_MAX_RESULTS_CAP),
     },
     ParamDef {
         key: "search.output_chars",
@@ -323,7 +363,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "搜索结果合并渲染后的截断长度",
         default: "6000",
         editable: false,
-        resolve: hardcoded_resolver!("6000"),
+        resolve: hardcoded_resolver!(crate::bot_web::SEARCH_OUTPUT_CAP),
     },
     ParamDef {
         key: "llm.stream_idle_secs",
@@ -332,7 +372,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "两个流式 chunk 间隔超过此值判定连接死亡；总时长不设限（长生成合法）",
         default: "120",
         editable: false,
-        resolve: hardcoded_resolver!("120"),
+        resolve: resolve_stream_idle_secs,
     },
     ParamDef {
         key: "llm.retry",
@@ -341,7 +381,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         hint: "429/5xx 自动重试次数与间隔",
         default: "2次/1.5s",
         editable: false,
-        resolve: hardcoded_resolver!("2次/1.5s"),
+        resolve: resolve_llm_retry,
     },
     ParamDef {
         key: "schedule.scan_secs",
@@ -423,6 +463,30 @@ fn resolve_max_output_chars(cfg: &BotConfig) -> (String, &'static str) {
             "default",
         ),
     }
+}
+
+/// 流式空闲超时是 `Duration`：展示串取秒（该超时只按秒粒度配置与告警）
+fn resolve_stream_idle_secs(_cfg: &BotConfig) -> (String, &'static str) {
+    (
+        crate::bot_model_loop::STREAM_CHUNK_IDLE_TIMEOUT
+            .as_secs()
+            .to_string(),
+        "hardcoded",
+    )
+}
+
+/// 重试策略是两个独立常量（次数 / 间隔），拼成一个展示串——任一常量改动都
+/// 自动带进设置页，不留「显示 2 次实际 3 次」的缝
+fn resolve_llm_retry(_cfg: &BotConfig) -> (String, &'static str) {
+    let delay_ms = crate::bot_model_loop::LLM_RETRY_DELAY.as_millis() as f64;
+    (
+        format!(
+            "{}次/{}s",
+            crate::bot_model_loop::MAX_LLM_ATTEMPTS,
+            delay_ms / 1000.0
+        ),
+        "hardcoded",
+    )
 }
 
 /// 遍历参数表产出生效值视图（命令体直接映射）
@@ -532,6 +596,106 @@ mod tests {
             max_tool_output_chars: None,
             ask_budget: None,
         }
+    }
+
+    /// 硬编码只读区每行的展示值必须等于代码里真正生效的那个常量。
+    ///
+    /// 这些行的 resolve 取的是真常量（MAX_GLOBAL_RUNNING / MAX_TURNS_HARD_CAP /
+    /// clamp 上界 / SEARCH_OUTPUT_CAP / 流式超时 / 重试两常量），但 `default` 是
+    /// `&'static str`，编不出常量串，只能留字面量——这里逐条把字面量与常量
+    /// 双向钉死：任一侧单独改动而不改另一侧即红。
+    #[test]
+    fn hardcoded_rows_track_runtime_constants() {
+        let views = effective_params(&empty_cfg());
+        // 取一行的展示值，并断言生效值与 default 同源（只读区两者恒等）
+        let shown = |k: &str| -> String {
+            let v = views.iter().find(|v| v.key == k).unwrap();
+            let d = PARAMS_TABLE.iter().find(|d| d.key == k).unwrap();
+            assert_eq!(v.source, "hardcoded", "{k} 应属硬编码只读区");
+            assert_eq!(v.value, d.default, "{k}: 生效值与 default 不同源");
+            v.default.to_string()
+        };
+        assert_eq!(
+            shown("subagent.max_running"),
+            crate::bot_orchestrator::MAX_GLOBAL_RUNNING.to_string()
+        );
+        assert_eq!(
+            shown("subagent.per_session_running"),
+            crate::bot_orchestrator::MAX_PER_SESSION_RUNNING.to_string()
+        );
+        assert_eq!(
+            shown("subagent.turns_hard_cap"),
+            crate::db::MAX_TURNS_HARD_CAP.to_string()
+        );
+        assert_eq!(
+            shown("search.count_cap"),
+            SEARCH_MAX_RESULTS_CAP.to_string(),
+            "搜索条数硬顶须与 clamp_search_max_results 上界同源"
+        );
+        assert_eq!(
+            shown("search.output_chars"),
+            crate::bot_web::SEARCH_OUTPUT_CAP.to_string()
+        );
+        assert_eq!(
+            shown("llm.stream_idle_secs"),
+            crate::bot_model_loop::STREAM_CHUNK_IDLE_TIMEOUT
+                .as_secs()
+                .to_string()
+        );
+        assert_eq!(
+            shown("llm.retry"),
+            format!(
+                "{}次/{}s",
+                crate::bot_model_loop::MAX_LLM_ATTEMPTS,
+                crate::bot_model_loop::LLM_RETRY_DELAY.as_millis() as f64 / 1000.0
+            )
+        );
+        // 「每会话并发」此前只在 max_running 的 hint 里以文字出现，表里查不到；
+        // 现在它有自己的行，且展示值即派发闸真正认的那个数
+        assert!(PARAMS_TABLE
+            .iter()
+            .any(|d| d.key == "subagent.per_session_running"));
+    }
+
+    /// 工具调用熔断上界单源：子 agent 预算解析与模型循环派生链末端同一个数。
+    ///
+    /// 两处曾各写一份 `clamp(1, 500)`，其中薄壳那份还会被绕过（测试直驱 core
+    /// 传 deps.fuse_cap_override 时不经薄壳）——同一条边界抄两份，改一处漏一处
+    /// 不编译失败也不测试失败。
+    #[test]
+    fn max_function_calls_cap_is_single_sourced() {
+        let mut cfg = empty_cfg();
+        cfg.max_function_calls = Some(u32::MAX);
+        assert_eq!(
+            resolve_subagent_budget(&cfg).max_tool_calls,
+            MAX_FUNCTION_CALLS_CAP,
+            "预算侧须钳到 MAX_FUNCTION_CALLS_CAP"
+        );
+        assert_eq!(clamp_max_function_calls(0), 1, "0 次调用无意义，钳到 1");
+        assert_eq!(clamp_max_function_calls(30), 30, "区间内原样放行");
+        // 模型循环消费端（bot_model_loop::fuse_cap_for）用的是同一个常量的
+        // usize 投影——两边改数必须同时，否则一个按 500 记账一个按 999 放行
+        assert_eq!(
+            MAX_FUNCTION_CALLS_CAP as usize,
+            crate::bot_model_loop::fuse_cap_upper_bound()
+        );
+    }
+
+    /// verifier 重试预算：默认值与钳制边界单源，写侧落盘与读侧提示词同口径。
+    #[test]
+    fn resolve_verifier_retry_max_single_source() {
+        assert_eq!(resolve_verifier_retry_max(None), 1, "未配置 = 默认 1");
+        assert_eq!(resolve_verifier_retry_max(Some(0)), 0, "0 = 不重试，合法");
+        assert_eq!(
+            resolve_verifier_retry_max(Some(99)),
+            VERIFIER_RETRY_MAX_CAP,
+            "越界钳到上限"
+        );
+        assert_eq!(
+            clamp_verifier_retry_max(u32::MAX),
+            VERIFIER_RETRY_MAX_CAP,
+            "写侧与读侧共用同一钳制"
+        );
     }
 
     /// 表完整性：key 唯一 + 每项 category/hint 非空 + 行数下限（防漏登记）

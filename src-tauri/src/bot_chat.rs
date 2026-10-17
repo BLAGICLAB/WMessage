@@ -840,9 +840,11 @@ pub async fn bot_chat(
     // 这些「静态前缀」字字节节稳定，让 Anthropic prompt caching 断点 1（system
     // 末尾）能跨会话命中——若把 verifier_retry_max 写进 Base 段，每会话变动
     // 会让 GenDir/SkillCatalog/工具 schema 缓存全部作废（miss → 1.25× 写价）。
-    let verifier_retry_max_cfg = crate::bot::bot_get_config(app.clone())
-        .map(|c| c.verifier_retry_max.unwrap_or(1).clamp(0, 3))
-        .unwrap_or(1);
+    let verifier_retry_max_cfg = crate::bot::params::resolve_verifier_retry_max(
+        crate::bot::bot_get_config(app.clone())
+            .ok()
+            .and_then(|c| c.verifier_retry_max),
+    );
     prompt.push(
         PromptSlot::VerifierRetryTail,
         format!(

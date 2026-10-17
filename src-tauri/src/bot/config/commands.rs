@@ -327,9 +327,11 @@ pub fn bot_set_config(
         .take()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    // verifier 重试上限落盘前钳制（0..=3：0 = 不重试；上限 3 防止无限循环
-    // 烧 token——真实 3 次还失败的任务属于硬阻塞不如直接如实汇报用户）
-    config.verifier_retry_max = config.verifier_retry_max.map(|n| n.clamp(0, 3));
+    // verifier 重试上限落盘前钳制（0..=VERIFIER_RETRY_MAX_CAP：0 = 不重试；上限 3
+    // 防止无限循环烧 token——真实 3 次还失败的任务属于硬阻塞不如直接如实汇报用户）
+    config.verifier_retry_max = config
+        .verifier_retry_max
+        .map(crate::bot::params::clamp_verifier_retry_max);
     // tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None
     config.tool_rules = sanitize_tool_rules(config.tool_rules.take());
     // 前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**

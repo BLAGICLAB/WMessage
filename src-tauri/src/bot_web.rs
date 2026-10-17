@@ -17,7 +17,8 @@ const FETCH_MAX_BYTES: usize = 10 * 1024 * 1024;
 /// 搜索引擎结果体上限：与 FETCH_MAX_BYTES 是两条不同用途的容量线——
 /// 这条封引擎结果体（正常远小于此），FETCH_MAX_BYTES 封页面抓取传输。
 const SEARCH_BODY_CAP_BYTES: usize = 2 * 1024 * 1024;
-const SEARCH_OUTPUT_CAP: usize = 6000;
+/// 搜索结果合并渲染后的字符截断：参数表只读行展示同一个数
+pub(crate) const SEARCH_OUTPUT_CAP: usize = 6000;
 
 /// reqwest 0.12+ 的错误 Display 只剩顶层一句（如「error sending request for url」），
 /// 真正原因（DNS/连接拒绝/TLS InvalidContentType）在 source 链里——逐层展开供

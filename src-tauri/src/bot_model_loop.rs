@@ -428,8 +428,8 @@ pub(crate) const ROUNDS_FUSE_MARKER: &str = "⏹ 已熔断（轮数上限）";
 /// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
-const MAX_LLM_ATTEMPTS: usize = 2;
-const LLM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+pub(crate) const MAX_LLM_ATTEMPTS: usize = 2;
+pub(crate) const LLM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// 可重试的 HTTP 状态：429 限流 + 5xx 服务端瞬时错误；401/400 等重试无意义
 fn is_retryable_llm_status(status: u16) -> bool {
@@ -506,6 +506,26 @@ fn shed_oldest_history(msgs: &mut Vec<serde_json::Value>, keep_ratio: f64) -> us
         }),
     );
     removed
+}
+
+/// 熔断上界的 usize 投影：与子 agent 预算解析（params::MAX_FUNCTION_CALLS_CAP）
+/// 是同一个数，这里只做类型转换——两处各写一份字面量就会在「预算按 500 记账、
+/// 循环按 999 放行」这种偏差上分叉，且分叉到熔断才暴露。
+pub(crate) fn fuse_cap_upper_bound() -> usize {
+    crate::bot::params::MAX_FUNCTION_CALLS_CAP as usize
+}
+
+/// 熔断上限派生链的唯一入口：子 agent 行上预算 > bot-config 覆盖 > 内置默认，
+/// 末端钳到 [1, 上界]。
+///
+/// 上游（薄壳组装 deps）刻意不钳：`deps.fuse_cap_override` 也被单测直驱 core
+/// 注入，绕过薄壳，钳在薄壳等于给「实际生效的那条边界」留了个不生效的副本。
+fn fuse_cap_for(subagent_budget: Option<u32>, cfg_override: Option<usize>) -> usize {
+    subagent_budget
+        .map(|n| n as usize)
+        .or(cfg_override)
+        .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
+        .clamp(1, fuse_cap_upper_bound())
 }
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。
@@ -938,7 +958,7 @@ pub async fn run_model_loop(
     let request_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let request_for_audit = request_count.clone();
     // 缓存命中/写入累计（仅 Anthropic 协议会变；OpenAI 协议保持 0）。
-    // 前端按 (cache_read) / (read + creation + input) 算命中率展示
+    // 前端水位条按「读/写」两档单列展示，不折进输入输出，也不算命中率
     let prompt_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let completion_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let cache_read_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -965,10 +985,12 @@ pub async fn run_model_loop(
         .collect();
 
     let deps = ModelLoopDeps {
-        // 全域熔断上限：config 有值用之（钳 1..=500），None = 默认 100
+        // 全域熔断上限：config 有值用之，None = 默认 100。这里**不钳**——
+        // 钳位单点在下方派生链末端（fuse_cap 的 clamp），此处再钳一次等于把
+        // 同一条边界抄成两份，改一处漏一处不会编译失败也不会测试失败。
         fuse_cap_override: Some(
             cfg.max_function_calls
-                .map(|v| v.clamp(1, 500) as usize)
+                .map(|v| v as usize)
                 .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
         ),
         conv_sidecar_dir: conv_sidecar_path.as_deref(),
@@ -1235,16 +1257,14 @@ where
 
     // 熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
     // 其余 = bot-config maxFunctionCalls（缺省 100）。软警阈值 = cap*7/10。
-    // 派生链：子 agent 预算（默认与全域 maxFunctionCalls 同源，
-    // 两条设置合一；LLM 显式给的仍可覆盖）→ bot-config maxFunctionCalls（钳 1..=500，
-    // 防巨值实质关闭熔断）→ 默认 100
-    let fuse_cap = stop
-        .session_id()
-        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
-        .map(|c| c.budget.max_tool_calls as usize)
-        .or(deps.fuse_cap_override)
-        .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
-        .clamp(1, 500);
+    // 钳位只在 fuse_cap_for 末端做一次（防巨值实质关闭熔断），上界取 params 的
+    // MAX_FUNCTION_CALLS_CAP，与子 agent 预算解析同一个数。
+    let fuse_cap = fuse_cap_for(
+        stop.session_id()
+            .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+            .map(|c| c.budget.max_tool_calls),
+        deps.fuse_cap_override,
+    );
     // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
     // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
     let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
@@ -1729,7 +1749,7 @@ where
         let mut usage_input: u64 = 0;
         let mut usage_output: u64 = 0;
         // 缓存命中/写入累计（仅 Anthropic 协议会变；OpenAI 协议保持 0）。
-        // 前端按 (cache_read) / (read + creation + input) 算命中率展示
+        // 前端水位条按「读/写」两档单列展示，不折进输入输出，也不算命中率
         let mut usage_cache_read: u64 = 0;
         let mut usage_cache_creation: u64 = 0;
         // Anthropic 模式 content block index → 工具槽位重映射：
@@ -3991,6 +4011,43 @@ mod rounds_fuse_tests {
         // 边界：第 50 次放行，第 51 次熔断
         assert!(!should_fuse(50, 50));
         assert!(should_fuse(51, 50));
+    }
+
+    /// 熔断上限只在一处钳：上游传进来的越界值必须由派生链末端收口。
+    ///
+    /// 钳位曾同时存在于薄壳（组装 deps 时）与 core 派生链末端，两份边界改一处
+    /// 漏一处不会有任何编译或测试信号。抽成 fuse_cap_for 后，薄壳原样透传
+    /// （9999 进来，末端才钳），本测试钉住这条契约。
+    #[test]
+    fn fuse_cap_clamps_at_the_only_consumer() {
+        let cap = fuse_cap_upper_bound();
+        assert_eq!(fuse_cap_for(None, None), MAX_FUNCTION_CALLS_PER_REQUEST);
+        assert_eq!(
+            fuse_cap_for(None, Some(9_999)),
+            cap,
+            "上游未钳时，末端必须收口到上界"
+        );
+        assert_eq!(fuse_cap_for(None, Some(0)), 1, "0 次调用无意义，钳到 1");
+        assert_eq!(fuse_cap_for(None, Some(30)), 30, "区间内原样放行");
+        // 子 agent 行上预算优先于全局覆盖，且同样受末端钳制约束
+        assert_eq!(fuse_cap_for(Some(7), Some(9_999)), 7);
+        assert_eq!(fuse_cap_for(Some(u32::MAX), None), cap);
+        // 漂移守卫：同一条边界在本文件里只允许有一份。薄壳那份钳位被删掉后，
+        // 生产代码里不应再出现 `clamp(1, 500)` 字面量——它是当年人手抄的副本，
+        // 被绕过也不报错（单测直驱 core 时根本不经薄壳）。
+        let src = include_str!("bot_model_loop.rs");
+        let production = src
+            .split_once("#[cfg(test)]")
+            .expect("bot_model_loop.rs 应有测试模块")
+            .0;
+        assert!(
+            !production.contains("clamp(1, 500)"),
+            "熔断上界不得在本文件内再存一份字面量副本（边界单源在 params）"
+        );
+        assert!(
+            production.matches("fuse_cap_upper_bound()").count() >= 2,
+            "熔断钳位必须走上界投影（定义 + 至少一处调用），不得另写数字"
+        );
     }
 }
 
