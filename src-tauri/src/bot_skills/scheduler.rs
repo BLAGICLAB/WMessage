@@ -151,7 +151,7 @@ where
         let rb_args = substitute_vars(&rb.args_json, ctx);
         let tool_outcome = execute_tool(rb.tool_name.clone(), rb_args).await;
         let text = tool_outcome.text;
-        if crate::audit::tool_call_failed("", &text) {
+        if !tool_outcome.status.is_success() {
             failed_steps += 1;
             crate::bot::audit_log_hook(
                 app,
@@ -500,7 +500,7 @@ where
         }
         let tool_outcome = execute_tool(step.tool_name.clone(), resolved_args).await;
         let text = tool_outcome.text;
-        let failed = crate::audit::tool_call_failed("", &text);
+        let failed = !tool_outcome.status.is_success();
         if failed {
             let rb_attempted = run_rollback_segment_core(
                 app,
@@ -628,7 +628,9 @@ mod tests {
             // 嵌套变量替换
             let resolved_args = substitute_vars(&step.args_json, ctx);
             let text = exec(&step.tool_name, &resolved_args);
-            // 失败判定：与生产 run_skill_scheduler 共用同一判定函数（不再手写镜像）
+            // 失败判定：本函数是测试专用的同步版，mock executor 只回文本拿不到
+            // ToolStatus，故仍走文本分类。生产路径（上方 run_skill_scheduler_core）
+            // 用 status.is_success()，两者的口径差由 audit 单测兜住。
             let failed = crate::audit::tool_call_failed("", &text);
             if failed {
                 for rb in rollback {

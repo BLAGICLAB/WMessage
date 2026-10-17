@@ -31,19 +31,41 @@ pub struct ToolCtx<'a> {
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = ToolResult> + Send + 'a>>;
 
-/// 工具返回的审计级别。代替 audit::classify_text 的字符串匹配。
-/// 工具在返回 ToolResult 时显式声明 status，dispatcher 据此写 audit 事件。
+/// 工具返回的成败状态。审计级别、trace span 的 ok 字段、以及「这一步算不算
+/// 成功」的调度判定全部由它派生（`AuditLevel::from_tool_status` /
+/// `dispatch::span_ok`），工具返回文本只负责给模型读。
 ///
-/// 迁移期：所有工具仍返 (String, Vec<TaskRef>)，From 过渡层默认 Ok；
-/// 迁移完成后工具逐个改为显式 ok/warn/error，From 过渡层在 cleanup 删除。
+/// 为什么单列 `Denied`：`Error` 是工具自己没能做完（执行报错），`Denied` 是
+/// 根本没执行——被闸拦下、被用户拒绝、预算触顶。两者对审计都不该同级别
+/// （前者 ERROR、后者 WARN 是正常控制流），但对「这一步成功了吗」是同一个
+/// 答案：不成功。合成一个状态会让日志被预期内的拒绝刷红。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolStatus {
     /// 工具成功完成主职责
     Ok,
-    /// 工具成功但有部分告警
+    /// 工具成功但有部分告警（对「成功了吗」仍是成功）
     Warn,
-    /// 工具明确返回错误
+    /// 工具没能完成主职责：执行报错
     Error,
+    /// 工具根本没执行：被闸拦下 / 用户拒绝 / 预算或熔断触顶
+    Denied,
+}
+
+impl ToolStatus {
+    /// 这次工具调用算不算成功。成败的唯一真相源——审计级别、trace span 的 ok、
+    /// Skill DSL 调度器的步骤成败判定都从这里派生。
+    ///
+    /// `Warn` 算成功：它表示「做成了但有告警」（部分写入、有降级）。`Error` 与
+    /// `Denied` 都不算。
+    ///
+    /// 为什么不用 `!audit::tool_call_failed(text)`：那是文本匹配，和 status 两套
+    /// 口径必然漂移。实际已经漂过——闸拦 / 用户拒绝 / 预算触顶 / 白名单外这 4 类
+    /// 文案既不带「⚠️」也不带「失败：」，审计按 status 记 WARN，而 trace span 与
+    /// Skill DSL 调度器按文本判成**成功**，被拒步骤被记成技能正常完成。
+    /// 工具返回文本只负责给模型读与 `classify_error_class` 的子类细分。
+    pub fn is_success(self) -> bool {
+        matches!(self, ToolStatus::Ok | ToolStatus::Warn)
+    }
 }
 
 /// 工具返回值。代替原 `(String, Vec<TaskRef>)` 元组。
@@ -103,6 +125,23 @@ impl ToolResult {
             text: text.into(),
             refs,
             status: ToolStatus::Error,
+            images: Vec::new(),
+            file_changes: Vec::new(),
+        }
+    }
+    /// 门禁拒绝：工具**没有执行**（规则 deny / 用户拒绝 / 白名单外 / 预算触顶 /
+    /// 熔断 / arguments 非法 JSON）。
+    ///
+    /// 走这里而不是 `warn`，是因为「被拒」对调度器和 trace 都是失败：用 `warn`
+    /// 会被 `skill_on_step_post` 记成步骤成功、trace span 记成 ok，技能对外报完成。
+    /// 文本原样透传——`audit::classify_tool_failure` 的分类（gate_denied /
+    /// user_denied / skill_paused / fused）靠文案前缀，由调用方按语义写，
+    /// 构造器不擅自改写给模型看的句子。
+    pub fn denied(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            refs: Vec::new(),
+            status: ToolStatus::Denied,
             images: Vec::new(),
             file_changes: Vec::new(),
         }

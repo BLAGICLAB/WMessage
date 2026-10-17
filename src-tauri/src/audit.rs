@@ -97,20 +97,31 @@ impl AuditLevel {
         }
     }
 
-    /// 从工具 status 派生 audit 级别，代替原 audit::classify_text 字符串匹配。
-    /// 工具会显式声明 status，本映射是唯一从 status → audit 级别的入口。
+    /// 从工具 status 派生 audit 级别，是唯一从 status → audit 级别的入口。
+    ///
+    /// 职责边界（status 与文本分工，写死以免日后又长出第二套口径）：
+    /// - **status 管「成没成」**——审计级别、trace span 的 ok、调度器的步骤成败判定。
+    /// - **文本管「模型读到啥」**——给模型的说明句，以及 `classify_tool_failure`
+    ///   提供的错误子类（error_class）。文本不承担成败判定。
     pub fn from_tool_status(s: crate::bot::registry::ToolStatus) -> Self {
         use crate::bot::registry::ToolStatus;
         match s {
             ToolStatus::Ok => AuditLevel::Info,
             ToolStatus::Warn => AuditLevel::Warn,
             ToolStatus::Error => AuditLevel::Error,
+            // 被拒是预期内的控制流（闸拦下 / 用户点了否 / 预算触顶），不是故障
+            ToolStatus::Denied => AuditLevel::Warn,
         }
     }
 }
 
-/// 工具失败单一分类器：tool_call_failed 与 classify_error_class 共用同一份
-/// 判定，杜绝「判定一处、归类另一处各测一遍前缀」的口径漂移。
+/// 工具文本失败分类器：`tool_call_failed` 与 `classify_error_class` 共用同一份判定，
+/// 杜绝「判定一处、归类另一处各测一遍前缀」的口径漂移。
+///
+/// **谁在用**：外部 MCP 工具（返回文本不受我们控制、拿不到 `ToolStatus`）、以及
+/// 内置工具的 `error_class` 细分（要区分 timeout / permission / gate_denied…）。
+/// 内置工具的成败判定走 `ToolStatus`，**不再走这里**——否则同一个结果会同时被
+/// 审计判成功、被调度器判失败。
 /// 判定臂依序：未知工具 / 门禁「⚠️」/ 用户拒绝 / 技能已暂停 / 已强制终止（contains）/
 /// 「失败/错误」关键词后置分隔符 / error: 系行首；都不命中 = 非失败。
 fn classify_tool_failure(text: &str) -> Option<ToolFailureClass> {
@@ -152,11 +163,17 @@ enum ToolFailureClass {
     ErrorPrefix,
 }
 
-/// 工具调用是否失败/被拒（统一判定口径，全链路唯一真相源）。
+/// 工具调用文本是否「看起来像失败/被拒」。**只服务拿不到 `ToolStatus` 的路径**
+/// （外部 MCP 工具），以及作为内置工具 `error_class` 子类的推导入口。
+///
+/// 内置工具的成败判定走 `registry::ToolStatus`（见 `dispatch::span_ok`），
+/// 不要在这里给内置工具的成败兜底——两套口径同时判，早晚会给同一个结果
+/// 两种答案：之前就发生过——5 处闸拦/拒绝/预算触顶的文案既不带「⚠️」也不带
+/// 「失败：」，审计记 WARN 而 Skill DSL 调度器把被拒步骤记成成功。
+///
 /// 熔断「已强制终止」、暂停「技能已暂停」、门禁拦截「⚠️」、用户拒绝「用户拒绝」
 /// 四类文案与常规失败前缀都要判失败；否则会出现末步熔断误报「✅ 完成」、门禁拦截
-/// 对 PREVR 隐身、被拒删除当成功。统一收口到这里，
-/// DSL 调度器 / PREVR / 幻觉守卫 / skill_on_step_post / 审计分级全部共用。
+/// 对 PREVR 隐身、被拒删除当成功。
 ///
 /// 「失败/错误」改为 markdown 前缀 + 关键词后接分隔符才判失败：
 /// 1. markdown 前缀（#/-/*/数字列表）→ 过滤文档小标题「# 失败案例分析」
