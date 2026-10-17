@@ -66,8 +66,8 @@ pub fn read_apply_policy_at(path: &Path) -> ApplyPolicy {
 }
 
 /// 写互斥：RMW（读→改→写）全程持锁，防并发两次点档后写覆盖先写。
-/// applyPolicy 与 deriveThresholds 共用这一把：两者都 RMW 同一 bot-config.json，
-/// 各持独立锁会让设置页并发点档互相覆盖丢字段。
+/// 同块兄弟字段（evolution 下其它键）都靠这把锁：各持独立锁会让设置页并发
+/// 点档互相覆盖丢字段。
 /// 持锁跨阻塞文件 IO 是有意取舍：这是低频设置写入路径，拆锁会破坏
 /// 「读到的基线在写回时仍有效」的 RMW 不变式。
 static APPLY_POLICY_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -147,11 +147,7 @@ mod tests {
             ApplyPolicy::Auto,
             "缺 evolution 块"
         );
-        std::fs::write(
-            &p,
-            r#"{"evolution":{"kill_switch":{"all_auto_apply":false}}}"#,
-        )
-        .unwrap();
+        std::fs::write(&p, r#"{"evolution":{"otherSetting":1}}"#).unwrap();
         assert_eq!(
             read_apply_policy_at(&p),
             ApplyPolicy::Auto,
@@ -225,17 +221,14 @@ mod tests {
         let p = tmp_path("preserve");
         std::fs::write(
             &p,
-            r#"{"baseUrl":"https://x/v1","evolution":{"kill_switch":{"all_auto_apply":false},"applyPolicy":"auto"},"memoryControl":{"injectionEnabled":false}}"#,
+            r#"{"baseUrl":"https://x/v1","evolution":{"otherSetting":1,"applyPolicy":"auto"},"memoryControl":{"injectionEnabled":false}}"#,
         )
         .unwrap();
         set_apply_policy_at(&p, ApplyPolicy::Confirm).unwrap();
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["evolution"]["applyPolicy"], "confirm", "目标字段已改");
-        assert_eq!(
-            v["evolution"]["kill_switch"]["all_auto_apply"], false,
-            "同块兄弟字段保留"
-        );
+        assert_eq!(v["evolution"]["otherSetting"], 1, "同块兄弟字段保留");
         assert_eq!(v["baseUrl"], "https://x/v1", "顶层字段保留");
         assert_eq!(v["memoryControl"]["injectionEnabled"], false, "无关块保留");
         // 覆盖回 auto 也保留
@@ -243,7 +236,7 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["evolution"]["applyPolicy"], "auto");
-        assert_eq!(v["evolution"]["kill_switch"]["all_auto_apply"], false);
+        assert_eq!(v["evolution"]["otherSetting"], 1);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 

@@ -838,23 +838,24 @@ mod tests {
             "baseUrl": "https://api.example.com/v1",
             "model": "m",
             "evolution": {
-                "kill_switch": {"all_auto_apply": false},
-                "unknown_block": {"nested": [1, 2]}
+                "unknown_block": {"nested": [1, 2]},
+                "another_block": {"deep": {"flag": true}}
             }
         }"#;
         let cfg: BotConfig = serde_json::from_str(raw).unwrap();
         assert!(cfg.evolution.is_some(), "读入应带上 evolution 块");
         let out = serde_json::to_string_pretty(&cfg).unwrap();
         let back: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(
-            back["evolution"]["kill_switch"]["all_auto_apply"],
-            serde_json::json!(false)
-        );
         // BotConfig 不解构 evolution 块（Option<Value> 原样透传），所以「未知 key
         // 也会丢」正是这条回归要防的——用真会被解构器吃掉的 key 才有探测力
         assert_eq!(
             back["evolution"]["unknown_block"]["nested"],
             serde_json::json!([1, 2])
+        );
+        assert_eq!(
+            back["evolution"]["another_block"]["deep"]["flag"],
+            serde_json::json!(true),
+            "嵌套更深的一层也要保真"
         );
         // RMW 语义（update_config_file/persist_last_run 同构：load → 改别处 → 写回）：
         // 二次反序列化再序列化，块仍不丢

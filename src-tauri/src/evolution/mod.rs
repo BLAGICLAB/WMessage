@@ -98,7 +98,6 @@ pub mod derive;
 pub mod emit;
 pub mod panel;
 pub mod proposal;
-pub mod sandbox;
 
 /// evolution 存储（proposals + changes 两个 jsonl）的**进程内单锁**。
 ///

@@ -9,7 +9,6 @@
 //! （历史实现见 git log）。
 
 use crate::evolution::proposal::{EvolutionProposal, ImpactLevel};
-use crate::evolution::sandbox::kill_switch::KillSwitch;
 use serde::{Deserialize, Serialize};
 
 /// 应用策略二档（决策词汇归策略层所有；policy.rs 负责配置 IO 与转发）。
@@ -42,21 +41,6 @@ impl ApplyPolicy {
             _ => None,
         }
     }
-}
-
-/// 运行时上下文只读快照：每个 evolution 周期在**决策点**构造一次，
-/// 构造后不可变；策略纯函数不消费本结构，它供编排侧做分流判定
-/// （applyPolicy 分流 / kill 中断 / shadow 观察）。
-/// 不含随机源——全域禁随机（不变式 7），未来引入必须加字段由调用方注入。
-#[derive(Debug, Clone)]
-pub struct EvalContext {
-    /// applyPolicy 档位快照（缺省/读失败 = Auto，与现状一致）
-    pub apply_policy: ApplyPolicy,
-    /// kill_switch 只读快照（读取失败 = 全关默认，与现状一致）
-    pub kill_switch: KillSwitch,
-    /// shadow 观察是否开启
-    /// 本周期基准时间
-    pub now_ms: i64,
 }
 
 /// gate 判定结果。Reject 是正常业务结果，不进 Err 通道。

@@ -540,16 +540,14 @@ mod evolution_preserve_tests {
         // 回归：前端视图不含 evolution 块——盘上有则以盘上回填
         let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();
         assert!(incoming.evolution.is_none());
-        let disk: BotConfig = serde_json::from_str(
-            r#"{"evolution":{"kill_switch":{"all_auto_apply":false,"max_per_day":5}}}"#,
-        )
-        .unwrap();
+        let disk: BotConfig =
+            serde_json::from_str(r#"{"evolution":{"otherSetting":{"max_per_day":5}}}"#).unwrap();
         preserve_evolution(&mut incoming, &disk);
         assert_eq!(
             incoming
                 .evolution
                 .as_ref()
-                .and_then(|v| v.get("kill_switch"))
+                .and_then(|v| v.get("otherSetting"))
                 .and_then(|v| v.get("max_per_day"))
                 .and_then(|v| v.as_i64()),
             Some(5)
