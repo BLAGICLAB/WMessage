@@ -1214,25 +1214,36 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
 /// （合法性 + 与 baseline 的一致性由 registry_tests 锁死）。
 ///
+/// 按名字表拼一份工具 JSON：`[` + 每项 `\n  ` + `,\n  ` + `\n]`。
+///
+/// 三处清单（主 agent 默认 / profile 白名单 / per-onion 交集）共用这一个拼装，
+/// 差异只是过滤依据。分开写三份的代价是 `splice_mcp_body` 依赖的「恒以 `\n]`
+/// 收尾」成了口头约定——破坏它只能靠限频 eprintln 事后发现（那是运行时降级
+/// 告警，本该由抽象收敛消掉）。
+///
+/// 空集产出 `[\n]`：模型看到零工具时该收到空清单，而不是整份默认清单——
+/// 后者是「配置看着生效、实际落空」的相反版本。
+fn assemble_tools_json(keep: impl Fn(&ToolDef) -> bool) -> String {
+    let mut s = String::with_capacity(16 * 1024);
+    s.push('[');
+    let mut first = true;
+    for tool in TOOLS_TABLE.iter() {
+        if !keep(tool) {
+            continue;
+        }
+        s.push_str(if first { "\n  " } else { ",\n  " });
+        first = false;
+        s.push_str(tool.schema);
+    }
+    s.push_str("\n]");
+    s
+}
+
 /// 仅子 agent 可见的工具（write_artifact_file / read_own_card）不出现在
 /// 主 agent 的默认清单里——主可见数 = BUILTIN_TOOL_COUNT - SUBAGENT_ONLY_TOOLS.len()。
 pub fn tools_json() -> &'static str {
     static CACHE: OnceLock<String> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        let mut s = String::with_capacity(16 * 1024);
-        s.push('[');
-        let mut first = true;
-        for tool in TOOLS_TABLE.iter() {
-            if SUBAGENT_ONLY_TOOLS.contains(&tool.name) {
-                continue;
-            }
-            s.push_str(if first { "\n  " } else { ",\n  " });
-            first = false;
-            s.push_str(tool.schema);
-        }
-        s.push_str("\n]");
-        s
-    })
+    CACHE.get_or_init(|| assemble_tools_json(|t| !SUBAGENT_ONLY_TOOLS.contains(&t.name)))
 }
 
 /// 仅子 agent 白名单可见的工具（主 agent 默认 schema 不含）。
@@ -1359,46 +1370,42 @@ pub fn tools_json_with_mcp(session_id: Option<&str>) -> std::borrow::Cow<'static
         }
     }
     // base 可能是 owned（本会话绑了 onion 配置、清单是现算的交集），
-    // 那种情况下没法借出去，只能再拷一份收尾
+    // 那种情况下没法借出去，只能再拷一份收尾。两版共用同一个拼接内核
     match base {
         std::borrow::Cow::Borrowed(b) => splice_mcp_body(b, &body),
         std::borrow::Cow::Owned(o) => std::borrow::Cow::Owned(splice_mcp_body_owned(o, &body)),
     }
 }
 
-/// 摘尾拼接内核（纯函数，单测直打）：base 恒以 `"\n]"` 收尾、动态段恒以
-/// `",\n"` 起头（build_tools_json_body 构造保证），摘尾接段再补收尾；
-/// 任一侧契约破坏回退 base 原样返回（宁可本轮少挂 MCP 工具，不产出非法 JSON;
-/// body 侧对偶检查为评审补充）。
-fn splice_mcp_body<'a>(base: &'a str, body: &str) -> std::borrow::Cow<'a, str> {
-    let Some(head) = base.strip_suffix("\n]") else {
-        return std::borrow::Cow::Borrowed(base);
-    };
+/// 拼接内核（纯函数，单测直打）：base 恒以 `"\n]"` 收尾、动态段恒以
+/// `",\n"` 起头（build_tools_json_body 构造保证），摘尾接段再补收尾。
+///
+/// 契约破坏返回 None，调用方各自回退原样 base（借用版回退 Borrowed、
+/// owned 版回退原串）——宁可本轮少挂 MCP 工具，不产出非法 JSON。
+/// 两版拼接共用这一个内核，判定逻辑只此一份。
+fn join_mcp_body(base: &str, body: &str) -> Option<String> {
+    let head = base.strip_suffix("\n]")?;
     if !body.starts_with(",\n") {
-        return std::borrow::Cow::Borrowed(base);
+        return None;
     }
     let mut s = String::with_capacity(head.len() + body.len() + 2);
     s.push_str(head);
     s.push_str(body);
     s.push_str("\n]");
-    std::borrow::Cow::Owned(s)
+    Some(s)
+}
+
+fn splice_mcp_body<'a>(base: &'a str, body: &str) -> std::borrow::Cow<'a, str> {
+    match join_mcp_body(base, body) {
+        Some(s) => std::borrow::Cow::Owned(s),
+        None => std::borrow::Cow::Borrowed(base),
+    }
 }
 
 /// `splice_mcp_body` 的 owned 版：base 已持有所有权时借不出去，只能再拷一份。
-/// 契约判断与借用版逐条同源（都走 `strip_suffix` + body 前缀检查），
-/// 不另抄一份判定——抄一份就等于给了两处会各自漂的形状。
+/// 契约判断复用同一个 `join_mcp_body` 内核，破坏时回退原串。
 fn splice_mcp_body_owned(base: String, body: &str) -> String {
-    let Some(head) = base.strip_suffix("\n]") else {
-        return base;
-    };
-    if !body.starts_with(",\n") {
-        return base;
-    }
-    let mut s = String::with_capacity(head.len() + body.len() + 2);
-    s.push_str(head);
-    s.push_str(body);
-    s.push_str("\n]");
-    s
+    join_mcp_body(&base, body).unwrap_or(base)
 }
 
 pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
@@ -1412,19 +1419,10 @@ pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
                 crate::db::SubagentProfile::General,
             ] {
                 let whitelist = profile_whitelist(p);
-                let mut s = String::with_capacity(4 * 1024);
-                s.push('[');
-                let mut first = true;
-                for tool in TOOLS_TABLE.iter() {
-                    if !whitelist.contains(&tool.name) {
-                        continue;
-                    }
-                    s.push_str(if first { "\n  " } else { ",\n  " });
-                    first = false;
-                    s.push_str(tool.schema);
-                }
-                s.push_str("\n]");
-                map.insert(p.as_str(), s);
+                map.insert(
+                    p.as_str(),
+                    assemble_tools_json(|t| whitelist.contains(&t.name)),
+                );
             }
             map
         })
@@ -1434,26 +1432,10 @@ pub fn profile_tools_json(profile: crate::db::SubagentProfile) -> &'static str {
 }
 
 /// 按 `effective` 名字表拼一份收窄后的工具 JSON（owned）。
-///
-/// 与 `profile_tools_json` 同构（同样的 `[` / `,\n  ` / `\n]` 拼装与顺序），
-/// 区别只是过滤依据从「profile 静态白名单」换成「交集结果」。两者共用同一套
-/// 拼装形状，`splice_mcp_body` 那套契约（base 必须以 `\n]` 收尾）才成立。
+/// 过滤依据是「profile 白名单 ∩ per-onion allowed」的交集结果，
+/// 拼装形状与 `tools_json` 同源（`assemble_tools_json`）。
 fn narrowed_tools_json(effective: &[&'static str]) -> String {
-    let mut s = String::with_capacity(4 * 1024);
-    s.push('[');
-    let mut first = true;
-    for tool in TOOLS_TABLE.iter() {
-        if !effective.contains(&tool.name) {
-            continue;
-        }
-        s.push_str(if first { "\n  " } else { ",\n  " });
-        first = false;
-        s.push_str(tool.schema);
-    }
-    s.push_str("\n]");
-    // 空集落成 `[\n]`：模型看到零工具时该收到空清单，而不是整份默认清单——
-    // 后者等于「配置看着生效、实际落空」的相反版本。
-    s
+    assemble_tools_json(|t| effective.contains(&t.name))
 }
 
 /// MUTATING_TOOLS 由 TOOLS_TABLE 过滤（mutating == true）。
@@ -2241,6 +2223,57 @@ mod registry_tests {
             super::splice_mcp_body("[\n  {}\n]", ",garbage"),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    /// 三份清单共用 `assemble_tools_json` 后形状恒等——这正是
+    /// `splice_mcp_body` 依赖的「恒以 `\n]` 收尾」契约。
+    /// 契约破坏以前只能靠限频 eprintln 事后发现；现在由构造保证，这里钉住。
+    #[test]
+    fn all_three_assemblies_share_the_same_shape() {
+        use crate::db::SubagentProfile;
+        let base = tools_json();
+        assert!(base.starts_with("[\n  "), "首项缩进两格：{base:.20}");
+        assert!(
+            base.ends_with("\n]"),
+            "必须以 \\n] 收尾：{:?}",
+            &base[base.len()..]
+        );
+        for p in [
+            SubagentProfile::Research,
+            SubagentProfile::Coder,
+            SubagentProfile::General,
+        ] {
+            let s = profile_tools_json(p);
+            assert!(
+                s.starts_with("[\n  ") && s.ends_with("\n]"),
+                "{} 档形状与主清单不一致",
+                p.as_str()
+            );
+        }
+        // 交集清单（owned 路径）同样形状
+        let narrowed = super::narrowed_tools_json(&["run_python"]);
+        assert!(narrowed.starts_with("[\n  ") && narrowed.ends_with("\n]"));
+        // 空集也要有合法形状（模型该收到空清单，不是默认清单）
+        assert_eq!(super::narrowed_tools_json(&[]), "[\n]");
+    }
+
+    /// 拼接内核只有一份判定：借用版与 owned 版对同一输入必须同进同退。
+    #[test]
+    fn splice_both_variants_share_one_kernel() {
+        let cases = [
+            ("[\n  {}\n]", ",\n  {}"), // 正常
+            ("[\n  {}\n]", "garbage"), // body 契约破坏
+            ("[broken", ",\n  {}"),    // base 契约破坏
+        ];
+        for (base, body) in cases {
+            let borrowed = super::splice_mcp_body(base, body);
+            let owned = super::splice_mcp_body_owned(base.to_string(), body);
+            assert_eq!(
+                borrowed.as_ref(),
+                owned.as_str(),
+                "两版对 base={base:?} body={body:?} 必须给出同一结果"
+            );
+        }
     }
 
     /// 动态拼装契约（纯格式）：拿 mount 的纯函数造一个假 body，
