@@ -370,6 +370,11 @@ pub fn run() {
             // 技能当次启动就要进路由
             bot_skills::materialize_at_startup(app.handle());
 
+            // per-onion 配置档物化：把内置的 probe / writereditor / validator 三份
+            // yaml 落进数据目录（已有同名不覆盖）。不做这一步，模型按 schema 里
+            // 写的配置档名派发只会得到「文件不存在」
+            bot_onions::materialize_builtin_configs(app.handle());
+
             // 动态技能路由：启动时按已安装技能的 frontmatter intents 建路由表；
             // 之后 skills_import / skills_delete 成功会各自重建
             bot_skills::rebuild_intent_routes(app.handle());

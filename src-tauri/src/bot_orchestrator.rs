@@ -76,6 +76,19 @@ impl SubagentStage {
     }
 }
 
+/// 派发时已解析校验过的 per-onion 配置档。
+///
+/// **随内存闭包进 runner，不落 subagents 行**：这两项是「这次派发做了什么决定」，
+/// 不是子 agent 的固有属性——重启后不会有第二个派发方重跑同一次 spawn
+/// （行已终态）。真正需要长期留存的是 `bot_sessions` 的两列，runner 建会话时写。
+#[derive(Debug, Clone)]
+pub struct SpawnOnion {
+    /// 配置档名，同时是 `<数据目录>/onions/<config>.yaml` 的文件名
+    pub config: String,
+    /// 配置档 `max_turn`：轮数上限，只收紧不覆盖
+    pub max_turn: Option<u32>,
+}
+
 /// spawn 入参（设计 §5 工具签名的内部形态）。
 #[derive(Debug, Clone)]
 pub struct SpawnRequest {
@@ -92,6 +105,12 @@ pub struct SpawnRequest {
     pub budget: Option<SubagentBudget>,
     /// A 期参数透传：None/无效值回退当前 active model（设计 §5）
     pub model_profile: Option<String>,
+    /// per-onion 配置档（设计 §3.7 三段流水线的权限载体）。
+    /// None = 不套配置档，工具集就是 profile 白名单原样。
+    ///
+    /// 名字与上限都在派发时**已解析校验**：加载失败必须在建行之前就报错，
+    /// 否则留下一条「派发成功但永远跑不起来」的幽灵行。
+    pub onion: Option<SpawnOnion>,
     /// 主卡（编排计划卡）id；缺卡 → TaskNotFound
     pub parent_task_id: Option<String>,
     /// 派发者主会话 id（串链审计）
@@ -139,6 +158,35 @@ pub struct CancelAck {
 /// 预算钳制：None → 默认值；其余交给 SubagentBudget::clamped（硬顶 50 / 下限 1）。
 pub fn clamp_budget(budget: Option<SubagentBudget>) -> SubagentBudget {
     budget.unwrap_or_default().clamped()
+}
+
+/// 配置档的 `max_turn` 只收紧：派发给的轮数更宽时不许被配置档顶开。
+///
+/// 取 min 而非覆盖——配置档是权限上限，不是「优先于调用方的指令」。
+fn apply_onion_turn_cap(budget: &mut SubagentBudget, cap: Option<u32>) {
+    if let Some(cap) = cap {
+        if cap < budget.max_turns {
+            budget.max_turns = cap;
+        }
+    }
+}
+
+/// 派发 profile 的解析顺序：显式 `profile` > 配置档的 `profile` > `stage` 派生。
+///
+/// **不是「配置档说了算」**：让 yaml 的 profile 覆盖运行时 profile 就是放宽
+/// （模型给 research、配置写 general → 白名单变大），与设计 §3.4「只有收紧、
+/// 没有第二张 allow 表」冲突。显式 profile 优先＝把档位的决定权交回运行时，
+/// yaml 的 `profile:` 只在调用方没表态时兜底。
+///
+/// 三者都给不出时返回 None：那是「没说清派个什么档位」，必须报错而不是猜。
+pub(crate) fn resolve_spawn_profile(
+    explicit: Option<SubagentProfile>,
+    config_profile: Option<SubagentProfile>,
+    stage: Option<SubagentStage>,
+) -> Option<SubagentProfile> {
+    explicit
+        .or(config_profile)
+        .or_else(|| stage.map(|s| s.default_profile()))
 }
 
 fn validate_request(req: &SpawnRequest) -> CommandResult<()> {
@@ -334,6 +382,10 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
         let cfg = crate::bot::load_config(app);
         req.budget = Some(crate::bot::params::resolve_subagent_budget(&cfg));
     }
+    // 配置档 max_turn 只收紧（规则见 apply_onion_turn_cap）
+    if let Some(b) = req.budget.as_mut() {
+        apply_onion_turn_cap(b, req.onion.as_ref().and_then(|o| o.max_turn));
+    }
     // 审计字段先拷出（闭包要 move req 进 spawn_blocking）；校验只走 locked 核心
     //（wrapper 侧重复调用已删——）
     let audit_parent_session = req.parent_session_id.clone();
@@ -342,6 +394,8 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     // stage 走 in-memory 闭包——spawn 触发 runner 是同步启动，闭包 move 进 runner；
     // 不落库（详见 SubagentStage 注释）。SubagentStage 是 Copy，所以这里直接搬走。
     let runner_stage = req.stage;
+    // 配置档同理走内存闭包（理由见 SpawnOnion 注释）
+    let runner_onion = req.onion.clone();
     let app2 = app.clone();
     let ack = tauri::async_runtime::spawn_blocking(move || -> CommandResult<SpawnAck> {
         let _g = crate::db::lock_db_write();
@@ -384,9 +438,9 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     emit_subagent_spawned(app, &ack.subagent_id, audit_parent_session.as_deref());
     let runner_app = app.clone();
     let runner_sid = ack.subagent_id.clone();
-    tauri::async_runtime::spawn(
-        async move { run_subagent(runner_app, runner_sid, runner_stage).await },
-    );
+    tauri::async_runtime::spawn(async move {
+        run_subagent(runner_app, runner_sid, runner_stage, runner_onion).await
+    });
     Ok(ack)
 }
 
@@ -1080,7 +1134,12 @@ impl SubagentGate {
 /// 具体化 `tauri::AppHandle`（= Wry）：run_model_loop 生产壳即该签名
 /// （mock 链路走 run_model_loop_core，同 llm_integration 分层）。
 #[allow(clippy::too_many_lines)]
-async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<SubagentStage>) {
+async fn run_subagent(
+    app: AppHandle,
+    subagent_id: String,
+    stage: Option<SubagentStage>,
+    onion: Option<SpawnOnion>,
+) {
     let sid_for_load = subagent_id.clone();
     let row = match db_locked(&app, move |conn| {
         crate::db::load_subagent(conn, &sid_for_load)
@@ -1330,6 +1389,7 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         let artifact_dir = artifact_dir.clone();
         let row = row.clone();
         let budget = budget.clone();
+        let onion = onion.clone();
         db_locked(&app, move |conn| -> CommandResult<(String, String)> {
             // 建会话与回填 session_id 包同一事务，防出现「建了会话但行没记」的孤儿会话
             let tx = conn
@@ -1344,6 +1404,17 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             let wrapper = render_task_wrapper(&row, &budget, &artifact_dir);
             crate::db::set_subagent_session(&tx, &row.id, &session.id)
                 .map_err(CommandError::DbError)?;
+            // 配置档元列随会话一起建：配置正文在 `<数据目录>/onions/`，这里只存指针。
+            // 不写的话 bind_session 读不到，子 agent 会拿到未收窄的整套 profile 工具。
+            if let Some(o) = &onion {
+                crate::db::bot_session_set_onion(
+                    &tx,
+                    &session.id,
+                    Some(&o.config),
+                    o.max_turn.map(|t| t as i64),
+                )
+                .map_err(CommandError::DbError)?;
+            }
             tx.commit()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
             Ok((session.id, wrapper))
@@ -1385,6 +1456,17 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         }
     };
 
+    // per-onion 配置绑定（两层配置的 DB 层）：读会话的 onion_config 元列 + 落盘
+    // yaml，解析校验后进进程内缓存。**必须在守卫注册之前**——守卫要拿
+    // 「profile ∩ allowed」的交集作为白名单判据，配置没绑就没交集可算。
+    crate::bot_onions::bind_session(&app, &session_id);
+    // 白名单全集：配置档在就取交集，不在就是 profile 白名单原样（语义不变）
+    let subagent_tools: Vec<&'static str> =
+        match crate::bot_onions::cached_for_session(Some(session_id.as_str())) {
+            Some(cfg) => crate::bot_onions::effective_tools(row.profile, &cfg.allowed),
+            None => crate::bot::registry::profile_whitelist(row.profile).to_vec(),
+        };
+
     // 工具守卫注册（白名单闸 + spawn 递归身份校验 + read_own_card/write_artifact 定位）。
     // RAII 守卫：Drop 反注册——runner 中途 panic 也不泄漏条目（ 采纳）
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
@@ -1393,16 +1475,12 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
             subagent_id: row.id.clone(),
             task_id: row.task_id.clone(),
             profile: row.profile,
+            tools: std::sync::Arc::new(subagent_tools),
             budget: budget.clone(),
             artifact_dir: artifact_dir.clone(),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         },
     );
-
-    // per-onion 配置绑定（两层配置的 DB 层）：读会话的 onion_config 元列 + 落盘
-    // yaml，解析校验后进进程内缓存。放在守卫之后——守卫给的是运行时 profile
-    // 上限，本函数给的是「在上限内再收窄到 allowed」的那一层。
-    crate::bot_onions::bind_session(&app, &session_id);
 
     // 会话锁（用户向围观会话发消息 → 友好拒绝）+ 停止守卫（interactive=围观流式）
     let chat_guard = ChatGuard::acquire(&app, Some(session_id.as_str()));
@@ -1506,11 +1584,22 @@ async fn run_subagent(app: AppHandle, subagent_id: String, stage: Option<Subagen
         },
     };
     // wrapper 已由 setup 渲染返回（同一文本：LLM 输入 = 历史落库 = 收尾覆盖源）
+    // 配置档段：角色 + 交集后的实际可用工具（§3.4「配置看着生效、实际落空」
+    // 要让模型也看得见）；无配置档时是空串，不占位也不改既有提示词。
+    let onion_note = crate::bot_onions::cached_for_session(Some(session_id.as_str()))
+        .map(|cfg| {
+            format!(
+                "\n\n{}",
+                crate::bot_onions::render_prompt_note(&cfg, row.profile)
+            )
+        })
+        .unwrap_or_default();
     let system = format!(
-        "{}\n\n{}\n\n{}",
+        "{}\n\n{}\n\n{}{}",
         crate::prompts::SUBAGENT_BASE,
         profile_prompt,
         gen_dir_rule_for(&artifact_dir),
+        onion_note,
     );
     let msgs = vec![
         serde_json::json!({ "role": "system", "content": system }),
@@ -1941,20 +2030,29 @@ pub async fn tool_spawn_subagent(
     let v = parse_tool_args(args);
     let objective = v["objective"].as_str().unwrap_or_default().to_string();
     // stage 可选：recon/executor/verifier 三段式派发阶段（设计 §8.5）。
-    // 给了 stage 但没给 profile 时按 default_profile 派生（recon/verifier→research，
-    // executor→coder）；都给了的 profile 仍优先——角色语义与白名单解耦。
+    // profile 可选：不给时按 配置档 → stage 派生（见 resolve_spawn_profile）。
     let stage = v["stage"].as_str().and_then(SubagentStage::from_str);
-    let profile = match v["profile"].as_str().and_then(SubagentProfile::from_str) {
-        Some(p) => p,
-        None => match stage {
-            Some(s) => s.default_profile(),
-            None => {
-                return ToolResult::warn(
-                    "spawn 失败：profile 必须是 research / coder / general 之一；或给 stage=recon/executor/verifier 让系统按默认派生",
-                    Vec::new(),
-                );
-            }
+    // 配置档：名字非法 / 文件不在 / YAML 语法错 / 字段不合法都在这里报错。
+    // 放在建行之前——加载失败的配置档若留到 runner 才炸，就是一条永远跑不起来的行。
+    let onion_cfg = match v["onion"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => match crate::bot_onions::load(app, id) {
+            Ok(cfg) => Some(cfg),
+            Err(e) => return ToolResult::warn(format!("spawn 失败：{e}"), Vec::new()),
         },
+        None => None,
+    };
+    let profile = match resolve_spawn_profile(
+        v["profile"].as_str().and_then(SubagentProfile::from_str),
+        onion_cfg.as_ref().and_then(|c| c.profile_enum()),
+        stage,
+    ) {
+        Some(p) => p,
+        None => {
+            return ToolResult::warn(
+                "spawn 失败：profile 必须是 research / coder / general 之一；或给 onion=配置档名；或给 stage=recon/executor/verifier 让系统按默认派生",
+                Vec::new(),
+            );
+        }
     };
     let criteria: Vec<String> = v["acceptanceCriteria"]
         .as_array()
@@ -1996,6 +2094,10 @@ pub async fn tool_spawn_subagent(
         context_summary: v["contextSummary"].as_str().map(str::to_string),
         budget,
         model_profile: v["modelProfile"].as_str().map(str::to_string),
+        onion: onion_cfg.as_ref().map(|c| SpawnOnion {
+            config: c.onion_id.clone(),
+            max_turn: c.max_turn,
+        }),
         parent_task_id: v["parentTaskId"].as_str().map(str::to_string),
         parent_session_id: session_id,
     };
@@ -2414,6 +2516,9 @@ mod orchestrator_tests {
             subagent_id: "sa_c1".into(),
             task_id: None,
             profile: SubagentProfile::Coder,
+            tools: std::sync::Arc::new(
+                crate::bot::registry::profile_whitelist(SubagentProfile::Coder).to_vec(),
+            ),
             budget: SubagentBudget {
                 max_turns: 5,
                 max_tool_calls: 2,
@@ -2614,6 +2719,7 @@ mod orchestrator_tests {
             context_summary: None,
             budget: None,
             model_profile: None,
+            onion: None,
             parent_task_id: parent,
             parent_session_id: Some("main-sess".into()),
         }
@@ -3149,5 +3255,149 @@ mod orchestrator_tests {
             .unwrap();
         // 行 profile 是显式给的 Coder（stage 在内存里走闭包，不落表）
         assert_eq!(row.profile, SubagentProfile::Coder);
+    }
+
+    // ── per-onion 配置档接线（期 6）──
+
+    /// profile 解析优先级：显式 > 配置档 > stage 派生，都没给则 None。
+    ///
+    /// 「配置档 > stage」这一档是配置档 profile 唯一的生效路径——它排在
+    /// 显式之后，才不会让 yaml 覆盖运行时档位（那等于放宽）。
+    #[test]
+    fn spawn_profile_priority_is_explicit_then_config_then_stage() {
+        let e = Some(SubagentProfile::General);
+        let c = Some(SubagentProfile::Coder);
+        // ① 显式压过配置档与 stage（防「配置覆盖运行时 profile = 放宽」）
+        assert_eq!(
+            resolve_spawn_profile(e, c, Some(SubagentStage::Executor)),
+            Some(SubagentProfile::General)
+        );
+        // ② 没给显式 → 配置档兜底，压过 stage
+        assert_eq!(
+            resolve_spawn_profile(None, c, Some(SubagentStage::Executor)),
+            Some(SubagentProfile::Coder)
+        );
+        // ③ 只有 stage → 按 stage 派生
+        assert_eq!(
+            resolve_spawn_profile(None, None, Some(SubagentStage::Verifier)),
+            Some(SubagentProfile::Research)
+        );
+        // ④ 三者皆无 → None，调用方据此报错（不许猜一个默认档）
+        assert_eq!(resolve_spawn_profile(None, None, None), None);
+    }
+
+    #[test]
+    fn onion_turn_cap_only_tightens() {
+        let mut b = SubagentBudget {
+            max_turns: 30,
+            max_tool_calls: 100,
+            max_wall_seconds: 600,
+        };
+        // 配置档更紧 → 压到配置档的值
+        apply_onion_turn_cap(&mut b, Some(4));
+        assert_eq!(b.max_turns, 4);
+        // 配置档更松 → 不许被它顶开（配置档是上限，不是覆盖）
+        apply_onion_turn_cap(&mut b, Some(50));
+        assert_eq!(b.max_turns, 4, "配置档比派发值宽时不应放宽轮数");
+        // 没给上限 → 不动
+        apply_onion_turn_cap(&mut b, None);
+        assert_eq!(b.max_turns, 4);
+    }
+
+    /// 接线守卫：配置档从派发到执行的四段链路，一段都不能靠单测推断。
+    ///
+    /// 四段分别是「spawn 解析 → 内存闭包进 runner → 建会话写两列 →
+    /// bind 出的交集进守卫白名单」。缺任一段的症状都是同一个：模型以为
+    /// 派了个受限子 agent，实际跑的是全档位——纯函数单测全绿也照样漏。
+    ///
+    /// **所有匹配串都用 `concat!` 拆开**：本测试就住在被扫描的同一个文件里，
+    /// 裸写字面量会被测试自己的源码匹配上，删掉真接线照样绿（本条守卫第一版
+    /// 就是这么假绿的）。与 `tool_guard::dead_command_bind_file_not_in_dispatcher` 同款。
+    #[test]
+    fn onion_config_is_wired_from_spawn_to_guard_whitelist() {
+        let body = include_str!("bot_orchestrator.rs");
+
+        // ① 派发层解析出配置档并装进 SpawnRequest
+        let parse_arm = body
+            .split_once(concat!("crate::bot_onions::", "load(app, id)"))
+            .expect("派发层必须先加载配置档再建行")
+            .1
+            .split("parent_session_id: session_id,")
+            .next()
+            .expect("SpawnRequest 构造应在 session_id 之前");
+        assert!(
+            parse_arm.contains(concat!("onion: ", "onion_cfg")),
+            "SpawnRequest 必须带上已解析的配置档：{parse_arm}"
+        );
+
+        // ② 配置档随内存闭包进 runner（不落 subagents 行）
+        assert!(
+            body.contains(concat!("let runner_onion = ", "req.onion.clone();")),
+            "配置档必须从 req 摘出来交给 runner，否则 runner 拿不到配置名"
+        );
+        assert!(
+            body.contains(concat!(
+                "run_subagent(runner_app, runner_sid, ",
+                "runner_stage, runner_onion)"
+            )),
+            "run_subagent 必须收到配置档参数"
+        );
+
+        // ③ 建会话时把配置写进 bot_sessions 两列——不写则 bind_session 无从读起
+        let setup = body
+            .split_once(concat!("bot_session_", "set_onion("))
+            .expect("子会话建会话时必须写配置档两列")
+            .1;
+        assert!(
+            setup.contains(concat!("Some(&", "o.config)")),
+            "要写配置档名（否则 bind 读到空指针，配置静默失效）"
+        );
+
+        // ④ 守卫白名单取交集，且 bind 发生在守卫注册之前
+        let bind_at = body
+            .find(concat!(
+                "crate::bot_onions::",
+                "bind_session(&app, &session_id)"
+            ))
+            .expect("runner 必须绑定配置");
+        let guard_at = body
+            .find("SubagentSessionGuard::new(")
+            .expect("runner 必须注册守卫");
+        assert!(
+            bind_at < guard_at,
+            "bind_session 必须在守卫注册之前：守卫的白名单取自绑定后的交集，\
+             顺序反了等于拿 profile 白名单当交集"
+        );
+        let guard_arm = body.split_at(guard_at).1;
+        let guard_arm = &guard_arm[..guard_arm.find(");").unwrap_or(guard_arm.len())];
+        assert!(
+            guard_arm.contains(concat!("tools: std::sync::Arc::", "new(subagent_tools)")),
+            "守卫必须带交集后的工具集，闸才是按收窄判的：{guard_arm}"
+        );
+    }
+
+    /// 接线守卫：配置档的角色与实际可用工具要进子 agent 的 system 提示词。
+    ///
+    /// 少了这段，配置档对模型就是「工具莫名少了一半」——它会反复调被收掉的
+    /// 工具、每次吃一次白名单拒绝，白烧轮数。匹配串同样 `concat!` 拆开。
+    #[test]
+    fn onion_prompt_note_is_injected_into_subagent_system() {
+        let body = include_str!("bot_orchestrator.rs");
+        assert!(
+            body.contains(concat!(
+                "crate::bot_onions::",
+                "render_prompt_note(&cfg, row.profile)"
+            )),
+            "system 拼装必须注入配置档提示词段"
+        );
+        let system_at = body
+            .find("let system = format!(")
+            .expect("子 agent system 拼装点");
+        let arm = &body[system_at..];
+        let arm = &arm[..arm.find("let msgs = vec![").unwrap_or(arm.len())];
+        assert!(
+            arm.contains("onion_note"),
+            "system 格式串必须带上配置档段，无配置档时为空串占位：{arm}"
+        );
     }
 }

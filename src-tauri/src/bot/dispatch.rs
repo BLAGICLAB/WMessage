@@ -425,17 +425,20 @@ async fn execute_tool_impl(
         }
     }
     // 1.6（置于 skill 钩子后）：子 agent 会话白名单闸（设计 §5.1/§10 服务端强制）。
-    // schema 层已按 profile 过滤（tools_json_for，递归双保险①），此处兜底：
-    // 白名单外工具一律拒——含 spawn/check/cancel（递归禁用②的 dispatch 侧）与
+    // schema 层已按 profile ∩ per-onion allowed 过滤（tools_json_for，递归双保险①），
+    // 此处兜底：白名单外工具一律拒——含 spawn/check/cancel（递归禁用②的 dispatch 侧）与
     // 任务卡主状态写（主状态只读）。早退事件配平 tool.return。
     if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {
-        if !crate::bot::registry::profile_whitelist(ctx.profile).contains(&name) {
+        // 判据是 ctx.tools（交集后的全集）而非 profile 白名单：schema 层藏起来的
+        // 工具模型仍可能硬猜名字调过来，只有闸也按交集拒，收窄才是真的。
+        if !ctx.tools.contains(&name) {
             // 事件顺序：先 subagent_whitelist_deny（真实原因，带 trace），再
             // tool.return 配平（reason=subagent_whitelist_deny，与 call 可按会话整轮对齐）。
             // 不复用 early_return_events（那是 skill_on_step 熔断专用形态）。
             let mut deny_kv: Vec<(&str, String)> = vec![
                 ("subagent_id", ctx.subagent_id.clone()),
                 ("profile", ctx.profile.as_str().to_string()),
+                ("allowed", ctx.tools.len().to_string()),
                 ("tool", name.to_string()),
             ];
             deny_kv.extend(trace_kv(trace, session_id));
@@ -455,8 +458,9 @@ async fn execute_tool_impl(
             crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
             return crate::bot::registry::ToolResult::warn(
                 format!(
-                    "子 agent 白名单外工具「{name}」已拒绝（profile={}）。只能使用白名单内工具；遇到阻塞在收尾 JSON 的 blockers 里如实记录。",
-                    ctx.profile.as_str()
+                    "子 agent 白名单外工具「{name}」已拒绝（profile={}，本次可用 {} 个）。只能使用白名单内工具；遇到阻塞在收尾 JSON 的 blockers 里如实记录。",
+                    ctx.profile.as_str(),
+                    ctx.tools.len()
                 ),
                 Vec::new(),
             );
@@ -998,6 +1002,29 @@ mod pre_tool_hook_tests {
         assert_eq!(kv_get(ret, "turn"), Some("4"));
         assert_eq!(kv_get(ret, "tool_call_id"), Some("call_hk"));
         assert_eq!(kv_get(ret, "session_id"), Some("sess-9"));
+    }
+
+    #[test]
+    fn subagent_whitelist_gate_judges_on_the_intersection() {
+        // 接线守卫：闸的判据是 ctx.tools（profile ∩ per-onion allowed），
+        // 不是 profile 白名单。只收窄 schema 不收窄闸等于没收窄——模型看不见
+        // 的工具仍能硬猜名字调通配置档明令禁用的能力。
+        let body = include_str!("dispatch.rs");
+        let gate = body
+            .split_once("if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {")
+            .expect("找不到子 agent 白名单闸的入口")
+            .1
+            .split("subagent_whitelist_deny\",")
+            .next()
+            .expect("闸分支应一直到 deny 事件");
+        assert!(
+            gate.contains(concat!("ctx.tools.", "contains(&name)")),
+            "闸的判据必须是 ctx.tools（交集后的全集）：{gate}"
+        );
+        assert!(
+            !gate.contains(concat!("profile_whitelist(", "ctx.profile)")),
+            "闸不得退回 profile 白名单（那样 allowed 收窄形同虚设）：{gate}"
+        );
     }
 
     #[test]

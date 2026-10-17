@@ -344,6 +344,29 @@ L2：主 agent 判断是否需要三段流水线（关键词/规则），并产�
 4. **事件不需要新建**：`subagent_start/finish/error` 已有对应实现——
    `subagent-spawned`（`:1899`，queued 即发）、`subagent-finished`（`:1884`）、
    审计事件 `subagent_done / failed / cancelled`（`:1697-1700`）。
+5. **配置档是这条流水线的权限载体（期 6 落定）**：三段各自带一份内置配置档
+   派发——`onion=probe` / `onion=writereditor` / `onion=validator`，模型在
+   `spawn_subagent` 的 `onion` 参数里点名。三段因此天然各有各的工具集与角色，
+   不必在父侧另写一段「这一段只准干这个」的约束。
+
+   链路上四段接线（缺任一段的症状都是「模型以为派了个受限子 agent，实际跑的
+   是全档位」，纯函数单测全绿也照样漏，故每段都有源码文本守卫钉住）：
+
+   ```
+   spawn 参数解析 ──► SpawnRequest.onion ──► 内存闭包进 runner
+        │                                          │
+        │  档位优先级：显式 profile > 配置档 > stage 派生
+        ▼                                          ▼
+   档位与轮数上限                    建会话时写 bot_sessions 两列
+   （配置档 max_turn 只收紧）                     │
+                                                  ▼
+                                   bind_session 读配置 → 解析进进程内缓存
+                                                  │
+                                        ┌─────────┴─────────┐
+                                        ▼                   ▼
+                          守卫白名单 = profile ∩ allowed    system 提示词段
+                          （dispatch 闸判 ctx.tools）   （角色 + 交集后工具清单）
+   ```
 
 ### 3.8 七层能力边界（L4 只读的连带影响）
 
@@ -587,7 +610,7 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
 ## 十、本轮未验证 / 未做的事
 
 > 期 1、期 0.5、两层配置内核（期 4 的后端部分）已落地，以下按落地情况更新。
-> 基线 `cargo nextest` 1710/1710。
+> 基线 `cargo nextest` 见 §八 路线表各期记录。
 
 - ~~未写任何运行时代码~~ → 期 1（L4 原型）、期 0.5、独立线 A 均已落地。
 - ~~未验证钩子能否在现有 async 生命周期里安全挂载~~ → 已验证，L4 三道闸入口
@@ -602,17 +625,35 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
   pandas 310ms）应贴着地板走——**但这只是推断，没实测**。且真正的固定开销在
   沙箱层（看门狗前导 + 临时目录 + setrlimit 探测），不在 Python 导入。
 - **`ast_inspect` 的输出体积未估**：符号树在大模块上可能爆 `max_output_chars`。
-- **两层配置尚未验证 / 未做的部分**：
-  - 设置页导入导出（`onions_export` 与复用 `skills_import` 的交互）未做。
-    配置目前只靠 `bind_session` 从 `<数据目录>/onions/<id>.yaml` 读，
-    **没有安装/导入路径**；随包发布的三份样例在
-    `src-tauri/resources/onions/`（由单测校验，尚未打包进 tauri resources）。
-  - 「配置无效时在渲染给模型的包装里显式列出实际可用工具」（§3.4）目前只落了
-    审计日志，提示词层那一半等期 6 子 agent 接线时一起做。
+- **期 6 已落地，以下是随之关闭或新增的缺口**：
+  - ~~配置没有安装路径~~ → 内置三份配置档用 `include_str!` 编进二进制，
+    启动时 `materialize_builtin_configs` 落进 `<数据目录>/onions/`（**缺失才写**，
+    不覆盖用户改过的）。走 `include_str!` 而非 tauri bundle `resources`：
+    后者在 `tauri dev` 下不落到 `resource_dir()`，开发期与单测期一律拿不到。
+  - ~~§3.4 提示词那一半没做~~ → `render_prompt_note` 把角色与**交集后**的
+    实际可用工具拼进子 agent 的 system 段。交集为空时明说「本次没有任何工具
+    可用」，不给模型「工具莫名少了一半」的错觉。
+  - ~~收窄只在 schema 层生效~~ → dispatch 白名单闸改判 `ctx.tools`
+    （`profile ∩ allowed`，注册时算好存在 `SubagentSessionCtx`）。
+    **只藏 schema 不收窄闸等于没收窄**：模型看不见的工具仍能硬猜名字调通。
+  - 中间产物不回传父上下文这条仍未加测试，但期 6 只在既有 msgs 组装后面**追加**
+    一段配置档提示词，没有动前两段与顺序，风险未变、结论仍依赖 session 行隔离。
+- **仍然未做 / 未验证**：
+  - 设置页导入导出（`onions_export` 与复用 `skills_import` 的交互）未做；
+    内置三份走启动播种，用户自写的配置档要手工放进数据目录。
+  - `yaml.temperature` **已解析但没有消费者**：接它要改 `run_model_loop` 签名
+    （六个调用点，主会话 / 任务卡 / 子 agent 共用），代价超出本期「流水线接线」。
+    这是一个**已知静默失效字段**，不是漏写。
   - **未接线的层名会「关不掉」**：配置写 `post_tool: ""` 时注册表只有 `pre_tool`
     已接线，故只记 `bot_onions layer_not_wired` 审计、关闭意图本次未生效。
     不静默当成功，但也没有别的办法——层还没接线。
   - `bot_sessions` 两列的迁移走既有幂等 `ensure_columns`，**未在真实老库上跑过
     升级路径**，只在测试库验证。
-- 子 agent 的中间产物不回传父上下文这一条，依赖现有 session 行隔离；未新增
-  机制，但也未新增测试锁它（若期 6 接线时动了 msgs 组装顺序，需补测）。
+  - **主会话仍无法绑定配置档**：`bot_session_set_onion` 现在只有子 agent 建会话
+    一个调用方；主会话的 system 装配在别处，要注入同一段配置档提示词得单独做。
+  - **spawn 的档位优先级是「显式 profile > 配置档 > stage」**（`resolve_spawn_profile`）。
+    配置档压不过显式 profile 是有意的：让 yaml 覆盖运行时档位就是放宽，与 §3.4
+    「只有收紧」冲突。代价是配置档的 `profile:` 只在调用方没表态时兜底生效。
+  - 期 6 的调度骨架**未在真实 provider 上端到端跑过**：三段流水线的非阻塞派发
+    沿用既有 `SpawnAck` + FIFO 闸，但「派发三个子 agent → 父侧轮询 → payload 只
+    注入 result_json」这条链仍靠既有 session 隔离保证，没有新增集成测试覆盖。

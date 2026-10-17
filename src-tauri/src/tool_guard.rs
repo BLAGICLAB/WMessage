@@ -49,6 +49,15 @@ pub struct SubagentSessionCtx {
     /// 事件与 spawn 事件字段对齐，老消费方按该键反查不受影响
     pub task_id: Option<String>,
     pub profile: SubagentProfile,
+    /// 本次子 agent 的**实际可用工具全集**（`profile 白名单 ∩ per-onion allowed`）。
+    ///
+    /// 落在 ctx 而不是闸里现算：dispatch 白名单闸每次工具调用都读它，而闸在
+    /// 热路径上拿不到 AppHandle、也读不到配置缓存；注册时算一次最省。
+    /// `Arc` 是因为 `subagent_ctx` 按值克隆 ctx——每次工具调用克隆一次，
+    /// 内含 `Vec` 就是每次一次堆分配。
+    ///
+    /// 无 per-onion 配置时就是 profile 白名单原样，闸语义与既往完全一致。
+    pub tools: std::sync::Arc<Vec<&'static str>>,
     pub budget: SubagentBudget,
     /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
     pub artifact_dir: PathBuf,
@@ -178,6 +187,10 @@ mod tests {
             subagent_id: subagent_id.into(),
             task_id: None,
             profile: crate::db::SubagentProfile::Research,
+            tools: std::sync::Arc::new(
+                crate::bot::registry::profile_whitelist(crate::db::SubagentProfile::Research)
+                    .to_vec(),
+            ),
             budget: crate::db::SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),

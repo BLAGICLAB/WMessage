@@ -122,6 +122,14 @@ pub fn validate(cfg: &OnionConfig) -> Result<(), String> {
             ));
         }
     }
+    if cfg.max_turn == Some(0) {
+        // 0 轮 = 模型循环一次都不跑，子 agent 交回一句空结论。
+        // 这是「配置看着生效、实际落空」的一种，必须在加载期就报错。
+        return Err(format!(
+            "配置 {}：max_turn 不能为 0（那等于一次工具循环都不给）",
+            cfg.onion_id
+        ));
+    }
     Ok(())
 }
 
@@ -139,6 +147,87 @@ pub fn parse(text: &str) -> Result<OnionConfig, String> {
 /// `<数据目录>/onions/<id>.yaml`
 pub fn onions_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> PathBuf {
     crate::db::paths::data_dir(app).join("onions")
+}
+
+/// 内置配置档（`include_str!` 编进二进制）。
+///
+/// 走 `include_str!` 而不是 tauri bundle 的 `resources`：`resources` 在
+/// `tauri dev` 下不落到 `resource_dir()`，配置档就只在打包后才存在，
+/// 开发期与单测期一律拿不到；编进二进制则 dev / test / 打包三种场景同源。
+/// 样例硬约束单测已逐个 `include_str!` 钉住，改名/挪位会直接编译失败。
+const BUILTIN_CONFIGS: &[(&str, &str)] = &[
+    ("probe", include_str!("../resources/onions/probe.yaml")),
+    (
+        "writereditor",
+        include_str!("../resources/onions/writereditor.yaml"),
+    ),
+    (
+        "validator",
+        include_str!("../resources/onions/validator.yaml"),
+    ),
+];
+
+/// 内置配置档名（播种清单的那一份）。
+///
+/// 单独给一个读取口：spawn 的 schema 描述里要写出有哪些配置档可派发，
+/// 那是**人手写的常量**，靠一条单测钉住它与播种清单不会漂。
+pub fn builtin_config_ids() -> impl Iterator<Item = &'static str> {
+    BUILTIN_CONFIGS.iter().map(|(id, _)| *id)
+}
+
+/// 启动时把内置配置档落进 `<数据目录>/onions/`（缺失才写）。
+///
+/// **不覆盖已存在的文件**：用户手改过的配置档被内置版本盖掉等于静默丢用户
+/// 编辑，而这份配置的唯一消费者就是用户自己。内置版本随程序升级更新，
+/// 想跟新版就自己改回来——这是显式的取舍。
+///
+/// 失败只审计不阻断启动：per-onion 配置是可选增强，写不进去只让这份功能
+/// 不可用（同 `bot_skills::materialize_at_startup` 口径）。
+pub fn materialize_builtin_configs<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let dir = onions_dir(app);
+    for outcome in materialize_into(&dir) {
+        crate::bot::audit_log(
+            app,
+            &match outcome {
+                MaterializeOutcome::Written(id) => format!("bot_onions materialized | {id}"),
+                MaterializeOutcome::DirFailed(e) => format!(
+                    "bot_onions mkdir_fail | {} | {e}，本轮未播种",
+                    dir.display()
+                ),
+                MaterializeOutcome::Failed(id, e) => {
+                    format!("bot_onions write_fail | {id} | {e}")
+                }
+            },
+        );
+    }
+}
+
+enum MaterializeOutcome {
+    Written(&'static str),
+    /// 建目录失败 → 本轮一份都没写
+    DirFailed(std::io::Error),
+    Failed(&'static str, std::io::Error),
+}
+
+/// 真正的写盘（返回结果，不记审计）——审计在调用点，好让失败原因统一走
+/// `bot::audit_log`。拆出来是为了能对着临时目录单测，不用真 AppHandle。
+fn materialize_into(dir: &std::path::Path) -> Vec<MaterializeOutcome> {
+    let mut out = Vec::new();
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        out.push(MaterializeOutcome::DirFailed(e));
+        return out;
+    }
+    for (id, text) in BUILTIN_CONFIGS {
+        let path = dir.join(format!("{id}.yaml"));
+        if path.exists() {
+            continue;
+        }
+        match std::fs::write(&path, text) {
+            Ok(()) => out.push(MaterializeOutcome::Written(id)),
+            Err(e) => out.push(MaterializeOutcome::Failed(id, e)),
+        }
+    }
+    out
 }
 
 /// 读一份配置。名字先过字符集闸（防路径穿越），再读文件、解析、校验。
@@ -177,6 +266,35 @@ pub fn render_effective_note(profile: SubagentProfile, allowed: &[String]) -> St
         len = eff.len(),
         names = eff.join("、")
     )
+}
+
+/// 注入子 agent system 提示词的配置段：角色 + **交集后**的实际可用工具清单。
+///
+/// 与 `render_effective_note` 的分工：那个写审计日志给人看，这个进提示词给
+/// 模型看。必须是交集后的名单——`allowed` 是期望集，生效值是
+/// `profile ∩ allowed`；把 `allowed` 原样念给模型，它会把被交集收掉的工具
+/// 当成可用反复尝试，每次都撞 dispatch 白名单闸。§3.4「配置看着生效、
+/// 实际落空」要连模型一起看得见，提示词这半就得给交集。
+pub fn render_prompt_note(cfg: &OnionConfig, profile: SubagentProfile) -> String {
+    let eff = effective_tools(profile, &cfg.allowed);
+    let tools = if eff.is_empty() {
+        "（无：本次没有任何工具可用。不要尝试调用任何工具，说明阻塞后直接交付你已知的部分。）"
+            .to_string()
+    } else {
+        eff.join("、")
+    };
+    let role = cfg.role.trim();
+    if role.is_empty() {
+        format!(
+            "本次运行配置档「{id}」：实际可用工具只有：{tools}。其余工具会被服务端拒绝，不要尝试调用。",
+            id = cfg.onion_id
+        )
+    } else {
+        format!(
+            "本次运行配置档「{id}」：{role}。实际可用工具只有：{tools}。其余工具会被服务端拒绝，不要尝试调用。",
+            id = cfg.onion_id
+        )
+    }
 }
 
 /// 进程内会话 → 已解析配置的缓存。
@@ -500,5 +618,121 @@ hooks:
         let eff = effective_tools(cfg.profile_enum().unwrap(), &cfg.allowed);
         assert!(!eff.contains(&"ast_inspect"));
         assert!(eff.contains(&"write_file"), "撰写者要能写文件");
+    }
+
+    // ── 首次启动播种（期 6：三份配置从此在生产可达）──
+
+    #[test]
+    fn materialize_writes_all_builtins_and_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!(
+            "wm_onion_mat_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        // ① 空目录 → 三份全部写入，且落盘内容与内置源逐字一致
+        let first = materialize_into(&dir);
+        assert_eq!(
+            first.len(),
+            BUILTIN_CONFIGS.len(),
+            "首启应写入全部内置配置档，实际 {:?}",
+            first
+                .iter()
+                .map(|o| match o {
+                    MaterializeOutcome::Written(id) => *id,
+                    MaterializeOutcome::DirFailed(_) => "<mkdir_fail>",
+                    MaterializeOutcome::Failed(id, _) => id,
+                })
+                .collect::<Vec<_>>()
+        );
+        for (id, text) in BUILTIN_CONFIGS {
+            let got = std::fs::read_to_string(dir.join(format!("{id}.yaml"))).unwrap();
+            assert_eq!(&got, text, "{id} 落盘内容应与内置源逐字一致");
+        }
+        // ② 已存在 → 一份都不重写（用户手改的配置档不能被内置版盖掉）
+        let edited = "onion_id: probe\nrole: 我改过的\nprofile: research\n";
+        std::fs::write(dir.join("probe.yaml"), edited).unwrap();
+        assert!(
+            materialize_into(&dir).is_empty(),
+            "已存在的配置档不得被覆盖"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("probe.yaml")).unwrap(),
+            edited,
+            "用户改过的配置档必须原样保留"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn builtin_configs_are_parseable_under_materialization_path() {
+        // 播种写出去的必须是能通过 load 的配置：materialize 只拷文本，
+        // 语法/字段不合法要等到派发时才炸——那时已经建了会话。
+        for (id, text) in BUILTIN_CONFIGS {
+            let cfg = parse(text).unwrap_or_else(|e| panic!("内置配置 {id} 不合法：{e}"));
+            assert_eq!(&cfg.onion_id, id, "文件名与文件内 onion_id 应一致");
+        }
+    }
+
+    // ── 提示词段（§3.4「配置看着生效、实际落空」要让模型也看得见）──
+
+    #[test]
+    fn prompt_note_lists_intersection_not_the_allowed_list() {
+        // allowed 里有 profile 给不了的工具时，提示词绝不能把它念进「可用」——
+        // 那会让模型反复调一个必然被闸拒的工具。
+        let cfg = parse(VALID).unwrap();
+        let profile = cfg.profile_enum().unwrap();
+        let note = render_prompt_note(&cfg, profile);
+        for tool in effective_tools(profile, &cfg.allowed) {
+            assert!(
+                note.contains(tool),
+                "交集内的 {tool} 应出现在提示词里：{note}"
+            );
+        }
+        let base = crate::bot::registry::profile_whitelist(profile);
+        let dropped = base
+            .iter()
+            .find(|t| !effective_tools(profile, &cfg.allowed).contains(t))
+            .expect("VALID 的 allowed 应收窄掉至少一个工具");
+        assert!(
+            !note.contains(*dropped),
+            "被交集收掉的 {dropped} 不得出现在「实际可用」里：{note}"
+        );
+        assert!(
+            note.contains(cfg.role.trim()),
+            "配置档 role 应进提示词（否则 role 字段无消费者）：{note}"
+        );
+    }
+
+    #[test]
+    fn prompt_note_says_no_tools_when_narrowed_to_zero() {
+        // allowed 里的工具全在 TOOLS_TABLE 但全不在 research 白名单内
+        // → 交集为空。这正是「配置看着生效、实际落空」的最坏形态。
+        let cfg = parse("onion_id: probe\nprofile: research\nallowed: [edit_file, write_file]\n")
+            .unwrap();
+        assert!(
+            effective_tools(SubagentProfile::Research, &cfg.allowed).is_empty(),
+            "本用例的前提是交集确实为空，否则断言无效"
+        );
+        let note = render_prompt_note(&cfg, SubagentProfile::Research);
+        assert!(
+            note.contains("没有任何工具可用"),
+            "交集为空时提示词要明说，否则模型会以为工具丢了：{note}"
+        );
+        assert!(
+            !note.contains("edit_file"),
+            "空交集不得还把 allowed 原样念成可用：{note}"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_turn() {
+        let e = parse("onion_id: z\nprofile: coder\nmax_turn: 0\n").unwrap_err();
+        assert!(
+            e.contains("max_turn"),
+            "max_turn=0 应被加载期拒掉（等于一次循环都不给）：{e}"
+        );
     }
 }

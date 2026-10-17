@@ -323,14 +323,15 @@ pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask
 // 子 agent 编排三工具（主 agent 可见）
 pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
     "objective":{"type":"string","description":"单一目标（一句话说清做什么）"},
-    "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集（与 stage 同给时白名单档优先，stage 只换角色语义层）"},
+    "onion":{"type":"string","description":"per-onion 配置档名（可选）：probe=只读探查产出素材 / writereditor=撰写与写代码 / validator=只读验收。指定后本子 agent 的工具会被该配置收窄、角色与轮数上限一并生效，且服务端会拒绝配置清单外的工具——这是控制子 agent 权限的唯一入口。三段式流水线（探查→撰写→验收）就靠它分别派发"},
+    "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集（与 stage 同给时白名单档优先，stage 只换角色语义层）。不给时按 onion 配置的 profile 派生；两者都不给则按 stage 派生（recon/verifier→research，executor→coder），都没有则报错"},
     "stage":{"type":"string","enum":["recon","executor","verifier"],"description":"三段式派发阶段（可选）：recon=只读调研 / executor=基于报告动手实现 / verifier=逐条验收。不给 stage 时仅按 profile 走基线提示词；只给 stage 不给 profile 时按默认派生（recon/verifier→research，executor→coder）"},
     "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验"},
     "contextSummary":{"type":"string","description":"必要上下文摘要（可选；不含主对话全文）"},
     "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限，默认 100"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选，默认值见上）"},
     "modelProfile":{"type":"string","description":"指定模型名（可选；未指定/无效回退当前激活模型）"},
     "parentTaskId":{"type":"string","description":"主卡 id（可选；编排计划卡，缺卡报错）"}
-  },"required":["objective","profile","acceptanceCriteria"]}}}"##;
+  },"required":["objective","acceptanceCriteria"]}}}"##;
 pub const SCHEMA_CHECK_SUBAGENT: &str = r##"{"type":"function","function":{"name":"check_subagent","description":"查询子 agent 状态（幂等可轮询）：status=queued|running|succeeded|failed|cancelled|budget_exceeded + 进度 + 收尾结果（summary/artifacts/blockers）。waitMs>0 时短等待至终态或超时（上限 5000，不要高频空转）","parameters":{"type":"object","properties":{
     "subagentId":{"type":"string","description":"子 agent id（spawn 返回值）"},
     "waitMs":{"type":"integer","description":"短等待毫秒数（可选，0=立即返回，上限 5000）"}
@@ -1462,6 +1463,43 @@ mod registry_tests {
         );
     }
 
+    /// spawn schema 暴露 `onion` 配置档，且 `profile` 不再是必填。
+    ///
+    /// 移出 required 消的是一处**既有矛盾**：代码一直支持「只给 stage / 配置档
+    /// 让系统派生档位」，而 schema 把 profile 列为必填让模型永远先填满它，
+    /// 配置档的 profile 就没有兜底生效的机会。
+    #[test]
+    fn spawn_subagent_schema_exposes_onion_and_makes_profile_optional() {
+        let v: serde_json::Value = serde_json::from_str(SCHEMA_SPAWN_SUBAGENT)
+            .expect("SCHEMA_SPAWN_SUBAGENT 必须是合法 JSON");
+        let onion = v
+            .pointer("/function/parameters/properties/onion")
+            .expect("spawn schema 必须声明 onion 字段——否则配置档对模型不可见");
+        assert_eq!(onion["type"], "string");
+        // 三份内置配置档名要写进描述，模型才知道有哪些可派发
+        let desc = onion["description"].as_str().unwrap_or_default();
+        for name in crate::bot_onions::builtin_config_ids() {
+            assert!(
+                desc.contains(name),
+                "onion 参数描述应列出内置配置档 {name}，否则模型无从知道有哪些"
+            );
+        }
+        // profile 不在 required：给 stage 或给 onion 都足以定档
+        let required: Vec<&str> = v
+            .pointer("/function/parameters/required")
+            .and_then(|r| r.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            !required.contains(&"profile"),
+            "profile 应可由 onion / stage 派生，不该是必填"
+        );
+        assert!(
+            required.contains(&"objective") && required.contains(&"acceptanceCriteria"),
+            "objective / acceptanceCriteria 仍必须必填：{required:?}"
+        );
+    }
+
     #[test]
     fn tools_table_count_matches_constant() {
         let v: serde_json::Value =
@@ -2027,6 +2065,70 @@ mod registry_tests {
         // 解除绑定回到默认（设置页换配置/解绑的路径）
         crate::bot_onions::bind_for_test("reg-onion-narrow", None);
         assert_eq!(names_of(Some("reg-onion-narrow")), plain);
+    }
+
+    /// schema 层与 dispatch 闸必须算出**同一份**工具集（期 6）。
+    ///
+    /// 两条路径各算一次（闸读注册时存进 ctx 的，schema 现算），一旦漂移：
+    /// 漂成 schema 比闸宽 → 模型看得见却调不动，白烧一轮拿一句「白名单外」；
+    /// 漂成 schema 比闸窄 → 能力被静默藏起来。本测试让两侧对着算一遍。
+    #[test]
+    fn gate_whitelist_and_schema_list_are_computed_from_the_same_intersection() {
+        fn names_of(session_id: &str) -> Vec<String> {
+            let v: serde_json::Value =
+                serde_json::from_str(tools_json_for(Some(session_id)).as_ref())
+                    .expect("清单须合法");
+            v.as_array()
+                .expect("顶层是数组")
+                .iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        }
+        // 配置档自称 profile=research，运行时报 coder。allowed 里一个只属 coder
+        // （write_file）、一个只属 research（web_search）——两侧算错哪一边、
+        // 错几次都会在结果里露出来（本用例无区分度时这条测试就是假绿）。
+        let cfg = crate::bot_onions::parse(
+            "onion_id: validator\nprofile: research\nallowed: [write_file, web_search]\n",
+        )
+        .expect("配置应合法");
+        let sid = "reg-onion-gate-parity";
+        let runtime_profile = crate::db::SubagentProfile::Coder;
+        let allowed = cfg.allowed.clone();
+        crate::bot_onions::bind_for_test(sid, Some(cfg));
+        crate::tool_guard::register_subagent_session(
+            sid,
+            crate::tool_guard::SubagentSessionCtx {
+                subagent_id: "sa_parity".into(),
+                task_id: None,
+                profile: runtime_profile,
+                tools: std::sync::Arc::new(crate::bot_onions::effective_tools(
+                    runtime_profile,
+                    &allowed,
+                )),
+                budget: crate::db::SubagentBudget::default(),
+                artifact_dir: std::path::PathBuf::from("/tmp/art_parity"),
+                used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            },
+        );
+
+        let gate: Vec<String> = crate::tool_guard::subagent_ctx(Some(sid))
+            .expect("刚注册过")
+            .tools
+            .iter()
+            .map(|t| t.to_string())
+            .collect();
+        let schema = names_of(sid);
+        assert_eq!(
+            schema, gate,
+            "schema 清单与闸白名单必须逐项一致（都应是运行时 profile ∩ allowed）"
+        );
+        assert_eq!(
+            schema,
+            vec!["write_file".to_string()],
+            "运行时 profile=coder 才是上限：web_search 只属 research，应被收掉"
+        );
+        crate::tool_guard::unregister_subagent_session(sid);
+        crate::bot_onions::bind_for_test(sid, None);
     }
 
     fn tools_json_names() -> Vec<String> {
