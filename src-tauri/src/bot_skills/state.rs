@@ -54,8 +54,6 @@ pub struct SkillRun {
     pub session_id: Option<String>,
     /// N7-③：use_skill 调用传入的参数（对象）；${params.key} 替换源
     pub params: serde_json::Value,
-    /// N7-⑤：allowed-tools 镜像（声明了才限制步骤工具）
-    pub allowed_tools: Vec<String>,
     /// N7-⑥：技能目录（第三层渐进披露——references 清单 + 会话级读白名单）
     pub dir: Option<PathBuf>,
 }
@@ -76,7 +74,6 @@ impl SkillRun {
             terminal_after_confirm: false,
             session_id: None,
             params: serde_json::Value::Null,
-            allowed_tools: meta.allowed_tools.clone(),
             dir: None,
         }
     }
@@ -212,6 +209,7 @@ pub(crate) fn load_skill_meta<R: tauri::Runtime>(
 // advance_dsl 分支与回滚窗口的真路径。仅测试使用，生产路径不调。
 
 #[doc(hidden)]
+#[cfg(debug_assertions)]
 pub fn test_hook_insert_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, run: SkillRun) {
     let registry = skill_runs(app);
     crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs")
@@ -219,12 +217,14 @@ pub fn test_hook_insert_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, run: Sk
 }
 
 #[doc(hidden)]
+#[cfg(debug_assertions)]
 pub fn test_hook_remove_skill_run<R: tauri::Runtime>(app: &AppHandle<R>, name: &str) {
     let registry = skill_runs(app);
     crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs").remove(name);
 }
 
 #[doc(hidden)]
+#[cfg(debug_assertions)]
 pub fn test_hook_skill_run_state<R: tauri::Runtime>(
     app: &AppHandle<R>,
     name: &str,
@@ -256,7 +256,6 @@ pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
         terminal_after_confirm: false,
         session_id: None,
         params: serde_json::Value::Null,
-        allowed_tools: Vec::new(),
         dir: None,
     };
     let registry = skill_runs(app);
@@ -305,7 +304,6 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
         terminal_after_confirm: false,
         session_id: None,
         params: serde_json::Value::Null,
-        allowed_tools: Vec::new(),
         dir: None,
     }
 }

@@ -219,7 +219,6 @@ fn make_run(name: &str, state: SkillState) -> SkillRun {
         end_reason: String::new(),
         resumable: true,
         params: serde_json::Value::Null,
-        allowed_tools: Vec::new(),
         dir: None,
         terminal_after_confirm: false,
         session_id: None,
@@ -336,8 +335,6 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         &body,
         None,
         &serde_json::Value::Null,
-        &[],
-        None,
         exec,
         persist,
     )
@@ -433,8 +430,6 @@ async fn scheduler_e2e_paused_run_returns_await_user() {
         &body,
         None,
         &serde_json::Value::Null,
-        &[],
-        None,
         exec,
         persist,
     )
@@ -524,8 +519,6 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
         &body,
         None,
         &serde_json::Value::Null,
-        &[],
-        None,
         exec,
         persist,
     )
@@ -611,8 +604,6 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
         &body,
         None,
         &serde_json::Value::Null,
-        &[],
-        None,
         exec,
         persist,
     )

@@ -609,6 +609,7 @@ impl Drop for ChatGuard {
 /// run_task_in_chat 执行期持有 ChatGuard——bot_execute_task 纳入会话锁的回归证据。
 /// 生产代码不调用。表随 `AppState` 走，故取注入实例（缺失时兜底实例，
 /// 与生产路径用的是同一个——集成测试的 mock handle 没注入时两边都落到兜底）。
+#[cfg(debug_assertions)]
 pub fn chat_guard_is_held<R: tauri::Runtime>(app: &AppHandle<R>, session_id: &str) -> bool {
     crate::db::lock::lock_or_recover(&chat_running(app), "bot_chat::chat_running")
         .contains(session_id)

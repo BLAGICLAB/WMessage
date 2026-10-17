@@ -217,15 +217,16 @@ pub async fn run_skill_scheduler(
     session_id: Option<&str>,
     stop: Option<&crate::bot_slash::StopGuard>,
 ) -> Result<DslOutcome, DslFailure> {
-    let (meta, body, dir) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
+    let (meta, body, _) = load_skill_meta(app, name).map_err(|e| DslFailure::Terminated {
         reason: e.to_string(),
     })?;
-    // params 与 allowed-tools 从本会话活动 run 取（use_skill 启动时写入；
-    // pre-step 路由路径无 run → Null/空 = 不限制、无参数替换源）
-    let (params, allowed_tools) = active_skill_run_for(app, session_id)
+    // params 从本会话活动 run 取（use_skill 启动时写入；pre-step 路由路径无 run
+    // → Null = 无参数替换源）。步骤工具白名单读的是 meta.allowed_tools
+    //（SKILL.md 声明），在 run_skill_scheduler_core 内逐步骤校验。
+    let params = active_skill_run_for(app, session_id)
         .filter(|r| r.name == name)
-        .map(|r| (r.params, r.allowed_tools))
-        .unwrap_or((serde_json::Value::Null, Vec::new()));
+        .map(|r| r.params)
+        .unwrap_or(serde_json::Value::Null);
     let execute_tool = |tool: String, args: String| async move {
         match stop {
             Some(s) => crate::bot::execute_tool_with_stop(app, &tool, &args, Some(s)).await,
@@ -246,8 +247,6 @@ pub async fn run_skill_scheduler(
         &body,
         session_id,
         &params,
-        &allowed_tools,
-        Some(&dir),
         execute_tool,
         persist_outcome,
     )
@@ -283,9 +282,6 @@ pub async fn run_skill_scheduler_core<R: tauri::Runtime, X, XP, P>(
     body: &str,
     session_id: Option<&str>,
     params: &serde_json::Value,
-    // 预留参数：DSL 技能的 allowed_tools 白名单/技能目录，阶段 3 接线
-    _allowed_tools: &[String],
-    _skill_dir: Option<&std::path::Path>,
     execute_tool: X,
     persist_outcome: P,
 ) -> Result<DslOutcome, DslFailure>
@@ -1162,8 +1158,6 @@ mod tests {
             body,
             None,
             &serde_json::Value::Null,
-            &[],
-            None,
             exec,
             persist,
         )
@@ -1246,8 +1240,6 @@ mod tests {
             body,
             None,
             &serde_json::Value::Null,
-            &[],
-            None,
             exec,
             persist,
         )

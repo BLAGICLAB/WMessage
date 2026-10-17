@@ -298,5 +298,3 @@ for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
         libs,
     }
 }
-
-// 保留 CommandError / CommandResult 引用以便未来 env.rs 中错误路径使用
