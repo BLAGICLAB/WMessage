@@ -197,6 +197,10 @@ async fn trace_lifecycle_done_row_written() {
                 active_skill_run: &|_| None,
                 final_selfcheck_round_gap: Some(0),
                 final_selfcheck_http: None,
+                on_round: &|rounds| {
+                    let _ = rounds;
+                },
+                turn_status: None,
             };
             let out =
                 run_model_loop_core(&http, msgs, 10, &stop, None, &deps, exec_never, noop_replan)

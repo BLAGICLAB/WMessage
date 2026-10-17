@@ -13,10 +13,14 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
 /// 预算默认值与硬顶（设计 §6 已；钳制实现见 [SubagentBudget::clamped]）。
-pub const DEFAULT_MAX_TURNS: u32 = 30;
+///
+/// 默认值单源在 `bot::params`（DEFAULT_SUBAGENT_MAX_*），这里直接引用而不是
+/// 各写一份字面量：两处曾同为 30/100/600，改一处漏一处就是静默漂移——
+/// bot 读侧按 30 放行、行上按 100 记账这类偏差会一路掩到熔断才暴露。
+pub const DEFAULT_MAX_TURNS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TURNS;
 pub const MAX_TURNS_HARD_CAP: u32 = 50;
-pub const DEFAULT_MAX_TOOL_CALLS: u32 = 100;
-pub const DEFAULT_MAX_WALL_SECONDS: u64 = 600;
+pub const DEFAULT_MAX_TOOL_CALLS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS;
+pub const DEFAULT_MAX_WALL_SECONDS: u64 = crate::bot::params::DEFAULT_SUBAGENT_MAX_WALL_SECS;
 
 /// 子 agent 轮数钳制（1..=硬顶 50）——单一来源：config 落盘（bot_set_config）、
 /// bot 读侧 resolver、预算持久化（[SubagentBudget::clamped]）三处共用，

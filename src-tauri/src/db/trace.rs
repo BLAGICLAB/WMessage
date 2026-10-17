@@ -46,10 +46,15 @@ CREATE TABLE IF NOT EXISTS exec_traces (
   turn_count        INTEGER NOT NULL DEFAULT 0,
   tool_calls        INTEGER NOT NULL DEFAULT 0,
   files_changed     INTEGER NOT NULL DEFAULT 0,
-  prompt_tokens     INTEGER NOT NULL DEFAULT 0,
-  completion_tokens INTEGER NOT NULL DEFAULT 0,
-  error             TEXT,
-  model             TEXT
+  prompt_tokens       INTEGER NOT NULL DEFAULT 0,
+  completion_tokens   INTEGER NOT NULL DEFAULT 0,
+  -- 缓存 token（Anthropic 协议四档计价之二）。单列而非塞进 prompt_tokens：
+  -- cache read 是 0.1x、cache write 是 1.25x，与普通 input 混算等于把
+  -- 长对话的缓存收益吃掉——一次长会话里 cache_read 常数倍于新增 input。
+  cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens  INTEGER NOT NULL DEFAULT 0,
+  error               TEXT,
+  model               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_traces_task     ON exec_traces(task_id);
 CREATE INDEX IF NOT EXISTS idx_traces_session  ON exec_traces(session_id);
@@ -104,6 +109,10 @@ pub struct TraceRow {
     pub files_changed: i64,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    /// 缓存读取 token（cache read 计价档）。旧行为 0。
+    pub cache_read_tokens: i64,
+    /// 缓存写入 token（cache write 计价档）。旧行为 0。
+    pub cache_write_tokens: i64,
     pub error: Option<String>,
     /// 本轮实际模型名（trace_finish 时写入；旧行/未发请求为 NULL）
     pub model: Option<String>,
@@ -195,6 +204,8 @@ pub struct TraceFinish<'a> {
     pub tool_calls: i64,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     pub error: Option<&'a str>,
     pub model: Option<&'a str>,
 }
@@ -227,32 +238,72 @@ fn trace_row_from(r: &rusqlite::Row) -> rusqlite::Result<TraceRow> {
         files_changed: r.get(10)?,
         prompt_tokens: r.get(11)?,
         completion_tokens: r.get(12)?,
-        error: r.get(13)?,
-        model: r.get(14)?,
+        cache_read_tokens: r.get(13)?,
+        cache_write_tokens: r.get(14)?,
+        error: r.get(15)?,
+        model: r.get(16)?,
     })
 }
 
 const TRACE_COLS: &str =
     "id, session_id, task_id, origin, title, status, started_at, finished_at, \
-     turn_count, tool_calls, files_changed, prompt_tokens, completion_tokens, error, model";
+     turn_count, tool_calls, files_changed, prompt_tokens, completion_tokens, \
+     cache_read_tokens, cache_write_tokens, error, model";
 
 /// 幂等建三表（open_db 接线；测试直接 execute_batch EXEC_TRACE_DDL 同款）。
-/// 旧库迁移：model 列（2026-10 词元统计按模型聚合）用 pragma 探测后 ALTER 补齐。
+/// 旧库迁移：model 列（2026-10 词元统计按模型聚合）与 cache_*_tokens 两列
+/// （缓存档计价不进 prompt_tokens）都用 pragma 探测后 ALTER 补齐。
 pub fn ensure_trace_tables(conn: &rusqlite::Connection) -> Result<(), String> {
     conn.execute_batch(EXEC_TRACE_DDL)
         .map_err(|e| e.to_string())?;
-    let has_model: i64 = conn
+    // 补列一律走 add_column_if_absent：**open_db 每次调用都跑本函数，而 open_db
+    // 会在多线程并发（首装时 setup / 僵尸清扫 / 首条命令各开一个连接），
+    // 两个连接会同时探测到「列不存在」再同时 ALTER，后到者吃 duplicate column。
+    // 先查后改的写法挡不住这个竞态——只有让 ALTER 自己容忍重复才挡得住。
+    add_column_if_absent(conn, "exec_traces", "model", "TEXT")?;
+    // 缓存 token 两列（Anthropic 四档计价之二，理由见 EXEC_TRACE_DDL 内的注释）
+    add_column_if_absent(
+        conn,
+        "exec_traces",
+        "cache_read_tokens",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_absent(
+        conn,
+        "exec_traces",
+        "cache_write_tokens",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    Ok(())
+}
+
+/// 列不存在才 ALTER；已存在（含别的连接刚加上的）一律静默成功。
+///
+/// 不吞真实错误：只有「duplicate column name」这一条被容忍，其余
+/// （库锁、SQL 语法错）照原样上抛——后者是代码 bug，静默会让缺列一路掩到查询失败。
+fn add_column_if_absent(
+    conn: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), String> {
+    let has: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('exec_traces') WHERE name = 'model'",
-            [],
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            [table, column],
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())?;
-    if has_model == 0 {
-        conn.execute_batch("ALTER TABLE exec_traces ADD COLUMN model TEXT")
-            .map_err(|e| e.to_string())?;
+    if has != 0 {
+        return Ok(());
     }
-    Ok(())
+    // 表名/列名来自本文件的常量、decl 同源，不含外部输入；
+    // 仍用 format! 而非参数绑定——SQLite 的 ALTER TABLE 不支持占位符。
+    match conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}")) {
+        Ok(()) => Ok(()),
+        Err(e) if e.to_string().contains("duplicate column name") => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 pub fn trace_start(conn: &rusqlite::Connection, t: &NewTrace) -> Result<i64, String> {
@@ -284,8 +335,9 @@ pub fn trace_finish(
            status = ?2, finished_at = ?3,
            turn_count = ?4, tool_calls = ?5,
            prompt_tokens = ?6, completion_tokens = ?7,
-           error = ?8,
-           model = COALESCE(?9, model),
+           cache_read_tokens = ?8, cache_write_tokens = ?9,
+           error = ?10,
+           model = COALESCE(?11, model),
            files_changed = (SELECT COUNT(*) FROM file_changes WHERE trace_id = ?1)
          WHERE id = ?1",
         rusqlite::params![
@@ -296,6 +348,8 @@ pub fn trace_finish(
             f.tool_calls,
             f.prompt_tokens,
             f.completion_tokens,
+            f.cache_read_tokens,
+            f.cache_write_tokens,
             f.error,
             f.model,
         ],
@@ -548,6 +602,9 @@ pub struct UsageDay {
     pub day: String,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    /// 缓存读取 / 写入 token（Anthropic 计价档）。旧行与 OpenAI 协议为 0。
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     pub runs: i64,
     pub tool_calls: i64,
 }
@@ -572,6 +629,7 @@ pub fn usage_stats_daily_conn(
         .prepare(
             "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day,
                     SUM(prompt_tokens), SUM(completion_tokens),
+                    SUM(cache_read_tokens), SUM(cache_write_tokens),
                     SUM(CASE WHEN finished_at IS NOT NULL THEN 1 ELSE 0 END),
                     SUM(tool_calls)
              FROM exec_traces WHERE started_at >= ?1
@@ -586,26 +644,30 @@ pub fn usage_stats_daily_conn(
                 r.get::<_, Option<i64>>(2)?.unwrap_or(0),
                 r.get::<_, Option<i64>>(3)?.unwrap_or(0),
                 r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                r.get::<_, Option<i64>>(6)?.unwrap_or(0),
             ))
         })
         .map_err(|e| e.to_string())?;
-    let mut by_day: std::collections::BTreeMap<String, [i64; 4]> =
+    let mut by_day: std::collections::BTreeMap<String, [i64; 6]> =
         std::collections::BTreeMap::new();
     for r in rows {
-        let (day, p, c, runs, tools) = r.map_err(|e| e.to_string())?;
-        by_day.insert(day, [p, c, runs, tools]);
+        let (day, p, c, cr, cw, runs, tools) = r.map_err(|e| e.to_string())?;
+        by_day.insert(day, [p, c, cr, cw, runs, tools]);
     }
     let mut out = Vec::with_capacity(days as usize);
     let mut d = start_date;
     while d <= today_local {
         let key = d.format("%Y-%m-%d").to_string();
-        let v = by_day.remove(&key).unwrap_or([0; 4]);
+        let v = by_day.remove(&key).unwrap_or([0; 6]);
         out.push(UsageDay {
             day: key,
             prompt_tokens: v[0],
             completion_tokens: v[1],
-            runs: v[2],
-            tool_calls: v[3],
+            cache_read_tokens: v[2],
+            cache_write_tokens: v[3],
+            runs: v[4],
+            tool_calls: v[5],
         });
         d += chrono::Duration::days(1);
     }
@@ -613,13 +675,16 @@ pub fn usage_stats_daily_conn(
 }
 
 /// 词元统计按模型聚合（「模型用量」榜数据源）：只计已收尾行（与 daily 口径一致），
-/// 按总 tokens 降序；旧行/未发请求 model 为 NULL，由前端显示「未知模型」。
+/// 按四档 token 合计降序（缓存两档计入排序但单列展示，理由见 UsageDay 的字段注释）；
+/// 旧行/未发请求 model 为 NULL，由前端显示「未知模型」。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageByModel {
     pub model: Option<String>,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
     pub runs: i64,
 }
 
@@ -642,10 +707,11 @@ pub fn usage_stats_by_model_conn(
     let mut stmt = conn
         .prepare(
             "SELECT model, SUM(prompt_tokens), SUM(completion_tokens),
+                    SUM(cache_read_tokens), SUM(cache_write_tokens),
                     SUM(CASE WHEN finished_at IS NOT NULL THEN 1 ELSE 0 END)
              FROM exec_traces WHERE started_at >= ?1
              GROUP BY model
-             ORDER BY SUM(prompt_tokens + completion_tokens) DESC",
+             ORDER BY SUM(prompt_tokens + completion_tokens + cache_read_tokens + cache_write_tokens) DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -654,7 +720,9 @@ pub fn usage_stats_by_model_conn(
                 model: r.get(0)?,
                 prompt_tokens: r.get::<_, Option<i64>>(1)?.unwrap_or(0),
                 completion_tokens: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                runs: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                cache_read_tokens: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                cache_write_tokens: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                runs: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -676,6 +744,8 @@ pub struct UsageDayModel {
     pub model: Option<String>,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
 }
 
 /// 聚合核心（conn + today 注入，测试可定时）
@@ -697,7 +767,8 @@ pub fn usage_stats_daily_by_model_conn(
     let mut stmt = conn
         .prepare(
             "SELECT date(started_at / 1000, 'unixepoch', 'localtime') AS day, model,
-                    SUM(prompt_tokens), SUM(completion_tokens)
+                    SUM(prompt_tokens), SUM(completion_tokens),
+                    SUM(cache_read_tokens), SUM(cache_write_tokens)
              FROM exec_traces WHERE started_at >= ?1
              GROUP BY day, model ORDER BY day ASC, model ASC",
         )
@@ -709,6 +780,8 @@ pub fn usage_stats_daily_by_model_conn(
                 model: r.get(1)?,
                 prompt_tokens: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
                 completion_tokens: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                cache_read_tokens: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                cache_write_tokens: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1125,6 +1198,8 @@ mod tests {
                 tool_calls: 8,
                 prompt_tokens: 100,
                 completion_tokens: 200,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 error: None,
                 model: None,
             },
@@ -1343,6 +1418,8 @@ mod tests {
                 tool_calls: 1,
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 error: None,
                 model: None,
             },
@@ -1360,6 +1437,8 @@ mod tests {
                 tool_calls: 1,
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 error: None,
                 model: None,
             },
@@ -1421,6 +1500,103 @@ mod tests {
         );
     }
 
+    /// 旧库迁移：缓存 token 两列（成本统计的 cache read/write 计价档）必须补齐，
+    /// 且补完可正常写入读取——漏 ADD COLUMN 的话 trace_finish 的 UPDATE 直接报错。
+    #[test]
+    fn ensure_trace_tables_migrates_cache_token_columns_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // 旧 schema：两列都缺（比 model 测试更旧的库形态）
+        conn.execute_batch(
+            "CREATE TABLE exec_traces (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               session_id TEXT NOT NULL, task_id TEXT, origin TEXT NOT NULL, title TEXT,
+               status TEXT NOT NULL DEFAULT 'running', started_at INTEGER NOT NULL,
+               finished_at INTEGER, turn_count INTEGER NOT NULL DEFAULT 0,
+               tool_calls INTEGER NOT NULL DEFAULT 0, files_changed INTEGER NOT NULL DEFAULT 0,
+               prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+               error TEXT, model TEXT);",
+        )
+        .unwrap();
+        ensure_trace_tables(&conn).unwrap();
+        for col in ["cache_read_tokens", "cache_write_tokens"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('exec_traces') WHERE name = ?1",
+                    [col],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "旧库必须补出 {col} 列");
+        }
+        ensure_trace_tables(&conn).unwrap(); // 幂等：再跑一遍不炸不加
+
+        // 迁移后写入读取闭环：缓存档数字要能原样读回，且不污染 prompt/completion
+        let id = mk_trace(&conn, "s1", None, "chat", 1000);
+        trace_finish(
+            &conn,
+            id,
+            &TraceFinish {
+                status: TRACE_STATUS_DONE,
+                finished_at: 2000,
+                turn_count: 3,
+                tool_calls: 0,
+                prompt_tokens: 10,
+                completion_tokens: 20,
+                cache_read_tokens: 40_000,
+                cache_write_tokens: 5_000,
+                error: None,
+                model: Some("glm-5.3"),
+            },
+        )
+        .unwrap();
+        let row = trace_query(&conn, None, None, None, 10).unwrap().remove(0);
+        assert_eq!(row.cache_read_tokens, 40_000);
+        assert_eq!(row.cache_write_tokens, 5_000);
+        assert_eq!(
+            row.prompt_tokens, 10,
+            "缓存 token 必须独立记账，混进 prompt_tokens 就等于把缓存收益算没"
+        );
+        assert_eq!(row.completion_tokens, 20);
+    }
+
+    /// 并发补列不得报错：`open_db` 每次调用都跑 ensure_trace_tables，而首装时
+    /// setup / 僵尸清扫 / 首条命令各开一个连接，两个连接会同时探测到「列不存在」
+    /// 再同时 ALTER。回归形态：日志里那条
+    /// `subagent_zombie_sweep_db_fail | err: duplicate column name: cache_read_tokens`
+    /// ——它让整个僵尸清扫提前返回（return），上一世的 running 行收不了尾。
+    #[test]
+    fn ensure_trace_tables_tolerates_concurrent_add_column() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE exec_traces (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               session_id TEXT NOT NULL, task_id TEXT, origin TEXT NOT NULL, title TEXT,
+               status TEXT NOT NULL DEFAULT 'running', started_at INTEGER NOT NULL,
+               finished_at INTEGER, turn_count INTEGER NOT NULL DEFAULT 0,
+               tool_calls INTEGER NOT NULL DEFAULT 0, files_changed INTEGER NOT NULL DEFAULT 0,
+               prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0,
+               error TEXT, model TEXT);",
+        )
+        .unwrap();
+        // 模拟「另一连接刚把列加上」：直接 ALTER 制造竞态后的既有状态
+        conn.execute_batch(
+            "ALTER TABLE exec_traces ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+        )
+        .unwrap();
+        // 再跑 ensure：必须在已存在列的情况下正常返回，不能 Err
+        ensure_trace_tables(&conn).expect("列已存在时 ensure 必须幂等成功");
+        for col in ["model", "cache_read_tokens", "cache_write_tokens"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('exec_traces') WHERE name = ?1",
+                    [col],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{col} 列应恰好存在一次");
+        }
+    }
+
     /// 保留期空转：无可删行返回 0，不 Err（定时器空跑是常态路径）
     #[test]
     fn retire_traces_before_noop_returns_zero() {
@@ -1469,6 +1645,8 @@ mod tests {
                 tool_calls: 0,
                 prompt_tokens: 10,
                 completion_tokens: 20,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 error: None,
                 model: Some("glm-5.3"),
             },
@@ -1493,6 +1671,8 @@ mod tests {
                 tool_calls: 0,
                 prompt_tokens: 0,
                 completion_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 error: Some("boom"),
                 model: None,
             },
@@ -1507,6 +1687,71 @@ mod tests {
 
     /// 词元按日聚合：缺日补零 + 升序 + 僵尸 running 不计执行次数（token 计入）
     #[test]
+    /// 缓存 token 必须独立聚合、且不混进 prompt/completion。
+    ///
+    /// 成本口径的依据：Anthropic 四档计价里 cache read 是 0.1x、cache write 是 1.25x，
+    /// 与普通 input（1x）不同价。把它折进 prompt_tokens 会让长会话的缓存收益
+    /// 显示不出来——而长会话恰恰是缓存收益最大、也最该看见的场景。
+    #[test]
+    fn usage_stats_sums_cache_tokens_separately() {
+        let conn = setup_conn();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        let today_ms = today
+            .and_hms_opt(4, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .earliest()
+            .unwrap()
+            .timestamp_millis();
+        for (i, (cr, cw)) in [(40_000i64, 5_000i64), (60_000, 8_000)].iter().enumerate() {
+            let id = mk_trace(
+                &conn,
+                &format!("s{i}"),
+                None,
+                "chat",
+                today_ms + i as i64 * 100,
+            );
+            trace_finish(
+                &conn,
+                id,
+                &TraceFinish {
+                    status: TRACE_STATUS_DONE,
+                    finished_at: today_ms + 1000,
+                    turn_count: 1,
+                    tool_calls: 0,
+                    prompt_tokens: 10,
+                    completion_tokens: 20,
+                    cache_read_tokens: *cr,
+                    cache_write_tokens: *cw,
+                    error: None,
+                    model: Some("glm-5.3"),
+                },
+            )
+            .unwrap();
+        }
+        let days = usage_stats_daily_conn(&conn, 1, today).unwrap();
+        let d = &days[0];
+        assert_eq!(d.cache_read_tokens, 100_000);
+        assert_eq!(d.cache_write_tokens, 13_000);
+        assert_eq!(
+            d.prompt_tokens, 20,
+            "缓存 token 不得并入 prompt_tokens（否则缓存收益被算没）"
+        );
+        assert_eq!(d.completion_tokens, 40);
+
+        // 按模型聚合同样要带上（否则「模型用量」榜的量是漏的）
+        let by_model = usage_stats_by_model_conn(&conn, 1, today).unwrap();
+        assert_eq!(by_model.len(), 1);
+        assert_eq!(by_model[0].cache_read_tokens, 100_000);
+        assert_eq!(by_model[0].cache_write_tokens, 13_000);
+
+        // 模型×日期交叉聚合（趋势图分线数据源）同样要带
+        let dm = usage_stats_daily_by_model_conn(&conn, 1, today).unwrap();
+        assert_eq!(dm.len(), 1);
+        assert_eq!(dm[0].cache_read_tokens, 100_000);
+        assert_eq!(dm[0].cache_write_tokens, 13_000);
+    }
+
     fn usage_stats_daily_zero_fills_and_counts_finished_only() {
         let conn = setup_conn();
         // 今天：一次完整执行（done）+ 一次僵尸 running——runs 只应算 1
@@ -1529,6 +1774,8 @@ mod tests {
                 tool_calls: 3,
                 prompt_tokens: 1000,
                 completion_tokens: 500,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 error: None,
                 model: Some("glm-5.3"),
             },
@@ -1554,6 +1801,8 @@ mod tests {
                 tool_calls: 1,
                 prompt_tokens: 200,
                 completion_tokens: 300,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
                 error: None,
                 model: None,
             },
@@ -1596,6 +1845,8 @@ mod tests {
                     tool_calls: 0,
                     prompt_tokens: p,
                     completion_tokens: c,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
                     error: None,
                     model,
                 },
@@ -1671,6 +1922,8 @@ mod tests {
                         tool_calls: 0,
                         prompt_tokens: p,
                         completion_tokens: p,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
                         error: None,
                         model,
                     },

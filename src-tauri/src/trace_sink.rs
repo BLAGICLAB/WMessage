@@ -223,15 +223,18 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
     } else {
         crate::db::TRACE_STATUS_FAILED
     };
-    let (turn_count, tool_calls, prompt_tokens, completion_tokens) = match &stats {
-        Some(t) => (
-            t.turn_count as i64,
-            t.tool_calls as i64,
-            t.prompt_tokens as i64,
-            t.completion_tokens as i64,
-        ),
-        None => (0, 0, 0, 0),
-    };
+    let (turn_count, tool_calls, prompt_tokens, completion_tokens, cache_read, cache_write) =
+        match &stats {
+            Some(t) => (
+                t.turn_count as i64,
+                t.tool_calls as i64,
+                t.prompt_tokens as i64,
+                t.completion_tokens as i64,
+                t.cache_read_tokens as i64,
+                t.cache_write_tokens as i64,
+            ),
+            None => (0, 0, 0, 0, 0, 0),
+        };
     let finished_at = chrono::Utc::now().timestamp_millis();
     let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::TraceRow, String> {
@@ -246,6 +249,8 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
                 tool_calls,
                 prompt_tokens,
                 completion_tokens,
+                cache_read_tokens: cache_read,
+                cache_write_tokens: cache_write,
                 error: err.as_deref(),
                 model: stats.as_ref().and_then(|t| t.model.as_deref()),
             },

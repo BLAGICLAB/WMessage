@@ -2129,6 +2129,7 @@ mod registry_tests {
                 budget: crate::db::SubagentBudget::default(),
                 artifact_dir: std::path::PathBuf::from("/tmp/art_parity"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             },
         );
 

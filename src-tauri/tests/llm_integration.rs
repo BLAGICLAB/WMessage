@@ -409,6 +409,10 @@ impl CoreHarness {
             active_skill_run: &*self.active_skill_run,
             final_selfcheck_round_gap: Some(0),
             final_selfcheck_http: None,
+            on_round: &|rounds| {
+                let _ = rounds;
+            },
+            turn_status: None,
         }
     }
 
@@ -424,6 +428,10 @@ impl CoreHarness {
             active_skill_run: &*self.active_skill_run,
             final_selfcheck_round_gap: gap,
             final_selfcheck_http: None,
+            on_round: &|rounds| {
+                let _ = rounds;
+            },
+            turn_status: None,
         }
     }
 
@@ -567,6 +575,136 @@ async fn core_reasoning_none_keeps_body_clean() {
         !bodies[0].contains("reasoning_effort") && !bodies[0].contains("budget_tokens"),
         "None 档不应出现推理字段：{}",
         bodies[0]
+    );
+}
+
+/// 回合状态机的事件时机（借鉴 ZCode turn view model）。
+///
+/// 回归背景：此前工具执行段零事件——`bot-tool`（要调了）到 `bot-tool-done`
+/// （调完了）之间可静默 300s（run_python 上限），前端只有一个静态「…」；
+/// 轮边界也不可见。用户在 300s 的 pip install 与 0.1s 的 list_files 之间
+/// 分辨不出差别，于是「看不出 agent 是否还在跑」。
+#[tokio::test]
+async fn turn_status_and_tool_running_events_are_emitted_in_order() {
+    use wmessage_lib::bot::TurnStatus;
+    // 轮 1：工具调用；轮 2：最终文本
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply("共 2 个任务".into()));
+    let h = CoreHarness::new();
+
+    // 按到达顺序记录两类事件
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let statuses: Arc<Mutex<Vec<TurnStatus>>> = Arc::new(Mutex::new(Vec::new()));
+    let st2 = statuses.clone();
+    let emit: Box<dyn Fn(&str, serde_json::Value) + Send + Sync> = {
+        let seen = seen2.clone();
+        Box::new(move |event, payload| {
+            if event == "bot-tool-running" {
+                let id = payload["id"].as_str().unwrap_or_default().to_string();
+                seen.lock().unwrap().push(format!("running:{id}"));
+            }
+        })
+    };
+    let turn_status: Box<dyn Fn(TurnStatus, &str) + Send + Sync> = {
+        let st = st2.clone();
+        let seen = seen.clone();
+        Box::new(move |s, _| {
+            seen.lock().unwrap().push(format!("turn:{}", s.as_str()));
+            st.lock().unwrap().push(s);
+        })
+    };
+    let exec = |_name: String, _args: String, _t: ToolCallTrace| async {
+        ToolResult::ok("明细", Vec::new())
+    };
+    let deps = ModelLoopDeps {
+        emit: &*emit,
+        on_round: &|_| {},
+        turn_status: Some(&*turn_status),
+        ..h.deps()
+    };
+
+    run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("应 Ok");
+
+    let log = seen.lock().unwrap().clone();
+    // 轮首 running 必须早于工具执行
+    let first_running = log
+        .iter()
+        .position(|e| e == "turn:running")
+        .expect("轮首必须发 running");
+    let tool_at = log
+        .iter()
+        .position(|e| e.starts_with("running:"))
+        .expect("工具执行前必须发 bot-tool-running");
+    assert!(first_running < tool_at, "顺序错：{log:?}");
+    // 终态：正常结束 → completed，且是最后一条
+    assert_eq!(
+        log.last().map(String::as_str),
+        Some("turn:completed"),
+        "收尾必须发 completed：{log:?}"
+    );
+    assert_eq!(
+        statuses.lock().unwrap().last(),
+        Some(&TurnStatus::Completed),
+        "终态枚举须为 Completed"
+    );
+}
+
+/// 用户中断时终态是 interrupted 而非 completed——前端据此收活体指示，
+/// 且不该误显示成「正常完成」。
+#[tokio::test]
+async fn turn_status_is_interrupted_when_stopped() {
+    use wmessage_lib::bot::TurnStatus;
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("你好".into()));
+    let h = CoreHarness::new();
+    h.stop.force_stop();
+
+    let statuses: Arc<Mutex<Vec<TurnStatus>>> = Arc::new(Mutex::new(Vec::new()));
+    let st2 = statuses.clone();
+    let turn_status: Box<dyn Fn(TurnStatus, &str) + Send + Sync> = {
+        let st = st2.clone();
+        Box::new(move |s, _| {
+            st.lock().unwrap().push(s);
+        })
+    };
+    let deps = ModelLoopDeps {
+        on_round: &|_| {},
+        turn_status: Some(&*turn_status),
+        ..h.deps()
+    };
+
+    let _ = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &deps,
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("", Vec::new()) },
+        noop_replan,
+    )
+    .await;
+
+    assert_eq!(
+        statuses.lock().unwrap().last(),
+        Some(&TurnStatus::Interrupted),
+        "stop 置位后终态须为 Interrupted"
     );
 }
 

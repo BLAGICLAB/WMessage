@@ -52,7 +52,7 @@ pub const MAX_ROUNDS_CAP: u32 = 200;
 pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = 100_000;
 pub const HISTORY_BUDGET_MIN: u32 = 20_000;
 pub const HISTORY_BUDGET_MAX: u32 = 500_000;
-/// 子 agent 默认预算（原 db::subagents DEFAULT_* 同值）：
+/// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）：
 /// max_tool_calls 仅是缺省兜底——配置了 max_function_calls 时子 agent 同源全域上限
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 = 30;
 pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 = 100;

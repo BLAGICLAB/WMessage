@@ -623,6 +623,45 @@ pub struct ModelLoopDeps<'a> {
     /// None = 现状（注入 prompt 主循环内多跑一轮）。薄壳从 bot-config
     /// `selfcheckModelId` 解析模型库条目装配，解析失败回落 None 并审计。
     pub final_selfcheck_http: Option<&'a LlmHttp>,
+    /// 轮数自报出口：core 每跑完一轮调一次，回传 1-based 已完成轮数。
+    ///
+    /// 存在的理由是「轮」必须由循环自己数，不能由薄壳数 `llm.request` 事件——
+    /// 一轮里可能重试、可能撞 max_tokens 续写、可能补终稿自检，数事件必然偏大。
+    pub on_round: &'a (dyn Fn(usize) + Send + Sync),
+    /// 回合状态变化出口（见 emit_turn_status）。传 None = 不发（测试直驱 core）。
+    pub turn_status: Option<&'a (dyn Fn(TurnStatus, &str) + Send + Sync)>,
+}
+
+/// 回合状态机。借鉴 ZCode 的 turn view model（`running` / `settling` /
+/// `completed` / `interrupted` / `failed`），核心是 `settling`：
+/// **正文已输出完、但收尾工作（终稿自检 / 熔断收尾）还没结束**。
+/// 没有这个态，前端只能把「正文说完」当「本轮结束」，于是最后一段工具执行
+/// （可静默 300s+）在 UI 上等同于静止。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStatus {
+    /// 本轮开始（含后续每轮开始）
+    Running,
+    /// 正文输出完、收尾中：仍可停止，UI 必须继续显示活动指示
+    Settling,
+    /// 正常结束
+    Completed,
+    /// 用户 /stop 中断
+    Interrupted,
+    /// 异常结束（模型循环报错）
+    Failed,
+}
+
+impl TurnStatus {
+    /// 机器读标识（前端 switch 用，不应改文案）
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Settling => "settling",
+            Self::Completed => "completed",
+            Self::Interrupted => "interrupted",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// 模型工具循环薄壳：只做 AppHandle 依赖装配——
@@ -651,11 +690,13 @@ pub const STREAM_CHUNK_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::
 pub const LLM_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 模型循环执行明细（trace 管道接线，trace.rs:110 既定计划的落地）。
-/// 轮数 = `llm.request` 审计事件计数（每轮恰好发一次请求）；工具摘要由薄壳的
+/// 轮数由循环按真实轮次自报（`ModelLoopDeps::on_round`），不是数 `llm.request`
+/// 事件——一轮里可能发多次请求（网络重试 / 撞 max_tokens 自动续写 / 终稿自检），
+/// 数事件会把「轮」算大，让上报值与真正约束循环的 max_rounds 脱钩。工具摘要由薄壳的
 /// execute_tool 包装器采集——真实分发路径零改动。
 #[derive(Debug, Clone, Default)]
 pub struct LoopTrace {
-    /// LLM 轮数（llm.request 事件数）
+    /// 真实循环轮数（run_model_loop_core 自报，含熔断那轮）
     pub turn_count: u32,
     /// 本轮工具调用次数（exec_traces.tool_calls 列；逐次明细在 trace_steps 表，
     /// 由 execute_tool_traced 的 span 写入，不在此重复采集）
@@ -663,8 +704,18 @@ pub struct LoopTrace {
     /// llm.usage 审计事件累计（Anthropic 协议现发；OpenAI usage 解析留 ）
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// 缓存读取 / 写入 token（Anthropic 四档计价之二）。
+    ///
+    /// 独立于 prompt_tokens 落库：cache read 是 0.1x、cache write 是 1.25x，
+    /// 混进 input 等于把长会话的缓存收益算没——一次长对话里 cache_read 常数倍
+    /// 于新增 input，漏记会让成本统计明显偏低。OpenAI 协议恒为 0。
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
     /// 本轮实际使用的模型名（词元统计按模型聚合用；未发请求即失败时为 None）
     pub model: Option<String>,
+    /// 本轮发出的 LLM 请求次数（含重试与续写）。
+    /// 与 `turn_count` 分开存：两者不等是常态，请求数才是成本口径。
+    pub request_count: u32,
 }
 
 /// 主循环推理参数选取：override 命中必须取覆盖条目的（resolve_model_override 已按
@@ -723,6 +774,12 @@ pub async fn run_model_loop(
     // **配置档压过条目级**，理由见 `resolve_temperature`。刻意只传 temperature
     // 不传 top_p：yaml 没这个字段，传了也只会多一条没有来源的覆盖路径。
     temperature_override: Option<f64>,
+    // 失败路径的执行明细出口（可选）：`Err` 时把已跑出的轮数/工具数/tokens
+    // 交回调用方。返回值里的 LoopTrace 只在 Ok 时才有，失败轨迹（熔断历史路径、
+    // API 报错、流式中断）会整段丢掉 stats，trace 于是记成 turns=0——
+    // 实测一次跑满 50 轮撞熔断的 255 秒执行，trace 里 turns=0/tools=0/tokens=0。
+    // 想要失败轨迹也落库的调用方（trace 管道）传 Some 即可。
+    failed_trace_out: Option<&std::sync::Arc<std::sync::Mutex<Option<LoopTrace>>>>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     // 每卡模型覆盖优先：命中模型库条目则整组替换 base_url/model/协议/key
@@ -863,10 +920,12 @@ pub async fn run_model_loop(
         }
     };
     // 执行明细采集（薄壳层，真实分发路径零改动）——
-    // 轮数：audit 闭包数 llm.request 事件；工具摘要：execute_tool 包装器计时+判定
-    // （声明在 deps 之前：deps 的 audit 闭包要引用轮数计数器）
-    let round_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let round_for_audit = round_count.clone();
+    // 轮数：循环自报真实轮次（rounds_used，每轮末置位）；请求数：audit 闭包数
+    // llm.request 事件。两者口径不同，必须分开存——见 LoopTrace 字段注释。
+    // （声明在 deps 之前：deps 的 audit 闭包要引用请求数计数器）
+    let rounds_used = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let request_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let request_for_audit = request_count.clone();
     // 缓存命中/写入累计（仅 Anthropic 协议会变；OpenAI 协议保持 0）。
     // 前端按 (cache_read) / (read + creation + input) 算命中率展示
     let prompt_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -896,11 +955,28 @@ pub async fn run_model_loop(
         // 0 = 关闭 final 自检的 kill switch 直接透传。
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         final_selfcheck_http: selfcheck_http.as_ref(),
+        on_round: &|rounds| {
+            rounds_used.store(rounds, std::sync::atomic::Ordering::Relaxed);
+            // 子 agent 会话：同步写进 tool_guard 的轮数仪表，供 check_subagent 的
+            // progress 报「已跑 N / 预算 M 轮」。主 agent 此前只能靠轮询猜
+            // 子 agent 有没有在推进——一个跑满预算的子任务在 UI 上和刚启动的长得一样。
+            if let Some(ctx) = crate::tool_guard::subagent_ctx(stop.session_id()) {
+                ctx.used_rounds
+                    .store(rounds, std::sync::atomic::Ordering::Relaxed);
+            }
+        },
+        turn_status: Some(&|status, detail| {
+            emit(
+                "bot-turn-status",
+                serde_json::json!({ "status": status.as_str(), "detail": detail }),
+            );
+        }),
         emit: &emit,
         audit: &|level, event, kv| {
-            // llm.request 事件计数 = 轮数（trace turn_count 的数据源）
+            // llm.request 事件计数 = 请求数（trace request_count 的数据源）。
+            // **不是轮数**：一轮里可能重试、可能撞 max_tokens 续写、可能有终稿自检。
             if event == "llm.request" {
-                round_for_audit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                request_for_audit.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             // llm.usage 累计（trace 汇总的 tokens 数据源）+  水位条事件
             //（仅交互实例推前端；前端按会话累计配合 contextK 显示水位。
@@ -1006,7 +1082,7 @@ pub async fn run_model_loop(
         let app = app.clone();
         async move { crate::bot_plan::replan(&app, &plan, &reason).await }
     };
-    run_model_loop_core(
+    let out = run_model_loop_core(
         &http,
         msgs,
         max_rounds,
@@ -1016,18 +1092,32 @@ pub async fn run_model_loop(
         execute_tool,
         replan,
     )
-    .await
-    .map(|(text, refs)| {
-        // 组装执行明细随返回值带出（trace 管道消费）
-        let loop_trace = LoopTrace {
-            turn_count: round_count.load(std::sync::atomic::Ordering::Relaxed) as u32,
-            tool_calls: tool_trace.lock().map_or(0, |n| *n),
-            prompt_tokens: prompt_tokens.load(std::sync::atomic::Ordering::Relaxed),
-            completion_tokens: completion_tokens.load(std::sync::atomic::Ordering::Relaxed),
-            model: Some(http.model.clone()),
-        };
-        (text, refs, loop_trace)
-    })
+    .await;
+    // 执行明细无论成败都要组装：熔断走 Ok 但 API 失败/流式中断走 Err，
+    // 早先用 `.map()` 只在成功时填 LoopTrace，于是跑满 50 轮被熔断的那次
+    // trace 落库 turns=0、tools=0、tokens=0（实测 255 秒的执行记成 0 轮）。
+    // 计数器在闭包里一路累加，出错不丢——这里只是把它们读出来。
+    let loop_trace = LoopTrace {
+        turn_count: rounds_used.load(std::sync::atomic::Ordering::Relaxed) as u32,
+        request_count: request_count.load(std::sync::atomic::Ordering::Relaxed) as u32,
+        tool_calls: tool_trace.lock().map_or(0, |n| *n),
+        prompt_tokens: prompt_tokens.load(std::sync::atomic::Ordering::Relaxed),
+        completion_tokens: completion_tokens.load(std::sync::atomic::Ordering::Relaxed),
+        cache_read_tokens: cache_read_tokens.load(std::sync::atomic::Ordering::Relaxed),
+        cache_write_tokens: cache_creation_tokens.load(std::sync::atomic::Ordering::Relaxed),
+        model: Some(http.model.clone()),
+    };
+    match out {
+        Ok(v) => Ok((v.0, v.1, loop_trace)),
+        Err(e) => {
+            if let Some(slot) = failed_trace_out {
+                if let Ok(mut g) = slot.lock() {
+                    *g = Some(loop_trace);
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 /// 流完整性收尾状态：替代旧 `saw_done_or_finish: bool`，区分具体收尾来源。
@@ -1177,6 +1267,15 @@ where
     let mut last_streamed = String::new();
     // 上下文超长降级次数（全循环共享）：超长时砍历史重发，至多两次
     let mut context_sheds: u8 = 0;
+    // 回合状态统一收口（见 TurnStatus）。整段循环体跑在 `run_body` 这个 async
+    // 块里，外层只负责「出口 → 状态」映射：
+    //
+    // 不这么做的理由——循环体内有 14 处 `return Ok(...)`（已停止 3 处、Skill
+    // 状态机 5 处、单轮熔断 1 处、正文定稿 1 处、续写/自检若干），逐个补
+    // 状态发射必漏一处，而漏掉的那处正好表现为「UI 提前显示完成」。
+    // 内层跑完由外层统一判定出口类别，出口只有一处可漏。
+    let mut body_outcome: Option<&'static str> = None;
+    let body: Result<(String, Vec<TaskRef>), CommandError> = async {
     for round in 0..max_rounds {
         // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
         // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
@@ -1303,6 +1402,7 @@ where
                     // Skill 暂停等用户确认，跳出主循环等待 bot_confirm_response 唤起。
                     // 并发新消息在第 0 轮命中此分支时 last_streamed
                     // 是空串，用户会得到空白回复——空串时给一句可读提示
+                    body_outcome = Some("await_confirm");
                     if last_streamed.is_empty() {
                         return Ok((
                             "⏸ 上一个操作正在等待你的确认——请先处理确认弹窗，再继续对话。".into(),
@@ -1313,18 +1413,33 @@ where
                 }
                 AdvanceAction::Finish => {
                     let _hint = skill_finish(true, "");
+                    body_outcome = Some("skill_finish");
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Fail(reason) => {
                     let _hint = skill_finish(false, &reason);
+                    body_outcome = Some("skill_fail");
                     return Ok((last_streamed.clone(), collected_refs));
                 }
                 AdvanceAction::Terminate(reason) => {
                     let _hint = skill_finish(false, &reason);
+                    body_outcome = Some("skill_terminate");
                     return Ok((last_streamed.clone(), collected_refs));
                 }
             }
         }
+        // 轮首活体信号：上一轮 bot-tool-done 之后到本轮首个 delta 之间是第二段
+        // 空窗（LLM 首 token 延迟，无工具行可挂）。发一条 running 让前端知道
+        // 「模型正在想」，配 turn 计数与已用时长的秒级刷新。
+        (deps.turn_status).map(|cb| {
+            cb(
+                TurnStatus::Running,
+                &format!(
+                    "正在思考 · 第 {} 轮",
+                    round + 1
+                ),
+            )
+        });
         // body 按协议分支——内部消息流保持 OpenAI
         // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
         // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
@@ -2000,6 +2115,10 @@ where
                 && last_final_selfcheck_round
                     .is_none_or(|r| round.saturating_sub(r) >= final_selfcheck_gap)
             {
+                // settling：正文已经完整输出，用户「看完了」，但模型还要跑一次
+                // 自检（可静默数十秒）。这一步不发生，用户会把正文结束误读成
+                // 「本轮结束」——ZCode 的 settling 就是为这个场景存在的。
+                (deps.turn_status).map(|cb| cb(TurnStatus::Settling, "收尾中 · 校验答复"));
                 let snippet: String = final_text
                     .chars()
                     .take(FINAL_SELFCHECK_SNIPPET_CHARS)
@@ -2181,6 +2300,7 @@ where
                     "fuse | 单轮 Function 调用超过 {} 次，已熔断",
                     fuse_cap
                 ));
+                body_outcome = Some("tool_fuse");
                 return Ok((fuse_message(&final_text, &hint, fuse_cap), collected_refs));
             }
             // 软警告（soft_warn_at，按会话熔断上限派生）：置标志，推迟到本轮 tool 响应全部回填后再注入——
@@ -2198,6 +2318,16 @@ where
             // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
             // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
             let t_tool = std::time::Instant::now();
+            // 工具执行段的活体信号：bot-tool 只说明「要调了」，bot-tool-done 要等
+            // 工具返回——中间这段（run_python 可静默 300s、MCP 600s）此前零事件，
+            // UI 只有一个静态「…」。补一条 running 事件让前端起计时与 spinner。
+            emit(
+                "bot-tool-running",
+                serde_json::json!({
+                    "id": id, "name": name,
+                    "args_preview": args.chars().take(200).collect::<String>(),
+                }),
+            );
             let tool_outcome = execute_tool(
                 name.clone(),
                 args.clone(),
@@ -2419,6 +2549,11 @@ where
         }
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
         last_streamed = final_text.clone();
+        // 轮数自报：1-based 累计，「轮」的唯一口径来源。
+        // 报在轮末，轮数熔断（自然落出循环）因此能报满 max_rounds；早返回出口
+        // （已停止 / Skill 收尾 / 单轮熔断）在轮中 return，漏报它们所在那轮——
+        // 那些都是「没跑完的一轮」，不上报反而更贴近真实完成量。
+        (deps.on_round)(round + 1);
     }
     // 轮数熔断补审计（单轮工具熔断已有 fuse 日志，对称留痕）
     let hint = skill_finish(false, "对话轮数超限");
@@ -2434,10 +2569,27 @@ where
     // 没说一个字——那是子任务派发卡本身写歪了（该写 objective 的没写），信号留痕备用。
     kv.push(("partial_chars", last_streamed.chars().count().to_string()));
     audit(crate::audit::AuditLevel::Warn, "fuse_rounds", kv);
+    body_outcome = Some("fused");
     Ok((
         rounds_fuse_message(&last_streamed, &hint, max_rounds),
         collected_refs,
     ))
+    }
+    .await;
+    // 回合状态收口：出口 → 状态。settling 在正文定稿后、收尾自检之前发，
+    // 它是「说完了但还在动」这个场景唯一的存在方式——没有它，前端只能把
+    // 「正文说完」当「本轮结束」，随后那段收尾（可静默 300s）就是一片静止。
+    let final_status = match (&body, body_outcome, stop.stopped()) {
+        (_, Some("fused"), _) => TurnStatus::Completed,
+        (_, Some("interrupted"), _) => TurnStatus::Interrupted,
+        (Err(_), _, _) => TurnStatus::Failed,
+        (Ok(_), _, true) => TurnStatus::Interrupted,
+        (Ok(_), _, false) => TurnStatus::Completed,
+    };
+    if let Some(cb) = deps.turn_status {
+        cb(final_status, "");
+    }
+    body
 }
 
 // 测试：feed_think / parse_sse_chunk / TOOLS schema
@@ -3446,6 +3598,40 @@ mod rounds_fuse_tests {
         assert_eq!(at(1), 1);
         // 主聊天默认 50 同样留 15 轮
         assert_eq!(at(50), 35);
+    }
+
+    /// 「轮」的口径必须由循环自报，不能数 `llm.request` 事件。
+    ///
+    /// 回归背景：一轮里可能网络重试、可能撞 max_tokens 自动续写、可能补终稿自检，
+    /// 数事件必然把上报轮数算大——上报值与真正约束循环的 max_rounds 对不上，
+    /// trace 里的 turns 就成了「请求数」而非「轮数」。
+    #[test]
+    fn turn_count_is_rounds_not_llm_requests() {
+        // 口径契约：LoopTrace 同时带轮数与请求数两个字段，二者不可复用同一来源。
+        let t = LoopTrace::default();
+        assert_eq!(t.turn_count, 0);
+        assert_eq!(t.request_count, 0);
+        // 审计闭包只给请求数加一（数据源是 llm.request 事件）；
+        // 轮数由 core 的 on_round 单独写。测试锚定这条分工：请求数归请求数、
+        // 轮数归轮数，谁把两者混起来就是回归。
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bot_model_loop.rs"
+        ))
+        .expect("读自身源码");
+        assert!(
+            src.contains("if event == \"llm.request\"")
+                && src.contains("request_for_audit.fetch_add"),
+            "请求数仍应数 llm.request 事件"
+        );
+        assert!(
+            src.contains("turn_count: rounds_used.load"),
+            "turn_count 必须来自 rounds_used（循环自报轮数），不得回到数请求事件"
+        );
+        assert!(
+            src.contains("request_count: request_count.load"),
+            "请求数应单独落在 request_count 字段"
+        );
     }
 
     #[test]

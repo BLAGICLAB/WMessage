@@ -28,7 +28,7 @@
 pub use crate::bot_chat::{BotChatResult, TaskRef};
 pub use crate::bot_model_loop::{
     accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk, run_model_loop_core,
-    LlmHttp, ModelLoopDeps, ToolCallDelta,
+    LlmHttp, ModelLoopDeps, ToolCallDelta, TurnStatus,
 };
 // bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。

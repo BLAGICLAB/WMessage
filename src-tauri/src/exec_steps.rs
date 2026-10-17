@@ -265,6 +265,7 @@ async fn run_step(
         None, // 执行步骤恢复链路：按 bot-config.json 全局默认（RE-1）
         None, // 每卡模型覆盖：逐步执行链路不挂
         None, // per-onion 温度覆盖：逐步执行链路不挂
+        None, // 失败明细出口：逐步执行不落 exec_traces，无需回传
     )
     .await?;
     park(

@@ -64,6 +64,11 @@ pub struct SubagentSessionCtx {
     /// 已执行工具调用累计（ 预算强制：dispatch 白名单闸后自增，
     /// 触顶拒绝新调用——max_tool_calls 的强制点）
     pub used_tool_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 已跑轮数累计（循环自报，见 ModelLoopDeps::on_round）。
+    /// 只读消费：让 `check_subagent` 的 progress 能报「已跑 N / 预算 M 轮」——
+    /// 此前轮数完全不落任何地方，主 agent 只能靠轮询猜子 agent 在不在推进。
+    /// 强制点仍在 run_model_loop_core 的 max_rounds 熔断，这里只是仪表读数。
+    pub used_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 static SUBAGENT_SESSIONS: OnceLock<std::sync::Mutex<HashMap<String, SubagentSessionCtx>>> =
@@ -194,6 +199,7 @@ mod tests {
             budget: crate::db::SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 

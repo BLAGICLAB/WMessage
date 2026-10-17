@@ -1079,6 +1079,8 @@ pub async fn bot_chat(
     let trace_capture = std::sync::Arc::new(std::sync::Mutex::new(
         crate::trace_sink::TraceCapture::default(),
     ));
+    // 失败路径的执行明细回传槽（run_model_loop 出错时写这里）
+    let failed_trace = std::sync::Arc::new(std::sync::Mutex::new(None));
     if let Some(sid) = session_id.as_ref() {
         let trace_id = crate::trace_sink::begin_trace(&trace_app, sid, None, "chat", None).await;
         if let Ok(mut c) = trace_capture.lock() {
@@ -1095,14 +1097,22 @@ pub async fn bot_chat(
         reasoning_effort,
         // 主聊天不挂每卡模型覆盖（ 仅工作流节点使用）
         None,
-        // per-onion 温度覆盖只走子 agent（主会话尚未绑定配置档，见设计文档 §十）
+        // per-onion 温度覆盖：主聊天不挂（仅子 agent 用）
         None,
+        // 失败轨迹也要落 trace：熔断/API 失败时把已跑出的轮数工具数交回，
+        // 否则 trace 记 turns=0（跑满 50 轮撞熔断那次实测就是 0）
+        Some(&failed_trace),
     )
     .await;
-    // LoopTrace 统计（tokens/轮数/模型名）塞进捕获，end_trace 汇总落库
-    if let Ok((_, _, lt)) = &loop_result {
-        if let Ok(mut c) = trace_capture.lock() {
-            c.stats = Some(lt.clone());
+    // LoopTrace 统计（tokens/轮数/模型名）塞进捕获，end_trace 汇总落库。
+    // 失败时从 failed_trace 句柄取回——Err 路径没有返回值可带明细。
+    {
+        let captured = match &loop_result {
+            Ok((_, _, lt)) => Some(lt.clone()),
+            Err(_) => failed_trace.lock().ok().and_then(|g| g.clone()),
+        };
+        if let (Some(lt), Ok(mut c)) = (captured, trace_capture.lock()) {
+            c.stats = Some(lt);
         }
     }
     crate::trace_sink::end_trace(
@@ -1568,6 +1578,10 @@ async fn run_task_in_chat_impl(
     let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
         Default::default();
     let hook_for_run = hook.clone();
+    // 失败轨迹的执行明细回传槽：Err 时 run_model_loop 把已跑出的统计写这里，
+    // 熔断/API 失败的 trace 才不会记成 turns=0
+    let failed_trace = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let failed_for_run = failed_trace.clone();
     run_task_in_chat_with(
         app,
         task_id,
@@ -1585,13 +1599,16 @@ async fn run_task_in_chat_impl(
                 None,
                 model,
                 None, // per-onion 温度覆盖：任务执行链路不挂
+                Some(&failed_for_run),
             )
             .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）
-            if let Ok((_, _, trace)) = &outcome {
-                if let Ok(mut c) = hook_for_run.lock() {
-                    c.stats = Some(trace.clone());
-                }
+            let captured = match &outcome {
+                Ok((_, _, trace)) => Some(trace.clone()),
+                Err(_) => failed_for_run.lock().ok().and_then(|g| g.clone()),
+            };
+            if let (Some(trace), Ok(mut c)) = (captured, hook_for_run.lock()) {
+                c.stats = Some(trace);
             }
             outcome.map(|(text, refs, _)| (text, refs))
         },

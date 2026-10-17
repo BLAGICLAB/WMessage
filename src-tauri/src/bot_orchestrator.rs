@@ -331,6 +331,21 @@ pub(crate) fn check_subagent_locked(
         "subtasksDone": subtasks_done,
         "subtasksTotal": subtasks_total,
     });
+    // 轮数读数：子 agent 在跑时 ctx 里有活的计数器，终态后守卫注销读不到。
+    // 预算从行上 budget_json 取——轮数与预算放一起看才有意义（10/20 与 10/200
+    // 是完全不同的紧迫度）。readOnly 消费，不参与任何强制。
+    if let Some(budget) = row
+        .budget_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<SubagentBudget>(s).ok())
+    {
+        let used = crate::tool_guard::subagent_ctx(row.session_id.as_deref())
+            .map(|c| c.used_rounds.load(std::sync::atomic::Ordering::Relaxed));
+        if let Some(used) = used {
+            progress["roundsUsed"] = serde_json::json!(used);
+            progress["roundsBudget"] = serde_json::json!(budget.max_turns);
+        }
+    }
     if let Some(pos) = queue_position {
         progress["queuePosition"] = serde_json::json!(pos);
     }
@@ -1691,6 +1706,9 @@ async fn run_subagent(
 
     // 工具守卫注册（白名单闸 + spawn 递归身份校验 + read_own_card/write_artifact 定位）。
     // RAII 守卫：Drop 反注册——runner 中途 panic 也不泄漏条目（ 采纳）
+    // 轮数仪表句柄：循环每轮自报时写进来，供 check_subagent 的 progress 读。
+    // 与 ctx 里的 used_rounds 是同一个 Arc（守卫按值克隆 ctx，Arc 保证同源）。
+    let rounds_gauge = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
         &session_id,
         crate::tool_guard::SubagentSessionCtx {
@@ -1701,6 +1719,7 @@ async fn run_subagent(
             budget: budget.clone(),
             artifact_dir: artifact_dir.clone(),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            used_rounds: rounds_gauge.clone(),
         },
     );
 
@@ -1846,6 +1865,8 @@ async fn run_subagent(
             .as_ref()
             .and_then(|c| c.temperature)
             .map(f64::from),
+        // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
+        None,
     );
     let wall = tokio::time::timeout(
         std::time::Duration::from_secs(budget.max_wall_seconds.max(1)),
@@ -2531,6 +2552,22 @@ pub async fn cancel_subagent(
     cancel_subagent_async(&app, &key, reason.as_deref().unwrap_or("用户取消")).await
 }
 
+/// list_subagents 的行视图 = DB 行 + 内存态实时轮数。
+///
+/// 轮数只活在 tool_guard 注册表（runner 开跑注册、收尾注销），不落 DB：落库就得
+/// 每轮写一次，与「轮数仪表共用同一个 Arc」的设计正好抵消。守卫注销后读不到就
+/// 报 None——凭空造数比不报更坏（与 check_subagent 同口径）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentRunView {
+    #[serde(flatten)]
+    pub row: crate::db::SubagentRow,
+    /// 已跑轮数；非在途（守卫已注销）为 None
+    pub rounds_used: Option<u32>,
+    /// 轮数硬顶；与轮数同源同报，10/20 与 10/200 的紧迫度完全不同
+    pub rounds_budget: Option<u32>,
+}
+
 /// 列某主会话派出的子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
 /// 「子 Agent」工作面的数据源——子 agent 不再建独立会话后，用户没有别的地方
 /// 能看见自己派出去的那些还活着/刚跑完。
@@ -2539,16 +2576,29 @@ pub async fn list_subagents(
     app: AppHandle,
     session_id: String,
     limit: Option<u32>,
-) -> CommandResult<Vec<crate::db::SubagentRow>> {
+) -> CommandResult<Vec<SubagentRunView>> {
     let limit = limit.unwrap_or(20).clamp(1, 100);
     tauri::async_runtime::spawn_blocking(move || {
         let _g = crate::db::lock_db_write();
         let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-        crate::db::load_subagents_by_parent(&conn, &session_id, limit)
-            .map_err(CommandError::DbError)
+        let rows = crate::db::load_subagents_by_parent(&conn, &session_id, limit)
+            .map_err(CommandError::DbError)?;
+        Ok(rows.into_iter().map(attach_rounds).collect())
     })
     .await
     .map_err(|e| CommandError::from(format!("subagent list 线程 join 失败：{e}")))?
+}
+
+/// 把内存态轮数挂到 DB 行上。在途行取 tool_guard 的计数器，终态行留空。
+fn attach_rounds(row: crate::db::SubagentRow) -> SubagentRunView {
+    let ctx = crate::tool_guard::subagent_ctx(row.session_id.as_deref());
+    SubagentRunView {
+        rounds_used: ctx
+            .as_ref()
+            .map(|c| c.used_rounds.load(std::sync::atomic::Ordering::Relaxed) as u32),
+        rounds_budget: ctx.map(|c| c.budget.max_turns),
+        row,
+    }
 }
 
 /// read_own_card 工具：只读自己的执行契约。子 agent 不再建卡——契约在
@@ -3007,6 +3057,7 @@ mod orchestrator_tests {
             },
             artifact_dir: std::path::PathBuf::from("/tmp/art_c1"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         assert_eq!(
             ctx.used_tool_calls
@@ -3417,6 +3468,153 @@ mod orchestrator_tests {
         assert_eq!(
             effective_status(None, SubagentStatus::Failed),
             SubagentStatus::Failed
+        );
+    }
+
+    /// 在跑的子 agent 必须报得出「已跑 N / 预算 M 轮」。
+    ///
+    /// 回归背景：轮数此前完全不落任何地方，主 agent 靠 `check_subagent` 轮询
+    /// 只看得到验收进度——一个跑满预算、在原地打转的子任务和一个刚启动的子任务
+    /// 在 UI 上长得一模一样，只能干等 budget_exceeded 才知道它在烧钱。
+    #[test]
+    fn check_reports_rounds_while_subagent_runs() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let sid = format!("sa-test-rounds-{}", ack.subagent_id);
+        // 注册子会话（行上 session_id 与之对应），模拟在跑的状态
+        crate::db::set_subagent_session(&conn, &ack.subagent_id, &sid).unwrap();
+
+        // 守卫注销时（终态）读不到计数器 → 不报轮数，字段整体不出现
+        let queued = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
+        assert!(
+            queued.progress.get("roundsUsed").is_none(),
+            "无在跑计数器时不得报轮数（凭空造数比不报更坏）"
+        );
+
+        let _g2 = crate::tool_guard::SubagentSessionGuard::new(
+            &sid,
+            crate::tool_guard::SubagentSessionCtx {
+                subagent_id: ack.subagent_id.clone(),
+                task_id: None,
+                profile: SubagentProfile::Research,
+                tools: std::sync::Arc::new(vec![]),
+                budget: SubagentBudget::default(),
+                artifact_dir: std::path::PathBuf::from("/tmp/art_rounds"),
+                used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+            },
+        );
+        let running = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
+        assert_eq!(running.progress["roundsUsed"], 14);
+        assert_eq!(
+            running.progress["roundsBudget"],
+            SubagentBudget::default().max_turns,
+            "预算必须与轮数同报：10/20 与 10/200 紧迫度完全不同"
+        );
+    }
+
+    /// list_subagents 的行视图与 check_subagent 同口径：在途报轮数与预算，
+    /// 读不到仪表（终态/未开跑）就整段留空——两条链路口径必须一致，否则
+    /// 「侧栏说跑了 14 轮、check 说没有」会让人怀疑数据。
+    #[test]
+    fn list_view_attaches_rounds_while_subagent_runs() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let sid = format!("sa-test-view-{}", ack.subagent_id);
+        crate::db::set_subagent_session(&conn, &ack.subagent_id, &sid).unwrap();
+
+        let row = crate::db::load_subagent(&conn, &ack.subagent_id)
+            .unwrap()
+            .expect("spawn 后应有行");
+        let queued = attach_rounds(row);
+        assert_eq!(
+            (queued.rounds_used, queued.rounds_budget),
+            (None, None),
+            "无在跑仪表时不得报轮数（凭空造数比不报更坏）"
+        );
+
+        let _g2 = crate::tool_guard::SubagentSessionGuard::new(
+            &sid,
+            crate::tool_guard::SubagentSessionCtx {
+                subagent_id: ack.subagent_id.clone(),
+                task_id: None,
+                profile: SubagentProfile::Research,
+                tools: std::sync::Arc::new(vec![]),
+                budget: SubagentBudget::default(),
+                artifact_dir: std::path::PathBuf::from("/tmp/art_view"),
+                used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+            },
+        );
+        let row = crate::db::load_subagent(&conn, &ack.subagent_id)
+            .unwrap()
+            .expect("行仍在");
+        let running = attach_rounds(row);
+        assert_eq!(running.rounds_used, Some(14));
+        assert_eq!(
+            running.rounds_budget,
+            Some(SubagentBudget::default().max_turns),
+            "预算必须与轮数同报：10/20 与 10/200 紧迫度完全不同"
+        );
+    }
+
+    /// 守卫注销（子 agent 收尾）后轮数归空：列表要显示的是「这轮跑了多久」，
+    /// 不是死后残留的最后一帧计数。终态行拿 started/finished 算时长即可。
+    #[test]
+    fn list_view_drops_rounds_after_guard_dropped() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let sid = format!("sa-test-drop-{}", ack.subagent_id);
+        crate::db::set_subagent_session(&conn, &ack.subagent_id, &sid).unwrap();
+
+        {
+            let _guard = crate::tool_guard::SubagentSessionGuard::new(
+                &sid,
+                crate::tool_guard::SubagentSessionCtx {
+                    subagent_id: ack.subagent_id.clone(),
+                    task_id: None,
+                    profile: SubagentProfile::Research,
+                    tools: std::sync::Arc::new(vec![]),
+                    budget: SubagentBudget::default(),
+                    artifact_dir: std::path::PathBuf::from("/tmp/art_drop"),
+                    used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(7)),
+                },
+            );
+            let row = crate::db::load_subagent(&conn, &ack.subagent_id)
+                .unwrap()
+                .expect("行仍在");
+            assert_eq!(attach_rounds(row).rounds_used, Some(7));
+        }
+
+        let row = crate::db::load_subagent(&conn, &ack.subagent_id)
+            .unwrap()
+            .expect("行仍在");
+        let after = attach_rounds(row);
+        assert_eq!(
+            (after.rounds_used, after.rounds_budget),
+            (None, None),
+            "守卫注销后不得继续报轮数"
+        );
+    }
+
+    /// 子 agent 预算默认值单源：db 侧常量必须引用 bot::params，改一处不漏两处。
+    #[test]
+    fn subagent_budget_defaults_have_single_source() {
+        assert_eq!(
+            crate::db::subagents::DEFAULT_MAX_TURNS,
+            crate::bot::params::DEFAULT_SUBAGENT_MAX_TURNS
+        );
+        assert_eq!(
+            crate::db::subagents::DEFAULT_MAX_TOOL_CALLS,
+            crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS
+        );
+        assert_eq!(
+            crate::db::subagents::DEFAULT_MAX_WALL_SECONDS,
+            crate::bot::params::DEFAULT_SUBAGENT_MAX_WALL_SECS
         );
     }
 
