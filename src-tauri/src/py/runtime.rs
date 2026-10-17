@@ -857,3 +857,144 @@ pub fn run_python_at(
         truncated,
     })
 }
+
+/// 安全边界测试：许可闸 / 子进程登记 / 进程组判定 / kill_tree 收割。
+///
+/// 这四处都在「出事了会误伤系统或留下孤儿进程」的位置上，而正文全是平台相关
+/// 的 spawn / signal 调用，靠 e2e 很难稳定复现失败路径，所以对可判定的部分
+/// 直接断言。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 许可归还：Drop 后可用许可数必须回到原值，否则闸会单向漏光，
+    /// 跑着跑着所有 Python 任务一起挂死。
+    #[test]
+    fn gate_guard_returns_permit_on_drop() {
+        let before = *crate::db::lock::lock_or_recover(&PY_PERMITS, "test");
+        {
+            let _g = py_gate_acquire_for_test();
+            assert_eq!(
+                *crate::db::lock::lock_or_recover(&PY_PERMITS, "test"),
+                before - 1,
+                "持有期间应占掉一个许可"
+            );
+        }
+        assert_eq!(
+            *crate::db::lock::lock_or_recover(&PY_PERMITS, "test"),
+            before,
+            "Drop 后许可必须归还"
+        );
+    }
+
+    /// 有界并发：许可发完就不再发，拿到最后一个之后计数必须为 0。
+    /// 这个断言锁住「许可数恒等于并发上限」——串行化过一次（std Mutex），
+    /// 也可能不小心被改成无限发。
+    #[test]
+    fn gate_permits_are_bounded_and_exhaustible() {
+        let start = *crate::db::lock::lock_or_recover(&PY_PERMITS, "test");
+        let mut held = Vec::new();
+        for _ in 0..start {
+            held.push(py_gate_acquire_for_test());
+        }
+        assert_eq!(
+            *crate::db::lock::lock_or_recover(&PY_PERMITS, "test"),
+            0,
+            "许可发完后必须为 0（PY_RUN_MAX_CONCURRENT={PY_RUN_MAX_CONCURRENT}）"
+        );
+        drop(held);
+        assert_eq!(
+            *crate::db::lock::lock_or_recover(&PY_PERMITS, "test"),
+            start,
+            "全部归还后回到起始值"
+        );
+    }
+
+    /// EXITING 置位后拒绝发许可，且**不**占用名额——否则每次退出都会把闸漏光。
+    #[test]
+    fn gate_refuses_when_exiting_without_leaking_permit() {
+        reset_exiting_for_test();
+        let start = *crate::db::lock::lock_or_recover(&PY_PERMITS, "test");
+        mark_exiting();
+        let r = py_gate_acquire();
+        reset_exiting_for_test();
+        let err = match r {
+            Ok(_) => panic!("EXITING 时不该发许可"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, CommandError::DomainRule { .. }), "{err:?}");
+        assert_eq!(
+            *crate::db::lock::lock_or_recover(&PY_PERMITS, "test"),
+            start,
+            "被拒的申请不得改变许可数"
+        );
+    }
+
+    /// 子进程登记生命周期：register 进表、Drop 出表。
+    /// 漏掉 Drop 会让 kill_all_py_children 对着已回收的 pid 反复 kill；
+    /// 漏掉 register 则崩溃时收割不到任何进程。
+    #[test]
+    fn child_reg_guard_tracks_lifecycle() {
+        let mut child = silent_cmd("sleep").arg("30").spawn().expect("应能起 sleep");
+        let pid = child.id();
+        {
+            let _guard = ChildRegGuard::register(&child);
+            assert!(
+                crate::db::lock::lock_or_recover(py_children(), "test").contains(&pid),
+                "register 后应在表内"
+            );
+        }
+        assert!(
+            !crate::db::lock::lock_or_recover(py_children(), "test").contains(&pid),
+            "guard 析构后应出表"
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// kill_tree 必须真正收割子进程，且调用后 child 已 wait 过（不留僵尸）。
+    #[test]
+    fn kill_tree_reaps_the_child() {
+        let mut child = silent_cmd("sleep").arg("30").spawn().expect("应能起 sleep");
+        let pid = child.id();
+        kill_tree(&mut child, &RunLimits::new(64 * 1024 * 1024, 10));
+        assert!(
+            !child
+                .try_wait()
+                .expect("wait 应可用")
+                .is_some_and(|s| s.success()),
+            "kill_tree 后子进程不该是成功退出状态"
+        );
+        // 进程确实不在了：unix 下 kill -0 对已回收 pid 返 ESRCH
+        #[cfg(unix)]
+        {
+            let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+            assert!(!alive, "pid {pid} 应已不存在");
+        }
+    }
+
+    /// 进程组判定：越界 pid 必须直接拒判。getpgid 失败返回 -1，
+    /// 而 i32::MAX 回绕也可能是 -1，等值比较会误判成「存活 leader」，
+    /// 随后 kill_py_children 会执行 `kill -9 --1`——那会打到全系统所有进程。
+    #[cfg(unix)]
+    #[test]
+    fn oversized_pid_never_counts_as_group_leader() {
+        assert!(!is_live_group_leader(i32::MAX as u32 + 1));
+        assert!(!is_live_group_leader(u32::MAX));
+        // 常规范围内的死 pid 也必须判 false（getpgid 返 -1 ≠ pid）
+        assert!(!is_live_group_leader(0));
+    }
+
+    /// kill_py_children 对非组长 / 不存在的 pid 一律不计数——
+    /// 计数只反映「确实杀掉了几棵进程树」。
+    #[cfg(unix)]
+    #[test]
+    fn kill_py_children_counts_only_live_group_leaders() {
+        assert_eq!(
+            kill_py_children(&[0, i32::MAX as u32 + 1]),
+            0,
+            "非组长/越界 pid 不应计入击杀数"
+        );
+        assert_eq!(kill_py_children(&[]), 0, "空列表应返 0");
+    }
+}
