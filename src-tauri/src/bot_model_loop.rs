@@ -3503,18 +3503,31 @@ mod rounds_fuse_tests {
 /// 与 dispatch 里 L5 那条同款理由：注册表的行为测试验不到调用点是否存在。
 /// 变异实测把模型循环里那段调用删掉（最终回复再也不过钩子）时，全仓测试
 /// 照样全绿——所以这里钉「语句存在 + 两点相对位置」。
+///
+/// 先切掉 `#[cfg(test)]` 尾段再扫是这条守卫成立的前提：`include_str!` 把本
+/// 测试模块自己也读进来了，不切的话，生产调用被删掉之后 `find` 会命中测试
+/// 模块里那个字符串字面量，测试依旧绿——那才是真的假保证。
 #[cfg(test)]
 mod post_turn_layer_tests {
     #[test]
     fn post_turn_layer_is_wired_after_answer_is_final() {
         let src = include_str!("bot_model_loop.rs");
-        let hook = src
+        let production = src
+            .split_once("#[cfg(test)]")
+            .expect("bot_model_loop.rs 应有测试模块")
+            .0;
+        assert_eq!(
+            production.matches("run_post_turn(").count(),
+            1,
+            "生产代码里 post_turn 调用应恰好 1 处（多处说明接线分叉了）"
+        );
+        let hook = production
             .find("run_post_turn(")
             .expect("模型循环必须调用 post_turn 钩子层");
-        let answer = src
+        let answer = production
             .find("let mut answer = if length_prefix.is_empty()")
             .expect("找不到答案定稿点");
-        let ret = src
+        let ret = production
             .find("return Ok((answer, collected_refs));")
             .expect("找不到主出口");
         assert!(
@@ -3522,5 +3535,18 @@ mod post_turn_layer_tests {
             "钩子必须在答案定稿之后（改写的要是用户真会看到的那一份）"
         );
         assert!(hook < ret, "钩子必须在返回之前：否则改写不会到达用户");
+        // 返回值必须被消费：run_post_turn 跑了却把结果丢掉，等于钩子改写
+        // answer 之后的失败既没人看见也没人记，只钉调用存在是不够的
+        let tail = &production[hook..];
+        let consumed = tail
+            .find("run.failures")
+            .expect("run_post_turn 的返回值必须被读（至少 failures 列表）");
+        let ret_after_hook = tail
+            .find("return Ok((answer, collected_refs));")
+            .expect("找不到主出口");
+        assert!(
+            consumed < ret_after_hook,
+            "钩子失败的消费必须在返回之前，否则失败静默丢失"
+        );
     }
 }

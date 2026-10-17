@@ -982,6 +982,10 @@ mod pre_tool_hook_tests {
     #[test]
     fn post_tool_layer_is_wired_between_execution_and_audit() {
         let body = include_str!("dispatch.rs")
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
+        let body = body
             .split_once("async fn execute_tool_impl(")
             .expect("找不到 execute_tool_impl")
             .1
@@ -1064,7 +1068,10 @@ mod pre_tool_hook_tests {
         // 第三处早退（子 agent 白名单）原先是手写字面量，与另两处没有任何
         // 机制保证一致。现在三处都走 tool_return_kv 一致性由构造保证，
         // 本断言只钉住「没有哪一处绕开它自己手搓 kv」。
-        let body = include_str!("dispatch.rs");
+        let body = include_str!("dispatch.rs")
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
         let sub_branch = body
             .split_once("subagent_whitelist_deny\",")
             .expect("找不到子 agent 白名单早退分支")
@@ -1090,7 +1097,10 @@ mod pre_tool_hook_tests {
         // 接线守卫：闸的判据是 ctx.tools（profile ∩ per-onion allowed），
         // 不是 profile 白名单。只收窄 schema 不收窄闸等于没收窄——模型看不见
         // 的工具仍能硬猜名字调通配置档明令禁用的能力。
-        let body = include_str!("dispatch.rs");
+        let body = include_str!("dispatch.rs")
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
         let gate = body
             .split_once("if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {")
             .expect("找不到子 agent 白名单闸的入口")
@@ -1204,8 +1214,7 @@ mod pre_tool_hook_tests {
     /// 工具本体里显式 warn）。
     #[test]
     fn no_gate_early_return_uses_warn_status() {
-        let body = include_str!("dispatch.rs");
-        let production = body
+        let production = include_str!("dispatch.rs")
             .split_once("#[cfg(test)]")
             .expect("dispatch.rs 应有测试模块")
             .0;
@@ -1265,7 +1274,10 @@ mod pre_tool_hook_tests {
         // 而这一期的全部价值就是「每个工具调用都过一次钩子」。
         // execute_tool_impl 需要 Wry AppHandle，单测够不到，故以源码文本钉住
         // 调用位置（与 invalid_args_gate_is_wired_into_execute_tool_impl 同款理由）。
-        let src = include_str!("dispatch.rs");
+        let src = include_str!("dispatch.rs")
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
         let body = src
             .split_once("async fn execute_tool_impl(")
             .expect("找不到 execute_tool_impl")
@@ -1378,7 +1390,10 @@ mod invalid_args_tests {
         // （if true { None } else { 闸 }），1511 个 lib 测试照样全绿——而这个提交
         // 的全部价值就是「工具不再执行」。execute_tool_impl 需要 Wry AppHandle，
         // 集成测试的 MockRuntime 够不到，故以源码文本钉住「语句形状 + 位置」。
-        let src = include_str!("dispatch.rs");
+        let src = include_str!("dispatch.rs")
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
         let body = src
             .split_once("async fn execute_tool_impl(")
             .expect("找不到 execute_tool_impl")
