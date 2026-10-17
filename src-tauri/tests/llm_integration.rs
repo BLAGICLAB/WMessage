@@ -375,6 +375,9 @@ struct CoreHarness {
     subagent_tools: Box<dyn Fn(Option<&str>) -> Vec<String> + Send + Sync>,
     /// `subagent_tools` 闭包背后的数据，供测试写入
     subagent_tools_data: Arc<Mutex<Vec<String>>>,
+    /// 执行类谎报守卫的触发词表。默认填**内置默认表**（与生产一致），
+    /// 否则依赖守卫的既有用例会因空词表静默失效；要验自定义表改这个字段。
+    guard_claim_keywords: Vec<String>,
     audit_events: AuditEvents,
 }
 
@@ -403,6 +406,7 @@ impl CoreHarness {
             },
             subagent_tools: Box::new(move |_| sub_tools2.lock().unwrap().clone()),
             subagent_tools_data: sub_tools,
+            guard_claim_keywords: wmessage_lib::bot::registry::default_execution_claim_patterns(),
             audit_events: events,
         }
     }
@@ -424,6 +428,7 @@ impl CoreHarness {
             },
             turn_status: None,
             subagent_tools: Some(&*self.subagent_tools),
+            guard_claim_keywords: &self.guard_claim_keywords,
         }
     }
 
@@ -444,6 +449,7 @@ impl CoreHarness {
             },
             turn_status: None,
             subagent_tools: Some(&*self.subagent_tools),
+            guard_claim_keywords: &self.guard_claim_keywords,
         }
     }
 

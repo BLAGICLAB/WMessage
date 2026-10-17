@@ -24,6 +24,10 @@ export interface BotConfigView {
   braveEnabled?: boolean | null;
   pythonTimeoutSecs?: number | null;
   maxFunctionCalls?: number | null;
+  /** 执行类谎报守卫触发词表（后端已把「没配过」回落成内置默认表）；
+   *  guardClaimDefaultKeywords 是内置默认，只读参照 + 设置页「恢复默认」用 */
+  guardClaimKeywords?: string[];
+  guardClaimDefaultKeywords?: string[];
   /** 任务卡归档天数（None = 后端默认 7） */
   archiveAfterDays?: number | null;
   /** 授权模式：strict/ask/auto/yolo（None = ask） */

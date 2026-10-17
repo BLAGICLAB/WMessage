@@ -43,7 +43,7 @@ fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> 
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
 pub use crate::bot::registry::claims_mutation;
-use crate::bot::registry::{claims_execution, fabricated_gen_path, mentioned_tool_names};
+use crate::bot::registry::{claims_execution_with, fabricated_gen_path, mentioned_tool_names};
 
 // TOOLS schema（编译期字符串，运行期 JSON 解析）
 
@@ -636,6 +636,11 @@ pub struct ModelLoopDeps<'a> {
     /// 不许派子 agent，没有可归并的对象）。None = 不归并，测试直驱 core 时
     /// 不接 DB。
     pub subagent_tools: Option<&'a (dyn Fn(Option<&str>) -> Vec<String> + Send + Sync)>,
+    /// 幻觉守卫「执行类谎报」触发词表（设置页「工具调用触发器关键词」可编辑）。
+    ///
+    /// 薄壳已把「没配过」回落成内置默认表再传进来，core 不再关心来源——
+    /// 空切片 = 用户显式清空，该档触发器失效（变更类与路径存在性两道闸不受影响）。
+    pub guard_claim_keywords: &'a [String],
 }
 
 /// 回合状态机。借鉴 ZCode 的 turn view model（`running` / `settling` /
@@ -949,6 +954,16 @@ pub async fn run_model_loop(
     let conv_sidecar_path = crate::db::gen_dir(&app)
         .ok()
         .map(|d| d.join("conv-history"));
+    // 触发词表：cfg 是 View，「没配过 → 内置默认」的回落已在 bot_get_config
+    // 组装时做完，这里拿到的就是当前生效表。剔空白项——盘上留个空串会让人
+    // 以为它还在起作用，其实判定时永远不命中。
+    let guard_claim_keywords: Vec<String> = cfg
+        .guard_claim_keywords
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     let deps = ModelLoopDeps {
         // 全域熔断上限：config 有值用之（钳 1..=500），None = 默认 100
         fuse_cap_override: Some(
@@ -977,6 +992,7 @@ pub async fn run_model_loop(
                 serde_json::json!({ "status": status.as_str(), "detail": detail }),
             );
         }),
+        guard_claim_keywords: &guard_claim_keywords,
         subagent_tools: Some(&|sid: Option<&str>| {
             let Some(sid) = sid else {
                 return Vec::new();
@@ -2097,7 +2113,8 @@ where
                 .filter(|t| !receipts.iter().any(|r| r == *t))
                 .copied()
                 .collect();
-            let mut claim_execution = claims_execution(&final_text)
+            let mut claim_execution =
+                claims_execution_with(&final_text, deps.guard_claim_keywords)
                 && if mentioned.is_empty() {
                     // 不点名工具（「执行完毕，工具真实返回…」）时无从按名查，
                     // 退回「整条提问一条凭证都没有」的粗判——这正是词表要顶住的那类。
@@ -2123,7 +2140,7 @@ where
                     if !sub.is_empty() {
                         unsupported.retain(|t| !sub.iter().any(|n| n == *t));
                         // 能进这个分支就意味着初判为真，而初判为真已经蕴含
-                        // claims_execution(&final_text) 为真——重判只剩凭证这一半。
+                        // 触发词命中为真——重判只剩凭证这一半。
                         claim_execution = !unsupported.is_empty();
                     }
                 }
@@ -2917,6 +2934,9 @@ mod think_tests {
 #[cfg(test)]
 mod hallucination_guard_tests {
     use super::*;
+    // 这组测试打的是内置默认表；判决层走的是词表来自配置的那一支
+    // （claims_execution_with），两者分开钉：内置表的负例不能被设置页改掉。
+    use crate::bot::registry::claims_execution;
 
     #[test]
     fn fabricated_gen_path_catches_fabricated_doc_path() {
@@ -3077,6 +3097,37 @@ mod hallucination_guard_tests {
         // 「返回了 / 结果是」两支刻意不收：代码讲解与算术题里高频
         assert!(!claims_execution("这个函数在空列表时返回了 None。"));
         assert!(!claims_execution("1+1 的结果是 2。"));
+    }
+
+    /// 设置页可编辑词表：内置表是默认值，用户这份**全量替换**它。
+    ///
+    /// 「替换不是合并」是这里的要点——合并的话用户在设置页删词会静默无效，
+    /// 而删不掉词等于这个设置没有存在的意义。
+    #[test]
+    fn claims_execution_uses_configured_keywords_wholesale() {
+        let custom = ["我说完了".to_string(), "搞定".to_string()];
+        // 自定义词生效
+        assert!(claims_execution_with("行了，我说完了。", &custom));
+        assert!(claims_execution_with("搞定", &custom));
+        // 内置词被替换掉后不再触发：删词 = 该话术的谎报静默放行
+        assert!(!claims_execution_with("执行完毕，输出 done", &custom));
+        // 空表 = 关掉这一档触发器
+        assert!(!claims_execution_with("执行完毕，输出 done", &[]));
+        // 空串项不产生「永远命中」的死条目
+        assert!(!claims_execution_with(
+            "执行完毕，输出 done",
+            &[String::new()]
+        ));
+        // 没配过时的回落值就是内置默认表
+        assert_eq!(
+            crate::bot::registry::default_execution_claim_patterns().len(),
+            21,
+            "内置词表条数变了——设置页「恢复默认」与 SPEC 的计数要同步"
+        );
+        assert!(claims_execution_with(
+            "执行完毕，输出 done",
+            &crate::bot::registry::default_execution_claim_patterns()
+        ));
     }
 
     #[test]

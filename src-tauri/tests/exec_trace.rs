@@ -193,6 +193,8 @@ async fn trace_lifecycle_done_row_written() {
                 emit: &|_, _| {},
                 // 测试直驱 core，不接 DB：本次提问没有子 agent 可归并
                 subagent_tools: None,
+                // 本文件不覆盖执行类谎报守卫（终稿不含完成态词），传空词表
+                guard_claim_keywords: &[],
                 audit: &|_: AuditLevel, _: &'static str, _| {},
                 audit_log: &|_| {},
                 skill_finish: &|_, _| String::new(),

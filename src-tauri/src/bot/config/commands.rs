@@ -112,6 +112,13 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         max_function_calls: cfg.max_function_calls,
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         selfcheck_model_id: cfg.selfcheck_model_id,
+        // 回落成内置默认再给前端：设置页编辑的是「当前生效表」，
+        // 让它对着空列表编辑会以为内置词都被人删了
+        guard_claim_keywords: cfg
+            .guard_claim_keywords
+            .clone()
+            .unwrap_or_else(crate::bot::registry::default_execution_claim_patterns),
+        guard_claim_default_keywords: crate::bot::registry::default_execution_claim_patterns(),
         verifier_retry_max: cfg.verifier_retry_max,
         archive_after_days: cfg.archive_after_days,
         perm_mode: cfg.perm_mode,
@@ -177,6 +184,18 @@ pub(crate) fn sanitize_tool_rules(
 /// 为准：该块只归 evolution/ 模块读写，设置页没有编辑入口。
 pub(crate) fn preserve_evolution(incoming: &mut BotConfig, disk: &BotConfig) {
     incoming.evolution = disk.evolution.clone();
+}
+
+/// 触发词表防丢（纯函数，单测直打）：incoming 为 None 说明前端这次**没带**
+/// 这个字段（整体替换写的老毛病），盘上有值就留着。
+///
+/// 与 preserve_evolution 的区别：那个是「前端根本没编辑入口」，这个前端**有**编辑
+/// 入口、用户说了算。所以只挡「漏传」，不挡「清空」——用户显式存空数组
+/// （Some(vec![])）是关掉执行类触发器，语义是另一回事，照写不误。
+pub(crate) fn preserve_guard_keywords(incoming: &mut BotConfig, disk: &BotConfig) {
+    if incoming.guard_claim_keywords.is_none() {
+        incoming.guard_claim_keywords = disk.guard_claim_keywords.clone();
+    }
 }
 
 /// 保存配置。api_key / tavily_key / brave_key / vendor_key 几个顶层参数同语义：
@@ -313,6 +332,7 @@ pub fn bot_set_config(
     let _g = super::io::lock_config_write();
     let disk = super::io::load_config(&app);
     preserve_evolution(&mut config, &disk);
+    preserve_guard_keywords(&mut config, &disk);
     prune_verified_vendors(&mut config, &disk, key_overwritten.as_deref());
     super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)
 }
@@ -418,7 +438,10 @@ pub fn memory_tuning_set(
 }
 
 #[cfg(test)]
-mod evolution_preserve_tests {
+/// bot_set_config 的「盘上值回填」测试。回填的是前端整体替换写碰不到、
+/// 但又不能被整体替换写清掉的字段：evolution 块（前端无编辑入口）与
+/// 触发词表（前端有入口，所以只挡漏传、不挡显式清空）。
+mod preserve_tests {
     use super::*;
 
     #[test]
@@ -532,6 +555,40 @@ mod evolution_preserve_tests {
             incoming.verified_vendors,
             vec!["DeepSeek".to_string()],
             "仅条目参数变化不应失效"
+        );
+    }
+
+    #[test]
+    fn preserve_guard_keywords_only_fills_missing_not_explicit_clear() {
+        // 前端整体替换写：没带这个字段（None）时保留盘上值，否则设置页任意
+        // 一次保存都会把用户的词表清掉
+        let mut disk = BotConfig::default();
+        disk.guard_claim_keywords = Some(vec!["我搞定了".to_string()]);
+        let mut incoming = BotConfig::default();
+        preserve_guard_keywords(&mut incoming, &disk);
+        assert_eq!(
+            incoming.guard_claim_keywords,
+            Some(vec!["我搞定了".to_string()]),
+            "漏传时应保留盘上词表"
+        );
+
+        // 用户显式存空数组 = 关掉这道触发器，是合法取值，照写不误
+        let mut clearing = BotConfig::default();
+        clearing.guard_claim_keywords = Some(Vec::new());
+        preserve_guard_keywords(&mut clearing, &disk);
+        assert_eq!(
+            clearing.guard_claim_keywords,
+            Some(Vec::new()),
+            "显式清空不该被回填"
+        );
+
+        // 用户自定义过 = 尊重用户的，不被盘上默认覆盖
+        let mut custom = BotConfig::default();
+        custom.guard_claim_keywords = Some(vec!["完事了".to_string()]);
+        preserve_guard_keywords(&mut custom, &disk);
+        assert_eq!(
+            custom.guard_claim_keywords,
+            Some(vec!["完事了".to_string()])
         );
     }
 

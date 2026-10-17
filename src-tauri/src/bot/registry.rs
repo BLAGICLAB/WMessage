@@ -781,13 +781,31 @@ const TOOL_ALIASES: &[(&str, &str)] = &[
     ("subagent", "spawn_subagent"),
 ];
 
-/// 终稿是否在叙述一次「已完成的执行」。
+/// 内置默认词表。既是设置页「恢复默认」的来源，也是没保存过自定义词表时的
+/// 生效值。返回 owned：调用方要跨线程用（command 返回给前端）。
+pub fn default_execution_claim_patterns() -> Vec<String> {
+    EXECUTION_CLAIM_PATTERNS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// 按传入词表判定「终稿是否在叙述一次已完成的执行」。
 ///
-/// 单独判定、不带上下文：是否该拦由调用方结合「本回合有没有工具成功过」一起
-/// 看（见 bot_model_loop 的幻觉守卫）。纯函数的职责只有「这句话像不像在转述
-/// 执行结果」。
+/// 判决层唯一入口：词表来自 bot-config（设置页可编辑），没配过时由薄壳回落
+/// 到内置表。**词表是全量替换而不是合并**——用户在设置页删掉某个词就是要它
+/// 不再生效，合并会让内置那排负例测试形同虚设。
+pub fn claims_execution_with(text: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|p| !p.is_empty() && text.contains(p))
+}
+
+/// 终稿是否在叙述一次「已完成的执行」（按内置默认词表）。
+///
+/// 单独判定、不带上下文：是否该拦由调用方结合凭证表一起看（见 bot_model_loop
+/// 的幻觉守卫）。纯函数的职责只有「这句话像不像在转述执行结果」。词表改了
+/// 这里跟着改——设置页改的是 bot-config，不改这段常量。
 pub fn claims_execution(text: &str) -> bool {
-    EXECUTION_CLAIM_PATTERNS.iter().any(|p| text.contains(p))
+    claims_execution_with(text, &default_execution_claim_patterns())
 }
 
 /// 终稿里点名的工具（按 TOOLS_TABLE 扫，snake_case 标识符不会与中文话术撞车）。

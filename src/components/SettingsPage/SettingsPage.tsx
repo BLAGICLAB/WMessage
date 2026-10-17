@@ -75,6 +75,7 @@ import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { MemoryPanel } from "./MemoryPanel";
 import GraphSettingsPanel from "./GraphSettingsPanel";
+import { GuardKeywordsPanel } from "./GuardKeywordsPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
 import { DiagnosticsCard } from "./DiagnosticsCard";
@@ -543,6 +544,10 @@ export function SettingsPage({
     bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
     // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
     allowedDirs: "",
+    // 幻觉守卫「执行类谎报」触发词表（textarea 一行一个；GuardKeywordsPanel 编辑）
+    guardClaimKeywords: "",
+    // 内置默认词表：只读参照 + 「恢复默认」取值来源（后端 view 带下来）
+    guardClaimKeywordsDefault: [] as string[],
     // Tavily 搜索 key 是否已存系统凭据存储（key 本体不回填，
     // 与主 API key 同模式：view 只给 has 标志，输入框独立 state 不回填）
     hasTavilyKey: false,
@@ -740,6 +745,8 @@ export function SettingsPage({
         // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
         bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
         allowedDirs: (c.allowedDirs ?? []).join("\n"),
+        guardClaimKeywords: (c.guardClaimKeywords ?? []).join("\n"),
+        guardClaimKeywordsDefault: c.guardClaimDefaultKeywords ?? [],
         // view 只给 has 标志；key 本体不回填（与 hasApiKey/keyInput 同模式）。
         // 开关自动态：老配置没显式开关字段（null/undefined）时按 has 标志显示
         hasTavilyKey: c.hasTavilyKey ?? false,
@@ -955,6 +962,12 @@ export function SettingsPage({
           bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit,
           // textarea 一行一个路径；空行/空白剔除；全空 = 后端内置默认白名单
           allowedDirs: c.allowedDirs
+            .split("\n")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0),
+          // 触发词表全量落盘（删词即失效，所以不能省字段——空数组是
+          // 「显式关掉这道触发器」的合法取值，必须能写上去）
+          guardClaimKeywords: c.guardClaimKeywords
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s.length > 0),
@@ -2513,6 +2526,20 @@ export function SettingsPage({
                 ))}
                 {renderSaveButton("mt-4 flex justify-end")}
               </div>
+
+              {/* 幻觉守卫触发词表：独立卡片（自带保存按钮，与 renderSaveButton
+                  无关——它只管下面那张 Agent 运行参数卡） */}
+              <GuardKeywordsPanel
+                value={config.guardClaimKeywords}
+                defaults={config.guardClaimKeywordsDefault}
+                onChange={(v) =>
+                  setConfig((prev) => ({ ...prev, guardClaimKeywords: v }))
+                }
+                onSave={() => {
+                  void saveConfig();
+                }}
+                busy={configBusy}
+              />
             </section>
           )}
           {mountedSections.has("memory") && (

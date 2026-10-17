@@ -251,6 +251,56 @@ describe("SettingsPage", () => {
     });
   });
 
+  it("工具调用触发器关键词：删词保存 → bot_set_config 携带改后的词表", async () => {
+    // 这条盯的是「整体替换写」：漏传 guardClaimKeywords = 用户词表被清空。
+    // 后端另有 preserve_guard_keywords 兜底，但前端该带的必须带。
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          guardClaimKeywords: ["执行完毕", "跑完了", "已执行"],
+          guardClaimDefaultKeywords: ["执行完毕", "跑完了", "已执行"],
+        };
+      if (cmd === "bot_set_config") return null;
+      if (cmd === "profile_get")
+        return { user: { name: "我", avatarId: null }, bot: { name: "机器人", avatarId: null } };
+      if (cmd === "bot_get_enabled") return false;
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_env_check")
+        return { available: false, python: "", version: "", libs: [] };
+      // 机器人分区有张卡直接读 status.enabled，兜底 null 会渲染崩
+      if (cmd === "api_status") return { enabled: false, port: 4763 };
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "机器人" }));
+    const ta = (await screen.findByPlaceholderText(
+      /执行完毕/,
+    )) as HTMLTextAreaElement;
+    expect(ta.value).toBe("执行完毕\n跑完了\n已执行");
+    await user.clear(ta);
+    await user.type(ta, "搞定{Enter}执行完毕");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            guardClaimKeywords: ["搞定", "执行完毕"],
+          }),
+        }),
+      );
+    });
+  });
+
   it("主题三态：依次点击 → onThemeChange 收到 light / dark / system", async () => {
     const onThemeChange = vi.fn();
     const user = userEvent.setup();
