@@ -29,8 +29,29 @@ const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
   failed: { label: "失败", cls: "text-[var(--danger,#ef4444)]" },
   running: { label: "执行中", cls: "text-[var(--info,#3b82f6)]" },
   stopped: { label: "已停止", cls: "text-[var(--t4)]" },
-  timeout: { label: "超时", cls: "text-[var(--t4)]" },
 };
+
+/** span 失败分类（后端 audit::classify_error_class 的九类）→ 中文短词。
+ *  值域跟后端分类器一一对应，新增一类必须在此补词；未登记值不退化成统一
+ *  「失败」——那样新分类上线后前端看不出差别，兜底走「失败（原值）」 */
+const ERROR_CLASS_LABEL: Record<string, string> = {
+  unknown_tool: "工具不存在",
+  gate_denied: "门禁拦截",
+  user_denied: "用户拒绝",
+  skill_paused: "技能暂停",
+  fused: "已熔断",
+  timeout: "超时",
+  not_found: "未找到",
+  permission: "权限不足",
+  exec_error: "执行失败",
+};
+
+/** span 行尾的失败短词。errorClass 为空（旧行/成功侧未落）走通用「失败」 */
+function spanFailText(s: SpanRow): string {
+  const cls = s.errorClass;
+  if (!cls) return "失败";
+  return ERROR_CLASS_LABEL[cls] ?? `失败（${cls}）`;
+}
 
 function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -53,7 +74,10 @@ function SpanItem({ s }: { s: SpanRow }) {
           <span className="ml-1.5 text-[10px] text-[var(--t5)]">
             第{s.turn}轮{s.durationMs != null && ` · ${fmtMs(s.durationMs)}`}
             {!s.ok && (
-              <span className="text-[var(--danger,#ef4444)]"> · 失败</span>
+              <span className="text-[var(--danger,#ef4444)]">
+                {" "}
+                · {spanFailText(s)}
+              </span>
             )}
           </span>
         </summary>
@@ -366,6 +390,14 @@ export function TracePanel({
               )}
               {detail.origin && (
                 <span className="nm-inset px-2 py-0.5">{detail.origin}</span>
+              )}
+              {detail.model && (
+                <span
+                  className="nm-inset px-2 py-0.5"
+                  title="本轮实际调用的模型"
+                >
+                  {detail.model}
+                </span>
               )}
             </div>
             {detail.error && (

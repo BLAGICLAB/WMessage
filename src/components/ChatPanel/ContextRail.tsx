@@ -30,6 +30,7 @@ import {
   SubagentCancelButton,
   SubagentProgress,
 } from "./SubagentRowLine";
+import { SUBAGENT_STATUS } from "./constants";
 import { SubagentDetailPanel } from "./SubagentDetailPanel";
 
 /** 三类工作面。key 用窄口径字符串，不另立枚举 */
@@ -61,20 +62,6 @@ export type SubagentRun = {
   /** 收尾结构化结果：库里是 JSON 对象字符串，同上（含数组/原文兜底） */
   result?: string | string[] | Record<string, unknown> | null;
   traceId?: string | null;
-};
-
-/** 六态 → 侧栏徽标。取消/预算耗尽各有自己的说法：都写成「失败」等于把
- *  用户的选择说成系统出错 */
-const SUBAGENT_STATUS: Record<
-  SubagentRun["status"],
-  { label: string; color: string }
-> = {
-  queued: { label: "排队中", color: "text-[var(--t5)]" },
-  running: { label: "执行中", color: "text-[var(--brand)]" },
-  succeeded: { label: "完成", color: "text-[var(--success)]" },
-  failed: { label: "失败", color: "text-[var(--danger)]" },
-  cancelled: { label: "已取消", color: "text-[var(--t5)]" },
-  budget_exceeded: { label: "预算耗尽", color: "text-[var(--danger)]" },
 };
 
 type ContextRailProps = {

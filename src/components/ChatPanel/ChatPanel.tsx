@@ -43,7 +43,7 @@ import type {
   TurnStatus,
   VerboseLevel,
 } from "./types";
-import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks, SUBAGENT_POLL_MS } from "./constants";
+import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks, SUBAGENT_POLL_MS, SUBAGENT_STATUS } from "./constants";
 import { LiveIndicator } from "./LiveIndicator";
 import { useAutoGrow, useOutsideClose } from "./useChatUi";
 import { SessionRail } from "./SessionRail";
@@ -192,8 +192,20 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   //  上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）。
   // lastInput = 最近一轮请求的 input（即当前上下文 prompt 体量）——每轮 input 是
   // 完整重发的 prompt，跨轮累加会随轮数近似平方膨胀，水位百分比必须用最近一轮。
+  // 缓存两档独立累计（协议口径见 UsageMeter 头部：Anthropic 的 cache_read 不含在
+  // input_tokens 里，折进 input 会与 trace 弹窗的分档展示对不上）
   const [sessionUsage, setSessionUsage] = useState<
-    Record<string, { input: number; output: number; lastInput: number }>
+    Record<
+      string,
+      {
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheCreation: number;
+        lastInput: number;
+        lastCacheRead: number;
+      }
+    >
   >({});
   //  执行过程详细度（verbose 三档）：localStorage 持久化，仅影响 ToolBadges 展示档位
   const [verboseLevel, setVerboseLevelState] = useState<VerboseLevel>(() => {
@@ -382,7 +394,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         contextSummary: r.contextSummary ?? null,
         acceptance: parseJsonField(r.acceptanceJson),
         result: parseJsonField(r.resultJson),
-        traceId: r.traceId ?? null,
+        traceId: r.traceId,
       })),
     [subagents],
   );
@@ -419,21 +431,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   // 子 agent 收尾事件——派发者主会话里轻提示（围观过滤沿用 PAR-1 的
   // sessionId 流式隔离；这里补「后台子任务完成」的可见性）。
   // 复用 useTauriListen（与手写 listen 生命周期等价且更稳）。
-  const subagentStatusLabel: Record<string, string> = {
-    succeeded: "已完成",
-    failed: "失败",
-    cancelled: "已取消",
-    budget_exceeded: "预算耗尽",
-  };
   useTauriListen<{
     subagentId: string;
     parentSessionId: string | null;
-    status: string;
+    status: SubagentRow["status"];
     summary: string;
   }>("subagent-finished", (payload) => {
     const parent = payload.parentSessionId;
     if (parent && parent === sessionIdRef.current) {
-      const label = subagentStatusLabel[payload.status] ?? payload.status;
+      const label = SUBAGENT_STATUS[payload.status]?.label ?? payload.status;
       addHint(`子任务${label}：${payload.summary || payload.subagentId}`);
     }
     // 子 agent 行只有这里可见（不再有任务卡兜底）：不重拉就一直停在
@@ -944,6 +950,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     const unUsage = listen<{
       inputTokens?: number;
       outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheCreationTokens?: number;
       sessionId?: string | null;
     }>("bot-usage-delta", (e) => {
       const sid = e.payload?.sessionId ?? null;
@@ -951,12 +959,30 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
       const i = e.payload?.inputTokens ?? 0;
       const o = e.payload?.outputTokens ?? 0;
-      if (i <= 0 && o <= 0) return;
+      const cr = e.payload?.cacheReadTokens ?? 0;
+      const cc = e.payload?.cacheCreationTokens ?? 0;
+      // 四项全空才跳过：缓存命中的回合 input/output 极小甚至为 0，只看前两项
+      // 会把整段缓存量丢在账外（与 trace 弹窗的分档展示对不上）
+      if (i <= 0 && o <= 0 && cr <= 0 && cc <= 0) return;
       setSessionUsage((prev) => {
-        const cur = prev[sid] ?? { input: 0, output: 0, lastInput: 0 };
+        const cur = prev[sid] ?? {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheCreation: 0,
+          lastInput: 0,
+          lastCacheRead: 0,
+        };
         return {
           ...prev,
-          [sid]: { input: cur.input + i, output: cur.output + o, lastInput: i },
+          [sid]: {
+            input: cur.input + i,
+            output: cur.output + o,
+            cacheRead: cur.cacheRead + cr,
+            cacheCreation: cur.cacheCreation + cc,
+            lastInput: i,
+            lastCacheRead: cr,
+          },
         };
       });
     });
@@ -1707,7 +1733,10 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       <UsageMeter
         input={sessionUsage[sessionId ?? ""]?.input ?? 0}
         output={sessionUsage[sessionId ?? ""]?.output ?? 0}
+        cacheRead={sessionUsage[sessionId ?? ""]?.cacheRead ?? 0}
+        cacheCreation={sessionUsage[sessionId ?? ""]?.cacheCreation ?? 0}
         lastInput={sessionUsage[sessionId ?? ""]?.lastInput ?? 0}
+        lastCacheRead={sessionUsage[sessionId ?? ""]?.lastCacheRead ?? 0}
         contextK={models.find((m) => m.id === activeModelId)?.contextK}
       />
 

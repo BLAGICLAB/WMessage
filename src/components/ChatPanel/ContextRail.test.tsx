@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ContextRail } from "./ContextRail";
+import { ContextRail, type SubagentRun } from "./ContextRail";
 import type { Task } from "../../types";
 
 const mocks = vi.hoisted(() => ({
@@ -102,5 +102,33 @@ describe("ContextRail 绑定文件到任务卡", () => {
       });
     });
     expect(onUpdateTask).not.toHaveBeenCalled();
+  });
+});
+
+// 六态标签曾在本文件与 ChatPanel 的收尾提示各写一份，同一状态两处措辞不同
+// （succeeded 一处「完成」一处「已完成」）。现在共用 constants 一份，这里钉住
+// 侧栏渲染出来的就是那一份
+describe("ContextRail 子 Agent 状态标签", () => {
+  it("六态徽标文案 = constants 共享表", () => {
+    const STATES: [SubagentRun["status"], string][] = [
+      ["queued", "排队中"],
+      ["running", "执行中"],
+      ["succeeded", "完成"],
+      ["failed", "失败"],
+      ["cancelled", "已取消"],
+      ["budget_exceeded", "预算耗尽"],
+    ];
+    renderRail({
+      tab: "agents",
+      subagents: STATES.map(([status], i) => ({
+        id: `sa_${i}`,
+        title: `子任务${i}`,
+        status,
+        running: status === "running" || status === "queued",
+      })),
+    });
+    for (const [, label] of STATES) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
   });
 });

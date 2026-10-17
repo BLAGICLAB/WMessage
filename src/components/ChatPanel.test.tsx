@@ -1354,6 +1354,101 @@ describe("ChatPanel", () => {
     }
   });
 
+  // 缓存命中的回合 input_tokens 只剩增量甚至为 0，token 全在 cache_read 上：
+  // 早前那个「input 与 output 都为 0 就跳过」会把整段缓存量丢在账外，
+  // 水位条比 trace 弹窗（同口径分档）少算一大截
+  it("只带缓存 token 的 usage 增量不被丢弃：水位条计入缓存两档", async () => {
+    const listeners = new Map<string, (e: { payload: unknown }) => void>();
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        listeners.set(event, cb);
+        return () => {};
+      },
+    );
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      await act(async () => {
+        listeners.get("bot-usage-delta")?.({
+          payload: {
+            sessionId: "s1",
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 8000,
+            cacheCreationTokens: 500,
+          },
+        });
+      });
+      // Σ 含缓存两档（0 + 0 + 8000 + 500），缓存另立一档不并进输入输出
+      expect(screen.getByText(/Σ 8\.5K/)).toBeInTheDocument();
+      expect(screen.getByText(/缓存 8\.0K\/500/)).toBeInTheDocument();
+    } finally {
+      mocks.listenMock.mockImplementation(prevListenImpl!);
+    }
+  });
+
+  it("四项全 0 的 usage 增量不产生水位条（无数据的回合不编数）", async () => {
+    const listeners = new Map<string, (e: { payload: unknown }) => void>();
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        listeners.set(event, cb);
+        return () => {};
+      },
+    );
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      await act(async () => {
+        listeners.get("bot-usage-delta")?.({
+          payload: {
+            sessionId: "s1",
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+          },
+        });
+      });
+      expect(screen.queryByText(/Σ/)).toBeNull();
+    } finally {
+      mocks.listenMock.mockImplementation(prevListenImpl!);
+    }
+  });
+
+  it("子 agent 收尾提示用侧栏徽标同一份措辞（succeeded = 完成，不是「已完成」）", async () => {
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      await act(async () => {
+        for (const cb of mocks.listeners["subagent-finished"] ?? []) {
+          cb({
+            payload: {
+              subagentId: "sa_1",
+              parentSessionId: "s1",
+              status: "succeeded",
+              summary: "周报已出",
+            },
+          });
+        }
+      });
+      expect(await screen.findByText(/子任务完成：周报已出/)).toBeInTheDocument();
+    } finally {
+      mocks.listenMock.mockImplementation(prevListenImpl!);
+    }
+  });
+
   it("删除会话后清掉该会话的水位累计（sessionUsage 条目随会话删除）", async () => {
     const user = userEvent.setup();
     const listeners = new Map<string, (e: { payload: unknown }) => void>();

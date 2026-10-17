@@ -29,6 +29,7 @@ const TRACE: TraceRow = {
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   error: null,
+  model: "MiniMax-M3.1",
 };
 
 const DETAIL: TraceDetail = {
@@ -56,7 +57,7 @@ const DETAIL: TraceDetail = {
       args: '{"path":"/a/x.py"}',
       result: null,
       ok: false,
-      errorClass: null,
+      errorClass: "permission",
       durationMs: 30,
       createdAt: Date.now(),
     },
@@ -122,8 +123,10 @@ describe("TracePanel", () => {
     );
     expect(screen.getByText("read_text_file")).toBeTruthy();
     expect(screen.getByText("edit_file")).toBeTruthy();
-    expect(screen.getByText("· 失败")).toBeTruthy();
+    expect(screen.getByText("· 权限不足")).toBeTruthy();
     expect(screen.getByText(/tokens 100\/50/)).toBeTruthy();
+    // 本轮实际模型（trace_finish 时写入；有值才显示）
+    expect(screen.getByText("MiniMax-M3.1")).toBeTruthy();
   });
 
   it("文件修改区展示 ±行与 diff，回滚成功后重载 detail", async () => {
@@ -173,4 +176,106 @@ describe("TracePanel", () => {
     );
   });
 
+  it("模型为空（旧行）不显示模型徽标", async () => {
+    const noModel: TraceDetail = { ...DETAIL, model: null };
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "trace_list") return Promise.resolve([TRACE]);
+      if (cmd === "trace_detail") return Promise.resolve(noModel);
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+    render(<TracePanel taskId="t1" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText("edit_file")).toBeTruthy());
+    expect(screen.queryByText("MiniMax-M3.1")).toBeNull();
+  });
+
+  // span.errorClass 的九类值域跟后端 audit::classify_error_class 对齐：前端漏映射一类，
+  // 那类失败就只能退回通用「失败」——用户看不出是门禁拦的还是权限不足的
+  it("span 失败按 errorClass 分类展示：九类各有说法", async () => {
+    const CLASSES: [string, string][] = [
+      ["unknown_tool", "工具不存在"],
+      ["gate_denied", "门禁拦截"],
+      ["user_denied", "用户拒绝"],
+      ["skill_paused", "技能暂停"],
+      ["fused", "已熔断"],
+      ["timeout", "超时"],
+      ["not_found", "未找到"],
+      ["permission", "权限不足"],
+      ["exec_error", "执行失败"],
+    ];
+    const detail: TraceDetail = {
+      ...DETAIL,
+      spans: CLASSES.map(([errorClass], i) => ({
+        id: 100 + i,
+        traceId: 7,
+        turn: i,
+        toolCallId: null,
+        name: `tool_${errorClass}`,
+        args: null,
+        result: null,
+        ok: false,
+        errorClass,
+        durationMs: 1,
+        createdAt: Date.now(),
+      })),
+    };
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "trace_list") return Promise.resolve([TRACE]);
+      if (cmd === "trace_detail") return Promise.resolve(detail);
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+    render(<TracePanel taskId="t1" onClose={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByText("tool_exec_error")).toBeTruthy(),
+    );
+    for (const [, label] of CLASSES) {
+      expect(screen.getByText(`· ${label}`)).toBeTruthy();
+    }
+  });
+
+  it("未登记的 errorClass 显形（不静默并进「失败」）与空值回落通用「失败」", async () => {
+    const detail: TraceDetail = {
+      ...DETAIL,
+      spans: [
+        {
+          id: 201,
+          traceId: 7,
+          turn: 0,
+          toolCallId: null,
+          name: "tool_new_kind",
+          args: null,
+          result: null,
+          ok: false,
+          errorClass: "brand_new_class",
+          durationMs: 1,
+          createdAt: Date.now(),
+        },
+        {
+          id: 202,
+          traceId: 7,
+          turn: 1,
+          toolCallId: null,
+          name: "tool_legacy",
+          args: null,
+          result: null,
+          ok: false,
+          errorClass: null,
+          durationMs: 1,
+          createdAt: Date.now(),
+        },
+      ],
+    };
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "trace_list") return Promise.resolve([TRACE]);
+      if (cmd === "trace_detail") return Promise.resolve(detail);
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+    render(<TracePanel taskId="t1" onClose={() => {}} />);
+    await waitFor(() =>
+      expect(screen.getByText("tool_new_kind")).toBeTruthy(),
+    );
+    // 后端新增分类：原值可见，用户能对上号
+    expect(screen.getByText("· 失败（brand_new_class）")).toBeTruthy();
+    // 旧行没落 errorClass：通用说法
+    expect(screen.getByText("· 失败")).toBeTruthy();
+  });
 });

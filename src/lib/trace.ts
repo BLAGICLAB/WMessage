@@ -11,7 +11,7 @@ export type TraceRow = {
   taskId?: string | null;
   origin: string;
   title?: string | null;
-  status: "running" | "done" | "failed" | "stopped" | "timeout";
+  status: "running" | "done" | "failed" | "stopped";
   startedAt: number;
   finishedAt?: number | null;
   turnCount: number;
@@ -23,6 +23,8 @@ export type TraceRow = {
   cacheReadTokens: number;
   cacheWriteTokens: number;
   error?: string | null;
+  /** 本轮实际模型名；旧行与未发请求为 null（Rust 侧同名列） */
+  model?: string | null;
 };
 
 /** 每次工具调用 = 一条 span（args/result 后端已按 16KB 钳制） */

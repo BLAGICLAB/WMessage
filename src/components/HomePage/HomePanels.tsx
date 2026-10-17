@@ -76,14 +76,12 @@ const PILL_CLS: Record<TraceRow["status"], string> = {
   done: "text-[var(--success)] bg-[color-mix(in_srgb,var(--success)_13%,transparent)]",
   failed: "text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_13%,transparent)]",
   stopped: "text-[var(--t5)] bg-[var(--inset-bg)]",
-  timeout: "text-[var(--t5)] bg-[var(--inset-bg)]",
 };
 const PILL_LABEL: Record<TraceRow["status"], string> = {
   running: "执行中",
   done: "完成",
   failed: "失败",
   stopped: "已停止",
-  timeout: "超时",
 };
 const ORIGIN_LABEL: Record<string, string> = {
   manual: "手动",

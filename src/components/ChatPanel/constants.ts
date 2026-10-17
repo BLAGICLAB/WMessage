@@ -5,6 +5,7 @@ import type {
   ModelItem,
   PermMode,
   ReasoningLevel,
+  SubagentRow,
   VerboseLevel,
 } from "./types";
 
@@ -77,4 +78,18 @@ export const VERBOSE_LABELS: Record<VerboseLevel, string> = {
   concise: "简洁",
   detailed: "详细",
   debug: "调试",
+};
+
+/** 子 agent 六态 → 中文标签 + 徽标色（右侧栏徽标与收尾提示共用一份）。
+ *  取消/预算耗尽各有自己的说法：都写成「失败」等于把用户的选择说成系统出错 */
+export const SUBAGENT_STATUS: Record<
+  SubagentRow["status"],
+  { label: string; color: string }
+> = {
+  queued: { label: "排队中", color: "text-[var(--t5)]" },
+  running: { label: "执行中", color: "text-[var(--brand)]" },
+  succeeded: { label: "完成", color: "text-[var(--success)]" },
+  failed: { label: "失败", color: "text-[var(--danger)]" },
+  cancelled: { label: "已取消", color: "text-[var(--t5)]" },
+  budget_exceeded: { label: "预算耗尽", color: "text-[var(--danger)]" },
 };
