@@ -31,11 +31,12 @@ pub use crate::bot::registry::mutating_tools as MUTATING_TOOLS;
 /// 会改动任务卡/文件系统的工具（判定「本轮是否真的动手了」）
 ///
 /// 变更工具是否真的成功落库/落盘（幻觉守卫 mutation_done 的判定依据）。
-/// 按执行结果判定而非调用前按名字置位：被门禁拦截（⚠️）、用户拒绝、执行失败的
-/// 调用都不算「动过手」，否则之后的幻觉汇报就不再被拦，守卫被架空。
-/// 失败口径走全链路统一的 `audit::tool_call_failed`。
-fn mutation_succeeded(name: &str, result: &str) -> bool {
-    MUTATING_TOOLS().iter().any(|t| t == &name) && !crate::audit::tool_call_failed(name, result)
+/// 按执行结果判定而非调用前按名字置位：被门禁拦截（status=Denied）、用户拒绝、
+/// 执行失败的调用都不算「动过手」，否则之后的幻觉汇报就不再被拦，守卫被架空。
+/// 成败口径走 `ToolStatus::is_success()`——status 是唯一真相源，不再对文本做
+/// 失败前缀匹配（此前 4 类「没执行」的文案匹配不上，会被当成功放行）。
+fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> bool {
+    MUTATING_TOOLS().iter().any(|t| t == &name) && result.status.is_success()
 }
 
 /// 从 ToolDef 注册表派生的变更声称检测。
@@ -953,9 +954,9 @@ pub async fn run_model_loop(
         async move {
             let t0 = std::time::Instant::now();
             let out = crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await;
-            // 成败口径与全链路统一（audit::tool_call_failed：门禁拦截/熔断/
-            // 用户拒绝/执行失败都算失败）；error_class 分类器  接线（同源口径）
-            let failed = crate::audit::tool_call_failed(&name, &out.text);
+            // 成败口径与全链路统一（ToolStatus 是唯一真相源）；error_class 分类器
+            // 只做子类细分（timeout/permission/gate_denied…），不承担成败判定
+            let failed = !out.status.is_success();
             let error_class = crate::audit::classify_error_class(&out.text);
             // 配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）；
             // 头尾保留——错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息
@@ -2196,7 +2197,7 @@ where
             let refs = &tool_outcome.refs;
             // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
             // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
-            if mutation_succeeded(name, result) {
+            if mutation_succeeded(name, &tool_outcome) {
                 mutation_done = true;
                 // 自检触发：变更类工具 + 非子 agent 路径 + 节流(5 轮 1 次)
                 // 失败路径写 last_failed_tool/consec_failures/fail_hint_queued，
@@ -2214,8 +2215,8 @@ where
                     pending_selfcheck = Some((name.clone(), snippet));
                 }
             }
-            // 成败口径与全链路统一（audit::tool_call_failed）——bot-tool-done 的 ok 字段同源
-            let failed = crate::audit::tool_call_failed(name, result);
+            // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
+            let failed = !tool_outcome.status.is_success();
             emit(
                 "bot-tool-done",
                 serde_json::json!({
@@ -2750,45 +2751,50 @@ mod hallucination_guard_tests {
 
     // ── mutation_done 按执行结果置位 ──
 
+    /// 构造一个只带 status 的 ToolResult（mutation_succeeded 不看文本了）
+    fn tr(status: crate::bot::registry::ToolStatus) -> crate::bot::registry::ToolResult {
+        crate::bot::registry::ToolResult {
+            text: String::new(),
+            refs: Vec::new(),
+            status,
+            images: Vec::new(),
+            file_changes: Vec::new(),
+        }
+    }
+
     #[test]
     fn mutation_succeeded_true_on_real_success() {
-        assert!(mutation_succeeded("complete_task", "已完成任务「买菜」"));
-        assert!(mutation_succeeded(
-            "link_file_to_task",
-            "已绑定文件到任务卡"
-        ));
-        assert!(mutation_succeeded(
-            "create_word",
-            "已生成 Word 文档：/tmp/x.docx"
-        ));
+        use crate::bot::registry::ToolStatus;
+        for name in ["complete_task", "link_file_to_task", "create_word"] {
+            assert!(
+                mutation_succeeded(name, &tr(ToolStatus::Ok)),
+                "{name} 成功落库应算动过手"
+            );
+            // 带告警的成功也算动过手（做成了，只是有提示）
+            assert!(
+                mutation_succeeded(name, &tr(ToolStatus::Warn)),
+                "{name} 带告警的成功仍算动过手"
+            );
+        }
     }
 
     #[test]
-    fn mutation_succeeded_false_on_gate_block() {
-        // 原子工具被 AtomicGuard 拦截：⚠️ 开头 → 不算动过手，幻觉守卫保持拦截能力
+    fn mutation_succeeded_false_on_denied_and_error() {
+        use crate::bot::registry::ToolStatus;
+        // 门禁拦截 / 用户拒绝 / 预算触顶 / 白名单外 —— 工具根本没执行
         assert!(!mutation_succeeded(
             "link_file_to_task",
-            "⚠️ link_file_to_task 是 Skill 末尾绑产物的内部原子，不允许裸调。"
+            &tr(ToolStatus::Denied)
         ));
-    }
-
-    #[test]
-    fn mutation_succeeded_false_on_user_reject_and_failure() {
-        assert!(!mutation_succeeded(
-            "delete_task",
-            "用户拒绝了删除，任务未删除"
-        ));
-        assert!(!mutation_succeeded("create_task", "新建任务失败：磁盘只读"));
-        assert!(!mutation_succeeded(
-            "complete_task",
-            "未知工具：complete_task"
-        ));
+        // 执行报错（落库失败、磁盘只读等）
+        assert!(!mutation_succeeded("create_task", &tr(ToolStatus::Error)));
     }
 
     #[test]
     fn mutation_succeeded_false_for_readonly_tools() {
-        // 只读工具即使返回成功文本也不算变更
-        assert!(!mutation_succeeded("list_tasks", "已完成任务「买菜」"));
+        use crate::bot::registry::ToolStatus;
+        // 只读工具即使成功也不算变更
+        assert!(!mutation_succeeded("list_tasks", &tr(ToolStatus::Ok)));
     }
 }
 

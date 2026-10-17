@@ -116,7 +116,10 @@ fn convert_all(
                     "tool_use_id": tool_use_id,
                     "content": if text.trim().is_empty() { " " } else { text.as_str() },
                 });
-                // 失败口径复用全链路统一的 audit::tool_call_failed（同一判定）
+                // 本层拿不到 ToolStatus：转换的是**历史消息**（status 在上游组装
+                // msgs 时就折叠成文本了），所以只能走文本分类。这也要求门禁拒绝的
+                // 文案必须自带可识别前缀（⚠️ / 用户拒绝 / 已强制终止）——
+                // ToolStatus::denied 的调用点都守住了这条。
                 if crate::audit::tool_call_failed("", &text) {
                     block["is_error"] = serde_json::json!(true);
                 }

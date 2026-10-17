@@ -275,12 +275,12 @@ fn run_pre_tool_layer(
             ) {
                 crate::audit::write_event(app, level, event, &kv);
             }
-            // ⚠️ 前缀不是装饰：audit::classify_tool_failure 的门禁臂按它判失败，
-            // 不带前缀时 Skill DSL 调度器会把这次拒跑记成步骤成功。
-            Some(crate::bot::registry::ToolResult::warn(
-                format!("⚠️ {reason}"),
-                Vec::new(),
-            ))
+            // ⚠️ 前缀不是装饰：classify_tool_failure 的门禁臂按它判 gate_denied，
+            // 让 error_class 能区分「被闸拦下」和「工具自己报错」两种失败。
+            // 成败判定本身由 status=Denied 承担（见 ToolResult::denied）。
+            Some(crate::bot::registry::ToolResult::denied(format!(
+                "⚠️ {reason}"
+            )))
         }
     }
 }
@@ -315,12 +315,10 @@ async fn tool_rule_gate(
                 "tool_rule.hit",
                 &[("tool", name.to_string()), ("action", "deny".to_string())],
             );
-            Some(crate::bot::registry::ToolResult::warn(
-                format!(
-                    "工具「{name}」已被工具规则禁用（设置页授权卡可调整）。如任务确实需要，请向用户说明。"
-                ),
-                Vec::new(),
-            ))
+            // ⚠️ 前缀让 error_class 归到 gate_denied；成败由 status=Denied 承担。
+            Some(crate::bot::registry::ToolResult::denied(format!(
+                "⚠️ 工具「{name}」已被工具规则禁用（设置页授权卡可调整）。如任务确实需要，请向用户说明。"
+            )))
         }
         Some(crate::bot_fs::ToolRuleAction::Ask) => {
             let approved = crate::bot_slash::ask_user_confirm(
@@ -361,10 +359,11 @@ async fn tool_rule_gate(
                 ) {
                     crate::audit::write_event(app, level, event, &kv);
                 }
-                Some(crate::bot::registry::ToolResult::warn(
-                    format!("工具「{name}」未获确认（用户拒绝或后台无人应答）。"),
-                    Vec::new(),
-                ))
+                // 「用户拒绝」前缀让 error_class 归到 user_denied（比笼统的
+                // gate_denied 信息量更大：这是人的决定，不是闸自动拦的）
+                Some(crate::bot::registry::ToolResult::denied(format!(
+                    "用户拒绝：工具「{name}」未获确认（后台无人应答）。"
+                )))
             }
         }
         _ => None,
@@ -420,8 +419,9 @@ async fn execute_tool_impl(
             ) {
                 crate::audit::write_event(app, level, event, &kv);
             }
-            // skill_step_failed 路径返回 Warn，与原 classify_text + tool_call_failed 结果一致。
-            return crate::bot::registry::ToolResult::warn(e.to_string(), Vec::new());
+            // 熔断/暂停 = 工具没被执行，是 Denied 不是 Warn。上游文案自带
+            // 「技能已暂停」「已强制终止」，classify 能分别归到 skill_paused / fused。
+            return crate::bot::registry::ToolResult::denied(e.to_string());
         }
     }
     // 1.6（置于 skill 钩子后）：子 agent 会话白名单闸（设计 §5.1/§10 服务端强制）。
@@ -456,14 +456,11 @@ async fn execute_tool_impl(
                 trace,
             );
             crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
-            return crate::bot::registry::ToolResult::warn(
-                format!(
-                    "子 agent 白名单外工具「{name}」已拒绝（profile={}，本次可用 {} 个）。只能使用白名单内工具；遇到阻塞在收尾 JSON 的 blockers 里如实记录。",
-                    ctx.profile.as_str(),
-                    ctx.tools.len()
-                ),
-                Vec::new(),
-            );
+            return crate::bot::registry::ToolResult::denied(format!(
+                "⚠️ 子 agent 白名单外工具「{name}」已拒绝（profile={}，本次可用 {} 个）。只能使用白名单内工具；遇到阻塞在收尾 JSON 的 blockers 里如实记录。",
+                ctx.profile.as_str(),
+                ctx.tools.len()
+            ));
         }
         //  预算强制（设计 §6 max_tool_calls）：白名单工具执行前核对——
         // 触顶拒绝新调用（模型收到后自然收尾；墙钟/轮数两顶在 runner 侧）。
@@ -508,12 +505,9 @@ async fn execute_tool_impl(
             ];
             ret_kv.extend(trace_kv(trace, session_id));
             crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
-            return crate::bot::registry::ToolResult::warn(
-                format!(
-                    "⏱ 工具调用预算已触顶（{used} / {max}）：停止新探索，整理当前结果并输出收尾 JSON。"
-                ),
-                Vec::new(),
-            );
+            return crate::bot::registry::ToolResult::denied(format!(
+                "⚠️ 工具调用预算已触顶（{used} / {max}）：停止新探索，整理当前结果并输出收尾 JSON。"
+            ));
         }
         let mut prog_kv: Vec<(&str, String)> = vec![
             ("subagent_id", ctx.subagent_id.clone()),
@@ -556,7 +550,7 @@ async fn execute_tool_impl(
         ];
         ret_kv.extend(trace_kv(trace, session_id));
         crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
-        return crate::bot::registry::ToolResult::warn(msg, Vec::new());
+        return crate::bot::registry::ToolResult::denied(msg);
     }
     // 工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
     //  cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。
@@ -642,7 +636,7 @@ async fn execute_tool_impl(
     // 文件类工具附带的变更证据落 file_changes + emit `bot-file-changed`（全窗口）。
     // fire-and-forget：sink 未初始化/满队列不阻断工具结果；registry 无映射（主聊天等）零开销跳过。
     if let Some(trace_id) = crate::app_state::trace_id_for_session(app, session_id) {
-        let ok = !crate::audit::tool_call_failed(name, &result.text);
+        let ok = result.status.is_success();
         crate::trace_sink::record_span(crate::trace_sink::SpanRecord {
             trace_id,
             turn: trace.turn.unwrap_or(0) as i64,
@@ -651,7 +645,8 @@ async fn execute_tool_impl(
             args: crate::trace_sink::clamp_span_text(app, name, "args", args.to_string()),
             result: crate::trace_sink::clamp_span_text(app, name, "result", result.text.clone()),
             ok,
-            // error_class 分类器（与 evolution ToolCallSummary 同源口径）
+            // error_class 只做子类细分（timeout/permission/gate_denied…），成败
+            // 由上面的 ok 决定；拿不到 status 的 MCP 工具靠这里兜住子类
             error_class: crate::audit::classify_error_class(&result.text).map(str::to_string),
             duration_ms: Some(dur_ms as i64),
             created_at: chrono::Utc::now().timestamp_millis(),
@@ -674,7 +669,14 @@ async fn execute_tool_impl(
         }
     }
     if name != "use_skill" {
-        crate::bot_skills::skill_on_step_post(app, name, &result.text, dur_ms, level, session_id);
+        crate::bot_skills::skill_on_step_post(
+            app,
+            name,
+            &result.text,
+            dur_ms,
+            result.status,
+            session_id,
+        );
     }
 
     result
@@ -689,9 +691,8 @@ async fn execute_tool_impl(
 /// 无参工具（query_tasks / list_files 等）会把 Null 当「不过滤、不指定」
 /// 真跑一遍——参数错配被当成用户本意执行了。返回 None 表示放行。
 ///
-/// 文案前缀 ⚠️ 不是装饰：`audit::classify_tool_failure` 的「门禁拦截」臂按
-/// `starts_with("⚠️")` 判失败，不带前缀的话 Skill DSL 调度器会把这次拒跑
-/// 记成步骤成功（scheduler 靠 `tool_call_failed` 判定），技能对外报完成。
+/// 文案前缀 ⚠️ 让 `classify_error_class` 把这次归到 gate_denied；成败判定本身
+/// 由 `ToolResult::denied` 的 status 承担。
 fn invalid_args_message(name: &str, args: &str) -> Option<String> {
     if args.trim().is_empty() {
         return None;
@@ -988,7 +989,7 @@ mod pre_tool_hook_tests {
             .split_once("subagent_whitelist_deny\",")
             .expect("找不到子 agent 白名单早退分支")
             .1
-            .split("return crate::bot::registry::ToolResult::warn(")
+            .split("return crate::bot::registry::ToolResult::denied(")
             .next()
             .expect("白名单早退分支应在此处返回");
         assert!(
@@ -1036,6 +1037,120 @@ mod pre_tool_hook_tests {
             crate::audit::tool_call_failed("write_file", &msg),
             "钩子拒绝文案必须被判失败：{msg}"
         );
+    }
+
+    /// 门禁拒绝的文案必须同时满足两件事：status=Denied（成败判定）+
+    /// 文本可被 classify_tool_failure 认出子类（error_class 细分 + 转换历史
+    /// 消息的 Anthropic 层靠它设 is_error）。
+    ///
+    /// 这条测试盯的是实际发出去的文案。历史上规则 deny / 用户拒绝 / 白名单外 /
+    /// 预算触顶这 4 条既不带「⚠️」也不带「失败：」，classify 全部落空 → 返回 None
+    /// → Skill DSL 调度器把被拒步骤记成成功、trace span 记 ok=true。
+    #[test]
+    fn every_gate_denial_is_denied_status_and_classifiable_text() {
+        use crate::bot::registry::{ToolResult, ToolStatus};
+        // 与 execute_tool_impl 里 7 个门禁早退点一一对应（rendered 文案）
+        let cases: Vec<(&str, ToolResult)> = vec![
+            (
+                "pre_tool 钩子拒绝",
+                ToolResult::denied("⚠️ 本轮不允许写盘"),
+            ),
+            (
+                "工具规则 deny",
+                ToolResult::denied("⚠️ 工具「run_python」已被工具规则禁用（设置页授权卡可调整）。如任务确实需要，请向用户说明。"),
+            ),
+            (
+                "确认被拒",
+                ToolResult::denied("用户拒绝：工具「delete_task」未获确认（后台无人应答）。"),
+            ),
+            (
+                "skill 熔断",
+                ToolResult::denied("skill「日报」超过最大步数上限（8 步），已强制终止"),
+            ),
+            (
+                "子 agent 白名单外",
+                ToolResult::denied(
+                    "⚠️ 子 agent 白名单外工具「edit_file」已拒绝（profile=Research，本次可用 8 个）。只能使用白名单内工具；遇到阻塞在收尾 JSON 的 blockers 里如实记录。",
+                ),
+            ),
+            (
+                "预算触顶",
+                ToolResult::denied(
+                    "⚠️ 工具调用预算已触顶（12 / 12）：停止新探索，整理当前结果并输出收尾 JSON。",
+                ),
+            ),
+            (
+                "arguments 非法 JSON",
+                ToolResult::denied(
+                    "⚠️ 工具「create_task」的 arguments 不是合法 JSON，已拒绝执行（未做任何改动）：expected value。",
+                ),
+            ),
+        ];
+        for (label, r) in &cases {
+            assert_eq!(
+                r.status,
+                ToolStatus::Denied,
+                "{label}：门禁早退必须是 Denied，用 warn 会被调度器/trace 记成成功"
+            );
+            assert!(
+                !r.status.is_success(),
+                "{label}：Denied 的 is_success 必须为 false"
+            );
+            assert!(
+                crate::audit::tool_call_failed("t", &r.text),
+                "{label}：文案必须能被 classify_tool_failure 认出，否则 error_class 与 Anthropic is_error 全丢：{}",
+                r.text
+            );
+            assert!(
+                crate::audit::classify_error_class(&r.text).is_some(),
+                "{label}：error_class 不应为空"
+            );
+        }
+        // 审计级别：被拒是预期内控制流，不该刷 ERROR
+        for (label, r) in &cases {
+            assert_eq!(
+                crate::audit::AuditLevel::from_tool_status(r.status),
+                crate::audit::AuditLevel::Warn,
+                "{label}：Denied 映射 WARN（正常控制流），ERROR 只留给真执行失败"
+            );
+        }
+    }
+
+    /// 防止后来者把门禁早退又写成 ToolResult::warn —— 那正是本条修复的回归形态。
+    ///
+    /// 全文件口径：dispatch 的早退只有两类语义——闸/拒绝类一律 Denied，工具
+    /// 本体自己跑完返回的结果一律由 tools.rs 构造。`ToolResult::warn` 在本文件
+    /// 不该有生产用途（真要表达「做成但有告警」应改用 `ok` + 告警文本，或在
+    /// 工具本体里显式 warn）。
+    #[test]
+    fn no_gate_early_return_uses_warn_status() {
+        let body = include_str!("dispatch.rs");
+        let production = body
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
+        assert!(
+            !production.contains("ToolResult::warn("),
+            "dispatch 的生产代码不得构造 ToolResult::warn（会把「没执行」记成成功）"
+        );
+        // 7 处：pre_tool 钩子拒绝 / 规则 deny / 确认被拒 / skill 熔断 /
+        // 子 agent 白名单外 / 预算触顶 / arguments 非法 JSON。
+        // 数量变了请同步本测试与 every_gate_denial_* 的用例表。
+        assert_eq!(
+            production.matches("ToolResult::denied(").count(),
+            7,
+            "门禁早退点应恰好 7 处"
+        );
+    }
+
+    /// ToolStatus 四态的成败语义：Warn 算成功（做成了但有告警），Error/Denied 不算。
+    #[test]
+    fn tool_status_success_semantics() {
+        use crate::bot::registry::ToolStatus;
+        assert!(ToolStatus::Ok.is_success());
+        assert!(ToolStatus::Warn.is_success());
+        assert!(!ToolStatus::Error.is_success());
+        assert!(!ToolStatus::Denied.is_success());
     }
 
     #[test]

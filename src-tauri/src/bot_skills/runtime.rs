@@ -327,15 +327,18 @@ pub fn skill_on_step(
 /// 与 `skill_on_step` 对称：执行工具后调用，记录步骤结果 + 检测失败。
 /// 仅在 Skill 处于 Running 时干预；Paused/Completed 等状态不写动作记录。
 ///
-/// 失败判定统一走 `audit::tool_call_failed`：「级别 ≥ Warn 且文本含失败关键词」
-/// 这类双条件会漏掉「未知工具」（不含关键词）等形态。
+/// 失败判定走 `ToolStatus::is_success()`（status 是成败唯一真相源）。
+/// 此前走 `audit::tool_call_failed(result)` 文本匹配，于是规则 deny / 用户拒绝 /
+/// 预算触顶 / 白名单外这 4 类「工具根本没执行」的文案被判成**成功**——SkillRun
+/// 停在 Running，技能对外报「✅ 完成」，而审计那边按 status 记的是 WARN。
+/// `result` 现在只用于失败时的日志预览与模型文案，不参与成败判定。
 /// 失败 → 把 Skill 标 Failed，写入 end_reason 让 `skill_finish` 知道不再继续后续步骤。
 pub fn skill_on_step_post(
     app: &AppHandle,
     tool: &str,
     result: &str,
     dur_ms: u64,
-    _level: crate::audit::AuditLevel,
+    status: crate::bot::registry::ToolStatus,
     session_id: Option<&str>,
 ) {
     let registry = skill_runs(app);
@@ -348,7 +351,7 @@ pub fn skill_on_step_post(
         return;
     };
     let name = run.name.clone();
-    let is_fail = crate::audit::tool_call_failed(tool, result);
+    let is_fail = !status.is_success();
     // 锁内只做状态迁移 + 拼审计载荷；audit_log_hook（写盘 IO）移到锁外发，
     // 理由同 start_skill：持锁跨外部调用会串行化全部写者且钩子重入即死锁
     let log_line = if is_fail {
