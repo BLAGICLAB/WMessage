@@ -750,9 +750,7 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
     会把行内注释全丢，而当初选 YAML 而不是 JSON 的唯一理由就是行内注释。
     未做删除：与「内置三份启动时播种、不覆盖已存在文件」有语义冲突（删了内置
     那份，下次启动会又长出来），要删得先定「用户删掉的内置档还播不播」。
-  - `yaml.temperature` **已解析但没有消费者**：接它要改 `run_model_loop` 签名
-    （六个调用点，主会话 / 任务卡 / 子 agent 共用），代价超出本期「流水线接线」。
-    这是一个**已知静默失效字段**，不是漏写。
+  - ~~`yaml.temperature` 已解析但没有消费者~~ → 已接：作为第 8 个入参进
   - **未接线的层名会「关不掉」**：配置写 `post_tool: ""` 时注册表只有 `pre_tool`
     已接线，故只记 `bot_onions layer_not_wired` 审计、关闭意图本次未生效。
     `pre_ingest` 现在是同一个坑：它**有实现**（期 5 的 `normalize_user_input`）

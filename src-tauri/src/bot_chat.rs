@@ -1142,6 +1142,8 @@ pub async fn bot_chat(
         reasoning_effort,
         // 主聊天不挂每卡模型覆盖（ 仅工作流节点使用）
         None,
+        // per-onion 温度覆盖只走子 agent（主会话尚未绑定配置档，见设计文档 §十）
+        None,
     )
     .await;
     // LoopTrace 统计（tokens/轮数/模型名）塞进捕获，end_trace 汇总落库
@@ -1704,6 +1706,7 @@ async fn run_task_in_chat_impl(
                 // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
                 None,
                 model,
+                None, // per-onion 温度覆盖：任务执行链路不挂
             )
             .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）

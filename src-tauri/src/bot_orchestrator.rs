@@ -1801,11 +1801,13 @@ async fn run_subagent(
     // wrapper 已由 setup 渲染返回（同一文本：LLM 输入 = 历史落库 = 收尾覆盖源）
     // 配置档段：角色 + 交集后的实际可用工具（§3.4「配置看着生效、实际落空」
     // 要让模型也看得见）；无配置档时是空串，不占位也不改既有提示词。
-    let onion_note = crate::bot_onions::cached_for_session(Some(session_id.as_str()))
+    let bound_onion = crate::bot_onions::cached_for_session(Some(session_id.as_str()));
+    let onion_note = bound_onion
+        .as_ref()
         .map(|cfg| {
             format!(
                 "\n\n{}",
-                crate::bot_onions::render_prompt_note(&cfg, row.profile)
+                crate::bot_onions::render_prompt_note(cfg, row.profile)
             )
         })
         .unwrap_or_default();
@@ -1831,6 +1833,12 @@ async fn run_subagent(
         None,
         // 子 agent 模型走自身预算/派发通道（model_profile），不挂每卡覆盖
         None,
+        // 配置档的采样温度（f32 → f64 无损）。这是 yaml `temperature:` 字段的
+        // 唯一消费者；None 时用模型条目自带的 temperature。
+        bound_onion
+            .as_ref()
+            .and_then(|c| c.temperature)
+            .map(f64::from),
     );
     let wall = tokio::time::timeout(
         std::time::Duration::from_secs(budget.max_wall_seconds.max(1)),
@@ -2940,6 +2948,30 @@ mod orchestrator_tests {
         );
     }
 
+    /// `temperature` 是 yaml 里长期没有消费者的字段（已解析、已落盘，就是没人用）。
+    /// 这条把它钉成「真的进了模型循环」：优先级是配置档 > 模型条目。
+    #[test]
+    fn onion_temperature_reaches_the_model_loop() {
+        let body = include_str!("bot_orchestrator.rs");
+        let runner = body
+            .split_once("let run = crate::bot_model_loop::run_model_loop(")
+            .expect("子 agent 调模型循环")
+            .1
+            .split(";")
+            .next()
+            .expect("调用应在此处收尾");
+        // 两个 token 分开断言而不是拼成 `bound_onion.as_ref()`：rustfmt 会按行宽
+        // 把链式调用拆行，拼出来的串匹配不到——守卫被格式器牵着走。
+        assert!(
+            runner.contains("bound_onion"),
+            "子 agent 必须把配置档的温度传进模型循环：{runner}"
+        );
+        assert!(
+            runner.contains("c.temperature"),
+            "传的是配置档的 temperature 字段：{runner}"
+        );
+    }
+
     /// tool_calls 预算计数器（ctx 侧）——dispatch 累计语义的单测锚点
     #[test]
     fn tool_call_counter_accumulates() {
@@ -3817,7 +3849,7 @@ mod orchestrator_tests {
         assert!(
             body.contains(concat!(
                 "crate::bot_onions::",
-                "render_prompt_note(&cfg, row.profile)"
+                "render_prompt_note(cfg, row.profile)"
             )),
             "system 拼装必须注入配置档提示词段"
         );

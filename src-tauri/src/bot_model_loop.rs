@@ -673,6 +673,19 @@ fn resolve_loop_inference(
 }
 
 #[allow(clippy::too_many_lines)]
+/// 采样温度的优先级：**配置档 > 模型条目**。
+///
+/// 与「权限只收紧、运行时优先」那条相反且是刻意的——采样温度不是权限，
+/// 放宽收紧都不构成安全问题；用户在设置页给模型配了 temperature=0.9 又写了
+/// 一份 `temperature: 0` 的配置档，他要的是后者（更具体的意图）。
+///
+/// 独立成函数而不是内联 `.or()`：内联的话优先级方向只能靠读代码确认，
+/// 测试只能去扫源码——而**测试就住在同一个文件里**，裸写字面量会自匹配，
+/// 断言会在实现被改反时照样通过（本守卫第一版就是这么假绿的）。
+pub fn resolve_temperature(config: Option<f64>, entry: Option<f64>) -> Option<f64> {
+    config.or(entry)
+}
+
 pub async fn run_model_loop(
     app: AppHandle,
     msgs: Vec<serde_json::Value>,
@@ -686,6 +699,11 @@ pub async fn run_model_loop(
     // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active 模型。
     // 解析失败（条目不存在/禁用/key 缺失）→ 响亮报错，不静默回落
     model_override: Option<String>,
+    // per-onion 配置档的采样温度（子 agent 用；None = 用模型条目的 temperature）。
+    //
+    // **配置档压过条目级**，理由见 `resolve_temperature`。刻意只传 temperature
+    // 不传 top_p：yaml 没这个字段，传了也只会多一条没有来源的覆盖路径。
+    temperature_override: Option<f64>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     // 每卡模型覆盖优先：命中模型库条目则整组替换 base_url/model/协议/key
@@ -792,7 +810,7 @@ pub async fn run_model_loop(
             .unwrap_or(cfg.model),
         provider: provider_for_reasoning,
         max_tokens: inference.max_tokens,
-        temperature: inference.temperature,
+        temperature: resolve_temperature(temperature_override, inference.temperature),
         top_p: inference.top_p,
         system_prompt: inference.system_prompt,
         // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。
@@ -2406,6 +2424,37 @@ mod inference_param_tests {
         let mut body = serde_json::json!({"model": "m"});
         apply_inference_params(&mut body, None, None);
         assert_eq!(body, serde_json::json!({"model": "m"}));
+    }
+
+    /// 配置档温度的优先级三态：配置档 > 模型条目 > 都不写。
+    #[test]
+    fn config_temperature_wins_over_the_model_entry() {
+        // 配置档有值（temperature: 0 也算有值，不能被当成缺省）
+        assert_eq!(resolve_temperature(Some(0.0), Some(0.9)), Some(0.0));
+        // 配置档没写 → 用条目级
+        assert_eq!(resolve_temperature(None, Some(0.9)), Some(0.9));
+        // 两边都没有 → 仍无值，请求体不写 temperature（沿用「有值才写」）
+        assert_eq!(resolve_temperature(None, None), None);
+        let mut body = serde_json::json!({"model": "m"});
+        apply_inference_params(&mut body, resolve_temperature(None, None), None);
+        assert!(
+            body.get("temperature").is_none(),
+            "两侧都无值不得写出空 temperature 字段"
+        );
+    }
+
+    /// 接线守卫：模型循环真的用了 `resolve_temperature` 取值。
+    ///
+    /// `concat!` 的**两段都非空**才算拆开：`concat!("...", "")` 等于没拆，
+    /// 拼出来的串仍会以完整形态出现在测试自己的源码里，于是自匹配、假绿。
+    /// 本条第一版正是这么写的（第二段是空串），改掉注入点照样绿。
+    #[test]
+    fn model_loop_applies_resolve_temperature() {
+        assert!(
+            include_str!("bot_model_loop.rs")
+                .contains(concat!("temperature: resolve_", "temperature(")),
+            "模型循环必须经 resolve_temperature 取温度（改反优先级会红）"
+        );
     }
 
     #[test]
