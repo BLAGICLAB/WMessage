@@ -15,7 +15,6 @@ import {
   ListTodo,
   Loader2,
   Paperclip,
-  Square,
 } from "lucide-react";
 import { basename } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
@@ -27,6 +26,11 @@ import {
   type TaskFile,
 } from "../../lib/taskFiles";
 import type { Task } from "../../types";
+import {
+  SubagentCancelButton,
+  SubagentProgress,
+} from "./SubagentRowLine";
+import { SubagentDetailPanel } from "./SubagentDetailPanel";
 
 /** 三类工作面。key 用窄口径字符串，不另立枚举 */
 export type ContextTab = "tasks" | "files" | "agents";
@@ -41,6 +45,22 @@ export type SubagentRun = {
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "budget_exceeded";
   running: boolean;
   error?: string | null;
+  /** 已跑轮数；在途才有（终态守卫注销后读不到，报 null 不报 0） */
+  roundsUsed?: number | null;
+  /** 轮数硬顶，与轮数同报 */
+  roundsBudget?: number | null;
+  /** 毫秒时间戳；排队期未开跑故 startedAt 可空 */
+  startedAt?: number | null;
+  finishedAt?: number | null;
+  /** 派它出来的子 agent 身份与契约原文（详情视图用；列表不消费） */
+  profile?: string;
+  contextSummary?: string | null;
+  /** 验收标准：库里是 JSON 数组字符串，映射时解析；解析失败/形状不符落回原文，
+   *  故类型含 Record 分支（渲染侧按非数组兜底转文本） */
+  acceptance?: string | string[] | Record<string, unknown> | null;
+  /** 收尾结构化结果：库里是 JSON 对象字符串，同上（含数组/原文兜底） */
+  result?: string | string[] | Record<string, unknown> | null;
+  traceId?: string | null;
 };
 
 /** 六态 → 侧栏徽标。取消/预算耗尽各有自己的说法：都写成「失败」等于把
@@ -72,6 +92,10 @@ type ContextRailProps = {
   onOpenSubagent: (id: string) => void;
   /** 取消在途子 agent */
   onCancelSubagent: (id: string) => void;
+  /** 当前钉住详情的子 agent（null = 停在列表页）。取不到对应行时回落列表，
+   *  详情页不该因为一次重拉把用户困在没有返回按钮的空白里。 */
+  subagentDetailId?: string | null;
+  onCloseSubagentDetail?: () => void;
   /** 当前工作面（受控）：内嵌子 agent 区域要点侧栏切类别，状态得在父级 */
   tab: Tab;
   onTabChange: (t: Tab) => void;
@@ -96,6 +120,8 @@ export function ContextRail({
   subagents,
   onOpenSubagent,
   onCancelSubagent,
+  subagentDetailId,
+  onCloseSubagentDetail,
   tab,
   onTabChange,
 }: ContextRailProps) {
@@ -259,7 +285,16 @@ export function ContextRail({
         </section>
       )}
 
-      {tab === "agents" && (
+      {tab === "agents" && (() => {
+        const detail = subagents.find((s) => s.id === subagentDetailId);
+        if (detail && onCloseSubagentDetail) {
+          return (
+            <section aria-label="子 Agent 详情">
+              <SubagentDetailPanel run={detail} onBack={onCloseSubagentDetail} />
+            </section>
+          );
+        }
+        return (
         <section aria-label="子 Agent">
           <div className="mb-1 flex items-center gap-1.5 px-1.5">
             <span className="text-[11px] font-medium text-[var(--t2)]">
@@ -305,28 +340,19 @@ export function ContextRail({
                     >
                       {SUBAGENT_STATUS[s.status].label}
                     </span>
+                    <SubagentProgress run={s} />
                   </button>
-                  {s.running && (
-                    <button
-                      type="button"
-                      title="取消这个子 agent"
-                      aria-label={`取消子 agent：${s.title}`}
-                      className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
-                      onClick={(e) => {
-                        // 取消不是「看详情」，别顺手切侧栏
-                        e.stopPropagation();
-                        onCancelSubagent(s.id);
-                      }}
-                    >
-                      <Square size={10} aria-hidden className="fill-current" />
-                    </button>
-                  )}
+                  <SubagentCancelButton
+                    run={s}
+                    onCancel={onCancelSubagent}
+                  />
                 </div>
               ))}
             </div>
           )}
         </section>
-      )}
+        );
+      })()}
     </aside>
   );
 }

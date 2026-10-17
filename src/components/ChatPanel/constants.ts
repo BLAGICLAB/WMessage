@@ -37,6 +37,10 @@ export const execTaskDedup = {
 /** 流式增量合并窗口（约一帧）：同一窗口内到达的 SSE 片段攒起来一次写 state */
 export const DELTA_BATCH_MS = 16;
 
+/** 在途子 agent 的行重拉周期（毫秒）。轮数只活在后端内存仪表里，不轮询就
+ *  永远看不到推进；3 秒够——子 agent 一轮最短也要几秒（要调模型）。 */
+export const SUBAGENT_POLL_MS = 3000;
+
 /** 斜杠命令清单（单一真相：autocomplete picker + runSlashCommand 共享）。
  *  没有 /help：上浮全面板后 /help 还在 LLM 上下文里白白占 token */
 export const SLASH_COMMANDS = [

@@ -1013,6 +1013,21 @@
   .plan-fresh {
     animation: plan-pop 0.22s cubic-bezier(0.2, 1.4, 0.4, 1);
   }
+  /* 执行中活体文字的流光（LiveIndicator）：横向渐变扫过字面，
+     配合每秒刷新的耗时，让「还在跑」有持续变化而非静止的光点 */
+  @keyframes wmsg-shimmer {
+    0% {
+      background-position: 120% 0;
+    }
+    100% {
+      background-position: -120% 0;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wmsg-live-label {
+      animation: none;
+    }
+  }
   @keyframes plan-pop {
     0% {
       transform: scale(0.88);

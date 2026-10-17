@@ -224,6 +224,54 @@ describe("ChatPanel", () => {
     expect(screen.getByRole("button", { name: "收起右侧栏" })).toBeVisible();
   });
 
+  it("点子 agent 条目把 id 带进详情页（只切类别不换视图等于点了没反应）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "list_subagents")
+        return [
+          {
+            id: "sa_1",
+            status: "succeeded",
+            objective: "整理周报",
+            profile: "research",
+            resultJson: JSON.stringify({ summary: "已汇总 3 条任务" }),
+            acceptanceJson: JSON.stringify(["给出结论"]),
+            traceId: "trc_x1",
+            startedAt: 1_700_000_000_000,
+            finishedAt: 1_700_000_148_001,
+          },
+          {
+            id: "sa_2",
+            status: "succeeded",
+            objective: "另一个子 agent",
+          },
+        ];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    // strip 要等 list_subagents 那次 invoke 回来才进 DOM，跟会话列表不是同一拍
+    await user.click(await screen.findByRole("button", { name: /子 Agent/ }));
+    await user.click(screen.getByRole("button", { name: /^整理周报/ }));
+
+    const rail = within(
+      screen.getByRole("complementary", { name: "上下文侧栏" }),
+    );
+    // 详情页真的渲染了，且渲染的是**被点的那个**（另一个条目不该混进来）
+    expect(rail.getByLabelText("子 Agent 详情")).toBeInTheDocument();
+    expect(rail.getByText("已汇总 3 条任务")).toBeInTheDocument();
+    expect(rail.getByText(/1\. 给出结论/)).toBeInTheDocument();
+    expect(rail.queryByText("另一个子 agent")).toBeNull();
+    // 终态用时定死（148.001s）
+    expect(rail.getByText("2m 28s")).toBeInTheDocument();
+    // 能退回列表
+    await user.click(rail.getByLabelText("返回子 agent 列表"));
+    expect(screen.queryByLabelText("子 Agent 详情")).toBeNull();
+    expect(rail.getByText("另一个子 agent")).toBeInTheDocument();
+  });
+
   it("subagent-finished 到达就重拉子 agent 行（行只有这块可见，不重拉永远停在 running）", async () => {
     const user = userEvent.setup();
     mocks.listenMock.mockImplementation(

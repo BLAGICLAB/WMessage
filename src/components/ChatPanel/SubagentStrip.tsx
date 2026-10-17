@@ -5,53 +5,14 @@
 // 各自跑到哪一步。点条目把右侧栏切到「子 Agent」工作面看详情——
 // 区域负责「发生了什么」，侧栏负责「细节是什么」。
 
-import { Bot, Check, Loader2, Square, TriangleAlert, X } from "lucide-react";
+import { Bot } from "lucide-react";
+import {
+  SubagentCancelButton,
+  SubagentRowLine,
+} from "./SubagentRowLine";
+import type { SubagentRun } from "./ContextRail";
 
-export type SubagentChip = {
-  id: string;
-  title: string;
-  /** 行上六态原值：取消/预算耗尽不是失败，分开显示才看得出发生了什么 */
-  status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "budget_exceeded";
-  running: boolean;
-  error?: string | null;
-};
-
-const STATUS_ICON = {
-  running: (
-    <Loader2
-      size={11}
-      aria-hidden
-      className="shrink-0 animate-spin text-[var(--brand)]"
-    />
-  ),
-  done: (
-    <Check
-      size={11}
-      aria-hidden
-      className="shrink-0 text-[var(--success)]"
-    />
-  ),
-  failed: (
-    <TriangleAlert
-      size={11}
-      aria-hidden
-      className="shrink-0 text-[var(--danger)]"
-    />
-  ),
-  cancelled: (
-    <X size={11} aria-hidden className="shrink-0 text-[var(--t5)]" />
-  ),
-} as const;
-
-/** 六态 → 展示态。取消有自己的 ✕，失败与预算耗尽共用警示图标（同属「没成」，
- *  具体原因看 title 与右侧栏徽标）；都归「非运行」会让用户分不清是跑完了还是
- *  被撤了 */
-function statusOf(s: SubagentChip): keyof typeof STATUS_ICON {
-  if (s.status === "cancelled") return "cancelled";
-  if (s.status === "failed" || (s.error && !s.running)) return "failed";
-  if (s.running) return "running";
-  return "done";
-}
+export type SubagentChip = SubagentRun;
 
 export function SubagentStrip({
   subagents,
@@ -105,28 +66,13 @@ export function SubagentStrip({
                 className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-[var(--t2)]"
                 onClick={() => onOpen(s.id)}
               >
-                {STATUS_ICON[statusOf(s)]}
-                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                <SubagentRowLine run={s} />
                 {/* 侧栏入口提示：点它去哪儿，得让人看得见 */}
                 <span className="shrink-0 text-[10px] text-[var(--t6)]">
                   详情 ›
                 </span>
               </button>
-              {s.running && (
-                <button
-                  type="button"
-                  title="取消这个子 agent"
-                  aria-label={`取消子 agent：${s.title}`}
-                  className="shrink-0 text-[var(--t5)] hover:text-[var(--danger)]"
-                  onClick={(e) => {
-                    // 行内取消不是「看详情」，别顺手把侧栏也切过去
-                    e.stopPropagation();
-                    onCancel(s.id);
-                  }}
-                >
-                  <Square size={10} aria-hidden className="fill-current" />
-                </button>
-              )}
+              <SubagentCancelButton run={s} onCancel={onCancel} />
             </div>
           ))}
         </div>

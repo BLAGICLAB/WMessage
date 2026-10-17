@@ -40,9 +40,11 @@ import type {
   SubagentRow,
   TaskRef,
   ToolCall,
+  TurnStatus,
   VerboseLevel,
 } from "./types";
-import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks } from "./constants";
+import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks, SUBAGENT_POLL_MS } from "./constants";
+import { LiveIndicator } from "./LiveIndicator";
 import { useAutoGrow, useOutsideClose } from "./useChatUi";
 import { SessionRail } from "./SessionRail";
 import { ContextRail, type ContextTab, type SubagentRun } from "./ContextRail";
@@ -50,6 +52,30 @@ import { SubagentStrip } from "./SubagentStrip";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
+
+/** 子 agent 行里的契约/结果字段都是 JSON 字符串，详情视图要结构化渲染。
+ *  解析失败或形状对不上（验收标准不是字符串数组、结果不是对象）都落回原文——
+ *  原文本身可能就是排查线索，吞掉等于把「子 agent 到底写了什么」变成无法回答。 */
+function parseJsonField(
+  raw?: string | null,
+): string | string[] | Record<string, unknown> | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  if (Array.isArray(parsed)) {
+    return parsed.every((x) => typeof x === "string")
+      ? (parsed as string[])
+      : raw;
+  }
+  if (typeof parsed === "object" && parsed !== null) {
+    return parsed as Record<string, unknown>;
+  }
+  return raw;
+}
 
 /** 模型下拉条目集合协议：types.ModelItem 的来源协议收窄用 */
 type Props = {
@@ -205,14 +231,20 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       return !v;
     });
   };
-  /** 点子 agent（内嵌区域或任务引用块）→ 展开右侧栏并切到「子 Agent」工作面。
-   *  对话是锚点、切类别不换视图：工作面在侧栏，主对话留在原位。
-   *  展开态与手点开关同口径落 localStorage，否则程序化展开重启后丢失 */
-  const openSubagentDetail = useCallback(() => {
+  /** 侧栏子 agent 工作面当前钉住的详情条目（null = 停在列表页）。
+   *  归属在这里而不是 ContextRail 内部：聊天内嵌区也能点开同一个详情，
+   *  谁触发的打开谁持有 id，内层存就丢了「点的是哪个」这条信息。 */
+  const [subagentDetailId, setSubagentDetailId] = useState<string | null>(null);
+  /** 点子 agent（内嵌区域或侧栏条目）→ 展开右侧栏、切到「子 Agent」工作面，
+   *  并把详情页钉在**被点的那个**上。id 必须一路带到详情：只切工作面的话，
+   *  用户点谁看到的都是同一份列表，等于点了没反应。 */
+  const openSubagentDetail = useCallback((id: string) => {
     setCtxOpen(true);
     localStorage.setItem("chat-ctx-open", "1");
     setCtxTab("agents");
+    setSubagentDetailId(id);
   }, []);
+  const closeSubagentDetail = useCallback(() => setSubagentDetailId(null), []);
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
   useAutoGrow(taRef, input);
   /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
@@ -222,6 +254,10 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     setSlashIdx(0);
     // oxlint-disable-next-line react/set-state-in-effect
     setSlashDismissed(false);
+    // 子 agent 详情是按会话归属的：不复位的话，切到另一个会话侧栏还钉着
+    // 上一世的条目，点「返回」才看得出列表已经换人了
+    // oxlint-disable-next-line react/set-state-in-effect
+    setSubagentDetailId(null);
   }, [sessionId]);
   /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；   *  并行回复各自累积互不串台，收尾并入最终消息后删除条目） */
   const streamingMetaMapRef = useRef<
@@ -232,6 +268,10 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         tools?: ToolCall[];
         skillFailure?: SkillFailure;
         fileChanges?: FileChangeLite[];
+        /** 回合状态机 + 本轮起点（秒级计时的权威副本，同 tools 的处理口径） */
+        turnStatus?: TurnStatus;
+        turnDetail?: string;
+        turnStartedAt?: number;
       }
     >
   >(new Map());
@@ -271,6 +311,18 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   };
   /** 视图会话是否有在途回复（驱动停止键/placeholder/禁用态） */
   const viewedBusy = sessionId !== null && inflightSids.has(sessionId);
+  /** 活体指示的三个输入：取最后一条 streaming 气泡上的回合状态。
+   *  从消息派生而不是另存一份 state——消息是唯一真相源，另存必然漂移
+   *  （切会话/收尾时状态不同步，表现为「会话 A 的计时跑到会话 B」）。 */
+  const lastStreaming = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].streaming) return messages[i];
+    }
+    return null;
+  }, [messages]);
+  const liveStatus: TurnStatus = lastStreaming?.turnStatus ?? "running";
+  const liveDetail = lastStreaming?.turnDetail;
+  const liveStartedAt = lastStreaming?.turnStartedAt;
   /** 子 agent 运行列表（右侧栏「子 Agent」工作面 + 聊天内嵌区域的同一份数据）。
    *  随会话切换重拉：子 agent 是按 parent_session_id 归属的 */
   const [subagents, setSubagents] = useState<SubagentRow[]>([]);
@@ -296,6 +348,19 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     refreshSubagentsRef.current = refreshSubagents;
     refreshSubagents();
   }, [refreshSubagents]);
+  /** 在途行要显示实时轮数，而轮数只活在 tool_guard 的内存仪表里（不落库，
+   *  落库就得每轮写一次），只能重拉才拿得到。3 秒一拍：子 agent 一轮最短也要
+   *  几秒（要调模型），再密只是白烧 IPC；终态后子集为空，定时器自己停。 */
+  const hasPendingSubagent = subagents.some(
+    (r) => r.status === "running" || r.status === "queued",
+  );
+  useEffect(() => {
+    if (!enabled || !sessionId || !hasPendingSubagent) return;
+    const t = window.setInterval(() => {
+      refreshSubagentsRef.current();
+    }, SUBAGENT_POLL_MS);
+    return () => window.clearInterval(t);
+  }, [enabled, sessionId, hasPendingSubagent]);
   /** 侧栏/内嵌区消费的视图模型：标题取 objective（子 agent 的目标即其身份）。
    *  六态原样带下去——压成 running/error 两桶会让「已取消」「预算耗尽」都
    *  显示成红色失败（子 agent 解绑任务卡后这两态不再有卡可对照） */
@@ -307,6 +372,17 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         status: r.status,
         running: r.status === "running" || r.status === "queued",
         error: r.error ?? null,
+        // 轮数与时间戳原样带下去：单行摘要要显示「已跑 N/M 轮 · 运行时长」，
+        // 在这里压掉就得让组件自己再拉一次行，等于把一次 IPC 复制成 N 次
+        roundsUsed: r.roundsUsed ?? null,
+        roundsBudget: r.roundsBudget ?? null,
+        startedAt: r.startedAt ?? null,
+        finishedAt: r.finishedAt ?? null,
+        profile: r.profile,
+        contextSummary: r.contextSummary ?? null,
+        acceptance: parseJsonField(r.acceptanceJson),
+        result: parseJsonField(r.resultJson),
+        traceId: r.traceId ?? null,
       })),
     [subagents],
   );
@@ -728,6 +804,71 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         return copy;
       });
     });
+    const unToolRunning = listen<{
+      id?: string;
+      name?: string;
+      args_preview?: string;
+      sessionId?: string | null;
+    }>("bot-tool-running", (e) => {
+      const sid = e.payload?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+      const { id, name, args_preview: argsPreview } = e.payload ?? {};
+      if (!id) return;
+      const m = metaFor(sid);
+      if (!m) return;
+      // 记本地开始时刻：工具返回后以 done 事件的 ms 为准，前端计时只在
+      // 「bot-tool 已收到但还没回」这段窗口里显示，不与后端耗时重复计。
+      const tools = (m.tools ?? []).map((x) =>
+        x.id === id ? { ...x, name: name ?? x.name, argsPreview, startedAt: Date.now() } : x,
+      );
+      m.tools = tools;
+      if (sid !== sessionIdRef.current) return;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = { ...last, tools };
+        return copy;
+      });
+    });
+    //  回合状态机（借鉴 ZCode turn view model）：running/settling 都算进行中。
+    //  settling 是关键——正文已输出完但终稿自检还在跑，此时若把气泡置为
+    //  「完成」，用户看到的正是一句「说完就停」的假静止。
+    const unTurnStatus = listen<{
+      status?: TurnStatus;
+      detail?: string;
+      sessionId?: string | null;
+    }>("bot-turn-status", (e) => {
+      const sid = e.payload?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+      const status = e.payload?.status;
+      if (!status) return;
+      const m = metaFor(sid);
+      if (m) {
+        m.turnStatus = status;
+        m.turnDetail = e.payload?.detail ?? undefined;
+        // 终态到来前记下开始时刻：running/settling 期间的秒表从这里起
+        if (status === "running" && m.turnStartedAt == null) {
+          m.turnStartedAt = Date.now();
+        }
+      }
+      if (sid !== sessionIdRef.current) return;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || !last.streaming) return prev;
+        const copy = [...prev];
+        copy[copy.length - 1] = {
+          ...last,
+          turnStatus: status,
+          turnDetail: e.payload?.detail ?? undefined,
+          turnStartedAt:
+            status === "running" ? (last.turnStartedAt ?? Date.now()) : last.turnStartedAt,
+        };
+        return copy;
+      });
+    });
     //  结构化文件变更：dispatch 在有 trace 的执行会话里 emit（全窗口）——
     // 每次落盘修改一条，按会话累积进 meta，收尾并入最终消息给 FileSummary 用。
     // 主聊天（无 trace）不产生事件 → FileSummary 走正则兜底，行为不变。
@@ -830,6 +971,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       unlistenSafe(unTool);
       unlistenSafe(unToolName);
       unlistenSafe(unToolDone);
+      unlistenSafe(unToolRunning);
+      unlistenSafe(unTurnStatus);
       unlistenSafe(unFileChanged);
       unlistenSafe(unUsage);
       unlistenSafe(unSkillFailed);
@@ -858,7 +1001,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       if (sessionIdRef.current !== sid) return;
       setMessages([
         ...rowsToMsgs(rows, sid),
-        { role: "assistant", content: "", streaming: true },
+        { role: "assistant", content: "", streaming: true, turnStatus: "running", turnStartedAt: Date.now() },
       ]);
     } catch (e) {
       handleCommandError(e, "bot_history_load", { silent: true });
@@ -1016,7 +1159,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         // 切回正在回复的会话：补一个流式占位气泡承接后续增量（已错过的增量段
         // 由收尾 full.text 整体校正，不会串进其他会话）
         if (inflightRef.current.has(sid)) {
-          msgs = [...msgs, { role: "assistant", content: "", streaming: true }];
+          msgs = [...msgs, { role: "assistant", content: "", streaming: true, turnStatus: "running", turnStartedAt: Date.now() }];
         }
         setMessages(msgs);
       } catch (e) {
@@ -1139,7 +1282,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     enterChat(sid);
     setMessages([
       ...history,
-      { role: "assistant", content: "", streaming: true },
+      { role: "assistant", content: "", streaming: true, turnStatus: "running", turnStartedAt: Date.now() },
     ]);
     streamingMetaMapRef.current.set(sid, {});
     // RE-1 推理强度：生效档位 = 本会话覆盖 ?? 后台默认（具体值传后端，
@@ -1166,6 +1309,10 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           tools: meta.tools,
           fileChanges: meta.fileChanges,
           skillFailure: meta.skillFailure,
+          // 终态随消息一起留档：turnStatus 缺失时 LiveIndicator 会退回
+          // 「正在思考」文案，历史气泡复用时就会出现假活体指示
+          turnStatus: meta.turnStatus ?? "completed",
+          turnStartedAt: meta.turnStartedAt,
         },
       ];
       // 持久化始终按 sid 写；UI 只在会话未切换时更新（防旧会话消息渲染进新会话）
@@ -1548,10 +1695,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           )}
         </button>
         {viewedBusy && (
-          <span className="flex shrink-0 items-center gap-1.5 text-[10px] text-[var(--brand)]">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand)]" />
-            正在回复
-          </span>
+          <LiveIndicator
+            status={liveStatus}
+            detail={liveDetail}
+            startedAt={liveStartedAt}
+          />
         )}
       </header>
 
@@ -1638,6 +1786,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           subagents={subagentRuns}
           onOpenSubagent={openSubagentDetail}
           onCancelSubagent={cancelSubagent}
+          subagentDetailId={subagentDetailId}
+          onCloseSubagentDetail={closeSubagentDetail}
           tab={ctxTab}
           onTabChange={setCtxTab}
         />

@@ -10,6 +10,7 @@ import {
   Check,
   Copy,
   FileText,
+  Loader2,
   MessageCircle,
   MessagesSquare,
   Pin,
@@ -22,6 +23,7 @@ import { MarkdownText } from "../MarkdownText";
 import { Fold } from "./Fold";
 import { RichText } from "./RichText";
 import { UserBubbleContent } from "./UserBubbleContent";
+import { fmtElapsed, useElapsed } from "./useElapsed";
 import type {
   FileChangeLite,
   Msg,
@@ -230,6 +232,35 @@ const MsgBubble = memo(MsgBubbleBase);
  *  折叠「进程 N/M」承载逐工具入参/结果详情。
  *  verbose 三档：简洁=隐藏详情折叠；详细=现状；调试=默认展开+耗时。
  *  memo：文本流式 tick 不改 tools 引用，跳过徽章行重渲染 */
+/** 单个工具徽章的状态标记（✕ / ✓ / spinner+计时）。
+ *  两档展示（concise 徽章行 / detailed 行）共用，避免两处各写一份后改一处漏一处。 */
+function ToolStatusMark({ t }: { t: ToolCall }) {
+  const running = !t.done && t.ok !== false;
+  const secs = useElapsed(t.startedAt, running);
+  const tone = t.ok === false
+    ? "text-[var(--danger,#ef4444)]"
+    : t.done
+      ? "text-[var(--success)]"
+      : "";
+  if (!running) {
+    return (
+      <span aria-hidden className={tone}>
+        {t.ok === false ? "✕" : <Check size={10} strokeWidth={3} />}
+      </span>
+    );
+  }
+  // 未完成：Loader2 转圈 + 前端本地计时。静态「…」在 300s 级的工具里
+  // 与「已结束」在视觉上无区别——这是用户看不出 agent 在不在跑的主因。
+  return (
+    <span aria-hidden className="inline-flex items-center gap-1 text-[var(--brand)]">
+      <Loader2 size={10} className="animate-spin" />
+      {secs != null && (
+        <span className="tabular-nums text-[var(--t4)]">{fmtElapsed(secs)}</span>
+      )}
+    </span>
+  );
+}
+
 const ToolBadges = memo(function ToolBadges({
   tools,
   verboseLevel,
@@ -249,24 +280,7 @@ const ToolBadges = memo(function ToolBadges({
             className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
           >
             {t.name || "tool"}
-            <span
-              aria-hidden
-              className={
-                t.ok === false
-                  ? "text-[var(--danger,#ef4444)]"
-                  : t.done
-                    ? "text-[var(--success)]"
-                    : ""
-              }
-            >
-              {t.ok === false ? (
-                "✕"
-              ) : t.done ? (
-                <Check size={10} strokeWidth={3} />
-              ) : (
-                "…"
-              )}
-            </span>
+            <ToolStatusMark t={t} />
           </span>
         ))}
       </div>
@@ -281,24 +295,7 @@ const ToolBadges = memo(function ToolBadges({
             className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
           >
             {t.name || "tool"}
-            <span
-              aria-hidden
-              className={
-                t.ok === false
-                  ? "text-[var(--danger,#ef4444)]"
-                  : t.done
-                    ? "text-[var(--success)]"
-                    : ""
-              }
-            >
-              {t.ok === false ? (
-                "✕"
-              ) : t.done ? (
-                <Check size={10} strokeWidth={3} />
-              ) : (
-                "…"
-              )}
-            </span>
+            <ToolStatusMark t={t} />
           </span>
         ))}
       </div>

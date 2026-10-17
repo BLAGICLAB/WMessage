@@ -1,9 +1,14 @@
 // ChatPanel 子模块：纯类型定义（无 React / 无 IO）。
 
+/** 回合状态（后端 TurnStatus 的 camelCase 镜像，见 bot_model_loop::TurnStatus） */
+export type TurnStatus = "running" | "settling" | "completed" | "interrupted" | "failed";
+
 export type TaskRef = { id: string; title: string };
 
 /** 工具调用行：折叠显示，展开可看入参；bot-tool-done 携带
- *  result（截 2000 字）/ms/ok（成败口径同后端 tool_call_failed） */
+ *  result（截 2000 字）/ms/ok（成败口径同后端 tool_call_failed）。
+ *  - startedAt: bot-tool-running 到达时的本地时刻（ms），用于未完成时秒级计时；
+ *    完成后以 done 事件的 ms 为准，不计前端计时（避免两端重复计） */
 export type ToolCall = {
   id: string;
   name: string;
@@ -12,6 +17,10 @@ export type ToolCall = {
   result?: string;
   ms?: number;
   ok?: boolean;
+  /** 本地开始时刻（Date.now()）；仅未完成态用于计时 */
+  startedAt?: number;
+  /** 入参预览（bot-tool-running 带的截断版，用于长工具的「正在跑什么」提示） */
+  argsPreview?: string;
 };
 
 /** 结构化文件变更：bot-file-changed 事件载荷的会话内累积条目，
@@ -44,6 +53,14 @@ export type Msg = {
   role: "user" | "assistant";
   content: string;
   streaming?: boolean;
+  /** 回合状态机（借鉴 ZCode turn view model）：running=在跑；settling=正文已出、
+   *  收尾中（终稿自检等），此时**仍算进行中**——这是「说完了但还在动」的唯一表达；
+   *  completed/interrupted/failed 为终态。前端据此决定是否显示活体指示。 */
+  turnStatus?: TurnStatus;
+  /** 当前阶段文案（「正在思考 · 第 N 轮」/「收尾中 · 校验答复」等） */
+  turnDetail?: string;
+  /** 本轮开始的本地时刻（ms），用于「持续了 N 秒」秒级刷新 */
+  turnStartedAt?: number;
   /** 本轮涉及的任务（渲染成可点击按钮，点击去主窗口打开该任务） */
   refs?: TaskRef[];
   /** 模型思考过程（折叠显示，不持久化） */
@@ -72,9 +89,12 @@ export type Session = {
   isSubagent?: boolean;
 };
 
-/** 子 agent 执行行（list_subagents 命令 = subagents 表行 camelCase）。
+/** 子 agent 执行行（list_subagents 命令 = subagents 表行 camelCase + 内存态轮数）。
  *  子 agent 不再建任务卡也不建独立会话——它的可见性完全落在聊天记录里，
- *  这一行就是那条记录的数据源。taskId 仅老数据有（无卡行为 null）。 */
+ *  这一行就是那条记录的数据源。taskId 仅老数据有（无卡行为 null）。
+ *  时间戳是毫秒（后端 now_ms），前端直接与 Date.now() 相减算运行时长。
+ *  rounds* 只在途时有值：轮数活在 tool_guard 注册表，终态守卫注销即读不到，
+ *  报 null 而非 0——凭空造数比不报更坏。 */
 export type SubagentRow = {
   id: string;
   status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "budget_exceeded";
@@ -84,6 +104,20 @@ export type SubagentRow = {
   taskId?: string | null;
   objective: string;
   error?: string | null;
+  contextSummary?: string | null;
+  /** 验收标准 JSON 数组原文；详情视图解析，解析失败落回原文显示 */
+  acceptanceJson?: string | null;
+  /** 收尾结构化结果 JSON 原文，同上 */
+  resultJson?: string | null;
+  traceId?: string | null;
+  /** 毫秒时间戳 */
+  createdAt?: number;
+  startedAt?: number | null;
+  finishedAt?: number | null;
+  /** 已跑轮数；在途才有 */
+  roundsUsed?: number | null;
+  /** 轮数硬顶；与轮数同报，10/20 与 10/200 的紧迫度完全不同 */
+  roundsBudget?: number | null;
 };
 
 /** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。
