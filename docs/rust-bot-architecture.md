@@ -7,8 +7,8 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (867)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
-├── app_state.rs (255)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
+├── lib.rs (1069)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
@@ -89,18 +89,20 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (1711) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (4106) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
-│                        （TOOLS schema 已移出，见 bot/registry.rs）
-├── bot.rs (116)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
+│                        （TOOLS schema 已移出，见 bot/registry.rs）；P4：maxToolOutputChars 截断落地
+│                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
+│                        事件（Anthropic 协议）
+├── bot.rs (147)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
 │                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
 │                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
-├── bot/registry.rs (716)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (2567)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-├── bot/dispatch.rs (237)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1435)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
 ├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
 │                        HookRegistry 进程级注册（OnceLock 单例，同层内按注册序；层序只由
@@ -134,7 +136,7 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (1589)    20 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发）
+├── bot/tools.rs (2553)    20 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
@@ -145,25 +147,21 @@ src-tauri/src/
 │                        见 §2.1）、危险操作确认弹窗、机器人总开关
 ├── exec_steps.rs        任务卡逐步执行模式：多子任务逐个做、用户确认「继续/重做/停」
 ├── bot_orchestrator.rs  子 Agent 编排器（方案 B，SUBA 设计 2026-09-27）：受管子 agent 的
-│                        spawn/check/cancel 生命周期状态机 + 子卡（🧩）创建 + acceptance
-│                        双写 + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
+│                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
+│                        只存 parent_task_id 指向派发主卡，新行 task_id 恒 NULL）+ acceptance
+│                        落行上 acceptance_json + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
 │                        各自独立；LLM 工具暴露/runner（SUBA-2）与预算强制/并发排队（SUBA-3）
 │                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置 + evolution
 │                        采样接线（run_task_in_chat 闭包喂 maybe_record_trace）
-├── bot_model_loop.rs    LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入
-│                        mock)；SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps
-│                        依赖注入（TOOLS schema 已移出，见 bot/registry.rs）；P4：maxToolOutputChars
-│                        截断落地（tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta
-│                        水位条事件（Anthropic 协议）
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
-├── notifications.rs (465) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
+├── notifications.rs (500) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
 │                        memory_proposal / evolution_proposal / artifact_bind 三类）+
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、evo 面板、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_desktop.rs (295) 电脑辅助 Tier1（N4，只「看」与「打开」）：reveal_path（opener 定位，
+├── bot_desktop.rs (323) 电脑辅助 Tier1（N4，只「看」与「打开」）：reveal_path（opener 定位，
 │                        白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ screenshot
 │                        （macOS screencapture -x / Windows PowerShell，落 AI_Gen_Files）；
@@ -182,7 +180,7 @@ src-tauri/src/
 │                        绑定文件夹+allowedDirs；白名单外 perm_mode 三分支/覆盖确认）；
 │                        路径白名单 + perm_mode(strict/ask/yolo) 授权闸
 ├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
-├── bot_py.rs (3682)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
+├── bot_py.rs (1360)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网
 ├── bing.rs              必应每日一图（首页小部件数据源）：cn.bing.com 官方 API + 按日落

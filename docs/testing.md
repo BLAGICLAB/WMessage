@@ -42,7 +42,7 @@ scripts/install-hooks.sh   # 首次 clone 后跑一次（幂等）：git 指向�
 ## 全量验证（push 前 / 大改动后）
 
 ```bash
-bash scripts/test-all.sh   # pre-push 自动跑：nextest 全量 + vitest
+bash scripts/test-all.sh   # pre-push 自动跑：nextest 全量 + vitest + 一致性对拍
 ```
 
 分项：
@@ -57,19 +57,36 @@ cargo test --test memory_v2_degraded      # 集成：记忆体 v2 降级模式
 cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（需仓库根 bge-small-zh-v1.5/）
 ```
 
-## 一致性对拍（tests-audit/，按需手跑）
+## 一致性对拍（tests-audit/，已在 test-all.sh 门禁内）
 
-源码文本断言式检查（不跑业务代码，读源码断言结构/协议）。2026-10-08 基线收敛后
-**已移出门禁**，需要时手动跑。前四个是 pytest 用例（`python3 -m pytest`），
-后两个是独立脚本（`python3 <脚本>`，用 pytest 跑会「no tests ran」静默放过）：
+源码文本断言式检查（不跑业务代码，读源码断言结构/协议），`scripts/test-all.sh` 第 3 步会跑，
+pre-push 自动触发。前三个是 pytest 用例，后两个是独立守卫脚本，两种形态分开跑：
+
+```bash
+python3 -m pytest tests-audit/audit_error_codes.py tests-audit/audit_module_map.py \
+                  tests-audit/audit_tauri_bridge.py -q   # pytest 用例：必须逐个点名
+python3 tests-audit/audit_evolution_layering.py          # 独立守卫脚本：看退出码
+python3 tests-audit/audit_no_eval.py
+```
+
+- 文件名不匹配 pytest 默认的 `test_*.py` glob，所以 `pytest tests-audit/`（整目录）收不到
+  任何用例，退出码 5 `no tests ran`——逐个点名文件才会真的跑。
+- 独立守卫脚本不能交给 pytest 跑：它一 tests 没收集到就是退出码 5，脚本体压根没执行，
+  却会被同批其他用例的通过掩盖成绿。
+
+对拍内容：
 
 - `audit_tauri_bridge.py`：Tauri 桥双向一致性（命令注册 ↔ 前端 invoke、emit ↔ listen）
 - `audit_error_codes.py`：错误码跨语言一致性（`error.rs::CommandErrorCode` ↔
   `errorHandler.ts::CommandErrorCode` 集合与声明顺序）
 - `audit_module_map.py`：模块地图对拍（`docs/rust-bot-architecture.md` 模块树 ↔ 实际
-  `src-tauri/src/**/*.rs`：树条目必须指向真实文件，每个源码文件必须有条目）
+  `src-tauri/src/**/*.rs`：树条目必须指向真实文件、不得重复、标了 `(NNN)` 的行数要与文件一致，
+  每个源码文件必须有条目）
 - `audit_evolution_layering.py`：evolution 分层依赖方向守卫
 - `audit_no_eval.py`：前端禁动态求值静态守卫（CSP 配套）
+
+改 `docs/rust-bot-architecture.md` 的模块树后，本地跑一遍 `audit_module_map.py`：新增/删除/
+改名模块要同步登记条目，条目上标的行数也会随代码改动漂移。
 
 Rust 侧另有编译期协议锁先例可参考：`bot/registry.rs` 的 `registry_tests`
 （schema ↔ `TOOLS_TABLE` ↔ baseline 三源一致 + `ToolDef.name` 与 schema 内名一致）、

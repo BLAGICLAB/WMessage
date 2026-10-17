@@ -9,6 +9,8 @@
 - 树里每条 `── xxx.rs` 必须**指向真实文件**（模块删了/改名了，文档没同步 → FAIL）
 - 每个源码 `.rs` 必须**在文档里被提到**（相对路径或文件名；新增模块漏写文档 → FAIL）
 - `lib.rs` 声明的每个顶层模块必须在文档里有对应条目
+- 同一条目在同一层不得出现两次（拼接/复制粘贴残留 → FAIL）
+- 带 `(NNN)` 行数标注的条目，行数必须与文件实际一致（标注过期 → FAIL）
 
 执行：python3 -m pytest tests-audit/audit_module_map.py -v
 """
@@ -23,7 +25,10 @@ SRC = ROOT / "src-tauri/src"
 ARCH_DOC = ROOT / "docs/rust-bot-architecture.md"
 
 # 模块树条目：`├── bot/registry.rs (716)` / `│   prompts/system.rs ...`
-TREE_ENTRY_RE = re.compile(r"^[│├└─ ]*──\s+([A-Za-z_0-9/]+\.rs)", re.M)
+# 组 1 = 缩进前缀（分层用）、组 2 = 文件名或相对路径、组 3 = 行数标注（可为 None）
+TREE_ENTRY_RE = re.compile(
+    r"^([│├└─ ]*)──\s+([A-Za-z_0-9/]+\.rs)(?:\s*\((\d+)(?:行)?\))?", re.M
+)
 # lib.rs / 子模块 mod.rs 的模块声明
 MOD_DECL_RE = re.compile(r"^\s*(?:pub(?:\(crate\))? )?mod ([a-z_0-9]+);", re.M)
 
@@ -39,7 +44,16 @@ def tree_entries():
     Phase 0.6 保守选择：保留原 regex 行为，不推栈、不拼层。
     拆出子目录里的同名文件由 `resolve_entry()` 走「同名就近」匹配。
     """
-    return TREE_ENTRY_RE.findall(doc_text())
+    return [m.group(2) for m in TREE_ENTRY_RE.finditer(doc_text())]
+
+
+def tree_entry_rows():
+    """树条目三元组：(缩进前缀, 裸名, 行数标注或 None)。
+
+    行数标注只有部分条目有（`── bot.rs (116)`），没有就是没写——不是过期，
+    对拍时跳过，否则这条断言会退化成「逼全树补行数」的格式门禁。
+    """
+    return [(m.group(1), m.group(2), m.group(3)) for m in TREE_ENTRY_RE.finditer(doc_text())]
 
 
 def resolve_entry(name):
@@ -136,3 +150,40 @@ def test_declared_modules_have_doc_entry():
     assert not missing, (
         "lib.rs / mod.rs 声明的模块在文档里没有对应条目：\n  " + "\n  ".join(missing)
     )
+
+
+def test_tree_entries_are_not_duplicated():
+    """同一缩进层里的条目不得出现两次。
+
+    key 带缩进前缀：树里子目录条目按父目录分组写裸文件名（`db/paths.rs` 写成
+    `│   ├── paths.rs`），同名不同父目录是真两条文件，只按裸名去重会误报。
+    """
+    seen = set()
+    dups = []
+    for prefix, name, _ in tree_entry_rows():
+        if (prefix, name) in seen:
+            dups.append(f"{name}（缩进前缀 {prefix!r}）")
+        seen.add((prefix, name))
+    assert not dups, (
+        "模块树里同一条目重复出现（拼接/复制粘贴残留）：\n  " + "\n  ".join(dups)
+    )
+
+
+def test_annotated_line_counts_match_files():
+    """带 `(NNN)` 行数标注的条目，行数必须与文件实际一致。
+
+    行数口径 = 换行符个数，与 `wc -l` 同值；纯 Python 计数避免 subprocess
+    的跨平台差异，也省掉每个文件一次进程启动（这份脚本要进门禁按秒计）。
+    """
+    drift = []
+    for _, name, annotated in tree_entry_rows():
+        if annotated is None:
+            continue
+        rel = resolve_entry(name)
+        if rel is None:
+            # 指不到文件由 test_tree_entries_point_to_existing_files 报，不重复报
+            continue
+        actual = (SRC / rel).read_bytes().count(b"\n")
+        if actual != int(annotated):
+            drift.append(f"{name}：文档写 {annotated}，实际 {actual}（wc -l 口径）")
+    assert not drift, "模块树行数标注与实际文件漂移：\n  " + "\n  ".join(drift)

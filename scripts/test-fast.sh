@@ -18,7 +18,8 @@
 #
 # 性能设计：git diff 智能跳过（只跑改动相关的链路）；tsc/vitest 各有增量机制；
 # 全量测试（cargo nextest + vitest）在 pre-push 的 test-all.sh。
-# tests-audit/ 一致性对拍脚本（tauri 桥/错误码/模块地图/分层）已降级为按需手跑。
+# tests-audit/ 一致性对拍脚本（tauri 桥/错误码/模块地图/分层）在 pre-push 的
+# test-all.sh 里跑，不在本脚本（快门禁只管格式/编译/类型/前端单测）。
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

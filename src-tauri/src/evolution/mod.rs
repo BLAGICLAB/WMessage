@@ -104,7 +104,7 @@ pub mod proposal;
 /// **一把锁覆盖两个文件是有意设计**：toggle/delete 一次操作**同时**改两个文件，
 /// 若按单文件各配一把锁，会出现「需要同时持两把锁」的顺序问题（死锁面）。
 /// **改动时勿「优化」成按文件锁。**
-/// 覆盖所有写路径：panel commands（toggle/delete/keep_shadow/rollback）+
+/// 覆盖所有写路径：panel commands（toggle/delete/rollback）+
 /// post_consolidation 的 write_proposals。**entry/record 的 append/read_all
 /// 内部不加锁**（外层已持锁，内层加锁必死锁）。
 pub(crate) static EVOLUTION_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

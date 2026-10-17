@@ -474,7 +474,6 @@ def test_frontend_invokes_picks_up_runCmd_calls():
     invokes = frontend_invokes()
     assert "evolution_promote_proposal" in invokes
     assert "evolution_reject_proposal" in invokes
-    assert "evolution_keep_shadow" in invokes
     assert "evolution_rollback_change" in invokes
     assert "evolution_delete_proposal" in invokes
     assert "EvolutionPanel" in invokes["evolution_promote_proposal"]
