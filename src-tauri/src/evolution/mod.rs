@@ -98,7 +98,6 @@ pub(crate) fn read_jsonl<T: serde::de::DeserializeOwned>(
 }
 pub mod derive;
 pub mod emit;
-pub mod observe;
 pub mod panel;
 pub mod proposal;
 pub mod sandbox;

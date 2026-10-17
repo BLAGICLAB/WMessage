@@ -127,22 +127,6 @@ export const APPLY_POLICY_LABELS = (
 ).map((value) => ({ value, label: APPLY_POLICY_LABEL[value] }));
 
 /**  W3：observe::compute_metrics 的四指标快照（snake_case 镜像后端 serde） */
-export interface ObserveMetrics {
-  candidate_generation_rate: number;
-  approval_rate: number;
-  rollback_rate: number;
-  pollution_survival_days: number;
-  proposal_total: number;
-  promoted_count: number;
-  rolled_back_count: number;
-  active_lessons: number;
-  observation_window_days: number;
-  observation_window_start_ms: number;
-  observation_window_end_ms: number;
-  evaluated_at_ms: number;
-}
-
-// 决策证据（镜像后端 panel/evidence.rs，camelCase）
 
 export type ShadowVerdict = "pass" | "fail" | "skipped";
 
@@ -174,10 +158,6 @@ export const SHADOW_VERDICT_LABEL: Record<ShadowVerdict, string> = {
 };
 
 /** 回滚预警阈值：观察窗口内回滚达到此数建议切手动档（沿袭 14 天观察期停止条件口径） */
-export const ROLLBACK_WARN_THRESHOLD = 5;
-// ───────────────────────── 提案派生门槛（镜像后端 derive.rs，camelCase） ─────────────────────────
-
-
 
 /** 按记忆总量给建议值（4 档）：小库操作天然小、大库单轮整理涉及面广。
  *  矛盾门槛恒 1——矛盾天然只涉及 2 条且都是真教训，抬门槛 ≈ 关闭。 */

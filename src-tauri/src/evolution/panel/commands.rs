@@ -11,7 +11,6 @@
 //! - 人工批准执行器：policy 层（MemoryHint）提案 toggle ON 即 `apply_one`
 //!   落库（幂等），CR pending→Active——此前批准只登记 pending、无执行器生效；
 //! - 治理开关：`evolution_get/set_apply_policy`（evolution.applyPolicy 二档）；
-//! - 冒烟：`evolution_metrics` 薄壳包 observe::compute_metrics。
 //!
 //! 全部走 ask_user_confirm 复用 ConfirmMap（spec 默认 A）。
 
@@ -25,7 +24,6 @@ use crate::evolution::apply::{self, ApplyOutcome};
 use crate::evolution::candidate::{self, ProposalEntry, ProposalStatus};
 use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
 use crate::evolution::lock_evolution_store;
-use crate::evolution::observe::{self, ObserveMetrics};
 use crate::evolution::policy::{read_apply_policy, set_apply_policy, ApplyPolicy};
 use crate::evolution::proposal::EvolutionProposal;
 
@@ -681,26 +679,6 @@ fn notify_resolved<R: tauri::Runtime>(app: &AppHandle<R>, proposal_id: &str, sta
 pub async fn evolution_list_changes(app: AppHandle) -> Result<Vec<ChangeRecord>, String> {
     // 阻塞 fs IO（全量 load jsonl）移出 async worker
     crate::py::document::spawn_blocking_map(move || load_changes(&app)).await
-}
-
-/// 四指标薄壳——读三个 jsonl 走 observe::compute_metrics 纯函数。
-/// 观察窗口 30 天；空文件 = 纯函数零值。
-#[tauri::command]
-pub async fn evolution_metrics(app: AppHandle) -> Result<ObserveMetrics, String> {
-    // 阻塞 fs IO（三份 jsonl 全量 load）移出 async worker
-    crate::py::document::spawn_blocking_map(move || {
-        let applied = crate::eval::metrics::read_applied(&applied_path(&app))?;
-        let now = crate::memory::now_ms();
-        let window_start = now - 30 * 86_400_000;
-        Ok(observe::compute_metrics(
-            &load_proposals(&app)?,
-            &load_changes(&app)?,
-            &applied,
-            now,
-            window_start,
-        ))
-    })
-    .await
 }
 
 /// 读应用策略档位（serde 小写序列化 "auto"/"confirm"；缺字段/读失败

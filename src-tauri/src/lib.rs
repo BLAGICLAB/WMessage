@@ -30,7 +30,6 @@ mod bot_web;
 pub mod db;
 mod due_notify;
 pub mod error;
-pub mod eval;
 pub mod evolution;
 mod exec_steps;
 pub mod intent_router;
@@ -727,7 +726,6 @@ pub fn run() {
             evolution::panel::commands::evolution_delete_proposal,
             evolution::panel::commands::evolution_list_changes,
             evolution::panel::commands::evolution_rollback_change,
-            evolution::panel::commands::evolution_metrics,
             evolution::panel::commands::evolution_proposal_evidence,
             evolution::panel::commands::evolution_get_apply_policy,
             evolution::panel::commands::evolution_set_apply_policy,

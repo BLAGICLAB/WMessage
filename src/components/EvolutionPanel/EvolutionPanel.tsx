@@ -26,7 +26,6 @@ import { useConfirm } from "../../lib/useConfirm";
 import {
   type ApplyPolicy,
   type ChangeRecord,
-  type ObserveMetrics,
   type ProposalEntry,
   type ProposalEvidence,
   type ProposalStatus,
@@ -34,7 +33,6 @@ import {
   APPLY_POLICY_LABELS,
   IMPACT_LABEL,
   LAYER_LABEL,
-  ROLLBACK_WARN_THRESHOLD,
   SHADOW_VERDICT_LABEL,
   STATUS_LABEL,
 } from "./types";
@@ -101,7 +99,6 @@ export function EvolutionPanel() {
   // 点档 in-flight guard（防连点 auto→confirm→auto 乱序回滚）
   const [policyBusy, setPolicyBusy] = useState(false);
   //  W3 四指标（读失败 = 不显示，不阻塞面板）
-  const [metrics, setMetrics] = useState<ObserveMetrics | null>(null);
   // 决策证据（影子判定 + 冲突标注；读失败 = 空表，面板照常工作）
   const [evidence, setEvidence] = useState<Record<string, ProposalEvidence>>(
     {},
@@ -158,9 +155,6 @@ export function EvolutionPanel() {
           .catch(() => {
             /* 读失败按 auto 显示（后端同口径），不打断面板 */
           }),
-        Promise.resolve(invoke<ObserveMetrics>("evolution_metrics"))
-          .then((m) => setMetrics(m ?? null))
-          .catch(() => setMetrics(null)),
       ]);
     })();
   }, []);
@@ -376,31 +370,6 @@ export function EvolutionPanel() {
             })}
           </div>
         </div>
-        {/*  W3：四指标条（读失败不显示；窗口天数取后端字段防漂移） */}
-        {metrics && (
-          <p
-            className="text-[11px] text-[var(--t5)]"
-            data-testid="evolution-metrics"
-          >
-            近{Math.round(metrics.observation_window_days)}天：候选{" "}
-            {metrics.candidate_generation_rate.toFixed(1)} 条/天 · 通过{" "}
-            {(metrics.approval_rate * 100).toFixed(0)}% · 回滚{" "}
-            {(metrics.rollback_rate * 100).toFixed(0)}% · 存活{" "}
-            {metrics.pollution_survival_days.toFixed(1)} 天
-          </p>
-        )}
-        {/* 回滚预警：观察窗口内回滚过阈值 → 建议切手动档 */}
-        {metrics && metrics.rolled_back_count >= ROLLBACK_WARN_THRESHOLD && (
-          <p
-            className="inline-flex items-center gap-1 text-[11px] text-[var(--danger)]"
-            data-testid="evolution-rollback-warning"
-          >
-            <AlertTriangle size={11} aria-hidden />近
-            {Math.round(metrics.observation_window_days)}天回滚{" "}
-            {metrics.rolled_back_count} 条（≥{ROLLBACK_WARN_THRESHOLD}）：
-            建议把应用策略切到「需我确认」档
-          </p>
-        )}
       </div>
 
       {/* 候选池列表 */}

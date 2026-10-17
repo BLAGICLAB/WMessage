@@ -8,7 +8,7 @@
 //!
 //! post_consolidation 字面入口依赖 emit::APP_HANDLE（OnceLock<AppHandle<Wry>>，
 //! 测试进程不可注册 MockRuntime），端到端按其真实构成拆三段覆盖——
-//! ① ops → `derive_proposals`（真启发式）② 候选池 `write_proposals`（真写盘）
+//! ① lesson → `derive_lesson_proposal`（真派生）② 候选池 `write_proposals`（真写盘）
 //! ③ confirm 分流谓词 `policy::auto_apply_allowed`（生产同一函数，读真
 //! bot-config.json）；三段即 post_consolidation 的全部决策面，apply 段由
 //! toggle 执行器真跑（lesson/CR/applied 留痕全落真库真文件）。
@@ -17,8 +17,7 @@ use wmessage_lib::db;
 use wmessage_lib::db::paths;
 use wmessage_lib::evolution::candidate::{self, ProposalStatus};
 use wmessage_lib::evolution::change::{self, ApprovalSource, ChangeStatus};
-use wmessage_lib::evolution::derive::derive_proposals;
-use wmessage_lib::evolution::observe;
+use wmessage_lib::evolution::derive::derive_lesson_proposal;
 use wmessage_lib::evolution::policy::{self, ApplyPolicy};
 use wmessage_lib::evolution::proposal::{
     Evidence, EvolutionProposal, ImpactLevel, ProposalCategory, ProposalOrigin, ProposalTarget,
@@ -49,6 +48,18 @@ fn proposals_path(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path
 
 fn changes_path(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
     paths::data_dir(app).join("evolution-changes.jsonl")
+}
+
+/// 读 evolution-applied.jsonl 原始行（观察层指标删除后，台账只留人工可读留痕，
+/// 这里按行读出来断言内容，不再经由已删的 eval::metrics::read_applied）
+fn applied_rows(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> Vec<serde_json::Value> {
+    let p = applied_path(app);
+    std::fs::read_to_string(&p)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("applied 台账每行必须是合法 JSON"))
+        .collect()
 }
 
 fn applied_path(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> std::path::PathBuf {
@@ -151,29 +162,20 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
         cfg: cfg.clone(),
     };
 
-    // ── 段 0：真 ops → 真启发式派生（post_consolidation 前半；先派生拿稳定
-    // pid——derive 对同 ops 确定性，跨次运行同 id，清理才能对准上一轮残留）──
-    let ops = vec![
-        wmessage_lib::memory::consolidate::ConsolidateOp::Contradiction {
-            keep: "u20-gov-keep-1".into(),
-            drop_id: "u20-gov-drop-1".into(),
-            content: "矛盾裁决语料：用户主仓库从 GitHub 迁到自建 GitLab".into(),
-        },
-    ];
-    let proposals = derive_proposals(
-        &ops,
-        &wmessage_lib::memory::consolidate::ConsolidateReport::default(),
-    );
-    assert_eq!(
-        proposals.len(),
-        1,
-        "Contradiction op 必产 1 条 MemoryHint High"
-    );
+    // ── 段 0：真 lesson → 真派生（post_consolidation 的唯一提案来源；先派生拿
+    // 稳定 pid——proposal_id 是内容归一化哈希，跨次运行同 id，清理才能对准上一轮
+    // 残留）。ops（merge/distill/contradiction）不再派生提案，见 derive.rs 头部 ──
+    let proposals = vec![derive_lesson_proposal(
+        "矛盾裁决语料：用户主仓库从 GitHub 迁到自建 GitLab",
+        1_700_000_000_000,
+    )
+    .expect("非空 lesson 应产出提案")];
+    assert_eq!(proposals.len(), 1);
     assert_eq!(proposals[0].category, ProposalCategory::MemoryHint);
     assert_eq!(
         proposals[0].impact,
-        ImpactLevel::High,
-        "门槛内（auto 档会被自动轨吃掉的那类）"
+        ImpactLevel::Medium,
+        "lesson 提案是 Medium，进 auto 轨"
     );
     let pid = proposals[0].proposal_id.clone();
     guard.add_id(&pid);
@@ -181,42 +183,6 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     cleanup(
         &app,
         &[pid.clone(), nonpolicy_id.into(), conflict_id.into()],
-    );
-
-    // ── 段 1：空 jsonl → 四指标零值（W3 薄壳的纯函数内核）──
-    let empty_proposals = candidate::read_all(&proposals_path(&app)).unwrap();
-    let empty_changes = change::read_all(&changes_path(&app)).unwrap();
-    let empty_applied = wmessage_lib::eval::metrics::read_applied(&applied_path(&app)).unwrap();
-    assert!(
-        empty_proposals.is_empty() && empty_changes.is_empty() && empty_applied.is_empty(),
-        "前置：三 jsonl 已清场"
-    );
-    let now = chrono::Utc::now().timestamp_millis();
-    let m = observe::compute_metrics(
-        &empty_proposals,
-        &empty_changes,
-        &empty_applied,
-        now,
-        now - 30 * 86_400_000,
-    );
-    assert_eq!(
-        (
-            m.candidate_generation_rate,
-            m.approval_rate,
-            m.rollback_rate,
-            m.pollution_survival_days
-        ),
-        (0.0, 0.0, 0.0, 0.0),
-        "空 jsonl 全零值"
-    );
-    assert_eq!(
-        (
-            m.proposal_total,
-            m.promoted_count,
-            m.rolled_back_count,
-            m.active_lessons
-        ),
-        (0, 0, 0, 0)
     );
 
     // ── 段 2：confirm 档接线（写真 bot-config.json，生产同一读取器）──
@@ -273,10 +239,13 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
     assert_eq!(lesson.content, proposals[0].suggestion.text);
 
     // applied.jsonl 留痕 + 提案晋升
-    let applied = wmessage_lib::eval::metrics::read_applied(&applied_path(&app)).unwrap();
+    let applied = applied_rows(&app);
     assert_eq!(applied.len(), 1);
-    assert_eq!(applied[0].proposal_id, pid);
-    assert_eq!(applied[0].mem_key, format!("evo:{pid}"));
+    assert_eq!(applied[0]["proposal_id"], serde_json::json!(pid));
+    assert_eq!(
+        applied[0]["mem_key"],
+        serde_json::json!(format!("evo:{pid}"))
+    );
     let promoted = candidate::read_all(&proposals_path(&app)).unwrap();
     assert_eq!(promoted[0].status, ProposalStatus::Promoted);
 
@@ -288,7 +257,7 @@ fn confirm_mode_e2e_toggle_applies_and_is_idempotent() {
         .filter(|m| m.tags.iter().any(|t| t == &format!("evo:{pid}")))
         .count();
     assert_eq!(lesson_count, 1, "重复批仍是一条 lesson");
-    let applied2 = wmessage_lib::eval::metrics::read_applied(&applied_path(&app)).unwrap();
+    let applied2 = applied_rows(&app);
     assert_eq!(applied2.len(), 1, "重复批不追加 applied 留痕");
     let changes = change::read_all(&changes_path(&app)).unwrap();
     assert_eq!(changes.len(), 1, "dedup 含 Active：重复批不新开 CR 行");

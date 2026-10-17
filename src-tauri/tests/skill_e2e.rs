@@ -496,7 +496,9 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
                 "create_task" => {
                     // 模拟生产 skill_on_step_post：工具失败后 run 被标 Failed
                     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Failed));
-                    ToolResult::ok("失败：模拟工具异常", Vec::new())
+                    // status=Error 而非 ok：调度器按 ToolStatus::is_success() 判步骤
+                    // 成败（成功与否的唯一真相源），ok + 失败文案是生产里不存在的组合
+                    ToolResult::error("失败：模拟工具异常", Vec::new())
                 }
                 "rollback_marker" => {
                     // 关键断言：回滚步骤执行时 run 必须已被重开为 Running（P0-5 窗口）
