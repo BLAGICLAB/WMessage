@@ -448,14 +448,7 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     if ops.is_empty() {
         // lesson 是反思的第二产物：ops 空但 lesson 非空时仍要过提案桥，
         // 否则 `{"ops":[],"lesson":"..."}` 形态的输出静默丢 lesson
-        if lesson.is_some() {
-            crate::evolution::post_consolidation(
-                &[],
-                &ConsolidateReport::default(),
-                lesson.as_deref(),
-            )
-            .await;
-        }
+        crate::evolution::post_consolidation(lesson.as_deref()).await;
         return Ok(ConsolidateReport::default());
     }
     // 嵌入在持锁前批量算好（独立阻塞闭包、不持 DB 写锁，与 mod.rs「嵌入计算一律在
@@ -471,9 +464,6 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
         .await
         .map_err(|e| CommandError::from(format!("记忆整理嵌入线程 join 失败：{e}")))?
     };
-    // Phase 1 追加：closure 拿走 ops 之前 clone 一份，留作 `evolution::post_consolidation` 审计信号源。
-    // 不改反思逻辑：ops 被应用一次（apply_ops）+ 被审计一次（emit_proposals），结果一致。
-    let ops_for_audit = ops.clone();
     // 整理写入也走 memoryTuning（容量/去重阈值统一口径）
     let tuning = crate::bot::read_memory_tuning(app);
     let report = crate::db::lock::with_write_conn(app, move |conn| {
@@ -488,9 +478,9 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     })
     .await
     .map_err(CommandError::DbError)?;
-    // Phase 1 追加：基于本次反思产出演化提案（仅写 audit；不改反思逻辑、不调二次 LLM）。
+    // 基于本次反思的 lesson 段产出演化提案（不调二次 LLM）。
     // 见 `crate::evolution::post_consolidation` 的依赖方向约束。
-    crate::evolution::post_consolidation(&ops_for_audit, &report, lesson.as_deref()).await;
+    crate::evolution::post_consolidation(lesson.as_deref()).await;
     Ok(report)
 }
 

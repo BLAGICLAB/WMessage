@@ -104,8 +104,6 @@ pub mod proposal;
 pub mod sandbox;
 pub mod trace;
 
-use crate::memory::consolidate::{ConsolidateOp, ConsolidateReport};
-
 /// evolution 存储（proposals + changes 两个 jsonl）的**进程内单锁**。
 ///
 /// **一把锁覆盖两个文件是有意设计**：toggle/delete 一次操作**同时**改两个文件，
@@ -165,49 +163,27 @@ fn notify_evolution_proposals<R: tauri::Runtime>(
 /// `audit_event!`、可能的 effect apply）以前在 tokio worker 上同步跑——
 /// 杀软瞬时锁/AV 扫描/网络盘慢时整 runtime 卡顿。改 async 后 spawn_blocking
 /// 把整段丢进 blocking pool，await 不阻塞 worker。
-pub async fn post_consolidation(
-    ops: &[ConsolidateOp],
-    report: &ConsolidateReport,
-    lesson: Option<&str>,
-) {
-    let ops_owned: Vec<ConsolidateOp> = ops.to_vec();
-    let report_owned = report.clone();
+pub async fn post_consolidation(lesson: Option<&str>) {
     let lesson_owned = lesson.map(str::to_string);
     let joined = tauri::async_runtime::spawn_blocking(move || {
-        post_consolidation_blocking(&ops_owned, &report_owned, lesson_owned.as_deref())
+        post_consolidation_blocking(lesson_owned.as_deref())
     })
     .await;
     if let Err(e) = joined {
         // blocking 线程 panic 不连带打崩调用方（本函数是 consolidate 收尾的后台
-        // 环节，panic 传播会拖垮整条反思链）；留痕保证失败可见非静默。提案 id 在
-        // blocking 内部才派生，此处以 ops 规模 + report 计数定位这一批。
-        eprintln!(
-            "[evolution] post_consolidation 后台线程 panic（提案未落库/未通知，ops: {} 条，merged: {}，distilled: {}，contradictions: {}）：{e:?}",
-            ops.len(),
-            report.merged,
-            report.distilled,
-            report.contradictions
-        );
+        // 环节，panic 传播会拖垮整条反思链）；留痕保证失败可见非静默。
+        eprintln!("[evolution] post_consolidation 后台线程 panic（提案未落库/未通知）：{e:?}");
     }
 }
 
-fn post_consolidation_blocking(
-    ops: &[ConsolidateOp],
-    report: &ConsolidateReport,
-    lesson: Option<&str>,
-) {
-    // 派生门槛：设置页可调（默认 2/2/1）；读失败/缺配置 = 默认
-    let thresholds = emit::app_handle()
-        .map(crate::evolution::policy::read_derive_thresholds)
-        .unwrap_or_default();
-    let mut proposals = derive::derive_proposals_with(ops, report, &thresholds);
-    // 行为准则提案（反思同调用产出）：与 ops 派生的复述类提案分层——
-    // lesson 写「以后怎么做」，语义与事实类 reflection 拉开，不撞防劫持闸
-    if let Some(l) = lesson {
-        if let Some(p) = derive::derive_lesson_proposal(l, chrono::Utc::now().timestamp_millis()) {
-            proposals.push(p);
-        }
-    }
+fn post_consolidation_blocking(lesson: Option<&str>) {
+    // 唯一提案来源：反思同调用产出的 lesson 段（行为准则「以后怎么做」）。
+    // ops（merge / contradiction / distill）不派生提案——它们的效果已由
+    // consolidate::apply_ops 执行完毕，复述成记忆是净负收益，见 derive.rs 头部。
+    let proposals: Vec<_> = lesson
+        .and_then(|l| derive::derive_lesson_proposal(l, chrono::Utc::now().timestamp_millis()))
+        .into_iter()
+        .collect();
     // 治理开关只读一次：下方「通知过滤」与「apply 闸」两处决策共用同一值——
     // 两次独立读盘在并发改档（设置页 toggle）时可能不一致，通知与落库口径分裂
     let auto_allowed = policy::auto_apply_allowed(emit::app_handle());

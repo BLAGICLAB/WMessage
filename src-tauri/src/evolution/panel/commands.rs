@@ -22,16 +22,12 @@ use tauri::AppHandle;
 use crate::audit::AuditLevel;
 use crate::bot_slash;
 use crate::db::paths;
-use crate::error::{CommandError, CommandResult};
 use crate::evolution::apply::{self, ApplyOutcome};
 use crate::evolution::candidate::{self, ProposalEntry, ProposalStatus};
 use crate::evolution::change::{self, ApprovalSource, ChangeRecord, ChangeStatus, EvolutionLayer};
-use crate::evolution::derive::DeriveThresholds;
 use crate::evolution::lock_evolution_store;
 use crate::evolution::observe::{self, ObserveMetrics};
-use crate::evolution::policy::{
-    read_apply_policy, read_derive_thresholds, set_apply_policy, set_derive_thresholds, ApplyPolicy,
-};
+use crate::evolution::policy::{read_apply_policy, set_apply_policy, ApplyPolicy};
 use crate::evolution::proposal::EvolutionProposal;
 
 use super::evidence;
@@ -881,26 +877,6 @@ fn delete_evolution_mem_item(app: &AppHandle, proposal_id: &str) -> Result<(), S
 }
 
 // 单元测试（pure helpers）
-
-/// 派生门槛读取（设置页自进化区「提案派生门槛」卡；已过 clamped）。
-/// 阻塞盘 IO 包 spawn_blocking 移出 async worker（同文件 evolution 命令先例）。
-#[tauri::command]
-pub async fn evolution_get_thresholds(app: AppHandle) -> CommandResult<DeriveThresholds> {
-    crate::py::document::spawn_blocking_map(move || Ok(read_derive_thresholds(&app)))
-        .await
-        .map_err(CommandError::from)
-}
-
-/// 派生门槛写回（服务端 clamped 兜底）。阻塞盘 IO 包 spawn_blocking 同上。
-#[tauri::command]
-pub async fn evolution_set_thresholds(
-    app: AppHandle,
-    thresholds: DeriveThresholds,
-) -> CommandResult<()> {
-    crate::py::document::spawn_blocking_map(move || set_derive_thresholds(&app, thresholds))
-        .await
-        .map_err(CommandError::from)
-}
 
 /// 提案决策证据（影子判定 + 冲突标注）——决策板逐卡渲染。
 #[tauri::command]

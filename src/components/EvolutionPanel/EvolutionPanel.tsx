@@ -26,20 +26,17 @@ import { useConfirm } from "../../lib/useConfirm";
 import {
   type ApplyPolicy,
   type ChangeRecord,
-  type DeriveThresholds,
   type ObserveMetrics,
   type ProposalEntry,
   type ProposalEvidence,
   type ProposalStatus,
   type ProposalTarget,
   APPLY_POLICY_LABELS,
-  DERIVE_THRESHOLD_META,
   IMPACT_LABEL,
   LAYER_LABEL,
   ROLLBACK_WARN_THRESHOLD,
   SHADOW_VERDICT_LABEL,
   STATUS_LABEL,
-  suggestedThresholds,
 } from "./types";
 import { formatTimestamp } from "../../format";
 
@@ -111,24 +108,6 @@ export function EvolutionPanel() {
   );
   // 立即反思进行中（LLM 调用秒级，与列表 busy 分开避免整板禁用）
   const [reflecting, setReflecting] = useState(false);
-  // 提案派生门槛（读失败 = 默认 2/2/1）；memTotal 用于建议值分档
-  const [thresholds, setThresholds] = useState<DeriveThresholds>({
-    mergeMinIds: 2,
-    distillMinIds: 2,
-    contradictionMinIds: 1,
-  });
-  const [thresholdsBusy, setThresholdsBusy] = useState(false);
-  const [thresholdsMsg, setThresholdsMsg] = useState("");
-  /** 提示自动消退计时器：重设前清旧（防连续保存时旧计时器提前清掉新提示），卸载清理 */
-  const thresholdsMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (thresholdsMsgTimer.current) clearTimeout(thresholdsMsgTimer.current);
-    },
-    [],
-  );
-  const [memTotal, setMemTotal] = useState<number | null>(null);
-
   // 竞态令牌：换筛选/连点刷新时，慢的旧响应不得覆盖新筛选的列表
   //（镜像 TracePanel detailSeqRef 模式；每次 refresh 开头作废在途响应）
   const refreshSeqRef = useRef(0);
@@ -182,41 +161,9 @@ export function EvolutionPanel() {
         Promise.resolve(invoke<ObserveMetrics>("evolution_metrics"))
           .then((m) => setMetrics(m ?? null))
           .catch(() => setMetrics(null)),
-        Promise.resolve(invoke<DeriveThresholds>("evolution_get_thresholds"))
-          .then((t) => {
-            if (t) setThresholds(t);
-          })
-          .catch(() => {
-            /* 读失败保持默认 2/2/1（后端同口径） */
-          }),
-        Promise.resolve(invoke<{ total: number } | null>("mem_stats"))
-          .then((st) => {
-            if (st) setMemTotal(st.total);
-          })
-          .catch(() => setMemTotal(null)),
       ]);
     })();
   }, []);
-
-  // 提案派生门槛保存（服务端 clamped 兜底；同点档先例先改 state 再落盘）。
-  // 保存成功后回拉权威值：服务端可能把越界输入改写（如 0 落库为 2），
-  // 不回拉会让输入框与服务端持久值长期分歧
-  const onSaveThresholds = async () => {
-    setThresholdsBusy(true);
-    setThresholdsMsg("");
-    try {
-      await invoke("evolution_set_thresholds", { thresholds });
-      const t = await invoke<DeriveThresholds>("evolution_get_thresholds");
-      if (t) setThresholds(t);
-      setThresholdsMsg("已保存");
-    } catch (e) {
-      setThresholdsMsg(String(e));
-    } finally {
-      setThresholdsBusy(false);
-      if (thresholdsMsgTimer.current) clearTimeout(thresholdsMsgTimer.current);
-      thresholdsMsgTimer.current = setTimeout(() => setThresholdsMsg(""), 4000);
-    }
-  };
 
   //  W2：点档即时落盘（同记忆三档先例：先改 state 再落盘，失败回滚+报错；
   // in-flight 期间忽略并发点档，防乱序回滚）
@@ -460,73 +407,6 @@ export function EvolutionPanel() {
             建议把应用策略切到「需我确认」档
           </p>
         )}
-      </div>
-
-      {/* 提案派生门槛（可设置项；按记忆总量给建议值） */}
-      <div
-        className="nm-inset p-4 space-y-2"
-        data-testid="evolution-thresholds-card"
-      >
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <p className="text-[11px] text-[var(--t3)]">提案派生门槛</p>
-          {memTotal != null && (
-            <p
-              className="text-[11px] text-[var(--t5)]"
-              data-testid="thresholds-suggestion"
-            >
-              记忆 {memTotal} 条（{suggestedThresholds(memTotal).tier} 档）→
-              建议 合并 {suggestedThresholds(memTotal).merge} / 提炼{" "}
-              {suggestedThresholds(memTotal).distill} / 矛盾{" "}
-              {suggestedThresholds(memTotal).contradiction}
-            </p>
-          )}
-        </div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          {DERIVE_THRESHOLD_META.map((f) => (
-            <label key={f.key} className="block">
-              <span className="text-[11px] text-[var(--t5)]">{f.label}</span>
-              <input
-                type="number"
-                min={f.min}
-                max={f.max}
-                step={1}
-                value={thresholds[f.key] ?? ""}
-                onChange={(e) => {
-                  // 门槛是整数（后端 serde usize）：清空放行（保留重输窗口），
-                  // 非整数拒绝，越界值按元数据区间钳制——原样写入会被后端打回
-                  const raw = e.target.value;
-                  if (raw === "") return;
-                  const n = Number(raw);
-                  if (!Number.isInteger(n)) return;
-                  setThresholds((t) => ({
-                    ...t,
-                    [f.key]: Math.min(f.max, Math.max(f.min, n)),
-                  }));
-                }}
-                data-testid={`thresholds-${f.key}`}
-                className="nm-inset mt-0.5 w-full px-2 py-1 text-xs text-[var(--t2)]"
-              />
-              <span className="block mt-0.5 text-[10px] leading-snug text-[var(--t6)]">
-                {f.hint}
-              </span>
-            </label>
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)] disabled:opacity-50"
-            onClick={() => void onSaveThresholds()}
-            disabled={busy || thresholdsBusy}
-            data-testid="btn-thresholds-save"
-          >
-            保存门槛
-          </button>
-          {thresholdsMsg && (
-            <span className="text-[11px] text-[var(--t5)]">
-              {thresholdsMsg}
-            </span>
-          )}
-        </div>
       </div>
 
       {/* 候选池列表 */}
