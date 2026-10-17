@@ -2874,3 +2874,133 @@ async fn core_final_selfcheck_sidecall_n_appends_warning() {
         "应记 final_selfcheck.fail 审计：{lines:?}"
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// 执行类谎报守卫：整场零工具调用 + 终稿叙述执行结果 → 打回一轮。
+//
+// 事故原话（session 81310e3a message 690，对应 trace turns=0 tools=0 ms=1866）：
+// 用户点名 run_python 要它 sleep+打印，模型一次工具都没调，却报「执行完毕，
+// sleep 120 秒后工具真实返回，打印了 done」。此前的守卫只有 mutating 一档，
+// 非 mutating 工具（run_python / fetch_url / bash）的执行结果可以凭空叙述。
+// ────────────────────────────────────────────────────────────────────────────
+
+/// 捕获 audit_log 的 deps，用于断言守卫记了什么审计
+fn deps_capturing_logs<'a>(
+    h: &'a CoreHarness,
+    logs: &'a Arc<Mutex<Vec<String>>>,
+) -> ModelLoopDeps<'a> {
+    let mut deps = h.deps();
+    deps.audit_log = {
+        let logs2 = logs.clone();
+        Box::leak(Box::new(move |line: &str| {
+            logs2.lock().unwrap().push(line.to_string());
+        }))
+    };
+    deps
+}
+
+/// 零工具调用 + 执行完成态终稿：应打回一轮，模型改口如实说明后才终结回合。
+#[tokio::test]
+async fn core_execution_claim_without_any_tool_call_is_pushed_back() {
+    let server = MockLlmServer::start();
+    // 第 1 轮：事故原话——零工具调用却报执行完成
+    server.push_behavior(MockBehavior::TextReply(
+        "执行完毕，sleep 120 秒后工具真实返回，打印了 `done`。".into(),
+    ));
+    // 第 2 轮：收到系统提示后改口，如实说明做不到（同会话 684/686 的正确行为）
+    server.push_behavior(MockBehavior::TextReply(
+        "受白名单约束，run_python 无法执行，不能编造结果。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    // exec_never：整场不该有任何工具被执行；真被调会 panic
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert_eq!(
+        text.trim(),
+        "受白名单约束，run_python 无法执行，不能编造结果。",
+        "应续跑并以模型的如实说明终结，实际：{text:?}"
+    );
+    assert_eq!(server.request_count(), 2, "守卫应打回一轮而不是直接终结");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("声称已执行但整场零工具调用")),
+        "应记执行类谎报审计：{lines:?}"
+    );
+}
+
+/// 真的调过工具之后：同样的完成态话术不得被拦（跨轮转述工具结果是常态）。
+#[tokio::test]
+async fn core_execution_claim_passes_after_a_tool_actually_ran() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 工具跑过之后的收尾话术——带执行完成态，但确实动过手
+    server.push_behavior(MockBehavior::TextReply("已执行完毕，任务清单如上。".into()));
+
+    let h = CoreHarness::new();
+    let deps = h.deps();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("工具跑过后应直接 Ok");
+    assert_eq!(
+        text.trim(),
+        "已执行完毕，任务清单如上。",
+        "动过手就不该拦：{text:?}"
+    );
+    assert_eq!(server.request_count(), 2, "不应被守卫多打一轮");
+}
+
+/// 零工具调用但如实拒绝：一次请求就该终结。守卫若误拦，等于惩罚诚实——
+/// 同会话 message 684/686/688 正是这个形态。
+#[tokio::test]
+async fn core_honest_refusal_without_tool_call_ends_immediately() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "受白名单约束，`node_modules` 路径不在白名单，工具拒绝真去扫。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let deps = h.deps();
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("如实拒绝应直接 Ok");
+    assert!(text.contains("不在白名单"), "应原样返回模型的拒绝说明");
+    assert_eq!(server.request_count(), 1, "如实拒绝不该被守卫多打一轮");
+}

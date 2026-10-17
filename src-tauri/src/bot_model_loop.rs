@@ -43,7 +43,7 @@ fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> 
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
 pub use crate::bot::registry::claims_mutation;
-use crate::bot::registry::fabricated_gen_path;
+use crate::bot::registry::{claims_execution, fabricated_gen_path};
 
 // TOOLS schema（编译期字符串，运行期 JSON 解析）
 
@@ -1227,6 +1227,11 @@ where
     // 补一轮机会（claim_retry）同样每次对话只用一次
     let mut mutation_done: bool = false;
     let mut claim_retry_used: bool = false;
+    // 执行类谎报守卫的会话级前置：本次对话是否**有任何**工具成功返回过。
+    // 与 mutation_done 同样的会话级一次置位、不按轮重置（工具结果跨轮转述是
+    // 常态），但口径更宽——任意工具成功即置位，只有「整场零工具调用」这一种
+    // 病态形态才拦，避免把「读了文件再汇报结果」这类正常轮次打回。
+    let mut any_tool_succeeded: bool = false;
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
     // PREVR 第 1 层：工具失败检测——同工具连续失败计数，
@@ -2035,30 +2040,51 @@ where
             }
             let fake_gen_path = fabricated_gen_path(&final_text);
             let claim_mutation = !mutation_done && claims_mutation(&final_text);
-            if !claim_retry_used && (claim_mutation || fake_gen_path.is_some()) {
+            // 执行类谎报：整场一次工具都没成功过，终稿却在叙述执行结果。此前守卫
+            // 只有 mutating 一档，run_python / fetch_url 这类非 mutating 工具可以
+            // 被凭空叙述——实测原话「执行完毕，sleep 120 秒后工具真实返回，
+            // 打印了 done」，对应 trace turns=0 tools=0、耗时 1.9 秒。
+            let claim_execution = !any_tool_succeeded && claims_execution(&final_text);
+            if !claim_retry_used
+                && (claim_mutation || claim_execution || fake_gen_path.is_some())
+            {
                 claim_retry_used = true;
                 audit_log(&format!(
                     "hallucination_guard | {}: {}",
-                    if fake_gen_path.is_some() {
+                    if claim_execution {
+                        "声称已执行但整场零工具调用"
+                    } else if fake_gen_path.is_some() {
                         "声称已生成但路径不存在"
                     } else {
                         "声称变更但未调工具"
                     },
                     crate::bot::truncate_for_log(&final_text, 100)
                 ));
-                let reason = match &fake_gen_path {
-                    Some(p) => {
+                let reason = match (&fake_gen_path, claim_execution) {
+                    (Some(p), _) => {
                         format!("你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。")
                     }
-                    None => {
+                    (None, true) => {
+                        "你刚才叙述了一次已完成的执行并给出了结果，但本次对话从头到尾没有任何工具调用成功——这个结果是编造的。"
+                            .to_string()
+                    }
+                    (None, false) => {
                         "你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。"
                             .to_string()
                     }
                 };
+                // 执行类谎报的补救路径与变更类不同：变更类要点名具体工具，
+                // 执行类（含 run_python / bash / fetch_url）点不全也不该点名——
+                // 该做的是把工具真正调起来，拿不到结果就如实说拿不到。
+                let remedy = if claim_execution && fake_gen_path.is_none() {
+                    "请立即调用对应工具实际执行并如实转述它的真实返回；若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
+                } else {
+                    "请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。".to_string()
+                };
                 msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
                 msgs.push(serde_json::json!({
                     "role": "user",
-                    "content": format!("【系统提示】{reason}请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。")
+                    "content": format!("【系统提示】{reason}{remedy}")
                 }));
                 continue;
             }
@@ -2362,6 +2388,12 @@ where
             }
             // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
             let failed = !tool_outcome.status.is_success();
+            // 任意工具成功即置位（执行类谎报守卫的前置）。按结果而非按调用置位：
+            // 被门禁拦下/用户拒绝的调用没产出任何可转述的东西，模型若照着它
+            // 编结果，守卫还得拦得住。
+            if !failed {
+                any_tool_succeeded = true;
+            }
             emit(
                 "bot-tool-done",
                 serde_json::json!({
@@ -2869,6 +2901,41 @@ mod hallucination_guard_tests {
         // 「保存/记住」动词覆盖落盘/记偏好话术
         assert!(claims_mutation("已保存到 AI_Gen_Files"));
         assert!(claims_mutation("已记住你的偏好"));
+    }
+
+    #[test]
+    fn claims_execution_catches_the_real_incident() {
+        // 实锤原话（session 81310e3a message 690，trace turns=0 tools=0 ms=1866）：
+        // 用户点名 run_python 要它 sleep+打印，模型零工具调用却报「工具真实返回」。
+        assert!(claims_execution(
+            "执行完毕，sleep 120 秒后工具真实返回，打印了 `done`。"
+        ));
+        // 同一形态的变体
+        assert!(claims_execution("脚本跑完了，输出正常"));
+        assert!(claims_execution("已执行完毕，无报错"));
+        assert!(claims_execution("工具返回 done"));
+    }
+
+    #[test]
+    fn claims_execution_passes_honest_refusals_and_instructions() {
+        // 同会话 message 684/686/688：模型如实拒绝白名单外路径——这是要鼓励的
+        // 行为，被守卫打回等于惩罚诚实。
+        assert!(!claims_execution(
+            "受安全红线约束，不会遍历全盘——工具直接拒绝、不会真去扫。"
+        ));
+        assert!(!claims_execution(
+            "`node_modules` 路径不在白名单，工具拒绝真去扫。"
+        ));
+        assert!(!claims_execution(
+            "受白名单约束——`src/components/ChatPanel` 不在白名单里，我不会凭文件名瞎猜。"
+        ));
+        // 教学/建议语气：出现「执行」但没有完成态，更不是谎报
+        assert!(!claims_execution("你可以执行 `npm test` 来验证。"));
+        assert!(!claims_execution("接下来执行 run_python 跑一遍。"));
+        // 中性收尾语刻意不收（与 claims_mutation 同一条纪律）
+        assert!(!claims_execution("分析已完成，结论如下"));
+        assert!(!claims_execution("已完成搜索，找到 3 条结果"));
+        assert!(!claims_execution(""));
     }
 
     #[test]
