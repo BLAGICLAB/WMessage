@@ -7003,3 +7003,63 @@ doneCount/total 一致（50%→49.7%，100%→99.3%，差值为 1px 边框所致
 **copy_file.rs 的搬迁记录是纯负债**：`从 lib.rs:98-122 搬过来，逻辑一字不动`——
 行号早已指向别处，留着只会误导。整段删除，只留「为什么这个函数签名是
 `Result<(), String>` 不统一」这条仍然有效的信息。
+
+## 2026-10-17（周六）轮数口径单源：「轮」由循环自报，不再数 LLM 请求事件
+
+**为什么换方向**: 上一版把子 agent 撞轮数熔断时丢掉的正文捞了回来，但那次事故本身还露出更深的问题：**上报的轮数和真正约束循环的轮数根本不是同一个数**。trace 里跑满 50 轮撞熔断的那次执行，落库是 `turns=0 | tools=0 | prompt_tok=0 | completion_tok=0 | ms=255001`——255 秒的执行记成 0 轮。四处偏差：
+
+1. `turn_count` 的数据源是**统计 `llm.request` 审计事件**，不是循环的 `round` 变量。一轮里可能网络重试、可能撞 max_tokens 自动续写、可能有终稿自检，数事件必然把「轮」算大。
+2. 明细用 `.map()` 组装，只在 `Ok` 路径填 `LoopTrace`；熔断走 `Err` 就整段没采到 —— 于是既没有轮数也没有 token。
+3. 子 agent 的轮数**不落任何地方**。`check_subagent` 的 progress 只有验收进度（done/total），主 agent 轮询只看得见「已验收 N 条」，看不见「已跑 N 轮」——一个跑满预算在原地打转的子任务，和一个刚启动的子任务在 UI 上长得一模一样。
+4. 子 agent 默认预算 `30/100/600` 在 `bot::params` 和 `db::subagents` 各写了一份字面量，改一处漏一处就是静默漂移。
+
+**为什么「轮」必须由循环自报（调研后的定论）**: 查了 OpenAI Agents SDK / LangGraph / Claude Agent SDK 三家的官方定义，结论一致——**没有一家按网络事件计轮数**。OpenAI 定义 turn 为「一次 AI 调用含其触发的工具调用」，Claude 定义为「一条用户消息 + 助手回复」，LangGraph 数的 super-step 也来自图执行器本身而不是请求日志。三家都把「轮数」和「请求数/成本」当两个量。所以把 `turn_count`（循环自报）和 `request_count`（数 `llm.request`）拆成两个字段，而不是在两者间二选一——请求数恰恰才是成本口径，丢掉它同样可惜。
+
+**失败路径为什么不塞进 CommandError**: `CommandError` 是穷举匹配的错误类型，加一个携带 stats 的变体会牵动 `code()` / `is_recoverable()` / `message()` 三处穷举和前端契约。改走一个显式的 `failed_trace_out: Option<&Arc<Mutex<Option<LoopTrace>>>>` 出口——成功照旧走返回值，失败把已跑出的统计交回给要落 trace 的调用方。逐步执行链路传 `None`（它不落 exec_traces），子 agent 也传 `None`（轮数另走 tool_guard 仪表）。
+
+**子 agent 轮数仪表跟着 ctx 走而不是另开通道**: `SubagentSessionCtx` 已经有 `used_tool_calls` 这个同款仪表（给 dispatch 预算闸用的），`used_rounds` 照它加一个，`on_round` 回调顺手写进去。强制点仍在 `run_model_loop_core` 的 `max_rounds` 熔断，仪表纯只读消费——**仪表和强制点分开**，否则改仪表会顺手改坏熔断。
+
+**读数口径**: `roundsUsed` 必须与 `roundsBudget` 同报。10/20 和 10/200 是完全不同的紧迫度，单给个「已跑 10 轮」没法判断该不该催。守卫注销后（子 agent 进终态）读不到计数器，此时字段整个不出现而不是报 0——凭空造数比不报更坏。
+
+## 2026-10-17（周六）缓存 token 落库：成本统计补上 Anthropic 四档计价的另一半
+
+**为什么换方向**: 上一条把「请求数」误当成成本口径（已撤回）。真正的成本口径一直是 token，而 token 这一侧本身有个更早的漏记：薄壳里 `usage_cr` / `cache_creation` 两个计数器一直在累加，但组装 `LoopTrace` 时没取，`exec_traces` 表也没有对应列——**缓存 token 从来没落过库**。
+
+**为什么这个漏记比请求数严重得多**: Anthropic 的 input token 分四档计价，cache read 是 **0.1x**、cache write 是 **1.25x**、普通 input 是 1x。一次长会话里缓存命中的 token 量经常数倍于新增 input（工具调用循环每轮都要重发全部历史，第一轮之后几乎全是缓存命中）。漏记它等于把长会话的成本系统性低估——**恰恰是缓存收益最大、最该看见的场景，看不见**。请求数丢失只是丢了个诊断信号，这个丢失直接让费用数字不对。
+
+**单列而非折进 prompt_tokens**: 折进去是最省事的做法（一列都不用加），但 0.1x 和 1x 混算之后这个数字同时失去两种含义——既不是「普通 input 量」也不是「等效成本」。分成两列之后每档保持自己的口径，要算钱的时候按档乘单价即可。
+
+**三个聚合口一个都不能漏**: `usage_stats_daily_conn`（按日）、`usage_stats_by_model_conn`（按模型）、`usage_stats_daily_by_model_conn`（按模型×日期，趋势图分线数据源）都读这两列。只改前两个的话，「每日 Token 趋势图」的分线会与其他两张图对不上——同一份数据在三个出口呈现三种总量是最难查的一类不一致，所以三个查询一起改，并写了一个测试同时断言三个口。
+
+**migration 沿用 pragma 探测而非版本号**: 照 `model` 列的既有写法（`pragma_table_info` 查列名在不在，不在就 ALTER 补）。没引入 `user_version` 版本表——那是一次架构决定，超出这次改动范围；且加列是单列语法，两个列必须分两次检查（一次 `query_row` 查两个列名会漏补）。
+
+**request_count 降级为内存字段**: 它的唯一用途是诊断（`request_count - turn_count` 的差值 = 重试 + 续写 + 自检次数），而 `llm.request` 审计事件日志里本来就有每次请求，事后能查。既然成本口径是 token，那这个字段就没必要为它做一次 migration——不落表，`LoopTrace` 里留着供内存内诊断使用。
+
+## 2026-10-17（周六）缓存列补齐的并发竞态：pragma 探测挡不住两个连接同时 ALTER
+
+**为什么换方向**: 上一条的缓存 token 两列迁移上线后立刻在日志里报
+`subagent_zombie_sweep_db_fail | err: duplicate column name: cache_read_tokens`。看着像迁移写错了，其实是我沿用的「先查 pragma 再 ALTER」写法**根本挡不住并发**。
+
+**竞态窗口在哪**: `open_db` 每次调用都跑一遍 `ensure_trace_tables`，而它返回的是**一个独立的新连接**。首装时 setup / 僵尸清扫 / 首条命令各调一次 `open_db`，三个连接各自跑 pragma——都看到「列不存在」——然后三个都去 ALTER，第二个开始吃 `duplicate column name`。先查后改只能挡**顺序**执行，挡不住**并发**执行。这不是概率问题，是必然：只要迁移窗口内有两个连接同时进来就会撞。
+
+**为什么查错列名也救不了**: 常见建议是「改查列名拼写」——但撞的是并发，不是拼写。
+
+**修法**: 抽出 `add_column_if_absent`，把「已存在」判定挪到 ALTER 自己的错误上：探测命中直接返回，否则 ALTER，**只有 `duplicate column name` 这一条被容忍**，其余（库锁、SQL 语法错）照原样上抛。静默整个 Err 是更糟的做法——那会让缺列一路掩到查询时才炸，离现场十万八千里。
+
+**顺带修好 model 列的同类竞态**: 它是同一个函数里同样的写法，从上线起就带着这个雷，只是一直没人并发调用 `open_db` 撞上。抽成公共函数后三列共用一条路径，不再是三份各自为政的探测代码。
+
+**为什么这道闸会连带炸掉僵尸清扫**: `sweep_zombie_subagents` 在 `open_db` 失败时是 `return`（整段提前结束），不是继续。所以迁移竞态不只是报个警——它让**上一世的 running/queued 僵尸行永远收不了尾**，在子 agent 面板里就一直转圈。一条 DB 迁移的报错，最后表现成 UI 里一个永远不结束的 loading。
+
+## 2026-10-17（周六）子 agent 轮数不落库：列表显示要的是「此刻跑到第几轮」，不是「收尾时跑了多少轮」
+
+**为什么换方向**: 子 agent 侧栏原本只有名字 + 状态图标，用户看不出它在推进。想显示「已跑 N/M 轮」时，第一反应是把轮数写进 `subagents` 表——但那样每轮都要 UPDATE 一次行，等于把上一轮刚定下的「轮数仪表共用一个 `Arc<AtomicUsize>`」整个抵消掉：仪表的意义就是**不碰 DB 就能读到当前值**，落库反而把它变回一个需要轮询才准的字段。
+
+**轮数其实早就有，只是不给前端**: `check_subagent` 工具一直能报 `roundsUsed`/`roundsBudget`，值从 `tool_guard::subagent_ctx` 的内存仪表取——子 agent 自己调 check 时能看见，主会话的侧栏看不见。同一个数字两条链路一份口径，所以没有新造状态源，只是把已有的那条接上。
+
+**为什么不新开事件通道**: ZCode 那种推送式更新更优雅，但轮数**只在轮边界变**，一轮最短也要几秒（要调模型）。为每轮发一个事件，等于为 3 秒一次的变化建一条永久通道。前端改成「有在途行才 3 秒重拉」，终态后定时器自然停摆——变化频率低的指标用轮询读，不为它开通道。
+
+**读不到就留空，不报 0**: 守卫注销后 `subagent_ctx` 返回 None。报 0 会让「刚跑完 14 轮的子 agent」显示成「0/30 轮」，比不显示更糟（凭空造数比不报更坏）。`list_view_drops_rounds_after_guard_dropped` 锁住这条。
+
+**时长在前端算、终态定死**: `started_at`/`finished_at` 本来就在行上（毫秒），后端什么都不用加。在途每秒刷新，终态用 `finishedAt - startedAt` 定死——终态还跳秒数等于骗用户说它还在跑。排队期 `started_at` 为空，两端都没有就整段不显示。
+
+**两个展示点共用一份摘要**: 聊天内嵌 strip 与右侧栏 agents 页各写一遍轮数文案，早晚有一边忘加分母。所以抽 `SubagentRowLine` / `SubagentProgress` / `SubagentCancelButton` 三个件，两边只套自己的外壳——和抽 `ToolStatusMark` 是同一个理由：改一处漏一处已经发生过一次。
