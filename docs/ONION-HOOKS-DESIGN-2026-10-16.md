@@ -763,8 +763,18 @@ yaml 里的 `onion_id`（probe / writereditor / validator）是**配置模板名
     技能路由命中率的变化（仓内无命中率指标）。
   - `bot_sessions` 两列的迁移走既有幂等 `ensure_columns`，**未在真实老库上跑过
     升级路径**，只在测试库验证。
-  - **主会话仍无法绑定配置档**：`bot_session_set_onion` 现在只有子 agent 建会话
-    一个调用方；主会话的 system 装配在别处，要注入同一段配置档提示词得单独做。
+  - **主会话绑定配置档：有意没做，需要产品拍板**（不是漏做）。查过后果：
+    `tools_json_for` 对非子 agent 会话会走 `cfg.profile` 分支，所以主会话一旦
+    绑定，45 个工具**立刻**被收窄到 `profile ∩ allowed`，而三份内置档全是子 agent
+    角色（探查 / 撰写 / 校验）——套到主 agent 上等于把 Planner + 派发者变成只读
+    校验员，且除了解绑没有 undo。症状还是最难诊断的那种：「工具莫名少了一半」。
+    三条可选语义，需要先定：
+    1. **完整收窄**（当前代码路径天然如此）：主 agent 真按配置档受限。
+    2. **只取 role，不收窄工具**：注入同一段提示词，工具集不动。安全，但三份配置
+       的 role 描述的是子 agent 职责，套在主 agent 上语义别扭。
+    3. **加一个「仅子 agent 可绑定」的闸**：明确不支持主会话绑定，配置入口按会话
+       类型过滤。
+    在拍板前 `bot_session_set_onion` 仍只有子 agent建会话一个调用方。
   - **spawn 的档位优先级是「显式 profile > 配置档 > stage」**（`resolve_spawn_profile`）。
     配置档压不过显式 profile 是有意的：让 yaml 覆盖运行时档位就是放宽，与 §3.4
     「只有收紧」冲突。代价是配置档的 `profile:` 只在调用方没表态时兜底生效。
