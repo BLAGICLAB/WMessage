@@ -777,6 +777,221 @@ pub(crate) fn acceptance_criteria_of(row: &SubagentRow) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 提示词用的软截断（按字符，不转义控制字符）。
+///
+/// **不复用 `truncate_for_log`**：那个会把换行/制表转义成 `\n` 形态，那是日志
+/// 专用形态；回报段是要给模型读的，多行摘要转义成一坨反而更难读。
+fn clip(s: &str, max: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max {
+        return t.to_string();
+    }
+    let mut out: String = t.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
+/// 回报段的渲染上限：一次注入最多这几条 / 这么多字。
+///
+/// 上限不是洁癖：父会话的历史预算是共享的，一次注入十条长摘要就能把本轮
+/// 对话挤掉。宁可少注入几条（下一轮还会补），也不要撑爆当轮上下文。
+const DIGEST_MAX_ITEMS: usize = 8;
+const DIGEST_MAX_SUMMARY_CHARS: usize = 600;
+const DIGEST_MAX_ARTIFACTS: usize = 5;
+
+/// 一段渲染好的子任务回报 + 本次注入后应记为「父上下文已吸收」的子 agent id。
+pub(crate) struct SubagentDigest {
+    pub text: String,
+    pub absorb: Vec<String>,
+}
+
+/// 父侧装配（设计 §3.7「下一轮 assemble 检查」的落点）。
+///
+/// 口径三条，都是为了「齐了/没齐」在模型侧都看得见：
+/// 1. **只注 `result_json`，绝不注子会话历史**——子 agent 的完整对话留在它自己
+///    的会话行里，父上下文只吸收结构化收尾。这是 §3.7 要点 3 的硬要求。
+/// 2. **终态即吸收**：终态行注入后记入 `absorb`，下一轮不再重复念同一份结果。
+/// 3. **非终态不吸收**：还在跑的行下轮还要看它有没有完成，所以只报一句计数，
+///    不逐条铺开。
+///
+/// 返回 None = 没有新东西可注入（该父会话的子任务都已汇报过，或一个都没有），
+/// 调用方据此不加这段 system 消息。
+pub(crate) fn build_subagent_digest(
+    rows: &[SubagentRow],
+    absorbed: &std::collections::HashSet<String>,
+) -> Option<SubagentDigest> {
+    let mut items = String::new();
+    let mut absorb = Vec::new();
+    let mut running = 0usize;
+    let mut listed = 0usize;
+
+    for row in rows {
+        if absorbed.contains(&row.id) {
+            continue;
+        }
+        let objective = clip(&row.objective, 40);
+        if !row.status.is_terminal() {
+            // 在途不逐条列：铺开只会挤占上下文，模型只需要知道「还有几个没回」
+            running += 1;
+            continue;
+        }
+        if listed >= DIGEST_MAX_ITEMS {
+            continue;
+        }
+        listed += 1;
+        absorb.push(row.id.clone());
+        match row.status {
+            SubagentStatus::Succeeded => {
+                items.push_str(&format!("{listed}. {objective} → 成功\n"));
+                if let Some(r) = row.result_json.as_deref().and_then(parse_result_json) {
+                    if let Some(summary) = r
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        items.push_str(&format!(
+                            "   摘要：{}\n",
+                            clip(summary, DIGEST_MAX_SUMMARY_CHARS)
+                        ));
+                    }
+                    if let Some(list) = r.get("artifacts").and_then(|v| v.as_array()) {
+                        let shown: Vec<String> = list
+                            .iter()
+                            .take(DIGEST_MAX_ARTIFACTS)
+                            .filter_map(|a| {
+                                let path = a.get("path").and_then(|v| v.as_str())?;
+                                let desc = a
+                                    .get("description")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty());
+                                Some(match desc {
+                                    Some(d) => format!("{}（{}）", clip(path, 80), clip(d, 60)),
+                                    None => clip(path, 80),
+                                })
+                            })
+                            .collect();
+                        if !shown.is_empty() {
+                            items.push_str(&format!("   产物：{}\n", shown.join("、")));
+                        }
+                    }
+                }
+            }
+            other => {
+                // 失败/取消/超预算也必须回报：父 agent 否则会一直以为子任务还在跑，
+                // 按「等齐」的预期一直等下去。
+                let reason = row
+                    .error
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| format!("：{}", clip(s, 200)))
+                    .unwrap_or_default();
+                items.push_str(&format!(
+                    "{listed}. {objective} → {}{reason}\n",
+                    match other {
+                        SubagentStatus::Failed => "失败",
+                        SubagentStatus::Cancelled => "已取消",
+                        SubagentStatus::BudgetExceeded => "超预算",
+                        _ => unreachable!("非终态已在上分支返回"),
+                    }
+                ));
+            }
+        }
+    }
+
+    if listed == 0 && running == 0 {
+        return None;
+    }
+    let mut text = String::from("[子任务回报] 以下是你此前派出的子任务结果，可直接据此继续：\n");
+    if listed > 0 {
+        text.push_str(&items);
+        text.push_str("（以上已汇报，不必再用 check_subagent 重复查。）\n");
+    }
+    if running > 0 {
+        text.push_str(&format!(
+            "另有 {running} 个子任务仍在排队或执行中，完成后会在下一轮自动汇总；\
+             现在可以先基于以上结果推进，不必空等。\n"
+        ));
+    }
+    Some(SubagentDigest { text, absorb })
+}
+
+/// 解析收尾 JSON：解析失败不当成「没有结果」，而是当没有——宁可少报一条，
+/// 也不要把半截 JSON 念进提示词（`finalize` 侧已保证 result_json 结构完整，
+/// 这里只是不假设它一定完整）。
+fn parse_result_json(raw: &str) -> Option<serde_json::Value> {
+    serde_json::from_str(raw).ok()
+}
+
+/// 父会话 → 已经汇报过的子 agent id。
+///
+/// **进程内、不落库**：这是一次「父上下文是否已吸收某结果」的去重标记，不是
+/// 业务事实——DB 里的终态才是事实。落库要多一列 + 迁移，换来的只是重启后
+/// 不重复念一遍；而重启后重复念的后果是提示词里多几段旧结果（啰嗦，不是
+/// 错误），重启一次也只发生一次。这个取舍是刻意的，重启后重复汇报的口子
+/// 记在设计文档 §十。
+static DIGESTED: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>,
+> = std::sync::OnceLock::new();
+
+fn digested(
+) -> &'static std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>
+{
+    DIGESTED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 锁中毒按 into_inner 取数据（全仓 mutex 口径）：去重表坏了的后果只是
+/// 「可能多汇报一次」，不该让整个对话发不出请求。
+fn lock_digested() -> std::sync::MutexGuard<
+    'static,
+    std::collections::HashMap<String, std::collections::HashSet<String>>,
+> {
+    crate::db::lock::lock_or_recover(digested(), "bot_orchestrator::DIGESTED")
+}
+
+/// 本次会话要注入的子任务回报段（没有新回报时 None）。
+///
+/// 只读自己的父会话行，查库失败/无会话一律 None——父上下文缺一段汇报照样能
+/// 发请求，用户也还能用 `check_subagent` 手动查。
+pub(crate) async fn subagent_digest_block(
+    app: &AppHandle,
+    session_id: Option<&str>,
+) -> Option<String> {
+    let sid = session_id?;
+    let app2 = app.clone();
+    let sid_owned = sid.to_string();
+    let rows = tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::db::open_db(&app2).ok()?;
+        crate::db::load_subagents_by_parent(&conn, &sid_owned, DIGEST_SCAN_LIMIT as u32).ok()
+    })
+    .await
+    .ok()
+    .flatten()?;
+
+    let (text, absorb) = {
+        let mut guard = lock_digested();
+        let set = guard.entry(sid.to_string()).or_default();
+        let built = build_subagent_digest(&rows, set)?;
+        for id in &built.absorb {
+            set.insert(id.clone());
+        }
+        (built.text, built.absorb.len())
+    };
+    crate::bot::audit_log(
+        app,
+        &format!("subagent_digest | session={sid} absorbed={absorb}"),
+    );
+    Some(text)
+}
+
+/// 每次会话扫多少个子 agent 行（最新在前的 LIMIT）。
+///
+/// 与 `DIGEST_MAX_ITEMS`（一次渲染几条）不同：前者是「看多新」，后者是
+/// 「说多少」。前者要够大，免得长期挂着的排队行把新完成的结果挤出候选。
+const DIGEST_SCAN_LIMIT: usize = 30;
+
 /// 机器可判定的验收谓词（相对子 agent 产物目录解析）：
 /// - `file_exists:<相对路径>`：该文件存在
 /// - `file_nonempty:<相对路径>`：该文件存在且非空
@@ -2506,6 +2721,222 @@ mod orchestrator_tests {
         assert!(
             !include_str!("bot_orchestrator.rs").contains(concat!("🧩 子", "任务：")),
             "标题已去 emoji 前缀（路由不依赖标题；子 agent 身份由 is_subagent 字段承载）"
+        );
+    }
+
+    // ── 父侧装配（设计 §3.7 L2 落点）──
+
+    fn digest_row(id: &str, status: SubagentStatus, result: Option<&str>) -> SubagentRow {
+        SubagentRow {
+            id: id.into(),
+            status,
+            profile: SubagentProfile::Coder,
+            model: None,
+            parent_session_id: Some("main-sess".into()),
+            session_id: Some(format!("sub-{id}")),
+            task_id: None,
+            objective: format!("目标-{id}"),
+            trace_id: format!("trc-{id}"),
+            acceptance_json: None,
+            context_summary: None,
+            budget_json: None,
+            result_json: result.map(str::to_string),
+            error: (status == SubagentStatus::Failed).then(|| "LLM 5xx".to_string()),
+            created_at: 1_000,
+            started_at: Some(1_001),
+            finished_at: Some(1_002),
+        }
+    }
+
+    const OK_RESULT: &str = r#"{"status":"succeeded","summary":"覆盖 5 个竞品，含官网 URL","artifacts":[{"path":"report.md","description":"竞品对比"},{"path":"data.csv"}]}"#;
+
+    #[test]
+    fn digest_reports_terminal_rows_and_only_absorbs_those() {
+        let rows = vec![
+            digest_row("sa_ok", SubagentStatus::Succeeded, Some(OK_RESULT)),
+            digest_row("sa_running", SubagentStatus::Running, None),
+            digest_row("sa_fail", SubagentStatus::Failed, None),
+        ];
+        let d = build_subagent_digest(&rows, &std::collections::HashSet::new())
+            .expect("有未汇报的子任务就该出段");
+        assert!(d.text.contains("覆盖 5 个竞品"), "摘要要进段：{}", d.text);
+        assert!(
+            d.text.contains("report.md（竞品对比）"),
+            "产物路径与说明都要进段：{}",
+            d.text
+        );
+        assert!(
+            d.text.contains("→ 失败：LLM 5xx"),
+            "失败必须回报（否则父 agent 会一直等）：{}",
+            d.text
+        );
+        assert!(
+            d.text.contains("1 个子任务仍在排队或执行中"),
+            "在途要报计数：{}",
+            d.text
+        );
+        assert!(
+            !d.text.contains("目标-sa_running"),
+            "在途不逐条铺开：{}",
+            d.text
+        );
+        // 只有终态被吸收：在途行下轮还要看它完没完
+        assert_eq!(d.absorb, vec!["sa_ok".to_string(), "sa_fail".to_string()]);
+    }
+
+    #[test]
+    fn digest_is_idempotent_across_turns() {
+        let rows = vec![digest_row(
+            "sa_ok",
+            SubagentStatus::Succeeded,
+            Some(OK_RESULT),
+        )];
+        let first = build_subagent_digest(&rows, &std::collections::HashSet::new()).unwrap();
+        let mut set = std::collections::HashSet::new();
+        for id in &first.absorb {
+            set.insert(id.clone());
+        }
+        assert!(
+            build_subagent_digest(&rows, &set).is_none(),
+            "同一份结果第二轮不得再念一遍"
+        );
+        assert!(
+            build_subagent_digest(&[], &set).is_none(),
+            "没有子任务时不该出段"
+        );
+    }
+
+    #[test]
+    fn digest_never_injects_child_conversation_history() {
+        // §3.7 要点 3：父 payload 只注 result_json，不注子会话历史。
+        // 段里出现「system」「assistant」这类角色标记或子会话 id 即为破线。
+        let rows = vec![digest_row(
+            "sa_ok",
+            SubagentStatus::Succeeded,
+            Some(OK_RESULT),
+        )];
+        let d = build_subagent_digest(&rows, &std::collections::HashSet::new()).unwrap();
+        assert!(
+            !d.text.contains("sub-sa_ok"),
+            "子会话 id 不该出现：{}",
+            d.text
+        );
+        assert!(
+            !d.text.contains("\"role\""),
+            "不得把子会话消息行当 payload 注入：{}",
+            d.text
+        );
+    }
+
+    #[test]
+    fn digest_caps_items_and_summary_length() {
+        // 一次注入不能把本轮对话挤掉：条数与摘要长度都要封顶。
+        let long = "长".repeat(DIGEST_MAX_SUMMARY_CHARS * 3);
+        let result = format!(
+            r#"{{"summary":"{long}","artifacts":[{{"path":"a.md"}},{{"path":"b.md"}},{{"path":"c.md"}},{{"path":"d.md"}},{{"path":"e.md"}},{{"path":"f.md"}}]}}"#
+        );
+        let rows: Vec<SubagentRow> = (0..DIGEST_MAX_ITEMS + 5)
+            .map(|i| {
+                digest_row(
+                    &format!("sa_{i}"),
+                    SubagentStatus::Succeeded,
+                    Some(result.as_str()),
+                )
+            })
+            .collect();
+        let d = build_subagent_digest(&rows, &std::collections::HashSet::new()).unwrap();
+        assert_eq!(
+            d.absorb.len(),
+            DIGEST_MAX_ITEMS,
+            "超出上限的行不注入（也不吸收，否则它永远进不了下一轮）"
+        );
+        let summary_line = d
+            .text
+            .lines()
+            .find(|l| l.trim_start().starts_with("摘要："))
+            .expect("有摘要行");
+        assert!(
+            summary_line.chars().count() <= DIGEST_MAX_SUMMARY_CHARS + 8,
+            "摘要必须被截断：{} 字",
+            summary_line.chars().count()
+        );
+        let artifacts_line = d
+            .text
+            .lines()
+            .find(|l| l.trim_start().starts_with("产物："))
+            .expect("有产物行");
+        assert!(
+            !artifacts_line.contains("f.md"),
+            "产物条数封顶：{artifacts_line}"
+        );
+    }
+
+    #[test]
+    fn digest_survives_malformed_result_json() {
+        // 收尾 JSON 解析失败当「没有结果」：宁可少报一条，也不把半截 JSON
+        // 念进提示词。行仍要被吸收——否则它每轮都重来一次。
+        let rows = vec![digest_row(
+            "sa_bad",
+            SubagentStatus::Succeeded,
+            Some("{半截"),
+        )];
+        let d = build_subagent_digest(&rows, &std::collections::HashSet::new())
+            .expect("行本身仍要出段");
+        assert!(!d.text.contains("半截"), "坏 JSON 不得进段：{}", d.text);
+        assert!(d.text.contains("→ 成功"));
+        assert_eq!(d.absorb, vec!["sa_bad".to_string()]);
+    }
+
+    #[test]
+    fn malformed_result_json_is_not_wrapped_and_carried_on() {
+        // 直接钉函数契约：解析失败返回 None。
+        // 只在渲染输出上断言「文本里没有坏 JSON」是不够的——把失败包成
+        // `{"raw": ...}` 继续往下走的写法同样能让输出里搜不到坏串，
+        // 那样原始文本就还在数据流里（且总有一天会换个字段被渲染出来）。
+        assert!(
+            parse_result_json("{半截").is_none(),
+            "解析失败必须返回 None，不得包装后继续"
+        );
+        assert!(
+            parse_result_json(OK_RESULT).is_some(),
+            "合法收尾 JSON 要能解析出来"
+        );
+        assert!(
+            parse_result_json("[]").is_some(),
+            "合法但结构不是对象也算解析成功（取字段时自然落空，不该当语法错）"
+        );
+    }
+
+    /// 接线守卫：回报段的注入点必须在消息组装的**末尾**（历史之后）。
+    ///
+    /// 放在摘要/记忆块那段之前，模型看到的是「先回报后用户问题」，权重结构
+    /// 反了；放在更早还会被后续逻辑改写。匹配串 `concat!` 拆分防自匹配。
+    #[test]
+    fn digest_is_injected_at_the_end_of_message_assembly() {
+        let chat = include_str!("bot_chat.rs");
+        let at = chat
+            .find(concat!(
+                "crate::bot_orchestrator::",
+                "subagent_digest_block(&app, session_id.as_deref())"
+            ))
+            .expect("组装末尾必须调 subagent_digest_block");
+        let history_end = chat
+            .find("msgs.push(serde_json::json!({\"role\": role, \"content\": m.content}))")
+            .expect("历史消息循环的收尾 push");
+        // 模型循环锚点必须在注入点**之后**找：bot_chat.rs 前面还有若干处提到
+        // run_model_loop 的注释/别名，全文件搜第一个会命中它们。
+        let runs_loop = chat[at..]
+            .find("run_model_loop(")
+            .map(|i| i + at)
+            .expect("注入点之后应有模型循环调用");
+        assert!(
+            history_end < at && at < runs_loop,
+            "回报段必须夹在历史消息与模型循环之间（现 history_end={history_end} \
+             digest={at} loop={runs_loop}）"
+        );
+        assert!(
+            chat[at..].contains("\"role\": \"system\""),
+            "回报段作为 system 消息追加"
         );
     }
 

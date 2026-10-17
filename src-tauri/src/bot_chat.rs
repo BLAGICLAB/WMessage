@@ -993,6 +993,15 @@ pub async fn bot_chat(
             msgs.push(serde_json::json!({"role": role, "content": m.content}));
         }
     }
+    // L2 落点 · 子任务回报（设计 §3.7「下一轮 assemble 检查」）：父 agent 派出去的
+    // 子任务，终态的在这里打包成一段注入，在途的只报计数。放最后是刻意的——
+    // 模型对本轮末尾的内容权重最高，而回报正是「此刻新增」的信息。
+    // 只注 result_json，子会话历史留在它自己的会话行里（§3.7 要点 3）。
+    if let Some(digest) =
+        crate::bot_orchestrator::subagent_digest_block(&app, session_id.as_deref()).await
+    {
+        msgs.push(serde_json::json!({"role": "system", "content": digest}));
+    }
     // Failure 分支可达——模型循环 Err（LLM 5xx/流断/头超时等）也落 trace
     //（此前只在 Ok 收尾处 hook，失败轨迹全丢，trace 的 Failure 采样规则不可达）。
     // reason 用粗分类，不带原始错误消息（含路径/参数，不入 trace/audit 明细）
