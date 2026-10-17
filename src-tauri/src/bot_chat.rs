@@ -855,7 +855,7 @@ pub async fn bot_chat(
         PromptSlot::SkillCatalog,
         format!(
             "\n\n{}",
-            // N7-②：按用户末条消息做语义化技能推荐排序（embed 不可用降级全清单）
+            // 按用户末条消息做语义化技能推荐排序（embed 不可用降级全清单）
             crate::bot_skills::build_skill_block_for(
                 &app,
                 messages.last().map(|m| m.content.as_str()),

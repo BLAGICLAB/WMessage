@@ -52,9 +52,9 @@ pub struct SkillRun {
     /// 后台定时任务为 None。active_skill_run / 暂停 / 确认按此过滤，
     /// 防会话 A 暂停中的 Skill 被会话 B 的主循环推进或确认。
     pub session_id: Option<String>,
-    /// N7-③：use_skill 调用传入的参数（对象）；${params.key} 替换源
+    /// use_skill 调用传入的参数（对象）；${params.key} 替换源
     pub params: serde_json::Value,
-    /// N7-⑥：技能目录（第三层渐进披露——references 清单 + 会话级读白名单）
+    /// 技能目录（第三层渐进披露——references 清单 + 会话级读白名单）
     pub dir: Option<PathBuf>,
 }
 
@@ -164,7 +164,7 @@ pub fn clear_terminal_skill_runs<R: tauri::Runtime>(app: &AppHandle<R>, session_
 /// 读取技能正文 + 完整元数据 + 技能目录（多目录 fallback）
 /// 遍历 `skill_search_paths(app)`：数据目录找不到 → dev 模式 fallback target/debug/skills。
 /// 数据目录优先（用户已修改的 Skill 优先于 dev mock 版本）。
-/// N7-⑥：返回目录供第三层渐进披露（references 清单）与会话级读白名单。
+/// 返回目录供第三层渐进披露（references 清单）与会话级读白名单。
 pub(crate) fn load_skill_meta<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     name: &str,

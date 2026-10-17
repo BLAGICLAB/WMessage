@@ -207,7 +207,7 @@ fn merge_raw_dirs(
 }
 
 /// 白名单目录集合（canonical 化，只保留真实存在的目录）。
-/// N7-⑥：session 对应会话有活动技能时，该技能目录追加进读白名单
+/// session 对应会话有活动技能时，该技能目录追加进读白名单
 ///（第三层渐进披露——SKILL.md 附带资料 references/*.md 由模型按需 read_text_file；
 /// 仅读侧，写闸门 writable_dirs 不受影响）。
 async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
@@ -252,7 +252,7 @@ async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
         eprintln!("[bot_fs] 白名单 canonicalize 失败，回空白名单：{e}");
         Vec::new()
     });
-    // N7-⑥：活动技能目录（会话级，只加读白名单；无活动技能/无目录则无追加）
+    // 活动技能目录（会话级，只加读白名单；无活动技能/无目录则无追加）
     if let Some(run) = crate::bot_skills::active_skill_run_for(app, session) {
         if let Some(dir) = &run.dir {
             if let Ok(c) = std::fs::canonicalize(dir) {

@@ -74,7 +74,7 @@ export type SkillInfo = {
   name: string;
   description: string;
   lastOutcome?: SkillOutcome | null;
-  /** frontmatter version（N7-⑦，可选） */
+  /** frontmatter version（可选） */
   version?: string | null;
   /** 引用了未内置工具的清单（空数组/缺省 = 全部兼容，设置页标红提示） */
   unknownTools?: string[];

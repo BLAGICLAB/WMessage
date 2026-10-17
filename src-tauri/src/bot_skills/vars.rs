@@ -33,7 +33,7 @@ static VAR_NESTED_BY_INDEX: LazyLock<Regex> =
 static VAR_NESTED_PREV: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\{prev\.([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)*)\}").unwrap());
 
-/// N7-③：`${params.key}` 参数替换
+/// `${params.key}` 参数替换
 static VAR_PARAMS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\$\{params\.([a-zA-Z0-9_]+)\}").unwrap());
 
@@ -113,7 +113,7 @@ pub fn substitute_vars(text: &str, ctx: &[CompletedStep]) -> String {
     substitute_vars_with_params(text, ctx, &serde_json::Value::Null)
 }
 
-/// N7-③：带参数上下文的替换——`${params.key}` → use_skill 传入的参数值。
+/// 带参数上下文的替换——`${params.key}` → use_skill 传入的参数值。
 /// params 非对象或键缺失 → 占位符保留（可诊断）；键存在但值为 null → "null"。
 pub fn substitute_vars_with_params(
     text: &str,
@@ -201,7 +201,7 @@ fn resolve_nested_path(parsed: Option<&serde_json::Value>, path: &str) -> Option
 mod tests {
     use super::*;
 
-    // ── N7-③：${params.key} ──
+    // ── ${params.key} ──
 
     #[test]
     fn substitute_params_resolves_keys_and_json_escapes() {

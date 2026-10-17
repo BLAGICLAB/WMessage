@@ -16,7 +16,7 @@ pub struct SkillInfo {
     /// last run outcome (SettingsPage badge)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
-    /// N7-⑦：可选版本号（frontmatter version）
+    /// 可选版本号（frontmatter version）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// 步骤/回滚引用了未内置工具的清单（设置页标红）
@@ -253,7 +253,7 @@ pub fn build_skill_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String
     render_skill_block(skills, false)
 }
 
-/// N7-②：语义化变体——按 query↔描述嵌入余弦排序，截前 5 条展开描述，
+/// 语义化变体——按 query↔描述嵌入余弦排序，截前 5 条展开描述，
 /// 其余合并为一行名称提及（progressive disclosure 纪律：清单不宜过长）。
 /// query 为空 / embed 引擎不可用 → 降级为原样全清单（与同步版行为一致）。
 /// embed_text 同步阻塞 ONNX → 本函数为 async，重活包 spawn_blocking。
@@ -286,7 +286,7 @@ pub async fn build_skill_block_for<R: tauri::Runtime>(
     render_skill_block(ranked, true)
 }
 
-/// 清单渲染（N7-② 拆分）：recommended=true 时前 5 条展开描述、其余合并一行提及
+/// 清单渲染（拆分）：recommended=true 时前 5 条展开描述、其余合并一行提及
 fn render_skill_block(skills: Vec<SkillInfo>, recommended: bool) -> String {
     if skills.is_empty() {
         return "已安装技能：无".into();

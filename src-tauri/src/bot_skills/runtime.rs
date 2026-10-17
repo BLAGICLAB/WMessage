@@ -49,7 +49,7 @@ fn skill_conflict_with_existing(existing: Option<&SkillRun>, session_id: Option<
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → 参数校验 → Running），
 /// 返回文档 + 运行约束提示。
 /// session_id：记录触发会话，活动判定/暂停/确认/推进按会话过滤（会话隔离）。
-/// params：use_skill 传入的参数对象（N7-③；缺失必填参数拒绝启动并教学化提示）。
+/// params：use_skill 传入的参数对象（缺失必填参数拒绝启动并教学化提示）。
 pub fn start_skill(
     app: &AppHandle,
     name: &str,
@@ -58,7 +58,7 @@ pub fn start_skill(
 ) -> Result<(SkillMeta, String), String> {
     let (meta, body, dir) = load_skill_meta(app, name)?;
     preflight(&meta)?;
-    // N7-③：参数契约校验——必填缺失拒绝启动（教模型带参重调）；非必填缺省回填 default
+    // 参数契约校验——必填缺失拒绝启动（教模型带参重调）；非必填缺省回填 default
     let mut params = params;
     if !params.is_object() {
         params = serde_json::Value::Null;
@@ -213,7 +213,7 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                     "\n\n（运行约束：本技能为人机协同模式，中高危动作执行前会暂停等待用户确认）",
                 );
             }
-            // N7-⑥：第三层渐进披露——技能目录附带资料按需读（会话级读白名单已放行）
+            // 第三层渐进披露——技能目录附带资料按需读（会话级读白名单已放行）
             if let Some(run) = active_skill_run_for(app, session_id) {
                 if run.name == meta.name {
                     if let Some(dir) = &run.dir {
@@ -476,7 +476,7 @@ fn rollback_section(body: &str) -> String {
 
 /// 收尾钩子：模型循环结束时调用（成功/失败/用户停止）。
 /// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
-/// N7-④：技能失败教训直沉淀（无 LLM）。仿 auto_lesson_on_task_failure：
+/// 技能失败教训直沉淀（无 LLM）。仿 auto_lesson_on_task_failure：
 /// record_lesson_core（kind=lesson、source=system、scenario=skill:{name}）——
 /// lesson 自动进下轮 consolidate 候选池与聊天 lesson 槽，evolution 反思可见。
 /// DB 打开失败静默（教训丢失可接受，不打断收尾）。pub(crate)：调度器失败分支共用。
@@ -598,7 +598,7 @@ pub fn skill_finish<R: tauri::Runtime>(
                     );
                 }
                 crate::bot::audit_log_hook(app, &log);
-                // N7-④：失败教训直沉淀（无 LLM，仿 auto_lesson_on_task_failure）——
+                // 失败教训直沉淀（无 LLM，仿 auto_lesson_on_task_failure）——
                 // lesson 进 mem_items 后自动进下轮 consolidate 候选池与聊天 lesson 槽，
                 // evolution 反思可见「技能 X 失败模式」。有实际动作/步数才沉淀（防空转噪音）。
                 if !actions.is_empty() {

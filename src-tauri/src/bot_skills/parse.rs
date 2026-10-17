@@ -19,17 +19,17 @@ pub struct SkillMeta {
     /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（50）。
     /// 解析时 clamp 到 1..=60（现有 Skill 未声明该字段 → None，不受影响）。
     pub max_rounds: Option<usize>,
-    /// N7-⑤：allowed-tools 前置声明（agentskills.io 开放标准字段）。
+    /// allowed-tools 前置声明（agentskills.io 开放标准字段）。
     /// 空 = 不限制（向后兼容）；非空 = 调度器步骤执行前校验 tool ∈ 声明集合
     /// （作者主动限权，与系统兜底「tool ∈ 注册表」正交两层）。
     pub allowed_tools: Vec<String>,
-    /// N7-⑦：可选版本号（导入重名提示对比 + 设置页展示）
+    /// 可选版本号（导入重名提示对比 + 设置页展示）
     pub version: Option<String>,
-    /// N7-③：参数契约（frontmatter params 多行列表）
+    /// 参数契约（frontmatter params 多行列表）
     pub params: Vec<SkillParam>,
 }
 
-/// N7-③：技能参数契约单条（frontmatter params 列表行）
+/// 技能参数契约单条（frontmatter params 列表行）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillParam {
     pub key: String,
@@ -64,7 +64,7 @@ impl Default for SkillMeta {
     }
 }
 
-/// N7-③：params 列表行解析（纯函数，可测）。
+/// params 列表行解析（纯函数，可测）。
 /// 行格式：`- key: 说明文字（必填）` / `- key: 说明文字（默认 X）` / `- key: 说明文字`。
 /// required 标记 = 说明含「必填」；默认值 = 说明含「默认 X」时提取 X；两者互斥。
 fn parse_param_line(line: &str) -> Option<SkillParam> {
@@ -243,7 +243,7 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
                         .collect();
                 }
             }
-            // N7-⑤：allowed-tools（agentskills.io 开放标准字段）——单行逗号分隔或
+            // allowed-tools（agentskills.io 开放标准字段）——单行逗号分隔或
             // 多行 `- ` 列表；工具名与注册表命名同规范（ASCII 字母数字下划线）
             "allowed-tools" | "allowed_tools" => {
                 let inner = v.trim();
@@ -267,13 +267,13 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
                         .collect();
                 }
             }
-            // N7-⑦：可选版本号
+            // 可选版本号
             "version" => {
                 if !v.is_empty() {
                     m.version = Some(v.to_string());
                 }
             }
-            // N7-③：params 多行列表（每行 `- key: 说明（必填）/（默认 X）`）
+            // params 多行列表（每行 `- key: 说明（必填）/（默认 X）`）
             "params" => {
                 let inner = v.trim();
                 if !inner.is_empty() {

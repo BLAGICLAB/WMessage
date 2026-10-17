@@ -436,7 +436,7 @@ where
                 ctx.len()
             ),
         );
-        // 变量替换：把上一步结果/UUID 拼进 args_json（N7-③：params 静态参数一并替换）
+        // 变量替换：把上一步结果/UUID 拼进 args_json（params 静态参数一并替换）
         let resolved_args = substitute_vars_with_params(&step.args_json, &ctx, params);
         if resolved_args != step.args_json {
             crate::bot::audit_log_hook(
@@ -448,7 +448,7 @@ where
                 ),
             );
         }
-        // N7-⑤：allowed-tools 双闸——技能声明了允许工具集合时，步骤工具必须 ∈ 集合
+        // allowed-tools 双闸——技能声明了允许工具集合时，步骤工具必须 ∈ 集合
         //（作者主动限权；与系统兜底「tool ∈ 注册表」正交）。违规 = 步骤失败，
         // 走既有回滚 + FailedButRecoverable 管道（LLM 兜底接管）。
         if !meta.allowed_tools.is_empty() && !meta.allowed_tools.contains(&step.tool_name) {
@@ -521,7 +521,7 @@ where
                 Some(&summary),
                 Some(rb_attempted),
             );
-            // N7-④：失败教训直沉淀（有已执行动作才记，防空转噪音）
+            // 失败教训直沉淀（有已执行动作才记，防空转噪音）
             if !ctx.is_empty() {
                 super::runtime::sink_skill_failure_lesson(
                     app,
