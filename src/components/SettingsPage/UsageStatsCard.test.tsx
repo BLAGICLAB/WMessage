@@ -24,6 +24,8 @@ const DAYS: UsageDay[] = [
     day: "2026-09-30",
     promptTokens: 500,
     completionTokens: 500,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     runs: 1,
     toolCalls: 1,
   },
@@ -31,6 +33,8 @@ const DAYS: UsageDay[] = [
     day: "2026-10-01",
     promptTokens: 500,
     completionTokens: 500,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     runs: 1,
     toolCalls: 1,
   },
@@ -38,6 +42,8 @@ const DAYS: UsageDay[] = [
     day: "2026-10-02",
     promptTokens: 500,
     completionTokens: 500,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     runs: 1,
     toolCalls: 1,
   },
@@ -45,6 +51,8 @@ const DAYS: UsageDay[] = [
     day: "2026-10-03",
     promptTokens: 0,
     completionTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     runs: 0,
     toolCalls: 0,
   },
@@ -52,6 +60,8 @@ const DAYS: UsageDay[] = [
     day: "2026-10-04",
     promptTokens: 0,
     completionTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     runs: 0,
     toolCalls: 0,
   },
@@ -59,6 +69,8 @@ const DAYS: UsageDay[] = [
     day: "2026-10-05",
     promptTokens: 900,
     completionTokens: 100,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     runs: 2,
     toolCalls: 5,
   },
@@ -66,14 +78,16 @@ const DAYS: UsageDay[] = [
     day: "2026-10-06",
     promptTokens: 4000,
     completionTokens: 1000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     runs: 3,
     toolCalls: 8,
   },
 ];
 
 const MODELS: UsageModelRow[] = [
-  { model: "glm-5.3", promptTokens: 4900, completionTokens: 1100, runs: 5 },
-  { model: null, promptTokens: 0, completionTokens: 0, runs: 0 },
+  { model: "glm-5.3", promptTokens: 4900, completionTokens: 1100, cacheReadTokens: 0, cacheWriteTokens: 0, runs: 5 },
+  { model: null, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, runs: 0 },
 ];
 
 const MODEL_DAYS: UsageDayModelRow[] = [
@@ -82,18 +96,24 @@ const MODEL_DAYS: UsageDayModelRow[] = [
     model: "glm-5.3",
     promptTokens: 900,
     completionTokens: 100,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
   },
   {
     day: "2026-10-06",
     model: "glm-5.3",
     promptTokens: 4000,
     completionTokens: 1000,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
   },
   {
     day: "2026-10-05",
     model: "kimi-k3",
     promptTokens: 50,
     completionTokens: 50,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
   },
 ];
 
@@ -204,6 +224,8 @@ describe("UsageStatsCard", () => {
       day,
       promptTokens: tokens,
       completionTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
       runs: 0,
       toolCalls: 0,
     });
@@ -225,12 +247,16 @@ describe("UsageStatsCard", () => {
         model: "a-model",
         promptTokens: 300,
         completionTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
       },
       {
         day: "2026-10-06",
         model: null,
         promptTokens: 100,
         completionTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
       },
     ];
     const series = buildTrendSeries(DAYS, rows, 5);

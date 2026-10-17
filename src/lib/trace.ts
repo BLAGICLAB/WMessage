@@ -19,6 +19,9 @@ export type TraceRow = {
   filesChanged: number;
   promptTokens: number;
   completionTokens: number;
+  /** 缓存读取 / 写入 token（Anthropic 计价档）。旧行与 OpenAI 协议为 0 */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   error?: string | null;
 };
 

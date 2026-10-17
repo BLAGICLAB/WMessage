@@ -26,6 +26,8 @@ const TRACE: TraceRow = {
   filesChanged: 1,
   promptTokens: 100,
   completionTokens: 50,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   error: null,
 };
 

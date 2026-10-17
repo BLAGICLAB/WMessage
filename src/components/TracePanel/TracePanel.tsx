@@ -347,9 +347,21 @@ export function TracePanel({
                 {detail.turnCount} 轮 · {detail.toolCalls} 次工具 ·{" "}
                 {detail.filesChanged} 个文件
               </span>
-              {(detail.promptTokens > 0 || detail.completionTokens > 0) && (
-                <span className="nm-inset px-2 py-0.5 tabular-nums">
+              {(detail.promptTokens > 0 ||
+                detail.completionTokens > 0 ||
+                detail.cacheReadTokens > 0 ||
+                detail.cacheWriteTokens > 0) && (
+                <span
+                  className="nm-inset px-2 py-0.5 tabular-nums"
+                  title={
+                    detail.cacheReadTokens > 0 || detail.cacheWriteTokens > 0
+                      ? `tokens 输入 ${detail.promptTokens} / 输出 ${detail.completionTokens} · 缓存读 ${detail.cacheReadTokens} / 缓存写 ${detail.cacheWriteTokens}（缓存档单价不同，不并入上面前两项）`
+                      : undefined
+                  }
+                >
                   tokens {detail.promptTokens}/{detail.completionTokens}
+                  {(detail.cacheReadTokens > 0 || detail.cacheWriteTokens > 0) &&
+                    ` · 缓存 ${detail.cacheReadTokens}/${detail.cacheWriteTokens}`}
                 </span>
               )}
               {detail.origin && (

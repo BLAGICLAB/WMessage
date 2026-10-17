@@ -51,6 +51,8 @@ function trace(partial: Partial<TraceRow> & { id: number }): TraceRow {
     filesChanged: 0,
     promptTokens: 0,
     completionTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     ...partial,
   };
 }

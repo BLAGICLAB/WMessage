@@ -14,6 +14,10 @@ export type UsageDay = {
   day: string;
   promptTokens: number;
   completionTokens: number;
+  /** 缓存档（Anthropic 四档计价之二）。不计入 dayTotal——
+   *  缓存单价与普通 input 不同，混算会让「用量」面板的总 token 数失真 */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   runs: number;
   toolCalls: number;
 };
@@ -23,6 +27,8 @@ export type UsageModelRow = {
   model: string | null;
   promptTokens: number;
   completionTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   runs: number;
 };
 
@@ -31,6 +37,8 @@ export type UsageDayModelRow = {
   model: string | null;
   promptTokens: number;
   completionTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 };
 
 /** 中文数量级格式化：≥1亿 → x.x亿；≥1万 → x.x万；≥1000 → x.xK；原值 */
