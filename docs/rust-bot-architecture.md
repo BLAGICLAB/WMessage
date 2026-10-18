@@ -121,8 +121,12 @@ src-tauri/src/
 │   ├── bot/mcp/secrets.rs       B4-6 机密存储：env/headers blob 走 keyring `mcp:<id>` 条目
 │   │                            （Linux 降级单文件 0600）+ 进程内缓存 + load_config 水合 +
 │   │                            迁移判据；配置永不明文（skip_serializing 收口）
-│   └── bot/mcp/commands.rs      设置页 tauri 命令：mcp_server_save/delete/toggle、
-│                                mcp_status、mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁）
+│   ├── bot/mcp/commands.rs      设置页 tauri 命令：mcp_server_save/delete/toggle、
+│   │                            mcp_status、mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁；
+│   │                            内置条目 delete 拦截，status 回 builtin 标志）
+│   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
+│                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
+│                                + 启动时缺失才补写配置（默认停用）
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
 │   ├── bot/config/schema.rs        bot-config.json schemaVersion 迁移 + 双协议派生

@@ -98,7 +98,7 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 - 工具（45 个，清单见「内置机器人聊天」一节）：任务 CRUD/子任务/绑定、文档生成（Word 修订模式：.NET OpenXML 优先 + Python 兜底；Excel 公式注入过滤；PPT；PDF）、文件编辑（edit_file/write_file，Aider 式三级匹配）、文件读写+grep、本机 Python 沙箱（run_python，独立临时目录+60s 超时+产物回收；完整 stdlib + 用户权限执行，无文件系统隔离，靠设置页开关默认关闭兜底）、Python AST 静态探查（ast_inspect，标准库 ast + 零新增依赖，符号树/定义/引用/调用链四种模式；调用前先过 bot_fs 白名单闸，只支持 .py）、联网（web_search：Tavily/Brave key 可配，未配置降级 Bing+百度抓取；fetch_url 公网白名单）、图片识字 ocr_image、截图直达模型视觉、电脑辅助 Tier1（reveal_path 等原生四件）、时间、记忆工具、use_skill、ask_user（任务执行中提问：手动执行任务卡，通知中心异步问答 + 假设兜底 + 全局预算 1–5 默认 3；聊天直接文字提问不用此工具）
 - **Word 模板双层口径**：设置页上传 .docx（管纸张/页边距/页眉页脚）+ 文字排版参数旁车 json（管正文/主标题/一二三级标题的字体字号行距缩进对齐，上传即从模板正文提取，启发式单点），参数记录可在面板编辑（含改名）；生成按参数构造版式，旁车缺失自动重提取；默认模板缺失时走内置版式
 - **语义记忆体 v2**：bge-small-zh 本地嵌入+混合打分；事实+教训两类；自动抽取、参数可调（设置页记忆区「检索参数」卡：注入预算/topN/recentN/lessonN/容量/衰减/去重阈值 8 项，留空=默认）、总开关、管理面板、导入导出、写入冲突裁决（改口即更新）、定时整理（consolidation）、黄金集评估器（recall@5 锁死）
-- **MCP 外部服务器**：stdio/HTTP 接入，env/headers 机密走系统钥匙串
+- **MCP 外部服务器**：stdio/HTTP 接入，env/headers 机密走系统钥匙串；内置 Playwright 浏览器条目（启动时缺失才补写，默认停用、不可删，只能开关）
 - **技能系统**：Markdown+YAML frontmatter DSL（对齐 Agent Skills 开放标准），步骤推进状态机 + LLM 兜底，设置页运行结果徽章
 - 产物统一落 `AI_Gen_Files`（启动预建、同名加 `(n)` 永不覆盖），流程结束产物登记表弹窗汇总
 
