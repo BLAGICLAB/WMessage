@@ -94,12 +94,13 @@ export function SessionRail({
                 </button>
                 {/* 删除键悬停显形：留白恒定，列表不会因悬停而抖动。
                     未显形时禁用指针事件——否则不可见的按钮仍占着行尾点击区。
-                    对齐首行：两行居中会正好卡在两行之间，看着像哪行都没属 */}
+                    贴在第二行右端（与时间同一行）：首行留给标题一个完整宽度，
+                    顶在首行会压掉标题尾部；贴底对齐也不用写死像素偏移 */}
                 <button
                   type="button"
                   aria-label={`删除对话 ${s.title}`}
                   title="删除此对话"
-                  className="pointer-events-none absolute right-1 top-2 flex h-5 w-5 items-center justify-center rounded text-[var(--t5)] opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:bg-[var(--hover-bg)] hover:text-[var(--danger)]"
+                  className="pointer-events-none absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded text-[var(--t5)] opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:bg-[var(--hover-bg)] hover:text-[var(--danger)]"
                   onClick={() => onDelete(s.id)}
                 >
                   <Trash2 size={11} aria-hidden />

@@ -1767,6 +1767,10 @@ describe("ChatPanel", () => {
       // 无 updatedAt 的行只有标题
       const bare = rail().getByText("写周报").closest("button");
       expect(within(bare as HTMLElement).queryByText(/前|刚刚/)).toBeNull();
+      // 删除键贴在第二行右端（与时间同行），不压首行标题尾部
+      const del = rail().getByRole("button", { name: "删除对话 政策调研" });
+      expect(del.className).toContain("bottom-1");
+      expect(del.className).not.toContain("top-2");
     } finally {
       mocks.invokeMock.mockImplementation(defaultInvoke);
     }
