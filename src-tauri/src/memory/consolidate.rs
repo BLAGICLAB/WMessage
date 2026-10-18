@@ -7,6 +7,10 @@
 //! - distill{ids, content}：新建 kind=reflection / importance=4 / source=system 条目
 //!   （引用 id 全不存在时跳过，防 LLM 幻觉 id 凭空造规律）
 //!
+//! 整理**只整理既有条目，不产 lesson**：行为准则由记忆体自己的渠道沉淀（任务失败、
+//! 技能失败、用户纠正、模型主动记录）。候选池装的正是那些渠道刚写下的条目，让
+//! 整理再"反思"一条准则出来只会产出关于准则本身的二阶内容，且与既有渠道重复。
+//!
 //! 解析健壮性：剥代码围栏/截取首尾花括号；整体解析失败 → 本轮静默放弃记审计；
 //! 单条缺字段/未知 action 跳过不影响其它。
 //!
@@ -43,9 +47,8 @@ const CONSOLIDATE_DEFAULT_WINDOW_MS: i64 = 7 * 86_400_000;
 /// 调度器检查周期（10 分钟扫一次是否到点，同 bot_scheduler 的 30s 扫描模式）
 const SCHED_TICK_SECS: u64 = 600;
 
-/// 整理产出的来源标记，兼作 lesson 的 scenario。distill 落在 tags[1]、
-/// lesson 落在 tags[1]（scenario 位）——两者是同一次反思的一对产物。
-const CONSOLIDATE_LESSON_SCENARIO: &str = "consolidation";
+/// 整理产出的来源标记，落在 distill 行的 tags[1]。
+const CONSOLIDATE_SOURCE_TAG: &str = "consolidation";
 
 // 配置
 
@@ -139,22 +142,6 @@ pub enum ConsolidateOp {
     },
     /// 从 ids 提炼一条规律/反思：新建 kind=reflection 条目（importance=4）
     Distill { ids: Vec<String>, content: String },
-}
-
-/// 解析反思输出中的行为准则段（lesson）：字符串形态或 {content} 形态；
-/// 缺失/空/空白 → None（本轮无行为准则提案）。截 400 字防超长。
-pub fn parse_lesson(text: &str) -> Option<String> {
-    let v = extract_json(text)?;
-    let raw = match v.get("lesson") {
-        Some(serde_json::Value::String(s)) => s.clone(),
-        Some(serde_json::Value::Object(o)) => o.get("content")?.as_str()?.to_string(),
-        _ => return None,
-    };
-    let t = raw.trim();
-    if t.is_empty() {
-        return None;
-    }
-    Some(t.chars().take(400).collect())
 }
 
 impl ConsolidateOp {
@@ -390,10 +377,7 @@ pub fn apply_ops_with(
                 let item = NewItem {
                     kind: "reflection".to_string(),
                     content: truncate_chars(content, MAX_CONTENT_CHARS, false),
-                    tags: vec![
-                        "reflection".to_string(),
-                        CONSOLIDATE_LESSON_SCENARIO.to_string(),
-                    ],
+                    tags: vec!["reflection".to_string(), CONSOLIDATE_SOURCE_TAG.to_string()],
                     importance: 4,
                     source: "system".to_string(),
                 };
@@ -431,11 +415,7 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     // LLM 配置不可用（空 key 等）在这里自然报 ApiKeyMissing
     let text = crate::bot_chat::summarize_messages(app, CONSOLIDATE_PROMPT, &msgs).await?;
     let ops = parse_ops(&text);
-    let lesson = parse_lesson(&text);
     if ops.is_empty() {
-        // lesson 是反思的第二产物：ops 空但 lesson 非空时仍要落库，
-        // 否则 `{"ops":[],"lesson":"..."}` 形态的输出静默丢 lesson
-        write_lesson(app, lesson.as_deref()).await;
         return Ok(ConsolidateReport::default());
     }
     // 嵌入在持锁前批量算好（独立阻塞闭包、不持 DB 写锁，与 mod.rs「嵌入计算一律在
@@ -465,77 +445,7 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     })
     .await
     .map_err(CommandError::DbError)?;
-    // 基于本次反思的 lesson 段直接落记忆（与 ops 同一条写路径，不调二次 LLM）
-    write_lesson(app, lesson.as_deref()).await;
     Ok(report)
-}
-
-/// 反思 lesson 落库。不走独立写路径——复用 `record_lesson_core`，与
-/// `tool_record_lesson` / 技能失败沉淀 / 纠正聚簇三条既有 lesson 写入同构：
-/// 同样 validate、同样 `tags = ["lesson", scenario]`、同样把语义去重整个
-/// 交给 `insert_item`（≥0.92 合并、0.75~0.92 冲突提示）。整理不额外做逐字
-/// 去重，也不给 lesson 开 merge-on-write 的豁免——那会让它与记忆系统里
-/// 其他类型的行行为不一致。
-///
-/// 返回串是 `record_lesson_core` 的原样结果（含合并/冲突提示），送审计让
-/// 「已合并覆盖既有行」不再静默。失败只记审计：整理主链路不因一条 lesson 回滚。
-async fn write_lesson(app: &AppHandle, lesson: Option<&str>) {
-    let Some(text) = lesson.map(str::trim).filter(|t| !t.is_empty()) else {
-        return;
-    };
-    let text = text.to_string();
-    // 嵌入在持锁前算好（ONNX 推理数十 ms，不占 DB 写锁临界区）
-    let emb = match tauri::async_runtime::spawn_blocking({
-        let t = text.clone();
-        move || embed::embed_text(&t)
-    })
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Warn,
-                "memory.lesson_write_failed",
-                "error" => format!("反思 lesson 嵌入线程 join 失败：{e}"));
-            return;
-        }
-    };
-    // 降级模式（ONNX 模型缺失）：写入照常，只是条目不可语义召回。这不是写失败，
-    // 不能复用 _failed——否则一次成功写会在日志里留下互斥的两条事件，
-    // 让按 lesson_write_failed 做的告警每轮都误报。
-    if emb.is_none() {
-        crate::audit_event!(app, crate::audit::AuditLevel::Info,
-            "memory.lesson_no_embedding", "note" => "反思 lesson 嵌入失败，条目将不可语义召回");
-    }
-    let tuning = crate::bot::read_memory_tuning(app);
-    let r = crate::db::lock::with_write_conn(app, move |conn| {
-        store::ensure_table(conn)?;
-        Ok(super::record_lesson_core(
-            conn,
-            &text,
-            CONSOLIDATE_LESSON_SCENARIO,
-            "system",
-            emb.as_deref(),
-            now_ms(),
-            &store::StoreParams::of(&tuning),
-        ))
-    })
-    .await;
-    // record_lesson_core 把失败也编码在返回串里，前缀「失败」/「错误」（与
-    // tool_record_lesson 同口径）；其余含「已合并更新」与冲突提示，一律 Info 留痕。
-    match r {
-        Ok(ref msg) if msg.starts_with("失败") || msg.starts_with("错误") => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Warn,
-                "memory.lesson_write_failed", "error" => msg.clone());
-        }
-        Ok(msg) => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Info,
-                "memory.lesson_written", "result" => msg);
-        }
-        Err(e) => {
-            crate::audit_event!(app, crate::audit::AuditLevel::Warn,
-                "memory.lesson_write_failed", "error" => e);
-        }
-    }
 }
 
 /// 立即手动整理（设置页「立即整理」按钮）。成功后回写 last_run_at。

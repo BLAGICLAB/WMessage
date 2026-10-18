@@ -76,54 +76,6 @@ fn parse_invalid_json_returns_empty() {
 }
 
 #[test]
-fn parse_lesson_string_form() {
-    let text = r#"{"ops":[],"lesson":"遇到重复记录先合并再回答"}"#;
-    assert_eq!(
-        parse_lesson(text).as_deref(),
-        Some("遇到重复记录先合并再回答")
-    );
-}
-
-#[test]
-fn parse_lesson_object_form_with_fence_and_prose() {
-    let text =
-        "整理如下：\n```json\n{\"ops\":[],\"lesson\":{\"content\":\"先去重再总结\"}}\n```\n以上。";
-    assert_eq!(parse_lesson(text).as_deref(), Some("先去重再总结"));
-}
-
-#[test]
-fn parse_lesson_missing_or_empty_is_none() {
-    assert!(parse_lesson(r#"{"ops":[]}"#).is_none(), "缺字段 → None");
-    assert!(
-        parse_lesson(r#"{"ops":[],"lesson":""}"#).is_none(),
-        "空串 → None"
-    );
-    assert!(
-        parse_lesson(r#"{"ops":[],"lesson":{"other":1}}"#).is_none(),
-        "对象缺 content → None"
-    );
-    assert!(parse_lesson("这不是 JSON").is_none(), "整体解析失败 → None");
-}
-
-#[test]
-fn empty_ops_with_lesson_still_reaches_store() {
-    // 复现：LLM 输出 `{"ops":[],"lesson":"..."}` 时，早退分支若在写 lesson
-    // 之前直接 return，lesson 被静默丢弃、架空「反思双产物」。
-    let text = r#"{"ops":[],"lesson":"回归验证：遇到重复记录先合并再回答"}"#;
-    let ops = parse_ops(text);
-    let lesson = parse_lesson(text);
-    assert!(ops.is_empty(), "前置：ops 解析为空");
-    let lesson = lesson.expect("lesson 应被解析出");
-    let conn = mem_db();
-    let msg = write_consolidate_lesson(&conn, &lesson, 1_700_000_000_000);
-    assert!(!msg.starts_with("失败"), "空 ops 下 lesson 仍要落库：{msg}");
-    assert!(store::load_all(&conn)
-        .unwrap()
-        .iter()
-        .any(|m| m.content == lesson));
-}
-
-#[test]
 fn parse_skips_malformed_and_unknown_ops() {
     let text = r#"{"ops":[
       {"action":"unknown_action","ids":["a"]},
@@ -181,75 +133,12 @@ fn apply_merge_with_missing_ids_skipped() {
     assert_eq!(store::load_all(&conn).unwrap().len(), 1);
 }
 
-// ── lesson 走标准写入路径（record_lesson_core） ──
-
-/// 整理写 lesson 的唯一入口就是 `record_lesson_core`——与 tool_record_lesson /
-/// 技能失败沉淀 / 纠正聚簇同一条路径，这里调的就是它本身。
-fn write_consolidate_lesson(conn: &rusqlite::Connection, text: &str, now: i64) -> String {
-    super::super::record_lesson_core(
-        conn,
-        text,
-        CONSOLIDATE_LESSON_SCENARIO,
-        "system",
-        None,
-        now,
-        &store::StoreParams::default(),
-    )
-}
-
-#[test]
-fn consolidate_lesson_row_matches_other_lesson_writers() {
-    let conn = mem_db();
-    write_consolidate_lesson(&conn, "下次排期前先确认时区", 1_000);
-    let all = store::load_all(&conn).unwrap();
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0].kind, "lesson");
-    assert_eq!(all[0].source, "system");
-    assert_eq!(
-        all[0].tags,
-        vec!["lesson", CONSOLIDATE_LESSON_SCENARIO],
-        "tags 与其余 lesson 写入同构：tags[0]=lesson、tags[1]=场景"
-    );
-    assert_eq!(
-        all[0].importance, 4,
-        "importance 跟 record_lesson_core 走，不再自定 3"
-    );
-}
-
-#[test]
-fn consolidate_lesson_leaves_dedup_to_insert_item() {
-    // 整理不做逐字去重——去重整个交给 insert_item。降级模式（无向量）
-    // 跳过去重是既有语义：整理不因缺向量而另加一层判重。
-    let conn = mem_db();
-    write_consolidate_lesson(&conn, "同一条 lesson", 1_000);
-    write_consolidate_lesson(&conn, "同一条 lesson", 2_000);
-    let all = store::load_all(&conn).unwrap();
-    assert_eq!(
-        all.len(),
-        2,
-        "无向量时 insert_item 跳过去重——整理层不再另加逐字判重"
-    );
-    assert!(all.iter().all(|m| m.kind == "lesson"));
-}
-
-#[test]
-fn consolidate_lesson_rejects_overlong_text_like_other_lesson_writers() {
-    // validate_lesson 顺带白拿：超长直接拒写并带「失败」前缀，不再静默截断
-    // 一条行为准则。生产路径上 parse_lesson 先截到 400 字、MAX_CONTENT_CHARS
-    // 是 800，所以这条走不到——这里锁的是 record_lesson_core 的契约本身。
-    let conn = mem_db();
-    let long = "长".repeat(MAX_CONTENT_CHARS + 1);
-    let msg = write_consolidate_lesson(&conn, &long, 1_000);
-    assert!(msg.starts_with("失败"), "超长应拒写，实际：{msg}");
-    assert!(store::load_all(&conn).unwrap().is_empty());
-}
-
 /// 测试助手：插一条 lesson 行（与 record_lesson_core 同款形态）
 fn insert_lesson(conn: &rusqlite::Connection, content: &str, now: i64) -> String {
     let item = NewItem {
         kind: "lesson".into(),
         content: content.into(),
-        tags: vec!["lesson".into(), CONSOLIDATE_LESSON_SCENARIO.into()],
+        tags: vec!["lesson".into(), "task_exec".into()],
         importance: 4,
         source: "system".into(),
     };
