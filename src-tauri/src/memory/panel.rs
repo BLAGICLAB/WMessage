@@ -168,8 +168,8 @@ pub(crate) fn update_core(
     Ok(MemItemView::from(&updated))
 }
 
-/// 删除单条（显式用户操作允许删任何条目，含 evo: 前缀的自进化教训——
-/// 前端 confirm 文案负责提示影响）。返回是否真删到。
+/// 删除单条（显式用户操作允许删任何条目——前端 confirm 文案负责提示影响）。
+/// 返回是否真删到。
 pub(crate) fn delete_core(conn: &rusqlite::Connection, id: &str) -> Result<bool, String> {
     store::ensure_table(conn)?;
     Ok(store::delete_by_ids(conn, &[id.to_string()])? > 0)
@@ -308,7 +308,7 @@ pub struct MemExportFile {
 }
 
 /// 导入报告：inserted 新增 / merged 语义去重合并 / skipped 跳过（空内容、
-/// 容量满拒写、evo: 异 key 冲突拒写、未知结构行）
+/// 容量满拒写、未知结构行）
 #[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MemImportReport {
@@ -402,7 +402,7 @@ fn prepare_import_items(
 }
 
 /// 导入内核（&Connection 可单测）：合法条目逐条走 insert_item 既有语义去重。
-/// 只增不删。skipped 口径：容量满拒写、evo: 异 key 冲突拒写（输入级校验已在
+/// 只增不删。skipped 口径：容量满拒写（输入级校验已在
 /// prepare 完成）；**存储故障（Err）不算 skipped——直接中止并上抛**，
 /// 不把真实故障伪装成「输入被跳过」。整批包在一个事务里：中途存储故障
 /// 一并回滚，不留下「一半已入库、一半丢失」的半截导入。
@@ -430,7 +430,6 @@ pub(crate) fn import_items(
             Ok((store::InsertOutcome::Inserted(_), _)) => report.inserted += 1,
             Ok((store::InsertOutcome::Merged { .. }, _)) => report.merged += 1,
             Ok((store::InsertOutcome::RejectedFull(_), _)) => report.skipped += 1,
-            Ok((store::InsertOutcome::RefusedForeignMerge { .. }, _)) => report.skipped += 1,
             Err(e) => {
                 // tx drop 即回滚：报错文案不再声称「已完成 N 条」（实际一条都没落）
                 return Err(format!(

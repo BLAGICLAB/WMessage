@@ -634,7 +634,7 @@ pub(crate) enum EditMode {
     },
 }
 
-/// edit 失败类型（进审计的结构化字段，供自进化反思统计）
+/// edit 失败类型（进审计的结构化字段，供失败统计与反思采集用）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EditErrorKind {
     /// 精确与空白容错都未命中
@@ -1055,7 +1055,7 @@ pub async fn tool_edit_file(
             .with_file_change(receipt)
         }
         Err((kind, hint)) => {
-            // 失败带教学提示走 ok 通道（reflection 文案，自进化经 tool.call_failed 采集）
+            // 失败带教学提示走 ok 通道（reflection 文案，经 tool.call_failed 采集）
             crate::bot::audit_log(
                 app,
                 &format!(

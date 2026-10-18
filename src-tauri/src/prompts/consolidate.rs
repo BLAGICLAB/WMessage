@@ -1,7 +1,7 @@
 //! 长期记忆整理提示词（memory::consolidate 定时整理用）：输出 JSON
 //! `{"ops":[…], "lesson":"可选的行为准则"}`，解析失败即跳过本轮，
-//! 措辞是唯一的格式防线。lesson 是自进化提案的内容源（行为准则，
-//! 与 ops 沉淀的事实类 reflection 刻意拉开语义距离，防候选池撞车）。
+//! 措辞是唯一的格式防线。lesson 是行为准则（与 ops 沉淀的事实类 reflection
+//! 刻意拉开语义距离），与 ops 一起直写进记忆。
 
 /// 整理 prompt（中文；给 LLM 的条目标注真实 id，指令回指同一 id）
 pub(crate) const CONSOLIDATE_PROMPT: &str = "\

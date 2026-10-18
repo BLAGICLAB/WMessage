@@ -296,9 +296,6 @@ pub fn apply_ops_with(
         let emb = embs.get(i).and_then(|e| e.as_deref());
         match op {
             ConsolidateOp::Merge { ids, content } => {
-                // evolution lesson（evo: key tag）不参与 merge——merge 把来源行整行
-                // 删掉、内容并进目标行，lesson 被吸收 = evo key 消失 = apply 幂等查重
-                // 失效。引用里含 lesson 时把 lesson 排除，剩余不足 2 条则整条跳过。
                 // 逐 id 主键点查（指令只引用少数几行，不再每条指令全表扫描）
                 let mut items: Vec<MemItem> = Vec::new();
                 for id in ids {
@@ -307,14 +304,7 @@ pub fn apply_ops_with(
                         continue;
                     }
                     if let Some(m) = store::find_by_id(&tx, id)? {
-                        let is_lesson = m
-                            .tags
-                            .first()
-                            .map(|t| t.starts_with("evo:"))
-                            .unwrap_or(false);
-                        if !is_lesson {
-                            items.push(m);
-                        }
+                        items.push(m);
                     }
                 }
                 if items.len() < 2 {
@@ -356,24 +346,14 @@ pub fn apply_ops_with(
                 drop_id,
                 content,
             } => {
-                // keep/drop 各一次主键点查，不再为两条记录做全表扫描
-                let (Some(keep_item), Some(drop_item)) = (
+                // keep/drop 各一次主键点查，不再为两条记录做全表扫描；
+                // 任一侧不存在则整条作废（drop 行已不在 = 无可裁决）
+                let (Some(keep_item), Some(_)) = (
                     store::find_by_id(&tx, keep)?,
                     store::find_by_id(&tx, drop_id)?,
                 ) else {
                     continue;
                 };
-                // contradiction 不碰 evolution lesson——drop 行会被删、
-                // keep 行内容会被 update_by_id 覆盖，任一侧是 lesson 都跳过整条
-                let is_lesson_row = |m: &MemItem| {
-                    m.tags
-                        .first()
-                        .map(|t| t.starts_with("evo:"))
-                        .unwrap_or(false)
-                };
-                if is_lesson_row(&keep_item) || is_lesson_row(&drop_item) {
-                    continue;
-                }
                 let rows = store::update_by_id(
                     &tx,
                     &keep_item.id,

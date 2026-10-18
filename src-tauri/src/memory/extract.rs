@@ -536,8 +536,7 @@ fn apply_insert(
     match store::insert_item_with(conn, &item, emb, now_ms, sp) {
         Ok((store::InsertOutcome::Inserted(_), _))
         | Ok((store::InsertOutcome::Merged { .. }, _)) => counts.inserted += 1,
-        Ok((store::InsertOutcome::RejectedFull(_), _))
-        | Ok((store::InsertOutcome::RefusedForeignMerge { .. }, _)) => counts.skipped += 1,
+        Ok((store::InsertOutcome::RejectedFull(_), _)) => counts.skipped += 1,
         Err(e) => {
             eprintln!("[memory] 抽取条目入库失败（跳过）：{e}");
             counts.failed += 1;
@@ -807,8 +806,7 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
             match store::insert_item_with(&tx, &item, emb.as_deref(), super::now_ms(), &sp) {
                 Ok((store::InsertOutcome::Inserted(_), _)) => report.inserted += 1,
                 Ok((store::InsertOutcome::Merged { .. }, _)) => report.merged += 1,
-                Ok((store::InsertOutcome::RejectedFull(_), _))
-                | Ok((store::InsertOutcome::RefusedForeignMerge { .. }, _)) => report.skipped += 1,
+                Ok((store::InsertOutcome::RejectedFull(_), _)) => report.skipped += 1,
                 Err(e) => {
                     return Err(format!(
                         "收下中止（存储故障，本批未提交任何变更，全部条目仍在列表）：{e}"

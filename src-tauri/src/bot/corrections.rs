@@ -109,11 +109,6 @@ pub(crate) async fn record_correction_fact<R: tauri::Runtime>(
                 | crate::memory::store::InsertOutcome::Merged { .. },
                 _,
             )) => Ok(()),
-            Ok((crate::memory::store::InsertOutcome::RefusedForeignMerge { target_key }, _)) => {
-                Err(format!(
-                    "correction 与受保护条目「{target_key}」语义冲突，拒写"
-                ))
-            }
             Ok((crate::memory::store::InsertOutcome::RejectedFull(e), _)) => Err(e),
             Err(e) => Err(e),
         }

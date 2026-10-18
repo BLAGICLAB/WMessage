@@ -235,13 +235,13 @@ fn store_lesson_dedup_only_scopes_to_lesson_kind() {
     assert_eq!(store::load_all(&conn).unwrap().len(), 2);
 }
 
-/// 测试助手：插一条带 evo: key tag 的 lesson 行（apply 链路同款形态）
-fn insert_lesson(conn: &rusqlite::Connection, pid: &str, content: &str, now: i64) -> String {
+/// 测试助手：插一条 lesson 行（与 write_lesson 同款形态）
+fn insert_lesson(conn: &rusqlite::Connection, content: &str, now: i64) -> String {
     let item = NewItem {
         kind: "lesson".into(),
         content: content.into(),
-        tags: vec![format!("evo:{pid}"), "evolution".into()],
-        importance: 4,
+        tags: vec![],
+        importance: 3,
         source: "system".into(),
     };
     match store::insert_item(conn, &item, None, now).unwrap().0 {
@@ -251,73 +251,42 @@ fn insert_lesson(conn: &rusqlite::Connection, pid: &str, content: &str, now: i64
 }
 
 #[test]
-fn apply_merge_excludes_evolution_lesson_rows() {
-    // lesson 被 merge 吸收 = evo key 消失 = 幂等失效。
-    // 引用含 lesson 时 lesson 必须被排除且存活。
+fn apply_merge_treats_lesson_rows_like_any_other() {
+    // lesson 不再享受「不参与 merge」的特殊待遇——它就是一条普通记忆行
     let mut conn = mem_db();
     let now = 1_000_000;
     let a = insert(&conn, "fact", "用户不吃辣", 3, now);
     let b = insert(&conn, "fact", "用户讨厌辛辣", 4, now + 1);
-    let lesson = insert_lesson(&conn, "m1", "偏好辛辣场景要谨慎", now + 2);
+    let lesson = insert_lesson(&conn, "偏好辛辣场景要谨慎", now + 2);
     let ops = vec![ConsolidateOp::Merge {
-        ids: vec![a.clone(), b.clone(), lesson.clone()],
+        ids: vec![a, b, lesson.clone()],
         content: "用户不吃辣（合并）".into(),
     }];
     let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now + 9).unwrap();
-    assert_eq!(report.merged, 1, "lesson 排除后 2 合 1，只删 1 条来源");
+    assert_eq!(report.merged, 2, "三条合成一条，删两条来源");
     let all = store::load_all(&conn).unwrap();
-    assert_eq!(all.len(), 2, "合并目标 + lesson 两行");
-    let l = all.iter().find(|m| m.id == lesson).expect("lesson 应存活");
-    assert_eq!(l.tags.first().map(String::as_str), Some("evo:m1"));
+    assert_eq!(all.len(), 1, "只剩合并目标");
+    assert_eq!(all[0].content, "用户不吃辣（合并）");
 }
 
 #[test]
-fn apply_merge_all_lesson_refs_skipped() {
-    // 引用只剩 lesson（不足 2 条非 lesson）→ 整条跳过
+fn apply_contradiction_applies_to_lesson_rows() {
+    // contradiction 同样不再绕开 lesson：keep 更新、drop 删除
     let mut conn = mem_db();
     let now = 1_000_000;
-    let a = insert(&conn, "fact", "普通条目", 3, now);
-    let l1 = insert_lesson(&conn, "m2", "lesson 一", now + 1);
-    let l2 = insert_lesson(&conn, "m3", "lesson 二", now + 2);
-    let ops = vec![ConsolidateOp::Merge {
-        ids: vec![a, l1, l2],
-        content: "合并".into(),
-    }];
-    let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now + 9).unwrap();
-    assert_eq!(report.merged, 0, "1 普通 + 2 lesson = 不足 2 可合并，跳过");
-    assert_eq!(store::load_all(&conn).unwrap().len(), 3, "三行全存活");
-}
-
-#[test]
-fn apply_contradiction_skips_when_either_side_is_lesson() {
-    // contradiction 不碰 lesson——drop 行会被删、keep 行内容被覆盖，
-    // 任一侧是 lesson 都跳过整条
-    let mut conn = mem_db();
-    let now = 1_000_000;
-    let a = insert(&conn, "fact", "用户住上海", 3, now);
-    let lesson = insert_lesson(&conn, "m4", "上海场景 lesson", now + 1);
-    // drop 是 lesson
+    let keep = insert_lesson(&conn, "旧教训：排期先确认时区", now);
+    let drop_id = insert(&conn, "fact", "排期直接按本地时间", 3, now + 1);
     let ops = vec![ConsolidateOp::Contradiction {
-        keep: a.clone(),
-        drop_id: lesson.clone(),
-        content: "矛盾内容".into(),
+        keep: keep.clone(),
+        drop_id,
+        content: "排期先确认用户时区".into(),
     }];
     let report = apply_ops(&mut conn, &ops, &fake_embs(&ops), now + 9).unwrap();
-    assert_eq!(report.contradictions, 0, "drop 是 lesson → 跳过");
-    // keep 是 lesson
-    let ops2 = vec![ConsolidateOp::Contradiction {
-        keep: lesson.clone(),
-        drop_id: a.clone(),
-        content: "矛盾内容 2".into(),
-    }];
-    let report2 = apply_ops(&mut conn, &ops2, &fake_embs(&ops2), now + 9).unwrap();
-    assert_eq!(report2.contradictions, 0, "keep 是 lesson → 跳过");
-    // 两行全存活、lesson 内容未被覆盖
+    assert_eq!(report.contradictions, 1);
     let all = store::load_all(&conn).unwrap();
-    assert_eq!(all.len(), 2);
-    let l = all.iter().find(|m| m.id == lesson).expect("lesson 应存活");
-    assert_eq!(l.content, "上海场景 lesson");
-    assert!(all.iter().any(|m| m.id == a), "普通行应存活");
+    assert_eq!(all.len(), 1, "drop 行已删");
+    assert_eq!(all[0].id, keep);
+    assert_eq!(all[0].content, "排期先确认用户时区");
 }
 
 #[test]
