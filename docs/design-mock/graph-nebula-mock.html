@@ -833,11 +833,12 @@ const edgeMat = new THREE.ShaderMaterial({
       vec2 dir = (ce.xy / ce.w - cs.xy / cs.w) * uRes;
       float len = length(dir);
       dir = len > 1e-4 ? dir / len : vec2(1.0, 0.0);
-      vec2 nrm = vec2(-dir.y, dir.x) / uRes;
-      // 远处的边收细，密图远景才不会糊成一块发光的板
+      // ×2 是 NDC↔像素的换算：uRes 宽的视口横跨 2 个 NDC 单位
+      vec2 nrm = vec2(-dir.y, dir.x) * 2.0 / uRes;
+      // 远处的边收细，密图远景才不会糊成一块发光的板；参考纵深 744（本样 R258 的机位距离）
       float depth = -(modelViewMatrix * vec4(aStart, 1.0)).z;
       vec4 p = mix(cs, ce, aCorner.y);
-      p.xy += nrm * (aCorner.x * uWidth * 0.5 * clamp(340.0 / max(depth, 1.0), 0.45, 1.15)) * p.w;
+      p.xy += nrm * (aCorner.x * uWidth * 0.5 * clamp(744.0 / max(depth, 1.0), 0.5, 1.15)) * p.w;
       gl_Position = p;
     }
   `,

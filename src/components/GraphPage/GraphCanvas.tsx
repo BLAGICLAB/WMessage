@@ -1,7 +1,7 @@
 // 图谱画布（星云方案）：Three.js 三维场景 + 自研三维力场。
 //
-// 为什么不用 Sigma：Sigma 是严格二维的，没有相机和投影，拖拽旋转、纵深、
-// 丝缕星雾这三样都做不出来——星云方案的核心恰恰是它们。旧版
+// 为什么不用 Sigma：Sigma 是严格二维的，没有相机和投影，拖拽旋转与纵深
+// 这两样都做不出来——星云方案的核心恰恰是它们。旧版
 // 「Sigma + ForceAtlas2 worker」整套已下线（含首页速览卡共用的 graph-adapter）。
 //
 // 交互契约与旧版一致：hover 邻接高亮其余淡出、点选详情、拖拽旋转视图、
@@ -20,29 +20,41 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { CloudField, Starfield, hexToRgb01 } from "./NebulaField";
 import { Force3D, KINETIC_EPSILON, settle } from "./graph-force3d";
 import { buildScene, isHub, labelDegreeFloor, type Scene, type SceneNode } from "./graph-scene";
-import { placeLabel, middleBand, type Rect } from "./graph-declutter";
+import { declutterPass, type DeclutterTarget, type Rect } from "./graph-declutter";
 import { HUB_COLOR, resolveNodeColor } from "./graph-palette";
 import type { BuiltGraph, GraphColorMode } from "./graph-build";
 import type { GraphLooseness } from "../../lib/graphPrefs";
 import type { GraphEdgeWidth, GraphLabelDensity } from "../../lib/graphPrefs";
 
-/** 连线粗细三档（设置页），单位是屏幕像素：窄带有了真实宽度，
+/** 连线粗细三档（设置页），单位是名义 CSS 像素：窄带有了真实宽度，
  *  这一档就该真的调宽度。旧的 LineSegments 恒 1px 宽，只能拿 alpha 顶替，
- *  而加色混合会把 alpha 平方衰减——「细」档直接等于看不见。 */
-const EDGE_WIDTH: Record<GraphEdgeWidth, number> = {
+ *  而加色混合会把 alpha 平方衰减——「细」档直接等于看不见。
+ *  标准档 1.6px 就是小样的定稿宽度：这三个数就是像素值本身，不再乘任何基准，
+ *  近景纵深上量出来就是这个宽度（纵深收细见 EDGE_DEPTH_*）。 */
+export const EDGE_WIDTH: Record<GraphEdgeWidth, number> = {
   thin: 1.0,
   standard: 1.6,
   thick: 2.8,
 };
+
+/** 窄带按纵深收细：近景更粗、远景更细，密图远景才不会糊成一块板。
+ *  参考纵深取小样的机位距离（2.882 × R258 ≈ 744），在这个纵深上系数正好是 1，
+ *  于是 EDGE_WIDTH 就是字面意义的屏幕像素；越远越细，但不细过下限——
+ *  亚像素的窄带在加色混合下等于看不见，那正是这档设置要避免的事。 */
+export const EDGE_DEPTH_REF = 744;
+export const EDGE_DEPTH_CLAMP_MIN = 0.5;
+export const EDGE_DEPTH_CLAMP_MAX = 1.15;
+
+/** NDC↔像素的换算系数：uRes 宽的视口横跨 2 个 NDC 单位，屏幕 1 像素 = 2/uRes。
+ *  它以前是着色器里一个裸字面量，档位表测试够不着——常数改了测试照样全绿。
+ *  提成常量插值进着色器，单测才有第二条真值可断言。 */
+export const EDGE_NDC_SCALE = 2.0;
 
 /** Bloom 参数。threshold 是「星体发光 / 云团不发光」那条分界线：
  *  星体与星轨芯部越过它起辉，云团粒子恒在它之下。压低了云就开始自己发光。 */
 const BLOOM_STRENGTH = 1.35;
 const BLOOM_RADIUS = 0.82;
 const BLOOM_THRESHOLD = 0.42;
-
-/** 星轨窄带的横截面半宽（像素），见 EDGE_VERT */
-const EDGE_BASE_WIDTH = 1.6;
 
 /** 相机：74° 广角（纵深夸张一点，星云才铺得开），近远裁剪面按场景外径给 */
 const FOV = 74;
@@ -93,10 +105,12 @@ const EDGE_VERT = /* glsl */ `
     vec2 dir = (ce.xy / ce.w - cs.xy / cs.w) * uRes;
     float len = length(dir);
     dir = len > 1e-4 ? dir / len : vec2(1.0, 0.0);
-    vec2 nrm = vec2(-dir.y, dir.x) / uRes;
+    // ×2 是 NDC↔像素的换算：uRes 宽的视口横跨 2 个 NDC 单位，
+    //  漏掉这个系数，uWidth 标称的像素宽会只剩一半（实测三档全落进亚像素）
+    vec2 nrm = vec2(-dir.y, dir.x) * ${EDGE_NDC_SCALE.toFixed(1)} / uRes;
     float depth = -(modelViewMatrix * vec4(aStart, 1.0)).z;
     vec4 p = mix(cs, ce, aCorner.y);
-    p.xy += nrm * (aCorner.x * uWidth * 0.5 * clamp(340.0 / max(depth, 1.0), 0.45, 1.15)) * p.w;
+    p.xy += nrm * (aCorner.x * uWidth * 0.5 * clamp(${EDGE_DEPTH_REF.toFixed(1)} / max(depth, 1.0), ${EDGE_DEPTH_CLAMP_MIN}, ${EDGE_DEPTH_CLAMP_MAX})) * p.w;
     gl_Position = p;
   }
 `;
@@ -110,6 +124,36 @@ const EDGE_FRAG = /* glsl */ `
 
 /** 每条边的角点数（窄带 = 2 个三角形 = 4 个角） */
 const EDGE_SEG = 4;
+
+/** 星轨材质。档位值从 EDGE_WIDTH 直接进 uWidth，着色器里只有 uWidth 一个宽度来源——
+ *  单测靠它够到 uniform 接线（曾出现过「档位表是 1.6、着色器另乘一个基准」的整档错位）。 */
+export function createEdgeMaterial(pref: GraphEdgeWidth): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uRes: { value: new THREE.Vector2(1, 1) },
+      uWidth: { value: EDGE_WIDTH[pref] },
+    },
+    vertexShader: EDGE_VERT,
+    fragmentShader: EDGE_FRAG,
+  });
+}
+
+/** 外观刷新写完颜色/尺寸后必须标脏，否则画面停在上一帧。
+ *  这里曾经只标了边、漏了星体：收敛之后 pushGeometry 不再被调用，切着色维度
+ *  就成了「连线变色、星体不变」。两边的规则收成一个函数，再漏时单测直接红。 */
+export function markAppearanceDirty(
+  nodeGeo: THREE.BufferGeometry,
+  edgeGeo: THREE.BufferGeometry,
+): void {
+  nodeGeo.attributes.aColor.needsUpdate = true;
+  nodeGeo.attributes.aSize.needsUpdate = true;
+  edgeGeo.attributes.aColor.needsUpdate = true;
+  edgeGeo.attributes.aAlpha.needsUpdate = true;
+}
 
 export interface GraphCanvasProps {
   graph: BuiltGraph;
@@ -159,6 +203,40 @@ interface Plaque {
 
 const STEP_BUDGET_MS = 10;
 
+/** separate() 是 O(N²)，超过这个规模就不跑了：万级任务宁可在几处小重叠上让步 */
+const SEPARATE_MAX_N = 1200;
+/** 补间距时每颗节点的半径倍率（nodeRadius 已经含 √ 度数压缩） */
+const SEPARATE_GAP = 2.2;
+/** 铭牌避让每帧的预算。摆位是 O(M²)：3200 块实测 15ms、12800 块 68ms，
+ *  一帧 16ms 根本放不下。预算耗尽后剩下的铭牌先隐一帧，下一帧接着摆。 */
+const DECLUTTER_BUDGET_MS = 4;
+
+/** 上一次的构图与机位（模块级，跨重建与卸载都在）。
+ *  改一条依赖只是换了几条边：节点集合与外径都没变。这时候把整场拆掉重建，等于
+ *  把用户刚摆好的视角弹回定稿机位、再让整片星云从种子重排一遍——数据没大动，
+ *  画面却整个重来。 */
+interface LayoutCache {
+  ids: string[];
+  radius: number;
+  pos: Float32Array;
+  camera: [number, number, number];
+  target: [number, number, number];
+}
+let layoutCache: LayoutCache | null = null;
+
+/** 能不能接着上次的画面走：必须是同一批节点（逐位一致）与同一外径。
+ *  换了松散度、增删了任务、动了过滤器——构图含义已经变了，重新来。 */
+export function canReuseLayout(
+  cache: LayoutCache | null,
+  ids: string[],
+  radius: number,
+): cache is LayoutCache {
+  if (!cache || cache.ids.length !== ids.length) return false;
+  // R = k·√N，同一份输入每次算出的是同一个数，不需要容差
+  if (cache.radius !== radius) return false;
+  return cache.ids.every((id, i) => id === ids[i]);
+}
+
 export default function GraphCanvas(props: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const propsRef = useRef(props);
@@ -180,6 +258,19 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     const N = scene.nodes.length;
     const E = scene.edges.length;
     const force = new Force3D(scene);
+
+    // ── 力场：rAF 时间切片推进 ──
+    let settled = false;
+    let running = false;
+    const pos = force.pos;
+    /** 唤醒力场。所有「让它继续跑」的路径都必须走这里——曾经拖拽松手那条漏了，
+     *  结果节点停在松手处再也不动，注释却写着「从新位置继续平衡」。
+     *  停机只有一处（收敛），恢复却有好几条，漏一条就是一块死区。 */
+    const resumeForce = () => {
+      force.reheat();
+      settled = false;
+      running = true;
+    };
     const labelFloor = labelDegreeFloor(scene.nodes);
 
     const renderer = new THREE.WebGLRenderer({
@@ -204,10 +295,10 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     const world = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(FOV, 1, 1, 6000);
     const R = scene.radius;
-    // 视觉小样的定稿机位：(-96, 232, 700) / R 258 ≈ 2.87R。视线方向同比例保留，
-    // 距离按小样的比例放大——这条距离直接决定星点的屏幕大小（点径 ∝ 1/距离），
+    // 视觉小样的定稿机位：(-96, 232, 700) / R 258 = 2.882R。视线方向同比例保留，
+    // 长度也照抄——这条距离直接决定星点的屏幕大小（点径 ∝ 1/距离），
     // 凑近了就等于把粒子相对云胀一圈，云一叠就自己发起光来
-    camera.position.set(-R * 0.334, R * 0.807, R * 2.436);
+    camera.position.set(-R * 0.372, R * 0.899, R * 2.713);
     camera.near = R * NEAR_RATIO;
     camera.far = R * FAR_RATIO;
 
@@ -226,6 +317,19 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       window.matchMedia("(prefers-reduced-motion: reduce)").matches
     ) {
       controls.autoRotate = false;
+    }
+
+    // 同一批节点、同一外径：接着上次的坐标与机位走，别把用户正在看的视角弹回去
+    const cache = layoutCache;
+    if (canReuseLayout(cache, scene.nodes.map((n) => n.id), R)) {
+      for (let i = 0; i < N; i++) {
+        pos[i * 3] = cache.pos[i * 3];
+        pos[i * 3 + 1] = cache.pos[i * 3 + 1];
+        pos[i * 3 + 2] = cache.pos[i * 3 + 2];
+      }
+      camera.position.set(...cache.camera);
+      controls.target.set(...cache.target);
+      controls.update();
     }
 
     const stars = new Starfield({ sceneRadius: scene.radius, pixelRatio });
@@ -292,18 +396,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     edgeGeo.setIndex(new THREE.BufferAttribute(edgeIdx, 1));
     // 顶点是着色器里才展开的，包围球只能给个假值，否则算出来是 NaN
     edgeGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
-    const edgeMat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      blending: THREE.AdditiveBlending,
-      uniforms: {
-        uRes: { value: new THREE.Vector2(1, 1) },
-        uWidth: { value: EDGE_BASE_WIDTH },
-      },
-      vertexShader: EDGE_VERT,
-      fragmentShader: EDGE_FRAG,
-    });
+    const edgeMat = createEdgeMaterial(props.edgeWidth);
     const edgeLines = new THREE.Mesh(edgeGeo, edgeMat);
     edgeLines.frustumCulled = false;
     world.add(edgeLines);
@@ -448,7 +541,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       // 边：只保留注意力邻域内的，其余退成尘。
       // 加色混合下 alpha 会被混和方式平方衰减，所以这里的数值看着虚高是刻意的：
       // 平方之后语义边才刚好爬到 Bloom 阈值起辉，弱边仍留在阈值下当淡光路
-      edgeMat.uniforms.uWidth.value = EDGE_WIDTH[p.edgeWidth] * EDGE_BASE_WIDTH;
+      edgeMat.uniforms.uWidth.value = EDGE_WIDTH[p.edgeWidth];
       for (let e = 0; e < E; e++) {
         const { a, b } = scene.edges[e];
         const on = focus < 0 || a === focus || b === focus ||
@@ -465,15 +558,14 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           edgeAlpha[e * EDGE_SEG + k] = alpha;
         }
       }
-      edgeGeo.attributes.aColor.needsUpdate = true;
-      edgeGeo.attributes.aAlpha.needsUpdate = true;
+      markAppearanceDirty(nodeGeo, edgeGeo);
       cloudsDirty = true;
 
       // 铭牌资格：锚点常驻；任务按密度档位 + 注意力
       const dense = p.labelDensity === "dense";
       const sparse = p.labelDensity === "sparse";
-      const hitList = searchHits();
-      const showAllHits = hitList.length > 0 && hitList.length <= 18;
+      // hits 就是 searchHits() 那一份，同一次刷新里搜命中不会变，不必再算一遍
+      const showAllHits = hits.size > 0 && hits.size <= 18;
       // 选中态只放行焦点 + 最重的 12 个邻居，否则节点一选中就是一片字墙
       const topNeighbors = new Set<number>();
       if (focus >= 0) {
@@ -611,6 +703,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       if (dragging < 0) return;
       controls.enabled = true;
       dragging = -1;
+      // 拖拽是在力场之外改的坐标，松手得让它重新参与平衡，否则全场就此定格
+      resumeForce();
     };
     const onClick = (e: MouseEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
@@ -625,12 +719,6 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     window.addEventListener("pointerup", onPointerUp);
     el.addEventListener("click", onClick);
     el.addEventListener("pointerleave", onLeave);
-
-    // ── 力场：rAF 时间切片推进 ──
-    let settled = false;
-    let running = false;
-    const pos = force.pos;
-    screen = new Float32Array(N * 3);
 
     const pushGeometry = () => {
       for (let i = 0; i < N; i++) {
@@ -681,21 +769,30 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       }
     };
 
-    const restLayout = () => {
+    /**
+     * 收敛收尾，顺序不能换：先 separate 再 normalize。
+     *
+     * separate 按绝对间距把还贴在一起的两点推开，normalize 是把全场整体乘一个
+     * 系数去命中 R——反过来的话，推开的距离会被随后的缩放再改一次，最后外径
+     * 就不是 R 了。开不开布局动画走的是同一个函数，否则同一份数据开和关
+     * 会长出两张不同的图。
+     */
+    const finishLayout = () => {
       // 小图补一遍最小间距：收敛后仍贴在一起的两个点，光点和铭牌会叠成一坨
-      if (N <= 1200) force.separate(nodeRadiusOf(scene) * 2.2);
+      if (N <= SEPARATE_MAX_N) force.separate(nodeRadiusOf(scene) * SEPARATE_GAP);
       force.normalize(R);
-      force.reheat();
-      settled = false;
-      running = true;
+    };
+
+    const restLayout = () => {
+      finishLayout();
+      resumeForce();
     };
     if (p.autoLayout) {
       running = true;
     } else {
       // 静态构图：一次跑到底。大图照样走时间切片，只是每帧预算给足
       settle(force, { maxSteps: 700 });
-      force.normalize(R);
-      if (N <= 1200) force.separate(nodeRadiusOf(scene) * 2.2);
+      finishLayout();
       settled = true;
       running = false;
     }
@@ -703,15 +800,13 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // THREE.Clock 已废弃且只为拿一个 elapsed，自己记起点即可
     const startedAt = performance.now();
     let raf = 0;
-    const boxes: Rect[] = [];
     const obstacles: Rect[] = [];
 
     const declutter = () => {
-      boxes.length = 0;
       obstacles.length = 0;
       for (const o of propsRef.current.obstacleRects()) obstacles.push(o);
-      for (const o of obstacles) boxes.push(o);
-      const band = middleBand(obstacles, width);
+      const wanted: Plaque[] = [];
+      const targets: DeclutterTarget[] = [];
       for (const i of order) {
         const pl = plaques[i];
         if (!pl.want) continue;
@@ -721,36 +816,30 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           pl.h = pl.el.offsetHeight;
           if (!pl.w) continue;
         }
-        if (screen[i * 3 + 2] > 1) {
-          pl.cull = true;
-          continue;
-        }
-        const hit = placeLabel(
-          {
-            cx: screen[i * 3],
-            cy: screen[i * 3 + 1],
-            w: pl.w,
-            h: pl.h,
-            lift: pl.lift,
-            width,
-            height,
-            band,
-          },
-          boxes,
-          { dx: pl.dx, dy: pl.dy },
-        );
-        if (!hit) {
-          // 真没地方了：藏这一帧。挤在一起的两块字没人读得下去，缺一块还有人找得到
-          pl.cull = true;
-          pl.dx = 0;
-          pl.dy = 0;
-          continue;
-        }
-        pl.cull = false;
-        pl.dx = hit.dx;
-        pl.dy = hit.dy;
-        pl.off.style.setProperty("--dx", `${hit.dx.toFixed(0)}px`);
-        pl.off.style.setProperty("--dy", `${hit.dy.toFixed(0)}px`);
+        wanted.push(pl);
+        targets.push({
+          cx: screen[i * 3],
+          cy: screen[i * 3 + 1],
+          behind: screen[i * 3 + 2] > 1,
+          w: pl.w,
+          h: pl.h,
+          lift: pl.lift,
+          dx: pl.dx,
+          dy: pl.dy,
+        });
+      }
+      const results = declutterPass(targets, obstacles, width, height, {
+        budgetMs: DECLUTTER_BUDGET_MS,
+      });
+      for (let k = 0; k < wanted.length; k++) {
+        const pl = wanted[k];
+        const r = results[k];
+        pl.cull = r.culled;
+        pl.dx = r.dx;
+        pl.dy = r.dy;
+        if (r.culled) continue;
+        pl.off.style.setProperty("--dx", `${r.dx.toFixed(0)}px`);
+        pl.off.style.setProperty("--dy", `${r.dy.toFixed(0)}px`);
         pl.el.style.opacity = "1";
       }
     };
@@ -772,8 +861,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           }
         }
         if (settled) {
-          if (N <= 1200) force.separate(nodeRadiusOf(scene) * 2.2);
-          force.normalize(R);
+          finishLayout();
           running = false;
           refreshAppearance();
         }
@@ -839,6 +927,14 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     window.addEventListener("graph:appearance", onAppearance);
 
     return () => {
+      // 先存构图与机位：重建时（改依赖、换过滤器…）紧接着就要接着它走
+      layoutCache = {
+        ids: scene.nodes.map((n) => n.id),
+        radius: R,
+        pos: new Float32Array(pos),
+        camera: [camera.position.x, camera.position.y, camera.position.z],
+        target: [controls.target.x, controls.target.y, controls.target.z],
+      };
       window.removeEventListener("graph:relayout", onRelayout);
       window.removeEventListener("graph:appearance", onAppearance);
       cancelAnimationFrame(raf);
@@ -892,6 +988,12 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     props.labelDensity,
     props.edgeWidth,
   ]);
+
+  // 离开图谱页就把缓存丢掉：下次进来仍是定稿机位，只有页内改数据才接着走。
+  // 声明在主 effect 之后，卸载时清理按声明顺序跑——先存后清。
+  useEffect(() => () => {
+    layoutCache = null;
+  }, []);
 
   return (
     <div ref={containerRef} className="graph-canvas h-full w-full" data-testid="graph-canvas" />
