@@ -115,17 +115,8 @@ fn empty_ops_with_lesson_still_reaches_store() {
     assert!(ops.is_empty(), "前置：ops 解析为空");
     let lesson = lesson.expect("lesson 应被解析出");
     let conn = mem_db();
-    assert!(
-        store_lesson(
-            &conn,
-            &lesson,
-            None,
-            1_700_000_000_000,
-            &store::StoreParams::default()
-        )
-        .unwrap(),
-        "空 ops 下 lesson 仍要落库"
-    );
+    let msg = write_consolidate_lesson(&conn, &lesson, 1_700_000_000_000);
+    assert!(!msg.starts_with("失败"), "空 ops 下 lesson 仍要落库：{msg}");
     assert!(store::load_all(&conn)
         .unwrap()
         .iter()
@@ -190,85 +181,100 @@ fn apply_merge_with_missing_ids_skipped() {
     assert_eq!(store::load_all(&conn).unwrap().len(), 1);
 }
 
-// ── lesson 直写 ──
+// ── lesson 走标准写入路径（record_lesson_core） ──
 
-#[test]
-fn store_lesson_inserts_lesson_row() {
-    let conn = mem_db();
-    let now = 1_000_000;
-    assert!(store_lesson(
-        &conn,
-        "下次排期前先确认时区",
+/// 整理写 lesson 的唯一入口就是 `record_lesson_core`——与 tool_record_lesson /
+/// 技能失败沉淀 / 纠正聚簇同一条路径，这里调的就是它本身。
+fn write_consolidate_lesson(conn: &rusqlite::Connection, text: &str, now: i64) -> String {
+    super::super::record_lesson_core(
+        conn,
+        text,
+        CONSOLIDATE_LESSON_SCENARIO,
+        "system",
         None,
         now,
-        &store::StoreParams::default()
+        &store::StoreParams::default(),
     )
-    .unwrap());
+}
+
+#[test]
+fn consolidate_lesson_row_matches_other_lesson_writers() {
+    let conn = mem_db();
+    write_consolidate_lesson(&conn, "下次排期前先确认时区", 1_000);
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].kind, "lesson");
-    assert_eq!(all[0].importance, 3);
     assert_eq!(all[0].source, "system");
-    assert_eq!(all[0].tags, vec![LESSON_SOURCE_TAG]);
+    assert_eq!(
+        all[0].tags,
+        vec!["lesson", CONSOLIDATE_LESSON_SCENARIO],
+        "tags 与其余 lesson 写入同构：tags[0]=lesson、tags[1]=场景"
+    );
+    assert_eq!(
+        all[0].importance, 4,
+        "importance 跟 record_lesson_core 走，不再自定 3"
+    );
 }
 
 #[test]
-fn store_lesson_source_tag_does_not_collide_with_record_lesson_key() {
-    // tags[0] 是 key 命名空间：record_lesson 用 `lesson`、distill 用 `reflection`。
-    // 整理 lesson 若也填 `lesson`，find_by_key_tag("lesson") 会误命中它，
-    // record_lesson 下次写就会判「已存在」而跳过——幂等就废了。
-    let conn = mem_db();
-    store_lesson(
-        &conn,
-        "整理产出的一条 lesson",
+fn consolidate_lesson_is_structurally_identical_to_record_lesson_core() {
+    // 整理若哪天又自己 new 一个 NewItem，这个断言会比任何约定文档先发现。
+    let a = mem_db();
+    write_consolidate_lesson(&a, "两条记忆该合并时先合并", 1_000);
+    let b = mem_db();
+    super::super::record_lesson_core(
+        &b,
+        "两条记忆该合并时先合并",
+        CONSOLIDATE_LESSON_SCENARIO,
+        "system",
         None,
         1_000,
         &store::StoreParams::default(),
-    )
-    .unwrap();
-    let l = &store::load_all(&conn).unwrap()[0];
-    assert_ne!(
-        l.tags.first().map(String::as_str),
-        Some("lesson"),
-        "整理 lesson 不得占用 record_lesson 的 key"
     );
-    assert_ne!(
-        l.tags.first().map(String::as_str),
-        Some("reflection"),
-        "整理 lesson 不得占用 distill 的 key"
-    );
+    let (x, y) = (store::load_all(&a).unwrap(), store::load_all(&b).unwrap());
+    assert_eq!(x.len(), 1);
+    assert_eq!(y.len(), 1);
+    assert_eq!(x[0].kind, y[0].kind);
+    assert_eq!(x[0].tags, y[0].tags);
+    assert_eq!(x[0].importance, y[0].importance);
+    assert_eq!(x[0].source, y[0].source);
+    assert_eq!(x[0].content, y[0].content);
 }
 
 #[test]
-fn store_lesson_is_idempotent_on_verbatim_content() {
+fn consolidate_lesson_leaves_dedup_to_insert_item() {
+    // 整理不做逐字去重——去重整个交给 insert_item。降级模式（无向量）
+    // 跳过去重是既有语义：整理不因缺向量而另加一层判重。
     let conn = mem_db();
-    let now = 1_000_000;
-    let sp = store::StoreParams::default();
-    assert!(store_lesson(&conn, "同一条 lesson", None, now, &sp).unwrap());
-    assert!(
-        !store_lesson(&conn, "同一条 lesson", None, now + 1, &sp).unwrap(),
-        "逐字重复不再落第二行"
+    write_consolidate_lesson(&conn, "同一条 lesson", 1_000);
+    write_consolidate_lesson(&conn, "同一条 lesson", 2_000);
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(
+        all.len(),
+        2,
+        "无向量时 insert_item 跳过去重——整理层不再另加逐字判重"
     );
-    assert_eq!(store::load_all(&conn).unwrap().len(), 1);
+    assert!(all.iter().all(|m| m.kind == "lesson"));
 }
 
 #[test]
-fn store_lesson_dedup_only_scopes_to_lesson_kind() {
-    // 逐字去重只认 kind=lesson：同文本的 fact 不该挡住 lesson 落库
+fn consolidate_lesson_rejects_overlong_text_like_other_lesson_writers() {
+    // validate_lesson 顺带白拿：超长直接拒写并带「失败」前缀，由 write_lesson
+    // 转成 Warn 审计，不再静默截断一条行为准则。
     let conn = mem_db();
-    let now = 1_000_000;
-    insert(&conn, "fact", "同文本", 3, now);
-    assert!(store_lesson(&conn, "同文本", None, now, &store::StoreParams::default()).unwrap());
-    assert_eq!(store::load_all(&conn).unwrap().len(), 2);
+    let long = "长".repeat(MAX_CONTENT_CHARS + 1);
+    let msg = write_consolidate_lesson(&conn, &long, 1_000);
+    assert!(msg.starts_with("失败"), "超长应拒写，实际：{msg}");
+    assert!(store::load_all(&conn).unwrap().is_empty());
 }
 
-/// 测试助手：插一条 lesson 行（与 write_lesson 同款形态）
+/// 测试助手：插一条 lesson 行（与 record_lesson_core 同款形态）
 fn insert_lesson(conn: &rusqlite::Connection, content: &str, now: i64) -> String {
     let item = NewItem {
         kind: "lesson".into(),
         content: content.into(),
-        tags: vec![LESSON_SOURCE_TAG.into()],
-        importance: 3,
+        tags: vec!["lesson".into(), CONSOLIDATE_LESSON_SCENARIO.into()],
+        importance: 4,
         source: "system".into(),
     };
     match store::insert_item(conn, &item, None, now).unwrap().0 {

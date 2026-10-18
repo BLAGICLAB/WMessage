@@ -43,9 +43,9 @@ const CONSOLIDATE_DEFAULT_WINDOW_MS: i64 = 7 * 86_400_000;
 /// 调度器检查周期（10 分钟扫一次是否到点，同 bot_scheduler 的 30s 扫描模式）
 const SCHED_TICK_SECS: u64 = 600;
 
-/// 整理产出条目的来源标记。distill 与 lesson 共用同一个值——两者是同一次反思
-/// 的一对产物，只是 kind 不同。
-const LESSON_SOURCE_TAG: &str = "consolidation";
+/// 整理产出的来源标记，兼作 lesson 的 scenario。distill 落在 tags[1]、
+/// lesson 落在 tags[1]（scenario 位）——两者是同一次反思的一对产物。
+const CONSOLIDATE_LESSON_SCENARIO: &str = "consolidation";
 
 // 配置
 
@@ -390,7 +390,10 @@ pub fn apply_ops_with(
                 let item = NewItem {
                     kind: "reflection".to_string(),
                     content: truncate_chars(content, MAX_CONTENT_CHARS, false),
-                    tags: vec!["reflection".to_string(), LESSON_SOURCE_TAG.to_string()],
+                    tags: vec![
+                        "reflection".to_string(),
+                        CONSOLIDATE_LESSON_SCENARIO.to_string(),
+                    ],
                     importance: 4,
                     source: "system".to_string(),
                 };
@@ -467,17 +470,20 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     Ok(report)
 }
 
-/// 反思 lesson 直写入库（kind=lesson / importance=3 / source=system / 无 key tag）。
+/// 反思 lesson 落库。不走独立写路径——复用 `record_lesson_core`，与
+/// `tool_record_lesson` / 技能失败沉淀 / 纠正聚簇三条既有 lesson 写入同构：
+/// 同样 validate、同样 `tags = ["lesson", scenario]`、同样把语义去重整个
+/// 交给 `insert_item`（≥0.92 合并、0.75~0.92 冲突提示）。整理不额外做逐字
+/// 去重，也不给 lesson 开 merge-on-write 的豁免——那会让它与记忆系统里
+/// 其他类型的行行为不一致。
 ///
-/// lesson 与 ops 是反思的一对产物，走同一条写路径——没有提案池与审批环节。
-/// 幂等：同 kind=lesson 且内容逐字相同则跳过；语义近重复（cosine ≥ 去重阈值）
-/// 由 store 的 merge-on-write 折叠。
-/// 失败只记审计：整理主链路不因一条 lesson 落库失败而回滚。
+/// 返回串是 `record_lesson_core` 的原样结果（含合并/冲突提示），送审计让
+/// 「已合并覆盖既有行」不再静默。失败只记审计：整理主链路不因一条 lesson 回滚。
 async fn write_lesson(app: &AppHandle, lesson: Option<&str>) {
     let Some(text) = lesson.map(str::trim).filter(|t| !t.is_empty()) else {
         return;
     };
-    let text = truncate_chars(text, MAX_CONTENT_CHARS, false);
+    let text = text.to_string();
     // 嵌入在持锁前算好（ONNX 推理数十 ms，不占 DB 写锁临界区）
     let emb = match tauri::async_runtime::spawn_blocking({
         let t = text.clone();
@@ -501,49 +507,33 @@ async fn write_lesson(app: &AppHandle, lesson: Option<&str>) {
     let tuning = crate::bot::read_memory_tuning(app);
     let r = crate::db::lock::with_write_conn(app, move |conn| {
         store::ensure_table(conn)?;
-        store_lesson(
+        Ok(super::record_lesson_core(
             conn,
             &text,
+            CONSOLIDATE_LESSON_SCENARIO,
+            "system",
             emb.as_deref(),
             now_ms(),
             &store::StoreParams::of(&tuning),
-        )
+        ))
     })
     .await;
-    if let Err(e) = r {
-        crate::audit_event!(app, crate::audit::AuditLevel::Warn,
-            "memory.lesson_write_failed", "error" => e);
+    // record_lesson_core 把失败也编码在返回串里，前缀「失败」/「错误」（与
+    // tool_record_lesson 同口径）；其余含「已合并更新」与冲突提示，一律 Info 留痕。
+    match r {
+        Ok(ref msg) if msg.starts_with("失败") || msg.starts_with("错误") => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn,
+                "memory.lesson_write_failed", "error" => msg.clone());
+        }
+        Ok(msg) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Info,
+                "memory.lesson_written", "result" => msg);
+        }
+        Err(e) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn,
+                "memory.lesson_write_failed", "error" => e);
+        }
     }
-}
-
-/// lesson 落库内核（纯函数，供单测）：逐字去重后交给 store 的去重/淘汰链。
-/// 返回是否真的新落一行（已存在或被 store 折叠都算没落）。
-fn store_lesson(
-    conn: &rusqlite::Connection,
-    text: &str,
-    emb: Option<&[f32]>,
-    now_ms: i64,
-    sp: &store::StoreParams,
-) -> Result<bool, String> {
-    let verbatim = store::load_all(conn)?
-        .iter()
-        .any(|m| m.kind == "lesson" && m.content == text);
-    if verbatim {
-        return Ok(false);
-    }
-    let item = NewItem {
-        kind: "lesson".to_string(),
-        content: text.to_string(),
-        // 来源标记，对齐同文件 distill 产出的 `consolidation` 维度。tags[0] 同时
-        // 是 key 命名空间（find_by_key_tag / key_of），库里 `lesson` 已被
-        // record_lesson 占用、`reflection` 被 distill 占用——这里只能用
-        // consolidation，填 `lesson` 会让 record_lesson 的幂等查重误命中。
-        tags: vec![LESSON_SOURCE_TAG.to_string()],
-        importance: 3,
-        source: "system".to_string(),
-    };
-    let (outcome, _) = store::insert_item_with(conn, &item, emb, now_ms, sp)?;
-    Ok(matches!(outcome, store::InsertOutcome::Inserted(_)))
 }
 
 /// 立即手动整理（设置页「立即整理」按钮）。成功后回写 last_run_at。
