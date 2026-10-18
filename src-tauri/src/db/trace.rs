@@ -1929,7 +1929,7 @@ mod tests {
 
     /// 榜位排序口径 = 面板展示口径（输入+输出）。缓存不进排序：
     /// 缓存读取单价约为普通输入的十分之一，把它算进名次会让「榜上第一」
-    /// 的模型在色块宽度上明显偏细，名次与图形对不上。
+    /// 的模型在饼图扇形上明显偏小，名次与图形对不上。
     #[test]
     fn usage_stats_by_model_ranks_ignoring_cache_tokens() {
         let conn = setup_conn();

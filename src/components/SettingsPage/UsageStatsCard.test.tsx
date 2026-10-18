@@ -1,6 +1,6 @@
 // UsageStatsCard 测试：mock usage_stats_daily / usage_stats_by_model /
 // usage_stats_daily_by_model，覆盖汇总行（含连续天数）/热力图（模式切换、月份标签）/
-// 时间范围切换/按模型趋势图/模型用量/空态/刷新。
+// 时间范围切换/按模型趋势图/模型用量 3D 饼图/空态/刷新。
 import {
   fireEvent,
   render,
@@ -19,6 +19,7 @@ import {
   UsageStatsCard,
   streakDays,
   buildTrendSeries,
+  pieSlices,
   type UsageDay,
   type UsageModelRow,
   type UsageDayModelRow,
@@ -160,9 +161,9 @@ describe("UsageStatsCard", () => {
     expect(
       container.querySelector('svg[aria-label="每日 Token 趋势图"]'),
     ).toBeTruthy();
-    expect(screen.getAllByText("glm-5.3").length).toBeGreaterThanOrEqual(1); // 图例 + 模型用量榜
+    expect(screen.getAllByText("glm-5.3").length).toBeGreaterThanOrEqual(1); // 趋势图例 + 饼图图例
     expect(screen.getByText("kimi-k3")).toBeTruthy();
-    // 模型用量榜
+    // 零占比的模型仍留在饼图图例里
     expect(screen.getByText("未知模型（旧数据）")).toBeTruthy();
   });
 
@@ -288,6 +289,19 @@ function findDayCell(container: HTMLElement, day: string): Element {
   return cell as Element;
 }
 
+/** 侧壁厚度守卫：d 里最后一组坐标必须比 M 起点低 PIE_DEPTH。折回那段若误用顶面
+ *  坐标，整条带子会收敛成零厚度——整圆那一片尤其明显，视觉上侧壁直接消失。 */
+function expectWallDepth(container: HTMLElement, count: number) {
+  const walls = Array.from(
+    container.querySelectorAll('svg[aria-label="模型用量 3D 饼图"] > path'),
+  );
+  expect(walls.length).toBe(count);
+  for (const w of walls) {
+    const nums = (w.getAttribute("d") ?? "").match(/-?\d+(\.\d+)?/g) ?? [];
+    expect(Number(nums[nums.length - 1]) - Number(nums[1])).toBeCloseTo(20, 1);
+  }
+}
+
 const CACHE_DAYS: UsageDay[] = [
     {
       day: "2026-10-05",
@@ -349,9 +363,9 @@ const CACHE_DAYS: UsageDay[] = [
     expect(screen.getByText("3.2 万")).toBeTruthy();
     // 汇总行只给缓存合计，不在行内再拆读/写
     expect(screen.queryByText(/^写入/)).toBeNull();
-    // 色块口径说明
+    // 扇形口径说明
     expect(
-      screen.getByText(/缓存命中的 token 单独计价，不计入色块/),
+      screen.getByText(/缓存命中的 token 单独计价，不计入扇形/),
     ).toBeTruthy();
   });
 
@@ -395,30 +409,94 @@ const CACHE_DAYS: UsageDay[] = [
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
-  it("模型榜：行内只留缓存未命中与占比，缓存/轮次不占行", async () => {
+  it("模型用量饼图：每模型一个扇形，图例给占比，悬浮出五行累计", async () => {
     mockCache();
     const { container } = render(<UsageStatsCard />);
     await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
-    // 每行一个「缓存未命中 X」，不再混列缓存数
+
+    expect(
+      container.querySelector('svg[aria-label="模型用量 3D 饼图"]'),
+    ).toBeTruthy();
+    // 扇形按未命中口径分角：5.0K : 1.0K = 83% : 17%
+    const glm = container.querySelector('[data-share="0.8333"]');
+    const kimi = container.querySelector('[data-share="0.1667"]');
+    expect(glm?.getAttribute("data-model")).toBe("glm-5.3");
+    expect(kimi?.getAttribute("data-model")).toBe("kimi-k3");
+    // 顶面 + 侧壁两段路径同属一个扇形组（侧壁不单独挂事件，顶面是命中区）
+    expect(glm?.querySelectorAll("path").length).toBe(1);
+    expectWallDepth(container, 2); // 两个侧壁，且都不是零厚度
+
+    // 图例行仍给「缓存未命中 X」与占比（饼图不替代数字，只补上分布与明细）
     const missLabels = screen.getAllByText(/^缓存未命中 /);
     expect(missLabels.length).toBe(2);
     expect(missLabels[0].textContent).toContain("5.0K");
     expect(missLabels[1].textContent).toContain("1.0K");
-    // 行内不再出现缓存命中数与轮次数
-    expect(screen.queryByText(/· 缓存 /)).toBeNull();
-    expect(screen.queryByText(/^\d+ 次$/)).toBeNull();
+    expect(screen.getByText("83%")).toBeTruthy();
+    expect(screen.getByText("17%")).toBeTruthy();
     // 榜尾口径说明保留
     expect(
-      screen.getByText(/缓存命中的 token 单独计价，不计入色块/),
+      screen.getByText(/缓存命中的 token 单独计价，不计入扇形/),
     ).toBeTruthy();
-    // 色块 tooltip 仍带出缓存命中（悬浮详情不占版面）
-    const barTitles = Array.from(container.querySelectorAll("[title]"))
-      .map((el) => el.getAttribute("title") ?? "")
-      .filter((t) => t.includes("tokens"));
+
+    // 悬浮扇形 → 五行累计：未命中 5.0K（输入 4.0K/输出 1.0K）、缓存 3.2 万
+    // （命中 3.0 万/写入 2.0K）、轮次 3
+    fireEvent.mouseEnter(glm as Element);
+    const tip = screen.getByRole("tooltip");
+    expect(within(tip).getByText("glm-5.3")).toBeTruthy();
+    expect(within(tip).getByText("累计缓存未命中")).toBeTruthy();
+    expect(within(tip).getByText("5.0K")).toBeTruthy();
+    expect(within(tip).getByText(/输入 4\.0K · 输出 1\.0K/)).toBeTruthy();
+    expect(within(tip).getByText("累计缓存命中")).toBeTruthy();
+    expect(within(tip).getByText("3.2 万")).toBeTruthy();
+    expect(within(tip).getByText(/命中 3\.0 万 · 写入 2\.0K/)).toBeTruthy();
+    expect(within(tip).getByText("轮次")).toBeTruthy();
+    expect(within(tip).getByText("3")).toBeTruthy();
+
+    // 无缓存的模型：同一结构展示 0，不跳行，便于对读
+    fireEvent.mouseEnter(kimi as Element);
+    const tip2 = screen.getByRole("tooltip");
+    expect(within(tip2).getByText("kimi-k3")).toBeTruthy();
+    expect(within(tip2).getByText("1.0K")).toBeTruthy();
+    expect(within(tip2).getByText(/命中 0 · 写入 0/)).toBeTruthy();
+
+    // 移出整块 → 浮层收起
+    fireEvent.mouseLeave((glm as Element).closest(".relative") as Element);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("零占比的模型没有扇形但仍可悬浮查累计数", async () => {
+    mockOk(); // MODELS 第二行未知模型全 0
+    const { container } = render(<UsageStatsCard />);
+    await waitFor(() => expect(screen.getByText("9.0K")).toBeTruthy());
+    // 唯一有量的模型吃掉整圆
+    expect(container.querySelector('[data-share="1.0000"]')).not.toBeNull();
+    // 整圆的侧壁也必须有厚度（整弧拆两半画，退化路径这里最容易塌）
+    expectWallDepth(container, 1);
+    // 零占比行只出现在图例里（切片 + 图例两个挂点，只有图例那一个）
+    const zeroNodes = container.querySelectorAll('[data-model="未知模型（旧数据）"]');
+    expect(zeroNodes.length).toBe(1);
+    expect(screen.getByText("未知模型（旧数据）")).toBeTruthy();
+    fireEvent.mouseEnter(zeroNodes[0]);
+    const tip = screen.getByRole("tooltip");
+    expect(within(tip).getByText("累计缓存未命中")).toBeTruthy();
+    expect(within(tip).getByText(/输入 0 · 输出 0/)).toBeTruthy();
+    expect(within(tip).getByText(/命中 0 · 写入 0/)).toBeTruthy();
+  });
+
+  it("pieSlices：角度按未命中口径分配、占比和为 1、全零返回空", () => {
+    const slices = pieSlices(CACHE_MODELS);
+    expect(slices.length).toBe(2);
+    expect(slices[0].a1).toBeCloseTo(0);
+    // 5/6 × 2π = 300°
+    expect(slices[0].a2).toBeCloseTo((5 / 6) * Math.PI * 2, 5);
+    expect(slices[1].a2).toBeCloseTo(Math.PI * 2, 5);
+    expect(slices[0].share + slices[1].share).toBeCloseTo(1, 6);
+    // 缓存不参与取值：kimi 缓存 0 但仍分到 1/6 的扇形
+    expect(slices[1].value).toBe(1000);
+    // 零占比行分不到角度
+    expect(pieSlices(MODELS).length).toBe(1);
     expect(
-      barTitles.some(
-        (t) => t.includes("缓存未命中 5.0K") && t.includes("缓存命中 3.2 万"),
-      ),
-    ).toBe(true);
+      pieSlices([{ model: "x", promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, runs: 0 }]),
+    ).toEqual([]);
   });
 });

@@ -1,10 +1,11 @@
 // 词元统计卡（设置页「tokens」分区）——按「使用统计」参照图重排：
 // 汇总指标行（竖线分隔 5 项，含连续天数）→ Token 活动热力图（GitHub contributions 式
 // 7×N 周格，每日/每周/累计切换 + 月份标签）→ 时间范围行 + 每日趋势按模型分线 →
-// 模型用量榜，各板块独立成卡。
+// 模型用量 3D 饼图，各板块独立成卡。
 // 数据源 = usage_stats_daily(365) + usage_stats_by_model(365)（Rust 侧升序、缺日补零）
 // + usage_stats_daily_by_model(range)（稀疏返回，前端以补零日序列为 x 轴）。
-// 不引图表库：曲线是手绘 SVG（Catmull-Rom 平滑），热力图是 div 网格——零依赖纪律。
+// 不引图表库：曲线是手绘 SVG（Catmull-Rom 平滑），热力图是 div 网格，饼图是手绘
+// 椭圆扇形 + 侧壁——零依赖纪律。
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -439,7 +440,7 @@ function TokenTrendChart({
   );
 }
 
-/* ───────────────────────── 模型用量榜 ───────────────────────── */
+/* ───────────────────────── 模型用量 3D 饼图 ───────────────────────── */
 
 /** 密集图例行的次级数字档：比正文低一档字号。
  *  text-[10px] 仍在 [data-font-size] 覆盖表内（standard/large/xlarge → 12/13/14px），
@@ -447,62 +448,268 @@ function TokenTrendChart({
  *  这里是三级元数据），不是任意值混排。 */
 const META_NUM = "text-[10px] font-mono tabular-nums text-[var(--t5)]";
 
-/** 占比堆叠条 + 图例行（palette 循环取色）。
- *  色块宽度与榜位都按「缓存未命中」口径（输入+输出），与 usage_stats_by_model
- *  的 ORDER BY 保持同一口径——名次和图形算两套数会让「第一名」色块明显偏细。
- *  行内只留「模型 · 缓存未命中 · 占比」：缓存命中与轮次不在行里重复，
- *  榜尾一行口径说明已交代清楚（缓存单价不同，混进占比会失真）。 */
-function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
+/** 立体饼的三个投影常量：顶面椭圆半径、俯视压扁比、侧壁厚度。压扁 + 竖直拉伸
+ *  这两步就是 Excel 3D 饼的画法——俯视看到的顶面是椭圆，朝向观众的那半圈侧壁
+ *  向下露出来；背面那半圈侧壁落在椭圆内部，被顶面盖掉，不用做背面剔除。 */
+const PIE_R = 76;
+const PIE_FLAT = 0.55;
+const PIE_DEPTH = 20;
+const PIE_RY = PIE_R * PIE_FLAT;
+const PIE_PAD = 4;
+const PIE_W = PIE_R * 2 + PIE_PAD * 2;
+const PIE_H = PIE_RY * 2 + PIE_DEPTH + PIE_PAD * 2;
+const PIE_CX = PIE_W / 2;
+const PIE_CY = PIE_RY + PIE_PAD;
+
+const UNKNOWN_MODEL = "未知模型（旧数据）";
+
+/** 角度参数化：0 在 12 点方向、顺时针为正。屏幕 y 轴向下，故 θ 增大在视觉上是
+ *  顺时针，与 SVG 弧的 sweep=1 同向——两侧接缝才不会错开。 */
+function piePt(th: number): [number, number] {
+  return [PIE_CX + PIE_R * Math.sin(th), PIE_CY - PIE_RY * Math.cos(th)];
+}
+
+const n2 = (v: number) => v.toFixed(1);
+
+/** 一段椭圆弧的 A 命令。dy > 0 画在顶面下方 PIE_DEPTH 处的底缘上（侧壁折回时用）。
+ *  整圆必须拆成两个半弧：首尾落在同一点的单条 A 弧画不出圆。 */
+function arcChain(a1: number, a2: number, sweep: 1 | 0, dy = 0): string {
+  const seg = (from: number, to: number) => {
+    const [x, y] = piePt(to);
+    const large = Math.abs(to - from) > Math.PI ? 1 : 0;
+    return `A ${PIE_R} ${n2(PIE_RY)} 0 ${large} ${sweep} ${n2(x)} ${n2(y + dy)}`;
+  };
+  return Math.abs(a2 - a1) >= Math.PI * 2 - 1e-6
+    ? `${seg(a1, a1 + Math.PI)} ${seg(a1 + Math.PI, a2)}`
+    : seg(a1, a2);
+}
+
+/** 顶面 = 椭圆扇形（整圆时退化为整个椭圆，不从圆心起笔） */
+function pieTopPath(a1: number, a2: number): string {
+  const [sx, sy] = piePt(a1);
+  const lead =
+    a2 - a1 >= Math.PI * 2 - 1e-6
+      ? `M ${n2(sx)} ${n2(sy)}`
+      : `M ${PIE_CX} ${PIE_CY} L ${n2(sx)} ${n2(sy)}`;
+  return `${lead} ${arcChain(a1, a2, 1)} Z`;
+}
+
+/** 侧壁 = 顶面那段弧沿竖直拉伸 PIE_DEPTH 后折回（折回那一段必须走底缘坐标，
+ *  否则下边缘会收敛回顶面，整条带子塌成零厚度） */
+function pieWallPath(a1: number, a2: number): string {
+  const [sx, sy] = piePt(a1);
+  const [ex, ey] = piePt(a2);
+  return `M ${n2(sx)} ${n2(sy)} ${arcChain(a1, a2, 1)} L ${n2(ex)} ${n2(
+    ey + PIE_DEPTH,
+  )} ${arcChain(a2, a1, 0, PIE_DEPTH)} Z`;
+}
+
+export type PieSlice = {
+  key: string;
+  name: string;
+  /** 扇形取值 = 缓存未命中口径（输入+输出） */
+  value: number;
+  share: number;
+  a1: number;
+  a2: number;
+  color: string;
+};
+
+/** 占比堆叠条 → 3D 饼图。扇形角度按「缓存未命中」口径（输入+输出）分配，与
+ *  usage_stats_by_model 的 ORDER BY 同一口径——名次和图形算两套数会让
+ *  「第一名」的扇形明显偏小。零占比的模型分不到角度（没有扇形可画），但仍留在
+ *  图例里，悬浮照样给它的累计数。 */
+export function pieSlices(rows: UsageModelRow[]): PieSlice[] {
+  const value = (r: UsageModelRow) => r.promptTokens + r.completionTokens;
+  const total = rows.reduce((a, r) => a + value(r), 0);
+  if (total <= 0) return [];
+  let acc = 0;
+  return rows
+    .filter((r) => value(r) > 0)
+    .map((r, i) => {
+      const v = value(r);
+      const a1 = (acc / total) * Math.PI * 2;
+      acc += v;
+      return {
+        key: r.model ?? UNKNOWN_MODEL,
+        name: r.model ?? UNKNOWN_MODEL,
+        value: v,
+        share: v / total,
+        a1,
+        a2: (acc / total) * Math.PI * 2,
+        color: MODEL_COLORS[i % MODEL_COLORS.length],
+      };
+    });
+}
+
+/** 3D 饼图 + 图例行。悬浮扇形或图例行都出累计数浮层（模型名 + 未命中/缓存
+ *  两组各带一行拆分 + 轮次）；侧壁不单独挂事件，它只是同一片扇形的立体投影，
+ *  顶面已经盖住整个命中区。 */
+function ModelUsagePie({ rows }: { rows: UsageModelRow[] }) {
+  const slices = pieSlices(rows);
   const total =
     rows.reduce((a, r) => a + r.promptTokens + r.completionTokens, 0) || 1;
-  return (
-    <div>
-      <div className="flex h-2.5 overflow-hidden rounded-full bg-[var(--inset-bg)]">
-        {rows.map((r, i) => {
-          const t = r.promptTokens + r.completionTokens;
-          const cache = cacheOf(r);
-          return (
-            <div
-              key={i}
-              style={{
-                width: `${(t / total) * 100}%`,
-                backgroundColor: MODEL_COLORS[i % MODEL_COLORS.length],
-              }}
-              title={`${r.model ?? "未知模型"} · 缓存未命中 ${fmtTokens(t)} tokens${
-                cache > 0 ? ` · 缓存命中 ${fmtTokens(cache)}` : ""
-              }`}
-            />
-          );
-        })}
+  const [hover, setHover] = useState<string | null>(null);
+  const [tip, setTip] = useState({ left: 0, top: 0, flip: false });
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const showTip = (key: string, el: Element) => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const wr = wrap.getBoundingClientRect();
+    const cr = el.getBoundingClientRect();
+    // 浮层宽 210px：靠右的扇形/图例行向左翻，避免越过容器右缘被裁
+    const flip = cr.right - wr.left > wr.width - 220;
+    setTip({
+      left: flip ? cr.left - wr.left - 6 : cr.right - wr.left + 6,
+      top: cr.top - wr.top + 12,
+      flip,
+    });
+    setHover(key);
+  };
+
+  const hov = rows.find((r) => (r.model ?? UNKNOWN_MODEL) === hover) ?? null;
+
+  /** 图例行兼作零占比模型的唯一入口（没有扇形可悬浮），所以它也挂同一套浮层 */
+  const legendRow = (r: UsageModelRow) => {
+    const key = r.model ?? UNKNOWN_MODEL;
+    const v = r.promptTokens + r.completionTokens;
+    return (
+      <div
+        key={key}
+        data-model={key}
+        className="flex items-center gap-2 text-xs"
+        onMouseEnter={(e) => showTip(key, e.currentTarget)}
+      >
+        <span
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{
+            backgroundColor:
+              slices.find((s) => s.key === key)?.color ?? "var(--edge-strong)",
+          }}
+        />
+        <span className="min-w-0 flex-1 truncate text-[var(--t2)]">
+          {r.model ?? UNKNOWN_MODEL}
+        </span>
+        <span className={`shrink-0 ${META_NUM} text-[var(--t4)]`}>
+          缓存未命中 {fmtTokens(v)}
+        </span>
+        <span className={`shrink-0 ${META_NUM} w-9 text-right`}>
+          {Math.round((v / total) * 100)}%
+        </span>
       </div>
-      <div className="mt-2 space-y-1.5">
-        {rows.map((r, i) => {
-          const t = r.promptTokens + r.completionTokens;
-          return (
-            <div key={i} className="flex items-center gap-2 text-xs">
-              <span
-                className="h-2 w-2 shrink-0 rounded-full"
-                style={{
-                  backgroundColor: MODEL_COLORS[i % MODEL_COLORS.length],
-                }}
-              />
-              <span className="min-w-0 flex-1 truncate text-[var(--t2)]">
-                {r.model ?? "未知模型（旧数据）"}
-              </span>
-              <span className={`shrink-0 ${META_NUM} text-[var(--t4)]`}>
-                缓存未命中 {fmtTokens(t)}
-              </span>
-              <span className={`shrink-0 ${META_NUM} w-9 text-right`}>
-                {Math.round((t / total) * 100)}%
+    );
+  };
+
+  return (
+    <div
+      className="relative"
+      ref={wrapRef}
+      onMouseLeave={() => setHover(null)}
+    >
+      <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
+        <svg
+          width={PIE_W}
+          height={PIE_H}
+          role="img"
+          aria-label="模型用量 3D 饼图"
+          style={{ overflow: "visible" }}
+        >
+          {/* 侧壁先于顶面画：背面那半圈落在椭圆内部，顶面一盖就看不见了 */}
+          {slices.map((s) => (
+            <path
+              key={`wall-${s.key}`}
+              d={pieWallPath(s.a1, s.a2)}
+              fill={`color-mix(in srgb, ${s.color} 62%, #000)`}
+            />
+          ))}
+          {slices.length === 0 ? (
+            /* 全零数据：留一块中性底坯，图例仍可读 */
+            <ellipse
+              cx={PIE_CX}
+              cy={PIE_CY}
+              rx={PIE_R}
+              ry={PIE_RY}
+              fill="var(--inset-bg)"
+            />
+          ) : (
+            /* 悬浮不做变暗：顶面一透明，底下那条深色侧壁就原形毕露，读起来像一圈
+               投影（越悬浮越明显）。反馈交给浮层——它就贴着光标出现，扇面保持
+               常态即可。 */
+            slices.map((s) => (
+              <g
+                key={s.key}
+                data-model={s.key}
+                data-share={s.share.toFixed(4)}
+                onMouseEnter={(e) => showTip(s.key, e.currentTarget)}
+                style={{ cursor: "pointer" }}
+              >
+                <path d={pieTopPath(s.a1, s.a2)} fill={s.color} />
+              </g>
+            ))
+          )}
+        </svg>
+
+        <div className="min-w-[240px] flex-1 space-y-1.5">
+          {rows.map((r) => legendRow(r))}
+        </div>
+      </div>
+
+      <p className="mt-2 text-[10px] text-[var(--t6)]">
+        扇形角度与占比按「缓存未命中」口径；缓存命中的 token
+        单独计价，不计入扇形。悬浮扇形或图例行看该模型的累计数。
+      </p>
+
+      {/* 悬浮说明：五行——未命中合计 / 其输入输出拆分 / 缓存合计 / 其命中写入
+          拆分 / 轮次。分组口径同热力图：缓存读单价约为普通输入的十分之一，
+          合成一个「总 token」会让规模与开销两头失真。 */}
+      {hov && (
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute z-10 w-[210px] rounded-[var(--r-md)] border border-[var(--edge-strong)] bg-[var(--surface-raised)] px-3 py-2 shadow-[var(--shadow-lg)]"
+          style={{
+            left: tip.left,
+            top: tip.top,
+            transform: tip.flip ? "translateX(-100%)" : undefined,
+          }}
+        >
+          <p className="text-xs font-medium text-[var(--t1)]">
+            {hov.model ?? UNKNOWN_MODEL}
+          </p>
+          <div className="mt-1.5 space-y-1.5">
+            <div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs text-[var(--t5)]">累计缓存未命中</span>
+                <span className="font-mono text-xs tabular-nums text-[var(--t2)]">
+                  {fmtTokens(hov.promptTokens + hov.completionTokens)}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-[var(--t6)]">
+                输入 {fmtTokens(hov.promptTokens)} · 输出{" "}
+                {fmtTokens(hov.completionTokens)}
+              </p>
+            </div>
+            <div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs text-[var(--t5)]">累计缓存命中</span>
+                <span className="font-mono text-xs tabular-nums text-[var(--t2)]">
+                  {fmtTokens(cacheOf(hov))}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-[var(--t6)]">
+                命中 {fmtTokens(cacheReadOf(hov))} · 写入{" "}
+                {fmtTokens(cacheWriteOf(hov))}
+              </p>
+            </div>
+            <div className="flex items-baseline justify-between gap-2 border-t border-[var(--edge)] pt-1.5">
+              <span className="text-xs text-[var(--t5)]">轮次</span>
+              <span className="font-mono text-xs tabular-nums text-[var(--t2)]">
+                {hov.runs}
               </span>
             </div>
-          );
-        })}
-      </div>
-      <p className="mt-2 text-[10px] text-[var(--t6)]">
-        色块宽度与占比按「缓存未命中」口径；缓存命中的 token
-        单独计价，不计入色块。
-      </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -712,12 +919,12 @@ export function UsageStatsCard() {
             )}
           </div>
 
-          {/* 卡 D · 模型用量榜 */}
+          {/* 卡 D · 模型用量 3D 饼图 */}
           {models.length > 0 && (
             <div className="nm-card p-5">
               <p className="text-sm font-medium text-[var(--t2)]">模型用量</p>
               <div className="mt-3">
-                <ModelUsageList rows={models} />
+                <ModelUsagePie rows={models} />
               </div>
             </div>
           )}
