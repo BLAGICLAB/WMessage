@@ -59,11 +59,6 @@ const cacheWriteOf = (d: { cacheWriteTokens?: number }) => d.cacheWriteTokens ??
 const cacheOf = (d: { cacheReadTokens?: number; cacheWriteTokens?: number }) =>
   cacheReadOf(d) + cacheWriteOf(d);
 
-/** 缓存读/写的取色：中性弱色（--t5/--t4），与模型榜六色饱和色系明显分开——
- *  缓存是附属口径，不该跟主数据抢视觉权重。 */
-const CACHE_READ_COLOR = "var(--t5)";
-const CACHE_WRITE_COLOR = "var(--t4)";
-
 /** 连续活跃天数（活跃 = 当日 tokens > 0）：
  *  当前 = 从今天（今天不活跃则从昨天）往前连续活跃日数；最长 = 窗口内最长活跃游程 */
 export function streakDays(days: UsageDay[]): [number, number] {
@@ -574,9 +569,7 @@ export function UsageStatsCard() {
   }, [loadOverview, loadModelDays]);
 
   const totalTokens = days.reduce((a, d) => a + dayTotal(d), 0);
-  const totalCacheRead = days.reduce((a, d) => a + cacheReadOf(d), 0);
-  const totalCacheWrite = days.reduce((a, d) => a + cacheWriteOf(d), 0);
-  const totalCache = totalCacheRead + totalCacheWrite;
+  const totalCache = days.reduce((a, d) => a + cacheOf(d), 0);
   const peakDay = days.reduce((a, d) => Math.max(a, dayTotal(d)), 0);
   const totalRuns = days.reduce((a, d) => a + d.runs, 0);
   const [curStreak, bestStreak] = useMemo(() => streakDays(days), [days]);
@@ -654,29 +647,6 @@ export function UsageStatsCard() {
                 <p className="mt-0.5 text-xs text-[var(--t5)]">{label}</p>
               </div>
             ))}
-          </div>
-        )}
-
-        {/* 缓存读/写的拆分（右对齐挂脚注，视觉上归到「累计缓存命中」那一格）。
-            写入只在冷启动 / 前缀变更 / TTL 过期时出现，常态为 0，属正常。 */}
-        {totalCache > 0 && (
-          <div className="mt-3 flex items-center justify-end gap-4 text-xs text-[var(--t5)]">
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: CACHE_READ_COLOR }}
-                aria-hidden
-              />
-              命中 <span className="font-mono tabular-nums">{fmtTokens(totalCacheRead)}</span>
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: CACHE_WRITE_COLOR }}
-                aria-hidden
-              />
-              写入 <span className="font-mono tabular-nums">{fmtTokens(totalCacheWrite)}</span>
-            </span>
           </div>
         )}
       </div>

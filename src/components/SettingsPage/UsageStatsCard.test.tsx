@@ -347,9 +347,8 @@ const CACHE_DAYS: UsageDay[] = [
     expect(screen.getByText("累计缓存未命中")).toBeTruthy();
     expect(screen.getByText("累计缓存命中")).toBeTruthy();
     expect(screen.getByText("3.2 万")).toBeTruthy();
-    // 读/写拆分作为挂脚注，仍分两档（30_000 命中 / 2_000 写入）
-    expect(screen.getByText("3.0 万")).toBeTruthy();
-    expect(screen.getByText("2.0K")).toBeTruthy();
+    // 汇总行只给缓存合计，不在行内再拆读/写
+    expect(screen.queryByText(/^写入/)).toBeNull();
     // 色块口径说明
     expect(
       screen.getByText(/缓存命中的 token 单独计价，不计入色块/),
