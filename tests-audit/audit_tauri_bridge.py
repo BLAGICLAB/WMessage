@@ -51,7 +51,8 @@ def invoke_names(text):
 
 
 # 本地包装函数：签名形如 `const NAME = useCallback((FIRST: string, ...) => { invoke(FIRST, ...) })`
-# 把命令名以运行期参数传入 invoke 时（如 EvolutionPanel 的 runCmd），需要在调用点提取字面量。
+# 把命令名以运行期参数传入 invoke 时，需要在调用点提取字面量（前端目前全是直接
+# invoke，此机制是为将来出现包装形态留的网，眼下无调用方）。
 # 形态检测：(1) 首参类型为 string；(2) body 内确实调用 invoke(FIRST_PARAM, ...)
 # 第二个条件用括号配平扫描函数体，try/catch/嵌套闭包/await chain 都能跨过。
 _WRAPPER_SIG_RE = re.compile(

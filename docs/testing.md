@@ -60,13 +60,12 @@ cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（�
 ## 一致性对拍（tests-audit/，已在 test-all.sh 门禁内）
 
 源码文本断言式检查（不跑业务代码，读源码断言结构/协议），`scripts/test-all.sh` 第 3 步会跑，
-pre-push 自动触发。前三个是 pytest 用例，后两个是独立守卫脚本，两种形态分开跑：
+pre-push 自动触发。前三个是 pytest 用例，末一个是独立守卫脚本，两种形态分开跑：
 
 ```bash
 python3 -m pytest tests-audit/audit_error_codes.py tests-audit/audit_module_map.py \
                   tests-audit/audit_tauri_bridge.py -q   # pytest 用例：必须逐个点名
-python3 tests-audit/audit_evolution_layering.py          # 独立守卫脚本：看退出码
-python3 tests-audit/audit_no_eval.py
+python3 tests-audit/audit_no_eval.py                     # 独立守卫脚本：看退出码
 ```
 
 - 文件名不匹配 pytest 默认的 `test_*.py` glob，所以 `pytest tests-audit/`（整目录）收不到
@@ -82,7 +81,6 @@ python3 tests-audit/audit_no_eval.py
 - `audit_module_map.py`：模块地图对拍（`docs/rust-bot-architecture.md` 模块树 ↔ 实际
   `src-tauri/src/**/*.rs`：树条目必须指向真实文件、不得重复、标了 `(NNN)` 的行数要与文件一致，
   每个源码文件必须有条目）
-- `audit_evolution_layering.py`：evolution 分层依赖方向守卫
 - `audit_no_eval.py`：前端禁动态求值静态守卫（CSP 配套）
 
 改 `docs/rust-bot-architecture.md` 的模块树后，本地跑一遍 `audit_module_map.py`：新增/删除/
