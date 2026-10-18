@@ -1,5 +1,5 @@
 // ChatPanel 子模块：右侧上下文栏（Agent workbench 式「对话锚点 + 工作面」）。
-// 三类工作面切换：任务池 / 文件 / 子 Agent。栏宽占聊天区 1/3——固定 px 在
+// 三类工作面切换：任务池 / 文件 / 子 Agent。栏宽占聊天区的一半——固定 px 在
 // 大窗口下显得局促，而这一栏要看的是任务标题与文件路径，宽一点才读得完。
 //
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
@@ -147,9 +147,13 @@ export function ContextRail({
     <aside
       id="chat-context-rail"
       aria-label="上下文侧栏"
-      // flex-1 与聊天主体的 flex-[2] 按 1:2 分剩余空间 → 侧栏 = 聊天区的 1/3；
-      // min/max 只在极端窗口兜底（窄窗不让侧栏挤成缝，宽窗不让正文消失）
-      className="flex min-w-[240px] max-w-[420px] flex-1 flex-col overflow-y-auto pl-3"
+      // 与聊天主体同为 flex-1（flex:1 1 0%）：basis 归零 + 等分增长 → 侧栏恒为
+      // 聊天主体的一半，且是纯 CSS 的等分——窗口缩放、左侧会话栏展开/收起、
+      // 侧栏自己开合都自动重算，不需要任何 JS 测量或 ResizeObserver。
+      // min-w-0：不吃内容宽度（预览里的长路径/代码块不能把栏撑宽，那样就不再是
+      // 一半了）。刻意不设 max-w：上限一旦生效（宽窗），「一半」就变成一个数
+      // 学结论；而这一栏看的就是任务标题与文件路径，窄了反而读不完。
+      className="flex min-w-0 flex-1 flex-col overflow-y-auto pl-3"
     >
       {/* 类别切换：切类别不打断对话（工作面在侧栏，主对话留在原位） */}
       <div className="mb-2 flex shrink-0 gap-1">
