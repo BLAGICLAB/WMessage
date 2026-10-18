@@ -144,10 +144,14 @@ describe("UsageStatsCard", () => {
     await waitFor(() => expect(screen.getByText("9.0K")).toBeTruthy()); // 累计 (500+500)×3+1000+5000
     expect(screen.getByText("5.0K")).toBeTruthy(); // 峰值日（10-06 = 5000）
     expect(screen.getByText("8")).toBeTruthy(); // 执行次数 1+1+1+2+3
-    expect(screen.getByText("2 天")).toBeTruthy(); // 当前连续（10-05~06）
-    expect(screen.getByText("3 天")).toBeTruthy(); // 最长连续（09-30~10-02 游程为 3）
-    expect(screen.getByText("累计 Token 数")).toBeTruthy();
-    expect(screen.getByText("最长连续天数")).toBeTruthy();
+    // 当前连续 2（10-05~06）/ 最长连续 3（09-30~10-02 游程）合并成一格
+    expect(screen.getByText("2 / 3 天")).toBeTruthy();
+    expect(screen.getByText("当前 / 最长连续")).toBeTruthy();
+    expect(screen.getByText("累计未命中")).toBeTruthy();
+    expect(screen.getByText("峰值未命中")).toBeTruthy();
+    // 缓存恒零 → 该格显示「—」而非 0（0 读起来像「测过是零」）
+    expect(screen.getByText("累计缓存命中")).toBeTruthy();
+    expect(screen.getByText("—")).toBeTruthy();
     // 热力图：活跃日的格子都在（悬浮说明自绘，标题在鼠标移入后才出现）
     expect(container.querySelector('[data-day="2026-10-06"]')).not.toBeNull();
     // 热力图底部月份标签：7 天窗口跨 9/30~10/06，仅月首 9月 获得标签（10月 距离过近被跳过）
@@ -335,19 +339,19 @@ const CACHE_DAYS: UsageDay[] = [
     });
   }
 
-  it("汇总行下方单列缓存读/写，且不并入累计 Token 数", async () => {
+  it("汇总行两档并列：累计未命中与累计缓存命中各占一格", async () => {
     mockCache();
     render(<UsageStatsCard />);
-    // 累计 = (900+100)+(4000+1000) = 6000，缓存 32_000 不进去
+    // 未命中 = (900+100)+(4000+1000) = 6000；缓存合计 32_000 独立一格
     await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
-    // 缓存两项单列
-    expect(screen.getByText("3.0 万")).toBeTruthy(); // 命中 30_000
-    expect(screen.getByText("2.0K")).toBeTruthy(); // 写入
-    expect(screen.getByText("命中")).toBeTruthy();
-    expect(screen.getByText("写入")).toBeTruthy();
-    expect(screen.getByText(/不计入上方累计/)).toBeTruthy();
-    // 缓存说明写明不进累计与色块
-    expect(screen.getByText(/单列展示且不计入累计/)).toBeTruthy();
+    expect(screen.getByText("累计未命中")).toBeTruthy();
+    expect(screen.getByText("累计缓存命中")).toBeTruthy();
+    expect(screen.getByText("3.2 万")).toBeTruthy();
+    // 读/写拆分作为挂脚注，仍分两档（30_000 命中 / 2_000 写入）
+    expect(screen.getByText("3.0 万")).toBeTruthy();
+    expect(screen.getByText("2.0K")).toBeTruthy();
+    // 色块口径说明
+    expect(screen.getByText(/缓存单独计价，不进色块/)).toBeTruthy();
   });
 
   it("缓存全为 0 时整行不出现（OpenAI 协议用户不看到恒零空指标）", async () => {
@@ -390,21 +394,22 @@ const CACHE_DAYS: UsageDay[] = [
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
-  it("模型榜：图例行标缓存，色块宽度仍按输入+输出（与榜位同口径）", async () => {
+  it("模型榜：图例行逐行标未命中/缓存，色块宽度与榜位同口径", async () => {
     mockCache();
     const { container } = render(<UsageStatsCard />);
     await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
-    // 图例行出现缓存标记，且只给有缓存的那个模型
-    const cacheMarks = screen.getAllByText(/^缓存 /);
-    expect(cacheMarks.length).toBe(1);
-    expect(cacheMarks[0].textContent).toContain("3.2 万");
-    expect(screen.queryAllByText(/缓存 0/)).toHaveLength(0);
-    // 色块 tooltip 说明缓存不计入色块
-    const barTitles = Array.from(
-      container.querySelectorAll("[title]"),
-    )
+    // 每行都写明未命中；有缓存的行追加缓存数
+    const missLabels = screen.getAllByText(/^未命中 /);
+    expect(missLabels.length).toBe(2);
+    expect(missLabels[0].textContent).toContain("5.0K");
+    expect(missLabels[0].textContent).toContain("缓存 3.2 万");
+    expect(missLabels[1].textContent).not.toContain("缓存");
+    // 色块 tooltip 同样点明口径
+    const barTitles = Array.from(container.querySelectorAll("[title]"))
       .map((el) => el.getAttribute("title") ?? "")
       .filter((t) => t.includes("tokens"));
-    expect(barTitles.some((t) => t.includes("另含缓存 3.2 万"))).toBe(true);
+    expect(
+      barTitles.some((t) => t.includes("未命中 5.0K") && t.includes("缓存命中 3.2 万")),
+    ).toBe(true);
   });
 });

@@ -446,10 +446,16 @@ function TokenTrendChart({
 
 /* ───────────────────────── 模型用量榜 ───────────────────────── */
 
+/** 密集图例行的次级数字档：比正文低一档字号。
+ *  text-[10px] 仍在 [data-font-size] 覆盖表内（standard/large/xlarge → 12/13/14px），
+ *  四档字号照常生效——它与设置行的 text-xs 分工不同（设置行是主阅读面，
+ *  这里是三级元数据），不是任意值混排。 */
+const META_NUM = "text-[10px] font-mono tabular-nums text-[var(--t5)]";
+
 /** 占比堆叠条 + 图例行（palette 循环取色）。
- *  色块宽度与榜位都按展示口径（输入+输出），与 usage_stats_by_model 的
+ *  色块宽度与榜位都按「未命中」口径（输入+输出），与 usage_stats_by_model 的
  *  ORDER BY 保持同一口径——名次和图形算两套数会让「第一名」色块明显偏细。
- *  缓存不进色块（单价不同），改在图例行单独标出，避免读者把缓存当普通输入读。 */
+ *  缓存不进色块（单价不同），改在图例行逐行标出，避免读者把缓存当普通输入读。 */
 function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
   const total =
     rows.reduce((a, r) => a + r.promptTokens + r.completionTokens, 0) || 1;
@@ -466,8 +472,8 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
                 width: `${(t / total) * 100}%`,
                 backgroundColor: MODEL_COLORS[i % MODEL_COLORS.length],
               }}
-              title={`${r.model ?? "未知模型"} · ${fmtTokens(t)} tokens${
-                cache > 0 ? `（另含缓存 ${fmtTokens(cache)}）` : ""
+              title={`${r.model ?? "未知模型"} · 未命中 ${fmtTokens(t)} tokens${
+                cache > 0 ? ` · 缓存命中 ${fmtTokens(cache)}` : ""
               }`}
             />
           );
@@ -476,8 +482,7 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
       <div className="mt-2 space-y-1.5">
         {rows.map((r, i) => {
           const t = r.promptTokens + r.completionTokens;
-          const cr = cacheReadOf(r);
-          const cw = cacheWriteOf(r);
+          const cache = cacheOf(r);
           return (
             <div key={i} className="flex items-center gap-2 text-xs">
               <span
@@ -489,31 +494,25 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
               <span className="min-w-0 flex-1 truncate text-[var(--t2)]">
                 {r.model ?? "未知模型（旧数据）"}
               </span>
-              {/* 缓存标记：中性弱色 + 显式「缓存」二字，
-                  不让读者把弱色块误认成模型名的一部分 */}
-              {(cr > 0 || cw > 0) && (
-                <span
-                  className="shrink-0 font-mono tabular-nums text-[var(--t5)]"
-                  title={`缓存命中 ${fmtTokens(cr)} / 缓存写入 ${fmtTokens(cw)}（不计入色块宽度）`}
-                >
-                  <span
-                    className="mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle"
-                    style={{ backgroundColor: CACHE_READ_COLOR }}
-                    aria-hidden
-                  />
-                  缓存 {fmtTokens(cr + cw)}
-                </span>
-              )}
-              <span className="shrink-0 font-mono text-xs tabular-nums text-[var(--t4)]">
-                {fmtTokens(t)} · {r.runs}次
+              {/* 逐行写明「未命中 / 缓存」：两档单价差十倍，
+                  不写清楚读者会把色块宽度当成全部消耗。 */}
+              <span className={`shrink-0 ${META_NUM}`}>
+                未命中 {fmtTokens(t)}
+                {cache > 0 && <> · 缓存 {fmtTokens(cache)}</>}
               </span>
-              <span className="w-9 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--t5)]">
+              <span className={`shrink-0 ${META_NUM} w-11 text-right`}>
+                {r.runs} 次
+              </span>
+              <span className={`shrink-0 ${META_NUM} w-9 text-right`}>
                 {Math.round((t / total) * 100)}%
               </span>
             </div>
           );
         })}
       </div>
+      <p className="mt-2 text-[10px] text-[var(--t6)]">
+        色块宽度与占比按「未命中」口径；缓存单独计价，不进色块。
+      </p>
     </div>
   );
 }
@@ -635,14 +634,24 @@ export function UsageStatsCard() {
             还没有词元用量——跑一次对话或任务后这里会出现统计。
           </p>
         ) : (
+          /* 五格：合并「当前/最长连续」腾出一格给缓存，两档 token 并列。
+             开着 prompt caching 时 prompt_tokens 只承载未命中部分，所以
+             两个 token 格都必须写明是未命中还是缓存，否则会低估真实消耗。 */
           <div className="mt-4 grid grid-cols-5 divide-x divide-[var(--edge)] text-center">
-            {[
-              ["累计 Token 数", fmtTokens(totalTokens)],
-              ["峰值 Token 数", fmtTokens(peakDay)],
-              ["执行次数", String(totalRuns)],
-              ["当前连续天数", `${curStreak} 天`],
-              ["最长连续天数", `${bestStreak} 天`],
-            ].map(([label, value]) => (
+            {(
+              [
+                ["累计未命中", fmtTokens(totalTokens)],
+                [
+                  "累计缓存命中",
+                  // 缓存仅 Anthropic 协议上报；恒零时用「—」而非 0，
+                  // 0 读起来像「测过是零」，— 才是「这一档没数据」
+                  totalCache === 0 ? "—" : fmtTokens(totalCache),
+                ],
+                ["峰值未命中", fmtTokens(peakDay)],
+                ["执行次数", String(totalRuns)],
+                ["当前 / 最长连续", `${curStreak} / ${bestStreak} 天`],
+              ] as const
+            ).map(([label, value]) => (
               <div key={label} className="px-2">
                 <p className="text-lg font-semibold tabular-nums text-[var(--t1)]">
                   {value}
@@ -653,38 +662,26 @@ export function UsageStatsCard() {
           </div>
         )}
 
-        {/* 缓存档：单列一行挂在汇总下面，不占上面的五格。
-            缓存读/写只有 Anthropic 协议会上报，全为 0 时整行不出现，
-            免得 OpenAI 协议用户看到一条恒零的空指标。 */}
+        {/* 缓存读/写的拆分（右对齐挂脚注，视觉上归到「累计缓存命中」那一格）。
+            写入只在冷启动 / 前缀变更 / TTL 过期时出现，常态为 0，属正常。 */}
         {totalCache > 0 && (
-          <div className="mt-4 flex items-center justify-between gap-4 border-t border-[var(--edge)] pt-3">
-            <p className="text-xs text-[var(--t5)]">
-              缓存（单独计价，不计入上方累计 Token 数）
-            </p>
-            <div className="flex shrink-0 items-center gap-4">
-              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--t4)]">
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: CACHE_READ_COLOR }}
-                  aria-hidden
-                />
-                命中
-                <span className="font-mono tabular-nums">
-                  {fmtTokens(totalCacheRead)}
-                </span>
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--t4)]">
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ backgroundColor: CACHE_WRITE_COLOR }}
-                  aria-hidden
-                />
-                写入
-                <span className="font-mono tabular-nums">
-                  {fmtTokens(totalCacheWrite)}
-                </span>
-              </span>
-            </div>
+          <div className="mt-3 flex items-center justify-end gap-4 text-xs text-[var(--t5)]">
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: CACHE_READ_COLOR }}
+                aria-hidden
+              />
+              命中 <span className="font-mono tabular-nums">{fmtTokens(totalCacheRead)}</span>
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: CACHE_WRITE_COLOR }}
+                aria-hidden
+              />
+              写入 <span className="font-mono tabular-nums">{fmtTokens(totalCacheWrite)}</span>
+            </span>
           </div>
         )}
       </div>
