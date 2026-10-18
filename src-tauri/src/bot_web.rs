@@ -970,113 +970,44 @@ fn with_url_port(addrs: Vec<std::net::SocketAddr>, url: &url::Url) -> Vec<std::n
         .collect()
 }
 
-/// 抓取网页正文：http/https、公网地址校验（含 DNS 解析与重定向逐跳）、HTML→纯文本、GBK 兜底解码
+/// 正文薄到多少字符就当「没抓到」：静态抓取拿到 JS 空壳时正文近于 0，
+/// 低于此值改走渲染代理。经验阈值，不是协议约束。
+const THIN_BODY_CHARS: usize = 100;
+
+/// 直连失败的两类，决定还有没有「换一个出口再试」的价值。
+enum FetchErr {
+    /// 目标明确拒绝：网址非法、SSRF 闸拦截、重定向策略拒绝、4xx、超大页面。
+    /// 换代理只会拿到同一个拒绝，还白等一次。
+    Rejected(CommandError),
+    /// 这次请求没走通：连接超时/被拒、5xx、响应不是网页文本、正文解析不出来。
+    /// 本机到目标的那条路不通（或目标在报错），但渲染代理走的是另一条出网路径。
+    Unreachable(String),
+}
+
+/// 状态码该不该换代理再试（纯函数，供测试钉住）。
+///
+/// 5xx/408 是目标站在自己那边出错，换个出口往往能拿到它渲染后的内容；
+/// 4xx 是目标明确表态——404 资源不存在、403 不许访问，代理会拿到同一个答案。
+/// 400 这类请求本身有问题的不在考虑内：它们本来就到不了这一步。
+fn status_worth_proxy_retry(status: u16) -> bool {
+    (500..600).contains(&status) || status == 408
+}
+
+/// 抓取网页正文：直连一次，不成再换渲染代理出网一次。
+///
+/// 直连通了但正文太短（JS 渲染的空壳），和直连压根没走通（连接超时、5xx、
+/// 返回的不是网页文本），都汇到同一条兜底路上——后者过去是直接失败的，于是
+/// 「本机到某个站点不通」直接等于「这个页面抓不到」，哪怕换个出口就能拿到。
+/// 隐私边界不变：目标 URL 会发给 r.jina.ai（公网地址本身，低风险），
+/// 且只发到公网代理一处，不做二次转发。
 pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
-    // 重定向逐跳校验：不跟随 reqwest 自动重定向，3xx 时手动校验 Location 目标
-    //（公网 URL 302 到内网地址是 SSRF 常见绕过）
-    const MAX_REDIRECTS: usize = 5;
-    let mut url_cursor = url::Url::parse(raw_url.trim()).map_err(|_| "网址格式无效".to_string())?;
-    let mut hops = 0usize;
-    let mut resp;
-    loop {
-        // 每跳都走「解析 → 校验 → 钉 IP」：check_public_url 返回校验过的地址，
-        // per-hop client 用 resolve_to_addrs 钉住，reqwest 不再二次 DNS（FIX-PLAN #7a DNS TOCTOU）
-        let addrs = check_public_url(&url_cursor).await?;
-        resp = http_client_pinned(&url_cursor, &addrs)?
-            .get(url_cursor.clone())
-            .header(reqwest::header::USER_AGENT, UA)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败：{}", err_chain(&e)))?;
-        let status = resp.status();
-        if status.is_redirection() {
-            if hops >= MAX_REDIRECTS {
-                return Err(CommandError::DomainRule {
-                    domain: "web".to_string(),
-                    reason: format!("重定向超过 {MAX_REDIRECTS} 次，已停止"),
-                });
-            }
-            let Some(loc) = resp.headers().get(reqwest::header::LOCATION) else {
-                return Err(CommandError::DomainRule {
-                    domain: "web".to_string(),
-                    reason: format!("网页返回重定向 {status} 但缺少 Location"),
-                });
-            };
-            let loc = loc.to_str().map_err(|_| "Location 头编码无效")?.to_string();
-            let prev_scheme = url_cursor.scheme().to_string();
-            url_cursor = url_cursor
-                .join(&loc)
-                .map_err(|_| format!("重定向目标无效：{loc}"))?;
-            // https→http 降级重定向拒：首跳 TLS 不保护后续明文跳（中间人可篡改返回内容）；
-            // 用户直接给 http 起始 URL 不受影响（既有语义）
-            if prev_scheme == "https" && url_cursor.scheme() == "http" {
-                return Err(CommandError::DomainRule {
-                    domain: "web".to_string(),
-                    reason: format!(
-                        "拒绝 https→http 降级重定向：{}",
-                        crate::bot::escape_for_log(&loc, 100)
-                    ),
-                });
-            }
-            hops += 1;
-            continue;
-        }
-        break;
-    }
-    if !resp.status().is_success() {
-        return Err(CommandError::DomainRule {
-            domain: "web".to_string(),
-            reason: format!("网页返回 HTTP {}", resp.status()),
-        });
-    }
-    let ctype = resp
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_lowercase();
-    if !ctype.is_empty()
-        && !ctype.contains("html")
-        && !ctype.contains("xml")
-        && !ctype.contains("text")
-    {
-        return Err(CommandError::DomainRule {
-            domain: "web".to_string(),
-            reason: format!("不是网页文本（Content-Type: {ctype}）"),
-        });
-    }
-    if let Some(len) = resp.content_length() {
-        if len > FETCH_MAX_BYTES as u64 {
-            return Err(CommandError::DomainRule {
-                domain: "web".to_string(),
-                reason: format!(
-                    "页面过大（超过 {}MB）已拒绝",
-                    FETCH_MAX_BYTES / (1024 * 1024)
-                ),
-            });
-        }
-    }
-    let bytes = read_body_capped(resp, FETCH_MAX_BYTES).await?;
-    let text = decode_html(&bytes);
-    // 先抽正文主块再转纯文本（去导航/广告/页脚）；提取结果过短说明误伤，退回整页转换
-    let main = extract_main_content(&text);
-    let mut plain = html2text::from_read(&mut main.as_bytes(), 120)
-        .map_err(|e| format!("解析 HTML 失败：{e}"))?
-        .trim()
-        .to_string();
-    if plain.chars().count() < 100 && main.len() != text.len() {
-        if let Ok(full) = html2text::from_read(&mut text.as_bytes(), 120) {
-            if full.trim().chars().count() > plain.chars().count() {
-                plain = full.trim().to_string();
-            }
-        }
-    }
-    // 正文仍过短（多半是 JS 渲染的 SPA 页面，静态抓取只能拿到空壳）→
-    // 回退 Jina Reader 公共代理（服务端渲染后返回 markdown，免费无需 key）。
-    // 隐私边界：目标 URL 会发给 r.jina.ai（公网地址本身，低风险）。
-    // 留痕：回退属基本审计面——失败/采用/未采用三路 stderr 记录，
-    // 不改 fetch_text 签名（签名改 + 调用链属扩 scope，）。
-    if plain.chars().count() < 100 {
+    let (mut plain, why_thin) = match fetch_direct(raw_url).await {
+        Ok(text) => (text, "正文过短（多半是 JS 渲染的空壳）".to_string()),
+        Err(FetchErr::Rejected(e)) => return Err(e),
+        Err(FetchErr::Unreachable(why)) => (String::new(), why),
+    };
+    // 留痕：回退属基本审计面——采用/未采用/失败三路 stderr 记录。
+    if plain.chars().count() < THIN_BODY_CHARS {
         match fetch_jina_reader(raw_url).await {
             Ok(jina) => {
                 if jina.chars().count() > plain.chars().count() {
@@ -1090,10 +1021,136 @@ pub async fn fetch_text(raw_url: &str) -> Result<String, CommandError> {
         }
     }
     if plain.is_empty() {
-        return Err(CommandError::DomainRule {
-            domain: "web".to_string(),
-            reason: "页面没有可提取的文本内容".to_string(),
-        });
+        // 直连空正文 + 代理也没拿到：报直连的实因（超时/5xx），别报成
+        // 「页面没有文本」——那会把排查引向目标页面，而真因在本机到目标的路上。
+        return Err(CommandError::Internal(format!(
+            "两条路都没拿到内容：直连{why_thin}；渲染代理回退也没成功（免费公共代理限流/超时时会这样）"
+        )));
+    }
+    Ok(plain)
+}
+
+/// 直连抓取：逐跳校验公网地址、钉 IP、手工跟随重定向、HTML→纯文本。
+///
+/// 与 `fetch_text` 的分工：这一层只管「直连这一条路」，成功就直接给正文；
+/// 失败时用 `FetchErr` 说明失败属于「换个出口有救」还是「换也没用」，
+/// 免得编排层把 SSRF 拦截也送去第三方代理重试一遍。
+async fn fetch_direct(raw_url: &str) -> Result<String, FetchErr> {
+    // 重定向逐跳校验：不跟随 reqwest 自动重定向，3xx 时手动校验 Location 目标
+    //（公网 URL 302 到内网地址是 SSRF 常见绕过）
+    const MAX_REDIRECTS: usize = 5;
+    let mut url_cursor =
+        url::Url::parse(raw_url.trim()).map_err(|_| FetchErr::Rejected("网址格式无效".into()))?;
+    let mut hops = 0usize;
+    let mut resp;
+    loop {
+        // 每跳都走「解析 → 校验 → 钉 IP」：check_public_url 返回校验过的地址，
+        // per-hop client 用 resolve_to_addrs 钉住，reqwest 不再二次 DNS（FIX-PLAN #7a DNS TOCTOU）
+        let addrs = check_public_url(&url_cursor)
+            .await
+            .map_err(FetchErr::Rejected)?;
+        resp = http_client_pinned(&url_cursor, &addrs)
+            .map_err(|e| FetchErr::Rejected(e.into()))?
+            .get(url_cursor.clone())
+            .header(reqwest::header::USER_AGENT, UA)
+            .send()
+            .await
+            .map_err(|e| FetchErr::Unreachable(format!("请求失败：{}", err_chain(&e))))?;
+        let status = resp.status();
+        if status.is_redirection() {
+            if hops >= MAX_REDIRECTS {
+                return Err(FetchErr::Rejected(CommandError::DomainRule {
+                    domain: "web".to_string(),
+                    reason: format!("重定向超过 {MAX_REDIRECTS} 次，已停止"),
+                }));
+            }
+            let Some(loc) = resp.headers().get(reqwest::header::LOCATION) else {
+                return Err(FetchErr::Rejected(CommandError::DomainRule {
+                    domain: "web".to_string(),
+                    reason: format!("网页返回重定向 {status} 但缺少 Location"),
+                }));
+            };
+            let loc = loc
+                .to_str()
+                .map_err(|_| FetchErr::Rejected("Location 头编码无效".into()))?
+                .to_string();
+            let prev_scheme = url_cursor.scheme().to_string();
+            url_cursor = url_cursor
+                .join(&loc)
+                .map_err(|_| FetchErr::Rejected(format!("重定向目标无效：{loc}").into()))?;
+            // https→http 降级重定向拒：首跳 TLS 不保护后续明文跳（中间人可篡改返回内容）；
+            // 用户直接给 http 起始 URL 不受影响（既有语义）
+            if prev_scheme == "https" && url_cursor.scheme() == "http" {
+                return Err(FetchErr::Rejected(CommandError::DomainRule {
+                    domain: "web".to_string(),
+                    reason: format!(
+                        "拒绝 https→http 降级重定向：{}",
+                        crate::bot::escape_for_log(&loc, 100)
+                    ),
+                }));
+            }
+            hops += 1;
+            continue;
+        }
+        break;
+    }
+    let status = resp.status();
+    if !status.is_success() {
+        // 带最终 URL：重定向之后报 404/5xx 时，模型据此才知道真正缺的是哪个地址
+        // （它给的原地址可能是活的，挂在重定向目标上）。
+        let reason = format!("网页返回 HTTP {status}（{url_cursor}）");
+        return if status_worth_proxy_retry(status.as_u16()) {
+            // 5xx 是目标站在自己那边出错，换出口还有救
+            Err(FetchErr::Unreachable(reason))
+        } else {
+            Err(FetchErr::Rejected(CommandError::DomainRule {
+                domain: "web".to_string(),
+                reason,
+            }))
+        };
+    }
+    let ctype = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    if !ctype.is_empty()
+        && !ctype.contains("html")
+        && !ctype.contains("xml")
+        && !ctype.contains("text")
+    {
+        return Err(FetchErr::Unreachable(format!(
+            "不是网页文本（Content-Type: {ctype}）"
+        )));
+    }
+    if let Some(len) = resp.content_length() {
+        if len > FETCH_MAX_BYTES as u64 {
+            return Err(FetchErr::Rejected(CommandError::DomainRule {
+                domain: "web".to_string(),
+                reason: format!(
+                    "页面过大（超过 {}MB）已拒绝",
+                    FETCH_MAX_BYTES / (1024 * 1024)
+                ),
+            }));
+        }
+    }
+    let bytes = read_body_capped(resp, FETCH_MAX_BYTES)
+        .await
+        .map_err(FetchErr::Unreachable)?;
+    let text = decode_html(&bytes);
+    // 先抽正文主块再转纯文本（去导航/广告/页脚）；提取结果过短说明误伤，退回整页转换
+    let main = extract_main_content(&text);
+    let mut plain = html2text::from_read(&mut main.as_bytes(), 120)
+        .map_err(|e| FetchErr::Unreachable(format!("解析 HTML 失败：{e}")))?
+        .trim()
+        .to_string();
+    if plain.chars().count() < 100 && main.len() != text.len() {
+        if let Ok(full) = html2text::from_read(&mut text.as_bytes(), 120) {
+            if full.trim().chars().count() > plain.chars().count() {
+                plain = full.trim().to_string();
+            }
+        }
     }
     Ok(plain)
 }
@@ -1801,6 +1858,44 @@ mod tests {
         assert_eq!(
             with_url_port(vec![mk([1, 2, 3, 4], 12345)], &http),
             vec![mk([1, 2, 3, 4], 80)]
+        );
+    }
+
+    /// 哪些状态码值得换渲染代理再试。
+    ///
+    /// 这条判据决定了「直连打不通」时还有没有第二次机会，判反了两头都亏：
+    /// 把 404 判成值得重试 = 白等一次代理，还把 URL 送到第三方；把 5xx 判成不
+    /// 值得重试 = 目标站自己在维护时直接判死刑，而代理往往能拿到它渲染后的内容。
+    #[test]
+    fn proxy_retry_only_for_server_side_failures() {
+        for s in [500, 502, 503, 504, 408] {
+            assert!(
+                status_worth_proxy_retry(s),
+                "{s} 是服务端/超时类失败，换出口还有救"
+            );
+        }
+        for s in [400, 401, 403, 404, 410, 429] {
+            assert!(
+                !status_worth_proxy_retry(s),
+                "{s} 是目标明确表态，代理只会拿到同一个答案"
+            );
+        }
+    }
+
+    /// SSRF 闸拦下的 URL 绝不进代理兜底。
+    ///
+    /// 兜底路要把目标 URL 发给 r.jina.ai，被本机闸拒掉的地址（回环/内网）一旦
+    /// 也走这条路，等于把「不该访问的目标」转手交给第三方——而闸拦发生在任何
+    /// 网络 I/O 之前，所以这条用回环地址就能真跑，无需起服务。
+    /// 归错类（Rejected 写成 Unreachable）会直接把这条断言打红。
+    #[tokio::test]
+    async fn ssrf_rejection_never_reaches_the_proxy() {
+        let err = fetch_direct("http://127.0.0.1:4763/api/health")
+            .await
+            .expect_err("回环地址必须被 SSRF 闸拒绝");
+        assert!(
+            matches!(err, FetchErr::Rejected(_)),
+            "闸拦属于「换出口也没用」，归 Unreachable 会把内网地址送去第三方代理重试"
         );
     }
 }
