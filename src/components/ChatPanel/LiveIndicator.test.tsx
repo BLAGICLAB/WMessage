@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { fireEvent, render, screen, act } from "@testing-library/react";
 import { LiveIndicator } from "./LiveIndicator";
 import { fmtElapsed } from "./useElapsed";
 import type { Msg } from "./types";
@@ -112,6 +112,15 @@ describe("工具徽章的未完成态", () => {
         onOpenExecSession={() => {}}
       />,
     );
+    // 工具块默认折叠（十几个工具平铺会把正文挤出视野），折叠标题行自己带
+    // 「正在跑」信号——收起了也不等于静默
+    expect(screen.getByText(/调用工具 0\/1/)).toBeTruthy();
+    expect(screen.getByText(/正在跑 run_python/)).toBeTruthy();
+    expect(screen.queryByText("run_python")).toBeNull();
+
+    // fireEvent 而非 userEvent：本用例跑在 fake timers 下，userEvent 的
+    // 内部轮询等不到真实时钟推进会挂死
+    fireEvent.click(screen.getByText(/调用工具 0\/1/));
     expect(screen.getByText("run_python")).toBeTruthy();
     // 静态「…」不该再出现——它与「已完成」在视觉上无法区分
     expect(screen.queryByText("…")).toBeNull();

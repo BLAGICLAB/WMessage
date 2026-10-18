@@ -44,11 +44,9 @@ import type {
   VerboseLevel,
 } from "./types";
 import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks, SUBAGENT_POLL_MS, SUBAGENT_STATUS } from "./constants";
-import { LiveIndicator } from "./LiveIndicator";
 import { useAutoGrow, useOutsideClose } from "./useChatUi";
 import { SessionRail } from "./SessionRail";
 import { ContextRail, type ContextTab, type SubagentRun } from "./ContextRail";
-import { SubagentStrip } from "./SubagentStrip";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
@@ -187,6 +185,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const effortBtnRef = useRef<HTMLButtonElement>(null);
   const effortDropdownRef = useRef<HTMLDivElement>(null);
+  /** 🛡 授权模式：全局档位（bot-config 的 permMode），输入卡底栏可直接改。
+   *  改的是「机器人敢做多少事」——这个恰恰要在动手前一刻就地决定，
+   *  让人跑去设置页等它跑起来再切是来不及的。 */
   /** 🛡 授权模式（ 只读展示）：bot-config 的 permMode，设置页维护 */
   const [permMode, setPermMode] = useState<PermMode>("ask");
   //  上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）。
@@ -323,18 +324,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   };
   /** 视图会话是否有在途回复（驱动停止键/placeholder/禁用态） */
   const viewedBusy = sessionId !== null && inflightSids.has(sessionId);
-  /** 活体指示的三个输入：取最后一条 streaming 气泡上的回合状态。
-   *  从消息派生而不是另存一份 state——消息是唯一真相源，另存必然漂移
-   *  （切会话/收尾时状态不同步，表现为「会话 A 的计时跑到会话 B」）。 */
-  const lastStreaming = useMemo(() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].streaming) return messages[i];
-    }
-    return null;
-  }, [messages]);
-  const liveStatus: TurnStatus = lastStreaming?.turnStatus ?? "running";
-  const liveDetail = lastStreaming?.turnDetail;
-  const liveStartedAt = lastStreaming?.turnStartedAt;
   /** 子 agent 运行列表（右侧栏「子 Agent」工作面 + 聊天内嵌区域的同一份数据）。
    *  随会话切换重拉：子 agent 是按 parent_session_id 归属的 */
   const [subagents, setSubagents] = useState<SubagentRow[]>([]);
@@ -406,6 +395,33 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       handleCommandError(e, "cancel_subagent"),
     );
   }, []);
+  /** 子 agent 内嵌区（挂在最后一条助手回复的工具调用下方）。
+   *  打包成一个对象传给 MessageList：它只挂一条气泡，其余气泡恒为 undefined，
+   *  memo 浅比较才不会被每帧新建的对象打穿。toggle 也要稳定引用——内联箭头
+   *  函数每帧换新，3s 轮询一次就白白重渲那条气泡。 */
+  const toggleSubagentStrip = useCallback(
+    () => setSubagentStripOpen((v) => !v),
+    [],
+  );
+  const subagentSlot = useMemo(
+    () =>
+      subagentRuns.length === 0
+        ? undefined
+        : {
+            runs: subagentRuns,
+            expanded: subagentStripOpen,
+            onOpen: openSubagentDetail,
+            onCancel: cancelSubagent,
+            onToggleExpanded: toggleSubagentStrip,
+          },
+    [
+      subagentRuns,
+      subagentStripOpen,
+      openSubagentDetail,
+      cancelSubagent,
+      toggleSubagentStrip,
+    ],
+  );
   /** 当前会话的文件变更累积（右侧「文件」面板）：去重按 path，保留最近一次统计。
    *  取自消息而非 streamingMeta——后者收尾即删，面板要活到切会话为止 */
   const sessionFileChanges = useMemo(() => {
@@ -1720,13 +1736,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
             <PanelRightOpen size={15} aria-hidden />
           )}
         </button>
-        {viewedBusy && (
-          <LiveIndicator
-            status={liveStatus}
-            detail={liveDetail}
-            startedAt={liveStartedAt}
-          />
-        )}
       </header>
 
       {/* 上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
@@ -1740,21 +1749,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         contextK={models.find((m) => m.id === activeModelId)?.contextK}
       />
 
-      {/* 子 agent 区域长在对话里（不另开对话框）——子 agent 不建独立会话后，
-          这里就是它唯一的常驻可见处；点条目把右侧栏切到详情 */}
-      <SubagentStrip
-        subagents={subagentRuns}
-        onOpen={openSubagentDetail}
-        onCancel={cancelSubagent}
-        expanded={subagentStripOpen}
-        onToggleExpanded={() => setSubagentStripOpen((v) => !v)}
-      />
       <MessageList
         scrollRef={scrollRef}
         messages={messages}
         viewedBusy={viewedBusy}
         copiedIdx={copiedIdx}
         verboseLevel={verboseLevel}
+        subagentSlot={subagentSlot}
         onPickStarter={setInput}
         onCopy={copyMessage}
         onRemove={removeMessage}

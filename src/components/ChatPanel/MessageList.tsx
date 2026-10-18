@@ -16,12 +16,16 @@ import {
   Pin,
   Trash2,
   TriangleAlert,
+  Wrench,
 } from "lucide-react";
 import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import { MarkdownText } from "../MarkdownText";
+import type { SubagentRun } from "./ContextRail";
 import { Fold } from "./Fold";
+import { LiveIndicator } from "./LiveIndicator";
 import { RichText } from "./RichText";
+import { SubagentStrip } from "./SubagentStrip";
 import { UserBubbleContent } from "./UserBubbleContent";
 import { fmtElapsed, useElapsed } from "./useElapsed";
 import type {
@@ -44,6 +48,18 @@ type BubbleCallbacks = {
   onOpenExecSession: (sid: string) => void;
 };
 
+/** 子 agent 内嵌区。整组可选：没子 agent 的会话不传就不渲染。
+ *  刻意打包成一个对象而不是摊平成四个 prop——它只会整体挂在**最后一条**
+ *  助手回复上，其余气泡恒为 undefined，memo 浅比较照样命中。 */
+type SubagentSlot = {
+  runs: SubagentRun[];
+  /** 条带是否展开（折叠时只列在途） */
+  expanded: boolean;
+  onOpen: (id: string) => void;
+  onCancel: (id: string) => void;
+  onToggleExpanded: () => void;
+};
+
 type MsgBubbleProps = BubbleCallbacks & {
   msg: Msg;
   idx: number;
@@ -53,6 +69,8 @@ type MsgBubbleProps = BubbleCallbacks & {
   busy: boolean;
   /** 执行过程详细度：控制工具徽章展开级别（简洁/详细/调试） */
   verboseLevel: VerboseLevel;
+  /** 子 agent 内嵌区；仅挂在最后一条助手回复上，其余气泡为 undefined */
+  subagentSlot?: SubagentSlot;
 };
 
 function MsgBubbleBase({
@@ -61,6 +79,7 @@ function MsgBubbleBase({
   isCopied,
   busy,
   verboseLevel,
+  subagentSlot,
   onCopy,
   onRemove,
   onOpenTask,
@@ -74,6 +93,15 @@ function MsgBubbleBase({
     m.role === "assistant" &&
     !m.streaming &&
     (hasContent || (m.refs?.length ?? 0) > 0 || fps.length > 0);
+  /** 活体指示的显示条件：本条还在流式、且回合未落终态。
+   *  turnStatus 缺省按 running 算（与 ChatPanel 旧的派生口径一致）——
+   *  已完成的历史气泡若 turnStatus 缺失，不该又冒出假活体指示。 */
+  const liveTurn =
+    m.role === "assistant" &&
+    !!m.streaming &&
+    m.turnStatus !== "completed" &&
+    m.turnStatus !== "interrupted" &&
+    m.turnStatus !== "failed";
   /** 气泡正文：用户消息走浅底渲染、流式走轻量富文本、完成走 markdown（拆分前的
    *  嵌套三元提取成函数，渲染输出逐字不变） */
   function bubbleBody(msg: Msg) {
@@ -93,6 +121,17 @@ function MsgBubbleBase({
           m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"
         }`}
       >
+        {/* 活体指示贴在气泡顶部：回合状态是「这条回复」的属性，头部那一条
+            讲的是整个会话——滚动看旧消息时，头部指示与眼前内容对不上号 */}
+        {liveTurn && (
+          <div className="mb-1.5">
+            <LiveIndicator
+              status={m.turnStatus ?? "running"}
+              detail={m.turnDetail}
+              startedAt={m.turnStartedAt}
+            />
+          </div>
+        )}
         {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
           <Fold
             title={
@@ -162,6 +201,18 @@ function MsgBubbleBase({
         {(m.tools?.length ?? 0) > 0 && (
           <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
         )}
+        {/* 子 agent 区域：挂在最后一条助手回复里、工具调用下方。
+            跟着派发它的那一轮走，而不是钉在对话顶部——对话顶部那块地属于会话，
+            「谁派的、派去做什么」属于某一轮，钉在顶上就成了无主浮层。 */}
+        {subagentSlot && subagentSlot.runs.length > 0 && (
+          <SubagentStrip
+            subagents={subagentSlot.runs}
+            onOpen={subagentSlot.onOpen}
+            onCancel={subagentSlot.onCancel}
+            expanded={subagentSlot.expanded}
+            onToggleExpanded={subagentSlot.onToggleExpanded}
+          />
+        )}
         {bubbleBody(m)}
         {/* 「查看执行对话」跳转（任务执行聊天化：busy 时跳转排队，
             忙完 hint + 按钮切换到执行会话） */}
@@ -228,12 +279,8 @@ function MsgBubbleBase({
 /** memo 边界：流式更新时历史气泡 props 全等 → 跳过重渲染（见文件头注释） */
 const MsgBubble = memo(MsgBubbleBase);
 
-/** 工具调用（对齐截图）：mono pill 徽章行（名称 + ✓/✗/… 状态 + 调试档耗时），
- *  折叠「进程 N/M」承载逐工具入参/结果详情。
- *  verbose 三档：简洁=隐藏详情折叠；详细=现状；调试=默认展开+耗时。
- *  memo：文本流式 tick 不改 tools 引用，跳过徽章行重渲染 */
 /** 单个工具徽章的状态标记（✕ / ✓ / spinner+计时）。
- *  两档展示（concise 徽章行 / detailed 行）共用，避免两处各写一份后改一处漏一处。 */
+ *  徽章行与折叠标题共用，避免两处各写一份后改一处漏一处。 */
 function ToolStatusMark({ t }: { t: ToolCall }) {
   const running = !t.done && t.ok !== false;
   const secs = useElapsed(t.startedAt, running);
@@ -261,6 +308,17 @@ function ToolStatusMark({ t }: { t: ToolCall }) {
   );
 }
 
+/** 工具调用：一行可折叠的摘要（🔧 调用工具 N/M），展开才是 mono pill 徽章行
+ *  + 逐工具入参/结果。
+ *
+ *  徽章行为什么也收进折叠里：一次任务动辄十几个工具，pill 全平铺会占掉
+ *  四五行、把正文挤到折叠线以下——正文才是用户要读的东西。
+ *  折叠不等于静默——标题行带着「N/M」进度与**当前正在跑的工具名**，
+ *  「亮着」也真有信息（否则用户会以为卡死）。
+ *
+ *  verbose 三档决定展开后看到多少：简洁=只有徽章；详细=再带入参/结果；
+ *  调试=默认展开 + 耗时。
+ *  memo：文本流式 tick 不改 tools 引用，跳过整块重渲染。 */
 const ToolBadges = memo(function ToolBadges({
   tools,
   verboseLevel,
@@ -271,75 +329,72 @@ const ToolBadges = memo(function ToolBadges({
   const done = tools.filter((t) => t.done).length;
   const failed = tools.filter((t) => t.ok === false).length;
   const totalMs = tools.reduce((acc, t) => acc + (t.ms ?? 0), 0);
-  if (verboseLevel === "concise") {
-    return (
-      <div className="mb-1 flex flex-wrap gap-1">
-        {tools.map((t) => (
-          <span
-            key={t.id}
-            className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
-          >
-            {t.name || "tool"}
-            <ToolStatusMark t={t} />
-          </span>
-        ))}
-      </div>
-    );
-  }
+  const runningTool = tools.find((t) => !t.done && t.ok !== false);
   return (
-    <div className="mb-1 space-y-1">
-      <div className="flex flex-wrap gap-1">
-        {tools.map((t) => (
-          <span
-            key={t.id}
-            className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
-          >
-            {t.name || "tool"}
-            <ToolStatusMark t={t} />
-          </span>
-        ))}
-      </div>
+    <div className="mb-1">
       <Fold
         title={
-          <span className="font-mono">
-            进程 {done}/{tools.length}
-            {failed > 0 && (
-              <span className="text-[var(--danger,#ef4444)]">
-                {" "}
-                · {failed} 失败
+          <span className="inline-flex items-center gap-1">
+            <Wrench size={11} aria-hidden className="shrink-0" />
+            <span className="font-mono">
+              调用工具 {done}/{tools.length}
+              {failed > 0 && (
+                <span className="text-[var(--danger,#ef4444)]">
+                  {" "}
+                  · {failed} 失败
+                </span>
+              )}
+              {verboseLevel === "debug" &&
+                totalMs > 0 &&
+                ` · Σ ${fmtMs(totalMs)}`}
+            </span>
+            {runningTool && (
+              <span className="inline-flex items-center gap-1 text-[var(--brand)]">
+                <Loader2 size={9} className="animate-spin" />
+                正在跑 {runningTool.name || "tool"}
               </span>
             )}
-            {verboseLevel === "debug" &&
-              totalMs > 0 &&
-              ` · Σ ${fmtMs(totalMs)}`}
           </span>
         }
         defaultOpen={verboseLevel === "debug"}
       >
-        <div className="space-y-1">
+        <div className="flex flex-wrap gap-1">
           {tools.map((t) => (
-            <div key={t.id}>
-              <span className="font-mono text-[10px] text-[var(--t4)]">
-                {t.name || "tool"}
-                {t.ms != null && (
-                  <span className="ml-1 text-[var(--t5)]">{fmtMs(t.ms)}</span>
-                )}
-              </span>
-              {t.args ? (
-                <pre className="opacity-80 whitespace-pre-wrap break-words font-mono text-[10px]">
-                  {t.args.length > 500 ? t.args.slice(0, 500) + "…" : t.args}
-                </pre>
-              ) : null}
-              {t.result ? (
-                <pre className="whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--t5)]">
-                  {t.result.length > 800
-                    ? t.result.slice(0, 800) + "…"
-                    : t.result}
-                </pre>
-              ) : null}
-            </div>
+            <span
+              key={t.id}
+              className="inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 font-mono text-[10px] leading-4 text-[var(--t4)]"
+            >
+              {t.name || "tool"}
+              <ToolStatusMark t={t} />
+            </span>
           ))}
         </div>
+        {verboseLevel !== "concise" && (
+          <div className="mt-1 space-y-1">
+            {tools.map((t) => (
+              <div key={t.id}>
+                <span className="font-mono text-[10px] text-[var(--t4)]">
+                  {t.name || "tool"}
+                  {t.ms != null && (
+                    <span className="ml-1 text-[var(--t5)]">{fmtMs(t.ms)}</span>
+                  )}
+                </span>
+                {t.args ? (
+                  <pre className="opacity-80 whitespace-pre-wrap break-words font-mono text-[10px]">
+                    {t.args.length > 500 ? t.args.slice(0, 500) + "…" : t.args}
+                  </pre>
+                ) : null}
+                {t.result ? (
+                  <pre className="whitespace-pre-wrap break-words font-mono text-[10px] text-[var(--t5)]">
+                    {t.result.length > 800
+                      ? t.result.slice(0, 800) + "…"
+                      : t.result}
+                  </pre>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
       </Fold>
     </div>
   );
@@ -445,6 +500,8 @@ type MessageListProps = BubbleCallbacks & {
   verboseLevel: VerboseLevel;
   /** 空状态起始短语点击：把短语填进当前会话输入框（不自动发送） */
   onPickStarter: (text: string) => void;
+  /** 子 agent 内嵌区；不传 = 本会话没有子 agent */
+  subagentSlot?: SubagentSlot;
 };
 
 /** 空状态：一行灰字把「能做什么」全压在读者眼前最弱的位置。
@@ -490,6 +547,7 @@ function renderMessageList(
     viewedBusy,
     copiedIdx,
     verboseLevel,
+    subagentSlot,
     onPickStarter,
     onCopy,
     onRemove,
@@ -498,6 +556,14 @@ function renderMessageList(
   }: MessageListProps,
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
+  // 子 agent 区域只挂一条：最后一条助手回复（= 最近一轮的落点）。其余气泡
+  // 拿到 undefined，memo 浅比较继续命中。全程只有一条助手消息时自然是它。
+  const hostIdx = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant") return i;
+    }
+    return -1;
+  })();
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
       {/* 内容限宽 760px 居中：通栏时正文行长在宽窗口下会拉长到难以扫读的行，
@@ -518,6 +584,7 @@ function renderMessageList(
                 isCopied={copiedIdx === i}
                 busy={viewedBusy}
                 verboseLevel={verboseLevel}
+                subagentSlot={i === hostIdx ? subagentSlot : undefined}
                 onCopy={onCopy}
                 onRemove={onRemove}
                 onOpenTask={onOpenTask}

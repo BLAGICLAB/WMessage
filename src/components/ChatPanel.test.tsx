@@ -189,6 +189,10 @@ describe("ChatPanel", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load")
         return [{ id: "s1", title: "默认会话" }];
+      // 子 agent 区域挂在**最后一条助手回复**里（工具调用下方），所以会话得
+      // 有一条助手消息当宿主，否则条带无处可挂
+      if (cmd === "bot_history_load")
+        return [{ role: "assistant", content: "已派发", refsJson: null }];
       if (cmd === "list_subagents")
         return [
           { id: "sa_1", status: "running", objective: "整理周报" },
@@ -229,6 +233,8 @@ describe("ChatPanel", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load")
         return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return [{ role: "assistant", content: "已派发", refsJson: null }];
       if (cmd === "list_subagents")
         return [
           {
@@ -286,7 +292,8 @@ describe("ChatPanel", () => {
     let finished = false;
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
-      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_history_load")
+        return [{ role: "assistant", content: "已派发", refsJson: null }];
       if (cmd === "list_subagents")
         return finished
           ? [{ id: "sa_1", status: "succeeded", objective: "整理周报" }]
@@ -365,7 +372,8 @@ describe("ChatPanel", () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
-      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_history_load")
+        return [{ role: "assistant", content: "已派发", refsJson: null }];
       if (cmd === "list_subagents")
         return [{ id: "sa_9", status: "running", objective: "整理周报" }];
       return defaultInvoke(cmd);
@@ -379,6 +387,88 @@ describe("ChatPanel", () => {
     expect(mocks.invokeMock).toHaveBeenCalledWith("cancel_subagent", {
       key: "sa_9",
     });
+  });
+
+  it("活体指示在助手气泡顶部，不在聊天头部（回合状态属于某一条回复）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      // 回合不收尾（bot_chat 悬着）：要看到的是**流式中**那条气泡的指示
+      if (cmd === "bot_chat") return new Promise(() => {});
+      return defaultInvoke(cmd);
+    });
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta" || event === "bot-turn-status") {
+        ((mocks.listeners[event] ??= []) as Array<typeof cb>).push(
+          cb as (e: { payload: Record<string, unknown> }) => void,
+        );
+      }
+      return () => {};
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await user.type(screen.getByPlaceholderText(/和机器人说点什么/), "跑一下");
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-chat-delta"] ?? []) {
+        cb({ payload: { sessionId: "s1", text: "开工了" } });
+      }
+      for (const cb of mocks.listeners["bot-turn-status"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            status: "running",
+            detail: "正在思考 · 第 7 轮",
+          },
+        });
+      }
+    });
+    expect(await screen.findByText("开工了")).toBeInTheDocument();
+    const indicator = await screen.findByText("正在思考 · 第 7 轮");
+    // 挂在气泡里：回合状态是「这条回复」的属性，头部那一条讲的是整个会话
+    expect(indicator.closest(".chat-bubble-bot")).not.toBeNull();
+    // 头部不再有它（塞在 header 会让「在读哪段对话」和「在跑第几轮」互相干扰）
+    expect(document.querySelector("header")?.textContent ?? "").not.toContain(
+      "正在思考",
+    );
+  });
+
+  it("子 agent 区域在最后一条助手回复里、工具调用下方（不钉在对话顶部）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return [
+          { role: "user", content: "整理周报", refsJson: null },
+          {
+            role: "assistant",
+            content: "已派发",
+            refsJson: null,
+            toolsJson: JSON.stringify([
+              { id: "t1", name: "spawn_subagent", done: true },
+            ]),
+          },
+        ];
+      if (cmd === "list_subagents")
+        return [{ id: "sa_1", status: "running", objective: "整理周报" }];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    const strip = await screen.findByRole("button", { name: /子 Agent/ });
+    // 落在助手气泡里，且在可滚动的消息列表内（原先是钉在列表上方的浮层，
+    // 不随内容滚动、也不属于任何一轮）
+    const bubble = strip.closest(".chat-bubble-bot");
+    expect(bubble).not.toBeNull();
+    expect(strip.closest(".overflow-y-auto")).not.toBeNull();
+
+    // 位置在工具调用块下方、正文上方：跟着派发它的那一轮走
+    const stripBlock = strip.closest("div") as HTMLElement;
+    const toolBlock = screen
+      .getByText(/调用工具 1\/1/)
+      .closest(".chat-bubble-bot > div") as HTMLElement;
+    const siblings = [...(bubble as HTMLElement).children];
+    expect(siblings.indexOf(stripBlock)).toBeGreaterThan(
+      siblings.indexOf(toolBlock),
+    );
   });
 
   it("右侧栏是聊天主体的兄弟节点，不在 header 内（百分比宽度才参照聊天区）", async () => {
@@ -796,11 +886,15 @@ describe("ChatPanel", () => {
       return null;
     });
     render(<ChatPanel {...defaultProps} />);
-    // 思考与工具默认折叠：思考 title 含「思考过程」；工具 = mono pill 徽章行
-    // 名称 + ✓ 状态）+「进程 N/M」折叠详情
+    // 思考与工具都默认折叠：思考 title 含「思考过程」；工具收在
+    // 「🔧 调用工具 N/M」一行里——十几个 pill 平铺会把正文挤出视野
     expect(await screen.findByText(/思考过程/)).toBeInTheDocument();
-    expect(await screen.findByText("search")).toBeInTheDocument();
-    expect(await screen.findByText(/进程 1\/1/)).toBeInTheDocument();
+    expect(await screen.findByText(/调用工具 1\/1/)).toBeInTheDocument();
+    expect(screen.queryByText("search")).not.toBeInTheDocument();
+    // 展开工具块才看到 mono pill 徽章行（名称 + ✓ 状态）；详细档下同一工具
+    // 在详情区还会再出现一次（徽章 + 入参行头），故用 findAll
+    await userEvent.setup().click(screen.getByText(/调用工具 1\/1/));
+    expect((await screen.findAllByText("search")).length).toBeGreaterThan(0);
     // 点击思考 toggle，展开内容
     await userEvent.setup().click(screen.getByText(/思考过程/));
     expect(await screen.findByText("我在想……")).toBeInTheDocument();
@@ -1163,7 +1257,6 @@ describe("ChatPanel", () => {
   });
 
   // ── 双命令：🧠 模型下拉 ──
-
   it("点 🧠 弹出当前协议模型列表，再点收起", async () => {
     const user = userEvent.setup();
     // 前面用例换过的 mockImplementation 会跨用例残留（beforeEach 只 mockClear），
