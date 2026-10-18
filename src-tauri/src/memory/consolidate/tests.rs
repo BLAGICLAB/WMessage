@@ -209,7 +209,34 @@ fn store_lesson_inserts_lesson_row() {
     assert_eq!(all[0].kind, "lesson");
     assert_eq!(all[0].importance, 3);
     assert_eq!(all[0].source, "system");
-    assert!(all[0].tags.is_empty(), "直写不带任何 key tag");
+    assert_eq!(all[0].tags, vec![LESSON_SOURCE_TAG]);
+}
+
+#[test]
+fn store_lesson_source_tag_does_not_collide_with_record_lesson_key() {
+    // tags[0] 是 key 命名空间：record_lesson 用 `lesson`、distill 用 `reflection`。
+    // 整理 lesson 若也填 `lesson`，find_by_key_tag("lesson") 会误命中它，
+    // record_lesson 下次写就会判「已存在」而跳过——幂等就废了。
+    let conn = mem_db();
+    store_lesson(
+        &conn,
+        "整理产出的一条 lesson",
+        None,
+        1_000,
+        &store::StoreParams::default(),
+    )
+    .unwrap();
+    let l = &store::load_all(&conn).unwrap()[0];
+    assert_ne!(
+        l.tags.first().map(String::as_str),
+        Some("lesson"),
+        "整理 lesson 不得占用 record_lesson 的 key"
+    );
+    assert_ne!(
+        l.tags.first().map(String::as_str),
+        Some("reflection"),
+        "整理 lesson 不得占用 distill 的 key"
+    );
 }
 
 #[test]
@@ -240,7 +267,7 @@ fn insert_lesson(conn: &rusqlite::Connection, content: &str, now: i64) -> String
     let item = NewItem {
         kind: "lesson".into(),
         content: content.into(),
-        tags: vec![],
+        tags: vec![LESSON_SOURCE_TAG.into()],
         importance: 3,
         source: "system".into(),
     };

@@ -43,6 +43,10 @@ const CONSOLIDATE_DEFAULT_WINDOW_MS: i64 = 7 * 86_400_000;
 /// 调度器检查周期（10 分钟扫一次是否到点，同 bot_scheduler 的 30s 扫描模式）
 const SCHED_TICK_SECS: u64 = 600;
 
+/// 整理产出条目的来源标记。distill 与 lesson 共用同一个值——两者是同一次反思
+/// 的一对产物，只是 kind 不同。
+const LESSON_SOURCE_TAG: &str = "consolidation";
+
 // 配置
 
 /// 记忆整理配置（存 bot-config.json 的 memoryConsolidation 字段）
@@ -386,7 +390,7 @@ pub fn apply_ops_with(
                 let item = NewItem {
                     kind: "reflection".to_string(),
                     content: truncate_chars(content, MAX_CONTENT_CHARS, false),
-                    tags: vec!["reflection".to_string(), "consolidation".to_string()],
+                    tags: vec!["reflection".to_string(), LESSON_SOURCE_TAG.to_string()],
                     importance: 4,
                     source: "system".to_string(),
                 };
@@ -530,7 +534,11 @@ fn store_lesson(
     let item = NewItem {
         kind: "lesson".to_string(),
         content: text.to_string(),
-        tags: Vec::new(),
+        // 来源标记，对齐同文件 distill 产出的 `consolidation` 维度。tags[0] 同时
+        // 是 key 命名空间（find_by_key_tag / key_of），库里 `lesson` 已被
+        // record_lesson 占用、`reflection` 被 distill 占用——这里只能用
+        // consolidation，填 `lesson` 会让 record_lesson 的幂等查重误命中。
+        tags: vec![LESSON_SOURCE_TAG.to_string()],
         importance: 3,
         source: "system".to_string(),
     };
