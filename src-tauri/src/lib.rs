@@ -598,6 +598,7 @@ pub fn run() {
             audit::frontend_event_report,
             audit::error_log_read,
             audit::logs_bundle_text,
+            bot_skills::bot_preview_text,
             bot_skills::open_file_path,
             bot_skills::pick_files_dialog,
             bot_skills::delete_bound_file,

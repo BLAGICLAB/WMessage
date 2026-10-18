@@ -205,6 +205,104 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
         .map_err(|e| CommandError::IoError(format!("打开路径失败：{e}")))
 }
 
+/// 文本预览载荷（右侧栏「文件」工作面点开文件后就地渲染）。
+///
+/// **为什么需要它**：以前文件行点不开，只能跳到系统默认程序——在聊天里
+/// 改完一批文件想确认内容，得一个个切出去又切回来，对话上下文整个断掉。
+/// 预览留在侧栏里，对话不动。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextPreview {
+    /// 回显路径（前端按它判 markdown / 纯文本）
+    pub path: String,
+    /// 文本内容（已按上限截断，按 UTF-8 字符边界切）
+    pub content: String,
+    /// 是否因超限被截断（前端显式提示，不让人以为这就是全文）
+    pub truncated: bool,
+    /// 原文件字节数（截断提示里说清「只显示了前 N / 共 M 字节」）
+    pub total_bytes: u64,
+    /// 内容里的行数（按 \n 计，截断后的）
+    pub lines: usize,
+}
+
+/// 预览读取上限：够读文档与 markdown，又不至于把 webview 撑住。
+/// 超出只截断不报错——用户要的是「看一眼」，不是全文导出。
+pub const PREVIEW_MAX_BYTES: usize = 256 * 1024;
+
+/// 二进制探测：前 8KB 里出现 NUL 即判二进制。
+///
+/// **按内容判，不按扩展名判**：`.txt` 可能是二进制、`.bin` 可能是文本，
+/// 扩展名白名单会两头都判错。UTF-16/UTF-32 文本恰好都含 NUL，会被误判成
+/// 二进制——那是可接受的保守方向（回一句「疑似二进制」好过吐一屏乱码）。
+const BINARY_SNIFF_BYTES: usize = 8 * 1024;
+
+/// 文本预览内核（纯函数，可单测）：读文件、按上限截断、判二进制。
+///
+/// `Err` 只回可读原因，前端弹错不静默——「点了没反应」和
+/// 「显示为空」都会让人以为文件是空的。
+pub fn read_text_preview(path: &str) -> CommandResult<TextPreview> {
+    let p = std::path::Path::new(path);
+    let meta = std::fs::metadata(p)
+        .map_err(|e| CommandError::IoError(format!("读取文件信息失败：{e}")))?;
+    if meta.is_dir() {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path.to_string(),
+            reason: "这是文件夹，暂不支持预览内容".into(),
+        });
+    }
+    // 多读 1 字节判溢出，避免为了知道「超没超限」把整个大文件读进内存
+    let mut buf = Vec::with_capacity(PREVIEW_MAX_BYTES.min(meta.len() as usize + 1));
+    let mut f =
+        std::fs::File::open(p).map_err(|e| CommandError::IoError(format!("打开文件失败：{e}")))?;
+    {
+        use std::io::Read;
+        // take(上限+1)：超限只多读一个字节即可判定
+        let mut limited = f.by_ref().take(PREVIEW_MAX_BYTES as u64 + 1);
+        limited
+            .read_to_end(&mut buf)
+            .map_err(|e| CommandError::IoError(format!("读取文件失败：{e}")))?;
+    }
+    let truncated = buf.len() > PREVIEW_MAX_BYTES;
+    if truncated {
+        buf.truncate(PREVIEW_MAX_BYTES);
+    }
+    if buf.iter().take(BINARY_SNIFF_BYTES).any(|&b| b == 0u8) {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path.to_string(),
+            reason: "疑似二进制文件，不做文本预览（可用「在访达中打开」查看）".into(),
+        });
+    }
+    // 非法 UTF-8（截断处切在多字节字符中间也会这样）→ 丢尾部残字节，
+    // 宁可少显示一个字符，也别让整个预览渲染失败
+    let content = match String::from_utf8(buf) {
+        Ok(s) => s,
+        Err(e) => {
+            let valid = e.utf8_error().valid_up_to();
+            // 截在多字节字符中间时 valid_up_to 可能正好是原长（后续全是残字节）
+            let upto = valid.min(e.as_bytes().len());
+            String::from_utf8_lossy(&e.into_bytes()[..upto]).into_owned()
+        }
+    };
+    Ok(TextPreview {
+        path: path.to_string(),
+        lines: content.lines().count(),
+        content,
+        truncated,
+        total_bytes: meta.len(),
+    })
+}
+
+/// 文本预览命令（右侧栏文件工作面）：同步 IO，挪进 blocking 线程池，
+/// 不占 async runtime worker（与 doc_* 同模式）。
+#[tauri::command]
+pub async fn bot_preview_text(path: String) -> CommandResult<TextPreview> {
+    tauri::async_runtime::spawn_blocking(move || read_text_preview(&path))
+        .await
+        .map_err(|e| CommandError::from(format!("预览线程 join 失败：{e}")))?
+}
+
 /// 文件多选对话框（Rust 侧 spawn_blocking 弹框）：聊天 ➕ 添加附件用。
 /// 此前前端 dialog.open 在 webview 里可能不弹框，与 doc_extract 弹框同方案修复。
 #[tauri::command]
@@ -552,5 +650,94 @@ mod tests {
             !link_kind_contributes_path("future_foo"),
             "未来 kind 必须被白名单拒（不是 != url 黑名单）"
         );
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::{read_text_preview, PREVIEW_MAX_BYTES};
+
+    /// 测试临时目录：唯一 tmp 子目录，跑完即删（不留垃圾在系统 temp 里）
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("wmessage-preview-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("建测试临时目录");
+        d
+    }
+
+    fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) -> String {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).expect("写测试文件");
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn reads_text_and_counts_lines() {
+        let dir = tmp_dir("text");
+        let path = write(&dir, "a.txt", b"line1\nline2\nline3");
+        let p = read_text_preview(&path).expect("文本文件应可预览");
+        assert_eq!(p.content, "line1\nline2\nline3");
+        assert_eq!(p.lines, 3);
+        assert_eq!(p.total_bytes, 17);
+        assert!(!p.truncated, "小文件不该报截断");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn markdown_goes_through_unchanged() {
+        // markdown 不做转换：转的是渲染层的事，这里只保证字节不丢
+        let dir = tmp_dir("md");
+        let md = b"# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
+        let path = write(&dir, "a.md", md);
+        let p = read_text_preview(&path).expect("md 应可预览");
+        assert_eq!(p.content.as_bytes(), md);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn binary_is_refused_with_readable_reason() {
+        // 按内容判：NUL 出现即二进制。返回可读原因而不是空内容——
+        // 空内容会被当成「文件是空的」，用户白点一次
+        let dir = tmp_dir("bin");
+        let path = write(&dir, "a.txt", b"PK\x03\x04\x00\x01\x02binary");
+        let err = read_text_preview(&path).expect_err("二进制应被拒");
+        let msg = err.message();
+        assert!(msg.contains("二进制"), "原因要说清是二进制：{msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_path_and_directory_report_reason() {
+        let dir = tmp_dir("missing");
+        let err =
+            read_text_preview(&dir.join("nope.txt").to_string_lossy()).expect_err("不存在应报错");
+        assert!(
+            err.message().contains("读取文件信息失败"),
+            "{}",
+            err.message()
+        );
+        // 目录不报「读失败」而要说清是文件夹：用户点文件夹只想看内容
+        let derr = read_text_preview(&dir.to_string_lossy()).expect_err("目录应被拒");
+        assert!(derr.message().contains("文件夹"), "{}", derr.message());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn oversize_file_is_truncated_not_rejected() {
+        // 超出上限只截断：用户要的是「看一眼」，报错等于不给看。
+        // 断言截断后仍是合法 UTF-8——按字节切会切在多字节字符中间
+        let dir = tmp_dir("big");
+        let mut body = vec![b'a'; PREVIEW_MAX_BYTES + 4096];
+        // 尾部塞一个三字节中文字符，保证截断边界会切到它
+        body.extend_from_slice("报告".as_bytes());
+        let path = write(&dir, "big.txt", &body);
+        let p = read_text_preview(&path).expect("超大文件应截断而非报错");
+        assert!(p.truncated, "超限必须标截断");
+        assert_eq!(p.content.len(), PREVIEW_MAX_BYTES, "截断后应正好等于上限");
+        assert!(
+            p.total_bytes > PREVIEW_MAX_BYTES as u64,
+            "原文件大小要如实报出，供前端提示「只显示了前 N」"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

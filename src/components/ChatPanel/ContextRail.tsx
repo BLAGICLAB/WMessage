@@ -5,7 +5,7 @@
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { basename } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
+import { FilePreview } from "./FilePreview";
 import {
   MAX_TASK_FILES,
   filesPatch,
@@ -113,6 +114,9 @@ export function ContextRail({
   onTabChange,
 }: ContextRailProps) {
   const runningCount = subagents.filter((s) => s.running).length;
+  /** 当前预览的文件（null = 停在列表页）。与子 Agent 详情同款：详情是一层，
+   *  返回才回列表——两个工作面用同一套手感，不给用户两种心智模型。 */
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
 
   /** 聊天窗口直接把本地文件绑到任务卡：选文件 → bind_files 探测 isDir →
    *  统一内核合并（去重/文件夹槽替换/10 上限）→ 走 onUpdateTask 既有落库通道。
@@ -230,7 +234,26 @@ export function ContextRail({
         </section>
       )}
 
-      {tab === "files" && (
+      {tab === "files" && (() => {
+        // 预览态：整栏换成文件内容（与子 Agent 详情同级），返回才回列表
+        const preview = previewPath
+          ? fileChanges.find((f) => f.path === previewPath)
+          : undefined;
+        if (preview) {
+          return (
+            <section aria-label="文件预览">
+              <FilePreview
+                // key 绑定 path：切文件即重挂载，预览状态天然清零
+                key={preview.path}
+                path={preview.path}
+                added={preview.added}
+                deleted={preview.deleted}
+                onBack={() => setPreviewPath(null)}
+              />
+            </section>
+          );
+        }
+        return (
         <section aria-label="文件变更">
           <div className="mb-1 flex items-center gap-1.5 px-1.5">
             <span className="text-[11px] font-medium text-[var(--t2)]">
@@ -245,11 +268,13 @@ export function ContextRail({
           ) : (
             <div className="space-y-0.5">
               {fileChanges.map((f, i) => (
-                <div
+                <button
                   // oxlint-disable-next-line react/no-array-index-key
                   key={`${f.path}-${i}`}
-                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs"
-                  title={`${f.path}（+${f.added} −${f.deleted}）`}
+                  type="button"
+                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs hover:bg-[var(--hover-bg)]"
+                  title={`${f.path}（+${f.added} −${f.deleted}）· 点开预览内容`}
+                  onClick={() => setPreviewPath(f.path)}
                 >
                   <FolderOpen
                     size={12}
@@ -265,12 +290,13 @@ export function ContextRail({
                   <span className="shrink-0 font-mono text-[10px] text-[var(--danger)]">
                     −{f.deleted}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           )}
         </section>
-      )}
+        );
+      })()}
 
       {tab === "agents" && (() => {
         const detail = subagents.find((s) => s.id === subagentDetailId);

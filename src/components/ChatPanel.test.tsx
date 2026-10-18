@@ -1257,6 +1257,68 @@ describe("ChatPanel", () => {
   });
 
   // ── 双命令：🧠 模型下拉 ──
+
+  it("右侧栏文件工作面：点文件就地预览内容，能返回列表", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      // 回合不收尾（bot_chat 悬着）：文件改动是流式回合里才有的事件
+      if (cmd === "bot_chat") return new Promise(() => {});
+      if (cmd === "bot_preview_text")
+        return {
+          path: "/tmp/报告.md",
+          content: "# 标题\n\n正文一段",
+          truncated: false,
+          totalBytes: 14,
+          lines: 3,
+        };
+      return defaultInvoke(cmd);
+    });
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      ((mocks.listeners[event] ??= []) as Array<typeof cb>).push(
+        cb as (e: { payload: Record<string, unknown> }) => void,
+      );
+      return () => {};
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await user.type(screen.getByPlaceholderText(/和机器人说点什么/), "改文件");
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      for (const cb of mocks.listeners["bot-file-changed"] ?? []) {
+        cb({
+          payload: {
+            sessionId: "s1",
+            path: "/tmp/报告.md",
+            kind: "modify",
+            added: 3,
+            deleted: 1,
+          },
+        });
+      }
+    });
+    // 打开右侧栏 → 文件工作面
+    await user.click(screen.getByRole("button", { name: "展开右侧栏" }));
+    const rail = within(
+      await screen.findByRole("complementary", { name: "上下文侧栏" }),
+    );
+    await user.click(rail.getByRole("button", { name: /文件/ }));
+    // 文件行可点（以前是只读 div）
+    const row = await rail.findByTitle(/报告\.md/);
+    expect(row.tagName).toBe("BUTTON");
+    await user.click(row);
+    // 内容在侧栏里就地渲染，不跳出去
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_preview_text", {
+      path: "/tmp/报告.md",
+    });
+    expect(await rail.findByLabelText("文件内容")).toBeInTheDocument();
+    expect(rail.getByText("标题")).toBeInTheDocument();
+    // 能退回列表
+    await user.click(rail.getByText(/返回文件列表/));
+    await waitFor(() =>
+      expect(rail.queryByLabelText("文件内容")).toBeNull(),
+    );
+  });
+
   it("授权模式可点选：写入走窄命令 bot_set_perm_mode，落盘失败回滚", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
