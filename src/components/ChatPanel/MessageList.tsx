@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
+import { ActorAvatar } from "../ActorAvatar";
 import { MarkdownText } from "../MarkdownText";
 import type { SubagentRun } from "./ContextRail";
 import { Fold } from "./Fold";
@@ -117,169 +118,183 @@ function MsgBubbleBase({
   return (
     <div
       className={
-        m.role === "user" ? "max-w-[85%] ml-auto" : "max-w-full mr-auto"
+        // 头像写在 DOM 首位，用户侧再翻 row-reverse：视觉上被甩到最右。
+        // 一处顺序写清，头像与气泡不会在两条分支里写歪
+        m.role === "user"
+          ? "flex flex-row-reverse items-start gap-2"
+          : "flex items-start gap-2"
       }
     >
+      {/* 归属头像：谁说的这条消息，悬停出姓名（ActorAvatar 自带 title） */}
+      <ActorAvatar bot={m.role === "assistant"} size={24} />
       <div
-        className={`chat-bubble text-xs leading-relaxed whitespace-pre-wrap break-words ${
-          m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"
-        }`}
+        className={
+          m.role === "user"
+            ? "max-w-[85%] min-w-0"
+            : "max-w-full min-w-0"
+        }
       >
-        {/* 活体指示贴在气泡顶部：回合状态是「这条回复」的属性，头部那一条
-            讲的是整个会话——滚动看旧消息时，头部指示与眼前内容对不上号 */}
-        {liveTurn && (
-          <div className="mb-1.5">
-            <LiveIndicator
-              status={m.turnStatus ?? "running"}
-              detail={m.turnDetail}
-              startedAt={m.turnStartedAt}
-            />
-          </div>
-        )}
-        {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
-          <Fold
-            title={
-              <span>
-                <MessageCircle
-                  size={11}
-                  aria-hidden
-                  className="inline-block align-[-2px]"
-                />{" "}
-                思考过程{m.streaming ? " …" : ""}
-              </span>
-            }
-          >
-            {m.thinking}
-          </Fold>
-        )}
-        {/* Skill 失败半成品。
-         *  区别于 🔧 工具折叠行：用 ⚠️ 标记，视觉上提示「这不是普通工具调用」；
-         *  默认折叠，点开才看哪个 step 成功 + 是否回滚。 */}
-        {m.role === "assistant" && m.skillFailure && (
-          <Fold
-            title={
-              <span
-                className={
-                  m.skillFailure.rollbackAttempted
-                    ? "text-[var(--t4)]"
-                    : "text-[var(--danger)]"
-                }
-              >
-                <TriangleAlert
-                  size={11}
-                  aria-hidden
-                  className="inline-block align-[-2px]"
-                />{" "}
-                Skill 失败：{m.skillFailure.skillName}
-                {m.skillFailure.rollbackAttempted
-                  ? "（已回滚）"
-                  : "（未回滚，请人工核对）"}
-              </span>
-            }
-          >
-            <div className="space-y-1">
-              <div>
-                <span className="opacity-70">原因：</span>
-                <span>{m.skillFailure.reason}</span>
-              </div>
-              <div>
-                <span className="opacity-70">已完成步骤：</span>
-                <pre className="opacity-80 whitespace-pre-wrap break-words">
-                  {m.skillFailure.completedSummary}
-                </pre>
-              </div>
-              {!m.skillFailure.rollbackAttempted && (
-                <div className="text-[var(--danger)]">
+        <div
+          className={`chat-bubble text-xs leading-relaxed whitespace-pre-wrap break-words ${
+            m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"
+          }`}
+        >
+          {/* 活体指示贴在气泡顶部：回合状态是「这条回复」的属性，头部那一条
+              讲的是整个会话——滚动看旧消息时，头部指示与眼前内容对不上号 */}
+          {liveTurn && (
+            <div className="mb-1.5">
+              <LiveIndicator
+                status={m.turnStatus ?? "running"}
+                detail={m.turnDetail}
+                startedAt={m.turnStartedAt}
+              />
+            </div>
+          )}
+          {m.role === "assistant" && (m.thinking?.length ?? 0) > 0 && (
+            <Fold
+              title={
+                <span>
+                  <MessageCircle
+                    size={11}
+                    aria-hidden
+                    className="inline-block align-[-2px]"
+                  />{" "}
+                  思考过程{m.streaming ? " …" : ""}
+                </span>
+              }
+            >
+              {m.thinking}
+            </Fold>
+          )}
+          {/* Skill 失败半成品。
+           *  区别于 🔧 工具折叠行：用 ⚠️ 标记，视觉上提示「这不是普通工具调用」；
+           *  默认折叠，点开才看哪个 step 成功 + 是否回滚。 */}
+          {m.role === "assistant" && m.skillFailure && (
+            <Fold
+              title={
+                <span
+                  className={
+                    m.skillFailure.rollbackAttempted
+                      ? "text-[var(--t4)]"
+                      : "text-[var(--danger)]"
+                  }
+                >
                   <TriangleAlert
                     size={11}
                     aria-hidden
                     className="inline-block align-[-2px]"
                   />{" "}
-                  已完成步骤未回滚，请检查任务卡状态。
+                  Skill 失败：{m.skillFailure.skillName}
+                  {m.skillFailure.rollbackAttempted
+                    ? "（已回滚）"
+                    : "（未回滚，请人工核对）"}
+                </span>
+              }
+            >
+              <div className="space-y-1">
+                <div>
+                  <span className="opacity-70">原因：</span>
+                  <span>{m.skillFailure.reason}</span>
                 </div>
-              )}
-            </div>
-          </Fold>
-        )}
-        {/* 工具调用（对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
-        {(m.tools?.length ?? 0) > 0 && (
-          <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
-        )}
-        {/* 子 agent 区域：挂在最后一条助手回复里、工具调用下方。
-            跟着派发它的那一轮走，而不是钉在对话顶部——对话顶部那块地属于会话，
-            「谁派的、派去做什么」属于某一轮，钉在顶上就成了无主浮层。 */}
-        {subagentSlot && subagentSlot.runs.length > 0 && (
-          <SubagentStrip
-            subagents={subagentSlot.runs}
-            onOpen={subagentSlot.onOpen}
-            onCancel={subagentSlot.onCancel}
-            expanded={subagentSlot.expanded}
-            onToggleExpanded={subagentSlot.onToggleExpanded}
-          />
-        )}
-        {bubbleBody(m)}
-        {/* 「查看执行对话」跳转（任务执行聊天化：busy 时跳转排队，
-            忙完 hint + 按钮切换到执行会话） */}
-        {m.actionSessionId && (
-          <button
-            className="nm-btn mt-1 inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t2)]"
-            onClick={() => onOpenExecSession(m.actionSessionId!)}
-          >
-            <MessagesSquare size={11} aria-hidden />
-            查看执行对话
-          </button>
+                <div>
+                  <span className="opacity-70">已完成步骤：</span>
+                  <pre className="opacity-80 whitespace-pre-wrap break-words">
+                    {m.skillFailure.completedSummary}
+                  </pre>
+                </div>
+                {!m.skillFailure.rollbackAttempted && (
+                  <div className="text-[var(--danger)]">
+                    <TriangleAlert
+                      size={11}
+                      aria-hidden
+                      className="inline-block align-[-2px]"
+                    />{" "}
+                    已完成步骤未回滚，请检查任务卡状态。
+                  </div>
+                )}
+              </div>
+            </Fold>
+          )}
+          {/* 工具调用（对齐截图）：mono pill 徽章行 + 可折叠「进程 N/M」详情 */}
+          {(m.tools?.length ?? 0) > 0 && (
+            <ToolBadges tools={m.tools!} verboseLevel={verboseLevel} />
+          )}
+          {/* 子 agent 区域：挂在最后一条助手回复里、工具调用下方。
+              跟着派发它的那一轮走，而不是钉在对话顶部——对话顶部那块地属于会话，
+              「谁派的、派去做什么」属于某一轮，钉在顶上就成了无主浮层。 */}
+          {subagentSlot && subagentSlot.runs.length > 0 && (
+            <SubagentStrip
+              subagents={subagentSlot.runs}
+              onOpen={subagentSlot.onOpen}
+              onCancel={subagentSlot.onCancel}
+              expanded={subagentSlot.expanded}
+              onToggleExpanded={subagentSlot.onToggleExpanded}
+            />
+          )}
+          {bubbleBody(m)}
+          {/* 「查看执行对话」跳转（任务执行聊天化：busy 时跳转排队，
+              忙完 hint + 按钮切换到执行会话） */}
+          {m.actionSessionId && (
+            <button
+              className="nm-btn mt-1 inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t2)]"
+              onClick={() => onOpenExecSession(m.actionSessionId!)}
+            >
+              <MessagesSquare size={11} aria-hidden />
+              查看执行对话
+            </button>
+          )}
+        </div>
+        {/* 回复完成后的操作行：复制按钮 + 任务引用按钮（点击去主窗口打开该任务） */}
+        {showActions && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            {hasContent && (
+              <button
+                className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
+                title="复制回复内容"
+                onClick={() => onCopy(idx, m.content)}
+              >
+                {isCopied ? (
+                  <>
+                    <Check size={12} aria-hidden /> 已复制
+                  </>
+                ) : (
+                  <>
+                    <Copy size={11} aria-hidden />
+                    复制
+                  </>
+                )}
+              </button>
+            )}
+            {hasContent && (
+              <button
+                className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t4)] hover:text-[var(--danger)]"
+                title="移除这条回复（不满意时删除，不再作为上下文）"
+                onClick={() => onRemove(idx)}
+                disabled={busy}
+              >
+                <Trash2 size={11} aria-hidden />
+                移除
+              </button>
+            )}
+            <FileSummary
+              fps={fps}
+              changes={m.fileChanges}
+              onPreviewFile={onPreviewFile}
+            />
+            {(m.refs ?? []).map((r) => (
+              <button
+                key={r.id}
+                className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
+                title={`打开任务：${r.title}`}
+                onClick={() => onOpenTask(r)}
+              >
+                <Pin size={11} aria-hidden className="shrink-0" />
+                <span className="truncate max-w-[260px]">{r.title}</span>
+              </button>
+            ))}
+          </div>
         )}
       </div>
-      {/* 回复完成后的操作行：复制按钮 + 任务引用按钮（点击去主窗口打开该任务） */}
-      {showActions && (
-        <div className="mt-1.5 flex flex-wrap items-center gap-1">
-          {hasContent && (
-            <button
-              className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
-              title="复制回复内容"
-              onClick={() => onCopy(idx, m.content)}
-            >
-              {isCopied ? (
-                <>
-                  <Check size={12} aria-hidden /> 已复制
-                </>
-              ) : (
-                <>
-                  <Copy size={11} aria-hidden />
-                  复制
-                </>
-              )}
-            </button>
-          )}
-          {hasContent && (
-            <button
-              className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t4)] hover:text-[var(--danger)]"
-              title="移除这条回复（不满意时删除，不再作为上下文）"
-              onClick={() => onRemove(idx)}
-              disabled={busy}
-            >
-              <Trash2 size={11} aria-hidden />
-              移除
-            </button>
-          )}
-          <FileSummary
-            fps={fps}
-            changes={m.fileChanges}
-            onPreviewFile={onPreviewFile}
-          />
-          {(m.refs ?? []).map((r) => (
-            <button
-              key={r.id}
-              className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-              title={`打开任务：${r.title}`}
-              onClick={() => onOpenTask(r)}
-            >
-              <Pin size={11} aria-hidden className="shrink-0" />
-              <span className="truncate max-w-[260px]">{r.title}</span>
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
