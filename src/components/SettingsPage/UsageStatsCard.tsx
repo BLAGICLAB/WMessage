@@ -453,9 +453,10 @@ function TokenTrendChart({
 const META_NUM = "text-[10px] font-mono tabular-nums text-[var(--t5)]";
 
 /** 占比堆叠条 + 图例行（palette 循环取色）。
- *  色块宽度与榜位都按「未命中」口径（输入+输出），与 usage_stats_by_model 的
- *  ORDER BY 保持同一口径——名次和图形算两套数会让「第一名」色块明显偏细。
- *  缓存不进色块（单价不同），改在图例行逐行标出，避免读者把缓存当普通输入读。 */
+ *  色块宽度与榜位都按「缓存未命中」口径（输入+输出），与 usage_stats_by_model
+ *  的 ORDER BY 保持同一口径——名次和图形算两套数会让「第一名」色块明显偏细。
+ *  行内只留「模型 · 缓存未命中 · 占比」：缓存命中与轮次不在行里重复，
+ *  榜尾一行口径说明已交代清楚（缓存单价不同，混进占比会失真）。 */
 function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
   const total =
     rows.reduce((a, r) => a + r.promptTokens + r.completionTokens, 0) || 1;
@@ -472,7 +473,7 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
                 width: `${(t / total) * 100}%`,
                 backgroundColor: MODEL_COLORS[i % MODEL_COLORS.length],
               }}
-              title={`${r.model ?? "未知模型"} · 未命中 ${fmtTokens(t)} tokens${
+              title={`${r.model ?? "未知模型"} · 缓存未命中 ${fmtTokens(t)} tokens${
                 cache > 0 ? ` · 缓存命中 ${fmtTokens(cache)}` : ""
               }`}
             />
@@ -482,7 +483,6 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
       <div className="mt-2 space-y-1.5">
         {rows.map((r, i) => {
           const t = r.promptTokens + r.completionTokens;
-          const cache = cacheOf(r);
           return (
             <div key={i} className="flex items-center gap-2 text-xs">
               <span
@@ -494,14 +494,8 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
               <span className="min-w-0 flex-1 truncate text-[var(--t2)]">
                 {r.model ?? "未知模型（旧数据）"}
               </span>
-              {/* 逐行写明「未命中 / 缓存」：两档单价差十倍，
-                  不写清楚读者会把色块宽度当成全部消耗。 */}
-              <span className={`shrink-0 ${META_NUM}`}>
-                未命中 {fmtTokens(t)}
-                {cache > 0 && <> · 缓存 {fmtTokens(cache)}</>}
-              </span>
-              <span className={`shrink-0 ${META_NUM} w-11 text-right`}>
-                {r.runs} 次
+              <span className={`shrink-0 ${META_NUM} text-[var(--t4)]`}>
+                缓存未命中 {fmtTokens(t)}
               </span>
               <span className={`shrink-0 ${META_NUM} w-9 text-right`}>
                 {Math.round((t / total) * 100)}%
@@ -511,7 +505,8 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
         })}
       </div>
       <p className="mt-2 text-[10px] text-[var(--t6)]">
-        色块宽度与占比按「未命中」口径；缓存单独计价，不进色块。
+        色块宽度与占比按「缓存未命中」口径；缓存命中的 token
+        单独计价，不计入色块。
       </p>
     </div>
   );
@@ -635,19 +630,19 @@ export function UsageStatsCard() {
           </p>
         ) : (
           /* 五格：合并「当前/最长连续」腾出一格给缓存，两档 token 并列。
-             开着 prompt caching 时 prompt_tokens 只承载未命中部分，所以
-             两个 token 格都必须写明是未命中还是缓存，否则会低估真实消耗。 */
+             开着 prompt caching 时 prompt_tokens 只承载缓存未命中的部分，所以
+             两个 token 格都必须写明是未命中还是命中，否则会低估真实消耗。 */
           <div className="mt-4 grid grid-cols-5 divide-x divide-[var(--edge)] text-center">
             {(
               [
-                ["累计未命中", fmtTokens(totalTokens)],
+                ["累计缓存未命中", fmtTokens(totalTokens)],
                 [
                   "累计缓存命中",
                   // 缓存仅 Anthropic 协议上报；恒零时用「—」而非 0，
                   // 0 读起来像「测过是零」，— 才是「这一档没数据」
                   totalCache === 0 ? "—" : fmtTokens(totalCache),
                 ],
-                ["峰值未命中", fmtTokens(peakDay)],
+                ["峰值缓存未命中", fmtTokens(peakDay)],
                 ["执行次数", String(totalRuns)],
                 ["当前 / 最长连续", `${curStreak} / ${bestStreak} 天`],
               ] as const

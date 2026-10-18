@@ -147,8 +147,8 @@ describe("UsageStatsCard", () => {
     // 当前连续 2（10-05~06）/ 最长连续 3（09-30~10-02 游程）合并成一格
     expect(screen.getByText("2 / 3 天")).toBeTruthy();
     expect(screen.getByText("当前 / 最长连续")).toBeTruthy();
-    expect(screen.getByText("累计未命中")).toBeTruthy();
-    expect(screen.getByText("峰值未命中")).toBeTruthy();
+    expect(screen.getByText("累计缓存未命中")).toBeTruthy();
+    expect(screen.getByText("峰值缓存未命中")).toBeTruthy();
     // 缓存恒零 → 该格显示「—」而非 0（0 读起来像「测过是零」）
     expect(screen.getByText("累计缓存命中")).toBeTruthy();
     expect(screen.getByText("—")).toBeTruthy();
@@ -344,14 +344,16 @@ const CACHE_DAYS: UsageDay[] = [
     render(<UsageStatsCard />);
     // 未命中 = (900+100)+(4000+1000) = 6000；缓存合计 32_000 独立一格
     await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
-    expect(screen.getByText("累计未命中")).toBeTruthy();
+    expect(screen.getByText("累计缓存未命中")).toBeTruthy();
     expect(screen.getByText("累计缓存命中")).toBeTruthy();
     expect(screen.getByText("3.2 万")).toBeTruthy();
     // 读/写拆分作为挂脚注，仍分两档（30_000 命中 / 2_000 写入）
     expect(screen.getByText("3.0 万")).toBeTruthy();
     expect(screen.getByText("2.0K")).toBeTruthy();
     // 色块口径说明
-    expect(screen.getByText(/缓存单独计价，不进色块/)).toBeTruthy();
+    expect(
+      screen.getByText(/缓存命中的 token 单独计价，不计入色块/),
+    ).toBeTruthy();
   });
 
   it("缓存全为 0 时整行不出现（OpenAI 协议用户不看到恒零空指标）", async () => {
@@ -394,22 +396,30 @@ const CACHE_DAYS: UsageDay[] = [
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
-  it("模型榜：图例行逐行标未命中/缓存，色块宽度与榜位同口径", async () => {
+  it("模型榜：行内只留缓存未命中与占比，缓存/轮次不占行", async () => {
     mockCache();
     const { container } = render(<UsageStatsCard />);
     await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
-    // 每行都写明未命中；有缓存的行追加缓存数
-    const missLabels = screen.getAllByText(/^未命中 /);
+    // 每行一个「缓存未命中 X」，不再混列缓存数
+    const missLabels = screen.getAllByText(/^缓存未命中 /);
     expect(missLabels.length).toBe(2);
     expect(missLabels[0].textContent).toContain("5.0K");
-    expect(missLabels[0].textContent).toContain("缓存 3.2 万");
-    expect(missLabels[1].textContent).not.toContain("缓存");
-    // 色块 tooltip 同样点明口径
+    expect(missLabels[1].textContent).toContain("1.0K");
+    // 行内不再出现缓存命中数与轮次数
+    expect(screen.queryByText(/· 缓存 /)).toBeNull();
+    expect(screen.queryByText(/^\d+ 次$/)).toBeNull();
+    // 榜尾口径说明保留
+    expect(
+      screen.getByText(/缓存命中的 token 单独计价，不计入色块/),
+    ).toBeTruthy();
+    // 色块 tooltip 仍带出缓存命中（悬浮详情不占版面）
     const barTitles = Array.from(container.querySelectorAll("[title]"))
       .map((el) => el.getAttribute("title") ?? "")
       .filter((t) => t.includes("tokens"));
     expect(
-      barTitles.some((t) => t.includes("未命中 5.0K") && t.includes("缓存命中 3.2 万")),
+      barTitles.some(
+        (t) => t.includes("缓存未命中 5.0K") && t.includes("缓存命中 3.2 万"),
+      ),
     ).toBe(true);
   });
 });
