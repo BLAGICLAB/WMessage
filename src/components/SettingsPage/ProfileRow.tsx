@@ -117,7 +117,7 @@ export function ProfileRow({
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <p className="w-10 shrink-0 text-xs font-medium text-[var(--t4)]">
+          <p className="w-10 shrink-0 text-sm font-medium text-[var(--t2)]">
             {label}
           </p>
           <input
@@ -148,7 +148,7 @@ export function ProfileRow({
           </button>
         </div>
         {error && (
-          <p className="mt-1 pl-12 text-[10px] text-[var(--danger)]">{error}</p>
+          <p className="mt-1 pl-12 text-xs text-[var(--danger)]">{error}</p>
         )}
       </div>
     </div>

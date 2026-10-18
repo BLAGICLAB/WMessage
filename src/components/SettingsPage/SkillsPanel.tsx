@@ -44,7 +44,7 @@ function SkillOutcomeBadge({ outcome }: { outcome: SkillOutcome }) {
     .join(" | ");
   return (
     <span
-      className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${m.color}`}
+      className={`shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${m.color}`}
       title={tip}
     >
       [{m.icon}] {m.label}

@@ -188,7 +188,7 @@ export function AvatarPicker({
           {avatarId && (
             <button
               type="button"
-              className="mt-2.5 w-full rounded-lg px-2 py-1.5 text-[11px] text-[var(--t4)] transition-colors duration-100 hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+              className="mt-2.5 w-full rounded-lg px-2 py-1.5 text-xs text-[var(--t4)] transition-colors duration-100 hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
               onClick={() => {
                 onClear();
                 closeAndRefocus();

@@ -23,7 +23,6 @@ import {
   Eye,
   EyeOff,
   FolderOutput,
-  GitBranch,
   History,
   Info,
   Monitor,
@@ -31,6 +30,7 @@ import {
   MoreHorizontal,
   Plug,
   Plus,
+  ScrollText,
   Settings2,
   Sparkles,
   Sun,
@@ -51,7 +51,6 @@ import {
   type MetaModel,
 } from "../../lib/modelMeta";
 import type { ThemeSetting } from "../../theme";
-import { Modal } from "../../ui/Modal";
 import { MigrationPanel } from "../MigrationPanel";
 
 import {
@@ -74,11 +73,12 @@ import { HomeKpiPanel } from "./HomeKpiPanel";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { MemoryPanel } from "./MemoryPanel";
+import { LogsPanel } from "./LogsPanel";
+import { SettingRow } from "./SettingRow";
 import GraphSettingsPanel from "./GraphSettingsPanel";
 import { GuardKeywordsPanel } from "./GuardKeywordsPanel";
 import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
-import { DiagnosticsCard } from "./DiagnosticsCard";
 import { ModelRow } from "./ModelRow";
 import { UsageStatsCard } from "./UsageStatsCard";
 import { OperationHistoryTab } from "./OperationHistoryTab";
@@ -91,7 +91,7 @@ import { ApiProviderSelect } from "./ApiProviderSelect";
  *  模型内（同一协议仅一份配置，预设会覆盖该协议当前同厂商条目——网格页注明）。
  *  模型名用户可改。
  *  keyUrl = 厂商控制台的 API Key 获取页（详情页「获取 API Key」外链）。 */
-type PresetModel = { id: string; contextK?: number; capabilities?: string[] };
+type PresetModel = { id: string; contextK?: number };
 type ProviderPreset = {
   name: string;
   protocol: "openai" | "anthropic";
@@ -127,7 +127,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     keyUrl:
       "https://platform.minimaxi.com/user-center/basic-information/interface-key",
     models: [
-      { id: "MiniMax-M3", contextK: 1000, capabilities: ["视觉"] },
+      { id: "MiniMax-M3", contextK: 1000 },
       { id: "MiniMax-M2", contextK: 204.8 },
     ],
   },
@@ -154,8 +154,8 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: "https://api.openai.com/v1",
     keyUrl: "https://platform.openai.com/api-keys",
     models: [
-      { id: "gpt-4o", contextK: 128, capabilities: ["视觉"] },
-      { id: "gpt-4o-mini", contextK: 128, capabilities: ["视觉"] },
+      { id: "gpt-4o", contextK: 128 },
+      { id: "gpt-4o-mini", contextK: 128 },
     ],
   },
   {
@@ -164,7 +164,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: "https://api.anthropic.com",
     keyUrl: "https://console.anthropic.com/settings/keys",
     models: [
-      { id: "claude-sonnet-4-20250514", contextK: 200, capabilities: ["视觉"] },
+      { id: "claude-sonnet-4-20250514", contextK: 200 },
     ],
   },
   {
@@ -172,7 +172,7 @@ const PROVIDER_PRESETS: ProviderPreset[] = [
     protocol: "openai",
     baseUrl: "https://api.x.ai/v1",
     keyUrl: "https://console.x.ai/",
-    models: [{ id: "grok-4", contextK: 256, capabilities: ["视觉"] }],
+    models: [{ id: "grok-4", contextK: 256 }],
   },
 ];
 
@@ -303,10 +303,11 @@ type Props = {
   onBack?: () => void;
 };
 
-/** 设置分类（十项，老板）：key 顺序 = 侧栏顺序。
- *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python/日志、
+/** 设置分类：key 顺序 = 侧栏顺序。
+ *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python、
  *  卡2 授权/白名单、卡3 技能路由/外部 API；「MCP 服务」两段：Tavily/Brave
- *  搜索引擎卡 + McpPanel。面板惰性挂载。 */
+ *  搜索引擎卡 + McpPanel。面板惰性挂载。
+ *  自进化不再是独立分类：提案来自记忆反思，决策面板并入「记忆」。 */
 type SectionKey =
   | "general"
   | "data"
@@ -315,11 +316,11 @@ type SectionKey =
   | "memory"
   | "skills"
   | "mcp"
-  | "evolution"
   | "desk"
   | "graph"
   | "tokens"
-  | "opsHistory";
+  | "opsHistory"
+  | "logs";
 const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "general", label: "基础设置", icon: Settings2 },
   { key: "data", label: "数据管理", icon: DatabaseBackup },
@@ -329,10 +330,10 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "skills", label: "技能", icon: Sparkles },
   { key: "graph", label: "任务图谱", icon: Waypoints },
   { key: "mcp", label: "MCP 服务", icon: Plug },
-  { key: "evolution", label: "自进化", icon: GitBranch },
   { key: "desk", label: "文件整理", icon: FolderOutput },
   { key: "tokens", label: "词元统计", icon: BarChart3 },
   { key: "opsHistory", label: "操作历史", icon: History },
+  { key: "logs", label: "日志", icon: ScrollText },
 ];
 
 /** 设置壳（重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。
@@ -450,7 +451,6 @@ export function SettingsPage({
       baseUrl: p.baseUrl,
       vendor: p.name,
       ...(m.contextK != null ? { contextK: m.contextK } : {}),
-      ...(m.capabilities ? { capabilities: m.capabilities } : {}),
     }));
     await applyVendorModels(p.name, p.protocol, models);
   };
@@ -700,9 +700,6 @@ export function SettingsPage({
   const [pyEnvBusy, setPyEnvBusy] = useState(false);
   /** 环境检查失败的错误文案（可见反馈，不再只 console.error） */
   const [pyEnvErr, setPyEnvErr] = useState("");
-  const [logOpen, setLogOpen] = useState(false);
-  const [logText, setLogText] = useState("");
-  const [logBusy, setLogBusy] = useState(false);
 
   const refreshBot = async () => {
     try {
@@ -854,21 +851,6 @@ export function SettingsPage({
     } finally {
       setPyEnvBusy(false);
     }
-  };
-
-  // 查看机器人审计日志（最新在前，默认 200 行）
-  const openLog = async () => {
-    if (logBusy) return;
-    setLogBusy(true);
-    try {
-      setLogText(await invoke<string>("bot_log_read", { limit: 200 }));
-    } catch (e) {
-      handleCommandError(e, "bot_log_read", { silent: true });
-      setLogText(formatCommandError(e));
-    } finally {
-      setLogBusy(false);
-    }
-    setLogOpen(true);
   };
 
   useEffect(() => {
@@ -1613,8 +1595,8 @@ export function SettingsPage({
     return (
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
-          <p className="text-[11px] text-[var(--t3)]">{label}</p>
-          <p className="mt-0.5 text-[11px] text-[var(--t5)]">{description}</p>
+          <p className="text-xs text-[var(--t3)]">{label}</p>
+          <p className="mt-0.5 text-xs text-[var(--t5)]">{description}</p>
         </div>
         <button
           role="switch"
@@ -1884,9 +1866,6 @@ export function SettingsPage({
                 </div>
               </div>
 
-              {/* 诊断：error.log 最近错误 + 一键复制全部日志 */}
-              <DiagnosticsCard />
-
               {/* 基础设置：外观 + 开机自启动 wmessage */}
               <div className="nm-card p-5">
                 <h2 className="text-lg font-semibold text-[var(--t1)]">
@@ -2006,15 +1985,10 @@ export function SettingsPage({
                   任务数据管理
                 </h2>
                 <div className="mt-4 space-y-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        导出任务数据
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        全部任务卡（含归档、回收站）导出为 JSON 文件
-                      </p>
-                    </div>
+                  <SettingRow
+                    label="导出任务数据"
+                    description="全部任务卡（含归档、回收站）导出为 JSON 文件"
+                  >
                     <button
                       className={`btn-sm-action ${
                         exporting ? "nm-inset" : "nm-outset"
@@ -2030,17 +2004,11 @@ export function SettingsPage({
                         </>
                       )}
                     </button>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        导入任务数据
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        从 JSON 文件导入任务卡；按 id 合并，同 id
-                        保留最后修改的记录
-                      </p>
-                    </div>
+                  </SettingRow>
+                  <SettingRow
+                    label="导入任务数据"
+                    description="从 JSON 文件导入任务卡；按 id 合并，同 id 保留最后修改的记录"
+                  >
                     <button
                       className={`btn-sm-action ${
                         importing ? "nm-inset" : "nm-outset"
@@ -2056,7 +2024,7 @@ export function SettingsPage({
                         </>
                       )}
                     </button>
-                  </div>
+                  </SettingRow>
                   {/* 删除非本人的任务卡：导入带来的归属人为他人的统计用卡，
               一键直接硬删（含回收站中的；本人 = 个人资料 personId，owner_id 为空的卡视为本人不动）。
               后端广播 tasks-updated 三端同步；结果在按钮文字上短暂反馈（不新增行防抖动） */}
@@ -2149,7 +2117,7 @@ export function SettingsPage({
                       className="w-16 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none"
                       title="保留天数（1–365，默认 30）"
                     />
-                    <span className="text-[11px] text-[var(--t5)]">天前</span>
+                    <span className="text-xs text-[var(--t5)]">天前</span>
                     <button
                       className={`btn-sm-action ${
                         traceClearBusy ? "nm-inset" : "nm-outset"
@@ -2178,16 +2146,10 @@ export function SettingsPage({
                   网页），与任务数据分开独立存储
                 </p>
                 <div className="mt-4 space-y-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        导出工作区链接
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        全部工作区条目（含分组、折叠状态、链接列表）导出为 JSON
-                        文件
-                      </p>
-                    </div>
+                  <SettingRow
+                    label="导出工作区链接"
+                    description="全部工作区条目（含分组、折叠状态、链接列表）导出为 JSON 文件"
+                  >
                     <button
                       className={`btn-sm-action ${
                         exportingWs ? "nm-inset" : "nm-outset"
@@ -2203,17 +2165,11 @@ export function SettingsPage({
                         </>
                       )}
                     </button>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        导入工作区链接
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        从 JSON 文件导入工作区条目；按 id 合并，同 id
-                        保留最后修改的记录
-                      </p>
-                    </div>
+                  </SettingRow>
+                  <SettingRow
+                    label="导入工作区链接"
+                    description="从 JSON 文件导入工作区条目；按 id 合并，同 id 保留最后修改的记录"
+                  >
                     <button
                       className={`btn-sm-action ${
                         importingWs ? "nm-inset" : "nm-outset"
@@ -2229,7 +2185,7 @@ export function SettingsPage({
                         </>
                       )}
                     </button>
-                  </div>
+                  </SettingRow>
                 </div>
               </div>
             </section>
@@ -2296,10 +2252,10 @@ export function SettingsPage({
                 {/* Python 环境状态 */}
                 <div className="mt-3 flex items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="text-xs font-medium text-[var(--t4)]">
+                    <p className="text-sm font-medium text-[var(--t2)]">
                       本机 Python 环境
                     </p>
-                    <p className="mt-1 text-[11px] text-[var(--t5)]">
+                    <p className="mt-1 text-xs text-[var(--t5)]">
                       {pyEnvErr
                         ? `检查失败：${pyEnvErr}`
                         : pyEnv
@@ -2323,10 +2279,10 @@ export function SettingsPage({
                 {/* Python 默认超时：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调 */}
                 <div className="mt-3 flex items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="text-xs font-medium text-[var(--t4)]">
+                    <p className="text-sm font-medium text-[var(--t2)]">
                       Python 默认超时（秒）
                     </p>
-                    <p className="mt-1 text-[11px] text-[var(--t5)]">
+                    <p className="mt-1 text-xs text-[var(--t5)]">
                       留空 = 60 秒；大计算可调大，上限 300 秒（超出自动钳制）
                     </p>
                   </div>
@@ -2342,26 +2298,6 @@ export function SettingsPage({
                     inputMode="numeric"
                     className="nm-inset shrink-0 w-24 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none text-right"
                   />
-                </div>
-
-                {/* 机器人审计日志查看 */}
-                <div className="mt-3 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium text-[var(--t4)]">
-                      机器人审计日志
-                    </p>
-                    <p className="mt-1 text-[11px] text-[var(--t5)]">
-                      记录机器人的用户指令、工具调用、参数与结果（数据目录
-                      bot.log）
-                    </p>
-                  </div>
-                  <button
-                    className="btn-sm-action nm-outset"
-                    onClick={openLog}
-                    disabled={logBusy}
-                  >
-                    {logBusy ? "读取中…" : "查看日志"}
-                  </button>
                 </div>
                 {/* Python 超时等 setConfig 字段靠本卡保存钮落盘（bot 关闭时 model 卡按钮不可达） */}
                 {renderSaveButton("mt-3 flex justify-end")}
@@ -2504,7 +2440,7 @@ export function SettingsPage({
                       <p className="text-sm font-medium text-[var(--t2)]">
                         {label}
                       </p>
-                      <p className="mt-0.5 text-[11px] text-[var(--t5)]">
+                      <p className="mt-0.5 text-xs text-[var(--t5)]">
                         {hint}
                       </p>
                     </div>
@@ -2550,16 +2486,10 @@ export function SettingsPage({
               <div className="nm-card p-5">
                 {/* 定时记忆整理 */}
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-[var(--t4)]">
-                        记忆整理
-                      </p>
-                      <p className="mt-1 text-[11px] text-[var(--t5)]">
-                        定期用大模型对近期记忆做一轮反思：合并相关条目、裁决矛盾、提炼规律（需要已配置大模型
-                        API）
-                      </p>
-                    </div>
+                  <SettingRow
+                    label="记忆整理"
+                    description="定期用大模型对近期记忆做一轮反思：合并相关条目、裁决矛盾、提炼规律（需要已配置大模型 API）"
+                  >
                     <button
                       className={`btn-sm-action ${
                         config.memoryConsolidation.enabled
@@ -2575,7 +2505,7 @@ export function SettingsPage({
                     >
                       {config.memoryConsolidation.enabled ? "已开启" : "已关闭"}
                     </button>
-                  </div>
+                  </SettingRow>
                   {config.memoryConsolidation.enabled && (
                     <>
                       <div className="flex gap-2">
@@ -2602,7 +2532,7 @@ export function SettingsPage({
                         ))}
                       </div>
                       <div className="flex items-center justify-between gap-4">
-                        <p className="text-[11px] text-[var(--t5)]">
+                        <p className="text-xs text-[var(--t5)]">
                           上次整理：
                           {config.memoryConsolidation.lastRunAt
                             ? new Date(
@@ -2626,7 +2556,7 @@ export function SettingsPage({
                         </button>
                       </div>
                       {consolidateMsg && (
-                        <p className="text-[11px] text-[var(--t4)]">
+                        <p className="text-xs text-[var(--t4)]">
                           {consolidateMsg}
                         </p>
                       )}
@@ -2637,7 +2567,7 @@ export function SettingsPage({
               {/*  记忆可控开关：注入总闸 + 模型主动记忆门禁（点档即时落盘） */}
               <div className="nm-card p-5">
                 <div className="space-y-3">
-                  <p className="text-xs font-medium text-[var(--t4)]">
+                  <p className="text-sm font-medium text-[var(--t2)]">
                     记忆权限
                   </p>
                   {renderMemoryToggle(
@@ -2653,8 +2583,8 @@ export function SettingsPage({
                   {/* 自动记忆抽取三档：会话收尾低频触发；总闸（模型自动记忆）关闭时不跑，
               三档随总闸禁用（radiogroup/radio 与厂商开关的 switch 同一可访问标准） */}
                   <div className="space-y-1.5">
-                    <p className="text-[11px] text-[var(--t3)]">自动记忆抽取</p>
-                    <p className="text-[11px] text-[var(--t5)]">
+                    <p className="text-xs text-[var(--t3)]">自动记忆抽取</p>
+                    <p className="text-xs text-[var(--t5)]">
                       每次聊天结束后低频（≥30
                       分钟一次）用大模型从对话里提取值得长期记住的偏好与事实；
                       需「模型自动记忆」开启；「需确认」档会先存入下方待确认列表
@@ -2694,6 +2624,8 @@ export function SettingsPage({
               </div>
               {/* 记忆库管理面板：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}
               <MemoryPanel />
+              {/* 自进化决策面板：提案由记忆反思产出，决策是记忆的一部分 */}
+              <EvolutionPanel />
             </section>
           )}
           {mountedSections.has("model") && (
@@ -2729,7 +2661,7 @@ export function SettingsPage({
                     <div className="flex h-[calc(100vh-14rem)] min-h-[320px] gap-4">
                       {/* 左栏：厂商列表（绿点 = 该厂商含全局 active 模型） */}
                       <div className="w-44 shrink-0 space-y-1 overflow-y-auto border-r border-[var(--edge)] pr-3">
-                        <p className="text-[10px] text-[var(--t5)]">厂商</p>
+                        <p className="text-xs text-[var(--t5)]">厂商</p>
                         {vendorGroups.map((v) => {
                           const meta = vendorMetaOf(v.name);
                           return (
@@ -2802,7 +2734,7 @@ export function SettingsPage({
                                 添加厂商
                               </p>
                             </div>
-                            <p className="text-[10px] text-[var(--t5)]">
+                            <p className="text-xs text-[var(--t5)]">
                               点选厂商即添加（同名厂商重新选择会覆盖其 Base URL
                               与模型列表）；添加后可改 Base URL、API
                               格式与模型列表。
@@ -2811,7 +2743,7 @@ export function SettingsPage({
                             metaProviders.length === 0 ? (
                               <>
                                 <div className="flex items-center gap-2">
-                                  <p className="min-w-0 flex-1 text-[10px] text-[var(--t5)]">
+                                  <p className="min-w-0 flex-1 text-xs text-[var(--t5)]">
                                     模型库为空或同步中——启动时自动同步
                                     models.dev，也可手动同步
                                   </p>
@@ -2826,7 +2758,7 @@ export function SettingsPage({
                                   </button>
                                 </div>
                                 {metaSyncMsg && (
-                                  <p className="text-[10px] text-[var(--t5)]">
+                                  <p className="text-xs text-[var(--t5)]">
                                     {metaSyncMsg}
                                   </p>
                                 )}
@@ -2844,7 +2776,7 @@ export function SettingsPage({
                                       </span>
                                       <span
                                         aria-hidden
-                                        className="text-[10px] text-[var(--t5)]"
+                                        className="text-xs text-[var(--t5)]"
                                       >
                                         {p.protocol === "anthropic"
                                           ? "Anthropic 格式"
@@ -2877,7 +2809,7 @@ export function SettingsPage({
                                   </button>
                                 </div>
                                 {metaSyncMsg && (
-                                  <p className="text-[10px] text-[var(--t5)]">
+                                  <p className="text-xs text-[var(--t5)]">
                                     {metaSyncMsg}
                                   </p>
                                 )}
@@ -2914,7 +2846,7 @@ export function SettingsPage({
                                         </span>
                                         <span
                                           aria-hidden
-                                          className="truncate text-[10px] text-[var(--t5)]"
+                                          className="truncate text-xs text-[var(--t5)]"
                                         >
                                           {hostOf(p.default_base_url)}
                                         </span>
@@ -2932,7 +2864,7 @@ export function SettingsPage({
                                       p.provider_key.toLowerCase().includes(q)
                                     );
                                   }) && (
-                                    <p className="text-[10px] text-[var(--t5)]">
+                                    <p className="text-xs text-[var(--t5)]">
                                       无匹配厂商，换个关键词试试
                                     </p>
                                   )}
@@ -3034,7 +2966,7 @@ export function SettingsPage({
                             </div>
                             {/* Base URL：厂商条目共用一个（编辑同步全部条目） */}
                             <div className="space-y-1">
-                              <p className="text-[10px] text-[var(--t5)]">
+                              <p className="text-xs text-[var(--t5)]">
                                 Base URL
                               </p>
                               <input
@@ -3048,7 +2980,7 @@ export function SettingsPage({
                             </div>
                             {/* API 格式：该厂商条目所在的协议列表（切换 = 条目整体搬移）；自绘下拉同 ApiProviderSelect 模式 */}
                             <div className="space-y-1">
-                              <p className="text-[10px] text-[var(--t5)]">
+                              <p className="text-xs text-[var(--t5)]">
                                 API 格式
                               </p>
                               <ApiProviderSelect
@@ -3060,7 +2992,7 @@ export function SettingsPage({
                             {/* API Key：按厂商分存（keyring 条目按厂商名），各厂商独立——挂账记录 */}
                             <div className="space-y-1">
                               <div className="flex items-center justify-between">
-                                <p className="text-[10px] text-[var(--t5)]">
+                                <p className="text-xs text-[var(--t5)]">
                                   API Key
                                   {activeVendorHasKey && (
                                     <span className="text-[var(--success)]">
@@ -3072,7 +3004,7 @@ export function SettingsPage({
                                 {activeVendorKeyUrl && (
                                   <button
                                     type="button"
-                                    className="text-[10px] text-[var(--brand)] hover:underline"
+                                    className="text-xs text-[var(--brand)] hover:underline"
                                     onClick={() => {
                                       openUrl(activeVendorKeyUrl).catch((e) =>
                                         handleCommandError(e, "open url"),
@@ -3112,7 +3044,7 @@ export function SettingsPage({
                               </div>
                               {activeVendorHasKey && (
                                 <button
-                                  className="text-[10px] text-[var(--danger)] hover:underline"
+                                  className="text-xs text-[var(--danger)] hover:underline"
                                   onClick={clearVendorKey}
                                 >
                                   清除已保存的 Key
@@ -3122,7 +3054,7 @@ export function SettingsPage({
                             {/* 模型列表：行 = 名称 + 上下文徽标 + 能力徽标 + 插头（连接测试）+ 铅笔编辑 + 开关；flex-1 与添加厂商网格同高对齐 */}
                             <div className="flex min-h-0 flex-1 flex-col gap-1">
                               <div className="flex items-center justify-between">
-                                <p className="text-[10px] text-[var(--t5)]">
+                                <p className="text-xs text-[var(--t5)]">
                                   模型列表
                                 </p>
                                 <div className="flex items-center gap-1.5">
@@ -3135,7 +3067,7 @@ export function SettingsPage({
                                         type="button"
                                         aria-haspopup="listbox"
                                         aria-expanded={metaPickerOpen}
-                                        className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
+                                        className="nm-btn px-2.5 py-1 text-xs text-[var(--t3)]"
                                         title="从模型库挑选该厂商的模型，自动填充上下文与推理参数；新模型默认禁用"
                                         onClick={toggleMetaPicker}
                                       >
@@ -3169,13 +3101,13 @@ export function SettingsPage({
                                             );
                                             if (metaPickerModels === null)
                                               return (
-                                                <p className="px-3 py-1.5 text-[10px] text-[var(--t5)]">
+                                                <p className="px-3 py-1.5 text-xs text-[var(--t5)]">
                                                   模型库服务不可用
                                                 </p>
                                               );
                                             if (options.length === 0)
                                               return (
-                                                <p className="px-3 py-1.5 text-[10px] text-[var(--t5)]">
+                                                <p className="px-3 py-1.5 text-xs text-[var(--t5)]">
                                                   模型库中的模型均已添加
                                                 </p>
                                               );
@@ -3195,7 +3127,7 @@ export function SettingsPage({
                                                 {m.context_length ? (
                                                   <span
                                                     aria-hidden
-                                                    className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+                                                    className="shrink-0 font-mono text-xs text-[var(--t5)]"
                                                   >
                                                     {Math.round(
                                                       m.context_length / 100,
@@ -3212,7 +3144,7 @@ export function SettingsPage({
                                   )}
                                   <button
                                     type="button"
-                                    className="nm-btn px-2.5 py-1 text-[10px] text-[var(--t3)]"
+                                    className="nm-btn px-2.5 py-1 text-xs text-[var(--t3)]"
                                     onClick={addModelToVendor}
                                   >
                                     ＋ 添加模型
@@ -3220,7 +3152,7 @@ export function SettingsPage({
                                 </div>
                               </div>
                               {activeVendorEntries.length === 0 ? (
-                                <p className="py-1 text-[11px] text-[var(--t5)]">
+                                <p className="py-1 text-xs text-[var(--t5)]">
                                   暂无模型，点「＋ 添加模型」开始添加
                                 </p>
                               ) : (
@@ -3250,7 +3182,7 @@ export function SettingsPage({
                                   ))}
                                 </div>
                               )}
-                              <p className="text-[10px] text-[var(--t6)] leading-snug">
+                              <p className="text-xs text-[var(--t6)] leading-snug">
                                 插头 =
                                 连接测试：通过后厂商点亮绿点、开启的模型才进聊天窗口下拉（key/URL/格式变更后需重新测试）。当前使用的模型在聊天窗口
                                 🧠 下拉切换；max_tokens 在各模型的编辑里设置（仅
@@ -3263,13 +3195,13 @@ export function SettingsPage({
                 结果决定左栏绿点与聊天下拉可见性 */}
                             <div className="mt-3 flex items-center justify-end gap-3">
                               {botError && (
-                                <p className="text-[10px] text-[var(--danger)]">
+                                <p className="text-xs text-[var(--danger)]">
                                   {botError}
                                 </p>
                               )}
                               {vendorTestMsg && (
                                 <p
-                                  className={`text-[10px] ${
+                                  className={`text-xs ${
                                     vendorTestOk
                                       ? "text-[var(--success)]"
                                       : "text-[var(--danger)]"
@@ -3342,7 +3274,7 @@ export function SettingsPage({
                       </button>
                     ))}
                   </div>
-                  <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  <p className="text-xs text-[var(--t6)] leading-snug">
                     {config.permMode === "strict" &&
                       "白名单外的文件访问一律拒绝。"}
                     {config.permMode === "ask" &&
@@ -3356,11 +3288,11 @@ export function SettingsPage({
                 {/* per-tool 权限规则表（deny/ask/allow 首中即停；无命中走授权模式） */}
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <p className="text-[10px] text-[var(--t5)]">
+                    <p className="text-xs text-[var(--t5)]">
                       工具权限规则（按工具覆盖授权模式）
                     </p>
                     <button
-                      className="nm-btn px-2 py-0.5 text-[10px] text-[var(--t3)]"
+                      className="nm-btn px-2 py-0.5 text-xs text-[var(--t3)]"
                       onClick={() =>
                         setConfig((c) => ({
                           ...c,
@@ -3375,7 +3307,7 @@ export function SettingsPage({
                     </button>
                   </div>
                   {config.toolRules.length === 0 ? (
-                    <p className="text-[10px] text-[var(--t6)]">
+                    <p className="text-xs text-[var(--t6)]">
                       例：deny run_python 禁用编程工具；ask edit_file
                       每次编辑都确认。规则优先于上方授权模式。
                     </p>
@@ -3395,7 +3327,7 @@ export function SettingsPage({
                                 ),
                               }))
                             }
-                            className="min-w-0 flex-1 rounded-lg nm-inset px-2 py-1 font-mono text-[11px] text-[var(--t2)] outline-none"
+                            className="min-w-0 flex-1 rounded-lg nm-inset px-2 py-1 font-mono text-xs text-[var(--t2)] outline-none"
                           />
                           <select
                             aria-label={`规则动作 ${r.tool || i + 1}`}
@@ -3414,7 +3346,7 @@ export function SettingsPage({
                                 ),
                               }))
                             }
-                            className="shrink-0 rounded-lg nm-inset px-1.5 py-1 text-[11px] text-[var(--t3)]"
+                            className="shrink-0 rounded-lg nm-inset px-1.5 py-1 text-xs text-[var(--t3)]"
                           >
                             <option value="allow">allow 放行</option>
                             <option value="ask">ask 确认</option>
@@ -3442,7 +3374,7 @@ export function SettingsPage({
                 {/* 本地文件工具白名单（read_text_file/grep_files/list_files；
                 追加语义：在内置默认之上追加放行） */}
                 <div className="space-y-1">
-                  <p className="text-[10px] text-[var(--t5)]">
+                  <p className="text-xs text-[var(--t5)]">
                     文件工具白名单目录（一行一个绝对路径）
                   </p>
                   <textarea
@@ -3456,7 +3388,7 @@ export function SettingsPage({
                     rows={3}
                     className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none resize-y"
                   />
-                  <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  <p className="text-xs text-[var(--t6)] leading-snug">
                     白名单内静默放行；白名单外按授权模式处理（见上）。授权弹窗点「始终允许该目录」会自动追加到这里。
                   </p>
                 </div>
@@ -3473,16 +3405,10 @@ export function SettingsPage({
               <div className="nm-card p-5">
                 {/* Tavily 搜索 */}
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        Tavily 搜索
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        开启后 web_search 走 Tavily API（需填 key）；关闭走
-                        Bing+百度双引擎
-                      </p>
-                    </div>
+                  <SettingRow
+                    label="Tavily 搜索"
+                    description="开启后 web_search 走 Tavily API（需填 key）；关闭走 Bing+百度双引擎"
+                  >
                     <button
                       className={`btn-sm-action ${
                         config.tavilyEnabled ? "nm-inset" : "nm-outset"
@@ -3496,8 +3422,8 @@ export function SettingsPage({
                           ? "已开启"
                           : "已关闭"}
                     </button>
-                  </div>
-                  <p className="text-[10px] text-[var(--t5)]">
+                  </SettingRow>
+                  <p className="text-xs text-[var(--t5)]">
                     Tavily 搜索 API Key（可选）
                   </p>
                   <input
@@ -3514,12 +3440,12 @@ export function SettingsPage({
                   {config.tavilyEnabled &&
                   !config.hasTavilyKey &&
                   !tavilyKeyInput.trim() ? (
-                    <p className="text-[10px] text-[var(--danger)] leading-snug">
+                    <p className="text-xs text-[var(--danger)] leading-snug">
                       已开启但未填 key：web_search 会报错提示，请填写 key
                       后点「保存配置」，或关闭开关。
                     </p>
                   ) : (
-                    <p className="text-[10px] text-[var(--t6)] leading-snug">
+                    <p className="text-xs text-[var(--t6)] leading-snug">
                       key 存系统凭据存储（与主 API key
                       同），不再明文写进配置文件；填 key 后点「保存配置」生效；
                       要停用请关闭开关（已存的 key
@@ -3530,16 +3456,10 @@ export function SettingsPage({
                 </div>
                 {/* Brave 搜索（照搬 Tavily 模式；与 Tavily 互斥） */}
                 <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        Brave 搜索
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        开启后 web_search 走 Brave Search API（需填
-                        key）；关闭走 Bing+百度双引擎
-                      </p>
-                    </div>
+                  <SettingRow
+                    label="Brave 搜索"
+                    description="开启后 web_search 走 Brave Search API（需填 key）；关闭走 Bing+百度双引擎"
+                  >
                     <button
                       className={`btn-sm-action ${
                         config.braveEnabled ? "nm-inset" : "nm-outset"
@@ -3553,8 +3473,8 @@ export function SettingsPage({
                           ? "已开启"
                           : "已关闭"}
                     </button>
-                  </div>
-                  <p className="text-[10px] text-[var(--t5)]">
+                  </SettingRow>
+                  <p className="text-xs text-[var(--t5)]">
                     Brave 搜索 API Key（可选）
                   </p>
                   <input
@@ -3571,12 +3491,12 @@ export function SettingsPage({
                   {config.braveEnabled &&
                   !config.hasBraveKey &&
                   !braveKeyInput.trim() ? (
-                    <p className="text-[10px] text-[var(--danger)] leading-snug">
+                    <p className="text-xs text-[var(--danger)] leading-snug">
                       已开启但未填 key：web_search 会报错提示，请填写 key
                       后点「保存配置」，或关闭开关。
                     </p>
                   ) : (
-                    <p className="text-[10px] text-[var(--t6)] leading-snug">
+                    <p className="text-xs text-[var(--t6)] leading-snug">
                       key 存系统凭据存储（与主 API key
                       同），不再明文写进配置文件；填 key 后点「保存配置」生效；
                       要停用请关闭开关（已存的 key 不提供清除入口）。与 Tavily
@@ -3587,7 +3507,7 @@ export function SettingsPage({
                 </div>
                 {/* Tavily/Brave 双开冲突提示：后端同样明确报错，这里提前可见 */}
                 {config.tavilyEnabled && config.braveEnabled && (
-                  <p className="text-[10px] text-[var(--danger)] leading-snug">
+                  <p className="text-xs text-[var(--danger)] leading-snug">
                     <TriangleAlert
                       size={10}
                       aria-hidden
@@ -3608,7 +3528,7 @@ export function SettingsPage({
               <div className="nm-card p-5">
                 {/*  bypass_llm_on_pre_step_hit 开关：技能路由新链路 / 旧链路回退闸 */}
                 <div className="space-y-1">
-                  <p className="text-[10px] text-[var(--t5)]">智能技能路由</p>
+                  <p className="text-xs text-[var(--t5)]">智能技能路由</p>
                   <button
                     className={`shrink-0 min-w-[160px] px-4 py-1.5 text-sm text-[var(--t3)] ${
                       config.bypassLlmOnPreStepHit ? "nm-inset" : "nm-outset"
@@ -3625,7 +3545,7 @@ export function SettingsPage({
                       ? "已开启（推荐）"
                       : "已关闭（回退旧链路）"}
                   </button>
-                  <p className="text-[10px] text-[var(--t6)] leading-snug">
+                  <p className="text-xs text-[var(--t6)] leading-snug">
                     开启（推荐）：命中技能时 auto 模式走 DSL 调度器、interactive
                     模式由 LLM 驱动技能步骤。
                     <br />
@@ -3754,14 +3674,6 @@ export function SettingsPage({
               <McpPanel />
             </section>
           )}
-          {mountedSections.has("evolution") && (
-            <section
-              hidden={activeSection !== "evolution"}
-              className="space-y-4 pt-4"
-            >
-              <EvolutionPanel />
-            </section>
-          )}
           {mountedSections.has("graph") && (
             <section
               hidden={activeSection !== "graph"}
@@ -3798,38 +3710,17 @@ export function SettingsPage({
               <OperationHistoryTab />
             </section>
           )}
+          {mountedSections.has("logs") && (
+            <section
+              hidden={activeSection !== "logs"}
+              className="space-y-4 pt-4"
+            >
+              {/* 错误 / 机器人审计 / 文件迁移三份日志 + 一键整包复制 */}
+              <LogsPanel />
+            </section>
+          )}
         </div>
       </div>
-
-      {/* 机器人审计日志弹窗 */}
-      {logOpen && (
-        <Modal className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
-          <div className="nm-card w-full max-w-2xl h-[70vh] flex flex-col p-4">
-            <div className="flex items-center justify-between mb-2 shrink-0">
-              <p className="text-sm font-medium text-[var(--t2)]">
-                机器人审计日志（最新在前）
-              </p>
-              <div className="flex gap-2">
-                <button
-                  className="nm-btn px-3 py-1 text-xs text-[var(--t3)]"
-                  onClick={openLog}
-                >
-                  刷新
-                </button>
-                <button
-                  className="nm-btn px-3 py-1 text-xs text-[var(--t3)]"
-                  onClick={() => setLogOpen(false)}
-                >
-                  关闭
-                </button>
-              </div>
-            </div>
-            <pre className="flex-1 min-h-0 overflow-auto text-[11px] leading-relaxed text-[var(--t4)] whitespace-pre-wrap break-all">
-              {logText}
-            </pre>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }

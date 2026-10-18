@@ -95,7 +95,7 @@ export function GuardKeywordsPanel({
           {defaults.map((w) => (
             <code
               key={w}
-              className="nm-inset rounded px-1.5 py-0.5 font-mono text-[11px] text-[var(--t3)]"
+              className="nm-inset rounded px-1.5 py-0.5 font-mono text-xs text-[var(--t3)]"
             >
               {w}
             </code>

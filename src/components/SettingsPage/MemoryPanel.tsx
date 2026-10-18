@@ -334,9 +334,9 @@ export function MemoryPanel() {
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-xs font-medium text-[var(--t4)]">记忆库</p>
+              <p className="text-sm font-medium text-[var(--t2)]">记忆库</p>
               {/* 统计行：总数/容量 + 向量覆盖（覆盖低 = 部分条目靠关键词模式检索） */}
-              <p className="mt-1 text-[11px] text-[var(--t5)]">
+              <p className="mt-1 text-xs text-[var(--t5)]">
                 {stats
                   ? `${stats.total}/${stats.capacity} 条 · 向量覆盖 ${stats.withEmbedding}/${stats.total}`
                   : "加载中…"}
@@ -374,17 +374,17 @@ export function MemoryPanel() {
               </IconButton>
             </div>
           </div>
-          {ioMsg && <p className="text-[11px] text-[var(--t4)]">{ioMsg}</p>}
+          {ioMsg && <p className="text-xs text-[var(--t4)]">{ioMsg}</p>}
           {/*  待确认队列（confirm 档抽取的条目在此过目） */}
           {pending.length > 0 && (
             <div className="rounded-xl nm-inset px-3 py-2">
               <div className="flex items-center gap-2">
-                <p className="min-w-0 flex-1 text-[11px] font-medium text-[var(--t3)]">
+                <p className="min-w-0 flex-1 text-xs font-medium text-[var(--t3)]">
                   待确认记忆（{pending.length}）——来自自动抽取，收下后进入记忆库
                 </p>
                 <button
                   type="button"
-                  className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t2)]"
+                  className="nm-btn shrink-0 px-2 py-1 text-xs text-[var(--t2)]"
                   onClick={() =>
                     actOnPending(
                       pending.map((p) => p.id),
@@ -397,7 +397,7 @@ export function MemoryPanel() {
                 </button>
                 <button
                   type="button"
-                  className="nm-btn shrink-0 px-2 py-1 text-[10px] text-[var(--t5)]"
+                  className="nm-btn shrink-0 px-2 py-1 text-xs text-[var(--t5)]"
                   onClick={async () => {
                     if (
                       await confirm(
@@ -418,17 +418,17 @@ export function MemoryPanel() {
               <div className="mt-1.5 max-h-60 space-y-1 overflow-y-auto">
                 {pending.map((p) => (
                   <div key={p.id} className="flex items-center gap-2">
-                    <span className="nm-tag shrink-0 text-[10px]">
+                    <span className="nm-tag shrink-0 text-xs">
                       {KIND_LABELS[p.kind] ?? p.kind}
                     </span>
                     <span
-                      className="min-w-0 flex-1 truncate text-[11px] text-[var(--t2)]"
+                      className="min-w-0 flex-1 truncate text-xs text-[var(--t2)]"
                       title={p.content}
                     >
                       {p.content}
                     </span>
                     <span
-                      className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+                      className="shrink-0 font-mono text-xs text-[var(--t5)]"
                       title={`重要度 ${p.importance}/5`}
                     >
                       <Star
@@ -442,7 +442,7 @@ export function MemoryPanel() {
                       type="button"
                       aria-label={`收下：${p.content}`}
                       title="收下入库"
-                      className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t2)]"
+                      className="nm-btn shrink-0 px-2 py-0.5 text-xs text-[var(--t2)]"
                       onClick={() => actOnPending([p.id], "approve")}
                       disabled={pendingBusy}
                     >
@@ -452,7 +452,7 @@ export function MemoryPanel() {
                       type="button"
                       aria-label={`忽略：${p.content}`}
                       title="忽略并丢弃"
-                      className="nm-btn shrink-0 px-2 py-0.5 text-[10px] text-[var(--t5)]"
+                      className="nm-btn shrink-0 px-2 py-0.5 text-xs text-[var(--t5)]"
                       onClick={() => actOnPending([p.id], "reject")}
                       disabled={pendingBusy}
                     >
@@ -466,7 +466,7 @@ export function MemoryPanel() {
           {/* 嵌入引擎降级横幅：界面照常可用（关键词检索），但语义相似度缺位 */}
           {stats && !stats.embedOk && (
             <p
-              className="flex items-start gap-1.5 text-[11px] text-[var(--t3)]"
+              className="flex items-start gap-1.5 text-xs text-[var(--t3)]"
               role="note"
               aria-label="嵌入引擎状态"
             >
@@ -495,7 +495,7 @@ export function MemoryPanel() {
               <button
                 key={k}
                 type="button"
-                className={`rounded-full px-2.5 py-1 text-[10px] text-[var(--t3)] ${
+                className={`rounded-full px-2.5 py-1 text-xs text-[var(--t3)] ${
                   kindFilter === k ? "nm-inset" : "nm-outset"
                 }`}
                 onClick={() => setKindFilter(k)}
@@ -505,10 +505,10 @@ export function MemoryPanel() {
             ))}
           </div>
           {loadError && (
-            <p className="text-[11px] text-[var(--danger)]">{loadError}</p>
+            <p className="text-xs text-[var(--danger)]">{loadError}</p>
           )}
           {rowError && (
-            <p className="text-[11px] text-[var(--danger)]">{rowError}</p>
+            <p className="text-xs text-[var(--danger)]">{rowError}</p>
           )}
           {items !== null && items.length === 0 && (
             <EmptyState
@@ -529,7 +529,7 @@ export function MemoryPanel() {
                     className="nm-inset w-full rounded-lg px-2.5 py-1.5 text-xs text-[var(--t3)] outline-none"
                   />
                   <div className="mt-1.5 flex items-center gap-2">
-                    <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--t3)]">
+                    <label className="flex shrink-0 items-center gap-1 text-xs text-[var(--t3)]">
                       重要度
                       <select
                         value={editImportance}
@@ -537,7 +537,7 @@ export function MemoryPanel() {
                           setEditImportance(Number(e.target.value))
                         }
                         aria-label="记忆重要度"
-                        className="nm-inset rounded-lg px-1.5 py-1 text-[11px] text-[var(--t3)] outline-none"
+                        className="nm-inset rounded-lg px-1.5 py-1 text-xs text-[var(--t3)] outline-none"
                       >
                         {[1, 2, 3, 4, 5].map((n) => (
                           <option key={n} value={n}>
@@ -546,13 +546,13 @@ export function MemoryPanel() {
                         ))}
                       </select>
                     </label>
-                    <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--t3)]">
+                    <label className="flex shrink-0 items-center gap-1 text-xs text-[var(--t3)]">
                       类型
                       <select
                         value={editKind}
                         onChange={(e) => setEditKind(e.target.value)}
                         aria-label="记忆类型"
-                        className="nm-inset rounded-lg px-1.5 py-1 text-[11px] text-[var(--t3)] outline-none"
+                        className="nm-inset rounded-lg px-1.5 py-1 text-xs text-[var(--t3)] outline-none"
                       >
                         {Object.entries(KIND_LABELS).map(([k, label]) => (
                           <option key={k} value={k}>
@@ -586,7 +586,7 @@ export function MemoryPanel() {
                   className="flex items-center gap-2 rounded-xl px-3 py-2 nm-outset"
                 >
                   <span
-                    className={`nm-tag shrink-0 text-[10px]${m.hasEmbedding ? "" : " opacity-50"}`}
+                    className={`nm-tag shrink-0 text-xs${m.hasEmbedding ? "" : " opacity-50"}`}
                     title={
                       m.hasEmbedding
                         ? "语义向量可用"
@@ -602,7 +602,7 @@ export function MemoryPanel() {
                     {m.content}
                   </span>
                   <span
-                    className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+                    className="shrink-0 font-mono text-xs text-[var(--t5)]"
                     title={`重要度 ${m.importance}/5`}
                   >
                     <Star
@@ -612,20 +612,20 @@ export function MemoryPanel() {
                     />
                     {m.importance}
                   </span>
-                  <span className="nm-tag shrink-0 text-[10px]">
+                  <span className="nm-tag shrink-0 text-xs">
                     {SOURCE_LABELS[m.source] ?? m.source}
                   </span>
                   {/* 被想起次数：行内直显（= 聊天注入命中的累计次数；面板搜索不计入） */}
                   {m.accessCount > 0 && (
                     <span
-                      className="shrink-0 text-[10px] text-[var(--t6)]"
+                      className="shrink-0 text-xs text-[var(--t6)]"
                       title="被聊天注入命中的次数"
                     >
                       想起 {m.accessCount}
                     </span>
                   )}
                   <span
-                    className="shrink-0 text-[10px] text-[var(--t6)]"
+                    className="shrink-0 text-xs text-[var(--t6)]"
                     title={`更新于 ${formatShortDateTime(m.updatedAt)}`}
                   >
                     {formatShortDateTime(m.updatedAt)}
@@ -769,14 +769,14 @@ function MemoryTuningCard() {
 
   return (
     <div className="nm-card p-5" data-testid="memory-tuning-card">
-      <p className="text-xs font-medium text-[var(--t4)]">检索参数（高级）</p>
-      <p className="mt-1 text-[11px] text-[var(--t6)]">
+      <p className="text-sm font-medium text-[var(--t2)]">检索参数（高级）</p>
+      <p className="mt-1 text-xs text-[var(--t6)]">
         记忆注入的混合打分与容量口径。留空 = 用默认值；保存后下一条消息即生效。
       </p>
       <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
         {MEMORY_TUNING_FIELDS.map((f) => (
           <label key={f.key} className="block">
-            <span className="text-[11px] text-[var(--t5)]">{f.label}</span>
+            <span className="text-xs text-[var(--t5)]">{f.label}</span>
             <input
               value={tuning[f.key] ?? ""}
               placeholder={`默认 ${f.def}`}
@@ -801,7 +801,7 @@ function MemoryTuningCard() {
         >
           保存检索参数
         </button>
-        {msg && <span className="text-[11px] text-[var(--t5)]">{msg}</span>}
+        {msg && <span className="text-xs text-[var(--t5)]">{msg}</span>}
       </div>
     </div>
   );

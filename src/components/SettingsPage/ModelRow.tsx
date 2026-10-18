@@ -1,7 +1,6 @@
 // SettingsPage 子模块：模型列表紧凑行对齐截图）。
-// 非编辑态：模型名（mono）+ 上下文徽标 + 能力徽标（视觉等）+
-// 插头（连接测试）+ 铅笔（编辑）+ 开关（启用）。
-// 编辑态（铅笔切换）：名称 / Base URL / model id 三输入 + 视觉能力 checkbox + 删除
+// 非编辑态：模型名（mono）+ 上下文徽标 + 插头（连接测试）+ 铅笔（编辑）+ 开关（启用）。
+// 编辑态（铅笔切换）：名称 / Base URL / model id 三输入 + 删除
 // + 每模型推理参数（temperature/top_p/max_tokens/system prompt，留空 = 跟随全局/默认）。
 // 开关 = ModelEntry.enabled（聊天 🧠 下拉只显示 enabled 模型）。
 // 厂商被禁用（vendorDisabled）时整行变淡、启用开关与连接测试禁用。
@@ -18,7 +17,7 @@ import type { ApiProvider } from "./constants";
 function ContextBadge({ contextK }: { contextK?: number }) {
   if (!contextK) return null;
   return (
-    <span className="shrink-0 rounded border border-[var(--edge)] px-1.5 py-0.5 font-mono text-[10px] leading-4 text-[var(--t5)]">
+    <span className="shrink-0 rounded border border-[var(--edge)] px-1.5 py-0.5 font-mono text-xs leading-4 text-[var(--t5)]">
       {contextK}K
     </span>
   );
@@ -135,12 +134,6 @@ export function ModelRow({
           {model.label || model.model || "（未命名）"}
         </span>
         <ContextBadge contextK={model.contextK} />
-        {/* 能力徽标（视觉等） */}
-        {(model.capabilities ?? []).map((cap) => (
-          <span key={cap} className="nm-tag shrink-0 text-[10px]">
-            {cap}
-          </span>
-        ))}
         {/* 插头：连接测试（openai → GET /models，anthropic → GET /v1/models）；
             绿色持久化——厂商在 verified_vendors 里即常显 */}
         <button
@@ -212,22 +205,6 @@ export function ModelRow({
             }
             className="nm-inset min-w-0 flex-1 rounded-lg px-2.5 py-1 text-xs text-[var(--t3)] outline-none"
           />
-          {/* 能力标记：目前只支持「视觉」（写 ModelEntry.capabilities） */}
-          <label className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--t3)]">
-            <input
-              type="checkbox"
-              checked={(model.capabilities ?? []).includes("视觉")}
-              onChange={(e) => {
-                const cur = model.capabilities ?? [];
-                onChange({
-                  capabilities: e.target.checked
-                    ? [...cur.filter((c) => c !== "视觉"), "视觉"]
-                    : cur.filter((c) => c !== "视觉"),
-                });
-              }}
-            />
-            视觉能力
-          </label>
           <button
             type="button"
             onClick={onDelete}
@@ -253,7 +230,7 @@ export function ModelRow({
             aria-label="temperature"
             inputMode="decimal"
             title="temperature（留空 = 跟随默认）"
-            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none"
+            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
           />
           <input
             defaultValue={model.topP ?? ""}
@@ -267,7 +244,7 @@ export function ModelRow({
             aria-label="top_p"
             inputMode="decimal"
             title="top_p（留空 = 跟随默认）"
-            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none"
+            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
           />
           <input
             defaultValue={model.maxTokens ?? ""}
@@ -281,7 +258,7 @@ export function ModelRow({
             aria-label="max_tokens"
             inputMode="numeric"
             title="max_tokens（留空 = 跟随默认）"
-            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none"
+            className="nm-inset min-w-0 flex-1 rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
           />
         </div>
         <input
@@ -292,11 +269,11 @@ export function ModelRow({
           }}
           placeholder="system prompt（留空 = 跟随默认）"
           aria-label="system prompt"
-          className="nm-inset w-full rounded-lg px-2 py-1 text-[11px] text-[var(--t3)] outline-none"
+          className="nm-inset w-full rounded-lg px-2 py-1 text-xs text-[var(--t3)] outline-none"
         />
         {/* U13：max_tokens 只在 Anthropic 格式请求体发送（OpenAI 兼容网关多不认识该字段），
             说明行避免用户填了没反应；temperature/top_p 两种格式都生效 */}
-        <p className="text-[10px] leading-4 text-[var(--t5)]">
+        <p className="text-xs leading-4 text-[var(--t5)]">
           temperature / top_p 留空跟随默认；max_tokens 仅 Anthropic
           格式生效（留空 = 全局/8192 默认）
         </p>

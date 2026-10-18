@@ -58,12 +58,12 @@ export function OperationHistoryTab() {
       <div className="flex items-center gap-2 mb-3">
         <History size={14} aria-hidden className="text-[var(--t3)]" />
         <span className="text-sm font-medium text-[var(--t2)]">操作历史</span>
-        <span className="text-[11px] text-[var(--t5)] ml-2">
+        <span className="text-xs text-[var(--t5)] ml-2">
           标签合并等破坏性操作的最近 50 条
         </span>
         <button
           type="button"
-          className="ml-auto nm-btn px-2.5 py-1 text-[11px] text-[var(--t3)]"
+          className="ml-auto nm-btn px-2.5 py-1 text-xs text-[var(--t3)]"
           onClick={reload}
         >
           刷新
@@ -97,22 +97,22 @@ export function OperationHistoryTab() {
                     · {r.affected_task_count} 任务
                   </span>
                   {r.rolled_back_at !== null && (
-                    <span className="text-[10px] text-[var(--t5)] nm-inset px-1.5 py-0.5 rounded">
+                    <span className="text-xs text-[var(--t5)] nm-inset px-1.5 py-0.5 rounded">
                       已撤销
                     </span>
                   )}
                 </div>
-                <div className="text-[10px] text-[var(--t5)] mt-0.5">
+                <div className="text-xs text-[var(--t5)] mt-0.5">
                   {formatDateTime(r.created_at)} · run_id: {r.run_id}
                 </div>
-                <div className="text-[10px] text-[var(--t5)] mt-0.5 truncate">
+                <div className="text-xs text-[var(--t5)] mt-0.5 truncate">
                   来源别名: {r.merged_from}
                 </div>
               </div>
               {r.rolled_back_at === null && (
                 <button
                   type="button"
-                  className="nm-btn shrink-0 px-2.5 py-1 text-[11px] text-[var(--t3)] flex items-center gap-1 disabled:opacity-50"
+                  className="nm-btn shrink-0 px-2.5 py-1 text-xs text-[var(--t3)] flex items-center gap-1 disabled:opacity-50"
                   onClick={() => onRollback(r.run_id)}
                   disabled={rolling !== null}
                 >

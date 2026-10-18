@@ -33,7 +33,7 @@ function OnionRow({
           {cfg.name}
         </span>
         {cfg.builtin && (
-          <span className="ml-1 text-[10px] text-[var(--t5)]">（内置）</span>
+          <span className="ml-1 text-xs text-[var(--t5)]">（内置）</span>
         )}
         {broken ? (
           <span className="text-[var(--t5)]"> — 此文件无效：{broken}</span>

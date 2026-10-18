@@ -37,6 +37,7 @@ import {
   STATUS_LABEL,
 } from "./types";
 import { formatTimestamp } from "../../format";
+import { SET_TITLE_CLASS } from "../SettingsPage/SettingRow";
 
 type StatusFilter = ProposalStatus | null;
 
@@ -297,11 +298,9 @@ export function EvolutionPanel() {
   const hasActive = activeChanges.length > 0;
 
   return (
-    <div className="nm-card p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-[var(--t2)]">
-          自进化决策面板
-        </h2>
+    <div className="nm-card p-5 space-y-4">
+      <div className="flex items-center justify-between gap-4">
+        <h2 className={SET_TITLE_CLASS}>自进化决策面板</h2>
         {/* 头部轻操作对齐全仓 IconButton 家族（同 MemoryPanel 头部刷新键） */}
         <IconButton
           aria-label="刷新提案与变更"
@@ -334,8 +333,8 @@ export function EvolutionPanel() {
       {/*  W2：应用策略二档（头部 radiogroup，同记忆三档样式；点档即时落盘） */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="space-y-1.5">
-          <p className="text-[11px] text-[var(--t3)]">应用策略</p>
-          <p className="text-[11px] text-[var(--t5)]">
+          <p className="text-xs text-[var(--t3)]">应用策略</p>
+          <p className="text-xs text-[var(--t5)]">
             「自动生效」=
             反思产出的记忆建议直接写入，不用逐条过目；「需我确认」=
             一律留在下方列表，等你拨开关才生效
@@ -408,7 +407,7 @@ export function EvolutionPanel() {
               >
                 立即反思
               </button>
-              <p className="text-[11px] text-[var(--t5)]">
+              <p className="text-xs text-[var(--t5)]">
                 对记忆库跑一轮反思（合并 / 提炼 /
                 裁决），反思产出会出现在这里等你决策
               </p>

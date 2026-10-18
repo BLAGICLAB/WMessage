@@ -255,13 +255,13 @@ export function WordTemplatePanel() {
                   />
                   <span className="truncate">{t.name}</span>
                   {t.isDefault && (
-                    <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-[var(--t5)]">
+                    <span className="shrink-0 rounded px-1.5 py-0.5 text-xs text-[var(--t5)]">
                       默认
                     </span>
                   )}
                   <span className="ml-auto shrink-0 flex items-center gap-1">
                     <button
-                      className="nm-btn px-2 py-0.5 text-[10px]"
+                      className="nm-btn px-2 py-0.5 text-xs"
                       onClick={() => void startEdit(t.name)}
                       disabled={busy}
                     >
@@ -270,7 +270,7 @@ export function WordTemplatePanel() {
                     </button>
                     {!t.isDefault && (
                       <button
-                        className="nm-btn px-2 py-0.5 text-[10px]"
+                        className="nm-btn px-2 py-0.5 text-xs"
                         onClick={() => void setDefault(t.name)}
                         disabled={busy}
                       >
@@ -279,7 +279,7 @@ export function WordTemplatePanel() {
                       </button>
                     )}
                     <button
-                      className="nm-btn px-2 py-0.5 text-[10px]"
+                      className="nm-btn px-2 py-0.5 text-xs"
                       onClick={() => void remove(t.name)}
                       disabled={busy}
                     >

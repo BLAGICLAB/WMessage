@@ -17,8 +17,6 @@ export type ModelEntry = {
   enabled?: boolean;
   /** 上下文窗口（千 token），徽标显示「204.8K」样式；缺省不显示 */
   contextK?: number;
-  /** 能力徽标（如「视觉」）；缺省/空数组不渲染徽标 */
-  capabilities?: string[];
   /** 每模型推理参数（模型库预填或手填）；缺省 = 跟随全局/默认。
    *  camelCase 与 Rust 端 serde 对齐（temperature/top_p/max_tokens/system_prompt） */
   temperature?: number;

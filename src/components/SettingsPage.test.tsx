@@ -181,7 +181,11 @@ describe("SettingsPage", () => {
     expect(
       screen.getByRole("radiogroup", { name: "布局松散度" }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "自进化" }));
+    // 自进化不再是独立分类：决策面板并入「记忆」
+    expect(
+      screen.queryByRole("button", { name: "自进化" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "记忆" }));
     expect(screen.getByText("自进化决策面板")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "文件整理" }));
     expect(screen.getByText("整理来源")).toBeInTheDocument();
@@ -1692,7 +1696,7 @@ describe("SettingsPage", () => {
     expect(plug.title).toContain("已通过");
   });
 
-  it("能力徽标：capabilities 含「视觉」的模型渲染徽标，无 capabilities 不渲染", async () => {
+  it("失效的「视觉能力」设置已下线：不再渲染能力徽标与编辑态 checkbox", async () => {
     const user = userEvent.setup();
     mockVendorConfig({
       modelsByProvider: {
@@ -1705,6 +1709,8 @@ describe("SettingsPage", () => {
             baseUrl: "https://api.minimaxi.com/anthropic",
             vendor: "MiniMax",
             contextK: 1000,
+            // 老配置里的残留字段：视觉能力对任何运行时行为都不设闸，
+            // 设置页既不再展示徽标也不让它进 UI
             capabilities: ["视觉"],
           },
           {
@@ -1724,15 +1730,18 @@ describe("SettingsPage", () => {
     });
     render(<SettingsPage {...defaultProps} />);
     await openVendorPage(user, "MiniMax");
-    expect((await screen.findAllByText("视觉")).length).toBe(1);
-    // 徽标在 M3 行内，M2 行没有
+    // 老配置残留的 capabilities 不再渲染成徽标
+    expect(screen.queryAllByText("视觉")).toHaveLength(0);
+    // 上下文徽标保持既有行为（编辑态把模型名换成输入框，故先断言徽标）
     const row1 = screen.getByText("MiniMax-M3").closest("div")!;
     const row2 = screen.getByText("MiniMax-M2").closest("div")!;
-    expect(within(row1).getByText("视觉")).toBeInTheDocument();
-    expect(within(row2).queryByText("视觉")).toBeNull();
-    // 上下文徽标保持既有行为
     expect(within(row1).getByText("1000K")).toBeInTheDocument();
     expect(within(row2).getByText("204.8K")).toBeInTheDocument();
+    // 编辑态的「视觉能力」checkbox 一并下线
+    const editBtns = screen.getAllByRole("button", { name: "编辑此模型" });
+    await user.click(editBtns[0]);
+    expect(screen.queryByLabelText("视觉能力")).toBeNull();
+    expect(screen.queryByText("视觉能力")).toBeNull();
   });
 
   it("厂商 Logo：预设厂商渲染本地 lobehub <img>，自定义厂商回退色块+首字母", async () => {
