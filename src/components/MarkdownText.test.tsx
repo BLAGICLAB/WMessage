@@ -74,6 +74,52 @@ describe("MarkdownText 链接识别", () => {
   });
 });
 
+// 传入 onPathClick 时路径点击改由调用方接管（聊天面板 = 右侧栏就地预览）。
+// 回归背景：右侧栏的文件行已改成栏内预览，正文里的同一份路径却还在调起系统
+// 默认程序，同一个文件两个地方两种行为。
+describe("MarkdownText 路径点击接管", () => {
+  it("链接路径 → 走 onPathClick，不再调 open_file_path", async () => {
+    const user = userEvent.setup();
+    const onPathClick = vi.fn();
+    render(
+      <MarkdownText
+        text={"[报告](/Users/x/report.pdf)"}
+        onPathClick={onPathClick}
+      />,
+    );
+    const link = screen.getByRole("link", { name: "报告" });
+    expect(link).toHaveAttribute("title", "在右侧栏预览");
+    await user.click(link);
+    expect(onPathClick).toHaveBeenCalledWith("/Users/x/report.pdf");
+    expect(mocks.invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("行内代码里的路径同样接管", async () => {
+    const user = userEvent.setup();
+    const onPathClick = vi.fn();
+    render(
+      <MarkdownText
+        text={"产物在 `/Users/x/out.md`"}
+        onPathClick={onPathClick}
+      />,
+    );
+    await user.click(screen.getByRole("link", { name: "/Users/x/out.md" }));
+    expect(onPathClick).toHaveBeenCalledWith("/Users/x/out.md");
+    expect(mocks.invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("URL 不受接管影响：仍进浏览器", async () => {
+    const user = userEvent.setup();
+    const onPathClick = vi.fn();
+    render(
+      <MarkdownText text={"[站点](https://example.com/a)"} onPathClick={onPathClick} />,
+    );
+    await user.click(screen.getByRole("link", { name: "站点" }));
+    expect(mocks.openUrlMock).toHaveBeenCalledWith("https://example.com/a");
+    expect(onPathClick).not.toHaveBeenCalled();
+  });
+});
+
 describe("MarkdownText 行内代码/代码块识别", () => {
   it("行内代码是 URL：渲染为 <a> 链接（键盘可聚焦），点击调 openUrl", async () => {
     const user = userEvent.setup();

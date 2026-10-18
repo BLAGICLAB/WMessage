@@ -1625,6 +1625,115 @@ describe("ChatPanel", () => {
     }
   });
 
+  it("点回复里的文件路径：右侧栏就地预览，不再调起系统默认程序", async () => {
+    const user = userEvent.setup();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load")
+        return [
+          {
+            role: "assistant",
+            content: "调研稿已写入 `/Users/x/调研.md`",
+            refsJson: null,
+            thinking: null,
+            toolsJson: null,
+          },
+        ];
+      if (cmd === "bot_preview_text")
+        return {
+          path: "/Users/x/调研.md",
+          content: "# 上海博士后政策\n正文一段",
+          truncated: false,
+          totalBytes: 20,
+          lines: 2,
+        };
+      return defaultInvoke(cmd);
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      await user.click(
+        await screen.findByRole("link", { name: "/Users/x/调研.md" }),
+      );
+      // 预览出现在右侧栏「文件」工作面里
+      const rail = within(
+        await screen.findByRole("complementary", { name: "上下文侧栏" }),
+      );
+      expect(await rail.findByLabelText("文件内容")).toHaveTextContent(
+        "上海博士后政策",
+      );
+      // 关键回归：不能顺带调起系统默认程序
+      expect(mocks.invokeMock).not.toHaveBeenCalledWith(
+        "open_file_path",
+        expect.anything(),
+      );
+    } finally {
+      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.listenMock.mockImplementation(async () => () => {});
+    }
+  });
+
+  it("点文件 pill 同样进右侧栏预览（pill 与正文链接是同一份文件的两种入口）", async () => {
+    const user = userEvent.setup();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_preview_text")
+        return {
+          path: "/Users/x/out.md",
+          content: "# 产物",
+          truncated: false,
+          totalBytes: 5,
+          lines: 1,
+        };
+      if (cmd === "bot_chat") return { text: "写到 /Users/x/out.md 了", taskRefs: [] };
+      return defaultInvoke(cmd);
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      await user.type(
+        screen.getByPlaceholderText(/和机器人说点什么/),
+        "写个文档",
+      );
+      await user.keyboard("{Enter}");
+      // 文件 pill（正文无改动的正则兜底路径）
+      const pill = await screen.findByTitle(
+        "在右侧栏预览：/Users/x/out.md",
+      );
+      await user.click(pill);
+      const rail = within(
+        await screen.findByRole("complementary", { name: "上下文侧栏" }),
+      );
+      expect(await rail.findByLabelText("文件内容")).toHaveTextContent("产物");
+      expect(mocks.invokeMock).not.toHaveBeenCalledWith(
+        "open_file_path",
+        expect.anything(),
+      );
+    } finally {
+      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.listenMock.mockImplementation(async () => () => {});
+    }
+  });
+
   it("无派发方时子 agent 收尾提示用侧栏徽标同一份措辞（succeeded = 完成，不是「已完成」）", async () => {
     const prevListenImpl = mocks.listenMock.getMockImplementation();
     mocks.listenMock.mockImplementation(

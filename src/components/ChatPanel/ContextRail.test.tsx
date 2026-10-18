@@ -6,11 +6,17 @@ import type { Task } from "../../types";
 
 const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
+  openTargetMock: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mocks.invokeMock,
 }));
+
+vi.mock("../../lib/openTarget", async (importActual) => {
+  const actual = await importActual<typeof import("../../lib/openTarget")>();
+  return { ...actual, openTarget: mocks.openTargetMock };
+});
 
 const task: Task = { id: "t1", title: "写周报", column: "todo" };
 
@@ -34,6 +40,7 @@ function renderRail(overrides: Partial<Parameters<typeof ContextRail>[0]> = {}) 
 
 beforeEach(() => {
   mocks.invokeMock.mockReset();
+  mocks.openTargetMock.mockReset();
 });
 
 // 聊天右侧栏绑卡入口：任务池行内回形针 → pick_files_dialog → bind_files →
@@ -102,6 +109,105 @@ describe("ContextRail 绑定文件到任务卡", () => {
       });
     });
     expect(onUpdateTask).not.toHaveBeenCalled();
+  });
+});
+
+// 文件预览的工作面：点行就地看内容，不跳系统默认程序。预览路径是受控的——
+// 对话正文里的路径链接也要能打开它，那些点击不在侧栏内部。
+describe("ContextRail 文件预览", () => {
+  const file = { path: "/Users/x/调研.md", added: 3, deleted: 1 };
+  function previewOf(path: string) {
+    return {
+      path,
+      content: "# 上海博士后政策\n正文一段",
+      truncated: false,
+      totalBytes: 20,
+      lines: 2,
+    };
+  }
+
+  it("点文件行：整栏切成预览并报给 onPreviewPath，不调起系统默认程序", async () => {
+    const user = userEvent.setup();
+    const onPreviewPath = vi.fn();
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "bot_preview_text" ? previewOf(file.path) : null,
+    );
+    renderRail({
+      tab: "files",
+      fileChanges: [file],
+      previewPath: null,
+      onPreviewPath,
+    });
+    await user.click(screen.getByTitle(/点开预览内容/));
+    expect(onPreviewPath).toHaveBeenCalledWith(file.path);
+    expect(mocks.openTargetMock).not.toHaveBeenCalled();
+  });
+
+  it("预览路径受父级控制：正文链接打开的路径即使不在改动列表里也能预览", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "bot_preview_text" ? previewOf("/Users/x/别的.md") : null,
+    );
+    renderRail({
+      tab: "files",
+      fileChanges: [file],
+      previewPath: "/Users/x/别的.md",
+      onPreviewPath: vi.fn(),
+    });
+    expect(await screen.findByLabelText("文件内容")).toHaveTextContent(
+      "上海博士后政策",
+    );
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_preview_text", {
+      path: "/Users/x/别的.md",
+    });
+    // 不在本会话改动记录里 → 没有 ±行数可显示，那一行就不出现
+    expect(screen.queryByText(/^\+/)).toBeNull();
+  });
+
+  it("改动记录里命中的路径：预览头部带 ±行数", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "bot_preview_text" ? previewOf(file.path) : null,
+    );
+    renderRail({
+      tab: "files",
+      fileChanges: [file],
+      previewPath: file.path,
+      onPreviewPath: vi.fn(),
+    });
+    expect(await screen.findByText("+3")).toBeInTheDocument();
+    expect(screen.getByText("−1")).toBeInTheDocument();
+  });
+
+  it("预览里的「用系统默认程序打开」按钮仍是出口（栏内看 ≠ 没有外部编辑器）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "bot_preview_text" ? previewOf(file.path) : null,
+    );
+    renderRail({
+      tab: "files",
+      fileChanges: [file],
+      previewPath: file.path,
+      onPreviewPath: vi.fn(),
+    });
+    await user.click(
+      await screen.findByLabelText("用系统默认程序打开 调研.md"),
+    );
+    expect(mocks.openTargetMock).toHaveBeenCalledWith(file.path);
+  });
+
+  it("返回文件列表：回到列表而不是空白", async () => {
+    const user = userEvent.setup();
+    const onPreviewPath = vi.fn();
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "bot_preview_text" ? previewOf(file.path) : null,
+    );
+    renderRail({
+      tab: "files",
+      fileChanges: [file],
+      previewPath: file.path,
+      onPreviewPath,
+    });
+    await user.click(await screen.findByText("返回文件列表"));
+    expect(onPreviewPath).toHaveBeenCalledWith(null);
   });
 });
 

@@ -71,6 +71,9 @@ type MsgBubbleProps = BubbleCallbacks & {
   verboseLevel: VerboseLevel;
   /** 子 agent 内嵌区；仅挂在最后一条助手回复上，其余气泡为 undefined */
   subagentSlot?: SubagentSlot;
+  /** 点文件（pill / 正文路径链接）→ 右侧栏就地预览。父级用 useCallback 固定，
+   *  memo 浅比较才不会因新句柄把历史气泡全部重渲染一遍 */
+  onPreviewFile?: (path: string) => void;
 };
 
 function MsgBubbleBase({
@@ -80,6 +83,7 @@ function MsgBubbleBase({
   busy,
   verboseLevel,
   subagentSlot,
+  onPreviewFile,
   onCopy,
   onRemove,
   onOpenTask,
@@ -107,8 +111,8 @@ function MsgBubbleBase({
   function bubbleBody(msg: Msg) {
     if (!msg.content) return msg.streaming ? "…" : "";
     if (msg.role === "user") return <UserBubbleContent content={msg.content} />;
-    if (msg.streaming) return <RichText text={msg.content} />;
-    return <MarkdownText text={msg.content} />;
+    if (msg.streaming) return <RichText text={msg.content} onPathClick={onPreviewFile} />;
+    return <MarkdownText text={msg.content} onPathClick={onPreviewFile} />;
   }
   return (
     <div
@@ -258,7 +262,11 @@ function MsgBubbleBase({
               移除
             </button>
           )}
-          <FileSummary fps={fps} changes={m.fileChanges} />
+          <FileSummary
+            fps={fps}
+            changes={m.fileChanges}
+            onPreviewFile={onPreviewFile}
+          />
           {(m.refs ?? []).map((r) => (
             <button
               key={r.id}
@@ -412,22 +420,26 @@ function fmtMs(ms: number): string {
 function FileSummary({
   fps,
   changes,
+  onPreviewFile,
 }: {
   fps: string[];
   changes?: FileChangeLite[];
+  /** 点文件 → 右侧栏就地预览；不传 = 沿用旧口径调起系统默认程序 */
+  onPreviewFile?: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const structured = changes ?? [];
+  const click = (p: string) => {
+    if (onPreviewFile) onPreviewFile(p);
+    else openTarget(p);
+  };
   const pillOf = (f: string) => (
     <button
       key={f}
       type="button"
       className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-      title={`打开文件：${f}`}
-      onClick={() => {
-        // Rust 侧打开（前端 openPath 权限可能被拒）；失败弹错不静默
-        openTarget(f);
-      }}
+      title={onPreviewFile ? `在右侧栏预览：${f}` : `打开文件：${f}`}
+      onClick={() => click(f)}
     >
       <span className="truncate max-w-[280px]">
         <FileText
@@ -444,8 +456,8 @@ function FileSummary({
       key={c.path}
       type="button"
       className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-      title={`打开文件：${c.path}`}
-      onClick={() => openTarget(c.path)}
+      title={onPreviewFile ? `在右侧栏预览：${c.path}` : `打开文件：${c.path}`}
+      onClick={() => click(c.path)}
     >
       <span className="truncate max-w-[240px]">
         <FileText
@@ -502,6 +514,8 @@ type MessageListProps = BubbleCallbacks & {
   onPickStarter: (text: string) => void;
   /** 子 agent 内嵌区；不传 = 本会话没有子 agent */
   subagentSlot?: SubagentSlot;
+  /** 点文件 → 右侧栏就地预览（不传 = 调起系统默认程序） */
+  onPreviewFile?: (path: string) => void;
 };
 
 /** 空状态：一行灰字把「能做什么」全压在读者眼前最弱的位置。
@@ -548,6 +562,7 @@ function renderMessageList(
     copiedIdx,
     verboseLevel,
     subagentSlot,
+    onPreviewFile,
     onPickStarter,
     onCopy,
     onRemove,
@@ -585,6 +600,7 @@ function renderMessageList(
                 busy={viewedBusy}
                 verboseLevel={verboseLevel}
                 subagentSlot={i === hostIdx ? subagentSlot : undefined}
+                onPreviewFile={onPreviewFile}
                 onCopy={onCopy}
                 onRemove={onRemove}
                 onOpenTask={onOpenTask}

@@ -280,6 +280,18 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     setSubagentDetailId(id);
   }, []);
   const closeSubagentDetail = useCallback(() => setSubagentDetailId(null), []);
+  /** 侧栏「文件」工作面当前预览的路径（null = 停在列表页）。归属在父级同
+   *  subagentDetailId：助手回复里的路径链接与文件 pill 也要能打开它，而那些
+   *  点击发生在消息区、不在侧栏内部。 */
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  /** 点文件 = 展开右侧栏、切到「文件」工作面、就地预览。侧栏可能正收起着，
+   *  不顺手展开的话点了等于没反应——用户要的是「看内容」，不必先摆弄面板。 */
+  const openFilePreview = useCallback((path: string) => {
+    setCtxOpen(true);
+    localStorage.setItem("chat-ctx-open", "1");
+    setCtxTab("files");
+    setPreviewPath(path);
+  }, []);
   /** 输入卡 textarea 自动增高：随内容长到 max-h-40 后内部滚动；发送清空后缩回 */
   useAutoGrow(taRef, input);
   /** 切会话：斜杠 picker 状态复位（草稿/附件已按会话隔离，picker 是瞬时 UI 态） */
@@ -1816,6 +1828,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         copiedIdx={copiedIdx}
         verboseLevel={verboseLevel}
         subagentSlot={subagentSlot}
+        onPreviewFile={openFilePreview}
         onPickStarter={setInput}
         onCopy={copyMessage}
         onRemove={removeMessage}
@@ -1887,6 +1900,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           onCloseSubagentDetail={closeSubagentDetail}
           tab={ctxTab}
           onTabChange={setCtxTab}
+          previewPath={previewPath}
+          onPreviewPath={setPreviewPath}
         />
       )}
     </div>

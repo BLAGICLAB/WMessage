@@ -5,7 +5,7 @@
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -87,6 +87,11 @@ type ContextRailProps = {
   /** 当前工作面（受控）：内嵌子 agent 区域要点侧栏切类别，状态得在父级 */
   tab: Tab;
   onTabChange: (t: Tab) => void;
+  /** 当前预览的文件（null = 停在列表页），受控——对话正文里的路径链接与
+   *  文件 pill 也要能把它打开，预览的归属方因此不能只在本组件内。
+   *  与子 Agent 详情同款：详情是一层，返回才回列表。 */
+  previewPath?: string | null;
+  onPreviewPath?: (path: string | null) => void;
 };
 
 const TABS: { key: Tab; label: string; icon: ReactNode }[] = [
@@ -112,11 +117,11 @@ export function ContextRail({
   onCloseSubagentDetail,
   tab,
   onTabChange,
+  previewPath = null,
+  onPreviewPath,
 }: ContextRailProps) {
   const runningCount = subagents.filter((s) => s.running).length;
-  /** 当前预览的文件（null = 停在列表页）。与子 Agent 详情同款：详情是一层，
-   *  返回才回列表——两个工作面用同一套手感，不给用户两种心智模型。 */
-  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const setPreviewPath = onPreviewPath ?? (() => {});
 
   /** 聊天窗口直接把本地文件绑到任务卡：选文件 → bind_files 探测 isDir →
    *  统一内核合并（去重/文件夹槽替换/10 上限）→ 走 onUpdateTask 既有落库通道。
@@ -235,19 +240,20 @@ export function ContextRail({
       )}
 
       {tab === "files" && (() => {
-        // 预览态：整栏换成文件内容（与子 Agent 详情同级），返回才回列表
-        const preview = previewPath
-          ? fileChanges.find((f) => f.path === previewPath)
-          : undefined;
-        if (preview) {
+        // 预览态：整栏换成文件内容（与子 Agent 详情同级），返回才回列表。
+        // 不要求这个路径出现在改动列表里——正文里的链接与文件 pill 也能打开
+        // 任意本机路径，那种情况下没有 ±行数可显示，只是不显示那一行。
+        if (previewPath) {
+          const hit = fileChanges.find((f) => f.path === previewPath);
           return (
             <section aria-label="文件预览">
               <FilePreview
                 // key 绑定 path：切文件即重挂载，预览状态天然清零
-                key={preview.path}
-                path={preview.path}
-                added={preview.added}
-                deleted={preview.deleted}
+                key={previewPath}
+                path={previewPath}
+                added={hit?.added}
+                deleted={hit?.deleted}
+                onOpenPath={setPreviewPath}
                 onBack={() => setPreviewPath(null)}
               />
             </section>

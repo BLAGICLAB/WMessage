@@ -4,7 +4,18 @@
 import type { ReactNode } from "react";
 import { LINK_OR_PATH_RE, isHttpUrl, openTarget } from "../../lib/openTarget";
 
-export function RichText({ text }: { text: string }) {
+export function RichText({
+  text,
+  onPathClick,
+}: {
+  text: string;
+  /** 点本地路径时的去处（见 MarkdownText 同名 prop）；不传 = 系统默认程序 */
+  onPathClick?: (path: string) => void;
+}) {
+  const clickPath = (p: string) => {
+    if (onPathClick) onPathClick(p);
+    else openTarget(p);
+  };
   const parts: ReactNode[] = [];
   let last = 0;
   let key = 0;
@@ -27,10 +38,11 @@ export function RichText({ text }: { text: string }) {
         role={isUrl ? undefined : "link"}
         tabIndex={isUrl ? undefined : 0}
         className="text-[var(--brand)] underline decoration-dotted underline-offset-2 cursor-pointer break-all"
-        title={isUrl ? "在浏览器打开" : "打开文件/文件夹"}
+        title={isUrl ? "在浏览器打开" : onPathClick ? "在右侧栏预览" : "打开文件/文件夹"}
         onClick={(e) => {
           e.preventDefault();
-          openTarget(clean);
+          if (isUrl) openTarget(clean);
+          else clickPath(clean);
         }}
         onKeyDown={
           isUrl
@@ -38,7 +50,7 @@ export function RichText({ text }: { text: string }) {
             : (e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  openTarget(clean);
+                  clickPath(clean);
                 }
               }
         }

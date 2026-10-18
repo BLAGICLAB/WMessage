@@ -9,9 +9,10 @@
 // 截断了还让用户以为这就是全文，等于给一份不完整的证据。
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, FileText, FolderOpen, Loader2, TriangleAlert } from "lucide-react";
+import { ArrowLeft, ExternalLink, FileText, FolderOpen, Loader2, TriangleAlert } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { MarkdownText } from "../MarkdownText";
+import { openTarget } from "../../lib/openTarget";
 import { formatCommandError, handleCommandError } from "../../lib/errorHandler";
 
 /** 后端 `bot_preview_text` 载荷（camelCase 镜像） */
@@ -38,11 +39,15 @@ export function FilePreview({
   path,
   added,
   deleted,
+  onOpenPath,
   onBack,
 }: {
   path: string;
-  added: number;
-  deleted: number;
+  /** ±行数只在本会话改动记录里命中该路径时才有（正文链接打开的文件没有） */
+  added?: number;
+  deleted?: number;
+  /** 正文里的路径链接 → 切到那个文件（预览里再点一层路径不必退出重来） */
+  onOpenPath?: (path: string) => void;
   onBack: () => void;
 }) {
   const [data, setData] = useState<TextPreview | null>(null);
@@ -93,11 +98,24 @@ export function FilePreview({
           <p className="truncate text-[10px] text-[var(--t5)]" title={path}>
             {path}
           </p>
-          <p className="font-mono text-[10px] text-[var(--t5)]">
-            <span className="text-[var(--success)]">+{added}</span>{" "}
-            <span className="text-[var(--danger)]">−{deleted}</span>
-          </p>
+          {added !== undefined && deleted !== undefined && (
+            <p className="font-mono text-[10px] text-[var(--t5)]">
+              <span className="text-[var(--success)]">+{added}</span>{" "}
+              <span className="text-[var(--danger)]">−{deleted}</span>
+            </p>
+          )}
         </div>
+        {/* 系统默认程序是留在的，只是不再是默认动作：栏内预览已经接住了「看一眼」，
+            想拿外部编辑器实时改时仍得有路可走 */}
+        <button
+          type="button"
+          onClick={() => openTarget(path)}
+          title={`用系统默认程序打开：${path}`}
+          aria-label={`用系统默认程序打开 ${name}`}
+          className="shrink-0 rounded p-1 text-[var(--t5)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+        >
+          <ExternalLink size={11} aria-hidden />
+        </button>
       </div>
 
       {err && (
@@ -125,7 +143,7 @@ export function FilePreview({
             aria-label="文件内容"
           >
             {isMarkdown(data.path) ? (
-              <MarkdownText text={data.content} />
+              <MarkdownText text={data.content} onPathClick={onOpenPath} />
             ) : (
               <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-[var(--t3)]">
                 {data.content}
@@ -136,7 +154,7 @@ export function FilePreview({
       )}
       <p className="mt-1.5 px-0.5 text-[10px] text-[var(--t5)]">
         <FolderOpen size={10} aria-hidden className="mr-1 inline" />
-        预览为只读快照；要看实时内容请在外部编辑器打开
+        预览为只读快照；要实时改请用右上角按钮在外部编辑器打开
       </p>
     </div>
   );

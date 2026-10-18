@@ -37,3 +37,31 @@ describe("RichText 链接可达性", () => {
     expect(mocks.openTargetMock).toHaveBeenCalledWith("/Users/x/report.pdf");
   });
 });
+
+// 流式中的路径与完成后的 markdown 路径是同一份文件，同一种点击
+// （见 MarkdownText 同组用例）
+describe("RichText 路径点击接管", () => {
+  it("路径 token 交给 onPathClick，不调 openTarget", async () => {
+    const user = userEvent.setup();
+    const onPathClick = vi.fn();
+    render(
+      <RichText text={"产物 /Users/x/out.md 好了"} onPathClick={onPathClick} />,
+    );
+    const link = screen.getByRole("link", { name: "/Users/x/out.md" });
+    expect(link).toHaveAttribute("title", "在右侧栏预览");
+    await user.click(link);
+    expect(onPathClick).toHaveBeenCalledWith("/Users/x/out.md");
+    expect(mocks.openTargetMock).not.toHaveBeenCalled();
+  });
+
+  it("URL 仍走 openTarget，不被接管", async () => {
+    const user = userEvent.setup();
+    const onPathClick = vi.fn();
+    render(
+      <RichText text={"详见 https://example.com/a"} onPathClick={onPathClick} />,
+    );
+    await user.click(screen.getByRole("link", { name: "https://example.com/a" }));
+    expect(mocks.openTargetMock).toHaveBeenCalledWith("https://example.com/a");
+    expect(onPathClick).not.toHaveBeenCalled();
+  });
+});

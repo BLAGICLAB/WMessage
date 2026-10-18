@@ -5,11 +5,24 @@ import { isAbsPath, isHttpUrl, openTarget } from "../lib/openTarget";
 
 /**
  * 助手回复的 Markdown 渲染：GFM（表格/任务列表）+ 单换行断行。
- * 链接/绝对路径保持与 RichText 一致的点击行为（统一走 openTarget：
- * URL → 浏览器；路径 → Rust open_file_path；失败弹错不静默）。
+ * 链接/绝对路径保持与 RichText 一致的点击行为（URL → 浏览器；路径 → 交给
+ * `onPathClick`，不传时退回 Rust open_file_path 走系统默认程序；失败弹错不静默）。
  * react-markdown 默认转义原始 HTML，安全。
  */
-export function MarkdownText({ text }: { text: string }) {
+export function MarkdownText({
+  text,
+  onPathClick,
+}: {
+  text: string;
+  /** 点本地路径时的去处。聊天面板传入 = 在右侧栏就地预览（对话不中断）；
+   *  不传 = 沿用旧口径调起系统默认程序。URL 不受影响，永远进浏览器。 */
+  onPathClick?: (path: string) => void;
+}) {
+  const clickPath = (p: string) => {
+    if (onPathClick) onPathClick(p);
+    else openTarget(p);
+  };
+  const pathTitle = onPathClick ? "在右侧栏预览" : "打开文件/文件夹";
   return (
     <div className="md-body">
       <Markdown
@@ -44,13 +57,13 @@ export function MarkdownText({ text }: { text: string }) {
             // 渲染 <a> 而非带 onClick 的 <code>：键盘可聚焦 + 屏幕阅读器播报为链接。
             // 路径链接不设 href（会被中键/复制链接当 URL 解析出 bogus 地址）；
             // 无 href 的 <a> 不可聚焦，补 role="link" + tabIndex + Enter 触发
-            const activate = () => openTarget(linkText);
+            const activate = () => (isUrl ? openTarget(linkText) : clickPath(linkText));
             return (
               <a
                 href={isUrl ? linkText : undefined}
                 role={isUrl ? undefined : "link"}
                 tabIndex={isUrl ? undefined : 0}
-                title={isUrl ? "在浏览器打开" : "打开文件/文件夹"}
+                title={isUrl ? "在浏览器打开" : pathTitle}
                 className="text-[var(--brand)] underline decoration-dotted underline-offset-2 cursor-pointer break-all"
                 onClick={(e) => {
                   e.preventDefault();
@@ -79,13 +92,13 @@ export function MarkdownText({ text }: { text: string }) {
             // 与行内 code 渲染同款 href 策略：路径链接不设 href
             //（中键/复制链接会把 /Users/x 之类当 URL 解析出 bogus 地址）；
             // 无 href 的 <a> 不可聚焦，补 role="link" + tabIndex + Enter 触发
-            const activate = () => openTarget(url);
+            const activate = () => (isUrl ? openTarget(url) : clickPath(url));
             return (
               <a
                 href={isUrl ? url : undefined}
                 role={isUrl ? undefined : "link"}
                 tabIndex={isUrl ? undefined : 0}
-                title={isUrl ? "在浏览器打开" : "打开文件/文件夹"}
+                title={isUrl ? "在浏览器打开" : pathTitle}
                 className="text-[var(--brand)] underline decoration-dotted underline-offset-2 cursor-pointer break-all"
                 onClick={(e) => {
                   e.preventDefault();
