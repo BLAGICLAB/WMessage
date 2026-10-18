@@ -106,14 +106,16 @@ Planner 归主 agent 后不再需要第 4 个 profile。名字也沿用这一套
 
 原稿那套 `list_dir / read_file / shell / vector_search / ast_inspect / delete`
 **整条作废**——它们不是「待映射的别名」，是写错了的名字。本仓工具的唯一真相源是
-`bot/registry.rs` 的 `TOOLS_TABLE`（`BUILTIN_TOOL_COUNT` 个，见 `registry.rs:709`）；
+`bot/registry.rs` 的 `TOOLS_TABLE`（`BUILTIN_TOOL_COUNT` 个，见 `registry.rs:877`）；
 yaml 里出现的任何工具名都必须能在那张表里查到，否则视为配置错误（期 0 单测）。
 
 三条语义澄清（不是改名建议，是**别按字面理解**）：
 
-1. **本仓不提供裸 shell**。`run_python` 是受限解释器沙箱：独立临时目录 + 60s
-   超时 + 产物回收 + 开关默认关闭。原稿 `shell` / `shell_sandbox` 的位置由它承担，
-   但它**不是** shell——没有进程管理、没有任意命令，静态检查只能写成受限脚本。
+1. **工具表里没有裸 shell 工具**，原稿 `shell` / `shell_sandbox` 的位置由 `run_python`
+   承担。但它**不是** shell——没有进程管理、没有交互式 session。它的真实边界是
+   完整 Python stdlib + 用户权限执行、**无文件系统隔离**（能读写任意路径、能起子进程、
+   能联网），只有 CPU/内存/时长限额 + 独立临时目录 + 产物回收 + 开关默认关闭兜底。
+   别因为「不是 shell」就以为它温和：它比多数 shell 更安静，不是更安全。
 2. **没有通用向量检索工具**。`recall_facts` 是语义记忆体 v2 的记忆召回，
    不是可对任意语料做向量查询的检索层。
 3. **`delete` 不存在**。`delete_task` 只删任务卡，不删文件；需要动文件时走
