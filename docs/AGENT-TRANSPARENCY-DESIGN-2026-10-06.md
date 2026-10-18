@@ -256,7 +256,7 @@ emit 范围：流式三件维持只推 widget；新增三事件 `app.emit` 全�
 1. **SQLite 写放大**：span 异步批量写（channel + 定时 flush），单 trace span 数天然被 max_function_calls 钳制；span 文本 16KB 上限。
 2. **diff 体积**：2000 行截断 + truncated 标记；二进制/超大文件（>1MB 读上限已有，edit_file_sync:610-631）跳过 diff 只记行数。
 3. **事件频率**：新增三事件只在工具调用/节点流转粒度（非 token 粒度），频率与现有 bot-tool 同级。
-4. **隐私**：diff/结果只落本地库；trace_clear_before + 数据管理清空入口；不进任何上报管道（evolution trace 的「只存计数不存原文」纪律不受影响，§4.2 的 evolution 接线仍走其采样判定）。
+4. **隐私**：diff/结果只落本地库；trace_clear_before + 数据管理清空入口；不进任何上报管道。（原文括注的 evolution trace 采样纪律随自进化系统退役而失效，该纪律现由本条自身承担——不落任何上报管道。）
 5. **兼容**：bot-tool-done 只加字段；前端类型同步更新；旧会话无 trace 时前端入口隐藏。
 6. **行为零变更**：不截断默认、不弹窗默认、工具结果回灌 msgs 逻辑不动（截断是 P4 显式开启项）。
 
@@ -305,8 +305,12 @@ emit 范围：流式三件维持只推 widget；新增三事件 `app.emit` 全�
 5. **内容门控/隐私开关**（OTel 5 个内容开关的本地版）——落 **P4**。
    span 结果/diff 正文默认落库（本地隐私面可控），但提供设置开关：关闭正文只存元数据（名称/耗时/成败/行数）。
    超限截断 60KB→我们 16KB 的对齐确认（Claude Code 也用 60KB 上限，量级一致）。
-6. **error_class 错误分类**（OTel `tool.execution.error_class`）——**P1 字段预留，P4 接线**。
-   exec_spans 加 `error_class TEXT`；evolution trace 的占位分类器（bot_model_loop.rs:609 None）补全后同源复用。
+6. **error_class 错误分类**（OTel `tool.execution.error_class`）——原文写「P1 字段预留，P4 接线」，**该判断已过期，见下**。
+   ~~exec_spans 加 `error_class TEXT`；evolution trace 的占位分类器（bot_model_loop.rs:609 None）补全后同源复用。~~
+   **（2026-10-18 更正）本项已完成，无需排期**：`exec_spans.error_class` 列已建，且已由
+   `audit::classify_error_class` 供给（`bot/dispatch.rs:650` → Span → `trace_sink.rs:328` 落库），
+   类别取自 `ToolFailureClass`（unknown_tool / gate_denied / user_denied / skill_paused / fused）
+   另加 exec_error。设计稿原写的 evolution 占位分类器随自进化系统一并删除，从未是活实现。
 7. **执行档案 Profiles**（Codex profiles）——落 **P4**。
    在 PARAMS_TABLE 之上加命名预设：「保守」（strict + 50 轮 + py 关）、「标准」、「放开」（auto/yolo + 200 轮），
    一键整体切换写 bot_set_config。避免用户逐项调 10 个参数。
@@ -328,7 +332,7 @@ emit 范围：流式三件维持只推 widget；新增三事件 `app.emit` 全�
 | P1 | exec_spans 加 `error_class`；file_changes 加 `before_ref` + checkpoints 落盘（保留期 30 天） | §9.2-3/6 |
 | P2 | TracePanel 文件级「回滚」按钮；verbose 三档全局开关 + 聊天临时全展开钮 | §9.2-3/4 |
 | P3 | `tool_rules` per-tool 规则表 + 授权卡可视化 + 「始终允许」写回；PermMode 第 4 档 `auto`（acceptEdits 语义）；配置钳制/来源诊断角标 | §9.2-1/2/8 |
-| P4 | 内容门控开关；Profiles 三预设；上下文水位条；trace JSONL 导出；error_class 接 evolution 分类器 | §9.2-5/6/7/9/10 |
+| P4 | 内容门控开关；Profiles 三预设；上下文水位条；trace JSONL 导出；~~error_class 接 evolution 分类器~~（2026-10-18 更正：该项已由 `audit::classify_error_class` 落地，不属 P4 待办） | §9.2-5/6/7/9/10 |
 
 > 对标后不改变 P1/P2 是「执行透明」主线、P3 是「参数透明」主线的判断；增补项多为低成本高价值的小切口，
 > 其中 §9.2-3（回滚）与 §9.2-2（auto 档）是两个真正改变产品能力的借鉴点。
@@ -396,7 +400,7 @@ emit 范围：流式三件维持只推 widget；新增三事件 `app.emit` 全�
 - 审计：`tool_rule.hit`（Info）、`perm.auto_degraded`（Info）、`params.clamped`（Info）。
 
 ### P4 可选增强（按需拉批）
-保留期设置 UI / 内容门控开关 / Profiles 三预设 / 上下文水位条 / `trace_export` JSONL / error_class 接 evolution 分类器 / 主窗口活动页——每项独立小批，先 OCR 复审后验收，不设固定顺序。
+保留期设置 UI / 内容门控开关 / Profiles 三预设 / 上下文水位条 / `trace_export` JSONL / 主窗口活动页——每项独立小批，先 OCR 复审后验收，不设固定顺序。
 
 ## 11. 全量测试门禁（每批必过）
 
