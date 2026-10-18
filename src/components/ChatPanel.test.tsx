@@ -1257,6 +1257,60 @@ describe("ChatPanel", () => {
   });
 
   // ── 双命令：🧠 模型下拉 ──
+  it("授权模式可点选：写入走窄命令 bot_set_perm_mode，落盘失败回滚", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_set_perm_mode") throw { code: "IO", message: "只读磁盘" };
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    // 默认档是 ask（bot_get_config 没给 permMode 时按安全默认归一）
+    const pill = await waitFor(() =>
+      screen.getByRole("button", { name: /弹授权/ }),
+    );
+    // 以前这里是个只读 span，点不动——正是要改的地方
+    expect(pill.tagName).toBe("BUTTON");
+    await user.click(pill);
+    const opt = await screen.findByRole("option", { name: /全放行/ });
+    await user.click(opt);
+    // 写盘走窄命令（只动 perm_mode），不是整份 bot_set_config 回写
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_set_perm_mode", {
+      mode: "yolo",
+    });
+    expect(
+      mocks.invokeMock.mock.calls.some((c) => c[0] === "bot_set_config"),
+    ).toBe(false);
+    // 落盘失败 → 回滚到 ask 并弹错，不留「界面显示已放行」的假绿
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /弹授权/ })).toBeInTheDocument(),
+    );
+  });
+
+  it("授权模式成功落盘后 pill 切换到新档位（yolo 走警示色）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_config")
+        return { ...((await defaultInvoke("bot_get_config")) as object), permMode: "ask" };
+      if (cmd === "bot_set_perm_mode") return defaultInvoke("bot_get_config");
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    const pill = await screen.findByRole("button", { name: /弹授权/ });
+    await user.click(pill);
+    await user.click(await screen.findByRole("option", { name: /自动/ }));
+    const next = await screen.findByRole("button", { name: /自动/ });
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_set_perm_mode", {
+      mode: "auto",
+    });
+    // 下拉选完自动收起（选完还开着会挡住下一次点发送）
+    await waitFor(() =>
+      expect(screen.queryByRole("option", { name: /全放行/ })).toBeNull(),
+    );
+    expect(next).toBeInTheDocument();
+  });
+
   it("点 🧠 弹出当前协议模型列表，再点收起", async () => {
     const user = userEvent.setup();
     // 前面用例换过的 mockImplementation 会跨用例残留（beforeEach 只 mockClear），

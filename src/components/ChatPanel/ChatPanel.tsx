@@ -188,8 +188,30 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   /** 🛡 授权模式：全局档位（bot-config 的 permMode），输入卡底栏可直接改。
    *  改的是「机器人敢做多少事」——这个恰恰要在动手前一刻就地决定，
    *  让人跑去设置页等它跑起来再切是来不及的。 */
-  /** 🛡 授权模式（ 只读展示）：bot-config 的 permMode，设置页维护 */
   const [permMode, setPermMode] = useState<PermMode>("ask");
+  /** 授权档位的当前值（回滚要读它）：state 更新是异步的，回滚时不能靠读 state */
+  const permModeRef = useRef<PermMode>("ask");
+  const [permMenuOpen, setPermMenuOpen] = useState(false);
+  const permBtnRef = useRef<HTMLButtonElement>(null);
+  const permDropdownRef = useRef<HTMLDivElement>(null);
+  /** 选定授权档：乐观更新 → 窄命令落盘。失败回滚并弹错——
+   *  留着「界面显示已放行、实际没落盘」的假绿比报错更危险（用户会以为白名单外
+   *  不会弹窗，实际还在弹）。副作用不写在 setState 的 updater 里（StrictMode 下
+   *  updater 会跑两次，invoke 就会发两次）。 */
+  const selectPermMode = useCallback((m: PermMode) => {
+    setPermMenuOpen(false);
+    const prev = permModeRef.current;
+    if (prev === m) return;
+    permModeRef.current = m;
+    setPermMode(m);
+    invoke("bot_set_perm_mode", { mode: m })
+      .then(() => {})
+      .catch((e) => {
+        permModeRef.current = prev;
+        setPermMode(prev);
+        handleCommandError(e, "bot_set_perm_mode");
+      });
+  }, []);
   //  上下文水位条：bot-usage-delta 按会话累计（Anthropic 协议回合级 usage）。
   // lastInput = 最近一轮请求的 input（即当前上下文 prompt 体量）——每轮 input 是
   // 完整重发的 prompt，跨轮累加会随轮数近似平方膨胀，水位百分比必须用最近一轮。
@@ -579,6 +601,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     effortBtnRef,
     effortDropdownRef,
   );
+  // 点击授权模式下拉外关闭（同镜像：双 ref 检测）
+  useOutsideClose(
+    permMenuOpen,
+    () => setPermMenuOpen(false),
+    permBtnRef,
+    permDropdownRef,
+  );
 
   // 挂载：读当前模型配置，输入卡底栏 🧠 下拉展示当前协议的模型列表 + active id；
   // 设置页/另一窗口保存配置后广播 bot-config-changed，这里同步刷新
@@ -619,11 +648,12 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           setEffortBase(
             raw === "off" || raw === "low" || raw === "high" ? raw : "medium",
           );
-          // 授权模式只读展示：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
+          // 授权模式：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
           const pm = c.permMode;
-          setPermMode(
-            pm === "strict" || pm === "yolo" || pm === "auto" ? pm : "ask",
-          );
+          const next: PermMode =
+            pm === "strict" || pm === "yolo" || pm === "auto" ? pm : "ask";
+          permModeRef.current = next;
+          setPermMode(next);
         })
         .catch(() => setModelLabel("未配置"));
     reload();
@@ -1779,7 +1809,14 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         pickFiles={pickFiles}
         onStop={stopCurrent}
         viewedBusy={viewedBusy}
-        permMode={permMode}
+        perm={{
+          mode: permMode,
+          menuOpen: permMenuOpen,
+          setMenuOpen: setPermMenuOpen,
+          onSelect: selectPermMode,
+        }}
+        permBtnRef={permBtnRef}
+        permDropdownRef={permDropdownRef}
         modelBtnRef={modelBtnRef}
         modelDropdownRef={modelDropdownRef}
         effortBtnRef={effortBtnRef}

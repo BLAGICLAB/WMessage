@@ -65,13 +65,27 @@ export const PROVIDER_LABELS: Record<ModelItem["provider"], string> = {
   anthropic: "Anthropic 兼容",
 };
 
-/** 授权模式展示文案（ 只读 pill）：短标签进 pill，完整语义在 title */
+/** 授权模式短标签：进 pill 与下拉行首 */
 export const PERM_LABELS: Record<PermMode, string> = {
   ask: "弹授权",
   strict: "硬拒",
   auto: "自动",
   yolo: "全放行",
 };
+
+/** 授权模式一行完整语义（下拉右侧说明 + pill 的 title 共用一处）。
+ *  「自动」档的两面必须写全：白名单内自动放行、白名单外降级弹窗——
+ *  只写前半句会让人以为它就是全放行。 */
+export const PERM_HINTS: Record<PermMode, string> = {
+  ask: "白名单外弹授权窗",
+  strict: "白名单外直接拒绝，不弹窗",
+  auto: "白名单内自动放行，白名单外仍弹窗",
+  yolo: "全部放行不弹窗（仍记审计）",
+};
+
+/** 下拉档位顺序：由严到宽。用户在这排里挑的是「放行多宽」，
+ *  按宽度排比按枚举顺序更好比较——这是安全档，不做记忆化排序。 */
+export const PERM_ORDER: readonly PermMode[] = ["strict", "ask", "auto", "yolo"] as const;
 
 /** 执行过程详细度（ verbose 三档）：短标签进 pill，语义见 types.ts */
 export const VERBOSE_LABELS: Record<VerboseLevel, string> = {

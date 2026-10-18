@@ -41,8 +41,9 @@ pub mod types;
 pub use crate::memory::MemoryTuning;
 pub use audit::{audit_log, audit_log_hook, bot_log_read};
 pub use commands::{
-    apply_active_model_switch, archive_after_days, bot_get_config, bot_set_active_model,
-    bot_set_config, memory_tuning_get, memory_tuning_set, perm_mode,
+    apply_active_model_switch, apply_perm_mode, archive_after_days, bot_get_config,
+    bot_set_active_model, bot_set_config, bot_set_perm_mode, memory_tuning_get, memory_tuning_set,
+    perm_mode,
 };
 pub use io::{
     config_path, migrate_legacy_key, migrate_search_keys, read_bypass_llm_switch,
@@ -73,8 +74,9 @@ pub(crate) use io::{add_allowed_dir, load_config, update_config_file};
 // #[tauri::command] 函数旁边自动生成；同样 re-export 以让 bot.rs 的 facade 一行不动。
 pub use commands::{
     __cmd__bot_get_config, __cmd__bot_set_active_model, __cmd__bot_set_config,
-    __cmd__memory_tuning_get, __cmd__memory_tuning_set, __tauri_command_name_bot_get_config,
-    __tauri_command_name_bot_set_active_model, __tauri_command_name_bot_set_config,
+    __cmd__bot_set_perm_mode, __cmd__memory_tuning_get, __cmd__memory_tuning_set,
+    __tauri_command_name_bot_get_config, __tauri_command_name_bot_set_active_model,
+    __tauri_command_name_bot_set_config, __tauri_command_name_bot_set_perm_mode,
     __tauri_command_name_memory_tuning_get, __tauri_command_name_memory_tuning_set,
 };
 // bot_log_read 是 #[tauri::command] 但住在 audit.rs（同模块同生命周期），

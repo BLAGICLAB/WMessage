@@ -19,7 +19,9 @@ import {
 import { basename, isImagePath } from "../../format";
 import {
   EFFORT_LABELS,
+  PERM_HINTS,
   PERM_LABELS,
+  PERM_ORDER,
   PROVIDER_LABELS,
   SLASH_COMMANDS,
   VERBOSE_LABELS,
@@ -64,8 +66,15 @@ type InputAreaProps = {
   /** 停止当前回复 */
   onStop: () => void;
   viewedBusy: boolean;
-  /** 🛡 授权模式只读展示：bot-config 的 permMode，设置页维护 */
-  permMode: PermMode;
+  /** 🛡 授权模式：窄命令 bot_set_perm_mode 落盘，改的是全局档位（不是会话级） */
+  perm: {
+    mode: PermMode;
+    menuOpen: boolean;
+    setMenuOpen: Dispatch<SetStateAction<boolean>>;
+    onSelect: (m: PermMode) => void;
+  };
+  permBtnRef: RefObject<HTMLButtonElement | null>;
+  permDropdownRef: RefObject<HTMLDivElement | null>;
   /** 🔍 执行过程详细度（ verbose 三档）：localStorage 持久化，控制工具徽章展开档位 */
   verbose: { level: VerboseLevel; setLevel: (l: VerboseLevel) => void };
   // 🧠/⚡ 的按钮与下拉 ref 顶层传（与滚动容器同模式）：ref 与普通值混嵌同一
@@ -109,7 +118,9 @@ export function InputArea({
   pickFiles,
   onStop,
   viewedBusy,
-  permMode,
+  perm,
+  permBtnRef,
+  permDropdownRef,
   verbose,
   modelBtnRef,
   modelDropdownRef,
@@ -314,14 +325,59 @@ export function InputArea({
             <Plus size={15} aria-hidden />
           </button>
           <div className="flex-1 min-w-0" />
-          {/* 🛡 授权模式（只读展示）：读 bot-config 的 perm_mode，设置页维护；
-              与 🧠/⚡ 同排的静态 pill，不承载操作 */}
-          <span
-            className="shrink-0 inline-flex items-center gap-1 rounded-full border border-[var(--edge)] px-2 py-0.5 text-[10px] leading-4 text-[var(--t4)]"
-            title={`授权模式 ${permMode}（设置页维护）：ask=白名单外弹授权窗，strict=白名单外硬拒，auto=白名单内全自动（含覆盖写）、白名单外弹授权窗，yolo=全放行（仍记审计）`}
-          >
-            <Shield size={10} aria-hidden /> {PERM_LABELS[permMode]}
-          </span>
+          {/* 🛡 授权模式：从只读展示改为可选下拉（与 🧠/⚡ 同排同款，向上弹出）。
+              以前只能去设置页改，而设置页离「机器人正要动手」那一刻很远——
+              授权档位恰恰是在那个瞬间最该就地决定的事。写盘走窄命令
+              bot_set_perm_mode（只动 perm_mode），不整份回写覆盖设置页的并发改动。 */}
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              ref={permBtnRef}
+              aria-haspopup="listbox"
+              aria-expanded={perm.menuOpen}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] leading-4 transition-colors ${
+                perm.mode === "yolo"
+                  ? "border-[var(--danger,#ef4444)] text-[var(--danger,#ef4444)] hover:bg-[var(--hover-bg)]"
+                  : "border-[var(--edge)] text-[var(--t4)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+              }`}
+              title={`授权模式 ${PERM_LABELS[perm.mode]}：${PERM_HINTS[perm.mode]}（点击切换）`}
+              onClick={() => perm.setMenuOpen((v) => !v)}
+            >
+              <Shield size={10} aria-hidden />
+              {PERM_LABELS[perm.mode]}
+              <span aria-hidden className="text-[9px]">
+                {perm.menuOpen ? "▴" : "▾"}
+              </span>
+            </button>
+            {perm.menuOpen && (
+              <div
+                ref={permDropdownRef}
+                role="listbox"
+                className="absolute bottom-full right-0 mb-2 w-60 nm-card p-1 rounded-xl z-50"
+              >
+                {PERM_ORDER.map((m) => (
+                  <button
+                    key={m}
+                    role="option"
+                    aria-selected={perm.mode === m}
+                    className={`w-full text-left px-2 py-1 rounded-lg text-xs ${
+                      perm.mode === m
+                        ? "nm-inset text-[var(--t1)]"
+                        : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
+                    }`}
+                    onClick={() => perm.onSelect(m)}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="font-medium">{PERM_LABELS[m]}</span>
+                      <span className="text-[10px] text-[var(--t5)]">
+                        {PERM_HINTS[m]}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {/* 🔍 执行过程详细度（P2-b verbose 三档）：点击循环 简洁→详细→调试，
               localStorage 持久化；控制工具徽章默认展开级别与耗时/结果列示 */}
           <button

@@ -431,6 +431,39 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
     bot_get_config(app)
 }
 
+/// 授权模式落盘的纯函数：只认四个合法值，非法值按 Ask 归一（与
+/// `PermMode::from_cfg` 同口径——安全默认偏严，不因为前端传了脏值就放宽成 yolo）。
+pub fn apply_perm_mode(cfg: &mut BotConfig, mode: &str) -> PermMode {
+    let m = PermMode::from_cfg(Some(mode));
+    cfg.perm_mode = Some(m.as_str().to_string());
+    m
+}
+
+/// 窄口径改授权模式（聊天区 🛡 下拉专用）：读盘上最新配置（单一事实源），
+/// 只动 perm_mode 一个字段后落盘。
+/// **不做整份配置写回**——与 bot_set_active_model 同理：整份回写会用前端旧快照
+/// 覆盖设置页并发修改的字段（白名单/开关/密钥开关等）。
+/// key 相关路径完全不触碰。返回更新后的 BotConfigView，前端免二次读取。
+#[tauri::command]
+pub fn bot_set_perm_mode(app: AppHandle, mode: String) -> CommandResult<BotConfigView> {
+    // 读改写全程持 CONFIG_WRITE_LOCK——与 bot_set_config / bot_set_active_model
+    // 同锁，消除并发丢更新
+    let _g = io::lock_config_write();
+    let mut cfg = io::load_config(&app);
+    let applied = apply_perm_mode(&mut cfg, &mode);
+    io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;
+    crate::audit::write_event(
+        &app,
+        crate::audit::AuditLevel::Info,
+        "bot.perm_mode_set",
+        &[("mode", applied.as_str().to_string())],
+    );
+    // bot_get_config 内的 migrate_* 会再取同一把非重入 CONFIG_WRITE_LOCK——
+    // 必须先放写锁再读，否则必然自锁死。
+    drop(_g);
+    bot_get_config(app)
+}
+
 /// 清除指定厂商的 API Key（keyring 条目按厂商名分存）；
 /// 先把厂商移出已验证名单（配置落盘成功）再删 key——顺序保证失败时
 /// fail-closed（宁可用不了，不留「key 没了但还显示已验证」的假绿）。
@@ -874,5 +907,63 @@ mod tool_rule_sanitize_tests {
         assert_eq!(sanitize_tool_rules(None), None);
         assert_eq!(sanitize_tool_rules(Some(vec![])), None);
         assert_eq!(sanitize_tool_rules(Some(vec![rule("x", "nope")])), None);
+    }
+}
+
+#[cfg(test)]
+mod perm_mode_tests {
+    use super::super::types::{BotConfig, PermMode, ToolRule};
+    use super::{apply_perm_mode, sanitize_tool_rules};
+
+    fn rule(tool: &str, action: &str) -> ToolRule {
+        ToolRule {
+            tool: tool.into(),
+            action: action.into(),
+        }
+    }
+
+    /// 授权档位落盘：四档原样写，非法值按 ask 归一。
+    ///
+    /// 非法值必须落到 **ask**（弹窗）而不是 yolo（全放行）：这里是唯一一处
+    /// 「用户在前端点了某个东西」直接变成「机器人放行多大」的边界，
+    /// 传错值就当成最宽档处理等于凭空放宽权限。
+    #[test]
+    fn apply_perm_mode_normalizes_illegal_to_ask() {
+        for (input, want) in [
+            ("strict", PermMode::Strict),
+            ("ask", PermMode::Ask),
+            ("auto", PermMode::Auto),
+            ("yolo", PermMode::Yolo),
+            (" yolo ", PermMode::Yolo),
+            ("YOlo", PermMode::Ask),
+            ("bogus", PermMode::Ask),
+            ("", PermMode::Ask),
+        ] {
+            let mut cfg = BotConfig::default();
+            let got = apply_perm_mode(&mut cfg, input);
+            assert_eq!(got, want, "input={input:?}");
+            // 落盘的是归一后的字符串，不是原始入参：否则下次读侧又按
+            // from_cfg 归一次，界面上显示的档位与文件里的会对不上
+            assert_eq!(
+                cfg.perm_mode.as_deref(),
+                Some(want.as_str()),
+                "input={input:?} 落盘值应归一"
+            );
+        }
+    }
+
+    /// 档位切换不能碰别的字段：窄命令只动 perm_mode，
+    /// 整份回写会覆盖设置页并发修改的白名单/开关。
+    #[test]
+    fn apply_perm_mode_touches_only_perm_mode() {
+        let mut cfg = BotConfig::default();
+        cfg.tool_rules = sanitize_tool_rules(Some(vec![rule("edit_file", "ask")]));
+        cfg.max_rounds = Some(42);
+        cfg.perm_mode = Some("ask".into());
+        let before_rules = cfg.tool_rules.clone();
+        apply_perm_mode(&mut cfg, "yolo");
+        assert_eq!(cfg.perm_mode.as_deref(), Some("yolo"));
+        assert_eq!(cfg.max_rounds, Some(42), "max_rounds 不该被动过");
+        assert_eq!(cfg.tool_rules, before_rules, "tool_rules 不该被动过");
     }
 }
