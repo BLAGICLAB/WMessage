@@ -247,7 +247,7 @@ emit 范围：流式三件维持只推 widget；新增三事件 `app.emit` 全�
 | **P1 执行透明·后端根基** | db/trace.rs 三表 + migrations；dispatch/model_loop/bot_fs 采集接线；similar 生成 diff；LoopTrace 收尾闭环；bot-tool-done 扩展 + bot-file-changed；trace_* 查询命令 | 手动执行一张含文件编辑的任务卡：`trace_detail` 能看到每个工具调用的入参/结果/耗时/成败，文件修改有 unified diff；工具 schema 基线（tools_baseline.json）测试不动 |
 | **P2 执行透明·前端呈现** | TracePanel + 任务卡入口；ToolBadges/FileSummary 增强 + diff 视图；workflow-node-status/sched-status + 画布实时 + 定时历史页 | 三大黑盒场景验收：手动卡、定时卡、工作流各跑一次，全程（工具流/文件 diff/节点状态/执行历史）在界面可见，不再需要翻 bot.log |
 | **P3 参数透明** | bot/params.rs PARAMS_TABLE + bot_effective_params；设置页运行参数卡 + memoryTuning UI + 全局 maxTokens/reasoningEffort 控件 + 词元统计卡 | 设置页可见全部第一批参数的生效值/默认值/来源；词元统计 section 实装非占位 |
-| **P4 增强（按需）** | max_tool_output_chars 截断行为落地（默认关）；trace 保留期+清理 UI；主窗口活动页；trace 接 evolution 采样（error_kind 分类器补全 bot_model_loop.rs:609 占位） | 各自单列验收 |
+| **P4 增强（按需）** | max_tool_output_chars 截断行为落地（默认关）；trace 保留期+清理 UI；主窗口活动页；~~trace 接 evolution 采样~~（2026-10-18 失效：自进化系统已退役；error_kind 分类器由 `audit::classify_error_class` 供给，不再走采样） | 各自单列验收 |
 
 每期遵守项目硬约束：不改 TOOLS schema / 事件名 / prompt 常量 / 命令名（只增不改）；`cargo test --lib` 全绿；新增模块在 rust-bot-architecture.md §6.4 登记。
 
