@@ -1,0 +1,1537 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>任务图谱 · 星云 — 视觉小样</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  /* ══════════ token：真空底 + 三层尘雾 + 语义四色 ══════════ */
+  :root {
+    --void: #05070c;
+    --panel: rgba(9, 12, 19, 0.58);
+    --panel-hi: rgba(14, 18, 27, 0.82);
+    --line: rgba(150, 172, 208, 0.16);
+    --line-hi: rgba(160, 184, 220, 0.34);
+
+    --ink: #dde4f0;
+    --ink-2: #98a3b8;
+    --ink-3: #5b6578;
+
+    /* 节点语义：进行中=活青，待办=热品红，钉子户=琥珀，已完成=石板（沉进尘里） */
+    --live: #35d6b5;
+    --hot: #ff4d8d;
+    --stall: #e8a33d;
+    --done: #6b7d95;
+    --self: #9fc0ff;
+
+    --font: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo,
+            "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", monospace;
+
+    --rail-l: 214px;
+    --rail-r: 250px;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--void);
+    color: var(--ink);
+    font-family: var(--font);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── 舞台 ── */
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { display: block; }
+
+  /* 景深之外的一切都退到雾里：暗角 + 极薄胶片颗粒 */
+  #veil {
+    position: fixed; inset: 0; z-index: 1; pointer-events: none;
+    background:
+      radial-gradient(130% 100% at 62% 46%, transparent 34%, rgba(3, 5, 9, 0.55) 78%, rgba(2, 3, 6, 0.88) 100%);
+  }
+  #grain {
+    position: fixed; inset: -50%; z-index: 1; pointer-events: none;
+    opacity: 0.045; mix-blend-mode: screen;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='140' height='140'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/></filter><rect width='140' height='140' filter='url(%23n)'/></svg>");
+  }
+
+  /* CSS2D 标签层：不可点，只透字 */
+  #labels { position: fixed; inset: 0; z-index: 2; pointer-events: none; overflow: hidden; }
+
+  .nlabel {
+    position: absolute;
+    white-space: nowrap;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: #7c879a;
+    text-shadow: 0 0 9px rgba(3, 6, 12, 0.95), 0 0 3px rgba(3, 6, 12, 1);
+    will-change: opacity, transform;
+  }
+  /* CSS2DRenderer 已经把外层 .nlabel 摆成以节点为中心，这里只补竖向的 lift 和避让偏移。
+     早前横向往返又写了一次 -50%，等于居中两次，铭牌实际比避让模型多偏了半个身位，
+     怎么调候选位都躲不开左侧仪器栏 */
+  .nlabel .off { display: block; transform: translate(var(--dx, 0px), calc(-50% - 16px + var(--dy, 0px))); text-align: center; }
+  .nlabel .sub { color: var(--ink-3); font-weight: 400; margin-left: 7px; font-size: 10px; }
+  /* 锚点：字距放开一档，像仪器上的分区铭牌 */
+  .nlabel.anchor { color: #b3bdd0; font-size: 11.5px; letter-spacing: 0.16em; font-weight: 500; }
+  .nlabel.anchor .off { transform: translate(var(--dx, 0px), calc(-50% - 22px + var(--dy, 0px))); }
+  .nlabel.anchor .kind { color: var(--ink-3); letter-spacing: 0.06em; margin-right: 8px; font-weight: 400; }
+  .nlabel.focus { color: #fff; }
+  .nlabel.focus .sub { color: var(--ink-2); }
+
+  /* ── HUD 仪器框 ── */
+  .rail { position: fixed; z-index: 3; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    backdrop-filter: blur(10px) saturate(120%);
+    -webkit-backdrop-filter: blur(10px) saturate(120%);
+  }
+
+  /* 顶栏 */
+  .top {
+    top: 0; left: 0; right: 0; height: 44px;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 14px;
+    border-left: 0; border-right: 0; border-top: 0;
+    background: linear-gradient(180deg, rgba(6, 8, 14, 0.92), rgba(6, 8, 14, 0.55));
+  }
+  .brand { display: flex; align-items: baseline; gap: 9px; letter-spacing: 0.2em; }
+  .brand .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--live); box-shadow: 0 0 10px var(--live);
+    align-self: center;
+  }
+  .brand b { font-weight: 600; font-size: 12px; color: var(--ink); letter-spacing: 0.2em; }
+  .brand span { font-size: 10px; color: var(--ink-3); letter-spacing: 0.28em; }
+
+  .search {
+    flex: 1; max-width: 340px; display: flex; align-items: center; gap: 8px;
+    border-bottom: 1px solid var(--line-hi);
+    padding: 3px 2px;
+  }
+  .search input {
+    flex: 1; background: none; border: 0; outline: 0;
+    color: var(--ink); font: 400 12px/1.4 var(--font); letter-spacing: 0.04em;
+  }
+  .search input::placeholder { color: var(--ink-3); }
+  .search .cnt { font-size: 10px; color: var(--ink-3); }
+
+  .readouts { margin-left: auto; display: flex; gap: 16px; font-size: 10px; }
+  .readouts div { display: flex; gap: 6px; align-items: baseline; }
+  .readouts span { color: var(--ink-3); letter-spacing: 0.16em; }
+  .readouts b { color: var(--ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  /* 左栏：着色 / 大小 / 筛选 */
+  .left { top: 56px; left: 12px; width: var(--rail-l); max-height: calc(100vh - 150px); overflow: auto; }
+  .left::-webkit-scrollbar { width: 3px; }
+  .left::-webkit-scrollbar-thumb { background: var(--line-hi); }
+
+  .grp { padding: 11px 12px 13px; border-bottom: 1px solid var(--line); }
+  .grp:last-child { border-bottom: 0; }
+  .grp > h4 {
+    font-size: 10px; font-weight: 400; letter-spacing: 0.22em;
+    color: var(--ink-3); margin-bottom: 9px;
+  }
+
+  .seg { display: flex; border: 1px solid var(--line-hi); }
+  .seg button {
+    flex: 1; padding: 5px 0; background: none; cursor: pointer;
+    font: 400 11px/1.3 var(--font); color: var(--ink-2);
+    border-right: 1px solid var(--line-hi); letter-spacing: 0.08em;
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button:hover { color: var(--ink); background: rgba(150, 172, 208, 0.07); }
+  .seg button[aria-pressed="true"] { color: var(--void); background: var(--ink); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .chip {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px; border: 1px solid var(--line);
+    background: none; cursor: pointer;
+    font: 400 11px/1.2 var(--font); color: var(--ink-2);
+    letter-spacing: 0.04em;
+  }
+  .chip:hover { border-color: var(--line-hi); color: var(--ink); }
+  .chip .sw { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
+  .chip .n { color: var(--ink-3); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .chip[aria-pressed="false"] { opacity: 0.34; }
+  .chip[aria-pressed="false"] .sw { background: var(--ink-3); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 10px; color: var(--ink-2); }
+  .legend i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+
+  /* 右栏：选中档案 */
+  .right { top: 56px; right: 12px; width: var(--rail-r); }
+  .rtitle {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 9px 12px; border-bottom: 1px solid var(--line);
+    font-size: 10px; letter-spacing: 0.22em; color: var(--ink-3);
+  }
+  .rtitle button {
+    background: none; border: 0; color: var(--ink-3); cursor: pointer;
+    font: 400 11px/1 var(--font); padding: 0;
+  }
+  .rtitle button:hover { color: var(--ink); }
+  .rbody { padding: 12px; font-size: 11px; line-height: 1.75; }
+  .rbody .empty { color: var(--ink-3); line-height: 1.9; font-size: 11px; }
+  .rbody .name { color: var(--ink); font-size: 13px; font-weight: 500; letter-spacing: 0.04em; line-height: 1.5; }
+  .kv { display: grid; grid-template-columns: 52px 1fr; gap: 3px 10px; margin-top: 10px; }
+  .kv dt { color: var(--ink-3); font-size: 10px; letter-spacing: 0.14em; }
+  .kv dd { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+  .meter { height: 4px; background: rgba(150, 172, 208, 0.13); margin-top: 11px; }
+  .meter i { display: block; height: 100%; background: var(--ink-2); }
+  .rel { margin-top: 12px; }
+  .rel h5 { font-size: 10px; font-weight: 400; letter-spacing: 0.18em; color: var(--ink-3); margin-bottom: 4px; }
+  .rel li {
+    list-style: none; color: var(--ink-2); font-size: 10.5px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;
+  }
+  .rel li:hover { color: var(--live); }
+
+  /* 底栏：实时读数 */
+  .bottom { left: 12px; right: 12px; bottom: 12px; }
+  .cells { display: flex; }
+  .cell {
+    flex: 1; padding: 9px 12px; border-right: 1px solid var(--line);
+    min-width: 0;
+  }
+  .cell:last-child { border-right: 0; }
+  .cell h5 { font-size: 9.5px; font-weight: 400; letter-spacing: 0.2em; color: var(--ink-3); margin-bottom: 6px; }
+  .cell .val { font-size: 15px; font-weight: 500; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+  .cell .val em { font-style: normal; font-size: 10px; color: var(--ink-3); margin-left: 4px; letter-spacing: 0.1em; }
+  .bars { display: flex; gap: 2px; margin-top: 7px; }
+  .bars i { flex: 1; height: 3px; background: rgba(150, 172, 208, 0.12); }
+  .bars i.on { background: var(--ink-2); }
+
+  button:focus-visible, input:focus-visible {
+    outline: 1px solid var(--live); outline-offset: 1px;
+  }
+
+  @media (max-width: 900px) {
+    :root { --rail-l: 172px; --rail-r: 200px; }
+    .readouts div:nth-child(n + 3) { display: none; }
+    .cell:nth-child(n + 4) { display: none; }
+  }
+  @media (max-width: 640px) {
+    .left, .right { display: none; }
+    .bottom { left: 0; right: 0; bottom: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #grain { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="stage"></div>
+<div id="labels"></div>
+<div id="veil"></div>
+<div id="grain"></div>
+
+<header class="rail top panel">
+  <div class="brand"><i class="dot"></i><b>wmessage</b><span>任务星云</span></div>
+  <label class="search">
+    <input id="q" type="search" placeholder="检索任务 / 成员 / 标签" aria-label="检索节点" />
+    <span class="cnt" id="q-count"></span>
+  </label>
+  <div class="readouts">
+    <div><span>NODES</span><b id="r-nodes">0</b></div>
+    <div><span>LINKS</span><b id="r-links">0</b></div>
+    <div><span>FPS</span><b id="r-fps">0</b></div>
+  </div>
+</header>
+
+<aside class="rail left panel" aria-label="图谱控制">
+  <section class="grp">
+    <h4>着色</h4>
+    <div class="seg" id="seg-color">
+      <button data-v="tag" aria-pressed="true">标签</button>
+      <button data-v="owner" aria-pressed="false">成员</button>
+      <button data-v="status" aria-pressed="false">状态</button>
+    </div>
+    <div class="legend" id="legend" style="margin-top:10px"></div>
+  </section>
+
+  <section class="grp">
+    <h4>状态筛选</h4>
+    <div class="chips" id="f-status"></div>
+  </section>
+
+  <section class="grp">
+    <h4>成员</h4>
+    <div class="chips" id="f-owner"></div>
+  </section>
+
+  <section class="grp">
+    <h4>标签</h4>
+    <div class="chips" id="f-tag"></div>
+  </section>
+</aside>
+
+<aside class="rail right panel" aria-label="节点详情">
+  <div class="rtitle"><span>节点档案</span><button id="clear" type="button" hidden>清除 ⎋</button></div>
+  <div class="rbody" id="detail"></div>
+</aside>
+
+<footer class="rail bottom panel">
+  <div class="cells">
+    <div class="cell">
+      <h5>连边密度</h5><div class="val" id="m-density">0<em>边/点</em></div>
+      <div class="bars" id="b-density"></div>
+    </div>
+    <div class="cell">
+      <h5>枢纽度</h5><div class="val" id="m-hub">0<em>最连节点</em></div>
+      <div class="bars" id="b-hub"></div>
+    </div>
+    <div class="cell">
+      <h5>在制</h5><div class="val" id="m-doing">0<em>进行中</em></div>
+      <div class="bars" id="b-doing"></div>
+    </div>
+    <div class="cell">
+      <h5>拖得最久</h5><div class="val" id="m-stall">0<em>天 · 未完成</em></div>
+      <div class="bars" id="b-stall"></div>
+    </div>
+    <div class="cell">
+      <h5>聚类</h5><div class="val" id="m-cluster">0<em>标签簇</em></div>
+      <div class="bars" id="b-cluster"></div>
+    </div>
+  </div>
+</footer>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+
+// 调色板按显示空间书写：自定义着色器直出，three 不再替我们做一次 sRGB 往返
+THREE.ColorManagement.enabled = false;
+
+/* ══════════════════════════════════════════════════════════════════
+   1. 合成部门任务数据（标题逐条手写，其余按固定种子派生，保证每次刷新同一片星云）
+   ══════════════════════════════════════════════════════════════════ */
+
+const TITLES = [
+  "微信登录态失效自动重连", "OCR 识别失败重试队列", "看板虚拟滚动掉帧", "图谱力导向布局收敛优化",
+  "记忆合并策略参数调优", "子代理并发上限动态调整", "MCP 工具白名单校验", "便携包打包脚本修复",
+  "备用大模型接入兜底", "任务自动打标词表更新", "附件体积上限提示", "深色模式对比度复核",
+  "图谱标签近义合并卡顿", "任务详情跳转丢失焦点", "定时整理任务重复触发", "微信图片消息 OCR 管线",
+  "SQLite WAL 模式切换", "开机自启配置项缺失", "依赖环检测误报", "便携包图标资源缺失",
+  "搜索框中文输入法卡顿", "会话历史分页加载", "Rust 日志级别可控开关", "记忆抽取批处理吞吐",
+  "看板泳道拖拽错位", "图谱侧栏过滤器记忆失效", "通知权限被系统拒绝", "OCR 版面还原错行",
+  "数据库迁移回滚路径", "子代理失败重试风暴", "任务卡片密度三档切换", "图谱节点标签遮挡",
+  "微信文件类型白名单", "大消息截断提示文案", "记忆检索召回率偏低", "任务依赖批量编辑",
+  "打包体积减少三成", "设置页分类折叠", "图谱性能模式自动降级", "OCR 置信度阈值可调",
+  "机器人回复重复推送", "时间线视图跨月断档", "图谱搜索高亮抖动", "微信撤回消息处理",
+  "归档任务回收站还原", "深链跳转参数校验", "任务标签批量合并", "记忆去重阈值调整",
+  "图谱边权重按关系区分", "Windows 便携包字体缺失", "键盘导航焦点环缺失", "图谱自动布局开关",
+  "截图工具长图拼接", "移动端布局断点适配", "任务超期提醒策略", "图谱锚点聚类可关闭",
+  "OCR 表格还原测试集", "记忆导出为 Markdown", "子代理超时时间分级", "机器人指令歧义澄清",
+  "看板筛选条件持久化", "图谱锚点计数口径", "微信联系人昵称去重", "任务附件预览缩略图",
+  "定时任务时区处理", "搜索结果高亮片段", "图谱力导向参数预设", "审计日志导出 CSV",
+  "通知渠道企微接入评估", "OCR 表格线检测算法", "记忆删除的级联规则", "子代理上下文裁剪策略",
+  "图谱边悬停显示关系名", "任务状态流转校验", "前端包体 tree-shaking", "记忆整理进度可视化",
+  "机器人技能热加载", "微信语音消息转写", "看板组内折叠记忆", "图谱相机视角持久化",
+  "OCR 并行度自适应", "任务依赖图环检测提示", "记忆置信度人工纠正", "子代理工具最小集裁剪",
+  "设置页导入导出配置", "图谱标签近义词表编辑", "微信长文本截断还原", "看板月度统计面板",
+  "记忆检索向量维度对齐", "图谱渲染分辨率自适应",
+];
+
+const OWNERS = ["张晓峰", "李晨", "王小雨", "陈默", "周航", "苏晴"];
+const TAGS = ["发布", "数据", "修复", "设计", "文档", "性能", "客户", "安全", "架构", "移动端"];
+const STATUS = [
+  { key: "doing", label: "进行中" },
+  { key: "todo", label: "待办" },
+  { key: "done", label: "已完成" },
+];
+
+const OWNER_COLOR = ["#7c6bd6", "#c2711d", "#0e7490", "#b04a8f", "#5a7a1f", "#b8434a"];
+// 一个任务挂多个标签时按首个标签着色，规则和标签筛选一致，色板跟成员同档明度
+const TAG_COLOR = {
+  发布: "#d08a2c", 数据: "#2a9d8f", 修复: "#7c6bd6", 设计: "#c05a9e", 文档: "#6b8f3a",
+  性能: "#d2564f", 客户: "#3f8fd0", 安全: "#9aa7bd", 架构: "#b8894a", 移动端: "#4fb583",
+};
+const STATUS_COLOR = { doing: "#35d6b5", todo: "#ff4d8d", done: "#6b7d95" };
+const STALL_COLOR = "#e8a33d";
+const DAY = 86400000;
+const NOW = Date.UTC(2026, 9, 18);
+
+/** mulberry32：小而稳的种子发生器，只为让每次刷新长出同一片星云 */
+function rng(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = rng(0x5eed1a);
+const randOf = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const nodes = [];
+const links = [];
+const index = new Map();
+
+function addNode(n) {
+  n.i = nodes.length;
+  nodes.push(n);
+  index.set(n.id, n);
+  return n;
+}
+
+// 锚点三类：成员（role）、状态（hub）、标签（rules）——与参考图的分区铭牌同构
+OWNERS.forEach((name, k) =>
+  addNode({ id: `owner:${name}`, label: name, kind: "owner", color: OWNER_COLOR[k % OWNER_COLOR.length], role: "role" }),
+);
+STATUS.forEach((s) => addNode({ id: `status:${s.key}`, label: s.label, kind: "status", color: STATUS_COLOR[s.key], role: "hub" }));
+TAGS.forEach((t) => addNode({ id: `tag:${t}`, label: t, kind: "tag", color: TAG_COLOR[t], role: "rules" }));
+
+const tasks = TITLES.map((title, k) => {
+  const owner = OWNERS[k % OWNERS.length];
+  const r = rand();
+  const status = r < 0.34 ? "doing" : r < 0.68 ? "todo" : "done";
+  const tagCount = 1 + Math.floor(rand() * 2);
+  const tags = [];
+  while (tags.length < tagCount) {
+    const t = randOf(TAGS);
+    if (!tags.includes(t)) tags.push(t);
+  }
+  const created = NOW - Math.floor((2 + rand() * 120) * DAY);
+  const duration = Math.floor((1 + rand() * 34) * DAY);
+  const done = status === "done";
+  return {
+    id: `task:${k}`,
+    label: title,
+    kind: "task",
+    owner,
+    status,
+    tags,
+    duration,
+    days: done ? Math.floor(duration / DAY) : Math.floor((NOW - created) / DAY),
+  };
+});
+tasks.forEach(addNode);
+
+// 边：任务→状态/成员/标签锚点，以及任务之间的依赖
+const degree = new Array(nodes.length).fill(0);
+function connect(s, t, kind) {
+  links.push({ s: s.i, t: t.i, kind });
+  degree[s.i]++; degree[t.i]++;
+}
+for (const task of tasks) {
+  connect(task, index.get(`status:${task.status}`), "status");
+  connect(task, index.get(`owner:${task.owner}`), "owner");
+  for (const tag of task.tags) connect(task, index.get(`tag:${tag}`), "tag");
+}
+for (let k = 0; k < tasks.length; k++) {
+  const task = tasks[k];
+  const depCount = rand() < 0.3 ? 0 : 1 + Math.floor(rand() * 2);
+  for (let j = 0; j < depCount; j++) {
+    const to = tasks[Math.floor(rand() * tasks.length)];
+    if (to.id !== task.id && !links.some((l) => l.s === task.i && l.t === to.i)) connect(task, to, "dep");
+  }
+}
+nodes.forEach((n, i) => { n.degree = degree[i]; });
+
+// 常驻铭牌：连接度最高的八个任务。其余节点靠 hover / 选中现形——
+// 靠"少数带字的点 + 大量微光点"成立，不靠把字铺满。
+// 只在任务里挑：锚点本来就有铭牌，再让高连接度的锚点挤进来，这里就只剩锚点了
+const LABEL_HUBS = new Set(
+  nodes
+    .filter((n) => n.kind === "task")
+    .map((n) => n.i)
+    .sort((a, b) => nodes[b].degree - nodes[a].degree)
+    .slice(0, 8),
+);
+
+/* ══════════════════════════════════════════════════════════════════
+   2. 三维力场
+   ══════════════════════════════════════════════════════════════════ */
+
+const N = nodes.length;
+const L = links.length;
+const pos = new Float32Array(N * 3);
+const vel = new Float32Array(N * 3);
+const MASS = new Float32Array(N).fill(1);
+
+// 锚点更重：只当惯性用——质量大 = 起步慢、被推回得稳，不该削弱它受到的力
+for (const n of nodes) if (n.kind !== "task") MASS[n.i] = 6;
+
+// 锚点各就各位：状态聚一簇当核心，成员沿正面一字排开，标签铺成星群
+// 力导向天生把所有人往中心收，铭牌会叠成一坨，所以先钉岗位、再让力学绕着它长
+const ANCHOR_HINTS = new Map();
+STATUS.forEach((s, k) => ANCHOR_HINTS.set(`status:${s.key}`, [-26, -54 + k * 54, 34]));
+OWNERS.forEach((name, k) => {
+  // 排成一条向后弯的浅弧：正对镜头时六枚铭牌会叠成一行，弧线把它们拉开纵深
+  const x = -152 + k * 60.8;
+  ANCHOR_HINTS.set(`owner:${name}`, [x, -74 + Math.sin(k * 1.05) * 26, 30 + Math.abs(x) * 0.42]);
+});
+// 黄金角 Fibonacci 球面：任意视角下都不存在两枚标签前后重叠
+TAGS.forEach((t, k) => {
+  const th = k * 2.39996323;
+  const yy = 1 - ((k + 0.5) / TAGS.length) * 1.75;   // 压扁一点，避免正上方和正下方各挤一枚
+  const rr = Math.sqrt(Math.max(0, 1 - yy * yy));
+  ANCHOR_HINTS.set(`tag:${t}`, [Math.cos(th) * rr * 176, yy * 126, Math.sin(th) * rr * 176]);
+});
+const PINNED = new Uint8Array(nodes.length);
+const HINT = new Float32Array(nodes.length * 3);
+
+for (let i = 0; i < N; i++) {
+  const n = nodes[i];
+  if (n.kind === "task") {
+    const r = 26 + rand() * 40, th = rand() * Math.PI * 2, ph = Math.acos(2 * rand() - 1);
+    pos[i * 3] = r * Math.sin(ph) * Math.cos(th);
+    pos[i * 3 + 1] = r * Math.cos(ph) * 0.55;
+    pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    continue;
+  }
+  const h = ANCHOR_HINTS.get(n.id);
+  const s = 0.9 + rand() * 0.22;
+  PINNED[i] = 1;
+  HINT[i * 3] = h[0] * s;
+  HINT[i * 3 + 1] = h[1] * s;
+  HINT[i * 3 + 2] = h[2] * s;
+  pos[i * 3] = HINT[i * 3];
+  pos[i * 3 + 1] = HINT[i * 3 + 1];
+  pos[i * 3 + 2] = HINT[i * 3 + 2];
+}
+
+// 边预解析成扁平索引，力学每帧不再读对象
+const la = new Uint16Array(L), lb = new Uint16Array(L);
+const lrest = new Float32Array(L), lweight = new Float32Array(L);
+links.forEach((l, k) => {
+  la[k] = l.s; lb[k] = l.t;
+  lrest[k] = l.kind === "dep" ? 24 : l.kind === "tag" ? 96 : l.kind === "owner" ? 132 : 148;
+  lweight[k] = l.kind === "tag" ? 0.011 : l.kind === "dep" ? 0.009 : 0.006;
+});
+
+// 平衡点：斥力 ∝ 1/d²、引力 ∝ d，云团半径 R ≈ (8.1·REPULSE/GRAVITY)^(1/3)
+// 这组值让 R 落在 190 上下，配合 700+ 的机位留出大片黑场
+const REPULSE = 1900;
+const GRAVITY = 0.0022;
+const DAMP = 0.855;
+const PIN = 0.24;      // 锚点回岗的刚度：要压得住三十几条弹簧的合力，又不能硬到像贴图
+let alpha = 1;
+
+function step() {
+  for (let i = 0; i < N; i++) {
+    const ix = i * 3;
+    for (let j = i + 1; j < N; j++) {
+      const jx = j * 3;
+      let dx = pos[ix] - pos[jx];
+      let dy = pos[ix + 1] - pos[jx + 1];
+      let dz = pos[ix + 2] - pos[jx + 2];
+      // +4 相当于最小间距 2：两点贴脸时斥力趋于无穷，不设下限就会指数飞出去
+      const d2 = dx * dx + dy * dy + dz * dz + 4;
+      const d = Math.sqrt(d2);
+      let f = REPULSE / (d2 * d);
+      if (f > 6) f = 6;
+      // 质量只做惯量：加速度 = 力 / 质量。早前把 MASS 乘进斥力分母，锚点之间几乎
+      // 不互推，而引力又按质量加倍——两类力一叠加，三类铭牌全被拽到画面正中叠成一坨
+      const ia = 1 / MASS[i], ja = 1 / MASS[j];
+      vel[ix] += dx * f * ia; vel[ix + 1] += dy * f * ia; vel[ix + 2] += dz * f * ia;
+      vel[jx] -= dx * f * ja; vel[jx + 1] -= dy * f * ja; vel[jx + 2] -= dz * f * ja;
+    }
+  }
+  for (let k = 0; k < L; k++) {
+    const a = la[k] * 3, b = lb[k] * 3;
+    const dx = pos[b] - pos[a], dy = pos[b + 1] - pos[a + 1], dz = pos[b + 2] - pos[a + 2];
+    const d = Math.sqrt(dx * dx + dy * dy + dz * dz) + 0.001;
+    // 线性胡克：刚度必须与静息长度无关，带 d/rest 因子时长边会硬到让显式积分发散
+    const f = (d - lrest[k]) * lweight[k];
+    const nx = dx / d * f, ny = dy / d * f, nz = dz / d * f;
+    const ia = 1 / MASS[la[k]], ja = 1 / MASS[lb[k]];
+    vel[a] += nx * ia; vel[a + 1] += ny * ia; vel[a + 2] += nz * ia;
+    vel[b] -= nx * ja; vel[b + 1] -= ny * ja; vel[b + 2] -= nz * ja;
+  }
+  for (let i = 0; i < N; i++) {
+    const ix = i * 3;
+    const g = GRAVITY / MASS[i];
+    vel[ix] -= pos[ix] * g;
+    vel[ix + 1] -= pos[ix + 1] * g * 1.6;
+    vel[ix + 2] -= pos[ix + 2] * g;
+    if (PINNED[i]) {
+      vel[ix] += (HINT[ix] - pos[ix]) * PIN;
+      vel[ix + 1] += (HINT[ix + 1] - pos[ix + 1]) * PIN;
+      vel[ix + 2] += (HINT[ix + 2] - pos[ix + 2]) * PIN;
+    }
+    const d = DAMP;
+    vel[ix] *= d; vel[ix + 1] *= d; vel[ix + 2] *= d;
+    pos[ix] += vel[ix] * alpha;
+    pos[ix + 1] += vel[ix + 1] * alpha;
+    pos[ix + 2] += vel[ix + 2] * alpha;
+    // 兜底：数值炸了就把该点甩回外壳重新入场，绝不让一帧坏数据把整片星云拖死
+    const len2 = pos[ix] * pos[ix] + pos[ix + 1] * pos[ix + 1] + pos[ix + 2] * pos[ix + 2];
+    if (!Number.isFinite(len2) || len2 > 810000) {
+      const th = rand() * Math.PI * 2, ph = Math.acos(2 * rand() - 1), r = 170 + rand() * 40;
+      pos[ix] = r * Math.sin(ph) * Math.cos(th);
+      pos[ix + 1] = r * Math.cos(ph) * 0.55;
+      pos[ix + 2] = r * Math.sin(ph) * Math.sin(th);
+      vel[ix] = vel[ix + 1] = vel[ix + 2] = 0;
+    }
+  }
+}
+
+// 退火式预热：alpha 爬升展开，再衰减收敛，两段跑完直接落在平衡态
+for (let i = 0; i < 500; i++) { alpha = 0.12 + 0.88 * (i / 500); step(); }
+for (let i = 0; i < 500; i++) { alpha = 0.4 * (1 - i / 500); step(); }
+
+// 归一：实测半径落到目标值，构图稳定，不随参数漂
+(function normalize(target) {
+  let max = 0;
+  for (let i = 0; i < N; i++) {
+    const d = Math.hypot(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+    if (d > max) max = d;
+  }
+  const k = max > 0 ? target / max : 1;
+  for (let i = 0; i < N * 3; i++) { pos[i] *= k; HINT[i] *= k; }   // 岗位跟着一起缩放，否则归一后锚点会被 PIN 拽回旧尺度
+})(258);
+
+alpha = 0.25;
+
+/* ══════════════════════════════════════════════════════════════════
+   3. 场景：星雾背景 / 恒星 / 尘埃 / 节点 / 边 / 标签
+   ══════════════════════════════════════════════════════════════════ */
+
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+// 纯黑真空：没有底色可谈，宇宙本身不发一分光
+renderer.setClearColor(0x000000, 1);
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(74, innerWidth / innerHeight, 0.5, 6000);
+camera.position.set(-96, 232, 700);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.rotateSpeed = 0.62;
+controls.zoomSpeed = 0.72;
+controls.minDistance = 220;
+controls.maxDistance = 1900;
+controls.autoRotateSpeed = 0.22;
+
+/* ══════════════════════════════════════════════════════════════════
+   3.5 Bloom：星体自己发光，光向外溢出一圈朦胧光晕
+   阈值定得比云团高——云团只是被照亮的尘，越过阈值就等于自己在发光，
+   那条「节点发光 / 云团不发光」的分界就没了
+   ══════════════════════════════════════════════════════════════════ */
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight),
+  1.35,   // strength：光溢出的浓
+  0.82,   // radius：晕开多远
+  0.42,   // threshold：多亮才算光源
+);
+composer.addPass(bloom);
+
+/* ── 远处稀疏静态星点：只负责把黑色宇宙填出纵深，自己不该抢戏 ── */
+const starCount = 1100;
+const starPos = new Float32Array(starCount * 3);
+const starSize = new Float32Array(starCount);
+const starAlpha = new Float32Array(starCount);
+for (let i = 0; i < starCount; i++) {
+  const layer = i % 3;
+  const r = 780 + layer * 560 + rand() * 460;
+  const th = rand() * Math.PI * 2, ph = Math.acos(2 * rand() - 1);
+  starPos[i * 3] = r * Math.sin(ph) * Math.cos(th);
+  starPos[i * 3 + 1] = r * Math.cos(ph);
+  starPos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+  starSize[i] = (1.5 - layer * 0.4) * (0.5 + rand());
+  // 压在 Bloom 阈值之下：星点是填充，不是光源
+  starAlpha[i] = (0.16 + layer * 0.09) * (0.3 + rand() * 0.7);
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+starGeo.setAttribute("aSize", new THREE.BufferAttribute(starSize, 1));
+starGeo.setAttribute("aAlpha", new THREE.BufferAttribute(starAlpha, 1));
+/* 点云材质：K 是「世界尺度 → 屏幕像素」的换算系数，每层自己给 */
+function pointMaterial(k) {
+  return new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uPR: { value: Math.min(devicePixelRatio, 2) } },
+    vertexShader: /* glsl */`
+      attribute float aSize; attribute float aAlpha;
+      uniform float uPR; varying float vA;
+      void main() {
+        vA = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uPR * (${k.toFixed(1)} / -mv.z);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying float vA;
+      void main() {
+        float r = length(gl_PointCoord - 0.5);
+        if (r > 0.5) discard;
+        float a = smoothstep(0.5, 0.0, r);
+        gl_FragColor = vec4(vec3(0.80, 0.86, 1.0) * a, a * a * vA);
+      }
+    `,
+  });
+}
+const stars = new THREE.Points(starGeo, pointMaterial(3000));
+scene.add(stars);
+
+/* ══════════════════════════════════════════════════════════════════
+   云团：不发光，只反射
+   粒子挂在锚点上——每个云团正好罩住一团同类星体，颜色才有得可反射。
+   颜色按 1/d² 加权平均附近星体实时算出，所以切「标签 / 成员 / 状态」时
+   云色跟着一起变；亮度封顶在 Bloom 阈值以下，越过去就等于自己在发光。
+   ══════════════════════════════════════════════════════════════════ */
+const cloudAnchors = nodes.filter((n) => n.kind !== "task").map((n) => n.i);
+const CLOUD_PER = 320;
+const CLOUD_TOTAL = cloudAnchors.length * CLOUD_PER;
+const cloudOff = new Float32Array(CLOUD_TOTAL * 3);   // 相对锚点的偏移，锚点动云跟着动
+const cloudPos = new Float32Array(CLOUD_TOTAL * 3);
+const cloudColor = new Float32Array(CLOUD_TOTAL * 3);
+const cloudSize = new Float32Array(CLOUD_TOTAL);
+const cloudAlpha = new Float32Array(CLOUD_TOTAL);
+const cloudBase = new Float32Array(CLOUD_TOTAL);   // 未做密度补偿的基础亮度
+const cloudSeed = new Float32Array(CLOUD_TOTAL);
+
+// cloudOff 不用在这里撒：散布形状归 fitCloud 用固定种子重建，
+// 这里只出与半径无关的每粒子属性
+for (let i = 0; i < CLOUD_TOTAL; i++) {
+  cloudSize[i] = 7 + rand() * 15;
+  cloudAlpha[i] = 0.024 + rand() * 0.046;
+  cloudBase[i] = cloudAlpha[i];
+  cloudSeed[i] = rand();
+}
+
+const cloudGeo = new THREE.BufferGeometry();
+cloudGeo.setAttribute("position", new THREE.BufferAttribute(cloudPos, 3));
+cloudGeo.setAttribute("aColor", new THREE.BufferAttribute(cloudColor, 3));
+cloudGeo.setAttribute("aSize", new THREE.BufferAttribute(cloudSize, 1));
+cloudGeo.setAttribute("aAlpha", new THREE.BufferAttribute(cloudAlpha, 1));
+cloudGeo.setAttribute("aSeed", new THREE.BufferAttribute(cloudSeed, 1));
+const cloudMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  uniforms: { uPR: { value: Math.min(devicePixelRatio, 2) }, uTime: { value: 0 } },
+  vertexShader: /* glsl */`
+    attribute vec3 aColor; attribute float aSize; attribute float aAlpha; attribute float aSeed;
+    uniform float uPR; uniform float uTime;
+    varying vec3 vC; varying float vA;
+    float hash(vec3 p3) {
+      p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+      p3 += dot(p3, p3.yxz + 33.33);
+      return fract((p3.x + p3.y) * p3.z);
+    }
+    float vnoise(vec3 x) {
+      vec3 i = floor(x), f = fract(x);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
+                     mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                 mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                     mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+    }
+    void main() {
+      vC = aColor;
+      vec3 q = position * 0.009
+             + vec3(aSeed * 23.0, aSeed * 11.0, aSeed * 7.0)
+             + vec3(0.0, uTime * 0.02, 0.0);
+      float n = vnoise(q) - 0.5;
+      // 噪声扰动：粒子忽疏忽密地推来推去，云边就没有硬边
+      vec3 wp = position + vec3(n, fract(n * 5.7) - 0.5, fract(n * 9.1) - 0.5) * 15.0;
+      vec4 mv = modelViewMatrix * vec4(wp, 1.0);
+      gl_PointSize = aSize * uPR * (2400.0 / max(-mv.z, 1.0));
+      vA = aAlpha * (0.3 + (n + 0.5));
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vC; varying float vA;
+    void main() {
+      float r = length(gl_PointCoord - 0.5);
+      if (r > 0.5) discard;
+      float a = smoothstep(0.5, 0.0, r); a *= a;
+      gl_FragColor = vec4(vC * a, a * vA);
+    }
+  `,
+});
+scene.add(new THREE.Points(cloudGeo, cloudMat));
+
+// 云色只在着色调色板或筛选变过时重算，跟随锚点的位移则每帧更新——
+// 两者频率差三个数量级，混在一起就是每帧重算近两千次加权平均
+let cloudsDirty = true;
+
+/* ── 边：随相机转向的细带 ──
+   LineSegments 恒为 1 像素宽，加色混合下存在感全靠 alpha，而 alpha 又被混和方式平方衰减，
+   压在 Bloom 阈值下就成了「有数据没画面」。星轨要的是一条有粗细、有软芯的光路，
+   所以每条边展开成 4 个角点的窄带：横截面 smoothstep 收出软边，
+   芯部亮度刚好越过阈值起一点辉，边上就散成淡光。 */
+const ESEG = 4;
+const edgeStart = new Float32Array(L * ESEG * 3);
+const edgeEnd = new Float32Array(L * ESEG * 3);
+const edgeColor = new Float32Array(L * ESEG * 3);
+const edgeAlpha = new Float32Array(L * ESEG);
+const edgeCorner = new Float32Array(L * ESEG * 2);
+const edgeIdx = new Uint32Array(L * 6);
+for (let k = 0; k < L; k++) {
+  const v = k * ESEG, o = k * 6;
+  // 角点按 (-1,0) (+1,0) (-1,1) (+1,1) 铺开，索引连成两张同向三角形
+  edgeIdx[o] = v; edgeIdx[o + 1] = v + 1; edgeIdx[o + 2] = v + 3;
+  edgeIdx[o + 3] = v; edgeIdx[o + 4] = v + 3; edgeIdx[o + 5] = v + 2;
+  for (let c = 0; c < ESEG; c++) {
+    edgeCorner[(v + c) * 2] = c & 1 ? 1 : -1;
+    edgeCorner[(v + c) * 2 + 1] = c >> 1;
+  }
+}
+const edgeGeo = new THREE.BufferGeometry();
+edgeGeo.setAttribute("aStart", new THREE.BufferAttribute(edgeStart, 3));
+edgeGeo.setAttribute("aEnd", new THREE.BufferAttribute(edgeEnd, 3));
+edgeGeo.setAttribute("aColor", new THREE.BufferAttribute(edgeColor, 3));
+edgeGeo.setAttribute("aAlpha", new THREE.BufferAttribute(edgeAlpha, 1));
+edgeGeo.setAttribute("aCorner", new THREE.BufferAttribute(edgeCorner, 2));
+edgeGeo.setIndex(new THREE.BufferAttribute(edgeIdx, 1));
+// 顶点是着色器里才展开的，包围球只能给个假值，否则算出来是 NaN
+edgeGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+const edgeMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  blending: THREE.AdditiveBlending,
+  uniforms: {
+    uRes: { value: new THREE.Vector2(innerWidth, innerHeight) },
+    uWidth: { value: 1.6 },
+  },
+  vertexShader: /* glsl */`
+    attribute vec3 aStart; attribute vec3 aEnd;
+    attribute vec3 aColor; attribute float aAlpha; attribute vec2 aCorner;
+    uniform vec2 uRes; uniform float uWidth;
+    varying vec3 vC; varying float vA; varying float vS;
+    void main() {
+      vC = aColor; vA = aAlpha; vS = aCorner.x;
+      vec4 cs = projectionMatrix * modelViewMatrix * vec4(aStart, 1.0);
+      vec4 ce = projectionMatrix * modelViewMatrix * vec4(aEnd, 1.0);
+      // 端点跑到相机背后时透视除法会把窄带拉成横贯全屏的巨块，直接塌掉
+      if (cs.w <= 0.0 || ce.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+      vec2 dir = (ce.xy / ce.w - cs.xy / cs.w) * uRes;
+      float len = length(dir);
+      dir = len > 1e-4 ? dir / len : vec2(1.0, 0.0);
+      vec2 nrm = vec2(-dir.y, dir.x) / uRes;
+      // 远处的边收细，密图远景才不会糊成一块发光的板
+      float depth = -(modelViewMatrix * vec4(aStart, 1.0)).z;
+      vec4 p = mix(cs, ce, aCorner.y);
+      p.xy += nrm * (aCorner.x * uWidth * 0.5 * clamp(340.0 / max(depth, 1.0), 0.45, 1.15)) * p.w;
+      gl_Position = p;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vC; varying float vA; varying float vS;
+    void main() {
+      float w = smoothstep(0.0, 1.0, 1.0 - abs(vS));
+      gl_FragColor = vec4(vC * vA * w, w * vA);
+    }
+  `,
+});
+const edgeLines = new THREE.Mesh(edgeGeo, edgeMat);
+edgeLines.frustumCulled = false;
+scene.add(edgeLines);
+
+/* ── 节点：发光核心 ── */
+const nodePos = new Float32Array(N * 3);
+const nodeColor = new Float32Array(N * 3);
+const nodeSize = new Float32Array(N);
+const nodeAlpha = new Float32Array(N);
+const nodeGeo = new THREE.BufferGeometry();
+nodeGeo.setAttribute("position", new THREE.BufferAttribute(nodePos, 3));
+nodeGeo.setAttribute("aColor", new THREE.BufferAttribute(nodeColor, 3));
+nodeGeo.setAttribute("aSize", new THREE.BufferAttribute(nodeSize, 1));
+nodeGeo.setAttribute("aAlpha", new THREE.BufferAttribute(nodeAlpha, 1));
+const nodePoints = new THREE.Points(
+  nodeGeo,
+  new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: { uPR: { value: Math.min(devicePixelRatio, 2) } },
+    vertexShader: /* glsl */`
+      attribute vec3 aColor; attribute float aSize; attribute float aAlpha;
+      uniform float uPR;
+      varying vec3 vC; varying float vA;
+      void main() {
+        vC = aColor; vA = aAlpha;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = aSize * uPR * (2300.0 / max(-mv.z, 1.0));
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec3 vC; varying float vA;
+      void main() {
+        float r = length(gl_PointCoord - 0.5);
+        if (r > 0.5) discard;
+        float halo = pow(smoothstep(0.5, 0.0, r), 2.4);
+        float core = smoothstep(0.17, 0.0, r);
+        vec3 col = vC * halo * 1.25 + vec3(1.0) * core * 0.9;
+        float a = (halo * 0.62 + core * 0.95) * vA;
+        gl_FragColor = vec4(col, a);
+        }
+    `,
+  }),
+);
+scene.add(nodePoints);
+
+/* ── 选中环：唯一允许"动"的结构件 ── */
+const haloGeo = new THREE.RingGeometry(1, 1.16, 72);
+const haloMat = new THREE.MeshBasicMaterial({
+  color: new THREE.Color("#8ff2e0"), transparent: true, opacity: 0,
+  side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+});
+const halo = new THREE.Mesh(haloGeo, haloMat);
+scene.add(halo);
+
+/* ── 标签层 ── */
+const labelRenderer = new CSS2DRenderer({ element: document.getElementById("labels") });
+labelRenderer.setSize(innerWidth, innerHeight);
+
+const labels = nodes.map((n) => {
+  const el = document.createElement("div");
+  el.className = "nlabel" + (n.kind === "task" ? "" : " anchor");
+  const off = document.createElement("span");
+  off.className = "off";
+  if (n.kind === "task") {
+    off.innerHTML = `${n.label}<span class="sub">${n.degree}</span>`;
+  } else {
+    off.innerHTML = `<span class="kind">${n.role}</span>${n.label}<span class="sub"></span>`;
+  }
+  el.appendChild(off);
+  el.style.opacity = "0";
+  const obj = new CSS2DObject(el);
+  scene.add(obj);
+  return { el, obj, sub: off.querySelector(".sub"), w: 0, h: 0, ox: 0, oy: 0, cull: false, want: false, lift: n.kind === "task" ? -16 : -22 };
+});
+
+// 铭牌落位顺序：锚点按连接度排，枢纽任务垫后。谁重要谁先占位，撞上了才让
+const PLAQUE_ORDER = nodes
+  .map((n, i) => ({ n, i }))
+  .sort((a, b) => (a.n.kind === "task") - (b.n.kind === "task") || b.n.degree - a.n.degree)
+  .map((x) => x.i);
+const boxes = [];
+const scr = new THREE.Vector3();
+let labelSet = null, labelSetFor = -2;   // 选中态的铭牌放行名单，按注意力目标缓存
+
+/* 仪表栏本身也是障碍：铭牌让进面板底下等于白让。矩形变化很慢，
+   ResizeObserver 只在真变过时标脏，省得每帧为量尺寸逼一次重排 */
+const RAILS = [...document.querySelectorAll(".rail")];
+const rails = [];
+let band = { l: 6, r: 0 };
+let railsDirty = true;
+const railRO = new ResizeObserver(() => { railsDirty = true; });
+RAILS.forEach((el) => railRO.observe(el));
+function measureRails() {
+  rails.length = 0;
+  for (const el of RAILS) {
+    const r = el.getBoundingClientRect();
+    rails.push({ l: r.left - 14, r: r.right + 14, t: r.top - 14, b: r.bottom + 14 });
+  }
+  // 中腰那条没被面板占掉的横带，通栏的顶/底条只压边不算进来
+  band = { l: 6, r: innerWidth - 6 };
+  for (const o of rails) {
+    if (o.r - o.l > innerWidth * 0.8) continue;
+    if (o.l < innerWidth / 2) band.l = Math.max(band.l, o.r);
+    else band.r = Math.min(band.r, o.l);
+  }
+  railsDirty = false;
+}
+
+/* 3D 摆位再讲究也躲不开某个机位下的透视压字，这层在屏幕坐标上兜底。
+   坑：早前只做"往下一格让"，一旦让到的高度恰好等于下方那块的下沿，
+   dy 就再也不增长，卡在同一个值上死循环——半个场景的铭牌就这么压在一起。
+   现在改成候选位贪心：上次的偏移排第一个（旋转时不抖），再依次试上下左右。
+   --dx/--dy 只作用在 .off 上，因为外层 transform 是 CSS2DRenderer 每帧覆写的 */
+function declutter() {
+  if (railsDirty) measureRails();
+  boxes.length = 0;
+  for (const o of rails) boxes.push(o);
+  for (const i of PLAQUE_ORDER) {
+    const lab = labels[i];
+    if (!lab.want) continue;
+    if (!lab.w) {
+      // 首帧元素还没被 CSS2DRenderer 挂进 DOM，量不到尺寸就等下一帧
+      lab.w = lab.el.offsetWidth;
+      lab.h = lab.el.offsetHeight;
+      if (!lab.w) continue;
+    }
+    scr.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]).project(camera);
+    const cx = (scr.x * 0.5 + 0.5) * innerWidth;
+    const cy = (-scr.y * 0.5 + 0.5) * innerHeight;
+    if (scr.z > 1) { lab.el.style.setProperty("--dx", "0px"); lab.el.style.setProperty("--dy", "0px"); continue; }
+
+    const gap = lab.h + 5;
+    const side = lab.w / 2 + 12;
+    // 顺序即优先级：先原地，再上下四层，最后往两侧。右侧先于左侧，
+    // 左边压着仪器栏，把铭牌让过去等于让进面板底下
+    const cand = [[lab.ox, lab.oy], [0, 0]];
+    for (let k = 1; k <= 4; k++) cand.push([0, -k * gap], [0, k * gap]);
+    cand.push(
+      [side, 0], [side, -gap], [side, gap], [-side, 0], [-side, -gap], [-side, gap],
+      [side * 2, 0], [side * 2, -gap], [side * 2, gap], [-side * 2, 0], [-side * 2, -gap], [-side * 2, gap],
+      [side * 3, 0], [side * 3, -gap], [-side * 3, 0], [-side * 3, -gap],
+    );
+    let hit = null;
+    for (const [dx, dy] of cand) {
+      const l = cx + dx - lab.w / 2 - 4, r = cx + dx + lab.w / 2 + 4;
+      const t = cy + dy + lab.lift - lab.h, b = cy + dy + lab.lift;
+      if (l < 6 || r > innerWidth - 6 || t < 6 || b > innerHeight - 6) continue;
+      if (boxes.some((o) => l < o.r && r > o.l && t < o.b && b > o.t)) continue;
+      boxes.push({ l, r, t, b });
+      hit = [dx, dy];
+      break;
+    }
+    if (!hit && band.r - band.l > lab.w) {
+      // 候选位挤不下就别塞回原位——压字比缺牌难看：先横着推进中腰的空档
+      const dx = cx + lab.w / 2 > band.r ? band.r - lab.w / 2 - cx
+        : cx - lab.w / 2 < band.l ? band.l - lab.w / 2 - cx : 0;
+      const l = cx + dx - lab.w / 2 - 4, r = cx + dx + lab.w / 2 + 4;
+      const t = cy + lab.lift - lab.h, b = cy + lab.lift;
+      if (t > 6 && b < innerHeight - 6 && !boxes.some((o) => l < o.r && r > o.l && t < o.b && b > o.t)) {
+        boxes.push({ l, r, t, b });
+        hit = [dx, 0];
+      }
+    }
+    if (!hit) {
+      // 真没地方了：藏这一帧。挤在一起的两块字没人读得下去，缺一块还有人找得到
+      lab.cull = true;
+      lab.ox = 0; lab.oy = 0;
+      lab.el.style.setProperty("--dx", "0px");
+      lab.el.style.setProperty("--dy", "0px");
+      continue;
+    }
+    lab.cull = false;
+    const [dx, dy] = hit;
+    lab.ox = dx; lab.oy = dy;
+    lab.el.style.setProperty("--dx", dx.toFixed(0) + "px");
+    lab.el.style.setProperty("--dy", dy.toFixed(0) + "px");
+  }
+}
+// IBM Plex Mono 是异步加载的，首帧量到的是回退字体的宽度，字体到位后重新量一次
+document.fonts.ready.then(() => labels.forEach((l) => { l.w = 0; }));
+
+/* ══════════════════════════════════════════════════════════════════
+   4. 视图状态：着色 / 大小 / 筛选 / 选中
+   ══════════════════════════════════════════════════════════════════ */
+
+const state = {
+  colorMode: "tag",
+  query: "",
+  hits: 0,
+  statuses: new Set(STATUS.map((s) => s.key)),
+  owners: new Set(OWNERS),
+  tags: new Set(TAGS),
+  hover: -1,
+  selected: -1,
+};
+
+const adjacency = nodes.map(() => new Set());
+links.forEach((l) => { adjacency[l.s].add(l.t); adjacency[l.t].add(l.s); });
+
+const tmpColor = new THREE.Color();
+const baseColor = new Array(N);
+const sizeBase = new Float32Array(N);
+
+function refreshAppearance() {
+  const q = state.query.trim().toLowerCase();
+  for (let i = 0; i < N; i++) {
+    const n = nodes[i];
+    let c = n.color;
+    if (n.kind === "task") {
+      c = state.colorMode === "tag" ? TAG_COLOR[n.tags[0]]
+        : state.colorMode === "owner" ? OWNER_COLOR[OWNERS.indexOf(n.owner)]
+        : STATUS_COLOR[n.status];
+    }
+    tmpColor.set(c);
+    baseColor[i] = [tmpColor.r, tmpColor.g, tmpColor.b];
+
+    const pool = n.kind === "task" ? Math.max(n.degree - 2, 0) : n.degree;
+    sizeBase[i] = n.kind === "task" ? 2.6 + Math.sqrt(pool) * 1.15 : Math.max(2.6 + Math.sqrt(pool) * 1.15, 5.0);
+  }
+  // 筛选：不合格节点不删除，只退成背景里的尘——星云的骨架得留着
+  // 文本检索只筛任务：锚点是结构不是检索对象，早前连锚点一起筛，
+  // 搜一个 "OCR" 就把状态/成员/标签铭牌全灭了，整张图连骨架都不剩
+  for (let i = 0; i < N; i++) {
+    const n = nodes[i];
+    let pass = true;
+    if (n.kind === "task") {
+      pass = state.statuses.has(n.status) && state.owners.has(n.owner)
+        && n.tags.some((t) => state.tags.has(t));
+      // 输入框写的是"检索任务 / 成员 / 标签"，三个维度都得能命中
+      if (q && !`${n.label} ${n.owner} ${n.tags.join(" ")} ${STATUS.find((s) => s.key === n.status).label}`
+        .toLowerCase().includes(q)) pass = false;
+    }
+    n.pass = pass;
+  }
+  const hit = nodes.filter((n) => n.pass && n.kind === "task").length;
+  state.hits = hit;
+  document.getElementById("q-count").textContent = q ? `${hit} 命中` : "";
+  cloudsDirty = true;
+}
+
+/* ── 云团着色：按 1/d² 加权平均它罩住的星体颜色 ──
+   这就是「反射」的全部含义：云自己没有色号，色号来自附近谁在发光。
+   被筛掉的节点不参与——它们已经灭成尘了，没资格照亮云。 */
+const CLOUD_REACH = 190;
+const CLOUD_REFLECT = 0.48;   // 反射是微弱的：单颗粒子最亮也就 0.04，离 Bloom 阈值差着两个数量级
+const cloudR = new Float32Array(cloudAnchors.length).fill(-1);
+
+/** 按固定种子重建某组云的散布形状。
+ *  用已存的 aSeed 派生方向而不是另抽随机数：同一组每次重建形状完全一致，
+ *  筛选来回切的时候云不会每次都换一副脸。 */
+function fitCloud(g, radius) {
+  cloudR[g] = radius;
+  // 半径一小粒子就挤密，加色叠加是逐粒累加的，密度上去了云会自己顶过 Bloom 阈值
+  // 开始发光——那正好把「云只反射、不发光」这条命门拆了。
+  // 补偿只按 r^-0.8 压一部分差异：全按面积反比摊掉的话，大半径的云会淡到看不见，
+  // 而锚点铺得开的时候大半云都是大半径。
+  const dens = Math.min(Math.pow(64 / radius, 0.8), 1.45);
+  for (let k = 0; k < CLOUD_PER; k++) {
+    const i = g * CLOUD_PER + k;
+    const s = cloudSeed[i];
+    const th = s * Math.PI * 2;
+    const ph = Math.acos(2 * ((s * 7.13) % 1) - 1);
+    // 幂次 <1：中心密外围疏，叠上着色器噪声后边缘没有硬轮廓
+    const rr = radius * (0.22 + 0.78 * Math.pow((s * 3.71) % 1, 0.62));
+    cloudOff[i * 3] = rr * Math.sin(ph) * Math.cos(th);
+    cloudOff[i * 3 + 1] = rr * Math.cos(ph) * 0.74;
+    cloudOff[i * 3 + 2] = rr * Math.sin(ph) * Math.sin(th);
+    cloudAlpha[i] = cloudBase[i] * dens;
+  }
+  cloudGeo.attributes.aAlpha.needsUpdate = true;
+}
+
+function sampleClouds() {
+  cloudsDirty = false;
+  for (let g = 0; g < cloudAnchors.length; g++) {
+    const ai = cloudAnchors[g];
+    const ax = pos[ai * 3], ay = pos[ai * 3 + 1], az = pos[ai * 3 + 2];
+    let r = 0, gg = 0, b = 0, w = 0, dw = 0;
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      if (n.kind !== "task" || !n.pass) continue;
+      const dx = pos[i * 3] - ax, dy = pos[i * 3 + 1] - ay, dz = pos[i * 3 + 2] - az;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > CLOUD_REACH * CLOUD_REACH) continue;
+      const k = 1 / (d2 + 1400);       // +常数项：太近也不让单颗星体主宰一整团云
+      r += baseColor[i][0] * k;
+      gg += baseColor[i][1] * k;
+      b += baseColor[i][2] * k;
+      w += k;
+      dw += k * Math.sqrt(d2);
+    }
+    // 云的大小 = 它罩住的星体群实际铺开多大。锚点全挤在中部，
+    // 半径写死或放太开的话十九团云会连成一片中央亮雾，把节点全埋进去
+    const fit = w > 0 ? Math.min(Math.max(dw / w * 1.45, 40), 132) : 56;
+    if (Math.abs(fit - cloudR[g]) > 5) fitCloud(g, fit);
+
+    // 多色星体加权平均会洗成灰白，把色度按亮度推回去，云才带得住局部色调
+    let cr = w > 0 ? r / w : 0.06, cg = w > 0 ? gg / w : 0.07, cb = w > 0 ? b / w : 0.1;
+    const lum = cr * 0.2126 + cg * 0.7152 + cb * 0.0722;
+    cr = Math.max(0, lum + (cr - lum) * 1.3);
+    cg = Math.max(0, lum + (cg - lum) * 1.3);
+    cb = Math.max(0, lum + (cb - lum) * 1.3);
+    const kR = CLOUD_REFLECT * cr, kG = CLOUD_REFLECT * cg, kB = CLOUD_REFLECT * cb;
+    for (let k = 0; k < CLOUD_PER; k++) {
+      const i = g * CLOUD_PER + k;
+      cloudColor[i * 3] = kR;
+      cloudColor[i * 3 + 1] = kG;
+      cloudColor[i * 3 + 2] = kB;
+    }
+  }
+  cloudGeo.attributes.aColor.needsUpdate = true;
+}
+
+/* 锚点被力场推着走，云是罩在锚点上的，必须每帧跟上 */
+function followClouds() {
+  for (let g = 0; g < cloudAnchors.length; g++) {
+    const ai = cloudAnchors[g];
+    const ax = pos[ai * 3], ay = pos[ai * 3 + 1], az = pos[ai * 3 + 2];
+    for (let k = 0; k < CLOUD_PER; k++) {
+      const i = (g * CLOUD_PER + k) * 3;
+      cloudPos[i] = ax + cloudOff[i];
+      cloudPos[i + 1] = ay + cloudOff[i + 1];
+      cloudPos[i + 2] = az + cloudOff[i + 2];
+    }
+  }
+  cloudGeo.attributes.position.needsUpdate = true;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   5. HUD 装配
+   ══════════════════════════════════════════════════════════════════ */
+
+const $ = (id) => document.getElementById(id);
+const legend = $("legend");
+function renderLegend() {
+  if (state.colorMode === "tag") {
+    legend.innerHTML = TAGS.map(
+      (t) => `<span><i style="background:${TAG_COLOR[t]}"></i>${t}</span>`,
+    ).join("");
+  } else if (state.colorMode === "owner") {
+    legend.innerHTML = OWNERS.map(
+      (o, k) => `<span><i style="background:${OWNER_COLOR[k]}"></i>${o}</span>`,
+    ).join("");
+  } else {
+    legend.innerHTML = STATUS.map(
+      (s) => `<span><i style="background:${STATUS_COLOR[s.key]}"></i>${s.label}</span>`,
+    ).join("");
+  }
+}
+function buildChips(host, items, set, render) {
+  host.innerHTML = "";
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.setAttribute("aria-pressed", "true");
+    b.style.color = render(it) || "";
+    b.innerHTML = `<i class="sw"></i><span>${it.label ?? it}</span><span class="n">${it.n}</span>`;
+    b.addEventListener("click", () => {
+      const key = it.key ?? it;
+      if (set.has(key)) set.delete(key); else set.add(key);
+      if (set.size === 0) items.forEach((x) => set.add(x.key ?? x));
+      host.querySelectorAll(".chip").forEach((el, k) => {
+        el.setAttribute("aria-pressed", String(set.has(items[k].key ?? items[k])));
+      });
+      refreshAppearance();
+      heat();
+    });
+    host.appendChild(b);
+  }
+}
+const countOf = (pred) => tasks.filter(pred).length;
+buildChips($("f-status"), STATUS.map((s) => ({ ...s, n: countOf((t) => t.status === s.key) })),
+  state.statuses, (it) => STATUS_COLOR[it.key]);
+buildChips($("f-owner"), OWNERS.map((o, k) => ({ key: o, label: o, n: countOf((t) => t.owner === o) })),
+  state.owners, (it) => OWNER_COLOR[OWNERS.indexOf(it.key)]);
+buildChips($("f-tag"), TAGS.map((t) => ({ key: t, label: t, n: countOf((x) => x.tags.includes(t)) })),
+  state.tags, (it) => TAG_COLOR[it.key]);
+
+$("seg-color").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.colorMode = b.dataset.v;
+  $("seg-color").querySelectorAll("button").forEach((x) =>
+    x.setAttribute("aria-pressed", String(x === b)));
+  renderLegend(); refreshAppearance();
+});
+$("q").addEventListener("input", (e) => { state.query = e.target.value; refreshAppearance(); });
+$("clear").addEventListener("click", () => select(-1));
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") select(-1);
+  if (e.key === " " && e.target === document.body) { controls.autoRotate = !controls.autoRotate; e.preventDefault(); }
+  if (e.key.toLowerCase() === "f" && e.target === document.body) {
+    camera.position.set(-96, 232, 700); controls.target.set(0, 0, 0); controls.update();
+  }
+});
+
+/* 节点档案 */
+function select(i) {
+  state.selected = i;
+  const box = $("detail");
+  $("clear").hidden = i < 0;
+  if (i < 0) {
+    box.innerHTML = `<p class="empty">拖动旋转 · 滚轮缩放<br />点选任一节点展开档案<br />Esc 清除选择</p>`;
+    return;
+  }
+  const n = nodes[i];
+  if (n.kind === "task") {
+    const up = links.filter((l) => l.t === i && l.kind === "dep").map((l) => nodes[l.s].label);
+    const down = links.filter((l) => l.s === i && l.kind === "dep").map((l) => nodes[l.t].label);
+    const pct = Math.max(4, Math.min(100, Math.round((1 - n.days / 45) * 100)));
+    box.innerHTML =
+      `<div class="name">${n.label}</div>
+       <dl class="kv">
+         <dt>状态</dt><dd style="color:${n.days >= 14 && n.status === "doing" ? STALL_COLOR : STATUS_COLOR[n.status]}">${STATUS.find((s) => s.key === n.status).label}${n.status === "doing" && n.days >= 14 ? " · 钉子户" : ""}</dd>
+         <dt>成员</dt><dd style="color:${OWNER_COLOR[OWNERS.indexOf(n.owner)]}">${n.owner}</dd>
+         <dt>标签</dt><dd>${n.tags.join(" / ")}</dd>
+         <dt>连接</dt><dd>${n.degree} 条</dd>
+         <dt>已历</dt><dd>${n.days} 天</dd>
+       </dl>
+       <div class="meter"><i style="width:${pct}%;background:${STATUS_COLOR[n.status]}"></i></div>
+       ${rel("上游依赖", up)}${rel("下游阻塞", down)}`;
+  } else {
+    const members = tasks.filter((t) =>
+      n.kind === "tag" ? t.tags.includes(n.label)
+        : n.kind === "owner" ? t.owner === n.label
+          : t.status === n.label.replace("进行中", "doing").replace("待办", "todo").replace("已完成", "done"));
+    const stKey = n.id.split(":")[1];
+    const list = n.kind === "status" ? members.filter((t) => t.status === stKey) : members;
+    box.innerHTML =
+      `<div class="name" style="color:${n.color}">${n.label}</div>
+       <dl class="kv">
+         <dt>类型</dt><dd>${n.role === "role" ? "成员锚点" : n.role === "hub" ? "状态锚点" : "标签锚点"}</dd>
+         <dt>任务</dt><dd>${list.length} 张卡</dd>
+         <dt>连线</dt><dd>${n.degree} 条</dd>
+       </dl>
+       <div class="rel"><h5>成员任务</h5><ul>${list.slice(0, 6).map((t) => `<li data-id="${t.id}">${t.label}</li>`).join("")}</ul></div>`;
+  }
+  box.querySelectorAll("li[data-id]").forEach((li) =>
+    li.addEventListener("click", () => select(index.get(li.dataset.id).i)));
+}
+function rel(title, list) {
+  if (!list.length) return "";
+  return `<div class="rel"><h5>${title}</h5><ul>${list.slice(0, 5).map((l) => `<li>${l}</li>`).join("")}</ul></div>`;
+}
+select(-1);
+renderLegend();
+refreshAppearance();
+sampleClouds();
+
+/* 底栏读数 */
+$("r-nodes").textContent = N;
+$("r-links").textContent = L;
+const metrics = (() => {
+  const taskDegree = tasks.map((t) => t.degree);
+  const density = (L / N).toFixed(2);
+  const hub = Math.max(...taskDegree);
+  const doing = tasks.filter((t) => t.status === "doing").length;
+  const stall = Math.max(...tasks.filter((t) => t.status !== "done").map((t) => t.days));
+  const cluster = TAGS.filter((t) => tasks.filter((x) => x.tags.includes(t)).length >= 3).length;
+  return { density, hub, doing, stall, cluster };
+})();
+function meter(barId, filled) {
+  const el = $(barId);
+  if (!el.children.length) for (let i = 0; i < 16; i++) el.appendChild(document.createElement("i"));
+  const n = Math.round((filled / 16) * el.children.length);
+  [...el.children].forEach((c, i) => c.classList.toggle("on", i < n));
+}
+$("m-density").innerHTML = `${metrics.density}<em>边/点</em>`;
+$("m-hub").innerHTML = `${metrics.hub}<em>最连节点</em>`;
+$("m-doing").innerHTML = `${metrics.doing}<em>进行中</em>`;
+$("m-stall").innerHTML = `${metrics.stall}<em>天 · 未完成</em>`;
+$("m-cluster").innerHTML = `${metrics.cluster}<em>标签簇</em>`;
+meter("b-density", metrics.density / 6);
+meter("b-hub", metrics.hub / 26);
+meter("b-doing", metrics.doing / 40);
+meter("b-stall", metrics.stall / 45);
+meter("b-cluster", metrics.cluster / 10);
+
+/* ══════════════════════════════════════════════════════════════════
+   6. 拾取：屏幕空间最近点，比 raycaster 便宜也更宽容
+   ══════════════════════════════════════════════════════════════════ */
+
+const ray = new THREE.Vector3();
+let pointer = { x: -1e4, y: -1e4, inside: false };
+const screen = new Float32Array(N * 3);
+
+renderer.domElement.addEventListener("pointermove", (e) => {
+  pointer = { x: e.clientX, y: e.clientY, inside: true };
+});
+renderer.domElement.addEventListener("pointerleave", () => {
+  pointer.inside = false; state.hover = -1;
+});
+renderer.domElement.addEventListener("click", () => {
+  const i = pick();     // 用按下这一瞬间的指针重新拾取，别赌上一帧的 hover 缓存
+  if (i >= 0) select(i);
+});
+renderer.domElement.addEventListener("dblclick", () => {
+  const i = pick();
+  if (i >= 0) {
+    const n = nodes[i];
+    camera.position.set(pos[n.i * 3] * 2.2, pos[n.i * 3 + 1] * 2.2, pos[n.i * 3 + 2] * 2.2);
+  }
+});
+
+function pick() {
+  if (!pointer.inside) return -1;
+  let best = -1, bestD = 26;
+  for (let i = 0; i < N; i++) {
+    if (screen[i * 3 + 2] > 1) continue;          // 相机背后
+    const d = Math.hypot(screen[i * 3] - pointer.x, screen[i * 3 + 1] - pointer.y);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   7. 帧循环
+   ══════════════════════════════════════════════════════════════════ */
+
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+controls.autoRotate = !reduced;
+
+let last = performance.now();
+let fpsAcc = 0, fpsFrames = 0, clock = 0;
+
+function heat(v = 0.75) { alpha = Math.max(alpha, v); }
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  clock += dt;
+
+  if (alpha > 0.006) { step(); alpha *= 0.982; }
+
+  controls.update();
+
+  // 云团内部的噪声缓慢流动——云是活的，但不跟背景星点一样转：
+  // 星点是宇宙本身（转），云是被照亮的局部物质（只流动）
+  cloudMat.uniforms.uTime.value = clock;
+  followClouds();
+  if (cloudsDirty) sampleClouds();
+
+  // 投影 → 屏幕空间拾取
+  for (let i = 0; i < N; i++) {
+    ray.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]).project(camera);
+    screen[i * 3] = (ray.x * 0.5 + 0.5) * innerWidth;
+    screen[i * 3 + 1] = (-ray.y * 0.5 + 0.5) * innerHeight;
+    screen[i * 3 + 2] = ray.z;
+  }
+  const hover = pick();
+  if (hover !== state.hover) { state.hover = hover; renderer.domElement.style.cursor = hover >= 0 ? "pointer" : "grab"; }
+  if (hover >= 0 && hover !== state.selected) heat(0.5);
+
+  // 注意力只有一处：选中的优先，没有选中才轮给悬停。二者不该各压一次全场
+  const focus = state.selected;
+  const att = focus >= 0 ? focus : hover;
+  const near = att >= 0 ? adjacency[att] : null;
+
+  // 选中态只放行最重的一批邻居铭牌：一个状态锚点连着二十多个任务，全亮出来就是一面字墙
+  if (att >= 0) {
+    if (labelSetFor !== att) {
+      labelSetFor = att;
+      labelSet = new Set([att]);
+      [...near]
+        .sort((a, b) => (nodes[a].kind === "task") - (nodes[b].kind === "task") || nodes[b].degree - nodes[a].degree)
+        .slice(0, 12)
+        .forEach((i) => labelSet.add(i));
+    }
+  } else {
+    labelSetFor = -2;
+  }
+
+  // 节点
+  for (let i = 0; i < N; i++) {
+    const n = nodes[i];
+    nodePos[i * 3] = pos[i * 3];
+    nodePos[i * 3 + 1] = pos[i * 3 + 1];
+    nodePos[i * 3 + 2] = pos[i * 3 + 2];
+
+    // 别把非注意力节点压成背景尘：压到 0.2 再乘深度衰减就只剩 0.09，整片星云看着像被清空了
+    let a = n.pass ? 1 : 0.055;
+    if (att >= 0) a = i === att ? 1 : near.has(i) ? 0.9 : 0.42;
+
+    // 远处退进雾里，深度感靠亮度差而非描边
+    const dist = Math.hypot(pos[i * 3] - camera.position.x, pos[i * 3 + 1] - camera.position.y, pos[i * 3 + 2] - camera.position.z);
+    a *= THREE.MathUtils.clamp(1.4 - (dist - 260) / 620, 0.46, 1);
+
+    nodeColor[i * 3] = baseColor[i][0];
+    nodeColor[i * 3 + 1] = baseColor[i][1];
+    nodeColor[i * 3 + 2] = baseColor[i][2];
+    nodeAlpha[i] = a;
+    const pulse = i === att ? 1.16 + Math.sin(clock * 2.6) * 0.07 : 1;
+    nodeSize[i] = sizeBase[i] * pulse;
+  }
+  nodeGeo.attributes.position.needsUpdate = true;
+  nodeGeo.attributes.aColor.needsUpdate = true;
+  nodeGeo.attributes.aSize.needsUpdate = true;
+  nodeGeo.attributes.aAlpha.needsUpdate = true;
+
+  // 边
+  for (let k = 0; k < L; k++) {
+    const a = la[k], b = lb[k];
+    const kind = links[k].kind;
+    // 加色混合下 alpha 会被混和方式平方衰减，所以这里的数值看着虚高是刻意的：
+    // 平方之后语义边才刚好爬到 Bloom 阈值起辉，弱边仍留在阈值下当淡光路
+    let al = kind === "dep" ? 0.72 : 0.34;
+    if (!nodes[a].pass || !nodes[b].pass) al *= 0.06;
+    if (att >= 0) {
+      if (a === att || b === att) al = 0.95;
+      else if (near.has(a) && near.has(b)) al *= 0.7;
+      else al *= 0.3;
+    }
+    for (let c = 0; c < ESEG; c++) {
+      const v = (k * ESEG + c) * 3, q = k * ESEG + c;
+      edgeStart[v] = pos[a * 3]; edgeStart[v + 1] = pos[a * 3 + 1]; edgeStart[v + 2] = pos[a * 3 + 2];
+      edgeEnd[v] = pos[b * 3]; edgeEnd[v + 1] = pos[b * 3 + 1]; edgeEnd[v + 2] = pos[b * 3 + 2];
+      edgeColor[v] = nodeColor[a * 3]; edgeColor[v + 1] = nodeColor[a * 3 + 1]; edgeColor[v + 2] = nodeColor[a * 3 + 2];
+      edgeAlpha[q] = al;
+    }
+  }
+  edgeGeo.attributes.aStart.needsUpdate = true;
+  edgeGeo.attributes.aEnd.needsUpdate = true;
+  edgeGeo.attributes.aColor.needsUpdate = true;
+  edgeGeo.attributes.aAlpha.needsUpdate = true;
+
+  // 标签：只给该给的人看。参考图靠"少数标签 + 大量微光点"成立，不是靠字多
+  // 检索时例外：命中数不多就把铭牌全亮出来，搜完却看不清搜到了什么等于没筛
+  const revealHits = !!state.query.trim() && state.hits <= 18;
+  for (let i = 0; i < N; i++) {
+    const n = nodes[i];
+    const lab = labels[i];
+    lab.obj.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+    let show = n.pass && nodeAlpha[i] > 0.2;
+    if (show && att < 0) show = n.kind !== "task" || revealHits || LABEL_HUBS.has(i);
+    else if (show) show = labelSet.has(i);
+    lab.want = show;
+    lab.obj.visible = show;   // 不能改 display：CSS2DRenderer 每帧会覆写它
+    // 没抢到落点的只压透明度，不动 visible：藏掉就等于永远退出摆位，再也回不来
+    lab.el.style.opacity = lab.cull ? "0" : String(Math.min(1, nodeAlpha[i] * 1.4));
+    lab.el.className = "nlabel" + (n.kind !== "task" ? " anchor" : "")
+      + (i === att ? " focus" : "");
+    if (n.kind !== "task") lab.sub.textContent = n.degree;
+  }
+  declutter();
+
+  // 选中环：屏幕尺寸跟着节点的视觉半径走，缩放时不脱节
+  if (focus >= 0) {
+    halo.position.set(pos[focus * 3], pos[focus * 3 + 1], pos[focus * 3 + 2]);
+    halo.quaternion.copy(camera.quaternion);
+    const dist = camera.position.distanceTo(halo.position);
+    const px = (sizeBase[focus] * 2300) / dist;
+    const worldPerPx = (2 * dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) / innerHeight;
+    const breathe = 1 + Math.sin(clock * 2.6) * 0.05;
+    halo.scale.setScalar(Math.max(px, 7) * 1.55 * breathe * worldPerPx);
+    haloMat.opacity = 0.42 + Math.sin(clock * 2.6) * 0.14;
+  } else {
+    haloMat.opacity = 0;
+  }
+
+  composer.render();
+  labelRenderer.render(scene, camera);
+
+  fpsAcc += dt; fpsFrames++;
+  if (fpsAcc >= 0.5) {
+    $("r-fps").textContent = Math.round(fpsFrames / fpsAcc);
+    fpsAcc = 0; fpsFrames = 0;
+  }
+}
+
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth, innerHeight);
+  edgeMat.uniforms.uRes.value.set(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
+  railsDirty = true;
+});
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
