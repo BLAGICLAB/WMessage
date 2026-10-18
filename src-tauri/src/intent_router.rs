@@ -102,10 +102,32 @@ pub fn is_chat_execute_trigger(content: &str) -> Option<Vec<(String, String)>> {
         .trim()
         .to_lowercase();
     const KEYWORDS: &[&str] = &["完成", "执行", "搞定", "开干", "做掉", "go", "run", "do"];
-    if !KEYWORDS.iter().any(|kw| user_cmd.contains(kw)) {
+    if !KEYWORDS.iter().any(|kw| keyword_hit(&user_cmd, kw)) {
         return None;
     }
     Some(tasks)
+}
+
+/// 触发词命中（纯函数，便于单测）：
+///
+/// - CJK 词按子串命中——中文没有词边界，「这些都完成」就该触发。
+/// - ASCII 词必须是命令的**第一个词**且右边界干净：go/run/do 单独成词太容易
+///   撞进英文句子（download、google 含 go；cargo run 的 run 不是首词），
+///   而命中意味着把选中卡**全部按自主执行跑一遍**——误判代价是用户只想聊天
+///   却开跑了。宁可漏触发：没触发时主流程按规则 1-16 正常处理，
+///   且系统提示词明令模型不得自行声称已开始批量执行。
+fn keyword_hit(user_cmd: &str, kw: &str) -> bool {
+    if !kw.is_ascii() {
+        return user_cmd.contains(kw);
+    }
+    let Some(rest) = user_cmd.strip_prefix(kw) else {
+        return false;
+    };
+    match rest.as_bytes().first() {
+        None => true,
+        // 多字节 UTF-8 首字节 ≥ 0x80，不落 ASCII 分支——「go一下」照样算边界
+        Some(&b) => !(b.is_ascii_alphanumeric() || b == b'_'),
+    }
 }
 
 /// 一条路由规则：技能名 + 该技能 frontmatter `intents` 声明的正则模式列表。
@@ -471,6 +493,49 @@ mod chat_execute_parse_tests {
     fn trigger_keyword_case_insensitive() {
         assert!(is_chat_execute_trigger("GO\n\n[已选任务]\n- id=a，标题=b").is_some());
         assert!(is_chat_execute_trigger("Run\n\n[已选任务]\n- id=a，标题=b").is_some());
+    }
+
+    /// 命中 = 把选中卡全部自主执行一遍，所以英文句子里**含** go/run/do 不足以触发：
+    /// download / google 含 go，cargo run 的 run 不是首词——这些都只是普通聊天。
+    #[test]
+    fn trigger_rejects_ascii_keywords_embedded_in_english() {
+        for cmd in [
+            "download the report",
+            "google 一下",
+            "cargo run",
+            "running tests",
+            "domain model",
+            "please run the build",
+        ] {
+            let content = format!("{cmd}\n\n[已选任务]\n- id=a，标题=b");
+            assert!(
+                is_chat_execute_trigger(&content).is_none(),
+                "「{cmd}」不该触发批量执行"
+            );
+        }
+    }
+
+    /// 反过来：中英混说里 ASCII 词确实在首位时仍要触发（口语「go一下」）。
+    #[test]
+    fn trigger_accepts_leading_ascii_keyword_with_cjk_suffix() {
+        for cmd in ["go一下", "run 一下", "do it", "go", "run"] {
+            let content = format!("{cmd}\n\n[已选任务]\n- id=a，标题=b");
+            assert!(
+                is_chat_execute_trigger(&content).is_some(),
+                "「{cmd}」应触发批量执行"
+            );
+        }
+    }
+
+    /// 前端真实发送格式（ChatPanel.tsx 拼装的 [已选任务] 块）必须能解析出 id：
+    /// 标记或字段名对不上，批量执行路由就静默不触发，模型只能按标题模糊匹配。
+    #[test]
+    fn trigger_parses_the_block_frontend_actually_sends() {
+        let content = "完成\n\n[已选任务]\n- id=t1，标题=改文档\n- id=t2，标题=写周报\n\n";
+        let parsed = is_chat_execute_trigger(content).expect("前端格式必须命中");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0], ("t1".to_string(), "改文档".to_string()));
+        assert_eq!(parsed[1], ("t2".to_string(), "写周报".to_string()));
     }
 
     #[test]

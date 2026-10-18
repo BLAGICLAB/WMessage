@@ -537,6 +537,16 @@ describe("ChatPanel", () => {
         }),
       );
     });
+    // 引用块必须是 intent_router 能解析的形态：标记 + 每行带 id。
+    // 少标记或少 id 时批量执行路由静默不触发，模型只能按标题模糊匹配找卡。
+    const chatCalls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_chat");
+    const sentMsgs =
+      chatCalls[chatCalls.length - 1]?.[1]?.messages ?? [];
+    const sentContent = [...sentMsgs]
+      .reverse()
+      .find((m: { role: string }) => m.role === "user")?.content;
+    expect(sentContent).toContain("[已选任务]");
+    expect(sentContent).toContain("- id=t2，标题=改文档");
     // 发送后芯片清空（与附件同口径）
     expect(screen.queryByTitle("改文档")).toBeNull();
   });

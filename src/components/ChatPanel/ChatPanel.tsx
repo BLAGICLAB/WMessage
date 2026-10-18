@@ -1601,9 +1601,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     const attach = files.length
       ? `[附件文件]\n${files.map((f) => `- ${f}`).join("\n")}\n\n`
       : "";
-    // 任务引用同理：[引用任务] 块给机器人标题线索，refs 让气泡渲染成可点的卡引用
+    // 任务引用同理：[已选任务] 块给机器人标题线索，refs 让气泡渲染成可点的卡引用
+    // 标记与行格式必须与 intent_router::parse_selected_tasks_block 严格对齐：
+    // 少 id 或标记对不上，批量执行路由就静默不触发，模型只能按标题模糊匹配找卡
     const refBlock = refs.length
-      ? `[引用任务]\n${refs.map((r) => `- ${r.title}`).join("\n")}\n\n`
+      ? `[已选任务]\n${refs.map((r) => `- id=${r.id}，标题=${r.title}`).join("\n")}\n\n`
       : "";
     const content = `${attach}${refBlock}${text}`;
     setFiles([]);
