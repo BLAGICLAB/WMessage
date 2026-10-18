@@ -305,13 +305,7 @@ export function MemoryPanel() {
 
   const removeItem = async (m: MemItemView) => {
     if (busyRef.current) return;
-    // evo: 前缀条目来自自进化链路（提案回滚的教训），删除影响回滚后注入——确认文案点名
-    const fromEvolution = (m.tags?.[0] ?? "").startsWith("evo:");
-    const ok = await confirm(
-      fromEvolution
-        ? "该条目来自自进化链路，删除后相关提案回滚时不再注入该教训。确定删除？"
-        : `删除这条记忆？\n\n${m.content.slice(0, 80)}`,
-    );
+    const ok = await confirm(`删除这条记忆？\n\n${m.content.slice(0, 80)}`);
     if (!ok) return;
     busyRef.current = true;
     setBusy(true);

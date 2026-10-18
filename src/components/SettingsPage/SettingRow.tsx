@@ -12,8 +12,8 @@
 
 import type { ReactNode } from "react";
 
-/** 卡片标题排版类（三级阶梯的第一级） */
-export const SET_TITLE_CLASS = "text-lg font-semibold text-[var(--t1)]";
+/** 卡片标题排版类（三级阶梯的第一级），仅本文件使用 */
+const SET_TITLE_CLASS = "text-lg font-semibold text-[var(--t1)]";
 /** 设置项名称排版类 */
 export const SET_LABEL_CLASS = "text-sm font-medium text-[var(--t2)]";
 /** 设置项说明排版类 */

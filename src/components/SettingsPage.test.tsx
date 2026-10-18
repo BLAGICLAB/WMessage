@@ -181,12 +181,8 @@ describe("SettingsPage", () => {
     expect(
       screen.getByRole("radiogroup", { name: "布局松散度" }),
     ).toBeInTheDocument();
-    // 自进化不再是独立分类：决策面板并入「记忆」
-    expect(
-      screen.queryByRole("button", { name: "自进化" }),
-    ).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "记忆" }));
-    expect(screen.getByText("自进化决策面板")).toBeInTheDocument();
+    expect(screen.getByText("记忆库")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "文件整理" }));
     expect(screen.getByText("整理来源")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "词元统计" }));

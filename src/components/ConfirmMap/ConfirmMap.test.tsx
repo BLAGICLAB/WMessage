@@ -57,15 +57,15 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "test-id-1",
-        tool: "evolution_promote",
-        detail: "晋升提案\nproposal_id: p1\nsummary: test",
+        tool: "apps_publish",
+        detail: "上架程序\napp_id: a1\nname: test",
         kind: "danger",
         sessionId: null,
       });
     });
     expect(screen.getByTestId("confirm-map-modal")).toBeInTheDocument();
     expect(screen.getByTestId("confirm-map-detail").textContent).toContain(
-      "晋升提案",
+      "上架程序",
     );
     expect(screen.getByTestId("confirm-map-countdown").textContent).toBe("60s");
     expect(screen.getByText(/高危/)).toBeInTheDocument();
@@ -76,7 +76,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "approve-1",
-        tool: "evolution_promote",
+        tool: "apps_publish",
         detail: "d",
         kind: "danger",
         sessionId: null,
@@ -97,7 +97,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "deny-1",
-        tool: "evolution_reject",
+        tool: "apps_discard",
         detail: "d",
         kind: "danger",
         sessionId: null,
@@ -117,7 +117,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "double-1",
-        tool: "evolution_promote",
+        tool: "apps_publish",
         detail: "d",
         kind: "danger",
         sessionId: null,
@@ -142,7 +142,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "race-1",
-        tool: "evolution_promote",
+        tool: "apps_publish",
         detail: "d",
         kind: "danger",
         sessionId: null,
@@ -172,7 +172,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "old-1",
-        tool: "evolution_promote",
+        tool: "apps_publish",
         detail: "old",
         kind: "danger",
         sessionId: null,
@@ -183,7 +183,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "new-1",
-        tool: "evolution_reject",
+        tool: "apps_discard",
         detail: "new detail",
         kind: "file_access",
         sessionId: null,
@@ -210,7 +210,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "stale-1",
-        tool: "evolution_promote",
+        tool: "apps_publish",
         detail: "old request",
         kind: "danger",
         sessionId: null,
@@ -220,7 +220,7 @@ describe("ConfirmMap", () => {
     await act(async () => {
       emit({
         id: "fresh-2",
-        tool: "evolution_promote",
+        tool: "apps_publish",
         detail: "new request",
         kind: "danger",
         sessionId: null,

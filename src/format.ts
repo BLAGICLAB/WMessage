@@ -34,11 +34,6 @@ export function formatShortDateTime(ms: number): string {
   });
 }
 
-/** 时间戳 → locale 全格式（提案时间轴的创建/过期时刻，含年月日时分秒） */
-export function formatTimestamp(ms: number): string {
-  return new Date(ms).toLocaleString();
-}
-
 /** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
  *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;

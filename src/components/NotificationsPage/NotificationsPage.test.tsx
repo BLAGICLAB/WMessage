@@ -91,30 +91,6 @@ describe("NotificationsPage", () => {
     );
   });
 
-  it("自进化提案卡：启用 → evolution_toggle_proposal(proposalId, true)", async () => {
-    invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "notifications_list")
-        return [
-          mkItem({
-            id: "e1",
-            kind: "evolution_proposal",
-            title: "调整记忆合并阈值",
-            payload: { proposalId: "abc123" },
-          }),
-        ];
-      return null;
-    });
-    render(<NotificationsPage />);
-    const btn = await screen.findByRole("button", { name: "启用" });
-    await userEvent.click(btn);
-    await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith("evolution_toggle_proposal", {
-        proposalId: "abc123",
-        enabled: true,
-      }),
-    );
-  });
-
   it("产物绑定卡：默认全选，绑定选中 → confirm_artifact_batch；跳过 → notifications_resolve(dismissed)", async () => {
     invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "notifications_list")

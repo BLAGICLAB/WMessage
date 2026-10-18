@@ -78,7 +78,6 @@ import { LogsPanel } from "./LogsPanel";
 import { SettingRow } from "./SettingRow";
 import GraphSettingsPanel from "./GraphSettingsPanel";
 import { GuardKeywordsPanel } from "./GuardKeywordsPanel";
-import { EvolutionPanel } from "../EvolutionPanel";
 import { ProfileRow } from "./ProfileRow";
 import { ModelRow } from "./ModelRow";
 import { UsageStatsCard } from "./UsageStatsCard";
@@ -308,7 +307,7 @@ type Props = {
  *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python、
  *  卡2 授权/白名单、卡3 技能路由/外部 API；「MCP 服务」两段：Tavily/Brave
  *  搜索引擎卡 + McpPanel。面板惰性挂载。
- *  自进化不再是独立分类：提案来自记忆反思，决策面板并入「记忆」。 */
+ */
 type SectionKey =
   | "general"
   | "data"
@@ -2634,8 +2633,6 @@ export function SettingsPage({
               </div>
               {/* 记忆库管理面板：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}
               <MemoryPanel />
-              {/* 自进化决策面板：提案由记忆反思产出，决策是记忆的一部分 */}
-              <EvolutionPanel />
             </section>
           )}
           {mountedSections.has("model") && (

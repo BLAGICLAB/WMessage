@@ -3,11 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 /** Agent 通知中心消息（与 Rust notifications::NotificationView 对应） */
 export interface NotificationItem {
   id: string;
-  kind:
-    | "memory_proposal"
-    | "evolution_proposal"
-    | "artifact_bind"
-    | "task_question";
+  kind: "memory_proposal" | "artifact_bind" | "task_question";
   title: string;
   body: string;
   payload: Record<string, unknown> | null;
@@ -51,11 +47,6 @@ export function approveMemoryProposals(ids: number[]): Promise<unknown> {
 /** 记忆提案：忽略 → mem_pending_reject(ids) */
 export function rejectMemoryProposals(ids: number[]): Promise<number> {
   return invoke("mem_pending_reject", { ids });
-}
-
-/** 自进化提案：启用 → evolution_toggle_proposal(proposalId, true) */
-export function enableEvolutionProposal(proposalId: string): Promise<void> {
-  return invoke("evolution_toggle_proposal", { proposalId, enabled: true });
 }
 
 /** 任务卡绑定文件：绑定选中 → confirm_artifact_batch(taskId, paths) */

@@ -4,7 +4,6 @@ import {
   BrainCircuit,
   FolderInput,
   HelpCircle,
-  Sparkles,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { EmptyState } from "../EmptyState";
@@ -20,7 +19,6 @@ import {
   clearDoneNotifications,
   confirmArtifactBatch,
   dismissNotification,
-  enableEvolutionProposal,
   listNotifications,
   rejectMemoryProposals,
 } from "../../lib/notifications";
@@ -34,10 +32,6 @@ const KIND_META: Record<
   memory_proposal: {
     icon: <BrainCircuit size={15} aria-hidden />,
     label: "记忆提案",
-  },
-  evolution_proposal: {
-    icon: <Sparkles size={15} aria-hidden />,
-    label: "自进化提案",
   },
   artifact_bind: {
     icon: <FolderInput size={15} aria-hidden />,
@@ -55,12 +49,6 @@ function memoryIds(n: NotificationItem): number[] {
   return Array.isArray(ids)
     ? ids.filter((v): v is number => typeof v === "number")
     : [];
-}
-
-/** 自进化提案 proposalId（payload.proposalId: string） */
-function evolutionProposalId(n: NotificationItem): string | null {
-  const id = n.payload?.proposalId;
-  return typeof id === "string" ? id : null;
 }
 
 /** 产物绑定批次（payload.taskId/taskTitle/paths） */
@@ -133,53 +121,6 @@ function MemoryCard({ item }: { item: NotificationItem }) {
         </button>
       </CardActions>
     </>
-  );
-}
-
-/** 自进化提案卡：启用（toggle ON，立即落 lesson）/ 忽略 */
-function EvolutionCard({ item }: { item: NotificationItem }) {
-  const proposalId = evolutionProposalId(item);
-  const [busy, setBusy] = useState(false);
-  const enable = async () => {
-    if (!proposalId) return;
-    setBusy(true);
-    try {
-      await enableEvolutionProposal(proposalId);
-    } catch (e) {
-      handleCommandError(e, "启用自进化提案");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const dismiss = async () => {
-    setBusy(true);
-    try {
-      await dismissNotification(item.id);
-    } catch (e) {
-      handleCommandError(e, "忽略自进化提案");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <CardActions>
-      <button
-        type="button"
-        className={btnGhost}
-        disabled={busy}
-        onClick={dismiss}
-      >
-        忽略
-      </button>
-      <button
-        type="button"
-        className={btnPrimary}
-        disabled={busy || !proposalId}
-        onClick={enable}
-      >
-        启用
-      </button>
-    </CardActions>
   );
 }
 
@@ -387,7 +328,7 @@ function TaskQuestionCard({ item }: { item: NotificationItem }) {
   );
 }
 
-/** Agent 通知中心：三类决策消息（记忆提案 / 自进化提案 / 产物绑定）的持久化收件箱 */
+/** Agent 通知中心：决策消息（记忆提案 / 产物绑定 / 任务提问）的持久化收件箱 */
 export function NotificationsPage() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [tab, setTab] = useState<"pending" | "all">("pending");
@@ -477,7 +418,7 @@ export function NotificationsPage() {
           <EmptyState
             icon={<Bell size={18} aria-hidden />}
             title={tab === "pending" ? "没有待处理的通知" : "还没有通知"}
-            description="Agent 的记忆提案、自进化提案与产物绑定会以消息形式出现在这里"
+            description="Agent 的记忆提案、产物绑定与任务提问会以消息形式出现在这里"
           />
         ) : (
           shown.map((n) => {
@@ -508,8 +449,6 @@ export function NotificationsPage() {
                 {n.status === "pending" &&
                   (n.kind === "memory_proposal" ? (
                     <MemoryCard item={n} />
-                  ) : n.kind === "evolution_proposal" ? (
-                    <EvolutionCard item={n} />
                   ) : n.kind === "task_question" ? (
                     <TaskQuestionCard item={n} />
                   ) : (

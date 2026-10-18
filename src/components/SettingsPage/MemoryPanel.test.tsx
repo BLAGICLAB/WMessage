@@ -1,5 +1,5 @@
 // MemoryPanel 测试：列表渲染 / 统计与降级横幅 / 搜索防抖 /
-// 编辑保存 / 删除确认（含自进化条目文案）/ 取消删除。
+// 编辑保存 / 删除确认 / 取消删除。
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
@@ -204,28 +204,24 @@ describe("MemoryPanel", () => {
     expect(screen.queryByLabelText("编辑记忆内容")).toBeNull();
   });
 
-  it("删除：确认后调 mem_delete；普通条目与自进化条目确认文案不同", async () => {
+  it("删除：确认后调 mem_delete", async () => {
     const user = userEvent.setup();
     const confirmMock = mocks.askMock;
     stubData([
       sampleItem(),
-      sampleItem({ id: "m2", tags: ["evo:abc"], content: "提案教训" }),
+      sampleItem({ id: "m2", content: "另一条教训" }),
     ]);
     render(<MemoryPanel />);
     await screen.findByText("喜欢简洁的回复风格");
-    // 普通条目
     const delBtns = screen.getAllByRole("button", { name: "删除记忆" });
     await user.click(delBtns[0]);
-    expect(confirmMock.mock.calls[0]?.[0]).not.toContain("自进化");
+    expect(confirmMock.mock.calls[0]?.[0]).toContain("喜欢简洁的回复风格");
     await flush();
     expect(
       mocks.invokeMock.mock.calls.some(
         (c) => c[0] === "mem_delete" && c[1]?.id === "m1",
       ),
     ).toBe(true);
-    // 自进化条目：确认文案点名影响
-    await user.click(delBtns[1]);
-    expect(confirmMock.mock.calls[1]?.[0]).toContain("自进化");
   });
 
   it("取消删除：confirm 返回 false 不调 mem_delete", async () => {

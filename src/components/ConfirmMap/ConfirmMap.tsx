@@ -6,7 +6,7 @@
 //! 前端这里 listen 这个事件 → 弹 modal + 60s 倒计时 + 确认/拒绝按钮 → 调
 //!   invoke("bot_confirm_response", { requestId, approved, always })
 //!
-//! 这是全窗唯一的呈现者：确认可能在任何视图下发生（任务卡执行、evolution 面板
+//! 这是全窗唯一的呈现者：确认可能在任何视图下发生（任务卡执行、程序上架
 //! 动作等），聊天窗只切 hidden 不卸载，弹窗放在聊天窗里会不可见。
 //!
 //! kind="file_access" 是白名单外路径授权，三选一（允许一次 / 始终允许该目录 / 拒绝）。

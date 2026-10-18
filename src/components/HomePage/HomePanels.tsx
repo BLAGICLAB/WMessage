@@ -160,7 +160,6 @@ export function BotPanel({
 
 const KIND_LABEL: Record<NotificationItem["kind"], string> = {
   memory_proposal: "记忆提案",
-  evolution_proposal: "自进化提案",
   artifact_bind: "产物绑定",
   task_question: "任务提问",
 };
