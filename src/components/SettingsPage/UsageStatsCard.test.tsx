@@ -1,7 +1,13 @@
 // UsageStatsCard 测试：mock usage_stats_daily / usage_stats_by_model /
 // usage_stats_daily_by_model，覆盖汇总行（含连续天数）/热力图（模式切换、月份标签）/
 // 时间范围切换/按模型趋势图/模型用量/空态/刷新。
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const invokeMock = vi.fn();
@@ -142,8 +148,8 @@ describe("UsageStatsCard", () => {
     expect(screen.getByText("3 天")).toBeTruthy(); // 最长连续（09-30~10-02 游程为 3）
     expect(screen.getByText("累计 Token 数")).toBeTruthy();
     expect(screen.getByText("最长连续天数")).toBeTruthy();
-    // 热力图：活跃日的格子都在（title 即 tooltip）
-    expect(screen.getByTitle(/2026-10-06 · 5.0K tokens/)).toBeTruthy();
+    // 热力图：活跃日的格子都在（悬浮说明自绘，标题在鼠标移入后才出现）
+    expect(container.querySelector('[data-day="2026-10-06"]')).not.toBeNull();
     // 热力图底部月份标签：7 天窗口跨 9/30~10/06，仅月首 9月 获得标签（10月 距离过近被跳过）
     expect(screen.getByText("9月")).toBeTruthy();
     // 趋势图 SVG + 图例按模型命名（窗口内两个模型）
@@ -211,8 +217,7 @@ describe("UsageStatsCard", () => {
         invokeMock.mock.calls.filter((c) => c[0] === "usage_stats_by_model")
           .length,
       ).toBe(2);
-      expect(
-        invokeMock.mock.calls.filter(
+      expect(        invokeMock.mock.calls.filter(
           (c) => c[0] === "usage_stats_daily_by_model",
         ).length,
       ).toBe(2);
@@ -266,5 +271,140 @@ describe("UsageStatsCard", () => {
     expect(series[0].values[5]).toBe(0); // 缺日记 0
     expect(series[1].name).toBe("未知模型");
     expect(series[1].color).not.toBe(series[0].color);
+  });
+
+  /* ─────────── 缓存档（Anthropic 四档计价之二）─────────── */
+
+  
+/** 热力图格子定位：jsdom 解析不了 var(--inset-bg)，style.backgroundColor 不可靠，
+ *  用渲染时落的 data-day 定位。 */
+function findDayCell(container: HTMLElement, day: string): Element {
+  const cell = container.querySelector(`[data-day="${day}"]`);
+  expect(cell, `热力图应渲染 ${day} 的格子`).not.toBeNull();
+  return cell as Element;
+}
+
+const CACHE_DAYS: UsageDay[] = [
+    {
+      day: "2026-10-05",
+      promptTokens: 900,
+      completionTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      runs: 2,
+      toolCalls: 5,
+    },
+    {
+      day: "2026-10-06",
+      promptTokens: 4000,
+      completionTokens: 1000,
+      cacheReadTokens: 30_000,
+      cacheWriteTokens: 2_000,
+      runs: 3,
+      toolCalls: 8,
+    },
+  ];
+
+  const CACHE_MODELS: UsageModelRow[] = [
+    {
+      model: "glm-5.3",
+      promptTokens: 4000,
+      completionTokens: 1000,
+      cacheReadTokens: 30_000,
+      cacheWriteTokens: 2_000,
+      runs: 3,
+    },
+    {
+      model: "kimi-k3",
+      promptTokens: 900,
+      completionTokens: 100,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      runs: 2,
+    },
+  ];
+
+  function mockCache() {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "usage_stats_daily") return Promise.resolve(CACHE_DAYS);
+      if (cmd === "usage_stats_by_model")
+        return Promise.resolve(CACHE_MODELS);
+      if (cmd === "usage_stats_daily_by_model")
+        return Promise.resolve([]);
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+  }
+
+  it("汇总行下方单列缓存读/写，且不并入累计 Token 数", async () => {
+    mockCache();
+    render(<UsageStatsCard />);
+    // 累计 = (900+100)+(4000+1000) = 6000，缓存 32_000 不进去
+    await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
+    // 缓存两项单列
+    expect(screen.getByText("3.0 万")).toBeTruthy(); // 命中 30_000
+    expect(screen.getByText("2.0K")).toBeTruthy(); // 写入
+    expect(screen.getByText("命中")).toBeTruthy();
+    expect(screen.getByText("写入")).toBeTruthy();
+    expect(screen.getByText(/不计入上方累计/)).toBeTruthy();
+    // 缓存说明写明不进累计与色块
+    expect(screen.getByText(/单列展示且不计入累计/)).toBeTruthy();
+  });
+
+  it("缓存全为 0 时整行不出现（OpenAI 协议用户不看到恒零空指标）", async () => {
+    mockOk();
+    render(<UsageStatsCard />);
+    await waitFor(() => expect(screen.getByText("9.0K")).toBeTruthy());
+    expect(screen.queryByText("命中")).toBeNull();
+    expect(screen.queryByText("写入")).toBeNull();
+    expect(screen.queryByText(/不计入上方累计/)).toBeNull();
+  });
+
+  it("热力图悬浮说明：六行分层，未命中/缓存各自成组", async () => {
+    mockCache();
+    const { container } = render(<UsageStatsCard />);
+    await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
+
+    // 10-06：未命中 5.0K（输入 4.0K / 输出 1.0K）、缓存 3.2 万（命中 3.0 万 / 写入 2.0K）
+    const cell = findDayCell(container, "2026-10-06");
+    fireEvent.mouseEnter(cell);
+    const tip = screen.getByRole("tooltip");
+    expect(within(tip).getByText("2026-10-06")).toBeTruthy();
+    expect(within(tip).getByText("缓存未命中")).toBeTruthy();
+    expect(within(tip).getByText("5.0K")).toBeTruthy();
+    expect(within(tip).getByText(/输入 4\.0K · 输出 1\.0K/)).toBeTruthy();
+    expect(within(tip).getByText("缓存命中")).toBeTruthy();
+    expect(within(tip).getByText("3.2 万")).toBeTruthy();
+    expect(within(tip).getByText(/命中 3\.0 万 · 写入 2\.0K/)).toBeTruthy();
+    expect(within(tip).getByText("轮次")).toBeTruthy();
+
+    // 10-05：无缓存 → 缓存组为 0，仍展示同一结构（不跳行，便于对读）
+    fireEvent.mouseEnter(findDayCell(container, "2026-10-05"));
+    const tip2 = screen.getByRole("tooltip");
+    expect(within(tip2).getByText("1.0K")).toBeTruthy(); // 900+100
+    expect(within(tip2).getByText(/输入 900 · 输出 100/)).toBeTruthy();
+    expect(within(tip2).getByText(/命中 0 · 写入 0/)).toBeTruthy();
+
+    // 鼠标移出整个热力图 → 浮层收起
+    // 移出热力图包裹层（onMouseLeave 挂在带 ref 的 .relative 上）
+    fireEvent.mouseLeave(cell.closest(".relative") as Element);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("模型榜：图例行标缓存，色块宽度仍按输入+输出（与榜位同口径）", async () => {
+    mockCache();
+    const { container } = render(<UsageStatsCard />);
+    await waitFor(() => expect(screen.getByText("6.0K")).toBeTruthy());
+    // 图例行出现缓存标记，且只给有缓存的那个模型
+    const cacheMarks = screen.getAllByText(/^缓存 /);
+    expect(cacheMarks.length).toBe(1);
+    expect(cacheMarks[0].textContent).toContain("3.2 万");
+    expect(screen.queryAllByText(/缓存 0/)).toHaveLength(0);
+    // 色块 tooltip 说明缓存不计入色块
+    const barTitles = Array.from(
+      container.querySelectorAll("[title]"),
+    )
+      .map((el) => el.getAttribute("title") ?? "")
+      .filter((t) => t.includes("tokens"));
+    expect(barTitles.some((t) => t.includes("另含缓存 3.2 万"))).toBe(true);
   });
 });

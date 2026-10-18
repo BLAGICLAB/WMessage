@@ -740,7 +740,7 @@ pub fn usage_stats_by_model_conn(
                     SUM(CASE WHEN finished_at IS NOT NULL THEN 1 ELSE 0 END)
              FROM exec_traces WHERE started_at >= ?1
              GROUP BY model
-             ORDER BY SUM(prompt_tokens + completion_tokens + cache_read_tokens + cache_write_tokens) DESC",
+             ORDER BY SUM(prompt_tokens + completion_tokens) DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1924,6 +1924,79 @@ mod tests {
             rows[0].prompt_tokens + rows[0].completion_tokens
                 >= rows[1].prompt_tokens + rows[1].completion_tokens,
             "必须按总 tokens 降序"
+        );
+    }
+
+    /// 榜位排序口径 = 面板展示口径（输入+输出）。缓存不进排序：
+    /// 缓存读取单价约为普通输入的十分之一，把它算进名次会让「榜上第一」
+    /// 的模型在色块宽度上明显偏细，名次与图形对不上。
+    #[test]
+    fn usage_stats_by_model_ranks_ignoring_cache_tokens() {
+        let conn = setup_conn();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 6).unwrap();
+        let t0 = today
+            .and_hms_opt(4, 0, 0)
+            .unwrap()
+            .and_local_timezone(chrono::Local)
+            .earliest()
+            .unwrap()
+            .timestamp_millis();
+        let finish = |conn: &rusqlite::Connection,
+                      id: i64,
+                      at: i64,
+                      p: i64,
+                      c: i64,
+                      cr: i64,
+                      model: &str| {
+            trace_finish(
+                conn,
+                id,
+                &TraceFinish {
+                    status: TRACE_STATUS_DONE,
+                    finished_at: at + 100,
+                    turn_count: 1,
+                    tool_calls: 0,
+                    prompt_tokens: p,
+                    completion_tokens: c,
+                    cache_read_tokens: cr,
+                    cache_write_tokens: 0,
+                    error: None,
+                    model: Some(model),
+                },
+            )
+            .unwrap();
+        };
+        // 有缓存的大模型：展示口径 500，但含缓存合计 50_500
+        finish(
+            &conn,
+            mk_trace(&conn, "s1", None, "chat", t0),
+            t0,
+            300,
+            200,
+            50_000,
+            "cached",
+        );
+        // 无缓存的小模型：展示口径 800，含缓存合计也是 800
+        finish(
+            &conn,
+            mk_trace(&conn, "s2", None, "chat", t0 + 1),
+            t0 + 1,
+            500,
+            300,
+            0,
+            "plain",
+        );
+
+        let rows = usage_stats_by_model_conn(&conn, 7, today).unwrap();
+        assert_eq!(
+            rows[0].model.as_deref(),
+            Some("plain"),
+            "榜位按输入+输出，缓存不参与"
+        );
+        assert_eq!(rows[1].model.as_deref(), Some("cached"));
+        assert_eq!(
+            rows[1].cache_read_tokens, 50_000,
+            "缓存数仍然照常返回，只是不参与排序"
         );
     }
 

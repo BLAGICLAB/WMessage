@@ -51,6 +51,19 @@ function fmtTokens(n: number): string {
 
 const dayTotal = (d: UsageDay) => d.promptTokens + d.completionTokens;
 
+/** 缓存档合计（读+写）。全程不并入展示口径的 total：缓存读取单价约为普通输入的
+ *  十分之一，混算会让「累计 Token 数」既不反映真实规模也不反映真实开销。
+ *  数值缺省（老后端/旧行）按 0 处理。 */
+const cacheReadOf = (d: { cacheReadTokens?: number }) => d.cacheReadTokens ?? 0;
+const cacheWriteOf = (d: { cacheWriteTokens?: number }) => d.cacheWriteTokens ?? 0;
+const cacheOf = (d: { cacheReadTokens?: number; cacheWriteTokens?: number }) =>
+  cacheReadOf(d) + cacheWriteOf(d);
+
+/** 缓存读/写的取色：中性弱色（--t5/--t4），与模型榜六色饱和色系明显分开——
+ *  缓存是附属口径，不该跟主数据抢视觉权重。 */
+const CACHE_READ_COLOR = "var(--t5)";
+const CACHE_WRITE_COLOR = "var(--t4)";
+
 /** 连续活跃天数（活跃 = 当日 tokens > 0）：
  *  当前 = 从今天（今天不活跃则从昨天）往前连续活跃日数；最长 = 窗口内最长活跃游程 */
 export function streakDays(days: UsageDay[]): [number, number] {
@@ -99,7 +112,9 @@ function heatValues(
 }
 
 /** GitHub contributions 式年宽热力图：列 = 周（首列对齐周日），每列 7 行圆角方格，
- *  底部月份标签按周列定位，title 即 tooltip */
+ *  底部月份标签按周列定位。悬浮说明用自绘浮层而非原生 title：
+ *  原生 title 不能分行、样式不可控，且会溢出窗口边界（热力图贴右边缘时
+ *  提示框被裁掉一半）。 */
 function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
   const firstDowRaw = days.length
     ? new Date(`${days[0].day}T00:00:00`).getDay()
@@ -111,6 +126,31 @@ function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
   const max = Math.max(1, ...values);
   const levelOf = (v: number) =>
     v <= 0 ? 0 : Math.min(4, Math.ceil((v / max) * 4));
+
+  /** 悬浮中的格子下标；-1 = 无。浮层内容由 hovered 派生，不另存副本 */
+  const [hover, setHover] = useState(-1);
+  /** 浮层锚点（相对外层容器）：{left, top} + 是否翻到格子左侧 */
+  const [tip, setTip] = useState<{ left: number; top: number; flip: boolean }>({
+    left: 0,
+    top: 0,
+    flip: false,
+  });
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const showTip = (i: number, el: HTMLElement) => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const wr = wrap.getBoundingClientRect();
+    const cr = el.getBoundingClientRect();
+    // 格子宽 12px、浮层约 210px：靠右时向左翻，避免越过容器右缘被裁
+    const flip = cr.right - wr.left > wr.width - 220;
+    setTip({
+      left: flip ? cr.left - wr.left - 6 : cr.right - wr.left + 6,
+      top: cr.top - wr.top + 14,
+      flip,
+    });
+    setHover(i);
+  };
 
   // 月份标签：月首所在周列，与上一标签距离 < 3 列时跳过（避免挤压重叠）
   const labels: Array<{ col: number; text: string }> = [];
@@ -126,8 +166,10 @@ function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
     }
   });
 
+  const hd = hover >= 0 ? days[hover] : null;
+
   return (
-    <div>
+    <div className="relative" ref={wrapRef} onMouseLeave={() => setHover(-1)}>
       <div
         className="grid"
         style={{
@@ -141,18 +183,18 @@ function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
           <div key={`blank-${i}`} />
         ))}
         {days.map((d, i) => {
-          const total = dayTotal(d);
           return (
             <div
               key={d.day}
+              data-day={d.day}
               className="rounded-[3px]"
               style={{ backgroundColor: heatColor(levelOf(values[i])) }}
-              title={`${d.day} · ${fmtTokens(total)} tokens（输入 ${fmtTokens(d.promptTokens)} / 输出 ${fmtTokens(d.completionTokens)}，执行 ${d.runs} 次）`}
+              onMouseEnter={(e) => showTip(i, e.currentTarget)}
             />
           );
         })}
       </div>
-      <div className="relative mt-2 h-4 text-[10px] text-[var(--t5)]">
+      <div className="relative mt-2 h-4 text-xs text-[var(--t5)]">
         {labels.map((l) => (
           <span
             key={`${l.col}-${l.text}`}
@@ -163,6 +205,56 @@ function TokenHeatmap({ days, mode }: { days: UsageDay[]; mode: HeatMode }) {
           </span>
         ))}
       </div>
+
+      {/* 悬浮说明：六行分层。分组口径——未命中（色阶所用那组）与缓存分开列，
+          读缓存单价约为普通输入的十分之一，合成一个「总 token」会两头失真。 */}
+      {hd && (
+        <div
+          role="tooltip"
+          className="pointer-events-none absolute z-10 w-[210px] rounded-[var(--r-md)] border border-[var(--edge-strong)] bg-[var(--surface-raised)] px-3 py-2 shadow-[var(--shadow-lg)]"
+          style={{
+            left: tip.left,
+            top: tip.top,
+            transform: tip.flip ? "translateX(-100%)" : undefined,
+          }}
+        >
+          <p className="text-xs font-medium text-[var(--t1)]">{hd.day}</p>
+          <div className="mt-1.5 space-y-1.5">
+            {/* 未命中：热力图色阶就是按这一组取值的 */}
+            <div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs text-[var(--t5)]">缓存未命中</span>
+                <span className="font-mono text-xs tabular-nums text-[var(--t2)]">
+                  {fmtTokens(dayTotal(hd))}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-[var(--t6)]">
+                输入 {fmtTokens(hd.promptTokens)} · 输出{" "}
+                {fmtTokens(hd.completionTokens)}
+              </p>
+            </div>
+            {/* 缓存：读 + 写两档分开，OpenAI 协议与未开缓存的日子整组为 0 */}
+            <div>
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-xs text-[var(--t5)]">缓存命中</span>
+                <span className="font-mono text-xs tabular-nums text-[var(--t2)]">
+                  {fmtTokens(cacheOf(hd))}
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-[var(--t6)]">
+                命中 {fmtTokens(cacheReadOf(hd))} · 写入{" "}
+                {fmtTokens(cacheWriteOf(hd))}
+              </p>
+            </div>
+            <div className="flex items-baseline justify-between gap-2 border-t border-[var(--edge)] pt-1.5">
+              <span className="text-xs text-[var(--t5)]">轮次</span>
+              <span className="font-mono text-xs tabular-nums text-[var(--t2)]">
+                {hd.runs}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -354,7 +446,10 @@ function TokenTrendChart({
 
 /* ───────────────────────── 模型用量榜 ───────────────────────── */
 
-/** 占比堆叠条 + 图例行（palette 循环取色） */
+/** 占比堆叠条 + 图例行（palette 循环取色）。
+ *  色块宽度与榜位都按展示口径（输入+输出），与 usage_stats_by_model 的
+ *  ORDER BY 保持同一口径——名次和图形算两套数会让「第一名」色块明显偏细。
+ *  缓存不进色块（单价不同），改在图例行单独标出，避免读者把缓存当普通输入读。 */
 function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
   const total =
     rows.reduce((a, r) => a + r.promptTokens + r.completionTokens, 0) || 1;
@@ -363,6 +458,7 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
       <div className="flex h-2.5 overflow-hidden rounded-full bg-[var(--inset-bg)]">
         {rows.map((r, i) => {
           const t = r.promptTokens + r.completionTokens;
+          const cache = cacheOf(r);
           return (
             <div
               key={i}
@@ -370,7 +466,9 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
                 width: `${(t / total) * 100}%`,
                 backgroundColor: MODEL_COLORS[i % MODEL_COLORS.length],
               }}
-              title={`${r.model ?? "未知模型"} · ${fmtTokens(t)} tokens`}
+              title={`${r.model ?? "未知模型"} · ${fmtTokens(t)} tokens${
+                cache > 0 ? `（另含缓存 ${fmtTokens(cache)}）` : ""
+              }`}
             />
           );
         })}
@@ -378,6 +476,8 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
       <div className="mt-2 space-y-1.5">
         {rows.map((r, i) => {
           const t = r.promptTokens + r.completionTokens;
+          const cr = cacheReadOf(r);
+          const cw = cacheWriteOf(r);
           return (
             <div key={i} className="flex items-center gap-2 text-xs">
               <span
@@ -389,10 +489,25 @@ function ModelUsageList({ rows }: { rows: UsageModelRow[] }) {
               <span className="min-w-0 flex-1 truncate text-[var(--t2)]">
                 {r.model ?? "未知模型（旧数据）"}
               </span>
-              <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--t4)]">
+              {/* 缓存标记：中性弱色 + 显式「缓存」二字，
+                  不让读者把弱色块误认成模型名的一部分 */}
+              {(cr > 0 || cw > 0) && (
+                <span
+                  className="shrink-0 font-mono tabular-nums text-[var(--t5)]"
+                  title={`缓存命中 ${fmtTokens(cr)} / 缓存写入 ${fmtTokens(cw)}（不计入色块宽度）`}
+                >
+                  <span
+                    className="mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle"
+                    style={{ backgroundColor: CACHE_READ_COLOR }}
+                    aria-hidden
+                  />
+                  缓存 {fmtTokens(cr + cw)}
+                </span>
+              )}
+              <span className="shrink-0 font-mono text-xs tabular-nums text-[var(--t4)]">
                 {fmtTokens(t)} · {r.runs}次
               </span>
-              <span className="w-9 shrink-0 text-right font-mono text-[10px] tabular-nums text-[var(--t5)]">
+              <span className="w-9 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--t5)]">
                 {Math.round((t / total) * 100)}%
               </span>
             </div>
@@ -465,6 +580,9 @@ export function UsageStatsCard() {
   }, [loadOverview, loadModelDays]);
 
   const totalTokens = days.reduce((a, d) => a + dayTotal(d), 0);
+  const totalCacheRead = days.reduce((a, d) => a + cacheReadOf(d), 0);
+  const totalCacheWrite = days.reduce((a, d) => a + cacheWriteOf(d), 0);
+  const totalCache = totalCacheRead + totalCacheWrite;
   const peakDay = days.reduce((a, d) => Math.max(a, dayTotal(d)), 0);
   const totalRuns = days.reduce((a, d) => a + d.runs, 0);
   const [curStreak, bestStreak] = useMemo(() => streakDays(days), [days]);
@@ -529,9 +647,44 @@ export function UsageStatsCard() {
                 <p className="text-lg font-semibold tabular-nums text-[var(--t1)]">
                   {value}
                 </p>
-                <p className="mt-0.5 text-[10px] text-[var(--t5)]">{label}</p>
+                <p className="mt-0.5 text-xs text-[var(--t5)]">{label}</p>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* 缓存档：单列一行挂在汇总下面，不占上面的五格。
+            缓存读/写只有 Anthropic 协议会上报，全为 0 时整行不出现，
+            免得 OpenAI 协议用户看到一条恒零的空指标。 */}
+        {totalCache > 0 && (
+          <div className="mt-4 flex items-center justify-between gap-4 border-t border-[var(--edge)] pt-3">
+            <p className="text-xs text-[var(--t5)]">
+              缓存（单独计价，不计入上方累计 Token 数）
+            </p>
+            <div className="flex shrink-0 items-center gap-4">
+              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--t4)]">
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: CACHE_READ_COLOR }}
+                  aria-hidden
+                />
+                命中
+                <span className="font-mono tabular-nums">
+                  {fmtTokens(totalCacheRead)}
+                </span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-xs text-[var(--t4)]">
+                <span
+                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                  style={{ backgroundColor: CACHE_WRITE_COLOR }}
+                  aria-hidden
+                />
+                写入
+                <span className="font-mono tabular-nums">
+                  {fmtTokens(totalCacheWrite)}
+                </span>
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -575,7 +728,7 @@ export function UsageStatsCard() {
             <p className="text-sm font-medium text-[var(--t2)]">
               每日 Token 趋势图
             </p>
-            <div className="mt-2 flex flex-wrap items-center gap-4 text-[10px] text-[var(--t4)]">
+            <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-[var(--t4)]">
               {series.map((s) => (
                 <span key={s.key} className="inline-flex items-center gap-1">
                   <span
@@ -607,10 +760,12 @@ export function UsageStatsCard() {
             </div>
           )}
 
-          <p className="px-1 text-[10px] leading-relaxed text-[var(--t5)]">
+          <p className="px-1 text-xs leading-relaxed text-[var(--t5)]">
             数据说明：本地 exec_traces 聚合（热力图窗口 1
             年，实际范围受保留期限制）； 执行次数只计已收尾执行；OpenAI
             兼容网关的流式用量暂未接入（仅 Anthropic 协议计统计）。
+            缓存读/写仅 Anthropic 协议上报，单列展示且不计入累计 Token 数
+            与色块宽度。
           </p>
         </>
       )}
