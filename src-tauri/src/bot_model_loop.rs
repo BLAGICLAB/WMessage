@@ -533,13 +533,16 @@ fn msg_chars(m: &serde_json::Value) -> usize {
 /// 只动 system 段之后、最后一条之前的消息：system 段是提示词/摘要/记忆块本体，
 /// 最后一条是本轮用户输入；本轮已执行的 tool 消息追加在本轮请求构造之后，
 /// 不落在可砍区间——砍它会破坏 tool_call/tool_result 配对，对端直接 400。
-/// 返回砍掉的条数，0 = 没得砍（历史已是空的）。
-fn shed_oldest_history(msgs: &mut Vec<serde_json::Value>, keep_ratio: f64) -> usize {
-    let is_system =
-        |m: &serde_json::Value| m.get("role").and_then(|r| r.as_str()) == Some("system");
+///
+/// 返回 `(切口下标, 砍掉条数)`：调用方必须拿它修正按 msgs 下标记账的旁路表
+/// （`tool_msg_ages`），否则砍完 msgs 变短、旧下标越界。0 条 = 没得砍（调用方走报错出口）。
+fn shed_oldest_history(msgs: &mut Vec<serde_json::Value>, keep_ratio: f64) -> (usize, usize) {
+    fn role_of(m: &serde_json::Value) -> &str {
+        m.get("role").and_then(|r| r.as_str()).unwrap_or_default()
+    }
     let first = msgs
         .iter()
-        .position(|m| !is_system(m))
+        .position(|m| role_of(m) != "system")
         .unwrap_or(msgs.len());
     let mut used: usize = msgs.iter().map(msg_chars).sum();
     let target = (used as f64 * keep_ratio) as usize;
@@ -551,7 +554,16 @@ fn shed_oldest_history(msgs: &mut Vec<serde_json::Value>, keep_ratio: f64) -> us
         removable -= 1;
     }
     if removed == 0 {
-        return 0;
+        return (first, 0);
+    }
+    // 切口不能停在 tool 分组中间：被砍走的 assistant(tool_calls) 会让紧邻的
+    // tool 消息变成孤儿（对端 400：tool 必须紧跟带 tool_calls 的 assistant）。
+    // 边界消息是 tool 就连带砍掉——它的父 assistant 已落在可砍区间里。
+    // 最后一条是本轮输入不动，故上界停在 len-1（此时其父 assistant 仍被保留）。
+    while first + removed < msgs.len().saturating_sub(1)
+        && role_of(&msgs[first + removed]) == "tool"
+    {
+        removed += 1;
     }
     msgs.drain(first..first + removed);
     msgs.insert(
@@ -561,7 +573,27 @@ fn shed_oldest_history(msgs: &mut Vec<serde_json::Value>, keep_ratio: f64) -> us
             "content": "[上下文超限] 早前对话已因超出模型上下文窗口被裁剪，上文从本条之后开始。"
         }),
     );
-    removed
+    (first, removed)
+}
+
+/// 降级砍历史后修正按 msgs 下标记账的旁路表：落在切口内的条目作废（消息已不存在），
+/// 其后条目左移——净变化是 `-(removed-1)`（砍掉 removed 条、补回 1 条裁剪占位）。
+fn reindex_after_shed(ages: &mut Vec<(usize, usize)>, first: usize, removed: usize) {
+    if removed == 0 {
+        return;
+    }
+    let end = first + removed;
+    let shift = removed - 1;
+    ages.retain_mut(|(_, idx)| {
+        if *idx < first {
+            true
+        } else if *idx < end {
+            false
+        } else {
+            *idx -= shift;
+            true
+        }
+    });
 }
 
 /// 熔断上界的 usize 投影：与子 agent 预算解析（params::MAX_FUNCTION_CALLS_CAP）
@@ -1388,7 +1420,8 @@ where
     // 改在 final_text 解析时统一 emit 视觉提示（✅ / ⚠️）
     let mut expecting_selfcheck = false;
     // 滚动降密度：每条 tool 消息的 (入栈轮次, msgs 下标)。msgs 循环内只追加
-    // 不删（压缩原位改写），下标恒稳定。
+    // 不删（压缩原位改写），下标恒稳定——唯一例外是上下文超限降级砍历史，
+    // 那条路径必须调 reindex_after_shed 同步左移，否则下标越界。
     let mut tool_msg_ages: Vec<(usize, usize)> = Vec::new();
     // 终稿自检视觉过滤：本轮已被注入 FINAL_SELFCHECK_PROMPT、下一轮 SSE 流式
     // emit 跳过 Y/N 字样（用户已在主出口前看到 final_text 自检运行属于机器内部
@@ -1736,9 +1769,13 @@ where
                         // 会话消息后重发（请求尚未开始流式产出，本轮无副作用可重放）
                         if overflow && context_sheds < CONTEXT_SHED_MAX {
                             let before = msgs.iter().map(msg_chars).sum::<usize>();
-                            let dropped = shed_oldest_history(&mut msgs, CONTEXT_SHED_KEEP_RATIO);
+                            let (cut, dropped) =
+                                shed_oldest_history(&mut msgs, CONTEXT_SHED_KEEP_RATIO);
                             if dropped > 0 {
                                 context_sheds += 1;
+                                // msgs 变短了：记账表里落在切口内的条目作废、
+                                // 其后左移，不同步就是下一轮按旧下标压缩时越界
+                                reindex_after_shed(&mut tool_msg_ages, cut, dropped);
                                 // body 在进循环前已序列化——砍完必须回填 messages，
                                 // 否则重发的是同一份旧 body，降级等于没做
                                 body["messages"] = serde_json::to_value(&msgs)
@@ -3934,6 +3971,133 @@ mod context_overflow_tests {
         serde_json::json!({"role": role, "content": "x".repeat(n)})
     }
 
+    fn assistant_with_tool_call(id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "role": "assistant",
+            "content": serde_json::Value::Null,
+            "tool_calls": [{"id": id, "type": "function",
+                            "function": {"name": "noop", "arguments": "{}"}}]
+        })
+    }
+
+    fn tool_msg(id: &str, n: usize) -> serde_json::Value {
+        serde_json::json!({"role": "tool", "tool_call_id": id, "content": "y".repeat(n)})
+    }
+
+    /// 孤儿 tool：前面最近一条非 system 消息不是「带 tool_calls 的 assistant」。
+    /// 这种结构发出去对端直接 400，降级等于白降。
+    fn orphan_tool_positions(msgs: &[serde_json::Value]) -> Vec<usize> {
+        msgs.iter()
+            .enumerate()
+            .filter(|(_, m)| m["role"] == "tool")
+            .filter(|(i, _)| {
+                msgs[..*i]
+                    .iter()
+                    .rev()
+                    .find(|p| p["role"] != "system")
+                    .is_none_or(|p| p["role"] != "assistant" || p.get("tool_calls").is_none())
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// 复现：降级砍历史会让「msgs 下标」记账的 tool 消息表整体失效。
+    /// 记账值是入栈时的旧下标，砍完 msgs 变短却不修正——下一轮按它压缩就
+    /// 越界 panic，或错指到别的消息。
+    #[test]
+    fn shed_keeps_recorded_tool_indices_addressable() {
+        let mut msgs = vec![
+            m("system", 10),
+            m("user", 400),
+            m("assistant", 400),
+            m("user", 400),
+            m("assistant", 400),
+            assistant_with_tool_call("c1"),
+            tool_msg("c1", 300),
+            m("user", 10),
+        ];
+        // 与循环内一致：tool 消息入栈时记下 (轮次, msgs 下标)
+        let mut recorded: Vec<(usize, usize)> = msgs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x["role"] == "tool")
+            .map(|(i, _)| (0usize, i))
+            .collect();
+        assert_eq!(recorded.len(), 1, "本用例要有 tool 消息可记账");
+
+        let (cut, dropped) = shed_oldest_history(&mut msgs, 0.5);
+        assert!(dropped > 0, "超预算必须真砍：{dropped}");
+        reindex_after_shed(&mut recorded, cut, dropped);
+
+        for (_born, idx) in recorded {
+            assert!(
+                idx < msgs.len(),
+                "降级后记账下标 {idx} 越界：msgs 只剩 {} 条（下标须随切口左移）",
+                msgs.len()
+            );
+            assert_eq!(
+                msgs[idx]["role"], "tool",
+                "记账下标 {idx} 已错指到非 tool 消息：{:?}",
+                msgs[idx]
+            );
+        }
+    }
+
+    /// 落在切口内的记账必须作废：那条 tool 消息已被砍掉，下标不再指向任何消息，
+    /// 留着就是一颗定时炸弹（后续轮按它压缩必越界）。
+    #[test]
+    fn shed_drops_bookkeeping_for_removed_tool_messages() {
+        let mut msgs = vec![
+            m("system", 10),
+            m("user", 400),
+            assistant_with_tool_call("c1"),
+            tool_msg("c1", 300),
+            tool_msg("c2", 300),
+            m("user", 10),
+        ];
+        let mut recorded: Vec<(usize, usize)> = msgs
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x["role"] == "tool")
+            .map(|(i, _)| (0usize, i))
+            .collect();
+        assert_eq!(recorded.len(), 2);
+
+        let (cut, dropped) = shed_oldest_history(&mut msgs, 0.5);
+        assert!(dropped > 0);
+        reindex_after_shed(&mut recorded, cut, dropped);
+
+        for (_born, idx) in &recorded {
+            assert!(
+                *idx < msgs.len(),
+                "残留记账 {idx} 指向已被砍掉的位置（msgs 只剩 {} 条）：{recorded:?}",
+                msgs.len()
+            );
+            assert_eq!(msgs[*idx]["role"], "tool");
+        }
+    }
+
+    /// 切口不能停在 tool 分组中间：砍掉带 tool_calls 的 assistant 却留下它的
+    /// tool 消息，对端 400（tool 必须紧跟带 tool_calls 的 assistant）。
+    #[test]
+    fn shed_never_leaves_orphan_tool_message() {
+        let mut msgs = vec![
+            m("system", 10),
+            m("user", 400),
+            assistant_with_tool_call("c1"),
+            tool_msg("c1", 300),
+            tool_msg("c2", 300),
+            m("user", 10),
+        ];
+        let (_cut, dropped) = shed_oldest_history(&mut msgs, 0.5);
+        assert!(dropped > 0, "超预算必须真砍：{dropped}");
+        let orphans = orphan_tool_positions(&msgs);
+        assert!(
+            orphans.is_empty(),
+            "降级后留下孤儿 tool 消息（下标 {orphans:?}），发出去必 400：{msgs:?}"
+        );
+    }
+
     #[test]
     fn shed_keeps_system_block_and_current_turn() {
         let mut msgs = vec![
@@ -3943,7 +4107,7 @@ mod context_overflow_tests {
             m("assistant", 400), // 旧历史：可砍
             m("user", 10),       // 本轮输入：不可砍
         ];
-        let dropped = shed_oldest_history(&mut msgs, 0.5);
+        let (_cut, dropped) = shed_oldest_history(&mut msgs, 0.5);
         assert!(dropped > 0, "超预算必须真砍：{dropped}");
         let roles: Vec<&str> = msgs.iter().filter_map(|x| x["role"].as_str()).collect();
         assert_eq!(
@@ -3968,11 +4132,11 @@ mod context_overflow_tests {
     fn shed_is_noop_when_nothing_left_to_drop() {
         // 只有 system + 本轮输入：没得砍，调用方据此走报错出口而非空转重发
         let mut msgs = vec![m("system", 10), m("user", 10)];
-        assert_eq!(shed_oldest_history(&mut msgs, 0.5), 0);
+        assert_eq!(shed_oldest_history(&mut msgs, 0.5).1, 0);
         assert_eq!(msgs.len(), 2, "空转不得插入裁剪说明");
 
         let mut empty: Vec<serde_json::Value> = Vec::new();
-        assert_eq!(shed_oldest_history(&mut empty, 0.5), 0);
+        assert_eq!(shed_oldest_history(&mut empty, 0.5).1, 0);
     }
 
     #[test]
@@ -3984,7 +4148,7 @@ mod context_overflow_tests {
             m("user", 500),
             serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "y".repeat(300)}),
         ];
-        let dropped = shed_oldest_history(&mut msgs, 0.5);
+        let (_cut, dropped) = shed_oldest_history(&mut msgs, 0.5);
         assert_eq!(dropped, 1, "只砍 user 那条：{dropped}");
         assert!(
             msgs.iter().any(|x| x.get("tool_call_id").is_some()),
