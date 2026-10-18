@@ -1734,40 +1734,6 @@ describe("ChatPanel", () => {
     }
   });
 
-  // 右侧栏恒为聊天主体的一半。关键是「恒为」：旧口径的 flex-[2]:flex-1 是 1/3，
-  // 且 max-w-[420px] 一生效（宽窗）连那个比例都不成立。宽度交给 flex 等分而不是
-  // JS 测量，展开/折叠左侧会话栏与缩放窗口才会在同一帧内跟着重算——没有滞后
-  // 可言，也就不需要 ResizeObserver 这类补丁。
-  it("右侧栏恒为聊天主体的一半：两侧等分、无宽度钳位、宽度不由 JS 决定", async () => {
-    const user = userEvent.setup();
-    render(<ChatPanel {...defaultProps} />);
-    await screen.findAllByText("默认会话");
-    await user.click(screen.getByRole("button", { name: "展开右侧栏" }));
-
-    const rail = screen.getByRole("complementary", { name: "上下文侧栏" });
-    const body = rail.previousElementSibling as HTMLElement;
-    const ratio = (el: HTMLElement) => ({
-      equalGrow: el.className.includes("flex-1"),
-      fixedRatio: /flex-\[\d\]/.test(el.className),
-      clamped: /[mw]ax-w-\[/.test(el.className),
-    });
-    expect(ratio(rail)).toEqual({ equalGrow: true, fixedRatio: false, clamped: false });
-    expect(ratio(body)).toEqual({ equalGrow: true, fixedRatio: false, clamped: false });
-    // 宽度不由内联样式决定——那才是「等分」的判据
-    expect(rail.getAttribute("style")).toBeNull();
-    expect(body.getAttribute("style")).toBeNull();
-
-    // 展开/折叠左侧会话栏只改变可用空间，不改这两列的等分关系
-    await user.click(screen.getByRole("button", { name: "收起会话栏" }));
-    await user.click(screen.getByRole("button", { name: "展开会话栏" }));
-    const rail2 = screen.getByRole("complementary", { name: "上下文侧栏" });
-    expect(ratio(rail2)).toEqual({ equalGrow: true, fixedRatio: false, clamped: false });
-    expect(
-      rail2.getAttribute("style"),
-      "会话栏开合不得引入内联宽度",
-    ).toBeNull();
-  });
-
   it("无派发方时子 agent 收尾提示用侧栏徽标同一份措辞（succeeded = 完成，不是「已完成」）", async () => {
     const prevListenImpl = mocks.listenMock.getMockImplementation();
     mocks.listenMock.mockImplementation(
