@@ -1,5 +1,5 @@
 // 图谱速览卡：映射任务图谱页——同一 buildTaskGraph 数据源（任务节点 + 依赖边，
-// 无工作流入参故无 hub），FA2 同步迭代布局后归一化进 SVG。
+// 速览卡不建结构锚点），FA2 同步迭代布局后归一化进 SVG。
 // 联动悬停：activeTaskId 高亮该任务节点、activeDay 高亮当天有排期/完成的节点，
 // 其余节点与边降透明（Dim）；点节点跳任务页编辑态，右上角入口跳图谱页。
 
@@ -44,13 +44,14 @@ function layoutGraph(tasks: Task[]): {
   const built = buildTaskGraph(tasks, DEFAULT_FILTERS);
   const g = new Graph({ type: "undirected" });
   for (const n of built.nodes) {
-    // 圆盘初值帮助 FA2 收敛（与图谱页分扇区初值同思路的简化版）
+    // 圆盘初值帮助 FA2 收敛：节点沿圆周均分，别让 FA2 自己从一团随机点里找结构
     const angle = (g.order / Math.max(built.nodes.length, 1)) * Math.PI * 2;
     g.addNode(n.id, { x: Math.cos(angle) * 10, y: Math.sin(angle) * 10, size: 1 });
   }
   for (const l of built.links) {
-    if (g.hasNode(l.source) && g.hasNode(l.target) && !g.hasEdge(l.source, l.target))
-      g.addEdge(l.source, l.target);
+    // built.links 的两端必然都在 nodes 里（buildTaskGraph 出口已过滤），无需再查；
+    // 去重要留在 FA2 这一侧：A 依赖 B 同时 A 的父任务是 B，两条关系会撞成一条边
+    if (!g.hasEdge(l.source, l.target)) g.addEdge(l.source, l.target);
   }
   if (g.order > 0) {
     forceAtlas2.assign(g, {
@@ -75,7 +76,15 @@ function layoutGraph(tasks: Task[]): {
     byId.set(node.id, { x, y });
     return { node, x, y };
   });
-  const edges = built.links.map((l) => ({ source: l.source, target: l.target }));
+  // 渲染边取 g.edges 而不是 built.links：前者已经去过重，
+  // 照抄 links 会把「依赖 + 父子撞同一对」的关系画成两条重合线
+  const edges: { source: string; target: string }[] = [];
+  // 端点在 forEachEdge 回调的第 3、4 个参数里。边属性对象只装 addEdge 时传进去
+  // 的东西（这里没传 = {}），从它里面读端点拿到的是 undefined，每条线都会被
+  // byId.get(undefined) 静默丢掉——节点照排、连线全没，且不报错
+  g.forEachEdge((_edge, _attrs, source, target) => {
+    edges.push({ source, target });
+  });
   return { laid, edges, byId };
 }
 

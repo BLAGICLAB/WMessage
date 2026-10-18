@@ -34,6 +34,23 @@ const fillOf = (id: string) =>
 
 afterEach(cleanup);
 
+describe("GraphMini 连线", () => {
+  it("父子/依赖关系画出线，同一对关系只画一条", () => {
+    renderMini(
+      [
+        task({ id: "t1", title: "父卡" }),
+        task({ id: "t2", title: "子卡", parentId: "t1" }),
+        task({ id: "t3", title: "依赖卡", dependsOn: ["t1"] }),
+        // 依赖与父子指向同一对：去重后仍只该有一条线
+        task({ id: "t4", title: "双重关系", parentId: "t1", dependsOn: ["t1"] }),
+      ],
+      ["2026-10-10"],
+    );
+    const lines = document.querySelectorAll('[data-testid="graph-mini"] line');
+    expect(lines.length).toBe(3);
+  });
+});
+
 describe("GraphMini 完成日匹配（本地时区口径）", () => {
   it("本地日界前完成（纽约 10-10 23:00）计入 10-10 当天，不因 UTC 解析偏一天", () => {
     renderMini(
