@@ -76,9 +76,9 @@ const HUB_MIN_MEMBERS = 2;
 
 /** 布局外径系数（面密度恒定：R = k·√N，千级与万级任务的视口密度一致） */
 const LOOSENESS_R: Record<GraphLooseness, number> = {
-  compact: 20,
-  standard: 30,
-  loose: 45,
+  tight: 30,
+  standard: 45,
+  loose: 70,
 };
 
 /**

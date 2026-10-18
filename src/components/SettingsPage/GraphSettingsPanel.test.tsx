@@ -43,7 +43,7 @@ describe("GraphSettingsPanel", () => {
 
     const loose = screen.getByRole("radiogroup", { name: "布局松散度" });
     fireEvent.click(within(loose).getByRole("radio", { name: "紧凑" }));
-    expect(localStorage.getItem("wm.graph.looseness")).toBe("compact");
+    expect(localStorage.getItem("wm.graph.looseness.v2")).toBe("tight");
   });
 
   it("记住过滤器：关 → 开 → 关 后已存过滤器被清除", () => {

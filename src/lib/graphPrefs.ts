@@ -7,14 +7,18 @@ import type { GraphFilters } from "../components/GraphPage/graph-build";
 export type GraphLabelDensity = "sparse" | "standard" | "dense";
 export type GraphEdgeWidth = "thin" | "standard" | "thick";
 /** 布局松散度（设置页可切）→ R_MAX 系数 k（面密度恒定公式 R_MAX = k·√N 的 k） */
-export type GraphLooseness = "compact" | "standard" | "loose";
+export type GraphLooseness = "tight" | "standard" | "loose";
+
+const LOOSENESS_VALUES = ["tight", "standard", "loose"] as const;
 
 const K = {
   onlyMine: "wm.graph.onlyMine",
   labelDensity: "wm.graph.labelDensity",
   edgeWidth: "wm.graph.edgeWidth",
   autoLayout: "wm.graph.autoLayout",
-  looseness: "wm.graph.looseness",
+  looseness: "wm.graph.looseness.v2",
+  /** 旧三档（紧凑 20 / 标准 30 / 松散 45）的存档，只在首次读到时搬一次 */
+  loosenessV1: "wm.graph.looseness",
   rememberFilters: "wm.graph.rememberFilters",
   filters: "wm.graph.filters",
 } as const;
@@ -73,18 +77,40 @@ export const getGraphEdgeWidth = () =>
   );
 export const setGraphEdgeWidth = (v: GraphEdgeWidth) => write(K.edgeWidth, v);
 
-// ── 打开时自动播放布局动画（默认开）：关 = 静态分扇区布局，「重新布局」仍可手动跑 ──
+// ── 打开时自动播放布局动画（默认开）：关 = 直接给静态三维构图，「重新布局」仍可手动跑 ──
 export const getGraphAutoLayout = () => readBool(K.autoLayout, true);
 export const setGraphAutoLayout = (v: boolean) =>
   write(K.autoLayout, v ? "1" : "0");
 
-// ── 布局松散度（默认标准） ──
-export const getGraphLooseness = () =>
-  readEnum<GraphLooseness>(
-    K.looseness,
-    ["compact", "standard", "loose"],
-    "standard",
-  );
+// ── 布局松散度（默认标准）：紧凑 30 / 标准 45 / 宽松 70 ──
+// 新旧档位不能共用一个键：「标准」这一档的 k 从 30 变成 45，同一个字符串在两种
+// 含义下画出的是两张不同的图，就地改写等于把老用户的选择悄悄换掉。所以读新键、
+// 没有就按旧键搬一次，搬完把旧键清掉，不留第二份真值。
+const LEGACY_LOOSENESS: Record<string, GraphLooseness> = {
+  compact: "tight", // 原「紧凑」(20) 已退役，并入新「紧凑」(30)
+  standard: "tight", // 原「标准」(30) → 新「紧凑」(30)：画面不变
+  loose: "standard", // 原「松散」(45) → 新「标准」(45)：画面不变
+};
+
+export function getGraphLooseness(): GraphLooseness {
+  if (read(K.looseness) !== null) {
+    return readEnum<GraphLooseness>(K.looseness, LOOSENESS_VALUES, "standard");
+  }
+  const old = read(K.loosenessV1);
+  const moved = old === null ? undefined : LEGACY_LOOSENESS[old];
+  if (!moved) return "standard";
+  write(K.looseness, moved);
+  // 确认新值真的落盘才删旧键：write 吞掉配额异常后控制流照常往下走，
+  // 先删就等于在写失败时把用户唯一那份存档删掉，且再也搬不回来
+  if (read(K.looseness) === moved) {
+    try {
+      localStorage.removeItem(K.loosenessV1);
+    } catch {
+      // 删不掉就留着：新键非空时下次直接短路，不会二次搬迁
+    }
+  }
+  return moved;
+}
 export const setGraphLooseness = (v: GraphLooseness) => write(K.looseness, v);
 
 // ── 记住上次的过滤器（默认关）：关掉时清掉已存的过滤器（语义诚实：不再记住） ──

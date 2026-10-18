@@ -78,7 +78,7 @@ describe("buildScene", () => {
 
   it("锚点有可解的岗位坐标，且按外径缩放", () => {
     const tight = sceneOf([t({ id: "a" }), t({ id: "b", column: "doing" })], {
-      looseness: "compact",
+      looseness: "tight",
     });
     const loose = sceneOf([t({ id: "a" }), t({ id: "b", column: "doing" })], {
       looseness: "loose",

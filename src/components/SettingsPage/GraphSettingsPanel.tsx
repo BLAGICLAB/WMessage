@@ -1,5 +1,5 @@
 // 任务图谱设置面板（G7-SETTINGS）：六项纯前端偏好（graphPrefs/localStorage），
-// 打开图谱页时现读生效。开关/三档切换即时生效，无需保存按钮（同工作流可见性开关先例）。
+// 打开图谱页时现读生效。开关/三档切换即时生效，无需保存按钮。
 import { useState } from "react";
 import {
   getGraphAutoLayout,
@@ -111,7 +111,7 @@ export default function GraphSettingsPanel() {
       <div className="mt-2 divide-y divide-[var(--edge)]">
         <SwitchRow
           label="只看我的任务"
-          desc="打开图谱时成员过滤默认只留本人（多人汇总后快速切回个人视角）；图谱侧栏的成员筛选仍可临时加回他人"
+          desc="打开图谱时成员过滤默认只留本人（多人汇总后快速切回个人视角）；图谱侧栏的成员筛选仍可临时加回他人。若同时开启了「记住上次的过滤器」且已有存档，以存档为准"
           value={onlyMine}
           onChange={(v) => {
             setOnlyMine(v);
@@ -120,7 +120,7 @@ export default function GraphSettingsPanel() {
         />
         <SegmentedRow<GraphLabelDensity>
           label="标签密度"
-          desc="节点任务名的显示多少：少 = 仅工作流和焦点邻域；多 = 全部显示。节点多时文字是第一个视觉洪水"
+          desc="节点任务名的显示多少：少 = 仅搜索命中与选中邻域；标准 = 仅高连接度节点（度数前 7%）；多 = 全部显示。成员核/标签核/状态核的铭牌常驻不受影响。节点多时文字是第一个视觉洪水"
           value={labelDensity}
           options={[
             { value: "sparse", label: "少" },
@@ -134,7 +134,7 @@ export default function GraphSettingsPanel() {
         />
         <SegmentedRow<GraphEdgeWidth>
           label="连线粗细"
-          desc="依赖/归属连线的线宽"
+          desc="星轨连线的名义屏幕宽度：细 1px / 标准 1.6px / 粗 2.8px，纵深处按透视收细，近景约等于这个值。这一档只改粗细不改亮度——亮暗是星体的事，连线只管光路"
           value={edgeWidth}
           options={[
             { value: "thin", label: "细" },
@@ -148,7 +148,7 @@ export default function GraphSettingsPanel() {
         />
         <SwitchRow
           label="打开时自动播放布局动画"
-          desc="关闭后打开图谱即为静态分扇区布局（大图秒开、不烧 CPU）；图谱上的「重新布局」按钮仍可随时手动跑一轮"
+          desc="关闭后打开图谱直接是收敛好的静态三维构图（大图秒开、不烧 CPU）；图谱上的「重新布局」按钮仍可随时手动跑一轮"
           value={autoLayout}
           onChange={(v) => {
             setAutoLayout(v);
@@ -157,12 +157,12 @@ export default function GraphSettingsPanel() {
         />
         <SegmentedRow<GraphLooseness>
           label="布局松散度"
-          desc="节点分布的疏密：紧凑 = 团簇更聚拢；松散 = 节点间留更多空隙"
+          desc="这一档调的是星点的大小与亮暗，不改节点之间的排布——构图半径一变相机就同步后退，松紧差正好被抵消掉（实测相邻两档构图跨度只差 0.001%，星点直径却差 1.5 倍）。紧凑 = 星体更大更亮、看着更密实；宽松 = 星体更细更暗。任务多到星点挤成一团时，调紧凑更清楚"
           value={looseness}
           options={[
-            { value: "compact", label: "紧凑" },
+            { value: "tight", label: "紧凑" },
             { value: "standard", label: "标准" },
-            { value: "loose", label: "松散" },
+            { value: "loose", label: "宽松" },
           ]}
           onChange={(v) => {
             setLooseness(v);
@@ -171,7 +171,7 @@ export default function GraphSettingsPanel() {
         />
         <SwitchRow
           label="记住上次的过滤器"
-          desc="开启后图谱的整套过滤器（状态/成员/标签/年份/工作流/孤立节点）跨会话保留，下次打开原样恢复；侧栏「重置过滤器」可随时清空"
+          desc="开启后图谱的整套过滤器（状态 / 成员 / 标签 / 完成年份 / 孤立节点）跨会话保留，下次打开原样恢复，优先级高于「只看我的任务」；侧栏「重置过滤器」可随时清空"
           value={rememberFilters}
           onChange={(v) => {
             setRememberFilters(v);
