@@ -20,6 +20,7 @@ import {
   AppVersionMeta,
   archiveApp,
   createApp,
+  deleteApp,
   listActiveApps,
   listArchivedApps,
   listAppRuns,
@@ -111,6 +112,21 @@ export function AppsPage() {
     }
   };
 
+  const handleDelete = async (a: App) => {
+    const ok = await confirm({
+      title: "彻底删除程序",
+      message: `「${a.name}」将被彻底删除，无法恢复：脚本与说明书、data/ 里的预置数据、input/ 里你自己放的文件、output/ 里的全部产物，以及运行历史和版本快照。想留着的请先取消。`,
+      okLabel: "彻底删除",
+    });
+    if (!ok) return;
+    try {
+      await deleteApp(a.id);
+      reload();
+    } catch (e) {
+      handleCommandError(e, "删除程序");
+    }
+  };
+
   const handleRun = (a: App) => {
     setRunning(a.id);
     runApp(a.id, null, undefined)
@@ -179,7 +195,7 @@ export function AppsPage() {
           <EmptyState
             icon={<Archive size={18} aria-hidden />}
             title="没有已归档的程序"
-            description="在程序页点卡上的删除按钮，程序会移到这里（脚本与数据都保留）"
+            description="在程序页点卡上的归档按钮，程序会移到这里（脚本与数据都保留，可在这里彻底删除）"
           />
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3">
@@ -191,6 +207,7 @@ export function AppsPage() {
                 archived
                 running={false}
                 onRestore={() => handleUnarchive(a)}
+                onDelete={() => handleDelete(a)}
                 onChanged={reload}
               />
             ))}
@@ -240,17 +257,20 @@ function AppCard({
   onRun,
   onArchive,
   onRestore,
+  onDelete,
   onChanged,
 }: {
   app: App;
   lastRun: AppRun | null | undefined;
   running: boolean;
-  /** 已归档视图：不显示运行/删除，只给恢复 */
+  /** 已归档视图：不显示运行按钮，历史/回滚也不开放；给恢复 + 彻底删除 */
   archived?: boolean;
   onRun?: () => void;
-  /** 删除 = 归档（脚本与数据保留，可在「已归档」里恢复） */
+  /** 程序页的垃圾桶 = 归档（脚本与数据保留，可在「已归档」里恢复） */
   onArchive?: () => void;
   onRestore?: () => void;
+  /** 归档视图的垃圾桶 = 彻底删除（不可逆，只此一处入口） */
+  onDelete?: () => void;
   /** 卡内发生了内容变更（如版本回滚）：通知页级重载列表 */
   onChanged: () => void;
 }) {
@@ -325,12 +345,24 @@ function AppCard({
             <History size={13} aria-hidden />
           </button>
         )}
+        {/* 程序页用 Archive 图标、归档页用 Trash2：两个垃圾桶图标摆在一处而含义
+            一个可逆一个不可逆，用户只能靠猜——图标必须自己说明是哪种删除 */}
         {!archived && (
           <button
-            className="nm-icon-btn h-7 w-7 text-[var(--t5)] hover:text-[var(--danger)]"
-            title="删除程序（移入已归档，可恢复）"
-            aria-label={`删除程序：${app.name}`}
+            className="nm-icon-btn h-7 w-7 text-[var(--t5)] hover:text-[var(--t2)]"
+            title="归档程序（移入已归档，可恢复）"
+            aria-label={`归档程序：${app.name}`}
             onClick={onArchive}
+          >
+            <Archive size={13} aria-hidden />
+          </button>
+        )}
+        {archived && (
+          <button
+            className="nm-icon-btn h-7 w-7 text-[var(--t5)] hover:text-[var(--danger)]"
+            title="彻底删除程序（不可恢复）"
+            aria-label={`彻底删除程序：${app.name}`}
+            onClick={onDelete}
           >
             <Trash2 size={13} aria-hidden />
           </button>

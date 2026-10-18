@@ -621,6 +621,7 @@ pub fn run() {
             crate::apps::commands::apps_archive,
             crate::apps::commands::apps_unarchive,
             crate::apps::commands::apps_list_archived,
+            crate::apps::commands::apps_delete,
             crate::apps::commands::apps_runs_list,
             crate::apps::commands::apps_versions_list,
             crate::apps::commands::apps_version_restore,

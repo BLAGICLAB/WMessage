@@ -182,6 +182,22 @@ pub async fn apps_unarchive(app: AppHandle, id: String) -> CommandResult<App> {
     .map_err(|e| CommandError::from(format!("程序恢复线程 join 失败：{e}")))?
 }
 
+/// 彻底删除归档程序：库内三张表的行 + 程序目录全部抹掉，不可逆。
+/// 只受理已归档程序——归档视图里那个删除键是唯一入口。
+#[tauri::command]
+pub async fn apps_delete(app: AppHandle, id: String) -> CommandResult<()> {
+    let app2 = app.clone();
+    let id2 = id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _g = crate::db::lock_db_write();
+        let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
+        let dir = apps_runner::app_dir(&app2, &id2);
+        crate::apps::manage::delete_core(&dir, &conn, &id2)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("程序删除线程 join 失败：{e}")))?
+}
+
 /// 最近运行历史（程序页 + 管理面板）
 #[tauri::command]
 pub async fn apps_runs_list(

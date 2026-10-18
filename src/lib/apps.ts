@@ -76,6 +76,14 @@ export function unarchiveApp(id: string): Promise<App> {
   return invoke<App>("apps_unarchive", { id });
 }
 
+/** 彻底删除归档程序：库内三张表的行 + 程序目录全部抹掉，**不可逆**。
+ *  后端只受理已归档程序——归档视图里那个删除键是唯一入口。
+ *  `data/`（AI 预置）、`input/`（你自己放的数据）、`output/`（产物）都在目录内，
+ *  一并删除，不留任何东西。 */
+export function deleteApp(id: string): Promise<void> {
+  return invoke<void>("apps_delete", { id });
+}
+
 /** 跑一个 app。
  * - 文件夹模式：`params` = null
  * - 表单模式：`params` = 字段 JSON 串（与 `inputSchema` 的 `fields` 顺序一致）

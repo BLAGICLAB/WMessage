@@ -128,6 +128,27 @@ pub fn list_active_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String>
     list_by_status(conn, "status != 'archived'")
 }
 
+/// 抹掉某程序的全部库内痕迹：三张表同事务删。
+///
+/// 三张表之间**没有外键**（apps_runs / app_versions 只存 app_id 文本），所以删
+/// apps 主行不会级联——只删主行会留下两堆孤儿行，且它们永远没人再读，是纯粹的
+/// 库膨胀。因此这里必须显式三条一起删，同事务保证「要么都删要么都不删」。
+///
+/// 返回删除的 app_versions + app_runs 行数，供调用方留痕核对。
+pub fn delete_app_rows(conn: &rusqlite::Connection, id: &str) -> Result<usize, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let versions = tx
+        .execute("DELETE FROM app_versions WHERE app_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    let runs = tx
+        .execute("DELETE FROM app_runs WHERE app_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM apps WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(versions + runs)
+}
+
 /// 已归档程序：程序页「已归档」视图 + 恢复入口的数据源。程序页只列非归档，
 /// 没有这份列表的话归档就是有去无回的单向门
 pub fn list_archived_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, String> {

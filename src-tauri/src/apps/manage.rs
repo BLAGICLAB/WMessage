@@ -73,6 +73,47 @@ pub fn unarchive_core(conn: &Connection, id: &str, now_ms: i64) -> Result<App, C
     Ok(next)
 }
 
+// ── 彻底删除（归档后的终态操作，纯函数核心，Tauri 命令直调，单测直打） ──
+
+/// 彻底删除：抹掉库内三张表的行 + 删掉整个程序目录。**不可逆。**
+///
+/// 只接受已归档程序——这是「先归档、再删除」两道刻意动作的价值所在：程序页上的
+/// 那个删除键是归档（可恢复），删除键出现在归档视图里，两步走完才轮到不可逆的
+/// 这一步。程序页直接删等于一次点击就没了代码，而这里的代码多半是 AI 写的、
+/// 重写一遍不便宜。
+///
+/// 顺序刻意是「先库后文件」：反过来的话，进程在两步之间崩掉会留下一个
+/// 程序页还看得见、脚本却已经没了的条目，那比留下一个没人看得见的孤儿目录
+/// 难查得多（库里说有、盘上没有）。
+///
+/// `data/`（AI 预置）与 `input/`（用户自己放的数据）都在目录内，一并删除——
+/// 确认框已逐项写明这一点，这里不替用户保留任何东西。
+pub fn delete_core(dir: &Path, conn: &Connection, id: &str) -> Result<(), CommandError> {
+    let cur = db_apps::get_app(conn, id)
+        .map_err(CommandError::DbError)?
+        .ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    if cur.status != mc::STATUS_ARCHIVED {
+        return Err(CommandError::DomainRule {
+            domain: "apps".into(),
+            reason: format!(
+                "只有已归档的程序才能彻底删除；「{id}」当前是 {}，请先在程序页归档",
+                cur.status
+            ),
+        });
+    }
+    db_apps::delete_app_rows(conn, id).map_err(CommandError::DbError)?;
+    // 目录可能已经不在（用户手工删过、或从别处同步来的元数据）：
+    // 那正是我们要的终态，不算失败。
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(CommandError::IoError(format!(
+            "程序记录已删除，但目录 {} 清不掉：{e}",
+            dir.display()
+        ))),
+    }
+}
+
 // ── 上限（对齐 bot_skills::manage 的 create_skill 同款量级） ──
 
 /// app.py 源码字符上限（100K 字符 ≈ 常规脚本的百倍裕度）
@@ -831,6 +872,9 @@ mod tests {
         let conn = Connection::open(tmp.path().join("test.db")).unwrap();
         conn.execute(db_apps::APPS_DDL, []).unwrap();
         conn.execute(db_apps::APP_VERSIONS_DDL, []).unwrap();
+        // app_runs 一并建：三张表在生产里由 db::ensure 一次建齐，缺一张的夹具
+        // 会让「删干净三张表」这类用例撞上 no such table 而不是它要验的东西
+        conn.execute(db_apps::APP_RUNS_DDL, []).unwrap();
         (tmp, conn)
     }
 
@@ -1079,6 +1123,85 @@ mod tests {
         let other = seed_enabled(&conn, "other");
         assert!(unarchive_core(&conn, &other.id, 2000).is_err());
         assert!(unarchive_core(&conn, "no-such-app", 2000).is_err());
+    }
+
+    /// 删干净是「库三张表 + 目录」全没，不是「列表里看不见了」。
+    ///
+    /// 三张表之间没有外键：只删 apps 主行的话，app_versions / app_runs 会留下
+    /// 两堆永远没人再读的孤儿行（症状是库一直在涨、程序页却空空如也），
+    /// 而目录留着更是白占磁盘——用户点删除就是冲着腾地方来的。
+    #[test]
+    fn delete_removes_all_three_tables_and_the_directory() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+        )
+        .unwrap();
+        db_apps::record_app_run(&conn, &id, 2, "ok").unwrap();
+        std::fs::create_dir_all(dir.join("input")).unwrap();
+        std::fs::write(dir.join("input").join("本月.xlsx"), b"x").unwrap();
+        archive_core(&conn, &id, 3).unwrap();
+
+        delete_core(&dir, &conn, &id).unwrap();
+
+        assert!(!dir.exists(), "程序目录没删干净（用户要的腾地方没兑现）");
+        for table in ["apps", "app_versions", "app_runs"] {
+            let n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE app_id = ?1"),
+                    [&id],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|_| {
+                    conn.query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE id = ?1"),
+                        [&id],
+                        |r| r.get(0),
+                    )
+                    .unwrap()
+                });
+            assert_eq!(n, 0, "{table} 里还留着 {id} 的行（无外键，不会自动级联）");
+        }
+        assert!(db_apps::list_archived_apps(&conn).unwrap().is_empty());
+    }
+
+    /// 删除只对已归档程序开放——「先归档、再删除」这两步不能被一次点击跳过。
+    ///
+    /// 顺着跳过的话，程序页上那个垃圾桶就等于真删除，而那里的代码多半是 AI 写的；
+    /// 归档这一步存在的全部意义就是当那道安全网。
+    #[test]
+    fn delete_rejects_non_archived_and_unknown_ids() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("roster");
+        let app = seed_enabled(&conn, "roster");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let err = delete_core(&dir, &conn, &app.id).expect_err("未归档程序不得直接删");
+        assert!(
+            matches!(err, CommandError::DomainRule { .. }),
+            "该走业务拒绝而不是 IO/未找到错误：{err:?}"
+        );
+        assert!(dir.exists(), "被拒的程序目录不该被动过");
+        assert!(db_apps::get_app(&conn, &app.id).unwrap().is_some());
+
+        assert!(delete_core(&dir, &conn, "ghost").is_err(), "不存在的 id");
+    }
+
+    /// 目录早就不在了也算删成功。
+    ///
+    /// 程序目录可能被用户手工清过、或从别处同步来一份只有元数据的行；
+    /// 那正是我们要的终态。为此报错会让「删除」在真实数据上无故失败。
+    #[test]
+    fn delete_tolerates_an_already_missing_directory() {
+        let (tmp, conn) = temp_db();
+        let app = seed_enabled(&conn, "ghost-dir");
+        archive_core(&conn, &app.id, 1).unwrap();
+        let dir = tmp.path().join("never-existed");
+
+        delete_core(&dir, &conn, &app.id).expect("目录缺失是目标状态，不是失败");
+        assert!(db_apps::get_app(&conn, &app.id).unwrap().is_none());
     }
 
     #[test]

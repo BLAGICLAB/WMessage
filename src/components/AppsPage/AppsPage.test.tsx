@@ -223,12 +223,12 @@ describe("AppsPage", () => {
       );
     });
   });
-  it("删除按钮走归档：确认后调 apps_archive，卡片从程序页消失", async () => {
+  it("程序页的删除键走归档（可逆）：确认后调 apps_archive，卡片从程序页消失", async () => {
     const user = userEvent.setup();
     askMock.mockResolvedValue(true);
     render(<AppsPage />);
     await screen.findByText("工资单匹配");
-    await user.click(screen.getByRole("button", { name: "删除程序：工资单匹配" }));
+    await user.click(screen.getByRole("button", { name: "归档程序：工资单匹配" }));
     expect(askMock).toHaveBeenCalled();
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("apps_archive", {
@@ -241,6 +241,21 @@ describe("AppsPage", () => {
         invokeMock.mock.calls.filter((c) => c[0] === "apps_list_active").length,
       ).toBeGreaterThan(1),
     );
+    // 程序页这一下是归档不是删除：不碰 apps_delete
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "apps_delete",
+      expect.anything(),
+    );
+  });
+
+  it("程序页没有彻底删除键——不可逆的那一下只在归档视图里", async () => {
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    // 两个垃圾桶摆在一处、一个可逆一个不可逆时，光看图标分不出来：
+    // 程序页这侧必须是归档键，彻底删除键不出现
+    expect(
+      screen.queryByRole("button", { name: /彻底删除程序/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("脚本失败（exit_code!=0）弹红色失败横幅，不谎报运行完成", async () => {
@@ -290,13 +305,66 @@ describe("AppsPage", () => {
     await screen.findByText("工资单匹配");
     await user.click(screen.getByRole("button", { name: /已归档/ }));
     expect(screen.getByText("旧工具")).toBeInTheDocument();
-    // 归档视图里不显示运行/删除，只给恢复
+    // 归档视图里不显示运行，不显示归档键（它已经是归档态），只给恢复 + 彻底删除
     expect(screen.queryByRole("button", { name: "运行" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "归档程序：旧工具" }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "恢复" }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("apps_unarchive", {
         id: "old-tool",
       }),
     );
+  });
+
+  it("归档视图里能彻底删除：确认后调 apps_delete 并重拉列表", async () => {
+    const user = userEvent.setup();
+    askMock.mockResolvedValue(true);
+    let hasArchived = true;
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "apps_delete") {
+        hasArchived = false;
+        return Promise.resolve(null);
+      }
+      if (cmd === "apps_list_archived")
+        return Promise.resolve(hasArchived ? ARCHIVED : []);
+      return routeInvoke(cmd, args ?? {});
+    });
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await user.click(screen.getByRole("button", { name: /已归档/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "彻底删除程序：旧工具" }),
+    );
+    // 不可逆操作必须先过确认，且确认文案要说清会失去什么
+    expect(askMock).toHaveBeenCalled();
+    const confirmText = JSON.stringify(askMock.mock.calls[0]);
+    expect(confirmText).toContain("彻底删除");
+    expect(confirmText).toContain("无法恢复");
+    expect(confirmText).toContain("input/");
+    expect(confirmText).toContain("output/");
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("apps_delete", {
+        id: "old-tool",
+      }),
+    );
+    expect(await screen.findByText("没有已归档的程序")).toBeInTheDocument();
+  });
+
+  it("取消确认就不该发出删除命令", async () => {
+    const user = userEvent.setup();
+    askMock.mockResolvedValue(false);
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await user.click(screen.getByRole("button", { name: /已归档/ }));
+    await user.click(
+      await screen.findByRole("button", { name: "彻底删除程序：旧工具" }),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "apps_delete",
+      expect.anything(),
+    );
+    expect(screen.getByText("旧工具")).toBeInTheDocument();
   });
 });
