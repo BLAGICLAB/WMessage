@@ -117,6 +117,22 @@ fn tail_prefix_len(s: &str, tag: &str) -> usize {
 // 提取后：测试调 wmessage_lib::bot::parse_sse_chunk，生产代码同样调之，
 //        OpenAI SSE 格式演化只改这一处。
 
+/// 一次 SSE chunk 内捞到的 token 用量（两协议归一后的口径）
+///
+/// 落库契约（见 SPEC 词元统计四档计价）：`input_tokens` 是**普通 input 量**，
+/// 不含任何缓存档。两协议的上报形状不同，落库前各自归一——
+/// - Anthropic：`input_tokens` 天然不含缓存，另有 `cache_read_input_tokens`
+///   / `cache_creation_input_tokens`
+/// - OpenAI：`prompt_tokens` **含** `cached_tokens`（在
+///   `prompt_tokens_details`），故解析时减去缓存档再当普通 input
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
+
 /// 一次 SSE chunk 解析结果（content / reasoning / tool_calls / finish_reason / 流内错误 / [DONE]）
 #[derive(Debug, Default, Clone)]
 pub struct ParsedChunk {
@@ -132,6 +148,9 @@ pub struct ParsedChunk {
     /// 200 流内错误载荷：部分 OpenAI 兼容网关在 200 流内发 `{"error":{...}}`，
     /// 静默丢弃会导致用户拿到空白回复——显式冒出
     pub error: Option<String>,
+    /// 本 chunk 携带的 token 用量（OpenAI 需请求带
+    /// `stream_options.include_usage`，末块 usage 的 choices 为空数组）
+    pub usage: Option<TokenUsage>,
     /// `data: [DONE]` 标记
     pub is_done: bool,
 }
@@ -165,6 +184,9 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
         });
     }
     let v: serde_json::Value = serde_json::from_str(data).ok()?;
+    // usage 必须在 choices 判定之前取：OpenAI 带 include_usage 时末块是
+    // `{"choices":[], "usage":{...}}`，choices 空数组会在下面的分支提前 return。
+    let usage = parse_openai_usage(&v);
     let choice0 = v
         .get("choices")
         .and_then(|c| c.as_array())
@@ -178,11 +200,16 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
                 ..Default::default()
             });
         }
-        return None;
+        // 纯 usage 末块（choices 空但带 usage）：不是错误，照常返回让调用方记账
+        return usage.map(|u| ParsedChunk {
+            usage: Some(u),
+            ..Default::default()
+        });
     };
     let delta = &choice0["delta"];
 
     let mut chunk = ParsedChunk::default();
+    chunk.usage = usage;
 
     if let Some(t) = delta["content"].as_str() {
         if !t.is_empty() {
@@ -221,6 +248,35 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     }
 
     Some(chunk)
+}
+
+/// 从 OpenAI 形状的 chunk 抽 token 用量（纯函数，无副作用）。
+///
+/// 两处口径差异必须在此归一，否则同一个列会混进两种含义：
+/// - **缓存归口不同**：OpenAI 的 `prompt_tokens` 已含缓存部分（缓存量在
+///   `prompt_tokens_details.cached_tokens`），而落库契约要求 `input_tokens`
+///   是「普通 input 量」（与 Anthropic 的 `input_tokens` 同义）。故减去，
+///   `saturating_sub` 防脏网关给出 cached > prompt 时下溢成天文数字。
+/// - **无写入口**：OpenAI 兼容形状不报 cache write，保持 0（不是解析失败）。
+///
+/// 无 usage 字段（含未请求 include_usage 的网关）返回 None，调用方按「本块
+/// 无用量」处理——这与 Anthropic 各事件各自带 usage 的形状不同，
+/// 故调用方**只认末块**，不能逐块累加（逐块累加会把末块的总量重复计入）。
+pub fn parse_openai_usage(v: &serde_json::Value) -> Option<TokenUsage> {
+    let u = v.get("usage")?;
+    if !u.is_object() {
+        return None;
+    }
+    let prompt_total = u["prompt_tokens"].as_u64()?;
+    let cached = u["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .unwrap_or(0);
+    Some(TokenUsage {
+        input_tokens: prompt_total.saturating_sub(cached),
+        output_tokens: u["completion_tokens"].as_u64().unwrap_or(0),
+        cache_read_tokens: cached,
+        cache_creation_tokens: 0,
+    })
 }
 
 /// 协议解析失败时的坏块判定（纯函数，供调用方计数留痕）——坏块曾经无声
@@ -1053,8 +1109,9 @@ pub async fn run_model_loop(
             }
             // llm.usage 累计（trace 汇总的 tokens 数据源）+  水位条事件
             //（仅交互实例推前端；前端按会话累计配合 contextK 显示水位。
-            // OpenAI 兼容网关的流式 usage 需要 stream_options 参数（部分网关
-            // 不认识会 400），暂不启用——水位仅 Anthropic 协议有数据，前端注明）
+            // 两协议都到这里：Anthropic 由 message_start/message_delta 带上，
+            // OpenAI 由末块 usage 带上（请求侧带 stream_options.include_usage，
+            // 网关不认时降级不统计，见 stream_options_unsupported 审计事件））
             if event == "llm.usage" {
                 let mut input_opt: Option<u64> = None;
                 let mut output_opt: Option<u64> = None;
@@ -1299,6 +1356,10 @@ where
     // 补一轮机会（claim_retry）同样每次对话只用一次
     let mut mutation_done: bool = false;
     let mut claim_retry_used: bool = false;
+    // 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）。
+    // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
+    // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
+    let mut openai_usage_supported: bool = true;
     // 执行类谎报守卫的凭证池：本次**用户提问**内所有工具调用的真实记录。
     //
     // 作用域是整条提问（= 一次 run_model_loop_core 调用 = exec_spans 的一条 trace_id），
@@ -1527,12 +1588,22 @@ where
         // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
         // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
         let mut body = match http.provider {
-            crate::bot::ApiProvider::Openai => serde_json::json!({
-                "model": http.model,
-                "messages": msgs,
-                "tools": tools,
-                "stream": true
-            }),
+            crate::bot::ApiProvider::Openai => {
+                let mut b = serde_json::json!({
+                    "model": http.model,
+                    "messages": msgs,
+                    "tools": tools,
+                    "stream": true
+                });
+                // 流式 usage 需显式索取：末块才带 `usage`（含
+                // prompt_tokens_details.cached_tokens），否则 OpenAI 协议下
+                // 缓存命中永远记不到。部分中转网关不认这个字段会 400，
+                // 届时 usage_supported 翻 false 并原样重发一次（见非成功分支）。
+                if openai_usage_supported {
+                    b["stream_options"] = serde_json::json!({"include_usage": true});
+                }
+                b
+            }
             crate::bot::ApiProvider::Anthropic => {
                 match crate::bot_anthropic::build_anthropic_body(
                     &http.model,
@@ -1616,19 +1687,42 @@ where
             match send_result {
                 Ok(r) => {
                     if !r.status().is_success() {
-                        // 429/5xx 瞬时抖动：退避后重发同一请求（不读 body，drop 即弃）
-                        if is_retryable_llm_status(r.status().as_u16())
-                            && attempt < MAX_LLM_ATTEMPTS
+                        let st = r.status().as_u16();
+                        // 错误响应体统一先读出来：stream_options 探测要用它，
+                        // 下面的报错文案与超长判定也要用同一份
+                        let text = r.text().await.unwrap_or_default();
+                        // 网关不认 stream_options 会 400。**只在错误体点名该字段
+                        // 时降级**——普通 400（鉴权错/参数错/上下文超长）不是它的
+                        // 问题，若一律重发，真错会被重试掩盖并变成一次多余请求。
+                        if st == 400
+                            && http.provider == crate::bot::ApiProvider::Openai
+                            && openai_usage_supported
+                            && body.get("stream_options").is_some()
+                            && text.contains("stream_options")
                         {
+                            openai_usage_supported = false;
+                            // body 是轮外构造、轮内复用的同一份（重试不发新
+                            // body），故必须就地摘掉字段，否则重发还是带它
+                            if let Some(obj) = body.as_object_mut() {
+                                obj.remove("stream_options");
+                            }
+                            audit(
+                                crate::audit::AuditLevel::Warn,
+                                "llm.stream_options_unsupported",
+                                vec![("status", st.to_string())],
+                            );
+                            continue;
+                        }
+                        // 429/5xx 瞬时抖动：退避后重发同一请求
+                        if is_retryable_llm_status(st) && attempt < MAX_LLM_ATTEMPTS {
                             audit(
                                 crate::audit::AuditLevel::Warn,
                                 "llm.retry",
                                 vec![
-                                    ("status", r.status().as_u16().to_string()),
+                                    ("status", st.to_string()),
                                     ("attempt", attempt.to_string()),
                                 ],
                             );
-                            drop(r);
                             // 重试等待期响应 /stop——不再发出下一次请求（与主循环停止口径一致）
                             if stop.stopped() {
                                 let hint = skill_finish(false, "用户停止");
@@ -1637,8 +1731,6 @@ where
                             tokio::time::sleep(LLM_RETRY_DELAY).await;
                             continue;
                         }
-                        let st = r.status().as_u16();
-                        let text = r.text().await.unwrap_or_default();
                         let overflow = is_context_overflow(st, &text);
                         // 上下文超长：同一份 msgs 重发必然同样 400——砍掉最旧的
                         // 会话消息后重发（请求尚未开始流式产出，本轮无副作用可重放）
@@ -1770,17 +1862,11 @@ where
                     crate::bot::ApiProvider::Anthropic => {
                         match crate::bot_anthropic::parse_anthropic_event(line) {
                             Some(mut ev) => {
-                                if let Some(u) = ev.usage {
-                                    usage_input += u.input_tokens;
-                                    usage_output += u.output_tokens;
-                                    usage_cache_read += u.cache_read_tokens;
-                                    usage_cache_creation += u.cache_creation_tokens;
-                                }
                                 // content block index → 稠密工具槽位（防幽灵条目）
-                                for d in &mut ev.chunk.tool_calls {
+                                for d in &mut ev.tool_calls {
                                     tool_slot_mapper.remap(d);
                                 }
-                                Some(ev.chunk)
+                                Some(ev)
                             }
                             None => None,
                         }
@@ -1789,7 +1875,7 @@ where
                 // 解析不出东西时的留痕（两协议共用一处）：跳过是原行为且是对的
                 // ——脏网关偶发半截 JSON 时其余 chunk 完好，中断会把好回复一起
                 // 丢掉；补的只是「静默」，回合结束发一条计数 + 首条样本。
-                let Some(parsed) = parsed else {
+                let Some(mut parsed) = parsed else {
                     if let Some(payload) = unparsable_sse_payload(line, http.provider) {
                         bad_sse_chunks += 1;
                         if bad_sse_sample.is_none() {
@@ -1798,6 +1884,15 @@ where
                     }
                     return None;
                 };
+                // token 记账两协议共用一处：Anthropic 分布在 message_start /
+                // message_delta 两个事件，OpenAI 集中在末块 usage——都是
+                // 「本块带用量就累加」，故不需要各写一份。
+                if let Some(u) = parsed.usage.take() {
+                    usage_input += u.input_tokens;
+                    usage_output += u.output_tokens;
+                    usage_cache_read += u.cache_read_tokens;
+                    usage_cache_creation += u.cache_creation_tokens;
+                }
                 if parsed.is_done {
                     stream_end_seen = true;
                     return None;
@@ -1939,12 +2034,11 @@ where
             );
         }
 
-        // Anthropic 模式：回合结束把流内捞到的 token 用量 + 缓存命中写审计。
+        // 回合结束把流内捞到的 token 用量 + 缓存命中写审计（两协议）。
         // 缓存字段（cache_read / cache_creation）拼到 llm.usage 事件里——
         // bot.log 落盘可做命中率回看（业界把命中率列为生产 agent 第一指标）。
-        if http.provider == crate::bot::ApiProvider::Anthropic
-            && (usage_input > 0 || usage_output > 0)
-        {
+        // OpenAI 无 cache write 字段，该档恒 0（不是解析失败）。
+        if usage_input > 0 || usage_output > 0 {
             let mut kv = vec![
                 ("input_tokens", usage_input.to_string()),
                 ("output_tokens", usage_output.to_string()),
@@ -3415,9 +3509,73 @@ mod parse_sse_chunk_tests {
 
     #[test]
     fn returns_none_for_empty_choices() {
-        // 网关异常：200 OK + choices:[] → 跳过
+        // 网关异常：200 OK + choices:[] 且无 usage → 跳过
         let line = r#"data: {"choices":[]}"#;
         assert!(parse_sse_chunk(line).is_none());
+    }
+
+    /// OpenAI 流式 usage：末块 `{"choices":[],"usage":{...}}` 必须被取到
+    /// （choices 为空数组，早于本改动会在空判定处直接 return 丢掉）。
+    #[test]
+    fn openai_usage_chunk_with_empty_choices_is_captured() {
+        let line = r#"data: {"id":"x","choices":[],"usage":{"prompt_tokens":5000,"completion_tokens":120,"total_tokens":5120,"prompt_tokens_details":{"cached_tokens":4000}}}"#;
+        let c = parse_sse_chunk(line).expect("usage 末块不得被丢弃");
+        assert!(c.content.is_none() && c.tool_calls.is_empty());
+        let u = c.usage.expect("usage 末块必须带出用量");
+        // 关键口径：prompt_tokens 含 cached，落库的普通 input 要减掉
+        assert_eq!(u.input_tokens, 1000);
+        assert_eq!(u.cache_read_tokens, 4000);
+        assert_eq!(u.output_tokens, 120);
+        assert_eq!(u.cache_creation_tokens, 0, "OpenAI 无写入口");
+    }
+
+    /// 无 cached 细节（网关不上报或未命中）时 input 原样透传
+    #[test]
+    fn openai_usage_without_cache_details_passes_input_through() {
+        let line = r#"data: {"choices":[],"usage":{"prompt_tokens":800,"completion_tokens":30}}"#;
+        let u = parse_sse_chunk(line).unwrap().usage.unwrap();
+        assert_eq!((u.input_tokens, u.cache_read_tokens), (800, 0));
+        assert_eq!(u.output_tokens, 30);
+    }
+
+    /// 脏网关给出 cached > prompt（口径反了/重复计入）时不得下溢
+    #[test]
+    fn openai_usage_saturates_when_cached_exceeds_prompt() {
+        let line = r#"data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":9999}}}"#;
+        let u = parse_sse_chunk(line).unwrap().usage.unwrap();
+        assert_eq!(u.input_tokens, 0, "减法必须 saturating，不能绕成天文数字");
+        assert_eq!(u.cache_read_tokens, 9999);
+    }
+
+    /// 普通内容块不带 usage → None（调用方据此只认真正带用量的块）
+    #[test]
+    fn openai_content_chunk_has_no_usage() {
+        let line = r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#;
+        assert!(parse_sse_chunk(line).unwrap().usage.is_none());
+    }
+
+    /// 非对象 usage（脏网关）不得当成有效用量
+    #[test]
+    fn openai_non_object_usage_is_ignored() {
+        let line = r#"data: {"choices":[],"usage":"n/a"}"#;
+        assert!(parse_sse_chunk(line).is_none());
+    }
+
+    /// 流内错误信封的优先级高于 usage（错误必须冒泡，不能被当末块静默吞掉）
+    #[test]
+    fn openai_error_envelope_beats_usage_chunk() {
+        let line = r#"data: {"choices":[],"usage":{"prompt_tokens":5},"error":{"message":"rate limited"}}"#;
+        let c = parse_sse_chunk(line).expect("错误信封不该被当成纯 usage 末块");
+        assert_eq!(c.error.as_deref(), Some("rate limited"));
+    }
+
+    /// OpenAI 形状的 usage 末块不得被算成「协议正常成分之外」的坏块
+    #[test]
+    fn openai_usage_chunk_is_not_counted_as_bad_sse() {
+        use super::unparsable_sse_payload;
+        use crate::bot::ApiProvider::Openai;
+        let line = r#"data: {"choices":[],"usage":{"prompt_tokens":5}}"#;
+        assert!(unparsable_sse_payload(line, Openai).is_none());
     }
 
     #[test]

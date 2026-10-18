@@ -1272,6 +1272,46 @@ async fn core_plain_400_is_not_degraded() {
     );
 }
 
+/// 网关点名 stream_options 不认时：摘字段原样重发一次，回复一字不变
+#[tokio::test]
+async fn core_stream_options_rejection_degrades_and_resends_once() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        400,
+        r#"{"error":{"message":"Unrecognized request argument supplied: stream_options","type":"invalid_request_error"}}"#.to_string(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("降级后的正常回复".into()));
+    let h = CoreHarness::new();
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("降级后应正常返回回复");
+
+    assert_eq!(text, "降级后的正常回复", "回复内容不得因降级而变");
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 2, "应恰好重发一次");
+    assert!(bodies[0].contains("stream_options"), "首次请求带该字段");
+    assert!(
+        !bodies[1].contains("stream_options"),
+        "重发必须摘掉该字段：{}",
+        bodies[1]
+    );
+    assert!(
+        h.events().contains(&"llm.stream_options_unsupported"),
+        "降级须留审计：{:?}",
+        h.events()
+    );
+}
+
 #[tokio::test]
 async fn core_truncated_stream_text_only_warns_but_returns() {
     // P1-1 防线另一支：干净 EOF 无 tool_calls 但有正文 → 不报错，

@@ -101,13 +101,13 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 - **子 Agent 配置档管理**：设置页「机器人技能」同一区，含列表（名字 / 角色 / 档位 / 工具数 / 轮数上限，坏文件显形并说明坏在哪）、导入 `.yaml`、导出原样。导入要求**文件名与文件内 `onion_id` 一致**（`bot_sessions.onion_config` 存的是文件名），同名不静默覆盖；导出搬落盘原文以保留行内注释
 - **per-onion 采样温度**：配置档的 `temperature` 覆盖模型条目自带的温度（采样参数不是权限，不适用「只收紧」；配置档是更具体的意图）。三个内置档里 validator 写的是 `temperature: 0`
 - **任务图谱**：Sigma.js + FA2 worker 力导向（Obsidian 式交互：hover 邻接高亮、度数定大小、过滤器、局部放大）；多人归属着色/聚簇、依赖编辑、标签近义合并、视野自适应、节点大小双模式（连接度/耗时）、设置页七项图谱偏好
-- **词元统计四档计价**（2026-10-17）：Anthropic 的 input token 分四档定价（cache read 0.1x / cache write 1.25x / 普通 input 1x / output），`exec_traces` 单列存 `cache_read_tokens` / `cache_write_tokens` 而**不折进 `prompt_tokens`**——折算会让数字同时失去「普通 input 量」与「等效成本」两种含义，长会话的缓存收益（工具循环里每轮重发全部历史，首轮之后几乎全是缓存命中）也就看不见了。按日 / 按模型 / 按模型×日期三个聚合口口径一致；trace 详情弹窗在 token 数后附缓存读/写两档（tooltip 说明单价差异），设置页词元统计面板仍只显示输入/输出两档不动；聊天页会话水位条（`UsageMeter`）按同一分档口径单列缓存读/写（不折进输入输出），百分比用「最近一轮 input + cache read」作当前 prompt 体量对窗口——Anthropic 的缓存读不在 `input_tokens` 里，折进去会让水位条与 trace 弹窗对不上
+- **词元统计四档计价**（2026-10-17）：Anthropic 的 input token 分四档定价（cache read 0.1x / cache write 1.25x / 普通 input 1x / output），`exec_traces` 单列存 `cache_read_tokens` / `cache_write_tokens` 而**不折进 `prompt_tokens`**——折算会让数字同时失去「普通 input 量」与「等效成本」两种含义，长会话的缓存收益（工具循环里每轮重发全部历史，首轮之后几乎全是缓存命中）也就看不见了。按日 / 按模型 / 按模型×日期三个聚合口口径一致；trace 详情弹窗在 token 数后附缓存读/写两档（tooltip 说明单价差异）；设置页词元统计面板分列「累计缓存未命中 / 累计缓存命中」两格（色块宽度与榜位都按未命中口径，缓存不折进色块）；聊天页会话水位条（`UsageMeter`）按同一分档口径单列缓存读/写（不折进输入输出），百分比用「最近一轮 input + cache read」作当前 prompt 体量对窗口——Anthropic 的缓存读不在 `input_tokens` 里，折进去会让水位条与 trace 弹窗对不上。**两协议都统计**（2026-10-18）：OpenAI 形状由请求侧 `stream_options.include_usage` 索取末块 usage，其 `prompt_tokens` 含 `prompt_tokens_details.cached_tokens`，解析时减去缓存档再落库，保证两种协议在同一列里是同一个「普通输入量」含义；OpenAI 兼容形状无缓存写入字段，该档恒 0。网关不认 `stream_options` 会 400——收到即本场对话降级（摘字段原样重发，回复不受影响、只是该次不记用量），记 `llm.stream_options_unsupported` 审计事件
 - **Agent 透明化**：执行详情面板（工具/耗时/成败/文件 diff 证据、error_class 分类、痕迹清理与导出；痕迹三表按保留期自动清理——启动一次 + 每天一次，数据管理可手动触发）、定时执行透明、通知中心（三类决策事件消息化）、Agent 参数注册表 + 词元统计卡、主窗活动页
 - **程序（M1 运行态 + M2 开发态已上线，设计稿 `docs/APPS-DESIGN-2026-10-15.md`、代码规范 `docs/APP-DEV-CONVENTIONS.md`）**：大模型开发的确定性小程序（脚本 + 输入声明），文件夹/表单两种运行态，运行不连大模型；程序页是运行态（卡片/试跑/历史/产物，草稿徽章可试跑）+ 手工上架入口；卡上「删除」= **归档**（脚本/数据/版本快照/运行历史原地保留，从程序页移走，头部「已归档 N」里可恢复回草稿态；归档/恢复都是用户动作，bot 工具不受理，已归档程序不开放修改）；开发态 = 聊天即 IDE——bot 工具 `apps_list`（防重名）/ `apps_create`（落草稿+文件集落盘）/ `apps_update_files`（整文件集修改，用户满意后置 enabled 上架），脚本契约（校验段 + `##RESULT##` 哨兵）写进工具 schema；程序本体走 `app_versions` 快照表版本化（创建/更新/回滚自动存，滚动 100 版，回滚 = 旧内容整体写回且可再撤销）。旧工作流画布（任务卡 DAG + LLM 逐节点执行）已退役，遗留表与数据行由 open_db 一次性清扫删除（幂等，以 workflows 表存在为闸）
 
 ### 5. 治理与自进化（观察态）
 
-- 设置页决策板：候选提案 Promote/Reject（即开关语义）、应用策略二档、影子观察（shadow）、执行痕迹与 lesson 落库；每张提案卡带**决策证据**——影子判定（采纳后会不会进 lesson top-3）、同目标冲突标注（池内/已生效）、回滚预警（观察窗回滚 ≥5 提示切手动档）；**提案派生门槛可调**（Merge/Distill/Contradiction 三个涉及条数门槛，按记忆总量给 4 档建议值，存 evolution.deriveThresholds）
+- 设置页决策板（并入「记忆」分类，非独立侧栏项）：候选提案 Promote/Reject（即开关语义）、应用策略二档、影子观察（shadow）、执行痕迹与 lesson 落库；每张提案卡带**决策证据**——影子判定（采纳后会不会进 lesson top-3）、同目标冲突标注（池内/已生效）、回滚预警（观察窗回滚 ≥5 提示切手动档）；**提案派生门槛可调**（Merge/Distill/Contradiction 三个涉及条数门槛，按记忆总量给 4 档建议值，存 evolution.deriveThresholds）
 - 文件治理：授权模式四档 strict 白名单硬拒 / ask 弹授权（默认）/ auto / yolo 全放行 + per-tool 权限规则表；绑定集合精确命中才放行（`..`/软链/前缀相似目录全拒）
 - 密钥纪律：API key、搜索 key、MCP 机密全走系统凭据存储，不落明文配置
 
@@ -117,7 +117,7 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 - **本地 HTTP API**（tiny_http + SSE + token 鉴权）：启停/状态/换 token，供外部集成
 - 便携模式：数据库随 exe 走（exe 目录锚定，不可写兜底 app_data_dir）；Windows 绿色 zip + macOS dmg（Intel/Apple Silicon）
 - 桌面清理：CSV 规则表（模版下载/导入），`{year}` 占位，move/delete 两动作，10 分钟后台轮询，migration.log；看板/回收站附件绝不触碰
-- **日志体系**：数据目录四个落盘日志——bot.log（全应用结构化审计，`[ts] LEVEL | event | k=v`）、error.log（WARN/ERROR 事件镜像账本，不被 Info 流水稀释）、api.log（HTTP API 访问+变更）、migration.log（迁移执行），全部 5MB 轮转保留两代（`.old`/`.old.1`）；全局 panic 钩子记 ERROR；前端 window error/unhandledrejection 与 CSP 违规经 frontend_event_report 上报（32 签名去重）；设置页「诊断」卡 = error.log 最近错误 + 一键复制全部日志（error 信号在前、流水在后，单文件超 256KB 尾部截断）
+- **日志体系**：数据目录四个落盘日志——bot.log（全应用结构化审计，`[ts] LEVEL | event | k=v`）、error.log（WARN/ERROR 事件镜像账本，不被 Info 流水稀释）、api.log（HTTP API 访问+变更）、migration.log（迁移执行），全部 5MB 轮转保留两代（`.old`/`.old.1`）；全局 panic 钩子记 ERROR；前端 window error/unhandledrejection 与 CSP 违规经 frontend_event_report 上报（32 签名去重）；设置页独立「日志」分类 = 三来源分段切换（错误 / 机器人审计 / 文件迁移，各读末条 200 行）+ 一键复制全部日志（error 信号在前、流水在后，单文件超 256KB 尾部截断）；api.log 无独立读命令，只出现在整包里
 - 全局快捷键：唤起/隐藏主窗口（macOS `Cmd+Ctrl+W` / Win `Ctrl+Alt+W`）、快速新建任务（`Cmd/Ctrl+Alt+N`，唤起并进入标题编辑）、切换深浅色（`Cmd/Ctrl+Alt+T`）；注册失败只记日志不影响启动
 - UI 体系：新拟态 nm 组件类 + 设计 token + 左导航壳 + lucide 图标 + a11y 基线 + 深浅色三态主题
 

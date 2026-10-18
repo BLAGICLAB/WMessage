@@ -724,10 +724,13 @@ export function UsageStatsCard() {
 
           <p className="px-1 text-xs leading-relaxed text-[var(--t5)]">
             数据说明：本地 exec_traces 聚合（热力图窗口 1
-            年，实际范围受保留期限制）； 执行次数只计已收尾执行；OpenAI
-            兼容网关的流式用量暂未接入（仅 Anthropic 协议计统计）。
-            缓存读/写仅 Anthropic 协议上报，单列展示且不计入累计 Token 数
-            与色块宽度。
+            年，实际范围受保留期限制）； 执行次数只计已收尾执行。Anthropic
+            与 OpenAI 两种协议的用量都在统计——OpenAI 的
+            <code className="mx-1">prompt_tokens</code> 含
+            <code className="mx-1">cached_tokens</code>，已减去后再落库，两种
+            协议的「普通输入」口径一致。OpenAI 兼容形状没有缓存写入字段，
+            该档恒 0；网关不支持
+            <code className="mx-1">stream_options</code> 时该次请求不记用量。
           </p>
         </>
       )}

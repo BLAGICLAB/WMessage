@@ -12,7 +12,7 @@
 //! 本模块全部纯函数（唯一例外 apply_anthropic_auth 只给 RequestBuilder 加头），
 //! 无 IO、无 AppHandle 依赖，模块内单测覆盖全矩阵。
 
-use crate::bot_model_loop::{ParsedChunk, ToolCallDelta};
+use crate::bot_model_loop::{ParsedChunk, TokenUsage, ToolCallDelta};
 
 /// Anthropic API 版本头（messages API 稳定版本）
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -402,23 +402,13 @@ pub fn apply_anthropic_auth(
 
 // SSE 解析（入站）
 
-/// 流内捞到的 token 用量（message_start 的 input_tokens / message_delta 的 output_tokens）
-/// prompt caching 命中/写入 tokens：cache_read_input_tokens（命中）、cache_creation_input_tokens（写入）
-/// 仅 Anthropic 协议有；其他协议下为 0。前端按会话累计展示缓存命中率 = read / (read + creation + input)
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct AnthropicUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_tokens: u64,
-    pub cache_creation_tokens: u64,
-}
-
-/// 一个 Anthropic SSE 事件的解析结果：复用 OpenAI 形状的 ParsedChunk
-///（主循环 handle_line 消费逻辑两协议共享），usage 单独带出
-pub struct AnthropicEvent {
-    pub chunk: ParsedChunk,
-    pub usage: Option<AnthropicUsage>,
-}
+/// 一个 Anthropic SSE 事件的解析结果：直接复用 OpenAI 形状的 ParsedChunk
+///（主循环 handle_line 消费逻辑两协议共享）。
+/// token 用量挂在 `chunk.usage` 上（message_start 带 input + cache_*，
+/// message_delta 带 output），与 OpenAI 末块 usage 走同一条累计路径——
+/// 两协议的上报时机不同（前者分散在两个事件、后者集中在末块），
+/// 但都是「出现就累加」，故不必在协议分支里各写一份记账。
+pub type AnthropicEvent = ParsedChunk;
 
 /// Anthropic stop_reason → OpenAI finish_reason 映射
 ///（下游 finish_reason 处理——length 截断提示 / content_filter 拦截提示——两协议共享）
@@ -482,10 +472,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
     }
     let v: serde_json::Value = serde_json::from_str(data).ok()?;
     let ty = v.get("type").and_then(|t| t.as_str())?;
-    let mut ev = AnthropicEvent {
-        chunk: ParsedChunk::default(),
-        usage: None,
-    };
+    let mut ev = ParsedChunk::default();
     match ty {
         "message_start" => {
             // 顺带捞 usage（input_tokens / cache_*_tokens 只在 message_start 里）
@@ -496,7 +483,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
             // output_tokens 此时通常为 0；保持现有「非零才报」以免空 usage 噪音
             let output = u["output_tokens"].as_u64().unwrap_or(0);
             if input > 0 || output > 0 || cache_read > 0 || cache_creation > 0 {
-                ev.usage = Some(AnthropicUsage {
+                ev.usage = Some(TokenUsage {
                     input_tokens: input,
                     output_tokens: output,
                     cache_read_tokens: cache_read,
@@ -510,7 +497,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
             match cb["type"].as_str() {
                 // tool_use 块开始：给出 id + name（arguments 等后续 input_json_delta）
                 Some("tool_use") => {
-                    ev.chunk.tool_calls.push(ToolCallDelta {
+                    ev.tool_calls.push(ToolCallDelta {
                         index: v["index"].as_u64().unwrap_or(0) as usize,
                         id: cb["id"].as_str().map(String::from),
                         name_chunk: cb["name"].as_str().map(String::from),
@@ -529,7 +516,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
                 Some("text_delta") => {
                     if let Some(t) = delta["text"].as_str() {
                         if !t.is_empty() {
-                            ev.chunk.content = Some(t.to_string());
+                            ev.content = Some(t.to_string());
                         }
                     }
                     Some(ev)
@@ -537,7 +524,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
                 Some("input_json_delta") => {
                     if let Some(p) = delta["partial_json"].as_str() {
                         if !p.is_empty() {
-                            ev.chunk.tool_calls.push(ToolCallDelta {
+                            ev.tool_calls.push(ToolCallDelta {
                                 index,
                                 arguments_chunk: Some(p.to_string()),
                                 ..Default::default()
@@ -550,7 +537,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
                 Some("thinking_delta") => {
                     if let Some(t) = delta["thinking"].as_str() {
                         if !t.is_empty() {
-                            ev.chunk.reasoning = Some(t.to_string());
+                            ev.reasoning = Some(t.to_string());
                         }
                     }
                     Some(ev)
@@ -560,7 +547,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
         }
         "message_delta" => {
             if let Some(sr) = v["delta"]["stop_reason"].as_str() {
-                ev.chunk.finish_reason = Some(map_stop_reason(sr).to_string());
+                ev.finish_reason = Some(map_stop_reason(sr).to_string());
             }
             // output_tokens 在 message_delta 里；cache_*_tokens 某些版本也在
             // 此处补登一次（Anthropic 当前仅 message_start 带 cache 字段，保留
@@ -570,7 +557,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
             let cr = u["cache_read_input_tokens"].as_u64().unwrap_or(0);
             let cc = u["cache_creation_input_tokens"].as_u64().unwrap_or(0);
             if o > 0 || cr > 0 || cc > 0 {
-                ev.usage = Some(AnthropicUsage {
+                ev.usage = Some(TokenUsage {
                     input_tokens: 0,
                     output_tokens: o,
                     cache_read_tokens: cr,
@@ -580,7 +567,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
             Some(ev)
         }
         "message_stop" => {
-            ev.chunk.is_done = true;
+            ev.is_done = true;
             Some(ev)
         }
         // 流内 error 事件（200 流内错误，对齐 OpenAI 侧防线）
@@ -589,7 +576,7 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
                 .as_str()
                 .or_else(|| v["error"].as_str())
                 .unwrap_or("未知错误");
-            ev.chunk.error = Some(msg.chars().take(200).collect());
+            ev.error = Some(msg.chars().take(200).collect());
             Some(ev)
         }
         // ping / content_block_stop / 未知 type → 跳过
@@ -929,7 +916,7 @@ mod tests {
             let Some(ev) = parse_anthropic_event(line) else {
                 continue;
             };
-            for mut d in ev.chunk.tool_calls {
+            for mut d in ev.tool_calls {
                 mapper.remap(&mut d);
                 assert!(crate::bot_model_loop::accumulate_tool_call_delta(
                     &mut calls, &d
@@ -1070,14 +1057,14 @@ mod tests {
     fn sse_text_flow() {
         let ev = parse(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}"#)
             .expect("text_delta 应解析");
-        assert_eq!(ev.chunk.content.as_deref(), Some("你好"));
+        assert_eq!(ev.content.as_deref(), Some("你好"));
         assert!(ev.usage.is_none());
         // message_start 带 usage
         let ev = parse(r#"data: {"type":"message_start","message":{"id":"m1","usage":{"input_tokens":12,"output_tokens":1}}}"#)
             .expect("message_start 应解析（捞 usage）");
         assert_eq!(
             ev.usage,
-            Some(AnthropicUsage {
+            Some(TokenUsage {
                 input_tokens: 12,
                 output_tokens: 1,
                 cache_read_tokens: 0,
@@ -1089,7 +1076,7 @@ mod tests {
             .expect("带缓存的 message_start 应解析");
         assert_eq!(
             ev.usage,
-            Some(AnthropicUsage {
+            Some(TokenUsage {
                 input_tokens: 50,
                 output_tokens: 5,
                 cache_read_tokens: 4000,
@@ -1097,14 +1084,14 @@ mod tests {
             }),
             "cache 字段必须被捕获，否则命中率不可算"
         );
-        assert!(ev.chunk.content.is_none());
+        assert!(ev.content.is_none());
         // message_delta 带 stop_reason + usage
         let ev = parse(r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#)
             .expect("message_delta 应解析");
-        assert_eq!(ev.chunk.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(ev.finish_reason.as_deref(), Some("stop"));
         assert_eq!(
             ev.usage,
-            Some(AnthropicUsage {
+            Some(TokenUsage {
                 input_tokens: 0,
                 output_tokens: 7,
                 cache_read_tokens: 0,
@@ -1113,30 +1100,27 @@ mod tests {
         );
         // message_stop
         let ev = parse(r#"data: {"type":"message_stop"}"#).expect("message_stop 应解析");
-        assert!(ev.chunk.is_done);
+        assert!(ev.is_done);
     }
 
     #[test]
     fn sse_tool_use_partial_json_across_blocks() {
         let ev = parse(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"create_task"}}"#)
             .expect("tool_use 开始");
-        assert_eq!(ev.chunk.tool_calls.len(), 1);
-        assert_eq!(ev.chunk.tool_calls[0].id.as_deref(), Some("toolu_1"));
-        assert_eq!(
-            ev.chunk.tool_calls[0].name_chunk.as_deref(),
-            Some("create_task")
-        );
+        assert_eq!(ev.tool_calls.len(), 1);
+        assert_eq!(ev.tool_calls[0].id.as_deref(), Some("toolu_1"));
+        assert_eq!(ev.tool_calls[0].name_chunk.as_deref(), Some("create_task"));
 
         let d1 = parse(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"title\":"}}"#)
             .expect("partial_json 1");
         let d2 = parse(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"买牛奶\"}"}}"#)
             .expect("partial_json 2");
         assert_eq!(
-            d1.chunk.tool_calls[0].arguments_chunk.as_deref(),
+            d1.tool_calls[0].arguments_chunk.as_deref(),
             Some("{\"title\":")
         );
         assert_eq!(
-            d2.chunk.tool_calls[0].arguments_chunk.as_deref(),
+            d2.tool_calls[0].arguments_chunk.as_deref(),
             Some("\"买牛奶\"}")
         );
     }
@@ -1145,11 +1129,11 @@ mod tests {
     fn sse_parallel_tool_uses_keep_their_index() {
         let a = parse(r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_a","name":"list_tasks"}}"#).unwrap();
         let b = parse(r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_b","name":"get_current_time"}}"#).unwrap();
-        assert_eq!(a.chunk.tool_calls[0].index, 0);
-        assert_eq!(b.chunk.tool_calls[0].index, 1);
+        assert_eq!(a.tool_calls[0].index, 0);
+        assert_eq!(b.tool_calls[0].index, 1);
         let d = parse(r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#).unwrap();
         assert_eq!(
-            d.chunk.tool_calls[0].index, 1,
+            d.tool_calls[0].index, 1,
             "delta 应按 content_block index 归位"
         );
     }
@@ -1168,7 +1152,7 @@ mod tests {
                 format!(r#"data: {{"type":"message_delta","delta":{{"stop_reason":"{sr}"}}}}"#);
             let ev = parse(&line).expect("message_delta 应解析");
             assert_eq!(
-                ev.chunk.finish_reason.as_deref(),
+                ev.finish_reason.as_deref(),
                 Some(expect),
                 "stop_reason={sr}"
             );
@@ -1181,7 +1165,7 @@ mod tests {
             r#"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
         )
         .expect("error 事件应解析");
-        assert_eq!(ev.chunk.error.as_deref(), Some("Overloaded"));
+        assert_eq!(ev.error.as_deref(), Some("Overloaded"));
     }
 
     #[test]
@@ -1205,8 +1189,8 @@ mod tests {
     fn sse_thinking_delta_to_reasoning() {
         let ev = parse(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"让我想想"}}"#)
             .expect("thinking_delta 应解析");
-        assert_eq!(ev.chunk.reasoning.as_deref(), Some("让我想想"));
-        assert!(ev.chunk.content.is_none(), "thinking 不进正文");
+        assert_eq!(ev.reasoning.as_deref(), Some("让我想想"));
+        assert!(ev.content.is_none(), "thinking 不进正文");
     }
 
     #[test]
