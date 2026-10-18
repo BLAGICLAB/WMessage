@@ -1,4 +1,4 @@
-// 任务图谱设置面板（G7-SETTINGS）：七项纯前端偏好（graphPrefs/localStorage），
+// 任务图谱设置面板（G7-SETTINGS）：六项纯前端偏好（graphPrefs/localStorage），
 // 打开图谱页时现读生效。开关/三档切换即时生效，无需保存按钮（同工作流可见性开关先例）。
 import { useState } from "react";
 import {
@@ -8,19 +8,16 @@ import {
   getGraphLooseness,
   getGraphOnlyMine,
   getGraphRememberFilters,
-  getGraphSizeMode,
   setGraphAutoLayout,
   setGraphEdgeWidth,
   setGraphLabelDensity,
   setGraphLooseness,
   setGraphOnlyMine,
   setGraphRememberFilters,
-  setGraphSizeMode,
   type GraphEdgeWidth,
   type GraphLabelDensity,
   type GraphLooseness,
 } from "../../lib/graphPrefs";
-import type { GraphSizeMode } from "../GraphPage/graph-adapter";
 
 function SwitchRow({
   label,
@@ -96,7 +93,6 @@ function SegmentedRow<T extends string>({
 
 export default function GraphSettingsPanel() {
   const [onlyMine, setOnlyMine] = useState(getGraphOnlyMine);
-  const [sizeMode, setSizeMode] = useState<GraphSizeMode>(getGraphSizeMode);
   const [labelDensity, setLabelDensity] =
     useState<GraphLabelDensity>(getGraphLabelDensity);
   const [edgeWidth, setEdgeWidth] = useState<GraphEdgeWidth>(getGraphEdgeWidth);
@@ -120,19 +116,6 @@ export default function GraphSettingsPanel() {
           onChange={(v) => {
             setOnlyMine(v);
             setGraphOnlyMine(v);
-          }}
-        />
-        <SegmentedRow<GraphSizeMode>
-          label="节点大小"
-          desc="连接度 = 连线越多点越大（经典关系图隐喻）；耗时 = 完成时间−创建时间天数越长点越大（进行中的任务按已进行天数）"
-          value={sizeMode}
-          options={[
-            { value: "degree", label: "连接度" },
-            { value: "duration", label: "耗时" },
-          ]}
-          onChange={(v) => {
-            setSizeMode(v);
-            setGraphSizeMode(v);
           }}
         />
         <SegmentedRow<GraphLabelDensity>

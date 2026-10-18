@@ -1,4 +1,4 @@
-// GraphSettingsPanel 单测：七项偏好渲染 + 开关/三档写入 localStorage（graphPrefs 键）。
+// GraphSettingsPanel 单测：六项偏好渲染 + 开关/三档写入 localStorage（graphPrefs 键）。
 import { beforeEach, describe, expect, it } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import GraphSettingsPanel from "./GraphSettingsPanel";
@@ -6,7 +6,7 @@ import GraphSettingsPanel from "./GraphSettingsPanel";
 describe("GraphSettingsPanel", () => {
   beforeEach(() => localStorage.clear());
 
-  it("七项设置全部渲染，默认值正确", () => {
+  it("六项设置全部渲染，默认值正确", () => {
     render(<GraphSettingsPanel />);
     expect(
       screen.getByRole("switch", { name: "只看我的任务" }),
@@ -17,9 +17,6 @@ describe("GraphSettingsPanel", () => {
     expect(
       screen.getByRole("switch", { name: "记住上次的过滤器" }),
     ).toHaveAttribute("aria-checked", "false");
-    expect(
-      screen.getByRole("radiogroup", { name: "节点大小" }),
-    ).toBeInTheDocument();
     expect(
       screen.getByRole("radiogroup", { name: "标签密度" }),
     ).toBeInTheDocument();
@@ -44,10 +41,6 @@ describe("GraphSettingsPanel", () => {
     fireEvent.click(within(density).getByRole("radio", { name: "多" }));
     expect(localStorage.getItem("wm.graph.labelDensity")).toBe("dense");
 
-    const size = screen.getByRole("radiogroup", { name: "节点大小" });
-    fireEvent.click(within(size).getByRole("radio", { name: "耗时" }));
-    expect(localStorage.getItem("wm.graph.sizeMode")).toBe("duration");
-
     const loose = screen.getByRole("radiogroup", { name: "布局松散度" });
     fireEvent.click(within(loose).getByRole("radio", { name: "紧凑" }));
     expect(localStorage.getItem("wm.graph.looseness")).toBe("compact");
@@ -68,18 +61,18 @@ describe("GraphSettingsPanel", () => {
   });
 
   it("回读持久化值渲染初始态", () => {
-    localStorage.setItem("wm.graph.sizeMode", "duration");
     localStorage.setItem("wm.graph.edgeWidth", "thick");
     render(<GraphSettingsPanel />);
-    const size = screen.getByRole("radiogroup", { name: "节点大小" });
-    expect(within(size).getByRole("radio", { name: "耗时" })).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
     const edge = screen.getByRole("radiogroup", { name: "连线粗细" });
     expect(within(edge).getByRole("radio", { name: "粗" })).toHaveAttribute(
       "aria-checked",
       "true",
     );
+  });
+
+  it("「节点大小」整组已退役：节点大小只由连接度决定，不给开关", () => {
+    render(<GraphSettingsPanel />);
+    expect(screen.queryByRole("radiogroup", { name: "节点大小" })).toBeNull();
+    expect(screen.queryByRole("radio", { name: "耗时" })).toBeNull();
   });
 });

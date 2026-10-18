@@ -1190,3 +1190,75 @@
     color: var(--bg);
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   任务图谱 · 三维星云画布（GraphCanvas）
+   画布恒定深色，不随应用亮/暗主题切换：它是一块「仪表屏」，
+   和应用 chrome 是两套视觉。铭牌用等宽字体栈——仪器感优先，
+   不为图谱单独引一套西文字体（那是几十 KB 的字体包换一点观感）。
+   ═══════════════════════════════════════════════════════════════ */
+@layer components {
+  .graph-canvas {
+    position: relative;
+    overflow: hidden;
+    /* 纯黑真空：没有星雾底色，背景就是宇宙本身。WebGL 首帧之前露出的也是它 */
+    background: #000000;
+    /* 画布不吃指针以外的交互事件，避免盖住外层容器 */
+    contain: strict;
+  }
+  .graph-canvas > canvas {
+    display: block;
+    /* 星云底色已是深色，禁掉高亮把光点染白 */
+    touch-action: none;
+  }
+  /* CSS2D 文字层：只透字，不吃事件（否则铭牌会挡住拾取） */
+  .graph-labels {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  .graph-plaque {
+    position: absolute;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    color: #7c879a;
+    /* 投影到亮星上时铭牌会消失，这层暗晕是它唯一的护身符 */
+    text-shadow:
+      0 0 9px rgba(3, 6, 12, 0.95),
+      0 0 3px rgba(3, 6, 12, 1);
+    will-change: opacity, transform;
+    transition: opacity 0.16s linear;
+  }
+  /* 外层 transform 由 CSS2DRenderer 每帧覆写，抬升与避让偏移只作用在这一层 */
+  .graph-plaque-off {
+    display: block;
+    transform: translate(var(--dx, 0px), calc(-50% - 16px + var(--dy, 0px)));
+    text-align: center;
+  }
+  .graph-plaque-sub {
+    color: #59657c;
+    font-weight: 400;
+    margin-left: 7px;
+    font-size: 10px;
+  }
+  /* 锚点铭牌：字距放开一档，像仪器上的分区标牌 */
+  .graph-plaque.is-hub {
+    color: #b3bdd0;
+    font-size: 11.5px;
+    letter-spacing: 0.16em;
+  }
+  .graph-plaque.is-hub .graph-plaque-off {
+    transform: translate(var(--dx, 0px), calc(-50% - 22px + var(--dy, 0px)));
+  }
+  .graph-plaque-kind {
+    color: #59657c;
+    letter-spacing: 0.06em;
+    margin-right: 8px;
+    font-weight: 400;
+  }
+}

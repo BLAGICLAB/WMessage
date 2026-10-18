@@ -7,7 +7,6 @@ import {
   getGraphLooseness,
   getGraphOnlyMine,
   getGraphRememberFilters,
-  getGraphSizeMode,
   loadGraphFilters,
   saveGraphFilters,
   setGraphAutoLayout,
@@ -16,7 +15,6 @@ import {
   setGraphLooseness,
   setGraphOnlyMine,
   setGraphRememberFilters,
-  setGraphSizeMode,
 } from "./graphPrefs";
 import {
   DEFAULT_FILTERS,
@@ -28,7 +26,6 @@ describe("graphPrefs", () => {
 
   it("全部默认值（未写入时）", () => {
     expect(getGraphOnlyMine()).toBe(false);
-    expect(getGraphSizeMode()).toBe("degree");
     expect(getGraphLabelDensity()).toBe("standard");
     expect(getGraphEdgeWidth()).toBe("standard");
     expect(getGraphAutoLayout()).toBe(true);
@@ -39,13 +36,11 @@ describe("graphPrefs", () => {
 
   it("读写往返", () => {
     setGraphOnlyMine(true);
-    setGraphSizeMode("duration");
     setGraphLabelDensity("dense");
     setGraphEdgeWidth("thick");
     setGraphAutoLayout(false);
     setGraphLooseness("compact");
     expect(getGraphOnlyMine()).toBe(true);
-    expect(getGraphSizeMode()).toBe("duration");
     expect(getGraphLabelDensity()).toBe("dense");
     expect(getGraphEdgeWidth()).toBe("thick");
     expect(getGraphAutoLayout()).toBe(false);
@@ -53,10 +48,8 @@ describe("graphPrefs", () => {
   });
 
   it("非法/损坏值回退默认", () => {
-    localStorage.setItem("wm.graph.sizeMode", "huge");
     localStorage.setItem("wm.graph.labelDensity", "全部");
     localStorage.setItem("wm.graph.filters", "{not json");
-    expect(getGraphSizeMode()).toBe("degree");
     expect(getGraphLabelDensity()).toBe("standard");
     expect(loadGraphFilters()).toBeNull();
   });

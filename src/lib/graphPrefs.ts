@@ -1,23 +1,16 @@
 // 任务图谱偏好：纯前端偏好，localStorage 持久化。
 // 图谱页只在主窗口存在，且设置页全屏接管时图谱必然已卸载——打开图谱页现读
-// 即最新值，无跨窗口同步需求。sizeMode 键由
-// G7-SIZEMODE 图谱图例切换先行落地，此处收为同一读写入口（图谱图例与设置页
-// 共用，永远同值）。
+// 即最新值，无跨窗口同步需求。图谱图例与设置页共用同一读写入口，永远同值。
 
 import type { GraphFilters } from "../components/GraphPage/graph-build";
-import type {
-  GraphSizeMode,
-  GraphLooseness,
-} from "../components/GraphPage/graph-adapter";
-
-export type { GraphLooseness };
 
 export type GraphLabelDensity = "sparse" | "standard" | "dense";
 export type GraphEdgeWidth = "thin" | "standard" | "thick";
+/** 布局松散度（设置页可切）→ R_MAX 系数 k（面密度恒定公式 R_MAX = k·√N 的 k） */
+export type GraphLooseness = "compact" | "standard" | "loose";
 
 const K = {
   onlyMine: "wm.graph.onlyMine",
-  sizeMode: "wm.graph.sizeMode",
   labelDensity: "wm.graph.labelDensity",
   edgeWidth: "wm.graph.edgeWidth",
   autoLayout: "wm.graph.autoLayout",
@@ -60,11 +53,6 @@ function readBool(key: string, fallback: boolean): boolean {
 export const getGraphOnlyMine = () => readBool(K.onlyMine, false);
 export const setGraphOnlyMine = (v: boolean) =>
   write(K.onlyMine, v ? "1" : "0");
-
-// ── 节点大小语义（默认连接度） ──
-export const getGraphSizeMode = () =>
-  readEnum<GraphSizeMode>(K.sizeMode, ["degree", "duration"], "degree");
-export const setGraphSizeMode = (v: GraphSizeMode) => write(K.sizeMode, v);
 
 // ── 标签密度（默认标准）：sparse = 仅 hub+焦点 / dense = 全部 ──
 export const getGraphLabelDensity = () =>

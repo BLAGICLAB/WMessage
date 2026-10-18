@@ -63,9 +63,10 @@ if (typeof globalThis.crypto.randomUUID !== "function") {
     `uuid-${Math.random().toString(36).slice(2)}-${Date.now()}`;
 }
 
-// sigma（图谱 WebGL 渲染器）在模块顶层探测 WebGL2 支持性（读构造函数存在性），
-// jsdom 无 WebGL → 补空构造函数存根让 import 通过；真正的渲染行为不进 jsdom
-// （GraphPage.test 里 GraphCanvas 已 mock，App.test 只经过导航路径）
+// jsdom 没有 WebGL/WebGL2 上下文。Three.js 在 WebGLRenderer 构造时才探测
+// 能力，而 GraphPage.test 已整块 mock 掉 GraphCanvas、HomePage 的速览卡走
+// 2D SVG——真正需要上下文的路径在 jsdom 里从没跑到。补两个空构造函数只是
+// 让「有没有 WebGL2」这类能力探测有个确定答案（返回未定义），不改任何渲染行为。
 if (typeof globalThis.WebGL2RenderingContext === "undefined") {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (globalThis as any).WebGL2RenderingContext =

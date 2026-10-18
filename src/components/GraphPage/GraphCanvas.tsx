@@ -1,536 +1,889 @@
-// 图谱画布（Sigma 迁移）：Sigma.js v3 WebGL 渲染 + ForceAtlas2 worker 物理。
-// 旧 Canvas2D 自研渲染/物理已删除。
-// 交互契约与旧版一致：hover 邻接高亮其余淡出、点选详情、空白拖拽平移、
-// 节点拖拽固定、滚轮指针锚缩放、搜索描环、双主题。
-// 配色读 CSS 变量（reducer 运行时解析，主题切换即重算），不硬编码色值。
+// 图谱画布（星云方案）：Three.js 三维场景 + 自研三维力场。
+//
+// 为什么不用 Sigma：Sigma 是严格二维的，没有相机和投影，拖拽旋转、纵深、
+// 丝缕星雾这三样都做不出来——星云方案的核心恰恰是它们。旧版
+// 「Sigma + ForceAtlas2 worker」整套已下线（含首页速览卡共用的 graph-adapter）。
+//
+// 交互契约与旧版一致：hover 邻接高亮其余淡出、点选详情、拖拽旋转视图、
+// 节点拖拽固定、搜索描环、Esc 清除选择、「重新布局」重跑一轮力场。
+//
+// 布局不在渲染循环里：rAF 每帧只花固定毫秒预算推进力场（时间切片），
+// 收敛后停机。大图一次性同步跑完会卡住首帧，万级任务更是会卡十几秒。
 
 import { useEffect, useRef } from "react";
-import Graph from "graphology";
-import Sigma from "sigma";
-import type { Attributes } from "graphology-types";
-import FA2Layout from "graphology-layout-forceatlas2/worker";
-import {
-  computeCameraFit,
-  fa2Settings,
-  graphBBox,
-  resolveOwnerColor,
-  resolveStatusColor,
-  toGraphologyGraph,
-  TAG_ANCHOR_PREFIX,
-  type GraphLooseness,
-  type GraphSizeMode,
-  type SigmaNodeAttrs,
-} from "./graph-adapter";
-import type { GraphEdgeWidth, GraphLabelDensity } from "../../lib/graphPrefs";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { CSS2DObject, CSS2DRenderer } from "three/examples/jsm/renderers/CSS2DRenderer.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { CloudField, Starfield, hexToRgb01 } from "./NebulaField";
+import { Force3D, KINETIC_EPSILON, settle } from "./graph-force3d";
+import { buildScene, isHub, labelDegreeFloor, type Scene, type SceneNode } from "./graph-scene";
+import { placeLabel, middleBand, type Rect } from "./graph-declutter";
+import { HUB_COLOR, resolveNodeColor } from "./graph-palette";
 import type { BuiltGraph, GraphColorMode } from "./graph-build";
+import type { GraphLooseness } from "../../lib/graphPrefs";
+import type { GraphEdgeWidth, GraphLabelDensity } from "../../lib/graphPrefs";
 
-interface Palette {
-  bg: string;
-  t1: string;
-  t2: string;
-  t3: string;
-  t5: string;
-  brand: string;
-  brandStrong: string;
-  success: string;
-  edge: string;
-  edgeStrong: string;
-  danger: string;
-  /** 主题判定（html.dark），标签色阶按主题取专用值——文本 token 是给 UI 的，
-   *  画布标签需要自己的对比度策略（见 LABEL_COLORS 注释） */
-  dark: boolean;
-}
-
-/**
- * 画布标签专用色阶（视觉修订）：
- * 旧版直接用 --t1/--t2（近黑/近白文本 token）——亮色下黑字压在彩点上生硬，
- * 暗色下默认 labelColor #000 直接消失。
- * 设计原则：
- *  - 常态标签 = 中性灰阶（--t3 系），比正文浅一档——图谱里标签是"路牌"不是正文，
- *    低对比才有"信息在背景里"的层次感（Obsidian 同款取向）
- *  - 焦点态（hover/选中/搜索）= --t2 提亮一档，白底光晕（亮）/深色光晕（暗）保证
- *    压在任意节点色上都可读
- *  - labelColor 用 color-mode 探测而非硬编码，跟主题即时切换
- */
-const LABEL_COLORS = {
-  light: {
-    normal: "#6b7690", // 亮底上的雾蓝灰（比 --t3 浅、比 --t5 深）
-    focus: "#2b3548", // --t2
-    halo: "rgba(255, 255, 255, 0.75)",
-  },
-  dark: {
-    normal: "#9aa5ba", // 暗底上的亮灰蓝（--t3/--t4 之间）
-    focus: "#eef1f7", // --t1
-    halo: "rgba(20, 22, 29, 0.72)",
-  },
-} as const;
-
-/** 连线粗细三档（设置页）：reducer 每次 render 现读，切换无需重建 */
-const EDGE_WIDTH_SIZE: Record<GraphEdgeWidth, number> = {
-  thin: 0.45,
-  standard: 0.7,
-  thick: 1.2,
+/** 连线粗细三档（设置页），单位是屏幕像素：窄带有了真实宽度，
+ *  这一档就该真的调宽度。旧的 LineSegments 恒 1px 宽，只能拿 alpha 顶替，
+ *  而加色混合会把 alpha 平方衰减——「细」档直接等于看不见。 */
+const EDGE_WIDTH: Record<GraphEdgeWidth, number> = {
+  thin: 1.0,
+  standard: 1.6,
+  thick: 2.8,
 };
 
-function readPalette(): Palette {
-  const s = getComputedStyle(document.documentElement);
-  const v = (name: string, fallback: string) =>
-    s.getPropertyValue(name).trim() || fallback;
-  return {
-    bg: v("--bg", "#eef1f6"),
-    t1: v("--t1", "#182031"),
-    t2: v("--t2", "#2b3548"),
-    t3: v("--t3", "#45506a"),
-    t5: v("--t5", "#5d6984"),
-    brand: v("--brand", "#5f6f94"),
-    brandStrong: v("--brand-strong", "#4a5879"),
-    success: v("--success", "#16a34a"),
-    edge: v("--edge", "#e2e7ef"),
-    edgeStrong: v("--edge-strong", "#cbd4e1"),
-    danger: v("--danger", "#dc2626"),
-    dark: document.documentElement.classList.contains("dark"),
-  };
-}
+/** Bloom 参数。threshold 是「星体发光 / 云团不发光」那条分界线：
+ *  星体与星轨芯部越过它起辉，云团粒子恒在它之下。压低了云就开始自己发光。 */
+const BLOOM_STRENGTH = 1.35;
+const BLOOM_RADIUS = 0.82;
+const BLOOM_THRESHOLD = 0.42;
 
-function resolveColor(
-  ownerKey: string,
-  statusKey: string,
-  palette: Palette,
-  colorMode: GraphColorMode,
-): string {
-  const cp = {
-    brand: palette.brand,
-    t3: palette.t3,
-    t5: palette.t5,
-    success: palette.success,
-  };
-  return colorMode === "owner"
-    ? resolveOwnerColor(ownerKey, cp)
-    : resolveStatusColor(statusKey, cp);
-}
+/** 星轨窄带的横截面半宽（像素），见 EDGE_VERT */
+const EDGE_BASE_WIDTH = 1.6;
+
+/** 相机：74° 广角（纵深夸张一点，星云才铺得开），近远裁剪面按场景外径给 */
+const FOV = 74;
+const NEAR_RATIO = 0.004;
+const FAR_RATIO = 12;
+
+const NODE_VERT = /* glsl */ `
+  attribute vec3 aColor; attribute float aSize; attribute float aAlpha;
+  uniform float uPR;
+  varying vec3 vC; varying float vA;
+  void main() {
+    vC = aColor; vA = aAlpha;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    gl_PointSize = aSize * uPR * (2300.0 / max(-mv.z, 1.0));
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+const NODE_FRAG = /* glsl */ `
+  varying vec3 vC; varying float vA;
+  void main() {
+    float r = length(gl_PointCoord - 0.5);
+    if (r > 0.5) discard;
+    float halo = pow(smoothstep(0.5, 0.0, r), 2.4);
+    float core = smoothstep(0.17, 0.0, r);
+    // 核心往本色里混而不是直接上纯白：加法混合下纯白心会把高连接度节点顶成一团
+    // 过曝白斑，色相全丢——那正是「按状态着色」要靠颜色读出来的东西
+    vec3 col = vC * halo * 1.30 + mix(vC, vec3(1.0), 0.62) * core * 0.62;
+    gl_FragColor = vec4(col, (halo * 0.58 + core * 0.82) * vA);
+  }
+`;
+
+/** 边：随相机转向的窄带，不是 1 像素线。
+ *  LineSegments 恒为 1 像素宽，加色混合下存在感全靠 alpha，而 alpha 又被混和方式
+ *  平方衰减，压在 Bloom 阈值下就成了「有数据没画面」。星轨要的是一条有粗细、有软芯的
+ *  光路，所以每条边展开成 4 个角点的窄带：横截面 smoothstep 收出软边，芯部亮度
+ *  刚好越过阈值起一点辉，边上就散成淡光；远处的边按深度收细，密图远景才不会糊成板。 */
+const EDGE_VERT = /* glsl */ `
+  attribute vec3 aStart; attribute vec3 aEnd;
+  attribute vec3 aColor; attribute float aAlpha; attribute vec2 aCorner;
+  uniform vec2 uRes; uniform float uWidth;
+  varying vec3 vC; varying float vA; varying float vS;
+  void main() {
+    vC = aColor; vA = aAlpha; vS = aCorner.x;
+    vec4 cs = projectionMatrix * modelViewMatrix * vec4(aStart, 1.0);
+    vec4 ce = projectionMatrix * modelViewMatrix * vec4(aEnd, 1.0);
+    // 端点跑到相机背后时透视除法会把窄带拉成横贯全屏的巨块，直接塌掉
+    if (cs.w <= 0.0 || ce.w <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+    vec2 dir = (ce.xy / ce.w - cs.xy / cs.w) * uRes;
+    float len = length(dir);
+    dir = len > 1e-4 ? dir / len : vec2(1.0, 0.0);
+    vec2 nrm = vec2(-dir.y, dir.x) / uRes;
+    float depth = -(modelViewMatrix * vec4(aStart, 1.0)).z;
+    vec4 p = mix(cs, ce, aCorner.y);
+    p.xy += nrm * (aCorner.x * uWidth * 0.5 * clamp(340.0 / max(depth, 1.0), 0.45, 1.15)) * p.w;
+    gl_Position = p;
+  }
+`;
+const EDGE_FRAG = /* glsl */ `
+  varying vec3 vC; varying float vA; varying float vS;
+  void main() {
+    float w = smoothstep(0.0, 1.0, 1.0 - abs(vS));
+    gl_FragColor = vec4(vC * vA * w, w * vA);
+  }
+`;
+
+/** 每条边的角点数（窄带 = 2 个三角形 = 4 个角） */
+const EDGE_SEG = 4;
 
 export interface GraphCanvasProps {
   graph: BuiltGraph;
   colorMode: GraphColorMode;
-  /** 节点大小语义（连接度/耗时）：切换即重建（大小参与 FA2 质量/碰撞，需写回图属性） */
-  sizeMode: GraphSizeMode;
-  /** 标签密度（少=仅焦点 / 标准 / 多=全部）：reducer 级，切换只需 refresh */
+  /** 标签密度（少=仅焦点 / 标准 / 多=全部） */
   labelDensity: GraphLabelDensity;
-  /** 连线粗细：reducer 级 */
+  /** 连线粗细 */
   edgeWidth: GraphEdgeWidth;
-  /** 打开时自动跑布局动画（关 = 静态分扇区布局，「重新布局」仍可手动跑） */
+  /** 打开时自动跑布局动画（关 = 直接给静态构图，「重新布局」仍可手动跑） */
   autoLayout: boolean;
-  /** 布局松散度（R_MAX 系数）：切换即重建 */
+  /** 布局松散度：切换即重建 */
   looseness: GraphLooseness;
   /** 标签 → 同义组键（键缺失 = 独立组） */
   tagGroups?: Map<string, string>;
-  /** owner 注入序（单一事实源，GraphPage 基于 chips 全序计算）：
-   *  建图写 ownerKey 与 chips 色点共用，保证图例与节点永远同色 */
+  /** 成员注入序（与 chips 色点共用同一事实源） */
   ownerOrder: Map<string, number>;
-  /** 「重新布局」触发信号：+1 启动一轮 FA2 短跑并自动停。
-   *  默认静态确定性布局——物理动画只作为手动增强，杜绝大图飞散 */
+  /** 标签注入序（与 chips 色点共用同一事实源） */
+  tagOrder: Map<string, number>;
+  /** 成员语义键 → 显示名（锚点铭牌要印真名，不是 owner:0） */
+  ownerNames?: Map<string, string>;
+  /** 「重新布局」触发信号：+1 重新暖机跑一轮力场 */
   relayoutSignal: number;
   selectedId: string | null;
   hoverId: string | null;
   searchMatchIds: Set<string> | null;
   onHover: (id: string | null) => void;
   onSelect: (id: string | null) => void;
+  /** 画布外可点的区域（详情面板、图例等）：铭牌避让要把它们当障碍 */
+  obstacleRects: () => Rect[];
 }
+
+interface Plaque {
+  el: HTMLDivElement;
+  /** 承载避让偏移的里层（外层 transform 由 CSS2DRenderer 每帧覆写） */
+  off: HTMLSpanElement;
+  obj: CSS2DObject;
+  w: number;
+  h: number;
+  dx: number;
+  dy: number;
+  /** 找不着落点：压透明度隐藏，而不是置 visible=false——
+   *  置 false 之后它就永远退出摆位，下个机位明明空出来了也回不来 */
+  cull: boolean;
+  want: boolean;
+  lift: number;
+}
+
+const STEP_BUDGET_MS = 10;
 
 export default function GraphCanvas(props: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const sigmaRef = useRef<Sigma<SigmaNodeAttrs> | null>(null);
-  const fa2Ref = useRef<FA2Layout | null>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
-  const paletteRef = useRef<Palette>(readPalette());
-  const relayoutRef = useRef<() => void>(() => {});
 
-  // ── 建图 → Sigma 实例 + FA2 worker（graph 变更时重建；旧实例 kill 释放内存） ──
+  // ── 建图 → 场景 + 力场 + Three 实例（场景输入变更时重建） ──
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const g: Graph<SigmaNodeAttrs> = toGraphologyGraph(
-      props.graph,
-      props.ownerOrder,
-      props.tagGroups,
-      props.sizeMode,
-      props.looseness,
-    );
+    const p = propsRef.current;
+    const scene: Scene = buildScene(p.graph, {
+      ownerOrder: p.ownerOrder,
+      tagOrder: p.tagOrder,
+      tagGroups: p.tagGroups,
+      ownerNames: p.ownerNames,
+      looseness: p.looseness,
+      now: Date.now(),
+    });
+    const N = scene.nodes.length;
+    const E = scene.edges.length;
+    const force = new Force3D(scene);
+    const labelFloor = labelDegreeFloor(scene.nodes);
 
-    // 初始相机适配在 Sigma 首帧后自动进行；先关标签渲染由 reducer 控制
-    const sigma = new Sigma<SigmaNodeAttrs>(g, container, {
-      allowInvalidContainer: true,
-      renderEdgeLabels: false,
-      labelDensity: props.graph.nodes.length > 400 ? 0.35 : 1,
-      labelGridCellSize: 60,
-      labelFont:
-        '500 12px ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
-      labelWeight: "500",
-      // 标签色由 reducer 写入节点属性（labelColor: { attribute: "labelColor" }）
-      // ——主题切换经 palette 重读即时生效，无需重建 sigma
-      labelColor: { attribute: "labelColor" as never },
-      // 自定义标签绘制：光晕底衬（主题感知）+ 右置文本。压在任意节点色上都可读，
-      // 取代 sigma 默认的纯色无衬底（亮底黑字生硬/暗底黑字不可读）
-      defaultDrawNodeLabel: (context, data, settings) => {
-        if (!data.label) return;
-        const palette = paletteRef.current;
-        const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
-        const size = settings.labelSize;
-        context.font = `${settings.labelWeight} ${size}px ${settings.labelFont}`;
-        context.textBaseline = "middle";
-        const textW = context.measureText(data.label).width;
-        const lx = data.x + data.size + 4;
-        // 光晕：与底色同色的半透明圆角衬底——把底下的点/线"抹掉"而不是盖住
-        context.fillStyle = lc.halo;
-        context.fillRect(lx - 2, data.y - size / 2 - 1, textW + 5, size + 2);
-        context.fillStyle = lc.normal;
-        context.fillText(data.label, lx, data.y + 1);
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: "high-performance",
+    });
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    renderer.setPixelRatio(pixelRatio);
+    // 纯黑真空：没有星雾底色，背景就是宇宙本身
+    renderer.setClearColor(0x000000, 1);
+    // 不接 OutputPass、也不开色调映射：着色器直出的就是设计稿里的原始 sRGB 色值，
+    // 再过一层 sRGB 转换等于把整套调色板整体抬亮一档
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+    container.appendChild(renderer.domElement);
+
+    const labelHost = document.createElement("div");
+    labelHost.className = "graph-labels";
+    container.appendChild(labelHost);
+    const labelRenderer = new CSS2DRenderer({ element: labelHost });
+
+    const world = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(FOV, 1, 1, 6000);
+    const R = scene.radius;
+    // 视觉小样的定稿机位：(-96, 232, 700) / R 258 ≈ 2.87R。视线方向同比例保留，
+    // 距离按小样的比例放大——这条距离直接决定星点的屏幕大小（点径 ∝ 1/距离），
+    // 凑近了就等于把粒子相对云胀一圈，云一叠就自己发起光来
+    camera.position.set(-R * 0.334, R * 0.807, R * 2.436);
+    camera.near = R * NEAR_RATIO;
+    camera.far = R * FAR_RATIO;
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.06;
+    controls.rotateSpeed = 0.62;
+    controls.zoomSpeed = 0.72;
+    controls.minDistance = R * 0.9;
+    controls.maxDistance = R * 7.5;
+    // 静止时极缓自转：图谱是「活着」的，但不抢注意力
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.22;
+    if (
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      controls.autoRotate = false;
+    }
+
+    const stars = new Starfield({ sceneRadius: scene.radius, pixelRatio });
+    stars.addTo(world);
+    // 云团挂在结构锚点上：一团正好罩一组同类星体，颜色才有得可反射
+    const clouds = new CloudField({
+      anchors: scene.nodes.map((n, i) => (n.kind === "hub" ? i : -1)).filter((i) => i >= 0),
+      samplable: scene.nodes.map((n, i) => (n.kind === "task" ? i : -1)).filter((i) => i >= 0),
+      sceneRadius: scene.radius,
+      pixelRatio,
+    });
+    clouds.addTo(world);
+    // 云色只在调色板/筛选变过时重算；跟随锚点的位移则每帧更新
+    let cloudsDirty = true;
+
+    // ── 节点点云 ──
+    const nodePos = new Float32Array(N * 3);
+    const nodeColor = new Float32Array(N * 3);
+    const nodeSize = new Float32Array(N);
+    const nodeAlpha = new Float32Array(N);
+    // 注意力/筛选层算出的基础亮度。nodeAlpha 是它乘上深度衰减后的结果——
+    // 相机一直在自转，远近关系每帧都在变，两者得分开存
+    const alphaBase = new Float32Array(N);
+    const nodeGeo = new THREE.BufferGeometry();
+    nodeGeo.setAttribute("position", new THREE.BufferAttribute(nodePos, 3));
+    nodeGeo.setAttribute("aColor", new THREE.BufferAttribute(nodeColor, 3));
+    nodeGeo.setAttribute("aSize", new THREE.BufferAttribute(nodeSize, 1));
+    nodeGeo.setAttribute("aAlpha", new THREE.BufferAttribute(nodeAlpha, 1));
+    const nodeMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: { uPR: { value: pixelRatio } },
+      vertexShader: NODE_VERT,
+      fragmentShader: NODE_FRAG,
+    });
+    const nodePoints = new THREE.Points(nodeGeo, nodeMat);
+    world.add(nodePoints);
+
+    // ── 边：星轨窄带 ──
+    const edgeStart = new Float32Array(E * EDGE_SEG * 3);
+    const edgeEnd = new Float32Array(E * EDGE_SEG * 3);
+    const edgeColor = new Float32Array(E * EDGE_SEG * 3);
+    const edgeAlpha = new Float32Array(E * EDGE_SEG);
+    const edgeCorner = new Float32Array(E * EDGE_SEG * 2);
+    const edgeIdx = new Uint32Array(E * 6);
+    for (let e = 0; e < E; e++) {
+      const v = e * EDGE_SEG;
+      const o = e * 6;
+      // 角点按 (-1,0) (+1,0) (-1,1) (+1,1) 铺开，索引连成两张同向三角形
+      edgeIdx[o] = v; edgeIdx[o + 1] = v + 1; edgeIdx[o + 2] = v + 3;
+      edgeIdx[o + 3] = v; edgeIdx[o + 4] = v + 3; edgeIdx[o + 5] = v + 2;
+      for (let c = 0; c < EDGE_SEG; c++) {
+        edgeCorner[(v + c) * 2] = c & 1 ? 1 : -1;
+        edgeCorner[(v + c) * 2 + 1] = c >> 1;
+      }
+    }
+    const edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute("aStart", new THREE.BufferAttribute(edgeStart, 3));
+    edgeGeo.setAttribute("aEnd", new THREE.BufferAttribute(edgeEnd, 3));
+    edgeGeo.setAttribute("aColor", new THREE.BufferAttribute(edgeColor, 3));
+    edgeGeo.setAttribute("aAlpha", new THREE.BufferAttribute(edgeAlpha, 1));
+    edgeGeo.setAttribute("aCorner", new THREE.BufferAttribute(edgeCorner, 2));
+    edgeGeo.setIndex(new THREE.BufferAttribute(edgeIdx, 1));
+    // 顶点是着色器里才展开的，包围球只能给个假值，否则算出来是 NaN
+    edgeGeo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+    const edgeMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uRes: { value: new THREE.Vector2(1, 1) },
+        uWidth: { value: EDGE_BASE_WIDTH },
       },
-      // hover 底板：sigma 默认写死 #FFF 白底——暗色下突兀。几何照抄官方
-      // drawDiscNodeHover（圆角胶囊 + 阴影），底色/文字色按主题取。
-      defaultDrawNodeHover: (context, data, settings) => {
-        if (!data.label) return;
-        const palette = paletteRef.current;
-        const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
-        const size = settings.labelSize;
-        context.font = `${settings.labelWeight} ${size}px ${settings.labelFont}`;
-        const PADDING = 4;
-        const textW = context.measureText(data.label).width;
-        const boxW = Math.round(textW + 8);
-        const boxH = Math.round(size + 2 * PADDING);
-        const radius = Math.max(data.size, size / 2) + PADDING;
-        // 底板阴影（亮色浅影/暗色深影）
-        context.shadowOffsetX = 0;
-        context.shadowOffsetY = palette.dark ? 2 : 1;
-        context.shadowBlur = palette.dark ? 10 : 6;
-        context.shadowColor = palette.dark
-          ? "rgba(0,0,0,0.55)"
-          : "rgba(23,32,51,0.18)";
-        context.fillStyle = palette.dark ? "#232836" : "#ffffff";
-        context.beginPath();
-        // 从节点右侧展开的胶囊（与官方一致：含节点的圆头）
-        const angle = Math.asin(Math.min(1, boxH / 2 / radius));
-        const xDelta = Math.sqrt(Math.abs(radius * radius - (boxH / 2) ** 2));
-        context.moveTo(data.x + xDelta, data.y + boxH / 2);
-        context.lineTo(data.x + radius + boxW, data.y + boxH / 2);
-        context.lineTo(data.x + radius + boxW, data.y - boxH / 2);
-        context.lineTo(data.x + xDelta, data.y - boxH / 2);
-        context.arc(data.x, data.y, radius, angle, -angle);
-        context.closePath();
-        context.fill();
-        context.shadowOffsetX = 0;
-        context.shadowOffsetY = 0;
-        context.shadowBlur = 0;
-        // 文本（焦点色）
-        context.textBaseline = "middle";
-        context.fillStyle = lc.focus;
-        context.fillText(data.label, data.x + data.size + 6, data.y + 1);
-      },
-      defaultEdgeType: "line",
-      // reducer 在每次 render 时调用：着色/淡出/描环全部动态算
-      nodeReducer: (node, data) => {
-        const p = propsRef.current;
-        const palette = paletteRef.current;
-        const res: Attributes = { ...data };
-        const attrs = data as SigmaNodeAttrs;
-        // 标签锚点恒隐藏（布局用伪节点，不入视觉/交互）
-        if (attrs.kind === "anchor") {
-          res.hidden = true;
-          return res;
+      vertexShader: EDGE_VERT,
+      fragmentShader: EDGE_FRAG,
+    });
+    const edgeLines = new THREE.Mesh(edgeGeo, edgeMat);
+    edgeLines.frustumCulled = false;
+    world.add(edgeLines);
+
+    const composer = new EffectComposer(renderer);
+    composer.addPass(new RenderPass(world, camera));
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(1, 1),
+      BLOOM_STRENGTH,
+      BLOOM_RADIUS,
+      BLOOM_THRESHOLD,
+    );
+    composer.addPass(bloom);
+
+    // ── 选中环：全场唯一允许「动」的结构件 ──
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0x8ff2e0,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(1, 1.16, 72), ringMat);
+    ring.visible = false;
+    world.add(ring);
+
+    // ── 铭牌（CSS2D 承载文字 + 屏幕空间避让） ──
+    const plaques: Plaque[] = scene.nodes.map((node) => {
+      const el = document.createElement("div");
+      el.className = `graph-plaque${node.kind === "task" ? "" : " is-hub"}`;
+      // 偏移挂在里层：CSS2DRenderer 每帧覆写外层 transform（定位用），
+      // 避让位移再写在外层等于两者相乘，铭牌实际会跑出避让模型算出的落点
+      const off = document.createElement("span");
+      off.className = "graph-plaque-off";
+      off.innerHTML = node.kind === "task"
+        ? `${node.label}<span class="graph-plaque-sub">${node.degree}</span>`
+        : `<span class="graph-plaque-kind">${hubRole(node)}</span>${node.label}`;
+      el.appendChild(off);
+      el.style.opacity = "0";
+      const obj = new CSS2DObject(el);
+      world.add(obj);
+      return {
+        el,
+        off,
+        obj,
+        w: 0,
+        h: 0,
+        dx: 0,
+        dy: 0,
+        cull: false,
+        want: false,
+        lift: node.kind === "task" ? -16 : -22,
+      };
+    });
+
+    // 落位顺序：锚点先占（它们是骨架，路牌比任务名重要），任务按连接度降序。
+    // 谁重要谁先占位，撞上了才让
+    const order = scene.nodes
+      .map((node, i) => ({ node, i }))
+      .sort((a, b) =>
+        (a.node.kind === "task" ? 1 : 0) - (b.node.kind === "task" ? 1 : 0) ||
+        b.node.degree - a.node.degree,
+      )
+      .map((x) => x.i);
+
+    // ── 邻接表：hover/选中高亮、拾取都用它 ──
+    const adjacency: Array<Set<number>> = scene.nodes.map(() => new Set());
+    scene.edges.forEach((e) => {
+      adjacency[e.a].add(e.b);
+      adjacency[e.b].add(e.a);
+    });
+
+    // ── 语义键 → 颜色（建图时固化，切着色模式只重算颜色，不动布局） ──
+    const rgbOf = (hex: string) => hexToRgb01(hex);
+    const HUB_RGB = rgbOf(HUB_COLOR);
+    const baseColor: Array<[number, number, number]> = scene.nodes.map((node) =>
+      node.kind === "task"
+        ? rgbOf(resolveNodeColor("status", node))
+        : HUB_RGB,
+    );
+    const baseSize = new Float32Array(N);
+    scene.nodes.forEach((node, i) => {
+      baseSize[i] = node.kind === "task" ? node.radius : node.radius * 1.15;
+    });
+
+    const writeColors = (mode: GraphColorMode) => {
+      scene.nodes.forEach((node, i) => {
+        const c = node.kind === "task" ? rgbOf(resolveNodeColor(mode, node)) : HUB_RGB;
+        baseColor[i] = c;
+      });
+    };
+
+    // ── 注意力（选中优先，无选中才用 hover）：全场只压暗一次 ──
+    const focusIndex = () => {
+      const p = propsRef.current;
+      if (p.selectedId) return scene.indexOf.get(p.selectedId) ?? -1;
+      if (p.hoverId) return scene.indexOf.get(p.hoverId) ?? -1;
+      return -1;
+    };
+
+    // 搜索命中节点（≤18 个时全体亮铭牌，超过只留计数——一片亮字等于没亮）
+    const searchHits = () => {
+      const ids = propsRef.current.searchMatchIds;
+      if (!ids || ids.size === 0) return [] as number[];
+      return [...ids]
+        .map((id) => scene.indexOf.get(id))
+        .filter((i): i is number => i !== undefined);
+    };
+
+    const refreshAppearance = () => {
+      const p = propsRef.current;
+      writeColors(p.colorMode);
+      const focus = focusIndex();
+      const near = new Set<number>();
+      if (focus >= 0) {
+        near.add(focus);
+        adjacency[focus].forEach((j) => near.add(j));
+      }
+      const hits = new Set(searchHits());
+      const inFocus = (i: number) => focus < 0 || near.has(i);
+
+      for (let i = 0; i < N; i++) {
+        const isFocus = i === focus;
+        const isHit = hits.has(i);
+        // 别把非注意力节点压成背景尘：压太狠整片星云看着像被清空了
+        const lit = inFocus(i) && scene.nodes[i].kind === "task";
+        alphaBase[i] = lit ? (isFocus || isHit ? 1 : 0.85) : 0.26;
+        nodeSize[i] = baseSize[i] * (isFocus ? 1.5 : isHit ? 1.2 : 1);
+        const c = baseColor[i];
+        nodeColor[i * 3] = c[0];
+        nodeColor[i * 3 + 1] = c[1];
+        nodeColor[i * 3 + 2] = c[2];
+      }
+      // 锚点：结构骨架常驻，不参与筛选淡出（它不是检索对象）
+      for (let i = 0; i < N; i++) {
+        if (scene.nodes[i].kind === "hub") {
+          alphaBase[i] = focus < 0 || near.has(i) ? 0.5 : 0.22;
         }
-        // 着色双轨：建图时 ownerKey/statusKey 都已固化，按当前模式现场选——
-        // 切「按成员/按状态」无需重建图
-        res.color = resolveColor(
-          attrs.ownerKey,
-          attrs.statusKey,
-          palette,
-          p.colorMode,
+      }
+
+      // 边：只保留注意力邻域内的，其余退成尘。
+      // 加色混合下 alpha 会被混和方式平方衰减，所以这里的数值看着虚高是刻意的：
+      // 平方之后语义边才刚好爬到 Bloom 阈值起辉，弱边仍留在阈值下当淡光路
+      edgeMat.uniforms.uWidth.value = EDGE_WIDTH[p.edgeWidth] * EDGE_BASE_WIDTH;
+      for (let e = 0; e < E; e++) {
+        const { a, b } = scene.edges[e];
+        const on = focus < 0 || a === focus || b === focus ||
+          (near.has(a) && near.has(b));
+        // 只压 alpha 不换色：星轨要的是「这束光从哪颗星发出来」，
+        // 换成中性灰整片就退化成一张灰网，分不出连线归属
+        const alpha = on ? (focus < 0 ? 0.72 : 0.95) : 0.2;
+        const c = baseColor[a];
+        for (let k = 0; k < EDGE_SEG; k++) {
+          const v = (e * EDGE_SEG + k) * 3;
+          edgeColor[v] = c[0];
+          edgeColor[v + 1] = c[1];
+          edgeColor[v + 2] = c[2];
+          edgeAlpha[e * EDGE_SEG + k] = alpha;
+        }
+      }
+      edgeGeo.attributes.aColor.needsUpdate = true;
+      edgeGeo.attributes.aAlpha.needsUpdate = true;
+      cloudsDirty = true;
+
+      // 铭牌资格：锚点常驻；任务按密度档位 + 注意力
+      const dense = p.labelDensity === "dense";
+      const sparse = p.labelDensity === "sparse";
+      const hitList = searchHits();
+      const showAllHits = hitList.length > 0 && hitList.length <= 18;
+      // 选中态只放行焦点 + 最重的 12 个邻居，否则节点一选中就是一片字墙
+      const topNeighbors = new Set<number>();
+      if (focus >= 0) {
+        topNeighbors.add(focus);
+        [...adjacency[focus]]
+          .sort((x, y) => scene.nodes[y].degree - scene.nodes[x].degree)
+          .slice(0, 12)
+          .forEach((j) => topNeighbors.add(j));
+      }
+      for (let i = 0; i < N; i++) {
+        const node = scene.nodes[i];
+        let want: boolean;
+        if (node.kind === "hub") {
+          want = true;
+        } else if (showAllHits && hits.has(i)) {
+          want = true;
+        } else if (focus >= 0) {
+          want = topNeighbors.has(i);
+        } else {
+          want = dense || (!sparse && node.degree >= labelFloor);
+        }
+        if (want && focus >= 0 && !inFocus(i) && !showAllHits) want = false;
+        plaques[i].want = want;
+        plaques[i].obj.visible = want;
+        plaques[i].el.style.opacity = want ? "1" : "0";
+      }
+      ringMat.opacity = 0.85;
+    };
+
+    refreshAppearance();
+
+    // ── 视口 ──
+    let width = 0;
+    let height = 0;
+    const resize = () => {
+      const w = container.clientWidth;
+      const h = container.clientHeight;
+      if (w < 2 || h < 2) return;
+      width = w;
+      height = h;
+      // 第三参必须留默认 true：置 false 时 three 只改绘图缓冲、不写 style，
+      // canvas 就按「缓冲像素」去布局（= CSS 尺寸 × devicePixelRatio），
+      // 直接撑成容器的两倍再被 overflow 裁掉左上一角——看着像没居中
+      renderer.setSize(w, h);
+      composer.setSize(w, h);
+      labelRenderer.setSize(w, h);
+      edgeMat.uniforms.uRes.value.set(w, h);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+    };
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(container);
+
+    // ── 拾取：屏幕空间最近点（点云没有实体可射线求交，
+    //    而且铭牌避让本来就要每个节点投影一次，顺手复用） ──
+    const proj = new THREE.Vector3();
+    let screen: Float32Array = new Float32Array(N * 3);
+    const projectAll = () => {
+      for (let i = 0; i < N; i++) {
+        proj.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]).project(camera);
+        screen[i * 3] = (proj.x * 0.5 + 0.5) * width;
+        screen[i * 3 + 1] = (-proj.y * 0.5 + 0.5) * height;
+        screen[i * 3 + 2] = proj.z;
+      }
+    };
+    const pick = (mx: number, my: number): number => {
+      let best = -1;
+      let bestD = 22 * 22;
+      let bestZ = Infinity;
+      for (let i = 0; i < N; i++) {
+        if (isHub(scene.nodes[i].id)) continue;
+        if (screen[i * 3 + 2] > 1) continue; // 相机背后
+        const dx = screen[i * 3] - mx;
+        const dy = screen[i * 3 + 1] - my;
+        const d = dx * dx + dy * dy;
+        if (d > bestD) continue;
+        // 屏幕上更近优先；距离几乎相同时取离相机更近的（视觉上在前面那个）
+        if (d > bestD * 0.7 && screen[i * 3 + 2] > bestZ) continue;
+        best = i;
+        bestD = Math.min(bestD, d);
+        bestZ = screen[i * 3 + 2];
+      }
+      return best;
+    };
+
+    const idAt = (i: number) => (i >= 0 ? scene.nodes[i].id : null);
+
+    // ── 指针事件 ──
+    const ray = new THREE.Raycaster();
+    const grabNormal = new THREE.Vector3();
+    const grabHit = new THREE.Vector3();
+    const grabOffset = new THREE.Vector3();
+    const grabPlane = new THREE.Plane();
+    const ndc = new THREE.Vector2();
+    const lastPointer = { clientX: 0, clientY: 0 };
+    let dragging = -1;
+    const ndcOf = (p: { clientX: number; clientY: number }, rect: DOMRect) => {
+      ndc.set(
+        ((p.clientX - rect.left) / rect.width) * 2 - 1,
+        -((p.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      return ndc;
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      lastPointer.clientX = e.clientX;
+      lastPointer.clientY = e.clientY;
+      const rect = renderer.domElement.getBoundingClientRect();
+      // 当帧重新拾取：hover 状态可能来自上一帧的相机位置，直接拿旧命中会错
+      propsRef.current.onHover(idAt(pick(e.clientX - rect.left, e.clientY - rect.top)));
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const i = pick(e.clientX - rect.left, e.clientY - rect.top);
+      if (i < 0) return;
+      // 按在业务节点上 = 固定它（拖走），否则交给 OrbitControls 转视角
+      controls.enabled = false;
+      dragging = i;
+      camera.getWorldDirection(grabNormal);
+      grabPlane.setFromNormalAndCoplanarPoint(
+        grabNormal,
+        new THREE.Vector3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]),
+      );
+      ray.setFromCamera(ndcOf(e, rect), camera);
+      ray.ray.intersectPlane(grabPlane, grabHit);
+      grabOffset.set(
+        pos[i * 3] - grabHit.x,
+        pos[i * 3 + 1] - grabHit.y,
+        pos[i * 3 + 2] - grabHit.z,
+      );
+    };
+    const onPointerUp = () => {
+      if (dragging < 0) return;
+      controls.enabled = true;
+      dragging = -1;
+    };
+    const onClick = (e: MouseEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const i = pick(e.clientX - rect.left, e.clientY - rect.top);
+      propsRef.current.onSelect(idAt(i));
+    };
+    const onLeave = () => propsRef.current.onHover(null);
+
+    const el = renderer.domElement;
+    el.addEventListener("pointermove", onPointerMove);
+    el.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", onPointerUp);
+    el.addEventListener("click", onClick);
+    el.addEventListener("pointerleave", onLeave);
+
+    // ── 力场：rAF 时间切片推进 ──
+    let settled = false;
+    let running = false;
+    const pos = force.pos;
+    screen = new Float32Array(N * 3);
+
+    const pushGeometry = () => {
+      for (let i = 0; i < N; i++) {
+        nodePos[i * 3] = pos[i * 3];
+        nodePos[i * 3 + 1] = pos[i * 3 + 1];
+        nodePos[i * 3 + 2] = pos[i * 3 + 2];
+        plaques[i].obj.position.set(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]);
+      }
+      for (let e = 0; e < E; e++) {
+        const { a, b } = scene.edges[e];
+        for (let k = 0; k < EDGE_SEG; k++) {
+          const v = (e * EDGE_SEG + k) * 3;
+          edgeStart[v] = pos[a * 3];
+          edgeStart[v + 1] = pos[a * 3 + 1];
+          edgeStart[v + 2] = pos[a * 3 + 2];
+          edgeEnd[v] = pos[b * 3];
+          edgeEnd[v + 1] = pos[b * 3 + 1];
+          edgeEnd[v + 2] = pos[b * 3 + 2];
+        }
+      }
+      nodeGeo.attributes.position.needsUpdate = true;
+      nodeGeo.attributes.aColor.needsUpdate = true;
+      nodeGeo.attributes.aSize.needsUpdate = true;
+      applyDepthFade();
+      nodeGeo.attributes.aAlpha.needsUpdate = true;
+      edgeGeo.attributes.aStart.needsUpdate = true;
+      edgeGeo.attributes.aEnd.needsUpdate = true;
+      nodeGeo.computeBoundingSphere();
+    };
+
+    /**
+     * 深度衰减：远处退进黑场，深度感靠亮度差而不是描边。
+     *
+     * 少了这一层，远半边星云和近半边一样亮。加色混合下几百个亮点在同一块
+     * 像素上逐粒累加，远侧不压暗就会直接顶过 Bloom 阈值糊成一片过曝白斑——
+     * 那是「云自己在发光」的观感，正好把星云的分层拆了。
+     * 系数折算自小样（260 / 620 @ R=258，相机 2.87R），按 R 等比放大。
+     */
+    const applyDepthFade = () => {
+      const cam = camera.position;
+      for (let i = 0; i < N; i++) {
+        const dx = pos[i * 3] - cam.x;
+        const dy = pos[i * 3 + 1] - cam.y;
+        const dz = pos[i * 3 + 2] - cam.z;
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        const fade = Math.min(Math.max(1.4 - (d - R) / (R * 2.403), 0.46), 1);
+        nodeAlpha[i] = alphaBase[i] * fade;
+      }
+    };
+
+    const restLayout = () => {
+      // 小图补一遍最小间距：收敛后仍贴在一起的两个点，光点和铭牌会叠成一坨
+      if (N <= 1200) force.separate(nodeRadiusOf(scene) * 2.2);
+      force.normalize(R);
+      force.reheat();
+      settled = false;
+      running = true;
+    };
+    if (p.autoLayout) {
+      running = true;
+    } else {
+      // 静态构图：一次跑到底。大图照样走时间切片，只是每帧预算给足
+      settle(force, { maxSteps: 700 });
+      force.normalize(R);
+      if (N <= 1200) force.separate(nodeRadiusOf(scene) * 2.2);
+      settled = true;
+      running = false;
+    }
+
+    // THREE.Clock 已废弃且只为拿一个 elapsed，自己记起点即可
+    const startedAt = performance.now();
+    let raf = 0;
+    const boxes: Rect[] = [];
+    const obstacles: Rect[] = [];
+
+    const declutter = () => {
+      boxes.length = 0;
+      obstacles.length = 0;
+      for (const o of propsRef.current.obstacleRects()) obstacles.push(o);
+      for (const o of obstacles) boxes.push(o);
+      const band = middleBand(obstacles, width);
+      for (const i of order) {
+        const pl = plaques[i];
+        if (!pl.want) continue;
+        if (!pl.w) {
+          // 首帧元素还没被 CSS2DRenderer 挂进 DOM，量不到尺寸就等下一帧
+          pl.w = pl.el.offsetWidth;
+          pl.h = pl.el.offsetHeight;
+          if (!pl.w) continue;
+        }
+        if (screen[i * 3 + 2] > 1) {
+          pl.cull = true;
+          continue;
+        }
+        const hit = placeLabel(
+          {
+            cx: screen[i * 3],
+            cy: screen[i * 3 + 1],
+            w: pl.w,
+            h: pl.h,
+            lift: pl.lift,
+            width,
+            height,
+            band,
+          },
+          boxes,
+          { dx: pl.dx, dy: pl.dy },
         );
-        // ── 标签色：专用色阶 + 光晕，见 LABEL_COLORS 注释。
-        // 常态灰阶、焦点提亮——经自定义 label draw 函数绘制光晕
-        const lc = palette.dark ? LABEL_COLORS.dark : LABEL_COLORS.light;
-        // 度数用建图值（不含锚点边，锚点边会虚增）
-        const degree = attrs.degree ?? 0;
-        const focusId = p.hoverId ?? p.selectedId;
-        const isFocusNode =
-          node === p.selectedId ||
-          node === p.hoverId ||
-          (p.searchMatchIds?.has(node) ?? false);
-        const inFocusNeighborhood =
-          focusId !== null &&
-          (node === focusId || g.areNeighbors(node, focusId) || isFocusNode);
-        res.labelColor = isFocusNode ? lc.focus : lc.normal;
-        // 标签资格：密度三档（设置页）——少 = 仅焦点邻域；标准 = 高连接度/焦点；
-        // 多 = 全部业务节点。done 在状态着色下常态压掉
-        const isDoneFade = p.colorMode === "status" && attrs.status === "done";
-        let labelWorthy =
-          p.labelDensity === "dense"
-            ? true
-            : p.labelDensity === "sparse"
-              ? inFocusNeighborhood
-              : degree >= 6 || inFocusNeighborhood;
-        if (isDoneFade && !inFocusNeighborhood) labelWorthy = false;
-        res.forceLabel = labelWorthy;
-        // hover/选中：邻接集合之外的淡出
-        let inFocus = true;
-        if (focusId) {
-          inFocus = inFocusNeighborhood;
-          if (!inFocus) {
-            res.color = palette.edge;
-            res.forceLabel = false;
-            res.zIndex = 0;
-            res.size = (data.size ?? 4) * 0.6;
-            return res;
+        if (!hit) {
+          // 真没地方了：藏这一帧。挤在一起的两块字没人读得下去，缺一块还有人找得到
+          pl.cull = true;
+          pl.dx = 0;
+          pl.dy = 0;
+          continue;
+        }
+        pl.cull = false;
+        pl.dx = hit.dx;
+        pl.dy = hit.dy;
+        pl.off.style.setProperty("--dx", `${hit.dx.toFixed(0)}px`);
+        pl.off.style.setProperty("--dy", `${hit.dy.toFixed(0)}px`);
+        pl.el.style.opacity = "1";
+      }
+    };
+
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const t = (performance.now() - startedAt) / 1000;
+
+      if (running && !settled) {
+        // 时间切片：一帧只花固定预算跑力场，大图也不会卡住主线程
+        const deadline = performance.now() + STEP_BUDGET_MS;
+        let steps = 0;
+        while (performance.now() < deadline && steps < 400) {
+          force.step();
+          steps++;
+          if (force.kinetic() < KINETIC_EPSILON) {
+            settled = true;
+            break;
           }
         }
-        res.zIndex = inFocus && focusId ? 1 : 0;
-        if (isFocusNode) {
-          res.highlighted = true;
-          res.forceLabel = true;
+        if (settled) {
+          if (N <= 1200) force.separate(nodeRadiusOf(scene) * 2.2);
+          force.normalize(R);
+          running = false;
+          refreshAppearance();
         }
-        return res;
-      },
-      edgeReducer: (edge, data) => {
-        const p = propsRef.current;
-        const palette = paletteRef.current;
-        const res: Attributes = {
-          ...data,
-          color: palette.edgeStrong,
-          size: EDGE_WIDTH_SIZE[p.edgeWidth],
-        };
-        const [source, target] = g.extremities(edge);
-        // 标签锚点边恒隐藏
-        if (
-          source.startsWith(TAG_ANCHOR_PREFIX) ||
-          target.startsWith(TAG_ANCHOR_PREFIX)
-        ) {
-          res.hidden = true;
-          return res;
-        }
-        const isDep = (data as { kind?: string }).kind === "dep";
-        if (isDep) res.color = palette.edgeStrong;
-        const focusId = p.hoverId ?? p.selectedId;
-        if (focusId && source !== focusId && target !== focusId) {
-          res.hidden = true; // 淡出边直接隐藏（万级边下 hidden 比降 alpha 快）
-        }
-        return res;
-      },
-    });
-    sigmaRef.current = sigma;
-    // 钉死归一化参考系：sigma 默认在每次 process()（FA2 每批坐标更新都触发）用
-    // 当前 bbox 重基归一化——参考系持续漂移，相机适配无从计算。固定为初始布局
-    // bbox 后，归一化映射成为常量，computeCameraFit 才有意义。
-    const normExtent = graphBBox(g);
-    sigma.setCustomBBox(normExtent);
-    // 压测/调试探针（gui 冒烟 harness 用；生产无害）
-    (window as unknown as Record<string, unknown>).__graphProbe = {
-      graph: g,
-      sigma,
-      fa2: () => fa2Ref.current,
-    };
-
-    // ── 视野自适应：把可见节点包围盒动画适配到视口 ──
-    // duration=0 时瞬时就位（rAF 节流/隐藏窗口下动画会被冻结，终态必须直接 set）。
-    // 跳过非有限坐标——NaN 会把包围盒毒化成 NaN，相机状态随之报废（全屏空白）。
-    // 相机态走归一化空间（computeCameraFit）：sigma 相机 x/y/ratio 不在图坐标系，
-    // 直写原始坐标会把内容推出视口（小图上全空——坍缩 bug 的根因）。
-    // needsFit：视口尺寸未就绪（computeCameraFit 返回 null）时挂起，settle tick
-    // 里持续重试——绝不把 Infinity/NaN ratio 写进相机（会把全部节点投影成一点）
-    let needsFit = true;
-    const fitToContent = (duration = 0) => {
-      if (g.order === 0) return;
-      let minX = Infinity,
-        maxX = -Infinity,
-        minY = Infinity,
-        maxY = -Infinity;
-      g.forEachNode((_, attrs) => {
-        if (!Number.isFinite(attrs.x) || !Number.isFinite(attrs.y)) return;
-        if (attrs.x < minX) minX = attrs.x;
-        if (attrs.x > maxX) maxX = attrs.x;
-        if (attrs.y < minY) minY = attrs.y;
-        if (attrs.y > maxY) maxY = attrs.y;
-      });
-      const size = sigma.getDimensions();
-      const target = computeCameraFit(
-        { minX, maxX, minY, maxY },
-        normExtent,
-        size,
-      );
-      if (!target) {
-        needsFit = true;
-        return;
+        pushGeometry();
       }
-      needsFit = false;
-      if (duration > 0) {
-        sigma.getCamera().animate(target, { duration });
+
+      if (dragging >= 0) {
+        // 拖拽固定：节点跟着指针走，跑在力场之外，松手后从新位置继续平衡
+        const rect = el.getBoundingClientRect();
+        ray.setFromCamera(ndcOf(lastPointer, rect), camera);
+        if (ray.ray.intersectPlane(grabPlane, grabHit)) {
+          pos[dragging * 3] = grabHit.x + grabOffset.x;
+          pos[dragging * 3 + 1] = grabHit.y + grabOffset.y;
+          pos[dragging * 3 + 2] = grabHit.z + grabOffset.z;
+          pushGeometry();
+        }
+      }
+
+      controls.update();
+      applyDepthFade();
+      nodeGeo.attributes.aAlpha.needsUpdate = true;
+      projectAll();
+
+      const sel = propsRef.current.selectedId;
+      const selIdx = sel ? scene.indexOf.get(sel) ?? -1 : -1;
+      if (selIdx >= 0) {
+        ring.visible = true;
+        ring.position.set(pos[selIdx * 3], pos[selIdx * 3 + 1], pos[selIdx * 3 + 2]);
+        ring.lookAt(camera.position);
+        const s = scene.nodes[selIdx].radius * 2.4;
+        ring.scale.setScalar(s);
       } else {
-        sigma.getCamera().setState(target);
+        ring.visible = false;
       }
-    };
 
-    // ── 布局策略（r2 终版）：自动物理动画 + 空间随任务量自适应 ──
-    // 布局坐标 ∝ √N（面密度恒定）后，FA2 动力学在任何规模下都能在视野内收敛，
-    // 无需降级为静态。收敛自动停机（省 CPU），「重新布局」按钮可手动重跑。
-    // autoLayout=off（设置页）：打开即静态分扇区布局，不烧 CPU；手动重跑不受影响
-    const fa2 = new FA2Layout(g, { settings: fa2Settings(g.order) });
-    if (props.autoLayout) fa2.start();
-    fa2Ref.current = fa2;
-    const timers: number[] = [];
-
-    // 手动重新布局：重跑 FA2（默认 6s 自动停），跑完终态视野适配
-    const startRelayout = (runMs = 6000) => {
-      fa2.start();
-      // 句柄必须入 timers：组件卸载/重建时随 cleanup 清掉，
-      // 否则回调仍会触碰已 kill 的 fa2/sigma 实例
-      const t = window.setTimeout(() => {
-        if (fa2.isRunning()) fa2.stop();
-        fitToContent(400);
-      }, runMs);
-      timers.push(t);
-    };
-    relayoutRef.current = () => startRelayout();
-
-    // 收敛自动停 + 坐标消毒：FA2 数值发散（强吸引边 × 碰撞修正下速度爆炸）
-    // 会把节点坐标推成 NaN/Inf——WebGL 对含非有限顶点的图元**整体丢弃**，
-    // 一个坏节点就清空整帧画布（真机「一闪而过即空白」根因）。
-    // 消毒 = 巡检坐标，坏点重置回盘内 + 重启 worker 重读坐标；顺带做收敛检测。
-    const LAYOUT_BOUND = 120 * Math.sqrt(Math.max(g.order, 1)) * 4;
-    let lastSnapshot = 0;
-    const settleTimer = window.setInterval(() => {
-      // 视口晚就绪（容器 0×0 起步）的补偿：挂起的 fit 在每个 tick 重试，
-      // 直到拿到合法相机态（早退之前检查，FA2 已停也要补）
-      if (needsFit) fitToContent();
-      if (!fa2.isRunning()) return;
-      let sum = 0;
-      let i = 0;
-      let repaired = 0;
-      const golden = 2.399963;
-      g.forEachNode((node, attrs) => {
-        const bad =
-          !Number.isFinite(attrs.x) ||
-          !Number.isFinite(attrs.y) ||
-          Math.abs(attrs.x) > LAYOUT_BOUND ||
-          Math.abs(attrs.y) > LAYOUT_BOUND;
-        if (bad) {
-          // 坏坐标重置回盘内（黄金角环带，确定性位置）
-          const idx = ++repaired;
-          const ang = idx * golden;
-          const r = 60 + (idx % 11) * 24;
-          g.setNodeAttribute(node, "x", Math.cos(ang) * r);
-          g.setNodeAttribute(node, "y", Math.sin(ang) * r);
-          g.setNodeAttribute(node, "vx", 0);
-          g.setNodeAttribute(node, "vy", 0);
-        }
-        if (i++ % 5 !== 0) return; // 采样 1/5 节点算动能
-        sum +=
-          Math.abs(attrs.x - Math.round(attrs.x)) +
-          Math.abs(attrs.y - Math.round(attrs.y));
-      });
-      if (repaired > 0) {
-        // 坏点已重置：重启 worker 让矩阵与图坐标同步，再暖跑收敛
-        fa2.stop();
-        fa2.start();
-        fitToContent(400);
-        return;
+      // 铭牌：压透明度隐藏，不是 visible=false（否则永远退出摆位）
+      for (let i = 0; i < N; i++) {
+        const pl = plaques[i];
+        if (!pl.want) continue;
+        pl.el.style.opacity = pl.cull ? "0.12" : "1";
       }
-      if (lastSnapshot > 0 && Math.abs(sum - lastSnapshot) < 1.5) {
-        fa2.stop();
-        fitToContent();
-      } else {
-        // 布局期间视野跟随：包围盒膨胀时相机不拍原地（节点冲出视野 = 「一闪而过」）
-        fitToContent(400);
+
+      declutter();
+      clouds.follow(pos);
+      if (cloudsDirty) {
+        clouds.sample(pos, baseColor);
+        cloudsDirty = false;
       }
-      lastSnapshot = sum;
-    }, 2500);
-
-    // 初始视野适配（布局初值先就位，收敛后再精调）
-    const initialFit = window.setTimeout(() => fitToContent(400), 200);
-    timers.push(initialFit);
-
-    // ── 交互 ──
-    const isBusinessNode = (node: string) =>
-      !node.startsWith(TAG_ANCHOR_PREFIX);
-    sigma.on("enterNode", ({ node }) => {
-      if (isBusinessNode(node)) propsRef.current.onHover(node);
-    });
-    sigma.on("leaveNode", () => propsRef.current.onHover(null));
-    sigma.on("clickNode", ({ node }) => {
-      if (isBusinessNode(node)) propsRef.current.onSelect(node);
-    });
-    sigma.on("clickStage", () => propsRef.current.onSelect(null));
-
-    // 节点拖拽固定：down 锁定 → move 移动（graphology 坐标）→ up 释放；
-    // 拖拽时暂停 FA2（松手续跑），fixed 节点不被物理推走
-    let draggedId: string | null = null;
-    sigma.on("downNode", ({ node }) => {
-      if (!isBusinessNode(node)) return;
-      draggedId = node;
-      fa2.stop();
-      g.setNodeAttribute(node, "fixed", true);
-      container.style.cursor = "grabbing";
-    });
-    const onMove = (e: PointerEvent) => {
-      if (!draggedId) return;
-      const pos = sigma.viewportToGraph({ x: e.clientX, y: e.clientY });
-      g.setNodeAttribute(draggedId, "x", pos.x);
-      g.setNodeAttribute(draggedId, "y", pos.y);
+      clouds.update(t);
+      composer.render();
+      labelRenderer.render(world, camera);
     };
-    const onUp = () => {
-      if (!draggedId) return;
-      g.setNodeAttribute(draggedId, "fixed", false);
-      draggedId = null;
-      container.style.cursor = "default";
-      // 暖启动续跑（拖拽后的位置作为新平衡起点）；静态模式（autoLayout=off）不续跑
-      if (propsRef.current.autoLayout) fa2.start();
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
 
-    // 主题切换重读配色（切主题不经 React 重渲染）
-    const themeObs = new MutationObserver(() => {
-      paletteRef.current = readPalette();
-      sigma.refresh();
-    });
-    themeObs.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
+    pushGeometry();
+    projectAll();
+    refreshAppearance();
+    raf = requestAnimationFrame(tick);
+
+    // 「重新布局」：暖机重跑一轮
+    const onRelayout = () => restLayout();
+    window.addEventListener("graph:relayout", onRelayout);
+    const onAppearance = () => refreshAppearance();
+    window.addEventListener("graph:appearance", onAppearance);
 
     return () => {
-      themeObs.disconnect();
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      timers.forEach((t) => window.clearTimeout(t));
-      window.clearInterval(settleTimer);
-      fa2.kill(); // terminate worker + 释放矩阵内存
-      sigma.kill();
-      sigmaRef.current = null;
-      fa2Ref.current = null;
+      window.removeEventListener("graph:relayout", onRelayout);
+      window.removeEventListener("graph:appearance", onAppearance);
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      el.removeEventListener("pointermove", onPointerMove);
+      el.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+      el.removeEventListener("click", onClick);
+      el.removeEventListener("pointerleave", onLeave);
+      controls.dispose();
+      nodeGeo.dispose();
+      nodeMat.dispose();
+      edgeGeo.dispose();
+      edgeMat.dispose();
+      ring.geometry.dispose();
+      ringMat.dispose();
+      for (const pl of plaques) pl.obj.removeFromParent();
+      stars.dispose();
+      clouds.dispose();
+      bloom.dispose();
+      composer.dispose();
+      renderer.dispose();
+      el.remove();
+      labelHost.remove();
     };
-    // colorMode 变化经 reducer（每次 render 读取 propsRef）自动生效，无需重建。
-    // tagGroups/ownerOrder 是建图输入（分扇区初值/锚点/ownerKey）且异步到达
-    // （tag_similar_pairs 走嵌入推理，秒级）——必须进依赖，否则真机上扇区布局
-    // 永远拿不到同义组（图谱始终以无组圆盘初值运行，与设计不符）；
-    // sizeMode 同理（大小参与 FA2 质量/碰撞，切换需重建写回图属性）；
-    // looseness（R_MAX 系数）也是建图输入
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     props.graph,
     props.tagGroups,
     props.ownerOrder,
-    props.sizeMode,
+    props.ownerNames,
+    props.tagOrder,
     props.looseness,
   ]);
 
-  // 「重新布局」信号：手动触发一轮 FA2 短跑（GraphCanvas 内部已自动停 + 终态适配）
+  // ── 「重新布局」信号 ──
   useEffect(() => {
-    if (props.relayoutSignal > 0) relayoutRef.current();
+    if (props.relayoutSignal > 0) {
+      window.dispatchEvent(new CustomEvent("graph:relayout"));
+    }
   }, [props.relayoutSignal]);
 
-  // hover/选中/搜索/着色模式/标签密度/连线粗细变化 → reducer 已读 propsRef，只需 refresh
+  // ── 外观态变化：只在力场之上重算着色/淡出/铭牌资格，不碰布局 ──
   useEffect(() => {
-    sigmaRef.current?.refresh();
+    window.dispatchEvent(new CustomEvent("graph:appearance"));
   }, [
     props.hoverId,
     props.selectedId,
@@ -541,11 +894,18 @@ export default function GraphCanvas(props: GraphCanvasProps) {
   ]);
 
   return (
-    <div
-      ref={containerRef}
-      className="h-full w-full"
-      data-testid="graph-canvas"
-      style={{ background: "var(--bg)" }}
-    />
+    <div ref={containerRef} className="graph-canvas h-full w-full" data-testid="graph-canvas" />
   );
+}
+
+/** 场景的平均节点半径（最小间距换算用） */
+function nodeRadiusOf(scene: Scene): number {
+  if (scene.nodes.length === 0) return 2.6;
+  let sum = 0;
+  for (const n of scene.nodes) sum += n.radius;
+  return sum / scene.nodes.length;
+}
+
+function hubRole(node: SceneNode): string {
+  return node.hubKind === "owner" ? "成员" : node.hubKind === "tag" ? "标签" : "状态";
 }

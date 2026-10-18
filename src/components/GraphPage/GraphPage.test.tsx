@@ -1,7 +1,7 @@
-// GraphPage 冒烟：渲染 + 过滤器交互（jsdom 无 canvas 2D 上下文，GraphCanvas
-// 静默跳过绘制——画布逻辑由 physics/graph-build 纯函数单测覆盖）。
+// GraphPage 冒烟：渲染 + 过滤器交互（jsdom 无 WebGL2 上下文，GraphCanvas
+// 整块 mock 掉——画布行为由 graph-scene/graph-force3d 纯函数单测覆盖）。
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import type { Task } from "../../types";
 
 const invokeMock = vi.fn();
@@ -11,11 +11,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
-// Sigma/WebGL 渲染层 mock：jsdom 无 WebGL2 上下文；GraphCanvas 的行为契约
-// 由 graph-adapter 单测 + 浏览器压测 harness 覆盖，这里只测 GraphPage 壳
+// Three.js 渲染层 mock：jsdom 无 WebGL2 上下文，这里只测 GraphPage 壳
 vi.mock("./GraphCanvas", () => ({
   default: () => <div data-testid="graph-canvas" />,
-  OWNER_PALETTE: ["#7c6bd6"],
 }));
 
 import GraphPage from "./GraphPage";
@@ -100,5 +98,32 @@ describe("GraphPage", () => {
     );
     await screen.findByTestId("graph-stats");
     expect(await screen.findByText("暂无任务")).toBeTruthy();
+  });
+
+  it("着色三选一：默认按标签，三档按钮都在且图例随档切换", async () => {
+    renderPage();
+    await screen.findByTestId("graph-stats");
+    const legend = screen.getByTestId("graph-legend");
+    // 默认标签档：图例列出数据里真实存在的标签
+    expect(screen.getByText("按标签").className).toContain("font-medium");
+    expect(within(legend).getByText("周报")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("按成员"));
+    expect(screen.getByText("按成员").className).toContain("font-medium");
+    // 成员档图例列人名，而不是标签
+    expect(within(legend).getByText("张三")).toBeTruthy();
+    expect(within(legend).queryByText("周报")).toBeNull();
+
+    fireEvent.click(screen.getByText("按状态"));
+    expect(screen.getByText("按状态").className).toContain("font-medium");
+    expect(within(legend).getByText("进行中")).toBeTruthy();
+  });
+
+  it("「按耗时定大小」已彻底退役：图例与设置页都不再有该控件", async () => {
+    renderPage();
+    await screen.findByTestId("graph-stats");
+    expect(screen.queryByText("耗时")).toBeNull();
+    expect(screen.queryByText("大小")).toBeNull();
+    expect(screen.queryByLabelText(/节点大小/)).toBeNull();
   });
 });

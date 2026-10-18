@@ -6,7 +6,8 @@
 import type { ColumnId, Task } from "../../types";
 import { isTrashed } from "../../lib/taskScope";
 
-export type GraphColorMode = "status" | "owner";
+/** 着色维度：标签 / 成员 / 状态，三选一（默认由图谱页图例切换） */
+export type GraphColorMode = "tag" | "owner" | "status";
 
 /** 本人 ownerKey 哨兵（Task.ownerId 为 undefined = 本人） */
 export const SELF_OWNER = "";
@@ -43,11 +44,11 @@ export interface GraphNode {
   owner?: string;
   tags?: string[];
   completedAt?: number;
-  /** 创建时间（epoch ms）：「耗时」大小口径的依赖（缺省 = 未知 → 最小尺寸） */
+  /** 创建时间（epoch ms）：「钉子户」判定（进行中且逾 STALL_DAYS 未动）的依据 */
   createdAt?: number;
   /** 任务节点的完整卡引用（详情面板/跳转用） */
   task?: Task;
-  /** 连接度数（dep 边 + parent 边），驱动半径 */
+  /** 连接度数（dep 边 + parent 边），驱动半径——节点大小只由它决定 */
   degree: number;
 }
 

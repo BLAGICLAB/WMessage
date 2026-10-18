@@ -5,7 +5,7 @@
 
 import { useMemo } from "react";
 import Graph from "graphology";
-import forceAtlas2 from "graphology-layout-forceatlas2";
+import forceAtlas2, { inferSettings } from "graphology-layout-forceatlas2";
 import { Network } from "lucide-react";
 import type { Task } from "../../types";
 import {
@@ -13,11 +13,27 @@ import {
   buildTaskGraph,
   type GraphNode,
 } from "../GraphPage/graph-build";
-import { fa2Settings } from "../GraphPage/graph-adapter";
 import { dayKey as localDayKey } from "./homeData";
 
 const VIEW_W = 100;
 const VIEW_H = 56;
+
+/**
+ * FA2 设置（万节点档调优）。速览卡是 100×56 的二维缩略图，档位比图谱页粗一档：
+ * barnesHut 只在真的上千节点时开，linLog 永久禁——LinLog 会把连通团坍缩成一点、
+ * 孤点推到无穷远，与「所有任务可见铺开」不可调和。
+ */
+function fa2Settings(nodeCount: number) {
+  return {
+    ...inferSettings(Math.min(nodeCount, 5000)),
+    barnesHutOptimize: nodeCount > 1500,
+    edgeWeightInfluence: 1,
+    linLogMode: false,
+    outboundAttractionDistribution: false,
+    adjustSizes: true,
+    slowDown: 1 + Math.min(10, nodeCount / 500),
+  };
+}
 
 /** 任务图 → FA2 布局 → 归一化坐标（memorize 于调用方） */
 function layoutGraph(tasks: Task[]): {
@@ -159,8 +175,9 @@ export function GraphMini({
               const hot = activeTaskId === node.id;
               const lit = !dim && (activeTaskId !== null || activeDay !== null);
               const r = 2.2 + Math.min(node.degree, 8) * 0.55;
-              // 已完成与图谱页状态着色同源（resolveStatusColor done → --success），
-              // 两处颜色必须一起改
+              // 速览卡留在应用主题里（它嵌在首页卡片中）；图谱页画布则是恒定深色
+              // 星云，那边的状态色另走一套（graph-palette 的 STATUS_PALETTE）。
+              // 两边不共用色值不是遗漏，是两张不同的屏。
               const fill =
                 node.status === "done"
                   ? "var(--success)"

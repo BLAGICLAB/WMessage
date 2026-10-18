@@ -1,16 +1,26 @@
 // 任务图谱页（任务图谱设计 §3）：全量任务（含归档、排除回收站）的 Obsidian 式
-// 关系图谱——力导向布局、依赖边、按状态/成员着色、过滤器侧栏、
+// 关系图谱——三维星云画布、依赖边、按标签/成员/状态着色、过滤器侧栏、
 // hover 邻接高亮、点选详情。看板只看本人任务；这里看整个部门。
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
 import { Waypoints } from "lucide-react";
-import type { PeopleEntry, Task } from "../../types";
+import type { ColumnId, PeopleEntry, Task } from "../../types";
 import { loadPeople } from "../../storage";
 import GraphCanvas from "./GraphCanvas";
-import { OWNER_PALETTE, type GraphSizeMode } from "./graph-adapter";
+import {
+  NO_TAG_COLOR,
+  STALL_COLOR,
+  STALL_DAYS,
+  STATUS_PALETTE,
+  ownerChipColor,
+  ownerColorKey,
+  tagChipColor,
+} from "./graph-palette";
+import { isStalled } from "./graph-scene";
+import type { Rect } from "./graph-declutter";
 import {
   getGraphAutoLayout,
   getGraphEdgeWidth,
@@ -18,10 +28,8 @@ import {
   getGraphLooseness,
   getGraphOnlyMine,
   getGraphRememberFilters,
-  getGraphSizeMode,
   loadGraphFilters,
   saveGraphFilters,
-  setGraphSizeMode,
 } from "../../lib/graphPrefs";
 import {
   DEFAULT_FILTERS,
@@ -35,11 +43,18 @@ import {
   type GraphFilters,
 } from "./graph-build";
 
-const STATUS_LABELS: Record<string, string> = {
+const STATUS_LABELS: Record<ColumnId, string> = {
   todo: "待办",
   doing: "进行中",
   done: "已完成",
 };
+
+/** 着色三选一（图例按钮的字面量，顺序即视觉优先级） */
+const COLOR_MODES = [
+  { m: "tag", label: "按标签" },
+  { m: "owner", label: "按成员" },
+  { m: "status", label: "按状态" },
+] as const satisfies ReadonlyArray<{ m: GraphColorMode; label: string }>;
 
 interface GraphPageProps {
   /** 全量任务（App 传 tasks 而非 visibleTasks——图谱自带过滤，需要看到所有人） */
@@ -70,18 +85,28 @@ export default function GraphPage({
   useEffect(() => {
     if (getGraphRememberFilters()) saveGraphFilters(filters);
   }, [filters]);
-  const [colorMode, setColorMode] = useState<GraphColorMode>("status");
-  // 节点大小语义（连接度/耗时）：graphPrefs 持久化（图谱图例与设置页共用同一键）
-  const [sizeMode, setSizeModeState] =
-    useState<GraphSizeMode>(getGraphSizeMode);
-  const setSizeMode = (m: GraphSizeMode) => {
-    setSizeModeState(m);
-    setGraphSizeMode(m);
-  };
+  // 着色维度三选一，默认按标签：图谱首先是一张「工作类型星云」，
+  // 成员与状态是两个备用视角，需要时才切。
+  const [colorMode, setColorMode] = useState<GraphColorMode>("tag");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [showFilters, setShowFilters] = useState(true);
+
+  // 画布局部坐标里的障碍矩形：铭牌避让要把图例 HUD 算进去，
+  // 否则它正压着的铭牌会被让到 HUD 底下——让了等于没让。
+  const stageRef = useRef<HTMLDivElement>(null);
+  const legendRef = useRef<HTMLDivElement>(null);
+  const obstacleRects = useCallback((): Rect[] => {
+    const stage = stageRef.current;
+    const legend = legendRef.current;
+    if (!stage || !legend) return [];
+    const s = stage.getBoundingClientRect();
+    const b = legend.getBoundingClientRect();
+    return [
+      { l: b.left - s.left, r: b.right - s.left, t: b.top - s.top, b: b.bottom - s.top },
+    ];
+  }, []);
 
   useEffect(() => {
     const refreshPeople = () =>
@@ -107,8 +132,8 @@ export default function GraphPage({
   const tagList = useMemo(() => collectTags(tasks), [tasks]);
   const years = useMemo(() => collectYears(tasks), [tasks]);
 
-  // owner 注入序 + chips 色点：与节点着色共用的单一事实源（graph-adapter 的
-  // ownerColorKey/resolveOwnerColor），保证图例色点与图内节点永远同色。
+  // owner 注入序 + chips 色点：与节点着色共用的单一事实源（graph-palette 的
+  // ownerColorKey/ownerChipColor），保证图例色点与图内节点永远同色。
   // 本人不在 ownerOrder（ownerKey="self"）；外来按 chips 全序取 0,1,2…
   const ownerOrder = useMemo(() => {
     const map = new Map<string, number>();
@@ -119,10 +144,34 @@ export default function GraphPage({
     }
     return map;
   }, [ownerChips]);
-  const chipColor = (id: string): string =>
-    id === SELF_OWNER
-      ? "var(--brand)"
-      : OWNER_PALETTE[(ownerOrder.get(id) ?? 0) % OWNER_PALETTE.length];
+  // 标签注入序同理，按使用数降序（collectTags 已排好序）——色板下标即注入序
+  const tagOrder = useMemo(() => {
+    const map = new Map<string, number>();
+    tagList.forEach(({ tag }, i) => map.set(tag, i));
+    return map;
+  }, [tagList]);
+  const chipColor = (id: string): string => ownerChipColor(id, ownerOrder);
+  // 锚点铭牌用真名（画布上直接可见，印 owner:0 等于把内部键漏给用户）
+  const ownerNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of ownerChips) {
+      map.set(ownerColorKey({ owner: p.id }, ownerOrder), p.name);
+    }
+    return map;
+  }, [ownerChips, ownerOrder]);
+  // 钉子户（进行中且逾 STALL_DAYS 未动）只在状态着色下才看得见，图例据此出现
+  const stalledCount = useMemo(() => {
+    const now = Date.now();
+    return graph.nodes.filter((n) => isStalled(n, now)).length;
+  }, [graph.nodes]);
+  // 无标签任务走中性灰，图例补一条，否则那批灰点无从解释
+  const untaggedCount = useMemo(
+    () =>
+      graph.nodes.filter(
+        (n) => n.kind === "task" && !(n.tags ?? []).some((t) => t.trim()),
+      ).length,
+    [graph.nodes],
+  );
 
   // ── 标签近义（G6-SYNONYM）：词表变化 → Rust 嵌入近义对 → 并查集并组 ──
   const [tagGroups, setTagGroups] = useState<Map<string, string>>(new Map());
@@ -350,74 +399,111 @@ export default function GraphPage({
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="relative min-w-0 flex-1">
+        <div ref={stageRef} className="relative min-w-0 flex-1">
           <GraphCanvas
             graph={graph}
             colorMode={colorMode}
-            sizeMode={sizeMode}
             labelDensity={getGraphLabelDensity()}
             edgeWidth={getGraphEdgeWidth()}
             autoLayout={getGraphAutoLayout()}
             looseness={getGraphLooseness()}
             ownerOrder={ownerOrder}
+            tagOrder={tagOrder}
             tagGroups={tagGroups}
+            ownerNames={ownerNames}
             relayoutSignal={relayoutSignal}
             selectedId={selectedId}
             hoverId={hoverId}
             searchMatchIds={searchMatchIds}
             onHover={setHoverId}
             onSelect={setSelectedId}
+            obstacleRects={obstacleRects}
           />
-          {/* 图例 + 重新布局（默认静态确定性布局，物理动画手动触发） */}
-          <div className="nm-card absolute left-3 top-3 flex items-center gap-2 rounded-[var(--r-md)] px-2.5 py-1.5 text-xs">
+          {/* 图例 + 重新布局（默认静态确定性布局，物理动画手动触发）。
+              铭牌避让要把这块当障碍，所以它的矩形由 obstacleRects 报给画布 */}
+          <div
+            ref={legendRef}
+            className="nm-card absolute left-3 top-3 z-10 flex max-w-[calc(100%-1.5rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-[var(--r-md)] px-2.5 py-1.5 text-xs"
+          >
             <button
               onClick={() => setRelayoutSignal((s) => s + 1)}
               className="rounded-[var(--r-sm)] px-1.5 py-0.5 text-[var(--t3)] hover:text-[var(--t1)]"
-              title="跑一轮力导向布局（约 6 秒后自动停）"
+              title="跑一轮力场布局，收敛后自动停"
             >
               重新布局
             </button>
-            {(["status", "owner"] as const).map((m) => (
+            {COLOR_MODES.map((m) => (
               <button
-                key={m}
-                onClick={() => setColorMode(m)}
+                key={m.m}
+                onClick={() => setColorMode(m.m)}
                 className={
-                  colorMode === m
+                  colorMode === m.m
                     ? "rounded-[var(--r-sm)] bg-[var(--inset-bg)] px-1.5 py-0.5 font-medium text-[var(--t1)]"
                     : "px-1.5 py-0.5 text-[var(--t5)] hover:text-[var(--t2)]"
                 }
               >
-                {m === "status" ? "按状态" : "按成员"}
+                {m.label}
               </button>
             ))}
-            {/* 节点大小语义切换：连接度（默认）/ 耗时（完成−创建天数，doing 用已进行天数） */}
-            <span className="flex items-center gap-1 border-l border-[var(--edge)] pl-2 text-[var(--t5)]">
-              大小
-              {(["degree", "duration"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setSizeMode(m)}
-                  aria-label={`节点大小按${m === "degree" ? "连接度" : "耗时"}`}
-                  className={
-                    sizeMode === m
-                      ? "rounded-[var(--r-sm)] bg-[var(--inset-bg)] px-1.5 py-0.5 font-medium text-[var(--t1)]"
-                      : "px-1.5 py-0.5 text-[var(--t5)] hover:text-[var(--t2)]"
-                  }
-                >
-                  {m === "degree" ? "连接度" : "耗时"}
-                </button>
-              ))}
+            <span
+              data-testid="graph-legend"
+              className="flex flex-wrap items-center gap-x-2 gap-y-1 border-l border-[var(--edge)] pl-2 text-[var(--t5)]"
+            >
+              {colorMode === "status" && (
+                <>
+                  {(Object.keys(STATUS_LABELS) as ColumnId[]).map((s) => (
+                    <span key={s} className="flex items-center gap-1">
+                      <i
+                        className="inline-block size-2 rounded-full"
+                        style={{ background: STATUS_PALETTE[s] }}
+                      />
+                      {STATUS_LABELS[s]}
+                    </span>
+                  ))}
+                  {stalledCount > 0 && (
+                    <span className="flex items-center gap-1">
+                      <i
+                        className="inline-block size-2 rounded-full"
+                        style={{ background: STALL_COLOR }}
+                      />
+                      逾 {STALL_DAYS} 天
+                    </span>
+                  )}
+                </>
+              )}
+              {colorMode === "owner" &&
+                ownerChips.map((o) => (
+                  <span key={o.id || "self"} className="flex items-center gap-1">
+                    <i
+                      className="inline-block size-2 rounded-full"
+                      style={{ background: chipColor(o.id) }}
+                    />
+                    {o.name}
+                  </span>
+                ))}
+              {colorMode === "tag" && (
+                <>
+                  {tagList.slice(0, 8).map(({ tag }) => (
+                    <span key={tag} className="flex items-center gap-1">
+                      <i
+                        className="inline-block size-2 rounded-full"
+                        style={{ background: tagChipColor(tagOrder.get(tag) ?? 0) }}
+                      />
+                      {tag}
+                    </span>
+                  ))}
+                  {untaggedCount > 0 && (
+                    <span className="flex items-center gap-1">
+                      <i
+                        className="inline-block size-2 rounded-full"
+                        style={{ background: NO_TAG_COLOR }}
+                      />
+                      无标签
+                    </span>
+                  )}
+                </>
+              )}
             </span>
-            {colorMode === "status" && (
-              <span className="flex items-center gap-2 pl-1 text-[var(--t5)]">
-                <i className="inline-block size-2 rounded-full bg-[var(--t5)]" />
-                待办
-                <i className="inline-block size-2 rounded-full bg-[var(--brand)]" />
-                进行中
-                <i className="inline-block size-2 rounded-full bg-[var(--success)]" />
-                已完成
-              </span>
-            )}
           </div>
           {graph.nodes.length === 0 && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
