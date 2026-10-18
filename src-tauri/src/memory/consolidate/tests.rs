@@ -200,6 +200,51 @@ fn apply_merge_with_missing_ids_skipped() {
     assert_eq!(store::load_all(&conn).unwrap().len(), 1);
 }
 
+// ── lesson 直写 ──
+
+#[test]
+fn store_lesson_inserts_lesson_row() {
+    let conn = mem_db();
+    let now = 1_000_000;
+    assert!(store_lesson(
+        &conn,
+        "下次排期前先确认时区",
+        None,
+        now,
+        &store::StoreParams::default()
+    )
+    .unwrap());
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].kind, "lesson");
+    assert_eq!(all[0].importance, 3);
+    assert_eq!(all[0].source, "system");
+    assert!(all[0].tags.is_empty(), "直写不带任何 key tag");
+}
+
+#[test]
+fn store_lesson_is_idempotent_on_verbatim_content() {
+    let conn = mem_db();
+    let now = 1_000_000;
+    let sp = store::StoreParams::default();
+    assert!(store_lesson(&conn, "同一条 lesson", None, now, &sp).unwrap());
+    assert!(
+        !store_lesson(&conn, "同一条 lesson", None, now + 1, &sp).unwrap(),
+        "逐字重复不再落第二行"
+    );
+    assert_eq!(store::load_all(&conn).unwrap().len(), 1);
+}
+
+#[test]
+fn store_lesson_dedup_only_scopes_to_lesson_kind() {
+    // 逐字去重只认 kind=lesson：同文本的 fact 不该挡住 lesson 落库
+    let conn = mem_db();
+    let now = 1_000_000;
+    insert(&conn, "fact", "同文本", 3, now);
+    assert!(store_lesson(&conn, "同文本", None, now, &store::StoreParams::default()).unwrap());
+    assert_eq!(store::load_all(&conn).unwrap().len(), 2);
+}
+
 /// 测试助手：插一条带 evo: key tag 的 lesson 行（apply 链路同款形态）
 fn insert_lesson(conn: &rusqlite::Connection, pid: &str, content: &str, now: i64) -> String {
     let item = NewItem {

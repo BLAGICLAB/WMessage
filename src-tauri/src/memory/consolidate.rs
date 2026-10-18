@@ -446,9 +446,9 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     let ops = parse_ops(&text);
     let lesson = parse_lesson(&text);
     if ops.is_empty() {
-        // lesson 是反思的第二产物：ops 空但 lesson 非空时仍要过提案桥，
+        // lesson 是反思的第二产物：ops 空但 lesson 非空时仍要落库，
         // 否则 `{"ops":[],"lesson":"..."}` 形态的输出静默丢 lesson
-        crate::evolution::post_consolidation(lesson.as_deref()).await;
+        write_lesson(app, lesson.as_deref()).await;
         return Ok(ConsolidateReport::default());
     }
     // 嵌入在持锁前批量算好（独立阻塞闭包、不持 DB 写锁，与 mod.rs「嵌入计算一律在
@@ -478,10 +478,84 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     })
     .await
     .map_err(CommandError::DbError)?;
-    // 基于本次反思的 lesson 段产出演化提案（不调二次 LLM）。
-    // 见 `crate::evolution::post_consolidation` 的依赖方向约束。
-    crate::evolution::post_consolidation(lesson.as_deref()).await;
+    // 基于本次反思的 lesson 段直接落记忆（与 ops 同一条写路径，不调二次 LLM）
+    write_lesson(app, lesson.as_deref()).await;
     Ok(report)
+}
+
+/// 反思 lesson 直写入库（kind=lesson / importance=3 / source=system / 无 key tag）。
+///
+/// lesson 与 ops 是反思的一对产物，走同一条写路径——没有提案池与审批环节。
+/// 幂等：同 kind=lesson 且内容逐字相同则跳过；语义近重复（cosine ≥ 去重阈值）
+/// 由 store 的 merge-on-write 折叠。
+/// 失败只记审计：整理主链路不因一条 lesson 落库失败而回滚。
+async fn write_lesson(app: &AppHandle, lesson: Option<&str>) {
+    let Some(text) = lesson.map(str::trim).filter(|t| !t.is_empty()) else {
+        return;
+    };
+    let text = truncate_chars(text, MAX_CONTENT_CHARS, false);
+    // 嵌入在持锁前算好（ONNX 推理数十 ms，不占 DB 写锁临界区）
+    let emb = match tauri::async_runtime::spawn_blocking({
+        let t = text.clone();
+        move || embed::embed_text(&t)
+    })
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            crate::audit_event!(app, crate::audit::AuditLevel::Warn,
+                "memory.lesson_write_failed",
+                "error" => format!("反思 lesson 嵌入线程 join 失败：{e}"));
+            return;
+        }
+    };
+    // 无向量的 lesson 永不可语义召回（检索打分 cosine 项记 0），留痕不静默
+    if emb.is_none() {
+        crate::audit_event!(app, crate::audit::AuditLevel::Warn,
+            "memory.lesson_write_failed", "error" => "反思 lesson 嵌入失败，条目将不可语义召回");
+    }
+    let tuning = crate::bot::read_memory_tuning(app);
+    let r = crate::db::lock::with_write_conn(app, move |conn| {
+        store::ensure_table(conn)?;
+        store_lesson(
+            conn,
+            &text,
+            emb.as_deref(),
+            now_ms(),
+            &store::StoreParams::of(&tuning),
+        )
+    })
+    .await;
+    if let Err(e) = r {
+        crate::audit_event!(app, crate::audit::AuditLevel::Warn,
+            "memory.lesson_write_failed", "error" => e);
+    }
+}
+
+/// lesson 落库内核（纯函数，供单测）：逐字去重后交给 store 的去重/淘汰链。
+/// 返回是否真的新落一行（已存在或被 store 折叠都算没落）。
+fn store_lesson(
+    conn: &rusqlite::Connection,
+    text: &str,
+    emb: Option<&[f32]>,
+    now_ms: i64,
+    sp: &store::StoreParams,
+) -> Result<bool, String> {
+    let verbatim = store::load_all(conn)?
+        .iter()
+        .any(|m| m.kind == "lesson" && m.content == text);
+    if verbatim {
+        return Ok(false);
+    }
+    let item = NewItem {
+        kind: "lesson".to_string(),
+        content: text.to_string(),
+        tags: Vec::new(),
+        importance: 3,
+        source: "system".to_string(),
+    };
+    let (outcome, _) = store::insert_item_with(conn, &item, emb, now_ms, sp)?;
+    Ok(matches!(outcome, store::InsertOutcome::Inserted(_)))
 }
 
 /// 立即手动整理（设置页「立即整理」按钮）。成功后回写 last_run_at。
