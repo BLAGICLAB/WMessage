@@ -115,7 +115,7 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 
 ### 5. 治理与记忆沉淀
 
-- **记忆整理与沉淀**（无独立提案层）：定时整理把候选记忆发给 LLM 反思一轮，产出两类结果**同事务直写 `mem_items`**——指令类 ops（merge / contradiction / distill：合并冗余、裁决矛盾、提炼规律）与行为准则 lesson。lesson **不另开写路径**，复用 `memory::record_lesson_core`（与 `tool_record_lesson` / 技能失败沉淀 / 纠正聚簇同一条）：`kind=lesson` / `importance=4` / `source=system` / `tags=[lesson, <场景>]`，整理场景填 `consolidation`。整理层不做逐字去重，超长由 `validate_lesson` 拒写并留痕（不静默截断一条行为准则）——语义去重整个交给 `insert_item`（cosine ≥0.92 合并、0.75~0.92 冲突提示）。**合并目标限定在 `kind=lesson`**：store 的 merge 是整行 UPDATE 且不动 kind，撞上 fact/preference/reflection 行会让那行保留旧 kind、内容却变成 lesson，按 kind 分槽的注入就再也召不回它；异 kind 行降级为冲突提示，既不并也不丢弃。lesson 与 ops 一样参与下一轮整理，也进聊天注入的「经验教训」段
+- **记忆整理与沉淀**（无独立提案层）：定时整理把候选记忆发给 LLM 反思一轮，产出两类结果**同事务直写 `mem_items`**——指令类 ops（merge / contradiction / distill：合并冗余、裁决矛盾、提炼规律）与行为准则 lesson。lesson **不另开写路径**，复用 `memory::record_lesson_core`（与 `tool_record_lesson` / 技能失败沉淀 / 纠正聚簇同一条）：`kind=lesson` / `importance=4` / `source=system` / `tags=[lesson, <场景>]`，整理场景填 `consolidation`。整理层不做逐字去重，超长由 `validate_lesson` 拒写并留痕（不静默截断一条行为准则）——语义去重整个交给 `insert_item`（cosine ≥0.92 合并、0.75~0.92 冲突提示）。**合并即替换，不分来源与 kind**：cos ≥0.92 的两条记忆说的是同一件事，留两行才是歧义本身，所以 merge 整行覆盖 `content/tags/importance/source/kind`，合并后的行统一代表最后写入的那条，五列自洽——kind 不跟着走会留下「内容是 lesson、kind 仍是 fact」的行，按 kind 分槽的注入再也召不回它。代价是合并不保护既有行：`is_protected` 只管容量淘汰，不豁免 merge（豁免会让两条近义记忆并存，正是要避免的歧义）。lesson 与 ops 一样参与下一轮整理，也进聊天注入的「经验教训」段
 - 文件治理：授权模式四档 strict 白名单硬拒 / ask 弹授权（默认）/ auto / yolo 全放行 + per-tool 权限规则表；绑定集合精确命中才放行（`..`/软链/前缀相似目录全拒）
 - 密钥纪律：API key、搜索 key、MCP 机密全走系统凭据存储，不落明文配置
 

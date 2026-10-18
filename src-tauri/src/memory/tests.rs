@@ -635,13 +635,10 @@ fn lesson_section_absent_without_lessons() {
     assert!(!block.contains("经验教训"), "无 lesson 不出第四段：{block}");
 }
 
-// ── lesson 的合并目标限定在 kind=lesson ──
-
 #[test]
-fn lesson_merge_does_not_overwrite_fact_row_of_same_embedding() {
-    // store 的 merge 分支是整行 UPDATE 且不动 kind：lesson 撞上同向量 fact 行时，
-    // 若不限定就会把 fact 的 content/tags 覆盖成 lesson 口径而 kind 留 fact，
-    // 按 kind 分槽的注入再也召不回这条 lesson。限定后应另起一行。
+fn merge_across_kind_replaces_and_carries_the_new_kind() {
+    // cos≥0.92 的两条记忆说的是同一件事，留两行才是歧义本身。合并后的行
+    // 统一代表最后写入的那条：kind 也随之覆盖，行内五列自洽。
     let conn = mem_db();
     let now = 1_000;
     let mut f = item("fact", "回答保持简短");
@@ -656,22 +653,43 @@ fn lesson_merge_does_not_overwrite_fact_row_of_same_embedding() {
         now + 1,
         &store::StoreParams::default(),
     );
-    assert!(!msg.starts_with("失败"), "写入应成功：{msg}");
-    let all = store::load_all(&conn).unwrap();
-    assert_eq!(all.len(), 2, "异 kind 不并，另起一行");
-    let fact = all.iter().find(|m| m.kind == "fact").expect("fact 应存活");
-    assert_eq!(fact.content, "回答保持简短", "fact 内容未被 lesson 覆盖");
-    assert_eq!(fact.tags, vec!["偏好"], "fact 的 key tag 未被抹掉");
-    assert_eq!(
-        all.iter().filter(|m| m.kind == "lesson").count(),
-        1,
-        "lesson 独立成行，kind 正确因而可被经验教训段召回"
+    assert!(
+        msg.contains("已合并更新"),
+        "跨 kind 近重复应直接合并：{msg}"
     );
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1, "不留两条近义记忆");
+    assert_eq!(all[0].kind, "lesson", "kind 随最后写入的那条走");
+    assert_eq!(all[0].content, "lesson: 回答保持简短");
 }
 
 #[test]
-fn lesson_merge_still_merges_into_another_lesson() {
-    // 限定只挡异 kind：同类 lesson 之间该合的照合，否则每次反思都会堆重复行。
+fn merge_carries_kind_in_both_directions() {
+    // 反方向同样：fact 写入覆盖 lesson 行时，kind 要变成 fact。
+    // kind 不跟着走的话，这条行会作为「经验教训」被注入而内容是条事实。
+    let conn = mem_db();
+    let now = 1_000;
+    super::record_lesson_core(
+        &conn,
+        "回答要简短",
+        "consolidation",
+        "system",
+        Some(&onehot(0)),
+        now,
+        &store::StoreParams::default(),
+    );
+    let mut f = item("fact", "用户偏好简短回答");
+    f.tags = vec!["偏好".into()];
+    store::insert_item(&conn, &f, Some(&onehot(0)), now + 1).unwrap();
+    let all = store::load_all(&conn).unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].kind, "fact", "kind 不留在旧值 lesson 上");
+    assert_eq!(all[0].content, "用户偏好简短回答");
+}
+
+#[test]
+fn merge_still_merges_within_the_same_kind() {
+    // 常规路径不受影响：同类 lesson 之间照合，否则每次反思都会堆重复行。
     let conn = mem_db();
     let now = 1_000;
     store::insert_item(
@@ -700,30 +718,6 @@ fn lesson_merge_still_merges_into_another_lesson() {
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].content, "新版教训");
-}
-
-#[test]
-fn scoped_out_high_cosine_row_still_surfaces_as_hint() {
-    // 异 kind 且 cos ≥0.92 时必须降级为提示，不能静默跳过——
-    // 否则 lesson 落库后调用方无从判断「为何没合并」。
-    let conn = mem_db();
-    let now = 1_000;
-    let f = item("reflection", "同向量的既有条目");
-    store::insert_item(&conn, &f, Some(&onehot(0)), now).unwrap();
-    let msg = super::record_lesson_core(
-        &conn,
-        "新的教训",
-        "consolidation",
-        "system",
-        Some(&onehot(0)),
-        now + 1,
-        &store::StoreParams::default(),
-    );
-    assert!(
-        msg.contains("相似已有记忆"),
-        "高相似异 kind 应进提示：{msg}"
-    );
-    assert_eq!(store::load_all(&conn).unwrap().len(), 2);
 }
 
 //  参数化

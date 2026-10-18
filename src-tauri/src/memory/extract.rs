@@ -1274,7 +1274,8 @@ mod tests {
             Some(&onehot(0)),
             1_000,
         );
-        // lesson 同向量但不在抽取域 → 不算候选（关语义合并让两行共存）
+        // lesson 与探测向量同向（cos=1.0，相似度最高）但不在抽取域 → 仍不算候选。
+        // 用 tilted(0.8) 与已有 fact 行拉开到 dedup_merge 之下，两行才真正共存。
         let lesson = store::NewItem {
             kind: "lesson".to_string(),
             content: "住在上海的教训".to_string(),
@@ -1282,13 +1283,14 @@ mod tests {
             importance: 3,
             source: "user_stated".to_string(),
         };
-        let no_merge = store::StoreParams {
-            dedup_merge: 1.0,
-            ..store::StoreParams::default()
-        };
-        store::insert_item_with(&conn, &lesson, Some(&onehot(0)), 1_001, &no_merge).unwrap();
+        store::insert_item(&conn, &lesson, Some(&tilted(0.8)), 1_001).unwrap();
         let items = store::load_all(&conn).unwrap();
-        // cos=0.8 ≥ hint(0.75) → 命中 fact 候选（而非同向 lesson）
+        assert_eq!(
+            items.len(),
+            2,
+            "两行须真正共存，否则本用例测不到 kind 作用域"
+        );
+        // cos=0.8 ≥ hint(0.75) → 命中 fact 候选（而非更同向的 lesson）
         let r = plan_adjudication(&items, &[Some(tilted(0.8))], 0.75);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].as_ref().map(|m| m.id.as_str()), Some(id_hit.as_str()));
