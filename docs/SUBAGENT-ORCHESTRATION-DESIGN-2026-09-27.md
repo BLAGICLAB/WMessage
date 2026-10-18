@@ -96,7 +96,9 @@ spawn 的 `acceptance_criteria` **必填**，orchestrator 双写：子卡 note�
 spawn_subagent(objective, profile, acceptance_criteria, budget?, model_profile?, parent_task_id?)
   -> { subagent_id, task_id, status }          # status: queued|running；非阻塞立即返回
 
-check_subagent(subagent_id? | task_id?, wait_ms=0)   # wait_ms 上限 5000，幂等可轮询
+check_subagent(subagent_id? | task_id?, wait_ms=0)   # 幂等可轮询；wait_ms 上限已由
+                                                    # 5000 放宽到 30000（2026-10-18，
+                                                    # 等待策略见 SUBAGENT-CHECK-BACKOFF-DESIGN）
   -> { status, progress, result?, error? }     # status: queued|running|succeeded|failed|cancelled|budget_exceeded
 
 cancel_subagent(subagent_id)
