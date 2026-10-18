@@ -120,3 +120,5 @@ fixtures/*.jsonl.tmp
 .zcode/
 .logs/
 .worktrees/
+# MCode 会话运行时产物（截图/画布等，纯会话级生成，不入库）
+.mavis/
