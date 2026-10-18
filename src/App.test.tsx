@@ -98,6 +98,21 @@ describe("App", () => {
     expect(label.className).toContain("min-w-0");
   });
 
+  // 设置视图全屏接管（壳内自带返回与分类导航），所以拿不到主导航来比对——
+  // 只钉住它同样取自 navWidth：同一个壳、同一套字号，各自定宽就会出现
+  // 「一边刚好够、一边被截」的不一致
+  it("设置页左栏宽度同样取自 navWidth，分类项不换行", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "设置" }));
+    const aside = screen.getByRole("complementary", { name: "设置分类" });
+    expect(aside.style.width).toBe(`${NAV_W}px`);
+    const label = within(aside).getByText("文件整理");
+    expect(label.className).toContain("truncate");
+  });
+
   it("初始渲染：首页视图 + 库内任务上任务池", async () => {
     render(<App />);
     await waitFor(() => {

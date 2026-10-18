@@ -26,10 +26,11 @@ export function SessionRail({
     <aside
       id="chat-session-rail"
       aria-label="会话列表"
-      // 248px = 主导航从 208 收窄到 160（lib/navWidth）省下的 48px 原样转到这里，
-      // 不凭空涨宽度。会话标题普遍较长，这一栏窄一像素首行就少两个字。
-      // 窗口无最小宽度约束（tauri.conf.json），侧栏自身不缩：先压聊天主体
-      className="flex w-[248px] shrink-0 flex-col border-r border-[var(--edge)] pr-3"
+      // 224px：主导航（NAV_W）与本栏的宽度此消彼长——导航收窄省下的转给这里，
+      // 导航按「最宽一行装得下」加宽时再从这里扣回去，聊天主体的宽度不变。
+      // 会话标题普遍较长，这一栏窄一像素首行就少两个字。窗口无最小宽度约束
+      // （tauri.conf.json），侧栏自身不缩：先压聊天主体
+      className="flex w-[224px] shrink-0 flex-col border-r border-[var(--edge)] pr-3"
     >
       {/* 「新建对话」占满整行：折叠入口统一在聊天头部，侧栏内不再放第二个 */}
       <button

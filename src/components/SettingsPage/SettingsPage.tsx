@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { NAV_W } from "../../lib/navWidth";
 import { getBotConfig } from "../../lib/botConfig";
 import { DEFAULT_ARCHIVE_DAYS, MAX_ARCHIVE_DAYS } from "../../lib/archiveRule";
 import {
@@ -1810,8 +1811,14 @@ export function SettingsPage({
     SECTIONS.find((s) => s.key === activeSection) ?? SECTIONS[0];
   return (
     <div className="flex h-full min-h-0 bg-[var(--bg)]">
-      {/* 左侧分类导航（设置壳）：返回 + 分类项（选中 nm-inset 语义） */}
-      <aside className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--edge)] p-3">
+      {/* 左侧分类导航（设置壳）：返回 + 分类项（选中 nm-inset 语义）。
+          与主导航共用 NAV_W：同一个壳、同一套字号，取宽的那档给它只会
+          多余不会截断；分类项本身不带快捷键提示条 */}
+      <aside
+        aria-label="设置分类"
+        style={{ width: NAV_W }}
+        className="flex shrink-0 flex-col gap-1 overflow-y-auto border-r border-[var(--edge)] p-3"
+      >
         <button
           type="button"
           className="nm-btn mb-2 flex h-8 items-center gap-2 px-2.5 text-sm text-[var(--t3)]"
@@ -1820,7 +1827,7 @@ export function SettingsPage({
           title="返回主界面"
         >
           <ArrowLeft size={15} aria-hidden />
-          返回
+          <span className="min-w-0 truncate">返回</span>
         </button>
         {SECTIONS.map((s) => (
           <button
@@ -1835,7 +1842,10 @@ export function SettingsPage({
             }`}
           >
             <s.icon size={15} aria-hidden />
-            <span className="flex-1 text-left">{s.label}</span>
+            {/* truncate + min-w-0：特大系统字号下省略而不是换行 */}
+            <span className="min-w-0 flex-1 truncate text-left">
+              {s.label}
+            </span>
           </button>
         ))}
       </aside>
