@@ -37,7 +37,7 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
    要求文件存在、`file_nonempty:output.xlsx` 要求存在且非空——这类由服务端核验，
    子 agent 自己说"已产出"不作数。其余需要看内容的标准照常写自然语言。
 3. 调用 spawn_subagent(...) —— 非阻塞，立即返回；马上告诉用户"已派发"，不等待。
-4. 继续响应用户；用 check_subagent 轮询（waitMs 0 或短等待，不要高频空转）。
+4. 继续响应用户；等子任务结果时用 check_subagent，waitMs 一次给足（上限 30000）——服务端内部递进等待、子任务转入终态立刻返回，不要自己反复小值轮询（每查一次你都要重新想一轮）。
 5. 完成后取结果，只向用户汇报：结论、产物路径、未完成项、风险。
 6. 复杂任务在 executor 收尾后强制加一次 verifier 子 agent——不接受"我自己看看就行"。
 
@@ -183,6 +183,16 @@ mod subagent_prompt_tests {
         // 设计 §8.6-3：主 agent 提示不承诺 spawn 给子 agent
         assert!(!SUBAGENT_BASE.contains("spawn_subagent("));
         assert!(SUBAGENT_BASE.contains("没有 spawn_subagent 工具"));
+    }
+
+    #[test]
+    fn main_agent_addendum_tells_model_to_give_wait_budget_in_one_go() {
+        // 等待策略口径（bot_orchestrator 的 waitMs 上限已放宽到 30000）：
+        // 提示词若还写「短等待 / 不要高频空转」，模型会继续按旧习惯反复小值
+        // 轮询，每次轮询都要多走一个 LLM 轮次——省等待反而更费。
+        assert!(MAIN_AGENT_ADDENDUM.contains("waitMs 一次给足"));
+        assert!(MAIN_AGENT_ADDENDUM.contains("30000"));
+        assert!(!MAIN_AGENT_ADDENDUM.contains("不要高频空转"));
     }
 
     #[test]

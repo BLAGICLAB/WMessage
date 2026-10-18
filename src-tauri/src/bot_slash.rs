@@ -96,6 +96,15 @@ impl StopToken {
     pub fn stop(&self) {
         self.0.store(true, std::sync::atomic::Ordering::SeqCst);
     }
+
+    /// 单测造一个可置位的停止令牌：唯一的生产构造路径是 `StopGuard::token()`，
+    /// 而它要 AppHandle——编排层的等待单测没有 handle（只测等待循环本身）。
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )))
+    }
 }
 
 impl Drop for StopGuard {

@@ -23,10 +23,18 @@ use tauri::AppHandle;
 pub use crate::db::{
     DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS, DEFAULT_MAX_WALL_SECONDS, MAX_TURNS_HARD_CAP,
 };
-/// check_subagent 的 wait_ms 上限（设计 §5）。
-pub const CHECK_WAIT_MS_CAP: u64 = 5_000;
-/// wait 轮询步长。
-const CHECK_POLL_INTERVAL_MS: u64 = 150;
+/// check_subagent 的 wait_ms 上限（设计 §5；放宽理由见
+/// docs/SUBAGENT-CHECK-BACKOFF-DESIGN-2026-10-18.md）。
+///
+/// 上限从 5s 抬到 30s：每返回一次 check_subagent，主 agent 就要多走一整个
+/// LLM 轮次（重发请求 + 重算上下文 + 把轮询结果再塞进历史），所以「早知道」
+/// 的边际收益远小于「少醒几次」。5s 上限逼着模型反复短轮询，一个 3 分钟的
+/// 子任务要付约 36 轮；一次给足预算让它整个睡到终态，轮次降到 1~2。
+pub const CHECK_WAIT_MS_CAP: u64 = 30_000;
+/// wait 兜底轮询步长阶梯（毫秒）。首档 150ms 保「秒退的子任务立刻可见」，
+/// 之后逐步拉长：终态另有事件唤醒（见 `finish_notify`），这条阶梯只是漏通知
+/// 时的安全网，末档后恒定封顶——兜底延迟要有上界，否则退化成看不见的卡住。
+const CHECK_POLL_LADDER_MS: [u64; 6] = [150, 300, 600, 1200, 2400, 3000];
 
 /// 三段式派发阶段（设计 §8.5）——主 agent 在 recon/executor/verifier 三段闭环中
 /// 选定当前阶段的角色语义。**不破坏 SubagentProfile 枚举**——profile 仍是工具白名单
@@ -459,24 +467,127 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     Ok(ack)
 }
 
-/// check 异步包装：wait_ms=0 单次读；>0 轮询至终态或超时（幂等可轮询，设计 §5）。
-pub async fn check_subagent(app: &AppHandle, key: &str, wait_ms: u64) -> CommandResult<CheckState> {
-    let wait = wait_ms.min(CHECK_WAIT_MS_CAP);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait);
-    loop {
-        let app2 = app.clone();
-        let key = key.to_string();
-        let state = tauri::async_runtime::spawn_blocking(move || -> CommandResult<CheckState> {
-            let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
-            check_subagent_locked(&conn, &key)
-        })
-        .await
-        .map_err(|e| CommandError::from(format!("subagent check 线程 join 失败：{e}")))??;
-        if state.status.is_terminal() || std::time::Instant::now() >= deadline {
-            return Ok(state);
+/// 等待退出原因（审计事件 `subagent_check_wait` 的 exit 字段）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitExit {
+    /// 等到了终态
+    Terminal,
+    /// 预算耗尽仍未终态（wait_ms 到点）
+    Timeout,
+    /// 用户 /stop
+    Stopped,
+}
+
+impl WaitExit {
+    fn as_str(self) -> &'static str {
+        match self {
+            WaitExit::Terminal => "terminal",
+            WaitExit::Timeout => "timeout",
+            WaitExit::Stopped => "stopped",
         }
-        tokio::time::sleep(std::time::Duration::from_millis(CHECK_POLL_INTERVAL_MS)).await;
     }
+}
+
+/// 终态唤醒信号：任何子 agent 转入终态都经 `emit_subagent_finished` 这一个出口，
+/// 在那里 notify_waiters 即可覆盖排队期取消 / 启动中止 / ghost 路径，不漏。
+/// 用进程内 `Notify` 而非 Tauri 事件——等待方就在同一进程里，没必要过事件总线。
+fn finish_notify() -> &'static tokio::sync::Notify {
+    static N: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    N.get_or_init(tokio::sync::Notify::new)
+}
+
+/// 兜底轮询步长：阶梯内递增，出阶梯后恒定封顶。
+fn next_poll_step(step: usize) -> u64 {
+    CHECK_POLL_LADDER_MS[step.min(CHECK_POLL_LADDER_MS.len() - 1)]
+}
+
+/// 等待核心：对「读一次状态」的取数函数泛型，因此可在没有 AppHandle 的单测里
+/// 直接驱动（生产传入 spawn_blocking + open_db 的闭包）。
+///
+/// 唤醒策略 = 终态事件 **或** 兜底步长，先到先醒。正常路径下子 agent 一转终态
+/// 就立刻返回，阶梯走不完；阶梯只兜「通知漏了」的情况。
+async fn wait_until_terminal<F, Fut>(
+    read: F,
+    wait_ms: u64,
+    stop: Option<&crate::bot_slash::StopToken>,
+) -> Result<(CheckState, WaitExit), CommandError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = CommandResult<CheckState>>,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    let mut step = 0usize;
+    loop {
+        // 先把唤醒监听挂上、再读状态：顺序反了会出现「读完状态到开始等待之间
+        // 恰好转入终态」的窗口，而 notify_waiters 不留 permit，那次通知就丢了
+        //（丢一次不致命，兜底阶梯接得住，只是白等一个步长）。
+        let notified = finish_notify().notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        let state = read().await?;
+        if state.status.is_terminal() {
+            return Ok((state, WaitExit::Terminal));
+        }
+        // 停止先于超时判定：用户按了 /stop 就该按「被叫停」记账，
+        // 而不是记成「等够了没等到」。
+        if stop.is_some_and(|t| t.stopped()) {
+            return Ok((state, WaitExit::Stopped));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok((state, WaitExit::Timeout));
+        }
+        let step_ms = next_poll_step(step);
+        step += 1;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(step_ms), notified).await;
+    }
+}
+
+/// check 异步包装：wait_ms=0 单次读；>0 等待至终态、预算耗尽或用户停止
+/// （幂等可轮询，设计 §5；等待策略见 docs/SUBAGENT-CHECK-BACKOFF-DESIGN-2026-10-18.md）。
+pub async fn check_subagent(
+    app: &AppHandle,
+    key: &str,
+    wait_ms: u64,
+    stop: Option<&crate::bot_slash::StopToken>,
+) -> CommandResult<CheckState> {
+    let wait = wait_ms.min(CHECK_WAIT_MS_CAP);
+    let started = std::time::Instant::now();
+    let app2 = app.clone();
+    let key2 = key.to_string();
+    let (state, exit) = wait_until_terminal(
+        || {
+            let app = app2.clone();
+            let key = key2.clone();
+            async move {
+                tauri::async_runtime::spawn_blocking(move || -> CommandResult<CheckState> {
+                    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
+                    check_subagent_locked(&conn, &key)
+                })
+                .await
+                .map_err(|e| CommandError::from(format!("subagent check 线程 join 失败：{e}")))?
+            }
+        },
+        wait,
+        stop,
+    )
+    .await?;
+    // 等待口径留痕：wait_ms=0 的单次读不记（否则审计被即时查询刷屏）。
+    // 有等待才记——本次优化唯一的验证手段，「轮次少了」不能靠感觉，
+    // 得能看实际等待时长与退出原因的分布。
+    if wait > 0 {
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            "subagent_check_wait",
+            &[
+                ("wait_ms", wait.to_string()),
+                ("waited_ms", started.elapsed().as_millis().to_string()),
+                ("exit", exit.as_str().to_string()),
+            ],
+        );
+    }
+    Ok(state)
 }
 
 /// cancel 异步包装：置 cancelled + 审计 + 远程停 runner。终态事件由 runner
@@ -2245,6 +2356,9 @@ fn emit_subagent_finished(
             "summary": summary,
         }),
     );
+    // 叫醒 check 等待方：本函数是所有转终态路径的唯一出口，通知挂在这里
+    // 就不会漏（含排队期取消 / 启动中止 / ghost 路径）。
+    finish_notify().notify_waiters();
 }
 
 /// 行刚建好（queued）就发一条：子 agent 列表只靠事件驱动重拉，没有这条，
@@ -2377,8 +2491,12 @@ pub async fn tool_spawn_subagent(
     }
 }
 
-/// check_subagent 工具（幂等可轮询；waitMs 上限 5000）。
-pub async fn tool_check_subagent(app: &AppHandle, args: &str) -> crate::bot::registry::ToolResult {
+/// check_subagent 工具（幂等可轮询；waitMs 上限 30000，等待期可被 /stop 打断）。
+pub async fn tool_check_subagent(
+    app: &AppHandle,
+    args: &str,
+    stop: Option<crate::bot_slash::StopToken>,
+) -> crate::bot::registry::ToolResult {
     use crate::bot::registry::ToolResult;
     let v = parse_tool_args(args);
     let key = v["subagentId"]
@@ -2389,7 +2507,7 @@ pub async fn tool_check_subagent(app: &AppHandle, args: &str) -> crate::bot::reg
         return ToolResult::error("check 失败：subagentId 与 taskId 至少提供一个", Vec::new());
     };
     let wait_ms = v["waitMs"].as_u64().unwrap_or(0).min(CHECK_WAIT_MS_CAP);
-    match check_subagent(app, &key, wait_ms).await {
+    match check_subagent(app, &key, wait_ms, stop.as_ref()).await {
         Ok(state) => ToolResult::ok(
             serde_json::to_string(&state).unwrap_or_else(|_| state.status.as_str().to_string()),
             Vec::new(),
@@ -2699,6 +2817,158 @@ mod orchestrator_tests {
         };
         crate::db::upsert_tasks(conn, std::slice::from_ref(&card)).unwrap();
         "parent-1".into()
+    }
+
+    // check 等待策略：阶梯递进 + 终态事件唤醒 + /stop 打断
+
+    fn fake_state(status: SubagentStatus) -> CheckState {
+        CheckState {
+            subagent_id: "sa_wait_test".into(),
+            task_id: None,
+            session_id: None,
+            status,
+            progress: serde_json::json!({ "subtasksDone": 0, "subtasksTotal": 1 }),
+            result: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn poll_step_ladder_is_monotonic_and_capped() {
+        // 首档小：秒退的子任务要立刻可见；末档后恒定：兜底延迟必须有上界，
+        // 否则漏通知时退化成看不见的卡住。
+        let steps: Vec<u64> = (0..8).map(next_poll_step).collect();
+        assert_eq!(steps[0], 150, "首档保持 150ms");
+        assert_eq!(steps[5], 3_000, "阶梯末档 3000ms");
+        assert_eq!(steps[7], 3_000, "出阶梯后封顶不增长");
+        for w in steps.windows(2) {
+            assert!(w[0] <= w[1], "步长不递减：{steps:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_returns_at_once_when_already_terminal() {
+        let (state, exit) = wait_until_terminal(
+            || async { Ok::<_, CommandError>(fake_state(SubagentStatus::Succeeded)) },
+            CHECK_WAIT_MS_CAP,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(exit, WaitExit::Terminal);
+        assert_eq!(state.status, SubagentStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn wait_wakes_on_finish_event_instead_of_burning_budget() {
+        // 终态事件必须立刻唤醒等待方：预算给满 30s，若退化成纯兜底轮询，
+        // 这个用例会白等一个封顶步长（3s）才返回。
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done2 = done.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            done2.store(true, std::sync::atomic::Ordering::SeqCst);
+            finish_notify().notify_waiters();
+        });
+        let started = std::time::Instant::now();
+        let (state, exit) = wait_until_terminal(
+            || async {
+                let terminal = done.load(std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, CommandError>(fake_state(if terminal {
+                    SubagentStatus::Succeeded
+                } else {
+                    SubagentStatus::Running
+                }))
+            },
+            CHECK_WAIT_MS_CAP,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(exit, WaitExit::Terminal);
+        assert_eq!(state.status, SubagentStatus::Succeeded);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "没被终态事件唤醒，等了 {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_returns_early_when_user_stops() {
+        // 预算上限已到 30s，而 /stop 只在轮次边界检查——等待循环不自己查令牌，
+        // 停止键就会锁死整个等待时长。
+        let stop = crate::bot_slash::StopToken::new_for_test();
+        stop.stop();
+        let started = std::time::Instant::now();
+        let (_, exit) = wait_until_terminal(
+            || async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) },
+            CHECK_WAIT_MS_CAP,
+            Some(&stop),
+        )
+        .await
+        .unwrap();
+        assert_eq!(exit, WaitExit::Stopped);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "/stop 没能打断等待，等了 {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_gives_up_at_budget_and_returns_last_state() {
+        let started = std::time::Instant::now();
+        let (state, exit) = wait_until_terminal(
+            || async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) },
+            200,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(exit, WaitExit::Timeout);
+        assert_eq!(
+            state.status,
+            SubagentStatus::Running,
+            "超时也要带回当前状态"
+        );
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "预算没走满就返回了：{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn long_budget_does_not_reopen_db_on_every_step() {
+        // 阶梯的意义就在这：每次读都要开一次库跑全量 DDL。固定 150ms 步长下
+        // 2s 预算要读 14 次，递进后（0/150/450/1050/2250）只读 5 次。
+        //
+        // 上界留到 7 而不是 5：finish_notify 是进程级信号，别的子 agent 收尾
+        // 会顺手唤醒本等待方，多读一次库——那是设计上的伪唤醒（醒来重读、
+        // 不是终态就继续等），不是 bug，故不该让本测试因并行而抖动。
+        let reads = std::cell::Cell::new(0usize);
+        let started = std::time::Instant::now();
+        let (_, exit) = wait_until_terminal(
+            || {
+                reads.set(reads.get() + 1);
+                async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) }
+            },
+            2_000,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(exit, WaitExit::Timeout);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(2_000),
+            "预算没走满就返回了"
+        );
+        assert!(
+            reads.get() <= 7,
+            "2s 预算读了 {} 次，阶梯没生效",
+            reads.get()
+        );
     }
 
     // 并发闸（FIFO/上限/释放）

@@ -371,9 +371,9 @@ pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name
     "modelProfile":{"type":"string","description":"指定模型名（可选；未指定/无效回退当前激活模型）"},
     "parentTaskId":{"type":"string","description":"主卡 id（可选；编排计划卡，缺卡报错）"}
   },"required":["objective","acceptanceCriteria"]}}}"##;
-pub const SCHEMA_CHECK_SUBAGENT: &str = r##"{"type":"function","function":{"name":"check_subagent","description":"查询子 agent 状态（幂等可轮询）：status=queued|running|succeeded|failed|cancelled|budget_exceeded + 进度 + 收尾结果（summary/artifacts/blockers）。waitMs>0 时短等待至终态或超时（上限 5000，不要高频空转）","parameters":{"type":"object","properties":{
+pub const SCHEMA_CHECK_SUBAGENT: &str = r##"{"type":"function","function":{"name":"check_subagent","description":"查询子 agent 状态（幂等可轮询）：status=queued|running|succeeded|failed|cancelled|budget_exceeded + 进度 + 收尾结果（summary/artifacts/blockers）。waitMs 是可放心给大的等待预算（上限 30000）：服务端内部递进等待，子任务一转入终态立刻返回，不必自己反复短轮询","parameters":{"type":"object","properties":{
     "subagentId":{"type":"string","description":"子 agent id（spawn 返回值）"},
-    "waitMs":{"type":"integer","description":"短等待毫秒数（可选，0=立即返回，上限 5000）"}
+    "waitMs":{"type":"integer","description":"等待预算毫秒数（可选，0=立即返回，上限 30000）。一次给足比反复小值轮询省轮次：每查一次你都要重新想一轮"}
   },"required":[]}}}"##;
 pub const SCHEMA_CANCEL_SUBAGENT: &str = r##"{"type":"function","function":{"name":"cancel_subagent","description":"取消子 agent：置 cancelled 并停止其执行；已终态则 no-op。用户说「停掉/不用继续了」且能对应到在途子 agent 时用","parameters":{"type":"object","properties":{
     "subagentId":{"type":"string","description":"子 agent id（spawn 返回值）"},
@@ -606,7 +606,10 @@ fn call_spawn_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a
 fn call_check_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let app = ctx.app.clone();
     let args = args.to_string();
-    Box::pin(async move { crate::bot_orchestrator::tool_check_subagent(&app, &args).await })
+    // 等待期要能被 /stop 打断（waitMs 上限已到 30s，不接就是锁死停止键）：
+    // StopGuard 借用活不过闭包，取 owned 令牌下传。
+    let stop = ctx.stop.map(|g| g.token());
+    Box::pin(async move { crate::bot_orchestrator::tool_check_subagent(&app, &args, stop).await })
 }
 
 fn call_cancel_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
