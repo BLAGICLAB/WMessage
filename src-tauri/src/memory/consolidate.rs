@@ -499,10 +499,12 @@ async fn write_lesson(app: &AppHandle, lesson: Option<&str>) {
             return;
         }
     };
-    // 无向量的 lesson 永不可语义召回（检索打分 cosine 项记 0），留痕不静默
+    // 降级模式（ONNX 模型缺失）：写入照常，只是条目不可语义召回。这不是写失败，
+    // 不能复用 _failed——否则一次成功写会在日志里留下互斥的两条事件，
+    // 让按 lesson_write_failed 做的告警每轮都误报。
     if emb.is_none() {
-        crate::audit_event!(app, crate::audit::AuditLevel::Warn,
-            "memory.lesson_write_failed", "error" => "反思 lesson 嵌入失败，条目将不可语义召回");
+        crate::audit_event!(app, crate::audit::AuditLevel::Info,
+            "memory.lesson_no_embedding", "note" => "反思 lesson 嵌入失败，条目将不可语义召回");
     }
     let tuning = crate::bot::read_memory_tuning(app);
     let r = crate::db::lock::with_write_conn(app, move |conn| {
