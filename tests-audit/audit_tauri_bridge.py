@@ -450,17 +450,17 @@ const buggy = useCallback(async (a: string, b: string) => {
 
 
 def test_wrapper_call_names_extracts_literals():
-    """`runCmd("literal", ...)` 字面量首参全部提取"""
+    """`runCmd("literal", ...)` 字面量首参全部提取（合成输入，命令名取中性名）"""
     src = '''
-await runCmd("evolution_promote_proposal", { id: 1 });
-await runCmd("evolution_reject_proposal", { id: 2 });
+await runCmd("alpha_cmd", { id: 1 });
+await runCmd("beta_cmd", { id: 2 });
 // 非字面量跳过：
 const name = "dynamic";
 runCmd(name, {});
 '''
     assert sorted(wrapper_call_names(src, {"runCmd"})) == [
-        "evolution_promote_proposal",
-        "evolution_reject_proposal",
+        "alpha_cmd",
+        "beta_cmd",
     ]
 
 
@@ -469,11 +469,15 @@ def test_wrapper_call_names_no_match():
     assert wrapper_call_names("runCmd('bar')", set()) == []
 
 
-def test_frontend_invokes_picks_up_runCmd_calls():
-    """端到端——EvolutionPanel 实际形态必须被 frontend_invokes 抓到"""
+def test_frontend_invokes_picks_up_real_commands():
+    """端到端——frontend_invokes 必须抓全 src/ 里的真实命令并映射到文件。
+
+    当前前端没有 `invoke(cmd, ...)` 包装函数，直接调 invoke 是唯一形态；
+    包装函数探测是为将来出现的形态留的通用网，眼下无调用方也保留。
+    """
     invokes = frontend_invokes()
-    assert "evolution_promote_proposal" in invokes
-    assert "evolution_reject_proposal" in invokes
-    assert "evolution_rollback_change" in invokes
-    assert "evolution_delete_proposal" in invokes
-    assert "EvolutionPanel" in invokes["evolution_promote_proposal"]
+    assert len(invokes) > 100, "前端命令面被意外清空"
+    assert invokes["apps_list_active"] == "src/lib/apps.ts"
+    assert invokes["mem_delete"] == "src/components/SettingsPage/MemoryPanel.tsx"
+    for name, path in invokes.items():
+        assert path.endswith((".ts", ".tsx")), f"{name} 映射到非前端文件 {path}"

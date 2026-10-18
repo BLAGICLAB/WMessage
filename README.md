@@ -64,7 +64,7 @@ src-tauri/
   src/bot_py.rs + src/py/     # 本机 Python 执行门面（runtime/io/document/env）
   src/bot_skills/ src/bot_web.rs src/migration.rs src/profile.rs
   src/api*.rs                 # 本地 HTTP API（tiny_http + SSE + 鉴权）
-  src/evolution/ src/memory/ src/ocr.rs src/audit.rs
+  src/memory/ src/ocr.rs src/audit.rs
   capabilities/default.json   # main 窗口权限
 ```
 

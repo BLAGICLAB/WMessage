@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1071)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1057)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -151,15 +151,15 @@ src-tauri/src/
 │                        只存 parent_task_id 指向派发主卡，新行 task_id 恒 NULL）+ acceptance
 │                        落行上 acceptance_json + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
 │                        各自独立；LLM 工具暴露/runner（SUBA-2）与预算强制/并发排队（SUBA-3）
-│                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置 + evolution
+│                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置
 │                        采样接线（run_task_in_chat 闭包喂 maybe_record_trace）
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
-├── notifications.rs (500) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
-│                        memory_proposal / evolution_proposal / artifact_bind 三类）+
+├── notifications.rs (498) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
+│                        memory_proposal / artifact_bind / task_question 三类）+
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
-│                        notifications-changed 广播；双向同步（mem approve/reject、evo 面板、
+│                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
 ├── bot_desktop.rs (323) 电脑辅助 Tier1（N4，只「看」与「打开」）：reveal_path（opener 定位，
 │                        白名单闸）/ open_url（公网闸 ensure_public_http_url）/
@@ -544,34 +544,6 @@ flowchart TD
 ### `eval/`
 - `eval/metrics.rs`
 - `eval/mod.rs`
-
-### `evolution/`
-- `evolution/activation.rs`
-- `evolution/apply.rs`
-- `evolution/candidate/derive.rs`
-- `evolution/candidate/entry.rs`
-- `evolution/candidate/mapping.rs`
-- `evolution/candidate/mod.rs`
-- `evolution/candidate/ttl.rs`
-- `evolution/change/derive.rs`
-- `evolution/change/mod.rs`
-- `evolution/change/record.rs`
-- `evolution/change/status.rs`
-- `evolution/derive.rs`
-- `evolution/emit.rs`
-- `evolution/mod.rs`
-- `evolution/observe/metrics.rs`
-- `evolution/observe/mod.rs`
-- `evolution/observe/shadow.rs`
-- `evolution/policy.rs`
-- `evolution/strategy.rs`
-- `evolution/panel/commands.rs`
-- `evolution/panel/evidence.rs`
-- `evolution/panel/mod.rs`
-- `evolution/proposal.rs`
-- `evolution/sandbox/kill_switch.rs`
-- `evolution/sandbox/mod.rs`
-- `evolution/trace.rs`
 
 ### `memory/`
 - `memory/consolidate.rs`

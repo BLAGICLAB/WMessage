@@ -24,7 +24,6 @@ python3 -m pytest \
     tests-audit/audit_module_map.py \
     tests-audit/audit_tauri_bridge.py \
     -q
-python3 tests-audit/audit_evolution_layering.py
 python3 tests-audit/audit_no_eval.py
 
 TOTAL_END=$(date +%s)
