@@ -606,10 +606,15 @@ fn call_spawn_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a
 fn call_check_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let app = ctx.app.clone();
     let args = args.to_string();
-    // 等待期要能被 /stop 打断（waitMs 上限已到 30s，不接就是锁死停止键）：
+    // 等待期要能被 /stop 打断（waitMs 上限已到 10 分钟，不接就是锁死停止键）：
     // StopGuard 借用活不过闭包，取 owned 令牌下传。
     let stop = ctx.stop.map(|g| g.token());
-    Box::pin(async move { crate::bot_orchestrator::tool_check_subagent(&app, &args, stop).await })
+    // 会话 id 跟着走：问到终态要记进「父会话已吸收」去重表，否则 digest 与
+    // 自动汇报轮会把同一份结果再念一遍。
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_orchestrator::tool_check_subagent(&app, &args, stop, session_id).await
+    })
 }
 
 fn call_cancel_subagent<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {

@@ -554,6 +554,7 @@ pub async fn check_subagent(
     key: &str,
     wait_ms: u64,
     stop: Option<&crate::bot_slash::StopToken>,
+    session_id: Option<&str>,
 ) -> CommandResult<CheckState> {
     let wait = wait_ms.min(CHECK_WAIT_MS_CAP);
     let started = std::time::Instant::now();
@@ -576,6 +577,11 @@ pub async fn check_subagent(
         stop,
     )
     .await?;
+    // 问到终态 = 父上下文已拿到这份结果：记进去重表，digest 不再重念，
+    // 自动汇报轮也不会因为「没人提过」而重复讲同一件事。
+    if state.status.is_terminal() {
+        mark_digested(session_id, &state.subagent_id);
+    }
     // 等待口径留痕：wait_ms=0 的单次读不记（否则审计被即时查询刷屏）。
     // 有等待才记——本次优化唯一的验证手段，「轮次少了」不能靠感觉，
     // 得能看实际等待时长与退出原因的分布。
@@ -725,6 +731,10 @@ pub(crate) fn extract_last_json_object(text: &str) -> Option<String> {
 /// 其他循环错误 → failed；正文解析成功 → 模型自报 succeeded/failed（自报
 /// cancelled/budget_exceeded 视为 failed + error 说明）；解析失败 →
 /// failed + result_json_unparseable + 原文存 summary（部分结果不丢弃）。
+///
+/// 这里只看得到子 agent 自己说的话，判不了产物；机器验收在调用方之后才跑，
+/// 它的结论由 `reconcile_machine_override` 在落库前回头修正终态——两步分开
+/// 是为了让「模型说了什么」与「服务端验到了什么」各自独立可测。
 pub(crate) fn classify_outcome(
     run_err: Option<&str>,
     wall_exceeded: bool,
@@ -796,7 +806,7 @@ pub(crate) fn classify_outcome(
         }
         None => (
             SubagentStatus::Failed,
-            Some("result_json_unparseable".into()),
+            Some(UNPARSEABLE_MARKER.into()),
             Some(serde_json::json!({
                 "summary": crate::bot::truncate_for_log(text, 800),
                 "note": "收尾 JSON 解析失败，原文截断存此防丢（设计 §7）"
@@ -1123,6 +1133,25 @@ pub(crate) async fn subagent_digest_block(
     Some(text)
 }
 
+/// 标记「父会话已吸收某子 agent 的结果」。
+///
+/// 父 agent 直接用 `check_subagent` 问到终态时同样算吸收：结果已经在父上下文
+/// 里，digest 再念一遍只是同一结论塞两遍；不记的话，自动汇报轮还会以为
+/// 「还没人说过」而把同一件事再讲一次。
+pub(crate) fn mark_digested(session_id: Option<&str>, subagent_id: &str) {
+    let Some(sid) = session_id else { return };
+    lock_digested()
+        .entry(sid.to_string())
+        .or_default()
+        .insert(subagent_id.to_string());
+}
+
+fn is_digested(session_id: &str, subagent_id: &str) -> bool {
+    lock_digested()
+        .get(session_id)
+        .is_some_and(|s| s.contains(subagent_id))
+}
+
 /// 每次会话扫多少个子 agent 行（最新在前的 LIMIT）。
 ///
 /// 与 `DIGEST_MAX_ITEMS`（一次渲染几条）不同：前者是「看多新」，后者是
@@ -1330,6 +1359,45 @@ pub(crate) fn apply_machine_verdicts(
     ));
     (result, t)
 }
+
+/// 机器验收推翻「收尾 JSON 解析失败」造成的假失败（纯函数，单测锚点）。
+///
+/// 起因：终态在 `classify_outcome` 里只凭子 agent 最后一条消息的收尾 JSON 判，
+/// 正文通篇散文就落进 `result_json_unparseable` → failed。可服务端手里明明有
+/// 更硬的证据——产物落盘了、机器可判定标准逐条验过——却排在终态之后算，
+/// 没有任何一步回头修正。于是「产物齐、验收全过、状态失败」能同时成立。
+///
+/// 只推翻 `result_json_unparseable` 一种：模型自报 failed（`model_reported_*`）
+/// 说的可能是服务端验不了的自由文本条目，机器全过不等于它同意。
+/// 也要求至少有一条机器可判定结论——一条都没有时服务端零证据，推翻就是放行。
+/// 不带前缀的自由文本条目本就没有服务端结论，按读者视角处理，原始正文仍
+/// 完整留在 `result_json.summary` 里。
+///
+/// 返回 (终态, error, 是否被推翻)：error 保留解析失败标记并补上推翻理由，
+/// 让「判成功」这件事在行上与审计里都留得下痕迹，而不是被悄悄抹平。
+pub(crate) fn reconcile_machine_override(
+    status: SubagentStatus,
+    error: Option<String>,
+    verdicts: &[MachineVerdict],
+) -> (SubagentStatus, Option<String>, bool) {
+    let parse_failed =
+        matches!(status, SubagentStatus::Failed) && error.as_deref() == Some(UNPARSEABLE_MARKER);
+    if !parse_failed || verdicts.is_empty() || !verdicts.iter().all(|v| v.met) {
+        return (status, error, false);
+    }
+    (
+        SubagentStatus::Succeeded,
+        Some(format!(
+            "{UNPARSEABLE_MARKER}:机器验收 {} 项全通过，按产物判成功",
+            verdicts.len()
+        )),
+        true,
+    )
+}
+
+/// 收尾 JSON 解析失败的 error 标记：判定与推翻两侧共用同一个字面量，
+/// 改名时不会只改一处导致推翻静默失效。
+const UNPARSEABLE_MARKER: &str = "result_json_unparseable";
 
 /// 产物目录（设计 §6 隔离）：gen_dir/subagents/{subagent_id}/。
 pub(crate) fn artifact_dir_of(gen_root: &std::path::Path, subagent_id: &str) -> std::path::PathBuf {
@@ -2054,6 +2122,27 @@ async fn run_subagent(
     // 收尾 JSON 与最终正文都带上机器结论——正文这行是模型和用户唯一同时
     // 看得到的地方，不能只躺在 result_json 里等人去查
     let (result, final_text) = apply_machine_verdicts(result, final_text, &machine_verdicts);
+    // 机器验收是对「模型自报」的独立旁证，判定顺序不能让它落在终态之后：
+    // 不在这里回头修正，「机器验收通过」与「行状态失败」就会永远同时成立。
+    let (status, error, recovered_by_machine) =
+        reconcile_machine_override(status, error, &machine_verdicts);
+    let final_text = if recovered_by_machine {
+        format!(
+            "{final_text}\n\n✅ 服务端机器验收 {} 项全部通过——子 agent 未按 schema 写收尾 JSON，按产物判成功",
+            machine_verdicts.len()
+        )
+    } else {
+        final_text
+    };
+    if recovered_by_machine {
+        crate::audit_event!(
+            &app,
+            crate::audit::AuditLevel::Warn,
+            "subagent.parse_failure_recovered",
+            "subagent_id" => row.id.clone(),
+            "criteria" => machine_verdicts.len().to_string(),
+        );
+    }
     let wrapper_for_db = wrapper.clone();
     let row_for_db = row.clone();
     let session_id_for_db = session_id.clone();
@@ -2234,6 +2323,57 @@ async fn run_subagent(
         effective_status,
         summary.as_deref().unwrap_or_default(),
     );
+    spawn_parent_report(&app, &row);
+}
+
+/// 汇报轮等空档的上限：与 `check_subagent` 的等待预算同档。主会话那一轮跑了
+/// 十分钟还没结束，用户早该知道子任务结果了，再等更久没有意义。
+const REPORT_WAIT_MS: u64 = CHECK_WAIT_MS_CAP;
+/// 汇报轮轮询主会话是否空闲的间隔。
+const REPORT_RETRY_MS: u64 = 2000;
+
+/// 子 agent 收尾后让主 agent 主动向用户转述（fire-and-forget）。
+///
+/// 为什么要这条：主 agent 原本只在「下一轮组装消息时注入 digest」这一个时机
+/// 看到子任务结果。可父会话那一轮往往已经结束了——实测里主 agent 用 4 次 30s
+/// 等待都没等到，把「仍在调研中」当成整轮答复收尾，子 agent 49 秒后才跑完，
+/// 此后用户没再说话，这个结果就永远躺在库里没人提。
+///
+/// 门控是「主会话空闲」而不是「子 agent 一收尾」：主会话还在跑的时候，它自己
+/// 会再 check 一次拿到终态并当轮转述（那条路径已记进去重表），这时再起一轮
+/// 就是同一件事说两遍。
+fn spawn_parent_report(app: &AppHandle, row: &SubagentRow) {
+    let Some(parent) = row.parent_session_id.clone() else {
+        return;
+    };
+    // 用户自己取消的：用户刚点过停止，不需要模型再解释一遍
+    if row.status == SubagentStatus::Cancelled {
+        return;
+    }
+    let app = app.clone();
+    let sub_id = row.id.clone();
+    tauri::async_runtime::spawn(async move {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(REPORT_WAIT_MS);
+        loop {
+            if is_digested(&parent, &sub_id) {
+                return;
+            }
+            match crate::bot_chat::report_subagent_result(&app, &parent).await {
+                crate::bot_chat::ReportOutcome::Ran | crate::bot_chat::ReportOutcome::Failed => {
+                    return
+                }
+                crate::bot_chat::ReportOutcome::Busy => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                crate::bot::audit_log(
+                    &app,
+                    &format!("subagent_report_gave_up | id: {sub_id} | 父会话一直没空下来"),
+                );
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(REPORT_RETRY_MS)).await;
+        }
+    });
 }
 
 /// 启动清扫：进程重启后没有任何 runner 在跑，库里 running/queued 的行是
@@ -2495,11 +2635,12 @@ pub async fn tool_spawn_subagent(
     }
 }
 
-/// check_subagent 工具（幂等可轮询；waitMs 上限 30000，等待期可被 /stop 打断）。
+/// check_subagent 工具（幂等可轮询；waitMs 上限 600000，等待期可被 /stop 打断）。
 pub async fn tool_check_subagent(
     app: &AppHandle,
     args: &str,
     stop: Option<crate::bot_slash::StopToken>,
+    session_id: Option<String>,
 ) -> crate::bot::registry::ToolResult {
     use crate::bot::registry::ToolResult;
     let v = parse_tool_args(args);
@@ -2511,7 +2652,7 @@ pub async fn tool_check_subagent(
         return ToolResult::error("check 失败：subagentId 与 taskId 至少提供一个", Vec::new());
     };
     let wait_ms = v["waitMs"].as_u64().unwrap_or(0).min(CHECK_WAIT_MS_CAP);
-    match check_subagent(app, &key, wait_ms, stop.as_ref()).await {
+    match check_subagent(app, &key, wait_ms, stop.as_ref(), session_id.as_deref()).await {
         Ok(state) => ToolResult::ok(
             serde_json::to_string(&state).unwrap_or_else(|_| state.status.as_str().to_string()),
             Vec::new(),
@@ -3414,6 +3555,133 @@ mod orchestrator_tests {
             summary.contains("det.onnx"),
             "熔断前的正文应存进 summary 供父 agent 判断是否重试：{summary}"
         );
+    }
+
+    /// 假失败回归：产物齐、机器验收全过，只因最后一条消息没按 schema 写收尾
+    /// JSON 就被判 failed。实测踩过这个形态——13780 字节的政策调研稿确实落盘、
+    /// `subagent.machine_check_passed` 已进日志，行状态却是 failed。
+    #[test]
+    fn machine_pass_overrides_unparseable_finish() {
+        let verdicts = vec![
+            MachineVerdict {
+                criterion: "file_exists:调研.md".into(),
+                met: true,
+                reason: "服务端核验：存在（13780 字节）".into(),
+            },
+            MachineVerdict {
+                criterion: "file_nonempty:调研.md".into(),
+                met: true,
+                reason: "服务端核验：存在（13780 字节）".into(),
+            },
+        ];
+        let (st, err, res) = classify_outcome(None, false, Some("散文收尾，没写 JSON"));
+        assert_eq!(st, SubagentStatus::Failed, "起点是解析失败");
+        assert!(res
+            .expect("原文必须留在 result_json")
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .contains("散文收尾"));
+
+        let (st2, err2, recovered) = reconcile_machine_override(st, err, &verdicts);
+        assert_eq!(st2, SubagentStatus::Succeeded);
+        assert!(recovered);
+        // 推翻这件事本身要留痕：error 上保留解析失败标记并补出理由
+        let e = err2.expect("推翻后仍须留标记");
+        assert!(e.starts_with(UNPARSEABLE_MARKER), "{e}");
+        assert!(e.contains("2 项"), "{e}");
+    }
+
+    /// 边界：机器全过只推翻「解析失败」这一种。模型自报失败说的可能是服务端
+    /// 验不了的自由文本条目；一条机器结论都没有时服务端零证据；验了没过更是
+    /// 实打实的不合格——这三种都必须维持失败。
+    #[test]
+    fn machine_pass_overrides_nothing_else() {
+        let all_met = vec![MachineVerdict {
+            criterion: "file_exists:a.md".into(),
+            met: true,
+            reason: "存在".into(),
+        }];
+        for (st, err) in [
+            (
+                SubagentStatus::Failed,
+                Some("model_reported_failure".to_string()),
+            ),
+            (SubagentStatus::Failed, Some("HTTP 500".to_string())),
+            (
+                SubagentStatus::BudgetExceeded,
+                Some("max_turns".to_string()),
+            ),
+        ] {
+            let (s2, e2, recovered) = reconcile_machine_override(st, err.clone(), &all_met);
+            assert_eq!(s2, st);
+            assert_eq!(e2, err);
+            assert!(!recovered);
+        }
+        // 零证据（一条机器标准都没声明）→ 维持失败
+        let (s2, _, r2) = reconcile_machine_override(
+            SubagentStatus::Failed,
+            Some(UNPARSEABLE_MARKER.into()),
+            &[],
+        );
+        assert_eq!(s2, SubagentStatus::Failed);
+        assert!(!r2);
+        // 验了没过 → 维持失败
+        let unmet = vec![MachineVerdict {
+            criterion: "file_exists:a.md".into(),
+            met: false,
+            reason: "产物不存在".into(),
+        }];
+        let (s3, _, r3) = reconcile_machine_override(
+            SubagentStatus::Failed,
+            Some(UNPARSEABLE_MARKER.into()),
+            &unmet,
+        );
+        assert_eq!(s3, SubagentStatus::Failed);
+        assert!(!r3);
+    }
+
+    /// 接线守卫：机器验收的修正必须落在终态快照之前。判定顺序反了的话，
+    /// 「机器验收通过」与「行状态 failed」就会永远同时成立——那正是本次修的 bug。
+    #[test]
+    fn machine_override_runs_before_status_snapshot() {
+        let src = include_str!("bot_orchestrator.rs");
+        let fix = src
+            .find("reconcile_machine_override(status, error,")
+            .expect("finalize 必须调用 reconcile_machine_override");
+        let snapshot = src.find("let status_for_db = status;").expect("终态快照点");
+        assert!(fix < snapshot, "修正必须早于落库快照");
+    }
+
+    /// 「问过即已吸收」：`check_subagent` 拿到终态后结果已在父上下文里，
+    /// digest 与自动汇报轮都不该再讲一遍。去重表按会话隔离，别把 A 会话的
+    /// 结果算到 B 会话头上。
+    #[test]
+    fn digest_mark_is_per_session() {
+        let sid = format!("dm-{}", uuid::Uuid::new_v4());
+        assert!(!is_digested(&sid, "sa_a"));
+        mark_digested(Some(&sid), "sa_a");
+        assert!(is_digested(&sid, "sa_a"));
+        assert!(
+            !is_digested(&format!("{sid}-other"), "sa_a"),
+            "去重表按会话隔离"
+        );
+        mark_digested(None, "sa_b");
+        assert!(!is_digested(&sid, "sa_b"), "无会话 id 不得污染任何会话");
+    }
+
+    /// 接线守卫：汇报轮的轮次说明要排在 digest 注入之前。digest 放末尾是
+    /// 刻意的（模型对末尾权重最高），说明插在它前面才不抢这份权重。
+    #[test]
+    fn report_turn_prompt_precedes_digest_injection() {
+        let src = include_str!("bot_chat.rs");
+        let prompt = src
+            .find("REPORT_TURN_PROMPT}))")
+            .expect("汇报轮必须注入轮次说明");
+        let digest = src
+            .find("subagent_digest_block(&app, session_id.as_deref())")
+            .expect("digest 注入点");
+        assert!(prompt < digest, "说明应在 digest 之前，末尾留给回报本身");
     }
 
     /// verifier 输出 verified.json schema 的判定分支覆盖。

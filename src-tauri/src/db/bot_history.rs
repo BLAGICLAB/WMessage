@@ -111,6 +111,38 @@ pub async fn bot_history_save(
     .map_err(|e| CommandError::from(format!("历史保存线程 join 失败：{e}")))?
 }
 
+/// 追加单条消息（不覆盖已有行）。
+///
+/// 给后端主动发起的轮次用：那种轮次没有前端快照可覆写，走全量覆盖写就得先
+/// 把整段历史读回来再拼一遍，而读回来的快照会和并发落库的用户消息打架——
+/// 谁后写谁赢，输的那条消息凭空消失。纯 INSERT 没有这个窗口。
+pub fn bot_history_append_inner(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    message: &BotMsgRow,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            message.role,
+            message.content,
+            message.refs_json,
+            session_id,
+            message.thinking,
+            message.tools_json,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 清空指定会话的聊天记录（会话保留）
 #[tauri::command]
 pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandResult<()> {

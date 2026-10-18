@@ -986,6 +986,66 @@ mod tests {
         (dir, conn)
     }
 
+    /// 追加写不能吃掉既有历史：后端主动发起的汇报轮没有前端快照可覆写，
+    /// 只能自己 INSERT；一旦退化成覆盖写，前端那份并发快照就会把它抹掉。
+    #[test]
+    fn bot_history_append_keeps_existing_rows_and_order() {
+        let (dir, mut conn) = setup_bhs_db();
+        conn.execute(
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000, 0)",
+            [],
+        )
+        .unwrap();
+        let mk = |c: &str| BotMsgRow {
+            role: "user".into(),
+            content: c.into(),
+            refs_json: None,
+            thinking: None,
+            tools_json: None,
+        };
+        let tx = conn.transaction().unwrap();
+        bot_history_save_inner(&tx, "s1", &[mk("第一条"), mk("第二条")]).unwrap();
+        tx.commit().unwrap();
+
+        bot_history_append_inner(
+            &conn,
+            "s1",
+            &BotMsgRow {
+                role: "assistant".into(),
+                content: "汇报轮回复".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            },
+        )
+        .unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT role, content FROM bot_messages WHERE session_id = 's1' ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(std::result::Result::unwrap)
+            .collect();
+        assert_eq!(rows.len(), 3, "追加不能删除既有行");
+        assert_eq!(rows[0].1, "第一条");
+        assert_eq!(rows[2].1, "汇报轮回复");
+        assert_eq!(rows[2].0, "assistant");
+        let updated: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM bot_sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(updated >= 1000, "会话活跃时间要跟着动");
+        drop(rows);
+        drop(stmt);
+        drop(conn);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// 核心回归：bot_history_save 内层报错时，DELETE 必须被事务回滚，
     /// 原会话聊天记录不得丢失（崩溃/强杀落在 INSERT 中间的场景）。
     #[test]

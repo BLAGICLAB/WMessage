@@ -741,6 +741,11 @@ enum SkillRouteOutcome {
     FallThrough { recovery_hint: Option<String> },
 }
 
+/// 会话已有执行实例时的统一拒答。它同时是「本轮根本没跑」的判据——
+/// 后端主动发起的汇报轮要靠它认出自己撞上了别人的回合（见
+/// `report_subagent_result`），否则这句提示会被当成模型答复落进历史。
+pub(crate) const CHAT_BUSY_REPLY: &str = "这条会话正在处理上一条消息，请稍候再发。";
+
 #[tauri::command]
 #[allow(clippy::too_many_lines)]
 pub async fn bot_chat(
@@ -765,7 +770,7 @@ pub async fn bot_chat(
                 ),
             );
             return Ok(BotChatResult {
-                text: "这条会话正在处理上一条消息，请稍候再发。".into(),
+                text: CHAT_BUSY_REPLY.into(),
                 task_refs: vec![],
             });
         }
@@ -775,6 +780,11 @@ pub async fn bot_chat(
     // 同一条原文，只要有一处读到未清洗的原文，规范化就只做了一半
     // （「做\u{FEFF}PPT」照旧匹配不上技能）。
     let mut messages = messages;
+    // 后端主动发起的汇报轮不带用户消息（子 agent 收尾转述，见
+    // `report_subagent_result`）。这个标志必须在历史进入 truncate 之前钉住：
+    // truncate 会消耗掉 messages，之后再判断就分不清「本来就没有用户消息」
+    // 和「历史被截断光了」，两者的模型行为完全不同。
+    let report_turn = messages.is_empty();
     if let Some(n) = normalize_user_input(&mut messages) {
         crate::audit_event!(
             &app,
@@ -1063,6 +1073,13 @@ pub async fn bot_chat(
     // 子任务，终态的在这里打包成一段注入，在途的只报计数。放最后是刻意的——
     // 模型对本轮末尾的内容权重最高，而回报正是「此刻新增」的信息。
     // 只注 result_json，子会话历史留在它自己的会话行里（§3.7 要点 3）。
+    //
+    // 汇报轮（report_turn）没带用户消息，模型面前只有系统提示词、历史和下面这段
+    // 回报；不说清这一轮要它做什么，它会对着历史反问用户「你想让我做什么」。
+    // 放在回报之前是为了不打断末尾那段的最高权重。
+    if report_turn {
+        msgs.push(serde_json::json!({"role": "system", "content": REPORT_TURN_PROMPT}));
+    }
     if let Some(digest) =
         crate::bot_orchestrator::subagent_digest_block(&app, session_id.as_deref()).await
     {
@@ -1146,6 +1163,84 @@ pub async fn bot_chat(
         text,
         task_refs: refs,
     })
+}
+
+/// 汇报轮的轮次说明：这一轮没有用户输入，模型唯一的新信息是末尾那段子任务回报。
+const REPORT_TURN_PROMPT: &str = "（本轮没有新的用户消息：这是子任务收尾后系统主动发起的汇报轮。）\
+请只依据末尾的「子任务回报」向用户说明情况：做了什么、结果如何、有没有需要用户决定的下一步。\
+不要反问用户要做什么，也不要重复用户已经知道的内容；\
+不要为汇报再派发子任务；回报不足以判断下一步时直接说缺什么。";
+
+/// 汇报轮的结局：跑完 / 撞上别的回合 / 报错。
+pub(crate) enum ReportOutcome {
+    Ran,
+    /// 主会话这一轮还没结束（`bot_chat` 的会话锁挡住了）
+    Busy,
+    Failed,
+}
+
+/// 子任务收尾汇报轮：主会话空闲时由后端主动起的一轮对话，没有用户消息。
+///
+/// 复用 `bot_chat` 的空消息路径而不是另写一条链路，是为了和主聊天共用同一套
+/// 提示词装配、历史截断、记忆注入与 digest 注入——另起一份必然随主链路漂移。
+/// 空消息下所有面向用户输入的步骤（规范化审计、纠正检测、pre-step 路由、
+/// 计划生成）本来就自然空转，不需要额外分支去跳过它们。
+pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) -> ReportOutcome {
+    match bot_chat(app.clone(), Vec::new(), Some(session_id.to_string()), None).await {
+        Ok(r) if r.text == CHAT_BUSY_REPLY => ReportOutcome::Busy,
+        Ok(r) if r.text.trim().is_empty() => ReportOutcome::Failed,
+        Ok(r) => {
+            persist_report_reply(app, session_id, &r).await;
+            ReportOutcome::Ran
+        }
+        Err(e) => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "subagent_report_failed",
+                "error" => crate::bot::truncate_for_log(&e.message(), 200),
+            );
+            ReportOutcome::Failed
+        }
+    }
+}
+
+/// 汇报轮回复的落地：追加落库 + 通知前端。
+///
+/// 不走前端的全量覆盖存历史：汇报轮没有前端快照，前端那份在下一条用户消息
+/// 才覆写；这一轮必须自己落库，否则用户不发言就重启，汇报内容就凭空消失。
+async fn persist_report_reply(app: &AppHandle, session_id: &str, result: &BotChatResult) {
+    let sid = session_id.to_string();
+    let content = result.text.clone();
+    let refs = serde_json::to_string(&result.task_refs).ok();
+    let r = crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::bot_history_append_inner(
+            conn,
+            &sid,
+            &crate::db::BotMsgRow {
+                role: "assistant".into(),
+                content,
+                refs_json: refs,
+                thinking: None,
+                tools_json: None,
+            },
+        )
+    })
+    .await;
+    if let Err(e) = r {
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "subagent_report.persist_failed",
+            "error" => e,
+        );
+        return;
+    }
+    let _ = app.emit_to(
+        "main",
+        "bot-chat-report",
+        serde_json::json!({ "sessionId": session_id, "text": result.text }),
+    );
 }
 
 // /compact 快捷命令
