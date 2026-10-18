@@ -788,7 +788,7 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
         let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app2));
         // 第三段（锁内）：入库 + 删队列。
         // 入库 Err → 中止上抛且**不删队列行**（用户可重试，条目不丢）；
-        // RejectedFull/RefusedForeignMerge → skipped 并删行（数据性拒收不可重试）
+        // RejectedFull → skipped 并删行（数据性拒收不可重试）
         let mut report = MemImportReport::default();
         let _g = super::store_lock();
         let mut conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
