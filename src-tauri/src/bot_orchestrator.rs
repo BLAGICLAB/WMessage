@@ -2332,6 +2332,27 @@ const REPORT_WAIT_MS: u64 = CHECK_WAIT_MS_CAP;
 /// 汇报轮轮询主会话是否空闲的间隔。
 const REPORT_RETRY_MS: u64 = 2000;
 
+/// 派发方会话是否还在（读失败按「不在」处理：宁可少报一次，也不写孤儿消息）
+///
+/// bot_messages 没有外键约束，会话删了之后往里插一条谁也读不到的消息就是
+/// 纯死数据，且会话已删时汇报轮本就没有对象。
+fn bot_session_exists_locked(conn: &rusqlite::Connection, session_id: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM bot_sessions WHERE id = ?1",
+        [session_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+async fn bot_session_exists(app: &AppHandle, session_id: &str) -> bool {
+    let sid = session_id.to_string();
+    db_locked(app, move |conn| Ok(bot_session_exists_locked(conn, &sid)))
+        .await
+        .unwrap_or(false)
+}
+
 /// 子 agent 收尾后让主 agent 主动向用户转述（fire-and-forget）。
 ///
 /// 为什么要这条：主 agent 原本只在「下一轮组装消息时注入 digest」这一个时机
@@ -2356,6 +2377,15 @@ fn spawn_parent_report(app: &AppHandle, row: &SubagentRow) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(REPORT_WAIT_MS);
         loop {
             if is_digested(&parent, &sub_id) {
+                return;
+            }
+            // 会话可能在这段等待里被用户删了：bot_messages 没有外键约束，
+            // 硬跑一轮只会给一个不存在的会话写一条没人读得到的孤儿消息
+            if !bot_session_exists(&app, &parent).await {
+                crate::bot::audit_log(
+                    &app,
+                    &format!("subagent_report_skipped | id: {sub_id} | 派发方会话已不存在"),
+                );
                 return;
             }
             match crate::bot_chat::report_subagent_result(&app, &parent).await {
@@ -3668,6 +3698,33 @@ mod orchestrator_tests {
         );
         mark_digested(None, "sa_b");
         assert!(!is_digested(&sid, "sa_b"), "无会话 id 不得污染任何会话");
+    }
+
+    /// 派发方会话被删后不该再汇报：bot_messages 没有外键约束，硬跑一轮只会给
+    /// 一个不存在的会话写一条永远读不到的孤儿消息。
+    #[test]
+    fn missing_parent_session_blocks_the_report() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bot_sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                is_subagent INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .unwrap();
+        assert!(
+            !bot_session_exists_locked(&conn, "s-gone"),
+            "不存在的会话判为不在"
+        );
+        conn.execute(
+            "INSERT INTO bot_sessions VALUES ('s1', 'T', 1000, 1000, 0)",
+            [],
+        )
+        .unwrap();
+        assert!(bot_session_exists_locked(&conn, "s1"));
     }
 
     /// 接线守卫：汇报轮的轮次说明要排在 digest 注入之前。digest 放末尾是
