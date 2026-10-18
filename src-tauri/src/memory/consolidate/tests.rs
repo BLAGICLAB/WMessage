@@ -217,31 +217,6 @@ fn consolidate_lesson_row_matches_other_lesson_writers() {
 }
 
 #[test]
-fn consolidate_lesson_is_structurally_identical_to_record_lesson_core() {
-    // 整理若哪天又自己 new 一个 NewItem，这个断言会比任何约定文档先发现。
-    let a = mem_db();
-    write_consolidate_lesson(&a, "两条记忆该合并时先合并", 1_000);
-    let b = mem_db();
-    super::super::record_lesson_core(
-        &b,
-        "两条记忆该合并时先合并",
-        CONSOLIDATE_LESSON_SCENARIO,
-        "system",
-        None,
-        1_000,
-        &store::StoreParams::default(),
-    );
-    let (x, y) = (store::load_all(&a).unwrap(), store::load_all(&b).unwrap());
-    assert_eq!(x.len(), 1);
-    assert_eq!(y.len(), 1);
-    assert_eq!(x[0].kind, y[0].kind);
-    assert_eq!(x[0].tags, y[0].tags);
-    assert_eq!(x[0].importance, y[0].importance);
-    assert_eq!(x[0].source, y[0].source);
-    assert_eq!(x[0].content, y[0].content);
-}
-
-#[test]
 fn consolidate_lesson_leaves_dedup_to_insert_item() {
     // 整理不做逐字去重——去重整个交给 insert_item。降级模式（无向量）
     // 跳过去重是既有语义：整理不因缺向量而另加一层判重。
@@ -259,8 +234,9 @@ fn consolidate_lesson_leaves_dedup_to_insert_item() {
 
 #[test]
 fn consolidate_lesson_rejects_overlong_text_like_other_lesson_writers() {
-    // validate_lesson 顺带白拿：超长直接拒写并带「失败」前缀，由 write_lesson
-    // 转成 Warn 审计，不再静默截断一条行为准则。
+    // validate_lesson 顺带白拿：超长直接拒写并带「失败」前缀，不再静默截断
+    // 一条行为准则。生产路径上 parse_lesson 先截到 400 字、MAX_CONTENT_CHARS
+    // 是 800，所以这条走不到——这里锁的是 record_lesson_core 的契约本身。
     let conn = mem_db();
     let long = "长".repeat(MAX_CONTENT_CHARS + 1);
     let msg = write_consolidate_lesson(&conn, &long, 1_000);
@@ -300,6 +276,11 @@ fn apply_merge_treats_lesson_rows_like_any_other() {
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1, "只剩合并目标");
     assert_eq!(all[0].content, "用户不吃辣（合并）");
+    // 目标是 max_by(importance, then updated_at)：lesson 行 importance 与 b 同为 4
+    // 但写入更晚 → 它是合并目标。断言 id 与 kind，让这个翻转是显式的——
+    // 只断言行数与内容的话，换个 importance 悄悄改变落点也照样绿。
+    assert_eq!(all[0].id, lesson, "落点是 importance 相同里更新的那条");
+    assert_eq!(all[0].kind, "lesson", "update_by_id 保留目标行的 kind");
 }
 
 #[test]
