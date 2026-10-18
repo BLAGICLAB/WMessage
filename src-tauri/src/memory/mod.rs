@@ -638,6 +638,12 @@ fn validate_lesson(lesson: &str, scenario: &str) -> Result<(), String> {
 
 /// lesson 写入内核（抽离 Connection + 注入向量，内存库可单测）：
 /// 语义去重由 insert_item 承担（≥0.92 合并、0.75~0.92 冲突提示）。
+///
+/// 合并目标**限定在 kind=lesson**：lesson 只该与 lesson 合并。store 的 merge
+/// 分支是整行 UPDATE 且不动 kind，撞上 fact/preference/reflection 行会让那行
+/// 保留旧 kind、内容却变成 lesson——按 kind 分槽的注入就再也召不回它
+/// （rank.rs 的经验教训段只看 kind=="lesson"）。限定放在这里而不是各调用方，
+/// 是因为「lesson 只并 lesson」是领域规则，四条 lesson 写入路径同受约束。
 pub fn record_lesson_core(
     conn: &rusqlite::Connection,
     lesson: &str,
@@ -663,7 +669,7 @@ pub fn record_lesson_core(
         importance: 4,
         source: source.to_string(),
     };
-    match store::insert_item_with(conn, &item, embedding, now_ms, sp) {
+    match store::insert_item_with(conn, &item, embedding, now_ms, &sp.scoped_merge("lesson")) {
         Ok((InsertOutcome::Inserted(_), hints)) => {
             let msg = format!("已记录教训：{}", truncate_chars(lesson, 60, false));
             if hints.is_empty() {

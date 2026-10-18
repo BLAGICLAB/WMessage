@@ -33,6 +33,15 @@ pub struct StoreParams {
     pub capacity: i64,
     pub dedup_merge: f64,
     pub dedup_hint: f64,
+    /// 合并目标的 kind 限定：Some(k) 时只与 kind==k 的行做 merge-on-write，
+    /// 异 kind 行即便 cos ≥ dedup_merge 也不并（降级为冲突提示）。
+    /// None = 不限定（remember_fact 等通用写入路径的既有行为）。
+    ///
+    /// 为什么需要：merge 分支是整行 UPDATE，只改 content/tags/importance/source，
+    /// **不动 kind**。lesson 撞上 fact/preference/reflection 行时，那行的 kind 留着
+    /// 旧值而内容已换成 lesson——按 kind 分槽注入（rank.rs 的经验教训段只看
+    /// kind=="lesson"）就会永远召不回这条 lesson。
+    pub merge_scope: Option<&'static str>,
 }
 
 impl Default for StoreParams {
@@ -41,6 +50,7 @@ impl Default for StoreParams {
             capacity: MAX_MEM_ITEMS,
             dedup_merge: DEDUP_MERGE_COSINE,
             dedup_hint: DEDUP_HINT_COSINE,
+            merge_scope: None,
         }
     }
 }
@@ -51,7 +61,14 @@ impl StoreParams {
             capacity: t.capacity,
             dedup_merge: t.dedup_merge_cosine,
             dedup_hint: t.dedup_hint_cosine,
+            merge_scope: None,
         }
+    }
+
+    /// 限定合并目标 kind 的副本（参数化入口，不改原值）。
+    pub fn scoped_merge(mut self, kind: &'static str) -> Self {
+        self.merge_scope = Some(kind);
+        self
     }
 }
 
@@ -400,8 +417,14 @@ pub fn insert_item_with(
         let mut hints: Vec<(f64, &MemItem)> = Vec::new();
         for m in &all {
             if let Some(c) = cosine(Some(emb), m.embedding.as_deref()) {
+                // kind 限定：异 kind 行一律降级为冲突提示，既不并也不丢弃——
+                // 调用方仍需知道「有相似但不同类的记忆」，
+                // 静默跳过会让 lesson 落库后无从判断为何没合并。
+                let scoped_out = p.merge_scope.is_some_and(|k| m.kind.as_str() != k);
                 if c >= p.dedup_merge {
-                    if best.is_none_or(|(s, _)| c > s) {
+                    if scoped_out {
+                        hints.push((c, m));
+                    } else if best.is_none_or(|(s, _)| c > s) {
                         best = Some((c, m));
                     }
                 } else if c >= p.dedup_hint {
