@@ -96,10 +96,11 @@ spawn 的 `acceptance_criteria` **必填**，orchestrator 双写：子卡 note�
 spawn_subagent(objective, profile, acceptance_criteria, budget?, model_profile?, parent_task_id?)
   -> { subagent_id, task_id, status }          # status: queued|running；非阻塞立即返回
 
-check_subagent(subagent_id? | task_id?, wait_ms=0)   # 幂等可轮询；wait_ms 上限已由
-                                                    # 5000 放宽到 30000（2026-10-18，
-                                                    # 等待策略见 SUBAGENT-CHECK-BACKOFF-DESIGN）
+check_subagent(subagent_id? | task_id?, wait_ms=0)   # 幂等可轮询；wait_ms 上限 600000（2026-10-18
+                                                    # 从 5000 放宽到 10 分钟，等待策略见
+                                                    # SUBAGENT-CHECK-BACKOFF-DESIGN）
   -> { status, progress, result?, error? }     # status: queued|running|succeeded|failed|cancelled|budget_exceeded
+                                                  # 返回终态即视作父会话已吸收该结果（不再进 digest）
 
 cancel_subagent(subagent_id)
   -> { ok }                                     # 与任务卡停止按钮同一 API
@@ -155,8 +156,46 @@ cancel_subagent(subagent_id)
 
 - 解析策略：取最终消息中最后一个 JSON 对象；解析失败 → `failed` +
   `error=result_json_unparseable`，原始文本存 summary（防丢）。B 期加一次廉价收尾重试。
+- 机器验收可以推翻「解析失败」这一种终态（2026-10-18）：`classify_outcome` 只看得见
+  子 agent 自己说的话，而产物是否落盘是服务端能自己核的旁证——两者矛盾时以产物为准。
+  条件是**已声明的机器可判定标准（§8.6 `file_exists:` / `file_nonempty:`）逐条通过**：
+  一条都没声明就没有旁证，模型自报的失败也不推翻（那说的可能是服务端验不了的自由
+  文本条目）。推翻后 `status=succeeded`，`error` 仍保留 `result_json_unparseable:`
+  前缀并补出理由，正文末尾补一行说明，审计记 `subagent.parse_failure_recovered`——
+  「判成功」这件事本身要能被查到，不能被悄悄抹平。
 - 主 agent **只消费** summary + artifacts + blockers + acceptance_check；长上下文留在
   子会话。orchestrator 解析后写子卡 result + 勾 subtask（代勾走 task_patch）。
+
+### 7.1 结果怎么到用户眼前（2026-10-18）
+
+主 agent 看到子任务结果只有两个时机，二者缺一不可：
+
+1. **当轮**：`check_subagent` 拿到终态，返回值直接进父上下文。问到终态即记进
+   「父会话已吸收」去重表（进程内，按会话隔离）——digest 与自动汇报轮据此不再重念。
+2. **跨轮**：`subagent_digest_block` 在**下一轮**消息组装末尾注入回报段。
+
+只有这两条时有个洞：父会话那一轮已经结束，子任务才跑完。实测形态是主 agent 用
+4 次 30s 等待都没等到，把「仍在调研中，继续等待完成」当成整轮答复收尾，子 agent
+49 秒后才跑完——此后再无对话，结果永远躺在库里没人提。
+
+因此补一条**汇报轮**：子 agent 转终态时起一个后台任务，等到父会话空闲（抢到
+`ChatGuard`）就跑一轮 `bot_chat` 空消息调用。它复用主聊天的全套装配（提示词、
+历史截断、记忆、digest 注入），因此与主链路不会漂移；空消息下所有面向用户输入的
+步骤自然空转。轮次说明（`REPORT_TURN_PROMPT`）排在 digest 之前注入，末尾最高权重
+仍留给回报本身。
+
+三条约束：
+
+- **门控是「父会话空闲」而非「一收尾就报」**：主会话还在跑时它自己会再 check 一次
+  并当轮转述，那时再起一轮就是同一件事说两遍。
+- **上界与 `check_subagent` 同档（10 分钟）**：主会话那一轮跑了十分钟还没结束，
+  用户早该知道结果了，再等更久没有意义（放弃时记 `subagent_report_gave_up`）。
+- **用户取消不汇报**：用户刚点过停止，不需要模型再解释一遍。
+
+汇报轮回复自己追加落库（`bot_history_append_inner`，纯 INSERT 不覆盖——它没有前端
+快照可覆写，走了覆盖写就会被并发的前端快照抹掉），再发 `bot-chat-report` 让前端把
+流式气泡定稿。前端收 `subagent-finished` 只在**没有派发方主会话**时打提示：有派发方
+时报示与汇报轮重复，两条消息说同一件事比不说更糟。
 
 ## 8. 提示词资产（A2 期落 `docs/prompts/subagent/`，实现固化为后端常量）
 
