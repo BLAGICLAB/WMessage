@@ -26,8 +26,10 @@ export function SessionRail({
     <aside
       id="chat-session-rail"
       aria-label="会话列表"
+      // 248px = 主导航从 208 收窄到 160（lib/navWidth）省下的 48px 原样转到这里，
+      // 不凭空涨宽度。会话标题普遍较长，这一栏窄一像素首行就少两个字。
       // 窗口无最小宽度约束（tauri.conf.json），侧栏自身不缩：先压聊天主体
-      className="flex w-[200px] shrink-0 flex-col border-r border-[var(--edge)] pr-3"
+      className="flex w-[248px] shrink-0 flex-col border-r border-[var(--edge)] pr-3"
     >
       {/* 「新建对话」占满整行：折叠入口统一在聊天头部，侧栏内不再放第二个 */}
       <button
@@ -60,7 +62,10 @@ export function SessionRail({
                   type="button"
                   aria-current={active ? "page" : undefined}
                   title={s.title}
-                  className={`flex min-w-0 flex-1 flex-col items-stretch gap-0.5 rounded-lg py-1.5 pl-2.5 pr-7 text-left ${
+                  // 右侧不留白：删除键的预留只落在第二行（下面那行有 pr-7）。
+                  // 整行都预留的话，首行在什么都没悬停时也白丢 28px——
+                  // 200px 的栏里这就是三四个字，比删除键遮住的那截还多
+                  className={`flex min-w-0 flex-1 flex-col items-stretch gap-0.5 rounded-lg py-1.5 pl-2.5 text-left ${
                     active
                       ? "nm-inset text-[var(--t1)]"
                       : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
@@ -83,7 +88,7 @@ export function SessionRail({
                     </span>
                   </span>
                   {s.updatedAt != null && (
-                    <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="flex min-w-0 items-center gap-1.5 pr-7">
                       {/* 与首行图标同宽的空位：时间落在标题正下方而不是图标下面 */}
                       <span className="w-[13px] shrink-0" aria-hidden />
                       <span className="min-w-0 flex-1 truncate text-[10px] tabular-nums text-[var(--t5)]">

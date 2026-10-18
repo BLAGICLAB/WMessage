@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ColumnId, Task } from "../../types";
+import { NAV_GAP, NAV_W } from "../../lib/navWidth";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 
-/** 浮窗左缘 = 导航栏 w-52(208px) + 4px 间距；滑出屏幕的位移要同时
- *  越过自身宽度(-100%)和左缘偏移，两个值都从 LEFT 推导保持同步 */
-const LEFT = 212;
+/** 浮窗左缘 = 导航栏宽度 + 间距；滑出屏幕的位移要同时越过自身宽度(-100%)
+ * 和左缘偏移，两个值都从 LEFT 推导保持同步。宽度本身 import 自 navWidth
+ * （口径单源），不在这里复写数字——复写一次就是一次静默错位。 */
+const LEFT = NAV_W + NAV_GAP;
 const SLIDE_MS = 240;
 /** 退场卸载兜底：略大于 SLIDE_MS（transitionend 事件在 jsdom/降级路径不触发） */
 const EXIT_MS = 280;

@@ -58,6 +58,7 @@ import {
   sortByOrder,
 } from "./storage";
 import { handleCommandError } from "./lib/errorHandler";
+import { NAV_W } from "./lib/navWidth";
 import { applyFontSizeSync } from "./lib/botConfig";
 import { dayKey } from "./components/HomePage/homeData";
 import { useConfirm } from "./lib/useConfirm";
@@ -174,7 +175,10 @@ function RailButton({
       className={`${base} ${skin}`}
     >
       <Icon size={15} aria-hidden />
-      <span className="flex-1 text-left">{label}</span>
+      {/* truncate（含 nowrap）：系统字号放大时标题宁可省略也不换行——换行会把
+          整条导航撑成两行高度，⌘K 提示条与角标也被挤到下一行。min-w-0 是前提，
+          没有它 flex 项的 auto 最小尺寸会顶着内容宽度不肯收缩 */}
+      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
       {badge > 0 && (
         <span
           aria-label={`${badge} 条待处理`}
@@ -196,7 +200,9 @@ function RailButton({
 function RailSection({ label }: { label: string }) {
   return (
     <div className="mt-3 mb-1 px-2.5">
-      <span className="text-[11px] font-medium text-[var(--t5)]">{label}</span>
+      <span className="block truncate text-[11px] font-medium text-[var(--t5)]">
+        {label}
+      </span>
       <div role="separator" className="mt-1 border-t border-[var(--edge)]" />
     </div>
   );
@@ -924,10 +930,13 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen overflow-hidden bg-[var(--bg)]">
-        {/* 左侧导航栏：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入 */}
+        {/* 左侧导航栏：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入。
+            宽度 import 自 navWidth（浮窗左缘要越过它，口径必须单源），
+            省下的宽度原样转给聊天会话栏 */}
         <nav
           aria-label="主导航"
-          className="flex w-52 shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
+          style={{ width: NAV_W }}
+          className="flex shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
         >
           <div className="mb-2 flex items-center gap-2 px-1 pt-1">
             <img

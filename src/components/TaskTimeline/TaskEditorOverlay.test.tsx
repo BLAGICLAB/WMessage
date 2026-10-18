@@ -2,7 +2,11 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskEditorOverlay } from "./TaskEditorOverlay";
+import { NAV_GAP, NAV_W } from "../../lib/navWidth";
 import type { Task } from "../../types";
+
+/** 退场位移里的左缘值：跟着 navWidth 走，导航栏宽度改了这里不会漂 */
+const LEFT_PX = `${NAV_W + NAV_GAP}px`;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
@@ -54,7 +58,7 @@ describe("TaskEditorOverlay", () => {
     setup();
     expect(screen.getByLabelText("任务详情")).toBeInTheDocument();
     const win = screen.getByLabelText("任务详情").parentElement!;
-    expect(win.style.transform).toContain("calc(-100% - 212px)");
+    expect(win.style.transform).toContain(`calc(-100% - ${LEFT_PX})`);
     await nextFrame();
     expect(win.style.transform).toBe("translateX(0)");
     expect(win.style.opacity).toBe("1");
@@ -63,7 +67,7 @@ describe("TaskEditorOverlay", () => {
   it("closing=true 滑出退场，退场完成后回调 onClosed（卸载由接线方执行）", async () => {
     const { onClosed } = setup({}, { closing: true });
     const win = screen.getByLabelText("任务详情").parentElement!;
-    expect(win.style.transform).toContain("calc(-100% - 212px)");
+    expect(win.style.transform).toContain(`calc(-100% - ${LEFT_PX})`);
     await vi.waitFor(() => expect(onClosed).toHaveBeenCalledTimes(1));
   });
 

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { stubScrollNoop } from "./test/scrollNoop";
+import { NAV_W } from "./lib/navWidth";
 import type { Task } from "./types";
 
 // 聊天区常挂载在主窗口，自动滚动依赖 jsdom 未实现的 scrollTo/scrollIntoView
@@ -81,6 +82,22 @@ beforeEach(() => {
 });
 
 describe("App", () => {
+  // 导航栏宽度被两处依赖：浮窗左缘要越过它（TaskEditorOverlay import
+  // navWidth），省下的宽度还要转给聊天会话栏。宽度一改这两处都得跟着动，
+  // 用测试钉住「渲染出来的就是那个常量」而不是钉死某个像素值。
+  it("主导航宽度取自 navWidth 单一真相源，且标题不换行", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
+    });
+    const nav = screen.getByRole("navigation", { name: "主导航" });
+    expect(nav.style.width).toBe(`${NAV_W}px`);
+    // 特大系统字号时标题省略而不是换行——换行会把导航撑成两行高度
+    const label = within(nav).getByText("回收站");
+    expect(label.className).toContain("truncate");
+    expect(label.className).toContain("min-w-0");
+  });
+
   it("初始渲染：首页视图 + 库内任务上任务池", async () => {
     render(<App />);
     await waitFor(() => {

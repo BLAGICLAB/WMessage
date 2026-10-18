@@ -1771,6 +1771,11 @@ describe("ChatPanel", () => {
       const del = rail().getByRole("button", { name: "删除对话 政策调研" });
       expect(del.className).toContain("bottom-1");
       expect(del.className).not.toContain("top-2");
+      // 删除键的预留只落在第二行：整行都留白的话首行在没悬停时也白丢 28px
+      const rowBtn = sideTitle.closest("button") as HTMLElement;
+      expect(rowBtn.className).not.toContain("pr-7");
+      const timeLine = time.closest("span")?.parentElement as HTMLElement;
+      expect(timeLine.className).toContain("pr-7");
     } finally {
       mocks.invokeMock.mockImplementation(defaultInvoke);
     }
