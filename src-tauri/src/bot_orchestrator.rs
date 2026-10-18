@@ -26,15 +26,19 @@ pub use crate::db::{
 /// check_subagent 的 wait_ms 上限（设计 §5；放宽理由见
 /// docs/SUBAGENT-CHECK-BACKOFF-DESIGN-2026-10-18.md）。
 ///
-/// 上限从 5s 抬到 30s：每返回一次 check_subagent，主 agent 就要多走一整个
+/// 上限放到 10 分钟：每返回一次 check_subagent，主 agent 就要多走一整个
 /// LLM 轮次（重发请求 + 重算上下文 + 把轮询结果再塞进历史），所以「早知道」
-/// 的边际收益远小于「少醒几次」。5s 上限逼着模型反复短轮询，一个 3 分钟的
-/// 子任务要付约 36 轮；一次给足预算让它整个睡到终态，轮次降到 1~2。
-pub const CHECK_WAIT_MS_CAP: u64 = 30_000;
-/// wait 兜底轮询步长阶梯（毫秒）。首档 150ms 保「秒退的子任务立刻可见」，
-/// 之后逐步拉长：终态另有事件唤醒（见 `finish_notify`），这条阶梯只是漏通知
-/// 时的安全网，末档后恒定封顶——兜底延迟要有上界，否则退化成看不见的卡住。
-const CHECK_POLL_LADDER_MS: [u64; 6] = [150, 300, 600, 1200, 2400, 3000];
+/// 的边际收益远小于「少醒几次」。短上限逼着模型反复短轮询——实测一个 3 分钟
+/// 的调研子任务被拆成 4 次 30s 等待，每次都是一轮模型开销，最后还因为等不到
+/// 而把「仍在进行中」当成了整轮答复。一次给足预算让它整个睡到终态，轮次降到 1。
+pub const CHECK_WAIT_MS_CAP: u64 = 600_000;
+/// wait 兜底轮询步长阶梯（毫秒）。首档 1500ms：终态另有事件唤醒
+/// （见 `finish_notify`），这条阶梯只是漏通知时的安全网，所以起手就不必密——
+/// 越密只是越频繁地开库跑全量 DDL。末档后恒定封顶：兜底延迟要有上界，
+/// 否则退化成看不见的卡住。
+const CHECK_POLL_LADDER_MS: [u64; 10] = [
+    1_500, 3_000, 6_000, 12_000, 24_000, 30_000, 60_000, 120_000, 300_000, 600_000,
+];
 
 /// 三段式派发阶段（设计 §8.5）——主 agent 在 recon/executor/verifier 三段闭环中
 /// 选定当前阶段的角色语义。**不破坏 SubagentProfile 枚举**——profile 仍是工具白名单
@@ -2835,15 +2839,20 @@ mod orchestrator_tests {
 
     #[test]
     fn poll_step_ladder_is_monotonic_and_capped() {
-        // 首档小：秒退的子任务要立刻可见；末档后恒定：兜底延迟必须有上界，
-        // 否则漏通知时退化成看不见的卡住。
-        let steps: Vec<u64> = (0..8).map(next_poll_step).collect();
-        assert_eq!(steps[0], 150, "首档保持 150ms");
-        assert_eq!(steps[5], 3_000, "阶梯末档 3000ms");
-        assert_eq!(steps[7], 3_000, "出阶梯后封顶不增长");
+        // 起手就稀疏（终态走事件唤醒，阶梯只兜漏通知）：每次读都要开一次库
+        // 跑全量 DDL，越密只是越频繁地开库
+        let steps: Vec<u64> = (0..12).map(next_poll_step).collect();
+        assert_eq!(steps[0], 1_500, "首档 1500ms");
+        assert_eq!(steps[9], 600_000, "阶梯末档 10 分钟");
+        assert_eq!(steps[11], 600_000, "出阶梯后封顶不增长");
         for w in steps.windows(2) {
             assert!(w[0] <= w[1], "步长不递减：{steps:?}");
         }
+        // 上限与末档同档：预算给满时兜底阶梯不会越过预算本身
+        assert_eq!(
+            next_poll_step(CHECK_POLL_LADDER_MS.len() - 1),
+            CHECK_WAIT_MS_CAP
+        );
     }
 
     #[tokio::test]
@@ -2917,11 +2926,21 @@ mod orchestrator_tests {
     }
 
     #[tokio::test]
-    async fn wait_gives_up_at_budget_and_returns_last_state() {
+    async fn long_budget_does_not_reopen_db_on_every_step() {
+        // 阶梯的意义就在这：每次读都要开一次库跑全量 DDL。旧的固定 150ms
+        // 步长下 1.5s 预算要读 11 次，递进后只读 2 次（起手就 1500ms）。
+        //
+        // 预算取 1500ms（正好一个首档）而不是更大：阶梯末档已是分钟级，
+        // 预算再大这个用例就得跑好几分钟，而 2 次 vs 11 次已足够判别。
+        // 合并了原先「超时也带回当前状态」那条：断的仍是同一行预算判定。
+        let reads = std::cell::Cell::new(0usize);
         let started = std::time::Instant::now();
         let (state, exit) = wait_until_terminal(
-            || async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) },
-            200,
+            || {
+                reads.set(reads.get() + 1);
+                async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) }
+            },
+            1_500,
             None,
         )
         .await
@@ -2933,40 +2952,16 @@ mod orchestrator_tests {
             "超时也要带回当前状态"
         );
         assert!(
-            started.elapsed() >= std::time::Duration::from_millis(200),
+            started.elapsed() >= std::time::Duration::from_millis(1_500),
             "预算没走满就返回了：{:?}",
             started.elapsed()
         );
-    }
-
-    #[tokio::test]
-    async fn long_budget_does_not_reopen_db_on_every_step() {
-        // 阶梯的意义就在这：每次读都要开一次库跑全量 DDL。固定 150ms 步长下
-        // 2s 预算要读 14 次，递进后（0/150/450/1050/2250）只读 5 次。
-        //
-        // 上界留到 7 而不是 5：finish_notify 是进程级信号，别的子 agent 收尾
-        // 会顺手唤醒本等待方，多读一次库——那是设计上的伪唤醒（醒来重读、
-        // 不是终态就继续等），不是 bug，故不该让本测试因并行而抖动。
-        let reads = std::cell::Cell::new(0usize);
-        let started = std::time::Instant::now();
-        let (_, exit) = wait_until_terminal(
-            || {
-                reads.set(reads.get() + 1);
-                async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) }
-            },
-            2_000,
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(exit, WaitExit::Timeout);
+        // 上界留 3 而不是 2：第二次读若因计时抖动落在 deadline 前几百毫秒，会
+        // 多走一档 3000ms——那是无害的，判别力仍远强于固定步长的 11 次。
+        // finish_notify 是进程级信号，别的子 agent 收尾也会唤醒本等待方。
         assert!(
-            started.elapsed() >= std::time::Duration::from_millis(2_000),
-            "预算没走满就返回了"
-        );
-        assert!(
-            reads.get() <= 7,
-            "2s 预算读了 {} 次，阶梯没生效",
+            reads.get() <= 3,
+            "1.5s 预算读了 {} 次，阶梯没生效",
             reads.get()
         );
     }
