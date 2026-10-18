@@ -657,6 +657,10 @@ fn merge_across_kind_replaces_and_carries_the_new_kind() {
         msg.contains("已合并更新"),
         "跨 kind 近重复应直接合并：{msg}"
     );
+    assert!(
+        !msg.contains("与已有教训"),
+        "合并目标可能是 fact 行，文案不能对用户谎称并的是教训：{msg}"
+    );
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1, "不留两条近义记忆");
     assert_eq!(all[0].kind, "lesson", "kind 随最后写入的那条走");

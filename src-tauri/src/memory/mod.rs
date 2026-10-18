@@ -676,8 +676,10 @@ pub fn record_lesson_core(
             }
         }
         Ok((InsertOutcome::Merged { .. }, _)) => {
+            // 「已有记忆」而非「已有教训」：合并不限定 kind，目标可能是 fact 等行，
+            // 说成教训就是对着用户讲假话（与 remember_fact 的合并文案同口径）。
             format!(
-                "已记录教训（与已有教训语义重复，已合并更新）：{}",
+                "已记录教训（与已有记忆语义重复，已合并更新）：{}",
                 truncate_chars(lesson, 60, false)
             )
         }
