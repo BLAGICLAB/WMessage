@@ -906,6 +906,43 @@ mod tests {
         assert_eq!(messages[1]["role"], "assistant");
     }
 
+    /// 只含 system 的请求发不出去——子任务汇报轮踩过的正是这一条。
+    ///
+    /// 汇报轮由后端发起、没有用户消息，早期实现直接传空历史：请求里只剩系统提示词、
+    /// 轮次说明和子任务回报三段 system，全被抽进 system 之后 messages 归零，
+    /// 转换阶段硬失败。症状在用户端是「子任务跑完了，却没人告诉我结果」。
+    #[test]
+    fn system_only_input_is_rejected() {
+        let msgs = vec![
+            sys("主提示词"),
+            sys("汇报轮说明：没有新的用户消息"),
+            sys("子任务回报：已完成"),
+        ];
+        assert!(
+            openai_msgs_to_anthropic(&msgs).is_err(),
+            "纯 system 的请求转出来是空消息列表，必须拒绝"
+        );
+    }
+
+    /// 汇报轮补上历史（或兜底那条 user 消息）后，同样的 system 段就能发出去了。
+    #[test]
+    fn report_turn_sends_once_it_carries_a_user_turn() {
+        let msgs = vec![
+            sys("主提示词"),
+            sys("汇报轮说明：没有新的用户消息"),
+            user("派子 agent 查一下东海水产研究所的最新进展"),
+            asst_text("已派发"),
+            sys("汇报轮说明：没有新的用户消息"),
+            sys("子任务回报：已完成"),
+        ];
+        let (system, messages) = openai_msgs_to_anthropic(&msgs).unwrap();
+        assert_eq!(messages.len(), 2, "历史两条都该发出去");
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        // 四段 system 全进 system 段，不占 messages
+        assert_eq!(system.as_array().unwrap().len(), 4);
+    }
+
     // ── ToolSlotMapper（真实环境 400 回归）──
 
     /// 模拟一轮 Anthropic 事件流经 parse + remap + 生产同一累积函数后的工具列表

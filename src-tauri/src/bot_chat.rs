@@ -746,8 +746,21 @@ enum SkillRouteOutcome {
 /// `report_subagent_result`），否则这句提示会被当成模型答复落进历史。
 pub(crate) const CHAT_BUSY_REPLY: &str = "这条会话正在处理上一条消息，请稍候再发。";
 
+/// 本轮的发起方。
+///
+/// 汇报轮由后端主动发起（子任务收尾转述，见 `report_subagent_result`），它带着库里的
+/// 对话历史却没有用户输入。历史上「有没有用户消息」等价于「messages 是否为空」，
+/// 带上历史之后这个等价就断了，所以发起方必须做成显式入参：靠 `messages.is_empty()`
+/// 猜出来的口径，会让汇报轮把用户的旧消息当成本轮输入，跑挂起恢复、技能路由和计划生成。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TurnOrigin {
+    /// 前端发起的用户回合
+    User,
+    /// 后端发起的汇报轮
+    Report,
+}
+
 #[tauri::command]
-#[allow(clippy::too_many_lines)]
 pub async fn bot_chat(
     app: AppHandle,
     messages: Vec<ChatMsg>,
@@ -756,6 +769,24 @@ pub async fn bot_chat(
     // 由前端解析「会话覆盖 ?? 后台默认」后传入具体值；None = 按后台默认。
     // 只影响本次聊天调用，不回写 bot-config.json。
     reasoning_effort: Option<String>,
+) -> CommandResult<BotChatResult> {
+    bot_chat_inner(
+        app,
+        messages,
+        session_id,
+        reasoning_effort,
+        TurnOrigin::User,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_lines)]
+async fn bot_chat_inner(
+    app: AppHandle,
+    messages: Vec<ChatMsg>,
+    session_id: Option<String>,
+    reasoning_effort: Option<String>,
+    origin: TurnOrigin,
 ) -> CommandResult<BotChatResult> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
     // 会话级防重入：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
@@ -780,11 +811,6 @@ pub async fn bot_chat(
     // 同一条原文，只要有一处读到未清洗的原文，规范化就只做了一半
     // （「做\u{FEFF}PPT」照旧匹配不上技能）。
     let mut messages = messages;
-    // 后端主动发起的汇报轮不带用户消息（子 agent 收尾转述，见
-    // `report_subagent_result`）。这个标志必须在历史进入 truncate 之前钉住：
-    // truncate 会消耗掉 messages，之后再判断就分不清「本来就没有用户消息」
-    // 和「历史被截断光了」，两者的模型行为完全不同。
-    let report_turn = messages.is_empty();
     if let Some(n) = normalize_user_input(&mut messages) {
         crate::audit_event!(
             &app,
@@ -793,9 +819,20 @@ pub async fn bot_chat(
             "stripped" => n.stripped.to_string(),
         );
     }
+    // 本轮的用户输入：汇报轮恒为 None（它没有用户发言，只是把库里的历史摆回模型面前）。
+    // 钉成一个变量而不是让各处各读一次 messages.last()：门控收在这里一处，将来
+    // 新增输入侧判定照旧读 user_input，就不会漏掉汇报轮这道门。
+    // 位置在 L0 之后——判定要读清洗过的文本；在 truncate 之前——truncate 会消耗掉
+    // messages（「最后一条永远保留」目前成立，但把门控绑在一段会被重建的 vec 上，
+    // 下一个改截断的人就会静默拿到错的值）。
+    let user_input: Option<ChatMsg> = match origin {
+        TurnOrigin::User => messages.last().cloned(),
+        TurnOrigin::Report => None,
+    };
     // 步骤 1：逐步执行挂起恢复：有子任务待确认时，本条消息是对执行流程的应答
     // （继续/重做/停），优先于一切聊天路由。/stop 走独立命令（bot_stop 内清挂起）。
-    if let Some(last) = messages.last() {
+    // 汇报轮 user_input=None，整体跳过：它不是用户的应答，不该劫持挂起中的流程。
+    if let Some(last) = user_input.as_ref() {
         if crate::exec_steps::has_pending_for(&app, session_id.as_deref()) {
             return crate::exec_steps::resume(&app, &last.content, session_id.as_deref()).await;
         }
@@ -806,7 +843,7 @@ pub async fn bot_chat(
     // 必须在任何路由判定之前读取——主流程禁止任何步骤抢跑。
     let bypass_llm_on_pre_step_hit = crate::bot::read_bypass_llm_switch(&app);
     // 审计：记录本轮用户最新指令（截断防刷日志）
-    if let Some(last) = messages.last() {
+    if let Some(last) = user_input.as_ref() {
         crate::audit_event!(
             &app,
             crate::audit::AuditLevel::Info,
@@ -870,7 +907,7 @@ pub async fn bot_chat(
             // 按用户末条消息做语义化技能推荐排序（embed 不可用降级全清单）
             crate::bot_skills::build_skill_block_for(
                 &app,
-                messages.last().map(|m| m.content.as_str()),
+                user_input.as_ref().map(|m| m.content.as_str()),
             )
             .await
         ),
@@ -882,7 +919,7 @@ pub async fn bot_chat(
     // - PassThrough → 放行进 LLM
     // 仅处理用户最新一条消息（后续轮次走原 LLM 路径）。
     // 路由命中的处理全部发生在本步骤之后，任何步骤不得抢跑、不得前置 return。
-    let pre_routed_skill: Option<PreStepRoute> = if let Some(last) = messages.last() {
+    let pre_routed_skill: Option<PreStepRoute> = if let Some(last) = user_input.as_ref() {
         if let Some(task_ids) = crate::intent_router::is_chat_execute_trigger(&last.content) {
             Some(PreStepRoute::ExecuteTasks(task_ids))
         } else {
@@ -990,9 +1027,9 @@ pub async fn bot_chat(
     // 触发保守：needs_plan 启发式命中才多花一次 Planner 调用；
     // Planner 失败/输出非法 → None → 原自由循环，不阻断聊天。
     // 仅聊天主路径启用：任务卡执行（run_task_in_chat）/ 逐步执行（exec_steps）
-    // 目标单一明确，不需要规划。
-    let last_user_text = messages
-        .last()
+    // 目标单一明确，不需要规划。汇报轮同理——它只该转述结果，不该顺手生计划。
+    let last_user_text = user_input
+        .as_ref()
         .map(|m| m.content.clone())
         .unwrap_or_default();
     let mut plan_state: Option<crate::bot_plan::PlanState> =
@@ -1031,10 +1068,11 @@ pub async fn bot_chat(
     }
     // 记忆块独立 system 消息（设计第 6 节），紧跟主
     // system prompt 与摘要消息之后。直接进 msgs 不经 ChatMsg——下方 role 白名单
-    // 会把非 assistant 降级为 user；检索查询 = 本轮用户消息原文 ≤200 字；
+    // 会把非 assistant 降级为 user；检索查询 = 本轮用户消息原文 ≤200 字（汇报轮
+    // 没有用户消息 → 空查询：记忆块照常注入，只是没有语义检索的抓手）；
     // DB 任何失败静默降级为无记忆块（build_memory_block 内部兜底）。
-    let memory_query = messages
-        .last()
+    let memory_query = user_input
+        .as_ref()
         .map(|m| m.content.chars().take(200).collect::<String>())
         .unwrap_or_default();
     if let Some(block) = build_memory_block(&app, &memory_query).await {
@@ -1045,7 +1083,12 @@ pub async fn bot_chat(
             "dropped" => dropped, "budget" => budget_used);
     }
     // 最后 3 条消息内 user 消息的图片附件转多模态消息（更早的历史降级为路径文本）
-    let img_indices = image_attach_indices(&messages);
+    // 汇报轮不回看图片：历史里那几张图与「转述子任务结果」无关，每轮重读磁盘 +
+    // 整图 base64 重发是白花的开销。
+    let img_indices = match origin {
+        TurnOrigin::User => image_attach_indices(&messages),
+        TurnOrigin::Report => Vec::new(),
+    };
     for (i, m) in messages.iter().enumerate() {
         // role 白名单：历史里的非法 role 一律按 user，
         // 防污染历史注入 system/tool 角色
@@ -1074,10 +1117,10 @@ pub async fn bot_chat(
     // 模型对本轮末尾的内容权重最高，而回报正是「此刻新增」的信息。
     // 只注 result_json，子会话历史留在它自己的会话行里（§3.7 要点 3）。
     //
-    // 汇报轮（report_turn）没带用户消息，模型面前只有系统提示词、历史和下面这段
+    // 汇报轮（TurnOrigin::Report）没带用户消息，模型面前只有系统提示词、历史和下面这段
     // 回报；不说清这一轮要它做什么，它会对着历史反问用户「你想让我做什么」。
     // 放在回报之前是为了不打断末尾那段的最高权重。
-    if report_turn {
+    if origin == TurnOrigin::Report {
         msgs.push(serde_json::json!({"role": "system", "content": REPORT_TURN_PROMPT}));
     }
     if let Some(digest) =
@@ -1181,12 +1224,21 @@ pub(crate) enum ReportOutcome {
 
 /// 子任务收尾汇报轮：主会话空闲时由后端主动起的一轮对话，没有用户消息。
 ///
-/// 复用 `bot_chat` 的空消息路径而不是另写一条链路，是为了和主聊天共用同一套
-/// 提示词装配、历史截断、记忆注入与 digest 注入——另起一份必然随主链路漂移。
-/// 空消息下所有面向用户输入的步骤（规范化审计、纠正检测、pre-step 路由、
-/// 计划生成）本来就自然空转，不需要额外分支去跳过它们。
+/// 复用 `bot_chat` 的主链路而不是另写一条，是为了和主聊天共用同一套提示词装配、
+/// 历史截断、记忆注入与 digest 注入——另起一份必然随主链路漂移。
+/// 面向用户输入的步骤（规范化审计、挂起恢复、纠正检测、技能推荐、pre-step 路由、
+/// 计划生成）在 `TurnOrigin::Report` 下由 `user_input` 统一空转，不需要各自分支。
 pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) -> ReportOutcome {
-    match bot_chat(app.clone(), Vec::new(), Some(session_id.to_string()), None).await {
+    let history = report_turn_history(app, session_id).await;
+    match bot_chat_inner(
+        app.clone(),
+        history,
+        Some(session_id.to_string()),
+        None,
+        TurnOrigin::Report,
+    )
+    .await
+    {
         Ok(r) if r.text == CHAT_BUSY_REPLY => ReportOutcome::Busy,
         Ok(r) if r.text.trim().is_empty() => ReportOutcome::Failed,
         Ok(r) => {
@@ -1203,6 +1255,55 @@ pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) ->
             ReportOutcome::Failed
         }
     }
+}
+
+/// 汇报轮占位 user 消息：库里一条历史都没有时补的那一条。
+///
+/// 不是装饰——Anthropic 协议不接受只含 system 的请求，`openai_msgs_to_anthropic`
+/// 抽走 system 后 messages 为空就直接报错。文本要写成「等待转述」而不是伪造一条
+/// 用户发言，免得模型据此以为用户问过什么。
+const REPORT_TURN_STUB: &str = "（系统消息：请读取本轮末尾的「子任务回报」并转述给用户。）";
+
+/// 汇报轮带的历史：库里已落盘的消息行。
+///
+/// 为什么必须带历史：对话历史不在 `bot_chat` 里读库，而是前端整段传进来；汇报轮
+/// 没有前端，就只能自己读。传空历史的后果不是「模型看不到上文」这么轻——请求里
+/// 只剩 system 消息，转成 Anthropic 协议时 system 全被抽走，messages 归零，
+/// 以「没有可发送的消息」硬失败，用户端表现是子任务跑完了却永远没人转述。
+fn report_turn_history_from_rows(rows: Vec<crate::db::BotMsgRow>) -> Vec<ChatMsg> {
+    let mut msgs: Vec<ChatMsg> = rows
+        .into_iter()
+        .map(|r| ChatMsg {
+            role: r.role,
+            content: r.content,
+        })
+        .collect();
+    if msgs.is_empty() {
+        // 派发方会话刚落库、首条用户消息的保存还没落地时会走到这里（汇报轮在
+        // 主会话锁释放后触发，而历史是前端在收到答复后才写的，两者没有时序保证）。
+        msgs.push(ChatMsg {
+            role: "user".into(),
+            content: REPORT_TURN_STUB.into(),
+        });
+    }
+    msgs
+}
+
+/// 汇报轮历史的取数薄壳：读库失败（会话被删、DB 不可用）不阻断汇报，退回占位消息。
+async fn report_turn_history(app: &AppHandle, session_id: &str) -> Vec<ChatMsg> {
+    let rows = match crate::db::bot_history_load(app.clone(), session_id.to_string()).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            crate::audit_event!(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "subagent_report.history_load_failed",
+                "error" => crate::bot::truncate_for_log(&e.message(), 200),
+            );
+            Vec::new()
+        }
+    };
+    report_turn_history_from_rows(rows)
 }
 
 /// 汇报轮回复的落地：追加落库 + 通知前端。
@@ -2294,12 +2395,12 @@ mod bot_chat_pure_helpers_tests {
     /// 防自匹配。
     #[test]
     fn ingest_runs_before_every_input_decision_and_mutates_in_place() {
-        // 限定在 bot_chat 函数体内搜：本文件前部还有好几个同名符号的定义与
+        // 限定在 bot_chat_inner 函数体内搜：本文件前部还有好几个同名符号的定义与
         // 文档提及，全文件搜第一个会命中它们，断言就变成在比谁先出现。
         let whole = include_str!("bot_chat.rs");
         let start = whole
-            .find("pub async fn bot_chat(")
-            .expect("bot_chat 函数体起点");
+            .find("async fn bot_chat_inner(")
+            .expect("bot_chat_inner 函数体起点");
         let body = &whole[start..];
         let l0 = body
             .find("normalize_user_input(&mut messages)")
@@ -2324,6 +2425,94 @@ mod bot_chat_pure_helpers_tests {
             body[..l0].contains("let mut messages"),
             "入参必须先转成 mut 才能就地改写"
         );
+    }
+
+    /// 接线守卫：汇报轮的门控只有一个入口。
+    ///
+    /// 汇报轮带着库里的历史走主链路，历史非空就意味着「messages.last() 就是本轮
+    /// 用户输入」这条老口径失效。任何在 `user_input` 之后新写的 `messages.last()`
+    /// 读法，都会让汇报轮把用户的旧消息当成本轮输入——挂起恢复、技能路由、计划生成
+    /// 全都会被误触发，而且这类误触发只在「子任务收尾后自动汇报」这条路上出现，
+    /// 手动聊天测不出来。故在这里钉死：门控点之后不允许再有裸的 messages.last()。
+    #[test]
+    fn report_turn_gate_is_the_only_input_read() {
+        let whole = include_str!("bot_chat.rs");
+        let start = whole
+            .find("async fn bot_chat_inner(")
+            .expect("bot_chat_inner 函数体起点");
+        let body = &whole[start..];
+        let gate = body
+            .find("let user_input: Option<ChatMsg>")
+            .expect("必须有一个统一的用户输入门控点");
+        // 从门控表达式之后开始扫：门控自己就要读 messages.last() 来区分两个分支。
+        // match 的两个分支都不带花括号，紧随其后的 `};` 就是它的收尾。
+        let after_gate = gate + body[gate..].find("};").expect("门控表达式收尾") + 2;
+        let tail = &body[after_gate..];
+        // 只看门控之后到函数收尾之间**真正的代码**：\n}\n 命中的是顶格右花括号，
+        // 函数体内的嵌套块都是缩进的，所以这是「函数结束」的无歧义记号；
+        // 注释行整行剔除，否则注释里提一嘴 messages.last() 就会误报。
+        let code: String = tail[..tail.find("\n}\n").expect("bot_chat_inner 函数体收尾")]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("messages.last()"),
+            "user_input 之后又出现裸的 messages.last()：这条读法绕过汇报轮门控，\
+             会把用户的旧消息当成本轮输入"
+        );
+        // 汇报轮的另一处显式门控：图片不回看，避免每轮把历史里的图重新 base64 发一遍
+        assert!(
+            code.contains("TurnOrigin::Report => Vec::new()"),
+            "汇报轮不该回看历史图片"
+        );
+    }
+
+    /// 汇报轮历史映射：库里有什么就带什么，一条不留。
+    ///
+    /// 汇报轮带空历史的后果是 Anthropic 转换阶段硬失败（system 抽完就没有消息可发），
+    /// 这条用例把「库里几条就带几条」钉住，防止映射时多丢一条——丢了症状同样是转述
+    /// 内容对不上，但更难从日志看出来。
+    #[test]
+    fn report_turn_history_passes_rows_through_in_order() {
+        let rows = vec![
+            crate::db::BotMsgRow {
+                role: "user".into(),
+                content: "派子 agent 查一下".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            },
+            crate::db::BotMsgRow {
+                role: "assistant".into(),
+                content: "已派发".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            },
+        ];
+        let out = report_turn_history_from_rows(rows);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, "user");
+        assert_eq!(out[0].content, "派子 agent 查一下");
+        assert_eq!(out[1].role, "assistant");
+        assert_eq!(out[1].content, "已派发");
+    }
+
+    /// 历史为空时补的占位必须是 user 角色的一条真消息。
+    ///
+    /// 角色写错（system / assistant）时 `openai_msgs_to_anthropic` 照样能把 system
+    /// 抽走，messages 依旧归零，失败现场和没补时一模一样——所以这条断言盯的是角色。
+    #[test]
+    fn report_turn_history_falls_back_to_a_user_turn_when_db_is_empty() {
+        let out = report_turn_history_from_rows(vec![]);
+        assert_eq!(
+            out.len(),
+            1,
+            "空历史也必须有一条 user 消息，否则 Anthropic 转换直接失败"
+        );
+        assert_eq!(out[0].role, "user");
+        assert_eq!(out[0].content, REPORT_TURN_STUB);
     }
 
     // ── 历史预算 / 图片窗口 / think 剥除 ──
