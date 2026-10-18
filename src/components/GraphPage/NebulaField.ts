@@ -101,10 +101,6 @@ export class Starfield {
     scene.add(this.stars);
   }
 
-  setPixelRatio(pr: number): void {
-    this.starMat.uniforms.uPR.value = pr;
-  }
-
   dispose(): void {
     this.stars.geometry.dispose();
     this.starMat.dispose();
@@ -258,11 +254,7 @@ export class CloudField {
     scene.add(this.points);
   }
 
-  setPixelRatio(pr: number): void {
-    this.mat.uniforms.uPR.value = pr;
-  }
-
-  /** 按已存的种子重建某组云的散布形状。
+  /** 按已存的种子重建某团云的散布形状。
    *  用种子派生方向而不是另抽随机数：同一组每次重建形状完全一致，
    *  筛选来回切的时候云不会每次都换一副脸。 */
   private fitCluster(g: number, radius: number): void {

@@ -119,7 +119,8 @@ describe("GraphPage", () => {
     expect(within(legend).getByText("进行中")).toBeTruthy();
   });
 
-  it("「按耗时定大小」已彻底退役：图例与设置页都不再有该控件", async () => {
+  it("「按耗时定大小」已彻底退役：图例里不再有该控件", async () => {
+    // 设置页那一半由 GraphSettingsPanel.test.tsx 覆盖（这里只渲染图谱页）
     renderPage();
     await screen.findByTestId("graph-stats");
     expect(screen.queryByText("耗时")).toBeNull();
