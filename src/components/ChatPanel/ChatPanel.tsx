@@ -466,8 +466,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
 
-  // 子 agent 收尾事件——派发者主会话里轻提示（围观过滤沿用 PAR-1 的
-  // sessionId 流式隔离；这里补「后台子任务完成」的可见性）。
+  // 子 agent 收尾事件——没有派发方主会话时（如后台/定时派发）才轻提示，
+  // 有派发方时由汇报轮发言，见下面 bot-chat-report。
   // 复用 useTauriListen（与手写 listen 生命周期等价且更稳）。
   useTauriListen<{
     subagentId: string;
@@ -475,14 +475,30 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     status: SubagentRow["status"];
     summary: string;
   }>("subagent-finished", (payload) => {
-    const parent = payload.parentSessionId;
-    if (parent && parent === sessionIdRef.current) {
+    // 有派发方主会话时不打这条提示：后端会在那一轮空闲时自己起一轮汇报，
+    // 同一件事说两遍比不说更糟。没有任何派发方（后台/定时派发）时才靠提示告知。
+    if (!payload.parentSessionId) {
       const label = SUBAGENT_STATUS[payload.status]?.label ?? payload.status;
       addHint(`子任务${label}：${payload.summary || payload.subagentId}`);
     }
     // 子 agent 行只有这里可见（不再有任务卡兜底）：不重拉就一直停在
     // running/queued——派发方会话里既看不到刚跑完的，也看不到刚派出的
     refreshSubagentsRef.current();
+  });
+  // 子任务收尾汇报轮的收尾：后端已把整段回复追加落库，这里只把流式气泡定稿
+  // （正文用后端给的全文覆盖，与 runChat 同一套「full.text 校正」口径）
+  useTauriListen<{ sessionId: string; text: string }>("bot-chat-report", (payload) => {
+    if (payload.sessionId !== sessionIdRef.current) return;
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last?.streaming) {
+        return [
+          ...prev.slice(0, -1),
+          { ...last, content: payload.text, streaming: false, turnStatus: "completed" as const },
+        ];
+      }
+      return [...prev, { role: "assistant" as const, content: payload.text, turnStatus: "completed" as const }];
+    });
   });
   // 子 agent 派发事件：行建好（queued）即到——只重拉列表，不打扰对话
   // （收尾提示只走 subagent-finished）。没有这条，新派发的行在收尾前
@@ -717,7 +733,21 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       if (!add && !thinkTouched) return;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
-        if (!last || !last.streaming) return prev;
+        if (!last || !last.streaming) {
+          // 后端主动起的一轮（子任务收尾汇报）没有前端预置的气泡，数组末尾是
+          // 用户消息。原来在这里直接 return prev，增量被静默丢掉，用户得重新
+          // 加载会话才看得见这段回复——这里补一个气泡接住它。
+          return [
+            ...prev,
+            {
+              role: "assistant" as const,
+              content: add ?? "",
+              streaming: true,
+              turnStatus: "running" as const,
+              turnStartedAt: Date.now(),
+            },
+          ];
+        }
         const copy = [...prev];
         copy[copy.length - 1] = {
           ...last,

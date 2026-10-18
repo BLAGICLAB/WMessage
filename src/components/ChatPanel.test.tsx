@@ -323,7 +323,6 @@ describe("ChatPanel", () => {
     await waitFor(() =>
       expect(screen.queryByText("1 个执行中")).not.toBeInTheDocument(),
     );
-    expect(screen.getByText(/周报已出/)).toBeInTheDocument();
   });
 
   it("subagent-spawned 到达就重拉：新派发的行收尾前就可见可取消", async () => {
@@ -1626,7 +1625,40 @@ describe("ChatPanel", () => {
     }
   });
 
-  it("子 agent 收尾提示用侧栏徽标同一份措辞（succeeded = 完成，不是「已完成」）", async () => {
+  it("无派发方时子 agent 收尾提示用侧栏徽标同一份措辞（succeeded = 完成，不是「已完成」）", async () => {
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      await act(async () => {
+        for (const cb of mocks.listeners["subagent-finished"] ?? []) {
+          cb({
+            payload: {
+              subagentId: "sa_1",
+              // 没有派发方主会话 → 没人会替模型转述，提示是唯一出口
+              parentSessionId: null,
+              status: "succeeded",
+              summary: "周报已出",
+            },
+          });
+        }
+      });
+      expect(await screen.findByText(/子任务完成：周报已出/)).toBeInTheDocument();
+    } finally {
+      mocks.listenMock.mockImplementation(prevListenImpl!);
+    }
+  });
+
+  it("有派发方主会话时收尾不再重复提示（后端会在那一轮空闲时自己起汇报轮）", async () => {
     const prevListenImpl = mocks.listenMock.getMockImplementation();
     mocks.listenMock.mockImplementation(
       async (
@@ -1646,18 +1678,89 @@ describe("ChatPanel", () => {
             payload: {
               subagentId: "sa_1",
               parentSessionId: "s1",
-              status: "succeeded",
-              summary: "周报已出",
+              status: "failed",
+              summary: "周报没跑出来",
             },
           });
         }
       });
-      expect(await screen.findByText(/子任务完成：周报已出/)).toBeInTheDocument();
+      await act(async () => {});
+      expect(screen.queryByText(/子任务失败/)).toBeNull();
     } finally {
       mocks.listenMock.mockImplementation(prevListenImpl!);
     }
   });
 
+  it("汇报轮：没有流式气泡时 delta 自建一个，别把整轮回复悄悄丢掉", async () => {
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    const prevInvokeImpl = mocks.invokeMock.getMockImplementation();
+    // 会话末尾停在一条用户消息——后端主动起的一轮就落在这个位置
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_history_load")
+        return [{ role: "user", content: "查一下上海博士后政策", refsJson: null }];
+      return defaultInvoke(cmd);
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      expect(await screen.findByText("查一下上海博士后政策")).toBeInTheDocument();
+      await act(async () => {
+        for (const cb of mocks.listeners["bot-chat-delta"] ?? []) {
+          cb({ payload: { sessionId: "s1", text: "子任务跑完了" } });
+        }
+      });
+      expect(await screen.findByText("子任务跑完了")).toBeInTheDocument();
+      // 用户原话还在：增量是另起气泡，不是被塞进用户那条
+      expect(screen.getByText("查一下上海博士后政策")).toBeInTheDocument();
+    } finally {
+      mocks.listenMock.mockImplementation(prevListenImpl!);
+      mocks.invokeMock.mockImplementation(prevInvokeImpl!);
+    }
+  });
+
+  it("汇报轮收尾：bot-chat-report 把流式气泡定稿成最终全文", async () => {
+    const prevListenImpl = mocks.listenMock.getMockImplementation();
+    mocks.listenMock.mockImplementation(
+      async (
+        event: string,
+        cb: (e: { payload: Record<string, unknown> }) => void,
+      ) => {
+        (mocks.listeners[event] ??= []).push(cb);
+        return () => {};
+      },
+    );
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await screen.findAllByText("默认会话");
+      await act(async () => {
+        for (const cb of mocks.listeners["bot-chat-delta"] ?? []) {
+          cb({ payload: { sessionId: "s1", text: "子任务跑完了" } });
+        }
+      });
+      await screen.findByText("子任务跑完了");
+      await act(async () => {
+        for (const cb of mocks.listeners["bot-chat-report"] ?? []) {
+          cb({
+            payload: { sessionId: "s1", text: "子任务跑完了，结论如下：……" },
+          });
+        }
+      });
+      // 正文按后端给的全文校正，不留半截流式内容，也不重复追加一条
+      expect(screen.getByText("子任务跑完了，结论如下：……")).toBeInTheDocument();
+      expect(screen.queryByText("子任务跑完了")).toBeNull();
+    } finally {
+      mocks.listenMock.mockImplementation(prevListenImpl!);
+    }
+  });
   it("删除会话后清掉该会话的水位累计（sessionUsage 条目随会话删除）", async () => {
     const user = userEvent.setup();
     const listeners = new Map<string, (e: { payload: unknown }) => void>();
