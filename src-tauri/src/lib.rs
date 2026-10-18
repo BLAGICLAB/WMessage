@@ -426,6 +426,12 @@ pub fn run() {
                 }
             }
 
+            // 内置 MCP 条目补写（当前：Playwright 浏览器操控）：缺失才写，
+            // 用户改过的条目原样保留。必须在上面那批迁移之后——明文 env/headers
+            // 未迁进凭据存储就写回配置，会被 skip_serializing 剥掉等于丢数据。
+            // 条目默认停用，写盘不触发连接。
+            bot::mcp::builtin::materialize_at_startup(app.handle());
+
             // 记忆 v2：嵌入引擎后台预热；定时记忆整理调度器
             //（bot_scheduler 同模式，10 分钟检查一次配置到点；旧 v1 记忆系统
             //（bot_facts 表）已删除，老库残表无害不清理）

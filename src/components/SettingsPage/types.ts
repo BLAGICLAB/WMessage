@@ -111,6 +111,8 @@ export type McpServerStatus = {
   state: string;
   error?: string | null;
   toolCount: number;
+  /** 内置条目（Playwright）：不可删除，只能开关 */
+  builtin?: boolean;
 };
 
 /** 服务器已发现的工具（名称 + 描述，设置页展示用） */

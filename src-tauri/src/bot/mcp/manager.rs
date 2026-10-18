@@ -70,6 +70,7 @@ pub fn shared() -> &'static McpManager {
     MANAGER.get_or_init(|| McpManager {
         slots: Mutex::new(HashMap::new()),
         stderr_tail: Mutex::new(HashMap::new()),
+        cwd: Mutex::new(None),
     })
 }
 
@@ -90,6 +91,10 @@ pub struct McpManager {
     /// 阶段 6 失败隔离强化：连接失败 / 调用断连时把尾巴附进错误与审计，
     /// 不用让用户去猜服务器为什么不起来。
     stderr_tail: Mutex<HashMap<String, Arc<Mutex<std::collections::VecDeque<String>>>>>,
+    /// stdio 子进程的工作目录（重载时钉成数据目录）；None = 不设，沿用进程 cwd。
+    /// 见 `reload_from_config` 的设置点：打包后进程 cwd 是 `/`，不钉住的话以
+    /// 工作目录为文件沙箱根的服务器（Playwright）会把整块文件系统当可访问范围。
+    cwd: Mutex<Option<std::path::PathBuf>>,
 }
 
 /// 环形缓冲容量（行）
@@ -232,6 +237,9 @@ impl McpManager {
                     .envs(cfg.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped());
+                if let Some(dir) = self.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                    cmd.current_dir(dir);
+                }
                 // Windows 桌面应用不弹控制台窗（与 bot_py Python 子进程同惯例）
                 #[cfg(windows)]
                 {
@@ -390,6 +398,7 @@ impl McpManager {
     /// 单台失败只记审计，不影响其他服务器（失败隔离）。
     /// 具体形态 `AppHandle`（= Wry）：load_config 是具体签名，本方法仅生产路径调用。
     pub async fn reload_from_config(&self, app: &tauri::AppHandle) {
+        *self.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::db::data_dir(app));
         let servers = crate::bot::config::io::load_config(app)
             .mcp_servers
             .unwrap_or_default();

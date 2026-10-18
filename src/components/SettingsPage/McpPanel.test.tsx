@@ -51,6 +51,20 @@ const SAMPLE_STATUS = [
   },
 ];
 
+const BUILTIN_STATUS = [
+  SAMPLE_STATUS[0],
+  {
+    id: "builtin-playwright",
+    name: "Playwright 浏览器",
+    transport: "stdio",
+    enabled: false,
+    state: "absent",
+    error: null,
+    toolCount: 0,
+    builtin: true,
+  },
+];
+
 describe("McpPanel", () => {
   it("空列表：显示占位文案 + 添加按钮", async () => {
     render(<McpPanel />);
@@ -199,5 +213,26 @@ describe("McpPanel", () => {
     await flush();
     expect(screen.getByText("read_file")).toBeInTheDocument();
     expect(screen.getByText(/读文件/)).toBeInTheDocument();
+  });
+
+  it("内置条目：标「内置」、不给删除按钮，开关照常可点", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status" ? BUILTIN_STATUS : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(screen.getByText("Playwright 浏览器")).toBeInTheDocument();
+    expect(screen.getByText("内置")).toBeInTheDocument();
+    // 两台服务器，但只有自建那台有删除按钮
+    expect(screen.getAllByTitle("删除")).toHaveLength(1);
+    // 内置条目默认停用，开关可打开（第二张卡 = 内置那台）
+    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
+    expect(boxes[1].checked).toBe(false);
+    fireEvent.click(boxes[1]);
+    await flush();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("mcp_server_toggle", {
+      id: "builtin-playwright",
+      enabled: true,
+    });
   });
 });

@@ -490,6 +490,11 @@ export function McpPanel() {
                 <StateDot status={s} />
                 <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]">
                   <span className="font-medium text-[var(--t2)]">{s.name}</span>
+                  {s.builtin && (
+                    <span className="ml-1.5 rounded bg-black/5 px-1 py-0.5 text-[10px] text-[var(--t5)]">
+                      内置
+                    </span>
+                  )}
                   <span className="text-[var(--t5)]">
                     {" "}
                     · {s.transport}
@@ -516,15 +521,18 @@ export function McpPanel() {
                 >
                   <Pencil size={13} aria-hidden />
                 </IconButton>
-                <IconButton
-                  className="p-0.5 text-xs hover:text-[var(--danger)]"
-                  onClick={() => remove(s)}
-                  disabled={busy}
-                  title="删除"
-                  aria-label="删除"
-                >
-                  <Trash2 size={13} aria-hidden />
-                </IconButton>
+                {/* 内置条目不给删除：启动时缺失会补写回来，删了等于没删 */}
+                {!s.builtin && (
+                  <IconButton
+                    className="p-0.5 text-xs hover:text-[var(--danger)]"
+                    onClick={() => remove(s)}
+                    disabled={busy}
+                    title="删除"
+                    aria-label="删除"
+                  >
+                    <Trash2 size={13} aria-hidden />
+                  </IconButton>
+                )}
                 {/* 启停开关：与设置页其他 Toggle 同款语义——点击即持久化 */}
                 <label className="flex shrink-0 cursor-pointer items-center gap-1">
                   <input

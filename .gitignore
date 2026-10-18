@@ -43,6 +43,10 @@ src-tauri/dotnet/**/obj
 # 绿色便携包产物（本地打包，勿入库）— 同时匹配目录和 zip
 wmessage-portable-*
 
+# 内置 MCP 的随包分发目录（npm 包 + Chromium 内核，体积大、随用户机器生成；
+# 目录形态与准备命令见 docs/MCP-COMPUTER-USE-SETUP.md §1）
+playwright-mcp/
+
 # TypeScript 增量编译缓存（tsconfig.node.json composite: true 触发）
 tsconfig.*.tsbuildinfo
 

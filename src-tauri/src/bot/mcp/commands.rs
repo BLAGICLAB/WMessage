@@ -140,6 +140,14 @@ pub fn mcp_server_save(
 /// 按 id 删除 MCP 服务器（幂等：不存在不报错）。返回删除后的完整列表。
 #[tauri::command]
 pub fn mcp_server_delete(app: AppHandle, id: String) -> CommandResult<Vec<McpServerConfig>> {
+    // 内置条目（Playwright）不可删：启动时缺失会补写回来，删了等于没删，
+    // 用户看到的却是「我明明删掉了又冒出来」。停用走 mcp_server_toggle。
+    if super::builtin::is_builtin_id(&id) {
+        return Err(crate::error::CommandError::DomainRule {
+            domain: "mcp".into(),
+            reason: "内置 MCP 服务器不可删除，可在设置页关闭它的开关来停用".into(),
+        });
+    }
     let (list, removed) = with_locked_config(&app, |cfg| {
         let removed = cfg
             .mcp_servers
@@ -214,6 +222,8 @@ pub struct McpServerStatus {
     pub state: String,
     pub error: Option<String>,
     pub tool_count: usize,
+    /// 内置条目（不可删除，只能开关）；前端据此隐藏删除按钮
+    pub builtin: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -236,6 +246,7 @@ pub fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
             (st.state, st.error, st.tool_count)
         };
         let transport = s.transport_kind().as_str().to_string();
+        let builtin = super::builtin::is_builtin_id(&s.id);
         out.push(McpServerStatus {
             id: s.id,
             name: s.name,
@@ -244,6 +255,7 @@ pub fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
             state,
             error,
             tool_count,
+            builtin,
         });
     }
     Ok(out)
