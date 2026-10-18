@@ -48,10 +48,11 @@ export function SessionRail({
             const active = s.id === sessionId;
             return (
               <div key={s.id} className="group relative flex items-center">
-                {/* 品牌色竖条：选中态的第二个信号，比仅靠底色对比更易扫读 */}
+                {/* 品牌色竖条：选中态的第二个信号，比仅靠底色对比更易扫读。
+                    行高了两行，竖条跟着加高一点才盖得住选中块 */}
                 <span
                   aria-hidden
-                  className={`absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full ${
+                  className={`absolute left-0 top-1/2 h-7 w-0.5 -translate-y-1/2 rounded-full ${
                     active ? "bg-[var(--brand)]" : "bg-transparent"
                   }`}
                 />
@@ -59,36 +60,46 @@ export function SessionRail({
                   type="button"
                   aria-current={active ? "page" : undefined}
                   title={s.title}
-                  className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-lg py-2 pl-2.5 pr-7 text-left ${
+                  className={`flex min-w-0 flex-1 flex-col items-stretch gap-0.5 rounded-lg py-1.5 pl-2.5 pr-7 text-left ${
                     active
                       ? "nm-inset text-[var(--t1)]"
                       : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
                   }`}
                   onClick={() => onSelect(s.id)}
                 >
-                  {/* 实心/空心图标对：当前会话与历史会话的第二重区分，
-                      不只靠底色（色觉障碍与低对比屏下底色差异不足） */}
-                  <MessageSquare
-                    size={13}
-                    aria-hidden
-                    className={`shrink-0 ${active ? "fill-current" : ""}`}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-xs">
-                    {s.title}
+                  {/* 两行式：首行标题、次行相对时间。原先时间挤在行尾，还得靠
+                      hover 让位给删除键——标题一长就被截得只剩几个字，看不出是哪段
+                      对话；挪到第二行后两样都不打架 */}
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    {/* 实心/空心图标对：当前会话与历史会话的第二重区分，
+                        不只靠底色（色觉障碍与低对比屏下底色差异不足） */}
+                    <MessageSquare
+                      size={13}
+                      aria-hidden
+                      className={`shrink-0 ${active ? "fill-current" : ""}`}
+                    />
+                    <span className="min-w-0 flex-1 truncate text-xs">
+                      {s.title}
+                    </span>
                   </span>
                   {s.updatedAt != null && (
-                    <span className="shrink-0 text-[10px] tabular-nums text-[var(--t5)] group-hover:hidden">
-                      {relativeTime(s.updatedAt)}
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {/* 与首行图标同宽的空位：时间落在标题正下方而不是图标下面 */}
+                      <span className="w-[13px] shrink-0" aria-hidden />
+                      <span className="min-w-0 flex-1 truncate text-[10px] tabular-nums text-[var(--t5)]">
+                        {relativeTime(s.updatedAt)}
+                      </span>
                     </span>
                   )}
                 </button>
                 {/* 删除键悬停显形：留白恒定，列表不会因悬停而抖动。
-                    未显形时禁用指针事件——否则不可见的按钮仍占着行尾点击区 */}
+                    未显形时禁用指针事件——否则不可见的按钮仍占着行尾点击区。
+                    对齐首行：两行居中会正好卡在两行之间，看着像哪行都没属 */}
                 <button
                   type="button"
                   aria-label={`删除对话 ${s.title}`}
                   title="删除此对话"
-                  className="pointer-events-none absolute right-1 flex h-5 w-5 items-center justify-center rounded text-[var(--t5)] opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:bg-[var(--hover-bg)] hover:text-[var(--danger)]"
+                  className="pointer-events-none absolute right-1 top-2 flex h-5 w-5 items-center justify-center rounded text-[var(--t5)] opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:bg-[var(--hover-bg)] hover:text-[var(--danger)]"
                   onClick={() => onDelete(s.id)}
                 >
                   <Trash2 size={11} aria-hidden />

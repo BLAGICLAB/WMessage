@@ -1734,6 +1734,44 @@ describe("ChatPanel", () => {
     }
   });
 
+  // 时间原先挤在行尾，还得靠 hover 让位给删除键：标题一长就被截成几个字，
+  // 扫列表时既认不出是哪段对话、也看不到它是什么时候的。改成两行。
+  it("会话条目两行：首行标题、次行相对时间（不因 hover 让位而消失）", async () => {
+    const threeHoursAgo = Date.now() - 3 * 3600_000;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [
+          { id: "s1", title: "政策调研", updatedAt: threeHoursAgo },
+          // 没有 updatedAt 的行不该渲染出空的时间位
+          { id: "s2", title: "写周报" },
+        ];
+      return defaultInvoke(cmd);
+    });
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      // 标题在侧栏与头部各渲染一次，按所在区域取侧栏那条
+      const title = await screen.findAllByText("政策调研");
+      const sideTitle = within(
+        screen.getByRole("complementary", { name: "会话列表" }),
+      ).getByText("政策调研");
+      expect(title.length).toBeGreaterThan(0);
+      const row = sideTitle.closest("button");
+      expect(row).not.toBeNull();
+      // 同一行内：首行标题、次行时间
+      const time = within(row as HTMLElement).getByText("3 小时前");
+      expect(time).toBeInTheDocument();
+      // 次行字号更小
+      expect(time.className).toContain("text-[10px]");
+      // 不得再靠 hover 才出现——那正是挪到第二行要消掉的抖动
+      expect(time.className).not.toContain("group-hover:hidden");
+      // 无 updatedAt 的行只有标题
+      const bare = rail().getByText("写周报").closest("button");
+      expect(within(bare as HTMLElement).queryByText(/前|刚刚/)).toBeNull();
+    } finally {
+      mocks.invokeMock.mockImplementation(defaultInvoke);
+    }
+  });
+
   it("无派发方时子 agent 收尾提示用侧栏徽标同一份措辞（succeeded = 完成，不是「已完成」）", async () => {
     const prevListenImpl = mocks.listenMock.getMockImplementation();
     mocks.listenMock.mockImplementation(
