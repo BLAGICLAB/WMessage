@@ -65,7 +65,7 @@ pub fn escape_for_log(s: &str, max_chars: usize) -> String {
 ///
 /// 与历史两版 `truncate_chars` 的关系：
 /// - `memory::truncate_chars(s, n)`（无省略号）→ 现在 `truncate_chars(s, n, false)`
-/// - `evolution::truncate_chars(s, max)`（有省略号）→ 现在 `truncate_chars(s, max, true)`
+/// - 带省略号的那一版 → 现在 `truncate_chars(s, n, true)`
 pub fn truncate_chars(s: &str, n: usize, ellipsis: bool) -> String {
     let count = s.chars().count();
     if count <= n {

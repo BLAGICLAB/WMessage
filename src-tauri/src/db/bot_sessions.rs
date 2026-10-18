@@ -153,7 +153,7 @@ pub fn bot_session_set_onion(
 #[tauri::command]
 pub fn bot_session_create(app: AppHandle, title: Option<String>) -> CommandResult<BotSession> {
     // open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，放在写锁外——
-    // 临界区只覆盖 SQL 写，别让建连耗时串行化其他写者（同 evolution::apply 先例）
+    // 临界区只覆盖 SQL 写，别让建连耗时串行化其他写者
     let conn = super::open_db(&app)?;
     let _g =
         crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::bot_sessions DB_WRITE_LOCK");

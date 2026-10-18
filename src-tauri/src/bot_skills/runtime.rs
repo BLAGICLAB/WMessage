@@ -478,7 +478,7 @@ fn rollback_section(body: &str) -> String {
 /// 返回回滚建议文本（失败且 rollback=auto 且有动作记录时非空），调用方拼进回复让模型执行逆操作。
 /// 技能失败教训直沉淀（无 LLM）。仿 auto_lesson_on_task_failure：
 /// record_lesson_core（kind=lesson、source=system、scenario=skill:{name}）——
-/// lesson 自动进下轮 consolidate 候选池与聊天 lesson 槽，evolution 反思可见。
+/// lesson 自动进下轮 consolidate 候选池与聊天 lesson 槽。
 /// DB 打开失败静默（教训丢失可接受，不打断收尾）。pub(crate)：调度器失败分支共用。
 pub(crate) fn sink_skill_failure_lesson<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -599,8 +599,8 @@ pub fn skill_finish<R: tauri::Runtime>(
                 }
                 crate::bot::audit_log_hook(app, &log);
                 // 失败教训直沉淀（无 LLM，仿 auto_lesson_on_task_failure）——
-                // lesson 进 mem_items 后自动进下轮 consolidate 候选池与聊天 lesson 槽，
-                // evolution 反思可见「技能 X 失败模式」。有实际动作/步数才沉淀（防空转噪音）。
+                // lesson 进 mem_items 后自动进下轮 consolidate 候选池与聊天 lesson 槽。
+                // 有实际动作/步数才沉淀（防空转噪音）。
                 if !actions.is_empty() {
                     sink_skill_failure_lesson(app, &name, reason, &actions);
                 }

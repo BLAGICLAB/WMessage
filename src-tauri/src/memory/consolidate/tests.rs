@@ -105,41 +105,31 @@ fn parse_lesson_missing_or_empty_is_none() {
     assert!(parse_lesson("这不是 JSON").is_none(), "整体解析失败 → None");
 }
 
-#[tokio::test]
-async fn empty_ops_with_lesson_still_flows_through_proposal_bridge() {
-    // 复现：LLM 输出 `{"ops":[],"lesson":"..."}` 时，早退分支若在提案桥之前
-    // 直接 return，lesson 被静默丢弃、架空「反思双产物」。锁修复契约：
-    // 空 ops + Some(lesson) 走 post_consolidation 空轨（修复后早退分支的
-    // 同一调用）——lesson 提案真实产出、过 gate（候选池可见 / auto 档可落库），
-    // 且已进 emit 的 24h dedup 面（同提案二次 emit 报 deduped=1；
-    // 早退丢失该提案时这里会得到 written=1）。
+#[test]
+fn empty_ops_with_lesson_still_reaches_store() {
+    // 复现：LLM 输出 `{"ops":[],"lesson":"..."}` 时，早退分支若在写 lesson
+    // 之前直接 return，lesson 被静默丢弃、架空「反思双产物」。
     let text = r#"{"ops":[],"lesson":"回归验证：遇到重复记录先合并再回答"}"#;
     let ops = parse_ops(text);
     let lesson = parse_lesson(text);
     assert!(ops.is_empty(), "前置：ops 解析为空");
     let lesson = lesson.expect("lesson 应被解析出");
-    crate::evolution::post_consolidation(Some(&lesson)).await;
-    let proposal = crate::evolution::derive::derive_lesson_proposal(&lesson, 1_700_000_000_000)
-        .expect("lesson 应派生出提案");
+    let conn = mem_db();
     assert!(
-        matches!(
-            crate::evolution::strategy::gate_decision(&proposal),
-            crate::evolution::strategy::GateDecision::Approved
-        ),
-        "lesson 提案（MemoryHint+Medium）应过 gate"
+        store_lesson(
+            &conn,
+            &lesson,
+            None,
+            1_700_000_000_000,
+            &store::StoreParams::default()
+        )
+        .unwrap(),
+        "空 ops 下 lesson 仍要落库"
     );
-    let report = crate::evolution::emit::emit_proposals(vec![proposal]);
-    assert_eq!(report.deduped, 1, "lesson 提案应已被桥 emit 过一次");
-    assert_eq!(report.written, 0, "不应有新写入（同 id 已在 dedup 表）");
-}
-
-/// post_consolidation 是 `async fn`——本测试在编译期（不返回 Future 不报错）
-/// 锁这一签名：未来若有人改回同步 fn，tokio worker 上同步执行整段阻塞 IO
-/// （jsonl RMW/sqlite/audit 直写）会再次把 runtime 卡顿，详见 commit history。
-#[test]
-fn post_consolidation_is_async_noop() {
-    // 拿空 args 调一下——async fn 必返回 Future，未 .await 编译过即可
-    let _fut = crate::evolution::post_consolidation(None);
+    assert!(store::load_all(&conn)
+        .unwrap()
+        .iter()
+        .any(|m| m.content == lesson));
 }
 
 #[test]

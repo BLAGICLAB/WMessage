@@ -583,7 +583,6 @@ mod tests {
             memory_control: None,
             memory_tuning: None,
             mcp_servers: None,
-            evolution: None,
             disabled_vendors: Vec::new(),
             verified_vendors: Vec::new(),
             schema_version: 1,

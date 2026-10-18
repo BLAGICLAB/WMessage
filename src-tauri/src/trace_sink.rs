@@ -28,7 +28,8 @@ pub struct SpanRecord {
     pub args: Option<String>,
     pub result: Option<String>,
     pub ok: bool,
-    ///  预留（恒 None）； 接 evolution error_kind 分类器
+    /// 工具失败子类（timeout / permission / gate_denied…），由
+    /// `audit::classify_error_class` 从失败文本推导。
     pub error_class: Option<String>,
     pub duration_ms: Option<i64>,
     pub created_at: i64,

@@ -178,20 +178,11 @@ pub(crate) fn sanitize_tool_rules(
 
 // bot_set_config
 
-/// 回填内核（纯函数，单测直打）：**盘上值权威**。前端视图（BotConfigView）
-/// 不含 evolution 块，bot_set_config 是整体替换写——不回填则设置页任意一次保存
-/// 都把自进化块写丢（运行时配置上实际发生过）。即便前端理论上带了值也以盘上
-/// 为准：该块只归 evolution/ 模块读写，设置页没有编辑入口。
-pub(crate) fn preserve_evolution(incoming: &mut BotConfig, disk: &BotConfig) {
-    incoming.evolution = disk.evolution.clone();
-}
-
 /// 触发词表防丢（纯函数，单测直打）：incoming 为 None 说明前端这次**没带**
 /// 这个字段（整体替换写的老毛病），盘上有值就留着。
 ///
-/// 与 preserve_evolution 的区别：那个是「前端根本没编辑入口」，这个前端**有**编辑
-/// 入口、用户说了算。所以只挡「漏传」，不挡「清空」——用户显式存空数组
-/// （Some(vec![])）是关掉执行类触发器，语义是另一回事，照写不误。
+/// 只挡「漏传」，不挡「清空」——用户显式存空数组（Some(vec![])）是关掉
+/// 执行类触发器，语义是另一回事，照写不误。
 pub(crate) fn preserve_guard_keywords(incoming: &mut BotConfig, disk: &BotConfig) {
     if incoming.guard_claim_keywords.is_none() {
         incoming.guard_claim_keywords = disk.guard_claim_keywords.clone();
@@ -199,15 +190,15 @@ pub(crate) fn preserve_guard_keywords(incoming: &mut BotConfig, disk: &BotConfig
 }
 
 /// 设置页整体替换写不丢「设置页无编辑入口」的字段（纯函数，单测直打）：
-/// **盘上值权威**，理由同 preserve_evolution。
+/// **盘上值权威**。
 ///
 /// 这四个字段前端视图与保存载荷里都没有：
 /// - `final_selfcheck_round_gap` / `selfcheck_model_id` / `verifier_retry_max`
-///   —— 只归自进化/终稿自检链路读改，设置页没有输入框；
+///   —— 只归终稿自检链路读改，设置页没有输入框；
 /// - `mcp_servers` —— 由 MCP 面板的 mcp_server_* 命令单独落盘，
 ///   设置页碰它就等于「改任何一个开关顺手清空所有 MCP 服务器」。
 ///
-/// 盘上值写入时已钳制过，回填不再二次钳制（与 preserve_evolution 同口径）。
+/// 盘上值写入时已钳制过，回填不再二次钳制。
 pub(crate) fn preserve_non_ui_fields(incoming: &mut BotConfig, disk: &BotConfig) {
     incoming.final_selfcheck_round_gap = disk.final_selfcheck_round_gap;
     incoming.selfcheck_model_id = disk.selfcheck_model_id.clone();
@@ -351,12 +342,11 @@ pub fn bot_set_config(
         .map(crate::bot::params::clamp_verifier_retry_max);
     // tool_rules 清洗——空 tool 名/非法 action/重复 tool 剔除；空表归一 None
     config.tool_rules = sanitize_tool_rules(config.tool_rules.take());
-    // 前端整体替换写不丢 evolution 块。读盘回填必须与写**同锁**
+    // 前端整体替换写不丢「设置页无编辑入口」的字段。读盘回填必须与写**同锁**
     //（评审 HIGH：无锁 load → 有锁 write 之间 persist_last_run 等并发写会被
     // 本写覆盖——丢更新窗口）；write_bot_config_file 自带加锁不可重入，走 _locked 变体
     let _g = super::io::lock_config_write();
     let disk = super::io::load_config(&app);
-    preserve_evolution(&mut config, &disk);
     preserve_guard_keywords(&mut config, &disk);
     preserve_non_ui_fields(&mut config, &disk);
     prune_verified_vendors(&mut config, &disk, key_overwritten.as_deref());
@@ -498,7 +488,7 @@ pub fn memory_tuning_set(
 
 #[cfg(test)]
 /// bot_set_config 的「盘上值回填」测试。回填的是前端整体替换写碰不到、
-/// 但又不能被整体替换写清掉的字段：evolution 块（前端无编辑入口）与
+/// 但又不能被整体替换写清掉的字段：设置页无编辑入口的配置项与
 /// 触发词表（前端有入口，所以只挡漏传、不挡显式清空）。
 mod preserve_tests {
     use super::*;
@@ -692,31 +682,6 @@ mod preserve_tests {
             custom.guard_claim_keywords,
             Some(vec!["完事了".to_string()])
         );
-    }
-
-    #[test]
-    fn preserve_evolution_disk_value_is_authoritative() {
-        // 回归：前端视图不含 evolution 块——盘上有则以盘上回填
-        let mut incoming: BotConfig = serde_json::from_str("{}").unwrap();
-        assert!(incoming.evolution.is_none());
-        let disk: BotConfig =
-            serde_json::from_str(r#"{"evolution":{"otherSetting":{"max_per_day":5}}}"#).unwrap();
-        preserve_evolution(&mut incoming, &disk);
-        assert_eq!(
-            incoming
-                .evolution
-                .as_ref()
-                .and_then(|v| v.get("otherSetting"))
-                .and_then(|v| v.get("max_per_day"))
-                .and_then(|v| v.as_i64()),
-            Some(5)
-        );
-        // 盘上没有 → 前端即便带了也清掉（该块只归 evolution 模块写，设置页无编辑入口）
-        let mut incoming2: BotConfig = serde_json::from_str("{}").unwrap();
-        incoming2.evolution = Some(serde_json::json!({"x": 1}));
-        let disk2: BotConfig = serde_json::from_str("{}").unwrap();
-        preserve_evolution(&mut incoming2, &disk2);
-        assert!(incoming2.evolution.is_none());
     }
 }
 

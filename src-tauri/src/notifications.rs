@@ -1,14 +1,13 @@
 //! Agent 通知中心（持久化消息）。
 //!
-//! 三类「需要用户决策」的 Agent 事件统一落 `notifications` 表，以消息形式
+//! 两类「需要用户决策」的 Agent 事件统一落 `notifications` 表，以消息形式
 //! 在主窗口通知页呈现——每条消息独立成行、持久化、互不覆盖：
 //! - `memory_proposal`：记忆待确认提案（`memory::extract` confirm 档入队）
-//! - `evolution_proposal`：自进化提案入池（`evolution` 反思派生、未被自动应用的）
 //! - `artifact_bind`：任务卡执行产物待绑定（原挂件 ArtifactBatchDialog 弹窗迁移）
 //!
-//! 幂等：id 由各来源生成（`memory:{session}:{ts}` / `evo:{proposal_id}` /
-//! `artifact:{task_id}:{sid}`），`INSERT OR IGNORE` 保证同 id 不重复。
-//! 操作面：通知页按钮 + 设置页面板（MemoryPanel / EvolutionPanel）双入口，
+//! 幂等：id 由各来源生成（`memory:{session}:{ts}` / `artifact:{task_id}:{sid}`），
+//! `INSERT OR IGNORE` 保证同 id 不重复。
+//! 操作面：通知页按钮 + 设置页记忆面板双入口，
 //! 既有命令尾部挂 resolution 回写，保证任一处操作后消息状态一致；
 //! 每次变更广播 `notifications-changed`，前端刷新列表与导航角标。
 //! 注意：广播由各落库/回写调用方在成功后自行触发（见 emit_changed 调用点），
@@ -28,7 +27,6 @@ pub const STATUS_DONE: &str = "done";
 pub const STATUS_DISMISSED: &str = "dismissed";
 
 pub const KIND_MEMORY: &str = "memory_proposal";
-pub const KIND_EVOLUTION: &str = "evolution_proposal";
 pub const KIND_ARTIFACT: &str = "artifact_bind";
 /// 任务执行提问（ask_user）：ask 端落队列、应答端 `ask_respond` 处理。
 /// payload = {questionId, taskId, nodeTitle, question, why, options, assumption, createdAt}
@@ -167,7 +165,7 @@ fn notif_list(
 }
 
 /// 解决一条通知（done / dismissed）；不存在时静默成功（幂等）。
-/// pub(crate)：evolution 面板命令的操作回写也走这里。
+/// pub(crate)：记忆面板命令的操作回写也走这里。
 pub(crate) fn notif_resolve(
     conn: &rusqlite::Connection,
     id: &str,
@@ -396,10 +394,10 @@ mod tests {
     #[test]
     fn resolve_only_pending() {
         let conn = mem_conn();
-        notif_insert(&conn, "evo:p1", KIND_EVOLUTION, "t", "", &Value::Null).unwrap();
-        notif_resolve(&conn, "evo:p1", STATUS_DISMISSED).unwrap();
+        notif_insert(&conn, "memory:s9:1", KIND_MEMORY, "t", "", &Value::Null).unwrap();
+        notif_resolve(&conn, "memory:s9:1", STATUS_DISMISSED).unwrap();
         // 已解决后再 resolve（幂等保护：只改 pending 行）不覆盖 resolved_at 语义
-        notif_resolve(&conn, "evo:p1", STATUS_DONE).unwrap();
+        notif_resolve(&conn, "memory:s9:1", STATUS_DONE).unwrap();
         let v = notif_list(&conn, None).unwrap();
         assert_eq!(v[0].status, STATUS_DISMISSED);
     }

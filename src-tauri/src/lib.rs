@@ -30,7 +30,6 @@ mod bot_web;
 pub mod db;
 mod due_notify;
 pub mod error;
-pub mod evolution;
 mod exec_steps;
 pub mod intent_router;
 pub mod llm_text;
@@ -431,10 +430,6 @@ pub fn run() {
             //（bot_scheduler 同模式，10 分钟检查一次配置到点；旧 v1 记忆系统
             //（bot_facts 表）已删除，老库残表无害不清理）
             memory::embed::warmup_async();
-            // Phase 1 自进化：emit 需要的 AppHandle 全局注册一次。
-            // 必须在 start_consolidation_scheduler 之前调，否则 10 分钟内的
-            // 首轮 consolidate emit 会因 AppHandle 未就绪而丢弃。
-            crate::evolution::emit::register_app_handle(app.handle().clone());
             memory::consolidate::start_consolidation_scheduler(app.handle().clone());
             // correction 聚类兜底定时器：5 min 一轮；事件驱动（同条 correction
             // 立即路径触发）的空隙补漏，主要服务「崩溃重启漏最后一条」「用户离线
@@ -722,16 +717,6 @@ pub fn run() {
             migration::commands::migration_sources_load,
             migration::commands::migration_sources_save,
             migration::commands::migration_sources_add_folder,
-            evolution::panel::commands::evolution_list_proposals,
-            evolution::panel::commands::evolution_promote_proposal,
-            evolution::panel::commands::evolution_reject_proposal,
-            evolution::panel::commands::evolution_toggle_proposal,
-            evolution::panel::commands::evolution_delete_proposal,
-            evolution::panel::commands::evolution_list_changes,
-            evolution::panel::commands::evolution_rollback_change,
-            evolution::panel::commands::evolution_proposal_evidence,
-            evolution::panel::commands::evolution_get_apply_policy,
-            evolution::panel::commands::evolution_set_apply_policy,
             meta::meta_list_providers,
             meta::meta_models_by_provider,
             meta::meta_sync_models_dev,

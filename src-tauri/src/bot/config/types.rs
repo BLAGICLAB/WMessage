@@ -210,13 +210,6 @@ pub struct BotConfig {
     /// None = 老配置无此字段 = 未配置任何服务器。结构见 bot::mcp::config。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mcp_servers: Option<Vec<crate::bot::mcp::config::McpServerConfig>>,
-    /// 自进化块原样透传：evolution/ 模块自己的读取器解析（applyPolicy），
-    /// BotConfig 不解构只保真——此前未知字段被 serde 静默丢弃，设置页任意一次
-    /// 写盘（bot_set_config / update_config_file / persist_last_run）都会把
-    /// evolution 块写丢。bot_set_config 是前端整体替换写（视图不含此块），
-    /// 落盘前从盘上现值回填（见 config::commands）。
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub evolution: Option<serde_json::Value>,
     /// 厂商级禁用列表（厂商详情页总开关）：名单内厂商的模型行在设置页变淡、
     /// 启用开关禁用，聊天选模型入口过滤。空 = 全部启用；
     /// 老配置缺字段 → 空 Vec（struct 级 #[serde(default)] + 字段级 default）。
@@ -353,7 +346,6 @@ impl Default for BotConfig {
             selfcheck_model_id: None,   // 未配置 = 自检在主循环内跑（现状）
             verifier_retry_max: None,   // 未配置 = 1 默认 verifier 拒绝重试上限（0 = 不重试）
             archive_after_days: None,   // 未配置 = 7 天默认（前端设置页数据管理可改）
-            evolution: None,            // 未配置 = 无自进化块（evolution 模块自管读写）
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本

@@ -718,7 +718,7 @@ mod tests {
         let p = dir.join("bot-config.json");
         std::fs::write(
             &p,
-            r#"{"baseUrl":"https://x/v1","evolution":{"applyPolicy":"confirm"}}"#,
+            r#"{"baseUrl":"https://x/v1","siblingBlock":{"applyPolicy":"confirm"}}"#,
         )
         .unwrap();
 
@@ -732,7 +732,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["memoryTuning"]["topN"], 10, "超界钳到上限");
         assert_eq!(v["baseUrl"], "https://x/v1", "顶层字段保留");
-        assert_eq!(v["evolution"]["applyPolicy"], "confirm", "兄弟块保留");
+        assert_eq!(v["siblingBlock"]["applyPolicy"], "confirm", "兄弟块保留");
 
         // None：整块移除，其余保留
         write_memory_tuning_at(&p, None).unwrap();
@@ -835,48 +835,6 @@ mod tests {
         assert!(!plaintext_strippable(None, false, "k"));
         assert!(!plaintext_strippable(None, true, "k"));
         assert!(!plaintext_strippable(Some("  "), true, "k"));
-    }
-
-    #[test]
-    fn evolution_block_survives_config_rewrite_cycle() {
-        //  回归：三条写路径（bot_set_config 整体替换 / update_config_file
-        // RMW / persist_last_run 回写）都经 BotConfig serde 落盘——未知字段曾被
-        // 静默丢弃，运行时配置的 evolution 块实际被写丢过。此处锁 serde 层保真：
-        // 读入带块 → 序列化 → 块原样仍在（三条路径的公共层）。
-        let raw = r#"{
-            "baseUrl": "https://api.example.com/v1",
-            "model": "m",
-            "evolution": {
-                "unknown_block": {"nested": [1, 2]},
-                "another_block": {"deep": {"flag": true}}
-            }
-        }"#;
-        let cfg: BotConfig = serde_json::from_str(raw).unwrap();
-        assert!(cfg.evolution.is_some(), "读入应带上 evolution 块");
-        let out = serde_json::to_string_pretty(&cfg).unwrap();
-        let back: serde_json::Value = serde_json::from_str(&out).unwrap();
-        // BotConfig 不解构 evolution 块（Option<Value> 原样透传），所以「未知 key
-        // 也会丢」正是这条回归要防的——用真会被解构器吃掉的 key 才有探测力
-        assert_eq!(
-            back["evolution"]["unknown_block"]["nested"],
-            serde_json::json!([1, 2])
-        );
-        assert_eq!(
-            back["evolution"]["another_block"]["deep"]["flag"],
-            serde_json::json!(true),
-            "嵌套更深的一层也要保真"
-        );
-        // RMW 语义（update_config_file/persist_last_run 同构：load → 改别处 → 写回）：
-        // 二次反序列化再序列化，块仍不丢
-        let cfg2: BotConfig = serde_json::from_str(&out).unwrap();
-        let out2 = serde_json::to_string(&cfg2).unwrap();
-        assert!(out2.contains("\"evolution\""), "二次改写后块仍在");
-        // 无块的配置写盘不得引入空 evolution 键（skip_serializing_if）
-        let cfg3: BotConfig =
-            serde_json::from_str(r#"{"baseUrl":"https://x/v1","model":"m"}"#).unwrap();
-        assert!(!serde_json::to_string(&cfg3)
-            .unwrap()
-            .contains("\"evolution\""));
     }
 
     #[test]
