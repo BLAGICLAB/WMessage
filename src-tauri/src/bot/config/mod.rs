@@ -118,7 +118,6 @@ mod tests {
             vendor: None,
             enabled: true,
             context_k: None,
-            capabilities: None,
             temperature: None,
             top_p: None,
             max_tokens: None,
@@ -138,7 +137,6 @@ mod tests {
             vendor: Some("MiniMax".into()),
             enabled: true,
             context_k: Some(1024.0),
-            capabilities: None,
             temperature: None,
             top_p: None,
             max_tokens: None,
@@ -160,24 +158,14 @@ mod tests {
         assert!(!clean.contains("vendor"));
     }
 
-    // 能力徽标：ModelEntry.capabilities 序列化往返 + 老配置缺字段向后兼容
+    // 失效的「视觉能力」字段下线：老配置里的 capabilities 必须仍能加载
+    // （serde 默认忽略未知字段，不因历史字段拒绝用户配置），且不再被写出
     #[test]
-    fn model_entry_capabilities_roundtrip_and_legacy_compat() {
-        let mut e = entry("m1", "https://x", "m");
-        e.capabilities = Some(vec!["视觉".into()]);
-        let json = serde_json::to_string(&e).unwrap();
-        assert!(json.contains(r#""capabilities":["视觉"]"#));
-        let back: ModelEntry = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            back.capabilities.as_deref(),
-            Some(&["视觉".to_string()][..])
-        );
-
-        // 老配置 JSON 无 capabilities 字段 → None（不拒绝加载）；
-        // None 不写进序列化输出（保持配置文件干净）
-        let legacy = r#"{"id":"m2","label":"旧条目","baseUrl":"https://x","model":"m"}"#;
-        let old: ModelEntry = serde_json::from_str(legacy).unwrap();
-        assert_eq!(old.capabilities, None);
+    fn legacy_capabilities_field_is_ignored_not_rejected() {
+        let legacy = r#"{"id":"m2","label":"旧条目","baseUrl":"https://x","model":"m","capabilities":["视觉"]}"#;
+        let old: ModelEntry = serde_json::from_str(legacy).expect("老配置必须能加载");
+        assert_eq!(old.id, "m2");
+        // 回写后历史字段消失（配置文件不再积累无人消费的键）
         let clean = serde_json::to_string(&old).unwrap();
         assert!(!clean.contains("capabilities"));
     }

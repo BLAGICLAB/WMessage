@@ -657,7 +657,6 @@ mod vendor_key_tests {
             vendor: vendor.map(str::to_string),
             enabled: true,
             context_k: None,
-            capabilities: None,
             temperature: None,
             top_p: None,
             max_tokens: None,

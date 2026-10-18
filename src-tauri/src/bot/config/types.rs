@@ -272,7 +272,6 @@ pub struct BotConfig {
 /// 老配置缺字段 → None（前端按协议名兜底分组），None 序列化时跳过保持文件干净。
 /// enabled（ 模型列表开关）：false = 聊天 🧠 下拉不显示该模型；缺字段默认启用。
 /// context_k（ 徽标）：上下文窗口（千 token），前端显示「204.8K」样式；None 不显示。
-/// capabilities（能力徽标）：如 ["视觉"]；老配置缺字段 → None，None 序列化时跳过。
 /// temperature/top_p/max_tokens/system_prompt（每模型推理参数覆盖）：None = 用全局
 /// 默认（BotConfig.max_tokens / 后端常量），不写入请求；老配置缺字段 → None，
 /// None 序列化时跳过保持文件干净。
@@ -289,8 +288,6 @@ pub struct ModelEntry {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_k: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -679,7 +676,6 @@ mod model_override_tests {
                     vendor: None,
                     enabled: true,
                     context_k: None,
-                    capabilities: None,
                     temperature: None,
                     top_p: None,
                     system_prompt: None,
@@ -693,7 +689,6 @@ mod model_override_tests {
                     vendor: None,
                     enabled: false,
                     context_k: None,
-                    capabilities: None,
                     temperature: None,
                     top_p: None,
                     system_prompt: None,

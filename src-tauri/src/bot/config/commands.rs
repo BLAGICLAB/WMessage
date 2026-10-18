@@ -198,6 +198,23 @@ pub(crate) fn preserve_guard_keywords(incoming: &mut BotConfig, disk: &BotConfig
     }
 }
 
+/// 设置页整体替换写不丢「设置页无编辑入口」的字段（纯函数，单测直打）：
+/// **盘上值权威**，理由同 preserve_evolution。
+///
+/// 这四个字段前端视图与保存载荷里都没有：
+/// - `final_selfcheck_round_gap` / `selfcheck_model_id` / `verifier_retry_max`
+///   —— 只归自进化/终稿自检链路读改，设置页没有输入框；
+/// - `mcp_servers` —— 由 MCP 面板的 mcp_server_* 命令单独落盘，
+///   设置页碰它就等于「改任何一个开关顺手清空所有 MCP 服务器」。
+///
+/// 盘上值写入时已钳制过，回填不再二次钳制（与 preserve_evolution 同口径）。
+pub(crate) fn preserve_non_ui_fields(incoming: &mut BotConfig, disk: &BotConfig) {
+    incoming.final_selfcheck_round_gap = disk.final_selfcheck_round_gap;
+    incoming.selfcheck_model_id = disk.selfcheck_model_id.clone();
+    incoming.verifier_retry_max = disk.verifier_retry_max;
+    incoming.mcp_servers = disk.mcp_servers.clone();
+}
+
 /// 保存配置。api_key / tavily_key / brave_key / vendor_key 几个顶层参数同语义：
 /// Some(非空) 写入系统凭据存储并覆盖；None/空串不动已存的 key。
 /// （Tavily/Brave key 与主 key 同模式，不落配置文件；
@@ -341,6 +358,7 @@ pub fn bot_set_config(
     let disk = super::io::load_config(&app);
     preserve_evolution(&mut config, &disk);
     preserve_guard_keywords(&mut config, &disk);
+    preserve_non_ui_fields(&mut config, &disk);
     prune_verified_vendors(&mut config, &disk, key_overwritten.as_deref());
     super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)
 }
@@ -452,6 +470,51 @@ pub fn memory_tuning_set(
 mod preserve_tests {
     use super::*;
 
+    /// 设置页保存不得清空「设置页无编辑入口」的字段。
+    /// 这四个字段不在前端载荷里，整体替换写会把它们从磁盘抹掉——
+    /// 改任何一个开关就会连带清空 MCP 服务器列表。
+    #[test]
+    fn preserve_non_ui_fields_keeps_disk_values_when_incoming_omits_them() {
+        use crate::bot::mcp::config::McpServerConfig;
+        let srv = |id: &str| McpServerConfig {
+            id: id.into(),
+            name: id.into(),
+            ..Default::default()
+        };
+        let disk = BotConfig {
+            final_selfcheck_round_gap: Some(7),
+            selfcheck_model_id: Some("m-selfcheck".into()),
+            verifier_retry_max: Some(2),
+            mcp_servers: Some(vec![srv("srv-a"), srv("srv-b")]),
+            ..Default::default()
+        };
+        // 前端整体替换写：这些字段一个都没带
+        let mut incoming = BotConfig::default();
+
+        preserve_non_ui_fields(&mut incoming, &disk);
+
+        assert_eq!(incoming.final_selfcheck_round_gap, Some(7));
+        assert_eq!(incoming.selfcheck_model_id.as_deref(), Some("m-selfcheck"));
+        assert_eq!(incoming.verifier_retry_max, Some(2));
+        assert_eq!(
+            incoming.mcp_servers.as_deref().map(|v| v.len()),
+            Some(2),
+            "MCP 服务器列表必须原样保住"
+        );
+        assert_eq!(incoming.mcp_servers.as_ref().unwrap()[1].id, "srv-b");
+    }
+
+    /// 盘上为空时不应凭空造值（回填不是初始化）。
+    #[test]
+    fn preserve_non_ui_fields_leaves_defaults_when_disk_empty() {
+        let mut incoming = BotConfig::default();
+        preserve_non_ui_fields(&mut incoming, &BotConfig::default());
+        assert_eq!(incoming.final_selfcheck_round_gap, None);
+        assert_eq!(incoming.selfcheck_model_id, None);
+        assert_eq!(incoming.verifier_retry_max, None);
+        assert_eq!(incoming.mcp_servers, None);
+    }
+
     #[test]
     fn prune_verified_vendors_drops_overwritten_missing_and_url_changed() {
         use crate::bot::config::types::{ModelEntry, ModelsByProvider};
@@ -463,7 +526,6 @@ mod preserve_tests {
             vendor: Some(vendor.into()),
             enabled: true,
             context_k: None,
-            capabilities: None,
             temperature: None,
             top_p: None,
             max_tokens: None,
@@ -542,7 +604,6 @@ mod preserve_tests {
             vendor: Some(vendor.into()),
             enabled: true,
             context_k: None,
-            capabilities: None,
             temperature: params.then_some(0.7),
             top_p: params.then_some(0.9),
             max_tokens: params.then_some(16_384),

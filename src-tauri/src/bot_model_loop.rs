@@ -2847,7 +2847,6 @@ mod inference_param_tests {
                 vendor: None,
                 enabled: true,
                 context_k: None,
-                capabilities: None,
                 temperature: Some(temperature),
                 top_p: Some(top_p),
                 max_tokens: Some(1111),
