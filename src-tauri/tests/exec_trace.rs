@@ -195,6 +195,7 @@ async fn trace_lifecycle_done_row_written() {
                 subagent_tools: None,
                 // 本文件不覆盖执行类谎报守卫（终稿不含完成态词），传空词表
                 guard_claim_keywords: &[],
+                file_receipts: None,
                 audit: &|_: AuditLevel, _: &'static str, _| {},
                 audit_log: &|_| {},
                 skill_finish: &|_, _| String::new(),

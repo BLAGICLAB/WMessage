@@ -43,7 +43,9 @@ fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> 
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
 pub use crate::bot::registry::claims_mutation;
-use crate::bot::registry::{claims_execution_with, fabricated_gen_path, mentioned_tool_names};
+use crate::bot::registry::{
+    claimed_doc_paths, claims_execution_with, mentioned_tool_names, path_missing_on_disk,
+};
 
 // TOOLS schema（编译期字符串，运行期 JSON 解析）
 
@@ -837,6 +839,16 @@ pub struct ModelLoopDeps<'a> {
     /// 薄壳已把「没配过」回落成内置默认表再传进来，core 不再关心来源——
     /// 空切片 = 用户显式清空，该档触发器失效（变更类与路径存在性两道闸不受影响）。
     pub guard_claim_keywords: &'a [String],
+    /// 落盘凭证查询（幻觉守卫的「路径是工具产物吗」那道判据）。
+    ///
+    /// 入参是（会话 id，候选路径），返回「查不到落盘凭证」的那部分。闭包在薄壳
+    /// 侧装配——那里有 AppHandle，能开库；core 保持可注入 mock（测试直驱 core
+    /// 时传 None = 不查凭证，路径存在性那道闸照旧生效）。
+    ///
+    /// 闭包内部负责两件事：查库看这些路径历史上有没有被工具写过；本会话有没有
+    /// 跑过自己就能写盘的工具（run_python / MCP）——后者命中就整批让开
+    /// （无从确证 ≠ 编造）。
+    pub file_receipts: Option<&'a (dyn Fn(Option<&str>, &[String]) -> Vec<String> + Send + Sync)>,
 }
 
 /// 回合状态机。借鉴 ZCode 的 turn view model（`running` / `settling` /
@@ -1220,6 +1232,61 @@ pub async fn run_model_loop(
                 }
             }
         }),
+        // 落盘凭证查询：返回「查不到凭证」的候选路径。查库失败一律返回空
+        // （= 全部放行）——查不到证据不等于有罪，宁可漏判不可误伤。
+        file_receipts: Some(&|sid: Option<&str>, paths: &[String]| {
+            let Some(sid) = sid else {
+                return Vec::new();
+            };
+            if paths.is_empty() {
+                return Vec::new();
+            }
+            let conn = match crate::db::open_db(&app) {
+                Ok(c) => c,
+                Err(e) => {
+                    crate::audit::write_event(
+                        &app,
+                        crate::audit::AuditLevel::Warn,
+                        "bot.file_receipts_open_fail",
+                        &[("error", e)],
+                    );
+                    return Vec::new();
+                }
+            };
+            // 本会话跑过自己就能写盘的工具（run_python 无文件系统隔离、MCP 在
+            // 外部服务里执行）——它们能写出文件却不经过我们的凭证，「没凭证」
+            // 推不出「不是工具产物」，整批让开。
+            match crate::db::trace::session_ran_unverifiable_writer(&conn, sid) {
+                Ok(true) => return Vec::new(),
+                Ok(false) => {}
+                Err(e) => {
+                    crate::audit::write_event(
+                        &app,
+                        crate::audit::AuditLevel::Warn,
+                        "bot.file_receipts_unverifiable_check_fail",
+                        &[("error", e)],
+                    );
+                    return Vec::new();
+                }
+            }
+            let written = match crate::db::trace::file_paths_with_receipt(&conn, paths) {
+                Ok(v) => v,
+                Err(e) => {
+                    crate::audit::write_event(
+                        &app,
+                        crate::audit::AuditLevel::Warn,
+                        "bot.file_receipts_query_fail",
+                        &[("error", e)],
+                    );
+                    return Vec::new();
+                }
+            };
+            paths
+                .iter()
+                .filter(|p| !written.iter().any(|w| w.eq_ignore_ascii_case(p)))
+                .cloned()
+                .collect()
+        }),
         emit: &emit,
         audit: &|level, event, kv| {
             // llm.request 事件计数 = 请求数（trace request_count 的数据源）。
@@ -1489,6 +1556,12 @@ where
     // · 不跨提问共用 —— 下一条用户消息是新的 trace，池子自然清零，历史凭证查不到，
     //   所以「本轮的成果不许冒充上一轮刚跑的」是默认行为，不需要额外规则。
     let mut receipts: Vec<String> = Vec::new();
+    // 本提问里被工具写过的路径（小写归一，与仓库既有的路径同一性口径一致）。
+    //
+    // 用途是幻觉守卫的「落盘凭证」那道判据：模型声称「已生成 /path/x.docx」，
+    // 而这个路径从来不是工具写出来的——那是凭空声称。凭证在**进程内**攒，
+    // 不等痕迹落库（本轮刚写的文件此刻还只在 trace sink 的队列里，查库查不到）。
+    let mut written_paths: Vec<String> = Vec::new();
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
     // PREVR 第 1 层：工具失败检测——同工具连续失败计数，
@@ -2273,10 +2346,13 @@ where
 
         if tool_calls.is_empty() {
             // 防幻觉汇报守卫（前置：每轮无工具调用的文本产出点即检查，当场打回，
-            // 不等会话收尾）两个支柱：
+            // 不等会话收尾）三个支柱：
             // a) claims_mutation——声称完成变更但本轮没动过手；
-            // b) fabricated_gen_path——声称已生成文档且给出路径，但路径在磁盘上
-            //    不存在（编造的路径经不起存在性检查，实测窄词表漏检的话术靠它兜住）
+            // b) claimed_doc_paths + 存在性——声称已生成文档且给出路径，但路径在
+            //    磁盘上不存在（编造的路径经不起存在性检查，实测窄词表漏检的话术
+            //    靠它兜住）
+            // c) claimed_doc_paths + 落盘凭证——路径在磁盘上，但它从来不是任何
+            //    工具写出来的：模型在声称「已生成」一个跟自己无关的文件
             // 自检回复解析：上一轮注入了 SELFCHECK_PROMPT（pending 仍在场、
             // expecting_selfcheck 为真）。纯 Y/N 不是给用户的答案：
             // Y → ✅ 视觉提示后续跑一轮，让模型产出正常汇报（否则回合被自检
@@ -2333,7 +2409,48 @@ where
                     }
                 }
             }
-            let fake_gen_path = fabricated_gen_path(&final_text);
+            // 声称产出的文档路径：两道校验。
+            //
+            // · 存在性——路径在磁盘上不在，就是凭空写的路径（原有判据）。
+            // · 落盘凭证——路径在，但它从来不是任何工具写出来的：模型在声称
+            //   「已生成」一个跟自己无关的文件。这道是存在性查不出来的——上周
+            //   生成过、或者用户自己放在那儿的文件，存在性一律放行。
+            //
+            // 凭证来源两处：本提问写过的路径在进程内（不等痕迹落库），历史上
+            // 写过的查库。两处都没有才是编造。
+            let claimed_paths = claimed_doc_paths(&final_text);
+            let mut fake_gen_path: Option<String> = None;
+            for p in &claimed_paths {
+                if path_missing_on_disk(p) {
+                    fake_gen_path = Some(p.clone());
+                    break;
+                }
+            }
+            // 落盘凭证这道要在存在性过了之后才问：路径压根不存在时已经判编造，
+            // 没必要再查库。
+            let mut unreceipted_path: Option<String> = None;
+            if fake_gen_path.is_none() && !claimed_paths.is_empty() {
+                // 本提问跑过「自己能写盘、我们无从确证」的工具（run_python 无文件
+                // 系统隔离、MCP 工具在外部服务里执行）——它们能写出文件却不经过
+                // 我们的凭证，「没凭证」推不出「不是工具产物」，这道必须让开。
+                let unverifiable_ran = receipts
+                    .iter()
+                    .any(|n| n == "run_python" || n.starts_with("mcp_"));
+                if !unverifiable_ran {
+                    let pending: Vec<String> = claimed_paths
+                        .iter()
+                        .filter(|p| !written_paths.contains(&p.to_lowercase()))
+                        .cloned()
+                        .collect();
+                    if !pending.is_empty() {
+                        if let Some(fetch) = deps.file_receipts {
+                            unreceipted_path = fetch(stop.session_id(), &pending)
+                                .into_iter()
+                                .next();
+                        }
+                    }
+                }
+            }
             let claim_mutation = !mutation_done && claims_mutation(&final_text);
             // 执行类谎报：本回合零工具成功，终稿却在叙述执行结果。此前守卫只有
             // mutating 一档，run_python / fetch_url 这类非 mutating 工具可以被凭空
@@ -2394,27 +2511,47 @@ where
             //   而谎报已经拦过一次，再拦一次收益不抵风险。改为把「这句没有对应
             //   凭证」如实标在终稿末尾：让用户看见谎话 + 一条更正，好过让谎话
             //   冒充事实单独到达用户。
-            if claim_mutation || claim_execution || fake_gen_path.is_some() {
-                let kind = if claim_execution && !unsupported.is_empty() {
+            if claim_mutation
+                || claim_execution
+                || fake_gen_path.is_some()
+                || unreceipted_path.is_some()
+            {
+                // kind 的优先级与下面的 reason 一致：先说最硬的那条（路径压根
+                // 不存在 / 路径不是工具产物），再说执行类、最后变更类。
+                let kind = if fake_gen_path.is_some() {
+                    "声称已生成但路径不存在".to_string()
+                } else if unreceipted_path.is_some() {
+                    "声称已生成但无落盘凭证".to_string()
+                } else if claim_execution && !unsupported.is_empty() {
                     format!("声称已执行但无对应凭证: {}", unsupported.join(","))
                 } else if claim_execution {
                     "声称已执行但本次提问零凭证".to_string()
-                } else if fake_gen_path.is_some() {
-                    "声称已生成但路径不存在".to_string()
                 } else {
                     "声称变更但未调工具".to_string()
                 };
                 // 同一处判决的两种口吻：reason 说给模型听（第二人称、要它改正），
                 // notice 说给用户听（第三人称、只陈述事实）。
-                let (reason, notice) = match (&fake_gen_path, claim_execution, unsupported.as_slice())
-                {
-                    (Some(p), _, _) => (
+                let (reason, notice) = match (
+                    &fake_gen_path,
+                    &unreceipted_path,
+                    claim_execution,
+                    unsupported.as_slice(),
+                ) {
+                    (Some(p), _, _, _) => (
                         format!(
                             "你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。"
                         ),
                         format!("上面提到的文件 {p} 实际没有生成——磁盘上不存在这个路径。"),
                     ),
-                    (None, true, [t, ..]) => (
+                    (None, Some(p), _, _) => (
+                        format!(
+                            "你声称已生成文件 {p}，但没有任何工具写过这个路径——本次提问的落盘记录和历史痕迹里都没有它，这个文件不是本次生成的。"
+                        ),
+                        format!(
+                            "上面提到的文件 {p} 不是本次生成的——没有任何工具写过这个路径。"
+                        ),
+                    ),
+                    (None, None, true, [t, ..]) => (
                         format!(
                             "你刚才说调了 {t} 并给出了结果，但本次提问里没有任何 {t} 的成功调用记录——这个结果是编造的。"
                         ),
@@ -2422,12 +2559,12 @@ where
                             "上面关于 {t} 的执行结果是编造的——本次提问里没有任何 {t} 的成功调用记录。"
                         ),
                     ),
-                    (None, true, _) => (
+                    (None, None, true, _) => (
                         "你刚才叙述了一次已完成的执行并给出了结果，但本次提问从头到尾没有任何工具调用成功——这个结果是编造的。".to_string(),
                         "上面叙述的这次执行没有实际发生——本次提问里没有任何工具调用成功。"
                             .to_string(),
                     ),
-                    (None, false, _) => (
+                    (None, None, false, _) => (
                         "你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。"
                             .to_string(),
                         "上面声称的变更没有实际发生——本轮没有变更类工具调用成功，数据实际没有变化。"
@@ -2443,8 +2580,12 @@ where
                     // 执行类谎报的补救路径与变更类不同：变更类要点名具体工具，
                     // 执行类（含 run_python / bash / fetch_url）点不全也不该点名——
                     // 该做的是把工具真正调起来，拿不到结果就如实说拿不到。
+                    // 文件类谎报（路径不存在 / 路径不是工具产物）第三档：只说
+                    // 文档生成那几个工具，别把模型引到任务卡工具上去。
                     let remedy = if claim_execution && fake_gen_path.is_none() {
                         "请立即发起 tool_call 实际执行，禁止只改文字糊弄；拿到真实返回后再如实转述（失败就如实报失败）。若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
+                    } else if fake_gen_path.is_some() || unreceipted_path.is_some() {
+                        "请立即调用文档生成工具实际把这个文件写出来（Word 用 create_word 或 create_word_revisions、Excel 用 create_excel、PPT 用 create_ppt、PDF 用 create_pdf；纯文本文件用 write_file），禁止只改文字糊弄；工具返回的完整路径才是能报给用户的路径。若确实无法生成（内容不足 / 工具不可用 / 权限不足），如实向用户说明原因，禁止再次声称已生成。".to_string()
                     } else {
                         "请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。".to_string()
                     };
@@ -2775,6 +2916,12 @@ where
             // 任何可转述的东西，模型若照着它编结果，凭证表还得拦得住。
             if !failed {
                 receipts.push(name.clone());
+                // 落盘凭证同步入池：写盘类工具成功时带回来的 file_changes 就是
+                // 「这个路径确实是工具产物」的凭据（文档生成器在 24a4ea6 之前
+                // 不带凭证，那是这道判据的地基缺口）。
+                for fc in &tool_outcome.file_changes {
+                    written_paths.push(fc.path.to_lowercase());
+                }
             }
             emit(
                 "bot-tool-done",
@@ -3215,9 +3362,9 @@ mod hallucination_guard_tests {
     use crate::bot::registry::claims_execution;
 
     #[test]
-    fn fabricated_gen_path_catches_fabricated_doc_path() {
-        // 实锤事故原话（trace 30）：窄词表漏检、路径是编造的——存在性校验兜住。
-        // 前置路径用本测专属 tempdir（不存在即触发），不依赖外部 /tmp 状态
+    fn claimed_doc_paths_extracts_claimed_doc_paths() {
+        // 实锤事故原话（trace 30）：窄词表漏检、路径是编造的。
+        // 前置路径用本测专属 tempdir，不依赖外部 /tmp 状态
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("苏州两日游行程规划.docx");
         let t = format!(
@@ -3225,28 +3372,44 @@ mod hallucination_guard_tests {
             fake.display()
         );
         assert_eq!(
-            fabricated_gen_path(&t),
-            Some(fake.to_string_lossy().into_owned())
+            claimed_doc_paths(&t),
+            vec![fake.to_string_lossy().into_owned()]
         );
         // 已写入/已导出等变体触发词 + 无盘符相对路径不算（只认绝对路径）
+        assert!(claimed_doc_paths("已写入报告到 report.pdf，稍后可下载").is_empty());
+    }
+
+    #[test]
+    fn claimed_doc_paths_ignores_non_claims_and_non_doc_files() {
+        // 无路径 / 非文档扩展名不入选
+        assert!(claimed_doc_paths("已生成完成，请查收").is_empty());
+        assert!(claimed_doc_paths("报告.txt 已生成").is_empty());
+        // 没有创建动词的普通提路径不算声称产出
+        assert!(claimed_doc_paths("请看 /tmp/a.docx 这个文件").is_empty());
+    }
+
+    #[test]
+    fn claimed_doc_paths_dedupes_repeated_paths() {
+        // 同一路径提到多次只留一条：判定按路径走，重复候选没有额外信息
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("a.docx");
+        let t = format!("已生成 {}，另见 {}", p.display(), p.display());
         assert_eq!(
-            fabricated_gen_path("已写入报告到 report.pdf，稍后可下载"),
-            None
+            claimed_doc_paths(&t),
+            vec![p.to_string_lossy().into_owned()]
         );
     }
 
     #[test]
-    fn fabricated_gen_path_ignores_real_files_and_non_claims() {
-        // 真实存在的文件不拦
+    fn path_missing_on_disk_separates_existing_from_fabricated() {
+        // 真实存在的文件不是编造（存在性这道判据放行）
         let real = std::env::temp_dir().join("wm-guard-real.docx");
         std::fs::write(&real, b"x").unwrap();
-        assert_eq!(
-            fabricated_gen_path(&format!("已生成：{}", real.display())),
-            None
-        );
-        // 无路径 / 非文档扩展名不触发
-        assert_eq!(fabricated_gen_path("已生成完成，请查收"), None);
-        assert_eq!(fabricated_gen_path("报告.txt 已生成"), None);
+        assert!(!path_missing_on_disk(&real.to_string_lossy()));
+        // 编造的路径：存在性这道拦下
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("没生成过的.docx");
+        assert!(path_missing_on_disk(&fake.to_string_lossy()));
         std::fs::remove_file(&real).ok();
     }
 

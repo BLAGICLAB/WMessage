@@ -953,18 +953,23 @@ mod mentioned_tool_names_tests {
     }
 }
 
-/// 生成类谎报的路径存在性校验（幻觉守卫第二支柱，与 claims_mutation 同点位）：
-/// 文本出现「已生成/已保存/已写入/已导出」且给出文档绝对路径
-/// （docx/xlsx/pptx/pdf）时逐个校验磁盘真实性，返回第一个不存在的路径。
-/// 编造的路径经不起存在性检查——实测「已生成XX规划 Word，文件路径：…」
-/// 类话术带真实形态的假路径，绕过 claims_mutation 的窄词表，只能靠存在性拦。
-pub fn fabricated_gen_path(text: &str) -> Option<String> {
+/// 终稿里声称产出的文档路径（纯提取，不判真假）。
+///
+/// 出现「已生成/已保存/已写入/已导出」且给出文档绝对路径
+/// （docx/xlsx/pptx/pdf）时逐个摘出候选。编造的路径经不起两道校验——
+/// 磁盘存在性（路径压根不在）与落盘凭证（路径在、但从来不是工具写出来的）；
+/// 实测「已生成XX规划 Word，文件路径：…」类话术带真实形态的假路径，
+/// 绕过 claims_mutation 的窄词表，只能靠这两道拦。
+///
+/// 真伪判定不在这里：两问都依赖运行期状态（磁盘、痕迹库），塞进纯函数就没法
+/// 单测；提取与判定分开，判定在模型循环侧。
+pub fn claimed_doc_paths(text: &str) -> Vec<String> {
     const DOC_EXTS: [&str; 4] = [".docx", ".xlsx", ".pptx", ".pdf"];
     let claimed = ["已生成", "已保存", "已写入", "已导出"]
         .iter()
         .any(|w| text.contains(w));
     if !claimed {
-        return None;
+        return Vec::new();
     }
     // 候选路径切分：空白/反引号/引号/括号/书名号/中英文标点都是路径边界。
     // `\` 不入边界集（会拆碎 `C:\` 盘符路径）；UNC 路径（`\\server\share\…`）
@@ -974,7 +979,9 @@ pub fn fabricated_gen_path(text: &str) -> Option<String> {
         ' ', '\t', '\n', '\r', '`', '"', '\'', '「', '」', '（', '）', '(', ')', '，', '。', '；',
         '、', ',', ';', ':', '：', '　',
     ];
-    text.split(boundaries)
+    let mut out: Vec<String> = Vec::new();
+    for tok in text
+        .split(boundaries)
         .map(|tok| tok.trim_matches(|c: char| matches!(c, '*' | '_' | '-' | '>' | '#')))
         .filter(|tok| {
             let low = tok.to_lowercase();
@@ -985,8 +992,22 @@ pub fn fabricated_gen_path(text: &str) -> Option<String> {
                 || (tok.len() > 2 && tok.as_bytes()[1] == b':')
                 || tok.starts_with(r"\\")
         })
-        .find(|tok| !std::path::Path::new(tok).exists())
-        .map(|tok| tok.to_string())
+    {
+        let p = tok.to_string();
+        // 同一路径被提到多次只留一条：判定按路径走，重复候选没有额外信息
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// 路径在磁盘上不存在（存在性判据的纯函数形态，便于单测）。
+///
+/// 存在性是幻觉守卫对「声称产出」的第一道判据：编造的路径经不起这一问。
+/// 单独成函数是为了让它能单测——挂在循环里就没法单独钉住。
+pub fn path_missing_on_disk(path: &str) -> bool {
+    !std::path::Path::new(path).exists()
 }
 
 use serde::{Deserialize, Serialize};
@@ -2092,20 +2113,17 @@ mod registry_tests {
     /// `/` 与盘符冒号两个前缀过滤掉，守卫对编造的 UNC 路径完全失明。
     /// 主机名用 `.invalid`（RFC 保留假 TLD，解析必败，Windows 上也快速返回）。
     /// `#[ignore]`：依赖 DNS 解析（即便 .invalid 也会查系统解析器），CI 噪声源，
-    /// 手动跑：`cargo test --test registry fabricated_gen_path -- --ignored`。
+    /// 手动跑：`cargo test --test registry claimed_doc_paths -- --ignored`。
     #[test]
     #[ignore = "UNC 主机名解析依赖系统 DNS resolver，CI 慢且不稳；手动 cargo test ... -- --ignored 验"]
-    fn fabricated_gen_path_checks_unc_paths() {
+    fn claimed_doc_paths_checks_unc_paths() {
         let text = "已生成报告，路径 \\\\nonexistent-host-.invalid\\share\\报告.docx";
         assert_eq!(
-            fabricated_gen_path(text),
-            Some("\\\\nonexistent-host-.invalid\\share\\报告.docx".to_string())
+            claimed_doc_paths(text),
+            vec!["\\\\nonexistent-host-.invalid\\share\\报告.docx".to_string()]
         );
         // 无声称触发词 → 不检查（与既有口径一致）
-        assert_eq!(
-            fabricated_gen_path("\\\\nonexistent-host-.invalid\\share\\报告.docx"),
-            None
-        );
+        assert!(claimed_doc_paths("\\\\nonexistent-host-.invalid\\share\\报告.docx").is_empty());
     }
 
     /// path tokenizer 边界契约：以下形态**不**应被拆碎成多 token，
@@ -2113,7 +2131,7 @@ mod registry_tests {
     /// `foo.docx` 三个碎片，盘符路径失访）。本测试用**本地可写**的 tmpdir
     /// 拼出真存在的盘符/UNC 形态路径，验 fabricated_gen_path 不返回误报。
     #[test]
-    fn fabricated_gen_path_preserves_drive_letter_path() {
+    fn claimed_doc_paths_preserves_drive_letter_path() {
         // tmpdir 路径形如 /var/folders/.../T/wm-fab-XXXX——本机 fs 存在，
         // 拼一个后缀 .docx 的真存在文件做 baseline
         let tmp = std::env::temp_dir().join(format!(
@@ -2121,14 +2139,19 @@ mod registry_tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::write(&tmp, b"baseline").unwrap();
-        // 在已存在文件旁描述一个**不存在**的同前缀路径：应被识别为 fabricated
+        // 在已存在文件旁描述一个**不存在**的同前缀路径：应被提取为候选，
+        // 且存在性判据判它缺
         let ghost = tmp.with_file_name(format!("{}.docx", uuid::Uuid::new_v4().simple()));
         let text = format!("已生成 {}", ghost.display());
-        // 本机绝对路径以 / 开头，已在 fabricated_gen_path 边界守卫内 → 命中
+        // 本机绝对路径以 / 开头，已在 claimed_doc_paths 边界守卫内 → 命中
         assert_eq!(
-            fabricated_gen_path(&text).as_deref(),
+            claimed_doc_paths(&text).first().map(|s| s.as_str()),
             Some(ghost.to_string_lossy().as_ref()),
-            "本机绝对盘符路径（含 / 前缀）必须被守卫识别为 fabricated"
+            "本机绝对盘符路径（含 / 前缀）必须被提取为候选"
+        );
+        assert!(
+            path_missing_on_disk(&ghost.to_string_lossy()),
+            "候选路径在磁盘上不存在，存在性判据要判它缺"
         );
         let _ = std::fs::remove_file(&tmp);
     }
@@ -2141,7 +2164,7 @@ mod registry_tests {
     /// 与现有 `fabricated_gen_path_preserves_drive_letter_path` 形成对照：
     /// 后者验「存在就跳过」、本测试验「不存在就命中 fabricated」。
     #[test]
-    fn fabricated_gen_path_tokenizer_does_not_split_at_certain_boundaries() {
+    fn claimed_doc_paths_tokenizer_does_not_split_at_certain_boundaries() {
         let tmp = std::env::temp_dir();
         let ghost = tmp.join(format!("{}.docx", uuid::Uuid::new_v4().simple()));
         // 必须先创建父目录存在——否则 ghost 父路径不存在导致 exists() 在
@@ -2150,11 +2173,11 @@ mod registry_tests {
         // tmp 在 macOS 上是 /var/folders/.../T/，路径以 / 开头——
         // tok.starts_with('/') 通过守卫；Path::new(ghost).exists() 必为 false
         // （uuid 新名未创建）；find 应找到完整 token
-        let got = fabricated_gen_path(&text);
+        let got = claimed_doc_paths(&text);
         assert_eq!(
-            got.as_deref(),
+            got.first().map(|s| s.as_str()),
             Some(ghost.to_string_lossy().as_ref()),
-            "本机绝对路径（含 / 前缀）必须以完整 token 进 find，不被切分"
+            "本机绝对路径（含 / 前缀）必须以完整 token 进候选，不被切分"
         );
     }
 

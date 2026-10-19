@@ -91,7 +91,11 @@ CREATE TABLE IF NOT EXISTS file_changes (
   after_sha  TEXT,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_changes_trace ON file_changes(trace_id);";
+CREATE INDEX IF NOT EXISTS idx_changes_trace ON file_changes(trace_id);
+-- 路径同一性用小写归一（与仓库既有的路径查重口径一致：同名不同路径算不同条目，
+-- 但大小写不同的同一个路径算同一条）。索引带 COLLATE NOCASE，查询侧同款写法
+-- 才能走上索引——否则每次判定都要全表扫。
+CREATE INDEX IF NOT EXISTS idx_changes_path ON file_changes(path COLLATE NOCASE);";
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -519,6 +523,58 @@ pub fn subagent_span_tools(
         out.push(r.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+/// 这批路径里哪些有落盘凭证（被工具写过盘）。
+///
+/// 判据是「有没有工具写过这个路径」，不是「这次写没写」——痕迹表按 30 天保留期
+/// 清理，所以这里的答案是「保留期内被写过」。路径比较大小写不敏感，与仓库既有
+/// 的路径同一性口径（小写归一）一致。
+///
+/// 返回**有凭证的**那部分（调用方取差集即「无凭证的」）。
+pub fn file_paths_with_receipt(
+    conn: &rusqlite::Connection,
+    paths: &[String],
+) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT path FROM file_changes WHERE path = ?1 COLLATE NOCASE LIMIT 1")
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for p in paths {
+        let hit: Option<String> = stmt.query_row([p], |r| r.get::<_, String>(0)).ok();
+        if let Some(found) = hit {
+            out.push(found);
+        }
+    }
+    Ok(out)
+}
+
+/// 本会话是否跑过「自己能写盘、我们无从确证」的工具。
+///
+/// `run_python` 无文件系统隔离（SPEC 明说：完整 stdlib + 用户权限执行），MCP
+/// 工具由外部服务执行——两者都能写出文件、但不经过我们的落盘凭证。跑过这类工具
+/// 时，「某路径没有凭证」推不出「它不是工具产物」，这一项判定必须让开。
+///
+/// 口径只认本会话的 trace（子 agent 的 trace 记在 subagents.trace_id 下，但
+/// 它的 span 仍挂在本会话的 trace 上——子 agent 复用主会话的 trace 根）。
+///
+/// MCP 工具名形如 `mcp_{服务器}_{工具}`（`bot::mcp::config::mcp_tool_name`），
+/// 这里用 GLOB 配字面前缀——LIKE 里 `_` 是通配符，配不出「字面 mcp_ 开头」。
+pub fn session_ran_unverifiable_writer(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT 1 FROM exec_spans s
+             JOIN exec_traces t ON s.trace_id = t.id
+             WHERE t.session_id = ?1
+               AND (s.name = 'run_python' OR s.name GLOB 'mcp_*')
+             LIMIT 1",
+        )
+        .map_err(|e| e.to_string())?;
+    let hit: Option<i64> = stmt.query_row([session_id], |r| r.get(0)).ok();
+    Ok(hit.is_some())
 }
 
 pub fn file_changes_for_trace(
@@ -1186,12 +1242,12 @@ mod tests {
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
-                 ('idx_traces_task','idx_traces_session','idx_traces_finished','idx_spans_trace','idx_changes_trace')",
+                 ('idx_traces_task','idx_traces_session','idx_traces_finished','idx_spans_trace','idx_changes_trace','idx_changes_path')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(n, 5, "5 个索引必须全部建出");
+        assert_eq!(n, 6, "6 个索引必须全部建出");
     }
 
     /// start→finish 往返：files_changed 从 file_changes 反计，不由调用方传
@@ -2079,5 +2135,120 @@ mod tests {
             "同日同模型求和"
         );
         assert_eq!(rows[2].model.as_deref(), Some("kimi-k3"));
+    }
+
+    /// 落盘凭证查询：只返回被工具写过的路径，大小写不敏感
+    #[test]
+    fn file_paths_with_receipt_returns_only_written_paths() {
+        let conn = setup_conn();
+        let tid = mk_trace(&conn, "s1", None, "chat", 1000);
+        for p in ["/out/report.docx", "/out/sheet.xlsx"] {
+            file_change_insert(
+                &conn,
+                &NewFileChange {
+                    trace_id: tid,
+                    span_id: None,
+                    path: p,
+                    kind: "create",
+                    added: 0,
+                    deleted: 0,
+                    diff: None,
+                    truncated: false,
+                    before_ref: None,
+                    before_sha: None,
+                    after_sha: Some("abc"),
+                    created_at: 1001,
+                },
+            )
+            .unwrap();
+        }
+        let asked = vec![
+            "/out/report.docx".to_string(),
+            "/out/never_written.pdf".to_string(),
+            "/OUT/SHEET.XLSX".to_string(),
+        ];
+        let hit = file_paths_with_receipt(&conn, &asked).unwrap();
+        assert_eq!(
+            hit.len(),
+            2,
+            "没被写过的路径不进结果；大小写不同仍算同一路径"
+        );
+        assert!(hit.iter().any(|h| h == "/out/report.docx"));
+        assert!(
+            hit.iter()
+                .any(|h| h.eq_ignore_ascii_case("/out/sheet.xlsx")),
+            "大小写归一后应命中表里那行：{:?}",
+            hit
+        );
+    }
+
+    /// 不可证伪写入通道：跑过 run_python / MCP 工具的会话要能被认出来
+    #[test]
+    fn session_ran_unverifiable_writer_detects_python_and_mcp() {
+        let conn = setup_conn();
+        let plain = mk_trace(&conn, "s-plain", None, "chat", 1000);
+        let py = mk_trace(&conn, "s-py", None, "chat", 1000);
+        let mcp = mk_trace(&conn, "s-mcp", None, "chat", 1000);
+        let mut add_span = |conn: &rusqlite::Connection, tid: i64, name: &str| {
+            span_insert(
+                conn,
+                &NewSpan {
+                    trace_id: tid,
+                    turn: 1,
+                    tool_call_id: None,
+                    name,
+                    args: None,
+                    result: None,
+                    ok: true,
+                    error_class: None,
+                    duration_ms: None,
+                    created_at: 1001,
+                },
+            )
+            .unwrap();
+        };
+        add_span(&conn, plain, "write_file");
+        add_span(&conn, py, "run_python");
+        add_span(&conn, mcp, "mcp_fs_read_file");
+
+        assert!(
+            !session_ran_unverifiable_writer(&conn, "s-plain").unwrap(),
+            "普通写盘工具不构成不可证伪通道"
+        );
+        assert!(
+            session_ran_unverifiable_writer(&conn, "s-py").unwrap(),
+            "run_python 自己能写盘，判定要让它开"
+        );
+        assert!(
+            session_ran_unverifiable_writer(&conn, "s-mcp").unwrap(),
+            "MCP 工具在外部服务执行，判定要让它开"
+        );
+        assert!(
+            !session_ran_unverifiable_writer(&conn, "s-absent").unwrap(),
+            "没跑过这类工具的会话不应被误开"
+        );
+    }
+    /// 凭证查询必须走 path 索引（守卫每次判定都查这道，痕迹表会一直长）
+    ///
+    /// 索引建在 `path COLLATE NOCASE` 上，查询侧得同款写法才走得上去——
+    /// 写成 `path = ?1`（不带 COLLATE）就退化成全表扫，注释里那句「否则每次判定
+    /// 都要全表扫」就成了空话。这条测试把那句话钉住。
+    #[test]
+    fn file_paths_with_receipt_query_uses_path_index() {
+        let conn = setup_conn();
+        let mut st = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT path FROM file_changes WHERE path = ?1 COLLATE NOCASE LIMIT 1",
+            )
+            .unwrap();
+        let plan: Vec<String> = st
+            .query_map(["/a/b.docx"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            plan.iter().any(|p| p.contains("idx_changes_path")),
+            "凭证查询应走 path 索引，实际计划：{plan:?}"
+        );
     }
 }

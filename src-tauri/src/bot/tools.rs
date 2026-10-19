@@ -1546,6 +1546,7 @@ pub(crate) async fn tool_create_word(
                 ),
                 Vec::new(),
             )
+            .with_file_change(crate::bot_fs::build_binary_file_receipt(&out))
         }
         Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
@@ -1671,7 +1672,8 @@ pub(crate) async fn tool_create_word_revisions(
                 if engine == "dotnet" { ".NET OpenXML" } else { "Python 兜底（.NET 不可用或执行失败）" }
             ),
             Vec::new(),
-        ),
+        )
+        .with_file_change(crate::bot_fs::build_binary_file_receipt(&out)),
         Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
 }
@@ -1701,6 +1703,7 @@ pub(crate) async fn tool_create_excel(
                 ),
                 Vec::new(),
             )
+            .with_file_change(crate::bot_fs::build_binary_file_receipt(&out))
         }
         Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
@@ -1744,6 +1747,7 @@ pub(crate) async fn tool_create_ppt(
                 ),
                 Vec::new(),
             )
+            .with_file_change(crate::bot_fs::build_binary_file_receipt(&out))
         }
         Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }
@@ -1800,6 +1804,7 @@ pub(crate) async fn tool_create_pdf(
                 ),
                 Vec::new(),
             )
+            .with_file_change(crate::bot_fs::build_binary_file_receipt(&out))
         }
         Err(e) => ToolResult::error(format!("生成失败：{e}"), Vec::new()),
     }

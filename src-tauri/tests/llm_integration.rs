@@ -378,6 +378,13 @@ struct CoreHarness {
     /// 执行类谎报守卫的触发词表。默认填**内置默认表**（与生产一致），
     /// 否则依赖守卫的既有用例会因空词表静默失效；要验自定义表改这个字段。
     guard_claim_keywords: Vec<String>,
+    /// 落盘凭证注入点：列出的路径判成「查不到凭证」（幻觉守卫的「这个路径是
+    /// 工具产物吗」那道判据）。空表 = 全部有凭证 = 放行。
+    file_receipts_missing: Arc<Mutex<Vec<String>>>,
+    /// 落盘凭证闭包（从 `file_receipts_missing` 读）。存进 harness 而不是每次
+    /// 现造——`deps()` 要的是 `&'a dyn Fn`，现造就得 `Box::leak` 逃逸，
+    /// 多轮用例下泄漏随调用次数增长。
+    file_receipts: Box<dyn Fn(Option<&str>, &[String]) -> Vec<String> + Send + Sync>,
     audit_events: AuditEvents,
 }
 
@@ -387,6 +394,8 @@ impl CoreHarness {
         let events2 = events.clone();
         let sub_tools: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sub_tools2 = sub_tools.clone();
+        let missing: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let missing2 = missing.clone();
         Self {
             // 非交互实例：不发流式事件，stop 标志未置位
             stop: StopGuard::new(&mock_handle(), false, None),
@@ -407,10 +416,21 @@ impl CoreHarness {
             subagent_tools: Box::new(move |_| sub_tools2.lock().unwrap().clone()),
             subagent_tools_data: sub_tools,
             guard_claim_keywords: wmessage_lib::bot::registry::default_execution_claim_patterns(),
+            file_receipts_missing: missing,
+            file_receipts: Box::new(move |_sid, paths: &[String]| {
+                let missing = missing2.lock().unwrap();
+                paths
+                    .iter()
+                    .filter(|p| missing.iter().any(|m| m.eq_ignore_ascii_case(p)))
+                    .cloned()
+                    .collect()
+            }),
             audit_events: events,
         }
     }
 
+    /// 依赖装配（默认关 final 自检，避免对历史用例产生回归干扰；
+    /// 新自检测试用 deps_with_gap(opt) opt-in）
     fn deps(&self) -> ModelLoopDeps<'_> {
         // 默认关 final 自检（避免对历史用例产生回归干扰）；新自检测试用 deps_with_gap(opt) opt-in
         ModelLoopDeps {
@@ -429,6 +449,7 @@ impl CoreHarness {
             turn_status: None,
             subagent_tools: Some(&*self.subagent_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
+            file_receipts: Some(&*self.file_receipts),
         }
     }
 
@@ -450,6 +471,7 @@ impl CoreHarness {
             turn_status: None,
             subagent_tools: Some(&*self.subagent_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
+            file_receipts: Some(&*self.file_receipts),
         }
     }
 
@@ -3520,4 +3542,115 @@ async fn core_truthful_rewrite_after_rework_carries_no_notice() {
         !text.contains("⚠️"),
         "改口后的干净终稿不该挂更正标注：{text:?}"
     );
+}
+
+/// 落盘凭证正路：模型真调了文档生成工具（带回凭证），终稿报同一个路径——
+/// 存在性与凭证两道都站得住，不该被拦。
+///
+/// 这条是正路回归锁：凭证那道判据一旦接线错（凭证没进池），每一次正常的
+/// 文档生成都会被当成凭空声称 → 守卫让模型重做 → 白跑一遍生成。
+#[tokio::test]
+async fn core_generated_doc_with_receipt_is_not_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("周报.pptx");
+    std::fs::write(&doc, b"pptx").unwrap();
+
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_ppt".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply(format!(
+        "已生成 PPT 演示文稿：{}",
+        doc.display()
+    )));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let receipt = wmessage_lib::bot::FileChangeReceipt {
+        path: doc.to_string_lossy().into_owned(),
+        kind: "create",
+        added: 0,
+        deleted: 0,
+        diff: None,
+        truncated: false,
+        before_ref: None,
+        before_sha: None,
+        after_sha: Some("0f0f".into()),
+        replacements: 0,
+    };
+    let exec = move |_n: String, _a: String, _t: ToolCallTrace| {
+        let receipt = receipt.clone();
+        async move { ToolResult::ok("已生成 PPT 演示文稿", Vec::new()).with_file_change(receipt) }
+    };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("有凭证的正路应 Ok");
+    assert!(text.contains("已生成 PPT 演示文稿"), "应原样返回：{text:?}");
+    assert!(!text.contains("⚠️"), "有凭证的正路不该被标注：{text:?}");
+    assert_eq!(server.request_count(), 2, "不该返工");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "不该记守卫审计：{lines:?}"
+    );
+}
+
+/// 落盘凭证反路：路径在磁盘上确实存在，但从来不是任何工具写出来的——
+/// 模型在凭空声称「已导出」这个文件。
+///
+/// 用「已导出」而不是「已生成」是有意的：「已导出」不在变更类词表里
+/// （claims_mutation 抓不到），所以这一条只有落盘凭证那道判据能拦——测的就是它。
+#[tokio::test]
+async fn core_claimed_doc_without_receipt_is_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("不是我生成的.pdf");
+    std::fs::write(&doc, b"pdf").unwrap();
+
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(format!(
+        "已导出 PDF 文档：{}",
+        doc.display()
+    )));
+    server.push_behavior(MockBehavior::TextReply("这个文件不是我导出的。".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // 这个路径查不到落盘凭证：它不是任何工具写出来的
+    h.file_receipts_missing
+        .lock()
+        .unwrap()
+        .push(doc.to_string_lossy().into_owned());
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("无凭证的声称应被打回后 Ok");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|l| l.contains("声称已生成但无落盘凭证")),
+        "应记无落盘凭证：{lines:?}"
+    );
+    assert_eq!(server.request_count(), 2, "应返工一轮");
+    assert!(text.contains("不是我导出的"), "模型应被要求改口：{text:?}");
 }

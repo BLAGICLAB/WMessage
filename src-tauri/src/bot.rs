@@ -39,6 +39,9 @@ pub use crate::audit::AuditLevel;
 // 同上：db 模块私有，tests/skill_e2e.rs 的调度器 e2e 用真实 upsert/load 验证
 // persist_outcome 注入闭包的落库载荷（临时库文件）。
 pub use crate::db::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
+// 同上：bot_fs 模块私有，但集成测试要模拟「工具写盘并带回凭证」——凭证的**存在**
+// 是幻觉守卫「这个路径是工具产物吗」那道判据的依据，测试得能造一个。
+pub use crate::bot_fs::FileChangeReceipt;
 
 // 子模块声明
 pub mod compaction;

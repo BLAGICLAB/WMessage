@@ -874,9 +874,16 @@ pub(crate) fn build_unified_diff(
 
 /// sha256 十六进制（回滚证据链： 回滚前比对 after_sha 防文件漂移）
 pub(crate) fn sha256_hex(s: &str) -> String {
+    sha256_hex_bytes(s.as_bytes())
+}
+
+/// sha256 十六进制（字节入参）：二进制产物（docx/xlsx/pptx 是 zip 容器，不是
+/// UTF-8 文本）只能按字节算哈希——按字符串算会先经过一次有损转换，哈希出来的
+/// 值与文件实际内容对不上。
+pub(crate) fn sha256_hex_bytes(bytes: &[u8]) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
-    h.update(s.as_bytes());
+    h.update(bytes);
     format!("{:x}", h.finalize())
 }
 
@@ -935,6 +942,30 @@ pub(crate) fn build_file_change_receipt(
         before_sha: before.map(sha256_hex),
         after_sha: Some(sha256_hex(after)),
         replacements,
+    }
+}
+
+/// 二进制产物（docx/xlsx/pptx/pdf）的落盘凭证：路径 + 内容哈希，无行级 diff。
+///
+/// 这类文件是 zip 容器、不是 UTF-8 文本——按行 diff 只会产出乱码，所以这档只记
+/// 「落在哪、是新建、内容哈希是多少」：执行痕迹面板靠它显示「新增了一个文档」，
+/// 回滚的漂移闸靠 after_sha 核内容。行数两档恒 0，因为二进制没有行。
+///
+/// 读不出内容时**仍然给凭证**（after_sha=None）——凭证的**存在**才是「这个文件
+/// 是工具产物」的凭据；缺了它，幻觉守卫会把模型真写出来的文档判成凭空声称。
+pub(crate) fn build_binary_file_receipt(path: &str) -> FileChangeReceipt {
+    let after_sha = std::fs::read(path).ok().map(|b| sha256_hex_bytes(&b));
+    FileChangeReceipt {
+        path: path.to_string(),
+        kind: "create",
+        added: 0,
+        deleted: 0,
+        diff: None,
+        truncated: false,
+        before_ref: None,
+        before_sha: None,
+        after_sha,
+        replacements: 0,
     }
 }
 
