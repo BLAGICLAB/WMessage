@@ -1694,15 +1694,15 @@ where
         // 轮首活体信号：上一轮 bot-tool-done 之后到本轮首个 delta 之间是第二段
         // 空窗（LLM 首 token 延迟，无工具行可挂）。发一条 running 让前端知道
         // 「模型正在想」，配 turn 计数与已用时长的秒级刷新。
-        (deps.turn_status).map(|cb| {
+        if let Some(cb) = deps.turn_status {
             cb(
                 TurnStatus::Running,
                 &format!(
                     "正在思考 · 第 {} 轮",
                     round + 1
                 ),
-            )
-        });
+            );
+        }
         // body 按协议分支——内部消息流保持 OpenAI
         // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
         // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
@@ -2518,7 +2518,9 @@ where
                 // settling：正文已经完整输出，用户「看完了」，但模型还要跑一次
                 // 自检（可静默数十秒）。这一步不发生，用户会把正文结束误读成
                 // 「本轮结束」——ZCode 的 settling 就是为这个场景存在的。
-                (deps.turn_status).map(|cb| cb(TurnStatus::Settling, "收尾中 · 校验答复"));
+                if let Some(cb) = deps.turn_status {
+                    cb(TurnStatus::Settling, "收尾中 · 校验答复");
+                }
                 let snippet: String = final_text
                     .chars()
                     .take(FINAL_SELFCHECK_SNIPPET_CHARS)
