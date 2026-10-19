@@ -664,6 +664,47 @@ describe("SettingsPage", () => {
     expect(await screen.findByText(/≥15 分钟一次/)).toBeInTheDocument();
   });
 
+  it("Python 开关（机器人分区）：开启确认框里的超时取自参数表，前端不写死 60 秒", async () => {
+    const user = userEvent.setup();
+    // 生效超时故意给 120（真值 60）：写死「60 秒超时」那条就会露馅
+    const views = paramViews.map((p) =>
+      p.key === "tools.python_timeout_secs" ? { ...p, value: "120" } : p,
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "bot_effective_params" ? views : agentParamsMock(cmd),
+    );
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "机器人" }));
+    const title = await screen.findByText("允许机器人执行 Python");
+    // 开关按钮与标题同一行（标题 <p> → 文字 div → flex 行）
+    const row = title.parentElement?.parentElement as HTMLElement;
+    await user.click(within(row).getByRole("button"));
+    // 二次确认走 Tauri 原生 dialog（useConfirm → ask），不是 window.confirm
+    await waitFor(() => expect(mocks.askMock).toHaveBeenCalled());
+    const text = String(mocks.askMock.mock.calls[0]?.[0] ?? "");
+    // 120 秒 → 「2 分钟」（走 fmtDurationSecs），不是手写的「60 秒」
+    expect(text).toContain("2 分钟");
+    expect(text).not.toContain("60 秒");
+  });
+
+  it("Python 开关：参数表拉不到时确认框不写秒数（不留手写副本）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      // 参数表拉不到 → 整块降级，此时文案里不能出现任何秒数
+      if (cmd === "bot_effective_params") return null;
+      return agentParamsMock(cmd);
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "机器人" }));
+    const title = await screen.findByText("允许机器人执行 Python");
+    const row = title.parentElement?.parentElement as HTMLElement;
+    await user.click(within(row).getByRole("button"));
+    await waitFor(() => expect(mocks.askMock).toHaveBeenCalled());
+    const text = String(mocks.askMock.mock.calls[0]?.[0] ?? "");
+    expect(text).toContain("限时执行");
+    expect(text).not.toMatch(/\d+\s*秒/);
+  });
+
   it("主题三态：依次点击 → onThemeChange 收到 light / dark / system", async () => {
     const onThemeChange = vi.fn();
     const user = userEvent.setup();

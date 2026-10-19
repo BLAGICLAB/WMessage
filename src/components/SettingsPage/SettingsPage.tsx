@@ -788,6 +788,20 @@ export function SettingsPage({
       ? fmtDurationSecs(secs)
       : null;
   })();
+  /** Python 执行超时（参数 tools.python_timeout_secs，单位秒）→ 展示文案。
+   *  取的是**生效值**（已钳过），不是用户填的原值。取不到 → null = 不写数字。 */
+  const pyTimeoutText = (() => {
+    const raw = pyTimeoutView?.value;
+    const secs = Number(raw);
+    return raw != null && Number.isFinite(secs) && secs > 0
+      ? fmtDurationSecs(secs)
+      : null;
+  })();
+  /** 沙箱说明那半句（开启确认框用）：有数就把生效超时写出来，取不到就不写——
+   *  手写的那个秒数会随后端常量漂（此前硬编码 60，改成 120 后文案就说谎了）。 */
+  const pySandboxDesc = `沙箱：独立临时目录 + ${
+    pyTimeoutText ? `${pyTimeoutText} 超时` : "限时执行"
+  } + 审计留痕`;
   /** 保留天数输入框的提示：范围与默认值都取自后端参数表。 */
   const traceRetentionTitle = (() => {
     const range = paramRangeText("trace.retention_days");
@@ -1000,7 +1014,7 @@ export function SettingsPage({
     if (
       enabling &&
       !(await confirm(
-        "开启后机器人可执行 Python 代码（沙箱：独立临时目录 + 60 秒超时 + 审计留痕）。确认开启？",
+        `开启后机器人可执行 Python 代码（${pySandboxDesc}）。确认开启？`,
       ))
     )
       return;
