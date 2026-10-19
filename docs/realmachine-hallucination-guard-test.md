@@ -94,6 +94,8 @@ rustc -O -o /tmp/probe /tmp/probe.rs && /tmp/probe
    （`create_word` 等只接受 `filename`，目录由 `db::gen_dir` 固定）。
 4. **Python 开关**：设置页「机器人设置」→「允许机器人执行 Python」。**默认关闭**。
    P3 / E1 两条要用，不开就整条跑不了。
+   同一张卡里的「Python 默认超时（秒）」是参数 `tools.python_timeout_secs`
+   （留空 = 60s，上限 300s，可编辑）——P3 / E1 都不需要动它。
 5. **清干净同名文件的历史凭证**（P2 必做，见该条的「陷阱」）。
 
 ## 验证手段
@@ -116,7 +118,11 @@ sqlite3 "$DD/wmessage.db" \
 
 第 3 条是「落盘凭证」这道闸的地面真相：`file_changes` 里有的路径 = 有凭证，
 没有的 = 无凭证（凭据来源两处：本提问写过的路径在进程内 + `file_changes` 里的历史）。
-**痕迹表 30 天保留期**，30 天前写过的文件凭证已被清掉（见 L1）。
+
+**保留期口径**：自动清扫按 **30 天**（后端常量 `TRACE_RETENTION_DAYS`，参数表里
+`trace.retention_days` 是只读项——设置页改不了它）。设置页「数据管理 → 执行痕迹」里
+那个「N 天前」输入框是**手动清理**的天数（`trace_clear_before(days)`），只作用于你
+手动点的那一次，**不改变自动清扫周期**——别把这两个数当成一回事。
 
 ---
 
@@ -332,11 +338,28 @@ bot.log 里也不该有守卫行——若出现 `声称已生成但无落盘凭�
 30 天前被工具写过的文件，凭证已被 `file_changes` 的保留期清扫清掉。
 此时模型重述那个路径 → 存在性过、凭证不过 → **真话被判成谎报**。
 
-复现：造一条 `file_changes` 记录并把 `created_at` 改到 31 天前，再问模型那个路径。
+**复现机制要说准**：凭证查询**不按时间过滤**——
+`file_paths_with_receipt` 的 SQL 是 `SELECT path FROM file_changes WHERE path = ?1 COLLATE NOCASE LIMIT 1`，
+只看「这个路径在不在表里」。所以把 `file_changes.created_at` 改到 31 天前**不会**让它查不到
+（行还在表里，凭证照样成立）。
+
+凭证消失的真正原因是**保留期清扫把行删了**：`retire_traces_before` 按
+`exec_traces.finished_at`（一直挂着 running 的按 `started_at`）挑出过期 trace，
+再连同 `exec_spans` / `file_changes` 三删同行。所以复现要走「让清扫真的删掉它」：
 
 ```bash
-sqlite3 "$DD/wmessage.db" "update file_changes set created_at = created_at - 31*86400000;"
+# ① 把那条 trace 的收尾时间挪到 31 天前
+sqlite3 "$DD/wmessage.db" \
+  "update exec_traces set finished_at = finished_at - 31*86400000 where id = <trace_id>;"
+
+# ② 在应用里：设置页 → 数据管理 → 执行痕迹 → 保留天数填 30 → 点「清理」
+#    （这一步真的删掉那条 trace 及其 file_changes 行）
 ```
+
+③ 回到聊天，让模型重述那个路径 → 存在性过、凭证不过 → **真话被判成谎报**。
+
+只想看结果不想走清扫流程的话，直接删掉那行等价（效果一样）：
+`sqlite3 "$DD/wmessage.db" "delete from file_changes where path like '%季度复盘%';"`
 
 ### L2 · 查不到证据 = 放行
 
