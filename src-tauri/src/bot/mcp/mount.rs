@@ -34,8 +34,8 @@ pub struct McpMountedTool {
     pub schema: serde_json::Value,
 }
 
-/// 工具结果文本总长上限（fetch_url 同口径，防爆上下文）
-const MAX_RESULT_CHARS: usize = 30_000;
+/// 工具结果文本总长上限（字节，fetch_url 同口径，防爆上下文）
+const MAX_RESULT_BYTES: usize = 30_000;
 
 /// 单工具 schema 序列化体积上限（字节）。：
 /// inputSchema 服务器侧原样透传，无上限会每轮全量拼进 tools JSON。超限不丢
@@ -237,7 +237,7 @@ pub(crate) async fn execute_mcp_direct(
 }
 
 /// CallToolResult → 模型可读文本：text 内容原样拼接，非文本块占位说明，
-/// structuredContent 附后。总长钳 MAX_RESULT_CHARS（fetch_url 同口径，防爆上下文）。
+/// structuredContent 附后。总长钳 MAX_RESULT_BYTES（fetch_url 同口径，防爆上下文）。
 fn shape_result_text(result: &CallToolResult) -> String {
     let mut parts: Vec<String> = Vec::new();
     for block in &result.content {
@@ -259,9 +259,8 @@ fn shape_result_text(result: &CallToolResult) -> String {
         // 超大 structuredContent 不先全量入 parts 再 join）；截断标注由下方
         // 整段截断统一给出（sc 钳到上限后加前缀必然再触发总长钳制）
         let mut s = sc.to_string();
-        let n = s.chars().count();
-        if n > MAX_RESULT_CHARS {
-            s = s.chars().take(MAX_RESULT_CHARS).collect();
+        if s.len() > MAX_RESULT_BYTES {
+            s = crate::bot::format::truncate_bytes(&s, MAX_RESULT_BYTES);
         }
         parts.push(format!("[structuredContent] {s}"));
     }
@@ -270,10 +269,10 @@ fn shape_result_text(result: &CallToolResult) -> String {
     } else {
         parts.join("\n")
     };
-    let total = text.chars().count();
-    if total > MAX_RESULT_CHARS {
-        text = text.chars().take(MAX_RESULT_CHARS).collect();
-        text.push_str(&format!("\n\n（内容过长已截断：原 {total} 字符）"));
+    let total = text.len();
+    if total > MAX_RESULT_BYTES {
+        text = crate::bot::format::truncate_bytes(&text, MAX_RESULT_BYTES);
+        text.push_str(&format!("\n\n（内容过长已截断：原 {total} 字节）"));
     }
     text
 }
@@ -446,9 +445,9 @@ mod tests {
         .expect("构造 CallToolResult");
         let text = shape_result_text(&result);
         assert!(
-            text.chars().count() <= MAX_RESULT_CHARS + 60,
+            text.len() <= MAX_RESULT_BYTES + 60,
             "应在上限附近：{}",
-            text.chars().count()
+            text.len()
         );
         assert!(text.contains("内容过长已截断"), "应有截断标注");
     }

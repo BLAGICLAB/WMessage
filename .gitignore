@@ -121,3 +121,5 @@ fixtures/*.jsonl.tmp
 .worktrees/
 # MCode 会话运行时产物（截图/画布等，纯会话级生成，不入库）
 .mavis/
+# overflow-probe.sh 的水位线，纯本机测试状态
+.overflow-probe.mark

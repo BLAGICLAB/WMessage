@@ -140,7 +140,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         subagent_max_turns: cfg.subagent_max_turns,
         subagent_max_wall_secs: cfg.subagent_max_wall_secs,
         search_max_results: cfg.search_max_results,
-        max_tool_output_chars: cfg.max_tool_output_chars,
+        max_tool_output_bytes: cfg.max_tool_output_bytes,
         ask_budget: cfg.ask_budget,
         tool_rules: cfg.tool_rules,
     })
@@ -323,9 +323,9 @@ pub fn bot_set_config(
     // 工具输出截断上限（0 = 显式关闭不动，其余钳到 params 的上限）——原先这个
     // 字段没有任何写侧钳制，只有模型循环生效点的一行 `.min(200_000)`，于是设置页
     // 显示用户设的值、运行时按另一个值走
-    config.max_tool_output_chars = config
-        .max_tool_output_chars
-        .map(crate::bot::params::clamp_max_tool_output_chars);
+    config.max_tool_output_bytes = config
+        .max_tool_output_bytes
+        .map(crate::bot::params::clamp_max_tool_output_bytes);
     // 终稿自检间隔落盘前钳制（0..=100：0 = 关闭；上限放宽到 100 留充足调整空间，
     // 真实触发频率受 final_text 字数 / function_calls / round gap 共同约束）
     config.final_selfcheck_round_gap = config.final_selfcheck_round_gap.map(|n| n.clamp(0, 100));

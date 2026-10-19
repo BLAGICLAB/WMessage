@@ -452,25 +452,31 @@ const AGE_HARD_ROUNDS: usize = 15;
 /// 终稿自检 N 判定追加到原文尾部的警告（in-loop 与侧调两条路径共用）。
 const FINAL_SELFCHECK_WARN: &str = "\n\n⚠️ 自检未达预期，请人工核对";
 
-/// 单条工具结果回灌默认上限（字符）：业界对齐——Claude Code 文件读 25K token /
-/// Bash 30K 字符、Gemini CLI 40K 字符。配置 Some(0) = 显式关闭截断。
-pub(crate) const DEFAULT_TOOL_OUTPUT_CAP: usize = 30_000;
-/// 截断时尾部保留字符数：错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息。
-const TOOL_OUTPUT_TAIL_KEEP: usize = 6_000;
+/// 单条工具结果回灌默认上限（字节，UTF-8）。业界对齐——Claude Code 文件读 25K token、
+/// Bash 30K 输出、Gemini CLI 40K 输出。配置 Some(0) = 显式关闭截断。
+///
+/// 为什么按字节而不是字符：这条上限的职责是「别把模型上下文撑爆」，而撑爆的是
+/// token，不是字符数。字节到 token 的换算跨语种稳定得多（中文约 3 字节/token、
+/// ASCII 约 4 字节/token），字符数则随语种漂三倍（同样 30000，中文占 3 倍字节、
+/// 只占 1/4 的 token）。且同一漏斗里 trace 侧的 `db::SPAN_TEXT_MAX` 与溢出指针
+/// 文案本来就按字节报，字符口径会让同一次溢出在两个地方显示成两个数。
+pub(crate) const DEFAULT_TOOL_OUTPUT_CAP_BYTES: usize = 30_000;
+/// 截断时尾部保留字节数：错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息。
+const TOOL_OUTPUT_TAIL_KEEP_BYTES: usize = 6_000;
 
-/// 本次工具结果回灌的实际天花板：per-tool 预算与全局配置 cap 取小。
+/// 本次工具结果回灌的实际天花板（字节）：per-tool 预算与全局配置 cap 取小。
 ///
 /// 两个都要，不能只要一个：
-/// - per-tool 预算（`ToolDef.max_output_chars`）管「这个工具天生输出就大」——
+/// - per-tool 预算（`ToolDef.max_output_bytes`）管「这个工具天生输出就大」——
 ///   fetch_url / read_text_file / list_files 可以给到 65536，其余默认 8192。
 /// - 全局 cap 管用户在设置页调的总量，也是唯一兜底——per-tool 预算被调到比它大时
 ///   不能放任，否则设置页那个旋钮就成了空设置。
-fn effective_output_cap(tool: &str, global_cap: usize) -> usize {
+fn effective_output_cap(tool: &str, global_cap_bytes: usize) -> usize {
     crate::bot::registry::tools_index()
         .get(tool)
-        .map(|t| t.max_output_chars)
-        .unwrap_or(global_cap)
-        .min(global_cap)
+        .map(|t| t.max_output_bytes)
+        .unwrap_or(global_cap_bytes)
+        .min(global_cap_bytes)
 }
 
 /// 超预算时的渲染：优先转存溢出文件 + 指针；转存失败退回纯头尾截断。
@@ -478,7 +484,7 @@ fn effective_output_cap(tool: &str, global_cap: usize) -> usize {
 /// 退回路径必须保留：落盘失败时若直接放行原文本，模型就白挨这一轮大上下文；
 /// 若返回空，结果凭空消失更糟。`cap_tool_output` 的四一分在无第二份拷贝时是对的，
 /// 这正是它作为兜底而非主路径的原因。
-fn spill_or_cap(app: &tauri::AppHandle, tool: &str, text: String, cap: usize) -> String {
+fn spill_or_cap(app: &tauri::AppHandle, tool: &str, text: String, cap_bytes: usize) -> String {
     match crate::overflow::spill(app, &text) {
         Ok(path) => {
             let notice = crate::overflow::pointer_text(tool, &path, &text);
@@ -488,12 +494,12 @@ fn spill_or_cap(app: &tauri::AppHandle, tool: &str, text: String, cap: usize) ->
                 "tool.output.spilled",
                 &[
                     ("tool", tool.to_string()),
-                    ("original", text.chars().count().to_string()),
-                    ("cap", cap.to_string()),
+                    ("original", text.len().to_string()),
+                    ("cap", cap_bytes.to_string()),
                     ("path", path.display().to_string()),
                 ],
             );
-            preview_with_pointer(&text, &notice, cap)
+            preview_with_pointer(&text, &notice, cap_bytes)
         }
         Err(e) => {
             crate::audit::write_event(
@@ -502,44 +508,57 @@ fn spill_or_cap(app: &tauri::AppHandle, tool: &str, text: String, cap: usize) ->
                 "tool.output.spill_failed",
                 &[
                     ("tool", tool.to_string()),
-                    ("cap", cap.to_string()),
+                    ("cap", cap_bytes.to_string()),
                     ("err", e),
                 ],
             );
-            cap_tool_output(&text, cap)
+            cap_tool_output(&text, cap_bytes)
         }
     }
 }
 
-/// 节选预览：头一半 + 指针 + 尾一半；指针自身长度先从 cap 里扣。
+/// 节选预览：头一半 + 指针 + 尾一半（字节口径）；指针自身长度先从 cap 里扣。
 ///
 /// 为什么五五分而 `cap_tool_output` 是四一：那份是「没有第二份拷贝」时的最后手段，
 /// 头部承载更多价值；这里完整内容已落盘、模型能分页读回，节选的职责只是让模型
 /// 判断「要不要读、读哪一段」，不是复述正文，头尾对半才不至于把结论藏在另一半。
 /// 纯函数便于单测。
-fn preview_with_pointer(text: &str, notice: &str, cap: usize) -> String {
-    // 指针两侧各一段 \n\n；不扣掉它们，节选会凭空超出 cap 这 4 个字符
+fn preview_with_pointer(text: &str, notice: &str, cap_bytes: usize) -> String {
+    // 指针两侧各一段 \n\n；不扣掉它们，节选会凭空超出 cap 这 4 个字节
     const SEPS: usize = 4;
-    let total = text.chars().count();
-    let half = cap.saturating_sub(notice.chars().count() + SEPS) / 2;
-    let head: String = text.chars().take(half).collect();
-    let tail: String = text.chars().skip(total.saturating_sub(half)).collect();
-    format!("{head}\n\n{notice}\n\n{tail}")
+    let half = cap_bytes.saturating_sub(notice.len() + SEPS) / 2;
+    let head_end = crate::bot::format::byte_head_end(text, half);
+    // 头尾不得重叠：正文短于两份预算时宁可不重复也别把同一段读两遍
+    let tail_start = crate::bot::format::byte_tail_start(text, half).max(head_end);
+    format!(
+        "{}\n\n{}\n\n{}",
+        &text[..head_end],
+        notice,
+        &text[tail_start..]
+    )
 }
 
-/// 截断到 cap 字符：头 (cap-tail) + 截断说明 + 尾 tail。不超 cap 原样返回。
+/// 截断到 cap 字节：头 (cap-tail) + 截断说明 + 尾 tail。不超 cap 原样返回。
 /// 纯函数便于单测；调用方（薄壳 execute_tool）负责审计留痕。
-pub(crate) fn cap_tool_output(text: &str, cap: usize) -> String {
-    let total = text.chars().count();
-    if total <= cap {
+pub(crate) fn cap_tool_output(text: &str, cap_bytes: usize) -> String {
+    let total = text.len();
+    if total <= cap_bytes {
         return text.to_string();
     }
     // 小 cap 时尾部保留退化为 cap 的 1/5，保证头部至少 4/5
-    let tail_keep = TOOL_OUTPUT_TAIL_KEEP.min(cap / 5).min(total / 2);
-    let head_keep = cap - tail_keep;
-    let head: String = text.chars().take(head_keep).collect();
-    let tail: String = text.chars().skip(total - tail_keep).collect();
-    format!("{head}\n…（已按 maxToolOutputChars={cap} 截断，原文 {total} 字符，头 {head_keep} + 尾 {tail_keep} 保留）…\n{tail}")
+    let tail_keep = TOOL_OUTPUT_TAIL_KEEP_BYTES
+        .min(cap_bytes / 5)
+        .min(total / 2);
+    let head_keep = cap_bytes - tail_keep;
+    let head_end = crate::bot::format::byte_head_end(text, head_keep);
+    let tail_start = crate::bot::format::byte_tail_start(text, tail_keep).max(head_end);
+    let head_bytes = head_end;
+    let tail_bytes = total - tail_start;
+    format!(
+        "{}\n…（已按 maxToolOutputBytes={cap_bytes} 截断，原文 {total} 字节，头 {head_bytes} + 尾 {tail_bytes} 保留）…\n{}",
+        &text[..head_end],
+        &text[tail_start..]
+    )
 }
 
 /// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
@@ -1265,13 +1284,13 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
-    // 配置化工具结果上限（设计 §3.2 maxToolOutputChars）——None = 显式关闭。
+    // 配置化工具结果上限（设计 §3.2 maxToolOutputBytes，字节口径）——None = 显式关闭。
     // 与 per-tool 预算取小后才是本次回灌的实际天花板，见 effective_output_cap。
-    let tool_output_cap: Option<usize> = match cfg.max_tool_output_chars {
+    let tool_output_cap: Option<usize> = match cfg.max_tool_output_bytes {
         Some(0) => None,
         // 上限单源在 bot::params（与写侧钳制、设置页展示同一个数）
-        Some(n) => Some(crate::bot::params::clamp_max_tool_output_chars(n) as usize),
-        None => Some(DEFAULT_TOOL_OUTPUT_CAP),
+        Some(n) => Some(crate::bot::params::clamp_max_tool_output_bytes(n) as usize),
+        None => Some(DEFAULT_TOOL_OUTPUT_CAP_BYTES),
     };
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();
@@ -1279,16 +1298,16 @@ pub async fn run_model_loop(
         async move {
             let out = crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await;
             // 三层漏斗（owner 各不相同，缺一不可）：
-            //   L1 per-tool 预算（ToolDef.max_output_chars，最紧）——超了就把完整结果
+            //   L1 per-tool 预算（ToolDef.max_output_bytes，最紧）——超了就把完整结果
             //      转存成溢出文件，回灌节选 + 指针；模型按需 read_text_file 分页读回。
-            //   L2 本配置 cap（maxToolOutputChars，默认 30K 字符）——兜住 per-tool 预算
+            //   L2 本配置 cap（maxToolOutputBytes，默认 30K 字节）——兜住 per-tool 预算
             //      被调得比它大的那三个长输出工具。
             //   L3 db::SPAN_TEXT_MAX——在 trace 侧，只管存多少进 SQLite，不管这里。
             // trace span 仍存原文（钳在 L3），整轮回放的证据不因回灌节选而丢失。
             let mut text = out.text;
             if let Some(global_cap) = tool_output_cap {
                 let cap = effective_output_cap(&name, global_cap);
-                if text.chars().count() > cap {
+                if text.len() > cap {
                     text = spill_or_cap(&app, &name, text, cap);
                 }
             }
@@ -3449,14 +3468,12 @@ mod hallucination_guard_tests {
             "T".repeat(10_000)
         );
         let out = cap_tool_output(&text, 30_000);
-        let total = text.chars().count();
-        assert!(out.contains("已按 maxToolOutputChars=30000 截断，原文 50000 字符"));
+        assert!(out.contains("已按 maxToolOutputBytes=30000 截断，原文 50000 字节"));
         // 头部保留 cap - 6K = 24K（原文头 20K 全 H + 中段 4K M）；尾部保留 6K
         assert!(out.starts_with(&format!("{}{}", "H".repeat(20_000), "M".repeat(4_000))));
         assert!(out.ends_with(&"T".repeat(6_000)));
         // 中段被替身说明取代（头部只含 4K 个 M，连续 5K M 必来自被替身的中段）
         assert!(!out.contains(&"M".repeat(5_000)));
-        let _ = total;
     }
 
     #[test]
@@ -3470,16 +3487,33 @@ mod hallucination_guard_tests {
             &out[..90]
         );
         assert!(out.ends_with(&"A".repeat(20)));
-        assert!(out.contains("已按 maxToolOutputChars=100 截断"));
+        assert!(out.contains("已按 maxToolOutputBytes=100 截断"));
     }
 
     #[test]
-    fn cap_tool_output_counts_chars_not_bytes() {
-        // 中文按字符计：30 个汉字 = 30 字符，60 字节——按字节截会误伤
+    fn cap_tool_output_counts_bytes_not_chars() {
+        // 中文 3 字节/字：50 个汉字 = 150 字节，cap 30 字节只够 8 个字
         let text = "中".repeat(50);
         let out = cap_tool_output(&text, 30);
-        assert!(out.contains("原文 50 字符"));
-        assert!(out.starts_with(&"中".repeat(24)));
+        assert!(out.contains("原文 150 字节"));
+        assert!(out.starts_with(&"中".repeat(8)), "头部应保留 8 个汉字");
+        assert!(out.ends_with(&"中".repeat(2)), "尾部应保留 2 个汉字");
+    }
+
+    #[test]
+    fn cap_tool_output_never_splits_a_multibyte_char() {
+        // 切点落在汉字中间时必须回退到字符边界——String 切片切出半个 UTF-8 字符
+        // 不是「乱码」，是 panic：整条工具调用直接崩。所以每个 cap 都要试一遍。
+        let text = "中".repeat(50);
+        for cap in 1..=150 {
+            let out = cap_tool_output(&text, cap); // 不 panic 即为一半的通过条件
+            let head: String = out.chars().take_while(|c| *c == '中').collect();
+            assert_eq!(
+                head.len() % 3,
+                0,
+                "cap={cap} 头部字节数不是 3 的倍数，说明切进了半个汉字"
+            );
+        }
     }
 
     #[test]
@@ -3502,15 +3536,12 @@ mod hallucination_guard_tests {
         let text: String = std::iter::repeat('A').take(20_000).collect();
         let notice = "指针";
         let out = preview_with_pointer(&text, notice, 8_192);
-        assert!(out.starts_with(&"A".repeat(4_093)), "头部应保留约一半预算");
-        assert!(out.ends_with(&"A".repeat(4_093)), "尾部应保留约一半预算");
+        // 指针 6 字节 + 分隔 4 字节，剩余 8182 字节对半分 = 4091
+        assert!(out.starts_with(&"A".repeat(4_091)), "头部应保留约一半预算");
+        assert!(out.ends_with(&"A".repeat(4_091)), "尾部应保留约一半预算");
         assert!(out.contains("指针"), "指针必须在场");
-        // 头尾对半分掉剩下的预算；整除差 1 时会略小于 cap，真不变量是「不超过」
-        assert!(
-            out.chars().count() <= 8_192,
-            "节选总长 {} 超出 cap",
-            out.chars().count()
-        );
+        // 头尾对半分掉剩下的预算；真不变量是「不超过」
+        assert!(out.len() <= 8_192, "节选总长 {} 超出 cap", out.len());
     }
 
     #[test]
@@ -3520,6 +3551,18 @@ mod hallucination_guard_tests {
         let notice = "N".repeat(20_000);
         let out = preview_with_pointer(&text, &notice, 1_000);
         assert!(out.contains(&"N".repeat(100)), "指针仍应完整在场");
+    }
+
+    #[test]
+    fn preview_never_splits_a_multibyte_char() {
+        // 节选路径同样按字节切：切点落在汉字中间会 panic，不是乱码
+        let text = "中".repeat(5_000);
+        let notice = "指针";
+        for cap in 1..=3_000 {
+            let out = preview_with_pointer(&text, notice, cap); // 不 panic 即通过
+            let head: String = out.chars().take_while(|c| *c == '中').collect();
+            assert_eq!(head.len() % 3, 0, "cap={cap} 头部切进了半个汉字");
+        }
     }
 
     #[test]

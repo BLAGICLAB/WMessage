@@ -89,9 +89,10 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (4571) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (4614) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
-│                        （TOOLS schema 已移出，见 bot/registry.rs）；P4：maxToolOutputChars 截断落地
+│                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
+│                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
 │                        事件（Anthropic 协议）
 ├── bot.rs (150)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
@@ -102,7 +103,7 @@ src-tauri/src/
 ├── bot/registry.rs (2576)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-├── bot/dispatch.rs (1435)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1437)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
 ├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
 │                        HookRegistry 进程级注册（OnceLock 单例，同层内按注册序；层序只由
@@ -190,7 +191,7 @@ src-tauri/src/
 ├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +
 │                        回灌指针文案 + 保留期清扫（30 天，启动一次 + 每天一次）。
 │                        配套 `bot_fs::allowed_dirs` 把本目录放进读白名单（模型靠它分页读回），
-│                        回灌上限取 per-tool 预算与设置页 maxToolOutputChars 的小者
+│                        回灌上限取 per-tool 预算与设置页 maxToolOutputBytes 的小者（字节口径）
 ├── bing.rs              必应每日一图（首页小部件数据源）：cn.bing.com 官方 API + 按日落
 │                        `{data_dir}/runtime/bing/`（图片先 / 元数据后提交标记；保留 7 天，
 │                        过期随拉取清理）；base64 data URL 单 IPC 返回（免配 asset 协议）

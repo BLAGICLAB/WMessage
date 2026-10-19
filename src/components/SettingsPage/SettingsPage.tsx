@@ -597,7 +597,7 @@ export function SettingsPage({
     subagentMaxTurns: "",
     subagentMaxWallSecs: "",
     searchMaxResults: "",
-    maxToolOutputChars: "",
+    maxToolOutputBytes: "",
     askBudget: "",
   });
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
@@ -815,8 +815,8 @@ export function SettingsPage({
           c.subagentMaxWallSecs != null ? String(c.subagentMaxWallSecs) : "",
         searchMaxResults:
           c.searchMaxResults != null ? String(c.searchMaxResults) : "",
-        maxToolOutputChars:
-          c.maxToolOutputChars != null ? String(c.maxToolOutputChars) : "",
+        maxToolOutputBytes:
+          c.maxToolOutputBytes != null ? String(c.maxToolOutputBytes) : "",
         askBudget: c.askBudget != null ? String(c.askBudget) : "",
       });
     } catch (e) {
@@ -1012,8 +1012,8 @@ export function SettingsPage({
             const n = parseInt(c.searchMaxResults.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
-          maxToolOutputChars: (() => {
-            const n = parseInt(c.maxToolOutputChars.trim(), 10);
+          maxToolOutputBytes: (() => {
+            const n = parseInt(c.maxToolOutputBytes.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
           askBudget: (() => {
@@ -2353,7 +2353,7 @@ export function SettingsPage({
                           subagentMaxTurns: "",
                           subagentMaxWallSecs: "",
                           searchMaxResults: "",
-                          maxToolOutputChars: "",
+                          maxToolOutputBytes: "",
                           toolRules: [] as Array<{
                             tool: string;
                             action: "allow" | "ask" | "deny";
@@ -2428,10 +2428,10 @@ export function SettingsPage({
                       "8",
                     ],
                     [
-                      "maxToolOutputChars",
-                      "工具结果截断字符数",
-                      "默认不截断（填 0 或留空 = 不截断）；超大输出会挤占上下文，截断行为 P4 接线生效",
-                      "不截断",
+                      "maxToolOutputBytes",
+                      "工具结果截断字节数",
+                      "单条工具结果回灌上下文的截断上限（字节，UTF-8）；超大输出会转存成溢出文件、只回灌节选+指针",
+                      "30000",
                     ],
                     [
                       "askBudget",

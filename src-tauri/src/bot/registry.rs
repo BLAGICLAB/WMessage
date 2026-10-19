@@ -169,11 +169,11 @@ pub struct ToolDef {
     /// 只在 `mutating == true` 时有意义；非 mutating 填 `&[]`。
     /// `claims_mutation()` 从所有 mutating 工具的 patterns 合并后检索。
     pub claims_patterns: &'static [&'static str],
-    /// 工具返回文本的回灌上限（字符）。超阈值把完整结果转存成溢出文件、回灌节选 +
-    /// 指针（见 bot_model_loop::effective_output_cap 与 overflow 模块）。
-    /// 与设置页的全局 maxToolOutputChars 取小后生效，两层都要。
+    /// 工具返回文本的回灌上限（字节，UTF-8）。超阈值把完整结果转存成溢出文件、
+    /// 回灌节选 + 指针（见 bot_model_loop::effective_output_cap 与 overflow 模块）。
+    /// 与设置页的全局 maxToolOutputBytes 取小后生效，两层都要。
     /// 默认 8192；长输出工具（read_text_file/fetch_url/list_files）自定 65536。
-    pub max_output_chars: usize,
+    pub max_output_bytes: usize,
     pub call: for<'a> fn(&'a ToolCtx<'a>, &'a str) -> ToolFuture<'a>,
 }
 
@@ -1014,7 +1014,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_QUERY_TASKS,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_query_tasks,
     },
     ToolDef {
@@ -1022,7 +1022,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_QUERY_SINGLE_TASK,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_query_single_task,
     },
     ToolDef {
@@ -1030,7 +1030,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_CREATE_TASK,
         mutating: true,
         claims_patterns: &["已创建", "已新建", "新建了", "创建了", "已新增"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_create_task,
     },
     ToolDef {
@@ -1038,7 +1038,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_COMPLETE_TASK,
         mutating: true,
         claims_patterns: &["已标记为完成", "标记为完成", "已完成任务", "已完成「"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_complete_task,
     },
     ToolDef {
@@ -1056,7 +1056,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "已移除",
             "已扔掉",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_delete_task,
     },
     ToolDef {
@@ -1064,7 +1064,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_EDIT_TASK,
         mutating: true,
         claims_patterns: &["已修改", "已更新", "已改成", "已改", "已调整", "已编辑"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_edit_task,
     },
     ToolDef {
@@ -1078,7 +1078,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "已新增子任务",
             "已加子任务",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_add_subtask,
     },
     ToolDef {
@@ -1086,7 +1086,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_TOGGLE_SUBTASK,
         mutating: true,
         claims_patterns: &["已勾选", "勾选了", "已标记子任务完成", "子任务已勾选"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_toggle_subtask,
     },
     ToolDef {
@@ -1100,7 +1100,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "子任务已移除",
             "已清掉子任务",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_remove_subtask,
     },
     ToolDef {
@@ -1108,7 +1108,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_READ_TEXT_FILE,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 65536,
+        max_output_bytes: 65536,
         call: call_read_text_file,
     },
     ToolDef {
@@ -1116,7 +1116,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_OCR_IMAGE,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_ocr_image,
     },
     ToolDef {
@@ -1124,7 +1124,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_GREP_FILES,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_grep_files,
     },
     ToolDef {
@@ -1132,7 +1132,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_LIST_FILES,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 65536,
+        max_output_bytes: 65536,
         call: call_list_files,
     },
     ToolDef {
@@ -1148,7 +1148,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "已清空文件",
             "已解绑",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_link_file_to_task,
     },
     ToolDef {
@@ -1156,7 +1156,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_EXTRACT_DOCUMENT,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_extract_document,
     },
     ToolDef {
@@ -1170,7 +1170,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "Word 文件已生成",
             "已写入 Word",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_create_word,
     },
     ToolDef {
@@ -1178,7 +1178,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_CREATE_WORD_REVISIONS,
         mutating: true,
         claims_patterns: &["已修订 Word", "已应用修订", "已写入修订", "修订已应用"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_create_word_revisions,
     },
     ToolDef {
@@ -1192,7 +1192,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "Excel 文件已生成",
             "已写入 Excel",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_create_excel,
     },
     ToolDef {
@@ -1206,7 +1206,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "PPT 文件已生成",
             "已写入 PPT",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_create_ppt,
     },
     ToolDef {
@@ -1220,7 +1220,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "PDF 文件已生成",
             "已写入 PDF",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_create_pdf,
     },
     ToolDef {
@@ -1228,7 +1228,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_RUN_PYTHON,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_run_python,
     },
     ToolDef {
@@ -1236,7 +1236,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_WEB_SEARCH,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_web_search,
     },
     ToolDef {
@@ -1244,7 +1244,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_FETCH_URL,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 65536,
+        max_output_bytes: 65536,
         call: call_fetch_url,
     },
     ToolDef {
@@ -1252,7 +1252,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_GET_CURRENT_TIME,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_get_current_time,
     },
     ToolDef {
@@ -1266,7 +1266,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "偏好已记",
             "已记住你的偏好",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_remember_fact,
     },
     ToolDef {
@@ -1274,7 +1274,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_RECALL_FACTS,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_recall_facts,
     },
     ToolDef {
@@ -1288,7 +1288,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "已记下教训",
             "已存档",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_record_lesson,
     },
     ToolDef {
@@ -1296,7 +1296,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_USE_SKILL,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_use_skill,
     },
     ToolDef {
@@ -1304,7 +1304,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_CREATE_SKILL,
         mutating: true,
         claims_patterns: &["已创建技能", "已新建技能", "已注册技能"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_create_skill,
     },
     // 子 agent 编排（主 agent 可见，追加表尾）
@@ -1319,7 +1319,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
             "已启动子任务",
             "已创建子任务",
         ],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_spawn_subagent,
     },
     ToolDef {
@@ -1327,7 +1327,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_CHECK_SUBAGENT,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_check_subagent,
     },
     ToolDef {
@@ -1335,7 +1335,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_CANCEL_SUBAGENT,
         mutating: true,
         claims_patterns: &["已取消子任务", "已取消派发", "已终止子任务"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_cancel_subagent,
     },
     // 电脑辅助 Tier1（只「看」与「打开」）
@@ -1344,7 +1344,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_REVEAL_PATH,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_reveal_path,
     },
     ToolDef {
@@ -1352,7 +1352,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_OPEN_URL,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_open_url,
     },
     ToolDef {
@@ -1360,7 +1360,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_CLIPBOARD_WRITE,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_clipboard_write,
     },
     ToolDef {
@@ -1368,7 +1368,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_SCREENSHOT,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_screenshot,
     },
     // 文件编辑（写白名单 ≠ 读白名单）
@@ -1377,7 +1377,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_EDIT_FILE,
         mutating: true,
         claims_patterns: &["已修改", "已编辑"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_edit_file,
     },
     ToolDef {
@@ -1385,7 +1385,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_WRITE_FILE,
         mutating: true,
         claims_patterns: &["已写入", "已创建文件"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_write_file,
     },
     // 程序 M2（聊天即 IDE）：apps_list 防重名 / apps_create 落草稿 / apps_update_files 整文件集修改
@@ -1394,7 +1394,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_APPS_LIST,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_apps_list,
     },
     ToolDef {
@@ -1402,7 +1402,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_APPS_CREATE,
         mutating: true,
         claims_patterns: &["已创建程序", "已新建程序", "已登记程序", "程序已创建"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_apps_create,
     },
     ToolDef {
@@ -1410,7 +1410,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_APPS_UPDATE_FILES,
         mutating: true,
         claims_patterns: &["已更新程序", "已修改程序", "程序已更新", "已上架"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_apps_update_files,
     },
     // 子 agent 白名单工具（不进主 agent 默认 schema）
@@ -1419,7 +1419,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_WRITE_ARTIFACT_FILE,
         mutating: true,
         claims_patterns: &["已写入产物", "产物已写入", "已保存产物", "已写入报告"],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_write_artifact_file,
     },
     ToolDef {
@@ -1427,7 +1427,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_READ_OWN_CARD,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_read_own_card,
     },
     ToolDef {
@@ -1435,7 +1435,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_ASK_USER,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_ask_user,
     },
     // Python AST 探查。追加在表尾：tools_json_matches_baseline 只比前 28 项
@@ -1446,7 +1446,7 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_AST_INSPECT,
         mutating: false,
         claims_patterns: &[],
-        max_output_chars: 8192,
+        max_output_bytes: 8192,
         call: call_ast_inspect,
     },
 ];

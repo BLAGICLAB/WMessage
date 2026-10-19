@@ -599,18 +599,20 @@ async fn execute_tool_impl(
     let dur_ms = start.elapsed().as_millis() as u64;
     let level = crate::audit::AuditLevel::from_tool_status(result.status);
     // 保守 token 预算——仅 audit，不截断。超阈值的工具输出走 `tool.output.over_budget`
-    // 事件供事后分析，默认阈值 8192，read_text_file/fetch_url/list_files 等长输出工具 65536。
+    // 事件供事后分析，默认阈值 8192 字节，read_text_file/fetch_url/list_files 等长输出工具 65536 字节。
+    // 口径必须与回灌漏斗一致（字节）：审计阈值和真实 cap 是同一个数，否则会出现
+    // 「审计报了超预算、实际没截」或反之，两边各说各话。
     if let Some(t) = tool_def {
-        let output_len = result.text.chars().count();
-        if output_len > t.max_output_chars {
+        let output_bytes = result.text.len();
+        if output_bytes > t.max_output_bytes {
             crate::audit::write_event(
                 app,
                 crate::audit::AuditLevel::Info,
                 "tool.output.over_budget",
                 &[
                     ("tool", name.to_string()),
-                    ("output_len", output_len.to_string()),
-                    ("max", t.max_output_chars.to_string()),
+                    ("output_bytes", output_bytes.to_string()),
+                    ("max_bytes", t.max_output_bytes.to_string()),
                 ],
             );
         }

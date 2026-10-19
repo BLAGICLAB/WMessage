@@ -251,8 +251,10 @@ pub(crate) const SCHEMA_VERSION_KEY: &str = "schemaVersion";
 /// 返回 (from, to)；已是当前或更高版本 → None（不降级「装过更新版后回退」的配置）。
 /// v0 = 带版本号方案之前、没有该字段的老配置。
 ///
-/// 逐版本迁移点：v0→v1 只补版本号字段本身；后续版本在此按 from 分支改字段
-/// （直接改 `value` 上的键即可——未识别的字段原样保留，不会丢用户数据）。
+/// 逐版本迁移点：v0→v1 只补版本号字段本身；v1→v2 把工具输出上限的键从
+/// `maxToolOutputChars` 换成 `maxToolOutputBytes`（单位从字符改成字节）。
+/// 后续版本在此按 from 分支改字段（直接改 `value` 上的键即可——未识别的字段
+/// 原样保留，不会丢用户数据）。
 pub(crate) fn migrate_config_value(value: &mut serde_json::Value) -> Option<(u32, u32)> {
     if !value.is_object() {
         return None; // 非对象 JSON：读取侧本来就回默认，不在这里纠错（也避免索引 panic）
@@ -264,8 +266,33 @@ pub(crate) fn migrate_config_value(value: &mut serde_json::Value) -> Option<(u32
     if from >= BOT_CONFIG_SCHEMA_VERSION {
         return None;
     }
+    if from < 2 {
+        migrate_tool_output_cap_to_bytes(value);
+    }
     value[SCHEMA_VERSION_KEY] = serde_json::json!(BOT_CONFIG_SCHEMA_VERSION);
     Some((from, BOT_CONFIG_SCHEMA_VERSION))
+}
+
+/// v1→v2：工具输出上限的键改名 + 口径从字符换成字节。
+///
+/// 数值原样搬过去（不做 ×3 之类的换算）：这个上限本来就是一条「体积预算」，
+/// 用户的意图是「别超过这么大」，不是「放这么多个汉字」。老值当字节用，
+/// 对 ASCII 输出（代码、路径、工具回显）完全等价；对中文输出偏紧 3 倍，
+/// 用户可自行调大。
+///
+/// 键已存在新名时不覆盖——新名优先（用户可能已手改过）。
+fn migrate_tool_output_cap_to_bytes(value: &mut serde_json::Value) {
+    const OLD_KEY: &str = "maxToolOutputChars";
+    const NEW_KEY: &str = "maxToolOutputBytes";
+    let Some(old) = value.get(OLD_KEY).cloned() else {
+        return;
+    };
+    if value.get(NEW_KEY).is_none() {
+        value[NEW_KEY] = old;
+    }
+    if let Some(obj) = value.as_object_mut() {
+        obj.remove(OLD_KEY);
+    }
 }
 
 /// 文件级迁移内核（无 AppHandle，便于单测）：命中迁移才写回，返回 (from, to)。
@@ -659,5 +686,76 @@ mod inference_tests {
             ),
             ReasoningWire::AnthropicBudget(6_144)
         );
+    }
+}
+
+#[cfg(test)]
+mod schema_migration_tests {
+    use super::*;
+
+    /// v1 配置里的工具输出上限键改名后不能丢：老用户设的截断值必须原样生效，
+    /// 否则改一次单位就把用户的设置静默清空。
+    #[test]
+    fn v1_tool_output_cap_key_is_renamed_to_bytes() {
+        let mut v = serde_json::json!({
+            "schemaVersion": 1,
+            "maxToolOutputChars": 12_345,
+        });
+        let pair = migrate_config_value(&mut v);
+        assert_eq!(pair, Some((1, 2)), "应从 v1 迁到 v2");
+        assert_eq!(v["maxToolOutputBytes"], serde_json::json!(12_345));
+        assert!(
+            v.get("maxToolOutputChars").is_none(),
+            "旧键必须移除，否则 serde 读 config 时会两个都看"
+        );
+    }
+
+    /// 无版本号的老配置（v0）也走同一条改名路径。
+    #[test]
+    fn v0_config_gets_tool_output_cap_renamed() {
+        let mut v = serde_json::json!({ "maxToolOutputChars": 800 });
+        assert_eq!(migrate_config_value(&mut v), Some((0, 2)));
+        assert_eq!(v["maxToolOutputBytes"], serde_json::json!(800));
+    }
+
+    /// 已是当前版本 → 不动（不降级、不重复迁移）。
+    #[test]
+    fn current_version_config_is_untouched() {
+        let mut v = serde_json::json!({
+            "schemaVersion": BOT_CONFIG_SCHEMA_VERSION,
+            "maxToolOutputBytes": 999,
+        });
+        assert_eq!(migrate_config_value(&mut v), None);
+        assert_eq!(v["maxToolOutputBytes"], serde_json::json!(999));
+    }
+
+    /// 新旧键同时存在时以新键为准，老键被清掉——不能出现两个值打架。
+    #[test]
+    fn new_key_wins_when_both_present() {
+        let mut v = serde_json::json!({
+            "schemaVersion": 1,
+            "maxToolOutputChars": 1,
+            "maxToolOutputBytes": 2,
+        });
+        migrate_config_value(&mut v);
+        assert_eq!(v["maxToolOutputBytes"], serde_json::json!(2));
+        assert!(v.get("maxToolOutputChars").is_none());
+    }
+
+    /// 迁移不得动其它字段——用户配置里的一堆无关键必须原样保留。
+    #[test]
+    fn migration_preserves_other_fields() {
+        let mut v = serde_json::json!({
+            "schemaVersion": 1,
+            "maxToolOutputChars": 4_096,
+            "baseUrl": "https://api.example.com/v1",
+            "allowedDirs": ["/tmp/a"],
+        });
+        migrate_config_value(&mut v);
+        assert_eq!(
+            v["baseUrl"],
+            serde_json::json!("https://api.example.com/v1")
+        );
+        assert_eq!(v["allowedDirs"], serde_json::json!(["/tmp/a"]));
     }
 }

@@ -17,8 +17,8 @@ const FETCH_MAX_BYTES: usize = 10 * 1024 * 1024;
 /// 搜索引擎结果体上限：与 FETCH_MAX_BYTES 是两条不同用途的容量线——
 /// 这条封引擎结果体（正常远小于此），FETCH_MAX_BYTES 封页面抓取传输。
 const SEARCH_BODY_CAP_BYTES: usize = 2 * 1024 * 1024;
-/// 搜索结果合并渲染后的字符截断：参数表只读行展示同一个数
-pub(crate) const SEARCH_OUTPUT_CAP: usize = 6000;
+/// 搜索结果合并渲染后的字节上限：参数表只读行展示同一个数
+pub(crate) const SEARCH_OUTPUT_CAP_BYTES: usize = 6000;
 
 /// reqwest 0.12+ 的错误 Display 只剩顶层一句（如「error sending request for url」），
 /// 真正原因（DNS/连接拒绝/TLS InvalidContentType）在 source 链里——逐层展开供
@@ -285,8 +285,8 @@ pub async fn web_search(query: &str, opts: &SearchOpts) -> Result<String, Comman
             snip
         ));
     }
-    if out.chars().count() > SEARCH_OUTPUT_CAP {
-        out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
+    if out.len() > SEARCH_OUTPUT_CAP_BYTES {
+        out = crate::bot::format::truncate_bytes(&out, SEARCH_OUTPUT_CAP_BYTES);
     }
     if opts.time_range.is_some() {
         out.push_str(
@@ -328,8 +328,8 @@ async fn search_tavily(key: &str, query: &str, opts: &SearchOpts) -> Result<Stri
             content
         ));
     }
-    if out.chars().count() > SEARCH_OUTPUT_CAP {
-        out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
+    if out.len() > SEARCH_OUTPUT_CAP_BYTES {
+        out = crate::bot::format::truncate_bytes(&out, SEARCH_OUTPUT_CAP_BYTES);
     }
     Ok(out)
 }
@@ -370,8 +370,8 @@ async fn search_brave(key: &str, query: &str, opts: &SearchOpts) -> Result<Strin
             clean_snippet(desc)
         ));
     }
-    if out.chars().count() > SEARCH_OUTPUT_CAP {
-        out = out.chars().take(SEARCH_OUTPUT_CAP).collect();
+    if out.len() > SEARCH_OUTPUT_CAP_BYTES {
+        out = crate::bot::format::truncate_bytes(&out, SEARCH_OUTPUT_CAP_BYTES);
     }
     Ok(out)
 }

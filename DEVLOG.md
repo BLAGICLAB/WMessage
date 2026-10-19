@@ -6,6 +6,76 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-19（周一）出包：Windows 绿色版 `wmessage-portable-2026-10-19.zip`（104 MB）
+
+**背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程执行，
+全程 macOS 交叉编译，无 Windows 机器参与。
+
+**构建**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-19.zip`
+  （109,455,535 B / 205 项 / 顶层 9 项，与 10-13 版同构）
+- `wmessage.exe`：72,590,570 B（约 69 MB，基于 main @ da7d6fb，mingw 交叉编译，
+  完整 tauri build）。编译启动时 HEAD 是 9b981af，结束后多出一个 da7d6fb——
+  经核是纯 docs 提交（模块树行数标注），不碰 `src-tauri/src/` 与 `src/`，exe 内容不受影响
+- `dotnet/`：189 文件 self-contained .NET 8（重新 publish）
+- `onnxruntime.dll`：1.28.0，从 NuGet 拉取，与 ort 2.0.0-rc.13 匹配
+- 固定文件（WebView2Loader.dll / MicrosoftEdgeWebview2Setup.exe）从
+  `packaging/wmessage-portable-staging/` 复用
+
+**距上一版（2026-09-05 的 staging 老货）跨度异常大**：1134 个提交、源码 822 个
+（Rust 490 / 前端 332）。exe 从 48 MB 涨到 69 MB。
+
+**staging 两个目录的陷阱（这次差点踩）**：`packaging/` 下有
+`wmessage-portable-staging/` 和 `wmessage-portable-dotnet-staging/` 两个同名前缀目录，
+内容不一样——
+
+- 前者的 `dotnet/` 只有 7 个文件，是 **framework-dependent** 产物，不含 .NET 运行时，
+  用户机没装 .NET 8 就起不来；后者才是 189 文件 self-contained。手册里「复用上一版
+  dotnet/」这句话没说清该复用哪个，按目录名猜很容易取到前者
+- 前者整体还缺 `pp-ocr-v6/` 与 `bge-small-zh-v1.5/`，直接照它组装会出一份**静默降级**的包：
+  OCR 工具不可用、记忆检索退回关键词模式，界面无任何提示
+
+这两个目录都是 09-05 的历史货，真实的完整包在仓库根按日期命名的 zip 里。
+
+**校验**：
+- `ZIP_OK 205 files`，顶层 9 项，无多余文件夹层级
+- `objdump -p wmessage.exe | grep -i onnxruntime` → 空（load-dynamic）
+- `file wmessage.exe` → PE32+ executable (GUI) x86-64
+- macOS 侧 `cargo check` 通过
+
+**未做**：Windows 实机验收（人工）——双击启动、便携锚定（exe 同目录生成
+wmessage.db / AI_Gen_Files）、机器人语义检索与 `ocr_image` 跑一张带文字的本地图。
+
+## 2026-10-19（周一）工具输出的体积上限从字符改成字节
+
+起因是一次单位审计：查 `ToolDef.max_output_chars` 到底有没有别处引用，发现它不止一处——
+`bot_model_loop.rs` 的 `effective_output_cap`（真正生效的那道）与 `bot/dispatch.rs` 的
+`tool.output.over_budget` 审计（只观测不截断）各读一次。审计阈值和真实 cap 必须是
+同一个数，否则会出现「审计报了超预算、实际没截」。顺着这条线往下查，发现整条漏斗
+一半按字符、一半按字节：`db::SPAN_TEXT_MAX` 是字节、溢出指针文案报的是字节（用户看到
+「66 KB」），而 cap、`cap_tool_output`、`preview_with_pointer` 全在数字符。
+
+**决定统一到字节**，理由是这条上限的职责是「别把模型上下文撑爆」，而撑爆的是 token。
+字节到 token 的换算跨语种稳定：中文约 3 字节/token、ASCII 约 4 字节/token，两者差距
+很小；而字符数到 token 的换算随语种漂三倍（同样 30000，中文占 3 倍字节、只占 1/4 的
+token）。拿字符数去卡一条字节预算，中文场景会实打实漏掉 3 倍容量——而这个仓库的
+工具输出里中文占比不低（任务标题、文件路径、grep 命中行）。另有一个旁证：per-tool
+预算那几个数（8192 / 65536）本来就是字节味的（8KB / 64KB），当初是按字符实现成了
+字节意图的形状。
+
+**连带改动**：字段与配置键一并改名（`max_output_chars` → `max_output_bytes`、
+`maxToolOutputChars` → `maxToolOutputBytes`），bot-config schema 升到 v2 并加迁移把
+老配置里的值搬过去——不改名的话，下一个读代码的人会以为那还是字符数。老值按 1:1
+搬（不 ×3）：这个上限本来就是一条「体积预算」，用户的意图是「别超过这么大」，
+不是「放这么多个汉字」；对 ASCII 输出（代码、路径、工具回显）完全等价，对中文偏紧
+3 倍，可自行调大。
+
+**没有跟着改的**：extract_document / fetch_url 的 `offset` 分页窗口仍是字符偏移。
+那不是体积上限，是给模型的**分页协议单位**——模型按返回的 offset 续读，改单位要
+连带改 schema 描述和模型心智模型，是另一件事。同理 `history_budget_chars`（会话历史
+预算）也不在这次范围内：它裁的是消息历史，不是工具输出。留在这两条边界上的分界，
+就是「体积上限」与「协议单位」的区别。
+
 ## 2026-10-19（周一）幻觉守卫只加一道「如实标注」：另外三样查完论证后不做
 
 拿了一份外部方案清单（Veridict / Agent Attest / SourceryKit / LoopGrid 之类的事后

@@ -25,7 +25,10 @@ pub const KEYRING_USER: &str = "api-key";
 
 /// bot-config.json 当前 schema 版本。结构变更 +1 并在此登记迁移步骤
 /// （风格对齐 migration.rs 的 `RulesFile::version`：文件自带版本字段 + serde 默认兜底）。
-pub const BOT_CONFIG_SCHEMA_VERSION: u32 = 1;
+///
+/// v2 = 工具输出上限键改名（`maxToolOutputChars` → `maxToolOutputBytes`，
+/// 单位从字符换成字节）。
+pub const BOT_CONFIG_SCHEMA_VERSION: u32 = 2;
 
 pub(crate) fn default_schema_version() -> u32 {
     BOT_CONFIG_SCHEMA_VERSION
@@ -243,11 +246,14 @@ pub struct BotConfig {
     /// web_search 默认结果条数（模型未传 count 时）：None = 8；钳 1..=10（后端硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
-    /// 单条工具结果回填消息栈的截断字符数。None = 默认 30000（业界对齐：
-    /// Claude Code 文件读 25K token / Bash 30K 字符、Gemini CLI 40K 字符）；
+    /// 单条工具结果回填消息栈的截断字节数（UTF-8）。None = 默认 30000 字节
+    /// （业界对齐：Claude Code 文件读 25K token / Bash 30K 输出、Gemini CLI 40K 输出）；
     /// 0 = 显式关闭截断（逃生口，长会话请依赖上下文压缩兜底）。
+    ///
+    /// 口径是字节不是字符：这条上限管的是「别撑爆上下文」，撑爆的是 token。
+    /// 同一条漏斗里 trace 侧 `db::SPAN_TEXT_MAX` 与溢出指针文案都按字节报。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tool_output_chars: Option<u32>,
+    pub max_tool_output_bytes: Option<u32>,
     /// 任务执行提问预算（ask_user 每次执行可问次数）：None = 3；钳 1..=5。
     /// 原 workflow_settings.ask_budget，随工作流退役迁入。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -355,7 +361,7 @@ impl Default for BotConfig {
             subagent_max_turns: None,
             subagent_max_wall_secs: None,
             search_max_results: None,
-            max_tool_output_chars: None,
+            max_tool_output_bytes: None,
             ask_budget: None,
             tool_rules: None,
         }
@@ -539,7 +545,7 @@ pub struct BotConfigView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tool_output_chars: Option<u32>,
+    pub max_tool_output_bytes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_budget: Option<u8>,
     /// per-tool 权限规则表原样透传（设置页授权卡编辑）
