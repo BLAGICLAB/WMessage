@@ -1770,8 +1770,6 @@ mod tests {
         );
     }
 
-    /// 词元按日聚合：缺日补零 + 升序 + 僵尸 running 不计执行次数（token 计入）
-    #[test]
     /// 缓存 token 必须独立聚合、且不混进 prompt/completion。
     ///
     /// 成本口径的依据：Anthropic 四档计价里 cache read 是 0.1x、cache write 是 1.25x，
@@ -1837,6 +1835,8 @@ mod tests {
         assert_eq!(dm[0].cache_write_tokens, 13_000);
     }
 
+    /// 词元按日聚合：缺日补零 + 升序 + 僵尸 running 不计执行次数（token 计入）
+    #[test]
     fn usage_stats_daily_zero_fills_and_counts_finished_only() {
         let conn = setup_conn();
         // 今天：一次完整执行（done）+ 一次僵尸 running——runs 只应算 1

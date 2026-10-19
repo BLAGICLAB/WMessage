@@ -2494,7 +2494,7 @@ export function SettingsPage({
                   const view = paramViews?.find((p) => p.key === key);
                   // 说明行 = 默认值 + 可填范围 + 语义说明 + 当前生效值与来源。
                   // 全部取自后端参数表：默认值是 resolver 派生的（与运行时同一份
-                  // 代码路径），范围是钳制常量，���效值是**钳过之后**的那个数。
+                  // 代码路径），范围是钳制常量，当前生效值是**钳过之后**的那个数。
                   const desc = [
                     view ? `默认 ${view.default}` : "",
                     view && view.min != null && view.max != null
