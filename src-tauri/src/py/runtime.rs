@@ -39,6 +39,15 @@ pub fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
     }
 }
 
+/// 写侧钳制（1..=MAX_TIMEOUT_SECS）——设置页落盘前用。
+///
+/// 运行期钳制在 `resolve_timeout`，但那条只在**执行时**生效：设置页写下去的是
+/// 原值（10000），页面显示 10000、实际跑 300——用户看到的和生效的不是一回事。
+/// 写侧用同一个上界钳一遍，落盘值 = 生效值。
+pub fn clamp_timeout_secs(n: u64) -> u64 {
+    n.clamp(1, MAX_TIMEOUT_SECS)
+}
+
 pub fn mem_limit_bytes(timeout_secs: u64) -> u64 {
     timeout_secs
         .saturating_mul(8)

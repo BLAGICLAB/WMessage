@@ -262,9 +262,9 @@ pub(crate) fn prune_verified_vendors(
 
 /// Agent 运行参数落盘前钳制（None = 内置默认不动）。
 ///
-/// 边界单源：bot::params clamp_* / db::clamp_subagent_max_turns，与读侧
-/// resolver 共用同一组数字——写侧钳过的值就是运行时生效的值，设置页显示的
-/// 与实际跑的是同一个数。
+/// 边界单源：bot::params clamp_* / db::clamp_subagent_max_turns /
+/// py::runtime::clamp_timeout_secs，与读侧 resolver 共用同一组数字——写侧钳过的
+/// 值就是运行时生效的值，设置页显示的与实际跑的是同一个数。
 ///
 /// 单独成函数是为了能单测：`bot_set_config` 要 AppHandle，测不到里面这一段。
 fn clamp_agent_params(config: &mut BotConfig) {
@@ -295,6 +295,12 @@ fn clamp_agent_params(config: &mut BotConfig) {
     config.max_tool_output_bytes = config
         .max_tool_output_bytes
         .map(crate::bot::params::clamp_max_tool_output_bytes);
+    // Python 执行超时：运行期钳在 py::runtime::resolve_timeout，但那条只在
+    // **执行时**生效——写侧不钳的话设置页写下去 10000、显示 10000、实际跑 300。
+    // 写侧用同一个上界钳一遍（边界仍是 py::runtime 那一个常量）。
+    config.python_timeout_secs = config
+        .python_timeout_secs
+        .map(crate::py::runtime::clamp_timeout_secs);
 }
 
 #[tauri::command]
@@ -965,6 +971,7 @@ mod perm_mode_tests {
         cfg.search_max_results = Some(99);
         cfg.ask_budget = Some(99);
         cfg.max_tool_output_bytes = Some(999_999);
+        cfg.python_timeout_secs = Some(10_000);
         clamp_agent_params(&mut cfg);
         // 每个落盘值都必须等于读侧 resolver 对同一份配置的解析结果
         assert_eq!(
@@ -1001,6 +1008,12 @@ mod perm_mode_tests {
             cfg.max_tool_output_bytes,
             Some(crate::bot::params::clamp_max_tool_output_bytes(999_999))
         );
+        assert_eq!(
+            cfg.python_timeout_secs,
+            Some(crate::py::runtime::clamp_timeout_secs(10_000)),
+            "Python 超时写侧此前不钳：设置页显示 10000、运行时按 300 跑"
+        );
+        assert_eq!(cfg.python_timeout_secs, Some(300));
     }
 
     /// 钳制不碰「未配置」这一态：None 仍是 None（= 用内置默认），

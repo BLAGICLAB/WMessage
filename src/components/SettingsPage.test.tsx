@@ -195,6 +195,34 @@ const paramViews = [
     min: 0,
     max: 200000,
   },
+  {
+    // 故意用 45 而不是真实的 30：页面显示的数必须来自后端参数表，
+    // 前端自留一份「30」的话这条就会露馅
+    key: "trace.retention_days",
+    label: "执行痕迹保留期（天）",
+    category: "tools",
+    hint: "痕迹三表与回滚快照的保留期：启动即清理一次，此后每天一次",
+    value: "45",
+    default: "45",
+    source: "hardcoded",
+    editable: false,
+    min: null,
+    max: null,
+  },
+  {
+    // Python 超时：默认 60 / 上限 300 是后端真值（py::runtime 常量），
+    // 前端此前手写这两个数
+    key: "tools.python_timeout_secs",
+    label: "Python 执行超时（秒）",
+    category: "tools",
+    hint: "run_python 默认超时；工具参数可单次覆盖",
+    value: "60",
+    default: "60",
+    source: "default",
+    editable: true,
+    min: 1,
+    max: 300,
+  },
 ];
 
 /** 机器人分区的 Agent 参数卡：进分区 + 拿到参数表 */
@@ -452,6 +480,92 @@ describe("SettingsPage", () => {
           config: expect.objectContaining({ maxToolOutputBytes: 0 }),
         }),
       );
+    });
+  });
+
+  it("Python 默认超时：默认秒数与上限取自后端参数表", async () => {
+    // 前端此前手写「留空 = 60 秒 / 上限 300 秒」——后端常量一改页面就撒谎
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "机器人" }));
+    expect(
+      await screen.findByText(/留空 = 60 秒；大计算可调大，上限 300 秒/),
+    ).toBeInTheDocument();
+  });
+
+  it("Python 默认超时：填 9999 保存 → 落盘钳到后端给的上限", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "机器人" }));
+    const input = (await screen.findByLabelText(
+      "Python 默认超时（秒）",
+    )) as HTMLInputElement;
+    await user.clear(input);
+    await user.type(input, "9999");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({ pythonTimeoutSecs: 300 }),
+        }),
+      );
+    });
+  });
+
+  it("执行痕迹保留期（数据管理）：默认天数取自后端参数表，前端不自留一份", async () => {
+    // 那个「30」此前在仓库里有 6 份副本（后端常量 / 参数表字面量 / 前端文案 /
+    // 前端输入框初值 / 前端 title / 前端兜底）。现在页面只从后端取。
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "数据管理" }));
+    // mock 里的保留期是 45（真实值是 30）——显示 45 才说明数来自后端
+    expect(await screen.findByText(/默认保留 45 天/)).toBeInTheDocument();
+    const input = (await screen.findByLabelText("保留天数")) as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("45");
+  });
+
+  it("执行痕迹清理：保留天数留空 → 传 null 由后端按内置默认处理", async () => {
+    // 前端不再自己兜一个 30：空值直接交回后端（trace_clear_before 的 None 分支
+    // 走 TRACE_RETENTION_DAYS），前端那份副本删掉后就不会漂
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "trace_clear_before") return 3;
+      if (cmd === "bot_effective_params") return paramViews;
+      if (cmd === "bot_get_config")
+        return {
+          baseUrl: "",
+          model: "",
+          hasApiKey: false,
+          bypassLlmOnPreStepHit: true,
+          uiFontSize: "small",
+        };
+      if (cmd === "profile_get")
+        return { user: { name: "我", avatarId: null }, bot: { name: "机器人", avatarId: null } };
+      if (cmd === "bot_get_enabled") return false;
+      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_env_check")
+        return { available: false, python: "", version: "", libs: [] };
+      if (cmd === "api_status") return { enabled: false, port: 4763 };
+      if (cmd === "skills_list") return [];
+      if (cmd === "migration_rules_load") return { version: 1, rules: [] };
+      if (cmd === "migration_status") return { rules_count: 0, poll_interval_secs: 600 };
+      if (cmd === "migration_log_read") return "";
+      return null;
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "数据管理" }));
+    const input = (await screen.findByLabelText("保留天数")) as HTMLInputElement;
+    expect(input.value).toBe("");
+    await user.click(screen.getByRole("button", { name: "清理" }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("trace_clear_before", {
+        days: null,
+      });
     });
   });
 

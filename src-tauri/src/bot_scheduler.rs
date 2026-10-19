@@ -278,7 +278,7 @@ fn sched_last_dt(ms: Option<i64>) -> chrono::DateTime<chrono::Local> {
 const CATCHUP_WINDOW: chrono::Duration = chrono::Duration::hours(2);
 
 /// 调度扫描周期（秒），start_scheduler 的 interval 与 at: 首跑宽限共用同一常量防漂移
-const SCHED_TICK_SECS: u64 = 30;
+pub const SCHED_TICK_SECS: u64 = 30;
 
 /// 到点判定（纯函数，可测）：
 /// - Run：触发点已到且未超补跑窗口（或新任务首跑），正常执行；

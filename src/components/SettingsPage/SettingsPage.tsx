@@ -640,8 +640,10 @@ export function SettingsPage({
   // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
   const [consolidateBusy, setConsolidateBusy] = useState(false);
   const [consolidateMsg, setConsolidateMsg] = useState("");
-  // 执行痕迹清理（数据管理卡）
-  const [traceRetainDays, setTraceRetainDays] = useState("30");
+  // 执行痕迹清理（数据管理卡）。保留天数**留空 = 用后端内置默认**——
+  // 前端不自己留一份「30」：那个数在后端常量、参数表、前端文案三处各抄过一遍，
+  // 改一处就漂。空值直接传 null，由后端按 TRACE_RETENTION_DAYS 处理。
+  const [traceRetainDays, setTraceRetainDays] = useState("");
   const [traceClearBusy, setTraceClearBusy] = useState(false);
   const [traceClearMsg, setTraceClearMsg] = useState("");
   const clearTraces = async () => {
@@ -651,7 +653,7 @@ export function SettingsPage({
     try {
       const days = parseInt(traceRetainDays, 10);
       const removed = await invoke<number>("trace_clear_before", {
-        days: Number.isFinite(days) && days > 0 ? days : 30,
+        days: Number.isFinite(days) && days > 0 ? days : null,
       });
       setTraceClearMsg(
         removed > 0 ? `已清理 ${removed} 条执行痕迹` : "没有需要清理的痕迹",
@@ -751,6 +753,16 @@ export function SettingsPage({
   /** Agent 运行参数卡的元数据（生效值/默认值/范围/来源）。
    *  null = 还没拉到（后端老版本无此命令时也走这条）——渲染退回本地兜底文案。 */
   const [paramViews, setParamViews] = useState<ParamView[] | null>(null);
+  /** 执行痕迹自动保留期（天）——后端参数表那行的生效值。
+   *  前端此前自己写着「30」（卡片文案 + 输入框初值 + 兜底三处），后端常量一改
+   *  页面就撒谎；现在只从后端取。 */
+  const traceRetentionDays = paramViews?.find(
+    (p) => p.key === "trace.retention_days",
+  )?.value;
+  /** Python 执行超时那行（默认值 + 上限）——同样只从后端取。 */
+  const pyTimeoutView = paramViews?.find(
+    (p) => p.key === "tools.python_timeout_secs",
+  );
   const loadParamViews = async () => {
     try {
       const views = await invoke<ParamView[]>("bot_effective_params");
@@ -763,7 +775,7 @@ export function SettingsPage({
     }
   };
 
-  /** 数值型 Agent 参数 → 落盘值。
+  /** 数值型参数 → 落盘值（Agent 运行参数卡 + Python 超时共用）。
    *
    *  空 = null（未配置 = 用内置默认）；负数 = null（非法）。
    *  **0 只有在参数下界为 0 时才是合法值**——工具输出截断的 0 是「显式关闭
@@ -771,7 +783,7 @@ export function SettingsPage({
    *  30000 字节）。其余数值钳到参数表给出的可填范围（与运行时钳制同一个数），
    *  顺带挡住超 u32 的输入——那种值会让整份 bot_set_config 反序列化失败。
    */
-  const agentParamNumber = (key: string, raw: string): number | null => {
+  const paramNumber = (key: string, raw: string): number | null => {
     const t = raw.trim();
     if (!t) return null;
     const n = parseInt(t, 10);
@@ -1040,11 +1052,11 @@ export function SettingsPage({
           braveKey: null,
           // 开关显式落盘：开 = Brave，关 = 不走 Brave（与 Tavily 互斥，双开后端报错）
           braveEnabled: c.braveEnabled,
-          // 空 = 60s 默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
-          pythonTimeoutSecs: (() => {
-            const n = parseInt(c.pythonTimeoutSecs.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
+          // 空 = 用内置默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
+          pythonTimeoutSecs: paramNumber(
+            "tools.python_timeout_secs",
+            c.pythonTimeoutSecs,
+          ),
           // 任务卡归档天数：空/非法 = null（后端回默认 7）；钳 1..=MAX 与后端一致
           archiveAfterDays: (() => {
             const n = parseInt(c.archiveAfterDays.trim(), 10);
@@ -1067,32 +1079,32 @@ export function SettingsPage({
           //    范围由后端参数表给出（与运行时钳制同一个数），这里先钳一遍：
           //    一来落盘值 = 生效值，二来超 u32 的数字会让整个 bot_set_config
           //    反序列化失败——一处输错字连带整份设置都存不下去。
-          maxRounds: agentParamNumber("loop.max_rounds", c.maxRounds),
-          maxFunctionCalls: agentParamNumber(
+          maxRounds: paramNumber("loop.max_rounds", c.maxRounds),
+          maxFunctionCalls: paramNumber(
             "loop.max_function_calls",
             c.maxFunctionCalls,
           ),
-          historyBudgetChars: agentParamNumber(
+          historyBudgetChars: paramNumber(
             "loop.history_budget_chars",
             c.historyBudgetChars,
           ),
-          subagentMaxTurns: agentParamNumber(
+          subagentMaxTurns: paramNumber(
             "subagent.max_turns",
             c.subagentMaxTurns,
           ),
-          subagentMaxWallSecs: agentParamNumber(
+          subagentMaxWallSecs: paramNumber(
             "subagent.max_wall_secs",
             c.subagentMaxWallSecs,
           ),
-          searchMaxResults: agentParamNumber(
+          searchMaxResults: paramNumber(
             "search.max_results",
             c.searchMaxResults,
           ),
-          maxToolOutputBytes: agentParamNumber(
+          maxToolOutputBytes: paramNumber(
             "tools.max_output_bytes",
             c.maxToolOutputBytes,
           ),
-          askBudget: agentParamNumber("tools.ask_budget", c.askBudget),
+          askBudget: paramNumber("tools.ask_budget", c.askBudget),
           // 规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
           toolRules: c.toolRules.length > 0 ? c.toolRules : null,
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
@@ -2179,8 +2191,11 @@ export function SettingsPage({
                   执行痕迹
                 </h2>
                 <p className="mt-1 text-xs text-[var(--t5)]">
-                  任务卡/定时/工作流执行的痕迹（工具调用时间线、文件
-                  diff、回滚快照）落本地库，默认保留 30 天
+                  {traceRetentionDays
+                    ? `任务卡/定时/工作流执行的痕迹（工具调用时间线、文件
+                    diff、回滚快照）落本地库，默认保留 ${traceRetentionDays} 天`
+                    : `任务卡/定时/工作流执行的痕迹（工具调用时间线、文件
+                    diff、回滚快照）落本地库，按保留期自动清理`}
                 </p>
                 <div className="mt-4 flex items-center justify-between gap-4">
                   <div className="min-w-0">
@@ -2199,8 +2214,13 @@ export function SettingsPage({
                         setTraceRetainDays(e.target.value.replace(/\D/g, ""))
                       }
                       inputMode="numeric"
+                      placeholder={traceRetentionDays ?? ""}
                       className="w-16 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none"
-                      title="保留天数（1–365，默认 30）"
+                      title={
+                        traceRetentionDays
+                          ? `保留天数（1–365，默认 ${traceRetentionDays}）`
+                          : "保留天数（1–365，留空 = 用内置默认）"
+                      }
                     />
                     <span className="text-xs text-[var(--t5)]">天前</span>
                     <button
@@ -2361,17 +2381,22 @@ export function SettingsPage({
                   </button>
                 </div>
 
-                {/* Python 默认超时：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调 */}
+                {/* Python 默认超时：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调。
+                    默认值与上限取自后端参数表（tools.python_timeout_secs）——前端此前
+                    自己写着「60」和「300」，后端常量一改页面就撒谎。 */}
                 <div className="mt-3 flex items-center justify-between gap-4">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-[var(--t2)]">
                       Python 默认超时（秒）
                     </p>
                     <p className="mt-1 text-xs text-[var(--t5)]">
-                      留空 = 60 秒；大计算可调大，上限 300 秒（超出自动钳制）
+                      {pyTimeoutView
+                        ? `留空 = ${pyTimeoutView.default} 秒；大计算可调大，上限 ${pyTimeoutView.max} 秒（超出自动钳制）`
+                        : "留空 = 用内置默认；大计算可调大（超出自动钳制）"}
                     </p>
                   </div>
                   <input
+                    aria-label="Python 默认超时（秒）"
                     value={config.pythonTimeoutSecs}
                     onChange={(e) =>
                       setConfig((c) => ({
@@ -2379,7 +2404,7 @@ export function SettingsPage({
                         pythonTimeoutSecs: e.target.value,
                       }))
                     }
-                    placeholder="60"
+                    placeholder={pyTimeoutView?.default ?? ""}
                     inputMode="numeric"
                     className="nm-inset shrink-0 w-24 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none text-right"
                   />

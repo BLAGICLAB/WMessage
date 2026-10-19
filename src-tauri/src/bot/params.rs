@@ -331,8 +331,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "Python 执行超时（秒）",
         category: "tools",
         hint: "run_python 默认超时；工具参数可单次覆盖",
-        min: None,
-        max: None,
+        min: Some(1),
+        max: Some(crate::py::runtime::MAX_TIMEOUT_SECS),
         editable: true,
         resolve: cfg_resolver!(plain_py_timeout, python_timeout_secs),
     },
@@ -436,7 +436,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!("30"),
+        resolve: hardcoded_resolver!(crate::bot_scheduler::SCHED_TICK_SECS),
     },
     ParamDef {
         key: "trace.span_text_max",
@@ -446,7 +446,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!("16384"),
+        resolve: hardcoded_resolver!(crate::db::trace::SPAN_TEXT_MAX),
     },
     ParamDef {
         key: "trace.diff_max_lines",
@@ -456,7 +456,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!("2000"),
+        resolve: hardcoded_resolver!(crate::db::trace::MAX_DIFF_LINES),
     },
     ParamDef {
         key: "trace.retention_days",
@@ -466,7 +466,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!("30"),
+        resolve: hardcoded_resolver!(crate::db::trace::TRACE_RETENTION_DAYS),
     },
 ];
 
@@ -489,7 +489,9 @@ fn plain_max_tokens(cfg: &BotConfig) -> String {
 }
 
 fn plain_py_timeout(cfg: &BotConfig) -> String {
-    cfg.python_timeout_secs.unwrap_or(60).to_string()
+    cfg.python_timeout_secs
+        .unwrap_or(crate::py::runtime::DEFAULT_TIMEOUT_SECS)
+        .to_string()
 }
 
 /// 推理强度无钳制但有静默回退：非法值下游一律按 medium 生效，展示同步取回退结果
@@ -717,6 +719,26 @@ mod tests {
                 crate::bot_model_loop::MAX_LLM_ATTEMPTS,
                 crate::bot_model_loop::LLM_RETRY_DELAY.as_millis() as f64 / 1000.0
             )
+        );
+        // 扫描间隔 / 痕迹三表的两个钳制 + 保留期：这四条原先是表里的裸字面量
+        // （"30" / "16384" / "2000" / "30"），与真常量恰好相等纯属手写对了——
+        // 真常量一改，表里的旧数会静默留着（没有任何测试把两者绑住）。
+        // 现在 resolve 直接取常量，测试再钉一层。
+        assert_eq!(
+            shown("schedule.scan_secs"),
+            crate::bot_scheduler::SCHED_TICK_SECS.to_string()
+        );
+        assert_eq!(
+            shown("trace.span_text_max"),
+            crate::db::trace::SPAN_TEXT_MAX.to_string()
+        );
+        assert_eq!(
+            shown("trace.diff_max_lines"),
+            crate::db::trace::MAX_DIFF_LINES.to_string()
+        );
+        assert_eq!(
+            shown("trace.retention_days"),
+            crate::db::trace::TRACE_RETENTION_DAYS.to_string()
         );
         // 「每会话并发」此前只在 max_running 的 hint 里以文字出现，表里查不到；
         // 现在它有自己的行，且展示值即派发闸真正认的那个数
