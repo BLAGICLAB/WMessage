@@ -262,6 +262,16 @@ async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
             }
         }
     }
+    // 溢出目录（工具大结果的转存位置）：恒在读白名单里。
+    // 漏了它，回灌给模型的指针就是一张读不回的废纸——模型只能看到节选、拿不到正文，
+    // 等于比直接截断还糟。目录还不存在（还没发生过溢出）时 canonicalize 失败即跳过，
+    // 而白名单是每次 read 调用重算的，等模型真去读时目录已经建好。
+    // 只加读侧：writable_dirs 不动，模型不能往里写。
+    if let Ok(c) = std::fs::canonicalize(crate::overflow::root(app)) {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
     out
 }
 

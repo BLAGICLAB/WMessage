@@ -187,6 +187,10 @@ src-tauri/src/
 ├── bot_py.rs (1360)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网
+├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +
+│                        回灌指针文案 + 保留期清扫（30 天，启动一次 + 每天一次）。
+│                        配套 `bot_fs::allowed_dirs` 把本目录放进读白名单（模型靠它分页读回），
+│                        回灌上限取 per-tool 预算与设置页 maxToolOutputChars 的小者
 ├── bing.rs              必应每日一图（首页小部件数据源）：cn.bing.com 官方 API + 按日落
 │                        `{data_dir}/runtime/bing/`（图片先 / 元数据后提交标记；保留 7 天，
 │                        过期随拉取清理）；base64 data URL 单 IPC 返回（免配 asset 协议）
@@ -481,6 +485,7 @@ flowchart TD
 - `main.rs`
 - `mutation.rs`
 - `ocr.rs`
+- `overflow.rs`
 - `paths.rs`
 - `profile.rs`
 - `prompt_builder.rs`

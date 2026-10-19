@@ -39,6 +39,7 @@ mod migration;
 mod mutation;
 mod notifications;
 mod ocr;
+pub mod overflow;
 pub mod paths;
 mod platform;
 mod profile;
@@ -474,6 +475,10 @@ pub fn run() {
             // 执行痕迹保留期自动清扫（启动一次 + 每天一次）：设置页公示的
             // 「保留期（天）」原先只有手动按钮会删，公示值与实际行为不符
             db::trace::spawn_retention_sweep(app.handle());
+
+            // 溢出文件保留期清扫（同节奏）：指针写进模型上下文的路径有时效，
+            // 过期不扫会让 data_dir/overflow 无限涨
+            overflow::spawn_sweep(app.handle());
 
             // 启动即预建 AI 产物目录（解析即建，不等首次生成产物才懒建）；
             // 失败只记 WARN 不阻塞启动——生成产物时 gen_dir 还会再试

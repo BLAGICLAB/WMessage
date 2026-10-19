@@ -458,6 +458,75 @@ pub(crate) const DEFAULT_TOOL_OUTPUT_CAP: usize = 30_000;
 /// 截断时尾部保留字符数：错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息。
 const TOOL_OUTPUT_TAIL_KEEP: usize = 6_000;
 
+/// 本次工具结果回灌的实际天花板：per-tool 预算与全局配置 cap 取小。
+///
+/// 两个都要，不能只要一个：
+/// - per-tool 预算（`ToolDef.max_output_chars`）管「这个工具天生输出就大」——
+///   fetch_url / read_text_file / list_files 可以给到 65536，其余默认 8192。
+/// - 全局 cap 管用户在设置页调的总量，也是唯一兜底——per-tool 预算被调到比它大时
+///   不能放任，否则设置页那个旋钮就成了空设置。
+fn effective_output_cap(tool: &str, global_cap: usize) -> usize {
+    crate::bot::registry::tools_index()
+        .get(tool)
+        .map(|t| t.max_output_chars)
+        .unwrap_or(global_cap)
+        .min(global_cap)
+}
+
+/// 超预算时的渲染：优先转存溢出文件 + 指针；转存失败退回纯头尾截断。
+///
+/// 退回路径必须保留：落盘失败时若直接放行原文本，模型就白挨这一轮大上下文；
+/// 若返回空，结果凭空消失更糟。`cap_tool_output` 的四一分在无第二份拷贝时是对的，
+/// 这正是它作为兜底而非主路径的原因。
+fn spill_or_cap(app: &tauri::AppHandle, tool: &str, text: String, cap: usize) -> String {
+    match crate::overflow::spill(app, &text) {
+        Ok(path) => {
+            let notice = crate::overflow::pointer_text(tool, &path, &text);
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Info,
+                "tool.output.spilled",
+                &[
+                    ("tool", tool.to_string()),
+                    ("original", text.chars().count().to_string()),
+                    ("cap", cap.to_string()),
+                    ("path", path.display().to_string()),
+                ],
+            );
+            preview_with_pointer(&text, &notice, cap)
+        }
+        Err(e) => {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "tool.output.spill_failed",
+                &[
+                    ("tool", tool.to_string()),
+                    ("cap", cap.to_string()),
+                    ("err", e),
+                ],
+            );
+            cap_tool_output(&text, cap)
+        }
+    }
+}
+
+/// 节选预览：头一半 + 指针 + 尾一半；指针自身长度先从 cap 里扣。
+///
+/// 为什么五五分而 `cap_tool_output` 是四一：那份是「没有第二份拷贝」时的最后手段，
+/// 头部承载更多价值；这里完整内容已落盘、模型能分页读回，节选的职责只是让模型
+/// 判断「要不要读、读哪一段」，不是复述正文，头尾对半才不至于把结论藏在另一半。
+/// 纯函数便于单测。
+fn preview_with_pointer(text: &str, notice: &str, cap: usize) -> String {
+    // 指针两侧各一段 \n\n；不扣掉它们，节选会凭空超出 cap 这 4 个字符
+    const SEPS: usize = 4;
+    let total = text.chars().count();
+    let half = cap.saturating_sub(notice.chars().count() + SEPS) / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(total.saturating_sub(half)).collect();
+    format!("{head}\n\n{notice}\n\n{tail}")
+}
+
 /// 截断到 cap 字符：头 (cap-tail) + 截断说明 + 尾 tail。不超 cap 原样返回。
 /// 纯函数便于单测；调用方（薄壳 execute_tool）负责审计留痕。
 pub(crate) fn cap_tool_output(text: &str, cap: usize) -> String {
@@ -1196,8 +1265,8 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
-    // 配置化工具结果截断（设计 §3.2 maxToolOutputChars）——None = 默认 30K 字符
-    //（业界对齐，截断只影响回灌文本；trace span 仍存原文）；Some(0) = 显式关闭。
+    // 配置化工具结果上限（设计 §3.2 maxToolOutputChars）——None = 显式关闭。
+    // 与 per-tool 预算取小后才是本次回灌的实际天花板，见 effective_output_cap。
     let tool_output_cap: Option<usize> = match cfg.max_tool_output_chars {
         Some(0) => None,
         // 上限单源在 bot::params（与写侧钳制、设置页展示同一个数）
@@ -1209,23 +1278,18 @@ pub async fn run_model_loop(
         let sink = tool_trace_for_exec.clone();
         async move {
             let out = crate::bot::execute_tool_traced(&app, &name, &args, Some(stop), &trace).await;
-            // 配置化截断（截断后文本进回灌/事件；span 存原文，审计留痕）；
-            // 头尾保留——错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息
+            // 三层漏斗（owner 各不相同，缺一不可）：
+            //   L1 per-tool 预算（ToolDef.max_output_chars，最紧）——超了就把完整结果
+            //      转存成溢出文件，回灌节选 + 指针；模型按需 read_text_file 分页读回。
+            //   L2 本配置 cap（maxToolOutputChars，默认 30K 字符）——兜住 per-tool 预算
+            //      被调得比它大的那三个长输出工具。
+            //   L3 db::SPAN_TEXT_MAX——在 trace 侧，只管存多少进 SQLite，不管这里。
+            // trace span 仍存原文（钳在 L3），整轮回放的证据不因回灌节选而丢失。
             let mut text = out.text;
-            if let Some(cap) = tool_output_cap {
-                let char_count = text.chars().count();
-                if char_count > cap {
-                    text = cap_tool_output(&text, cap);
-                    crate::audit::write_event(
-                        &app,
-                        crate::audit::AuditLevel::Info,
-                        "tool.output.truncated",
-                        &[
-                            ("tool", name.to_string()),
-                            ("cap", cap.to_string()),
-                            ("original", char_count.to_string()),
-                        ],
-                    );
+            if let Some(global_cap) = tool_output_cap {
+                let cap = effective_output_cap(&name, global_cap);
+                if text.chars().count() > cap {
+                    text = spill_or_cap(&app, &name, text, cap);
                 }
             }
             if let Ok(mut n) = sink.lock() {
@@ -3376,6 +3440,46 @@ mod hallucination_guard_tests {
         let out = cap_tool_output(&text, 30);
         assert!(out.contains("原文 50 字符"));
         assert!(out.starts_with(&"中".repeat(24)));
+    }
+
+    #[test]
+    fn effective_cap_is_per_tool_budget_when_tighter() {
+        // run_python 的 per-tool 预算 8192 比全局 30_000 紧 → 取 8192
+        assert_eq!(effective_output_cap("run_python", 30_000), 8_192);
+    }
+
+    #[test]
+    fn effective_cap_falls_back_to_global_when_budget_is_looser() {
+        // read_text_file 的 per-tool 预算 65536 比全局大 → 全局兜底，否则设置页那个
+        // 旋钮在长输出工具上就成空设置
+        assert_eq!(effective_output_cap("read_text_file", 30_000), 30_000);
+        // 不在注册表里的名字（MCP 挂载工具）也走全局
+        assert_eq!(effective_output_cap("mcp_unknown", 30_000), 30_000);
+    }
+
+    #[test]
+    fn preview_keeps_head_tail_and_notice_within_cap() {
+        let text: String = std::iter::repeat('A').take(20_000).collect();
+        let notice = "指针";
+        let out = preview_with_pointer(&text, notice, 8_192);
+        assert!(out.starts_with(&"A".repeat(4_093)), "头部应保留约一半预算");
+        assert!(out.ends_with(&"A".repeat(4_093)), "尾部应保留约一半预算");
+        assert!(out.contains("指针"), "指针必须在场");
+        // 头尾对半分掉剩下的预算；整除差 1 时会略小于 cap，真不变量是「不超过」
+        assert!(
+            out.chars().count() <= 8_192,
+            "节选总长 {} 超出 cap",
+            out.chars().count()
+        );
+    }
+
+    #[test]
+    fn preview_survives_notice_longer_than_cap() {
+        // 路径长到吃掉整个 cap 时不得 panic，也不得把正文整个挤没成空
+        let text = "A".repeat(5_000);
+        let notice = "N".repeat(20_000);
+        let out = preview_with_pointer(&text, &notice, 1_000);
+        assert!(out.contains(&"N".repeat(100)), "指针仍应完整在场");
     }
 
     #[test]

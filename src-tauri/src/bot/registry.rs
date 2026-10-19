@@ -169,9 +169,10 @@ pub struct ToolDef {
     /// 只在 `mutating == true` 时有意义；非 mutating 填 `&[]`。
     /// `claims_mutation()` 从所有 mutating 工具的 patterns 合并后检索。
     pub claims_patterns: &'static [&'static str],
-    /// 工具返回文本的字符软上限（仅 audit，不截断）。
-    /// 超阈值仅 audit_event!("tool.output.over_budget")，不丢字符、不压缩。
-    /// 默认 8192（8KB）；长输出工具（read_text_file/fetch_url/list_files）自定 65536。
+    /// 工具返回文本的回灌上限（字符）。超阈值把完整结果转存成溢出文件、回灌节选 +
+    /// 指针（见 bot_model_loop::effective_output_cap 与 overflow 模块）。
+    /// 与设置页的全局 maxToolOutputChars 取小后生效，两层都要。
+    /// 默认 8192；长输出工具（read_text_file/fetch_url/list_files）自定 65536。
     pub max_output_chars: usize,
     pub call: for<'a> fn(&'a ToolCtx<'a>, &'a str) -> ToolFuture<'a>,
 }
