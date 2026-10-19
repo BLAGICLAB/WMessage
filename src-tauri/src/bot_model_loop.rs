@@ -1447,11 +1447,14 @@ where
     let mut soft_warn_sent: bool = false;
     // 轮数软警告同款：只发一次，发完不再打扰后续轮次
     let mut rounds_warn_sent: bool = false;
-    // 防幻觉汇报守卫：本次对话是否实际执行过变更类工具（会话级一次置位、不按轮
+    // 防幻觉汇报守卫：本次提问是否实际执行过变更类工具（提问级一次置位、不按轮
     // 重置——后续正常汇报轮靠它放行，按轮重置会把改完再汇报的正常轮误判为幻觉）；
-    // 补一轮机会（claim_retry）同样每次对话只用一次
+    // 补一轮机会（claim_retry）同样每次提问只用一次
     let mut mutation_done: bool = false;
     let mut claim_retry_used: bool = false;
+    // 幻觉守卫第二次拦下时写这里：终稿末尾追加一条如实更正（见判决处）。
+    // None = 本次提问没有出现「返工后仍编造」，终稿照常。
+    let mut fabrication_notice: Option<String> = None;
     // 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）。
     // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
     // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
@@ -2361,54 +2364,84 @@ where
                     }
                 }
             }
-            if !claim_retry_used
-                && (claim_mutation || claim_execution || fake_gen_path.is_some())
-            {
-                claim_retry_used = true;
-                audit_log(&format!(
-                    "hallucination_guard | {}: {}",
-                    if claim_execution && !unsupported.is_empty() {
-                        format!("声称已执行但无对应凭证: {}", unsupported.join(","))
-                    } else if claim_execution {
-                        "声称已执行但本次提问零凭证".to_string()
-                    } else if fake_gen_path.is_some() {
-                        "声称已生成但路径不存在".to_string()
-                    } else {
-                        "声称变更但未调工具".to_string()
-                    },
-                    crate::bot::truncate_for_log(&final_text, 100)
-                ));
-                let reason = match (&fake_gen_path, claim_execution, unsupported.as_slice()) {
-                    (Some(p), _, _) => {
-                        format!("你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。")
-                    }
-                    (None, true, [t, ..]) => {
+            // 幻觉守卫判决：声称完成但无对应凭证 → 第一次返工，第二次如实标注。
+            //
+            // 两次是两种不同处置，不是同一种做两遍：
+            // · 第一次（claim_retry_used=false）：把终稿推回消息栈、注入系统提示
+            //   让模型真去调工具。此时谎报还只在消息栈里——前端收尾时用 bot_chat
+            //   的返回值覆盖流式气泡，用户最终看到的是返工后的那一版。
+            // · 第二次（claim_retry_used=true）：不再返工。返工会让模型重跑已完成
+            //   的动作（delete_task / link_file_to_task 这类是重复的破坏性操作），
+            //   而谎报已经拦过一次，再拦一次收益不抵风险。改为把「这句没有对应
+            //   凭证」如实标在终稿末尾：让用户看见谎话 + 一条更正，好过让谎话
+            //   冒充事实单独到达用户。
+            if claim_mutation || claim_execution || fake_gen_path.is_some() {
+                let kind = if claim_execution && !unsupported.is_empty() {
+                    format!("声称已执行但无对应凭证: {}", unsupported.join(","))
+                } else if claim_execution {
+                    "声称已执行但本次提问零凭证".to_string()
+                } else if fake_gen_path.is_some() {
+                    "声称已生成但路径不存在".to_string()
+                } else {
+                    "声称变更但未调工具".to_string()
+                };
+                // 同一处判决的两种口吻：reason 说给模型听（第二人称、要它改正），
+                // notice 说给用户听（第三人称、只陈述事实）。
+                let (reason, notice) = match (&fake_gen_path, claim_execution, unsupported.as_slice())
+                {
+                    (Some(p), _, _) => (
+                        format!(
+                            "你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。"
+                        ),
+                        format!("上面提到的文件 {p} 实际没有生成——磁盘上不存在这个路径。"),
+                    ),
+                    (None, true, [t, ..]) => (
                         format!(
                             "你刚才说调了 {t} 并给出了结果，但本次提问里没有任何 {t} 的成功调用记录——这个结果是编造的。"
-                        )
-                    }
-                    (None, true, _) => {
-                        "你刚才叙述了一次已完成的执行并给出了结果，但本次提问从头到尾没有任何工具调用成功——这个结果是编造的。".to_string()
-                    }
-                    (None, false, _) => {
+                        ),
+                        format!(
+                            "上面关于 {t} 的执行结果是编造的——本次提问里没有任何 {t} 的成功调用记录。"
+                        ),
+                    ),
+                    (None, true, _) => (
+                        "你刚才叙述了一次已完成的执行并给出了结果，但本次提问从头到尾没有任何工具调用成功——这个结果是编造的。".to_string(),
+                        "上面叙述的这次执行没有实际发生——本次提问里没有任何工具调用成功。"
+                            .to_string(),
+                    ),
+                    (None, false, _) => (
                         "你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。"
-                            .to_string()
-                    }
+                            .to_string(),
+                        "上面声称的变更没有实际发生——本轮没有变更类工具调用成功，数据实际没有变化。"
+                            .to_string(),
+                    ),
                 };
-                // 执行类谎报的补救路径与变更类不同：变更类要点名具体工具，
-                // 执行类（含 run_python / bash / fetch_url）点不全也不该点名——
-                // 该做的是把工具真正调起来，拿不到结果就如实说拿不到。
-                let remedy = if claim_execution && fake_gen_path.is_none() {
-                    "请立即发起 tool_call 实际执行，禁止只改文字糊弄；拿到真实返回后再如实转述（失败就如实报失败）。若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
-                } else {
-                    "请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。".to_string()
-                };
-                msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
-                msgs.push(serde_json::json!({
-                    "role": "user",
-                    "content": format!("【系统提示】{reason}{remedy}")
-                }));
-                continue;
+                if !claim_retry_used {
+                    claim_retry_used = true;
+                    audit_log(&format!(
+                        "hallucination_guard | {kind}: {}",
+                        crate::bot::truncate_for_log(&final_text, 100)
+                    ));
+                    // 执行类谎报的补救路径与变更类不同：变更类要点名具体工具，
+                    // 执行类（含 run_python / bash / fetch_url）点不全也不该点名——
+                    // 该做的是把工具真正调起来，拿不到结果就如实说拿不到。
+                    let remedy = if claim_execution && fake_gen_path.is_none() {
+                        "请立即发起 tool_call 实际执行，禁止只改文字糊弄；拿到真实返回后再如实转述（失败就如实报失败）。若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
+                    } else {
+                        "请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。".to_string()
+                    };
+                    msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                    msgs.push(serde_json::json!({
+                        "role": "user",
+                        "content": format!("【系统提示】{reason}{remedy}")
+                    }));
+                    continue;
+                }
+                // 返工之后仍编造：不返工（见块首），只在终稿末尾挂一条如实更正。
+                audit_log(&format!(
+                    "hallucination_guard.repeat | {kind}: {}",
+                    crate::bot::truncate_for_log(&final_text, 100)
+                ));
+                fabrication_notice = Some(notice);
             }
             // stop_reason=max_tokens：思维链把输出预算吃光时，正文和排在最后的
             // tool_use 会整段被砍，用户只拿到半截甚至空回复，还得自己打「继续」。
@@ -2575,6 +2608,13 @@ where
             } else {
                 format!("{length_prefix}{final_text}")
             };
+            // 幻觉守卫返工后仍编造：把更正挂在终稿末尾（不删原文——谎话已经
+            // 流出去了，删掉它只会让用户更信那句假的）。前端收尾时用本返回值
+            // 覆盖流式气泡，所以这行更正会落到用户眼前的那一份文本上。
+            if let Some(notice) = &fabrication_notice {
+                answer.push_str("\n\n⚠️ ");
+                answer.push_str(notice);
+            }
             // L6 post_turn 钩子层：回合收尾、答案定稿（终稿自检已还原、
             // 长度续跑已拼好）之后、回灌与 emit 之前。
             // 与 L5 同理：放这里意味着钩子看到并能改的，就是用户真正会看到的

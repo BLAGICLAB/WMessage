@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1063)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1068)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -89,7 +89,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (4427) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (4571) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；P4：maxToolOutputChars 截断落地
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
@@ -99,7 +99,7 @@ src-tauri/src/
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
 │                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
-├── bot/registry.rs (2575)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (2576)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1435)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+

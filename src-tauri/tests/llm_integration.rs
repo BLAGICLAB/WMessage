@@ -3435,3 +3435,89 @@ async fn core_subagent_receipts_credit_lets_truthful_report_through() {
     );
     assert_eq!(server.request_count(), 2, "子 agent 归并后不得返工");
 }
+
+/// 返工之后仍编造：不再返工，终稿末尾挂一条如实更正。
+///
+/// 守的是「谎话不能单独到达用户」。此前第二次谎报整块守卫直接跳过（返工机会
+/// 一次用完就作废），原文原样出到用户眼前——用户看到的是一句纯假的执行汇报。
+/// 现在第二次改成不返工、只标注：再返工会让模型重跑已完成的动作（delete_task
+/// 那类是重复的破坏性操作），而谎报已经拦过一次，再拦一次收益不抵风险。
+#[tokio::test]
+async fn core_second_fabrication_is_marked_not_silently_passed() {
+    let server = MockLlmServer::start();
+    // 第一轮：零工具调用却叙述执行结果 → 守卫返工
+    server.push_behavior(MockBehavior::TextReply(
+        "执行完毕，工具真实返回，打印了 done。".into(),
+    ));
+    // 第二轮：仍然编造 → 不再返工，改为在终稿标注
+    server.push_behavior(MockBehavior::TextReply(
+        "执行完毕，工具真实返回，打印了 done。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("第二次编造应 Ok");
+    // 谎话本身仍在（不删原文——删掉只会让用户更信那句假的）
+    assert!(text.contains("执行完毕"), "应保留原文：{text:?}");
+    // 但必须带一条如实更正，让用户知道这句没有凭证
+    assert!(
+        text.contains("⚠️") && text.contains("没有实际发生"),
+        "第二次编造应在终稿标注：{text:?}"
+    );
+    // 不再返工：只有两次请求（第二次是模型的作答，不是第三次返工）
+    assert_eq!(server.request_count(), 2, "第二次编造不得再返工");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("hallucination_guard.repeat")),
+        "应记 repeat 审计：{lines:?}"
+    );
+}
+
+/// 正路不回归：第一次编造被返工、模型改口后终稿干净，不该挂更正标注。
+#[tokio::test]
+async fn core_truthful_rewrite_after_rework_carries_no_notice() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "执行完毕，工具真实返回，打印了 done。".into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("我没有执行过任何脚本。".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("改口后应 Ok");
+    assert!(text.contains("没有执行过任何脚本"), "应改口：{text:?}");
+    assert!(
+        !text.contains("⚠️"),
+        "改口后的干净终稿不该挂更正标注：{text:?}"
+    );
+}
