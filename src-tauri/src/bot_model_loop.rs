@@ -3499,6 +3499,22 @@ mod hallucination_guard_tests {
     }
 
     #[test]
+    fn claims_execution_catches_tool_call_listings() {
+        // 实测原话：模型把工具调用结果列成清单，零工具调用却报「✅ 调用成功」。
+        // 这一族措辞在词表补之前一个都不命中 → 执行类闸整道不开门。
+        assert!(claims_execution(
+            "工具调用如下：\n- create_word：✅ 调用成功，返回路径 `/x/y.docx`"
+        ));
+        assert!(claims_execution(
+            "工具调用结果：\n- create_word：✅ 调用成功"
+        ));
+        assert!(claims_execution("脚本调用完成，无报错"));
+        // 相反形态不收：如实汇报失败/被拒不该被判成叙述了一次成功执行
+        assert!(!claims_execution("run_python：调用失败，模块缺失"));
+        assert!(!claims_execution("complete_task：调用被拒，任务不存在"));
+    }
+
+    #[test]
     fn claims_execution_passes_honest_refusals_and_instructions() {
         // 同会话 message 684/686/688：模型如实拒绝白名单外路径——这是要鼓励的
         // 行为，被守卫打回等于惩罚诚实。
@@ -3595,7 +3611,7 @@ mod hallucination_guard_tests {
         // 没配过时的回落值就是内置默认表
         assert_eq!(
             crate::bot::registry::default_execution_claim_patterns().len(),
-            21,
+            26,
             "内置词表条数变了——设置页「恢复默认」与 SPEC 的计数要同步"
         );
         assert!(claims_execution_with(
