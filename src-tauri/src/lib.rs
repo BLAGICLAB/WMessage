@@ -669,6 +669,7 @@ pub fn run() {
             bot::bot_set_config,
             bot::bot_set_active_model,
             bot::bot_set_perm_mode,
+            bot::bot_effective_params,
             bot::memory_tuning_get,
             bot::memory_tuning_set,
             bot::mcp::commands::mcp_server_save,

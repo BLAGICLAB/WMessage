@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1068)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1069)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -99,11 +99,13 @@ src-tauri/src/
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
 │                        事件（Anthropic 协议）
-├── bot.rs (153)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
+├── bot.rs (161)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
 │                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
 │                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
+│                        （默认值 = resolver 在空配置下的派生值；可填范围 = 钳制常量 min/max；
+│                        生效值 = 钳过之后的数 + 来源标注——页面不再自留一份硬编码数字）
 ├── bot/registry.rs (2599)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生

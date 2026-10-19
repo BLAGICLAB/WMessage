@@ -58,6 +58,14 @@ pub mod registry;
 pub mod tags_consolidate;
 pub mod tools;
 
+// params re-export：参数表命令（设置页「Agent 运行参数」卡的数据源）。
+// 走 facade 口径——外部只认 `crate::bot::bot_effective_params`，不直接摸
+// `crate::bot::params::*`。
+pub use params::{
+    __cmd__bot_effective_params, __tauri_command_name_bot_effective_params, bot_effective_params,
+    effective_params, ParamDef, ParamView, PARAMS_TABLE,
+};
+
 // config re-export
 pub use config::{
     __cmd__bot_get_config,

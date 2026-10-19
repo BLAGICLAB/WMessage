@@ -51,6 +51,9 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
       };
     case "py_get_enabled":
       return false;
+    // Agent 运行参数卡的元数据（默认值/可填范围/当前生效值）
+    case "bot_effective_params":
+      return paramViews;
     case "py_env_check":
       return { available: false, python: "", version: "", libs: [] };
     case "api_status":
@@ -150,6 +153,94 @@ const defaultProps = {
   onThemeChange: vi.fn(),
   onExportTasks: vi.fn(async () => {}),
   onImportTasks: vi.fn(async () => {}),
+};
+
+/** bot_effective_params 的返回体（后端 bot::params::ParamView 的线格式）。
+ *  前端不再自留一份默认数字——这些值就是页面显示「默认/可填范围/当前生效」
+ *  的唯一来源。 */
+const paramViews = [
+  {
+    key: "loop.max_rounds",
+    label: "模型循环最大轮数",
+    category: "loop",
+    hint: "单次对话/任务执行的 LLM 轮数上限；调大=更复杂任务但失控时更费 token",
+    value: "50",
+    default: "50",
+    source: "default",
+    editable: true,
+    min: 5,
+    max: 200,
+  },
+  {
+    key: "loop.max_function_calls",
+    label: "单次请求工具调用熔断",
+    category: "loop",
+    hint: "全域工具调用熔断上限（子 agent 预算同源此值）",
+    value: "100",
+    default: "100",
+    source: "default",
+    editable: true,
+    min: 1,
+    max: 500,
+  },
+  {
+    key: "tools.max_output_bytes",
+    label: "工具结果截断字节数",
+    category: "tools",
+    hint: "单条工具结果回填模型上下文的截断上限（字节，UTF-8）；设 0 = 显式关闭截断",
+    value: "30000",
+    default: "30000",
+    source: "default",
+    editable: true,
+    min: 0,
+    max: 200000,
+  },
+];
+
+/** 机器人分区的 Agent 参数卡：进分区 + 拿到参数表 */
+async function openAgentParams(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "机器人" }));
+  return screen.findByText("Agent 运行参数");
+}
+
+/** 机器人分区的 invoke mock（标准命令 + Agent 参数表）。
+ *  必须自带 bot_effective_params：前一个用例覆写过 invoke 实现，未识别的
+ *  命令一律返 null——参数表拉不到时页面会走降级渲染（不显示默认值/范围）。 */
+const agentParamsMock = async (cmd: string): Promise<unknown> => {
+  switch (cmd) {
+    case "bot_effective_params":
+      return paramViews;
+    case "bot_get_config":
+      return {
+        baseUrl: "",
+        model: "",
+        hasApiKey: false,
+        bypassLlmOnPreStepHit: true,
+        uiFontSize: "small",
+      };
+    case "bot_set_config":
+      return null;
+    case "profile_get":
+      return { user: { name: "我", avatarId: null }, bot: { name: "机器人", avatarId: null } };
+    case "bot_get_enabled":
+      return false;
+    case "py_get_enabled":
+      return false;
+    case "py_env_check":
+      return { available: false, python: "", version: "", libs: [] };
+    case "api_status":
+      return { enabled: false, port: 4763 };
+    case "skills_list":
+      return [];
+    case "migration_rules_load":
+      return { version: 1, rules: [] };
+    case "migration_status":
+      return { rules_count: 0, poll_interval_secs: 600 };
+    case "migration_log_read":
+      return "";
+    default:
+      return null;
+  }
 };
 
 describe("SettingsPage", () => {
@@ -296,6 +387,69 @@ describe("SettingsPage", () => {
           config: expect.objectContaining({
             guardClaimKeywords: ["搞定", "执行完毕"],
           }),
+        }),
+      );
+    });
+  });
+
+  it("Agent 运行参数卡：默认值/可填范围/当前生效值来自后端参数表", async () => {
+    // 这条盯的是「页面显示的数 = 真正生效的数」：默认值与范围此前是前端
+    // 自留的一份硬编码，后端改了默认页面还写着旧数。
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await openAgentParams(user);
+    const desc = await screen.findByText(/默认 50/);
+    expect(desc.textContent).toContain("可填 5–200");
+    expect(desc.textContent).toContain("当前生效 50");
+    expect(desc.textContent).toContain("内置默认");
+    // 输入框的 placeholder = 后端给的默认值（留空 = 用内置默认）
+    const input = screen.getByLabelText(
+      "模型循环最大轮数",
+    ) as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("50");
+  });
+
+  it("Agent 运行参数卡：改数值保存 → 落盘钳到后端给的可填范围", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await openAgentParams(user);
+    const input = (await screen.findByLabelText(
+      "模型循环最大轮数",
+    )) as HTMLInputElement;
+    await user.clear(input);
+    await user.type(input, "9999");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({ maxRounds: 200 }),
+        }),
+      );
+    });
+  });
+
+  it("工具结果截断字节数填 0 → 落盘 0（显式关闭截断），不是当成未配置", async () => {
+    // 0 是这一项的合法第三态（关闭截断）。此前前端 `n > 0` 把它判成 null，
+    // 用户填 0 存下去还是默认 30000 字节——设了等于没设。
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await openAgentParams(user);
+    const input = (await screen.findByLabelText(
+      "工具结果截断字节数",
+    )) as HTMLInputElement;
+    await user.clear(input);
+    await user.type(input, "0");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({ maxToolOutputBytes: 0 }),
         }),
       );
     });

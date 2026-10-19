@@ -260,6 +260,43 @@ pub(crate) fn prune_verified_vendors(
     });
 }
 
+/// Agent 运行参数落盘前钳制（None = 内置默认不动）。
+///
+/// 边界单源：bot::params clamp_* / db::clamp_subagent_max_turns，与读侧
+/// resolver 共用同一组数字——写侧钳过的值就是运行时生效的值，设置页显示的
+/// 与实际跑的是同一个数。
+///
+/// 单独成函数是为了能单测：`bot_set_config` 要 AppHandle，测不到里面这一段。
+fn clamp_agent_params(config: &mut BotConfig) {
+    config.max_rounds = config.max_rounds.map(crate::bot::params::clamp_max_rounds);
+    config.history_budget_chars = config
+        .history_budget_chars
+        .map(crate::bot::params::clamp_history_budget_chars);
+    config.subagent_max_turns = config
+        .subagent_max_turns
+        .map(crate::db::clamp_subagent_max_turns);
+    config.subagent_max_wall_secs = config
+        .subagent_max_wall_secs
+        .map(crate::bot::params::clamp_subagent_max_wall_secs);
+    config.search_max_results = config
+        .search_max_results
+        .map(crate::bot::params::clamp_search_max_results);
+    config.ask_budget = config.ask_budget.map(crate::bot::params::clamp_ask_budget);
+    // 工具调用熔断上限：写侧此前**没有**钳制，只有模型循环派生链末端的一行
+    // `.clamp(1, 500)`——于是设置页显示用户设的值（999）、运行时按另一个值
+    // 走（500），用户看到的和实际生效的不是一回事。写侧补上钳制后落盘值
+    // = 生效值；边界仍是 params::clamp_max_function_calls 这一个数。
+    config.max_function_calls = config
+        .max_function_calls
+        .map(crate::bot::params::clamp_max_function_calls);
+    // 工具输出截断上限（0 = 显式关闭不动，其余钳到 params 的上限）——原先这个
+    // 字段没有任何写侧钳制，只有模型循环生效点的一行 `.min(200_000)`，于是设置页
+    // 显示用户设的值、运行时按另一个值走
+    config.max_tool_output_bytes = config
+        .max_tool_output_bytes
+        .map(crate::bot::params::clamp_max_tool_output_bytes);
+}
+
 #[tauri::command]
 pub fn bot_set_config(
     app: AppHandle,
@@ -306,26 +343,7 @@ pub fn bot_set_config(
         .map(|n| n.clamp(1, super::types::MAX_ARCHIVE_DAYS));
     // Agent 运行参数落盘前钳制（None = 内置默认不动；与 archive 同款）——
     // 边界单源：bot::params clamp_* / db::clamp_subagent_max_turns，与读侧 resolver 共用
-    config.max_rounds = config.max_rounds.map(crate::bot::params::clamp_max_rounds);
-    config.history_budget_chars = config
-        .history_budget_chars
-        .map(crate::bot::params::clamp_history_budget_chars);
-    config.subagent_max_turns = config
-        .subagent_max_turns
-        .map(crate::db::clamp_subagent_max_turns);
-    config.subagent_max_wall_secs = config
-        .subagent_max_wall_secs
-        .map(crate::bot::params::clamp_subagent_max_wall_secs);
-    config.search_max_results = config
-        .search_max_results
-        .map(crate::bot::params::clamp_search_max_results);
-    config.ask_budget = config.ask_budget.map(crate::bot::params::clamp_ask_budget);
-    // 工具输出截断上限（0 = 显式关闭不动，其余钳到 params 的上限）——原先这个
-    // 字段没有任何写侧钳制，只有模型循环生效点的一行 `.min(200_000)`，于是设置页
-    // 显示用户设的值、运行时按另一个值走
-    config.max_tool_output_bytes = config
-        .max_tool_output_bytes
-        .map(crate::bot::params::clamp_max_tool_output_bytes);
+    clamp_agent_params(&mut config);
     // 终稿自检间隔落盘前钳制（0..=100：0 = 关闭；上限放宽到 100 留充足调整空间，
     // 真实触发频率受 final_text 字数 / function_calls / round gap 共同约束）
     config.final_selfcheck_round_gap = config.final_selfcheck_round_gap.map(|n| n.clamp(0, 100));
@@ -878,7 +896,7 @@ mod tool_rule_sanitize_tests {
 #[cfg(test)]
 mod perm_mode_tests {
     use super::super::types::{BotConfig, PermMode, ToolRule};
-    use super::{apply_perm_mode, sanitize_tool_rules};
+    use super::{apply_perm_mode, clamp_agent_params, sanitize_tool_rules};
 
     fn rule(tool: &str, action: &str) -> ToolRule {
         ToolRule {
@@ -930,5 +948,78 @@ mod perm_mode_tests {
         assert_eq!(cfg.perm_mode.as_deref(), Some("yolo"));
         assert_eq!(cfg.max_rounds, Some(42), "max_rounds 不该被动过");
         assert_eq!(cfg.tool_rules, before_rules, "tool_rules 不该被动过");
+    }
+
+    /// 落盘值 = 生效值：越界配置必须在写侧就被钳到运行时真正认的那个数。
+    ///
+    /// 写侧不钳 = 设置页显示用户设的值、运行时按另一个值走（用户看到的和
+    /// 实际生效的不是一回事）。`max_function_calls` 此前就漏在钳制列表外。
+    #[test]
+    fn clamp_agent_params_makes_stored_value_equal_effective_value() {
+        let mut cfg = BotConfig::default();
+        cfg.max_rounds = Some(999);
+        cfg.max_function_calls = Some(9999);
+        cfg.history_budget_chars = Some(1);
+        cfg.subagent_max_turns = Some(0);
+        cfg.subagent_max_wall_secs = Some(10);
+        cfg.search_max_results = Some(99);
+        cfg.ask_budget = Some(99);
+        cfg.max_tool_output_bytes = Some(999_999);
+        clamp_agent_params(&mut cfg);
+        // 每个落盘值都必须等于读侧 resolver 对同一份配置的解析结果
+        assert_eq!(
+            cfg.max_rounds,
+            Some(crate::bot::params::clamp_max_rounds(999))
+        );
+        assert_eq!(
+            cfg.max_function_calls,
+            Some(crate::bot::params::clamp_max_function_calls(9999)),
+            "熔断上限写侧此前不钳：设置页显示 9999、运行时按 500 走"
+        );
+        assert_eq!(cfg.max_function_calls, Some(500));
+        assert_eq!(
+            cfg.history_budget_chars,
+            Some(crate::bot::params::clamp_history_budget_chars(1))
+        );
+        assert_eq!(
+            cfg.subagent_max_turns,
+            Some(crate::db::clamp_subagent_max_turns(0))
+        );
+        assert_eq!(
+            cfg.subagent_max_wall_secs,
+            Some(crate::bot::params::clamp_subagent_max_wall_secs(10))
+        );
+        assert_eq!(
+            cfg.search_max_results,
+            Some(crate::bot::params::clamp_search_max_results(99))
+        );
+        assert_eq!(
+            cfg.ask_budget,
+            Some(crate::bot::params::clamp_ask_budget(99))
+        );
+        assert_eq!(
+            cfg.max_tool_output_bytes,
+            Some(crate::bot::params::clamp_max_tool_output_bytes(999_999))
+        );
+    }
+
+    /// 钳制不碰「未配置」这一态：None 仍是 None（= 用内置默认），
+    /// 且 0（工具输出截断的「显式关闭」）不能被当成非法值抹掉。
+    #[test]
+    fn clamp_agent_params_keeps_none_and_zero() {
+        let mut cfg = BotConfig::default();
+        clamp_agent_params(&mut cfg);
+        assert_eq!(cfg.max_rounds, None, "未配置不该被写成 0 之类的值");
+        assert_eq!(cfg.max_function_calls, None);
+        assert_eq!(cfg.max_tool_output_bytes, None);
+
+        let mut cfg = BotConfig::default();
+        cfg.max_tool_output_bytes = Some(0);
+        clamp_agent_params(&mut cfg);
+        assert_eq!(
+            cfg.max_tool_output_bytes,
+            Some(0),
+            "0 = 显式关闭截断，写侧不许抹成 null"
+        );
     }
 }

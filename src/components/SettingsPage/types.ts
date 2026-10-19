@@ -81,6 +81,25 @@ export type SkillInfo = {
 // MCP（外部工具服务器）
 
 /** 单个外部 MCP 服务器配置（与 Rust bot::mcp::config::McpServerConfig 同形，camelCase） */
+/** bot_effective_params 返回的一行（与 Rust bot::params::ParamView 同形，camelCase）。
+ *
+ *  字段口径：
+ *  - value = **当前生效值**（已被钳制过的那个数，不是用户填的原值）
+ *  - default = 内置默认值（后端从 resolver 派生，与运行时同一份代码路径）
+ *  - source = "config"（用户改过）/ "default"（还在用内置默认）/ "hardcoded"（只读常量）
+ *  - min/max = 可填范围（与运行时钳制边界同一个数） */
+export type ParamView = {
+  key: string;
+  label: string;
+  category: string;
+  hint: string;
+  value: string;
+  default: string;
+  source: "config" | "default" | "hardcoded";
+  editable: boolean;
+  min?: number | null;
+  max?: number | null;
+};
 export type McpServerConfig = {
   /** "" = 新建（后端生成 uuid） */
   id: string;

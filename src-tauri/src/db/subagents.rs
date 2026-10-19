@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 /// bot 读侧按 30 放行、行上按 100 记账这类偏差会一路掩到熔断才暴露。
 pub const DEFAULT_MAX_TURNS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TURNS;
 pub const MAX_TURNS_HARD_CAP: u32 = 50;
+/// 轮数下界（0 轮 = 子 agent 一句话都说不完，等于白派）
+pub const MIN_SUBAGENT_TURNS: u32 = 1;
 pub const DEFAULT_MAX_TOOL_CALLS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS;
 pub const DEFAULT_MAX_WALL_SECONDS: u64 = crate::bot::params::DEFAULT_SUBAGENT_MAX_WALL_SECS;
 
@@ -26,7 +28,7 @@ pub const DEFAULT_MAX_WALL_SECONDS: u64 = crate::bot::params::DEFAULT_SUBAGENT_M
 /// bot 读侧 resolver、预算持久化（[SubagentBudget::clamped]）三处共用，
 /// 边界只认这里的 `MAX_TURNS_HARD_CAP`，防改一处漏两处。
 pub fn clamp_subagent_max_turns(n: u32) -> u32 {
-    n.clamp(1, MAX_TURNS_HARD_CAP)
+    n.clamp(MIN_SUBAGENT_TURNS, MAX_TURNS_HARD_CAP)
 }
 
 /// 子 agent 生命周期六态（设计 §3 状态机）。

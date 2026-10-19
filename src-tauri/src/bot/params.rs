@@ -48,6 +48,9 @@ macro_rules! cfg_resolver {
 /// 模型循环默认轮数（原 bot_model_loop::DEFAULT_MAX_ROUNDS 同值；该处引用本常量）
 pub const DEFAULT_MAX_ROUNDS: u32 = 50;
 pub const MAX_ROUNDS_CAP: u32 = 200;
+/// 轮数下界（少于 5 轮的循环连一次工具往返都跑不完）——钳制与设置页展示的
+/// 可填范围共用这一个数。
+pub const MAX_ROUNDS_MIN: u32 = 5;
 /// 会话历史字符预算默认（原 bot_chat::HISTORY_BUDGET_CHARS 同值）
 pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = 100_000;
 pub const HISTORY_BUDGET_MIN: u32 = 20_000;
@@ -57,6 +60,10 @@ pub const HISTORY_BUDGET_MAX: u32 = 500_000;
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 = 30;
 pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 = 100;
 pub const DEFAULT_SUBAGENT_MAX_WALL_SECS: u64 = 600;
+/// 子 agent 墙钟下界（秒）——钳制与设置页展示的可填范围共用这一个数。
+pub const SUBAGENT_MAX_WALL_SECS_MIN: u64 = 30;
+/// 子 agent 墙钟上界（秒）
+pub const SUBAGENT_MAX_WALL_SECS_MAX: u64 = 3600;
 /// web_search 默认结果条数（原 bot_web SEARCH_MAX_RESULTS 同值）
 pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 8;
 
@@ -66,7 +73,7 @@ pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 8;
 
 /// 模型循环轮数钳 5..=200
 pub fn clamp_max_rounds(n: u32) -> u32 {
-    n.clamp(5, MAX_ROUNDS_CAP)
+    n.clamp(MAX_ROUNDS_MIN, MAX_ROUNDS_CAP)
 }
 
 /// 会话历史字符预算钳 20K..=500K
@@ -76,23 +83,27 @@ pub fn clamp_history_budget_chars(n: u32) -> u32 {
 
 /// 子 agent 墙钟秒数钳 30..=3600
 pub fn clamp_subagent_max_wall_secs(n: u64) -> u64 {
-    n.clamp(30, 3600)
+    n.clamp(SUBAGENT_MAX_WALL_SECS_MIN, SUBAGENT_MAX_WALL_SECS_MAX)
 }
 
 /// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）
 pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;
+/// 联网搜索结果条数下界（0 条搜索无意义）
+pub const SEARCH_MAX_RESULTS_MIN: u32 = 1;
 
 /// 联网搜索结果条数钳 1..=SEARCH_MAX_RESULTS_CAP
 pub fn clamp_search_max_results(n: u32) -> u32 {
-    n.clamp(1, SEARCH_MAX_RESULTS_CAP)
+    n.clamp(SEARCH_MAX_RESULTS_MIN, SEARCH_MAX_RESULTS_CAP)
 }
 
 /// 单次请求工具调用熔断上限硬顶：写侧（子 agent 预算解析）与读侧（模型循环
 /// 派生链末端的 `.clamp`）共用这一个数，防「预算按 500 记账、循环按 999 放行」。
 pub const MAX_FUNCTION_CALLS_CAP: u32 = 500;
+/// 工具调用熔断下界（0 次调用无意义）
+pub const MAX_FUNCTION_CALLS_MIN: u32 = 1;
 
 pub fn clamp_max_function_calls(n: u32) -> u32 {
-    n.clamp(1, MAX_FUNCTION_CALLS_CAP)
+    n.clamp(MAX_FUNCTION_CALLS_MIN, MAX_FUNCTION_CALLS_CAP)
 }
 
 /// verifier 拒绝后的修复重试预算：未配置时的默认次数。
@@ -126,8 +137,12 @@ pub fn clamp_max_tool_output_bytes(n: u32) -> u32 {
 }
 
 /// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
+pub const ASK_BUDGET_MIN: u8 = 1;
+pub const ASK_BUDGET_MAX: u8 = 5;
+
+/// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
 pub fn clamp_ask_budget(n: u8) -> u8 {
-    n.clamp(1, 5)
+    n.clamp(ASK_BUDGET_MIN, ASK_BUDGET_MAX)
 }
 
 // 解析辅助（读取口唯一）
@@ -183,10 +198,16 @@ pub struct ParamDef {
     pub label: &'static str,
     /// 分组（设置页参数卡按此分节）：loop / subagent / search / model / tools / schedule
     pub category: &'static str,
-    /// 一句话说明（含调大的代价）
+    /// 一句话说明（含调大的代价）。
+    ///
+    /// **不写具体数字**：默认值由 resolver 在空配置下的输出派生（见
+    /// `effective_params`），可填范围由 `min`/`max`（钳制常量）给出——文案里
+    /// 再抄一遍数字就是第二份真相源，改一边漏另一边不会编译失败也不会测试失败。
     pub hint: &'static str,
-    /// 默认值展示串
-    pub default: &'static str,
+    /// 可填范围下界（None = 不限或不适用）
+    pub min: Option<u64>,
+    /// 可填范围上界（None = 不限或不适用）
+    pub max: Option<u64>,
     /// true = bot-config.json 有对应字段可改；false = 硬编码只读
     pub editable: bool,
     /// 生效值解析（值展示串, 来源）。
@@ -207,10 +228,16 @@ pub struct ParamView {
     pub hint: &'static str,
     /// 生效值展示串（config 解析或硬编码常量）
     pub value: String,
-    pub default: &'static str,
+    /// 内置默认值（**由 resolver 在空配置下的输出派生**，不是手写字面量——
+    /// 手写的那份曾与真正的内置默认各自漂移，且没有任何测试把两者绑在一起）
+    pub default: String,
     /// config = 配置覆盖生效 / default = 用内置默认 / hardcoded = 硬编码只读
     pub source: &'static str,
     pub editable: bool,
+    /// 可填范围下界（None = 不限或不适用）
+    pub min: Option<u64>,
+    /// 可填范围上界（None = 不限或不适用）
+    pub max: Option<u64>,
 }
 
 /// 全量参数表：可编辑区在前，硬编码只读区在后（前端按 category 分组渲染）
@@ -221,7 +248,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "模型循环最大轮数",
         category: "loop",
         hint: "单次对话/任务执行的 LLM 轮数上限；调大=更复杂任务但失控时更费 token。Skill 自报轮数优先于此值",
-        default: "50",
+        min: Some(MAX_ROUNDS_MIN as u64),
+        max: Some(MAX_ROUNDS_CAP as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_max_rounds_cfg, max_rounds),
     },
@@ -230,7 +258,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "单次请求工具调用熔断",
         category: "loop",
         hint: "全域工具调用熔断上限（子 agent 预算同源此值）；工作流节点等长链任务可调大；软警告在 70% 处自动触发",
-        default: "100",
+        min: Some(MAX_FUNCTION_CALLS_MIN as u64),
+        max: Some(MAX_FUNCTION_CALLS_CAP as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_budget_tool_calls, max_function_calls),
     },
@@ -239,7 +268,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "会话历史字符预算",
         category: "loop",
         hint: "超出后最旧消息先丢并生成摘要；调大=长对话记忆更好但上下文成本更高",
-        default: "100000",
+        min: Some(HISTORY_BUDGET_MIN as u64),
+        max: Some(HISTORY_BUDGET_MAX as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_history_budget_chars, history_budget_chars),
     },
@@ -248,8 +278,9 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "subagent.max_turns",
         label: "子 agent 轮数预算",
         category: "subagent",
-        hint: "LLM 派发子 agent 未显式给预算时的默认轮数；硬顶 50",
-        default: "30",
+        hint: "LLM 派发子 agent 未显式给预算时的默认轮数；任何配置（含 LLM 自报）都不能越过硬顶",
+        min: Some(crate::db::MIN_SUBAGENT_TURNS as u64),
+        max: Some(crate::db::MAX_TURNS_HARD_CAP as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_budget_turns, subagent_max_turns),
     },
@@ -258,7 +289,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "子 agent 墙钟预算（秒）",
         category: "subagent",
         hint: "子 agent 从起跑计的最长时长；排队不计入",
-        default: "600",
+        min: Some(SUBAGENT_MAX_WALL_SECS_MIN),
+        max: Some(SUBAGENT_MAX_WALL_SECS_MAX),
         editable: true,
         resolve: cfg_resolver!(resolve_budget_wall, subagent_max_wall_secs),
     },
@@ -267,8 +299,9 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "search.max_results",
         label: "联网搜索默认条数",
         category: "search",
-        hint: "web_search 未指定 count 时的结果条数；后端硬顶 10",
-        default: "8",
+        hint: "web_search 未指定 count 时的结果条数；后端有硬顶",
+        min: Some(SEARCH_MAX_RESULTS_MIN as u64),
+        max: Some(SEARCH_MAX_RESULTS_CAP as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_search_max_results, search_max_results),
     },
@@ -278,7 +311,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "全局 max_tokens",
         category: "model",
         hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送。条目级设置优先于此全局值",
-        default: "8192",
+        min: None,
+        max: None,
         editable: true,
         resolve: cfg_resolver!(plain_max_tokens, max_tokens),
     },
@@ -287,7 +321,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "推理强度默认档",
         category: "model",
         hint: "off/low/medium/high；按模型族映射到线上参数（聊天输入栏 ⚡ 可按会话覆盖）",
-        default: "medium",
+        min: None,
+        max: None,
         editable: true,
         resolve: cfg_resolver!(plain_reasoning, reasoning_effort),
     },
@@ -295,8 +330,9 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "tools.python_timeout_secs",
         label: "Python 执行超时（秒）",
         category: "tools",
-        hint: "run_python 默认超时；工具参数可单次覆盖，硬顶 300",
-        default: "60",
+        hint: "run_python 默认超时；工具参数可单次覆盖",
+        min: None,
+        max: None,
         editable: true,
         resolve: cfg_resolver!(plain_py_timeout, python_timeout_secs),
     },
@@ -306,7 +342,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "工具结果截断字节数",
         category: "tools",
         hint: "单条工具结果回填模型上下文的截断上限（字节，UTF-8）；超大输出会挤占上下文，设 0 = 显式关闭截断",
-        default: "30000",
+        min: Some(0),
+        max: Some(MAX_TOOL_OUTPUT_BYTES_CAP as u64),
         editable: true,
         resolve: resolve_max_output_bytes,
     },
@@ -314,8 +351,9 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "tools.ask_budget",
         label: "任务提问预算（次）",
         category: "tools",
-        hint: "ask_user 每次任务执行最多提问次数，超限按 AI 假设继续；钳 1..=5",
-        default: "3",
+        hint: "ask_user 每次任务执行最多提问次数，超限按 AI 假设继续",
+        min: Some(ASK_BUDGET_MIN as u64),
+        max: Some(ASK_BUDGET_MAX as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_ask_budget_cfg, ask_budget),
     },
@@ -325,7 +363,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "子 agent 全局并发",
         category: "subagent",
         hint: "全局同时运行的子 agent 上限；排队在 SubagentGate（单会话上限见「每会话并发」）",
-        default: "3",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!(crate::bot_orchestrator::MAX_GLOBAL_RUNNING),
     },
@@ -334,7 +373,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "子 agent 每会话并发",
         category: "subagent",
         hint: "同一个主会话同时运行的子 agent 上限；与全局上限取更紧者（全局见「全局并发」）",
-        default: "2",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!(crate::bot_orchestrator::MAX_PER_SESSION_RUNNING),
     },
@@ -343,7 +383,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "子 agent 轮数硬顶",
         category: "subagent",
         hint: "任何配置（含 LLM 自报）都不能超过的轮数硬顶",
-        default: "50",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!(crate::db::MAX_TURNS_HARD_CAP),
     },
@@ -352,7 +393,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "搜索条数硬顶",
         category: "search",
         hint: "工具参数 count 的硬上限（防单次搜索拉爆上下文）",
-        default: "10",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!(SEARCH_MAX_RESULTS_CAP),
     },
@@ -361,7 +403,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "搜索输出字节上限",
         category: "search",
         hint: "搜索结果合并渲染后的截断长度（字节，UTF-8）",
-        default: "6000",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!(crate::bot_web::SEARCH_OUTPUT_CAP_BYTES),
     },
@@ -370,7 +413,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "流式空闲超时（秒）",
         category: "model",
         hint: "两个流式 chunk 间隔超过此值判定连接死亡；总时长不设限（长生成合法）",
-        default: "120",
+        min: None,
+        max: None,
         editable: false,
         resolve: resolve_stream_idle_secs,
     },
@@ -379,7 +423,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "LLM 请求重试",
         category: "model",
         hint: "429/5xx 自动重试次数与间隔",
-        default: "2次/1.5s",
+        min: None,
+        max: None,
         editable: false,
         resolve: resolve_llm_retry,
     },
@@ -388,7 +433,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "定时扫描间隔（秒）",
         category: "schedule",
         hint: "定时任务/工作流调度的扫描周期（执行最早延迟该时长）",
-        default: "30",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!("30"),
     },
@@ -397,7 +443,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "痕迹单条文本上限（字节）",
         category: "tools",
         hint: "执行痕迹里单条工具入参/结果的落库钳制（超出留审计）",
-        default: "16384",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!("16384"),
     },
@@ -406,7 +453,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "文件 diff 最大行数",
         category: "tools",
         hint: "执行痕迹里 unified diff 的行数钳制（±行计数不随截断丢失）",
-        default: "2000",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!("2000"),
     },
@@ -415,7 +463,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "执行痕迹保留期（天）",
         category: "tools",
         hint: "痕迹三表与回滚快照的保留期：启动即清理一次，此后每天一次；数据管理可手动清理",
-        default: "30",
+        min: None,
+        max: None,
         editable: false,
         resolve: hardcoded_resolver!("30"),
     },
@@ -490,23 +539,44 @@ fn resolve_llm_retry(_cfg: &BotConfig) -> (String, &'static str) {
 }
 
 /// 遍历参数表产出生效值视图（命令体直接映射）
+///
+/// **默认值从 resolver 派生**：同一份 resolver 在空配置下的输出就是内置默认，
+/// 不再另抄一份字面量。此前 `ParamDef.default` 是手写 `&'static str`，
+/// 与 resolver 各自漂移且没有测试把两者绑在一起——后端改了默认、设置页仍
+/// 写着旧数，页面上「默认 X」与实际生效的 Y 就是两回事。
 pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
+    // 空配置 = 各 resolver 的内置默认分支（BotConfig::default 里 Agent 运行
+    // 参数全为 None，正是「未配置」这一态）
+    let empty = BotConfig::default();
     PARAMS_TABLE
         .iter()
         .map(|d| {
             let (value, source) = (d.resolve)(cfg);
+            let default = (d.resolve)(&empty).0;
             ParamView {
                 key: d.key,
                 label: d.label,
                 category: d.category,
                 hint: d.hint,
                 value,
-                default: d.default,
+                default,
                 source,
                 editable: d.editable,
+                min: d.min,
+                max: d.max,
             }
         })
         .collect()
+}
+
+/// 设置页「Agent 运行参数」卡的数据源：生效值 + 默认值 + 来源 + 可填范围。
+///
+/// 命令而不是函数：设置页要的是**当前这份配置**下的生效值（用户改过什么、
+/// 哪些被钳过、哪些还在用内置默认），core 里的表只回答「有哪些参数」。
+#[tauri::command]
+pub fn bot_effective_params(app: tauri::AppHandle) -> Vec<ParamView> {
+    let cfg = crate::bot::config::load_config(&app);
+    effective_params(&cfg)
 }
 
 #[cfg(test)]
@@ -600,19 +670,18 @@ mod tests {
     /// 硬编码只读区每行的展示值必须等于代码里真正生效的那个常量。
     ///
     /// 这些行的 resolve 取的是真常量（MAX_GLOBAL_RUNNING / MAX_TURNS_HARD_CAP /
-    /// clamp 上界 / SEARCH_OUTPUT_CAP_BYTES / 流式超时 / 重试两常量），但 `default` 是
-    /// `&'static str`，编不出常量串，只能留字面量——这里逐条把字面量与常量
-    /// 双向钉死：任一侧单独改动而不改另一侧即红。
+    /// clamp 上界 / SEARCH_OUTPUT_CAP_BYTES / 流式超时 / 重试两常量），而 `default`
+    /// 现在是**从 resolver 派生**的（空配置下的输出）——只读区两者恒等。
+    /// 这里逐条把派生值与常量双向钉死：任一侧单独改动而不改另一侧即红。
     #[test]
     fn hardcoded_rows_track_runtime_constants() {
         let views = effective_params(&empty_cfg());
         // 取一行的展示值，并断言生效值与 default 同源（只读区两者恒等）
         let shown = |k: &str| -> String {
             let v = views.iter().find(|v| v.key == k).unwrap();
-            let d = PARAMS_TABLE.iter().find(|d| d.key == k).unwrap();
             assert_eq!(v.source, "hardcoded", "{k} 应属硬编码只读区");
-            assert_eq!(v.value, d.default, "{k}: 生效值与 default 不同源");
-            v.default.to_string()
+            assert_eq!(v.value, v.default, "{k}: 生效值与 default 不同源");
+            v.default.clone()
         };
         assert_eq!(
             shown("subagent.max_running"),
@@ -717,13 +786,43 @@ mod tests {
     /// `tools.max_output_bytes` 的 `default` 曾写「不截断」，而空配置下 resolver
     /// 返 30000、模型循环按 `DEFAULT_TOOL_OUTPUT_CAP_BYTES` 走——表里自相矛盾，且
     /// 没有任何测试把这两个数字绑在一起。这条把该绑的都绑上：改任一侧不同步即红。
+    ///
+    /// 现在 `default` 由 resolver 派生（不再是手写字面量），但「派生的结果等于
+    /// 运行时常量」这件事仍要钉住——派生走的是 resolver 路径，运行时走的是
+    /// 模型循环里的常量，两条路必须落在同一个数上。
     #[test]
     fn params_table_defaults_match_runtime_constants() {
-        let by_key = |k: &str| PARAMS_TABLE.iter().find(|d| d.key == k).unwrap();
+        let views = effective_params(&empty_cfg());
+        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
         assert_eq!(
             by_key("tools.max_output_bytes").default,
             crate::bot_model_loop::DEFAULT_TOOL_OUTPUT_CAP_BYTES.to_string(),
             "参数表展示的默认截断字节数与模型循环实际生效的默认值不符"
+        );
+        // 其余可编辑项：展示的默认 = 运行时内置默认常量
+        assert_eq!(
+            by_key("loop.max_rounds").default,
+            DEFAULT_MAX_ROUNDS.to_string()
+        );
+        assert_eq!(
+            by_key("loop.max_function_calls").default,
+            DEFAULT_SUBAGENT_MAX_TOOL_CALLS.to_string()
+        );
+        assert_eq!(
+            by_key("loop.history_budget_chars").default,
+            DEFAULT_HISTORY_BUDGET_CHARS.to_string()
+        );
+        assert_eq!(
+            by_key("subagent.max_turns").default,
+            DEFAULT_SUBAGENT_MAX_TURNS.to_string()
+        );
+        assert_eq!(
+            by_key("subagent.max_wall_secs").default,
+            DEFAULT_SUBAGENT_MAX_WALL_SECS.to_string()
+        );
+        assert_eq!(
+            by_key("search.max_results").default,
+            DEFAULT_SEARCH_MAX_RESULTS.to_string()
         );
         // 越界配置：展示值必须已经是钳过的生效值，不能是用户填的原值
         let mut cfg = empty_cfg();
@@ -734,6 +833,80 @@ mod tests {
             .find(|v| v.key == "tools.max_output_bytes")
             .unwrap();
         assert_eq!(v.value, MAX_TOOL_OUTPUT_BYTES_CAP.to_string());
+    }
+
+    /// 可填范围（min/max）必须等于实际生效的钳制边界。
+    ///
+    /// 设置页把这两个数直接显示成「可填 X–Y」——它跟真正生效的钳制不是同一个
+    /// 数的话，页面就在骗人（用户填 999，运行时按 200 走，页面却说可填到 999）。
+    #[test]
+    fn editable_rows_ranges_match_clamp_bounds() {
+        let views = effective_params(&empty_cfg());
+        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
+        let range = |k: &str| -> (Option<u64>, Option<u64>) {
+            let v = by_key(k);
+            (v.min, v.max)
+        };
+        assert_eq!(
+            range("loop.max_rounds"),
+            (Some(MAX_ROUNDS_MIN as u64), Some(MAX_ROUNDS_CAP as u64))
+        );
+        assert_eq!(
+            range("loop.max_function_calls"),
+            (
+                Some(MAX_FUNCTION_CALLS_MIN as u64),
+                Some(MAX_FUNCTION_CALLS_CAP as u64)
+            )
+        );
+        assert_eq!(
+            range("loop.history_budget_chars"),
+            (
+                Some(HISTORY_BUDGET_MIN as u64),
+                Some(HISTORY_BUDGET_MAX as u64)
+            )
+        );
+        assert_eq!(
+            range("subagent.max_turns"),
+            (
+                Some(crate::db::MIN_SUBAGENT_TURNS as u64),
+                Some(crate::db::MAX_TURNS_HARD_CAP as u64)
+            )
+        );
+        assert_eq!(
+            range("subagent.max_wall_secs"),
+            (
+                Some(SUBAGENT_MAX_WALL_SECS_MIN),
+                Some(SUBAGENT_MAX_WALL_SECS_MAX)
+            )
+        );
+        assert_eq!(
+            range("search.max_results"),
+            (
+                Some(SEARCH_MAX_RESULTS_MIN as u64),
+                Some(SEARCH_MAX_RESULTS_CAP as u64)
+            )
+        );
+        assert_eq!(
+            range("tools.ask_budget"),
+            (Some(ASK_BUDGET_MIN as u64), Some(ASK_BUDGET_MAX as u64))
+        );
+        // 工具输出截断：0 是合法值（显式关闭截断），不是下界 1
+        assert_eq!(
+            range("tools.max_output_bytes"),
+            (Some(0), Some(MAX_TOOL_OUTPUT_BYTES_CAP as u64))
+        );
+        // 范围两端都要真的被钳制函数认（否则展示与生效又是一回事）
+        assert_eq!(clamp_max_rounds(MAX_ROUNDS_MIN), MAX_ROUNDS_MIN);
+        assert_eq!(clamp_max_rounds(MAX_ROUNDS_CAP), MAX_ROUNDS_CAP);
+        assert_eq!(
+            clamp_max_function_calls(MAX_FUNCTION_CALLS_CAP),
+            MAX_FUNCTION_CALLS_CAP
+        );
+        assert_eq!(clamp_ask_budget(ASK_BUDGET_MAX), ASK_BUDGET_MAX);
+        assert_eq!(
+            clamp_search_max_results(SEARCH_MAX_RESULTS_CAP),
+            SEARCH_MAX_RESULTS_CAP
+        );
     }
 
     /// 空配置 → 全部默认来源（可编辑区）；只读区恒 hardcoded

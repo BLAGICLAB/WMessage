@@ -59,6 +59,7 @@ import {
   type ModelsByProvider,
   type ActiveModelId,
   type ModelEntry,
+  type ParamView,
   genModelId,
 } from "./types";
 import {
@@ -335,6 +336,42 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "opsHistory", label: "操作历史", icon: History },
   { key: "logs", label: "日志", icon: ScrollText },
 ];
+
+/** Agent 运行参数卡的行定义：后端参数表 key + 对应的 config 字段名。
+ *
+ *  这里只声明「哪一行、编辑哪个字段」——标签/说明/默认值/可填范围/当前生效值
+ *  全部来自 `bot_effective_params`（后端 `bot::params` 单源）。前端此前自留了
+ *  一份默认数字，两份各改各的：后端改了默认、页面还写着旧数，页面上「默认 X」
+ *  与实际生效的 Y 就是两回事。
+ */
+const AGENT_PARAM_ROWS = [
+  ["loop.max_rounds", "maxRounds"],
+  ["loop.max_function_calls", "maxFunctionCalls"],
+  ["loop.history_budget_chars", "historyBudgetChars"],
+  ["subagent.max_turns", "subagentMaxTurns"],
+  ["subagent.max_wall_secs", "subagentMaxWallSecs"],
+  ["search.max_results", "searchMaxResults"],
+  ["tools.max_output_bytes", "maxToolOutputBytes"],
+  ["tools.ask_budget", "askBudget"],
+] as const;
+
+/** 降级用的行名（后端参数表拉不到时用）。
+ *  只放**名字**、不放任何数字——默认值与范围一律来自后端，前端多抄一份数字
+ *  就是多一个能各自漂移的真相源。 */
+const AGENT_PARAM_FALLBACK_LABELS: Record<string, string> = {
+  "loop.max_rounds": "模型循环最大轮数",
+  "loop.max_function_calls": "调用工具上限（全域熔断）",
+  "loop.history_budget_chars": "会话历史字符预算",
+  "subagent.max_turns": "子 agent 轮数预算",
+  "subagent.max_wall_secs": "子 agent 墙钟预算（秒）",
+  "search.max_results": "联网搜索默认条数",
+  "tools.max_output_bytes": "工具结果截断字节数",
+  "tools.ask_budget": "任务提问预算（次）",
+};
+
+/** u32 上界——config 里这些字段是 Option<u32>，超了整份 bot_set_config
+ *  反序列化失败（一处输错字连带整份设置都存不下去）。 */
+const U32_MAX = 4294967295;
 
 /** 设置壳（重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。
  *  面板惰性挂载：分类首次激活才挂载，挂后保留（hidden 切换）——
@@ -711,6 +748,43 @@ export function SettingsPage({
     }
   };
 
+  /** Agent 运行参数卡的元数据（生效值/默认值/范围/来源）。
+   *  null = 还没拉到（后端老版本无此命令时也走这条）——渲染退回本地兜底文案。 */
+  const [paramViews, setParamViews] = useState<ParamView[] | null>(null);
+  const loadParamViews = async () => {
+    try {
+      const views = await invoke<ParamView[]>("bot_effective_params");
+      setParamViews(Array.isArray(views) ? views : null);
+    } catch (e) {
+      // 拉不到就让卡片退回本地兜底：参数卡不能因为一个展示用的命令挂了就整块
+      // 消失（设置页其余部分照常用）
+      handleCommandError(e, "bot_effective_params", { silent: true });
+      setParamViews(null);
+    }
+  };
+
+  /** 数值型 Agent 参数 → 落盘值。
+   *
+   *  空 = null（未配置 = 用内置默认）；负数 = null（非法）。
+   *  **0 只有在参数下界为 0 时才是合法值**——工具输出截断的 0 是「显式关闭
+   *  截断」，此前被 `n > 0` 判成 null，用户填 0 静默无效（存下去还是默认
+   *  30000 字节）。其余数值钳到参数表给出的可填范围（与运行时钳制同一个数），
+   *  顺带挡住超 u32 的输入——那种值会让整份 bot_set_config 反序列化失败。
+   */
+  const agentParamNumber = (key: string, raw: string): number | null => {
+    const t = raw.trim();
+    if (!t) return null;
+    const n = parseInt(t, 10);
+    if (!Number.isFinite(n) || n < 0) return null;
+    const view = paramViews?.find((p) => p.key === key);
+    const lo = view?.min ?? 1;
+    const hi = view?.max ?? U32_MAX;
+    if (n === 0) return lo === 0 ? 0 : null;
+    if (n < lo) return lo;
+    if (n > hi) return hi;
+    return n;
+  };
+
   const loadConfig = async () => {
     try {
       const c = await getBotConfig();
@@ -860,6 +934,10 @@ export function SettingsPage({
     refreshBot();
     // oxlint-disable-next-line react/set-state-in-effect
     loadConfig();
+    // Agent 运行参数卡的元数据（生效值/默认值/范围）——与 loadConfig 同步拉，
+    // 两者都来自后端同一份参数表
+    // oxlint-disable-next-line react/set-state-in-effect
+    loadParamViews();
     // oxlint-disable-next-line react/set-state-in-effect
     refreshPy();
     // 拉取开机自启动状态
@@ -967,11 +1045,6 @@ export function SettingsPage({
             const n = parseInt(c.pythonTimeoutSecs.trim(), 10);
             return Number.isFinite(n) && n > 0 ? n : null;
           })(),
-          // Function 调用熔断上限：空 = 100 默认；非法输入按未配置处理
-          maxFunctionCalls: (() => {
-            const n = parseInt(c.maxFunctionCalls.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
           // 任务卡归档天数：空/非法 = null（后端回默认 7）；钳 1..=MAX 与后端一致
           archiveAfterDays: (() => {
             const n = parseInt(c.archiveAfterDays.trim(), 10);
@@ -990,36 +1063,36 @@ export function SettingsPage({
           })(),
           // 推理强度后台默认（RE-1）：四档抽象档位原样落盘
           reasoningEffort: c.reasoningEffort,
-          // ──  Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘，
-          //    越界值由后端 bot_set_config 钳制（与 archiveAfterDays 同款）──
-          maxRounds: (() => {
-            const n = parseInt(c.maxRounds.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          historyBudgetChars: (() => {
-            const n = parseInt(c.historyBudgetChars.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          subagentMaxTurns: (() => {
-            const n = parseInt(c.subagentMaxTurns.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          subagentMaxWallSecs: (() => {
-            const n = parseInt(c.subagentMaxWallSecs.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          searchMaxResults: (() => {
-            const n = parseInt(c.searchMaxResults.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          maxToolOutputBytes: (() => {
-            const n = parseInt(c.maxToolOutputBytes.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
-          askBudget: (() => {
-            const n = parseInt(c.askBudget.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
+          // ──  Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘。
+          //    范围由后端参数表给出（与运行时钳制同一个数），这里先钳一遍：
+          //    一来落盘值 = 生效值，二来超 u32 的数字会让整个 bot_set_config
+          //    反序列化失败——一处输错字连带整份设置都存不下去。
+          maxRounds: agentParamNumber("loop.max_rounds", c.maxRounds),
+          maxFunctionCalls: agentParamNumber(
+            "loop.max_function_calls",
+            c.maxFunctionCalls,
+          ),
+          historyBudgetChars: agentParamNumber(
+            "loop.history_budget_chars",
+            c.historyBudgetChars,
+          ),
+          subagentMaxTurns: agentParamNumber(
+            "subagent.max_turns",
+            c.subagentMaxTurns,
+          ),
+          subagentMaxWallSecs: agentParamNumber(
+            "subagent.max_wall_secs",
+            c.subagentMaxWallSecs,
+          ),
+          searchMaxResults: agentParamNumber(
+            "search.max_results",
+            c.searchMaxResults,
+          ),
+          maxToolOutputBytes: agentParamNumber(
+            "tools.max_output_bytes",
+            c.maxToolOutputBytes,
+          ),
+          askBudget: agentParamNumber("tools.ask_budget", c.askBudget),
           // 规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
           toolRules: c.toolRules.length > 0 ? c.toolRules : null,
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
@@ -1048,6 +1121,9 @@ export function SettingsPage({
       // skipReload=true 用于点档即时落盘场景：末尾 loadConfig 会拿 mock/磁盘上的旧值覆盖刚点的字段
       if (!opts?.skipReload) {
         await loadConfig();
+        // 生效值跟着变（写侧钳过的值、刚改的默认值来源）——不重拉的话卡片上
+        // 还会显示保存前的「当前生效」
+        await loadParamViews();
       }
       // 广播 bot-config-changed：聊天头部 🧠 模型标签同步刷新
       emit("bot-config-changed", null).catch(() => {});
@@ -2389,86 +2465,60 @@ export function SettingsPage({
                     </button>
                   ))}
                 </div>
-                {(
-                  [
-                    [
-                      "maxRounds",
-                      "模型循环最大轮数",
-                      "默认 50（钳 5–200）；Skill 自报轮数优先",
-                      "50",
-                    ],
-                    [
-                      "maxFunctionCalls",
-                      "调用工具上限（全域熔断）",
-                      "默认 100（钳 1–500）；单次执行累计调用达到即熔断（软警告在 70% 处）；子 agent 工具调用预算同源此值",
-                      "100",
-                    ],
-                    [
-                      "historyBudgetChars",
-                      "会话历史字符预算",
-                      "默认 100000（钳 20000–500000）；超出后最旧消息先丢并生成摘要",
-                      "100000",
-                    ],
-                    [
-                      "subagentMaxTurns",
-                      "子 agent 轮数预算",
-                      "默认 30（硬顶 50）；LLM 派发子 agent 未给预算时用",
-                      "30",
-                    ],
-                    [
-                      "subagentMaxWallSecs",
-                      "子 agent 墙钟预算（秒）",
-                      "默认 600（钳 30–3600）；从起跑计时，排队不算",
-                      "600",
-                    ],
-                    [
-                      "searchMaxResults",
-                      "联网搜索默认条数",
-                      "默认 8（钳 1–10）；模型未指定 count 时用",
-                      "8",
-                    ],
-                    [
-                      "maxToolOutputBytes",
-                      "工具结果截断字节数",
-                      "单条工具结果回灌上下文的截断上限（字节，UTF-8）；超大输出会转存成溢出文件、只回灌节选+指针",
-                      "30000",
-                    ],
-                    [
-                      "askBudget",
-                      "任务提问预算（次）",
-                      "默认 3（钳 1–5）；ask_user 每次任务执行最多提问次数，超限按 AI 假设继续",
-                      "3",
-                    ],
-                  ] as const
-                ).map(([field, label, hint, def]) => (
-                  <div
-                    key={field}
-                    className="mt-3 flex items-center justify-between gap-4"
-                  >
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        {label}
-                      </p>
-                      <p className="mt-0.5 text-xs text-[var(--t5)]">
-                        {hint}
-                      </p>
+                {AGENT_PARAM_ROWS.map(([key, field]) => {
+                  const view = paramViews?.find((p) => p.key === key);
+                  // 说明行 = 默认值 + 可填范围 + 语义说明 + 当前生效值与来源。
+                  // 全部取自后端参数表：默认值是 resolver 派生的（与运行时同一份
+                  // 代码路径），范围是钳制常量，���效值是**钳过之后**的那个数。
+                  const desc = [
+                    view ? `默认 ${view.default}` : "",
+                    view && view.min != null && view.max != null
+                      ? `可填 ${view.min}–${view.max}`
+                      : "",
+                    view?.hint ?? "",
+                    view
+                      ? `当前生效 ${view.value}（${
+                          view.source === "config"
+                            ? "你的设置"
+                            : view.source === "default"
+                              ? "内置默认"
+                              : "只读常量"
+                        }）`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  return (
+                    <div
+                      key={key}
+                      className="mt-3 flex items-center justify-between gap-4"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-[var(--t2)]">
+                          {view?.label ?? AGENT_PARAM_FALLBACK_LABELS[key]}
+                        </p>
+                        <p className="mt-0.5 text-xs text-[var(--t5)]">
+                          {desc ||
+                            "参数说明暂不可用（后端参数表没拉到）；填空 = 用内置默认"}
+                        </p>
+                      </div>
+                      <input
+                        aria-label={view?.label ?? AGENT_PARAM_FALLBACK_LABELS[key]}
+                        title={view?.hint ?? ""}
+                        value={config[field]}
+                        onChange={(e) =>
+                          setConfig((prev) => ({
+                            ...prev,
+                            [field]: e.target.value,
+                          }))
+                        }
+                        placeholder={view?.default ?? ""}
+                        inputMode="numeric"
+                        className="w-28 shrink-0 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
+                      />
                     </div>
-                    <input
-                      aria-label={label}
-                      title={hint}
-                      value={config[field]}
-                      onChange={(e) =>
-                        setConfig((prev) => ({
-                          ...prev,
-                          [field]: e.target.value,
-                        }))
-                      }
-                      placeholder={def}
-                      inputMode="numeric"
-                      className="w-28 shrink-0 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
-                    />
-                  </div>
-                ))}
+                  );
+                })}
                 {renderSaveButton("mt-4 flex justify-end")}
               </div>
 
