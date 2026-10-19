@@ -3401,6 +3401,41 @@ mod hallucination_guard_tests {
     }
 
     #[test]
+    fn claimed_doc_paths_keeps_paths_with_spaces() {
+        // macOS 数据目录带空格（"Application Support"）：整条路径被空格切成两截
+        // 时后半截不再以 '/' 开头 → 提取为空 → 存在性与凭证两道闸对它失明
+        let t = "已生成 Word 文档：/Users/renshi/Library/Application Support/com.renshi.wmessage/AI_Gen_Files/2026Q3复盘.docx";
+        assert_eq!(
+            claimed_doc_paths(t),
+            vec![
+                "/Users/renshi/Library/Application Support/com.renshi.wmessage/AI_Gen_Files/2026Q3复盘.docx"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn claimed_doc_paths_does_not_merge_two_adjacent_paths() {
+        // 合并规则不能把两条路径粘成一条（粘出来的路径在盘上不存在 →
+        // 存在性闸会把真话判成编造）。两条必须**直接相邻**——中间隔个词的话
+        // 压根进不了合并分支，测不到规则本身。
+        let t = "已生成 /a/b.docx /c/d.docx";
+        assert_eq!(
+            claimed_doc_paths(t),
+            vec!["/a/b.docx".to_string(), "/c/d.docx".to_string()]
+        );
+    }
+
+    #[test]
+    fn claimed_doc_paths_does_not_swallow_prose() {
+        // 紧邻的片段不能被并进绝对路径：并进来会造出一条盘上不存在的假路径，
+        // 存在性闸据此把真话判成编造。这里第二条是相对路径形态（只认绝对路径，
+        // 它本就不入选），期望只有前面那条绝对路径。
+        let t = "已生成 /a/b.docx 2024/报告.docx";
+        assert_eq!(claimed_doc_paths(t), vec!["/a/b.docx".to_string()]);
+    }
+
+    #[test]
     fn path_missing_on_disk_separates_existing_from_fabricated() {
         // 真实存在的文件不是编造（存在性这道判据放行）
         let real = std::env::temp_dir().join("wm-guard-real.docx");

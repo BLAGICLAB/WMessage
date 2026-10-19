@@ -964,7 +964,6 @@ mod mentioned_tool_names_tests {
 /// 真伪判定不在这里：两问都依赖运行期状态（磁盘、痕迹库），塞进纯函数就没法
 /// 单测；提取与判定分开，判定在模型循环侧。
 pub fn claimed_doc_paths(text: &str) -> Vec<String> {
-    const DOC_EXTS: [&str; 4] = [".docx", ".xlsx", ".pptx", ".pdf"];
     let claimed = ["已生成", "已保存", "已写入", "已导出"]
         .iter()
         .any(|w| text.contains(w));
@@ -979,27 +978,81 @@ pub fn claimed_doc_paths(text: &str) -> Vec<String> {
         ' ', '\t', '\n', '\r', '`', '"', '\'', '「', '」', '（', '）', '(', ')', '，', '。', '；',
         '、', ',', ';', ':', '：', '　',
     ];
-    let mut out: Vec<String> = Vec::new();
-    for tok in text
+    // 片段先切出来再合并：含空格的路径（macOS 的 "Application Support"）会被
+    // 空格切成两截，后半截不再以 '/' 开头 → 整条路径被丢掉、存在性与凭证两道
+    // 闸对它失明。合并规则见 `join_path_fragment`。
+    let frags: Vec<&str> = text
         .split(boundaries)
         .map(|tok| tok.trim_matches(|c: char| matches!(c, '*' | '_' | '-' | '>' | '#')))
-        .filter(|tok| {
-            let low = tok.to_lowercase();
-            DOC_EXTS.iter().any(|e| low.ends_with(e))
-        })
-        .filter(|tok| {
-            tok.starts_with('/')
-                || (tok.len() > 2 && tok.as_bytes()[1] == b':')
-                || tok.starts_with(r"\\")
-        })
-    {
-        let p = tok.to_string();
-        // 同一路径被提到多次只留一条：判定按路径走，重复候选没有额外信息
-        if !out.contains(&p) {
-            out.push(p);
+        .filter(|tok| !tok.is_empty())
+        .collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < frags.len() {
+        let mut cand = frags[i].to_string();
+        // 贪心吸收后续片段：把被空格切断的路径接回去
+        while i + 1 < frags.len() && join_path_fragment(&cand, frags[i + 1]) {
+            cand.push(' ');
+            cand.push_str(frags[i + 1]);
+            i += 1;
         }
+        if claimed_doc_path_shape(&cand) && !out.contains(&cand) {
+            out.push(cand);
+        }
+        i += 1;
     }
     out
+}
+
+/// 片段是否以已知文档后缀结尾（不看路径形态——合并时要看的是分段，不是整条）。
+fn doc_ext_suffix(seg: &str) -> bool {
+    const DOC_EXTS: [&str; 4] = [".docx", ".xlsx", ".pptx", ".pdf"];
+    let low = seg.to_lowercase();
+    DOC_EXTS.iter().any(|e| low.ends_with(e))
+}
+
+/// 绝对路径形态：POSIX 根、盘符、UNC 前缀。
+fn abs_path_shape(tok: &str) -> bool {
+    tok.starts_with('/') || (tok.len() > 2 && tok.as_bytes()[1] == b':') || tok.starts_with(r"\\")
+}
+
+/// 一条候选是否成立：文档后缀 + 绝对路径形态。
+fn claimed_doc_path_shape(tok: &str) -> bool {
+    doc_ext_suffix(tok) && abs_path_shape(tok)
+}
+
+/// `next` 能不能并进 `cand`，把被空格切断的路径接回去。
+///
+/// 四条都要满足：
+/// 1. `cand` 已经是绝对路径的起点（否则合并只会造出更长的垃圾串）；
+/// 2. `next` 含 '/'——它是目录片段而不是普通词（"详见" 这类词不能并进来）；
+/// 3. `next` 不含句读标点（"…docx 详见。" 那种，标点一进来就不是路径了）；
+/// 4. 合并后按空格分段，**至多一个**分段带文档后缀，且那个分段在最后。
+///    这条把「一条含空格的路径」和「两个相邻的路径」分开：
+///    `/a/b.docx` + `/c/d.docx` 合并后有两个带后缀的分段 → 不并；
+///    `/…/Application` + `Support/…/x.docx` 只有一个带后缀的分段 → 并。
+fn join_path_fragment(cand: &str, next: &str) -> bool {
+    if !abs_path_shape(cand) {
+        return false;
+    }
+    if !next.contains('/') {
+        return false;
+    }
+    if next.chars().any(|c| "。，；：！？、—".contains(c)) {
+        return false;
+    }
+    let mut segs: Vec<&str> = cand.split(' ').collect();
+    segs.push(next);
+    let mut hits = 0;
+    for (idx, seg) in segs.iter().enumerate() {
+        if doc_ext_suffix(seg) {
+            hits += 1;
+            if idx + 1 != segs.len() {
+                return false;
+            }
+        }
+    }
+    hits <= 1
 }
 
 /// 路径在磁盘上不存在（存在性判据的纯函数形态，便于单测）。
