@@ -10,6 +10,7 @@
 //!
 //! 隐私：span 与 diff 全文只落本地 SQLite（SPAN_TEXT_MAX 钳制），不进任何上报管道。
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use tauri::AppHandle;
 use tokio::sync::mpsc;
@@ -86,21 +87,75 @@ pub fn init<R: tauri::Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(writer(app, rx));
 }
 
-/// dispatch 工具执行后采集一条 span（fire-and-forget：sink 未初始化/满队列 → 丢弃）
+/// 采集管道丢弃计数（队列满 / 管道已关闭 → 观测记录未进 writer）。进程内单调递增，
+/// 为 0 即表示本次运行没有过观测缺口。
+static DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// 累计丢弃条数（健康检查与测试读）。
+pub fn dropped_count() -> u64 {
+    DROPPED.load(Ordering::Relaxed)
+}
+
+/// 两个 record_* 的共同入队：满队列与已关闭都要留痕。
+///
+/// 与 writer 侧 `trace.batch_dropped` 同一纪律——丢弃不留信号，观测面就可能静默
+/// 降级为零覆盖而无任何外部迹象（见 writer 丢弃处的注释）。
+fn try_send(tx: &mpsc::Sender<TraceWrite>, msg: TraceWrite, kind: &str) {
+    match tx.try_send(msg) {
+        Ok(()) => {}
+        Err(e) => {
+            let n = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    log::warn!(target: "trace", "{kind} 采集队列已满，丢弃第 {n} 条观测记录");
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    log::error!(target: "trace", "{kind} 采集管道已关闭（writer 任务已退出），丢弃第 {n} 条观测记录");
+                }
+            }
+        }
+    }
+}
+
+/// dispatch 工具执行后采集一条 span（fire-and-forget：sink 未初始化 → 静默跳过；
+/// 满队列 / 已关闭 → 记 dropped_count 并留日志，不阻断工具结果）
 pub fn record_span(rec: SpanRecord) {
     if let Some(tx) = SINK.get() {
-        let _ = tx.try_send(TraceWrite::Span(rec));
+        try_send(tx, TraceWrite::Span(rec), "span");
     }
 }
 
 /// 文件变更证据采集（与 span 同管道；emit `bot-file-changed` 由 dispatch 侧发）
 pub fn record_file_change(rec: FileChangeRecord) {
     if let Some(tx) = SINK.get() {
-        let _ = tx.try_send(TraceWrite::FileChange(rec));
+        try_send(tx, TraceWrite::FileChange(rec), "file_change");
     }
 }
 
-/// span 文本钳制（SPAN_TEXT_MAX，UTF-8 边界安全）；超限发 `trace.span_overflow` 审计。
+/// 超限钳制后的文本（纯函数：AppHandle 相关的审计写入在调用侧，故可单测）。
+///
+/// 标记里的长度一律**字节**：与 `s.len()` / `SPAN_TEXT_MAX` 同单位。中文场景下
+/// 一个字 3 字节，按字符报长度会让「到底钳了多少」永远算不清。
+///
+/// 标记先算、从预算里扣、钳完再拼，两个方向反过来都错：先钳后拼，最终字段超出
+/// `SPAN_TEXT_MAX`；先拼后钳，标记本身会被截掉，钳出的长度不再等于上限。
+fn clamped_overflow_text(s: &str) -> String {
+    let marker = format!(
+        "\n\n…[span text truncated: clamped to {} bytes, original {} bytes]",
+        crate::db::SPAN_TEXT_MAX,
+        s.len()
+    );
+    let head_budget = crate::db::SPAN_TEXT_MAX.saturating_sub(marker.len());
+    let mut out = crate::db::clamp_text(s, head_budget);
+    out.push_str(&marker);
+    out
+}
+
+/// span 文本钳制（SPAN_TEXT_MAX，UTF-8 边界安全）；超限记 `trace.span_overflow` 审计。
+///
+/// 审计级别是 **Info**：超限必钳是本模块的既定路径，不是异常。Warn 留给 writer
+/// 侧真丢数据的 `trace.batch_dropped`——两者混在一个级别里，真丢数据那条就被
+/// 日常钳制记录淹掉了。
 pub(crate) fn clamp_span_text<R: tauri::Runtime>(
     app: &AppHandle<R>,
     tool: &str,
@@ -115,7 +170,7 @@ pub(crate) fn clamp_span_text<R: tauri::Runtime>(
     }
     crate::audit::write_event(
         app,
-        crate::audit::AuditLevel::Warn,
+        crate::audit::AuditLevel::Info,
         "trace.span_overflow",
         &[
             ("tool", tool.to_string()),
@@ -123,7 +178,7 @@ pub(crate) fn clamp_span_text<R: tauri::Runtime>(
             ("len", s.len().to_string()),
         ],
     );
-    Some(crate::db::clamp_text(&s, crate::db::SPAN_TEXT_MAX))
+    Some(clamped_overflow_text(&s))
 }
 
 // trace 生命周期
@@ -360,8 +415,8 @@ async fn writer<R: tauri::Runtime>(app: AppHandle<R>, mut rx: mpsc::Receiver<Tra
             Ok(()) => conn = Some(c),
             Err(e) => {
                 // 半批丢弃 + 连接重开（下轮 open_db 幂等重建）；观测面 best-effort。
-                // 丢弃必须落审计留痕（同 trace.span_overflow 口径），否则观测面可能
-                // 静默降级为零覆盖而无任何外部信号
+                // 丢弃必须落审计留痕，否则观测面可能静默降级为零覆盖而无任何外部
+                // 信号——WARN 级，真丢数据该占住这个级别。
                 crate::audit::write_event(
                     &app,
                     crate::audit::AuditLevel::Warn,
@@ -371,5 +426,149 @@ async fn writer<R: tauri::Runtime>(app: AppHandle<R>, mut rx: mpsc::Receiver<Tra
                 eprintln!("[trace_sink] 批量落库失败（{batch_len} 条丢弃，重连）：{e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span_record() -> SpanRecord {
+        SpanRecord {
+            trace_id: 1,
+            turn: 0,
+            tool_call_id: None,
+            name: "run_python".into(),
+            args: None,
+            result: Some("x".into()),
+            ok: true,
+            error_class: None,
+            duration_ms: Some(1),
+            created_at: 0,
+        }
+    }
+
+    fn file_change_record_stub() -> FileChangeRecord {
+        FileChangeRecord {
+            trace_id: 1,
+            path: "a.txt".into(),
+            kind: "modify",
+            added: 1,
+            deleted: 0,
+            diff: None,
+            truncated: false,
+            before_ref: None,
+            before_sha: None,
+            after_sha: None,
+            created_at: 0,
+        }
+    }
+
+    // DROPPED 是进程级计数器，测试并行时基线会被别的用例推进，故这三个用例串行取基线。
+    static DROP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn drop_guard() -> std::sync::MutexGuard<'static, ()> {
+        DROP_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 满队列必须计数而不是静默丢——观测面归零而无任何外部信号是本模块明确禁止的。
+    #[test]
+    fn full_queue_counts_dropped() {
+        let _guard = drop_guard();
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(TraceWrite::Span(span_record()))
+            .expect("预填队列");
+        let before = dropped_count();
+        try_send(
+            &tx,
+            TraceWrite::FileChange(file_change_record_stub()),
+            "file_change",
+        );
+        assert_eq!(dropped_count(), before + 1, "满队列丢弃必须计入 DROPPED");
+    }
+
+    /// 管道已关闭比满队列更重（writer 任务已退出，此后每条都进不去），同样不能静默。
+    #[test]
+    fn closed_channel_counts_dropped() {
+        let _guard = drop_guard();
+        let (tx, rx) = mpsc::channel::<TraceWrite>(1);
+        drop(rx);
+        let before = dropped_count();
+        try_send(&tx, TraceWrite::Span(span_record()), "span");
+        assert_eq!(
+            dropped_count(),
+            before + 1,
+            "已关闭管道丢弃必须计入 DROPPED"
+        );
+    }
+
+    /// 入队成功不计数：计数器是丢弃数，不是发送数。
+    #[test]
+    fn successful_send_not_counted() {
+        let _guard = drop_guard();
+        let (tx, _rx) = mpsc::channel(4);
+        let before = dropped_count();
+        try_send(&tx, TraceWrite::Span(span_record()), "span");
+        assert_eq!(dropped_count(), before);
+    }
+
+    /// 钳后总长仍须 ≤ SPAN_TEXT_MAX：标记是从预算里扣出来的，不是额外附加的。
+    #[test]
+    fn clamped_text_respects_span_text_max() {
+        let big = "文".repeat(crate::db::SPAN_TEXT_MAX); // 每字 3 字节，远超上限
+        let out = clamped_overflow_text(&big);
+        assert!(
+            out.len() <= crate::db::SPAN_TEXT_MAX,
+            "钳后 {} 字节超出上限 {}",
+            out.len(),
+            crate::db::SPAN_TEXT_MAX
+        );
+    }
+
+    /// 标记报的是**原始字节数**（与 s.len() 同单位），并落在末尾不被二次截断。
+    #[test]
+    fn clamped_text_marks_original_bytes() {
+        let big = "文".repeat(crate::db::SPAN_TEXT_MAX);
+        let original = big.len();
+        let out = clamped_overflow_text(&big);
+        assert!(
+            out.ends_with(&format!(
+                "[span text truncated: clamped to {} bytes, original {original} bytes]",
+                crate::db::SPAN_TEXT_MAX
+            )),
+            "标记未落在末尾或字节数不符（末尾 80 字节：{:?}）",
+            tail(&out)
+        );
+    }
+
+    /// 标记之前只能是完整中文字符：clamp_text 不得拦腰切断多字节字符。
+    #[test]
+    fn clamped_text_keeps_utf8_boundary() {
+        let big = "文".repeat(crate::db::SPAN_TEXT_MAX);
+        let out = clamped_overflow_text(&big);
+        let head = out.split("\n\n…[").next().unwrap_or_default();
+        assert!(!head.is_empty(), "正文被标记吃光");
+        assert!(
+            head.chars().all(|c| c == '文'),
+            "正文混进非预期字符，可能拦腰切断（头尾各 40 字符：{:?}…{:?}）",
+            head.chars().take(40).collect::<String>(),
+            head.chars()
+                .rev()
+                .take(40)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
+        );
+    }
+
+    /// 失败信息只带尾部若干字节：钳后文本有 16KB，整段打进断言消息没法读。
+    fn tail(s: &str) -> &str {
+        let cut = s.len().saturating_sub(80);
+        let mut i = cut;
+        while i < s.len() && !s.is_char_boundary(i) {
+            i += 1;
+        }
+        &s[i..]
     }
 }
