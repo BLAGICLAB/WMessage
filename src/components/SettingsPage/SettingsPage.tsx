@@ -763,6 +763,39 @@ export function SettingsPage({
   const pyTimeoutView = paramViews?.find(
     (p) => p.key === "tools.python_timeout_secs",
   );
+  /** 参数表里的上界（取不到 → 空串 = 留空 = 用内置默认）。
+   *  预设的「拉到上限」用它：上限就是后端的硬顶常量，不是前端选的数。 */
+  const paramMaxText = (key: string) => {
+    const max = paramViews?.find((p) => p.key === key)?.max;
+    return max != null ? String(max) : "";
+  };
+  /** 参数表里的可填范围（min–max，取不到 → null = 不公示范围）。 */
+  const paramRangeText = (key: string) => {
+    const row = paramViews?.find((p) => p.key === key);
+    return row?.min != null && row?.max != null ? `${row.min}–${row.max}` : null;
+  };
+  /** 秒 → 人读时长（整分钟走分钟，否则走秒）。单位换算不是数值，值本身来自后端。 */
+  const fmtDurationSecs = (secs: number) =>
+    secs % 60 === 0 ? `${secs / 60} 分钟` : `${secs} 秒`;
+  /** 自动记忆抽取的最小间隔（后端限频常量，单位秒）→ 展示文案。
+   *  取不到 → null = 文案里不写数字（宁可少说一句，不写一份手写副本）。 */
+  const extractIntervalText = (() => {
+    const raw = paramViews?.find(
+      (p) => p.key === "memory.extract_min_interval_secs",
+    )?.value;
+    const secs = Number(raw);
+    return raw != null && Number.isFinite(secs) && secs > 0
+      ? fmtDurationSecs(secs)
+      : null;
+  })();
+  /** 保留天数输入框的提示：范围与默认值都取自后端参数表。 */
+  const traceRetentionTitle = (() => {
+    const range = paramRangeText("trace.retention_days");
+    const tail = traceRetentionDays
+      ? `默认 ${traceRetentionDays}`
+      : "留空 = 用内置默认";
+    return range ? `保留天数（${range}，${tail}）` : `保留天数（${tail}）`;
+  })();
   const loadParamViews = async () => {
     try {
       const views = await invoke<ParamView[]>("bot_effective_params");
@@ -852,7 +885,7 @@ export function SettingsPage({
           c.permMode === "auto"
             ? c.permMode
             : "ask",
-        // 空 = 8192 默认（仅 Anthropic 模式用）
+        // 空 = 内置默认（仅 Anthropic 模式用）
         maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
         // 推理强度：缺字段/非法值 → medium（与后端 EffortLevel::from_cfg 回退一致）
         reasoningEffort:
@@ -1068,11 +1101,8 @@ export function SettingsPage({
           permMode: c.permMode,
           // API 协议（openai/anthropic）
           apiProvider: c.apiProvider,
-          // max_tokens：空 = 8192 默认；非法输入按未配置处理（后端钳 256..=200000）
-          maxTokens: (() => {
-            const n = parseInt(c.maxTokens.trim(), 10);
-            return Number.isFinite(n) && n > 0 ? n : null;
-          })(),
+          // max_tokens：空 = 内置默认；非法输入按未配置处理（后端自钳）
+          maxTokens: paramNumber("model.max_tokens", c.maxTokens),
           // 推理强度后台默认（RE-1）：四档抽象档位原样落盘
           reasoningEffort: c.reasoningEffort,
           // ──  Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘。
@@ -2216,11 +2246,7 @@ export function SettingsPage({
                       inputMode="numeric"
                       placeholder={traceRetentionDays ?? ""}
                       className="w-16 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none"
-                      title={
-                        traceRetentionDays
-                          ? `保留天数（1–365，默认 ${traceRetentionDays}）`
-                          : "保留天数（1–365，留空 = 用内置默认）"
-                      }
+                      title={traceRetentionTitle}
                     />
                     <span className="text-xs text-[var(--t5)]">天前</span>
                     <button
@@ -2339,8 +2365,8 @@ export function SettingsPage({
                       允许机器人执行 Python
                     </p>
                     <p className="mt-1 text-xs text-[var(--t5)]">
-                      文档处理/编程工具的本机执行开关；沙箱：独立临时目录 + 60
-                      秒超时 + 审计留痕，默认关闭
+                      文档处理/编程工具的本机执行开关；沙箱：独立临时目录 +
+                      限时执行 + 审计留痕，默认关闭
                     </p>
                   </div>
                   <button
@@ -2424,7 +2450,10 @@ export function SettingsPage({
                   内置默认。调大 = 更强能力但更多 token 消耗
                 </p>
                 {/* Profiles 三预设：一键整组切换（写 config 字段 + 落盘；Python 开关是
-            独立 flag 文件不在预设内，保守预设的 py 语义 = 严格白名单下弹窗把关） */}
+            独立 flag 文件不在预设内，保守预设的 py 语义 = 严格白名单下弹窗把关）。
+            预设里**不写默认值的字面量**：留空 = 用内置默认（后端参数表那份），
+            「拉到上限」用参数表的上界——默认值与上界都在后端，前端再抄一份就
+            是一处能各自漂移的真相源 */}
                 <div className="mt-3 flex gap-2">
                   {(
                     [
@@ -2433,9 +2462,10 @@ export function SettingsPage({
                         "严格白名单 + 默认轮数，慎用自动化",
                         {
                           permMode: "strict" as const,
-                          maxRounds: "50",
-                          maxFunctionCalls: "100",
-                          pythonTimeoutSecs: "60",
+                          // 保守 = 内置默认（留空），不把默认值钉成字面量
+                          maxRounds: "",
+                          maxFunctionCalls: "",
+                          pythonTimeoutSecs: "",
                           toolRules: [] as Array<{
                             tool: string;
                             action: "allow" | "ask" | "deny";
@@ -2466,9 +2496,15 @@ export function SettingsPage({
                         "白名单内全自动 + 高轮数长预算（适合无人值守批量）",
                         {
                           permMode: "auto" as const,
-                          maxRounds: "200",
+                          // 轮数与 Python 超时 = 拉到后端允许的上界（参数表那份）
+                          maxRounds: paramMaxText("loop.max_rounds"),
+                          // 这一项是**档位值不是常量**：硬顶 500、默认 100，
+                          // 300 是产品选的中间档（≈3× 默认），后端没有对应常量，
+                          // 派生不出「档位」——所以这里保留手写并标明性质
                           maxFunctionCalls: "300",
-                          pythonTimeoutSecs: "300",
+                          pythonTimeoutSecs: paramMaxText(
+                            "tools.python_timeout_secs",
+                          ),
                           toolRules: [] as Array<{
                             tool: string;
                             action: "allow" | "ask" | "deny";
@@ -2596,6 +2632,8 @@ export function SettingsPage({
                         {(
                           [
                             ["off", "关闭"],
+                            // 键是后端协议值，标签只是它的中文读法——「12」不是
+                            // 一个可配置数值，后端改协议时这里跟着改键即可
                             ["12h", "每 12 小时"],
                             ["daily", "每天"],
                             ["weekly", "每周"],
@@ -2669,8 +2707,11 @@ export function SettingsPage({
                   <div className="space-y-1.5">
                     <p className="text-xs text-[var(--t3)]">自动记忆抽取</p>
                     <p className="text-xs text-[var(--t5)]">
-                      每次聊天结束后低频（≥30
-                      分钟一次）用大模型从对话里提取值得长期记住的偏好与事实；
+                      每次聊天结束后低频
+                      {extractIntervalText
+                        ? `（≥${extractIntervalText}一次）`
+                        : "地"}
+                      用大模型从对话里提取值得长期记住的偏好与事实；
                       需「模型自动记忆」开启；「需确认」档会先存入下方待确认列表
                     </p>
                     <div
@@ -3272,7 +3313,7 @@ export function SettingsPage({
                               </p>
                             </div>
                             {/* 全局 max_tokens 输入已删（每模型编辑里都有，页底重复）；BotConfig.maxTokens
-                仍作条目留空时的兜底层透传保存（条目 > 全局 > 8192 默认），无 UI 入口 */}
+                仍作条目留空时的兜底层透传保存（条目 > 全局 > 内置默认），无 UI 入口 */}
                             {/* 保存 + 自动连接测试：保存成功后厂商下有开启的模型即自动探测，
                 结果决定左栏绿点与聊天下拉可见性 */}
                             <div className="mt-3 flex items-center justify-end gap-3">

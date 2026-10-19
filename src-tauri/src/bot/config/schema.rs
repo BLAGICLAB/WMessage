@@ -242,6 +242,14 @@ pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
         .clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
 
+/// max_tokens 写侧钳制（256..=200000）——落盘前用。
+///
+/// 钳制原本只在读侧 `resolve_max_tokens`：落盘的是用户填的原值，运行时按钳过的
+/// 值走。写侧用同一组边界钳一遍，落盘值 = 生效值。
+pub fn clamp_max_tokens(n: u32) -> u32 {
+    n.clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
+}
+
 // schema 迁移
 
 /// schemaVersion 在 JSON 里的键名（camelCase）。
@@ -566,7 +574,7 @@ mod inference_tests {
         // 条目无值 → 回退全局
         cfg.models_by_provider.as_mut().unwrap().openai[0].max_tokens = None;
         assert_eq!(eff(&cfg).max_tokens, 100_000);
-        // 都无值 → 内置默认 8192
+        // 都无值 → 内置默认
         cfg.max_tokens = None;
         assert_eq!(eff(&cfg).max_tokens, DEFAULT_MAX_TOKENS);
         // 钳制在覆盖之后：条目 50 → 256，条目 999999 → 200000
@@ -574,6 +582,20 @@ mod inference_tests {
             cfg.models_by_provider.as_mut().unwrap().openai[0].max_tokens = Some(raw);
             assert_eq!(eff(&cfg).max_tokens, clamped);
         }
+    }
+
+    /// 写侧钳制与读侧 resolve 同一组边界：落盘值 = 生效值。
+    #[test]
+    fn clamp_max_tokens_matches_resolve_bounds() {
+        for raw in [0u32, 50, MIN_MAX_TOKENS, 32_768, MAX_MAX_TOKENS, u32::MAX] {
+            assert_eq!(
+                clamp_max_tokens(raw),
+                resolve_max_tokens(Some(raw)),
+                "写侧与读侧边界必须一致：{raw}"
+            );
+        }
+        assert_eq!(clamp_max_tokens(0), MIN_MAX_TOKENS);
+        assert_eq!(clamp_max_tokens(u32::MAX), MAX_MAX_TOKENS);
     }
 
     #[test]

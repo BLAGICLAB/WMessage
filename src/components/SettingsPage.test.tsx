@@ -168,8 +168,10 @@ const paramViews = [
     default: "50",
     source: "default",
     editable: true,
+    // 上界故意用 1000（真值 200）：预设里的「拉到上限」若写死字面量就露馅——
+    // 钳制只会把超出的往下拉，写死 200 落盘还是 200，派生则落盘 1000
     min: 5,
-    max: 200,
+    max: 1000,
   },
   {
     key: "loop.max_function_calls",
@@ -206,12 +208,41 @@ const paramViews = [
     default: "45",
     source: "hardcoded",
     editable: false,
+    // 范围也故意用非真值（真值 1/365）：title 里的「N–M」必须跟着参数表走
+    min: 2,
+    max: 400,
+  },
+  {
+    // 记忆抽取限频（秒）：真值 1800（30 分钟），这里故意给 900（15 分钟）——
+    // 页面文案里的分钟数只能从后端取，写死「30 分钟」这条就会露馅
+    key: "memory.extract_min_interval_secs",
+    label: "记忆抽取最小间隔（秒）",
+    category: "memory",
+    hint: "同一会话两次自动抽取的最小间隔",
+    value: "900",
+    default: "900",
+    source: "hardcoded",
+    editable: false,
     min: null,
     max: null,
   },
   {
-    // Python 超时：默认 60 / 上限 300 是后端真值（py::runtime 常量），
-    // 前端此前手写这两个数
+    // 全局 max_tokens：真默认 32768（后端 schema::DEFAULT_MAX_TOKENS），
+    // 范围 256..=200000
+    key: "model.max_tokens",
+    label: "全局 max_tokens",
+    category: "model",
+    hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送",
+    value: "32768",
+    default: "32768",
+    source: "default",
+    editable: true,
+    min: 256,
+    max: 200000,
+  },
+  {
+    // Python 超时：默认 60 是后端真值（py::runtime 常量），前端此前手写这两个数。
+    // 上界故意用 1000（真值 300）：预设「拉到上限」若写死就露馅（同上）
     key: "tools.python_timeout_secs",
     label: "Python 执行超时（秒）",
     category: "tools",
@@ -221,7 +252,7 @@ const paramViews = [
     source: "default",
     editable: true,
     min: 1,
-    max: 300,
+    max: 1000,
   },
 ];
 
@@ -428,7 +459,7 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} />);
     await openAgentParams(user);
     const desc = await screen.findByText(/默认 50/);
-    expect(desc.textContent).toContain("可填 5–200");
+    expect(desc.textContent).toContain("可填 5–1000");
     expect(desc.textContent).toContain("当前生效 50");
     expect(desc.textContent).toContain("内置默认");
     // 输入框的 placeholder = 后端给的默认值（留空 = 用内置默认）
@@ -454,7 +485,7 @@ describe("SettingsPage", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_config",
         expect.objectContaining({
-          config: expect.objectContaining({ maxRounds: 200 }),
+          config: expect.objectContaining({ maxRounds: 1000 }),
         }),
       );
     });
@@ -490,7 +521,7 @@ describe("SettingsPage", () => {
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "机器人" }));
     expect(
-      await screen.findByText(/留空 = 60 秒；大计算可调大，上限 300 秒/),
+      await screen.findByText(/留空 = 60 秒；大计算可调大，上限 1000 秒/),
     ).toBeInTheDocument();
   });
 
@@ -509,7 +540,52 @@ describe("SettingsPage", () => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_config",
         expect.objectContaining({
-          config: expect.objectContaining({ pythonTimeoutSecs: 300 }),
+          config: expect.objectContaining({ pythonTimeoutSecs: 1000 }),
+        }),
+      );
+    });
+  });
+
+  it("一键预设「保守」：轮数/调用数/超时全部留空（用后端内置默认），不钉成字面量", async () => {
+    // 预设里写死 50/100/60 = 把后端默认值抄成前端副本：后端改默认，预设还是
+    // 旧数，页面说「保守档」实际按另一套跑。留空才是「交给后端默认」。
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await openAgentParams(user);
+    await user.click(await screen.findByRole("button", { name: "保守" }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            maxRounds: null,
+            maxFunctionCalls: null,
+            pythonTimeoutSecs: null,
+          }),
+        }),
+      );
+    });
+  });
+
+  it("一键预设「放开」：轮数与 Python 超时取参数表上界，调用数是产品档位值 300", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await openAgentParams(user);
+    await user.click(await screen.findByRole("button", { name: "放开" }));
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_set_config",
+        expect.objectContaining({
+          config: expect.objectContaining({
+            // 上界来自参数表（mock：轮数/超时上界都是 1000，非真值——
+            // 写死字面量时钳制不会把它拉到上界，断言就能分辨）
+            maxRounds: 1000,
+            pythonTimeoutSecs: 1000,
+            // 这一项后端没有对应常量（硬顶 500、默认 100），是产品选的中间档
+            maxFunctionCalls: 300,
+          }),
         }),
       );
     });
@@ -567,6 +643,25 @@ describe("SettingsPage", () => {
         days: null,
       });
     });
+  });
+
+  it("执行痕迹保留期（数据管理）：title 里的范围取自参数表，前端不写死 1–365", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "数据管理" }));
+    const input = (await screen.findByLabelText("保留天数")) as HTMLInputElement;
+    // mock 的范围是 2–400（真值 1/365）：写死就露馅
+    expect(input.title).toBe("保留天数（2–400，默认 45）");
+  });
+
+  it("自动记忆抽取（记忆分区）：限频分钟数取自参数表，前端不写死 30 分钟", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(agentParamsMock);
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "记忆" }));
+    // mock 给 900 秒 = 15 分钟（真值 1800 = 30 分钟）
+    expect(await screen.findByText(/≥15 分钟一次/)).toBeInTheDocument();
   });
 
   it("主题三态：依次点击 → onThemeChange 收到 light / dark / system", async () => {

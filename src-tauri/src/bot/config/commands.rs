@@ -301,6 +301,11 @@ fn clamp_agent_params(config: &mut BotConfig) {
     config.python_timeout_secs = config
         .python_timeout_secs
         .map(crate::py::runtime::clamp_timeout_secs);
+    // 全局 max_tokens：读侧 resolve_max_tokens 会钳到 256..=200000，写侧不钳的话
+    // 落盘的是原值、运行时按钳过的值走（手改过 config 的场景）
+    config.max_tokens = config
+        .max_tokens
+        .map(crate::bot::config::schema::clamp_max_tokens);
 }
 
 #[tauri::command]
@@ -972,6 +977,7 @@ mod perm_mode_tests {
         cfg.ask_budget = Some(99);
         cfg.max_tool_output_bytes = Some(999_999);
         cfg.python_timeout_secs = Some(10_000);
+        cfg.max_tokens = Some(999_999);
         clamp_agent_params(&mut cfg);
         // 每个落盘值都必须等于读侧 resolver 对同一份配置的解析结果
         assert_eq!(
@@ -1014,6 +1020,13 @@ mod perm_mode_tests {
             "Python 超时写侧此前不钳：设置页显示 10000、运行时按 300 跑"
         );
         assert_eq!(cfg.python_timeout_secs, Some(300));
+        // 全局 max_tokens：写侧此前不钳，页面显示用户填的原值、运行时按钳过的走
+        assert_eq!(
+            cfg.max_tokens,
+            Some(crate::bot::config::schema::clamp_max_tokens(999_999)),
+            "max_tokens 写侧此前不钳：设置页显示 999999、运行时按 200000 走"
+        );
+        assert_eq!(cfg.max_tokens, Some(200_000));
     }
 
     /// 钳制不碰「未配置」这一态：None 仍是 None（= 用内置默认），

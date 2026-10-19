@@ -38,7 +38,9 @@ src-tauri/src/
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
 │   ├── db/trace.rs        执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
-│   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）
+│   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）；
+│   │                     保留期边界（TRACE_RETENTION_MIN/MAX_DAYS）与词元统计可查窗口
+│   │                     （USAGE_STATS_MAX_DAYS）各一份常量，命令与设置页公示共用
 │   │                     痕迹表也是幻觉守卫的证据源：file_paths_with_receipt（某路径历史上
 │   │                     有没有工具写过，按 path COLLATE NOCASE 走索引）/
 │   │                     session_ran_unverifiable_writer（本会话跑过 run_python / MCP
@@ -105,7 +107,10 @@ src-tauri/src/
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
 │                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
 │                        （默认值 = resolver 在空配置下的派生值；可填范围 = 钳制常量 min/max；
-│                        生效值 = 钳过之后的数 + 来源标注——页面不再自留一份硬编码数字）
+│                        生效值 = 钳过之后的数 + 来源标注——页面不再自留一份硬编码数字）。
+│                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
+│                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
+│                        的抽取限频——文案里的数不留手写副本
 ├── bot/registry.rs (2599)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生

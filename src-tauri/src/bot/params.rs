@@ -311,8 +311,8 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "全局 max_tokens",
         category: "model",
         hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送。条目级设置优先于此全局值",
-        min: None,
-        max: None,
+        min: Some(crate::bot::config::schema::MIN_MAX_TOKENS as u64),
+        max: Some(crate::bot::config::schema::MAX_MAX_TOKENS as u64),
         editable: true,
         resolve: cfg_resolver!(plain_max_tokens, max_tokens),
     },
@@ -463,10 +463,20 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         label: "执行痕迹保留期（天）",
         category: "tools",
         hint: "痕迹三表与回滚快照的保留期：启动即清理一次，此后每天一次；数据管理可手动清理",
+        min: Some(crate::db::trace::TRACE_RETENTION_MIN_DAYS as u64),
+        max: Some(crate::db::trace::TRACE_RETENTION_MAX_DAYS as u64),
+        editable: false,
+        resolve: hardcoded_resolver!(crate::db::trace::TRACE_RETENTION_DAYS),
+    },
+    ParamDef {
+        key: "memory.extract_min_interval_secs",
+        label: "记忆抽取最小间隔（秒）",
+        category: "memory",
+        hint: "同一会话两次自动抽取的最小间隔（节流是抽取成本的第一道闸）",
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!(crate::db::trace::TRACE_RETENTION_DAYS),
+        resolve: hardcoded_resolver!(crate::memory::extract::EXTRACT_MIN_INTERVAL_SECS),
     },
 ];
 
@@ -485,7 +495,11 @@ fn resolve_budget_wall(cfg: &BotConfig) -> String {
 }
 
 fn plain_max_tokens(cfg: &BotConfig) -> String {
-    cfg.max_tokens.unwrap_or(8192).to_string()
+    // 默认值取后端常量（32768）——此前这里手写 8192，而后端早已把默认提到 32K
+    // （截断自愈那条），两处就此各说各话：表里写 8192、运行时按 32768 走。
+    cfg.max_tokens
+        .unwrap_or(crate::bot::config::schema::DEFAULT_MAX_TOKENS)
+        .to_string()
 }
 
 fn plain_py_timeout(cfg: &BotConfig) -> String {
@@ -740,6 +754,11 @@ mod tests {
             shown("trace.retention_days"),
             crate::db::trace::TRACE_RETENTION_DAYS.to_string()
         );
+        // 记忆抽取限频：设置页文案里的「≥N 分钟一次」引用的就是这个常量
+        assert_eq!(
+            shown("memory.extract_min_interval_secs"),
+            crate::memory::extract::EXTRACT_MIN_INTERVAL_SECS.to_string()
+        );
         // 「每会话并发」此前只在 max_running 的 hint 里以文字出现，表里查不到；
         // 现在它有自己的行，且展示值即派发闸真正认的那个数
         assert!(PARAMS_TABLE
@@ -846,6 +865,12 @@ mod tests {
             by_key("search.max_results").default,
             DEFAULT_SEARCH_MAX_RESULTS.to_string()
         );
+        // 全局 max_tokens：默认 32768（后端早已从 8192 提到 32K），表里若还写
+        // 8192 就是页面与运行时各说各话
+        assert_eq!(
+            by_key("model.max_tokens").default,
+            crate::bot::config::schema::DEFAULT_MAX_TOKENS.to_string()
+        );
         // 越界配置：展示值必须已经是钳过的生效值，不能是用户填的原值
         let mut cfg = empty_cfg();
         cfg.max_tool_output_bytes = Some(MAX_TOOL_OUTPUT_BYTES_CAP + 100_000);
@@ -911,6 +936,22 @@ mod tests {
         assert_eq!(
             range("tools.ask_budget"),
             (Some(ASK_BUDGET_MIN as u64), Some(ASK_BUDGET_MAX as u64))
+        );
+        // 全局 max_tokens：页面显示的「可填 X–Y」要与写侧/读侧同一个边界
+        assert_eq!(
+            range("model.max_tokens"),
+            (
+                Some(crate::bot::config::schema::MIN_MAX_TOKENS as u64),
+                Some(crate::bot::config::schema::MAX_MAX_TOKENS as u64)
+            )
+        );
+        // 痕迹保留期：手动清理的输入框公示「1–365」，与实际删的范围同源
+        assert_eq!(
+            range("trace.retention_days"),
+            (
+                Some(crate::db::trace::TRACE_RETENTION_MIN_DAYS as u64),
+                Some(crate::db::trace::TRACE_RETENTION_MAX_DAYS as u64)
+            )
         );
         // 工具输出截断：0 是合法值（显式关闭截断），不是下界 1
         assert_eq!(

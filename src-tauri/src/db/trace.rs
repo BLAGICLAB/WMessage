@@ -23,9 +23,25 @@ pub const SPAN_TEXT_MAX: usize = 16 * 1024;
 pub const MAX_DIFF_LINES: usize = 2000;
 /// 执行痕迹保留期（天）；对齐 Claude Code checkpointing 的 cleanupPeriodDays 默认
 pub const TRACE_RETENTION_DAYS: i64 = 30;
+/// 保留期可填范围（天）：下限 1（0 天 = 删光，不解释成那个意思），上限 365。
+/// 手动清理与自动清扫共用这同一组边界——设置页公示的「1–365」即这两个数。
+pub const TRACE_RETENTION_MIN_DAYS: i64 = 1;
+pub const TRACE_RETENTION_MAX_DAYS: i64 = 365;
 /// 自动清扫间隔（秒）：启动即跑一次，此后每天一次。保留期以「天」计，
 /// 每天一轮足够——早一轮晚一轮对 30 天的窗口没有可观察差别。
 const RETENTION_SWEEP_INTERVAL_SECS: u64 = 24 * 3600;
+
+/// 词元统计可查窗口上限（天）：热力图能拉多宽的历史由这个数决定。
+///
+/// 三个 `usage_stats_*` 命令共用这一份上界——命令里的 `unwrap_or(30)` 与
+/// `clamp(1, 365)` 曾各写一份字面量，改一处漏一处不会编译失败也不会测试失败。
+pub const USAGE_STATS_MAX_DAYS: i64 = 365;
+
+/// 词元统计窗口解析：`None` = 取上界（要多少给多少），`Some(n)` = 钳到 1..=上界。
+pub fn resolve_usage_window_days(days: Option<i64>) -> i64 {
+    days.map(|d| d.clamp(1, USAGE_STATS_MAX_DAYS))
+        .unwrap_or(USAGE_STATS_MAX_DAYS)
+}
 
 /// trace 收尾状态值域（status 列；running 为起始态，其余四态只能由 trace_finish 写入）
 pub const TRACE_STATUS_RUNNING: &str = "running";
@@ -883,7 +899,7 @@ pub fn usage_stats_daily_by_model(
     days: Option<i64>,
 ) -> CommandResult<Vec<UsageDayModel>> {
     let conn = super::open_db(&app)?;
-    let days = days.unwrap_or(30).clamp(1, 365);
+    let days = resolve_usage_window_days(days);
     Ok(usage_stats_daily_by_model_conn(
         &conn,
         days,
@@ -928,7 +944,7 @@ pub fn trace_detail(app: tauri::AppHandle, trace_id: i64) -> CommandResult<Optio
 /// 手动命令与自动清扫共用同一口径（钳制不一致会让「公示的保留期」与实际删的
 /// 范围在边界上对不上）。
 pub fn retention_cutoff_ms(days: i64, now_ms: i64) -> i64 {
-    now_ms - days.clamp(1, 365) * 86_400_000
+    now_ms - days.clamp(TRACE_RETENTION_MIN_DAYS, TRACE_RETENTION_MAX_DAYS) * 86_400_000
 }
 
 /// 保留期清理内核：设置页手动命令与自动清扫共用。
@@ -989,7 +1005,7 @@ pub fn trace_clear_before(app: tauri::AppHandle, days: Option<i64>) -> CommandRe
 #[tauri::command]
 pub fn usage_stats_daily(app: tauri::AppHandle, days: Option<i64>) -> CommandResult<Vec<UsageDay>> {
     let conn = super::open_db(&app)?;
-    let days = days.unwrap_or(30).clamp(1, 365);
+    let days = resolve_usage_window_days(days);
     Ok(usage_stats_daily_conn(
         &conn,
         days,
@@ -1003,7 +1019,7 @@ pub fn usage_stats_by_model(
     days: Option<i64>,
 ) -> CommandResult<Vec<UsageByModel>> {
     let conn = super::open_db(&app)?;
-    let days = days.unwrap_or(30).clamp(1, 365);
+    let days = resolve_usage_window_days(days);
     Ok(usage_stats_by_model_conn(
         &conn,
         days,
@@ -1566,6 +1582,17 @@ mod tests {
         assert_eq!(retention_cutoff_ms(0, now), now - 86_400_000);
         assert_eq!(retention_cutoff_ms(-7, now), now - 86_400_000);
         assert_eq!(retention_cutoff_ms(999, now), now - 365 * 86_400_000);
+    }
+
+    /// 词元统计窗口：None = 上界（前端不写死天数，要多少给多少），
+    /// Some(n) 钳到 1..=上界。三个命令共用这一份口径。
+    #[test]
+    fn usage_window_days_resolves_to_backend_bound() {
+        assert_eq!(resolve_usage_window_days(None), USAGE_STATS_MAX_DAYS);
+        assert_eq!(resolve_usage_window_days(Some(30)), 30);
+        assert_eq!(resolve_usage_window_days(Some(0)), 1);
+        assert_eq!(resolve_usage_window_days(Some(-5)), 1);
+        assert_eq!(resolve_usage_window_days(Some(9999)), USAGE_STATS_MAX_DAYS);
     }
 
     /// 自动清扫必须真接在启动路径上，且走与手动命令同一个内核——

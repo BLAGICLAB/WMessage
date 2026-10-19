@@ -2,8 +2,9 @@
 // 汇总指标行（竖线分隔 5 项，含连续天数）→ Token 活动热力图（GitHub contributions 式
 // 7×N 周格，每日/每周/累计切换 + 月份标签）→ 时间范围行 + 每日趋势按模型分线 →
 // 模型用量 3D 饼图，各板块独立成卡。
-// 数据源 = usage_stats_daily(365) + usage_stats_by_model(365)（Rust 侧升序、缺日补零）
-// + usage_stats_daily_by_model(range)（稀疏返回，前端以补零日序列为 x 轴）。
+// 数据源 = usage_stats_daily(整个可查窗口) + usage_stats_by_model(整个可查窗口)
+// （Rust 侧升序、缺日补零）+ usage_stats_daily_by_model(range)（稀疏返回，
+// 前端以补零日序列为 x 轴）。窗口宽度由后端给，前端不写死天数。
 // 不引图表库：曲线是手绘 SVG（Catmull-Rom 平滑），热力图是 div 网格，饼图是手绘
 // 椭圆扇形 + 侧壁——零依赖纪律。
 
@@ -727,6 +728,8 @@ export function UsageStatsCard() {
   const [models, setModels] = useState<UsageModelRow[]>([]);
   const [modelDays, setModelDays] = useState<UsageDayModelRow[]>([]);
   const [heatMode, setHeatMode] = useState<HeatMode>("daily");
+  // 趋势图的视图档位：用户点「近7日 / 近30日」选的是**看多久**，不是后端
+  // 限制的副本——后端接受任意 1..=窗口上限的天数，这里是产品选的两档快捷方式
   const [range, setRange] = useState<7 | 30>(30);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -736,8 +739,11 @@ export function UsageStatsCard() {
     setLoading(true);
     setError(null);
     Promise.all([
-      invoke<UsageDay[]>("usage_stats_daily", { days: 365 }),
-      invoke<UsageModelRow[]>("usage_stats_by_model", { days: 365 }),
+      // days 传 null = 要后端能给的整个窗口（热力图按返回的天数铺开）。
+      // 前端写死 365 的话，后端一旦改了可查窗口上限，这里就静默少一段历史
+      // （图还是按实际返回的天数渲染，只是窄了，不报错）。
+      invoke<UsageDay[]>("usage_stats_daily", { days: null }),
+      invoke<UsageModelRow[]>("usage_stats_by_model", { days: null }),
     ])
       .then(([d, m]) => {
         setDays(Array.isArray(d) ? d : []);

@@ -178,6 +178,20 @@ describe("UsageStatsCard", () => {
     expect(screen.getByText("每日").className).toContain("nm-outset");
   });
 
+  it("取数窗口交给后端：概览两次调用都不带天数（null = 要后端的整个可查窗口）", async () => {
+    // 前端写死 365 的话，后端一旦改了可查窗口上限，这里就静默少一段历史
+    render(<UsageStatsCard />);
+    await waitFor(() => expect(screen.getByText("9.0K")).toBeTruthy());
+    for (const cmd of ["usage_stats_daily", "usage_stats_by_model"]) {
+      const calls = invokeMock.mock.calls.filter((c) => c[0] === cmd);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(
+        calls.every((c) => c[1]?.days === null),
+        `${cmd} 不该在前端写死窗口天数`,
+      ).toBe(true);
+    }
+  });
+
   it("时间范围切换：近7日/近30日选中态互换，并按新窗口重拉按模型序列", async () => {
     render(<UsageStatsCard />);
     await waitFor(() => expect(screen.getByText("9.0K")).toBeTruthy());
