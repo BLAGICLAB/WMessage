@@ -65,6 +65,9 @@ const FAR_RATIO = 12;
  *  提成常量插值进着色器，单测才有第二条真值可断言（档位表与着色器脱节过一次）。 */
 export const NODE_POINT_SCALE = 2300;
 
+/** 单个星点的屏幕直径上限（CSS 像素）：相机贴到节点跟前时点径会炸成巨斑 */
+export const NODE_POINT_MAX_PX = 64;
+
 /** 定稿机位（相对布局外径）：视线方向与距离都照抄视觉小样 */
 const CAMERA_DIR = { x: -0.372, y: 0.899, z: 2.713 } as const;
 
@@ -78,7 +81,8 @@ const NODE_VERT = /* glsl */ `
   void main() {
     vC = aColor; vA = aAlpha;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = aSize * uPR * (${NODE_POINT_SCALE.toFixed(1)} / max(-mv.z, 1.0));
+    // 点径上限：相机拉近到贴着节点走时，1/纵深 会把点撑成几百像素的巨斑
+    gl_PointSize = min(aSize * uPR * (${NODE_POINT_SCALE.toFixed(1)} / max(-mv.z, 1.0)), ${NODE_POINT_MAX_PX.toFixed(1)} * uPR);
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -101,6 +105,19 @@ const NODE_FRAG = /* glsl */ `
  *  平方衰减，压在 Bloom 阈值下就成了「有数据没画面」。星轨要的是一条有粗细、有软芯的
  *  光路，所以每条边展开成 4 个角点的窄带：横截面 smoothstep 收出软边，芯部亮度
  *  刚好越过阈值起一点辉，边上就散成淡光；远处的边按深度收细，密图远景才不会糊成板。 */
+/** 节点点云材质（导出成工厂：点径上限要在着色器源码上断言，
+ *  档位表与着色器脱节过一次，单测够不着着色器就等于没测） */
+export function createNodeMaterial(pixelRatio: number): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uPR: { value: pixelRatio } },
+    vertexShader: NODE_VERT,
+    fragmentShader: NODE_FRAG,
+  });
+}
+
 const EDGE_VERT = /* glsl */ `
   attribute vec3 aStart; attribute vec3 aEnd;
   attribute vec3 aColor; attribute float aAlpha; attribute vec2 aCorner;
@@ -390,7 +407,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         kbApi.current = null;
       };
     }
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    let pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
     renderer.setPixelRatio(pixelRatio);
     // 纯黑真空：没有星雾底色，背景就是宇宙本身
     renderer.setClearColor(0x000000, 1);
@@ -416,21 +433,20 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     camera.far = R * FAR_RATIO;
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
+    // 系统声明「减少动效」时，整张画布都不许自己动：相机不自转、不带阻尼
+    // 滑行（松手后还在飘），云噪声不漂，布局也不播中间态
+    const reducedMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    controls.enableDamping = !reducedMotion;
     controls.dampingFactor = 0.06;
     controls.rotateSpeed = 0.62;
     controls.zoomSpeed = 0.72;
     controls.minDistance = R * 0.9;
     controls.maxDistance = R * 7.5;
     // 静止时极缓自转：图谱是「活着」的，但不抢注意力
-    controls.autoRotate = true;
+    controls.autoRotate = !reducedMotion;
     controls.autoRotateSpeed = 0.22;
-    if (
-      typeof window.matchMedia === "function" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      controls.autoRotate = false;
-    }
 
     // 同一批节点、同一外径：接着上次的坐标与机位走，别把用户正在看的视角弹回去
     const cache = layoutCache;
@@ -471,14 +487,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     nodeGeo.setAttribute("aColor", new THREE.BufferAttribute(nodeColor, 3));
     nodeGeo.setAttribute("aSize", new THREE.BufferAttribute(nodeSize, 1));
     nodeGeo.setAttribute("aAlpha", new THREE.BufferAttribute(nodeAlpha, 1));
-    const nodeMat = new THREE.ShaderMaterial({
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      uniforms: { uPR: { value: pixelRatio } },
-      vertexShader: NODE_VERT,
-      fragmentShader: NODE_FRAG,
-    });
+    const nodeMat = createNodeMaterial(pixelRatio);
     const nodePoints = new THREE.Points(nodeGeo, nodeMat);
     world.add(nodePoints);
 
@@ -587,10 +596,17 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     });
 
     const writeColors = (mode: GraphColorMode) => {
+      let changed = false;
       scene.nodes.forEach((node, i) => {
         const c = node.kind === "task" ? rgbOf(resolveNodeColor(mode, node)) : HUB_RGB;
+        if (baseColor[i][0] !== c[0] || baseColor[i][1] !== c[1] || baseColor[i][2] !== c[2]) {
+          changed = true;
+        }
         baseColor[i] = c;
       });
+      // 云色是按附近星体的颜色采样的：颜色没变就别重采样
+      // （悬停/选中只改亮度，改亮度也动不了云的颜色）
+      if (changed) cloudsDirty = true;
     };
 
     // ── 注意力（选中优先，无选中才用 hover）：全场只压暗一次 ──
@@ -662,7 +678,6 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         }
       }
       markAppearanceDirty(nodeGeo, edgeGeo);
-      cloudsDirty = true;
 
       // 铭牌资格：锚点常驻；任务按密度档位 + 注意力
       const dense = p.labelDensity === "dense";
@@ -694,6 +709,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         plaques[i].want = want;
         plaques[i].obj.visible = want;
         plaques[i].el.style.opacity = want ? "1" : "0";
+        // 合成层提升只给显示中的铭牌（见 main.css 的 .graph-plaque.is-on）
+        plaques[i].el.classList.toggle("is-on", want);
       }
       ringMat.opacity = 0.85;
     };
@@ -709,6 +726,16 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       if (w < 2 || h < 2) return;
       width = w;
       height = h;
+      // devicePixelRatio 会变（窗口拖到另一块不同缩放的屏幕）：只在建场取一次
+      // 的话，拖过去之后画布仍按旧倍率渲染（要么糊，要么过采样）
+      const pr = Math.min(window.devicePixelRatio || 1, 2);
+      if (pr !== pixelRatio) {
+        pixelRatio = pr;
+        renderer.setPixelRatio(pr);
+        nodeMat.uniforms.uPR.value = pr;
+        stars.setPixelRatio(pr);
+        clouds.setPixelRatio(pr);
+      }
       // 第三参必须留默认 true：置 false 时 three 只改绘图缓冲、不写 style，
       // canvas 就按「缓冲像素」去布局（= CSS 尺寸 × devicePixelRatio），
       // 直接撑成容器的两倍再被 overflow 裁掉左上一角——看着像没居中
@@ -909,7 +936,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // 两条路径都走 rAF 时间切片（每帧 ≤10ms 且 ≤400 步）。
     // 「不播布局动画」只是不画中间态，不是把 700 步同步跑完——万级任务
     // 那一下能把主线程冻住一秒多（实测 700 步 ≈ 1.1s），期间整个应用无响应。
-    let animated = p.autoLayout;
+    let animated = p.autoLayout && !reducedMotion;
     running = true;
     settled = false;
 
@@ -985,6 +1012,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         if (settled) {
           finishLayout();
           running = false;
+          // 位置整场变了，云色（按附近星体采样）要重采一次
+          cloudsDirty = true;
           refreshAppearance();
           computing.remove();
         }
@@ -1041,7 +1070,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         clouds.sample(pos, baseColor);
         cloudsDirty = false;
       }
-      clouds.update(t);
+      clouds.update(reducedMotion ? 0 : t);
       composer.render();
       labelRenderer.render(world, camera);
     };
@@ -1091,6 +1120,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       bloom.dispose();
       composer.dispose();
       renderer.dispose();
+      // 主动交还 GPU 上下文：只 dispose 不还上下文，浏览器要等整个页面卸载
+      // 才回收，图谱页反复进出时显存一路涨
+      renderer.forceContextLoss();
       el.remove();
       labelHost.remove();
     };

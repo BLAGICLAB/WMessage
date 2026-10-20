@@ -13,6 +13,9 @@ import {
   EDGE_NDC_SCALE,
   EDGE_WIDTH,
   createEdgeMaterial,
+  createNodeMaterial,
+  NODE_POINT_MAX_PX,
+  NODE_POINT_SCALE,
 } from "./GraphCanvas";
 import type { GraphEdgeWidth } from "../../lib/graphPrefs";
 
@@ -80,5 +83,19 @@ describe("星轨宽度（设置页「连线粗细」）", () => {
     for (const w of Object.values(EDGE_WIDTH)) {
       expect(w).toBeGreaterThanOrEqual(1);
     }
+  });
+});
+
+describe("星点点径（渲染层）", () => {
+  it("点径上限在着色器里，不靠驱动兜底", () => {
+    const vs = createNodeMaterial(1).vertexShader;
+    expect(vs).toContain(`min(aSize * uPR * (${NODE_POINT_SCALE.toFixed(1)}`);
+    expect(vs).toContain(`${NODE_POINT_MAX_PX.toFixed(1)} * uPR)`);
+  });
+
+  it("点径系数与场景层的换算同源", () => {
+    // 场景层按 798 × (半径 / 外径) 估屏幕直径，渲染层按 2300 / 纵深 算，
+    // 两者要能对上（机位距离比就是 2300 / 798）
+    expect(NODE_POINT_SCALE / 798).toBeCloseTo(2.8819, 3);
   });
 });

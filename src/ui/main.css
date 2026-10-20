@@ -1249,8 +1249,12 @@
     text-shadow:
       0 0 9px rgba(3, 6, 12, 0.95),
       0 0 3px rgba(3, 6, 12, 1);
-    will-change: opacity, transform;
     transition: opacity 0.16s linear;
+  }
+  /* 合成层提升只给真正在显示的铭牌：CSS2D 每帧改一次 transform，
+     常驻 will-change 会把上千块铭牌全提成合成层，显存一路涨 */
+  .graph-plaque.is-on {
+    will-change: opacity, transform;
   }
   /* 外层 transform 由 CSS2DRenderer 每帧覆写，抬升与避让偏移只作用在这一层 */
   .graph-plaque-off {

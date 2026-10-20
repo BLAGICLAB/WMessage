@@ -101,6 +101,11 @@ export class Starfield {
     scene.add(this.stars);
   }
 
+  /** 像素倍率变了（窗口拖到另一块不同缩放的屏幕）跟着改点径 */
+  setPixelRatio(pixelRatio: number): void {
+    this.starMat.uniforms.uPR.value = pixelRatio;
+  }
+
   dispose(): void {
     this.stars.geometry.dispose();
     this.starMat.dispose();
@@ -359,6 +364,11 @@ export class CloudField {
 
   update(timeSec: number): void {
     this.mat.uniforms.uTime.value = timeSec;
+  }
+
+  /** 像素倍率变了（窗口拖到另一块不同缩放的屏幕）跟着改点径 */
+  setPixelRatio(pixelRatio: number): void {
+    this.mat.uniforms.uPR.value = pixelRatio;
   }
 
   dispose(): void {
