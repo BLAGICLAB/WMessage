@@ -1,6 +1,6 @@
 # 动效改进计划（improve-animations 审计产出）
 
-全仓动效审计（`src/`，147 个 tsx + `src/ui/main.css`）的落地计划。**19 条高置信发现，其中 18 条落成计划**（2 条 LOW 未落计划：ContextRail 的 `nm-inset` 过渡随状态增删、LiveIndicator 内联 `animation` 压过定向 reduced-motion 覆盖）。
+全仓动效审计（`src/`，147 个 tsx + `src/ui/main.css`）的落地计划。**19 条高置信发现，其中 18 条落成计划**（2 条 LOW 未单独立计划，已就地修复：ContextRail 的 `nm-inset` 过渡随状态增删 → `931b6c18`；LiveIndicator 内联 `animation` 压过定向 reduced-motion 覆盖 → `83218422`）。
 
 > **019**（任务编辑浮窗的内联手写过渡收归 token）是收尾时补上的缺口：原 18 条计划都没覆盖
 > `TaskEditorOverlay.tsx` 那条内联过渡，它是全仓最后一处没进 token 层的动效。
