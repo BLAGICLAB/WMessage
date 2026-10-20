@@ -82,13 +82,41 @@ const LOOSENESS_R: Record<GraphLooseness, number> = {
 };
 
 /**
- * 任务半径只跟连接数走（√压缩：度 2≈2.6、9≈5.6、25≈8.4、100≈14）。
- * 「按耗时定大小」已退役——拖得久不等于牵涉多，两套语义混在一张图上互相拆台。
+ * 星点屏幕直径的下限（CSS 像素）。
+ *
+ * 星点的屏幕直径 ≈ 798 × (半径 / 布局外径)：布局外径 R = k√N 随任务数涨，
+ * 而半径是按连接度给的定值，于是两者一除，星点在大图里越缩越小——
+ * 万级任务时直径不到 0.5px，落在像素栅格以下（驱动按 1px 画，形状与
+ * 亮度都失真），整片星云退成一层看不清的灰点。
+ *
+ * 下限按外径给（而不是给一个绝对世界值）：布局放大多少，星点的地板
+ * 就跟着放大多少，屏幕上的观感在任何规模下都一致。
  */
-export function nodeRadius(degree: number): number {
+export const NODE_PX_MIN = 1.6;
+
+/**
+ * 世界半径 → 屏幕直径的换算系数：点径 px ≈ 798 × (半径 / 布局外径)。
+ * 798 = 渲染层的点径系数 2300 ÷ 机位距离比 2.882（相机按外径等比摆）。
+ * 渲染层改了机位或点径系数，这里要跟着改——graph-scene.test.ts 有对拍。
+ */
+export const SCREEN_PX_PER_RATIO = 798;
+
+/**
+ * 任务半径只跟连接数走（√压缩：度 2≈2.6、9≈5.6、25≈8.12、100≈14）。
+ * 「按耗时定大小」已退役——拖得久不等于牵涉多，两套语义混在一张图上互相拆台。
+ *
+ * 半径另有一个下限：星点跟着布局外径一起缩放，小到看不见就没意义了。
+ */
+export function nodeRadius(degree: number, R: number): number {
   // 扣掉两条基础连线（每张卡平均都有）免得低度数节点缩成看不见的点
   const pool = Math.max(degree - 2, 0);
-  return 2.6 + Math.sqrt(pool) * 1.15;
+  const raw = 2.6 + Math.sqrt(pool) * 1.15;
+  return Math.max(raw, minWorldRadius(R));
+}
+
+/** 屏幕下限对应的世界半径：布局外径越大，同样的屏幕尺寸要更多世界单位 */
+function minWorldRadius(R: number): number {
+  return (R * NODE_PX_MIN) / SCREEN_PX_PER_RATIO;
 }
 
 /** 锚点半径下界：够大到读得出「这里是个核」，又不能盖过它聚起来的任务 */
@@ -244,7 +272,7 @@ export function buildScene(built: BuiltGraph, opts: SceneOptions): Scene {
       id: n.id,
       kind: "task",
       label: n.label,
-      radius: nodeRadius(n.degree),
+      radius: nodeRadius(n.degree, R),
       degree: n.degree,
       ownerKey: ownerColorKey(n, ownerOrder),
       tagIdx: tagColorKey(n, tagOrder),
@@ -266,7 +294,7 @@ export function buildScene(built: BuiltGraph, opts: SceneOptions): Scene {
       kind: "hub",
       hubKind: kind,
       label,
-      radius: Math.max(nodeRadius(members), HUB_RADIUS_FLOOR),
+      radius: Math.max(nodeRadius(members, R), HUB_RADIUS_FLOOR, minWorldRadius(R)),
       degree: members,
       ownerKey: "self",
       tagIdx: null,

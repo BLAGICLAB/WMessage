@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import type { Task } from "../../types";
 import type { SceneNode } from "./graph-scene";
 import { buildTaskGraph, DEFAULT_FILTERS } from "./graph-build";
-import { buildScene, isHub, isStalled, labelDegreeFloor, nodeRadius } from "./graph-scene";
+import { buildScene, isHub, isStalled, labelDegreeFloor, nodeRadius, NODE_PX_MIN, SCREEN_PX_PER_RATIO } from "./graph-scene";
+import { CAMERA_DIST_RATIO, NODE_POINT_SCALE } from "./GraphCanvas";
 import { Force3D, KINETIC_EPSILON, mulberry32, settle } from "./graph-force3d";
 
 function t(partial: Partial<Task> & { id: string }): Task {
@@ -29,11 +30,29 @@ function sceneOf(
 }
 
 describe("nodeRadius", () => {
+  // R 取视觉小样的构图外径（258）：这一档下星点尺寸不受下限约束，
+  // 纯看连接度
+  const R = 258;
   it("只跟连接数走，单调递增，零度不炸", () => {
-    expect(nodeRadius(0)).toBeCloseTo(nodeRadius(1));
-    expect(nodeRadius(2)).toBeLessThan(nodeRadius(9));
-    expect(nodeRadius(9)).toBeLessThan(nodeRadius(50));
-    expect(Number.isFinite(nodeRadius(0))).toBe(true);
+    expect(nodeRadius(0, R)).toBeCloseTo(nodeRadius(1, R));
+    expect(nodeRadius(2, R)).toBeLessThan(nodeRadius(9, R));
+    expect(nodeRadius(9, R)).toBeLessThan(nodeRadius(50, R));
+    expect(Number.isFinite(nodeRadius(0, R))).toBe(true);
+  });
+
+  it("屏幕直径有下限：大图里星点不会塌成亚像素", () => {
+    // 万级任务：外径 45 × √10000 = 4500
+    const big = 4500;
+    const px = (r: number, outer: number) => (SCREEN_PX_PER_RATIO * r) / outer;
+    expect(px(nodeRadius(2, big), big)).toBeGreaterThanOrEqual(NODE_PX_MIN);
+    expect(px(nodeRadius(2, big), big)).toBeCloseTo(NODE_PX_MIN, 6);
+    // 小图不受下限影响：直径就是公式给的那一档
+    expect(px(nodeRadius(2, R), R)).toBeCloseTo((SCREEN_PX_PER_RATIO * 2.6) / R, 6);
+  });
+
+  it("星点尺寸换算与渲染层的机位/点径系数对得上", () => {
+    // 渲染层改了机位距离比或点径系数，场景层的换算就得跟着改
+    expect(SCREEN_PX_PER_RATIO).toBeCloseTo(NODE_POINT_SCALE / CAMERA_DIST_RATIO, 0);
   });
 });
 

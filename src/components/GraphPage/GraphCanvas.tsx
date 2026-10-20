@@ -61,6 +61,16 @@ const FOV = 74;
 const NEAR_RATIO = 0.004;
 const FAR_RATIO = 12;
 
+/** 节点点径系数：世界半径 → 屏幕直径（CSS 像素）的分子。
+ *  提成常量插值进着色器，单测才有第二条真值可断言（档位表与着色器脱节过一次）。 */
+export const NODE_POINT_SCALE = 2300;
+
+/** 定稿机位（相对布局外径）：视线方向与距离都照抄视觉小样 */
+const CAMERA_DIR = { x: -0.372, y: 0.899, z: 2.713 } as const;
+
+/** 机位距离 / 布局外径：星点的屏幕大小 ∝ 1/它（场景层的星点尺寸下限按它换算） */
+export const CAMERA_DIST_RATIO = Math.hypot(CAMERA_DIR.x, CAMERA_DIR.y, CAMERA_DIR.z);
+
 const NODE_VERT = /* glsl */ `
   attribute vec3 aColor; attribute float aSize; attribute float aAlpha;
   uniform float uPR;
@@ -68,7 +78,7 @@ const NODE_VERT = /* glsl */ `
   void main() {
     vC = aColor; vA = aAlpha;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
-    gl_PointSize = aSize * uPR * (2300.0 / max(-mv.z, 1.0));
+    gl_PointSize = aSize * uPR * (${NODE_POINT_SCALE.toFixed(1)} / max(-mv.z, 1.0));
     gl_Position = projectionMatrix * mv;
   }
 `;
@@ -298,7 +308,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     // 视觉小样的定稿机位：(-96, 232, 700) / R 258 = 2.882R。视线方向同比例保留，
     // 长度也照抄——这条距离直接决定星点的屏幕大小（点径 ∝ 1/距离），
     // 凑近了就等于把粒子相对云胀一圈，云一叠就自己发起光来
-    camera.position.set(-R * 0.372, R * 0.899, R * 2.713);
+    camera.position.set(R * CAMERA_DIR.x, R * CAMERA_DIR.y, R * CAMERA_DIR.z);
     camera.near = R * NEAR_RATIO;
     camera.far = R * FAR_RATIO;
 
