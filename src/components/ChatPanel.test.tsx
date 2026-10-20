@@ -659,7 +659,7 @@ describe("ChatPanel", () => {
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_stop");
   });
 
-  it("回复中发送键变为红框停止键：点击调 bot_stop（2026-08-26 发送/停止一体键）", async () => {
+  it("回复中发送键变为红框停止键：点击调 bot_stop", async () => {
     const user = userEvent.setup();
     // bot_chat 挂起不返回 → busy 保持 true
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -795,7 +795,7 @@ describe("ChatPanel", () => {
     expect(events).toContain("bot-chat-delta");
   });
 
-  it("流式事件按会话过滤：别会话的 bot-chat-delta 被忽略，本会话的才追加（2026-08-28 批次3审计 P0-2）", async () => {
+  it("流式事件按会话过滤：别会话的 bot-chat-delta 被忽略，本会话的才追加", async () => {
     const user = userEvent.setup();
     // 捕获 ChatPanel 注册的 bot-chat-delta 监听器
     let deltaHandler:
@@ -997,7 +997,7 @@ describe("ChatPanel", () => {
     }
   });
 
-  it("任务卡执行被 TASK_INVALID_STATE 拒绝：按结构化 code 识别，⏳ 本地提示而非 ⚠️ 气泡（批次7 P2-2）", async () => {
+  it("任务卡执行被 TASK_INVALID_STATE 拒绝：按结构化 code 识别，⏳ 本地提示而非 ⚠️ 气泡", async () => {
     // 捕获 listen 回调以手动触发 execute-task 事件
     const listeners = new Map<string, (e: { payload: unknown }) => void>();
     mocks.listenMock.mockImplementation(
