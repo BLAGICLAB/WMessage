@@ -1017,9 +1017,13 @@ mod perm_mode_tests {
         assert_eq!(
             cfg.python_timeout_secs,
             Some(crate::py::runtime::clamp_timeout_secs(10_000)),
-            "Python 超时写侧此前不钳：设置页显示 10000、运行时按 300 跑"
+            "Python 超时写侧此前不钳：设置页显示 10000、运行时按上限跑"
         );
-        assert_eq!(cfg.python_timeout_secs, Some(300));
+        assert_eq!(
+            cfg.python_timeout_secs,
+            Some(crate::py::runtime::MAX_TIMEOUT_SECS),
+            "落盘值必须等于生效值（天花板常量一改这里跟着走）"
+        );
         // 全局 max_tokens：写侧此前不钳，页面显示用户填的原值、运行时按钳过的走
         assert_eq!(
             cfg.max_tokens,

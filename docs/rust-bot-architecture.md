@@ -200,7 +200,7 @@ src-tauri/src/
 │                        绑定文件夹+allowedDirs；白名单外 perm_mode 三分支/覆盖确认）；
 │                        路径白名单 + perm_mode(strict/ask/yolo) 授权闸
 ├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
-├── bot_py.rs (1360)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
+├── bot_py.rs (1363)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网
 ├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +

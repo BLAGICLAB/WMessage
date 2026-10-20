@@ -25,6 +25,7 @@ import {
   listArchivedApps,
   listAppRuns,
   listAppVersions,
+  fmtTimeoutSecs,
   openAppOutput,
   parseInputSchema,
   restoreAppVersion,
@@ -300,6 +301,13 @@ function AppCard({
         <LastRunLine run={lastRun} />
         <span className="flex-1" />
         {app.status === "draft" && <DraftBadge />}
+        {/* 声明过运行时长的程序：把「能跑多久」摆在卡上（未声明的不显示——
+            那是内置默认，不是这个程序的属性） */}
+        {app.timeoutSecs != null && (
+          <span className="nm-tag text-[10px] tabular-nums">
+            最长 {fmtTimeoutSecs(app.timeoutSecs)}
+          </span>
+        )}
         <span className="nm-tag text-[10px]">
           {inputKind === "form" ? "表单" : "文件夹"}
         </span>
@@ -680,6 +688,8 @@ function CreateDialog({
   const [icon, setIcon] = useState("📦");
   const [inputKind, setInputKind] = useState<"folder" | "form">("folder");
   const [fields, setFields] = useState<AppInputField[]>([]);
+  /** 声明的单次运行时长（秒）：留空 = 不声明（运行时用内置默认） */
+  const [timeoutSecs, setTimeoutSecs] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -687,6 +697,13 @@ function CreateDialog({
     setErr(null);
     if (!id.trim() || !name.trim()) {
       setErr("id 与名称不能为空");
+      return;
+    }
+    // 非数字的时长当场拒（不静默忽略：填了「十分钟」而实际按默认跑，
+    // 用户看到的和生效的不是一回事）
+    const timeoutNum = timeoutSecs.trim() ? Number(timeoutSecs.trim()) : null;
+    if (timeoutNum !== null && (!Number.isInteger(timeoutNum) || timeoutNum < 0)) {
+      setErr("单次运行时长填非负整数秒，或留空用内置默认");
       return;
     }
     setBusy(true);
@@ -704,6 +721,7 @@ function CreateDialog({
       scriptPath: "app.py",
       manual: "",
       status: "enabled",
+      timeoutSecs: timeoutNum,
     })
       .then(onCreated)
       .catch((e) => {
@@ -817,6 +835,16 @@ function CreateDialog({
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={2}
+            className="nm-input w-full px-2 py-1.5 text-xs"
+          />
+        </Field>
+        <Field label="单次运行时长（秒）">
+          <input
+            aria-label="单次运行时长（秒）"
+            value={timeoutSecs}
+            onChange={(e) => setTimeoutSecs(e.target.value)}
+            inputMode="numeric"
+            placeholder="留空 = 用内置默认"
             className="nm-input w-full px-2 py-1.5 text-xs"
           />
         </Field>

@@ -241,6 +241,8 @@ pub fn open_db<R: tauri::Runtime>(
     // 程序模块（apps）：程序元数据 + 运行历史 + 版本快照，幂等建表
     conn.execute_batch(crate::db::apps::APPS_DDL)
         .map_err(|e| e.to_string())?;
+    // 老库补列：程序声明的单次运行时长（apps.timeout_secs，NULL = 未声明）
+    ensure_columns(&conn, "apps", &[("timeout_secs", "INTEGER")])?;
     conn.execute_batch(crate::db::apps::APP_RUNS_DDL)
         .map_err(|e| e.to_string())?;
     conn.execute_batch(crate::db::apps::APP_VERSIONS_DDL)

@@ -78,6 +78,8 @@ fn script_rel_path(script_rel: &str) -> Result<std::path::PathBuf, String> {
 /// 跑一个 app。脚本路径相对 app 目录（M1 恒为 `app.py`）
 /// 产物目录 = `{app_dir}/output/<run_id>/`，由本函数创建并经 argv[2] 传给脚本
 /// 入参 params 是表单模式 JSON 串（写进脚本进程 cwd 的 `params.json`）；文件夹模式传 None
+/// 入参 timeout_secs 是本次运行的时长上限（秒）：调用方显式值 > 程序声明值 > 内置默认；
+/// 最终值由 `py::runtime::resolve_timeout` 钳到全局天花板
 pub fn run(
     app: &App,
     script_rel: &str,

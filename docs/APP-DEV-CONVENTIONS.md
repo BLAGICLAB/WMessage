@@ -41,8 +41,12 @@ exe 根（便携模式）。app 目录由 `apps_create` 命令**原子化建好*
 | `scriptPath` | string | M1 恒 `app.py` | 相对 app 目录的脚本路径 |
 | `manual` | string | ≤ 8000 字符 | 程序页的「管理/说明」用 |
 | `status` | enum | `draft` / `enabled` / `archived` | 上架时建议直接 `enabled` |
+| `timeoutSecs` | 整数秒 | 可选；≤ 1800（超出钳到上限） | 声明这个程序单次运行需要多久；不声明 = 运行时用内置默认 60s |
 
 `enabled_at` / `created_at` / `updated_at` 由命令自动写，不要在 manifest 里给。
+
+**`timeoutSecs` 什么时候必须声明**：耗时随输入规模增长的活（转写长录音、装依赖、
+批处理）——登记时就知道它要跑多久，不声明就会被内置默认的 60s 从中间掐掉。
 
 ## 3. inputSchema 两种模式
 
@@ -132,7 +136,7 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
 
 - ❌ 联网（默认信任单用户本机；联网要走专门授权）
 - ❌ `input/ output/` 之外写文件（破坏目录契约）
-- ❌ 长时间死循环或阻塞（60s 超时会被强杀）
+- ❌ 长时间死循环或阻塞（按声明的时长强杀，未声明则按内置默认 60s，上限 30 分钟）
 - ❌ 在 `app.py` 里硬编码敏感数据（身份证号、工资数等）——放在 `data/` 配文件里
 - ❌ `print` 大量调试信息到 stdout（>64KB 会被截断；调试写 stderr）
 
@@ -143,7 +147,7 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
 | `0` | 成功，stdout 找哨兵 | status=ok |
 | `2` | 输入校验失败（缺文件/列名） | status=failed，stderr 写 summary |
 | 其他非 0 | 运行时错误 | status=failed，stderr 写 summary |
-| 超时 60s | 强杀 | status=failed，「超过 60 秒未完成」 |
+| 超时（声明值；未声明则 60s） | 强杀 | status=failed，summary 写明超时时长 |
 
 ## 5. M1 与 M2 边界
 
@@ -177,6 +181,11 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
   拍板口径：快照表而非 git（Windows 绿色版不带 git、`data/` 敏感数据不进历史）；
   知识库级多文件语料将来走「独立数据目录 + 按需 git」，与本表正交
 - 摘要截断：summary > 300 字符截断 + 标记截断，提示用户去 `output/<run_id>/` 看完整产物
+- **单次运行时长是程序的属性**（2026-10-20 加）：manifest 增 `timeoutSecs`，登记时声明
+  「这个程序正常要跑多久」；运行取值 = 调用方显式值 > 程序声明 > 内置默认 60s，
+  一律钳到全局天花板 30 分钟。理由：耗时随输入规模增长的活（转写长录音、装依赖）
+  在固定墙钟下是被硬杀的，不是被「保护」住的。程序页卡片显示声明值；
+  版本回滚只回内容、不动这个运行预算
 
 ## 6. 真机验收清单（M1 后）
 

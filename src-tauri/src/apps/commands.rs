@@ -49,9 +49,13 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
             reason: "已归档程序不可运行".into(),
         });
     }
-    let (timeout, _) = resolve_timeout(args.timeout_secs);
+    // 超时来源优先级：调用方显式传入 > 程序声明的运行时长 > 内置默认。
+    // 程序声明是**这个程序自己的属性**（登记时就知道它要跑多久），
+    // 全局墙钟不该拿小程序的尺子量批量程序。resolve_timeout 统一把结果
+    // 钳到全局天花板——谁给的数都越不过那道顶。
+    let timeout = resolve_run_timeout(args.timeout_secs, a.timeout_secs);
     // 执行内部阻塞等子进程至多 timeout 秒，必须挪进阻塞线程池（钉死 async
-    // worker 会拖垮其余命令）；不持全局写锁——60s 的子进程不能挡住别的写者，
+    // worker 会拖垮其余命令）；不持全局写锁——长跑的子进程不能挡住别的写者，
     // 内部两次短写靠 busy_timeout 兜底
     let app_name = a.name.clone();
     let res = {
@@ -103,6 +107,8 @@ pub struct CreateArgs {
     pub manual: String,
     /// draft / enabled；M1 推荐传 enabled
     pub status: String,
+    /// 声明的单次运行时长（秒）：None = 未声明（运行时用内置默认）
+    pub timeout_secs: Option<u64>,
 }
 
 #[tauri::command]
@@ -248,6 +254,16 @@ pub async fn apps_version_restore(
 
 // ─── helpers ─────────────────────────────────────────────────────────
 
+/// 单次运行的时长上限（纯函数，单测直打）：
+///
+/// 来源优先级 = 调用方显式传入 > 程序声明的运行时长 > 内置默认。
+/// 三者都过 `resolve_timeout`：超上限的钳到天花板（谁给的数都越不过那道顶），
+/// 都没给就是内置默认。
+pub fn resolve_run_timeout(caller_secs: Option<u64>, declared_secs: Option<u64>) -> u64 {
+    let (t, _) = resolve_timeout(caller_secs.or(declared_secs));
+    t
+}
+
 fn open_db_or(app: &AppHandle) -> Result<rusqlite::Connection, CommandError> {
     crate::db::open_db(app).map_err(CommandError::DbError)
 }
@@ -317,6 +333,7 @@ fn build_app_from_create(app: &AppHandle, args: &CreateArgs) -> Result<App, Comm
         enabled_at,
         created_at: now,
         updated_at: now,
+        timeout_secs: crate::apps::manage::normalize_declared_timeout(args.timeout_secs),
     })
 }
 
@@ -334,4 +351,44 @@ pub mod manifest_contract {
     pub const STATUS_DRAFT: &str = "draft";
     pub const STATUS_ENABLED: &str = "enabled";
     pub const STATUS_ARCHIVED: &str = "archived";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::py::runtime::{DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS};
+
+    /// 运行超时的来源优先级：调用方 > 程序声明 > 内置默认；越不过天花板
+    #[test]
+    fn run_timeout_prefers_caller_then_declaration_then_default() {
+        assert_eq!(resolve_run_timeout(None, None), DEFAULT_TIMEOUT_SECS);
+        assert_eq!(resolve_run_timeout(None, Some(1800)), 1800, "声明值生效");
+        assert_eq!(
+            resolve_run_timeout(Some(120), Some(1800)),
+            120,
+            "调用方显式值盖过声明"
+        );
+        assert_eq!(
+            resolve_run_timeout(Some(9999), None),
+            MAX_TIMEOUT_SECS,
+            "超上限的调用方值钳到天花板"
+        );
+        assert_eq!(
+            resolve_run_timeout(None, Some(9999)),
+            MAX_TIMEOUT_SECS,
+            "超上限的声明值钳到天花板"
+        );
+    }
+
+    /// 老客户端不带 timeoutSecs 也要能反序列化（缺字段 = 未声明，不能是报错）
+    #[test]
+    fn create_args_tolerate_missing_timeout_field() {
+        let args: CreateArgs = serde_json::from_str(
+            r#"{"id":"a","name":"n","description":"","icon":"📦",
+                "inputSchema":"{\"kind\":\"folder\"}","scriptPath":"app.py",
+                "manual":"","status":"draft"}"#,
+        )
+        .expect("缺 timeoutSecs 的旧载荷要能反序列化");
+        assert_eq!(args.timeout_secs, None);
+    }
 }

@@ -25,7 +25,8 @@ pub const APPS_DDL: &str = "CREATE TABLE IF NOT EXISTS apps (
    status          TEXT NOT NULL,
    enabled_at     INTEGER,
    created_at     INTEGER NOT NULL,
-   updated_at     INTEGER NOT NULL
+   updated_at     INTEGER NOT NULL,
+   timeout_secs   INTEGER
  );";
 
 /// app_runs 表单源 DDL：每次运行的元数据（产物路径在 `data_dir/apps/<id>/output/<run_id>/`）
@@ -75,6 +76,13 @@ pub struct App {
     pub enabled_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// 本程序声明的单次运行时长上限（秒）：None = 未声明（运行时用内置默认 60s）。
+    ///
+    /// **为什么是程序的属性而不是全局常量**：耗时与输入规模成正比的程序
+    /// （语音转写、装依赖、长文档处理）要多久，在登记时就是已知的——
+    /// 它不是运行时才出现的意外。全局墙钟拿来管这类活，砍掉的是正常业务。
+    /// 写侧已钳到 `py::runtime::MAX_TIMEOUT_SECS`（落盘值 = 生效值）。
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -93,8 +101,8 @@ pub fn upsert_app(conn: &rusqlite::Connection, a: &App) -> Result<(), String> {
     conn.execute(
         "INSERT INTO apps (
             id, name, description, icon, input_schema, script_path, manual, status,
-            enabled_at, created_at, updated_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            enabled_at, created_at, updated_at, timeout_secs
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
          ON CONFLICT(id) DO UPDATE SET
             name=excluded.name,
             description=excluded.description,
@@ -104,7 +112,8 @@ pub fn upsert_app(conn: &rusqlite::Connection, a: &App) -> Result<(), String> {
             manual=excluded.manual,
             status=excluded.status,
             enabled_at=excluded.enabled_at,
-            updated_at=excluded.updated_at",
+            updated_at=excluded.updated_at,
+            timeout_secs=excluded.timeout_secs",
         rusqlite::params![
             a.id,
             a.name,
@@ -117,6 +126,7 @@ pub fn upsert_app(conn: &rusqlite::Connection, a: &App) -> Result<(), String> {
             a.enabled_at,
             a.created_at,
             a.updated_at,
+            a.timeout_secs,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -158,7 +168,7 @@ pub fn list_archived_apps(conn: &rusqlite::Connection) -> Result<Vec<App>, Strin
 fn list_by_status(conn: &rusqlite::Connection, where_clause: &str) -> Result<Vec<App>, String> {
     let sql = format!(
         "SELECT id, name, description, icon, input_schema, script_path, manual, status,
-                enabled_at, created_at, updated_at
+                enabled_at, created_at, updated_at, timeout_secs
          FROM apps WHERE {where_clause} ORDER BY updated_at DESC"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -176,6 +186,7 @@ fn list_by_status(conn: &rusqlite::Connection, where_clause: &str) -> Result<Vec
                 enabled_at: r.get(8)?,
                 created_at: r.get(9)?,
                 updated_at: r.get(10)?,
+                timeout_secs: r.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -187,7 +198,7 @@ pub fn get_app(conn: &rusqlite::Connection, id: &str) -> Result<Option<App>, Str
     let mut stmt = conn
         .prepare(
             "SELECT id, name, description, icon, input_schema, script_path, manual, status,
-                    enabled_at, created_at, updated_at
+                    enabled_at, created_at, updated_at, timeout_secs
              FROM apps WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -205,6 +216,7 @@ pub fn get_app(conn: &rusqlite::Connection, id: &str) -> Result<Option<App>, Str
                 enabled_at: r.get(8)?,
                 created_at: r.get(9)?,
                 updated_at: r.get(10)?,
+                timeout_secs: r.get(11)?,
             })
         })
         .map_err(|e| e.to_string())?;

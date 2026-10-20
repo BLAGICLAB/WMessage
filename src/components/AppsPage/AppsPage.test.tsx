@@ -30,6 +30,7 @@ const APPS: App[] = [
     enabledAt: 1,
     createdAt: 1,
     updatedAt: 1,
+    timeoutSecs: null,
   },
   {
     id: "daily-report",
@@ -44,6 +45,8 @@ const APPS: App[] = [
     enabledAt: 1,
     createdAt: 1,
     updatedAt: 2,
+    // 声明了单次运行时长（转写长录音这类活）→ 卡上要看得见
+    timeoutSecs: 1800,
   },
   {
     id: "ai-draft",
@@ -57,6 +60,7 @@ const APPS: App[] = [
     enabledAt: null,
     createdAt: 1,
     updatedAt: 3,
+    timeoutSecs: null,
   },
 ];
 
@@ -96,6 +100,7 @@ const ARCHIVED: App[] = [
     enabledAt: 1,
     createdAt: 1,
     updatedAt: 1,
+    timeoutSecs: null,
   },
 ];
 
@@ -222,6 +227,54 @@ describe("AppsPage", () => {
         }),
       );
     });
+  });
+
+  it("声明了运行时长的程序，卡上看得见「最长 30 分钟」；没声明的不写时长", async () => {
+    render(<AppsPage />);
+    await screen.findByText("日报汇总");
+    expect(screen.getByText("最长 30 分钟")).toBeInTheDocument();
+    // 未声明 = 走内置默认，不是这个程序的属性 → 卡上不摆时长
+    expect(screen.queryByText("最长 1 分钟")).not.toBeInTheDocument();
+  });
+
+  it("上架弹窗：填的运行时长随 apps_create 一起提交", async () => {
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await userEvent.click(screen.getAllByRole("button", { name: "上架程序" })[0]);
+    await userEvent.type(screen.getByPlaceholderText("wage-match"), "stt");
+    await userEvent.type(screen.getByPlaceholderText("工资单匹配"), "语音转写");
+    await userEvent.type(
+      screen.getByLabelText("单次运行时长（秒）"),
+      "1800",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "确认上架" }));
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "apps_create",
+        expect.objectContaining({
+          args: expect.objectContaining({ id: "stt", timeoutSecs: 1800 }),
+        }),
+      );
+    });
+  });
+
+  it("上架弹窗：非整数时长当场拒（不静默按默认跑）", async () => {
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await userEvent.click(screen.getAllByRole("button", { name: "上架程序" })[0]);
+    await userEvent.type(screen.getByPlaceholderText("wage-match"), "stt");
+    await userEvent.type(screen.getByPlaceholderText("工资单匹配"), "语音转写");
+    await userEvent.type(
+      screen.getByLabelText("单次运行时长（秒）"),
+      "十分钟",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "确认上架" }));
+    expect(
+      await screen.findByText(/单次运行时长填非负整数秒/),
+    ).toBeInTheDocument();
+    expect(
+      invokeMock.mock.calls.some((c) => c[0] === "apps_create"),
+    ).toBe(false);
   });
   it("程序页的删除键走归档（可逆）：确认后调 apps_archive，卡片从程序页消失", async () => {
     const user = userEvent.setup();

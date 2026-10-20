@@ -24,6 +24,12 @@ export interface App {
   enabledAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /**
+   * 声明的单次运行时长上限（秒）；null = 未声明（运行时用内置默认 60s）。
+   * 耗时随输入规模增长的程序（转写长录音、装依赖、批处理）必须声明，
+   * 否则会在默认时长被中途掐掉。写侧已钳到后端天花板（落盘值 = 生效值）。
+   */
+  timeoutSecs: number | null;
 }
 
 /** 单次运行元数据（与 Rust `db::apps::AppRun` 对应） */
@@ -52,6 +58,11 @@ export interface AppRunResult {
   exitCode: number | null;
   truncated: boolean;
   durationMs: number;
+}
+
+/** 秒 → 人读时长（整分钟走分钟，否则走秒）。展示用；秒数本身来自后端。 */
+export function fmtTimeoutSecs(secs: number): string {
+  return secs % 60 === 0 ? `${secs / 60} 分钟` : `${secs} 秒`;
 }
 
 /** 程序页 M2 全量视图（草稿 + 已启用，归档不返回），按 updated_at 倒序 */
@@ -87,7 +98,8 @@ export function deleteApp(id: string): Promise<void> {
 /** 跑一个 app。
  * - 文件夹模式：`params` = null
  * - 表单模式：`params` = 字段 JSON 串（与 `inputSchema` 的 `fields` 顺序一致）
- * - 超时：默认 60s（与 py::run_python 同款）；可调但实际 M1 不用 */
+ * - 超时：不传 = 用程序声明的时长（未声明则 60s）；传值 = 本次运行覆盖声明。
+ *   最终值由后端钳到全局天花板 */
 export function runApp(
   id: string,
   params: Record<string, unknown> | null,
@@ -114,6 +126,8 @@ export interface CreateAppArgs {
   scriptPath: string;
   manual: string;
   status: "draft" | "enabled" | "archived";
+  /** 声明的单次运行时长（秒）；不传/0 = 未声明（运行时用内置默认 60s） */
+  timeoutSecs?: number | null;
 }
 export function createApp(args: CreateAppArgs): Promise<App> {
   return invoke<App>("apps_create", { args });

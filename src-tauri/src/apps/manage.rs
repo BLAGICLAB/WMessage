@@ -162,6 +162,27 @@ pub fn validate_manifest_meta(
     Ok(())
 }
 
+/// 程序声明的单次运行时长（秒）：钳到全局天花板。
+///
+/// 口径（创建与更新共用）：
+/// - `None` = 未声明（运行时用内置默认）
+/// - `Some(0)` = 清除声明（回落默认；更新时「传 0」=「取消声明」）
+/// - `Some(n)` = 声明 n 秒，超出天花板的部分钳掉（落盘值 = 生效值）
+pub fn normalize_declared_timeout(v: Option<u64>) -> Option<u64> {
+    match v {
+        None | Some(0) => None,
+        Some(n) => Some(crate::py::runtime::clamp_timeout_secs(n)),
+    }
+}
+
+/// 程序声明值的钳制是否改动了原值（用于如实回报「你要的 7200s 按 1800s 生效」）
+pub fn declared_timeout_clamped(raw: Option<u64>) -> bool {
+    match raw {
+        Some(n) if n > 0 => Some(n) != normalize_declared_timeout(Some(n)),
+        _ => false,
+    }
+}
+
 /// inputSchema 校验：合法 JSON + 文件夹/表单二选一 + 表单字段 type 三选一 +
 /// key 非空且不重复（M2 新增；`docs/APP-DEV-CONVENTIONS.md` §3/§5）
 pub fn validate_input_schema(raw: &str) -> Result<(), String> {
@@ -388,6 +409,7 @@ pub fn create_app_core(
     script: &str,
     files: &[(String, String)],
     manual: &str,
+    timeout_secs: Option<u64>,
     now_ms: i64,
 ) -> Result<App, CommandError> {
     validate_app_id(id)?;
@@ -410,6 +432,7 @@ pub fn create_app_core(
         enabled_at: None,
         created_at: now_ms,
         updated_at: now_ms,
+        timeout_secs: normalize_declared_timeout(timeout_secs),
     };
     // 落库 + 版本快照同一事务：快照写不进去 = 整体没发生（库是真相源）
     let tx = conn
@@ -494,6 +517,9 @@ pub fn restore_version_core(
         enabled_at: cur.enabled_at,
         created_at: cur.created_at,
         updated_at: now_ms,
+        // 声明的运行时长**不进版本快照**：回滚回的是内容与 manifest，
+        // 运行预算属于当前这台机器上的运行条件，回滚不该顺手改掉它
+        timeout_secs: cur.timeout_secs,
     };
     let tx = conn
         .unchecked_transaction()
@@ -523,6 +549,7 @@ pub fn update_app_core(
     input_schema: Option<&str>,
     manual: Option<&str>,
     status: Option<&str>,
+    timeout_secs: Option<u64>,
     now_ms: i64,
 ) -> Result<App, CommandError> {
     let cur = db_apps::get_app(conn, id)
@@ -554,6 +581,7 @@ pub fn update_app_core(
         && input_schema.is_none()
         && manual.is_none()
         && status.is_none()
+        && timeout_secs.is_none()
     {
         return Err(CommandError::InvalidArgument {
             field: "id".into(),
@@ -565,6 +593,12 @@ pub fn update_app_core(
     let description = description.unwrap_or(&cur.description);
     let icon = icon.unwrap_or(&cur.icon);
     let manual = manual.unwrap_or(&cur.manual);
+    // timeoutSecs：未传 = 保持不变；传 0 = 取消声明（回落内置默认）；传 N = 声明 N 秒
+    let timeout_secs = match timeout_secs {
+        None => cur.timeout_secs,
+        Some(0) => None,
+        Some(n) => normalize_declared_timeout(Some(n)),
+    };
     let input_schema = match input_schema {
         Some(s) => {
             validate_input_schema(s).map_err(reason_to_invalid())?;
@@ -597,6 +631,7 @@ pub fn update_app_core(
         enabled_at,
         created_at: cur.created_at,
         updated_at: now_ms,
+        timeout_secs,
     };
     // 落库 + 版本快照同一事务（口径同创建核）
     let tx = conn
@@ -638,6 +673,39 @@ fn files_from_args(v: &serde_json::Value) -> Result<Vec<(String, String)>, Strin
     Ok(out)
 }
 
+/// timeoutSecs 入参：缺省/null = 未传（创建=不声明，更新=保持不变）；
+/// 传 0 = 取消声明；传 N = 声明 N 秒。非整数一律报错（不猜、不静默忽略）。
+fn timeout_field(v: &serde_json::Value) -> Result<Option<u64>, CommandError> {
+    match v.get("timeoutSecs") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(val) => val
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| CommandError::InvalidArgument {
+                field: "timeoutSecs".into(),
+                value: val.to_string(),
+                reason: "timeoutSecs 必须是整数秒（非负；0 = 取消声明）".into(),
+            }),
+    }
+}
+
+/// 声明值的如实描述（给工具结果用）：未声明 / N 秒 / 被钳后的 N 秒
+fn describe_declared_timeout(declared: Option<u64>, requested: Option<u64>) -> String {
+    match declared {
+        None => format!(
+            "未声明（单次运行按内置默认 {} 秒）",
+            crate::py::runtime::DEFAULT_TIMEOUT_SECS
+        ),
+        Some(n) if declared_timeout_clamped(requested) => {
+            format!(
+                "{n} 秒（你要的 {} 秒超出上限，按上限生效）",
+                requested.unwrap_or(n)
+            )
+        }
+        Some(n) => format!("{n} 秒"),
+    }
+}
+
 /// apps_list：列非归档程序（草稿 + 已启用），防重名 / 找现有 id 用
 pub async fn tool_apps_list(app: &AppHandle, _args: &str) -> ToolResult {
     let owned = app.clone();
@@ -669,7 +737,16 @@ pub async fn tool_apps_list(app: &AppHandle, _args: &str) -> ToolResult {
                 } else {
                     a.description.as_str()
                 };
-                s.push_str(&format!("- {}｜{}｜{}｜{}\n", a.id, a.name, status, desc));
+                // 声明的运行时长一并列出：模型得知道这个程序能跑多久，
+                // 才能在建议用户「等着」时说得准
+                let timeout = match a.timeout_secs {
+                    Some(n) => format!("｜最长 {n} 秒"),
+                    None => String::new(),
+                };
+                s.push_str(&format!(
+                    "- {}｜{}｜{}｜{}{}\n",
+                    a.id, a.name, status, desc, timeout
+                ));
             }
             ToolResult::ok(s, Vec::new())
         }
@@ -713,12 +790,22 @@ pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
         Ok(f) => f,
         Err(e) => return ToolResult::ok(format!("apps_create：{e}"), Vec::new()),
     };
+    let timeout_secs = match timeout_field(&v) {
+        Ok(t) => t,
+        Err(e) => return ToolResult::ok(format!("apps_create：{e}"), Vec::new()),
+    };
     crate::bot::audit_log(
         app,
         &format!(
-            "apps_create | {} | files: {}",
+            "apps_create | {} | files: {} timeout: {}",
             crate::bot::escape_for_log(&id, 100),
-            files.len()
+            files.len(),
+            crate::bot::escape_for_log(
+                &timeout_secs
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                20
+            ),
         ),
     );
     let owned = app.clone();
@@ -740,6 +827,7 @@ pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
             &script,
             &files,
             &manual,
+            timeout_secs,
             db::now_ms(),
         )
         .map_err(|e| e.to_string())
@@ -748,9 +836,10 @@ pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
     match created {
         Ok(created) => {
             let name = created.name;
+            let timeout_desc = describe_declared_timeout(created.timeout_secs, timeout_secs);
             ToolResult::ok(
                 format!(
-                    "程序「{name}」已创建为草稿，目录：{dir_log}。\n\
+                    "程序「{name}」已创建为草稿，目录：{dir_log}。单次运行时长：{timeout_desc}。\n\
                      下一步：让用户把真实输入放进该目录 input/（表单模式则直接在程序页运行时填写），\
                      在程序页点「运行」试跑（草稿可运行）；失败把报错发回聊天，用 apps_update_files \
                      提交完整新脚本；用户明确满意后再调 apps_update_files 并传 status=\"enabled\" 上架。"
@@ -800,14 +889,25 @@ pub async fn tool_apps_update_files(app: &AppHandle, args: &str) -> ToolResult {
         },
     };
     let status = optional_field(&v, "status");
+    // timeoutSecs 缺省 = 保持不变；传 0 = 取消声明；传 N = 声明 N 秒
+    let timeout_secs = match timeout_field(&v) {
+        Ok(t) => t,
+        Err(e) => return ToolResult::ok(format!("apps_update_files：{e}"), Vec::new()),
+    };
     crate::bot::audit_log(
         app,
         &format!(
-            "apps_update_files | {} | script: {} files: {} status: {}",
+            "apps_update_files | {} | script: {} files: {} status: {} timeout: {}",
             crate::bot::escape_for_log(&id, 100),
             script.is_some(),
             files.len(),
             crate::bot::escape_for_log(status.as_deref().unwrap_or("-"), 20),
+            crate::bot::escape_for_log(
+                &timeout_secs
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                20
+            ),
         ),
     );
     let owned = app.clone();
@@ -829,6 +929,7 @@ pub async fn tool_apps_update_files(app: &AppHandle, args: &str) -> ToolResult {
             input_schema.as_deref(),
             manual.as_deref(),
             status.as_deref(),
+            timeout_secs,
             db::now_ms(),
         )
         .map_err(|e| e.to_string())
@@ -841,9 +942,10 @@ pub async fn tool_apps_update_files(app: &AppHandle, args: &str) -> ToolResult {
             } else {
                 "草稿"
             };
+            let timeout_desc = describe_declared_timeout(next.timeout_secs, timeout_secs);
             ToolResult::ok(
                 format!(
-                    "程序「{}」已更新：当前状态 {}。改了脚本记得让用户在程序页重新试跑。",
+                    "程序「{}」已更新：当前状态 {}，单次运行时长：{timeout_desc}。改了脚本记得让用户在程序页重新试跑。",
                     next.name, status_label
                 ),
                 Vec::new(),
@@ -894,6 +996,7 @@ mod tests {
             enabled_at: Some(1000),
             created_at: 1000,
             updated_at: 1000,
+            timeout_secs: None,
         };
         db_apps::upsert_app(conn, &app).unwrap();
         app
@@ -929,7 +1032,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         let app = create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         assert_eq!(app.status, "draft");
@@ -945,7 +1048,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         let err = create_app_core(
@@ -959,6 +1062,7 @@ mod tests {
             "print('x')",
             &files,
             &manual,
+            None,
             2,
         )
         .unwrap_err();
@@ -975,14 +1079,14 @@ mod tests {
         let (_i, name, desc, icon, schema, script, files, manual) = create_args("ok");
         // id 含 ..
         let err = create_app_core(
-            &dir, &conn, "../evil", &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, "../evil", &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap_err();
         assert!(err.to_string().contains("id"), "{err}");
         // 名称超长
         let long_name = "名".repeat(mc::NAME_MAX + 1);
         let err = create_app_core(
-            &dir, &conn, "ok", &long_name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, "ok", &long_name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap_err();
         assert!(err.to_string().contains("名称"), "{err}");
@@ -998,13 +1102,14 @@ mod tests {
             &script,
             &files,
             &manual,
+            None,
             1,
         )
         .unwrap_err();
         assert!(err.to_string().contains("text/number/date"), "{err}");
         // 空脚本
         let err = create_app_core(
-            &dir, &conn, "ok", &name, &desc, &icon, &schema, "  ", &files, &manual, 1,
+            &dir, &conn, "ok", &name, &desc, &icon, &schema, "  ", &files, &manual, None, 1,
         )
         .unwrap_err();
         assert!(err.to_string().contains("script"), "{err}");
@@ -1023,7 +1128,7 @@ mod tests {
         std::fs::write(dir.join("data"), "占位文件").unwrap();
         let files = vec![("data/x.csv".to_string(), "a,b".to_string())];
         let err = create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap_err();
         assert!(
@@ -1046,7 +1151,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         let next = update_app_core(
@@ -1061,6 +1166,7 @@ mod tests {
             None,
             None,
             Some("enabled"),
+            None,
             2,
         )
         .unwrap();
@@ -1136,7 +1242,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         db_apps::record_app_run(&conn, &id, 2, "ok").unwrap();
@@ -1210,7 +1316,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         // 不存在的 id
@@ -1220,6 +1326,7 @@ mod tests {
             "ghost",
             Some("x"),
             &[],
+            None,
             None,
             None,
             None,
@@ -1245,6 +1352,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             2,
         )
         .unwrap_err();
@@ -1264,6 +1372,7 @@ mod tests {
             None,
             None,
             Some("archived"),
+            None,
             2,
         )
         .unwrap_err();
@@ -1276,7 +1385,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         // 无任何变更
@@ -1286,6 +1395,7 @@ mod tests {
             "wage",
             None,
             &[],
+            None,
             None,
             None,
             None,
@@ -1309,6 +1419,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             2,
         )
         .unwrap_err();
@@ -1320,6 +1431,7 @@ mod tests {
             "wage",
             None,
             &[("data/../../evil".to_string(), "x".to_string())],
+            None,
             None,
             None,
             None,
@@ -1343,6 +1455,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             2,
         )
         .unwrap();
@@ -1360,7 +1473,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         let metas = db_apps::list_app_version_metas(&conn, "wage", 100).unwrap();
@@ -1379,6 +1492,7 @@ mod tests {
             None,
             None,
             Some("enabled"),
+            None,
             2,
         )
         .unwrap();
@@ -1412,7 +1526,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         let err = restore_version_core(&dir, &conn, "wage", 99, 2).unwrap_err();
@@ -1429,7 +1543,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         archive_core(&conn, "wage", 2).unwrap();
@@ -1446,7 +1560,7 @@ mod tests {
         let dir = tmp.path().join("wage");
         let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
         create_app_core(
-            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, 1,
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
         )
         .unwrap();
         for i in 2..=5 {
@@ -1456,6 +1570,7 @@ mod tests {
                 "wage",
                 Some(&format!("print('v{i}')")),
                 &[],
+                None,
                 None,
                 None,
                 None,
@@ -1516,5 +1631,216 @@ mod tests {
         assert!(normalize_input_schema(Some(&obj)).is_ok());
         let bad: serde_json::Value = serde_json::from_str(r#"{"kind":"x"}"#).unwrap();
         assert!(normalize_input_schema(Some(&bad)).is_err());
+    }
+
+    // ── 声明的运行时长 ──
+
+    /// 声明值的三态：未声明 / 0（取消）/ N 秒；超上限的钳到天花板（落盘=生效）
+    #[test]
+    fn declared_timeout_normalizes_and_clamps() {
+        assert_eq!(normalize_declared_timeout(None), None);
+        assert_eq!(normalize_declared_timeout(Some(0)), None, "0 = 取消声明");
+        assert_eq!(normalize_declared_timeout(Some(1800)), Some(1800));
+        assert_eq!(
+            normalize_declared_timeout(Some(9999)),
+            Some(crate::py::runtime::MAX_TIMEOUT_SECS),
+            "超上限的声明要钳到天花板"
+        );
+        assert!(declared_timeout_clamped(Some(9999)));
+        assert!(!declared_timeout_clamped(Some(600)));
+        assert!(!declared_timeout_clamped(None));
+    }
+
+    /// 创建时的声明落库后可读回；未声明 = NULL（运行时走内置默认）
+    #[test]
+    fn create_stores_declared_timeout_and_reads_back() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("stt");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("stt");
+        let app = create_app_core(
+            &dir,
+            &conn,
+            &id,
+            &name,
+            &desc,
+            &icon,
+            &schema,
+            &script,
+            &files,
+            &manual,
+            Some(1800),
+            1,
+        )
+        .unwrap();
+        assert_eq!(app.timeout_secs, Some(1800));
+        let stored = db_apps::get_app(&conn, "stt").unwrap().unwrap();
+        assert_eq!(stored.timeout_secs, Some(1800), "声明值要能从库里读回来");
+    }
+
+    /// 更新语义：不传 = 保持不变；传 0 = 取消声明；传 N = 改声明
+    #[test]
+    fn update_timeout_keeps_clears_and_sets() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir,
+            &conn,
+            &id,
+            &name,
+            &desc,
+            &icon,
+            &schema,
+            &script,
+            &files,
+            &manual,
+            Some(900),
+            1,
+        )
+        .unwrap();
+        // 不传 timeoutSecs = 保持不变（本次改的是名字，所以是合法更新）
+        let kept = update_app_core(
+            &dir,
+            &conn,
+            "wage",
+            None,
+            &[],
+            Some("新名字"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            2,
+        )
+        .unwrap();
+        assert_eq!(kept.timeout_secs, Some(900));
+        assert_eq!(kept.name, "新名字");
+        // 传 N = 改声明
+        let changed = update_app_core(
+            &dir,
+            &conn,
+            "wage",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1200),
+            3,
+        )
+        .unwrap();
+        assert_eq!(changed.timeout_secs, Some(1200));
+        // 传 0 = 取消声明（回落内置默认）
+        let cleared = update_app_core(
+            &dir,
+            &conn,
+            "wage",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            4,
+        )
+        .unwrap();
+        assert_eq!(cleared.timeout_secs, None);
+    }
+
+    /// 只改声明也算「有变更」（否则改声明会被「没有任何变更」那道闸误拒）
+    #[test]
+    fn timeout_only_change_is_accepted() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir, &conn, &id, &name, &desc, &icon, &schema, &script, &files, &manual, None, 1,
+        )
+        .unwrap();
+        let next = update_app_core(
+            &dir,
+            &conn,
+            "wage",
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(300),
+            2,
+        )
+        .unwrap();
+        assert_eq!(next.timeout_secs, Some(300));
+    }
+
+    /// 回滚回的是内容，不顺手改掉运行预算（声明不进版本快照）
+    #[test]
+    fn rollback_keeps_declared_timeout() {
+        let (tmp, conn) = temp_db();
+        let dir = tmp.path().join("wage");
+        let (id, name, desc, icon, schema, script, files, manual) = create_args("wage");
+        create_app_core(
+            &dir,
+            &conn,
+            &id,
+            &name,
+            &desc,
+            &icon,
+            &schema,
+            &script,
+            &files,
+            &manual,
+            Some(600),
+            1,
+        )
+        .unwrap();
+        update_app_core(
+            &dir,
+            &conn,
+            "wage",
+            Some("print('v2')"),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            2,
+        )
+        .unwrap();
+        let restored = restore_version_core(&dir, &conn, "wage", 1, 3).unwrap();
+        assert_eq!(restored.timeout_secs, Some(600), "回滚内容不改运行预算");
+    }
+
+    /// timeoutSecs 入参：缺省/ null = 未传；非整数一律拒（不静默忽略）
+    #[test]
+    fn timeout_field_accepts_integer_only() {
+        let v = serde_json::json!({});
+        assert_eq!(timeout_field(&v).unwrap(), None);
+        let v = serde_json::json!({"timeoutSecs": null});
+        assert_eq!(timeout_field(&v).unwrap(), None);
+        let v = serde_json::json!({"timeoutSecs": 600});
+        assert_eq!(timeout_field(&v).unwrap(), Some(600));
+        let v = serde_json::json!({"timeoutSecs": 0});
+        assert_eq!(timeout_field(&v).unwrap(), Some(0));
+        let v = serde_json::json!({"timeoutSecs": "600"});
+        assert!(timeout_field(&v).is_err(), "字符串时长要报错而不是猜");
+        let v = serde_json::json!({"timeoutSecs": -1});
+        assert!(timeout_field(&v).is_err(), "负数时长要报错");
+        let v = serde_json::json!({"timeoutSecs": 1.5});
+        assert!(timeout_field(&v).is_err(), "小数时长要报错");
     }
 }
