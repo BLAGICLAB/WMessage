@@ -72,7 +72,7 @@ export function DayGridMini({
         <h3 className="text-[13px] font-semibold text-[var(--t3)]">本周日程</h3>
         <button
           onClick={onMore}
-          className="ml-auto rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+          className="ml-auto rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
         >
           任务页
         </button>
@@ -90,7 +90,7 @@ export function DayGridMini({
               onMouseEnter={() => onActiveDay(col.dayIdx)}
               onFocus={() => onActiveDay(col.dayIdx)}
               onClick={() => onActiveDay(col.dayIdx)}
-              className={`rounded-md py-1 text-center text-[11px] transition-colors ${
+              className={`rounded-md py-1 text-center text-[11px] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                 activeDay === col.dayIdx
                   ? "bg-[var(--inset-bg)] font-semibold text-[var(--t1)]"
                   : "text-[var(--t4)] hover:bg-[var(--hover-bg)]"

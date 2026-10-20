@@ -397,7 +397,7 @@ export function NotificationsPage() {
               role="tab"
               aria-selected={tab === key}
               onClick={() => setTab(key)}
-              className={`rounded-[var(--r-sm)] px-2.5 py-1 text-xs transition-colors duration-100 ${
+              className={`rounded-[var(--r-sm)] px-2.5 py-1 text-xs transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                 tab === key
                   ? "nm-inset text-[var(--t1)]"
                   : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"

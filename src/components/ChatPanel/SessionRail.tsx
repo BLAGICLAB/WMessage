@@ -106,7 +106,7 @@ export function SessionRail({
                   type="button"
                   aria-label={`删除对话 ${s.title}`}
                   title="删除此对话"
-                  className="pointer-events-none absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded text-[var(--t5)] opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:bg-[var(--hover-bg)] hover:text-[var(--danger)]"
+                  className="pointer-events-none absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded text-[var(--t5)] opacity-0 transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)] group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:bg-[var(--hover-bg)] hover:text-[var(--danger)]"
                   onClick={() => onDelete(s.id)}
                 >
                   <Trash2 size={11} aria-hidden />

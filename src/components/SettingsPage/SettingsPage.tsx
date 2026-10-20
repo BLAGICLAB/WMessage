@@ -1966,7 +1966,7 @@ export function SettingsPage({
             type="button"
             aria-current={activeSection === s.key || undefined}
             onClick={() => openSection(s.key)}
-            className={`flex h-8 w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 text-sm transition-colors duration-100 ${
+            className={`flex h-8 w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 text-sm transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
               activeSection === s.key
                 ? "nm-inset rounded-[var(--r-sm)] text-[var(--t1)]"
                 : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
@@ -2809,7 +2809,7 @@ export function SettingsPage({
                                 activeVendor === v.name || undefined
                               }
                               onClick={() => setActiveVendor(v.name)}
-                              className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-100 ${
+                              className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                                 activeVendor === v.name
                                   ? "nm-inset text-[var(--t1)]"
                                   : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"

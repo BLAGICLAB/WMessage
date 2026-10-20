@@ -106,7 +106,7 @@ export function SubtaskRow({
               type="button"
               title="打开生成的任务卡"
               aria-label={`打开子任务「${sub.text}」生成的任务卡`}
-              className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--t2)] group-hover:opacity-100"
+              className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:text-[var(--t2)] group-hover:opacity-100"
               onClick={() => onOpenCard(sub.taskId!)}
             >
               <ArrowUpRight size={12} aria-hidden />
@@ -118,7 +118,7 @@ export function SubtaskRow({
               type="button"
               title="生成为任务卡"
               aria-label={`把子任务「${sub.text}」生成为任务卡`}
-              className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--t2)] group-hover:opacity-100"
+              className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:text-[var(--t2)] group-hover:opacity-100"
               onClick={onGenerateCard}
             >
               <Plus size={12} aria-hidden />
@@ -130,7 +130,7 @@ export function SubtaskRow({
             type="button"
             title="删除子任务"
             aria-label={`删除子任务「${sub.text}」`}
-            className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity hover:text-[var(--danger)] group-hover:opacity-100"
+            className="shrink-0 text-[var(--t5)] opacity-0 transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:text-[var(--danger)] group-hover:opacity-100"
             onClick={onDelete}
           >
             ×

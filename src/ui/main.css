@@ -50,6 +50,18 @@
   --fs-sm: 14px;
   --fs-md: 15px;
   --fs-lg: 16px;
+  /* 动效 token（曲线 + 时长）——全仓唯一动效词汇表。
+     时长阶梯对齐组件层纪律（卡片 150ms，按钮/ Chips 100ms，无弹跳）；
+     曲线用强 ease-out，不用 CSS 关键字 ease（cubic-bezier(0.25,0.1,0.25,1)），
+     也不用 Tailwind 默认 cubic-bezier(0.4,0,0.2,1)（慢起，hover 显滞）。 */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  /* 到达脉冲用 CSS ease-out 关键字的等值写法：脉冲是「撑开再收回」，
+     强 ease-out 会让它一半时间就撑满、一半时间就消失，形状反而垮掉 */
+  --ease-pulse: cubic-bezier(0, 0, 0.58, 1);
+  --dur-chip: 100ms; /* 按钮 / Chips / hover 抬升 */
+  --dur-card: 150ms; /* 表面与选中态（卡片 / body 底色） */
+  --dur-fade: 150ms; /* 淡入淡出 / 遮罩 */
+  --dur-tooltip: 150ms; /* 提示条 */
 }
 
 .dark {
@@ -92,8 +104,8 @@
   /* 主题切换平滑过渡（背景/文字，不影响 transform 动画）；150ms 与组件层同步 */
   body {
     transition:
-      background-color 0.15s ease,
-      color 0.15s ease;
+      background-color var(--dur-card) var(--ease-out),
+      color var(--dur-card) var(--ease-out);
   }
   input::placeholder,
   textarea::placeholder {
@@ -176,8 +188,8 @@
     border: 1px solid var(--edge);
     box-shadow: var(--shadow-sm);
     transition:
-      background-color 0.15s ease,
-      border-color 0.15s ease;
+      background-color var(--dur-card) var(--ease-out),
+      border-color var(--dur-card) var(--ease-out);
   }
 
   .nm-card-hover {
@@ -210,8 +222,8 @@
     background-color: var(--inset-bg);
     border: 1px solid var(--edge);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
 
   /* === 抬升胶囊（未选中）：面板底 + 边线，与 .nm-inset 的对比承载「选中」语义 === */
@@ -220,8 +232,8 @@
     background-color: var(--surface);
     border: 1px solid var(--edge);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
   .nm-outset:hover:not(:disabled) {
     background-color: var(--hover-bg);
@@ -244,8 +256,8 @@
     background-color: var(--surface);
     border: 1px solid var(--edge);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
   .nm-btn:hover:not(:disabled) {
     background-color: var(--hover-bg);
@@ -270,8 +282,8 @@
     color: var(--t4);
     border-radius: var(--r-sm);
     transition:
-      background-color 0.1s ease,
-      color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      color var(--dur-chip) var(--ease-out);
   }
   .nm-icon-btn:hover:not(:disabled) {
     color: var(--t2);
@@ -297,8 +309,8 @@
     border-radius: var(--r-sm);
     color: var(--t2);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
   .nm-input:focus {
     outline: none;
@@ -697,9 +709,9 @@
     border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
     box-shadow: var(--shadow-sm);
     transition:
-      box-shadow 0.12s ease,
-      transform 0.12s ease,
-      background-color 0.12s ease;
+      box-shadow var(--dur-chip) var(--ease-out),
+      transform var(--dur-chip) var(--ease-out),
+      background-color var(--dur-chip) var(--ease-out);
   }
   .plan-blk::before {
     content: "";
@@ -806,7 +818,7 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--c) 55%, transparent);
     opacity: 0;
-    transition: opacity 0.12s ease;
+    transition: opacity var(--dur-chip) var(--ease-out);
     cursor: ns-resize;
   }
   .dark .plan-grip {
@@ -985,7 +997,7 @@
     border-radius: var(--r-lg);
     outline: 2px solid var(--plan-violet);
     outline-offset: 3px;
-    animation: archive-locate-pulse 0.85s ease-out 2;
+    animation: archive-locate-pulse 0.85s var(--ease-pulse) 2;
   }
   @keyframes archive-locate-pulse {
     0% {
@@ -1103,7 +1115,7 @@
     box-shadow: var(--shadow-lg);
     transform: translateY(-100%);
     pointer-events: none;
-    animation: hover-tip-in 0.15s ease-out;
+    animation: hover-tip-in var(--dur-tooltip) var(--ease-out);
   }
   @keyframes hover-tip-in {
     from {
@@ -1130,9 +1142,9 @@
     border: 1px solid var(--brand);
     color: #fff;
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease,
-      filter 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out),
+      filter var(--dur-chip) var(--ease-out);
   }
   .nm-btn-brand:hover:not(:disabled) {
     background-color: var(--brand-strong);
@@ -1242,7 +1254,7 @@
       0 0 9px rgba(3, 6, 12, 0.95),
       0 0 3px rgba(3, 6, 12, 1);
     will-change: opacity, transform;
-    transition: opacity 0.16s linear;
+    transition: opacity var(--dur-fade) linear;
   }
   /* 外层 transform 由 CSS2DRenderer 每帧覆写，抬升与避让偏移只作用在这一层 */
   .graph-plaque-off {

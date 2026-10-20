@@ -39,7 +39,7 @@ export function Toggle({
       disabled={disabled}
       onClick={() => !disabled && onChange(!checked)}
       className={[
-        "relative inline-flex shrink-0 items-center rounded-full transition-colors duration-150",
+        "relative inline-flex shrink-0 items-center rounded-full transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]",
         dims,
         checked ? "bg-[#ef4444]" : "bg-[var(--border)]",
         disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
@@ -49,7 +49,7 @@ export function Toggle({
       <span
         aria-hidden
         className={[
-          "inline-block transform rounded-full bg-white shadow transition-transform duration-150",
+          "inline-block transform rounded-full bg-white shadow transition-transform duration-[var(--dur-chip)] ease-[var(--ease-out)]",
           size === "sm" ? "h-4 w-4" : "h-5 w-5",
           checked ? knobChecked : "translate-x-0.5",
         ].join(" ")}

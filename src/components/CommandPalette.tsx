@@ -184,7 +184,7 @@ export function CommandPalette({
                   data-cmd-active={i === active || undefined}
                   onClick={() => choose(row)}
                   onMouseEnter={() => setActive(i)}
-                  className={`flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-sm transition-colors duration-100 ${
+                  className={`flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-sm transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                     i === active
                       ? "bg-[var(--hover-bg)] text-[var(--t1)]"
                       : "text-[var(--t3)]"

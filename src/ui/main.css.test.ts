@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 // main.css 静态结构锁（vitest 配置 css:false 会把 .css 导入吞成空串，直接读文件）。
 //
@@ -8,7 +9,16 @@ import { readFileSync } from "node:fs";
 // 2) nm-card-hover 过渡对称：hover 块改了哪些属性，基类 transition 必须同样声明，
 //    否则鼠标进入平滑、离开瞬间弹回。 换扁平材质后 hover 信号 = 背景抬升 +
 //    边框提亮，不再有 transform/shadow 跳变；基类 transition 同时覆盖进出场。
+// 3) 动效 token 层：曲线与时长的唯一来源。库里每条 transition 都得引用 token——
+//    手写一次就多一个分叉，同一个「hover 一个控件」迟早有快有慢。
 const css = readFileSync("src/ui/main.css", "utf-8");
+
+/** src/ 下的业务 tsx（测试文件除外）：动效类串的扫描范围 */
+function tsxFiles(): string[] {
+  return readdirSync("src", { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith(".tsx") && !f.includes(".test."));
+}
 
 describe("滚动条主题适配（main.css）", () => {
   it("color-scheme 随深浅主题切换", () => {
@@ -33,7 +43,7 @@ describe("main.css nm-card-hover 过渡对称", () => {
   it("基类 transition 声明 hover 变化的属性（background/border），hover 块不引入 transform", () => {
     // 基类 .nm-card, .nm-card-hover 块：transition 覆盖 hover 全部变化属性
     expect(css).toMatch(
-      /transition:\s*background-color 0\.15s ease,\s*border-color 0\.15s ease;[\s\S]*?\.nm-card-hover:hover/,
+      /transition:\s*background-color var\(--dur-card\) var\(--ease-out\),\s*border-color var\(--dur-card\) var\(--ease-out\);[\s\S]*?\.nm-card-hover:hover/,
     );
     // hover 块只改背景与边框（扁平悬停），不得引入 transform/shadow 跳变
     const hoverBlock = css.match(/\.nm-card-hover:hover\s*\{([^}]*?)\}/);
@@ -53,6 +63,58 @@ describe("main.css 主滚动容器 app-scroll", () => {
     // 吸顶头部的高度由滚动进度驱动、每帧都在变，而进度又来自 scrollY——
     // 两者相扣成环。关掉锚定，滚动语义由应用自己管。
     expect(css).toMatch(/\.app-scroll\s*\{[^}]*overflow-anchor:\s*none/);
+  });
+});
+
+describe("动效 token 层（main.css）", () => {
+  it("定义了动效曲线与时长 token", () => {
+    expect(css).toMatch(/--ease-out:\s*cubic-bezier\(0\.23,\s*1,\s*0\.32,\s*1\)/);
+    expect(css).toMatch(/--ease-pulse:\s*cubic-bezier\(0,\s*0,\s*0\.58,\s*1\)/);
+    expect(css).toMatch(/--dur-chip:\s*100ms/);
+    expect(css).toMatch(/--dur-card:\s*150ms/);
+    expect(css).toMatch(/--dur-fade:\s*150ms/);
+    expect(css).toMatch(/--dur-tooltip:\s*150ms/);
+  });
+
+  it("main.css 的 transition 声明不再有手写时长/曲线字面量", () => {
+    // 减少动效兜底那行 transition-duration: 0.01ms 不在此列——它不是过渡，是全局掐断
+    expect(css).not.toMatch(/transition:[^;]*\b\d+m?s\b/);
+  });
+
+  it("tsx 里的 transition-* 工具类都带 token 时长与曲线", () => {
+    // 扫字符串字面量而不是 className 属性：Toggle / App 的类串是数组 join，
+    // 类名活在变量里，按属性扫会漏掉那几处。
+    const TRANSITION = /transition-(?:colors|opacity|transform|\[[^\]]+\])/;
+    const offenders: string[] = [];
+    for (const f of tsxFiles()) {
+      const src = readFileSync(join("src", f), "utf-8");
+      for (const m of src.matchAll(/"([^"]*)"|`([^`]*)`/g)) {
+        const lit = m[1] ?? m[2] ?? "";
+        if (!TRANSITION.test(lit)) continue;
+        if (
+          !/duration-\[var\(--dur-/.test(lit) ||
+          !/ease-\[var\(--ease-/.test(lit)
+        ) {
+          offenders.push(`${f}: ${lit.trim().slice(0, 80)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("没有死 token：每个动效 token 都得有人用", () => {
+    // 定了不用的 token 就是下一个分叉源：先定义、后没人引用，久了就成了
+    // 「这值到底是多少也没人知道」的遗产。定义与使用同一批落地。
+    const defined = [...css.matchAll(/^\s*(--(?:ease|dur)-[a-z-]+):/gm)].map(
+      (m) => m[1],
+    );
+    expect(defined.length).toBeGreaterThan(0);
+    const sources = [
+      css,
+      ...tsxFiles().map((f) => readFileSync(join("src", f), "utf-8")),
+    ].join("\n");
+    const unused = defined.filter((t) => !sources.includes(`var(${t})`));
+    expect(unused).toEqual([]);
   });
 });
 

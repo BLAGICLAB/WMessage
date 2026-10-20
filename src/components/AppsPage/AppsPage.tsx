@@ -472,7 +472,7 @@ function TabChip({
   return (
     <button
       type="button"
-      className={`rounded-[var(--r-sm)] px-2 py-0.5 text-[10px] transition-colors ${
+      className={`rounded-[var(--r-sm)] px-2 py-0.5 text-[10px] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
         active
           ? "bg-[var(--hover-bg)] font-medium text-[var(--t1)]"
           : "text-[var(--t5)] hover:text-[var(--t3)]"

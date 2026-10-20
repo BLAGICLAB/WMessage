@@ -139,7 +139,7 @@ export function GraphMini({
         <h3 className="text-[13px] font-semibold text-[var(--t3)]">图谱速览</h3>
         <button
           onClick={onMore}
-          className="ml-auto rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+          className="ml-auto rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
         >
           图谱页
         </button>

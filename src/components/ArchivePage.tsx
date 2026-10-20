@@ -123,7 +123,7 @@ export function ArchivePage({
       {tagCounts.length > 0 && (
         <details className="mt-3 group">
           <summary className="text-[11px] text-[var(--t5)] cursor-pointer select-none hover:text-[var(--t3)] flex items-center gap-1.5">
-            <span className="inline-block transition-transform group-open:rotate-90">
+            <span className="inline-block transition-transform duration-[var(--dur-chip)] ease-[var(--ease-out)] group-open:rotate-90">
               ▶
             </span>
             标签（{tagCounts.length}）{activeTag && (
@@ -146,7 +146,7 @@ export function ArchivePage({
             {tagCounts.map(([tag, count]) => (
               <button
                 key={tag}
-                className={`px-2.5 py-1 text-xs rounded-full transition-colors ${
+                className={`px-2.5 py-1 text-xs rounded-full transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                   activeTag === tag
                     ? "nm-inset text-[var(--t1)] font-medium"
                     : "nm-outset text-[var(--t4)] hover:text-[var(--t2)]"

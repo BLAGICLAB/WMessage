@@ -159,7 +159,7 @@ function RailButton({
   badge?: number;
 }) {
   const base =
-    "flex h-8 w-full items-center gap-2 px-2.5 text-sm transition-colors duration-100";
+    "flex h-8 w-full items-center gap-2 px-2.5 text-sm transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]";
   let skin: string;
   if (variant === "action") {
     skin = "nm-btn text-[var(--t3)]";

@@ -317,7 +317,7 @@ export function InputArea({
           <button
             type="button"
             aria-label="添加文件或图片"
-            className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
+            className="shrink-0 h-7 px-1.5 flex items-center justify-center rounded-lg text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]"
             title="添加文件或图片，和消息一起发送（如：添加 Word 后输入「润色」；图片发给机器人识别：png / jpg / jpeg / webp / gif / bmp，最大 3MB/张、最多 4 张/消息）"
             onClick={pickFiles}
             disabled={viewedBusy}
@@ -335,7 +335,7 @@ export function InputArea({
               ref={permBtnRef}
               aria-haspopup="listbox"
               aria-expanded={perm.menuOpen}
-              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] leading-4 transition-colors ${
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] leading-4 transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                 perm.mode === "yolo"
                   ? "border-[var(--danger,#ef4444)] text-[var(--danger,#ef4444)] hover:bg-[var(--hover-bg)]"
                   : "border-[var(--edge)] text-[var(--t4)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
@@ -402,7 +402,7 @@ export function InputArea({
             <button
               type="button"
               ref={modelBtnRef}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]"
               title="切换模型"
               onClick={() => model.setMenuOpen((v) => !v)}
             >
@@ -467,7 +467,7 @@ export function InputArea({
             <button
               type="button"
               ref={effortBtnRef}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors"
+              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]"
               title="推理强度：只影响当前会话的发送，不写入设置"
               onClick={() => effort.setMenuOpen((v) => !v)}
             >
@@ -520,7 +520,7 @@ export function InputArea({
             <button
               type="button"
               aria-label="停止当前回复"
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors"
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center border border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]"
               title="停止当前回复"
               onClick={onStop}
             >
@@ -529,7 +529,7 @@ export function InputArea({
           ) : (
             <button
               type="button"
-              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-opacity"
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[var(--t1)] text-[var(--bg)] hover:opacity-85 transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)]"
               title="发送（Enter 发送，Shift+Enter 换行）"
               aria-label="发送"
               onClick={send}

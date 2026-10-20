@@ -75,7 +75,7 @@ export function BingCard() {
           <p className="line-clamp-2 text-xs text-[var(--t5)]">{error}</p>
           <button
             onClick={load}
-            className="mt-1 flex items-center gap-1.5 rounded-md border border-[var(--edge-strong)] px-2.5 py-1 text-xs text-[var(--t2)] transition-colors hover:bg-[var(--hover-bg)]"
+            className="mt-1 flex items-center gap-1.5 rounded-md border border-[var(--edge-strong)] px-2.5 py-1 text-xs text-[var(--t2)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)]"
           >
             <RotateCw size={12} aria-hidden />
             重试
