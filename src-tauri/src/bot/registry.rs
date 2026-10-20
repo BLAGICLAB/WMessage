@@ -327,6 +327,11 @@ pub const SCHEMA_PACK_ARCHIVE: &str = r##"{"type":"function","function":{"name":
     "outputPath":{"type":"string","description":"输出压缩包路径（须在可写目录内，白名单外会弹确认）；不给则 AI_Gen_Files/<源名>.zip"},
     "format":{"type":"string","enum":["zip","tar.gz"],"description":"压缩格式（可选）：不给按输出路径后缀判定（.tar.gz / .tgz → tar.gz，否则 zip）"}
   },"required":["sourcePath"]}}}"##;
+pub const SCHEMA_MANAGE_FILE: &str = r##"{"type":"function","function":{"name":"manage_file","description":"文件复制 / 移动 / 删除。copy 复制（源保留）、move 移动（源消失，同卷直接重命名、跨卷复制后源入回收站）、delete 删除（进系统回收站，删前弹窗请用户确认，60s 无响应默认拒绝）。源路径须在读白名单内（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs），目标路径须在可写目录内（AI_Gen_Files + 任务卡绑定文件夹 + allowedDirs，白名单外弹确认）；目标已存在一律不覆盖；目录树里的符号链接既不跟随也不复制。copy/move 的目标按「已生成」计入产物，报告时必须附上完整目标路径","parameters":{"type":"object","properties":{
+    "action":{"type":"string","enum":["copy","move","delete"],"description":"操作类型：copy=复制 / move=移动 / delete=删除（进回收站）"},
+    "path":{"type":"string","description":"源路径（绝对路径，支持 ~ 开头；copy/move 的源、delete 的目标）"},
+    "dest":{"type":"string","description":"目标路径（copy/move 必填；delete 不需要）"}
+  },"required":["action","path"]}}}"##;
 pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
@@ -558,6 +563,17 @@ fn call_pack_archive<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> 
     let session_id = ctx.session_id.map(|s| s.to_string());
     Box::pin(async move {
         crate::bot_archive::tool_pack_archive(&app, &args, interactive, session_id.as_deref()).await
+    })
+}
+
+fn call_manage_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_manage_file::tool_manage_file(&app, &args, interactive, session_id.as_deref())
+            .await
     })
 }
 
@@ -1607,7 +1623,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 47;
+pub const BUILTIN_TOOL_COUNT: usize = 48;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2069,6 +2085,15 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &["已打包", "已压缩", "已生成压缩包"],
         max_output_bytes: 8192,
         call: call_pack_archive,
+    },
+    // 文件复制 / 移动 / 删除。追加在表尾：与归档工具同理由——基线只比前缀。
+    ToolDef {
+        name: "manage_file",
+        schema: SCHEMA_MANAGE_FILE,
+        mutating: true,
+        claims_patterns: &["已复制", "已拷贝", "已移动", "已移到"],
+        max_output_bytes: 8192,
+        call: call_manage_file,
     },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
@@ -2581,6 +2606,7 @@ mod registry_tests {
             "ast_inspect",
             "unpack_archive",
             "pack_archive",
+            "manage_file",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2643,6 +2669,7 @@ mod registry_tests {
             "ast_inspect",
             "unpack_archive",
             "pack_archive",
+            "manage_file",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2679,6 +2706,7 @@ mod registry_tests {
             "apps_update_files",
             "unpack_archive",
             "pack_archive",
+            "manage_file",
         ]
         .into_iter()
         .collect();
@@ -2734,8 +2762,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 17,
-            "主可见应为 28+3+4+2+1+1+3+1+2（末位 +2 = 归档两工具）"
+            base_arr.len() + 18,
+            "主可见应为 28+3+4+2+1+1+3+1+3（末位 +3 = 归档两工具 + manage_file）"
         );
     }
 

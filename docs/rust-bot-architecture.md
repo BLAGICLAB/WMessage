@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1074)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1075)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -115,7 +115,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3331)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3359)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1445)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
@@ -205,6 +205,11 @@ src-tauri/src/
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
 │                        200:1 封顶；已存在的文件不覆盖（跳过并列出）；解包只认源在读白名单、
 │                        落点在写白名单
+├── bot_manage_file.rs (402) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
+│                        move 移动（同卷 rename、跨卷复制后源入回收站）/ delete 删除
+│                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
+│                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
+│                        软链既不跟随也不复制
 ├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
 ├── bot_py.rs (1365)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
@@ -476,7 +481,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 160 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 161 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 通过相对路径或文件名提及强制要求；任何新增模块请同步登记。
 
 ### 顶层
@@ -491,6 +496,7 @@ flowchart TD
 - `bot_artifacts.rs`
 - `bot_chat.rs`
 - `bot_fs.rs`
+- `bot_manage_file.rs`
 - `bot_model_loop.rs`
 - `bot_onions.rs`
 - `bot_plan.rs`
