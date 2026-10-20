@@ -186,7 +186,7 @@ M3 与 M4 是一对（尺度体系），改完 150 任务的观感再变一次�
 npx tsc --noEmit         ✓
 npx knip --no-progress   ✓
 npx oxlint src           ✓（exit 0，仅既有 warning）
-npx vitest run           85 文件 / 855 用例全绿
+npx vitest run           85 文件 / 856 用例全绿
 cargo test --lib         1539 例全绿
 ```
 
@@ -200,7 +200,10 @@ cargo test --lib         1539 例全绿
 
 ## 六、遗留
 
-- **`ChatPanel.test.tsx > 流式事件按会话过滤` 偶发红**（8 次全量跑里 2 次）。与图谱无关：
-  `src/test/scrollNoop.ts` 的 `scrollTo` stub 是 scoped 的（`beforeEach` 装、
-  `afterEach` 删），React 的 passive effect 在 teardown 之后才 flush 就撞上窗口期。
-  一行修法（stub 提到全局 setup，或延到 unmount 后再删），当时未在本批处理。
+- **`ChatPanel.test.tsx > 流式事件按会话过滤` 偶发红**（8 次全量跑里 2 次）——2026-10-21 已修。
+  根因不是「时序敏感」：自动滚动那行 `scrollRef.current?.scrollTo(...)` 的可选链
+  只挡 ref 为空，挡不住**方法缺失**——缺 scrollTo 的环境里这行抛 TypeError，抛在
+  passive effect 里就落到随机某个用例头上（红的那条用例只是撞上的，不是肇事的）。
+  两条都补上：组件侧显式判方法在不在再调（`4498ead`，配回归用例「环境没有
+  scrollTo 时不炸」）；测试侧把 scrollTo stub 从「按用例摘除」改成「文件内常驻、
+  文件末清掉」，补掉原型方法的空档期（`bf20686`）。
