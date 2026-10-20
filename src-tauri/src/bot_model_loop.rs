@@ -39,6 +39,21 @@ fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> 
     MUTATING_TOOLS().iter().any(|t| t == &name) && result.status.is_success()
 }
 
+/// 变更声称守卫的判定：终稿声称改了东西，而本轮**没有动过手**。
+///
+/// 「动过手」有两类凭据：
+/// - `mutation_done`：变更类工具（写盘 / 建任务卡…）调用成功；
+/// - `unverifiable_ran`：跑过**能改状态但核验不了凭证**的工具
+///   （run_python 自己写盘、MCP 工具在外部服务里执行、子 agent 代劳）。
+///   这类的副作用不进我们的痕迹表，「没凭证」推不出「没动手」——少了这条，
+///   「用 Python 写完文件并如实汇报」会被当成凭空汇报，模型被迫重跑
+///   （副作用翻倍），终稿末尾还会挂一条「这句没有对应凭证」的更正。
+///
+/// 口径与落盘凭证那道闸一致（同一份 unverifiable_ran）。
+fn claim_mutation_fires(mutation_done: bool, unverifiable_ran: bool, text: &str) -> bool {
+    !mutation_done && !unverifiable_ran && claims_mutation(text)
+}
+
 /// 从 ToolDef 注册表派生的变更声称检测。
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
@@ -2697,24 +2712,24 @@ where
                     break;
                 }
             }
+            // 本次提问跑过「自己能写盘、我们无从确证」的工具（run_python 无文件
+            // 系统隔离、MCP 工具在外部服务里执行）——它们能写出文件却不经过
+            // 我们的凭证，「没凭证」推不出「不是工具产物」，这两道闸都必须让开。
+            //
+            // 口径是**本次提问**，不是整个会话：早先按会话判，一次 run_python
+            // 会把这条会话后续所有提问的凭证闸全打死。
+            //
+            // 派过子 agent 也让开：子 agent 的调用不落我们的痕迹表（它的
+            // trace_id 是 'trc_xxx' 字符串，与 exec_spans 的整数 trace_id 类型
+            // 都对不上，join 永远不成立），它写的文件在这道闸眼里永远没凭证。
+            let unverifiable_ran = receipts
+                .iter()
+                .any(|n| n == "run_python" || n.starts_with("mcp_"))
+                || receipts.iter().any(|n| n == "spawn_subagent");
             // 落盘凭证这道要在存在性过了之后才问：路径压根不存在时已经判编造，
             // 没必要再查库。
             let mut unreceipted_path: Option<String> = None;
             if fake_gen_path.is_none() && !claimed_paths.is_empty() {
-                // 本次提问跑过「自己能写盘、我们无从确证」的工具（run_python 无文件
-                // 系统隔离、MCP 工具在外部服务里执行）——它们能写出文件却不经过
-                // 我们的凭证，「没凭证」推不出「不是工具产物」，这道必须让开。
-                //
-                // 口径是**本次提问**，不是整个会话：早先按会话判，一次 run_python
-                // 会把这条会话后续所有提问的凭证闸全打死。
-                //
-                // 派过子 agent 也让开：子 agent 的调用不落我们的痕迹表（它的
-                // trace_id 是 'trc_xxx' 字符串，与 exec_spans 的整数 trace_id 类型
-                // 都对不上，join 永远不成立），它写的文件在这道闸眼里永远没凭证。
-                let unverifiable_ran = receipts
-                    .iter()
-                    .any(|n| n == "run_python" || n.starts_with("mcp_"))
-                    || receipts.iter().any(|n| n == "spawn_subagent");
                 if !unverifiable_ran {
                     let pending: Vec<String> = claimed_paths
                         .iter()
@@ -2730,7 +2745,16 @@ where
                     }
                 }
             }
-            let claim_mutation = !mutation_done && claims_mutation(&final_text);
+            // 「动过手」的凭据：变更类工具成功（mutation_done），**或**跑过
+            // 不可核验但确实改状态的工具（run_python / MCP 工具 / 子 agent）。
+            //
+            // 后者的副作用核验不了凭证，但「没凭证」推不出「没动手」——少了
+            // 这一条，「用 Python 写完文件并如实汇报」会被守卫当成凭空汇报：
+            // 变更声称命中（write_file 的「已写入」等），而 mutation_done 是
+            // 假的，守卫把终稿推回让模型重跑，副作用翻倍，末尾还会挂一条
+            // 「这句没有对应凭证」的更正。口径与上面落盘凭证那道闸一致。
+            let claim_mutation =
+                claim_mutation_fires(mutation_done, unverifiable_ran, &final_text);
             // 执行类谎报：本回合零工具成功，终稿却在叙述执行结果。此前守卫只有
             // mutating 一档，run_python / fetch_url 这类非 mutating 工具可以被凭空
             // 叙述——实测两起：原话一「执行完毕，sleep 120 秒后工具真实返回，打印了
@@ -4459,6 +4483,40 @@ mod hallucination_guard_tests {
         use crate::bot::registry::ToolStatus;
         // 只读工具即使成功也不算变更
         assert!(!mutation_succeeded("list_tasks", &tr(ToolStatus::Ok)));
+    }
+
+    /// 变更声称守卫：跑过「能改状态但核验不了凭证」的工具后，如实汇报
+    /// 不该被判成凭空汇报。
+    ///
+    /// 典型误伤：模型用 run_python 写完文件，如实说「已写入 /tmp/a.csv」
+    /// ——「已写入」命中 write_file 的声称话术，但 run_python 不在变更类
+    /// 工具里，mutation_done 是假的 → 守卫把终稿推回让模型重跑，副作用
+    /// 翻倍，末尾还挂一条「这句没有对应凭证」的更正。
+    #[test]
+    fn claim_mutation_does_not_fire_after_unverifiable_tool_ran() {
+        let text = "已写入 /tmp/a.csv";
+        assert!(
+            claims_mutation(text),
+            "「已写入」确实是变更声称话术（对照组）"
+        );
+        assert!(
+            claim_mutation_fires(false, false, text),
+            "什么都没动过却声称写入 → 该拦"
+        );
+        assert!(
+            !claim_mutation_fires(false, true, text),
+            "run_python 写过盘 → 「没凭证」推不出「没动手」，不该拦"
+        );
+        // 变更类工具成功过 → 同样不该拦
+        assert!(!claim_mutation_fires(true, false, text));
+    }
+
+    /// 守卫仍要拦得住真正的凭空汇报：不可核验工具没跑过时照拦。
+    #[test]
+    fn claim_mutation_still_fires_without_any_receipt() {
+        assert!(claim_mutation_fires(false, false, "已把任务移至回收站"));
+        // 没有变更声称 → 不拦
+        assert!(!claim_mutation_fires(false, false, "今天天气不错"));
     }
 }
 
