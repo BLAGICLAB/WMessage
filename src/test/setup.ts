@@ -48,9 +48,10 @@ if (typeof window !== "undefined" && !window.matchMedia) {
   });
 }
 
-// Element.scrollTo / scrollIntoView 的 jsdom noop 已按 suite scope 收进
-// src/test/scrollNoop.ts（渲染 ChatPanel 的测试文件各自引入）——
-// 不再全局常驻原型补丁（原型链安全规则）。
+// Element.scrollTo / scrollIntoView 的 jsdom noop 已按文件 scope 收进
+// src/test/scrollNoop.ts（渲染 ChatPanel 的测试文件各自引入，文件末清掉）——
+// 不在全局 setup 里常驻原型补丁（原型链安全规则）；文件内也不按用例摘除：
+// 摘掉到重装之间有空档，passive effect 撞上就是随机某个用例的红。
 
 // crypto.randomUUID 在 jsdom 中默认存在，但部分老环境下缺失；这里兜底
 if (typeof globalThis.crypto === "undefined") {
