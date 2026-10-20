@@ -1116,9 +1116,12 @@
     }
   }
 
-  /* 拖拽幽灵：跟随指针的半成品块（fixed 定位，位置内联注入） */
+  /* 拖拽幽灵：跟随指针的半成品块（fixed 定位，位移走 transform——
+     left/top 是布局属性，拖拽全程每帧写一次就重排一次） */
   .drag-ghost {
     position: fixed;
+    left: 0;
+    top: 0;
     z-index: 50;
     pointer-events: none;
     width: 180px;

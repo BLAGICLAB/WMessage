@@ -231,6 +231,38 @@ describe("按压反馈", () => {
   });
 });
 
+describe("拖拽幽灵的定位方式", () => {
+  const TIMELINE = "src/components/TaskTimeline/TaskTimelinePage.tsx";
+
+  it("幽灵用 transform 定位，不写 left/top（布局属性逐帧写会每帧重排）", () => {
+    const src = readFileSync(TIMELINE, "utf-8");
+    const ghostBlock =
+      src.match(/className="drag-ghost"[\s\S]*?style=\{([\s\S]*?)\}/)?.[1] ?? "";
+    expect(ghostBlock).toContain("translate3d");
+    expect(ghostBlock).not.toContain("left: ghost.x");
+    expect(ghostBlock).not.toContain("top: ghost.y");
+  });
+
+  it("幽灵的定位原点固定在左上角（位移只由 transform 给）", () => {
+    const block = css.match(/\.drag-ghost\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(block).toMatch(/left:\s*0/);
+    expect(block).toMatch(/top:\s*0/);
+  });
+
+  it("幽灵尺寸只量一次（逐帧读 offsetWidth 会强制同步布局）", () => {
+    const src = readFileSync(TIMELINE, "utf-8");
+    expect(src).toContain("ghostSizeRef");
+    // 剥掉注释再数：注释里提到 offsetWidth 不算一次读取
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    // 读取必须落在「缓存为空且元素在」的守卫里，且读完写回缓存
+    expect(code).toMatch(
+      /if \(![A-Za-z_$][\w$]* && ghostRef\.current\) \{[\s\S]*?offsetWidth[\s\S]*?offsetHeight[\s\S]*?ghostSizeRef\.current = [A-Za-z_$][\w$]*;/,
+    );
+    // 不允许每帧裸读
+    expect(code).not.toMatch(/ghostRef\.current\?\.offset(Width|Height)/);
+  });
+});
+
 describe("main.css 共享弹层入场", () => {
   it("遮罩淡入、面板从中心缩放入场，缩放起点在 0.9–0.97", () => {
     const backdrop = css.match(/\.modal-backdrop\s*\{([^}]*)\}/)?.[1] ?? "";

@@ -1,7 +1,7 @@
 # 006 — 拖拽幽灵改用 transform 定位，去掉逐帧布局写入
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §5 Performance
 - **Estimated scope**: 2 个文件（`TaskTimelinePage.tsx` + `main.css`），约 20 行改动
@@ -169,3 +169,45 @@
   - 上面那条测试全绿。
   - Performance 面板里拖拽期间没有因幽灵引起的 layout 事件。
 
+
+## 落地记录
+
+落地与本计划一致，无偏差。两处与计划写法不同，理由如下。
+
+**一、尺寸缓存改成「量到才缓存」。** 计划给的写法是
+`const gs = ghostSizeRef.current ?? { w: ghostRef.current?.offsetWidth ?? 180, ... }`，
+再 `if (!ghostSizeRef.current && gs.w) ghostSizeRef.current = gs;`——但那样第一次
+pointermove 时幽灵元素**还没挂上**（`ghost` 状态是这次 move 才 set 的），读到的
+`?? 180` / `?? 54` 是兜底值，且因为 `gs.w` 为真（180）而**被当成实测值缓存下来**，
+之后再也不量。改法是只有 `ghostRef.current` 真的在时才量、才写缓存；元素不在就用
+兜底值过这一帧，下一帧再量。行为与改动前一致（改动前也是元素挂上后才读到真实值）。
+
+**二、`.drag-ghost` 的高度确实是固定的**，缓存是安全的：标题 `white-space: nowrap;
+overflow: hidden; text-overflow: ellipsis`（单行），标签也是单行，宽度固定 180px。
+拖拽过程中标签文案会变（「至 18:30」/「松手取消」/「拖到时间轴上排期」），但都是
+单行，高度不变；标题在整次拖拽内不变。所以每次拖拽量一次即可——`startDrag` 里把缓存
+置 `null`，让下一次拖拽重新量（不同任务标题可能让高度差一像素）。
+
+**坐标等价性实测**（Chromium，两个 `position: fixed` 元素分别用两种定位方式落在
+413,287）：`getBoundingClientRect()` 的 x/y/width/height **完全一致**（dx=0 dy=0
+dw=0 dh=0）。`left: 0; top: 0` + `translate3d(x, y, 0)` 与原来的 `left: x; top: y`
+是像素级等价，不存在计划里担心的 1px 偏移。
+
+**静态锁四条**：
+
+- DOM 级（`TaskTimelinePage.test.tsx`）：拖起来之后幽灵的 `style.transform` 形如
+  `translate3d(Xpx, Ypx, 0)`，且 `style.left` / `style.top` 为空串。DOM 断言比扫
+  源码文本强——源码写了 transform 但没真正落到元素上，DOM 断言照样红。
+- 源码级（`main.css.test.ts`）：幽灵的 style 块里有 `translate3d`、没有
+  `left: ghost.x` / `top: ghost.y`。
+- 源码级：`.drag-ghost` 的 CSS 里 `left: 0` / `top: 0` 都在（transform 是唯一位移源）。
+- 源码级：幽灵尺寸的读取必须落在「缓存为空且元素在」的守卫里且读完写回缓存，
+  不允许出现 `ghostRef.current?.offsetWidth` 这种每帧裸读。
+
+四条都做过反向验证：撤掉 transform → 2 条红；撤掉 CSS 的 `left/top: 0` → 1 条红；
+退回每帧裸读 → 1 条红。
+
+**没做的**：`.plan-slot`（落点提示框）仍每帧改 `top` / `height`——它是静态提示，不跟随
+指针，只在落点变化时才需要重算，按计划边界不动。整棵时间轴树在 pointermove 里重渲染
+（`setGhost` / `setSlot` / `setDragEvade`）也没碰——那要先稳定回调引用，是独立且更大的
+重构。
