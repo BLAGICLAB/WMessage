@@ -49,7 +49,7 @@ export function Toggle({
       <span
         aria-hidden
         className={[
-          "inline-block transform rounded-full bg-white shadow transition-transform duration-[var(--dur-chip)] ease-[var(--ease-out)]",
+          "inline-block transform rounded-full bg-white shadow transition-transform duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]",
           size === "sm" ? "h-4 w-4" : "h-5 w-5",
           checked ? knobChecked : "translate-x-0.5",
         ].join(" ")}

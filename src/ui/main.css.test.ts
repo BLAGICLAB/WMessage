@@ -198,3 +198,35 @@ describe("main.css nm-card 的 opacity 过渡腿", () => {
     );
   });
 });
+
+describe("按压反馈", () => {
+  const PRESS_FILES = [
+    "src/components/Toggle/Toggle.tsx",
+    "src/components/ChatPanel/InputArea.tsx",
+  ];
+
+  it("Toggle 与聊天输入栏按钮有按压反馈", () => {
+    for (const f of PRESS_FILES) {
+      expect(readFileSync(f, "utf-8")).toContain("active:scale-[0.97]");
+    }
+    const input = readFileSync("src/components/ChatPanel/InputArea.tsx", "utf-8");
+    // 发送键的过渡必须覆盖 transform：transition-opacity 只过渡 opacity，
+    // 按压时的缩放会瞬切
+    expect(input).toMatch(/transition-\[opacity,transform\]/);
+  });
+
+  it("按压缩放的元素，其过渡必须覆盖 transform（否则缩放是瞬切）", () => {
+    const offenders: string[] = [];
+    for (const f of PRESS_FILES) {
+      const src = readFileSync(f, "utf-8");
+      for (const m of src.matchAll(/"([^"]*)"|`([^`]*)`/g)) {
+        const lit = m[1] ?? m[2] ?? "";
+        if (!lit.includes("active:scale-[0.97]")) continue;
+        if (!/transition-(transform|\[[^\]]*transform[^\]]*\])/.test(lit)) {
+          offenders.push(`${f}: ${lit.trim().slice(0, 90)}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});

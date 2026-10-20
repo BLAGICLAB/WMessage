@@ -1,7 +1,7 @@
 # 009 — 给没走 nm-btn 家族的高频控件补上按压反馈
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §3 Physicality & origin
 - **Estimated scope**: 3 个 tsx，约 8 行改动
