@@ -7,9 +7,11 @@ import { TaskDetailPanel } from "./TaskDetailPanel";
  * 和左缘偏移，两个值都从 LEFT 推导保持同步。宽度本身 import 自 navWidth
  * （口径单源），不在这里复写数字——复写一次就是一次静默错位。 */
 const LEFT = NAV_W + NAV_GAP;
+/** 滑入时长（ms）：与 main.css 的 --dur-drawer 同值。过渡本身走 CSS token，
+ *  这个常量只用来算退场兜底；两处同值由静态锁钉住。 */
 const SLIDE_MS = 240;
-/** 退场卸载兜底：略大于 SLIDE_MS（transitionend 事件在 jsdom/降级路径不触发） */
-const EXIT_MS = 280;
+/** 退场卸载兜底：略大于滑入时长（transitionend 事件在 jsdom/降级路径不触发） */
+const EXIT_MS = SLIDE_MS + 40;
 
 /** 全局任务编辑浮窗（毛玻璃上层窗）：fixed 悬浮在当前页面之上，从左滑入、
  *  向左滑出，任何导航页都可打开（新建/编辑统一入口）。
@@ -68,7 +70,8 @@ export function TaskEditorOverlay({
         left: LEFT,
         transform: shown ? "translateX(0)" : `translateX(calc(-100% - ${LEFT}px))`,
         opacity: shown ? 1 : 0,
-        transition: `transform ${SLIDE_MS}ms cubic-bezier(0.05, 0.7, 0.1, 1), opacity 180ms ease`,
+        transition:
+          "transform var(--dur-drawer) var(--ease-out), opacity var(--dur-drawer) var(--ease-out)",
       }}
     >
       <TaskDetailPanel

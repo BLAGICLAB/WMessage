@@ -79,6 +79,7 @@ describe("动效 token 层（main.css）", () => {
     expect(css).toMatch(/--dur-card:\s*150ms/);
     expect(css).toMatch(/--dur-fade:\s*150ms/);
     expect(css).toMatch(/--dur-tooltip:\s*150ms/);
+    expect(css).toMatch(/--dur-drawer:\s*240ms/);
   });
 
   it("main.css 的 transition 声明不再有手写时长/曲线字面量", () => {

@@ -1,6 +1,9 @@
 # 动效改进计划（improve-animations 审计产出）
 
-全仓动效审计（`src/`，147 个 tsx + `src/ui/main.css`）的落地计划。**19 条高置信发现，其中 17 条落成计划**（2 条 LOW 未落计划：ContextRail 的 `nm-inset` 过渡随状态增删、LiveIndicator 内联 `animation` 压过定向 reduced-motion 覆盖）。
+全仓动效审计（`src/`，147 个 tsx + `src/ui/main.css`）的落地计划。**19 条高置信发现，其中 18 条落成计划**（2 条 LOW 未落计划：ContextRail 的 `nm-inset` 过渡随状态增删、LiveIndicator 内联 `animation` 压过定向 reduced-motion 覆盖）。
+
+> **019**（任务编辑浮窗的内联手写过渡收归 token）是收尾时补上的缺口：原 18 条计划都没覆盖
+> `TaskEditorOverlay.tsx` 那条内联过渡，它是全仓最后一处没进 token 层的动效。
 
 - **审计基线**：`5f8d82e7`（起审时）→ 复核于 `b22387c7`（审计期间仓库被并发提交，EvolutionPanel 已删）
 - **各计划锚定的 commit**：`b22387c7`
@@ -29,6 +32,7 @@
 | [016](016-archive-locate-reduced-motion.md) | 归档定位的平滑滚动要听减少动效的话 | MEDIUM | §6 | — | 已完成 |
 | [017](017-command-palette-instant-highlight.md) | ⌘K 命令面板的键盘高亮改为瞬时 | MEDIUM | §1 / §7 | **必须晚于 001** | 已完成 `07526ffd` |
 | [018](018-home-header-scroll-jitter.md) | 首页吸顶头部滚动收缩时抖动（Windows 尤其明显） | HIGH | §4 / §5 | **必须先于 003**（同改头部内部） | 已完成 `dcc330f2` |
+| [019](019-task-editor-overlay-token.md) | 任务编辑浮窗的内联手写过渡收归 token | MEDIUM | §2 / §7 | 001（token） | 已完成 |
 
 ## 推荐执行顺序
 

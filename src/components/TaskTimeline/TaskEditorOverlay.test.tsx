@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { TaskEditorOverlay } from "./TaskEditorOverlay";
 import { NAV_GAP, NAV_W } from "../../lib/navWidth";
 import type { Task } from "../../types";
@@ -113,5 +114,30 @@ describe("TaskEditorOverlay", () => {
     await user.keyboard("abc");
     // 全选态下输入直接覆盖旧值
     expect(title.value).toBe("abc");
+  });
+});
+
+describe("TaskEditorOverlay 的入场过渡口径", () => {
+  const src = readFileSync("src/components/TaskTimeline/TaskEditorOverlay.tsx", "utf-8");
+  const css = readFileSync("src/ui/main.css", "utf-8");
+
+  it("位移与透明度两条腿都走 token，不再手写曲线与时长", () => {
+    const transition = src.match(/transition:\s*\n?\s*"([^"]+)"/)?.[1] ?? "";
+    expect(transition).toBe(
+      "transform var(--dur-drawer) var(--ease-out), opacity var(--dur-drawer) var(--ease-out)",
+    );
+    // CSS 关键字 ease 与手写 cubic-bezier 都不该再出现
+    expect(transition).not.toMatch(/cubic-bezier/);
+    expect(transition).not.toMatch(/[\d.]+m?s\s/);
+  });
+
+  it("抽屉时长在 CSS token 与 TS 常量之间同值（改一处必须改两处）", () => {
+    const token = css.match(/--dur-drawer:\s*(\d+)ms/)?.[1];
+    const constant = src.match(/const SLIDE_MS = (\d+)/)?.[1];
+    expect(token).toBeTruthy();
+    expect(constant).toBe(token);
+    // 退场兜底必须比滑入长（transitionend 不触发时的卸载时机）
+    const exit = src.match(/const EXIT_MS = SLIDE_MS \+ (\d+)/)?.[1];
+    expect(Number(exit)).toBeGreaterThan(0);
   });
 });
