@@ -144,6 +144,12 @@ pub struct ParsedChunk {
     /// delta.reasoning_content（DeepSeek-reasoner 等模型的独立推理字段；
     /// 与 <think> 标签同走 bot-think-delta 出口）
     pub reasoning: Option<String>,
+    /// Anthropic 的 thinking 块增量（仅 Anthropic 协议会产出）。
+    ///
+    /// 与 `reasoning` 分开：reasoning 只是给前端看的思考文本，thinking 块
+    /// 要**原样回传**给服务端（丢了下一轮带 tool_result 的请求会被 400），
+    /// 故走独立的增量通道，由 bot_anthropic::ThinkingCollector 归位成块。
+    pub thinking: Option<crate::bot_anthropic::ThinkingDelta>,
     /// delta.tool_calls 增量（多 chunk 拼成一个完整 tool_call）
     pub tool_calls: Vec<ToolCallDelta>,
     /// choices[0].finish_reason（最后一 chunk 通常为 "stop" / "tool_calls"）
@@ -308,6 +314,42 @@ pub fn merge_stream_usage(acc: &mut TokenUsage, u: TokenUsage) {
     if u.cache_creation_tokens > 0 {
         acc.cache_creation_tokens = u.cache_creation_tokens;
     }
+}
+
+/// 给 assistant 消息挂上本轮的 Anthropic thinking 块。
+///
+/// 内部消息流是 OpenAI 形状，同一份 msgs 也会直接发给 OpenAI 端点，故这个
+/// provider 专属键发 OpenAI 前会被剥掉（见 build_request_body）。
+fn with_thinking(mut msg: serde_json::Value, thinking: &[serde_json::Value]) -> serde_json::Value {
+    if !thinking.is_empty() {
+        if let Some(obj) = msg.as_object_mut() {
+            obj.insert(
+                crate::bot_anthropic::THINKING_KEY.to_string(),
+                serde_json::Value::Array(thinking.to_vec()),
+            );
+        }
+    }
+    msg
+}
+
+/// 从内部消息里剥掉 provider 专属键（发 OpenAI 端点前用）。
+///
+/// 只有 Anthropic 分支会挂 thinking 块载体，平时不命中——不命中时直接
+/// 原样返回，不重建数组。
+fn strip_thinking_key(msgs: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let key = crate::bot_anthropic::THINKING_KEY;
+    if !msgs.iter().any(|m| m.get(key).is_some()) {
+        return msgs.to_vec();
+    }
+    msgs.iter()
+        .map(|m| {
+            let mut c = m.clone();
+            if let Some(obj) = c.as_object_mut() {
+                obj.remove(key);
+            }
+            c
+        })
+        .collect()
 }
 
 /// 协议解析失败时的坏块判定（纯函数，供调用方计数留痕）——坏块曾经无声
@@ -829,7 +871,9 @@ fn build_request_body(
         crate::bot::ApiProvider::Openai => {
             let mut b = serde_json::json!({
                 "model": http.model,
-                "messages": msgs,
+                // Anthropic 的 thinking 块载体是 provider 专属键，OpenAI 端点
+                // 不认（部分网关对消息里的未知字段直接 400）→ 发前剥掉
+                "messages": strip_thinking_key(msgs),
                 "tools": tools,
                 "stream": true
             });
@@ -1713,6 +1757,9 @@ where
     // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
     // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
     let mut openai_usage_supported: bool = true;
+    // Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救，见请求失败分支）。
+    // 只补救一次：重发后仍报同样的错就是别的问题，不该无限重试。
+    let mut anthropic_thinking_dropped: bool = false;
     // 执行类谎报守卫的凭证池：本次**用户提问**内所有工具调用的真实记录。
     //
     // 作用域是整条提问（= 一次 run_model_loop_core 调用 = exec_spans 的一条 trace_id），
@@ -2037,6 +2084,58 @@ where
                             );
                             continue;
                         }
+                        // Anthropic 的 thinking 块签名绑在会话前缀上：前缀变了
+                        // （换模型 / 改系统提示 / 砍历史）签名即失效，服务端回
+                        // 400 "Invalid `signature` in `thinking` block"。
+                        //
+                        // 官方给的补救是「删掉 thinking 与 redacted_thinking 块
+                        // 后重试一次」（block_binding 的 drop_block 只在
+                        // adaptive 模式可用，本项目走 budget_tokens 模式，只能手动删）。
+                        // 只在响应体点名 thinking + signature 时才走这条路——
+                        // 普通 400 不是它的问题，一律重发只会把真错掩盖成一次多余请求。
+                        if st == 400
+                            && http.provider == crate::bot::ApiProvider::Anthropic
+                            && !anthropic_thinking_dropped
+                            && text.contains("thinking")
+                            && text.contains("signature")
+                        {
+                            let key = crate::bot_anthropic::THINKING_KEY;
+                            let had = msgs.iter().any(|m| m.get(key).is_some());
+                            if had {
+                                anthropic_thinking_dropped = true;
+                                for m in msgs.iter_mut() {
+                                    if let Some(obj) = m.as_object_mut() {
+                                        obj.remove(key);
+                                    }
+                                }
+                                // body 已序列化：删完必须重建，否则重发还是带旧块
+                                body = match build_request_body(
+                                    http,
+                                    &msgs,
+                                    &tools,
+                                    openai_usage_supported,
+                                ) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        let hint = skill_finish(false, "消息转换失败");
+                                        let err: CommandError =
+                                            format!("Anthropic 消息转换失败：{e}{hint}").into();
+                                        audit(
+                                            crate::audit::AuditLevel::Error,
+                                            "llm.request_failed",
+                                            crate::audit::error_kv(&err),
+                                        );
+                                        return Err(err);
+                                    }
+                                };
+                                audit(
+                                    crate::audit::AuditLevel::Warn,
+                                    "llm.anthropic_thinking_dropped",
+                                    vec![("status", st.to_string())],
+                                );
+                                continue;
+                            }
+                        }
                         // 429/5xx 瞬时抖动：退避后重发同一请求
                         if is_retryable_llm_status(st) && attempt < MAX_LLM_ATTEMPTS {
                             audit(
@@ -2197,6 +2296,9 @@ where
         // Anthropic 的块序号连文本块一起数，直接当工具序号累积会留下
         // 幽灵空条目，严格 API 会 400（详见 bot_anthropic::ToolSlotMapper 注释）
         let mut tool_slot_mapper = crate::bot_anthropic::ToolSlotMapper::new();
+        // Anthropic 的 thinking 块收集器（仅 Anthropic 协议会收到增量）：
+        // 块要原样回传服务端，故随本轮响应收集、随 assistant 消息入历史。
+        let mut thinking_collector = crate::bot_anthropic::ThinkingCollector::default();
 
         let mut stopped = false;
         {
@@ -2238,6 +2340,11 @@ where
                 // 合并口径统一走 merge_stream_usage（按字段取最后一次非零值）。
                 if let Some(u) = parsed.usage.take() {
                     merge_stream_usage(&mut usage_acc, u);
+                }
+                // Anthropic 的 thinking 块收进收集器：它要原样回传（丢了下一轮
+                // 带 tool_result 的请求会被 400），不能只走前端展示出口。
+                if let Some(d) = parsed.thinking.take() {
+                    thinking_collector.push(&d);
                 }
                 if parsed.is_done {
                     stream_end_seen = true;
@@ -2367,6 +2474,10 @@ where
                 }
             }
         }
+
+        // 本轮响应里的 Anthropic thinking 块（空 = 非 Anthropic 协议，
+        // 或模型没开思考）。随本轮的 assistant 消息入历史，回传时原样发回。
+        let thinking_blocks = thinking_collector.blocks();
 
         // 坏块可见化：整条流一条（逐块发会被脏网关刷屏），带首条样本供对拍
         if bad_sse_chunks > 0 {
@@ -2530,9 +2641,10 @@ where
                             "bot-chat-delta",
                             serde_json::json!({ "text": "✅ 自检通过\n\n" }),
                         );
-                        msgs.push(
+                        msgs.push(with_thinking(
                             serde_json::json!({ "role": "assistant", "content": final_text }),
-                        );
+                            &thinking_blocks,
+                        ));
                         msgs.push(serde_json::json!({
                             "role": "user",
                             "content": "【系统提示】自检通过。请继续：完成剩余步骤，或直接向用户汇报结果。"
@@ -2546,9 +2658,10 @@ where
                             "bot-chat-delta",
                             serde_json::json!({ "text": "⚠️ 自检未达预期,换策略中…\n\n" }),
                         );
-                        msgs.push(
+                        msgs.push(with_thinking(
                             serde_json::json!({ "role": "assistant", "content": final_text }),
-                        );
+                            &thinking_blocks,
+                        ));
                         msgs.push(serde_json::json!({
                             "role": "user",
                             "content": format!(
@@ -2861,7 +2974,10 @@ where
                     } else {
                         "请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。".to_string()
                     };
-                    msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                    msgs.push(with_thinking(
+                        serde_json::json!({"role": "assistant", "content": final_text}),
+                        &thinking_blocks,
+                    ));
                     msgs.push(serde_json::json!({
                         "role": "user",
                         "content": format!("【系统提示】{reason}{remedy}")
@@ -2895,7 +3011,10 @@ where
                         ("chars", final_text.chars().count().to_string()),
                     ],
                 );
-                msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                msgs.push(with_thinking(
+                    serde_json::json!({"role": "assistant", "content": final_text}),
+                    &thinking_blocks,
+                ));
                 msgs.push(serde_json::json!({
                     "role": "user",
                     "content": LENGTH_CONTINUE_PROMPT
@@ -3090,14 +3209,17 @@ where
         pending_selfcheck = None;
         expecting_final_selfcheck = false;
         final_selfcheck_snapshot = None;
-        msgs.push(serde_json::json!({
-            "role": "assistant",
-            "content": serde_json::Value::Null,
-            "tool_calls": tool_calls.iter().map(|(id, name, args)| serde_json::json!({
-                "id": id, "type": "function",
-                "function": {"name": name, "arguments": args}
-            })).collect::<Vec<_>>()
-        }));
+        msgs.push(with_thinking(
+            serde_json::json!({
+                "role": "assistant",
+                "content": serde_json::Value::Null,
+                "tool_calls": tool_calls.iter().map(|(id, name, args)| serde_json::json!({
+                    "id": id, "type": "function",
+                    "function": {"name": name, "arguments": args}
+                })).collect::<Vec<_>>()
+            }),
+            &thinking_blocks,
+        ));
         if stop.stopped() {
             let hint = skill_finish(false, "用户停止");
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
@@ -3583,6 +3705,90 @@ mod inference_param_tests {
         assert_eq!(miss.top_p, Some(0.95));
         assert_eq!(miss.max_tokens, 1111);
         assert_eq!(miss.system_prompt.as_deref(), Some("active-e-system"));
+    }
+}
+
+#[cfg(test)]
+mod anthropic_thinking_tests {
+    use super::*;
+
+    fn http_with(provider: crate::bot::ApiProvider) -> LlmHttp {
+        LlmHttp {
+            client: reqwest::Client::new(),
+            base_url: "https://example.invalid".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            provider,
+            max_tokens: 1024,
+            reasoning: crate::bot::reasoning::ReasoningWire::None,
+            temperature: None,
+            top_p: None,
+            system_prompt: None,
+        }
+    }
+
+    fn msgs_with_thinking() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"role": "user", "content": "查一下"}),
+            with_thinking(
+                serde_json::json!({"role": "assistant", "content": "我查一下"}),
+                &[serde_json::json!({
+                    "type": "thinking", "thinking": "先想", "signature": "SIG"
+                })],
+            ),
+        ]
+    }
+
+    /// OpenAI 请求体不得带 Anthropic 的 thinking 块载体（provider 专属键）。
+    ///
+    /// 部分 OpenAI 兼容网关对消息里的未知字段直接 400；且这个键对 OpenAI
+    /// 毫无意义。
+    #[test]
+    fn openai_body_drops_thinking_key() {
+        let http = http_with(crate::bot::ApiProvider::Openai);
+        let body = build_request_body(&http, &msgs_with_thinking(), &serde_json::json!([]), true)
+            .expect("请求体应能构造");
+        let arr = body["messages"].as_array().expect("messages 应是数组");
+        assert!(
+            arr.iter()
+                .all(|m| m.get(crate::bot_anthropic::THINKING_KEY).is_none()),
+            "OpenAI 请求体不得带 thinking 块载体：{arr:?}"
+        );
+        // 正文不能被顺手剥掉
+        assert_eq!(arr[1]["content"], "我查一下");
+    }
+
+    /// Anthropic 请求体要把 thinking 块带上（否则下一轮带 tool_result 的
+    /// 请求被 400 "cannot be modified"）。
+    #[test]
+    fn anthropic_body_carries_thinking_block() {
+        let http = http_with(crate::bot::ApiProvider::Anthropic);
+        let body = build_request_body(&http, &msgs_with_thinking(), &serde_json::json!([]), true)
+            .expect("请求体应能构造");
+        let arr = body["messages"].as_array().expect("messages 应是数组");
+        let asst = arr
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("应有 assistant 轮");
+        let blocks = asst["content"].as_array().expect("content 应是块数组");
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["signature"], "SIG");
+    }
+
+    /// 剥键只动 provider 专属键，其余内容原样保留。
+    #[test]
+    fn strip_thinking_key_keeps_other_fields() {
+        let msgs = msgs_with_thinking();
+        let stripped = strip_thinking_key(&msgs);
+        assert_eq!(stripped.len(), msgs.len());
+        assert!(stripped[1]
+            .get(crate::bot_anthropic::THINKING_KEY)
+            .is_none());
+        assert_eq!(stripped[1]["content"], "我查一下");
+        // 没有这个键时原样返回（不重建数组）
+        let plain = vec![serde_json::json!({"role": "user", "content": "x"})];
+        let out = strip_thinking_key(&plain);
+        assert_eq!(out, plain);
     }
 }
 

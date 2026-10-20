@@ -76,6 +76,13 @@ fn convert_all(
                 flush_tool_results(&mut out, &mut pending_tools);
                 let (mut blocks, skipped) = convert_content_blocks(m.get("content"));
                 skipped_images += skipped;
+                // thinking 块必须原样回传，且排在 assistant 轮最前
+                // （Anthropic 要求 thinking 块在内容数组开头）。
+                // 缺了这一步，带 tool_result 的下一轮请求被 400：
+                // "'thinking' or 'redacted_thinking' blocks in the latest
+                // assistant message cannot be modified"。
+                let thinking = thinking_blocks_of(m);
+                blocks.splice(0..0, thinking);
                 if let Some(tcs) = m.get("tool_calls").and_then(|t| t.as_array()) {
                     for tc in tcs {
                         let name = tc["function"]["name"].as_str().unwrap_or("");
@@ -154,6 +161,15 @@ fn convert_all(
         last["cache_control"] = serde_json::json!({"type": "ephemeral"});
     }
     (system_blocks, out, skipped_images)
+}
+
+/// 从内部消息里取回该轮保存的 Anthropic thinking 块（内部消息用 provider
+/// 专属键承载；OpenAI 形状的普通消息没有这个键）。
+fn thinking_blocks_of(m: &serde_json::Value) -> Vec<serde_json::Value> {
+    m.get(THINKING_KEY)
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// 攒着的 tool_result 块冲刷成（或合并进末尾）一条 user 消息
@@ -465,6 +481,118 @@ impl ToolSlotMapper {
 /// 解析一行 Anthropic SSE（`data: <json>`，按 JSON type 字段分发）。
 /// 返回 None = 非 data 行（含 `event:` 行）/ 空行 / ping / 无需消费的事件 /
 /// JSON 解析失败（与 parse_sse_chunk 的 None 语义一致：跳过该行）。
+/// Anthropic 的 thinking / redacted_thinking 内容块。
+///
+/// **必须原样回传**——Anthropic 文档明令：「多轮对话和工具使用对话中，助手
+/// 消息（含其 thinking 与 redacted_thinking 块）要原样发回 API，API 会验证
+/// 它们未经修改地到达」。丢掉或重建助手消息时，带 tool_result 的下一轮请求
+/// 被拒：
+/// `400 invalid_request_error: 'thinking' or 'redacted_thinking' blocks in the
+/// latest assistant message cannot be modified`。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThinkingBlock {
+    /// 普通 thinking 块：思考文本 + 签名（签名由 signature_delta 补齐）。
+    /// **没有签名的块不能回传**（服务端会判签名无效）。
+    Thinking { text: String, signature: String },
+    /// 加密的 thinking 块：密文原样回传。
+    Redacted { data: String },
+}
+
+/// Anthropic thinking 块的流式增量（一个响应里可能有多块，按 content_block
+/// 的 index 归位）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ThinkingDelta {
+    /// content_block_start：thinking（或 redacted_thinking）块开始。
+    Start {
+        index: usize,
+        redacted: bool,
+        data: String,
+    },
+    /// content_block_delta / thinking_delta：思考文本增量。
+    Text { index: usize, text: String },
+    /// content_block_delta / signature_delta：签名（整块一次给全）。
+    Signature { index: usize, signature: String },
+}
+
+/// 一个响应里的 thinking 块收集器（按 content_block 的 index 归位）。
+#[derive(Debug, Default, Clone)]
+pub struct ThinkingCollector {
+    blocks: Vec<(usize, ThinkingBlock)>,
+}
+
+impl ThinkingCollector {
+    /// 吃进一条 thinking 增量。未知 index 的文本/签名增量直接忽略——
+    /// 没收到过 Start 说明这不是 thinking 块（正常流不会这样）。
+    pub fn push(&mut self, d: &ThinkingDelta) {
+        match d {
+            ThinkingDelta::Start {
+                index,
+                redacted,
+                data,
+            } => {
+                let block = if *redacted {
+                    ThinkingBlock::Redacted { data: data.clone() }
+                } else {
+                    ThinkingBlock::Thinking {
+                        text: String::new(),
+                        signature: String::new(),
+                    }
+                };
+                // 同一 index 重复 Start（脏网关）以最后一次为准
+                self.blocks.retain(|(i, _)| i != index);
+                self.blocks.push((*index, block));
+            }
+            ThinkingDelta::Text { index, text } => {
+                if let Some((_, ThinkingBlock::Thinking { text: t, .. })) =
+                    self.blocks.iter_mut().find(|(i, _)| i == index)
+                {
+                    t.push_str(text);
+                }
+            }
+            ThinkingDelta::Signature { index, signature } => {
+                if let Some((_, ThinkingBlock::Thinking { signature: s, .. })) =
+                    self.blocks.iter_mut().find(|(i, _)| i == index)
+                {
+                    *s = signature.clone();
+                }
+            }
+        }
+    }
+
+    /// 回传用的 Anthropic 块数组（按 index 升序）。
+    ///
+    /// **缺签名的 thinking 块被丢弃**：没有签名回传等于伪造，服务端会判
+    /// 签名无效（400）。那种情况宁可少带一个块，也不能带一个坏的。
+    pub fn blocks(&self) -> Vec<serde_json::Value> {
+        let mut sorted: Vec<&(usize, ThinkingBlock)> = self.blocks.iter().collect();
+        sorted.sort_by_key(|(i, _)| *i);
+        sorted
+            .into_iter()
+            .filter_map(|(_, b)| match b {
+                ThinkingBlock::Thinking { text, signature } if !signature.is_empty() => {
+                    Some(serde_json::json!({
+                        "type": "thinking",
+                        "thinking": text,
+                        "signature": signature,
+                    }))
+                }
+                ThinkingBlock::Thinking { .. } => None,
+                ThinkingBlock::Redacted { data } => Some(serde_json::json!({
+                    "type": "redacted_thinking",
+                    "data": data,
+                })),
+            })
+            .collect()
+    }
+}
+
+/// 内部消息里承载 Anthropic thinking 块的键（provider 专属）。
+///
+/// 内部消息流是 OpenAI 形状、同一份 msgs 会直接发给 OpenAI 端点，故这个键
+/// 只在 Anthropic 分支挂载，发 OpenAI 前会被剥掉（见 build_request_body）。
+pub const THINKING_KEY: &str = "anthropic_thinking";
+
+/// Anthropic SSE 事件解析入口。
 pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
     let data = line.strip_prefix("data:")?.trim();
     if data.is_empty() {
@@ -506,6 +634,23 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
                     Some(ev)
                 }
                 // text/thinking 块开始无内容，等 delta
+                Some("thinking") => {
+                    ev.thinking = Some(ThinkingDelta::Start {
+                        index: v["index"].as_u64().unwrap_or(0) as usize,
+                        redacted: false,
+                        data: String::new(),
+                    });
+                    Some(ev)
+                }
+                // 加密的 thinking 块：密文在 start 里给全，后续无 delta
+                Some("redacted_thinking") => {
+                    ev.thinking = Some(ThinkingDelta::Start {
+                        index: v["index"].as_u64().unwrap_or(0) as usize,
+                        redacted: true,
+                        data: cb["data"].as_str().unwrap_or("").to_string(),
+                    });
+                    Some(ev)
+                }
                 _ => None,
             }
         }
@@ -534,15 +679,33 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
                     Some(ev)
                 }
                 // thinking_delta 喂现有 bot-think-delta 出口（不需启用 thinking 也兼容）
+                // 同时把增量喂给 thinking 收集器——那块要原样回传（见 ThinkingBlock）
                 Some("thinking_delta") => {
                     if let Some(t) = delta["thinking"].as_str() {
                         if !t.is_empty() {
                             ev.reasoning = Some(t.to_string());
+                            ev.thinking = Some(ThinkingDelta::Text {
+                                index,
+                                text: t.to_string(),
+                            });
                         }
                     }
                     Some(ev)
                 }
-                _ => None, // signature_delta 等
+                // signature_delta：thinking 块的签名（整块一次给全）。
+                // 缺它那块就回传不了（服务端判签名无效），故必须收。
+                Some("signature_delta") => {
+                    if let Some(s) = delta["signature"].as_str() {
+                        if !s.is_empty() {
+                            ev.thinking = Some(ThinkingDelta::Signature {
+                                index,
+                                signature: s.to_string(),
+                            });
+                        }
+                    }
+                    Some(ev)
+                }
+                _ => None,
             }
         }
         "message_delta" => {
@@ -637,6 +800,116 @@ mod tests {
             "tool_result 与 image 应在同一条 user 消息里：{blocks:?}"
         );
         assert!(blocks.iter().any(|b| b["type"] == "text"));
+    }
+
+    /// Anthropic 的 thinking 块必须能原样收集回来（文本 + 签名）。
+    ///
+    /// 块丢了，下一轮带 tool_result 的请求被 400：
+    /// "'thinking' or 'redacted_thinking' blocks in the latest assistant message
+    /// cannot be modified"。
+    #[test]
+    fn thinking_block_collected_with_signature() {
+        let mut c = ThinkingCollector::default();
+        for line in [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"让我想想"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG123"}}"#,
+        ] {
+            let ev = parse(line).expect("thinking 相关事件应解析");
+            if let Some(d) = ev.thinking {
+                c.push(&d);
+            }
+        }
+        let blocks = c.blocks();
+        assert_eq!(blocks.len(), 1, "应收集到一个 thinking 块");
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["thinking"], "让我想想");
+        assert_eq!(blocks[0]["signature"], "SIG123");
+    }
+
+    /// 加密的 thinking 块（redacted_thinking）：密文在 start 里给全，原样回传。
+    #[test]
+    fn redacted_thinking_block_collected() {
+        let mut c = ThinkingCollector::default();
+        let ev = parse(
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"ENC=="}}"#,
+        )
+        .expect("redacted_thinking 应解析");
+        if let Some(d) = ev.thinking {
+            c.push(&d);
+        }
+        let blocks = c.blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "redacted_thinking");
+        assert_eq!(blocks[0]["data"], "ENC==");
+    }
+
+    /// 缺签名的 thinking 块不能回传（服务端判签名无效）——宁可少带一个块。
+    #[test]
+    fn thinking_block_without_signature_is_not_replayed() {
+        let mut c = ThinkingCollector::default();
+        for line in [
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"想"}}"#,
+        ] {
+            let ev = parse(line).expect("应解析");
+            if let Some(d) = ev.thinking {
+                c.push(&d);
+            }
+        }
+        assert!(
+            c.blocks().is_empty(),
+            "没有签名的块回传过去会被判签名无效，不能带"
+        );
+    }
+
+    /// assistant 轮必须把 thinking 块原样回传，且排在内容数组最前。
+    ///
+    /// Anthropic 要求 thinking 块在 assistant 轮开头；缺了它，带 tool_result
+    /// 的下一轮请求被 400（"cannot be modified"）。
+    #[test]
+    fn assistant_turn_replays_thinking_blocks_first() {
+        let msgs = vec![
+            user("查一下"),
+            json!({
+                "role": "assistant", "content": "我查一下",
+                "anthropic_thinking": [
+                    {"type":"thinking","thinking":"先想","signature":"SIG"}
+                ],
+                "tool_calls": [{"id":"c1","type":"function","function":{"name":"query_tasks","arguments":"{}"}}]
+            }),
+            json!({"role":"tool","tool_call_id":"c1","content":"ok"}),
+        ];
+        let (_, messages) = openai_msgs_to_anthropic(&msgs).unwrap();
+        let asst = messages
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("应有 assistant 轮");
+        let blocks = asst["content"].as_array().unwrap();
+        assert_eq!(
+            blocks[0]["type"], "thinking",
+            "thinking 块必须排在 assistant 轮最前：{blocks:?}"
+        );
+        assert_eq!(blocks[0]["thinking"], "先想");
+        assert_eq!(blocks[0]["signature"], "SIG");
+        assert!(
+            blocks.iter().any(|b| b["type"] == "tool_use"),
+            "tool_use 块仍应在：{blocks:?}"
+        );
+    }
+
+    /// 没有 thinking 块的 assistant 轮不受影响（普通 Anthropic 模型路径）。
+    #[test]
+    fn assistant_turn_without_thinking_is_unchanged() {
+        let msgs = vec![user("x"), asst_text("答")];
+        let (_, messages) = openai_msgs_to_anthropic(&msgs).unwrap();
+        let asst = messages
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("应有 assistant 轮");
+        let blocks = asst["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
     }
 
     #[test]
