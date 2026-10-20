@@ -126,11 +126,17 @@ describe("poolCounts", () => {
     const tasks = [
       task({ id: "1" }),
       task({ id: "2", column: "doing" }),
-      task({ id: "3", completedAt: 1 }),
+      task({ id: "3", column: "done", completedAt: 1 }),
       task({ id: "4", archived: true, completedAt: 1 }),
       task({ id: "5", archived: true, completedAt: 1, deletedAt: 1 }),
     ];
     expect(poolCounts(tasks)).toEqual({ todo: 2, done: 1, archived: 1 });
+  });
+
+  it("「完成」按完成列判：遗留卡（完成列无完成时间）算完成", () => {
+    expect(
+      poolCounts([task({ id: "legacy", column: "done" }), task({ id: "open" })]),
+    ).toEqual({ todo: 1, done: 1, archived: 0 });
   });
 });
 

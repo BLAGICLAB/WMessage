@@ -5,7 +5,7 @@
 import type { Task } from "../../types";
 import type { TraceRow } from "../../lib/trace";
 import { startOfWeek } from "../TaskTimeline/week";
-import { isTrashed, isPending, isArchived } from "../../lib/taskScope";
+import { isTrashed, isPending, isArchived, isTaskCompleted } from "../../lib/taskScope";
 
 /** 本地日期键 YYYY-MM-DD（与 App.tsx 的 localDateStr 同口径） */
 export function dayKey(d: Date): string {
@@ -42,13 +42,15 @@ export function planPhases(tasks: Task[], now: Date): PlanPhases {
 
 export type PoolCounts = { todo: number; done: number; archived: number };
 
-/** 三个池子的存量：待办（未完成未归档）/ 完成（已完成未归档）/ 归档 */
+/** 三个池子的存量：待办（未完成未归档）/ 完成（已完成未归档）/ 归档。
+ *  「完成」按完成列判（口径单源见 lib/taskScope 的 isTaskCompleted）：
+ *  完成时间戳管的是「什么时候完成的」，池子存量问的是「现在算不算完成」。 */
 export function poolCounts(tasks: Task[]): PoolCounts {
   const c: PoolCounts = { todo: 0, done: 0, archived: 0 };
   for (const t of tasks) {
     if (t.deletedAt) continue;
     if (t.archived) c.archived++;
-    else if (t.completedAt) c.done++;
+    else if (isTaskCompleted(t)) c.done++;
     else c.todo++;
   }
   return c;
