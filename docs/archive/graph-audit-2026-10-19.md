@@ -186,7 +186,7 @@ M3 与 M4 是一对（尺度体系），改完 150 任务的观感再变一次�
 npx tsc --noEmit         ✓
 npx knip --no-progress   ✓
 npx oxlint src           ✓（exit 0，仅既有 warning）
-npx vitest run           85 文件 / 856 用例全绿
+npx vitest run           85 文件 / 857 用例全绿
 cargo test --lib         1539 例全绿
 ```
 
@@ -207,3 +207,10 @@ cargo test --lib         1539 例全绿
   两条都补上：组件侧显式判方法在不在再调（`4498ead`，配回归用例「环境没有
   scrollTo 时不炸」）；测试侧把 scrollTo stub 从「按用例摘除」改成「文件内常驻、
   文件末清掉」，补掉原型方法的空档期（`bf20686`）。
+- **同型的一处也在别处**：`ArchivePage.tsx` 的定位滚动 `locateRef.current?.scrollIntoView(...)`
+  是同一个写法（可选链只挡 ref 为空）。当时渲染它的测试文件都自带 stub 所以不炸，
+  但它是下一颗同款地雷——一并补上守卫与回归用例（`c454a20`）。
+- **重负载下被判超时的两条用例**（同时跑几份全量时必红，报的是超时不是断言不达标）：
+  `SettingsPage.test.tsx > 初始渲染：所有主要 section 都出现` 与
+  `MessageList.perf.test.tsx > 流式更新只重渲染最后一条`。两条在空闲机器上都是亚秒级，
+  是被抢光的 CPU 饿死的——给它们各自 30 秒上限，断言与倍率阈值一字未动（`d00e994`）。
