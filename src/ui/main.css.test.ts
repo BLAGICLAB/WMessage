@@ -43,7 +43,7 @@ describe("main.css nm-card-hover 过渡对称", () => {
   it("基类 transition 声明 hover 变化的属性（background/border），hover 块不引入 transform", () => {
     // 基类 .nm-card, .nm-card-hover 块：transition 覆盖 hover 全部变化属性
     expect(css).toMatch(
-      /transition:\s*background-color var\(--dur-card\) var\(--ease-out\),\s*border-color var\(--dur-card\) var\(--ease-out\);[\s\S]*?\.nm-card-hover:hover/,
+      /transition:\s*background-color var\(--dur-card\) var\(--ease-out\),\s*border-color var\(--dur-card\) var\(--ease-out\),\s*opacity var\(--dur-card\) var\(--ease-out\);[\s\S]*?\.nm-card-hover:hover/,
     );
     // hover 块只改背景与边框（扁平悬停），不得引入 transform/shadow 跳变
     const hoverBlock = css.match(/\.nm-card-hover:hover\s*\{([^}]*?)\}/);
@@ -182,5 +182,19 @@ describe("main.css 计划块 hover 的触屏门控", () => {
     const block = css.match(/\.plan-blk\s*\{([\s\S]*?)\}/)?.[1] ?? "";
     expect(block).not.toMatch(/transition:[\s\S]*?box-shadow/);
     expect(block).toMatch(/transition:[\s\S]*?var\(--dur-chip\)/);
+  });
+});
+
+describe("main.css nm-card 的 opacity 过渡腿", () => {
+  it("nm-card 的过渡覆盖 opacity（整卡降透明度要补间）", () => {
+    const block = css.match(/\.nm-card,\s*\.nm-card-hover\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(block).toMatch(/transition:[^;]*opacity/);
+  });
+
+  it("标签合并弹窗的簇行过渡覆盖 opacity/边框/背景（勾选与未勾选之间要有补间）", () => {
+    const src = readFileSync("src/components/TagConsolidateModal.tsx", "utf-8");
+    expect(src).toMatch(
+      /transition-\[opacity,border-color,background-color\] duration-\[var\(--dur-card\)\] ease-\[var\(--ease-out\)\]/,
+    );
   });
 });

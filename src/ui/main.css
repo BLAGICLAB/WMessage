@@ -190,7 +190,8 @@
     box-shadow: var(--shadow-sm);
     transition:
       background-color var(--dur-card) var(--ease-out),
-      border-color var(--dur-card) var(--ease-out);
+      border-color var(--dur-card) var(--ease-out),
+      opacity var(--dur-card) var(--ease-out);
   }
 
   .nm-card-hover {

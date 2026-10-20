@@ -158,7 +158,7 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
                 return (
                   <li
                     key={c.members.join("|")}
-                    className={`rounded-lg p-3 border ${
+                    className={`rounded-lg p-3 border transition-[opacity,border-color,background-color] duration-[var(--dur-card)] ease-[var(--ease-out)] ${
                       sel.enabled
                         ? "border-[var(--bd)] bg-[var(--bg)]"
                         : "border-dashed border-[var(--bd)] bg-transparent opacity-60"

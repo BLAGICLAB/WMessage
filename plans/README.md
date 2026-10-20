@@ -22,7 +22,7 @@
 | [009](009-press-feedback.md) | 给高频控件补上按压反馈 | MEDIUM | §3 | **必须晚于 001** | TODO |
 | [010](010-popover-entrance.md) | 设置页下拉浮层加入场动效 | MEDIUM | §3 / §2 | 001（token） | TODO |
 | [011](011-modal-entrance.md) | 共享 Modal 壳加入场动效 | MEDIUM | §8 / §2 | 001（token） | TODO |
-| [012](012-card-opacity-transition.md) | 整卡透明度切换补上 opacity 过渡腿 | MEDIUM | §3 / §8 | 001（token）+ 001 先于本条改 `.nm-card` 过渡 | TODO |
+| [012](012-card-opacity-transition.md) | 整卡透明度切换补上 opacity 过渡腿 | MEDIUM | §3 / §8 | 001（token）+ 001 先于本条改 `.nm-card` 过渡 | 已完成 |
 | [013](013-framer-motion-transform-string.md) | framer-motion 的 y 简写改成完整 transform 串 | MEDIUM | §5 | — | TODO |
 | [014](014-linked-hover-unify.md) | 首页联动 hover 三个组件统一成一种响应 | MEDIUM | §7 / §8 | 001（token） | TODO |
 | [015](015-reduced-motion-activity-signal.md) | 减少动效下保住「还在跑」的活动信号 | MEDIUM | §6 | — | TODO |

@@ -1,7 +1,7 @@
 # 012 — 整卡透明度切换补上 opacity 过渡腿
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §3 Physicality & origin / §8 Missed opportunities
 - **Estimated scope**: 2 个文件（`main.css` + `TagConsolidateModal.tsx`），约 6 行改动
