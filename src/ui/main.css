@@ -1216,8 +1216,8 @@
     /* 星云底色已是深色，禁掉高亮把光点染白 */
     touch-action: none;
   }
-  /* 静态构图期间的黑屏提示：布局在后台分片算，算完才出图 */
-  .graph-computing {
+  /* 画布状态提示：静态构图期间的黑屏说明、WebGL 起不来时的原因 */
+  .graph-notice {
     position: absolute;
     inset: 0;
     display: flex;

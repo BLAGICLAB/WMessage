@@ -195,6 +195,22 @@ export interface GraphCanvasProps {
   obstacleRects: () => Rect[];
 }
 
+/**
+ * 键盘游标接口：画布里的节点按连接度依次可及。
+ * 画布是纯 WebGL，屏幕上没有可聚焦的元素——键盘要能走图，只能自己
+ * 维护一个游标（当前落在哪个节点），并把它报给读屏。
+ */
+interface GraphKeyboardApi {
+  /** 游标前后移动一格 */
+  move(delta: number): void;
+  /** 游标跳到头 / 尾 */
+  edge(to: "first" | "last"): void;
+  /** 选中游标所在节点 */
+  activate(): void;
+  /** 清除选择与游标 */
+  clear(): void;
+}
+
 interface Plaque {
   el: HTMLDivElement;
   /** 承载避让偏移的里层（外层 transform 由 CSS2DRenderer 每帧覆写） */
@@ -267,6 +283,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const propsRef = useRef(props);
   propsRef.current = props;
+  /** 键盘游标接口：画布建好时填进来，键盘事件从这里驱动 */
+  const kbApi = useRef<GraphKeyboardApi | null>(null);
 
   // ── 建图 → 场景 + 力场 + Three 实例（场景输入变更时重建） ──
   useEffect(() => {
@@ -299,10 +317,79 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     };
     const labelFloor = labelDegreeFloor(scene.nodes);
 
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      powerPreference: "high-performance",
-    });
+    // ── 落位顺序与键盘游标 ──
+    // 锚点先占（它们是骨架，路牌比任务名重要），任务按连接度降序：
+    // 谁重要谁先占位，撞上了才让
+    const order = scene.nodes
+      .map((node, i) => ({ node, i }))
+      .sort((a, b) =>
+        (a.node.kind === "task" ? 1 : 0) - (b.node.kind === "task" ? 1 : 0) ||
+        b.node.degree - a.node.degree,
+      )
+      .map((x) => x.i);
+
+    // 画布是纯 WebGL，屏幕上没有一个可聚焦的元素，键盘用户无从下手。
+    // 自己维护一个游标（当前落在哪个任务节点），方向键移动、回车选中、
+    // Esc 清除；落点用 aria-live 报给读屏。
+    // 游标只在任务节点间走：锚点不是可选对象（点选也拾取不到它们）。
+    const kbOrder = order.filter((i) => scene.nodes[i].kind === "task");
+    let kbIndex = -1;
+    const live = document.createElement("div");
+    live.className = "sr-only";
+    live.setAttribute("aria-live", "polite");
+    container.appendChild(live);
+    const announceKb = () => {
+      if (kbIndex < 0) return;
+      live.textContent = `任务：${scene.nodes[kbOrder[kbIndex]].label}`;
+    };
+    kbApi.current = {
+      move: (delta) => {
+        if (kbOrder.length === 0) return;
+        kbIndex =
+          kbIndex < 0
+            ? delta > 0
+              ? 0
+              : kbOrder.length - 1
+            : (kbIndex + delta + kbOrder.length) % kbOrder.length;
+        announceKb();
+      },
+      edge: (to) => {
+        if (kbOrder.length === 0) return;
+        kbIndex = to === "first" ? 0 : kbOrder.length - 1;
+        announceKb();
+      },
+      activate: () => {
+        if (kbIndex < 0) return;
+        propsRef.current.onSelect(scene.nodes[kbOrder[kbIndex]].id);
+      },
+      clear: () => {
+        kbIndex = -1;
+        live.textContent = "";
+        propsRef.current.onSelect(null);
+      },
+    };
+
+    // ── WebGL2 能力探测 ──
+    // 起不来画布时（虚拟机、老显卡、禁用硬件加速）要在画布位置说明原因：
+    // 白屏加一句报错没人看得懂，也不能把异常吞掉当没事发生
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        powerPreference: "high-performance",
+      });
+    } catch (e) {
+      console.error("[graph] WebGL2 context unavailable", e);
+      const note = document.createElement("div");
+      note.className = "graph-notice";
+      note.textContent = "这台机器没有可用的 WebGL2，图谱画不出来";
+      container.appendChild(note);
+      return () => {
+        live.remove();
+        note.remove();
+        kbApi.current = null;
+      };
+    }
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
     renderer.setPixelRatio(pixelRatio);
     // 纯黑真空：没有星雾底色，背景就是宇宙本身
@@ -478,16 +565,6 @@ export default function GraphCanvas(props: GraphCanvasProps) {
         lift: node.kind === "task" ? -16 : -22,
       };
     });
-
-    // 落位顺序：锚点先占（它们是骨架，路牌比任务名重要），任务按连接度降序。
-    // 谁重要谁先占位，撞上了才让
-    const order = scene.nodes
-      .map((node, i) => ({ node, i }))
-      .sort((a, b) =>
-        (a.node.kind === "task" ? 1 : 0) - (b.node.kind === "task" ? 1 : 0) ||
-        b.node.degree - a.node.degree,
-      )
-      .map((x) => x.i);
 
     // ── 邻接表：hover/选中高亮、拾取都用它 ──
     const adjacency: Array<Set<number>> = scene.nodes.map(() => new Set());
@@ -838,7 +915,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
 
     // 静态构图期间的黑屏给个说法：否则用户以为画布坏了
     const computing = document.createElement("div");
-    computing.className = "graph-computing";
+    computing.className = "graph-notice";
     computing.textContent = "构图计算中…";
     if (!animated) container.appendChild(computing);
 
@@ -938,11 +1015,14 @@ export default function GraphCanvas(props: GraphCanvasProps) {
 
       const sel = propsRef.current.selectedId;
       const selIdx = sel ? scene.indexOf.get(sel) ?? -1 : -1;
-      if (selIdx >= 0) {
+      // 选中优先；没选中时环画在键盘游标上（键盘用户看得见自己走到哪了）
+      const kbIdx = kbIndex >= 0 ? kbOrder[kbIndex] : -1;
+      const ringIdx = selIdx >= 0 ? selIdx : kbIdx;
+      if (ringIdx >= 0) {
         ring.visible = true;
-        ring.position.set(pos[selIdx * 3], pos[selIdx * 3 + 1], pos[selIdx * 3 + 2]);
+        ring.position.set(pos[ringIdx * 3], pos[ringIdx * 3 + 1], pos[ringIdx * 3 + 2]);
         ring.lookAt(camera.position);
-        const s = scene.nodes[selIdx].radius * 2.4;
+        const s = scene.nodes[ringIdx].radius * 2.4;
         ring.scale.setScalar(s);
       } else {
         ring.visible = false;
@@ -990,6 +1070,8 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       window.removeEventListener("graph:appearance", onAppearance);
       cancelAnimationFrame(raf);
       computing.remove();
+      live.remove();
+      kbApi.current = null;
       ro.disconnect();
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerdown", onPointerDown);
@@ -1047,8 +1129,59 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     layoutCache = null;
   }, []);
 
+  // ── 键盘：方向键走图、回车选中、Esc 清除选择 ──
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const api = kbApi.current;
+    if (!api) return;
+    switch (e.key) {
+      case "ArrowRight":
+      case "ArrowDown":
+        api.move(1);
+        e.preventDefault();
+        break;
+      case "ArrowLeft":
+      case "ArrowUp":
+        api.move(-1);
+        e.preventDefault();
+        break;
+      case "Home":
+        api.edge("first");
+        e.preventDefault();
+        break;
+      case "End":
+        api.edge("last");
+        e.preventDefault();
+        break;
+      case "Enter":
+      case " ":
+        api.activate();
+        e.preventDefault();
+        break;
+      case "Escape":
+        api.clear();
+        e.preventDefault();
+        break;
+      default:
+        break;
+    }
+  };
+
   return (
-    <div ref={containerRef} className="graph-canvas h-full w-full" data-testid="graph-canvas" />
+    <div
+      ref={containerRef}
+      className="graph-canvas h-full w-full"
+      data-testid="graph-canvas"
+      // 画布自身可聚焦：键盘用户要能进得来（里面没有可聚焦的 DOM 元素）
+      tabIndex={0}
+      role="application"
+      aria-label="任务图谱三维画布"
+      aria-describedby="graph-canvas-hint"
+      onKeyDown={onKeyDown}
+    >
+      <p id="graph-canvas-hint" className="sr-only">
+        方向键在任务节点间移动，回车选中当前节点，Esc 清除选择。
+      </p>
+    </div>
   );
 }
 
