@@ -230,3 +230,27 @@ describe("按压反馈", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe("main.css 浮层入场", () => {
+  it("浮层有入场动效且缩放起点在 0.9–0.97", () => {
+    const popover = css.match(/\.nm-popover\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(popover).toMatch(/animation:\s*popover-in var\(--dur-pop\) var\(--ease-out\)/);
+    const kf = css.match(/@keyframes popover-in\s*\{[\s\S]*?scale\(([\d.]+)\)/)?.[1];
+    expect(parseFloat(kf ?? "0")).toBeGreaterThanOrEqual(0.9);
+    expect(parseFloat(kf ?? "0")).toBeLessThanOrEqual(0.97);
+  });
+
+  it("四个浮层调用点各自指定了变换原点（从触发点长出来）", () => {
+    for (const [f, origin] of [
+      ["src/components/SettingsPage/ApiProviderSelect.tsx", "origin-top"],
+      ["src/components/SettingsPage/AvatarPicker.tsx", "origin-top-left"],
+      ["src/components/SettingsPage/SettingsPage.tsx", "origin-top-right"],
+    ] as const) {
+      const src = readFileSync(f, "utf-8");
+      expect(src).toContain(origin);
+    }
+    // SettingsPage 有两个浮层调用点，右对齐原点要两处都在
+    const settings = readFileSync("src/components/SettingsPage/SettingsPage.tsx", "utf-8");
+    expect(settings.match(/nm-popover[^"]*origin-top-right/g)?.length).toBe(2);
+  });
+});

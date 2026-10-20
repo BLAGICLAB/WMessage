@@ -3051,7 +3051,7 @@ export function SettingsPage({
                                   {vendorMenuOpen && (
                                     <div
                                       role="menu"
-                                      className="nm-popover absolute right-0 z-50 mt-1 w-40 p-1 space-y-0.5"
+                                      className="nm-popover absolute right-0 z-50 mt-1 w-40 p-1 space-y-0.5 origin-top-right"
                                     >
                                       <button
                                         type="button"
@@ -3214,7 +3214,7 @@ export function SettingsPage({
                                         <div
                                           role="listbox"
                                           aria-label="从模型库添加"
-                                          className="nm-popover absolute right-0 z-50 mt-1 max-h-56 w-64 space-y-0.5 overflow-y-auto p-1"
+                                          className="nm-popover absolute right-0 z-50 mt-1 max-h-56 w-64 space-y-0.5 overflow-y-auto p-1 origin-top-right"
                                         >
                                           {(() => {
                                             const added = new Set(

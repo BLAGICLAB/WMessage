@@ -1,7 +1,7 @@
 # 010 — 设置页下拉浮层加入场动效，并从触发点长出来
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §3 Physicality & origin / §2 Easing & duration
 - **Estimated scope**: 1 个 CSS + 4 个 tsx，约 14 行改动

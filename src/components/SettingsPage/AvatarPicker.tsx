@@ -145,7 +145,7 @@ export function AvatarPicker({
           id={listboxId}
           role="listbox"
           aria-label={`${kindLabel}头像`}
-          className="nm-popover absolute left-0 top-full z-50 mt-2 w-60 p-3"
+          className="nm-popover absolute left-0 top-full z-50 mt-2 w-60 p-3 origin-top-left"
         >
           <div className="grid grid-cols-4 gap-2">
             {AVATAR_IDS.map((id, i) => {

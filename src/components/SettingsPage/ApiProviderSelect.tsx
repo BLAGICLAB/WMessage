@@ -106,7 +106,7 @@ export function ApiProviderSelect({
         <div
           id={listboxId}
           role="listbox"
-          className="nm-popover absolute z-50 mt-1 w-full p-1 space-y-0.5"
+          className="nm-popover absolute z-50 mt-1 w-full p-1 space-y-0.5 origin-top"
         >
           {options.map((o, i) => (
             <button
