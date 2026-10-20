@@ -738,6 +738,9 @@ const EXECUTION_CLAIM_PATTERNS: &[&str] = &[
     "执行完毕",
     "运行完毕",
     "跑完了",
+    // 「已跑完」与「跑完了」是同一个完成态的两种语序，漏了它整道闸对
+    // 「已跑完，输出 5050」这种最常见的说法是瞎的
+    "已跑完",
     "已执行",
     "已经执行",
     "已运行",
@@ -904,6 +907,314 @@ pub fn claims_execution_with(text: &str, patterns: &[String]) -> bool {
 /// 这里跟着改——设置页改的是 bot-config，不改这段常量。
 pub fn claims_execution(text: &str) -> bool {
     claims_execution_with(text, &default_execution_claim_patterns())
+}
+
+/// 结果措辞：把一个数说成「某次执行的产物」的引子。
+///
+/// 与 `EXECUTION_CLAIM_PATTERNS` 分家：那批词判「像不像在叙述一次执行」，
+/// 这批词判「这个数是不是被当成那次执行的产出」。两者要同时命中才作数——
+/// 少一个就是误伤的入口：
+/// · 少了执行措辞 → 「1+1 的结果是 2」这类算术与讲解句会被当成谎报
+///   （词表里刻意不收「结果是/返回了」，指的就是这个坑）。
+/// · 少了结果措辞 → 「已跑完，共 3 步」里的 3 是计数不是结果。
+const RESULT_CLAIM_MARKERS: &[&str] = &[
+    "结果",
+    "输出",
+    "返回",
+    "打印",
+    "显示",
+    "算出",
+    "算出来",
+    "得到",
+    "统计",
+    "实测",
+    "答案",
+    "读出",
+    "产出",
+];
+
+/// 终稿是否如实说明了「那次执行没做成」。
+///
+/// 判据一（结果无出处）的让开条件：模型说了「跑不了 / 被拦了」，那它后面给
+/// 的数是它自己的推算（哪怕没标注），不是把执行结果编出来。如实汇报失败是
+/// 诚实行为，不该被判成编造——这条是执行类守卫一直守着的承诺。
+const EXECUTION_NOT_DONE_MARKERS: &[&str] = &[
+    "跑不了",
+    "跑不成",
+    "没法跑",
+    "无法执行",
+    "执行不了",
+    "执行失败",
+    "运行失败",
+    "调用失败",
+    "调用被拒",
+    "被拒绝",
+    "被拦截",
+    "被挡",
+    "未开启",
+    "没开启",
+    "没跑成",
+    "没能跑",
+    "跑不动",
+    "不可用",
+    "没有权限",
+    "没权限",
+    "无权限",
+    "白名单",
+    "失败",
+    "公式",
+    "推算",
+    "估算",
+    "估计",
+    "凭印象",
+];
+
+/// 终稿是否如实说明了「那次执行没做成」（含「这是推算不是执行结果」）。
+pub fn states_execution_not_done(text: &str) -> bool {
+    EXECUTION_NOT_DONE_MARKERS
+        .iter()
+        .any(|m| !m.is_empty() && text.contains(m))
+}
+
+/// 存在性/核实类措辞：终稿在给出现场结论（文件在不在、查到没有）。
+///
+/// 只给回声那道判据用（见 `is_echo_call`）：那次调用没取回任何新信息，结论
+/// 却靠它撑着。与 `RESULT_CLAIM_MARKERS` 分开——「没有」「确实」这类词太泛，
+/// 放进结果值那道判据会把「已跑完，没有报错」当成在报结果。
+const EXISTENCE_CLAIM_MARKERS: &[&str] = &[
+    "存在",
+    "不存在",
+    "只有",
+    "找到",
+    "没找到",
+    "确实",
+    "已核实",
+    "已确认",
+    "已检查",
+    "核对过",
+    "已验证",
+];
+
+/// 终稿是否给出了「结果」——数值结果或现场结论。
+///
+/// 供回声那道判据用：调用没取回任何新信息时，终稿若还给不出结论，那次调用
+/// 就是白调的，模型拿它当依据就是虚的。
+pub fn states_a_result(text: &str) -> bool {
+    RESULT_CLAIM_MARKERS.iter().any(|m| text.contains(m))
+        || EXISTENCE_CLAIM_MARKERS.iter().any(|m| text.contains(m))
+}
+
+/// 文本里的数值（宽松扫描：只取数字，不排形态）。
+///
+/// 给「出处比对」用：工具给 1234.56、模型报 1235 时字面比不上，但四舍五入到
+/// 1235 是等价的——那种是如实转述，不该判成编造。
+pub fn numbers_in_text(text: &str) -> Vec<f64> {
+    let mut out: Vec<f64> = Vec::new();
+    let mut cur = String::new();
+    for c in text.chars() {
+        if c.is_ascii_digit() || (c == '.' && !cur.ends_with('.')) {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            if let Ok(v) = cur.parse::<f64>() {
+                out.push(v);
+            }
+            cur.clear();
+        }
+    }
+    if !cur.is_empty() {
+        if let Ok(v) = cur.parse::<f64>() {
+            out.push(v);
+        }
+    }
+    out
+}
+
+/// 终稿里「被当成执行产出的结果」的具体数值。
+///
+/// 纯提取，不判真假：有没有出处要在运行期比（工具返回 + 对话上下文），那边
+/// 依赖运行期状态，塞进纯函数就没法单测——与 `claimed_doc_paths` 同样的分工。
+///
+/// 触发要三样同时落在同一个句段里：执行完成态措辞（词表）、结果措辞、具体
+/// 数值。句段按换行与句末标点切（`split_claim_segments`），跨行的那句
+/// 「执行完毕：」与下一行的「输出 5050」不算同一段——宁可漏判不误伤。
+pub fn claimed_result_numbers(text: &str, patterns: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for seg in split_claim_segments(text) {
+        if !patterns
+            .iter()
+            .any(|p| !p.is_empty() && seg.contains(p.as_str()))
+        {
+            continue;
+        }
+        if !RESULT_CLAIM_MARKERS.iter().any(|m| seg.contains(m)) {
+            continue;
+        }
+        for n in result_numbers_in(seg) {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    out
+}
+
+/// 数值两侧的「贴边字符」：贴上就是别的 token 的一部分。
+///
+/// 路径（`/…/2026Q3复盘.docx`）、标识符（`2026Q3`）、日期（`2026-10-20`）
+/// 里的数字都不是结果值。
+fn is_value_edge_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/')
+}
+
+/// 数后面跟的中文量词：跟上了就是计数，不是结果值。
+///
+/// 「共 3 项」「3 步」「3 个文件」里的 3 是数出来的个数，模型没执行也数得出来，
+/// 拿它当结果去查出处必然误伤。计时与体积单位（秒/ms/KB）不在此列——那是执行
+/// 才产得出的量。
+const COUNT_UNITS: &[char] = &[
+    '个', '项', '条', '次', '份', '张', '页', '行', '轮', '步', '种', '类', '名', '位', '块', '道',
+    '组', '批', '套', '只', '件', '本', '款', '台',
+];
+
+/// 数前面跟的估算词：跟上了就是估算，不是执行产出的确切值。
+const ESTIMATE_WORDS: &[&str] = &[
+    "约", "大概", "大致", "近", "超", "逾", "至少", "至多", "最多", "最少", "多达", "几百", "几千",
+    "几", "余", "将", "接近", "超过", "多于", "少于", "不到",
+];
+
+/// 数前面跟的序数/条款标记：跟上了是编号，不是结果值。
+const ORDINAL_WORDS: &[&str] = &["第", "规则", "版本", "条款", "条"];
+
+/// 句段里的数值候选（排掉各自都有正当讲解句的形态）。
+///
+/// 排掉的形态：标识符/路径/日期的一部分、列表序号（`1.`）、计数（`3 项`）、
+/// 估算（`约 5013`）、编号（`第 21 条`、`规则 21/19`）。
+fn result_numbers_in(seg: &str) -> Vec<String> {
+    let chars: Vec<char> = seg.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        let mut end = i;
+        // 小数：小数点后必须是数字，否则是列表序号或句末点号
+        if i < chars.len()
+            && chars[i] == '.'
+            && chars.get(i + 1).is_some_and(|c| c.is_ascii_digit())
+        {
+            i += 1;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            end = i;
+        }
+        let num: String = chars[start..end].iter().collect();
+        let prev = start.checked_sub(1).map(|k| chars[k]);
+        let next = chars.get(end).copied();
+        // 贴边字符：路径/标识符/日期的一部分
+        if prev.is_some_and(is_value_edge_char) || next.is_some_and(is_value_edge_char) {
+            i = end;
+            continue;
+        }
+        // 列表序号（`1.` `2、`）
+        if next == Some('、') {
+            i = end;
+            continue;
+        }
+        // 计数：数后面（跨过空格）跟中文量词
+        if next_non_space(&chars, end).is_some_and(|c| COUNT_UNITS.contains(&c)) {
+            i = end;
+            continue;
+        }
+        // 估算：数前面（跨过空格）跟估算词
+        if ends_with_any(&chars, start, ESTIMATE_WORDS) {
+            i = end;
+            continue;
+        }
+        // 编号：数前面跟序数/条款标记
+        if ends_with_any(&chars, start, ORDINAL_WORDS) {
+            i = end;
+            continue;
+        }
+        if !out.contains(&num) {
+            out.push(num);
+        }
+        i = end;
+    }
+    out
+}
+
+/// 从 `end` 起跳过空白后的第一个字符。
+fn next_non_space(chars: &[char], end: usize) -> Option<char> {
+    chars[end..].iter().find(|c| !c.is_whitespace()).copied()
+}
+
+/// `start` 之前的文字（跳过空白）是否以 `words` 里的某个词结尾。
+fn ends_with_any(chars: &[char], start: usize, words: &[&str]) -> bool {
+    let head: String = chars[..start].iter().rev().take(4).collect();
+    let head: String = head.chars().rev().collect();
+    let head = head.trim_end();
+    words.iter().any(|w| !w.is_empty() && head.ends_with(w))
+}
+
+/// 一次工具调用是不是「回声」——返回内容没有取回任何新信息，全是自己写进参数的那句。
+///
+/// 判据：返回里的内容 token 全部能在入参里找到。模型把结论写进参数、再让工具
+/// 原样吐回来，回声就是「这次调用替你核实了什么」的答案——没有。
+///
+/// 样板不算内容：外部 MCP 工具的返回常排成 `### Result` / `### Ran … code` /
+/// `### Page` 几段，格式词（Result/Page/URL…）会让每个 MCP 调用都显得「有新
+/// 信息」，所以只取第一段（结果段）与入参比对。
+///
+/// 返回得太少判不出「有没有新信息」——不猜，不算回声。
+pub fn is_echo_call(args: &str, output: &str) -> bool {
+    let tokens = content_tokens(result_section(output));
+    if tokens.len() < 2 || tokens.iter().map(|t| t.chars().count()).sum::<usize>() < 12 {
+        return false;
+    }
+    let arg_tokens = content_tokens(args);
+    tokens
+        .iter()
+        .all(|t| arg_tokens.iter().any(|a| a == t) || args.contains(t.as_str()))
+}
+
+/// 工具返回里的结果段。
+///
+/// 外部 MCP 工具常把返回排成 `### Result` / `### Ran … code` / `### Page` 几段，
+/// 样板段不是取回的内容。第一行不是 `### ` 格式头时整段都算内容。
+fn result_section(output: &str) -> &str {
+    let first_line = output.split_inclusive('\n').next().unwrap_or("");
+    if !first_line.trim_start().starts_with("### ") {
+        return output;
+    }
+    let rest = &output[first_line.len()..];
+    match rest.find("\n### ") {
+        Some(idx) => &rest[..idx],
+        None => rest,
+    }
+}
+
+/// 内容 token：字母数字（含中日韩）与 `_` `.` `-` `/` 连成的片段。
+fn content_tokens(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for c in text.chars() {
+        if c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '/') {
+            cur.push(c);
+        } else if !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
 }
 
 /// 终稿里点名的工具（按 TOOLS_TABLE 扫，snake_case 标识符不会与中文话术撞车）。
@@ -1946,6 +2257,107 @@ pub fn mutating_tools() -> Vec<&'static str> {
         .filter(|t| t.mutating)
         .map(|t| t.name)
         .collect()
+}
+
+/// 工具单源真相的守卫相关纯函数：结果值抽取与回声判定。
+#[cfg(test)]
+mod result_claim_tests {
+    use super::{
+        claimed_result_numbers, default_execution_claim_patterns, is_echo_call, result_numbers_in,
+        states_execution_not_done,
+    };
+
+    fn patterns() -> Vec<String> {
+        default_execution_claim_patterns()
+    }
+
+    /// 判据 A 的正例：执行完成态措辞 + 结果措辞 + 数值，同一段里齐了才摘。
+    #[test]
+    fn claimed_result_numbers_picks_execution_result_values() {
+        assert_eq!(
+            claimed_result_numbers("已跑完，输出 5050", &patterns()),
+            vec!["5050".to_string()]
+        );
+        assert_eq!(
+            claimed_result_numbers("执行完毕，返回 8191", &patterns()),
+            vec!["8191".to_string()]
+        );
+        // 小数与千分位照原样摘（出处比对那侧再归一）
+        assert_eq!(
+            claimed_result_numbers("我跑了，结果是 2.5", &patterns()),
+            vec!["2.5".to_string()]
+        );
+    }
+
+    /// 算术与讲解句不摘：没有执行措辞，它们说的不是执行产物。
+    /// 「1+1 的结果是 2」是 SPEC 里点名不收「结果是」的原因。
+    #[test]
+    fn claimed_result_numbers_skips_arithmetic_and_explanations() {
+        assert!(claimed_result_numbers("1+1 的结果是 2", &patterns()).is_empty());
+        assert!(claimed_result_numbers("这个函数返回了 None", &patterns()).is_empty());
+        // 计数不是结果：3 是数出来的个数
+        assert!(claimed_result_numbers("已跑完，共 3 步", &patterns()).is_empty());
+        // 估算不是确切值
+        assert!(claimed_result_numbers("实测约 5013 ms", &patterns()).is_empty());
+        // 编号不是结果
+        assert!(claimed_result_numbers("已执行，规则 21/19 这条我会卡死", &patterns()).is_empty());
+    }
+
+    /// 路径、日期、标识符里的数字不是结果值。
+    #[test]
+    fn result_numbers_in_skips_identifiers_paths_and_dates() {
+        assert!(result_numbers_in("/Users/renshi/Desktop/2026Q3复盘.docx").is_empty());
+        assert!(result_numbers_in("2026-10-20 的结果").is_empty());
+        assert!(result_numbers_in("第 21 条").is_empty());
+        assert!(result_numbers_in("1. 把新内容写进已有文件").is_empty());
+        assert_eq!(result_numbers_in("输出 5050"), vec!["5050".to_string()]);
+    }
+
+    /// 判据 B 的正例：模型把结论写进参数、让工具原样吐回来。
+    /// 真机原形（trace 106）：browser_evaluate 的函数体是硬编码字符串。
+    #[test]
+    fn is_echo_call_detects_hardcoded_assertion_echoed_back() {
+        let args = r#"{"function":"async () => { return { desktopDocx: 'only 2026Q3复盘.docx exists, 季度复盘.docx NOT found' }; }"}"#;
+        let output = "### Result\n{\n  \"desktopDocx\": \"only 2026Q3复盘.docx exists, 季度复盘.docx NOT found\"\n}\n### Ran Playwright code\n```js\nawait page.evaluate('async () => { return { desktopDocx: \\'only 2026Q3复盘.docx exists, 季度复盘.docx NOT found\\' }; }');\n```\n### Page\n- Page URL: about:blank";
+        assert!(
+            is_echo_call(args, output),
+            "返回内容全来自入参 = 这次调用没替模型核实任何东西"
+        );
+    }
+
+    /// 判据 B 的负例：真的去读了现场，返回里有入参没有的东西。
+    #[test]
+    fn is_echo_call_accepts_calls_that_retrieved_new_content() {
+        let args = "import os\np = \"/Users/renshi/Desktop/季度复盘.docx\"\nprint(\"exists:\", os.path.exists(p))";
+        let output = "exists: False\nisfile: False\ndocx on desktop: ['/Users/renshi/Desktop/2026Q3复盘.docx']";
+        assert!(
+            !is_echo_call(args, output),
+            "返回里有入参没有的现场信息，不算回声"
+        );
+        // 目录列举：文件名不在入参里
+        assert!(!is_echo_call(
+            r#"{"dir":"/Users/renshi/Desktop","pattern":"*.docx"}"#,
+            "/Users/renshi/Desktop（1 条）：\n2026Q3复盘.docx"
+        ));
+    }
+
+    /// 返回得太少判不出「有没有新信息」——不猜，不算回声。
+    #[test]
+    fn is_echo_call_needs_enough_content_to_judge() {
+        assert!(!is_echo_call(r#"{"code":"print(\"OK\")"}"#, "OK"));
+    }
+
+    /// 让开条件：终稿如实说明执行没做成（或明说那是推算）→ 结果值判据整档让开。
+    #[test]
+    fn states_execution_not_done_covers_failure_and_derivation_forms() {
+        assert!(states_execution_not_done("我跑了，但开关没开，跑不了。"));
+        assert!(states_execution_not_done("答案是 5050（按公式推算的）"));
+        assert!(states_execution_not_done(
+            "run_python 调用失败：Python 编程未开启"
+        ));
+        // 正常的执行完成态终稿不该命中让开
+        assert!(!states_execution_not_done("已跑完，输出 5050"));
+    }
 }
 
 #[cfg(test)]

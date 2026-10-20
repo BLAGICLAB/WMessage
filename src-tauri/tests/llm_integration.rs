@@ -4024,3 +4024,226 @@ async fn core_unverifiable_writer_exemption_does_not_leak_into_next_question() {
     );
     assert!(text.contains("不是我导出的"), "模型应被要求改口：{text:?}");
 }
+
+/// 判据一（结果无出处）：工具跑过，但报出来的数不是它给的。
+///
+/// 真机那类形态：模型调了工具（凭证表里有「调过」），终稿却报了一个工具返回
+/// 里根本没有的数。凭证表答不了这一问——它记的是「哪个工具成功过」，不是
+/// 「这个数是哪来的」。
+#[tokio::test]
+async fn core_result_value_without_source_is_blocked() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"print('done')"}"#.into(),
+    }));
+    // 工具真的返回了，但返回里没有 5050
+    server.push_behavior(MockBehavior::TextReply("已跑完，输出 5050".into()));
+    server.push_behavior(MockBehavior::TextReply("刚才那个数是编的。".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert_eq!(server.request_count(), 3, "应返工一轮");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|l| l.contains("声称的结果无出处: 5050")),
+        "报出来的数没有出处，应判成编造：{lines:?}"
+    );
+    assert!(text.contains("编的"), "模型应被要求改口：{text:?}");
+}
+
+/// 判据一的对家：有出处的数不判。工具给的是 5050，模型报 5050 就是如实转述。
+#[tokio::test]
+async fn core_result_value_with_source_is_not_blocked() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"print(sum(range(1,101)))"}"#.into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply("已跑完，输出 5050".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("5050", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("有出处应直接 Ok");
+    assert_eq!(server.request_count(), 2, "不该返工");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "数有出处，不该判：{lines:?}"
+    );
+    assert!(text.contains("5050"), "应原样返回：{text:?}");
+}
+
+/// 判据二（回声调用）：模型把结论写进参数，让工具原样吐回来，再拿它当依据。
+///
+/// 真机 trace 106 的形态：browser_evaluate 的函数体是一句硬编码字符串，工具
+/// 「成功」返回的正是模型自己写的那句。这次调用没替模型核实任何东西。
+#[tokio::test]
+async fn core_echo_call_cannot_back_a_conclusion() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "mcp_playwright_browser_evaluate".into(),
+        arguments: r#"{"function":"async () => { return { desktopDocx: 'only 2026Q3复盘.docx exists, 季度复盘.docx NOT found' }; }"}"#.into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply(
+        "已核实：桌面上没有 /Users/renshi/Desktop/季度复盘.docx，只有 2026Q3复盘.docx。".into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("刚才没真的核实过。".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    // 工具把参数里那句话原样吐回来——回声
+    let exec = |_n: String, _a: String, _t: ToolCallTrace| async {
+        ToolResult::ok(
+            "### Result\n{\n  \"desktopDocx\": \"only 2026Q3复盘.docx exists, 季度复盘.docx NOT found\"\n}\n### Ran Playwright code\n```js\nawait page.evaluate('async () => { return { desktopDocx: \\'only 2026Q3复盘.docx exists, 季度复盘.docx NOT found\\' }; }');\n```\n### Page\n- Page URL: about:blank",
+            Vec::new(),
+        )
+    };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert_eq!(server.request_count(), 3, "应返工一轮");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|l| l.contains("结论无工具支撑")),
+        "回声调用不能给结论背书：{lines:?}"
+    );
+    assert!(text.contains("没真的核实过"), "模型应被要求改口：{text:?}");
+}
+
+/// 判据二的对家：同一提问里还有一次真读到现场的调用，结论就有依据，不判。
+///
+/// 真机 trace 106 就是这个形态——browser_evaluate 那次回声，但 run_python 真的
+/// 读了桌面，模型报的结论站得住。
+#[tokio::test]
+async fn core_echo_call_alongside_real_lookup_is_not_blocked() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "mcp_playwright_browser_evaluate".into(),
+        arguments: r#"{"function":"async () => { return { desktopDocx: 'only 2026Q3复盘.docx exists, 季度复盘.docx NOT found' }; }"}"#.into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"import glob; print(glob.glob('/Users/renshi/Desktop/*.docx'))"}"#
+            .into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply(
+        "已核实：桌面上没有 /Users/renshi/Desktop/季度复盘.docx，只有 2026Q3复盘.docx。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec = |name: String, _a: String, _t: ToolCallTrace| async move {
+        if name == "run_python" {
+            ToolResult::ok(
+                "docx on desktop: ['/Users/renshi/Desktop/2026Q3复盘.docx']",
+                Vec::new(),
+            )
+        } else {
+            ToolResult::ok(
+                "### Result\n{\n  \"desktopDocx\": \"only 2026Q3复盘.docx exists, 季度复盘.docx NOT found\"\n}\n### Ran Playwright code\n```js\nawait page.evaluate('async () => { return { desktopDocx: \\'only 2026Q3复盘.docx exists, 季度复盘.docx NOT found\\' }; }');\n```\n### Page\n- Page URL: about:blank",
+                Vec::new(),
+            )
+        }
+    };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("有真读到现场的调用应直接 Ok");
+    assert_eq!(server.request_count(), 3, "不该返工");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "还有一次读到现场的调用，结论有依据：{lines:?}"
+    );
+    assert!(text.contains("已核实"), "应原样返回：{text:?}");
+}
+
+/// 如实说明「这个数是我的推算、不是执行产物」不算谎报执行结果。
+///
+/// 工具确实调过（凭证表里有），但模型报的那个数不是工具给的——它自己标了是
+/// 推算。这类不该判：判了就是把「如实标注」也当成编造。
+#[tokio::test]
+async fn core_honest_failure_report_is_not_blocked_by_value_criterion() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"print(sum(range(1,101)))"}"#.into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply(
+        "我跑了脚本，答案是 5050（按公式推算的，不是这次跑出来的）。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("如实标注推算应直接 Ok");
+    assert_eq!(server.request_count(), 2, "不该返工");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "如实标注推算不受结果值判据影响：{lines:?}"
+    );
+    assert!(text.contains("5050"), "应原样返回：{text:?}");
+}

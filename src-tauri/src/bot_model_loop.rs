@@ -939,6 +939,97 @@ pub struct LoopTrace {
     pub request_count: u32,
 }
 
+/// 证据池里单次调用保留的返回文本上限（字符）。
+///
+/// 工具返回本身已被回灌上限钳过（默认 30K 字节），这里再钳一层是防极端值把
+/// 内存吃光。截掉的部分模型多半也没看见——真截在中间的数判成「无出处」是
+/// 误伤方向，宁可放过。
+const EVIDENCE_OUTPUT_CHARS: usize = 64 * 1024;
+
+/// 一次工具调用的证据：参数与返回。
+///
+/// 凭证池记的是「哪个工具成功过」——存在性。要判「模型报出来的这个数是哪来的」
+/// 「这次调用到底替模型核实了什么」，得留着返回内容与参数本身：那是另一根轴。
+#[derive(Debug, Clone)]
+struct ToolEvidence {
+    /// 这次调用成功没有（失败与成功的返回都是模型看得见的内容，出处比对都要算）
+    ok: bool,
+    /// 调用的参数（原始 JSON 串）
+    args: String,
+    /// 工具返回的文本（模型看到的那一份）
+    output: String,
+}
+
+/// 消息里的文本内容（字符串，或多模态数组里的 text 段）。
+fn msg_text(msg: &serde_json::Value) -> Option<String> {
+    match msg.get("content") {
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(serde_json::Value::Array(parts)) => {
+            let mut buf = String::new();
+            for p in parts {
+                if let Some(t) = p.get("text").and_then(|t| t.as_str()) {
+                    buf.push_str(t);
+                    buf.push('\n');
+                }
+            }
+            if buf.is_empty() {
+                None
+            } else {
+                Some(buf)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// 对话里模型见过的「非模型自产」内容：用户消息 + 工具消息。
+///
+/// assistant 消息不算出处——模型自己上一轮说过的数字不是证据，它说的话不能
+/// 给自己作证。跨提问的旧工具消息算：那是上一轮真的跑出来的。
+fn context_sources(msgs: &[serde_json::Value]) -> Vec<String> {
+    msgs.iter()
+        .filter(|m| {
+            matches!(
+                m.get("role").and_then(|r| r.as_str()),
+                Some("user") | Some("tool")
+            )
+        })
+        .filter_map(msg_text)
+        .collect()
+}
+
+/// 数值在出处里找得到吗。
+///
+/// 三条路算「找得到」：字面命中（去千分位逗号后子串命中）、四舍五入等价
+/// （工具给 1234.56、模型报 1235）、以及出处里本来就有这个数。
+/// 四舍五入那条例外是给「工具给的是原值、模型报的是它自己抄下来的近似值」
+/// 留的——那种是如实转述，判成编造就是误伤。
+fn number_sourced(value: &str, sources: &[String]) -> bool {
+    let needle: String = value.chars().filter(|c| *c != ',').collect();
+    if needle.is_empty() {
+        return true;
+    }
+    let decimals = needle.split_once('.').map(|(_, d)| d.len()).unwrap_or(0);
+    // 解析不过的不是数值，按「比不出来」处理（当前只有数字会走到这儿，
+    // 但别让以后的形态悄悄进来当成有出处）。
+    if needle.parse::<f64>().is_err() {
+        return false;
+    }
+    for s in sources {
+        if s.replace(',', "").contains(&needle) {
+            return true;
+        }
+    }
+    for s in sources {
+        for n in crate::bot::registry::numbers_in_text(s) {
+            if format!("{n:.decimals$}") == needle {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 主循环推理参数选取：override 命中必须取覆盖条目的（resolve_model_override 已按
 /// 条目值 > 全局 max_tokens 兜底算好）；未命中才按 active 条目解析（active 条目 >
 /// 全局 > 内置默认，见 schema::effective_inference）。两路不可混用——覆盖端点打
@@ -1545,6 +1636,12 @@ where
     //   跨提问的重述（「刚才 create_word 生成的那个」）是真话，由会话级的成功
     //   记录兜住，见下面的 session_tools_cache。
     let mut receipts: Vec<String> = Vec::new();
+    // 本提问里每次工具调用的「参数 + 返回」。
+    //
+    // 凭证池只记「哪个工具成功过」——那是存在性。要判「模型报出来的这个数是哪来的」
+    // 「这次调用到底替模型核实了什么」，得留着返回内容本身：两者是不同的轴，
+    // 凭证表答不了后者。
+    let mut evidence: Vec<ToolEvidence> = Vec::new();
     // 本会话调用过的工具名（调用过 / 成功过两档）——点名判据的排除集，跨提问的
     // 重述是真话。惰性拉一次：判据要用它，但每轮拉一次库不值当。None = 还没拉。
     let mut session_tools_cache: Option<Option<crate::db::trace::SessionTools>> = None;
@@ -2529,6 +2626,45 @@ where
             // 而本次提问一条成功凭证都没有——退回整条提问零凭证的粗判，这正是
             // 词表要顶住的那类（「执行完毕，工具真实返回…」）。
             let claim_execution = table_hit && mentioned.is_empty() && receipts.is_empty();
+            // 判据一（结果无出处）：终稿把一个数当成执行产物报出来，而那个数在
+            // 本次提问的工具返回与对话上下文里都找不到出处。
+            //
+            // 凭证表答不了这一问：它记的是「哪个工具成功过」，不是「这个数是哪
+            // 来的」。同一个提问里调过工具，不代表报出来的数就是那个工具给的
+            // ——「已跑完，输出 5050」而工具给的是别的数，就是编的。
+            //
+            // 让开两处：派过子 agent（它的返回不落我们的池子）、终稿如实说了
+            // 执行没做成（那它给的是自己的推算，不是把执行结果编出来）。
+            let claimed_numbers = crate::bot::registry::claimed_result_numbers(
+                &final_text,
+                deps.guard_claim_keywords,
+            );
+            let mut sources: Vec<String> = context_sources(&msgs);
+            sources.extend(evidence.iter().filter(|e| e.ok).map(|e| e.output.clone()));
+            let unsourced_value: Option<String> = if claimed_numbers.is_empty()
+                || subagent_spawned
+                || crate::bot::registry::states_execution_not_done(&final_text)
+            {
+                None
+            } else {
+                claimed_numbers
+                    .iter()
+                    .find(|n| !number_sourced(n, &sources))
+                    .cloned()
+            };
+            // 判据二（回声调用）：本次提问的成功调用全都没取回新信息——返回内容
+            // 就是模型自己写进参数的那句。终稿再拿它当结论的依据，就是自证。
+            //
+            // 口径是「有没有别的调用取回过真东西」：同一提问里若还有一次读到现
+            // 场的调用（真机 trace 106 的 run_python），结论就有依据，不该拦。
+            let echo_only = evidence.iter().any(|e| e.ok)
+                && evidence
+                    .iter()
+                    .filter(|e| e.ok)
+                    .all(|e| crate::bot::registry::is_echo_call(&e.args, &e.output));
+            let echo_backed = echo_only
+                && !subagent_spawned
+                && (crate::bot::registry::states_a_result(&final_text) || !mentioned.is_empty());
             // 幻觉守卫判决：声称完成但无对应凭证 → 第一次返工，第二次如实标注。
             //
             // 两次是两种不同处置，不是同一种做两遍：
@@ -2545,9 +2681,17 @@ where
                 || !unsupported.is_empty()
                 || fake_gen_path.is_some()
                 || unreceipted_path.is_some()
+                || unsourced_value.is_some()
+                || echo_backed
             {
                 // kind 的优先级与下面的 reason 一致：先说最硬的那条（路径压根
-                // 不存在 / 路径不是工具产物），再说点名判据、执行类、最后变更类。
+                // 不存在 / 路径不是工具产物），再说点名判据、执行类粗判，然后是
+                // 结果无出处与回声调用，最后变更类。
+                //
+                // 粗判排在结果无出处前面：零凭证时「本次提问没有任何工具调用
+                // 成功」是更完整的根因说法——那种情形下结果值必然也没出处，
+                // 换个说法反而丢信息。两条新判据顶的是粗判够不着的地界：工具
+                // 确实调过（有凭证），但报出来的数不是它给的。
                 let kind = if fake_gen_path.is_some() {
                     "声称已生成但路径不存在".to_string()
                 } else if unreceipted_path.is_some() {
@@ -2556,6 +2700,10 @@ where
                     format!("声称已执行但无对应凭证: {}", unsupported.join(","))
                 } else if claim_execution {
                     "声称已执行但本次提问零凭证".to_string()
+                } else if let Some(v) = &unsourced_value {
+                    format!("声称的结果无出处: {v}")
+                } else if echo_backed {
+                    "结论无工具支撑".to_string()
                 } else {
                     "声称变更但未调工具".to_string()
                 };
@@ -2566,14 +2714,16 @@ where
                     &unreceipted_path,
                     claim_execution,
                     unsupported.as_slice(),
+                    unsourced_value.as_deref(),
+                    echo_backed,
                 ) {
-                    (Some(p), _, _, _) => (
+                    (Some(p), _, _, _, _, _) => (
                         format!(
                             "你声称已生成文件 {p}，但该路径在磁盘上不存在——文件实际没有生成。"
                         ),
                         format!("上面提到的文件 {p} 实际没有生成——磁盘上不存在这个路径。"),
                     ),
-                    (None, Some(p), _, _) => (
+                    (None, Some(p), _, _, _, _) => (
                         format!(
                             "你声称已生成文件 {p}，但这个路径没有落盘凭证——本次提问的落盘记录和历史痕迹里都没有它，这个文件不是本次生成的。"
                         ),
@@ -2581,7 +2731,7 @@ where
                             "上面提到的文件 {p} 不是本次生成的——这个路径没有落盘凭证。"
                         ),
                     ),
-                    (None, None, _, [t, ..]) => (
+                    (None, None, _, [t, ..], _, _) => (
                         format!(
                             "你刚才说调了 {t} 并给出了结果，但本次提问和本会话历史里它都没有成功返回过——这个结果是编造的。"
                         ),
@@ -2589,12 +2739,25 @@ where
                             "上面关于 {t} 的执行结果是编造的——本次提问和本会话历史里它都没有成功返回过。"
                         ),
                     ),
-                    (None, None, true, _) => (
+                    (None, None, true, _, _, _) => (
                         "你刚才叙述了一次已完成的执行并给出了结果，但本次提问从头到尾没有任何工具调用成功——这个结果是编造的。".to_string(),
                         "上面叙述的这次执行没有实际发生——本次提问里没有任何工具调用成功。"
                             .to_string(),
                     ),
-                    (None, None, false, _) => (
+                    (None, None, _, _, Some(v), _) => (
+                        format!(
+                            "你刚报的结果 {v} 在本次提问的工具返回与对话内容里都找不到出处——这个数不是执行出来的。要么真的执行一次、拿到返回后再如实转述，要么明确写清这是你的推算值（不是执行结果），禁止把没跑出来的数说成跑出来的。"
+                        ),
+                        format!(
+                            "上面报的 {v} 没有出处——本次提问的工具返回与对话内容里都没有这个数。"
+                        ),
+                    ),
+                    (None, None, _, _, _, true) => (
+                        "你这次的调用没有取回任何新信息——返回内容就是你写进参数里的那句话，工具没有替你核实任何东西，结论不该拿它当依据。请换用能真正读到现场的工具重新核实（列目录用 list_files、读文件用 read_text_file、查任务用 query_tasks、搜内容用 grep_files）；若确实无法核实，如实说明这次没有核实过，禁止把没核实过的结论说成核实过的。".to_string(),
+                        "上面的结论没有工具支撑——本次提问的调用没有取回任何新信息。"
+                            .to_string(),
+                    ),
+                    (None, None, false, _, _, _) => (
                         "你刚才声称完成了变更，但本轮没有任何变更类工具调用成功，数据实际没有变化。"
                             .to_string(),
                         "上面声称的变更没有实际发生——本轮没有变更类工具调用成功，数据实际没有变化。"
@@ -2613,7 +2776,14 @@ where
                     // 文件类谎报（路径不存在 / 路径不是工具产物）第三档：只说
                     // 文档生成那几个工具，别把模型引到任务卡工具上去。
                     // 点名判据（独立判据）走执行类那一档：它说的就是一次执行。
-                    let remedy = if (claim_execution || !unsupported.is_empty())
+                    // 结果无出处那道：要么真跑一次拿到返回，要么写清这是推算。
+                    // 回声调用那道：换能读到现场的工具重查，别拿自己写进参数的
+                    // 那句话当证据。
+                    let remedy = if echo_backed {
+                        "请换用能真正读到现场的工具重新核实（列目录用 list_files、读文件用 read_text_file、查任务用 query_tasks、搜内容用 grep_files），并只转述工具真实返回的内容；若确实无法核实，如实说明这次没有核实过，禁止把没核实过的结论说成核实过的。".to_string()
+                    } else if unsourced_value.is_some() {
+                        "请发起 tool_call 实际执行并拿到真实返回后再如实转述；若确实无法执行（白名单拦截 / 无权限 / 工具不可用），就明确写清这是你的推算值而不是执行结果，禁止把没跑出来的数说成跑出来的。".to_string()
+                    } else if (claim_execution || !unsupported.is_empty())
                         && fake_gen_path.is_none()
                     {
                         "请立即发起 tool_call 实际执行，禁止只改文字糊弄；拿到真实返回后再如实转述（失败就如实报失败）。若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
@@ -2945,6 +3115,13 @@ where
             }
             // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
             let failed = !tool_outcome.status.is_success();
+            // 证据池：参数与返回都留着。成功与失败都记——失败信息也是模型看得见的
+            // 内容（模型会照着它说「跑不了」），出处比对时算不算得到依据就在这里。
+            evidence.push(ToolEvidence {
+                ok: !failed,
+                args: args.clone(),
+                output: result.chars().take(EVIDENCE_OUTPUT_CHARS).collect(),
+            });
             // 只有成功返回的工具才算数：被门禁拦下 / 用户拒绝 / 执行失败的调用没产出
             // 任何可转述的东西，模型若照着它编结果，凭证表还得拦得住。
             if !failed {
@@ -3394,6 +3571,42 @@ mod hallucination_guard_tests {
     // （claims_execution_with），两者分开钉：内置表的负例不能被设置页改掉。
     use crate::bot::registry::claims_execution;
 
+    /// 出处比对：字面命中、数值等价（千分位）、四舍五入等价。
+    #[test]
+    fn number_sourced_accepts_literal_and_rounded_forms() {
+        let sources = vec!["耗时 1234.56 ms，文件 36 KB".to_string()];
+        assert!(number_sourced("1234.56", &sources), "字面命中");
+        assert!(number_sourced("36", &sources), "字面命中");
+        assert!(
+            number_sourced("1235", &sources),
+            "工具给 1234.56、模型报 1235：如实转述，不是编造"
+        );
+        assert!(!number_sourced("5050", &sources), "没有出处");
+    }
+
+    /// 出处只认模型见过的、非模型自产的内容：它自己上一轮说的话不算证据。
+    #[test]
+    fn context_sources_excludes_assistant_messages() {
+        let msgs = vec![
+            serde_json::json!({"role": "user", "content": "算 5050"}),
+            serde_json::json!({"role": "assistant", "content": "结果是 7777"}),
+            serde_json::json!({"role": "tool", "content": "9999"}),
+        ];
+        let sources = context_sources(&msgs);
+        assert!(
+            sources.iter().any(|s| s.contains("5050")),
+            "用户消息是出处：{sources:?}"
+        );
+        assert!(
+            sources.iter().any(|s| s.contains("9999")),
+            "工具消息是出处：{sources:?}"
+        );
+        assert!(
+            !sources.iter().any(|s| s.contains("7777")),
+            "模型自己说的话不能给自己作证：{sources:?}"
+        );
+    }
+
     #[test]
     fn claimed_doc_paths_extracts_claimed_doc_paths() {
         // 实锤事故原话（trace 30）：窄词表漏检、路径是编造的。
@@ -3672,7 +3885,7 @@ mod hallucination_guard_tests {
         // 没配过时的回落值就是内置默认表
         assert_eq!(
             crate::bot::registry::default_execution_claim_patterns().len(),
-            26,
+            27,
             "内置词表条数变了——设置页「恢复默认」与 SPEC 的计数要同步"
         );
         assert!(claims_execution_with(
