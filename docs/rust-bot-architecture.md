@@ -32,7 +32,7 @@ src-tauri/src/
 │   ├── subagents.rs      子 agent 编排持久化（SubagentRow / 六态状态机 transition_allowed /
 │   │                     SubagentBudget 预算三硬顶；spawn 插 queued 行，check 幂等轮询）
 │   ├── people.rs         成员注册表（多人任务汇总的归属人字典；people_list 命令 +
-│   │                     upsert 最新名覆盖 + 占位兜底，见 docs/TASK-GRAPH-DESIGN-2026-10-05.md §1）
+│   │                     upsert 最新名覆盖 + 占位兜底，见 docs/archive/TASK-GRAPH-DESIGN-2026-10-05.md §1）
 │   ├── schedule_jobs.rs  内容型定时作业（T1）：XXL-JOB 式调度日志——重试/自动暂停/
 │   │                     错过消费 + scheduled_job_runs 执行历史；定时单源本表
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）

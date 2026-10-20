@@ -6,7 +6,7 @@ import type { GraphFilters } from "../components/GraphPage/graph-build";
 
 export type GraphLabelDensity = "sparse" | "standard" | "dense";
 export type GraphEdgeWidth = "thin" | "standard" | "thick";
-/** 布局松散度（设置页可切）→ R_MAX 系数 k（面密度恒定公式 R_MAX = k·√N 的 k） */
+/** 布局松散度（设置页可切）→ 布局外径系数 k（面密度恒定公式 外径 = k·√N 的 k） */
 export type GraphLooseness = "tight" | "standard" | "loose";
 
 const LOOSENESS_VALUES = ["tight", "standard", "loose"] as const;
@@ -177,7 +177,12 @@ export function loadGraphFilters(): GraphFilters | null {
   const isStringArray = (x: unknown): x is string[] =>
     Array.isArray(x) && x.every((s) => typeof s === "string");
   return {
-    status: f.status as GraphFilters["status"],
+    // 逐字段重建：存档里多出来的键不往外带（status 的多余键此前整包透传）
+    status: {
+      todo: f.status.todo,
+      doing: f.status.doing,
+      done: f.status.done,
+    },
     owners: isStringArray(f.owners) ? f.owners : null,
     tags: isStringArray(f.tags) ? f.tags : null,
     year: typeof f.year === "number" && Number.isFinite(f.year) ? f.year : null,

@@ -1,6 +1,6 @@
 # 图谱标签聚簇 / 依赖编辑 / 标签近义设计（G4-CLUSTER · G5-DEPEDIT · G6-SYNONYM，2026-10-05）
 
-> 承接 `docs/TASK-GRAPH-DESIGN-2026-10-05.md`（图谱主设计）。渲染层已迁移
+> 承接 `docs/archive/TASK-GRAPH-DESIGN-2026-10-05.md`（图谱主设计，已归档）。渲染层已迁移
 > Sigma.js + FA2 worker（G3-SIGMA）。本设计覆盖三批：
 > ① 标签亲和聚簇 + 视野自适应；② 普通任务卡依赖编辑；③ 标签近义（嵌入引擎）。
 > 拖线建边明确不做（老板拍板）。

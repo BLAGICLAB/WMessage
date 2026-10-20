@@ -1,6 +1,6 @@
 # 人工冒烟验收清单 — 任务图谱 G1-OWNER / G2-AUTOTAG / G3-GRAPH / G3-SIGMA / G3-PERF / G3-LABEL（2026-10-05）
 
-> 依据：`docs/TASK-GRAPH-DESIGN-2026-10-05.md`（§5 验收环节）+ 各批实现
+> 依据：`docs/archive/TASK-GRAPH-DESIGN-2026-10-05.md`（§5 验收环节）+ 各批实现
 > （G1-OWNER 数据基座 / G2-AUTOTAG 归档打标 / G3-GRAPH 图谱 / G3-PERF 性能修复 /
 > G3-SIGMA Sigma.js+FA2 worker 渲染迁移 / G3-LABEL 标签视觉修订）。
 > **用法**：逐条操作 → 对照「预期」→ 通过打 `[x]`，失败留 `[ ]` 并在文末 §11 记录现象与截图。
