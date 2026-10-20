@@ -323,6 +323,7 @@ use wmessage_lib::bot::{
     noop_replan, run_model_loop_core, ApiProvider, AuditLevel, LlmHttp, ModelLoopDeps, StopGuard,
     ToolCallTrace, DEFAULT_MAX_TOKENS,
 };
+use wmessage_lib::db::trace::SessionTools;
 use wmessage_lib::error::CommandError;
 
 /// 指向 mock server 的连接参数（与生产薄壳同一构造路径：trim_end_matches('/') 等
@@ -369,12 +370,12 @@ struct CoreHarness {
     /// 阶段 3.3：核心只读「活动技能快照」（等价 `bot_skills::active_skill_run_for`）
     active_skill_run:
         Box<dyn Fn(Option<&str>) -> Option<wmessage_lib::bot_skills::SkillRun> + Send + Sync>,
-    /// 子 agent 凭证归并的注入点（幻觉守卫用）：默认空 = 本次提问没有子 agent
-    /// 调过工具。要验「子 agent 真干过活、主 agent 据实汇报不被拦」的用例用
-    /// `set_subagent_tools` 填入子 agent 实际调过的工具名。
-    subagent_tools: Box<dyn Fn(Option<&str>) -> Vec<String> + Send + Sync>,
-    /// `subagent_tools` 闭包背后的数据，供测试写入
-    subagent_tools_data: Arc<Mutex<Vec<String>>>,
+    /// 本会话调用过的工具名（调用过 / 成功过两档，幻觉守卫「点名判据」的排除集）。
+    /// None = 查不到 → 点名相关的判据整档让开；要验「跨提问的重述是真话、不被拦」
+    /// 用 `set_session_tools`。
+    session_tools: Box<dyn Fn(Option<&str>) -> Option<SessionTools> + Send + Sync>,
+    /// `session_tools` 闭包背后的数据，供测试写入
+    session_tools_data: Arc<Mutex<Option<SessionTools>>>,
     /// 执行类谎报守卫的触发词表。默认填**内置默认表**（与生产一致），
     /// 否则依赖守卫的既有用例会因空词表静默失效；要验自定义表改这个字段。
     guard_claim_keywords: Vec<String>,
@@ -392,7 +393,8 @@ impl CoreHarness {
     fn new() -> Self {
         let events: AuditEvents = Arc::new(Mutex::new(Vec::new()));
         let events2 = events.clone();
-        let sub_tools: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sub_tools: Arc<Mutex<Option<SessionTools>>> =
+            Arc::new(Mutex::new(Some(SessionTools::default())));
         let sub_tools2 = sub_tools.clone();
         let missing: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let missing2 = missing.clone();
@@ -413,8 +415,8 @@ impl CoreHarness {
                 let h = mock_handle();
                 Box::new(move |sid| wmessage_lib::bot_skills::active_skill_run_for(&h, sid))
             },
-            subagent_tools: Box::new(move |_| sub_tools2.lock().unwrap().clone()),
-            subagent_tools_data: sub_tools,
+            session_tools: Box::new(move |_| sub_tools2.lock().unwrap().clone()),
+            session_tools_data: sub_tools,
             guard_claim_keywords: wmessage_lib::bot::registry::default_execution_claim_patterns(),
             file_receipts_missing: missing,
             file_receipts: Box::new(move |_sid, paths: &[String]| {
@@ -447,7 +449,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
-            subagent_tools: Some(&*self.subagent_tools),
+            session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),
         }
@@ -469,7 +471,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
-            subagent_tools: Some(&*self.subagent_tools),
+            session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),
         }
@@ -487,10 +489,13 @@ impl CoreHarness {
         self.audit_events.lock().unwrap().clone()
     }
 
-    /// 声明本次提问派生的子 agent 成功用过这些工具（凭证归并的阳性输入）
-    fn set_subagent_tools(&self, names: &[&str]) {
-        let mut g = self.subagent_tools_data.lock().unwrap();
-        *g = names.iter().map(|s| s.to_string()).collect();
+    /// 声明本会话调用过且成功过这些工具（点名判据的排除集）
+    fn set_session_tools(&self, names: &[&str]) {
+        let mut g = self.session_tools_data.lock().unwrap();
+        *g = Some(SessionTools {
+            called: names.iter().map(|s| s.to_string()).collect(),
+            succeeded: names.iter().map(|s| s.to_string()).collect(),
+        });
     }
 }
 
@@ -3434,8 +3439,8 @@ async fn core_subagent_receipts_credit_lets_truthful_report_through() {
     ));
 
     let h = CoreHarness::new();
-    // 子 agent 真的用 run_python 跑出了那个数
-    h.set_subagent_tools(&["run_python"]);
+    // 子 agent 真的用 run_python 跑出了那个数（本会话调过这两个工具）
+    h.set_session_tools(&["run_python", "spawn_subagent"]);
     let deps = h.deps();
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
@@ -3655,6 +3660,213 @@ async fn core_claimed_doc_without_receipt_is_blocked() {
     assert!(text.contains("不是我导出的"), "模型应被要求改口：{text:?}");
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// 点名判据（独立判据）：终稿点名某工具跑过，而那个工具从没成功返回过。
+//
+// 真机事故（2026-10-20 trace 101）：零工具调用，终稿却把工具调用结果列成清单
+// 「- create_word：✅ 调用成功，返回路径 …」，声称的产物根本不存在。守卫生效与否
+// 取决于两件事：触发层认不认这种清单写法，判决层查不查得到这个工具的凭证。
+// ────────────────────────────────────────────────────────────────────────────
+
+/// 清单写法报「✅ 调用成功」，而 create_word 从没被调用过 —— 必须拦。
+///
+/// 这条就是真机 trace 101 的原话形态。清单里的成功标记（✅）与工具名落在同一
+/// 行，触发层认得；判决层查不到 create_word 的成功记录，判成编造。
+#[tokio::test]
+async fn core_named_tool_claimed_success_without_receipt_is_blocked() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "工具调用如下：\n- create_word：✅ 调用成功，返回路径 `/tmp/AI_Gen_Files/2026Q3复盘.docx`"
+            .into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("我没有调用过 create_word。".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert_eq!(server.request_count(), 2, "应返工一轮");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("声称已执行但无对应凭证: create_word")),
+        "应点名缺凭证的工具：{lines:?}"
+    );
+    assert!(
+        text.contains("没有调用过 create_word"),
+        "模型应被要求改口：{text:?}"
+    );
+}
+
+/// 如实汇报失败不受影响：词表收的是完成态措辞，「调用失败」不在其中。
+///
+/// 真机 trace 103 的原话形态：模型如实报「run_python：调用失败」「complete_task：
+/// ❌ 任务不存在，调用被拒」——工具确实没跑成（Python 开关关着、任务不存在），
+/// 它是在如实交代，不是编造。
+///
+/// 标题那行「工具调用结果」带执行措辞，但工具名在下一行——同名不同句，不能
+/// 把标题的措辞算到工具名头上。这条钉的就是这个分句边界。
+#[tokio::test]
+async fn core_honest_failure_report_is_not_treated_as_fabrication() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "工具调用结果：\n- run_python：调用失败，返回错误 `[ErrNo -7] Function execution failed.`\n- complete_task：❌ 任务不存在，调用被拒".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("如实汇报失败应直接 Ok");
+    assert_eq!(server.request_count(), 1, "如实汇报失败不该被拦");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "不该记守卫审计：{lines:?}"
+    );
+    assert!(text.contains("调用失败"), "应原样返回：{text:?}");
+}
+
+/// 建议语气提到工具名不算声称（点名判据的触发层按句判，不是全局判一次）。
+///
+/// 词表命中与否在这句里是「没有」——句中没有执行措辞。
+#[tokio::test]
+async fn core_advice_mentioning_tool_name_with_claim_word_elsewhere_is_not_a_claim() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "任务我已经执行完了，但这一步你可以用 grep_files 搜，我没有文件访问权限。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("建议语气应直接 Ok");
+    assert_eq!(server.request_count(), 1, "建议语气不该被拦");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "不该记守卫审计：{lines:?}"
+    );
+    assert!(text.contains("grep_files"), "应原样返回：{text:?}");
+}
+
+/// 跨提问的重述是真话：本会话里 create_word 成功过，这次提到它不算编造。
+#[tokio::test]
+async fn core_cross_question_restatement_of_succeeded_tool_passes() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "刚才 create_word 调用成功了，文件在 `/tmp/AI_Gen_Files/周报.docx`。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // 本会话上一条提问里 create_word 成功过
+    h.set_session_tools(&["create_word"]);
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("据实重述应直接 Ok");
+    assert_eq!(server.request_count(), 1, "跨提问的重述不该被拦");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "不该记守卫审计：{lines:?}"
+    );
+    assert!(text.contains("create_word"), "应原样返回：{text:?}");
+}
+
+/// 调用过但没成功，却报成功 —— 判成编造（判据问的是「成功过没有」）。
+#[tokio::test]
+async fn core_named_tool_claimed_success_though_call_failed_is_blocked() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"print('done')"}"#.into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply(
+        "- run_python：✅ 调用成功，输出 done".into(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("run_python 其实失败了。".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let deps = deps_capturing_logs(&h, &logs);
+    // 调用返回失败：只有「调用过」，没有「成功过」
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::error("boom", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("打回后应 Ok");
+    assert_eq!(server.request_count(), 3, "应返工一轮");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("声称已执行但无对应凭证: run_python")),
+        "应点名缺成功记录的工具：{lines:?}"
+    );
+    assert!(text.contains("失败了"), "模型应被要求改口：{text:?}");
+}
+
 /// 不可证伪的写入通道按**本次提问**让开，不是整条会话。
 ///
 /// 本次提问跑过 run_python（它能写盘、但走的是我们没有凭证的通道）→ 落盘凭证
@@ -3706,4 +3918,54 @@ async fn core_unverifiable_writer_exemption_is_per_question() {
         "本次提问跑过不可证伪的写入通道，凭证闸应让开：{lines:?}"
     );
     assert!(text.contains("已导出 PDF 文档"), "应原样返回：{text:?}");
+}
+
+/// 让开是**本次提问**的事：上一条提问跑过 run_python，不能把这次的凭证闸一起关掉。
+///
+/// 早先按会话判：一次 run_python 会让这条会话后续所有提问的落盘凭证闸全打死——
+/// 那不是「无从确证」，是把闸门焊死。这条钉的就是这个口径。
+#[tokio::test]
+async fn core_unverifiable_writer_exemption_does_not_leak_into_next_question() {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("不是我生成的.pdf");
+    std::fs::write(&doc, b"pdf").unwrap();
+
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(format!(
+        "已导出 PDF 文档：{}",
+        doc.display()
+    )));
+    server.push_behavior(MockBehavior::TextReply("这个文件不是我导出的。".into()));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // 上一条提问跑过 run_python（自己写盘的通道）
+    h.set_session_tools(&["run_python"]);
+    // 这个路径查不到落盘凭证
+    h.file_receipts_missing
+        .lock()
+        .unwrap()
+        .push(doc.to_string_lossy().into_owned());
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("无凭证的声称应被打回后 Ok");
+    assert_eq!(server.request_count(), 2, "应返工一轮");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        lines.iter().any(|l| l.contains("声称已生成但无落盘凭证")),
+        "上一条提问的 run_python 不该让开这一条：{lines:?}"
+    );
+    assert!(text.contains("不是我导出的"), "模型应被要求改口：{text:?}");
 }

@@ -192,7 +192,7 @@ async fn trace_lifecycle_done_row_written() {
                 conv_sidecar_dir: None,
                 emit: &|_, _| {},
                 // 测试直驱 core，不接 DB：本次提问没有子 agent 可归并
-                subagent_tools: None,
+                session_tools: None,
                 // 本文件不覆盖执行类谎报守卫（终稿不含完成态词），传空词表
                 guard_claim_keywords: &[],
                 file_receipts: None,

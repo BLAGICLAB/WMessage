@@ -808,6 +808,86 @@ pub fn default_execution_claim_patterns() -> Vec<String> {
         .collect()
 }
 
+/// 点名判据的成功形态标记（内置，不受设置页词表影响）。
+///
+/// 词表是用户可编辑的执行类触发器：删空就是「关掉这一档触发器」。点名判据要
+/// 在词表之外还能立住，得有一个关不掉的形态标记——模型把工具结果列成清单时
+/// 写的那种（`- create_word：✅ 调用成功`）。符号形态不参与措辞，模型换说法
+/// 照样命中。
+const BUILTIN_SUCCESS_MARKERS: &[&str] = &["✅", "✔"];
+
+/// 终稿里「点名了某次执行」的工具。
+///
+/// 与 `mentioned_tool_names` 的差别有两条，都是为了不误伤：
+///
+/// · **执行形态词要落在工具名之后、且在同一句内**——「任务创建成功，你可以用
+///   grep_files 搜」里的「成功」说的是任务，不是 grep_files；词落在名字前面
+///   （同一句里前面那半截的执行叙述）不算。
+/// · **只认词表里的完成态措辞**——失败形态（「调用失败」「调用被拒」）不在词表
+///   里，如实汇报工具不可用是诚实行为，不该被判成编造。
+pub fn claimed_executed_tools(text: &str, patterns: &[String]) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for seg in split_claim_segments(text) {
+        for (name, needle) in tool_needles() {
+            if out.contains(&name) {
+                continue;
+            }
+            let claimed = identifier_occurrences(seg, needle).any(|i| {
+                let tail = &seg[i + needle.len()..];
+                patterns
+                    .iter()
+                    .any(|p| !p.is_empty() && tail.contains(p.as_str()))
+                    || BUILTIN_SUCCESS_MARKERS.iter().any(|m| tail.contains(m))
+            });
+            if claimed {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// 工具名与它在正文里的写法：snake_case 名 + 中文别名。
+///
+/// 别名指向的名字必须是真存在的工具——别名表写错工具名时静默跳过（理由同
+/// `mentioned_tool_names`）。
+fn tool_needles() -> Vec<(&'static str, &'static str)> {
+    let mut out: Vec<(&'static str, &'static str)> =
+        TOOLS_TABLE.iter().map(|t| (t.name, t.name)).collect();
+    for (alias, target) in TOOL_ALIASES {
+        if TOOLS_TABLE.iter().any(|t| t.name == *target) {
+            out.push((target, alias));
+        }
+    }
+    out
+}
+
+/// 切句：换行与句末标点断开。
+///
+/// 判定「执行形态词落在工具名之后」要在同一句内成立，否则一句里前半段的执行
+/// 叙述会被算到后半段提到的工具头上。
+fn split_claim_segments(text: &str) -> Vec<&str> {
+    text.split(['\n', '。', '！', '？', '；', ';'])
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
+/// 标识符的整词命中位置（左右不得续上标识符字符）。
+///
+/// 与 `mentions_identifier` 同一口径：工具名互为前缀时纯子串会互相污染
+/// （`create_word` ⊂ `create_word_revisions`）。
+fn identifier_occurrences<'a>(text: &'a str, ident: &'a str) -> impl Iterator<Item = usize> + 'a {
+    text.match_indices(ident).filter_map(move |(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + ident.len()..].chars().next();
+        if before.is_some_and(is_ident_char) || after.is_some_and(is_ident_char) {
+            None
+        } else {
+            Some(i)
+        }
+    })
+}
+
 /// 按传入词表判定「终稿是否在叙述一次已完成的执行」。
 ///
 /// 判决层唯一入口：词表来自 bot-config（设置页可编辑），没配过时由薄壳回落
@@ -958,6 +1038,75 @@ mod mentioned_tool_names_tests {
         assert!(
             pairs > 0,
             "表里没有前缀名对了，本测试失去意义——留给下一条前缀关系出现时用"
+        );
+    }
+}
+
+#[cfg(test)]
+mod claimed_executed_tools_tests {
+    use super::{claimed_executed_tools, default_execution_claim_patterns};
+
+    fn claimed(text: &str) -> Vec<&'static str> {
+        claimed_executed_tools(text, &default_execution_claim_patterns())
+    }
+
+    /// 清单写法要点名得出来：成功标记与工具名同行。
+    ///
+    /// 真机 trace 101 的原话形态：零工具调用，终稿报「✅ 调用成功」。成功标记
+    /// （✅）是内置的，不受设置页词表影响——词表被删空这道也得在。
+    #[test]
+    fn checklist_form_names_the_tool() {
+        assert_eq!(
+            claimed("工具调用如下：\n- create_word：✅ 调用成功，返回路径 `/tmp/x.docx`"),
+            vec!["create_word"]
+        );
+        assert_eq!(
+            claimed("- create_word（周报20261020）：✅ 调用成功，返回路径 `/tmp/x.docx`"),
+            vec!["create_word"]
+        );
+    }
+
+    /// 失败形态不点名：如实汇报工具不可用是诚实行为。
+    ///
+    /// 真机 trace 103 的原话形态。词表收的是完成态措辞，「调用失败 / 调用被拒」
+    /// 不在其中。
+    #[test]
+    fn failure_form_is_not_a_claim() {
+        assert!(claimed("- run_python：调用失败，返回错误 `[ErrNo -7]`").is_empty());
+        assert!(claimed("- complete_task：❌ 任务不存在，调用被拒").is_empty());
+    }
+
+    /// 建议语气不点名：提到工具名不等于声称调过它。
+    ///
+    /// 词在名字前面（「任务已经执行完了，你可以用 grep_files 搜」）也不算——
+    /// 那个「执行完」说的是任务，不是 grep_files。
+    #[test]
+    fn advice_form_is_not_a_claim() {
+        assert!(claimed("这个问题你可以用 grep_files 搜，但我没权限。").is_empty());
+        assert!(
+            claimed("任务我已经执行完了，但这一步你可以用 grep_files 搜，我没权限。").is_empty()
+        );
+    }
+
+    /// 执行措辞与工具名同句才算是「点名了这次执行」——分句边界是这道闸的护栏。
+    ///
+    /// 标题那行带执行措辞、工具名在下一行，说的是两件事：全局判一次会把如实
+    /// 汇报失败也拖下水。
+    #[test]
+    fn claim_word_must_share_the_sentence_with_the_tool_name() {
+        assert!(claimed("工具调用结果：\n- run_python：调用失败").is_empty());
+        assert_eq!(
+            claimed("工具调用如下：\n- create_word：✅ 调用成功"),
+            vec!["create_word"]
+        );
+    }
+
+    /// 别名同样要点名得出来：模型写「子 agent」而表里是 spawn_subagent。
+    #[test]
+    fn alias_form_names_the_tool() {
+        assert_eq!(
+            claimed("子 agent 跑 sleep(5) 实测约 5013 ms。"),
+            vec!["spawn_subagent"]
         );
     }
 }

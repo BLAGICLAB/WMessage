@@ -512,31 +512,56 @@ pub fn spans_for_trace(conn: &rusqlite::Connection, trace_id: i64) -> Result<Vec
     Ok(out)
 }
 
-/// 本次提问派生出的子 agent 实际成功用过的工具名。
+/// 本会话调用过的工具名（分「调用过」与「成功过」两档）。
 ///
-/// 子 agent 的 span 记在它自己的 trace 下（`subagents.trace_id` 由 trace_registry
-/// 按子会话注册），主循环的凭证池里没有这些名字——幻觉守卫按主池查会认为主
-/// agent 在凭空叙述「子 agent 跑完了 X」。这里顺 `parent_session_id` 把它拉回来，
-/// 让主 agent 据实汇报子 agent 的工作能过闸。
+/// 幻觉守卫「点名判据」的证据池。两档分开的理由是两道判据问的不是同一件事：
 ///
-/// 只取 `ok = 1`：失败的调用没产生结果，叙述它跟凭空叙述一样是假的。
-pub fn subagent_span_tools(
+/// · **成功过**——终稿声称某个工具跑成了，而它从没成功返回过 → 编造。跨提问的
+///   重述（「刚才 create_word 生成的那个」）是真话，所以这一档要覆盖本会话历史，
+///   不止本次提问。
+/// · **调用过**——本会话派过子 agent 的判断依据。子 agent 的调用不落我们的痕迹表
+///   （见下），它跑的活在我们眼里永远「没成功过」；派过子 agent 时点名判据整档
+///   让开，查不到不等于没跑过。
+///
+/// 只覆盖**主 agent**的调用：子 agent 的 span 记在 `subagents.trace_id` 下，而那个
+/// 值是 `trc_xxx` 字符串、`exec_spans.trace_id` 是整数——join 永远不成立，子 agent
+/// 的工具名在这张表里查不到。调用方遇到派过子 agent 的会话要整档让开。
+#[derive(Clone, Debug, Default)]
+pub struct SessionTools {
+    /// 调用过（含失败）
+    pub called: Vec<String>,
+    /// 成功过
+    pub succeeded: Vec<String>,
+}
+
+pub fn session_tool_names(
     conn: &rusqlite::Connection,
-    parent_session_id: &str,
-) -> Result<Vec<String>, String> {
+    session_id: &str,
+) -> Result<SessionTools, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT DISTINCT s.name FROM exec_spans s
-             JOIN subagents a ON s.trace_id = a.trace_id
-             WHERE a.parent_session_id = ?1 AND s.ok = 1",
+            "SELECT DISTINCT s.name, s.ok FROM exec_spans s
+             JOIN exec_traces t ON s.trace_id = t.id
+             WHERE t.session_id = ?1",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map([parent_session_id], |r| r.get::<_, String>(0))
+        .query_map([session_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
+        })
         .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
+    let mut out = SessionTools {
+        called: Vec::new(),
+        succeeded: Vec::new(),
+    };
     for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
+        let (name, ok) = r.map_err(|e| e.to_string())?;
+        if !out.called.contains(&name) {
+            out.called.push(name.clone());
+        }
+        if ok && !out.succeeded.contains(&name) {
+            out.succeeded.push(name);
+        }
     }
     Ok(out)
 }
@@ -2181,6 +2206,60 @@ mod tests {
         );
     }
 
+    /// 会话工具名单要分「调用过」与「成功过」两档
+    ///
+    /// 两档分家是守卫的两道判据要的：提到某个工具时「调用过」就够（失败也是
+    /// 调过），声称它成功时只有「成功过」才作数。
+    #[test]
+    fn session_tool_names_splits_called_and_succeeded() {
+        let conn = setup_conn();
+        let tid = mk_trace(&conn, "s-tools", None, "chat", 1000);
+        let add_span = |name: &str, ok: bool| {
+            span_insert(
+                &conn,
+                &NewSpan {
+                    trace_id: tid,
+                    turn: 1,
+                    tool_call_id: None,
+                    name,
+                    args: None,
+                    result: None,
+                    ok,
+                    error_class: None,
+                    duration_ms: None,
+                    created_at: 1001,
+                },
+            )
+            .unwrap();
+        };
+        add_span("write_file", true);
+        add_span("complete_task", false);
+        add_span("write_file", true);
+
+        let st = session_tool_names(&conn, "s-tools").unwrap();
+        assert!(
+            st.called.iter().any(|n| n == "write_file")
+                && st.called.iter().any(|n| n == "complete_task"),
+            "调用过的一律要进 called（含失败的）：{:?}",
+            st.called
+        );
+        assert!(
+            st.succeeded.iter().any(|n| n == "write_file"),
+            "成功过的要进 succeeded：{:?}",
+            st.succeeded
+        );
+        assert!(
+            !st.succeeded.iter().any(|n| n == "complete_task"),
+            "失败的调用不算成功过：{:?}",
+            st.succeeded
+        );
+        let other = session_tool_names(&conn, "s-absent").unwrap();
+        assert!(
+            other.called.is_empty() && other.succeeded.is_empty(),
+            "没调过工具的会话两档都空：{:?}",
+            other.called
+        );
+    }
     /// 凭证查询必须走 path 索引（守卫每次判定都查这道，痕迹表会一直长）
     ///
     /// 索引建在 `path COLLATE NOCASE` 上，查询侧得同款写法才走得上去——

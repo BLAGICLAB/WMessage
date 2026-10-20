@@ -44,7 +44,8 @@ fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> 
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
 pub use crate::bot::registry::claims_mutation;
 use crate::bot::registry::{
-    claimed_doc_paths, claims_execution_with, mentioned_tool_names, path_missing_on_disk,
+    claimed_doc_paths, claimed_executed_tools, claims_execution_with, mentioned_tool_names,
+    path_missing_on_disk,
 };
 
 // TOOLS schema（编译期字符串，运行期 JSON 解析）
@@ -828,12 +829,17 @@ pub struct ModelLoopDeps<'a> {
     pub on_round: &'a (dyn Fn(usize) + Send + Sync),
     /// 回合状态变化出口（见 emit_turn_status）。传 None = 不发（测试直驱 core）。
     pub turn_status: Option<&'a (dyn Fn(TurnStatus, &str) + Send + Sync)>,
-    /// 本次提问派生出的子 agent 成功用过的工具名（幻觉守卫的凭证归并用）。
+    /// 本会话调用过的工具名（分「调用过」与「成功过」两档）——幻觉守卫「点名
+    /// 判据」的排除集。
     ///
-    /// 入参是当前会话 id——主 agent 用它；子 agent 会话传 None 即可（子 agent
-    /// 不许派子 agent，没有可归并的对象）。None = 不归并，测试直驱 core 时
-    /// 不接 DB。
-    pub subagent_tools: Option<&'a (dyn Fn(Option<&str>) -> Vec<String> + Send + Sync)>,
+    /// 入参是当前会话 id。跨提问的重述是真话（「刚才 create_word 生成的那个」），
+    /// 所以排除集要覆盖本会话历史，不止本次提问。
+    ///
+    /// 返回 None = 查不到（薄壳没这个注入点 / 查库失败）→ 点名相关的判据整档
+    /// 让开（查不到证据不等于有罪）。Some(空) = 查到了，这个会话确实没调过
+    /// 任何工具。
+    pub session_tools:
+        Option<&'a (dyn Fn(Option<&str>) -> Option<crate::db::trace::SessionTools> + Send + Sync)>,
     /// 幻觉守卫「执行类谎报」触发词表（设置页「工具调用触发器关键词」可编辑）。
     ///
     /// 薄壳已把「没配过」回落成内置默认表再传进来，core 不再关心来源——
@@ -1199,9 +1205,11 @@ pub async fn run_model_loop(
             );
         }),
         guard_claim_keywords: &guard_claim_keywords,
-        subagent_tools: Some(&|sid: Option<&str>| {
+        // 本会话调用过的工具名（点名判据的排除集）：查库失败返 None
+        // （= 查不到 → core 侧整档让开，查不到证据不等于有罪）。
+        session_tools: Some(&|sid: Option<&str>| {
             let Some(sid) = sid else {
-                return Vec::new();
+                return None;
             };
             let conn = match crate::db::open_db(&app) {
                 Ok(c) => c,
@@ -1209,22 +1217,22 @@ pub async fn run_model_loop(
                     crate::audit::write_event(
                         &app,
                         crate::audit::AuditLevel::Warn,
-                        "bot.subagent_span_tools_open_fail",
+                        "bot.session_tools_open_fail",
                         &[("error", e)],
                     );
-                    return Vec::new();
+                    return None;
                 }
             };
-            match crate::db::trace::subagent_span_tools(&conn, sid) {
-                Ok(names) => names,
+            match crate::db::trace::session_tool_names(&conn, sid) {
+                Ok(names) => Some(names),
                 Err(e) => {
                     crate::audit::write_event(
                         &app,
                         crate::audit::AuditLevel::Warn,
-                        "bot.subagent_span_tools_fail",
+                        "bot.session_tools_query_fail",
                         &[("error", e)],
                     );
-                    Vec::new()
+                    None
                 }
             }
         }),
@@ -1247,6 +1255,8 @@ pub async fn run_model_loop(
                     return Vec::new();
                 }
             };
+            // 「本次提问跑过自己就能写盘的工具」这道让开在 core 侧判（提问级，
+            // 不再是会话级）：一次 run_python 只让开那一轮，不是整个会话。
             let written = match crate::db::trace::file_paths_with_receipt(&conn, paths) {
                 Ok(v) => v,
                 Err(e) => {
@@ -1531,9 +1541,13 @@ where
     // · 不跨轮清零 —— trace 53 的最终汇报（msg 720「执行完毕：模块不存在…」）是真话，
     //   但它的凭证在上一轮；按轮查会把真话判成幻觉，再让模型去重跑一个已完成的
     //   动作（delete_task / link_file_to_task 这类就是重复的破坏性操作）。
-    // · 不跨提问共用 —— 下一条用户消息是新的 trace，池子自然清零，历史凭证查不到，
-    //   所以「本轮的成果不许冒充上一轮刚跑的」是默认行为，不需要额外规则。
+    // · 跨提问的成功记录另查 —— 下一条用户消息是新的 trace，这个池子自然清零；
+    //   跨提问的重述（「刚才 create_word 生成的那个」）是真话，由会话级的成功
+    //   记录兜住，见下面的 session_tools_cache。
     let mut receipts: Vec<String> = Vec::new();
+    // 本会话调用过的工具名（调用过 / 成功过两档）——点名判据的排除集，跨提问的
+    // 重述是真话。惰性拉一次：判据要用它，但每轮拉一次库不值当。None = 还没拉。
+    let mut session_tools_cache: Option<Option<crate::db::trace::SessionTools>> = None;
     // 本提问里被工具写过的路径（小写归一，与仓库既有的路径同一性口径一致）。
     //
     // 用途是幻觉守卫的「落盘凭证」那道判据：模型声称「已生成 /path/x.docx」，
@@ -2449,43 +2463,72 @@ where
             // 挡不住「本轮成功调了 A、却编造 B 的执行结果」——同一个提问里
             // 不同工具的凭证不能互相担保。
             let mentioned = mentioned_tool_names(&final_text);
-            let mut unsupported: Vec<&str> = mentioned
-                .iter()
-                .filter(|t| !receipts.iter().any(|r| r == *t))
-                .copied()
-                .collect();
-            let mut claim_execution =
-                claims_execution_with(&final_text, deps.guard_claim_keywords)
-                && if mentioned.is_empty() {
-                    // 不点名工具（「执行完毕，工具真实返回…」）时无从按名查，
-                    // 退回「整条提问一条凭证都没有」的粗判——这正是词表要顶住的那类。
-                    receipts.is_empty()
-                } else {
-                    !unsupported.is_empty()
-                };
-            // 子 agent 的凭证归并：它的 span 记在自己的 trace 下（subagents.trace_id），
-            // 不在主循环的凭证池里，所以主 agent 如实汇报「子 agent 跑完了 run_python」
-            // 会按主池查成伪造。只在初判要拦、且点名了工具时才拉这一趟——正常路径
-            // 零读库，真走到判决的那轮最多多一次同步查询。
+            let table_hit = claims_execution_with(&final_text, deps.guard_claim_keywords);
+            // 终稿里「点名了某次执行」的工具：执行形态词与工具名落在同一句内。
             //
-            // 口径差异要知道：子 agent 按 `parent_session_id` 认主会话，不按轮，
-            // 所以归并凭证的生命周期比主池长（主池是一次提问）。主池清零后子 agent
-            // 可能还在——这条是刻意放开的：跨消息引用上条消息派过的子 agent 是
-            // **真话**（它确实跑过），而误伤「子 agent 每次汇报都被拦」是常态。
-            // 粗判那一支（不点名工具、只看池空）不做归并：主 agent 要有子 agent
-            // 就得先调 spawn_subagent，主池不可能空，那条分支进来时池必然是空的，
-            // 归并只会把「本次没动手」放成「上条消息动过手」。
-            if claim_execution && !mentioned.is_empty() {
-                if let Some(fetch) = deps.subagent_tools {
-                    let sub = fetch(stop.session_id());
-                    if !sub.is_empty() {
-                        unsupported.retain(|t| !sub.iter().any(|n| n == *t));
-                        // 能进这个分支就意味着初判为真，而初判为真已经蕴含
-                        // 触发词命中为真——重判只剩凭证这一半。
-                        claim_execution = !unsupported.is_empty();
+            // 词表收的全是完成态 / 成功态的措辞（失败形态「调用失败」「调用被拒」
+            // 刻意不收），所以「词贴在这个工具名旁边」= 模型在报这个工具跑成了。
+            // 触发层按工具名逐个判，而不是全局判一次：全局判会把「工具调用结果：
+            // - run_python：调用失败」这种如实汇报失败也拖下水——词在标题那一行，
+            // 工具名在下一行，说的不是同一件事。
+            let claimed = claimed_executed_tools(&final_text, deps.guard_claim_keywords);
+            // 本次提问派过子 agent → 点名判定让开。子 agent 的调用不落我们的痕迹表
+            // （trace_id 类型都对不上），主 agent 如实汇报「子 agent 跑完了 run_python」
+            // 在主池里查不到这个名字——查不到不等于没跑过。
+            let subagent_spawned = receipts.iter().any(|n| n == "spawn_subagent");
+            // 会话工具名单（本次提问之前本会话调用过 / 成功过的工具）：跨提问的
+            // 重述是真话（「刚才 create_word 生成的那个」），排除集要覆盖本会话历史。
+            // 惰性拉一次，且只在判据用得上时拉——正常路径零读库。
+            let need_session_tools = !claimed.is_empty();
+            let session_tools: Option<crate::db::trace::SessionTools> = if !need_session_tools {
+                None
+            } else {
+                match &session_tools_cache {
+                    Some(v) => v.clone(),
+                    None => {
+                        let v = deps.session_tools.and_then(|f| f(stop.session_id()));
+                        session_tools_cache = Some(v.clone());
+                        v
                     }
                 }
-            }
+            };
+            let subagent_in_session = match &session_tools {
+                // 查不到历史 → 让开（薄壳没这个注入点、或查库失败）
+                None => true,
+                Some(st) => st.called.iter().any(|n| n == "spawn_subagent"),
+            };
+            // 点名判据统一的开闸条件：派过子 agent、或查不到本会话历史时整档让开
+            // （查不到证据不等于有罪）。
+            let point_check_open = !subagent_spawned && !subagent_in_session;
+            let session_succeeded: &[String] = session_tools
+                .as_ref()
+                .map(|st| st.succeeded.as_slice())
+                .unwrap_or(&[]);
+            // 点名判据（独立判据）：终稿点名某工具跑过，而那个工具**从没成功返回
+            // 过**——编造的一次执行。
+            //
+            // 判决口径是「没成功过」而不是「没调用过」：调用过但失败、却报成功，
+            // 正是这道要抓的；而如实汇报失败（词表不收失败形态）根本进不了触发
+            // 层，不会被牵连。
+            //
+            // 排除集两处：本次提问的成功凭证与本会话历史里的成功记录（跨提问的
+            // 重述是真话）。
+            let unsupported: Vec<&str> = if !point_check_open {
+                Vec::new()
+            } else {
+                claimed
+                    .iter()
+                    .filter(|t| {
+                        !receipts.iter().any(|r| r == *t)
+                            && !session_succeeded.iter().any(|n| n == *t)
+                    })
+                    .copied()
+                    .collect()
+            };
+            // 执行类粗判：终稿不点名任何工具（无从按名查）却在叙述一次执行，
+            // 而本次提问一条成功凭证都没有——退回整条提问零凭证的粗判，这正是
+            // 词表要顶住的那类（「执行完毕，工具真实返回…」）。
+            let claim_execution = table_hit && mentioned.is_empty() && receipts.is_empty();
             // 幻觉守卫判决：声称完成但无对应凭证 → 第一次返工，第二次如实标注。
             //
             // 两次是两种不同处置，不是同一种做两遍：
@@ -2499,16 +2542,17 @@ where
             //   冒充事实单独到达用户。
             if claim_mutation
                 || claim_execution
+                || !unsupported.is_empty()
                 || fake_gen_path.is_some()
                 || unreceipted_path.is_some()
             {
                 // kind 的优先级与下面的 reason 一致：先说最硬的那条（路径压根
-                // 不存在 / 路径不是工具产物），再说执行类、最后变更类。
+                // 不存在 / 路径不是工具产物），再说点名判据、执行类、最后变更类。
                 let kind = if fake_gen_path.is_some() {
                     "声称已生成但路径不存在".to_string()
                 } else if unreceipted_path.is_some() {
                     "声称已生成但无落盘凭证".to_string()
-                } else if claim_execution && !unsupported.is_empty() {
+                } else if !unsupported.is_empty() {
                     format!("声称已执行但无对应凭证: {}", unsupported.join(","))
                 } else if claim_execution {
                     "声称已执行但本次提问零凭证".to_string()
@@ -2537,12 +2581,12 @@ where
                             "上面提到的文件 {p} 不是本次生成的——没有任何工具写过这个路径。"
                         ),
                     ),
-                    (None, None, true, [t, ..]) => (
+                    (None, None, _, [t, ..]) => (
                         format!(
-                            "你刚才说调了 {t} 并给出了结果，但本次提问里没有任何 {t} 的成功调用记录——这个结果是编造的。"
+                            "你刚才说调了 {t} 并给出了结果，但本次提问和本会话历史里它都没有成功返回过——这个结果是编造的。"
                         ),
                         format!(
-                            "上面关于 {t} 的执行结果是编造的——本次提问里没有任何 {t} 的成功调用记录。"
+                            "上面关于 {t} 的执行结果是编造的——本次提问和本会话历史里它都没有成功返回过。"
                         ),
                     ),
                     (None, None, true, _) => (
@@ -2568,7 +2612,10 @@ where
                     // 该做的是把工具真正调起来，拿不到结果就如实说拿不到。
                     // 文件类谎报（路径不存在 / 路径不是工具产物）第三档：只说
                     // 文档生成那几个工具，别把模型引到任务卡工具上去。
-                    let remedy = if claim_execution && fake_gen_path.is_none() {
+                    // 点名判据（独立判据）走执行类那一档：它说的就是一次执行。
+                    let remedy = if (claim_execution || !unsupported.is_empty())
+                        && fake_gen_path.is_none()
+                    {
                         "请立即发起 tool_call 实际执行，禁止只改文字糊弄；拿到真实返回后再如实转述（失败就如实报失败）。若确实无法执行（白名单拦截 / 无权限 / 工具不可用），如实向用户说明原因，禁止再次编造执行结果。".to_string()
                     } else if fake_gen_path.is_some() || unreceipted_path.is_some() {
                         "请立即调用文档生成工具实际把这个文件写出来（Word 用 create_word 或 create_word_revisions、Excel 用 create_excel、PPT 用 create_ppt、PDF 用 create_pdf；纯文本文件用 write_file），禁止只改文字糊弄；工具返回的完整路径才是能报给用户的路径。若确实无法生成（内容不足 / 工具不可用 / 权限不足），如实向用户说明原因，禁止再次声称已生成。".to_string()
