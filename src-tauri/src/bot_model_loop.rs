@@ -3047,6 +3047,12 @@ where
                 && last_final_selfcheck_round
                     .is_none_or(|r| round.saturating_sub(r) >= final_selfcheck_gap)
             {
+                // 用户已停止：不再做终稿自检。侧调一次最多烧 60s，期间 UI 停在
+                // 「收尾中 · 校验答复」——用户看着像停止失灵。
+                if stop.stopped() {
+                    let hint = skill_finish(false, "用户停止");
+                    return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
+                }
                 // settling：正文已经完整输出，用户「看完了」，但模型还要跑一次
                 // 自检（可静默数十秒）。这一步不发生，用户会把正文结束误读成
                 // 「本轮结束」——ZCode 的 settling 就是为这个场景存在的。
@@ -3440,6 +3446,12 @@ where
                         steps: plan.steps.clone(),
                         replans_used: plan.replans_used,
                     };
+                    // 用户已停止：不再重规划。planner 一次调用最多烧 60s，而
+                    // 它的产物只是给模型注入一段提示——用户已经叫停了。
+                    if stop.stopped() {
+                        let hint = skill_finish(false, "用户停止");
+                        return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
+                    }
                     if let Some(new_steps) = replan(snapshot, reason).await {
                         plan.steps = new_steps;
                         fail_hint_queued = Some(format!(
@@ -3789,6 +3801,51 @@ mod anthropic_thinking_tests {
         let plain = vec![serde_json::json!({"role": "user", "content": "x"})];
         let out = strip_thinking_key(&plain);
         assert_eq!(out, plain);
+    }
+}
+
+#[cfg(test)]
+mod stop_guard_tests {
+    /// `/stop` 必须覆盖主循环里两处长 await：
+    /// - 终稿自检的侧调（`summarize_http`，单次最多 60s）；
+    /// - 重规划（`replan`，单次最多 60s）。
+    ///
+    /// 两处都不看停止信号时，用户点了停止后 UI 仍停在「收尾中」最长两分钟，
+    /// 看着像停止失灵。
+    ///
+    /// 这两处在主循环深处，行为级验证得用 mock server 跑完整轮次、并在恰当
+    /// 的时机置位停止——成本远高于收益，故扫源码钉住「调用点之前有 stop
+    /// 检查，且检查与调用之间没有别的 await」。
+    #[test]
+    fn stop_guards_the_two_long_awaits() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bot_model_loop.rs"
+        ))
+        .expect("应能读到自己");
+        for (what, needle) in [
+            ("终稿自检侧调", "crate::bot_chat::summarize_http("),
+            ("重规划", "replan(snapshot, reason).await"),
+        ] {
+            let idx = src
+                .find(needle)
+                .unwrap_or_else(|| panic!("应能找到{what}的调用点"));
+            // 在整段前缀里找最后一次 stop 检查（rfind 返回的一定是字符边界，
+            // 按字节切窗口会切在多字节字符中间）
+            let last_stop = src[..idx]
+                .rfind("stop.stopped()")
+                .unwrap_or_else(|| panic!("{what}之前必须有 stop 检查（否则 /stop 后还能烧 60s）"));
+            assert!(
+                idx - last_stop <= 4000,
+                "{what}的 stop 检查离调用点太远（{} 字节），中间可能夹着别的 await",
+                idx - last_stop
+            );
+            let between = &src[last_stop..idx];
+            assert!(
+                !between.contains(".await"),
+                "{what}的 stop 检查与调用点之间不得夹着别的 await（检查会形同虚设）"
+            );
+        }
     }
 }
 
