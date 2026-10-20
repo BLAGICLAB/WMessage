@@ -317,6 +317,16 @@ pub const SCHEMA_AST_INSPECT: &str = r##"{"type":"function","function":{"name":"
     "symbol":{"type":"string","description":"符号名（op 为 defs/refs/callgraph 时必填；类方法可只写方法名，如 resolve_with_perm）"},
     "depth":{"type":"integer","description":"callgraph 展开层数（可选，默认 1，上限 3）"}
   },"required":["op","path"]}}}"##;
+pub const SCHEMA_UNPACK_ARCHIVE: &str = r##"{"type":"function","function":{"name":"unpack_archive","description":"解压压缩包到目录（支持 zip / tar / tar.gz，格式按文件头自动识别，不看后缀）。逐条校验条目路径：带 .. / 绝对路径 / 盘符 / 软链的条目会被跳过并列出（防压缩包把文件写到目标目录外）；单文件 64MB、整包 256MB、条目 5000 条上限，超限中止并报「疑似压缩炸弹」；目标已存在的文件不覆盖（会列出来）。解出的文件按「已生成」计入产物，可如实说「已解压出 N 个文件」","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"压缩包路径（须在读白名单内：桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs）"},
+    "destDir":{"type":"string","description":"解压目标目录（须在可写目录内：AI_Gen_Files + 任务卡绑定文件夹 + allowedDirs，白名单外会弹确认）；不给则解到 AI_Gen_Files/解压/<包名>/"},
+    "format":{"type":"string","enum":["auto","zip","tar","tar.gz"],"description":"压缩格式（可选，默认 auto 按文件头识别）"}
+  },"required":["path"]}}}"##;
+pub const SCHEMA_PACK_ARCHIVE: &str = r##"{"type":"function","function":{"name":"pack_archive","description":"把目录或文件打包成压缩包（zip / tar.gz）：目录会连同目录名一起打包（zip -r 口径），软链跳过不跟随也不写入链接本身；输出到 AI_Gen_Files 或指定路径。打包完成按「已生成」计入产物，向用户报告时必须附上完整路径","parameters":{"type":"object","properties":{
+    "sourcePath":{"type":"string","description":"要打包的目录或文件（须在读白名单内）"},
+    "outputPath":{"type":"string","description":"输出压缩包路径（须在可写目录内，白名单外会弹确认）；不给则 AI_Gen_Files/<源名>.zip"},
+    "format":{"type":"string","enum":["zip","tar.gz"],"description":"压缩格式（可选）：不给按输出路径后缀判定（.tar.gz / .tgz → tar.gz，否则 zip）"}
+  },"required":["sourcePath"]}}}"##;
 pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
@@ -527,6 +537,27 @@ fn call_ast_inspect<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let stop = ctx.stop;
     Box::pin(async move {
         crate::py::ast::tool_ast_inspect(ctx.app, args, interactive, session_id, stop).await
+    })
+}
+
+fn call_unpack_archive<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_archive::tool_unpack_archive(&app, &args, interactive, session_id.as_deref())
+            .await
+    })
+}
+
+fn call_pack_archive<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_archive::tool_pack_archive(&app, &args, interactive, session_id.as_deref()).await
     })
 }
 
@@ -1576,7 +1607,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 45;
+pub const BUILTIN_TOOL_COUNT: usize = 47;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2021,6 +2052,24 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_bytes: 8192,
         call: call_ast_inspect,
     },
+    // 归档工具。追加在表尾：tools_json_matches_baseline 只比前 28 项前缀，
+    // 插在中间会无谓地改动基线前缀（同 ast_inspect 的理由）。
+    ToolDef {
+        name: "unpack_archive",
+        schema: SCHEMA_UNPACK_ARCHIVE,
+        mutating: true,
+        claims_patterns: &["已解压", "已解包", "已解压出"],
+        max_output_bytes: 8192,
+        call: call_unpack_archive,
+    },
+    ToolDef {
+        name: "pack_archive",
+        schema: SCHEMA_PACK_ARCHIVE,
+        mutating: true,
+        claims_patterns: &["已打包", "已压缩", "已生成压缩包"],
+        max_output_bytes: 8192,
+        call: call_pack_archive,
+    },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
@@ -2087,6 +2136,8 @@ pub const CODER_TOOLS: &[&str] = &[
     "write_file",
     "run_python",
     "ast_inspect",
+    "unpack_archive",
+    "pack_archive",
     "write_artifact_file",
     "read_own_card",
 ];
@@ -2101,6 +2152,8 @@ pub const GENERAL_TOOLS: &[&str] = &[
     "write_file",
     "run_python",
     "ast_inspect",
+    "unpack_archive",
+    "pack_archive",
     "write_artifact_file",
     "read_own_card",
 ];
@@ -2526,6 +2579,8 @@ mod registry_tests {
             "apps_update_files",
             "ask_user",
             "ast_inspect",
+            "unpack_archive",
+            "pack_archive",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2586,6 +2641,8 @@ mod registry_tests {
             "apps_update_files",
             "ask_user",
             "ast_inspect",
+            "unpack_archive",
+            "pack_archive",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2620,6 +2677,8 @@ mod registry_tests {
             "create_skill",
             "apps_create",
             "apps_update_files",
+            "unpack_archive",
+            "pack_archive",
         ]
         .into_iter()
         .collect();
@@ -2675,8 +2734,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 15,
-            "主可见应为 28+3+4+2+1+1+3+1（末位 +1 = ast_inspect）"
+            base_arr.len() + 17,
+            "主可见应为 28+3+4+2+1+1+3+1+2（末位 +2 = 归档两工具）"
         );
     }
 
@@ -2966,6 +3025,8 @@ mod registry_tests {
                 "write_file",
                 "run_python",
                 "ast_inspect",
+                "unpack_archive",
+                "pack_archive",
                 "write_artifact_file",
                 "read_own_card",
             ]

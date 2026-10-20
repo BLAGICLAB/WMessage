@@ -14,6 +14,7 @@ mod audit;
 pub mod bing;
 pub mod bot;
 mod bot_anthropic;
+mod bot_archive;
 pub mod bot_artifacts;
 pub mod bot_chat;
 mod bot_desktop;

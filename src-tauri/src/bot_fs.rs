@@ -529,7 +529,9 @@ async fn writable_dirs(app: &AppHandle) -> Vec<PathBuf> {
 /// 穿过软链绕过读闸、防 rename 把链接整体替换）。成功返回展开后的目标路径
 /// （文件可能尚不存在，不能 canonicalize；父目录已 canonical 校验，TOCTOU 窗口
 /// 与读闸门同级留档）。
-async fn resolve_writable(
+///
+/// 第二个调用方：归档工具（bot_archive）解包 / 打包的落点也要走写闸。
+pub(crate) async fn resolve_writable(
     app: &AppHandle,
     tool: &str,
     path: &str,
