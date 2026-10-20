@@ -92,13 +92,30 @@ const LEGACY_LOOSENESS: Record<string, GraphLooseness> = {
   loose: "standard", // 原「松散」(45) → 新「标准」(45)：画面不变
 };
 
+/**
+ * 读松散度（纯读，不写盘）：新键优先；新键还没有时按旧键的映射给值，
+ * 这样旧档位用户读到的仍是搬过去的那个档。
+ */
 export function getGraphLooseness(): GraphLooseness {
   if (read(K.looseness) !== null) {
     return readEnum<GraphLooseness>(K.looseness, LOOSENESS_VALUES, "standard");
   }
   const old = read(K.loosenessV1);
   const moved = old === null ? undefined : LEGACY_LOOSENESS[old];
-  if (!moved) return "standard";
+  return moved ?? "standard";
+}
+
+/**
+ * 旧档位搬迁：把旧键的值写进新键，确认写成了才删旧键，不留第二份真值。
+ *
+ * 显式调一次，不藏在读函数里：读函数在渲染期跑（页面与设置页都在渲染期
+ * 读偏好），在那里写 localStorage 是渲染副作用。
+ */
+export function migrateGraphLooseness(): void {
+  if (read(K.looseness) !== null) return;
+  const old = read(K.loosenessV1);
+  const moved = old === null ? undefined : LEGACY_LOOSENESS[old];
+  if (!moved) return;
   write(K.looseness, moved);
   // 确认新值真的落盘才删旧键：write 吞掉配额异常后控制流照常往下走，
   // 先删就等于在写失败时把用户唯一那份存档删掉，且再也搬不回来
@@ -109,7 +126,6 @@ export function getGraphLooseness(): GraphLooseness {
       // 删不掉就留着：新键非空时下次直接短路，不会二次搬迁
     }
   }
-  return moved;
 }
 export const setGraphLooseness = (v: GraphLooseness) => write(K.looseness, v);
 

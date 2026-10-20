@@ -39,6 +39,7 @@ import { SchedulePage } from "./components/SchedulePage/SchedulePage";
 import { ActivityPage } from "./components/ActivityPage";
 import GraphPage from "./components/GraphPage/GraphPage";
 import { NotificationsPage } from "./components/NotificationsPage/NotificationsPage";
+import { migrateGraphLooseness } from "./lib/graphPrefs";
 import {
   NOTIFICATIONS_CHANGED_EVENT,
   pendingNotificationCount,
@@ -320,6 +321,13 @@ function App() {
   // 聊天气泡外观：启动应用（单窗口，无跨页同步面；设置页改动即时落 DOM）
   useEffect(() => {
     applyBubbleStyle(getBubbleStyle());
+  }, []);
+
+  // 图谱偏好搬迁：旧档位键写进新键（写成了才删旧键）。
+  // 放在启动时做，而不是塞进读函数——偏好是在渲染期读的，
+  // 读函数里写 localStorage 是渲染副作用
+  useEffect(() => {
+    migrateGraphLooseness();
   }, []);
 
   // 字体大小：启动从 bot config 拉值套用 + 监听广播重拉（共享体见 lib/botConfig）；

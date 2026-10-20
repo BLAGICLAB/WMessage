@@ -5,6 +5,7 @@ import {
   getGraphEdgeWidth,
   getGraphLabelDensity,
   getGraphLooseness,
+  migrateGraphLooseness,
   getGraphOnlyMine,
   getGraphRememberFilters,
   loadGraphFilters,
@@ -51,6 +52,7 @@ describe("graphPrefs", () => {
     // 标准档的 k 从 30 变成 45，同名不同义，只能靠换键区分，不能就地改写
     localStorage.setItem("wm.graph.looseness", "standard");
     expect(getGraphLooseness()).toBe("tight");
+    migrateGraphLooseness();
     expect(localStorage.getItem("wm.graph.looseness.v2")).toBe("tight");
     expect(localStorage.getItem("wm.graph.looseness")).toBeNull();
 
@@ -61,6 +63,13 @@ describe("graphPrefs", () => {
     localStorage.clear();
     localStorage.setItem("wm.graph.looseness", "compact");
     expect(getGraphLooseness()).toBe("tight");
+  });
+
+  it("读偏好不写盘：搬迁是显式动作，不是读的副作用", () => {
+    localStorage.setItem("wm.graph.looseness", "loose");
+    getGraphLooseness();
+    expect(localStorage.getItem("wm.graph.looseness.v2")).toBeNull();
+    expect(localStorage.getItem("wm.graph.looseness")).toBe("loose");
   });
 
   it("旧存档不认识时不猜：回默认；新键存在时旧键一律不看", () => {
@@ -78,8 +87,10 @@ describe("graphPrefs", () => {
         throw new DOMException("quota", "QuotaExceededError");
       });
     expect(getGraphLooseness()).toBe("standard");
+    migrateGraphLooseness();
     expect(localStorage.getItem("wm.graph.looseness")).toBe("loose");
     spy.mockRestore();
+    migrateGraphLooseness();
     expect(getGraphLooseness()).toBe("standard");
     expect(localStorage.getItem("wm.graph.looseness.v2")).toBe("standard");
     expect(localStorage.getItem("wm.graph.looseness")).toBeNull();
