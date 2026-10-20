@@ -989,7 +989,7 @@ function App() {
             onClick={() => setView("settings")}
           />
         </nav>
-        <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto p-6">
+        <main ref={mainRef} className="app-scroll min-w-0 flex-1 overflow-y-auto p-6">
           {view === "home" ? (
             <HomePage
               tasks={visibleTasks}

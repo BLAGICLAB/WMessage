@@ -146,7 +146,8 @@ export function HomeHeader({
   const reduceMotion = useReducedMotion();
   const { scrollY } = useScroll({ container: scrollRef });
   const raw = useTransform(scrollY, [0, COLLAPSE_PX], [0, 1]);
-  const spring = useSpring(raw, { stiffness: 320, damping: 34 });
+  // damping 36 → 阻尼比 ζ=1.006（临界略偏过），扰动直接落定不回摆
+  const spring = useSpring(raw, { stiffness: 320, damping: 36 });
   // 减少动效：跳过 spring，跟随滚动即时到值（still 连续可逆，只是不缓动）
   const progress = reduceMotion ? raw : spring;
 

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HomePage } from "./HomePage";
@@ -469,5 +470,22 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     // 指针离开小组件 → 恢复今日
     await user.hover(screen.getByTestId("due-ticker"));
     expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
+  });
+});
+
+describe("吸顶头部收缩动画", () => {
+  // 头部高度由滚动进度驱动，弹簧是唯一的平滑层。阻尼比 ζ = c/(2√k)：
+  // ζ<1 欠阻尼——扰动一来先过冲再回摆，视觉上就是"抖一下"。
+  // 钉住 ζ≥1，让「落定」不依赖别的条件恰好成立。
+  it("弹簧是临界/过阻尼（ζ≥1），扰动直接落定不回摆", () => {
+    const src = readFileSync("src/components/HomePage/HomeHeader.tsx", "utf-8");
+    const m = src.match(
+      /useSpring\(raw,\s*\{[^}]*stiffness:\s*(\d+)[^}]*damping:\s*(\d+)/,
+    );
+    expect(m).not.toBeNull();
+    const k = Number(m?.[1] ?? 0);
+    const c = Number(m?.[2] ?? 0);
+    expect(k).toBeGreaterThan(0);
+    expect(c / (2 * Math.sqrt(k))).toBeGreaterThanOrEqual(1);
   });
 });

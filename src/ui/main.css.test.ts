@@ -47,3 +47,12 @@ describe("main.css nm-card-hover 过渡对称", () => {
   });
 });
 
+describe("main.css 主滚动容器 app-scroll", () => {
+  it("关掉滚动锚定：吸顶头部高度每帧变化会与锚定补偿形成反馈环（头部抖动）", () => {
+    // 浏览器默认给滚动容器开滚动锚定：视口外内容尺寸一变就改 scrollTop 补偿。
+    // 吸顶头部的高度由滚动进度驱动、每帧都在变，而进度又来自 scrollY——
+    // 两者相扣成环。关掉锚定，滚动语义由应用自己管。
+    expect(css).toMatch(/\.app-scroll\s*\{[^}]*overflow-anchor:\s*none/);
+  });
+});
+
