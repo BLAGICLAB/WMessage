@@ -92,3 +92,22 @@ describe("GraphMini 节点状态着色", () => {
     expect(fillOf("d2")).toBe("var(--accent)");
   });
 });
+
+describe("GraphMini 规模上限", () => {
+  it("节点超上限只画连接度最高的一批，并说明画的不是全部", () => {
+    const tasks: Task[] = [];
+    for (let i = 0; i < 320; i++) {
+      const t = task({ id: `n${i}`, title: `任务 ${i}` });
+      // 前 20 个任务各挂 5 条依赖 → 连接度最高，它们必须留下
+      if (i < 20) t.dependsOn = [`n${i + 100}`, `n${i + 101}`, `n${i + 102}`, `n${i + 103}`];
+      tasks.push(t);
+    }
+    const { container } = renderMini(tasks, ["2026-10-11"], null);
+    const circles = container.querySelectorAll("circle");
+    expect(circles.length).toBe(300);
+    // 连接度最高的那批在图里
+    expect(container.querySelector("[data-testid='graph-node-n0']")).not.toBeNull();
+    // 卡片上说明这是截断后的视图
+    expect(container.textContent).toContain("连接度前 300 个");
+  });
+});

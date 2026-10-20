@@ -18,6 +18,14 @@ import { dayKey as localDayKey } from "./homeData";
 const VIEW_W = 100;
 const VIEW_H = 56;
 
+/** 速览卡最多画多少个节点。FA2 一轮是 O(N²)（1500 节点以上才开
+ *  barnesHut），而这张卡每次任务写入都要重跑一遍——节点不设上限，
+ *  千级任务上就是一次几百毫秒的同步计算。 */
+const MINI_MAX_NODES = 300;
+
+/** 布局轮数：缩略图 100×56，40 轮足够看出结构，再多只是烧 CPU */
+const MINI_ITERATIONS = 40;
+
 /**
  * FA2 设置（万节点档调优）。速览卡是 100×56 的二维缩略图，档位比图谱页粗一档：
  * barnesHut 只在真的上千节点时开，linLog 永久禁——LinLog 会把连通团坍缩成一点、
@@ -40,22 +48,34 @@ function layoutGraph(tasks: Task[]): {
   laid: Array<{ node: GraphNode; x: number; y: number }>;
   edges: Array<{ source: string; target: string }>;
   byId: Map<string, { x: number; y: number }>;
+  /** 节点超上限被截了：卡片要说明画的不是全部 */
+  truncated: boolean;
 } {
   const built = buildTaskGraph(tasks, DEFAULT_FILTERS);
+  // 节点多了只留连接度最高的一批：缩略图放不下那么多点，
+  // 而 FA2 的开销随节点数平方涨
+  const kept =
+    built.nodes.length > MINI_MAX_NODES
+      ? [...built.nodes]
+          .sort((a, b) => b.degree - a.degree)
+          .slice(0, MINI_MAX_NODES)
+      : built.nodes;
+  const keptIds = new Set(kept.map((n) => n.id));
   const g = new Graph({ type: "undirected" });
-  for (const n of built.nodes) {
+  for (const n of kept) {
     // 圆盘初值帮助 FA2 收敛：节点沿圆周均分，别让 FA2 自己从一团随机点里找结构
-    const angle = (g.order / Math.max(built.nodes.length, 1)) * Math.PI * 2;
+    const angle = (g.order / Math.max(kept.length, 1)) * Math.PI * 2;
     g.addNode(n.id, { x: Math.cos(angle) * 10, y: Math.sin(angle) * 10, size: 1 });
   }
   for (const l of built.links) {
     // built.links 的两端必然都在 nodes 里（buildTaskGraph 出口已过滤），无需再查；
     // 去重要留在 FA2 这一侧：A 依赖 B 同时 A 的父任务是 B，两条关系会撞成一条边
+    if (!keptIds.has(l.source) || !keptIds.has(l.target)) continue;
     if (!g.hasEdge(l.source, l.target)) g.addEdge(l.source, l.target);
   }
   if (g.order > 0) {
     forceAtlas2.assign(g, {
-      iterations: 80,
+      iterations: MINI_ITERATIONS,
       settings: fa2Settings(g.order),
     });
   }
@@ -69,7 +89,7 @@ function layoutGraph(tasks: Task[]): {
   const spanX = maxX - minX || 1;
   const spanY = maxY - minY || 1;
   const byId = new Map<string, { x: number; y: number }>();
-  const laid = built.nodes.map((node) => {
+  const laid = kept.map((node) => {
     const attrs = g.getNodeAttributes(node.id);
     const x = 6 + ((attrs.x - minX) / spanX) * (VIEW_W - 12);
     const y = 5 + ((attrs.y - minY) / spanY) * (VIEW_H - 10);
@@ -85,7 +105,7 @@ function layoutGraph(tasks: Task[]): {
   g.forEachEdge((_edge, _attrs, source, target) => {
     edges.push({ source, target });
   });
-  return { laid, edges, byId };
+  return { laid, edges, byId, truncated: kept.length < built.nodes.length };
 }
 
 /** 节点是否落在联动指向的一天（当日有排期或当日完成） */
@@ -119,7 +139,7 @@ export function GraphMini({
   onOpenTask: (t: Task) => void;
   onMore: () => void;
 }) {
-  const { laid, edges, byId } = useMemo(() => layoutGraph(tasks), [tasks]);
+  const { laid, edges, byId, truncated } = useMemo(() => layoutGraph(tasks), [tasks]);
   const dayKey = activeDay !== null ? dayKeys[activeDay] : null;
 
   const dimmed = (node: GraphNode): boolean => {
@@ -137,6 +157,11 @@ export function GraphMini({
           style={{ background: "var(--plan-violet)" }}
         />
         <h3 className="text-[13px] font-semibold text-[var(--t3)]">图谱速览</h3>
+        {truncated && (
+          <span className="text-[11px] text-[var(--t5)]">
+            连接度前 {MINI_MAX_NODES} 个
+          </span>
+        )}
         <button
           onClick={onMore}
           className="ml-auto rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
