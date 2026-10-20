@@ -43,6 +43,19 @@ import {
   type GraphFilters,
 } from "./graph-build";
 
+/**
+ * 过滤器默认值：只看我的 → 全默认。
+ *
+ * 「重置过滤器」重置到的是「没有存档时的样子」，所以也走这里：
+ * 重置到全默认会把「只看我的」一并清掉，而开着「记住上次的过滤器」时
+ * 这套全默认还会被写进存档——存档优先级高于「只看我的」，于是那一项
+ * 从此长期被遮蔽，用户在设置页也看不出来。
+ */
+function defaultFilters(): GraphFilters {
+  if (getGraphOnlyMine()) return { ...DEFAULT_FILTERS, owners: [SELF_OWNER] };
+  return DEFAULT_FILTERS;
+}
+
 const STATUS_LABELS: Record<ColumnId, string> = {
   todo: "待办",
   doing: "进行中",
@@ -78,8 +91,7 @@ export default function GraphPage({
       const saved = loadGraphFilters();
       if (saved) return saved;
     }
-    if (getGraphOnlyMine()) return { ...DEFAULT_FILTERS, owners: [SELF_OWNER] };
-    return DEFAULT_FILTERS;
+    return defaultFilters();
   });
   // 「记住上次的过滤器」开启时：每次变更即持久化（关掉开关时 graphPrefs 已清除存档）
   useEffect(() => {
@@ -716,7 +728,7 @@ export default function GraphPage({
 
             <button
               className="mt-2 w-full rounded-[var(--r-sm)] px-2 py-1 text-xs text-[var(--t5)] hover:text-[var(--t2)]"
-              onClick={() => setFilters(DEFAULT_FILTERS)}
+              onClick={() => setFilters(defaultFilters())}
             >
               重置过滤器
             </button>

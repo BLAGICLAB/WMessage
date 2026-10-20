@@ -35,6 +35,7 @@ const TASKS: Task[] = [
 ];
 
 beforeEach(() => {
+  localStorage.clear();
   invokeMock.mockImplementation((cmd: string) => {
     if (cmd === "people_list")
       return Promise.resolve([
@@ -78,6 +79,22 @@ describe("GraphPage", () => {
     await vi.waitFor(() => {
       expect(stats.textContent).not.toContain("4 任务");
     });
+  });
+
+  it("重置过滤器回到「只看我的」的默认——不把全默认写进存档遮蔽它", async () => {
+    localStorage.setItem("wm.graph.onlyMine", "1");
+    localStorage.setItem("wm.graph.rememberFilters", "1");
+    renderPage();
+    const stats = await screen.findByTestId("graph-stats");
+    // 「只看我的」：外来卡（z）被滤掉，只剩本人 3 张
+    expect(stats.textContent).toContain("3 任务");
+    fireEvent.click(screen.getByRole("button", { name: "重置过滤器" }));
+    await vi.waitFor(() => {
+      expect(stats.textContent).toContain("3 任务");
+    });
+    // 存档里存的也是「只看我的」这份默认，不是全默认
+    const saved = JSON.parse(localStorage.getItem("wm.graph.filters") ?? "{}");
+    expect(saved.owners).toEqual([""]);
   });
 
   it("搜索框可输入", async () => {
