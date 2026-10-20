@@ -1,7 +1,7 @@
 # 008 — 计划块 hover 动效加触屏门控，时长收到 100ms
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §6 Accessibility / §1 Purpose & frequency
 - **Estimated scope**: 1 个 CSS，约 12 行改动
@@ -202,3 +202,23 @@
   - `grep -n "^\s*\.plan-blk:hover" src/ui/main.css` 返回空（全部进了媒体查询）。
   - 上面两条测试全绿。
 
+
+## 落地记录
+
+**与 007 的合并**：007 刚给 `.plan-blk` 的过渡列表补了 `opacity` 一项（网格侧源块
+变暗、`.is-done`/`.is-archived` 的透明度变化），本计划 Target 节的过渡列表只写了
+`transform` + `background-color` —— 直接照抄会把 007 那条腿抹掉。合并后的最终形态：
+
+```css
+    transition:
+      transform var(--dur-chip) var(--ease-out),
+      background-color var(--dur-chip) var(--ease-out),
+      opacity var(--dur-chip) var(--ease-out);
+```
+
+即：本计划只做它自己的事（**移出 box-shadow 腿** + 5 处 hover 规则加触屏门控），
+不动 007 加的 opacity 腿。两条计划的静态锁同时成立。
+
+**静态锁写法**：门控检查不能靠正则猜「这条规则在不在媒体查询里」——用括号配对
+扫出 `@media (hover: hover) and (pointer: fine)` 的区间，再检查每条 `.plan-blk…:hover`
+规则的起始位置落在哪个区间。撤掉任一处门控，锁立刻转红（已反向验证）。

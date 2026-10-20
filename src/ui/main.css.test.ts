@@ -142,3 +142,45 @@ describe("main.css 拖拽的拾起语汇", () => {
     expect(planBlk).toMatch(/transition:[\s\S]*?opacity/);
   });
 });
+
+/** 扫出「不在 hover 门控媒体查询里」的 .plan-blk hover 规则 */
+function barePlanBlkHover(css: string): string[] {
+  const ranges: Array<[number, number]> = [];
+  const gate = /@media \(hover: hover\) and \(pointer: fine\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = gate.exec(css))) {
+    let depth = 0;
+    let i = css.indexOf("{", m.index);
+    for (; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    ranges.push([m.index, i]);
+    gate.lastIndex = i;
+  }
+  const out: string[] = [];
+  for (const rule of css.matchAll(
+    /^[ \t]*([^\n{}]*\.plan-blk[^{}]*:hover[^{}]*)\{/gm,
+  )) {
+    const gated = ranges.some(([a, b]) => rule.index >= a && rule.index <= b);
+    if (!gated) out.push(rule[1].trim());
+  }
+  return out;
+}
+
+describe("main.css 计划块 hover 的触屏门控", () => {
+  it("计划块 hover 规则有触屏门控", () => {
+    // 触屏点一下就保持抬起、手感像卡住——hover 抬升只在真鼠标下生效
+    expect(barePlanBlkHover(css)).toEqual([]);
+    expect(css).toMatch(/@media \(hover: hover\) and \(pointer: fine\)/);
+  });
+
+  it("计划块过渡列表不含 box-shadow（阴影是状态不是运动），时长归 chip 档", () => {
+    const block = css.match(/\.plan-blk\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+    expect(block).not.toMatch(/transition:[\s\S]*?box-shadow/);
+    expect(block).toMatch(/transition:[\s\S]*?var\(--dur-chip\)/);
+  });
+});

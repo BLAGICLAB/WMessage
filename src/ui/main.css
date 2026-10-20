@@ -710,7 +710,6 @@
     border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
     box-shadow: var(--shadow-sm);
     transition:
-      box-shadow var(--dur-chip) var(--ease-out),
       transform var(--dur-chip) var(--ease-out),
       background-color var(--dur-chip) var(--ease-out),
       opacity var(--dur-chip) var(--ease-out);
@@ -725,8 +724,11 @@
     background: var(--c);
     border-radius: 3px 0 0 3px;
   }
-  .plan-blk:hover {
-    transform: translateY(-1px);
+  /* hover 抬升只在真鼠标下生效：触屏点一下就保持抬起、手感像卡住 */
+  @media (hover: hover) and (pointer: fine) {
+    .plan-blk:hover {
+      transform: translateY(-1px);
+    }
   }
   .dark .plan-blk {
     background: linear-gradient(
@@ -743,11 +745,13 @@
   .dark .plan-blk::before {
     display: none;
   }
-  .dark .plan-blk:hover {
-    transform: translateY(-2px);
-    box-shadow:
-      0 8px 24px color-mix(in srgb, var(--c) 45%, transparent),
-      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  @media (hover: hover) and (pointer: fine) {
+    .dark .plan-blk:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        0 8px 24px color-mix(in srgb, var(--c) 45%, transparent),
+        inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    }
   }
   .plan-blk.sel {
     border-color: var(--accent);
@@ -826,8 +830,10 @@
   .dark .plan-grip {
     background: rgba(255, 255, 255, 0.6);
   }
-  .plan-blk:hover .plan-grip {
-    opacity: 1;
+  @media (hover: hover) and (pointer: fine) {
+    .plan-blk:hover .plan-grip {
+      opacity: 1;
+    }
   }
   /* 跨日续接段：贴列底/列顶的开口角 + »« 标记 */
   .plan-blk.tail {
@@ -942,10 +948,12 @@
   .plan-blk.is-archived::before {
     background: color-mix(in srgb, var(--c) 45%, var(--edge));
   }
-  .plan-blk.is-archived:hover {
-    transform: translateY(-1px);
-    filter: saturate(0.5);
-    box-shadow: 0 3px 8px color-mix(in srgb, var(--c) 14%, transparent);
+  @media (hover: hover) and (pointer: fine) {
+    .plan-blk.is-archived:hover {
+      transform: translateY(-1px);
+      filter: saturate(0.5);
+      box-shadow: 0 3px 8px color-mix(in srgb, var(--c) 14%, transparent);
+    }
   }
   .dark .plan-blk.is-archived {
     background: linear-gradient(
@@ -956,8 +964,10 @@
     border-color: color-mix(in srgb, var(--c) 35%, var(--edge));
     box-shadow: none;
   }
-  .dark .plan-blk.is-archived:hover {
-    box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent);
+  @media (hover: hover) and (pointer: fine) {
+    .dark .plan-blk.is-archived:hover {
+      box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent);
+    }
   }
   /* 已归档印章：红底白描边内圈 + 微旋转（盖章隐喻）；薄块平贴不转。
      整体严格 12px 高——与头像/对勾同行不撑行，标题行数不受挤占 */
