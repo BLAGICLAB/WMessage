@@ -265,6 +265,35 @@
     }
   }
 
+  /* === 共享弹层（src/ui/Modal.tsx）：遮罩淡入 + 面板从 0.96 缩放淡入 ===
+     弹窗是偶发档，给一段标准入场；transform-origin 用 center
+     ——弹窗是居中出现的，从中心长是对的（浮层才需要从触发点长）。 */
+  .modal-backdrop {
+    animation: modal-fade var(--dur-pop) var(--ease-out);
+  }
+  .modal-panel {
+    transform-origin: center;
+    animation: modal-pop var(--dur-pop) var(--ease-out);
+  }
+  @keyframes modal-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes modal-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
   /* === 动作按钮：hover 底色抬升一档，active 压暗（按压感不靠阴影） === */
   .nm-btn {
     border-radius: var(--r-sm);

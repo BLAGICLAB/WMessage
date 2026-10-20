@@ -231,6 +231,30 @@ describe("按压反馈", () => {
   });
 });
 
+describe("main.css 共享弹层入场", () => {
+  it("遮罩淡入、面板从中心缩放入场，缩放起点在 0.9–0.97", () => {
+    const backdrop = css.match(/\.modal-backdrop\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(backdrop).toMatch(/animation:\s*modal-fade var\(--dur-pop\) var\(--ease-out\)/);
+    const panel = css.match(/\.modal-panel\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(panel).toMatch(/animation:\s*modal-pop var\(--dur-pop\) var\(--ease-out\)/);
+    // 弹窗是居中出现的，从中心长是对的（浮层才需要从触发点长）
+    expect(panel).toMatch(/transform-origin:\s*center/);
+    const kf = css.match(/@keyframes modal-pop\s*\{[\s\S]*?scale\(([\d.]+)\)/)?.[1];
+    expect(parseFloat(kf ?? "0")).toBeGreaterThanOrEqual(0.9);
+    expect(parseFloat(kf ?? "0")).toBeLessThanOrEqual(0.97);
+  });
+
+  it("入场动效只在共享壳里实现，调用点不各写各的", () => {
+    const shell = readFileSync("src/ui/Modal.tsx", "utf-8");
+    expect(shell).toContain("modal-backdrop");
+    expect(shell).toContain("modal-panel");
+    const offenders = tsxFiles()
+      .filter((f) => f !== "ui/Modal.tsx")
+      .filter((f) => /modal-pop|modal-fade/.test(readFileSync(join("src", f), "utf-8")));
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("main.css 浮层入场", () => {
   it("浮层有入场动效且缩放起点在 0.9–0.97", () => {
     const popover = css.match(/\.nm-popover\s*\{([^}]*)\}/)?.[1] ?? "";

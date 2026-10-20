@@ -1,7 +1,7 @@
 # 011 — 共享 Modal 壳加入场动效
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §8 Missed opportunities / §2 Easing & duration
 - **Estimated scope**: 2 个文件（`Modal.tsx` + `main.css`），约 20 行改动
@@ -200,3 +200,44 @@
   - `grep -n "modal-fade\|modal-pop" src/ui/main.css` 命中 4 处（两条规则 + 两个 keyframes）。
   - 上面两条测试全绿。
 
+
+## 落地记录
+
+落地与本计划一致，无偏差。以下是实施前先做的两项确认。
+
+**一、八个调用点的面板都是干净的 `nm-card`。** 逐一核过九个渲染点（`MigrationPanel` /
+`TracePanel` / `AppsPage` / `McpPanel` / `ConfirmMap` / `TagConsolidateModal` / `TodoCard` /
+`ErrorDialogHost`）的面板类串：全是 `nm-card …`，**没有自带 animation、也没有 transform
+类**。这是前提——`modal-pop` 动画会占用面板的 `opacity` 与 `transform`，若某个面板自带
+transform，动画播完（`animation-fill-mode` 默认 none）会把它弹回去；自带 animation 的话，
+两条规则同权重、后者覆盖前者，入场直接不播。共享壳一改就是九处一起改，任一处脏就全炸。
+
+**二、实测入场曲线与收尾状态**（Chromium，逐帧采样 `getComputedStyle`）：
+
+| 时刻 | 遮罩 opacity | 面板 opacity | 面板 transform |
+|---|---|---|---|
+| 102ms | 0.973 | 0.973 | `matrix(0.998933, 0, 0, 0.998933, 0, 0)` |
+| 151ms | 0.998 | 0.998 | `matrix(0.999931, 0, 0, 0.999931, 0, 0)` |
+| 动画结束 | 1 | 1 | **none** |
+
+动画结束后面板 `transform` 回到 `none`（`fill-mode` 默认 `none`，播完即释放），不留残余
+缩放——这一条对应本计划「手感自检」里「DevTools 选面板，Computed 的 transform 应为
+`none` 或 `matrix(1,0,0,1,0,0)`」。
+
+遮罩与面板各带一条 opacity 动画，实际渲染的面板不透明度是两者的乘积（50% 时刻约 0.947
+而非 0.966）——差异在这个幅度上察觉不出，且两者同曲线同时长，形状一致。
+
+**减少动效兜底已有**：`src/ui/main.css:124` 的全局 `prefers-reduced-motion: reduce` 块用
+`animation-duration: 0.01ms !important` 掐断所有动画，新加的两条入场自动被覆盖，不需要
+再写一段 `@media`。
+
+**静态锁两条**（`src/ui/Modal.test.tsx` 用 DOM 断言，不扫源码文本）：
+
+- 遮罩与面板都挂了动效类，且**调用方自己的 `className` 没被覆盖**——这条正是本计划
+  「`cloneElement` 传 `className` 会覆盖」那个坑的守卫。DOM 断言比源码正则强：源码写
+  拼接了但拼错了顺序或漏了元素，DOM 断言照样红。
+- 遮罩淡入 + 面板缩放入场，缩放起点落在 0.9–0.97，`transform-origin: center`。
+- 另加一条「入场动效只在共享壳里实现」：扫 `src/**/*.tsx`，除 `Modal.tsx` 外谁引用
+  `modal-pop` / `modal-fade` 谁红——把「一次实现、九处受益」从约定变成锁。
+
+三条锁都做过反向验证：撤掉 CSS 规则 → 2 条红；在调用点私挂 `modal-pop` → 第 3 条红。
