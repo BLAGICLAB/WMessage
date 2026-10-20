@@ -18,7 +18,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { CloudField, Starfield, hexToRgb01 } from "./NebulaField";
-import { Force3D, KINETIC_EPSILON, settle } from "./graph-force3d";
+import { Force3D, KINETIC_EPSILON } from "./graph-force3d";
 import { buildScene, isHub, labelDegreeFloor, type Scene, type SceneNode } from "./graph-scene";
 import { declutterPass, type DeclutterTarget, type Rect } from "./graph-declutter";
 import { HUB_COLOR, resolveNodeColor } from "./graph-palette";
@@ -795,17 +795,23 @@ export default function GraphCanvas(props: GraphCanvasProps) {
 
     const restLayout = () => {
       finishLayout();
+      // 手动重跑一律播中间态：用户点了「重新布局」就是要看它长出来
+      animated = true;
+      container.appendChild(computing);
       resumeForce();
     };
-    if (p.autoLayout) {
-      running = true;
-    } else {
-      // 静态构图：一次跑到底。大图照样走时间切片，只是每帧预算给足
-      settle(force, { maxSteps: 700 });
-      finishLayout();
-      settled = true;
-      running = false;
-    }
+    // 两条路径都走 rAF 时间切片（每帧 ≤10ms 且 ≤400 步）。
+    // 「不播布局动画」只是不画中间态，不是把 700 步同步跑完——万级任务
+    // 那一下能把主线程冻住一秒多（实测 700 步 ≈ 1.1s），期间整个应用无响应。
+    let animated = p.autoLayout;
+    running = true;
+    settled = false;
+
+    // 静态构图期间的黑屏给个说法：否则用户以为画布坏了
+    const computing = document.createElement("div");
+    computing.className = "graph-computing";
+    computing.textContent = "构图计算中…";
+    if (!animated) container.appendChild(computing);
 
     // THREE.Clock 已废弃且只为拿一个 elapsed，自己记起点即可
     const startedAt = performance.now();
@@ -874,9 +880,15 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           finishLayout();
           running = false;
           refreshAppearance();
+          computing.remove();
         }
-        pushGeometry();
+        // 静态构图不画中间态：画了就是布局动画，这一档开关就没意义了
+        if (animated) pushGeometry();
       }
+
+      // 静态构图还没收敛：这一帧不出画（黑屏 + 「构图计算中」提示），
+      // 等布局就绪再一次性出图
+      if (!animated && !settled) return;
 
       if (dragging >= 0) {
         // 拖拽固定：节点跟着指针走，跑在力场之外，松手后从新位置继续平衡
@@ -948,6 +960,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       window.removeEventListener("graph:relayout", onRelayout);
       window.removeEventListener("graph:appearance", onAppearance);
       cancelAnimationFrame(raf);
+      computing.remove();
       ro.disconnect();
       el.removeEventListener("pointermove", onPointerMove);
       el.removeEventListener("pointerdown", onPointerDown);

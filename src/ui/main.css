@@ -1216,6 +1216,19 @@
     /* 星云底色已是深色，禁掉高亮把光点染白 */
     touch-action: none;
   }
+  /* 静态构图期间的黑屏提示：布局在后台分片算，算完才出图 */
+  .graph-computing {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    color: #59657c;
+    pointer-events: none;
+  }
   /* CSS2D 文字层：只透字，不吃事件（否则铭牌会挡住拾取） */
   .graph-labels {
     position: absolute;
