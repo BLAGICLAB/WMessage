@@ -837,6 +837,25 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("本会话输出")).toBeInTheDocument();
   });
 
+  it("自动滚动：环境没有 scrollTo 时不炸（可选链挡不住方法缺失）", async () => {
+    const user = userEvent.setup();
+    // jsdom 本身不实现 scrollTo，测试基建按 suite scope 临时补上——补的窗口期
+    // 里它可能已经不在。可选链只挡 ref 为空，挡不住方法缺失：缺方法时这行
+    // 抛 TypeError，落在 passive effect 里就成了随机某个用例的红
+    const saved = Element.prototype.scrollTo;
+    delete (Element.prototype as unknown as Record<string, unknown>).scrollTo;
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
+      const input = screen.getByPlaceholderText(/和机器人说点什么/);
+      await user.type(input, "你好");
+      await user.keyboard("{Enter}");
+      await act(async () => {});
+    } finally {
+      (Element.prototype as unknown as Record<string, unknown>).scrollTo = saved;
+    }
+  });
+
   it("流式增量 16ms 合并：同帧多条 delta 攒成一次写入，内容不丢且保持到达顺序", async () => {
     const user = userEvent.setup();
     let deltaHandler:

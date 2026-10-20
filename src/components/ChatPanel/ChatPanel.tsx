@@ -1243,7 +1243,12 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
 
   // 新消息自动滚到底
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    const el = scrollRef.current;
+    // 可选链只挡 ref 为空，挡不住方法缺失——缺 scrollTo 的环境里这行会抛，
+    // 抛在 passive effect 里就变成随机某个用例的红
+    if (el && typeof el.scrollTo === "function") {
+      el.scrollTo({ top: el.scrollHeight });
+    }
   }, [messages]);
 
   const switchSession = useCallback(
