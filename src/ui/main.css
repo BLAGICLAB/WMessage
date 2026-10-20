@@ -1014,7 +1014,12 @@
     animation: plan-pop 0.22s cubic-bezier(0.2, 1.4, 0.4, 1);
   }
   /* 执行中活体文字的流光（LiveIndicator）：横向渐变扫过字面，
-     配合每秒刷新的耗时，让「还在跑」有持续变化而非静止的光点 */
+     配合每秒刷新的耗时，让「还在跑」有持续变化而非静止的光点。
+     动画声明必须落在类里：内联 style 压过样式表规则，
+     下面那条 reduced-motion 覆盖就永远不生效。 */
+  .wmsg-live-label {
+    animation: wmsg-shimmer 1.8s linear infinite;
+  }
   @keyframes wmsg-shimmer {
     0% {
       background-position: 120% 0;

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { fireEvent, render, screen, act } from "@testing-library/react";
 import { LiveIndicator } from "./LiveIndicator";
 import { fmtElapsed } from "./useElapsed";
@@ -128,5 +129,30 @@ describe("工具徽章的未完成态", () => {
       vi.advanceTimersByTime(4200);
     });
     expect(screen.getByText("4s")).toBeTruthy();
+  });
+});
+
+// 流光动画的 reduced-motion 覆盖必须真的能生效。
+// 内联 style 压过样式表规则：动画写在 GRADIENT_TEXT 里时，
+// main.css 那条 .wmsg-live-label { animation: none } 永远轮不到它，
+// 「系统声明减少动效 → 流光停下」这条承诺就是空的。
+describe("LiveIndicator 流光的减少动效覆盖", () => {
+  const src = readFileSync("src/components/ChatPanel/LiveIndicator.tsx", "utf-8");
+  const css = readFileSync("src/ui/main.css", "utf-8");
+
+  it("流光动画声明在样式表的类里，不在内联 style", () => {
+    const inline = src.match(/const GRADIENT_TEXT[\s\S]*?\n\};/)?.[0] ?? "";
+    expect(inline).not.toContain("animation");
+    expect(css).toMatch(/\.wmsg-live-label\s*\{[^}]*animation:\s*wmsg-shimmer/);
+  });
+
+  it("reduced-motion 覆盖排在基础规则之后（同特异性下后写的赢）", () => {
+    const at = [...css.matchAll(/\.wmsg-live-label\s*\{/g)].map((m) => m.index ?? 0);
+    expect(at.length).toBe(2);
+    // 基础规则与覆盖之间必须隔着 reduced-motion 媒体查询
+    expect(css.slice(at[0], at[1])).toContain(
+      "@media (prefers-reduced-motion: reduce)",
+    );
+    expect(css.slice(at[1], at[1] + 80)).toContain("animation: none");
   });
 });

@@ -13,7 +13,9 @@ import type { TurnStatus } from "./types";
 import { fmtElapsed, useElapsed } from "./useElapsed";
 
 /** 渐变文字：CSS 动画渐变裁切到字面（ZCode 的 animated-gradient-text 同款思路）。
- *  用内联 style 而非 tailwind 任意值类——项目 tailwind 配置未含这条动效 key。 */
+ *  渐变本身用内联 style——tailwind 任意值类装不下这条 color-mix 渐变；
+ *  但流光动画必须写在 CSS 类里（.wmsg-live-label）：内联 style 压过样式表规则，
+ *  main.css 里那条 reduced-motion 覆盖就永远不生效。 */
 const GRADIENT_TEXT: React.CSSProperties = {
   backgroundImage:
     "linear-gradient(90deg, var(--brand) 0%, var(--brand) 35%, color-mix(in oklab, var(--brand) 55%, transparent) 50%, var(--brand) 65%, var(--brand) 100%)",
@@ -21,7 +23,6 @@ const GRADIENT_TEXT: React.CSSProperties = {
   WebkitBackgroundClip: "text",
   backgroundClip: "text",
   color: "transparent",
-  animation: "wmsg-shimmer 1.8s linear infinite",
 };
 
 export function LiveIndicator({
