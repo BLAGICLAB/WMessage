@@ -137,7 +137,7 @@ export function FilePreview({
       )}
       {!err && !data && (
         <p className="inline-flex items-center gap-1 px-0.5 text-[11px] text-[var(--t5)]">
-          <Loader2 size={11} aria-hidden className="animate-spin" />
+          <Loader2 size={11} aria-hidden className="wmsg-activity" />
           读取中…
         </p>
       )}

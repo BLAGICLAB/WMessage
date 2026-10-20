@@ -1,7 +1,7 @@
 # 015 — 减少动效下保住「还在跑」的活动信号
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §6 Accessibility
 - **Estimated scope**: 1 个 CSS + 8 个 tsx，约 30 行改动
@@ -201,3 +201,95 @@ src/components/ChatPanel/ContextRail.tsx:347       className="shrink-0 animate-s
   - `grep -n "wmsg-activity" src/ui/main.css` 命中 2 处以上（规则 + reduced-motion 覆盖）。
   - 上面两条测试全绿。
 
+
+## 落地记录：计划给的 CSS 会被兜底块压死，加 `!important` 才成立
+
+计划的核心判断（减少动效下转子冻结成静止图标，「还在跑」和「已经结束」长得一样）是对的，
+但**计划给的 CSS 写法不生效**——这一点是实测出来的，不是推测。
+
+### 一、计划原版为什么不行
+
+计划的写法是：
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .wmsg-activity {
+    animation: wmsg-breathe 1.6s ease-in-out infinite;
+  }
+}
+```
+
+计划自己写了一句「`.wmsg-activity` 的特异性（0,1,0）高于全局兜底块里的 `*`（0,0,0），
+所以它能赢过兜底块」——**这句话漏了 `!important`**。全局兜底块是：
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+```
+
+`!important` 的声明在任何特异性、任何层之前都赢。所以 `.wmsg-activity` 的
+`animation-duration: 1.6s` 与 `animation-iteration-count: infinite` 会被兜底块压成
+`0.01ms` 与 `1`——动画只播一帧就冻结，等于没改。
+
+**Chromium 实测**（`--force-prefers-reduced-motion --dump-dom`，读 computed style）：
+
+| 写法 | animation-name | duration | iteration-count |
+|---|---|---|---|
+| 计划原版（无 `!important`） | `wmsg-breathe` | `1e-05s` | `1` ← 冻结 |
+| 修正版（带 `!important`） | `wmsg-breathe` | `1.6s` | `infinite` ← 正常 |
+
+顺带确认层结构不是变量：Tailwind v3.4 把 `main.css` 里手写的 `@layer components`
+整块展平了（编译产物里 `@layer` 出现 0 次），兜底块与新规则同为无层，
+所以这里只比特异性与 `!important`，不必再考虑层的优先级。
+
+### 二、端到端实测（真实编译产物 + 强制减少动效）
+
+编译 `src/ui/main.css` 后在 Chromium 里读 computed style：
+
+| 元素 | 正常模式 | 减少动效 |
+|---|---|---|
+| `.wmsg-activity`（转子） | `wmsg-spin` 1s infinite | **`wmsg-breathe` 1.6s infinite** |
+| `.wmsg-activity-pulse`（圆点/状态图标） | `wmsg-pulse` 2s infinite | **`wmsg-breathe` 1.6s infinite** |
+| `.plan-fresh`（落位弹入） | `plan-pop` 0.2s 1 次 | `1e-05s` 1 次 ← 仍被掐断 |
+| `.animate-pulse`（必应骨架屏） | `pulse` 2s infinite | `1e-05s` 1 次 ← 仍被掐断 |
+
+活动指示器的信号保住了，非活动动效照旧瞬时化——本计划没有意外放开别的动画。
+
+### 三、拆成两个类：正常模式的形态必须原样
+
+计划说「两个活动小圆点也换成 `wmsg-activity`」。实测下来有两个问题：
+
+1. **`ActivityPage/index.tsx` 的那个不是圆点**，是 lucide 的 `Activity` 图标（心跳线），
+   旋转它会变成另一个视觉；而 `ContextRail` 的圆点是正圆，旋转看不见。
+2. 两个元素正常模式用的是 `animate-pulse`（透明度呼吸），换成旋转类会让它们**在正常
+   模式下丢掉可见的呼吸**——正圆的呼吸是看得见的。
+
+所以拆成两个类，各自保留正常模式原样的动画，只在减少动效时汇合到同一个呼吸态：
+
+- `.wmsg-activity` —— 12 处转子（`animate-spin` → 1s linear infinite，与 Tailwind 一致）
+- `.wmsg-activity-pulse` —— 2 处呼吸元素（`animate-pulse` → 2s，与 Tailwind 的周期一致；
+  曲线走 `--ease-pulse` token，不手写 Tailwind 默认曲线）
+
+减少动效时两者都换成 `wmsg-breathe`（1.6s ease-in-out，只动 opacity）。
+
+**必应图的骨架屏 `animate-pulse` 不动**——骨架本来就该是静态的，不是活动信号。
+
+### 四、静态锁四条（`src/ui/main.css.test.ts`）
+
+- 活动指示器在减少动效下换成 `wmsg-breathe`，**且那条覆盖必须带 `!important`**
+  （这是计划原版失效的那个点，锁住它）。
+- 呼吸态的 keyframes 只动 opacity，不含 transform。
+- `src/**/*.tsx`（测试文件除外）里不再有 `animate-spin`。
+- `animate-pulse` 只剩下 `components/HomePage/BingCard.tsx` 一处（骨架屏）。
+
+四条都做过反向验证：撤掉 `!important`、给呼吸态加 transform、把一处转子改回
+`animate-spin`、把圆点改回 `animate-pulse`——各对应一条转红。
+
+扫类名时会先剥掉注释：`LiveIndicator.tsx` 的注释里提过 `animate-pulse`（讲的是改之前
+的历史），那是注释不是类名。

@@ -149,7 +149,7 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
                       <Activity
                         size={10}
                         aria-hidden
-                        className="mr-1 inline animate-pulse"
+                        className="mr-1 inline wmsg-activity-pulse"
                       />
                     )}
                     {STATUS_LABEL[t.status] ?? t.status}

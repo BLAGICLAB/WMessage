@@ -822,7 +822,7 @@ export function UsageStatsCard() {
             <RefreshCw
               size={12}
               aria-hidden
-              className={loading ? "animate-spin" : ""}
+              className={loading ? "wmsg-activity" : ""}
             />
             {loading ? "读取中…" : "刷新"}
           </button>

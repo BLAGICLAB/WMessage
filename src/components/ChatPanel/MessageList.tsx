@@ -323,7 +323,7 @@ function ToolStatusMark({ t }: { t: ToolCall }) {
   // 与「已结束」在视觉上无区别——这是用户看不出 agent 在不在跑的主因。
   return (
     <span aria-hidden className="inline-flex items-center gap-1 text-[var(--brand)]">
-      <Loader2 size={10} className="animate-spin" />
+      <Loader2 size={10} className="wmsg-activity" />
       {secs != null && (
         <span className="tabular-nums text-[var(--t4)]">{fmtElapsed(secs)}</span>
       )}
@@ -373,7 +373,7 @@ const ToolBadges = memo(function ToolBadges({
             </span>
             {runningTool && (
               <span className="inline-flex items-center gap-1 text-[var(--brand)]">
-                <Loader2 size={9} className="animate-spin" />
+                <Loader2 size={9} className="wmsg-activity" />
                 正在跑 {runningTool.name || "tool"}
               </span>
             )}

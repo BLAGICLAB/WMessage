@@ -16,7 +16,7 @@ const STATUS_ICON = {
     <Loader2
       size={11}
       aria-hidden
-      className="shrink-0 animate-spin text-[var(--brand)]"
+      className="shrink-0 wmsg-activity text-[var(--brand)]"
     />
   ),
   done: (

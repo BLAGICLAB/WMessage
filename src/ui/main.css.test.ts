@@ -20,6 +20,11 @@ function tsxFiles(): string[] {
     .filter((f) => f.endsWith(".tsx") && !f.includes(".test."));
 }
 
+/** 去掉注释：注释里提到某个类名不算真的用了它 */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
 describe("滚动条主题适配（main.css）", () => {
   it("color-scheme 随深浅主题切换", () => {
     // 浅色根 + .dark 覆盖，二者缺一 WebView2 原生滚动条就不随主题
@@ -253,13 +258,48 @@ describe("拖拽幽灵的定位方式", () => {
     const src = readFileSync(TIMELINE, "utf-8");
     expect(src).toContain("ghostSizeRef");
     // 剥掉注释再数：注释里提到 offsetWidth 不算一次读取
-    const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+    const code = stripComments(src);
     // 读取必须落在「缓存为空且元素在」的守卫里，且读完写回缓存
     expect(code).toMatch(
       /if \(![A-Za-z_$][\w$]* && ghostRef\.current\) \{[\s\S]*?offsetWidth[\s\S]*?offsetHeight[\s\S]*?ghostSizeRef\.current = [A-Za-z_$][\w$]*;/,
     );
     // 不允许每帧裸读
     expect(code).not.toMatch(/ghostRef\.current\?\.offset(Width|Height)/);
+  });
+});
+
+describe("减少动效下的活动信号", () => {
+  it("活动指示器在减少动效时换成透明度呼吸（信号不能消失）", () => {
+    expect(css).toMatch(/\.wmsg-activity\s*\{[^}]*animation:\s*wmsg-spin/);
+    expect(css).toMatch(/\.wmsg-activity-pulse\s*\{[^}]*animation:\s*wmsg-pulse/);
+    // 兜底块用 !important 掐断一切动画，这里的覆盖也必须带 !important 才压得住：
+    // 普通优先级会被兜底块压成 0.01ms / 1 次，动画等于冻结（Chromium 实测）
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.wmsg-activity,\s*\.wmsg-activity-pulse\s*\{[^}]*animation:[^;]*!important/,
+    );
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.wmsg-activity,\s*\.wmsg-activity-pulse\s*\{[^}]*wmsg-breathe/,
+    );
+  });
+
+  it("呼吸态只动 opacity，不动 transform（减少动效去掉位移）", () => {
+    const breathe = css.match(/@keyframes wmsg-breathe\s*\{([\s\S]*?)\n {2}\}/)?.[1] ?? "";
+    expect(breathe).toContain("opacity");
+    expect(breathe).not.toContain("transform");
+  });
+
+  it("活动指示器不再用 Tailwind 的 animate-spin（转子冻结成静止图标）", () => {
+    const offenders = tsxFiles().filter((f) =>
+      stripComments(readFileSync(join("src", f), "utf-8")).includes("animate-spin"),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("animate-pulse 只剩必应图骨架屏（骨架本就该静态，不是活动信号）", () => {
+    const users = tsxFiles().filter((f) =>
+      stripComments(readFileSync(join("src", f), "utf-8")).includes("animate-pulse"),
+    );
+    expect(users).toEqual(["components/HomePage/BingCard.tsx"]);
   });
 });
 

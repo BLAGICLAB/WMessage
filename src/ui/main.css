@@ -1105,6 +1105,42 @@
       animation: none;
     }
   }
+  /* 活动指示器（加载 / 运行中）：转子旋转、圆点呼吸。
+     减少动效时换成不涉及位移的透明度呼吸——旋转是位移，该去掉；
+     但「还有事情在发生」这个信号必须留下（§6：保留帮助理解的反馈）。
+     兜底块用 !important 掐断一切动画，这里也必须 !important 才压得住：
+     普通优先级会被兜底块压成 0.01ms / 1 次，动画等于冻结（Chromium 实测）。 */
+  .wmsg-activity {
+    animation: wmsg-spin 1s linear infinite;
+  }
+  .wmsg-activity-pulse {
+    animation: wmsg-pulse 2s var(--ease-pulse) infinite;
+  }
+  @keyframes wmsg-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes wmsg-pulse {
+    50% {
+      opacity: 0.5;
+    }
+  }
+  @keyframes wmsg-breathe {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wmsg-activity,
+    .wmsg-activity-pulse {
+      animation: wmsg-breathe 1.6s ease-in-out infinite !important;
+    }
+  }
   @keyframes plan-pop {
     0% {
       transform: scale(0.94);

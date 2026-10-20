@@ -173,7 +173,7 @@ export function ContextRail({
                 {t.key === "agents" && runningCount > 0 && (
                   <span
                     aria-hidden
-                    className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--brand)]"
+                    className="h-1.5 w-1.5 shrink-0 wmsg-activity-pulse rounded-full bg-[var(--brand)]"
                   />
                 )}
               </button>
@@ -344,7 +344,7 @@ export function ContextRail({
                       <Loader2
                         size={12}
                         aria-hidden
-                        className="shrink-0 animate-spin text-[var(--brand)]"
+                        className="shrink-0 wmsg-activity text-[var(--brand)]"
                       />
                     ) : (
                       <Bot

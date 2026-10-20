@@ -331,7 +331,7 @@ function AppCard({
             title="按 data_dir/apps/<id>/ 子进程跑脚本，零 LLM"
           >
             {running ? (
-              <Loader2 size={12} aria-hidden className="animate-spin" />
+              <Loader2 size={12} aria-hidden className="wmsg-activity" />
             ) : (
               <Play size={12} aria-hidden />
             )}
