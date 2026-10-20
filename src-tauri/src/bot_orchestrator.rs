@@ -2323,7 +2323,7 @@ async fn run_subagent(
         effective_status,
         summary.as_deref().unwrap_or_default(),
     );
-    spawn_parent_report(&app, &row);
+    spawn_parent_report(&app, &row, effective_status);
 }
 
 /// 汇报轮等空档的上限：与 `check_subagent` 的等待预算同档。主会话那一轮跑了
@@ -2353,6 +2353,16 @@ async fn bot_session_exists(app: &AppHandle, session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 子 agent 收尾后要不要给父会话起汇报轮。
+///
+/// 用户自己取消的不汇报：用户刚点过停止，不需要模型再解释一遍
+/// （设计文档「用户取消不汇报」）。判据必须用**收尾时的真实终态**——
+/// 收尾前那行的 status 恒为 Queued（行是派发时建的），拿行快照判取消
+/// 永远判不成立，用户取消后照样起汇报轮。
+fn should_report_to_parent(status: SubagentStatus) -> bool {
+    status != SubagentStatus::Cancelled
+}
+
 /// 子 agent 收尾后让主 agent 主动向用户转述（fire-and-forget）。
 ///
 /// 为什么要这条：主 agent 原本只在「下一轮组装消息时注入 digest」这一个时机
@@ -2363,12 +2373,12 @@ async fn bot_session_exists(app: &AppHandle, session_id: &str) -> bool {
 /// 门控是「主会话空闲」而不是「子 agent 一收尾」：主会话还在跑的时候，它自己
 /// 会再 check 一次拿到终态并当轮转述（那条路径已记进去重表），这时再起一轮
 /// 就是同一件事说两遍。
-fn spawn_parent_report(app: &AppHandle, row: &SubagentRow) {
+fn spawn_parent_report(app: &AppHandle, row: &SubagentRow, status: SubagentStatus) {
     let Some(parent) = row.parent_session_id.clone() else {
         return;
     };
     // 用户自己取消的：用户刚点过停止，不需要模型再解释一遍
-    if row.status == SubagentStatus::Cancelled {
+    if !should_report_to_parent(status) {
         return;
     }
     let app = app.clone();
@@ -4058,6 +4068,59 @@ mod orchestrator_tests {
         assert_eq!(
             effective_status(None, SubagentStatus::Failed),
             SubagentStatus::Failed
+        );
+    }
+
+    /// 用户取消的子 agent 不给父会话起汇报轮：用户刚点过停止，
+    /// 不需要模型再解释一遍。
+    #[test]
+    fn cancelled_subagent_does_not_report_to_parent() {
+        assert!(!should_report_to_parent(SubagentStatus::Cancelled));
+        for st in [
+            SubagentStatus::Succeeded,
+            SubagentStatus::Failed,
+            SubagentStatus::BudgetExceeded,
+            SubagentStatus::Running,
+            SubagentStatus::Queued,
+        ] {
+            assert!(should_report_to_parent(st), "{st:?} 应汇报");
+        }
+    }
+
+    /// 接线守卫：汇报轮的门控必须用收尾时的真实终态，不能用行快照。
+    ///
+    /// 行是派发时建的，收尾前 status 恒为 Queued——门控拿 `row.status` 判取消
+    /// 永远判不成立，用户取消后照样起汇报轮（违反设计「用户取消不汇报」）。
+    /// 单测验不到调用点传的是哪个值，故这里扫源码钉住接线。
+    #[test]
+    fn parent_report_gate_is_wired_to_the_effective_status() {
+        let src = include_str!("bot_orchestrator.rs");
+        let production = src
+            .split_once("#[cfg(test)]")
+            .expect("bot_orchestrator.rs 应有测试模块")
+            .0;
+        assert!(
+            production.contains(concat!(
+                "spawn_parent_report(&app, &row, effective_",
+                "status)"
+            )),
+            "汇报轮必须传收尾时的真实终态（effective_status）"
+        );
+        // 只扫汇报轮函数体：别处读行快照是合法的（如 read_own_card 读的是
+        // 库里当前行，不是收尾前的快照）
+        let start = production
+            .find("fn spawn_parent_report")
+            .expect("应能找到 spawn_parent_report");
+        let rest = &production[start..];
+        let end = rest[1..].find("\nfn ").map(|i| i + 1).unwrap_or(rest.len());
+        let func = &rest[..end];
+        assert!(
+            func.contains("should_report_to_parent("),
+            "汇报轮门控必须走 should_report_to_parent"
+        );
+        assert!(
+            !func.contains("row.status"),
+            "汇报轮门控不得读行快照判取消（快照恒为 Queued）"
         );
     }
 
