@@ -61,7 +61,16 @@ export function ArchivePage({
   }
   useEffect(() => {
     if (highlightTaskId) {
-      locateRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      // 减少动效时不做平滑滚动：全局兜底块里的 scroll-behavior: auto !important
+      // 管不到 scrollIntoView 的 behavior 选项——那是显式指定，直接覆盖 CSS 属性，
+      // 只能在 JS 里判一次
+      const reduced =
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      locateRef.current?.scrollIntoView({
+        behavior: reduced ? "auto" : "smooth",
+        block: "center",
+      });
     }
   }, [highlightTaskId, query, activeTag]);
 

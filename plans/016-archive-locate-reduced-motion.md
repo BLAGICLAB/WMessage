@@ -1,7 +1,7 @@
 # 016 — 归档定位的平滑滚动要听减少动效的话
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §6 Accessibility
 - **Estimated scope**: 2 个文件（`ArchivePage.tsx` + 其测试），约 12 行改动
@@ -149,3 +149,54 @@
   - `grep -n "prefers-reduced-motion" src/components/ArchivePage.tsx` 命中。
   - 新增用例通过，原有用例仍通过。
 
+
+## 落地记录
+
+落地与本计划一致（路径有漂移：文件在 `src/components/ArchivePage.tsx`，不是
+`src/components/ArchivePage/ArchivePage.tsx`）。
+
+### 一、前提实测确认：CSS 的 `scroll-behavior` 确实挡不住
+
+计划的判断是「`scroll-behavior: auto !important` 管不住 `scrollIntoView({ behavior:
+"smooth" })`」。Chromium 实测（`scroll-behavior: auto` 同时加在 `html` 与滚动容器上，
+再用 `scrollIntoView({behavior:"smooth", block:"center"})`）：
+
+```
+scrollTop 采样：0 → 2 → 10 → 23 → 1922（5 帧渐进到终点）
+```
+
+渐进而非瞬跳，说明 CSS 的守卫被显式的 `behavior` 选项盖过了——计划成立。
+
+### 二、顺带修掉 `src/test/setup.ts` 里 matchMedia mock 的一个既有脆弱点
+
+新增的用例第一次跑就红了，但红的位置不在新用例上，而是它**后面**的两条既有用例：
+
+```
+TypeError: Cannot read properties of undefined (reading 'matches')
+  at ArchivePage.tsx:69  ← window.matchMedia(...).matches
+```
+
+原因：`src/test/setup.ts` 里的 matchMedia mock 写成
+`vi.fn().mockImplementation((query) => ({...}))`，而全局 `afterEach` 里的
+`vi.restoreAllMocks()` 会把这种 mock 的实现重置成空函数。**同一个测试文件里，第一个
+用例跑完之后 `window.matchMedia` 就变成返回 `undefined` 的空壳**——之前没暴露，是因为
+`ArchivePage` 是第一次在渲染期/effect 里查 matchMedia。
+
+改成 `vi.fn((query) => ({...}))`（实现交给 `vi.fn(impl)`）即可：`vi.restoreAllMocks()`
+重置后仍保留 `vi.fn(impl)` 的原始实现。这条修的是测试基座的真问题，不只是为了让新用例
+变绿——任何在第二个用例之后查 matchMedia 的组件都会踩到同一个坑。
+
+### 三、静态锁与反向验证
+
+新增用例：`减少动效下定位不滚动（瞬时跳转）`——把 `window.matchMedia` mock 成命中
+`prefers-reduced-motion`，断言 `scrollIntoView` 收到 `{ behavior: "auto", block: "center" }`。
+既有的 `behavior: "smooth"` 断言**不动**（它测的是默认路径，依然成立）。
+
+反向验证：撤掉组件里的 reduced-motion 判断 → 新用例转红（其余 10 条仍绿）。
+
+### 四、没动的
+
+- 全局兜底块（`main.css` 的 `prefers-reduced-motion` 块）不动。
+- `.archive-locate` 的紫框脉冲与它自己的 reduced-motion 覆盖不动——紫框脉冲在减少动效下
+  本来就不出现，定位卡靠紫框 + 定位本身表达，不靠滚动。
+- `block: "center"` 不动；定位态清筛选、保留到下一次交互的行为不动。

@@ -26,7 +26,7 @@
 | [013](013-framer-motion-transform-string.md) | framer-motion 的 y 简写改成完整 transform 串 | MEDIUM | §5 | — | 已完成（前提被实测推翻 → 只统一缓动） |
 | [014](014-linked-hover-unify.md) | 首页联动 hover 三个组件统一成一种响应 | MEDIUM | §7 / §8 | 001（token） | 已完成 |
 | [015](015-reduced-motion-activity-signal.md) | 减少动效下保住「还在跑」的活动信号 | MEDIUM | §6 | — | 已完成 |
-| [016](016-archive-locate-reduced-motion.md) | 归档定位的平滑滚动要听减少动效的话 | MEDIUM | §6 | — | TODO |
+| [016](016-archive-locate-reduced-motion.md) | 归档定位的平滑滚动要听减少动效的话 | MEDIUM | §6 | — | 已完成 |
 | [017](017-command-palette-instant-highlight.md) | ⌘K 命令面板的键盘高亮改为瞬时 | MEDIUM | §1 / §7 | **必须晚于 001** | 已完成 `07526ffd` |
 | [018](018-home-header-scroll-jitter.md) | 首页吸顶头部滚动收缩时抖动（Windows 尤其明显） | HIGH | §4 / §5 | **必须先于 003**（同改头部内部） | 已完成 `dcc330f2` |
 
