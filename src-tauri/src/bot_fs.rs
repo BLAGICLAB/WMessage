@@ -771,19 +771,23 @@ pub(crate) fn try_apply_edit(
     match windows.len() {
         1 => {
             let start = windows[0];
-            let eol = if content.contains("\r\n") {
-                "\r\n"
-            } else {
-                "\n"
-            };
-            let mut out_lines: Vec<String> =
-                content.lines().take(start).map(|l| l.to_string()).collect();
-            out_lines.extend(new.lines().map(|l| l.to_string()));
-            out_lines.extend(content.lines().skip(start + n).map(|l| l.to_string()));
-            let mut applied = out_lines.join(eol);
-            if content.ends_with('\n') {
-                applied.push('\n');
-            }
+            // 按**字节范围**替换，不把全文按行重建。重建有两个副作用：
+            // · 文件原有的混合换行（部分 CRLF 部分 LF）被整体归一成一档——
+            //   那是一次与本次编辑无关的全文件改动（diff 全红），而精确
+            //   匹配路径的 replacen 不会有；
+            // · newString 末尾的换行被吃掉（按行取 lines() 不含尾换行），
+            //   替换区在文件末尾时，模型明确要求的尾换行直接消失。
+            let ranges = line_ranges(content);
+            let byte_start = ranges[start].0;
+            let byte_end = ranges[start + n - 1].1;
+            // 新内容按文件的主导换行符归一（模型给的 newString 多是 LF），
+            // 尾换行保留——与精确匹配路径（replacen 原样插入）语义对齐。
+            let eol = dominant_eol(content);
+            let replacement = normalize_eol(new, eol);
+            let mut applied = String::with_capacity(content.len() + replacement.len());
+            applied.push_str(&content[..byte_start]);
+            applied.push_str(&replacement);
+            applied.push_str(&content[byte_end..]);
             let delta = new.lines().count() as i64 - n as i64;
             Ok((applied, EditMode::WhitespaceTolerant, delta, 1))
         }
@@ -808,6 +812,41 @@ pub(crate) fn try_apply_edit(
                 windows.len()
             ),
         )),
+    }
+}
+
+/// content 逐行的字节范围（行首偏移, 行内容末尾偏移；不含行尾的 \r 与 \n）。
+///
+/// 下标与 `content.lines()` 一一对应（行数相同、顺序相同），供空白容错
+/// 把「命中的那几行」换算成字节区间——按区间拼接才不会动到区间之外的
+/// 换行符。
+fn line_ranges(content: &str) -> Vec<(usize, usize)> {
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(content.lines().count());
+    let mut start = 0usize;
+    for chunk in content.split_inclusive('\n') {
+        let trimmed = chunk.trim_end_matches(['\r', '\n']);
+        out.push((start, start + trimmed.len()));
+        start += chunk.len();
+    }
+    out
+}
+
+/// 文件的主导换行符：出现过 CRLF 就按 CRLF，否则 LF。
+fn dominant_eol(content: &str) -> &'static str {
+    if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+/// 把文本的换行统一到 eol（**尾换行保留**）。
+fn normalize_eol(text: &str, eol: &str) -> String {
+    let lf = text.replace("\r\n", "\n");
+    if eol == "\n" {
+        lf
+    } else {
+        lf.replace('\n', "\r\n")
     }
 }
 
@@ -2002,6 +2041,35 @@ mod tests {
         let content2 = "x\nold";
         let (out2, _, _, _) = try_apply_edit(content2, "old", "new", false).unwrap();
         assert_eq!(out2, "x\nnew");
+    }
+
+    /// 空白容错**不得**把文件原有的混合换行整体归一。
+    ///
+    /// 原实现把全文按行重建再用一个换行符拼回去：文件里与本次编辑无关的
+    /// 那部分换行（这里是 "a" 后面的 LF）被改成主导换行符——一次与编辑
+    /// 无关的全文件改动，diff 全红。精确匹配路径的 replacen 不会有这问题。
+    #[test]
+    fn apply_edit_whitespace_fallback_keeps_mixed_eol_outside_the_edit() {
+        // 行尾空白让精确匹配失配 → 走空白容错；文件本身是混合换行
+        let content = "a\nold  \nb\r\nc\n";
+        let (out, mode, _, _) = try_apply_edit(content, "old\nb", "X\nY", false).unwrap();
+        assert_eq!(mode, EditMode::WhitespaceTolerant);
+        assert_eq!(
+            out, "a\nX\r\nY\r\nc\n",
+            "编辑区间外的换行必须原样保留：{out:?}"
+        );
+    }
+
+    /// 空白容错必须保留 newString 明确要求的尾换行。
+    ///
+    /// 原实现按行重建（`new.lines()` 不含尾换行），替换区在文件末尾时，
+    /// 模型要求的尾换行直接消失——文件仍不以换行结尾。
+    #[test]
+    fn apply_edit_whitespace_fallback_keeps_requested_trailing_newline() {
+        // 文件本身没有尾换行；替换区在文件末尾
+        let content = "x\nold  \ny";
+        let (out, _, _, _) = try_apply_edit(content, "old\ny", "new\n", false).unwrap();
+        assert_eq!(out, "x\nnew\n", "newString 要求的尾换行不能被吃掉：{out:?}");
     }
 
     /// 路径类型探测必须三态：目录 / 不是目录 / 探测失败。
