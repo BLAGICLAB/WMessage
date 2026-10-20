@@ -298,12 +298,20 @@ where
 }
 
 /// async 版 is_dir：单次 metadata syscall 同样移出 runtime 线程。
-/// JoinError → false（按「不是目录」处理，后续 open/read_dir 自然失败冒泡）。
-async fn is_dir_async(path: &Path) -> bool {
+///
+/// 三态返回：**Some(true)** 是目录 / **Some(false)** 不是目录 /
+/// **None** 探测失败（阻塞线程 join 失败或 metadata 报错）。
+///
+/// 为什么不是 bool：调用方必须能区分「不是目录」与「没探到」。授权粒度那处
+/// 分不清就会朝**过度授权**方向失败：探测失败被判成文件 → 授权落到父目录，
+/// 比用户选中的那个目录宽一层。
+async fn is_dir_async(path: &Path) -> Option<bool> {
     let p = path.to_path_buf();
-    spawn_blocking_io(move || Ok(p.is_dir()))
+    // metadata 的 io::Error（不存在 / 无权限）与线程 join 失败都归到 None（探不到）。
+    // spawn_blocking_io 已把 io::Error 压成 Err(String)，故一层 ok() 即三态。
+    spawn_blocking_io(move || std::fs::metadata(&p).map(|m| m.is_dir()))
         .await
-        .unwrap_or(false)
+        .ok()
 }
 
 pub async fn resolve_with_perm(
@@ -381,13 +389,27 @@ pub async fn resolve_with_perm(
                     // （文件 → parent、目录 → self），与判定逻辑保持一致。
                     // 绝不能用 canonical(parent())：那个是 symlink 解析后的路径，
                     // 可被攻击者控制指向 allowlist 外。
-                    let dir = if is_dir_async(&expanded).await {
-                        expanded.clone()
-                    } else {
-                        expanded
+                    let dir = match is_dir_async(&expanded).await {
+                        Some(true) => expanded.clone(),
+                        Some(false) => expanded
                             .parent()
                             .map(|d| d.to_path_buf())
-                            .unwrap_or_else(|| expanded.clone())
+                            .unwrap_or_else(|| expanded.clone()),
+                        // 探测失败：不落盘授权。落盘就得先定粒度，而两种粒度
+                        // 此刻都只是猜——猜成文件会把父目录（比用户选的宽一层）
+                        // 写进白名单，安全闸门朝过度授权方向失败。宁可不授权。
+                        None => {
+                            crate::bot::audit_log(
+                                app,
+                                &format!(
+                                    "bot_fs.always_persist_skip | tool: {tool} | path: {} | 路径类型探测失败",
+                                    crate::bot::truncate_for_log(&expanded.to_string_lossy(), 200)
+                                ),
+                            );
+                            return Err(format!(
+                                "无法确认路径类型，本次授权未保存（探测失败，请重试）：{p}"
+                            ));
+                        }
                     };
                     let dir_str = strip_verbatim(dir).to_string_lossy().to_string();
                     if let Err(e) = crate::bot::add_allowed_dir(app, &dir_str) {
@@ -1452,12 +1474,23 @@ pub async fn tool_read_text_file(
             // resolve_with_perm Err 返 String，首字不定 → ok
             Err(e) => return ToolResult::ok(e, Vec::new()),
         };
-    if is_dir_async(&canonical).await {
-        // format! 文本首字为路径首字符（不定） → ok
-        return ToolResult::ok(
-            format!("{} 是目录，列文件请用 list_files", path.trim()),
-            Vec::new(),
-        );
+    match is_dir_async(&canonical).await {
+        Some(true) => {
+            // format! 文本首字为路径首字符（不定） → ok
+            return ToolResult::ok(
+                format!("{} 是目录，列文件请用 list_files", path.trim()),
+                Vec::new(),
+            );
+        }
+        Some(false) => {}
+        // 探测失败：说清是探测失败（不是「不是目录」）——后者会让用户以为
+        // 路径类型没问题，转而去改别的
+        None => {
+            return ToolResult::ok(
+                format!("无法确认 {} 的路径类型（探测失败），请重试", path.trim()),
+                Vec::new(),
+            );
+        }
     }
     // 【 TOCTOU】保护范围（精确）：
     //   canonicalize → capture_pre_ino → is_binary_file_with_ino_check
@@ -1649,9 +1682,18 @@ pub async fn tool_grep_files(
             None => return ToolResult::ok("没有可用的白名单目录".to_string(), Vec::new()),
         },
     };
-    if !is_dir_async(&dir).await {
-        // format! 文本首字为目录路径首字符（不定） → ok
-        return ToolResult::ok(format!("{} 不是目录", dir.display()), Vec::new());
+    match is_dir_async(&dir).await {
+        Some(true) => {}
+        Some(false) => {
+            // format! 文本首字为目录路径首字符（不定） → ok
+            return ToolResult::ok(format!("{} 不是目录", dir.display()), Vec::new());
+        }
+        None => {
+            return ToolResult::ok(
+                format!("无法确认 {} 的路径类型（探测失败），请重试", dir.display()),
+                Vec::new(),
+            );
+        }
     }
     // walk 整体包 spawn_blocking：内部 read_dir / metadata / read_to_string
     // 都是同步 syscall，全部移到阻塞线程跑，不再阻塞 Tauri async runtime
@@ -1778,12 +1820,21 @@ pub async fn tool_list_files(
         // resolve_with_perm Err 返 String，首字不定 → ok
         Err(e) => return ToolResult::ok(e, Vec::new()),
     };
-    if !is_dir_async(&canonical).await {
-        // format! 文本首字为目录路径首字符（不定） → ok
-        return ToolResult::ok(
-            format!("{} 不是目录；读文件请用 read_text_file", dir.trim()),
-            Vec::new(),
-        );
+    match is_dir_async(&canonical).await {
+        Some(true) => {}
+        Some(false) => {
+            // format! 文本首字为目录路径首字符（不定） → ok
+            return ToolResult::ok(
+                format!("{} 不是目录；读文件请用 read_text_file", dir.trim()),
+                Vec::new(),
+            );
+        }
+        None => {
+            return ToolResult::ok(
+                format!("无法确认 {} 的路径类型（探测失败），请重试", dir.trim()),
+                Vec::new(),
+            );
+        }
     }
     let pattern = v["pattern"].as_str().unwrap_or("").trim().to_string();
     // walk 整体包 spawn_blocking（ performance）：同 grep_files 原因。
@@ -1951,6 +2002,54 @@ mod tests {
         let content2 = "x\nold";
         let (out2, _, _, _) = try_apply_edit(content2, "old", "new", false).unwrap();
         assert_eq!(out2, "x\nnew");
+    }
+
+    /// 路径类型探测必须三态：目录 / 不是目录 / 探测失败。
+    ///
+    /// 分不清「不是目录」与「没探到」的话，授权粒度那处会朝**过度授权**
+    /// 方向失败：探测失败被判成文件 → 授权落到父目录，比用户选中的宽一层。
+    #[tokio::test]
+    async fn is_dir_probe_distinguishes_missing_from_not_a_dir() {
+        let dir = std::env::temp_dir().join("wmessage-isdir-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"x").expect("写测试文件");
+        assert_eq!(is_dir_async(&dir).await, Some(true), "目录应判 Some(true)");
+        assert_eq!(
+            is_dir_async(&file).await,
+            Some(false),
+            "文件应判 Some(false)"
+        );
+        assert_eq!(
+            is_dir_async(&dir.join("nope")).await,
+            None,
+            "探不到（路径不存在）必须是 None，不能与「不是目录」混同"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 接线守卫：「始终允许」落盘授权前必须先探明路径类型，
+    /// 探测失败时**不落盘**（宁可不授权，也不朝宽的方向失败）。
+    #[test]
+    fn always_allow_does_not_persist_on_probe_failure() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot_fs.rs"))
+            .expect("应能读到自己");
+        let start = src.find("ConfirmChoice::Always").expect("应有 Always 分支");
+        let rest = &src[start..];
+        let end = rest[1..]
+            .find("ConfirmChoice::Deny")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let branch = &rest[..end];
+        assert!(
+            branch.contains("None =>"),
+            "Always 分支必须显式处理探测失败（None）"
+        );
+        assert!(
+            branch.contains("本次授权未保存"),
+            "探测失败必须不落盘授权（落盘就得先定粒度，而两种粒度此刻都只是猜）"
+        );
     }
 
     /// 超大文件必须**先按上限读、再判体积**：整读入内存后才判上限，
