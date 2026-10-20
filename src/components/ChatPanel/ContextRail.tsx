@@ -160,7 +160,7 @@ export function ContextRail({
                 key={t.key}
                 type="button"
                 aria-pressed={on}
-                className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] ${
+                className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] transition-colors duration-100 ${
                   on
                     ? "nm-inset text-[var(--t1)]"
                     : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"

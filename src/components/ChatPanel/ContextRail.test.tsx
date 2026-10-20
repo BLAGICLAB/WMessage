@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextRail, type SubagentRun } from "./ContextRail";
@@ -236,5 +237,30 @@ describe("ContextRail 子 Agent 状态标签", () => {
     for (const [, label] of STATES) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+  });
+});
+
+// 类别切换钮的底色过渡必须常驻在元素上。
+// nm-inset 是随选中态增删的类，过渡跟着类走就变成「进不补间、退瞬切」：
+// 选中时底色淡入、取消选中时底色瞬间消失，hover 底色也是硬切。
+describe("ContextRail 类别切换钮的过渡", () => {
+  it("选中与未选中两个态都带过渡类（写在常驻段，不是跟着 nm-inset 增删）", () => {
+    renderRail();
+    // 默认选中「任务」页，「文件」页是未选中态
+    const selected = screen.getByRole("button", { name: "任务" });
+    const idle = screen.getByRole("button", { name: "文件" });
+    expect(selected.getAttribute("aria-pressed")).toBe("true");
+    expect(idle.getAttribute("aria-pressed")).toBe("false");
+    expect(selected.className).toContain("nm-inset");
+    expect(selected.className).toContain("transition-colors");
+    expect(idle.className).not.toContain("nm-inset");
+    // 未选中态也必须有：撤掉 nm-inset 后过渡不能跟着消失
+    expect(idle.className).toContain("transition-colors");
+  });
+
+  it("过渡声明不在 nm-inset 分支里（否则退场就是瞬切）", () => {
+    const src = readFileSync("src/components/ChatPanel/ContextRail.tsx", "utf-8");
+    const branch = src.match(/\?\s*"nm-inset[^"]*"/)?.[0] ?? "";
+    expect(branch).not.toContain("transition");
   });
 });
