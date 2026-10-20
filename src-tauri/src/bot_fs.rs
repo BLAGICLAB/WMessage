@@ -1372,17 +1372,6 @@ fn read_capped_file_sync(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, b
     Ok((buf, truncated))
 }
 
-/// async 版 read_capped_file：包 spawn_blocking。
-/// 返 std::io::Result 保持调用方契约（spawn_blocking_map 返 String，这里 .map_err 转回 io::Error）。
-async fn read_capped_file(path: &Path, max: usize) -> std::io::Result<(Vec<u8>, bool)> {
-    let path = path.to_path_buf();
-    crate::py::document::spawn_blocking_map(move || {
-        read_capped_file_sync(&path, max).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(std::io::Error::other)
-}
-
 /// 【 TOCTOU】inode re-check 结果。
 #[derive(Debug, PartialEq, Eq)]
 enum InodeCheckOutcome {
@@ -1395,18 +1384,18 @@ enum InodeCheckOutcome {
 /// 读 canonical 路径当前 inode。三种情况（按 Phase 0.6 流程债 L402 精确三情况约束）：
 ///
 /// 1. **Windows（`#[cfg(not(unix))]`）**：直接 `None`。
-///    设计选择：Windows 端**无 TOCTOU 保护**（非缺陷——`is_binary_file_with_ino_check`
+///    设计选择：Windows 端**无 TOCTOU 保护**（非缺陷——`read_with_ino_check`
 ///    整个 inode 比对逻辑都被 `#[cfg(unix)]` gate）。见 follow-up：
 ///    `Phase 6: Windows 端 TOCTOU 策略`（先决定做不做，再决定怎么做）。
 ///    **fail-open 是当前语义**——tool_read_text_file 在 Windows 上仍能读文件，
 ///    只是没有 inode re-check 这一道闸。
 ///
 /// 2. **Unix 上 `metadata()` 成功**：`Some(ino)`，进入 re-check 保护范围（见下文
-///    `is_binary_file_with_ino_check` 的注释）。
+///    `read_with_ino_check` 的注释）。
 ///
 /// 3. **Unix 上 `metadata()` 失败**（文件瞬间被删、权限拒、IO 错误等）：
-///    `None`。**fail-open 是当前语义**——不放行也拒绝（不报 Replaced），让
-///    后续 `read_capped_file` 的 `File::open` 自然失败冒泡到 `tool_read_text_file`
+///    `None`。**fail-open 是当前语义**——不放行也不拒绝（不报 Replaced），让
+///    后续 `read_with_ino_check` 的 `File::open` 自然失败冒泡到 `tool_read_text_file`
 ///    返回「读取失败：...」。这是 C1b 阶段**有意选择**的不阻断读路径：
 ///    fail-closed 会让 race window 内的瞬态失败也拒绝，Windows + race 加起来
 ///    会让 read_text_file 在很多边界条件下不可用。
@@ -1429,67 +1418,81 @@ async fn capture_pre_ino(_path: &Path) -> Option<u64> {
     None
 }
 
-/// 二进制检测 + inode re-check 合一。
-/// 返回 `(InodeCheckOutcome, bool /* is_binary */)`——二进制判定不再丢。
+/// 读 + inode 复核 + 二进制判定，**全部在同一个 fd 上做完**。
 ///
-/// **保护范围（精确）**：
-/// 1. `tool_read_text_file::resolve_with_perm` → canonicalize 出 path
-/// 2. `capture_pre_ino(path)` 读 pre_ino（unix only，Windows 返 None）
-/// 3. 本函数 open file 拿 fd → stat fd 看 inode → 与 pre 比对
-///    - 不变 → `Ok`
-///    - 变了 → `Replaced`（说明 canonical 与 stat 之间文件被换过）
-/// 同时 fd 上读 8KB，判二进制（保留 is_binary 结果，不丢）。
+/// 返回 (inode 判定, 是否二进制, 内容, 是否按上限截断)。
 ///
-/// **不在保护范围（明确写明）**：
-/// - `read_capped_file` 后续 `File::open` + read 不在 inode 比对窗口内
-///   ——本函数 open 拿到的 fd 不传出去，read 重新 open。
-///   见 follow-up: `Phase 6: resolve_with_perm 其它调用点 TOCTOU 统一策略`。
-/// - symlink target 替换（canonical 路径不变但内容指向新文件）。
-///   见 follow-up: `Phase 6: symlink target 替换防护收紧`。
+/// **为什么必须合并成一个 fd**：原实现分两步——`is_binary_file_with_ino_check`
+/// 打开文件、stat fd 比对 inode、读 8KB 判二进制，**fd 在闭包内 drop**；
+/// 随后 `read_capped_file` 按**路径重新 open** 读内容。真正的读取不在 inode
+/// 比对窗口内：两步之间文件被换掉（删 + 同名新建），读回来的是新文件的内容
+/// （TOCTOU）。本函数一次 open，比对、判二进制、读内容都在这个 fd 上完成，
+/// 窗口关闭。
+///
+/// inode 比对本身的口径不变（unix only，Windows 无 TOCTOU 保护——设计选择）。
 #[cfg(unix)]
-async fn is_binary_file_with_ino_check(
+async fn read_with_ino_check(
     path: &Path,
     pre_ino: Option<u64>,
-) -> std::io::Result<(InodeCheckOutcome, bool)> {
+    max: usize,
+) -> std::io::Result<(InodeCheckOutcome, bool, Vec<u8>, bool)> {
     use std::io::Read;
     use std::os::unix::fs::MetadataExt;
-    let pre = pre_ino;
     let path = path.to_path_buf();
-    // 注意：closure 返 Result<(InodeCheckOutcome, bool), String> 走 spawn_blocking_map，
-    // 这里我们用 spawn_blocking_map 直接（不走 spawn_blocking_io），因为返回值不需
-    // 要 io::Error 类型擦除。
-    crate::py::document::spawn_blocking_map(move || -> Result<(InodeCheckOutcome, bool), String> {
-        let mut f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-        let fd_ino = f.metadata().map_err(|e| e.to_string())?.ino();
-        if let Some(pre) = pre {
-            if fd_ino != pre {
-                return Ok((InodeCheckOutcome::Replaced, false));
+    crate::py::document::spawn_blocking_map(
+        move || -> Result<(InodeCheckOutcome, bool, Vec<u8>, bool), String> {
+            let f = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            let fd_ino = f.metadata().map_err(|e| e.to_string())?.ino();
+            if let Some(pre) = pre_ino {
+                if fd_ino != pre {
+                    // inode 变了：内容一概不返回（读了也是被换掉的那个文件）
+                    return Ok((InodeCheckOutcome::Replaced, false, Vec::new(), false));
+                }
             }
-        }
-        let mut buf = [0u8; 8192];
-        let n = f.read(&mut buf).unwrap_or(0);
-        let is_binary = buf[..n].contains(&0);
-        Ok((InodeCheckOutcome::Ok, is_binary))
-    })
+            // 同一个 fd 上读：前 8KB 判二进制，其余接着读（fd 位置连续）
+            let mut buf = Vec::new();
+            f.take(max as u64 + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
+            let truncated = buf.len() > max;
+            if truncated {
+                buf.truncate(max);
+            }
+            let is_binary = buf[..buf.len().min(8192)].contains(&0);
+            Ok((InodeCheckOutcome::Ok, is_binary, buf, truncated))
+        },
+    )
     .await
     .map_err(std::io::Error::other)
 }
 
+/// Windows 端无 inode 比对（设计选择：非 unix 的 inode 语义不同），
+/// 但**读与判二进制仍在同一个 fd 上**。
 #[cfg(not(unix))]
-async fn is_binary_file_with_ino_check(
+async fn read_with_ino_check(
     path: &Path,
     _pre_ino: Option<u64>,
-) -> std::io::Result<(InodeCheckOutcome, bool)> {
-    // Windows 端 TOCTOU 未实现（设计选择）：只判二进制，不做 inode 比对。
-    // 复用 is_binary_file_sync 的二进制判定（但走 spawn_blocking_io 不阻塞 runtime）。
+    max: usize,
+) -> std::io::Result<(InodeCheckOutcome, bool, Vec<u8>, bool)> {
     let path = path.to_path_buf();
-    let res = spawn_blocking_io(move || -> Result<bool, std::io::Error> {
-        Ok(is_binary_file_sync(&path))
+    let res = spawn_blocking_io(move || -> Result<(bool, Vec<u8>, bool), std::io::Error> {
+        let mut f = std::fs::File::open(&path)?;
+        let mut buf = Vec::new();
+        std::io::Read::by_ref(&mut f)
+            .take(max as u64 + 1)
+            .read_to_end(&mut buf)?;
+        let truncated = buf.len() > max;
+        if truncated {
+            buf.truncate(max);
+        }
+        let is_binary = buf[..buf.len().min(8192)].contains(&0);
+        Ok((is_binary, buf, truncated))
     })
     .await;
     match res {
-        Ok(b) => Ok((InodeCheckOutcome::Ok, b)),
-        Err(_) => Ok((InodeCheckOutcome::Ok, true)), // IO 错误按二进制处理（fail-closed）
+        Ok((b, buf, t)) => Ok((InodeCheckOutcome::Ok, b, buf, t)),
+        // IO 错误按二进制处理（fail-closed）
+        Err(_) => Ok((InodeCheckOutcome::Ok, true, Vec::new(), false)),
     }
 }
 
@@ -1532,24 +1535,22 @@ pub async fn tool_read_text_file(
         }
     }
     // 【 TOCTOU】保护范围（精确）：
-    //   canonicalize → capture_pre_ino → is_binary_file_with_ino_check
-    //   （内部 open file 拿 fd → stat fd 看 inode → 与 pre_ino 比对 → 顺手判 8KB 二进制）
-    //   —— 三步窗口内的 inode swap 被捕获（canonical 与 stat 之间文件被换）。
+    //   canonicalize → capture_pre_ino → read_with_ino_check
+    //   （**一次 open**：同一个 fd 上 stat 比对 inode → 读内容 → 判二进制）
+    //   ——inode swap 与「读到的内容」之间不再有窗口：比对与读取在同一个 fd 上。
     //
     // 不在保护范围（明确写明）：
-    //   - `read_capped_file` 后续 `File::open` + read 不在 inode 比对窗口内
-    //     （is_binary_file_with_ino_check 的 fd 不传出，后续 read 重新 open）。
-    //     见 follow-up: "Phase 6: resolve_with_perm 其它调用点 TOCTOU 统一策略"
     //   - symlink target 替换（canonical 路径不变但内容指向新文件）。
     //     见 follow-up: "Phase 6: symlink target 替换防护收紧"
     //   - Windows 平台（`#[cfg(not(unix))]`）：capture_pre_ino 直接 None，整个
     //     inode re-check 不执行。设计选择，非缺陷——见 capture_pre_ino 注释
     //     + follow-up: "Phase 6: Windows 端 TOCTOU 策略"。
     let pre_ino = capture_pre_ino(&canonical).await;
-    let (inode_check, is_binary) = match is_binary_file_with_ino_check(&canonical, pre_ino).await {
-        Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("读取失败：{e}"), Vec::new()),
-    };
+    let (inode_check, is_binary, raw, byte_truncated) =
+        match read_with_ino_check(&canonical, pre_ino, READ_MAX_BYTES).await {
+            Ok(r) => r,
+            Err(e) => return ToolResult::error(format!("读取失败：{e}"), Vec::new()),
+        };
     if inode_check == InodeCheckOutcome::Replaced {
         crate::bot::audit_log(
             app,
@@ -1576,10 +1577,8 @@ pub async fn tool_read_text_file(
     let offset = v["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit =
         (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize).min(READ_MAX_LINES);
-    let (raw, byte_truncated) = match read_capped_file(&canonical, READ_MAX_BYTES).await {
-        Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("读取失败：{e}"), Vec::new()),
-    };
+    // 内容已在 read_with_ino_check 里从**核对过的那同一个 fd** 读出（不再按
+    // 路径二次 open——二次 open 就是 TOCTOU 窗口）。
     let text = String::from_utf8_lossy(&raw).to_string();
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
@@ -2523,10 +2522,11 @@ mod tests {
         let new_ino = std::fs::metadata(&file).unwrap().ino();
         assert_ne!(pre_ino, new_ino, "sanity: 新文件 inode 必须与旧不同");
 
-        // 2. 调用 is_binary_file_with_ino_check：应返回 Rejected + is_binary
-        let (outcome, is_binary) = is_binary_file_with_ino_check(&file, Some(pre_ino))
-            .await
-            .unwrap();
+        // 2. 调用 read_with_ino_check：应返回 Replaced，且**不返回任何内容**
+        let (outcome, is_binary, content, _truncated) =
+            read_with_ino_check(&file, Some(pre_ino), READ_MAX_BYTES)
+                .await
+                .unwrap();
         assert_eq!(
             outcome,
             InodeCheckOutcome::Replaced,
@@ -2534,6 +2534,58 @@ mod tests {
         );
         // 顺手验证二进制判定也不丢（这里是文本文件，应为 false）
         assert!(!is_binary, "文本文件的 is_binary 应为 false");
+        assert!(
+            content.is_empty(),
+            "inode 不一致时不得返回内容（内容必须来自核对过的那个 fd）"
+        );
+    }
+
+    /// 【 TOCTOU】读到的内容必须来自**核对过 inode 的那个 fd**。
+    ///
+    /// 原实现分两步：inode 复核时打开的 fd 在闭包内 drop，随后按路径**重新
+    /// open** 读内容——两步之间文件被换掉，读回来的是新文件的内容。合并成
+    /// 一次 open 后，比对与读取在同一个 fd 上完成。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn replaced_file_content_is_never_returned() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"original").unwrap();
+        let pre_ino = std::fs::metadata(&file).unwrap().ino();
+
+        // 换掉文件：删 + 同名新建（inode 变了，内容也变了）
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&file, b"replaced-by-attacker").unwrap();
+
+        let (outcome, _is_binary, content, _t) =
+            read_with_ino_check(&file, Some(pre_ino), READ_MAX_BYTES)
+                .await
+                .unwrap();
+        assert_eq!(outcome, InodeCheckOutcome::Replaced);
+        assert!(
+            !content.windows(7).any(|w| w == b"replaced"),
+            "被换掉的文件的内容不得被读出来：{content:?}"
+        );
+    }
+
+    /// inode 一致时，内容照常读出（合并 fd 后不能把正常读取也弄坏）。
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn matching_inode_returns_the_file_content() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.txt");
+        std::fs::write(&file, b"hello\nworld\n").unwrap();
+        let pre_ino = std::fs::metadata(&file).unwrap().ino();
+        let (outcome, is_binary, content, truncated) =
+            read_with_ino_check(&file, Some(pre_ino), READ_MAX_BYTES)
+                .await
+                .unwrap();
+        assert_eq!(outcome, InodeCheckOutcome::Ok);
+        assert!(!is_binary);
+        assert!(!truncated);
+        assert_eq!(content, b"hello\nworld\n");
     }
 }
 
@@ -2696,5 +2748,78 @@ mod file_change_tests {
         let skipped = vec!["a".to_string(); 5];
         let note = format_skip_note(&skipped, 9).expect("有跳过必有提示");
         assert!(note.contains("等共 9 个"), "{note}");
+    }
+}
+
+/// U7 接线守卫：`tool_read_text_file` 的读路径**只开一次文件**。
+///
+/// inode 复核若与实际读取分属两次 open，中间就是 TOCTOU 窗口——复核的是旧
+/// fd，交给用户的是新文件的内容。行为级测试只能覆盖「已经换掉」这一种情形，
+/// 验不到「函数体里又多了一次 open」这种接线退化，所以这里扫源码。
+///
+/// 用花括号配平截函数体（而不是 `split_once("#[cfg(test)]")` 切生产段）：
+/// 本文件的测试模块在文件头部也有一个，位置不在生产代码之后，切不出干净的
+/// 「生产段」。
+#[cfg(test)]
+mod read_path_single_open_tests {
+    /// 从锚点起按花括号配平截出函数体。
+    fn fn_body<'a>(src: &'a str, anchor: &str) -> &'a str {
+        let start = src
+            .find(anchor)
+            .unwrap_or_else(|| panic!("锚点应存在：{anchor}"));
+        let open = start
+            + src[start..]
+                .find('{')
+                .unwrap_or_else(|| panic!("锚点后应有函数体：{anchor}"));
+        let bytes = src.as_bytes();
+        let mut depth = 0usize;
+        for (i, b) in bytes[open..].iter().enumerate() {
+            match b {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=open + i];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("函数体未闭合：{anchor}");
+    }
+
+    #[test]
+    fn read_text_file_reads_through_one_verified_fd() {
+        let src = include_str!("bot_fs.rs");
+        let body = fn_body(src, "pub async fn tool_read_text_file(");
+        assert_eq!(
+            body.matches("read_with_ino_check(").count(),
+            1,
+            "读路径必须且只能调一次 read_with_ino_check（复核与读取合并在同一个 fd 上）"
+        );
+        assert!(
+            !body.contains("read_capped_file"),
+            "读路径不得再按路径二次 open 读内容（那正是 TOCTOU 窗口）"
+        );
+        assert!(
+            !body.contains("File::open") && !body.contains("fs::read"),
+            "读路径不得自行 open/read 文件——内容必须来自已复核的那个 fd"
+        );
+    }
+
+    /// 守卫的守卫：抽取器本身得能截对函数体，否则上面的断言恒真。
+    #[test]
+    fn fn_body_extractor_ends_at_the_right_brace() {
+        let src = include_str!("bot_fs.rs");
+        let body = fn_body(src, "pub async fn tool_read_text_file(");
+        assert!(body.starts_with('{') && body.ends_with('}'), "{body}");
+        assert!(
+            !body.contains("pub async fn tool_grep_files("),
+            "函数体不得越过 tool_read_text_file 的边界"
+        );
+        assert!(
+            body.contains("read_with_ino_check("),
+            "函数体应包含读路径调用"
+        );
     }
 }
