@@ -1,4 +1,4 @@
-//! 跨平台「复制文件 + 任务标题到剪贴板」helper
+//! 跨平台「复制文件（可多个）+ 任务标题到剪贴板」helper
 //!
 //! 行为契约：
 //! - 文件类粘贴（Finder / 飞书 / 微信）得到真实文件
@@ -11,13 +11,16 @@
 //! - **Windows**：CF_HDROP + CF_UNICODETEXT，返回 `Result<(), CommandError>`
 //!   直接是 `CommandResult` 形态
 //! - **其它平台**：`copy_file_with_title` 顶层兜底返回 `DomainRule` 错误
+//!
+//! 文件列表可多个（一次粘贴多个文件）；前端命令只传一个，机器人工具传一串。
 
 /// macOS 实现：NSPasteboard 写三类粘贴板
 ///
 /// 保留 `Result<(), String>` 是为了不破坏既有的 From 转换链
 /// （`f2_copy_file_tests::string_error_converts_to_internal_with_message_preserved`）。
 #[cfg(target_os = "macos")]
-pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
+pub(crate) fn copy_files_macos(paths: &[&str], title: &str) -> Result<(), String> {
+    use objc2::rc::Retained;
     use objc2::runtime::ProtocolObject;
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString, NSPasteboardWriting};
     use objc2_foundation::{NSArray, NSString, NSURL};
@@ -26,22 +29,24 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
     pb.clearContents();
 
     // 1) 现代文件类型（public.file-url）：Finder / 原生应用读这个
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-    let url_obj: objc2::rc::Retained<ProtocolObject<dyn NSPasteboardWriting>> =
-        ProtocolObject::from_retained(url);
-    let objs = NSArray::from_retained_slice(&[url_obj]);
+    let urls: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = paths
+        .iter()
+        .map(|p| ProtocolObject::from_retained(NSURL::fileURLWithPath(&NSString::from_str(p))))
+        .collect();
+    let objs = NSArray::from_retained_slice(&urls);
     if !pb.writeObjects(&objs) {
         return Err("写入文件 URL 失败".to_string());
     }
 
     // 2) 老式文件列表类型（NSFilenamesPboardType）：Electron 系应用（飞书等）读这个
-    let path_str = NSString::from_str(path);
-    let paths = NSArray::from_retained_slice(&[path_str]);
-    // SAFETY: path_str 由 NSString::from_str 创建、Retained 存于本栈帧，调用期间不释放；
-    // paths 是持 Retained 元素的 NSArray 借用视图（单元素字面量切片，恒非空）；
+    let names: Vec<Retained<NSString>> = paths.iter().map(|p| NSString::from_str(p)).collect();
+    let paths_arr = NSArray::from_retained_slice(&names);
+    // SAFETY: names 里的 NSString 由 NSString::from_str 创建、Retained 存于本栈帧，
+    // 调用期间不释放；paths_arr 持 Retained 元素、生命周期覆盖整个调用；
     // 尾随的 NSString::from_str 临时值存活到本表达式结束，借用覆盖整个调用。
-    if !unsafe { pb.setPropertyList_forType(&paths, &NSString::from_str("NSFilenamesPboardType")) }
-    {
+    if !unsafe {
+        pb.setPropertyList_forType(&paths_arr, &NSString::from_str("NSFilenamesPboardType"))
+    } {
         // 第 1 类已提交：失败必须清板，否则「复制失败」报错下粘贴仍拿到文件
         //（与 Windows 侧 post-commit 失败 EmptyClipboard 的语义对齐）
         let _ = pb.clearContents();
@@ -61,7 +66,10 @@ pub(crate) fn copy_file_macos(path: &str, title: &str) -> Result<(), String> {
 
 /// Windows 实现：CF_HDROP + CF_UNICODETEXT
 #[cfg(windows)]
-pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::error::CommandError> {
+pub(crate) fn copy_files_windows(
+    paths: &[&str],
+    title: &str,
+) -> Result<(), crate::error::CommandError> {
     use std::ffi::OsStr;
     use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
@@ -91,8 +99,12 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
         }
         let _ = EmptyClipboard();
 
-        // 1) 文件列表（CF_HDROP）
-        let file_wide: Vec<u16> = OsStr::new(path).encode_wide().chain(Some(0)).collect();
+        // 1) 文件列表（CF_HDROP）：多个路径依次 NUL 结尾拼接，末尾再补一个 NUL
+        //    形成双 NUL 结尾（CF_HDROP 的文件列表约定）
+        let file_wide: Vec<u16> = paths
+            .iter()
+            .flat_map(|p| OsStr::new(p).encode_wide().chain(Some(0)))
+            .collect();
         let total = size_of::<DROPFILES>() + file_wide.len() * 2 + 2;
         // 不能用 `?`：失败路径必须在返错前 CloseClipboard（见  #79）
         // 否则剪贴板被本进程独占，后续 OpenClipboard 全部 stall
@@ -145,7 +157,7 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
             Ok(th) => th,
             Err(e) => {
                 if let Err(ec) = EmptyClipboard() {
-                    eprintln!("[copy_file_windows] EmptyClipboard after GlobalAlloc(title) failure failed: {ec}");
+                    eprintln!("[copy_files_windows] EmptyClipboard after GlobalAlloc(title) failure failed: {ec}");
                 }
                 let _ = CloseClipboard();
                 return Err(crate::error::CommandError::DomainRule {
@@ -159,7 +171,7 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
             let _ = GlobalFree(Some(th));
             if let Err(ec) = EmptyClipboard() {
                 eprintln!(
-                    "[copy_file_windows] EmptyClipboard after GlobalLock(title) NULL failed: {ec}"
+                    "[copy_files_windows] EmptyClipboard after GlobalLock(title) NULL failed: {ec}"
                 );
             }
             let _ = CloseClipboard();
@@ -176,7 +188,7 @@ pub(crate) fn copy_file_windows(path: &str, title: &str) -> Result<(), crate::er
             // +  #4：post-CF_HDROP 失败后必须 EmptyClipboard
             let _ = GlobalFree(Some(th));
             if let Err(ec) = EmptyClipboard() {
-                eprintln!("[copy_file_windows] EmptyClipboard after SetClipboardData(title) failure failed: {ec}");
+                eprintln!("[copy_files_windows] EmptyClipboard after SetClipboardData(title) failure failed: {ec}");
             }
             let _ = CloseClipboard();
             return Err(crate::error::CommandError::DomainRule {

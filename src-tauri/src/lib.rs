@@ -65,11 +65,12 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
     #[cfg(target_os = "macos")]
     {
         // F2（Phase 6b）：平台 helper 仍为 Result<(), String>，经 From<String> → Internal 转换
-        platform::copy_file::copy_file_macos(&path, &title).map_err(error::CommandError::from)
+        platform::copy_file::copy_files_macos(&[path.as_str()], &title)
+            .map_err(error::CommandError::from)
     }
     #[cfg(windows)]
     {
-        return platform::copy_file::copy_file_windows(&path, &title);
+        return platform::copy_file::copy_files_windows(&[path.as_str()], &title);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -178,7 +179,7 @@ struct TagMergeRunSummary {
 
 // 平台相关 copy_file_* helper 已迁到 `platform/copy_file.rs`。
 // `copy_file_with_title`（本文件顶层 tauri command）按平台 cfg 调
-// `platform::copy_file::copy_file_macos` / `copy_file_windows`。
+// `platform::copy_file::copy_files_macos` / `copy_files_windows`。
 
 /// 退出前统一清理（macOS Cmd+Q / Windows 托盘「退出」都走 RunEvent::ExitRequested）。
 /// 只销毁主窗口不够：API 服务线程、SSE writer、活动 Skill、在途 Python 子进程会

@@ -332,6 +332,10 @@ pub const SCHEMA_MANAGE_FILE: &str = r##"{"type":"function","function":{"name":"
     "path":{"type":"string","description":"源路径（绝对路径，支持 ~ 开头；copy/move 的源、delete 的目标）"},
     "dest":{"type":"string","description":"目标路径（copy/move 必填；delete 不需要）"}
   },"required":["action","path"]}}}"##;
+pub const SCHEMA_COPY_FILE_TO_CLIPBOARD: &str = r##"{"type":"function","function":{"name":"copy_file_to_clipboard","description":"把本地文件放进系统剪贴板：用户在微信 / 飞书 / 邮件等应用里按 Cmd+V（Windows Ctrl+V）就能把这个文件当附件粘出去——发文件给别人的最短路径。会覆盖剪贴板原内容。路径须在读白名单内（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs，白名单外弹授权）。一次可放多个文件（最多 20 个），用户在目标应用里粘贴出来就是这批文件","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"单个文件路径（绝对路径，支持 ~ 开头）；与 paths 二选一"},
+    "paths":{"type":"array","items":{"type":"string"},"description":"多个文件路径（最多 20 个）；与 path 二选一"}
+  }}}}"##;
 pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
@@ -704,6 +708,15 @@ fn call_open_url<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 
 fn call_clipboard_write<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { crate::bot_desktop::tool_clipboard_write(ctx.app, args).await })
+}
+
+fn call_copy_file_to_clipboard<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(async move {
+        crate::bot_desktop::tool_copy_file_to_clipboard(ctx.app, args, interactive, session_id)
+            .await
+    })
 }
 
 fn call_screenshot<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -1680,7 +1693,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 48;
+pub const BUILTIN_TOOL_COUNT: usize = 49;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2151,6 +2164,16 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &["已复制", "已拷贝", "已移动", "已移到"],
         max_output_bytes: 8192,
         call: call_manage_file,
+    },
+    // 文件进系统剪贴板。追加在表尾：同 manage_file 的理由（基线只比前缀）。
+    // 非 mutating：剪贴板不是文件/任务卡的变更，与 clipboard_write 同档。
+    ToolDef {
+        name: "copy_file_to_clipboard",
+        schema: SCHEMA_COPY_FILE_TO_CLIPBOARD,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_copy_file_to_clipboard,
     },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
@@ -2664,6 +2687,7 @@ mod registry_tests {
             "unpack_archive",
             "pack_archive",
             "manage_file",
+            "copy_file_to_clipboard",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2727,6 +2751,7 @@ mod registry_tests {
             "unpack_archive",
             "pack_archive",
             "manage_file",
+            "copy_file_to_clipboard",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2819,8 +2844,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 18,
-            "主可见应为 28+3+4+2+1+1+3+1+3（末位 +3 = 归档两工具 + manage_file）"
+            base_arr.len() + 19,
+            "主可见应为 28+3+4+2+1+1+3+1+4（末位 +4 = 归档两工具 + manage_file + copy_file_to_clipboard）"
         );
     }
 

@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1075)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1076)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -115,7 +115,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3359)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3467)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1445)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
@@ -181,10 +181,12 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_desktop.rs (323) 电脑辅助 Tier1（N4，只「看」与「打开」）：reveal_path（opener 定位，
-│                        白名单闸）/ open_url（公网闸 ensure_public_http_url）/
-│                        clipboard_write（官方 clipboard-manager v2）/ screenshot
-│                        （macOS screencapture -x / Windows PowerShell，落 AI_Gen_Files）；
+├── bot_desktop.rs (538) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+│                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
+│                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
+│                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的
+│                        NSPasteboard / CF_HDROP）/ screenshot（macOS screencapture -x /
+│                        Windows PowerShell，落 AI_Gen_Files）；
 │                        原生鼠标键盘 Computer Use 不做（spec N4 出界说明）
 ├── bot_skills/recommend.rs 语义化技能推荐（N7-②）：技能描述 embed（bge-small-zh 复用
 │                        memory/embed）+ 余弦排序截断 top5，embed 不可用降级全清单；
