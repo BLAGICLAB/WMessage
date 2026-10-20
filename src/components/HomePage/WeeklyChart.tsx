@@ -154,7 +154,15 @@ export function WeeklyChart({
           <CartesianGrid vertical={false} stroke="var(--edge)" strokeDasharray="3 3" />
           <XAxis dataKey="label" tickLine={false} axisLine={false} tick={axisTick} interval={0} />
           <YAxis width={26} tickLine={false} axisLine={false} tick={axisTick} allowDecimals={false} />
-          <Tooltip cursor={false} content={(p) => <WeekTip {...p} />} />
+          {/* animationEasing 的类型只收具名曲线与 cubic-bezier(...)，不收 CSS 变量；
+              而 recharts 只是把它原样拼进 transition 简写（不参与缓动函数求值），
+              所以这里写死曲线值安全。曲线与 --ease-out token 同源由测试锁住。 */}
+          <Tooltip
+            cursor={false}
+            content={(p) => <WeekTip {...p} />}
+            animationDuration={150}
+            animationEasing="cubic-bezier(0.23,1,0.32,1)"
+          />
           {refLine}
           <Bar dataKey="planned" radius={[4, 4, 0, 0]} barSize={11} isAnimationActive={false}>
             {data.map((d, i) => (
