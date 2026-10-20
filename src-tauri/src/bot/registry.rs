@@ -740,6 +740,14 @@ fn call_write_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 ///    原实现同款，避免漏掉「已把附件全部移除」之类的中间插入副词话术）
 ///
 /// 两阶段并集 OR，原 hallucination_guard_tests 6 个负面用例仍会正确返回 false。
+///
+/// 命中点带**领域豁免**：命中处前后 12 字内出现「剪贴板」时这次命中不算变更声称。
+/// 「已复制到剪贴板」说的是系统剪贴板（clipboard_write / copy_file_to_clipboard
+/// 都是非变更类工具），而 manage_file 的短动词「已复制」是它的子串——不豁免就会把
+/// 「把这段文字复制到剪贴板」当成「文件复制」，凭空打回模型并给用户挂一条
+/// 「这句没有对应凭证」的更正。剪贴板只改系统剪贴板，不改文件与任务卡，
+/// 语义上确实不是变更。文件复制话术（「已复制：/a → /b」）不与「剪贴板」同现，
+/// 照常命中。
 pub fn claims_mutation(text: &str) -> bool {
     let patterns: Vec<&str> = TOOLS_TABLE
         .iter()
@@ -747,26 +755,75 @@ pub fn claims_mutation(text: &str) -> bool {
         .flat_map(|t| t.claims_patterns.iter())
         .copied()
         .collect();
-    // 阶段 1：子串匹配
-    if patterns.iter().any(|p| text.contains(p)) {
-        return true;
-    }
-    // 阶段 2：「已」后 8 字窗口包含任一 pattern（strip 前缀「已」后）
-    // 原 bot_model_loop.rs VERBS 表不含「已」前缀（「删除」不是「已删除」），
-    // 故 window 检查也需剥去 pattern 的前缀「已」才能覆盖「已...移除」类变体。
     let chars: Vec<char> = text.chars().collect();
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '已' {
-            let window: String = chars[i + 1..].iter().take(8).collect();
-            if patterns.iter().any(|p| {
-                let stripped = p.strip_prefix('已').unwrap_or(p);
-                window.contains(stripped)
-            }) {
+    // 阶段 1：子串匹配
+    for p in &patterns {
+        for (s, e) in find_occurrences(&chars, p) {
+            if !claim_exempt(&chars, s, e) {
                 return true;
             }
         }
     }
+    // 阶段 2：「已」后 8 字窗口包含任一 pattern（strip 前缀「已」后）
+    // 原 bot_model_loop.rs VERBS 表不含「已」前缀（「删除」不是「已删除」），
+    // 故 window 检查也需剥去 pattern 的前缀「已」才能覆盖「已...移除」类变体。
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '已' {
+            continue;
+        }
+        let w_end = (i + 1 + 8).min(chars.len());
+        let window = &chars[i + 1..w_end];
+        for p in &patterns {
+            let stripped = p.strip_prefix('已').unwrap_or(p);
+            for (ws, we) in find_occurrences(window, stripped) {
+                // 窗口内位置换算回原文位置再判豁免
+                let abs_s = i + 1 + ws;
+                let abs_e = i + 1 + we;
+                if !claim_exempt(&chars, abs_s, abs_e) {
+                    return true;
+                }
+            }
+        }
+    }
     false
+}
+
+/// 命中点的领域豁免：前后 12 字窗口内出现「剪贴板」则这次命中不算变更声称。
+///
+/// 窗口取 12 字是够用的下限：剪贴板话术的常见形态（「已复制到剪贴板」、
+/// 「文件已放入剪贴板」）里动词与「剪贴板」的距离都在 6 字内；12 字保证
+/// 「已复制 /a 到 /b，并把说明复制到剪贴板」这种前后两处并存时，文件复制那处
+/// 仍照常命中。
+const CLAIM_EXEMPT_WINDOW: usize = 12;
+/// 非变更语义领域标记：系统剪贴板（只改剪贴板，不改文件与任务卡）。
+const CLAIM_EXEMPT_MARK: &str = "剪贴板";
+
+fn claim_exempt(chars: &[char], start: usize, end: usize) -> bool {
+    let lo = start.saturating_sub(CLAIM_EXEMPT_WINDOW);
+    let hi = (end + CLAIM_EXEMPT_WINDOW).min(chars.len());
+    chars[lo..hi]
+        .iter()
+        .collect::<String>()
+        .contains(CLAIM_EXEMPT_MARK)
+}
+
+/// pattern 在 chars 里的全部出现位置（字符下标，半开区间，不重叠）。
+fn find_occurrences(chars: &[char], pattern: &str) -> Vec<(usize, usize)> {
+    let pat: Vec<char> = pattern.chars().collect();
+    if pat.is_empty() || pat.len() > chars.len() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + pat.len() <= chars.len() {
+        if chars[i..i + pat.len()] == pat[..] {
+            out.push((i, i + pat.len()));
+            i += pat.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// 执行类谎报的完成态措辞。
@@ -2865,6 +2922,33 @@ mod registry_tests {
                 t.claims_patterns
             );
         }
+    }
+
+    /// 剪贴板语义豁免：「已复制到剪贴板」说的是系统剪贴板（clipboard_write /
+    /// copy_file_to_clipboard 都是非变更类工具），不是文件复制——而 manage_file 的
+    /// 短动词「已复制」是它的子串。不豁免的话，用户让「把这段话复制到剪贴板」
+    /// 会被幻觉守卫判成「声称变更但未调工具」：凭空打回模型，还给用户挂一条
+    /// 「这句没有对应凭证」的更正。
+    #[test]
+    fn clipboard_phrasing_is_not_a_mutation_claim() {
+        assert!(
+            !claims_mutation("已复制到剪贴板（42 字符），可直接粘贴"),
+            "剪贴板话术不是变更声称"
+        );
+        assert!(
+            !claims_mutation("文件已放入剪贴板"),
+            "剪贴板话术不是变更声称"
+        );
+        // 文件复制话术照常命中（豁免只在剪贴板邻域生效）
+        assert!(
+            claims_mutation("已复制：/a/b.txt → /c/d.txt"),
+            "文件复制仍是变更声称"
+        );
+        // 同句前后并存时，文件复制那处不因远处出现「剪贴板」而被豁免
+        assert!(
+            claims_mutation("已复制 /a/b.txt 到 /c/d.txt，并把说明复制到剪贴板"),
+            "同句里的文件复制那处仍要命中"
+        );
     }
 
     /// UNC 路径不再绕过存在性校验：`\\server\share\x.docx` 形态候选此前被
