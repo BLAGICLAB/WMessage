@@ -131,3 +131,14 @@ describe("main.css 计划块落位弹入", () => {
     expect(css).not.toContain("cubic-bezier(0.2, 1.4, 0.4, 1)");
   });
 });
+
+describe("main.css 拖拽的拾起语汇", () => {
+  it("池内拖起有 transform 过渡，网格块有 opacity 过渡腿", () => {
+    const poolLift = css.match(/\.pool-lift\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(poolLift).toMatch(/transition:[^;]*transform/);
+    // box-shadow 不进过渡列表：阴影是逐帧重绘，拖起是「瞬间抬起」的语义
+    expect(poolLift).not.toMatch(/transition:[^;]*box-shadow/);
+    const planBlk = css.match(/\.plan-blk\s*\{([\s\S]*?)\}/)?.[1] ?? "";
+    expect(planBlk).toMatch(/transition:[\s\S]*?opacity/);
+  });
+});

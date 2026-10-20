@@ -17,7 +17,7 @@
 | [004](004-weeklychart-tooltip-duration.md) | 周图 Tooltip 的 400ms 过渡收到 150ms | HIGH | §2 | 001（token） | TODO |
 | [005](005-plan-fresh-no-bounce.md) | 计划块落位弹入：去掉过冲曲线 | MEDIUM | §7 / §3 | 001（token） | 已完成 |
 | [006](006-drag-ghost-transform.md) | 拖拽幽灵改用 transform 定位 | MEDIUM | §5 | — | TODO |
-| [007](007-pool-lift-transition.md) | 池内拖起补上过渡 | MEDIUM | §3 / §7 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | TODO |
+| [007](007-pool-lift-transition.md) | 池内拖起补上过渡 | MEDIUM | §3 / §7 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | 已完成 |
 | [008](008-plan-block-hover-gate.md) | 计划块 hover 加触屏门控，时长收 100ms | MEDIUM | §6 / §1 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | TODO |
 | [009](009-press-feedback.md) | 给高频控件补上按压反馈 | MEDIUM | §3 | **必须晚于 001** | TODO |
 | [010](010-popover-entrance.md) | 设置页下拉浮层加入场动效 | MEDIUM | §3 / §2 | 001（token） | TODO |

@@ -712,7 +712,8 @@
     transition:
       box-shadow var(--dur-chip) var(--ease-out),
       transform var(--dur-chip) var(--ease-out),
-      background-color var(--dur-chip) var(--ease-out);
+      background-color var(--dur-chip) var(--ease-out),
+      opacity var(--dur-chip) var(--ease-out);
   }
   .plan-blk::before {
     content: "";
@@ -1097,6 +1098,10 @@
       var(--shadow-lg),
       0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
     cursor: grabbing;
+    /* 拖起/收回走 transform 过渡，不再单帧瞬切。
+       box-shadow 不进过渡列表：阴影动画是逐帧重绘，
+       而拖起这块是「瞬间抬起」的语义，不需要阴影跟着补间。 */
+    transition: transform var(--dur-chip) var(--ease-out);
   }
 
   /* 悬停完整标题提示（portal 到 body）：深色玻璃小片，贴元素上方 */

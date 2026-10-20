@@ -1,7 +1,7 @@
 # 007 — 池内拖起补上过渡，别再单帧瞬时缩放
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §3 Physicality & origin / §7 Cohesion
 - **Estimated scope**: 2 个文件（`TaskPool.tsx` + `main.css`），约 10 行改动
