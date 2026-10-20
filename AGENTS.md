@@ -9,7 +9,7 @@
 - `docs/rust-bot-architecture.md` — 模块树，现行架构以此为准
 - `SPEC.md` — 现行产品规格（功能规格全景）+ 开发基线（准绳）；功能变更随提交更新它
 - `DEVLOG.md` — 只写「为什么换方向」；git log 是事实记录
-- `docs/graph-audit-2026-10-19.md` — 图谱多角度审计的发现清单、已修状态与未修待办
+- `docs/archive/graph-audit-2026-10-19.md` — 图谱多角度审计报告（发现项已于 2026-10-21 全部处理，归档备查）
 - `docs/agent-audit-2026-10-19.md` — Agent 内核审计的发现清单、已修状态与未修待办
 
 ## 命令
