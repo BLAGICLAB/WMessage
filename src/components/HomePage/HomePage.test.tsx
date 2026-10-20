@@ -489,3 +489,23 @@ describe("吸顶头部收缩动画", () => {
     expect(c / (2 * Math.sqrt(k))).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("完成率进度条的百分比文字", () => {
+  // 数据 30s 刷新一次，越过 18% 阈值那一刻进度条还在生长。条件挂载会让数字
+  // 在运动中途硬跳一下，所以文字常驻挂载、用透明度淡入淡出。
+  it("常驻挂载 + 透明度淡入淡出（不在阈值处硬跳）", () => {
+    renderHome();
+    const fill = document.querySelector(".home-progress-fill") as HTMLElement;
+    const label = fill.querySelector("span") as HTMLElement;
+    expect(label).not.toBeNull();
+    expect(label.textContent).toBe("33%");
+    expect(label.style.opacity).toBe("1");
+    expect(label.style.transition).toContain("var(--dur-fade)");
+  });
+
+  it("源码里不再是条件挂载", () => {
+    const src = readFileSync("src/components/HomePage/HomeHeader.tsx", "utf-8");
+    expect(src).not.toMatch(/\{pct >= 18 &&/);
+    expect(src).toMatch(/opacity: pct >= 18 \? 1 : 0/);
+  });
+});

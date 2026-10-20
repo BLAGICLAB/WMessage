@@ -13,7 +13,7 @@
 | --- | --- | --- | --- | --- | --- |
 | [001](001-motion-token-layer.md) | 建立动效 token 层，把曲线与时长收归一处 | HIGH | §7 / §2 | — | 已完成 `0af87dd4` |
 | [002](002-taskpool-exit-easing.md) | 任务池退场曲线改掉 ease-in 慢起 | HIGH | §2 | 001（token） | TODO |
-| [003](003-home-header-transform-scroll.md) | 首页吸顶头部：滚动驱动的布局属性动画换 transform | HIGH | §5 | 001（token，B5 步） | TODO |
+| [003](003-home-header-transform-scroll.md) | 首页吸顶头部：滚动驱动的布局属性动画换 transform | HIGH | §5 | 001（token，B5 步） | DONE（实测 0% 掉帧 → 不做重构；已做 B5） |
 | [004](004-weeklychart-tooltip-duration.md) | 周图 Tooltip 的 400ms 过渡收到 150ms | HIGH | §2 | 001（token） | TODO |
 | [005](005-plan-fresh-no-bounce.md) | 计划块落位弹入：去掉过冲曲线 | MEDIUM | §7 / §3 | 001（token） | TODO |
 | [006](006-drag-ghost-transform.md) | 拖拽幽灵改用 transform 定位 | MEDIUM | §5 | — | TODO |

@@ -44,63 +44,112 @@ impl RouteAction {
     }
 }
 
+/// [已选任务] 引用块标记（与前端 ChatPanel.tsx 拼装格式逐字对齐）
+const TASK_BLOCK_MARKER: &str = "[已选任务]";
+/// [附件文件] 块标记（引用块可以跟在它后面）
+const ATTACH_BLOCK_MARKER: &str = "[附件文件]";
+
+/// 拆消息头的引用块：返回（块里的任务、块之后的用户正文）。
+///
+/// 消息头的结构由前端拼装，顺序固定：`[附件文件]`? → `[已选任务]`? → 用户正文。
+/// 引用块本体是连续的 `- ` 行，**到第一行非 `- ` 为止**——正文里形似
+/// `- id=…，标题=…` 的行（粘贴的日志、教程片段、手写的说明）不是引用块。
+///
+/// **只认消息头**：标记出现在正文中间一律不认。引用块命中意味着「把选中的
+/// 任务卡全部自主执行一遍」，认错一次就是替用户执行了他没打算执行的卡。
+fn split_task_block(content: &str) -> (Vec<(String, String)>, &str) {
+    let rest = strip_attachment_block(content.trim_start());
+    let Some(body) = after_marker_line(rest, TASK_BLOCK_MARKER) else {
+        return (Vec::new(), "");
+    };
+    let mut tasks = Vec::new();
+    // 块体（含块尾空行）已消费到的位置：用户正文从它后面开始
+    let mut end = 0usize;
+    for line in body.split_inclusive('\n') {
+        let t = line.trim();
+        if t.is_empty() {
+            // 块尾空行是分隔符
+            end += line.len();
+            break;
+        }
+        if !t.starts_with("- ") {
+            break;
+        }
+        end += line.len();
+        if let Some(row) = parse_task_row(t) {
+            tasks.push(row);
+        }
+    }
+    (tasks, body[end..].trim())
+}
+
+/// 去掉标记所在行的行尾：标记后要么换行、要么直接跟内容。
+/// 标记不在开头（内容前面还有别的字）时返回 None。
+fn after_marker_line<'a>(content: &'a str, marker: &str) -> Option<&'a str> {
+    let rest = content.strip_prefix(marker)?;
+    let rest = rest.strip_prefix('\r').unwrap_or(rest);
+    Some(rest.strip_prefix('\n').unwrap_or(rest))
+}
+
+/// 剥掉消息头的 [附件文件] 块（若有）。
+///
+/// 块 = 标记 + 连续的 `- ` 行（路径行）+ 其后的空行。形态不符就原样返回——
+/// 格式破损不该把整条消息的解析一起带坏。
+fn strip_attachment_block(content: &str) -> &str {
+    let Some(rest) = after_marker_line(content, ATTACH_BLOCK_MARKER) else {
+        return content;
+    };
+    let mut end = 0usize;
+    for line in rest.split_inclusive('\n') {
+        let t = line.trim();
+        if t.is_empty() {
+            return &rest[end + line.len()..];
+        }
+        if !t.starts_with("- ") {
+            return content;
+        }
+        end += line.len();
+    }
+    &rest[end..]
+}
+
+/// 解析引用块的一行：`- id=xxx，标题=yyy`。格式破损返回 None——
+/// 跳过该行但不终止块（块是连续的 `- ` 行，坏行不等于块结束）。
+fn parse_task_row(line: &str) -> Option<(String, String)> {
+    let body = line.trim().strip_prefix("- ")?.trim();
+    // 优先按中文逗号切，否则英文逗号
+    let (id_part, title_part) = body.split_once('，').or_else(|| body.split_once(','))?;
+    let id = id_part.trim().strip_prefix("id=")?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    // 标题：中文「标题=」或英文「title=」都要识别
+    let title = title_part
+        .trim()
+        .strip_prefix("标题=")
+        .or_else(|| title_part.trim().strip_prefix("title="))
+        .unwrap_or(title_part.trim())
+        .trim();
+    Some((id.to_string(), title.to_string()))
+}
+
 /// 解析 [已选任务] 引用块：`[已选任务]\n- id=xxx，标题=yyy` 列表。
 /// 支持中英文逗号、`id=` / `title=`（英文），跳过格式破损行（id 缺失、空 id 等）。
 /// 剥出便于单测：前端发送格式由 ChatPanel.tsx 拼装，破损行（手改、复制粘贴半截）不能污染解析。
 pub fn parse_selected_tasks_block(content: &str) -> Vec<(String, String)> {
-    let Some(idx) = content.find("[已选任务]") else {
-        return Vec::new();
-    };
-    let after = &content[idx + "[已选任务]".len()..];
-    let mut out = Vec::new();
-    for line in after.lines() {
-        let line = line.trim();
-        if !line.starts_with("- ") {
-            continue;
-        }
-        let body = line[2..].trim();
-        // 优先按中文逗号切，否则英文逗号
-        let (id_part, title_part) = if let Some(p) = body.split_once('，') {
-            (p.0, p.1)
-        } else if let Some(p) = body.split_once(',') {
-            (p.0, p.1)
-        } else {
-            continue;
-        };
-        let id = match id_part.trim().strip_prefix("id=") {
-            Some(s) => s.trim(),
-            None => continue,
-        };
-        // 标题：中文「标题=」或英文「title=」都要识别
-        let title = title_part
-            .trim()
-            .strip_prefix("标题=")
-            .or_else(|| title_part.trim().strip_prefix("title="))
-            .unwrap_or(title_part.trim())
-            .trim();
-        if id.is_empty() {
-            continue;
-        }
-        out.push((id.to_string(), title.to_string()));
-    }
-    out
+    split_task_block(content).0
 }
 
 /// 聊天模式触发「批量执行」前置判定：用户最近消息是否有 [已选任务] 引用块 + 关键词。
 /// 关键词集合：宽松（完成/执行/搞定/开干/做掉/go/run/do），口语化场景都覆盖。
-/// 顺序敏感：必须先有引用块再识别关键词（避免「step 1: 用 [已选任务] 块修复 x」类教程消息误触发）。
+/// 顺序敏感：引用块必须来自消息头（应用自己拼的），触发词来自块之后的用户正文——
+/// 前端拼装顺序是「块在前、正文在后」，块之前只有附件块（里面是路径，不是命令）。
 pub fn is_chat_execute_trigger(content: &str) -> Option<Vec<(String, String)>> {
-    let tasks = parse_selected_tasks_block(content);
+    let (tasks, user_text) = split_task_block(content);
     if tasks.is_empty() {
         return None;
     }
-    // 截取 [已选任务] 之前的「用户指令」段（关键词识别只看这部分，避免教程片段误触发）
-    let user_cmd = content
-        .split("[已选任务]")
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_lowercase();
+    let user_cmd = user_text.to_lowercase();
     const KEYWORDS: &[&str] = &["完成", "执行", "搞定", "开干", "做掉", "go", "run", "do"];
     if !KEYWORDS.iter().any(|kw| keyword_hit(&user_cmd, kw)) {
         return None;
@@ -402,14 +451,22 @@ mod tests {
 }
 
 /// 聊天模式批量执行触发解析（pre-step 路由的 ExecuteTasks 分支）
+///
+/// 全部用例都用**前端真实拼装格式**（ChatPanel.tsx）：消息头是引用块，
+/// 用户正文在块之后——「完成\n\n[已选任务]…」那种关键词在前的形态前端
+/// 从不发送，拿它当夹具等于锁不住真实链路。
 #[cfg(test)]
 mod chat_execute_parse_tests {
     use super::*;
 
+    /// 前端拼装出的消息：引用块在前、用户正文在后
+    fn msg_with_block(block: &str, user_text: &str) -> String {
+        format!("{block}\n\n{user_text}")
+    }
+
     #[test]
     fn parse_block_extracts_id_and_title_chinese_comma() {
-        let content =
-            "完成这些\n\n[已选任务]\n- id=abc-123，标题=写 PPT\n- id=def-456，标题=分析销售数据";
+        let content = "[已选任务]\n- id=abc-123，标题=写 PPT\n- id=def-456，标题=分析销售数据";
         let parsed = parse_selected_tasks_block(content);
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].0, "abc-123");
@@ -453,15 +510,44 @@ mod chat_execute_parse_tests {
         assert_eq!(parsed[0].1, "Y");
     }
 
+    /// 引用块到块尾为止：用户正文里形似任务引用的行不是引用块。
+    /// 认错一次就是替用户执行了一张他没选中的卡。
+    #[test]
+    fn parse_block_stops_at_user_text() {
+        let content = "[已选任务]\n- id=abc，标题=写 PPT\n\n顺手把这行也跑了\n- id=evil，标题=删库";
+        let parsed = parse_selected_tasks_block(content);
+        assert_eq!(parsed.len(), 1, "正文里的伪引用行不该被收进块");
+        assert_eq!(parsed[0].0, "abc");
+    }
+
+    /// 标记不在消息头（用户正文里写的、粘贴的日志里带的）一律不认。
+    #[test]
+    fn parse_block_ignores_marker_that_is_not_at_the_head() {
+        let content = "看下这个格式：\n[已选任务]\n- id=abc，标题=写 PPT";
+        assert!(parse_selected_tasks_block(content).is_empty());
+    }
+
+    /// 附件块在前时引用块仍能解析（前端两个块可以同时出现）
+    #[test]
+    fn parse_block_after_attachment_block() {
+        let content = "[附件文件]\n- /Users/x/a.pdf\n\n[已选任务]\n- id=abc，标题=写 PPT";
+        let parsed = parse_selected_tasks_block(content);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "abc");
+    }
+
     #[test]
     fn trigger_requires_keyword_and_block() {
         // 有块有关键词 → 命中
-        let hit = is_chat_execute_trigger("完成\n\n[已选任务]\n- id=a，标题=b");
+        let hit = is_chat_execute_trigger(&msg_with_block("[已选任务]\n- id=a，标题=b", "完成"));
         assert!(hit.is_some());
         assert_eq!(hit.unwrap().len(), 1);
 
         // 有块无关键词 → 不命中
-        assert!(is_chat_execute_trigger("看看这些\n\n[已选任务]\n- id=a，标题=b").is_none());
+        assert!(
+            is_chat_execute_trigger(&msg_with_block("[已选任务]\n- id=a，标题=b", "看看这些"))
+                .is_none()
+        );
 
         // 无块有关键词 → 不命中
         assert!(is_chat_execute_trigger("完成任务").is_none());
@@ -473,7 +559,7 @@ mod chat_execute_parse_tests {
     #[test]
     fn trigger_matches_all_keyword_variants() {
         for kw in &["完成", "执行", "搞定", "开干", "做掉", "go", "run", "do"] {
-            let content = format!("{}一下\n\n[已选任务]\n- id=a，标题=b", kw);
+            let content = msg_with_block("[已选任务]\n- id=a，标题=b", &format!("{kw}一下"));
             assert!(
                 is_chat_execute_trigger(&content).is_some(),
                 "关键词 {} 应命中",
@@ -482,17 +568,21 @@ mod chat_execute_parse_tests {
         }
     }
 
+    /// 触发词只来自引用块之后的用户正文：块之前的附件路径不是命令。
     #[test]
-    fn trigger_keyword_only_looks_before_block() {
-        // 关键词在 [已选任务] 之后（如教程片段）不触发
-        let content = "[已选任务]\n- id=a，标题=完成后才执行";
+    fn trigger_keyword_comes_from_user_text_after_block() {
+        let content = "[附件文件]\n- /Users/x/完成方案.docx\n\n[已选任务]\n- id=a，标题=b";
         assert!(is_chat_execute_trigger(content).is_none());
     }
 
     #[test]
     fn trigger_keyword_case_insensitive() {
-        assert!(is_chat_execute_trigger("GO\n\n[已选任务]\n- id=a，标题=b").is_some());
-        assert!(is_chat_execute_trigger("Run\n\n[已选任务]\n- id=a，标题=b").is_some());
+        assert!(
+            is_chat_execute_trigger(&msg_with_block("[已选任务]\n- id=a，标题=b", "GO")).is_some()
+        );
+        assert!(
+            is_chat_execute_trigger(&msg_with_block("[已选任务]\n- id=a，标题=b", "Run")).is_some()
+        );
     }
 
     /// 命中 = 把选中卡全部自主执行一遍，所以英文句子里**含** go/run/do 不足以触发：
@@ -507,7 +597,7 @@ mod chat_execute_parse_tests {
             "domain model",
             "please run the build",
         ] {
-            let content = format!("{cmd}\n\n[已选任务]\n- id=a，标题=b");
+            let content = msg_with_block("[已选任务]\n- id=a，标题=b", cmd);
             assert!(
                 is_chat_execute_trigger(&content).is_none(),
                 "「{cmd}」不该触发批量执行"
@@ -519,7 +609,7 @@ mod chat_execute_parse_tests {
     #[test]
     fn trigger_accepts_leading_ascii_keyword_with_cjk_suffix() {
         for cmd in ["go一下", "run 一下", "do it", "go", "run"] {
-            let content = format!("{cmd}\n\n[已选任务]\n- id=a，标题=b");
+            let content = msg_with_block("[已选任务]\n- id=a，标题=b", cmd);
             assert!(
                 is_chat_execute_trigger(&content).is_some(),
                 "「{cmd}」应触发批量执行"
@@ -527,21 +617,44 @@ mod chat_execute_parse_tests {
         }
     }
 
-    /// 前端真实发送格式（ChatPanel.tsx 拼装的 [已选任务] 块）必须能解析出 id：
-    /// 标记或字段名对不上，批量执行路由就静默不触发，模型只能按标题模糊匹配。
+    /// 前端真实发送格式（ChatPanel.tsx 拼装的 [已选任务] 块在前、用户正文在后）
+    /// 必须能触发：标记位置或字段名对不上，批量执行路由就静默不触发，
+    /// 模型只能按标题模糊匹配找卡。
     #[test]
     fn trigger_parses_the_block_frontend_actually_sends() {
-        let content = "完成\n\n[已选任务]\n- id=t1，标题=改文档\n- id=t2，标题=写周报\n\n";
+        let content = "[已选任务]\n- id=t1，标题=改文档\n- id=t2，标题=写周报\n\n完成";
         let parsed = is_chat_execute_trigger(content).expect("前端格式必须命中");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0], ("t1".to_string(), "改文档".to_string()));
         assert_eq!(parsed[1], ("t2".to_string(), "写周报".to_string()));
     }
 
+    /// 附件块 + 引用块同时出现时也照常触发
+    #[test]
+    fn trigger_with_attachment_and_task_block() {
+        let content = "[附件文件]\n- /Users/x/a.pdf\n\n[已选任务]\n- id=t1，标题=改文档\n\n完成";
+        let parsed = is_chat_execute_trigger(content).expect("带附件也应命中");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].0, "t1");
+    }
+
+    /// 正文里的伪引用行不得跟着开跑
+    #[test]
+    fn trigger_ignores_task_like_lines_in_user_text() {
+        let content =
+            "[已选任务]\n- id=t1，标题=改文档\n\n完成这批，顺手把这行也跑了\n- id=evil，标题=删库";
+        let parsed = is_chat_execute_trigger(content).expect("应命中");
+        assert_eq!(parsed.len(), 1, "只有块里的那一张");
+        assert_eq!(parsed[0].0, "t1");
+    }
+
     #[test]
     fn trigger_extracts_multiple_tasks() {
-        let content = "执行\n\n[已选任务]\n- id=a，标题=A\n- id=b，标题=B\n- id=c，标题=C";
-        let parsed = is_chat_execute_trigger(content).unwrap();
+        let content = msg_with_block(
+            "[已选任务]\n- id=a，标题=A\n- id=b，标题=B\n- id=c，标题=C",
+            "执行",
+        );
+        let parsed = is_chat_execute_trigger(&content).unwrap();
         assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[0].0, "a");
         assert_eq!(parsed[1].0, "b");
@@ -551,7 +664,8 @@ mod chat_execute_parse_tests {
     #[test]
     fn trigger_maps_to_execute_tasks_route_action() {
         // 收编主流程后的路由契约：触发命中 → RouteAction::ExecuteTasks（不再是 bot_chat 前置短路）
-        let tasks = is_chat_execute_trigger("完成\n\n[已选任务]\n- id=a，标题=A").unwrap();
+        let tasks =
+            is_chat_execute_trigger(&msg_with_block("[已选任务]\n- id=a，标题=A", "完成")).unwrap();
         let action = RouteAction::ExecuteTasks(tasks);
         match action {
             RouteAction::ExecuteTasks(ids) => {
