@@ -61,7 +61,12 @@ export function ArchivePage({
   }
   useEffect(() => {
     if (highlightTaskId) {
-      locateRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      const el = locateRef.current;
+      // 可选链只挡 ref 为空，挡不住方法缺失——缺 scrollIntoView 的环境里这行
+      // 会抛，抛在 passive effect 里就成了随机某个用例的红
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
     }
   }, [highlightTaskId, query, activeTag]);
 

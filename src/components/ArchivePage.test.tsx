@@ -167,6 +167,20 @@ describe("ArchivePage 跳转定位", () => {
     });
   });
 
+  it("定位滚动：环境没有 scrollIntoView 时不炸（可选链挡不住方法缺失）", () => {
+    const saved = Element.prototype.scrollIntoView;
+    delete (Element.prototype as unknown as Record<string, unknown>).scrollIntoView;
+    try {
+      renderPage(tasks, { highlightTaskId: "b" });
+      expect(document.querySelector('[data-task-id="b"]')).toHaveClass(
+        "archive-locate",
+      );
+    } finally {
+      (Element.prototype as unknown as Record<string, unknown>).scrollIntoView =
+        saved;
+    }
+  });
+
   it("目标卡被当前筛选挡住时自动清筛选，保证卡可见", async () => {
     const user = userEvent.setup();
     const { rerender } = renderPage();
