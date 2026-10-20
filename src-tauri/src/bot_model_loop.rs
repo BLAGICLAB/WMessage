@@ -2575,10 +2575,10 @@ where
                     ),
                     (None, Some(p), _, _) => (
                         format!(
-                            "你声称已生成文件 {p}，但没有任何工具写过这个路径——本次提问的落盘记录和历史痕迹里都没有它，这个文件不是本次生成的。"
+                            "你声称已生成文件 {p}，但这个路径没有落盘凭证——本次提问的落盘记录和历史痕迹里都没有它，这个文件不是本次生成的。"
                         ),
                         format!(
-                            "上面提到的文件 {p} 不是本次生成的——没有任何工具写过这个路径。"
+                            "上面提到的文件 {p} 不是本次生成的——这个路径没有落盘凭证。"
                         ),
                     ),
                     (None, None, _, [t, ..]) => (
@@ -3466,6 +3466,34 @@ mod hallucination_guard_tests {
         // 它本就不入选），期望只有前面那条绝对路径。
         let t = "已生成 /a/b.docx 2024/报告.docx";
         assert_eq!(claimed_doc_paths(t), vec!["/a/b.docx".to_string()]);
+    }
+
+    /// 如实改口不是声称：触发词与路径不在同一句就别凑成一次「声称生成」。
+    ///
+    /// 真机原话（返工后的终稿）：模型照着改口提示复述了那句谎话（「之前那条
+    /// 「已生成」是我口胡」），路径出现在最后一段——触发词在第一句、路径在另一句，
+    /// 说的是两件事。全文级提取会把两者凑成一次声称，于是诚实更正被挂上
+    /// 「⚠️ 不是本次生成的」。
+    #[test]
+    fn claimed_doc_paths_requires_trigger_and_path_in_same_sentence() {
+        let retraction = "你说得对，之前那条「已生成」是我口胡，实际并没有落盘。现在老实说一下：\n\n- 你之前明确说过这份纪要要存到 `/Users/renshi/Desktop/2026Q3复盘.docx`，但规则 21/19 这条我会卡死。";
+        assert!(
+            claimed_doc_paths(retraction).is_empty(),
+            "如实改口不得被读成声称生成：{:?}",
+            claimed_doc_paths(retraction)
+        );
+        // 谎报那句仍然要摘出来：触发词与路径同句
+        let fabrication = "好的，已整理，文件已生成在 `/Users/renshi/Desktop/2026Q3复盘.docx`。";
+        assert_eq!(
+            claimed_doc_paths(fabrication),
+            vec!["/Users/renshi/Desktop/2026Q3复盘.docx".to_string()]
+        );
+        // 换行不切句：「已生成 Word 文档：」后面换行给路径仍是同一次声称
+        let wrapped = "已生成 Word 文档：\n\n`/Users/renshi/Desktop/2026Q3复盘.docx`";
+        assert_eq!(
+            claimed_doc_paths(wrapped),
+            vec!["/Users/renshi/Desktop/2026Q3复盘.docx".to_string()]
+        );
     }
 
     #[test]

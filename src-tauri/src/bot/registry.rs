@@ -1119,15 +1119,44 @@ mod claimed_executed_tools_tests {
 /// 实测「已生成XX规划 Word，文件路径：…」类话术带真实形态的假路径，
 /// 绕过 claims_mutation 的窄词表，只能靠这两道拦。
 ///
+/// **触发词与路径必须同句**：全文级提取会把「如实改口」读成声称——返工后模型
+/// 照着改口提示复述那句「已生成」（还常带引号），而路径在后面另一段里，全文级
+/// 提取照样把两者凑成一次声称，于是诚实更正被挂上「⚠️ 不是本次生成的」。真机
+/// 原话：「之前那条「已生成」是我口胡，实际并没有落盘……你之前明确说过这份纪要
+/// 要存到 `/path/x.docx`」——触发词在第一句、路径在最后一句，说的是两件事。
+///
 /// 真伪判定不在这里：两问都依赖运行期状态（磁盘、痕迹库），塞进纯函数就没法
 /// 单测；提取与判定分开，判定在模型循环侧。
 pub fn claimed_doc_paths(text: &str) -> Vec<String> {
-    let claimed = ["已生成", "已保存", "已写入", "已导出"]
-        .iter()
-        .any(|w| text.contains(w));
-    if !claimed {
-        return Vec::new();
+    let mut out: Vec<String> = Vec::new();
+    for sent in split_claim_sentences(text) {
+        if !["已生成", "已保存", "已写入", "已导出"]
+            .iter()
+            .any(|w| sent.contains(w))
+        {
+            continue;
+        }
+        for cand in doc_path_candidates(sent) {
+            if !out.contains(&cand) {
+                out.push(cand);
+            }
+        }
     }
+    out
+}
+
+/// 切句：按句末标点断开，**换行不算**。
+///
+/// 换行不切是因为「已生成 Word 文档：\n\n`/path/x.docx`」是常见排版——路径
+/// 换行到下一段仍是同一次声称。
+fn split_claim_sentences(text: &str) -> Vec<&str> {
+    text.split(['。', '！', '？', '；', ';'])
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
+/// 一句里的文档路径候选（切片段 + 贪心合并）。
+fn doc_path_candidates(text: &str) -> Vec<String> {
     // 候选路径切分：空白/反引号/引号/括号/书名号/中英文标点都是路径边界。
     // `\` 不入边界集（会拆碎 `C:\` 盘符路径）；UNC 路径（`\\server\share\…`）
     // 靠前缀白名单放行——split 已保证 token 起点必在行首/空白/边界符之后，

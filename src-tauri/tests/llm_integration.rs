@@ -3549,6 +3549,61 @@ async fn core_truthful_rewrite_after_rework_carries_no_notice() {
     );
 }
 
+/// 返工后的如实改口不得再被当成第二次谎报挂标注。
+///
+/// 真机 trace 110：第一遍谎报「文件已生成在 X」被拦下，模型第二遍
+/// 照着改口提示写如实更正——复述了那句「已生成」，路径出现在后面另一段。全文级
+/// 的路径提取把两者凑成一次声称，于是诚实更正被挂上「⚠️ 不是本次生成的」。
+///
+/// 触发词与路径必须同句：改口那句话里「已生成」在第一句、路径在最后一句。
+#[tokio::test]
+async fn core_truthful_retraction_of_file_claim_carries_no_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("2026Q3复盘.docx");
+    std::fs::write(&doc, b"docx").unwrap();
+    let path = doc.to_string_lossy().into_owned();
+
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(format!(
+        "好的，已整理，文件已生成在 `{}`。",
+        path
+    )));
+    server.push_behavior(MockBehavior::TextReply(format!(
+        "你说得对，之前那条「已生成」是我口胡，实际并没有落盘。\n\n你之前明确说过这份纪要要存到 `{}`，但这一条我会卡死。",
+        path
+    )));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // 这个路径查不到落盘凭证：它不是任何工具写出来的
+    h.file_receipts_missing.lock().unwrap().push(path.clone());
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("改口后应 Ok");
+    assert_eq!(server.request_count(), 2, "第一遍谎报应被打回一轮");
+    assert!(text.contains("是我口胡"), "应如实改口：{text:?}");
+    assert!(!text.contains("⚠️"), "如实改口不该被挂上更正标注：{text:?}");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("hallucination_guard.repeat")),
+        "如实改口不该记第二次谎报：{lines:?}"
+    );
+}
+
 /// 落盘凭证正路：模型真调了文档生成工具（带回凭证），终稿报同一个路径——
 /// 存在性与凭证两道都站得住，不该被拦。
 ///
