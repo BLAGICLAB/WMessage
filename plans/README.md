@@ -12,9 +12,9 @@
 | # | 标题 | 严重度 | 类别 | 依赖 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | [001](001-motion-token-layer.md) | 建立动效 token 层，把曲线与时长收归一处 | HIGH | §7 / §2 | — | 已完成 `0af87dd4` |
-| [002](002-taskpool-exit-easing.md) | 任务池退场曲线改掉 ease-in 慢起 | HIGH | §2 | 001（token） | TODO |
+| [002](002-taskpool-exit-easing.md) | 任务池退场曲线改掉 ease-in 慢起 | HIGH | §2 | 001（token） | 已完成 `92f79eb6` |
 | [003](003-home-header-transform-scroll.md) | 首页吸顶头部：滚动驱动的布局属性动画换 transform | HIGH | §5 | 001（token，B5 步） | DONE（实测 0% 掉帧 → 不做重构；已做 B5） |
-| [004](004-weeklychart-tooltip-duration.md) | 周图 Tooltip 的 400ms 过渡收到 150ms | HIGH | §2 | 001（token） | TODO |
+| [004](004-weeklychart-tooltip-duration.md) | 周图 Tooltip 的 400ms 过渡收到 150ms | HIGH | §2 | 001（token） | 已完成 `36784986` |
 | [005](005-plan-fresh-no-bounce.md) | 计划块落位弹入：去掉过冲曲线 | MEDIUM | §7 / §3 | 001（token） | 已完成 |
 | [006](006-drag-ghost-transform.md) | 拖拽幽灵改用 transform 定位 | MEDIUM | §5 | — | 已完成 |
 | [007](007-pool-lift-transition.md) | 池内拖起补上过渡 | MEDIUM | §3 / §7 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | 已完成 |
@@ -27,7 +27,7 @@
 | [014](014-linked-hover-unify.md) | 首页联动 hover 三个组件统一成一种响应 | MEDIUM | §7 / §8 | 001（token） | 已完成 |
 | [015](015-reduced-motion-activity-signal.md) | 减少动效下保住「还在跑」的活动信号 | MEDIUM | §6 | — | TODO |
 | [016](016-archive-locate-reduced-motion.md) | 归档定位的平滑滚动要听减少动效的话 | MEDIUM | §6 | — | TODO |
-| [017](017-command-palette-instant-highlight.md) | ⌘K 命令面板的键盘高亮改为瞬时 | MEDIUM | §1 / §7 | **必须晚于 001** | TODO |
+| [017](017-command-palette-instant-highlight.md) | ⌘K 命令面板的键盘高亮改为瞬时 | MEDIUM | §1 / §7 | **必须晚于 001** | 已完成 `07526ffd` |
 | [018](018-home-header-scroll-jitter.md) | 首页吸顶头部滚动收缩时抖动（Windows 尤其明显） | HIGH | §4 / §5 | **必须先于 003**（同改头部内部） | 已完成 `dcc330f2` |
 
 ## 推荐执行顺序
