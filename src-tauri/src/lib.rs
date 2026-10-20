@@ -920,6 +920,10 @@ mod exit_cleanup_tests {
     ///（退出 ≠ 用户关开关，下次启动应自动恢复）、app_exit_cleanup 审计落行。
     #[test]
     fn cleanup_on_exit_releases_api_and_skill() {
+        // 闸门测试锁：EXITING 是进程级全局标志，本用例在退出清理里会置位它、
+        // 收尾再复位；并行的闸门用例可能正好读到中间态（拿到本该被拒的许可，
+        // 或把本该被拒的申请放行）。持锁到用例结束。
+        let _serial = crate::py::runtime::gate_test_lock();
         // 撤锁：本测试做的两类「全局广播」——skill_terminate_all(None) 与
         // stop_all_executions ——现在都按传入 app 取实例；下面 manage 了独立 AppState，
         // 广播只落在本用例自己的表上，不再干扰并行的 state 清理 / StopReader 用例。

@@ -147,7 +147,7 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
 | `0` | 成功，stdout 找哨兵 | status=ok |
 | `2` | 输入校验失败（缺文件/列名） | status=failed，stderr 写 summary |
 | 其他非 0 | 运行时错误 | status=failed，stderr 写 summary |
-| 超时（声明值；未声明则 60s） | 强杀 | status=failed，summary 写明超时时长 |
+| 超时（声明值；未声明则 60s） | 强杀 | status=timeout，summary 写明超时时长 |
 
 ## 5. M1 与 M2 边界
 
@@ -186,6 +186,10 @@ print("##RESULT## " + json.dumps(result, ensure_ascii=False))
   一律钳到全局天花板 30 分钟。理由：耗时随输入规模增长的活（转写长录音、装依赖）
   在固定墙钟下是被硬杀的，不是被「保护」住的。程序页卡片显示声明值；
   版本回滚只回内容、不动这个运行预算
+- **运行记录按失败种类如实上报**（2026-10-20 加）：`app_runs.status` 区分
+  `ok` / `failed` / `timeout` / `stopped`——超时那次程序明明跑起来了，记成
+  「运行启动失败」是说谎；失败也记真实耗时（被砍掉的那次跑了多久，是用户最该
+  看见的数字）
 
 ## 6. 真机验收清单（M1 后）
 

@@ -74,6 +74,17 @@ const RUN_OK: AppRun = {
   summary: "匹配 32 行",
 };
 
+/** 被时长上限砍掉的一次运行：状态是 timeout，文案说清是被砍而不是没起来 */
+const RUN_TIMEOUT: AppRun = {
+  id: 2,
+  appId: "wage-match",
+  startedAt: hourAgo,
+  finishedAt: hourAgo + 1_800_000,
+  durationMs: 1_800_000,
+  status: "timeout",
+  summary: "执行超时（1800s）已强制终止",
+};
+
 const RUN_RESULT: AppRunResult = {
   runId: 9,
   appId: "wage-match",
@@ -187,6 +198,27 @@ describe("AppsPage", () => {
     expect(await screen.findByText("匹配 32 行")).toBeInTheDocument();
     // 历史行时间走 MM-DD HH:mm
     expect(screen.getByText(/\d{2}-\d{2} \d{2}:\d{2}/)).toBeInTheDocument();
+  });
+
+  it("超时的运行：历史里如实显示被砍，不说成「启动失败」，状态点不是红的", async () => {
+    invokeMock.mockImplementation((cmd: string, args: Record<string, unknown>) => {
+      if (cmd === "apps_runs_list") {
+        return Promise.resolve(
+          args.appId === "wage-match" ? [RUN_TIMEOUT, RUN_OK] : [],
+        );
+      }
+      return routeInvoke(cmd, args);
+    });
+    render(<AppsPage />);
+    await screen.findByText("工资单匹配");
+    await userEvent.click(screen.getAllByRole("button", { name: "运行历史" })[0]);
+    const summary = await screen.findByText("执行超时（1800s）已强制终止");
+    expect(summary).toBeInTheDocument();
+    expect(screen.queryByText(/启动失败/)).not.toBeInTheDocument();
+    // 超时行的状态点走中性色（不是错误红）
+    const dot = summary.parentElement?.querySelector("span[aria-hidden]");
+    expect(dot?.className).toContain("bg-[var(--t5)]");
+    expect(dot?.className).not.toContain("bg-[var(--danger)]");
   });
 
   it("版本页签：列出快照，最新版无回滚钮、旧版可回滚", async () => {

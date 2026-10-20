@@ -378,6 +378,21 @@ pub fn py_gate_acquire_for_test() -> PyGateGuard {
     py_gate_acquire_inner(false).expect("非退出态取许可必须成功")
 }
 
+/// 闸门测试的串行锁。
+///
+/// 许可池（`PY_PERMITS`）与 `EXITING` 标志是**进程级全局**的，而 Rust 测试默认
+/// 并行跑：两个用例各拿许可会互相看见「只剩 1 个」（断言漂移），一个用例读到的
+/// 许可数被另一个改掉，读到 0 再去减一就直接下溢 panic。碰这两样全局的用例都
+/// 要先拿这把锁——锁本身是测试设施，中毒后照常取用（见 `gate_test_lock`）。
+#[cfg(test)]
+pub(crate) static GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 取闸门测试锁。守卫活到用例结束即自动释放。
+#[cfg(test)]
+pub(crate) fn gate_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::db::lock::lock_or_recover(&GATE_TEST_LOCK, "py::runtime::GATE_TEST_LOCK")
+}
+
 pub static EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn mark_exiting() {
@@ -389,7 +404,50 @@ pub fn reset_exiting_for_test() {
     EXITING.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Python 执行的失败种类（机器读）。
+///
+/// 为什么要有「种类」而不只是一句话：调用方要**如实上报**这次运行到底怎么了——
+/// 「没能开始跑」「跑了但超时被杀」「跑了但被停止」是三回事，混成一句
+/// 「运行启动失败」就是说谎了（超时那次程序明明跑起来了）。文案会改，种类是稳定的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PyFailKind {
+    /// 没能开始跑：没装 Python、spawn 失败、运行目录建不出来、闸门拒发
+    StartFailed,
+    /// 跑起来了，但超过时长上限被强杀
+    Timeout,
+    /// 跑起来了，但被停止（用户 /stop、应用退出、子 agent 墙钟耗尽）
+    Stopped,
+    /// 跑起来了，但出了别的错（等待子进程状态失败、被信号杀死等）
+    Runtime,
+}
+
+/// Python 执行的失败：种类 + 人读原因。
+///
+/// 转 `CommandError` 仍是 DomainRule(python)——对外协议不变，只是把种类带到了
+/// 调用方手上（`From<PyRunError>`）。
+#[derive(Debug, Clone)]
+pub struct PyRunError {
+    pub kind: PyFailKind,
+    pub msg: String,
+}
+
+impl std::fmt::Display for PyRunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.msg)
+    }
+}
+
+impl From<PyRunError> for CommandError {
+    fn from(e: PyRunError) -> Self {
+        CommandError::DomainRule {
+            domain: "python".to_string(),
+            reason: e.msg,
+        }
+    }
+}
+
 pub struct RunFail {
+    pub kind: PyFailKind,
     pub msg: String,
     pub spawn_not_found: bool,
 }
@@ -401,10 +459,13 @@ pub fn run_python(
     args: &[String],
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
-) -> Result<PyRunResult, CommandError> {
+) -> Result<PyRunResult, PyRunError> {
     // 有界并发闸（许可 2）。EXITING 复查在闸门内完成（等待前/唤醒后/
     // 拿到许可后），排队者过闸即拒——不会 spawn 出无人收割的孤儿进程
-    let _gate = py_gate_acquire()?;
+    let _gate = py_gate_acquire().map_err(|e| PyRunError {
+        kind: PyFailKind::StartFailed,
+        msg: e.message(),
+    })?;
     run_python_ungated(app, script, input_json, args, timeout_secs, stop)
 }
 
@@ -415,7 +476,7 @@ pub fn run_python_ungated(
     args: &[String],
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
-) -> Result<PyRunResult, CommandError> {
+) -> Result<PyRunResult, PyRunError> {
     #[cfg(unix)]
     let script_owned;
     #[cfg(unix)]
@@ -427,9 +488,9 @@ pub fn run_python_ungated(
         Some(p) => p,
         None => {
             py_audit(app, "run_python err | kind=no_python");
-            return Err(CommandError::DomainRule {
-                domain: "python".to_string(),
-                reason: "本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".to_string(),
+            return Err(PyRunError {
+                kind: PyFailKind::StartFailed,
+                msg: "本机未检测到 Python。macOS 请安装 Command Line Tools；Windows 请到 python.org 安装并勾选 Add to PATH".to_string(),
             });
         }
     };
@@ -444,9 +505,9 @@ pub fn run_python_ungated(
                     "run_python err | kind=setup_fail | {}",
                     crate::audit::escape_for_log(&e, 200)
                 ));
-                return Err(CommandError::DomainRule {
-                    domain: "python".to_string(),
-                    reason: format!("准备运行目录失败：{e}"),
+                return Err(PyRunError {
+                    kind: PyFailKind::StartFailed,
+                    msg: format!("准备运行目录失败：{e}"),
                 });
             }
         };
@@ -469,9 +530,9 @@ pub fn run_python_ungated(
                         continue;
                     }
                 }
-                return Err(CommandError::DomainRule {
-                    domain: "python".to_string(),
-                    reason: f.msg,
+                return Err(PyRunError {
+                    kind: f.kind,
+                    msg: f.msg,
                 });
             }
         }
@@ -760,6 +821,7 @@ pub fn run_python_at(
             ));
             cleanup_after_spawn_fail(dir, &limits);
             return Err(RunFail {
+                kind: PyFailKind::StartFailed,
                 msg: format!("启动 Python 失败：{e}"),
                 spawn_not_found: e.kind() == std::io::ErrorKind::NotFound,
             });
@@ -814,6 +876,7 @@ pub fn run_python_at(
                 audit(&format!("run_python err | kind=wait_fail | {e}"));
                 crate::py::io::join_reader_threads(out_handle, err_handle, audit);
                 return Err(RunFail {
+                    kind: PyFailKind::Runtime,
                     msg: format!("等待子进程状态失败：{e}"),
                     spawn_not_found: false,
                 });
@@ -827,6 +890,7 @@ pub fn run_python_at(
             ));
             crate::py::io::join_reader_threads(out_handle, err_handle, audit);
             return Err(RunFail {
+                kind: PyFailKind::Timeout,
                 msg: format!("执行超时（{}s）已强制终止", timeout.as_secs()),
                 spawn_not_found: false,
             });
@@ -836,6 +900,7 @@ pub fn run_python_at(
             audit("run_python err | kind=stopped");
             crate::py::io::join_reader_threads(out_handle, err_handle, audit);
             return Err(RunFail {
+                kind: PyFailKind::Stopped,
                 msg: "已停止".into(),
                 spawn_not_found: false,
             });
@@ -864,6 +929,7 @@ pub fn run_python_at(
     let Some(code) = exit_code else {
         audit("run_python err | kind=exit_none | 无退出码，子进程疑似被信号杀死");
         return Err(RunFail {
+            kind: PyFailKind::Runtime,
             msg: "子进程异常终止（被信号杀死，无退出码）".into(),
             spawn_not_found: false,
         });
@@ -915,10 +981,41 @@ mod tests {
         );
     }
 
+    /// 失败种类必须与实际发生的事对上：超时就是 Timeout，不能混成「启动失败」。
+    /// 靠这个，调用方（程序页运行记录）才能如实上报而不是一律说启动失败。
+    #[test]
+    fn timeout_failure_is_tagged_as_timeout() {
+        let Some(py) = crate::py::env::cached_python().or_else(crate::py::env::detect_python)
+        else {
+            // 本机无可用 python3：跑不了真脚本，跳过（不是失败）
+            return;
+        };
+        let tmp = tempfile::tempdir().expect("临时目录");
+        let dir = setup_run_dir(tmp.path(), "import time\ntime.sleep(30)\n", None)
+            .expect("运行目录应能建");
+        let mut audit = |_line: &str| {};
+        let err = run_python_at(
+            &py,
+            Some("run.py"),
+            &dir,
+            None,
+            &[],
+            Some(1),
+            &mut audit,
+            None,
+        )
+        .err()
+        .expect("睡 30 秒而只给 1 秒必须失败");
+        assert_eq!(err.kind, PyFailKind::Timeout, "超时必须是 Timeout 种类");
+        assert!(err.msg.contains("超时"), "文案要说明是超时：{}", err.msg);
+    }
+
     /// 许可归还：Drop 后可用许可数必须回到原值，否则闸会单向漏光，
     /// 跑着跑着所有 Python 任务一起挂死。
     #[test]
     fn gate_guard_returns_permit_on_drop() {
+        // 许可池是进程级全局：并行跑会互抢（断言漂移 / 读到 0 再减一的下溢 panic）
+        let _serial = gate_test_lock();
         let before = *crate::db::lock::lock_or_recover(&PY_PERMITS, "test");
         {
             let _g = py_gate_acquire_for_test();
@@ -940,6 +1037,7 @@ mod tests {
     /// 也可能不小心被改成无限发。
     #[test]
     fn gate_permits_are_bounded_and_exhaustible() {
+        let _serial = gate_test_lock();
         let start = *crate::db::lock::lock_or_recover(&PY_PERMITS, "test");
         let mut held = Vec::new();
         for _ in 0..start {
@@ -961,6 +1059,7 @@ mod tests {
     /// EXITING 置位后拒绝发许可，且**不**占用名额——否则每次退出都会把闸漏光。
     #[test]
     fn gate_refuses_when_exiting_without_leaking_permit() {
+        let _serial = gate_test_lock();
         reset_exiting_for_test();
         let start = *crate::db::lock::lock_or_recover(&PY_PERMITS, "test");
         mark_exiting();

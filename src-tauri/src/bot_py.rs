@@ -1037,10 +1037,12 @@ mod tests {
 
     #[test]
     fn py_run_gate_caps_concurrent_runs() {
-        use crate::py::runtime::{py_gate_acquire_for_test, PY_RUN_MAX_CONCURRENT};
+        use crate::py::runtime::{gate_test_lock, py_gate_acquire_for_test, PY_RUN_MAX_CONCURRENT};
         use std::sync::atomic::{AtomicUsize, Ordering};
         static CUR: AtomicUsize = AtomicUsize::new(0);
         static MAX: AtomicUsize = AtomicUsize::new(0);
+        // 许可池是进程级全局：别的用例同时拿许可会让这里量到的并发数偏小
+        let _serial = gate_test_lock();
         let mut joins = Vec::new();
         // 10 个并发请求同时抢许可，临界区内 sleep 100ms 放大竞争窗口
         for _ in 0..10 {

@@ -132,18 +132,22 @@ pub fn run(
         stop,
     )
     .map_err(|e| {
+        // 如实上报：超时 / 停止 / 启动失败是三回事——超时那次程序明明跑起来了，
+        // 一律记成「运行启动失败」就是说谎。状态与文案都按失败种类分。
+        let (status, summary) = failed_run_report(&e);
         let conn = db::open_db(app_handle).ok();
         if let Some(conn) = conn {
             let _ = db::finish_app_run(
                 &conn,
                 run_id,
                 db::now_ms(),
-                0,
-                "failed",
-                Some(&format!("runner 启动失败：{e}")),
+                // 失败也记真实耗时：被超时杀掉的这次跑了多久，是用户最该看见的数字
+                started.elapsed().as_millis() as i64,
+                status,
+                Some(&summary),
             );
         }
-        format!("运行启动失败：{e}")
+        summary
     })?;
     let duration_ms = started.elapsed().as_millis();
     let result_json = parse_result_sentinel(&stdout);
@@ -191,6 +195,20 @@ pub fn run(
         truncated,
         duration_ms,
     })
+}
+
+/// 失败种类 → （app_runs 状态, 人读摘要）。
+///
+/// 超时 / 停止 / 启动失败是三回事：超时那次程序明明跑起来了，
+/// 一律记成「运行启动失败」就是说谎（用户在历史里看到的是「启动失败」，
+/// 实际是跑了半小时被时长上限砍掉的）。
+pub fn failed_run_report(e: &runtime::PyRunError) -> (&'static str, String) {
+    match e.kind {
+        runtime::PyFailKind::StartFailed => ("failed", format!("运行启动失败：{}", e.msg)),
+        runtime::PyFailKind::Timeout => ("timeout", e.msg.clone()),
+        runtime::PyFailKind::Stopped => ("stopped", e.msg.clone()),
+        runtime::PyFailKind::Runtime => ("failed", e.msg.clone()),
+    }
 }
 
 pub fn recent_runs(
@@ -241,6 +259,7 @@ pub fn preflight_script<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::py::runtime::{PyFailKind, PyRunError};
 
     #[test]
     fn parse_result_sentinel_basic() {
@@ -329,5 +348,40 @@ mod tests {
             "{}",
             got.chars().count()
         );
+    }
+    /// 运行记录必须按失败种类如实上报：超时不是「启动失败」
+    #[test]
+    fn failed_run_report_maps_kind_to_status_and_summary() {
+        let timeout = PyRunError {
+            kind: PyFailKind::Timeout,
+            msg: "执行超时（1800s）已强制终止".into(),
+        };
+        let (status, summary) = failed_run_report(&timeout);
+        assert_eq!(status, "timeout");
+        assert_eq!(summary, "执行超时（1800s）已强制终止");
+        assert!(
+            !summary.contains("启动失败"),
+            "超时的文案不得说成启动失败：{summary}"
+        );
+
+        let stopped = PyRunError {
+            kind: PyFailKind::Stopped,
+            msg: "已停止".into(),
+        };
+        assert_eq!(failed_run_report(&stopped).0, "stopped");
+
+        let start_failed = PyRunError {
+            kind: PyFailKind::StartFailed,
+            msg: "启动 Python 失败：No such file or directory".into(),
+        };
+        let (status, summary) = failed_run_report(&start_failed);
+        assert_eq!(status, "failed");
+        assert!(summary.contains("启动失败"), "{summary}");
+
+        let runtime_err = PyRunError {
+            kind: PyFailKind::Runtime,
+            msg: "子进程异常终止（被信号杀死，无退出码）".into(),
+        };
+        assert_eq!(failed_run_report(&runtime_err).0, "failed");
     }
 }

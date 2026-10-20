@@ -507,7 +507,11 @@ function RunsList({ appId }: { appId: string }) {
           <span
             aria-hidden
             className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-              r.status === "ok" ? "bg-[var(--success)]" : "bg-[var(--danger)]"
+              r.status === "ok"
+                ? "bg-[var(--success)]"
+                : r.status === "timeout" || r.status === "stopped"
+                  ? "bg-[var(--t5)]"
+                  : "bg-[var(--danger)]"
             }`}
           />
           <span className="shrink-0 tabular-nums">
