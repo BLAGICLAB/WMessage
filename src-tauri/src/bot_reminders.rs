@@ -15,7 +15,7 @@ use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::bot::registry::ToolResult;
-use crate::db::reminders::{Reminder, MAX_REMINDER_TEXT};
+use crate::db::reminders::Reminder;
 
 /// 一次性提醒错过多久就不再补提醒（超过 24h 视为过期，静默丢弃）
 const ONE_SHOT_GRACE: Duration = Duration::hours(24);
@@ -133,11 +133,6 @@ fn build_schedule(base: DateTime<Local>, repeat: Repeat) -> String {
     }
 }
 
-/// 规范定时串的下次触发时间（now 之后最近的一次；一次性已过返回 None）
-pub fn first_fire_at(schedule: &str) -> Option<DateTime<Local>> {
-    crate::bot_scheduler::occurrence_after(schedule, Local::now())
-}
-
 // ── 工具 ───────────────────────────────────────────────────────────────────
 
 /// schedule_reminder：设一个到点提醒。
@@ -145,20 +140,12 @@ pub fn first_fire_at(schedule: &str) -> Option<DateTime<Local>> {
 /// text = 提醒内容；when = 时间（绝对 / HH:MM / 相对）；repeat = 重复类型。
 pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
-    let text = v["text"].as_str().unwrap_or("").trim().to_string();
-    if text.is_empty() {
-        // 「schedule_reminder 缺少 text」首字「s」非 error/warn 前缀 → ok
-        return ToolResult::ok(
-            "schedule_reminder 缺少 text 参数（要提醒用户什么）".to_string(),
-            Vec::new(),
-        );
-    }
-    if text.chars().count() > MAX_REMINDER_TEXT {
-        return ToolResult::ok(
-            format!("提醒内容超过 {MAX_REMINDER_TEXT} 字上限，请精简"),
-            Vec::new(),
-        );
-    }
+    let raw_text = v["text"].as_str().unwrap_or("");
+    let text = match crate::db::reminders::validate_reminder_text(raw_text) {
+        Ok(t) => t,
+        // 「提醒内容不能为空」首字「提」非 error/warn 前缀 → ok
+        Err(e) => return ToolResult::ok(e, Vec::new()),
+    };
     let when = v["when"].as_str().unwrap_or("").trim().to_string();
     if when.is_empty() {
         return ToolResult::ok(

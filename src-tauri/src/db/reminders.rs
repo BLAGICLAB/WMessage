@@ -11,9 +11,6 @@
 
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
-
-use crate::error::{CommandError, CommandResult};
 
 /// 单源 DDL：open_db 与测试建表共用
 pub const REMINDERS_DDL: &str = "CREATE TABLE IF NOT EXISTS reminders (
@@ -177,113 +174,19 @@ pub fn delete_reminder(conn: &rusqlite::Connection, id: &str) -> Result<bool, St
     Ok(n > 0)
 }
 
-// Tauri commands
-
 /// 提醒内容校验（纯函数，可测）
-pub fn validate_reminder_text(text: &str) -> CommandResult<String> {
+///
+/// 返回裁好的内容；错误是给机器人工具读的纯文案（不进 CommandError——
+/// 提醒没有设置页入口，只有工具层一个调用方）。
+pub fn validate_reminder_text(text: &str) -> Result<String, String> {
     let t = text.trim();
     if t.is_empty() {
-        return Err(CommandError::InvalidArgument {
-            field: "text".into(),
-            value: text.to_string(),
-            reason: "提醒内容不能为空".into(),
-        });
+        return Err("提醒内容不能为空".into());
     }
     if t.chars().count() > MAX_REMINDER_TEXT {
-        return Err(CommandError::InvalidArgument {
-            field: "text".into(),
-            value: text.to_string(),
-            reason: format!("提醒内容超过 {MAX_REMINDER_TEXT} 字上限"),
-        });
+        return Err(format!("提醒内容超过 {MAX_REMINDER_TEXT} 字上限"));
     }
     Ok(t.to_string())
-}
-
-/// 新建提醒（设置页「新建提醒」入口，与机器人工具同一条写路径）
-#[tauri::command]
-pub async fn reminder_create(
-    app: AppHandle,
-    text: String,
-    schedule: String,
-) -> CommandResult<Reminder> {
-    let text = validate_reminder_text(&text)?;
-    crate::bot_scheduler::validate_schedule(schedule.trim()).map_err(|reason| {
-        CommandError::InvalidArgument {
-            field: "schedule".into(),
-            value: schedule.clone(),
-            reason,
-        }
-    })?;
-    let app_emit = app.clone();
-    let row = tauri::async_runtime::spawn_blocking(move || -> CommandResult<Reminder> {
-        let _g = super::lock_db_write();
-        let conn = super::open_db(&app)?;
-        let now = chrono::Utc::now().timestamp_millis();
-        let remind_at = crate::bot_reminders::first_fire_at(schedule.trim())
-            .map(|t| t.timestamp_millis())
-            .ok_or(CommandError::InvalidArgument {
-                field: "schedule".into(),
-                value: schedule.trim().to_string(),
-                reason: "触发时间已过或无效".into(),
-            })?;
-        let r = Reminder {
-            id: uuid::Uuid::new_v4().simple().to_string(),
-            text,
-            schedule: schedule.trim().to_string(),
-            remind_at: Some(remind_at),
-            enabled: None,
-            created_at: Some(now),
-            updated_at: Some(now),
-            fired_at: None,
-            fired_count: None,
-        };
-        insert_reminder(&conn, &r).map_err(CommandError::from)?;
-        Ok(r)
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("提醒创建线程 join 失败：{e}")))??;
-    crate::audit::write_event(
-        &app_emit,
-        crate::audit::AuditLevel::Info,
-        "reminder_create",
-        &[
-            ("reminderId", row.id.clone()),
-            ("schedule", row.schedule.clone()),
-        ],
-    );
-    Ok(row)
-}
-
-/// 提醒列表
-#[tauri::command]
-pub async fn reminder_list(app: AppHandle) -> CommandResult<Vec<Reminder>> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = super::open_db(&app)?;
-        load_reminders(&conn).map_err(CommandError::from)
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("提醒列表线程 join 失败：{e}")))?
-}
-
-/// 删除提醒（取消提醒）
-#[tauri::command]
-pub async fn reminder_delete(app: AppHandle, id: String) -> CommandResult<bool> {
-    let app_emit = app.clone();
-    let id_for_audit = id.clone();
-    let ok = tauri::async_runtime::spawn_blocking(move || -> CommandResult<bool> {
-        let _g = super::lock_db_write();
-        let conn = super::open_db(&app)?;
-        delete_reminder(&conn, &id).map_err(CommandError::from)
-    })
-    .await
-    .map_err(|e| CommandError::from(format!("提醒删除线程 join 失败：{e}")))??;
-    crate::audit::write_event(
-        &app_emit,
-        crate::audit::AuditLevel::Info,
-        "reminder_delete",
-        &[("reminderId", id_for_audit)],
-    );
-    Ok(ok)
 }
 
 #[cfg(test)]

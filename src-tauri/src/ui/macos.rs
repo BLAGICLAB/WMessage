@@ -390,3 +390,26 @@ pub fn type_text(text: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 真实 AX 冒烟（macOS）：读当前运行的窗口列表，验 AX 读树这条路真能通。
+    /// 依赖本进程获「辅助功能」权限（AXIsProcessTrusted），未授权直接失败——
+    /// 不授权时整条 UI 自动化链路都不可用，这是必须让人看见的事实。
+    /// 手动跑：cargo test --lib ui::macos -- --ignored --nocapture
+    #[test]
+    #[ignore = "真实 AX 冒烟（依赖辅助功能授权，手动跑）"]
+    fn macos_ax_list_windows_smoke() {
+        assert!(
+            accessibility_trusted(),
+            "本进程未获 macOS「辅助功能」权限：先到 系统设置 → 隐私与安全性 → 辅助功能 授权"
+        );
+        let wins = list_windows().expect("列窗口应成功");
+        for w in wins.iter().take(5) {
+            println!("{} | {} | {}", w.id, w.app, w.title);
+        }
+        assert!(!wins.is_empty(), "至少应读到一些窗口");
+    }
+}

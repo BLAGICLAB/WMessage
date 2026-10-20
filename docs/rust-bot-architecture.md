@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1084)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1081)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -163,7 +163,7 @@ src-tauri/src/
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
 │                        SchedGuard 防重入；完成发系统通知
-├── bot_reminders.rs (588) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
+├── bot_reminders.rs (575) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
 │                        定时串与触发点计算复用 bot_scheduler（occurrence_after），
@@ -196,10 +196,10 @@ src-tauri/src/
 │                        敏感控件禁打（密码、验证码类不代填）；每次动作留审计 +
 │                        动作前后各一张截图（落 AI_Gen_Files）
 ├── ui/                 桌面 UI 自动化跨平台层（数据模型 + 总开关 + 平台分发）
-│   ├── ui/mod.rs (256) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
+│   ├── ui/mod.rs (254) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
 │   │                 ui_set_enabled）+ 平台分发（list_windows / activate_window /
 │   │                 inspect_tree / press_node / focus_node / type_text）
-│   ├── ui/macos.rs (392) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
+│   ├── ui/macos.rs (415) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
 │   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）
 │   └── ui/windows.rs (403) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，

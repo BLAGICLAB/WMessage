@@ -219,8 +219,6 @@ pub fn type_text(text: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// 接线守卫：六件套必须真的接进工具表（改了工具名而忘了登记，这里会红）
     #[test]
     fn ui_tools_are_wired_into_registry() {
