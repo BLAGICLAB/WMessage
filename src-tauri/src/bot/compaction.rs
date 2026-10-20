@@ -137,13 +137,22 @@ pub(crate) fn compact_one(
     };
     let total = text.chars().count();
     let mut pointer: Option<String> = None;
+    // 长度守卫对**所有**分支生效，不能只挂在 `else if` 上。
+    //
+    // 短于 head+tail 的文本本就没得压：硬档下 head/tail 还会重叠，替身把
+    // 原文首尾重复一遍；而它同时是下面 `total - head_keep - tail_keep`
+    // 不下溢的前提——原来带标记的短文本绕过这道守卫，直接落到无符号减法，
+    // debug 构建 panic、release 静默回绕成天文数字。
+    if total <= head_keep + tail_keep {
+        return Ok((false, Vec::new()));
+    }
     if text.contains(COMPACT_MARK) {
+        // 软档跳过已压过的（对替身再压省不了多少、还叠标记）；
+        // 硬档再压但沿用原指针、不写第二个 sidecar（盘上原文还在）。
         if !hard {
             return Ok((false, Vec::new()));
         }
         pointer = extract_pointer(text);
-    } else if total <= head_keep + tail_keep {
-        return Ok((false, Vec::new()));
     }
     let original = text.to_string();
     let head: String = original.chars().take(head_keep).collect();
@@ -155,7 +164,9 @@ pub(crate) fn compact_one(
         .into_iter()
         .rev()
         .collect();
-    let middle = total - head_keep - tail_keep;
+    // 守卫已保证 total > head+tail（故 ≥1）；saturating 只是兜住将来守卫
+    // 被挪动时的静默回绕——回绕出来的天文数字会写进正文当成"压缩了多少"。
+    let middle = total.saturating_sub(head_keep + tail_keep);
     // 先定路径、后写盘：替身不比原文短就整条跳过（sidecar 也不落）——
     // 指针里的绝对路径可能比省下的字符还长，压了白压还孤儿一个文件
     let sidecar_path: Option<PathBuf> = match (sidecar_dir, &pointer) {
@@ -361,6 +372,45 @@ mod tests {
             "同毫秒批量压缩也不允许同名互覆"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 短于保留窗口的**已带标记**文本，硬档不得下溢。
+    ///
+    /// 触发条件：工具输出自带压缩标记前缀（`⟦c:`）。标记后缀是 8 位随机
+    /// 十六进制，正常工具输出撞不上；但模型把占位符原样拷回工具参数、
+    /// 或 grep 命中含标记的行时，就会出现这种短文本。
+    ///
+    /// 原实现里长度守卫挂在 `else if` 上，只挡未压过的文本——已带标记的
+    /// 短文本直接落到 `total - head_keep - tail_keep`，无符号减法下溢：
+    /// debug 构建 panic，release 静默回绕成天文数字（"已压缩 18446… 字符"）。
+    #[test]
+    fn compact_one_never_underflows_on_short_marked_text() {
+        for text in ["⟦c:1f3a9b2c⟧", "⟦c:", "x⟦c:"] {
+            let mut m = mk_tool_msg(text);
+            let (ok, paths) = compact_one(&mut m, true, None, None).unwrap();
+            assert!(!ok, "短于保留窗口的文本压不动：{text}");
+            assert!(paths.is_empty(), "压不动就不该落 sidecar：{text}");
+            assert_eq!(m["content"].as_str().unwrap(), text, "原样保留：{text}");
+        }
+    }
+
+    /// 已压过但**长于**保留窗口的文本，硬档仍要能再压（沿用原指针）。
+    ///
+    /// 这是上面那条的对照：不能因为「带标记」就整条跳过。
+    #[test]
+    fn hard_pass_still_recompacts_long_marked_text() {
+        let mut m = mk_tool_msg(&format!(
+            "…（已压缩 700 字符 · 原文未保留）…⟦c:1f3a9b2c⟧{}",
+            "M".repeat(80)
+        ));
+        let (ok, _) = compact_one(&mut m, true, None, None).unwrap();
+        assert!(ok, "长于保留窗口的已压文本仍应再压");
+        let out = m["content"].as_str().unwrap();
+        assert!(
+            out.chars().count() < 160,
+            "再压后应变短：{}",
+            out.chars().count()
+        );
     }
 
     #[test]
