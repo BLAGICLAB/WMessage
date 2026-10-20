@@ -784,6 +784,67 @@ pub fn apply_inference_params(
     }
 }
 
+/// 按协议构造请求体。
+///
+/// 内部消息流恒为 OpenAI 形状；Anthropic 分支在这里转成块结构（system 段、
+/// tool_use / tool_result 块都在这一步成形）。**降级重发必须整体重建**：
+/// 把 OpenAI 形状的 msgs 直接回填进 Anthropic 的 body，`role=system` /
+/// `role=tool` 都不被 Anthropic 接受 → 必 400；而那个 400 文案不再像超长，
+/// 用户连「请 /compact」的指引都拿不到。
+fn build_request_body(
+    http: &LlmHttp,
+    msgs: &[serde_json::Value],
+    tools: &serde_json::Value,
+    openai_usage_supported: bool,
+) -> Result<serde_json::Value, String> {
+    let mut body = match http.provider {
+        crate::bot::ApiProvider::Openai => {
+            let mut b = serde_json::json!({
+                "model": http.model,
+                "messages": msgs,
+                "tools": tools,
+                "stream": true
+            });
+            // 流式 usage 需显式索取：末块才带 `usage`（含
+            // prompt_tokens_details.cached_tokens），否则 OpenAI 协议下
+            // 缓存命中永远记不到。部分中转网关不认这个字段会 400，
+            // 届时 usage_supported 翻 false 并原样重发一次（见非成功分支）。
+            if openai_usage_supported {
+                b["stream_options"] = serde_json::json!({"include_usage": true});
+            }
+            b
+        }
+        crate::bot::ApiProvider::Anthropic => crate::bot_anthropic::build_anthropic_body(
+            &http.model,
+            msgs,
+            tools,
+            http.max_tokens,
+            true,
+        )?,
+    };
+    // 条目级采样参数注入：temperature/top_p 有值才写（两协议顶层字段同名）
+    apply_inference_params(&mut body, http.temperature, http.top_p);
+    // 推理强度注入（RE-1）：OpenAI 兼容分支直接加字段；
+    // Anthropic 分支加 thinking 块（budget < max_tokens 约束已在 resolve 时夹紧）。
+    match &http.reasoning {
+        crate::bot::reasoning::ReasoningWire::OpenAiEffort(effort) => {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+        crate::bot::reasoning::ReasoningWire::GlmThinking(on) => {
+            body["thinking"] = serde_json::json!({
+                "type": if *on { "enabled" } else { "disabled" }
+            });
+        }
+        crate::bot::reasoning::ReasoningWire::AnthropicBudget(budget) => {
+            if http.provider == crate::bot::ApiProvider::Anthropic {
+                crate::bot_anthropic::apply_anthropic_thinking(&mut body, *budget);
+            }
+        }
+        crate::bot::reasoning::ReasoningWire::None => {}
+    }
+    Ok(body)
+}
+
 /// run_model_loop_core 的同步副作用出口：
 /// 流式事件 / 结构化审计 / bot.log / Skill 收尾 4 个出口抽成注入回调，
 /// 使核心循环不依赖 AppHandle；异步出口（execute_tool / replan）因 Rust 闭包生命周期
@@ -1868,65 +1929,19 @@ where
         // body 按协议分支——内部消息流保持 OpenAI
         // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
         // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
-        let mut body = match http.provider {
-            crate::bot::ApiProvider::Openai => {
-                let mut b = serde_json::json!({
-                    "model": http.model,
-                    "messages": msgs,
-                    "tools": tools,
-                    "stream": true
-                });
-                // 流式 usage 需显式索取：末块才带 `usage`（含
-                // prompt_tokens_details.cached_tokens），否则 OpenAI 协议下
-                // 缓存命中永远记不到。部分中转网关不认这个字段会 400，
-                // 届时 usage_supported 翻 false 并原样重发一次（见非成功分支）。
-                if openai_usage_supported {
-                    b["stream_options"] = serde_json::json!({"include_usage": true});
-                }
-                b
-            }
-            crate::bot::ApiProvider::Anthropic => {
-                match crate::bot_anthropic::build_anthropic_body(
-                    &http.model,
-                    &msgs,
-                    &tools,
-                    http.max_tokens,
-                    true,
-                ) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        let hint = skill_finish(false, "消息转换失败");
-                        let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
-                        audit(
-                            crate::audit::AuditLevel::Error,
-                            "llm.request_failed",
-                            crate::audit::error_kv(&err),
-                        );
-                        return Err(err);
-                    }
-                }
+        let mut body = match build_request_body(http, &msgs, &tools, openai_usage_supported) {
+            Ok(b) => b,
+            Err(e) => {
+                let hint = skill_finish(false, "消息转换失败");
+                let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
+                audit(
+                    crate::audit::AuditLevel::Error,
+                    "llm.request_failed",
+                    crate::audit::error_kv(&err),
+                );
+                return Err(err);
             }
         };
-        // 条目级采样参数注入：temperature/top_p 有值才写（两协议顶层字段同名）
-        apply_inference_params(&mut body, http.temperature, http.top_p);
-        // 推理强度注入（RE-1）：OpenAI 兼容分支直接加字段；
-        // Anthropic 分支加 thinking 块（budget < max_tokens 约束已在 resolve 时夹紧）。
-        match &http.reasoning {
-            crate::bot::reasoning::ReasoningWire::OpenAiEffort(effort) => {
-                body["reasoning_effort"] = serde_json::json!(effort);
-            }
-            crate::bot::reasoning::ReasoningWire::GlmThinking(on) => {
-                body["thinking"] = serde_json::json!({
-                    "type": if *on { "enabled" } else { "disabled" }
-                });
-            }
-            crate::bot::reasoning::ReasoningWire::AnthropicBudget(budget) => {
-                if http.provider == crate::bot::ApiProvider::Anthropic {
-                    crate::bot_anthropic::apply_anthropic_thinking(&mut body, *budget);
-                }
-            }
-            crate::bot::reasoning::ReasoningWire::None => {}
-        }
 
         // LLM 请求前记录
         audit(
@@ -2024,10 +2039,31 @@ where
                                 // msgs 变短了：记账表里落在切口内的条目作废、
                                 // 其后左移，不同步就是下一轮按旧下标压缩时越界
                                 reindex_after_shed(&mut tool_msg_ages, cut, dropped);
-                                // body 在进循环前已序列化——砍完必须回填 messages，
-                                // 否则重发的是同一份旧 body，降级等于没做
-                                body["messages"] = serde_json::to_value(&msgs)
-                                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+                                // body 在进循环前已序列化——砍完必须重建整个 body，
+                                // 否则重发的是同一份旧 body，降级等于没做。
+                                // 重建要走协议构造：OpenAI 形状的 msgs 直接回填进
+                                // Anthropic 的 body 会被拒（role=system / role=tool
+                                // 都不认）→ 那个 400 还不再像超长，用户拿不到
+                                // 「请 /compact」的指引。
+                                body = match build_request_body(
+                                    http,
+                                    &msgs,
+                                    &tools,
+                                    openai_usage_supported,
+                                ) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        let hint = skill_finish(false, "消息转换失败");
+                                        let err: CommandError =
+                                            format!("Anthropic 消息转换失败：{e}{hint}").into();
+                                        audit(
+                                            crate::audit::AuditLevel::Error,
+                                            "llm.request_failed",
+                                            crate::audit::error_kv(&err),
+                                        );
+                                        return Err(err);
+                                    }
+                                };
                                 let after = msgs.iter().map(msg_chars).sum::<usize>();
                                 audit(
                                     crate::audit::AuditLevel::Warn,
