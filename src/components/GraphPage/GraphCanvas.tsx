@@ -221,6 +221,22 @@ const SEPARATE_GAP = 2.2;
  *  一帧 16ms 根本放不下。预算耗尽后剩下的铭牌先隐一帧，下一帧接着摆。 */
 const DECLUTTER_BUDGET_MS = 4;
 
+/**
+ * 点选判定：按下与松开的位移不超过这个像素数才算点击。
+ *
+ * 旋转视角是按住拖的：从空白处起手转一下、松手正好压在某颗星上，
+ * 会被当成点选——用户转个视角就随机选中了一张卡。
+ */
+export const CLICK_SLOP_PX = 4;
+
+/** 位移是否在「点击」的范围内（纯函数，单测直接钉住这条阈值） */
+export function isClickGesture(
+  down: { x: number; y: number },
+  up: { x: number; y: number },
+): boolean {
+  return Math.hypot(up.x - down.x, up.y - down.y) <= CLICK_SLOP_PX;
+}
+
 /** 上一次的构图与机位（模块级，跨重建与卸载都在）。
  *  改一条依赖只是换了几条边：节点集合与外径都没变。这时候把整场拆掉重建，等于
  *  把用户刚摆好的视角弹回定稿机位、再让整片星云从种子重排一遍——数据没大动，
@@ -673,6 +689,10 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     const ndc = new THREE.Vector2();
     const lastPointer = { clientX: 0, clientY: 0 };
     let dragging = -1;
+    // 按下点与「拖过了」标记：旋转视角时用来把松手从点选里剔出去
+    let pressX = 0;
+    let pressY = 0;
+    let pressMoved = false;
     const ndcOf = (p: { clientX: number; clientY: number }, rect: DOMRect) => {
       ndc.set(
         ((p.clientX - rect.left) / rect.width) * 2 - 1,
@@ -684,12 +704,20 @@ export default function GraphCanvas(props: GraphCanvasProps) {
     const onPointerMove = (e: PointerEvent) => {
       lastPointer.clientX = e.clientX;
       lastPointer.clientY = e.clientY;
+      if (!pressMoved && !isClickGesture({ x: pressX, y: pressY }, e)) {
+        pressMoved = true;
+      }
       const rect = renderer.domElement.getBoundingClientRect();
       // 当帧重新拾取：hover 状态可能来自上一帧的相机位置，直接拿旧命中会错
       propsRef.current.onHover(idAt(pick(e.clientX - rect.left, e.clientY - rect.top)));
     };
     const onPointerDown = (e: PointerEvent) => {
       if (e.button !== 0) return;
+      // 按下位置先记下来（哪怕没按在节点上）：旋转视角也是从空白处起手的，
+      // 松手压在节点上时靠这个位移判定把它从「点选」里剔出去
+      pressX = e.clientX;
+      pressY = e.clientY;
+      pressMoved = false;
       const rect = renderer.domElement.getBoundingClientRect();
       const i = pick(e.clientX - rect.left, e.clientY - rect.top);
       if (i < 0) return;
@@ -717,6 +745,7 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       resumeForce();
     };
     const onClick = (e: MouseEvent) => {
+      if (pressMoved) return; // 拖过了：这是旋转视角，不是点选
       const rect = renderer.domElement.getBoundingClientRect();
       const i = pick(e.clientX - rect.left, e.clientY - rect.top);
       propsRef.current.onSelect(idAt(i));
