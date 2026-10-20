@@ -17,6 +17,9 @@ P0 是「文档与系统提示词承诺的能力，代码从不执行」的功�
 - **原「未修 1 条高危」已修**：N1 因 `e8d2270` 让批量执行路由真正可达而激活，
   本轮连同 B#1 的遗漏（触发词位置与前端相反 → 路由至今恒空）一并修掉
 - **未修 3 条 P2**，清单在下面，每条带文件行号与证据
+- **第三轮**：§五「待复核 U1–U13」已逐条核对——**12 条确认为真并已修**，
+  U5 拆两半（删会话那半是真缺陷已修，`/stop` 那半是设计语义不改）。
+  逐条结论与修法见 §五，全量门禁结果见 §七
 
 ---
 
@@ -60,6 +63,19 @@ P0 是「文档与系统提示词承诺的能力，代码从不执行」的功�
 | L2 | 一个回归测试被静默禁用（缺 `#[test]`），从未被收集运行 | 低 | `1058e272` |
 | L3 | `is_dir_async` 把探测失败吞成「不是目录」，授权粒度朝宽的方向落盘 | 低 | `c7efaef` |
 | L4 | 模块树行数标注漂移，pre-push 门禁红 | 低 | — |
+| U1 | usage 逐块累加：每块都发 usage 的网关上总量翻倍 | 中 | `129bf03` |
+| U2 | `/stop` 未覆盖终稿自检与 replan 两处长 await（最多再烧 180s） | 中 | `231d8961` |
+| U3 | Anthropic thinking 块未原样回传：tool_result 轮 400 | 中 | `3c87d87a` |
+| U4 | 压缩收缩守卫前算 `total - head_keep - tail_keep`，无符号下溢 panic | 中 | `e5e162b` |
+| U5 | 删会话不级联取消在途子 agent：没人收的活烧完整份预算 | 中 | `c98fb6e` |
+| U6 | 两个 async 工具函数里跑同步 syscall，阻塞 runtime 线程 | 中 | `690b915` |
+| U7 | 读路径 inode 复核与实际读取分属两个 open（复核没管住读到的内容） | 中 | `b0002fc` |
+| U8 | `spawn_subagent` 无幂等键：重复调用建两条活行、各拿一份完整预算 | 中 | `88ae51b` |
+| U9 | runner panic 跳过整条收尾：令牌泄漏 + 前端该行永远转圈 | 中 | `f956873` |
+| U10 | 变更声称守卫认不下「不可核验但确实改状态」的工具 | 中 | `08f4cf0` |
+| U11 | `tool.return` 两处早退手搓 kv，将来加键会漏 | 低 | `caabe2d` |
+| U12 | 任务工具 schema 指向已下线的 `list_tasks` | 低 | `5708252` |
+| U13 | `edit_file` 空白容错重建丢尾换行、混合 EOL 被整体归一 | 低 | `98fd1b2` |
 
 > L4 修在承载本报告的那个提交里。提交无法在自身文件内引用自己的 hash，
 > 查 `git log` ——按提交信息 `模块树行数标注跟上实际文件` 定位。
@@ -241,26 +257,109 @@ pid 0（kill 语义里是「调用方自己的组」）与超 i32::MAX（回绕�
 
 ---
 
-## 五、待复核（未确证，不建议直接照改）
+## 五、待复核 U1–U13 的核对结论（第三轮逐条核实）
 
-以下条目子代理自己标了 NEEDS-VERIFICATION，或我没亲自读到代码。列出以免
-重复劳动，但**动手前请自行确认**。
+原表是子代理标 NEEDS-VERIFICATION 的线索，**不是结论**。第三轮逐条读过代码、
+读过协议文档、写过复现测试再改，结论如下。**12 条确认为真并已修，1 条（U5）
+拆成两半**：一半是真缺陷（已修），一半是设计语义（不改，理由写进 `SPEC.md`）。
 
-| # | 线索 | 位置 |
-|---|---|---|
-| U1 | 逐块累加 usage 与其上方注释「调用方**只认末块**，不能逐块累加」自相矛盾；对标准 OpenAI/Anthropic 正确，但每块都发 usage 的网关会重复计数 | `bot_model_loop.rs:1890` vs `:262` |
-| U2 | `/stop` 未覆盖两处长 await（终稿自检 `summarize_http`、replan），各可烧 60s + 120s，UI 停在「收尾中」像是停止失灵 | `bot_model_loop.rs:2386`、`:2733` |
-| U3 | 开了 extended thinking 时 assistant 轮不回传 thinking 块，Anthropic 文档称 tool_result 轮缺 thinking 会报错 | `bot_anthropic.rs:370` |
-| U4 | `total - head_keep - tail_keep` 在收缩守卫之前计算，无符号减法 | `bot/compaction.rs:158` |
-| U5 | 父会话 `/stop` 或会话删除都不级联取消子 agent（子 agent 继续烧到预算耗尽）；设计文档未规定是否该级联，需产品确认 | `bot_orchestrator.rs:1968` |
-| U6 | `extract_path_check` / `tool_link_file_to_task` 在 async 函数里直接跑同步 syscall（含 per-task `canonicalize` 循环）；同文件 :86 有正确范式 `spawn_blocking_map` | `bot/tools.rs:1264`、`:1132` |
-| U7 | 读路径的 inode 复核不覆盖实际读取（fd 在闭包内 drop，`read_capped_file` 重开路径）；默认读白名单含 `~/Downloads`。作者自己记为「Phase 6」待办 | `bot_fs.rs:1352` / `:1458` |
-| U8 | `spawn_subagent` 无幂等键：LLM 重复调用会建两条活行，各拿一份完整预算 | `bot_orchestrator.rs:240` |
-| U9 | runner panic 时 `subagent_stops` 条目泄漏（RAII 未覆盖该表）且不发 `subagent-finished`，前端该行永远转圈 | `bot_orchestrator.rs:1950` |
-| U10 | `clipboard_write` / `run_python` 标 `mutating: false`，幻觉防护拿不到凭据回执。影响有限——`MUTATING_TOOLS` 不参与任何确认弹窗 | `bot/registry.rs:1360`、`:1228` |
-| U11 | `tool.return` 四个早退分支里有两处手搓 kv，未走 `tool_return_kv` 构造器；键集当前一致，但将来加键会漏这两处 | `bot/dispatch.rs:500`、`:545` |
-| U12 | 任务工具 schema 指向已不存在的 `list_tasks`（已并入 `query_tasks`）与 `[已选任务]` 块 | `bot/registry.rs:195` |
-| U13 | `edit_file` 空白容错重建时丢掉 `newString` 请求的尾换行；混合 EOL 文件被整体归一 | `bot_fs.rs:747` |
+| # | 核对结论 | 处置 | 提交 |
+|---|---|---|---|
+| U1 | **真**，但触发面比线索窄：标准 OpenAI/Anthropic 的 `usage` 是**累计总量**（末块即总量），逐块 `+=` 才会翻倍；翻车的是「每块都发 usage」的网关 | 按**字段**取最后一次非零值（`merge_stream_usage`），不整块替换 | `129bf03` |
+| U2 | **真**：终稿自检（60s）与 replan（120s）两处 await 之前没有 stop 检查 | 两处各加 stop 检查 + 源码扫描守卫 | `231d8961` |
+| U3 | **真**：Anthropic 官方口径要求 assistant 轮原样回传 thinking/redacted_thinking 块，丢块在 tool_result 轮会 400 | 按官方口径原样回传（含 signature），OpenAI 路径剥掉；400 且含 thinking+signature 时删块重试一次 | `3c87d87a` |
+| U4 | **真**：`total - head_keep - tail_keep` 在收缩守卫之前算，无符号下溢 | 长度守卫提到所有分支之前（短于 head+tail 本就没得压）+ `saturating_sub` | `e5e162b` |
+| U5 | **一半真**：`/stop` 不级联=**设计语义**（非阻塞派发 + 后台汇报轮，`/stop` 只停本会话当前这次交互执行）；**删会话不级联=真缺陷**（产物没人收、行没人看得见，还照烧完整份预算） | `/stop` 不改（口径写进 `SPEC.md`）；删会话连带取消在途子 agent | `c98fb6e` |
+| U6 | **真**：两个 async 工具函数里直接跑同步 syscall（含 per-task `canonicalize` 循环），阻塞 runtime 线程 | 搬进 `spawn_blocking_map`，同步内核抽成可被守卫判定的纯函数 | `690b915` |
+| U7 | **真**，且比线索记的更实：不是「复核窗口没覆盖读取」，是**复核根本没管住读到的内容**——复核用的 fd 在闭包内 drop，真正读内容时按路径重新 open | 复核、判二进制、读内容合并到**同一个 fd**（一次 open） | `b0002fc` |
+| U8 | **真**：`spawn_subagent_locked` 无条件插新行，重复调用建两条活行、各拿一份完整预算 | 服务端幂等键（父会话 + 档位 + 目标 + 验收标准 + 指定模型，只认活着行） | `88ae51b` |
+| U9 | **真**：runner panic 会跳过整条收尾——取消令牌不反注册、`subagent-finished` 不发，前端那一行永远转圈 | panic 捕获归一成普通失败 + RAII 反注册守卫 | `f956873` |
+| U10 | **真，但影响面比线索写的小**：线索说「`clipboard_write`/`run_python` 标 `mutating: false`」，实测真正缺凭据的是**变更声称**这道闸（落盘凭证闸已经放行过它们） | 把「不可核验但确实改状态」纳入变更声称闸的凭据口径 | `08f4cf0` |
+| U11 | **真**（当前键集一致，不是当下的 bug，是将来加键会漏） | 两处早退改走 `tool_return_kv` 构造器 | `caabe2d` |
+| U12 | **真**：任务工具 schema 指向已下线的 `list_tasks` | 改 `query_tasks` + 同步 schema 基线 + 退役工具名守卫 | `5708252` |
+| U13 | **真**：空白容错分支按行重建全文 → 混合 EOL 被整体归一、`newString` 尾换行丢失 | 改按**字节区间**拼接，区间外内容连其换行原样保留 | `98fd1b2` |
+
+### U1–U13 怎么修的
+
+**U1 usage 逐块累加**（`129bf03`）：新增纯函数 `merge_stream_usage`——按**字段**
+取最后一次非零值，而不是逐块 `+=`，也不是整块替换（整块替换会把 Anthropic 的
+input 抹成 0）。四个局部变量合并成一个 `TokenUsage` 累加器。测试 3 条，其中一条
+专门钉住「Anthropic `message_start` 给 input、`message_delta` 给 output，两个
+字段都得留住」。
+
+**U2 `/stop` 覆盖两处长 await**（`231d8961`）：终稿自检（`summarize_http`，60s）
+与 replan（planner，60s）前各加一次 stop 检查。接线点用**源码扫描守卫**
+`stop_guard_tests` 锁住（前缀 rfind 取最后一次 stop 检查、距离 ≤4000 字节、
+中间无 `.await`）——行为级用例测不到「检查点还在不在那个位置上」。
+
+**U3 Anthropic thinking 块未回传**（`3c87d87a`）：按 Anthropic 官方文档「请将
+助手轮次原样回传，包括思考块」实现：解析 `content_block_start` 的
+thinking/redacted_thinking 与 delta 的 thinking_delta/signature_delta，块随
+assistant 消息入历史（放 provider 专属键 `anthropic_thinking`），转 Anthropic
+协议时原样回放且排最前，OpenAI 路径剥掉。thinking 块只活在单次 run 内（不落库），
+跨 run 无签名失效风险；同 run 内前缀稳定，砍历史导致前缀变化时由「400 且响应体含
+thinking+signature → 删块重试一次」兜底。测试 8 条。
+
+**U4 无符号减法下溢**（`e5e162b`）：长度守卫从 `else if` 提到所有分支之前——短于
+head+tail 的文本本就没得压，而这道守卫又是 `total - head_keep - tail_keep` 不
+下溢的前提；减法改 `saturating_sub` 双保险。红/绿对照过（panic: attempt to
+subtract with overflow @ compaction.rs:158）。
+
+**U5 父会话 `/stop` 不级联取消子 agent**（`c98fb6e`）：分两半处理。
+`/stop` 那半**不改**——`spawn_subagent` 是非阻塞派发，结果由后台汇报轮回灌父
+会话；`/stop` 的语义是「停本会话当前这次交互执行」（`check_subagent` 等待期响应
+`/stop` 就是这个意思：停了等待不等于杀了后台活），子 agent 行在聊天内嵌区与右侧栏
+可见可单独取消。删会话那半**是缺陷**——父会话没了，产物没人收、行没人看得见，
+子 agent 却照烧完整份预算、照落盘写文件；改成删会话时把在途行（`parent_session_id`
+或 `session_id` 挂在该会话下的 queued/running 行）一并置 `cancelled`，行留着不删
+（runner 收尾还要读它），置终态后 runner 的 2s watcher 见到终态即停工具循环。
+
+**U6 async 里跑同步 syscall**（`690b915`）：`extract_path_check` /
+`tool_link_file_to_task` 的 canonicalize/exists/gen_dir 搬进 `spawn_blocking_map`；
+同步内核抽成非 async 的 `probe_paths_sync`（返 `PathProbe`）与
+`any_bound_path_matches`，让「async 函数体内无裸 syscall」可被守卫判定。报错文案
+与判定口径逐条保持原样。守卫 `sync_syscall_off_runtime_tests`。
+
+**U7 读路径 inode 复核不覆盖实际读取**（`b0002fc`）：`is_binary_file_with_ino_check`
++ `read_capped_file` 合并成 `read_with_ino_check`——**一次 open**，同一个 fd 上
+stat 比对 inode → 读内容 → 前 8KB 判二进制；inode 不一致时内容一概不返回。顺带
+删掉被孤儿化的 async `read_capped_file`。unix 保持 inode 比对，Windows 仍无
+TOCTOU 保护（既有设计选择，非缺陷）。测试 3 条 + 接线守卫 2 条（读路径只开一次
+文件；守卫已用注入二次 open 实测过会红）。
+
+**U8 `spawn_subagent` 无幂等键**（`88ae51b`）：幂等键由**服务端派生**（不指望模型
+给稳定 key）：同一父会话里，档位 / 目标 / 验收标准 / 指定模型全同，且那一条**还
+活着**（queued/running）。命中就返回同一个 `subagentId`：不建行、不发事件、
+**不再起第二个 runner**（起第二个就是同一份活跑两遍、各烧一份预算）。取舍：已
+终态的不参与去重（「再跑一次」是重试语义）；跨父会话不去重；拿不到父会话 id 时
+宁可多建一行；键里不含 onion（onion 不落库，加列要动 schema，而「同目标同验收
+却换了配置档」几乎不会出现）。回执文案分两种形态——新建说「已派发」，命中幂等键
+说「未重复派发」，模型照抄不会把一个子 agent 说成两个。
+
+**U9 runner panic 泄露**（`f956873`）：runner future 包 `catch_unwind()`（bot_scheduler
+既有范式），panic 经 `panic_to_command_error` 归一成 `CommandError::Internal` 走
+正常收尾（行落 failed、发 `subagent-finished`）；另加 `StopTokenGuard`（Drop 反注册
+`subagent_stops`）兜 panic 路径。测试 2 条。
+
+**U10 变更声称守卫拿不到凭证**（`08f4cf0`）：线索指 `clipboard_write`/`run_python`
+的 `mutating: false`，实测真正缺凭据的是**变更声称**这道闸（落盘凭证闸已经放行过
+它们）。把已有的 `unverifiable_ran`（run_python / mcp_* / spawn_subagent）从落盘
+凭证闸**提升**到变更声称闸，抽纯函数 `claim_mutation_fires`。**有意不改
+`mutating` 标志**：给 run_python 加 mutating 会触发工具结果自检，自检判「不符预期」
+会让模型重跑脚本，副作用翻倍；clipboard_write 没有声称话术，标记只多一轮无意义
+自检。测试 2 条。
+
+**U11 `tool.return` 手搓 kv**（`caabe2d`）：预算触顶、入参 JSON 非法两处早退改走
+`tool_return_kv` 构造器；守卫扩到三处分支（锚点用事件名，避免自匹配）。
+
+**U12 schema 点名已下线工具**（`5708252`）：`SCHEMA_COMPLETE_TASK` 的 taskId
+描述 `list_tasks` → `query_tasks`；同步 `tests/fixtures/tools_baseline.json`；新增
+守卫 `retired_tool_names_absent_from_schemas`。
+
+**U13 `edit_file` 空白容错**（`98fd1b2`）：空白容错分支不再按行重建全文，改按
+**字节区间**拼接（新增 `line_ranges` / `dominant_eol` / `normalize_eol`）；区间外
+内容连其换行原样保留（混合 EOL 不再被整体归一）；`newString` 尾换行保留（与精确
+分支 `replacen` 语义对齐）。测试 2 条，红/绿对照过。
 
 ---
 
@@ -362,6 +461,47 @@ tests-audit/               26 条全过（须逐个点名 pytest 文件，整目
 > 提交里，提交信息对不上）。未重写历史以免干扰对方——代码本身已入库，
 > 改动内容见 §一「N1 怎么修的」。
 
+### 第三轮（U1–U13 逐条核对修复）
+
+§五那 13 条是子代理的线索不是结论。第三轮逐条读过代码、读过 Anthropic 官方
+协议文档，**先写复现测试再改**，每条单独提交（12 条修，U5 拆两半修一半留一半）。
+修法与取舍逐条写在 §五「U1–U13 怎么修的」。
+
+红/绿对照做了 6 条：U1（改回逐块累加即红）、U2（挪走 stop 检查即红）、
+U4（还原下溢即红）、U7（注入二次 open 即红）、U8（摘掉幂等查表即红）、
+U13（还原按行重建即红）。U3 与 U6 也做过对照。U9 / U10 / U11 / U12 的新用例
+与修复一并写出、修复后转绿，其中 U12 是**既有基线对拍**直接红（`complete_task`
+在基线前 28 项内，schema 一改基线就漂）。
+
+接线守卫 6 条（U2 stop 检查位置、U6 async 内无裸 syscall、U7 读路径只开一次
+文件、U8 deduped 早退早于 runner 派发、U10 变更声称凭据口径、U12 退役工具名不
+出现在 schema）：这类「调用点是否存在 / 接线是否正确」单测验不到，用源码扫描
+钉住。
+
+```
+cargo nextest run       1764 passed / 7 skipped
+cargo test --lib        1587 passed / 5 ignored
+cargo fmt --all -- --check ✓
+npx tsc --noEmit           ✓
+npx oxlint src             ✓（exit 0，仅既有 warning）
+npx vitest run             85 文件 / 880 用例全绿
+tests-audit/               26 条全过（须逐个点名 pytest 文件，整目录跑会静默放过）
+```
+
+> 这几个数是**工作区当前值**，含并发会话同期提交（动效 / 任务卡编辑那批）带来的
+> 用例增量，不是本轮 13 条修复的净增量——本轮的净增量见上面「本轮新增测试」
+> 一段。
+
+本轮新增测试：`bot_model_loop.rs`（U1 usage 合并 3 条 + U10 变更声称口径 2 条 +
+U2 stop 守卫）、`bot_anthropic.rs`（U3 thinking 8 条）、`bot/compaction.rs`
+（U4 2 条）、`bot/dispatch.rs`（U11 守卫）、`bot/registry.rs`（U12 退役工具名
+守卫）、`bot_fs.rs`（U13 2 条、U7 3+2 条）、`bot/tools.rs`（U6 守卫）、
+`bot_orchestrator.rs`（U9 2 条、U8 8 条）、`db/mod.rs`（U5 2 条）。
+
+> U5 的 `/stop` 那半**故意不改**：`spawn_subagent` 是非阻塞派发、结果由后台汇报
+> 轮回灌，`/stop` 只停本会话当前这次交互执行。改它等于把「后台干活」这个设计
+> 前提推翻。口径已写进 `SPEC.md`，不再是悬案。
+
 ---
 
 ## 八、遗留
@@ -374,4 +514,10 @@ tests-audit/               26 条全过（须逐个点名 pytest 文件，整目
   静默不绿（L4 已修，但它的成因还在——行数标注靠人肉同步，改大文件就会
   再漂一次）。建议在 pre-push 里加一条「用例收集数不得下降」的对拍，
   成本极低，能挡住 L2 这类回归。
-- §五「待复核 U1–U13」尚未逐条核对——那是下一轮的活。
+- §五「待复核 U1–U13」**已逐条核对**（第三轮）：12 条确认为真并已修，U5 拆两半
+  （删会话那半已修，`/stop` 那半是设计语义、不改）。原表是子代理的线索不是
+  结论——其中 U10 的定位（指向 `mutating: false`）实测有偏差：真正缺凭据的是
+  变更声称那道闸，不是落盘凭证闸。
+- 剩下三处**有意留白**（都不是本轮该动的）：U3 的「400 + thinking+signature →
+  删块重试一次」只兜一次；U8 的幂等键不含 onion（onion 不落库）；U7 在 Windows
+  端仍无 TOCTOU 保护（既有设计选择，follow-up 记在 `Phase 6`）。
