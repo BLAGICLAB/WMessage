@@ -111,7 +111,7 @@ export function DayGridMini({
                   className="relative border-l border-[var(--edge)] last:border-r"
                   style={{
                     opacity: dimmed ? 0.25 : 1,
-                    transition: "opacity .15s ease",
+                    transition: "opacity var(--dur-card) var(--ease-out)",
                   }}
                 >
                   {[2, 4, 6, 8].map((tick) => (

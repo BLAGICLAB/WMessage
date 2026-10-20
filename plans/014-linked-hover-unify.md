@@ -1,7 +1,7 @@
 # 014 — 首页联动 hover 三个组件统一成一种响应
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §7 Cohesion & tokens / §8 Missed opportunities
 - **Estimated scope**: 3 个 tsx，约 10 行改动
@@ -170,3 +170,44 @@ transition: "opacity 0.15s cubic-bezier(0.23, 1, 0.32, 1)"
   - `GraphMini.tsx` 的 `<line>` 与 `<circle>` 都带上了 `style.transition`。
   - 上面那条测试全绿。
 
+
+## 落地记录：**SVG presentation attribute 变化不触发 CSS 过渡**
+
+本计划 Target 节给 `GraphMini` 的 `<line>` / `<circle>` 加 `style.transition`，但
+**照那样写，过渡一条都不会生效**。Chromium 实测（本地探针，逐帧采样 computed 值）：
+
+| 属性 | 改法 | 是否补间 |
+| --- | --- | --- |
+| `r` | `setAttribute("r", …)` | **否**（全程终值，`getAnimations()` 为空） |
+| `r` | `style.r = "24px"` | **是**（20 → 20.83 → 40px） |
+| `opacity` | `setAttribute("opacity", …)` | **否**（全程终值） |
+| `opacity` | `style.opacity = "0.3"` | **是**（1 → 0.967 → 0.3） |
+| `stroke-width` | `setAttribute("stroke-width", …)` | **否**（1px → 6px 直跳） |
+
+即：**只有走 CSS 属性（style）的变化才补间；presentation attribute 变化不补间**。
+`CSS.supports("transition-property", "r")` 是 true（属性被识别），但这不等于
+attribute 变化会触发过渡——所以「浏览器支持 SVG 几何属性」这个前提本身没错，
+错在**值的来源**。
+
+React 把 JSX 上的 `r={…}` / `opacity={…}` / `strokeWidth={…}` 渲染成**属性**，
+所以这三项必须搬到 `style` 里：
+
+```tsx
+                <circle
+                  ...
+                  style={{
+                    r: `${hot ? r + 0.8 : r}px`,
+                    strokeWidth: `${hot ? 0.9 : 0.4}px`,
+                    opacity: dim ? 0.22 : 1,
+                    transition:
+                      "opacity var(--dur-card) var(--ease-out), r var(--dur-card) var(--ease-out), stroke-width var(--dur-card) var(--ease-out)",
+                  }}
+```
+
+（`fill` / `stroke` 不参与过渡，保持属性即可。）
+
+**连带改了两条既有断言**：`HomePage.test.tsx` 与 `GraphMini.test.tsx` 里用属性
+选择器 `[opacity='0.22']` / `getAttribute("opacity")` 找降透明的节点。产品行为
+没变（无关节点仍然降透明到 0.22），变的只是「这个值放在哪」——断言跟着改成读
+`style.opacity`。静态锁同时钉住「这三个值必须在 style 上、不得退回属性」，
+退回属性等于静默失效（过渡没了，但代码看着是对的）。

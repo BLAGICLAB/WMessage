@@ -24,7 +24,7 @@
 | [011](011-modal-entrance.md) | 共享 Modal 壳加入场动效 | MEDIUM | §8 / §2 | 001（token） | TODO |
 | [012](012-card-opacity-transition.md) | 整卡透明度切换补上 opacity 过渡腿 | MEDIUM | §3 / §8 | 001（token）+ 001 先于本条改 `.nm-card` 过渡 | 已完成 |
 | [013](013-framer-motion-transform-string.md) | framer-motion 的 y 简写改成完整 transform 串 | MEDIUM | §5 | — | TODO |
-| [014](014-linked-hover-unify.md) | 首页联动 hover 三个组件统一成一种响应 | MEDIUM | §7 / §8 | 001（token） | TODO |
+| [014](014-linked-hover-unify.md) | 首页联动 hover 三个组件统一成一种响应 | MEDIUM | §7 / §8 | 001（token） | 已完成 |
 | [015](015-reduced-motion-activity-signal.md) | 减少动效下保住「还在跑」的活动信号 | MEDIUM | §6 | — | TODO |
 | [016](016-archive-locate-reduced-motion.md) | 归档定位的平滑滚动要听减少动效的话 | MEDIUM | §6 | — | TODO |
 | [017](017-command-palette-instant-highlight.md) | ⌘K 命令面板的键盘高亮改为瞬时 | MEDIUM | §1 / §7 | **必须晚于 001** | TODO |

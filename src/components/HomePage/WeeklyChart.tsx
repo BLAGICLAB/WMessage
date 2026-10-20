@@ -170,7 +170,7 @@ export function WeeklyChart({
                 key={d.key}
                 data-testid={`week-plan-${i}`}
                 fill={d.isToday ? "var(--accent)" : "var(--plan-slate)"}
-                style={{ opacity: cellOpacity(i), transition: "opacity .15s ease" }}
+                style={{ opacity: cellOpacity(i), transition: "opacity var(--dur-card) var(--ease-out)" }}
               />
             ))}
           </Bar>
@@ -180,7 +180,7 @@ export function WeeklyChart({
                 key={d.key}
                 data-testid={`week-done-${i}`}
                 fill="var(--plan-green)"
-                style={{ opacity: cellOpacity(i), transition: "opacity .15s ease" }}
+                style={{ opacity: cellOpacity(i), transition: "opacity var(--dur-card) var(--ease-out)" }}
               />
             ))}
           </Bar>

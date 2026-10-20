@@ -433,9 +433,11 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     const nodes = document.querySelectorAll("[data-testid^='graph-node-']");
     expect(nodes.length).toBeGreaterThanOrEqual(5);
     fireEvent.mouseEnter(nodes[0]);
-    // 指向节点后，图谱内出现降透明的无关节点（Dim）
-    const dimmed = document.querySelectorAll(
-      "[data-testid^='graph-node-'][opacity='0.22']",
+    // 指向节点后，图谱内出现降透明的无关节点（Dim）。
+    // 透明度走 style 而不是 SVG 属性：属性变化不触发 CSS 过渡（Chromium 实测），
+    // 而过渡正是这条联动要的效果——断言跟着改成读 style。
+    const dimmed = [...document.querySelectorAll("[data-testid^='graph-node-']")].filter(
+      (el) => (el as HTMLElement).style.opacity === "0.22",
     );
     expect(dimmed.length).toBeGreaterThanOrEqual(1);
     fireEvent.mouseLeave(nodes[0]);
@@ -507,5 +509,36 @@ describe("完成率进度条的百分比文字", () => {
     const src = readFileSync("src/components/HomePage/HomeHeader.tsx", "utf-8");
     expect(src).not.toMatch(/\{pct >= 18 &&/);
     expect(src).toMatch(/opacity: pct >= 18 \? 1 : 0/);
+  });
+});
+
+describe("首页联动 hover 的过渡口径", () => {
+  // 周图柱、日历列、图谱节点三处必须同一套过渡：指针扫过时「成组」地一起变，
+  // 不能一个渐变一个硬切。
+  it("三个组件的过渡口径一致（token 形式，无手写 .15s ease）", () => {
+    const graph = readFileSync("src/components/HomePage/GraphMini.tsx", "utf-8");
+    // 图谱的连线与节点：opacity / r / stroke-width 三项一起补间
+    expect(graph).toMatch(/opacity var\(--dur-card\) var\(--ease-out\)/);
+    expect(graph).toMatch(/r var\(--dur-card\) var\(--ease-out\)/);
+    expect(graph).toMatch(/stroke-width var\(--dur-card\) var\(--ease-out\)/);
+    // 这三项必须走 style：SVG 的 presentation attribute 变化不触发 CSS 过渡
+    // （Chromium 实测：属性方式改 r / opacity / stroke-width 都不补间，
+    //  CSS 属性方式才逐帧插值）——放回属性等于静默失效
+    const line = graph.match(/<line[\s\S]*?\/>/)?.[0] ?? "";
+    const circle = graph.match(/<circle[\s\S]*?\/>/)?.[0] ?? "";
+    expect(line).not.toMatch(/\sopacity=/);
+    expect(line).not.toMatch(/\sstrokeWidth=/);
+    expect(circle).not.toMatch(/\sopacity=/);
+    expect(circle).not.toMatch(/\sstrokeWidth=/);
+    expect(circle).not.toMatch(/\sr=/);
+    for (const f of [
+      "src/components/HomePage/WeeklyChart.tsx",
+      "src/components/HomePage/DayGridMini.tsx",
+    ]) {
+      expect(readFileSync(f, "utf-8")).not.toContain("opacity .15s ease");
+      expect(readFileSync(f, "utf-8")).toMatch(
+        /transition: "opacity var\(--dur-card\) var\(--ease-out\)"/,
+      );
+    }
   });
 });

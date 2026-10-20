@@ -174,8 +174,14 @@ export function GraphMini({
                   x2={t.x}
                   y2={t.y}
                   stroke="var(--edge-strong)"
-                  strokeWidth={hot ? 0.8 : 0.5}
-                  opacity={activeTaskId ? (hot ? 0.9 : 0.12) : 0.6}
+                  /* 这三项走 style 而不是属性：SVG 的 presentation attribute
+                     变化不触发 CSS 过渡（Chromium 实测），只有 CSS 属性变化才补间 */
+                  style={{
+                    strokeWidth: `${hot ? 0.8 : 0.5}px`,
+                    opacity: activeTaskId ? (hot ? 0.9 : 0.12) : 0.6,
+                    transition:
+                      "opacity var(--dur-card) var(--ease-out), stroke-width var(--dur-card) var(--ease-out)",
+                  }}
                 />
               );
             })}
@@ -196,11 +202,16 @@ export function GraphMini({
                   key={node.id}
                   cx={x}
                   cy={y}
-                  r={hot ? r + 0.8 : r}
                   fill={lit ? "var(--accent)" : fill}
-                  opacity={dim ? 0.22 : 1}
                   stroke={hot ? "var(--accent)" : "var(--surface)"}
-                  strokeWidth={hot ? 0.9 : 0.4}
+                  /* 同上：走 style 才有过渡（属性变化不触发 CSS 过渡） */
+                  style={{
+                    r: `${hot ? r + 0.8 : r}px`,
+                    strokeWidth: `${hot ? 0.9 : 0.4}px`,
+                    opacity: dim ? 0.22 : 1,
+                    transition:
+                      "opacity var(--dur-card) var(--ease-out), r var(--dur-card) var(--ease-out), stroke-width var(--dur-card) var(--ease-out)",
+                  }}
                   className="cursor-pointer"
                   data-testid={`graph-node-${node.id}`}
                   onMouseEnter={() => node.task && onHoverTask(node.task)}
