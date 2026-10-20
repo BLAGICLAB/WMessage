@@ -43,8 +43,9 @@ src-tauri/src/
 │   │                     （USAGE_STATS_MAX_DAYS）各一份常量，命令与设置页公示共用
 │   │                     痕迹表也是幻觉守卫的证据源：file_paths_with_receipt（某路径历史上
 │   │                     有没有工具写过，按 path COLLATE NOCASE 走索引）/
-│   │                     session_ran_unverifiable_writer（本会话跑过 run_python / MCP
-│   │                     这类自己就能写盘、无从确证的工具 → 守卫的落盘凭证闸整批让开）
+│   │                     不可证伪写入通道（run_python / MCP 这类自己就能写盘、
+│   │                     无从确证的工具）不再查库：让开口径从会话级改成提问级，
+│   │                     判在模型循环侧（本次提问跑过就让开那一轮）
 │   ├── db/apps.rs        程序 apps 表 CRUD + app_runs 运行史 + app_versions 版本快照
 │   │                     （滚动保留最近 100 版，见 docs/APPS-DESIGN-2026-10-15.md §5）
 │   └── workspace.rs      workspace / bind_files
@@ -95,7 +96,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (4779) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (4816) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
@@ -111,7 +112,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (2599)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (2661)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1437)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+

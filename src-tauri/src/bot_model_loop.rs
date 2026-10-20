@@ -844,10 +844,6 @@ pub struct ModelLoopDeps<'a> {
     /// 入参是（会话 id，候选路径），返回「查不到落盘凭证」的那部分。闭包在薄壳
     /// 侧装配——那里有 AppHandle，能开库；core 保持可注入 mock（测试直驱 core
     /// 时传 None = 不查凭证，路径存在性那道闸照旧生效）。
-    ///
-    /// 闭包内部负责两件事：查库看这些路径历史上有没有被工具写过；本会话有没有
-    /// 跑过自己就能写盘的工具（run_python / MCP）——后者命中就整批让开
-    /// （无从确证 ≠ 编造）。
     pub file_receipts: Option<&'a (dyn Fn(Option<&str>, &[String]) -> Vec<String> + Send + Sync)>,
 }
 
@@ -1235,10 +1231,8 @@ pub async fn run_model_loop(
         // 落盘凭证查询：返回「查不到凭证」的候选路径。查库失败一律返回空
         // （= 全部放行）——查不到证据不等于有罪，宁可漏判不可误伤。
         file_receipts: Some(&|sid: Option<&str>, paths: &[String]| {
-            let Some(sid) = sid else {
-                return Vec::new();
-            };
-            if paths.is_empty() {
+            // 没有会话 id 就不查：查不到证据不等于有罪，宁可漏判不可误伤。
+            if sid.is_none() || paths.is_empty() {
                 return Vec::new();
             }
             let conn = match crate::db::open_db(&app) {
@@ -1253,22 +1247,6 @@ pub async fn run_model_loop(
                     return Vec::new();
                 }
             };
-            // 本会话跑过自己就能写盘的工具（run_python 无文件系统隔离、MCP 在
-            // 外部服务里执行）——它们能写出文件却不经过我们的凭证，「没凭证」
-            // 推不出「不是工具产物」，整批让开。
-            match crate::db::trace::session_ran_unverifiable_writer(&conn, sid) {
-                Ok(true) => return Vec::new(),
-                Ok(false) => {}
-                Err(e) => {
-                    crate::audit::write_event(
-                        &app,
-                        crate::audit::AuditLevel::Warn,
-                        "bot.file_receipts_unverifiable_check_fail",
-                        &[("error", e)],
-                    );
-                    return Vec::new();
-                }
-            }
             let written = match crate::db::trace::file_paths_with_receipt(&conn, paths) {
                 Ok(v) => v,
                 Err(e) => {
@@ -2430,12 +2408,20 @@ where
             // 没必要再查库。
             let mut unreceipted_path: Option<String> = None;
             if fake_gen_path.is_none() && !claimed_paths.is_empty() {
-                // 本提问跑过「自己能写盘、我们无从确证」的工具（run_python 无文件
+                // 本次提问跑过「自己能写盘、我们无从确证」的工具（run_python 无文件
                 // 系统隔离、MCP 工具在外部服务里执行）——它们能写出文件却不经过
                 // 我们的凭证，「没凭证」推不出「不是工具产物」，这道必须让开。
+                //
+                // 口径是**本次提问**，不是整个会话：早先按会话判，一次 run_python
+                // 会把这条会话后续所有提问的凭证闸全打死。
+                //
+                // 派过子 agent 也让开：子 agent 的调用不落我们的痕迹表（它的
+                // trace_id 是 'trc_xxx' 字符串，与 exec_spans 的整数 trace_id 类型
+                // 都对不上，join 永远不成立），它写的文件在这道闸眼里永远没凭证。
                 let unverifiable_ran = receipts
                     .iter()
-                    .any(|n| n == "run_python" || n.starts_with("mcp_"));
+                    .any(|n| n == "run_python" || n.starts_with("mcp_"))
+                    || receipts.iter().any(|n| n == "spawn_subagent");
                 if !unverifiable_ran {
                     let pending: Vec<String> = claimed_paths
                         .iter()

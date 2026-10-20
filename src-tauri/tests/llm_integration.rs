@@ -3654,3 +3654,56 @@ async fn core_claimed_doc_without_receipt_is_blocked() {
     assert_eq!(server.request_count(), 2, "应返工一轮");
     assert!(text.contains("不是我导出的"), "模型应被要求改口：{text:?}");
 }
+
+/// 不可证伪的写入通道按**本次提问**让开，不是整条会话。
+///
+/// 本次提问跑过 run_python（它能写盘、但走的是我们没有凭证的通道）→ 落盘凭证
+/// 那道判据让开。早先按会话判：一次 run_python 会把这条会话后续所有提问的凭证
+/// 闸全打死——那不是「无从确证」，那是把闸门焊死。
+#[tokio::test]
+async fn core_unverifiable_writer_exemption_is_per_question() {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("不是我生成的.pdf");
+    std::fs::write(&doc, b"pdf").unwrap();
+
+    let server = MockLlmServer::start();
+    // 本次提问先跑一次 run_python（自己写盘的通道，我们拿不到它的落盘凭证）
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "run_python".into(),
+        arguments: r#"{"code":"print('done')"}"#.into(),
+    }));
+    server.push_behavior(MockBehavior::TextReply(format!(
+        "已导出 PDF 文档：{}",
+        doc.display()
+    )));
+
+    let h = CoreHarness::new();
+    let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // 这个路径查不到落盘凭证：run_python 写的东西走的是我们没有凭证的通道
+    h.file_receipts_missing
+        .lock()
+        .unwrap()
+        .push(doc.to_string_lossy().into_owned());
+    let deps = deps_capturing_logs(&h, &logs);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("ok", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &deps,
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("让开时应直接 Ok");
+    assert_eq!(server.request_count(), 2, "不该返工");
+    let lines = logs.lock().unwrap().clone();
+    assert!(
+        !lines.iter().any(|l| l.contains("hallucination_guard")),
+        "本次提问跑过不可证伪的写入通道，凭证闸应让开：{lines:?}"
+    );
+    assert!(text.contains("已导出 PDF 文档"), "应原样返回：{text:?}");
+}

@@ -565,34 +565,6 @@ pub fn file_paths_with_receipt(
     Ok(out)
 }
 
-/// 本会话是否跑过「自己能写盘、我们无从确证」的工具。
-///
-/// `run_python` 无文件系统隔离（SPEC 明说：完整 stdlib + 用户权限执行），MCP
-/// 工具由外部服务执行——两者都能写出文件、但不经过我们的落盘凭证。跑过这类工具
-/// 时，「某路径没有凭证」推不出「它不是工具产物」，这一项判定必须让开。
-///
-/// 口径只认本会话的 trace（子 agent 的 trace 记在 subagents.trace_id 下，但
-/// 它的 span 仍挂在本会话的 trace 上——子 agent 复用主会话的 trace 根）。
-///
-/// MCP 工具名形如 `mcp_{服务器}_{工具}`（`bot::mcp::config::mcp_tool_name`），
-/// 这里用 GLOB 配字面前缀——LIKE 里 `_` 是通配符，配不出「字面 mcp_ 开头」。
-pub fn session_ran_unverifiable_writer(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT 1 FROM exec_spans s
-             JOIN exec_traces t ON s.trace_id = t.id
-             WHERE t.session_id = ?1
-               AND (s.name = 'run_python' OR s.name GLOB 'mcp_*')
-             LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?;
-    let hit: Option<i64> = stmt.query_row([session_id], |r| r.get(0)).ok();
-    Ok(hit.is_some())
-}
-
 pub fn file_changes_for_trace(
     conn: &rusqlite::Connection,
     trace_id: i64,
@@ -2209,52 +2181,6 @@ mod tests {
         );
     }
 
-    /// 不可证伪写入通道：跑过 run_python / MCP 工具的会话要能被认出来
-    #[test]
-    fn session_ran_unverifiable_writer_detects_python_and_mcp() {
-        let conn = setup_conn();
-        let plain = mk_trace(&conn, "s-plain", None, "chat", 1000);
-        let py = mk_trace(&conn, "s-py", None, "chat", 1000);
-        let mcp = mk_trace(&conn, "s-mcp", None, "chat", 1000);
-        let mut add_span = |conn: &rusqlite::Connection, tid: i64, name: &str| {
-            span_insert(
-                conn,
-                &NewSpan {
-                    trace_id: tid,
-                    turn: 1,
-                    tool_call_id: None,
-                    name,
-                    args: None,
-                    result: None,
-                    ok: true,
-                    error_class: None,
-                    duration_ms: None,
-                    created_at: 1001,
-                },
-            )
-            .unwrap();
-        };
-        add_span(&conn, plain, "write_file");
-        add_span(&conn, py, "run_python");
-        add_span(&conn, mcp, "mcp_fs_read_file");
-
-        assert!(
-            !session_ran_unverifiable_writer(&conn, "s-plain").unwrap(),
-            "普通写盘工具不构成不可证伪通道"
-        );
-        assert!(
-            session_ran_unverifiable_writer(&conn, "s-py").unwrap(),
-            "run_python 自己能写盘，判定要让它开"
-        );
-        assert!(
-            session_ran_unverifiable_writer(&conn, "s-mcp").unwrap(),
-            "MCP 工具在外部服务执行，判定要让它开"
-        );
-        assert!(
-            !session_ran_unverifiable_writer(&conn, "s-absent").unwrap(),
-            "没跑过这类工具的会话不应被误开"
-        );
-    }
     /// 凭证查询必须走 path 索引（守卫每次判定都查这道，痕迹表会一直长）
     ///
     /// 索引建在 `path COLLATE NOCASE` 上，查询侧得同款写法才走得上去——
