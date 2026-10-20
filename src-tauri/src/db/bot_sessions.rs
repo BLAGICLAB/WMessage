@@ -177,6 +177,24 @@ pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Co
         [id],
     )
     .map_err(|e| CommandError::DbError(e.to_string()))?;
+    // 在途子 agent 一并取消：父会话没了，它的产物没人收、它的行没人看得见，
+    // 再跑下去是纯浪费（烧完整份预算、还照落盘写文件）。置终态后 runner 的
+    // 2s watcher 见到终态即停工具循环。
+    //
+    // 行留着不删——runner 收尾还要读它（删了 finalize 找不到行）。
+    let live = crate::db::subagents::load_live_subagents_by_session(&tx, id)
+        .map_err(CommandError::DbError)?;
+    let now = chrono::Utc::now().timestamp_millis();
+    for row in live {
+        crate::db::subagents::update_subagent_status(
+            &tx,
+            &row.id,
+            crate::db::subagents::SubagentStatus::Cancelled,
+            now,
+            Some("父会话已删除"),
+        )
+        .map_err(CommandError::DbError)?;
+    }
     tx.execute("DELETE FROM bot_sessions WHERE id = ?1", [id])
         .map_err(|e| CommandError::DbError(e.to_string()))?;
     tx.commit()

@@ -488,6 +488,33 @@ pub fn find_live_subagent_by_request(
     .map_err(|e| e.to_string())
 }
 
+/// 按会话（作为父会话 **或** 子 agent 自己的会话）取**在途**行。
+///
+/// 会话删除时用：父会话没了，它派出去的子 agent 就成了没人收的孤儿——看不见、
+/// 停不掉，还照烧完整份预算。
+pub fn load_live_subagents_by_session(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Vec<SubagentRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+             trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+             created_at, started_at, finished_at FROM subagents \
+             WHERE (parent_session_id = ?1 OR session_id = ?1) \
+             AND status IN ('queued','running') ORDER BY created_at",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([session_id], row_to_subagent)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
 /// 推进状态机：校验转移合法 → 打 started/finished 戳 → 回写。非法转移响亮失败。
 /// 允许同态重入（幂等收敛：runner 重试同一终态写不炸）。
 pub fn update_subagent_status(
