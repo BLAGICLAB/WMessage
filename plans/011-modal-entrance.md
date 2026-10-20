@@ -141,8 +141,9 @@
 
 ## Steps
 
-1. 确认 token 是否已存在：`grep -n -- "--ease-out\|--dur-pop" src/ui/main.css`。
-   - 存在 → 用 token 形式；不存在 → 用字面量形式并在本文件顶部记一笔。
+1. 计划 001 已落地：`--ease-out` 存在，`--dur-pop` **还没有**（001 只定义有消费方的 token）。
+   先把 `--dur-pop: 200ms; /* 一次性出现（下拉 / 浮层 / 落位弹入） */` 加进 `src/ui/main.css` 的
+   `:root` 动效 token 块，再用 token 形式。**不要**回退到字面量形式。
 2. 改 `src/ui/Modal.tsx:40-61`：按 Target 节的代码，给 `panel` 拼 `modal-panel`、给遮罩拼 `modal-backdrop`。
 3. 在 `src/ui/main.css` 的 `@layer components` 块内加 `.modal-backdrop` / `.modal-panel` 两条规则和两个 `@keyframes`。
 4. 跑验证（见下）。

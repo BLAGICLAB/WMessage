@@ -1,7 +1,7 @@
 # 001 — 建立动效 token 层，把曲线与时长收归一处
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成（`0af87dd4`）
+- **Commit**: b22387c7（计划锚定）→ 落地于 `0af87dd4`
 - **Severity**: HIGH
 - **Category**: §7 Cohesion & tokens / §2 Easing & duration
 - **Estimated scope**: 22 files（1 个 CSS + 20 个 tsx + 1 个测试），约 120 行改动
@@ -272,3 +272,31 @@ src/components/task/SubtaskRow.tsx:133
   - `grep -n "0\.[0-9]*s ease" src/ui/main.css` 返回空（除 `@keyframes` 内部不涉及）。
   - 上面三条测试全绿。
 
+
+## 落地记录（`0af87dd4`）
+
+实际落地与本计划有三处偏差，都是为了守住 `AGENTS.md` 的硬性禁令或避免动效退化：
+
+**一、token 集合收窄为 6 个。** 本计划 Target 列了 10 个 token，但 `--ease-in-out` /
+`--ease-drawer` / `--dur-press` / `--dur-panel` 在全仓与全部后续计划里**零消费**
+（`--dur-pop` 只有 005/010/011 用得到，那三条计划已改为各自在第一次使用时加那一行）。
+AGENTS.md 明令「不留死代码」与「第二个调用方出现前不抽象」，定义出来没人用的 token
+就是下一个分叉源。最终只定义 `--ease-out` / `--ease-pulse` / `--dur-chip` /
+`--dur-card` / `--dur-fade` / `--dur-tooltip`，并加了一条**死 token 锁**
+（每个 `--ease-*` / `--dur-*` 都得在 `src/` 里有 `var()` 引用）把这条家规机械化。
+
+**二、`.archive-locate` 脉冲用 `--ease-pulse` 而不是 `--ease-out`。** 本计划让它改用
+`var(--ease-out)`，实测下来那是退步：脉冲是「撑开再收回」的两段动画，强 ease-out 会让
+扩张段在 25% 时间就走完 78%、收缩段在 50% 时间就缩没了，后面半程挂着看不见，形状从
+「呼吸」变成「闪一下」。故另立 `--ease-pulse: cubic-bezier(0, 0, 0.58, 1)`（CSS `ease-out`
+关键字的等值写法，视觉零变化），脉冲形状原样保留。
+
+**三、计划外的 4 处内联过渡没有覆盖。** `WeeklyChart.tsx:165/175` 与
+`DayGridMini.tsx:114` 的 `transition: "opacity .15s ease"` 归**计划 014**；本计划不碰。
+`TaskEditorOverlay.tsx:71` 的 `transform 240ms cubic-bezier(0.05,0.7,0.1,1), opacity 180ms ease`
+**没有任何计划覆盖**——那条入场曲线正是审计里「起步慢到 96.6% 才开始动」的那条（25%
+时间点只走完 16.8%），是一处真问题，但改它是行为变更，需要自己的计划与取舍，
+不该塞进一个「收归 token」的机械改动里。**留作缺口，建议补一条计划。**
+
+另有两条既有断言被本计划打破并已同步修正：`main.css.test.ts` 的「nm-card-hover 过渡
+对称」原断言匹配 `0.15s ease` 字面量，改成匹配 token 形式。

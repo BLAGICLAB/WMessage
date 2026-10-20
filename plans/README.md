@@ -4,13 +4,14 @@
 
 - **审计基线**：`5f8d82e7`（起审时）→ 复核于 `b22387c7`（审计期间仓库被并发提交，EvolutionPanel 已删）
 - **各计划锚定的 commit**：`b22387c7`
+- **行号已漂移，按内容定位**：001 加了 12 行 token 块、018 加了 11 行 `.app-scroll`，加上审计期间的并发提交，本清单里的 `file:line` 一律**不再可靠**（实测 `.plan-blk` 已下移 9 行、`.plan-fresh` 22 行、`.nm-popover` 25 行）。执行任何一条计划时按**选择器 / 类名 / 文案**找位置，别照着行号改。
 - **来源技能**：`improve-animations`（判据来自 Emil Kowalski 的动效哲学）
 
 ## 计划清单
 
 | # | 标题 | 严重度 | 类别 | 依赖 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| [001](001-motion-token-layer.md) | 建立动效 token 层，把曲线与时长收归一处 | HIGH | §7 / §2 | — | TODO |
+| [001](001-motion-token-layer.md) | 建立动效 token 层，把曲线与时长收归一处 | HIGH | §7 / §2 | — | 已完成 `0af87dd4` |
 | [002](002-taskpool-exit-easing.md) | 任务池退场曲线改掉 ease-in 慢起 | HIGH | §2 | 001（token） | TODO |
 | [003](003-home-header-transform-scroll.md) | 首页吸顶头部：滚动驱动的布局属性动画换 transform | HIGH | §5 | 001（token，B5 步） | TODO |
 | [004](004-weeklychart-tooltip-duration.md) | 周图 Tooltip 的 400ms 过渡收到 150ms | HIGH | §2 | 001（token） | TODO |
