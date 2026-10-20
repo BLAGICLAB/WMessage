@@ -139,6 +139,9 @@ pub struct SpawnAck {
     pub task_id: Option<String>,
     pub trace_id: String,
     pub status: SubagentStatus,
+    /// 命中幂等键：返回的是**已在跑**的同一个子 agent，本次没有新建行、
+    /// 也没有再起一个 runner。消费方据此区分「派发成功」与「重复派发未新建」。
+    pub deduped: bool,
 }
 
 /// check 应答（设计 §5/§7：status/progress/result?/error?）。
@@ -222,7 +225,7 @@ fn validate_request(req: &SpawnRequest) -> CommandResult<()> {
     Ok(())
 }
 
-/// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 插 queued 行。
+/// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 幂等查表 → 插 queued 行。
 /// 子 agent 不再建任务卡——执行契约全在行上（objective / acceptance_json /
 /// context_summary / budget_json），前端经 `list_subagents` 读行看进度。
 pub(crate) fn spawn_subagent_locked(
@@ -238,6 +241,36 @@ pub(crate) fn spawn_subagent_locked(
         }
     }
     let budget = clamp_budget(req.budget.clone());
+    let objective = req.objective.trim().to_string();
+    let acceptance_json = serde_json::to_string(&req.acceptance_criteria)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    // 幂等键（服务端派生，不指望模型给）：同一父会话里，档位 / 目标 / 验收标准 /
+    // 指定模型全同的**活着的**子 agent 只应有一条。模型重复派发（同一轮里
+    // 发两次，或隔几轮忘了自己已经派过）不该再插一行——两条活行各拿一份完整
+    // 预算，同一份活干两遍。
+    //
+    // 只在有父会话时去重：跨会话的同目标派发是不同用户意图，不该互相吞掉。
+    // 已终态的不参与去重——「再跑一次」是重试语义。
+    if let Some(parent_sid) = req.parent_session_id.as_deref() {
+        let live = crate::db::find_live_subagent_by_request(
+            conn,
+            parent_sid,
+            req.profile.as_str(),
+            &objective,
+            &acceptance_json,
+            req.model_profile.as_deref(),
+        )
+        .map_err(CommandError::DbError)?;
+        if let Some(existing) = live {
+            return Ok(SpawnAck {
+                subagent_id: existing.id,
+                task_id: existing.task_id,
+                trace_id: existing.trace_id,
+                status: existing.status,
+                deduped: true,
+            });
+        }
+    }
     let subagent_id = format!("sa_{}", uuid::Uuid::new_v4().simple());
     let trace_id = format!("trc_{}", uuid::Uuid::new_v4().simple());
     let tx = conn
@@ -251,12 +284,9 @@ pub(crate) fn spawn_subagent_locked(
         parent_session_id: req.parent_session_id.clone(),
         session_id: None,
         task_id: None,
-        objective: req.objective.trim().to_string(),
+        objective,
         trace_id: trace_id.clone(),
-        acceptance_json: Some(
-            serde_json::to_string(&req.acceptance_criteria)
-                .map_err(|e| CommandError::Internal(e.to_string()))?,
-        ),
+        acceptance_json: Some(acceptance_json),
         context_summary: req
             .context_summary
             .as_deref()
@@ -280,6 +310,7 @@ pub(crate) fn spawn_subagent_locked(
         task_id: None,
         trace_id,
         status: SubagentStatus::Queued,
+        deduped: false,
     })
 }
 
@@ -433,6 +464,21 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     })
     .await
     .map_err(|e| CommandError::from(format!("subagent spawn 线程 join 失败：{e}")))??;
+    // 命中幂等键：这一份活已经在跑了——不建行（本来就没建）、不发事件（前端
+    // 已经见过这一行）、**不再起第二个 runner**（起第二个就是同一份活跑两遍、
+    // 各烧一份预算）。
+    if ack.deduped {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "subagent_spawn_deduped | id: {} | parent_session: {} | profile: {}",
+                ack.subagent_id,
+                audit_parent_session.as_deref().unwrap_or("-"),
+                audit_profile.as_str(),
+            ),
+        );
+        return Ok(ack);
+    }
     // 审计：结构化 + 文本行（设计 §3 事件字段）。task_id 恒空（新行无卡），
     // 字段仍留——老审计日志按该键反查的查询不受影响
     crate::audit::write_event(
@@ -2728,15 +2774,29 @@ pub async fn tool_spawn_subagent(
     };
     match spawn_subagent(app, req).await {
         Ok(ack) => ToolResult::ok(
-            format!(
-                "已派发子 agent（非阻塞）：subagentId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
-                ack.subagent_id,
-                ack.status.as_str()
-            ),
+            spawn_receipt_text(&ack),
             // 无卡：不挂 TaskRef（指向已不存在的卡，前端会渲染成死链）
             Vec::new(),
         ),
         Err(e) => ToolResult::error(format!("spawn 失败：{}", e.message()), Vec::new()),
+    }
+}
+
+/// spawn 的工具回执文案。命中幂等键时要说清「没新建、还是那个」——
+/// 模型读到「已派发」会以为又多了一个子 agent，转述给用户时就会说错。
+fn spawn_receipt_text(ack: &SpawnAck) -> String {
+    if ack.deduped {
+        format!(
+            "同一目标已有在跑的子 agent，未重复派发：subagentId={} status={}。继续用 check_subagent 轮询它。",
+            ack.subagent_id,
+            ack.status.as_str()
+        )
+    } else {
+        format!(
+            "已派发子 agent（非阻塞）：subagentId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
+            ack.subagent_id,
+            ack.status.as_str()
+        )
     }
 }
 
@@ -4044,6 +4104,142 @@ mod orchestrator_tests {
         let ack = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
         assert!(ack.task_id.is_none());
         assert!(!ack.trace_id.is_empty());
+    }
+
+    /// 重复派发同一份请求不建第二条活行（幂等键：父会话 + 档位 + 目标 +
+    /// 验收标准 + 指定模型）。
+    ///
+    /// 模型重复调用 spawn_subagent（同一轮发两次、或隔几轮忘了自己派过）原先
+    /// 会建两条活行，各拿一份完整预算——同一份活干两遍。
+    #[test]
+    fn repeated_spawn_of_the_same_request_reuses_the_live_row() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        assert!(!first.deduped, "首次派发必须是新建");
+        let second = spawn_subagent_locked(&mut conn, &req(None), 6_000).unwrap();
+        assert!(second.deduped, "重复派发必须命中幂等键");
+        assert_eq!(
+            second.subagent_id, first.subagent_id,
+            "重复派发必须返回同一个子 agent id"
+        );
+        let rows = crate::db::load_subagents_by_parent(&conn, "main-sess", 100).unwrap();
+        assert_eq!(rows.len(), 1, "重复派发不得再建一条活行");
+    }
+
+    /// 已终态的不参与去重：「再跑一次」是重试语义，不能被幂等键吞掉。
+    #[test]
+    fn spawn_after_the_previous_one_finished_creates_a_new_row() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        crate::db::update_subagent_status(
+            &conn,
+            &first.subagent_id,
+            SubagentStatus::Cancelled,
+            6_000,
+            None,
+        )
+        .unwrap();
+        let second = spawn_subagent_locked(&mut conn, &req(None), 7_000).unwrap();
+        assert!(!second.deduped, "已终态的旧行不该再命中幂等键");
+        assert_ne!(second.subagent_id, first.subagent_id);
+        let rows = crate::db::load_subagents_by_parent(&conn, "main-sess", 100).unwrap();
+        assert_eq!(rows.len(), 2, "重试应另起一行");
+    }
+
+    /// 验收标准不同 = 不同的活，不去重（模型改需求后重派是正当的）。
+    #[test]
+    fn spawn_with_different_acceptance_criteria_is_not_deduped() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let mut other = req(None);
+        other.acceptance_criteria = vec!["覆盖至少 8 个产品".into()];
+        let second = spawn_subagent_locked(&mut conn, &other, 6_000).unwrap();
+        assert!(!second.deduped, "验收标准不同不该命中幂等键");
+        assert_ne!(second.subagent_id, first.subagent_id);
+    }
+
+    /// 不同父会话的同目标派发是不同意图，不互相吞掉。
+    #[test]
+    fn spawn_from_a_different_parent_session_is_not_deduped() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let mut other = req(None);
+        other.parent_session_id = Some("other-sess".into());
+        let second = spawn_subagent_locked(&mut conn, &other, 6_000).unwrap();
+        assert!(!second.deduped, "跨会话不命中幂等键");
+        assert_ne!(second.subagent_id, first.subagent_id);
+    }
+
+    /// 没有父会话（拿不到会话 id 的调用路径）时不去重：宁可多建一行，
+    /// 也不要把别人的活吞掉。
+    #[test]
+    fn spawn_without_parent_session_is_not_deduped() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let mut r = req(None);
+        r.parent_session_id = None;
+        let first = spawn_subagent_locked(&mut conn, &r, 5_000).unwrap();
+        let second = spawn_subagent_locked(&mut conn, &r, 6_000).unwrap();
+        assert!(!first.deduped && !second.deduped);
+        assert_ne!(first.subagent_id, second.subagent_id);
+    }
+
+    /// 幂等键挡住的是「建第二条活行」，挡不住「再起一个 runner」——后者照样
+    /// 把同一份活跑两遍、各烧一份预算。deduped 的早退必须排在 runner 派发前。
+    #[test]
+    fn deduped_spawn_returns_before_the_runner_is_dispatched() {
+        let src = include_str!("bot_orchestrator.rs");
+        let start = src
+            .find("pub async fn spawn_subagent(")
+            .expect("bot_orchestrator.rs 应有 spawn_subagent");
+        let dedup = start
+            + src[start..]
+                .find("ack.deduped")
+                .expect("spawn_subagent 应有 deduped 早退分支");
+        let runner = start
+            + src[start..]
+                .find("run_subagent(")
+                .expect("spawn_subagent 应派发 runner");
+        assert!(
+            dedup < runner,
+            "命中幂等键必须早于 runner 派发返回（否则同一份活跑两遍）"
+        );
+        assert!(
+            src[dedup..runner].contains("return Ok(ack);"),
+            "deduped 分支必须直接返回，不得落到 runner 派发"
+        );
+    }
+
+    /// 回执文案两种形态：新建说「已派发」，命中幂等键要说清「没新建、
+    /// 还是那个」——模型照抄「已派发」会把一个子 agent 说成两个。
+    #[test]
+    fn spawn_receipt_text_distinguishes_new_from_deduped() {
+        let ack = SpawnAck {
+            subagent_id: "sa_x".into(),
+            task_id: None,
+            trace_id: "trc_x".into(),
+            status: SubagentStatus::Queued,
+            deduped: false,
+        };
+        let fresh = spawn_receipt_text(&ack);
+        assert!(fresh.contains("已派发子 agent"), "{fresh}");
+        assert!(fresh.contains("sa_x"), "{fresh}");
+
+        let deduped = SpawnAck {
+            deduped: true,
+            ..ack
+        };
+        let dup = spawn_receipt_text(&deduped);
+        assert!(dup.contains("未重复派发"), "{dup}");
+        assert!(dup.contains("sa_x"), "{dup}");
+        assert!(
+            !dup.contains("已派发子 agent"),
+            "命中幂等键的回执不得说成新建：{dup}"
+        );
     }
 
     #[test]

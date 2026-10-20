@@ -345,6 +345,17 @@ const SQL_SELECT_BY_PARENT: &str =
      created_at, started_at, finished_at FROM subagents WHERE parent_session_id = ?1 \
      ORDER BY created_at DESC LIMIT ?2";
 
+/// 按「同一份派发请求」找**还活着**的行（幂等去重用）。
+///
+/// 只认 queued / running：已终态的允许重派——「再跑一次」是重试语义，不能
+/// 被去重吞掉。`model IS ?5` 用 IS 而不是 =，NULL 行（未指定模型）也要能匹配上。
+const SQL_SELECT_LIVE_BY_REQUEST: &str =
+    "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
+     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     created_at, started_at, finished_at FROM subagents WHERE parent_session_id = ?1 \
+     AND profile = ?2 AND objective = ?3 AND acceptance_json = ?4 AND model IS ?5 \
+     AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1";
+
 fn row_to_subagent(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRow> {
     let id: String = row.get(0)?;
     let status_s: String = row.get(1)?;
@@ -445,6 +456,36 @@ pub fn load_subagents_by_parent(
         out.push(r.map_err(|e| e.to_string())?);
     }
     Ok(out)
+}
+
+/// 按「同一份派发请求」找还活着的子 agent 行（spawn 幂等去重的查表口）。
+///
+/// 请求口径 = 父会话 + 档位 + 目标 + 验收标准 + 指定模型：全同即视为同一次
+/// 派发。`acceptance_json` 与 `objective` 都取行里的原样字符串（写行时就是
+/// 这么存的），比较是逐字节的——目标差一个字就不是同一次派发。
+///
+/// 只认活着的行（queued / running）：已终态的允许重派。
+pub fn find_live_subagent_by_request(
+    conn: &rusqlite::Connection,
+    parent_session_id: &str,
+    profile: &str,
+    objective: &str,
+    acceptance_json: &str,
+    model: Option<&str>,
+) -> Result<Option<SubagentRow>, String> {
+    conn.query_row(
+        SQL_SELECT_LIVE_BY_REQUEST,
+        rusqlite::params![
+            parent_session_id,
+            profile,
+            objective,
+            acceptance_json,
+            model
+        ],
+        row_to_subagent,
+    )
+    .optional()
+    .map_err(|e| e.to_string())
 }
 
 /// 推进状态机：校验转移合法 → 打 started/finished 戳 → 回写。非法转移响亮失败。
