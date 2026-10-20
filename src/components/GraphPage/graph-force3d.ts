@@ -422,6 +422,11 @@ export class Force3D {
    * 最小间距硬分离：力场收敛后仍贴在一起的节点（通常是同标签的两张卡挤在
    * 锚点同一个方向上）会被推开，否则光点和铭牌会叠成一坨。
    * O(N²)，只在小图上调用。
+   *
+   * 缺口一次补满：两点各让一半（minGap − d），合起来正好差 minGap − d，
+   * 分离后 d' = minGap。曾经公式里多乘了个 0.5，两点各让四分之一，
+   * 实测 8.373 的两点按 8.89 分离后只到 8.63，缺口还剩一半——注释写着
+   * 「硬分离」而实际是软分离。
    */
   separate(minGap: number): void {
     const { pos } = this;
@@ -433,10 +438,26 @@ export class Force3D {
         const dz = pos[j * 3 + 2] - pos[i * 3 + 2];
         const d = Math.hypot(dx, dy, dz);
         if (d >= minGap) continue;
-        const k = d < 1e-6 ? 0 : ((minGap - d) / 2 / d) * 0.5;
-        const ox = d < 1e-6 ? 0.5 : dx * k;
-        const oy = d < 1e-6 ? 0.5 : dy * k;
-        const oz = d < 1e-6 ? 0 : dz * k;
+        let ox: number;
+        let oy: number;
+        let oz: number;
+        if (d < 1e-6) {
+          // 完全重合：方向不可靠，用确定性的微扰方向推开（同一对永远同向，
+          // 不会两个节点互推成死循环）
+          const ux = ((i % 7) - 3) / 5;
+          const uy = ((j % 5) - 2) / 5;
+          const uz = ((i + j) % 3 - 1) / 3;
+          const m = Math.hypot(ux, uy, uz) || 1;
+          const h = minGap / 2;
+          ox = (ux / m) * h;
+          oy = (uy / m) * h;
+          oz = (uz / m) * h;
+        } else {
+          const k = (minGap - d) / 2 / d;
+          ox = dx * k;
+          oy = dy * k;
+          oz = dz * k;
+        }
         pos[i * 3] -= ox; pos[i * 3 + 1] -= oy; pos[i * 3 + 2] -= oz;
         pos[j * 3] += ox; pos[j * 3 + 1] += oy; pos[j * 3 + 2] += oz;
       }

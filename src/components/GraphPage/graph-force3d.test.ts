@@ -33,6 +33,19 @@ function sceneOf(n: number): Scene {
   });
 }
 
+/** 两个节点的裸场景（锚点/边都不要），用来精确控制坐标 */
+function bareScene(): Scene {
+  return {
+    nodes: [
+      { id: "a", kind: "task", label: "a", radius: 2.6, degree: 0, ownerKey: "self", tagIdx: null, statusKey: "todo", stalled: false, hint: null },
+      { id: "b", kind: "task", label: "b", radius: 2.6, degree: 0, ownerKey: "self", tagIdx: null, statusKey: "todo", stalled: false, hint: null },
+    ],
+    edges: [],
+    indexOf: new Map([["a", 0], ["b", 1]]),
+    radius: 100,
+  };
+}
+
 describe("Force3D", () => {
   it("每步位移都不超过当前温度：锚点也不例外", () => {
     const scene = sceneOf(40);
@@ -80,4 +93,31 @@ describe("Force3D", () => {
     expect(force.kinetic()).toBeLessThan(KINETIC_EPSILON);
   });
 
+  it("最小间距硬分离：两点分到指定间距（缺口一次补满）", () => {
+    const scene = bareScene();
+    const force = new Force3D(scene);
+    force.pos[0] = 0; force.pos[1] = 0; force.pos[2] = 0;
+    force.pos[3] = 8.373; force.pos[4] = 0; force.pos[5] = 0;
+    force.separate(8.89);
+    const d = Math.hypot(
+      force.pos[3] - force.pos[0],
+      force.pos[4] - force.pos[1],
+      force.pos[5] - force.pos[2],
+    );
+    expect(d).toBeCloseTo(8.89, 3);
+  });
+
+  it("最小间距硬分离：重合的两点也被推开", () => {
+    const scene = bareScene();
+    const force = new Force3D(scene);
+    // 初始坐标由种子撒开，两点并不重合——要测重合分支得手动摆成同一点
+    force.pos.fill(0);
+    force.separate(8);
+    const d = Math.hypot(
+      force.pos[3] - force.pos[0],
+      force.pos[4] - force.pos[1],
+      force.pos[5] - force.pos[2],
+    );
+    expect(d).toBeCloseTo(8, 3);
+  });
 });
