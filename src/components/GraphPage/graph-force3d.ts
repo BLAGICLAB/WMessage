@@ -315,36 +315,56 @@ export class Force3D {
       force[b] -= ux; force[b + 1] -= uy; force[b + 2] -= uz;
     }
 
-    // ── 中心引力 ──
+    // ── 中心引力 + 锚点回拉 + 定温位移 ──
     for (let i = 0; i < n; i++) {
       const p = i * 3;
       force[p] -= options.gravity * pos[p];
       force[p + 1] -= options.gravity * pos[p + 1];
       force[p + 2] -= options.gravity * pos[p + 2];
-      const hint = this.scene.nodes[i].hint;
-      if (hint) {
-        // 锚点回拉写成位置修正而非力：走力的话，收敛末期会在岗位两侧来回荡
-        pos[p] += (this.hints[p] - pos[p]) * options.hubPull;
-        pos[p + 1] += (this.hints[p + 1] - pos[p + 1]) * options.hubPull;
-        pos[p + 2] += (this.hints[p + 2] - pos[p + 2]) * options.hubPull;
+      // 锚点回拉写成位置修正而非力：走力的话，收敛末期会在岗位两侧来回荡。
+      // 但它不自带封顶：修正量与力位移要合起来算，一起受温度封顶。
+      // 分开封顶的话锚点每步能挪出 temp 以外的距离（实测越界到 1.7 倍），
+      // 「位移永不超 temp」这条收敛保证就只剩任务节点成立。
+      let cx = 0;
+      let cy = 0;
+      let cz = 0;
+      if (this.scene.nodes[i].hint) {
+        cx = (this.hints[p] - pos[p]) * options.hubPull;
+        cy = (this.hints[p + 1] - pos[p + 1]) * options.hubPull;
+        cz = (this.hints[p + 2] - pos[p + 2]) * options.hubPull;
       }
       // 定温位移：方向取合力，步长封顶在当前温度——位移永远不会超过 temp，
       // 温度单调下降 ⇒ 收敛是结构保证的
       const mag = Math.hypot(force[p], force[p + 1], force[p + 2]);
+      let dx = 0;
+      let dy = 0;
+      let dz = 0;
       if (mag > 1e-9) {
         const s = Math.min(1, this.temp / mag);
-        const dx = force[p] * s;
-        const dy = force[p + 1] * s;
-        const dz = force[p + 2] * s;
-        vel[p] = dx;
-        vel[p + 1] = dy;
-        vel[p + 2] = dz;
-        pos[p] += dx;
-        pos[p + 1] += dy;
-        pos[p + 2] += dz;
-      } else {
-        vel[p] = vel[p + 1] = vel[p + 2] = 0;
+        dx = force[p] * s;
+        dy = force[p + 1] * s;
+        dz = force[p + 2] * s;
       }
+      dx += cx;
+      dy += cy;
+      dz += cz;
+      // 合位移再封一次顶：温度是这一步唯一的位移预算，力与岗位修正共用一份。
+      // 少了这次封顶，锚点修正会把总位移顶出温度之外
+      const dm = Math.hypot(dx, dy, dz);
+      if (dm > this.temp) {
+        const k = this.temp / dm;
+        dx *= k;
+        dy *= k;
+        dz *= k;
+      }
+      // vel 记的是这一步的真实位移（含岗位修正）：动能判据据此才诚实，
+      // 否则锚点一直在动而动能读数看不见，收敛会被提前判成已静止
+      vel[p] = dx;
+      vel[p + 1] = dy;
+      vel[p + 2] = dz;
+      pos[p] += dx;
+      pos[p + 1] += dy;
+      pos[p + 2] += dz;
     }
     this.sanitize();
     this.tempNow = Math.max(this.tempNow * options.cooling, options.minTemp);
