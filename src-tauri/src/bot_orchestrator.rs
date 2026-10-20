@@ -16,6 +16,7 @@
 
 use crate::db::{now_ms, SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
+use futures_util::FutureExt;
 use tauri::AppHandle;
 
 /// 预算默认值与硬顶（设计 §6 已）——常量与钳制实现在 db::SubagentBudget（写口
@@ -1548,6 +1549,37 @@ impl SubagentGate {
 
 // runner（执行引擎）
 
+/// 取消令牌的 RAII 反注册守卫。
+///
+/// `subagent_stops` 里每登一条就要负责抹掉：漏一条 = cancel_subagent 之后
+/// 还能停一个早该消失的子 agent，那张表也只增不减。手工 remove 漏掉的是
+/// panic 路径（runner panic 后整条收尾被跳过），故用 Drop 兜住。
+struct StopTokenGuard {
+    app: AppHandle,
+    id: String,
+}
+
+impl Drop for StopTokenGuard {
+    fn drop(&mut self) {
+        crate::db::lock::lock_or_recover(
+            &crate::app_state::subagent_stops(&self.app),
+            "app_state::subagent_stops",
+        )
+        .remove(&self.id);
+    }
+}
+
+/// runner panic → 普通失败（与 runner 返错同一层，收尾路径不变）。
+///
+/// 单独成纯函数：panic 的三种 payload（&str / String / 其它）由
+/// audit::panic_payload_msg 归一，这里只负责截断与包装。
+fn panic_to_command_error(msg: &str) -> CommandError {
+    CommandError::Internal(format!(
+        "执行器异常退出（panic）：{}",
+        crate::bot::truncate_for_log(msg, 200)
+    ))
+}
+
 /// 子 agent 执行引擎：独立会话 + 工具循环 + 收尾落库。spawn 异步包装末尾派发
 /// （非阻塞）。执行基建复用 exec 家族（ChatGuard/ExecGuard/StopGuard/tool_guard），
 /// 但入口/存储/事件与 bot_execute_task 各自独立（设计 §2）。
@@ -1952,6 +1984,14 @@ async fn run_subagent(
         "app_state::subagent_stops",
     )
     .insert(row.id.clone(), stop.token());
+    // 取消令牌的 RAII 反注册：任何提前返回 / panic 路径都不会把条目留在
+    // subagent_stops 里（残留令牌让 cancel_subagent 停一个早该消失的子
+    // agent，这张表也只增不减）。下面还有一次显式 remove（早于收尾落库），
+    // 守卫那次是幂等的兜底。
+    let _stop_token_guard = StopTokenGuard {
+        app: app.clone(),
+        id: row.id.clone(),
+    };
 
     // 取消 watcher（设计 §4.3 硬停）：2s 轮询行状态，进终态即停工具循环。
     // 子 agent 无卡，不再有「软删卡 = 取消派发」这条信号——cancel 置行终态，
@@ -2051,11 +2091,36 @@ async fn run_subagent(
         // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
         None,
     );
-    let wall = tokio::time::timeout(
+    // runner panic 隔离（bot_scheduler 的既有范式）：panic 会跳过下面所有收尾
+    // ——取消令牌反注册、状态落库、subagent-finished 事件——前端那一行永远转圈，
+    // 行状态也停在 running（只能靠重启清扫僵尸行）。故把 panic 捕获成普通失败，
+    // 让收尾路径照常走完：行落 failed，事件发出去，前端不再转圈。
+    let wall = match tokio::time::timeout(
         std::time::Duration::from_secs(budget.max_wall_seconds.max(1)),
-        run,
+        std::panic::AssertUnwindSafe(run).catch_unwind(),
     )
-    .await;
+    .await
+    {
+        // 墙钟触达
+        Err(elapsed) => Err(elapsed),
+        // 正常跑完
+        Ok(Ok(Ok(v))) => Ok(Ok(v)),
+        // runner 自己返错
+        Ok(Ok(Err(e))) => Ok(Err(e)),
+        // runner panic → 归一成普通失败（与返错同一层，收尾路径不变）
+        Ok(Err(panic)) => {
+            let msg = crate::audit::panic_payload_msg(panic.as_ref());
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_panic | id: {} | {} | 已归一为执行失败",
+                    row.id,
+                    crate::bot::truncate_for_log(&msg, 200)
+                ),
+            );
+            Ok(Err(panic_to_command_error(&msg)))
+        }
+    };
 
     // 墙钟触达先 stop 后收尾——run future 被 timeout 掐掉时，脱离 runtime
     // 的在飞 Python/MCP（spawn_blocking 不随 future 取消）靠 StopToken 自行退出；
@@ -2961,6 +3026,54 @@ mod orchestrator_tests {
     use super::*;
     // 仅 parent_card 夹具用：子 agent 自己不再建卡，但派发仍可挂编排计划卡
     use crate::db::Task;
+
+    /// runner panic 必须归一成普通失败，收尾路径照常走。
+    ///
+    /// panic 会跳过整条收尾（取消令牌反注册、状态落库、subagent-finished
+    /// 事件）——前端那一行永远转圈，行状态停在 running。
+    #[test]
+    fn runner_panic_becomes_ordinary_failure() {
+        let e = panic_to_command_error("index out of bounds");
+        let msg = e.message();
+        assert!(
+            msg.contains("panic") && msg.contains("index out of bounds"),
+            "panic 信息要如实带进失败原因：{msg}"
+        );
+        // 超长信息截断（审计日志与失败原因都不该被一段长 payload 撑爆）
+        let long = "x".repeat(5000);
+        let e2 = panic_to_command_error(&long);
+        assert!(
+            e2.message().chars().count() < 400,
+            "panic 信息应截断到 200 量级：{}",
+            e2.message().chars().count()
+        );
+    }
+
+    /// 接线守卫：runner future 必须包 catch_unwind，且取消令牌登记要有
+    /// RAII 反注册——两者都是「panic 路径不漏」的前提。
+    #[test]
+    fn runner_is_panic_isolated_and_stop_token_has_raii_cleanup() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bot_orchestrator.rs"
+        ))
+        .expect("应能读到自己");
+        let start = src
+            .find("async fn run_subagent(")
+            .expect("应能找到 run_subagent");
+        let rest = &src[start..];
+        // 函数体到顶格 "}" 为止（嵌套块的 "}" 都带缩进）
+        let end = rest[1..].find("\n}\n").map(|i| i + 1).unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("catch_unwind"),
+            "runner future 必须包 catch_unwind（panic 要归一成普通失败走收尾）：{body}"
+        );
+        assert!(
+            body.contains("StopTokenGuard"),
+            "取消令牌登记必须配 RAII 反注册（panic 路径不能把条目留在 subagent_stops）：{body}"
+        );
+    }
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
