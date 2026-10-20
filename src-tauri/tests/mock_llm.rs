@@ -365,9 +365,11 @@ fn status_to_reason(status: u16) -> &'static str {
 /// 流式文本回复（与 bot_model_loop.rs 的 parse_sse_chunk 解析路径对齐）
 /// 格式：`data: {json}\n\n` + `data: {json}\n\n` + `data: [DONE]\n\n`
 fn sse_text_reply(content: &str) -> String {
-    let escaped = content.replace('\\', "\\\\").replace('"', "\\\"");
+    // 用 serde_json 转义整段内容：手写 replace 只挡得住引号和反斜杠，挡不住
+    // 换行——多行回复会变成非法 JSON，解析失败后模型侧看到的是空文本。
+    let escaped = serde_json::to_string(content).unwrap_or_else(|_| "\"\"".to_string());
     let chunk1 = format!(
-        r#"data: {{"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{{"delta":{{"role":"assistant","content":"{escaped}"}},"index":0,"finish_reason":null}}]}}"#
+        r#"data: {{"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{{"delta":{{"role":"assistant","content":{escaped}}},"index":0,"finish_reason":null}}]}}"#
     );
     let chunk2 = r#"data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{"delta":{},"index":0,"finish_reason":"stop"}]}"#;
     format!("{chunk1}\n\n{chunk2}\n\ndata: [DONE]\n\n")
@@ -621,6 +623,37 @@ fn mock_llm_server_returns_valid_sse_text_reply() {
     );
 
     assert_eq!(server.request_count(), 1, "应处理 1 个请求");
+}
+
+/// 多行回复要产出合法的 JSON。
+///
+/// 手写 replace 只挡得住引号和反斜杠，挡不住换行：多行回复会变成非法 JSON，
+/// 解析失败后模型侧看到的是空文本——用例里表现为「模型答了但内容是空的」。
+#[test]
+fn mock_llm_server_escapes_multiline_text_reply() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply(
+        "工具调用如下：\n- create_word：✅ 调用成功".to_string(),
+    ));
+
+    let raw = http_post_raw(
+        &format!("{}/chat/completions", server.base_url),
+        r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}],"stream":true}"#,
+    )
+    .expect("POST 成功");
+
+    let (_, body) = split_response(&raw);
+    let payload = body
+        .lines()
+        .find_map(|l| l.strip_prefix("data: "))
+        .expect("SSE 应有 data 段");
+    let v: serde_json::Value =
+        serde_json::from_str(payload).expect("data 段必须是合法 JSON（多行内容要转义）");
+    assert_eq!(
+        v["choices"][0]["delta"]["content"],
+        serde_json::json!("工具调用如下：\n- create_word：✅ 调用成功"),
+        "转义后解析出的内容应与原文一致"
+    );
 }
 
 #[test]
