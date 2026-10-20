@@ -1,7 +1,7 @@
 # 005 — 计划块落位弹入：去掉过冲曲线，回到「无弹跳」纪律
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于本次提交
 - **Severity**: MEDIUM
 - **Category**: §7 Cohesion & tokens / §3 Physicality & origin
 - **Estimated scope**: 1 个 CSS，约 6 行改动

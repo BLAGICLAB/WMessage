@@ -118,3 +118,16 @@ describe("动效 token 层（main.css）", () => {
   });
 });
 
+
+describe("main.css 计划块落位弹入", () => {
+  it("落位弹入无过冲（遵守「无弹跳」纪律）", () => {
+    const block = css.match(/\.plan-fresh\s*\{([^}]*)\}/)?.[1] ?? "";
+    expect(block).toMatch(/animation:\s*plan-pop var\(--dur-pop\) var\(--ease-out\)/);
+    // 起点缩放比落在 0.9–0.97
+    const kf = css.match(/@keyframes plan-pop\s*\{[\s\S]*?scale\(([\d.]+)\)/)?.[1];
+    expect(parseFloat(kf ?? "0")).toBeGreaterThanOrEqual(0.9);
+    expect(parseFloat(kf ?? "0")).toBeLessThanOrEqual(0.97);
+    // 旧曲线（y2 = 1.4，过冲）不得残留
+    expect(css).not.toContain("cubic-bezier(0.2, 1.4, 0.4, 1)");
+  });
+});

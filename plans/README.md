@@ -15,7 +15,7 @@
 | [002](002-taskpool-exit-easing.md) | 任务池退场曲线改掉 ease-in 慢起 | HIGH | §2 | 001（token） | TODO |
 | [003](003-home-header-transform-scroll.md) | 首页吸顶头部：滚动驱动的布局属性动画换 transform | HIGH | §5 | 001（token，B5 步） | DONE（实测 0% 掉帧 → 不做重构；已做 B5） |
 | [004](004-weeklychart-tooltip-duration.md) | 周图 Tooltip 的 400ms 过渡收到 150ms | HIGH | §2 | 001（token） | TODO |
-| [005](005-plan-fresh-no-bounce.md) | 计划块落位弹入：去掉过冲曲线 | MEDIUM | §7 / §3 | 001（token） | TODO |
+| [005](005-plan-fresh-no-bounce.md) | 计划块落位弹入：去掉过冲曲线 | MEDIUM | §7 / §3 | 001（token） | 已完成 |
 | [006](006-drag-ghost-transform.md) | 拖拽幽灵改用 transform 定位 | MEDIUM | §5 | — | TODO |
 | [007](007-pool-lift-transition.md) | 池内拖起补上过渡 | MEDIUM | §3 / §7 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | TODO |
 | [008](008-plan-block-hover-gate.md) | 计划块 hover 加触屏门控，时长收 100ms | MEDIUM | §6 / §1 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | TODO |

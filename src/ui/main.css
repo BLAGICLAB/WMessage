@@ -61,6 +61,7 @@
   --dur-chip: 100ms; /* 按钮 / Chips / hover 抬升 */
   --dur-card: 150ms; /* 表面与选中态（卡片 / body 底色） */
   --dur-fade: 150ms; /* 淡入淡出 / 遮罩 */
+  --dur-pop: 200ms; /* 一次性出现（下拉 / 浮层 / 落位弹入） */
   --dur-tooltip: 150ms; /* 提示条 */
 }
 
@@ -1033,7 +1034,7 @@
   }
   /* 落位弹入（批 3：新排期块） */
   .plan-fresh {
-    animation: plan-pop 0.22s cubic-bezier(0.2, 1.4, 0.4, 1);
+    animation: plan-pop var(--dur-pop) var(--ease-out);
   }
   /* 执行中活体文字的流光（LiveIndicator）：横向渐变扫过字面，
      配合每秒刷新的耗时，让「还在跑」有持续变化而非静止的光点 */
@@ -1052,7 +1053,7 @@
   }
   @keyframes plan-pop {
     0% {
-      transform: scale(0.88);
+      transform: scale(0.94);
       opacity: 0;
     }
     100% {
