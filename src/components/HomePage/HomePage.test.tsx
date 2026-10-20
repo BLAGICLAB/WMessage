@@ -542,3 +542,44 @@ describe("首页联动 hover 的过渡口径", () => {
     }
   });
 });
+
+describe("首页两处 framer-motion 过渡的缓动口径", () => {
+  const FILES = [
+    "src/components/HomePage/PoolPager.tsx",
+    "src/components/HomePage/DueTicker.tsx",
+  ];
+
+  it("两处过渡都显式指定缓动（不靠 framer-motion 的默认曲线）", () => {
+    // framer-motion 的默认是 keyframes ease [0.25,0.1,0.35,1]，
+    // 与仓库的 --ease-out 不是一条曲线；进场/退场按动效纪律走强 ease-out
+    for (const f of FILES) {
+      expect(readFileSync(f, "utf-8")).toMatch(
+        /transition=\{\{ duration: [\d.]+, ease: \[/,
+      );
+    }
+  });
+
+  it("缓动与 --ease-out token 同源（ease 是 JS 值只能写死，锁住不漂移）", () => {
+    const css = readFileSync("src/ui/main.css", "utf-8");
+    const token = css
+      .match(/--ease-out:\s*cubic-bezier\(([^)]+)\)/)?.[1]
+      ?.replace(/\s/g, "");
+    expect(token).toBeTruthy();
+    for (const f of FILES) {
+      const arr = readFileSync(f, "utf-8")
+        .match(/ease: \[([^\]]+)\]/)?.[1]
+        ?.replace(/\s/g, "");
+      expect(arr).toBe(token);
+    }
+  });
+
+  it("时长留在 UI 预算内（≤300ms）", () => {
+    for (const f of FILES) {
+      const dur = Number(
+        readFileSync(f, "utf-8").match(/transition=\{\{ duration: ([\d.]+)/)?.[1] ?? 0,
+      );
+      expect(dur).toBeGreaterThan(0);
+      expect(dur).toBeLessThanOrEqual(0.3);
+    }
+  });
+});

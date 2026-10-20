@@ -120,7 +120,9 @@ export function PoolPager({
             initial={reduceMotion ? false : { opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
-            transition={{ duration: 0.18 }}
+            // ease 是 JS 值，不能写 var(--ease-out)；写死曲线值，
+            // 与 token 同源由测试锁住（见 HomePage.test.tsx）
+            transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
           >
         {pageTasks.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 py-4 text-center">
