@@ -928,9 +928,9 @@ export default function GraphCanvas(props: GraphCanvasProps) {
 
     const restLayout = () => {
       finishLayout();
-      // 手动重跑一律播中间态：用户点了「重新布局」就是要看它长出来
+      // 手动重跑一律播中间态：用户点了「重新布局」就是要看它长出来。
+      // （画面这期间照常渲染，不需要「构图计算中」那句）
       animated = true;
-      container.appendChild(computing);
       resumeForce();
     };
     // 两条路径都走 rAF 时间切片（每帧 ≤10ms 且 ≤400 步）。
@@ -1017,8 +1017,10 @@ export default function GraphCanvas(props: GraphCanvasProps) {
           refreshAppearance();
           computing.remove();
         }
-        // 静态构图不画中间态：画了就是布局动画，这一档开关就没意义了
-        if (animated) pushGeometry();
+        // 静态构图不画中间态：画了就是布局动画，这一档开关就没意义了。
+        // 但收敛那一帧要照常上传——归一后的坐标得进顶点缓冲，否则画的是
+        // 归一前那一份（相机按 R 摆、画面却是旧尺度）
+        if (animated || settled) pushGeometry();
       }
 
       // 静态构图还没收敛：这一帧不出画（黑屏 + 「构图计算中」提示），
