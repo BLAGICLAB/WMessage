@@ -242,7 +242,7 @@ const paramViews = [
   },
   {
     // Python 超时：默认 60 是后端真值（py::runtime 常量），前端此前手写这两个数。
-    // 上界故意用 1000（真值 300）：预设「拉到上限」若写死就露馅（同上）
+    // 上界故意用 1000（真值是后端 MAX_TIMEOUT_SECS）：预设「拉到上限」若写死就露馅（同上）
     key: "tools.python_timeout_secs",
     label: "Python 执行超时（秒）",
     category: "tools",
@@ -515,7 +515,7 @@ describe("SettingsPage", () => {
   });
 
   it("Python 默认超时：默认秒数与上限取自后端参数表", async () => {
-    // 前端此前手写「留空 = 60 秒 / 上限 300 秒」——后端常量一改页面就撒谎
+    // 前端此前手写「留空 = 60 秒 / 上限 N 秒」——后端常量一改页面就撒谎
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(agentParamsMock);
     render(<SettingsPage {...defaultProps} />);

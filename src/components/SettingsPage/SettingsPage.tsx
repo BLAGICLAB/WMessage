@@ -594,7 +594,7 @@ export function SettingsPage({
     hasBraveKey: false,
     // 「Brave 搜索」开关：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
     braveEnabled: false,
-    // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳 300s）
+    // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳上限见后端参数表）
     pythonTimeoutSecs: "",
     // Function 调用熔断上限（空 = 100 默认； 全域，含工作流节点执行）
     maxFunctionCalls: "",
@@ -1099,7 +1099,7 @@ export function SettingsPage({
           braveKey: null,
           // 开关显式落盘：开 = Brave，关 = 不走 Brave（与 Tavily 互斥，双开后端报错）
           braveEnabled: c.braveEnabled,
-          // 空 = 用内置默认；非法输入按未配置处理（后端 resolve_timeout 硬钳 300s）
+          // 空 = 用内置默认；非法输入按未配置处理（后端 resolve_timeout 硬钳到上限）
           pythonTimeoutSecs: paramNumber(
             "tools.python_timeout_secs",
             c.pythonTimeoutSecs,

@@ -309,7 +309,7 @@ pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"c
   },"required":["paragraphs"]}}}"##;
 pub const SCHEMA_RUN_PYTHON: &str = r##"{"type":"function","function":{"name":"run_python","description":"执行 Python 代码（资源受限：CPU/内存/时长限额 + 独立临时目录，无文件系统隔离；默认超时 60s。默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）","parameters":{"type":"object","properties":{
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
-    "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 300）"}
+    "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 1800）"}
   },"required":["code"]}}}"##;
 pub const SCHEMA_AST_INSPECT: &str = r##"{"type":"function","function":{"name":"ast_inspect","description":"对 Python 源码做符号级静态探查（走本机 Python 沙箱 + 标准库 ast，零新增依赖：资源受限、独立临时目录、默认 60s 超时，沙箱无文件系统隔离故调用前已过白名单闸；需设置页开启「允许机器人执行 Python」，或授权模式为 yolo 时免开关）。只支持 .py 文件，非 .py 会明确拒绝并让你改用 grep_files / read_text_file，不会静默退化成文本检索。四种模式：symbols 出符号树（类/函数/方法 + 行号）、defs 定位定义、refs 找全部引用（区分裸名与属性访问 + 所在函数）、callgraph 出调用链（按名字匹配，非作用域解析；depth 层）。调用链跨文件现扫不缓存：单次最多扫 200 个文件 / 2MB，跳过 .git/__pycache__/node_modules/venv 等目录，目录里指向外部的 symlink 一律排除；触及上限时返回 truncated=true，此时结果不完整","parameters":{"type":"object","properties":{
     "op":{"type":"string","enum":["symbols","defs","refs","callgraph"],"description":"探查模式：symbols=符号树 / defs=定义位置 / refs=全部引用 / callgraph=调用链"},

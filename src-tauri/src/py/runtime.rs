@@ -28,9 +28,13 @@ pub struct PyRunResult {
 
 pub const OUTPUT_CAP: usize = 64 * 1024;
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
-pub const MAX_TIMEOUT_SECS: u64 = 300;
+/// 全局天花板：任何一次 Python 执行（run_python / 程序）都不得超过这个秒数。
+/// 取值 1800（30 分钟）——上限存在的意义是兜住「跑飞」与「模型乱填」，
+/// 不是拿来卡正常活：耗时与输入规模成正比的批量活（语音转写、装依赖、
+/// 长文档处理）在 300s 这个量级上是被硬杀的，不是被「保护」住的。
+pub const MAX_TIMEOUT_SECS: u64 = 1800;
 
-/// 解析超时：None → 60s 默认；> 300s → 钳到 300s 并返回 clamped=true
+/// 解析超时：None → 60s 默认；> MAX_TIMEOUT_SECS → 钳到上限并返回 clamped=true
 pub fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
     match timeout_secs {
         None => (DEFAULT_TIMEOUT_SECS, false),
@@ -531,7 +535,7 @@ static SETRLIMIT_PROBE: OnceLock<SetrlimitSupport> = OnceLock::new();
 
 #[cfg(unix)]
 const SETRLIMIT_PROBE_SCRIPT: &str = concat!(
-    "import resource as _r\n",
+    "import resource as _r, sys\n",
     "def _t(res, v):\n",
     "    try:\n",
     "        _r.setrlimit(res, (v, v))\n",
@@ -539,10 +543,13 @@ const SETRLIMIT_PROBE_SCRIPT: &str = concat!(
     "    except (OSError, ValueError) as e:\n",
     "        # CPython 把 setrlimit 的 EINVAL 映射成 ValueError（文案固定），一并捕获\n",
     "        return '%s: %s' % (type(e).__name__, e)\n",
-    "print('WM_RLIMIT_AS=' + _t(_r.RLIMIT_AS, 2 * 1024 * 1024 * 1024))\n",
-    "print('WM_RLIMIT_CPU=' + _t(_r.RLIMIT_CPU, 310))\n",
+    "print('WM_RLIMIT_AS=' + _t(_r.RLIMIT_AS, int(sys.argv[1])))\n",
+    "print('WM_RLIMIT_CPU=' + _t(_r.RLIMIT_CPU, int(sys.argv[2])))\n",
 );
-// 探测值取生产上限（AS 2GB = mem_limit_bytes 封顶 / CPU 310s = timeout 300+10 宽限封顶）：
+// 探测值取生产上限，且**由 argv 从 Rust 常量传入**（不在脚本文本里写死数字）：
+// AS 2GB = mem_limit_bytes 封顶 / CPU = timeout 上限 + 10 宽限。脚本与生产共用
+// 同一组常量，天花板一改两边同时跟着变，不会出现「探针按旧值判可用、生产按新值
+// 设置」的错位（那会让限额静默失效）。
 // 上限通过 → 单调 ceiling 下全部生产值可用；上限被拒 → 从严判 Unavailable 留痕。
 // 方向性硬约束：宁可误判「不可用」留痕（丢限额但诚实），不可误判「可用」静默（S20 原罪）。
 // 已知残差：仅拒中间值、放行两端的非单调沙箱不在覆盖；pre_exec 内仍
@@ -594,6 +601,9 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
     let mut cmd = silent_cmd(py);
     cmd.arg("-c")
         .arg(SETRLIMIT_PROBE_SCRIPT)
+        // 探测值来自生产常量（见 SETRLIMIT_PROBE_SCRIPT 注），脚本自己只读 argv
+        .arg(mem_limit_bytes(MAX_TIMEOUT_SECS).to_string())
+        .arg(cpu_limit_secs(MAX_TIMEOUT_SECS).to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -875,6 +885,35 @@ pub fn run_python_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 生产上限 → 资源限额：天花板 1800s 时内存封顶 2GB、CPU 限额 = 上限 + 10 宽限。
+    /// 这两个数是 setrlimit 探针与 pre_exec 设限的依据，改天花板必须同步复核。
+    #[test]
+    fn production_ceiling_maps_to_resource_limits() {
+        assert_eq!(mem_limit_bytes(MAX_TIMEOUT_SECS), 2 * 1024 * 1024 * 1024);
+        assert_eq!(cpu_limit_secs(MAX_TIMEOUT_SECS), MAX_TIMEOUT_SECS + 10);
+    }
+
+    /// 探针实跑：脚本从 argv 取生产上限值——改成 argv 传参后必须仍能跑出可解析结论
+    /// （argv 索引写错 → stdout 缺标记 → ProbeError，这里会露馅）。
+    #[cfg(unix)]
+    #[test]
+    fn setrlimit_probe_runs_with_argv_limits() {
+        let Some(py) = crate::py::env::cached_python().or_else(crate::py::env::detect_python)
+        else {
+            // 本机无可用 python3：探针无从跑起，跳过（不是失败）
+            return;
+        };
+        let support = run_setrlimit_probe(&py);
+        assert!(
+            !matches!(support.rlimit_as, SetrlimitProbe::ProbeError(_)),
+            "AS 探测不该是「探测失败」：{support:?}"
+        );
+        assert!(
+            !matches!(support.rlimit_cpu, SetrlimitProbe::ProbeError(_)),
+            "CPU 探测不该是「探测失败」：{support:?}"
+        );
+    }
 
     /// 许可归还：Drop 后可用许可数必须回到原值，否则闸会单向漏光，
     /// 跑着跑着所有 Python 任务一起挂死。

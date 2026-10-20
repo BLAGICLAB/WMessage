@@ -116,7 +116,7 @@ pub struct BotConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave_enabled: Option<bool>,
     /// run_python 默认超时秒数（可选）：None = 60s；工具参数 timeoutSecs 优先于此；
-    /// 硬钳上限 300s（bot_py::resolve_timeout）。大计算（pandas 等）可调大。
+    /// 硬钳上限 = py::runtime::MAX_TIMEOUT_SECS。大计算（pandas 等）可调大。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub python_timeout_secs: Option<u64>,
     /// 文件/代码执行授权模式（Kimi CLI 风格）：
@@ -475,7 +475,7 @@ pub struct BotConfigView {
     pub has_brave_key: bool,
     /// 「Brave 搜索」开关原样透传（None = 未显式设置，前端按 key 有无显示自动态）
     pub brave_enabled: Option<bool>,
-    /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 300s）
+    /// run_python 默认超时秒数（None = 60s 默认；设置页可改，硬钳 = py::runtime::MAX_TIMEOUT_SECS）
     pub python_timeout_secs: Option<u64>,
     /// 单次请求 Function 调用熔断上限（ 全域统一）：None = 默认 100；
     /// 子 agent 默认预算同源此值

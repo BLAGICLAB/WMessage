@@ -245,18 +245,21 @@ mod tests {
         );
     }
 
-    // ── resolve_timeout / 资源限额（默认 60s、硬钳上限 300s、限额按 timeout 比例）──
+    // ── resolve_timeout / 资源限额（默认 60s、硬钳上限 = MAX_TIMEOUT_SECS、限额按 timeout 比例）──
 
     #[test]
     fn resolve_timeout_default_60s() {
         assert_eq!(resolve_timeout(None), (DEFAULT_TIMEOUT_SECS, false));
         assert_eq!(resolve_timeout(Some(30)), (30, false));
-        assert_eq!(resolve_timeout(Some(300)), (300, false));
+        assert_eq!(
+            resolve_timeout(Some(MAX_TIMEOUT_SECS)),
+            (MAX_TIMEOUT_SECS, false)
+        );
     }
 
     #[test]
-    fn resolve_timeout_clamps_over_300s() {
-        // 传入 10000 应被钳到 300 并报告 clamped
+    fn resolve_timeout_clamps_over_ceiling() {
+        // 传入超上限的数应被钳到上限并报告 clamped
         assert_eq!(resolve_timeout(Some(10000)), (MAX_TIMEOUT_SECS, true));
         assert_eq!(resolve_timeout(Some(u64::MAX)), (MAX_TIMEOUT_SECS, true));
     }

@@ -1931,7 +1931,7 @@ pub(crate) async fn tool_run_python(
         return ToolResult::ok("run_python 缺少 code".to_string(), Vec::new());
     };
     // 超时优先级：工具参数 timeoutSecs > 设置页配置 python_timeout_secs > 内置 60s
-    //（pandas 大计算 60s 偏紧；硬钳 300s 在 bot_py::resolve_timeout）
+    //（pandas 大计算 60s 偏紧；硬钳在 py::runtime::resolve_timeout）
     let timeout_secs = v["timeoutSecs"]
         .as_u64()
         .or_else(|| load_config(app).python_timeout_secs);

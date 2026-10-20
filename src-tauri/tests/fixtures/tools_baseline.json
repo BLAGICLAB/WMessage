@@ -774,7 +774,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "timeoutSecs": {
-            "description": "超时秒数（可选，默认 60；大计算可调大，上限 300）",
+            "description": "超时秒数（可选，默认 60；大计算可调大，上限 1800）",
             "type": "integer"
           }
         },
