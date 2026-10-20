@@ -29,6 +29,20 @@ export function isDoneTask(t: Task): boolean {
   return isLive(t) && t.column === "done";
 }
 
+/**
+ * 「已完成」判据（口径单源）：在完成列即完成。
+ *
+ * 图谱的已完成筛选与着色、首页 KPI 的完成率 / 大型任务完成率 / 逾期数
+ * 都引它。两处各判各的会让同一张卡在图里算完成、在完成率里不算
+ * （遗留卡有完成列但没有完成时间戳，两边正好判反）。
+ *
+ * 完成时间戳是另一件事：它管「什么时候完成的」——按期完成率、计划完成率
+ * 这类按时间口径的指标用它（见 homeKpi）。
+ */
+export function isTaskCompleted(t: Pick<Task, "column">): boolean {
+  return t.column === "done";
+}
+
 /** 可催办口径：进行区且无完成时间戳（首页到期轮播）——按 completedAt 判活，
  *  与完成列口径刻意不同：登记了完成时间的卡即使还在待办列也不再催 */
 export function isPending(t: Task): boolean {

@@ -35,8 +35,8 @@ beforeEach(() => {
 describe("computeHomeKpis · 任务完成率 / 大型任务占比", () => {
   it("有效 = 未删（含归档），分母 0 → null", () => {
     const tasks = [
-      t({ id: "d1", completedAt: 1 }),
-      t({ id: "d2", completedAt: 2, archived: true }),
+      t({ id: "d1", column: "done", completedAt: 1 }),
+      t({ id: "d2", column: "done", completedAt: 2, archived: true }),
       t({ id: "open" }),
       t({ id: "del", completedAt: 3, deletedAt: 9 }),
     ];
@@ -51,8 +51,8 @@ describe("computeHomeKpis · 任务完成率 / 大型任务占比", () => {
   it("大型任务 = 关联簇：连通分量 ≥2 卡算 1，悬空与已删不成边，孤卡不算", () => {
     const tasks = [
       // 簇 1（母子，全部完成 → 簇完成）
-      t({ id: "mom", completedAt: 1 }),
-      t({ id: "kid", parentId: "mom", completedAt: 2 }),
+      t({ id: "mom", column: "done", completedAt: 1 }),
+      t({ id: "kid", parentId: "mom", column: "done", completedAt: 2 }),
       // 簇 2（a→b、multi→b、multi→a：multi 关联再多整簇只计 1；未全完成）
       t({ id: "a", dependsOn: ["b"] }),
       t({ id: "b", completedAt: 5, column: "done" }),
@@ -64,6 +64,16 @@ describe("computeHomeKpis · 任务完成率 / 大型任务占比", () => {
     expect(got.largeCount).toBe(2);
     expect(got.largeRatio).toBeCloseTo(33.333, 2); // 2 簇 / 6 张有效卡
     expect(got.largeDoneRate).toBe(50); // 簇 1 全完成，簇 2 未全完成
+  });
+
+  it("「已完成」按完成列判：遗留卡（完成列但没完成时间）算完成，有完成时间但不在完成列不算", () => {
+    const tasks = [
+      t({ id: "legacy", column: "done" }), // 遗留卡：完成列，没有完成时间
+      t({ id: "stamped", completedAt: 1 }), // 有完成时间，但列还是待办
+      t({ id: "open" }),
+    ];
+    const got = computeHomeKpis(tasks, NOW);
+    expect(got.completionRate).toBeCloseTo(33.333, 2); // 只有 legacy 算完成
   });
 
   it("关联链合并成 1 簇；两对互不相连算 2；无关联全为 0", () => {
@@ -105,7 +115,7 @@ describe("computeHomeKpis · 截止与排期", () => {
       t({ id: "pend", due: "2026-10-10" }),
       t({ id: "pendTime", due: "2026-10-11T15:00" }),
       t({ id: "future", due: "2026-10-12" }),
-      t({ id: "lateDone", due: "2026-10-09", completedAt: new Date(2026, 9, 10).getTime() }),
+      t({ id: "lateDone", due: "2026-10-09", column: "done", completedAt: new Date(2026, 9, 10).getTime() }),
       t({ id: "archPend", due: "2026-10-09", archived: true }),
       t({ id: "delPend", due: "2026-10-09", deletedAt: 1 }),
     ];

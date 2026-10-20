@@ -4,11 +4,13 @@
 // 与 dependsOn（依赖），与图谱 buildTaskGraph 同口径：两端都未删才成边；
 // 图谱里的结构锚点（成员核/标签核/状态核）连的不是「别的任务」，不计入。
 // 大型任务 = 关联簇：边连成的连通分量（≥2 张卡）算 1 个大型任务，簇内关联
-// 再多只计 1；簇的「已完成」= 簇内全部卡都有完成时间。
+// 再多只计 1；簇的「已完成」= 簇内全部卡都在完成列（判据单源见 taskScope）。
+// 完成时间戳只管「什么时候完成的」：按期完成率、计划完成率按它算。
 // 选择与快照是主窗口本地偏好，localStorage 持久化（同 bubbleStyle 模式），
 // 设置页改动经自定义事件即时同步首页。
 
 import type { Task } from "../types";
+import { isTaskCompleted } from "./taskScope";
 
 export type KpiId =
   | "completionRate"
@@ -32,7 +34,7 @@ export const HOME_KPIS: readonly KpiDef[] = [
   {
     id: "completionRate",
     name: "任务完成率",
-    desc: "已完成任务 ÷ 全部有效任务（未删，含归档）×100%",
+    desc: "已完成任务（完成列）÷ 全部有效任务（未删，含归档）×100%",
     unit: "pct",
   },
   {
@@ -50,7 +52,7 @@ export const HOME_KPIS: readonly KpiDef[] = [
   {
     id: "largeDoneRate",
     name: "大型任务完成率",
-    desc: "簇内全部卡都已完成的大型任务 ÷ 全部大型任务 ×100%",
+    desc: "簇内全部卡都在完成列的大型任务 ÷ 全部大型任务 ×100%",
     unit: "pct",
   },
   {
@@ -62,7 +64,7 @@ export const HOME_KPIS: readonly KpiDef[] = [
   {
     id: "overdueCount",
     name: "逾期任务数",
-    desc: "已过截止时间仍未完成的任务数（进行区内）",
+    desc: "已过截止时间仍未完成（不在完成列）的任务数（进行区内）",
     unit: "count",
   },
   {
@@ -118,7 +120,7 @@ function ratio(num: number, den: number): number | null {
 export function computeHomeKpis(tasks: Task[], now: Date): KpiValues {
   const valid = tasks.filter((t) => !t.deletedAt);
   const byId = new Map(valid.map((t) => [t.id, t]));
-  const completed = valid.filter((t) => t.completedAt != null);
+  const completed = valid.filter(isTaskCompleted);
 
   const completionRate = ratio(completed.length, valid.length);
 
@@ -154,7 +156,7 @@ export function computeHomeKpis(tasks: Task[], now: Date): KpiValues {
     const root = find(t.id);
     const c = clusters.get(root) ?? { size: 0, done: 0 };
     c.size++;
-    if (t.completedAt != null) c.done++;
+    if (isTaskCompleted(t)) c.done++;
     clusters.set(root, c);
   }
   let largeCount = 0;
@@ -171,7 +173,7 @@ export function computeHomeKpis(tasks: Task[], now: Date): KpiValues {
   const nowMs = now.getTime();
   const overdueCount = valid.filter(
     (t) =>
-      !t.completedAt &&
+      !isTaskCompleted(t) &&
       !t.archived &&
       !!t.due &&
       parseLocalTime(t.due) < nowMs,

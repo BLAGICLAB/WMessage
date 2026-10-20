@@ -4,7 +4,7 @@
 // （默认 7 天，设置页可改）后的存储状态，按归档时间会把跨年完成的任务记错年份（设计 §3.1）。
 
 import type { ColumnId, Task } from "../../types";
-import { isTrashed } from "../../lib/taskScope";
+import { isTaskCompleted, isTrashed } from "../../lib/taskScope";
 
 /** 着色维度：标签 / 成员 / 状态，三选一（默认由图谱页图例切换） */
 export type GraphColorMode = "tag" | "owner" | "status";
@@ -125,9 +125,17 @@ export function collectYears(tasks: Task[]): number[] {
   return [...years].sort((a, b) => b - a);
 }
 
+/**
+ * 节点的完成态：完成列即完成（判据单源见 lib/taskScope）。
+ * 图谱的筛选与着色都按它来——首页 KPI 的完成率也是这一套，两边不各判各的。
+ */
+function statusOf(t: Task): ColumnId {
+  return isTaskCompleted(t) ? "done" : t.column;
+}
+
 function passTaskFilters(t: Task, f: GraphFilters): boolean {
   if (t.deletedAt) return false;
-  if (!f.status[t.column]) return false;
+  if (!f.status[statusOf(t)]) return false;
   if (f.owners && !f.owners.includes(t.ownerId ?? SELF_OWNER)) return false;
   if (f.tags) {
     const tags = t.tags ?? [];
@@ -191,7 +199,7 @@ export function buildTaskGraph(
       id: t.id,
       kind: "task",
       label: t.title,
-      status: t.column,
+      status: statusOf(t),
       archived: t.archived,
       owner: t.ownerId ?? undefined,
       tags: t.tags,

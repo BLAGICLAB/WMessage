@@ -59,7 +59,7 @@ function trace(partial: Partial<TraceRow> & { id: number }): TraceRow {
 
 const TASKS: Task[] = [
   task({ id: "p1", title: "首页模块小样", planStart: "2026-10-11T15:15", planEnd: "2026-10-11T16:45", tags: ["设计"] }),
-  task({ id: "p2", title: "需求清单梳理", planStart: "2026-10-11T09:00", planEnd: "2026-10-11T10:30", completedAt: NOW.getTime() }),
+  task({ id: "p2", title: "需求清单梳理", planStart: "2026-10-11T09:00", planEnd: "2026-10-11T10:30", completedAt: NOW.getTime(), column: "done" }),
   task({ id: "p3", title: "周报汇总", planStart: "2026-10-11T19:00", planEnd: "2026-10-11T20:00" }),
   task({ id: "d1", title: "提交验收报告", due: "2026-10-11T18:00" }),
   task({ id: "d2", title: "OCR 分诊复核", due: "2026-10-10" }),
