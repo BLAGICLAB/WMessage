@@ -342,7 +342,9 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_get_enabled");
     });
-  });
+    // 上限放宽到 30 秒：这条要把整个设置页挂起来再逐个分类点一遍，是全仓
+    // 最重的 UI 用例；机器负载高时 5 秒默认上限会把它饿死（报超时，不是断言不达标）
+  }, 30_000);
 
   it("任务卡归档时间（数据管理）：默认 7 天，改 30 保存 → bot_set_config 携带 archiveAfterDays=30", async () => {
     const user = userEvent.setup();

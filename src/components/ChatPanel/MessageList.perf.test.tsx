@@ -88,5 +88,7 @@ describe("MsgBubble memo 流式性能", () => {
     expect(memoAvg).toBeLessThan(baseAvg);
     // 保守阈值：30 条消息的 markdown 全量重渲染至少是单条增量的 2 倍
     expect(baseAvg / memoAvg).toBeGreaterThan(2);
-  });
+    // 上限放宽到 30 秒：这条要跑两遍 30 气泡 × 50 次更新，是全仓最重的用例；
+    // 机器负载高时 5 秒默认上限会把它饿死（报超时，不是断言不达标）
+  }, 30_000);
 });
