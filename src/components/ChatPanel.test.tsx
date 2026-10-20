@@ -1274,6 +1274,7 @@ describe("ChatPanel", () => {
       if (cmd === "bot_chat") return new Promise(() => {});
       if (cmd === "bot_preview_text")
         return {
+          kind: "text",
           path: "/tmp/报告.md",
           content: "# 标题\n\n正文一段",
           truncated: false,
@@ -1660,6 +1661,7 @@ describe("ChatPanel", () => {
         ];
       if (cmd === "bot_preview_text")
         return {
+          kind: "text",
           path: "/Users/x/调研.md",
           content: "# 上海博士后政策\n正文一段",
           truncated: false,
@@ -1708,6 +1710,7 @@ describe("ChatPanel", () => {
       if (cmd === "bot_history_load") return [];
       if (cmd === "bot_preview_text")
         return {
+          kind: "text",
           path: "/Users/x/out.md",
           content: "# 产物",
           truncated: false,

@@ -205,6 +205,22 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
         .map_err(|e| CommandError::IoError(format!("打开路径失败：{e}")))
 }
 
+/// 文本预览结果（右侧栏「文件」工作面点开文件后就地渲染）。
+///
+/// **分两态而不是「成功 / 失败」**：二进制、文件夹这类目标**读得到、但渲染不了**
+/// ——命令本身是成功的，只是「不能作为文本渲染」。塞进错误通道的话前端只能
+/// 靠错误文案认它（「消息里有没有『二进制』三个字」），文案一改就失效；
+/// 而错误消息本身又是给人看的（「参数校验失败：path=…（…）」），不适合当机器信号。
+/// 独立成态后前端拿到的是稳定的 kind 标签 + 一句干净的原因。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TextPreviewResult {
+    /// 可作为文本渲染
+    Text(TextPreview),
+    /// 读到了但不能作为文本渲染（二进制 / 文件夹）：可交给系统默认程序打开
+    Unsupported { path: String, reason: String },
+}
+
 /// 文本预览载荷（右侧栏「文件」工作面点开文件后就地渲染）。
 ///
 /// **为什么需要它**：以前文件行点不开，只能跳到系统默认程序——在聊天里
@@ -233,22 +249,24 @@ pub const PREVIEW_MAX_BYTES: usize = 256 * 1024;
 ///
 /// **按内容判，不按扩展名判**：`.txt` 可能是二进制、`.bin` 可能是文本，
 /// 扩展名白名单会两头都判错。UTF-16/UTF-32 文本恰好都含 NUL，会被误判成
-/// 二进制——那是可接受的保守方向（回一句「疑似二进制」好过吐一屏乱码）。
+/// 二进制——那是可接受的保守方向（回一句「这是二进制文件」并给出外部打开
+/// 入口，好过吐一屏乱码；系统默认程序读 UTF-16 文本本来就没问题）。
 const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 
 /// 文本预览内核（纯函数，可单测）：读文件、按上限截断、判二进制。
 ///
-/// `Err` 只回可读原因，前端弹错不静默——「点了没反应」和
+/// **读得到但渲染不了**（二进制 / 文件夹）回 `Unsupported` 而不是错误：
+/// 命令成功了，只是没有可渲染的文本。真正的读不到（路径不存在、权限）
+/// 才回 Err，且只回可读原因，前端弹错不静默——「点了没反应」和
 /// 「显示为空」都会让人以为文件是空的。
-pub fn read_text_preview(path: &str) -> CommandResult<TextPreview> {
+pub fn read_text_preview(path: &str) -> CommandResult<TextPreviewResult> {
     let p = std::path::Path::new(path);
     let meta = std::fs::metadata(p)
         .map_err(|e| CommandError::IoError(format!("读取文件信息失败：{e}")))?;
     if meta.is_dir() {
-        return Err(CommandError::InvalidArgument {
-            field: "path".into(),
-            value: path.to_string(),
-            reason: "这是文件夹，暂不支持预览内容".into(),
+        return Ok(TextPreviewResult::Unsupported {
+            path: path.to_string(),
+            reason: "这是文件夹，无法在栏内预览内容".into(),
         });
     }
     // 多读 1 字节判溢出，避免为了知道「超没超限」把整个大文件读进内存
@@ -268,10 +286,9 @@ pub fn read_text_preview(path: &str) -> CommandResult<TextPreview> {
         buf.truncate(PREVIEW_MAX_BYTES);
     }
     if buf.iter().take(BINARY_SNIFF_BYTES).any(|&b| b == 0u8) {
-        return Err(CommandError::InvalidArgument {
-            field: "path".into(),
-            value: path.to_string(),
-            reason: "疑似二进制文件，不做文本预览（可用「在访达中打开」查看）".into(),
+        return Ok(TextPreviewResult::Unsupported {
+            path: path.to_string(),
+            reason: "这是二进制文件（图片、PDF、Office 文档等），无法在栏内预览内容".into(),
         });
     }
     // 非法 UTF-8（截断处切在多字节字符中间也会这样）→ 丢尾部残字节，
@@ -285,19 +302,19 @@ pub fn read_text_preview(path: &str) -> CommandResult<TextPreview> {
             String::from_utf8_lossy(&e.into_bytes()[..upto]).into_owned()
         }
     };
-    Ok(TextPreview {
+    Ok(TextPreviewResult::Text(TextPreview {
         path: path.to_string(),
         lines: content.lines().count(),
         content,
         truncated,
         total_bytes: meta.len(),
-    })
+    }))
 }
 
 /// 文本预览命令（右侧栏文件工作面）：同步 IO，挪进 blocking 线程池，
 /// 不占 async runtime worker（与 doc_* 同模式）。
 #[tauri::command]
-pub async fn bot_preview_text(path: String) -> CommandResult<TextPreview> {
+pub async fn bot_preview_text(path: String) -> CommandResult<TextPreviewResult> {
     tauri::async_runtime::spawn_blocking(move || read_text_preview(&path))
         .await
         .map_err(|e| CommandError::from(format!("预览线程 join 失败：{e}")))?
@@ -655,7 +672,7 @@ mod tests {
 
 #[cfg(test)]
 mod preview_tests {
-    use super::{read_text_preview, PREVIEW_MAX_BYTES};
+    use super::{read_text_preview, TextPreviewResult, PREVIEW_MAX_BYTES};
 
     /// 测试临时目录：唯一 tmp 子目录，跑完即删（不留垃圾在系统 temp 里）
     fn tmp_dir(tag: &str) -> std::path::PathBuf {
@@ -676,6 +693,9 @@ mod preview_tests {
         let dir = tmp_dir("text");
         let path = write(&dir, "a.txt", b"line1\nline2\nline3");
         let p = read_text_preview(&path).expect("文本文件应可预览");
+        let super::TextPreviewResult::Text(p) = p else {
+            panic!("文本文件应走 Text 分支");
+        };
         assert_eq!(p.content, "line1\nline2\nline3");
         assert_eq!(p.lines, 3);
         assert_eq!(p.total_bytes, 17);
@@ -690,24 +710,30 @@ mod preview_tests {
         let md = b"# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
         let path = write(&dir, "a.md", md);
         let p = read_text_preview(&path).expect("md 应可预览");
+        let super::TextPreviewResult::Text(p) = p else {
+            panic!("md 应走 Text 分支");
+        };
         assert_eq!(p.content.as_bytes(), md);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn binary_is_refused_with_readable_reason() {
-        // 按内容判：NUL 出现即二进制。返回可读原因而不是空内容——
-        // 空内容会被当成「文件是空的」，用户白点一次
+    fn binary_reports_unsupported_with_readable_reason() {
+        // 按内容判：NUL 出现即二进制。回「不可预览」而不是空内容——
+        // 空内容会被当成「文件是空的」，用户白点一次；
+        // 也不当成错误：读到了、只是渲染不了，命令本身是成功的
         let dir = tmp_dir("bin");
         let path = write(&dir, "a.txt", b"PK\x03\x04\x00\x01\x02binary");
-        let err = read_text_preview(&path).expect_err("二进制应被拒");
-        let msg = err.message();
-        assert!(msg.contains("二进制"), "原因要说清是二进制：{msg}");
+        let r = read_text_preview(&path).expect("二进制应给出结果而非报错");
+        let TextPreviewResult::Unsupported { reason, .. } = r else {
+            panic!("二进制应走 Unsupported 分支");
+        };
+        assert!(reason.contains("二进制"), "原因要说清是二进制：{reason}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn missing_path_and_directory_report_reason() {
+    fn missing_path_reports_error_and_directory_reports_unsupported() {
         let dir = tmp_dir("missing");
         let err =
             read_text_preview(&dir.join("nope.txt").to_string_lossy()).expect_err("不存在应报错");
@@ -717,8 +743,33 @@ mod preview_tests {
             err.message()
         );
         // 目录不报「读失败」而要说清是文件夹：用户点文件夹只想看内容
-        let derr = read_text_preview(&dir.to_string_lossy()).expect_err("目录应被拒");
-        assert!(derr.message().contains("文件夹"), "{}", derr.message());
+        let r = read_text_preview(&dir.to_string_lossy()).expect("目录应给出结果而非报错");
+        let TextPreviewResult::Unsupported { reason, .. } = r else {
+            panic!("目录应走 Unsupported 分支");
+        };
+        assert!(reason.contains("文件夹"), "{reason}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn result_serializes_with_kind_tag() {
+        // 前端靠 kind 分流：text 走渲染，unsupported 走「用系统默认程序打开」。
+        // 标签名是线协议的一部分，改名等于让前端两边对不上
+        let dir = tmp_dir("serde");
+        let text = write(&dir, "a.txt", b"hello");
+        let json = serde_json::to_value(read_text_preview(&text).expect("文本应可预览"))
+            .expect("应能序列化");
+        assert_eq!(json["kind"], "text");
+        assert_eq!(json["content"], "hello");
+        assert_eq!(json["truncated"], false);
+        let bin = write(&dir, "b.bin", b"PK\x03\x04\x00\x01");
+        let json = serde_json::to_value(read_text_preview(&bin).expect("二进制应给出结果"))
+            .expect("应能序列化");
+        assert_eq!(json["kind"], "unsupported");
+        assert!(
+            json["reason"].as_str().is_some_and(|s| !s.is_empty()),
+            "unsupported 必须带原因：{json}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -732,6 +783,9 @@ mod preview_tests {
         body.extend_from_slice("报告".as_bytes());
         let path = write(&dir, "big.txt", &body);
         let p = read_text_preview(&path).expect("超大文件应截断而非报错");
+        let super::TextPreviewResult::Text(p) = p else {
+            panic!("超大文本应走 Text 分支");
+        };
         assert!(p.truncated, "超限必须标截断");
         assert_eq!(p.content.len(), PREVIEW_MAX_BYTES, "截断后应正好等于上限");
         assert!(
