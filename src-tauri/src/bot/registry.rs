@@ -336,6 +336,15 @@ pub const SCHEMA_COPY_FILE_TO_CLIPBOARD: &str = r##"{"type":"function","function
     "path":{"type":"string","description":"单个文件路径（绝对路径，支持 ~ 开头）；与 paths 二选一"},
     "paths":{"type":"array","items":{"type":"string"},"description":"多个文件路径（最多 20 个）；与 path 二选一"}
   }}}}"##;
+pub const SCHEMA_SCHEDULE_REMINDER: &str = r##"{"type":"function","function":{"name":"schedule_reminder","description":"设一个到点提醒：到点用系统通知提醒用户（只说话，不建任务卡、不执行任何内容）。用户说「30分钟后提醒我 X」「明天9点提醒我 Y」「每天早上提醒我 Z」时用它。when 支持三种写法：绝对时间 2026-10-22T09:00、今天 HH:MM（今天已过则顺延到明天）、相对现在 +30m / +2h / +1d；repeat 决定重复频率（none 仅一次 / daily 每天 / weekly 每周 / monthly 每月，重复时按 when 的时刻与星期、日序锚定）。设完返回提醒 id，可配合 list_reminders / cancel_reminder 管理","parameters":{"type":"object","properties":{
+    "text":{"type":"string","description":"提醒内容（要提醒用户什么，一句话）"},
+    "when":{"type":"string","description":"提醒时间：绝对时间 2026-10-22T09:00 / 今天 HH:MM / 相对现在 +30m、+2h、+1d"},
+    "repeat":{"type":"string","enum":["none","daily","weekly","monthly"],"default":"none","description":"重复频率：none=仅一次（默认）/ daily=每天 / weekly=每周 / monthly=每月"}
+  },"required":["text","when"]}}}"##;
+pub const SCHEMA_LIST_REMINDERS: &str = r##"{"type":"function","function":{"name":"list_reminders","description":"列出当前已设的全部提醒（含提醒 id、下次触发时间与启用状态），用于回答「我有哪些提醒」或拿到 cancel_reminder 需要的 id","parameters":{"type":"object","properties":{}}}}"##;
+pub const SCHEMA_CANCEL_REMINDER: &str = r##"{"type":"function","function":{"name":"cancel_reminder","description":"取消一条已设的提醒（按提醒 id，id 用 list_reminders 查）。取消后到点不再通知","parameters":{"type":"object","properties":{
+    "id":{"type":"string","description":"提醒 id（list_reminders 返回）"}
+  },"required":["id"]}}}"##;
 pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
@@ -717,6 +726,18 @@ fn call_copy_file_to_clipboard<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolF
         crate::bot_desktop::tool_copy_file_to_clipboard(ctx.app, args, interactive, session_id)
             .await
     })
+}
+
+fn call_schedule_reminder<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_reminders::tool_schedule_reminder(ctx.app, args).await })
+}
+
+fn call_list_reminders<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_reminders::tool_list_reminders(ctx.app, args).await })
+}
+
+fn call_cancel_reminder<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_reminders::tool_cancel_reminder(ctx.app, args).await })
 }
 
 fn call_screenshot<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -1693,7 +1714,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 49;
+pub const BUILTIN_TOOL_COUNT: usize = 52;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2174,6 +2195,31 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &[],
         max_output_bytes: 8192,
         call: call_copy_file_to_clipboard,
+    },
+    // 提醒三件套。追加在表尾：同 manage_file 的理由（基线只比前缀）。
+    ToolDef {
+        name: "schedule_reminder",
+        schema: SCHEMA_SCHEDULE_REMINDER,
+        mutating: true,
+        claims_patterns: &["已设提醒", "已设置提醒", "提醒已设置", "已添加提醒"],
+        max_output_bytes: 8192,
+        call: call_schedule_reminder,
+    },
+    ToolDef {
+        name: "list_reminders",
+        schema: SCHEMA_LIST_REMINDERS,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_list_reminders,
+    },
+    ToolDef {
+        name: "cancel_reminder",
+        schema: SCHEMA_CANCEL_REMINDER,
+        mutating: true,
+        claims_patterns: &["已取消提醒", "提醒已取消"],
+        max_output_bytes: 8192,
+        call: call_cancel_reminder,
     },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
@@ -2688,6 +2734,9 @@ mod registry_tests {
             "pack_archive",
             "manage_file",
             "copy_file_to_clipboard",
+            "schedule_reminder",
+            "list_reminders",
+            "cancel_reminder",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2752,6 +2801,9 @@ mod registry_tests {
             "pack_archive",
             "manage_file",
             "copy_file_to_clipboard",
+            "schedule_reminder",
+            "list_reminders",
+            "cancel_reminder",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2789,6 +2841,8 @@ mod registry_tests {
             "unpack_archive",
             "pack_archive",
             "manage_file",
+            "schedule_reminder",
+            "cancel_reminder",
         ]
         .into_iter()
         .collect();
@@ -2844,8 +2898,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 19,
-            "主可见应为 28+3+4+2+1+1+3+1+4（末位 +4 = 归档两工具 + manage_file + copy_file_to_clipboard）"
+            base_arr.len() + 22,
+            "主可见应为 28+3+4+2+1+1+3+1+7（末位 +7 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具）"
         );
     }
 

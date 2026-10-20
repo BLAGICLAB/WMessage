@@ -25,6 +25,7 @@ pub mod bot_onions;
 pub mod bot_orchestrator;
 mod bot_plan;
 mod bot_py;
+mod bot_reminders;
 mod bot_scheduler;
 pub mod bot_skills;
 mod bot_slash;
@@ -649,6 +650,9 @@ pub fn run() {
             crate::db::trace::trace_export,
             crate::db::schedule_jobs::scheduled_job_update,
             crate::db::schedule_jobs::scheduled_job_delete,
+            crate::db::reminders::reminder_create,
+            crate::db::reminders::reminder_list,
+            crate::db::reminders::reminder_delete,
             crate::db::schedule_jobs::scheduled_job_history,
             crate::db::workspace::workspace_load,
             crate::db::workspace::workspace_upsert,

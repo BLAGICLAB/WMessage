@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 源码共 160 个文件、约 8.7 万行，全部在 `src-tauri/src/`。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 源码共 163 个文件、约 8.8 万行，全部在 `src-tauri/src/`。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1076)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1080)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -33,6 +33,8 @@ src-tauri/src/
 │   │                     SubagentBudget 预算三硬顶；spawn 插 queued 行，check 幂等轮询）
 │   ├── people.rs         成员注册表（多人任务汇总的归属人字典；people_list 命令 +
 │   │                     upsert 最新名覆盖 + 占位兜底，见 docs/TASK-GRAPH-DESIGN-2026-10-05.md §1）
+│   ├── reminders.rs      机器人提醒（reminders 表）：到点发系统通知，不建卡不执行；
+│   │                     定时串与作业同格式，触发点计算共用 bot_scheduler
 │   ├── schedule_jobs.rs  内容型定时作业（T1）：XXL-JOB 式调度日志——重试/自动暂停/
 │   │                     错过消费 + scheduled_job_runs 执行历史；定时单源本表
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
@@ -115,7 +117,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3467)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3522)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1445)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
@@ -161,6 +163,11 @@ src-tauri/src/
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
 │                        SchedGuard 防重入；完成发系统通知
+├── bot_reminders.rs (588) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
+│                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
+│                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
+│                        定时串与触发点计算复用 bot_scheduler（occurrence_after），
+│                        存储与触发路径独立（reminders 表）；与作业同一个 30s tick
 ├── due_notify.rs        任务卡截止系统通知：30s 扫描活跃任务（仿 bot_scheduler），截止前 1h 一条、
 │                        截止时刻一条（超 24h 老任务不补发，防升级/重启后轰炸）；通知失败只记日志
 ├── bot_slash.rs         StopGuard/StopRegistry（/stop 按执行实例隔离；注册表已迁 app_state::AppState，
@@ -181,7 +188,7 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_desktop.rs (538) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+├── bot_desktop.rs (539) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
 │                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的
@@ -483,7 +490,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 161 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 163 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 通过相对路径或文件名提及强制要求；任何新增模块请同步登记。
 
 ### 顶层
@@ -499,6 +506,7 @@ flowchart TD
 - `bot_chat.rs`
 - `bot_fs.rs`
 - `bot_manage_file.rs`
+- `bot_reminders.rs`
 - `bot_model_loop.rs`
 - `bot_onions.rs`
 - `bot_plan.rs`
@@ -573,6 +581,7 @@ flowchart TD
 - `db/mod.rs`
 - `db/paths.rs`
 - `db/people.rs`
+- `db/reminders.rs`
 - `db/schedule_jobs.rs`
 - `db/skill_out.rs`
 - `db/subagents.rs`

@@ -139,7 +139,8 @@ pub(crate) fn resolve_local(dt: chrono::NaiveDateTime) -> Option<chrono::DateTim
 /// - "weekly:D:HH:MM" 每周（D=1..7，周一起）
 /// - "at:YYYY-MM-DDTHH:MM" 一次性
 /// 返回在 after 之后最近的触发时间；一次性已过或格式无效返回 None。
-fn occurrence_after(
+/// pub(crate)：提醒模块（bot_reminders）复用同一套触发点计算。
+pub(crate) fn occurrence_after(
     schedule: &str,
     after: chrono::DateTime<chrono::Local>,
 ) -> Option<chrono::DateTime<chrono::Local>> {
@@ -863,6 +864,8 @@ pub fn start_scheduler(app: AppHandle) {
 async fn scheduler_tick(app: &AppHandle) {
     // 内容型定时作业扫描（到点新建任务卡并执行）
     jobs_tick(app).await;
+    // 提醒扫描（到点发系统通知，不建卡不执行）
+    crate::bot_reminders::reminders_tick(app).await;
 }
 
 // 定时任务模块命令

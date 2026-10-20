@@ -12,6 +12,7 @@ pub use crate::db::bot_sessions::*;
 pub use crate::db::migrations::*;
 pub use crate::db::paths::*;
 pub use crate::db::people::*;
+pub use crate::db::reminders::*;
 pub use crate::db::schedule_jobs::*;
 pub use crate::db::skill_out::*;
 pub use crate::db::subagents::*;
@@ -27,6 +28,7 @@ pub mod lock;
 pub mod migrations;
 pub mod paths;
 pub mod people;
+pub mod reminders;
 pub mod schedule_jobs;
 pub mod skill_out;
 pub mod subagents;
@@ -234,6 +236,9 @@ pub fn open_db<R: tauri::Runtime>(
     // v1 老库补状态/重试列 + 执行历史表（XXL-JOB 调度日志借鉴）
     crate::db::schedule_jobs::ensure_scheduled_jobs_columns(&conn).map_err(|e| e.to_string())?;
     conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOB_RUNS_DDL)
+        .map_err(|e| e.to_string())?;
+    // 提醒表：到点发系统通知，不建卡不执行（与内容型作业分表存）
+    conn.execute_batch(crate::db::reminders::REMINDERS_DDL)
         .map_err(|e| e.to_string())?;
     // 成员注册表（任务图谱设计 §1.2）：多人汇总的归属人字典，幂等
     conn.execute_batch(people::PEOPLE_DDL)
