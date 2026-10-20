@@ -282,6 +282,34 @@ pub fn parse_openai_usage(v: &serde_json::Value) -> Option<TokenUsage> {
     })
 }
 
+/// token 用量的合并口径：**按字段取最后一次非零值**，不逐块累加。
+///
+/// 两协议的 usage 都是「本请求截至此刻的**总量**」，不是增量：
+/// - OpenAI：`stream_options.include_usage` 让末块带 usage（每块都带的网关
+///   并不少见），每块带的是同一份总量；
+/// - Anthropic：message_delta 的 `usage.output_tokens` 是累计输出量。
+///
+/// 逐块累加会把同一份总量重复计入（每块都带 usage 的网关按块数 ×N），
+/// 落库后 token 数与缓存命中率全部虚高，前端水位条也跟着虚高。
+///
+/// 但两协议的字段**分散在不同事件**里（Anthropic 的 input 在 message_start、
+/// output 在 message_delta；OpenAI 两者同块），故按字段取最后一次非零值，
+/// 而不是整块替换——整块替换会把 Anthropic 的 input 抹成 0。
+pub fn merge_stream_usage(acc: &mut TokenUsage, u: TokenUsage) {
+    if u.input_tokens > 0 {
+        acc.input_tokens = u.input_tokens;
+    }
+    if u.output_tokens > 0 {
+        acc.output_tokens = u.output_tokens;
+    }
+    if u.cache_read_tokens > 0 {
+        acc.cache_read_tokens = u.cache_read_tokens;
+    }
+    if u.cache_creation_tokens > 0 {
+        acc.cache_creation_tokens = u.cache_creation_tokens;
+    }
+}
+
 /// 协议解析失败时的坏块判定（纯函数，供调用方计数留痕）——坏块曾经无声
 /// 消失：网关吐半截 JSON 或非本协议形状的载荷，回复凭空少一段，日志里什么
 /// 都不留。两协议各有一条同样形态的 `.ok()?`（OpenAI parse_sse_chunk /
@@ -2157,14 +2185,14 @@ where
         // 解析不掉的 data 载荷计数 + 首条样本：回合结束发一条审计，不逐块刷屏
         let mut bad_sse_chunks: u32 = 0;
         let mut bad_sse_sample: Option<String> = None;
-        // Anthropic 模式 token 用量累积（message_start 的 input / message_delta 的
-        // output，parse_anthropic_event 顺带捞出），回合结束写 llm.usage 审计
-        let mut usage_input: u64 = 0;
-        let mut usage_output: u64 = 0;
-        // 缓存命中/写入累计（仅 Anthropic 协议会变；OpenAI 协议保持 0）。
-        // 前端水位条按「读/写」两档单列展示，不折进输入输出，也不算命中率
-        let mut usage_cache_read: u64 = 0;
-        let mut usage_cache_creation: u64 = 0;
+        // 流内 token 用量累计（Anthropic：message_start 的 input /
+        // message_delta 的 output；OpenAI：末块 usage），回合结束写 llm.usage 审计。
+        //
+        // 合并口径见 merge_stream_usage：按字段取最后一次非零值，**不逐块累加**
+        // ——两协议的 usage 都是累计总量，逐块加会把同一份总量重复计入。
+        // 缓存命中/写入两档单独记（仅 Anthropic 协议会变；OpenAI 保持 0），
+        // 前端水位条按「读/写」单列展示，不折进输入输出，也不算命中率。
+        let mut usage_acc = TokenUsage::default();
         // Anthropic 模式 content block index → 工具槽位重映射：
         // Anthropic 的块序号连文本块一起数，直接当工具序号累积会留下
         // 幽灵空条目，严格 API 会 400（详见 bot_anthropic::ToolSlotMapper 注释）
@@ -2206,13 +2234,10 @@ where
                     return None;
                 };
                 // token 记账两协议共用一处：Anthropic 分布在 message_start /
-                // message_delta 两个事件，OpenAI 集中在末块 usage——都是
-                // 「本块带用量就累加」，故不需要各写一份。
+                // message_delta 两个事件，OpenAI 集中在末块 usage。
+                // 合并口径统一走 merge_stream_usage（按字段取最后一次非零值）。
                 if let Some(u) = parsed.usage.take() {
-                    usage_input += u.input_tokens;
-                    usage_output += u.output_tokens;
-                    usage_cache_read += u.cache_read_tokens;
-                    usage_cache_creation += u.cache_creation_tokens;
+                    merge_stream_usage(&mut usage_acc, u);
                 }
                 if parsed.is_done {
                     stream_end_seen = true;
@@ -2359,20 +2384,28 @@ where
         // 缓存字段（cache_read / cache_creation）拼到 llm.usage 事件里——
         // bot.log 落盘可做命中率回看（业界把命中率列为生产 agent 第一指标）。
         // OpenAI 无 cache write 字段，该档恒 0（不是解析失败）。
-        if usage_input > 0 || usage_output > 0 {
+        if usage_acc.input_tokens > 0 || usage_acc.output_tokens > 0 {
             let mut kv = vec![
-                ("input_tokens", usage_input.to_string()),
-                ("output_tokens", usage_output.to_string()),
+                ("input_tokens", usage_acc.input_tokens.to_string()),
+                ("output_tokens", usage_acc.output_tokens.to_string()),
             ];
-            if usage_cache_read > 0 || usage_cache_creation > 0 {
-                kv.push(("cache_read_tokens", usage_cache_read.to_string()));
-                kv.push(("cache_creation_tokens", usage_cache_creation.to_string()));
+            if usage_acc.cache_read_tokens > 0 || usage_acc.cache_creation_tokens > 0 {
+                kv.push((
+                    "cache_read_tokens",
+                    usage_acc.cache_read_tokens.to_string(),
+                ));
+                kv.push((
+                    "cache_creation_tokens",
+                    usage_acc.cache_creation_tokens.to_string(),
+                ));
                 // 命中率 = read / (read + creation + input)，缓存写入一次占新前缀
                 // 后续轮都是 read；creation 仅在「上一轮窗口写满 + 重新构造前缀」
                 // 时出现。计算时 input 含未被缓存的尾部 token，命中看 read 占比
-                let total = usage_cache_read + usage_cache_creation + usage_input;
+                let total = usage_acc.cache_read_tokens
+                    + usage_acc.cache_creation_tokens
+                    + usage_acc.input_tokens;
                 // checked_div：total=0（无任何 token）时整个键都不落，与旧守卫语义一致
-                if let Some(pct) = (usage_cache_read * 100).checked_div(total) {
+                if let Some(pct) = (usage_acc.cache_read_tokens * 100).checked_div(total) {
                     kv.push(("cache_hit_pct", pct.to_string()));
                 }
             }
@@ -4302,6 +4335,70 @@ mod parse_sse_chunk_tests {
     fn openai_content_chunk_has_no_usage() {
         let line = r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#;
         assert!(parse_sse_chunk(line).unwrap().usage.is_none());
+    }
+
+    /// OpenAI 网关**每块都带 usage** 时，token 数不得按块数翻倍。
+    ///
+    /// usage 是本请求的**总量**（`stream_options.include_usage` 约定），逐块
+    /// 累加会把同一份总量重复计入——落库 token、缓存命中率、前端水位条全部
+    /// 虚高。合并口径：按字段取最后一次非零值。
+    #[test]
+    fn stream_usage_is_not_multiplied_when_every_chunk_carries_it() {
+        let chunk =
+            r#"data: {"choices":[],"usage":{"prompt_tokens":5000,"completion_tokens":120}}"#;
+        let mut acc = TokenUsage::default();
+        for _ in 0..5 {
+            let u = parse_sse_chunk(chunk).unwrap().usage.unwrap();
+            merge_stream_usage(&mut acc, u);
+        }
+        assert_eq!(acc.input_tokens, 5000, "不得累加成 25000");
+        assert_eq!(acc.output_tokens, 120, "不得累加成 600");
+    }
+
+    /// Anthropic 的字段分散在两个事件里（input 在 message_start、output 在
+    /// message_delta），按字段取最后一次非零值才两样都在——整块替换会把
+    /// Anthropic 的 input 抹成 0。
+    #[test]
+    fn anthropic_usage_keeps_input_from_start_and_output_from_delta() {
+        let start = crate::bot_anthropic::parse_anthropic_event(
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":50,"cache_read_input_tokens":4000,"cache_creation_input_tokens":1500}}}"#,
+        )
+        .unwrap()
+        .usage
+        .unwrap();
+        let delta = crate::bot_anthropic::parse_anthropic_event(
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+        )
+        .unwrap()
+        .usage
+        .unwrap();
+        let mut acc = TokenUsage::default();
+        merge_stream_usage(&mut acc, start);
+        merge_stream_usage(&mut acc, delta);
+        assert_eq!(
+            acc.input_tokens, 50,
+            "message_start 的 input 不能被后到的 delta 抹掉"
+        );
+        assert_eq!(acc.output_tokens, 7);
+        assert_eq!(acc.cache_read_tokens, 4000);
+        assert_eq!(acc.cache_creation_tokens, 1500);
+    }
+
+    /// Anthropic 的 message_delta.output_tokens 是**累计**输出量：再来一个更大的
+    /// delta 时应覆盖，不是相加（相加会把 5+7 算成 12）。
+    #[test]
+    fn anthropic_cumulative_output_replaces_rather_than_adds() {
+        let mut acc = TokenUsage::default();
+        for o in [5u64, 7] {
+            let u = crate::bot_anthropic::parse_anthropic_event(&format!(
+                r#"data: {{"type":"message_delta","usage":{{"output_tokens":{o}}}}}"#
+            ))
+            .unwrap()
+            .usage
+            .unwrap();
+            merge_stream_usage(&mut acc, u);
+        }
+        assert_eq!(acc.output_tokens, 7, "累计值应覆盖，不得相加");
     }
 
     /// 非对象 usage（脏网关）不得当成有效用量
