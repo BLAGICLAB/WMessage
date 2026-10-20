@@ -193,7 +193,7 @@ pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}}"##;
 pub const SCHEMA_COMPLETE_TASK: &str = r##"{"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；任务卡带【验收标准】且未逐条达标时不要调用）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 list_tasks 输出），可选，优先于 title"},
+    "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 query_tasks 输出），可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
   },"required":[]}}}"##;
 pub const SCHEMA_DELETE_TASK: &str = r##"{"type":"function","function":{"name":"delete_task","description":"删除任务到回收站（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
@@ -2624,6 +2624,25 @@ mod registry_tests {
         .into_iter()
         .collect();
         assert_eq!(derived, expected);
+    }
+
+    /// 已下线的工具名不得再出现在任何 schema 描述里。
+    ///
+    /// 描述是模型看得见的说明书：让它去找一个已经不存在的工具，得到的
+    /// 只会是「未知工具」，用户看到的是一次白跑的工具调用
+    /// （list_tasks / search_tasks 已合并进 query_tasks）。
+    #[test]
+    fn retired_tool_names_absent_from_schemas() {
+        const RETIRED: &[&str] = &["list_tasks", "search_tasks"];
+        for t in TOOLS_TABLE {
+            for gone in RETIRED {
+                assert!(
+                    !t.schema.contains(gone),
+                    "{} 的 schema 仍提到已下线的工具 {gone}",
+                    t.name
+                );
+            }
+        }
     }
 
     /// 阶段 2 spec 1: TOOLS JSON 与基线一致。

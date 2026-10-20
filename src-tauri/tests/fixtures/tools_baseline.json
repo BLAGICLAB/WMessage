@@ -110,7 +110,7 @@ const TOOLS: &str = r#"[
       "parameters": {
         "properties": {
           "taskId": {
-            "description": "任务 id（来自用户消息的 [已选任务] 引用块或 list_tasks 输出），可选，优先于 title",
+            "description": "任务 id（来自用户消息的 [已选任务] 引用块或 query_tasks 输出），可选，优先于 title",
             "type": "string"
           },
           "title": {
