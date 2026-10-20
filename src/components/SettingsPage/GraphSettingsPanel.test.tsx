@@ -75,4 +75,27 @@ describe("GraphSettingsPanel", () => {
     expect(screen.queryByRole("radiogroup", { name: "节点大小" })).toBeNull();
     expect(screen.queryByRole("radio", { name: "耗时" })).toBeNull();
   });
+
+  it("三档标签齐全：密度 少/标准/多，粗细 细/标准/粗，松散度 紧凑/标准/宽松", () => {
+    render(<GraphSettingsPanel />);
+    const labels = (name: string) =>
+      within(screen.getByRole("radiogroup", { name }))
+        .getAllByRole("radio")
+        .map((el) => el.textContent);
+    expect(labels("标签密度")).toEqual(["少", "标准", "多"]);
+    expect(labels("连线粗细")).toEqual(["细", "标准", "粗"]);
+    expect(labels("布局松散度")).toEqual(["紧凑", "标准", "宽松"]);
+  });
+
+  it("文案里的关键口径不被改掉：度数分位、三档像素值、松散度调的是星点大小", () => {
+    render(<GraphSettingsPanel />);
+    const text = document.body.textContent ?? "";
+    // 标签密度：按度数分位取门槛（写死阈值会让密度档随图的疏密漂移）
+    expect(text).toContain("度数前 7%");
+    // 连线粗细：三档的名义像素值
+    expect(text).toContain("细 1px / 标准 1.6px / 粗 2.8px");
+    // 布局松散度：调的是星点大小，不改节点排布
+    expect(text).toContain("星点的大小与亮暗");
+    expect(text).toContain("不改节点之间的排布");
+  });
 });
