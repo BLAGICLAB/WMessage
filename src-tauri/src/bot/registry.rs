@@ -345,6 +345,29 @@ pub const SCHEMA_LIST_REMINDERS: &str = r##"{"type":"function","function":{"name
 pub const SCHEMA_CANCEL_REMINDER: &str = r##"{"type":"function","function":{"name":"cancel_reminder","description":"取消一条已设的提醒（按提醒 id，id 用 list_reminders 查）。取消后到点不再通知","parameters":{"type":"object","properties":{
     "id":{"type":"string","description":"提醒 id（list_reminders 返回）"}
   },"required":["id"]}}}"##;
+pub const SCHEMA_LIST_WINDOWS: &str = r##"{"type":"function","function":{"name":"list_windows","description":"列出可接管的桌面窗口（应用名 + 窗口标题 + 窗口 id）。UI 自动化的第一步：先拿窗口 id，再对它做 inspect / click / type。只列有标题的窗口；需要先在设置页开启「允许机器人操作桌面界面」","parameters":{"type":"object","properties":{}}}}"##;
+pub const SCHEMA_ACTIVATE_WINDOW: &str = r##"{"type":"function","function":{"name":"activate_window","description":"把指定窗口切到前台（后续 click / type 都作用在这个窗口上）","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"}
+  },"required":["windowId"]}}}"##;
+pub const SCHEMA_UI_INSPECT: &str = r##"{"type":"function","function":{"name":"ui_inspect","description":"读窗口里的控件树（角色 / 标题 / 当前值 / 是否可用 / 是否可直接触发），可按关键词过滤。点击与输入前先用它确认目标控件的 id","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "query":{"type":"string","description":"可选：按控件标题 / 角色 / 标识过滤（不填=全部）"},
+    "maxDepth":{"type":"integer","description":"可选：树深度上限，默认 6"}
+  },"required":["windowId"]}}}"##;
+pub const SCHEMA_UI_CLICK: &str = r##"{"type":"function","function":{"name":"ui_click","description":"点击窗口里的某个控件（按控件 id 或标题关键词定位）。点「发送 / 提交 / 支付 / 删除」这类按钮前会弹窗请用户确认，用户拒绝则不执行——真发出去的消息撤不回来，所以这一步必须让用户过目","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"}
+  },"required":["windowId","target"]}}}"##;
+pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填。输入完不会自动发出去——发送是另一次 ui_click","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"},
+    "text":{"type":"string","description":"要输入的文本"}
+  },"required":["windowId","target","text"]}}}"##;
+pub const SCHEMA_WAIT_FOR_ELEMENT: &str = r##"{"type":"function","function":{"name":"wait_for_element","description":"等待窗口里出现某个控件（按标题 / 角色关键词），等到就返回它的 id，超时没出现就如实说明。用于「等对方发来消息再回复」这类时序","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "query":{"type":"string","description":"要找的控件标题 / 角色关键词"},
+    "timeoutMs":{"type":"integer","description":"可选：等待上限毫秒，默认 5000，最大 30000"}
+  },"required":["windowId","query"]}}}"##;
 pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
@@ -738,6 +761,38 @@ fn call_list_reminders<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a
 
 fn call_cancel_reminder<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { crate::bot_reminders::tool_cancel_reminder(ctx.app, args).await })
+}
+
+fn call_list_windows<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_list_windows(ctx.app, args).await })
+}
+
+fn call_activate_window<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_activate_window(ctx.app, args).await })
+}
+
+fn call_ui_inspect<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_ui_inspect(ctx.app, args).await })
+}
+
+fn call_ui_click<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(
+        async move { crate::bot_ui::tool_ui_click(ctx.app, args, interactive, session_id).await },
+    )
+}
+
+fn call_ui_type<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(
+        async move { crate::bot_ui::tool_ui_type(ctx.app, args, interactive, session_id).await },
+    )
+}
+
+fn call_wait_for_element<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_wait_for_element(ctx.app, args).await })
 }
 
 fn call_screenshot<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -1714,7 +1769,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 52;
+pub const BUILTIN_TOOL_COUNT: usize = 58;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2220,6 +2275,57 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &["已取消提醒", "提醒已取消"],
         max_output_bytes: 8192,
         call: call_cancel_reminder,
+    },
+    // UI 自动化六件套。追加在表尾：同 manage_file 的理由（基线只比前缀）。
+    // 点击 / 输入是 mutating：它们能在别的应用里产生真实副作用（消息真发出去了），
+    // 声称「已点击 / 已输入」必须能对上凭证。
+    ToolDef {
+        name: "list_windows",
+        schema: SCHEMA_LIST_WINDOWS,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_list_windows,
+    },
+    ToolDef {
+        name: "activate_window",
+        schema: SCHEMA_ACTIVATE_WINDOW,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_activate_window,
+    },
+    ToolDef {
+        name: "ui_inspect",
+        schema: SCHEMA_UI_INSPECT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_ui_inspect,
+    },
+    ToolDef {
+        name: "ui_click",
+        schema: SCHEMA_UI_CLICK,
+        mutating: true,
+        claims_patterns: &["已点击", "已按下"],
+        max_output_bytes: 8192,
+        call: call_ui_click,
+    },
+    ToolDef {
+        name: "ui_type",
+        schema: SCHEMA_UI_TYPE,
+        mutating: true,
+        claims_patterns: &["已输入"],
+        max_output_bytes: 8192,
+        call: call_ui_type,
+    },
+    ToolDef {
+        name: "wait_for_element",
+        schema: SCHEMA_WAIT_FOR_ELEMENT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_wait_for_element,
     },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
@@ -2737,6 +2843,12 @@ mod registry_tests {
             "schedule_reminder",
             "list_reminders",
             "cancel_reminder",
+            "list_windows",
+            "activate_window",
+            "ui_inspect",
+            "ui_click",
+            "ui_type",
+            "wait_for_element",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2804,6 +2916,12 @@ mod registry_tests {
             "schedule_reminder",
             "list_reminders",
             "cancel_reminder",
+            "list_windows",
+            "activate_window",
+            "ui_inspect",
+            "ui_click",
+            "ui_type",
+            "wait_for_element",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2843,6 +2961,8 @@ mod registry_tests {
             "manage_file",
             "schedule_reminder",
             "cancel_reminder",
+            "ui_click",
+            "ui_type",
         ]
         .into_iter()
         .collect();
@@ -2898,8 +3018,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 22,
-            "主可见应为 28+3+4+2+1+1+3+1+7（末位 +7 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具）"
+            base_arr.len() + 28,
+            "主可见应为 28+3+4+2+1+1+3+1+13（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套）"
         );
     }
 

@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 源码共 163 个文件、约 8.8 万行，全部在 `src-tauri/src/`。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 源码共 166 个文件、约 8.9 万行，全部在 `src-tauri/src/`。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1080)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1084)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -117,7 +117,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3522)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3642)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1445)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
@@ -188,13 +188,30 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_desktop.rs (539) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+├── bot_ui.rs (692) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
+│                        ui_inspect / ui_click / ui_type / wait_for_element。
+│                        四道闸——独立总开关（ui::ui_enabled，默认关闭）/ 窗口级授权
+│                        （动作必带 windowId 且窗口真实存在）/ 危险动作确认
+│                        （发送、提交、支付、删除类点击前弹窗，60s 无响应默认拒绝）/
+│                        敏感控件禁打（密码、验证码类不代填）；每次动作留审计 +
+│                        动作前后各一张截图（落 AI_Gen_Files）
+├── ui/                 桌面 UI 自动化跨平台层（数据模型 + 总开关 + 平台分发）
+│   ├── ui/mod.rs (256) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
+│   │                 ui_set_enabled）+ 平台分发（list_windows / activate_window /
+│   │                 inspect_tree / press_node / focus_node / type_text）
+│   ├── ui/macos.rs (392) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
+│   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
+│   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）
+│   └── ui/windows.rs (403) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
+│                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
+│                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
+├── bot_desktop.rs (550) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
 │                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的
 │                        NSPasteboard / CF_HDROP）/ screenshot（macOS screencapture -x /
 │                        Windows PowerShell，落 AI_Gen_Files）；
-│                        原生鼠标键盘 Computer Use 不做（spec N4 出界说明）
+│                        鼠标键盘注入不在本模块——见 bot_ui.rs / ui/（独立总开关）
 ├── bot_skills/recommend.rs 语义化技能推荐（N7-②）：技能描述 embed（bge-small-zh 复用
 │                        memory/embed）+ 余弦排序截断 top5，embed 不可用降级全清单；
 │                        只影响 SkillCatalog 呈现顺序，不接管 IntentRule 路由
@@ -490,7 +507,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 163 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 166 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 通过相对路径或文件名提及强制要求；任何新增模块请同步登记。
 
 ### 顶层
@@ -507,6 +524,7 @@ flowchart TD
 - `bot_fs.rs`
 - `bot_manage_file.rs`
 - `bot_reminders.rs`
+- `bot_ui.rs`
 - `bot_model_loop.rs`
 - `bot_onions.rs`
 - `bot_plan.rs`
@@ -619,6 +637,11 @@ flowchart TD
 ### `platform/`
 - `platform/copy_file.rs`
 - `platform/mod.rs`
+
+### `ui/`
+- `ui/macos.rs`
+- `ui/mod.rs`
+- `ui/windows.rs`
 
 ### `prompts/`
 - `prompts/consolidate.rs`

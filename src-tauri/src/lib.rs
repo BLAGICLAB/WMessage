@@ -29,6 +29,7 @@ mod bot_reminders;
 mod bot_scheduler;
 pub mod bot_skills;
 mod bot_slash;
+mod bot_ui;
 mod bot_web;
 pub mod db;
 mod due_notify;
@@ -54,6 +55,7 @@ pub mod task_autotag;
 pub mod task_out;
 pub mod tool_guard;
 pub mod trace_sink;
+mod ui;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -653,6 +655,8 @@ pub fn run() {
             crate::db::reminders::reminder_create,
             crate::db::reminders::reminder_list,
             crate::db::reminders::reminder_delete,
+            crate::ui::ui_get_enabled,
+            crate::ui::ui_set_enabled,
             crate::db::schedule_jobs::scheduled_job_history,
             crate::db::workspace::workspace_load,
             crate::db::workspace::workspace_upsert,

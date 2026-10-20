@@ -156,6 +156,29 @@ objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 objc2-vision = "0.3"
+# UI 自动化（macOS）：AX 读 UI 树 + CGEvent 注入。
+# objc2-application-services：AXUIElement（AXUIElementCreateApplication /
+# AXUIElementCopyAttributeValue / AXUIElementPerformAction / AXIsProcessTrusted）；
+# objc2-core-graphics：CGEvent 造鼠标/键盘事件并 post 到 HID 层。
+# 不引第三方 crate：Apple 的 Accessibility.framework / CoreGraphics 本身有 objc2 绑定。
+objc2-application-services = { version = "0.3", features = [
+    "AXUIElement",
+    "AXAttributeConstants",
+    "AXConstants",
+    "AXError",
+    "AXActionConstants",
+    "AXRoleConstants",
+    "AXValue",
+    "std",
+] }
+objc2-core-graphics = { version = "0.3", features = [
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
+] }
+# objc2-core-foundation：AX 属性的 CF 类型（CFString / CFArray / AXValue 承载）
+objc2-core-foundation = { version = "0.3", features = ["CFArray", "CFString"] }
 
 [target.'cfg(windows)'.dependencies]
 # Threading：JobObjects 的 JOBOBJECT_EXTENDED_LIMIT_INFORMATION 挂在此 feature 下（py/runtime.rs）
@@ -167,7 +190,13 @@ windows = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Threading",
+    # UI 自动化（Windows）：COM 初始化（UIAutomation 是 COM 接口）
+    "Win32_System_Com",
     "Win32_UI_Shell",
+    # UI 自动化（Windows）：UIAutomation 读控件树 + SendInput 注鼠标键盘
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [patch.crates-io]

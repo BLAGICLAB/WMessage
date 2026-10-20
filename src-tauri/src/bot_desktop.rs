@@ -1,9 +1,9 @@
 //! 电脑辅助 Tier1 工具：reveal_path / open_url / clipboard_write /
 //! copy_file_to_clipboard / screenshot。
 //!
-//! 定位：只「看」与「打开」+ 把东西递到用户手上，不做鼠标键盘/UI 自动化
-//! （分层决策见 docs/batches/N4-DESKTOP-TIER1.spec.md 出界说明——原生 Computer Use
-//! 需要产品 + VM 隔离，官方指引明确不建议在主机裸跑）。
+//! 定位：只「看」与「打开」+ 把东西递到用户手上——**不做鼠标键盘注入**。
+//! 鼠标键盘 / UI 树读取是另一套能力，放在 `bot_ui.rs` + `ui/`（独立总开关，
+//! 默认关闭，见 ui::ui_enabled）；本模块只保留无副作用的看/开/递。
 //!
 //! 安全边界（对齐官方 best practice）：
 //! - reveal_path 走 `bot_fs::resolve_with_perm`，与读文件同一白名单闸；
@@ -363,6 +363,17 @@ fn platform_capture(out: &std::path::Path) -> Result<(), String> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn platform_capture(_out: &std::path::Path) -> Result<(), String> {
     Err("当前平台不支持 screenshot".into())
+}
+
+/// 截屏到指定路径（供 UI 动作留痕复用）。返回产物是否非空。
+///
+/// 与 tool_screenshot 的区别：不写「模型可见」的文案，只落盘——UI 动作留痕要的是
+/// 「动作前后各一张」，路径由调用方写进工具结果。
+pub(crate) fn capture_to(out: &std::path::Path) -> bool {
+    match platform_capture(out) {
+        Ok(()) => std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false),
+        Err(_) => false,
+    }
 }
 
 /// 截取主显示器画面 → AI_Gen_Files/wm-screen-<时间戳>.png，返回路径。

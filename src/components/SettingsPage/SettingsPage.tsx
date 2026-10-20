@@ -730,6 +730,9 @@ export function SettingsPage({
   );
   const [pyEnabled, setPyEnabled] = useState(false);
   const [pyBusy, setPyBusy] = useState(false);
+  /** 桌面 UI 自动化总开关（后端 flag 文件，默认关闭） */
+  const [uiEnabled, setUiEnabled] = useState(false);
+  const [uiBusy, setUiBusy] = useState(false);
   const [pyEnv, setPyEnv] = useState<{
     available: boolean;
     python: string;
@@ -999,6 +1002,8 @@ export function SettingsPage({
     loadParamViews();
     // oxlint-disable-next-line react/set-state-in-effect
     refreshPy();
+    // oxlint-disable-next-line react/set-state-in-effect
+    refreshUi();
     // 拉取开机自启动状态
     invoke<boolean>("plugin:autostart|is_enabled")
       .then(setAutostartEnabled)
@@ -1032,6 +1037,41 @@ export function SettingsPage({
       await refreshPy();
     } finally {
       setPyBusy(false);
+    }
+  };
+
+  const refreshUi = async () => {
+    try {
+      const on = await invoke<boolean>("ui_get_enabled");
+      setUiEnabled(on);
+    } catch (e) {
+      handleCommandError(e, "ui_get_enabled", { silent: true });
+    }
+  };
+
+  const toggleUi = async () => {
+    if (uiBusy) return;
+    const enabling = !uiEnabled;
+    if (
+      enabling &&
+      !(await confirm(
+        "开启后机器人可以操作你电脑上的界面（读窗口控件、点击、输入文字）。涉及发送/提交/支付/删除的点击仍会弹窗请用户确认。确认开启？",
+      ))
+    )
+      return;
+    setUiBusy(true);
+    setBotError("");
+    try {
+      const next = await invoke<boolean>("ui_set_enabled", {
+        enabled: enabling,
+      });
+      setUiEnabled(next);
+    } catch (e) {
+      handleCommandError(e, "ui_set_enabled", { silent: true });
+      setBotError(formatCommandError(e));
+      await refreshUi();
+    } finally {
+      setUiBusy(false);
     }
   };
 
@@ -2391,6 +2431,28 @@ export function SettingsPage({
                     disabled={pyBusy}
                   >
                     {pyBusy ? "…" : pyEnabled ? "已开启" : "已关闭"}
+                  </button>
+                </div>
+
+                {/* 桌面 UI 自动化开关 */}
+                <div className="mt-4 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-[var(--t2)]">
+                      允许机器人操作桌面界面
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--t5)]">
+                      读取窗口控件、点击、输入文字（原生应用 / 系统弹窗 / 已登录窗口）；
+                      涉及发送、提交、支付、删除的点击会弹窗请用户确认，默认关闭
+                    </p>
+                  </div>
+                  <button
+                    className={`btn-sm-action ${
+                      uiEnabled ? "nm-inset" : "nm-outset"
+                    }`}
+                    onClick={toggleUi}
+                    disabled={uiBusy}
+                  >
+                    {uiBusy ? "…" : uiEnabled ? "已开启" : "已关闭"}
                   </button>
                 </div>
 
