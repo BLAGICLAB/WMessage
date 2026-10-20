@@ -186,7 +186,7 @@ M3 与 M4 是一对（尺度体系），改完 150 任务的观感再变一次�
 npx tsc --noEmit         ✓
 npx knip --no-progress   ✓
 npx oxlint src           ✓（exit 0，仅既有 warning）
-npx vitest run           85 文件 / 854 用例全绿
+npx vitest run           85 文件 / 855 用例全绿
 cargo test --lib         1539 例全绿
 ```
 

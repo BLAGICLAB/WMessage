@@ -49,7 +49,7 @@ bash scripts/test-all.sh   # pre-push 自动跑：nextest 全量 + vitest + 一�
 
 ```bash
 cd src-tauri && cargo test --lib          # Rust lib 单测（当前 1539 例）
-npm test                                  # 前端 vitest（当前 854 例，85 文件）
+npm test                                  # 前端 vitest（当前 855 例，85 文件）
 cargo test --test llm_integration         # 集成：mock LLM 全链路
 cargo test --test task_chat_exec          # 集成：任务卡执行聊天化
 cargo test --test skill_e2e               # 集成：Skill DSL 端到端
