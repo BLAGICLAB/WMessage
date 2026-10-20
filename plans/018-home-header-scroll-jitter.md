@@ -1,7 +1,7 @@
 # 018 — 首页吸顶头部滚动收缩时抖动（Windows 尤其明显）
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于 `dcc330f2`
 - **Severity**: HIGH
 - **Category**: §4 Interruptibility / §5 Performance
 - **Estimated scope**: 诊断为主；修复分三档，最小档 2 行（`main.css` 1 条 + `HomeHeader.tsx` 1 处）

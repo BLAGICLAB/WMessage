@@ -1,7 +1,7 @@
 # 004 — 周图 Tooltip 的 400ms 过渡收到 150ms
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于 `36784986`
 - **Severity**: HIGH
 - **Category**: §2 Easing & duration
 - **Estimated scope**: 1 个 tsx，1 行改动

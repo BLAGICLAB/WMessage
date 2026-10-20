@@ -1,7 +1,7 @@
 # 017 — ⌘K 命令面板的键盘高亮改为瞬时
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于 `07526ffd`
 - **Severity**: MEDIUM
 - **Category**: §1 Purpose & frequency / §7 Cohesion
 - **Estimated scope**: 1 个 tsx，1 行改动

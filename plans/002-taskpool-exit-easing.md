@@ -1,7 +1,7 @@
 # 002 — 任务池退场曲线改掉 ease-in 慢起
 
-- **Status**: TODO
-- **Commit**: b22387c7
+- **Status**: 已完成
+- **Commit**: b22387c7（计划锚定）→ 落地于 `92f79eb6`
 - **Severity**: HIGH
 - **Category**: §2 Easing & duration
 - **Estimated scope**: 1 个 tsx（+ 可能 1 处 CSS token），约 8 行改动

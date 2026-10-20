@@ -18,21 +18,21 @@
 | [002](002-taskpool-exit-easing.md) | 任务池退场曲线改掉 ease-in 慢起 | HIGH | §2 | 001（token） | 已完成 `92f79eb6` |
 | [003](003-home-header-transform-scroll.md) | 首页吸顶头部：滚动驱动的布局属性动画换 transform | HIGH | §5 | 001（token，B5 步） | DONE（实测 0% 掉帧 → 不做重构；已做 B5） |
 | [004](004-weeklychart-tooltip-duration.md) | 周图 Tooltip 的 400ms 过渡收到 150ms | HIGH | §2 | 001（token） | 已完成 `36784986` |
-| [005](005-plan-fresh-no-bounce.md) | 计划块落位弹入：去掉过冲曲线 | MEDIUM | §7 / §3 | 001（token） | 已完成 |
-| [006](006-drag-ghost-transform.md) | 拖拽幽灵改用 transform 定位 | MEDIUM | §5 | — | 已完成 |
-| [007](007-pool-lift-transition.md) | 池内拖起补上过渡 | MEDIUM | §3 / §7 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | 已完成 |
-| [008](008-plan-block-hover-gate.md) | 计划块 hover 加触屏门控，时长收 100ms | MEDIUM | §6 / §1 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | 已完成 |
-| [009](009-press-feedback.md) | 给高频控件补上按压反馈 | MEDIUM | §3 | **必须晚于 001** | 已完成 |
-| [010](010-popover-entrance.md) | 设置页下拉浮层加入场动效 | MEDIUM | §3 / §2 | 001（token） | 已完成 |
-| [011](011-modal-entrance.md) | 共享 Modal 壳加入场动效 | MEDIUM | §8 / §2 | 001（token） | 已完成 |
-| [012](012-card-opacity-transition.md) | 整卡透明度切换补上 opacity 过渡腿 | MEDIUM | §3 / §8 | 001（token）+ 001 先于本条改 `.nm-card` 过渡 | 已完成 |
-| [013](013-framer-motion-transform-string.md) | framer-motion 的 y 简写改成完整 transform 串 | MEDIUM | §5 | — | 已完成（前提被实测推翻 → 只统一缓动） |
-| [014](014-linked-hover-unify.md) | 首页联动 hover 三个组件统一成一种响应 | MEDIUM | §7 / §8 | 001（token） | 已完成 |
-| [015](015-reduced-motion-activity-signal.md) | 减少动效下保住「还在跑」的活动信号 | MEDIUM | §6 | — | 已完成 |
-| [016](016-archive-locate-reduced-motion.md) | 归档定位的平滑滚动要听减少动效的话 | MEDIUM | §6 | — | 已完成 |
+| [005](005-plan-fresh-no-bounce.md) | 计划块落位弹入：去掉过冲曲线 | MEDIUM | §7 / §3 | 001（token） | 已完成 `2e320ea7` |
+| [006](006-drag-ghost-transform.md) | 拖拽幽灵改用 transform 定位 | MEDIUM | §5 | — | 已完成 `a10fedd5` |
+| [007](007-pool-lift-transition.md) | 池内拖起补上过渡 | MEDIUM | §3 / §7 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | 已完成 `d7970dcb` |
+| [008](008-plan-block-hover-gate.md) | 计划块 hover 加触屏门控，时长收 100ms | MEDIUM | §6 / §1 | 001（token）+ 001 先于本条改 `.plan-blk` 过渡 | 已完成 `6fae0bf5` |
+| [009](009-press-feedback.md) | 给高频控件补上按压反馈 | MEDIUM | §3 | **必须晚于 001** | 已完成 `b790ca97` |
+| [010](010-popover-entrance.md) | 设置页下拉浮层加入场动效 | MEDIUM | §3 / §2 | 001（token） | 已完成 `1bebc666` |
+| [011](011-modal-entrance.md) | 共享 Modal 壳加入场动效 | MEDIUM | §8 / §2 | 001（token） | 已完成 `af684546` |
+| [012](012-card-opacity-transition.md) | 整卡透明度切换补上 opacity 过渡腿 | MEDIUM | §3 / §8 | 001（token）+ 001 先于本条改 `.nm-card` 过渡 | 已完成 `bae7de31` |
+| [013](013-framer-motion-transform-string.md) | framer-motion 的 y 简写改成完整 transform 串 | MEDIUM | §5 | — | 已完成 `e03e78df`（前提被实测推翻 → 只统一缓动） |
+| [014](014-linked-hover-unify.md) | 首页联动 hover 三个组件统一成一种响应 | MEDIUM | §7 / §8 | 001（token） | 已完成 `38458572` |
+| [015](015-reduced-motion-activity-signal.md) | 减少动效下保住「还在跑」的活动信号 | MEDIUM | §6 | — | 已完成 `31e0fb64` |
+| [016](016-archive-locate-reduced-motion.md) | 归档定位的平滑滚动要听减少动效的话 | MEDIUM | §6 | — | 已完成 `52eea40b` |
 | [017](017-command-palette-instant-highlight.md) | ⌘K 命令面板的键盘高亮改为瞬时 | MEDIUM | §1 / §7 | **必须晚于 001** | 已完成 `07526ffd` |
 | [018](018-home-header-scroll-jitter.md) | 首页吸顶头部滚动收缩时抖动（Windows 尤其明显） | HIGH | §4 / §5 | **必须先于 003**（同改头部内部） | 已完成 `dcc330f2` |
-| [019](019-task-editor-overlay-token.md) | 任务编辑浮窗的内联手写过渡收归 token | MEDIUM | §2 / §7 | 001（token） | 已完成 |
+| [019](019-task-editor-overlay-token.md) | 任务编辑浮窗的内联手写过渡收归 token | MEDIUM | §2 / §7 | 001（token） | 已完成 `06d32b1d` |
 
 ## 推荐执行顺序
 
