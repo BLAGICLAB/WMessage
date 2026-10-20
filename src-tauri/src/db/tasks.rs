@@ -903,6 +903,16 @@ pub(crate) fn apply_task_patch(
                             reason: "dependsOn 元素不能为空串".into(),
                         });
                     }
+                    // 自环：自己依赖自己。前端加依赖时会拒（成环），机器人走
+                    // task_patch 这条路此前能写进去——写进去的卡在图谱里连出一条
+                    // 自环边，度数虚高
+                    if deps.iter().any(|d| d == &task.id) {
+                        return Err(CommandError::InvalidArgument {
+                            field: k.into(),
+                            value: v.to_string(),
+                            reason: "dependsOn 不能包含任务自己".into(),
+                        });
+                    }
                 }
             }
             "model" => {
@@ -1581,6 +1591,28 @@ mod task_patch_tests {
                 "{bad} 应 InvalidArgument，got {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn task_patch_rejects_self_dependency() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('a', '任务A', 'todo', 1000)",
+            [],
+        )
+        .unwrap();
+        // 自己依赖自己：写进去的卡在图谱里连出一条自环边，度数虚高
+        let err = match run_patch(&mut conn, "a", serde_json::json!({"dependsOn": ["a"]})) {
+            Err(e) => e,
+            Ok(_) => panic!("自环依赖应被拒绝"),
+        };
+        assert!(
+            matches!(err, CommandError::InvalidArgument { .. }),
+            "自环依赖应 InvalidArgument，got {err:?}"
+        );
+        // 正常依赖不受影响
+        let row = run_patch(&mut conn, "a", serde_json::json!({"dependsOn": ["b"]})).unwrap();
+        assert_eq!(row.depends_on.as_deref(), Some(&["b".to_string()][..]));
     }
 
     #[test]

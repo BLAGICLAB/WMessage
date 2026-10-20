@@ -196,3 +196,29 @@ describe("wouldCreateDepCycle（G5-DEPEDIT）", () => {
     expect(wouldCreateDepCycle(tasks, "self", "ghost")).toBe(false);
   });
 });
+
+describe("buildTaskGraph 边去重与自环", () => {
+  it("自环不连边，度数不虚高", () => {
+    const graph = buildTaskGraph(
+      [t({ id: "a", dependsOn: ["a"] }), t({ id: "b" })],
+      DEFAULT_FILTERS,
+    );
+    expect(graph.links).toHaveLength(0);
+    expect(graph.nodes.find((n) => n.id === "a")?.degree).toBe(0);
+  });
+
+  it("依赖与父子撞成同一对：只连一条，度数只算一次", () => {
+    const graph = buildTaskGraph(
+      [
+        t({ id: "kid", dependsOn: ["mom"], parentId: "mom" }),
+        t({ id: "mom" }),
+      ],
+      DEFAULT_FILTERS,
+    );
+    expect(graph.links).toHaveLength(1);
+    const kid = graph.nodes.find((n) => n.id === "kid")!;
+    const mom = graph.nodes.find((n) => n.id === "mom")!;
+    expect(kid.degree).toBe(1);
+    expect(mom.degree).toBe(1);
+  });
+});
