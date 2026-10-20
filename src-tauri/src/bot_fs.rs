@@ -978,21 +978,29 @@ fn edit_file_sync(
     new: String,
     use_regex: bool,
 ) -> Result<(String, String, EditMode, i64, usize), (EditErrorKind, String)> {
-    let content = std::fs::read_to_string(&canonical).map_err(|e| {
+    // 先按上限读、**再**判体积：整读入内存后才判上限，白名单内一个 GB 级
+    // 日志就能把进程内存打爆（read_capped_file_sync 存在的理由就是这个）。
+    let (buf, truncated) = read_capped_file_sync(&canonical, EDIT_MAX_FILE_BYTES).map_err(|e| {
         (
             EditErrorKind::NotFound,
             format!("读取失败（非 UTF-8 文本或不可读）：{e}"),
         )
     })?;
-    if content.len() > EDIT_MAX_FILE_BYTES {
+    if truncated {
+        // 体积是这类文件的真因：整读会先撞上非 UTF-8 报错，用户看不到
+        // 「文件太大、请拆分」这条可操作的指引
+        let size = std::fs::metadata(&canonical).map(|m| m.len()).unwrap_or(0);
         return Err((
             EditErrorKind::NotFound,
-            format!(
-                "文件 {} 字节超过 edit_file 上限 {EDIT_MAX_FILE_BYTES}",
-                content.len()
-            ),
+            format!("文件 {size} 字节超过 edit_file 上限 {EDIT_MAX_FILE_BYTES}"),
         ));
     }
+    let content = String::from_utf8(buf).map_err(|_| {
+        (
+            EditErrorKind::NotFound,
+            "读取失败（非 UTF-8 文本或不可读）".to_string(),
+        )
+    })?;
     let (applied, mode, delta, replacements) = try_apply_edit(&content, &old, &new, use_regex)?;
     Ok((content, applied, mode, delta, replacements))
 }
@@ -1943,6 +1951,33 @@ mod tests {
         let content2 = "x\nold";
         let (out2, _, _, _) = try_apply_edit(content2, "old", "new", false).unwrap();
         assert_eq!(out2, "x\nnew");
+    }
+
+    /// 超大文件必须**先按上限读、再判体积**：整读入内存后才判上限，
+    /// 白名单内一个 GB 级日志就能把进程内存打爆。
+    ///
+    /// 判据取「体积超限」而不是「非 UTF-8」：旧实现整读时先撞上非 UTF-8
+    /// 就报错，用户看到的是「不是文本」，看不到真因（文件太大、请拆分）。
+    #[test]
+    fn edit_rejects_oversized_file_by_size_not_by_encoding() {
+        let dir = std::env::temp_dir().join("wmessage-edit-max-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        let path = dir.join("big.txt");
+        let mut body = vec![b'a'; EDIT_MAX_FILE_BYTES + 4096];
+        body.push(0xFF); // 尾部一个非法字节：整读会先在这里失败
+        std::fs::write(&path, &body).expect("写测试文件");
+
+        let err = match edit_file_sync(path.clone(), "a".into(), "b".into(), false) {
+            Ok(_) => panic!("超限文件必须被拒"),
+            Err(e) => e,
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            err.1.contains("超过 edit_file 上限"),
+            "应报体积超限（可操作指引），实际：{}",
+            err.1
+        );
     }
 
     // edit regex 模式（mode=regex 走 try_apply_edit use_regex=true 路径）
