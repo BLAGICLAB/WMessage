@@ -623,3 +623,122 @@ async fn scheduler_e2e_zombie_terminal_run_cleared_at_entry() {
     test_hook_remove_skill_run(&app, "minimax-ppt");
     let _ = std::fs::remove_file(&db_path);
 }
+
+// ────────────────────────────────────────────────────────────────────
+// 受管服务：Skill DSL 全链路（真工具 + 真闸 + 真进程）
+// ────────────────────────────────────────────────────────────────────
+
+/// 受管服务走**真实 Skill DSL 链路**的端到端用例。
+///
+/// 单测验的是 `substitute_vars` 这个纯函数，验不到
+/// 「调度器 → 变量替换 → 工具入参解析 → 授权闸 → 真进程 → 登记表 → 停止」这条链。
+/// 这里把 executor 换成**真工具**（生产实现，非 mock）。
+///
+/// 覆盖与不覆盖（别误以为全链路都测到了）：
+/// - 覆盖：调度器步骤推进、变量替换（`${step1.serviceId}`）、工具入参解析、
+///   授权闸（设置页开关 + 启动器白名单）、真进程起停、登记表状态机。
+/// - 不覆盖：**dispatch 层的三道闸**（pre_tool 钩子 / per-tool 规则表 /
+///   子 agent 白名单）与 **bot_fs 路径授权闸**——前者 dispatch 整体是 Wry 专属，
+///   后者要读权限档并弹窗，两者都在 Wry 层；本仓测试只有 mock runtime
+///   （Wry 需要显示环境 + 主线程，见本文件头部说明）。
+///   路径闸在测试里用「固定解析器」替身：它只把入参路径变成 canonical 路径，
+///   不做授权判定。
+#[tokio::test]
+async fn scheduler_e2e_managed_service_start_then_stop_via_real_tool() {
+    let _serial = SKILL_SCHED_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let app = mock_handle();
+    test_hook_insert_skill_run(&app, make_run("svc-dsl", SkillState::Running));
+
+    // 闸 1（设置页开关）默认关 —— 走生产 API 打开，收尾再关掉
+    wmessage_lib::bot::services::set_enabled(&app, true).expect("受管服务开关应可写");
+
+    // 服务的工作目录：随便一个存在的目录（路径闸在测试里是替身）
+    let cwd = std::env::temp_dir().join(format!("wmessage-svc-e2e-{}", std::process::id()));
+    std::fs::create_dir_all(&cwd).expect("建临时工作目录");
+
+    // 真 Skill 文本：两步，起服务 → 用上一步的 serviceId 停服务
+    let body = format!(
+        "---\nname: svc-dsl\ndescription: 受管服务 DSL 全链路测试\nmode: auto\n\
+         risk_level: low\nmax_steps: 5\ntimeout_secs: 60\nrollback: none\n\
+         allowed-tools: start_service, stop_service\n---\n\n\
+         # 受管服务 DSL 测试\n\n\
+         ## Step 1: 启动长驻服务\n\
+         start_service({{\"command\":\"python3\",\"args\":[\"-c\",\"import time\\nwhile True: time.sleep(1)\"],\"cwd\":{:?}}})\n\n\
+         ## Step 2: 用上一步的 serviceId 停掉它\n\
+         stop_service({{\"serviceId\":\"${{step1.serviceId}}\"}})\n",
+        cwd.to_string_lossy()
+    );
+    let meta = parse_meta(&body, "svc-dsl");
+
+    // executor 换成真工具
+    let exec_app = app.clone();
+    let exec = move |tool: String, args: String| {
+        let app = exec_app.clone();
+        async move {
+            match tool.as_str() {
+                "start_service" => {
+                    wmessage_lib::bot::tools::test_hook_tool_start_service(
+                        &app,
+                        &args,
+                        false,
+                        |p: String| -> std::pin::Pin<
+                            Box<
+                                dyn std::future::Future<Output = Result<std::path::PathBuf, String>>
+                                    + Send,
+                            >,
+                        > {
+                            Box::pin(async move { Ok(std::path::PathBuf::from(p)) })
+                        },
+                    )
+                    .await
+                }
+                "stop_service" => {
+                    wmessage_lib::bot::tools::test_hook_tool_stop_service(&app, &args).await
+                }
+                other => panic!("意外工具调用：{other}"),
+            }
+        }
+    };
+
+    let (conn, db_path) = open_temp_db("svcdsl");
+    let persist_calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let persist = make_persist(&conn, persist_calls.clone());
+
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "svc-dsl",
+        &meta,
+        &body,
+        None,
+        &serde_json::Value::Null,
+        exec,
+        persist,
+    )
+    .await;
+
+    // 收尾：关开关、删临时目录
+    let _ = wmessage_lib::bot::services::set_enabled(&app, false);
+    let _ = std::fs::remove_dir_all(&cwd);
+
+    match &outcome {
+        Ok(DslOutcome::Done(summary)) => {
+            assert!(summary.contains("✅"), "两步都该成功：{summary}");
+        }
+        other => panic!("期望 Done，got {other:?}"),
+    }
+
+    // 服务确实起过又被停掉：登记表里是终态 Exited
+    let services = wmessage_lib::bot::services::list_all(&app);
+    assert_eq!(services.len(), 1, "应恰好登记一个服务：{services:?}");
+    assert_eq!(
+        services[0].state.as_str(),
+        "exited",
+        "step2 必须把服务停掉（step1 的 serviceId 经变量替换传到了 step2）"
+    );
+
+    test_hook_remove_skill_run(&app, "svc-dsl");
+    let _ = std::fs::remove_file(&db_path);
+}
