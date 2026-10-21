@@ -239,8 +239,9 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
     // 受管长驻服务收尾：走降级信号阶梯 + 回收脱离进程组的子孙，
     // 退出时必须收干净——长驻进程留着就是宿主管不到的孤儿
     let services_stopped = bot::services::stop_all(app);
-    // MCP 服务器连接收尾：取消全部令牌，子进程由传输 Drop 兜底 kill（不孤儿）
-    bot::mcp::manager::shutdown_all(app);
+    // MCP 服务器连接收尾：本地子进程走信号阶梯停干净（脱离进程组的子孙一并回收），
+    // 再取消全部令牌让连接收尾
+    let mcp_stopped = bot::mcp::manager::shutdown_all(app);
     audit::write_event(
         app,
         audit::AuditLevel::Info,
@@ -249,6 +250,7 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
             ("api_stopped", api_stopped.to_string()),
             ("py_killed", py_killed.to_string()),
             ("services_stopped", services_stopped.to_string()),
+            ("mcp_stopped", mcp_stopped.to_string()),
             ("exec_stopped", exec_stopped.to_string()),
             ("exec_drained", exec_drained.to_string()),
         ],

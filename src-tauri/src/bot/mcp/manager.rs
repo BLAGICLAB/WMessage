@@ -55,6 +55,9 @@ enum Slot {
         name: String,
         tools: Vec<Tool>,
         service: Arc<ClientService>,
+        /// stdio 子进程的 pid（HTTP 连接没有子进程 → None）。
+        /// 停止时靠它走信号阶梯（见 `close_old`）。
+        pid: Option<u32>,
     },
     Down {
         error: String,
@@ -161,7 +164,7 @@ impl McpManager {
         self.prune_stderr(&cfg.id);
         Self::close_old(old).await;
         match self.spawn_service(cfg).await {
-            Ok((service, tools)) => {
+            Ok((service, tools, pid)) => {
                 self.slots().insert(
                     cfg.id.clone(),
                     Slot::Connected {
@@ -169,6 +172,7 @@ impl McpManager {
                         name: cfg.name.clone(),
                         tools,
                         service,
+                        pid,
                     },
                 );
                 Ok(())
@@ -190,10 +194,26 @@ impl McpManager {
         Self::close_old(old).await;
     }
 
-    async fn close_old(slot: Option<Slot>) {
-        if let Some(Slot::Connected { service, .. }) = slot {
+    /// 断开一个连接：先走信号阶梯把子进程树停干净，再取消令牌让 rmcp 收尾。
+    ///
+    /// 顺序不能反：rmcp 的 `TokioChildProcess` Drop 只会 fire-and-forget 一个
+    /// SIGKILL——没有优雅退出窗口、不回收脱离进程组的子孙，而且那个 kill 是
+    /// `tokio::spawn` 出去的，应用正在退出时它可能根本没来得及跑（子进程留成孤儿）。
+    /// 阶梯先跑完，Drop 的 kill 就只是对死进程的一记空操作。
+    async fn close_old(slot: Option<Slot>) -> bool {
+        if let Some(Slot::Connected { service, pid, .. }) = slot {
+            let stopped = match pid {
+                Some(pid) => {
+                    stop_stdio_tree(pid).await;
+                    true
+                }
+                // HTTP 连接没有本地子进程
+                None => false,
+            };
             service.cancellation_token().cancel();
+            return stopped;
         }
+        false
     }
 
     /// 拉起传输 + initialize 握手 + 首次工具发现。
@@ -202,7 +222,7 @@ impl McpManager {
     async fn spawn_service(
         &self,
         cfg: &McpServerConfig,
-    ) -> Result<(Arc<ClientService>, Vec<Tool>), String> {
+    ) -> Result<(Arc<ClientService>, Vec<Tool>, Option<u32>), String> {
         match cfg.transport_kind() {
             McpTransport::Stdio => {
                 let command = cfg.command.as_deref().unwrap_or("").trim();
@@ -240,6 +260,12 @@ impl McpManager {
                 if let Some(dir) = self.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone() {
                     cmd.current_dir(dir);
                 }
+                // 自成进程组：停止时整组发信号（组外逃逸的子孙由 ppid 树补）。
+                // 不建组的话子进程与宿主同组，整组杀会连宿主一起带走。
+                #[cfg(unix)]
+                {
+                    cmd.process_group(0);
+                }
                 // Windows 桌面应用不弹控制台窗（与 bot_py Python 子进程同惯例）
                 #[cfg(windows)]
                 {
@@ -250,6 +276,8 @@ impl McpManager {
                     .stderr(std::process::Stdio::piped())
                     .spawn()
                     .map_err(|e| format!("启动命令「{command}」失败：{e}"))?;
+                // pid 留着给停止路径（信号阶梯要按 pid 找进程组与子孙）
+                let child_pid = transport.id();
                 // stderr 后台收割：行进环形缓冲，进程退出时流关闭、任务自然结束
                 if let Some(stderr) = stderr {
                     let tail = self.stderr_ring(&cfg.id);
@@ -300,7 +328,7 @@ impl McpManager {
                         self.format_with_stderr_tail(&cfg.id, format!("工具发现失败：{e}"))
                     })?;
                 let tools = truncate_tools(cfg, tools);
-                Ok((Arc::new(service), tools))
+                Ok((Arc::new(service), tools, child_pid))
             }
             // Streamable HTTP（阶段 7/8）：发请求前再过一次 URL 安全闸
             //（保存口 validate_server 已把关，此处防手改配置文件绕过）
@@ -348,7 +376,8 @@ impl McpManager {
                     .map_err(|_| format!("工具发现超时（{}s）", CONNECT_TIMEOUT.as_secs()))?
                     .map_err(|e| format!("工具发现失败：{e}"))?;
                 let tools = truncate_tools(cfg, tools);
-                Ok((Arc::new(service), tools))
+                // HTTP 连接没有本地子进程
+                Ok((Arc::new(service), tools, None))
             }
         }
     }
@@ -574,22 +603,52 @@ impl McpManager {
         slots.insert(id.to_string(), Slot::Down { error });
     }
 
-    /// 退出清理：取消全部连接令牌并清空槽位。子进程 kill 由
-    /// TokioChildProcess Drop 兜底（作用域结束时 Arc 落地触发）。
-    pub async fn shutdown(&self) {
+    /// 退出清理：停掉本地子进程树 + 取消全部连接令牌并清空槽位。
+    ///
+    /// 返回停掉的本地子进程数（HTTP 连接没有子进程，不计）。
+    pub async fn shutdown(&self) -> usize {
         let slots: Vec<(String, Slot)> = self.slots().drain().collect();
+        let mut stopped = 0usize;
         for (id, slot) in slots {
             // stderr 尾巴一并清（ 评审：per-id 路径 disconnect/ensure_connected
             // 都 prune，批量 shutdown 漏了会留残留诊断，下个同 id 服务器错配）
             self.prune_stderr(&id);
-            Self::close_old(Some(slot)).await;
+            if Self::close_old(Some(slot)).await {
+                stopped += 1;
+            }
         }
+        stopped
     }
 }
 
-/// 退出清理的同步外壳（cleanup_on_exit 是同步上下文）：清进程级单例全部连接
-pub fn shutdown_all<R: Runtime>(_app: &tauri::AppHandle<R>) {
-    tauri::async_runtime::block_on(async move { shared().shutdown().await });
+/// 停掉一个 MCP stdio 子进程树：走与受管服务层同一套信号阶梯。
+///
+/// 与受管服务的差别只有一处：那边等的是「登记表状态转终态」，这边等的是
+/// 「进程真的不在了」（`kill(pid, 0)` 探测）——MCP 连接没有登记表。
+///
+/// 阶梯含等待窗口（100ms + 400ms）与若干次进程表快照，是阻塞操作，
+/// 必须挪到 blocking 线程，不能占着 async 运行时的线程。
+async fn stop_stdio_tree(pid: u32) {
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        crate::bot::procs::stop_tree(pid, pid as i32, |grace| {
+            crate::bot::procs::wait_pid_exit(pid, grace)
+        })
+    });
+    match handle.await {
+        Ok(tree) => {
+            eprintln!(
+                "[mcp] stdio 子进程树已停：pid={pid} method={} 补杀子孙={} 耗时={}ms",
+                tree.method, tree.descendants_killed, tree.elapsed_ms
+            );
+        }
+        Err(e) => eprintln!("[mcp] stdio 子进程树停止失败（pid={pid}）：{e}"),
+    }
+}
+
+/// 退出清理的同步外壳（cleanup_on_exit 是同步上下文）：清进程级单例全部连接。
+/// 返回停掉的本地子进程数（供审计记账）。
+pub fn shutdown_all<R: Runtime>(_app: &tauri::AppHandle<R>) -> usize {
+    tauri::async_runtime::block_on(async move { shared().shutdown().await })
 }
 
 #[cfg(test)]
@@ -756,7 +815,82 @@ mod e2e_stdio {
         );
     }
 
+    /// 退出/断开后 MCP 子进程必须真的没了——不是「令牌取消了、进程还在」那种孤儿。
+    ///
+    /// 桩服务器启动时拉一个 setsid 逃逸的子孙（组杀管不到，只能靠 ppid 树回收），
+    /// 父子 pid 写进文件；断言 shutdown 后两个 pid 都不在了。
     #[tokio::test]
+    async fn shutdown_stops_stdio_child_and_its_escaped_descendant() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP stdio 停止 e2e");
+            return;
+        }
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+
+        let pidfile = std::env::temp_dir().join(format!(
+            "wm-mcp-spawner-{}.pid",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut cfg = echo_cfg("e2e-stop");
+        cfg.args = vec![concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/mcp_spawner_server.py"
+        )
+        .into()];
+        cfg.env = std::collections::BTreeMap::from([(
+            "MCP_SPAWNER_PIDFILE".to_string(),
+            pidfile.to_string_lossy().to_string(),
+        )]);
+        mgr.ensure_connected(&cfg).await.expect("连接应成功");
+
+        // 桩把「自己 pid + 逃逸子孙 pid」写进文件
+        let (server_pid, escaped_pid) = {
+            let mut content = String::new();
+            for _ in 0..50 {
+                if let Ok(c) = std::fs::read_to_string(&pidfile) {
+                    if !c.trim().is_empty() {
+                        content = c;
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let mut it = content.split_whitespace();
+            (
+                it.next().and_then(|v| v.parse::<u32>().ok()),
+                it.next().and_then(|v| v.parse::<u32>().ok()),
+            )
+        };
+        let server_pid = server_pid.expect("桩应写出自己 pid");
+        let escaped_pid = escaped_pid.expect("桩应写出逃逸子孙 pid");
+        assert!(
+            crate::bot::procs::pid_exists(server_pid),
+            "MCP 子进程此刻应活着"
+        );
+        assert!(
+            crate::bot::procs::pid_exists(escaped_pid),
+            "逃逸子孙此刻应活着"
+        );
+
+        let stopped = mgr.shutdown().await;
+        assert_eq!(stopped, 1, "应停掉 1 个本地子进程");
+
+        // 回收是异步的（rmcp 的 Drop 才会 reap），给它一点时间
+        for pid in [server_pid, escaped_pid] {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while crate::bot::procs::pid_exists(pid) && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(
+                !crate::bot::procs::pid_exists(pid),
+                "shutdown 后 pid={pid} 必须真的没了（不能留成宿主管不到的孤儿）"
+            );
+        }
+        let _ = std::fs::remove_file(&pidfile);
+    }
+
     async fn missing_binary_marks_down_and_lazy_reconnects() {
         if !ensure_python3().await {
             eprintln!("[skip] 无 python3，跳过 MCP stdio e2e");
