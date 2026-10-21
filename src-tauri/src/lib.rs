@@ -720,6 +720,8 @@ pub fn run() {
             bot_py::py_env_check,
             bot::services::service_get_enabled,
             bot::services::service_set_enabled,
+            bot::services::service_get_expose_net_allowed,
+            bot::services::service_set_expose_net_allowed,
             bot::services::services_list,
             bot::services::services_stop,
             bot_skills::skills_list,

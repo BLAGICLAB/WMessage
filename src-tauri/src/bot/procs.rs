@@ -348,6 +348,15 @@ pub(crate) fn tree_sample(snap: &[ProcSnapshot], root: u32) -> Option<ResourceSa
 
 // ── 监听 socket（可见性；P2-③ 闸复用同一份解析） ──
 
+/// 本平台能不能采到监听 socket。
+///
+/// Windows 不能（既没有 `/proc` 也没有 `lsof`）。判定层据此返回
+/// **Unsupported（没判）而不是 Ok（判了没事）**——安全闸在某个平台静默
+/// 不生效是缺陷，不是功能缺失。
+pub fn listening_supported() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
+}
+
 /// 列出这些进程各自监听的 socket（TCP 的 LISTEN 态 + UDP 已绑定的端口）。
 ///
 /// 只读系统 socket 表，不碰任何上层登记表。Linux 走 `/proc/<pid>/fd` 的 socket

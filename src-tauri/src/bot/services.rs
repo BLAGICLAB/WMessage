@@ -15,17 +15,20 @@
 //! 3. **停止走降级阶梯**（SIGINT → SIGTERM → SIGKILL），并递归回收**脱离进程组**
 //!    的子孙——`kill` 进程组管不到 `setsid` 逃逸者。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
 
 use crate::audit::AuditLevel;
 use crate::bot::mcp::config::STDIO_LAUNCH_ALLOWLIST;
-use crate::bot::procs::{take_snapshot, tree_sample, ResourceSample};
+use crate::bot::procs::{
+    listening_sockets, merge_sockets, take_snapshot, tree_pids, tree_sample, ListeningSocket,
+    ResourceSample,
+};
 
 // ── 常量 ──
 
@@ -76,6 +79,536 @@ pub(crate) const WARN_RSS: &str = "rss_over_limit";
 pub(crate) const WARN_CPU: &str = "cpu_sustained_high";
 /// 告警项：全部服务合计 RSS 超阈值。
 pub(crate) const WARN_TOTAL_RSS: &str = "total_rss_over_limit";
+
+// ── P2-③：端口 / 监听地址闸 ──
+
+/// 启动期加密采样点（毫秒，从 spawn 算起）。
+///
+/// 为什么加密：服务起来到 bind 落定之间可能隔好几秒（dev server 尤其慢），
+/// 30s 一轮的巡检在这个窗口里会漏掉刚绑的端口。**最坏检测延迟上界**因此是
+/// 启动期 10s、稳态 30s。
+///
+/// 这些采样点**不是容忍期**：一旦某次采样发现违规立即终止，不等窗口结束。
+const STARTUP_SAMPLE_OFFSETS_MS: [u64; 6] = [0, 500, 1000, 2000, 5000, 10000];
+
+/// 违规档位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViolationRule {
+    /// L1：监听地址不是 loopback（暴露到局域网/公网）
+    NonLoopback,
+    /// L2：占了宿主保留端口
+    ReservedPort,
+    /// L3：特权端口（<1024）
+    PrivilegedPort,
+}
+
+impl std::fmt::Display for ViolationRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl ViolationRule {
+    /// 面板与审计里的档位名。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViolationRule::NonLoopback => "L1",
+            ViolationRule::ReservedPort => "L2",
+            ViolationRule::PrivilegedPort => "L3",
+        }
+    }
+
+    /// 违规的人话描述（给模型与面板看）。
+    pub fn explain(self) -> &'static str {
+        match self {
+            ViolationRule::NonLoopback => "只允许监听 loopback（127.0.0.0/8 或 ::1）",
+            ViolationRule::ReservedPort => "该端口是宿主保留端口，服务不能占",
+            ViolationRule::PrivilegedPort => {
+                "特权端口（<1024）需 root/CAP_NET_BIND_SERVICE，请改用 >=1024"
+            }
+        }
+    }
+}
+
+/// 违规的处置动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViolationAction {
+    /// 运行期采样发现 → 杀进程组
+    Killed,
+    /// spawn 前检查发现 → 拒绝启动
+    Rejected,
+}
+
+impl ViolationAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViolationAction::Killed => "killed",
+            ViolationAction::Rejected => "rejected",
+        }
+    }
+}
+
+/// 一次违规。
+///
+/// **正交于生命周期状态**：状态机讲的是进程还在不在（running/stopped/down），
+/// 违规讲的是安全事件。一个服务可以 running + 有过违规，也可以 stopped +
+/// 违规致死——混进状态机会污染所有状态机消费者。
+#[derive(Debug, Clone)]
+pub struct Violation {
+    /// 触发的档位
+    pub rule: ViolationRule,
+    /// 违规的监听地址
+    pub address: String,
+    /// 违规的端口
+    pub port: u16,
+    /// 发生时刻（毫秒）
+    pub at_ms: i64,
+    /// 处置动作
+    pub action: ViolationAction,
+}
+
+/// 判定结果（三态）。
+///
+/// **Unsupported 不等于 Ok**：「没判」与「判了没事」是两回事——安全闸在某个
+/// 平台静默不生效是缺陷，所以语义上必须分开。
+#[derive(Debug, Clone, PartialEq)]
+pub enum GateVerdict {
+    /// 没违规
+    Ok,
+    /// 违规
+    Violated {
+        rule: ViolationRule,
+        address: String,
+        port: u16,
+    },
+    /// **没判**：本平台采不到监听 socket（见 `procs::listening_supported`）
+    Unsupported,
+}
+
+/// 命令行里粗解析出的监听意图。
+///
+/// **仅诊断**：模型可以写配置文件、设环境变量、在代码里硬编码端口，静态解析
+/// 不可靠。真正兜底的是运行期采样。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct FlagListen {
+    /// 绑定地址（`--host` / `--listen` / `--bind`）
+    pub host: Option<String>,
+    /// 端口（`--port` / `-p` / `--listen host:port`）
+    pub port: Option<u16>,
+}
+
+/// 端口 / 地址判据的保留集（静态 ∪ 宿主自身在监听的端口）。
+///
+/// 静态项是保底：宿主 API server 是可选启停的，4763 不在监听时静态项仍拒绑
+/// ——保守正确（宿主「可能」用就该保留，不给模型抢绑窗口）。
+/// 动态项每轮巡检刷新一次（宿主中途启停下一轮才反映；L2 是防抢占不是实时精确）。
+static RESERVED_DYNAMIC: LazyLock<Mutex<HashSet<u16>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// 静态保留端口（宿主自己的 API 端口）。
+fn static_reserved_ports() -> HashSet<u16> {
+    let mut s = HashSet::new();
+    s.insert(crate::api::API_PORT);
+    s
+}
+
+/// 当前保留集 = 静态 ∪ 动态。
+pub(crate) fn reserved_ports() -> HashSet<u16> {
+    let mut out = static_reserved_ports();
+    out.extend(
+        RESERVED_DYNAMIC
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied(),
+    );
+    out
+}
+
+/// 刷新保留集的动态部分（每轮巡检一次）。
+fn refresh_reserved_ports(host_ports: &[u16]) {
+    let mut g = RESERVED_DYNAMIC.lock().unwrap_or_else(|e| e.into_inner());
+    g.clear();
+    g.extend(host_ports.iter().copied());
+}
+
+/// 地址是不是 loopback。
+///
+/// IPv4 的 `127.0.0.0/8` 与 IPv6 的 `::1` 都算；`0.0.0.0` / `::`（通配）不算。
+pub(crate) fn is_loopback(address: &str) -> bool {
+    if let Ok(ip) = address.parse::<std::net::Ipv4Addr>() {
+        return ip.is_loopback();
+    }
+    if let Ok(ip) = address.parse::<std::net::Ipv6Addr>() {
+        return ip.is_loopback();
+    }
+    false
+}
+
+/// 判一条监听 socket 触发了哪一档（没触发返回 None）。
+///
+/// 顺序 L1 → L2 → L3：一条 socket 可能同时踩多条（`0.0.0.0:80` 既是 L1 也是
+/// L3），L1 是真安全边界，优先报它。
+fn rule_of(
+    sock: &ListeningSocket,
+    reserved: &HashSet<u16>,
+    allow_non_loopback: bool,
+) -> Option<ViolationRule> {
+    if !allow_non_loopback && !is_loopback(&sock.address) {
+        return Some(ViolationRule::NonLoopback);
+    }
+    if reserved.contains(&sock.port) {
+        return Some(ViolationRule::ReservedPort);
+    }
+    if sock.port < 1024 {
+        return Some(ViolationRule::PrivilegedPort);
+    }
+    None
+}
+
+/// 运行期判定：看采到的监听 socket。
+///
+/// 本平台采不到 socket 时返回 **Unsupported**——不是 Ok。
+pub(crate) fn judge_sockets(
+    socks: &[ListeningSocket],
+    reserved: &HashSet<u16>,
+    allow_non_loopback: bool,
+) -> GateVerdict {
+    if !crate::bot::procs::listening_supported() {
+        return GateVerdict::Unsupported;
+    }
+    for sock in socks {
+        if let Some(rule) = rule_of(sock, reserved, allow_non_loopback) {
+            return GateVerdict::Violated {
+                rule,
+                address: sock.address.clone(),
+                port: sock.port,
+            };
+        }
+    }
+    GateVerdict::Ok
+}
+
+/// spawn 前的 flag 早退判定（**弱于运行期判定**）。
+///
+/// 只覆盖命令行里写明的意图——模型能写配置文件、设环境变量、硬编码端口。
+/// 所以 Windows 上（本平台采不到运行期监听）**不能拿它当边界**：调用方必须
+/// 看到「本平台兜不住」才降级成诊断而不是拒绝。
+pub(crate) fn judge_flags(
+    flags: &FlagListen,
+    reserved: &HashSet<u16>,
+    allow_non_loopback: bool,
+) -> Option<(ViolationRule, String, u16)> {
+    if let Some(host) = &flags.host {
+        if !allow_non_loopback && !is_loopback(host) {
+            return Some((
+                ViolationRule::NonLoopback,
+                host.clone(),
+                flags.port.unwrap_or(0),
+            ));
+        }
+    }
+    let port = flags.port?;
+    if reserved.contains(&port) {
+        return Some((
+            ViolationRule::ReservedPort,
+            flags.host.clone().unwrap_or_else(|| "0.0.0.0".to_string()),
+            port,
+        ));
+    }
+    if port < 1024 {
+        return Some((
+            ViolationRule::PrivilegedPort,
+            flags.host.clone().unwrap_or_else(|| "0.0.0.0".to_string()),
+            port,
+        ));
+    }
+    None
+}
+
+/// 从命令行里粗解析端口与绑定地址。
+///
+/// 认这些写法：`--port 5173` / `--port=5173` / `-p 5173` /
+/// `--host 0.0.0.0` / `--host=0.0.0.0` / `--listen 0.0.0.0:5173` / `--bind 127.0.0.1`。
+pub(crate) fn parse_listen_flags(args: &[String]) -> FlagListen {
+    let mut out = FlagListen::default();
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        let (key, inline) = match arg.split_once('=') {
+            Some((k, v)) if k.starts_with('-') => (k, Some(v.to_string())),
+            _ => (arg, None),
+        };
+        let take_value = |i: &mut usize| -> Option<String> {
+            if let Some(v) = inline.clone() {
+                return Some(v);
+            }
+            *i += 1;
+            args.get(*i).cloned()
+        };
+        match key {
+            "--port" | "-p" => {
+                if let Some(v) = take_value(&mut i) {
+                    out.port = v.trim().parse::<u16>().ok();
+                }
+            }
+            "--host" => {
+                if let Some(v) = take_value(&mut i) {
+                    out.host = Some(v.trim().to_string());
+                }
+            }
+            "--listen" | "--bind" => {
+                if let Some(v) = take_value(&mut i) {
+                    let v = v.trim().to_string();
+                    // `host:port` 形式：地址与端口一起给
+                    match v.rsplit_once(':') {
+                        Some((h, p)) if p.trim().parse::<u16>().is_ok() => {
+                            out.host = Some(
+                                h.trim()
+                                    .trim_start_matches('[')
+                                    .trim_end_matches(']')
+                                    .to_string(),
+                            );
+                            out.port = p.trim().parse::<u16>().ok();
+                        }
+                        _ => out.host = Some(v),
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// 违规的人话（给模型与面板看，含改绑示例）。
+pub(crate) fn violation_message(rule: ViolationRule, address: &str, port: u16) -> String {
+    match rule {
+        ViolationRule::NonLoopback => format!(
+            "监听地址 {address} 不是 loopback（{rule}：{}）。\
+             请改绑 127.0.0.1 或 ::1（如加 --host 127.0.0.1）；\
+             确实要对外暴露，先在设置页打开「允许服务暴露到非 loopback」。",
+            rule.explain()
+        ),
+        ViolationRule::ReservedPort => format!(
+            "端口 {port} 是宿主保留端口（{rule}：{}）。请换一个端口。",
+            rule.explain()
+        ),
+        ViolationRule::PrivilegedPort => format!(
+            "端口 {port} 是特权端口（{rule}：{}）。请改用 >=1024 的端口（如加 --port 3000）。",
+            rule.explain()
+        ),
+    }
+}
+
+/// spawn 前的端口/地址早退检查（工具层调用）。
+///
+/// 返回 Some((档位, 地址, 端口, 话术)) 表示命令行里写明的监听意图违规。
+///
+/// **平台不支持运行期判定时不能拿它当边界**：调用方要靠
+/// `procs::listening_supported()` 区分「拒」与「只诊断」——Windows 上采不到
+/// 运行期监听，拿 flag 解析冒充 L1 比没有边界更危险（review 会误以为有闸）。
+pub(crate) fn precheck_listen(
+    args: &[String],
+    allow_non_loopback: bool,
+) -> Option<(ViolationRule, String, u16, String)> {
+    let flags = parse_listen_flags(args);
+    let reserved = reserved_ports();
+    let (rule, address, port) = judge_flags(&flags, &reserved, allow_non_loopback)?;
+    let message = violation_message(rule, &address, port);
+    Some((rule, address, port, message))
+}
+
+/// 采一个服务整棵树的监听 socket 并判定。
+///
+/// 口径与资源采样一致：**整棵进程树**（组长 + 全部后代）——dev server 的活
+/// 多半在子进程里，只看组长会漏掉真正在监听的那个。
+fn check_service_listening<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    entry: &ServiceEntry,
+    reserved: &HashSet<u16>,
+    allow_non_loopback: bool,
+) -> GateVerdict {
+    let (state, pid) = {
+        let g = entry.lock().unwrap_or_else(|e| e.into_inner());
+        (g.state, g.pid)
+    };
+    // 启动期（Starting）也要判：bind 落定多在 ready 之前，只认 Running 的话
+    // 启动期加密采样整轮空转，最坏检测延迟就变成 30s 而不是 10s。
+    if !matches!(state, ServiceState::Running | ServiceState::Starting) || pid == 0 {
+        return GateVerdict::Ok;
+    }
+    let snap = take_snapshot();
+    let tree = tree_pids(&snap, pid);
+    let sockets = listening_sockets(&tree);
+    let listening = merge_sockets(
+        tree.iter()
+            .filter_map(|p| sockets.get(p).cloned())
+            .collect(),
+    );
+    let verdict = judge_sockets(&listening, reserved, allow_non_loopback);
+    if let GateVerdict::Violated {
+        rule,
+        address,
+        port,
+    } = &verdict
+    {
+        handle_violation(app, entry, *rule, address, *port, ViolationAction::Killed);
+    }
+    verdict
+}
+
+/// 处置一次违规：记 last_violation + 写审计 + 杀进程组。
+///
+/// 两个通道都要：审计给事后追溯，面板给当下响应——只写审计日志、面板只显示
+/// 「down 了」而不说为什么，用户没法响应。
+fn handle_violation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    entry: &ServiceEntry,
+    rule: ViolationRule,
+    address: &str,
+    port: u16,
+    action: ViolationAction,
+) {
+    // 还在跑才处置：加密采样与 30s 巡检可能同时看到同一条违规，
+    // 重复处置会写两条审计、杀两次组。
+    let still_up = entry
+        .lock()
+        .map(|s| s.state == ServiceState::Running || s.state == ServiceState::Starting)
+        .unwrap_or(false);
+    if !still_up {
+        return;
+    }
+    let now = crate::db::now_ms();
+    let violation = Violation {
+        rule,
+        address: address.to_string(),
+        port,
+        at_ms: now,
+        action,
+    };
+    let (service_id, label) = {
+        let mut g = entry.lock().unwrap_or_else(|e| e.into_inner());
+        g.last_violation = Some(violation.clone());
+        let label = if g.name.is_empty() {
+            g.command.clone()
+        } else {
+            g.name.clone()
+        };
+        (g.id.clone(), label)
+    };
+    crate::audit::write_event(
+        app,
+        AuditLevel::Warn,
+        "service.port_violation",
+        &[
+            ("service_id", service_id),
+            ("rule", rule.as_str().to_string()),
+            ("address", address.to_string()),
+            ("port", port.to_string()),
+            ("action", action.as_str().to_string()),
+            ("detail", rule.explain().to_string()),
+            ("label", label),
+        ],
+    );
+    if action == ViolationAction::Killed {
+        // 走既有信号阶梯杀进程组（不是裸 kill）
+        let _ = stop_entry(app, entry, "port_violation");
+    }
+}
+
+/// 启动期加密采样：0 / 0.5 / 1 / 2 / 5 / 10 秒各采一次，违规立即终止。
+///
+/// 服务退出就提前收工（别对着一个死进程空采样）。
+fn spawn_startup_listening_watch<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    entry: ServiceEntry,
+    reserved: HashSet<u16>,
+    allow_non_loopback: bool,
+) {
+    // 线程要 'static 的句柄：克隆一份搬进去
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        for offset_ms in STARTUP_SAMPLE_OFFSETS_MS {
+            let target = Duration::from_millis(offset_ms);
+            if start.elapsed() < target {
+                std::thread::sleep(target - start.elapsed());
+            }
+            let alive = entry
+                .lock()
+                .map(|s| s.state == ServiceState::Running || s.state == ServiceState::Starting)
+                .unwrap_or(false);
+            if !alive {
+                return;
+            }
+            let verdict = check_service_listening(&app, &entry, &reserved, allow_non_loopback);
+            if let GateVerdict::Violated { .. } = verdict {
+                // 违规已处置（杀组），停掉这轮加密采样
+                return;
+            }
+        }
+    });
+}
+
+/// 一轮监听采样与判定：所有在跑服务 + 宿主自身一次采完。
+///
+/// 宿主自身的监听端口用来刷新**保留集**（静态 ∪ 动态）——复用同一份采样，
+/// 不额外调一次系统调用。
+fn enforce_listening_gate<R: tauri::Runtime>(app: &AppHandle<R>) {
+    if !crate::bot::procs::listening_supported() {
+        // Windows：采不到 → 不判（Unsupported 语义，见 judge_sockets）。
+        // 这里不静默「判了没事」——判定层返回的是 Unsupported，不是 Ok。
+        return;
+    }
+    let table = crate::app_state::services(app);
+    let entries: Vec<ServiceEntry> = {
+        let guard = lock_table(&table);
+        guard.values().cloned().collect()
+    };
+    let self_pid = std::process::id();
+    let snap = take_snapshot();
+    // 一次平台调用采完：所有在跑服务的树 + 宿主自身
+    let mut all_pids: Vec<u32> = vec![self_pid];
+    let mut trees: Vec<(ServiceEntry, Vec<u32>)> = Vec::new();
+    for entry in entries {
+        let (state, pid) = {
+            let g = entry.lock().unwrap_or_else(|e| e.into_inner());
+            (g.state, g.pid)
+        };
+        if !matches!(state, ServiceState::Running | ServiceState::Starting) || pid == 0 {
+            continue;
+        }
+        let tree = tree_pids(&snap, pid);
+        all_pids.extend(tree.iter().copied());
+        trees.push((entry, tree));
+    }
+    let sockets = listening_sockets(&all_pids);
+    // 保留集动态部分 = 宿主自身在监听的端口
+    let host_ports: Vec<u16> = sockets
+        .get(&self_pid)
+        .map(|list| list.iter().map(|s| s.port).collect())
+        .unwrap_or_default();
+    refresh_reserved_ports(&host_ports);
+    let reserved = reserved_ports();
+    let allow_non_loopback = expose_net_allowed(app);
+    for (entry, tree) in trees {
+        let listening = merge_sockets(
+            tree.iter()
+                .filter_map(|p| sockets.get(p).cloned())
+                .collect(),
+        );
+        if let GateVerdict::Violated {
+            rule,
+            address,
+            port,
+        } = judge_sockets(&listening, &reserved, allow_non_loopback)
+        {
+            handle_violation(app, &entry, rule, &address, port, ViolationAction::Killed);
+        }
+    }
+}
 
 /// 受管服务的**合计**资源观测状态（跨服务口径）。
 ///
@@ -231,6 +764,9 @@ pub struct ManagedService {
     pub(crate) cpu_busy_since_ms: Option<i64>,
     /// 当前告警项。同一项在条件消失前只告警一次，不反复刷审计。
     pub(crate) warnings: Vec<String>,
+    /// 最近一次端口/地址违规。**正交于生命周期状态**——服务死了但违规记录
+    /// 还在，用户得知道它为什么死。
+    pub(crate) last_violation: Option<Violation>,
 }
 
 impl ManagedService {
@@ -268,6 +804,7 @@ impl ManagedService {
             last_cpu_sample: None,
             cpu_busy_since_ms: None,
             warnings: Vec::new(),
+            last_violation: None,
         }
     }
 
@@ -567,6 +1104,15 @@ pub(crate) fn do_start<R: tauri::Runtime>(
         });
     }
 
+    // 启动期加密采样监听（0/0.5/1/2/5/10s）：dev server 起来到 bind 落定可能
+    // 隔好几秒，30s 一轮的巡检在这个窗口里会漏。发现违规立即终止，不等窗口。
+    spawn_startup_listening_watch(
+        app,
+        entry.clone(),
+        reserved_ports(),
+        expose_net_allowed(app),
+    );
+
     // 就绪判定
     let ready = match &req.ready_pattern {
         Some(pattern) => wait_ready_pattern(app, &entry, pattern, req.ready_timeout_secs, &id),
@@ -602,7 +1148,25 @@ pub(crate) fn do_start<R: tauri::Runtime>(
             .lock()
             .map(|s| s.state == ServiceState::Exited)
             .unwrap_or(false);
-        let msg = if exited_early {
+        // 端口闸在启动期杀了它 → 说清是违规致死，不是「没就绪」：
+        // 模型要拿到规则、地址和改绑示例才可能下一轮改对。
+        let violation = entry
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last_violation
+            .clone();
+        let msg = if let Some(v) = violation {
+            let mut m = format!(
+                "服务「{}」已被端口闸终止：{}",
+                req.command,
+                violation_message(v.rule, &v.address, v.port)
+            );
+            if !detail.is_empty() {
+                m.push(' ');
+                m.push_str(&detail);
+            }
+            m
+        } else if exited_early {
             format!(
                 "服务「{}」启动后立即退出（{}）。{}",
                 req.command,
@@ -1015,6 +1579,8 @@ fn notify_system<R: tauri::Runtime>(app: &AppHandle<R>, title: &str, body: &str)
 fn sweep_round<R: tauri::Runtime>(app: &AppHandle<R>) {
     enforce_output_caps(app);
     sample_resources(app);
+    // P2-③：监听采样与判定（发现违规 → 杀进程组 + 记审计 + 面板标红）
+    enforce_listening_gate(app);
 }
 
 /// 启动输出上限巡检：每 30s 一轮（App 启动时调用）。
@@ -1180,6 +1746,51 @@ pub fn service_set_enabled(app: AppHandle, enabled: bool) -> Result<bool, String
     set_enabled(&app, enabled)
 }
 
+// ── L1 放开开关（允许服务暴露到非 loopback） ──
+
+/// 「允许服务暴露到非 loopback」的 flag 文件路径（与 `services-enabled.flag` 同款）。
+pub(crate) fn expose_net_flag_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
+    crate::paths::flags_dir(app).join("services-expose-net.flag")
+}
+
+/// 非 loopback 暴露是否被允许（L1 的放开方式，默认关）。
+pub fn expose_net_allowed<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
+    expose_net_flag_path(app).exists()
+}
+
+/// 写「允许服务暴露到非 loopback」开关。
+pub fn set_expose_net_allowed<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    on: bool,
+) -> Result<bool, String> {
+    let path = expose_net_flag_path(app);
+    if on {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败：{e}"))?;
+        }
+        std::fs::write(&path, b"1").map_err(|e| format!("写入开关失败：{e}"))?;
+    } else {
+        match std::fs::remove_file(&path) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("删除开关失败：{e}")),
+        }
+    }
+    Ok(expose_net_allowed(app))
+}
+
+/// 读「允许服务暴露到非 loopback」开关（设置页）。
+#[tauri::command]
+pub fn service_get_expose_net_allowed(app: AppHandle) -> bool {
+    expose_net_allowed(&app)
+}
+
+/// 写「允许服务暴露到非 loopback」开关（设置页）。
+#[tauri::command]
+pub fn service_set_expose_net_allowed(app: AppHandle, allowed: bool) -> Result<bool, String> {
+    set_expose_net_allowed(&app, allowed)
+}
+
 // ── 序列化 ──
 
 /// 服务条目 → JSON（给模型看）。
@@ -1208,6 +1819,17 @@ pub(crate) fn service_to_json(s: &ManagedService, with_tail: bool) -> serde_json
         obj["cpuPct"] = serde_json::json!(round1(p));
     }
     obj["warnings"] = serde_json::json!(s.warnings);
+    // 违规（正交于生命周期状态）：服务死了但违规记录还在，用户得知道它为什么死
+    if let Some(v) = &s.last_violation {
+        obj["violation"] = serde_json::json!({
+            "rule": v.rule.as_str(),
+            "address": v.address,
+            "port": v.port,
+            "at": v.at_ms,
+            "action": v.action.as_str(),
+            "detail": v.rule.explain(),
+        });
+    }
     if with_tail {
         obj["stdoutTail"] = serde_json::json!(tail_lines(&s.stdout_path, TAIL_LINES));
         obj["stderrTail"] = serde_json::json!(tail_lines(&s.stderr_path, TAIL_LINES));
@@ -1236,6 +1858,9 @@ pub(crate) fn services_snapshot_json<R: tauri::Runtime>(
         "totalRssMb": round1(u.total_rss_bytes as f64 / 1024.0 / 1024.0),
         "warnings": u.warnings,
         "sampledAt": u.sampled_at_ms,
+        // 本平台能不能采到监听 socket。Windows 不能——面板据此说明
+        // 「本平台暂不支持监听端口采集」，而不是让用户对着空白猜。
+        "listeningSupported": crate::bot::procs::listening_supported(),
     })
 }
 

@@ -567,3 +567,222 @@ fn resource_warning_survives_missing_notification_plugin() {
         None,
     );
 }
+
+// ── P2-③：端口 / 监听地址闸 ──
+
+#[test]
+fn parse_listen_flags_reads_common_forms() {
+    let args = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+
+    // --port 5173
+    let f = parse_listen_flags(&args(&["--port", "5173"]));
+    assert_eq!(f.port, Some(5173));
+    assert_eq!(f.host, None);
+
+    // --port=5173
+    let f = parse_listen_flags(&args(&["--port=5173"]));
+    assert_eq!(f.port, Some(5173));
+
+    // -p 5173
+    let f = parse_listen_flags(&args(&["-p", "5173"]));
+    assert_eq!(f.port, Some(5173));
+
+    // --host 0.0.0.0
+    let f = parse_listen_flags(&args(&["--host", "0.0.0.0"]));
+    assert_eq!(f.host.as_deref(), Some("0.0.0.0"));
+
+    // --host=127.0.0.1
+    let f = parse_listen_flags(&args(&["--host=127.0.0.1"]));
+    assert_eq!(f.host.as_deref(), Some("127.0.0.1"));
+
+    // --listen 0.0.0.0:8080（地址与端口一起给）
+    let f = parse_listen_flags(&args(&["--listen", "0.0.0.0:8080"]));
+    assert_eq!(f.host.as_deref(), Some("0.0.0.0"));
+    assert_eq!(f.port, Some(8080));
+
+    // --bind 127.0.0.1（只有地址）
+    let f = parse_listen_flags(&args(&["--bind", "127.0.0.1"]));
+    assert_eq!(f.host.as_deref(), Some("127.0.0.1"));
+    assert_eq!(f.port, None);
+
+    // 无关参数不误伤
+    let f = parse_listen_flags(&args(&["--verbose", "--outdir", "/tmp"]));
+    assert_eq!(f.host, None);
+    assert_eq!(f.port, None);
+}
+
+#[test]
+fn parse_listen_flags_ignores_a_trailing_flag_without_value() {
+    let args = vec!["--port".to_string()];
+    let f = parse_listen_flags(&args);
+    assert_eq!(f.port, None);
+}
+
+#[test]
+fn is_loopback_tells_wildcard_apart() {
+    assert!(is_loopback("127.0.0.1"));
+    assert!(is_loopback("127.1.2.3"));
+    assert!(is_loopback("::1"));
+    // 通配不是 loopback——这正是 L1 要拦的
+    assert!(!is_loopback("0.0.0.0"));
+    assert!(!is_loopback("::"));
+    assert!(!is_loopback("192.168.1.10"));
+}
+
+#[test]
+fn judge_sockets_flags_non_loopback_bind() {
+    let socks = vec![ListeningSocket {
+        protocol: crate::bot::procs::SocketProtocol::Tcp,
+        address: "0.0.0.0".to_string(),
+        port: 7000,
+    }];
+    let reserved = HashSet::new();
+    match judge_sockets(&socks, &reserved, false) {
+        GateVerdict::Violated {
+            rule,
+            address,
+            port,
+        } => {
+            assert_eq!(rule, ViolationRule::NonLoopback);
+            assert_eq!(address, "0.0.0.0");
+            assert_eq!(port, 7000);
+        }
+        other => panic!("应判 L1 违规，实际 {other:?}"),
+    }
+    // 开关放开 → 不再报 L1
+    assert_eq!(judge_sockets(&socks, &reserved, true), GateVerdict::Ok);
+}
+
+#[test]
+fn judge_sockets_flags_reserved_and_privileged_ports() {
+    let mut reserved = HashSet::new();
+    reserved.insert(4763u16);
+    let mk = |port: u16, addr: &str| ListeningSocket {
+        protocol: crate::bot::procs::SocketProtocol::Tcp,
+        address: addr.to_string(),
+        port,
+    };
+
+    // L2：占了宿主保留端口（地址是 loopback 也照样占）
+    match judge_sockets(&[mk(4763, "127.0.0.1")], &reserved, false) {
+        GateVerdict::Violated { rule, port, .. } => {
+            assert_eq!(rule, ViolationRule::ReservedPort);
+            assert_eq!(port, 4763);
+        }
+        other => panic!("应判 L2 违规，实际 {other:?}"),
+    }
+
+    // L3：特权端口
+    match judge_sockets(&[mk(80, "127.0.0.1")], &reserved, false) {
+        GateVerdict::Violated { rule, port, .. } => {
+            assert_eq!(rule, ViolationRule::PrivilegedPort);
+            assert_eq!(port, 80);
+        }
+        other => panic!("应判 L3 违规，实际 {other:?}"),
+    }
+
+    // 普通 loopback 端口 → 没违规
+    assert_eq!(
+        judge_sockets(&[mk(5173, "127.0.0.1")], &reserved, false),
+        GateVerdict::Ok
+    );
+}
+
+#[test]
+fn judge_flags_mirrors_the_runtime_rules() {
+    let mut reserved = HashSet::new();
+    reserved.insert(4763u16);
+
+    let f = FlagListen {
+        host: Some("0.0.0.0".to_string()),
+        port: Some(5173),
+    };
+    let (rule, _, _) = judge_flags(&f, &reserved, false).expect("应判 L1");
+    assert_eq!(rule, ViolationRule::NonLoopback);
+    assert!(judge_flags(&f, &reserved, true).is_none(), "开关放开则不报");
+
+    let f = FlagListen {
+        host: Some("127.0.0.1".to_string()),
+        port: Some(4763),
+    };
+    let (rule, _, port) = judge_flags(&f, &reserved, false).expect("应判 L2");
+    assert_eq!(rule, ViolationRule::ReservedPort);
+    assert_eq!(port, 4763);
+
+    let f = FlagListen {
+        host: Some("127.0.0.1".to_string()),
+        port: Some(80),
+    };
+    let (rule, _, port) = judge_flags(&f, &reserved, false).expect("应判 L3");
+    assert_eq!(rule, ViolationRule::PrivilegedPort);
+    assert_eq!(port, 80);
+}
+
+#[test]
+fn reserved_ports_always_hold_the_host_api_port() {
+    // 静态保底：宿主 API server 可选启停，4763 不在监听时也得保留
+    assert!(reserved_ports().contains(&crate::api::API_PORT));
+}
+
+/// 找一个空闲端口（先占 :0 拿到端口即释放；与别的测试不撞固定端口）。
+fn free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("应能绑一个临时端口");
+    let p = l.local_addr().expect("应有本地地址").port();
+    drop(l);
+    p
+}
+
+/// 启动期绑到非 loopback → 端口闸在启动期就杀组，错误里带规则与改绑示例。
+///
+/// 这条同时钉住「启动期也判」：bind 落定多在 ready 之前，只认 Running 的话
+/// 启动期加密采样整轮空转，闸就漏了最危险的那一段窗口。
+#[test]
+fn startup_service_bound_to_non_loopback_is_killed_with_violation_reason() {
+    if !crate::bot::procs::listening_supported() {
+        eprintln!("跳过：本平台采不到监听 socket，闸不生效");
+        return;
+    }
+    let Some((py, _)) = long_running_launcher() else {
+        eprintln!("跳过：环境里没有 python3");
+        return;
+    };
+    let port = free_port();
+    let script = format!(
+        "import socket, time\ns = socket.socket()\n\
+         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
+         s.bind(('0.0.0.0', {port}))\n\
+         s.listen(8)\n\
+         print('bound', flush=True)\n\
+         while True: time.sleep(0.2)\n"
+    );
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    app.manage(crate::app_state::AppState::default());
+
+    let req = StartRequest {
+        command: py,
+        args: vec!["-c".to_string(), script],
+        cwd: std::env::temp_dir(),
+        name: "l1".to_string(),
+        // 永远匹配不到的 readyPattern：让启动停在 Starting，等端口闸来判
+        ready_pattern: Some("__never_matches__".to_string()),
+        ready_timeout_secs: 10,
+        session_id: None,
+    };
+    let err = do_start(&handle, &req).expect_err("非 loopback 监听应被端口闸终止");
+    assert!(err.contains("端口闸"), "错误要说清是端口闸终止：{err}");
+    assert!(err.contains("loopback"), "错误要带 L1 规则：{err}");
+    assert!(err.contains("127.0.0.1"), "错误要带改绑示例：{err}");
+
+    // 违规进了登记表（面板 badge 的数据源），状态机本身不动
+    let all = list_all(&handle);
+    assert_eq!(all.len(), 1);
+    let v = all[0]
+        .last_violation
+        .as_ref()
+        .expect("登记表要记下这次违规");
+    assert_eq!(v.rule, ViolationRule::NonLoopback);
+    assert_eq!(v.port, port);
+    assert_eq!(v.action, ViolationAction::Killed);
+    assert_eq!(all[0].state, ServiceState::Exited);
+}

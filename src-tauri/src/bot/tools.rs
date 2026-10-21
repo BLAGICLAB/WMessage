@@ -2127,6 +2127,60 @@ where
         .unwrap_or(crate::bot::services::DEFAULT_READY_TIMEOUT_SECS)
         .min(crate::bot::services::MAX_READY_TIMEOUT_SECS);
 
+    // 闸 4：端口 / 监听地址判据（P2-③）
+    //
+    // 两层：① spawn 前从命令行 flag 粗解析的早退（**仅诊断级**——模型能写
+    // 配置文件、设环境变量、在代码里硬编码端口，静态解析不可靠）；② 运行期
+    // 采样（真正兜底，违规 → 杀进程组）。
+    //
+    // 本平台兜不住时（Windows 采不到运行期监听）**只诊断不拒**——拿 flag
+    // 解析冒充 L1 比没有边界更危险：review 会误以为有闸。
+    let allow_non_loopback = crate::bot::services::expose_net_allowed(app);
+    let precheck_note = match crate::bot::services::precheck_listen(&args_list, allow_non_loopback)
+    {
+        None => None,
+        Some((rule, address, port, message)) => {
+            if crate::bot::procs::listening_supported() {
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Warn,
+                    "service.denied",
+                    &[
+                        ("command", command.clone()),
+                        ("rule", rule.as_str().to_string()),
+                        ("address", address.clone()),
+                        ("port", port.to_string()),
+                        (
+                            "action",
+                            crate::bot::services::ViolationAction::Rejected
+                                .as_str()
+                                .to_string(),
+                        ),
+                        ("reason", message.clone()),
+                    ],
+                );
+                return ToolResult::denied(format!("⚠️ {message}"));
+            }
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "service.port_violation_precheck",
+                &[
+                    ("command", command.clone()),
+                    ("rule", rule.as_str().to_string()),
+                    ("address", address.clone()),
+                    ("port", port.to_string()),
+                    ("action", "diagnostic".to_string()),
+                    ("reason", message.clone()),
+                    ("enforced", "false".to_string()),
+                ],
+            );
+            Some(format!(
+                "{message}（注意：本平台采不到运行期监听，端口闸未生效，这条只作诊断）"
+            ))
+        }
+    };
+
     let req = crate::bot::services::StartRequest {
         command: command.clone(),
         args: args_list,
@@ -2144,11 +2198,15 @@ where
 
     match started {
         Ok(out) => {
-            let entry = crate::bot::services::list_all(app)
+            let mut entry = crate::bot::services::list_all(app)
                 .into_iter()
                 .find(|s| s.id == out.id)
                 .map(|s| crate::bot::services::service_to_json(&s, false))
                 .unwrap_or_else(|| serde_json::json!({}));
+            // 本平台兜不住时的诊断说明（如实告诉模型这条不是边界）
+            if let Some(note) = precheck_note {
+                entry["precheckNote"] = serde_json::json!(note);
+            }
             // 返回紧凑 JSON：Skill DSL 的 ${stepN.serviceId} 要能解析它
             ToolResult::ok(entry.to_string(), Vec::new())
         }
