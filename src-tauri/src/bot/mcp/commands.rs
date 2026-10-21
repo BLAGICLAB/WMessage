@@ -224,6 +224,16 @@ pub struct McpServerStatus {
     pub tool_count: usize,
     /// 内置条目（不可删除，只能开关）；前端据此隐藏删除按钮
     pub builtin: bool,
+    /// 本地子进程 pid（stdio 连接才有；HTTP 连接没有子进程）
+    pub pid: Option<u32>,
+    /// 常驻内存（MB，整棵进程树合计）；未连接时没有
+    pub rss_mb: Option<f64>,
+    /// CPU 占用率（百分比，整棵进程树合计）；第一次采样没有前值时没有
+    pub cpu_pct: Option<f64>,
+    /// 累计 CPU 时间（秒）
+    pub cpu_seconds: Option<f64>,
+    /// 子进程已运行秒数
+    pub uptime_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -236,9 +246,16 @@ pub struct McpToolBrief {
 /// 设置页读 MCP 状态：配置全量（含禁用）× 连接槽位合并。
 /// 同步命令：只做内存合并（槽位是 std Mutex 短临界区），不触发连接。
 #[tauri::command]
-pub fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
+pub async fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
     let cfg = crate::bot::config::io::load_config(&app);
     let manager = shared();
+    // 资源采样可能要拍一张全机 ps（~50ms）——挪到 blocking 线程，别卡主线程
+    let children = manager.connected_children();
+    let pids: Vec<u32> = children.values().map(|(pid, _)| *pid).collect();
+    let sampled = tauri::async_runtime::spawn_blocking(move || manager.sample_children(&pids))
+        .await
+        .unwrap_or_default();
+    let now_ms = crate::db::now_ms();
     let mut out = Vec::new();
     for s in cfg.mcp_servers.unwrap_or_default() {
         let (state, error, tool_count) = {
@@ -247,6 +264,12 @@ pub fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
         };
         let transport = s.transport_kind().as_str().to_string();
         let builtin = super::builtin::is_builtin_id(&s.id);
+        let (pid, started_at_ms) = children.get(&s.id).copied().unwrap_or((0, 0));
+        let resource = if pid == 0 {
+            None
+        } else {
+            sampled.get(&pid).copied()
+        };
         out.push(McpServerStatus {
             id: s.id,
             name: s.name,
@@ -256,6 +279,15 @@ pub fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
             error,
             tool_count,
             builtin,
+            pid: if pid == 0 { None } else { Some(pid) },
+            rss_mb: resource.map(|r| (r.rss_bytes as f64 / 1024.0 / 1024.0 * 10.0).round() / 10.0),
+            cpu_pct: resource.and_then(|r| r.cpu_pct),
+            cpu_seconds: resource.map(|r| (r.cpu_seconds * 10.0).round() / 10.0),
+            uptime_secs: if pid == 0 {
+                None
+            } else {
+                Some(((now_ms - started_at_ms).max(0) / 1000) as u64)
+            },
         });
     }
     Ok(out)

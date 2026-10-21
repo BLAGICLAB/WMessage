@@ -116,14 +116,10 @@ pub(crate) fn evaluate_resources(
     prev_warnings: &[String],
     now_ms: i64,
 ) -> ResourceVerdict {
-    // 占用率 = 两次采样之间的 CPU 时间增量 ÷ 墙上时间增量（×100 得百分比）
-    let cpu_pct = match last_cpu_sample {
-        Some((prev_cpu, prev_at)) if now_ms > prev_at => {
-            let wall_secs = (now_ms - prev_at) as f64 / 1000.0;
-            Some((sample.cpu_seconds - prev_cpu) / wall_secs * 100.0)
-        }
-        _ => None,
-    };
+    // 占用率走公共公式（与 MCP 侧同一条口径）
+    let cpu_pct = last_cpu_sample.and_then(|(prev_cpu, prev_at)| {
+        crate::bot::procs::cpu_usage_pct(prev_cpu, prev_at, sample.cpu_seconds, now_ms)
+    });
 
     // "持续"判定：占用率高就把起点钉住（第一次高时记为 now），掉回阈值以下就清零
     let mut busy_since = cpu_busy_since_ms;

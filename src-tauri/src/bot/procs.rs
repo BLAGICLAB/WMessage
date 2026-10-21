@@ -278,6 +278,25 @@ pub(crate) fn parse_ps_time(s: &str) -> Option<f64> {
     Some(days * 86400.0 + secs)
 }
 
+/// 两次采样之间的 CPU 占用率（百分比）。
+///
+/// delta 累计 CPU 时间 ÷ delta 墙上时间。**受管服务层与 MCP 侧同一条公式**——
+/// 两处各算一遍迟早会漂。
+///
+/// 没有前值（第一次采样）或墙上时间没走（同一毫秒）时返回 None。
+pub(crate) fn cpu_usage_pct(
+    prev_cpu_secs: f64,
+    prev_at_ms: i64,
+    cur_cpu_secs: f64,
+    cur_at_ms: i64,
+) -> Option<f64> {
+    if cur_at_ms <= prev_at_ms {
+        return None;
+    }
+    let wall_secs = (cur_at_ms - prev_at_ms) as f64 / 1000.0;
+    Some((cur_cpu_secs - prev_cpu_secs) / wall_secs * 100.0)
+}
+
 /// 把一次进程快照折成某个服务整棵树的资源采样。
 ///
 /// 树 = 组长自身 + 快照里的全部后代。组长不在快照里（已退出）时返回 None。

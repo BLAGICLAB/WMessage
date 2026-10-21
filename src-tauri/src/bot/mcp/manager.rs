@@ -58,11 +58,36 @@ enum Slot {
         /// stdio 子进程的 pid（HTTP 连接没有子进程 → None）。
         /// 停止时靠它走信号阶梯（见 `close_old`）。
         pid: Option<u32>,
+        /// 子进程起来的时刻（毫秒）——面板上算「已运行多久」。
+        started_at_ms: i64,
     },
     Down {
         error: String,
     },
 }
+
+/// 一份进程快照（带采样时刻）。
+#[derive(Clone)]
+struct SampleEntry {
+    /// 采样时刻（毫秒）
+    at_ms: i64,
+    /// 全机进程快照
+    snap: Vec<crate::bot::procs::ProcSnapshot>,
+}
+
+/// 一个 MCP 子进程的资源读数（整棵进程树合计）。
+#[derive(Debug, Clone, Copy)]
+pub struct ChildResource {
+    /// 常驻内存（字节）
+    pub rss_bytes: u64,
+    /// 累计 CPU 时间（秒）
+    pub cpu_seconds: f64,
+    /// CPU 占用率（百分比）；第一次采样没有前值 → None
+    pub cpu_pct: Option<f64>,
+}
+
+/// 采样缓存 TTL（毫秒）。
+const SAMPLE_TTL_MS: i64 = 5_000;
 
 /// 进程级单例：模型循环 / registry 挂载层拿不到 AppHandle，
 /// manager 用 OnceLock 全局化（连/断/状态命令全部经 `shared()` 访问）。
@@ -73,6 +98,7 @@ pub fn shared() -> &'static McpManager {
     MANAGER.get_or_init(|| McpManager {
         slots: Mutex::new(HashMap::new()),
         stderr_tail: Mutex::new(HashMap::new()),
+        sample_cache: Mutex::new(Vec::new()),
         cwd: Mutex::new(None),
     })
 }
@@ -94,6 +120,11 @@ pub struct McpManager {
     /// 阶段 6 失败隔离强化：连接失败 / 调用断连时把尾巴附进错误与审计，
     /// 不用让用户去猜服务器为什么不起来。
     stderr_tail: Mutex<HashMap<String, Arc<Mutex<std::collections::VecDeque<String>>>>>,
+    /// 资源采样缓存：全机快照一次，所有已连接的 MCP 子进程共用。
+    ///
+    /// TTL 5s：`mcp_status` 可能被前端轮询，每次都拍一张全机 `ps`（~50ms）就重了。
+    /// 留两份是为了算占用率（需要前一次的累计 CPU 时间）。
+    sample_cache: Mutex<Vec<SampleEntry>>,
     /// stdio 子进程的工作目录（重载时钉成数据目录）；None = 不设，沿用进程 cwd。
     /// 见 `reload_from_config` 的设置点：打包后进程 cwd 是 `/`，不钉住的话以
     /// 工作目录为文件沙箱根的服务器（Playwright）会把整块文件系统当可访问范围。
@@ -173,6 +204,7 @@ impl McpManager {
                         tools,
                         service,
                         pid,
+                        started_at_ms: crate::db::now_ms(),
                     },
                 );
                 Ok(())
@@ -380,6 +412,79 @@ impl McpManager {
                 Ok((Arc::new(service), tools, None))
             }
         }
+    }
+
+    /// 已连接的本地子进程：serverId → (pid, 起来时刻)
+    pub fn connected_children(&self) -> HashMap<String, (u32, i64)> {
+        let guard = self.slots();
+        let mut out = HashMap::new();
+        for (id, slot) in guard.iter() {
+            if let Slot::Connected {
+                pid: Some(pid),
+                started_at_ms,
+                ..
+            } = slot
+            {
+                out.insert(id.clone(), (*pid, *started_at_ms));
+            }
+        }
+        out
+    }
+
+    /// 采样 MCP 子进程的资源占用（整棵进程树合计），带 5s TTL 缓存。
+    ///
+    /// 口径与受管服务层**同一套代码**（`bot::procs` 的 take_snapshot + tree_sample
+    /// + cpu_usage_pct）——两处各写一遍迟早会漂。
+    ///
+    /// 阻塞：可能拍一张全机 `ps`（~50ms），调用方要挪到 blocking 线程。
+    pub fn sample_children(&self, pids: &[u32]) -> HashMap<u32, ChildResource> {
+        self.sample_children_within(pids, SAMPLE_TTL_MS)
+    }
+
+    /// 同上，但 TTL 可指定（测试用 0 = 每次都重采，逼出「第二次才有占用率」那条路径）。
+    fn sample_children_within(&self, pids: &[u32], ttl_ms: i64) -> HashMap<u32, ChildResource> {
+        let mut guard = self.sample_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let now_ms = crate::db::now_ms();
+        let fresh = guard
+            .first()
+            .map(|e| now_ms - e.at_ms < ttl_ms)
+            .unwrap_or(false);
+        if !fresh {
+            guard.insert(
+                0,
+                SampleEntry {
+                    at_ms: now_ms,
+                    snap: crate::bot::procs::take_snapshot(),
+                },
+            );
+            guard.truncate(2);
+        }
+        let cur = &guard[0];
+        let prev = guard.get(1);
+        let mut out = HashMap::new();
+        for pid in pids {
+            let Some(sample) = crate::bot::procs::tree_sample(&cur.snap, *pid) else {
+                continue;
+            };
+            let cpu_pct = prev.and_then(|p| {
+                let prev_sample = crate::bot::procs::tree_sample(&p.snap, *pid)?;
+                crate::bot::procs::cpu_usage_pct(
+                    prev_sample.cpu_seconds,
+                    p.at_ms,
+                    sample.cpu_seconds,
+                    cur.at_ms,
+                )
+            });
+            out.insert(
+                *pid,
+                ChildResource {
+                    rss_bytes: sample.rss_bytes,
+                    cpu_seconds: sample.cpu_seconds,
+                    cpu_pct,
+                },
+            );
+        }
+        out
     }
 
     /// 取（无则建）该服务器的 stderr 环形缓冲句柄
@@ -813,6 +918,47 @@ mod e2e_stdio {
             !crate::bot::registry::tools_json_with_mcp(None).contains("mcp_echo_echo"),
             "断开后工具应立即从清单消失"
         );
+    }
+
+    /// 资源采样：已连接的子进程能被采到内存/累计 CPU，第二次采样起才有占用率。
+    ///
+    /// 口径与受管服务层同一条（bot/procs 的 take_snapshot + tree_sample + cpu_usage_pct）。
+    #[tokio::test]
+    async fn child_resources_are_sampled_from_the_process_table() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP 资源采样 e2e");
+            return;
+        }
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+        let cfg = echo_cfg("e2e-res");
+        mgr.ensure_connected(&cfg).await.expect("连接应成功");
+
+        let children = mgr.connected_children();
+        let (pid, started_at_ms) = children
+            .get("e2e-res")
+            .copied()
+            .expect("应记下子进程 pid 与起来时刻");
+        assert!(crate::bot::procs::pid_exists(pid), "子进程此刻应活着");
+        assert!(started_at_ms > 0, "应记下起来时刻");
+
+        // 第一次采样：只有瞬时值，没有占用率（没有前值可比）
+        let first = mgr.sample_children_within(&[pid], 0);
+        let r1 = first.get(&pid).copied().expect("应采到资源");
+        assert!(r1.rss_bytes > 0, "内存必须采到非零值：{r1:?}");
+        assert!(r1.cpu_seconds >= 0.0);
+        assert!(
+            r1.cpu_pct.is_none(),
+            "第一次采样没有前值 → 不该有占用率：{r1:?}"
+        );
+
+        // 第二次（TTL=0 → 强制重采）：有前值了 → 有占用率
+        let second = mgr.sample_children_within(&[pid], 0);
+        let r2 = second.get(&pid).copied().expect("应采到资源");
+        assert!(r2.cpu_pct.is_some(), "第二次采样起应有占用率：{r2:?}");
+
+        mgr.shutdown().await;
     }
 
     /// 退出/断开后 MCP 子进程必须真的没了——不是「令牌取消了、进程还在」那种孤儿。
