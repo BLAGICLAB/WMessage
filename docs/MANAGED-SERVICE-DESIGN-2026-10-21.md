@@ -1061,11 +1061,17 @@ MCP stdio server 也是"宿主 spawn 的长驻子进程"，看起来可以合并
 3. **上层语义不同**：MCP 有 initialize 握手 + 工具发现 + 挂载；受管服务是裸进程，用户自己连。
 
 **可以共享的**：`STDIO_LAUNCH_ALLOWLIST`（已是单一事实源）、逐臂构造模式。
-**将来可以共享的**：停止阶梯 + 子孙回收。§10.3 的进程树操作**已经按纯函数设计**
-（`take_snapshot` / `descendants` / `merge_descendants` 只依赖 pid 空间，不碰登记表），
-等 MCP stdio 真要接时，**直接上提**成 `bot::procs::collect_and_kill_tree(root_pid)` 即可，
-不需要届时再重写一遍。本期**不抽象**（AGENTS.md：第二个调用方出现前不抽象）——
-但**代码形态**已经按"将来能整体搬走"写，不是一堆和登记表耦合的胶水。
+**停止阶梯 + 子孙回收已共享**（P2-② 落地）：§10.3 的进程树操作按纯函数设计
+（`take_snapshot` / `descendants` / `diff_descendants` 只依赖 pid 空间，不碰登记表），
+第二个调用方（MCP stdio 退出收尾）出现后整体上提为 **`bot/procs.rs`**：
+`procs::stop_tree(root_pid, pgid, wait_exit)` 走同一套阶梯与子孙回收，
+两个上层只差「怎么判进程退了」（服务层看登记表状态，MCP 侧看 `kill(pid, 0)`）。
+
+MCP 侧接阶梯解决的是一个真问题：rmcp 的 `TokioChildProcess` Drop 只是
+fire-and-forget 一个 SIGKILL——没有优雅退出窗口、不回收脱离进程组的子孙，
+而且那个 kill 是 `tokio::spawn` 出去的，应用正在退出时它可能根本没来得及跑
+（子进程留成宿主管不到的孤儿）。现在 MCP stdio 子进程自建进程组，
+退出时先走阶梯停干净，再让 rmcp 收尾（此时已是死进程，Drop 的 kill 是空操作）。
 
 ### 14.2 与 `py/runtime.rs` 的关系（为什么不复用）
 
@@ -1201,7 +1207,7 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 | **P0** | 登记表 + `start_service` / `stop_service` / `list_services` + 停止阶梯 + 子孙回收 + 退出清理 + 权限闸（开关 / 白名单 / cwd）+ **限额不继承** + **输出上限巡检**（8MB 截断 + 30s 一轮） | 打通"skill 内部起 node 长驻"的主链路 |
 | **P1** | **readyPattern + 就绪超时**（已提前落地：就绪判据是长驻服务的核心可用性，一并做了）+ **RSS/CPU 观测告警**（已落地：整棵进程树合计口径，单服务 512MB / 合计 1GB / CPU 跑满持续 5min，只告警不杀）+ **前端服务面板**（已落地：设置页「本地服务」分区，看状态与资源占用、随时停） | 可用性与可观测性 |
 | **P1 剩余** | RSS/CPU 告警目前只在设置页与 `list_services` 可见，**没有主动推送**（通知中心/系统通知通道未接） | |
-| **P2**（不在本方案） | ① 方案 1：node MCP server 配到设置页（`bot/mcp/config.rs` 已有整套 UI）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）<br>③ 端口/监听地址硬化闸 | 配套与深化 |
+| **P2** | ① 方案 1：node MCP server 配到设置页（`bot/mcp/config.rs` 已有整套 UI）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）——**已落地**<br>③ 端口/监听地址硬化闸 | 配套与深化 |
 
 ---
 

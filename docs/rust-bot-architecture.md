@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1092)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1094)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -107,7 +107,7 @@ src-tauri/src/
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
 │                        事件（Anthropic 协议）
-├── bot.rs (162)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
+├── bot.rs (163)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
 │                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
@@ -145,14 +145,22 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/services.rs (1681) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/procs.rs (531)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+│                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
+│                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
+│                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）
+│                        + 停止阶梯 stop_tree（SIGINT→100ms→SIGTERM→400ms→SIGKILL，
+│                        每级发信号前拍一张快照增量收集子孙，最后统一杀）
+│   └── bot/procs/tests.rs (194)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
+│                        整组杀护栏 / 资源采样
+├── bot/services.rs (1279) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
 │                        （带 starttime 防 PID 复用）+ 资源观测（整棵进程树 RSS / CPU，
 │                        只告警不杀）。与 py/runtime.rs 是两层：前者有界作业、
 │                        连坐杀组；本层长驻、宿主知道它、能停它、退出时收干净
-│   └── bot/services/tests.rs (719)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
+│   └── bot/services/tests.rs (569)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
 │                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
 │                        资源告警判定（阈值 / 持续 / 去重）等
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
