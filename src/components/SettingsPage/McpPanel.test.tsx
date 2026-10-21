@@ -300,4 +300,36 @@ describe("McpPanel", () => {
       screen.queryByText("此进程由 MCP 客户端按需拉起，不在本地服务表中"),
     ).not.toBeInTheDocument();
   });
+
+  it("监听端口：显示子进程在监听的 socket", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status"
+        ? [
+            {
+              ...STATUS_WITH_RES[0],
+              listening: [
+                { protocol: "TCP", address: "127.0.0.1", port: 5173 },
+                { protocol: "TCP", address: "0.0.0.0", port: 8080 },
+              ],
+            },
+          ]
+        : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(screen.getByText(/监听 TCP 127\.0\.0\.1:5173/)).toBeInTheDocument();
+    // 非 loopback 的绑定也要照实显示（判 L1 是 P2-③ 的事，这里只管显示）
+    expect(screen.getByText(/TCP 0\.0\.0\.0:8080/)).toBeInTheDocument();
+  });
+
+  it("无监听：不显示监听行", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status"
+        ? [{ ...STATUS_WITH_RES[0], listening: [] }]
+        : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(screen.queryByText(/监听/)).not.toBeInTheDocument();
+  });
 });

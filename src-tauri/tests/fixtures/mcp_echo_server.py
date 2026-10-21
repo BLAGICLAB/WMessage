@@ -2,6 +2,8 @@
 # 供 manager e2e 测试真实走完 spawn → initialize → tools/list → tools/call → shutdown。
 # 不是产品代码；协议面刻意最小化，只应答 rmcp 客户端会发的四个方法。
 import json
+import os
+import socket
 import sys
 
 TOOLS = [
@@ -25,6 +27,13 @@ def send(msg):
 def main():
     # 阶段 6 e2e：stderr 管道捕获的确定性锚点（manager 环形缓冲应捕获本行）
     print("echo-test stderr ready", file=sys.stderr, flush=True)
+    # 可选：按 WM_TEST_LISTEN_PORT 开一个真实 TCP 监听，让「子进程在监听什么端口」
+    # 的采样有真东西可采（e2e 用；不设这个变量就是普通桩）
+    listen_port = os.environ.get("WM_TEST_LISTEN_PORT")
+    if listen_port:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", int(listen_port)))
+        sock.listen(8)
     for raw in sys.stdin:
         line = raw.strip()
         if not line:

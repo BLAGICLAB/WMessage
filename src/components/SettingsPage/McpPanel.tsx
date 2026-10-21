@@ -559,6 +559,14 @@ export function McpPanel() {
                     {s.uptimeSecs != null && (
                       <span>已运行 {formatUptime(s.uptimeSecs)}</span>
                     )}
+                    {s.listening && s.listening.length > 0 && (
+                      <span>
+                        监听{" "}
+                        {s.listening
+                          .map((l) => `${l.protocol} ${l.address}:${l.port}`)
+                          .join(" · ")}
+                      </span>
+                    )}
                   </div>
                   <p className="mt-0.5 text-[11px] text-[var(--t5)]">
                     此进程由 MCP 客户端按需拉起，不在本地服务表中

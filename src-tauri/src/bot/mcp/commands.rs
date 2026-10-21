@@ -234,6 +234,20 @@ pub struct McpServerStatus {
     pub cpu_seconds: Option<f64>,
     /// 子进程已运行秒数
     pub uptime_secs: Option<u64>,
+    /// 子进程树在监听的 socket（TCP LISTEN / UDP 已绑定；整棵树合计）
+    pub listening: Vec<ListeningBrief>,
+}
+
+/// 一个监听 socket（面板展示用）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListeningBrief {
+    /// 协议名（TCP / UDP）
+    pub protocol: String,
+    /// 监听地址（`127.0.0.1` / `::1` / `0.0.0.0` / `::`）
+    pub address: String,
+    /// 端口
+    pub port: u16,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -268,8 +282,21 @@ pub async fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
         let resource = if pid == 0 {
             None
         } else {
-            sampled.get(&pid).copied()
+            sampled.get(&pid).cloned()
         };
+        let listening = resource
+            .as_ref()
+            .map(|r| {
+                r.listening
+                    .iter()
+                    .map(|l| ListeningBrief {
+                        protocol: l.protocol.as_str().to_string(),
+                        address: l.address.clone(),
+                        port: l.port,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         out.push(McpServerStatus {
             id: s.id,
             name: s.name,
@@ -280,14 +307,19 @@ pub async fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
             tool_count,
             builtin,
             pid: if pid == 0 { None } else { Some(pid) },
-            rss_mb: resource.map(|r| (r.rss_bytes as f64 / 1024.0 / 1024.0 * 10.0).round() / 10.0),
-            cpu_pct: resource.and_then(|r| r.cpu_pct),
-            cpu_seconds: resource.map(|r| (r.cpu_seconds * 10.0).round() / 10.0),
+            rss_mb: resource
+                .as_ref()
+                .map(|r| (r.rss_bytes as f64 / 1024.0 / 1024.0 * 10.0).round() / 10.0),
+            cpu_pct: resource.as_ref().and_then(|r| r.cpu_pct),
+            cpu_seconds: resource
+                .as_ref()
+                .map(|r| (r.cpu_seconds * 10.0).round() / 10.0),
             uptime_secs: if pid == 0 {
                 None
             } else {
                 Some(((now_ms - started_at_ms).max(0) / 1000) as u64)
             },
+            listening,
         });
     }
     Ok(out)

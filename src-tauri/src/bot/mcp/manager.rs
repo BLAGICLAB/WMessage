@@ -76,7 +76,7 @@ struct SampleEntry {
 }
 
 /// 一个 MCP 子进程的资源读数（整棵进程树合计）。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ChildResource {
     /// 常驻内存（字节）
     pub rss_bytes: u64,
@@ -84,6 +84,8 @@ pub struct ChildResource {
     pub cpu_seconds: f64,
     /// CPU 占用率（百分比）；第一次采样没有前值 → None
     pub cpu_pct: Option<f64>,
+    /// 子进程树在监听的 socket（TCP LISTEN / UDP 已绑定）
+    pub listening: Vec<crate::bot::procs::ListeningSocket>,
 }
 
 /// 采样缓存 TTL（毫秒）。
@@ -461,13 +463,21 @@ impl McpManager {
         }
         let cur = &guard[0];
         let prev = guard.get(1);
+        // 监听 socket：整棵树（组长 + 后代）合计。一次平台调用采完所有 pid，
+        // 再按树分发——每个 pid 单独调一次是 N 倍开销。
+        let trees: Vec<(u32, Vec<u32>)> = pids
+            .iter()
+            .map(|pid| (*pid, crate::bot::procs::tree_pids(&cur.snap, *pid)))
+            .collect();
+        let all_pids: Vec<u32> = trees.iter().flat_map(|(_, t)| t.iter().copied()).collect();
+        let sockets = crate::bot::procs::listening_sockets(&all_pids);
         let mut out = HashMap::new();
-        for pid in pids {
-            let Some(sample) = crate::bot::procs::tree_sample(&cur.snap, *pid) else {
+        for (pid, tree) in trees {
+            let Some(sample) = crate::bot::procs::tree_sample(&cur.snap, pid) else {
                 continue;
             };
             let cpu_pct = prev.and_then(|p| {
-                let prev_sample = crate::bot::procs::tree_sample(&p.snap, *pid)?;
+                let prev_sample = crate::bot::procs::tree_sample(&p.snap, pid)?;
                 crate::bot::procs::cpu_usage_pct(
                     prev_sample.cpu_seconds,
                     p.at_ms,
@@ -475,12 +485,18 @@ impl McpManager {
                     cur.at_ms,
                 )
             });
+            let listening = crate::bot::procs::merge_sockets(
+                tree.iter()
+                    .filter_map(|p| sockets.get(p).cloned())
+                    .collect(),
+            );
             out.insert(
-                *pid,
+                pid,
                 ChildResource {
                     rss_bytes: sample.rss_bytes,
                     cpu_seconds: sample.cpu_seconds,
                     cpu_pct,
+                    listening,
                 },
             );
         }
@@ -834,6 +850,14 @@ mod e2e_stdio {
             .unwrap_or(false)
     }
 
+    /// 挑一个当前空闲的本地端口（先占再放，让桩服务器去绑）。
+    fn free_local_port() -> Option<u16> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+        let port = listener.local_addr().ok()?.port();
+        drop(listener);
+        Some(port)
+    }
+
     #[tokio::test]
     async fn connect_discover_call_roundtrip() {
         if !ensure_python3().await {
@@ -945,7 +969,7 @@ mod e2e_stdio {
 
         // 第一次采样：只有瞬时值，没有占用率（没有前值可比）
         let first = mgr.sample_children_within(&[pid], 0);
-        let r1 = first.get(&pid).copied().expect("应采到资源");
+        let r1 = first.get(&pid).cloned().expect("应采到资源");
         assert!(r1.rss_bytes > 0, "内存必须采到非零值：{r1:?}");
         assert!(r1.cpu_seconds >= 0.0);
         assert!(
@@ -955,10 +979,62 @@ mod e2e_stdio {
 
         // 第二次（TTL=0 → 强制重采）：有前值了 → 有占用率
         let second = mgr.sample_children_within(&[pid], 0);
-        let r2 = second.get(&pid).copied().expect("应采到资源");
+        let r2 = second.get(&pid).cloned().expect("应采到资源");
         assert!(r2.cpu_pct.is_some(), "第二次采样起应有占用率：{r2:?}");
 
         mgr.shutdown().await;
+    }
+
+    /// 子进程真在监听端口时，采样要能采到它。
+    ///
+    /// 桩服务器按 `WM_TEST_LISTEN_PORT` 开一个真实 TCP 监听（127.0.0.1），
+    /// 断言采样结果里有这条 socket——「面板上显示的监听端口」不是猜的。
+    #[tokio::test]
+    async fn child_listening_sockets_are_sampled() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP 监听采样 e2e");
+            return;
+        }
+        let Some(port) = free_local_port() else {
+            eprintln!("[skip] 拿不到空闲端口，跳过 MCP 监听采样 e2e");
+            return;
+        };
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+        let mut cfg = echo_cfg("e2e-listen");
+        cfg.env
+            .insert("WM_TEST_LISTEN_PORT".to_string(), port.to_string());
+        mgr.ensure_connected(&cfg).await.expect("连接应成功");
+
+        let pid = mgr
+            .connected_children()
+            .get("e2e-listen")
+            .copied()
+            .expect("应记下子进程 pid")
+            .0;
+
+        // 采样可能要等一拍（子进程刚起来，平台 socket 表可能还没刷新）
+        let mut found = false;
+        let mut sampled = Vec::new();
+        for _ in 0..40 {
+            let out = mgr.sample_children_within(&[pid], 0);
+            sampled = out.get(&pid).cloned().expect("应采到资源").listening;
+            if sampled
+                .iter()
+                .any(|s| s.port == port && s.address == "127.0.0.1")
+            {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        mgr.shutdown().await;
+        assert!(
+            found,
+            "应采到子进程的监听 socket 127.0.0.1:{port}，实际采到 {sampled:?}"
+        );
     }
 
     /// 退出/断开后 MCP 子进程必须真的没了——不是「令牌取消了、进程还在」那种孤儿。

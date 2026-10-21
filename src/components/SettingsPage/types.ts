@@ -142,6 +142,8 @@ export type McpServerStatus = {
   cpuSeconds?: number | null;
   /** 子进程已运行秒数 */
   uptimeSecs?: number | null;
+  /** 子进程树在监听的 socket（TCP LISTEN / UDP 已绑定；整棵树合计） */
+  listening?: { protocol: string; address: string; port: number }[];
 };
 
 /** 服务器已发现的工具（名称 + 描述，设置页展示用） */
