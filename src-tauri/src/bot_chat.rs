@@ -1146,10 +1146,9 @@ async fn bot_chat_inner(
     if origin == TurnOrigin::Report {
         msgs.push(serde_json::json!({"role": "system", "content": REPORT_TURN_PROMPT}));
     }
-    if let Some(digest) =
-        crate::bot_orchestrator::subagent_digest_block(&app, session_id.as_deref()).await
-    {
-        msgs.push(serde_json::json!({"role": "system", "content": digest}));
+    let digest = crate::bot_orchestrator::subagent_digest_block(&app, session_id.as_deref()).await;
+    if let Some(d) = &digest {
+        msgs.push(serde_json::json!({"role": "system", "content": d.text}));
     }
     // Failure 分支可达——模型循环 Err（LLM 5xx/流断/头超时等）也落 trace
     //（此前只在 Ok 收尾处 hook，失败轨迹全丢，trace 的 Failure 采样规则不可达）。
@@ -1194,6 +1193,15 @@ async fn bot_chat_inner(
         Some(&failed_trace),
     )
     .await;
+    // 「已吸收」只在模型循环成功后记：循环失败说明这段回报压根没送进模型，
+    // 提前记会让汇报轮以为已经说过、从此不再重提——子任务结果就此永久丢失
+    if loop_result.is_ok() {
+        if let Some(d) = &digest {
+            for id in &d.absorb {
+                crate::bot_orchestrator::mark_digested(session_id.as_deref(), id);
+            }
+        }
+    }
     // LoopTrace 统计（tokens/轮数/模型名）塞进捕获，end_trace 汇总落库。
     // 失败时从 failed_trace 句柄取回——Err 路径没有返回值可带明细。
     {

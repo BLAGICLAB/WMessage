@@ -1149,10 +1149,15 @@ fn lock_digested() -> std::sync::MutexGuard<
 ///
 /// 只读自己的父会话行，查库失败/无会话一律 None——父上下文缺一段汇报照样能
 /// 发请求，用户也还能用 `check_subagent` 手动查。
+///
+/// **不在这里记已吸收**：本函数只把「要注入什么」和「该记哪些 id」交出去，记
+/// 动作由调用方在模型循环成功之后做（`mark_digested`）。在这里就记，等于把
+/// 「这段回报已经说过了」提前宣布——而模型循环失败时它压根没送进模型，汇报轮
+/// 也会因此以为已经说过、从此不再重提，子任务结果在本次进程内永久消失。
 pub(crate) async fn subagent_digest_block(
     app: &AppHandle,
     session_id: Option<&str>,
-) -> Option<String> {
+) -> Option<SubagentDigest> {
     let sid = session_id?;
     let app2 = app.clone();
     let sid_owned = sid.to_string();
@@ -1164,20 +1169,19 @@ pub(crate) async fn subagent_digest_block(
     .ok()
     .flatten()?;
 
-    let (text, absorb) = {
+    let built = {
         let mut guard = lock_digested();
         let set = guard.entry(sid.to_string()).or_default();
-        let built = build_subagent_digest(&rows, set)?;
-        for id in &built.absorb {
-            set.insert(id.clone());
-        }
-        (built.text, built.absorb.len())
+        build_subagent_digest(&rows, set)?
     };
     crate::bot::audit_log(
         app,
-        &format!("subagent_digest | session={sid} absorbed={absorb}"),
+        &format!(
+            "subagent_digest | session={sid} absorbed={}",
+            built.absorb.len()
+        ),
     );
-    Some(text)
+    Some(built)
 }
 
 /// 标记「父会话已吸收某子 agent 的结果」。
@@ -2510,15 +2514,17 @@ fn spawn_parent_report(app: &AppHandle, row: &SubagentRow, status: SubagentStatu
                 return;
             }
             match crate::bot_chat::report_subagent_result(&app, &parent).await {
-                crate::bot_chat::ReportOutcome::Ran | crate::bot_chat::ReportOutcome::Failed => {
-                    return
-                }
-                crate::bot_chat::ReportOutcome::Busy => {}
+                crate::bot_chat::ReportOutcome::Ran => return,
+                // 失败也重试：失败的那轮没把子任务结果说出去，直接放弃等于这条
+                // 结果永远没人汇报（digest 也不会记成已吸收，下一轮还有机会）
+                crate::bot_chat::ReportOutcome::Failed | crate::bot_chat::ReportOutcome::Busy => {}
             }
             if std::time::Instant::now() >= deadline {
                 crate::bot::audit_log(
                     &app,
-                    &format!("subagent_report_gave_up | id: {sub_id} | 父会话一直没空下来"),
+                    &format!(
+                        "subagent_report_gave_up | id: {sub_id} | 父会话一直没空下来，或汇报一直失败"
+                    ),
                 );
                 return;
             }
@@ -3881,6 +3887,103 @@ mod orchestrator_tests {
         );
         mark_digested(None, "sa_b");
         assert!(!is_digested(&sid, "sa_b"), "无会话 id 不得污染任何会话");
+
+        // 回报段的吸收是两步：先构造（不碰已吸收集合），模型循环成功后才提交。
+        // 构造即提交是「digest 失败即丢」的根因——循环失败时这段回报压根没送进
+        // 模型，却已被记成已吸收，汇报轮从此不再重提这条子任务结果。
+        let sid2 = format!("dmc-{}", uuid::Uuid::new_v4());
+        let rows = vec![digest_row(
+            "sa_x",
+            SubagentStatus::Succeeded,
+            Some(OK_RESULT),
+        )];
+        let built = build_subagent_digest(&rows, &std::collections::HashSet::new())
+            .expect("有未汇报的终态子任务就该出段");
+        assert_eq!(built.absorb, vec!["sa_x".to_string()]);
+        assert!(
+            !is_digested(&sid2, "sa_x"),
+            "构造回报段不构成吸收——模型循环还没成功"
+        );
+        for id in &built.absorb {
+            mark_digested(Some(&sid2), id);
+        }
+        assert!(is_digested(&sid2, "sa_x"), "提交后才算已吸收");
+    }
+
+    /// 接线守卫：汇报轮失败不能直接放弃——那等于这条子任务结果永远没人汇报。
+    ///
+    /// 失败与 Busy 同款处理：deadline 内 sleep 后再试（digest 此时也没记成已
+    /// 吸收，下一轮还有机会把结果说出去）。
+    #[test]
+    fn report_failure_is_retried_instead_of_given_up() {
+        let src = include_str!("bot_orchestrator.rs");
+        // 匹配串用 `concat!` 拆分防自匹配（本测试自身的源码不算命中）
+        assert!(
+            !src.contains(concat!(
+                "ReportOutcome::Ran | crate::bot_chat::",
+                "ReportOutcome::Failed"
+            )),
+            "汇报失败不能和成功同款直接 return"
+        );
+        assert!(
+            src.contains(concat!(
+                "ReportOutcome::Failed | crate::bot_chat::",
+                "ReportOutcome::Busy"
+            )),
+            "汇报失败要与 Busy 同款：deadline 内 sleep 后重试"
+        );
+    }
+
+    /// 接线守卫：`subagent_digest_block` 只造段，不得顺手记「已吸收」。
+    ///
+    /// 它被模型循环**之前**调用——在这里记，等于把「这段回报已经说过了」提前
+    /// 宣布；循环失败时它压根没送进模型，汇报轮也会因此以为说过、从此不再
+    /// 重提，子任务结果在本次进程内永久消失。
+    #[test]
+    fn digest_block_builds_without_absorbing() {
+        let src = include_str!("bot_orchestrator.rs");
+        let start = src
+            .find("pub(crate) async fn subagent_digest_block(")
+            .expect("要有 subagent_digest_block");
+        let rest = &src[start..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            !body.contains("set.insert"),
+            "回报段的构造函数里不得记已吸收——记动作在模型循环成功之后"
+        );
+        assert!(
+            body.contains("build_subagent_digest("),
+            "构造函数仍要调 build_subagent_digest 出段"
+        );
+    }
+
+    /// 接线守卫：「已吸收」的标记必须发生在模型循环**之后**。
+    ///
+    /// 循环失败说明这段回报没送进模型，此时就标记成已吸收，汇报轮会以为已经
+    /// 说过、从此不再重提——子任务结果在本次进程内永久消失。
+    #[test]
+    fn digest_absorb_mark_comes_after_the_model_loop() {
+        let chat = include_str!("bot_chat.rs");
+        let at = chat
+            .find(concat!(
+                "crate::bot_orchestrator::",
+                "subagent_digest_block(&app, session_id.as_deref())"
+            ))
+            .expect("组装末尾必须调 subagent_digest_block");
+        // 模型循环锚点必须在注入点之后找：bot_chat.rs 前面还有若干处提到
+        // run_model_loop 的注释/别名，全文件搜第一个会命中它们
+        let runs_loop = chat[at..]
+            .find("run_model_loop(")
+            .map(|i| i + at)
+            .expect("注入点之后应有模型循环调用");
+        let mark_at = chat
+            .find("crate::bot_orchestrator::mark_digested(")
+            .expect("吸收标记必须在 bot_chat.rs 里落");
+        assert!(
+            runs_loop < mark_at,
+            "mark_digested 必须在模型循环之后（现 loop={runs_loop} mark={mark_at}）"
+        );
     }
 
     /// 派发方会话被删后不该再汇报：bot_messages 没有外键约束，硬跑一轮只会给
