@@ -1526,9 +1526,19 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           );
       }
     } catch (e) {
+      /* 失败/中断：保住已经流出来的正文。
+       * 整段替换成一行「⚠️ …」= 用户读到一半的回复凭空消失（内容被吞），
+       * 而这一轮往往正是最需要留着的部分。已流出的正文照旧，错误接在后面。 */
+      const viewMsgs =
+        sessionIdRef.current === sid ? messagesRef.current : [];
+      const partial = viewMsgs[viewMsgs.length - 1]?.content ?? "";
+      const note = `⚠️ ${formatCommandError(e)}`;
       const failed: Msg[] = [
         ...history,
-        { role: "assistant", content: `⚠️ ${formatCommandError(e)}` },
+        {
+          role: "assistant",
+          content: partial ? `${partial}\n\n${note}` : note,
+        },
       ];
       persistHistory(sid, failed);
       if (sessionIdRef.current === sid) setMessages(failed);

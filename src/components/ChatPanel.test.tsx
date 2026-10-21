@@ -2494,4 +2494,42 @@ describe("聊天窗滚动（流式期）", () => {
     }
   });
 
+  it("机器人报错：已流出的正文不被吞掉（错误接在正文后面）", async () => {
+    const user = userEvent.setup();
+    let deltaHandler:
+      | ((e: { payload: Record<string, unknown> }) => void)
+      | null = null;
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta")
+        deltaHandler = cb as typeof deltaHandler;
+      return () => {};
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat")
+        return new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("boom")), 60),
+        );
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      (
+        deltaHandler as unknown as (e: {
+          payload: Record<string, unknown>;
+        }) => void
+      )({ payload: { text: "已经说了一半", sessionId: "s1" } });
+    });
+    const list = screen.getByTestId("chat-scroll");
+    expect(await screen.findByText("已经说了一半")).toBeInTheDocument();
+    // 收尾报错：正文必须还在（整段替换 = 用户读到的回复凭空消失）
+    await waitFor(() => expect(list.textContent).toContain("boom"));
+    expect(list.textContent).toContain("已经说了一半");
+  });
+
 });
