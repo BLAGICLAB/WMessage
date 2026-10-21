@@ -14,6 +14,7 @@ import {
 import { DOW1, formatCompletedAt } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import { ActorAvatar } from "../ActorAvatar";
+import { Toggle } from "../Toggle/Toggle";
 import { TracePanel } from "../TracePanel";
 import { TaskFileChips } from "../task/TaskFileChips";
 import { SubtaskRow } from "../task/SubtaskRow";
@@ -38,7 +39,11 @@ function planDuration(task: Task): number {
 /** 任务卡详情面板（毛玻璃内容体，由 TaskEditorOverlay 悬浮宿主承载）。
  *  字段与旧看板卡（TodoCard）能力对齐：标题/备注/标签/子任务/文件绑定（多文件+
  *  文件夹，点开/复制/移除）/🤖 交给机器人/执行详情/截止时间/完成状态 + 计划时间
- *  编辑与完成入口。所有编辑走最小 task_patch。 */
+ *  编辑与完成入口。所有编辑走最小 task_patch。
+ *
+ *  关闭键左侧的拨杆决定关闭语义：开 = 保存关闭（提交草稿后关），关 = 不保存关闭
+ *  （草稿不提交，已落库的改动由宿主按打开浮窗时的快照回滚）。拨杆不持久化，
+ *  每次打开（新建/编辑/换一张卡）都是「开」。 */
 export function TaskDetailPanel({
   task,
   autoFocusTitle = false,
@@ -46,6 +51,7 @@ export function TaskDetailPanel({
   onSetColumn,
   onDelete,
   onClose,
+  onDiscard,
   onCreateSubtaskCard,
   onOpenTask,
   onDeleteSubtask,
@@ -57,6 +63,8 @@ export function TaskDetailPanel({
   onSetColumn: (col: ColumnId) => void;
   onDelete: () => void;
   onClose: () => void;
+  /** 不保存关闭：宿主按打开浮窗时的快照回滚本次改动（必接——否则「不保存」名不副实） */
+  onDiscard: () => void;
   /** 子任务行一键生成子任务卡（按钮悬停显现；接线缺省 = 不显示按钮） */
   onCreateSubtaskCard?: (subId: string, title: string) => void;
   /** 子任务行 ↗ 跳转到已生成的任务卡 */
@@ -66,28 +74,44 @@ export function TaskDetailPanel({
 }) {
   // 标题本地草稿：任务切换/外部改名时回填，blur/Enter 提交，Esc 还原
   const [titleDraft, setTitleDraft] = useState(task.title);
+  // 草稿的最新值另存 ref：提交动作发生在事件回调里，读到的是上一帧的 state 闭包。
+  // Esc 还原草稿后紧接着的关闭提交必须读到「还原后」的值——读旧闭包会把刚还原掉的
+  // 草稿又提交出去（既有的「Esc 还原不提交」会被打破）
+  const titleDraftRef = useRef(task.title);
   // Esc 还原路径：setState 异步而 blur 同步读旧草稿——用标志跳过一次提交
   const skipTitleCommit = useRef(false);
+  // 已提交值：落库是异步的，task prop 要等回包才更新。拿它当「有没有待提交」的
+  // 判据，才不会把同一份草稿提交两次（blur 提交一次 + 关闭时再提交一次）
+  const titleSaved = useRef(task.title);
   useEffect(() => {
     setTitleDraft(task.title);
+    titleDraftRef.current = task.title;
+    titleSaved.current = task.title;
   }, [task.id, task.title]);
   // 备注/标签同样走草稿（避免每键一次 task_patch）
   const [noteDraft, setNoteDraft] = useState(task.note ?? "");
+  const noteDraftRef = useRef(task.note ?? "");
+  const noteSaved = useRef(task.note ?? "");
   useEffect(() => {
     setNoteDraft(task.note ?? "");
+    noteDraftRef.current = task.note ?? "";
+    noteSaved.current = task.note ?? "";
   }, [task.id, task.note]);
   const [tagsDraft, setTagsDraft] = useState((task.tags ?? []).join("，"));
+  const tagsDraftRef = useRef((task.tags ?? []).join("，"));
+  const tagsSaved = useRef((task.tags ?? []).join("，"));
   useEffect(() => {
     setTagsDraft((task.tags ?? []).join("，"));
+    tagsDraftRef.current = (task.tags ?? []).join("，");
+    tagsSaved.current = (task.tags ?? []).join("，");
   }, [task.id, task.tags]);
 
+  // 关闭拨杆：开 = 保存关闭，关 = 不保存关闭。每次打开都是「开」——换一张卡等于
+  // 换一次打开（浮窗原地换内容），不继承上一张卡的拨杆状态
+  const [saveOnClose, setSaveOnClose] = useState(true);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.isComposing) onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    setSaveOnClose(true);
+  }, [task.id]);
 
   const dur = planDuration(task);
   const startVal = task.planStart ?? "";
@@ -113,16 +137,66 @@ export function TaskDetailPanel({
   const commitTitle = () => {
     if (skipTitleCommit.current) {
       skipTitleCommit.current = false;
-      setTitleDraft(task.title);
+      titleDraftRef.current = titleSaved.current;
+      setTitleDraft(titleSaved.current);
       return;
     }
-    const t = titleDraft.trim();
-    if (!t || t === task.title) {
-      setTitleDraft(task.title);
+    const t = titleDraftRef.current.trim();
+    if (!t || t === titleSaved.current) {
+      titleDraftRef.current = titleSaved.current;
+      setTitleDraft(titleSaved.current);
       return;
     }
+    titleSaved.current = t;
     onUpdate({ title: t });
   };
+
+  const commitNote = () => {
+    const v = noteDraftRef.current.trim();
+    if (v === noteSaved.current) return;
+    noteSaved.current = v;
+    onUpdate({ note: v || undefined });
+  };
+
+  const commitTags = () => {
+    if (tagsDraftRef.current === tagsSaved.current) return;
+    const tags = tagsDraftRef.current
+      .split(/[，,]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    tagsSaved.current = tagsDraftRef.current;
+    onUpdate({ tags });
+  };
+
+  /* 关闭浮窗的两条路（拨杆决定）：
+   *  开 = 保存关闭——先把三份草稿提交掉再关。Esc 触发时输入框未必失焦，
+   *       只靠 blur 提交会漏掉最后一段输入；
+   *  关 = 不保存关闭——草稿不提交，已落库的改动由宿主按打开浮窗时的快照回滚。 */
+  const handleClose = () => {
+    if (saveOnClose) {
+      commitTitle();
+      commitNote();
+      commitTags();
+      onClose();
+    } else {
+      onDiscard();
+      onClose();
+    }
+  };
+
+  // Esc 与关闭键同一条路（拨杆语义一致）。handleClose 每渲染重建，用 ref 兜住
+  // 最新一份，免得每次渲染都重挂 window 监听
+  const closeRef = useRef(handleClose);
+  useEffect(() => {
+    closeRef.current = handleClose;
+  });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.isComposing) closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const toggleSubtask = (sid: string) => {
     const next = (task.subtasks ?? []).map((s) =>
@@ -263,7 +337,10 @@ export function TaskDetailPanel({
           value={titleDraft}
           autoFocus={autoFocusTitle}
           onFocus={(e) => autoFocusTitle && e.target.select()}
-          onChange={(e) => setTitleDraft(e.target.value)}
+          onChange={(e) => {
+            titleDraftRef.current = e.target.value;
+            setTitleDraft(e.target.value);
+          }}
           onBlur={commitTitle}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
@@ -272,20 +349,30 @@ export function TaskDetailPanel({
             }
             if (e.key === "Escape") {
               skipTitleCommit.current = true;
-              setTitleDraft(task.title);
+              titleDraftRef.current = titleSaved.current;
+              setTitleDraft(titleSaved.current);
               (e.target as HTMLTextAreaElement).blur();
             }
           }}
           aria-label="任务标题"
         />
-        <button
-          type="button"
-          aria-label="关闭详情"
-          onClick={onClose}
-          className="nm-icon-btn mt-0.5 h-6 w-6 shrink-0 text-xs"
-        >
-          ✕
-        </button>
+        {/* 关闭键 + 左侧的保存拨杆：拨杆开 = 保存关闭，关 = 不保存关闭。
+            文案直接写在关闭键上，模式一眼可见，不靠 tooltip 解释 */}
+        <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
+          <Toggle
+            checked={saveOnClose}
+            onChange={setSaveOnClose}
+            size="sm"
+            ariaLabel="关闭时保存改动"
+          />
+          <button
+            type="button"
+            onClick={handleClose}
+            className="nm-btn shrink-0 whitespace-nowrap px-1.5 py-0.5 text-[11px] text-[var(--t3)]"
+          >
+            {saveOnClose ? "保存关闭" : "不保存关闭"}
+          </button>
+        </div>
       </div>
       <p className="mt-1 pl-8 text-[10px] text-[var(--t5)]">
         {task.column === "done" && task.completedAt
@@ -393,11 +480,11 @@ export function TaskDetailPanel({
         rows={3}
         value={noteDraft}
         placeholder="补充说明…"
-        onChange={(e) => setNoteDraft(e.target.value)}
-        onBlur={() => {
-          const v = noteDraft.trim();
-          if (v !== (task.note ?? "")) onUpdate({ note: v || undefined });
+        onChange={(e) => {
+          noteDraftRef.current = e.target.value;
+          setNoteDraft(e.target.value);
         }}
+        onBlur={commitNote}
       />
 
       <div className="mt-3 mb-1.5 text-[11px] font-medium tracking-wide text-[var(--t5)]">
@@ -407,14 +494,11 @@ export function TaskDetailPanel({
         className="w-full rounded-lg border border-[var(--edge)] bg-[var(--input-bg)] px-2 py-1.5 text-xs text-[var(--t2)] outline-none focus:border-[var(--brand)]"
         value={tagsDraft}
         placeholder="逗号分隔，如：设计，改造"
-        onChange={(e) => setTagsDraft(e.target.value)}
-        onBlur={() => {
-          const tags = tagsDraft
-            .split(/[，,]/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-          if (tagsDraft !== (task.tags ?? []).join("，")) onUpdate({ tags });
+        onChange={(e) => {
+          tagsDraftRef.current = e.target.value;
+          setTagsDraft(e.target.value);
         }}
+        onBlur={commitTags}
         aria-label="标签"
       />
 

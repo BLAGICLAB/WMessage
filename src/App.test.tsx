@@ -852,4 +852,113 @@ describe("App", () => {
       screen.queryByText(FIXTURE_TITLE),
     ).not.toBeInTheDocument();
   });
+
+  /* 浮窗关闭拨杆（关 = 不保存关闭）：
+   *  编辑已有卡 → 把本次改动回滚到打开浮窗时的值（只回写被动过的字段）；
+   *  新建卡   → 取消新建，卡片直接抹掉（不进回收站）。 */
+  describe("浮窗关闭拨杆：不保存关闭", () => {
+    const patchCalls = () =>
+      mocks.invokeMock.mock.calls.filter((c) => c[0] === "task_patch");
+
+    it("编辑已有卡：标题改动回滚到打开浮窗时的值", async () => {
+      const user = userEvent.setup();
+      const handlers: Record<string, (e: unknown) => Promise<void>> = {};
+      mocks.listenMock.mockImplementation(
+        async (event: string, cb: (e: unknown) => Promise<void>) => {
+          handlers[event] = cb;
+          return () => {};
+        },
+      );
+      // task_patch 模拟真后端：回带改后的行（前端据此刷新快照）
+      let db: Task[] = [
+        {
+          id: FIXTURE.id,
+          title: FIXTURE_TITLE,
+          column: "todo",
+          order: 0,
+          updatedAt: 1,
+        },
+      ];
+      mocks.invokeMock.mockImplementation(
+        async (cmd: string, args?: unknown) => {
+          if (cmd === "db_load") return db;
+          if (cmd === "task_patch") {
+            const { id, patch } = args as { id: string; patch: Partial<Task> };
+            const row = { ...db.find((t) => t.id === id)!, ...patch, id } as Task;
+            db = db.map((t) => (t.id === id ? row : t));
+            return row;
+          }
+          return defaultInvokeImpl(cmd);
+        },
+      );
+      render(<App />);
+      await waitFor(() => {
+        expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
+      });
+      // 聊天区点任务引用 → 打开该卡的编辑浮窗
+      await act(async () => {
+        await handlers["edit-task"]({ payload: { id: FIXTURE.id } });
+      });
+      expect(await screen.findByLabelText("任务详情")).toBeInTheDocument();
+      // 改标题（失焦提交 → 落库）
+      const title = screen.getByLabelText("任务标题");
+      await user.clear(title);
+      await user.type(title, "改过的标题");
+      await user.tab();
+      await waitFor(() => {
+        expect(
+          patchCalls().some(
+            (c) => (c[1] as { patch: Record<string, unknown> }).patch.title ===
+              "改过的标题",
+          ),
+        ).toBe(true);
+      });
+      // 拨杆关掉 → 不保存关闭 → 回滚补丁写回打开时的标题
+      fireEvent.click(screen.getByRole("switch"));
+      fireEvent.click(screen.getByText("不保存关闭"));
+      await waitFor(() => {
+        const calls = patchCalls();
+        const last = calls[calls.length - 1][1] as {
+          id: string;
+          patch: Record<string, unknown>;
+        };
+        expect(last.id).toBe(FIXTURE.id);
+        expect(last.patch.title).toBe(FIXTURE_TITLE);
+      });
+    });
+
+    it("新建卡：取消新建——卡片被抹掉，不进回收站", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+      await waitFor(() => {
+        expect(screen.getByText(FIXTURE_TITLE)).toBeInTheDocument();
+      });
+      await user.click(screen.getByText("新建任务"));
+      expect(await screen.findByDisplayValue("新任务")).toBeInTheDocument();
+      // 拨杆关掉 → 不保存关闭 → 退场动画走完后任务行被删
+      fireEvent.click(screen.getByRole("switch"));
+      fireEvent.click(screen.getByText("不保存关闭"));
+      await waitFor(
+        () => {
+          const calls = mocks.invokeMock.mock.calls.filter(
+            (c) => c[0] === "db_delete",
+          );
+          expect(calls.length).toBeGreaterThan(0);
+          const ids = (calls[0][1] as { ids: string[] }).ids;
+          expect(ids).toHaveLength(1);
+          // 删的是刚建的那张新卡，不是库里的旧卡
+          expect(ids[0]).not.toBe(FIXTURE.id);
+        },
+        { timeout: 3000 },
+      );
+      // 不进回收站：没有 deletedAt 软删补丁
+      expect(
+        patchCalls().filter(
+          (c) =>
+            (c[1] as { patch: Record<string, unknown> }).patch.deletedAt !==
+            undefined,
+        ),
+      ).toHaveLength(0);
+    });
+  });
 });

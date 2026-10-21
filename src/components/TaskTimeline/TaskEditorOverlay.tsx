@@ -12,6 +12,9 @@ const LEFT = NAV_W + NAV_GAP;
 const SLIDE_MS = 240;
 /** 退场卸载兜底：略大于滑入时长（transitionend 事件在 jsdom/降级路径不触发） */
 const EXIT_MS = SLIDE_MS + 40;
+/** 退场时长对外口径：宿主「取消新建」要把任务行删在这段之后——
+ *  任务行先没 → 浮窗无内容可渲染，会瞬间消失而不是滑出。 */
+export const EDITOR_EXIT_MS = EXIT_MS;
 
 /** 全局任务编辑浮窗（毛玻璃上层窗）：fixed 悬浮在当前页面之上，从左滑入、
  *  向左滑出，任何导航页都可打开（新建/编辑统一入口）。
@@ -23,6 +26,7 @@ export function TaskEditorOverlay({
   closing = false,
   onClosed,
   onClose,
+  onDiscard,
   onUpdate,
   onSetColumn,
   onDelete,
@@ -37,6 +41,8 @@ export function TaskEditorOverlay({
   closing?: boolean;
   onClosed: () => void;
   onClose: () => void;
+  /** 不保存关闭：宿主按打开浮窗时的快照回滚本次改动 */
+  onDiscard: () => void;
   onUpdate: (patch: Partial<Task>) => void;
   onSetColumn: (col: ColumnId) => void;
   onDelete: () => void;
@@ -81,6 +87,7 @@ export function TaskEditorOverlay({
         onSetColumn={onSetColumn}
         onDelete={onDelete}
         onClose={onClose}
+        onDiscard={onDiscard}
         onCreateSubtaskCard={onCreateSubtaskCard}
         onOpenTask={onOpenTask}
         onDeleteSubtask={onDeleteSubtask}

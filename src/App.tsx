@@ -23,7 +23,10 @@ import {
   Waypoints,
 } from "lucide-react";
 import { TaskTimelinePage } from "./components/TaskTimeline/TaskTimelinePage";
-import { TaskEditorOverlay } from "./components/TaskTimeline/TaskEditorOverlay";
+import {
+  TaskEditorOverlay,
+  EDITOR_EXIT_MS,
+} from "./components/TaskTimeline/TaskEditorOverlay";
 import { sortPoolTasks } from "./components/TaskTimeline/week";
 import { HomePage } from "./components/HomePage/HomePage";
 import { CommandPalette } from "./components/CommandPalette";
@@ -65,6 +68,7 @@ import { dayKey } from "./components/HomePage/homeData";
 import { useConfirm } from "./lib/useConfirm";
 import { unlistenSafe } from "./lib/useTauriListen";
 import { isBackendPersisted, KNOWN_SOURCES } from "./lib/mutationOrigin";
+import { revertPatch } from "./lib/taskRevert";
 import {
   applyArchiveRule,
   loadArchiveDaysFromConfig,
@@ -222,13 +226,22 @@ function applyTodayRule(tasks: Task[]): Task[] {
 // 天数存 bot-config.json，后端 migration 兜底归档同源读取（设置页数据管理可改）
 
 /** 任务编辑浮窗的打开态：id + 焦点模式 + 退场标记（单原子，防退场定时器
- *  与「切换任务重开」竞态——dismiss 只清 closing 态）。null = 关闭。 */
-type EditorState = { id: string; autoFocus: boolean; closing: boolean };
+ *  与「切换任务重开」竞态——dismiss 只清 closing 态）+ 是否新建卡。
+ *  null = 关闭。 */
+type EditorState = {
+  id: string;
+  autoFocus: boolean;
+  closing: boolean;
+  /** 新建卡：不保存关闭 = 取消新建（这张卡不该留下），与编辑已有卡的回滚不同路 */
+  isNew: boolean;
+};
 
 function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
   const [editor, setEditor] = useState<EditorState | null>(null);
+  // 打开浮窗那一刻的任务行快照：不保存关闭时按它回滚本次改动
+  const editorSnapRef = useRef<{ id: string; task: Task } | null>(null);
   const [view, setView] = useState<RailView | "settings">("home");
   // 归档定位目标（时间泳道双击归档卡 → 归档区滚动定位 + 紫边框）。
   // 切出归档视图即清（定位态只活在当下这次跳转）。
@@ -236,6 +249,17 @@ function App() {
   useEffect(() => {
     if (view !== "archive") setArchiveFocus(null);
   }, [view]);
+
+  /** 打开浮窗统一入口：留快照（不保存关闭时按它回滚）+ 标记是否新建卡 */
+  const openEditor = (id: string, autoFocus: boolean, isNew = false) => {
+    const t = tasksRef.current.find((x) => x.id === id);
+    editorSnapRef.current = t ? { id, task: { ...t } } : null;
+    setEditor({ id, autoFocus, closing: false, isNew });
+  };
+  // 事件监听器只跑一次，闭包会拿到旧的 openEditor → ref 兜住最新一份
+  const openEditorRef = useRef(openEditor);
+  openEditorRef.current = openEditor;
+
   // main 滚动容器 ref：首页吸顶头部的滚动进度源（useScroll container）
   const mainRef = useRef<HTMLElement>(null);
   // Agent 通知中心待处理数（导航角标；notifications-changed 广播驱动刷新）
@@ -555,7 +579,7 @@ function App() {
   useEffect(() => {
     const unlisten = listen<{ id?: string }>("edit-task", (e) => {
       const id = e.payload?.id;
-      if (id) setEditor({ id, autoFocus: false, closing: false });
+      if (id) openEditorRef.current(id, false);
     });
     return () => {
       unlistenSafe(unlisten);
@@ -589,7 +613,7 @@ function App() {
       const max = prev.reduce((m, t) => Math.max(m, t.order ?? 0), 0);
       return [...prev, { id, title: "新任务", column: "todo", order: max + 1 }];
     }).then(
-      () => setEditor({ id, autoFocus: true, closing: false }),
+      () => openEditorRef.current(id, true, true),
       (e) => console.error("[mutate] persist failed", e),
     );
   };
@@ -650,7 +674,7 @@ function App() {
   // ⌘K 跳转 / 图谱与首页点卡：当前页上层滑出该任务的编辑浮窗（不切视图）；
   // 找不到（已被彻底删除）静默不动
   const jumpToTask = (t: Task) => {
-    setEditor({ id: t.id, autoFocus: false, closing: false });
+    openEditor(t.id, false);
   };
   // 子任务行 ↗ 跳转：按 id 定位
   const jumpToTaskId = (id: string) => {
@@ -902,6 +926,30 @@ function App() {
   // 只清退场态：退场途中若已切换/重开任务（closing=false），本次 dismiss 是陈旧定时器，不吞
   const dismissEditor = () => setEditor((cur) => (cur?.closing ? null : cur));
 
+  /* 「不保存关闭」（浮窗里的拨杆关掉时）两条路：
+   *  编辑已有卡 = 回滚到打开浮窗时的状态——按快照与当前行的差异回写，
+   *    只有与打开时不同的字段才回写（整行回写会抹掉期间机器人的写入）；
+   *  新建卡 = 取消新建——这张卡从没用过，直接抹掉，不进回收站。 */
+  const discardEditor = () => {
+    const cur = editor;
+    if (!cur) return;
+    if (cur.isNew) {
+      closeEditor();
+      // 等退场动画走完再删任务行：行先没 → 浮窗无内容可渲染，会瞬间消失
+      setTimeout(() => {
+        mutateFire((prev) => prev.filter((t) => t.id !== cur.id));
+      }, EDITOR_EXIT_MS);
+      return;
+    }
+    const snap = editorSnapRef.current;
+    const now = tasksRef.current.find((t) => t.id === cur.id);
+    if (snap && snap.id === cur.id && now) {
+      const patch = revertPatch(snap.task, now);
+      if (Object.keys(patch).length > 0) void patchTask(cur.id, patch);
+    }
+    closeEditor();
+  };
+
   // 记录进入设置前的视图（ 设置壳）：「返回」跳回进入前的界面
   const lastViewRef = useRef<RailView>("home");
   useEffect(() => {
@@ -1071,6 +1119,7 @@ function App() {
             closing={editor.closing}
             onClosed={dismissEditor}
             onClose={closeEditor}
+            onDiscard={discardEditor}
             onUpdate={(patch) => updateTask(editorTask.id, patch)}
             onSetColumn={(col) => setTaskColumn(editorTask.id, col)}
             onDelete={() => {

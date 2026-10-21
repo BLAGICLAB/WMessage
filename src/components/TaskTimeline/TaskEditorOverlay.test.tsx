@@ -39,6 +39,7 @@ const setup = (
 ) => {
   const onClosed = vi.fn();
   const onClose = vi.fn();
+  const onDiscard = vi.fn();
   render(
     <TaskEditorOverlay
       task={{ ...base, ...over }}
@@ -46,12 +47,13 @@ const setup = (
       closing={props.closing}
       onClosed={onClosed}
       onClose={onClose}
+      onDiscard={onDiscard}
       onUpdate={vi.fn()}
       onSetColumn={vi.fn()}
       onDelete={vi.fn()}
     />,
   );
-  return { onClosed, onClose };
+  return { onClosed, onClose, onDiscard };
 };
 
 describe("TaskEditorOverlay", () => {
@@ -80,12 +82,21 @@ describe("TaskEditorOverlay", () => {
     expect(onClosed).not.toHaveBeenCalled();
   });
 
+  it("面板拨杆关掉后点「不保存关闭」→ 透传 onDiscard（宿主按快照回滚）", async () => {
+    const { onDiscard } = setup();
+    await nextFrame();
+    fireEvent.click(screen.getByRole("switch"));
+    fireEvent.click(screen.getByText("不保存关闭"));
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+  });
+
   it("任务切换（closing=false 换 id）：原位换内容不退场，onClosed 不误发", async () => {
     const { rerender } = render(
       <TaskEditorOverlay
         task={base}
         onClosed={vi.fn()}
         onClose={vi.fn()}
+        onDiscard={vi.fn()}
         onUpdate={vi.fn()}
         onSetColumn={vi.fn()}
         onDelete={vi.fn()}
@@ -97,6 +108,7 @@ describe("TaskEditorOverlay", () => {
         task={{ id: "p2", title: "另一张卡", column: "doing" }}
         onClosed={vi.fn()}
         onClose={vi.fn()}
+        onDiscard={vi.fn()}
         onUpdate={vi.fn()}
         onSetColumn={vi.fn()}
         onDelete={vi.fn()}

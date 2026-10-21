@@ -41,6 +41,7 @@ const setup = (
   const onSetColumn = vi.fn();
   const onDelete = vi.fn();
   const onClose = vi.fn();
+  const onDiscard = vi.fn();
   render(
     <TaskDetailPanel
       task={{ ...base, ...over }}
@@ -48,12 +49,13 @@ const setup = (
       onSetColumn={onSetColumn}
       onDelete={onDelete}
       onClose={onClose}
+      onDiscard={onDiscard}
       onCreateSubtaskCard={extra.onCreateSubtaskCard}
       onOpenTask={extra.onOpenTask}
       onDeleteSubtask={extra.onDeleteSubtask}
     />,
   );
-  return { onUpdate, onSetColumn, onDelete, onClose };
+  return { onUpdate, onSetColumn, onDelete, onClose, onDiscard };
 };
 
 describe("TaskDetailPanel", () => {
@@ -140,6 +142,7 @@ describe("TaskDetailPanel", () => {
         onSetColumn={h.onSetColumn}
         onDelete={h.onDelete}
         onClose={h.onClose}
+        onDiscard={vi.fn()}
       />,
     );
     await user.click(screen.getByRole("button", { name: "✓ 恢复待办" }));
@@ -240,6 +243,7 @@ describe("TaskDetailPanel", () => {
         onSetColumn={vi.fn()}
         onDelete={vi.fn()}
         onClose={vi.fn()}
+        onDiscard={vi.fn()}
       />,
     );
     const input = screen.getByLabelText("任务标题") as HTMLInputElement;
@@ -267,6 +271,7 @@ describe("TaskDetailPanel", () => {
         onSetColumn={vi.fn()}
         onDelete={vi.fn()}
         onClose={vi.fn()}
+        onDiscard={vi.fn()}
       />,
     );
     expect(screen.getByText("绑定文件")).toBeInTheDocument();
@@ -293,6 +298,7 @@ describe("TaskDetailPanel", () => {
         onSetColumn={h.onSetColumn}
         onDelete={h.onDelete}
         onClose={h.onClose}
+        onDiscard={vi.fn()}
       />,
     );
     expect(screen.getByText(/完成 \d{4}-\d{2}-\d{2} \d{2}:\d{2}/)).toBeInTheDocument();
@@ -304,6 +310,7 @@ describe("TaskDetailPanel", () => {
         onSetColumn={h.onSetColumn}
         onDelete={h.onDelete}
         onClose={h.onClose}
+        onDiscard={vi.fn()}
       />,
     );
     expect(screen.getByText("机器人执行中…")).toBeInTheDocument();
@@ -332,5 +339,96 @@ describe("TaskDetailPanel", () => {
     vi.mocked(invoke).mockRejectedValueOnce(new Error("denied"));
     fireEvent.click(screen.getByTitle("复制到剪贴板"));
     expect(await screen.findByText("复制失败")).toBeInTheDocument();
+  });
+});
+
+// 关闭拨杆：开 = 保存关闭，关 = 不保存关闭；每次打开都是「开」，不记上次状态
+describe("TaskDetailPanel 关闭拨杆", () => {
+  it("默认拨杆是开的：关闭键读「保存关闭」", () => {
+    setup();
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("保存关闭")).toBeInTheDocument();
+  });
+
+  it("拨杆关掉：关闭键改读「不保存关闭」", () => {
+    setup();
+    fireEvent.click(screen.getByRole("switch"));
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByText("不保存关闭")).toBeInTheDocument();
+    expect(screen.queryByText("保存关闭")).not.toBeInTheDocument();
+  });
+
+  it("保存关闭：关闭动作自己提交草稿（不等失焦触发）", () => {
+    const { onUpdate, onClose, onDiscard } = setup();
+    // 用 fireEvent.change：只改值不聚焦 → 不会先走一遍 blur 提交
+    fireEvent.change(screen.getByLabelText("任务标题"), {
+      target: { value: "草稿标题" },
+    });
+    fireEvent.change(screen.getByLabelText("标签"), {
+      target: { value: "设计" },
+    });
+    fireEvent.click(screen.getByText("保存关闭"));
+    expect(onUpdate).toHaveBeenCalledWith({ title: "草稿标题" });
+    expect(onUpdate).toHaveBeenCalledWith({ tags: ["设计"] });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onDiscard).not.toHaveBeenCalled();
+  });
+
+  it("不保存关闭：草稿不提交，回调 onDiscard 让宿主回滚", () => {
+    const { onUpdate, onClose, onDiscard } = setup();
+    fireEvent.change(screen.getByLabelText("任务标题"), {
+      target: { value: "草稿标题" },
+    });
+    fireEvent.click(screen.getByRole("switch"));
+    fireEvent.click(screen.getByText("不保存关闭"));
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("Esc 与关闭键同一条路（拨杆开 = 保存关闭）", () => {
+    const { onUpdate, onClose, onDiscard } = setup();
+    fireEvent.change(screen.getByLabelText("任务标题"), {
+      target: { value: "草稿标题" },
+    });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onUpdate).toHaveBeenCalledWith({ title: "草稿标题" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onDiscard).not.toHaveBeenCalled();
+  });
+
+  it("Esc 拨杆关：不保存关闭（走 onDiscard）", () => {
+    const { onClose, onDiscard } = setup();
+    fireEvent.click(screen.getByRole("switch"));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("拨杆不持久化：换一张卡（换 id）回到「保存关闭」", () => {
+    const { rerender } = render(
+      <TaskDetailPanel
+        task={base}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+        onDiscard={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("switch"));
+    expect(screen.getByText("不保存关闭")).toBeInTheDocument();
+    rerender(
+      <TaskDetailPanel
+        task={{ ...base, id: "p2", title: "另一张卡" }}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+        onDiscard={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText("保存关闭")).toBeInTheDocument();
   });
 });
