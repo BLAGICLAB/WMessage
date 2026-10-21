@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import { Bot, FolderOpen, History, Paperclip } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
 import { runWithBot } from "../../lib/botRun";
 import { openFilePath } from "../../lib/openTarget";
+import { useTaskFiles } from "../../lib/useTaskFiles";
 import {
   MAX_TASK_FILES,
   filesPatch,
-  mergeFiles,
   taskFiles,
 } from "../../lib/taskFiles";
 import { DOW1, formatCompletedAt } from "../../format";
@@ -218,54 +217,11 @@ export function TaskDetailPanel({
 
   /* ── 文件绑定（与 TodoCard 同通道：bind_files / open_file_path / copy_file_with_title） ── */
   const boundFiles = taskFiles(task);
-
-  const pickFile = async () => {
-    try {
-      // 文件与文件夹不互斥：已绑文件夹也可继续添加文件
-      const selected = await open({ multiple: true, directory: false });
-      const paths = Array.isArray(selected)
-        ? selected
-        : typeof selected === "string"
-          ? [selected]
-          : [];
-      if (paths.length === 0) return;
-      // isDir 由 Rust 侧 fs::metadata 判定（前端无法 stat）
-      const added = await invoke<{ path: string; isDir: boolean }[]>(
-        "bind_files",
-        { paths },
-      );
-      const { files, truncated, applied } = mergeFiles(boundFiles, added);
-      if (truncated)
-        window.alert(`每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`);
-      if (applied > 0) onUpdate(filesPatch(files));
-    } catch (e) {
-      handleCommandError(e, "pick file");
-    }
-  };
-
-  const pickFolder = async () => {
-    try {
-      // 文件夹单选（每卡一个文件夹槽）；文件与文件夹不互斥。
-      // 绑定一律加法：已有文件夹时新文件夹替换旧文件夹（占原位），不再拦截
-      const selected = await open({ directory: true });
-      if (typeof selected === "string") {
-        const { files, truncated, applied } = mergeFiles(boundFiles, [
-          { path: selected, isDir: true },
-        ]);
-        if (truncated)
-          window.alert(
-            `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
-          );
-        if (applied > 0) onUpdate(filesPatch(files));
-      }
-    } catch (e) {
-      handleCommandError(e, "pick folder");
-    }
-  };
-
-  const removeFile = (path: string) => {
-    onUpdate(filesPatch(boundFiles.filter((f) => f.path !== path)));
-  };
+  // 绑定走共享 hook：合并基线取 await 之后的最新 files——渲染期快照会把
+  // 「面板开着的同时另一路径绑进来的那批」整列覆盖掉（两处实现曾就此漂移）
+  const { pickFile, pickFolder, removeFile } = useTaskFiles(task, (files) =>
+    onUpdate(filesPatch(files)),
+  );
 
   // 点文件名直接打开：走 lib/openTarget 的 openFilePath（失败 silent 理由见彼处）
 

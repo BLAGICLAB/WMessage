@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ContextRail, type SubagentRun } from "./ContextRail";
 import type { Task } from "../../types";
@@ -110,6 +110,68 @@ describe("ContextRail 绑定文件到任务卡", () => {
       });
     });
     expect(onUpdateTask).not.toHaveBeenCalled();
+  });
+
+  // 复现：侧栏此前拿「点击时的 task 快照」当合并基线——对话框挂起期间
+  // 另一条路径（卡片 / 详情面板）绑进来的文件会被整列覆盖掉。
+  it("绑定对话框挂起期间 tasks 被并发改动：合并基线取最新，两批文件都不丢", async () => {
+    const user = userEvent.setup();
+    const onUpdateTask = vi.fn();
+    let releasePick!: (v: string[]) => void;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "pick_files_dialog")
+        return new Promise<string[]>((resolve) => {
+          releasePick = resolve;
+        });
+      if (cmd === "bind_files")
+        return [{ path: "/Users/t/Desktop/新.txt", isDir: false }];
+      return null;
+    });
+    const { rerender } = render(
+      <ContextRail
+        tasks={[task]}
+        onUpdateTask={onUpdateTask}
+        onRefTask={vi.fn()}
+        refIds={[]}
+        fileChanges={[]}
+        subagents={[]}
+        onOpenSubagent={vi.fn()}
+        onCancelSubagent={vi.fn()}
+        tab="tasks"
+        onTabChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByLabelText("绑定文件到 写周报"));
+    // 对话框挂起期间：另一条路径给这张卡绑了 并发.txt
+    rerender(
+      <ContextRail
+        tasks={[
+          {
+            ...task,
+            files: [{ path: "/Users/t/Desktop/并发.txt", isDir: false }],
+          },
+        ]}
+        onUpdateTask={onUpdateTask}
+        onRefTask={vi.fn()}
+        refIds={[]}
+        fileChanges={[]}
+        subagents={[]}
+        onOpenSubagent={vi.fn()}
+        onCancelSubagent={vi.fn()}
+        tab="tasks"
+        onTabChange={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      releasePick(["/Users/t/Desktop/新.txt"]);
+    });
+    // 陈旧基线（无绑定）会把 并发.txt 整列覆盖掉
+    expect(onUpdateTask).toHaveBeenCalledWith("t1", {
+      files: [
+        { path: "/Users/t/Desktop/并发.txt", isDir: false },
+        { path: "/Users/t/Desktop/新.txt", isDir: false },
+      ],
+    });
   });
 });
 

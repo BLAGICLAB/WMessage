@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import type { Task } from "../../types";
 
@@ -276,6 +277,68 @@ describe("TaskDetailPanel", () => {
     );
     expect(screen.getByText("绑定文件")).toBeInTheDocument();
     expect(screen.getByText("绑定文件夹")).toBeInTheDocument();
+  });
+
+  // 复现：详情面板此前用渲染期快照 taskFiles(task) 当合并基线，而卡片侧早已
+  // 改成「对话框返回后的现值」——面板开着时另一路径绑的文件会被整列覆盖掉。
+  it("绑定对话框挂起期间 task.files 被并发改动：合并基线取最新，两批文件都不丢", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    let releaseOpen!: (v: string[]) => void;
+    vi.mocked(open).mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          releaseOpen = resolve;
+        }) as never,
+    );
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "bind_files")
+        return [{ path: "/docs/new.txt", isDir: false }];
+      return undefined;
+    });
+    const before: Task = {
+      ...base,
+      files: [{ path: "/docs/a.pdf", isDir: false }],
+    };
+    const { rerender } = render(
+      <TaskDetailPanel
+        task={before}
+        onUpdate={onUpdate}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+        onDiscard={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByTitle("继续绑定文件"));
+    // 对话框挂起期间：并发进来一个绑定（task.files 多了 concurrent.txt）
+    rerender(
+      <TaskDetailPanel
+        task={{
+          ...before,
+          files: [
+            { path: "/docs/a.pdf", isDir: false },
+            { path: "/docs/concurrent.txt", isDir: false },
+          ],
+        }}
+        onUpdate={onUpdate}
+        onSetColumn={vi.fn()}
+        onDelete={vi.fn()}
+        onClose={vi.fn()}
+        onDiscard={vi.fn()}
+      />,
+    );
+    await act(async () => {
+      releaseOpen(["/docs/new.txt"]);
+    });
+    // 陈旧基线（只有 a.pdf）会丢掉 concurrent.txt
+    expect(onUpdate).toHaveBeenCalledWith({
+      files: [
+        { path: "/docs/a.pdf", isDir: false },
+        { path: "/docs/concurrent.txt", isDir: false },
+        { path: "/docs/new.txt", isDir: false },
+      ],
+    });
   });
 
   it("交给机器人：发 execute-task 事件（id + 标题）", async () => {

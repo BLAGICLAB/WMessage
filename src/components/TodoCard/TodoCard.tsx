@@ -5,7 +5,7 @@
 // `import { TodoCardView } from "./components/TodoCard"`，
 // Vite 解析到 `./TodoCard/index.tsx` → 透传本目录各文件。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bot,
   FileText,
@@ -19,16 +19,15 @@ import {
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { runWithBot } from "../../lib/botRun";
 import { openFilePath } from "../../lib/openTarget";
 import { planWindowLabel } from "../TaskTimeline/week";
 import { useConfirm } from "../../lib/useConfirm";
+import { useTaskFiles } from "../../lib/useTaskFiles";
 import {
   taskFiles,
   filesPatch,
-  mergeFiles,
   MAX_TASK_FILES,
 } from "../../lib/taskFiles";
 import {
@@ -129,69 +128,11 @@ export function TodoCardView({
     setAddingSubtask(false);
   };
 
-  // 最新 task 镜像：绑定对话框挂起期间 files 可能被别处改动（另一窗口/机器人），
-  // 合并基线必须取对话框返回后的现值，而非点击时的快照（ref 写放 effect，同 ChatPanel 先例）
-  const taskRef = useRef(task);
-  useEffect(() => {
-    taskRef.current = task;
-  });
-
-  const pickFile = async () => {
-    try {
-      // 文件与文件夹不互斥：已绑文件夹也可继续添加文件
-      const selected = await open({ multiple: true, directory: false });
-      const paths = Array.isArray(selected)
-        ? selected
-        : typeof selected === "string"
-          ? [selected]
-          : [];
-      if (paths.length === 0) return;
-      // isDir 由 Rust 侧 fs::metadata 判定（前端无法 stat）
-      const added = await invoke<{ path: string; isDir: boolean }[]>(
-        "bind_files",
-        { paths },
-      );
-      // await 期间可能有并发绑定：以最新 files 为合并基线，别丢掉那批改动
-      const cur = taskFiles(taskRef.current);
-      const { files, truncated, applied } = mergeFiles(cur, added);
-      if (truncated)
-        window.alert(
-          `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
-        );
-      if (applied > 0) onUpdate(task.id, filesPatch(files));
-    } catch (e) {
-      handleCommandError(e, "pick file");
-    }
-  };
-
-  const pickFolder = async () => {
-    try {
-      // 文件夹单选（每卡一个文件夹槽）；文件与文件夹不互斥。
-      // 绑定一律加法：已有文件夹时新文件夹替换旧文件夹（占原位），不再拦截
-      const selected = await open({ directory: true });
-      // 对话框挂起期间可能有并发绑定：合并基线取最新 files
-      if (typeof selected === "string") {
-        const cur = taskFiles(taskRef.current);
-        const { files, truncated, applied } = mergeFiles(cur, [
-          { path: selected, isDir: true },
-        ]);
-        if (truncated)
-          window.alert(
-            `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
-          );
-        if (applied > 0) onUpdate(task.id, filesPatch(files));
-      }
-    } catch (e) {
-      handleCommandError(e, "pick folder");
-    }
-  };
-
-  const removeFile = (path: string) => {
-    onUpdate(
-      task.id,
-      filesPatch(taskFiles(task).filter((f) => f.path !== path)),
-    );
-  };
+  // 文件绑定：统一走共享 hook（合并基线取 await 之后的最新 files，
+  // 不吃点击时的快照——并发进来的那批文件不能被整列覆盖掉）
+  const { pickFile, pickFolder, removeFile } = useTaskFiles(task, (files) =>
+    onUpdate(task.id, filesPatch(files)),
+  );
 
   // 标题右侧圆圈：待办/今日 → 完成（自动记完成时间）；完成 → 截止日期是今天回「今日」、否则回「待办」，完成时间删除
   // TP-1：优先走 onSetColumn（服务端定向命令，同锁内读现值打基线，免快照竞态）；

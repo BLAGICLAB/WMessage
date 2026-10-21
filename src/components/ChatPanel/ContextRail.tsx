@@ -5,7 +5,7 @@
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import { type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -20,9 +20,8 @@ import { basename } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import { FilePreview } from "./FilePreview";
 import {
-  MAX_TASK_FILES,
+  applyBinding,
   filesPatch,
-  mergeFiles,
   taskFiles,
   type TaskFile,
 } from "../../lib/taskFiles";
@@ -122,6 +121,12 @@ export function ContextRail({
 }: ContextRailProps) {
   const runningCount = subagents.filter((s) => s.running).length;
   const setPreviewPath = onPreviewPath ?? (() => {});
+  // 最新 tasks 镜像：绑定对话框挂起期间 files 可能被别处改动（另一窗口/机器人），
+  // 合并基线必须取对话框返回后的现值，而非点击时的快照（ref 写放 effect）
+  const tasksRef = useRef(tasks);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  });
 
   /** 聊天窗口直接把本地文件绑到任务卡：选文件 → bind_files 探测 isDir →
    *  统一内核合并（去重/文件夹槽替换/10 上限）→ 走 onUpdateTask 既有落库通道。
@@ -131,13 +136,12 @@ export function ContextRail({
       const picked = await invoke<string[]>("pick_files_dialog");
       if (!picked?.length) return;
       const added = await invoke<TaskFile[]>("bind_files", { paths: picked });
-      const cur = taskFiles(t);
-      const { files, truncated, applied } = mergeFiles(cur, added);
-      if (truncated)
-        window.alert(
-          `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`,
-        );
-      if (applied > 0) onUpdateTask(t.id, filesPatch(files));
+      // 对话框挂起期间别的路径（卡片 / 详情面板）可能改了绑定：合并基线取
+      // 「对话框返回后的现值」，别拿点击时的快照把那批整列覆盖掉
+      const cur = tasksRef.current.find((x) => x.id === t.id) ?? t;
+      applyBinding(taskFiles(cur), added, (files) =>
+        onUpdateTask(t.id, filesPatch(files)),
+      );
     } catch (e) {
       handleCommandError(e, "bind files to task", { silent: true });
     }

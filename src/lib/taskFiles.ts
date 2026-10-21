@@ -22,6 +22,11 @@ export function filesPatch(files: TaskFile[]): Partial<Task> {
   return { files };
 }
 
+/** 超上限提示文案（唯一副本）：改文案只改这里，别再散落各调用点。 */
+export function maxFilesMessage(): string {
+  return `每个任务最多绑定 ${MAX_TASK_FILES} 个文件，超出部分已忽略`;
+}
+
 /**
  * 追加绑定（统一绑定内核，与 Rust db::upsert_files_to_task 同语义）：
  * 查重主键 = 路径（小写归一，同名不同路径视为不同条目）；文件追加；
@@ -50,4 +55,23 @@ export function mergeFiles(
   const truncated = files.length > MAX_TASK_FILES;
   if (truncated) files.length = MAX_TASK_FILES;
   return { files, truncated, applied };
+}
+
+/**
+ * 绑定落库内核：合并 → 超限提示 → 落库。各绑定入口共用这一条路，
+ * 免得「合并规则」与「超限文案」在几个调用点各写一份、各改一次。
+ *
+ * base 必须是**await 之后的最新 files**：陈旧基线会把期间并发进来的那批
+ * 整列覆盖掉（表现为「另一个窗口绑的文件凭空消失」）。
+ * 返回实际生效条数（0 = 无变化，调用方免写库）。
+ */
+export function applyBinding(
+  base: TaskFile[],
+  added: TaskFile[],
+  commit: (files: TaskFile[]) => void,
+): number {
+  const { files, truncated, applied } = mergeFiles(base, added);
+  if (truncated) window.alert(maxFilesMessage());
+  if (applied > 0) commit(files);
+  return applied;
 }
