@@ -1,9 +1,13 @@
 //! Agent 通知中心（持久化消息）。
 //!
-//! 两类「需要用户决策」的 Agent 事件统一落 `notifications` 表，以消息形式
+//! 「需要用户决策」的 Agent 事件统一落 `notifications` 表，以消息形式
 //! 在主窗口通知页呈现——每条消息独立成行、持久化、互不覆盖：
 //! - `memory_proposal`：记忆待确认提案（`memory::extract` confirm 档入队）
 //! - `artifact_bind`：任务卡执行产物待绑定（原挂件 ArtifactBatchDialog 弹窗迁移）
+//!
+//! 另一类 `service_alert` 是**只告知不决策**：受管服务的资源告警与端口违规。
+//! 它不需要用户做选择，但必须让用户看见——系统通知依赖通知插件，插件没装
+//! 就静默跳过，那时它是唯一的去处。
 //!
 //! 幂等：id 由各来源生成（`memory:{session}:{ts}` / `artifact:{task_id}:{sid}`），
 //! `INSERT OR IGNORE` 保证同 id 不重复。
@@ -32,6 +36,10 @@ pub const KIND_ARTIFACT: &str = "artifact_bind";
 /// payload = {questionId, taskId, nodeTitle, question, why, options, assumption, createdAt}
 /// （画布时代旧 kind=workflow_question 的历史行由 open_db 退役清扫一次性删除）
 pub const KIND_TASK_QUESTION: &str = "task_question";
+/// 受管服务告警（资源超阈值 / 端口违规）：只告知，不要求决策——
+/// 用户点「知道了」即算处理。payload 带 (serviceId, alertType, warning) 三元组，
+/// 供告警条件消失时精确撤收。
+pub const KIND_SERVICE_ALERT: &str = "service_alert";
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +285,88 @@ pub fn emit_changed<R: tauri::Runtime>(app: &AppHandle<R>) {
     let _ = app.emit(EVENT_CHANGED, serde_json::json!({}));
 }
 
+/// 解决某服务某类告警的待处理通知（告警条件消失时调用）。
+///
+/// 按 payload 的 (serviceId, alertType, warning) 三元组匹配。同一类告警再次
+/// 出现是新一集（通知 id 带时间戳），但**条件持续期间**不该让通知角标一直涨
+/// ——条件消失就把上一集收掉（done），历史仍能在「全部」页签看到。
+///
+/// 返回解决了几条。
+pub fn notif_resolve_service_alert(
+    conn: &rusqlite::Connection,
+    service_id: &str,
+    alert_type: &str,
+    warning: Option<&str>,
+) -> Result<usize, String> {
+    ensure_table(conn)?;
+    let ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, payload FROM notifications
+                 WHERE kind = ?1 AND status = 'pending'",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([KIND_SERVICE_ALERT], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let rows = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows.into_iter()
+            .filter(|(_, p)| {
+                let v: Value = serde_json::from_str(p).unwrap_or(Value::Null);
+                let s = |k: &str| v.get(k).and_then(Value::as_str);
+                s("serviceId") == Some(service_id)
+                    && s("alertType") == Some(alert_type)
+                    && match warning {
+                        Some(w) => s("warning") == Some(w),
+                        None => v.get("warning").is_none(),
+                    }
+            })
+            .map(|(id, _)| id)
+            .collect()
+    };
+    for id in &ids {
+        notif_resolve(conn, id, STATUS_DONE)?;
+    }
+    Ok(ids.len())
+}
+
+/// 往通知中心投递一条服务告警（服务层调用）。
+///
+/// 幂等：同 id 已存在则不重复插入（`INSERT OR IGNORE`）。
+pub fn insert_service_alert<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    id: &str,
+    title: &str,
+    body: &str,
+    payload: &Value,
+) -> Result<bool, String> {
+    let conn = crate::db::open_db(app)?;
+    let inserted = notif_insert(&conn, id, KIND_SERVICE_ALERT, title, body, payload)?;
+    if inserted {
+        emit_changed(app);
+    }
+    Ok(inserted)
+}
+
+/// 收掉某服务某类告警的待处理通知（告警条件消失时调用）。
+pub fn resolve_service_alert<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    service_id: &str,
+    alert_type: &str,
+    warning: Option<&str>,
+) -> Result<usize, String> {
+    let conn = crate::db::open_db(app)?;
+    let n = notif_resolve_service_alert(&conn, service_id, alert_type, warning)?;
+    if n > 0 {
+        emit_changed(app);
+    }
+    Ok(n)
+}
+
 // tauri 命令
 
 /// 通知列表（新→旧）；status 传 "pending"/"done"/"dismissed"，缺省全量
@@ -494,5 +584,78 @@ mod tests {
         let done = notif_list(&conn, Some(STATUS_DONE)).unwrap();
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].id, "artifact:t1:s1");
+    }
+
+    /// 服务告警按 (serviceId, alertType, warning) 三元组撤收：
+    /// 同服务的不同告警项、别的服务，都不能被误收。
+    #[test]
+    fn resolve_service_alert_only_touches_the_matching_key() {
+        let conn = mem_conn();
+        let mk = |id: &str, sid: &str, atype: &str, warn: Option<&str>| {
+            let mut payload = serde_json::json!({
+                "serviceId": sid,
+                "alertType": atype,
+            });
+            if let Some(w) = warn {
+                payload["warning"] = serde_json::json!(w);
+            }
+            notif_insert(&conn, id, KIND_SERVICE_ALERT, "t", "", &payload).unwrap();
+        };
+        mk("s1:rss", "s1", "resource_warning", Some("rss_over_limit"));
+        mk(
+            "s1:cpu",
+            "s1",
+            "resource_warning",
+            Some("cpu_sustained_high"),
+        );
+        mk("s2:rss", "s2", "resource_warning", Some("rss_over_limit"));
+        mk("s1:vio", "s1", "port_violation", None);
+
+        // 只收 s1 的 rss 那条
+        let n =
+            notif_resolve_service_alert(&conn, "s1", "resource_warning", Some("rss_over_limit"))
+                .unwrap();
+        assert_eq!(n, 1);
+        let pending = notif_list(&conn, Some(STATUS_PENDING)).unwrap();
+        let mut ids: Vec<&str> = pending.iter().map(|v| v.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["s1:cpu", "s1:vio", "s2:rss"]);
+        // 收掉的那条转 done，不丢
+        let done = notif_list(&conn, Some(STATUS_DONE)).unwrap();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].id, "s1:rss");
+    }
+
+    /// 没有 warning 字段的告警（端口违规）与带 warning 的告警不能互相误收。
+    #[test]
+    fn resolve_service_alert_without_warning_ignores_the_others() {
+        let conn = mem_conn();
+        notif_insert(
+            &conn,
+            "s1:vio",
+            KIND_SERVICE_ALERT,
+            "t",
+            "",
+            &serde_json::json!({ "serviceId": "s1", "alertType": "port_violation" }),
+        )
+        .unwrap();
+        notif_insert(
+            &conn,
+            "s1:rss",
+            KIND_SERVICE_ALERT,
+            "t",
+            "",
+            &serde_json::json!({
+                "serviceId": "s1",
+                "alertType": "port_violation",
+                "warning": "rss_over_limit",
+            }),
+        )
+        .unwrap();
+        let n = notif_resolve_service_alert(&conn, "s1", "port_violation", None).unwrap();
+        assert_eq!(n, 1);
+        let pending = notif_list(&conn, Some(STATUS_PENDING)).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "s1:rss");
     }
 }

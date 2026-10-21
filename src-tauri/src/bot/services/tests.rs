@@ -785,4 +785,68 @@ fn startup_service_bound_to_non_loopback_is_killed_with_violation_reason() {
     assert_eq!(v.port, port);
     assert_eq!(v.action, ViolationAction::Killed);
     assert_eq!(all[0].state, ServiceState::Exited);
+
+    // 通知中心也要有：服务被杀是用户必须知道的事，审计日志与设置页那行字
+    // 都要用户主动去看
+    let alerts = service_alerts_in_center(&handle);
+    let hit = alerts
+        .iter()
+        .find(|v| v["serviceId"] == serde_json::json!(all[0].id))
+        .expect("通知中心要有这条端口违规");
+    assert_eq!(hit["alertType"], serde_json::json!("port_violation"));
+    assert_eq!(hit["rule"], serde_json::json!("L1"));
+    assert_eq!(hit["port"], serde_json::json!(port));
+}
+
+/// 通知中心里的服务告警（kind = service_alert）。
+fn service_alerts_in_center<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Vec<serde_json::Value> {
+    let conn = crate::db::open_db(app).expect("应能打开库");
+    let mut stmt = conn
+        .prepare("SELECT payload FROM notifications WHERE kind = ?1")
+        .expect("应能查 notifications");
+    let rows = stmt
+        .query_map([crate::notifications::KIND_SERVICE_ALERT], |r| {
+            r.get::<_, String>(0)
+        })
+        .expect("应能查 payload");
+    rows.filter_map(|r| r.ok())
+        .filter_map(|p| serde_json::from_str::<serde_json::Value>(&p).ok())
+        .collect()
+}
+
+/// 资源告警要落到应用内通知中心。
+///
+/// 系统通知（`notify_system`）依赖通知插件，插件没装就静默跳过——那台机器上
+/// 这条告警就只剩设置页里的一行字，用户不看就没有。通知中心走自己的库，
+/// 永远在。
+#[test]
+fn resource_warning_lands_in_the_notification_center() {
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    app.manage(crate::app_state::AppState::default());
+    let service_id = format!(
+        "svc_test_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+
+    write_resource_warning(
+        &handle,
+        &service_id,
+        "service",
+        "测试服务",
+        WARN_RSS,
+        700 * 1024 * 1024,
+        None,
+    );
+
+    let alerts = service_alerts_in_center(&handle);
+    let hit = alerts
+        .iter()
+        .find(|v| v["serviceId"] == serde_json::json!(service_id))
+        .expect("资源告警应落到通知中心");
+    assert_eq!(hit["alertType"], serde_json::json!("resource_warning"));
+    assert_eq!(hit["warning"], serde_json::json!(WARN_RSS));
+    assert_eq!(hit["label"], serde_json::json!("测试服务"));
 }

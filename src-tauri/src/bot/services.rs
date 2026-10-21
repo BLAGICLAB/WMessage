@@ -80,6 +80,13 @@ pub(crate) const WARN_CPU: &str = "cpu_sustained_high";
 /// 告警项：全部服务合计 RSS 超阈值。
 pub(crate) const WARN_TOTAL_RSS: &str = "total_rss_over_limit";
 
+/// 通知中心里的服务告警类型（payload 的 alertType）。
+///
+/// 一类 kind 两种类型：资源告警与端口违规对用户都是「看一眼」的告知，
+/// 不需要分别造 kind——分类靠 payload 里的 alertType，撤收时也靠它。
+const ALERT_RESOURCE: &str = "resource_warning";
+const ALERT_VIOLATION: &str = "port_violation";
+
 // ── P2-③：端口 / 监听地址闸 ──
 
 /// 启动期加密采样点（毫秒，从 spawn 算起）。
@@ -459,10 +466,11 @@ fn check_service_listening<R: tauri::Runtime>(
     verdict
 }
 
-/// 处置一次违规：记 last_violation + 写审计 + 杀进程组。
+/// 处置一次违规：记 last_violation + 写审计 + 通知中心 + 杀进程组。
 ///
-/// 两个通道都要：审计给事后追溯，面板给当下响应——只写审计日志、面板只显示
-/// 「down 了」而不说为什么，用户没法响应。
+/// 三个通道都要：审计给事后追溯，面板给当下响应，通知中心给「用户不在设置页
+/// 前面」那类时刻——只写审计日志、面板只显示「down 了」而不说为什么，
+/// 用户没法响应。
 fn handle_violation<R: tauri::Runtime>(
     app: &AppHandle<R>,
     entry: &ServiceEntry,
@@ -503,15 +511,35 @@ fn handle_violation<R: tauri::Runtime>(
         AuditLevel::Warn,
         "service.port_violation",
         &[
-            ("service_id", service_id),
+            ("service_id", service_id.clone()),
             ("rule", rule.as_str().to_string()),
             ("address", address.to_string()),
             ("port", port.to_string()),
             ("action", action.as_str().to_string()),
             ("detail", rule.explain().to_string()),
-            ("label", label),
+            ("label", label.clone()),
         ],
     );
+    // 通知中心也落一条：服务被杀是用户必须知道的事，而审计日志与设置页里
+    // 那行字都得用户主动去看。
+    let notif_id = format!("service:{service_id}:{ALERT_VIOLATION}:{now}");
+    let payload = serde_json::json!({
+        "serviceId": service_id,
+        "alertType": ALERT_VIOLATION,
+        "rule": rule.as_str(),
+        "address": address,
+        "port": port,
+        "label": label,
+    });
+    if let Err(e) = crate::notifications::insert_service_alert(
+        app,
+        &notif_id,
+        &format!("{label} · 端口违规"),
+        &violation_message(rule, address, port),
+        &payload,
+    ) {
+        eprintln!("[bot::services] 端口违规落通知中心失败：{e}");
+    }
     if action == ViolationAction::Killed {
         // 走既有信号阶梯杀进程组（不是裸 kill）
         let _ = stop_entry(app, entry, "port_violation");
@@ -1456,11 +1484,12 @@ pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
         total_rss = total_rss.saturating_add(sample.rss_bytes);
 
         let mut g = entry.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_warnings = g.warnings.clone();
         let verdict = evaluate_resources(
             sample,
             g.last_cpu_sample,
             g.cpu_busy_since_ms,
-            &g.warnings,
+            &prev_warnings,
             now,
         );
         let service_id = g.id.clone();
@@ -1486,6 +1515,21 @@ pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
                 sample.rss_bytes,
                 verdict.cpu_pct,
             );
+        }
+        // 条件消失的告警：通知中心里那条也收掉，否则同一条告警反复出现会
+        // 在角标里堆成一摞（每次出现是新一集，旧的不撤就都留着）。
+        for w in prev_warnings
+            .iter()
+            .filter(|w| !verdict.warnings.contains(*w))
+        {
+            if let Err(e) = crate::notifications::resolve_service_alert(
+                app,
+                &service_id,
+                ALERT_RESOURCE,
+                Some(w),
+            ) {
+                eprintln!("[bot::services] 资源告警撤收失败：{e}");
+            }
         }
     }
 
@@ -1514,6 +1558,16 @@ pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
             total_rss,
             None,
         );
+    } else if !total_warn && already {
+        // 合计口径的条件消失了：通知中心那条一起收掉
+        if let Err(e) = crate::notifications::resolve_service_alert(
+            app,
+            "*",
+            ALERT_RESOURCE,
+            Some(WARN_TOTAL_RSS),
+        ) {
+            eprintln!("[bot::services] 合计资源告警撤收失败：{e}");
+        }
     }
 }
 
@@ -1559,6 +1613,25 @@ fn write_resource_warning<R: tauri::Runtime>(
     }
     crate::audit::write_event(app, AuditLevel::Warn, "service.resource_warning", &kv);
     notify_system(app, "受管服务资源告警", &body);
+    // 应用内通知中心也落一条：系统通知依赖通知插件，插件没装就静默跳过——
+    // 那台机器上这条告警就只剩设置页里的一行字，用户不看就没有。
+    let notif_id = format!("service:{service_id}:{kind}:{}", crate::db::now_ms());
+    let payload = serde_json::json!({
+        "serviceId": service_id,
+        "alertType": ALERT_RESOURCE,
+        "warning": kind,
+        "scope": scope,
+        "label": label,
+    });
+    if let Err(e) = crate::notifications::insert_service_alert(
+        app,
+        &notif_id,
+        &format!("{label} · 资源告警"),
+        &body,
+        &payload,
+    ) {
+        eprintln!("[bot::services] 资源告警落通知中心失败：{e}");
+    }
 }
 
 /// 发一条系统通知。
