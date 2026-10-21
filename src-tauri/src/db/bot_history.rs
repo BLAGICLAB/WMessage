@@ -151,13 +151,19 @@ pub async fn bot_history_save(
 /// 给后端主动发起的轮次用：那种轮次没有前端快照可覆写，走全量覆盖写就得先
 /// 把整段历史读回来再拼一遍，而读回来的快照会和并发落库的用户消息打架——
 /// 谁后写谁赢，输的那条消息凭空消失。纯 INSERT 没有这个窗口。
+///
+/// 追加与「会话活跃时间推进」写在同一事务里：两步必须同时成立。只 INSERT
+/// 成功而 UPDATE 失败时，调用方会把这次追加当成「没写进去」（汇报轮据此
+/// 不记「已吸收」并重试），可消息行其实已经在库里——重试就会多插一条一样
+/// 的汇报，用户看到两条重复的子任务结果。
 pub fn bot_history_append_inner(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     session_id: &str,
     message: &BotMsgRow,
 ) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     let now = chrono::Utc::now().timestamp_millis();
-    conn.execute(
+    tx.execute(
         "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, turn_status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             message.role,
@@ -171,11 +177,12 @@ pub fn bot_history_append_inner(
         ],
     )
     .map_err(|e| e.to_string())?;
-    conn.execute(
+    tx.execute(
         "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
         rusqlite::params![now, session_id],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -469,6 +476,65 @@ mod tests {
             loaded[1].turn_status.as_deref(),
             Some("interrupted"),
             "回合终态要原样回来"
+        );
+    }
+
+    /// 追加写必须是**一个单位**：插入消息与推进会话活跃时间要么都成、要么都不成。
+    ///
+    /// 只 INSERT 成功而 UPDATE 失败时，调用方会把这次追加当成「没写进去」
+    /// （汇报轮据此不记「已吸收」并重试），可消息行其实已经在库里——重试就
+    /// 会多插一条一样的汇报，用户看到两条重复的子任务结果。
+    #[test]
+    fn history_append_rolls_back_the_row_when_the_session_update_fails() {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE bot_messages (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 role       TEXT NOT NULL,
+                 content    TEXT NOT NULL,
+                 refs       TEXT,
+                 session_id TEXT,
+                 thinking   TEXT,
+                 tools      TEXT,
+                 turn_status TEXT,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE bot_sessions (
+                 id         TEXT PRIMARY KEY,
+                 title      TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO bot_sessions (id, title, created_at, updated_at)
+                 VALUES ('s1', '会话', 1000, 1000);
+             CREATE TRIGGER boom BEFORE UPDATE ON bot_sessions
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        )
+        .expect("建表");
+        let r = bot_history_append_inner(
+            &mut conn,
+            "s1",
+            &BotMsgRow {
+                role: "assistant".into(),
+                content: "汇报轮回复".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+                turn_status: None,
+            },
+        );
+        assert!(r.is_err(), "会话更新时间写失败时整次追加必须失败");
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(
+            left, 0,
+            "失败的追加不得留下消息行——否则重试会多插一条一样的汇报"
         );
     }
 

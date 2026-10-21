@@ -4046,31 +4046,25 @@ mod orchestrator_tests {
         );
     }
 
-    /// 接线守卫：「已吸收」的标记必须发生在模型循环**之后**。
+    /// 接线守卫：「已吸收」的标记不在 `bot_chat_inner` 里做。
     ///
-    /// 循环失败说明这段回报没送进模型，此时就标记成已吸收，汇报轮会以为已经
-    /// 说过、从此不再重提——子任务结果在本次进程内永久消失。
+    /// 这一层既不知道送达结果、也不该替调用方决定：交互聊天（前端驱动）在
+    /// 命令返回前记（模型确实看到了那段回报），汇报轮（后端驱动）要等落库
+    /// 成功才记（它的历史下一轮从库里读，没落库的回复等于没说出去）。在这里
+    /// 无条件记，等于把「已经说过了」提前宣布——落库失败时那段回报从此不再
+    /// 进 digest，子任务结果在本次进程内永久消失。
     #[test]
-    fn digest_absorb_mark_comes_after_the_model_loop() {
+    fn digest_absorb_mark_is_left_to_the_caller() {
         let chat = include_str!("bot_chat.rs");
-        let at = chat
-            .find(concat!(
-                "crate::bot_orchestrator::",
-                "subagent_digest_block(&app, session_id.as_deref())"
-            ))
-            .expect("组装末尾必须调 subagent_digest_block");
-        // 模型循环锚点必须在注入点之后找：bot_chat.rs 前面还有若干处提到
-        // run_model_loop 的注释/别名，全文件搜第一个会命中它们
-        let runs_loop = chat[at..]
-            .find("run_model_loop(")
-            .map(|i| i + at)
-            .expect("注入点之后应有模型循环调用");
-        let mark_at = chat
-            .find("crate::bot_orchestrator::mark_digested(")
-            .expect("吸收标记必须在 bot_chat.rs 里落");
+        let start = chat
+            .find("async fn bot_chat_inner(")
+            .expect("bot_chat_inner 函数体起点");
+        let body = &chat[start..];
+        let end = body.find("\n}\n").map(|i| i + 3).unwrap_or(body.len());
+        let inner = &body[..end];
         assert!(
-            runs_loop < mark_at,
-            "mark_digested 必须在模型循环之后（现 loop={runs_loop} mark={mark_at}）"
+            !inner.contains("mark_digested("),
+            "bot_chat_inner 里不得记「已吸收」——标记由知道送达结果的调用方做"
         );
     }
 

@@ -796,14 +796,33 @@ pub async fn bot_chat(
     // 只影响本次聊天调用，不回写 bot-config.json。
     reasoning_effort: Option<String>,
 ) -> CommandResult<BotChatResult> {
-    bot_chat_inner(
+    let out = bot_chat_inner(
         app,
         messages,
-        session_id,
+        session_id.clone(),
         reasoning_effort,
         TurnOrigin::User,
     )
-    .await
+    .await?;
+    // 交互聊天：模型确实看到了那段回报 → 记「已吸收」（digest 不再重念它）。
+    // 前端落库失败不影响这个判断——下一轮的历史来自前端内存，模型那边还留着
+    // 这段回报，「已吸收」成立。
+    for id in &out.absorb {
+        crate::bot_orchestrator::mark_digested(session_id.as_deref(), id);
+    }
+    Ok(out.result)
+}
+
+/// `bot_chat_inner` 的产出：模型答复 + 本轮待记「已吸收」的子 agent id。
+///
+/// 「已吸收」不由这一层记：谁送达、谁记。交互聊天（前端驱动）在命令返回前
+/// 记——模型确实看到了那段回报；汇报轮（后端驱动）要等回复落库成功才记——
+/// 它的历史下一轮从库里读，没落库的回复等于没说出去，落库失败还记着就等于
+/// 「已经汇报过了」，重试时那段回报不在 digest 里，子任务结果就此永久消失。
+struct ChatOutcome {
+    result: BotChatResult,
+    /// 本轮 digest 段里被吸收的子 agent id
+    absorb: Vec<String>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -813,7 +832,7 @@ async fn bot_chat_inner(
     session_id: Option<String>,
     reasoning_effort: Option<String>,
     origin: TurnOrigin,
-) -> CommandResult<BotChatResult> {
+) -> CommandResult<ChatOutcome> {
     require_bot_enabled(bot_get_enabled(app.clone()))?;
     // 会话级防重入：同会话并发消息直接拒绝，防技能路由/start_skill 竞争
     let _chat_guard = match ChatGuard::acquire(&app, session_id.as_deref()) {
@@ -826,7 +845,10 @@ async fn bot_chat_inner(
                     crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)
                 ),
             );
-            return Ok(busy_chat_result());
+            return Ok(ChatOutcome {
+                result: busy_chat_result(),
+                absorb: Vec::new(),
+            });
         }
     };
     // L0 pre_ingest（设计 §二）：输入侧唯一改写点，在**所有**输入判定之前。
@@ -857,7 +879,12 @@ async fn bot_chat_inner(
     // 汇报轮 user_input=None，整体跳过：它不是用户的应答，不该劫持挂起中的流程。
     if let Some(last) = user_input.as_ref() {
         if crate::exec_steps::has_pending_for(&app, session_id.as_deref()) {
-            return crate::exec_steps::resume(&app, &last.content, session_id.as_deref()).await;
+            let result =
+                crate::exec_steps::resume(&app, &last.content, session_id.as_deref()).await?;
+            return Ok(ChatOutcome {
+                result,
+                absorb: Vec::new(),
+            });
         }
     }
     let stop = StopGuard::new(&app, true, session_id.clone());
@@ -1005,7 +1032,11 @@ async fn bot_chat_inner(
             "chat_execute.routed",
             "task_count" => task_ids.len(),
         );
-        return chat_execute_tasks(&app, task_ids, stop, BatchPolicy::default()).await;
+        let result = chat_execute_tasks(&app, task_ids, stop, BatchPolicy::default()).await?;
+        return Ok(ChatOutcome {
+            result,
+            absorb: Vec::new(),
+        });
     }
     // auto-mode Skill → 调用 apply_skill_route（步骤 4 抽出）；interactive 模式走 FallThrough。
     // LLM 兜底路径：FailedButRecoverable 不再 return，把 recovery_hint 拼进 system_content，
@@ -1021,7 +1052,12 @@ async fn bot_chat_inner(
         )
         .await?
         {
-            SkillRouteOutcome::Done(result) => return Ok(result),
+            SkillRouteOutcome::Done(result) => {
+                return Ok(ChatOutcome {
+                    result,
+                    absorb: Vec::new(),
+                })
+            }
             SkillRouteOutcome::FallThrough {
                 recovery_hint: hint,
             } => {
@@ -1193,15 +1229,13 @@ async fn bot_chat_inner(
         Some(&failed_trace),
     )
     .await;
-    // 「已吸收」只在模型循环成功后记：循环失败说明这段回报压根没送进模型，
-    // 提前记会让汇报轮以为已经说过、从此不再重提——子任务结果就此永久丢失
-    if loop_result.is_ok() {
-        if let Some(d) = &digest {
-            for id in &d.absorb {
-                crate::bot_orchestrator::mark_digested(session_id.as_deref(), id);
-            }
-        }
-    }
+    // 「已吸收」的 id 交出去，不在这里记：谁送达、谁记。
+    // 模型循环失败时这段回报压根没送进模型，提前记等于把「已经说过了」提前
+    // 宣布——汇报轮会因此以为说过、从此不再重提，子任务结果就此永久丢失。
+    let absorb: Vec<String> = digest
+        .as_ref()
+        .map(|d| d.absorb.clone())
+        .unwrap_or_default();
     // LoopTrace 统计（tokens/轮数/模型名）塞进捕获，end_trace 汇总落库。
     // 失败时从 failed_trace 句柄取回——Err 路径没有返回值可带明细。
     {
@@ -1238,11 +1272,14 @@ async fn bot_chat_inner(
             stop.is_interactive(),
         );
     }
-    Ok(BotChatResult {
-        text,
-        task_refs: refs,
-        busy: false,
-        trace_id: chat_trace_id,
+    Ok(ChatOutcome {
+        result: BotChatResult {
+            text,
+            task_refs: refs,
+            busy: false,
+            trace_id: chat_trace_id,
+        },
+        absorb,
     })
 }
 
@@ -1268,7 +1305,7 @@ pub(crate) enum ReportOutcome {
 /// 计划生成）在 `TurnOrigin::Report` 下由 `user_input` 统一空转，不需要各自分支。
 pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) -> ReportOutcome {
     let history = report_turn_history(app, session_id).await;
-    match bot_chat_inner(
+    let out = match bot_chat_inner(
         app.clone(),
         history,
         Some(session_id.to_string()),
@@ -1277,12 +1314,7 @@ pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) ->
     )
     .await
     {
-        Ok(r) if r.busy => ReportOutcome::Busy,
-        Ok(r) if r.text.trim().is_empty() => ReportOutcome::Failed,
-        Ok(r) => {
-            persist_report_reply(app, session_id, &r).await;
-            ReportOutcome::Ran
-        }
+        Ok(o) => o,
         Err(e) => {
             crate::audit_event!(
                 app,
@@ -1290,6 +1322,29 @@ pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) ->
                 "subagent_report_failed",
                 "error" => crate::bot::truncate_for_log(&e.message(), 200),
             );
+            return ReportOutcome::Failed;
+        }
+    };
+    if out.result.busy {
+        return ReportOutcome::Busy;
+    }
+    if out.result.text.trim().is_empty() {
+        // 正文为空 = 什么都没说出来：不记已吸收，重试时那段回报还在 digest 里
+        return ReportOutcome::Failed;
+    }
+    // 送达 = 落库成功。汇报轮没有前端快照，它的历史下一轮从库里读——回复没
+    // 落库就等于没说出来，用户那边看不到，模型下一轮也读不到这段汇报。
+    match persist_report_reply(app, session_id, &out.result).await {
+        Ok(()) => {
+            // 送达成功 → 现在才算已吸收（digest 不再重念这段回报）
+            for id in &out.absorb {
+                crate::bot_orchestrator::mark_digested(Some(session_id), id);
+            }
+            ReportOutcome::Ran
+        }
+        Err(_) => {
+            // 没送达 → 不记已吸收：重试时那段回报还在 digest 里，模型能重说一遍。
+            // 记了就是「已经汇报过了」，重试也只会空转一轮，子任务结果就此消失。
             ReportOutcome::Failed
         }
     }
@@ -1348,7 +1403,14 @@ async fn report_turn_history(app: &AppHandle, session_id: &str) -> Vec<ChatMsg> 
 ///
 /// 不走前端的全量覆盖存历史：汇报轮没有前端快照，前端那份在下一条用户消息
 /// 才覆写；这一轮必须自己落库，否则用户不发言就重启，汇报内容就凭空消失。
-async fn persist_report_reply(app: &AppHandle, session_id: &str, result: &BotChatResult) {
+///
+/// 返回 Err = 没送达：调用方据此不记「已吸收」并重试（这段汇报是子任务结果
+/// 唯一的出口，丢了就是永久丢失）。
+async fn persist_report_reply(
+    app: &AppHandle,
+    session_id: &str,
+    result: &BotChatResult,
+) -> Result<(), String> {
     let sid = session_id.to_string();
     let content = result.text.clone();
     let refs = serde_json::to_string(&result.task_refs).ok();
@@ -1374,13 +1436,14 @@ async fn persist_report_reply(app: &AppHandle, session_id: &str, result: &BotCha
             "subagent_report.persist_failed",
             "error" => e,
         );
-        return;
+        return Err(e);
     }
     let _ = app.emit_to(
         "main",
         "bot-chat-report",
         serde_json::json!({ "sessionId": session_id, "text": result.text }),
     );
+    Ok(())
 }
 
 // /compact 快捷命令
@@ -2304,12 +2367,46 @@ mod bot_chat_pure_helpers_tests {
             .find("chat_trace_id = trace_id;")
             .expect("开 trace 时要把 id 留在局部变量里");
         let returned = chat
-            .find(concat!("busy: false,\n        trace_id: chat_trace_id,"))
+            .find("trace_id: chat_trace_id,")
             .expect("结果里必须带回这个 trace id");
         assert!(
             opened < kept && kept < returned,
             "trace id 的取值链必须是 开 trace → 存局部 → 进结果（现 opened={opened} \
              kept={kept} returned={returned}）"
+        );
+    }
+
+    /// 接线守卫：汇报轮只在**落库成功**之后记「已吸收」。
+    ///
+    /// 汇报轮没有前端快照，它的历史下一轮从库里读——回复没落库就等于没说出
+    /// 出去，用户那边看不到，模型下一轮也读不到这段汇报。落库失败还记着
+    /// 「已吸收」，重试时那段回报就不在 digest 里，模型无话可说，子任务结果
+    /// 在本次进程内永久消失。匹配串用 `concat!` 拆分防自匹配。
+    #[test]
+    fn report_turn_marks_absorbed_only_after_the_reply_is_persisted() {
+        let chat = include_str!("bot_chat.rs");
+        let start = chat
+            .find("pub(crate) async fn report_subagent_result(")
+            .expect("汇报轮入口");
+        let body = &chat[start..];
+        let end = body.find("\n}\n").map(|i| i + 3).unwrap_or(body.len());
+        let fn_body = &body[..end];
+        let persist = fn_body
+            .find(concat!(
+                "persist_report_reply(app, session_id, ",
+                "&out.result)"
+            ))
+            .expect("汇报轮必须先落库");
+        let mark = fn_body
+            .find(concat!("mark_digested(Some(session_id), ", "id)"))
+            .expect("落库成功后要记已吸收");
+        assert!(
+            persist < mark,
+            "「已吸收」必须记在落库之后（现 persist={persist} mark={mark}）"
+        );
+        assert!(
+            fn_body[persist..mark].contains("Ok(()) =>"),
+            "标记必须落在落库成功的分支里——Err 分支是「没送达」，不能记"
         );
     }
 

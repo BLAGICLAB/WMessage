@@ -1088,7 +1088,7 @@ mod tests {
         tx.commit().unwrap();
 
         bot_history_append_inner(
-            &conn,
+            &mut conn,
             "s1",
             &BotMsgRow {
                 role: "assistant".into(),
