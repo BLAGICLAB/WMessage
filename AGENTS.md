@@ -11,6 +11,7 @@
 - `DEVLOG.md` — 只写「为什么换方向」；git log 是事实记录
 - `docs/archive/graph-audit-2026-10-19.md` — 图谱多角度审计报告（发现项已于 2026-10-21 全部处理，归档备查）
 - `docs/agent-audit-2026-10-19.md` — Agent 内核审计的发现清单、已修状态与未修待办
+- `docs/agent-audit-2026-10-21.md` — Agent 全量多角度审计报告（Skill/MCP/工具/服务/子 agent/痕迹/契约/门禁七链；1 P0 + 15 P1 + 7 P2，修复按 §六 优先级推进）
 
 ## 命令
 
