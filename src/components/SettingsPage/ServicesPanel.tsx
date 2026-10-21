@@ -35,6 +35,15 @@ type ManagedServiceView = {
   cpuPct?: number;
   /** 告警项（rss_over_limit / cpu_sustained_high） */
   warnings: string[];
+  /** 最近一次端口/地址违规（正交于生命周期状态：服务死了记录还在） */
+  violation?: {
+    rule: "L1" | "L2" | "L3";
+    address: string;
+    port: number;
+    at: number;
+    action: "killed" | "rejected";
+    detail: string;
+  };
   stdoutTail?: string[];
   stderrTail?: string[];
 };
@@ -45,6 +54,8 @@ type ServicesSnapshot = {
   totalRssMb: number;
   warnings: string[];
   sampledAt: number | null;
+  /** 本平台能不能采到监听 socket（Windows 不能） */
+  listeningSupported?: boolean;
 };
 
 /** 状态 → 中文 + 徽章色 */
@@ -61,6 +72,13 @@ const WARNING_LABEL: Record<string, string> = {
   rss_over_limit: "内存超阈值（>512MB）",
   cpu_sustained_high: "CPU 持续跑满（>95% 持续 5 分钟）",
   total_rss_over_limit: "全部服务合计内存超阈值（>1GB）",
+};
+
+/** 违规档位 → 中文短标签 */
+const VIOLATION_LABEL: Record<string, string> = {
+  L1: "非 loopback 暴露",
+  L2: "占用保留端口",
+  L3: "特权端口",
 };
 
 /** 受管服务面板：看状态与资源占用，随时停掉不用的服务 */
@@ -138,6 +156,12 @@ export function ServicesPanel() {
         </div>
       )}
 
+      {snapshot && snapshot.listeningSupported === false && (
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          本平台暂不支持监听端口采集——端口闸在本平台不生效（仅保留启动前的参数诊断）
+        </p>
+      )}
+
       {error && <p className="mt-2 text-xs text-[var(--danger)]">{error}</p>}
 
       {services.length === 0 ? (
@@ -163,6 +187,15 @@ export function ServicesPanel() {
                   >
                     {badge.text}
                   </span>
+                  {/* 违规徽章：正交于生命周期状态——服务死了记录还在 */}
+                  {s.violation && (
+                    <span
+                      className="shrink-0 cursor-help rounded bg-red-50 px-1.5 py-0.5 text-xs font-medium text-red-600"
+                      title={`${s.violation.rule} ${VIOLATION_LABEL[s.violation.rule] ?? ""}：${s.violation.address}:${s.violation.port}（${s.violation.action === "killed" ? "已终止" : "已拒绝启动"}）· ${new Date(s.violation.at).toLocaleString()}\n${s.violation.detail}`}
+                    >
+                      ⚠ {VIOLATION_LABEL[s.violation.rule] ?? s.violation.rule}
+                    </span>
+                  )}
                   <span
                     className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--t2)]"
                     title={`${s.command} ${s.args.join(" ")}`}

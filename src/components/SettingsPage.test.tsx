@@ -51,6 +51,7 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
       };
     case "py_get_enabled":
     case "service_get_enabled":
+    case "service_get_expose_net_allowed":
       return false;
     case "services_list":
       return { services: [], totalRssMb: 0, warnings: [], sampledAt: null };
@@ -290,6 +291,7 @@ const agentParamsMock = async (cmd: string): Promise<unknown> => {
       return false;
     case "py_get_enabled":
     case "service_get_enabled":
+    case "service_get_expose_net_allowed":
       return false;
     case "services_list":
       return { services: [], totalRssMb: 0, warnings: [], sampledAt: null };
@@ -741,6 +743,28 @@ describe("SettingsPage", () => {
     expect(text).toContain("环境变量");
     expect(text).toContain("密钥");
     expect(setMock).toHaveBeenCalledWith({ enabled: true });
+  });
+
+  it("非 loopback 暴露开关：默认关闭；开启要二次确认并写明局域网可连", async () => {
+    const user = userEvent.setup();
+    const setMock = vi.fn(async (_payload?: unknown) => true);
+    mocks.invokeMock.mockImplementation(async (cmd: string, payload?: unknown) => {
+      if (cmd === "service_set_expose_net_allowed") return setMock(payload);
+      return agentParamsMock(cmd);
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "机器人" }));
+    const title = await screen.findByText("允许服务暴露到非 loopback");
+    const row = title.parentElement?.parentElement as HTMLElement;
+    // 默认关闭
+    expect(within(row).getByRole("button").textContent).toContain("已关闭");
+    await user.click(within(row).getByRole("button"));
+    // 二次确认走 Tauri 原生 dialog
+    await waitFor(() => expect(mocks.askMock).toHaveBeenCalled());
+    const text = String(mocks.askMock.mock.calls[0]?.[0] ?? "");
+    // 确认框要写明后果：局域网能连上它
+    expect(text).toContain("局域网");
+    expect(setMock).toHaveBeenCalledWith({ allowed: true });
   });
 
   it("主题三态：依次点击 → onThemeChange 收到 light / dark / system", async () => {

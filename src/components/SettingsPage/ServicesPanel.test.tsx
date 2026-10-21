@@ -152,3 +152,63 @@ describe("ServicesPanel", () => {
     }
   });
 });
+
+describe("ServicesPanel 违规与平台降级", () => {
+  it("违规徽章：显示档位 + tooltip 带地址与处置", async () => {
+    const snap = structuredClone(SNAPSHOT) as unknown as Record<string, unknown>;
+    (snap.services as Record<string, unknown>[])[1].violation = {
+      rule: "L1",
+      address: "0.0.0.0",
+      port: 7000,
+      at: 1_700_000_000_000,
+      action: "killed",
+      detail: "只允许监听 loopback（127.0.0.0/8 或 ::1）",
+    };
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? snap : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    const badge = screen.getByText(/非 loopback 暴露/);
+    expect(badge).toBeInTheDocument();
+    // tooltip 里要有规则、地址端口、处置与时间
+    const tip = badge.getAttribute("title") ?? "";
+    expect(tip).toContain("L1");
+    expect(tip).toContain("0.0.0.0:7000");
+    expect(tip).toContain("已终止");
+    // 状态本身不动：违规是正交字段
+    expect(screen.getByText("已退出")).toBeInTheDocument();
+  });
+
+  it("无违规：不显示徽章", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? structuredClone(SNAPSHOT) : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    expect(screen.queryByText(/非 loopback 暴露/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/占用保留端口/)).not.toBeInTheDocument();
+  });
+
+  it("平台不支持采集：明说端口闸在本平台不生效", async () => {
+    const snap = structuredClone(SNAPSHOT) as unknown as Record<string, unknown>;
+    snap.listeningSupported = false;
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? snap : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    expect(screen.getByText(/本平台暂不支持监听端口采集/)).toBeInTheDocument();
+  });
+
+  it("平台支持采集：不显示那句说明", async () => {
+    const snap = structuredClone(SNAPSHOT) as unknown as Record<string, unknown>;
+    snap.listeningSupported = true;
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? snap : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    expect(screen.queryByText(/本平台暂不支持监听端口采集/)).not.toBeInTheDocument();
+  });
+});

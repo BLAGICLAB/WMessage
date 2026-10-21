@@ -737,6 +737,9 @@ export function SettingsPage({
   /** 受管长驻服务总开关（后端 flag 文件，默认关闭） */
   const [servicesEnabled, setServicesEnabled] = useState(false);
   const [servicesBusy, setServicesBusy] = useState(false);
+  /** 允许受管服务暴露到非 loopback（L1 放开开关，默认关闭） */
+  const [exposeNetAllowed, setExposeNetAllowed] = useState(false);
+  const [exposeNetBusy, setExposeNetBusy] = useState(false);
   /** 桌面 UI 自动化总开关（后端 flag 文件，默认关闭） */
   const [uiEnabled, setUiEnabled] = useState(false);
   const [uiBusy, setUiBusy] = useState(false);
@@ -983,6 +986,12 @@ export function SettingsPage({
     } catch (e) {
       handleCommandError(e, "service_get_enabled", { silent: true });
     }
+    try {
+      const on = await invoke<boolean>("service_get_expose_net_allowed");
+      setExposeNetAllowed(on);
+    } catch (e) {
+      handleCommandError(e, "service_get_expose_net_allowed", { silent: true });
+    }
   };
 
   const checkPyEnv = async () => {
@@ -1055,6 +1064,34 @@ export function SettingsPage({
       await refreshPy();
     } finally {
       setPyBusy(false);
+    }
+  };
+
+  const toggleExposeNet = async () => {
+    if (exposeNetBusy) return;
+    const enabling = !exposeNetAllowed;
+    if (
+      enabling &&
+      !(await confirm(
+        "开启后机器人起的本地服务可以监听 0.0.0.0 / :: 等非 loopback 地址，" +
+          "也就是同局域网（乃至公网可达）的机器能连上它。" +
+          "服务代码归机器人写、可能来自不可信来源，确认开启？",
+      ))
+    )
+      return;
+    setExposeNetBusy(true);
+    setBotError("");
+    try {
+      const next = await invoke<boolean>("service_set_expose_net_allowed", {
+        allowed: enabling,
+      });
+      setExposeNetAllowed(next);
+    } catch (e) {
+      handleCommandError(e, "service_set_expose_net_allowed", { silent: true });
+      setBotError(formatCommandError(e));
+      await refreshServices();
+    } finally {
+      setExposeNetBusy(false);
     }
   };
 
@@ -2500,6 +2537,32 @@ export function SettingsPage({
                     disabled={servicesBusy}
                   >
                     {servicesBusy ? "…" : servicesEnabled ? "已开启" : "已关闭"}
+                  </button>
+                </div>
+
+                {/* 非 loopback 暴露开关（L1 的放开方式） */}
+                <div className="mt-4 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-[var(--t2)]">
+                      允许服务暴露到非 loopback
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--t5)]">
+                      默认只许受管服务监听 127.0.0.1 / ::1。打开后允许绑
+                      0.0.0.0 / :: —— 同局域网的机器能连上它
+                    </p>
+                  </div>
+                  <button
+                    className={`btn-sm-action ${
+                      exposeNetAllowed ? "nm-inset" : "nm-outset"
+                    }`}
+                    onClick={toggleExposeNet}
+                    disabled={exposeNetBusy}
+                  >
+                    {exposeNetBusy
+                      ? "…"
+                      : exposeNetAllowed
+                        ? "已开启"
+                        : "已关闭"}
                   </button>
                 </div>
 
