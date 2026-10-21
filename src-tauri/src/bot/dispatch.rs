@@ -594,8 +594,7 @@ async fn execute_tool_impl(
     }
     // 工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
     //  cleanup 会删除 From impl，工具届时改为显式 ok/warn/error。
-    // O(n) 线性扫描 → O(1) HashMap 查找；结果存 tool_def 供 post-execute 复用
-    // （原先下方又走 TOOLS_TABLE.iter().find 线性扫，每次调用两次 name 查找）。
+    // O(n) 线性扫描 → O(1) HashMap 查找；查表结果决定走内置工具还是 MCP 兜底路由
     let tool_def = tools_index().get(name).copied();
     let mut result: crate::bot::registry::ToolResult = match tool_def {
         Some(t) => run_tool_panic_isolated(app, name, (t.call)(&ctx, args)).await,
@@ -645,25 +644,12 @@ async fn execute_tool_impl(
     //    - 镜像调用 skill_on_step_post：技能步骤结果/失败检测
     let dur_ms = start.elapsed().as_millis() as u64;
     let level = crate::audit::AuditLevel::from_tool_status(result.status);
-    // 保守 token 预算——仅 audit，不截断。超阈值的工具输出走 `tool.output.over_budget`
-    // 事件供事后分析，默认阈值 8192 字节，read_text_file/fetch_url/list_files 等长输出工具 65536 字节。
-    // 口径必须与回灌漏斗一致（字节）：审计阈值和真实 cap 是同一个数，否则会出现
-    // 「审计报了超预算、实际没截」或反之，两边各说各话。
-    if let Some(t) = tool_def {
-        let output_bytes = result.text.len();
-        if output_bytes > t.max_output_bytes {
-            crate::audit::write_event(
-                app,
-                crate::audit::AuditLevel::Info,
-                "tool.output.over_budget",
-                &[
-                    ("tool", name.to_string()),
-                    ("output_bytes", output_bytes.to_string()),
-                    ("max_bytes", t.max_output_bytes.to_string()),
-                ],
-            );
-        }
-    }
+    // 「工具输出超预算」的审计事件**不在这里发**——这里只知道 per-tool 预算，
+    // 而真实截断用 min(per-tool 预算, 全局 cap)（见 bot_model_loop 的
+    // effective_output_cap）。全局 cap 更紧时（默认 30000 vs 长输出工具的
+    // 65536）文本被截了而审计不报；反过来审计报了也可能根本没截——两边各说
+    // 各话。事件移到截断发生的地方发（bot_model_loop 的 execute_tool 闭包），
+    // 审计阈值与真实 cap 是同一个数。
     // create_task/edit_task 带 files 参数时补 files_count/truncated kv（多文件绑定）
     let mut kv: Vec<(&str, String)> = vec![
         ("tool", name.to_string()),
@@ -1045,9 +1031,10 @@ mod pre_tool_hook_tests {
         let hook = body
             .find("run_post_tool(&call, &mut text)")
             .expect("execute_tool_impl 必须调用 post_tool 钩子层：结果回灌前必须过钩子");
-        let audit = body
-            .find("tool.output.over_budget")
-            .expect("找不到输出预算审计");
+        // 「tool.return」在函数里有好几处（三个早退出口 + 末尾那次）——锚点取
+        // **最后一次**：末尾那次才是工具执行完之后的审计，前几处在早退分支里、
+        // 排在钩子之前，拿来当锚点会把顺序判反。
+        let audit = body.rfind("\"tool.return\"").expect("找不到工具返回审计");
         let refill = body
             .find("skill_on_step_post")
             .expect("找不到结果回灌/技能后置钩子");

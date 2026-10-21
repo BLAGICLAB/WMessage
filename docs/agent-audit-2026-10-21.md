@@ -1088,6 +1088,8 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-7 | 已修 | 失效测试补回 `#[tokio::test]` + `cargo clippy --all-targets -- -D warnings` 进快门禁（`scripts/test-fast.sh`）+ 16 处存量 lint 清零 |
 | P1-6 | 已修 | 回滚段只在 `rollback: auto` 时执行（`scheduler`）+ `auto` 无回滚段降级为 `none`（`parse::normalize_rollback_meta`）|
 | P1-5 | 已修 | 工具预算触达落 `BudgetExceeded`（收尾读 `ctx.used_tool_calls` + `classify_outcome` 认工具熔断标记）|
+| P2-1 | 已修 | 「超预算」审计事件移到截断发生处（与 `effective_output_cap` 同源），dispatch 侧不再用 per-tool 预算当阈值 |
+| P2-2 | 已修 | 溢出指针按文件规模说清可达范围（`read_text_file` 单次上限 100KB + grep_files 兜底路径）|
 
 ### P0-1 的落地口径
 
@@ -1387,3 +1389,31 @@ summary，**决定重试**」——既然烧满预算的子 agent 报的是 succ
   新调用，模型可能被告知「停止新探索」后照办收尾，也可能没来得及收尾）。
   部分结果照旧存进 `result_json.summary`，父 agent 判断「该不该原目标重试、
   还是放宽预算」要用。
+
+### P2-1 / P2-2 的落地口径
+
+**P2-1：审计阈值与真实截断 cap 同源**。「工具输出超预算」事件原先在
+dispatch 侧按 **per-tool 预算**报，而实际截断用
+`min(per-tool 预算, 全局 cap)`（bot_model_loop 的 `effective_output_cap`）：
+默认配置下真实 cap 是 30000（全局），长输出工具的 per-tool 预算是 65536——
+**输出 40000 字节时文本被截了，审计却不报**；运维据此查超预算会漏掉全部由
+全局 cap 触发的截断。dispatch 那段注释写的正是它要防的分裂（审计阈值和真实
+cap 必须是同一个数），但没防住。
+
+事件移到**截断发生的地方**（bot_model_loop 的 execute_tool 闭包）：阈值就是
+这次真正用的 cap。dispatch 侧不再发这条事件——它只知道 per-tool 预算，
+用它当阈值就是两边各说各话。
+
+**P2-2：溢出指针不许承诺读不到的东西**。指针写「已**完整**转存到本地文件
+…用 read_text_file 配 offset + limit 分页读」，但 `read_text_file` 只读文件
+**前 100KB**（offset 是在这 100KB 的行上取的）——超过 100KB 的文件分页读只能
+读到前部，再往后 offset 直接撞「超出范围」，尾部永远读不回来。模型的反应是
+「文件被截断了」。
+
+指针现在按文件规模说清**可达范围**：超限时补一句「单次读取上限 100KB：分页
+读只能读到文件前部，后半段用 grep_files 按关键词定位」（grep_files 的单文件
+上限 2MB，覆盖得到）。文件本身的内容确实是完整的——不可达的是读法。
+
+**已知残留**：根治做法是让 `read_text_file` 支持「从 offset 起读的行窗」（不受
+100KB 读入上限约束），那要动 TOCTOU 防护的读路径，本轮未做——本轮先把承诺
+改成与可达性一致。

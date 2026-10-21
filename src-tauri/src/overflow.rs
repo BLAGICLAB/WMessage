@@ -42,16 +42,31 @@ pub fn spill<R: tauri::Runtime>(app: &AppHandle<R>, text: &str) -> Result<PathBu
 }
 
 /// 给模型的指针文案：说清「完整内容在哪、怎么读」，别让它以为执行失败或结果为空。
+///
+/// **可达范围必须一起说清**：`read_text_file` 只读文件前 100KB（offset 是在
+/// 这 100KB 的行上取的）。指针原先承诺「完整内容已转存，用 offset + limit
+/// 分页读」，但超过 100KB 的文件分页读只能读到前部，后半段会撞上
+/// 「offset 超出范围」——模型读不到尾部会以为文件被截断了。
 pub fn pointer_text(tool: &str, path: &std::path::Path, text: &str) -> String {
+    let read_cap = crate::bot_fs::READ_MAX_BYTES;
+    let reach = if text.len() > read_cap {
+        format!(
+            "（单次读取上限 {}KB：分页读只能读到文件前部，后半段用 grep_files 按关键词定位）",
+            read_cap / 1024
+        )
+    } else {
+        String::new()
+    };
     format!(
         "⚠️ 工具「{tool}」输出超过单次回灌预算，已**完整**转存到本地文件（下方是节选，不是全部）：\n\
          - 完整内容：{}\n\
          - 规模：{} 行 / {} 字节\n\
-         - 读法：read_text_file 配 offset（行号，从 1 起）+ limit（每页行数）分页读\n\n\
+         - 读法：read_text_file 配 offset（行号，从 1 起）+ limit（每页行数）分页读{}\n\n\
          需要哪一段读哪一段，不要一次读完；上面这段是节选，中间部分以文件为准。",
         path.display(),
         text.lines().count(),
         text.len(),
+        reach,
     )
 }
 
@@ -130,5 +145,27 @@ mod tests {
         assert!(p.contains("3 行"), "指针必须给出行数：{p}");
         assert!(p.contains("5 字节"), "指针必须给出字节数：{p}");
         assert!(p.contains("read_text_file"), "指针必须说清读法：{p}");
+        assert!(
+            !p.contains("单次读取上限"),
+            "文件没超单次读取上限时不必提上限：{p}"
+        );
+    }
+
+    /// 超过单次读取上限的文件：指针必须说清**可达范围**。
+    ///
+    /// `read_text_file` 只读前 100KB，offset 是在这 100KB 的行上取的——
+    /// 指针原先承诺「分页读」，但 100KB 之后的行压根到不了（offset 超出范围）。
+    #[test]
+    fn pointer_text_states_the_reachable_range_for_big_files() {
+        let big = "x".repeat(crate::bot_fs::READ_MAX_BYTES + 1);
+        let p = pointer_text("run_python", std::path::Path::new("/x/o.txt"), &big);
+        assert!(
+            p.contains("单次读取上限 100KB"),
+            "超限文件必须说清读得到哪一段：{p}"
+        );
+        assert!(
+            p.contains("grep_files"),
+            "要给一条真的能读到后半段的路径：{p}"
+        );
     }
 }

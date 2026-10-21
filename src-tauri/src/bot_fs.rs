@@ -16,7 +16,9 @@ use tauri::AppHandle;
 
 use crate::bot::registry::ToolResult;
 
-const READ_MAX_BYTES: usize = 100 * 1024;
+/// 单次读取上限（字节）。`pub(crate)`：溢出指针文案要据此说明「可达范围」
+/// （指针承诺了怎么读，就得说清读得到哪一段）。
+pub(crate) const READ_MAX_BYTES: usize = 100 * 1024;
 const READ_DEFAULT_LINES: usize = 500;
 const READ_MAX_LINES: usize = 2000;
 const GREP_MAX_HITS: usize = 50;

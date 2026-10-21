@@ -1605,6 +1605,22 @@ pub async fn run_model_loop(
             if let Some(global_cap) = tool_output_cap {
                 let cap = effective_output_cap(&name, global_cap);
                 if text.len() > cap {
+                    // 「超预算」审计事件在**截断发生的地方**发：阈值就是这次
+                    // 真正用的 cap（同一个数）。此前这条事件在 dispatch 侧按
+                    // per-tool 预算报，而截断用 min(per-tool, 全局 cap)——
+                    // 全局 cap 更紧时（默认 30000 vs 长输出工具 65536）文本被
+                    // 截了而审计不报，运维据此查超预算会漏掉全部由全局 cap
+                    // 触发的截断；反过来审计报了也可能根本没截。
+                    crate::audit::write_event(
+                        &app,
+                        crate::audit::AuditLevel::Info,
+                        "tool.output.over_budget",
+                        &[
+                            ("tool", name.clone()),
+                            ("output_bytes", text.len().to_string()),
+                            ("max_bytes", cap.to_string()),
+                        ],
+                    );
                     text = spill_or_cap(&app, &name, text, cap);
                 }
             }
