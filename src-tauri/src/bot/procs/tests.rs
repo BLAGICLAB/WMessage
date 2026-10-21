@@ -192,3 +192,210 @@ fn send_signal_rejects_pid_zero() {
     assert!(!send_signal(0, libc::SIGKILL));
     assert!(!signal_group(0, libc::SIGKILL));
 }
+
+// ── 监听 socket ──
+
+/// `/proc/net/tcp` 的一行（表头 + 数据行）。
+const PROC_NET_TCP: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 26231 1 0000000000000000 100 0 0 10 0\n   1: 0100007F:1F91 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 26232 1 0000000000000000 100 0 0 10 0\n   2: 0100007F:1F92 0100007F:D431 01 00000000:00000000 00:00000000 00000000     0        0 26233 1 0000000000000000 100 0 0 10 0\n";
+
+#[test]
+fn parse_proc_net_reads_listening_sockets_only() {
+    let rows = parse_proc_net(PROC_NET_TCP, SocketProtocol::Tcp);
+    // 只有 LISTEN（0A）那两行；ESTABLISHED（01）不算监听
+    assert_eq!(rows.len(), 2);
+    let (inode, sock) = &rows[0];
+    assert_eq!(*inode, 26231);
+    assert_eq!(sock.protocol, SocketProtocol::Tcp);
+    // 00000000 小端反序 → 0.0.0.0（通配 = 非 loopback，L1 的判据）
+    assert_eq!(sock.address, "0.0.0.0");
+    assert_eq!(sock.port, 8080);
+    // 0100007F 小端反序 → 127.0.0.1
+    assert_eq!(rows[1].1.address, "127.0.0.1");
+    assert_eq!(rows[1].1.port, 8081);
+}
+
+#[test]
+fn parse_proc_net_reads_ipv6_loopback() {
+    // 内核按 __be32 打印，**每 4 字节组内是反的**（组间顺序不变）：
+    // ::1 的地址字节是 15 个 0 + 1，最后一组打印成 "01000000"（不是 "00000001"）。
+    // 同一机制的旁证：fe80:: 的第一组打印成 "000080FE"。
+    let text = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 00000000000000000000000001000000:1F92 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 9 1 0000000000000000 100 0 0 10 0\n";
+    let rows = parse_proc_net(text, SocketProtocol::Tcp);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1.address, "::1");
+    assert_eq!(rows[0].1.port, 8082);
+}
+
+#[test]
+fn parse_proc_net_keeps_udp_bound_ports() {
+    // UDP 没有 LISTEN 态：绑定即占用端口，st=07（UDP）也要收
+    let text = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 00000000:14E9 00000000:0000 07 00000000:00000000 00:00000000 00000000     0        0 7 1 0000000000000000 100 0 0 10 0\n";
+    let rows = parse_proc_net(text, SocketProtocol::Udp);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].1.protocol, SocketProtocol::Udp);
+    assert_eq!(rows[0].1.address, "0.0.0.0");
+    assert_eq!(rows[0].1.port, 5353);
+}
+
+#[test]
+fn parse_proc_net_skips_malformed_lines() {
+    let text =
+        "not a socket table\n   0: broken\n   1: 00000000:ZZZZ 00000000:0000 0A 0 0 0 0 0 0\n";
+    assert!(parse_proc_net(text, SocketProtocol::Tcp).is_empty());
+}
+
+#[test]
+fn parse_lsof_line_splits_address_and_port() {
+    let line = "ControlCe 616 renshi    9u  IPv4  0x379717086c3df0f      0t0  TCP *:7000 (LISTEN)";
+    let (pid, sock) = parse_lsof_line(line, SocketProtocol::Tcp).expect("应解析出监听 socket");
+    assert_eq!(pid, 616);
+    // 通配地址要按 IPv4/IPv6 分开记——判 loopback 靠这个
+    assert_eq!(sock.address, "0.0.0.0");
+    assert_eq!(sock.port, 7000);
+    assert_eq!(sock.protocol, SocketProtocol::Tcp);
+}
+
+#[test]
+fn parse_lsof_line_keeps_ipv6_wildcard_distinct() {
+    let line = "ControlCe 616 renshi   10u  IPv6 0x24ea8df863a2157b      0t0  TCP *:7000 (LISTEN)";
+    let (_, sock) = parse_lsof_line(line, SocketProtocol::Tcp).expect("应解析出监听 socket");
+    assert_eq!(sock.address, "::");
+    assert_eq!(sock.port, 7000);
+}
+
+#[test]
+fn parse_lsof_line_reads_loopback_addresses() {
+    let (pid, v4) = parse_lsof_line(
+        "node 900 me 20u IPv4 0x1 0t0 TCP 127.0.0.1:5231 (LISTEN)",
+        SocketProtocol::Tcp,
+    )
+    .expect("应解析出监听 socket");
+    assert_eq!(pid, 900);
+    assert_eq!(v4.address, "127.0.0.1");
+    assert_eq!(v4.port, 5231);
+
+    let (_, v6) = parse_lsof_line(
+        "node 900 me 21u IPv6 0x2 0t0 TCP [::1]:5231 (LISTEN)",
+        SocketProtocol::Tcp,
+    )
+    .expect("应解析出监听 socket");
+    assert_eq!(v6.address, "::1");
+    assert_eq!(v6.port, 5231);
+}
+
+#[test]
+fn parse_lsof_line_reads_udp() {
+    let (_, sock) = parse_lsof_line(
+        "node 900 me 22u IPv4 0x3 0t0 UDP *:5353",
+        SocketProtocol::Udp,
+    )
+    .expect("应解析出 UDP socket");
+    assert_eq!(sock.protocol, SocketProtocol::Udp);
+    assert_eq!(sock.address, "0.0.0.0");
+    assert_eq!(sock.port, 5353);
+}
+
+#[test]
+fn parse_lsof_line_ignores_non_network_and_mismatched_proto() {
+    assert!(parse_lsof_line("node 900 me cwd DIR 0x1 0t0 /tmp", SocketProtocol::Tcp).is_none());
+    // 协议对不上（这条是 UDP 行，按 TCP 问）→ 不认
+    assert!(parse_lsof_line(
+        "node 900 me 22u IPv4 0x3 0t0 UDP *:5353",
+        SocketProtocol::Tcp
+    )
+    .is_none());
+}
+
+/// 真子进程：起一个绑在 127.0.0.1 的 TCP 监听，验平台路径能采到。
+///
+/// 这是**平台级**验证——解析函数的单测锁不住「lsof / /proc 能不能真读到」，
+/// 平台路径错了一直要到 P2-③ 挂闸时才发现就晚了。
+#[cfg(unix)]
+#[test]
+fn listening_sockets_finds_a_real_child_listener() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let probe = Command::new("python3")
+        .arg("-c")
+        .arg(
+            "import socket,time\n\
+             s=socket.socket()\n\
+             s.bind(('127.0.0.1',0))\n\
+             s.listen(8)\n\
+             print(s.getsockname()[1],flush=True)\n\
+             time.sleep(30)\n",
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = probe else {
+        eprintln!("[skip] 无 python3，跳过监听 socket 集成测试");
+        return;
+    };
+    let pid = child.id();
+    let mut line = String::new();
+    if let Some(out) = child.stdout.take() {
+        let _ = BufReader::new(out).read_line(&mut line);
+    }
+    let Ok(port) = line.trim().parse::<u16>() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        eprintln!("[skip] 子进程没报出端口（{line:?}），跳过");
+        return;
+    };
+
+    // 采到为止（子进程刚起来时 lsof 可能还没看到）
+    let mut found = false;
+    for _ in 0..40 {
+        let socks = listening_sockets(&[pid]);
+        let mine = socks.get(&pid).cloned().unwrap_or_default();
+        if mine
+            .iter()
+            .any(|s| s.port == port && s.address == "127.0.0.1")
+        {
+            found = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let socks = listening_sockets(&[pid]);
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        found,
+        "应采到子进程的监听 socket 127.0.0.1:{port}，实际采到 {socks:?}"
+    );
+}
+
+/// 没有任何 pid 时不做事（登记表的占位条目 pid 就是 0）。
+#[test]
+fn listening_sockets_of_empty_input_is_empty() {
+    assert!(listening_sockets(&[]).is_empty());
+    assert!(listening_sockets(&[0]).is_empty());
+}
+
+/// 组长 + 后代的 pid 列表（树口径）。
+#[test]
+fn tree_pids_covers_root_and_descendants() {
+    let s = vec![
+        snap(100, 1, "t100"),
+        snap(101, 100, "t101"),
+        snap(102, 101, "t102"),
+        snap(200, 1, "t200"),
+    ];
+    let mut pids = tree_pids(&s, 100);
+    pids.sort_unstable();
+    assert_eq!(pids, vec![100, 101, 102]);
+}
+
+#[test]
+fn parse_lsof_line_survives_a_process_named_like_the_protocol() {
+    // 进程名撞上 "TCP"：命令列不能被当成协议列（位置假设会错行）
+    let line = "TCP 900 me 20u IPv4 0x1 0t0 TCP 127.0.0.1:5231 (LISTEN)";
+    let (pid, sock) = parse_lsof_line(line, SocketProtocol::Tcp).expect("应解析出监听 socket");
+    assert_eq!(pid, 900);
+    assert_eq!(sock.address, "127.0.0.1");
+    assert_eq!(sock.port, 5231);
+}

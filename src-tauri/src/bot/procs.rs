@@ -66,6 +66,36 @@ pub(crate) struct ResourceSample {
     pub(crate) cpu_seconds: f64,
 }
 
+/// 监听 socket 的协议。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SocketProtocol {
+    Tcp,
+    Udp,
+}
+
+impl SocketProtocol {
+    /// 面板与审计里用的名字。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SocketProtocol::Tcp => "TCP",
+            SocketProtocol::Udp => "UDP",
+        }
+    }
+}
+
+/// 一个监听 socket：TCP 的 LISTEN 态，或 UDP 已绑定端口。
+///
+/// 地址是**规范化后的具体地址**（不是 `*`）：通配绑在 IPv4 上记 `0.0.0.0`，
+/// IPv6 上记 `::`——判断「是不是 loopback」要靠这个，通配符留着没法判。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ListeningSocket {
+    pub protocol: SocketProtocol,
+    /// 监听地址（`127.0.0.1` / `::1` / `0.0.0.0` / `::`）
+    pub address: String,
+    /// 端口
+    pub port: u16,
+}
+
 // ── 进程快照（纯函数） ──
 
 /// 从快照收集 `root` 的全部后代（不含 root 自身）。
@@ -314,6 +344,315 @@ pub(crate) fn tree_sample(snap: &[ProcSnapshot], root: u32) -> Option<ResourceSa
         }
     }
     Some(sample)
+}
+
+// ── 监听 socket（可见性；P2-③ 闸复用同一份解析） ──
+
+/// 列出这些进程各自监听的 socket（TCP 的 LISTEN 态 + UDP 已绑定的端口）。
+///
+/// 只读系统 socket 表，不碰任何上层登记表。Linux 走 `/proc/<pid>/fd` 的 socket
+/// inode → 配 `/proc/net/{tcp,tcp6,udp,udp6}`；macOS 走 `lsof`。
+///
+/// 返回**按 pid 归属**的映射：同一个 socket 可能被父子进程同时持有（fd 被继承），
+/// 归属清楚了上层才能算「整棵树的监听合计」。
+///
+/// **这层只采不判**：采到什么返回什么。L1/L2/L3 的判定属 P2-③ 的闸，但判定用的
+/// 数据必须来自这一份解析——两个条目各写一套 socket 解析就是重复采样 + 两套口径。
+///
+/// 平台覆盖：Linux 与 macOS 有路径；**Windows 没有**（`lsof` 不存在，
+/// 而现有进程快照层在 Windows 上本来就退化了——它依赖 `ps`）。Windows 要做
+/// 得走 `netstat -ano`，另开条目。
+pub fn listening_sockets(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
+    let pids: Vec<u32> = pids.iter().copied().filter(|p| *p != 0).collect();
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        listening_sockets_linux(&pids)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        listening_sockets_lsof(&pids)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        HashMap::new()
+    }
+}
+
+/// 组长 + 全部后代的 pid 列表（树口径，与 `tree_sample` 一致）。
+pub(crate) fn tree_pids(snap: &[ProcSnapshot], root: u32) -> Vec<u32> {
+    let mut out = vec![root];
+    out.extend(descendants(snap, root).into_keys());
+    out
+}
+
+/// 合并多组监听 socket（去重 + 按端口排序，面板展示要稳定顺序）。
+pub fn merge_sockets(groups: Vec<Vec<ListeningSocket>>) -> Vec<ListeningSocket> {
+    let mut list: Vec<ListeningSocket> = groups.into_iter().flatten().collect();
+    list.sort_by(|a, b| {
+        (a.port, &a.address, a.protocol.as_str()).cmp(&(b.port, &b.address, b.protocol.as_str()))
+    });
+    list.dedup_by(|a, b| a.protocol == b.protocol && a.address == b.address && a.port == b.port);
+    list
+}
+
+/// Linux：读 `/proc/<pid>/fd` 拿 socket inode，再去 `/proc/net/*` 按 inode 配对。
+#[cfg(target_os = "linux")]
+fn listening_sockets_linux(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
+    // socket 表只读一次：inode → socket（多个 pid 共用这张表）
+    let mut by_inode: HashMap<u64, ListeningSocket> = HashMap::new();
+    for (proto, path) in [
+        (SocketProtocol::Tcp, "/proc/net/tcp"),
+        (SocketProtocol::Tcp, "/proc/net/tcp6"),
+        (SocketProtocol::Udp, "/proc/net/udp"),
+        (SocketProtocol::Udp, "/proc/net/udp6"),
+    ] {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for (inode, sock) in parse_proc_net(&text, proto) {
+            by_inode.insert(inode, sock);
+        }
+    }
+    let mut out: HashMap<u32, Vec<ListeningSocket>> = HashMap::new();
+    if by_inode.is_empty() {
+        return out;
+    }
+    for pid in pids {
+        let mut socks = Vec::new();
+        for inode in socket_inodes(*pid) {
+            if let Some(sock) = by_inode.get(&inode) {
+                socks.push(sock.clone());
+            }
+        }
+        if !socks.is_empty() {
+            out.insert(*pid, merge_sockets(vec![socks]));
+        }
+    }
+    out
+}
+
+/// 某个进程持有的 socket inode（`/proc/<pid>/fd` 里形如 `socket:[12345]` 的链接）。
+#[cfg(target_os = "linux")]
+fn socket_inodes(pid: u32) -> Vec<u64> {
+    let Ok(dir) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in dir.flatten() {
+        let Ok(target) = std::fs::read_link(entry.path()) else {
+            continue;
+        };
+        let text = target.to_string_lossy();
+        let Some(rest) = text.strip_prefix("socket:[") else {
+            continue;
+        };
+        let Some(num) = rest.strip_suffix(']') else {
+            continue;
+        };
+        if let Ok(inode) = num.parse::<u64>() {
+            out.push(inode);
+        }
+    }
+    out
+}
+
+/// 解析 `/proc/net/tcp{,6}` 或 `/proc/net/udp{,6}`。
+///
+/// 行格式（空白分隔）：
+/// `sl local_address rem_address st tx_queue:rx_queue tr:tm->when retrnsmt uid timeout inode ...`
+/// - `local_address` = 十六进制地址:十六进制端口（地址是**小端字节序**打印的）
+/// - `st` = 状态，TCP 的 `0A` 是 LISTEN
+/// - `inode` = 第 10 列
+///
+/// TCP 只认 LISTEN 态；UDP 没有 LISTEN 态，**绑定即占用端口**，全收。
+pub fn parse_proc_net(text: &str, proto: SocketProtocol) -> Vec<(u64, ListeningSocket)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 10 {
+            continue;
+        }
+        // 表头行没有 `:`，自然被跳过——不靠「跳过第一行」这种位置假设
+        let Some((addr_hex, port_hex)) = cols[1].split_once(':') else {
+            continue;
+        };
+        if proto == SocketProtocol::Tcp && cols[3] != "0A" {
+            continue;
+        }
+        let Some(address) = parse_hex_address(addr_hex) else {
+            continue;
+        };
+        let Ok(port) = u16::from_str_radix(port_hex, 16) else {
+            continue;
+        };
+        let Ok(inode) = cols[9].parse::<u64>() else {
+            continue;
+        };
+        out.push((
+            inode,
+            ListeningSocket {
+                protocol: proto,
+                address,
+                port,
+            },
+        ));
+    }
+    out
+}
+
+/// 解析 `/proc/net/*` 里的十六进制地址（内核按小端打印）→ 可读地址文本。
+///
+/// IPv4：4 字节，整体反序（`0100007F` → `127.0.0.1`）。
+/// IPv6：16 字节，**每 4 字节一组**反序——内核按 `__be32` 打印，组内是反的、
+/// 组间是正的，整体反会把 4 个字的顺序也倒过来。
+fn parse_hex_address(hex: &str) -> Option<String> {
+    let bytes = hex_to_bytes(hex)?;
+    match bytes.len() {
+        4 => {
+            Some(std::net::Ipv4Addr::from(<[u8; 4]>::try_from(bytes.as_slice()).ok()?).to_string())
+        }
+        16 => {
+            Some(std::net::Ipv6Addr::from(<[u8; 16]>::try_from(bytes.as_slice()).ok()?).to_string())
+        }
+        _ => None,
+    }
+}
+
+/// 十六进制 → 字节，并按内核的小端打印规则反序。
+fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut raw = Vec::with_capacity(hex.len() / 2);
+    for i in (0..hex.len()).step_by(2) {
+        raw.push(u8::from_str_radix(&hex[i..i + 2], 16).ok()?);
+    }
+    match raw.len() {
+        4 => {
+            raw.reverse();
+            Some(raw)
+        }
+        16 => {
+            for word in raw.chunks_mut(4) {
+                word.reverse();
+            }
+            Some(raw)
+        }
+        _ => None,
+    }
+}
+
+/// macOS：走 `lsof`（一次调用带上全部 pid）。
+#[cfg(target_os = "macos")]
+fn listening_sockets_lsof(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
+    let pid_arg = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut by_pid: HashMap<u32, Vec<ListeningSocket>> = HashMap::new();
+    for (proto, filters) in [
+        (SocketProtocol::Tcp, vec!["-iTCP", "-sTCP:LISTEN"]),
+        (SocketProtocol::Udp, vec!["-iUDP"]),
+    ] {
+        let Some(text) = run_lsof(&pid_arg, &filters) else {
+            continue;
+        };
+        for line in text.lines() {
+            let Some((pid, sock)) = parse_lsof_line(line, proto) else {
+                continue;
+            };
+            by_pid.entry(pid).or_default().push(sock);
+        }
+    }
+    by_pid
+        .into_iter()
+        .map(|(pid, socks)| (pid, merge_sockets(vec![socks])))
+        .collect()
+}
+
+/// 调 `lsof` 取指定 pid 集合的网络监听行。
+#[cfg(target_os = "macos")]
+fn run_lsof(pids: &str, filters: &[&str]) -> Option<String> {
+    // lsof 在 /usr/sbin；GUI 启动的 app 拿到的 PATH 有时不含它，两个路径都试
+    for bin in ["lsof", "/usr/sbin/lsof"] {
+        let mut cmd = Command::new(bin);
+        cmd.args(["-nP", "-a", "-p", pids]);
+        for f in filters {
+            cmd.arg(f);
+        }
+        let Ok(out) = cmd.output() else {
+            continue;
+        };
+        // lsof 没有匹配项时退出码非 0 且 stdout 为空
+        if out.stdout.is_empty() {
+            continue;
+        }
+        if let Ok(text) = String::from_utf8(out.stdout) {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// 解析一行 `lsof -nP` 的网络行。
+///
+/// 列：`COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME [STATE]`
+/// - `TYPE` 列给 `IPv4` / `IPv6`——通配地址 `*:7000` 要靠它区分是 `0.0.0.0` 还是 `::`
+/// - `NAME` 列形如 `TCP *:7000 (LISTEN)` / `TCP 127.0.0.1:5231 (LISTEN)` / `TCP [::1]:5231 (LISTEN)`
+///
+/// 协议名的位置靠「前一个 token 是 IPv4/IPv6」认，不靠「第一个 TCP/UDP token」——
+/// 进程名撞上 TCP 这种位置假设会错行。
+///
+/// 返回 (pid, socket)：pid 用来把 socket 归属到进程（fd 被父子继承时两边都算持有）。
+pub fn parse_lsof_line(line: &str, proto: SocketProtocol) -> Option<(u32, ListeningSocket)> {
+    let cols: Vec<&str> = line.split_whitespace().collect();
+    let pid: u32 = cols.get(1)?.parse().ok()?;
+    // 协议名的位置不能靠「第一个 TCP/UDP token」认（进程名可能撞上这个词）——
+    // 取**后面跟着能拆出 `地址:端口`、前面有 IPv4/IPv6 类型列**的那一个。
+    for (idx, c) in cols.iter().enumerate() {
+        if *c != proto.as_str() {
+            continue;
+        }
+        let Some(addr_port) = cols.get(idx + 1) else {
+            continue;
+        };
+        // TYPE 列在协议名之前（列序：TYPE … NODE NAME），取其最后一次出现
+        let ipv6 = cols[..idx].iter().rev().any(|t| *t == "IPv6");
+        let Some((address, port)) = split_addr_port(addr_port, ipv6) else {
+            continue;
+        };
+        return Some((
+            pid,
+            ListeningSocket {
+                protocol: proto,
+                address,
+                port,
+            },
+        ));
+    }
+    None
+}
+
+/// 拆 `*:7000` / `127.0.0.1:5231` / `[::1]:5231` → (地址, 端口)。
+fn split_addr_port(s: &str, ipv6: bool) -> Option<(String, u16)> {
+    let (addr, port) = s.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    let addr = addr.trim_start_matches('[').trim_end_matches(']');
+    let address = match addr {
+        "*" => {
+            if ipv6 {
+                "::".to_string()
+            } else {
+                "0.0.0.0".to_string()
+            }
+        }
+        other => other.to_string(),
+    };
+    Some((address, port))
 }
 
 // ── 信号与存活判定 ──
