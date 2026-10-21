@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 源码共 166 个文件、约 8.9 万行，全部在 `src-tauri/src/`。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 155 个文件、约 11.2 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1096)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1097)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -101,7 +101,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (5558) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (5574) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
@@ -120,7 +120,7 @@ src-tauri/src/
 ├── bot/registry.rs (3793)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-├── bot/dispatch.rs (1445)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1555)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
 ├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
 │                        HookRegistry 进程级注册（OnceLock 单例，同层内按注册序；层序只由
@@ -148,7 +148,7 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/procs.rs (898)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+├── bot/procs.rs (1147)      进程树公共模块（受管服务层与 MCP stdio 共用）：
 │                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
 │                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
 │                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）
@@ -160,10 +160,10 @@ src-tauri/src/
 │                        **Windows 没有**——现有进程快照层在 Windows 上本就退化）
 │                        + 平台能力声明 listening_supported（Windows 为 false——
 │                        判定层据此返回 Unsupported 而非 Ok）
-│   └── bot/procs/tests.rs (401)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
+│   └── bot/procs/tests.rs (480)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
 │                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
 │                        + 真子进程监听端口集成测试（验平台路径真能读到）
-├── bot/services.rs (1973) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (2127) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
@@ -177,7 +177,7 @@ src-tauri/src/
 │                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
 │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
 │                        + 服务告警进通知中心（资源告警 / 端口违规，条件消失自动撤收）
-│   └── bot/services/tests.rs (852)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
+│   └── bot/services/tests.rs (1000)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
 │                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
 │                        资源告警判定（阈值 / 持续 / 去重）、
 │                        端口闸（flag 解析 / loopback 判定 / L1-L3 判据 / 保留集）、
@@ -195,13 +195,13 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (2932)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
+├── bot/tools.rs (2892)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
 │                        受管服务起停查 start_service / stop_service / list_services）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
 │                        SchedGuard 防重入；完成发系统通知
-├── bot_reminders.rs (575) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
+├── bot_reminders.rs (562) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
 │                        定时串与触发点计算复用 bot_scheduler（occurrence_after），
@@ -228,7 +228,7 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_ui.rs (692) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
+├── bot_ui.rs (658) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
 │                        ui_inspect / ui_click / ui_type / wait_for_element。
 │                        四道闸——独立总开关（ui::ui_enabled，默认关闭）/ 窗口级授权
 │                        （动作必带 windowId 且窗口真实存在）/ 危险动作确认
@@ -245,7 +245,7 @@ src-tauri/src/
 │   └── ui/windows.rs (403) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
-├── bot_desktop.rs (550) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+├── bot_desktop.rs (529) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
 │                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的
@@ -265,13 +265,13 @@ src-tauri/src/
 │                        reflection；写白名单≠读白名单：可写根=AI_Gen_Files+任务卡
 │                        绑定文件夹+allowedDirs；白名单外 perm_mode 三分支/覆盖确认）；
 │                        路径白名单 + perm_mode(strict/ask/yolo) 授权闸
-├── bot_archive.rs (1416) 归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
+├── bot_archive.rs (1404) 归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
 │                        （纯 Rust：zip + tar + flate2，不依赖本机 Python）；压缩包是外部
 │                        输入——条目名带 .. / 绝对路径 / 盘符 / 软链一律跳过并列出，单文件
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
 │                        200:1 封顶；已存在的文件不覆盖（跳过并列出）；解包只认源在读白名单、
 │                        落点在写白名单
-├── bot_manage_file.rs (402) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
+├── bot_manage_file.rs (394) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
 │                        move 移动（同卷 rename、跨卷复制后源入回收站）/ delete 删除
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
@@ -553,8 +553,8 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 166 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
-通过相对路径或文件名提及强制要求；任何新增模块请同步登记。
+`src-tauri/src/` 实际 155 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+对拍：每条必须指向真实文件，每个源文件必须在本节列出。新增模块请同步登记。
 
 ### 顶层
 - `api.rs`
@@ -563,20 +563,24 @@ flowchart TD
 - `app_state.rs`
 - `ask_engine.rs`
 - `audit.rs`
+- `bing.rs`
 - `bot.rs`
 - `bot_anthropic.rs`
+- `bot_archive.rs`
 - `bot_artifacts.rs`
 - `bot_chat.rs`
+- `bot_desktop.rs`
 - `bot_fs.rs`
 - `bot_manage_file.rs`
-- `bot_reminders.rs`
-- `bot_ui.rs`
 - `bot_model_loop.rs`
 - `bot_onions.rs`
+- `bot_orchestrator.rs`
 - `bot_plan.rs`
 - `bot_py.rs`
+- `bot_reminders.rs`
 - `bot_scheduler.rs`
 - `bot_slash.rs`
+- `bot_ui.rs`
 - `bot_web.rs`
 - `due_notify.rs`
 - `error.rs`
@@ -586,16 +590,17 @@ flowchart TD
 - `llm_text.rs`
 - `main.rs`
 - `mutation.rs`
+- `notifications.rs`
 - `ocr.rs`
 - `overflow.rs`
 - `paths.rs`
 - `profile.rs`
 - `prompt_builder.rs`
-- `task_autotag.rs`
 - `tag_similar.rs`
+- `task_autotag.rs`
 - `task_out.rs`
-- `trace_sink.rs`
 - `tool_guard.rs`
+- `trace_sink.rs`
 
 ### `api_handlers/`
 - `api_handlers/body.rs`
@@ -607,6 +612,11 @@ flowchart TD
 - `api_handlers/types.rs`
 - `api_handlers/util.rs`
 - `api_handlers/validate.rs`
+
+### `apps/`
+- `apps/commands.rs`
+- `apps/manage.rs`
+- `apps/mod.rs`
 
 ### `bot/`
 - `bot/compaction.rs`
@@ -622,22 +632,38 @@ flowchart TD
 - `bot/format.rs`
 - `bot/hooks.rs`
 - `bot/log_sanitize.rs`
+- `bot/mcp/builtin.rs`
+- `bot/mcp/commands.rs`
+- `bot/mcp/config.rs`
+- `bot/mcp/manager.rs`
+- `bot/mcp/mod.rs`
+- `bot/mcp/mount.rs`
+- `bot/mcp/secrets.rs`
 - `bot/params.rs`
+- `bot/procs.rs`
+- `bot/procs/tests.rs`
+- `bot/reasoning.rs`
 - `bot/registry.rs`
+- `bot/services.rs`
+- `bot/services/tests.rs`
 - `bot/tags_consolidate.rs`
 - `bot/tools.rs`
 
 ### `bot_skills/`
+- `bot_skills/builtin.rs`
 - `bot_skills/files.rs`
 - `bot_skills/manage.rs`
 - `bot_skills/mod.rs`
 - `bot_skills/parse.rs`
+- `bot_skills/recommend.rs`
+- `bot_skills/remote.rs`
 - `bot_skills/runtime.rs`
 - `bot_skills/scheduler.rs`
 - `bot_skills/state.rs`
 - `bot_skills/vars.rs`
 
 ### `db/`
+- `db/apps.rs`
 - `db/bot_history.rs`
 - `db/bot_sessions.rs`
 - `db/lock.rs`
@@ -653,20 +679,20 @@ flowchart TD
 - `db/trace.rs`
 - `db/workspace.rs`
 
-### `eval/`
-- `eval/metrics.rs`
-- `eval/mod.rs`
-
 ### `memory/`
 - `memory/consolidate.rs`
-- `memory/extract.rs`
 - `memory/consolidate/tests.rs`
 - `memory/embed.rs`
+- `memory/extract.rs`
 - `memory/mod.rs`
 - `memory/panel.rs`
 - `memory/rank.rs`
 - `memory/store.rs`
 - `memory/tests.rs`
+
+### `meta/`
+- `meta/mod.rs`
+- `meta/sync.rs`
 
 ### `migration/`
 - `migration/commands.rs`
@@ -684,18 +710,12 @@ flowchart TD
 - `platform/copy_file.rs`
 - `platform/mod.rs`
 
-### `ui/`
-- `ui/macos.rs`
-- `ui/mod.rs`
-- `ui/windows.rs`
-
 ### `prompts/`
 - `prompts/consolidate.rs`
 - `prompts/execute.rs`
 - `prompts/extract.rs`
 - `prompts/mod.rs`
 - `prompts/planner.rs`
-- `prompts/reflection.rs`
 - `prompts/selfcheck.rs`
 - `prompts/subagent.rs`
 - `prompts/summary.rs`
@@ -711,3 +731,8 @@ flowchart TD
 - `py/io.rs`
 - `py/mod.rs`
 - `py/runtime.rs`
+
+### `ui/`
+- `ui/macos.rs`
+- `ui/mod.rs`
+- `ui/windows.rs`

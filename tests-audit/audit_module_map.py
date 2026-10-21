@@ -29,6 +29,11 @@ ARCH_DOC = ROOT / "docs/rust-bot-architecture.md"
 TREE_ENTRY_RE = re.compile(
     r"^([│├└─ ]*)──\s+([A-Za-z_0-9/]+\.rs)(?:\s*\((\d+)(?:行)?\))?", re.M
 )
+# §6.4 源文件清单条目：`- `bot/registry.rs``
+SECTION_6_4_RE = re.compile(r"^- `([A-Za-z_0-9/]+\.rs)`", re.M)
+# 文档开头的散文数字：「共 155 个文件、约 11.2 万行」
+PROSE_FILES_RE = re.compile(r"共\s*(\d+)\s*个文件")
+PROSE_LINES_RE = re.compile(r"约\s*([\d.]+)\s*万行")
 # lib.rs / 子模块 mod.rs 的模块声明
 MOD_DECL_RE = re.compile(r"^\s*(?:pub(?:\(crate\))? )?mod ([a-z_0-9]+);", re.M)
 
@@ -96,6 +101,27 @@ def source_files():
     return sorted(p.relative_to(SRC) for p in SRC.rglob("*.rs"))
 
 
+def section_6_4_entries():
+    """§6.4「源文件清单」里的条目（`- `path`` 格式）。
+
+    与模块树的 `── xxx.rs` 是**两套格式**：脚本原先只解析模块树，
+    §6.4 那份自称「完整列表、由本脚本对拍」的清单其实零校验——
+    里面躺着 3 条指向不存在文件的幽灵条目、漏登 26 个真实文件，
+    脚本照样全绿。
+    """
+    doc = doc_text()
+    assert "## 6.4" in doc, "架构文档里没有 §6.4 源文件清单（挪走了还是改了标题？）"
+    sec = doc.split("## 6.4", 1)[1]
+    # §6.4 是最后一节；若后面还有 `## ` 标题就截到那里
+    sec = sec.split("\n## ", 1)[0]
+    return SECTION_6_4_RE.findall(sec)
+
+
+def total_source_lines():
+    """源码总行数（换行符个数，与 `wc -l` 同值）。"""
+    return sum(p.read_bytes().count(b"\n") for p in SRC.rglob("*.rs"))
+
+
 def declared_modules():
     """lib.rs 顶层模块 + 全部 mod.rs（动态发现）里的子模块声明"""
     out = set()
@@ -132,13 +158,53 @@ def test_tree_entries_point_to_existing_files():
 
 
 def test_every_source_file_is_mentioned():
-    doc = doc_text()
-    # 只认相对路径命中（如 `bot/registry.rs`）：裸 basename 兜底会让 15 组
-    # 同名文件互相顶替，文档漂移可静默漏登记
-    unlisted = [str(f) for f in source_files() if str(f) not in doc]
+    """每个源文件必须在 §6.4 的源文件清单里**列出**。
+
+    判据从「全文任意位置提到」收紧到「§6.4 列出」：旧判据下，26 个漏登记
+    的文件在正文散文里被提到过，照样过审——「清单自称完整、实际缺 26 条」
+    与「文档说的事实被代码否掉」是同一个形状。
+    """
+    listed = set(section_6_4_entries())
+    unlisted = [f.as_posix() for f in source_files() if f.as_posix() not in listed]
     assert not unlisted, (
-        "以下源码文件在 docs/rust-bot-architecture.md 里找不到"
-        "（新增模块请登记进模块树）：\n  " + "\n  ".join(unlisted)
+        "以下源码文件没在 §6.4 源文件清单里列出"
+        "（新增模块请登记进 §6.4）：\n  " + "\n  ".join(unlisted)
+    )
+
+
+def test_section_6_4_entries_point_to_existing_files():
+    """§6.4 的每条清单必须指向真实文件。
+
+    幽灵条目（模块已删、文档没同步）会让读者按清单导航时点到不存在的文件。
+    """
+    ghosts = [e for e in section_6_4_entries() if not (SRC / e).exists()]
+    assert not ghosts, (
+        "§6.4 源文件清单里有指向不存在文件的条目"
+        "（模块已删/改名，清单没同步）：\n  " + "\n  ".join(ghosts)
+    )
+
+
+def test_prose_file_and_line_counts_match_reality():
+    """文档开头的散文数字必须等于实测值。
+
+    这句话是架构文档的入口第一屏，文档别处用「≤1200 行」当拆分阈值、
+    用总行数估算评审范围——数字错了会系统性偏低。旧实现写下即错
+    （166 个文件 / 8.9 万行，实际 155 / 11.2 万），而脚本对散文零校验。
+    """
+    head = doc_text().split("\n## ", 1)[0]
+    m_files = PROSE_FILES_RE.search(head)
+    m_lines = PROSE_LINES_RE.search(head)
+    assert m_files, "文档开头没写「共 N 个文件」——数字必须可被校验"
+    assert m_lines, "文档开头没写「约 N 万行」——数字必须可被校验"
+    actual_files = len(source_files())
+    actual_lines = total_source_lines()
+    assert int(m_files.group(1)) == actual_files, (
+        f"文档写 {m_files.group(1)} 个文件，实际 {actual_files}"
+    )
+    written_wan = float(m_lines.group(1))
+    actual_wan = round(actual_lines / 10000, 1)
+    assert written_wan == actual_wan, (
+        f"文档写约 {written_wan} 万行，实际 {actual_lines} 行（{actual_wan} 万）"
     )
 
 

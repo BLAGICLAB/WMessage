@@ -1,9 +1,10 @@
 # WMessage — SPEC v2（现行产品规格）
 
 > **活文档**：本文件记录产品**现行**形态，功能进/改/删随同一提交更新
-> 「功能规格」一节（开发基线有此约定）。v1 原始需求快照（2026-08-13 ~
-> 08-18）原文保留于文末附录 A，不再修改。架构细节以
-> `docs/rust-bot-architecture.md` 为准。
+> 「功能规格」一节（开发基线有此约定）。文末附录 A 分两段：上半段是 v1 原始
+> 需求快照（历史，只读），下半段是**机制详录**（现行节给概览、附录给逐项细则，
+> **随功能更新**）——工具清单、端口闸、资源告警这类细则只写在附录下半段，改功能
+> 时一并改它。架构细节以 `docs/rust-bot-architecture.md` 为准。
 
 ## 开发基线（单人口径，2026-10-08 收敛，同日按 vibe coding 通行要素进化）
 
@@ -18,7 +19,8 @@
 - **DEVLOG 降级**：git log 是事实记录；DEVLOG 只写 git log 写不下的
   「为什么换方向」，一事一段，不写小作文。
 - **SPEC 活文档**：功能进/改/删随同一提交更新「功能规格」一节；
-  附录 A（v1 快照）冻结不动。
+  附录 A 下半段的**机制详录**（现行节给概览、附录给逐项细则）**随功能一起更新**
+  ——它不是冻结快照，写着「冻结」却一直在改（工具清单 61→63 就是这么来的）。
 - **docs/ 口径**：顶层只放长期设计文档与手册；一次性审计/交接/冒烟/工单文档
   直接进 `docs/archive/` 或不落盘。
 - **代码卫生（anti-slop）**：死代码随发现随删，自己孤儿化的一切随同一提交删除；
@@ -109,7 +111,7 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 - **生成类文档的落盘凭证**（2026-10-19）：`create_word` / `create_word_revisions` / `create_excel` / `create_ppt` / `create_pdf` 写完盘原先不产变更凭证（凭证只有 `write_file` / `edit_file` 两档），执行详情面板承诺的文件变更证据在这五档一直是空白、落盘凭证闸也拿它们没办法。改成产出**二进制档**凭证：路径 + 内容哈希（`after_sha` 按字节算），**不带行 diff**——docx/xlsx/pptx 是 zip 容器不是 UTF-8 文本，按行 diff 只会产乱码；pdf 同理。行数两档恒 0。读不出内容时**仍然给凭证**（`after_sha` 为空）——凭证的**存在**才是「这个文件是工具产物」的依据，缺了它模型真写出来的文档会被判成凭空声称。回滚的漂移闸靠 `after_sha` 核内容
 - **工具成败只由 status 承担**（2026-10-21）：内置工具返回值带四态（`ToolStatus`：`Ok` / `Warn` / `Error` / `Denied`），**「成没成」只看 status，文本只负责给模型读与错误子类细分**——同一个结果配两套口径必然漂移。三类归属不得再混：①**参数闸**（缺必填参数 / 参数为空 / 参数非法 / 目标不存在或已存在 / 路径校验不过）→ `Denied`，工具没动手；②**门禁与用户拒绝**（白名单与路径闸拦下、用户点否、确认超时、功能开关关闭）→ `Denied`；③**执行失败**（读写 / 下载 / 解包 / 删除 / 设置 / 取消 / 点击 / 输入 / 激活 / 探测失败）→ `Error`，动了没成。`Warn` 只留给「做成了但有告警」，且它**算成功**——故失败文案绝不能配 `Warn` 或 `Ok`。**设计内的降级仍走 `Warn`**（如 `ask_user` 未获回答后按模型声明的假设继续）：这类不是失败事件，按失败处理会让 Skill DSL 调度器误判步骤失败并触发回滚。这条不是洁癖：同一个结果两套答案会同时污染三个消费端——Skill DSL 调度器把失败步骤记成技能正常完成、trace span 记 `ok`、幻觉守卫的凭证表留下「delete_task 成功过」，模型汇报「已删除任务卡」不被拦。**守卫**（`audit.rs` 内的静态扫描）按「构造器首个字符串实参」判定失败语，注释与代码不参与判定；守卫自带正例夹具，防止它退化成空转（上一版守卫长期空转：生产代码切反了，且只认「失败：/错误：」两种形态）
 - **工具输出回灌上限**（2026-10-19）：单条工具结果喂回模型上下文的上限**按字节计**（UTF-8），三层漏斗——per-tool 预算（`ToolDef.max_output_bytes`，默认 8192，read_text_file/fetch_url/list_files 给到 65536）与设置页全局 `maxToolOutputBytes`（默认 30000 字节）**取小**，超限则把完整结果转存成溢出文件（`data_dir/overflow/`）、回灌「头尾节选 + 指针」，模型按需 `read_text_file` 分页读回；落盘失败退回纯头尾截断（不落空、不放行原文）。**口径是字节不是字符**：这条上限的职责是别撑爆上下文，撑爆的是 token，而字节到 token 的换算跨语种稳定（中文约 3 字节/token、ASCII 约 4），字符数则随语种漂三倍；同漏斗里 trace 侧 `db::SPAN_TEXT_MAX` 与溢出指针文案本来就按字节报，字符口径会让同一次溢出在两处显示成两个数。切点必须落在 code point 边界上（切出半个 UTF-8 字符是 panic 不是乱码）。分页类工具（extract_document/fetch_url 的 `offset`）**仍是字符偏移**——那是给模型的分页协议单位，与体积上限不同物
-- 工具（63 个，清单见「内置机器人聊天」一节）：任务 CRUD/子任务/绑定、文档生成（Word 修订模式：.NET OpenXML 优先 + Python 兜底；Excel 公式注入过滤；PPT；PDF）、文件编辑（edit_file/write_file，Aider 式三级匹配）、文件读写+grep、本机 Python 沙箱（run_python，独立临时目录+默认 60s 超时（上限 30 分钟）+产物回收；完整 stdlib + 用户权限执行，无文件系统隔离，靠设置页开关默认关闭兜底）、Python AST 静态探查（ast_inspect，标准库 ast + 零新增依赖，符号树/定义/引用/调用链四种模式；调用前先过 bot_fs 白名单闸，只支持 .py）、联网（web_search：Tavily/Brave key 可配，未配置降级 Bing+百度抓取；fetch_url 公网白名单）、图片识字 ocr_image、截图直达模型视觉、电脑辅助 Tier1（reveal_path 等原生五件）、桌面 UI 自动化（list_windows/ui_inspect/ui_click/ui_type 等六件，独立总开关默认关闭）、时间、记忆工具、use_skill、远程技能安装与检索（install_skill 装 GitHub/SkillHub/zip 技能、search_skills 在 SkillHub 上搜技能）、ask_user（任务执行中提问：手动执行任务卡，通知中心异步问答 + 假设兜底 + 全局预算 1–5 默认 3；聊天直接文字提问不用此工具）
+- 工具（63 个，清单见**附录 A「机制详录」**）：任务 CRUD/子任务/绑定、文档生成（Word 修订模式：.NET OpenXML 优先 + Python 兜底；Excel 公式注入过滤；PPT；PDF）、文件编辑（edit_file/write_file，Aider 式三级匹配）、文件读写+grep、本机 Python 沙箱（run_python，独立临时目录+默认 60s 超时（上限 30 分钟）+产物回收；完整 stdlib + 用户权限执行，无文件系统隔离，靠设置页开关默认关闭兜底）、Python AST 静态探查（ast_inspect，标准库 ast + 零新增依赖，符号树/定义/引用/调用链四种模式；调用前先过 bot_fs 白名单闸，只支持 .py）、联网（web_search：Tavily/Brave key 可配，未配置降级 Bing+百度抓取；fetch_url 公网白名单）、图片识字 ocr_image、截图直达模型视觉、电脑辅助 Tier1（reveal_path 等原生五件）、桌面 UI 自动化（list_windows/ui_inspect/ui_click/ui_type 等六件，独立总开关默认关闭）、时间、记忆工具、use_skill、远程技能安装与检索（install_skill 装 GitHub/SkillHub/zip 技能、search_skills 在 SkillHub 上搜技能）、ask_user（任务执行中提问：手动执行任务卡，通知中心异步问答 + 假设兜底 + 全局预算 1–5 默认 3；聊天直接文字提问不用此工具）
 - **Word 模板双层口径**：设置页上传 .docx（管纸张/页边距/页眉页脚）+ 文字排版参数旁车 json（管正文/主标题/一二三级标题的字体字号行距缩进对齐，上传即从模板正文提取，启发式单点），参数记录可在面板编辑（含改名）；生成按参数构造版式，旁车缺失自动重提取；默认模板缺失时走内置版式
 - **语义记忆体 v2**：bge-small-zh 本地嵌入+混合打分；事实+教训两类；自动抽取、参数可调（设置页记忆区「检索参数」卡：注入预算/topN/recentN/lessonN/容量/衰减/去重阈值 8 项，留空=默认）、总开关、管理面板、导入导出、写入冲突裁决（改口即更新）、定时整理（consolidation）、黄金集评估器（recall@5 锁死）
 - **MCP 外部服务器**：stdio/HTTP 接入，env/headers 机密走系统钥匙串；**机密不回传前端**（2026-10-21）：设置页编辑走脱敏视图（键名 + 掩码值，`mcp_server_secrets_masked`）——原样保存即保留该值、改写即替换、删掉该行即删除该项，掩码过期按「该项已被别处删除」处理；旧口径是「空 = 清空」，而前端拿不到明文、编辑任何字段都会发空对象过去，等于把 keyring 里的机密静默删掉；**连接指纹认 env/headers**（改了 API token / 环境变量即换指纹 → 重连）——不用序列化值算指纹（机密字段被 `skip_serializing` 剥掉，改了机密不换指纹 = 不重连 = 旧凭据继续用）；内置 Playwright 浏览器条目（启动时缺失才补写，默认停用、不可删，只能开关）；**HTTP 传输只连公网**（2026-10-21）：连接口两道闸——字面量级（scheme / host 字面量：拒 localhost 家族、环回、私网、链路本地、保留段、数字形式 IPv4 变体、mDNS `.local`、IPv4-mapped / IPv4-compatible / 6to4 / Teredo / NAT64 / 文档段；保存口同一判据）＋ **DNS 级**（域名解析出的**每个** IP 都必须是公网——内网域名、DNS rebinding、`169.254.169.254.nip.io` 这类都在这一跳被拦，判据单源在 `bot_web::check_public_url`），并把解析结果**钉给 reqwest**（`resolve_to_addrs`）：校验与请求之间不再二次解析，DNS TOCTOU 窗口关闭；禁跟随重定向（公网端点 302 到内网即穿透「仅公网」闸）；**本地子进程资源可见**（2026-10-21）：设置页 MCP 面板对 stdio 连接显示 pid / 内存 / CPU 占用率 / 累计 CPU / 已运行时长 / **在监听的端口与地址**，并标一行「此进程由 MCP 客户端按需拉起，不在本地服务表中」——MCP 进程归连接槽、生命周期按需，不并入受管服务表（合并要么给服务层开管道模式、要么自造 rmcp 传输分帧，都是拿架构纯洁性换 bug 面）；采样口径与受管服务层同一套（整棵进程树合计），按需触发 + 5s TTL 缓存（`mcp_status` 可能被前端轮询，每次都拍全机 `ps` 就重了），CPU 占用率同一条公式且第一次采样只显示累计 CPU 时间、第二次起才有百分比；监听 socket 走 Linux `/proc/<pid>/fd` + `/proc/net/tcp{,6}`、macOS `lsof` 两条路径（**Windows 没有**——现有进程快照层在 Windows 上本就退化）
@@ -157,10 +159,17 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 
 ---
 
-# 附录 A：v1 原始需求快照（2026-08-13 ~ 2026-08-18）
+# 附录 A：v1 原始需求快照 + 机制详录
 
-> 项目起点的原始需求记录（含原始 UI 规范与逐条追加功能），停止更新；
-> 现行形态以本文件前半部分为准。
+> **本附录有两段，口径不同**：
+> - 上半段「WMessage — SPEC v1」（2026-08-13 ~ 08-18 的原始需求）：**历史快照，
+>   只读**。
+> - 下半段「机制详录」（内置工具清单、端口闸、资源告警这类逐项细则）：**活节，
+>   随功能更新**——改功能时一并改它。
+>
+> 此前整个附录都标着「v1 原始需求快照 · 停止更新 / 冻结不动」，而实际一直在改
+> ——工具清单从 61 改到 63 就是证据；「冻结」这条自订口径被违反过至少 5 次。
+> 现在把两段的口径分开写清：概览在现行节，逐项细则在附录下半段。
 
 # WMessage — SPEC v1
 
@@ -246,6 +255,12 @@ WMessage：Tauri + React + TailwindCSS 的 Todo 看板，带系统侧边磁吸�
 
 10. 内置机器人（设置页开关，默认关闭）：
    - 挂件下方聊天区（展开高度 840 = 560 + 280）；多会话（新建/切换/删除/自动改名）、历史持久化 SQLite
+
+### 机制详录（活节，随功能更新）
+
+> 从这里往下的各条是**现行细则**（工具清单、闸门口径、白名单、参数范围…），
+> **随功能更新**：改功能时一并改这里。上方「功能需求（追加 …）」各段是 v1
+> 原始需求快照，只读。
 - 内置工具 63 个（清单以 `bot::registry::TOOLS_TABLE` 为准；其中 read_own_card/write_artifact_file 两个仅子 agent 可见，不进主 agent 清单）：任务管理（query_tasks/query_single_task/create_task/complete_task/delete_task/edit_task/add_subtask/toggle_subtask/remove_subtask/link_file_to_task）+ 文件读写（list_files/read_text_file/grep_files/edit_file/write_file）+ 文档处理（extract_document/create_word/create_word_revisions/create_excel/create_ppt/create_pdf）+ 图片识字（ocr_image）+ 本机 Python（run_python，独立临时目录在系统 temp 的 wmessage-py-runs/<uuid>/ + 60s 超时，开关默认关闭；子进程注入 WM_GEN_DIR/WM_TMP_DIR 环境变量，写相对路径的产物跑完自动回收进 AI_Gen_Files）+ Python AST 探查（ast_inspect：走同一 run_python 沙箱 + 标准库 ast，零新增依赖；op=symbols/defs/refs/callgraph 四模式，callgraph 跨文件现扫不缓存，单次上限 200 文件/2MB、触及即报 truncated；授权判定留在 Rust 侧——先过 bot_fs 白名单闸再把 canonical path 交给沙箱，目录内指向外部的 symlink 一律排除；仅 .py，非 .py 明确拒绝并指向 grep_files）+ 联网（web_search：配置 Tavily 或 Brave key 走对应 API、双开报错，未配置走 Bing+百度网页抓取 / fetch_url 仅公网；直连打通但正文过短（JS 空壳）时回退免费渲染代理 r.jina.ai，**直连压根没走通同样回退**（2026-10-18）——连接超时/被拒、5xx/408、响应不是网页文本过去一律当场失败，于是「本机到某个站点不通」直接等于「这个页面抓不到」，哪怕换个出口就能拿到内容；失败按性质分两类：网址非法、SSRF 闸拦、重定向策略拒绝、4xx、超大页面属「换出口也没用」直接报错不碰代理（闸拦过的内网地址若也走兜底，等于把不该访问的目标转手交给第三方），其余才进代理；HTTP 错误带最终 URL（重定向之后的那个））+ 长期记忆（remember_fact/recall_facts/record_lesson，语义记忆体 v2）+ 时间（get_current_time）+ Skill（use_skill/create_skill/install_skill/search_skills：install_skill 装 GitHub 仓库 / 腾讯 SkillHub / zip 直链三种来源的技能，search_skills 在 SkillHub 上搜技能；**三条装入入口（create_skill / install_skill / 设置页导入）同一准入核**：frontmatter 必须有 description、intents 与 description 不命中危险关键词、intents 每条模式必须可编译且**不得过宽**——须含 ≥2 字符的连续字面量，且不得能匹配与自身意图词无关的任意文本（判据在 `intent_router::check_intent_pattern`；技能装上即进进程级路由表，一个 `.*` 就能把此后每条用户消息都劫持进该技能）；**create_skill 与 install_skill 都要用户确认**，确认窗展示 intents 触发词与 mode（auto = 命中后不经 LLM 复核直接执行技能步骤），非交互/后台执行一律默认拒绝）+ 归档（unpack_archive/pack_archive：zip / tar / tar.gz）+ 文件搬运（manage_file：copy 复制 / move 移动 / delete 删除进回收站）+ 子 agent（spawn_subagent/check_subagent/cancel_subagent）+ 电脑辅助（reveal_path/open_url/clipboard_write/copy_file_to_clipboard/screenshot）+ 提醒（schedule_reminder/list_reminders/cancel_reminder）+ 桌面 UI 自动化（list_windows/activate_window/ui_inspect/ui_click/ui_type/wait_for_element，独立总开关默认关闭）+ 程序（apps_list/apps_create/apps_update_files）+ 问答（ask_user）+ 受管长驻服务（start_service/stop_service/list_services：宿主直接 spawn 的长驻进程，活过本次工具调用，登记表可查可停，停止走 SIGINT→100ms→SIGTERM→400ms→SIGKILL 阶梯并递归回收脱离进程组的子孙，宿主退出时统一收干净；**Windows 上没有信号语义**，改走 `taskkill /T /F` 整树强杀；**停止只在进程真退出时才算成功**（2026-10-22）：等不到退出就把状态放回原样、服务留在活动集合里（写 `Exited` 等于告诉退出清理「这个不用收了」，而它明明还在跑），并返回一条明确错误——此前 Windows 上停止阶梯整体空转（信号发不出去、存活探测恒假），接口却回报「已停止」、登记表写「已退出」，服务进程继续跑继续占端口却被从活动集合里摘掉；**树根不许是 pid 0 / pid 1**（2026-10-22）：pid 0 是 spawn 前的占位条目、pid 1 是 init/launchd（全机进程都是它的后代），拿它们当根去收集后代会收到「宿主机上所有进程」再逐个 SIGKILL——那是宿主自杀；**不继承 run_python 的 rlimit**——RLIMIT_CPU=timeout+10 会 SIGXCPU 杀掉正在构建的 dev server、Linux 上 RLIMIT_AS=480MB 会让 node 启动即失败（实测）；stdout/stderr 落 O_APPEND 文件不占管道（绕开 drain 超时那条连坐杀组路径），输出上限 8MB 保留尾部；启动器走 MCP 侧同一份 STDIO_LAUNCH_ALLOWLIST 白名单、cwd 过 bot_fs 路径授权闸；独立设置页开关默认关闭，yolo 免开关；服务继承宿主环境变量（含其中密钥）；**端口/监听地址闸**（2026-10-21）：默认只许受管服务监听 loopback（127.0.0.0/8 或 ::1），禁用宿主保留端口（本地 API 4763）与特权端口（<1024）——**检测-终止不是预防**：启动后前 10s 加密采样（0/0.5/1/2/5/10s）、之后并入 30s 巡检，**最坏检测延迟上界 10s（启动）/ 30s（稳态）**，一旦采样发现违规立即杀进程组（不是容忍暴露期）；放开非 loopback 要单独开设置页开关「允许服务暴露到非 loopback」；违规记在独立字段（面板红色徽章 + 审计 service.port_violation + 应用内通知中心一条消息），状态机本身不变；**Windows 上本闸不生效**（采不到运行期监听，只能做启动前参数诊断），面板会明说这一点——待 NETSTAT-SOCKETS 条目补齐；**采不到与「没人监听」分开**（2026-10-21）：采集层（`lsof` / `/proc/net/*`）显式回报「本次采样是否成功」——采空但采成功 = 真没人在监听（判了没事），采集路径存在却采不到（lsof 起不来或报错、`/proc/net/*` 不可读）= **没判**，闸本轮返回 `Unsupported` 而不是 `Ok`，并写审计 `service.listening_sample_failed`、在设置页明说「端口闸本轮未判」；采不到时**保留端口动态保留集不清空**（清空了 L2 防抢占随之一起静默失效）；**MCP stdio 子进程也走同一套停止阶梯**（自建进程组 + SIGINT→SIGTERM→SIGKILL 阶梯 + 回收脱离进程组的子孙；原先只靠 rmcp 的 Drop fire-and-forget 一个 SIGKILL，退出时可能留孤儿）；**资源观测只告警不杀**——每 30s 采样整棵进程树的 RSS / CPU（单服务 >512MB / 合计 >1GB / CPU 跑满持续 5min 才出声，审计记 service.resource_warning，list_services 与设置页都看得见；macOS 无等价内存硬限额、CPU 上限会误杀正在构建的 dev server，所以只出声不自动杀）；**服务告警也进应用内通知中心**（资源告警与端口违规各落一条，只告知不决策）——系统通知依赖通知插件，插件没装就静默跳过，那时通知中心是唯一去处；告警条件消失时自动收掉那一条（转「已处理」），避免同一条告警反复出现把角标堆成一摞；**设置页「本地服务」分区**列出受管服务（状态 / pid / 运行时长 / 内存 / CPU / 输出尾部 / 告警）并可随时停掉）
    - Word 润色默认修订模式（track changes，w:ins/w:del，author=WMessage AI）；产物统一落 AI_Gen_Files（`db::gen_dir` 中心函数解析、启动即预建、同名 (n) 序号永不覆盖；系统提示词硬性约束产物/临时文件落点）
    - 文件搬运工具（manage_file）：复制 / 移动 / 删除。**源走读白名单闸、目标走写白名单闸**（与 edit_file / write_file 同一套 `bot_fs` 授权口径，白名单外弹授权窗）；目标已存在一律**不覆盖**（让模型自己换名，不猜「覆盖是用户想要的」）；`move` 同卷走 rename、跨卷走「复制 + 源入回收站」（半途失败时源文件仍在原处，不凭空消失）；`delete` 删前**弹窗确认**（60s 无响应默认拒绝）且删除进系统回收站（macOS 废纸篓 / Windows 回收站）而不是物理删除——误删可恢复；目录树里的符号链接既不跟随也不复制（软链能把后续条目引到目录外）；copy/move 的目标按「已生成」计入产物凭证（模型可如实说「已复制到 X」）
