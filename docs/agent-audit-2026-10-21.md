@@ -1085,6 +1085,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-1 | 已修 | 采集层显式回报采样成败（`procs::ListeningSample`）+ 采样失败降级 `Unsupported` |
 | P1-2 | 已修 | Windows 停止阶梯落地（`taskkill /T /F`）+ 停止失败不谎报「已停」+ pid 0/1 不许当树根（`procs::stop_tree` / `services::stop_entry`）|
 | P1-12 | 已修 | 主聊天路径工具执行包 `catch_unwind`（`dispatch::run_tool_panic_isolated`）+ 接线守卫 |
+| P1-7 | 已修 | 失效测试补回 `#[tokio::test]` + `cargo clippy --all-targets -- -D warnings` 进快门禁（`scripts/test-fast.sh`）+ 16 处存量 lint 清零 |
 
 ### P0-1 的落地口径
 
@@ -1311,3 +1312,34 @@ panic → future unwind → `bot_chat` 整轮崩：用户这一轮对话全丢�
 
 **接线守卫**：`dispatch` 源码扫描钉住「内置工具执行与 MCP 兜底路由都必须走
 隔离层，隔离层必须真的 catch_unwind 且归一成 `ToolResult::error`」。
+
+### P1-7 的落地口径
+
+**失效的测试补回属性**：`bot/mcp/manager.rs` 的
+`missing_binary_marks_down_and_lazy_reconnects` 补上 `#[tokio::test]`。它覆盖的
+「MCP stdio 指向不存在的脚本 → 置 Down + 错误可查 + 懒重连自动恢复」此前
+**从未被收集运行**（缺属性 → clippy 的 dead_code 判死 → `cargo nextest list`
+查无此例）。补回后实测通过——与本报告初稿的判断一致：是写漏了属性，不是
+行为不完整。
+
+**clippy 进快门禁**：`scripts/test-fast.sh` 新增 `[2.4/N]` 步：
+
+```
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
+- `--all-targets` 是关键：只 lint lib 的话，测试目标里的死函数照样看不见。
+- **clippy 没装 = 这道门禁直接失败**（不静默 skip）。静默 skip 等于门禁只剩
+  一个名字——「文档说的事实被代码否掉」那个形状。
+- 存量 lint 清零：`-D warnings` 一开就是 **16 处报错**（`io_other_error` ×7、
+  `collapsible_if` ×2、`field_reassign_with_default` ×7、`if_same_then_else`、
+  `redundant_closure`、`manual_is_multiple_of`、`single_char_add_str`、
+  `too_many_lines`）。这 16 处此前**从未被任何门禁拦过**——clippy 不在门禁里
+  的代价，现在一次结清。清零后 `cargo clippy --all-targets -- -D warnings`
+  全绿。
+
+**文档口径同步**：`AGENTS.md` 的命令条改成真话（clippy 带 `--all-targets
+-- -D warnings`，且**已在快门禁内**）；`docs/testing.md` 门禁表补 `[2.4/N]`
+一行，并写明它防的是哪一类问题——「测试压根没被收集运行」，那种 `cargo
+nextest` 跑起来全绿、只有 clippy 知道真相的坑。
+

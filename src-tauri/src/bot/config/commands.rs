@@ -683,8 +683,10 @@ mod preserve_tests {
     fn preserve_guard_keywords_only_fills_missing_not_explicit_clear() {
         // 前端整体替换写：没带这个字段（None）时保留盘上值，否则设置页任意
         // 一次保存都会把用户的词表清掉
-        let mut disk = BotConfig::default();
-        disk.guard_claim_keywords = Some(vec!["我搞定了".to_string()]);
+        let disk = BotConfig {
+            guard_claim_keywords: Some(vec!["我搞定了".to_string()]),
+            ..Default::default()
+        };
         let mut incoming = BotConfig::default();
         preserve_guard_keywords(&mut incoming, &disk);
         assert_eq!(
@@ -694,8 +696,10 @@ mod preserve_tests {
         );
 
         // 用户显式存空数组 = 关掉这道触发器，是合法取值，照写不误
-        let mut clearing = BotConfig::default();
-        clearing.guard_claim_keywords = Some(Vec::new());
+        let mut clearing = BotConfig {
+            guard_claim_keywords: Some(Vec::new()),
+            ..Default::default()
+        };
         preserve_guard_keywords(&mut clearing, &disk);
         assert_eq!(
             clearing.guard_claim_keywords,
@@ -704,8 +708,10 @@ mod preserve_tests {
         );
 
         // 用户自定义过 = 尊重用户的，不被盘上默认覆盖
-        let mut custom = BotConfig::default();
-        custom.guard_claim_keywords = Some(vec!["完事了".to_string()]);
+        let mut custom = BotConfig {
+            guard_claim_keywords: Some(vec!["完事了".to_string()]),
+            ..Default::default()
+        };
         preserve_guard_keywords(&mut custom, &disk);
         assert_eq!(
             custom.guard_claim_keywords,
@@ -950,10 +956,12 @@ mod perm_mode_tests {
     /// 整份回写会覆盖设置页并发修改的白名单/开关。
     #[test]
     fn apply_perm_mode_touches_only_perm_mode() {
-        let mut cfg = BotConfig::default();
-        cfg.tool_rules = sanitize_tool_rules(Some(vec![rule("edit_file", "ask")]));
-        cfg.max_rounds = Some(42);
-        cfg.perm_mode = Some("ask".into());
+        let mut cfg = BotConfig {
+            tool_rules: sanitize_tool_rules(Some(vec![rule("edit_file", "ask")])),
+            max_rounds: Some(42),
+            perm_mode: Some("ask".into()),
+            ..Default::default()
+        };
         let before_rules = cfg.tool_rules.clone();
         apply_perm_mode(&mut cfg, "yolo");
         assert_eq!(cfg.perm_mode.as_deref(), Some("yolo"));
@@ -967,17 +975,19 @@ mod perm_mode_tests {
     /// 实际生效的不是一回事）。`max_function_calls` 此前就漏在钳制列表外。
     #[test]
     fn clamp_agent_params_makes_stored_value_equal_effective_value() {
-        let mut cfg = BotConfig::default();
-        cfg.max_rounds = Some(999);
-        cfg.max_function_calls = Some(9999);
-        cfg.history_budget_chars = Some(1);
-        cfg.subagent_max_turns = Some(0);
-        cfg.subagent_max_wall_secs = Some(10);
-        cfg.search_max_results = Some(99);
-        cfg.ask_budget = Some(99);
-        cfg.max_tool_output_bytes = Some(999_999);
-        cfg.python_timeout_secs = Some(10_000);
-        cfg.max_tokens = Some(999_999);
+        let mut cfg = BotConfig {
+            max_rounds: Some(999),
+            max_function_calls: Some(9999),
+            history_budget_chars: Some(1),
+            subagent_max_turns: Some(0),
+            subagent_max_wall_secs: Some(10),
+            search_max_results: Some(99),
+            ask_budget: Some(99),
+            max_tool_output_bytes: Some(999_999),
+            python_timeout_secs: Some(10_000),
+            max_tokens: Some(999_999),
+            ..Default::default()
+        };
         clamp_agent_params(&mut cfg);
         // 每个落盘值都必须等于读侧 resolver 对同一份配置的解析结果
         assert_eq!(
@@ -1043,8 +1053,10 @@ mod perm_mode_tests {
         assert_eq!(cfg.max_function_calls, None);
         assert_eq!(cfg.max_tool_output_bytes, None);
 
-        let mut cfg = BotConfig::default();
-        cfg.max_tool_output_bytes = Some(0);
+        let mut cfg = BotConfig {
+            max_tool_output_bytes: Some(0),
+            ..Default::default()
+        };
         clamp_agent_params(&mut cfg);
         assert_eq!(
             cfg.max_tool_output_bytes,

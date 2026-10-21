@@ -1053,6 +1053,7 @@ fn build_command(command: &str, args: &[String], cwd: &Path) -> Result<Command, 
 }
 
 /// 起一个服务并登记。**阻塞**：含就绪等待，必须挪到 blocking 线程。
+#[allow(clippy::too_many_lines)]
 pub(crate) fn do_start<R: tauri::Runtime>(
     app: &AppHandle<R>,
     req: &StartRequest,
@@ -1244,7 +1245,7 @@ pub(crate) fn do_start<R: tauri::Runtime>(
         }
         if !stderr_tail.is_empty() {
             if !detail.is_empty() {
-                detail.push_str("；");
+                detail.push('；');
             }
             detail.push_str("stderr: ");
             detail.push_str(&stderr_tail.join(" | "));

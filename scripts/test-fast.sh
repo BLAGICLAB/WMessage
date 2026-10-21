@@ -9,6 +9,8 @@
 #           audit-ok 行内豁免）——纯文本检查，<1s
 #   [1/N]   cargo fmt --check：格式漂移
 #   [2/N]   cargo check：编译错误（增量缓存）
+#   [2.4/N] cargo clippy --all-targets -- -D warnings：Rust lint 门禁
+#           （含「测试压根没被收集」这条 dead_code 信号；未安装即失败，不静默 skip）
 #   [2.5/N] cargo machete src-tauri：未使用 Rust 依赖（未安装则 skip 并提示）
 #   [3/N]   tsc --noEmit：前端类型检查（incremental）
 #   [3.5/N] knip --no-progress：前端死文件/死 export/未使用 npm 依赖
@@ -128,6 +130,27 @@ fi
 if [[ "$NEED_CARGO" == true ]]; then
     step "[2/N] cargo check (compile-only)" \
         cargo check --manifest-path src-tauri/Cargo.toml --quiet
+fi
+
+# ─── 步骤 2.4: cargo clippy（Rust lint 门禁） ──────────────────────────
+# clippy 是**唯一**能发现「一个测试从未被收集运行」的信号：缺 #[test] /
+# #[tokio::test] 的函数会被 dead_code 判死，而 cargo nextest 跑起来是全绿的
+# （那个函数压根没进测试集合）。
+#
+# 这条不是「多一道 lint」：上一轮审计实证过——一条覆盖「MCP 指向不存在的
+# 二进制 → 置 Down → 懒重连自动恢复」的测试因缺 #[tokio::test] 从未运行过，
+# 而门禁里没有任何东西能拦住它复发。
+#
+# 没装 clippy 不放行（静默 skip = 门禁只剩一个名字）：装不上就装
+# `rustup component add clippy`。
+if [[ "$NEED_CARGO" == true ]]; then
+    if command -v cargo-clippy >/dev/null 2>&1; then
+        step "[2.4/N] cargo clippy（--all-targets，-D warnings）" \
+            cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+    else
+        echo "✗ [2.4/N] cargo clippy 未安装——门禁必须有它（装：rustup component add clippy）"
+        exit 1
+    fi
 fi
 
 # ─── 步骤 2.5: cargo machete（未使用 Rust 依赖门禁，未安装则 skip） ──

@@ -1330,6 +1330,7 @@ mod e2e_stdio {
         let _ = std::fs::remove_file(&pidfile);
     }
 
+    #[tokio::test]
     async fn missing_binary_marks_down_and_lazy_reconnects() {
         if !ensure_python3().await {
             eprintln!("[skip] 无 python3，跳过 MCP stdio e2e");

@@ -227,10 +227,11 @@ fn detect_format(path: &Path) -> std::io::Result<ArchiveFormat> {
     // tar：ustar 标记在第 257 字节；旧式 tar 没有，但旧式 tar 极少，
     // 交给 tar 解析器报错（错误文案会带上「无法识别的压缩格式」）。
     let mut magic = [0u8; 5];
-    if f.seek(std::io::SeekFrom::Start(257)).is_ok() && f.read_exact(&mut magic).is_ok() {
-        if &magic == b"ustar" {
-            return Ok(ArchiveFormat::Tar);
-        }
+    if f.seek(std::io::SeekFrom::Start(257)).is_ok()
+        && f.read_exact(&mut magic).is_ok()
+        && &magic == b"ustar"
+    {
+        return Ok(ArchiveFormat::Tar);
     }
     Ok(ArchiveFormat::Tar)
 }
@@ -658,9 +659,8 @@ fn pack_zip(src: &Path, out: &Path, limits: &Limits) -> std::io::Result<PackOutc
     let mut count = 0usize;
     for (path, rel) in &files {
         let mut f = File::open(path)?;
-        zw.start_file(entry_name_of(rel), opts).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("zip 写入失败：{e}"))
-        })?;
+        zw.start_file(entry_name_of(rel), opts)
+            .map_err(|e| std::io::Error::other(format!("zip 写入失败：{e}")))?;
         let written = std::io::copy(&mut f, &mut zw)?;
         total = total.saturating_add(written);
         if total > limits.max_total_bytes {
@@ -676,9 +676,8 @@ fn pack_zip(src: &Path, out: &Path, limits: &Limits) -> std::io::Result<PackOutc
         }
         count += 1;
     }
-    zw.finish().map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::Other, format!("zip 收尾失败：{e}"))
-    })?;
+    zw.finish()
+        .map_err(|e| std::io::Error::other(format!("zip 收尾失败：{e}")))?;
     Ok(PackOutcome {
         entries: count,
         total_bytes: total,
@@ -706,18 +705,15 @@ fn pack_tar(
                 let n = file_size(path);
                 builder
                     .append_path_with_name(path, entry_name_of(rel))
-                    .map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::Other, format!("tar 写入失败：{e}"))
-                    })?;
+                    .map_err(|e| std::io::Error::other(format!("tar 写入失败：{e}")))?;
                 total = total.saturating_add(n);
                 count += 1;
             }
-            let enc = builder.into_inner().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("tar 收尾失败：{e}"))
-            })?;
-            enc.finish().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("gzip 收尾失败：{e}"))
-            })?;
+            let enc = builder
+                .into_inner()
+                .map_err(|e| std::io::Error::other(format!("tar 收尾失败：{e}")))?;
+            enc.finish()
+                .map_err(|e| std::io::Error::other(format!("gzip 收尾失败：{e}")))?;
         }
         _ => {
             let mut builder = tar::Builder::new(file);
@@ -725,15 +721,13 @@ fn pack_tar(
                 let n = file_size(path);
                 builder
                     .append_path_with_name(path, entry_name_of(rel))
-                    .map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::Other, format!("tar 写入失败：{e}"))
-                    })?;
+                    .map_err(|e| std::io::Error::other(format!("tar 写入失败：{e}")))?;
                 total = total.saturating_add(n);
                 count += 1;
             }
-            builder.finish().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("tar 收尾失败：{e}"))
-            })?;
+            builder
+                .finish()
+                .map_err(|e| std::io::Error::other(format!("tar 收尾失败：{e}")))?;
         }
     }
     if total > limits.max_total_bytes {

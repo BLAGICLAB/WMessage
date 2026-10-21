@@ -244,7 +244,7 @@ pub async fn tool_list_reminders(app: &AppHandle, _args: &str) -> ToolResult {
             for r in &list {
                 let at = r
                     .remind_at
-                    .and_then(|ms| DateTime::from_timestamp_millis(ms))
+                    .and_then(DateTime::from_timestamp_millis)
                     .map(|t| t.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string())
                     .unwrap_or_else(|| "无下次触发".to_string());
                 lines.push(format!(

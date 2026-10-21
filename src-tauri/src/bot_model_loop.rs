@@ -232,8 +232,10 @@ pub fn parse_sse_chunk(line: &str) -> Option<ParsedChunk> {
     };
     let delta = &choice0["delta"];
 
-    let mut chunk = ParsedChunk::default();
-    chunk.usage = usage;
+    let mut chunk = ParsedChunk {
+        usage,
+        ..Default::default()
+    };
 
     if let Some(t) = delta["content"].as_str() {
         if !t.is_empty() {
@@ -1447,9 +1449,7 @@ pub async fn run_model_loop(
         // 本会话调用过的工具名（点名判据的排除集）：查库失败返 None
         // （= 查不到 → core 侧整档让开，查不到证据不等于有罪）。
         session_tools: Some(&|sid: Option<&str>| {
-            let Some(sid) = sid else {
-                return None;
-            };
+            let sid = sid?;
             let conn = match crate::db::open_db(&app) {
                 Ok(c) => c,
                 Err(e) => {
@@ -2729,19 +2729,16 @@ where
             // 落盘凭证这道要在存在性过了之后才问：路径压根不存在时已经判编造，
             // 没必要再查库。
             let mut unreceipted_path: Option<String> = None;
-            if fake_gen_path.is_none() && !claimed_paths.is_empty() {
-                if !unverifiable_ran {
-                    let pending: Vec<String> = claimed_paths
-                        .iter()
-                        .filter(|p| !written_paths.contains(&p.to_lowercase()))
-                        .cloned()
-                        .collect();
-                    if !pending.is_empty() {
-                        if let Some(fetch) = deps.file_receipts {
-                            unreceipted_path = fetch(stop.session_id(), &pending)
-                                .into_iter()
-                                .next();
-                        }
+            if fake_gen_path.is_none() && !claimed_paths.is_empty() && !unverifiable_ran {
+                let pending: Vec<String> = claimed_paths
+                    .iter()
+                    .filter(|p| !written_paths.contains(&p.to_lowercase()))
+                    .cloned()
+                    .collect();
+                if !pending.is_empty() {
+                    if let Some(fetch) = deps.file_receipts {
+                        unreceipted_path =
+                            fetch(stop.session_id(), &pending).into_iter().next();
                     }
                 }
             }
@@ -4379,7 +4376,7 @@ mod hallucination_guard_tests {
 
     #[test]
     fn preview_keeps_head_tail_and_notice_within_cap() {
-        let text: String = std::iter::repeat('A').take(20_000).collect();
+        let text: String = "A".repeat(20_000);
         let notice = "指针";
         let out = preview_with_pointer(&text, notice, 8_192);
         // 指针 6 字节 + 分隔 4 字节，剩余 8182 字节对半分 = 4091

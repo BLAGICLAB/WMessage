@@ -26,6 +26,7 @@ scripts/install-hooks.sh   # 首次 clone 后跑一次（幂等）：git 指向�
 | `[0/N]` 工单号防线 | 注释里混入工单号/拍板记录（`批次N审计` / `P0-12` / `W8-ATTACH` / `OCR C5` / `B0-1` / `AUDIT-*` / `SUBA-2` /「拍板」），烂成考古化石 | 把工单号从新增注释里删掉，只留"为什么"；确需引用历史口径 → 行内加 `audit-ok` |
 | `[1/N]` cargo fmt --check | 格式漂移 | `cargo fmt --manifest-path src-tauri/Cargo.toml` |
 | `[2/N]` cargo check | 编译错误 | 按报错修 |
+| `[2.4/N]` cargo clippy（`--all-targets -- -D warnings`） | Rust lint 报错的**全部**，含最阴的那类：**缺 `#[test]` / `#[tokio::test]` 的测试从未被收集运行**——`cargo nextest` 跑起来是全绿的（那个函数压根不在测试集合里），只有 clippy 的 `dead_code` 知道它 | 按 clippy 提示改；确认是误报就 `#[allow(clippy::<lint>)]` 并写清理由。**clippy 没装 = 这道门禁直接失败**（`rustup component add clippy`），不静默 skip——静默 skip 等于门禁只剩一个名字 |
 | `[2.5/N]` cargo machete | 未使用的 Rust 依赖（Cargo.toml 只进不出） | 删依赖；误报 → Cargo.toml `[package.metadata.cargo-machete] ignored = [...]`。未安装时该步 skip 并提示：`cargo install cargo-machete --locked` |
 | `[3/N]` tsc --noEmit | 前端类型错误 | 按报错修 |
 | `[3.5/N]` knip | 前端死文件/死 export/未使用 npm 依赖 | 删或改为内部使用；tauri 插件类包若只在 Rust 侧用（字符串 invoke），属低置信误报，按实际情况取舍 |

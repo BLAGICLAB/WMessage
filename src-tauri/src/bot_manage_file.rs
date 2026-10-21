@@ -258,10 +258,10 @@ async fn delete_to_trash(
                     crate::bot::truncate_for_log(&shown, 200)
                 ),
             );
+            // macOS 叫「废纸篓」，其余平台叫「回收站」——平台差异由 trash crate
+            // 内部处理，本分支只管文案
             let where_ = if cfg!(target_os = "macos") {
                 "废纸篓"
-            } else if cfg!(target_os = "windows") {
-                "回收站"
             } else {
                 "回收站"
             };

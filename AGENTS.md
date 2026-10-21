@@ -17,7 +17,7 @@
 
 - 快检：`bash scripts/test-fast.sh`（pre-commit 自动跑，按改动智能跳过）
 - 全量：`bash scripts/test-all.sh`（pre-push 自动跑：cargo nextest + vitest）
-- Rust 单测：`cd src-tauri && cargo test --lib`；lint：`cargo clippy --manifest-path src-tauri/Cargo.toml`
+- Rust 单测：`cd src-tauri && cargo test --lib`；lint：`cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`（**已在快门禁内**；clippy 是唯一能发现「测试压根没被收集运行」的信号，没装 = 门禁失败，不静默 skip）
 - 前端：`npm test`；lint：`npx oxlint src`；类型：`npx tsc --noEmit`
 
 ## 硬性禁令（门禁会拦，人也退）
