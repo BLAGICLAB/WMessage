@@ -229,10 +229,23 @@ fn http_client_pinned(
 pub(crate) static SHARED_MCP_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 配置指纹：任何影响连接/行为的字段变化都会换指纹（id 变化 = 换条目，天然换槽）。
+///
+/// **显式枚举字段**：不能用 `serde_json::to_value(cfg)`——env/headers 是机密
+/// 字段，`Serialize` 里被 `skip_serializing` 剥掉，用序列化值算指纹就看不见
+/// 它们：改了 API token / 环境变量不换指纹 = 不重连 = 旧凭据继续用
+/// （配置已保存、面板已刷新，实际行为没变）。
 pub fn fingerprint(cfg: &McpServerConfig) -> u64 {
-    let value = serde_json::to_value(cfg).unwrap_or(serde_json::Value::Null);
     let mut h = DefaultHasher::new();
-    value.to_string().hash(&mut h);
+    cfg.id.hash(&mut h);
+    cfg.name.hash(&mut h);
+    cfg.transport.hash(&mut h);
+    cfg.command.hash(&mut h);
+    cfg.args.hash(&mut h);
+    cfg.url.hash(&mut h);
+    cfg.env.hash(&mut h);
+    cfg.headers.hash(&mut h);
+    cfg.timeout_secs.hash(&mut h);
+    cfg.enabled.hash(&mut h);
     h.finish()
 }
 
@@ -850,6 +863,53 @@ mod send_probe {
             };
             assert_eq!(arm, *cmd, "构造臂字面量必须等于白名单项本身");
         }
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    //! 指纹必须对「影响连接/行为的字段」敏感。env/headers 是机密字段，
+    //! `Serialize` 里被 `skip_serializing` 剥掉——用序列化值算指纹就看不见它们，
+    //! 改了 API token 不换指纹 = 不重连 = 旧凭据继续用（配置已保存、行为没变）。
+    use super::*;
+
+    fn cfg() -> McpServerConfig {
+        McpServerConfig {
+            id: "s1".into(),
+            name: "fs".into(),
+            transport: "stdio".into(),
+            command: Some("npx".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fingerprint_changes_when_env_or_headers_change() {
+        let fp = fingerprint(&cfg());
+        let mut with_env = cfg();
+        with_env.env.insert("TOKEN".into(), "v1".into());
+        assert_ne!(
+            fingerprint(&with_env),
+            fp,
+            "env 变了必须换指纹（否则改了机密不重连）"
+        );
+        let mut with_env2 = cfg();
+        with_env2.env.insert("TOKEN".into(), "v2".into());
+        assert_ne!(
+            fingerprint(&with_env2),
+            fingerprint(&with_env),
+            "env 的值变了必须换指纹"
+        );
+        let mut with_headers = cfg();
+        with_headers
+            .headers
+            .insert("Authorization".into(), "Bearer x".into());
+        assert_ne!(fingerprint(&with_headers), fp, "headers 变了必须换指纹");
+    }
+
+    #[test]
+    fn fingerprint_is_stable_for_identical_config() {
+        assert_eq!(fingerprint(&cfg()), fingerprint(&cfg()));
     }
 }
 

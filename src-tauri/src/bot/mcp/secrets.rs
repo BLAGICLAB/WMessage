@@ -63,6 +63,61 @@ impl McpSecrets {
     }
 }
 
+/// 脱敏视图（下发给前端）：键名 + 掩码值，明文不出宿主。
+///
+/// 空组也照常下发（不像 blob 那样 skip 空组）——前端要靠「键名在不在」
+/// 判断这一项是否已设置，缺字段与空组必须能区分。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpSecretsMasked {
+    /// 掩码占位符（前端提示文案用——两边各写一份常量就会漂）
+    pub mask: String,
+    /// 值全为 `MASK`
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// 值全为 `MASK`
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+/// 脱敏掩码：下发给前端的机密值占位符。
+///
+/// 前端拿不到明文（`skip_serializing`），但用户要看得见「哪些变量已设置」
+/// 并能逐项增删——于是下发「键名 + 掩码值」，保存时掩码值原样回传即表示
+/// 「这一项保留原值」。真值只存在于 keyring / 降级文件，不出宿主。
+pub const MASK: &str = "••••••";
+
+/// 脱敏视图：值全替换成掩码（键名照常下发）。
+pub fn masked(secrets: &McpSecrets) -> McpSecrets {
+    let mask_map = |m: &BTreeMap<String, String>| -> BTreeMap<String, String> {
+        m.keys().map(|k| (k.clone(), MASK.to_string())).collect()
+    };
+    McpSecrets {
+        env: mask_map(&secrets.env),
+        headers: mask_map(&secrets.headers),
+    }
+}
+
+/// 掩码解析：把回传的掩码值还原成已存真值。
+///
+/// 规则：值 == 掩码 → 保留已存的同名项（已存没有这一项 = 该项已被别处删除，
+/// 按「用户没改这一项」处理 = 不写回）；值 != 掩码 → 用新值。
+/// **不在传入表里的键 = 用户删掉了这一项**（不再保留）。
+pub fn resolve_masked(
+    incoming: &BTreeMap<String, String>,
+    old: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    incoming
+        .iter()
+        .filter_map(|(k, v)| {
+            if v == MASK {
+                old.get(k).map(|kept| (k.clone(), kept.clone()))
+            } else {
+                Some((k.clone(), v.clone()))
+            }
+        })
+        .collect()
+}
+
 // 进程内缓存
 
 /// id → 已读结果（None = 读过且无值 / 读失败按空处理）。
@@ -349,17 +404,39 @@ pub(crate) fn hydrate_mcp_servers(app: &tauri::AppHandle, cfg: &mut crate::bot::
     }
 }
 
+/// 读一台服务器的已存机密（缓存优先；未读过才敲后端）。
+///
+/// 读失败 → Err（不缓存：缓存 None 会把瞬时故障固化成永久丢机密）。
+pub(crate) fn read_server_secrets(
+    app: &tauri::AppHandle,
+    id: &str,
+) -> Result<Option<McpSecrets>, String> {
+    match cache_get(id) {
+        Some(v) => Ok(v),
+        None => {
+            let v = read_backend(app, id)?;
+            cache_put(id, v.clone());
+            Ok(v)
+        }
+    }
+}
+
 /// 保存命令落 blob（先 keyring 后配置的关键一步）。空机密 = 清除条目。
 /// 返回 Err 时调用方整体报错、配置不动。
+///
+/// **掩码还原**：前端回传的掩码值 = 「这一项保留原值」——落盘的是真值，
+/// 掩码只是传输态占位。还原对表用的是**当前已存**的真值（不是前端看到的
+/// 那份脱敏快照），所以掩码过期也不会把旧值写回去。
 pub(crate) fn store_server_secrets(
     app: &tauri::AppHandle,
     id: &str,
     env: &BTreeMap<String, String>,
     headers: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    let old = read_server_secrets(app, id)?.unwrap_or_default();
     let secrets = McpSecrets {
-        env: env.clone(),
-        headers: headers.clone(),
+        env: resolve_masked(env, &old.env),
+        headers: resolve_masked(headers, &old.headers),
     };
     if secrets.is_empty() {
         delete_backend(app, id)?;
@@ -410,6 +487,53 @@ mod tests {
             big.to_blob().is_err(),
             "超限 blob 必须响亮报错（Windows 2560 上限）"
         );
+    }
+
+    // ── 脱敏视图：掩码往返 ──
+
+    #[test]
+    fn masked_view_keeps_keys_and_hides_values() {
+        let m = masked(&secrets());
+        assert_eq!(m.env.get("HOME").map(String::as_str), Some(MASK));
+        assert_eq!(
+            m.headers.get("Authorization").map(String::as_str),
+            Some(MASK)
+        );
+        // 明文不得出现在脱敏视图里
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("/tmp/x"), "{json}");
+        assert!(!json.contains("Bearer tok"), "{json}");
+        // 键名照常下发（用户要看得见「哪些变量已设置」）
+        assert!(m.env.contains_key("HOME"));
+        assert!(m.headers.contains_key("Authorization"));
+    }
+
+    #[test]
+    fn resolve_masked_keeps_stored_value_and_applies_new_one() {
+        let old = BTreeMap::from([
+            ("KEEP".into(), "old-secret".into()),
+            ("DROP".into(), "gone".into()),
+        ]);
+        // 前端回传：KEEP 是掩码（用户没改这一项）、NEW 是新值、DROP 压根没回传
+        let incoming = BTreeMap::from([
+            ("KEEP".into(), MASK.to_string()),
+            ("NEW".into(), "fresh".into()),
+        ]);
+        let out = resolve_masked(&incoming, &old);
+        assert_eq!(out.get("KEEP").map(String::as_str), Some("old-secret"));
+        assert_eq!(out.get("NEW").map(String::as_str), Some("fresh"));
+        assert!(
+            !out.contains_key("DROP"),
+            "前端没回传的键 = 用户删掉了这一项，不该被保留"
+        );
+    }
+
+    #[test]
+    fn resolve_masked_drops_mask_for_key_that_no_longer_exists() {
+        // 掩码过期（该项已被别处删除）：按「用户没改这一项」处理 = 不写回
+        let old = BTreeMap::new();
+        let incoming = BTreeMap::from([("K".into(), MASK.to_string())]);
+        assert!(resolve_masked(&incoming, &old).is_empty());
     }
 
     // ── config.rs 判据与剥离 ──

@@ -19,6 +19,7 @@ import { Modal } from "../../ui/Modal";
 import { EmptyState } from "../EmptyState";
 import {
   MCP_STDIO_LAUNCHERS,
+  type McpSecretsMasked,
   type McpServerConfig,
   type McpServerStatus,
   type McpToolBrief,
@@ -36,6 +37,12 @@ type FormState = {
   envText: string;
   /** http：一行一个 Key: Value（鉴权头等） */
   headersText: string;
+  /** 脱敏视图（本机已存的机密，值是掩码）：本表单不展示的那一组按原样回传，
+   *  免得「隐藏组的空对象」被后端当成「清空这一组」 */
+  maskedEnv: Record<string, string>;
+  maskedHeaders: Record<string, string>;
+  /** 掩码占位符（提示文案用；空 = 新建服务器，没有已存机密） */
+  maskText: string;
   url: string;
   /** 空串 = 默认 60s */
   timeoutSecs: string;
@@ -50,6 +57,9 @@ const EMPTY_FORM: FormState = {
   argsText: "",
   envText: "",
   headersText: "",
+  maskedEnv: {},
+  maskedHeaders: {},
+  maskText: "",
   url: "",
   timeoutSecs: "",
   enabled: true,
@@ -288,25 +298,47 @@ export function McpPanel() {
     // 表单回填需要原始配置字段——status 视图没有 args/env，
     // 从「编辑即整行覆盖」的角度只需回填用户可感知字段，args/env 留空会丢：
     // 因此编辑走 bot_get_config（getBotConfig）拿完整 mcpServers。
+    // 机密（env/headers）明文不下发前端（skip_serializing），另取脱敏视图：
+    // 键名照常回填、值是掩码——保存时掩码原样回传即「保留原值」，
+    // 用户改写即替换、删掉该行即删除，不用再靠「空 = 清空」猜意图。
     try {
+      // 机密脱敏视图先取：取不到就不开表单（fail-closed）——表单里的 env/headers
+      // 若是空对象，保存时会被后端当成「清空这一组」，把已存机密删掉
+      let maskedSecrets: McpSecretsMasked;
+      try {
+        maskedSecrets = await invoke<McpSecretsMasked>("mcp_server_secrets_masked", {
+          id: s.id,
+        });
+      } catch (e) {
+        handleCommandError(e, "mcp_server_secrets_masked", { silent: true });
+        setError(
+          `读取已存机密失败：${formatCommandError(e)}（为免误删机密，本次不打开编辑表单）`,
+        );
+        return;
+      }
       const cfg = await getBotConfig();
       const full = (cfg.mcpServers ?? []).find((x) => x.id === s.id);
       if (!full) {
         setError("找不到该服务器的完整配置");
         return;
       }
+      const maskedEnv = maskedSecrets.env ?? {};
+      const maskedHeaders = maskedSecrets.headers ?? {};
       setForm({
         id: full.id,
         name: full.name,
         transport: full.transport,
         command: full.command ?? "npx",
         argsText: (full.args ?? []).join("\n"),
-        envText: Object.entries(full.env ?? {})
+        envText: Object.entries(maskedEnv)
           .map(([k, v]) => `${k}=${v}`)
           .join("\n"),
-        headersText: Object.entries(full.headers ?? {})
+        headersText: Object.entries(maskedHeaders)
           .map(([k, v]) => `${k}: ${v}`)
           .join("\n"),
+        maskedEnv,
+        maskedHeaders,
+        maskText: maskedSecrets.mask ?? "",
         url: full.url ?? "",
         timeoutSecs: full.timeoutSecs != null ? String(full.timeoutSecs) : "",
         enabled: full.enabled,
@@ -344,10 +376,18 @@ export function McpPanel() {
       transport: form.transport,
       command: form.transport === "stdio" ? form.command : null,
       args: form.transport === "stdio" ? parseArgsLines(form.argsText) : [],
-      env: form.transport === "stdio" ? parseEnvLines(form.envText) : {},
+      // 本表单不展示的那一组按脱敏视图原样回传（掩码 = 保留原值）；
+      // 展示的那一组以用户改写后的内容为准（掩码原样 = 保留，改写 = 替换，
+      // 删掉该行 = 删除该项）
+      env:
+        form.transport === "stdio"
+          ? parseEnvLines(form.envText)
+          : form.maskedEnv,
       url: form.transport === "http" ? form.url.trim() : null,
       headers:
-        form.transport === "http" ? parseHeaderLines(form.headersText) : {},
+        form.transport === "http"
+          ? parseHeaderLines(form.headersText)
+          : form.maskedHeaders,
       timeoutSecs: timeout.value,
       enabled: form.enabled,
     };
@@ -674,6 +714,11 @@ export function McpPanel() {
                   }
                   placeholder={"一行一个 KEY=VALUE，可选"}
                 />
+                {form.maskText && (
+                  <p className="text-[0.65rem] text-[var(--t5)]">
+                    已设置的机密以 {form.maskText} 显示（明文不回传）：原样保存即保留该值，改写即替换，删掉该行即删除该项
+                  </p>
+                )}
               </>
             ) : (
               <>
@@ -696,6 +741,11 @@ export function McpPanel() {
                     "一行一个 Key: Value，鉴权头如：\nAuthorization: Bearer <token>"
                   }
                 />
+                {form.maskText && (
+                  <p className="text-[0.65rem] text-[var(--t5)]">
+                    已设置的机密以 {form.maskText} 显示（明文不回传）：原样保存即保留该值，改写即替换，删掉该行即删除该项
+                  </p>
+                )}
               </>
             )}
             <label className="text-[var(--t4)]">超时（秒）</label>

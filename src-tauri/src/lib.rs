@@ -694,6 +694,7 @@ pub fn run() {
             bot::mcp::commands::mcp_server_toggle,
             bot::mcp::commands::mcp_status,
             bot::mcp::commands::mcp_server_tools,
+            bot::mcp::commands::mcp_server_secrets_masked,
             memory::consolidate::memory_consolidate_now,
             memory::extract::mem_pending_approve,
             memory::extract::mem_pending_list,

@@ -120,6 +120,15 @@ export type McpServerConfig = {
   enabled: boolean;
 };
 
+/** mcp_server_secrets_masked 返回：MCP 机密脱敏视图（键名 + 掩码值）。
+ * 明文不出宿主；掩码值原样回传 = 「这一项保留原值」。 */
+export type McpSecretsMasked = {
+  /** 掩码占位符（提示文案用；值本身就是这个串 = 保留原值） */
+  mask: string;
+  env: Record<string, string>;
+  headers: Record<string, string>;
+};
+
 /** mcp_status 返回：配置 × 连接槽合并视图 */
 export type McpServerStatus = {
   id: string;

@@ -598,7 +598,7 @@ offset 起读的字节窗（当前是「先读前 100KB 再按行切」）。
 
 **本链已确认的问题**（主会话逐条复核成立）：
 
-#### P1-16 编辑 MCP 服务器会静默删掉它的 keyring 机密（env / headers）
+#### P1-16 编辑 MCP 服务器会静默删掉它的 keyring 机密（env / headers）（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/mcp/config.rs:102`（`env` 的 `skip_serializing`）·
 `src-tauri/src/bot/config/types.rs:528`（`BotConfigView.mcp_servers`）·
@@ -645,7 +645,7 @@ env 输入框**，不知道那下面原本有值。删除后重建连接时 `loa
 **之前**执行；校验失败时配置文件不写，但对**已存在的**服务器**不**回滚
 keyring → 「保存报错，但机密已被清空/替换」。
 
-#### P1-17 连接指纹对 env / headers 不敏感 → 改了机密不重连
+#### P1-17 连接指纹对 env / headers 不敏感 → 改了机密不重连（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/mcp/manager.rs:168-173`（`fingerprint`）
 
@@ -1079,6 +1079,8 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 |---|---|---|
 | P0-1 | 已修 | `intent_router::check_intent_pattern`（宽度闸）+ `tool_create_skill` 确认窗 + `skills_import` 补准入核 |
 | P1-18 | 已修 | MCP HTTP 分支接 DNS 级 SSRF 闸 + 钉 IP（`manager::http_client_for_mcp`） |
+| P1-16 | 已修 | 脱敏视图下发（`mcp_server_secrets_masked`）+ 掩码回传语义（`secrets::resolve_masked`） |
+| P1-17 | 已修 | 指纹显式枚举字段，含 env/headers（`manager::fingerprint`） |
 
 ### P0-1 的落地口径
 
@@ -1130,4 +1132,32 @@ localhost 家族、环回、私网、链路本地、保留段、数字形式 IPv
 公网 IP 字面量过两道闸；钉 IP 后用 `.invalid` 域名连本地回环桩成功（证明
 reqwest 没有二次解析、Host 头仍是原域名）；源码文本钉住「HTTP 分支只有
 `http_client_for_mcp` 这一个闸入口」。
+
+### P1-16 / P1-17 的落地口径
+
+**根因同源**：`McpServerConfig.env/headers` 的 `skip_serializing` 同时造成
+「前端拿不到机密」（P1-16）与「指纹看不见机密」（P1-17）。两处一起解。
+
+**P1-16 —— 脱敏视图 + 掩码回传语义**：
+- 新命令 `mcp_server_secrets_masked(id)` 下发**键名 + 掩码值**（`MASK`），
+  明文不出宿主；前端编辑表单回填掩码，用户看得见「哪些变量已设置」，
+  能逐项增删。
+- 保存时掩码值原样回传 = **「这一项保留原值」**（`secrets::resolve_masked`
+  与**当前已存**的真值对表——掩码过期也不会把旧值写回去）；非掩码值 = 替换；
+  **没回传的键 = 用户删掉了这一项**。
+- 前端本组不展示时（stdio 的 headers / http 的 env）按脱敏视图原样回传，
+  不发空对象——空对象在旧口径下等于「清空这一组」。
+- 取脱敏视图失败 → **不开表单**（fail-closed）：表单里的空对象一旦被当成
+  「清空」，就是又一次静默删机密。
+- 旧口径「空 = 清除条目」保留在 `store_server_secrets` 内部（真值集合为空
+  → 删 blob），但**到达那里之前**掩码已被还原，不再有「前端没回填」这一路。
+
+**P1-17 —— 指纹显式枚举字段**：`fingerprint` 不再用
+`serde_json::to_value(cfg)`（那走同一个 `Serialize`，机密字段被剥掉），
+改为逐字段哈希，**含 env/headers**：改了 API token / 环境变量即换指纹 →
+重连 → 新凭据生效。
+
+**测试**：`secrets::masked` / `resolve_masked`（保留 / 替换 / 删除 / 掩码过期）
+与 `manager::fingerprint`（env/headers 变即换指纹、相同配置指纹稳定）。
+
 

@@ -89,15 +89,12 @@ pub fn mcp_server_save(
     let server_id = server.id.clone();
     let app_for_blob = app.clone();
     let (list, saved) = with_locked_config(&app, |cfg| {
-        // 新建（id 原先不在配置里）还是编辑：upsert 失败时的补偿清理只对新建安全
-        // ——编辑场景老配置仍指向同一 id 的 keyring 槽位，清掉会把既有服务器弄坏
-        let pre_existing = cfg
-            .mcp_servers
-            .as_ref()
-            .is_some_and(|l| l.iter().any(|s| s.id == server_id));
+        // **先校验后落机密**：校验失败时已存机密原封不动。旧次序是先写机密
+        // 再校验，校验失败就是「保存报错，但机密已被清空/替换」。
+        upsert_in_config(cfg, server.clone())?;
         // 机密落 keyring/降级文件——**锁内、迁移之后**（评审 CRITICAL②：
         // 若在锁外先写，紧随其后的迁移会读文件里的旧明文同 id 覆盖刚写的新值）。
-        // 写败 → f 返 Err → 配置不动（先 keyring 后配置的次序仍成立）
+        // 写败 → f 返 Err → 配置文件不落盘（闭包返回 Err 时外层直接短路）
         crate::bot::mcp::secrets::store_server_secrets(
             &app_for_blob,
             &server_id,
@@ -105,24 +102,6 @@ pub fn mcp_server_save(
             &server.headers,
         )
         .map_err(CommandError::KeyringError)?;
-        if let Err(e) = upsert_in_config(cfg, server.clone()) {
-            // 补偿：新建的 id 校验没过（重名/超上限等）时清掉刚写的机密 blob，
-            // 不留 keyring 孤儿（用户改个名字重试会换新 id，旧 blob 再也无人认领）。
-            // 清理失败只留痕不改变原错误（配置仍是权威失败原因）。
-            if !pre_existing {
-                if let Err(pe) =
-                    crate::bot::mcp::secrets::purge_server_secrets(&app_for_blob, &server_id)
-                {
-                    crate::audit::write_event(
-                        &app_for_blob,
-                        crate::audit::AuditLevel::Warn,
-                        "mcp.secret_orphan_purge_failed",
-                        &[("id", server_id.clone()), ("err", pe)],
-                    );
-                }
-            }
-            return Err(e);
-        }
         let saved = cfg
             .mcp_servers
             .as_ref()
@@ -323,6 +302,26 @@ pub async fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
         });
     }
     Ok(out)
+}
+
+/// 单台服务器的机密脱敏视图（设置页编辑回填用）：键名 + 掩码值，明文不出宿主。
+///
+/// 前端拿不到明文（`skip_serializing`），但用户要看得见「哪些变量已设置」
+/// 并能逐项增删——于是下发脱敏视图，保存时掩码值原样回传即表示「保留原值」。
+#[tauri::command]
+pub fn mcp_server_secrets_masked(
+    app: AppHandle,
+    id: String,
+) -> CommandResult<crate::bot::mcp::secrets::McpSecretsMasked> {
+    let secrets = crate::bot::mcp::secrets::read_server_secrets(&app, &id)
+        .map_err(CommandError::KeyringError)?
+        .unwrap_or_default();
+    let masked = crate::bot::mcp::secrets::masked(&secrets);
+    Ok(crate::bot::mcp::secrets::McpSecretsMasked {
+        mask: crate::bot::mcp::secrets::MASK.to_string(),
+        env: masked.env,
+        headers: masked.headers,
+    })
 }
 
 /// 单服务器已发现工具清单（设置页「查看工具」展开用）：只读连接槽的缓存快照，
