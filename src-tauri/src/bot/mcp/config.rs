@@ -291,8 +291,13 @@ pub fn normalize_server(mut s: McpServerConfig) -> McpServerConfig {
 /// URL scheme + host 安全闸（Mimosa 约束，保存口与连接口双重把关）：
 /// HTTP 传输仅允许 http/https 且只连**公网**地址——拒绝 localhost、环回、
 /// 私有和保留地址（agent 会把上下文发给该端点，内网地址一律不放行防 SSRF）。
-/// 字符串/字面量级校验，不做 DNS 解析（解析结果可变且 TOCTOU；DNS 级校验二期再议）。
-pub fn http_url_is_public(u: &str) -> Result<(), String> {
+///
+/// **字面量级**校验：只认 URL 里写着的地址与主机名，不做 DNS 解析——DNS 级
+/// 校验在**连接口**（`manager::http_client_for_mcp`：解析出的每个 IP 都必须
+/// 公网，并把结果钉给 reqwest），保存口不做网络解析。
+///
+/// 通过时返回解析后的 URL：连接口要拿它去做 DNS 级校验。
+pub fn http_url_is_public(u: &str) -> Result<url::Url, String> {
     // 解析失败不回显原文（ 评审：URL 可能内嵌凭据 user:pass@ 或敏感 query）
     let parsed = url::Url::parse(u).map_err(|_| {
         format!(
@@ -300,6 +305,13 @@ pub fn http_url_is_public(u: &str) -> Result<(), String> {
             u.len()
         )
     })?;
+    http_parsed_is_public(&parsed)?;
+    Ok(parsed)
+}
+
+/// 已解析 URL 的字面量级安全闸（scheme + host 字面量）——与 `http_url_is_public`
+/// 同一判据，单源。
+pub fn http_parsed_is_public(parsed: &url::Url) -> Result<(), String> {
     match parsed.scheme() {
         "http" | "https" => {}
         _ => return Err("URL 仅支持 http/https".into()),

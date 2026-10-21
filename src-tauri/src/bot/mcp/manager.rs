@@ -155,6 +155,70 @@ fn truncate_tools(cfg: &McpServerConfig, tools: Vec<Tool>) -> Vec<Tool> {
     tools.into_iter().take(MAX_TOOLS_PER_SERVER).collect()
 }
 
+/// HTTP 传输的客户端构造（连接口安全闸）：字面量级闸（scheme / host 字面量）
+/// + DNS 级闸（域名解析出的**每个** IP 都必须公网），并把解析结果钉给 reqwest。
+///
+/// 字面量级闸只挡「URL 里写着内网地址」，挡不住「URL 里写着公网域名、该域名
+/// 解析到内网」——内网域名、DNS rebinding、`169.254.169.254.nip.io` 这类都在
+/// DNS 这一跳被拦（判据单源在 `bot_web::check_public_url`，与抓取链同一份）。
+/// 钉 IP 则堵住「校验通过之后改 DNS 应答」的 TOCTOU 窗口：校验与请求之间
+/// 不再二次解析。
+///
+/// 头（鉴权头等）随每个请求发送：挂 reqwest 默认头。
+async fn http_client_for_mcp(
+    url: &str,
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<reqwest::Client, String> {
+    // 字面量级闸（与保存口同一判据）
+    let parsed =
+        super::config::http_url_is_public(url).map_err(|reason| format!("URL 安全闸：{reason}"))?;
+    // DNS 级闸：解析出的每个 IP 都必须公网
+    let addrs = crate::bot_web::check_public_url(&parsed)
+        .await
+        .map_err(|e| format!("URL 安全闸：{e}"))?;
+    let host = parsed.host_str().unwrap_or_default().to_string();
+    http_client_pinned(&host, &addrs, headers)
+}
+
+/// 钉住解析结果的 HTTP 客户端（DNS TOCTOU 防护）：host 固定解析到已校验过的
+/// 地址，reqwest 不再二次 DNS；TLS SNI / 证书校验仍按原域名。
+/// addrs 的端口必须是真实端口（`check_public_url` 已按 URL 端口重写）。
+fn http_client_pinned(
+    host: &str,
+    addrs: &[std::net::SocketAddr],
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        // 评审 SSRF 项：禁跟随重定向——公网端点 302 到内网地址即穿透「仅公网」
+        // 闸；Streamable HTTP 不依赖跨主机重定向
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve_to_addrs(host, addrs);
+    // 尾点变体一并登记：DNS 查的是去尾点的名字（check_public_url 归一过），
+    // reqwest 查表用的是 URL 里的原样 host——两种形态都登记，钉 IP 一定命中
+    let bare = host.trim_end_matches('.');
+    if !bare.is_empty() && bare != host {
+        builder = builder.resolve_to_addrs(bare, addrs);
+    }
+    if !headers.is_empty() {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (k, v) in headers {
+            match (
+                reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                reqwest::header::HeaderValue::from_str(v.as_str()),
+            ) {
+                (Ok(name), Ok(value)) => {
+                    map.insert(name, value);
+                }
+                _ => return Err(format!("非法的自定义头：{k}")),
+            }
+        }
+        builder = builder.default_headers(map);
+    }
+    builder
+        .build()
+        .map_err(|e| format!("HTTP 客户端构建失败：{e}"))
+}
+
 /// 串行化触碰进程级 `shared()` 的测试：cargo test 默认多线程并行，
 /// e2e 用例的连接存活窗口会让 registry 的
 /// `tools_json_with_mcp_without_connections_is_borrowed_static`（断言全局无连接）
@@ -364,39 +428,14 @@ impl McpManager {
                 let tools = truncate_tools(cfg, tools);
                 Ok((Arc::new(service), tools, child_pid))
             }
-            // Streamable HTTP（阶段 7/8）：发请求前再过一次 URL 安全闸
+            // Streamable HTTP（阶段 7/8）：发请求前再过 URL 安全闸
             //（保存口 validate_server 已把关，此处防手改配置文件绕过）
             McpTransport::Http => {
                 let url = cfg.url.as_deref().unwrap_or("").trim().to_string();
-                if let Err(reason) = super::config::http_url_is_public(&url) {
-                    return Err(format!("URL 安全闸：{reason}"));
-                }
+                let client = http_client_for_mcp(&url, &cfg.headers).await?;
                 use rmcp::transport::streamable_http_client::{
                     StreamableHttpClientTransport, StreamableHttpClientTransportConfig,
                 };
-                // 自定义头（鉴权头等）挂 reqwest 默认头：随每个请求发送
-                let mut client = reqwest::Client::builder();
-                if !cfg.headers.is_empty() {
-                    let mut map = reqwest::header::HeaderMap::new();
-                    for (k, v) in &cfg.headers {
-                        match (
-                            reqwest::header::HeaderName::from_bytes(k.as_bytes()),
-                            reqwest::header::HeaderValue::from_str(v.as_str()),
-                        ) {
-                            (Ok(name), Ok(value)) => {
-                                map.insert(name, value);
-                            }
-                            _ => return Err(format!("非法的自定义头：{k}")),
-                        }
-                    }
-                    client = client.default_headers(map);
-                }
-                let client = client
-                    // 评审 SSRF 项：禁跟随重定向——公网端点 302 到内网地址
-                    // 即穿透「仅公网」闸；Streamable HTTP 不依赖跨主机重定向
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .map_err(|e| format!("HTTP 客户端构建失败：{e}"))?;
                 let transport = StreamableHttpClientTransport::with_client(
                     client,
                     StreamableHttpClientTransportConfig::with_uri(url),
@@ -811,6 +850,114 @@ mod send_probe {
             };
             assert_eq!(arm, *cmd, "构造臂字面量必须等于白名单项本身");
         }
+    }
+}
+
+#[cfg(test)]
+mod http_gate {
+    //! HTTP 传输的 URL 安全闸：字面量级 + DNS 级 + 钉 IP。
+    //! 全部用例不依赖外网：IP 字面量的解析由 getaddrinfo 本地完成，
+    //! 钉 IP 用 .invalid 域名（RFC 2606，真实 DNS 必解析失败）。
+    use super::*;
+
+    fn no_headers() -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::new()
+    }
+
+    /// 字面量级闸：内网 / 环回 / 链路本地地址在发请求前就拒。
+    #[tokio::test]
+    async fn private_literal_url_is_rejected_before_any_request() {
+        for u in [
+            "http://127.0.0.1:8080/mcp",
+            "http://169.254.169.254/latest/meta-data",
+            "http://localhost:3000/mcp",
+            "http://10.0.0.5/mcp",
+        ] {
+            let err = http_client_for_mcp(u, &no_headers())
+                .await
+                .expect_err("内网 URL 必须被 URL 安全闸拒掉");
+            assert!(err.contains("URL 安全闸"), "{err}");
+        }
+    }
+
+    /// 公网 IP 字面量：字面量闸放行 → DNS 级闸也放行 → 客户端建得出来。
+    /// IP 字面量的解析由 getaddrinfo 本地完成（不查外网 DNS）。
+    #[tokio::test]
+    async fn public_literal_ip_passes_both_gates() {
+        assert!(
+            http_client_for_mcp("http://93.184.216.34/mcp", &no_headers())
+                .await
+                .is_ok(),
+            "公网 IP 字面量应通过两道闸"
+        );
+    }
+
+    /// 钉 IP 真的生效：.invalid 域名钉到本地回环端口，能连通即证明 reqwest
+    /// 没有二次解析（DNS TOCTOU 窗口已关）；Host 头仍是原域名。
+    #[tokio::test]
+    async fn pinned_client_does_not_resolve_again() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let got_host = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let got_host2 = got_host.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                if let Some(line) = req
+                    .lines()
+                    .find(|l| l.to_ascii_lowercase().starts_with("host:"))
+                {
+                    *got_host2.lock().unwrap() = line[5..].trim().to_string();
+                }
+                let _ = s.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                );
+            }
+        });
+        let url = url::Url::parse(&format!("http://mcp-pinned.invalid:{port}/")).unwrap();
+        let pinned = [std::net::SocketAddr::from(([127, 0, 0, 1], 80))];
+        let client = http_client_pinned("mcp-pinned.invalid", &pinned, &no_headers())
+            .expect("钉住 client 构建失败");
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .expect("钉住 127.0.0.1 后请求应成功（.invalid 真实 DNS 必失败，无二次解析）");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(
+            got_host.lock().unwrap().as_str(),
+            format!("mcp-pinned.invalid:{port}"),
+            "钉 IP 不改 Host 头"
+        );
+    }
+
+    /// HTTP 分支必须走 http_client_for_mcp（字面量闸 + DNS 闸 + 钉 IP 三合一）。
+    /// 连接路径要真连 MCP 服务器，纯函数单测够不到，故以源码文本钉住「分支里
+    /// 只有这一个闸入口」——否则哪天有人加回裸的字面量级闸，两道闸就只剩一道。
+    #[test]
+    fn http_branch_goes_through_the_two_gate_client() {
+        let src = include_str!("manager.rs")
+            .split_once("mod send_probe")
+            .expect("manager.rs 应有 send_probe 测试模块")
+            .0;
+        let body = src
+            .split_once("McpTransport::Http => {")
+            .expect("找不到 HTTP 分支")
+            .1
+            .split("\n            }")
+            .next()
+            .expect("HTTP 分支应能截取");
+        assert!(
+            body.contains("http_client_for_mcp(&url, &cfg.headers)"),
+            "HTTP 分支必须走两道闸的客户端构造"
+        );
+        assert!(
+            !body.contains("http_url_is_public"),
+            "HTTP 分支不得再单独调字面量级闸——统一在 http_client_for_mcp 里"
+        );
     }
 }
 

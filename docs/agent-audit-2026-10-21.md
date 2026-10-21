@@ -590,7 +590,7 @@ offset 起读的字节窗（当前是「先读前 100KB 再按行切」）。
 精确匹配挂载表，miss 直接 `ToolResult::error("未知工具：{name}")`——
 编造的 `mcp_*` 名在路由内仍回「未知工具」。**不会误命中内置工具**。
 
-**SSRF 闸 —— ⚠️ 见 P1-18，**MCP 自己的 HTTP 分支**没有用 DNS 级闸**，
+**SSRF 闸 —— ⚠️ 见 P1-18（已修，见 §七），**MCP 自己的 HTTP 分支**没有用 DNS 级闸**，
 只有字面量级检查。远程技能安装链（`bot_skills/remote.rs:242`）才复用了
 `bot_web::check_public_url`（DNS 解析 + 逐 IP 公网校验 + `resolve_to_addrs`
 钉 IP，TOCTOU 已堵）。**两者是不同的闸**——初稿把这条写反了，见 P1-18。
@@ -716,7 +716,7 @@ B 台的工具被重新编号成 `mcp_p_read` → **模型本想调 A 的 `mcp_p
 **修法**：重连期间保留旧槽（先建新槽、成功后再换旧），或把工具名映射改成
 按服务器 id 而非序号派生（序号只在构建时消歧，调用时按 id 反查）。
 
-#### P1-18 MCP 的 HTTP 分支不做 DNS 解析 → SSRF 缺口（**本报告初稿写错，已更正**）
+#### P1-18 MCP 的 HTTP 分支不做 DNS 解析 → SSRF 缺口（**本报告初稿写错，已更正**；已修，见 §七）
 
 **位置**：`src-tauri/src/bot/mcp/manager.rs:369-373`（HTTP 分支发请求前的唯一闸）·
 `src-tauri/src/bot/mcp/config.rs:294-295`（闸的实现与自述）
@@ -1078,6 +1078,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | 项 | 状态 | 落点 |
 |---|---|---|
 | P0-1 | 已修 | `intent_router::check_intent_pattern`（宽度闸）+ `tool_create_skill` 确认窗 + `skills_import` 补准入核 |
+| P1-18 | 已修 | MCP HTTP 分支接 DNS 级 SSRF 闸 + 钉 IP（`manager::http_client_for_mcp`） |
 
 ### P0-1 的落地口径
 
@@ -1105,4 +1106,28 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 标记」**本轮未实现**——它要动的是进程级路由表的数据结构（`route_user_input`
 得带 session 参数），与①②不是一个量级。①②已把「模型可在无用户确认的情况下
 永久改写进程级行为」这条路径关掉，③留作后续加固。
+
+### P1-18 的落地口径
+
+**连接口两道闸**（`manager::http_client_for_mcp`）：
+① **字面量级**（`config::http_url_is_public`）：scheme + host 字面量——拒绝
+localhost 家族、环回、私网、链路本地、保留段、数字形式 IPv4 变体、mDNS
+`.local`、IPv4-mapped / IPv4-compatible / 6to4 / Teredo / NAT64 / 文档段。
+这一层比 `bot_web` 的字面量侧更全，**保留不动**。
+② **DNS 级**（`bot_web::check_public_url`，判据单源，与抓取链同一份）：域名
+解析出的**每个** IP 都必须是公网——内网域名、DNS rebinding、
+`169.254.169.254.nip.io` 这类「公网域名解析到内网」在这一跳被拦。
+
+**钉 IP**：`resolve_to_addrs` 把校验过的地址钉给 reqwest，校验与请求之间不再
+二次解析（DNS TOCTOU 窗口关闭）。尾点变体（`example.com.`）两种形态都登记
+——DNS 查的是去尾点的名字，reqwest 查表用的是 URL 原样 host。
+
+**保存口不做 DNS 解析**：`config::http_url_is_public` 现在返回解析后的 URL
+（连接口要拿它做 DNS 级校验），判据本身一字未改——保存时做 DNS 解析会让
+设置页在网络异常时卡住，而 DNS 结果本来就该在**连接时**现查。
+
+**测试**（`manager::http_gate`）：内网/环回/链路本地 URL 在发请求前被拒；
+公网 IP 字面量过两道闸；钉 IP 后用 `.invalid` 域名连本地回环桩成功（证明
+reqwest 没有二次解析、Host 头仍是原域名）；源码文本钉住「HTTP 分支只有
+`http_client_for_mcp` 这一个闸入口」。
 
