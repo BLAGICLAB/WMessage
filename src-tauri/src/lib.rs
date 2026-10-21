@@ -236,6 +236,9 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
     // 复查标志直接拒绝，不会 spawn 出无人收割的孤儿进程
     bot_py::mark_exiting();
     let py_killed = kill_py();
+    // 受管长驻服务收尾：走降级信号阶梯 + 回收脱离进程组的子孙，
+    // 退出时必须收干净——长驻进程留着就是宿主管不到的孤儿
+    let services_stopped = bot::services::stop_all(app);
     // MCP 服务器连接收尾：取消全部令牌，子进程由传输 Drop 兜底 kill（不孤儿）
     bot::mcp::manager::shutdown_all(app);
     audit::write_event(
@@ -245,6 +248,7 @@ fn cleanup_on_exit_with<R: tauri::Runtime>(
         &[
             ("api_stopped", api_stopped.to_string()),
             ("py_killed", py_killed.to_string()),
+            ("services_stopped", services_stopped.to_string()),
             ("exec_stopped", exec_stopped.to_string()),
             ("exec_drained", exec_drained.to_string()),
         ],
@@ -392,6 +396,9 @@ pub fn run() {
 
             // 截止通知：每 30s 扫一次活跃任务卡，截止前 1 小时 / 截止时刻发系统通知
             due_notify::start_due_notifier(app.handle().clone());
+
+            // 受管服务日志上限巡检：每 30s 把超 8MB 的输出截到最近的部分
+            bot::services::start_output_sweeper(app.handle().clone());
 
             // 开关持久化：上次退出前 API 开启过，则自动恢复（写 api-enabled.flag）
             {
@@ -709,6 +716,8 @@ pub fn run() {
             bot_py::py_get_enabled,
             bot_py::py_set_enabled,
             bot_py::py_env_check,
+            bot::services::service_get_enabled,
+            bot::services::service_set_enabled,
             bot_skills::skills_list,
             bot_skills::skills_import,
             bot_skills::skills_delete,

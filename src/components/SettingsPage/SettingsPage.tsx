@@ -730,6 +730,9 @@ export function SettingsPage({
   );
   const [pyEnabled, setPyEnabled] = useState(false);
   const [pyBusy, setPyBusy] = useState(false);
+  /** 受管长驻服务总开关（后端 flag 文件，默认关闭） */
+  const [servicesEnabled, setServicesEnabled] = useState(false);
+  const [servicesBusy, setServicesBusy] = useState(false);
   /** 桌面 UI 自动化总开关（后端 flag 文件，默认关闭） */
   const [uiEnabled, setUiEnabled] = useState(false);
   const [uiBusy, setUiBusy] = useState(false);
@@ -969,6 +972,15 @@ export function SettingsPage({
     }
   };
 
+  const refreshServices = async () => {
+    try {
+      const on = await invoke<boolean>("service_get_enabled");
+      setServicesEnabled(on);
+    } catch (e) {
+      handleCommandError(e, "service_get_enabled", { silent: true });
+    }
+  };
+
   const checkPyEnv = async () => {
     if (pyEnvBusy) return;
     setPyEnvBusy(true);
@@ -1002,6 +1014,8 @@ export function SettingsPage({
     loadParamViews();
     // oxlint-disable-next-line react/set-state-in-effect
     refreshPy();
+    // oxlint-disable-next-line react/set-state-in-effect
+    refreshServices();
     // oxlint-disable-next-line react/set-state-in-effect
     refreshUi();
     // 拉取开机自启动状态
@@ -1037,6 +1051,34 @@ export function SettingsPage({
       await refreshPy();
     } finally {
       setPyBusy(false);
+    }
+  };
+
+  const toggleServices = async () => {
+    if (servicesBusy) return;
+    const enabling = !servicesEnabled;
+    if (
+      enabling &&
+      !(await confirm(
+        "开启后机器人可在本机启动长驻进程（node MCP server、dev server 等）。" +
+          "被启动的代码会继承宿主的环境变量，能读到其中的密钥；进程归机器人托管，" +
+          "但用户自己写的代码也可能读到。确认开启？",
+      ))
+    )
+      return;
+    setServicesBusy(true);
+    setBotError("");
+    try {
+      const next = await invoke<boolean>("service_set_enabled", {
+        enabled: enabling,
+      });
+      setServicesEnabled(next);
+    } catch (e) {
+      handleCommandError(e, "service_set_enabled", { silent: true });
+      setBotError(formatCommandError(e));
+      await refreshServices();
+    } finally {
+      setServicesBusy(false);
     }
   };
 
@@ -2431,6 +2473,29 @@ export function SettingsPage({
                     disabled={pyBusy}
                   >
                     {pyBusy ? "…" : pyEnabled ? "已开启" : "已关闭"}
+                  </button>
+                </div>
+
+                {/* 受管长驻服务开关 */}
+                <div className="mt-4 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-[var(--t2)]">
+                      允许机器人启动本地服务
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--t5)]">
+                      起长驻进程（node MCP server / dev server / watcher），
+                      归机器人托管、可查可停、退出时自动收干净；
+                      被启动的代码会继承宿主环境变量（含其中密钥），默认关闭
+                    </p>
+                  </div>
+                  <button
+                    className={`btn-sm-action ${
+                      servicesEnabled ? "nm-inset" : "nm-outset"
+                    }`}
+                    onClick={toggleServices}
+                    disabled={servicesBusy}
+                  >
+                    {servicesBusy ? "…" : servicesEnabled ? "已开启" : "已关闭"}
                   </button>
                 </div>
 

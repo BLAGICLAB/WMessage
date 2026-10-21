@@ -50,6 +50,7 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
         uiFontSize: "small",
       };
     case "py_get_enabled":
+    case "service_get_enabled":
       return false;
     // Agent 运行参数卡的元数据（默认值/可填范围/当前生效值）
     case "bot_effective_params":
@@ -284,6 +285,7 @@ const agentParamsMock = async (cmd: string): Promise<unknown> => {
     case "bot_get_enabled":
       return false;
     case "py_get_enabled":
+    case "service_get_enabled":
       return false;
     case "py_env_check":
       return { available: false, python: "", version: "", libs: [] };
@@ -364,7 +366,7 @@ describe("SettingsPage", () => {
           bot: { name: "机器人", avatarId: null },
         };
       if (cmd === "bot_get_enabled") return false;
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -421,7 +423,7 @@ describe("SettingsPage", () => {
       if (cmd === "profile_get")
         return { user: { name: "我", avatarId: null }, bot: { name: "机器人", avatarId: null } };
       if (cmd === "bot_get_enabled") return false;
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "py_env_check")
         return { available: false, python: "", version: "", libs: [] };
       // 机器人分区有张卡直接读 status.enabled，兜底 null 会渲染崩
@@ -625,7 +627,7 @@ describe("SettingsPage", () => {
       if (cmd === "profile_get")
         return { user: { name: "我", avatarId: null }, bot: { name: "机器人", avatarId: null } };
       if (cmd === "bot_get_enabled") return false;
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "py_env_check")
         return { available: false, python: "", version: "", libs: [] };
       if (cmd === "api_status") return { enabled: false, port: 4763 };
@@ -707,6 +709,29 @@ describe("SettingsPage", () => {
     expect(text).not.toMatch(/\d+\s*秒/);
   });
 
+  it("受管服务开关：默认关闭；开启要二次确认并写明凭证继承", async () => {
+    const user = userEvent.setup();
+    const setMock = vi.fn(async (_payload?: unknown) => true);
+    mocks.invokeMock.mockImplementation(async (cmd: string, payload?: unknown) => {
+      if (cmd === "service_set_enabled") return setMock(payload);
+      return agentParamsMock(cmd);
+    });
+    render(<SettingsPage {...defaultProps} />);
+    await user.click(screen.getByRole("button", { name: "机器人" }));
+    const title = await screen.findByText("允许机器人启动本地服务");
+    const row = title.parentElement?.parentElement as HTMLElement;
+    // 默认关闭
+    expect(within(row).getByRole("button").textContent).toContain("已关闭");
+    await user.click(within(row).getByRole("button"));
+    // 二次确认走 Tauri 原生 dialog
+    await waitFor(() => expect(mocks.askMock).toHaveBeenCalled());
+    const text = String(mocks.askMock.mock.calls[0]?.[0] ?? "");
+    // 凭证继承这条必须写在确认框里——用户是在授权「代码能读我机器上的密钥」
+    expect(text).toContain("环境变量");
+    expect(text).toContain("密钥");
+    expect(setMock).toHaveBeenCalledWith({ enabled: true });
+  });
+
   it("主题三态：依次点击 → onThemeChange 收到 light / dark / system", async () => {
     const onThemeChange = vi.fn();
     const user = userEvent.setup();
@@ -763,7 +788,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -822,7 +847,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -881,7 +906,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -918,7 +943,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -992,7 +1017,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1028,7 +1053,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1084,7 +1109,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1145,7 +1170,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1220,7 +1245,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1298,7 +1323,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1362,7 +1387,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1426,7 +1451,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1506,7 +1531,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1568,7 +1593,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1608,7 +1633,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -1730,7 +1755,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -2012,7 +2037,7 @@ describe("SettingsPage", () => {
           user: { name: "我", avatarId: null },
           bot: { name: "机器人", avatarId: null },
         };
-      if (cmd === "py_get_enabled") return false;
+      if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       if (cmd === "migration_status")
@@ -2420,7 +2445,7 @@ describe("SettingsPage", () => {
             user: { name: "我", avatarId: null },
             bot: { name: "机器人", avatarId: null },
           };
-        if (cmd === "py_get_enabled") return false;
+        if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
         if (cmd === "skills_list") return [];
         if (cmd === "migration_rules_load") return { version: 1, rules: [] };
         if (cmd === "migration_status")
@@ -2802,7 +2827,7 @@ describe("SettingsPage", () => {
             user: { name: "我", avatarId: null },
             bot: { name: "机器人", avatarId: null },
           };
-        if (cmd === "py_get_enabled") return false;
+        if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
         if (cmd === "skills_list") return [];
         if (cmd === "migration_rules_load") return { version: 1, rules: [] };
         if (cmd === "migration_status")
@@ -2879,7 +2904,7 @@ describe("SettingsPage", () => {
             user: { name: "我", avatarId: null },
             bot: { name: "机器人", avatarId: null },
           };
-        if (cmd === "py_get_enabled") return false;
+        if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
         if (cmd === "skills_list") return [];
         if (cmd === "migration_rules_load") return { version: 1, rules: [] };
         if (cmd === "migration_status")

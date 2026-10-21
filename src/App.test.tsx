@@ -807,7 +807,8 @@ describe("App", () => {
         return { enabled: false, port: 4763, token: "" };
       if (cmd === "bot_get_config")
         return { baseUrl: "", model: "", hasApiKey: false };
-      if (cmd === "bot_get_enabled" || cmd === "py_get_enabled") return false;
+      if (cmd === "bot_get_enabled" || cmd === "py_get_enabled" || cmd === "service_get_enabled")
+        return false;
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
       return defaultInvokeImpl(cmd);
