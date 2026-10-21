@@ -145,8 +145,11 @@ pub fn active_execution_count<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> u
 /// /stop 快捷命令：停止**当前会话**用户交互触发的执行（bot_chat / 🤖 任务卡执行），
 /// 后台定时（interactive=false）与别的会话不受影响
 /// （避免会话 B 的 /stop 误杀会话 A 的活动 Skill）
+///
+/// 返回置位的执行实例数：前端据此知道「停了几条」。原先 `map(|_| ())` 把计数
+/// 丢了，前端只能靠「有没有在途」猜，停没停成功都拿不到。
 #[tauri::command]
-pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String> {
+pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<usize, String> {
     // /stop 本身留痕——区分「用户停过」与「自己跑完」
     crate::bot::audit_log(
         &app,
@@ -180,7 +183,8 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<(), String
             map.remove(&k);
         }
     }
-    stopped.map(|_| ())
+    // 置位数量原样带回前端（0 = 本会话没有可停的交互实例）
+    stopped
 }
 
 /// /stop 置位内核：本会话交互实例的停止标志置位，返回置位数量。
@@ -475,6 +479,27 @@ mod stop_all_tests {
 mod command_result_tests {
     // 注入式 mock handle 统一在文件作用域定义
     use super::test_handle as mock_handle;
+
+    /// 接线守卫：bot_stop 必须把置位数量返回给前端。
+    ///
+    /// 原先把计数 `map(|_| ())` 丢了：前端只能靠「有没有在途」猜，停没停
+    /// 成功、停了几条都拿不到。命令绑定 Wry AppHandle 没法直接单测，故钉源码。
+    /// 匹配串用 `concat!` 拆分防自匹配（本测试自身的源码不算命中）。
+    #[test]
+    fn bot_stop_returns_the_stopped_count() {
+        let src = include_str!("bot_slash.rs");
+        assert!(
+            !src.contains(concat!("stopped.map(|_| (", "))")),
+            "bot_stop 不得丢弃置位数量"
+        );
+        assert!(
+            src.contains(concat!(
+                "pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<usize, ",
+                "String>"
+            )),
+            "bot_stop 的返回类型必须是置位数量"
+        );
+    }
 
     /// /stop 置位内核只停本会话交互实例并返回数量；
     /// 锁中毒路径经 map_err 返回 Err（命令绑定 Wry AppHandle 无法单测，测内核）。
