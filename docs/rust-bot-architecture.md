@@ -7,8 +7,8 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1090)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
-├── app_state.rs (264)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
+├── lib.rs (1092)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
@@ -145,14 +145,16 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/services.rs (1273) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (1681) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
-│                        （带 starttime 防 PID 复用）。与 py/runtime.rs 是两层：前者有界作业、
+│                        （带 starttime 防 PID 复用）+ 资源观测（整棵进程树 RSS / CPU，
+│                        只告警不杀）。与 py/runtime.rs 是两层：前者有界作业、
 │                        连坐杀组；本层长驻、宿主知道它、能停它、退出时收干净
-│   └── bot/services/tests.rs (522)  服务层单测：进程快照纯函数（ppid 树 / starttime 解析）+
-│                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞等
+│   └── bot/services/tests.rs (719)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
+│                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
+│                        资源告警判定（阈值 / 持续 / 去重）等
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
 │   ├── bot/config/schema.rs        bot-config.json schemaVersion 迁移 + 双协议派生
@@ -166,7 +168,7 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (2879)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
+├── bot/tools.rs (2874)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
 │                        受管服务起停查 start_service / stop_service / list_services）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
@@ -346,6 +348,7 @@ src-tauri/src/
 | `pending` | exec_steps.rs | 用户应答 / 超时 |
 | `artifact_registry` | bot_artifacts.rs | 流程收尾 clear |
 | `services` | bot/services.rs | 受管服务状态机 + `stop_service` / 退出时 `services::stop_all` |
+| `services_usage` | bot/services.rs | 资源观测的**合计**口径（合计 RSS + 合计告警去重）——跨服务属性，没有归属条目 |
 
 刻意**留档不收口**：`NEXT_STOP_ID`（id 发号器，进程级）、`SESSION_ORIGINS`（session 元数据，
 「写一次/读一处/随 session 消亡」，理由与三条测量结论见 `app_state.rs` 总表与 `tool_guard.rs:45`）、

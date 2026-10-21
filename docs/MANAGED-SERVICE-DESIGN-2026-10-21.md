@@ -205,7 +205,13 @@ $ ulimit -v 524288
 | **输出上限** | stdout/stderr 落 `O_APPEND` 文件；宿主巡检（默认 30s）发现超限 → 保留尾部 N/2 字节重写 | **硬**（不超） | 8MB / 流 |
 | **并发上限** | 同时存活的受管服务数超限 → `start_service` 直接拒绝 | **硬** | 4 个 |
 | **生命周期上限** | 显式 `stop_service` / 应用退出必杀 | **硬** | — |
-| **资源观测** | 宿主定期采样 RSS / CPU 时间；超阈值 → **告警**（审计 + 工具返回里带告警），**不自动杀** | **软** | 单服务 RSS 512MB / 合计 RSS 1GB / CPU 100% 持续 5min（阈值实测见 §5.4） |
+| **资源观测** | 宿主定期采样 RSS / CPU 时间；超阈值 → **告警**（审计 + 工具返回里带告警），**不自动杀** | **软** | 单服务 RSS 512MB / 合计 RSS 1GB / CPU 跑满持续 5min（阈值实测见 §5.4） |
+
+**采样口径是整棵进程树**（组长 + 全部后代）合计：dev server 的活多半在子进程里
+（vite 拉起的 esbuild），只看组长会漏掉真正在烧的那个。
+
+**CPU 阈值实现成 95% 而不是 100%**：占用率是两次采样之差算出来的，采样时刻与进程
+记账有误差，真跑满时算出来是 99.9x%——阈值卡 100% 就永远差一点，永远不告警。
 
 **为什么内存只告警不杀**：macOS 没有任何等价的 per-process 内存硬限额
 （`RLIMIT_AS` 被内核拒；cgroup 是 Linux 专有）；Linux 上有 cgroup v2 但跨平台不一致。
@@ -696,6 +702,12 @@ pub(crate) struct ProcSnapshot {
     /// 进程启动标识。Linux = `/proc/<pid>/stat` 第 22 字段（starttime，clock ticks
     /// since boot）；macOS = `ps -o lstart=` 的启动时间串。用于识别 **PID 复用**。
     pub(crate) starttime: String,
+    /// 常驻内存（字节）。Linux = `/proc/<pid>/stat` 第 24 字段（页数 × 页大小）；
+    /// macOS = `ps -o rss=`（KB）。资源观测用。
+    pub(crate) rss_bytes: u64,
+    /// 累计 CPU 时间（秒）。Linux = (utime+stime)/CLK_TCK；macOS = `ps -o time=`。
+    /// 两次采样的差值 ÷ 时间差 = 占用率。
+    pub(crate) cpu_seconds: f64,
 }
 
 /// 拍一张全机进程快照。只读系统进程表，不碰本模块登记表。
@@ -1077,6 +1089,7 @@ MCP stdio server 也是"宿主 spawn 的长驻子进程"，看起来可以合并
 | `service.stop_requested` | Info | `service_id`, `reason`(`tool`/`app_exit`/`ready_timeout`) |
 | `service.stopped` | Info | `service_id`, `method`(signal used), `elapsed_ms`, `descendants_killed` |
 | `service.pid_reuse_skipped` | Warn | `service_id`, `pid`, `old_starttime`, `new_starttime` —— 该 pid 在快照之间被复用，**不杀** |
+| `service.resource_warning` | Warn | `service_id`, `scope`(`service`/`total`), `rss_mb`, `cpu_pct`(仅有 CPU 告警时), `threshold` |
 | `service.denied` | Warn | `command`, `reason`（开关关 / 白名单 / 路径闸） |
 | `service.output_truncated` | Info | `service_id`, `stream`, `bytes`, `cap` |
 | `service.resource_warning` | Warn | `service_id`, `rss_mb` / `cpu_pct`, `threshold` |
@@ -1186,7 +1199,8 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 | 期 | 内容 | 价值 |
 |---|---|---|
 | **P0** | 登记表 + `start_service` / `stop_service` / `list_services` + 停止阶梯 + 子孙回收 + 退出清理 + 权限闸（开关 / 白名单 / cwd）+ **限额不继承** + **输出上限巡检**（8MB 截断 + 30s 一轮） | 打通"skill 内部起 node 长驻"的主链路 |
-| **P1** | **readyPattern + 就绪超时**（本次已提前落地：就绪判据是长驻服务的核心可用性，一并做了）+ RSS/CPU 观测告警 + 前端服务面板 | 可用性与可观测性 |
+| **P1** | **readyPattern + 就绪超时**（已提前落地：就绪判据是长驻服务的核心可用性，一并做了）+ **RSS/CPU 观测告警**（已落地：整棵进程树合计口径，单服务 512MB / 合计 1GB / CPU 跑满持续 5min，只告警不杀）+ **前端服务面板**（已落地：设置页「本地服务」分区，看状态与资源占用、随时停） | 可用性与可观测性 |
+| **P1 剩余** | RSS/CPU 告警目前只在设置页与 `list_services` 可见，**没有主动推送**（通知中心/系统通知通道未接） | |
 | **P2**（不在本方案） | ① 方案 1：node MCP server 配到设置页（`bot/mcp/config.rs` 已有整套 UI）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）<br>③ 端口/监听地址硬化闸 | 配套与深化 |
 
 ---
