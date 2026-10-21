@@ -27,7 +27,11 @@ pub struct BotSession {
     pub created_at: i64,
     pub updated_at: i64,
     /// 子 agent 执行会话标记（U20D 批 5：会话路由从「标题 🧩 前缀」升级为
-    /// 结构化字段；runner 建会话时置 1，普通会话/存量旧会话为 0）
+    /// 结构化字段；runner 建会话时置 1，普通会话/存量旧会话为 0）。
+    ///
+    /// 这一列是真源：会话列表靠它把子 agent 会话挡在外面，活会话的判定走
+    /// tool_guard 的会话注册表。**载荷里的这一位恒为 false**——列表查询
+    /// 过滤了 is_subagent = 0，前端也没有消费者。别拿它当路由依据。
     pub is_subagent: bool,
 }
 
@@ -43,7 +47,8 @@ pub async fn bot_sessions_load(app: AppHandle) -> CommandResult<Vec<BotSession>>
             .prepare(
                 // 子 agent 会话不列出：它是内部执行标识（tool_guard 的闸与流式路由
                 // 都以 session id 为键），对用户只以聊天内嵌的子 agent 区域呈现。
-                // 一堆执行现场混进对话列表会把真正的对话淹掉
+                // 一堆执行现场混进对话列表会把真正的对话淹掉。
+                // 过滤的代价：载荷里的 is_subagent 位恒为 false（见字段注释）
                 "SELECT id, title, created_at, updated_at, is_subagent FROM bot_sessions \
                  WHERE is_subagent = 0 ORDER BY updated_at DESC",
             )
@@ -75,8 +80,8 @@ pub fn bot_session_create_inner(
 }
 
 /// 子 agent 执行会话创建（U20D 批 5）：is_subagent=1 结构化标记——
-/// 前端停止键/斜杠 /stop 按 `Session.isSubagent` 路由 cancel_subagent，
-/// 不再依赖标题 emoji 前缀。
+/// 会话列表据此把子 agent 会话挡在对话列表外；取消入口是子 agent 条带上的
+/// 取消键（cancel_subagent，按子 agent id 直查行），不依赖标题 emoji 前缀。
 pub fn bot_session_create_subagent_inner(
     conn: &rusqlite::Connection,
     title: Option<String>,
@@ -297,6 +302,29 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    /// 会话列表载荷里的 is_subagent 恒为 false：那条查询过滤了 is_subagent = 0。
+    ///
+    /// 这个字段因此不是路由依据——子 agent 会话根本不进列表。真源是 DB 的
+    /// is_subagent 列与 tool_guard 的会话注册表，前端也没有消费者。
+    /// 这条测试钉住过滤条件：过滤一去，字段就不再恒 false（子 agent 执行
+    /// 现场会混进对话列表）。
+    #[test]
+    fn session_list_query_keeps_excluding_subagent_sessions() {
+        let src = include_str!("bot_sessions.rs");
+        let at = src
+            .find(concat!(
+                "SELECT id, title, created_at, updated_at, is_subagent FROM bot_",
+                "sessions"
+            ))
+            .expect("会话列表查询");
+        // 按字符切窗（按字节切会切在多字节汉字中间）
+        let window: String = src[at..].chars().take(200).collect();
+        assert!(
+            window.contains("WHERE is_subagent = 0"),
+            "会话列表必须过滤掉子 agent 会话：{window}"
+        );
     }
 
     /// 接线守卫：这三个会话命令不得是同步命令。

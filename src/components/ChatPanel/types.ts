@@ -85,14 +85,13 @@ export type Msg = {
 
 /** 会话（bot_sessions_load 载荷 = Rust BotSession camelCase）。
  *  时间戳可选：chat-open-session 前端补行的会话不带（按无时间渲染）。
- *  isSubagent：子 agent 执行会话标记（结构化路由的唯一依据，runner
- *  建会话时写入；chat-open-session 补行的执行会话本就不是子 agent，不带） */
+ *  后端载荷里的 isSubagent 位恒为 false（列表已过滤子 agent 会话），
+ *  这边没有消费者——不按它路由 */
 export type Session = {
   id: string;
   title: string;
   createdAt?: number;
   updatedAt?: number;
-  isSubagent?: boolean;
 };
 
 /** 子 agent 执行行（list_subagents 命令 = subagents 表行 camelCase + 内存态轮数）。

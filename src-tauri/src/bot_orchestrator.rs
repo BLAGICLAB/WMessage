@@ -1906,7 +1906,7 @@ async fn run_subagent(
 
     // 开跑：建会话 + 包装落库 + session/assignee 回填（单次锁内完成）。
     // 标题不带 emoji 前缀：子 agent 身份由 bot_sessions.is_subagent 结构化
-    // 字段承载（U20D 批 5），前端按 Session.isSubagent 路由停止键
+    // 字段承载（U20D 批 5），会话列表据此把它们挡在对话列表外
     let title = format!(
         "子任务：{}",
         crate::bot::truncate_for_log(row.objective.trim(), 30)
@@ -3459,11 +3459,13 @@ mod orchestrator_tests {
         assert_eq!(SubagentGate::queue_position(Some("ps_q1")), None, "清场");
     }
 
-    /// U20D 批 5：前端以 `Session.isSubagent` 结构化字段判定子 agent 会话并
-    /// 分流停止键（cancel_subagent / bot_stop，后者已作运行时兜底）——路由
-    /// 契约从「标题 🧩 前缀」升级为 bot_sessions.is_subagent 字段。此处锁定：
+    /// U20D 批 5：子 agent 会话的身份由 bot_sessions.is_subagent 结构化字段
+    /// 承载，路由契约从「标题 🧩 前缀」升级为该字段。此处锁定：
     /// ① runner setup 必须经 subagent 变体建会话（漂移即测试红）；
     /// ② 标题已去 emoji 前缀（路由不再依赖标题）。
+    ///
+    /// 这一列用于「会话列表不列子 agent 会话」与库内判定；活会话的判定走
+    /// tool_guard 注册表，前端拿到的 Session.isSubagent 恒为 false。
     #[test]
     fn subagent_sessions_flagged_structurally_not_by_title() {
         // concat! 拼接防本测试自匹配（dead_command_tests 同款手法）
