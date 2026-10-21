@@ -55,9 +55,149 @@ pub(crate) const TAIL_LINES: usize = 20;
 /// 输出上限巡检周期（秒）。
 const OUTPUT_SWEEP_SECS: u64 = 30;
 
+// ── 资源观测 ──
+
+/// 单服务 RSS 告警阈值（字节）。正常 vite dev server 是 145MB，阈值在它上面 3.5 倍——
+/// 抓住真正失控的进程，又不会对正常 dev server 误报。
+pub(crate) const RSS_WARN_BYTES: u64 = 512 * 1024 * 1024;
+
+/// 全部服务合计 RSS 告警阈值（字节）。4 × 145MB = 580MB 属正常；打到 1GB
+/// 说明开的太多或某个跑飞了，该出声。
+pub(crate) const RSS_TOTAL_WARN_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// CPU 占用告警阈值（百分比）：一个核的 95% 以上视为「跑满」。
+///
+/// 不是 100%：占用率是两次采样之差算出来的，采样时刻与进程记账有误差，
+/// 真跑满时算出来是 99.9x%——阈值卡 100% 就永远差一点，永远不告警。
+pub(crate) const CPU_WARN_PCT: f64 = 95.0;
+
+/// CPU 高占用需持续的时长（毫秒）。瞬时跑满是正常的（首次构建、全量编译），
+/// 持续 5 分钟才是问题。
+pub(crate) const CPU_WARN_SUSTAIN_MS: i64 = 5 * 60 * 1000;
+
+/// 告警项：单服务 RSS 超阈值。
+pub(crate) const WARN_RSS: &str = "rss_over_limit";
+/// 告警项：CPU 持续高占用。
+pub(crate) const WARN_CPU: &str = "cpu_sustained_high";
+/// 告警项：全部服务合计 RSS 超阈值。
+pub(crate) const WARN_TOTAL_RSS: &str = "total_rss_over_limit";
+
+/// 受管服务的**合计**资源观测状态（跨服务口径）。
+///
+/// 单服务的采样在各自登记条目里；合计口径是集合属性，没有"某一条"能放，
+/// 单独存一份（运行期状态一律进 AppState，见 `app_state.rs` 的总表）。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ServicesUsage {
+    /// 全部在跑服务合计 RSS（字节）
+    pub(crate) total_rss_bytes: u64,
+    /// 合计口径的告警项（条件消失前只告警一次）
+    pub(crate) warnings: Vec<String>,
+    /// 最近一次采样时刻
+    pub(crate) sampled_at_ms: Option<i64>,
+}
+
+/// 一个服务**整棵进程树**的资源采样。
+///
+/// 口径是树而不是组长：dev server 的活多半在子进程里（vite 拉起的 esbuild），
+/// 只看组长会漏掉真正在烧的那个。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct ResourceSample {
+    /// 整棵树的常驻内存合计（字节）
+    pub(crate) rss_bytes: u64,
+    /// 整棵树的累计 CPU 时间（秒）
+    pub(crate) cpu_seconds: f64,
+}
+
+/// 资源告警判定结果。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ResourceVerdict {
+    /// 判定后的告警集合（条件消失的项会被移除，条件再现时能重新告警）
+    pub(crate) warnings: Vec<String>,
+    /// 本轮**新出现**的告警（只有这些要写审计）
+    pub(crate) new_warnings: Vec<String>,
+    /// 新的 CPU 高占用起始时刻
+    pub(crate) cpu_busy_since_ms: Option<i64>,
+    /// 本轮算出的 CPU 占用率（百分比）
+    pub(crate) cpu_pct: Option<f64>,
+}
+
+/// 资源告警判定（纯函数）。
+///
+/// 只告警**不杀**：CPU 上限对"正在构建的 dev server"是误杀（见设计稿 §5.1），
+/// 内存也没有跨平台的硬限额（macOS 没有等价机制，Linux 上设 RLIMIT_AS 会让
+/// node 启动即失败）。失控了出声，用户自己停。
+pub(crate) fn evaluate_resources(
+    sample: ResourceSample,
+    last_cpu_sample: Option<(f64, i64)>,
+    cpu_busy_since_ms: Option<i64>,
+    prev_warnings: &[String],
+    now_ms: i64,
+) -> ResourceVerdict {
+    // 占用率 = 两次采样之间的 CPU 时间增量 ÷ 墙上时间增量（×100 得百分比）
+    let cpu_pct = match last_cpu_sample {
+        Some((prev_cpu, prev_at)) if now_ms > prev_at => {
+            let wall_secs = (now_ms - prev_at) as f64 / 1000.0;
+            Some((sample.cpu_seconds - prev_cpu) / wall_secs * 100.0)
+        }
+        _ => None,
+    };
+
+    // "持续"判定：占用率高就把起点钉住（第一次高时记为 now），掉回阈值以下就清零
+    let mut busy_since = cpu_busy_since_ms;
+    if let Some(pct) = cpu_pct {
+        if pct >= CPU_WARN_PCT {
+            busy_since = Some(busy_since.unwrap_or(now_ms));
+        } else {
+            busy_since = None;
+        }
+    }
+    let cpu_warn = cpu_pct.map(|p| p >= CPU_WARN_PCT).unwrap_or(false)
+        && busy_since
+            .map(|s| now_ms - s >= CPU_WARN_SUSTAIN_MS)
+            .unwrap_or(false);
+
+    let mut warnings: Vec<String> = Vec::new();
+    if sample.rss_bytes >= RSS_WARN_BYTES {
+        warnings.push(WARN_RSS.to_string());
+    }
+    if cpu_warn {
+        warnings.push(WARN_CPU.to_string());
+    }
+    let new_warnings = warnings
+        .iter()
+        .filter(|w| !prev_warnings.contains(w))
+        .cloned()
+        .collect();
+
+    ResourceVerdict {
+        warnings,
+        new_warnings,
+        cpu_busy_since_ms: busy_since,
+        cpu_pct,
+    }
+}
+
+/// 把一次进程快照折成某个服务整棵树的资源采样。
+///
+/// 树 = 组长自身 + 快照里的全部后代。组长不在快照里（已退出）时返回 None。
+pub(crate) fn tree_sample(snap: &[ProcSnapshot], root: u32) -> Option<ResourceSample> {
+    let index: HashMap<u32, &ProcSnapshot> = snap.iter().map(|p| (p.pid, p)).collect();
+    let root_row = index.get(&root)?;
+    let mut sample = ResourceSample {
+        rss_bytes: root_row.rss_bytes,
+        cpu_seconds: root_row.cpu_seconds,
+    };
+    for pid in descendants(snap, root).keys() {
+        if let Some(row) = index.get(pid) {
+            sample.rss_bytes = sample.rss_bytes.saturating_add(row.rss_bytes);
+            sample.cpu_seconds += row.cpu_seconds;
+        }
+    }
+    Some(sample)
+}
+
 /// 进程组存活判定的轮询间隔。
 const ALIVE_POLL_MS: u64 = 20;
-
 /// 无 readyPattern 时的短存活确认窗口：起得来且这一刻还活着就算 Running。
 const LIVENESS_CONFIRM_MS: u64 = 200;
 
@@ -123,6 +263,16 @@ pub struct ManagedService {
     /// 就绪瞬间的 stdout 尾部快照。**不参与日志截断**——日志只留最近输出，
     /// 而启动横幅（监听地址）在长跑服务上早就被冲掉了。
     pub(crate) ready_snapshot: Option<String>,
+    /// 最近一次资源采样（整棵进程树合计）。
+    pub(crate) sample: Option<ResourceSample>,
+    /// 最近一次算出的 CPU 占用率（百分比，100 = 一个核跑满）。
+    pub(crate) cpu_pct: Option<f64>,
+    /// 上一次采样（累计 CPU 秒 + 时刻），两次采样之差 ÷ 时间差 = 占用率。
+    pub(crate) last_cpu_sample: Option<(f64, i64)>,
+    /// CPU 高占用起始时刻。占用率掉回阈值以下即清零（"持续"才算问题）。
+    pub(crate) cpu_busy_since_ms: Option<i64>,
+    /// 当前告警项。同一项在条件消失前只告警一次，不反复刷审计。
+    pub(crate) warnings: Vec<String>,
 }
 
 impl ManagedService {
@@ -155,6 +305,11 @@ impl ManagedService {
             stderr_path,
             owner_session,
             ready_snapshot: None,
+            sample: None,
+            cpu_pct: None,
+            last_cpu_sample: None,
+            cpu_busy_since_ms: None,
+            warnings: Vec::new(),
         }
     }
 
@@ -172,7 +327,7 @@ pub(crate) type ServiceEntry = Arc<Mutex<ManagedService>>;
 // ── 进程快照（纯函数） ──
 
 /// 进程快照的一行。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProcSnapshot {
     pub(crate) pid: u32,
     pub(crate) ppid: u32,
@@ -180,6 +335,10 @@ pub(crate) struct ProcSnapshot {
     /// 快照里启动标识变了，说明这个 pid 已经属于另一个进程——那个进程不是我们的
     /// 后代，**不能杀**。
     pub(crate) starttime: String,
+    /// 常驻内存（字节）。资源观测用（§5.4 的 RSS 阈值）。
+    pub(crate) rss_bytes: u64,
+    /// 累计 CPU 时间（秒）。两次采样的差值 ÷ 时间差 = 占用率。
+    pub(crate) cpu_seconds: f64,
 }
 
 /// 一次快照比对的结果。
@@ -275,23 +434,55 @@ fn snapshot_linux() -> Vec<ProcSnapshot> {
 }
 
 /// `/proc/<pid>/stat` 解析。非 Linux 平台上是主路径，Linux 上仅供测试覆盖同一套解析逻辑。
+///
+/// 字段位置（1-based，pid 与 comm 之后从 state 起算）：
+/// 4=ppid、14=utime、15=stime、22=starttime、24=rss（页数）。
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_proc_stat(pid: u32, text: &str) -> Option<ProcSnapshot> {
     let close = text.rfind(')')?;
     let rest = &text[close + 1..];
     let t: Vec<&str> = rest.split_whitespace().collect();
-    if t.len() < 20 {
+    if t.len() < 22 {
         return None;
     }
     let ppid = t[1].parse::<u32>().ok()?;
+    let utime: u64 = t[11].parse().ok()?;
+    let stime: u64 = t[12].parse().ok()?;
+    let rss_pages: u64 = t[21].parse().ok()?;
     Some(ProcSnapshot {
         pid,
         ppid,
         starttime: t[19].to_string(),
+        rss_bytes: rss_pages.saturating_mul(page_size()),
+        cpu_seconds: (utime + stime) as f64 / clock_ticks(),
     })
 }
 
-/// macOS 等无 `/proc` 的平台：调 `ps` 取 pid / ppid / lstart。
+/// 一页的字节数（Linux 的 rss 以页计）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn page_size() -> u64 {
+    // SAFETY: sysconf 是纯查询，返回 -1 表示未知，此时按 4096 兜底。
+    let v = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if v > 0 {
+        v as u64
+    } else {
+        4096
+    }
+}
+
+/// 一秒多少个 clock tick（utime/stime 以 tick 计）。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn clock_ticks() -> f64 {
+    // SAFETY: sysconf 是纯查询，返回 -1 表示未知，此时按 100 兜底（Linux 常规值）。
+    let v = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if v > 0 {
+        v as f64
+    } else {
+        100.0
+    }
+}
+
+/// macOS 等无 `/proc` 的平台：调 `ps` 取 pid / ppid / lstart / rss / 累计 CPU 时间。
 ///
 /// `lstart` 是绝对启动时间（"Wed Oct 21 18:15:00 2026"，恒为 5 段），
 /// 同一进程在两次快照里必然相同，不同进程必然不同（除非同一秒内启动，
@@ -299,34 +490,74 @@ pub(crate) fn parse_proc_stat(pid: u32, text: &str) -> Option<ProcSnapshot> {
 #[cfg(not(target_os = "linux"))]
 fn snapshot_ps() -> Vec<ProcSnapshot> {
     let Ok(out) = Command::new("ps")
-        .args(["-o", "pid=", "-o", "ppid=", "-o", "lstart=", "-ax"])
+        .args([
+            "-o", "pid=", "-o", "ppid=", "-o", "lstart=", "-o", "rss=", "-o", "time=", "-ax",
+        ])
         .output()
     else {
         return Vec::new();
     };
-    parse_ps_lstart(&String::from_utf8_lossy(&out.stdout))
+    parse_ps_rows(&String::from_utf8_lossy(&out.stdout))
 }
 
 /// `ps` 输出解析。非 Linux 平台上是主路径，Linux 上仅供测试覆盖同一套解析逻辑。
+///
+/// 列序：pid / ppid / lstart(5 段) / rss(KB) / time(累计 CPU 时间)。
 #[cfg_attr(target_os = "linux", allow(dead_code))]
-pub(crate) fn parse_ps_lstart(text: &str) -> Vec<ProcSnapshot> {
+pub(crate) fn parse_ps_rows(text: &str) -> Vec<ProcSnapshot> {
     let mut out = Vec::new();
     for line in text.lines() {
         let t: Vec<&str> = line.split_whitespace().collect();
-        // pid + ppid + lstart 的 5 段
-        if t.len() < 7 {
+        // pid + ppid + lstart 的 5 段 + rss + time
+        if t.len() < 9 {
             continue;
         }
         let (Ok(pid), Ok(ppid)) = (t[0].parse::<u32>(), t[1].parse::<u32>()) else {
             continue;
         };
+        let rss_kb: u64 = t[7].parse().unwrap_or(0);
         out.push(ProcSnapshot {
             pid,
             ppid,
             starttime: t[2..7].join(" "),
+            rss_bytes: rss_kb.saturating_mul(1024),
+            cpu_seconds: parse_ps_time(t[8]).unwrap_or(0.0),
         });
     }
     out
+}
+
+/// `ps` 的 `time` 列解析：`[[DD-]HH:]MM:SS[.ss]` → 秒。
+///
+/// 解析不出来就返回 None（当成 0 秒处理，不猜）。
+pub(crate) fn parse_ps_time(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // 天数段（形如 `1-02:03:04`）
+    let (days, rest) = match s.split_once('-') {
+        Some((d, r)) => (d.parse::<f64>().ok()?, r),
+        None => (0.0, s),
+    };
+    let parts: Vec<&str> = rest.split(':').collect();
+    let secs = match parts.len() {
+        3 => {
+            // HH:MM:SS
+            let h: f64 = parts[0].parse().ok()?;
+            let m: f64 = parts[1].parse().ok()?;
+            let sec: f64 = parts[2].parse().ok()?;
+            h * 3600.0 + m * 60.0 + sec
+        }
+        2 => {
+            // MM:SS
+            let m: f64 = parts[0].parse().ok()?;
+            let sec: f64 = parts[1].parse().ok()?;
+            m * 60.0 + sec
+        }
+        _ => return None,
+    };
+    Some(days * 86400.0 + secs)
 }
 
 // ── 信号与存活判定 ──
@@ -1062,9 +1293,122 @@ pub(crate) fn enforce_output_caps<R: tauri::Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// 资源观测一轮：采样在跑服务的资源占用，更新告警状态，必要时记审计。
+///
+/// 口径是**整棵进程树**（组长 + 全部后代）合计：dev server 的活多半在子进程里
+/// （vite 拉起的 esbuild），只看组长会漏掉真正在烧的那个。
+///
+/// 只告警不杀——理由见 `evaluate_resources`。
+pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let snap = take_snapshot();
+    let now = crate::db::now_ms();
+    let table = crate::app_state::services(app);
+    let entries: Vec<ServiceEntry> = {
+        let guard = lock_table(&table);
+        guard.values().cloned().collect()
+    };
+    let mut total_rss = 0u64;
+    for entry in entries {
+        let (state, pid) = {
+            let g = entry.lock().unwrap_or_else(|e| e.into_inner());
+            (g.state, g.pid)
+        };
+        if state != ServiceState::Running {
+            continue;
+        }
+        // 组长不在快照里 = 进程已经没了（这一轮采不到它）
+        let Some(sample) = tree_sample(&snap, pid) else {
+            continue;
+        };
+        total_rss = total_rss.saturating_add(sample.rss_bytes);
+
+        let mut g = entry.lock().unwrap_or_else(|e| e.into_inner());
+        let verdict = evaluate_resources(
+            sample,
+            g.last_cpu_sample,
+            g.cpu_busy_since_ms,
+            &g.warnings,
+            now,
+        );
+        let service_id = g.id.clone();
+        g.sample = Some(sample);
+        g.cpu_pct = verdict.cpu_pct;
+        g.last_cpu_sample = Some((sample.cpu_seconds, now));
+        g.cpu_busy_since_ms = verdict.cpu_busy_since_ms;
+        g.warnings = verdict.warnings.clone();
+        drop(g);
+
+        for w in &verdict.new_warnings {
+            let threshold = if w == WARN_RSS {
+                "rss>512MB"
+            } else {
+                "cpu>95%_for_5min"
+            };
+            write_resource_warning(
+                app,
+                &service_id,
+                "service",
+                sample.rss_bytes,
+                verdict.cpu_pct,
+                threshold,
+            );
+        }
+    }
+
+    // 合计口径：跨服务的集合属性，没有归属条目
+    let usage = crate::app_state::services_usage(app);
+    let mut u = usage.lock().unwrap_or_else(|e| e.into_inner());
+    u.total_rss_bytes = total_rss;
+    u.sampled_at_ms = Some(now);
+    let total_warn = total_rss >= RSS_TOTAL_WARN_BYTES;
+    let already = u.warnings.iter().any(|w| w == WARN_TOTAL_RSS);
+    if total_warn {
+        if !already {
+            u.warnings.push(WARN_TOTAL_RSS.to_string());
+        }
+    } else {
+        u.warnings.retain(|w| w != WARN_TOTAL_RSS);
+    }
+    drop(u);
+    if total_warn && !already {
+        write_resource_warning(app, "*", "total", total_rss, None, "total_rss>1024MB");
+    }
+}
+
+/// 记一条资源告警。
+fn write_resource_warning<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    service_id: &str,
+    scope: &str,
+    rss_bytes: u64,
+    cpu_pct: Option<f64>,
+    threshold: &str,
+) {
+    let mut kv = vec![
+        ("service_id", service_id.to_string()),
+        ("scope", scope.to_string()),
+        (
+            "rss_mb",
+            format!("{:.1}", rss_bytes as f64 / 1024.0 / 1024.0),
+        ),
+        ("threshold", threshold.to_string()),
+    ];
+    if let Some(p) = cpu_pct {
+        kv.push(("cpu_pct", format!("{:.1}", p)));
+    }
+    crate::audit::write_event(app, AuditLevel::Warn, "service.resource_warning", &kv);
+}
+
+/// 巡检一轮：输出上限 + 资源观测。
+fn sweep_round<R: tauri::Runtime>(app: &AppHandle<R>) {
+    enforce_output_caps(app);
+    sample_resources(app);
+}
+
 /// 启动输出上限巡检：每 30s 一轮（App 启动时调用）。
 ///
-/// 周期取 30s：长跑服务的日志增长是「分钟级」的，巡检太密只是白跑 IO。
+/// 周期取 30s：长跑服务的日志增长与 CPU 跑满都是「分钟级」的，
+/// 巡检太密只是白跑 IO。
 /// 单轮失败不杀循环：截断失败只丢日志，不影响服务本身。
 pub fn start_output_sweeper<R: tauri::Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
@@ -1072,7 +1416,7 @@ pub fn start_output_sweeper<R: tauri::Runtime>(app: AppHandle<R>) {
         ticker.tick().await; // 消耗首个立即触发的 tick
         loop {
             ticker.tick().await;
-            enforce_output_caps(&app);
+            sweep_round(&app);
         }
     });
 }
@@ -1262,11 +1606,75 @@ pub(crate) fn service_to_json(s: &ManagedService, with_tail: bool) -> serde_json
     if let Some(r) = &s.ready_snapshot {
         obj["readySnapshot"] = serde_json::Value::String(r.clone());
     }
+    // 资源观测：整棵进程树合计（只告警不杀，见 evaluate_resources）
+    if let Some(sample) = &s.sample {
+        obj["rssMb"] = serde_json::json!(round1(sample.rss_bytes as f64 / 1024.0 / 1024.0));
+    }
+    if let Some(p) = s.cpu_pct {
+        obj["cpuPct"] = serde_json::json!(round1(p));
+    }
+    obj["warnings"] = serde_json::json!(s.warnings);
     if with_tail {
         obj["stdoutTail"] = serde_json::json!(tail_lines(&s.stdout_path, TAIL_LINES));
         obj["stderrTail"] = serde_json::json!(tail_lines(&s.stderr_path, TAIL_LINES));
     }
     obj
+}
+
+/// 保留一位小数（给模型看的数字不用小数点后一堆位）。
+fn round1(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+/// 受管服务全景 → JSON（模型与设置页共用一份口径）。
+///
+/// 顶层带合计口径（合计 RSS 与合计告警）——单服务数据在 `services` 数组里。
+pub(crate) fn services_snapshot_json<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    with_tail: bool,
+) -> serde_json::Value {
+    let list = list_all(app);
+    let arr: Vec<serde_json::Value> = list.iter().map(|s| service_to_json(s, with_tail)).collect();
+    let usage = crate::app_state::services_usage(app);
+    let u = usage.lock().unwrap_or_else(|e| e.into_inner());
+    serde_json::json!({
+        "services": arr,
+        "totalRssMb": round1(u.total_rss_bytes as f64 / 1024.0 / 1024.0),
+        "warnings": u.warnings,
+        "sampledAt": u.sampled_at_ms,
+    })
+}
+
+/// 读受管服务全景（设置页）。
+#[tauri::command]
+pub fn services_list(app: AppHandle) -> serde_json::Value {
+    services_snapshot_json(&app, true)
+}
+
+/// 停一个受管服务（设置页）。
+#[tauri::command]
+pub async fn services_stop(
+    app: AppHandle,
+    service_id: String,
+) -> Result<serde_json::Value, String> {
+    let handle = app.clone();
+    let id = service_id.clone();
+    // 停止含等待窗口（信号阶梯），必须挪出命令线程
+    let outcome =
+        tauri::async_runtime::spawn_blocking(move || stop_service(&handle, &id, "settings"))
+            .await
+            .map_err(|e| format!("停止任务失败：{e}"))?;
+    match outcome {
+        Ok(o) => Ok(serde_json::json!({
+            "serviceId": service_id,
+            "stopped": o.stopped,
+            "method": o.method,
+            "descendantsKilled": o.descendants_killed,
+            "exitCode": o.exit_code,
+            "elapsedMs": o.elapsed_ms,
+        })),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

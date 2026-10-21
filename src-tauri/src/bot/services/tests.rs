@@ -13,6 +13,19 @@ fn snap(pid: u32, ppid: u32, st: &str) -> ProcSnapshot {
         pid,
         ppid,
         starttime: st.to_string(),
+        rss_bytes: 0,
+        cpu_seconds: 0.0,
+    }
+}
+
+/// 带资源数据的快照行（资源观测用）。
+fn snap_rss(pid: u32, ppid: u32, st: &str, rss_bytes: u64, cpu_seconds: f64) -> ProcSnapshot {
+    ProcSnapshot {
+        pid,
+        ppid,
+        starttime: st.to_string(),
+        rss_bytes,
+        cpu_seconds,
     }
 }
 
@@ -93,22 +106,37 @@ fn diff_ignores_unchanged_process() {
 
 #[test]
 fn ps_lstart_parser_splits_pid_ppid_and_five_lstart_tokens() {
-    // ps -o pid= -o ppid= -o lstart= 的行：lstart 恒为 5 段
-    let text = "  100     1 Wed Oct 21 18:15:00 2026\n  101   100 Wed Oct 21 18:15:01 2026\n";
-    let s = parse_ps_lstart(text);
+    // ps -o pid= -o ppid= -o lstart= -o rss= -o time= 的行：lstart 恒为 5 段
+    let text = "  100     1 Wed Oct 21 18:15:00 2026  20480 00:01:30\n  101   100 Wed Oct 21 18:15:01 2026  10240 00:00:05\n";
+    let s = parse_ps_rows(text);
     assert_eq!(s.len(), 2);
     assert_eq!(s[0].pid, 100);
     assert_eq!(s[0].ppid, 1);
     assert_eq!(s[0].starttime, "Wed Oct 21 18:15:00 2026");
     assert_eq!(s[1].ppid, 100);
+    // rss 是 KB → 字节
+    assert_eq!(s[0].rss_bytes, 20480 * 1024);
+    // time 是累计 CPU 时间 → 秒
+    assert!((s[0].cpu_seconds - 90.0).abs() < 0.01);
+    assert!((s[1].cpu_seconds - 5.0).abs() < 0.01);
 }
 
 #[test]
 fn ps_lstart_parser_skips_malformed_lines() {
-    let text = "garbage\n  100     1 Wed Oct 21 18:15:00 2026\n";
-    let s = parse_ps_lstart(text);
+    let text = "garbage\n  100     1 Wed Oct 21 18:15:00 2026  20480 00:01:30\n";
+    let s = parse_ps_rows(text);
     assert_eq!(s.len(), 1);
     assert_eq!(s[0].pid, 100);
+}
+
+#[test]
+fn ps_time_parser_handles_hms_ms_and_days() {
+    assert!((parse_ps_time("00:01:30").unwrap() - 90.0).abs() < 0.01);
+    assert!((parse_ps_time("01:30").unwrap() - 90.0).abs() < 0.01);
+    assert!((parse_ps_time("1-00:00:00").unwrap() - 86400.0).abs() < 0.01);
+    assert!((parse_ps_time("00:00:01.50").unwrap() - 1.5).abs() < 0.01);
+    assert!(parse_ps_time("").is_none());
+    assert!(parse_ps_time("abc").is_none());
 }
 
 #[test]
@@ -121,6 +149,10 @@ fn proc_stat_parser_handles_spaces_in_comm() {
     assert_eq!(s.pid, 3210);
     assert_eq!(s.ppid, 100);
     assert_eq!(s.starttime, "987654");
+    // utime=10 + stime=5 tick（100 tick = 1s）→ 0.15s
+    assert!((s.cpu_seconds - 0.15).abs() < 0.001);
+    // rss 以页计（页大小随平台：macOS arm64 是 16KB，Linux x64 是 4KB）
+    assert_eq!(s.rss_bytes / page_size(), 4242);
 }
 
 // ── 日志截断 ──
@@ -519,4 +551,169 @@ fn every_allowlisted_launcher_has_a_construction_arm() {
             "白名单里的启动器「{name}」没有对应的逐臂构造分支"
         );
     }
+}
+
+// ── 资源观测 ──
+
+#[test]
+fn resource_verdict_flags_rss_over_limit() {
+    let sample = ResourceSample {
+        rss_bytes: RSS_WARN_BYTES + 1,
+        cpu_seconds: 1.0,
+    };
+    let v = evaluate_resources(sample, None, None, &[], 1_000);
+    assert!(v.warnings.contains(&WARN_RSS.to_string()));
+    assert_eq!(v.new_warnings, vec![WARN_RSS.to_string()]);
+}
+
+#[test]
+fn resource_verdict_stays_quiet_below_thresholds() {
+    // 正常 vite dev server 那一档（145MB）
+    let sample = ResourceSample {
+        rss_bytes: 145 * 1024 * 1024,
+        cpu_seconds: 10.0,
+    };
+    let v = evaluate_resources(sample, Some((0.0, 0)), None, &[], 30_000);
+    assert!(v.warnings.is_empty(), "正常服务不该告警：{:?}", v.warnings);
+    assert!(v.new_warnings.is_empty());
+}
+
+#[test]
+fn resource_verdict_needs_sustained_cpu_before_warning() {
+    // 累计 CPU 时间每次涨 30s，墙上时间也涨 30s → 占用率恒为 100%（一个核跑满）
+    let sample = ResourceSample {
+        rss_bytes: 10 * 1024 * 1024,
+        cpu_seconds: 30.0,
+    };
+    // 第一次采样：只记起点，不告警
+    let v1 = evaluate_resources(sample, Some((0.0, 0)), None, &[], 30_000);
+    assert!((v1.cpu_pct.unwrap() - 100.0).abs() < 0.01);
+    assert!(!v1.warnings.contains(&WARN_CPU.to_string()));
+    assert_eq!(v1.cpu_busy_since_ms, Some(30_000));
+    // 持续不到 5 分钟：仍不告警
+    let v2 = evaluate_resources(
+        ResourceSample {
+            cpu_seconds: 60.0,
+            ..sample
+        },
+        Some((30.0, 30_000)),
+        v1.cpu_busy_since_ms,
+        &v1.warnings,
+        60_000,
+    );
+    assert!(!v2.warnings.contains(&WARN_CPU.to_string()));
+    // 持续超过 5 分钟：告警
+    let v3 = evaluate_resources(
+        ResourceSample {
+            cpu_seconds: 330.0,
+            ..sample
+        },
+        Some((60.0, 60_000)),
+        v2.cpu_busy_since_ms,
+        &v2.warnings,
+        330_001,
+    );
+    assert!(v3.warnings.contains(&WARN_CPU.to_string()));
+    assert_eq!(v3.new_warnings, vec![WARN_CPU.to_string()]);
+}
+
+#[test]
+fn resource_verdict_resets_cpu_busy_when_idle_again() {
+    let busy = ResourceSample {
+        rss_bytes: 0,
+        cpu_seconds: 30.0,
+    };
+    let v1 = evaluate_resources(busy, Some((0.0, 0)), None, &[], 30_000);
+    assert_eq!(v1.cpu_busy_since_ms, Some(30_000));
+    // 掉回空闲 → 起点清零（"持续"被打断就不算持续）
+    let idle = ResourceSample {
+        rss_bytes: 0,
+        cpu_seconds: 30.1,
+    };
+    let v2 = evaluate_resources(
+        idle,
+        Some((30.0, 30_000)),
+        v1.cpu_busy_since_ms,
+        &[],
+        60_000,
+    );
+    assert_eq!(v2.cpu_busy_since_ms, None);
+    assert!(!v2.warnings.contains(&WARN_CPU.to_string()));
+}
+
+#[test]
+fn resource_verdict_dedups_repeated_warning() {
+    let sample = ResourceSample {
+        rss_bytes: RSS_WARN_BYTES + 1,
+        cpu_seconds: 1.0,
+    };
+    let v1 = evaluate_resources(sample, None, None, &[], 1_000);
+    assert_eq!(v1.new_warnings.len(), 1);
+    // 条件没消失：不再重复报（审计不刷屏）
+    let v2 = evaluate_resources(sample, None, None, &v1.warnings, 31_000);
+    assert!(v2.new_warnings.is_empty());
+    assert!(v2.warnings.contains(&WARN_RSS.to_string()));
+}
+
+#[test]
+fn tree_sample_sums_whole_process_tree() {
+    // 组长 100MB/1s + 子进程 50MB/2s + 孙子 25MB/3s
+    let s = vec![
+        snap_rss(100, 1, "t100", 100 * 1024 * 1024, 1.0),
+        snap_rss(101, 100, "t101", 50 * 1024 * 1024, 2.0),
+        snap_rss(102, 101, "t102", 25 * 1024 * 1024, 3.0),
+        snap_rss(200, 1, "t200", 999 * 1024 * 1024, 9.0),
+    ];
+    let sample = tree_sample(&s, 100).expect("组长在快照里");
+    assert_eq!(sample.rss_bytes, 175 * 1024 * 1024);
+    assert!((sample.cpu_seconds - 6.0).abs() < 0.001);
+    // 组长不在快照里 → 采不到
+    assert!(tree_sample(&s, 999).is_none());
+}
+
+#[test]
+fn sample_resources_records_rss_of_a_running_service() {
+    let Some((py, args)) = long_running_launcher() else {
+        eprintln!("跳过：环境里没有 python3");
+        return;
+    };
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    app.manage(crate::app_state::AppState::default());
+
+    let req = StartRequest {
+        command: py,
+        args,
+        cwd: std::env::temp_dir(),
+        name: String::new(),
+        ready_pattern: None,
+        ready_timeout_secs: 10,
+        session_id: None,
+    };
+    let out = do_start(&handle, &req).expect("服务应能启动");
+    sample_resources(&handle);
+
+    let svc = list_all(&handle)
+        .into_iter()
+        .find(|s| s.id == out.id)
+        .expect("服务应在登记表里");
+    let sample = svc.sample.expect("在跑的服务应采到资源占用");
+    assert!(sample.rss_bytes > 0, "RSS 必须采到非零值：{sample:?}");
+    assert!(sample.cpu_seconds >= 0.0);
+
+    // 合计口径也有值
+    {
+        let usage = crate::app_state::services_usage(&handle);
+        let u = usage.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(u.total_rss_bytes >= sample.rss_bytes);
+        assert!(u.sampled_at_ms.is_some());
+    }
+
+    // JSON 里带得上（模型与设置页看的是这份）
+    let json = services_snapshot_json(&handle, false);
+    let first = &json["services"][0];
+    assert!(first["rssMb"].as_f64().unwrap_or(0.0) > 0.0);
+    assert!(first["warnings"].is_array());
+
+    let _ = stop_service(&handle, &out.id, "test");
 }

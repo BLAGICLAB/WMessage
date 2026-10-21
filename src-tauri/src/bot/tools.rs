@@ -2236,12 +2236,7 @@ pub fn test_hook_tool_list_services<R: tauri::Runtime>(app: &AppHandle<R>) -> To
 
 /// list_services：列出宿主托管的受管服务。
 pub(crate) fn tool_list_services<R: tauri::Runtime>(app: &AppHandle<R>) -> ToolResult {
-    let list = crate::bot::services::list_all(app);
-    let arr: Vec<serde_json::Value> = list
-        .iter()
-        .map(|s| crate::bot::services::service_to_json(s, true))
-        .collect();
-    let out = serde_json::json!({ "services": arr });
+    let out = crate::bot::services::services_snapshot_json(app, true);
     ToolResult::ok(out.to_string(), Vec::new())
 }
 

@@ -114,6 +114,9 @@ pub(crate) struct AppState {
     /// 生命周期：start_service 起服务时登记、进程退出时转终态、stop_service / 应用退出时收尾。
     /// 访问器见文件尾 `services(app)`。
     pub(crate) services: Arc<Mutex<HashMap<String, crate::bot::services::ServiceEntry>>>,
+    /// 受管服务的**合计**资源观测状态（跨服务口径：合计 RSS 与告警去重）。
+    /// 单服务采样在各自登记条目里，合计口径没有归属条目，单独存一份。
+    pub(crate) services_usage: Arc<Mutex<crate::bot::services::ServicesUsage>>,
 }
 
 /// 兜底实例：只在 `AppState` 未注入的路径上用（见上面的口径说明）
@@ -245,6 +248,13 @@ pub(crate) fn services<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Arc<Mutex<HashMap<String, crate::bot::services::ServiceEntry>>> {
     ext(app).services.clone()
+}
+
+/// 受管服务合计资源观测状态访问器：Arc 克隆。
+pub(crate) fn services_usage<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Arc<Mutex<crate::bot::services::ServicesUsage>> {
+    ext(app).services_usage.clone()
 }
 
 /// 查会话当前运行中的 trace_id（无会话 / 无运行中 trace → None；dispatch 据此跳过采集）。
