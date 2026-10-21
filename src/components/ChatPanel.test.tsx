@@ -896,6 +896,53 @@ describe("ChatPanel", () => {
     });
   });
 
+  it("停止后回显置位条数：bot_stop 返回几条就显示「已停 N 条」", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return new Promise(() => {});
+      if (cmd === "bot_stop") return 2;
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    const stopBtn = await screen.findByTitle("停止当前回复");
+    await user.click(stopBtn);
+    expect(await screen.findByText(/已停 2 条/)).toBeInTheDocument();
+  });
+
+  it("一条都没停到时不报数（点了停止却什么都没发生，报「已停 0 条」更让人困惑）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return new Promise(() => {});
+      if (cmd === "bot_stop") return 0;
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    const stopBtn = await screen.findByTitle("停止当前回复");
+    await user.click(stopBtn);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_stop", {
+        sessionId: "s1",
+      });
+    });
+    expect(screen.queryByText(/已停/)).not.toBeInTheDocument();
+  });
+
   it("推理强度：默认跟随后台（中·默认）随发送传入；会话覆盖只影响本会话且不回写（RE-1）", async () => {
     const user = userEvent.setup();
     // 上一个用例把 bot_chat 换成挂起 Promise，这里恢复默认实现（见 defaultInvoke 注释）

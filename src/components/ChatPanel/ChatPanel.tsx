@@ -142,6 +142,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   );
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  /** 停止反馈：bot_stop 回传的置位条数。
+   *  放在消息流之外——回合收尾会整表替换消息数组，放在流里的提示会被那一下
+   *  抹掉，用户根本来不及看。它是本地瞬态，不落库、不进模型上下文。 */
+  const [stopNotice, setStopNotice] = useState<{
+    sid: string;
+    n: number;
+  } | null>(null);
   /** 执行详情弹层：回合回传的 traceId + 所属会话（会话维度列出同会话的多次执行） */
   const [openTrace, setOpenTrace] = useState<{
     traceId: number;
@@ -1392,6 +1399,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       // 镜像同步落（同 openExecSession）：守卫在 await 之后读 ref，不能等渲染
       sessionIdRef.current = sid;
       setMessages([]);
+      // 停止反馈是上一段会话的事：切走就收起来
+      setStopNotice(null);
       try {
         const rows = await invoke<
           {
@@ -1528,6 +1537,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     const sid = sessionId;
     if (!sid || inflightRef.current.has(sid)) return;
     enterChat(sid);
+    // 新的回合开始：上一轮的停止反馈作废（它说的是上一轮的事）
+    setStopNotice(null);
     // 用户主动发消息 → 视口回到底部跟着这一轮（哪怕刚才翻过历史）
     stickBottomRef.current = true;
     setMessages([
@@ -1646,9 +1657,14 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
 
   // 停止分派唯一实现（发送/停止一体键的 busy 分支 + /stop 斜杠命令共用）
   const stopCurrent = useCallback(() => {
-    invoke("bot_stop", { sessionId: sessionIdRef.current }).catch((e) =>
-      handleCommandError(e, "bot_stop", { silent: true }),
-    );
+    const sid = sessionIdRef.current ?? "";
+    invoke<number>("bot_stop", { sessionId: sessionIdRef.current })
+      .then((n) => {
+        // 一条都没停到就不报数：点了停止却什么都没发生，报「已停 0 条」
+        // 比不报更让人困惑（真停到了才说明停止确实生效了）
+        if (n > 0) setStopNotice({ sid, n });
+      })
+      .catch((e) => handleCommandError(e, "bot_stop", { silent: true }));
   }, []);
 
   // 斜杠快捷命令（/stop 在机器人回复中也能生效）
@@ -2022,6 +2038,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         onOpenExecSession={switchSession}
         onOpenTrace={openTraceFor}
       />
+      {/* 停止反馈（bot_stop 回传置位条数）：贴在输入区上方，不进消息流 */}
+      {stopNotice && stopNotice.sid === sessionId && (
+        <p
+          className="shrink-0 px-1 py-1 text-[11px] text-[var(--t4)]"
+          title="本会话被置停止标志的执行条数"
+        >
+          ⏹ 已停 {stopNotice.n} 条
+        </p>
+      )}
       <InputArea
         verbose={{ level: verboseLevel, setLevel: setVerboseLevel }}
         input={input}
