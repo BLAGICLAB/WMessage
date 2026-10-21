@@ -1655,7 +1655,7 @@ async fn run_subagent(
             // 加载失败也要落终态，防 ghost queued 行永挂
             let ghost_sid = subagent_id.clone();
             let ghost_err = e.message();
-            let _ = db_locked(&app, move |conn| {
+            let write = db_locked(&app, move |conn| {
                 crate::db::update_subagent_status(
                     conn,
                     &ghost_sid,
@@ -1666,6 +1666,18 @@ async fn run_subagent(
                 .map_err(CommandError::DbError)
             })
             .await;
+            if let Err(write_err) = write {
+                // 终态写不进去 = 行永远停在 queued/running，面板上一直转圈。
+                // 这层兜底本身失败不留痕就等于静默丢单，必须记
+                crate::bot::audit_log(
+                    &app,
+                    &format!(
+                        "subagent_terminal_state_write_failed | id: {} | err: {}",
+                        subagent_id,
+                        write_err.message()
+                    ),
+                );
+            }
             crate::bot::audit_log(
                 &app,
                 &format!(
@@ -1827,7 +1839,7 @@ async fn run_subagent(
         Err(e) => {
             let msg = format!("产物目录不可用（{e}），子任务中止");
             let sid_failed = row.id.clone();
-            let _ = db_locked(&app, move |conn| {
+            let write = db_locked(&app, move |conn| {
                 crate::db::update_subagent_status(
                     conn,
                     &sid_failed,
@@ -1838,6 +1850,18 @@ async fn run_subagent(
                 .map_err(CommandError::DbError)
             })
             .await;
+            if let Err(write_err) = write {
+                // 终态写不进去 = 行永远停在 queued/running，面板上一直转圈。
+                // 这层兜底本身失败不留痕就等于静默丢单，必须记
+                crate::bot::audit_log(
+                    &app,
+                    &format!(
+                        "subagent_terminal_state_write_failed | id: {} | err: {}",
+                        row.id,
+                        write_err.message()
+                    ),
+                );
+            }
             crate::bot::audit_log(
                 &app,
                 &format!(
@@ -1929,7 +1953,7 @@ async fn run_subagent(
             let msg = e.message();
             let msg_for_db = msg.clone();
             let sid = row.id.clone();
-            let _ = db_locked(&app, move |conn| {
+            let write = db_locked(&app, move |conn| {
                 crate::db::update_subagent_status(
                     conn,
                     &sid,
@@ -1940,6 +1964,18 @@ async fn run_subagent(
                 .map_err(CommandError::DbError)
             })
             .await;
+            if let Err(write_err) = write {
+                // 终态写不进去 = 行永远停在 queued/running，面板上一直转圈。
+                // 这层兜底本身失败不留痕就等于静默丢单，必须记
+                crate::bot::audit_log(
+                    &app,
+                    &format!(
+                        "subagent_terminal_state_write_failed | id: {} | err: {}",
+                        row.id,
+                        write_err.message()
+                    ),
+                );
+            }
             crate::bot::audit_log(
                 &app,
                 &format!(
@@ -2334,9 +2370,10 @@ async fn run_subagent(
             //（终态判定在收尾闭包内已做；此处只兜住闭包本身失败的情形）。
             // 后台任务持 owned handle（spawn 要求 'static，不能借用 app）。
             let sid_failed = row.id.clone();
+            let sid_for_log = row.id.clone();
             let app_for_fail = app.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = db_locked(&app_for_fail, move |conn| {
+                let write = db_locked(&app_for_fail, move |conn| {
                     crate::db::update_subagent_status(
                         conn,
                         &sid_failed,
@@ -2347,6 +2384,18 @@ async fn run_subagent(
                     .map_err(CommandError::DbError)
                 })
                 .await;
+                if let Err(write_err) = write {
+                    // 终态写不进去 = 行永远停在 running，面板上一直转圈。
+                    // 这层兜底本身失败不留痕就等于静默丢单，必须记
+                    crate::bot::audit_log(
+                        &app_for_fail,
+                        &format!(
+                            "subagent_terminal_state_write_failed | id: {} | err: {}",
+                            sid_for_log,
+                            write_err.message()
+                        ),
+                    );
+                }
             });
             crate::bot::audit_log(
                 &app,
@@ -3935,6 +3984,36 @@ mod orchestrator_tests {
             )),
             "汇报失败要与 Busy 同款：deadline 内 sleep 后重试"
         );
+    }
+
+    /// 接线守卫：兜底写终态失败必须留痕。
+    ///
+    /// 兜底写的是「行停在 queued/running」的唯一补救；它自己失败时若不记，
+    /// 那行就永远停在那里，面板上一直转圈，事后也查不到是哪一步失败的。
+    /// 匹配串用 `concat!` 拆分防自匹配（本测试自身的源码不算命中）。
+    #[test]
+    fn terminal_state_fallback_write_leaves_a_trace_on_failure() {
+        let src = include_str!("bot_orchestrator.rs");
+        assert!(
+            !src.contains(concat!("let _ = db_", "locked(")),
+            "兜底写终态不得吞掉失败——行会永远停在 queued/running"
+        );
+        let write_needle = concat!("let write = db_", "locked(");
+        let trace_needle = concat!("subagent_terminal_state_write_", "failed");
+        // 按「兜底写」切段：每段到下一个兜底写为止，每段都要有自己的失败留痕
+        let segments: Vec<&str> = src.split(write_needle).skip(1).collect();
+        assert!(
+            segments.len() >= 4,
+            "兜底写终态有四处（加载失败 / 产物目录不可用 / 会话建立失败 / 收尾失败），\
+             现 {len} 处",
+            len = segments.len()
+        );
+        for seg in &segments {
+            assert!(
+                seg.contains(trace_needle),
+                "兜底写终态失败必须留痕——行永远停在 queued/running 时只有这条线索"
+            );
+        }
     }
 
     /// 接线守卫：`subagent_digest_block` 只造段，不得顺手记「已吸收」。
