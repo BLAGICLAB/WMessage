@@ -54,6 +54,12 @@ pub(crate) const TAIL_LINES: usize = 20;
 /// 输出上限巡检周期（秒）。
 const OUTPUT_SWEEP_SECS: u64 = 30;
 
+/// 停止之后等进程真正退出的窗口（毫秒）。
+///
+/// 过了这个窗口还没退 = 判定「停不掉」：状态放回原样并报失败，
+/// 不写 `Exited`（写了等于把它从退出清理里摘掉，而它还在跑）。
+const STOP_EXIT_WAIT_MS: u64 = 1000;
+
 // ── 资源观测 ──
 
 /// 单服务 RSS 告警阈值（字节）。正常 vite dev server 是 145MB，阈值在它上面 3.5 倍——
@@ -582,7 +588,10 @@ fn handle_violation<R: tauri::Runtime>(
     }
     if action == ViolationAction::Killed {
         // 走既有信号阶梯杀进程组（不是裸 kill）
-        let _ = stop_entry(app, entry, "port_violation");
+        // 停不掉也要看得见：stop_entry 自己写审计，这里再留一行诊断
+        if let Err(e) = stop_entry(app, entry, "port_violation") {
+            eprintln!("[bot::services] 端口违规杀组未成功：{e}");
+        }
     }
 }
 
@@ -1132,6 +1141,24 @@ pub(crate) fn do_start<R: tauri::Runtime>(
         g.pgid = pgid;
     }
 
+    // spawn 窗口里可能已经被 stop 过（那时 pid 还是 0，登记表记的是「没有进程」，
+    // stop 如实标了已退出）。现在进程真的起来了，但那条 stop 已经「完成」——
+    // 不收掉它，它就是宿主管不到的孤儿。必须立刻杀掉，并让这次启动失败。
+    let stopped_during_spawn = {
+        let g = entry.lock().unwrap_or_else(|e| e.into_inner());
+        !matches!(g.state, ServiceState::Starting)
+    };
+    if stopped_during_spawn {
+        // 走同一套停止阶梯（含子孙回收）——刚起来的进程也可能已经 fork 了
+        let _ = crate::bot::procs::stop_tree(pid, pgid, |_| {
+            child.try_wait().map(|s| s.is_some()).unwrap_or(false)
+        });
+        let _ = child.wait();
+        lock_table(&table).remove(&id);
+        let _ = std::fs::remove_dir_all(&dir);
+        return Err("服务在启动过程中已被停止".to_string());
+    }
+
     crate::audit::write_event(
         app,
         AuditLevel::Info,
@@ -1204,7 +1231,10 @@ pub(crate) fn do_start<R: tauri::Runtime>(
     if !ready {
         // 就绪超时 / 提前退出：主动收掉这个服务，别留半死不活的东西
         let reason = "ready_timeout";
-        let _ = stop_entry(app, &entry, reason);
+        // 停不掉也要看得见：审计里有 service.stop_failed，这里再留一行诊断
+        if let Err(e) = stop_entry(app, &entry, reason) {
+            eprintln!("[bot::services] 就绪超时的服务收不掉：{e}");
+        }
         let stderr_tail = tail_lines(&stderr_path, TAIL_LINES);
         let stdout_tail = tail_lines(&stdout_path, TAIL_LINES);
         let mut detail = String::new();
@@ -1365,7 +1395,8 @@ fn tail_chars(s: &str, n: usize) -> String {
 #[derive(Debug, Clone)]
 pub(crate) struct StopOutcome {
     pub(crate) stopped: bool,
-    /// 实际生效的手段（`SIGINT` / `SIGTERM` / `SIGKILL` / `already_exited`）
+    /// 实际生效的手段（unix：`SIGINT` / `SIGTERM` / `SIGKILL`；
+    /// Windows：`taskkill` / `taskkill_failed`；另有 `already_exited`）
     pub(crate) method: String,
     pub(crate) descendants_killed: usize,
     pub(crate) exit_code: Option<i32>,
@@ -1375,13 +1406,17 @@ pub(crate) struct StopOutcome {
 /// 停止一个服务：降级信号阶梯 + 脱离进程组的子孙回收。
 ///
 /// 阻塞：含等待窗口，必须挪到 blocking 线程。
+///
+/// **只报「停掉了」的前提是进程真的退了**：等不到退出就把状态放回原样
+/// （服务留在活动集合里，退出时还会再收一次），并返回一条明确错误——
+/// 写 `Exited` 等于告诉退出清理「这个不用收了」，而它明明还在跑。
 pub(crate) fn stop_entry<R: tauri::Runtime>(
     app: &AppHandle<R>,
     entry: &ServiceEntry,
     reason: &str,
 ) -> Result<StopOutcome, String> {
     let started = Instant::now();
-    let (pid, pgid, stdout_path, stderr_path, id) = {
+    let (pid, pgid, stdout_path, stderr_path, id, prev_state) = {
         let mut g = entry.lock().unwrap_or_else(|e| e.into_inner());
         if g.state == ServiceState::Exited || g.state == ServiceState::Failed {
             return Ok(StopOutcome {
@@ -1392,6 +1427,7 @@ pub(crate) fn stop_entry<R: tauri::Runtime>(
                 elapsed_ms: 0,
             });
         }
+        let prev = g.state;
         g.state = ServiceState::Stopping;
         g.stop_reason = Some(reason.to_string());
         (
@@ -1400,6 +1436,7 @@ pub(crate) fn stop_entry<R: tauri::Runtime>(
             g.stdout_path.clone(),
             g.stderr_path.clone(),
             g.id.clone(),
+            prev,
         )
     };
 
@@ -1416,9 +1453,55 @@ pub(crate) fn stop_entry<R: tauri::Runtime>(
 
     // 停止阶梯 + 子孙回收：走公共进程树模块（受管服务层与 MCP stdio 共用一套）。
     // 等待口径传「登记表状态」——watcher 的 wait() 是权威（进程真退了状态才变）。
-    let tree = crate::bot::procs::stop_tree(pid, pgid, |grace| wait_state_exit(entry, grace));
+    let tree = match crate::bot::procs::stop_tree(pid, pgid, |grace| wait_state_exit(entry, grace))
+    {
+        Ok(tree) => tree,
+        Err(e) => {
+            // 本平台没有停止手段：状态放回原样，服务继续留在活动集合里
+            restore_state(entry, prev_state);
+            crate::audit::write_event(
+                app,
+                AuditLevel::Warn,
+                "service.stop_unsupported",
+                &[
+                    ("service_id", id.clone()),
+                    ("reason", e.clone()),
+                    ("pid", pid.to_string()),
+                ],
+            );
+            return Err(format!("{e}（无法停止受管服务）"));
+        }
+    };
     let method = tree.method;
     let killed = tree.descendants_killed;
+
+    // 没有进程可停（pid 0 占位条目 / pid 1）：这个服务本来就没在跑，
+    // 记成已退出是如实的。spawn 窗口里真的起来的那一个，由 do_start 侧兜底收掉。
+    if method == "no_process" {
+        {
+            let mut g = entry.lock().unwrap_or_else(|e| e.into_inner());
+            g.state = ServiceState::Exited;
+            g.exited_at_ms = Some(crate::db::now_ms());
+        }
+        crate::audit::write_event(
+            app,
+            AuditLevel::Info,
+            "service.stopped",
+            &[
+                ("service_id", id.clone()),
+                ("method", method.clone()),
+                ("elapsed_ms", started.elapsed().as_millis().to_string()),
+                ("descendants_killed", "0".to_string()),
+            ],
+        );
+        return Ok(StopOutcome {
+            stopped: true,
+            method,
+            descendants_killed: 0,
+            exit_code: None,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        });
+    }
 
     for (p, old, new) in &tree.reused_skipped {
         crate::audit::write_event(
@@ -1435,12 +1518,27 @@ pub(crate) fn stop_entry<R: tauri::Runtime>(
     }
 
     // 等 watcher 收尸，拿到退出码
-    wait_state_exit(entry, Duration::from_millis(1000));
-
+    let exited = wait_state_exit(entry, Duration::from_millis(STOP_EXIT_WAIT_MS));
     let (exit_code, state) = {
         let g = entry.lock().unwrap_or_else(|e| e.into_inner());
         (g.exit_code, g.state)
     };
+    if !exited {
+        // 进程还活着：状态放回原样（不许写 Exited），并明确报失败
+        restore_state(entry, prev_state);
+        crate::audit::write_event(
+            app,
+            AuditLevel::Warn,
+            "service.stop_failed",
+            &[
+                ("service_id", id.clone()),
+                ("reason", "进程仍在运行".to_string()),
+                ("method", method.clone()),
+                ("pid", pid.to_string()),
+            ],
+        );
+        return Err(format!("进程仍在运行（pid={pid}），停止未生效"));
+    }
     if state != ServiceState::Exited {
         let mut g = entry.lock().unwrap_or_else(|e| e.into_inner());
         g.state = ServiceState::Exited;
@@ -1470,6 +1568,20 @@ pub(crate) fn stop_entry<R: tauri::Runtime>(
         exit_code,
         elapsed_ms: started.elapsed().as_millis() as u64,
     })
+}
+
+/// 停止失败时把状态放回停止前的那个。
+///
+/// 关键：失败的服务必须留在活动集合里（`is_active`）——写 `Exited` 等于
+/// 告诉退出清理「这个不用收了」，而它明明还在跑。
+///
+/// 只在状态还是 `Stopping` 时回退：watcher 若在这期间把状态转成了终态
+/// （进程确实退了），那就不该再把它说成「还在跑」。
+fn restore_state(entry: &ServiceEntry, prev: ServiceState) {
+    let mut g = entry.lock().unwrap_or_else(|e| e.into_inner());
+    if g.state == ServiceState::Stopping {
+        g.state = prev;
+    }
 }
 
 /// 截断一个日志流到上限，超限才记审计。
@@ -1770,19 +1882,10 @@ pub(crate) fn stop_all<R: tauri::Runtime>(app: &AppHandle<R>) -> usize {
     }
     let mut stopped = 0usize;
     for entry in entries {
-        match stop_entry(app, &entry, "app_exit") {
-            Ok(o) => {
-                if o.stopped {
-                    stopped += 1;
-                }
-            }
-            Err(e) => {
-                crate::audit::write_event(
-                    app,
-                    AuditLevel::Warn,
-                    "service.stop_failed",
-                    &[("reason", e)],
-                );
+        // 失败由 stop_entry 自己写审计（service.stop_failed / service.stop_unsupported）
+        if let Ok(o) = stop_entry(app, &entry, "app_exit") {
+            if o.stopped {
+                stopped += 1;
             }
         }
     }

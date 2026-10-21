@@ -1083,6 +1083,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-17 | 已修 | 指纹显式枚举字段，含 env/headers（`manager::fingerprint`） |
 | P1-4 | 已修 | 194 处工具返回点改 `denied` / `error` + 静态扫描守卫重写（`audit.rs`） |
 | P1-1 | 已修 | 采集层显式回报采样成败（`procs::ListeningSample`）+ 采样失败降级 `Unsupported` |
+| P1-2 | 已修 | Windows 停止阶梯落地（`taskkill /T /F`）+ 停止失败不谎报「已停」+ pid 0/1 不许当树根（`procs::stop_tree` / `services::stop_entry`）|
 | P1-12 | 已修 | 主聊天路径工具执行包 `catch_unwind`（`dispatch::run_tool_panic_isolated`）+ 接线守卫 |
 
 ### P0-1 的落地口径
@@ -1255,6 +1256,45 @@ reqwest 没有二次解析、Host 头仍是原域名）；源码文本钉住「H
 记录的是「为什么这里用 ok」——理由是文案首字。这套理由在 status 改由语义
 决定之后不再成立，留着会让人以为「文案首字决定 status」，故一并删除。
 
+
+### P1-2 的落地口径
+
+**Windows 上不再谎报「已停止」**：
+
+- `procs::stop_tree` 的返回类型从 `TreeStop` 改成 `Result<TreeStop, String>`：
+  `Err` = **本平台没有可用的停止手段**（不是「这个进程停不掉」），调用方必须
+  区分这两者。unix 阶梯照旧；Windows 走 `taskkill /PID <pid> /T /F`
+  （整树强杀，不给优雅退出的机会）；其余平台显式失败而不是空转。
+- `procs::pid_exists` 在 Windows 上改用 `OpenProcess` + `GetExitCodeProcess`
+  判存活——unix 的 `kill(pid, 0)` 在 Windows 上没有对应物，恒 false 会让
+  「等进程退出」立刻判定「已退出」，停止阶梯因此整条空转，而上层照样回报
+  「已停止」。
+- `services::stop_entry` 等不到进程退出时**不写 `Exited`**、**不回报
+  `stopped: true`**：状态放回停止前的那个（服务留在活动集合里，退出时还会
+  再收一次），返回一条明确错误，并写审计 `service.stop_failed`。写 `Exited`
+  等于告诉退出清理「这个不用收了」，而它明明还在跑。
+- MCP 侧同样不再把「阶梯跑完」当成「进程没了」：收尾再核一次存活。
+
+**顺带挖出来的宿主自杀（本次最要紧的一条）**：
+
+新写的「停不掉」用例第一次跑就把**整台机器的用户进程** SIGKILL 掉了
+（连带 4 个并发测试一起死，表现为一片 SIGKILL）。根因不在测试，在生产代码：
+`stop_tree` 直接拿登记表的 pid 当树根，而登记表里 spawn 前的占位条目 pid
+就是 0——`descendants(snap, 0)` 于是把 **launchd 的整棵子树**（= 机器上每个
+用户进程）当成「我们的后代」，随后逐个 SIGKILL。
+
+修法落在**树根这一层**（不是信号那一层）：`send_signal` / `signal_group`
+早就各自挡了 0，但那挡的是「信号发出去会自杀」；这里漏掉的是**收集**这一步
+——pid 0 是「调用方进程组」的哨兵，pid 1 是 init/launchd（全机进程的祖先）。
+现在 `descendants` 与 `stop_tree` 都拒收 pid ≤ 1 的树根（返回空集合 /
+`no_process`），并把「没有进程可停」如实回报给调用方。
+
+**spawn 窗口的竞态**：`do_start` 在 spawn 成功、pid 写进登记表之后多看一眼
+状态——若这期间已被 stop 过（那时 pid 还是 0，登记表记的是「没有进程」），
+就把刚起来的进程树收掉并让这次启动失败，否则它会变成宿主管不到的孤儿。
+
+**测试**：`stop_tree(0, …)` 不杀任何进程（哨兵进程事后仍活着）；`descendants`
+拒收 pid 0/1；停不掉时报错且状态放回原样；没起来过的服务报「没有进程」。
 
 ### P1-12 的落地口径
 

@@ -868,6 +868,9 @@ mod tests {
     }
 
     /// src 是 symlink → 返 Err（read_dir 跟读目标 = move 语义失控）
+    ///
+    /// symlink 的创建是 unix-only API——Windows 上没有对应物，这个用例不适用。
+    #[cfg(unix)]
     #[test]
     fn copy_dir_recursive_rejects_symlink_src() {
         let dir = std::env::temp_dir().join(format!("wm-copy-sym-{}", uuid::Uuid::new_v4()));

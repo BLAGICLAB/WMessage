@@ -23,13 +23,23 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 /// SIGINT 后的优雅退出等待窗口。
+#[cfg(unix)]
 pub(crate) const SIGINT_GRACE_MS: u64 = 100;
 
 /// SIGTERM 后的等待窗口。
+#[cfg(unix)]
 pub(crate) const SIGTERM_GRACE_MS: u64 = 400;
 
 /// 进程存活判定的轮询间隔。
 pub(crate) const ALIVE_POLL_MS: u64 = 20;
+
+/// Windows：等进程自己退出的窗口。
+#[cfg(windows)]
+const WINDOWS_EXIT_GRACE_MS: u64 = 300;
+
+/// Windows：`taskkill` 之后等进程真正消失的窗口。
+#[cfg(windows)]
+const WINDOWS_KILL_WAIT_MS: u64 = 1000;
 
 // ── 数据结构 ──
 
@@ -49,6 +59,7 @@ pub(crate) struct ProcSnapshot {
 }
 
 /// 一次快照比对的结果。
+#[cfg(unix)]
 #[derive(Debug, Default, Clone)]
 pub(crate) struct TreeScan {
     /// 本次新出现的后代（可杀）
@@ -102,6 +113,13 @@ pub struct ListeningSocket {
 ///
 /// 纯计算：只读传入的快照，不做任何 IO。返回 pid → 启动标识。
 pub(crate) fn descendants(snap: &[ProcSnapshot], root: u32) -> HashMap<u32, String> {
+    // pid 0 / 1 不能当树根：
+    // - pid 0 是「调用方的进程组」哨兵（`kill(0, sig)` 发给整个进程组）；
+    // - pid 1 是 init/launchd——**全机进程都是它的后代**。
+    // 以它们为根，收集到的就是「宿主机上所有进程」，随后逐个 SIGKILL = 宿主自杀。
+    if root <= 1 {
+        return HashMap::new();
+    }
     let mut children: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
     for p in snap {
         children
@@ -127,6 +145,7 @@ pub(crate) fn descendants(snap: &[ProcSnapshot], root: u32) -> HashMap<u32, Stri
 ///
 /// PID 复用的处置是剔除而非杀：宁可漏杀（那个进程已经不是我们的后代），
 /// 也不能误杀（可能杀掉用户正在跑的别的进程）。
+#[cfg(unix)]
 pub(crate) fn diff_descendants(
     prev: &HashMap<u32, String>,
     cur: &HashMap<u32, String>,
@@ -754,11 +773,6 @@ pub(crate) fn send_signal(pid: u32, sig: i32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, sig) == 0 }
 }
 
-#[cfg(not(unix))]
-pub(crate) fn send_signal(_pid: u32, _sig: i32) -> bool {
-    false
-}
-
 #[cfg(unix)]
 pub(crate) fn signal_group(pgid: i32, sig: i32) -> bool {
     // killpg(0, sig) 同样是"调用方的整个进程组"——组 id 拿不到时宁可不发。
@@ -768,11 +782,6 @@ pub(crate) fn signal_group(pgid: i32, sig: i32) -> bool {
     // SAFETY: killpg(2) 对任意 pgid 安全；pgid 是我们自己 spawn 时用
     // process_group(0) 建的组，不可能是宿主的组。
     unsafe { libc::killpg(pgid as libc::pid_t, sig) == 0 }
-}
-
-#[cfg(not(unix))]
-pub(crate) fn signal_group(_pgid: i32, _sig: i32) -> bool {
-    false
 }
 
 #[cfg(unix)]
@@ -794,7 +803,38 @@ pub(crate) fn pid_exists(pid: u32) -> bool {
     unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
 }
 
-#[cfg(not(unix))]
+/// Windows：进程是否还在（`OpenProcess` + `GetExitCodeProcess`）。
+///
+/// unix 的 `kill(pid, 0)` 在 Windows 上没有对应物。恒 false 会让
+/// 「等进程退出」立刻判定「已退出」——停止阶梯因此整条空转，
+/// 而上层照样回报「已停止」。
+///
+/// 已知边角：退出码恰好是 259（`STILL_ACTIVE`）的进程会被误判成还活着——
+/// Windows 用退出码表示这个值没有特殊含义，撞上只能认。
+#[cfg(windows)]
+pub(crate) fn pid_exists(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: 只申请查询权限，不改进程状态；句柄用完即关。
+    let Ok(handle) = (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }) else {
+        // 打不开 = 进程不在（pid 已回收）或无权查询。
+        return false;
+    };
+    let mut code = 0u32;
+    // SAFETY: handle 由上面取得且有效；code 是栈上 u32，尺寸符合 API 要求。
+    let queried = unsafe { GetExitCodeProcess(handle, &mut code) }.is_ok();
+    // SAFETY: handle 由本函数取得，关闭一次。
+    let _ = unsafe { CloseHandle(handle) };
+    queried && code == STILL_ACTIVE.0 as u32
+}
+
+/// 其余平台：没有可靠的存活探测口径。
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn pid_exists(_pid: u32) -> bool {
     false
 }
@@ -820,6 +860,7 @@ pub(crate) fn wait_pid_exit(pid: u32, timeout: Duration) -> bool {
 /// 为什么不能只看"pid 还在不在"：进程被回收后 pid 就被释放了，
 /// 之后这个号可能被系统分给别的进程；`kill(pid, 0)` 对两种情况都返回成功。
 /// 核启动标识才能区分"还是我们的组长"和"号被借走了"。
+#[cfg(unix)]
 pub(crate) fn group_kill_allowed(
     final_map: &HashMap<u32, &str>,
     leader_pid: u32,
@@ -832,6 +873,10 @@ pub(crate) fn group_kill_allowed(
 }
 
 /// 停止一棵进程树的结果。
+///
+/// `method` 记的是**实际生效的手段**：`SIGINT` / `SIGTERM` / `SIGKILL`（unix）、
+/// `taskkill` 及其失败形态（Windows）、`already_exited`（进程自己退了）、
+/// `no_process`（没有进程可停——pid 0 占位条目 / pid 1）。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TreeStop {
     /// 实际生效的手段（`SIGINT` / `SIGTERM` / `SIGKILL`）
@@ -852,11 +897,28 @@ pub(crate) struct TreeStop {
 ///
 /// 阶梯的每一级发信号前各拍一张快照增量收集子孙，最后统一杀——
 /// 边收边杀会打断正在进行的快照（父子链残缺 → 漏收）。
+///
+/// `Err` = **本平台没有可用的停止手段**（不是「停不掉这个进程」）。
+/// 调用方必须区分这两者：前者是能力缺失，后者由等待回调的口径判定。
 #[cfg(unix)]
-pub(crate) fn stop_tree<F>(root_pid: u32, pgid: i32, mut wait_exit: F) -> TreeStop
+pub(crate) fn stop_tree<F>(root_pid: u32, pgid: i32, mut wait_exit: F) -> Result<TreeStop, String>
 where
     F: FnMut(Duration) -> bool,
 {
+    // **pid 0 / 1 不许当树根**：
+    // - pid 0 是登记表的占位条目（spawn 还没成功），`kill(0, sig)` 的语义是
+    //   「给调用方的整个进程组发信号」；
+    // - pid 1 是 init/launchd，全机进程都是它的后代。
+    // 拿它们当根去收集后代，收到的就是「宿主机上所有进程」，随后逐个 SIGKILL——
+    // 那是宿主自杀。这里没有进程可停，如实返回「没有进程」。
+    if root_pid <= 1 {
+        return Ok(TreeStop {
+            method: "no_process".to_string(),
+            descendants_killed: 0,
+            reused_skipped: Vec::new(),
+            elapsed_ms: 0,
+        });
+    }
     let started = Instant::now();
     // 已知后代：pid → 启动标识。pid 与启动标识一起存，才能在最后核验
     // "这个 pid 现在还是不是当时那个进程"（防 PID 复用误杀）。
@@ -963,30 +1025,123 @@ where
         }
     }
 
-    TreeStop {
+    Ok(TreeStop {
         method,
         descendants_killed: killed,
         reused_skipped,
         elapsed_ms: started.elapsed().as_millis() as u64,
-    }
+    })
 }
 
-/// 非 unix 平台没有信号阶梯（unix 靠 SIGINT/SIGTERM/SIGKILL）。
+/// Windows 的停止阶梯：先等它自己退 → `taskkill /T /F` 强杀。
 ///
-/// 这里给出显式的「不支持」结果而不是空转：空转会让调用方把
-/// 「一个信号都没发出去」当成「已经停掉」。
-#[cfg(not(unix))]
-pub(crate) fn stop_tree<F>(_root_pid: u32, _pgid: i32, _wait_exit: F) -> TreeStop
+/// Windows 没有 unix 那套信号语义（`SIGINT` 在 Windows 上没有对应投递方式），
+/// 停止走 `taskkill`：`/T` 连子孙一起杀，`/F` 不给优雅退出的机会。
+///
+/// **没有「关 stdin 让它自己退」这一级**：受管服务的 stdin 是 `Stdio::null()`
+/// （没有可关的管道）；MCP stdio 的 stdin 管道要到连接层释放传输时才关，
+/// 而那发生在本阶梯**之后**。第一级窗口只是留给「已经自己退出的进程」。
+#[cfg(windows)]
+pub(crate) fn stop_tree<F>(root_pid: u32, _pgid: i32, mut wait_exit: F) -> Result<TreeStop, String>
 where
     F: FnMut(Duration) -> bool,
 {
-    TreeStop {
-        method: "unsupported".to_string(),
+    // pid 0 是占位条目（没有进程可停），pid 1 是 init——都不许当目标
+    if root_pid <= 1 {
+        return Ok(TreeStop {
+            method: "no_process".to_string(),
+            descendants_killed: 0,
+            reused_skipped: Vec::new(),
+            elapsed_ms: 0,
+        });
+    }
+    let started = Instant::now();
+    // 已经自己退了（服务自己结束 / 连接断开）就不用动刀
+    if wait_exit(Duration::from_millis(WINDOWS_EXIT_GRACE_MS)) {
+        return Ok(TreeStop {
+            method: "already_exited".to_string(),
+            descendants_killed: 0,
+            reused_skipped: Vec::new(),
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        });
+    }
+    let killed = taskkill_tree(root_pid);
+    // 杀完再等一次：进程真没了才算停掉（等的是调用方的权威口径）
+    let gone = wait_exit(Duration::from_millis(WINDOWS_KILL_WAIT_MS));
+    let method = if gone {
+        "taskkill".to_string()
+    } else if killed {
+        // 命令跑成了，进程却还在——如实记，别写成「已停」
+        "taskkill_failed".to_string()
+    } else {
+        // 命令没跑成（找不到 taskkill / 没权限）
+        "taskkill_unavailable".to_string()
+    };
+    Ok(TreeStop {
+        method,
+        // `taskkill /T` 是整树一起杀的，宿主这边数不出被杀的子孙个数
         descendants_killed: 0,
         reused_skipped: Vec::new(),
-        elapsed_ms: 0,
-    }
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
 }
+
+/// 本平台没有可用的停止手段（unix 靠信号，Windows 靠 taskkill）。
+///
+/// 这里**必须显式失败而不是空转**：调用方据此判定「停不掉」，
+/// 不许把「一个信号都没发出去」当成「已经停掉」。
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn stop_tree<F>(_root_pid: u32, _pgid: i32, _wait_exit: F) -> Result<TreeStop, String>
+where
+    F: FnMut(Duration) -> bool,
+{
+    Err("本平台没有可用的停止手段".to_string())
+}
+
+/// Windows：整棵进程树强杀（`taskkill /PID <pid> /T /F`）。
+///
+/// 返回是否杀成功。杀不掉时调用方按「进程可能还活着」处理——
+/// 停止结果由等待口径判定，不由这条命令的退出码判定。
+#[cfg(windows)]
+fn taskkill_tree(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let pid_text = pid.to_string();
+    let mut cmd = match taskkill_program() {
+        Some(program) => silent_cmd(&program),
+        None => silent_cmd("taskkill"),
+    };
+    cmd.args(["/PID", &pid_text, "/T", "/F"]);
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+/// 定位 `taskkill.exe`。
+///
+/// 优先 `%SystemRoot%\System32\taskkill.exe` 绝对路径：GUI 子进程继承到的
+/// PATH 不一定含 System32，裸名会「找不到程序」——而找不到程序与「杀掉了」
+/// 在返回码上长得一模一样。
+#[cfg(windows)]
+fn taskkill_program() -> Option<std::path::PathBuf> {
+    let root = std::env::var_os("SystemRoot")?;
+    let path = std::path::PathBuf::from(root)
+        .join("System32")
+        .join("taskkill.exe");
+    path.is_file().then_some(path)
+}
+
+/// 静默执行一条外部命令（不弹控制台窗口、不接管道）。
+#[cfg(windows)]
+fn silent_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// Windows 上创建控制台窗口的标志位（`CREATE_NO_WINDOW`）。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(test)]
 mod tests;

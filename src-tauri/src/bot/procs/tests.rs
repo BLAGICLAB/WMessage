@@ -55,8 +55,8 @@ fn descendants_of_leaf_is_empty() {
 #[test]
 fn descendants_tolerates_cycle() {
     // 坏数据：a 的父亲是 b，b 的父亲是 a。收集必须终止，不能死循环
-    let s = vec![snap(1, 2, "t1"), snap(2, 1, "t2")];
-    let d = descendants(&s, 1);
+    let s = vec![snap(10, 20, "t10"), snap(20, 10, "t20")];
+    let d = descendants(&s, 10);
     assert_eq!(d.len(), 2);
 }
 
@@ -66,8 +66,59 @@ fn descendants_of_unknown_root_is_empty() {
     assert!(descendants(&s, 999).is_empty());
 }
 
+#[test]
+fn descendants_refuses_pid_zero_and_pid_one_as_tree_root() {
+    // pid 0 是「调用方进程组」的哨兵，pid 1 是 init/launchd——
+    // **全机进程都是 pid 1 的后代**。以它们为根，收到的就是「整台机器」。
+    let s = vec![
+        snap(1, 0, "t1"),
+        snap(100, 1, "t100"),
+        snap(101, 100, "t101"),
+    ];
+    assert!(descendants(&s, 0).is_empty(), "pid 0 不能当树根");
+    assert!(descendants(&s, 1).is_empty(), "pid 1 不能当树根");
+    // 正常根照常工作（别把闸修过头）
+    assert_eq!(descendants(&s, 100).len(), 1);
+}
+
+/// pid 0 的停止不许牵连任何进程——**回归测试**。
+///
+/// 修复之前：`stop_tree(0, …)` 拿 pid 0 当树根，`descendants` 于是把
+/// launchd 的整棵子树（= 机器上每个用户进程）当成「我们的后代」，
+/// 随后逐个 SIGKILL——连测试进程自己一起死（表现为整片测试被 SIGKILL）。
+#[cfg(unix)]
+#[test]
+fn stop_tree_with_pid_zero_kills_nothing() {
+    // 哨兵：修复前会被这棵树误杀
+    let mut sentinel = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("应能起哨兵进程");
+    let sentinel_pid = sentinel.id();
+
+    let Ok(tree) = stop_tree(0, 0, |_| false) else {
+        eprintln!("[skip] 本平台没有停止手段");
+        let _ = sentinel.kill();
+        let _ = sentinel.wait();
+        return;
+    };
+    assert_eq!(
+        tree.method, "no_process",
+        "pid 0 是占位条目，必须判为「没有进程可停」"
+    );
+
+    assert!(
+        pid_exists(sentinel_pid),
+        "pid 0 的停止不许牵连任何进程（修复前这里会把整台机器的用户进程杀掉）"
+    );
+    let _ = sentinel.kill();
+    let _ = sentinel.wait();
+}
+
 // ── 增量比对与 PID 复用 ──
 
+// 增量比对与整组杀护栏是 unix 信号阶梯的一部分——Windows 上没有这两套函数。
+#[cfg(unix)]
 #[test]
 fn diff_reports_newly_appeared_descendants() {
     let prev: HashMap<u32, String> = HashMap::new();
@@ -77,6 +128,7 @@ fn diff_reports_newly_appeared_descendants() {
     assert!(scan.reused.is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn diff_flags_pid_reuse_instead_of_treating_it_as_new() {
     // 同一个 pid，启动标识变了 → 被复用 → 剔除不杀
@@ -88,6 +140,7 @@ fn diff_flags_pid_reuse_instead_of_treating_it_as_new() {
     assert_eq!(scan.reused[0].0, 101);
 }
 
+#[cfg(unix)]
 #[test]
 fn diff_ignores_unchanged_process() {
     let prev: HashMap<u32, String> = HashMap::from([(101, "t101".to_string())]);
@@ -170,6 +223,8 @@ fn tree_sample_sums_whole_process_tree() {
 
 // ── 整组杀护栏 ──
 
+// 整组杀护栏跟着 unix 信号阶梯走（Windows 没有「整组杀」这回事）。
+#[cfg(unix)]
 #[test]
 fn group_kill_allowed_only_for_same_leader_process() {
     let mut map: HashMap<u32, &str> = HashMap::new();

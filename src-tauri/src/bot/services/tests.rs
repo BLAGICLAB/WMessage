@@ -238,6 +238,104 @@ fn stop_is_idempotent_for_exited_service() {
     assert_eq!(second.method, "already_exited");
 }
 
+/// 起一个会待够久的子进程（当停止流程的目标）。
+///
+/// unix 用 `sleep`，Windows 用 ping 计时——两边都能撑过停止流程的等待窗口。
+fn spawn_sleeper() -> std::process::Child {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("sleep");
+        c.arg("30");
+        c
+    };
+    #[cfg(windows)]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "ping -n 31 127.0.0.1 >NUL"]);
+        c
+    };
+    cmd.spawn().expect("应能起子进程")
+}
+
+#[test]
+fn stop_that_cannot_confirm_exit_reports_failure_and_keeps_the_service_active() {
+    // 「停不掉」不许被写成「已停」：写 Exited 等于把它从活动集合里摘掉
+    // （`is_active` 过滤），而退出时它还得再收一次。
+    //
+    // 造一个收不到退出确认的服务：进程真的在跑，但**没有 watcher 线程**
+    // ——登记表永远等不到「进程退了」这个事实。
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    app.manage(crate::app_state::AppState::default());
+
+    let mut child = spawn_sleeper();
+    let pid = child.id();
+
+    let entry: ServiceEntry = Arc::new(Mutex::new(ManagedService::new(
+        "svc_stuck".to_string(),
+        String::new(),
+        "python3".to_string(),
+        Vec::new(),
+        std::env::temp_dir(),
+        pid,
+        pid as i32,
+        PathBuf::new(),
+        PathBuf::new(),
+        None,
+    )));
+    entry.lock().unwrap_or_else(|e| e.into_inner()).state = ServiceState::Running;
+
+    let r = stop_entry(&handle, &entry, "test");
+    assert!(r.is_err(), "停不掉必须报错，不能回报「已停止」");
+
+    let g = entry.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+        g.state,
+        ServiceState::Running,
+        "停止失败时状态必须放回原样——写 Exited 等于宣告它不用收了"
+    );
+    assert!(
+        g.state.is_active(),
+        "还在跑的服务必须留在活动集合里（退出时还要再收一次）"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn stop_of_a_service_that_never_started_reports_no_process() {
+    // pid 0 = spawn 前的占位条目：没有进程可停，如实说「没有进程」，
+    // 而不是「已停止」。更关键的是：**不许牵连别的进程**——
+    // 拿 pid 0 当树根会把 launchd 的整棵子树（全机用户进程）收进来。
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    app.manage(crate::app_state::AppState::default());
+
+    let entry: ServiceEntry = Arc::new(Mutex::new(ManagedService::new(
+        "svc_never_started".to_string(),
+        String::new(),
+        "python3".to_string(),
+        Vec::new(),
+        std::env::temp_dir(),
+        0,
+        0,
+        PathBuf::new(),
+        PathBuf::new(),
+        None,
+    )));
+    entry.lock().unwrap_or_else(|e| e.into_inner()).state = ServiceState::Starting;
+
+    let outcome = stop_entry(&handle, &entry, "test").expect("没有进程可停不报错");
+    assert_eq!(outcome.method, "no_process");
+    assert!(outcome.stopped, "本来就没在跑，等于「已不在运行」");
+    assert_eq!(
+        entry.lock().unwrap_or_else(|e| e.into_inner()).state,
+        ServiceState::Exited,
+        "没有进程的条目记成已退出（它本来就不在跑）"
+    );
+}
+
 #[test]
 fn stop_unknown_service_is_an_error() {
     let app = tauri::test::mock_app();

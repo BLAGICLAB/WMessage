@@ -797,7 +797,7 @@ impl McpManager {
 /// 停掉一个 MCP stdio 子进程树：走与受管服务层同一套信号阶梯。
 ///
 /// 与受管服务的差别只有一处：那边等的是「登记表状态转终态」，这边等的是
-/// 「进程真的不在了」（`kill(pid, 0)` 探测）——MCP 连接没有登记表。
+/// 「进程真的不在了」（存活探测）——MCP 连接没有登记表。
 ///
 /// 阶梯含等待窗口（100ms + 400ms）与若干次进程表快照，是阻塞操作，
 /// 必须挪到 blocking 线程，不能占着 async 运行时的线程。
@@ -808,12 +808,22 @@ async fn stop_stdio_tree(pid: u32) {
         })
     });
     match handle.await {
-        Ok(tree) => {
-            eprintln!(
-                "[mcp] stdio 子进程树已停：pid={pid} method={} 补杀子孙={} 耗时={}ms",
-                tree.method, tree.descendants_killed, tree.elapsed_ms
-            );
+        Ok(Ok(tree)) => {
+            // 阶梯跑完不等于进程真没了——再核一次，别把「还在跑」记成「已停」
+            if crate::bot::procs::pid_exists(pid) {
+                eprintln!(
+                    "[mcp] stdio 子进程树停止后仍在运行：pid={pid} method={}",
+                    tree.method
+                );
+            } else {
+                eprintln!(
+                    "[mcp] stdio 子进程树已停：pid={pid} method={} 补杀子孙={} 耗时={}ms",
+                    tree.method, tree.descendants_killed, tree.elapsed_ms
+                );
+            }
         }
+        // 本平台没有停止手段——不是「这个进程停不掉」，是这台机器根本没法停它
+        Ok(Err(e)) => eprintln!("[mcp] stdio 子进程树无法停止（pid={pid}）：{e}"),
         Err(e) => eprintln!("[mcp] stdio 子进程树停止失败（pid={pid}）：{e}"),
     }
 }
