@@ -25,6 +25,7 @@ use tauri::AppHandle;
 
 use crate::audit::AuditLevel;
 use crate::bot::mcp::config::STDIO_LAUNCH_ALLOWLIST;
+use crate::bot::procs::{take_snapshot, tree_sample, ResourceSample};
 
 // ── 常量 ──
 
@@ -36,12 +37,6 @@ pub(crate) const OUTPUT_CAP_BYTES: u64 = 8 * 1024 * 1024;
 
 /// 就绪瞬间固化的 stdout 尾部字节数。日志会被截断，启动横幅 / 监听地址不能跟着丢。
 pub(crate) const READY_SNAPSHOT_BYTES: usize = 2 * 1024;
-
-/// SIGINT 后的优雅退出等待窗口。
-pub(crate) const SIGINT_GRACE_MS: u64 = 100;
-
-/// SIGTERM 后的等待窗口。
-pub(crate) const SIGTERM_GRACE_MS: u64 = 400;
 
 /// 就绪等待默认上限。
 pub(crate) const DEFAULT_READY_TIMEOUT_SECS: u64 = 30;
@@ -94,18 +89,6 @@ pub(crate) struct ServicesUsage {
     pub(crate) warnings: Vec<String>,
     /// 最近一次采样时刻
     pub(crate) sampled_at_ms: Option<i64>,
-}
-
-/// 一个服务**整棵进程树**的资源采样。
-///
-/// 口径是树而不是组长：dev server 的活多半在子进程里（vite 拉起的 esbuild），
-/// 只看组长会漏掉真正在烧的那个。
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub(crate) struct ResourceSample {
-    /// 整棵树的常驻内存合计（字节）
-    pub(crate) rss_bytes: u64,
-    /// 整棵树的累计 CPU 时间（秒）
-    pub(crate) cpu_seconds: f64,
 }
 
 /// 资源告警判定结果。
@@ -177,27 +160,6 @@ pub(crate) fn evaluate_resources(
     }
 }
 
-/// 把一次进程快照折成某个服务整棵树的资源采样。
-///
-/// 树 = 组长自身 + 快照里的全部后代。组长不在快照里（已退出）时返回 None。
-pub(crate) fn tree_sample(snap: &[ProcSnapshot], root: u32) -> Option<ResourceSample> {
-    let index: HashMap<u32, &ProcSnapshot> = snap.iter().map(|p| (p.pid, p)).collect();
-    let root_row = index.get(&root)?;
-    let mut sample = ResourceSample {
-        rss_bytes: root_row.rss_bytes,
-        cpu_seconds: root_row.cpu_seconds,
-    };
-    for pid in descendants(snap, root).keys() {
-        if let Some(row) = index.get(pid) {
-            sample.rss_bytes = sample.rss_bytes.saturating_add(row.rss_bytes);
-            sample.cpu_seconds += row.cpu_seconds;
-        }
-    }
-    Some(sample)
-}
-
-/// 进程组存活判定的轮询间隔。
-const ALIVE_POLL_MS: u64 = 20;
 /// 无 readyPattern 时的短存活确认窗口：起得来且这一刻还活着就算 Running。
 const LIVENESS_CONFIRM_MS: u64 = 200;
 
@@ -323,296 +285,6 @@ impl ManagedService {
 /// 登记表值：一条服务 + 它的运行态。`Arc<Mutex<..>>` 让 watcher 线程与工具调用
 /// 侧都能就地改状态，不用重建整张表。
 pub(crate) type ServiceEntry = Arc<Mutex<ManagedService>>;
-
-// ── 进程快照（纯函数） ──
-
-/// 进程快照的一行。
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ProcSnapshot {
-    pub(crate) pid: u32,
-    pub(crate) ppid: u32,
-    /// 进程启动标识（绝对启动时间）。用来识别 **PID 复用**：同一个 pid 在两次
-    /// 快照里启动标识变了，说明这个 pid 已经属于另一个进程——那个进程不是我们的
-    /// 后代，**不能杀**。
-    pub(crate) starttime: String,
-    /// 常驻内存（字节）。资源观测用（§5.4 的 RSS 阈值）。
-    pub(crate) rss_bytes: u64,
-    /// 累计 CPU 时间（秒）。两次采样的差值 ÷ 时间差 = 占用率。
-    pub(crate) cpu_seconds: f64,
-}
-
-/// 一次快照比对的结果。
-#[derive(Debug, Default, Clone)]
-pub(crate) struct TreeScan {
-    /// 本次新出现的后代（可杀）
-    pub(crate) added: Vec<(u32, String)>,
-    /// 本次发现 PID 复用（pid, 旧启动标识, 新启动标识）——不杀
-    pub(crate) reused: Vec<(u32, String, String)>,
-}
-
-/// 从快照收集 `root` 的全部后代（不含 root 自身）。
-///
-/// 纯计算：只读传入的快照，不做任何 IO。返回 pid → 启动标识。
-pub(crate) fn descendants(snap: &[ProcSnapshot], root: u32) -> HashMap<u32, String> {
-    let mut children: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
-    for p in snap {
-        children
-            .entry(p.ppid)
-            .or_default()
-            .push((p.pid, p.starttime.as_str()));
-    }
-    let mut out: HashMap<u32, String> = HashMap::new();
-    let mut stack: Vec<(u32, &str)> = children.get(&root).cloned().unwrap_or_default();
-    while let Some((pid, st)) = stack.pop() {
-        // 已访问过就跳过：进程表理论上无环，但坏数据下不能死循环
-        if out.insert(pid, st.to_string()).is_some() {
-            continue;
-        }
-        if let Some(kids) = children.get(&pid) {
-            stack.extend(kids.iter().copied());
-        }
-    }
-    out
-}
-
-/// 对比前后两张快照，算出**新增**后代与 **PID 复用**者。
-///
-/// PID 复用的处置是剔除而非杀：宁可漏杀（那个进程已经不是我们的后代），
-/// 也不能误杀（可能杀掉用户正在跑的别的进程）。
-pub(crate) fn diff_descendants(
-    prev: &HashMap<u32, String>,
-    cur: &HashMap<u32, String>,
-) -> TreeScan {
-    let mut scan = TreeScan::default();
-    for (pid, st) in cur {
-        match prev.get(pid) {
-            None => scan.added.push((*pid, st.clone())),
-            Some(old) if old == st => {}
-            Some(old) => scan.reused.push((*pid, old.clone(), st.clone())),
-        }
-    }
-    scan
-}
-
-/// 拍一张全机进程快照。
-///
-/// 只读系统进程表，不碰服务登记表——这层将来要整体上提给 MCP 侧复用。
-pub(crate) fn take_snapshot() -> Vec<ProcSnapshot> {
-    #[cfg(target_os = "linux")]
-    {
-        snapshot_linux()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        snapshot_ps()
-    }
-}
-
-/// Linux：读 `/proc/<pid>/stat`，starttime 精度到 tick（~10ms）。
-#[cfg(target_os = "linux")]
-fn snapshot_linux() -> Vec<ProcSnapshot> {
-    let mut out = Vec::new();
-    let Ok(dir) = std::fs::read_dir("/proc") else {
-        return out;
-    };
-    for entry in dir.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(text) = std::fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        if let Some(s) = parse_proc_stat(pid, &text) {
-            out.push(s);
-        }
-    }
-    out
-}
-
-/// `/proc/<pid>/stat` 解析。非 Linux 平台上是主路径，Linux 上仅供测试覆盖同一套解析逻辑。
-///
-/// 字段位置（1-based，pid 与 comm 之后从 state 起算）：
-/// 4=ppid、14=utime、15=stime、22=starttime、24=rss（页数）。
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn parse_proc_stat(pid: u32, text: &str) -> Option<ProcSnapshot> {
-    let close = text.rfind(')')?;
-    let rest = &text[close + 1..];
-    let t: Vec<&str> = rest.split_whitespace().collect();
-    if t.len() < 22 {
-        return None;
-    }
-    let ppid = t[1].parse::<u32>().ok()?;
-    let utime: u64 = t[11].parse().ok()?;
-    let stime: u64 = t[12].parse().ok()?;
-    let rss_pages: u64 = t[21].parse().ok()?;
-    Some(ProcSnapshot {
-        pid,
-        ppid,
-        starttime: t[19].to_string(),
-        rss_bytes: rss_pages.saturating_mul(page_size()),
-        cpu_seconds: (utime + stime) as f64 / clock_ticks(),
-    })
-}
-
-/// 一页的字节数（Linux 的 rss 以页计）。
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn page_size() -> u64 {
-    // SAFETY: sysconf 是纯查询，返回 -1 表示未知，此时按 4096 兜底。
-    let v = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if v > 0 {
-        v as u64
-    } else {
-        4096
-    }
-}
-
-/// 一秒多少个 clock tick（utime/stime 以 tick 计）。
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn clock_ticks() -> f64 {
-    // SAFETY: sysconf 是纯查询，返回 -1 表示未知，此时按 100 兜底（Linux 常规值）。
-    let v = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if v > 0 {
-        v as f64
-    } else {
-        100.0
-    }
-}
-
-/// macOS 等无 `/proc` 的平台：调 `ps` 取 pid / ppid / lstart / rss / 累计 CPU 时间。
-///
-/// `lstart` 是绝对启动时间（"Wed Oct 21 18:15:00 2026"，恒为 5 段），
-/// 同一进程在两次快照里必然相同，不同进程必然不同（除非同一秒内启动，
-/// 而 pid 复用要在同一秒内完成回收+重分配，实际不可能）。
-#[cfg(not(target_os = "linux"))]
-fn snapshot_ps() -> Vec<ProcSnapshot> {
-    let Ok(out) = Command::new("ps")
-        .args([
-            "-o", "pid=", "-o", "ppid=", "-o", "lstart=", "-o", "rss=", "-o", "time=", "-ax",
-        ])
-        .output()
-    else {
-        return Vec::new();
-    };
-    parse_ps_rows(&String::from_utf8_lossy(&out.stdout))
-}
-
-/// `ps` 输出解析。非 Linux 平台上是主路径，Linux 上仅供测试覆盖同一套解析逻辑。
-///
-/// 列序：pid / ppid / lstart(5 段) / rss(KB) / time(累计 CPU 时间)。
-#[cfg_attr(target_os = "linux", allow(dead_code))]
-pub(crate) fn parse_ps_rows(text: &str) -> Vec<ProcSnapshot> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let t: Vec<&str> = line.split_whitespace().collect();
-        // pid + ppid + lstart 的 5 段 + rss + time
-        if t.len() < 9 {
-            continue;
-        }
-        let (Ok(pid), Ok(ppid)) = (t[0].parse::<u32>(), t[1].parse::<u32>()) else {
-            continue;
-        };
-        let rss_kb: u64 = t[7].parse().unwrap_or(0);
-        out.push(ProcSnapshot {
-            pid,
-            ppid,
-            starttime: t[2..7].join(" "),
-            rss_bytes: rss_kb.saturating_mul(1024),
-            cpu_seconds: parse_ps_time(t[8]).unwrap_or(0.0),
-        });
-    }
-    out
-}
-
-/// `ps` 的 `time` 列解析：`[[DD-]HH:]MM:SS[.ss]` → 秒。
-///
-/// 解析不出来就返回 None（当成 0 秒处理，不猜）。
-pub(crate) fn parse_ps_time(s: &str) -> Option<f64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    // 天数段（形如 `1-02:03:04`）
-    let (days, rest) = match s.split_once('-') {
-        Some((d, r)) => (d.parse::<f64>().ok()?, r),
-        None => (0.0, s),
-    };
-    let parts: Vec<&str> = rest.split(':').collect();
-    let secs = match parts.len() {
-        3 => {
-            // HH:MM:SS
-            let h: f64 = parts[0].parse().ok()?;
-            let m: f64 = parts[1].parse().ok()?;
-            let sec: f64 = parts[2].parse().ok()?;
-            h * 3600.0 + m * 60.0 + sec
-        }
-        2 => {
-            // MM:SS
-            let m: f64 = parts[0].parse().ok()?;
-            let sec: f64 = parts[1].parse().ok()?;
-            m * 60.0 + sec
-        }
-        _ => return None,
-    };
-    Some(days * 86400.0 + secs)
-}
-
-// ── 信号与存活判定 ──
-
-#[cfg(unix)]
-fn send_signal(pid: u32, sig: i32) -> bool {
-    // pid 0 必须拒掉：kill(0, sig) 的语义是"给调用方的整个进程组发信号"，
-    // 等于宿主给自己发信号。登记表占位条目（还没 spawn 成功）pid 就是 0。
-    if pid == 0 {
-        return false;
-    }
-    // SAFETY: kill(2) 对任意 pid 安全；ESRCH/EPERM 都表示"没打上"，
-    // 调用方据此判进程已走。信号值为 SIGINT/SIGTERM/SIGKILL 常量。
-    unsafe { libc::kill(pid as libc::pid_t, sig) == 0 }
-}
-
-#[cfg(unix)]
-fn signal_group(pgid: i32, sig: i32) -> bool {
-    // killpg(0, sig) 同样是"调用方的整个进程组"——组 id 拿不到时宁可不发。
-    if pgid <= 0 {
-        return false;
-    }
-    // SAFETY: killpg(2) 对任意 pgid 安全；pgid 是我们自己 spawn 时用
-    // process_group(0) 建的组，不可能是宿主的组。
-    unsafe { libc::killpg(pgid as libc::pid_t, sig) == 0 }
-}
-
-#[cfg(unix)]
-const SIGINT: i32 = libc::SIGINT;
-#[cfg(unix)]
-const SIGTERM: i32 = libc::SIGTERM;
-#[cfg(unix)]
-const SIGKILL: i32 = libc::SIGKILL;
-
-#[cfg(not(unix))]
-fn send_signal(_pid: u32, _sig: i32) -> bool {
-    false
-}
-
-#[cfg(not(unix))]
-fn signal_group(_pgid: i32, _sig: i32) -> bool {
-    false
-}
-
-/// 进程是否还存在（`kill(pid, 0)` 探测）。测试用：断言逃逸子孙是否真被回收。
-#[cfg(all(test, unix))]
-fn pid_exists(pid: u32) -> bool {
-    // SAFETY: kill(pid, 0) 只做存在性与权限探测，不发信号。
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
-#[cfg(all(test, not(unix)))]
-fn pid_exists(_pid: u32) -> bool {
-    false
-}
 
 // ── 日志文件 ──
 
@@ -1107,112 +779,13 @@ pub(crate) fn stop_entry<R: tauri::Runtime>(
         ],
     );
 
-    // 已知后代：pid → 启动标识。pid 与启动标识一起存，才能在最后核验
-    // "这个 pid 现在还是不是当时那个进程"（防 PID 复用误杀）。
-    let mut known: HashMap<u32, String> = HashMap::new();
-    let mut prev: HashMap<u32, String> = HashMap::new();
-    let mut method = "SIGINT".to_string();
-    let mut reused_skipped: Vec<(u32, String, String)> = Vec::new();
-    // 组长的启动标识：整组杀的护栏要用（见下面的 group_safe）
-    let mut leader_starttime: Option<String> = None;
+    // 停止阶梯 + 子孙回收：走公共进程树模块（受管服务层与 MCP stdio 共用一套）。
+    // 等待口径传「登记表状态」——watcher 的 wait() 是权威（进程真退了状态才变）。
+    let tree = crate::bot::procs::stop_tree(pid, pgid, |grace| wait_state_exit(entry, grace));
+    let method = tree.method;
+    let killed = tree.descendants_killed;
 
-    // 阶梯：每一级发信号前拍一张快照，增量收集，最后统一杀。
-    for step in 0..3u32 {
-        // 收集（只收集，不杀）
-        let snap = take_snapshot();
-        if leader_starttime.is_none() {
-            leader_starttime = snap
-                .iter()
-                .find(|p| p.pid == pid)
-                .map(|p| p.starttime.clone());
-        }
-        let cur = descendants(&snap, pid);
-        let scan = diff_descendants(&prev, &cur);
-        for (p, st) in scan.added {
-            known.insert(p, st);
-        }
-        for (p, old, new) in scan.reused {
-            // PID 被复用：这个 pid 现在属于别的进程，不杀；同时从待杀集合剔除
-            known.remove(&p);
-            reused_skipped.push((p, old, new));
-        }
-        prev = cur;
-
-        let (sig, grace_ms) = match step {
-            0 => (SIGINT, SIGINT_GRACE_MS),
-            1 => (SIGTERM, SIGTERM_GRACE_MS),
-            _ => (SIGKILL, 0),
-        };
-        if step == 2 {
-            method = "SIGKILL".to_string();
-            break;
-        }
-        if step == 1 {
-            method = "SIGTERM".to_string();
-        }
-
-        send_signal(pid, sig);
-        // 等到进程真的走了再进下一级（登记表状态由 watcher 的 wait() 权威更新）
-        if wait_state_exit(entry, Duration::from_millis(grace_ms)) {
-            break;
-        }
-    }
-
-    // 最后一张快照：确认待杀集合里的 pid 仍是当时那个进程，再动手
-    let final_snap = take_snapshot();
-    let final_map: HashMap<u32, &str> = final_snap
-        .iter()
-        .map(|p| (p.pid, p.starttime.as_str()))
-        .collect();
-    let mut to_kill: Vec<u32> = Vec::new();
-    for (p, st) in &known {
-        match final_map.get(p) {
-            Some(cur_st) if *cur_st == st => to_kill.push(*p),
-            _ => {
-                // 已退出，或 pid 已被复用 → 不杀
-                reused_skipped.push((*p, st.clone(), "gone_or_reused".to_string()));
-            }
-        }
-    }
-
-    // 整组强杀 + 逐个补杀
-    //
-    // 整组杀的护栏：组长被回收后 pid 可能被系统分配给别人，而 pid 同时
-    // 是组 id，复用后 killpg 会打到别人的组上。
-    //
-    // `kill(pid, 0)` 证明不了"还是我们那个"——watcher 一收尸，pid 就被
-    // 释放了；这时 pid 仍存在只说明"这个号上有别的进程"。所以要核启动
-    // 标识：组长还是同一个进程（标识一致）才允许整组杀。
-    //
-    // 组长已经走了的情况：组里剩下的成员由 ppid 树补杀覆盖（它们在
-    // 快照里是组长的后代），不依赖整组杀。
-    let group_safe = group_kill_allowed(&final_map, pid, leader_starttime.as_deref());
-    if let (Some(cur), Some(old)) = (final_map.get(&pid), leader_starttime.as_deref()) {
-        if *cur != old {
-            // 组长这个 pid 已被复用：现在这个号上的不是我们的进程，剔除不杀
-            reused_skipped.push((pid, old.to_string(), cur.to_string()));
-        }
-    }
-    // 快照整个是空的（ps 读不到）→ 无从核验，但组长是我们自己 spawn 的，
-    // 这时宁可赌一次也不能让服务活着跑（否则 stop 报「已停」而进程还在）。
-    let unverifiable = final_snap.is_empty();
-    if group_safe || unverifiable {
-        signal_group(pgid, SIGKILL);
-        // 组长自己：只在确认「还是我们那个进程」时才发最后一下。
-        // 组长已优雅退出且 pid 被系统回收再分配给别人时，无条件 kill 会误杀它。
-        send_signal(pid, SIGKILL);
-    }
-    let mut killed = 0usize;
-    for p in &to_kill {
-        if *p == pid {
-            continue; // 主进程已单独处理
-        }
-        if send_signal(*p, SIGKILL) {
-            killed += 1;
-        }
-    }
-
-    for (p, old, new) in &reused_skipped {
+    for (p, old, new) in &tree.reused_skipped {
         crate::audit::write_event(
             app,
             AuditLevel::Warn,
@@ -1331,6 +904,11 @@ pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
             now,
         );
         let service_id = g.id.clone();
+        let label = if g.name.is_empty() {
+            g.command.clone()
+        } else {
+            g.name.clone()
+        };
         g.sample = Some(sample);
         g.cpu_pct = verdict.cpu_pct;
         g.last_cpu_sample = Some((sample.cpu_seconds, now));
@@ -1339,18 +917,14 @@ pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
         drop(g);
 
         for w in &verdict.new_warnings {
-            let threshold = if w == WARN_RSS {
-                "rss>512MB"
-            } else {
-                "cpu>95%_for_5min"
-            };
             write_resource_warning(
                 app,
                 &service_id,
                 "service",
+                &label,
+                w,
                 sample.rss_bytes,
                 verdict.cpu_pct,
-                threshold,
             );
         }
     }
@@ -1371,32 +945,74 @@ pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
     }
     drop(u);
     if total_warn && !already {
-        write_resource_warning(app, "*", "total", total_rss, None, "total_rss>1024MB");
+        write_resource_warning(
+            app,
+            "*",
+            "total",
+            "全部受管服务",
+            WARN_TOTAL_RSS,
+            total_rss,
+            None,
+        );
     }
 }
 
-/// 记一条资源告警。
+/// 记一条资源告警：审计 + 系统通知。
+///
+/// 系统通知是给「用户不在设置页前面」准备的——面板上的告警只有盯着才看得见，
+/// 而资源跑飞属于「等用户发现时机器已经卡了」那类事。
 fn write_resource_warning<R: tauri::Runtime>(
     app: &AppHandle<R>,
     service_id: &str,
     scope: &str,
+    label: &str,
+    kind: &str,
     rss_bytes: u64,
     cpu_pct: Option<f64>,
-    threshold: &str,
 ) {
+    let rss_mb = rss_bytes as f64 / 1024.0 / 1024.0;
+    let (threshold, body) = match kind {
+        WARN_RSS => (
+            "rss>512MB",
+            format!("{label}内存 {rss_mb:.0} MB（阈值 512 MB）"),
+        ),
+        WARN_CPU => (
+            "cpu>95%_for_5min",
+            format!(
+                "{label} CPU 持续跑满（>95% 持续 5 分钟，当前 {:.0}%）",
+                cpu_pct.unwrap_or(0.0)
+            ),
+        ),
+        _ => (
+            "total_rss>1024MB",
+            format!("{label}合计内存 {rss_mb:.0} MB（阈值 1 GB）"),
+        ),
+    };
     let mut kv = vec![
         ("service_id", service_id.to_string()),
         ("scope", scope.to_string()),
-        (
-            "rss_mb",
-            format!("{:.1}", rss_bytes as f64 / 1024.0 / 1024.0),
-        ),
+        ("rss_mb", format!("{:.1}", rss_mb)),
         ("threshold", threshold.to_string()),
     ];
     if let Some(p) = cpu_pct {
         kv.push(("cpu_pct", format!("{:.1}", p)));
     }
     crate::audit::write_event(app, AuditLevel::Warn, "service.resource_warning", &kv);
+    notify_system(app, "受管服务资源告警", &body);
+}
+
+/// 发一条系统通知。
+///
+/// 插件没装就跳过（测试里的 mock app 没有这个插件）——通知发不出去不是业务错误，
+/// 但也不该因此把巡检循环带崩。
+fn notify_system<R: tauri::Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    use tauri::Manager;
+    let Some(state) = app.try_state::<tauri_plugin_notification::Notification<R>>() else {
+        return;
+    };
+    if let Err(e) = state.inner().builder().title(title).body(body).show() {
+        eprintln!("[bot::services] 系统通知发送失败：{e}");
+    }
 }
 
 /// 巡检一轮：输出上限 + 资源观测。
@@ -1421,24 +1037,6 @@ pub fn start_output_sweeper<R: tauri::Runtime>(app: AppHandle<R>) {
     });
 }
 
-/// 整组杀是否安全：组长还在、且还是当初那个进程，才允许 `killpg`。
-///
-/// 纯函数：只吃 pid 空间的数据，不碰登记表。
-///
-/// 为什么不能只看"pid 还在不在"：watcher 收尸后 pid 就被释放了，
-/// 之后这个号可能被分给别的进程；`kill(pid, 0)` 对两种情况都返回成功。
-/// 核启动标识才能区分"还是我们的组长"和"号被借走了"。
-pub(crate) fn group_kill_allowed(
-    final_map: &HashMap<u32, &str>,
-    leader_pid: u32,
-    leader_starttime: Option<&str>,
-) -> bool {
-    match (final_map.get(&leader_pid), leader_starttime) {
-        (Some(cur), Some(old)) => *cur == old,
-        _ => false,
-    }
-}
-
 /// 等服务状态转为终态。返回是否已终止。
 fn wait_state_exit(entry: &ServiceEntry, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
@@ -1453,7 +1051,7 @@ fn wait_state_exit(entry: &ServiceEntry, timeout: Duration) -> bool {
         if Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(ALIVE_POLL_MS));
+        std::thread::sleep(Duration::from_millis(crate::bot::procs::ALIVE_POLL_MS));
     }
 }
 

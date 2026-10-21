@@ -53,6 +53,7 @@ pub mod hooks;
 pub mod log_sanitize;
 pub mod mcp;
 pub mod params;
+pub mod procs;
 pub mod reasoning;
 pub mod registry;
 pub mod services;
