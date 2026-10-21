@@ -52,6 +52,10 @@ mocks.invokeMock.mockImplementation(async (cmd: string) => {
     case "py_get_enabled":
     case "service_get_enabled":
       return false;
+    case "services_list":
+      return { services: [], totalRssMb: 0, warnings: [], sampledAt: null };
+    case "services_stop":
+      return { serviceId: "", stopped: true };
     // Agent 运行参数卡的元数据（默认值/可填范围/当前生效值）
     case "bot_effective_params":
       return paramViews;
@@ -287,6 +291,10 @@ const agentParamsMock = async (cmd: string): Promise<unknown> => {
     case "py_get_enabled":
     case "service_get_enabled":
       return false;
+    case "services_list":
+      return { services: [], totalRssMb: 0, warnings: [], sampledAt: null };
+    case "services_stop":
+      return { serviceId: "", stopped: true };
     case "py_env_check":
       return { available: false, python: "", version: "", libs: [] };
     case "api_status":
@@ -326,6 +334,9 @@ describe("SettingsPage", () => {
     expect(screen.getByText("机器人技能")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "MCP 服务" }));
     expect(screen.getByText("MCP 服务器（外部工具）")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "本地服务" }));
+    expect(screen.getByText("受管服务")).toBeInTheDocument();
+    expect(screen.getByText("暂无受管服务")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "任务图谱" }));
     expect(
       screen.getByRole("switch", { name: "只看我的任务" }),

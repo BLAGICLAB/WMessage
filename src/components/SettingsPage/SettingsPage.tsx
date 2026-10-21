@@ -31,6 +31,7 @@ import {
   Plug,
   Plus,
   ScrollText,
+  Server,
   Settings2,
   Sparkles,
   Sun,
@@ -75,6 +76,7 @@ import { HomeKpiPanel } from "./HomeKpiPanel";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { MemoryPanel } from "./MemoryPanel";
+import { ServicesPanel } from "./ServicesPanel";
 import { LogsPanel } from "./LogsPanel";
 import { SettingRow } from "./SettingRow";
 import GraphSettingsPanel from "./GraphSettingsPanel";
@@ -317,6 +319,7 @@ type SectionKey =
   | "memory"
   | "skills"
   | "mcp"
+  | "services"
   | "desk"
   | "graph"
   | "tokens"
@@ -331,6 +334,7 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "skills", label: "技能", icon: Sparkles },
   { key: "graph", label: "任务图谱", icon: Waypoints },
   { key: "mcp", label: "MCP 服务", icon: Plug },
+  { key: "services", label: "本地服务", icon: Server },
   { key: "desk", label: "文件整理", icon: FolderOutput },
   { key: "tokens", label: "词元统计", icon: BarChart3 },
   { key: "opsHistory", label: "操作历史", icon: History },
@@ -3936,6 +3940,14 @@ export function SettingsPage({
               className="space-y-4 pt-4"
             >
               <McpPanel />
+            </section>
+          )}
+          {mountedSections.has("services") && (
+            <section
+              hidden={activeSection !== "services"}
+              className="space-y-4 pt-4"
+            >
+              <ServicesPanel />
             </section>
           )}
           {mountedSections.has("graph") && (
