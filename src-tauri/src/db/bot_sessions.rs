@@ -28,31 +28,39 @@ pub struct BotSession {
     pub is_subagent: bool,
 }
 
+/// 会话列表（子 agent 会话不列出）。
+///
+/// 走 spawn_blocking：open_db 每次都跑全套 DDL + 迁移，是实打实的同步磁盘 I/O。
+/// 同步命令在 Tauri v2 里跑主线程，聊天页一挂载就拉一次列表，等于把界面冻住。
 #[tauri::command]
-pub fn bot_sessions_load(app: AppHandle) -> CommandResult<Vec<BotSession>> {
-    let conn = super::open_db(&app)?;
-    let mut stmt = conn
-        .prepare(
-            // 子 agent 会话不列出：它是内部执行标识（tool_guard 的闸与流式路由
-            // 都以 session id 为键），对用户只以聊天内嵌的子 agent 区域呈现。
-            // 一堆执行现场混进对话列表会把真正的对话淹掉
-            "SELECT id, title, created_at, updated_at, is_subagent FROM bot_sessions \
-             WHERE is_subagent = 0 ORDER BY updated_at DESC",
-        )
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok(BotSession {
-                id: r.get::<_, String>(0)?,
-                title: r.get::<_, String>(1)?,
-                created_at: r.get::<_, i64>(2)?,
-                updated_at: r.get::<_, i64>(3)?,
-                is_subagent: r.get::<_, i64>(4)? != 0,
+pub async fn bot_sessions_load(app: AppHandle) -> CommandResult<Vec<BotSession>> {
+    async_runtime::spawn_blocking(move || {
+        let conn = super::open_db(&app)?;
+        let mut stmt = conn
+            .prepare(
+                // 子 agent 会话不列出：它是内部执行标识（tool_guard 的闸与流式路由
+                // 都以 session id 为键），对用户只以聊天内嵌的子 agent 区域呈现。
+                // 一堆执行现场混进对话列表会把真正的对话淹掉
+                "SELECT id, title, created_at, updated_at, is_subagent FROM bot_sessions \
+                 WHERE is_subagent = 0 ORDER BY updated_at DESC",
+            )
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(BotSession {
+                    id: r.get::<_, String>(0)?,
+                    title: r.get::<_, String>(1)?,
+                    created_at: r.get::<_, i64>(2)?,
+                    updated_at: r.get::<_, i64>(3)?,
+                    is_subagent: r.get::<_, i64>(4)? != 0,
+                })
             })
-        })
-        .map_err(|e| CommandError::DbError(e.to_string()))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| CommandError::DbError(e.to_string()))
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| CommandError::DbError(e.to_string()))
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("会话列表读取线程 join 失败：{e}")))?
 }
 
 //
@@ -150,14 +158,27 @@ pub fn bot_session_set_onion(
     Ok(())
 }
 
+/// 新建会话。
+///
+/// 走 spawn_blocking：open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，
+/// 同步命令在 Tauri v2 里跑主线程。
 #[tauri::command]
-pub fn bot_session_create(app: AppHandle, title: Option<String>) -> CommandResult<BotSession> {
-    // open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，放在写锁外——
-    // 临界区只覆盖 SQL 写，别让建连耗时串行化其他写者
-    let conn = super::open_db(&app)?;
-    let _g =
-        crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::bot_sessions DB_WRITE_LOCK");
-    bot_session_create_inner(&conn, title).map_err(CommandError::DbError)
+pub async fn bot_session_create(
+    app: AppHandle,
+    title: Option<String>,
+) -> CommandResult<BotSession> {
+    async_runtime::spawn_blocking(move || {
+        // open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，放在写锁外——
+        // 临界区只覆盖 SQL 写，别让建连耗时串行化其他写者
+        let conn = super::open_db(&app)?;
+        let _g = crate::db::lock::lock_or_recover(
+            &super::DB_WRITE_LOCK,
+            "db::bot_sessions DB_WRITE_LOCK",
+        );
+        bot_session_create_inner(&conn, title).map_err(CommandError::DbError)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("会话创建线程 join 失败：{e}")))?
 }
 
 pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> CommandResult<()> {
@@ -215,8 +236,12 @@ pub async fn bot_session_delete(app: AppHandle, id: String) -> CommandResult<()>
     .map_err(|e| CommandError::from(format!("会话删除线程 join 失败：{e}")))?
 }
 
+/// 重命名会话。
+///
+/// 走 spawn_blocking：open_db（建连 + PRAGMA + 幂等 DDL）是同步磁盘 I/O，
+/// 同步命令在 Tauri v2 里跑主线程。
 #[tauri::command]
-pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandResult<()> {
+pub async fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandResult<()> {
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err(CommandError::InvalidArgument {
@@ -225,25 +250,31 @@ pub fn bot_session_rename(app: AppHandle, id: String, title: String) -> CommandR
             reason: "会话标题不能为空（或全为空白字符）".into(),
         });
     }
-    // 同 bot_session_create：open_db 在写锁外，临界区只覆盖 UPDATE
-    let conn = super::open_db(&app)?;
-    let _g =
-        crate::db::lock::lock_or_recover(&super::DB_WRITE_LOCK, "db::bot_sessions DB_WRITE_LOCK");
-    let now = chrono::Utc::now().timestamp_millis();
-    let rows = conn
-        .execute(
-            "UPDATE bot_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![title, now, id],
-        )
-        .map_err(|e| e.to_string())?;
-    if rows == 0 {
-        return Err(CommandError::InvalidArgument {
-            field: "id".into(),
-            value: id.to_string(),
-            reason: "会话不存在（重命名未命中任何行）".into(),
-        });
-    }
-    Ok(())
+    async_runtime::spawn_blocking(move || {
+        // 同 bot_session_create：open_db 在写锁外，临界区只覆盖 UPDATE
+        let conn = super::open_db(&app)?;
+        let _g = crate::db::lock::lock_or_recover(
+            &super::DB_WRITE_LOCK,
+            "db::bot_sessions DB_WRITE_LOCK",
+        );
+        let now = chrono::Utc::now().timestamp_millis();
+        let rows = conn
+            .execute(
+                "UPDATE bot_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                rusqlite::params![title, now, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if rows == 0 {
+            return Err(CommandError::InvalidArgument {
+                field: "id".into(),
+                value: id.to_string(),
+                reason: "会话不存在（重命名未命中任何行）".into(),
+            });
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("会话重命名线程 join 失败：{e}")))?
 }
 
 #[cfg(test)]
@@ -263,6 +294,33 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    /// 接线守卫：这三个会话命令不得是同步命令。
+    ///
+    /// Tauri v2 的同步命令在主线程执行，而 `open_db` 每次都跑全套 DDL + 迁移
+    /// （实打实的同步磁盘 I/O）——聊天页一挂载就拉一次会话列表，界面会被冻住。
+    #[test]
+    fn session_commands_run_off_the_main_thread() {
+        let src = include_str!("bot_sessions.rs");
+        for name in [
+            "bot_sessions_load",
+            "bot_session_create",
+            "bot_session_rename",
+        ] {
+            let at = src
+                .find(&format!("pub async fn {name}("))
+                .unwrap_or_else(|| panic!("{name} 必须是 async 命令，否则跑在主线程"));
+            // 光 async 不够：async 命令体里直接做同步阻塞 I/O，只是把阻塞从
+            // 主线程挪到了执行线程。必须下到 spawn_blocking。
+            // 按字符切窗（按字节切会切在多字节汉字中间）
+            let body: String = src[at..].chars().take(600).collect();
+            assert!(
+                body.contains("spawn_blocking"),
+                "{name} 必须在 spawn_blocking 里跑——async 命令体里直接做同步 I/O \
+                 只是把阻塞挪了地方"
+            );
+        }
     }
 
     /// U20D 批 5：subagent 变体写 is_subagent=1，普通创建默认 0——
