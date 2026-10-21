@@ -161,8 +161,7 @@ pub fn start_skill(
 pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> ToolResult {
     let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
     let Some(name) = v["name"].as_str().map(|s| s.trim().to_string()) else {
-        // 「use_skill 缺少 name」首字「u」非 error/warn 前缀 → ok
-        return ToolResult::ok("use_skill 缺少 name".to_string(), Vec::new());
+        return ToolResult::denied("use_skill 缺少 name");
     };
     let params = v.get("params").cloned().unwrap_or(serde_json::Value::Null);
     match start_skill(app, &name, params, session_id) {
@@ -242,12 +241,9 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                     }
                 }
             }
-            // 技能文档全文，首字符任意 UTF-8 → ok
             ToolResult::ok(out, Vec::new())
         }
-        // start_skill Err 返回 String（错误描述），首字可能是错误说明的「失」/「请」等
-        // —— 首字符不定 → ok（除非 start_skill 内部显式标 ToolResult，否则这里一律 ok）
-        Err(e) => ToolResult::ok(e, Vec::new()),
+        Err(e) => ToolResult::denied(e),
     }
 }
 
@@ -498,7 +494,7 @@ pub(crate) fn sink_skill_failure_lesson<R: tauri::Runtime>(
             actions.join(" → ")
         }
     );
-    let msg = crate::memory::record_lesson_core(
+    let msg = match crate::memory::record_lesson_core(
         &conn,
         &lesson,
         &format!("skill:{name}"),
@@ -506,7 +502,19 @@ pub(crate) fn sink_skill_failure_lesson<R: tauri::Runtime>(
         None,
         now_ms(),
         &crate::memory::store::StoreParams::of(&crate::bot::read_memory_tuning(app)),
-    );
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "skill.lesson_sink_failed | name: {name} | {}",
+                    crate::bot::truncate_for_log(&e, 120)
+                ),
+            );
+            return;
+        }
+    };
     crate::bot::audit_log_hook(
         app,
         &format!(

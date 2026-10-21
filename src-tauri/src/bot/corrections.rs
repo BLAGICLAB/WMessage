@@ -475,7 +475,7 @@ pub(crate) fn cluster_correction_lessons_blocking(
         // 代表条目：簇内 id 字典序最小（确定性）
         idxs.sort_by_key(|&i| &corrections[i].id);
         let rep = corrections[idxs[0]];
-        let msg = crate::memory::record_lesson_core(
+        let written = crate::memory::record_lesson_core(
             conn,
             &rep.content,
             "user_correction",
@@ -483,8 +483,9 @@ pub(crate) fn cluster_correction_lessons_blocking(
             rep.embedding.as_deref(),
             now_ms,
             sp,
-        );
-        if msg.starts_with("已记录教训") {
+        )
+        .is_ok();
+        if written {
             stats.lessons_written += 1;
         }
     }

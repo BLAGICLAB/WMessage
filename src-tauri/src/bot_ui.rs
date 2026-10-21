@@ -83,10 +83,8 @@ fn gate_enabled(app: &AppHandle) -> Option<ToolResult> {
     if crate::ui::ui_enabled(app) {
         return None;
     }
-    // 「UI 自动化未开启」首字「U」非 error/warn 前缀 → ok
-    Some(ToolResult::ok(
-        "UI 自动化未开启：请到 设置页 打开「允许机器人操作桌面界面」后再用这些工具。".to_string(),
-        Vec::new(),
+    Some(ToolResult::denied(
+        "UI 自动化未开启：请到 设置页 打开「允许机器人操作桌面界面」后再用这些工具。",
     ))
 }
 
@@ -95,16 +93,14 @@ fn gate_window(window_id: &str) -> Result<UiWindow, ToolResult> {
     let windows = match crate::ui::list_windows() {
         Ok(w) => w,
         Err(e) => {
-            // 平台错误首字不定（如「本进程尚未…」）→ ok
-            return Err(ToolResult::ok(e, Vec::new()));
+            return Err(ToolResult::error(e, Vec::new()));
         }
     };
     match windows.into_iter().find(|w| w.id == window_id) {
         Some(w) => Ok(w),
-        None => Err(ToolResult::ok(
-            format!("窗口 {window_id} 不存在（可能已关闭）。先用 list_windows 重新取窗口列表。"),
-            Vec::new(),
-        )),
+        None => Err(ToolResult::denied(format!(
+            "窗口 {window_id} 不存在（可能已关闭）。先用 list_windows 重新取窗口列表。"
+        ))),
     }
 }
 
@@ -124,10 +120,7 @@ async fn gate_dangerous(
     if approved {
         return None;
     }
-    Some(ToolResult::ok(
-        "用户拒绝了这次操作，未执行。".to_string(),
-        Vec::new(),
-    ))
+    Some(ToolResult::denied("用户拒绝了这次操作，未执行。"))
 }
 
 /// 敏感控件闸：密码 / 验证码一类控件不接受输入
@@ -140,13 +133,10 @@ fn gate_sensitive(node: &UiNode) -> Option<ToolResult> {
     )
     .to_lowercase();
     if SENSITIVE_KEYWORDS.iter().any(|k| hay.contains(k)) {
-        return Some(ToolResult::ok(
-            format!(
-                "拒绝操作：目标控件是敏感控件（{}），不代填密码 / 验证码类内容。",
-                node.title
-            ),
-            Vec::new(),
-        ));
+        return Some(ToolResult::denied(format!(
+            "拒绝操作：目标控件是敏感控件（{}），不代填密码 / 验证码类内容。",
+            node.title
+        )));
     }
     None
 }
@@ -155,31 +145,27 @@ fn gate_sensitive(node: &UiNode) -> Option<ToolResult> {
 fn resolve_target(window_id: &str, target: &str, max_depth: usize) -> Result<UiNode, ToolResult> {
     let t = target.trim();
     if t.is_empty() {
-        return Err(ToolResult::ok(
-            "缺少 target 参数（控件 id 或控件标题关键词）".to_string(),
-            Vec::new(),
+        return Err(ToolResult::denied(
+            "缺少 target 参数（控件 id 或控件标题关键词）",
         ));
     }
     // 形如 <pid>:<窗口序号>[.<路径>] 的控件 id：直接用
     if t.contains(':') && t.split(':').count() == 2 {
         let tree = match crate::ui::inspect_tree(window_id, max_depth, DEFAULT_MAX_NODES) {
             Ok(nodes) => nodes,
-            Err(e) => return Err(ToolResult::ok(e, Vec::new())),
+            Err(e) => return Err(ToolResult::error(e, Vec::new())),
         };
         if let Some(node) = tree.iter().find(|n| n.id == t) {
             return Ok(node.clone());
         }
-        return Err(ToolResult::ok(
-            format!(
-                "控件 {t} 不在窗口 {window_id} 的当前界面里（界面可能已变，先 ui_inspect 重新看）"
-            ),
-            Vec::new(),
-        ));
+        return Err(ToolResult::denied(format!(
+            "控件 {t} 不在窗口 {window_id} 的当前界面里（界面可能已变，先 ui_inspect 重新看）"
+        )));
     }
     // 否则按标题 / 角色 / 标识匹配
     let tree = match crate::ui::inspect_tree(window_id, max_depth, DEFAULT_MAX_NODES) {
         Ok(nodes) => nodes,
-        Err(e) => return Err(ToolResult::ok(e, Vec::new())),
+        Err(e) => return Err(ToolResult::error(e, Vec::new())),
     };
     let needle = t.to_lowercase();
     let hit = tree
@@ -195,10 +181,9 @@ fn resolve_target(window_id: &str, target: &str, max_depth: usize) -> Result<UiN
         .cloned();
     match hit {
         Some(n) => Ok(n),
-        None => Err(ToolResult::ok(
-            format!("窗口 {window_id} 里找不到匹配「{t}」的控件（先 ui_inspect 看看有哪些控件）"),
-            Vec::new(),
-        )),
+        None => Err(ToolResult::denied(format!(
+            "窗口 {window_id} 里找不到匹配「{t}」的控件（先 ui_inspect 看看有哪些控件）"
+        ))),
     }
 }
 
@@ -254,7 +239,7 @@ pub async fn tool_list_windows(app: &AppHandle, _args: &str) -> ToolResult {
                 Vec::new(),
             )
         }
-        Err(e) => ToolResult::ok(e, Vec::new()),
+        Err(e) => ToolResult::error(e, Vec::new()),
     }
 }
 
@@ -266,9 +251,8 @@ pub async fn tool_activate_window(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let window_id = v["windowId"].as_str().unwrap_or("").trim().to_string();
     if window_id.is_empty() {
-        return ToolResult::ok(
-            "activate_window 缺少 windowId 参数（先用 list_windows 拿窗口 id）".to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "activate_window 缺少 windowId 参数（先用 list_windows 拿窗口 id）",
         );
     }
     let w = match gate_window(&window_id) {
@@ -284,10 +268,9 @@ pub async fn tool_activate_window(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::truncate_for_log(&w.title, 80)
                 ),
             );
-            // 「已激活窗口」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(format!("已激活窗口：{}（{}）", w.title, w.app), Vec::new())
         }
-        Err(e) => ToolResult::ok(format!("激活窗口失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("激活窗口失败：{e}"), Vec::new()),
     }
 }
 
@@ -299,10 +282,7 @@ pub async fn tool_ui_inspect(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let window_id = v["windowId"].as_str().unwrap_or("").trim().to_string();
     if window_id.is_empty() {
-        return ToolResult::ok(
-            "ui_inspect 缺少 windowId 参数（先用 list_windows 拿窗口 id）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("ui_inspect 缺少 windowId 参数（先用 list_windows 拿窗口 id）");
     }
     let w = match gate_window(&window_id) {
         Ok(w) => w,
@@ -315,7 +295,7 @@ pub async fn tool_ui_inspect(app: &AppHandle, args: &str) -> ToolResult {
     let query = v["query"].as_str().unwrap_or("").trim().to_lowercase();
     let nodes = match crate::ui::inspect_tree(&window_id, max_depth, DEFAULT_MAX_NODES) {
         Ok(n) => n,
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::error(e, Vec::new()),
     };
     let filtered: Vec<&UiNode> = if query.is_empty() {
         nodes.iter().collect()
@@ -396,10 +376,7 @@ pub async fn tool_ui_click(
     let v = crate::bot::parse_args(args);
     let window_id = v["windowId"].as_str().unwrap_or("").trim().to_string();
     if window_id.is_empty() {
-        return ToolResult::ok(
-            "ui_click 缺少 windowId 参数（先用 list_windows 拿窗口 id）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("ui_click 缺少 windowId 参数（先用 list_windows 拿窗口 id）");
     }
     let target = v["target"].as_str().unwrap_or("").trim().to_string();
     let w = match gate_window(&window_id) {
@@ -457,10 +434,9 @@ pub async fn tool_ui_click(
             if let Some(a) = &after {
                 text.push_str(&format!("\n动作后截图：{}", a.display()));
             }
-            // 「已点击」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(text, Vec::new())
         }
-        Err(e) => ToolResult::ok(format!("点击失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("点击失败：{e}"), Vec::new()),
     }
 }
 
@@ -477,18 +453,12 @@ pub async fn tool_ui_type(
     let v = crate::bot::parse_args(args);
     let window_id = v["windowId"].as_str().unwrap_or("").trim().to_string();
     if window_id.is_empty() {
-        return ToolResult::ok(
-            "ui_type 缺少 windowId 参数（先用 list_windows 拿窗口 id）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("ui_type 缺少 windowId 参数（先用 list_windows 拿窗口 id）");
     }
     let target = v["target"].as_str().unwrap_or("").trim().to_string();
     let text = v["text"].as_str().unwrap_or("").to_string();
     if text.is_empty() {
-        return ToolResult::ok(
-            "ui_type 缺少 text 参数（要输入的内容）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("ui_type 缺少 text 参数（要输入的内容）");
     }
     let w = match gate_window(&window_id) {
         Ok(w) => w,
@@ -553,10 +523,9 @@ pub async fn tool_ui_type(
             if let Some(a) = &after {
                 out.push_str(&format!("\n动作后截图：{}", a.display()));
             }
-            // 「已在」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(out, Vec::new())
         }
-        Err(e) => ToolResult::ok(format!("输入失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("输入失败：{e}"), Vec::new()),
     }
 }
 
@@ -568,16 +537,14 @@ pub async fn tool_wait_for_element(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let window_id = v["windowId"].as_str().unwrap_or("").trim().to_string();
     if window_id.is_empty() {
-        return ToolResult::ok(
-            "wait_for_element 缺少 windowId 参数（先用 list_windows 拿窗口 id）".to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "wait_for_element 缺少 windowId 参数（先用 list_windows 拿窗口 id）",
         );
     }
     let query = v["query"].as_str().unwrap_or("").trim().to_lowercase();
     if query.is_empty() {
-        return ToolResult::ok(
-            "wait_for_element 缺少 query 参数（要找的控件标题 / 角色关键词）".to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "wait_for_element 缺少 query 参数（要找的控件标题 / 角色关键词）",
         );
     }
     let timeout_ms = v["timeoutMs"]
@@ -600,7 +567,6 @@ pub async fn tool_wait_for_element(app: &AppHandle, args: &str) -> ToolResult {
                     .map(|i| i.to_lowercase().contains(&query))
                     .unwrap_or(false)
         }) {
-            // 「已找到控件」首字「已」非 error/warn 前缀 → ok
             return ToolResult::ok(
                 format!(
                     "已找到控件「{}」（id: {}，角色 {}），出现在「{}」（{}）",
@@ -618,7 +584,7 @@ pub async fn tool_wait_for_element(app: &AppHandle, args: &str) -> ToolResult {
             );
         }
         if std::time::Instant::now() >= deadline {
-            return ToolResult::ok(
+            return ToolResult::error(
                 format!(
                     "等待 {:?} 结束：窗口「{}」（{}）里始终没出现匹配「{}」的控件",
                     std::time::Duration::from_millis(timeout_ms as u64),

@@ -6,7 +6,8 @@ export type TurnStatus = "running" | "settling" | "completed" | "interrupted" | 
 export type TaskRef = { id: string; title: string };
 
 /** 工具调用行：折叠显示，展开可看入参；bot-tool-done 携带
- *  result（截 2000 字）/ms/ok（成败口径同后端 tool_call_failed）。
+ *  result（截 2000 字）/ms/ok（成败口径同后端 ToolStatus::is_success——
+ *  被门禁拦下 / 用户拒绝 / 执行失败都算失败，不算成功）。
  *  - startedAt: bot-tool-running 到达时的本地时刻（ms），用于未完成时秒级计时；
  *    完成后以 done 事件的 ms 为准，不计前端计时（避免两端重复计） */
 export type ToolCall = {

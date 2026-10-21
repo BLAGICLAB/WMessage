@@ -458,7 +458,8 @@ fn record_lesson_writes_with_defaults() {
         None,
         now,
         &store::StoreParams::default(),
-    );
+    )
+    .unwrap();
     assert!(msg.starts_with("已记录教训"), "{msg}");
     let items = store::load_all(&conn).unwrap();
     assert_eq!(items.len(), 1);
@@ -478,8 +479,8 @@ fn record_lesson_core_respects_tuning_capacity() {
         capacity: 1,
         ..store::StoreParams::default()
     };
-    super::record_lesson_core(&conn, "教训一", "场景", "system", None, 1_000, &sp);
-    super::record_lesson_core(&conn, "教训二", "场景", "system", None, 2_000, &sp);
+    super::record_lesson_core(&conn, "教训一", "场景", "system", None, 1_000, &sp).unwrap();
+    super::record_lesson_core(&conn, "教训二", "场景", "system", None, 2_000, &sp).unwrap();
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1, "capacity=1 时第二条应挤掉第一条");
     assert_eq!(all[0].content, "教训二");
@@ -497,7 +498,8 @@ fn record_lesson_semantic_dedup_merges() {
         Some(&onehot(0)),
         now,
         &store::StoreParams::default(),
-    );
+    )
+    .unwrap();
     // 同向量（cos=1）→ 合并更新不新增
     let msg = super::record_lesson_core(
         &conn,
@@ -507,7 +509,8 @@ fn record_lesson_semantic_dedup_merges() {
         Some(&onehot(0)),
         now + 1,
         &store::StoreParams::default(),
-    );
+    )
+    .unwrap();
     assert!(msg.contains("合并"), "{msg}");
     let items = store::load_all(&conn).unwrap();
     assert_eq!(items.len(), 1, "同类教训合并不堆积");
@@ -517,59 +520,71 @@ fn record_lesson_semantic_dedup_merges() {
 #[test]
 fn record_lesson_validation() {
     let conn = mem_db();
-    assert!(super::record_lesson_core(
+    // 校验失败走 Err（不是「Ok 里塞一段错误文案」）——调用方按类型分
+    // denied（参数非法）/ error（写入失败），不再靠文案前缀猜。
+    let empty = super::record_lesson_core(
         &conn,
         "",
         "s",
         "system",
         None,
         0,
-        &store::StoreParams::default()
-    )
-    .contains("不能为空"));
+        &store::StoreParams::default(),
+    );
+    assert!(
+        matches!(&empty, Err(m) if m.contains("不能为空")),
+        "{empty:?}"
+    );
     let long = "x".repeat(801);
-    assert!(super::record_lesson_core(
+    let too_long = super::record_lesson_core(
         &conn,
         &long,
         "s",
         "system",
         None,
         0,
-        &store::StoreParams::default()
-    )
-    .contains("太长"));
+        &store::StoreParams::default(),
+    );
+    assert!(
+        matches!(&too_long, Err(m) if m.contains("太长")),
+        "{too_long:?}"
+    );
     let long_s = "s".repeat(51);
-    assert!(super::record_lesson_core(
+    let bad_scenario = super::record_lesson_core(
         &conn,
         "ok",
         &long_s,
         "system",
         None,
         0,
-        &store::StoreParams::default()
-    )
-    .contains("scenario"));
+        &store::StoreParams::default(),
+    );
+    assert!(
+        matches!(&bad_scenario, Err(m) if m.contains("scenario")),
+        "{bad_scenario:?}"
+    );
     // scenario 含英文逗号被拒（tags 逗号分隔存储）；中文逗号不受影响
-    assert!(super::record_lesson_core(
+    let comma = super::record_lesson_core(
         &conn,
         "ok",
         "a,b",
         "system",
         None,
         0,
-        &store::StoreParams::default()
-    )
-    .contains("逗号"));
-    assert!(super::record_lesson_core(
+        &store::StoreParams::default(),
+    );
+    assert!(matches!(&comma, Err(m) if m.contains("逗号")), "{comma:?}");
+    let ok = super::record_lesson_core(
         &conn,
         "ok",
         "文档，修订",
         "system",
         None,
         0,
-        &store::StoreParams::default()
+        &store::StoreParams::default(),
     )
-    .starts_with("已记录教训"));
+    .unwrap();
+    assert!(ok.starts_with("已记录教训"), "{ok}");
 }
 
 #[test]
@@ -599,7 +614,8 @@ fn lesson_injected_in_fourth_section() {
         None,
         now,
         &store::StoreParams::default(),
-    );
+    )
+    .unwrap();
     let mut f = item("fact", "关键词普通记忆");
     f.importance = 3;
     store::insert_item(&conn, &f, None, now).unwrap();
@@ -652,7 +668,8 @@ fn merge_across_kind_replaces_and_carries_the_new_kind() {
         Some(&onehot(0)),
         now + 1,
         &store::StoreParams::default(),
-    );
+    )
+    .unwrap();
     assert!(
         msg.contains("已合并更新"),
         "跨 kind 近重复应直接合并：{msg}"
@@ -681,7 +698,8 @@ fn merge_carries_kind_in_both_directions() {
         Some(&onehot(0)),
         now,
         &store::StoreParams::default(),
-    );
+    )
+    .unwrap();
     let mut f = item("fact", "用户偏好简短回答");
     f.tags = vec!["偏好".into()];
     store::insert_item(&conn, &f, Some(&onehot(0)), now + 1).unwrap();
@@ -717,7 +735,8 @@ fn merge_still_merges_within_the_same_kind() {
         Some(&onehot(0)),
         now + 1,
         &store::StoreParams::default(),
-    );
+    )
+    .unwrap();
     assert!(msg.contains("已合并更新"), "同类应合并：{msg}");
     let all = store::load_all(&conn).unwrap();
     assert_eq!(all.len(), 1);

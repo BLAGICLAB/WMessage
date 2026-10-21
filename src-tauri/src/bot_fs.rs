@@ -1077,28 +1077,22 @@ pub async fn tool_edit_file(
 ) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str().map(|s| s.trim().to_string()) else {
-        return ToolResult::ok("edit_file 缺少 path 参数".to_string(), Vec::new());
+        return ToolResult::denied("edit_file 缺少 path 参数");
     };
     let Some(old) = v["oldString"].as_str().map(|s| s.to_string()) else {
-        return ToolResult::ok("edit_file 缺少 oldString 参数".to_string(), Vec::new());
+        return ToolResult::denied("edit_file 缺少 oldString 参数");
     };
     let Some(new) = v["newString"].as_str().map(|s| s.to_string()) else {
-        return ToolResult::ok("edit_file 缺少 newString 参数".to_string(), Vec::new());
+        return ToolResult::denied("edit_file 缺少 newString 参数");
     };
     if path.is_empty() {
-        return ToolResult::ok("edit_file 的 path 不能为空".to_string(), Vec::new());
+        return ToolResult::denied("edit_file 的 path 不能为空");
     }
     if old.trim().is_empty() {
-        return ToolResult::ok(
-            "oldString 不能为空（请提供要替换的原文）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("oldString 不能为空（请提供要替换的原文）");
     }
     if old == new {
-        return ToolResult::ok(
-            "oldString 与 newString 相同，没有可应用的变更".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("oldString 与 newString 相同，没有可应用的变更");
     }
     // mode 解析：默认 literal；显式传 "regex" 启用正则 replace_all
     let mode_str = v["mode"].as_str().unwrap_or("literal");
@@ -1106,16 +1100,14 @@ pub async fn tool_edit_file(
         "literal" => false,
         "regex" => true,
         other => {
-            return ToolResult::ok(
-                format!("edit_file 的 mode 非法：{other}（仅支持 literal|regex）"),
-                Vec::new(),
-            );
+            return ToolResult::denied(format!(
+                "edit_file 的 mode 非法：{other}（仅支持 literal|regex）"
+            ));
         }
     };
     let canonical = match resolve_writable(app, "edit_file", &path, interactive, session_id).await {
         Ok(p) => p,
-        // resolve_writable Err 返 String，首字不定 → ok
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     let log_path = crate::bot::truncate_for_log(&canonical.display().to_string(), 200);
     let shown = canonical.display().to_string();
@@ -1159,7 +1151,6 @@ pub async fn tool_edit_file(
             let mut receipt =
                 build_file_change_receipt(&shown, "modify", Some(&before), &applied, replacements);
             receipt.before_ref = write_before_snapshot(app, &before);
-            // 「已修改」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
                 format!("已修改 {shown}（{delta_note}）{mode_note}"),
                 Vec::new(),
@@ -1167,7 +1158,6 @@ pub async fn tool_edit_file(
             .with_file_change(receipt)
         }
         Err((kind, hint)) => {
-            // 失败带教学提示走 ok 通道（reflection 文案，经 tool.call_failed 采集）
             crate::bot::audit_log(
                 app,
                 &format!(
@@ -1177,7 +1167,7 @@ pub async fn tool_edit_file(
                     crate::bot::truncate_for_log(&hint, 200)
                 ),
             );
-            ToolResult::ok(hint, Vec::new())
+            ToolResult::error(hint, Vec::new())
         }
     }
 }
@@ -1191,21 +1181,21 @@ pub async fn tool_write_file(
 ) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str().map(|s| s.trim().to_string()) else {
-        return ToolResult::ok("write_file 缺少 path 参数".to_string(), Vec::new());
+        return ToolResult::denied("write_file 缺少 path 参数");
     };
     let Some(content) = v["content"].as_str().map(|s| s.to_string()) else {
-        return ToolResult::ok("write_file 缺少 content 参数".to_string(), Vec::new());
+        return ToolResult::denied("write_file 缺少 content 参数");
     };
     if path.is_empty() {
-        return ToolResult::ok("write_file 的 path 不能为空".to_string(), Vec::new());
+        return ToolResult::denied("write_file 的 path 不能为空");
     }
     if let Err(e) = validate_write_content(&content) {
-        return ToolResult::ok(e, Vec::new());
+        return ToolResult::denied(e);
     }
     let canonical = match resolve_writable(app, "write_file", &path, interactive, session_id).await
     {
         Ok(p) => p,
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     // existed 只认文件：目录目标不弹覆盖确认，直接写盘自然 IsADirectory 失败
     let c = canonical.clone();
@@ -1229,10 +1219,7 @@ pub async fn tool_write_file(
             .await;
         if !approved {
             // 非交互（子 agent）确认窗不可用自动拒——覆盖走 edit_file 精确修改
-            return ToolResult::ok(
-                "覆盖未获确认，文件未修改。修改已有文件请用 edit_file（精确替换，无需确认）；新建文件请换一个文件名".to_string(),
-                Vec::new(),
-            );
+            return ToolResult::denied("覆盖未获确认，文件未修改。修改已有文件请用 edit_file（精确替换，无需确认）；新建文件请换一个文件名");
         }
     }
     //  变更证据：modify 需在写盘前取旧文（读不出/超上限/二进制 → 无 diff 降级）。
@@ -1279,7 +1266,6 @@ pub async fn tool_write_file(
                     action
                 ),
             );
-            // 「已写入」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
                 format!("已写入 {}（{action}，{lines} 行）", written.display()),
                 Vec::new(),
@@ -1509,28 +1495,22 @@ pub async fn tool_read_text_file(
 ) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str() else {
-        // 「read_text_file 缺少 path」首字「r」非 error/warn 前缀 → ok
-        return ToolResult::ok("read_text_file 缺少 path".to_string(), Vec::new());
+        return ToolResult::denied("read_text_file 缺少 path");
     };
     let canonical =
         match resolve_with_perm(app, "read_text_file", path, interactive, session_id).await {
             Ok(p) => p,
-            // resolve_with_perm Err 返 String，首字不定 → ok
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         };
     match is_dir_async(&canonical).await {
         Some(true) => {
-            // format! 文本首字为路径首字符（不定） → ok
-            return ToolResult::ok(
-                format!("{} 是目录，列文件请用 list_files", path.trim()),
-                Vec::new(),
-            );
+            return ToolResult::denied(format!("{} 是目录，列文件请用 list_files", path.trim()));
         }
         Some(false) => {}
         // 探测失败：说清是探测失败（不是「不是目录」）——后者会让用户以为
         // 路径类型没问题，转而去改别的
         None => {
-            return ToolResult::ok(
+            return ToolResult::error(
                 format!("无法确认 {} 的路径类型（探测失败），请重试", path.trim()),
                 Vec::new(),
             );
@@ -1561,20 +1541,16 @@ pub async fn tool_read_text_file(
                 crate::bot::truncate_for_log(&canonical.display().to_string(), 200)
             ),
         );
-        return ToolResult::ok(
-            format!("{} 在校验后被替换，拒绝读取（TOCTOU 防护）", path.trim()),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "{} 在校验后被替换，拒绝读取（TOCTOU 防护）",
+            path.trim()
+        ));
     }
     if is_binary {
-        // 同上，首字不定 → ok
-        return ToolResult::ok(
-            format!(
-                "{} 是二进制/非文本文件；Office/PDF 文档请用 extract_document",
-                path.trim()
-            ),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "{} 是二进制/非文本文件；Office/PDF 文档请用 extract_document",
+            path.trim()
+        ));
     }
     let offset = v["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit =
@@ -1585,11 +1561,7 @@ pub async fn tool_read_text_file(
     let lines: Vec<&str> = text.lines().collect();
     let total = lines.len();
     if offset > total {
-        // 「文件共 N 行」首字「文」非 error/warn 前缀 → ok
-        return ToolResult::ok(
-            format!("文件共 {total} 行，offset {offset} 超出范围"),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!("文件共 {total} 行，offset {offset} 超出范围"));
     }
     let slice: Vec<String> = lines
         .iter()
@@ -1618,7 +1590,6 @@ pub async fn tool_read_text_file(
             crate::bot::truncate_for_log(&canonical.display().to_string(), 200)
         ),
     );
-    // 文件内容文本，首字符不定 → ok
     ToolResult::ok(out, Vec::new())
 }
 
@@ -1694,14 +1665,12 @@ pub async fn tool_grep_files(
 ) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(pattern) = v["pattern"].as_str() else {
-        // 「grep_files 缺少 pattern」首字「g」非 error/warn 前缀 → ok
-        return ToolResult::ok("grep_files 缺少 pattern".to_string(), Vec::new());
+        return ToolResult::denied("grep_files 缺少 pattern");
     };
     // 非法正则降级为字面量搜索（regex::escape），不让一个坏 pattern 炸掉整轮
     let re = regex::Regex::new(pattern).or_else(|_| regex::Regex::new(&regex::escape(pattern)));
     let Ok(re) = re else {
-        // 「无效的正则表达式」首字「无」非 error/warn 前缀 → ok
-        return ToolResult::ok(format!("无效的正则表达式：{pattern}"), Vec::new());
+        return ToolResult::denied(format!("无效的正则表达式：{pattern}"));
     };
     let glob = v["glob"].as_str().unwrap_or("").trim().to_string();
     let max = (v["max"].as_u64().unwrap_or(GREP_MAX_HITS as u64) as usize).min(GREP_MAX_HITS);
@@ -1712,24 +1681,21 @@ pub async fn tool_grep_files(
         Some(d) if !d.trim().is_empty() => {
             match resolve_with_perm(app, "grep_files", d, interactive, session_id).await {
                 Ok(p) => p,
-                // resolve_with_perm Err 返 String，首字不定 → ok
-                Err(e) => return ToolResult::ok(e, Vec::new()),
+                Err(e) => return ToolResult::denied(e),
             }
         }
         _ => match allowed_dirs(app, session_id).await.first() {
             Some(d) => d.clone(),
-            // 「没有可用的白名单目录」首字「没」非 error/warn 前缀 → ok
-            None => return ToolResult::ok("没有可用的白名单目录".to_string(), Vec::new()),
+            None => return ToolResult::denied("没有可用的白名单目录"),
         },
     };
     match is_dir_async(&dir).await {
         Some(true) => {}
         Some(false) => {
-            // format! 文本首字为目录路径首字符（不定） → ok
-            return ToolResult::ok(format!("{} 不是目录", dir.display()), Vec::new());
+            return ToolResult::denied(format!("{} 不是目录", dir.display()));
         }
         None => {
-            return ToolResult::ok(
+            return ToolResult::error(
                 format!("无法确认 {} 的路径类型（探测失败），请重试", dir.display()),
                 Vec::new(),
             );
@@ -1823,7 +1789,7 @@ pub async fn tool_grep_files(
         ),
     );
     if hits.is_empty() {
-        // 「... 内没有匹配 ...」首字不定 → ok；跳过的大文件随提示可见
+        // 跳过的大文件随提示可见
         let skip_note = format_skip_note(&skipped, skipped_total).unwrap_or_default();
         return ToolResult::ok(
             format!("{} 内没有匹配「{pattern}」的内容{skip_note}", dir_log),
@@ -1839,7 +1805,6 @@ pub async fn tool_grep_files(
     if let Some(note) = format_skip_note(&skipped, skipped_total) {
         out.push_str(&note);
     }
-    // 匹配结果文本，首字符任意 UTF-8 → ok
     ToolResult::ok(out, Vec::new())
 }
 
@@ -1852,25 +1817,22 @@ pub async fn tool_list_files(
 ) -> crate::bot::registry::ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(dir) = v["dir"].as_str() else {
-        // 「list_files 缺少 dir」首字「l」非 error/warn 前缀 → ok
-        return ToolResult::ok("list_files 缺少 dir".to_string(), Vec::new());
+        return ToolResult::denied("list_files 缺少 dir");
     };
     let canonical = match resolve_with_perm(app, "list_files", dir, interactive, session_id).await {
         Ok(p) => p,
-        // resolve_with_perm Err 返 String，首字不定 → ok
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     match is_dir_async(&canonical).await {
         Some(true) => {}
         Some(false) => {
-            // format! 文本首字为目录路径首字符（不定） → ok
-            return ToolResult::ok(
-                format!("{} 不是目录；读文件请用 read_text_file", dir.trim()),
-                Vec::new(),
-            );
+            return ToolResult::denied(format!(
+                "{} 不是目录；读文件请用 read_text_file",
+                dir.trim()
+            ));
         }
         None => {
-            return ToolResult::ok(
+            return ToolResult::error(
                 format!("无法确认 {} 的路径类型（探测失败），请重试", dir.trim()),
                 Vec::new(),
             );
@@ -1914,7 +1876,6 @@ pub async fn tool_list_files(
         ),
     );
     if entries.is_empty() {
-        // 「... 内没有匹配的文件」首字不定 → ok
         return ToolResult::ok(format!("{} 内没有匹配的文件", canonical_log), Vec::new());
     }
     let mut out = format!(
@@ -1928,7 +1889,6 @@ pub async fn tool_list_files(
             "\n…（已达 {LIST_MAX_ENTRIES} 条上限，用 pattern 过滤缩小范围）"
         ));
     }
-    // 文件列表文本，首字符不定 → ok
     ToolResult::ok(out, Vec::new())
 }
 

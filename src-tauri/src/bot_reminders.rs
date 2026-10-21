@@ -143,29 +143,26 @@ pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
     let raw_text = v["text"].as_str().unwrap_or("");
     let text = match crate::db::reminders::validate_reminder_text(raw_text) {
         Ok(t) => t,
-        // 「提醒内容不能为空」首字「提」非 error/warn 前缀 → ok
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     let when = v["when"].as_str().unwrap_or("").trim().to_string();
     if when.is_empty() {
-        return ToolResult::ok(
-            "schedule_reminder 缺少 when 参数（提醒时间，可用 2026-10-22T09:00 / 09:00 / +30m）"
-                .to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "schedule_reminder 缺少 when 参数（提醒时间，可用 2026-10-22T09:00 / 09:00 / +30m）",
         );
     }
     let repeat = match Repeat::parse(v["repeat"].as_str().unwrap_or("none")) {
         Ok(r) => r,
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     let now = Local::now();
     let base = match parse_base(&when, now) {
         Ok(b) => b,
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     let schedule = build_schedule(base, repeat);
     if crate::bot_scheduler::validate_schedule(&schedule).is_err() {
-        return ToolResult::ok(format!("提醒时间无法解析：{when}"), Vec::new());
+        return ToolResult::denied(format!("提醒时间无法解析：{when}"));
     }
     // 首次触发：基准在将来就用基准；已过则退到该规则的下一次（一次性无下一次 → 报错）
     let first = if base > now {
@@ -174,10 +171,7 @@ pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
         match crate::bot_scheduler::occurrence_after(&schedule, now) {
             Some(t) => t,
             None => {
-                return ToolResult::ok(
-                    format!("提醒时间已过：{when}（请给一个将来的时间）"),
-                    Vec::new(),
-                )
+                return ToolResult::denied(format!("提醒时间已过：{when}（请给一个将来的时间）"))
             }
         }
     };
@@ -217,7 +211,6 @@ pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::truncate_for_log(&r.text, 60)
                 ),
             );
-            // 「已设提醒」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
                 format!(
                     "已设提醒：{} 「{}」（{}）。到点会以系统通知提醒用户，提醒 id: {}",
@@ -229,7 +222,7 @@ pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
                 Vec::new(),
             )
         }
-        Err(e) => ToolResult::ok(format!("设置提醒失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("设置提醒失败：{e}"), Vec::new()),
     }
 }
 
@@ -245,7 +238,6 @@ pub async fn tool_list_reminders(app: &AppHandle, _args: &str) -> ToolResult {
     match rows {
         Ok(list) => {
             if list.is_empty() {
-                // 「当前没有设置任何提醒」首字「当」非 error/warn 前缀 → ok
                 return ToolResult::ok("当前没有设置任何提醒".to_string(), Vec::new());
             }
             let mut lines = Vec::new();
@@ -272,7 +264,7 @@ pub async fn tool_list_reminders(app: &AppHandle, _args: &str) -> ToolResult {
                 Vec::new(),
             )
         }
-        Err(e) => ToolResult::ok(format!("读取提醒失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("读取提醒失败：{e}"), Vec::new()),
     }
 }
 
@@ -281,10 +273,7 @@ pub async fn tool_cancel_reminder(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let id = v["id"].as_str().unwrap_or("").trim().to_string();
     if id.is_empty() {
-        return ToolResult::ok(
-            "cancel_reminder 缺少 id 参数（用 list_reminders 查 id）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("cancel_reminder 缺少 id 参数（用 list_reminders 查 id）");
     }
     let app2 = app.clone();
     let id_for_db = id.clone();
@@ -310,17 +299,15 @@ pub async fn tool_cancel_reminder(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::truncate_for_log(&row.text, 60)
                 ),
             );
-            // 「已取消提醒」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
                 format!("已取消提醒：「{}」（id: {}）", row.text, row.id),
                 Vec::new(),
             )
         }
-        Ok((false, _)) => ToolResult::ok(
-            format!("没有找到 id 为 {id} 的提醒（用 list_reminders 查现有提醒）"),
-            Vec::new(),
-        ),
-        Err(e) => ToolResult::ok(format!("取消提醒失败：{e}"), Vec::new()),
+        Ok((false, _)) => ToolResult::denied(format!(
+            "没有找到 id 为 {id} 的提醒（用 list_reminders 查现有提醒）"
+        )),
+        Err(e) => ToolResult::error(format!("取消提醒失败：{e}"), Vec::new()),
     }
 }
 

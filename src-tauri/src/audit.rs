@@ -761,13 +761,205 @@ pub(crate) static BOT_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::ne
 mod tests {
     use super::*;
 
-    /// 回归锁：文案会被 `classify_tool_failure` 判成失败的返回点，不得构造
-    /// `ok` / `warn` —— status 是成败唯一真相源，两者矛盾会让 Skill DSL 调度器、
-    /// trace span 与幻觉守卫把失败步骤记成成功。
+    // ── 工具状态守卫：失败/拒绝语义的文案不得构造 ok / warn ──
+
+    /// 构造器名（源码里以字面量出现，扫描时按「落在字符串/注释里」跳过——
+    /// 所以这里写全名不会让守卫扫到自己）。
+    const OK_CTOR: &str = "ToolResult::ok(";
+    const WARN_CTOR: &str = "ToolResult::warn(";
+
+    /// 失败语标记：命中即视为「这段文案不该配 ok / warn」。
+    /// 「失败 / 错误」要求后接分隔符（见 `failure_reason`），其余是直查。
+    const FAILURE_MARKERS: &[&str] = &[
+        "拒绝",
+        "缺少",
+        "不能为空",
+        "未找到",
+        "不存在",
+        "非法",
+        "无效",
+        "未获确认",
+        "没有可用",
+        "不可用",
+        "禁用",
+    ];
+
+    /// 良性命中：文案里带失败语词但不是失败事件。
+    /// 每条都带理由——加新条目时必须写清为什么不是失败。
+    const BENIGN_FAILURE_TEXT: &[(&str, &str)] = &[
+        ("逐条接受/拒绝", "Word 修订模式给用户的操作指引（成功文案）"),
+        (
+            "提问队列暂不可用",
+            "提问队列故障是设计内降级：按模型声明的假设继续，不是失败事件",
+        ),
+    ];
+
+    /// 「失败 / 错误」后接分隔符才算失败——避免「失败把报错发回聊天」这类正常文案。
+    const FAILURE_SEPARATORS: &str = "：:，,、；;（(）) \n";
+
+    /// 判定一段文案是否带失败/拒绝语义；返回命中的标记名。
+    fn failure_reason(lit: &str) -> Option<&'static str> {
+        for (needle, _why) in BENIGN_FAILURE_TEXT {
+            if lit.contains(needle) {
+                return None;
+            }
+        }
+        for kw in ["失败", "错误"] {
+            let mut from = 0;
+            while let Some(rel) = lit[from..].find(kw) {
+                let at = from + rel;
+                let next = lit[at + kw.len()..].chars().next();
+                if next.is_some_and(|c| FAILURE_SEPARATORS.contains(c)) {
+                    return Some(kw);
+                }
+                from = at + kw.len();
+            }
+        }
+        FAILURE_MARKERS.iter().copied().find(|m| lit.contains(m))
+    }
+
+    /// 源码词法：切出字符串字面量与注释的区间。
+    /// 返回 (字面量区间, 注释区间)，每个字面量区间是 (起, 内容起, 止)。
+    fn lex_source(text: &str) -> (Vec<(usize, usize, usize)>, Vec<(usize, usize)>) {
+        let b = text.as_bytes();
+        let mut i = 0usize;
+        let mut literals: Vec<(usize, usize, usize)> = Vec::new();
+        let mut comments: Vec<(usize, usize)> = Vec::new();
+        while i < b.len() {
+            match b[i] {
+                b'/' if b.get(i + 1) == Some(&b'/') => {
+                    let start = i;
+                    while i < b.len() && b[i] != b'\n' {
+                        i += 1;
+                    }
+                    comments.push((start, i));
+                }
+                b'/' if b.get(i + 1) == Some(&b'*') => {
+                    let start = i;
+                    i += 2;
+                    while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                        i += 1;
+                    }
+                    i = (i + 2).min(b.len());
+                    comments.push((start, i));
+                }
+                b'r' if matches!(b.get(i + 1), Some(b'"') | Some(b'#')) => {
+                    let mut j = i + 1;
+                    while b.get(j) == Some(&b'#') {
+                        j += 1;
+                    }
+                    if b.get(j) == Some(&b'"') {
+                        let hashes = j - i - 1;
+                        let marker = format!("\"{}", "#".repeat(hashes));
+                        let mut k = j + 1;
+                        while k < text.len() {
+                            // 只在字符边界上切（raw string 里常有中文）
+                            if text.is_char_boundary(k) && text[k..].starts_with(&marker) {
+                                k += marker.len();
+                                break;
+                            }
+                            k += 1;
+                        }
+                        literals.push((i, j + 1, k));
+                        i = k;
+                        continue;
+                    }
+                    i += 1;
+                }
+                b'"' => {
+                    let start = i;
+                    let content = i + 1;
+                    let mut j = content;
+                    while j < b.len() {
+                        if b[j] == b'\\' {
+                            j += 2;
+                            continue;
+                        }
+                        if b[j] == b'"' {
+                            break;
+                        }
+                        j += 1;
+                    }
+                    let end = (j + 1).min(b.len());
+                    literals.push((start, content, end));
+                    i = end;
+                }
+                _ => i += 1,
+            }
+        }
+        (literals, comments)
+    }
+
+    fn span_contains(spans: &[(usize, usize)], pos: usize) -> bool {
+        spans.iter().any(|(s, e)| pos >= *s && pos < *e)
+    }
+
+    /// 找构造器调用的**首个字符串实参**：实参是字面量或 `format!("…")` 时返回其内容区间。
+    fn first_literal_arg(
+        text: &str,
+        literals: &[(usize, usize, usize)],
+        after_paren: usize,
+    ) -> Option<(usize, usize)> {
+        let mut p = after_paren;
+        let bytes = text.as_bytes();
+        while p < bytes.len() && bytes[p].is_ascii_whitespace() {
+            p += 1;
+        }
+        if text[p..].starts_with("format!") {
+            p += "format!".len();
+            while p < bytes.len() && bytes[p].is_ascii_whitespace() {
+                p += 1;
+            }
+            if bytes.get(p) != Some(&b'(') {
+                return None;
+            }
+            p += 1;
+            while p < bytes.len() && bytes[p].is_ascii_whitespace() {
+                p += 1;
+            }
+        }
+        literals
+            .iter()
+            .find(|(s, _, _)| *s == p)
+            .map(|(_, content, end)| (*content, *end))
+    }
+
+    /// 扫一段源码里所有「构造器 + 首个字符串实参」，返回带失败语义的文案与其位置。
+    fn scan_text_for_failure(text: &str, ctor: &str) -> Vec<(usize, String)> {
+        let (literals, comments) = lex_source(text);
+        let mut out = Vec::new();
+        let mut from = 0usize;
+        while let Some(rel) = text[from..].find(ctor) {
+            let pos = from + rel;
+            from = pos + ctor.len();
+            // 源码里「提到」构造器名不等于调用它（注释 / 字面量里的不算）
+            if span_contains(&comments, pos)
+                || literals.iter().any(|(s, _, e)| pos >= *s && pos < *e)
+            {
+                continue;
+            }
+            let Some((cs, ce)) = first_literal_arg(text, &literals, pos + ctor.len()) else {
+                continue;
+            };
+            let lit = &text[cs..ce];
+            if let Some(reason) = failure_reason(lit) {
+                out.push((cs, format!("{reason}：{lit}")));
+            }
+        }
+        out
+    }
+
+    /// 回归锁：文案带失败/拒绝语义的返回点不得构造 `ok` / `warn`。
     ///
-    /// 「失败：/错误：」是这类文案的稳定形态（首字不必是「失败」，旧实现正是
-    /// 按首字机械判 ok 才积下这批矛盾）。跨行调用一并扫：多行 `format!` 的
-    /// 返回值同样落在构造器里，单行匹配会漏。
+    /// status 是成败唯一真相源（见 `registry::ToolStatus::is_success`）：`Warn`
+    /// 也算成功，所以「做成了但有告警」这条留白不适用于失败文案——被拒 /
+    /// 执行失败的返回点一旦记成成功，Skill DSL 调度器会把失败步骤记成技能
+    /// 正常完成，trace span 记 ok，幻觉守卫的凭证表里还会留下
+    /// 「delete_task 成功过」，模型据此汇报「已删除任务卡」也不会被拦。
+    ///
+    /// 判定对象是构造器的**首个字符串实参**：注释、代码、非首参都不参与。
+    /// 变量实参（`ToolResult::ok(e, …)`）静态扫不到——那些点的成败由
+    /// 调用方按错误类型给，文案不承载语义。
     #[test]
     fn failure_texted_results_never_use_ok_or_warn() {
         fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -793,41 +985,76 @@ mod tests {
             let Ok(text) = std::fs::read_to_string(&f) else {
                 continue;
             };
-            // 每个文件从首个 #[cfg(test)] 起是测试代码，不算生产调用点
-            let production = text
-                .split_once("#[cfg(test)]")
-                .map_or(text.as_str(), |(_, rest)| rest);
-            let lines: Vec<&str> = production.lines().collect();
-            for (i, line) in lines.iter().enumerate() {
-                for ctor in ["ToolResult::ok(", "ToolResult::warn("] {
-                    if !line.contains(ctor) {
-                        continue;
-                    }
-                    let mut buf = (*line).to_string();
-                    let mut j = i;
-                    while buf.matches('(').count() > buf.matches(')').count()
-                        && j + 1 < lines.len()
-                        && j - i < 8
-                    {
-                        j += 1;
-                        buf.push('\n');
-                        buf.push_str(lines[j]);
-                    }
-                    if buf.contains("失败：") || buf.contains("错误：") {
-                        offenders.push(format!(
-                            "{}:{}: {}",
-                            f.strip_prefix(&root).unwrap_or(&f).display(),
-                            i + 1,
-                            buf.trim().lines().next().unwrap_or("").trim()
-                        ));
-                    }
+            for ctor in [OK_CTOR, WARN_CTOR] {
+                for (at, hit) in scan_text_for_failure(&text, ctor) {
+                    offenders.push(format!(
+                        "{}:{}: {}",
+                        f.strip_prefix(&root).unwrap_or(&f).display(),
+                        text[..at].lines().count() + 1,
+                        hit
+                    ));
                 }
             }
         }
         assert!(
             offenders.is_empty(),
-            "文案含「失败：/错误：」的返回点不得构造 ok/warn，应改 ToolResult::error：\n{}",
+            "文案带失败/拒绝语义的返回点不得构造 ok/warn，应改 ToolResult::denied / error：\n{}",
             offenders.join("\n")
+        );
+    }
+
+    /// 守卫自测：扫描器本身必须抓到违例、放过正常文案。
+    ///
+    /// 上一版守卫长期空转（把生产代码切反了，只扫测试代码；且只认
+    /// 「失败：/错误：」两种形态）。没有正例夹具就看不出它其实什么也没扫——
+    /// 这类静态守卫必须自带自测。
+    #[test]
+    fn ok_warn_failure_scanner_catches_violations() {
+        // 违例：参数缺失 / 执行失败 / 拒绝 / 目标不存在
+        for bad in [
+            "ToolResult::ok(\"create_task 缺少 title\".to_string(), Vec::new());",
+            "ToolResult::ok(\"路径不存在，拒绝绑定：{path}\", Vec::new());",
+            "ToolResult::ok(\"未找到 id={id} 的任务卡\", Vec::new());",
+        ] {
+            assert!(
+                !scan_text_for_failure(bad, OK_CTOR).is_empty(),
+                "应被抓到：{bad}"
+            );
+        }
+        assert!(
+            !scan_text_for_failure(
+                "ToolResult::ok(format!(\"删除失败：{e}\"), Vec::new())",
+                OK_CTOR
+            )
+            .is_empty(),
+            "多行 format! 的失败文案应被抓到"
+        );
+        assert!(
+            !scan_text_for_failure("ToolResult::warn(\"用户拒绝了删除\", vec![]);", WARN_CTOR)
+                .is_empty(),
+            "warn 同样是成功态，失败文案不得用 warn"
+        );
+        // 正常文案：成功 / 空结果 / 变量实参 / 注释与字面量里的同形文本
+        for good in [
+            "ToolResult::ok(\"已删除任务「x」（进回收站）\", Vec::new());",
+            "ToolResult::ok(\"没有找到相关记忆\", Vec::new());",
+            "ToolResult::ok(lines.join(\"\\n\"), refs);",
+            "// ToolResult::ok(\"失败：注释里的不算\")",
+            "let s = \"ToolResult::ok(\\\"失败：字面量里的不算\\\")\";",
+        ] {
+            assert!(
+                scan_text_for_failure(good, OK_CTOR).is_empty(),
+                "不应被抓到：{good}"
+            );
+        }
+        // 良性清单：带失败语词但不是失败事件
+        assert!(
+            scan_text_for_failure(
+                "ToolResult::ok(\"已生成修订版 Word（逐条接受/拒绝）：{out}\", vec![]);",
+                OK_CTOR
+            )
+            .is_empty(),
+            "良性清单里的文案不应被抓到"
         );
     }
 

@@ -411,16 +411,17 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     args: &str,
 ) -> ToolResult {
-    // 模型主动记忆总闸：ok 而非 error——不是故障，模型拿到提示后自然转述，不会重试刷屏
+    // 模型主动记忆总闸：记忆功能关闭 = 工具没动手（denied），不是「记好了」。
+    // remember_fact 是变更类工具，记成 ok 会在幻觉守卫的凭证表里留下
+    // 「remember_fact 成功过」，模型随后汇报「已记住」不会被拦。
     if !auto_write_allowed(app) {
-        return ToolResult::ok("记忆功能已在设置中关闭，无需记录。".to_string(), Vec::new());
+        return ToolResult::denied("记忆功能已在设置中关闭，无需记录。");
     }
     let v = crate::bot::parse_args(args);
     let key = v["key"].as_str().unwrap_or("").trim().to_string();
     let value = v["value"].as_str().unwrap_or("").trim().to_string();
     if let Err(e) = validate_fact_kv(&key, &value) {
-        // CommandError.to_string() 首字不定 → ok
-        return ToolResult::ok(e, Vec::new());
+        return ToolResult::denied(e);
     }
     let category: &'static str = match v["category"].as_str().map(|s| s.trim()) {
         Some("profile") => "profile",
@@ -443,7 +444,6 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
         let _g = crate::db::lock::lock_or_recover(&crate::db::DB_WRITE_LOCK, "db::DB_WRITE_LOCK");
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
-            // 「失败：打开数据库出错」以「失败」开头 → error
             Err(e) => {
                 return ToolResult::error(format!("失败：打开数据库出错：{e}"), Vec::new());
             }
@@ -456,7 +456,7 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
         if value.is_empty() {
             return match store::delete_by_key_tag(&conn, &key) {
                 Ok(true) => ToolResult::ok(format!("已删除记忆「{key}」"), Vec::new()),
-                Ok(false) => ToolResult::ok(format!("记忆「{key}」本来就不存在"), Vec::new()),
+                Ok(false) => ToolResult::denied(format!("记忆「{key}」本来就不存在")),
                 Err(e) => ToolResult::error(format!("失败：{e}"), Vec::new()),
             };
         }
@@ -475,7 +475,6 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
                 ) {
                     return ToolResult::error(format!("失败：{e}"), Vec::new());
                 }
-                // 「已记住」首字「已」非 error/warn 前缀 → ok
                 ToolResult::ok(format!("已记住「{key}」：{value}"), Vec::new())
             }
             Ok(None) => {
@@ -529,7 +528,6 @@ pub async fn tool_remember_fact<R: tauri::Runtime>(
     })
     .await;
     r.unwrap_or_else(|e| {
-        // 「失败：记忆写入线程 join 失败」以「失败」开头 → error
         ToolResult::error(format!("失败：记忆写入线程 join 失败：{e}"), Vec::new())
     })
 }
@@ -552,7 +550,6 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
         );
         let conn = match crate::db::open_db(&app) {
             Ok(c) => c,
-            // 「失败：打开数据库出错」以「失败」开头 → error
             Err(e) => {
                 return ToolResult::error(format!("失败：打开数据库出错：{e}"), Vec::new());
             }
@@ -579,24 +576,20 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
                 &rank::RankParams::of(&tuning),
             );
             if hits.is_empty() {
-                // 「没有找到相关记忆」首字「没」非 error/warn 前缀 → ok
                 return ToolResult::ok("没有找到相关记忆".to_string(), Vec::new());
             }
             let lines: Vec<String> = hits.iter().map(line_of).collect();
-            // 「最相关 N 条」首字「最」非 error/warn 前缀 → ok
             return ToolResult::ok(
                 format!("最相关 {} 条：\n{}", lines.len(), lines.join("\n")),
                 Vec::new(),
             );
         }
         if items.is_empty() {
-            // 「（还没有任何长期记忆）」首字「（」非 error/warn 前缀 → ok
             return ToolResult::ok("（还没有任何长期记忆）".to_string(), Vec::new());
         }
         let mut all = items;
         all.sort_by_key(|m| std::cmp::Reverse(m.updated_at_ms));
         let lines: Vec<String> = all.iter().map(line_of).collect();
-        // 「已记住 N 条」首字「已」非 error/warn 前缀 → ok
         ToolResult::ok(
             format!("已记住 {} 条：\n{}", lines.len(), lines.join("\n")),
             Vec::new(),
@@ -604,7 +597,6 @@ pub async fn tool_recall_facts(app: &AppHandle, args: &str) -> ToolResult {
     })
     .await;
     r.unwrap_or_else(|e| {
-        // 「失败：记忆检索线程 join 失败」以「失败」开头 → error
         ToolResult::error(format!("失败：记忆检索线程 join 失败：{e}"), Vec::new())
     })
 }
@@ -638,6 +630,8 @@ fn validate_lesson(lesson: &str, scenario: &str) -> Result<(), String> {
 
 /// lesson 写入内核（抽离 Connection + 注入向量，内存库可单测）：
 /// 语义去重由 insert_item 承担（≥0.92 合并、0.75~0.92 冲突提示）。
+///
+/// 失败走 `Err` 而不是「失败：」前缀——成败由类型承担，调用方不必再猜文案。
 pub fn record_lesson_core(
     conn: &rusqlite::Connection,
     lesson: &str,
@@ -646,12 +640,10 @@ pub fn record_lesson_core(
     embedding: Option<&[f32]>,
     now_ms: i64,
     sp: &store::StoreParams,
-) -> String {
+) -> Result<String, String> {
     let lesson = lesson.trim();
     let scenario = scenario.trim();
-    if let Err(e) = validate_lesson(lesson, scenario) {
-        return e;
-    }
+    validate_lesson(lesson, scenario)?;
     let mut tags = vec!["lesson".to_string()];
     if !scenario.is_empty() {
         tags.push(scenario.to_string());
@@ -667,24 +659,24 @@ pub fn record_lesson_core(
         Ok((InsertOutcome::Inserted(_), hints)) => {
             let msg = format!("已记录教训：{}", truncate_chars(lesson, 60, false));
             if hints.is_empty() {
-                msg
+                Ok(msg)
             } else {
-                format!(
+                Ok(format!(
                     "{msg}。相似已有记忆：[{}]——如需更新请用同场景覆盖",
                     hints.join("；")
-                )
+                ))
             }
         }
         Ok((InsertOutcome::Merged { .. }, _)) => {
             // 「已有记忆」而非「已有教训」：合并不限定 kind，目标可能是 fact 等行，
             // 说成教训就是对着用户讲假话（与 remember_fact 的合并文案同口径）。
-            format!(
+            Ok(format!(
                 "已记录教训（与已有记忆语义重复，已合并更新）：{}",
                 truncate_chars(lesson, 60, false)
-            )
+            ))
         }
-        Ok((InsertOutcome::RejectedFull(e), _)) => format!("失败：{e}"),
-        Err(e) => format!("失败：{e}"),
+        Ok((InsertOutcome::RejectedFull(e), _)) => Err(format!("失败：{e}")),
+        Err(e) => Err(format!("失败：{e}")),
     }
 }
 
@@ -693,33 +685,26 @@ pub async fn tool_record_lesson<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     args: &str,
 ) -> ToolResult {
-    // 模型主动记忆总闸：同 remember_fact，ok 提示不报错
+    // 模型主动记忆总闸：同 remember_fact，denied（工具没动手）
     if !auto_write_allowed(app) {
-        return ToolResult::ok("记忆功能已在设置中关闭，无需记录。".to_string(), Vec::new());
+        return ToolResult::denied("记忆功能已在设置中关闭，无需记录。");
     }
     let v = crate::bot::parse_args(args);
     let lesson = v["lesson"].as_str().unwrap_or("").trim().to_string();
     let scenario = v["scenario"].as_str().unwrap_or("").trim().to_string();
     if let Err(e) = validate_lesson(&lesson, &scenario) {
-        // validate_lesson 返回 String，首字可能是「失」或其他描述 → ok
-        return ToolResult::ok(e, Vec::new());
+        return ToolResult::denied(e);
     }
     let app2 = app.clone();
-    // 闭包返 String（不动 record_lesson_core 签名）；outer 首字符判定 → ToolResult
-    let r = tauri::async_runtime::spawn_blocking(move || -> String {
+    // 闭包返 Result：成败由类型承担，不用「失败：」前缀当失败信号
+    let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
         let emb = embed::embed_text(&lesson);
         let _g = crate::db::lock::lock_or_recover(
             &crate::db::DB_WRITE_LOCK,
             "memory::mod DB_WRITE_LOCK",
         );
-        let conn = match crate::db::open_db(&app2) {
-            Ok(c) => c,
-            // 「失败：打开数据库出错」以「失败」开头
-            Err(e) => return format!("失败：打开数据库出错：{e}"),
-        };
-        if let Err(e) = store::ensure_table(&conn) {
-            return format!("失败：{e}");
-        }
+        let conn = crate::db::open_db(&app2).map_err(|e| format!("失败：打开数据库出错：{e}"))?;
+        store::ensure_table(&conn).map_err(|e| format!("失败：{e}"))?;
         record_lesson_core(
             &conn,
             &lesson,
@@ -732,15 +717,8 @@ pub async fn tool_record_lesson<R: tauri::Runtime>(
     })
     .await;
     match r {
-        Ok(s) => {
-            // record_lesson_core 返 String：前缀「失败」/「错误 → error，其他 → ok
-            if s.starts_with("失败") || s.starts_with("错误") {
-                ToolResult::error(s, Vec::new())
-            } else {
-                ToolResult::ok(s, Vec::new())
-            }
-        }
-        // Join 失败以「失败」开头 → error
+        Ok(Ok(s)) => ToolResult::ok(s, Vec::new()),
+        Ok(Err(e)) => ToolResult::error(e, Vec::new()),
         Err(e) => ToolResult::error(format!("失败：教训写入线程 join 失败：{e}"), Vec::new()),
     }
 }
@@ -776,7 +754,7 @@ pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(
         );
         let conn = crate::db::open_db(&app2)?;
         store::ensure_table(&conn)?;
-        let msg = record_lesson_core(
+        record_lesson_core(
             &conn,
             &content,
             "task_exec",
@@ -784,10 +762,7 @@ pub async fn auto_lesson_on_task_failure<R: tauri::Runtime>(
             emb.as_deref(),
             now_ms(),
             &store::StoreParams::of(&crate::bot::read_memory_tuning(&app2)),
-        );
-        if msg.starts_with("失败") {
-            return Err(msg);
-        }
+        )?;
         Ok(())
     })
     .await;

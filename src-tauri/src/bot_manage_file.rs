@@ -40,31 +40,26 @@ pub async fn tool_manage_file(
     let v = crate::bot::parse_args(args);
     let action = v["action"].as_str().unwrap_or("").trim().to_string();
     if action.is_empty() {
-        return ToolResult::ok(
-            "manage_file 缺少 action 参数（可用 copy / move / delete）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("manage_file 缺少 action 参数（可用 copy / move / delete）");
     }
     let path = v["path"].as_str().unwrap_or("").trim().to_string();
     if path.is_empty() {
-        return ToolResult::ok("manage_file 缺少 path 参数".to_string(), Vec::new());
+        return ToolResult::denied("manage_file 缺少 path 参数");
     }
     match action.as_str() {
         "copy" | "move" => {
             let dest = v["dest"].as_str().unwrap_or("").trim().to_string();
             if dest.is_empty() {
-                return ToolResult::ok(
-                    format!("manage_file 的 {action} 需要 dest 参数（目标路径）"),
-                    Vec::new(),
-                );
+                return ToolResult::denied(format!(
+                    "manage_file 的 {action} 需要 dest 参数（目标路径）"
+                ));
             }
             copy_or_move(app, &action, &path, &dest, interactive, session_id).await
         }
         "delete" => delete_to_trash(app, &path, interactive, session_id).await,
-        other => ToolResult::ok(
-            format!("manage_file 不认识的 action：{other}（可用 copy / move / delete）"),
-            Vec::new(),
-        ),
+        other => ToolResult::denied(format!(
+            "manage_file 不认识的 action：{other}（可用 copy / move / delete）"
+        )),
     }
 }
 
@@ -84,7 +79,7 @@ async fn copy_or_move(
             .await
         {
             Ok(p) => p,
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         };
     // 目标走写闸：目标可不存在（新建），校验的是父目录
     let dst =
@@ -92,24 +87,21 @@ async fn copy_or_move(
             .await
         {
             Ok(p) => p,
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         };
     if dst.exists() {
-        return ToolResult::ok(
-            format!("目标已存在，未覆盖：{}（换个目标名重试）", dst.display()),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "目标已存在，未覆盖：{}（换个目标名重试）",
+            dst.display()
+        ));
     }
     // 目标落在源目录内部 → 拒绝（把目录复制进自己会无限递归）
     if dest_inside_src(&src, &dst) {
-        return ToolResult::ok(
-            format!(
-                "目标 {} 在源 {} 内部，拒绝（不能把目录复制/移动进它自己）",
-                dst.display(),
-                src.display()
-            ),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "目标 {} 在源 {} 内部，拒绝（不能把目录复制/移动进它自己）",
+            dst.display(),
+            src.display()
+        ));
     }
     let src_s = src.display().to_string();
     let dst_s = dst.display().to_string();
@@ -144,7 +136,7 @@ async fn copy_or_move(
             )
             .with_file_change(crate::bot_fs::build_binary_file_receipt(&dst_s))
         }
-        Err(e) => ToolResult::ok(format!("{action} 失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("{action} 失败：{e}"), Vec::new()),
     }
 }
 
@@ -236,7 +228,7 @@ async fn delete_to_trash(
             .await
         {
             Ok(p) => p,
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         };
     let shown = target.display().to_string();
     // 破坏性动作：弹窗确认后才执行（60s 无响应默认拒绝）
@@ -249,7 +241,7 @@ async fn delete_to_trash(
     )
     .await;
     if !approved {
-        return ToolResult::ok("用户拒绝了删除，文件未删除".to_string(), Vec::new());
+        return ToolResult::denied("用户拒绝了删除，文件未删除");
     }
     let target2 = target.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
@@ -278,7 +270,7 @@ async fn delete_to_trash(
                 Vec::new(),
             )
         }
-        Err(e) => ToolResult::ok(format!("删除失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(format!("删除失败：{e}"), Vec::new()),
     }
 }
 

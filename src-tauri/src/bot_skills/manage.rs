@@ -708,7 +708,6 @@ pub async fn tool_create_skill(
     match created {
         Ok(file_count) => {
             rebuild_intent_routes(app);
-            // 成功摘要中路径段首字不定 → ok
             ToolResult::ok(
                 format!(
                     "技能「{name}」已创建并生效（附件 {file_count} 个），技能目录：{dir_log}。路由已重建：用户说出该技能 intents 关键词即会进入该技能流程。"

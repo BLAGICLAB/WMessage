@@ -758,25 +758,19 @@ pub async fn tool_apps_list(app: &AppHandle, _args: &str) -> ToolResult {
 pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(id) = required_field(&v, "id") else {
-        return ToolResult::ok(
-            "apps_create 缺少 id（程序目录名：字母/数字/-/_，路径分量，不能含 / 或 ..）"
-                .to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "apps_create 缺少 id（程序目录名：字母/数字/-/_，路径分量，不能含 / 或 ..）",
         );
     };
     if let Err(e) = validate_app_id(&id) {
-        return ToolResult::ok(format!("apps_create：{e}"), Vec::new());
+        return ToolResult::denied(format!("apps_create：{e}"));
     }
     let Some(name) = required_field(&v, "name") else {
-        return ToolResult::ok(
-            "apps_create 缺少 name（程序页卡片标题）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("apps_create 缺少 name（程序页卡片标题）");
     };
     let Some(script) = v["script"].as_str().map(|s| s.to_string()) else {
-        return ToolResult::ok(
-            "apps_create 缺少 script（完整 app.py 源码全文，不许片段/diff）".to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "apps_create 缺少 script（完整 app.py 源码全文，不许片段/diff）",
         );
     };
     let description = optional_field(&v, "description").unwrap_or_default();
@@ -784,15 +778,15 @@ pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
     let manual = optional_field(&v, "manual").unwrap_or_default();
     let input_schema = match normalize_input_schema(v.get("input_schema")) {
         Ok(s) => s,
-        Err(e) => return ToolResult::ok(format!("apps_create：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("apps_create：{e}")),
     };
     let files = match files_from_args(&v) {
         Ok(f) => f,
-        Err(e) => return ToolResult::ok(format!("apps_create：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("apps_create：{e}")),
     };
     let timeout_secs = match timeout_field(&v) {
         Ok(t) => t,
-        Err(e) => return ToolResult::ok(format!("apps_create：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("apps_create：{e}")),
     };
     crate::bot::audit_log(
         app,
@@ -866,15 +860,12 @@ pub async fn tool_apps_create(app: &AppHandle, args: &str) -> ToolResult {
 pub async fn tool_apps_update_files(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(id) = required_field(&v, "id") else {
-        return ToolResult::ok(
-            "apps_update_files 缺少 id（要修改的程序 id，先 apps_list 查）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("apps_update_files 缺少 id（要修改的程序 id，先 apps_list 查）");
     };
     let script = v["script"].as_str().map(|s| s.to_string());
     let files = match files_from_args(&v) {
         Ok(f) => f,
-        Err(e) => return ToolResult::ok(format!("apps_update_files：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("apps_update_files：{e}")),
     };
     let name = optional_field(&v, "name");
     let description = optional_field(&v, "description");
@@ -885,14 +876,14 @@ pub async fn tool_apps_update_files(app: &AppHandle, args: &str) -> ToolResult {
         None | Some(serde_json::Value::Null) => None,
         Some(val) => match normalize_input_schema(Some(val)) {
             Ok(s) => Some(s),
-            Err(e) => return ToolResult::ok(format!("apps_update_files：{e}"), Vec::new()),
+            Err(e) => return ToolResult::denied(format!("apps_update_files：{e}")),
         },
     };
     let status = optional_field(&v, "status");
     // timeoutSecs 缺省 = 保持不变；传 0 = 取消声明；传 N = 声明 N 秒
     let timeout_secs = match timeout_field(&v) {
         Ok(t) => t,
-        Err(e) => return ToolResult::ok(format!("apps_update_files：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("apps_update_files：{e}")),
     };
     crate::bot::audit_log(
         app,

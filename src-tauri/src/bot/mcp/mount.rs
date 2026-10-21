@@ -172,20 +172,14 @@ pub(crate) async fn execute_mcp_tool(
     let server = servers.into_iter().find(|s| s.id == mounted.server_id);
     match server {
         Some(cfg) if cfg.enabled => execute_mcp_direct(&cfg, &mounted, args).await,
-        Some(_) => crate::bot::registry::ToolResult::warn(
-            format!(
-                "MCP 服务器「{}」已被禁用，工具 {name} 不可用；下轮清单刷新后不再出现",
-                mounted.server_name
-            ),
-            Vec::new(),
-        ),
-        None => crate::bot::registry::ToolResult::warn(
-            format!(
-                "MCP 服务器「{}」已被删除，工具 {name} 不可用；下轮清单刷新后不再出现",
-                mounted.server_name
-            ),
-            Vec::new(),
-        ),
+        Some(_) => crate::bot::registry::ToolResult::denied(format!(
+            "MCP 服务器「{}」已被禁用，工具 {name} 不可用；下轮清单刷新后不再出现",
+            mounted.server_name
+        )),
+        None => crate::bot::registry::ToolResult::denied(format!(
+            "MCP 服务器「{}」已被删除，工具 {name} 不可用；下轮清单刷新后不再出现",
+            mounted.server_name
+        )),
     }
 }
 

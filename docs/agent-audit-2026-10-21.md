@@ -209,7 +209,7 @@ Linux 侧 `/proc/net/*` 读不到同样返回空 map。`judge_sockets(&[], …)`
 **修法**：服务层复用沙箱层看门狗思路（Unix `pre_exec` 里
 `prctl(PR_SET_PDEATHSIG, SIGTERM)`），并在 `lib.rs` 加 `RunEvent::Exit` 兜底。
 
-### P1-4 工具层 60 处把「拒绝 / 失败」返回成 `Ok` → 污染幻觉守卫的成功凭证表
+### P1-4 工具层把「拒绝 / 失败」返回成 `Ok` → 污染幻觉守卫的成功凭证表（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/tools.rs` 等 11 个文件 · `src-tauri/src/bot/registry.rs:55-70`
 （`ToolStatus::is_success`）· `src-tauri/src/bot/dispatch.rs:641`
@@ -1081,6 +1081,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-18 | 已修 | MCP HTTP 分支接 DNS 级 SSRF 闸 + 钉 IP（`manager::http_client_for_mcp`） |
 | P1-16 | 已修 | 脱敏视图下发（`mcp_server_secrets_masked`）+ 掩码回传语义（`secrets::resolve_masked`） |
 | P1-17 | 已修 | 指纹显式枚举字段，含 env/headers（`manager::fingerprint`） |
+| P1-4 | 已修 | 194 处工具返回点改 `denied` / `error` + 静态扫描守卫重写（`audit.rs`） |
 
 ### P0-1 的落地口径
 
@@ -1159,5 +1160,64 @@ reqwest 没有二次解析、Host 头仍是原域名）；源码文本钉住「H
 
 **测试**：`secrets::masked` / `resolve_masked`（保留 / 替换 / 删除 / 掩码过期）
 与 `manager::fingerprint`（env/headers 变即换指纹、相同配置指纹稳定）。
+
+### P1-4 的落地口径
+
+**规模**：本报告初稿按 `audit.rs` 的文本分类器口径数出 60 处（A 类 12 / B 类 48）。
+按「失败语义」重新穷举（含 `format!` 模板、跨行调用、变量实参），**实际改写
+194 处**，覆盖 13 个文件（`bot/tools.rs` / `bot_fs.rs` / `bot_ui.rs` /
+`bot_desktop.rs` / `bot_manage_file.rs` / `bot_reminders.rs` / `bot_archive.rs` /
+`bot_skills/remote.rs` / `bot_skills/runtime.rs` / `apps/manage.rs` /
+`memory/mod.rs` / `py/ast.rs` / `ocr.rs`），另改 `bot/mcp/mount.rs` 2 处
+（MCP 服务器被禁用 / 被删除 → `denied`）。**初稿的 60 处是下界**：文本分类器
+只认「失败 / 错误」两类，「缺少 X 参数」「未找到」「不能为空」「拒绝」这些
+参数闸与拒绝类文案它一条都不认。
+
+**归属三档**（写进 SPEC「工具成败只由 status 承担」）：
+① **参数闸**（缺必填参数 / 参数为空 / 参数非法 / 超上限 / 目标不存在或已存在 /
+路径校验不过）→ `Denied`（工具没动手）；
+② **门禁与用户拒绝**（白名单闸拦下、用户点否、确认超时、功能开关关闭）→
+`Denied`；
+③ **执行失败**（读写 / 下载 / 解包 / 删除 / 设置 / 取消 / 点击 / 输入 / 激活 /
+探测失败）→ `Error`（动了没成）。
+
+**两处按错误类型分流，不按文案**：
+- `resolve_task` 的失败混着两种语义——`CommandError::DbError`（读库失败）是
+  执行失败（`Error`），`DomainRule`（定位不到 / 参数缺失 / taskId 与标题打架）
+  是工具没动手（`Denied`）。新增 `resolve_task_err` 按变体分，文案一字未改。
+- `resolve_owner` 原先把「读成员表失败」和「同名歧义 / 未命中」塞进同一个
+  `Err(String)`：前者是执行失败，后者是参数闸。**成员表改由调用方读**，
+  `resolve_owner` 收窄成纯函数（`&[PeopleEntry] → Result<String, String>`）。
+
+**`Warn` 也是成功**——所以失败文案连 `Warn` 都不能配。`ask_user` 的 7 处
+`Warn` 是**设计内降级**（未获回答 / 队列故障 → 按模型声明的假设继续），
+不是失败事件，按失败处理会让 Skill DSL 调度器误判步骤失败并触发回滚——
+这类保留 `Warn`，并在守卫的良性清单里写明理由。
+
+**记忆内核的失败信号从文案改成类型**：`memory::record_lesson_core` 原先返
+`String`，失败靠「失败：」前缀传递，调用方再按前缀猜 status。改成返
+`Result<String, String>`，四个调用点（`tool_record_lesson` /
+`auto_lesson_on_task_failure` / `bot::corrections` / `bot_skills::runtime`）
+按类型分。
+
+**守卫重写**（`audit.rs` 的 `failure_texted_results_never_use_ok_or_warn`）：
+上一版守卫**长期空转**——它用 `split_once("#[cfg(test)]")` 取后半段当「生产
+代码」，切反了，等于只扫测试代码；且只认「失败：/错误：」两种形态。重写后：
+- 判定对象是**构造器调用的首个字符串实参**（注释、代码、非首参都不参与）；
+- 失败语 = 「失败 / 错误」后接分隔符 + 参数闸与拒绝类关键词
+  （拒绝 / 缺少 / 不能为空 / 未找到 / 不存在 / 非法 / 无效 / 未获确认 /
+  没有可用 / 不可用 / 禁用）；
+- 良性清单两条，各带理由（「逐条接受/拒绝」是 Word 修订模式给用户的操作
+  指引；「提问队列暂不可用」是设计内降级）；
+- **自带正例夹具**（`ok_warn_failure_scanner_catches_violations`）：违例必须
+  抓到、正常文案 / 注释 / 字面量里的同形文本必须放过——上一版没有自测，
+  所以没人看出它什么也没扫。
+
+**变量实参扫不到**（`ToolResult::ok(e, …)`）：那些点的成败由调用方按错误
+类型给，文案不承载语义，静态扫描无解。这条局限写进守卫的注释里。
+
+**顺带清掉的失效注释**：104 行「首字「X」非 error/warn 前缀 → ok」这类注释
+记录的是「为什么这里用 ok」——理由是文案首字。这套理由在 status 改由语义
+决定之后不再成立，留着会让人以为「文案首字决定 status」，故一并删除。
 
 

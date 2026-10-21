@@ -94,46 +94,37 @@ pub async fn tool_ast_inspect(
 ) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(op_raw) = v["op"].as_str() else {
-        // 「ast_inspect 缺少 op」首字「a」非 error/warn 前缀 → ok
-        return ToolResult::ok(
-            format!("ast_inspect 缺少 op，可选：{}", AST_OPS.join(" / ")),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "ast_inspect 缺少 op，可选：{}",
+            AST_OPS.join(" / ")
+        ));
     };
     let op = op_raw.trim();
     if !AST_OPS.contains(&op) {
-        return ToolResult::ok(
-            format!("ast_inspect 不认识 op={op}，可选：{}", AST_OPS.join(" / ")),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "ast_inspect 不认识 op={op}，可选：{}",
+            AST_OPS.join(" / ")
+        ));
     }
     let Some(path_raw) = v["path"].as_str() else {
-        // 「ast_inspect 缺少 path」首字「a」非 error/warn 前缀 → ok
-        return ToolResult::ok(
-            "ast_inspect 缺少 path（.py 文件；op=callgraph 时可传目录）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("ast_inspect 缺少 path（.py 文件；op=callgraph 时可传目录）");
     };
     let path = path_raw.trim();
     if !target_is_supported(op, path) {
         // 明确不可用 + 指路，绝不静默换成文本检索结果（A5）
-        return ToolResult::ok(
-            format!(
-                "ast_inspect 只支持 Python 源码（.py），{path} 不是 .py 文件。\
+        return ToolResult::denied(format!(
+            "ast_inspect 只支持 Python 源码（.py），{path} 不是 .py 文件。\
                  本文件请改用 grep_files（按正则搜内容）或 read_text_file（整文件读）。"
-            ),
-            Vec::new(),
-        );
+        ));
     }
     let symbol = v["symbol"]
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty());
     if AST_OPS_NEEDING_SYMBOL.contains(&op) && symbol.is_none() {
-        return ToolResult::ok(
-            format!("ast_inspect 的 op={op} 需要 symbol 参数（符号名，如 parse_args）"),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "ast_inspect 的 op={op} 需要 symbol 参数（符号名，如 parse_args）"
+        ));
     }
     let depth = v["depth"]
         .as_u64()
@@ -146,8 +137,7 @@ pub async fn tool_ast_inspect(
             .await
         {
             Ok(canonical) => canonical,
-            // resolve_with_perm Err 返 String，首字不定 → ok
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         };
     let code = build_ast_code(op, &canonical.to_string_lossy(), symbol, depth);
     match crate::py::document::py_exec_sync_async(app.clone(), code, None, stop.map(|s| s.token()))
@@ -167,7 +157,6 @@ pub async fn tool_ast_inspect(
             if out.is_empty() {
                 out = "执行完成（无输出）".into();
             }
-            // 探查结果首字符可能是任意 UTF-8 → ok
             ToolResult::ok(out, Vec::new())
         }
         Err(e) => ToolResult::error(format!("探查失败：{e}"), Vec::new()),

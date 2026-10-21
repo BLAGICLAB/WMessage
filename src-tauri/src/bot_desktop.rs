@@ -33,19 +33,17 @@ pub async fn tool_reveal_path(
 ) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str().map(|s| s.trim().to_string()) else {
-        // 「reveal_path 缺少 path」首字「r」非 error/warn 前缀 → ok
-        return ToolResult::ok("reveal_path 缺少 path 参数".to_string(), Vec::new());
+        return ToolResult::denied("reveal_path 缺少 path 参数");
     };
     if path.is_empty() {
-        return ToolResult::ok("reveal_path 的 path 不能为空".to_string(), Vec::new());
+        return ToolResult::denied("reveal_path 的 path 不能为空");
     }
     let canonical =
         match crate::bot_fs::resolve_with_perm(app, "reveal_path", &path, interactive, session_id)
             .await
         {
             Ok(p) => p,
-            // resolve_with_perm Err 返 String，首字不定 → ok
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         };
     use tauri_plugin_opener::OpenerExt;
     let shown = canonical.display().to_string();
@@ -58,7 +56,6 @@ pub async fn tool_reveal_path(
                     crate::bot::truncate_for_log(&shown, 200)
                 ),
             );
-            // 「已在访达显示」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(format!("已在系统文件管理器中定位：{shown}"), Vec::new())
         }
         Err(e) => ToolResult::error(format!("定位失败：{e}"), Vec::new()),
@@ -72,19 +69,17 @@ pub async fn tool_reveal_path(
 pub async fn tool_open_url(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(u) = v["url"].as_str().map(|s| s.trim().to_string()) else {
-        // 「open_url 缺少 url」首字「o」非 error/warn 前缀 → ok
-        return ToolResult::ok("open_url 缺少 url 参数".to_string(), Vec::new());
+        return ToolResult::denied("open_url 缺少 url 参数");
     };
     if u.is_empty() {
-        return ToolResult::ok("open_url 的 url 不能为空".to_string(), Vec::new());
+        return ToolResult::denied("open_url 的 url 不能为空");
     }
     if let Err(e) = crate::bot::check_len(&u, crate::bot::MAX_KEYWORD, "网址") {
-        return ToolResult::ok(e.to_string(), Vec::new());
+        return ToolResult::denied(e);
     }
     let url = match crate::bot_web::ensure_public_http_url(&u).await {
         Ok(url) => url,
-        // 错误文案首字不定（含「无效/仅支持/拒绝」等）→ ok
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     use tauri_plugin_opener::OpenerExt;
     let shown = url.as_str().to_string();
@@ -97,7 +92,6 @@ pub async fn tool_open_url(app: &AppHandle, args: &str) -> ToolResult {
                     crate::bot::escape_for_log(&shown, 200)
                 ),
             );
-            // 「已在浏览器打开」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(format!("已在默认浏览器打开：{shown}"), Vec::new())
         }
         Err(e) => ToolResult::error(format!("打开失败：{e}"), Vec::new()),
@@ -126,13 +120,11 @@ fn validate_clip_text(text: &str) -> Result<String, String> {
 pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(text) = v["text"].as_str() else {
-        // 「clipboard_write 缺少 text」首字「c」非 error/warn 前缀 → ok
-        return ToolResult::ok("clipboard_write 缺少 text 参数".to_string(), Vec::new());
+        return ToolResult::denied("clipboard_write 缺少 text 参数");
     };
     let text = match validate_clip_text(text) {
         Ok(t) => t,
-        // 错误文案首字「剪/内」非 error/warn 前缀 → ok
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     let n = text.chars().count();
     // 模块约定「同步平台调用全部 spawn_blocking」：剪贴板写入触系统 pasteboard
@@ -146,14 +138,12 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
     match written {
         Ok(Ok(())) => {
             crate::bot::audit_log(app, &format!("desktop.clipboard_write | {} chars", n));
-            // 「已复制」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
                 format!("已复制到剪贴板（{n} 字符），可直接粘贴"),
                 Vec::new(),
             )
         }
         Ok(Err(e)) => ToolResult::error(format!("写入剪贴板失败：{e}"), Vec::new()),
-        // 「失败：剪贴板线程异常」以「失败」开头 → error（同截图线程异常口径）
         Err(e) => ToolResult::error(format!("失败：剪贴板线程异常：{e}"), Vec::new()),
     }
 }
@@ -209,20 +199,15 @@ pub async fn tool_copy_file_to_clipboard(
     let v = crate::bot::parse_args(args);
     let raw = collect_clip_paths(&v);
     if raw.is_empty() {
-        // 「copy_file_to_clipboard 缺少 path」首字「c」非 error/warn 前缀 → ok
-        return ToolResult::ok(
-            "copy_file_to_clipboard 缺少 path 参数（要复制多个文件用 paths 数组）".to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "copy_file_to_clipboard 缺少 path 参数（要复制多个文件用 paths 数组）",
         );
     }
     if raw.len() > MAX_CLIP_FILES {
-        return ToolResult::ok(
-            format!(
-                "一次最多复制 {MAX_CLIP_FILES} 个文件（收到 {} 个），请分批复制",
-                raw.len()
-            ),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "一次最多复制 {MAX_CLIP_FILES} 个文件（收到 {} 个），请分批复制",
+            raw.len()
+        ));
     }
     // 逐个过读闸：读白名单 = Desktop / Downloads / Documents + AI_Gen_Files +
     // 任务卡绑定目录 + 用户配置的 allowedDirs；白名单外按权限模式处理
@@ -238,8 +223,7 @@ pub async fn tool_copy_file_to_clipboard(
         .await
         {
             Ok(c) => resolved.push(c.display().to_string()),
-            // resolve_with_perm Err 返 String，首字不定 → ok
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         }
     }
     // 文本类粘贴的载荷：文件名（多个用、分隔）
@@ -269,7 +253,6 @@ pub async fn tool_copy_file_to_clipboard(
                 app,
                 &format!("desktop.copy_file_to_clipboard | {n} 个文件 | {shown}"),
             );
-            // 「已放入系统剪贴板」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok(
                 format!(
                     "已放入系统剪贴板（{n} 个文件）：{shown}。可在微信 / 飞书等应用里直接粘贴出这些文件。"
@@ -278,7 +261,6 @@ pub async fn tool_copy_file_to_clipboard(
             )
         }
         Ok(Err(e)) => ToolResult::error(format!("放入剪贴板失败：{e}"), Vec::new()),
-        // 「失败：剪贴板线程异常」以「失败」开头 → error（同 clipboard_write 口径）
         Err(e) => ToolResult::error(format!("失败：剪贴板线程异常：{e}"), Vec::new()),
     }
 }
@@ -396,8 +378,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
     let out = match crate::db::gen_dir(app) {
         Ok(d) => d.join(&name),
         Err(e) => {
-            // 「产物目录不可用：」首字「产」非 error/warn 前缀 → ok
-            return ToolResult::ok(format!("产物目录不可用：{e}"), Vec::new());
+            return ToolResult::error(format!("产物目录不可用：{e}"), Vec::new());
         }
     };
     let out_for_task = out.clone();
@@ -416,7 +397,6 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
                 &format!("desktop.screenshot | {} | {size} bytes", name),
             );
             // 图随 ToolResult 直接进对话（模型视觉读取），不再引导。
-            // 「已截屏」首字「已」非 error/warn 前缀 → ok
             ToolResult::ok_with_images(
                 format!(
                     "已截屏：{}\n主显示器全屏 PNG（{size} 字节）。截图已作为图片附在本消息之后，请直接用视觉能力读取内容。",
@@ -427,7 +407,6 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
             )
         }
         Ok(Err(e)) => ToolResult::error(format!("截图失败：{e}"), Vec::new()),
-        // 「失败：截图线程异常」以「失败」开头 → error
         Err(e) => ToolResult::error(format!("失败：截图线程异常：{e}"), Vec::new()),
     }
 }

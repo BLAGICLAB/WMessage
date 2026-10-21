@@ -763,10 +763,7 @@ pub(crate) async fn tool_unpack_archive(
 ) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(path) = v["path"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
-        return ToolResult::ok(
-            "unpack_archive 缺少 path（压缩包路径）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("unpack_archive 缺少 path（压缩包路径）");
     };
     // 源：读白名单闸（压缩包本身必须在读白名单内）
     let canonical = match crate::bot_fs::resolve_with_perm(
@@ -779,7 +776,7 @@ pub(crate) async fn tool_unpack_archive(
     .await
     {
         Ok(p) => p,
-        Err(e) => return ToolResult::ok(e, Vec::new()),
+        Err(e) => return ToolResult::denied(e),
     };
     // 目标：给了就走写白名单闸；不给则默认 AI_Gen_Files/解压/<包名>/
     // （gen_dir 恒在可写根内，默认目标不过闸也不会越界）
@@ -793,7 +790,7 @@ pub(crate) async fn tool_unpack_archive(
                 .await
             {
                 Ok(p) => p,
-                Err(e) => return ToolResult::ok(e, Vec::new()),
+                Err(e) => return ToolResult::denied(e),
             }
         }
         None => default_unpack_dir(app, &canonical),
@@ -871,10 +868,7 @@ pub(crate) async fn tool_pack_archive(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        return ToolResult::ok(
-            "pack_archive 缺少 sourcePath（要打包的目录或文件）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("pack_archive 缺少 sourcePath（要打包的目录或文件）");
     };
     // 源：读白名单闸
     let canonical =
@@ -882,7 +876,7 @@ pub(crate) async fn tool_pack_archive(
             .await
         {
             Ok(p) => p,
-            Err(e) => return ToolResult::ok(e, Vec::new()),
+            Err(e) => return ToolResult::denied(e),
         };
     // 格式：显式给了就用它；否则按输出路径后缀判定
     let explicit = match v["format"].as_str().map(str::trim) {
@@ -902,7 +896,7 @@ pub(crate) async fn tool_pack_archive(
                 .await
             {
                 Ok(p) => p,
-                Err(e) => return ToolResult::ok(e, Vec::new()),
+                Err(e) => return ToolResult::denied(e),
             }
         }
         None => default_pack_path(app, &canonical, explicit),

@@ -547,10 +547,8 @@ pub async fn tool_install_skill(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        return ToolResult::ok(
-            "install_skill 缺少 source（GitHub 仓库地址 / SkillHub 技能页地址 / zip 直链）"
-                .to_string(),
-            Vec::new(),
+        return ToolResult::denied(
+            "install_skill 缺少 source（GitHub 仓库地址 / SkillHub 技能页地址 / zip 直链）",
         );
     };
     let hint = v["skill"]
@@ -561,18 +559,18 @@ pub async fn tool_install_skill(
 
     let source = match parse_source(source_raw) {
         Ok(s) => s,
-        Err(e) => return ToolResult::ok(format!("install_skill：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("install_skill：{e}")),
     };
 
     let urls = match resolve_download_urls(&source).await {
         Ok(u) => u,
-        Err(e) => return ToolResult::ok(format!("install_skill：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("install_skill：{e}")),
     };
 
     // 临时目录：解包与落盘之间的一次性中转，结束即清。
     let tmp = match TempWorkspace::new() {
         Ok(t) => t,
-        Err(e) => return ToolResult::ok(format!("install_skill：{e}"), Vec::new()),
+        Err(e) => return ToolResult::error(format!("install_skill：{e}"), Vec::new()),
     };
 
     let mut zip_bytes: Option<Vec<u8>> = None;
@@ -587,30 +585,30 @@ pub async fn tool_install_skill(
         }
     }
     let Some(zip_bytes) = zip_bytes else {
-        return ToolResult::ok(format!("install_skill：下载失败——{last_err}"), Vec::new());
+        return ToolResult::error(format!("install_skill：下载失败——{last_err}"), Vec::new());
     };
 
     let zip_path = tmp.path().join("skill.zip");
     if let Err(e) = std::fs::write(&zip_path, &zip_bytes) {
-        return ToolResult::ok(format!("install_skill：写入临时文件失败——{e}"), Vec::new());
+        return ToolResult::error(format!("install_skill：写入临时文件失败——{e}"), Vec::new());
     }
     let unpack_dir = tmp.path().join("unpacked");
     if let Err(e) = std::fs::create_dir_all(&unpack_dir) {
-        return ToolResult::ok(format!("install_skill：创建解包目录失败——{e}"), Vec::new());
+        return ToolResult::error(format!("install_skill：创建解包目录失败——{e}"), Vec::new());
     }
     let limits = crate::bot_archive::Limits::unpack();
     let unpack = crate::bot_archive::unpack(&zip_path, &unpack_dir, &limits, None);
     let outcome = match unpack {
         Ok(o) => o,
         Err(e) => {
-            return ToolResult::ok(format!("install_skill：解包失败——{e}"), Vec::new());
+            return ToolResult::error(format!("install_skill：解包失败——{e}"), Vec::new());
         }
     };
 
     let hint_ref = hint.as_deref();
     let skill_dir = match locate_skill(&unpack_dir, hint_ref) {
         Ok(d) => d,
-        Err(e) => return ToolResult::ok(format!("install_skill：{e}"), Vec::new()),
+        Err(e) => return ToolResult::denied(format!("install_skill：{e}")),
     };
 
     // 技能正文：读入口文件定名与校验
@@ -621,30 +619,24 @@ pub async fn tool_install_skill(
         match find_skill_md_file(&skill_dir) {
             Some(p) => p,
             None => {
-                return ToolResult::ok(
-                    "install_skill：包里没有 SKILL.md，不是有效的技能包".to_string(),
-                    Vec::new(),
-                )
+                return ToolResult::denied("install_skill：包里没有 SKILL.md，不是有效的技能包")
             }
         }
     };
     let meta_text = match std::fs::read(&text_path) {
         Ok(b) => b,
         Err(e) => {
-            return ToolResult::ok(
+            return ToolResult::error(
                 format!("install_skill：读取 SKILL.md 失败——{e}"),
                 Vec::new(),
             )
         }
     };
     if meta_text.len() as u64 > crate::bot_skills::IMPORT_MAX_SKILL_MD_BYTES {
-        return ToolResult::ok(
-            format!(
-                "install_skill：SKILL.md 超过 {} 字节上限，拒绝安装",
-                crate::bot_skills::IMPORT_MAX_SKILL_MD_BYTES
-            ),
-            Vec::new(),
-        );
+        return ToolResult::denied(format!(
+            "install_skill：SKILL.md 超过 {} 字节上限，拒绝安装",
+            crate::bot_skills::IMPORT_MAX_SKILL_MD_BYTES
+        ));
     }
     let text = String::from_utf8_lossy(&meta_text).to_string();
 
@@ -654,7 +646,7 @@ pub async fn tool_install_skill(
     let meta = crate::bot_skills::parse_meta(&text, &fallback);
     let name = resolve_skill_name(&meta.name, &fallback);
     if let Err(reason) = crate::bot_skills::validate_created_meta(&meta) {
-        return ToolResult::ok(format!("install_skill：拒绝安装——{reason}"), Vec::new());
+        return ToolResult::denied(format!("install_skill：拒绝安装——{reason}"));
     }
 
     // 安装前确认：装的是第三方内容，落盘后即进入技能目录、会被后续对话读取。
@@ -672,7 +664,7 @@ pub async fn tool_install_skill(
     )
     .await;
     if !approved {
-        return ToolResult::ok("用户拒绝了安装，技能未安装".to_string(), Vec::new());
+        return ToolResult::denied("用户拒绝了安装，技能未安装");
     }
 
     let dest_root = crate::bot_skills::skills_dir(app);
@@ -685,7 +677,7 @@ pub async fn tool_install_skill(
     .await
     {
         Ok(r) => r,
-        Err(e) => return ToolResult::ok(format!("install_skill：{e}"), Vec::new()),
+        Err(e) => return ToolResult::error(format!("install_skill：{e}"), Vec::new()),
     };
 
     crate::bot_skills::rebuild_intent_routes(app);
@@ -767,10 +759,7 @@ pub async fn tool_search_skills(app: &tauri::AppHandle, args: &str) -> ToolResul
         .map(str::trim)
         .filter(|s| !s.is_empty())
     else {
-        return ToolResult::ok(
-            "search_skills 缺少 keyword（搜索关键词）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("search_skills 缺少 keyword（搜索关键词）");
     };
     let limit = v["limit"]
         .as_u64()
@@ -783,13 +772,13 @@ pub async fn tool_search_skills(app: &tauri::AppHandle, args: &str) -> ToolResul
     );
     let body = match fetch_bytes(&url, 1024 * 1024).await {
         Ok(b) => b,
-        Err(e) => return ToolResult::ok(format!("search_skills：搜索失败——{e}"), Vec::new()),
+        Err(e) => return ToolResult::error(format!("search_skills：搜索失败——{e}"), Vec::new()),
     };
     let text = String::from_utf8_lossy(&body).to_string();
     let v: serde_json::Value = match serde_json::from_str(&text) {
         Ok(v) => v,
         Err(e) => {
-            return ToolResult::ok(format!("search_skills：响应不是合法 JSON——{e}"), Vec::new())
+            return ToolResult::error(format!("search_skills：响应不是合法 JSON——{e}"), Vec::new())
         }
     };
     let skills = v
