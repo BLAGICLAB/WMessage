@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1094)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1096)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -148,7 +148,7 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/procs.rs (889)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+├── bot/procs.rs (898)      进程树公共模块（受管服务层与 MCP stdio 共用）：
 │                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
 │                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
 │                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）
@@ -158,19 +158,28 @@ src-tauri/src/
 │                        + 监听 socket 枚举 listening_sockets（Linux 读 /proc/<pid>/fd
 │                        的 inode 配 /proc/net/tcp{,6}、udp{,6}；macOS 走 lsof；
 │                        **Windows 没有**——现有进程快照层在 Windows 上本就退化）
+│                        + 平台能力声明 listening_supported（Windows 为 false——
+│                        判定层据此返回 Unsupported 而非 Ok）
 │   └── bot/procs/tests.rs (401)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
 │                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
 │                        + 真子进程监听端口集成测试（验平台路径真能读到）
-├── bot/services.rs (1275) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (1900) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
 │                        （带 starttime 防 PID 复用）+ 资源观测（整棵进程树 RSS / CPU，
 │                        只告警不杀）。与 py/runtime.rs 是两层：前者有界作业、
 │                        连坐杀组；本层长驻、宿主知道它、能停它、退出时收干净
-│   └── bot/services/tests.rs (569)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
+│                        + **端口/监听地址闸**（P2-③）：判据 L1 默认只许 loopback
+│                        （放开靠独立开关）/ L2 禁占宿主保留端口 / L3 禁特权端口；
+│                        判定三态 Ok / Violated / **Unsupported**（Windows 没判≠没事）；
+│                        违规记在**正交字段** last_violation（不复用状态机）+
+│                        审计 service.port_violation + 面板红色徽章；
+│                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
+│   └── bot/services/tests.rs (788)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
 │                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
-│                        资源告警判定（阈值 / 持续 / 去重）等
+│                        资源告警判定（阈值 / 持续 / 去重）、
+│                        端口闸（flag 解析 / loopback 判定 / L1-L3 判据 / 保留集）等
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
 │   ├── bot/config/schema.rs        bot-config.json schemaVersion 迁移 + 双协议派生
@@ -184,7 +193,7 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (2874)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
+├── bot/tools.rs (2932)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
 │                        受管服务起停查 start_service / stop_service / list_services）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
