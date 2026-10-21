@@ -665,6 +665,78 @@ describe("ChatPanel", () => {
     expect(mocks.invokeMock).not.toHaveBeenCalledWith("bot_stop");
   });
 
+  it("本地提示不进历史库、不进模型上下文（/stop 无在途 → 提示 → 再发一条）", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    // 触发提示：/stop 且本会话无在途回复
+    await user.type(input, "/stop ");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(screen.getByText(/当前对话没有进行中的回复/)).toBeInTheDocument();
+    });
+    // 再发一条正常消息：提示不得进入落库载荷与模型载荷
+    await user.type(input, "第二个问题");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith(
+        "bot_chat",
+        expect.objectContaining({
+          messages: expect.arrayContaining([
+            expect.objectContaining({ role: "user", content: "第二个问题" }),
+          ]),
+        }),
+      );
+    });
+    const saveCalls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_history_save",
+    );
+    const saveCall = saveCalls[saveCalls.length - 1];
+    expect(JSON.stringify(saveCall?.[1])).not.toContain("当前对话没有进行中的回复");
+    const chatCalls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_chat",
+    );
+    const chatCall = chatCalls[chatCalls.length - 1];
+    expect(JSON.stringify(chatCall?.[1])).not.toContain("当前对话没有进行中的回复");
+  });
+
+  it("移除一条回复时的整段落库也不带本地提示（persistHistory 收口）", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    // 先跑完一轮，让列表里有一条可移除的助手回复
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("机器人回复")).toBeInTheDocument();
+    // 再造一条本地提示（/stop 且本会话无在途回复）
+    await user.type(input, "/stop ");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => {
+      expect(screen.getByText(/当前对话没有进行中的回复/)).toBeInTheDocument();
+    });
+    // 移除助手回复 → 整段历史重新落库：提示不得混进去
+    const bubbleRow = screen
+      .getByText("机器人回复")
+      .closest("div.chat-bubble")?.parentElement;
+    expect(bubbleRow).not.toBeNull();
+    await user.click(
+      within(bubbleRow as HTMLElement).getByTitle(
+        "移除这条回复（不满意时删除，不再作为上下文）",
+      ),
+    );
+    const saveCalls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_history_save",
+    );
+    const saveCall = saveCalls[saveCalls.length - 1];
+    expect(JSON.stringify(saveCall?.[1])).not.toContain("当前对话没有进行中的回复");
+  });
+
   it("回复中发送键变为红框停止键：点击调 bot_stop", async () => {
     const user = userEvent.setup();
     // bot_chat 挂起不返回 → busy 保持 true

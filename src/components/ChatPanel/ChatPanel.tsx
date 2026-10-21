@@ -514,7 +514,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   const addHint = (content: string, actionSessionId?: string) => {
     setMessages((prev) => [
       ...prev,
-      { role: "assistant", content, actionSessionId },
+      { role: "assistant", content, actionSessionId, hint: true },
     ]);
   };
   /** sessionId 镜像：异步收尾时判断会话是否已切换（竞态防护） */
@@ -569,13 +569,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   const persistHistory = (sid: string, msgs: Msg[]) =>
     invoke("bot_history_save", {
       sessionId: sid,
-      messages: msgs.map((m) => ({
-        role: m.role,
-        content: m.content,
-        refsJson: m.refs?.length ? JSON.stringify(m.refs) : null,
-        thinking: m.thinking ?? null,
-        toolsJson: m.tools?.length ? JSON.stringify(m.tools) : null,
-      })),
+      messages: msgs
+        .filter((m) => !m.hint)
+        .map((m) => ({
+          role: m.role,
+          content: m.content,
+          refsJson: m.refs?.length ? JSON.stringify(m.refs) : null,
+          thinking: m.thinking ?? null,
+          toolsJson: m.tools?.length ? JSON.stringify(m.tools) : null,
+        })),
     }).catch((e) =>
       // 后台持久化失败：UI 还能跑，不打断当前对话
       handleCommandError(e, "bot_history_save", { silent: true }),
@@ -1643,7 +1645,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId)
         return true;
       const sid = sessionId;
-      const history = messages.filter((m) => !m.streaming && m.content.trim());
+      const history = messages.filter(
+        (m) => !m.streaming && !m.hint && m.content.trim(),
+      );
       if (history.length < 2) {
         addHint("消息太少，暂无需压缩");
         return true;
@@ -1686,7 +1690,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       setInput("");
       if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId)
         return true;
-      const msgs = messages.filter((m) => !m.streaming);
+      const msgs = messages.filter((m) => !m.streaming && !m.hint);
       // 找到最后一条用户消息，砍掉它之后的所有内容，重新生成回复
       let lastUserIdx = -1;
       for (let i = msgs.length - 1; i >= 0; i--) {
@@ -1747,7 +1751,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     setFiles([]);
     setRefs([]);
     const history: Msg[] = [
-      ...messages.filter((m) => !m.streaming),
+      ...messages.filter((m) => !m.streaming && !m.hint),
       { role: "user", content, refs },
     ];
     await runChat(history, text);

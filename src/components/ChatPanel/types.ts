@@ -75,6 +75,9 @@ export type Msg = {
   /** 「查看执行对话」跳转按钮（任务执行聊天化：busy 时执行跳转排队，
    *  忙完提示 + 点击切到该执行会话） */
   actionSessionId?: string;
+  /** 本地瞬态提示（addHint 造）：只显示，不落库、不进模型上下文。
+   *  过滤点四处：send / retry / compact 的历史构造 + persistHistory 收口 */
+  hint?: boolean;
 };
 
 /** 会话（bot_sessions_load 载荷 = Rust BotSession camelCase）。
