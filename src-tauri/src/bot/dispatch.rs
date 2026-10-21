@@ -380,8 +380,8 @@ async fn tool_rule_gate(
 ///
 /// panic 归一成 `Error` 而不是直接结束这一轮：模型能读到失败原因并换策略，
 /// 这也正是幻觉守卫要的「成败凭证」——panic 不该被算成一次成功调用。
-async fn run_tool_panic_isolated<F>(
-    app: &AppHandle,
+async fn run_tool_panic_isolated<R: tauri::Runtime, F>(
+    app: &AppHandle<R>,
     name: &str,
     fut: F,
 ) -> crate::bot::registry::ToolResult
@@ -1041,9 +1041,7 @@ mod pre_tool_hook_tests {
             .split("\n}\n")
             .next()
             .expect("execute_tool_impl 应以顶格 } 收尾");
-        let exec = body
-            .find("run_tool_panic_isolated(app, name, (t.call)(&ctx, args))")
-            .expect("找不到工具执行点");
+        let exec = body.find("(t.call)(&ctx, args)").expect("找不到工具执行点");
         let hook = body
             .find("run_post_tool(&call, &mut text)")
             .expect("execute_tool_impl 必须调用 post_tool 钩子层：结果回灌前必须过钩子");
@@ -1081,20 +1079,24 @@ mod pre_tool_hook_tests {
             .split_once("#[cfg(test)]")
             .expect("dispatch.rs 应有测试模块")
             .0;
-        // 内置工具与 MCP 兜底路由都要走隔离层
+        // 内置工具与 MCP 兜底路由都要走隔离层。
+        // 判据按「调用点之前有没有出现过隔离层的名字」——不按整行文本：
+        // rustfmt 一换行整行匹配就失效，而失效的守卫往往是被改断言绕过的。
+        // （用 rfind 而不是定长字节窗口：窗口偏移可能落在多字节字符中间。）
+        let call_pos = body.find("(t.call)(&ctx, args)").expect("找不到工具执行点");
         assert!(
-            body.contains("run_tool_panic_isolated(app, name, (t.call)(&ctx, args))"),
+            body[..call_pos].rfind("run_tool_panic_isolated").is_some(),
             "内置工具执行必须走 panic 隔离层"
         );
+        let mcp_pos = body.find("execute_mcp_tool").expect("找不到 MCP 兜底路由");
         assert!(
-            body.contains(
-                "run_tool_panic_isolated(app, name, crate::bot::mcp::mount::execute_mcp_tool"
-            ),
+            body[..mcp_pos].rfind("run_tool_panic_isolated").is_some(),
             "MCP 兜底路由也要走 panic 隔离层"
         );
         // 隔离层本身必须真的 catch，且把 panic 归一成失败（不是成功调用）
+        // 匹配函数名不带括号：泛型化后名字后面是 `<R, F>`，带括号就匹配不到。
         let iso = body
-            .split_once("async fn run_tool_panic_isolated(")
+            .split_once("fn run_tool_panic_isolated")
             .expect("找不到 panic 隔离层")
             .1;
         assert!(
