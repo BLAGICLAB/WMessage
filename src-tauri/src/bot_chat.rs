@@ -1709,11 +1709,13 @@ async fn create_exec_session<R: tauri::Runtime>(
         crate::bot::truncate_for_log(task.title.trim(), 30)
     );
     let block = build_task_block(task);
+    let app_for_audit = app.clone();
     let session = crate::db::lock::with_write_conn(app, move |conn| {
         // 建会话与任务块落库包同一事务：任务块写失败时会话不该留下空壳
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let s = crate::db::bot_session_create_inner(&tx, Some(title))?;
-        crate::db::bot_history_save_inner(
+        crate::db::bot_history_save_audited(
+            &app_for_audit,
             &tx,
             &s.id,
             &[crate::db::BotMsgRow {
@@ -1758,9 +1760,11 @@ async fn persist_exec_reply<R: tauri::Runtime>(
     };
     let block = build_task_block(task);
     let sid = sid.to_string();
+    let app_for_audit = app.clone();
     let r = crate::db::lock::with_write_conn(app, move |conn| {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        crate::db::bot_history_save_inner(
+        crate::db::bot_history_save_audited(
+            &app_for_audit,
             &tx,
             &sid,
             &[

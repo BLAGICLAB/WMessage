@@ -34,20 +34,18 @@ pub async fn bot_history_load(app: AppHandle, session_id: String) -> CommandResu
 }
 
 /// 保存指定会话的聊天记录：全量覆盖 + 更新会话活跃时间
+///
+/// 返回被丢弃的条数（0 = 没截断）：超上限时截断最旧的若干条，丢弃这件事
+/// 必须留痕——调用方（`bot_history_save_audited`）据此写审计事件。
 pub fn bot_history_save_inner(
     conn: &rusqlite::Connection,
     session_id: &str,
     messages: &[BotMsgRow],
-) -> Result<(), String> {
+) -> Result<usize, String> {
     const MAX_HISTORY_MSGS: usize = 2000;
-    let messages = if messages.len() > MAX_HISTORY_MSGS {
-        // 超限截断留痕：让日志能区分「干净保存」与「丢了最旧 N 条」
-        eprintln!(
-            "[bot_history_save] 会话 {session_id} 消息数 {} 超上限 {MAX_HISTORY_MSGS}，截断丢弃最旧 {} 条",
-            messages.len(),
-            messages.len() - MAX_HISTORY_MSGS
-        );
-        &messages[messages.len() - MAX_HISTORY_MSGS..]
+    let dropped = messages.len().saturating_sub(MAX_HISTORY_MSGS);
+    let messages = if dropped > 0 {
+        &messages[dropped..]
     } else {
         messages
     };
@@ -85,6 +83,33 @@ pub fn bot_history_save_inner(
         rusqlite::params![now, session_id],
     )
     .map_err(|e| e.to_string())?;
+    Ok(dropped)
+}
+
+/// 整段覆盖写（留痕版）：超上限截断时把丢弃条数记进审计账本。
+///
+/// 截断原先只往 stderr 吐一行——stderr 不在日志体系里（bot.log / error.log
+/// 才查得到），事后没人能看出「这段对话是不是被截过、丢了多少条」。
+/// 事件名与「按 token 预算截上下文」那条区分开：那条是 `chat.history_truncated`。
+///
+/// 入参是事务句柄不是裸连接：整段覆盖写必须是事务里的一个单位。
+pub fn bot_history_save_audited<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    tx: &rusqlite::Transaction,
+    session_id: &str,
+    messages: &[BotMsgRow],
+) -> Result<(), String> {
+    let dropped = bot_history_save_inner(tx, session_id, messages)?;
+    if dropped > 0 {
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Warn,
+            "chat.history_save_truncated",
+            "session_id" => session_id,
+            "dropped" => dropped,
+            "total" => messages.len(),
+        );
+    }
     Ok(())
 }
 
@@ -103,7 +128,8 @@ pub async fn bot_history_save(
         let tx = conn
             .transaction()
             .map_err(|e| CommandError::DbError(e.to_string()))?;
-        bot_history_save_inner(&tx, &session_id, &messages).map_err(CommandError::DbError)?;
+        bot_history_save_audited(&app, &tx, &session_id, &messages)
+            .map_err(CommandError::DbError)?;
         tx.commit()
             .map_err(|e| CommandError::DbError(e.to_string()))
     })
@@ -185,6 +211,73 @@ pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 超上限截断要进审计账本：原先只往 stderr 吐一行——stderr 不在日志体系里，
+    /// 事后没人能看出「这段对话是不是被截过、丢了多少条」。
+    ///
+    /// cargo test 下数据目录被钉在 temp（见 paths::probe_log_dir 的测试旁路），
+    /// 写盘不会碰到用户真实数据目录。
+    #[test]
+    fn history_save_truncation_is_recorded_in_the_audit_log() {
+        let _serial = crate::db::lock::lock_or_recover(
+            &crate::audit::BOT_LOG_TEST_LOCK,
+            "audit::BOT_LOG_TEST_LOCK",
+        );
+        let app = tauri::test::mock_app();
+        let bot_log = crate::db::data_dir(app.handle()).join("bot.log");
+        let _ = std::fs::remove_file(&bot_log);
+        let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE bot_messages (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 role       TEXT NOT NULL,
+                 content    TEXT NOT NULL,
+                 refs       TEXT,
+                 session_id TEXT,
+                 thinking   TEXT,
+                 tools      TEXT,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE bot_sessions (
+                 id         TEXT PRIMARY KEY,
+                 title      TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO bot_sessions (id, title, created_at, updated_at)
+                 VALUES ('s1', '会话', 1000, 1000);",
+        )
+        .expect("建表");
+        // 2001 条：超上限 1 条
+        let rows: Vec<BotMsgRow> = (0..2001)
+            .map(|i| BotMsgRow {
+                role: "user".into(),
+                content: format!("m{i}"),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+            })
+            .collect();
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_audited(app.handle(), &tx, "s1", &rows).expect("保存");
+        tx.commit().expect("提交");
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(count, 2000, "超上限应截断到 2000 条（丢最旧的）");
+        let content = std::fs::read_to_string(&bot_log).expect("审计应写出 bot.log");
+        let last = content.lines().last().expect("bot.log 至少一行");
+        assert!(
+            last.contains("chat.history_save_truncated"),
+            "截断事件名缺失: {last}"
+        );
+        assert!(last.contains("dropped=1"), "丢弃条数要记: {last}");
+    }
 
     /// 清空历史要把会话的活跃时间推到当前：会话列表按 updated_at 倒序，
     /// 不更新的话清空过的对话仍挂在旧位置，看着像「没动过」。
@@ -327,10 +420,14 @@ mod tests {
                 if src[line_start..at].trim_start().starts_with("//") {
                     continue;
                 }
-                let call = &src[at..(at + 60).min(src.len())];
+                let call = &src[at..];
+                // 取第一个实参：必须是事务句柄（tx / &tx），不得是裸连接
+                let args = &call[call.find('(').map(|i| i + 1).unwrap_or(0)..];
+                let arg = args[..args.find(',').unwrap_or(0)].trim();
                 assert!(
-                    call.contains("&tx"),
-                    "{name}: 历史整段覆盖写的调用点必须传事务句柄（&tx），不得直接传 conn：{call}"
+                    arg == "tx" || arg == "&tx",
+                    "{name}: 历史整段覆盖写的调用点必须传事务句柄（tx / &tx），\
+                     不得直接传 conn：{call}"
                 );
             }
         }

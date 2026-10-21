@@ -2302,6 +2302,7 @@ async fn run_subagent(
     let error_for_db = error.clone();
     let final_for_db = final_text.clone();
     // 返回 fresh row——下游审计/事件直接用，免二次持锁查询
+    let app_for_audit = app.clone();
     let finalized: Option<SubagentRow> =
         db_locked(&app, move |conn| -> CommandResult<Option<SubagentRow>> {
             // 多写包同一事务 + cancel-vs-runner 竞态闸——
@@ -2338,7 +2339,8 @@ async fn run_subagent(
                     .map_err(CommandError::DbError)?
                     .ok_or_else(|| CommandError::TaskNotFound(row_for_db.id.clone()))?
             };
-            crate::db::bot_history_save_inner(
+            crate::db::bot_history_save_audited(
+                &app_for_audit,
                 &tx,
                 &session_id_for_db,
                 &[
