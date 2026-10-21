@@ -12,6 +12,7 @@ import { unlistenSafe } from "../../lib/useTauriListen";
 import { useConfirm } from "../../lib/useConfirm";
 import { Pencil, Plug, Trash2 } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { formatUptime } from "../../lib/uptime";
 import { getBotConfig } from "../../lib/botConfig";
 import { IconButton } from "../../ui/IconButton";
 import { Modal } from "../../ui/Modal";
@@ -545,6 +546,25 @@ export function McpPanel() {
                   <span className="text-xs text-[var(--t5)]">启用</span>
                 </label>
               </div>
+              {s.pid ? (
+                <>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[var(--t5)]">
+                    <span>pid {s.pid}</span>
+                    {s.rssMb != null && <span>内存 {s.rssMb.toFixed(0)} MB</span>}
+                    {s.cpuPct != null ? (
+                      <span>CPU {s.cpuPct.toFixed(0)}%</span>
+                    ) : s.cpuSeconds != null ? (
+                      <span>累计 CPU {s.cpuSeconds.toFixed(1)}s</span>
+                    ) : null}
+                    {s.uptimeSecs != null && (
+                      <span>已运行 {formatUptime(s.uptimeSecs)}</span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-[var(--t5)]">
+                    此进程由 MCP 客户端按需拉起，不在本地服务表中
+                  </p>
+                </>
+              ) : null}
               {expandedId === s.id && (
                 <div className="mt-1.5 border-t border-black/5 pt-1.5 text-xs text-[var(--t4)]">
                   {toolsError ? (

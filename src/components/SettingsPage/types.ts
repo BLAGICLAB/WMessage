@@ -132,6 +132,16 @@ export type McpServerStatus = {
   toolCount: number;
   /** 内置条目（Playwright）：不可删除，只能开关 */
   builtin?: boolean;
+  /** 本地子进程 pid（stdio 连接才有；HTTP 连接没有子进程） */
+  pid?: number | null;
+  /** 常驻内存（MB，整棵进程树合计） */
+  rssMb?: number | null;
+  /** CPU 占用率（百分比）；第一次采样没有前值时为 null */
+  cpuPct?: number | null;
+  /** 累计 CPU 时间（秒） */
+  cpuSeconds?: number | null;
+  /** 子进程已运行秒数 */
+  uptimeSecs?: number | null;
 };
 
 /** 服务器已发现的工具（名称 + 描述，设置页展示用） */

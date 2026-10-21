@@ -65,6 +65,24 @@ const BUILTIN_STATUS = [
   },
 ];
 
+/** stdio 连接且子进程在跑：带资源字段 */
+const STATUS_WITH_RES = [
+  {
+    id: "srv-1",
+    name: "filesystem",
+    transport: "stdio",
+    enabled: true,
+    state: "connected",
+    error: null,
+    toolCount: 3,
+    pid: 4321,
+    rssMb: 128.4,
+    cpuPct: 12.6,
+    cpuSeconds: 1.5,
+    uptimeSecs: 125,
+  },
+];
+
 describe("McpPanel", () => {
   it("空列表：显示占位文案 + 添加按钮", async () => {
     render(<McpPanel />);
@@ -234,5 +252,52 @@ describe("McpPanel", () => {
       id: "builtin-playwright",
       enabled: true,
     });
+  });
+
+  it("资源行：有子进程时显示 pid / 内存 / CPU / 运行时长", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status" ? STATUS_WITH_RES : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(screen.getByText("pid 4321")).toBeInTheDocument();
+    expect(screen.getByText("内存 128 MB")).toBeInTheDocument();
+    expect(screen.getByText("CPU 13%")).toBeInTheDocument();
+    expect(screen.getByText("已运行 2 分 5 秒")).toBeInTheDocument();
+  });
+
+  it("说明行：标清 MCP 子进程不在本地服务表里", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status" ? STATUS_WITH_RES : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(
+      screen.getByText("此进程由 MCP 客户端按需拉起，不在本地服务表中"),
+    ).toBeInTheDocument();
+  });
+
+  it("首采无占用率：退化成累计 CPU 时间", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status"
+        ? [{ ...STATUS_WITH_RES[0], cpuPct: null, cpuSeconds: 1.5 }]
+        : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(screen.getByText("累计 CPU 1.5s")).toBeInTheDocument();
+    expect(screen.queryByText(/^CPU /)).not.toBeInTheDocument();
+  });
+
+  it("无子进程（HTTP 连接）：不显示资源行与说明行", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status" ? SAMPLE_STATUS : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(screen.queryByText(/^pid /)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("此进程由 MCP 客户端按需拉起，不在本地服务表中"),
+    ).not.toBeInTheDocument();
   });
 });

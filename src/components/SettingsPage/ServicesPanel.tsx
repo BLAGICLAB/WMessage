@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Server, Square } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { formatUptime } from "../../lib/uptime";
 import { EmptyState } from "../EmptyState";
 
 /** 服务状态（后端 ServiceState 的小写形态） */
@@ -61,14 +62,6 @@ const WARNING_LABEL: Record<string, string> = {
   cpu_sustained_high: "CPU 持续跑满（>95% 持续 5 分钟）",
   total_rss_over_limit: "全部服务合计内存超阈值（>1GB）",
 };
-
-/** 运行时长 → 人类可读 */
-function formatUptime(secs: number): string {
-  if (secs < 60) return `${secs} 秒`;
-  if (secs < 3600) return `${Math.floor(secs / 60)} 分 ${secs % 60} 秒`;
-  const h = Math.floor(secs / 3600);
-  return `${h} 小时 ${Math.floor((secs % 3600) / 60)} 分`;
-}
 
 /** 受管服务面板：看状态与资源占用，随时停掉不用的服务 */
 export function ServicesPanel() {
