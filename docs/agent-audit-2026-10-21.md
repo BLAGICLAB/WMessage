@@ -1087,6 +1087,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-12 | 已修 | 主聊天路径工具执行包 `catch_unwind`（`dispatch::run_tool_panic_isolated`）+ 接线守卫 |
 | P1-7 | 已修 | 失效测试补回 `#[tokio::test]` + `cargo clippy --all-targets -- -D warnings` 进快门禁（`scripts/test-fast.sh`）+ 16 处存量 lint 清零 |
 | P1-6 | 已修 | 回滚段只在 `rollback: auto` 时执行（`scheduler`）+ `auto` 无回滚段降级为 `none`（`parse::normalize_rollback_meta`）|
+| P1-5 | 已修 | 工具预算触达落 `BudgetExceeded`（收尾读 `ctx.used_tool_calls` + `classify_outcome` 认工具熔断标记）|
 
 ### P0-1 的落地口径
 
@@ -1366,3 +1367,23 @@ nextest` 跑起来全绿、只有 clippy 知道真相的坑。
 为 false；对照组 `rollback: auto` → 照跑（别把 auto 也掐了）；`auto` 但正文没有
 回滚段 → 降级为 `none`（中英文标题都认）。
 
+### P1-5 的落地口径
+
+**工具预算触达要落 `budget_exceeded`**。此前只有墙钟与轮数两条熔断落
+`BudgetExceeded`，工具熔断的正文用的是另一个常量（`FUSE_MARKER`），
+`classify_outcome` 不认 → 落进 JSON 解析分支：模型照办输出
+`{"status":"succeeded"}` 就报**成功**，没输出收尾 JSON 则报 failed +
+`result_json_unparseable`——真实原因「预算触顶」两次都被丢掉。
+
+父 agent 的提示词教它「failed / budget_exceeded / cancelled：先读 error 与
+summary，**决定重试**」——既然烧满预算的子 agent 报的是 succeeded，父 agent
+**不会重试**，产出实际残缺而无人知晓。
+
+两处一起补：
+- `classify_outcome` 认工具熔断标记 → `BudgetExceeded` + `max_tool_calls`
+  （轮数标记是工具标记的前缀，所以判在轮数之后）。
+- 收尾处读一次 `ctx.used_tool_calls` 与 `budget.max_tool_calls` 比：触达即
+  强制 `BudgetExceeded`——不依赖模型自觉汇报（dispatch 侧预算闸到顶后拒绝
+  新调用，模型可能被告知「停止新探索」后照办收尾，也可能没来得及收尾）。
+  部分结果照旧存进 `result_json.summary`，父 agent 判断「该不该原目标重试、
+  还是放宽预算」要用。

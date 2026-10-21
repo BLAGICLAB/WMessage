@@ -801,8 +801,11 @@ fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
     calls_so_far > cap
 }
 
-/// 熔断返回消息（与主循环文案同源，单测直接断言）
-fn fuse_message(final_text: &str, hint: &str, cap: usize) -> String {
+/// 熔断返回消息（与主循环文案同源，单测直接断言）。
+///
+/// `pub(crate)`：子 agent 收尾判定要认这条熔断（工具预算触达 → budget_exceeded），
+/// 测试也要用同一份文案——两处各拼一遍字符串会漂。
+pub(crate) fn fuse_message(final_text: &str, hint: &str, cap: usize) -> String {
     format!(
         "{final_text}\n\n{FUSE_MARKER}：本轮 Function 调用超过 {cap} 次上限（安全保护），已停止后续执行{hint}"
     )

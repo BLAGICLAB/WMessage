@@ -816,6 +816,21 @@ pub(crate) fn classify_outcome(
             })),
         );
     }
+    // 工具熔断：正文带 FUSE_MARKER。轮数标记是它的前缀，所以必须判在轮数之后。
+    //
+    // 此前这条不认 → 落进 JSON 解析分支：模型照办输出 {"status":"succeeded"}
+    // 就报成功（父 agent 因此不重试，产出残缺而无人知晓）；没有收尾 JSON 则
+    // 报 failed + result_json_unparseable——真实原因「预算触顶」被丢掉。
+    if text.contains(crate::bot_model_loop::FUSE_MARKER) {
+        return (
+            SubagentStatus::BudgetExceeded,
+            Some("max_tool_calls".into()),
+            Some(serde_json::json!({
+                "summary": crate::bot::truncate_for_log(text, 800),
+                "note": "工具调用预算熔断，未产出收尾 JSON；以上为熔断前保留的最后一段正文"
+            })),
+        );
+    }
     let parsed = extract_last_json_object(text)
         .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok());
     match parsed {
@@ -2010,6 +2025,11 @@ async fn run_subagent(
     // 轮数仪表句柄：循环每轮自报时写进来，供 check_subagent 的 progress 读。
     // 与 ctx 里的 used_rounds 是同一个 Arc（守卫按值克隆 ctx，Arc 保证同源）。
     let rounds_gauge = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // 工具调用计数：与 ctx 里的 used_tool_calls 同一个 Arc（守卫按值克隆 ctx）。
+    // 收尾时读一次，判断预算是否触达——触达必须落 budget_exceeded，不能落
+    // succeeded（父 agent 提示词教它「failed / budget_exceeded 都要读 error
+    // 决定重试」，报成 succeeded 就不重试，产出残缺而无人知晓）。
+    let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
         &session_id,
         crate::tool_guard::SubagentSessionCtx {
@@ -2019,7 +2039,7 @@ async fn run_subagent(
             tools: std::sync::Arc::new(subagent_tools),
             budget: budget.clone(),
             artifact_dir: artifact_dir.clone(),
-            used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
         },
     );
@@ -2228,11 +2248,32 @@ async fn run_subagent(
     drop(chat_guard);
 
     // 收尾判定（设计 §6/§7）
-    let (status, error, result) = match &wall {
+    let (mut status, mut error, mut result) = match &wall {
         Err(_elapsed) => classify_outcome(None, true, None),
         Ok(Err(e)) => classify_outcome(Some(&e.message()), false, None),
         Ok(Ok((text, _refs, _loop_trace))) => classify_outcome(None, false, Some(text)),
     };
+    // 工具预算触达 → 强制 budget_exceeded(max_tool_calls)。
+    //
+    // dispatch 侧预算闸到顶后拒绝新调用，模型收到「停止新探索，整理当前结果」
+    // 的提示——它可能照办输出 {"status":"succeeded"}，也可能没来得及输出收尾
+    // JSON（落 failed + 解析失败）。两种都把真实原因（预算触顶）弄丢了：
+    // 父 agent 的提示词教它「failed / budget_exceeded 都要读 error 决定
+    // 重试」，报成 succeeded 就不会重试，产出残缺而无人知晓。
+    let tool_calls_used = used_tool_calls.load(std::sync::atomic::Ordering::SeqCst);
+    if tool_calls_used >= budget.max_tool_calls as usize && status != SubagentStatus::BudgetExceeded
+    {
+        status = SubagentStatus::BudgetExceeded;
+        error = Some("max_tool_calls".into());
+        // 部分结果不丢弃：熔断前跑出来的正文对父 agent 判断「该不该原目标
+        // 重试、还是放宽预算」仍有价值
+        if let Ok(Ok((text, _, _))) = &wall {
+            result = Some(serde_json::json!({
+                "summary": crate::bot::truncate_for_log(text, 800),
+                "note": "工具调用预算触达，未产出收尾 JSON；以上为触达前保留的最后一段正文"
+            }));
+        }
+    }
     // 轮数熔断现在也走 Ok 出口（正文带 ROUNDS_FUSE_MARKER），机器验收必须把它
     // 排除掉：熔断行没有收尾 JSON，等于没交答卷，拿产物文件判它「未通过」只会
     // 在正文里凭空多出一段子 agent 没说过的话。
@@ -3832,6 +3873,33 @@ mod orchestrator_tests {
             summary.contains("det.onnx"),
             "熔断前的正文应存进 summary 供父 agent 判断是否重试：{summary}"
         );
+    }
+
+    /// 工具熔断必须落 budget_exceeded(max_tool_calls)。
+    ///
+    /// 此前 classify_outcome 只认轮数熔断标记，工具熔断（另一个常量）落不进
+    /// 预算分支：模型照办输出 {"status":"succeeded"} 就报成功，父 agent 因此
+    /// 不重试——预算烧满、产出残缺，却记成一次干净的成功。
+    #[test]
+    fn classify_outcome_treats_tool_fuse_as_budget_exceeded() {
+        use SubagentStatus::*;
+        let partial = "查到 3 个候选包，还差最后一步没跑";
+        let fused = crate::bot_model_loop::fuse_message(partial, "", 100);
+        let (st, err, res) = classify_outcome(None, false, Some(&fused));
+        assert_eq!(st, BudgetExceeded, "工具熔断必须落预算触达");
+        assert_eq!(err.as_deref(), Some("max_tool_calls"));
+        let res = res.expect("工具熔断不得写 NULL result_json");
+        let summary = res["summary"].as_str().expect("熔断行必须带 summary");
+        assert!(
+            summary.contains("3 个候选包"),
+            "熔断前的正文应存进 summary 供父 agent 判断是否重试：{summary}"
+        );
+
+        // 轮数熔断仍归 max_turns（轮数标记是工具标记的前缀，判据不能反）
+        let rounds = crate::bot_model_loop::rounds_fuse_message(partial, "", 20);
+        let (st, err, _) = classify_outcome(None, false, Some(&rounds));
+        assert_eq!(st, BudgetExceeded);
+        assert_eq!(err.as_deref(), Some("max_turns"));
     }
 
     /// 假失败回归：产物齐、机器验收全过，只因最后一条消息没按 schema 写收尾
