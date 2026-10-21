@@ -737,6 +737,24 @@ describe("ChatPanel", () => {
     expect(JSON.stringify(saveCall?.[1])).not.toContain("当前对话没有进行中的回复");
   });
 
+  it("bot_chat 回传 traceId：答复照常呈现（trace 归属跟着消息走）", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_chat") {
+        return { text: "带 trace 的答复", taskRefs: [], traceId: 123 };
+      }
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("带 trace 的答复")).toBeInTheDocument();
+  });
+
   it("会话锁被占：拒答不当成模型答复——只显示本地提示，不落库", async () => {
     const user = userEvent.setup();
     // 后端回 busy=true：本轮压根没跑，text 是拒答文案不是模型答复

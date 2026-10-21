@@ -388,6 +388,7 @@ pub async fn chat_execute_tasks(
         text: all_text,
         task_refs: merge_task_refs_dedup(all_refs),
         busy: false,
+        trace_id: None,
     })
 }
 
@@ -530,6 +531,10 @@ pub struct BotChatResult {
     /// 前端据此把这条结果当拒答处理——不落库、不进上下文，只显示一条本地提示。
     /// 判据是这个标记而不是文案本身：文案可以被别的路径复述，标记不会。
     pub busy: bool,
+    /// 本回合的 trace id（`exec_traces` 行号）：聊天回合也落 trace，前端据此
+    /// 把这条答复关联到它的执行轨迹。None = 本回合没开 trace（无会话 id、
+    /// 或 trace 建行失败降级）——不是错误。
+    pub trace_id: Option<i64>,
 }
 
 /// 机器人开关关闭 → BotDisabled（recoverable=true，引导去设置页开启）。
@@ -685,6 +690,7 @@ async fn apply_skill_route(
                 text,
                 task_refs: Vec::new(),
                 busy: false,
+                trace_id: None,
             }))
         }
         Ok(crate::bot_skills::DslOutcome::AwaitUser) => {
@@ -704,6 +710,7 @@ async fn apply_skill_route(
                 ),
                 task_refs: Vec::new(),
                 busy: false,
+                trace_id: None,
             }))
         }
         Ok(crate::bot_skills::DslOutcome::FailedButRecoverable {
@@ -761,6 +768,7 @@ fn busy_chat_result() -> BotChatResult {
         text: CHAT_BUSY_REPLY.into(),
         task_refs: vec![],
         busy: true,
+        trace_id: None,
     }
 }
 
@@ -1158,8 +1166,13 @@ async fn bot_chat_inner(
     ));
     // 失败路径的执行明细回传槽（run_model_loop 出错时写这里）
     let failed_trace = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // trace id 回传：开 trace 时就把 id 留在局部变量里，端到端带回结果。
+    // 不能等收尾再从捕获槽取——end_trace 会把 trace_id take 走，那时拿到的
+    // 永远是 None。None = 本回合没开 trace（无会话 id / 建行失败降级），不是错误。
+    let mut chat_trace_id: Option<i64> = None;
     if let Some(sid) = session_id.as_ref() {
         let trace_id = crate::trace_sink::begin_trace(&trace_app, sid, None, "chat", None).await;
+        chat_trace_id = trace_id;
         if let Ok(mut c) = trace_capture.lock() {
             c.trace_id = trace_id;
             c.session_id = Some(sid.clone());
@@ -1221,6 +1234,7 @@ async fn bot_chat_inner(
         text,
         task_refs: refs,
         busy: false,
+        trace_id: chat_trace_id,
     })
 }
 
@@ -1967,6 +1981,7 @@ where
         text,
         task_refs: refs,
         busy: false,
+        trace_id: None,
     });
     // trace 收尾（无论成败；与 begin 成对）+ 注销 session→trace 映射
     if let Some(hook) = &trace_hook {
@@ -2229,6 +2244,52 @@ mod bot_chat_pure_helpers_tests {
     fn merge_task_refs_dedup_empty_input_returns_empty() {
         let out = merge_task_refs_dedup(vec![]);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn chat_result_carries_trace_id_as_camel_case() {
+        let r = BotChatResult {
+            text: "答复".into(),
+            task_refs: vec![],
+            busy: false,
+            trace_id: Some(42),
+        };
+        let json = serde_json::to_value(&r).expect("序列化");
+        assert_eq!(json["traceId"], serde_json::json!(42));
+        // 没开 trace 的回合也要有这个键（null）：前端按缺省处理，不靠键在不在
+        let r2 = BotChatResult {
+            text: "答复".into(),
+            task_refs: vec![],
+            busy: false,
+            trace_id: None,
+        };
+        let json2 = serde_json::to_value(&r2).expect("序列化");
+        assert!(json2["traceId"].is_null());
+    }
+
+    /// 接线守卫：回传的 trace id 必须与开 trace 时拿到的**同一个值**。
+    ///
+    /// 匹配串用 `concat!` 拆分防自匹配（本测试模块自身的源码不算命中）。
+    #[test]
+    fn returned_trace_id_comes_from_the_one_begin_trace_created() {
+        let chat = include_str!("bot_chat.rs");
+        let opened = chat
+            .find(concat!(
+                "let trace_id = crate::trace_sink::begin_trace(",
+                "&trace_app, sid, None, \"chat\", None).await;"
+            ))
+            .expect("开 trace 的调用点");
+        let kept = chat
+            .find("chat_trace_id = trace_id;")
+            .expect("开 trace 时要把 id 留在局部变量里");
+        let returned = chat
+            .find(concat!("busy: false,\n        trace_id: chat_trace_id,"))
+            .expect("结果里必须带回这个 trace id");
+        assert!(
+            opened < kept && kept < returned,
+            "trace id 的取值链必须是 开 trace → 存局部 → 进结果（现 opened={opened} \
+             kept={kept} returned={returned}）"
+        );
     }
 
     #[test]

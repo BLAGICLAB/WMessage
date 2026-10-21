@@ -1531,6 +1531,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         text: string;
         taskRefs?: TaskRef[];
         busy?: boolean;
+        traceId?: number | null;
       }>("bot_chat", {
         messages: history.map((m) => ({ role: m.role, content: m.content })),
         sessionId: sid,
@@ -1556,6 +1557,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           role: "assistant",
           content: full.text || "",
           refs: full.taskRefs ?? [],
+          // 本回合的 trace 归属：跟着消息走，跳转执行轨迹时用得上
+          traceId: full.traceId ?? null,
           thinking: meta.thinking,
           tools: meta.tools,
           fileChanges: meta.fileChanges,

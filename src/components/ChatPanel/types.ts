@@ -78,6 +78,9 @@ export type Msg = {
   /** 本地瞬态提示（addHint 造）：只显示，不落库、不进模型上下文。
    *  过滤点四处：send / retry / compact 的历史构造 + persistHistory 收口 */
   hint?: boolean;
+  /** 本回合的 trace id（后端 bot_chat 回传）：把这条答复关联到它的执行轨迹。
+   *  null = 本回合没开 trace。暂不落库（bot_messages 无此列），刷新后不保留 */
+  traceId?: number | null;
 };
 
 /** 会话（bot_sessions_load 载荷 = Rust BotSession camelCase）。
