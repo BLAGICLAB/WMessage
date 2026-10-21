@@ -181,6 +181,30 @@ describe("ArchivePage 跳转定位", () => {
     }
   });
 
+  it("减少动效下定位不滚动（瞬时跳转）", () => {
+    // CSS 的 scroll-behavior: auto 管不到 scrollIntoView 的 behavior 选项
+    // （显式指定直接覆盖 CSS 属性），所以必须在 JS 里判一次系统偏好
+    const spy = vi.spyOn(window, "matchMedia").mockImplementation(
+      (query: string) =>
+        ({
+          matches: query.includes("prefers-reduced-motion"),
+          media: query,
+          onchange: null,
+          addListener: vi.fn(),
+          removeListener: vi.fn(),
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+          dispatchEvent: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    renderPage(tasks, { highlightTaskId: "b" });
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledWith({
+      behavior: "auto",
+      block: "center",
+    });
+    spy.mockRestore();
+  });
+
   it("目标卡被当前筛选挡住时自动清筛选，保证卡可见", async () => {
     const user = userEvent.setup();
     const { rerender } = renderPage();

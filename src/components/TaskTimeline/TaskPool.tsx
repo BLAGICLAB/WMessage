@@ -118,9 +118,7 @@ export function TaskPool({
           hidden || evaded ? "translateX(calc(100% + 16px))" : "translateX(0)",
         transitionProperty: "transform, opacity",
         transitionDuration: hidden || evaded ? "150ms" : "240ms",
-        transitionTimingFunction: hidden || evaded
-          ? "cubic-bezier(0.3, 0, 0.8, 0.15)"
-          : "cubic-bezier(0.05, 0.7, 0.1, 1)",
+        transitionTimingFunction: "var(--ease-out)",
       }}
     >
       <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--edge)_70%,transparent)] px-3.5 pt-3 pb-2.5">

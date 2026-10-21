@@ -160,7 +160,7 @@ export function ContextRail({
                 key={t.key}
                 type="button"
                 aria-pressed={on}
-                className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] transition-colors duration-100 ${
+                className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                   on
                     ? "nm-inset text-[var(--t1)]"
                     : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
@@ -173,7 +173,7 @@ export function ContextRail({
                 {t.key === "agents" && runningCount > 0 && (
                   <span
                     aria-hidden
-                    className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--brand)]"
+                    className="h-1.5 w-1.5 shrink-0 wmsg-activity-pulse rounded-full bg-[var(--brand)]"
                   />
                 )}
               </button>
@@ -344,7 +344,7 @@ export function ContextRail({
                       <Loader2
                         size={12}
                         aria-hidden
-                        className="shrink-0 animate-spin text-[var(--brand)]"
+                        className="shrink-0 wmsg-activity text-[var(--brand)]"
                       />
                     ) : (
                       <Bot

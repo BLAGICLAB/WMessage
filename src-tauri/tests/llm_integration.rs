@@ -1202,6 +1202,71 @@ async fn core_context_overflow_sheds_history_and_retries() {
 }
 
 #[tokio::test]
+async fn core_anthropic_context_overflow_resends_anthropic_shaped_body() {
+    // Anthropic 协议下的上下文超长降级：砍完历史重发的请求体必须仍是
+    // Anthropic 形状（content 是块数组、system 走顶层字段）。
+    // 把 OpenAI 形状的 msgs 直接回填进 body 的话，role=system / role=tool
+    // 都不被 Anthropic 接受 → 必 400；而那个 400 文案不再像超长，
+    // 用户连「请 /compact」的指引都拿不到。
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        400,
+        r#"{"error":{"message":"prompt is too long: 210000 tokens > 200000 maximum","type":"invalid_request_error"}}"#
+            .to_string(),
+    ));
+    server.push_behavior(MockBehavior::AnthropicTextReply("降级后正常回复".into()));
+    let h = CoreHarness::new();
+
+    let msgs: Vec<serde_json::Value> = vec![
+        serde_json::json!({"role": "system", "content": "系统提示词"}),
+        serde_json::json!({"role": "user", "content": "旧问题一"}),
+        serde_json::json!({"role": "assistant", "content": "旧回答一"}),
+        serde_json::json!({"role": "user", "content": "旧问题二"}),
+        serde_json::json!({"role": "assistant", "content": "旧回答二"}),
+        serde_json::json!({"role": "user", "content": "本轮问题"}),
+    ];
+
+    let (text, _) = run_model_loop_core(
+        &core_http_anthropic(&server),
+        msgs,
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    .expect("Anthropic 超长降级后应成功返回");
+
+    assert!(text.contains("降级后正常回复"), "got: {text}");
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 2, "应重发一次：{bodies:?}");
+    let second: serde_json::Value =
+        serde_json::from_str(&bodies[1]).expect("第二次请求体应是 JSON");
+    let arr = second["messages"]
+        .as_array()
+        .expect("messages 应是数组")
+        .clone();
+    assert!(!arr.is_empty(), "重发体里应还有消息");
+    for m in &arr {
+        assert!(
+            m["content"].is_array(),
+            "Anthropic 的 content 必须是块数组（OpenAI 形状的字符串 content 会被拒）：{m}"
+        );
+    }
+    assert!(
+        second.get("system").is_some(),
+        "system 段在 Anthropic 走顶层字段，不进 messages：{second}"
+    );
+    assert!(
+        !bodies[1].contains("旧回答二"),
+        "旧历史应已砍掉：{}",
+        bodies[1]
+    );
+}
+
+#[tokio::test]
 async fn core_context_overflow_without_history_to_shed_reports_actionable_error() {
     // 没得砍时（只有 system + 本轮输入）：不再空转重发，直接回带指引的错误
     let server = MockLlmServer::start();

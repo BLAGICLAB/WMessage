@@ -547,6 +547,12 @@ describe("ChatPanel", () => {
       .find((m: { role: string }) => m.role === "user")?.content;
     expect(sentContent).toContain("[已选任务]");
     expect(sentContent).toContain("- id=t2，标题=改文档");
+    // 位置也是协议的一部分：块在消息头、用户正文在块之后。
+    // 解析器只认消息头的块，触发词只从块之后的正文里找——顺序反了两边都落空。
+    expect(sentContent.indexOf("[已选任务]")).toBe(0);
+    expect(sentContent.indexOf("这两张卡先做哪张")).toBeGreaterThan(
+      sentContent.indexOf("- id=t2，标题=改文档"),
+    );
     // 发送后芯片清空（与附件同口径）
     expect(screen.queryByTitle("改文档")).toBeNull();
   });
@@ -1293,6 +1299,7 @@ describe("ChatPanel", () => {
       if (cmd === "bot_chat") return new Promise(() => {});
       if (cmd === "bot_preview_text")
         return {
+          kind: "text",
           path: "/tmp/报告.md",
           content: "# 标题\n\n正文一段",
           truncated: false,
@@ -1679,6 +1686,7 @@ describe("ChatPanel", () => {
         ];
       if (cmd === "bot_preview_text")
         return {
+          kind: "text",
           path: "/Users/x/调研.md",
           content: "# 上海博士后政策\n正文一段",
           truncated: false,
@@ -1727,6 +1735,7 @@ describe("ChatPanel", () => {
       if (cmd === "bot_history_load") return [];
       if (cmd === "bot_preview_text")
         return {
+          kind: "text",
           path: "/Users/x/out.md",
           content: "# 产物",
           truncated: false,

@@ -65,7 +65,16 @@ export function ArchivePage({
       // 可选链只挡 ref 为空，挡不住方法缺失——缺 scrollIntoView 的环境里这行
       // 会抛，抛在 passive effect 里就成了随机某个用例的红
       if (el && typeof el.scrollIntoView === "function") {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        // 减少动效时不做平滑滚动：全局兜底块里的 scroll-behavior: auto !important
+        // 管不到 scrollIntoView 的 behavior 选项——那是显式指定，直接覆盖 CSS 属性，
+        // 只能在 JS 里判一次
+        const reduced =
+          typeof window.matchMedia === "function" &&
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        el.scrollIntoView({
+          behavior: reduced ? "auto" : "smooth",
+          block: "center",
+        });
       }
     }
   }, [highlightTaskId, query, activeTag]);
@@ -128,7 +137,7 @@ export function ArchivePage({
       {tagCounts.length > 0 && (
         <details className="mt-3 group">
           <summary className="text-[11px] text-[var(--t5)] cursor-pointer select-none hover:text-[var(--t3)] flex items-center gap-1.5">
-            <span className="inline-block transition-transform group-open:rotate-90">
+            <span className="inline-block transition-transform duration-[var(--dur-chip)] ease-[var(--ease-out)] group-open:rotate-90">
               ▶
             </span>
             标签（{tagCounts.length}）{activeTag && (
@@ -151,7 +160,7 @@ export function ArchivePage({
             {tagCounts.map(([tag, count]) => (
               <button
                 key={tag}
-                className={`px-2.5 py-1 text-xs rounded-full transition-colors ${
+                className={`px-2.5 py-1 text-xs rounded-full transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                   activeTag === tag
                     ? "nm-inset text-[var(--t1)] font-medium"
                     : "nm-outset text-[var(--t4)] hover:text-[var(--t2)]"

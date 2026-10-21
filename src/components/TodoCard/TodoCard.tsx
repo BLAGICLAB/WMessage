@@ -257,7 +257,7 @@ export function TodoCardView({
           <span
             {...drag.listeners}
             title="拖拽移动"
-            className="shrink-0 mt-0.5 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab active:cursor-grabbing"
+            className="shrink-0 mt-0.5 w-4 h-4 flex items-center justify-center text-[12px] leading-none text-[var(--t5)] rounded hover:bg-[var(--hover-bg)] opacity-0 group-hover:opacity-100 transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)] cursor-grab active:cursor-grabbing"
           >
             <GripVertical size={12} aria-hidden />
           </span>

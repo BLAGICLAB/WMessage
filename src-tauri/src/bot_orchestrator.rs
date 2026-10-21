@@ -16,6 +16,7 @@
 
 use crate::db::{now_ms, SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
+use futures_util::FutureExt;
 use tauri::AppHandle;
 
 /// 预算默认值与硬顶（设计 §6 已）——常量与钳制实现在 db::SubagentBudget（写口
@@ -138,6 +139,9 @@ pub struct SpawnAck {
     pub task_id: Option<String>,
     pub trace_id: String,
     pub status: SubagentStatus,
+    /// 命中幂等键：返回的是**已在跑**的同一个子 agent，本次没有新建行、
+    /// 也没有再起一个 runner。消费方据此区分「派发成功」与「重复派发未新建」。
+    pub deduped: bool,
 }
 
 /// check 应答（设计 §5/§7：status/progress/result?/error?）。
@@ -221,7 +225,7 @@ fn validate_request(req: &SpawnRequest) -> CommandResult<()> {
     Ok(())
 }
 
-/// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 插 queued 行。
+/// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 幂等查表 → 插 queued 行。
 /// 子 agent 不再建任务卡——执行契约全在行上（objective / acceptance_json /
 /// context_summary / budget_json），前端经 `list_subagents` 读行看进度。
 pub(crate) fn spawn_subagent_locked(
@@ -237,6 +241,36 @@ pub(crate) fn spawn_subagent_locked(
         }
     }
     let budget = clamp_budget(req.budget.clone());
+    let objective = req.objective.trim().to_string();
+    let acceptance_json = serde_json::to_string(&req.acceptance_criteria)
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    // 幂等键（服务端派生，不指望模型给）：同一父会话里，档位 / 目标 / 验收标准 /
+    // 指定模型全同的**活着的**子 agent 只应有一条。模型重复派发（同一轮里
+    // 发两次，或隔几轮忘了自己已经派过）不该再插一行——两条活行各拿一份完整
+    // 预算，同一份活干两遍。
+    //
+    // 只在有父会话时去重：跨会话的同目标派发是不同用户意图，不该互相吞掉。
+    // 已终态的不参与去重——「再跑一次」是重试语义。
+    if let Some(parent_sid) = req.parent_session_id.as_deref() {
+        let live = crate::db::find_live_subagent_by_request(
+            conn,
+            parent_sid,
+            req.profile.as_str(),
+            &objective,
+            &acceptance_json,
+            req.model_profile.as_deref(),
+        )
+        .map_err(CommandError::DbError)?;
+        if let Some(existing) = live {
+            return Ok(SpawnAck {
+                subagent_id: existing.id,
+                task_id: existing.task_id,
+                trace_id: existing.trace_id,
+                status: existing.status,
+                deduped: true,
+            });
+        }
+    }
     let subagent_id = format!("sa_{}", uuid::Uuid::new_v4().simple());
     let trace_id = format!("trc_{}", uuid::Uuid::new_v4().simple());
     let tx = conn
@@ -250,12 +284,9 @@ pub(crate) fn spawn_subagent_locked(
         parent_session_id: req.parent_session_id.clone(),
         session_id: None,
         task_id: None,
-        objective: req.objective.trim().to_string(),
+        objective,
         trace_id: trace_id.clone(),
-        acceptance_json: Some(
-            serde_json::to_string(&req.acceptance_criteria)
-                .map_err(|e| CommandError::Internal(e.to_string()))?,
-        ),
+        acceptance_json: Some(acceptance_json),
         context_summary: req
             .context_summary
             .as_deref()
@@ -279,6 +310,7 @@ pub(crate) fn spawn_subagent_locked(
         task_id: None,
         trace_id,
         status: SubagentStatus::Queued,
+        deduped: false,
     })
 }
 
@@ -432,6 +464,21 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     })
     .await
     .map_err(|e| CommandError::from(format!("subagent spawn 线程 join 失败：{e}")))??;
+    // 命中幂等键：这一份活已经在跑了——不建行（本来就没建）、不发事件（前端
+    // 已经见过这一行）、**不再起第二个 runner**（起第二个就是同一份活跑两遍、
+    // 各烧一份预算）。
+    if ack.deduped {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "subagent_spawn_deduped | id: {} | parent_session: {} | profile: {}",
+                ack.subagent_id,
+                audit_parent_session.as_deref().unwrap_or("-"),
+                audit_profile.as_str(),
+            ),
+        );
+        return Ok(ack);
+    }
     // 审计：结构化 + 文本行（设计 §3 事件字段）。task_id 恒空（新行无卡），
     // 字段仍留——老审计日志按该键反查的查询不受影响
     crate::audit::write_event(
@@ -1548,6 +1595,37 @@ impl SubagentGate {
 
 // runner（执行引擎）
 
+/// 取消令牌的 RAII 反注册守卫。
+///
+/// `subagent_stops` 里每登一条就要负责抹掉：漏一条 = cancel_subagent 之后
+/// 还能停一个早该消失的子 agent，那张表也只增不减。手工 remove 漏掉的是
+/// panic 路径（runner panic 后整条收尾被跳过），故用 Drop 兜住。
+struct StopTokenGuard {
+    app: AppHandle,
+    id: String,
+}
+
+impl Drop for StopTokenGuard {
+    fn drop(&mut self) {
+        crate::db::lock::lock_or_recover(
+            &crate::app_state::subagent_stops(&self.app),
+            "app_state::subagent_stops",
+        )
+        .remove(&self.id);
+    }
+}
+
+/// runner panic → 普通失败（与 runner 返错同一层，收尾路径不变）。
+///
+/// 单独成纯函数：panic 的三种 payload（&str / String / 其它）由
+/// audit::panic_payload_msg 归一，这里只负责截断与包装。
+fn panic_to_command_error(msg: &str) -> CommandError {
+    CommandError::Internal(format!(
+        "执行器异常退出（panic）：{}",
+        crate::bot::truncate_for_log(msg, 200)
+    ))
+}
+
 /// 子 agent 执行引擎：独立会话 + 工具循环 + 收尾落库。spawn 异步包装末尾派发
 /// （非阻塞）。执行基建复用 exec 家族（ChatGuard/ExecGuard/StopGuard/tool_guard），
 /// 但入口/存储/事件与 bot_execute_task 各自独立（设计 §2）。
@@ -1952,6 +2030,14 @@ async fn run_subagent(
         "app_state::subagent_stops",
     )
     .insert(row.id.clone(), stop.token());
+    // 取消令牌的 RAII 反注册：任何提前返回 / panic 路径都不会把条目留在
+    // subagent_stops 里（残留令牌让 cancel_subagent 停一个早该消失的子
+    // agent，这张表也只增不减）。下面还有一次显式 remove（早于收尾落库），
+    // 守卫那次是幂等的兜底。
+    let _stop_token_guard = StopTokenGuard {
+        app: app.clone(),
+        id: row.id.clone(),
+    };
 
     // 取消 watcher（设计 §4.3 硬停）：2s 轮询行状态，进终态即停工具循环。
     // 子 agent 无卡，不再有「软删卡 = 取消派发」这条信号——cancel 置行终态，
@@ -2051,11 +2137,36 @@ async fn run_subagent(
         // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
         None,
     );
-    let wall = tokio::time::timeout(
+    // runner panic 隔离（bot_scheduler 的既有范式）：panic 会跳过下面所有收尾
+    // ——取消令牌反注册、状态落库、subagent-finished 事件——前端那一行永远转圈，
+    // 行状态也停在 running（只能靠重启清扫僵尸行）。故把 panic 捕获成普通失败，
+    // 让收尾路径照常走完：行落 failed，事件发出去，前端不再转圈。
+    let wall = match tokio::time::timeout(
         std::time::Duration::from_secs(budget.max_wall_seconds.max(1)),
-        run,
+        std::panic::AssertUnwindSafe(run).catch_unwind(),
     )
-    .await;
+    .await
+    {
+        // 墙钟触达
+        Err(elapsed) => Err(elapsed),
+        // 正常跑完
+        Ok(Ok(Ok(v))) => Ok(Ok(v)),
+        // runner 自己返错
+        Ok(Ok(Err(e))) => Ok(Err(e)),
+        // runner panic → 归一成普通失败（与返错同一层，收尾路径不变）
+        Ok(Err(panic)) => {
+            let msg = crate::audit::panic_payload_msg(panic.as_ref());
+            crate::bot::audit_log(
+                &app,
+                &format!(
+                    "subagent_runner_panic | id: {} | {} | 已归一为执行失败",
+                    row.id,
+                    crate::bot::truncate_for_log(&msg, 200)
+                ),
+            );
+            Ok(Err(panic_to_command_error(&msg)))
+        }
+    };
 
     // 墙钟触达先 stop 后收尾——run future 被 timeout 掐掉时，脱离 runtime
     // 的在飞 Python/MCP（spawn_blocking 不随 future 取消）靠 StopToken 自行退出；
@@ -2323,7 +2434,7 @@ async fn run_subagent(
         effective_status,
         summary.as_deref().unwrap_or_default(),
     );
-    spawn_parent_report(&app, &row);
+    spawn_parent_report(&app, &row, effective_status);
 }
 
 /// 汇报轮等空档的上限：与 `check_subagent` 的等待预算同档。主会话那一轮跑了
@@ -2353,6 +2464,16 @@ async fn bot_session_exists(app: &AppHandle, session_id: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 子 agent 收尾后要不要给父会话起汇报轮。
+///
+/// 用户自己取消的不汇报：用户刚点过停止，不需要模型再解释一遍
+/// （设计文档「用户取消不汇报」）。判据必须用**收尾时的真实终态**——
+/// 收尾前那行的 status 恒为 Queued（行是派发时建的），拿行快照判取消
+/// 永远判不成立，用户取消后照样起汇报轮。
+fn should_report_to_parent(status: SubagentStatus) -> bool {
+    status != SubagentStatus::Cancelled
+}
+
 /// 子 agent 收尾后让主 agent 主动向用户转述（fire-and-forget）。
 ///
 /// 为什么要这条：主 agent 原本只在「下一轮组装消息时注入 digest」这一个时机
@@ -2363,12 +2484,12 @@ async fn bot_session_exists(app: &AppHandle, session_id: &str) -> bool {
 /// 门控是「主会话空闲」而不是「子 agent 一收尾」：主会话还在跑的时候，它自己
 /// 会再 check 一次拿到终态并当轮转述（那条路径已记进去重表），这时再起一轮
 /// 就是同一件事说两遍。
-fn spawn_parent_report(app: &AppHandle, row: &SubagentRow) {
+fn spawn_parent_report(app: &AppHandle, row: &SubagentRow, status: SubagentStatus) {
     let Some(parent) = row.parent_session_id.clone() else {
         return;
     };
     // 用户自己取消的：用户刚点过停止，不需要模型再解释一遍
-    if row.status == SubagentStatus::Cancelled {
+    if !should_report_to_parent(status) {
         return;
     }
     let app = app.clone();
@@ -2653,15 +2774,29 @@ pub async fn tool_spawn_subagent(
     };
     match spawn_subagent(app, req).await {
         Ok(ack) => ToolResult::ok(
-            format!(
-                "已派发子 agent（非阻塞）：subagentId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
-                ack.subagent_id,
-                ack.status.as_str()
-            ),
+            spawn_receipt_text(&ack),
             // 无卡：不挂 TaskRef（指向已不存在的卡，前端会渲染成死链）
             Vec::new(),
         ),
         Err(e) => ToolResult::error(format!("spawn 失败：{}", e.message()), Vec::new()),
+    }
+}
+
+/// spawn 的工具回执文案。命中幂等键时要说清「没新建、还是那个」——
+/// 模型读到「已派发」会以为又多了一个子 agent，转述给用户时就会说错。
+fn spawn_receipt_text(ack: &SpawnAck) -> String {
+    if ack.deduped {
+        format!(
+            "同一目标已有在跑的子 agent，未重复派发：subagentId={} status={}。继续用 check_subagent 轮询它。",
+            ack.subagent_id,
+            ack.status.as_str()
+        )
+    } else {
+        format!(
+            "已派发子 agent（非阻塞）：subagentId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
+            ack.subagent_id,
+            ack.status.as_str()
+        )
     }
 }
 
@@ -2951,6 +3086,54 @@ mod orchestrator_tests {
     use super::*;
     // 仅 parent_card 夹具用：子 agent 自己不再建卡，但派发仍可挂编排计划卡
     use crate::db::Task;
+
+    /// runner panic 必须归一成普通失败，收尾路径照常走。
+    ///
+    /// panic 会跳过整条收尾（取消令牌反注册、状态落库、subagent-finished
+    /// 事件）——前端那一行永远转圈，行状态停在 running。
+    #[test]
+    fn runner_panic_becomes_ordinary_failure() {
+        let e = panic_to_command_error("index out of bounds");
+        let msg = e.message();
+        assert!(
+            msg.contains("panic") && msg.contains("index out of bounds"),
+            "panic 信息要如实带进失败原因：{msg}"
+        );
+        // 超长信息截断（审计日志与失败原因都不该被一段长 payload 撑爆）
+        let long = "x".repeat(5000);
+        let e2 = panic_to_command_error(&long);
+        assert!(
+            e2.message().chars().count() < 400,
+            "panic 信息应截断到 200 量级：{}",
+            e2.message().chars().count()
+        );
+    }
+
+    /// 接线守卫：runner future 必须包 catch_unwind，且取消令牌登记要有
+    /// RAII 反注册——两者都是「panic 路径不漏」的前提。
+    #[test]
+    fn runner_is_panic_isolated_and_stop_token_has_raii_cleanup() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bot_orchestrator.rs"
+        ))
+        .expect("应能读到自己");
+        let start = src
+            .find("async fn run_subagent(")
+            .expect("应能找到 run_subagent");
+        let rest = &src[start..];
+        // 函数体到顶格 "}" 为止（嵌套块的 "}" 都带缩进）
+        let end = rest[1..].find("\n}\n").map(|i| i + 1).unwrap_or(rest.len());
+        let body = &rest[..end];
+        assert!(
+            body.contains("catch_unwind"),
+            "runner future 必须包 catch_unwind（panic 要归一成普通失败走收尾）：{body}"
+        );
+        assert!(
+            body.contains("StopTokenGuard"),
+            "取消令牌登记必须配 RAII 反注册（panic 路径不能把条目留在 subagent_stops）：{body}"
+        );
+    }
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -3923,6 +4106,142 @@ mod orchestrator_tests {
         assert!(!ack.trace_id.is_empty());
     }
 
+    /// 重复派发同一份请求不建第二条活行（幂等键：父会话 + 档位 + 目标 +
+    /// 验收标准 + 指定模型）。
+    ///
+    /// 模型重复调用 spawn_subagent（同一轮发两次、或隔几轮忘了自己派过）原先
+    /// 会建两条活行，各拿一份完整预算——同一份活干两遍。
+    #[test]
+    fn repeated_spawn_of_the_same_request_reuses_the_live_row() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        assert!(!first.deduped, "首次派发必须是新建");
+        let second = spawn_subagent_locked(&mut conn, &req(None), 6_000).unwrap();
+        assert!(second.deduped, "重复派发必须命中幂等键");
+        assert_eq!(
+            second.subagent_id, first.subagent_id,
+            "重复派发必须返回同一个子 agent id"
+        );
+        let rows = crate::db::load_subagents_by_parent(&conn, "main-sess", 100).unwrap();
+        assert_eq!(rows.len(), 1, "重复派发不得再建一条活行");
+    }
+
+    /// 已终态的不参与去重：「再跑一次」是重试语义，不能被幂等键吞掉。
+    #[test]
+    fn spawn_after_the_previous_one_finished_creates_a_new_row() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        crate::db::update_subagent_status(
+            &conn,
+            &first.subagent_id,
+            SubagentStatus::Cancelled,
+            6_000,
+            None,
+        )
+        .unwrap();
+        let second = spawn_subagent_locked(&mut conn, &req(None), 7_000).unwrap();
+        assert!(!second.deduped, "已终态的旧行不该再命中幂等键");
+        assert_ne!(second.subagent_id, first.subagent_id);
+        let rows = crate::db::load_subagents_by_parent(&conn, "main-sess", 100).unwrap();
+        assert_eq!(rows.len(), 2, "重试应另起一行");
+    }
+
+    /// 验收标准不同 = 不同的活，不去重（模型改需求后重派是正当的）。
+    #[test]
+    fn spawn_with_different_acceptance_criteria_is_not_deduped() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let mut other = req(None);
+        other.acceptance_criteria = vec!["覆盖至少 8 个产品".into()];
+        let second = spawn_subagent_locked(&mut conn, &other, 6_000).unwrap();
+        assert!(!second.deduped, "验收标准不同不该命中幂等键");
+        assert_ne!(second.subagent_id, first.subagent_id);
+    }
+
+    /// 不同父会话的同目标派发是不同意图，不互相吞掉。
+    #[test]
+    fn spawn_from_a_different_parent_session_is_not_deduped() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let first = spawn_subagent_locked(&mut conn, &req(None), 5_000).unwrap();
+        let mut other = req(None);
+        other.parent_session_id = Some("other-sess".into());
+        let second = spawn_subagent_locked(&mut conn, &other, 6_000).unwrap();
+        assert!(!second.deduped, "跨会话不命中幂等键");
+        assert_ne!(second.subagent_id, first.subagent_id);
+    }
+
+    /// 没有父会话（拿不到会话 id 的调用路径）时不去重：宁可多建一行，
+    /// 也不要把别人的活吞掉。
+    #[test]
+    fn spawn_without_parent_session_is_not_deduped() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let mut r = req(None);
+        r.parent_session_id = None;
+        let first = spawn_subagent_locked(&mut conn, &r, 5_000).unwrap();
+        let second = spawn_subagent_locked(&mut conn, &r, 6_000).unwrap();
+        assert!(!first.deduped && !second.deduped);
+        assert_ne!(first.subagent_id, second.subagent_id);
+    }
+
+    /// 幂等键挡住的是「建第二条活行」，挡不住「再起一个 runner」——后者照样
+    /// 把同一份活跑两遍、各烧一份预算。deduped 的早退必须排在 runner 派发前。
+    #[test]
+    fn deduped_spawn_returns_before_the_runner_is_dispatched() {
+        let src = include_str!("bot_orchestrator.rs");
+        let start = src
+            .find("pub async fn spawn_subagent(")
+            .expect("bot_orchestrator.rs 应有 spawn_subagent");
+        let dedup = start
+            + src[start..]
+                .find("ack.deduped")
+                .expect("spawn_subagent 应有 deduped 早退分支");
+        let runner = start
+            + src[start..]
+                .find("run_subagent(")
+                .expect("spawn_subagent 应派发 runner");
+        assert!(
+            dedup < runner,
+            "命中幂等键必须早于 runner 派发返回（否则同一份活跑两遍）"
+        );
+        assert!(
+            src[dedup..runner].contains("return Ok(ack);"),
+            "deduped 分支必须直接返回，不得落到 runner 派发"
+        );
+    }
+
+    /// 回执文案两种形态：新建说「已派发」，命中幂等键要说清「没新建、
+    /// 还是那个」——模型照抄「已派发」会把一个子 agent 说成两个。
+    #[test]
+    fn spawn_receipt_text_distinguishes_new_from_deduped() {
+        let ack = SpawnAck {
+            subagent_id: "sa_x".into(),
+            task_id: None,
+            trace_id: "trc_x".into(),
+            status: SubagentStatus::Queued,
+            deduped: false,
+        };
+        let fresh = spawn_receipt_text(&ack);
+        assert!(fresh.contains("已派发子 agent"), "{fresh}");
+        assert!(fresh.contains("sa_x"), "{fresh}");
+
+        let deduped = SpawnAck {
+            deduped: true,
+            ..ack
+        };
+        let dup = spawn_receipt_text(&deduped);
+        assert!(dup.contains("未重复派发"), "{dup}");
+        assert!(dup.contains("sa_x"), "{dup}");
+        assert!(
+            !dup.contains("已派发子 agent"),
+            "命中幂等键的回执不得说成新建：{dup}"
+        );
+    }
+
     #[test]
     fn spawn_with_missing_parent_card_is_task_not_found() {
         let mut conn = test_conn();
@@ -4058,6 +4377,59 @@ mod orchestrator_tests {
         assert_eq!(
             effective_status(None, SubagentStatus::Failed),
             SubagentStatus::Failed
+        );
+    }
+
+    /// 用户取消的子 agent 不给父会话起汇报轮：用户刚点过停止，
+    /// 不需要模型再解释一遍。
+    #[test]
+    fn cancelled_subagent_does_not_report_to_parent() {
+        assert!(!should_report_to_parent(SubagentStatus::Cancelled));
+        for st in [
+            SubagentStatus::Succeeded,
+            SubagentStatus::Failed,
+            SubagentStatus::BudgetExceeded,
+            SubagentStatus::Running,
+            SubagentStatus::Queued,
+        ] {
+            assert!(should_report_to_parent(st), "{st:?} 应汇报");
+        }
+    }
+
+    /// 接线守卫：汇报轮的门控必须用收尾时的真实终态，不能用行快照。
+    ///
+    /// 行是派发时建的，收尾前 status 恒为 Queued——门控拿 `row.status` 判取消
+    /// 永远判不成立，用户取消后照样起汇报轮（违反设计「用户取消不汇报」）。
+    /// 单测验不到调用点传的是哪个值，故这里扫源码钉住接线。
+    #[test]
+    fn parent_report_gate_is_wired_to_the_effective_status() {
+        let src = include_str!("bot_orchestrator.rs");
+        let production = src
+            .split_once("#[cfg(test)]")
+            .expect("bot_orchestrator.rs 应有测试模块")
+            .0;
+        assert!(
+            production.contains(concat!(
+                "spawn_parent_report(&app, &row, effective_",
+                "status)"
+            )),
+            "汇报轮必须传收尾时的真实终态（effective_status）"
+        );
+        // 只扫汇报轮函数体：别处读行快照是合法的（如 read_own_card 读的是
+        // 库里当前行，不是收尾前的快照）
+        let start = production
+            .find("fn spawn_parent_report")
+            .expect("应能找到 spawn_parent_report");
+        let rest = &production[start..];
+        let end = rest[1..].find("\nfn ").map(|i| i + 1).unwrap_or(rest.len());
+        let func = &rest[..end];
+        assert!(
+            func.contains("should_report_to_parent("),
+            "汇报轮门控必须走 should_report_to_parent"
+        );
+        assert!(
+            !func.contains("row.status"),
+            "汇报轮门控不得读行快照判取消（快照恒为 Queued）"
         );
     }
 

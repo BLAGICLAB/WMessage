@@ -26,8 +26,11 @@ function renderMini(tasks: Task[], dayKeys: string[], activeDay: number | null =
   );
 }
 
+// 透明度走 style 而不是 SVG 属性：属性变化不触发 CSS 过渡（Chromium 实测），
+// 而过渡正是这条联动要的效果——断言跟着改成读 style。
 const opacityOf = (id: string) =>
-  document.querySelector(`[data-testid='graph-node-${id}']`)!.getAttribute("opacity");
+  document.querySelector<HTMLElement>(`[data-testid='graph-node-${id}']`)!.style
+    .opacity;
 
 const fillOf = (id: string) =>
   document.querySelector(`[data-testid='graph-node-${id}']`)!.getAttribute("fill");
@@ -109,5 +112,47 @@ describe("GraphMini 规模上限", () => {
     expect(container.querySelector("[data-testid='graph-node-n0']")).not.toBeNull();
     // 卡片上说明这是截断后的视图
     expect(container.textContent).toContain("连接度前 300 个");
+  });
+});
+
+describe("GraphMini 的联动过渡", () => {
+  it("节点的动效值落在 style 上（SVG 属性变化不触发 CSS 过渡）", () => {
+    renderMini(
+      [
+        task({ id: "t1", title: "父卡" }),
+        task({ id: "t2", title: "子卡", parentId: "t1" }),
+      ],
+      ["2026-10-10"],
+    );
+    const node = document.querySelector<HTMLElement>(
+      "[data-testid^='graph-node-']",
+    )!;
+    // r / stroke-width / opacity 都得是 CSS 属性值（带 px 或数值），不是 SVG 属性
+    expect(node.style.r).toMatch(/px$/);
+    expect(node.style.strokeWidth).toMatch(/px$/);
+    expect(node.style.opacity).not.toBe("");
+    expect(node.style.transition).toContain("var(--dur-card)");
+    expect(node.style.transition).toContain("r var(--dur-card)");
+    // 属性上不该再有这三个（留着也不生效，只会误导）
+    expect(node.getAttribute("opacity")).toBeNull();
+    expect(node.getAttribute("r")).toBeNull();
+    expect(node.getAttribute("stroke-width")).toBeNull();
+  });
+
+  it("连线同样把动效值放在 style 上", () => {
+    renderMini(
+      [
+        task({ id: "t1", title: "父卡" }),
+        task({ id: "t2", title: "子卡", parentId: "t1" }),
+      ],
+      ["2026-10-10"],
+    );
+    const line = document.querySelector<HTMLElement>(
+      '[data-testid="graph-mini"] line',
+    )!;
+    expect(line.style.strokeWidth).toMatch(/px$/);
+    expect(line.style.opacity).not.toBe("");
+    expect(line.style.transition).toContain("stroke-width var(--dur-card)");
+    expect(line.getAttribute("opacity")).toBeNull();
   });
 });

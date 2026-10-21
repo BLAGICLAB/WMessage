@@ -181,12 +181,41 @@ pub fn is_live_group_leader(pid: u32) -> bool {
     unsafe { libc::getpgid(pid as i32) == pid as i32 }
 }
 
+/// 进程组是否仍存在（组长已死、组里还有孙进程时也为真）。
+///
+/// 用于「能不能按组号杀」的判定。`kill(-pgid, 0)` 对不存在的组回 ESRCH、
+/// 对存在但无权限的组回 EPERM——两者都按「不在」处理（真去杀也会失败）。
+///
+/// 问的是**组还在不在**而不是「组长还在不在」：主循环已 reap 子进程，
+/// 组长已死时 getpgid 失败，只问组长会让「孙进程占住管道」那条路径
+/// 再也杀不掉进程组——而那正是 kill_tree 存在的理由。
+#[cfg(unix)]
+pub fn process_group_alive(pid: u32) -> bool {
+    // pid 0 = 调用方自己的进程组（kill -0 语义），绝不能当目标；
+    // 超 i32::MAX 的 pid 转 i32 会回绕成负数 → `kill -9 --1` = 杀光本用户
+    // 所有进程（同文件 is_live_group_leader 的注释）。
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    // SAFETY: pid 已过区间校验（非 0、非负）；kill 的负 pid 表示进程组，
+    // 信号 0 只做存在性探测、不投递任何信号。
+    unsafe { libc::kill(-(pid as i32), 0) == 0 }
+}
+
 pub fn kill_tree(child: &mut Child, limits: &RunLimits) {
     limits.terminate();
     #[cfg(unix)]
     {
-        let pid = child.id() as i32;
-        let _ = silent_cmd("kill").args(["-9", &format!("-{pid}")]).status();
+        let pid = child.id();
+        // 组号 = 子进程 pid（spawn 时 process_group(0) 起组，组号恒等于 pid）。
+        // 两道护栏都在「误伤系统」的位置上：
+        // - pid 必须落在 i32 有效区间：转 i32 回绕成负数 → kill -9 --1
+        //   杀光本用户所有进程；
+        // - 该组必须还在：组号可能被别的进程组占用（pid 回收），杀错组
+        //   等于杀无关进程。
+        if process_group_alive(pid) {
+            let _ = silent_cmd("kill").args(["-9", &format!("-{pid}")]).status();
+        }
     }
     #[cfg(windows)]
     {
@@ -1143,5 +1172,64 @@ mod tests {
             "非组长/越界 pid 不应计入击杀数"
         );
         assert_eq!(kill_py_children(&[]), 0, "空列表应返 0");
+    }
+
+    /// 组存活判定的护栏：pid 0 与超 i32 上限的 pid 一律判「不在」。
+    ///
+    /// pid 0 在 kill 语义里是「调用方自己的进程组」；超上限的 pid 转 i32
+    /// 会回绕成负数 → `kill -9 --1` 打到全系统所有进程。
+    #[cfg(unix)]
+    #[test]
+    fn process_group_alive_rejects_dangerous_pids() {
+        assert!(
+            !process_group_alive(0),
+            "pid 0 = 调用方自己的组，不能当目标"
+        );
+        assert!(
+            !process_group_alive(i32::MAX as u32 + 1),
+            "超 i32 上限（回绕成 --1）必须拒判"
+        );
+        assert!(!process_group_alive(u32::MAX));
+    }
+
+    /// 本进程所在的组必然还在——判据不能把「自己人」也拒掉。
+    #[cfg(unix)]
+    #[test]
+    fn process_group_alive_accepts_the_group_we_are_in() {
+        // SAFETY: getpgrp 无参数、无内存影响。
+        let pgid = unsafe { libc::getpgrp() };
+        assert!(pgid > 0);
+        assert!(
+            process_group_alive(pgid as u32),
+            "本进程所在组应判为在（否则孙进程占管道那条路径再也杀不掉组）"
+        );
+    }
+
+    /// 接线守卫：kill_tree 的进程组杀必须先过护栏。
+    ///
+    /// 少了护栏就是 `kill -9 -{pid}` 无条件执行——pid 转 i32 回绕即
+    /// `kill -9 --1`，杀光本用户所有进程。纯函数护栏测不到调用点，
+    /// 故扫源码钉住。
+    #[cfg(unix)]
+    #[test]
+    fn kill_tree_checks_the_group_before_killing_it() {
+        let src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/py/runtime.rs"))
+                .expect("应能读到自己");
+        let start = src.find("pub fn kill_tree").expect("应有 kill_tree");
+        let rest = &src[start..];
+        let end = rest[1..]
+            .find("\npub fn ")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let func = &rest[..end];
+        assert!(
+            func.contains("process_group_alive"),
+            "进程组杀前必须过护栏（pid 0 / 回绕 / 组已不在）"
+        );
+        assert!(
+            !func.contains("as i32"),
+            "pid 不得直接转 i32（回绕成负数即 kill -9 --1）"
+        );
     }
 }

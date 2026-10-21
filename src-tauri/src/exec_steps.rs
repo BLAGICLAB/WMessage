@@ -310,6 +310,12 @@ async fn advance_or_finish(
         .await;
     }
     clear_for(app, stop.session_id(), "全部子任务完成").await;
+    // 收尾必须**显式**复位机器人头像：clear_for 只在「从挂起表取到 pending」
+    // 时才复位，而收尾时 pending 已被 resume 取走（start 路径则还没 park）
+    // → 必然取不到 → 卡片一直顶着机器人头像，直到重启。
+    // 错误路径早就有显式复位（start 的早退、resume 的 cleanup_on_err），
+    // 唯独成功路径漏了。
+    crate::bot_chat::set_bot_assigned(app, task_id, false).await;
     Ok(BotChatResult {
         text: "🎉 所有子任务都已完成并勾选。任务卡本身我没有标记完成——你确认没问题后自己勾完成，或跟我说「完成它」。".into(),
         task_refs: vec![],
@@ -672,5 +678,35 @@ mod guard_tests {
             scope.contains("exec_guard: ExecGuard"),
             "PendingExec 必须持有 ExecGuard: {scope:?}"
         );
+    }
+
+    /// 接线守卫：逐步执行做完最后一步时，收尾分支必须显式复位机器人头像。
+    ///
+    /// 回归背景：收尾靠 clear_for 复位，而 clear_for 只在「从挂起表取到
+    /// pending」时才复位——resume 已把 pending 取走（start 路径还没 park），
+    /// 于是取不到，卡片一直顶着机器人头像直到重启。错误路径早就有显式复位，
+    /// 唯独成功路径漏了。
+    ///
+    /// 这里只能扫源码：逐步执行整条链绑在具体 Runtime 上（mock runtime 驱不动），
+    /// 行为级用例跑不了——而「调用点被删掉」这类变异，别的用例照样全绿。
+    #[test]
+    fn finishing_path_resets_bot_avatar_explicitly() {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/exec_steps.rs"))
+                .unwrap();
+        let start = text
+            .find("async fn advance_or_finish")
+            .expect("应有 advance_or_finish");
+        let rest = &text[start..];
+        let end = rest[1..]
+            .find("\nasync fn ")
+            .map(|i| i + 1)
+            .unwrap_or(rest.len());
+        let func = &rest[..end];
+        assert!(
+            func.contains("set_bot_assigned"),
+            "收尾分支必须显式复位机器人头像（clear_for 取不到 pending 时不复位）"
+        );
+        assert!(func.contains("clear_for"), "收尾仍要清挂起");
     }
 }

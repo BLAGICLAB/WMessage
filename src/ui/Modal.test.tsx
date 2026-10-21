@@ -84,6 +84,23 @@ describe("Modal 弹层模板", () => {
     expect(onEscClose).not.toHaveBeenCalled();
   });
 
+  it("遮罩和面板都挂入场动效类，且不覆盖调用方自己的 className", () => {
+    render(
+      <Modal className={backdropClass} data-testid="backdrop">
+        <div className="nm-card" data-testid="panel">
+          面板
+        </div>
+      </Modal>,
+    );
+    // cloneElement 传 className 会覆盖子元素原有的，所以壳里必须拼接
+    const backdrop = screen.getByTestId("backdrop");
+    expect(backdrop.className).toContain("modal-backdrop");
+    expect(backdrop.className).toContain(backdropClass);
+    const panel = screen.getByTestId("panel");
+    expect(panel.className).toContain("modal-panel");
+    expect(panel.className).toContain("nm-card");
+  });
+
   it("portal=true 渲染进 document.body", () => {
     render(
       <Modal

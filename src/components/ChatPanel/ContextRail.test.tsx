@@ -119,6 +119,7 @@ describe("ContextRail 文件预览", () => {
   const file = { path: "/Users/x/调研.md", added: 3, deleted: 1 };
   function previewOf(path: string) {
     return {
+      kind: "text",
       path,
       content: "# 上海博士后政策\n正文一段",
       truncated: false,

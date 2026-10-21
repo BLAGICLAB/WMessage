@@ -193,7 +193,7 @@ pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}}"##;
 pub const SCHEMA_COMPLETE_TASK: &str = r##"{"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；任务卡带【验收标准】且未逐条达标时不要调用）","parameters":{"type":"object","properties":{
-    "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 list_tasks 输出），可选，优先于 title"},
+    "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 query_tasks 输出），可选，优先于 title"},
     "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
   },"required":[]}}}"##;
 pub const SCHEMA_DELETE_TASK: &str = r##"{"type":"function","function":{"name":"delete_task","description":"删除任务到回收站（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
@@ -317,6 +317,57 @@ pub const SCHEMA_AST_INSPECT: &str = r##"{"type":"function","function":{"name":"
     "symbol":{"type":"string","description":"符号名（op 为 defs/refs/callgraph 时必填；类方法可只写方法名，如 resolve_with_perm）"},
     "depth":{"type":"integer","description":"callgraph 展开层数（可选，默认 1，上限 3）"}
   },"required":["op","path"]}}}"##;
+pub const SCHEMA_UNPACK_ARCHIVE: &str = r##"{"type":"function","function":{"name":"unpack_archive","description":"解压压缩包到目录（支持 zip / tar / tar.gz，格式按文件头自动识别，不看后缀）。逐条校验条目路径：带 .. / 绝对路径 / 盘符 / 软链的条目会被跳过并列出（防压缩包把文件写到目标目录外）；单文件 64MB、整包 256MB、条目 5000 条上限，超限中止并报「疑似压缩炸弹」；目标已存在的文件不覆盖（会列出来）。解出的文件按「已生成」计入产物，可如实说「已解压出 N 个文件」","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"压缩包路径（须在读白名单内：桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs）"},
+    "destDir":{"type":"string","description":"解压目标目录（须在可写目录内：AI_Gen_Files + 任务卡绑定文件夹 + allowedDirs，白名单外会弹确认）；不给则解到 AI_Gen_Files/解压/<包名>/"},
+    "format":{"type":"string","enum":["auto","zip","tar","tar.gz"],"description":"压缩格式（可选，默认 auto 按文件头识别）"}
+  },"required":["path"]}}}"##;
+pub const SCHEMA_PACK_ARCHIVE: &str = r##"{"type":"function","function":{"name":"pack_archive","description":"把目录或文件打包成压缩包（zip / tar.gz）：目录会连同目录名一起打包（zip -r 口径），软链跳过不跟随也不写入链接本身；输出到 AI_Gen_Files 或指定路径。打包完成按「已生成」计入产物，向用户报告时必须附上完整路径","parameters":{"type":"object","properties":{
+    "sourcePath":{"type":"string","description":"要打包的目录或文件（须在读白名单内）"},
+    "outputPath":{"type":"string","description":"输出压缩包路径（须在可写目录内，白名单外会弹确认）；不给则 AI_Gen_Files/<源名>.zip"},
+    "format":{"type":"string","enum":["zip","tar.gz"],"description":"压缩格式（可选）：不给按输出路径后缀判定（.tar.gz / .tgz → tar.gz，否则 zip）"}
+  },"required":["sourcePath"]}}}"##;
+pub const SCHEMA_MANAGE_FILE: &str = r##"{"type":"function","function":{"name":"manage_file","description":"文件复制 / 移动 / 删除。copy 复制（源保留）、move 移动（源消失，同卷直接重命名、跨卷复制后源入回收站）、delete 删除（进系统回收站，删前弹窗请用户确认，60s 无响应默认拒绝）。源路径须在读白名单内（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs），目标路径须在可写目录内（AI_Gen_Files + 任务卡绑定文件夹 + allowedDirs，白名单外弹确认）；目标已存在一律不覆盖；目录树里的符号链接既不跟随也不复制。copy/move 的目标按「已生成」计入产物，报告时必须附上完整目标路径","parameters":{"type":"object","properties":{
+    "action":{"type":"string","enum":["copy","move","delete"],"description":"操作类型：copy=复制 / move=移动 / delete=删除（进回收站）"},
+    "path":{"type":"string","description":"源路径（绝对路径，支持 ~ 开头；copy/move 的源、delete 的目标）"},
+    "dest":{"type":"string","description":"目标路径（copy/move 必填；delete 不需要）"}
+  },"required":["action","path"]}}}"##;
+pub const SCHEMA_COPY_FILE_TO_CLIPBOARD: &str = r##"{"type":"function","function":{"name":"copy_file_to_clipboard","description":"把本地文件放进系统剪贴板：用户在微信 / 飞书 / 邮件等应用里按 Cmd+V（Windows Ctrl+V）就能把这个文件当附件粘出去——发文件给别人的最短路径。会覆盖剪贴板原内容。路径须在读白名单内（桌面/下载/文档 + 任务卡绑定文件夹 + 设置页 allowedDirs，白名单外弹授权）。一次可放多个文件（最多 20 个），用户在目标应用里粘贴出来就是这批文件","parameters":{"type":"object","properties":{
+    "path":{"type":"string","description":"单个文件路径（绝对路径，支持 ~ 开头）；与 paths 二选一"},
+    "paths":{"type":"array","items":{"type":"string"},"description":"多个文件路径（最多 20 个）；与 path 二选一"}
+  }}}}"##;
+pub const SCHEMA_SCHEDULE_REMINDER: &str = r##"{"type":"function","function":{"name":"schedule_reminder","description":"设一个到点提醒：到点用系统通知提醒用户（只说话，不建任务卡、不执行任何内容）。用户说「30分钟后提醒我 X」「明天9点提醒我 Y」「每天早上提醒我 Z」时用它。when 支持三种写法：绝对时间 2026-10-22T09:00、今天 HH:MM（今天已过则顺延到明天）、相对现在 +30m / +2h / +1d；repeat 决定重复频率（none 仅一次 / daily 每天 / weekly 每周 / monthly 每月，重复时按 when 的时刻与星期、日序锚定）。设完返回提醒 id，可配合 list_reminders / cancel_reminder 管理","parameters":{"type":"object","properties":{
+    "text":{"type":"string","description":"提醒内容（要提醒用户什么，一句话）"},
+    "when":{"type":"string","description":"提醒时间：绝对时间 2026-10-22T09:00 / 今天 HH:MM / 相对现在 +30m、+2h、+1d"},
+    "repeat":{"type":"string","enum":["none","daily","weekly","monthly"],"default":"none","description":"重复频率：none=仅一次（默认）/ daily=每天 / weekly=每周 / monthly=每月"}
+  },"required":["text","when"]}}}"##;
+pub const SCHEMA_LIST_REMINDERS: &str = r##"{"type":"function","function":{"name":"list_reminders","description":"列出当前已设的全部提醒（含提醒 id、下次触发时间与启用状态），用于回答「我有哪些提醒」或拿到 cancel_reminder 需要的 id","parameters":{"type":"object","properties":{}}}}"##;
+pub const SCHEMA_CANCEL_REMINDER: &str = r##"{"type":"function","function":{"name":"cancel_reminder","description":"取消一条已设的提醒（按提醒 id，id 用 list_reminders 查）。取消后到点不再通知","parameters":{"type":"object","properties":{
+    "id":{"type":"string","description":"提醒 id（list_reminders 返回）"}
+  },"required":["id"]}}}"##;
+pub const SCHEMA_LIST_WINDOWS: &str = r##"{"type":"function","function":{"name":"list_windows","description":"列出可接管的桌面窗口（应用名 + 窗口标题 + 窗口 id）。UI 自动化的第一步：先拿窗口 id，再对它做 inspect / click / type。只列有标题的窗口；需要先在设置页开启「允许机器人操作桌面界面」","parameters":{"type":"object","properties":{}}}}"##;
+pub const SCHEMA_ACTIVATE_WINDOW: &str = r##"{"type":"function","function":{"name":"activate_window","description":"把指定窗口切到前台（后续 click / type 都作用在这个窗口上）","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"}
+  },"required":["windowId"]}}}"##;
+pub const SCHEMA_UI_INSPECT: &str = r##"{"type":"function","function":{"name":"ui_inspect","description":"读窗口里的控件树（角色 / 标题 / 当前值 / 是否可用 / 是否可直接触发），可按关键词过滤。点击与输入前先用它确认目标控件的 id","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "query":{"type":"string","description":"可选：按控件标题 / 角色 / 标识过滤（不填=全部）"},
+    "maxDepth":{"type":"integer","description":"可选：树深度上限，默认 6"}
+  },"required":["windowId"]}}}"##;
+pub const SCHEMA_UI_CLICK: &str = r##"{"type":"function","function":{"name":"ui_click","description":"点击窗口里的某个控件（按控件 id 或标题关键词定位）。点「发送 / 提交 / 支付 / 删除」这类按钮前会弹窗请用户确认，用户拒绝则不执行——真发出去的消息撤不回来，所以这一步必须让用户过目","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"}
+  },"required":["windowId","target"]}}}"##;
+pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填。输入完不会自动发出去——发送是另一次 ui_click","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"},
+    "text":{"type":"string","description":"要输入的文本"}
+  },"required":["windowId","target","text"]}}}"##;
+pub const SCHEMA_WAIT_FOR_ELEMENT: &str = r##"{"type":"function","function":{"name":"wait_for_element","description":"等待窗口里出现某个控件（按标题 / 角色关键词），等到就返回它的 id，超时没出现就如实说明。用于「等对方发来消息再回复」这类时序","parameters":{"type":"object","properties":{
+    "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
+    "query":{"type":"string","description":"要找的控件标题 / 角色关键词"},
+    "timeoutMs":{"type":"integer","description":"可选：等待上限毫秒，默认 5000，最大 30000"}
+  },"required":["windowId","query"]}}}"##;
 pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"web_search","description":"搜索互联网获取最新信息（配置 Tavily 或 Brave key 时走对应 API、双开报错，否则 Bing+百度网页抓取；返回标题/链接/摘要；润色/翻译/改写用户已给的文本不需要搜索）","parameters":{"type":"object","properties":{
     "query":{"type":"string","description":"搜索关键词"},
     "count":{"type":"integer","description":"结果条数，可选，1-10，默认 8"},
@@ -361,7 +412,7 @@ pub const SCHEMA_ASK_USER: &str = r##"{"type":"function","function":{"name":"ask
     "assumption":{"type":"string","description":"你的推荐假设，必填——用户未回答时按它继续执行"}
   },"required":["question","assumption"]}}}"##;
 // 子 agent 编排三工具（主 agent 可见）
-pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总","parameters":{"type":"object","properties":{
+pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name":"spawn_subagent","description":"派发受管子 agent 执行单一目标长任务（非阻塞，立即返回 subagentId/status）。适用：预计超 5 轮工具调用、多来源调研、写代码跑脚本、用户要求后台/并行。objective 单一目标；acceptanceCriteria 必填且每条可检验（不要写「调研清楚」，要写「覆盖至少 5 个产品，每个含官网 URL，输出 report.md」）；contextSummary 只给必要背景，不要倒主对话全文。完成后用 check_subagent 轮询结果再汇总。同一会话里重复派发完全相同的目标（档位/目标/验收标准全同）不会建第二条活行：返回同一个 subagentId，继续 check 它即可","parameters":{"type":"object","properties":{
     "objective":{"type":"string","description":"单一目标（一句话说清做什么）"},
     "onion":{"type":"string","description":"per-onion 配置档名（可选）：probe=只读探查产出素材 / writereditor=撰写与写代码 / validator=只读验收。指定后本子 agent 的工具会被该配置收窄、角色与轮数上限一并生效，且服务端会拒绝配置清单外的工具——这是控制子 agent 权限的唯一入口。三段式流水线（探查→撰写→验收）就靠它分别派发"},
     "profile":{"type":"string","enum":["research","coder","general"],"description":"工具档位：research=联网调研写报告 / coder=读代码跑 Python 写文件 / general=两者并集（与 stage 同给时白名单档优先，stage 只换角色语义层）。不给时按 onion 配置的 profile 派生；两者都不给则按 stage 派生（recon/verifier→research，executor→coder），都没有则报错"},
@@ -530,6 +581,38 @@ fn call_ast_inspect<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     })
 }
 
+fn call_unpack_archive<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_archive::tool_unpack_archive(&app, &args, interactive, session_id.as_deref())
+            .await
+    })
+}
+
+fn call_pack_archive<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_archive::tool_pack_archive(&app, &args, interactive, session_id.as_deref()).await
+    })
+}
+
+fn call_manage_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let app = ctx.app.clone();
+    let args = args.to_string();
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        crate::bot_manage_file::tool_manage_file(&app, &args, interactive, session_id.as_deref())
+            .await
+    })
+}
+
 fn call_web_search<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_web_search(ctx.app, args).await })
 }
@@ -659,6 +742,59 @@ fn call_clipboard_write<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'
     Box::pin(async move { crate::bot_desktop::tool_clipboard_write(ctx.app, args).await })
 }
 
+fn call_copy_file_to_clipboard<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(async move {
+        crate::bot_desktop::tool_copy_file_to_clipboard(ctx.app, args, interactive, session_id)
+            .await
+    })
+}
+
+fn call_schedule_reminder<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_reminders::tool_schedule_reminder(ctx.app, args).await })
+}
+
+fn call_list_reminders<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_reminders::tool_list_reminders(ctx.app, args).await })
+}
+
+fn call_cancel_reminder<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_reminders::tool_cancel_reminder(ctx.app, args).await })
+}
+
+fn call_list_windows<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_list_windows(ctx.app, args).await })
+}
+
+fn call_activate_window<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_activate_window(ctx.app, args).await })
+}
+
+fn call_ui_inspect<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_ui_inspect(ctx.app, args).await })
+}
+
+fn call_ui_click<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(
+        async move { crate::bot_ui::tool_ui_click(ctx.app, args, interactive, session_id).await },
+    )
+}
+
+fn call_ui_type<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(
+        async move { crate::bot_ui::tool_ui_type(ctx.app, args, interactive, session_id).await },
+    )
+}
+
+fn call_wait_for_element<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_ui::tool_wait_for_element(ctx.app, args).await })
+}
+
 fn call_screenshot<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { crate::bot_desktop::tool_screenshot(ctx.app, args).await })
 }
@@ -693,6 +829,14 @@ fn call_write_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 ///    原实现同款，避免漏掉「已把附件全部移除」之类的中间插入副词话术）
 ///
 /// 两阶段并集 OR，原 hallucination_guard_tests 6 个负面用例仍会正确返回 false。
+///
+/// 命中点带**领域豁免**：命中处前后 12 字内出现「剪贴板」时这次命中不算变更声称。
+/// 「已复制到剪贴板」说的是系统剪贴板（clipboard_write / copy_file_to_clipboard
+/// 都是非变更类工具），而 manage_file 的短动词「已复制」是它的子串——不豁免就会把
+/// 「把这段文字复制到剪贴板」当成「文件复制」，凭空打回模型并给用户挂一条
+/// 「这句没有对应凭证」的更正。剪贴板只改系统剪贴板，不改文件与任务卡，
+/// 语义上确实不是变更。文件复制话术（「已复制：/a → /b」）不与「剪贴板」同现，
+/// 照常命中。
 pub fn claims_mutation(text: &str) -> bool {
     let patterns: Vec<&str> = TOOLS_TABLE
         .iter()
@@ -700,26 +844,75 @@ pub fn claims_mutation(text: &str) -> bool {
         .flat_map(|t| t.claims_patterns.iter())
         .copied()
         .collect();
-    // 阶段 1：子串匹配
-    if patterns.iter().any(|p| text.contains(p)) {
-        return true;
-    }
-    // 阶段 2：「已」后 8 字窗口包含任一 pattern（strip 前缀「已」后）
-    // 原 bot_model_loop.rs VERBS 表不含「已」前缀（「删除」不是「已删除」），
-    // 故 window 检查也需剥去 pattern 的前缀「已」才能覆盖「已...移除」类变体。
     let chars: Vec<char> = text.chars().collect();
-    for (i, &c) in chars.iter().enumerate() {
-        if c == '已' {
-            let window: String = chars[i + 1..].iter().take(8).collect();
-            if patterns.iter().any(|p| {
-                let stripped = p.strip_prefix('已').unwrap_or(p);
-                window.contains(stripped)
-            }) {
+    // 阶段 1：子串匹配
+    for p in &patterns {
+        for (s, e) in find_occurrences(&chars, p) {
+            if !claim_exempt(&chars, s, e) {
                 return true;
             }
         }
     }
+    // 阶段 2：「已」后 8 字窗口包含任一 pattern（strip 前缀「已」后）
+    // 原 bot_model_loop.rs VERBS 表不含「已」前缀（「删除」不是「已删除」），
+    // 故 window 检查也需剥去 pattern 的前缀「已」才能覆盖「已...移除」类变体。
+    for (i, &c) in chars.iter().enumerate() {
+        if c != '已' {
+            continue;
+        }
+        let w_end = (i + 1 + 8).min(chars.len());
+        let window = &chars[i + 1..w_end];
+        for p in &patterns {
+            let stripped = p.strip_prefix('已').unwrap_or(p);
+            for (ws, we) in find_occurrences(window, stripped) {
+                // 窗口内位置换算回原文位置再判豁免
+                let abs_s = i + 1 + ws;
+                let abs_e = i + 1 + we;
+                if !claim_exempt(&chars, abs_s, abs_e) {
+                    return true;
+                }
+            }
+        }
+    }
     false
+}
+
+/// 命中点的领域豁免：前后 12 字窗口内出现「剪贴板」则这次命中不算变更声称。
+///
+/// 窗口取 12 字是够用的下限：剪贴板话术的常见形态（「已复制到剪贴板」、
+/// 「文件已放入剪贴板」）里动词与「剪贴板」的距离都在 6 字内；12 字保证
+/// 「已复制 /a 到 /b，并把说明复制到剪贴板」这种前后两处并存时，文件复制那处
+/// 仍照常命中。
+const CLAIM_EXEMPT_WINDOW: usize = 12;
+/// 非变更语义领域标记：系统剪贴板（只改剪贴板，不改文件与任务卡）。
+const CLAIM_EXEMPT_MARK: &str = "剪贴板";
+
+fn claim_exempt(chars: &[char], start: usize, end: usize) -> bool {
+    let lo = start.saturating_sub(CLAIM_EXEMPT_WINDOW);
+    let hi = (end + CLAIM_EXEMPT_WINDOW).min(chars.len());
+    chars[lo..hi]
+        .iter()
+        .collect::<String>()
+        .contains(CLAIM_EXEMPT_MARK)
+}
+
+/// pattern 在 chars 里的全部出现位置（字符下标，半开区间，不重叠）。
+fn find_occurrences(chars: &[char], pattern: &str) -> Vec<(usize, usize)> {
+    let pat: Vec<char> = pattern.chars().collect();
+    if pat.is_empty() || pat.len() > chars.len() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + pat.len() <= chars.len() {
+        if chars[i..i + pat.len()] == pat[..] {
+            out.push((i, i + pat.len()));
+            i += pat.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// 执行类谎报的完成态措辞。
@@ -1576,7 +1769,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 45;
+pub const BUILTIN_TOOL_COUNT: usize = 58;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2021,6 +2214,119 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_bytes: 8192,
         call: call_ast_inspect,
     },
+    // 归档工具。追加在表尾：tools_json_matches_baseline 只比前 28 项前缀，
+    // 插在中间会无谓地改动基线前缀（同 ast_inspect 的理由）。
+    ToolDef {
+        name: "unpack_archive",
+        schema: SCHEMA_UNPACK_ARCHIVE,
+        mutating: true,
+        claims_patterns: &["已解压", "已解包", "已解压出"],
+        max_output_bytes: 8192,
+        call: call_unpack_archive,
+    },
+    ToolDef {
+        name: "pack_archive",
+        schema: SCHEMA_PACK_ARCHIVE,
+        mutating: true,
+        claims_patterns: &["已打包", "已压缩", "已生成压缩包"],
+        max_output_bytes: 8192,
+        call: call_pack_archive,
+    },
+    // 文件复制 / 移动 / 删除。追加在表尾：与归档工具同理由——基线只比前缀。
+    ToolDef {
+        name: "manage_file",
+        schema: SCHEMA_MANAGE_FILE,
+        mutating: true,
+        claims_patterns: &["已复制", "已拷贝", "已移动", "已移到"],
+        max_output_bytes: 8192,
+        call: call_manage_file,
+    },
+    // 文件进系统剪贴板。追加在表尾：同 manage_file 的理由（基线只比前缀）。
+    // 非 mutating：剪贴板不是文件/任务卡的变更，与 clipboard_write 同档。
+    ToolDef {
+        name: "copy_file_to_clipboard",
+        schema: SCHEMA_COPY_FILE_TO_CLIPBOARD,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_copy_file_to_clipboard,
+    },
+    // 提醒三件套。追加在表尾：同 manage_file 的理由（基线只比前缀）。
+    ToolDef {
+        name: "schedule_reminder",
+        schema: SCHEMA_SCHEDULE_REMINDER,
+        mutating: true,
+        claims_patterns: &["已设提醒", "已设置提醒", "提醒已设置", "已添加提醒"],
+        max_output_bytes: 8192,
+        call: call_schedule_reminder,
+    },
+    ToolDef {
+        name: "list_reminders",
+        schema: SCHEMA_LIST_REMINDERS,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_list_reminders,
+    },
+    ToolDef {
+        name: "cancel_reminder",
+        schema: SCHEMA_CANCEL_REMINDER,
+        mutating: true,
+        claims_patterns: &["已取消提醒", "提醒已取消"],
+        max_output_bytes: 8192,
+        call: call_cancel_reminder,
+    },
+    // UI 自动化六件套。追加在表尾：同 manage_file 的理由（基线只比前缀）。
+    // 点击 / 输入是 mutating：它们能在别的应用里产生真实副作用（消息真发出去了），
+    // 声称「已点击 / 已输入」必须能对上凭证。
+    ToolDef {
+        name: "list_windows",
+        schema: SCHEMA_LIST_WINDOWS,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_list_windows,
+    },
+    ToolDef {
+        name: "activate_window",
+        schema: SCHEMA_ACTIVATE_WINDOW,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_activate_window,
+    },
+    ToolDef {
+        name: "ui_inspect",
+        schema: SCHEMA_UI_INSPECT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_ui_inspect,
+    },
+    ToolDef {
+        name: "ui_click",
+        schema: SCHEMA_UI_CLICK,
+        mutating: true,
+        claims_patterns: &["已点击", "已按下"],
+        max_output_bytes: 8192,
+        call: call_ui_click,
+    },
+    ToolDef {
+        name: "ui_type",
+        schema: SCHEMA_UI_TYPE,
+        mutating: true,
+        claims_patterns: &["已输入"],
+        max_output_bytes: 8192,
+        call: call_ui_type,
+    },
+    ToolDef {
+        name: "wait_for_element",
+        schema: SCHEMA_WAIT_FOR_ELEMENT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_wait_for_element,
+    },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
@@ -2087,6 +2393,8 @@ pub const CODER_TOOLS: &[&str] = &[
     "write_file",
     "run_python",
     "ast_inspect",
+    "unpack_archive",
+    "pack_archive",
     "write_artifact_file",
     "read_own_card",
 ];
@@ -2101,6 +2409,8 @@ pub const GENERAL_TOOLS: &[&str] = &[
     "write_file",
     "run_python",
     "ast_inspect",
+    "unpack_archive",
+    "pack_archive",
     "write_artifact_file",
     "read_own_card",
 ];
@@ -2526,6 +2836,19 @@ mod registry_tests {
             "apps_update_files",
             "ask_user",
             "ast_inspect",
+            "unpack_archive",
+            "pack_archive",
+            "manage_file",
+            "copy_file_to_clipboard",
+            "schedule_reminder",
+            "list_reminders",
+            "cancel_reminder",
+            "list_windows",
+            "activate_window",
+            "ui_inspect",
+            "ui_click",
+            "ui_type",
+            "wait_for_element",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2586,6 +2909,19 @@ mod registry_tests {
             "apps_update_files",
             "ask_user",
             "ast_inspect",
+            "unpack_archive",
+            "pack_archive",
+            "manage_file",
+            "copy_file_to_clipboard",
+            "schedule_reminder",
+            "list_reminders",
+            "cancel_reminder",
+            "list_windows",
+            "activate_window",
+            "ui_inspect",
+            "ui_click",
+            "ui_type",
+            "wait_for_element",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2620,10 +2956,36 @@ mod registry_tests {
             "create_skill",
             "apps_create",
             "apps_update_files",
+            "unpack_archive",
+            "pack_archive",
+            "manage_file",
+            "schedule_reminder",
+            "cancel_reminder",
+            "ui_click",
+            "ui_type",
         ]
         .into_iter()
         .collect();
         assert_eq!(derived, expected);
+    }
+
+    /// 已下线的工具名不得再出现在任何 schema 描述里。
+    ///
+    /// 描述是模型看得见的说明书：让它去找一个已经不存在的工具，得到的
+    /// 只会是「未知工具」，用户看到的是一次白跑的工具调用
+    /// （list_tasks / search_tasks 已合并进 query_tasks）。
+    #[test]
+    fn retired_tool_names_absent_from_schemas() {
+        const RETIRED: &[&str] = &["list_tasks", "search_tasks"];
+        for t in TOOLS_TABLE {
+            for gone in RETIRED {
+                assert!(
+                    !t.schema.contains(gone),
+                    "{} 的 schema 仍提到已下线的工具 {gone}",
+                    t.name
+                );
+            }
+        }
     }
 
     /// 阶段 2 spec 1: TOOLS JSON 与基线一致。
@@ -2656,8 +3018,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 15,
-            "主可见应为 28+3+4+2+1+1+3+1（末位 +1 = ast_inspect）"
+            base_arr.len() + 28,
+            "主可见应为 28+3+4+2+1+1+3+1+13（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套）"
         );
     }
 
@@ -2759,6 +3121,33 @@ mod registry_tests {
                 t.claims_patterns
             );
         }
+    }
+
+    /// 剪贴板语义豁免：「已复制到剪贴板」说的是系统剪贴板（clipboard_write /
+    /// copy_file_to_clipboard 都是非变更类工具），不是文件复制——而 manage_file 的
+    /// 短动词「已复制」是它的子串。不豁免的话，用户让「把这段话复制到剪贴板」
+    /// 会被幻觉守卫判成「声称变更但未调工具」：凭空打回模型，还给用户挂一条
+    /// 「这句没有对应凭证」的更正。
+    #[test]
+    fn clipboard_phrasing_is_not_a_mutation_claim() {
+        assert!(
+            !claims_mutation("已复制到剪贴板（42 字符），可直接粘贴"),
+            "剪贴板话术不是变更声称"
+        );
+        assert!(
+            !claims_mutation("文件已放入剪贴板"),
+            "剪贴板话术不是变更声称"
+        );
+        // 文件复制话术照常命中（豁免只在剪贴板邻域生效）
+        assert!(
+            claims_mutation("已复制：/a/b.txt → /c/d.txt"),
+            "文件复制仍是变更声称"
+        );
+        // 同句前后并存时，文件复制那处不因远处出现「剪贴板」而被豁免
+        assert!(
+            claims_mutation("已复制 /a/b.txt 到 /c/d.txt，并把说明复制到剪贴板"),
+            "同句里的文件复制那处仍要命中"
+        );
     }
 
     /// UNC 路径不再绕过存在性校验：`\\server\share\x.docx` 形态候选此前被
@@ -2947,6 +3336,8 @@ mod registry_tests {
                 "write_file",
                 "run_python",
                 "ast_inspect",
+                "unpack_archive",
+                "pack_archive",
                 "write_artifact_file",
                 "read_own_card",
             ]

@@ -97,7 +97,7 @@ export function ApiProviderSelect({
       >
         <span className="truncate">{current.label}</span>
         <span
-          className={`shrink-0 text-[var(--t5)] transition-transform ${open ? "rotate-180" : ""}`}
+          className={`shrink-0 text-[var(--t5)] transition-transform duration-[var(--dur-chip)] ease-[var(--ease-out)] ${open ? "rotate-180" : ""}`}
         >
           ▾
         </span>
@@ -106,7 +106,7 @@ export function ApiProviderSelect({
         <div
           id={listboxId}
           role="listbox"
-          className="nm-popover absolute z-50 mt-1 w-full p-1 space-y-0.5"
+          className="nm-popover absolute z-50 mt-1 w-full p-1 space-y-0.5 origin-top"
         >
           {options.map((o, i) => (
             <button

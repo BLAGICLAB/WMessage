@@ -43,13 +43,18 @@ export function Modal({
           children.props.onPointerDown?.(e);
           e.stopPropagation();
         },
+        // 面板入场动效：cloneElement 的 className 会覆盖子元素原有的，
+        // 所以要拼接而不是直接给值
+        className: children.props.className
+          ? `${children.props.className} modal-panel`
+          : "modal-panel",
       })
     : children;
 
   const node = (
     <div
       {...rest}
-      className={className}
+      className={className ? `${className} modal-backdrop` : "modal-backdrop"}
       onPointerDown={closeOnOutside && onClose ? onClose : undefined}
     >
       {panel}

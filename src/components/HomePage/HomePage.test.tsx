@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { render, screen, fireEvent, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HomePage } from "./HomePage";
@@ -432,9 +433,11 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     const nodes = document.querySelectorAll("[data-testid^='graph-node-']");
     expect(nodes.length).toBeGreaterThanOrEqual(5);
     fireEvent.mouseEnter(nodes[0]);
-    // 指向节点后，图谱内出现降透明的无关节点（Dim）
-    const dimmed = document.querySelectorAll(
-      "[data-testid^='graph-node-'][opacity='0.22']",
+    // 指向节点后，图谱内出现降透明的无关节点（Dim）。
+    // 透明度走 style 而不是 SVG 属性：属性变化不触发 CSS 过渡（Chromium 实测），
+    // 而过渡正是这条联动要的效果——断言跟着改成读 style。
+    const dimmed = [...document.querySelectorAll("[data-testid^='graph-node-']")].filter(
+      (el) => (el as HTMLElement).style.opacity === "0.22",
     );
     expect(dimmed.length).toBeGreaterThanOrEqual(1);
     fireEvent.mouseLeave(nodes[0]);
@@ -469,5 +472,114 @@ describe("Linked Hover 联动（周图 / 日程 / 任务卡 / 图谱）", () => 
     // 指针离开小组件 → 恢复今日
     await user.hover(screen.getByTestId("due-ticker"));
     expect(screen.getByTestId("pool-pager-counter")).toHaveTextContent("7/8");
+  });
+});
+
+describe("吸顶头部收缩动画", () => {
+  // 头部高度由滚动进度驱动，弹簧是唯一的平滑层。阻尼比 ζ = c/(2√k)：
+  // ζ<1 欠阻尼——扰动一来先过冲再回摆，视觉上就是"抖一下"。
+  // 钉住 ζ≥1，让「落定」不依赖别的条件恰好成立。
+  it("弹簧是临界/过阻尼（ζ≥1），扰动直接落定不回摆", () => {
+    const src = readFileSync("src/components/HomePage/HomeHeader.tsx", "utf-8");
+    const m = src.match(
+      /useSpring\(raw,\s*\{[^}]*stiffness:\s*(\d+)[^}]*damping:\s*(\d+)/,
+    );
+    expect(m).not.toBeNull();
+    const k = Number(m?.[1] ?? 0);
+    const c = Number(m?.[2] ?? 0);
+    expect(k).toBeGreaterThan(0);
+    expect(c / (2 * Math.sqrt(k))).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("完成率进度条的百分比文字", () => {
+  // 数据 30s 刷新一次，越过 18% 阈值那一刻进度条还在生长。条件挂载会让数字
+  // 在运动中途硬跳一下，所以文字常驻挂载、用透明度淡入淡出。
+  it("常驻挂载 + 透明度淡入淡出（不在阈值处硬跳）", () => {
+    renderHome();
+    const fill = document.querySelector(".home-progress-fill") as HTMLElement;
+    const label = fill.querySelector("span") as HTMLElement;
+    expect(label).not.toBeNull();
+    expect(label.textContent).toBe("33%");
+    expect(label.style.opacity).toBe("1");
+    expect(label.style.transition).toContain("var(--dur-fade)");
+  });
+
+  it("源码里不再是条件挂载", () => {
+    const src = readFileSync("src/components/HomePage/HomeHeader.tsx", "utf-8");
+    expect(src).not.toMatch(/\{pct >= 18 &&/);
+    expect(src).toMatch(/opacity: pct >= 18 \? 1 : 0/);
+  });
+});
+
+describe("首页联动 hover 的过渡口径", () => {
+  // 周图柱、日历列、图谱节点三处必须同一套过渡：指针扫过时「成组」地一起变，
+  // 不能一个渐变一个硬切。
+  it("三个组件的过渡口径一致（token 形式，无手写 .15s ease）", () => {
+    const graph = readFileSync("src/components/HomePage/GraphMini.tsx", "utf-8");
+    // 图谱的连线与节点：opacity / r / stroke-width 三项一起补间
+    expect(graph).toMatch(/opacity var\(--dur-card\) var\(--ease-out\)/);
+    expect(graph).toMatch(/r var\(--dur-card\) var\(--ease-out\)/);
+    expect(graph).toMatch(/stroke-width var\(--dur-card\) var\(--ease-out\)/);
+    // 这三项必须走 style：SVG 的 presentation attribute 变化不触发 CSS 过渡
+    // （Chromium 实测：属性方式改 r / opacity / stroke-width 都不补间，
+    //  CSS 属性方式才逐帧插值）——放回属性等于静默失效
+    const line = graph.match(/<line[\s\S]*?\/>/)?.[0] ?? "";
+    const circle = graph.match(/<circle[\s\S]*?\/>/)?.[0] ?? "";
+    expect(line).not.toMatch(/\sopacity=/);
+    expect(line).not.toMatch(/\sstrokeWidth=/);
+    expect(circle).not.toMatch(/\sopacity=/);
+    expect(circle).not.toMatch(/\sstrokeWidth=/);
+    expect(circle).not.toMatch(/\sr=/);
+    for (const f of [
+      "src/components/HomePage/WeeklyChart.tsx",
+      "src/components/HomePage/DayGridMini.tsx",
+    ]) {
+      expect(readFileSync(f, "utf-8")).not.toContain("opacity .15s ease");
+      expect(readFileSync(f, "utf-8")).toMatch(
+        /transition: "opacity var\(--dur-card\) var\(--ease-out\)"/,
+      );
+    }
+  });
+});
+
+describe("首页两处 framer-motion 过渡的缓动口径", () => {
+  const FILES = [
+    "src/components/HomePage/PoolPager.tsx",
+    "src/components/HomePage/DueTicker.tsx",
+  ];
+
+  it("两处过渡都显式指定缓动（不靠 framer-motion 的默认曲线）", () => {
+    // framer-motion 的默认是 keyframes ease [0.25,0.1,0.35,1]，
+    // 与仓库的 --ease-out 不是一条曲线；进场/退场按动效纪律走强 ease-out
+    for (const f of FILES) {
+      expect(readFileSync(f, "utf-8")).toMatch(
+        /transition=\{\{ duration: [\d.]+, ease: \[/,
+      );
+    }
+  });
+
+  it("缓动与 --ease-out token 同源（ease 是 JS 值只能写死，锁住不漂移）", () => {
+    const css = readFileSync("src/ui/main.css", "utf-8");
+    const token = css
+      .match(/--ease-out:\s*cubic-bezier\(([^)]+)\)/)?.[1]
+      ?.replace(/\s/g, "");
+    expect(token).toBeTruthy();
+    for (const f of FILES) {
+      const arr = readFileSync(f, "utf-8")
+        .match(/ease: \[([^\]]+)\]/)?.[1]
+        ?.replace(/\s/g, "");
+      expect(arr).toBe(token);
+    }
+  });
+
+  it("时长留在 UI 预算内（≤300ms）", () => {
+    for (const f of FILES) {
+      const dur = Number(
+        readFileSync(f, "utf-8").match(/transition=\{\{ duration: ([\d.]+)/)?.[1] ?? 0,
+      );
+      expect(dur).toBeGreaterThan(0);
+      expect(dur).toBeLessThanOrEqual(0.3);
+    }
   });
 });

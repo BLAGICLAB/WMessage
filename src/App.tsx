@@ -160,7 +160,7 @@ function RailButton({
   badge?: number;
 }) {
   const base =
-    "flex h-8 w-full items-center gap-2 px-2.5 text-sm transition-colors duration-100";
+    "flex h-8 w-full items-center gap-2 px-2.5 text-sm transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]";
   let skin: string;
   if (variant === "action") {
     skin = "nm-btn text-[var(--t3)]";
@@ -997,7 +997,7 @@ function App() {
             onClick={() => setView("settings")}
           />
         </nav>
-        <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto p-6">
+        <main ref={mainRef} className="app-scroll min-w-0 flex-1 overflow-y-auto p-6">
           {view === "home" ? (
             <HomePage
               tasks={visibleTasks}

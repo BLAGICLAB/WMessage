@@ -32,10 +32,12 @@ beforeEach(() => {
 });
 
 // jsdom 不实现 matchMedia，theme.ts 的 subscribeSystem 要用到；返回基础 mock
+// 实现要交给 vi.fn(impl) 而不是 vi.fn().mockImplementation(impl)：全局 afterEach 里的
+// vi.restoreAllMocks() 会重置 mock，前者重置后仍保留原始实现，后者会被抹成空函数
 if (typeof window !== "undefined" && !window.matchMedia) {
   Object.defineProperty(window, "matchMedia", {
     writable: true,
-    value: vi.fn().mockImplementation((query: string) => ({
+    value: vi.fn((query: string) => ({
       matches: false,
       media: query,
       onchange: null,

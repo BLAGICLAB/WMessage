@@ -17,7 +17,7 @@ export function FoldToggle({
       type="button"
       aria-expanded={!collapsed}
       aria-label={collapsed ? "展开" : "收起"}
-      className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-sm leading-none text-[var(--t5)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-opacity ${
+      className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-sm leading-none text-[var(--t5)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
         alwaysVisible || collapsed
           ? "opacity-100"
           : "opacity-0 group-hover:opacity-100"

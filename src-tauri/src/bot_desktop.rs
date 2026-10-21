@@ -1,14 +1,17 @@
-//! 电脑辅助 Tier1 工具：reveal_path / open_url / clipboard_write / screenshot。
+//! 电脑辅助 Tier1 工具：reveal_path / open_url / clipboard_write /
+//! copy_file_to_clipboard / screenshot。
 //!
-//! 定位：只「看」与「打开」，不做鼠标键盘/UI 自动化（分层决策见
-//! docs/batches/N4-DESKTOP-TIER1.spec.md 出界说明——原生 Computer Use 需要产品
-//! + VM 隔离，官方指引明确不建议在主机裸跑）。
+//! 定位：只「看」与「打开」+ 把东西递到用户手上——**不做鼠标键盘注入**。
+//! 鼠标键盘 / UI 树读取是另一套能力，放在 `bot_ui.rs` + `ui/`（独立总开关，
+//! 默认关闭，见 ui::ui_enabled）；本模块只保留无副作用的看/开/递。
 //!
 //! 安全边界（对齐官方 best practice）：
 //! - reveal_path 走 `bot_fs::resolve_with_perm`，与读文件同一白名单闸；
 //! - open_url 复用 `bot_web::check_public_url` 公网闸（拒绝本机/内网/保留地址，
 //!   仅 http/https）；截图落 AI_Gen_Files（产物目录纪律，模型可见可 ocr）；
 //! - clipboard_write 限长（防把整份文档灌进剪贴板被别的应用粘贴出去）；
+//! - copy_file_to_clipboard 同样走读闸（剪贴板内容的敏感度不高于读文件本身），
+//!   平台实现复用 `platform::copy_file`（前端「复制文件 + 任务标题」同一套代码）；
 //! - 截图依赖系统屏幕录制权限（macOS 未授权时出壁纸/黑图，工具描述与 README 明示）；
 //! - 同步平台调用全部 spawn_blocking，不占 async worker。
 
@@ -155,6 +158,147 @@ pub async fn tool_clipboard_write(app: &AppHandle, args: &str) -> ToolResult {
     }
 }
 
+// copy_file_to_clipboard
+
+/// 一次放进剪贴板的文件数上限：再多用户自己都点不清
+const MAX_CLIP_FILES: usize = 20;
+
+/// 从工具参数里取出待复制的路径（`path` 单个 / `paths` 多个，二者可只给其一）。
+///
+/// 纯函数，可测：去重保序、剔空串。返回空 Vec 表示参数没给路径。
+fn collect_clip_paths(v: &serde_json::Value) -> Vec<String> {
+    let mut raw: Vec<String> = Vec::new();
+    if let Some(arr) = v["paths"].as_array() {
+        for it in arr {
+            if let Some(s) = it.as_str() {
+                let t = s.trim().to_string();
+                if !t.is_empty() {
+                    raw.push(t);
+                }
+            }
+        }
+    }
+    if let Some(s) = v["path"].as_str() {
+        let t = s.trim().to_string();
+        if !t.is_empty() {
+            raw.push(t);
+        }
+    }
+    // 去重保序：同一文件列两次只放一份（剪贴板里出现两份同一个文件没意义）
+    let mut uniq: Vec<String> = Vec::new();
+    for p in raw {
+        if !uniq.contains(&p) {
+            uniq.push(p);
+        }
+    }
+    uniq
+}
+
+/// 把本地文件放进系统剪贴板：用户在任意应用里按 Cmd/Ctrl+V 就能把这个文件粘出去
+/// （发微信 / 飞书附件的最短路径——机器人放好，用户自己粘）。
+///
+/// 路径走读闸（`bot_fs::resolve_with_perm`）：剪贴板内容的敏感度不高于读文件本身，
+/// 故与读文件同一白名单；白名单外弹授权窗。平台实现复用 `platform::copy_file`
+/// （前端「复制文件 + 任务标题」同一套 NSPasteboard / CF_HDROP 代码）。
+pub async fn tool_copy_file_to_clipboard(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> ToolResult {
+    let v = crate::bot::parse_args(args);
+    let raw = collect_clip_paths(&v);
+    if raw.is_empty() {
+        // 「copy_file_to_clipboard 缺少 path」首字「c」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            "copy_file_to_clipboard 缺少 path 参数（要复制多个文件用 paths 数组）".to_string(),
+            Vec::new(),
+        );
+    }
+    if raw.len() > MAX_CLIP_FILES {
+        return ToolResult::ok(
+            format!(
+                "一次最多复制 {MAX_CLIP_FILES} 个文件（收到 {} 个），请分批复制",
+                raw.len()
+            ),
+            Vec::new(),
+        );
+    }
+    // 逐个过读闸：读白名单 = Desktop / Downloads / Documents + AI_Gen_Files +
+    // 任务卡绑定目录 + 用户配置的 allowedDirs；白名单外按权限模式处理
+    let mut resolved: Vec<String> = Vec::new();
+    for p in &raw {
+        match crate::bot_fs::resolve_with_perm(
+            app,
+            "copy_file_to_clipboard",
+            p,
+            interactive,
+            session_id,
+        )
+        .await
+        {
+            Ok(c) => resolved.push(c.display().to_string()),
+            // resolve_with_perm Err 返 String，首字不定 → ok
+            Err(e) => return ToolResult::ok(e, Vec::new()),
+        }
+    }
+    // 文本类粘贴的载荷：文件名（多个用、分隔）
+    let title = resolved
+        .iter()
+        .map(|p| {
+            std::path::Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.clone())
+        })
+        .collect::<Vec<_>>()
+        .join("、");
+    let shown = resolved.join("、");
+    let n = resolved.len();
+    // 模块约定「同步平台调用全部 spawn_blocking」：剪贴板写入走系统 IPC
+    // （macOS pasteboard / Windows 全局内存），慢时不占 async worker
+    let moved = resolved;
+    let r = tauri::async_runtime::spawn_blocking(move || {
+        let refs: Vec<&str> = moved.iter().map(|s| s.as_str()).collect();
+        platform_copy_files(&refs, &title)
+    })
+    .await;
+    match r {
+        Ok(Ok(())) => {
+            crate::bot::audit_log(
+                app,
+                &format!("desktop.copy_file_to_clipboard | {n} 个文件 | {shown}"),
+            );
+            // 「已放入系统剪贴板」首字「已」非 error/warn 前缀 → ok
+            ToolResult::ok(
+                format!(
+                    "已放入系统剪贴板（{n} 个文件）：{shown}。可在微信 / 飞书等应用里直接粘贴出这些文件。"
+                ),
+                Vec::new(),
+            )
+        }
+        Ok(Err(e)) => ToolResult::error(format!("放入剪贴板失败：{e}"), Vec::new()),
+        // 「失败：剪贴板线程异常」以「失败」开头 → error（同 clipboard_write 口径）
+        Err(e) => ToolResult::error(format!("失败：剪贴板线程异常：{e}"), Vec::new()),
+    }
+}
+
+/// 平台分发：把文件列表 + 文本载荷写进系统剪贴板。
+#[cfg(target_os = "macos")]
+fn platform_copy_files(paths: &[&str], title: &str) -> Result<(), String> {
+    crate::platform::copy_file::copy_files_macos(paths, title)
+}
+
+#[cfg(target_os = "windows")]
+fn platform_copy_files(paths: &[&str], title: &str) -> Result<(), String> {
+    crate::platform::copy_file::copy_files_windows(paths, title).map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn platform_copy_files(_paths: &[&str], _title: &str) -> Result<(), String> {
+    Err("当前平台不支持把文件放进剪贴板".into())
+}
+
 // screenshot
 
 /// 截图文件名（纯函数，可测）：wm-screen-YYYYMMDD-HHMMSS-mmm-nnnnnn.png。
@@ -219,6 +363,17 @@ fn platform_capture(out: &std::path::Path) -> Result<(), String> {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn platform_capture(_out: &std::path::Path) -> Result<(), String> {
     Err("当前平台不支持 screenshot".into())
+}
+
+/// 截屏到指定路径（供 UI 动作留痕复用）。返回产物是否非空。
+///
+/// 与 tool_screenshot 的区别：不写「模型可见」的文案，只落盘——UI 动作留痕要的是
+/// 「动作前后各一张」，路径由调用方写进工具结果。
+pub(crate) fn capture_to(out: &std::path::Path) -> bool {
+    match platform_capture(out) {
+        Ok(()) => std::fs::metadata(out).map(|m| m.len() > 0).unwrap_or(false),
+        Err(_) => false,
+    }
 }
 
 /// 截取主显示器画面 → AI_Gen_Files/wm-screen-<时间戳>.png，返回路径。
@@ -319,5 +474,77 @@ mod tests {
         let size = std::fs::metadata(&out).expect("产物应存在").len();
         assert!(size > 0, "产物非空");
         std::fs::remove_file(&out).ok();
+    }
+
+    /// 路径收集：path 单个 / paths 多个，二者都给时合并；去重保序、剔空串。
+    #[test]
+    fn collect_clip_paths_merges_dedupes_and_trims() {
+        let v = serde_json::json!({"path": " /a/b.txt ", "paths": ["/c/d.txt", "/a/b.txt", "  "]});
+        assert_eq!(
+            collect_clip_paths(&v),
+            vec!["/c/d.txt".to_string(), "/a/b.txt".to_string()],
+            "paths 在前、path 在后；重复项只留一份；空白项剔除"
+        );
+        // 只有 paths
+        let only = serde_json::json!({"paths": ["/x", "/y"]});
+        assert_eq!(collect_clip_paths(&only).len(), 2);
+        // 一个都没给
+        assert!(collect_clip_paths(&serde_json::json!({})).is_empty());
+        // 全是空白
+        assert!(collect_clip_paths(&serde_json::json!({"path": "  "})).is_empty());
+    }
+
+    /// 接线守卫：copy_file_to_clipboard 必须真的接进工具表（改了工具名/接线而
+    /// 忘了登记，这里会红）。
+    #[test]
+    fn copy_file_to_clipboard_is_wired_into_registry() {
+        let src = include_str!("bot/registry.rs");
+        assert!(
+            src.contains("name: \"copy_file_to_clipboard\""),
+            "copy_file_to_clipboard 必须登记进 TOOLS_TABLE"
+        );
+        assert!(
+            src.contains("SCHEMA_COPY_FILE_TO_CLIPBOARD"),
+            "copy_file_to_clipboard 必须有 schema 常量"
+        );
+    }
+
+    /// 真实剪贴板冒烟（macOS）：两个临时文件写进系统剪贴板，再读回校验——
+    /// 文本载荷是标题，板上含 public.file-url（Finder / 微信认这个类型）。
+    /// 会覆盖用户剪贴板，故默认忽略；手动跑：
+    /// cargo test --lib desktop::macos_clipboard_file_smoke -- --ignored
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "真实剪贴板冒烟（会覆盖用户剪贴板，手动跑）"]
+    fn macos_clipboard_file_smoke() {
+        use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+
+        let dir =
+            std::env::temp_dir().join(format!("wm-clip-smoke-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        std::fs::write(&a, "A").unwrap();
+        std::fs::write(&b, "B").unwrap();
+
+        let paths = [
+            a.to_str().unwrap().to_string(),
+            b.to_str().unwrap().to_string(),
+        ];
+        let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+        platform_copy_files(&refs, "a.txt、b.txt").expect("写入剪贴板应成功");
+
+        let pb = NSPasteboard::generalPasteboard();
+        // SAFETY: NSPasteboardTypeString 是 Foundation 公开常量，值稳定不释放、全局唯一无别名风险。
+        let text = pb
+            .stringForType(unsafe { NSPasteboardTypeString })
+            .expect("板上应有文本载荷");
+        assert_eq!(text.to_string(), "a.txt、b.txt");
+        let types = pb.types().expect("板上应有类型列表");
+        assert!(
+            types.iter().any(|t| t.to_string() == "public.file-url"),
+            "板上应含 public.file-url 类型（Finder / 微信靠它认出这是文件）"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

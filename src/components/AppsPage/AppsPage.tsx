@@ -331,7 +331,7 @@ function AppCard({
             title="按 data_dir/apps/<id>/ 子进程跑脚本，零 LLM"
           >
             {running ? (
-              <Loader2 size={12} aria-hidden className="animate-spin" />
+              <Loader2 size={12} aria-hidden className="wmsg-activity" />
             ) : (
               <Play size={12} aria-hidden />
             )}
@@ -472,7 +472,7 @@ function TabChip({
   return (
     <button
       type="button"
-      className={`rounded-[var(--r-sm)] px-2 py-0.5 text-[10px] transition-colors ${
+      className={`rounded-[var(--r-sm)] px-2 py-0.5 text-[10px] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
         active
           ? "bg-[var(--hover-bg)] font-medium text-[var(--t1)]"
           : "text-[var(--t5)] hover:text-[var(--t3)]"

@@ -14,18 +14,22 @@ mod audit;
 pub mod bing;
 pub mod bot;
 mod bot_anthropic;
+mod bot_archive;
 pub mod bot_artifacts;
 pub mod bot_chat;
 mod bot_desktop;
 mod bot_fs;
+mod bot_manage_file;
 mod bot_model_loop;
 pub mod bot_onions;
 pub mod bot_orchestrator;
 mod bot_plan;
 mod bot_py;
+mod bot_reminders;
 mod bot_scheduler;
 pub mod bot_skills;
 mod bot_slash;
+mod bot_ui;
 mod bot_web;
 pub mod db;
 mod due_notify;
@@ -51,6 +55,7 @@ pub mod task_autotag;
 pub mod task_out;
 pub mod tool_guard;
 pub mod trace_sink;
+mod ui;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -63,11 +68,12 @@ fn copy_file_with_title(path: String, title: String) -> error::CommandResult<()>
     #[cfg(target_os = "macos")]
     {
         // F2（Phase 6b）：平台 helper 仍为 Result<(), String>，经 From<String> → Internal 转换
-        platform::copy_file::copy_file_macos(&path, &title).map_err(error::CommandError::from)
+        platform::copy_file::copy_files_macos(&[path.as_str()], &title)
+            .map_err(error::CommandError::from)
     }
     #[cfg(windows)]
     {
-        return platform::copy_file::copy_file_windows(&path, &title);
+        return platform::copy_file::copy_files_windows(&[path.as_str()], &title);
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
@@ -176,7 +182,7 @@ struct TagMergeRunSummary {
 
 // 平台相关 copy_file_* helper 已迁到 `platform/copy_file.rs`。
 // `copy_file_with_title`（本文件顶层 tauri command）按平台 cfg 调
-// `platform::copy_file::copy_file_macos` / `copy_file_windows`。
+// `platform::copy_file::copy_files_macos` / `copy_files_windows`。
 
 /// 退出前统一清理（macOS Cmd+Q / Windows 托盘「退出」都走 RunEvent::ExitRequested）。
 /// 只销毁主窗口不够：API 服务线程、SSE writer、活动 Skill、在途 Python 子进程会
@@ -646,6 +652,8 @@ pub fn run() {
             crate::db::trace::trace_export,
             crate::db::schedule_jobs::scheduled_job_update,
             crate::db::schedule_jobs::scheduled_job_delete,
+            crate::ui::ui_get_enabled,
+            crate::ui::ui_set_enabled,
             crate::db::schedule_jobs::scheduled_job_history,
             crate::db::workspace::workspace_load,
             crate::db::workspace::workspace_upsert,

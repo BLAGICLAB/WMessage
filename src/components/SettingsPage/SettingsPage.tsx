@@ -730,6 +730,9 @@ export function SettingsPage({
   );
   const [pyEnabled, setPyEnabled] = useState(false);
   const [pyBusy, setPyBusy] = useState(false);
+  /** 桌面 UI 自动化总开关（后端 flag 文件，默认关闭） */
+  const [uiEnabled, setUiEnabled] = useState(false);
+  const [uiBusy, setUiBusy] = useState(false);
   const [pyEnv, setPyEnv] = useState<{
     available: boolean;
     python: string;
@@ -999,6 +1002,8 @@ export function SettingsPage({
     loadParamViews();
     // oxlint-disable-next-line react/set-state-in-effect
     refreshPy();
+    // oxlint-disable-next-line react/set-state-in-effect
+    refreshUi();
     // 拉取开机自启动状态
     invoke<boolean>("plugin:autostart|is_enabled")
       .then(setAutostartEnabled)
@@ -1032,6 +1037,41 @@ export function SettingsPage({
       await refreshPy();
     } finally {
       setPyBusy(false);
+    }
+  };
+
+  const refreshUi = async () => {
+    try {
+      const on = await invoke<boolean>("ui_get_enabled");
+      setUiEnabled(on);
+    } catch (e) {
+      handleCommandError(e, "ui_get_enabled", { silent: true });
+    }
+  };
+
+  const toggleUi = async () => {
+    if (uiBusy) return;
+    const enabling = !uiEnabled;
+    if (
+      enabling &&
+      !(await confirm(
+        "开启后机器人可以操作你电脑上的界面（读窗口控件、点击、输入文字）。涉及发送/提交/支付/删除的点击仍会弹窗请用户确认。确认开启？",
+      ))
+    )
+      return;
+    setUiBusy(true);
+    setBotError("");
+    try {
+      const next = await invoke<boolean>("ui_set_enabled", {
+        enabled: enabling,
+      });
+      setUiEnabled(next);
+    } catch (e) {
+      handleCommandError(e, "ui_set_enabled", { silent: true });
+      setBotError(formatCommandError(e));
+      await refreshUi();
+    } finally {
+      setUiBusy(false);
     }
   };
 
@@ -1966,7 +2006,7 @@ export function SettingsPage({
             type="button"
             aria-current={activeSection === s.key || undefined}
             onClick={() => openSection(s.key)}
-            className={`flex h-8 w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 text-sm transition-colors duration-100 ${
+            className={`flex h-8 w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 text-sm transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
               activeSection === s.key
                 ? "nm-inset rounded-[var(--r-sm)] text-[var(--t1)]"
                 : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
@@ -2394,6 +2434,28 @@ export function SettingsPage({
                   </button>
                 </div>
 
+                {/* 桌面 UI 自动化开关 */}
+                <div className="mt-4 flex items-center justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-[var(--t2)]">
+                      允许机器人操作桌面界面
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--t5)]">
+                      读取窗口控件、点击、输入文字（原生应用 / 系统弹窗 / 已登录窗口）；
+                      涉及发送、提交、支付、删除的点击会弹窗请用户确认，默认关闭
+                    </p>
+                  </div>
+                  <button
+                    className={`btn-sm-action ${
+                      uiEnabled ? "nm-inset" : "nm-outset"
+                    }`}
+                    onClick={toggleUi}
+                    disabled={uiBusy}
+                  >
+                    {uiBusy ? "…" : uiEnabled ? "已开启" : "已关闭"}
+                  </button>
+                </div>
+
                 {/* Python 环境状态 */}
                 <div className="mt-3 flex items-center justify-between gap-4">
                   <div className="min-w-0">
@@ -2809,7 +2871,7 @@ export function SettingsPage({
                                 activeVendor === v.name || undefined
                               }
                               onClick={() => setActiveVendor(v.name)}
-                              className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-100 ${
+                              className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                                 activeVendor === v.name
                                   ? "nm-inset text-[var(--t1)]"
                                   : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
@@ -3051,7 +3113,7 @@ export function SettingsPage({
                                   {vendorMenuOpen && (
                                     <div
                                       role="menu"
-                                      className="nm-popover absolute right-0 z-50 mt-1 w-40 p-1 space-y-0.5"
+                                      className="nm-popover absolute right-0 z-50 mt-1 w-40 p-1 space-y-0.5 origin-top-right"
                                     >
                                       <button
                                         type="button"
@@ -3214,7 +3276,7 @@ export function SettingsPage({
                                         <div
                                           role="listbox"
                                           aria-label="从模型库添加"
-                                          className="nm-popover absolute right-0 z-50 mt-1 max-h-56 w-64 space-y-0.5 overflow-y-auto p-1"
+                                          className="nm-popover absolute right-0 z-50 mt-1 max-h-56 w-64 space-y-0.5 overflow-y-auto p-1 origin-top-right"
                                         >
                                           {(() => {
                                             const added = new Set(

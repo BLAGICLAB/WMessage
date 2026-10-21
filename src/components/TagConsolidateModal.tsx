@@ -136,7 +136,7 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
         <div className="flex-1 overflow-y-auto p-4">
           {loading && (
             <div className="flex items-center gap-2 text-xs text-[var(--t4)] py-4 justify-center">
-              <Loader2 size={12} aria-hidden className="animate-spin" />
+              <Loader2 size={12} aria-hidden className="wmsg-activity" />
               扫描归档卡片…
             </div>
           )}
@@ -158,7 +158,7 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
                 return (
                   <li
                     key={c.members.join("|")}
-                    className={`rounded-lg p-3 border ${
+                    className={`rounded-lg p-3 border transition-[opacity,border-color,background-color] duration-[var(--dur-card)] ease-[var(--ease-out)] ${
                       sel.enabled
                         ? "border-[var(--bd)] bg-[var(--bg)]"
                         : "border-dashed border-[var(--bd)] bg-transparent opacity-60"
@@ -260,7 +260,7 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
           >
             {submitting ? (
               <>
-                <Loader2 size={11} aria-hidden className="inline animate-spin mr-1" />
+                <Loader2 size={11} aria-hidden className="inline wmsg-activity mr-1" />
                 合并中…
               </>
             ) : (

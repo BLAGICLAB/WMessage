@@ -7,6 +7,10 @@
 //
 // 只读文本：二进制文件由后端判掉（前端不猜），超限由后端截断并标出来——
 // 截断了还让用户以为这就是全文，等于给一份不完整的证据。
+//
+// 后端把「读得到但渲染不了」单列成一态（unsupported）而不是当错误：这类目标
+// （图片/PDF/Office 文档/文件夹）在栏内给不出内容，但用系统默认程序打开是可行
+// 的——所以这一态给的是主行动按钮，不是红字报错加一个藏在角落的 ↗。
 
 import { useEffect, useState } from "react";
 import { ArrowLeft, ExternalLink, FileText, FolderOpen, Loader2, TriangleAlert } from "lucide-react";
@@ -15,14 +19,21 @@ import { MarkdownText } from "../MarkdownText";
 import { openTarget } from "../../lib/openTarget";
 import { formatCommandError, handleCommandError } from "../../lib/errorHandler";
 
-/** 后端 `bot_preview_text` 载荷（camelCase 镜像） */
-type TextPreview = {
-  path: string;
-  content: string;
-  truncated: boolean;
-  totalBytes: number;
-  lines: number;
-};
+/** 后端 `bot_preview_text` 载荷（camelCase 镜像）：文本可预览 / 预览不了但可外部打开 */
+type TextPreview =
+  | {
+      kind: "text";
+      path: string;
+      content: string;
+      truncated: boolean;
+      totalBytes: number;
+      lines: number;
+    }
+  | {
+      kind: "unsupported";
+      path: string;
+      reason: string;
+    };
 
 /** markdown 扩展名（小写比对）：这些走 Markdown 渲染，其余按纯文本原样显示。
  *  判扩展名而不是嗅探内容——markdown 的表格/标题排版是给人看的，
@@ -126,11 +137,33 @@ export function FilePreview({
       )}
       {!err && !data && (
         <p className="inline-flex items-center gap-1 px-0.5 text-[11px] text-[var(--t5)]">
-          <Loader2 size={11} aria-hidden className="animate-spin" />
+          <Loader2 size={11} aria-hidden className="wmsg-activity" />
           读取中…
         </p>
       )}
-      {data && (
+      {data?.kind === "unsupported" && (
+        <div className="rounded-lg nm-card px-2 py-2">
+          <p className="flex items-start gap-1 text-[11px] leading-relaxed text-[var(--t3)]">
+            <TriangleAlert
+              size={11}
+              aria-hidden
+              className="mt-0.5 shrink-0 text-[var(--t5)]"
+            />
+            {data.reason}
+          </p>
+          {/* 栏内给不出内容时，外部打开是唯一可行路——所以它是这一屏的主行动，
+              不是缩在标题栏角落的 ↗（那个对二进制文件等于让用户自己找路） */}
+          <button
+            type="button"
+            onClick={() => openTarget(path)}
+            className="nm-btn mt-1.5 inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-[var(--t2)]"
+          >
+            <ExternalLink size={11} aria-hidden />
+            用系统默认程序打开
+          </button>
+        </div>
+      )}
+      {data?.kind === "text" && (
         <>
           {data.truncated && (
             <p className="mb-1 rounded-md px-1.5 py-1 text-[10px] text-[var(--t5)] nm-inset">
@@ -152,10 +185,12 @@ export function FilePreview({
           </div>
         </>
       )}
-      <p className="mt-1.5 px-0.5 text-[10px] text-[var(--t5)]">
-        <FolderOpen size={10} aria-hidden className="mr-1 inline" />
-        预览为只读快照；要实时改请用右上角按钮在外部编辑器打开
-      </p>
+      {data?.kind === "text" && (
+        <p className="mt-1.5 px-0.5 text-[10px] text-[var(--t5)]">
+          <FolderOpen size={10} aria-hidden className="mr-1 inline" />
+          预览为只读快照；要实时改请用右上角按钮在外部编辑器打开
+        </p>
+      )}
     </div>
   );
 }

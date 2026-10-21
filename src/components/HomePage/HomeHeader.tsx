@@ -122,7 +122,17 @@ function ProgressBar({ done, planned }: { done: number; planned: number }) {
         animate={{ width: `${pct}%` }}
         transition={reduceMotion ? { duration: 0 } : { type: "spring", stiffness: 120, damping: 22 }}
       >
-        {pct >= 18 && <span className="num">{pct}%</span>}
+        {/* 百分比文字常驻挂载、用透明度淡入淡出：条件挂载会让它在进度条还在
+            生长时硬跳一下——数据 30s 刷新一次，越过 18% 阈值那一刻条仍在动 */}
+        <span
+          className="num"
+          style={{
+            opacity: pct >= 18 ? 1 : 0,
+            transition: "opacity var(--dur-fade) var(--ease-out)",
+          }}
+        >
+          {pct}%
+        </span>
       </motion.div>
     </div>
   );
@@ -146,7 +156,8 @@ export function HomeHeader({
   const reduceMotion = useReducedMotion();
   const { scrollY } = useScroll({ container: scrollRef });
   const raw = useTransform(scrollY, [0, COLLAPSE_PX], [0, 1]);
-  const spring = useSpring(raw, { stiffness: 320, damping: 34 });
+  // damping 36 → 阻尼比 ζ=1.006（临界略偏过），扰动直接落定不回摆
+  const spring = useSpring(raw, { stiffness: 320, damping: 36 });
   // 减少动效：跳过 spring，跟随滚动即时到值（still 连续可逆，只是不缓动）
   const progress = reduceMotion ? raw : spring;
 

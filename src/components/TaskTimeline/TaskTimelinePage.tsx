@@ -67,6 +67,9 @@ export function TaskTimelinePage({
   const gridBodyRef = useRef<HTMLDivElement | null>(null);
   const poolRef = useRef<HTMLElement | null>(null);
   const ghostRef = useRef<HTMLDivElement | null>(null);
+  /** 幽灵尺寸缓存：内容固定（标题与标签都是单行），量一次就够；
+   *  每帧读 offsetWidth 会强制同步布局，把上一帧的脏布局立刻算出来。 */
+  const ghostSizeRef = useRef<{ w: number; h: number } | null>(null);
   const freshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 拖拽 window 监听生命周期：拖拽中途卸载组件时 abort 统一清掉
    *  pointermove/pointerup（onUp 内的 removeEventListener 是正常收尾路径，幂等并存） */
@@ -128,6 +131,8 @@ export function TaskTimelinePage({
     e.preventDefault();
     setDragTaskId(drag.task.id);
     setDragFromPool(drag.kind === "create");
+    // 每次拖拽重新量幽灵尺寸：不同标题可能让高度差一像素
+    ghostSizeRef.current = null;
     // 点 vs 拖区分：位移 ≤4px 视为点击（move/create → 选中开面板；resize 无点击语义）
     const startX = e.clientX;
     const startY = e.clientY;
@@ -179,8 +184,17 @@ export function TaskTimelinePage({
       let gy = p.y - 14;
       const gr = drag.kind === "create" ? gridRect() : null;
       if (gr) {
-        const gw = ghostRef.current?.offsetWidth ?? 180;
-        const gh = ghostRef.current?.offsetHeight ?? 54;
+        // 量到才缓存：元素还没挂上时用兜底值，下一帧再量
+        let gs = ghostSizeRef.current;
+        if (!gs && ghostRef.current) {
+          gs = {
+            w: ghostRef.current.offsetWidth,
+            h: ghostRef.current.offsetHeight,
+          };
+          ghostSizeRef.current = gs;
+        }
+        const gw = gs?.w ?? 180;
+        const gh = gs?.h ?? 54;
         gx = Math.min(Math.max(p.x + 14, gr.left + 2), Math.max(gr.left + 2, gr.right - gw - 2));
         gy = Math.min(Math.max(p.y - 14, gr.top + 2), Math.max(gr.top + 2, gr.bottom - gh - 2));
       }
@@ -411,8 +425,8 @@ export function TaskTimelinePage({
           style={
             {
               "--c": ghost.color,
-              left: ghost.x,
-              top: ghost.y,
+              // 位移走 transform：left/top 是布局属性，逐帧写会每帧重排
+              transform: `translate3d(${ghost.x}px, ${ghost.y}px, 0)`,
             } as React.CSSProperties
           }
         >

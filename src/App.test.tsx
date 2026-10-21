@@ -98,6 +98,17 @@ describe("App", () => {
     expect(label.className).toContain("min-w-0");
   });
 
+  // 主滚动容器必须关掉滚动锚定：吸顶头部高度每帧变化会与锚定补偿形成反馈环（头部抖动）
+  it("主滚动容器带 app-scroll（关掉滚动锚定，避免吸顶头部高度变化形成反馈环）", async () => {
+    render(<App />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
+    });
+    const main = document.querySelector("main");
+    expect(main).not.toBeNull();
+    expect(main?.className).toContain("app-scroll");
+  });
+
   // 设置视图全屏接管（壳内自带返回与分类导航），所以拿不到主导航来比对——
   // 只钉住它同样取自 navWidth：同一个壳、同一套字号，各自定宽就会出现
   // 「一边刚好够、一边被截」的不一致

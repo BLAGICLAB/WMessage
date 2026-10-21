@@ -119,6 +119,17 @@ rmcp = { version = "3.5", default-features = false, features = [
     "transport-streamable-http-client-reqwest",
 ] }
 
+# 归档工具（unpack_archive / pack_archive）：zip 与 tar.gz 的解包 / 打包。
+# 为什么是这三个 crate：std 没有归档支持（无 zip / tar / gzip）；
+# - zip 2.x 本来就在依赖树里（dev-dependency，修订工具测试解 docx 用），
+#   提升为正式依赖不新增任何 crate——只开 deflate（docx 默认压缩算法），
+#   bzip2 / zstd / aes 保持关闭：遇到就报「不支持的压缩算法」，不静默跳过。
+# - tar 0.4：纯 Rust，无 C 依赖；tar.gz 的容器格式（ustar/pax/gnu 长名都它管）。
+# - flate2 1.x：gzip 后端走 miniz_oxide（纯 Rust），跨平台预编译一致。
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+
 # Windows 交叉编译（x86_64-pc-windows-gnu）：ort 官方预编译库无 gnu target，
 # 叠加 load-dynamic（特性取并集）→ ort-sys disable-linking，构建期不下载不链接，
 # 运行时按名加载 onnxruntime.dll（随绿色包放 exe 同目录）；macOS 路径不受影响。
@@ -134,7 +145,7 @@ futures = { version = "0.3", features = ["executor"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # 修订工具测试：解开 docx（zip）验证 word/document.xml 修订标记
 # （deflate：docx 默认压缩算法；default-features=false 会把它关掉导致解压失败）
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# zip 已提升为正式依赖（归档工具要用），这里不再重复声明——dev 段继承正式段。
 
 [target.'cfg(unix)'.dependencies]
 # Python 子进程资源限额（C2）：setrlimit RLIMIT_AS / RLIMIT_CPU
@@ -145,6 +156,29 @@ objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 objc2-vision = "0.3"
+# UI 自动化（macOS）：AX 读 UI 树 + CGEvent 注入。
+# objc2-application-services：AXUIElement（AXUIElementCreateApplication /
+# AXUIElementCopyAttributeValue / AXUIElementPerformAction / AXIsProcessTrusted）；
+# objc2-core-graphics：CGEvent 造鼠标/键盘事件并 post 到 HID 层。
+# 不引第三方 crate：Apple 的 Accessibility.framework / CoreGraphics 本身有 objc2 绑定。
+objc2-application-services = { version = "0.3", features = [
+    "AXUIElement",
+    "AXAttributeConstants",
+    "AXConstants",
+    "AXError",
+    "AXActionConstants",
+    "AXRoleConstants",
+    "AXValue",
+    "std",
+] }
+objc2-core-graphics = { version = "0.3", features = [
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
+] }
+# objc2-core-foundation：AX 属性的 CF 类型（CFString / CFArray / AXValue 承载）
+objc2-core-foundation = { version = "0.3", features = ["CFArray", "CFString"] }
 
 [target.'cfg(windows)'.dependencies]
 # Threading：JobObjects 的 JOBOBJECT_EXTENDED_LIMIT_INFORMATION 挂在此 feature 下（py/runtime.rs）
@@ -156,7 +190,13 @@ windows = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Threading",
+    # UI 自动化（Windows）：COM 初始化（UIAutomation 是 COM 接口）
+    "Win32_System_Com",
     "Win32_UI_Shell",
+    # UI 自动化（Windows）：UIAutomation 读控件树 + SendInput 注鼠标键盘
+    "Win32_UI_Accessibility",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [patch.crates-io]

@@ -497,13 +497,13 @@ async fn execute_tool_impl(
                 "subagent_budget_tool_calls_exceeded",
                 &budget_kv,
             );
-            let mut ret_kv: Vec<(&str, String)> = vec![
-                ("tool", name.to_string()),
-                ("reason", "budget_tool_calls_exceeded".to_string()),
-                ("exit_code", "none".to_string()),
-                ("duration_ms", start.elapsed().as_millis().to_string()),
-            ];
-            ret_kv.extend(trace_kv(trace, session_id));
+            let ret_kv = tool_return_kv(
+                name,
+                "budget_tool_calls_exceeded",
+                start.elapsed().as_millis() as u64,
+                session_id,
+                trace,
+            );
             crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
             return crate::bot::registry::ToolResult::denied(format!(
                 "⚠️ 工具调用预算已触顶（{used} / {max}）：停止新探索，整理当前结果并输出收尾 JSON。"
@@ -542,13 +542,13 @@ async fn execute_tool_impl(
             "tool_args_invalid_json",
             &bad_kv,
         );
-        let mut ret_kv: Vec<(&str, String)> = vec![
-            ("tool", name.to_string()),
-            ("reason", "invalid_args_json".to_string()),
-            ("exit_code", "none".to_string()),
-            ("duration_ms", start.elapsed().as_millis().to_string()),
-        ];
-        ret_kv.extend(trace_kv(trace, session_id));
+        let ret_kv = tool_return_kv(
+            name,
+            "invalid_args_json",
+            start.elapsed().as_millis() as u64,
+            session_id,
+            trace,
+        );
         crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
         return crate::bot::registry::ToolResult::denied(msg);
     }
@@ -1074,21 +1074,29 @@ mod pre_tool_hook_tests {
             .split_once("#[cfg(test)]")
             .expect("dispatch.rs 应有测试模块")
             .0;
-        let sub_branch = body
-            .split_once("subagent_whitelist_deny\",")
-            .expect("找不到子 agent 白名单早退分支")
-            .1
-            .split("return crate::bot::registry::ToolResult::denied(")
-            .next()
-            .expect("白名单早退分支应在此处返回");
-        assert!(
-            sub_branch.contains("tool_return_kv("),
-            "子 agent 白名单分支必须走 tool_return_kv 构造 tool.return：{sub_branch}"
-        );
-        assert!(
-            !sub_branch.contains("exit_code"),
-            "子 agent 白名单分支不得自己手搓 tool.return 的 kv（键集只由 tool_return_kv 决定）：{sub_branch}"
-        );
+        // 每处早退分支：从「事件名」到下一个 return 之间那段——手搓 kv 就在
+        // 这段里（键集只由 tool_return_kv 决定）。
+        for (event, label) in [
+            ("subagent_whitelist_deny\",", "子 agent 白名单"),
+            ("subagent_budget_tool_calls_exceeded\",", "工具调用预算触顶"),
+            ("tool_args_invalid_json", "入参 JSON 非法"),
+        ] {
+            let branch = body
+                .split_once(event)
+                .unwrap_or_else(|| panic!("找不到{label}早退分支"))
+                .1
+                .split("return crate::bot::registry::ToolResult::denied(")
+                .next()
+                .expect("早退分支应在此处返回");
+            assert!(
+                branch.contains("tool_return_kv("),
+                "{label}分支必须走 tool_return_kv 构造 tool.return：{branch}"
+            );
+            assert!(
+                !branch.contains("exit_code"),
+                "{label}分支不得自己手搓 tool.return 的 kv（键集只由 tool_return_kv 决定）：{branch}"
+            );
+        }
         assert_eq!(kv_get(ret, "turn"), Some("4"));
         assert_eq!(kv_get(ret, "tool_call_id"), Some("call_hk"));
         assert_eq!(kv_get(ret, "session_id"), Some("sess-9"));

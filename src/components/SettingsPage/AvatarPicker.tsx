@@ -145,7 +145,7 @@ export function AvatarPicker({
           id={listboxId}
           role="listbox"
           aria-label={`${kindLabel}头像`}
-          className="nm-popover absolute left-0 top-full z-50 mt-2 w-60 p-3"
+          className="nm-popover absolute left-0 top-full z-50 mt-2 w-60 p-3 origin-top-left"
         >
           <div className="grid grid-cols-4 gap-2">
             {AVATAR_IDS.map((id, i) => {
@@ -168,7 +168,7 @@ export function AvatarPicker({
                     src={avatarSrc(id) ?? undefined}
                     alt=""
                     draggable={false}
-                    className={`h-12 w-12 rounded-full object-cover transition-[box-shadow] duration-100 ${
+                    className={`h-12 w-12 rounded-full object-cover transition-[box-shadow] duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                       sel
                         ? "ring-2 ring-[var(--brand)] ring-offset-2 ring-offset-[var(--surface-raised)]"
                         : act
@@ -188,7 +188,7 @@ export function AvatarPicker({
           {avatarId && (
             <button
               type="button"
-              className="mt-2.5 w-full rounded-lg px-2 py-1.5 text-xs text-[var(--t4)] transition-colors duration-100 hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+              className="mt-2.5 w-full rounded-lg px-2 py-1.5 text-xs text-[var(--t4)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
               onClick={() => {
                 onClear();
                 closeAndRefocus();

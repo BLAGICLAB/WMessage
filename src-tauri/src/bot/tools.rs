@@ -1129,28 +1129,36 @@ pub(crate) async fn tool_link_file_to_task(
         // 「link_file_to_task 缺少 path」首字「l」非 error/warn 前缀 → ok
         return ToolResult::ok("link_file_to_task 缺少 path".to_string(), Vec::new());
     };
-    if !std::path::Path::new(&path).exists() {
+    // canonicalize 失败不回退原路径（fail-closed）：白名单比对必须基于
+    // 规范化后的真实落点，拿原始路径比 lexical starts_with 会给软链/竞态窗口留绕过面
+    //
+    // 同步 syscall（exists / canonicalize / gen_dir）整体包 spawn_blocking：跑在
+    // async runtime 线程上会阻塞全部 Tauri command / event（ performance）。
+    let app_for_probe = app.clone();
+    let path_for_probe = path.clone();
+    let checked = crate::py::document::spawn_blocking_map(move || {
+        Ok::<_, String>(probe_paths_sync(&path_for_probe, &app_for_probe))
+    })
+    .await;
+    let probe = match checked {
+        Ok(p) => p,
+        Err(e) => {
+            // 「路径校验失败」首字「路」非 error/warn 前缀 → ok
+            return ToolResult::ok(format!("路径校验失败，拒绝绑定：{path}（{e}）"), Vec::new());
+        }
+    };
+    if !probe.exists {
         // 「路径不存在」首字「路」非 error/warn 前缀 → ok
         return ToolResult::ok(format!("路径不存在，拒绝绑定：{path}"), Vec::new());
     }
-    // canonicalize 失败不回退原路径（fail-closed）：白名单比对必须基于
-    // 规范化后的真实落点，拿原始路径比 lexical starts_with 会给软链/竞态窗口留绕过面
-    let canon = match std::fs::canonicalize(&path) {
-        Ok(c) => c,
-        Err(_) => {
-            // 「路径校验失败」首字「路」非 error/warn 前缀 → ok
-            return ToolResult::ok(
-                format!(
-                    "路径校验失败，拒绝绑定：{path}（无法解析真实路径，请确认文件仍然存在后重试）"
-                ),
-                Vec::new(),
-            );
-        }
+    let Some(canon) = probe.canon else {
+        // 「路径校验失败」首字「路」非 error/warn 前缀 → ok
+        return ToolResult::ok(
+            format!("路径校验失败，拒绝绑定：{path}（无法解析真实路径，请确认文件仍然存在后重试）"),
+            Vec::new(),
+        );
     };
-    let in_gen = crate::db::gen_dir(app)
-        .ok()
-        .and_then(|d| std::fs::canonicalize(d).ok())
-        .is_some_and(|gen| canon.starts_with(&gen));
+    let in_gen = probe.gen.is_some_and(|gen| canon.starts_with(&gen));
     if !in_gen {
         // 「已拒绝绑定」首字「已」非 error/warn 前缀 → ok（语义上其实是拒绝，机械规则降级）
         return ToolResult::ok(
@@ -1255,31 +1263,83 @@ pub(crate) async fn tool_link_file_to_task(
 /// 授权分流：其余路径不硬拒，走 bot_fs::resolve_with_perm 分流
 ///（strict 硬拒 / ask 弹授权窗 / yolo 放行），拒绝文案透传给模型。
 /// interactive/session_id 透传给授权弹窗：后台执行（interactive=false）不弹窗直接拒。
+/// 路径校验的同步内核（**非 async**）：存在性 + 真实落点 + gen 目录真实落点。
+///
+/// 单独成函数有两个理由：
+/// · 同步 syscall 跑在 async runtime 线程上会阻塞全部 Tauri command /
+///   event（ performance）——调用方整体包 spawn_blocking_map；
+/// · 源码守卫据此断言两个 async 工具函数体内没有裸的同步 syscall。
+struct PathProbe {
+    exists: bool,
+    canon: Option<std::path::PathBuf>,
+    gen: Option<std::path::PathBuf>,
+}
+
+fn probe_paths_sync(path: &str, app: &AppHandle) -> PathProbe {
+    PathProbe {
+        exists: std::path::Path::new(path).exists(),
+        canon: std::fs::canonicalize(path).ok(),
+        gen: crate::db::gen_dir(app)
+            .ok()
+            .and_then(|d| std::fs::canonicalize(d).ok()),
+    }
+}
+
+/// 任务卡绑定文件里有没有与 canon 同一落点的（同步内核，非 async）。
+///
+/// 单独成函数同上：调用方整体包 spawn_blocking_map——任务多、绑定文件多时
+/// 是几十上百次 syscall，跑在 runtime 线程上会卡住整个 app 的事件循环。
+fn any_bound_path_matches(bound: &[String], canon: &std::path::Path) -> bool {
+    bound
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .any(|fc| fc == canon)
+}
+
 async fn extract_path_check(
     app: &AppHandle,
     path: &str,
     interactive: bool,
     session_id: Option<&str>,
 ) -> Result<(), String> {
-    let Ok(canon) = std::fs::canonicalize(path) else {
+    // 同步 syscall（canonicalize / gen_dir）整体包 spawn_blocking：跑在 async
+    // runtime 线程上会阻塞全部 Tauri command / event（同文件
+    // sanitize_task_files_arg 的既有范式， performance）。
+    // 线程异常与「拿不到真实路径」同口径：都拒（fail-closed）。
+    let app_for_probe = app.clone();
+    let path_for_probe = path.to_string();
+    let checked = crate::py::document::spawn_blocking_map(move || {
+        Ok::<_, String>(probe_paths_sync(&path_for_probe, &app_for_probe))
+    })
+    .await;
+    let probe = match checked {
+        Ok(p) => p,
+        Err(e) => return Err(format!("路径不存在或不可访问：{path}（{e}）")),
+    };
+    let Some(canon) = probe.canon else {
         return Err(format!("路径不存在或不可访问：{path}"));
     };
     // 1) AI_Gen_Files 目录内
-    if let Ok(gen) = crate::db::gen_dir(app).and_then(std::fs::canonicalize) {
-        if canon.starts_with(&gen) {
+    if let Some(gen) = &probe.gen {
+        if canon.starts_with(gen) {
             return Ok(());
         }
     }
     // 2) 任务卡绑定文件（多文件绑定：files 列表 + 旧字段兜底走 effective_files）
     if let Ok(tasks) = crate::db::db_load(app.clone()).await {
-        for t in tasks {
-            for f in t.effective_files() {
-                if let Ok(fc) = std::fs::canonicalize(&f.path) {
-                    if fc == canon {
-                        return Ok(());
-                    }
-                }
-            }
+        let bound: Vec<String> = tasks
+            .iter()
+            .flat_map(|t| t.effective_files())
+            .map(|f| f.path)
+            .collect();
+        let canon_for_cmp = canon.clone();
+        let hit = crate::py::document::spawn_blocking_map(move || {
+            Ok::<_, String>(any_bound_path_matches(&bound, &canon_for_cmp))
+        })
+        .await
+        .unwrap_or(false);
+        if hit {
+            return Ok(());
         }
     }
     // 3) 授权分流（与 bot_fs 同一口径：白名单静默放行 / strict 拒 /
@@ -2082,6 +2142,46 @@ mod tool_extract_document_tests {
 /// 早退路径审计事件序列单测（tool.call 配平 tool.return）。
 // 此处覆盖 parse_task_files_arg 单测；
 // execute_tool 的 mock 路径见 skill_e2e.rs。
+#[cfg(test)]
+mod sync_syscall_off_runtime_tests {
+    /// async 工具函数里的同步 syscall 必须包 spawn_blocking_map。
+    ///
+    /// async runtime 线程上跑同步 syscall 会阻塞全部 Tauri command / event
+    /// ——extract_path_check 里的 per-task canonicalize 循环尤其明显（任务多、
+    /// 绑定文件多时是几十上百次 syscall）。同文件 sanitize_task_files_arg 早
+    /// 就是这个范式。
+    ///
+    /// 行为级用例测不出「跑在哪个线程上」，故扫源码钉住接线。
+    #[test]
+    fn async_tool_paths_do_not_run_sync_syscalls_inline() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bot/tools.rs"))
+            .expect("应能读到自己");
+        for (sig, label) in [
+            ("async fn extract_path_check(", "extract_path_check"),
+            (
+                "pub(crate) async fn tool_link_file_to_task(",
+                "tool_link_file_to_task",
+            ),
+        ] {
+            let start = src
+                .find(sig)
+                .unwrap_or_else(|| panic!("应能找到 {label} 的定义"));
+            let rest = &src[start..];
+            // 函数体到顶格 "}" 为止（嵌套块的 "}" 都带缩进，只有顶层收尾是顶格）
+            let end = rest[1..].find("\n}\n").map(|i| i + 1).unwrap_or(rest.len());
+            let body = &rest[..end];
+            assert!(
+                body.contains("spawn_blocking_map"),
+                "{label} 的同步 syscall 必须包 spawn_blocking_map：{body}"
+            );
+            assert!(
+                !body.contains("std::fs::canonicalize"),
+                "{label} 体内不得直接调 std::fs::canonicalize（必须包进 spawn_blocking_map）：{body}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod task_files_arg_tests {
     use super::*;

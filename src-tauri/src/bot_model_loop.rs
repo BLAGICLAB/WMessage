@@ -39,6 +39,21 @@ fn mutation_succeeded(name: &str, result: &crate::bot::registry::ToolResult) -> 
     MUTATING_TOOLS().iter().any(|t| t == &name) && result.status.is_success()
 }
 
+/// 变更声称守卫的判定：终稿声称改了东西，而本轮**没有动过手**。
+///
+/// 「动过手」有两类凭据：
+/// - `mutation_done`：变更类工具（写盘 / 建任务卡…）调用成功；
+/// - `unverifiable_ran`：跑过**能改状态但核验不了凭证**的工具
+///   （run_python 自己写盘、MCP 工具在外部服务里执行、子 agent 代劳）。
+///   这类的副作用不进我们的痕迹表，「没凭证」推不出「没动手」——少了这条，
+///   「用 Python 写完文件并如实汇报」会被当成凭空汇报，模型被迫重跑
+///   （副作用翻倍），终稿末尾还会挂一条「这句没有对应凭证」的更正。
+///
+/// 口径与落盘凭证那道闸一致（同一份 unverifiable_ran）。
+fn claim_mutation_fires(mutation_done: bool, unverifiable_ran: bool, text: &str) -> bool {
+    !mutation_done && !unverifiable_ran && claims_mutation(text)
+}
+
 /// 从 ToolDef 注册表派生的变更声称检测。
 /// 原「14 个动词 + 4 个整段」硬编码迁到 `bot::registry::ToolDef.claims_patterns`，
 /// 加新 mutating 工具只需填自己的 pattern，检测逻辑零修改。
@@ -144,6 +159,12 @@ pub struct ParsedChunk {
     /// delta.reasoning_content（DeepSeek-reasoner 等模型的独立推理字段；
     /// 与 <think> 标签同走 bot-think-delta 出口）
     pub reasoning: Option<String>,
+    /// Anthropic 的 thinking 块增量（仅 Anthropic 协议会产出）。
+    ///
+    /// 与 `reasoning` 分开：reasoning 只是给前端看的思考文本，thinking 块
+    /// 要**原样回传**给服务端（丢了下一轮带 tool_result 的请求会被 400），
+    /// 故走独立的增量通道，由 bot_anthropic::ThinkingCollector 归位成块。
+    pub thinking: Option<crate::bot_anthropic::ThinkingDelta>,
     /// delta.tool_calls 增量（多 chunk 拼成一个完整 tool_call）
     pub tool_calls: Vec<ToolCallDelta>,
     /// choices[0].finish_reason（最后一 chunk 通常为 "stop" / "tool_calls"）
@@ -280,6 +301,70 @@ pub fn parse_openai_usage(v: &serde_json::Value) -> Option<TokenUsage> {
         cache_read_tokens: cached,
         cache_creation_tokens: 0,
     })
+}
+
+/// token 用量的合并口径：**按字段取最后一次非零值**，不逐块累加。
+///
+/// 两协议的 usage 都是「本请求截至此刻的**总量**」，不是增量：
+/// - OpenAI：`stream_options.include_usage` 让末块带 usage（每块都带的网关
+///   并不少见），每块带的是同一份总量；
+/// - Anthropic：message_delta 的 `usage.output_tokens` 是累计输出量。
+///
+/// 逐块累加会把同一份总量重复计入（每块都带 usage 的网关按块数 ×N），
+/// 落库后 token 数与缓存命中率全部虚高，前端水位条也跟着虚高。
+///
+/// 但两协议的字段**分散在不同事件**里（Anthropic 的 input 在 message_start、
+/// output 在 message_delta；OpenAI 两者同块），故按字段取最后一次非零值，
+/// 而不是整块替换——整块替换会把 Anthropic 的 input 抹成 0。
+pub fn merge_stream_usage(acc: &mut TokenUsage, u: TokenUsage) {
+    if u.input_tokens > 0 {
+        acc.input_tokens = u.input_tokens;
+    }
+    if u.output_tokens > 0 {
+        acc.output_tokens = u.output_tokens;
+    }
+    if u.cache_read_tokens > 0 {
+        acc.cache_read_tokens = u.cache_read_tokens;
+    }
+    if u.cache_creation_tokens > 0 {
+        acc.cache_creation_tokens = u.cache_creation_tokens;
+    }
+}
+
+/// 给 assistant 消息挂上本轮的 Anthropic thinking 块。
+///
+/// 内部消息流是 OpenAI 形状，同一份 msgs 也会直接发给 OpenAI 端点，故这个
+/// provider 专属键发 OpenAI 前会被剥掉（见 build_request_body）。
+fn with_thinking(mut msg: serde_json::Value, thinking: &[serde_json::Value]) -> serde_json::Value {
+    if !thinking.is_empty() {
+        if let Some(obj) = msg.as_object_mut() {
+            obj.insert(
+                crate::bot_anthropic::THINKING_KEY.to_string(),
+                serde_json::Value::Array(thinking.to_vec()),
+            );
+        }
+    }
+    msg
+}
+
+/// 从内部消息里剥掉 provider 专属键（发 OpenAI 端点前用）。
+///
+/// 只有 Anthropic 分支会挂 thinking 块载体，平时不命中——不命中时直接
+/// 原样返回，不重建数组。
+fn strip_thinking_key(msgs: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    let key = crate::bot_anthropic::THINKING_KEY;
+    if !msgs.iter().any(|m| m.get(key).is_some()) {
+        return msgs.to_vec();
+    }
+    msgs.iter()
+        .map(|m| {
+            let mut c = m.clone();
+            if let Some(obj) = c.as_object_mut() {
+                obj.remove(key);
+            }
+            c
+        })
+        .collect()
 }
 
 /// 协议解析失败时的坏块判定（纯函数，供调用方计数留痕）——坏块曾经无声
@@ -782,6 +867,69 @@ pub fn apply_inference_params(
     if let Some(p) = top_p {
         body["top_p"] = serde_json::json!(p);
     }
+}
+
+/// 按协议构造请求体。
+///
+/// 内部消息流恒为 OpenAI 形状；Anthropic 分支在这里转成块结构（system 段、
+/// tool_use / tool_result 块都在这一步成形）。**降级重发必须整体重建**：
+/// 把 OpenAI 形状的 msgs 直接回填进 Anthropic 的 body，`role=system` /
+/// `role=tool` 都不被 Anthropic 接受 → 必 400；而那个 400 文案不再像超长，
+/// 用户连「请 /compact」的指引都拿不到。
+fn build_request_body(
+    http: &LlmHttp,
+    msgs: &[serde_json::Value],
+    tools: &serde_json::Value,
+    openai_usage_supported: bool,
+) -> Result<serde_json::Value, String> {
+    let mut body = match http.provider {
+        crate::bot::ApiProvider::Openai => {
+            let mut b = serde_json::json!({
+                "model": http.model,
+                // Anthropic 的 thinking 块载体是 provider 专属键，OpenAI 端点
+                // 不认（部分网关对消息里的未知字段直接 400）→ 发前剥掉
+                "messages": strip_thinking_key(msgs),
+                "tools": tools,
+                "stream": true
+            });
+            // 流式 usage 需显式索取：末块才带 `usage`（含
+            // prompt_tokens_details.cached_tokens），否则 OpenAI 协议下
+            // 缓存命中永远记不到。部分中转网关不认这个字段会 400，
+            // 届时 usage_supported 翻 false 并原样重发一次（见非成功分支）。
+            if openai_usage_supported {
+                b["stream_options"] = serde_json::json!({"include_usage": true});
+            }
+            b
+        }
+        crate::bot::ApiProvider::Anthropic => crate::bot_anthropic::build_anthropic_body(
+            &http.model,
+            msgs,
+            tools,
+            http.max_tokens,
+            true,
+        )?,
+    };
+    // 条目级采样参数注入：temperature/top_p 有值才写（两协议顶层字段同名）
+    apply_inference_params(&mut body, http.temperature, http.top_p);
+    // 推理强度注入（RE-1）：OpenAI 兼容分支直接加字段；
+    // Anthropic 分支加 thinking 块（budget < max_tokens 约束已在 resolve 时夹紧）。
+    match &http.reasoning {
+        crate::bot::reasoning::ReasoningWire::OpenAiEffort(effort) => {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+        crate::bot::reasoning::ReasoningWire::GlmThinking(on) => {
+            body["thinking"] = serde_json::json!({
+                "type": if *on { "enabled" } else { "disabled" }
+            });
+        }
+        crate::bot::reasoning::ReasoningWire::AnthropicBudget(budget) => {
+            if http.provider == crate::bot::ApiProvider::Anthropic {
+                crate::bot_anthropic::apply_anthropic_thinking(&mut body, *budget);
+            }
+        }
+        crate::bot::reasoning::ReasoningWire::None => {}
+    }
+    Ok(body)
 }
 
 /// run_model_loop_core 的同步副作用出口：
@@ -1624,6 +1772,9 @@ where
     // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
     // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
     let mut openai_usage_supported: bool = true;
+    // Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救，见请求失败分支）。
+    // 只补救一次：重发后仍报同样的错就是别的问题，不该无限重试。
+    let mut anthropic_thinking_dropped: bool = false;
     // 执行类谎报守卫的凭证池：本次**用户提问**内所有工具调用的真实记录。
     //
     // 作用域是整条提问（= 一次 run_model_loop_core 调用 = exec_spans 的一条 trace_id），
@@ -1868,65 +2019,19 @@ where
         // body 按协议分支——内部消息流保持 OpenAI
         // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
         // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
-        let mut body = match http.provider {
-            crate::bot::ApiProvider::Openai => {
-                let mut b = serde_json::json!({
-                    "model": http.model,
-                    "messages": msgs,
-                    "tools": tools,
-                    "stream": true
-                });
-                // 流式 usage 需显式索取：末块才带 `usage`（含
-                // prompt_tokens_details.cached_tokens），否则 OpenAI 协议下
-                // 缓存命中永远记不到。部分中转网关不认这个字段会 400，
-                // 届时 usage_supported 翻 false 并原样重发一次（见非成功分支）。
-                if openai_usage_supported {
-                    b["stream_options"] = serde_json::json!({"include_usage": true});
-                }
-                b
-            }
-            crate::bot::ApiProvider::Anthropic => {
-                match crate::bot_anthropic::build_anthropic_body(
-                    &http.model,
-                    &msgs,
-                    &tools,
-                    http.max_tokens,
-                    true,
-                ) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        let hint = skill_finish(false, "消息转换失败");
-                        let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
-                        audit(
-                            crate::audit::AuditLevel::Error,
-                            "llm.request_failed",
-                            crate::audit::error_kv(&err),
-                        );
-                        return Err(err);
-                    }
-                }
+        let mut body = match build_request_body(http, &msgs, &tools, openai_usage_supported) {
+            Ok(b) => b,
+            Err(e) => {
+                let hint = skill_finish(false, "消息转换失败");
+                let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
+                audit(
+                    crate::audit::AuditLevel::Error,
+                    "llm.request_failed",
+                    crate::audit::error_kv(&err),
+                );
+                return Err(err);
             }
         };
-        // 条目级采样参数注入：temperature/top_p 有值才写（两协议顶层字段同名）
-        apply_inference_params(&mut body, http.temperature, http.top_p);
-        // 推理强度注入（RE-1）：OpenAI 兼容分支直接加字段；
-        // Anthropic 分支加 thinking 块（budget < max_tokens 约束已在 resolve 时夹紧）。
-        match &http.reasoning {
-            crate::bot::reasoning::ReasoningWire::OpenAiEffort(effort) => {
-                body["reasoning_effort"] = serde_json::json!(effort);
-            }
-            crate::bot::reasoning::ReasoningWire::GlmThinking(on) => {
-                body["thinking"] = serde_json::json!({
-                    "type": if *on { "enabled" } else { "disabled" }
-                });
-            }
-            crate::bot::reasoning::ReasoningWire::AnthropicBudget(budget) => {
-                if http.provider == crate::bot::ApiProvider::Anthropic {
-                    crate::bot_anthropic::apply_anthropic_thinking(&mut body, *budget);
-                }
-            }
-            crate::bot::reasoning::ReasoningWire::None => {}
-        }
 
         // LLM 请求前记录
         audit(
@@ -1994,6 +2099,58 @@ where
                             );
                             continue;
                         }
+                        // Anthropic 的 thinking 块签名绑在会话前缀上：前缀变了
+                        // （换模型 / 改系统提示 / 砍历史）签名即失效，服务端回
+                        // 400 "Invalid `signature` in `thinking` block"。
+                        //
+                        // 官方给的补救是「删掉 thinking 与 redacted_thinking 块
+                        // 后重试一次」（block_binding 的 drop_block 只在
+                        // adaptive 模式可用，本项目走 budget_tokens 模式，只能手动删）。
+                        // 只在响应体点名 thinking + signature 时才走这条路——
+                        // 普通 400 不是它的问题，一律重发只会把真错掩盖成一次多余请求。
+                        if st == 400
+                            && http.provider == crate::bot::ApiProvider::Anthropic
+                            && !anthropic_thinking_dropped
+                            && text.contains("thinking")
+                            && text.contains("signature")
+                        {
+                            let key = crate::bot_anthropic::THINKING_KEY;
+                            let had = msgs.iter().any(|m| m.get(key).is_some());
+                            if had {
+                                anthropic_thinking_dropped = true;
+                                for m in msgs.iter_mut() {
+                                    if let Some(obj) = m.as_object_mut() {
+                                        obj.remove(key);
+                                    }
+                                }
+                                // body 已序列化：删完必须重建，否则重发还是带旧块
+                                body = match build_request_body(
+                                    http,
+                                    &msgs,
+                                    &tools,
+                                    openai_usage_supported,
+                                ) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        let hint = skill_finish(false, "消息转换失败");
+                                        let err: CommandError =
+                                            format!("Anthropic 消息转换失败：{e}{hint}").into();
+                                        audit(
+                                            crate::audit::AuditLevel::Error,
+                                            "llm.request_failed",
+                                            crate::audit::error_kv(&err),
+                                        );
+                                        return Err(err);
+                                    }
+                                };
+                                audit(
+                                    crate::audit::AuditLevel::Warn,
+                                    "llm.anthropic_thinking_dropped",
+                                    vec![("status", st.to_string())],
+                                );
+                                continue;
+                            }
+                        }
                         // 429/5xx 瞬时抖动：退避后重发同一请求
                         if is_retryable_llm_status(st) && attempt < MAX_LLM_ATTEMPTS {
                             audit(
@@ -2024,10 +2181,31 @@ where
                                 // msgs 变短了：记账表里落在切口内的条目作废、
                                 // 其后左移，不同步就是下一轮按旧下标压缩时越界
                                 reindex_after_shed(&mut tool_msg_ages, cut, dropped);
-                                // body 在进循环前已序列化——砍完必须回填 messages，
-                                // 否则重发的是同一份旧 body，降级等于没做
-                                body["messages"] = serde_json::to_value(&msgs)
-                                    .unwrap_or(serde_json::Value::Array(Vec::new()));
+                                // body 在进循环前已序列化——砍完必须重建整个 body，
+                                // 否则重发的是同一份旧 body，降级等于没做。
+                                // 重建要走协议构造：OpenAI 形状的 msgs 直接回填进
+                                // Anthropic 的 body 会被拒（role=system / role=tool
+                                // 都不认）→ 那个 400 还不再像超长，用户拿不到
+                                // 「请 /compact」的指引。
+                                body = match build_request_body(
+                                    http,
+                                    &msgs,
+                                    &tools,
+                                    openai_usage_supported,
+                                ) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        let hint = skill_finish(false, "消息转换失败");
+                                        let err: CommandError =
+                                            format!("Anthropic 消息转换失败：{e}{hint}").into();
+                                        audit(
+                                            crate::audit::AuditLevel::Error,
+                                            "llm.request_failed",
+                                            crate::audit::error_kv(&err),
+                                        );
+                                        return Err(err);
+                                    }
+                                };
                                 let after = msgs.iter().map(msg_chars).sum::<usize>();
                                 audit(
                                     crate::audit::AuditLevel::Warn,
@@ -2121,18 +2299,21 @@ where
         // 解析不掉的 data 载荷计数 + 首条样本：回合结束发一条审计，不逐块刷屏
         let mut bad_sse_chunks: u32 = 0;
         let mut bad_sse_sample: Option<String> = None;
-        // Anthropic 模式 token 用量累积（message_start 的 input / message_delta 的
-        // output，parse_anthropic_event 顺带捞出），回合结束写 llm.usage 审计
-        let mut usage_input: u64 = 0;
-        let mut usage_output: u64 = 0;
-        // 缓存命中/写入累计（仅 Anthropic 协议会变；OpenAI 协议保持 0）。
-        // 前端水位条按「读/写」两档单列展示，不折进输入输出，也不算命中率
-        let mut usage_cache_read: u64 = 0;
-        let mut usage_cache_creation: u64 = 0;
+        // 流内 token 用量累计（Anthropic：message_start 的 input /
+        // message_delta 的 output；OpenAI：末块 usage），回合结束写 llm.usage 审计。
+        //
+        // 合并口径见 merge_stream_usage：按字段取最后一次非零值，**不逐块累加**
+        // ——两协议的 usage 都是累计总量，逐块加会把同一份总量重复计入。
+        // 缓存命中/写入两档单独记（仅 Anthropic 协议会变；OpenAI 保持 0），
+        // 前端水位条按「读/写」单列展示，不折进输入输出，也不算命中率。
+        let mut usage_acc = TokenUsage::default();
         // Anthropic 模式 content block index → 工具槽位重映射：
         // Anthropic 的块序号连文本块一起数，直接当工具序号累积会留下
         // 幽灵空条目，严格 API 会 400（详见 bot_anthropic::ToolSlotMapper 注释）
         let mut tool_slot_mapper = crate::bot_anthropic::ToolSlotMapper::new();
+        // Anthropic 的 thinking 块收集器（仅 Anthropic 协议会收到增量）：
+        // 块要原样回传服务端，故随本轮响应收集、随 assistant 消息入历史。
+        let mut thinking_collector = crate::bot_anthropic::ThinkingCollector::default();
 
         let mut stopped = false;
         {
@@ -2170,13 +2351,15 @@ where
                     return None;
                 };
                 // token 记账两协议共用一处：Anthropic 分布在 message_start /
-                // message_delta 两个事件，OpenAI 集中在末块 usage——都是
-                // 「本块带用量就累加」，故不需要各写一份。
+                // message_delta 两个事件，OpenAI 集中在末块 usage。
+                // 合并口径统一走 merge_stream_usage（按字段取最后一次非零值）。
                 if let Some(u) = parsed.usage.take() {
-                    usage_input += u.input_tokens;
-                    usage_output += u.output_tokens;
-                    usage_cache_read += u.cache_read_tokens;
-                    usage_cache_creation += u.cache_creation_tokens;
+                    merge_stream_usage(&mut usage_acc, u);
+                }
+                // Anthropic 的 thinking 块收进收集器：它要原样回传（丢了下一轮
+                // 带 tool_result 的请求会被 400），不能只走前端展示出口。
+                if let Some(d) = parsed.thinking.take() {
+                    thinking_collector.push(&d);
                 }
                 if parsed.is_done {
                     stream_end_seen = true;
@@ -2307,6 +2490,10 @@ where
             }
         }
 
+        // 本轮响应里的 Anthropic thinking 块（空 = 非 Anthropic 协议，
+        // 或模型没开思考）。随本轮的 assistant 消息入历史，回传时原样发回。
+        let thinking_blocks = thinking_collector.blocks();
+
         // 坏块可见化：整条流一条（逐块发会被脏网关刷屏），带首条样本供对拍
         if bad_sse_chunks > 0 {
             audit(
@@ -2323,20 +2510,28 @@ where
         // 缓存字段（cache_read / cache_creation）拼到 llm.usage 事件里——
         // bot.log 落盘可做命中率回看（业界把命中率列为生产 agent 第一指标）。
         // OpenAI 无 cache write 字段，该档恒 0（不是解析失败）。
-        if usage_input > 0 || usage_output > 0 {
+        if usage_acc.input_tokens > 0 || usage_acc.output_tokens > 0 {
             let mut kv = vec![
-                ("input_tokens", usage_input.to_string()),
-                ("output_tokens", usage_output.to_string()),
+                ("input_tokens", usage_acc.input_tokens.to_string()),
+                ("output_tokens", usage_acc.output_tokens.to_string()),
             ];
-            if usage_cache_read > 0 || usage_cache_creation > 0 {
-                kv.push(("cache_read_tokens", usage_cache_read.to_string()));
-                kv.push(("cache_creation_tokens", usage_cache_creation.to_string()));
+            if usage_acc.cache_read_tokens > 0 || usage_acc.cache_creation_tokens > 0 {
+                kv.push((
+                    "cache_read_tokens",
+                    usage_acc.cache_read_tokens.to_string(),
+                ));
+                kv.push((
+                    "cache_creation_tokens",
+                    usage_acc.cache_creation_tokens.to_string(),
+                ));
                 // 命中率 = read / (read + creation + input)，缓存写入一次占新前缀
                 // 后续轮都是 read；creation 仅在「上一轮窗口写满 + 重新构造前缀」
                 // 时出现。计算时 input 含未被缓存的尾部 token，命中看 read 占比
-                let total = usage_cache_read + usage_cache_creation + usage_input;
+                let total = usage_acc.cache_read_tokens
+                    + usage_acc.cache_creation_tokens
+                    + usage_acc.input_tokens;
                 // checked_div：total=0（无任何 token）时整个键都不落，与旧守卫语义一致
-                if let Some(pct) = (usage_cache_read * 100).checked_div(total) {
+                if let Some(pct) = (usage_acc.cache_read_tokens * 100).checked_div(total) {
                     kv.push(("cache_hit_pct", pct.to_string()));
                 }
             }
@@ -2461,9 +2656,10 @@ where
                             "bot-chat-delta",
                             serde_json::json!({ "text": "✅ 自检通过\n\n" }),
                         );
-                        msgs.push(
+                        msgs.push(with_thinking(
                             serde_json::json!({ "role": "assistant", "content": final_text }),
-                        );
+                            &thinking_blocks,
+                        ));
                         msgs.push(serde_json::json!({
                             "role": "user",
                             "content": "【系统提示】自检通过。请继续：完成剩余步骤，或直接向用户汇报结果。"
@@ -2477,9 +2673,10 @@ where
                             "bot-chat-delta",
                             serde_json::json!({ "text": "⚠️ 自检未达预期,换策略中…\n\n" }),
                         );
-                        msgs.push(
+                        msgs.push(with_thinking(
                             serde_json::json!({ "role": "assistant", "content": final_text }),
-                        );
+                            &thinking_blocks,
+                        ));
                         msgs.push(serde_json::json!({
                             "role": "user",
                             "content": format!(
@@ -2515,24 +2712,24 @@ where
                     break;
                 }
             }
+            // 本次提问跑过「自己能写盘、我们无从确证」的工具（run_python 无文件
+            // 系统隔离、MCP 工具在外部服务里执行）——它们能写出文件却不经过
+            // 我们的凭证，「没凭证」推不出「不是工具产物」，这两道闸都必须让开。
+            //
+            // 口径是**本次提问**，不是整个会话：早先按会话判，一次 run_python
+            // 会把这条会话后续所有提问的凭证闸全打死。
+            //
+            // 派过子 agent 也让开：子 agent 的调用不落我们的痕迹表（它的
+            // trace_id 是 'trc_xxx' 字符串，与 exec_spans 的整数 trace_id 类型
+            // 都对不上，join 永远不成立），它写的文件在这道闸眼里永远没凭证。
+            let unverifiable_ran = receipts
+                .iter()
+                .any(|n| n == "run_python" || n.starts_with("mcp_"))
+                || receipts.iter().any(|n| n == "spawn_subagent");
             // 落盘凭证这道要在存在性过了之后才问：路径压根不存在时已经判编造，
             // 没必要再查库。
             let mut unreceipted_path: Option<String> = None;
             if fake_gen_path.is_none() && !claimed_paths.is_empty() {
-                // 本次提问跑过「自己能写盘、我们无从确证」的工具（run_python 无文件
-                // 系统隔离、MCP 工具在外部服务里执行）——它们能写出文件却不经过
-                // 我们的凭证，「没凭证」推不出「不是工具产物」，这道必须让开。
-                //
-                // 口径是**本次提问**，不是整个会话：早先按会话判，一次 run_python
-                // 会把这条会话后续所有提问的凭证闸全打死。
-                //
-                // 派过子 agent 也让开：子 agent 的调用不落我们的痕迹表（它的
-                // trace_id 是 'trc_xxx' 字符串，与 exec_spans 的整数 trace_id 类型
-                // 都对不上，join 永远不成立），它写的文件在这道闸眼里永远没凭证。
-                let unverifiable_ran = receipts
-                    .iter()
-                    .any(|n| n == "run_python" || n.starts_with("mcp_"))
-                    || receipts.iter().any(|n| n == "spawn_subagent");
                 if !unverifiable_ran {
                     let pending: Vec<String> = claimed_paths
                         .iter()
@@ -2548,7 +2745,16 @@ where
                     }
                 }
             }
-            let claim_mutation = !mutation_done && claims_mutation(&final_text);
+            // 「动过手」的凭据：变更类工具成功（mutation_done），**或**跑过
+            // 不可核验但确实改状态的工具（run_python / MCP 工具 / 子 agent）。
+            //
+            // 后者的副作用核验不了凭证，但「没凭证」推不出「没动手」——少了
+            // 这一条，「用 Python 写完文件并如实汇报」会被守卫当成凭空汇报：
+            // 变更声称命中（write_file 的「已写入」等），而 mutation_done 是
+            // 假的，守卫把终稿推回让模型重跑，副作用翻倍，末尾还会挂一条
+            // 「这句没有对应凭证」的更正。口径与上面落盘凭证那道闸一致。
+            let claim_mutation =
+                claim_mutation_fires(mutation_done, unverifiable_ran, &final_text);
             // 执行类谎报：本回合零工具成功，终稿却在叙述执行结果。此前守卫只有
             // mutating 一档，run_python / fetch_url 这类非 mutating 工具可以被凭空
             // 叙述——实测两起：原话一「执行完毕，sleep 120 秒后工具真实返回，打印了
@@ -2792,7 +2998,10 @@ where
                     } else {
                         "请立即调用对应工具实际执行（删除用 delete_task、完成用 complete_task、编辑用 edit_task、子任务用 add_subtask/remove_subtask、绑定产物用 link_file_to_task（任务卡执行流程内有效）、生成文档用 create_word/create_excel/create_ppt/create_pdf；逐步执行模式下子任务勾选由系统完成，不要代调 toggle_subtask）；若确实无法执行（任务不存在/被安全闸门拦截/无权限等），如实向用户说明原因，禁止再次声称已完成。".to_string()
                     };
-                    msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                    msgs.push(with_thinking(
+                        serde_json::json!({"role": "assistant", "content": final_text}),
+                        &thinking_blocks,
+                    ));
                     msgs.push(serde_json::json!({
                         "role": "user",
                         "content": format!("【系统提示】{reason}{remedy}")
@@ -2826,7 +3035,10 @@ where
                         ("chars", final_text.chars().count().to_string()),
                     ],
                 );
-                msgs.push(serde_json::json!({"role": "assistant", "content": final_text}));
+                msgs.push(with_thinking(
+                    serde_json::json!({"role": "assistant", "content": final_text}),
+                    &thinking_blocks,
+                ));
                 msgs.push(serde_json::json!({
                     "role": "user",
                     "content": LENGTH_CONTINUE_PROMPT
@@ -2859,6 +3071,12 @@ where
                 && last_final_selfcheck_round
                     .is_none_or(|r| round.saturating_sub(r) >= final_selfcheck_gap)
             {
+                // 用户已停止：不再做终稿自检。侧调一次最多烧 60s，期间 UI 停在
+                // 「收尾中 · 校验答复」——用户看着像停止失灵。
+                if stop.stopped() {
+                    let hint = skill_finish(false, "用户停止");
+                    return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
+                }
                 // settling：正文已经完整输出，用户「看完了」，但模型还要跑一次
                 // 自检（可静默数十秒）。这一步不发生，用户会把正文结束误读成
                 // 「本轮结束」——ZCode 的 settling 就是为这个场景存在的。
@@ -3021,14 +3239,17 @@ where
         pending_selfcheck = None;
         expecting_final_selfcheck = false;
         final_selfcheck_snapshot = None;
-        msgs.push(serde_json::json!({
-            "role": "assistant",
-            "content": serde_json::Value::Null,
-            "tool_calls": tool_calls.iter().map(|(id, name, args)| serde_json::json!({
-                "id": id, "type": "function",
-                "function": {"name": name, "arguments": args}
-            })).collect::<Vec<_>>()
-        }));
+        msgs.push(with_thinking(
+            serde_json::json!({
+                "role": "assistant",
+                "content": serde_json::Value::Null,
+                "tool_calls": tool_calls.iter().map(|(id, name, args)| serde_json::json!({
+                    "id": id, "type": "function",
+                    "function": {"name": name, "arguments": args}
+                })).collect::<Vec<_>>()
+            }),
+            &thinking_blocks,
+        ));
         if stop.stopped() {
             let hint = skill_finish(false, "用户停止");
             return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
@@ -3249,6 +3470,12 @@ where
                         steps: plan.steps.clone(),
                         replans_used: plan.replans_used,
                     };
+                    // 用户已停止：不再重规划。planner 一次调用最多烧 60s，而
+                    // 它的产物只是给模型注入一段提示——用户已经叫停了。
+                    if stop.stopped() {
+                        let hint = skill_finish(false, "用户停止");
+                        return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
+                    }
                     if let Some(new_steps) = replan(snapshot, reason).await {
                         plan.steps = new_steps;
                         fail_hint_queued = Some(format!(
@@ -3514,6 +3741,135 @@ mod inference_param_tests {
         assert_eq!(miss.top_p, Some(0.95));
         assert_eq!(miss.max_tokens, 1111);
         assert_eq!(miss.system_prompt.as_deref(), Some("active-e-system"));
+    }
+}
+
+#[cfg(test)]
+mod anthropic_thinking_tests {
+    use super::*;
+
+    fn http_with(provider: crate::bot::ApiProvider) -> LlmHttp {
+        LlmHttp {
+            client: reqwest::Client::new(),
+            base_url: "https://example.invalid".into(),
+            api_key: "k".into(),
+            model: "m".into(),
+            provider,
+            max_tokens: 1024,
+            reasoning: crate::bot::reasoning::ReasoningWire::None,
+            temperature: None,
+            top_p: None,
+            system_prompt: None,
+        }
+    }
+
+    fn msgs_with_thinking() -> Vec<serde_json::Value> {
+        vec![
+            serde_json::json!({"role": "user", "content": "查一下"}),
+            with_thinking(
+                serde_json::json!({"role": "assistant", "content": "我查一下"}),
+                &[serde_json::json!({
+                    "type": "thinking", "thinking": "先想", "signature": "SIG"
+                })],
+            ),
+        ]
+    }
+
+    /// OpenAI 请求体不得带 Anthropic 的 thinking 块载体（provider 专属键）。
+    ///
+    /// 部分 OpenAI 兼容网关对消息里的未知字段直接 400；且这个键对 OpenAI
+    /// 毫无意义。
+    #[test]
+    fn openai_body_drops_thinking_key() {
+        let http = http_with(crate::bot::ApiProvider::Openai);
+        let body = build_request_body(&http, &msgs_with_thinking(), &serde_json::json!([]), true)
+            .expect("请求体应能构造");
+        let arr = body["messages"].as_array().expect("messages 应是数组");
+        assert!(
+            arr.iter()
+                .all(|m| m.get(crate::bot_anthropic::THINKING_KEY).is_none()),
+            "OpenAI 请求体不得带 thinking 块载体：{arr:?}"
+        );
+        // 正文不能被顺手剥掉
+        assert_eq!(arr[1]["content"], "我查一下");
+    }
+
+    /// Anthropic 请求体要把 thinking 块带上（否则下一轮带 tool_result 的
+    /// 请求被 400 "cannot be modified"）。
+    #[test]
+    fn anthropic_body_carries_thinking_block() {
+        let http = http_with(crate::bot::ApiProvider::Anthropic);
+        let body = build_request_body(&http, &msgs_with_thinking(), &serde_json::json!([]), true)
+            .expect("请求体应能构造");
+        let arr = body["messages"].as_array().expect("messages 应是数组");
+        let asst = arr
+            .iter()
+            .find(|m| m["role"] == "assistant")
+            .expect("应有 assistant 轮");
+        let blocks = asst["content"].as_array().expect("content 应是块数组");
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[0]["signature"], "SIG");
+    }
+
+    /// 剥键只动 provider 专属键，其余内容原样保留。
+    #[test]
+    fn strip_thinking_key_keeps_other_fields() {
+        let msgs = msgs_with_thinking();
+        let stripped = strip_thinking_key(&msgs);
+        assert_eq!(stripped.len(), msgs.len());
+        assert!(stripped[1]
+            .get(crate::bot_anthropic::THINKING_KEY)
+            .is_none());
+        assert_eq!(stripped[1]["content"], "我查一下");
+        // 没有这个键时原样返回（不重建数组）
+        let plain = vec![serde_json::json!({"role": "user", "content": "x"})];
+        let out = strip_thinking_key(&plain);
+        assert_eq!(out, plain);
+    }
+}
+
+#[cfg(test)]
+mod stop_guard_tests {
+    /// `/stop` 必须覆盖主循环里两处长 await：
+    /// - 终稿自检的侧调（`summarize_http`，单次最多 60s）；
+    /// - 重规划（`replan`，单次最多 60s）。
+    ///
+    /// 两处都不看停止信号时，用户点了停止后 UI 仍停在「收尾中」最长两分钟，
+    /// 看着像停止失灵。
+    ///
+    /// 这两处在主循环深处，行为级验证得用 mock server 跑完整轮次、并在恰当
+    /// 的时机置位停止——成本远高于收益，故扫源码钉住「调用点之前有 stop
+    /// 检查，且检查与调用之间没有别的 await」。
+    #[test]
+    fn stop_guards_the_two_long_awaits() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/bot_model_loop.rs"
+        ))
+        .expect("应能读到自己");
+        for (what, needle) in [
+            ("终稿自检侧调", "crate::bot_chat::summarize_http("),
+            ("重规划", "replan(snapshot, reason).await"),
+        ] {
+            let idx = src
+                .find(needle)
+                .unwrap_or_else(|| panic!("应能找到{what}的调用点"));
+            // 在整段前缀里找最后一次 stop 检查（rfind 返回的一定是字符边界，
+            // 按字节切窗口会切在多字节字符中间）
+            let last_stop = src[..idx]
+                .rfind("stop.stopped()")
+                .unwrap_or_else(|| panic!("{what}之前必须有 stop 检查（否则 /stop 后还能烧 60s）"));
+            assert!(
+                idx - last_stop <= 4000,
+                "{what}的 stop 检查离调用点太远（{} 字节），中间可能夹着别的 await",
+                idx - last_stop
+            );
+            let between = &src[last_stop..idx];
+            assert!(
+                !between.contains(".await"),
+                "{what}的 stop 检查与调用点之间不得夹着别的 await（检查会形同虚设）"
+            );
+        }
     }
 }
 
@@ -4128,6 +4484,40 @@ mod hallucination_guard_tests {
         // 只读工具即使成功也不算变更
         assert!(!mutation_succeeded("list_tasks", &tr(ToolStatus::Ok)));
     }
+
+    /// 变更声称守卫：跑过「能改状态但核验不了凭证」的工具后，如实汇报
+    /// 不该被判成凭空汇报。
+    ///
+    /// 典型误伤：模型用 run_python 写完文件，如实说「已写入 /tmp/a.csv」
+    /// ——「已写入」命中 write_file 的声称话术，但 run_python 不在变更类
+    /// 工具里，mutation_done 是假的 → 守卫把终稿推回让模型重跑，副作用
+    /// 翻倍，末尾还挂一条「这句没有对应凭证」的更正。
+    #[test]
+    fn claim_mutation_does_not_fire_after_unverifiable_tool_ran() {
+        let text = "已写入 /tmp/a.csv";
+        assert!(
+            claims_mutation(text),
+            "「已写入」确实是变更声称话术（对照组）"
+        );
+        assert!(
+            claim_mutation_fires(false, false, text),
+            "什么都没动过却声称写入 → 该拦"
+        );
+        assert!(
+            !claim_mutation_fires(false, true, text),
+            "run_python 写过盘 → 「没凭证」推不出「没动手」，不该拦"
+        );
+        // 变更类工具成功过 → 同样不该拦
+        assert!(!claim_mutation_fires(true, false, text));
+    }
+
+    /// 守卫仍要拦得住真正的凭空汇报：不可核验工具没跑过时照拦。
+    #[test]
+    fn claim_mutation_still_fires_without_any_receipt() {
+        assert!(claim_mutation_fires(false, false, "已把任务移至回收站"));
+        // 没有变更声称 → 不拦
+        assert!(!claim_mutation_fires(false, false, "今天天气不错"));
+    }
 }
 
 #[cfg(test)]
@@ -4266,6 +4656,70 @@ mod parse_sse_chunk_tests {
     fn openai_content_chunk_has_no_usage() {
         let line = r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#;
         assert!(parse_sse_chunk(line).unwrap().usage.is_none());
+    }
+
+    /// OpenAI 网关**每块都带 usage** 时，token 数不得按块数翻倍。
+    ///
+    /// usage 是本请求的**总量**（`stream_options.include_usage` 约定），逐块
+    /// 累加会把同一份总量重复计入——落库 token、缓存命中率、前端水位条全部
+    /// 虚高。合并口径：按字段取最后一次非零值。
+    #[test]
+    fn stream_usage_is_not_multiplied_when_every_chunk_carries_it() {
+        let chunk =
+            r#"data: {"choices":[],"usage":{"prompt_tokens":5000,"completion_tokens":120}}"#;
+        let mut acc = TokenUsage::default();
+        for _ in 0..5 {
+            let u = parse_sse_chunk(chunk).unwrap().usage.unwrap();
+            merge_stream_usage(&mut acc, u);
+        }
+        assert_eq!(acc.input_tokens, 5000, "不得累加成 25000");
+        assert_eq!(acc.output_tokens, 120, "不得累加成 600");
+    }
+
+    /// Anthropic 的字段分散在两个事件里（input 在 message_start、output 在
+    /// message_delta），按字段取最后一次非零值才两样都在——整块替换会把
+    /// Anthropic 的 input 抹成 0。
+    #[test]
+    fn anthropic_usage_keeps_input_from_start_and_output_from_delta() {
+        let start = crate::bot_anthropic::parse_anthropic_event(
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":50,"cache_read_input_tokens":4000,"cache_creation_input_tokens":1500}}}"#,
+        )
+        .unwrap()
+        .usage
+        .unwrap();
+        let delta = crate::bot_anthropic::parse_anthropic_event(
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}"#,
+        )
+        .unwrap()
+        .usage
+        .unwrap();
+        let mut acc = TokenUsage::default();
+        merge_stream_usage(&mut acc, start);
+        merge_stream_usage(&mut acc, delta);
+        assert_eq!(
+            acc.input_tokens, 50,
+            "message_start 的 input 不能被后到的 delta 抹掉"
+        );
+        assert_eq!(acc.output_tokens, 7);
+        assert_eq!(acc.cache_read_tokens, 4000);
+        assert_eq!(acc.cache_creation_tokens, 1500);
+    }
+
+    /// Anthropic 的 message_delta.output_tokens 是**累计**输出量：再来一个更大的
+    /// delta 时应覆盖，不是相加（相加会把 5+7 算成 12）。
+    #[test]
+    fn anthropic_cumulative_output_replaces_rather_than_adds() {
+        let mut acc = TokenUsage::default();
+        for o in [5u64, 7] {
+            let u = crate::bot_anthropic::parse_anthropic_event(&format!(
+                r#"data: {{"type":"message_delta","usage":{{"output_tokens":{o}}}}}"#
+            ))
+            .unwrap()
+            .usage
+            .unwrap();
+            merge_stream_usage(&mut acc, u);
+        }
+        assert_eq!(acc.output_tokens, 7, "累计值应覆盖，不得相加");
     }
 
     /// 非对象 usage（脏网关）不得当成有效用量

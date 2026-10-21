@@ -415,6 +415,29 @@ describe("TaskTimelinePage", () => {
     expect(pool.style.transform).toBe("translateX(0)");
   });
 
+  it("拖拽幽灵用 transform 定位，不写 left/top 布局属性", () => {
+    render(
+      <TaskTimelinePage
+        tasks={TASKS}
+        onUpdate={vi.fn()}
+        onSetColumn={vi.fn()}
+      />,
+    );
+    const poolItem = within(screen.getByLabelText("任务池")).getByText(
+      "未排期任务乙",
+    );
+    fireEvent.pointerDown(poolItem, { button: 0 });
+    fireEvent.pointerMove(window, { clientX: 1300, clientY: 400 });
+    const ghost = document.querySelector(".drag-ghost") as HTMLElement;
+    expect(ghost).not.toBeNull();
+    // 位移只由 transform 给：left/top 是布局属性，逐帧写会每帧重排
+    expect(ghost.style.transform).toMatch(
+      /^translate3d\(-?[\d.]+px, -?[\d.]+px, 0\)$/,
+    );
+    expect(ghost.style.left).toBe("");
+    expect(ghost.style.top).toBe("");
+  });
+
   it("拖拽中卸载组件：window 拖拽监听被清理（pointermove 不再触发处理，不抛错）", () => {
     // 包一层注册：记录真实 onMove 的调用次数（卸载后派发事件不得再进入处理）
     let moveCalls = 0;

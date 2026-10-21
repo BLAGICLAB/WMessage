@@ -375,7 +375,7 @@ export default function GraphPage({
   const depCount = graph.links.filter((l) => l.kind === "dep").length;
 
   const chipBase =
-    "inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors";
+    "inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)]";
   const chipOn =
     "border-[var(--edge-strong)] bg-[var(--surface-raised)] text-[var(--t1)]";
   const chipOff = "border-[var(--edge)] text-[var(--t5)] opacity-60";

@@ -40,7 +40,7 @@ function Panel({
         <h3 className="text-[13px] font-semibold text-[var(--t3)]">{title}</h3>
         <button
           onClick={onMore}
-          className="ml-auto rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+          className="ml-auto rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
         >
           {moreLabel}
         </button>
@@ -64,7 +64,7 @@ function Row({
   return (
     <Tag
       {...(onClick ? { onClick, type: "button" as const } : {})}
-      className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-1.5 py-2 text-left transition-colors first:pt-1 hover:bg-[var(--hover-bg)]"
+      className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-1.5 py-2 text-left transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] first:pt-1 hover:bg-[var(--hover-bg)]"
     >
       {children}
     </Tag>
@@ -209,7 +209,7 @@ export function NotifyPanel({
             </span>
             <button
               onClick={onMore}
-              className="shrink-0 rounded-md border border-[var(--edge-strong)] px-2 py-0.5 text-[11px] text-[var(--t2)] transition-colors hover:bg-[var(--hover-bg)]"
+              className="shrink-0 rounded-md border border-[var(--edge-strong)] px-2 py-0.5 text-[11px] text-[var(--t2)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)]"
             >
               去处理
             </button>

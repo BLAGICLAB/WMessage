@@ -50,6 +50,20 @@
   --fs-sm: 14px;
   --fs-md: 15px;
   --fs-lg: 16px;
+  /* 动效 token（曲线 + 时长）——全仓唯一动效词汇表。
+     时长阶梯对齐组件层纪律（卡片 150ms，按钮/ Chips 100ms，无弹跳）；
+     曲线用强 ease-out，不用 CSS 关键字 ease（cubic-bezier(0.25,0.1,0.25,1)），
+     也不用 Tailwind 默认 cubic-bezier(0.4,0,0.2,1)（慢起，hover 显滞）。 */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  /* 到达脉冲用 CSS ease-out 关键字的等值写法：脉冲是「撑开再收回」，
+     强 ease-out 会让它一半时间就撑满、一半时间就消失，形状反而垮掉 */
+  --ease-pulse: cubic-bezier(0, 0, 0.58, 1);
+  --dur-chip: 100ms; /* 按钮 / Chips / hover 抬升 */
+  --dur-card: 150ms; /* 表面与选中态（卡片 / body 底色） */
+  --dur-fade: 150ms; /* 淡入淡出 / 遮罩 */
+  --dur-pop: 200ms; /* 一次性出现（下拉 / 浮层 / 落位弹入） */
+  --dur-tooltip: 150ms; /* 提示条 */
+  --dur-drawer: 240ms; /* 抽屉 / 侧浮窗滑入（任务编辑浮窗） */
 }
 
 .dark {
@@ -92,8 +106,8 @@
   /* 主题切换平滑过渡（背景/文字，不影响 transform 动画）；150ms 与组件层同步 */
   body {
     transition:
-      background-color 0.15s ease,
-      color 0.15s ease;
+      background-color var(--dur-card) var(--ease-out),
+      color var(--dur-card) var(--ease-out);
   }
   input::placeholder,
   textarea::placeholder {
@@ -153,6 +167,16 @@
   background: transparent;
 }
 
+@layer components {
+  /* 主滚动容器：关掉滚动锚定。
+     吸顶头部高度由滚动进度驱动、每帧都在变 → 下方内容每帧上移 →
+     Chromium 的滚动锚定改 scrollTop 补偿（而进度又来自 scrollY）→ 反馈环 → 头部抖动。
+     锚定是浏览器替作者兜底的通用行为，这里滚动语义由应用自己接管。 */
+  .app-scroll {
+    overflow-anchor: none;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════
    扁平分层组件类（nm-* 同名重实现：类名不动、材质全换，深浅两套自动生效）
    动效纪律：卡片 150ms，按钮/ Chips 100ms，无弹跳
@@ -166,8 +190,9 @@
     border: 1px solid var(--edge);
     box-shadow: var(--shadow-sm);
     transition:
-      background-color 0.15s ease,
-      border-color 0.15s ease;
+      background-color var(--dur-card) var(--ease-out),
+      border-color var(--dur-card) var(--ease-out),
+      opacity var(--dur-card) var(--ease-out);
   }
 
   .nm-card-hover {
@@ -200,8 +225,8 @@
     background-color: var(--inset-bg);
     border: 1px solid var(--edge);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
 
   /* === 抬升胶囊（未选中）：面板底 + 边线，与 .nm-inset 的对比承载「选中」语义 === */
@@ -210,8 +235,8 @@
     background-color: var(--surface);
     border: 1px solid var(--edge);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
   .nm-outset:hover:not(:disabled) {
     background-color: var(--hover-bg);
@@ -220,12 +245,54 @@
 
   /* === 浮层面板（下拉/菜单容器）：实色悬浮底 + 大投影，无 hover 换底 ===
      不能用 nm-outset 当浮层底：其 hover 态切半透明 --hover-bg（按钮语义），
-     鼠标移入浮层选选项时整个面板会变透明，透出下方内容（API 格式下拉 bug） */
+     鼠标移入浮层选选项时整个面板会变透明，透出下方内容（API 格式下拉 bug）
+     入场：从触发点长出来（transform-origin 由调用点用 origin-* 指定），
+     缩放起点 0.96 + 淡入，走 ease-out 200ms。 */
   .nm-popover {
     border-radius: var(--r-md);
     background-color: var(--surface-raised);
     border: 1px solid var(--edge);
     box-shadow: var(--shadow-lg);
+    animation: popover-in var(--dur-pop) var(--ease-out);
+  }
+  @keyframes popover-in {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  /* === 共享弹层（src/ui/Modal.tsx）：遮罩淡入 + 面板从 0.96 缩放淡入 ===
+     弹窗是偶发档，给一段标准入场；transform-origin 用 center
+     ——弹窗是居中出现的，从中心长是对的（浮层才需要从触发点长）。 */
+  .modal-backdrop {
+    animation: modal-fade var(--dur-pop) var(--ease-out);
+  }
+  .modal-panel {
+    transform-origin: center;
+    animation: modal-pop var(--dur-pop) var(--ease-out);
+  }
+  @keyframes modal-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes modal-pop {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
   }
 
   /* === 动作按钮：hover 底色抬升一档，active 压暗（按压感不靠阴影） === */
@@ -234,8 +301,8 @@
     background-color: var(--surface);
     border: 1px solid var(--edge);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
   .nm-btn:hover:not(:disabled) {
     background-color: var(--hover-bg);
@@ -260,8 +327,8 @@
     color: var(--t4);
     border-radius: var(--r-sm);
     transition:
-      background-color 0.1s ease,
-      color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      color var(--dur-chip) var(--ease-out);
   }
   .nm-icon-btn:hover:not(:disabled) {
     color: var(--t2);
@@ -287,8 +354,8 @@
     border-radius: var(--r-sm);
     color: var(--t2);
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out);
   }
   .nm-input:focus {
     outline: none;
@@ -687,9 +754,9 @@
     border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
     box-shadow: var(--shadow-sm);
     transition:
-      box-shadow 0.12s ease,
-      transform 0.12s ease,
-      background-color 0.12s ease;
+      transform var(--dur-chip) var(--ease-out),
+      background-color var(--dur-chip) var(--ease-out),
+      opacity var(--dur-chip) var(--ease-out);
   }
   .plan-blk::before {
     content: "";
@@ -701,8 +768,11 @@
     background: var(--c);
     border-radius: 3px 0 0 3px;
   }
-  .plan-blk:hover {
-    transform: translateY(-1px);
+  /* hover 抬升只在真鼠标下生效：触屏点一下就保持抬起、手感像卡住 */
+  @media (hover: hover) and (pointer: fine) {
+    .plan-blk:hover {
+      transform: translateY(-1px);
+    }
   }
   .dark .plan-blk {
     background: linear-gradient(
@@ -719,11 +789,13 @@
   .dark .plan-blk::before {
     display: none;
   }
-  .dark .plan-blk:hover {
-    transform: translateY(-2px);
-    box-shadow:
-      0 8px 24px color-mix(in srgb, var(--c) 45%, transparent),
-      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  @media (hover: hover) and (pointer: fine) {
+    .dark .plan-blk:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        0 8px 24px color-mix(in srgb, var(--c) 45%, transparent),
+        inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    }
   }
   .plan-blk.sel {
     border-color: var(--accent);
@@ -796,14 +868,16 @@
     border-radius: 999px;
     background: color-mix(in srgb, var(--c) 55%, transparent);
     opacity: 0;
-    transition: opacity 0.12s ease;
+    transition: opacity var(--dur-chip) var(--ease-out);
     cursor: ns-resize;
   }
   .dark .plan-grip {
     background: rgba(255, 255, 255, 0.6);
   }
-  .plan-blk:hover .plan-grip {
-    opacity: 1;
+  @media (hover: hover) and (pointer: fine) {
+    .plan-blk:hover .plan-grip {
+      opacity: 1;
+    }
   }
   /* 跨日续接段：贴列底/列顶的开口角 + »« 标记 */
   .plan-blk.tail {
@@ -918,10 +992,12 @@
   .plan-blk.is-archived::before {
     background: color-mix(in srgb, var(--c) 45%, var(--edge));
   }
-  .plan-blk.is-archived:hover {
-    transform: translateY(-1px);
-    filter: saturate(0.5);
-    box-shadow: 0 3px 8px color-mix(in srgb, var(--c) 14%, transparent);
+  @media (hover: hover) and (pointer: fine) {
+    .plan-blk.is-archived:hover {
+      transform: translateY(-1px);
+      filter: saturate(0.5);
+      box-shadow: 0 3px 8px color-mix(in srgb, var(--c) 14%, transparent);
+    }
   }
   .dark .plan-blk.is-archived {
     background: linear-gradient(
@@ -932,8 +1008,10 @@
     border-color: color-mix(in srgb, var(--c) 35%, var(--edge));
     box-shadow: none;
   }
-  .dark .plan-blk.is-archived:hover {
-    box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent);
+  @media (hover: hover) and (pointer: fine) {
+    .dark .plan-blk.is-archived:hover {
+      box-shadow: 0 4px 14px color-mix(in srgb, var(--c) 18%, transparent);
+    }
   }
   /* 已归档印章：红底白描边内圈 + 微旋转（盖章隐喻）；薄块平贴不转。
      整体严格 12px 高——与头像/对勾同行不撑行，标题行数不受挤占 */
@@ -975,7 +1053,7 @@
     border-radius: var(--r-lg);
     outline: 2px solid var(--plan-violet);
     outline-offset: 3px;
-    animation: archive-locate-pulse 0.85s ease-out 2;
+    animation: archive-locate-pulse 0.85s var(--ease-pulse) 2;
   }
   @keyframes archive-locate-pulse {
     0% {
@@ -1011,7 +1089,7 @@
   }
   /* 落位弹入（批 3：新排期块） */
   .plan-fresh {
-    animation: plan-pop 0.22s cubic-bezier(0.2, 1.4, 0.4, 1);
+    animation: plan-pop var(--dur-pop) var(--ease-out);
   }
   /* 执行中活体文字的流光（LiveIndicator）：横向渐变扫过字面，
      配合每秒刷新的耗时，让「还在跑」有持续变化而非静止的光点。
@@ -1033,9 +1111,45 @@
       animation: none;
     }
   }
+  /* 活动指示器（加载 / 运行中）：转子旋转、圆点呼吸。
+     减少动效时换成不涉及位移的透明度呼吸——旋转是位移，该去掉；
+     但「还有事情在发生」这个信号必须留下（§6：保留帮助理解的反馈）。
+     兜底块用 !important 掐断一切动画，这里也必须 !important 才压得住：
+     普通优先级会被兜底块压成 0.01ms / 1 次，动画等于冻结（Chromium 实测）。 */
+  .wmsg-activity {
+    animation: wmsg-spin 1s linear infinite;
+  }
+  .wmsg-activity-pulse {
+    animation: wmsg-pulse 2s var(--ease-pulse) infinite;
+  }
+  @keyframes wmsg-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes wmsg-pulse {
+    50% {
+      opacity: 0.5;
+    }
+  }
+  @keyframes wmsg-breathe {
+    0%,
+    100% {
+      opacity: 0.35;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wmsg-activity,
+    .wmsg-activity-pulse {
+      animation: wmsg-breathe 1.6s ease-in-out infinite !important;
+    }
+  }
   @keyframes plan-pop {
     0% {
-      transform: scale(0.88);
+      transform: scale(0.94);
       opacity: 0;
     }
     100% {
@@ -1044,9 +1158,12 @@
     }
   }
 
-  /* 拖拽幽灵：跟随指针的半成品块（fixed 定位，位置内联注入） */
+  /* 拖拽幽灵：跟随指针的半成品块（fixed 定位，位移走 transform——
+     left/top 是布局属性，拖拽全程每帧写一次就重排一次） */
   .drag-ghost {
     position: fixed;
+    left: 0;
+    top: 0;
     z-index: 50;
     pointer-events: none;
     width: 180px;
@@ -1079,6 +1196,10 @@
       var(--shadow-lg),
       0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
     cursor: grabbing;
+    /* 拖起/收回走 transform 过渡，不再单帧瞬切。
+       box-shadow 不进过渡列表：阴影动画是逐帧重绘，
+       而拖起这块是「瞬间抬起」的语义，不需要阴影跟着补间。 */
+    transition: transform var(--dur-chip) var(--ease-out);
   }
 
   /* 悬停完整标题提示（portal 到 body）：深色玻璃小片，贴元素上方 */
@@ -1098,7 +1219,7 @@
     box-shadow: var(--shadow-lg);
     transform: translateY(-100%);
     pointer-events: none;
-    animation: hover-tip-in 0.15s ease-out;
+    animation: hover-tip-in var(--dur-tooltip) var(--ease-out);
   }
   @keyframes hover-tip-in {
     from {
@@ -1125,9 +1246,9 @@
     border: 1px solid var(--brand);
     color: #fff;
     transition:
-      background-color 0.1s ease,
-      border-color 0.1s ease,
-      filter 0.1s ease;
+      background-color var(--dur-chip) var(--ease-out),
+      border-color var(--dur-chip) var(--ease-out),
+      filter var(--dur-chip) var(--ease-out);
   }
   .nm-btn-brand:hover:not(:disabled) {
     background-color: var(--brand-strong);
@@ -1249,7 +1370,7 @@
     text-shadow:
       0 0 9px rgba(3, 6, 12, 0.95),
       0 0 3px rgba(3, 6, 12, 1);
-    transition: opacity 0.16s linear;
+    transition: opacity var(--dur-fade) linear;
   }
   /* 合成层提升只给真正在显示的铭牌：CSS2D 每帧改一次 transform，
      常驻 will-change 会把上千块铭牌全提成合成层，显存一路涨 */

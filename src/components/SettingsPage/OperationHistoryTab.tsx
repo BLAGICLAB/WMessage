@@ -71,7 +71,7 @@ export function OperationHistoryTab() {
       </div>
       {loading && (
         <div className="flex items-center gap-2 text-xs text-[var(--t4)] py-3">
-          <Loader2 size={11} aria-hidden className="animate-spin" />
+          <Loader2 size={11} aria-hidden className="wmsg-activity" />
           加载中…
         </div>
       )}
@@ -117,7 +117,7 @@ export function OperationHistoryTab() {
                   disabled={rolling !== null}
                 >
                   {rolling === r.run_id ? (
-                    <Loader2 size={11} aria-hidden className="animate-spin" />
+                    <Loader2 size={11} aria-hidden className="wmsg-activity" />
                   ) : (
                     <Undo2 size={11} aria-hidden />
                   )}

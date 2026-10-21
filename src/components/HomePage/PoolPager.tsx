@@ -85,7 +85,7 @@ export function PoolPager({
         </span>
         <button
           onClick={onMore}
-          className="rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+          className="rounded-md px-2 py-0.5 text-xs text-[var(--t4)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
         >
           任务页
         </button>
@@ -95,7 +95,7 @@ export function PoolPager({
         <button
           onClick={() => setPage(page - 1)}
           aria-label="上一页"
-          className="rounded-md border border-[var(--edge)] px-1.5 py-0.5 text-[var(--t4)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+          className="rounded-md border border-[var(--edge)] px-1.5 py-0.5 text-[var(--t4)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
         >
           <ChevronLeft size={13} aria-hidden />
         </button>
@@ -105,7 +105,7 @@ export function PoolPager({
         <button
           onClick={() => setPage(page + 1)}
           aria-label="下一页"
-          className="rounded-md border border-[var(--edge)] px-1.5 py-0.5 text-[var(--t4)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+          className="rounded-md border border-[var(--edge)] px-1.5 py-0.5 text-[var(--t4)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
         >
           <ChevronRight size={13} aria-hidden />
         </button>
@@ -120,7 +120,9 @@ export function PoolPager({
             initial={reduceMotion ? false : { opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6 }}
-            transition={{ duration: 0.18 }}
+            // ease 是 JS 值，不能写 var(--ease-out)；写死曲线值，
+            // 与 token 同源由测试锁住（见 HomePage.test.tsx）
+            transition={{ duration: 0.18, ease: [0.23, 1, 0.32, 1] }}
           >
         {pageTasks.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 py-4 text-center">
@@ -141,7 +143,7 @@ export function PoolPager({
                 onMouseEnter={() => onHoverTask(t)}
                 onMouseLeave={() => onHoverTask(null)}
                 data-active={rowActive || undefined}
-                className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors ${
+                className={`flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
                   rowActive
                     ? "border-[var(--accent)] bg-[color-mix(in_srgb,var(--accent)_10%,transparent)]"
                     : "border-[var(--edge)] hover:border-[var(--edge-strong)] hover:bg-[var(--hover-bg)]"

@@ -44,7 +44,7 @@ export function LiveIndicator({
         : "正在回复";
   return (
     <span className="flex shrink-0 items-center gap-1.5 text-[10px]">
-      <Loader2 size={10} className="animate-spin text-[var(--brand)]" aria-hidden />
+      <Loader2 size={10} className="wmsg-activity text-[var(--brand)]" aria-hidden />
       <span style={GRADIENT_TEXT} className="wmsg-live-label tabular-nums">
         {label}
       </span>

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CommandPalette } from "./CommandPalette";
@@ -127,5 +128,23 @@ describe("CommandPalette", () => {
     expect(screen.getByText("完成")).toBeInTheDocument();
     expect(screen.getByText("归档")).toBeInTheDocument();
     expect(screen.getByText("回收站")).toBeInTheDocument();
+  });
+});
+
+describe("命令面板的高亮是瞬时的", () => {
+  // 面板的判词是「永不动效」：开合零动效是对的，面板内部唯一一条过渡
+  // （键盘高亮的背景色）反而让高亮滞后于光标——过渡窗口内旧行还在褪色、
+  // 新行还在上色，同一时刻两行都带底色。键盘驱动的表面就该是瞬时的。
+  it("结果行没有任何过渡类（键盘高亮必须瞬时）", async () => {
+    renderPalette();
+    await screen.findByText("机器人闲聊");
+    const row = document.querySelector("[data-cmd-active]") as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(row.className).not.toContain("transition");
+  });
+
+  it("整个面板文件里不再出现 transition（开合与高亮都是瞬时）", () => {
+    const src = readFileSync("src/components/CommandPalette.tsx", "utf-8");
+    expect(src).not.toContain("transition");
   });
 });
