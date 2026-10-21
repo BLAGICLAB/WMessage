@@ -66,14 +66,14 @@ impl ArchiveFormat {
 
 /// 上限集合（解包 / 打包两套）。
 #[derive(Debug, Clone, Copy)]
-struct Limits {
+pub(crate) struct Limits {
     max_entry_bytes: u64,
     max_total_bytes: u64,
     max_entries: usize,
 }
 
 impl Limits {
-    const fn unpack() -> Self {
+    pub(crate) const fn unpack() -> Self {
         Limits {
             max_entry_bytes: UNPACK_MAX_ENTRY_BYTES,
             max_total_bytes: UNPACK_MAX_TOTAL_BYTES,
@@ -91,14 +91,14 @@ impl Limits {
 
 /// 解包结果：写出的文件 + 被跳过的条目。
 #[derive(Debug, Default)]
-struct UnpackOutcome {
+pub(crate) struct UnpackOutcome {
     /// 实际识别的格式（auto 时由文件头判定）
-    format: Option<ArchiveFormat>,
+    pub(crate) format: Option<ArchiveFormat>,
     /// (落盘绝对路径, 字节数)
-    written: Vec<(PathBuf, u64)>,
+    pub(crate) written: Vec<(PathBuf, u64)>,
     /// (条目名, 跳过原因)
-    skipped: Vec<(String, String)>,
-    total_bytes: u64,
+    pub(crate) skipped: Vec<(String, String)>,
+    pub(crate) total_bytes: u64,
 }
 
 /// 打包结果。
@@ -238,7 +238,7 @@ fn detect_format(path: &Path) -> std::io::Result<ArchiveFormat> {
 // ── 解包 ──────────────────────────────────────────────────────────────────
 
 /// 解包（按格式分派；`format` 为 None 时按文件头识别）。
-fn unpack(
+pub(crate) fn unpack(
     src: &Path,
     dest: &Path,
     limits: &Limits,

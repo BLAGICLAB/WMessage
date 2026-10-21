@@ -39,7 +39,7 @@ pub struct SkillInfo {
 ///
 /// 失败（罕见，仅限 sandbox 完全拒绝对系统应用数据目录的访问）回退 `data_dir()`，
 /// 保证 skills_import / skills_open_dir / load_skill_meta 永不报「路径不存在」。
-fn skills_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
+pub(crate) fn skills_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> std::path::PathBuf {
     data_dir_subdir(
         app.path().app_data_dir().ok(),
         || crate::db::data_dir(app),
@@ -130,7 +130,7 @@ pub fn scan_skills<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Vec<SkillInf
 /// 技能名校验：仅允许 ASCII 字母/数字 + `-` / `_`，非空。
 /// 与 parse.rs::SKILL_NAME_CHARS_OK 同语义（不外暴露该常量以避免跨模块耦合）。
 /// 抽公共函数：skills_import / skills_delete / scan_skill_dirs 三处复用。
-fn validate_skill_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_skill_name(name: &str) -> Result<(), String> {
     if name.is_empty() || !name.chars().all(SKILL_NAME_CHARS_OK) {
         return Err(format!("技能名「{name}」无效（仅允许字母/数字/-/_）"));
     }
@@ -355,7 +355,7 @@ pub fn skills_open_dir(app: AppHandle) -> CommandResult<()> {
 /// 导入源 SKILL.md 字节上限：导入口无上限 read_to_string 会把超大文件整读进内存。
 /// 256KB = 创建侧 `CREATE_MAX_SKILL_CHARS`（64K 字符）的 UTF-8 最坏字节数（4 B/char），
 /// 与既有创建侧策略对齐的宽松上界。
-const IMPORT_MAX_SKILL_MD_BYTES: u64 = 256 * 1024;
+pub(crate) const IMPORT_MAX_SKILL_MD_BYTES: u64 = 256 * 1024;
 
 /// 读入导入源的 SKILL.md：先过字节大小闸再读（纯路径参数，单测直打）。
 fn read_import_skill_md(src: &std::path::Path) -> Result<String, CommandError> {
@@ -430,7 +430,7 @@ const CREATE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 /// 创建校验的元数据部分（纯逻辑可测）：description 必填（技能清单与路由展示必需）
 /// + intents/description 危险关键词预检（与运行时 preflight 同一黑名单——把拒绝
 /// 提前到落盘前，而非装上后每次启动才炸）。
-fn validate_created_meta(meta: &SkillMeta) -> Result<(), String> {
+pub(crate) fn validate_created_meta(meta: &SkillMeta) -> Result<(), String> {
     if meta.description.trim().is_empty() {
         return Err("frontmatter 缺少 description（技能清单与路由展示必需）".into());
     }

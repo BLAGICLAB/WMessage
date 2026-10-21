@@ -117,7 +117,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3750)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3793)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1445)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
@@ -298,6 +298,10 @@ src-tauri/src/
 │                                （Done/AwaitUser/FailedButRecoverable → LLM 兜底）
 ├── bot_skills/vars.rs           步骤变量替换（${stepN.field} / ${prev…} 嵌套路径）
 ├── bot_skills/manage.rs         技能安装/列表/删除，路由表重建触发点
+├── bot_skills/remote.rs         远程技能源：install_skill（GitHub 仓库 / 腾讯 SkillHub / zip 直链 →
+│                                下载 → 解包 → 定位 SKILL.md → 落盘 + 重建路由）与 search_skills
+│                                （SkillHub 公开搜索 API）；下载走公网闸逐跳校验重定向，解包复用
+│                                bot_archive 的限额闸（zip slip / 软链 / zip bomb），落盘失败回滚
 ├── bot_skills/builtin.rs        内置技能预装：`assets/skills/` include_bytes! 烘进二进制，启动时
 │                                物化到 builtin_skills/（与用户 skills 同父不同名，导入/删除语义互不干扰）；
 │                                物化幂等（Seeded/Updated/Unchanged）；搜索优先级：用户 > 内置 > dev mock

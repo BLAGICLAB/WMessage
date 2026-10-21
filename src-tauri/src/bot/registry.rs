@@ -409,6 +409,18 @@ pub const SCHEMA_RECORD_LESSON: &str = r##"{"type":"function","function":{"name"
 /// create_skill：机器人自建技能（SKILL.md + 可选脚本/模板附件），创建即生效并重建路由
 pub const SCHEMA_CREATE_SKILL: &str = r##"{"type":"function","function":{"name":"create_skill","description":"把本次对话中沉淀的可复用流程固化为技能（skill），长期生效、重启保留。适合：用户明确说「把这个流程存成技能/记住这个做法」，或同一多步流程第二次被手动描述时。content 为完整 SKILL.md 文本（YAML frontmatter 必含 name 与 description；可声明 risk_level/mode/max_steps/intents 触发关键词；步骤用 ## 标题分节）。创建后立即生效：用户说出 intents 关键词即进入该技能。同名技能已存在、或 description/intents 命中危险关键词会被拒绝","parameters":{"type":"object","properties":{"name":{"type":"string","description":"技能名：仅字母/数字/-/_"},"content":{"type":"string","description":"完整 SKILL.md 文本（frontmatter + 正文步骤）"},"files":{"type":"array","description":"可选附件（脚本/模板），路径相对技能目录","items":{"type":"object","properties":{"path":{"type":"string","description":"相对路径，如 scripts/run.py"},"content":{"type":"string","description":"文件文本内容"}}}}},"required":["name","content"]}}}"##;
 
+/// install_skill：从远程源安装技能（GitHub 仓库 / 腾讯 SkillHub / zip 直链），装上即生效
+pub const SCHEMA_INSTALL_SKILL: &str = r##"{"type":"function","function":{"name":"install_skill","description":"从远程源把技能（skill）装到本机技能目录，装上即生效并进入「已安装技能」清单。用户说「安装/装一下 XX 技能」「把这个 GitHub 仓库装成技能」「从 SkillHub 装 XX」时用它。source 三种写法：① GitHub 仓库地址（https://github.com/owner/repo；仓库里含多个技能时用 skill 参数指定技能目录名，或 source 直接写 owner/repo#技能名）② 腾讯 SkillHub 技能页地址（https://skillhub.cn/skills/xxx）③ zip 直链。安装会弹确认窗等用户点头；技能名不合法（如中文）时自动改用来源里的 slug 作技能名。装完后续用 use_skill 读取并执行","parameters":{"type":"object","properties":{
+"source":{"type":"string","description":"技能来源：GitHub 仓库地址 / SkillHub 技能页地址 / zip 直链 / owner/repo#技能名"},
+"skill":{"type":"string","description":"可选：仓库内的技能目录名——仓库含多个技能时必填（如 skill-hub-query）"}
+},"required":["source"]}}}"##;
+
+/// search_skills：在腾讯 SkillHub 上搜可安装的技能（公开 API，免鉴权）
+pub const SCHEMA_SEARCH_SKILLS: &str = r##"{"type":"function","function":{"name":"search_skills","description":"在腾讯 SkillHub（中文技能商店）搜索可安装的技能。用户说「找个能做 XX 的技能」「SkillHub 上有没有 XX」「装个 XX 技能」且还不知道具体技能名时先搜它。返回候选的名称、简介、slug、热度，以及可直接交给 install_skill 的安装地址。搜完先把候选列给用户挑，用户选定再调 install_skill 装","parameters":{"type":"object","properties":{
+"keyword":{"type":"string","description":"搜索关键词（中文或英文，如「周报」「PDF 处理」「前端」）"},
+"limit":{"type":"integer","description":"返回条数，可选，默认 8，最多 20"}
+},"required":["keyword"]}}}"##;
+
 pub const SCHEMA_USE_SKILL: &str = r##"{"type":"function","function":{"name":"use_skill","description":"读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个","parameters":{"type":"object","properties":{
     "name":{"type":"string","description":"技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）"},
     "params":{"type":"object","description":"技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略","additionalProperties":{"type":"string"}}
@@ -709,6 +721,16 @@ fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 
 fn call_create_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_create_skill(ctx.app, args).await })
+}
+
+fn call_install_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move {
+        crate::bot_skills::tool_install_skill(ctx.app, args, ctx.interactive, ctx.session_id).await
+    })
+}
+
+fn call_search_skills<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { crate::bot_skills::tool_search_skills(ctx.app, args).await })
 }
 
 fn call_apps_list<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -1820,7 +1842,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 61;
+pub const BUILTIN_TOOL_COUNT: usize = 63;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2122,6 +2144,22 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &["已创建技能", "已新建技能", "已注册技能"],
         max_output_bytes: 8192,
         call: call_create_skill,
+    },
+    ToolDef {
+        name: "install_skill",
+        schema: SCHEMA_INSTALL_SKILL,
+        mutating: true,
+        claims_patterns: &["已安装技能", "技能已安装"],
+        max_output_bytes: 8192,
+        call: call_install_skill,
+    },
+    ToolDef {
+        name: "search_skills",
+        schema: SCHEMA_SEARCH_SKILLS,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 16384,
+        call: call_search_skills,
     },
     // 子 agent 编排（主 agent 可见，追加表尾）
     ToolDef {
@@ -2922,6 +2960,8 @@ mod registry_tests {
             "record_lesson",
             "use_skill",
             "create_skill",
+            "install_skill",
+            "search_skills",
             "spawn_subagent",
             "check_subagent",
             "cancel_subagent",
@@ -2998,6 +3038,8 @@ mod registry_tests {
             "record_lesson",
             "use_skill",
             "create_skill",
+            "install_skill",
+            "search_skills",
             "spawn_subagent",
             "check_subagent",
             "cancel_subagent",
@@ -3060,6 +3102,7 @@ mod registry_tests {
             "edit_file",
             "write_file",
             "create_skill",
+            "install_skill",
             "apps_create",
             "apps_update_files",
             "unpack_archive",
@@ -3126,8 +3169,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 31,
-            "主可见应为 28+3+4+2+1+1+3+1+13+3（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具）"
+            base_arr.len() + 33,
+            "主可见应为 28+3+4+2+1+1+3+1+13+3+2（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具）"
         );
     }
 

@@ -171,7 +171,7 @@ fn http_client_builder() -> reqwest::ClientBuilder {
 /// 攻击者改 DNS 应答的窗口被关掉。TLS SNI/证书校验仍按原域名；
 /// addrs 端口必须是真实端口（check_public_url 已重写）——reqwest 0.13 的
 /// resolve_to_addrs 在 https 场景按 addr 自带端口连接，URL 端口不覆盖。
-fn http_client_pinned(
+pub(crate) fn http_client_pinned(
     url: &url::Url,
     addrs: &[std::net::SocketAddr],
 ) -> Result<reqwest::Client, String> {
@@ -888,7 +888,9 @@ fn extract_baidu_snippet(tail: &str) -> String {
 /// 校验 URL 并返回通过校验的解析地址：协议 + 主机名字符串 + DNS 解析出的所有 IP
 /// 均须公网（防 DNS 重绑定/内网域名）。返回的地址由调用方钉给 reqwest
 /// （resolve_to_addrs，FIX-PLAN #7a），校验与请求之间不再二次解析，堵 DNS TOCTOU。
-async fn check_public_url(url: &url::Url) -> Result<Vec<std::net::SocketAddr>, CommandError> {
+pub(crate) async fn check_public_url(
+    url: &url::Url,
+) -> Result<Vec<std::net::SocketAddr>, CommandError> {
     match url.scheme() {
         "http" | "https" => {}
         s => {
