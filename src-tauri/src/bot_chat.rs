@@ -1709,9 +1709,11 @@ async fn create_exec_session<R: tauri::Runtime>(
     );
     let block = build_task_block(task);
     let session = crate::db::lock::with_write_conn(app, move |conn| {
-        let s = crate::db::bot_session_create_inner(conn, Some(title))?;
+        // 建会话与任务块落库包同一事务：任务块写失败时会话不该留下空壳
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let s = crate::db::bot_session_create_inner(&tx, Some(title))?;
         crate::db::bot_history_save_inner(
-            conn,
+            &tx,
             &s.id,
             &[crate::db::BotMsgRow {
                 role: "user".into(),
@@ -1721,6 +1723,7 @@ async fn create_exec_session<R: tauri::Runtime>(
                 tools_json: None,
             }],
         )?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(s)
     })
     .await

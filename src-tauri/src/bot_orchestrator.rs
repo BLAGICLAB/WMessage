@@ -2274,9 +2274,36 @@ async fn run_subagent(
                 .map_err(CommandError::DbError)?
                 .ok_or_else(|| CommandError::TaskNotFound(row_for_db.id.clone()))?;
             let already_terminal = current.status.is_terminal();
-            // 历史落库（任务包装 + 收尾文本）无论终态与否都执行（围观/取证可见）
+            let tx = conn
+                .transaction()
+                .map_err(|e| CommandError::DbError(e.to_string()))?;
+            // 历史落库（任务包装 + 收尾文本）无论终态与否都执行（围观/取证可见），
+            // 且与状态更新同处一个事务：历史是「DELETE + 逐条 INSERT」两步，
+            // 不在事务里就是半截写——中途失败会留下「历史被清空但新行没写进去」
+            let fresh = if already_terminal {
+                // 终态已被 cancel 抢先写入：不做任何状态/结果副作用，但把行本身
+                // 带回去——下游事件与教训要用行的真实终态（cancelled），不能用
+                // classify_outcome 的「执行被打断 → Failed」观感
+                current
+            } else {
+                crate::db::update_subagent_status(
+                    &tx,
+                    &row_for_db.id,
+                    status_for_db,
+                    now_ms(),
+                    error_for_db.as_deref(),
+                )
+                .map_err(CommandError::DbError)?;
+                if let Some(v) = &result_for_db {
+                    crate::db::set_subagent_result(&tx, &row_for_db.id, &v.to_string())
+                        .map_err(CommandError::DbError)?;
+                }
+                crate::db::load_subagent(&tx, &row_for_db.id)
+                    .map_err(CommandError::DbError)?
+                    .ok_or_else(|| CommandError::TaskNotFound(row_for_db.id.clone()))?
+            };
             crate::db::bot_history_save_inner(
-                conn,
+                &tx,
                 &session_id_for_db,
                 &[
                     crate::db::BotMsgRow {
@@ -2296,30 +2323,6 @@ async fn run_subagent(
                 ],
             )
             .map_err(CommandError::DbError)?;
-            if already_terminal {
-                // 终态已被 cancel 抢先写入：不做任何状态/结果副作用，但把行本身
-                // 带回去——下游事件与教训要用行的真实终态（cancelled），不能用
-                // classify_outcome 的「执行被打断 → Failed」观感
-                return Ok(Some(current));
-            }
-            let tx = conn
-                .transaction()
-                .map_err(|e| CommandError::DbError(e.to_string()))?;
-            crate::db::update_subagent_status(
-                &tx,
-                &row_for_db.id,
-                status_for_db,
-                now_ms(),
-                error_for_db.as_deref(),
-            )
-            .map_err(CommandError::DbError)?;
-            if let Some(v) = &result_for_db {
-                crate::db::set_subagent_result(&tx, &row_for_db.id, &v.to_string())
-                    .map_err(CommandError::DbError)?;
-            }
-            let fresh = crate::db::load_subagent(&tx, &row_for_db.id)
-                .map_err(CommandError::DbError)?
-                .ok_or_else(|| CommandError::TaskNotFound(row_for_db.id.clone()))?;
             tx.commit()
                 .map_err(|e| CommandError::DbError(e.to_string()))?;
             Ok(Some(fresh))

@@ -162,3 +162,107 @@ pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandRes
     .await
     .map_err(|e| CommandError::from(format!("历史清空线程 join 失败：{e}")))?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 整段覆盖写在事务里必须是**一个单位**：中途失败不能留下「历史被清空、
+    /// 新行只写进去一半」的状态。
+    ///
+    /// 用触发器让第二条 INSERT 失败：DELETE 已经执行过了，不在事务里的话
+    /// 这条旧消息就真没了。（`db::tests` 里那条 `bot_history_save_rolls_back_on_insert_failure`
+    /// 用裸 SQL 复现同一场景；这条直接调被测函数本身，验的是函数里的 DELETE
+    /// 也被事务盖住。）
+    #[test]
+    fn history_save_in_a_transaction_rolls_back_as_one_unit() {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE bot_messages (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 role       TEXT NOT NULL,
+                 content    TEXT NOT NULL,
+                 refs       TEXT,
+                 session_id TEXT,
+                 thinking   TEXT,
+                 tools      TEXT,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE bot_sessions (
+                 id         TEXT PRIMARY KEY,
+                 title      TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO bot_sessions (id, title, created_at, updated_at)
+                 VALUES ('s1', '会话', 1, 1);
+             INSERT INTO bot_messages (role, content, session_id, created_at)
+                 VALUES ('user', '旧消息', 's1', 1);
+             CREATE TRIGGER boom BEFORE INSERT ON bot_messages
+                 WHEN NEW.content = 'BOOM' BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        )
+        .expect("建表");
+        let row = |content: &str| BotMsgRow {
+            role: "assistant".into(),
+            content: content.into(),
+            refs_json: None,
+            thinking: None,
+            tools_json: None,
+        };
+        // 事务里跑到一半失败 → 整个覆盖写回滚
+        let tx = conn.transaction().expect("开事务");
+        let r = bot_history_save_inner(&tx, "s1", &[row("新消息"), row("BOOM")]);
+        assert!(r.is_err(), "第二条 INSERT 应被触发器打断");
+        drop(tx); // 不提交 → 回滚
+        let left: Vec<String> = conn
+            .prepare("SELECT content FROM bot_messages WHERE session_id = 's1'")
+            .expect("读")
+            .query_map([], |r| r.get(0))
+            .expect("取行")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("收集");
+        assert_eq!(
+            left,
+            vec!["旧消息".to_string()],
+            "覆盖写失败后旧历史必须完好——不能被 DELETE 掏空"
+        );
+    }
+
+    /// 接线守卫：历史整段覆盖写的每个调用点都必须传事务句柄。
+    ///
+    /// 上面那条测试说明为什么：不在事务里就是半截写。匹配串用 `concat!` 拆分
+    /// 防自匹配（本测试自身的源码不算命中）。
+    #[test]
+    fn every_history_save_call_runs_inside_a_transaction() {
+        let needle = concat!("bot_history_save_", "inner(");
+        for (name, src) in [
+            ("db/bot_history.rs", include_str!("bot_history.rs")),
+            ("bot_chat.rs", include_str!("../bot_chat.rs")),
+            (
+                "bot_orchestrator.rs",
+                include_str!("../bot_orchestrator.rs"),
+            ),
+        ] {
+            let mut from = 0usize;
+            while let Some(rel) = src[from..].find(needle) {
+                let at = from + rel;
+                from = at + 1;
+                // 跳过函数定义本身
+                if src[..at].ends_with("pub fn ") {
+                    continue;
+                }
+                // 跳过注释里的提及（说明文字，不是调用点）
+                let line_start = src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                if src[line_start..at].trim_start().starts_with("//") {
+                    continue;
+                }
+                let call = &src[at..(at + 60).min(src.len())];
+                assert!(
+                    call.contains("&tx"),
+                    "{name}: 历史整段覆盖写的调用点必须传事务句柄（&tx），不得直接传 conn：{call}"
+                );
+            }
+        }
+    }
+}
