@@ -17,8 +17,9 @@ use crate::bot::tools::{
     tool_add_subtask, tool_complete_task, tool_create_excel, tool_create_pdf, tool_create_ppt,
     tool_create_task, tool_create_word, tool_create_word_revisions, tool_delete_task,
     tool_edit_task, tool_extract_document, tool_fetch_url, tool_get_current_time,
-    tool_link_file_to_task, tool_query_single_task, tool_query_tasks, tool_remove_subtask,
-    tool_run_python, tool_toggle_subtask, tool_web_search,
+    tool_link_file_to_task, tool_list_services, tool_query_single_task, tool_query_tasks,
+    tool_remove_subtask, tool_run_python, tool_start_service, tool_stop_service,
+    tool_toggle_subtask, tool_web_search,
 };
 use crate::bot_skills::{tool_create_skill, tool_use_skill};
 
@@ -311,6 +312,18 @@ pub const SCHEMA_RUN_PYTHON: &str = r##"{"type":"function","function":{"name":"r
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
     "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 1800）"}
   },"required":["code"]}}}"##;
+pub const SCHEMA_START_SERVICE: &str = r##"{"type":"function","function":{"name":"start_service","description":"启动一个受管长驻进程（node/deno/python 等白名单启动器）。进程归宿主托管：活过本次工具调用，可查可停，宿主退出时自动收干净。适合 node MCP server、dev server、watcher 这类需要持续运行的东西；一次性脚本用 run_python。启动器必须在白名单内（npx/bunx/uvx/pipx/node/deno/python/python3/docker/podman），不传 shell 字符串。默认需用户在设置页开启「允许机器人启动本地服务」，授权模式为 yolo 时免开关。服务继承宿主环境变量（含其中的密钥），只起自己写的代码","parameters":{"type":"object","properties":{
+    "command":{"type":"string","description":"启动器名，必须在白名单内（npx/bunx/uvx/pipx/node/deno/python/python3/docker/podman）"},
+    "args":{"type":"array","items":{"type":"string"},"description":"参数列表，逐个传入，不做 shell 解析"},
+    "cwd":{"type":"string","description":"工作目录（绝对路径），受文件授权闸约束；省略则用宿主当前目录"},
+    "name":{"type":"string","description":"用途标签，便于人识别，如「前端 dev server」；可省"},
+    "readyPattern":{"type":"string","description":"就绪判据：stdout 出现该正则才算启动成功。省略=进程起来 200ms 后仍活着即算成功"},
+    "readyTimeoutSecs":{"type":"integer","description":"等待就绪的超时秒数，默认 30，上限 120"}
+  },"required":["command"]}}}"##;
+pub const SCHEMA_STOP_SERVICE: &str = r##"{"type":"function","function":{"name":"stop_service","description":"停止一个受管服务。走降级信号阶梯：SIGINT → 100ms → SIGTERM → 400ms → SIGKILL，并递归回收脱离进程组的子孙进程。幂等：已停止的服务再停一次返回 stopped=false，不报错。","parameters":{"type":"object","properties":{
+    "serviceId":{"type":"string","description":"start_service 返回的服务 id"}
+  },"required":["serviceId"]}}}"##;
+pub const SCHEMA_LIST_SERVICES: &str = r##"{"type":"function","function":{"name":"list_services","description":"列出宿主托管的受管服务：id / 名称 / 命令 / 状态 / pid / 已运行秒数 / 退出码 / 最近输出尾部。用于确认服务是否还活着、拿服务 id 去 stop_service。","parameters":{"type":"object","properties":{}}}}"##;
 pub const SCHEMA_AST_INSPECT: &str = r##"{"type":"function","function":{"name":"ast_inspect","description":"对 Python 源码做符号级静态探查（走本机 Python 沙箱 + 标准库 ast，零新增依赖：资源受限、独立临时目录、默认 60s 超时，沙箱无文件系统隔离故调用前已过白名单闸；需设置页开启「允许机器人执行 Python」，或授权模式为 yolo 时免开关）。只支持 .py 文件，非 .py 会明确拒绝并让你改用 grep_files / read_text_file，不会静默退化成文本检索。四种模式：symbols 出符号树（类/函数/方法 + 行号）、defs 定位定义、refs 找全部引用（区分裸名与属性访问 + 所在函数）、callgraph 出调用链（按名字匹配，非作用域解析；depth 层）。调用链跨文件现扫不缓存：单次最多扫 200 个文件 / 2MB，跳过 .git/__pycache__/node_modules/venv 等目录，目录里指向外部的 symlink 一律排除；触及上限时返回 truncated=true，此时结果不完整","parameters":{"type":"object","properties":{
     "op":{"type":"string","enum":["symbols","defs","refs","callgraph"],"description":"探查模式：symbols=符号树 / defs=定义位置 / refs=全部引用 / callgraph=调用链"},
     "path":{"type":"string","description":"目标 .py 文件绝对路径（支持 ~ 开头）；op=callgraph 时可传目录，扫该目录下所有 .py"},
@@ -570,6 +583,44 @@ fn call_create_pdf<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 fn call_run_python<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let stop = ctx.stop;
     Box::pin(async move { tool_run_python(ctx.app, args, stop).await })
+}
+
+fn call_start_service<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    let app = ctx.app;
+    // 权限档与路径闸住在 Wry 层（bot-config 读写、bot_fs 授权弹窗都是 Wry 专属），
+    // 这里算好传进去：工具本体因此不绑 Runtime，能在 mock runtime 下被真调用
+    // （与调度器 core 注入 executor 同款思路）。
+    let yolo = crate::bot::perm_mode(app) == crate::bot::PermMode::Yolo;
+    // 闭包自带所有权：注入的 future 必须是 'static（工具本体不绑 Runtime）
+    let app_for_cwd = app.clone();
+    let sid_for_cwd = session_id.map(|s| s.to_string());
+    Box::pin(async move {
+        tool_start_service(app, args, session_id, yolo, move |p| {
+            let app = app_for_cwd.clone();
+            let sid = sid_for_cwd.clone();
+            Box::pin(async move {
+                crate::bot_fs::resolve_with_perm(
+                    &app,
+                    "start_service",
+                    &p,
+                    interactive,
+                    sid.as_deref(),
+                )
+                .await
+            })
+        })
+        .await
+    })
+}
+
+fn call_stop_service<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { tool_stop_service(ctx.app, args).await })
+}
+
+fn call_list_services<'a>(ctx: &'a ToolCtx<'a>, _args: &'a str) -> ToolFuture<'a> {
+    Box::pin(async move { tool_list_services(ctx.app) })
 }
 
 fn call_ast_inspect<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
@@ -1769,7 +1820,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 58;
+pub const BUILTIN_TOOL_COUNT: usize = 61;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -2327,6 +2378,31 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         max_output_bytes: 8192,
         call: call_wait_for_element,
     },
+    // 受管长驻服务。追加在表尾：同 manage_file 的理由——基线只比前缀。
+    ToolDef {
+        name: "start_service",
+        schema: SCHEMA_START_SERVICE,
+        mutating: true,
+        claims_patterns: &["已启动", "已启动服务", "服务已启动", "已在后台启动"],
+        max_output_bytes: 8192,
+        call: call_start_service,
+    },
+    ToolDef {
+        name: "stop_service",
+        schema: SCHEMA_STOP_SERVICE,
+        mutating: true,
+        claims_patterns: &["已停止", "已停止服务", "服务已停止", "已关闭服务"],
+        max_output_bytes: 8192,
+        call: call_stop_service,
+    },
+    ToolDef {
+        name: "list_services",
+        schema: SCHEMA_LIST_SERVICES,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_list_services,
+    },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。
 /// 少一次运行期解析，也不给「schema 非法 → expect panic 杀聊天」留路径
@@ -2675,6 +2751,30 @@ mod registry_tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// `TOOLS_TABLE` 里不许有 cfg-gated 条目。
+    ///
+    /// `BUILTIN_TOOL_COUNT` 是**手写常量**，而表长度是编译期决定的——
+    /// 一旦某条工具被 `#[cfg(feature = ...)]` gate 掉，某个编译配置下
+    /// 常量与表长度就不等，基线断言在**别的**配置下才炸（难查）。
+    /// 这里直接扫源码当场红：加 feature-gated 工具的人立刻看到。
+    #[test]
+    fn tools_table_has_no_cfg_gated_entries() {
+        let src = include_str!("registry.rs");
+        let start = src
+            .find("pub static TOOLS_TABLE")
+            .expect("registry.rs 里有 TOOLS_TABLE");
+        let end = start
+            + src[start..]
+                .find("\n];")
+                .expect("TOOLS_TABLE 是以 \\n]; 收尾的静态数组");
+        let body = &src[start..end];
+        assert!(
+            !body.contains("#[cfg("),
+            "TOOLS_TABLE 里不许出现 #[cfg(...)]：表长度会随编译配置变，\
+             而 BUILTIN_TOOL_COUNT 是手写常量（要么改成派生，要么别 gate 工具条目）"
+        );
+    }
+
     /// spawn_subagent schema 暴露 stage 字段（recon/executor/verifier）——锁住
     /// 三段式派发对 LLM 的契约入口；字段丢失即等于功能对模型不可见。
     #[test]
@@ -2849,6 +2949,9 @@ mod registry_tests {
             "ui_click",
             "ui_type",
             "wait_for_element",
+            "start_service",
+            "stop_service",
+            "list_services",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2922,6 +3025,9 @@ mod registry_tests {
             "ui_click",
             "ui_type",
             "wait_for_element",
+            "start_service",
+            "stop_service",
+            "list_services",
         ]
         .iter()
         .map(|s| s.to_string())
@@ -2963,6 +3069,8 @@ mod registry_tests {
             "cancel_reminder",
             "ui_click",
             "ui_type",
+            "start_service",
+            "stop_service",
         ]
         .into_iter()
         .collect();
@@ -3018,8 +3126,8 @@ mod registry_tests {
         );
         assert_eq!(
             der_arr.len(),
-            base_arr.len() + 28,
-            "主可见应为 28+3+4+2+1+1+3+1+13（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套）"
+            base_arr.len() + 31,
+            "主可见应为 28+3+4+2+1+1+3+1+13+3（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具）"
         );
     }
 
