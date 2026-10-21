@@ -295,6 +295,17 @@ where
     clear_terminal_skill_runs(app, session_id);
     let (steps, rollback) =
         parse_skill_steps(body).map_err(|e| DslFailure::Terminated { reason: e })?;
+    // 回滚段**只在 `rollback: auto` 时才执行**。
+    //
+    // 作者显式声明「不执行回滚」时，正文里留着 `## Rollback` 段（复制模板时
+    // 最常见）也不能跑——那会执行作者明确声明不要执行的逆操作（delete_task
+    // 等），可能删掉作者想保留的数据。此前全文零处读 `meta.rollback`：
+    // 回滚段存不存在只看正文有没有那节。
+    let rollback_slice: &[super::parse::SkillStep] = if meta.rollback == "auto" {
+        &rollback
+    } else {
+        &[]
+    };
     if steps.is_empty() {
         crate::bot::audit_log_hook(
             app,
@@ -387,7 +398,7 @@ where
                     let rb_attempted = run_rollback_segment_core(
                         app,
                         name,
-                        &rollback,
+                        rollback_slice,
                         &ctx,
                         step.index,
                         &reason,
@@ -460,7 +471,7 @@ where
             let rb_attempted = run_rollback_segment_core(
                 app,
                 name,
-                &rollback,
+                rollback_slice,
                 &ctx,
                 step.index,
                 &text,
@@ -501,7 +512,7 @@ where
             let rb_attempted = run_rollback_segment_core(
                 app,
                 name,
-                &rollback,
+                rollback_slice,
                 &ctx,
                 step.index,
                 &text,
@@ -1251,5 +1262,125 @@ mod tests {
             !pv.iter().any(|(_, k)| k == "terminated"),
             "仅 rollback 未知不得终止：{pv:?}"
         );
+    }
+
+    /// `rollback: none` 时，正文里的 `## Rollback` 段不许被执行。
+    ///
+    /// 作者显式声明「不执行回滚」时，复制模板留下的回滚段（最常见的来源）
+    /// 仍会跑逆操作（delete_task 等）——可能删掉作者想保留的数据。
+    /// 此前全文零处读 `meta.rollback`：回滚段存不存在只看正文有没有那节。
+    #[tokio::test]
+    async fn rollback_none_does_not_run_the_rollback_segment() {
+        let app = {
+            let app = tauri::test::mock_app();
+            tauri::Manager::manage(&app, crate::app_state::AppState::default());
+            app.handle().clone()
+        };
+        let body = "## Step 1: list\nquery_single_task({})\n\n## Rollback\ndelete_task({})";
+        let mut meta = crate::bot_skills::parse_meta(body, "rollback-gate-none");
+        meta.rollback = "none".into();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let calls2 = calls.clone();
+        let exec = move |tool: String, _args: String| {
+            let calls2 = calls2.clone();
+            async move {
+                calls2.lock().unwrap().push(tool.clone());
+                if tool == "query_single_task" {
+                    crate::bot::registry::ToolResult::error("步骤失败", Vec::new())
+                } else {
+                    crate::bot::registry::ToolResult::ok("已回滚", Vec::new())
+                }
+            }
+        };
+        let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let persisted2 = persisted.clone();
+        let persist =
+            move |name: &str, kind: &str, _r: Option<&str>, _s: Option<&str>, _rb: Option<bool>| {
+                persisted2
+                    .lock()
+                    .unwrap()
+                    .push((name.to_string(), kind.to_string()));
+            };
+        let outcome = run_skill_scheduler_core(
+            &app,
+            "rollback-gate-none",
+            &meta,
+            body,
+            None,
+            &serde_json::Value::Null,
+            exec,
+            persist,
+        )
+        .await
+        .expect("应跑出结果");
+        match outcome {
+            DslOutcome::FailedButRecoverable {
+                rollback_attempted, ..
+            } => assert!(!rollback_attempted, "rollback: none 时不许声称回滚跑过"),
+            other => panic!("主步失败应落 FailedButRecoverable，实际 {other:?}"),
+        }
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "回滚段不许执行（作者声明了 rollback: none）：{calls:?}"
+        );
+        assert_eq!(calls[0], "query_single_task");
+    }
+
+    /// 对照组：`rollback: auto` 时回滚段照跑（上面的闸不许把 auto 也掐了）。
+    #[tokio::test]
+    async fn rollback_auto_still_runs_the_rollback_segment() {
+        let app = {
+            let app = tauri::test::mock_app();
+            tauri::Manager::manage(&app, crate::app_state::AppState::default());
+            app.handle().clone()
+        };
+        let body = "## Step 1: list\nquery_single_task({})\n\n## Rollback\ndelete_task({})";
+        let mut meta = crate::bot_skills::parse_meta(body, "rollback-gate-auto");
+        meta.rollback = "auto".into();
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let calls2 = calls.clone();
+        let exec = move |tool: String, _args: String| {
+            let calls2 = calls2.clone();
+            async move {
+                calls2.lock().unwrap().push(tool.clone());
+                if tool == "query_single_task" {
+                    crate::bot::registry::ToolResult::error("步骤失败", Vec::new())
+                } else {
+                    crate::bot::registry::ToolResult::ok("已回滚", Vec::new())
+                }
+            }
+        };
+        let persisted = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let persisted2 = persisted.clone();
+        let persist =
+            move |name: &str, kind: &str, _r: Option<&str>, _s: Option<&str>, _rb: Option<bool>| {
+                persisted2
+                    .lock()
+                    .unwrap()
+                    .push((name.to_string(), kind.to_string()));
+            };
+        let outcome = run_skill_scheduler_core(
+            &app,
+            "rollback-gate-auto",
+            &meta,
+            body,
+            None,
+            &serde_json::Value::Null,
+            exec,
+            persist,
+        )
+        .await
+        .expect("应跑出结果");
+        match outcome {
+            DslOutcome::FailedButRecoverable {
+                rollback_attempted, ..
+            } => assert!(rollback_attempted, "rollback: auto 时回滚段应跑过"),
+            other => panic!("主步失败应落 FailedButRecoverable，实际 {other:?}"),
+        }
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "rollback: auto 时回滚段必须执行：{calls:?}");
+        assert_eq!(calls[1], "delete_task");
     }
 }

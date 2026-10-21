@@ -57,6 +57,11 @@ pub fn start_skill(
     session_id: Option<&str>,
 ) -> Result<(SkillMeta, String), String> {
     let (meta, body, dir) = load_skill_meta(app, name)?;
+    // `rollback: auto` 但正文没有 `## Rollback` 段 → 降为 `none`。
+    //
+    // SKILL-DSL 承诺过这个降级：声明了 auto 却没有回滚段可跑 = 没有回滚。
+    // 不降级的话，「回滚 auto」会被读成「会回滚」，而实际上一段都没有。
+    let meta = crate::bot_skills::parse::normalize_rollback_meta(meta, &body);
     preflight(&meta)?;
     // 参数契约校验——必填缺失拒绝启动（教模型带参重调）；非必填缺省回填 default
     let mut params = params;

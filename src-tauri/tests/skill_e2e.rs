@@ -474,7 +474,11 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
     let _serial = SKILL_SCHED_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let (meta, body) = fixture_meta_body();
+    let (mut meta, body) = fixture_meta_body();
+    // 回滚段只在 `rollback: auto` 时才执行（作者声明 none = 不执行逆操作）。
+    // 这个用例验的是「回滚窗口」机制（回滚执行时 run 被临时重开为 Running），
+    // 所以显式声明 auto；夹具里的 none 留着当「不跑回滚」那侧的样本。
+    meta.rollback = "auto".into();
     let app = mock_handle();
     test_hook_insert_skill_run(&app, make_run("minimax-ppt", SkillState::Running));
     let log_offset = bot_log_len();

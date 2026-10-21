@@ -1086,6 +1086,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-2 | 已修 | Windows 停止阶梯落地（`taskkill /T /F`）+ 停止失败不谎报「已停」+ pid 0/1 不许当树根（`procs::stop_tree` / `services::stop_entry`）|
 | P1-12 | 已修 | 主聊天路径工具执行包 `catch_unwind`（`dispatch::run_tool_panic_isolated`）+ 接线守卫 |
 | P1-7 | 已修 | 失效测试补回 `#[tokio::test]` + `cargo clippy --all-targets -- -D warnings` 进快门禁（`scripts/test-fast.sh`）+ 16 处存量 lint 清零 |
+| P1-6 | 已修 | 回滚段只在 `rollback: auto` 时执行（`scheduler`）+ `auto` 无回滚段降级为 `none`（`parse::normalize_rollback_meta`）|
 
 ### P0-1 的落地口径
 
@@ -1342,4 +1343,26 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 -- -D warnings`，且**已在快门禁内**）；`docs/testing.md` 门禁表补 `[2.4/N]`
 一行，并写明它防的是哪一类问题——「测试压根没被收集运行」，那种 `cargo
 nextest` 跑起来全绿、只有 clippy 知道真相的坑。
+
+### P1-6 的落地口径
+
+**`meta.rollback` 终于被读了一次**：回滚段只在 `rollback: auto` 时执行。
+此前 `scheduler.rs` 全文**零处**读 `meta.rollback`——回滚段存不存在只看正文
+有没有 `## Rollback` 那一节。于是复制模板时最常见的形态（frontmatter 写着
+`rollback: none`、正文留着 `## Rollback` 段）会执行作者**明确声明不要执行**
+的逆操作（`delete_task` 等），可能删掉作者想保留的数据。
+
+- 执行闸落在调度器：解析出 `(steps, rollback)` 之后，按 `meta.rollback` 决定
+  这段回滚步给不给执行——一处闸管住三个失败出口（状态机中止 / allowed-tools
+  违规 / 步骤失败）。
+- 降级也补上了：SKILL-DSL 承诺「`rollback: auto` 时必须含 `## Rollback` 段，
+  否则 `rollback: none`」，解析器此前没做。frontmatter 单独解析时看不到正文，
+  所以降级放在「meta 与正文同时在手」的那一层（`start_skill`），判据抽成
+  纯函数 `parse::normalize_rollback_meta`。
+- 判据单源：段落标题判定仍走 `is_rollback_heading`（`## Rollback` / `## 回滚`
+  都认），不再各认一半。
+
+**测试**：`rollback: none` + 正文有回滚段 → 回滚步**不执行**、`rollback_attempted`
+为 false；对照组 `rollback: auto` → 照跑（别把 auto 也掐了）；`auto` 但正文没有
+回滚段 → 降级为 `none`（中英文标题都认）。
 

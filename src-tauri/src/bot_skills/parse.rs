@@ -352,6 +352,28 @@ pub(crate) fn is_rollback_heading(line: &str) -> bool {
         || rest.starts_with("回滚(")
 }
 
+/// 正文里有没有回滚段。
+///
+/// 与 `parse_skill_steps` 共用 `is_rollback_heading` 同一判定——两处各认一半
+/// 会漂（判据不一致 = 「声明了 auto 却说没有回滚段」这类假象）。
+pub(crate) fn body_has_rollback_section(body: &str) -> bool {
+    body.lines().any(is_rollback_heading)
+}
+
+/// `rollback: auto` 但正文没有 `## Rollback` 段 → 降为 `none`。
+///
+/// SKILL-DSL 承诺过这个降级：声明了 auto 却没有回滚段可跑 = 没有回滚。
+/// 不降级的话，「回滚 auto」会被读成「会回滚」，而实际上一段都没有。
+///
+/// 判据单源在这里：frontmatter 单独解析时看不到正文，所以降级必须由
+/// 「拿到 meta 与正文」的那一层调用。
+pub(crate) fn normalize_rollback_meta(mut m: SkillMeta, body: &str) -> SkillMeta {
+    if m.rollback == "auto" && !body_has_rollback_section(body) {
+        m.rollback = "none".into();
+    }
+    m
+}
+
 /// 解析 `## Step N: 标题` 或 `## Step N 标题` → `(序号, 标题)`
 fn parse_step_heading(line: &str) -> Option<(usize, String)> {
     let rest = line.trim().strip_prefix("## Step ")?;
@@ -936,5 +958,33 @@ query_single_task({\"id\": \"${step1.id}\"})\n";
             return;
         }
         eprintln!("扫瞄 {} 个 Skill，全部解析通过", found);
+    }
+
+    /// `rollback: auto` 但正文没有 `## Rollback` 段 → 降为 `none`。
+    ///
+    /// SKILL-DSL 承诺过这个降级，实现此前没做：声明了 auto 却一节回滚都没有，
+    /// 读起来却像「会回滚」。
+    #[test]
+    fn rollback_auto_without_a_rollback_section_downgrades_to_none() {
+        let m = parse_meta("---\nrollback: auto\n---\n# 步骤\n", "d");
+        assert_eq!(m.rollback, "auto", "frontmatter 单独解析时不该改判");
+
+        // 正文没有回滚段 → 降为 none
+        let downgraded = normalize_rollback_meta(m.clone(), "## Step 1: a\nquery_tasks({})\n");
+        assert_eq!(downgraded.rollback, "none", "没有回滚段可跑 = 没有回滚");
+
+        // 有回滚段 → 保持 auto
+        let kept = normalize_rollback_meta(
+            m.clone(),
+            "## Step 1: a\nquery_tasks({})\n\n## Rollback\ndelete_task({})\n",
+        );
+        assert_eq!(kept.rollback, "auto");
+
+        // 中文标题的段落也认（判据单源在 is_rollback_heading）
+        let kept_cn = normalize_rollback_meta(
+            m,
+            "## Step 1: a\nquery_tasks({})\n\n## 回滚\ndelete_task({})\n",
+        );
+        assert_eq!(kept_cn.rollback, "auto");
     }
 }
