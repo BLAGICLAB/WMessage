@@ -1083,6 +1083,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-17 | 已修 | 指纹显式枚举字段，含 env/headers（`manager::fingerprint`） |
 | P1-4 | 已修 | 194 处工具返回点改 `denied` / `error` + 静态扫描守卫重写（`audit.rs`） |
 | P1-1 | 已修 | 采集层显式回报采样成败（`procs::ListeningSample`）+ 采样失败降级 `Unsupported` |
+| P1-12 | 已修 | 主聊天路径工具执行包 `catch_unwind`（`dispatch::run_tool_panic_isolated`）+ 接线守卫 |
 
 ### P0-1 的落地口径
 
@@ -1255,3 +1256,18 @@ reqwest 没有二次解析、Host 头仍是原域名）；源码文本钉住「H
 决定之后不再成立，留着会让人以为「文案首字决定 status」，故一并删除。
 
 
+### P1-12 的落地口径
+
+**主聊天路径的 panic 隔离**：工具 future 现在包 `catch_unwind`
+（`dispatch::run_tool_panic_isolated`），panic 归一成 `ToolResult::error`
+回灌给模型——模型能读到失败原因并换策略，这一轮也不会整轮丢掉。此前工具
+panic → future unwind → `bot_chat` 整轮崩：用户这一轮对话全丢（无部分输出、
+无错误提示），前端停在「正在思考」。子 agent runner 早有同样的隔离
+（`bot_orchestrator::run_subagent`），hooks 扩展点三层都做了 fail-open——
+被扩展的本体反而没有。
+
+**归一成失败而不是成功**：成功凭证表会被污染（幻觉守卫查不到真实成功记录，
+反过来给模型背书）。
+
+**接线守卫**：`dispatch` 源码扫描钉住「内置工具执行与 MCP 兜底路由都必须走
+隔离层，隔离层必须真的 catch_unwind 且归一成 `ToolResult::error`」。

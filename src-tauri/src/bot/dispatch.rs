@@ -370,6 +370,46 @@ async fn tool_rule_gate(
     }
 }
 
+/// 跑一个工具 future，panic 归一成普通失败。
+///
+/// 工具 panic → future unwind → 主聊天链路整轮崩掉：这一轮对话全丢
+/// （无部分输出、无错误提示），前端停在「正在思考」。子 agent runner
+/// 早有同样的隔离（`bot_orchestrator::run_subagent`），这里给主链路补齐——
+/// **同一份工具代码，不该有两种健壮性**。hooks 扩展点三层都做了 fail-open，
+/// 被扩展的本体反而没有。
+///
+/// panic 归一成 `Error` 而不是直接结束这一轮：模型能读到失败原因并换策略，
+/// 这也正是幻觉守卫要的「成败凭证」——panic 不该被算成一次成功调用。
+async fn run_tool_panic_isolated<F>(
+    app: &AppHandle,
+    name: &str,
+    fut: F,
+) -> crate::bot::registry::ToolResult
+where
+    F: std::future::Future<Output = crate::bot::registry::ToolResult>,
+{
+    use futures_util::FutureExt;
+    match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(r) => r,
+        Err(panic) => {
+            let msg = crate::audit::panic_payload_msg(panic.as_ref());
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "tool.panic",
+                &[
+                    ("tool", name.to_string()),
+                    ("panic", crate::bot::truncate_for_log(&msg, 300)),
+                ],
+            );
+            crate::bot::registry::ToolResult::error(
+                format!("工具执行异常，已中断该次调用：{msg}"),
+                Vec::new(),
+            )
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 async fn execute_tool_impl(
@@ -558,11 +598,18 @@ async fn execute_tool_impl(
     // （原先下方又走 TOOLS_TABLE.iter().find 线性扫，每次调用两次 name 查找）。
     let tool_def = tools_index().get(name).copied();
     let mut result: crate::bot::registry::ToolResult = match tool_def {
-        Some(t) => (t.call)(&ctx, args).await,
+        Some(t) => run_tool_panic_isolated(app, name, (t.call)(&ctx, args)).await,
         // 阶段 4（MCP 增量挂载）：查表 miss 先走外部工具兜底路由——
         // 反查挂载表命中则调远端；编造的 mcp_* 名在路由内仍回「未知工具」。
         // 审计（tool.call/tool.return）已在函数出入口统一发出，无需重复。
-        None => crate::bot::mcp::mount::execute_mcp_tool(app, name, args).await,
+        None => {
+            run_tool_panic_isolated(
+                app,
+                name,
+                crate::bot::mcp::mount::execute_mcp_tool(app, name, args),
+            )
+            .await
+        }
     };
 
     // 3. L5 post_tool 钩子层：工具已跑完、结果落定但还没进审计与回灌之前。
@@ -995,7 +1042,7 @@ mod pre_tool_hook_tests {
             .next()
             .expect("execute_tool_impl 应以顶格 } 收尾");
         let exec = body
-            .find("(t.call)(&ctx, args).await")
+            .find("run_tool_panic_isolated(app, name, (t.call)(&ctx, args))")
             .expect("找不到工具执行点");
         let hook = body
             .find("run_post_tool(&call, &mut text)")
@@ -1018,6 +1065,80 @@ mod pre_tool_hook_tests {
             hook < refill,
             "钩子必须在结果回灌之前：否则改写不会到达模型"
         );
+    }
+
+    /// 主聊天路径的 panic 隔离守卫：工具 future 必须包 catch_unwind。
+    ///
+    /// 工具 panic → future unwind → 这一轮对话整轮丢失（无部分输出、无错误提示），
+    /// 前端停在「正在思考」。子 agent runner 早有同样的隔离
+    /// （`bot_orchestrator::run_subagent`），主链路必须有——**同一份工具代码
+    /// 不该有两种健壮性**。hooks 扩展点三层都做了 fail-open，被扩展的本体
+    /// 反而没有。
+    #[test]
+    fn tool_execution_is_panic_isolated() {
+        let src = include_str!("dispatch.rs");
+        let body = src
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
+        // 内置工具与 MCP 兜底路由都要走隔离层
+        assert!(
+            body.contains("run_tool_panic_isolated(app, name, (t.call)(&ctx, args))"),
+            "内置工具执行必须走 panic 隔离层"
+        );
+        assert!(
+            body.contains(
+                "run_tool_panic_isolated(app, name, crate::bot::mcp::mount::execute_mcp_tool"
+            ),
+            "MCP 兜底路由也要走 panic 隔离层"
+        );
+        // 隔离层本身必须真的 catch，且把 panic 归一成失败（不是成功调用）
+        let iso = body
+            .split_once("async fn run_tool_panic_isolated(")
+            .expect("找不到 panic 隔离层")
+            .1;
+        assert!(
+            iso.contains("catch_unwind"),
+            "隔离层必须真的 catch_unwind（panic 要归一成普通失败回灌给模型）"
+        );
+        assert!(
+            iso.contains("ToolResult::error"),
+            "panic 必须归一成失败——算成成功调用会污染幻觉守卫的成功凭证表"
+        );
+    }
+
+    /// panic 的**行为**测试：工具炸了不许把这一轮带走。
+    ///
+    /// 归一成 `Error` 而不是「成功」：成功凭证表会被污染（幻觉守卫查不到
+    /// 真实成功记录，反过来给模型背书）。
+    #[tokio::test]
+    async fn panic_in_tool_is_normalized_into_an_error_result() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let fut = async move {
+            // black_box 挡住编译期折叠，编译器才不会把另一支判成不可达
+            if std::hint::black_box(true) {
+                panicking_tool()
+            } else {
+                crate::bot::registry::ToolResult::ok("没炸", Vec::new())
+            }
+        };
+        let r = super::run_tool_panic_isolated(&handle, "boom_tool", fut).await;
+        assert_eq!(
+            r.status,
+            crate::bot::registry::ToolStatus::Error,
+            "panic 必须归一成失败，不能算成成功调用"
+        );
+        assert!(
+            r.text.contains("工具执行异常"),
+            "失败文案要说清是异常中断：{}",
+            r.text
+        );
+    }
+
+    /// 一个只会炸的工具（模拟工具内部 panic）。
+    fn panicking_tool() -> crate::bot::registry::ToolResult {
+        panic!("工具内部炸了");
     }
 
     fn kv_get<'a>(kv: &'a [(&'static str, String)], key: &str) -> Option<&'a str> {
