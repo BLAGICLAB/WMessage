@@ -207,6 +207,7 @@ pub(crate) fn parse_proc_stat(pid: u32, text: &str) -> Option<ProcSnapshot> {
 }
 
 /// 一页的字节数（Linux 的 rss 以页计）。
+#[cfg(unix)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn page_size() -> u64 {
     // SAFETY: sysconf 是纯查询，返回 -1 表示未知，此时按 4096 兜底。
@@ -218,7 +219,16 @@ pub(crate) fn page_size() -> u64 {
     }
 }
 
+/// 非 unix 没有 `sysconf`（libc 是 unix-only 依赖）。这个值只在 Linux 的
+/// `/proc` 解析路径上生效，别的平台上它只保证纯函数可测——取值取 Linux 常规值。
+#[cfg(not(unix))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn page_size() -> u64 {
+    4096
+}
+
 /// 一秒多少个 clock tick（utime/stime 以 tick 计）。
+#[cfg(unix)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn clock_ticks() -> f64 {
     // SAFETY: sysconf 是纯查询，返回 -1 表示未知，此时按 100 兜底（Linux 常规值）。
@@ -228,6 +238,13 @@ pub(crate) fn clock_ticks() -> f64 {
     } else {
         100.0
     }
+}
+
+/// 非 unix 没有 `sysconf`——同 `page_size`，只保证纯函数可测。
+#[cfg(not(unix))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn clock_ticks() -> f64 {
+    100.0
 }
 
 /// macOS 等无 `/proc` 的平台：调 `ps` 取 pid / ppid / lstart / rss / 累计 CPU 时间。
@@ -835,6 +852,7 @@ pub(crate) struct TreeStop {
 ///
 /// 阶梯的每一级发信号前各拍一张快照增量收集子孙，最后统一杀——
 /// 边收边杀会打断正在进行的快照（父子链残缺 → 漏收）。
+#[cfg(unix)]
 pub(crate) fn stop_tree<F>(root_pid: u32, pgid: i32, mut wait_exit: F) -> TreeStop
 where
     F: FnMut(Duration) -> bool,
@@ -950,6 +968,23 @@ where
         descendants_killed: killed,
         reused_skipped,
         elapsed_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+/// 非 unix 平台没有信号阶梯（unix 靠 SIGINT/SIGTERM/SIGKILL）。
+///
+/// 这里给出显式的「不支持」结果而不是空转：空转会让调用方把
+/// 「一个信号都没发出去」当成「已经停掉」。
+#[cfg(not(unix))]
+pub(crate) fn stop_tree<F>(_root_pid: u32, _pgid: i32, _wait_exit: F) -> TreeStop
+where
+    F: FnMut(Duration) -> bool,
+{
+    TreeStop {
+        method: "unsupported".to_string(),
+        descendants_killed: 0,
+        reused_skipped: Vec::new(),
+        elapsed_ms: 0,
     }
 }
 

@@ -1462,6 +1462,7 @@ async fn read_with_ino_check(
     _pre_ino: Option<u64>,
     max: usize,
 ) -> std::io::Result<(InodeCheckOutcome, bool, Vec<u8>, bool)> {
+    use std::io::Read;
     let path = path.to_path_buf();
     let res = spawn_blocking_io(move || -> Result<(bool, Vec<u8>, bool), std::io::Error> {
         let mut f = std::fs::File::open(&path)?;
