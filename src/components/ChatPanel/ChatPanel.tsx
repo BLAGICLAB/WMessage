@@ -83,6 +83,18 @@ function parseJsonField(
   return raw;
 }
 
+/** 回合状态取值域（与后端 TurnStatus::as_str 同源）。
+ *  库里出现未知值按缺失处理：旧版本写入/库被手改都不能让整段会话加载炸掉 */
+const TURN_STATUS_VALUES: readonly string[] = [
+  "running",
+  "settling",
+  "completed",
+  "interrupted",
+  "failed",
+];
+const parseTurnStatus = (raw?: string | null): TurnStatus | undefined =>
+  raw && TURN_STATUS_VALUES.includes(raw) ? (raw as TurnStatus) : undefined;
+
 /** 贴底阈值（px）：离底这么近就算「还贴着底」。
  *  流式追加让内容高度每帧变，差几像素就当没贴底 → 视口在底部反复抽搐。 */
 const STICK_BOTTOM_PX = 32;
@@ -583,6 +595,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           refsJson: m.refs?.length ? JSON.stringify(m.refs) : null,
           thinking: m.thinking ?? null,
           toolsJson: m.tools?.length ? JSON.stringify(m.tools) : null,
+          turnStatus: m.turnStatus ?? null,
         })),
     }).catch((e) =>
       // 后台持久化失败：UI 还能跑，不打断当前对话
@@ -618,6 +631,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       refsJson?: string | null;
       thinking?: string | null;
       toolsJson?: string | null;
+      turnStatus?: string | null;
     }[],
     sid?: string | null,
   ): Msg[] =>
@@ -627,6 +641,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       refs: parseHistoryJson<TaskRef>(r.refsJson, "refsJson", i, sid ?? null),
       thinking: r.thinking ?? undefined,
       tools: parseHistoryJson<ToolCall>(r.toolsJson, "toolsJson", i, sid ?? null),
+      turnStatus: parseTurnStatus(r.turnStatus),
     }));
 
   // 挂载：加载会话列表（空则新建一个），选中最近更新的会话并恢复其消息

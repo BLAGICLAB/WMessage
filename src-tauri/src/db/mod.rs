@@ -196,6 +196,7 @@ pub fn open_db<R: tauri::Runtime>(
            session_id TEXT,
            thinking   TEXT,
            tools      TEXT,
+           turn_status TEXT,
            created_at INTEGER NOT NULL
          );
          CREATE TABLE IF NOT EXISTS bot_sessions (
@@ -293,11 +294,15 @@ pub fn open_db<R: tauri::Runtime>(
     ensure_columns(&conn, "tasks", &[("ord", "REAL")])?;
     ensure_columns(&conn, "tasks", &[("updated_at", "INTEGER")])?;
     migrations::ensure_files_column(&conn)?;
-    ensure_columns(&conn, "bot_messages", &[("session_id", "TEXT")])?;
     ensure_columns(
         &conn,
         "bot_messages",
-        &[("thinking", "TEXT"), ("tools", "TEXT")],
+        &[
+            ("session_id", "TEXT"),
+            ("thinking", "TEXT"),
+            ("tools", "TEXT"),
+            ("turn_status", "TEXT"),
+        ],
     )?;
     {
         let orphan: i64 = match conn.query_row(
@@ -419,6 +424,72 @@ mod tests {
         assert_eq!(fk, 1, "foreign_keys 应打开（默认 OFF）");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 老库没有 turn_status 列时必须幂等补上。
+    ///
+    /// bot_messages 的 DDL 是 CREATE TABLE IF NOT EXISTS——老库走不到那句 DDL，
+    /// 只剩 ensure_columns 补列这一条路。缺列的后果不是「少个字段」，而是写
+    /// 历史时直接炸「no such column: turn_status」。
+    #[test]
+    fn ensure_columns_adds_turn_status_to_legacy_bot_messages() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bot_messages (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 role       TEXT NOT NULL,
+                 content    TEXT NOT NULL,
+                 refs       TEXT,
+                 session_id TEXT,
+                 thinking   TEXT,
+                 tools      TEXT,
+                 created_at INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        let has_turn_status = |c: &rusqlite::Connection| -> bool {
+            c.prepare("PRAGMA table_info(bot_messages)")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .any(|n| n == "turn_status")
+        };
+        ensure_columns(&conn, "bot_messages", &[("turn_status", "TEXT")]).unwrap();
+        assert!(has_turn_status(&conn), "老库必须补上 turn_status 列");
+        // 幂等：每次 open_db 都会走这一遍，重复补列不得报错
+        ensure_columns(&conn, "bot_messages", &[("turn_status", "TEXT")]).unwrap();
+        assert!(has_turn_status(&conn), "重复补列不得报错");
+    }
+
+    /// 接线守卫：bot_messages 的幂等补列清单里必须带 turn_status。
+    ///
+    /// 上面的测试证明的是「机制能补」；这条证明的是「真接上了」——两件事
+    /// 少一件，老库就永远缺这一列。匹配串用 `concat!` 拆分防自匹配
+    /// （本测试自身的源码不算命中）。
+    #[test]
+    fn bot_messages_ensure_columns_covers_turn_status() {
+        let src = include_str!("mod.rs");
+        let needle_call = concat!("ensure_", "columns(");
+        let needle_table = concat!("\"bot_", "messages\"");
+        let needle_col = concat!("turn_", "status");
+        let mut from = 0usize;
+        let mut checked = 0usize;
+        while let Some(rel) = src[from..].find(needle_call) {
+            let at = from + rel;
+            from = at + 1;
+            let rest = &src[at..];
+            let call = &rest[..rest.find(';').unwrap_or(rest.len())];
+            if !call.contains(needle_table) {
+                continue;
+            }
+            checked += 1;
+            assert!(
+                call.contains(needle_col),
+                "bot_messages 的幂等补列清单里必须有 turn_status：{call}"
+            );
+        }
+        assert!(checked > 0, "没找到 bot_messages 的幂等补列调用");
     }
 
     // ── legacy WAL copy 不吞错 + 边车文件一并拷贝 ──
@@ -984,6 +1055,7 @@ mod tests {
                 refs TEXT,
                 thinking TEXT,
                 tools TEXT,
+                turn_status TEXT,
                 created_at INTEGER NOT NULL
             );",
         )
@@ -1009,6 +1081,7 @@ mod tests {
             refs_json: None,
             thinking: None,
             tools_json: None,
+            turn_status: None,
         };
         let tx = conn.transaction().unwrap();
         bot_history_save_inner(&tx, "s1", &[mk("第一条"), mk("第二条")]).unwrap();
@@ -1023,6 +1096,7 @@ mod tests {
                 refs_json: None,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             },
         )
         .unwrap();
@@ -1128,6 +1202,7 @@ mod tests {
                 refs_json: None,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             },
             BotMsgRow {
                 role: "assistant".into(),
@@ -1135,6 +1210,7 @@ mod tests {
                 refs_json: None,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             },
         ];
 
@@ -1179,6 +1255,7 @@ mod tests {
             refs_json: None,
             thinking: None,
             tools_json: None,
+            turn_status: None,
         };
 
         // 第一批 3 条 → 整批覆写为 2 条（内容可辨识顺序）

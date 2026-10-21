@@ -14,6 +14,9 @@ pub struct BotMsgRow {
     pub refs_json: Option<String>,
     pub thinking: Option<String>,
     pub tools_json: Option<String>,
+    /// 回合终态（bot_model_loop::TurnStatus 的机器读标识）。
+    /// None = 用户消息 / 后端自己写的行 / 旧行——没有回合概念，不是「进行中」
+    pub turn_status: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -355,6 +358,34 @@ mod tests {
             rows.iter().filter(|s| s.is_subagent).count(),
             1,
             "恰好一条标记为子 agent 会话"
+        );
+    }
+
+    /// 前后端的字段名靠 camelCase serde 对齐：前端发 `turnStatus`，后端收
+    /// `turn_status`。名字对不上不会报错——serde 把多出来的键丢掉，字段静默
+    /// 变 None，回合终态就这么没了。
+    #[test]
+    fn turn_status_uses_camel_case_on_the_wire() {
+        let row = BotMsgRow {
+            role: "assistant".into(),
+            content: "答".into(),
+            refs_json: None,
+            thinking: None,
+            tools_json: None,
+            turn_status: Some("completed".into()),
+        };
+        let v = serde_json::to_value(&row).expect("序列化");
+        assert_eq!(v["turnStatus"], "completed", "线上字段名必须是 turnStatus");
+        let back: BotMsgRow = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": "答",
+            "turnStatus": "completed",
+        }))
+        .expect("反序列化");
+        assert_eq!(
+            back.turn_status.as_deref(),
+            Some("completed"),
+            "前端发什么后端就得收什么"
         );
     }
 }

@@ -782,6 +782,50 @@ describe("ChatPanel", () => {
     });
   });
 
+  it("回合终态跟着消息走：历史行带的 turnStatus 落库时原样带回", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_history_load") {
+        return [
+          {
+            role: "user",
+            content: "问",
+            refsJson: null,
+            thinking: null,
+            toolsJson: null,
+            turnStatus: null,
+          },
+          {
+            role: "assistant",
+            content: "被打断的答复",
+            refsJson: null,
+            thinking: null,
+            toolsJson: null,
+            turnStatus: "interrupted",
+          },
+        ];
+      }
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("被打断的答复")).toBeInTheDocument();
+    // 再发一条 → 整段历史重写：读进来的终态必须原样带回
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "再问一句");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      const saveCalls = mocks.invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_history_save",
+      );
+      const last = saveCalls[saveCalls.length - 1];
+      const msgs =
+        (last?.[1] as { messages?: { content?: string; turnStatus?: string | null }[] })
+          .messages ?? [];
+      const row = msgs.find((m) => m.content === "被打断的答复");
+      expect(row?.turnStatus).toBe("interrupted");
+    });
+  });
+
   it("会话锁被占：拒答不当成模型答复——只显示本地提示，不落库", async () => {
     const user = userEvent.setup();
     // 后端回 busy=true：本轮压根没跑，text 是拒答文案不是模型答复

@@ -1362,6 +1362,7 @@ async fn persist_report_reply(app: &AppHandle, session_id: &str, result: &BotCha
                 refs_json: refs,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             },
         )
     })
@@ -1724,6 +1725,7 @@ async fn create_exec_session<R: tauri::Runtime>(
                 refs_json: None,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             }],
         )?;
         tx.commit().map_err(|e| e.to_string())?;
@@ -1774,6 +1776,7 @@ async fn persist_exec_reply<R: tauri::Runtime>(
                     refs_json: None,
                     thinking: None,
                     tools_json: None,
+                    turn_status: None,
                 },
                 crate::db::BotMsgRow {
                     role: "assistant".into(),
@@ -1781,6 +1784,7 @@ async fn persist_exec_reply<R: tauri::Runtime>(
                     refs_json: refs,
                     thinking: None,
                     tools_json: None,
+                    turn_status: None,
                 },
             ],
         )?;
@@ -2617,6 +2621,7 @@ mod bot_chat_pure_helpers_tests {
                 refs_json: None,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             },
             crate::db::BotMsgRow {
                 role: "assistant".into(),
@@ -2624,6 +2629,7 @@ mod bot_chat_pure_helpers_tests {
                 refs_json: None,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             },
         ];
         let out = report_turn_history_from_rows(rows);

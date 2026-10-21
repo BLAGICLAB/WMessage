@@ -8,26 +8,34 @@ use crate::error::{CommandError, CommandResult};
 
 /// 加载指定会话的消息（按写入顺序：行序由自增 id 恢复——写入侧批内 created_at
 /// 相同（覆写原子时刻），id 是唯一行序事实源）
+pub fn bot_history_load_inner(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Vec<BotMsgRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT role, content, refs, thinking, tools, turn_status FROM bot_messages WHERE session_id = ?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([session_id], |r| {
+            Ok(BotMsgRow {
+                role: r.get::<_, String>(0)?,
+                content: r.get::<_, String>(1)?,
+                refs_json: r.get::<_, Option<String>>(2)?,
+                thinking: r.get::<_, Option<String>>(3)?,
+                tools_json: r.get::<_, Option<String>>(4)?,
+                turn_status: r.get::<_, Option<String>>(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn bot_history_load(app: AppHandle, session_id: String) -> CommandResult<Vec<BotMsgRow>> {
     async_runtime::spawn_blocking(move || {
         let conn = super::open_db(&app)?;
-        let mut stmt = conn
-            .prepare("SELECT role, content, refs, thinking, tools FROM bot_messages WHERE session_id = ?1 ORDER BY id")
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        let rows = stmt
-            .query_map([&session_id], |r| {
-                Ok(BotMsgRow {
-                    role: r.get::<_, String>(0)?,
-                    content: r.get::<_, String>(1)?,
-                    refs_json: r.get::<_, Option<String>>(2)?,
-                    thinking: r.get::<_, Option<String>>(3)?,
-                    tools_json: r.get::<_, Option<String>>(4)?,
-                })
-            })
-            .map_err(|e| CommandError::DbError(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| CommandError::DbError(e.to_string()))
+        bot_history_load_inner(&conn, &session_id).map_err(CommandError::DbError)
     })
     .await
     .map_err(|e| CommandError::from(format!("历史读取线程 join 失败：{e}")))?
@@ -62,7 +70,7 @@ pub fn bot_history_save_inner(
     if !messages.is_empty() {
         let mut stmt = conn
             .prepare(
-                "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, turn_status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|e| e.to_string())?;
         for m in messages {
@@ -73,6 +81,7 @@ pub fn bot_history_save_inner(
                 session_id,
                 m.thinking,
                 m.tools_json,
+                m.turn_status,
                 now
             ])
             .map_err(|e| e.to_string())?;
@@ -149,7 +158,7 @@ pub fn bot_history_append_inner(
 ) -> Result<(), String> {
     let now = chrono::Utc::now().timestamp_millis();
     conn.execute(
-        "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, turn_status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             message.role,
             message.content,
@@ -157,6 +166,7 @@ pub fn bot_history_append_inner(
             session_id,
             message.thinking,
             message.tools_json,
+            message.turn_status,
             now
         ],
     )
@@ -236,6 +246,7 @@ mod tests {
                  session_id TEXT,
                  thinking   TEXT,
                  tools      TEXT,
+                 turn_status TEXT,
                  created_at INTEGER NOT NULL
              );
              CREATE TABLE bot_sessions (
@@ -257,6 +268,7 @@ mod tests {
                 refs_json: None,
                 thinking: None,
                 tools_json: None,
+                turn_status: None,
             })
             .collect();
         let tx = conn.transaction().expect("开事务");
@@ -293,6 +305,7 @@ mod tests {
                  session_id TEXT,
                  thinking   TEXT,
                  tools      TEXT,
+                 turn_status TEXT,
                  created_at INTEGER NOT NULL
              );
              CREATE TABLE bot_sessions (
@@ -349,6 +362,7 @@ mod tests {
                  session_id TEXT,
                  thinking   TEXT,
                  tools      TEXT,
+                 turn_status TEXT,
                  created_at INTEGER NOT NULL
              );
              CREATE TABLE bot_sessions (
@@ -372,6 +386,7 @@ mod tests {
             refs_json: None,
             thinking: None,
             tools_json: None,
+            turn_status: None,
         };
         // 事务里跑到一半失败 → 整个覆盖写回滚
         let tx = conn.transaction().expect("开事务");
@@ -389,6 +404,71 @@ mod tests {
             left,
             vec!["旧消息".to_string()],
             "覆盖写失败后旧历史必须完好——不能被 DELETE 掏空"
+        );
+    }
+
+    /// 回合终态要能往返：写进去的 turn_status 读回来还得是它。
+    ///
+    /// 终态是「这一轮怎么结束的」的事实，只活在内存里的话，重载会话就丢——
+    /// 库里才是这一轮的真源。None（用户消息 / 后端自己写的行 / 旧行）也必须
+    /// 原样回来：None 是「没有回合概念」，不是「进行中」。
+    #[test]
+    fn turn_status_round_trips_through_history() {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE bot_messages (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 role       TEXT NOT NULL,
+                 content    TEXT NOT NULL,
+                 refs       TEXT,
+                 session_id TEXT,
+                 thinking   TEXT,
+                 tools      TEXT,
+                 turn_status TEXT,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE bot_sessions (
+                 id         TEXT PRIMARY KEY,
+                 title      TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO bot_sessions (id, title, created_at, updated_at)
+                 VALUES ('s1', '会话', 1000, 1000);",
+        )
+        .expect("建表");
+        let rows = vec![
+            BotMsgRow {
+                role: "user".into(),
+                content: "问".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+                turn_status: None,
+            },
+            BotMsgRow {
+                role: "assistant".into(),
+                content: "答".into(),
+                refs_json: None,
+                thinking: None,
+                tools_json: None,
+                turn_status: Some("interrupted".into()),
+            },
+        ];
+        let tx = conn.transaction().expect("开事务");
+        bot_history_save_inner(&tx, "s1", &rows).expect("保存");
+        tx.commit().expect("提交");
+        let loaded = bot_history_load_inner(&conn, "s1").expect("读历史");
+        assert_eq!(loaded.len(), 2, "两行都要读回来");
+        assert_eq!(
+            loaded[0].turn_status, None,
+            "用户消息没有回合终态，None 不能被当成进行中"
+        );
+        assert_eq!(
+            loaded[1].turn_status.as_deref(),
+            Some("interrupted"),
+            "回合终态要原样回来"
         );
     }
 

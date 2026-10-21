@@ -2350,6 +2350,7 @@ async fn run_subagent(
                         refs_json: None,
                         thinking: None,
                         tools_json: None,
+                        turn_status: None,
                     },
                     crate::db::BotMsgRow {
                         role: "assistant".into(),
@@ -2357,6 +2358,7 @@ async fn run_subagent(
                         refs_json: None,
                         thinking: None,
                         tools_json: None,
+                        turn_status: None,
                     },
                 ],
             )
