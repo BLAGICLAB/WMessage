@@ -1582,9 +1582,10 @@ pub async fn bot_execute_task(
                         // 聊天批量执行与定时调度仍走整卡连续执行（多卡/无人在场不适合逐步确认）。
                         // 逐步执行也在新会话内（exec_steps 挂起态按新会话 id 停放）。
     if bot_get_enabled(app.clone()) {
+        // 读库失败要上抛：吞成空列表等于把 DB 故障说成「这张卡没有未勾子任务」，
+        // 用户看到的现象是「点了执行却直接走普通执行」，故障原因被埋掉
         if let Some(task) = crate::db::db_load(app.clone())
-            .await
-            .unwrap_or_default()
+            .await?
             .into_iter()
             .find(|t| t.id == task_id && t.deleted_at.is_none())
         {
@@ -1894,9 +1895,10 @@ where
             reason: "该任务卡正在执行中，请等待完成后再触发".into(),
         });
     };
+    // 读库失败要上抛：吞成空列表等于把 DB 故障说成「任务卡不存在或已在回收站」，
+    // 用户看到的是一句根本不成立的结论，真正的故障原因被埋掉
     let task = crate::db::db_load_for(app)
-        .await
-        .unwrap_or_default()
+        .await?
         .into_iter()
         .find(|t| t.id == task_id && t.deleted_at.is_none())
         .ok_or("任务卡不存在或已在回收站")?;
@@ -2301,6 +2303,32 @@ mod bot_chat_pure_helpers_tests {
             "trace id 的取值链必须是 开 trace → 存局部 → 进结果（现 opened={opened} \
              kept={kept} returned={returned}）"
         );
+    }
+
+    /// 接线守卫：任务执行入口读库失败必须上抛，不得吞成「任务卡不存在」。
+    ///
+    /// 吞掉的后果是把 DB 故障说成一句根本不成立的结论（卡不存在 / 已在回收站），
+    /// 真正的故障原因被埋掉，排查只能靠猜。匹配串用 `concat!` 拆分防自匹配。
+    #[test]
+    fn task_execution_does_not_swallow_db_load_failures() {
+        let src = include_str!("bot_chat.rs");
+        for anchor in [
+            // 逐步执行分流那一处
+            concat!("if let Some(task) = crate::db::db_load(app.", "clone())"),
+            // 任务校验那一处
+            concat!("let task = crate::db::db_load_for(", "app)"),
+        ] {
+            let at = src
+                .find(anchor)
+                .unwrap_or_else(|| panic!("找不到锚点，挪动代码后请同步这条守卫"));
+            // 按字符切窗（按字节切会切在多字节汉字中间）
+            let window: String = src[at..].chars().take(160).collect();
+            assert!(
+                !window.contains(concat!("unwrap_or_", "default")),
+                "任务执行入口读库失败必须上抛，不得兜成空列表——\
+                 DB 故障会被伪装成「任务卡不存在或已在回收站」"
+            );
+        }
     }
 
     #[test]
