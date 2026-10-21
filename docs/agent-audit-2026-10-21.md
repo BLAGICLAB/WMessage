@@ -139,7 +139,7 @@ MCP 链、受管服务 / 进程 / 通知链、子 agent 编排、记忆体、执
 > P1-16 / P1-17（MCP 机密被删 / 指纹不认机密）与
 > P1-18（MCP HTTP 分支无 DNS 级 SSRF 闸）见 §3.2。
 
-### P1-1 端口闸的采集失败被折叠成「判了没事」
+### P1-1 端口闸的采集失败被折叠成「判了没事」（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/procs.rs:570-571`（`run_lsof` 失败 → `continue`）·
 `procs.rs:429-431`（Linux 侧 `if by_inode.is_empty() { return out; }`）·
@@ -1082,6 +1082,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-16 | 已修 | 脱敏视图下发（`mcp_server_secrets_masked`）+ 掩码回传语义（`secrets::resolve_masked`） |
 | P1-17 | 已修 | 指纹显式枚举字段，含 env/headers（`manager::fingerprint`） |
 | P1-4 | 已修 | 194 处工具返回点改 `denied` / `error` + 静态扫描守卫重写（`audit.rs`） |
+| P1-1 | 已修 | 采集层显式回报采样成败（`procs::ListeningSample`）+ 采样失败降级 `Unsupported` |
 
 ### P0-1 的落地口径
 
@@ -1160,6 +1161,39 @@ reqwest 没有二次解析、Host 头仍是原域名）；源码文本钉住「H
 
 **测试**：`secrets::masked` / `resolve_masked`（保留 / 替换 / 删除 / 掩码过期）
 与 `manager::fingerprint`（env/headers 变即换指纹、相同配置指纹稳定）。
+
+### P1-1 的落地口径
+
+**类型层分开「采空」与「采不到」**：采集层现在返回 `procs::ListeningSample`
+（`by_pid` + `complete`），不再只回一个可能为空的 map。`complete = false`
+= 采集路径存在但本次采不到——判定层据此返回 `Unsupported`（**没判**）而不是
+`Ok`（**判了没事**）。
+
+**各平台的「采不到」怎么认**（实测口径，不是猜的）：
+- **macOS**：`lsof` **空 stdout 不等于失败**——没有匹配项时 lsof 退出码非 0、
+  stdout 与 stderr 都是空的；真正报错（选项非法 / 系统文件表耗尽等）时 stderr
+  有内容。旧实现把「stdout 为空」当失败，于是采集器一失灵，采样结果就被
+  折叠成「没人监听」。现按 stderr 判：stderr 有内容或二进制起不来 = 采集失败。
+- **Linux**：`/proc/net/{tcp,tcp6,udp,udp6}` **四张表一张都读不到** = 采集失败
+  （受限容器 / `hidepid`）；读到但表里没有 socket = 采空但采成功。
+
+**连带修 L2 的连带失效**：采样失败时**保留端口动态保留集不清空**。旧流程把
+「宿主没在监听」当成事实去清空它——采集器一坏，L2（防抢占宿主端口）跟着一起
+静默失效，两个闸一起废比一个闸废更糟。
+
+**不再静默**：采样失败写审计 `service.listening_sample_failed`（只在
+「成功 → 失败」时记一条，避免 30s 一轮刷屏）；设置页服务面板多一行
+「最近一次监听端口采集失败——端口闸本轮未判」（`services_snapshot_json` 的
+`listeningSampleOk`）。
+
+**已知残留**：`lsof` 跑得通但**看不见别的用户的进程**时（权限不足），它既不
+报错也不出行——这种「采空但其实是采不到」静态判不了。报告建议的**金丝雀**
+（拿宿主自身已知在监听的端口当基准）本轮未做：宿主只在本地 HTTP API 开着时
+才在监听，金丝雀的适用条件不成立，硬上会变成误报源。这条留作后续加固。
+
+**测试**：`judge_sockets` 采样失败 → `Unsupported`（采空+采成功 → `Ok`）；
+保留集在采样失败时原样保留；macOS 上 `lsof` 空输出 = 没匹配而非失败；
+真采到子进程监听 socket 时采样状态必须是「成功」。
 
 ### P1-4 的落地口径
 

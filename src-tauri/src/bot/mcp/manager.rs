@@ -539,7 +539,7 @@ impl McpManager {
             });
             let listening = crate::bot::procs::merge_sockets(
                 tree.iter()
-                    .filter_map(|p| sockets.get(p).cloned())
+                    .filter_map(|p| sockets.by_pid.get(p).cloned())
                     .collect(),
             );
             out.insert(

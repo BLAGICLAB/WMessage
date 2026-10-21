@@ -357,6 +357,31 @@ pub fn listening_supported() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
+/// 一次监听采样的结果：**采到什么** + **采没采成**。
+///
+/// 两件事必须分开：采空了可能是「确实没人在监听」（**判了没事**），也可能是
+/// 「采集器坏了 / 权限不足 / 系统文件表耗尽」（**没判**）。类型层不分开，
+/// 判定层就只能把两种情况都当成 Ok——L1 那条真安全边界会在采集器失灵时
+/// 静默失效：没有审计、没有通知、面板无变化。
+#[derive(Debug, Clone, Default)]
+pub struct ListeningSample {
+    /// 按 pid 归属的监听 socket（采到什么算什么）
+    pub by_pid: HashMap<u32, Vec<ListeningSocket>>,
+    /// 采样是否成功。false = 采集路径存在但本次采不到（lsof 起不来 / 报错、
+    /// `/proc/net/*` 不可读）——此时 `by_pid` 不可信，判定层必须当「没判」。
+    pub complete: bool,
+}
+
+impl ListeningSample {
+    /// 没有 pid 可采：没有采集动作发生，不算采集失败。
+    fn empty() -> Self {
+        Self {
+            by_pid: HashMap::new(),
+            complete: true,
+        }
+    }
+}
+
 /// 列出这些进程各自监听的 socket（TCP 的 LISTEN 态 + UDP 已绑定的端口）。
 ///
 /// 只读系统 socket 表，不碰任何上层登记表。Linux 走 `/proc/<pid>/fd` 的 socket
@@ -365,16 +390,17 @@ pub fn listening_supported() -> bool {
 /// 返回**按 pid 归属**的映射：同一个 socket 可能被父子进程同时持有（fd 被继承），
 /// 归属清楚了上层才能算「整棵树的监听合计」。
 ///
-/// **这层只采不判**：采到什么返回什么。L1/L2/L3 的判定属 P2-③ 的闸，但判定用的
-/// 数据必须来自这一份解析——两个条目各写一套 socket 解析就是重复采样 + 两套口径。
+/// **这层只采不判**：采到什么返回什么，采没采成一并报（`ListeningSample::complete`）。
+/// L1/L2/L3 的判定属 P2-③ 的闸，但判定用的数据必须来自这一份解析——两个条目
+/// 各写一套 socket 解析就是重复采样 + 两套口径。
 ///
 /// 平台覆盖：Linux 与 macOS 有路径；**Windows 没有**（`lsof` 不存在，
 /// 而现有进程快照层在 Windows 上本来就退化了——它依赖 `ps`）。Windows 要做
 /// 得走 `netstat -ano`，另开条目。
-pub fn listening_sockets(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
+pub fn listening_sockets(pids: &[u32]) -> ListeningSample {
     let pids: Vec<u32> = pids.iter().copied().filter(|p| *p != 0).collect();
     if pids.is_empty() {
-        return HashMap::new();
+        return ListeningSample::empty();
     }
     #[cfg(target_os = "linux")]
     {
@@ -386,7 +412,11 @@ pub fn listening_sockets(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        HashMap::new()
+        // 本平台没有采集路径：不是「采空」，是「没采」。
+        ListeningSample {
+            by_pid: HashMap::new(),
+            complete: false,
+        }
     }
 }
 
@@ -409,9 +439,10 @@ pub fn merge_sockets(groups: Vec<Vec<ListeningSocket>>) -> Vec<ListeningSocket> 
 
 /// Linux：读 `/proc/<pid>/fd` 拿 socket inode，再去 `/proc/net/*` 按 inode 配对。
 #[cfg(target_os = "linux")]
-fn listening_sockets_linux(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
+fn listening_sockets_linux(pids: &[u32]) -> ListeningSample {
     // socket 表只读一次：inode → socket（多个 pid 共用这张表）
     let mut by_inode: HashMap<u64, ListeningSocket> = HashMap::new();
+    let mut readable = 0usize;
     for (proto, path) in [
         (SocketProtocol::Tcp, "/proc/net/tcp"),
         (SocketProtocol::Tcp, "/proc/net/tcp6"),
@@ -421,13 +452,25 @@ fn listening_sockets_linux(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
+        readable += 1;
         for (inode, sock) in parse_proc_net(&text, proto) {
             by_inode.insert(inode, sock);
         }
     }
+    // 四张表一张都读不到 = 采集路径存在但本次不可用（受限容器 / hidepid）
+    // ——不能当成「没有人在监听」。
+    if readable == 0 {
+        return ListeningSample {
+            by_pid: HashMap::new(),
+            complete: false,
+        };
+    }
     let mut out: HashMap<u32, Vec<ListeningSocket>> = HashMap::new();
     if by_inode.is_empty() {
-        return out;
+        return ListeningSample {
+            by_pid: out,
+            complete: true,
+        };
     }
     for pid in pids {
         let mut socks = Vec::new();
@@ -440,7 +483,10 @@ fn listening_sockets_linux(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
             out.insert(*pid, merge_sockets(vec![socks]));
         }
     }
-    out
+    ListeningSample {
+        by_pid: out,
+        complete: true,
+    }
 }
 
 /// 某个进程持有的 socket inode（`/proc/<pid>/fd` 里形如 `socket:[12345]` 的链接）。
@@ -556,18 +602,21 @@ fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
 
 /// macOS：走 `lsof`（一次调用带上全部 pid）。
 #[cfg(target_os = "macos")]
-fn listening_sockets_lsof(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
+fn listening_sockets_lsof(pids: &[u32]) -> ListeningSample {
     let pid_arg = pids
         .iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
     let mut by_pid: HashMap<u32, Vec<ListeningSocket>> = HashMap::new();
+    let mut complete = true;
     for (proto, filters) in [
         (SocketProtocol::Tcp, vec!["-iTCP", "-sTCP:LISTEN"]),
         (SocketProtocol::Udp, vec!["-iUDP"]),
     ] {
         let Some(text) = run_lsof(&pid_arg, &filters) else {
+            // lsof 起不来 / 报错 = 采集失败，不是「没匹配到」
+            complete = false;
             continue;
         };
         for line in text.lines() {
@@ -577,13 +626,24 @@ fn listening_sockets_lsof(pids: &[u32]) -> HashMap<u32, Vec<ListeningSocket>> {
             by_pid.entry(pid).or_default().push(sock);
         }
     }
-    by_pid
-        .into_iter()
-        .map(|(pid, socks)| (pid, merge_sockets(vec![socks])))
-        .collect()
+    ListeningSample {
+        by_pid: by_pid
+            .into_iter()
+            .map(|(pid, socks)| (pid, merge_sockets(vec![socks])))
+            .collect(),
+        complete,
+    }
 }
 
 /// 调 `lsof` 取指定 pid 集合的网络监听行。
+///
+/// `None` = **lsof 跑不起来或跑出了错**（两个候选路径都起不来 / lsof 自己往
+/// stderr 报了错）；`Some(text)` = 跑通了，text 可能为空——**没有匹配项时
+/// lsof 退出码非 0、stdout 与 stderr 都是空的**（空 stdout 是「没匹配」，
+/// 不是「采集失败」）。
+///
+/// 这两件事必须分开：「没有匹配项」是采空但采成功，「lsof 起不来 / 报错」是
+/// 采集失败——后者会让 L1 闸静默失效。
 #[cfg(target_os = "macos")]
 fn run_lsof(pids: &str, filters: &[&str]) -> Option<String> {
     // lsof 在 /usr/sbin；GUI 启动的 app 拿到的 PATH 有时不含它，两个路径都试
@@ -596,13 +656,12 @@ fn run_lsof(pids: &str, filters: &[&str]) -> Option<String> {
         let Ok(out) = cmd.output() else {
             continue;
         };
-        // lsof 没有匹配项时退出码非 0 且 stdout 为空
-        if out.stdout.is_empty() {
+        // lsof 报错时 stderr 有内容（选项非法 / 系统文件表耗尽等）；没有匹配项时
+        // stdout 与 stderr 都是空的。这个候选自己报错了就换下一个。
+        if !out.stderr.is_empty() {
             continue;
         }
-        if let Ok(text) = String::from_utf8(out.stdout) {
-            return Some(text);
-        }
+        return Some(String::from_utf8_lossy(&out.stdout).to_string());
     }
     None
 }

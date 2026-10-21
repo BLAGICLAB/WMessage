@@ -637,7 +637,7 @@ fn judge_sockets_flags_non_loopback_bind() {
         port: 7000,
     }];
     let reserved = HashSet::new();
-    match judge_sockets(&socks, &reserved, false) {
+    match judge_sockets(&socks, true, &reserved, false) {
         GateVerdict::Violated {
             rule,
             address,
@@ -650,7 +650,10 @@ fn judge_sockets_flags_non_loopback_bind() {
         other => panic!("应判 L1 违规，实际 {other:?}"),
     }
     // 开关放开 → 不再报 L1
-    assert_eq!(judge_sockets(&socks, &reserved, true), GateVerdict::Ok);
+    assert_eq!(
+        judge_sockets(&socks, true, &reserved, true),
+        GateVerdict::Ok
+    );
 }
 
 #[test]
@@ -664,7 +667,7 @@ fn judge_sockets_flags_reserved_and_privileged_ports() {
     };
 
     // L2：占了宿主保留端口（地址是 loopback 也照样占）
-    match judge_sockets(&[mk(4763, "127.0.0.1")], &reserved, false) {
+    match judge_sockets(&[mk(4763, "127.0.0.1")], true, &reserved, false) {
         GateVerdict::Violated { rule, port, .. } => {
             assert_eq!(rule, ViolationRule::ReservedPort);
             assert_eq!(port, 4763);
@@ -673,7 +676,7 @@ fn judge_sockets_flags_reserved_and_privileged_ports() {
     }
 
     // L3：特权端口
-    match judge_sockets(&[mk(80, "127.0.0.1")], &reserved, false) {
+    match judge_sockets(&[mk(80, "127.0.0.1")], true, &reserved, false) {
         GateVerdict::Violated { rule, port, .. } => {
             assert_eq!(rule, ViolationRule::PrivilegedPort);
             assert_eq!(port, 80);
@@ -683,9 +686,56 @@ fn judge_sockets_flags_reserved_and_privileged_ports() {
 
     // 普通 loopback 端口 → 没违规
     assert_eq!(
-        judge_sockets(&[mk(5173, "127.0.0.1")], &reserved, false),
+        judge_sockets(&[mk(5173, "127.0.0.1")], true, &reserved, false),
         GateVerdict::Ok
     );
+}
+
+#[test]
+fn judge_sockets_unsupported_when_sample_failed() {
+    // 采集失败（lsof 起不来 / /proc/net/* 不可读）与「确实没人在监听」
+    // 在类型层必须分开：前者是**没判**，不是「判了没事」。
+    let reserved = HashSet::new();
+    // 采空 + 采成功 → Ok（真没人在监听）
+    assert_eq!(
+        judge_sockets(&[], true, &reserved, false),
+        GateVerdict::Ok,
+        "采成功但没采到 = 判了没事"
+    );
+    // 采空 + 采失败 → Unsupported（没判）
+    assert_eq!(
+        judge_sockets(&[], false, &reserved, false),
+        GateVerdict::Unsupported,
+        "采集失败不得判成 Ok"
+    );
+    // 采样失败时即便采到东西也不判——那批数据不可信
+    let socks = vec![ListeningSocket {
+        protocol: crate::bot::procs::SocketProtocol::Tcp,
+        address: "0.0.0.0".to_string(),
+        port: 7000,
+    }];
+    assert_eq!(
+        judge_sockets(&socks, false, &reserved, false),
+        GateVerdict::Unsupported,
+        "采样失败时不得据其判违规"
+    );
+}
+
+#[test]
+fn reserved_dynamic_survives_a_failed_sample() {
+    // 采样失败时保留集动态部分**不清空**：清空了 L2（防抢占宿主端口）
+    // 就跟着一起静默失效了。
+    refresh_reserved_ports(&[52001], true);
+    assert!(reserved_ports().contains(&52001));
+    refresh_reserved_ports(&[], false);
+    assert!(
+        reserved_ports().contains(&52001),
+        "采样失败不得把动态保留集清空"
+    );
+    // 采样恢复后正常刷新
+    refresh_reserved_ports(&[52002], true);
+    assert!(reserved_ports().contains(&52002));
+    assert!(!reserved_ports().contains(&52001));
 }
 
 #[test]

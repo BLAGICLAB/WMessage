@@ -18,6 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -212,6 +213,35 @@ pub(crate) struct FlagListen {
 static RESERVED_DYNAMIC: LazyLock<Mutex<HashSet<u16>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
+/// 上一次监听采样是否成功（true = 采到了，可以判）。
+///
+/// 采集失败时端口闸**不判**——安全边界静默失效必须留痕：面板据此说明
+/// 「本轮没判」，审计记一条 `service.listening_sample_failed`。
+static LAST_SAMPLE_OK: AtomicBool = AtomicBool::new(true);
+
+/// 记一次采样结果；只在「成功 → 失败」时写审计（每 30s 一轮，失败时逐轮记会刷屏）。
+fn note_sample_status<R: tauri::Runtime>(app: &AppHandle<R>, complete: bool) {
+    let prev = LAST_SAMPLE_OK.swap(complete, Ordering::Relaxed);
+    if prev || complete {
+        return;
+    }
+    crate::audit::write_event(
+        app,
+        AuditLevel::Warn,
+        "service.listening_sample_failed",
+        &[
+            (
+                "detail",
+                "监听端口采集失败（lsof 起不来 / /proc/net/* 不可读）——端口闸本轮未判".to_string(),
+            ),
+            (
+                "impact",
+                "L1/L2 端口闸本轮不生效；动态保留集未刷新".to_string(),
+            ),
+        ],
+    );
+}
+
 /// 静态保留端口（宿主自己的 API 端口）。
 fn static_reserved_ports() -> HashSet<u16> {
     let mut s = HashSet::new();
@@ -233,7 +263,13 @@ pub(crate) fn reserved_ports() -> HashSet<u16> {
 }
 
 /// 刷新保留集的动态部分（每轮巡检一次）。
-fn refresh_reserved_ports(host_ports: &[u16]) {
+///
+/// **采样失败时不清空**：采空当成「宿主没在监听」会把动态保留集整个清掉，
+/// L2（防抢占宿主端口）随之静默失效——两个闸一起废比一个闸废更糟。
+fn refresh_reserved_ports(host_ports: &[u16], sample_complete: bool) {
+    if !sample_complete {
+        return;
+    }
     let mut g = RESERVED_DYNAMIC.lock().unwrap_or_else(|e| e.into_inner());
     g.clear();
     g.extend(host_ports.iter().copied());
@@ -276,12 +312,16 @@ fn rule_of(
 /// 运行期判定：看采到的监听 socket。
 ///
 /// 本平台采不到 socket 时返回 **Unsupported**——不是 Ok。
+/// **采样失败**（采集路径存在但本次采不到：lsof 起不来 / `/proc/net/*` 不可读）
+/// 同样返回 Unsupported：那是「没判」，不是「判了没事」。两者混在 Ok 里，
+/// L1 这条真安全边界会在采集器失灵时静默失效。
 pub(crate) fn judge_sockets(
     socks: &[ListeningSocket],
+    sample_complete: bool,
     reserved: &HashSet<u16>,
     allow_non_loopback: bool,
 ) -> GateVerdict {
-    if !crate::bot::procs::listening_supported() {
+    if !crate::bot::procs::listening_supported() || !sample_complete {
         return GateVerdict::Unsupported;
     }
     for sock in socks {
@@ -448,13 +488,13 @@ fn check_service_listening<R: tauri::Runtime>(
     }
     let snap = take_snapshot();
     let tree = tree_pids(&snap, pid);
-    let sockets = listening_sockets(&tree);
+    let sample = listening_sockets(&tree);
     let listening = merge_sockets(
         tree.iter()
-            .filter_map(|p| sockets.get(p).cloned())
+            .filter_map(|p| sample.by_pid.get(p).cloned())
             .collect(),
     );
-    let verdict = judge_sockets(&listening, reserved, allow_non_loopback);
+    let verdict = judge_sockets(&listening, sample.complete, reserved, allow_non_loopback);
     if let GateVerdict::Violated {
         rule,
         address,
@@ -612,26 +652,33 @@ fn enforce_listening_gate<R: tauri::Runtime>(app: &AppHandle<R>) {
         all_pids.extend(tree.iter().copied());
         trees.push((entry, tree));
     }
-    let sockets = listening_sockets(&all_pids);
+    let sample = listening_sockets(&all_pids);
+    note_sample_status(app, sample.complete);
+    if !sample.complete {
+        // 采集失败 = 没判，不是「判了没事」。保留集动态部分也不动
+        // （refresh_reserved_ports 在采样失败时原样保留旧集合）。
+        return;
+    }
     // 保留集动态部分 = 宿主自身在监听的端口
-    let host_ports: Vec<u16> = sockets
+    let host_ports: Vec<u16> = sample
+        .by_pid
         .get(&self_pid)
         .map(|list| list.iter().map(|s| s.port).collect())
         .unwrap_or_default();
-    refresh_reserved_ports(&host_ports);
+    refresh_reserved_ports(&host_ports, sample.complete);
     let reserved = reserved_ports();
     let allow_non_loopback = expose_net_allowed(app);
     for (entry, tree) in trees {
         let listening = merge_sockets(
             tree.iter()
-                .filter_map(|p| sockets.get(p).cloned())
+                .filter_map(|p| sample.by_pid.get(p).cloned())
                 .collect(),
         );
         if let GateVerdict::Violated {
             rule,
             address,
             port,
-        } = judge_sockets(&listening, &reserved, allow_non_loopback)
+        } = judge_sockets(&listening, sample.complete, &reserved, allow_non_loopback)
         {
             handle_violation(app, &entry, rule, &address, port, ViolationAction::Killed);
         }
@@ -1934,6 +1981,9 @@ pub(crate) fn services_snapshot_json<R: tauri::Runtime>(
         // 本平台能不能采到监听 socket。Windows 不能——面板据此说明
         // 「本平台暂不支持监听端口采集」，而不是让用户对着空白猜。
         "listeningSupported": crate::bot::procs::listening_supported(),
+        // 最近一次采样是否成功。false = 采集路径存在但本次采不到——端口闸
+        // 本轮**没判**（不是「判了没事」），面板必须说出来。
+        "listeningSampleOk": LAST_SAMPLE_OK.load(Ordering::Relaxed),
     })
 }
 

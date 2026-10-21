@@ -211,4 +211,28 @@ describe("ServicesPanel 违规与平台降级", () => {
     await flush();
     expect(screen.queryByText(/本平台暂不支持监听端口采集/)).not.toBeInTheDocument();
   });
+
+  it("采集失败：明说端口闸本轮未判（不是「判了没事」）", async () => {
+    const snap = structuredClone(SNAPSHOT) as unknown as Record<string, unknown>;
+    snap.listeningSupported = true;
+    snap.listeningSampleOk = false;
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? snap : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    expect(screen.getByText(/端口闸本轮未判/)).toBeInTheDocument();
+  });
+
+  it("采样成功：不显示那句说明", async () => {
+    const snap = structuredClone(SNAPSHOT) as unknown as Record<string, unknown>;
+    snap.listeningSupported = true;
+    snap.listeningSampleOk = true;
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? snap : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    expect(screen.queryByText(/端口闸本轮未判/)).not.toBeInTheDocument();
+  });
 });

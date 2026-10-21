@@ -349,7 +349,7 @@ fn listening_sockets_finds_a_real_child_listener() {
     let mut found = false;
     for _ in 0..40 {
         let socks = listening_sockets(&[pid]);
-        let mine = socks.get(&pid).cloned().unwrap_or_default();
+        let mine = socks.by_pid.get(&pid).cloned().unwrap_or_default();
         if mine
             .iter()
             .any(|s| s.port == port && s.address == "127.0.0.1")
@@ -367,13 +367,20 @@ fn listening_sockets_finds_a_real_child_listener() {
         found,
         "应采到子进程的监听 socket 127.0.0.1:{port}，实际采到 {socks:?}"
     );
+    // 采样必须**成功**：这台机器上 lsof / /proc 能读到，才说明 complete=true。
+    // 采不到（complete=false）时判定层会当「没判」——采到 socket 却报采失败，
+    // 同样是错的。
+    assert!(
+        socks.complete,
+        "这台机器能采到监听 socket，采样状态不应是失败：{socks:?}"
+    );
 }
 
 /// 没有任何 pid 时不做事（登记表的占位条目 pid 就是 0）。
 #[test]
 fn listening_sockets_of_empty_input_is_empty() {
-    assert!(listening_sockets(&[]).is_empty());
-    assert!(listening_sockets(&[0]).is_empty());
+    assert!(listening_sockets(&[]).by_pid.is_empty());
+    assert!(listening_sockets(&[0]).by_pid.is_empty());
 }
 
 /// 组长 + 后代的 pid 列表（树口径）。
@@ -398,4 +405,21 @@ fn parse_lsof_line_survives_a_process_named_like_the_protocol() {
     assert_eq!(pid, 900);
     assert_eq!(sock.address, "127.0.0.1");
     assert_eq!(sock.port, 5231);
+}
+
+/// lsof 跑通但**没有匹配项**时，stdout 为空、stderr 也为空——那是「采空但采成功」，
+/// 不是「采集失败」。
+///
+/// 旧实现把「stdout 为空」当失败（空 = 采集器不可用），于是采集器一失灵，
+/// 采样结果就被折叠成「没人监听」，L1 闸静默失效。空与失败必须分开。
+#[cfg(target_os = "macos")]
+#[test]
+fn lsof_empty_output_means_no_match_not_failure() {
+    // 一个不存在的 pid：lsof 跑得起来、没有任何匹配项
+    let out = run_lsof("999999", &["-iTCP", "-sTCP:LISTEN"]);
+    assert!(
+        out.is_some(),
+        "lsof 跑通了（只是没匹配项）应返 Some，不是 None"
+    );
+    assert!(out.unwrap().is_empty(), "没有匹配项时 stdout 应为空");
 }

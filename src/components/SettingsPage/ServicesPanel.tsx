@@ -56,6 +56,11 @@ type ServicesSnapshot = {
   sampledAt: number | null;
   /** 本平台能不能采到监听 socket（Windows 不能） */
   listeningSupported?: boolean;
+  /**
+   * 最近一次监听端口采样是否成功。false = 采集路径存在但本次采不到——
+   * 端口闸本轮**没判**（不是「判了没事」），必须说出来。
+   */
+  listeningSampleOk?: boolean;
 };
 
 /** 状态 → 中文 + 徽章色 */
@@ -159,6 +164,13 @@ export function ServicesPanel() {
       {snapshot && snapshot.listeningSupported === false && (
         <p className="mt-1 text-xs text-[var(--t5)]">
           本平台暂不支持监听端口采集——端口闸在本平台不生效（仅保留启动前的参数诊断）
+        </p>
+      )}
+
+      {snapshot && snapshot.listeningSampleOk === false && (
+        <p className="mt-1 text-xs text-[var(--danger,#ef4444)]">
+          最近一次监听端口采集失败——端口闸本轮未判（不是「判了没事」），详见审计日志
+          service.listening_sample_failed
         </p>
       )}
 
