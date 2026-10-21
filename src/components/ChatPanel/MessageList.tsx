@@ -10,6 +10,7 @@ import {
   Check,
   Copy,
   FileText,
+  History,
   Loader2,
   MessageCircle,
   MessagesSquare,
@@ -47,6 +48,8 @@ type BubbleCallbacks = {
   onOpenTask: (ref: TaskRef) => void;
   /** 「查看执行对话」跳转：切到该执行会话 */
   onOpenExecSession: (sid: string) => void;
+  /** 「执行轨迹」：打开这一轮的执行详情（trace 归属跟着消息走） */
+  onOpenTrace?: (traceId: number) => void;
 };
 
 /** 子 agent 内嵌区。整组可选：没子 agent 的会话不传就不渲染。
@@ -89,6 +92,7 @@ function MsgBubbleBase({
   onRemove,
   onOpenTask,
   onOpenExecSession,
+  onOpenTrace,
 }: MsgBubbleProps) {
   // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）；
   // 流式末条气泡每帧重渲染，useMemo 让路径正则只在内容变化时重跑
@@ -97,7 +101,10 @@ function MsgBubbleBase({
   const showActions =
     m.role === "assistant" &&
     !m.streaming &&
-    (hasContent || (m.refs?.length ?? 0) > 0 || fps.length > 0);
+    (hasContent ||
+      (m.refs?.length ?? 0) > 0 ||
+      fps.length > 0 ||
+      m.traceId != null);
   /** 活体指示的显示条件：本条还在流式、且回合未落终态。
    *  turnStatus 缺省按 running 算（与 ChatPanel 旧的派生口径一致）——
    *  已完成的历史气泡若 turnStatus 缺失，不该又冒出假活体指示。 */
@@ -274,6 +281,16 @@ function MsgBubbleBase({
               >
                 <Trash2 size={11} aria-hidden />
                 移除
+              </button>
+            )}
+            {m.traceId != null && onOpenTrace && (
+              <button
+                className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
+                title="查看这一轮的工具调用与文件改动"
+                onClick={() => onOpenTrace(m.traceId!)}
+              >
+                <History size={11} aria-hidden />
+                执行轨迹
               </button>
             )}
             <FileSummary
@@ -583,6 +600,7 @@ function renderMessageList(
     onRemove,
     onOpenTask,
     onOpenExecSession,
+    onOpenTrace,
   }: MessageListProps,
   Bubble: ComponentType<MsgBubbleProps>,
 ) {
@@ -627,6 +645,7 @@ function renderMessageList(
                 onRemove={onRemove}
                 onOpenTask={onOpenTask}
                 onOpenExecSession={onOpenExecSession}
+                onOpenTrace={onOpenTrace}
               />
             );
           })

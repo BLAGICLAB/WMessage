@@ -64,12 +64,33 @@ export type TraceDetail = TraceRow & {
   fileChanges: FileChangeRow[];
 };
 
+/** 最近执行痕迹（startedAt 倒序）：不限任务卡/会话/来源 */
+export function traceList(limit = 50): Promise<TraceRow[]> {
+  return invoke<TraceRow[]>("trace_list", { limit });
+}
+
 /** 按任务卡查执行历史（startedAt 倒序） */
 export function traceListByTask(
   taskId: string,
   limit = 20,
 ): Promise<TraceRow[]> {
   return invoke<TraceRow[]>("trace_list", { taskId, limit });
+}
+
+/** 按会话查执行历史（startedAt 倒序）：聊天回合也落 trace，按会话查得到 */
+export function traceListBySession(
+  sessionId: string,
+  limit = 20,
+): Promise<TraceRow[]> {
+  return invoke<TraceRow[]>("trace_list", { sessionId, limit });
+}
+
+/** 按来源查执行历史（startedAt 倒序）：manual / scheduled / batch / chat */
+export function traceListByOrigin(
+  origin: string,
+  limit = 20,
+): Promise<TraceRow[]> {
+  return invoke<TraceRow[]>("trace_list", { origin, limit });
 }
 
 /** 单次执行完整痕迹（trace + spans + fileChanges）；无此 trace 返回 null */

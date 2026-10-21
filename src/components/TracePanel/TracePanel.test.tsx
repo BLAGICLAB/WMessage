@@ -176,6 +176,33 @@ describe("TracePanel", () => {
     );
   });
 
+  it("按会话查执行历史并预选指定那条", async () => {
+    render(<TracePanel sessionId="s1" traceId={7} onClose={() => {}} />);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("trace_list", {
+        sessionId: "s1",
+        limit: 20,
+      }),
+    );
+    // 预选的是指定那条（不是列表第一条）
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("trace_detail", { traceId: 7 }),
+    );
+  });
+
+  it("目标执行已翻出本页时直查单条，不回退到列表里的其它执行", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "trace_list") return Promise.resolve([{ ...TRACE, id: 99 }]);
+      if (cmd === "trace_detail") return Promise.resolve(DETAIL);
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+    render(<TracePanel sessionId="s1" traceId={7} onClose={() => {}} />);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("trace_detail", { traceId: 7 }),
+    );
+    expect(invokeMock).not.toHaveBeenCalledWith("trace_detail", { traceId: 99 });
+  });
+
   it("模型为空（旧行）不显示模型徽标", async () => {
     const noModel: TraceDetail = { ...DETAIL, model: null };
     invokeMock.mockImplementation((cmd: string) => {

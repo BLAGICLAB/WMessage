@@ -755,6 +755,33 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("带 trace 的答复")).toBeInTheDocument();
   });
 
+  it("回合带 traceId：气泡上有「执行轨迹」入口，点开按会话查执行历史", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_chat") {
+        return { text: "带 trace 的答复", taskRefs: [], traceId: 123 };
+      }
+      if (cmd === "trace_list") return [];
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    const btn = await screen.findByRole("button", { name: /执行轨迹/ });
+    await user.click(btn);
+    // 按会话维度查（同会话的多次执行列出来），并预选这一轮那条
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("trace_list", {
+        sessionId: "s1",
+        limit: 20,
+      });
+    });
+  });
+
   it("会话锁被占：拒答不当成模型答复——只显示本地提示，不落库", async () => {
     const user = userEvent.setup();
     // 后端回 busy=true：本轮压根没跑，text 是拒答文案不是模型答复

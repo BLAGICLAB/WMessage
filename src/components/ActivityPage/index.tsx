@@ -4,11 +4,10 @@
 // 数据源 = exec_traces（trace_list 命令）；10s 轻轮询兜底（有 running 行时才转）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { Activity, Bot, ExternalLink } from "lucide-react";
 import { TracePanel } from "../TracePanel";
 import { formatCommandError } from "../../lib/errorHandler";
-import type { TraceRow } from "../../lib/trace";
+import { traceList, traceListByOrigin, type TraceRow } from "../../lib/trace";
 
 const ORIGIN_LABEL: Record<string, string> = {
   manual: "手动",
@@ -17,6 +16,15 @@ const ORIGIN_LABEL: Record<string, string> = {
   // 聊天回合也落 trace（origin="chat"）：不加这项就显示英文原值
   chat: "聊天",
 };
+
+/** 来源筛选项：null = 全部（不按来源过滤） */
+const ORIGIN_FILTERS: Array<{ key: string | null; label: string }> = [
+  { key: null, label: "全部" },
+  { key: "manual", label: ORIGIN_LABEL.manual },
+  { key: "scheduled", label: ORIGIN_LABEL.scheduled },
+  { key: "batch", label: ORIGIN_LABEL.batch },
+  { key: "chat", label: ORIGIN_LABEL.chat },
+];
 
 const STATUS_CLS: Record<string, string> = {
   done: "text-[var(--success)]",
@@ -44,17 +52,19 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
   /** 列表加载失败提示：非空时不渲染「还没有执行痕迹」空态（失败 ≠ 无数据） */
   const [loadError, setLoadError] = useState("");
   const [openTraceId, setOpenTraceId] = useState<number | null>(null);
+  /** 来源筛选：null = 全部。切筛选即重拉（后端按 origin 过滤，不在前端筛） */
+  const [origin, setOrigin] = useState<string | null>(null);
 
   // 竞态令牌：10s 轮询 + 事件重入时，慢的旧 trace_list 响应不得覆盖新响应
   const reqIdRef = useRef(0);
   const reload = useCallback(() => {
     const reqId = ++reqIdRef.current;
-    invoke<TraceRow[]>("trace_list", { limit: 50 })
-      .then((rows) => {
-        if (reqId !== reqIdRef.current) return;
-        setTraces(rows);
-        setLoadError("");
-      })
+    const p = origin ? traceListByOrigin(origin, 50) : traceList(50);
+    p.then((rows) => {
+      if (reqId !== reqIdRef.current) return;
+      setTraces(rows);
+      setLoadError("");
+    })
       .catch((e) => {
         if (reqId !== reqIdRef.current) return;
         // 失败必须可见：静默吞掉会让首屏落进「还没有执行痕迹」空态误导用户
@@ -63,7 +73,7 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
       .finally(() => {
         if (reqId === reqIdRef.current) setLoaded(true);
       });
-  }, []);
+  }, [origin]);
 
   useEffect(() => {
     reload();
@@ -98,6 +108,22 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
           </button>
         </div>
 
+        {/* 来源筛选：后端按 origin 过滤（不在前端筛，免得 50 条截断后漏项） */}
+        <div className="mt-3 flex flex-wrap gap-1" role="group" aria-label="按来源筛选">
+          {ORIGIN_FILTERS.map((f) => (
+            <button
+              key={f.key ?? "all"}
+              className={`nm-btn rounded-lg px-2 py-0.5 text-[10px] ${
+                origin === f.key ? "text-[var(--t1)]" : "text-[var(--t4)]"
+              }`}
+              aria-pressed={origin === f.key}
+              onClick={() => setOrigin(f.key)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
         {!loaded && (
           <p className="mt-6 text-center text-xs text-[var(--t5)]">加载中…</p>
         )}
@@ -108,7 +134,9 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
         )}
         {loaded && !loadError && traces.length === 0 && (
           <p className="mt-6 text-center text-xs text-[var(--t5)]">
-            还没有执行痕迹——跑一次对话或交给机器人执行任务卡后，这里会出现执行记录。
+            {origin
+              ? "该来源下还没有执行痕迹。"
+              : "还没有执行痕迹——跑一次对话或交给机器人执行任务卡后，这里会出现执行记录。"}
           </p>
         )}
         {traces.length > 0 && (

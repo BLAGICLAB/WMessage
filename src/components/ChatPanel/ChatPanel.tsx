@@ -57,6 +57,7 @@ import { ContextRail, type ContextTab, type SubagentRun } from "./ContextRail";
 import { MessageList } from "./MessageList";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
+import { TracePanel } from "../TracePanel";
 
 /** 子 agent 行里的契约/结果字段都是 JSON 字符串，详情视图要结构化渲染。
  *  解析失败或形状对不上（验收标准不是字符串数组、结果不是对象）都落回原文——
@@ -129,6 +130,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   );
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  /** 执行详情弹层：回合回传的 traceId + 所属会话（会话维度列出同会话的多次执行） */
+  const [openTrace, setOpenTrace] = useState<{
+    traceId: number;
+    sessionId: string | null;
+  } | null>(null);
   /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送）——按会话隔离（DRAFT-1） */
   const [filesBySession, setFilesBySession] = useState<Map<string, string[]>>(
     new Map(),
@@ -1885,6 +1891,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     invoke("focus_main_window").catch(() => {});
   }, []);
 
+  // 「执行轨迹」入口：按回合回传的 trace 打开执行详情。会话 id 走 ref
+  // 取当前视图会话——气泡的 memo 浅比较依赖句柄稳定，不能把 sessionId
+  // 闭进回调里（那样每换会话就换一次句柄，历史气泡全量重渲）。
+  const openTraceFor = useCallback((traceId: number) => {
+    setOpenTrace({ traceId, sessionId: sessionIdRef.current });
+  }, []);
+
   // RE-1 推理强度：底栏按钮显示的生效档位 = 本会话覆盖 ?? 后台默认；
   // effortIsOverridden 决定要不要缀「·默认」角标
   const effectiveEffort: ReasoningLevel =
@@ -1992,6 +2005,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         onRemove={removeMessage}
         onOpenTask={openTaskInMain}
         onOpenExecSession={switchSession}
+        onOpenTrace={openTraceFor}
       />
       <InputArea
         verbose={{ level: verboseLevel, setLevel: setVerboseLevel }}
@@ -2060,6 +2074,14 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           onTabChange={setCtxTab}
           previewPath={previewPath}
           onPreviewPath={setPreviewPath}
+        />
+      )}
+      {/* 执行详情弹层：按回合的 trace 打开（TracePanel 自带 portal） */}
+      {openTrace && (
+        <TracePanel
+          traceId={openTrace.traceId}
+          sessionId={openTrace.sessionId ?? undefined}
+          onClose={() => setOpenTrace(null)}
         />
       )}
     </div>
