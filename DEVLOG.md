@@ -67,8 +67,13 @@
 在独立 worktree + 独立分支上做，改动、提交、门禁都只作用于自己那份 index 和工作树，
 不必和别人的在途状态抢同一个 checkout。
 
-**刻意不做**：不推 `agent` 分支；不 `git worktree remove`；不把这轮合进 `main`。这轮
+**当时刻意不做**：不推 `agent` 分支；不 `git worktree remove`；不把这轮合进 `main`。这轮
 动的是工具面（内置工具 48 → 58），先进主线再一起推更稳。
+
+**后来改了主意**：同日把两侧都改过的 16 个文件逐个核对完（6 个真冲突按语义合并，没有取
+任何一侧整块覆盖另一侧）之后，这轮已合入 `main` 并推送（合并提交 `ae2f7b51`）。合进去
+时门禁抓出一处真冲突：main 侧新加的 `duration-100` 撞上 agent 侧的动效 token 纪律守卫，
+改成 `duration-[var(--dur-chip)] ease-[var(--ease-out)]`（`--dur-chip` 同为 100ms，语义不变）。
 
 **顺带**：提醒只留聊天里的 `list_reminders` / `cancel_reminder` 一个入口，不做设置页
 列表 UI——上一版那三个没人调用的 Tauri 命令（create/list/delete）已经删掉，不留没人
