@@ -163,7 +163,7 @@ src-tauri/src/
 │   └── bot/procs/tests.rs (401)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
 │                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
 │                        + 真子进程监听端口集成测试（验平台路径真能读到）
-├── bot/services.rs (1900) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (1973) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
@@ -174,12 +174,14 @@ src-tauri/src/
 │                        （放开靠独立开关）/ L2 禁占宿主保留端口 / L3 禁特权端口；
 │                        判定三态 Ok / Violated / **Unsupported**（Windows 没判≠没事）；
 │                        违规记在**正交字段** last_violation（不复用状态机）+
-│                        审计 service.port_violation + 面板红色徽章；
+│                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
 │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
-│   └── bot/services/tests.rs (788)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
+│                        + 服务告警进通知中心（资源告警 / 端口违规，条件消失自动撤收）
+│   └── bot/services/tests.rs (852)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
 │                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
 │                        资源告警判定（阈值 / 持续 / 去重）、
-│                        端口闸（flag 解析 / loopback 判定 / L1-L3 判据 / 保留集）等
+│                        端口闸（flag 解析 / loopback 判定 / L1-L3 判据 / 保留集）、
+│                        服务告警落通知中心（资源告警 / 端口违规）等
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
 │   ├── bot/config/schema.rs        bot-config.json schemaVersion 迁移 + 双协议派生
@@ -219,8 +221,10 @@ src-tauri/src/
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
-├── notifications.rs (498) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
-│                        memory_proposal / artifact_bind / task_question 三类）+
+├── notifications.rs (661) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
+│                        memory_proposal / artifact_bind / task_question 三类决策事件 +
+│                        service_alert 一类服务告警——只告知不决策，条件消失时按
+│                        (serviceId, alertType, warning) 三元组自动撤收）+
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
