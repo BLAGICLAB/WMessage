@@ -292,6 +292,18 @@ describe("HomePage 渲染", () => {
     expect(screen.getByText("失败")).toBeInTheDocument();
   });
 
+  it("机器人动态：聊天回合的来源显示中文标签，不露英文原值", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "trace_list")
+        return [trace({ id: 9, origin: "chat", title: null })];
+      if (cmd === "notifications_list") return [];
+      return null;
+    });
+    renderHome();
+    expect(await screen.findByText("聊天")).toBeInTheDocument();
+    expect(screen.queryByText("chat")).not.toBeInTheDocument();
+  });
+
   it("通知：pending 消息渲染 + 待处理数脚注", async () => {
     renderHome();
     await screen.findByText(/「周报生成」问你/);

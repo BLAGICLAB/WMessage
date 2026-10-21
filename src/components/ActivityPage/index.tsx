@@ -14,6 +14,8 @@ const ORIGIN_LABEL: Record<string, string> = {
   manual: "手动",
   scheduled: "定时",
   batch: "批量",
+  // 聊天回合也落 trace（origin="chat"）：不加这项就显示英文原值
+  chat: "聊天",
 };
 
 const STATUS_CLS: Record<string, string> = {
