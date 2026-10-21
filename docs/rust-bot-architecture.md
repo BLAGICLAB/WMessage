@@ -134,27 +134,33 @@ src-tauri/src/
 │   │                            normalize/timeout 钳制）+ 工具命名 mcp_tool_name/tool_prefix
 │   ├── bot/mcp/manager.rs       McpManager（OnceLock 单例）：连接槽 ensure_connected/call_tool、
 │   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造、
-│   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs）
+│   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs：
+│   │                            RSS / CPU / 监听 socket，整棵进程树合计）
 │   ├── bot/mcp/mount.rs         挂载层：连接快照 → 工具 schema 段（撞名消歧/条数/schema 体积
 │   │                            上限）+ dispatch miss 反查 execute_mcp_tool（带超时/结果整形）
 │   ├── bot/mcp/secrets.rs       B4-6 机密存储：env/headers blob 走 keyring `mcp:<id>` 条目
 │   │                            （Linux 降级单文件 0600）+ 进程内缓存 + load_config 水合 +
 │   │                            迁移判据；配置永不明文（skip_serializing 收口）
 │   ├── bot/mcp/commands.rs      设置页 tauri 命令：mcp_server_save/delete/toggle、
-│   │                            mcp_status（回 builtin 标志 + 子进程 pid/内存/CPU/运行时长）、
-│   │                            mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁；
+│   │                            mcp_status（回 builtin 标志 + 子进程 pid/内存/CPU/运行时长/
+│   │                            监听 socket）、mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁；
 │   │                            内置条目 delete 拦截）
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/procs.rs (550)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+├── bot/procs.rs (889)      进程树公共模块（受管服务层与 MCP stdio 共用）：
 │                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
 │                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
 │                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）
 │                        + 停止阶梯 stop_tree（SIGINT→100ms→SIGTERM→400ms→SIGKILL，
 │                        每级发信号前拍一张快照增量收集子孙，最后统一杀）
-│   └── bot/procs/tests.rs (194)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
-│                        整组杀护栏 / 资源采样
+│                        + CPU 占用率公式 cpu_usage_pct（两个上层共用一条）
+│                        + 监听 socket 枚举 listening_sockets（Linux 读 /proc/<pid>/fd
+│                        的 inode 配 /proc/net/tcp{,6}、udp{,6}；macOS 走 lsof；
+│                        **Windows 没有**——现有进程快照层在 Windows 上本就退化）
+│   └── bot/procs/tests.rs (401)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
+│                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
+│                        + 真子进程监听端口集成测试（验平台路径真能读到）
 ├── bot/services.rs (1275) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件

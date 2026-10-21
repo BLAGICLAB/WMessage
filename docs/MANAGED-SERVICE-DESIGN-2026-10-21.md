@@ -1271,6 +1271,8 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
   与资源读数同批采出，**P2-③ 与 P2-①(c) 共用同一份 socket 解析，一次采样两用**——
   两个条目各写一套 `/proc/net/tcp` 解析的话，就是重复采样 + 两套口径。
   归属：显示归 P2-①(c)（可见性），**拦截归 P2-③（闸）**，判据见 §17.2。
+  **已落地**（`bot/procs.rs` 的 `listening_sockets` + MCP 面板的资源行）；
+  闸那一侧还没挂（P2-③ 未实现）。
 
 **非目标（明确不做）**：
 
@@ -1335,9 +1337,18 @@ socket 解析——重复采样、两套口径。所以本节**只定闸**。
 - **平台现实**：上述 `/proc` 路径**只在 Linux 存在**。本应用发 macOS 与 Windows
   两版，`bot/procs.rs` 已经是「Linux 走 `/proc`、其余走 `ps`」的双平台结构，
   socket 这块同样要分平台。**判据（哪些地址/端口算违规）跨平台一致**，
-  只有「怎么取到 socket」按平台分：macOS 走 `lsof -nP -a -p <pid> -iTCP -sTCP:LISTEN`
-  （已实测可拿到 `*:7000` / `127.0.0.1:PORT` / `[::1]:PORT` 三种形态），
-  Windows 另找等效手段。**具体取法是实现期要定的细节，判据不变**。
+  只有「怎么取到 socket」按平台分：
+  - **Linux**：`/proc/<pid>/fd` 的 inode 配 `/proc/net/tcp{,6}`、`udp{,6}`
+    （内核按 `__be32` 打印地址，**每 4 字节组内是反的**——`::1` 打印成
+    `...01000000`，`fe80::` 打印成 `000080FE...`）。
+  - **macOS**：`lsof -nP -a -p <pids> -iTCP -sTCP:LISTEN`（一次调用带全部 pid）。
+    `*:7000` 这种通配写法靠 `TYPE` 列区分 IPv4 / IPv6 → 落成 `0.0.0.0` 或 `::`
+    （不落通配符：判 loopback 靠的是具体地址）。
+  - **Windows**：**没有路径**。`lsof` 不存在，而现有进程快照层在 Windows 上
+    本来就退化了（它依赖 `ps`）。要做得走 `netstat -ano`，**另开条目**。
+
+  这份解析已在 P2-①(c) 落地（`bot/procs.rs` 的 `listening_sockets`），
+  **闸与可见性共用这一份**——两边各写一套 socket 解析就是重复采样 + 两套口径。
 - **违规处理**：走既有信号阶梯杀进程组（`bot/procs.rs` 的 `stop_tree`），
   写审计事件，面板标红并显示违规地址/端口。
 - **最坏检测延迟上界**：启动期 10s、稳态 30s。**这不是容忍暴露期**——
@@ -1497,8 +1508,9 @@ ps -o pid= -o ppid= -ax | wc -l
 | 白名单校验 + 逐臂构造 | `bot/mcp/manager.rs:261` / `:268-287` |
 | MCP 进程 spawn / shutdown | `bot/mcp/manager.rs:254`（spawn_service）/ `:312`（child pid）/ `:714-724`（shutdown）/ `:755`（shutdown_all） |
 | 进程采样公共件（P2-① 与受管服务层共用） | `bot/procs.rs:118`（take_snapshot）/ `:303`（tree_sample）/ `:287`（cpu_usage_pct） |
-| MCP 子进程资源采样（P2-①） | `bot/mcp/manager.rs:418`（connected_children）/ `:440`（sample_children，5s TTL） |
-| MCP 面板资源字段（P2-①） | `bot/mcp/commands.rs:216`（McpServerStatus）/ `:249`（mcp_status，采样走 spawn_blocking） |
+| 监听 socket 枚举（P2-① 落地，P2-③ 复用） | `bot/procs.rs:365`（listening_sockets）/ `:385`（tree_pids）/ `:392`（merge_sockets）/ `:471`（parse_proc_net）/ `:600`（parse_lsof_line） |
+| MCP 子进程资源采样（P2-①） | `bot/mcp/manager.rs:420`（connected_children）/ `:442`（sample_children，5s TTL）/ `:447`（sample_children_within） |
+| MCP 面板资源字段（P2-①） | `bot/mcp/commands.rs:216`（McpServerStatus）/ `:244`（ListeningBrief）/ `:263`（mcp_status，采样走 spawn_blocking） |
 | `ToolDef` / `TOOLS_TABLE` / 工具数 | `bot/registry.rs:164-178` / `:1776+` / `:1772` |
 | 工具名基线断言（集合 / 顺序 / mutating） | `bot/registry.rs:2795` / `:2868` / `:2935` |
 | profile 工具列表 | `bot/registry.rs:2368` / `:2378` / `:2388` / `:2401` |
