@@ -818,9 +818,10 @@ describe("ChatPanel", () => {
         (c) => c[0] === "bot_history_save",
       );
       const last = saveCalls[saveCalls.length - 1];
-      const msgs =
-        (last?.[1] as { messages?: { content?: string; turnStatus?: string | null }[] })
-          .messages ?? [];
+      const payload = (last?.[1] ?? {}) as {
+        messages?: { content?: string; turnStatus?: string | null }[];
+      };
+      const msgs = payload.messages ?? [];
       const row = msgs.find((m) => m.content === "被打断的答复");
       expect(row?.turnStatus).toBe("interrupted");
     });
