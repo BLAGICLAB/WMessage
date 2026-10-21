@@ -1207,7 +1207,7 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 | **P0** | 登记表 + `start_service` / `stop_service` / `list_services` + 停止阶梯 + 子孙回收 + 退出清理 + 权限闸（开关 / 白名单 / cwd）+ **限额不继承** + **输出上限巡检**（8MB 截断 + 30s 一轮） | 打通"skill 内部起 node 长驻"的主链路 |
 | **P1** | **readyPattern + 就绪超时**（已提前落地：就绪判据是长驻服务的核心可用性，一并做了）+ **RSS/CPU 观测告警**（已落地：整棵进程树合计口径，单服务 512MB / 合计 1GB / CPU 跑满持续 5min，只告警不杀）+ **前端服务面板**（已落地：设置页「本地服务」分区，看状态与资源占用、随时停） | 可用性与可观测性 |
 | **P1 剩余** | 资源告警已走**系统通知**（`bot/services.rs` 的 `notify_system`，插件没装时静默跳过）；**应用内通知中心仍未接**服务资源告警（`src/lib/notifications.ts` 的 kind 只有 memory_proposal / artifact_bind / task_question） | |
-| **P2** | ① 方案 1：node MCP server 配到设置页——**已重定义并完成可见性**（见 §17.1 决策记录）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）——**已落地**<br>③ 端口/监听地址硬化闸 | 配套与深化 |
+| **P2** | ① 方案 1：node MCP server 配到设置页——**已重定义并完成可见性**（见 §17.1 决策记录）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）——**已落地**<br>③ 端口/监听地址硬化闸——**判据已定**（见 §17.2；实现排在可见性之后，共用同一份 socket 解析） | 配套与深化 |
 
 ### 17.1 P2-① 决策记录：node MCP server 归到「可见性」口径
 
@@ -1267,6 +1267,10 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 - CPU 占用率与受管服务层**同一条公式**（`bot/procs` 的 `cpu_usage_pct`）：
   delta 累计 CPU 时间 ÷ delta 墙上时间。第一次采样没有前值 → 面板显示累计 CPU 时间，
   第二次（≥5s 后）起才有百分比。
+- **监听信息（端口 / 地址）也在这一份采样里**：`listening` 字段（local_address:port）
+  与资源读数同批采出，**P2-③ 与 P2-①(c) 共用同一份 socket 解析，一次采样两用**——
+  两个条目各写一套 `/proc/net/tcp` 解析的话，就是重复采样 + 两套口径。
+  归属：显示归 P2-①(c)（可见性），**拦截归 P2-③（闸）**，判据见 §17.2。
 
 **非目标（明确不做）**：
 
@@ -1282,6 +1286,90 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 - **面板里不做实时曲线**（任务管理器式）：现在没有需求，真要做再上巡检。
 - **预设模板（选项 4）暂缓、单独开条目**：预设带第三方包名与版本固定，
   是"配置即信任"的一次性确认点，值得单独审文案与版本策略，不混进可见性里稀释 review。
+  条目内容见 §17.3。
+
+### 17.2 P2-③ 判据：端口/监听地址硬化闸（只管闸，可见性已归 P2-①(c)）
+
+**范围纠正**：本条原本把两件性质不同的事混在一起——
+「登记监听端口供面板显示」是**可见性**（与 P2-①(c) 同一层，已并进 §17.1 采样口径），
+「限制绑定哪些地址/端口」才是**闸**（本节）。混在一起的后果是两条目各写一套
+socket 解析——重复采样、两套口径。所以本节**只定闸**。
+
+#### 三条判据
+
+| 级 | 判据 | 定性 |
+|---|---|---|
+| **L1** | 默认只许 loopback：监听地址必须是 `127.0.0.0/8` 或 `::1`。绑 `0.0.0.0` / `::` / 任何非 loopback 地址即违规 | **真安全边界**。暴露到局域网/公网才是要防的 |
+| **L2** | 保留端口：禁止绑宿主登记的端口 | **防抢占 / 防伪装**。模型起的服务不能占宿主端口 |
+| **L3** | 特权端口 `<1024`：发现即终止 | **诊断而非安全边界**。非 root 子进程本来绑不上，价值在报错清楚 |
+
+**L1 的放开方式**：独立开关「允许服务暴露到非 loopback」，**默认关**。
+落地形态与现有三道闸并列，成为**第四道闸**（现有三道都在 `bot/tools.rs` 的
+`tool_start_service`）：
+闸 1 独立开关 `services::enabled`（flag 文件 `services-enabled.flag`）、
+闸 2 启动器白名单 `STDIO_LAUNCH_ALLOWLIST`、
+闸 3 工作目录过文件授权闸（`bot_fs::resolve_with_perm`，注入点
+`bot/registry.rs` 的 `call_start_service`）。
+**L2 / L3 不设开关**，直接拒。
+
+**L2 保留端口表的来源**（维护一张表，每次采样前刷新）：
+
+- 宿主本地 API 端口：`crate::api::API_PORT` = 4763（`src-tauri/src/api.rs:23`）。
+- 运行时宿主自身正在监听的端口（动态采集——插件、可选服务器都算）。
+- **「MCP 控制端口」在本仓库并不存在**：MCP HTTP 传输只允许公网
+  （`bot/mcp/config.rs` 的 `http_url_is_public` 拒内网与 localhost 家族），
+  本地没有「MCP 控制端口」这一说。stdio MCP server 内部自己开的端口属用户
+  信任范围（见下方适用范围口径）。
+
+#### 执行机制：检测-终止，不是预防
+
+- **spawn 前**：解析命令行常见 flag（`--port` / `--host` / `--listen` / `--bind`）
+  做快速失败。**仅为诊断优化，不是执行点**——模型可以写配置文件、设环境变量、
+  在代码里硬编码端口，静态解析不可靠，当成闸会漏。
+- **spawn 后**：前 10s 加密采样（0 / 0.5 / 1 / 2 / 5 / 10s），之后并入 30s 巡检。
+  30s 巡检已有且**只有一条**：`bot/services.rs` 的 `start_output_sweeper` →
+  `sweep_round`（同轮已跑 `enforce_output_caps` + `sample_resources`），P2-③ 的
+  监听检测并进这一轮，不另起循环。
+- **怎么取监听 socket**：读 `/proc/<pid>/fd` 的 socket inode → 匹配
+  `/proc/net/tcp{,6}` 与 `/proc/net/udp{,6}` 的 inode 列 → 取 `local_address:port`。
+- **平台现实**：上述 `/proc` 路径**只在 Linux 存在**。本应用发 macOS 与 Windows
+  两版，`bot/procs.rs` 已经是「Linux 走 `/proc`、其余走 `ps`」的双平台结构，
+  socket 这块同样要分平台。**判据（哪些地址/端口算违规）跨平台一致**，
+  只有「怎么取到 socket」按平台分：macOS 走 `lsof -nP -a -p <pid> -iTCP -sTCP:LISTEN`
+  （已实测可拿到 `*:7000` / `127.0.0.1:PORT` / `[::1]:PORT` 三种形态），
+  Windows 另找等效手段。**具体取法是实现期要定的细节，判据不变**。
+- **违规处理**：走既有信号阶梯杀进程组（`bot/procs.rs` 的 `stop_tree`），
+  写审计事件，面板标红并显示违规地址/端口。
+- **窗口期**：启动期最长 10s，稳态最长 30s（文档写明，不假装是预防）。
+  真要「预防」只能上 network namespace——代价是服务对外不可达，**不做**。
+- **UDS 不管**：unix domain socket 的文件落在 cwd，已有路径闸覆盖。
+  P2-③ 只管 TCP / UDP。
+
+#### 适用范围口径（防下次再混）
+
+**P2-③ 只管受管服务**（命令由模型给）。**MCP stdio 子进程不做闸、只做可见性**——
+MCP 的信任源是**用户手填 + 弹窗确认**，不是模型；且很多 MCP server 本身就要开端口
+（开端口是它的正常功能，拦掉等于把这类 MCP server 全部作废）。
+这句写在这里，否则下次还会被问「为什么 MCP 不拦」。
+
+#### 非目标
+
+- **不含 network namespace 级预防**（真预防的代价是服务不可达）。
+- **不含 MCP 侧闸**（理由见适用范围口径）。
+
+### 17.3 选项 4（backlog，不排期）：MCP server 一键预设模板
+
+**状态**：开条目，**现在不做**，不排期。
+
+- **范围**：`McpPanel` 加预设下拉，选中后填入 `command` + `args` + `env` 默认值；
+  **仍走现有弹窗确认**，不绕过白名单闸。
+- **信任点**：预设含第三方包名 → **必须 pin 版本**（`pkg@x.y.z`）；
+  「版本升级需人工 review」写进条目本身。
+- **待定**：预设集合（filesystem / fetch / memory / git 等）；
+  是否允许用户自定义预设——**建议 v1 不允许**，否则自定义预设变成任意命令注入面；
+  UI 文案。
+- **明确不做**：不自动安装包、不自动 `npx` 拉最新版。
+- **依赖**：无，可独立排期。
 
 ---
 
@@ -1293,7 +1381,7 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 | 2 | 内存无硬限额（macOS 无等价机制） | 只观测 + 告警 | §5.4 实测：正常 vite dev server 145MB/棵，4 个并发上限打满 ~580MB；告警阈值按实测定（单 512MB / 合计 1GB）；退出必杀是硬边界 |
 | 3 | CPU 无硬限额 | 只观测 + 告警 | 杀正在构建的 dev server 比让它跑飞更糟 |
 | 4 | 会话结束不回收服务 | §13.4 的取舍 | `stop_service` + 观测告警 + 用户可随时停 |
-| 5 | 服务可监听任意端口 | 本期不做端口闸 | 审计记全 argv + `list_services` 展示 stdout + **就绪快照固化监听地址**（§11.5）；P2 硬化 |
+| 5 | 服务可监听任意端口 | P2-③ 判据已定（§17.2）：L1 默认只许 loopback、L2 禁占宿主端口、L3 禁特权端口。**实现未落地**，且它本质是**检测-终止不是预防**（窗口期 10s/30s）；真预防要 network namespace，代价是服务不可达 | 现状缓解：审计记全 argv + `list_services` 展示 stdout + **就绪快照固化监听地址**（§11.5）。落地后：违规走信号阶梯杀组 + 审计 + 面板标红；L1 可用独立开关放开 |
 | 6 | 停止阶梯期间服务可能写坏自己的文件 | SIGINT 给 100ms 优雅退出，SIGKILL 是兜底 | 语义与 Claude Code 一致 |
 | 7 | 并发上限 4 是拍的 | 无依据数据 | 可配（设置页），先给个保守值 |
 | 8 | `ps` 快照在超多进程机器上慢 | 单次 ~50ms 量级 | 只在停止时拍（低频，3 次），不在巡检里拍 |
@@ -1303,6 +1391,7 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 | 12 | **DSL 变量替换：数字落成字符串** | `resolve_nested_path` 对非 String 终值走 `to_string()`，数字 `5173` → `"5173"`（§7.5） | 既有实现的性质，非本方案引入。**占位符写在非字符串位时实测能落回真正的 JSON 数字/布尔**（探针 2：`is_number()==true`）；写在字符串位则落字符串。已写进 §7.5 的示例 |
 | 13 | **DSL 变量替换：残留占位符传给下游** | key 不存在时 `${step1.nope}` **原样保留**并随 args 传给下游工具，下游看到的是字面量而不是"缺参数" | 既有实现的行为（"不静默变空串"是有意的）。下游多半会报"URL 非法"之类的错，**可诊断性中等**。SKILL.md 侧靠"先跑 step1 看返回"来规避；根治要改 `vars.rs` 的 fallback 策略（超出本方案范围） |
 | 14 | **前端启动器清单与后端白名单是两份手工副本** | 后端硬闸 `bot/mcp/config.rs` 的 `STDIO_LAUNCH_ALLOWLIST` 与前端下拉 `src/components/SettingsPage/types.ts` 的 `MCP_STDIO_LAUNCHERS` **当前一致**（各 10 项），但**没有测试锁这一对**（`stdio_allowlist_and_spawn_match_stay_in_sync` 只锁 Rust 侧白名单↔进程构造臂） | 前端多一项 → 用户能选但后端保存时被拒（报错清晰，不静默）；后端多一项 → 用户在 UI 里选不到（功能缺失，不报错）。两侧都靠人手记，迟早漂。修法：加一个跨语言源码锁单测（照 `src/lib/taskFiles.test.ts` 直接读 Rust 源文件的做法，把 `STDIO_LAUNCH_ALLOWLIST` 解析出来与 TS 常量对拍）——**另开条目**，P2-① 只做可见性不扩这个 |
+| 15 | **端口闸只在受管服务侧，MCP stdio 子进程不受约束** | 刻意如此：MCP 的信任源是用户手填 + 弹窗确认，不是模型；且很多 MCP server 本身就要开端口（开端口是它的正常功能） | 口径写进设计稿 §17.2 适用范围，避免下次又被问「为什么 MCP 不拦」 |
 
 ---
 
