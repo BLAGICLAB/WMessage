@@ -1207,7 +1207,81 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 | **P0** | 登记表 + `start_service` / `stop_service` / `list_services` + 停止阶梯 + 子孙回收 + 退出清理 + 权限闸（开关 / 白名单 / cwd）+ **限额不继承** + **输出上限巡检**（8MB 截断 + 30s 一轮） | 打通"skill 内部起 node 长驻"的主链路 |
 | **P1** | **readyPattern + 就绪超时**（已提前落地：就绪判据是长驻服务的核心可用性，一并做了）+ **RSS/CPU 观测告警**（已落地：整棵进程树合计口径，单服务 512MB / 合计 1GB / CPU 跑满持续 5min，只告警不杀）+ **前端服务面板**（已落地：设置页「本地服务」分区，看状态与资源占用、随时停） | 可用性与可观测性 |
 | **P1 剩余** | RSS/CPU 告警目前只在设置页与 `list_services` 可见，**没有主动推送**（通知中心/系统通知通道未接） | |
-| **P2** | ① 方案 1：node MCP server 配到设置页（`bot/mcp/config.rs` 已有整套 UI）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）——**已落地**<br>③ 端口/监听地址硬化闸 | 配套与深化 |
+| **P2** | ① 方案 1：node MCP server 配到设置页——**已重定义**为「只补可见性」（见 §17.1 决策记录）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）——**已落地**<br>③ 端口/监听地址硬化闸 | 配套与深化 |
+
+### 17.1 P2-① 决策记录：node MCP server 归到「可见性」口径
+
+**结论**：P2-① 的范围**重定义**为「宿主对 MCP 子进程的资源可见性」，
+本节落地后按「**已重定义并完成可见性**」结案（不写"已完成"——原措辞太模糊，
+"已有整套 UI"这种话会被反复拿出来重问）。
+
+**为什么重定义**：原条目「node MCP server 配到设置页」混了三层意思，
+不拆开会一直谈不清：
+
+| 层 | 含义 | 结论 |
+|---|---|---|
+| (a) 能不能配 | 用户在设置页配一个 node MCP server | **已覆盖**（引用见下） |
+| (b) 管不管得住 | 宿主知不知道、能不能停、退出时收不收干净 | **已覆盖**（P2-②，引用见下） |
+| (c) 看不看得见 | 资源占用 / 运行时长 / pid | **本节的范围** |
+
+**(a) 能不能配 —— 已覆盖，引用写死**（不再写"已有整套 UI"这种模糊话）：
+
+- 配置面：`src/components/SettingsPage/McpPanel.tsx` —— stdio 表单的 command 来自
+  `src/components/SettingsPage/types.ts` 的 `MCP_STDIO_LAUNCHERS` 下拉，
+  有 args / env（值走 keyring）/ 超时；
+  **保存前弹窗展示完整命令行**让用户确认。
+- 配置结构：`src-tauri/src/bot/mcp/config.rs` 的 `McpServerConfig`
+  （`transport` = stdio | http；`env` / `headers` 的值 `skip_serializing`，落 keyring）。
+- 白名单：后端硬闸 `bot/mcp/config.rs` 的 `STDIO_LAUNCH_ALLOWLIST`
+  （保存校验、错误文案、进程构造全查此表）。
+  后端两份清单（白名单 ↔ `bot/mcp/manager.rs` 的逐臂字面量构造）由单测
+  `stdio_allowlist_and_spawn_match_stay_in_sync` 锁住（新增白名单项漏改构造臂
+  会静默断 stdio 路）。
+  **但前端 `MCP_STDIO_LAUNCHERS` 是手工维护的第二份副本**——两侧当前一致
+  （各 10 项），**没有测试锁**（该单测只管 Rust 侧）。见 §18 风险 14。
+
+**(b) 管不管得住 —— 已覆盖，引用写死**：
+
+- 生命周期：连接槽 + 按需连接 + 懒重连（`bot/mcp/manager.rs` 的 `ensure_connected`）。
+- 停止：P2-② 起，MCP stdio 子进程**自建进程组**（否则整组杀会连宿主一起带走），
+  断开/退出时先走 `bot::procs::stop_tree` 的同一套信号阶梯
+  （SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ 回收脱离进程组的子孙，
+  **再**取消令牌让 rmcp 收尾（此时已是死进程，Drop 的 fire-and-forget SIGKILL 是空操作）。
+  顺序不能反：rmcp 先杀会让逃逸子孙在快照前被 reparent，ppid 树就认不出它是谁的后代。
+- 退出必杀：`src-tauri/src/lib.rs` 的 `cleanup_on_exit_with` →
+  `bot::mcp::manager::shutdown_all`；审计 `app_exit_cleanup` 的 `mcp_stopped` 字段。
+- 测试：`bot/mcp/manager.rs` 的 e2e
+  `shutdown_stops_stdio_child_and_its_escaped_descendant`
+  （桩服务器拉一个 setsid 逃逸子孙，断言 shutdown 后父子两个 pid 都不在了）。
+
+**采样口径（本节要做的事）**：
+
+- 与受管服务层**同一套采样代码**：`bot/procs.rs` 的 `take_snapshot` + `tree_sample`
+  —— 整棵进程树合计（组长 + 全部后代），因为 dev server 的活多半在子进程里，
+  只看组长会漏掉真正在烧的那个。
+- 触发方式：**按需采样 + 5s TTL 缓存**（在 `mcp_status` 里取）。
+  不做 30s 后台巡检：MCP 是按需连接、连接数少，巡检大概率空转，
+  且巡检要先问管理器「现在哪些连着」再把采样状态塞回 MCP 侧，引入后台线程与
+  管理器锁的耦合。
+- 5s TTL 的理由：`mcp_status` 可能被前端轮询，每次都拍一张全机 `ps`（~50ms）就重了。
+- CPU 占用率与受管服务层**同一条公式**（`bot/procs` 的 `cpu_usage_pct`）：
+  delta 累计 CPU 时间 ÷ delta 墙上时间。第一次采样没有前值 → 面板显示累计 CPU 时间，
+  第二次（≥5s 后）起才有百分比。
+
+**非目标（明确不做）**：
+
+- **不含对话内临时挂载 MCP server**（模型在对话里临时起一个 MCP server 挂上）。
+  若要做，**另开条目**——那是另一个产品面，设计稿没有它就不塞进来。
+- **不合并进受管服务表**（不做"一张表看全部长驻进程"）：MCP 进程归连接槽、
+  生命周期是按需的。合并要么给服务层开"管道模式"（与「不占管道」正面冲突：
+  孙进程占住管道会触发 drain 超时那条连坐杀组路径），要么自造 FIFO+文件尾的
+  rmcp 传输（JSON-RPC 分帧从文件尾读是竞态的）。为了"一张表"去动 rmcp 传输层，
+  是用架构纯洁性换真金白银的 bug 面。
+- **不给 MCP server 加 CPU/内存硬限额**：同受管服务层口径——限额会误杀正在干活的
+  进程，且 macOS 没有等价的 per-process 内存硬限额。只观测。
+- **面板里不做实时曲线**（任务管理器式）：现在没有需求，真要做再上巡检。
+- **预设模板（选项 4）暂缓、单独开条目**：预设带第三方包名与版本固定，
+  是"配置即信任"的一次性确认点，值得单独审文案与版本策略，不混进可见性里稀释 review。
 
 ---
 
@@ -1228,6 +1302,7 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 | 11 | **日志截断窗口内的输出可能丢失 / 顺序错乱** | `set_len(0)` 与写回之间有几毫秒窗口（§11.3） | 接受：日志尾部本就是"最近发生了什么"的近似；关键信息（启动横幅 / 监听地址）由 `ready_snapshot` 单独固化（§11.5），不依赖日志 |
 | 12 | **DSL 变量替换：数字落成字符串** | `resolve_nested_path` 对非 String 终值走 `to_string()`，数字 `5173` → `"5173"`（§7.5） | 既有实现的性质，非本方案引入。**占位符写在非字符串位时实测能落回真正的 JSON 数字/布尔**（探针 2：`is_number()==true`）；写在字符串位则落字符串。已写进 §7.5 的示例 |
 | 13 | **DSL 变量替换：残留占位符传给下游** | key 不存在时 `${step1.nope}` **原样保留**并随 args 传给下游工具，下游看到的是字面量而不是"缺参数" | 既有实现的行为（"不静默变空串"是有意的）。下游多半会报"URL 非法"之类的错，**可诊断性中等**。SKILL.md 侧靠"先跑 step1 看返回"来规避；根治要改 `vars.rs` 的 fallback 策略（超出本方案范围） |
+| 14 | **前端启动器清单与后端白名单是两份手工副本** | 后端硬闸 `bot/mcp/config.rs` 的 `STDIO_LAUNCH_ALLOWLIST` 与前端下拉 `src/components/SettingsPage/types.ts` 的 `MCP_STDIO_LAUNCHERS` **当前一致**（各 10 项），但**没有测试锁这一对**（`stdio_allowlist_and_spawn_match_stay_in_sync` 只锁 Rust 侧白名单↔进程构造臂） | 前端多一项 → 用户能选但后端保存时被拒（报错清晰，不静默）；后端多一项 → 用户在 UI 里选不到（功能缺失，不报错）。两侧都靠人手记，迟早漂。修法：加一个跨语言源码锁单测（照 `src/lib/taskFiles.test.ts` 直接读 Rust 源文件的做法，把 `STDIO_LAUNCH_ALLOWLIST` 解析出来与 TS 常量对拍）——**另开条目**，P2-① 只做可见性不扩这个 |
 
 ---
 
