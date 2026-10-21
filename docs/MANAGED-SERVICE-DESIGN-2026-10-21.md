@@ -443,9 +443,9 @@ PROBE2_PORT_IS_NUMBER=true   PROBE2_PID_IS_NUMBER=true   PROBE2_READY_IS_BOOL=tr
 > 注意：变量替换**只发生在 DSL 调度器**（`scheduler.rs:440`）。主 agent 的裸工具调用不走这层，
 > 模型得自己从上一次工具返回里读 id。
 
-### 7.6 三处基线断言必须同步（否则单测红）
+### 7.6 四处基线断言必须同步（否则单测红）
 
-`bot/registry.rs` 里三处**手写的全量名单**锁着内置工具集。加工具只改 `TOOLS_TABLE` 会红：
+`bot/registry.rs` 里**四处**手写的全量名单锁着内置工具集。加工具只改 `TOOLS_TABLE` 会红：
 
 | 位置 | 断言 | 新增工具怎么改 |
 |---|---|---|
@@ -453,6 +453,15 @@ PROBE2_PORT_IS_NUMBER=true   PROBE2_PID_IS_NUMBER=true   PROBE2_READY_IS_BOOL=tr
 | `registry.rs:2795` | `let expected: HashSet<String>` —— 工具名**集合**（断言在 `:2856`） | 三个名字加进集合 |
 | `registry.rs:2868` | `let expected_order: Vec<String>` —— 工具名**顺序**（断言在 `:2929`） | 按 `TOOLS_TABLE` 实际追加位置插入 |
 | `registry.rs:2935` | `let expected: HashSet<&str>` —— **mutating 工具基线**（`mutating_tools_matches_baseline`） | `start_service` / `stop_service` 是 mutating → 加进去；`list_services` 不是 → 不加 |
+| `registry.rs:3079` | `tools_json_matches_baseline` —— **主可见工具数**（`base_arr.len() + N`） | N 从 28 → **31**（+3 = 受管服务三工具）；断言消息里的算式也要跟着改，否则读的人对不上账 |
+
+> **第四处是实施时才发现的**：前三条都在 `registry.rs` 的同一段测试里，第四条
+> （`tools_json_matches_baseline`）隔得远、且它锁的是**数量算式**而不是名字列表，
+> 读前三处时很容易以为「名字都加进去就完了」。它比的是 `tests/fixtures/tools_baseline.json`
+> 里那 28 个核心工具 + 尾部增量，**新增工具必须把增量数一起改**。
+>
+> 教训：加内置工具时，基线断言不止「名字列表」这一类，**数量算式**也是一处。
+> 实施时按「跑全量门禁，看哪个红」逐个补，比照着文档清单猜要可靠。
 
 `expected_order` 锁的是**顺序**（"基线只比前缀"那种追加法在表尾加才安全），
 所以三个新工具追加在 `TOOLS_TABLE` **表尾**，`expected_order` 同步在末尾追加。
@@ -753,6 +762,23 @@ pid 是可复用的。停止一个服务要花 500ms+，这期间系统完全可
 - **Windows**：用 `taskkill /T`（系统自带进程树），不做 ppid 树解析，也不存在 pid 复用问题
   （Windows 的 pid 复用有不同语义，交给系统命令处理）。
 
+#### 整组杀的护栏（实施时补上）
+
+阶梯最后一步要 `kill -9 -<pgid>`，但组 id 就是组长的 pid，而 pid 会被回收、复用：
+
+- 组长被 watcher 收尸后，pid **立刻被释放**（这是 pid 复用的前提）；
+- 之后这个号可能被系统分给**毫不相干的新进程**，而新进程若自成组长，
+  `killpg(组长 pid)` 就会打到**别人的组**上。
+
+所以整组杀不能只看"pid 还在不在"——`kill(pid, 0)` 对"我们的组长"和"号被借走了"
+两种情况都返回成功。**判据是启动标识**：快照里组长的启动标识与停止开始时记下的
+一致，才说明"还是我们的组长"，才允许整组杀；不一致或组长已不在快照里（走了且被回收）
+就**只逐个补杀**已核验过的后代（宁可漏杀也不误杀，见上面的 PID 复用一节）。
+
+同理，`kill(0, sig)` / `killpg(0, sig)` 的语义是"给调用方的整个进程组发信号"，
+一旦 pid 拿不到（登记表占位条目还没填 pid）就会变成"宿主给自己发信号"——
+这两个调用必须显式拒掉 pid ≤ 0。
+
 #### 与 `DEVLOG.md:4150` 的关系
 
 那条记录的是 `run_python` 沙箱里的孙进程逃逸。
@@ -1001,8 +1027,8 @@ bot::mcp::manager::shutdown_all(app);
 | `src-tauri/src/bot/services.rs` | **新增**：登记表 / 状态机 / spawn / 停止阶梯 / 子孙回收 / 输出落盘 / 闸判定 | — |
 | `src-tauri/src/bot/mod.rs` | 加 `pub mod services;` | — |
 | `src-tauri/src/app_state.rs` | `AppState` 加 `services` 字段 + `services(app)` 访问器 | 其余 12 张表不动 |
-| `src-tauri/src/bot/registry.rs` | `TOOLS_TABLE` 追加 3 条 + 3 个 `SCHEMA_*` 常量 + `BUILTIN_TOOL_COUNT` 58→61 + **三处基线断言同步**（见 §7.6） | 四处 profile 工具列表**不动**（子 agent 不给起服务的权限） |
-| `src-tauri/src/bot/tools.rs` | 3 个 `tool_start_service` / `tool_stop_service` / `tool_list_services` 薄壳 | 既有 58 个工具不动 |
+| `src-tauri/src/bot/registry.rs` | `TOOLS_TABLE` 追加 3 条 + 3 个 `SCHEMA_*` 常量 + `BUILTIN_TOOL_COUNT` 58→61 + **四处基线断言同步**（见 §7.6）；`call_start_service` 算好权限档与路径闸再注入工具（见 §16.3） | 四处 profile 工具列表**不动**（子 agent 不给起服务的权限） |
+| `src-tauri/src/bot/tools.rs` | 3 个 `tool_start_service` / `tool_stop_service` / `tool_list_services` 薄壳（工具本体不绑 Runtime，Wry 依赖注入进来——见 §16.3） | 既有 58 个工具不动 |
 | `src-tauri/src/lib.rs` | `cleanup_on_exit_with` 加 `services::stop_all(app)` 一行 + 审计字段 | 退出顺序其余部分不动 |
 | `src-tauri/src/py/commands.rs` | 加 `service_get_enabled` / `service_set_enabled`（flag 文件，与 `py-enabled.flag` 同款） | `py_get_enabled` 不动 |
 | `src-tauri/src/py/runtime.rs` | **不改** | 全部 |
@@ -1072,6 +1098,8 @@ MCP stdio server 也是"宿主 spawn 的长驻子进程"，看起来可以合并
 | ppid 树收集不误伤 | 与 root **无祖先关系**的 pid 不进集合（不能把别人的进程杀了） |
 | **增量快照合并** | 两次快照的差集 = 新增后代；已收集的不重复入集合 |
 | **PID 复用剔除** | 同一 pid 在新旧快照里 `starttime` 不同 → **不进待杀集合**（宁可漏杀不可误杀） |
+| **整组杀护栏** | 组长启动标识一致 → 允许整组杀；标识变了 / 组长不在快照里 / 从没记到标识 → **不允许**（`group_kill_allowed`） |
+| **pid 0 拒发** | `send_signal(0, ·)` / `signal_group(0, ·)` 一律拒绝（`kill(0,·)` = 给调用方整个进程组发信号） |
 | 收集阶段不杀 | `merge_descendants` 纯计算，不产生任何 kill（杀全部推迟到最后一步） |
 | 输出截断 | 超限文件截断后 size ≤ cap，且**尾部内容保留**、头部丢弃 |
 | 截断后子进程续写不产生空洞 | `O_APPEND` 下 truncate → 写 → 文件 size 连续（无 NUL 空洞） |
@@ -1085,7 +1113,7 @@ MCP stdio server 也是"宿主 spawn 的长驻子进程"，看起来可以合并
 
 | 用例 | 断言 |
 |---|---|
-| **P0 全链路（第一条就要有）** | 走**真实 Skill DSL 链路**：SKILL.md 的 step1 调 `start_service` → step2 用 `${step1.serviceId}` 调 `stop_service` → 服务真的被停掉。**不许只在单测里验变量替换**——单测验的是 `substitute_vars`，验不到"调度器 → dispatch → 三道闸 → 工具 → 登记表"这条真链上任何一环的问题 |
+| **P0 全链路（第一条就要有）** | 走**真实 Skill DSL 链路**（`tests/skill_e2e.rs`）：SKILL.md 的 step1 调 `start_service` → step2 用 `${step1.serviceId}` 调 `stop_service` → 服务真的被停掉（登记表转 `exited`）。**不许只在单测里验变量替换**——单测验的是 `substitute_vars`，验不到"调度器 → 变量替换 → 工具入参解析 → 授权闸 → 真进程 → 登记表"这条链上任何一环的问题 |
 | 起服务并存活 | `start_service` → `Running`；`list_services` 能看到；进程在 2s 后仍活 |
 | **限额不继承**（核心回归） | 服务跑一个烧 CPU 的 node，**跑 5s 仍存活**；对照：同样脚本在 `run_python` 里 2s 就被 SIGXCPU 杀 |
 | 停止阶梯 | `stop_service` → 进程消失；`method` 与实际信号一致 |
@@ -1098,15 +1126,50 @@ MCP stdio server 也是"宿主 spawn 的长驻子进程"，看起来可以合并
 | 输出上限 | 服务狂写 stdout → 文件 size ≤ cap；`list_services` 仍能拿到最近 20 行 |
 | **就绪快照不被截断吃掉** | 服务启动打横幅 → 之后狂写 stdout 把横幅挤出 8MB → `list_services` 仍能拿到 `ready_snapshot` 里的监听地址 |
 
-### 16.3 门禁
+### 16.3 全链路测试的覆盖边界（实施后确定）
 
+上面那条「P0 全链路」用例实施时撞上一个硬约束：**本仓测试只有 mock runtime**
+（`tauri::test::mock_app()`；Wry 需要显示环境 + 主线程，见 `tests/skill_e2e.rs` 头部说明），
+而 **dispatch 层与 `bot_fs` 路径闸整体是 Wry 专属**（`ToolCtx.app` 收 `&AppHandle`，
+`bot-config.json` 读写与授权弹窗都绑 Wry）。
+
+处置：**把两处 Wry 依赖做成注入项**，让工具本体不绑 Runtime——
+权限档（`yolo`）与路径闸（`resolve_cwd` 闭包）由调用方算好传进来
+（与 `run_skill_scheduler_core` 注入 `execute_tool` / `persist` 同款思路）：
+
+```rust
+// bot/tools.rs
+pub(crate) async fn tool_start_service<R, F>(
+    app: &AppHandle<R>, args: &str, session_id: Option<&str>,
+    yolo: bool, resolve_cwd: F,
+) -> ToolResult
+where F: Fn(String) -> Pin<Box<dyn Future<Output = Result<PathBuf, String>> + Send>> + Send + Sync
+```
+
+于是**真工具**能在 mock runtime 下被真调用，测试覆盖到：
+
+| 环节 | 覆盖 |
+|---|---|
+| 调度器步骤推进 / 变量替换（`${step1.serviceId}`） | ✅ |
+| 工具入参解析（JSON → `StartRequest`） | ✅ |
+| 授权闸（设置页开关 + 启动器白名单） | ✅ |
+| 真进程起停 / 登记表状态机 / 停止阶梯 | ✅ |
+| **dispatch 层三道闸**（pre_tool 钩子 / per-tool 规则表 / 子 agent 白名单） | ❌ Wry 专属，dispatch 自身测试覆盖 |
+| **`bot_fs` 路径授权闸**（白名单外弹窗） | ❌ Wry 专属，测试里用固定解析器替身 |
+
+> 诚实标注：这条用例**不是**「全链路无盲区」。它证明的是
+> 「skill 写的一步能真的起一个受管服务、下一步能真的用上一步的 serviceId 把它停掉」，
+> 这正是本功能的核心承诺。dispatch 三闸与路径闸是**全仓所有工具共用的基建**，
+> 它们的测试在各自模块里，不在本功能的账上。
+
+### 16.4 门禁
 ```
 bash scripts/test-fast.sh     # pre-commit
 bash scripts/test-all.sh      # pre-push（cargo nextest + vitest）
 cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 ```
 
-### 16.4 无新增依赖
+### 16.5 无新增依赖
 
 - 进程 spawn：`std::process::Command`（已有）。
 - 进程组/信号：Unix 用 `libc`（**已在依赖里**，`py/runtime.rs` 用 `libc::setrlimit` / `kill`）。
@@ -1122,8 +1185,8 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 
 | 期 | 内容 | 价值 |
 |---|---|---|
-| **P0** | 登记表 + `start_service` / `stop_service` / `list_services` + 停止阶梯 + 子孙回收 + 退出清理 + 权限闸（开关 / 白名单 / cwd）+ **限额不继承** | 打通"skill 内部起 node 长驻"的主链路 |
-| **P1** | `readyPattern` + 就绪超时 + 输出上限巡检 + RSS/CPU 观测告警 + 前端服务面板 | 可用性与可观测性 |
+| **P0** | 登记表 + `start_service` / `stop_service` / `list_services` + 停止阶梯 + 子孙回收 + 退出清理 + 权限闸（开关 / 白名单 / cwd）+ **限额不继承** + **输出上限巡检**（8MB 截断 + 30s 一轮） | 打通"skill 内部起 node 长驻"的主链路 |
+| **P1** | **readyPattern + 就绪超时**（本次已提前落地：就绪判据是长驻服务的核心可用性，一并做了）+ RSS/CPU 观测告警 + 前端服务面板 | 可用性与可观测性 |
 | **P2**（不在本方案） | ① 方案 1：node MCP server 配到设置页（`bot/mcp/config.rs` 已有整套 UI）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）<br>③ 端口/监听地址硬化闸 | 配套与深化 |
 
 ---

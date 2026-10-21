@@ -7,8 +7,8 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1081)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
-├── app_state.rs (250)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
+├── lib.rs (1090)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── app_state.rs (264)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
@@ -107,7 +107,7 @@ src-tauri/src/
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
 │                        事件（Anthropic 协议）
-├── bot.rs (161)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
+├── bot.rs (162)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
 │                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
@@ -117,7 +117,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3642)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3750)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1445)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
@@ -145,6 +145,14 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
+├── bot/services.rs (1273) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+│                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
+│                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
+│                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
+│                        （带 starttime 防 PID 复用）。与 py/runtime.rs 是两层：前者有界作业、
+│                        连坐杀组；本层长驻、宿主知道它、能停它、退出时收干净
+│   └── bot/services/tests.rs (522)  服务层单测：进程快照纯函数（ppid 树 / starttime 解析）+
+│                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞等
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
 │   ├── bot/config/schema.rs        bot-config.json schemaVersion 迁移 + 双协议派生
@@ -158,7 +166,8 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (2658)    20 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发）
+├── bot/tools.rs (2879)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
+│                        受管服务起停查 start_service / stop_service / list_services）
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
@@ -336,6 +345,7 @@ src-tauri/src/
 | `sched_running` | bot_scheduler.rs | `SchedGuard::drop`（Arc 句柄） |
 | `pending` | exec_steps.rs | 用户应答 / 超时 |
 | `artifact_registry` | bot_artifacts.rs | 流程收尾 clear |
+| `services` | bot/services.rs | 受管服务状态机 + `stop_service` / 退出时 `services::stop_all` |
 
 刻意**留档不收口**：`NEXT_STOP_ID`（id 发号器，进程级）、`SESSION_ORIGINS`（session 元数据，
 「写一次/读一处/随 session 消亡」，理由与三条测量结论见 `app_state.rs` 总表与 `tool_guard.rs:45`）、
