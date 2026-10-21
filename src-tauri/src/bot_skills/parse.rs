@@ -136,11 +136,6 @@ fn strip_annotations(rest: &str) -> String {
         .to_string()
 }
 
-pub(crate) fn parse_frontmatter(text: &str, dir_name: &str) -> (String, String) {
-    let meta = parse_meta(text, dir_name);
-    (meta.name, meta.description)
-}
-
 /// 解析完整元数据（调度器用）：缺失字段走默认值；非法值回退默认
 pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     let mut m = SkillMeta::default();
@@ -667,23 +662,23 @@ mod tests {
     #[test]
     fn frontmatter_parses_name_and_description() {
         let text = "---\nname: ppt-pro\ndescription: \"PPT 制作规范\"\n---\n# 正文\n步骤一\n";
-        let (n, d) = parse_frontmatter(text, "fallback");
-        assert_eq!(n, "ppt-pro");
-        assert_eq!(d, "PPT 制作规范");
+        let m = parse_meta(text, "fallback");
+        assert_eq!(m.name, "ppt-pro");
+        assert_eq!(m.description, "PPT 制作规范");
     }
 
     #[test]
     fn frontmatter_missing_falls_back_to_dir_name() {
-        let (n, d) = parse_frontmatter("没有 frontmatter", "dir-x");
-        assert_eq!(n, "dir-x");
-        assert_eq!(d, "");
+        let m = parse_meta("没有 frontmatter", "dir-x");
+        assert_eq!(m.name, "dir-x");
+        assert_eq!(m.description, "");
     }
 
     #[test]
     fn frontmatter_invalid_name_falls_back() {
         let text = "---\nname: \"../evil\"\ndescription: x\n---\n";
-        let (n, _) = parse_frontmatter(text, "dir-x");
-        assert_eq!(n, "dir-x"); // 非法名（含路径字符）回退目录名
+        let m = parse_meta(text, "dir-x");
+        assert_eq!(m.name, "dir-x"); // 非法名（含路径字符）回退目录名
     }
 
     #[test]

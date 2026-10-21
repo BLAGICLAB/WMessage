@@ -1,6 +1,6 @@
 use super::parse::{
-    parse_frontmatter, parse_meta, parse_skill_steps, strip_frontmatter, unknown_tool_names,
-    SkillMeta, SKILL_NAME_CHARS_OK,
+    parse_meta, parse_skill_steps, strip_frontmatter, unknown_tool_names, SkillMeta,
+    SKILL_NAME_CHARS_OK,
 };
 use crate::error::{CommandError, CommandResult};
 use serde::Serialize;
@@ -387,7 +387,8 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    let (name, _) = parse_frontmatter(&text, &dir_name);
+    let meta = parse_meta(&text, &dir_name);
+    let name = meta.name.clone();
     // 校验最终技能名（frontmatter 名非法时 parse 回退目录名，
     // 目录名本身也可能非法）——非法名装上后 load/delete 都拒绝，装得上用不了删不掉
     if let Err(reason) = validate_skill_name(&name) {
@@ -395,6 +396,14 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
             field: "name".into(),
             value: name,
             reason,
+        });
+    }
+    // 准入核与 create_skill / install_skill 同一口径（description 必填 / 危险词 /
+    // intents 宽度闸）：导入是第三方内容的入口，不能绕过闸门落盘
+    if let Err(reason) = validate_created_meta(&meta) {
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: format!("拒绝导入：{reason}"),
         });
     }
     let dir = skills_dir(&app);
@@ -429,7 +438,8 @@ const CREATE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 
 /// 创建校验的元数据部分（纯逻辑可测）：description 必填（技能清单与路由展示必需）
 /// + intents/description 危险关键词预检（与运行时 preflight 同一黑名单——把拒绝
-/// 提前到落盘前，而非装上后每次启动才炸）。
+/// 提前到落盘前，而非装上后每次启动才炸）+ intents 宽度闸（装上即进进程级路由表，
+/// 过宽模式会把此后每条用户消息都劫持进该技能）。
 pub(crate) fn validate_created_meta(meta: &SkillMeta) -> Result<(), String> {
     if meta.description.trim().is_empty() {
         return Err("frontmatter 缺少 description（技能清单与路由展示必需）".into());
@@ -447,7 +457,27 @@ pub(crate) fn validate_created_meta(meta: &SkillMeta) -> Result<(), String> {
             "intents/description 命中危险关键词「{hit}」，拒绝创建"
         ));
     }
+    for p in &meta.intents {
+        crate::intent_router::check_intent_pattern(p)
+            .map_err(|reason| format!("intents「{p}」{reason}"))?;
+    }
     Ok(())
+}
+
+/// 待创建技能的元数据核（纯逻辑、可测）：解析 frontmatter + 名称一致性 +
+/// 准入核。名称一致性：frontmatter name 必须与技能名一致——路由/清单用
+/// meta.name，磁盘目录用参数名，失配会产出「路由指 frontmatter 名、目录叫参数名」
+/// 的僵尸技能（load/delete 都按目录名找）。
+fn prepare_created_meta(name: &str, content: &str) -> Result<SkillMeta, String> {
+    let meta = parse_meta(content, name);
+    if meta.name != name {
+        return Err(format!(
+            "SKILL.md frontmatter name「{}」与技能名「{name}」不一致——frontmatter name 必须与技能名完全一致",
+            meta.name
+        ));
+    }
+    validate_created_meta(&meta)?;
+    Ok(meta)
 }
 
 /// 落盘核（同步、可测）：name 须已过 validate_skill_name；content 为完整 SKILL.md
@@ -466,20 +496,9 @@ fn create_skill_at(
             reason: format!("SKILL.md 超过 {CREATE_MAX_SKILL_CHARS} 字符上限"),
         });
     }
-    let meta = parse_meta(content, name);
-    // frontmatter name 必须与目录名一致：路由/清单用 meta.name，磁盘目录用参数名，
-    // 失配会产出「路由指 frontmatter 名、目录叫参数名」的僵尸技能（load/delete 都按目录名找）
-    if meta.name != name {
-        return Err(CommandError::InvalidArgument {
-            field: "name".into(),
-            value: name.to_string(),
-            reason: format!(
-                "SKILL.md frontmatter name「{}」与技能名「{name}」不一致——frontmatter name 必须与技能名完全一致",
-                meta.name
-            ),
-        });
-    }
-    validate_created_meta(&meta).map_err(|reason| CommandError::InvalidArgument {
+    // frontmatter name 必须与目录名一致 + 准入核（description 必填 / 危险词 /
+    // intents 宽度闸）：解析与校验口径单源，工具层与落盘核共用
+    prepare_created_meta(name, content).map_err(|reason| CommandError::InvalidArgument {
         field: "content".into(),
         value: String::new(),
         reason,
@@ -593,8 +612,18 @@ fn create_skill_at(
 
 /// 机器人自建技能：把对话中沉淀的可复用流程固化为 SKILL.md（可带脚本/模板附件），
 /// 创建即生效（路由重建）。与 skills_import 同一校验核/排他落盘/路由重建口径；
-/// intents 危险词在创建时预检（同运行时 preflight 黑名单）。
-pub async fn tool_create_skill(app: &AppHandle, args: &str) -> crate::bot::registry::ToolResult {
+/// intents 危险词在创建时预检（同运行时 preflight 黑名单），并过 intents 宽度闸
+/// （装上即进程级路由，过宽模式不得进）。
+///
+/// 落盘前有确认窗：技能装上即进**进程级**路由表，此后命中的用户消息会被直接
+/// 送进该技能（正文进系统提示；mode=auto 时整段 DSL 无 LLM 参与地执行）。
+/// 与 install_skill 同一姿态——「从公网下载要确认，本地写一个不要」不是设计。
+pub async fn tool_create_skill(
+    app: &AppHandle,
+    args: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+) -> crate::bot::registry::ToolResult {
     use crate::bot::registry::ToolResult;
     let v = crate::bot::parse_args(args);
     let Some(name) = v["name"]
@@ -602,17 +631,16 @@ pub async fn tool_create_skill(app: &AppHandle, args: &str) -> crate::bot::regis
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
     else {
-        // 「create_skill 缺少 name」首字「c」非 error/warn 前缀 → ok
-        return ToolResult::ok(
+        return ToolResult::error(
             "create_skill 缺少 name（技能名：字母/数字/-/_）".to_string(),
             Vec::new(),
         );
     };
     if let Err(reason) = validate_skill_name(&name) {
-        return ToolResult::ok(format!("create_skill：{reason}"), Vec::new());
+        return ToolResult::error(format!("create_skill：{reason}"), Vec::new());
     }
     let Some(content) = v["content"].as_str().map(|s| s.to_string()) else {
-        return ToolResult::ok(
+        return ToolResult::error(
             "create_skill 缺少 content（完整 SKILL.md 文本，frontmatter 必含 description）"
                 .to_string(),
             Vec::new(),
@@ -624,13 +652,42 @@ pub async fn tool_create_skill(app: &AppHandle, args: &str) -> crate::bot::regis
             match (f["path"].as_str(), f["content"].as_str()) {
                 (Some(p), Some(c)) => files.push((p.to_string(), c.to_string())),
                 _ => {
-                    return ToolResult::ok(
+                    return ToolResult::error(
                         "files 条目必须同时包含 path 与 content".to_string(),
                         Vec::new(),
                     )
                 }
             }
         }
+    }
+
+    // 准入核先行（解析 + 名称一致 + 危险词 + intents 宽度闸）：不合格的技能
+    // 不该占用用户一次确认
+    let meta = match prepare_created_meta(&name, &content) {
+        Ok(m) => m,
+        Err(reason) => return ToolResult::error(format!("create_skill：{reason}"), Vec::new()),
+    };
+    // 确认窗展示 intents 与 mode：这两项决定「建成后哪些话会被路由进来」和
+    // 「命中后是否绕开 LLM 直接执行」——不给用户看就等于让用户盲批
+    let confirm_text = format!(
+        "创建技能「{name}」并立即生效（重启后仍有效）。触发词 intents：{}；执行模式 mode：{}（auto = 命中后不经 LLM 复核直接执行技能步骤）。",
+        if meta.intents.is_empty() {
+            "未声明（不会自动触发）".to_string()
+        } else {
+            meta.intents.join("、")
+        },
+        meta.mode
+    );
+    let approved = crate::bot_slash::ask_user_confirm(
+        app,
+        "create_skill",
+        &confirm_text,
+        interactive,
+        session_id,
+    )
+    .await;
+    if !approved {
+        return ToolResult::denied("用户拒绝了创建，技能未创建".to_string());
     }
 
     let dir = skills_dir(app);
@@ -875,6 +932,92 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("上限"), "{err}");
+    }
+
+    // ── 准入核：intents 宽度闸（装上即进程级路由）──
+
+    /// 复现：intents 写成 `.*` 时旧实现照单全收——技能装上即进进程级路由表，
+    /// 此后每条用户消息都被劫持进该技能（正文进系统提示，mode=auto 时无 LLM
+    /// 复核直接执行）。修复后落盘前必须拒。
+    #[test]
+    fn create_skill_rejects_overly_broad_intents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = create_skill_at(
+            tmp.path(),
+            "wide",
+            "---\nname: wide\ndescription: d\nintents:\n  - .*\n---\nx",
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("过宽"), "{err}");
+        assert!(!tmp.path().join("wide").exists(), "拒绝时不得留下半份目录");
+    }
+
+    /// 宽度闸不得误杀真实意图模式（量词 / 字符类 / 分支 / 转义混用）。
+    #[test]
+    fn create_skill_accepts_realistic_composite_intents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let content = "---\nname: docx-fix\ndescription: 文档润色\nintents:\n  - (?i)(润色|修订).{0,15}(word|文档)\n  - (?is)(润色|修订)[\\s\\S]*\\.docx?\n---\nx";
+        assert!(
+            create_skill_at(tmp.path(), "docx-fix", content, &[]).is_ok(),
+            "合法复合 intents 模式不该被宽度闸拒掉"
+        );
+    }
+
+    /// 导入入口必须走准入核：它是第三方内容的入口，绕过闸门等于装上哑弹技能
+    /// 或劫持路由（skills_import 需要 AppHandle，纯函数单测够不到，故以源码
+    /// 文本钉住「调用存在」）。
+    #[test]
+    fn skills_import_runs_the_admission_check() {
+        let body = manage_src_before_tests();
+        let body = body
+            .split_once("pub fn skills_import(")
+            .expect("找不到 skills_import")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("skills_import 应以顶格 } 收尾");
+        assert!(
+            body.contains("validate_created_meta(&meta)"),
+            "skills_import 必须调 validate_created_meta：导入是第三方内容入口，不能绕过准入核"
+        );
+    }
+
+    /// create_skill 落盘前必须有确认窗，且确认窗要展示 intents 与 mode——
+    /// 这两项决定「哪些话会被路由进来」和「命中后是否绕开 LLM 直接执行」。
+    #[test]
+    fn tool_create_skill_confirms_before_writing_and_shows_intents_and_mode() {
+        let body = manage_src_before_tests();
+        let body = body
+            .split_once("pub async fn tool_create_skill(")
+            .expect("找不到 tool_create_skill")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("tool_create_skill 应以顶格 } 收尾");
+        let confirm = body
+            .find("ask_user_confirm(")
+            .expect("tool_create_skill 必须有确认窗");
+        let write = body
+            .find("create_skill_at(")
+            .expect("tool_create_skill 必须走 create_skill_at 落盘");
+        assert!(confirm < write, "确认窗必须在落盘之前");
+        assert!(
+            body.contains("meta.intents.join"),
+            "确认窗必须展示 intents：不给用户看触发词就等于让用户盲批"
+        );
+        assert!(
+            body.contains("meta.mode"),
+            "确认窗必须展示 mode：auto 模式命中后不经 LLM 复核直接执行"
+        );
+    }
+
+    /// 本文件生产代码切片（测试模块之前）——源码文本守卫用。
+    fn manage_src_before_tests() -> &'static str {
+        include_str!("manage.rs")
+            .split_once("#[cfg(test)]")
+            .expect("manage.rs 应有测试模块")
+            .0
     }
 
     // ── scan_skill_dirs 多目录去重 ──

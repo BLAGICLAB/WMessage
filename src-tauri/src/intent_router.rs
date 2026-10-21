@@ -208,6 +208,187 @@ fn compile_rules(rules: &[IntentRule]) -> Vec<CompiledRule> {
         .collect()
 }
 
+// ── intent 模式准入（装技能时拦住「匹配一切」的模式）────────────────────
+
+/// 单条 intent 模式的扫描结果。
+struct PatternScan {
+    /// 连续字面量段（被通配 / 分支 / 量词切断）
+    runs: Vec<String>,
+    /// 模式涉及的全部字面量字符（字符类里的字符也算——探针串要避开它们）
+    literal_chars: std::collections::HashSet<char>,
+}
+
+/// 扫一遍正则模式，抽出「模式确定要匹配的固定文本」。
+///
+/// 只认字面量：通配 `.`、分支 `|`、量词、字符类、`\d` 一类字符类转义都不算——
+/// 它们决定「匹配哪个字符」，不决定「匹配哪段文本」。分组括号不切断字面量段：
+/// `(ab)c` 匹配的仍是连续文本 "abc"。
+fn scan_pattern(pattern: &str) -> PatternScan {
+    let mut runs: Vec<String> = Vec::new();
+    let mut literal_chars: std::collections::HashSet<char> = std::collections::HashSet::new();
+    let mut cur = String::new();
+    let mut it = pattern.chars().peekable();
+
+    while let Some(c) = it.next() {
+        match c {
+            // 分组：`(?flags)` 整组跳过（标志不是文本）；`(?:` / `(?P<name>` /
+            // `(?flags:` 只跳前缀，组内文本照常计入
+            '(' => {
+                if it.peek() == Some(&'?') {
+                    it.next();
+                    match it.peek().copied() {
+                        Some(':') => {
+                            it.next();
+                        }
+                        Some('P') => {
+                            it.next();
+                            if it.peek() == Some(&'<') {
+                                it.next();
+                                for n in it.by_ref() {
+                                    if n == '>' {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Some('<') => {
+                            it.next();
+                            for n in it.by_ref() {
+                                if n == '>' {
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {
+                            // `(?flags)` 或 `(?flags:`：标志字符集合固定
+                            while let Some(f) = it.peek().copied() {
+                                match f {
+                                    'i' | 'm' | 's' | 'U' | 'x' | '-' => {
+                                        it.next();
+                                    }
+                                    ':' => {
+                                        it.next();
+                                        break;
+                                    }
+                                    ')' => {
+                                        it.next();
+                                        break;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 分支：两侧是互斥候选，不是连续文本
+            '|' | '.' | '^' | '$' | '*' | '+' | '?' => {
+                if !cur.is_empty() {
+                    runs.push(std::mem::take(&mut cur));
+                }
+            }
+            // 重复量词 `{m,n}`：里面的数字不是文本
+            '{' => {
+                if !cur.is_empty() {
+                    runs.push(std::mem::take(&mut cur));
+                }
+                for n in it.by_ref() {
+                    if n == '}' {
+                        break;
+                    }
+                }
+            }
+            // 字符类 `[...]`：是「字符集合」不是「文本」，整段跳过
+            '[' => {
+                if !cur.is_empty() {
+                    runs.push(std::mem::take(&mut cur));
+                }
+                let mut first = true;
+                while let Some(n) = it.next() {
+                    if n == ']' && !first {
+                        break;
+                    }
+                    first = false;
+                    if n == '\\' {
+                        if let Some(e) = it.next() {
+                            literal_chars.insert(e);
+                        }
+                        continue;
+                    }
+                    literal_chars.insert(n);
+                }
+            }
+            // 转义：`\d` 一类是字符类（不是文本），其余转义的是字面字符
+            '\\' => match it.next() {
+                Some(
+                    e @ ('d' | 'D' | 'w' | 'W' | 's' | 'S' | 'b' | 'B' | 'A' | 'z' | 'Z' | 'G'
+                    | 'p' | 'P'),
+                ) => {
+                    literal_chars.insert(e);
+                    if !cur.is_empty() {
+                        runs.push(std::mem::take(&mut cur));
+                    }
+                }
+                Some(e) => {
+                    cur.push(e);
+                    literal_chars.insert(e);
+                }
+                None => {}
+            },
+            // 其余都是字面字符
+            c => {
+                cur.push(c);
+                literal_chars.insert(c);
+            }
+        }
+    }
+    if !cur.is_empty() {
+        runs.push(cur);
+    }
+    PatternScan {
+        runs,
+        literal_chars,
+    }
+}
+
+/// 探针串：一段不含模式任何字面量字符的重复文本。
+/// 模式若能匹配它，说明匹配靠的是通配而非意图词 → 过宽。
+fn content_free_probe(literal_chars: &std::collections::HashSet<char>) -> Option<String> {
+    const FILLERS: [char; 12] = ['x', 'y', 'z', '0', '9', '-', '_', '~', '@', '#', '中', '日'];
+    FILLERS
+        .iter()
+        .find(|f| !literal_chars.contains(f))
+        .map(|f| f.to_string().repeat(8))
+}
+
+/// intent 模式准入检查（纯函数）：装技能时拦住「能匹配几乎任意输入」的模式。
+///
+/// 装上的技能立刻进**进程级**路由表，命中的用户消息会被直接送进该技能
+/// （正文进系统提示；mode=auto 时整段 DSL 无 LLM 参与地执行）。一个 `.*`
+/// 就能把此后每条用户消息都劫持进去——这是提示注入的落点，不是「宽一点」。
+///
+/// 三道闸：
+/// 1. **正则必须可编译**——编译不了的模式在 `compile_rules` 里被 `.ok()` 静默
+///    丢弃，装上却永不触发（哑弹技能），不如当场拒掉。
+/// 2. **必须含 ≥2 字符的连续字面量段**——`.*` / `(?s).*` / `^.*$` / `.{0,}` /
+///    `[\s\S]*` 这类模式没有字面量，能匹配任意文本（含空串）。
+/// 3. **不得能匹配「不含其字面量的探针串」**——`(?s)(润色|修订)?.*` 这类
+///    「关键词可选」的写法含字面量却仍能匹配任意文本，同样过宽。
+pub fn check_intent_pattern(pattern: &str) -> Result<(), String> {
+    let re =
+        Regex::new(pattern).map_err(|e| format!("正则语法错误（该模式永远不会被触发）：{e}"))?;
+    let scan = scan_pattern(pattern);
+    if !scan.runs.iter().any(|r| r.chars().count() >= 2) {
+        return Err("模式过宽：必须包含至少 2 个连续的字面量字符（如「日报」或「(?i)(润色|修订).{0,15}(word|文档)」），不能是 .* 一类通配".into());
+    }
+    if let Some(probe) = content_free_probe(&scan.literal_chars) {
+        if re.is_match(&probe) {
+            return Err("模式过宽：能匹配与本模式意图词无关的任意文本（如 .* 、(?s).* ），会把此后每条用户消息都路由进本技能".into());
+        }
+    }
+    Ok(())
+}
+
 fn match_compiled(text: &str, rules: &[CompiledRule]) -> RouteAction {
     for rule in rules {
         for re in &rule.regexes {
@@ -447,6 +628,87 @@ mod tests {
             route_user_input("zzRouterProbePattern"),
             RouteAction::PassThrough
         );
+    }
+
+    // ── intent 模式准入闸 ──
+
+    /// 通配型模式必须被拒：它们能匹配任意输入（含空串），装上即把此后每条
+    /// 用户消息都路由进该技能。
+    #[test]
+    fn wildcard_only_patterns_are_rejected() {
+        for p in [
+            ".*",
+            "(?s).*",
+            "^.*$",
+            ".{0,}",
+            "[\\s\\S]*",
+            "(?is)[\\s\\S]*",
+            "^$",
+            ".+",
+        ] {
+            assert!(
+                check_intent_pattern(p).is_err(),
+                "过宽模式「{p}」必须被准入闸拒掉"
+            );
+        }
+    }
+
+    /// 含字面量但仍能匹配任意文本的模式同样要拒：关键词是**可选**时，
+    /// `(?s)(润色|修订)?.*` 看着像「带关键词」，实际匹配一切。
+    #[test]
+    fn pattern_matching_arbitrary_text_around_literal_is_rejected() {
+        for p in [
+            "(?s)(润色|修订)?.*",
+            "(?i)(abc)?.*",
+            "(?i)(abc)*",
+            "(?i)(a|bc)?.*",
+        ] {
+            assert!(
+                check_intent_pattern(p).is_err(),
+                "模式「{p}」能匹配与意图无关的任意文本，必须被拒"
+            );
+        }
+    }
+
+    /// 合法意图模式必须放行：复合模式（量词 / 字符类 / 分支 / 转义）不能被误杀。
+    #[test]
+    fn legitimate_intent_patterns_are_accepted() {
+        for p in [
+            "日报",
+            "PPT",
+            "用修订模式",
+            r"(?i)(润色|修订).{0,15}(word|文档)",
+            r"(?i)word.{0,10}(润色|修订)",
+            r"(?is)(润色|修订)[\s\S]*\.docx?",
+            r"(?is)\.docx?[\s\S]*(润色|修订)",
+            r"(?i)create\s+(ppt|deck)",
+        ] {
+            assert!(
+                check_intent_pattern(p).is_ok(),
+                "合法模式「{p}」不该被准入闸拒掉：{:?}",
+                check_intent_pattern(p)
+            );
+        }
+    }
+
+    /// 装不上的技能等于哑弹：语法非法的模式在路由表里被静默丢弃，
+    /// 准入闸要在装的时候就说出来。
+    #[test]
+    fn invalid_regex_is_rejected_with_reason() {
+        let err = check_intent_pattern(r"(?i)unclosed(").unwrap_err();
+        assert!(err.contains("正则语法错误"), "{err}");
+    }
+
+    /// 已装技能的声明必须过得了闸——闸不能把现役技能判死。
+    #[test]
+    fn docx_fixture_patterns_pass_the_gate() {
+        for p in &docx_rules()[0].patterns {
+            assert!(
+                check_intent_pattern(p).is_ok(),
+                "docx 夹具模式「{p}」过不了准入闸：{:?}",
+                check_intent_pattern(p)
+            );
+        }
     }
 }
 

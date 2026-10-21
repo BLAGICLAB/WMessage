@@ -720,7 +720,7 @@ fn call_ask_user<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
 }
 
 fn call_create_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
-    Box::pin(async move { tool_create_skill(ctx.app, args).await })
+    Box::pin(async move { tool_create_skill(ctx.app, args, ctx.interactive, ctx.session_id).await })
 }
 
 fn call_install_skill<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
