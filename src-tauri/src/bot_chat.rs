@@ -387,6 +387,7 @@ pub async fn chat_execute_tasks(
     Ok(BotChatResult {
         text: all_text,
         task_refs: merge_task_refs_dedup(all_refs),
+        busy: false,
     })
 }
 
@@ -525,6 +526,10 @@ pub struct TaskRef {
 pub struct BotChatResult {
     pub text: String,
     pub task_refs: Vec<TaskRef>,
+    /// 本轮压根没跑（会话锁被占）：`text` 是拒答文案，不是模型答复。
+    /// 前端据此把这条结果当拒答处理——不落库、不进上下文，只显示一条本地提示。
+    /// 判据是这个标记而不是文案本身：文案可以被别的路径复述，标记不会。
+    pub busy: bool,
 }
 
 /// 机器人开关关闭 → BotDisabled（recoverable=true，引导去设置页开启）。
@@ -679,6 +684,7 @@ async fn apply_skill_route(
             Ok(SkillRouteOutcome::Done(BotChatResult {
                 text,
                 task_refs: Vec::new(),
+                busy: false,
             }))
         }
         Ok(crate::bot_skills::DslOutcome::AwaitUser) => {
@@ -697,6 +703,7 @@ async fn apply_skill_route(
                     meta.name
                 ),
                 task_refs: Vec::new(),
+                busy: false,
             }))
         }
         Ok(crate::bot_skills::DslOutcome::FailedButRecoverable {
@@ -741,10 +748,21 @@ enum SkillRouteOutcome {
     FallThrough { recovery_hint: Option<String> },
 }
 
-/// 会话已有执行实例时的统一拒答。它同时是「本轮根本没跑」的判据——
-/// 后端主动发起的汇报轮要靠它认出自己撞上了别人的回合（见
-/// `report_subagent_result`），否则这句提示会被当成模型答复落进历史。
+/// 会话已有执行实例时的统一拒答文案。
+///
+/// 「本轮根本没跑」的判据是 `BotChatResult::busy` 标记（见 `busy_chat_result`），
+/// 不是这段文案本身——文案只是拒答时随结果带出去的说明。
 pub(crate) const CHAT_BUSY_REPLY: &str = "这条会话正在处理上一条消息，请稍候再发。";
+
+/// 会话锁被占时的拒答结果。抽成纯函数便于单测（构造点内联在 Tauri 命令里，
+/// mock_app 跑不到那一层）。
+fn busy_chat_result() -> BotChatResult {
+    BotChatResult {
+        text: CHAT_BUSY_REPLY.into(),
+        task_refs: vec![],
+        busy: true,
+    }
+}
 
 /// 本轮的发起方。
 ///
@@ -800,10 +818,7 @@ async fn bot_chat_inner(
                     crate::bot::truncate_for_log(session_id.as_deref().unwrap_or("<none>"), 60)
                 ),
             );
-            return Ok(BotChatResult {
-                text: CHAT_BUSY_REPLY.into(),
-                task_refs: vec![],
-            });
+            return Ok(busy_chat_result());
         }
     };
     // L0 pre_ingest（设计 §二）：输入侧唯一改写点，在**所有**输入判定之前。
@@ -1205,6 +1220,7 @@ async fn bot_chat_inner(
     Ok(BotChatResult {
         text,
         task_refs: refs,
+        busy: false,
     })
 }
 
@@ -1239,7 +1255,7 @@ pub(crate) async fn report_subagent_result(app: &AppHandle, session_id: &str) ->
     )
     .await
     {
-        Ok(r) if r.text == CHAT_BUSY_REPLY => ReportOutcome::Busy,
+        Ok(r) if r.busy => ReportOutcome::Busy,
         Ok(r) if r.text.trim().is_empty() => ReportOutcome::Failed,
         Ok(r) => {
             persist_report_reply(app, session_id, &r).await;
@@ -1950,6 +1966,7 @@ where
     let outcome = outcome.map(|(text, refs)| BotChatResult {
         text,
         task_refs: refs,
+        busy: false,
     });
     // trace 收尾（无论成败；与 begin 成对）+ 注销 session→trace 映射
     if let Some(hook) = &trace_hook {
@@ -2212,6 +2229,20 @@ mod bot_chat_pure_helpers_tests {
     fn merge_task_refs_dedup_empty_input_returns_empty() {
         let out = merge_task_refs_dedup(vec![]);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn busy_result_is_marked_busy_so_frontend_can_tell_it_from_a_model_reply() {
+        // 拒答结果必须带 busy 标记：前端靠它认出「本轮压根没跑」，
+        // 把拒答文案当本地提示而不是一条落库的 assistant 答复
+        let r = busy_chat_result();
+        assert!(r.busy, "会话锁被占的结果必须标 busy");
+        assert_eq!(r.text, CHAT_BUSY_REPLY);
+        assert!(r.task_refs.is_empty(), "拒答不挂任务引用");
+        // 序列化口径：camelCase，busy 落在顶层
+        let json = serde_json::to_value(&r).expect("序列化");
+        assert_eq!(json["busy"], serde_json::json!(true));
+        assert_eq!(json["taskRefs"], serde_json::json!([]));
     }
 
     #[test]

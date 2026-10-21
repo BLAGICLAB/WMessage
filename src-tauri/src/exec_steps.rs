@@ -285,6 +285,7 @@ async fn run_step(
             total
         ),
         task_refs: refs,
+        busy: false,
     })
 }
 
@@ -319,6 +320,7 @@ async fn advance_or_finish(
     Ok(BotChatResult {
         text: "🎉 所有子任务都已完成并勾选。任务卡本身我没有标记完成——你确认没问题后自己勾完成，或跟我说「完成它」。".into(),
         task_refs: vec![],
+        busy: false,
     })
 }
 
@@ -389,6 +391,7 @@ pub async fn resume(
         return Ok(BotChatResult {
             text: "（当前没有待确认的子任务执行）".into(),
             task_refs: vec![],
+            busy: false,
         });
     };
     // 续跑失败必须显式收尾——pending 已 take，若 LLM 失败后不收尾，
@@ -445,6 +448,7 @@ pub async fn resume(
             Ok(BotChatResult {
                 text: "⏹ 已结束逐步执行。已确认勾选的子任务保持现状，其余未动。".into(),
                 task_refs: vec![],
+                busy: false,
             })
         }
         StepReply::Continue => {

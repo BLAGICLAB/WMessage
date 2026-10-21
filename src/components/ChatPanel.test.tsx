@@ -737,6 +737,46 @@ describe("ChatPanel", () => {
     expect(JSON.stringify(saveCall?.[1])).not.toContain("当前对话没有进行中的回复");
   });
 
+  it("会话锁被占：拒答不当成模型答复——只显示本地提示，不落库", async () => {
+    const user = userEvent.setup();
+    // 后端回 busy=true：本轮压根没跑，text 是拒答文案不是模型答复
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_chat") {
+        return {
+          text: "这条会话正在处理上一条消息，请稍候再发。",
+          taskRefs: [],
+          busy: true,
+        };
+      }
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
+    });
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    // ① 本地提示可见（末条是提示，不是模型答复）
+    await waitFor(() => {
+      expect(screen.getByText(/模型正忙/)).toBeInTheDocument();
+    });
+    // ② 拒答文案不当成答复展示；占位气泡已摘除（活体指示不再亮）
+    expect(
+      screen.queryByText(/这条会话正在处理上一条消息/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+    // ③ 助手答复不落库（用户消息那一条是允许的）
+    const saveCalls = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_history_save",
+    );
+    expect(saveCalls.length).toBeGreaterThan(0);
+    for (const call of saveCalls) {
+      const msgs = (call[1] as { messages?: { role?: string }[] }).messages ?? [];
+      expect(msgs.some((m) => m.role === "assistant")).toBe(false);
+    }
+  });
+
   it("回复中发送键变为红框停止键：点击调 bot_stop", async () => {
     const user = userEvent.setup();
     // bot_chat 挂起不返回 → busy 保持 true

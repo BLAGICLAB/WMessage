@@ -1527,14 +1527,27 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       // 回合开始即落库：用户消息先进库，之后任何一次「按会话重载历史」
       // 都拿得到它——在途回合不再只活在内存里（切走再切回不丢消息的根因修复）
       await persistHistory(sid, history);
-      const full = await invoke<{ text: string; taskRefs?: TaskRef[] }>(
-        "bot_chat",
-        {
-          messages: history.map((m) => ({ role: m.role, content: m.content })),
-          sessionId: sid,
-          reasoningEffort: effort,
-        },
-      );
+      const full = await invoke<{
+        text: string;
+        taskRefs?: TaskRef[];
+        busy?: boolean;
+      }>("bot_chat", {
+        messages: history.map((m) => ({ role: m.role, content: m.content })),
+        sessionId: sid,
+        reasoningEffort: effort,
+      });
+      // 会话锁被占（别的回合在跑）：本轮压根没跑，full.text 是拒答文案。
+      // 当成模型答复落库 = 给用户发了一条假答复，还进了下一轮上下文。
+      if (full.busy) {
+        if (sessionIdRef.current === sid) {
+          // 先 reset 摘掉本轮塞的空占位气泡（它带 streaming，活体指示会一直亮），
+          // 再补提示——顺序反了提示会被 reset 冲掉
+          setMessages(history);
+          // 文案要自洽：用户消息已在上一步落库，历史里会留一条孤立用户消息
+          addHint("⏳ 模型正忙，本次未生成回复，请稍后重试");
+        }
+        return;
+      }
       // 把流式过程中累积的思考/工具行并入最终消息
       const meta = streamingMetaMapRef.current.get(sid) ?? {};
       const done: Msg[] = [
