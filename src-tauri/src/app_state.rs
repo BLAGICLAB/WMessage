@@ -110,6 +110,10 @@ pub(crate) struct AppState {
     /// 生命周期：run_task_in_chat_with 建 trace 时注册、收尾注销（trace_sink::begin/end_trace）。
     /// dispatch 据此判断「本会话在跑 trace」→ 决定 span/file_change 是否落库（无映射 = 零开销旁路）。
     pub(crate) trace_registry: Arc<Mutex<HashMap<String, i64>>>,
+    /// 受管长驻服务表：serviceId → 服务条目（登记 + 状态机 + 停止）。
+    /// 生命周期：start_service 起服务时登记、进程退出时转终态、stop_service / 应用退出时收尾。
+    /// 访问器见文件尾 `services(app)`。
+    pub(crate) services: Arc<Mutex<HashMap<String, crate::bot::services::ServiceEntry>>>,
 }
 
 /// 兜底实例：只在 `AppState` 未注入的路径上用（见上面的口径说明）
@@ -231,6 +235,16 @@ pub(crate) fn trace_registry<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Arc<Mutex<HashMap<String, i64>>> {
     ext(app).trace_registry.clone()
+}
+
+/// 受管长驻服务表访问器：Arc 克隆。
+///
+/// 克隆的理由同 `skill_runs`——停止路径在 blocking 线程里跑，要跨线程访问同一张表；
+/// 登记表本身是 `Arc<Mutex<..>>`，克隆 Arc 不复制数据。
+pub(crate) fn services<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Arc<Mutex<HashMap<String, crate::bot::services::ServiceEntry>>> {
+    ext(app).services.clone()
 }
 
 /// 查会话当前运行中的 trace_id（无会话 / 无运行中 trace → None；dispatch 据此跳过采集）。

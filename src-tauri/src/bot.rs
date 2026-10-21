@@ -55,6 +55,7 @@ pub mod mcp;
 pub mod params;
 pub mod reasoning;
 pub mod registry;
+pub mod services;
 pub mod tags_consolidate;
 pub mod tools;
 
