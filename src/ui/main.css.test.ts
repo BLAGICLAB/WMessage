@@ -71,6 +71,15 @@ describe("main.css 主滚动容器 app-scroll", () => {
   });
 });
 
+describe("main.css 聊天消息列表 chat-scroll", () => {
+  it("关掉滚动锚定：流式气泡长高时锚定补偿与程序化滚动抢同一个 scrollTop（抖动）", () => {
+    // 聊天列表是流式期变化最频繁的滚动容器：气泡每帧长高，锚定改 scrollTop
+    // 补偿、程序化滚动又写一次 —— 两个控制器抢同一份滚动位置。
+    // 贴底与否由应用自己判定（ChatPanel 的贴底意图跟踪），这里只钉住锚定已关。
+    expect(css).toMatch(/\.chat-scroll\s*\{[^}]*overflow-anchor:\s*none/);
+  });
+});
+
 describe("动效 token 层（main.css）", () => {
   it("定义了动效曲线与时长 token", () => {
     expect(css).toMatch(/--ease-out:\s*cubic-bezier\(0\.23,\s*1,\s*0\.32,\s*1\)/);

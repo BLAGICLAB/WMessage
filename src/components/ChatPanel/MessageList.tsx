@@ -595,7 +595,14 @@ function renderMessageList(
     return -1;
   })();
   return (
-    <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+    // chat-scroll：关掉浏览器滚动锚定（理由见 main.css 同名类）。
+    // 流式气泡在视口内长高时，锚定会改 scrollTop 补偿，程序化滚动又写一次 ——
+    // 两个控制器抢同一份滚动位置，表现为抖动。滚动语义由应用自己接管（贴底意图跟踪）。
+    <div
+      ref={scrollRef}
+      data-testid="chat-scroll"
+      className="chat-scroll min-h-0 flex-1 overflow-y-auto"
+    >
       {/* 内容限宽 760px 居中：通栏时正文行长在宽窗口下会拉长到难以扫读的行，
           这里把阅读带约束在舒适行长内，滚动条仍占满容器宽 */}
       <div className="mx-auto w-full max-w-[760px] space-y-2.5 px-0.5 pb-1">

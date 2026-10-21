@@ -7,7 +7,14 @@
 // 公开 import 路径保持稳定：外部仍 `import { ChatPanel } from "./components/ChatPanel"`，
 // Vite 解析到 `./ChatPanel/index.tsx` → 透传 `./ChatPanel`。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import {
@@ -74,6 +81,10 @@ function parseJsonField(
   }
   return raw;
 }
+
+/** 贴底阈值（px）：离底这么近就算「还贴着底」。
+ *  流式追加让内容高度每帧变，差几像素就当没贴底 → 视口在底部反复抽搐。 */
+const STICK_BOTTOM_PX = 32;
 
 /** 模型下拉条目集合协议：types.ModelItem 的来源协议收窄用 */
 type Props = {
@@ -161,6 +172,12 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   /** 拖放悬停：文件拖到聊天区上时显示提示层 */
   const [dragHover, setDragHover] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 贴底意图：用户往上翻了历史就别再抢视口（自动滚动处的说明） */
+  const stickBottomRef = useRef(true);
+  /** 上次的滚动位置：容器从隐藏态回来时浏览器会清零滚动口，用它还原 */
+  const lastScrollTopRef = useRef(0);
+  /** 上一个会话 id：换会话要把视口甩回底部（上一段的滚动位置不跟着带过来） */
+  const lastSessionRef = useRef<string | null>(null);
   /** 聊天区根节点：拖放落点判定用（只接收落在聊天区矩形内的文件） */
   const rootRef = useRef<HTMLDivElement>(null);
   // 🧠 模型下拉：同会话菜单三件套——开合 + 按钮 ref + 下拉 ref，
@@ -1241,15 +1258,70 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   // 聊天窗常挂载只切 hidden，把弹窗放这里会在别的视图里不可见）。
   // 本组件不再 listen bot-confirm——两个呈现者会为同一请求各弹一次。
 
-  // 新消息自动滚到底
-  useEffect(() => {
+  /* 新消息自动滚到底——只在「还贴着底」时跟。
+   *
+   * 无条件滚底是聊天窗最重的坑：流式增量每 16ms 换一次 messages 引用，
+   * 每帧都无条件 scrollTo 底 → 用户往上翻历史，下一帧就被拽回去（历史根本看不了），
+   * 人和程序抢同一个滚动位置 → 视口来回抽搐（抖）。
+   *
+   * 用 layout effect（绘制前）而不是 useEffect（绘制后）：后者每帧晚一帧才滚，
+   * 观感是「内容先跳一下、再跟一下」，16ms 一帧攒起来就是抖。
+   * 贴底意图由滚动容器自己的 scroll 事件判定（离底多远是最终要满足的不变量），
+   * 滚回底部自动恢复跟随；换会话/发新消息强制回到底部。 */
+  useLayoutEffect(() => {
     const el = scrollRef.current;
     // 可选链只挡 ref 为空，挡不住方法缺失——缺 scrollTo 的环境里这行会抛，
-    // 抛在 passive effect 里就变成随机某个用例的红
-    if (el && typeof el.scrollTo === "function") {
-      el.scrollTo({ top: el.scrollHeight });
+    // 抛在 effect 里就变成随机某个用例的红
+    if (!el || typeof el.scrollTo !== "function") return;
+    // 换会话 = 换一段对话：上一段的滚动位置不跟着带过来
+    if (lastSessionRef.current !== sessionId) {
+      lastSessionRef.current = sessionId;
+      stickBottomRef.current = true;
     }
-  }, [messages]);
+    if (!stickBottomRef.current) return;
+    el.scrollTo({ top: el.scrollHeight });
+  }, [messages, sessionId]);
+
+  /* 贴底意图跟踪：滚动容器的 scroll 事件是「用户想看哪」的唯一可靠信号。
+   * 不用 wheel/touch 判意图——惯性滚动与程序化滚动都会混进 scroll 事件，
+   * 而「离底多远」才是最终要满足的不变量。 */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      lastScrollTopRef.current = el.scrollTop;
+      const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickBottomRef.current = gap <= STICK_BOTTOM_PX;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  /* 容器尺寸变化 → 视口复位。
+   *  聊天页切走时容器是 display:none（没有滚动口，浏览器把滚动位置清零），
+   *  切回来不复位就停在历史开头，再来一帧流式增量又被拽到底——看着像吞内容。
+   *  上下文水位条出现等布局变化同理：贴着底就跟到底，不打断正在读的内容。 */
+  useEffect(() => {
+    const el = scrollRef.current;
+    // 能力守卫：jsdom 等环境没有 ResizeObserver，缺了只是不做自动复位
+    if (!el || typeof ResizeObserver !== "function") return;
+    let visible = el.clientHeight > 0;
+    const ro = new ResizeObserver(() => {
+      const nowVisible = el.clientHeight > 0;
+      const becameVisible = nowVisible && !visible;
+      visible = nowVisible;
+      if (typeof el.scrollTo !== "function") return;
+      if (becameVisible) {
+        // 刚从隐藏态回来：滚动口被清零，按贴底意图复位
+        if (stickBottomRef.current) el.scrollTo({ top: el.scrollHeight });
+        else el.scrollTop = lastScrollTopRef.current;
+        return;
+      }
+      if (stickBottomRef.current) el.scrollTo({ top: el.scrollHeight });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const switchSession = useCallback(
     async (sid: string) => {
@@ -1399,6 +1471,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     const sid = sessionId;
     if (!sid || inflightRef.current.has(sid)) return;
     enterChat(sid);
+    // 用户主动发消息 → 视口回到底部跟着这一轮（哪怕刚才翻过历史）
+    stickBottomRef.current = true;
     setMessages([
       ...history,
       { role: "assistant", content: "", streaming: true, turnStatus: "running", turnStartedAt: Date.now() },
