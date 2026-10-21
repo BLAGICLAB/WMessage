@@ -336,6 +336,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         turnStatus?: TurnStatus;
         turnDetail?: string;
         turnStartedAt?: number;
+        /** 本轮已流出的正文：切走再切回时占位气泡靠它回填这半截，
+         *  不然重载历史等于把已读到的回复抹掉 */
+        text?: string;
+        /** 本轮用户消息：回合开始即落库，库里还没落地时靠它把视图补全 */
+        userMsg?: Msg;
       }
     >
   >(new Map());
@@ -350,6 +355,29 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   };
   /** 在途会话集合（同步镜像，见 inflightSids 注释） */
   const inflightRef = useRef<Set<string>>(new Set());
+  /** 重建视图时接回在途回合：按会话重载历史拿到的是「回合收尾时」的库内容，
+   *  库里还没有这一轮——不接回来，用户发出去的消息与已读到的半截回复就没了。
+   *  用户消息在回合开始即落库，这里补的是库尚未落地的窗口与在途正文。 */
+  const mergeInflight = useCallback((rows: Msg[], sid: string): Msg[] => {
+    if (!inflightRef.current.has(sid)) return rows;
+    const meta = streamingMetaMapRef.current.get(sid);
+    const userMsg = meta?.userMsg;
+    const last = rows[rows.length - 1];
+    // 库里已经有这条用户消息（回合开始即落库）就不再补，避免重复一条
+    const inDb =
+      !!userMsg && last?.role === "user" && last.content === userMsg.content;
+    const base = userMsg && !inDb ? [...rows, userMsg] : rows;
+    return [
+      ...base,
+      {
+        role: "assistant",
+        content: meta?.text ?? "",
+        streaming: true,
+        turnStatus: "running",
+        turnStartedAt: meta?.turnStartedAt ?? Date.now(),
+      },
+    ];
+  }, []);
   /** 任务执行聊天化：围观流式回复中的会话时，到达的执行会话跳转排队（只留最新一个）；   *  执行本身不排队——后端已在新会话开跑 */
   const pendingExecRef = useRef<{ sid: string; title: string } | null>(null);
   /** 任务 id → 执行会话 id（chat-open-session 事件建立；invoke 收尾时按它刷新历史） */
@@ -536,7 +564,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     refreshSubagentsRef.current();
   });
 
-  const persistHistory = (sid: string, msgs: Msg[]) => {
+  /** 历史整段落库（覆盖写）。返回 promise：回合开始处要 await 它——
+   *  用户消息先入库，库里才是这轮对话的真源。 */
+  const persistHistory = (sid: string, msgs: Msg[]) =>
     invoke("bot_history_save", {
       sessionId: sid,
       messages: msgs.map((m) => ({
@@ -550,7 +580,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       // 后台持久化失败：UI 还能跑，不打断当前对话
       handleCommandError(e, "bot_history_save", { silent: true }),
     );
-  };
 
   /** 历史行 JSON 列安全解析：损坏数据（旧版本写入/库被手改）不得炸掉整个
    *  会话加载——该字段按缺失处理，console.error 留痕（带字段名/行序/会话）定位 */
@@ -623,14 +652,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         >("bot_history_load", { sessionId: cur.id });
         // 历史加载期间用户已切走（如 ⌘K 跨窗口跳会话）：过期历史不得盖掉新会话视图
         if (sessionIdRef.current !== cur.id) return;
-        if (rows?.length) {
-          setMessages(rowsToMsgs(rows, cur.id));
+        const msgs = mergeInflight(rowsToMsgs(rows ?? [], cur.id), cur.id);
+        if (rows?.length || msgs.length) {
+          setMessages(msgs);
         }
       } catch (e) {
         handleCommandError(e, "chat init", { silent: true });
       }
     })();
-  }, [enabled]);
+  }, [enabled, mergeInflight]);
 
   // 点击模型下拉外关闭（镜像会话菜单：按钮与下拉不在同一 ref 容器，双 ref 检测）
   useOutsideClose(
@@ -799,9 +829,17 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       "bot-chat-delta",
       (e) => {
         const sid = e.payload?.sessionId ?? null;
-        if (sid !== sessionIdRef.current) return;
         const t = e.payload?.text;
         if (!t) return;
+        // 权威副本按「回复所属会话」累加（切走再切回时占位气泡要回填这半截）
+        if (
+          sid !== null &&
+          (inflightRef.current.has(sid) || sid === sessionIdRef.current)
+        ) {
+          const m = metaFor(sid);
+          if (m) m.text = (m.text ?? "") + t;
+        }
+        if (sid !== sessionIdRef.current) return;
         pending.text += t;
         schedule();
       },
@@ -1130,10 +1168,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       );
       // 围观期间用户已切走：丢弃过期历史，防旧会话消息刷进当前视图
       if (sessionIdRef.current !== sid) return;
-      setMessages([
-        ...rowsToMsgs(rows, sid),
-        { role: "assistant", content: "", streaming: true, turnStatus: "running", turnStartedAt: Date.now() },
-      ]);
+      setMessages(mergeInflight(rowsToMsgs(rows, sid), sid));
     } catch (e) {
       handleCommandError(e, "bot_history_load", { silent: true });
     }
@@ -1347,17 +1382,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         // 等待期间用户已切到别的会话：丢弃过期响应（后到的慢响应不得盖掉新会话的加载结果）
         if (sessionIdRef.current !== sid) return;
         let msgs = rowsToMsgs(rows, sid);
-        // 切回正在回复的会话：补一个流式占位气泡承接后续增量（已错过的增量段
-        // 由收尾 full.text 整体校正，不会串进其他会话）
-        if (inflightRef.current.has(sid)) {
-          msgs = [...msgs, { role: "assistant", content: "", streaming: true, turnStatus: "running", turnStartedAt: Date.now() }];
-        }
+        // 切回正在回复的会话：接回在途回合（用户消息 + 已流出的正文）——
+        // 库里只有上一轮收尾时的内容，不接回来用户会以为消息被吞了
+        msgs = mergeInflight(msgs, sid);
         setMessages(msgs);
       } catch (e) {
         handleCommandError(e, "bot_history_load", { silent: true });
       }
     },
-    [sessionId],
+    [sessionId, mergeInflight],
   );
 
   const newSession = async () => {
@@ -1443,7 +1476,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           >("bot_history_load", { sessionId: targetSid });
           // 等待期用户已切走：丢弃过期历史，防旧会话消息刷进新视图
           if (sessionIdRef.current !== targetSid) return;
-          setMessages(rowsToMsgs(rows, targetSid));
+          // 目标会话可能正在回复：接回在途回合，别把在途内容抹掉
+          setMessages(mergeInflight(rowsToMsgs(rows, targetSid), targetSid));
         } else {
           // await 前记基线：创建期间用户已切走（如 chat-focus-session）则放弃
           // 抢占视图——新建结果不强行切屏
@@ -1477,11 +1511,20 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       ...history,
       { role: "assistant", content: "", streaming: true, turnStatus: "running", turnStartedAt: Date.now() },
     ]);
-    streamingMetaMapRef.current.set(sid, {});
+    // 本轮在途内容的权威副本（按 sid 隔离，收尾时随消息并入最终气泡）：
+    // 用户消息兜住「库尚未落地」的窗口，已流出的正文供切回时回填占位气泡
+    const lastMsg = history[history.length - 1];
+    streamingMetaMapRef.current.set(sid, {
+      text: "",
+      userMsg: lastMsg?.role === "user" ? lastMsg : undefined,
+    });
     // RE-1 推理强度：生效档位 = 本会话覆盖 ?? 后台默认（具体值传后端，
     // 覆盖本身只存前端内存，不回写 bot-config.json）
     const effort = effortBySession.get(sid) ?? effortBase;
     try {
+      // 回合开始即落库：用户消息先进库，之后任何一次「按会话重载历史」
+      // 都拿得到它——在途回合不再只活在内存里（切走再切回不丢消息的根因修复）
+      await persistHistory(sid, history);
       const full = await invoke<{ text: string; taskRefs?: TaskRef[] }>(
         "bot_chat",
         {
@@ -1531,7 +1574,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
        * 而这一轮往往正是最需要留着的部分。已流出的正文照旧，错误接在后面。 */
       const viewMsgs =
         sessionIdRef.current === sid ? messagesRef.current : [];
-      const partial = viewMsgs[viewMsgs.length - 1]?.content ?? "";
+      // 权威副本是本轮累积的流式正文（切走了也在）；视图只是它的近似
+      const partial =
+        streamingMetaMapRef.current.get(sid)?.text ||
+        viewMsgs[viewMsgs.length - 1]?.content ||
+        "";
       const note = `⚠️ ${formatCommandError(e)}`;
       const failed: Msg[] = [
         ...history,

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act, within, fireEvent } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
@@ -2216,7 +2216,8 @@ describe("ChatPanel", () => {
       await waitFor(() => {
         expect(saves.some((sv) => sv?.sessionId === "s2")).toBe(true);
       });
-      const s2Save = saves.find((sv) => sv?.sessionId === "s2") as {
+      // 取 S2 最后一次落库（回合收尾那次）：回合开始还会先写一次用户消息
+      const s2Save = saves.filter((sv) => sv?.sessionId === "s2").pop() as {
         messages: { role: string; content: string }[];
       };
       expect(s2Save.messages.some((m) => m.content.includes("问题二"))).toBe(
@@ -2533,3 +2534,120 @@ describe("聊天窗滚动（流式期）", () => {
   });
 
 });
+
+/* 在途回合不丢：发出去的消息，切走再切回来必须还在。
+ *
+ * 根因：普通对话的历史只有前端在**回合收尾时**整段写库——回合进行中，
+ * 用户消息只活在 React 内存里。任何一次「按会话重载历史」（切会话 /
+ * 跨窗口跳会话 / 执行会话围观）都用库里旧历史整段替换视图，在途的用户
+ * 消息当场消失；下一回合收尾再把这份残缺视图整段写回库，丢失就变永久。 */
+describe("在途回合（切走再切回不丢消息）", () => {
+  /** 仿库的存/取：bot_history_save 整段覆盖写，bot_history_load 原样读回 */
+  const db = new Map<string, { role: string; content: string }[]>();
+  const sessions = [
+    { id: "s1", title: "会话一" },
+    { id: "s2", title: "会话二" },
+  ];
+  /** 机器人一直不回复：回合保持在途，正好复现「消息发出去还没回来」的时刻 */
+  const useDb = () => {
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_sessions_load") return sessions;
+        if (cmd === "bot_history_load")
+          return db.get(String(args?.sessionId)) ?? [];
+        if (cmd === "bot_history_save") {
+          db.set(
+            String(args?.sessionId),
+            (args?.messages ?? []) as { role: string; content: string }[],
+          );
+          return null;
+        }
+        if (cmd === "bot_chat") return new Promise(() => {});
+        return defaultInvoke(cmd);
+      },
+    );
+  };
+
+  beforeEach(() => {
+    db.clear();
+  });
+  afterEach(() => {
+    mocks.invokeMock.mockImplementation(defaultInvoke);
+    mocks.listenMock.mockImplementation(async () => () => {});
+  });
+
+  it("发出去的消息：切到别的会话再切回来，这条消息必须还在", async () => {
+    const user = userEvent.setup();
+    useDb();
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("会话一")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "是不是Python撞钟墙了？");
+    await user.keyboard("{Enter}");
+    expect(
+      await screen.findByText("是不是Python撞钟墙了？"),
+    ).toBeInTheDocument();
+    // 切到另一个会话
+    await user.click(railSession("会话二"));
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话二"));
+    // 再切回来：这一轮还没回完，视图里不能凭空少掉用户发的那条
+    await user.click(railSession("会话一"));
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话一"));
+    expect(
+      await screen.findByText("是不是Python撞钟墙了？"),
+    ).toBeInTheDocument();
+  });
+
+  it("已流出的回复正文：切走再切回，占位气泡要接着这段文字", async () => {
+    const user = userEvent.setup();
+    let deltaHandler:
+      | ((e: { payload: Record<string, unknown> }) => void)
+      | null = null;
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta")
+        deltaHandler = cb as typeof deltaHandler;
+      return () => {};
+    });
+    useDb();
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("会话一")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "继续");
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      (
+        deltaHandler as unknown as (e: {
+          payload: Record<string, unknown>;
+        }) => void
+      )({ payload: { text: "已经说了一半", sessionId: "s1" } });
+    });
+    expect(await screen.findByText("已经说了一半")).toBeInTheDocument();
+    await user.click(railSession("会话二"));
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话二"));
+    await user.click(railSession("会话一"));
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话一"));
+    // 已读到的半截回复要接得上，不凭空少一半
+    expect(await screen.findByText("已经说了一半")).toBeInTheDocument();
+  });
+
+  it("回合开始即落库：在途时用户消息已经进库（崩了也不丢）", async () => {
+    const user = userEvent.setup();
+    useDb();
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("会话一")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "先记下来");
+    await user.keyboard("{Enter}");
+    // 回合还没结束，库里已经有这条用户消息
+    await waitFor(() => {
+      const saved = mocks.invokeMock.mock.calls.find(
+        (c) => c[0] === "bot_history_save" && c[1]?.sessionId === "s1",
+      );
+      expect(saved).toBeTruthy();
+      expect(saved?.[1]?.messages).toEqual([
+        expect.objectContaining({ role: "user", content: "先记下来" }),
+      ]);
+    });
+  });
+});
+
