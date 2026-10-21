@@ -143,6 +143,30 @@ pub fn bot_history_append_inner(
     Ok(())
 }
 
+/// 清空指定会话的聊天记录（会话保留），并把会话的活跃时间推到当前。
+///
+/// 两步写在同一事务里：删消息与更新时间要么都成、要么都不成。
+pub fn bot_history_clear_inner(
+    conn: &mut rusqlite::Connection,
+    session_id: &str,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM bot_messages WHERE session_id = ?1",
+        [session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    // 清空也是一次会话活动：会话列表按 updated_at 倒序，不更新的话
+    // 清空过的对话仍挂在旧位置，看着像「没动过」
+    let now = chrono::Utc::now().timestamp_millis();
+    tx.execute(
+        "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
+        rusqlite::params![now, session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
 /// 清空指定会话的聊天记录（会话保留）
 #[tauri::command]
 pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandResult<()> {
@@ -151,13 +175,8 @@ pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandRes
             &super::DB_WRITE_LOCK,
             "db::bot_history DB_WRITE_LOCK",
         );
-        let conn = super::open_db(&app)?;
-        conn.execute(
-            "DELETE FROM bot_messages WHERE session_id = ?1",
-            [&session_id],
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(())
+        let mut conn = super::open_db(&app)?;
+        bot_history_clear_inner(&mut conn, &session_id).map_err(CommandError::DbError)
     })
     .await
     .map_err(|e| CommandError::from(format!("历史清空线程 join 失败：{e}")))?
@@ -166,6 +185,57 @@ pub async fn bot_history_clear(app: AppHandle, session_id: String) -> CommandRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 清空历史要把会话的活跃时间推到当前：会话列表按 updated_at 倒序，
+    /// 不更新的话清空过的对话仍挂在旧位置，看着像「没动过」。
+    #[test]
+    fn clearing_history_bumps_session_activity_time() {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE bot_messages (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 role       TEXT NOT NULL,
+                 content    TEXT NOT NULL,
+                 refs       TEXT,
+                 session_id TEXT,
+                 thinking   TEXT,
+                 tools      TEXT,
+                 created_at INTEGER NOT NULL
+             );
+             CREATE TABLE bot_sessions (
+                 id         TEXT PRIMARY KEY,
+                 title      TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 is_subagent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO bot_sessions (id, title, created_at, updated_at)
+                 VALUES ('s1', '会话', 1000, 1000);
+             INSERT INTO bot_messages (role, content, session_id, created_at)
+                 VALUES ('user', '旧消息', 's1', 1000);",
+        )
+        .expect("建表");
+        bot_history_clear_inner(&mut conn, "s1").expect("清空");
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bot_messages WHERE session_id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("数行");
+        assert_eq!(left, 0, "消息行应被清空");
+        let updated_at: i64 = conn
+            .query_row(
+                "SELECT updated_at FROM bot_sessions WHERE id = 's1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("读会话");
+        assert!(
+            updated_at > 1000,
+            "清空也要推会话活跃时间（现 updated_at={updated_at}）"
+        );
+    }
 
     /// 整段覆盖写在事务里必须是**一个单位**：中途失败不能留下「历史被清空、
     /// 新行只写进去一半」的状态。
