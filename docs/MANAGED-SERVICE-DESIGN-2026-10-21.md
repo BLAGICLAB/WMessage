@@ -1206,8 +1206,8 @@ cd src-tauri && cargo clippy --manifest-path src-tauri/Cargo.toml
 |---|---|---|
 | **P0** | 登记表 + `start_service` / `stop_service` / `list_services` + 停止阶梯 + 子孙回收 + 退出清理 + 权限闸（开关 / 白名单 / cwd）+ **限额不继承** + **输出上限巡检**（8MB 截断 + 30s 一轮） | 打通"skill 内部起 node 长驻"的主链路 |
 | **P1** | **readyPattern + 就绪超时**（已提前落地：就绪判据是长驻服务的核心可用性，一并做了）+ **RSS/CPU 观测告警**（已落地：整棵进程树合计口径，单服务 512MB / 合计 1GB / CPU 跑满持续 5min，只告警不杀）+ **前端服务面板**（已落地：设置页「本地服务」分区，看状态与资源占用、随时停） | 可用性与可观测性 |
-| **P1 剩余** | RSS/CPU 告警目前只在设置页与 `list_services` 可见，**没有主动推送**（通知中心/系统通知通道未接） | |
-| **P2** | ① 方案 1：node MCP server 配到设置页——**已重定义**为「只补可见性」（见 §17.1 决策记录）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）——**已落地**<br>③ 端口/监听地址硬化闸 | 配套与深化 |
+| **P1 剩余** | 资源告警已走**系统通知**（`bot/services.rs` 的 `notify_system`，插件没装时静默跳过）；**应用内通知中心仍未接**服务资源告警（`src/lib/notifications.ts` 的 kind 只有 memory_proposal / artifact_bind / task_question） | |
+| **P2** | ① 方案 1：node MCP server 配到设置页——**已重定义并完成可见性**（见 §17.1 决策记录）<br>② MCP stdio 接同一停止阶梯（上提为 `bot::procs::stop_tree`）——**已落地**<br>③ 端口/监听地址硬化闸 | 配套与深化 |
 
 ### 17.1 P2-① 决策记录：node MCP server 归到「可见性」口径
 
@@ -1385,8 +1385,11 @@ ps -o pid= -o ppid= -ax | wc -l
 | Python 开关（flag 文件） | `py/commands.rs:10-34` |
 | yolo 免开关口径 | `py/document.rs:2003-2006` |
 | 启动器白名单（单一事实源） | `bot/mcp/config.rs:49-51` |
-| 白名单校验 + 逐臂构造 | `bot/mcp/manager.rs:209-235` |
-| MCP 进程 spawn / shutdown | `bot/mcp/manager.rs:249-252` / `:579-593` |
+| 白名单校验 + 逐臂构造 | `bot/mcp/manager.rs:261` / `:268-287` |
+| MCP 进程 spawn / shutdown | `bot/mcp/manager.rs:254`（spawn_service）/ `:312`（child pid）/ `:714-724`（shutdown）/ `:755`（shutdown_all） |
+| 进程采样公共件（P2-① 与受管服务层共用） | `bot/procs.rs:118`（take_snapshot）/ `:303`（tree_sample）/ `:287`（cpu_usage_pct） |
+| MCP 子进程资源采样（P2-①） | `bot/mcp/manager.rs:418`（connected_children）/ `:440`（sample_children，5s TTL） |
+| MCP 面板资源字段（P2-①） | `bot/mcp/commands.rs:216`（McpServerStatus）/ `:249`（mcp_status，采样走 spawn_blocking） |
 | `ToolDef` / `TOOLS_TABLE` / 工具数 | `bot/registry.rs:164-178` / `:1776+` / `:1772` |
 | 工具名基线断言（集合 / 顺序 / mutating） | `bot/registry.rs:2795` / `:2868` / `:2935` |
 | profile 工具列表 | `bot/registry.rs:2368` / `:2378` / `:2388` / `:2401` |
