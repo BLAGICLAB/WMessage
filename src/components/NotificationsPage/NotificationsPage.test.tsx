@@ -140,4 +140,43 @@ describe("NotificationsPage", () => {
       }),
     );
   });
+
+  it("服务告警卡：只告知不决策——「知道了」→ notifications_resolve(id, dismissed)", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "notifications_list")
+        return [
+          mkItem({
+            id: "s1",
+            kind: "service_alert",
+            title: "前端 dev server · 端口违规",
+            body: "监听地址 0.0.0.0 不是 loopback（L1）",
+            payload: {
+              serviceId: "svc_1",
+              alertType: "port_violation",
+              rule: "L1",
+              address: "0.0.0.0",
+              port: 7000,
+            },
+          }),
+        ];
+      return null;
+    });
+    render(<NotificationsPage />);
+    // 标题与正文照常显示，档位信息在正文里
+    expect(await screen.findByText("前端 dev server · 端口违规")).toBeTruthy();
+    expect(
+      screen.getByText("监听地址 0.0.0.0 不是 loopback（L1）"),
+    ).toBeTruthy();
+    // 类别标签
+    expect(screen.getByText("服务告警")).toBeTruthy();
+    // 只有「知道了」，没有别的决策按钮
+    const btn = screen.getByRole("button", { name: "知道了" });
+    await userEvent.click(btn);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("notifications_resolve", {
+        id: "s1",
+        status: "dismissed",
+      }),
+    );
+  });
 });

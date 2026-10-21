@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  AlertTriangle,
   Bell,
   BrainCircuit,
   FolderInput,
@@ -40,6 +41,10 @@ const KIND_META: Record<
   task_question: {
     icon: <HelpCircle size={15} aria-hidden />,
     label: "任务提问",
+  },
+  service_alert: {
+    icon: <AlertTriangle size={15} aria-hidden />,
+    label: "服务告警",
   },
 };
 
@@ -328,7 +333,34 @@ function TaskQuestionCard({ item }: { item: NotificationItem }) {
   );
 }
 
-/** Agent 通知中心：决策消息（记忆提案 / 产物绑定 / 任务提问）的持久化收件箱 */
+/** 服务告警卡：只告知不决策——「知道了」即算处理 */
+function ServiceAlertCard({ item }: { item: NotificationItem }) {
+  const [busy, setBusy] = useState(false);
+  const ack = async () => {
+    setBusy(true);
+    try {
+      await dismissNotification(item.id);
+    } catch (e) {
+      handleCommandError(e, "确认服务告警");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <CardActions>
+      <button
+        type="button"
+        className={btnGhost}
+        disabled={busy}
+        onClick={() => void ack()}
+      >
+        知道了
+      </button>
+    </CardActions>
+  );
+}
+
+/** Agent 通知中心：决策消息（记忆提案 / 产物绑定 / 任务提问）+ 服务告警的持久化收件箱 */
 export function NotificationsPage() {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [tab, setTab] = useState<"pending" | "all">("pending");
@@ -418,7 +450,7 @@ export function NotificationsPage() {
           <EmptyState
             icon={<Bell size={18} aria-hidden />}
             title={tab === "pending" ? "没有待处理的通知" : "还没有通知"}
-            description="Agent 的记忆提案、产物绑定与任务提问会以消息形式出现在这里"
+            description="Agent 的记忆提案、产物绑定与任务提问会以消息形式出现在这里；受管服务的资源告警与端口违规也会"
           />
         ) : (
           shown.map((n) => {
@@ -451,6 +483,8 @@ export function NotificationsPage() {
                     <MemoryCard item={n} />
                   ) : n.kind === "task_question" ? (
                     <TaskQuestionCard item={n} />
+                  ) : n.kind === "service_alert" ? (
+                    <ServiceAlertCard item={n} />
                   ) : (
                     <ArtifactCard item={n} />
                   ))}
