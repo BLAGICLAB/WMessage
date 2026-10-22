@@ -1,13 +1,14 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 157 个文件、约 11.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 157 个文件、约 11.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1117)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1186)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+│                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -23,7 +24,8 @@ src-tauri/src/
 │─ 数据层
 ├── db/                  SQLite（wmessage.db）+ 迁移 + 产物 + 工作区（按表分文件）
 │   ├── db/mod.rs      模块声明 + 公共 re-export
-│   ├── tasks.rs         Task / Subtask / TaskFile
+│   ├── tasks.rs         Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
+│                        （截止只认 YYYY-MM-DD 与 YYYY-MM-DDTHH:mm，解析不了的一律拒）
 │   ├── bot_sessions.rs   BotSession / 会话归属
 │   ├── bot_history.rs   会话聊天记录
 │   ├── migrations.rs     数据库迁移（历史顶层 migration.rs 已并入）
@@ -73,7 +75,8 @@ src-tauri/src/
 │─ 本地 HTTP API（127.0.0.1 微服务，与 bot 解耦，只操作任务数据）
 ├── api.rs               trait TaskStore + MemStore(测试) + TauriStore(生产)
 ├── api_server.rs        HTTP server 生命周期、端口绑定、EventHub（SSE 中枢）
-├── api_auth.rs          Bearer token（runtime/flags/api-token.txt）、开关持久化（runtime/flags/api-enabled.flag）
+├── api_auth.rs          Bearer token（runtime/flags/api-token.txt）、开关持久化（runtime/flags/api-enabled.flag）；
+│                        token 文件为空则原子覆写自愈（否则 create_new 恒撞 AlreadyExists，api_start 起不来）
 ├── api_handlers/        REST /api/tasks CRUD + SSE + api_start/stop 等命令
 │   ├── api_handlers/mod.rs  模块声明 + 路由分发
 │   ├── handlers.rs      HTTP 路由层
@@ -209,7 +212,9 @@ src-tauri/src/
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
-│                        SchedGuard 防重入；完成发系统通知
+│                        SchedGuard 防重入；完成发系统通知；
+│                        机器人总开关关着时到点的作业判 Held（不派发、水位不推进，
+│                        恢复后仍在补跑窗口内）——否则每 30s 空转一轮、每天几千条跳过审计
 ├── bot_reminders.rs (562) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
@@ -237,22 +242,28 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_ui.rs (882) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
+├── bot_ui.rs (1098) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
 │                        ui_inspect / ui_click / ui_type / wait_for_element。
 │                        四道闸——独立总开关（ui::ui_enabled，默认关闭）/ 窗口级授权
 │                        （动作必带 windowId 且窗口真实存在）/ 危险动作确认
-│                        （发送、提交、支付、删除类点击前弹窗，60s 无响应默认拒绝）/
-│                        敏感控件禁打（密码、验证码类不代填）；每次动作留审计 +
+│                        （发送、提交、支付、删除类点击前弹窗，60s 无响应默认拒绝；
+│                        判不出的（无标题按钮）一律确认）/ 敏感控件禁打（密码、验证码类不代填）；
+│                        闸门与实际动作之间还夹两道——窗口身份（pid+标题）比对，
+│                        变了就不动；控件身份（NodeIdentity）比对，对不上就不动；
+│                        注入全程持全局互斥；每次动作留审计 +
 │                        动作前后各一张截图（落 AI_Gen_Files）
 ├── ui/                 桌面 UI 自动化跨平台层（数据模型 + 总开关 + 平台分发）
-│   ├── ui/mod.rs (337) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
-│   │                 ui_set_enabled）+ 平台分发（list_windows / activate_window /
-│   │                 inspect_tree / press_node / focus_node / type_text）
-│   ├── ui/macos.rs (488) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
+│   ├── ui/mod.rs (618) UiWindow / UiNode / NodeIdentity 数据模型 + flag 开关（ui_get_enabled /
+│   │                 ui_set_enabled，unix 建即 0600；每次切换写 ui_automation_toggle 审计）+
+│   │                 平台分发（list_windows / activate_window / inspect_tree / press_node /
+│   │                 focus_node / type_text）+ 前台窗口判定（window_is_foreground）
+│   ├── ui/macos.rs (554) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
-│   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）
-│   └── ui/windows.rs (431) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
+│   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）；
+│   │                 前台窗口按 NSWorkspace 实测（不恒为 false）
+│   └── ui/windows.rs (472) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
+│                     控件值读 UIA ValuePattern（密码框不读，避免读出明文）；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
 ├── bot_desktop.rs (647) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
@@ -288,21 +299,25 @@ src-tauri/src/
 ├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
 ├── bot_py.rs (1367)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
-├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网
+├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
+│                        输入有字节与像素上限（解码前只读文件头，解码炸弹面）
 ├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +
 │                        回灌指针文案 + 保留期清扫（30 天，启动一次 + 每天一次）。
 │                        配套 `bot_fs::allowed_dirs` 把本目录放进读白名单（模型靠它分页读回），
 │                        回灌上限取 per-tool 预算与设置页 maxToolOutputBytes 的小者（字节口径）
 ├── bing.rs              必应每日一图（首页小部件数据源）：cn.bing.com 官方 API + 按日落
 │                        `{data_dir}/runtime/bing/`（图片先 / 元数据后提交标记；保留 7 天，
-│                        过期随拉取清理）；base64 data URL 单 IPC 返回（免配 asset 协议）
+│                        过期随拉取清理）；base64 data URL 单 IPC 返回（免配 asset 协议）；
+│                        大图先查长度再流式读，边读边计数（超限即中止）
 │─ 技能系统 bot_skills/（技能 = 数据目录 skills/<name>/SKILL.md，YAML frontmatter）
 ├── bot_skills/mod.rs            门面：全量 re-export 子模块
 ├── bot_skills/parse.rs          SKILL.md frontmatter/正文解析 → SkillMeta（mode/intents/steps）
 ├── bot_skills/state.rs          SkillRun 运行实例 + 状态机
 │                                （Loaded/Running/Paused/Finished/Failed/Terminated）、
 │                                SKILL_RUNS 表（已迁 app_state::AppState，访问器需 AppHandle）
-├── bot_skills/runtime.rs        生命周期：start_skill 预审/启动、暂停/确认/推进、skill_finish 收尾
+├── bot_skills/runtime.rs        生命周期：start_skill 预审/启动、暂停/确认/推进、skill_finish 收尾；
+│                                暂停态也算超时（等确认等到超时的按失败收，
+│                                否则同名技能被一直占着，别人起不来）
 ├── bot_skills/scheduler.rs      DSL 步骤调度器 run_skill_scheduler + DslOutcome
 │                                （Done/AwaitUser/FailedButRecoverable → LLM 兜底）
 ├── bot_skills/vars.rs           步骤变量替换（${stepN.field} / ${prev…} 嵌套路径）
@@ -321,6 +336,8 @@ src-tauri/src/
 ├── apps/mod.rs          runner：跑 `{data_dir}/apps/<id>/<script_path>`（脚本路径只放行
 │                        app 目录下的单个文件名）、抓 stdout 的 `##RESULT## {json}` 哨兵、
 │                        产物落 `output/<run_id>/`、摘要 300 字截断；app_runs 运行史回写
+│                        （失败路径都回写终态；进程崩在写回之前留下的 running 僵尸行
+│                        由清扫标成失败）
 ├── apps/commands.rs     程序页 tauri 命令：list_active/get/run/create/update/archive/
 │                        runs_list/versions_list/version_restore/preflight/open_output
 ├── apps/manage.rs       领域核 + 三个 bot 工具（apps_list / apps_create / apps_update_files，
