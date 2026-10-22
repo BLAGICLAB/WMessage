@@ -176,6 +176,22 @@ fn gate_no_line_break(text: &str) -> Option<ToolResult> {
 /// 有没有『密码』这类词」判，等于把闸门交给应用作者的文案习惯。
 const SENSITIVE_ROLES: &[&str] = &["AXSecureTextField"];
 
+/// 前台判定的结论：放行还是拒绝
+///
+/// 三种输入三种结论——在前台放行、不在前台拒绝、**判不出来也拒绝**（fail-closed）：
+/// 宁可少注入一次，也不要把字符打进用户正在用的另一个应用。
+fn foreground_verdict(fg: Result<bool, String>) -> Result<(), String> {
+    match fg {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(
+            "目标窗口不在前台：键盘注入会落进当前正在使用的应用（前台不是目标窗口）。\
+             先调 activate_window 把目标窗口置前，再输入。"
+                .to_string(),
+        ),
+        Err(e) => Err(format!("没法确认目标窗口是否在前台，已放弃注入：{e}")),
+    }
+}
+
 /// 敏感控件闸：密码 / 验证码一类控件不接受输入
 fn gate_sensitive(node: &UiNode) -> Option<ToolResult> {
     // 角色与平台标志优先于文案：密码框的标题可能是空的
@@ -543,6 +559,11 @@ pub async fn tool_ui_type(
     if let Some(t) = gate_sensitive(&node) {
         return t;
     }
+    // 前台闸：键盘事件路由给前台应用，目标窗口不在前台就会打进用户正在用的
+    // 另一个应用（另一扇聊天窗、终端、地址栏）。判不出来也不注入。
+    if let Err(msg) = foreground_verdict(crate::ui::window_is_foreground(&window_id)) {
+        return ToolResult::denied(msg);
+    }
     // 危险动作闸：往「发送 / 提交」框里打字同样要确认（点了发送就是发出去）
     let detail = format!(
         "在「{}」（{}）的「{}」里输入：{}",
@@ -742,6 +763,23 @@ mod tests {
         assert!(
             gate_no_line_break("早上好").is_none(),
             "普通单行文本不该被拦"
+        );
+    }
+
+    /// 注入前的前台闸：目标窗口不在前台、或者判不出来，都不注入
+    #[test]
+    fn injection_must_wait_for_the_target_window_to_come_to_front() {
+        assert!(
+            foreground_verdict(Ok(true)).is_ok(),
+            "目标窗口在前台才允许注入"
+        );
+        assert!(
+            foreground_verdict(Ok(false)).is_err(),
+            "不在前台必须拒绝（键盘事件会打进用户正在用的应用）"
+        );
+        assert!(
+            foreground_verdict(Err("读不到前台窗口".to_string())).is_err(),
+            "判不出来也必须拒绝（fail-closed）"
         );
     }
 

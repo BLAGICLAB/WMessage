@@ -35,6 +35,7 @@ const AX_POSITION: &str = "AXPosition";
 const AX_SIZE: &str = "AXSize";
 const AX_ACTIONS: &str = "AXActions";
 const AX_PRESS: &str = "AXPress";
+const AX_FOCUSED_WINDOW: &str = "AXFocusedWindow";
 
 fn cfstr(s: &str) -> CFRetained<CFString> {
     CFString::from_str(s)
@@ -272,6 +273,55 @@ pub fn activate_window(window_id: &str) -> Result<(), String> {
     Err(format!("找不到 pid 为 {pid} 的应用（应用已退出？）"))
 }
 
+/// 目标窗口是否在前台
+///
+/// macOS 没有公开的「哪个窗口在前台」标志，只能两级判断：应用级（前台应用的
+/// pid）+ 窗口级（该应用 AXFocusedWindow 的标题对不对得上）。
+pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
+    let (pid_str, _win) = window_id
+        .split_once(':')
+        .ok_or("窗口 id 格式应为 <pid>:<窗口序号>")?;
+    let pid: i32 = pid_str.parse().map_err(|_| "窗口 id 的 pid 段无法解析")?;
+    if frontmost_app_pid() != pid {
+        return Ok(false);
+    }
+    let target_title = resolve(window_id)
+        .ok()
+        .and_then(|el| string_attr(&el, AX_TITLE))
+        .unwrap_or_default();
+    Ok(same_window_by_title(
+        &target_title,
+        focused_window_title(pid).as_deref(),
+    ))
+}
+
+/// 前台应用的 pid（拿不到就是 0——不等于任何真实 pid，等于「不在前台」）
+fn frontmost_app_pid() -> i32 {
+    use objc2_app_kit::NSWorkspace;
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .map(|a| a.processIdentifier())
+        .unwrap_or(0)
+}
+
+/// 该应用当前聚焦窗口的标题（读不到就是 None）
+fn focused_window_title(pid: i32) -> Option<String> {
+    let app_el = unsafe { AXUIElement::new_application(pid as libc::pid_t) };
+    let ty = unsafe { copy_attr(&app_el, AX_FOCUSED_WINDOW) }?;
+    let win = ty.downcast_ref::<AXUIElement>()?;
+    string_attr(win, AX_TITLE)
+}
+
+/// 同应用内的逐窗口判定：聚焦窗口的标题与目标窗口标题一致才算同一个窗口
+///
+/// 标题读不到时退化为「同应用即可」——macOS 没有更细的公开标志可比。
+fn same_window_by_title(target_title: &str, focused_title: Option<&str>) -> bool {
+    match focused_title {
+        Some(f) if !f.is_empty() && !target_title.is_empty() => f == target_title,
+        _ => true,
+    }
+}
+
 // ── 控件树 ─────────────────────────────────────────────────────────────────
 
 /// 读窗口的控件树
@@ -396,6 +446,27 @@ pub fn type_text(text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 同应用内的逐窗口判定：聚焦窗口标题对不上就不是同一个窗口
+    #[test]
+    fn same_window_check_compares_titles_within_one_app() {
+        assert!(
+            same_window_by_title("微信", Some("微信")),
+            "标题一致算同一个窗口"
+        );
+        assert!(
+            !same_window_by_title("微信", Some("另一个窗口")),
+            "同应用里的另一个窗口不算前台窗口"
+        );
+        assert!(
+            same_window_by_title("微信", None),
+            "读不到聚焦窗口时退化为「同应用即可」"
+        );
+        assert!(
+            same_window_by_title("", Some("另一个窗口")),
+            "目标窗口没标题时读不到可比的东西，退化为「同应用即可」"
+        );
+    }
 
     /// 真实 AX 冒烟（macOS）：读当前运行的窗口列表，验 AX 读树这条路真能通。
     /// 依赖本进程获「辅助功能」权限（AXIsProcessTrusted），未授权直接失败——

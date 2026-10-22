@@ -168,6 +168,26 @@ pub fn inspect_tree(
     }
 }
 
+/// 目标窗口当前是否在前台（键盘 / 坐标注入的前提）
+///
+/// 键盘事件路由给前台应用：目标窗口不在前台时，注入的字符会打进用户正在用的
+/// 另一个应用（另一扇聊天窗、终端、地址栏）。所以注入前必须问一句。
+pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::window_is_foreground(window_id)
+    }
+    #[cfg(windows)]
+    {
+        windows::window_is_foreground(window_id)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = window_id;
+        Err("当前平台不支持 UI 自动化".into())
+    }
+}
+
 /// 按控件本身触发（AXPress / UIA Invoke）
 pub fn press_node(node_id: &str) -> Result<(), String> {
     #[cfg(target_os = "macos")]

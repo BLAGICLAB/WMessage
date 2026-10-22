@@ -310,6 +310,12 @@ fn supports_invoke(el: &IUIAutomationElement) -> bool {
     unsafe { el.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) }.is_ok()
 }
 
+/// 目标窗口是否在前台
+pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
+    let hwnd = parse_hwnd(window_id)?;
+    Ok(is_foreground(hwnd))
+}
+
 /// 按控件本身触发（Invoke 模式；不支持则退回坐标点击）
 pub fn press_node(node_id: &str) -> Result<(), String> {
     let _com = ComGuard::new()?;
@@ -321,6 +327,13 @@ pub fn press_node(node_id: &str) -> Result<(), String> {
         return Ok(());
     }
     // 没有 Invoke 模式（输入框之类）→ 坐标点击兜底
+    // 兜底点击打在屏幕坐标上：窗口被别的窗口盖住时，点到的不是目标控件
+    let hwnd = parse_node_id(node_id)?.hwnd;
+    if !is_foreground(hwnd) {
+        return Err(
+            "目标窗口不在前台：坐标兜底点击会打在盖住它的那个窗口上，先激活目标窗口".to_string(),
+        );
+    }
     let rect: RECT = unsafe { el.CurrentBoundingRectangle() }
         .map_err(|e| format!("控件不支持触发且读不到位置：{e}"))?;
     click_at(

@@ -237,7 +237,7 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_ui.rs (844) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
+├── bot_ui.rs (882) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
 │                        ui_inspect / ui_click / ui_type / wait_for_element。
 │                        四道闸——独立总开关（ui::ui_enabled，默认关闭）/ 窗口级授权
 │                        （动作必带 windowId 且窗口真实存在）/ 危险动作确认
@@ -245,13 +245,13 @@ src-tauri/src/
 │                        敏感控件禁打（密码、验证码类不代填）；每次动作留审计 +
 │                        动作前后各一张截图（落 AI_Gen_Files）
 ├── ui/                 桌面 UI 自动化跨平台层（数据模型 + 总开关 + 平台分发）
-│   ├── ui/mod.rs (317) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
+│   ├── ui/mod.rs (337) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
 │   │                 ui_set_enabled）+ 平台分发（list_windows / activate_window /
 │   │                 inspect_tree / press_node / focus_node / type_text）
-│   ├── ui/macos.rs (417) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
+│   ├── ui/macos.rs (488) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
 │   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）
-│   └── ui/windows.rs (418) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
+│   └── ui/windows.rs (431) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
 ├── bot_desktop.rs (647) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
