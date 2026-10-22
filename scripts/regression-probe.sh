@@ -202,6 +202,70 @@ cmd_keyring() {
   echo "  按服务器逐个查：security find-generic-password -s \"wmessage.bot.v1\" -a \"mcp:<id>\" -w"
 }
 
+# ── 本轮修复的证据 ──────────────────────────────────────────────────────
+# 与 Windows 侧 regression-probe.ps1 的 fixes 子命令同义：
+# 一次命令拿到「这轮修的东西在日志里的落点」，避免在几千行 bot.log 里翻。
+cmd_fixes() {
+  local log
+  log="$(find_bot_log)" || { echo "✗ 没找到 bot.log（先跑 locate）"; return 1; }
+
+  echo "── 修复复验证据 ──"
+  echo "  bot.log = $log"
+  echo
+
+  echo "── D-2：open_url / fetch_url 的失败级别（同因必须同级）──"
+  local tool_lines
+  tool_lines="$(grep -aE 'tool\.return .*tool=(open_url|fetch_url)' "$log" | tail -8)"
+  if [ -n "$tool_lines" ]; then
+    printf '%s\n' "$tool_lines" | sed 's/^/  /'
+    echo "  期望：DNS 解析失败在 open_url 与 fetch_url 上都是 ERROR；策略拒绝仍是 WARN"
+  else
+    echo "  （还没有 open_url / fetch_url 的 tool.return 行）"
+  fi
+  echo
+
+  echo "── D-6：就绪超时的归因 ──"
+  local svc_lines
+  svc_lines="$(grep -aE 'service\.(started|ready|stop_requested|exited|stopped|start_failed)' "$log" | tail -15)"
+  if [ -n "$svc_lines" ]; then
+    printf '%s\n' "$svc_lines" | sed 's/^/  /'
+    echo "  期望：start_failed 的 reason 是「在 Ns 内未就绪」，绝不是「启动后立即退出」"
+    echo "  期望：service.exited 那行带 stop_reason=ready_timeout"
+  else
+    echo "  （还没有服务生命周期行）"
+  fi
+  echo
+
+  echo "── D-1：构建机路径泄漏（必须为空）──"
+  # 判据不是「文本里长得像盘符」（Python 代码里的 as e:\n 会误报），
+  # 而是地面真相：mcp.builtin_materialized 记的包路径在本机**存不存在**。
+  local mats leaks=""
+  mats="$(grep -a 'mcp\.builtin_materialized' "$log" | tail -3)"
+  if [ -n "$mats" ]; then
+    printf '%s\n' "$mats" | sed 's/^/  /'
+    local p
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      if [ ! -e "$p" ]; then
+        leaks="  [!] 指向本机不存在的路径（构建机路径泄漏）：$p
+"
+      fi
+    done <<<"$(printf '%s\n' "$mats" | sed -n 's/.*包: \(.*\)（.*/\1/p')"
+    if [ -n "$leaks" ]; then
+      printf '%s' "$leaks"
+    else
+      echo "  ✓ 内置包路径在本机存在，没有构建机路径泄漏"
+    fi
+  else
+    echo "  （还没有 mcp.builtin_materialized 事件）"
+  fi
+  echo
+
+  echo "── 人眼项（面板是 WebView，脚本读不到 DOM）──"
+  echo "  D-7：本地服务面板必须出现能力提示，且不得出现「合计内存 0 MB」"
+  echo "  D-8：截屏不得弹出控制台窗口（macOS 上无 Windows 那个坑，看不到就跳过）"
+}
+
 cmd_usage() {
   cat <<'EOF'
 用法：bash scripts/regression-probe.sh <子命令>
@@ -212,6 +276,7 @@ cmd_usage() {
   services  列受管服务的真实进程与监听端口
   orphans   查宿主已死、服务还活着的孤儿
   keyring   查 MCP 服务器的 keyring 机密条目
+  fixes     打印本轮修好的缺陷的日志证据（D-1 / D-2 / D-6）
   usage     本帮助
 EOF
 }
@@ -223,6 +288,7 @@ case "${1:-usage}" in
   services) cmd_services ;;
   orphans)  cmd_orphans ;;
   keyring)  cmd_keyring ;;
+  fixes)    cmd_fixes ;;
   usage)    cmd_usage ;;
   *)        cmd_usage; exit 1 ;;
 esac
