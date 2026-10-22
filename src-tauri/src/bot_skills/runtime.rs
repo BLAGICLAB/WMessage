@@ -39,11 +39,49 @@ fn preflight(meta: &SkillMeta) -> Result<(), String> {
     Ok(())
 }
 
+/// 技能超时判定（单一口径）：已跑秒数 > 声明的 timeout_secs。
+/// 步骤熔断、状态机实时检测、暂停过期清扫都走这里——口径分叉会让
+/// 「同一次运行在不同入口超时时刻不同」。
+fn skill_timed_out(run: &SkillRun, now_ms: i64) -> bool {
+    (now_ms - run.started_at_ms) / 1000 > run.timeout_secs as i64
+}
+
+/// 超时清扫：把等待确认等到超时的 Paused run 标成 Failed（终态），返回被扫掉的技能名。
+/// Paused 不是终态——不扫的话它一直占着同名技能，那个会话再也不回来就永久挡路。
+fn sweep_expired_pauses(
+    runs: &mut std::collections::HashMap<String, SkillRun>,
+    now_ms: i64,
+) -> Vec<String> {
+    let mut expired = Vec::new();
+    for (name, run) in runs.iter_mut() {
+        if run.state == SkillState::Paused && skill_timed_out(run, now_ms) {
+            run.state = SkillState::Failed;
+            run.end_reason = "等待确认超时，已过期".into();
+            expired.push(name.clone());
+        }
+    }
+    expired
+}
+
 /// 同名技能冲突判定：SKILL_RUNS 以技能名为键，
 /// 别的会话的 Running/Paused 同名 run 会被 insert 顶掉导致安全闸全失——启动前拒绝。
-fn skill_conflict_with_existing(existing: Option<&SkillRun>, session_id: Option<&str>) -> bool {
-    matches!(existing, Some(r) if (r.state == SkillState::Running || r.state == SkillState::Paused)
-        && r.session_id.as_deref() != session_id)
+/// 过了超时的 Paused 不算活动：没人会再来确认它，占着就是永久挡路，启动方有权接管。
+fn skill_conflict_with_existing(
+    existing: Option<&SkillRun>,
+    session_id: Option<&str>,
+    now_ms: i64,
+) -> bool {
+    let Some(r) = existing else {
+        return false;
+    };
+    if r.session_id.as_deref() == session_id {
+        return false; // 同会话同名重启：覆盖语义
+    }
+    match r.state {
+        SkillState::Running => true,
+        SkillState::Paused => !skill_timed_out(r, now_ms),
+        _ => false,
+    }
 }
 
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → 参数校验 → Running），
@@ -110,10 +148,14 @@ pub fn start_skill(
     run.dir = Some(dir);
     let registry = skill_runs(app);
     let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
+    let now = now_ms();
+    // 超时清扫：等确认等到超时的 Paused run 标成 Failed（终态）——
+    // 它占着同名技能，不清就一直挡着别的会话。
+    let expired = sweep_expired_pauses(&mut runs, now);
     // 同名 run 属于别的会话且仍在活动 → 拒绝启动，
     // 否则 insert 会把对方的步数/超时熔断、动作记录、收尾整个顶掉。
     // 同会话同名重启（覆盖语义）与终态 run 不拦截。
-    if skill_conflict_with_existing(runs.get(&meta.name), session_id) {
+    if skill_conflict_with_existing(runs.get(&meta.name), session_id, now) {
         return Err(format!(
             "技能「{}」正在另一个会话/任务中运行，请等它结束后再启动",
             meta.name
@@ -138,6 +180,12 @@ pub fn start_skill(
     }
     runs.insert(meta.name.clone(), run);
     drop(runs);
+    for name in &expired {
+        crate::bot::audit_log_hook(
+            app,
+            &format!("skill_expired | name: {name} | 等待确认超时，已过期并释放占位"),
+        );
+    }
     for (n, step) in &switched {
         crate::bot::audit_log_hook(
             app,
@@ -274,8 +322,7 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
         });
     }
     // 超时熔断
-    let elapsed = (now - run.started_at_ms) / 1000;
-    if elapsed > run.timeout_secs as i64 {
+    if skill_timed_out(run, now) {
         run.state = SkillState::Failed;
         run.end_reason = format!("超时（超过 {} 秒）", run.timeout_secs);
         return Err(CommandError::DomainRule {
@@ -388,7 +435,14 @@ fn pause_state(run: &mut SkillRun) {
 }
 
 /// 确认结果纯函数（单测入口）：通过 → 恢复 Running 或暂停即终止；拒绝 → Terminated。
-fn confirm_state(run: &mut SkillRun, approved: bool) {
+/// 过了超时的暂停不再恢复：技能已过期（没人会再来确认它），
+/// 恢复等于让一个过期计划继续动手——标成 Failed（终态）并释放占位。
+fn confirm_state(run: &mut SkillRun, approved: bool, now_ms: i64) {
+    if skill_timed_out(run, now_ms) {
+        run.state = SkillState::Failed;
+        run.end_reason = "等待确认超时，已过期".into();
+        return;
+    }
     if approved {
         if run.terminal_after_confirm {
             run.state = SkillState::Terminated;
@@ -436,7 +490,7 @@ pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<
         .values_mut()
         .find(|r| r.state == SkillState::Paused && r.session_id.as_deref() == session_id)
     {
-        confirm_state(run, approved);
+        confirm_state(run, approved, now_ms());
         let name = run.name.clone();
         let state = format!("{:?}", run.state);
         let reason = run.end_reason.clone();
@@ -676,14 +730,21 @@ pub fn advance_skill(run: &SkillRun, now_ms: i64) -> AdvanceAction {
         SkillState::Loaded => AdvanceAction::NoActive,
         SkillState::Running => {
             // 实时超时检测（即使 step_check 没跑到，主循环也能感知）
-            let elapsed = (now_ms - run.started_at_ms) / 1000;
-            if elapsed > run.timeout_secs as i64 {
+            if skill_timed_out(run, now_ms) {
                 AdvanceAction::Fail(format!("超时（超过 {} 秒）", run.timeout_secs))
             } else {
                 AdvanceAction::Continue
             }
         }
-        SkillState::Paused => AdvanceAction::AwaitConfirm,
+        SkillState::Paused => {
+            // 暂停等确认同样有超时：Paused 不是终态，不判超时它就一直占着同名技能，
+            // 那个会话不再回来就永久挡着别的会话。
+            if skill_timed_out(run, now_ms) {
+                AdvanceAction::Fail(format!("超时（超过 {} 秒）", run.timeout_secs))
+            } else {
+                AdvanceAction::AwaitConfirm
+            }
+        }
         SkillState::Completed => AdvanceAction::Finish,
         SkillState::Failed => AdvanceAction::Fail(run.end_reason.clone()),
         SkillState::Terminated => AdvanceAction::Terminate(run.end_reason.clone()),
@@ -718,6 +779,12 @@ pub enum DslAdvanceAction {
 }
 
 pub fn advance_dsl(run: &SkillRun, now_ms: i64) -> DslAdvanceAction {
+    // 暂停态：DSL 层只表达「等用户」——暂停超时的裁决在状态机层
+    // （advance_skill 的主循环判定）与 start_skill 的清扫，两处口径一致。
+    // 这里不重复判超时：同一份判定出现两个答案，DSL 与主循环就会打架。
+    if run.state == SkillState::Paused {
+        return DslAdvanceAction::AwaitUser;
+    }
     match advance_skill(run, now_ms) {
         AdvanceAction::NoActive | AdvanceAction::Continue => DslAdvanceAction::Run,
         AdvanceAction::Finish => DslAdvanceAction::Finish,
@@ -1015,11 +1082,13 @@ mod tests {
         pause_state(&mut r);
         assert_eq!(r.state, SkillState::Paused);
         assert!(!r.terminal_after_confirm);
-        confirm_state(&mut r, true);
+        let now = r.started_at_ms;
+        confirm_state(&mut r, true, now);
         assert_eq!(r.state, SkillState::Running); // 确认通过恢复
                                                   // 再次暂停后拒绝
         pause_state(&mut r);
-        confirm_state(&mut r, false);
+        let now = r.started_at_ms;
+        confirm_state(&mut r, false, now);
         assert_eq!(r.state, SkillState::Terminated);
         assert_eq!(r.end_reason, "用户拒绝确认");
     }
@@ -1033,7 +1102,8 @@ mod tests {
         pause_state(&mut r);
         assert_eq!(r.state, SkillState::Paused);
         assert!(r.terminal_after_confirm);
-        confirm_state(&mut r, true);
+        let now = r.started_at_ms;
+        confirm_state(&mut r, true, now);
         assert_eq!(r.state, SkillState::Terminated);
         assert!(r.end_reason.contains("resumable=false"));
     }
@@ -1051,12 +1121,15 @@ mod tests {
 
     // ── 同名技能跨会话顶号拦截 ──
 
+    /// test_run 的起点是 1000ms；NOW 取起点后 10s（未超时口径内）。
+    const NOW: i64 = 11_000;
+
     #[test]
     fn skill_conflict_other_session_running_is_blocked() {
         let mut r = test_run(8, 180);
         r.state = SkillState::Running;
         r.session_id = Some("s-a".into());
-        assert!(skill_conflict_with_existing(Some(&r), Some("s-b")));
+        assert!(skill_conflict_with_existing(Some(&r), Some("s-b"), NOW));
     }
 
     #[test]
@@ -1064,9 +1137,9 @@ mod tests {
         let mut r = test_run(8, 180);
         r.state = SkillState::Paused;
         r.session_id = Some("s-a".into());
-        assert!(skill_conflict_with_existing(Some(&r), Some("s-b")));
+        assert!(skill_conflict_with_existing(Some(&r), Some("s-b"), NOW));
         // 一方无会话（后台任务）也算不同会话
-        assert!(skill_conflict_with_existing(Some(&r), None));
+        assert!(skill_conflict_with_existing(Some(&r), None, NOW));
     }
 
     #[test]
@@ -1075,7 +1148,7 @@ mod tests {
         let mut r = test_run(8, 180);
         r.state = SkillState::Running;
         r.session_id = Some("s-a".into());
-        assert!(!skill_conflict_with_existing(Some(&r), Some("s-a")));
+        assert!(!skill_conflict_with_existing(Some(&r), Some("s-a"), NOW));
     }
 
     #[test]
@@ -1090,7 +1163,7 @@ mod tests {
             r.state = state.clone();
             r.session_id = Some("s-a".into());
             assert!(
-                !skill_conflict_with_existing(Some(&r), Some("s-b")),
+                !skill_conflict_with_existing(Some(&r), Some("s-b"), NOW),
                 "终态 {state:?} 不应拦截"
             );
         }
@@ -1098,7 +1171,87 @@ mod tests {
 
     #[test]
     fn skill_conflict_no_existing_allowed() {
-        assert!(!skill_conflict_with_existing(None, Some("s-b")));
-        assert!(!skill_conflict_with_existing(None, None));
+        assert!(!skill_conflict_with_existing(None, Some("s-b"), NOW));
+        assert!(!skill_conflict_with_existing(None, None, NOW));
+    }
+
+    // ── 暂停（Paused）超时 ──
+
+    /// Paused 不是终态：不判超时它就一直占着同名技能，
+    /// 别的会话再也起不来（那个会话不回来就永久挡路）。
+    #[test]
+    fn skill_conflict_expired_pause_no_longer_blocks() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Paused;
+        r.session_id = Some("s-a".into());
+        // 超时后（180s 之后）不再算活动
+        let expired_at = r.started_at_ms + 181 * 1000;
+        assert!(!skill_conflict_with_existing(
+            Some(&r),
+            Some("s-b"),
+            expired_at
+        ));
+        assert!(!skill_conflict_with_existing(Some(&r), None, expired_at));
+    }
+
+    /// 状态机：暂停等确认超过技能超时 → 判失败（不再无限等确认）。
+    #[test]
+    fn advance_skill_paused_fails_after_timeout() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Paused;
+        let expired_at = r.started_at_ms + 181 * 1000;
+        match advance_skill(&r, expired_at) {
+            AdvanceAction::Fail(reason) => assert!(reason.contains("超时"), "{reason}"),
+            other => panic!("超时的暂停应判失败，实得 {other:?}"),
+        }
+    }
+
+    /// 未超时的暂停仍等确认（不得提前判失败）。
+    #[test]
+    fn advance_skill_paused_within_timeout_awaits_confirm() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Paused;
+        assert_eq!(
+            advance_skill(&r, r.started_at_ms + 179 * 1000),
+            AdvanceAction::AwaitConfirm
+        );
+    }
+
+    /// 过了超时的暂停不再恢复：确认通过也不能让过期计划继续动手。
+    #[test]
+    fn confirm_state_expired_pause_fails_instead_of_resuming() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Paused;
+        r.resumable = true;
+        let expired_at = r.started_at_ms + 181 * 1000;
+        confirm_state(&mut r, true, expired_at);
+        assert_eq!(r.state, SkillState::Failed);
+        assert!(r.end_reason.contains("超时"), "{}", r.end_reason);
+    }
+
+    /// 清扫：过期的暂停被标成 Failed（终态），占位随之释放。
+    #[test]
+    fn sweep_expired_pauses_marks_failed_and_frees_slot() {
+        let mut runs: std::collections::HashMap<String, SkillRun> =
+            std::collections::HashMap::new();
+        let mut paused = test_run(8, 180);
+        paused.state = SkillState::Paused;
+        paused.session_id = Some("s-a".into());
+        let mut running = test_run(8, 180);
+        running.state = SkillState::Running;
+        running.session_id = Some("s-b".into());
+        runs.insert("paused-skill".into(), paused);
+        runs.insert("running-skill".into(), running);
+        let expired_at = 1000 + 181 * 1000;
+        let expired = sweep_expired_pauses(&mut runs, expired_at);
+        assert_eq!(expired, vec!["paused-skill".to_string()]);
+        let swept = runs.get("paused-skill").unwrap();
+        assert_eq!(swept.state, SkillState::Failed);
+        assert!(swept.end_reason.contains("超时"), "{}", swept.end_reason);
+        // 未超时的 Running 不受影响
+        assert_eq!(
+            runs.get("running-skill").unwrap().state,
+            SkillState::Running
+        );
     }
 }
