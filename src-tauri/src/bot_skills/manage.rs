@@ -631,19 +631,15 @@ pub async fn tool_create_skill(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
     else {
-        return ToolResult::error(
-            "create_skill 缺少 name（技能名：字母/数字/-/_）".to_string(),
-            Vec::new(),
-        );
+        return ToolResult::denied("create_skill 缺少 name（技能名：字母/数字/-/_）".to_string());
     };
     if let Err(reason) = validate_skill_name(&name) {
-        return ToolResult::error(format!("create_skill：{reason}"), Vec::new());
+        return ToolResult::denied(format!("create_skill：{reason}"));
     }
     let Some(content) = v["content"].as_str().map(|s| s.to_string()) else {
-        return ToolResult::error(
+        return ToolResult::denied(
             "create_skill 缺少 content（完整 SKILL.md 文本，frontmatter 必含 description）"
                 .to_string(),
-            Vec::new(),
         );
     };
     let mut files: Vec<(String, String)> = Vec::new();
@@ -652,10 +648,7 @@ pub async fn tool_create_skill(
             match (f["path"].as_str(), f["content"].as_str()) {
                 (Some(p), Some(c)) => files.push((p.to_string(), c.to_string())),
                 _ => {
-                    return ToolResult::error(
-                        "files 条目必须同时包含 path 与 content".to_string(),
-                        Vec::new(),
-                    )
+                    return ToolResult::denied("files 条目必须同时包含 path 与 content".to_string())
                 }
             }
         }
@@ -663,9 +656,14 @@ pub async fn tool_create_skill(
 
     // 准入核先行（解析 + 名称一致 + 危险词 + intents 宽度闸）：不合格的技能
     // 不该占用用户一次确认
+    //
+    // 口径：这些分支**工具根本没执行**（没落盘、没进路由表）——与工具层其余
+    // 分支一致（缺 title、空 query、开关未开都是 denied），也与 install_skill
+    // 对同一准入核的口径一致（那边是 denied）。走 error 会让「被闸拦下」记成
+    // ERROR 进 error.log——被拒是预期内控制流，不是故障。
     let meta = match prepare_created_meta(&name, &content) {
         Ok(m) => m,
-        Err(reason) => return ToolResult::error(format!("create_skill：{reason}"), Vec::new()),
+        Err(reason) => return ToolResult::denied(format!("create_skill：{reason}")),
     };
     // 确认窗展示 intents 与 mode：这两项决定「建成后哪些话会被路由进来」和
     // 「命中后是否绕开 LLM 直接执行」——不给用户看就等于让用户盲批
@@ -1008,6 +1006,41 @@ mod tests {
         assert!(
             body.contains("meta.mode"),
             "确认窗必须展示 mode：auto 模式命中后不经 LLM 复核直接执行"
+        );
+    }
+
+    /// create_skill 的前置拒绝一律 denied（工具根本没执行），只有落盘失败才是 error。
+    ///
+    /// 口径三处一致：① 工具层其余分支（缺 title、空 query、开关未开）都是 denied；
+    /// ② install_skill 对**同一个**准入核也是 denied；③ 审计层
+    /// `ToolStatus::Denied → WARN`（「被拒是预期内的控制流，不是故障」）。
+    /// 走 error 会把「被闸拦下」记成 ERROR 进 error.log——同因不同级正是
+    /// 实机复验里 D-2 那条修复要根治的形态。
+    #[test]
+    fn tool_create_skill_pre_execution_rejections_are_denied() {
+        let body = manage_src_before_tests();
+        let body = body
+            .split_once("pub async fn tool_create_skill(")
+            .expect("找不到 tool_create_skill")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("tool_create_skill 应以顶格 } 收尾");
+        let admission = body
+            .split_once("prepare_created_meta(&name, &content)")
+            .expect("tool_create_skill 必须走准入核")
+            .1
+            .split(';')
+            .next()
+            .expect("准入核分支应有分号收尾");
+        assert!(
+            admission.contains("ToolResult::denied"),
+            "准入核拒绝（宽度闸 / 危险词）必须走 denied：{admission}"
+        );
+        assert_eq!(
+            body.matches("ToolResult::error(").count(),
+            1,
+            "create_skill 里除落盘执行失败外不该再有 error——前置拒绝都是 denied：{body}"
         );
     }
 

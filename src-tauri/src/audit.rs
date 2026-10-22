@@ -767,6 +767,23 @@ pub(crate) static BOT_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::ne
 mod tests {
     use super::*;
 
+    /// 工具状态 → 审计级别：被拒是预期内控制流（闸拦下 / 用户点了否 / 预算触顶），
+    /// 记 ERROR 会把「闸拦下」写进 error.log，让正常控制流看起来像故障。
+    #[test]
+    fn tool_status_denied_is_warn_and_error_is_error() {
+        use crate::bot::registry::ToolStatus;
+        assert_eq!(
+            AuditLevel::from_tool_status(ToolStatus::Denied),
+            AuditLevel::Warn,
+            "被闸拦下不是故障：级别必须是 WARN"
+        );
+        assert_eq!(
+            AuditLevel::from_tool_status(ToolStatus::Error),
+            AuditLevel::Error,
+            "执行报错才是 ERROR"
+        );
+    }
+
     // ── 工具状态守卫：失败/拒绝语义的文案不得构造 ok / warn ──
 
     /// 构造器名（源码里以字面量出现，扫描时按「落在字符串/注释里」跳过——
