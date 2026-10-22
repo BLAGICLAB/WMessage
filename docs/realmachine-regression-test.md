@@ -616,7 +616,7 @@ host pids        = 12345
 > **⚠️ Windows 探针的输出是英文的。** `regression-probe.ps1` 必须是**纯 ASCII**（PowerShell 5.1 在无 BOM 时按 ANSI/GBK 解码，中文字面量会把引号吃掉、整段解析失败），所以它打印的是 `[ok] no orphan service processes`；`.sh` 那份才打印中文「✓ 没有孤儿服务进程」。**别照着中文那句去找，找不到会误判成 FAIL。**
 
 > **🔑 必须先确认「这次真的是崩溃」**——否则测的是正常退出清理，不是 Job Object。
-> `app_exit_cleanup` 审计写在 `ExitRequested` 处理器里（`lib.rs:254-262`），**只有正常退出才写**。
+> `app_exit_cleanup` 审计写在 `ExitRequested` 处理器里（`lib.rs:308-334`），**只有正常退出才写**。
 > ```powershell
 > Get-Content "$PKG\bot.log" -Encoding UTF8 | Select-String "app_exit_cleanup" | Select-Object -Last 3
 > ```
@@ -740,7 +740,7 @@ UI 自动化未开启：请到 设置页 打开「允许机器人操作桌面界
 - PASS：起得来时正常渲染，且画布容器可 Tab 聚焦、方向键在节点间移动游标、Enter 选中、Esc 清除选择。
 - FAIL：白屏 / 页面崩了 / 键盘游标在降级时不可用。
 
-> **✅ 降级路径已代码核对（2026-10-22）**：`GraphCanvas.tsx` 里 `kbApi.current = {…}`（键盘游标 API）在 **362 行**，而 WebGL2 探测在 **392-409 行**——**键盘先挂好、渲染器后探测**，catch 分支只追加一句说明并返回（`kbApi.current = null` 在**卸载清理**里，不在降级当场）。键盘处理是 React 事件绑定（`:1166` `onKeyDown`），不受 catch 影响。→ **「键盘游标降级时仍可用」这条断言成立。**
+> **✅ 降级路径已代码核对（2026-10-22）**：`GraphCanvas.tsx` 里 `kbApi.current = {…}`（键盘游标 API）在 **362 行**，而 WebGL2 探测在 **392-409 行**——**键盘先挂好、渲染器后探测**，catch 分支只追加一句说明并返回（`kbApi.current = null` 在**卸载清理**里，不在降级当场）。键盘处理是 React 事件绑定（`:1180` `onKeyDown`），不受 catch 影响。→ **「键盘游标降级时仍可用」这条断言成立。**
 >
 > **⚠️ 这一项要人眼看，不要让机器人代劳。** 机器人**自己的界面是 WebView2**，UIAutomation 看不到 DOM（2026-10-22 实测：`ui_inspect` 只给出 16 个「窗格 / 区域」壳控件，导航项一个都没有）——所以「让机器人点开图谱页」得退回 `screenshot` + `run_python` 模拟点击，**既慢又绕开了 UI 闸**（见附录 D-9）。
 > **正确做法**：你自己点开侧边栏「图谱」页，**用眼睛看画布**，再按上面三条判据判。
@@ -2517,7 +2517,7 @@ let status = std::process::Command::new("powershell")
 
 **没有设 `CREATE_NO_WINDOW`**。Windows 上 GUI 程序拉起控制台程序，默认会给它**新建一个控制台窗口**——于是每截一张图闪一个。
 
-**为什么是「反复弹」**：UI 动作要「前后各一张留痕」（`bot_ui.rs:191-207` 的 `trace_shot` → `bot_desktop::capture_to`）→ **一次 UI 操作 = 2 次截屏 = 2 个窗口**。`screenshot` 工具本身也走同一条路。
+**为什么是「反复弹」**：UI 动作要「前后各一张留痕」（`bot_ui.rs:335-353` 的 `trace_shot` → `bot_desktop::capture_to`）→ **一次 UI 操作 = 2 次截屏 = 2 个窗口**。`screenshot` 工具本身也走同一条路。
 
 **这在本仓库是个「漏了一处」，不是「没人知道」**——`CREATE_NO_WINDOW` 在**其它四个**拉起点全都设了：
 
@@ -2569,7 +2569,7 @@ tool: run_python | args: {"code":"import ctypes … SetCursorPos(1370,321) … m
 
 它**没有**用 `ui_click`，而是用 `run_python` 调 Win32 API 模拟了一次真实的鼠标点击。
 
-**为什么值得记**：UI 自动化的四道闸里，**第 3 道（危险动作确认：点「发送 / 提交 / 支付 / 删除」前弹窗）和第 4 道（敏感控件禁打：密码 / 验证码不代填）都只实现在 `ui_click` / `ui_type` 内部**（`bot_ui.rs:390` / `:471` / `:475`）。模型换成 `run_python` 直接发 `mouse_event`，这两道闸**一次都不会触发**——点「发送」不会弹确认、往密码框里打字不会被拦。
+**为什么值得记**：UI 自动化的四道闸里，**第 3 道（危险动作确认：点「发送 / 提交 / 支付 / 删除」前弹窗）和第 4 道（敏感控件禁打：密码 / 验证码不代填）都只实现在 `ui_click` / `ui_type` 内部**（闸的定义在 `bot_ui.rs:152` 危险动作闸、`:257` 敏感控件闸；调用点在 `ui_click` 的 `:550`、`ui_type` 的 `:638` 与 `:660`）。模型换成 `run_python` 直接发 `mouse_event`，这两道闸**一次都不会触发**——点「发送」不会弹确认、往密码框里打字不会被拦。
 
 **为什么定「观察级」而不是真缺陷**：
 
