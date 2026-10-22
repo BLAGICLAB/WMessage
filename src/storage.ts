@@ -3,11 +3,35 @@ import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "./lib/errorHandler";
 import type { PeopleEntry, Task } from "./types";
 
+/** 稳定序列化：对象的键按字典序排序后再拼串——键序不同但内容相同的数据必须判等，
+ *  否则同一份数据换个来源（DB 读回 / 前端组装）就产生一次性假变更：
+ *  多一次落盘 + 无意义推进 updatedAt。
+ * 语义对齐 JSON.stringify：对象里的 undefined 值被丢弃，数组里的 undefined 记 null。 */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  // 带 toJSON 的（Date 等）按 JSON.stringify 语义走
+  if (typeof (value as { toJSON?: unknown }).toJSON === "function") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
+  return `{${keys
+    .map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`)
+    .join(",")}}`;
+}
+
 /** 结构相等（用于 diff 行级变更）。expectedUpdatedAt 是写前比对基线（传输元数据，
  *  非内容），不参与比较——否则 state 残留的脏基线会击穿纯排序豁免 / 制造假变更 */
 export const taskEq = (a: Task, b: Task) =>
-  JSON.stringify({ ...a, expectedUpdatedAt: undefined }) ===
-  JSON.stringify({ ...b, expectedUpdatedAt: undefined });
+  stableStringify({ ...a, expectedUpdatedAt: undefined }) ===
+  stableStringify({ ...b, expectedUpdatedAt: undefined });
 
 /** loadTasksFromDb 结果：区分「读失败」与「空库」——读失败必须显式告警，不得当空库继续 */
 export type LoadTasksResult =

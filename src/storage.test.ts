@@ -10,6 +10,7 @@ import {
   importTasksFromFile,
   diffTaskRows,
   assignInsertOrder,
+  taskEq,
 } from "./storage";
 import type { Task, WorkspaceItem } from "./types";
 
@@ -294,8 +295,7 @@ describe("loadWorkspaceFromDb 判别式结果", () => {
 });
 
 // diffTaskRows 不得就地突变 caller 的 next 行（React state 引用相等假设）。
-describe("diffTaskRows 不突变输入", () => {
-  const base: Task[] = [
+describe("diffTaskRows 不突变输入", () => {  const base: Task[] = [
     { id: "t1", title: "a", column: "todo", updatedAt: 1000 },
     { id: "t2", title: "b", column: "todo", updatedAt: 1000 },
   ];
@@ -322,5 +322,58 @@ describe("diffTaskRows 不突变输入", () => {
     expect(next[0].expectedUpdatedAt).toBeUndefined();
     expect(next[1].expectedUpdatedAt).toBeUndefined();
     expect(upserts[0]).not.toBe(next[0]);
+  });
+});
+
+// taskEq 用 JSON.stringify 全串比较时键序敏感：同一份数据换个来源
+// （DB 读回 vs 前端组装）键序不同就判成「变了」→ 一次性假变更落盘 +
+// 无意义推进 updatedAt。比较必须与键序无关。
+describe("taskEq 键序无关", () => {
+  it("同一份数据键序不同判为相等", () => {
+    const a = { id: "t1", title: "甲", column: "todo" } as Task;
+    const b = { column: "todo", title: "甲", id: "t1" } as Task;
+    expect(taskEq(a, b)).toBe(true);
+  });
+
+  it("嵌套对象/数组的键序不同同样判为相等", () => {
+    const a = {
+      id: "t1",
+      title: "甲",
+      column: "todo",
+      files: [{ path: "a.png", isDir: false }],
+      subtasks: [{ id: "s1", title: "子", done: false }],
+    } as unknown as Task;
+    const b = {
+      subtasks: [{ title: "子", done: false, id: "s1" }],
+      files: [{ isDir: false, path: "a.png" }],
+      column: "todo",
+      title: "甲",
+      id: "t1",
+    } as unknown as Task;
+    expect(taskEq(a, b)).toBe(true);
+  });
+
+  it("内容真变了仍判不等", () => {
+    const a = { id: "t1", title: "甲", column: "todo" } as Task;
+    const b = { id: "t1", title: "乙", column: "todo" } as Task;
+    expect(taskEq(a, b)).toBe(false);
+  });
+
+  it("expectedUpdatedAt 差异不参与比较（传输元数据非内容）", () => {
+    const a = { id: "t1", title: "甲", column: "todo", expectedUpdatedAt: 1 } as Task;
+    const b = { id: "t1", title: "甲", column: "todo", expectedUpdatedAt: 2 } as Task;
+    expect(taskEq(a, b)).toBe(true);
+  });
+
+  it("键序不同的同一行不再进 upserts（不再产生一次性假变更）", () => {
+    const prev = [
+      { id: "t1", title: "甲", column: "todo", updatedAt: 1000 },
+    ] as Task[];
+    const next = [
+      { column: "todo", updatedAt: 1000, title: "甲", id: "t1" },
+    ] as Task[];
+    const { upserts, deletes } = diffTaskRows(prev, next, 999999);
+    expect(upserts).toHaveLength(0);
+    expect(deletes).toEqual([]);
   });
 });
