@@ -1095,6 +1095,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-9 | 已修 | 架构文档开头散文数字改为实测值 + 脚本新增散文数字校验 + 12 处行数标注刷新 |
 | P1-10 | 已修 | SPEC 附录口径改成真话（v1 快照只读 / 机制详录活节并立真标题）|
 | P1-11 | 已修 | 绑定内核收成一份（`taskFiles::applyBinding` + `lib/useTaskFiles.ts` hook）：卡片 / 详情面板 / 上下文栏三处共用，合并基线一律取最新 files |
+| P1-3 | 已修 | 服务层父进程看门狗（unix 管道 EOF 助手 + Windows `KILL_ON_JOB_CLOSE` job）+ `RunEvent::Exit` 兜底 |
 
 ### P0-1 的落地口径
 
@@ -1538,4 +1539,48 @@ Rust `spawn_blocking` 弹框，聊天附件在用；卡片与详情面板走 web
 
 **已知残留**：三处绑定的**选文件通道**仍未统一（webview `dialog.open` vs
 Rust `pick_files_dialog`）；本项统一的是「合并 / 提示 / 落库」这一段。
+
+### P1-3 的落地口径
+
+**这一条原先不在 §六 的优先级表里**（审计正文有、优先级表漏了），本轮补在
+最后落地。
+
+**为什么没按审计建议的 `prctl(PR_SET_PDEATHSIG)` 做**：
+一是它是 **Linux 专有**，macOS 根本没有——照建议做等于用户主平台一点没修到；
+二是它按「父**线程**」算：受管服务是工具链用 **blocking 线程池** spawn 的
+（`bot/tools.rs` → `spawn_blocking_map` → `do_start`），而 tokio 的 blocking
+线程空闲一会儿就会退休——线程一退，服务就被内核 SIGTERM 掉。看门狗反倒成了
+杀手。所以走「管道 EOF」这条跨平台的路。
+
+**unix（macOS / Linux）**：每个服务起一个看门狗助手（`/bin/sh`，自成进程组）：
+- 宿主持有管道**写端**，助手的 stdin 是**读端**；
+- 宿主一旦非正常死亡（SIGKILL / OOM / 崩溃），内核关闭它的所有 fd → 写端随之
+  关闭 → 助手的 `read` 收到 EOF → 它 `kill -TERM -<pgid>` 收掉服务整组；
+- 管道两端都带 `FD_CLOEXEC`：助手绝不能继承写端（继承了 EOF 永远不来，
+  看门狗就是个摆设）；
+- 助手自成进程组：收它时不会连带宿主所在的组（宿主可能在别人的组里）；
+- 服务停止 / 自己退出 → 看门狗从登记表移除 → 助手被 kill + **wait** 回收
+  （不 wait 会留僵尸：助手是我们的子进程）。
+
+**Windows**：复用沙箱层那套 Job Object（同一份实现，`py::runtime::win_job`），
+加一个只要 `KILL_ON_JOB_CLOSE` 的构造——长驻 dev server 不该被内存限额误杀，
+但宿主崩了必须跟着走：把服务进程塞进 job，宿主一死 job 句柄随进程关闭，内核
+杀掉整组。
+
+**退出兜底**：`lib.rs` 原来只在 `RunEvent::ExitRequested` 清理——那条路不是
+每次都走（托盘直接退出、启动期失败等只发 `Exit`）。现在 `RunEvent::Exit`
+也收一次，用一次性门闩保证「两条路只清一次」（重复清理会把已停的服务再报
+一遍、审计也写两条）。
+
+**测试**（`bot/services/watchdog.rs`，macOS/Linux 上可实测）：关掉写端
+（= 宿主死亡）→ 服务进程组被收掉；宿主还活着 → 看门狗**不许**动服务；
+登记表的 attach / disarm 配平。
+
+判据上踩过一个坑：判「服务死了」**不能**用 `pid_exists`——服务是本进程的子
+进程，被杀后未回收前是**僵尸**，而 `kill(pid, 0)` 对僵尸照样返回成功，会把
+「已经死了」读成「还活着」。必须用 `try_wait()`（它顺手回收）。
+
+**已知残留**：Windows 侧的 Job Object 路径**只做了交叉编译验证，行为未实测**
+（本机无 Windows）；unix 侧依赖 `/bin/sh`（macOS / 主流 Linux 都有；缺了则
+看门狗装不上，服务照跑，只是不带这层兜底——装不上不拦启动）。
 

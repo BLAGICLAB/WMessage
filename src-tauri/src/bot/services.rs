@@ -31,6 +31,8 @@ use crate::bot::procs::{
     ResourceSample,
 };
 
+mod watchdog;
+
 // ── 常量 ──
 
 /// 同时存活的受管服务数上限。超限直接拒绝启动。
@@ -1176,6 +1178,11 @@ pub(crate) fn do_start<R: tauri::Runtime>(
         ],
     );
 
+    // 宿主死亡看门狗：宿主非正常死亡（崩溃 / 被强杀 / OOM）时，服务进程组必须
+    // 跟着走——否则留下的是宿主管不到的孤儿（还占着端口，下次启动直接撞端口闸）。
+    // 装不上不拦启动：看门狗是兜底，不是服务能不能跑的前提。
+    watchdog::attach(&id, pgid, &child);
+
     // watcher 线程：wait() 回收子进程并把状态转 Exited。不同步 wait 会留僵尸。
     {
         let entry = entry.clone();
@@ -1187,6 +1194,8 @@ pub(crate) fn do_start<R: tauri::Runtime>(
             guard.state = ServiceState::Exited;
             guard.exited_at_ms = Some(crate::db::now_ms());
             guard.exit_code = status.ok().and_then(|s| s.code());
+            // 服务自己退了 → 看门狗助手没有存在的意义了，收掉（别留空转的 sh）
+            watchdog::disarm(&watch_id);
             let exit_code = guard
                 .exit_code
                 .map(|c| c.to_string())
@@ -1545,6 +1554,8 @@ pub(crate) fn stop_entry<R: tauri::Runtime>(
         g.state = ServiceState::Exited;
         g.exited_at_ms = Some(crate::db::now_ms());
     }
+    // 服务停了 → 看门狗助手收掉（别留一个空转的 sh 进程）
+    watchdog::disarm(&id);
 
     crate::audit::write_event(
         app,

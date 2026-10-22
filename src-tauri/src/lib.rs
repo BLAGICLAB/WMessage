@@ -196,6 +196,20 @@ fn cleanup_on_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     cleanup_on_exit_with(app, bot_py::kill_all_py_children);
 }
 
+/// 退出清理只跑一次。
+///
+/// 正常退出**两条路都会到**：先 `ExitRequested`（可被拦）后 `Exit`（真退出）。
+/// 清理不是幂等无害的——重复跑会把「已停的服务」再报一遍、审计也写两条。
+/// 用一次性门闩把两条路合成一次。
+static EXIT_CLEANED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn cleanup_on_exit_once<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if EXIT_CLEANED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    cleanup_on_exit(app);
+}
+
 /// 退出时等在途执行实例收尾的宽限（StopGuard 轮询点收到标志后
 /// 自行收尾；LLM 流卡住时最坏等满即放弃，进程退出优先）
 const EXIT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -772,10 +786,16 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 // 先清理资源（API server / 活动 Skill / 在途 Python 子进程），
                 // 再销毁主窗口 —— 只 destroy 的话，子进程与服务线程全部变孤儿
-                cleanup_on_exit(app);
+                cleanup_on_exit_once(app);
                 if let Some(main) = app.get_webview_window("main") {
                     let _ = main.destroy();
                 }
+            }
+            // 兜底：ExitRequested 不是每次都会走到（托盘直接退出、启动期失败、
+            // 某些退出路径只发 Exit）——真退出这一刻必须再收一次，否则受管服务 /
+            // 在途 Python / MCP 子进程全部变孤儿（宿主管不到，还占着端口）。
+            if let tauri::RunEvent::Exit = event {
+                cleanup_on_exit_once(app);
             }
         });
 }

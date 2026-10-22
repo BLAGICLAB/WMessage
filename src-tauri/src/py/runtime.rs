@@ -64,7 +64,7 @@ pub fn cpu_limit_secs(timeout_secs: u64) -> u64 {
 }
 
 #[cfg(windows)]
-mod win_job {
+pub(crate) mod win_job {
     use std::process::Child;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -76,6 +76,34 @@ mod win_job {
     };
 
     pub struct JobGuard(HANDLE);
+
+    // SAFETY: HANDLE 是内核对象句柄（不透明整数），不绑定线程也不绑定进程；
+    // 换持有者只是换了谁负责 CloseHandle，句柄上的操作
+    // （SetInformation / Assign / Terminate / CloseHandle）本身都是线程安全的。
+    unsafe impl Send for JobGuard {}
+
+    /// 只要「宿主一死就杀光」这一条（不限内存 / CPU）——受管服务层用：
+    /// 长驻 dev server 不该被内存限额误杀，但宿主崩了必须跟着走。
+    pub fn create_kill_on_close() -> Option<JobGuard> {
+        // SAFETY: 同 create()：CreateJobObjectW 失败返回 None；
+        // SetInformationJobObject 失败时 CloseHandle 兜底，不泄漏 HANDLE。
+        unsafe {
+            let job = CreateJobObjectW(None, PCWSTR::null()).ok()?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let r = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of_val(&info) as u32,
+            );
+            if r.is_err() {
+                let _ = CloseHandle(job);
+                return None;
+            }
+            Some(JobGuard(job))
+        }
+    }
 
     pub fn create(mem_bytes: u64, cpu_secs: u64) -> Option<JobGuard> {
         // SAFETY: Win32 Job Object FFI 块。

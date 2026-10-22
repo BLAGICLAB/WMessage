@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 155 个文件、约 11.2 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 157 个文件、约 11.3 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1097)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1117)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
@@ -145,6 +145,11 @@ src-tauri/src/
 │   │                            mcp_status（回 builtin 标志 + 子进程 pid/内存/CPU/运行时长/
 │   │                            监听 socket）、mcp_server_tools（写路径 CONFIG_WRITE_LOCK 全程持锁；
 │   │                            内置条目 delete 拦截）
+│   ├── bot/mcp/stdio_transport.rs  stdio 子进程传输（读侧行长上限 + 子进程生命周期托管）：
+│   │                            LineCappedReader 每行最多转发 1MB（超出的丢弃，rmcp 的
+│   │                            read_until 无上限 → 外部服务器一条长行就能撑爆宿主）；
+│   │                            CappedChildProcess 托管子进程（关 stdin → 3s 优雅退出 →
+│   │                            超时强杀），不依赖 rmcp 的 TokioChildProcess
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
@@ -160,10 +165,10 @@ src-tauri/src/
 │                        **Windows 没有**——现有进程快照层在 Windows 上本就退化）
 │                        + 平台能力声明 listening_supported（Windows 为 false——
 │                        判定层据此返回 Unsupported 而非 Ok）
-│   └── bot/procs/tests.rs (480)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
+│   └── bot/procs/tests.rs (483)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
 │                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
 │                        + 真子进程监听端口集成测试（验平台路径真能读到）
-├── bot/services.rs (2127) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (2138) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
@@ -177,6 +182,9 @@ src-tauri/src/
 │                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
 │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
 │                        + 服务告警进通知中心（资源告警 / 端口违规，条件消失自动撤收）
+│   ├── bot/services/watchdog.rs (294)  服务层「宿主死了服务也得死」看门狗：
+│   │                            unix 用管道 EOF（宿主一死 → 写端关闭 → 助手 TERM 服务整组）；
+│   │                            Windows 复用 py/runtime.rs 的 Job Object（KILL_ON_JOB_CLOSE）
 │   └── bot/services/tests.rs (1000)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
 │                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
 │                        资源告警判定（阈值 / 持续 / 去重）、
@@ -277,7 +285,7 @@ src-tauri/src/
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
 │                        软链既不跟随也不复制
 ├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
-├── bot_py.rs (1365)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
+├── bot_py.rs (1367)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网
 ├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +
@@ -553,7 +561,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 155 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 157 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 对拍：每条必须指向真实文件，每个源文件必须在本节列出。新增模块请同步登记。
 
 ### 顶层
@@ -639,6 +647,7 @@ flowchart TD
 - `bot/mcp/mod.rs`
 - `bot/mcp/mount.rs`
 - `bot/mcp/secrets.rs`
+- `bot/mcp/stdio_transport.rs`
 - `bot/params.rs`
 - `bot/procs.rs`
 - `bot/procs/tests.rs`
@@ -646,6 +655,7 @@ flowchart TD
 - `bot/registry.rs`
 - `bot/services.rs`
 - `bot/services/tests.rs`
+- `bot/services/watchdog.rs`
 - `bot/tags_consolidate.rs`
 - `bot/tools.rs`
 
