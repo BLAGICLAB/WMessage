@@ -98,18 +98,42 @@ pub fn run(
             dir.display()
         ));
     }
+    // 新运行开始前先扫陈旧行：上一轮崩在写回之前的运行行会永远停在 running
+    sweep_stale_runs(app_handle);
     let run_id = {
         let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
         db::record_app_run(&conn, &app.id, now_ms, "running").map_err(|e| e.to_string())?
     };
+    let started = Instant::now();
     // 产物目录先建实：脚本经 argv[2] 直接写这里，不用自己拼 run_id（它无从得知）
     let output_dir = dir.join("output").join(run_id.to_string());
-    std::fs::create_dir_all(&output_dir).map_err(|e| format!("建产物目录失败：{e}"))?;
-    let script_text =
-        std::fs::read_to_string(&script_abs).map_err(|e| format!("读脚本失败：{e}"))?;
+    // 失败路径必须把行落回终态：停在 running 的行在程序页上永远是「运行中」，
+    // 用户以为程序还在跑，实际早就没影了。
+    if let Err(e) = std::fs::create_dir_all(&output_dir) {
+        mark_run_failed(
+            app_handle,
+            run_id,
+            started.elapsed().as_millis() as i64,
+            "failed",
+            &format!("建产物目录失败：{e}"),
+        );
+        return Err(format!("建产物目录失败：{e}"));
+    }
+    let script_text = match std::fs::read_to_string(&script_abs) {
+        Ok(t) => t,
+        Err(e) => {
+            mark_run_failed(
+                app_handle,
+                run_id,
+                started.elapsed().as_millis() as i64,
+                "failed",
+                &format!("读脚本失败：{e}"),
+            );
+            return Err(format!("读脚本失败：{e}"));
+        }
+    };
     let params_owned = params.map(|s| s.to_string());
     let params_for_py = params_owned.as_deref();
-    let started = Instant::now();
     // 契约：argv[1] = app 目录绝对路径，argv[2] = 本次运行产物目录。
     // run_python 的子进程 cwd 在临时 run 目录（脚本源码被拷过去执行），
     // 脚本一律用 argv[1] 解析 data/ input/，产物写 argv[2]
@@ -135,18 +159,14 @@ pub fn run(
         // 如实上报：超时 / 停止 / 启动失败是三回事——超时那次程序明明跑起来了，
         // 一律记成「运行启动失败」就是说谎。状态与文案都按失败种类分。
         let (status, summary) = failed_run_report(&e);
-        let conn = db::open_db(app_handle).ok();
-        if let Some(conn) = conn {
-            let _ = db::finish_app_run(
-                &conn,
-                run_id,
-                db::now_ms(),
-                // 失败也记真实耗时：被超时杀掉的这次跑了多久，是用户最该看见的数字
-                started.elapsed().as_millis() as i64,
-                status,
-                Some(&summary),
-            );
-        }
+        mark_run_failed(
+            app_handle,
+            run_id,
+            // 失败也记真实耗时：被超时杀掉的这次跑了多久，是用户最该看见的数字
+            started.elapsed().as_millis() as i64,
+            status,
+            &summary,
+        );
         summary
     })?;
     let duration_ms = started.elapsed().as_millis();
@@ -173,15 +193,18 @@ pub fn run(
     let summary = bound_summary(summary, run_id);
     {
         let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
-        db::finish_app_run(
+        if let Err(e) = db::finish_app_run(
             &conn,
             run_id,
             now_ms.saturating_add(duration_ms as i64),
             duration_ms as i64,
             status,
             summary.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
+        ) {
+            // 行留在 running：清扫会按时间阈值把它标成失败（用户看到「中断」而不是「还在跑」）
+            eprintln!("[apps] 回写运行结果失败，行暂留 running（清扫兜底）：{e}");
+            return Err(e.to_string());
+        }
     }
     Ok(AppRunResult {
         run_id,
@@ -195,6 +218,80 @@ pub fn run(
         truncated,
         duration_ms,
     })
+}
+
+/// 失败态回写（DB 层，纯函数便于单测）：把 running 行改成终态。
+fn finish_run_failed(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+    duration_ms: i64,
+    now_ms: i64,
+    status: &str,
+    summary: &str,
+) -> Result<(), String> {
+    db::finish_app_run(conn, run_id, now_ms, duration_ms, status, Some(summary))
+}
+
+/// 回写失败态并留痕：所有失败路径都要走这里——
+/// 停在 running 的行在程序页上永远是「运行中」，用户以为程序还在跑。
+/// DB 写失败不吞（留痕）：行会由清扫兜底标成失败。
+fn mark_run_failed(
+    app_handle: &AppHandle,
+    run_id: i64,
+    duration_ms: i64,
+    status: &str,
+    summary: &str,
+) {
+    let conn = match db::open_db(app_handle) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[apps] 打开库失败，运行行暂留 running（清扫兜底）：{e}");
+            return;
+        }
+    };
+    if let Err(e) = finish_run_failed(&conn, run_id, duration_ms, db::now_ms(), status, summary) {
+        eprintln!("[apps] 回写失败态失败，运行行暂留 running（清扫兜底）：{e}");
+    }
+}
+
+/// 陈旧 running 行的判定阈值：超过这个时长仍停在 running 的行，
+/// 它的进程早就不在了（崩在写回之前）——按中断处理。
+/// 取 py::runtime::MAX_TIMEOUT_SECS（30 分钟）的四倍：再长的运行也早该结束了。
+const STALE_RUN_AGE_MS: i64 = 2 * 60 * 60 * 1000;
+
+/// 清扫陈旧的 running 行（僵尸行，纯函数便于单测）：
+/// 进程崩在写回之前时，行会永远停在 running，程序页上显示「运行中」。
+/// 只动 started_at 早于阈值的 running 行；已终态的行不碰。
+fn sweep_stale_runs_conn(
+    conn: &rusqlite::Connection,
+    now_ms: i64,
+    age_ms: i64,
+) -> Result<usize, String> {
+    let cutoff = now_ms - age_ms;
+    conn.execute(
+        "UPDATE app_runs
+            SET finished_at = ?1, duration_ms = ?1 - started_at, status = 'failed', summary = ?2
+          WHERE status = 'running' AND started_at < ?3",
+        rusqlite::params![now_ms, "进程中断（未回写结果）", cutoff],
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 清扫入口（开库 + 留痕）。调用点：程序页历史读取前、新运行开始前——
+/// 程序页的历史列表是这些行的唯一读出口，扫完用户看到的就是真实状态。
+pub(crate) fn sweep_stale_runs(app_handle: &AppHandle) {
+    let conn = match db::open_db(app_handle) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[apps] 清扫陈旧运行行失败（开库失败）：{e}");
+            return;
+        }
+    };
+    match sweep_stale_runs_conn(&conn, db::now_ms(), STALE_RUN_AGE_MS) {
+        Ok(n) if n > 0 => eprintln!("[apps] 清扫陈旧运行行：{n} 行由 running 标成失败"),
+        Ok(_) => {}
+        Err(e) => eprintln!("[apps] 清扫陈旧运行行失败：{e}"),
+    }
 }
 
 /// 失败种类 → （app_runs 状态, 人读摘要）。
@@ -216,6 +313,9 @@ pub fn recent_runs(
     app_id: &str,
     limit: i64,
 ) -> Result<Vec<AppRun>, String> {
+    // 读之前先扫陈旧行：崩在写回之前的运行行会永远停在 running，
+    // 程序页显示成「运行中」——用户看到的必须是真实状态
+    sweep_stale_runs(app_handle);
     let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
     db::list_app_runs(&conn, app_id, limit)
 }
@@ -383,5 +483,63 @@ mod tests {
             msg: "子进程异常终止（被信号杀死，无退出码）".into(),
         };
         assert_eq!(failed_run_report(&runtime_err).0, "failed");
+    }
+
+    // ── 运行行必须落终态（僵尸 running 行）──
+
+    fn runs_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::apps::APP_RUNS_DDL).unwrap();
+        conn
+    }
+
+    fn insert_run(conn: &rusqlite::Connection, id: i64, started_at: i64, status: &str) {
+        conn.execute(
+            "INSERT INTO app_runs (id, app_id, started_at, status) VALUES (?1, 'app1', ?2, ?3)",
+            rusqlite::params![id, started_at, status],
+        )
+        .unwrap();
+    }
+
+    fn run_status(conn: &rusqlite::Connection, id: i64) -> (String, Option<i64>) {
+        conn.query_row(
+            "SELECT status, finished_at FROM app_runs WHERE id = ?1",
+            [id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)),
+        )
+        .unwrap()
+    }
+
+    /// 失败回写：行必须从 running 落成终态（否则程序页永远显示「运行中」）。
+    #[test]
+    fn finish_run_failed_marks_terminal_status() {
+        let conn = runs_db();
+        insert_run(&conn, 1, 1000, "running");
+        finish_run_failed(&conn, 1, 250, 2000, "failed", "建产物目录失败：权限").unwrap();
+        let (status, finished_at) = run_status(&conn, 1);
+        assert_eq!(status, "failed");
+        assert_eq!(finished_at, Some(2000));
+    }
+
+    /// 清扫：只把过了阈值的 running 行标失败；刚起的行与已终态的行不碰。
+    #[test]
+    fn sweep_stale_runs_only_marks_old_running_rows() {
+        let conn = runs_db();
+        let now = 10_000_000i64;
+        insert_run(&conn, 1, now - 5_000, "running"); // 刚起：仍在跑
+        insert_run(&conn, 2, now - 3 * 60 * 60 * 1000, "running"); // 陈旧：僵尸行
+        insert_run(&conn, 3, now - 3 * 60 * 60 * 1000, "ok"); // 已终态
+        let n = sweep_stale_runs_conn(&conn, now, 60 * 60 * 1000).unwrap();
+        assert_eq!(n, 1, "只应扫掉 1 个僵尸行");
+        assert_eq!(run_status(&conn, 1).0, "running");
+        assert_eq!(run_status(&conn, 2).0, "failed");
+        assert_eq!(run_status(&conn, 3).0, "ok");
+        // 僵尸行的耗时按「跑到清扫时」算
+        let dur: i64 = conn
+            .query_row("SELECT duration_ms FROM app_runs WHERE id = 2", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(dur, 3 * 60 * 60 * 1000);
     }
 }

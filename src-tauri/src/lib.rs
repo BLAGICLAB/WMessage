@@ -411,6 +411,14 @@ pub fn run() {
             app.manage(api_server::ApiState::default());
             // 全局可变状态容器（单一入口）；产物登记表已迁入，其余表逐张迁移
             app.manage(app_state::AppState::default());
+            // 程序运行的僵尸行清扫：进程上次被杀时 app_runs 的 running 行没人回写，
+            // 状态永远停在 running。启动即扫一遍，把陈旧行标成失败。
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    apps::sweep_stale_runs(&handle);
+                });
+            }
             // MCP 宿主（阶段 2）：进程级连接管理器 + 启动即连启用的服务器
             {
                 bot::mcp::manager::shared();
