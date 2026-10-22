@@ -872,6 +872,29 @@ mod tests {
         assert!(err.to_string().contains("已被其他"), "实际：{err}");
     }
 
+    /// 实机卡片 S10 的前提：两台**显示名不同、净化后前缀相同**的服务器必须能共存。
+    ///
+    /// 名称唯一闸比的是**名字本身**（大小写不敏感），不是净化后的工具名前缀：
+    /// `p x` 与 `p.x` 名字不同、都存得进去，而 `tool_prefix` 把两者的前缀都归成 `p_x`
+    /// → 它们派生出**同一个** base 函数名（消歧是挂载层的事）。
+    ///
+    /// 卡片若按「同名」写就永远建不出这个场景（实机文档附录 D-14）。这条用例把
+    /// **两头**都钉住：同名仍被拒、不同名同前缀仍放行——任一边被改，场景就没了。
+    #[test]
+    fn upsert_allows_distinct_names_sharing_a_tool_prefix() {
+        let mut cfg = BotConfig::default();
+        let a = stdio_server("p x");
+        let b = stdio_server("p.x");
+        upsert_in_config(&mut cfg, a.clone()).unwrap();
+        upsert_in_config(&mut cfg, b.clone()).unwrap();
+        assert_eq!(cfg.mcp_servers.as_ref().unwrap().len(), 2);
+        // 前缀撞上 → base 函数名撞上（挂载层再消歧）
+        assert_eq!(tool_prefix(&a.name), "p_x");
+        assert_eq!(tool_prefix(&b.name), "p_x");
+        assert_eq!(mcp_tool_name(&a.name, "echo"), "mcp_p_x_echo");
+        assert_eq!(mcp_tool_name(&b.name, "echo"), "mcp_p_x_echo");
+    }
+
     #[test]
     fn upsert_normalizes_before_validate_and_store() {
         let mut cfg = BotConfig::default();
