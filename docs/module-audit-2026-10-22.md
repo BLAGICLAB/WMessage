@@ -421,18 +421,161 @@ audit 中心转义不可绕+error.log 镜像独立+防递归纪律；paths 便�
 
 ---
 
-## 批 4 · 已审模块复验（M2 / M6 / M7 / M8 / M9）
+### 10-21 审计 23 项修复逐条核验：**23/23 在位，0 削弱、0 回退、0 找不到**
 
-（待跑）
+逐项读到修复代码+测试锁（22 项有测试或扫描守卫；P1-10 为纯文档口径项无脚本锁、P2-1 的事件
+发射仅间接锁 effective_output_cap——两者与报告口径一致无漂移）。P0-1 三点核验全在位：intents
+零宽度三道闸（intent_router.rs:377）、确认窗展示 intents+mode（manage.rs:679）、三条装入入口
+收敛 validate_created_meta。后续提交无削弱（2506fd32 是加固方向；4184513b 触碰文件但修复点原样在位）。
 
-## 批 4 · 已审模块复验（M2 / M6 / M7 / M8 / M9）
+### M2/M6/M7 盲区抽查（全部 P3）
 
-（待跑）
+- **[P3] Paused 技能 run 无超时**：等确认的用户永不响应 → 同名技能跨会话被无限期占位
+  （bot_skills/runtime.rs:686 只对 Running 查 timeout；Paused 非终态不清扫）。
+- **[P3] MCP 工具挂载只有单服务器/单 schema 上限，跨服务器总量无闸**（manager.rs:143-156
+  128 条/台、mount.rs:61 8KB/条；mcp_tools_json_body 拼接处无总量钳制）。
+- **[P3] Down 状态服务器懒重连无退避**：每次工具调用白付一次 10s 连接超时
+  （manager.rs:261-297；建议 Down 记 last_attempt_ms 短路冷却）。
+- **[P3] stdio 超长行截断对调用方不可见**：被截的恰是合法 JSON-RPC 响应时挂起的 call 只能等
+  超时；截断只一次性 eprintln，不进 stderr 环形缓冲不进审计（stdio_transport.rs:91-97）。
+- **[P3-low]** vars.rs params 值会被第二遍 step 变量扫描再展开一层（vars.rs:118-132）；
+  Anthropic tool_result 的 is_error 靠文本启发式（bot_anthropic.rs:130-132，注释自述约束）；
+  compaction 预算只统计字符串 content，工具附图的数组 content 不计入（compaction.rs:233-238）。
+
+已查证无问题：Replan 链（钳制/失败兜底/停止优先）；bot_anthropic 并行 tool_calls/合并
+tool_result/thinking 签名回传/stop_reason 四态；compaction 只压无 pending tool_call 的消息
+（协议非法不可能）；intent_router 用 regex crate 线性引擎（ReDoS 结构性不可能）+编译失败哑弹
+不拖垮整表；prompt_builder 槽位稳定排序+可变值钉末位保缓存；ChatGuard 会话级+Drop 兜底；
+remote.rs 重定向逐跳过闸+钉 IP+64MB 双闸+落盘失败回滚；parse.rs 畸形 frontmatter 全兜底；
+vars 单遍替换不递归；DSL 线性序列无环；MCP 撞名消歧进程级登记簿不漂移；secrets 水合失败
+不缓存不阻断；并发调用走 rmcp 多路复用；stdio 读侧背压有界。
+
+### M8/M9 盲区抽查（全部 P3）
+
+- **[P3] 服务退出/停止后已挂的资源告警通知永不撤收**（services.rs:1784/1828-1840 撤收只在
+  30s 巡检且仅 Running 态 → 孤儿 pending 占角标）。
+- **[P3] 机器人总开关关闭时，到点作业每 30s 空转一轮 spawn+审计**（bot_scheduler.rs:413-419
+  开关检查在推进水位之前 return；每天 2880 条 sched_job_skip 审计；panic 兜底路径 retry_at
+  未清同样重触环）。
+- **[P3] ask_user 超时/停止后 wfq:{qid} 通知永久 pending**（ask_engine.rs:413-441 Expired 只摘
+  waiter 不 resolve 通知，也无后台清扫）。
+- **[P3] 记忆抽取限频计数器纯进程内存**（重启即清零）+ **parse_extract 对非数组输出静默吞轮**
+  （extract.rs:229-239 失败返回空 Vec 无审计，且限频窗口已被占）。
+- **[P3] consolidate 矛盾裁决/合并只记数量**——被删条目内容不可追溯（consolidate.rs:333/362/
+  491-494；记忆库无回收站）。
+- **[P3] 主执行链（run_task_in_chat_with）无 panic 隔离**：panic → end_trace 不执行 → trace 行
+  挂 running 最长 30 天（bot_chat.rs:2024 注释只保证「无早退分支」；子 agent 有 catch_unwind，
+  主链没有）。
+- **[P3·需验证] occurrence_after 跨日跳进用绝对 24h 加法**（bot_scheduler.rs:151-152/168-169）——
+  DST 时区秋拨日 daily 同日双触发、春拨日晚 1h；国内无 DST 不触达，低优先国际化边界。
+
+已查证无问题：watchdog 收尸三路齐全+FD_CLOEXEC 防误触发；资源告警采样/去重/撤收自洽；
+scheduler Missed 判定+RMW 消费+防睡眠唤醒双跑；monthly 短月顺延两端一致；due_notify 24h
+边界有测试；notifications 幂等键实际唯一；孤儿 queued/running 有启动清扫；六态跃迁表确认；
+子 agent 预算原子计数+并发票据 RAII；ask 等待 24h 有界+预算回冲；U19 坏输出回退全 New；
+consolidate 同事务顺序应用对已删行安全；embed 失败永久缓存是明示取舍；trace 16KB 字节钳
+UTF-8 边界回退；trace_sink 批次事务+失败重连+DROPPED 计数。
 
 ## 批 5 · 前端专审（M13）
 
-（待跑）
+### 渲染与注入面
+
+全仓危险通道扫描：dangerouslySetInnerHTML/outerHTML/insertAdjacentHTML/document.write/
+iframe/srcDoc/window.open/eval/new Function/DOMParser **全仓零命中**；innerHTML 唯一命中即
+M1 已记的 GraphCanvas 铭牌。href/src 动态通道 12 处逐一定性全部安全（打包静态资产/16 张
+头像注册表/本地 lobehub SVG/models.dev 的 logo_url 已不消费/必应 data URL 后端硬编码前缀）。
+
+- **[P3·需验证] http(s) 链接只拦左键，中键/Cmd+点击（auxclick）可能让 webview 本体导航外域**
+  （MarkdownText.tsx:98、RichText.tsx:37 只有 onClick preventDefault，无 onAuxClick；Rust 侧无
+  on_navigation 处理器。最坏＝整页跳外域钓鱼，非代码执行；是否真能导航取决于 Tauri v2 对
+  webview 跨源导航默认策略。修法：气泡层全局 auxclick preventDefault 或 Rust 侧导航拦截转 opener）。
+- **[P3] 必应大图外跳 URL 未做域名白名单**（bing.rs:146-151 `starts_with("http")` 即原样采用，
+  API 响应被劫持时点卡片跳任意 URL；点击门控+走系统浏览器，定 P3。修法：后端校验 host 为
+  bing.com 系）。
+
+已查证安全：MarkdownText 用 react-markdown 且无 rehype-raw（原始 HTML 默认转义）+自定义
+链接组件协议白名单（非 http/https 一律 span 化，javascript:/data:/ipc:// 全中性化）+react-markdown
+默认 urlTransform 双保险；AI 注入外域图片被 CSP img-src 拦截；ChatPanel 流式中走纯文本正则
+链接化（半截标签不进解析器）、完成后才全量 markdown；工具入参/结果全走 `<pre>` 文本节点；
+CommandPalette/通知/trace/日志/diff 全文本节点；ErrorDialogHost/ErrorBoundary 文本节点。
+
+### 状态管理与错误链路
+
+- **[P3] applyRemoteRows 绕过 mutating 串行链**：与 tasks-updated 处理器的 await 窗口交错可
+  短暂丢行（App.tsx:834-842 vs :526-549；窗口极窄且 events 双通道自愈；建议并入 chain）。
+- **[P3] applyRemoteRows 套规则但不落盘**，与 tasks-updated 处理器行为不对称（规则变更只进
+  UI 态，重启回退，等每分钟定时器补救；App.tsx:836-841）。
+- **[P3] taskEq 用 JSON.stringify 全串比较**，对键序敏感可产生一次性假变更落盘
+  （storage.ts:8-10；多余写+无意义 updatedAt 推进。修法：逐字段比较或键排序）。
+- **[P3] homeKpi 对畸形 due 返回 NaN，onTimeRate 分母含永不可能进分子的项**（homeKpi.ts:107-113/
+  182-186；仅脏数据触发。修法：Number.isFinite 过滤分母）。
+- **[P3] archiveRule 启动拉取配置失败按默认 7 天落盘归档**，与后端实际配置（如 30 天）漂移
+  造成过早归档且方向不可逆（archiveRule.ts:34-41 + App.tsx:600-607。修法：loaded 前不应用规则）。
+- **[P3] botRun.emit 失败完全静默**（botRun.ts:6-8 `.catch(() => {})`，点 🤖 无任何反馈）。
+- **[P3-观察] useInlineEdit 隐式契约**：onCommit 后父组件必须退出编辑态，否则二次提交被吞
+  （useInlineEdit.ts:53-74；现两处调用点均满足，建议补注释）。
+- NEEDS-VERIFICATION：archiveRule 前端 `>=` 与后端 resolve_archive_after_days 的恰 N 天边界
+  方向一致性未逐行核对；bubbleStyle.ts:120 注释声称的 storage 事件跨窗口同步不存在（单窗口
+  架构下无影响，注释与现实不符）。
+
+已查证安全：globalErrorReport 双层熔断（前端 20 条/会话+Rust 32 签名去重）+上报失败不递归+
+StrictMode 防双装；errorHandler 24 code 三重漂移防线+recoverable 分流；useConfirm 走 OS 原生
+ask 并发天然排队+fail-closed；ConfirmMap busyRef 防双发+条件清理不误杀新请求；useTauriListen
+cancelled flag 全覆盖（含 StrictMode 迟到 resolve 自注销）；App.tsx 无乐观更新（先落盘再
+setState 天然免回滚）+mutate 串行链+stamped map 防基线落后+source 协议五源对齐有测试锁；
+storage.ts 实为 SQLite 封装+排序变更豁免刷戳；homeKpi 并查集口径与「连通分量≥2」一致+
+口径单源成立；types.ts 抽查 12 项契约镜像全对齐（含 expectedUpdatedAt 单向下行、TaskOut
+wire 形状锁）。
+
+---
 
 ## 汇总与拍板清单
 
-（收尾填写）
+### 总计
+
+**P0 0 条 / P1 5 条 / P2 20 条 / P3 73 条 / 待定性（NEEDS-VERIFICATION）11 处**；
+P1 全部集中在 M5（桌面 UI 自动化），P2 分布：M5×6、M12×3、M11×4、M1×3、M15×2、M4×1、M14×1。
+
+验证性结论：2026-10-21 的 23 项修复 **23/23 在位零回退**；2026-10-19 图谱轮修复抽查在位；
+架构文档 §6.4 对拍 157=157；基线全绿（nextest 1981 / vitest 985 / tests-audit 29 / clippy 干净 /
+machete 干净）。整体判断：**没有 P0**——安全边界（本地 API、keyring、vendor 门、MCP SSRF 闸、
+压缩炸弹闸、脚本路径收窄）经逐条攻击性验证全部成立；本轮主病灶是**闸门判定材料可绕**
+（UI 自动化）与**凭据/数据一致性边角**（keyring 故障窗口、合并无事务），多为上轮审计
+「七链」之外的模块的首轮深审收益。
+
+### 拍板清单（按修复收益分组，建议按序开修复批）
+
+**A. M5 UI 自动化整组（1 个文件群，5 P1 + 6 P2，建议整组一次修）**
+P1：危险关键词大小写敏感；ui_type 换行绕确认（违背 schema 承诺）；敏感判定缺
+AXSecureTextField/IsPassword 角色；Windows 坐标点击归一化 bug（落点失控）；后台窗口注入
+打进前台任意应用。P2：macOS 窗口 id 复用 TOCTOU；闸门快照与实际动作二次解析不一致；
+无标题按钮绕确认（建议 fail-closed）；注入无全局互斥；开关变更无审计+flag 权限；授权模型
+（应用白名单）是否要产品化——需要你拍方向。
+
+**B. 凭据面（M12 三条 P2）**
+① update_config_file 补 strip_verified_keys（keyring 故障窗口丢密钥，零丢失语义）；
+② selfcheck_http 补 ensure_vendor_verified（侧道绕 vendor 门）；
+③ 带厂商条目无 key 时禁止全局主 key 回退（防主力 key 发往任意 base_url + 探活 2xx 转正）。
+
+**C. 数据一致性组**
+M11 四条：合并搬进 with_write_conn+同事务；instr 子串越界改精确匹配；`__new__` 占位校验；
+merge/rollback 补广播。M1 三条：软删补清 plan 字段（或订正注释+SPEC）；浮窗 due 套
+isValidDateTimeLocal+后端补格式校验；GraphCanvas 铭牌 innerHTML 改 textContent。
+M14 一行修：with_write_conn 改用 lock_db_write()（debug 构建 panic）。
+
+**D. 跨平台契约（M15 两条 P2）**
+macOS focused 实测前台（或 Option<bool>+声明）；Windows 读 UIA ValuePattern 或声明恒空。
+
+**E. P3 择优建议（其余 70+ 条见各批正文）**
+僵尸 app_runs 行+启动清扫；孤儿通知两条（服务告警撤收、ask wfq 回收）；机器人开关关闭的
+调度空转；Paused 技能超时；审计缺口三项（apps_run、配置变更/active 切换、consolidate 删除
+内容）；bing/ocr 输入上限；M10 token 文件空残留自愈；archiveRule 配置未加载不应用；
+taskEq 键序敏感。evolution/ 死目录随手清。
+
+**F. 待定性 11 处（需要你给口径，不急着修）**
+① apps 是否纳管 py-enabled.flag；② apps_run 审计事件口径；③ 历史畸形 app id 是否存在
+需清洗；④ open_url 工具文案补「跳转由浏览器接管」；⑤ opener capability 是否收窄 deny-open-url
+（M13 结论：前端渲染面全文本节点+链接白名单，维持现状风险低）；⑥ HTTP SSE overlay 无
+主窗写事件的轮询兜底确认；⑦ archiveRule 前后端恰 N 天边界逐行核对；⑧ tags_consolidate_scan
+是否包 spawn_blocking；⑨ 受管服务 GBK 输出解码；⑩ Windows 长路径文案；⑪ DST 跳进算术
+（国内不触达，备案）。
