@@ -554,9 +554,22 @@ export default function GraphCanvas(props: GraphCanvasProps) {
       // 避让位移再写在外层等于两者相乘，铭牌实际会跑出避让模型算出的落点
       const off = document.createElement("span");
       off.className = "graph-plaque-off";
-      off.innerHTML = node.kind === "task"
-        ? `${node.label}<span class="graph-plaque-sub">${node.degree}</span>`
-        : `<span class="graph-plaque-kind">${hubRole(node)}</span>${node.label}`;
+      // 铭牌拼装走 createElement + textContent：label 是任务标题，
+      // 来源不可信（bot 写卡 / 外来 tasks.json 信封 / HTTP API）——
+      // innerHTML 会把它当标记解析，标题里的尖括号会变成真的元素。
+      if (node.kind === "task") {
+        off.appendChild(document.createTextNode(node.label));
+        const sub = document.createElement("span");
+        sub.className = "graph-plaque-sub";
+        sub.textContent = String(node.degree);
+        off.appendChild(sub);
+      } else {
+        const kind = document.createElement("span");
+        kind.className = "graph-plaque-kind";
+        kind.textContent = hubRole(node);
+        off.appendChild(kind);
+        off.appendChild(document.createTextNode(node.label));
+      }
       el.appendChild(off);
       el.style.opacity = "0";
       const obj = new CSS2DObject(el);
