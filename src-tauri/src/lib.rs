@@ -126,23 +126,30 @@ fn tags_consolidate_scan(
 }
 
 #[tauri::command]
-fn tags_consolidate_merge(
+async fn tags_consolidate_merge(
     app: tauri::AppHandle,
     main: String,
     members: Vec<String>,
 ) -> Result<crate::bot::tags_consolidate::RunRecord, String> {
-    let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-    let member_refs: Vec<&str> = members.iter().map(String::as_str).collect();
-    crate::bot::tags_consolidate::merge_tag_cluster(&conn, &main, &member_refs)
+    // 合并走写连接：改写与回滚凭据必须同一把写锁下的同一事务，
+    // 否则并发写者能在改写与 history 行之间插进来。
+    crate::db::lock::with_write_conn(&app, move |conn| {
+        let member_refs: Vec<&str> = members.iter().map(String::as_str).collect();
+        crate::bot::tags_consolidate::merge_tag_cluster(conn, &main, &member_refs)
+    })
+    .await
 }
 
 #[tauri::command]
-fn tags_consolidate_rollback(
+async fn tags_consolidate_rollback(
     app: tauri::AppHandle,
     run_id: String,
 ) -> Result<crate::bot::tags_consolidate::RollbackResult, String> {
-    let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-    crate::bot::tags_consolidate::rollback_tag_merge(&app, &conn, &run_id)
+    let app_for_audit = app.clone();
+    crate::db::lock::with_write_conn(&app, move |conn| {
+        crate::bot::tags_consolidate::rollback_tag_merge(&app_for_audit, conn, &run_id)
+    })
+    .await
 }
 
 #[tauri::command]

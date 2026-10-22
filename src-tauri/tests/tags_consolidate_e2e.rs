@@ -15,7 +15,7 @@ use wmessage_lib::bot::tags_consolidate::{
 #[test]
 fn tag_consolidate_e2e_scan_merge_rollback() {
     // 1. 内存库 + 必要 DDL（tasks + tag_merge_history，与 db/mod.rs bootstrap 同步）
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
         "CREATE TABLE tasks (
             id TEXT PRIMARY KEY,
@@ -71,7 +71,7 @@ fn tag_consolidate_e2e_scan_merge_rollback() {
         .filter(|m| **m != cluster.suggested_main)
         .collect();
     assert!(!members_refs.is_empty(), "应至少 1 个别名可合并");
-    let run = merge_tag_cluster(&conn, &cluster.suggested_main, &members_refs).unwrap();
+    let run = merge_tag_cluster(&mut conn, &cluster.suggested_main, &members_refs).unwrap();
     assert_eq!(run.merged_to, cluster.suggested_main);
     assert!(!run.affected_task_ids.is_empty(), "应至少影响 1 个归档卡");
     assert!(
@@ -114,7 +114,7 @@ fn tag_consolidate_e2e_scan_merge_rollback() {
     // 7. rollback：mock app 走 AppHandle<MockRuntime>
     let app = tauri::test::mock_app();
     let handle = app.handle().clone();
-    let rb = rollback_tag_merge(&handle, &conn, &run.run_id).unwrap();
+    let rb = rollback_tag_merge(&handle, &mut conn, &run.run_id).unwrap();
     assert_eq!(rb.run_id, run.run_id);
     assert_eq!(rb.restored_task_count, run.affected_task_ids.len());
 
@@ -134,6 +134,6 @@ fn tag_consolidate_e2e_scan_merge_rollback() {
     }
 
     // 9. 二次 rollback 应 Err（rolled_back_at 已置）
-    let rb2 = rollback_tag_merge(&handle, &conn, &run.run_id);
+    let rb2 = rollback_tag_merge(&handle, &mut conn, &run.run_id);
     assert!(rb2.is_err(), "二次 rollback 应被 rolled_back_at 拒绝");
 }

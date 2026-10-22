@@ -247,8 +247,12 @@ pub fn new_run_id() -> String {
 /// 按主标签 + 成员别名合并：把每个 task 的 tags 里出现的成员别名替换为主
 /// 标签，去重后写回。返回 run_id 与受影响 task 数（供 audit 落点）。
 /// 注意「成员里已有 main」时只去重、不动其他。
+///
+/// 整个合并包一个事务：逐条 UPDATE 自动提交时，中途失败会留下半合并态——
+/// 前面的 UPDATE 已落盘而回滚凭据（history 行）还没写，「合并可完整撤销」
+/// 在失败路径上根本不成立。
 pub fn merge_tag_cluster(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     main: &str,
     members: &[&str],
 ) -> Result<RunRecord, String> {
@@ -261,6 +265,8 @@ pub fn merge_tag_cluster(
     if aliases.is_empty() {
         return Err("成员别名至少 1 个".to_string());
     }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     // 找受影响的归档 task：tags 含任一别名的
     // INSTR 是标量函数，对每个别名建一个 ?i 占位（?1 重复会被覆盖为最后值）
@@ -275,45 +281,53 @@ pub fn merge_tag_cluster(
             .collect::<Vec<_>>()
             .join(" OR ")
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let params = rusqlite::params_from_iter(alias_list.iter().map(|a| a.as_str()));
-    let rows = stmt
-        .query_map(params, |row| {
-            let id: String = row.get(0)?;
-            let tags_raw: String = row.get(1)?;
-            let parsed: Vec<String> = serde_json::from_str(&tags_raw).unwrap_or_default();
-            Ok((id, parsed))
-        })
-        .map_err(|e| e.to_string())?;
 
     // 收集 (task_id, old_tags, new_tags) 三元组
     let mut updates: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
     let mut affected_ids: Vec<String> = Vec::new();
-    for r in rows {
-        let (task_id, old_tags) = r.map_err(|e| e.to_string())?;
-        let mut new_tags: Vec<String> = old_tags
-            .iter()
-            .filter(|t| !aliases.contains(*t))
-            .cloned()
-            .collect();
-        if !new_tags.contains(&main.to_string()) {
-            new_tags.push(main.to_string());
+    {
+        let mut stmt = tx.prepare(&sql).map_err(|e| e.to_string())?;
+        let params = rusqlite::params_from_iter(alias_list.iter().map(|a| a.as_str()));
+        let rows = stmt
+            .query_map(params, |row| {
+                let id: String = row.get(0)?;
+                let tags_raw: String = row.get(1)?;
+                let parsed: Vec<String> = serde_json::from_str(&tags_raw).unwrap_or_default();
+                Ok((id, parsed))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let (task_id, old_tags) = r.map_err(|e| e.to_string())?;
+            // SQL 的 instr 只是子串粗筛：「集成测试」含「测试」也会命中。
+            // 主标签只该加给真正带着簇成员标签的卡，所以精确判定放在这里——
+            // 粗筛命中的卡若不含任一别名（精确相等），整张卡跳过。
+            if !old_tags.iter().any(|t| aliases.contains(t)) {
+                continue;
+            }
+            let mut new_tags: Vec<String> = old_tags
+                .iter()
+                .filter(|t| !aliases.contains(*t))
+                .cloned()
+                .collect();
+            if !new_tags.contains(&main.to_string()) {
+                new_tags.push(main.to_string());
+            }
+            if new_tags == old_tags {
+                // 没变化（可能 main 已在且无别名）——跳过
+                continue;
+            }
+            affected_ids.push(task_id.clone());
+            updates.push((task_id, old_tags, new_tags));
         }
-        if new_tags == old_tags {
-            // 没变化（可能 main 已在且无别名）——跳过
-            continue;
-        }
-        affected_ids.push(task_id.clone());
-        updates.push((task_id, old_tags, new_tags));
     }
     affected_ids.sort();
 
-    // 写盘：每条 UPDATE
+    // 写盘：每条 UPDATE（与 history INSERT 同事务）
     let mut previous_tags: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (task_id, old, new) in &updates {
         previous_tags.insert(task_id.clone(), old.clone());
         let new_json = serde_json::to_string(new).map_err(|e| e.to_string())?;
-        conn.execute(
+        tx.execute(
             "UPDATE tasks SET tags = ?1 WHERE id = ?2",
             rusqlite::params![new_json, task_id],
         )
@@ -326,13 +340,15 @@ pub fn merge_tag_cluster(
     let snapshot = serde_json::to_string(&previous_tags).unwrap_or_default();
     let merged_from_csv = aliases.iter().cloned().collect::<Vec<_>>().join(",");
     let affected_count = updates.len() as i64;
-    conn.execute(
+    tx.execute(
         "INSERT INTO tag_merge_history
             (run_id, merged_to, merged_from, previous_tags_json, affected_task_count, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![run_id, main, merged_from_csv, snapshot, affected_count, ts],
     )
     .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(RunRecord {
         run_id,
@@ -347,39 +363,45 @@ pub fn merge_tag_cluster(
 /// 按 run_id 回滚：tag_merge_history 表读旧 tags 快照 → 逐 task UPDATE 回写。
 /// 返回受影响 task 数。run_id 不存在或快照损坏 → Err；已回滚的 run_id
 /// 二次回滚也 Err（rolled_back_at 标记避免误回滚导致数据漂移）。
+///
+/// 回写包一个事务：中途失败时不能留下「部分卡已恢复、部分卡还是合并态」的
+/// 半回滚态——那种状态下快照还在、rolled_back_at 没置，撤销语义已经碎了。
 pub fn rollback_tag_merge<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     run_id: &str,
 ) -> Result<RollbackResult, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT merged_to, previous_tags_json, created_at, rolled_back_at
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let (merged_to, prev_json, ts, rolled_back_at) = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT merged_to, previous_tags_json, created_at, rolled_back_at
              FROM tag_merge_history WHERE run_id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-    let mut rows = stmt
-        .query_map([run_id], |row| {
-            let merged_to: String = row.get(0)?;
-            let prev_json: String = row.get(1)?;
-            let created_at: i64 = row.get(2)?;
-            let rolled_back_at: Option<i64> = row.get(3)?;
-            Ok((merged_to, prev_json, created_at, rolled_back_at))
-        })
-        .map_err(|e| e.to_string())?;
-    let (merged_to, prev_json, ts, rolled_back_at) = rows
-        .next()
-        .ok_or_else(|| format!("run_id {run_id} 不存在"))?
-        .map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query_map([run_id], |row| {
+                let merged_to: String = row.get(0)?;
+                let prev_json: String = row.get(1)?;
+                let created_at: i64 = row.get(2)?;
+                let rolled_back_at: Option<i64> = row.get(3)?;
+                Ok((merged_to, prev_json, created_at, rolled_back_at))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.next()
+            .ok_or_else(|| format!("run_id {run_id} 不存在"))?
+            .map_err(|e| e.to_string())?
+    };
     if rolled_back_at.is_some() {
         return Err(format!("run_id {run_id} 已于 ts={rolled_back_at:?} 回滚过"));
     }
     let snapshot: BTreeMap<String, Vec<String>> =
         serde_json::from_str(&prev_json).map_err(|e| format!("快照损坏：{e}"))?;
     let mut count = 0_usize;
+    let mut restored_task_ids: Vec<String> = Vec::new();
     for (task_id, old_tags) in &snapshot {
         let old_json = serde_json::to_string(old_tags).map_err(|e| e.to_string())?;
-        let affected = conn
+        let affected = tx
             .execute(
                 "UPDATE tasks SET tags = ?1 WHERE id = ?2",
                 rusqlite::params![old_json, task_id],
@@ -387,15 +409,17 @@ pub fn rollback_tag_merge<R: Runtime>(
             .map_err(|e| e.to_string())?;
         if affected > 0 {
             count += 1;
+            restored_task_ids.push(task_id.clone());
         }
     }
     // 标记回滚时间
     let now = now_ms();
-    conn.execute(
+    tx.execute(
         "UPDATE tag_merge_history SET rolled_back_at = ?1 WHERE run_id = ?2",
         rusqlite::params![now, run_id],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     // 同时落 audit 给 bot.log 看（按用户点击动作可观测）
     audit::write_event(
         app,
@@ -411,6 +435,7 @@ pub fn rollback_tag_merge<R: Runtime>(
         run_id: run_id.to_string(),
         merged_to,
         restored_task_count: count,
+        restored_task_ids,
         original_timestamp_ms: ts,
     })
 }
@@ -421,6 +446,8 @@ pub struct RollbackResult {
     pub run_id: String,
     pub merged_to: String,
     pub restored_task_count: usize,
+    /// 实际被改回原 tags 的 task id（回滚凭据里那张卡已不在库里时不算）
+    pub restored_task_ids: Vec<String>,
     pub original_timestamp_ms: i64,
 }
 
@@ -502,12 +529,12 @@ mod tests {
 
     #[test]
     fn merge_writes_to_archived_only_and_audits() {
-        let c = conn();
+        let mut c = conn();
         // 主面板卡不应被改
         insert_task(&c, "active", vec!["买菜", "购菜"], false);
         insert_task(&c, "arch1", vec!["买菜", "购菜"], true);
         insert_task(&c, "arch2", vec!["购菜"], true);
-        let run = merge_tag_cluster(&c, "groceries", &["买菜", "购菜"]).unwrap();
+        let run = merge_tag_cluster(&mut c, "groceries", &["买菜", "购菜"]).unwrap();
         assert_eq!(run.merged_to, "groceries");
         assert_eq!(
             run.affected_task_ids.len(),
@@ -527,19 +554,99 @@ mod tests {
         assert_eq!(arch1_parsed, vec!["groceries".to_string()]);
     }
 
+    /// 子串不算命中：簇别名「测试」不该把只带「集成测试」的卡拉进来。
+    ///
+    /// SQL 侧的 `instr(tags, ?)` 是子串粗筛，「集成测试」含「测试」必然命中；
+    /// 精确判定必须落在 Rust 侧，否则主标签会被强加给从未拥有该别名的卡。
+    #[test]
+    fn merge_skips_cards_that_only_contain_the_alias_as_a_substring() {
+        let mut c = conn();
+        insert_task(&c, "exact", vec!["测试"], true);
+        insert_task(&c, "substring", vec!["集成测试"], true);
+        let run = merge_tag_cluster(&mut c, "testing", &["测试"]).unwrap();
+        assert_eq!(
+            run.affected_task_ids,
+            vec!["exact".to_string()],
+            "只有精确带别名的卡该被合并"
+        );
+        let exact: Vec<String> = serde_json::from_str(
+            &c.query_row("SELECT tags FROM tasks WHERE id='exact'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(exact, vec!["testing".to_string()]);
+        let substring: Vec<String> = serde_json::from_str(
+            &c.query_row("SELECT tags FROM tasks WHERE id='substring'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            substring,
+            vec!["集成测试".to_string()],
+            "只含子串的卡不该被打上主标签"
+        );
+    }
+
+    /// 合并中途失败不得留下半合并态：回滚凭据写不进去时，改写必须一并回滚。
+    ///
+    /// 逐条 UPDATE 自动提交的话，前面的改写已落盘而 history 行没写——
+    /// 「合并可完整撤销」在失败路径上不成立。
+    #[test]
+    fn merge_rolls_back_every_rewrite_when_the_history_row_cannot_be_written() {
+        let mut c = conn();
+        // history 表加一条永远不成立的约束，让最后的 INSERT 必然失败
+        c.execute_batch(
+            "DROP TABLE tag_merge_history;
+             CREATE TABLE tag_merge_history (
+                run_id TEXT PRIMARY KEY,
+                merged_to TEXT NOT NULL,
+                merged_from TEXT NOT NULL,
+                previous_tags_json TEXT NOT NULL,
+                affected_task_count INTEGER NOT NULL,
+                rolled_back_at INTEGER,
+                created_at INTEGER NOT NULL,
+                CHECK (affected_task_count < 0)
+             );",
+        )
+        .unwrap();
+        insert_task(&c, "arch1", vec!["买菜"], true);
+        insert_task(&c, "arch2", vec!["购菜"], true);
+        let err = merge_tag_cluster(&mut c, "groceries", &["买菜", "购菜"]);
+        assert!(err.is_err(), "history 写不进去时合并必须失败");
+        for id in ["arch1", "arch2"] {
+            let raw: String = c
+                .query_row("SELECT tags FROM tasks WHERE id=?1", [id], |r| r.get(0))
+                .unwrap();
+            let parsed: Vec<String> = serde_json::from_str(&raw).unwrap();
+            assert_eq!(parsed.len(), 1, "{id} 的 tags 必须回到合并前");
+            assert!(
+                !parsed.contains(&"groceries".to_string()),
+                "{id} 不得残留主标签"
+            );
+        }
+        let hist: i64 = c
+            .query_row("SELECT COUNT(*) FROM tag_merge_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hist, 0, "失败路径不得留下 history 行");
+    }
+
     #[test]
     fn rollback_restores_previous_tags() {
-        let c = conn();
+        let mut c = conn();
         insert_task(&c, "t1", vec!["a", "b"], true);
         let app_root = tauri::test::mock_app();
         let app = app_root.handle();
-        let run = merge_tag_cluster(&c, "main", &["a", "b"]).unwrap();
+        let run = merge_tag_cluster(&mut c, "main", &["a", "b"]).unwrap();
         let after: String = c
             .query_row("SELECT tags FROM tasks WHERE id='t1'", [], |r| r.get(0))
             .unwrap();
         let after_parsed: Vec<String> = serde_json::from_str(&after).unwrap();
         assert_eq!(after_parsed, vec!["main".to_string()]);
-        let rb = rollback_tag_merge(app, &c, &run.run_id).unwrap();
+        let rb = rollback_tag_merge(app, &mut c, &run.run_id).unwrap();
         assert_eq!(rb.restored_task_count, 1);
         let restored: String = c
             .query_row("SELECT tags FROM tasks WHERE id='t1'", [], |r| r.get(0))
@@ -557,19 +664,19 @@ mod tests {
 
     #[test]
     fn merge_rejects_empty_main() {
-        let c = conn();
+        let mut c = conn();
         let app_root = tauri::test::mock_app();
         let _app = app_root.handle();
-        let err = merge_tag_cluster(&c, "", &["a", "b"]);
+        let err = merge_tag_cluster(&mut c, "", &["a", "b"]);
         assert!(err.is_err());
     }
 
     #[test]
     fn merge_rejects_when_only_main_in_members() {
-        let c = conn();
+        let mut c = conn();
         let app_root = tauri::test::mock_app();
         let _app = app_root.handle();
-        let err = merge_tag_cluster(&c, "only", &["only"]);
+        let err = merge_tag_cluster(&mut c, "only", &["only"]);
         assert!(err.is_err());
     }
 }
