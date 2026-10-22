@@ -155,17 +155,17 @@ Windows 机器上 13:13~13:44 那次运行（`D:\Program Files\wmessage-portable
 | **S06** 技能步骤失败判失败 | ✅ PASS | `skill_step_fail | name: pptx-design | tool: fetch_url | 抓取失败：…` —— 失败步骤记成 fail，**没有**被记成 `skill_step_ok`。P1-4 落地生效 |
 | **S02** 远程技能安装 | 🟡 部分 PASS | 确认窗在：`confirm | id: 51ed268a | kind: danger | install_skill | 安装技能「ppt-craft-master」…共 7 个文件。`；安装审计在：`skill_install | ppt-craft-master | source: SkillHub ppt-craft-master | files: 7 | bytes: 120646`。**宽度闸那一半没验**（装的是正常包） |
 | **S12** `rollback: none` | 🟡 部分 PASS | `skill.start | name=pptx-design | … rollback=none` 且该技能无回滚段——**降级路径**生效。**「有回滚段但声明 none」的对照组还没跑** |
-| **S05 第四条** 同因不同级 | ❌ **FAIL** | `fetch_url` 记 ERROR、`open_url` 同因记 WARN（详见 S05 第四条） |
+| **S05 第四条** 同因不同级 | 🔧 **源码已修 · 待实机复验** | 未修时的实测：`fetch_url` 记 **ERROR**、`open_url` 同因记 **WARN**（详见 S05 第四条）。已修（`270e822c`）：公网闸的错误拆成「策略拒绝 / 解析故障」两类——`open_url` 的 DNS 失败改 **ERROR**（与 fetch_url 同级），策略拒绝仍 **WARN/Denied**；fetch_url 的文案与行为未动。实机复验见 `docs/realmachine-rerun-2026-10-22.md` §2.2 |
 | **W09 附** 内置 Playwright 路径 | ❌ **FAIL** | `mcp.builtin_materialized | … 包: /Users/renshi/Projects/wmessage\playwright-mcp（缺失，开关打开会连不上）`——构建机 macOS 路径泄漏进 Windows 包（详见 W09） |
 | **W03** 端口闸在 Windows 上只诊断且明说 | ✅ **PASS** | `service.port_violation_precheck | command=python | rule=L1 | address=0.0.0.0 | port=0 | action=diagnostic | enforced=false`；工具返回带 `precheckNote`；服务**没被杀**（闸在 Windows 上本就不生效，符合预期）。面板**只有一行**灰字提示，**没有**第二行「采集失败」；`svc_24426226`（pid 12624）运行 **19 分 51 秒**（远超 30 秒巡检周期），审计里**没有** `service.listening_sample_failed`。原因：`enforce_listening_gate` 的平台守卫让 `note_sample_status` 在 Windows 上永不执行（详见附录 D-3 的否证记录） |
 | **W04** MCP 面板两行能力提示 | ✅ **PASS** | 实机确认：MCP 面板顶部出现**两行**灰字——「本平台暂不支持进程资源采集——内存 / CPU / 运行时长显示为空不代表没占用」「本平台暂不支持监听端口采集——没有监听记录不代表没在监听」。P2-4 在 MCP 面板这半落地生效 |
-| **W04 附** 本地服务面板「合计内存 0 MB」 | ❌ **FAIL** | 实机截图：跑着 1 个 Python 服务（pid 12624，19 分 51 秒），面板写「合计内存 **0 MB**」且**无任何**能力提示；而同一个设置页的 MCP 面板明说「本平台暂不支持进程资源采集——内存 / CPU / 运行时长显示为空不代表没占用」——**两块面板口径矛盾**（详见附录 D-7） |
+| **W04 附** 本地服务面板「合计内存 0 MB」 | 🔧 **源码已修 · 待实机复验** | 未修时的实机截图：跑着 1 个 Python 服务（pid 12624，19 分 51 秒），面板写「合计内存 **0 MB**」且**无任何**能力提示；同一个设置页的 MCP 面板却明说「本平台暂不支持进程资源采集」——**两块面板口径矛盾**（详见附录 D-7）。已修（`2eeb707d`）：快照 JSON 补 `snapshotSupported`，采不到时 `totalRssMb` 给 `null`（面板不显示「合计内存 0 MB」，改说能力提示）；合计 RSS 阈值告警在「没判」时**不判成「没超」**。实机复验见 `docs/realmachine-rerun-2026-10-22.md` §2.3 |
 | **W05** 宿主崩溃不留孤儿（Job Object） | ✅ **PASS** | 强杀宿主（pid 11820）后：`Get-Process -Id 1892` 无输出；探针 `services` 显示 `svc_5cc1a0e9 pid=1892 → process 1892 is gone`；`Get-NetTCPConnection -LocalPort 8081 -State Listen` 无输出（**端口也释放了**）；bot.log 里**查不到** `app_exit_cleanup`（证明走的是崩溃路径，不是正常退出清理）→ Job Object 兜底在 Windows 上**成立**。审计里那条「只做交叉编译验证、行为未实测」的残留就此划掉 |
 | **W06** UI 自动化正向路径 | 🟡 部分 PASS | 普通权限窗口能读控件、能输入（返回 `已输入 N 个字符到「{title}」（控件 {id}）`）→ **正向路径成立**。**UIPI 拒绝那半测不了**（应用是管理员 → UIPI 只拦「低→高」，高→任何都不拦）。**同时暴露一个真缺陷**：每次截屏都弹一个 PowerShell 控制台窗口（详见附录 D-8） |
 | **W07** WebGL2 缺失时的图谱降级 | 🟡 基本通过 | 降级路径**代码核对通过**（`GraphCanvas.tsx`：键盘游标 API 在 362 行挂好、WebGL2 探测在 392-409 行，catch 只追加说明文案 → 「键盘游标降级时仍可用」成立）。实机未报明显问题 |
 | **W08** 凭据管理器不删条目 | ✅ **PASS** | 实机确认：编辑 MCP 服务器只改超时、保存后**凭据管理器条目仍在、数量不变**，编辑表单显示掩码 + 那行掩码提示。P1-16 在 Windows 侧落地生效（**证据原文未贴**，只有口头结论；「值有没有被改对」那半 Windows 本就测不了，见附录 C） |
 | **W09** 绿色包本身 | ✅ **PASS** | 实机确认：目录内容齐全、首跑在 exe 同目录生成 `wmessage.db` 与 `AI_Gen_Files`（便携锚定生效，与 W01 互证）。**D-1 附项仍 FAIL**（内置 Playwright 的包路径是构建机 macOS 绝对路径） |
-| **S32** ready 超时不误报成「立即退出」 | ❌ **FAIL** | `service.stop_requested | reason=ready_timeout` → `service.exited | exit_code=1 | uptime_ms=30772` → `service.stopped | method=taskkill` → `service.start_failed | reason=服务「python」启动后立即退出（退出码 1）。`——**服务活了整整 30 秒才被我们停掉**，却报成「启动后立即退出」；那个退出码 1 是 `taskkill /F` 的签名（详见附录 D-6） |
+| **S32** ready 超时不误报成「立即退出」 | 🔧 **源码已修 · 待实机复验** | 未修时的实测：`service.stop_requested | reason=ready_timeout` → `service.exited | exit_code=1 | uptime_ms=30772` → `service.stopped | method=taskkill` → `service.start_failed | reason=服务「python」启动后立即退出（退出码 1）。`——**服务活了整整 30 秒才被我们停掉**，却报成「启动后立即退出」；那个退出码 1 是 `taskkill /F` 的签名（详见附录 D-6）。已修（`aa80d2f9` `7f80865f` `a8b54f10`）：就绪判定四态 + **先判后停**（停止前取快照）+ 停止结果如实进文案 + `service.exited` 补 `stop_reason`。macOS 侧已端到端复现并变异复验（真 spawn、真等超时、真停），**Windows 实机复验还没跑**。见 `docs/realmachine-rerun-2026-10-22.md` §2.1 |
 
 **日志里几条不是缺陷、但值得记的**：
 
@@ -189,6 +189,10 @@ C:\Users\Administrator\AppData\Local\Microsoft\WindowsApps\python.exe        ←
 这会伪装成「服务起不来」，实际上服务好好地跑着。**凡是拿 `http.server` 当 `readyPattern` 的靶子，args 必须带 `-u`。**（实测：加 `-u` 后 `service.ready | elapsed_ms=473`；不加 `-u` 则 30 秒后超时。）
 
 **还没跑过的**：**W 序列（W01–W09）已全部跑完**。剩下 S 序列：S03、S04、S07、S08、S10、S11、S13、S15~S25（**S07 是 macOS/Linux 专属**，Windows 测不了——见附录 C）。**S32 已经跑出 FAIL**（见上表），修完后需复验。
+
+> **2026-10-22 晚：本轮修了三个真缺陷（D-2 / D-6 / D-7），源码侧已提交并做了变异复验，但 Windows 实机一次都还没跑**——
+> 所以上面三行标的是「🔧 源码已修 · 待实机复验」，**不是 PASS**。
+> 复验步骤（换 exe + 6 项清单 + S 序列剩余项 + 结果回填到哪）见 **`docs/realmachine-rerun-2026-10-22.md`**。
 
 ---
 
@@ -2042,6 +2046,25 @@ WARN  | tool.return | tool=open_url  |          [web] 域名解析失败：不�
 
 **复验**：修完后 `open_url` 的 DNS 失败应记 **ERROR**；`open_url` 打内网地址仍应是 **WARN/Denied**（门禁拒绝）。
 
+> **✅ 2026-10-22 已修（源码侧，`270e822c`）**
+>
+> 公网闸的错误改成两类（`bot_web::UrlGateError`）：
+>
+> | 变体 | 含义 | `open_url` 落地 | 审计级别 |
+> |---|---|---|---|
+> | `Denied{reason}` | 策略拒绝：协议不对、地址非法、解析到本机/内网/保留地址 | `ToolResult::denied` | WARN |
+> | `Unresolved{reason}` | DNS 解析失败：这台机器到那个名字的路不通 | `ToolResult::error` | **ERROR** |
+>
+> `fetch_url` 的文案与行为**未动**（仍是「抓取失败：[web] 域名解析失败：…」/ERROR）——
+> 本轮只拆开 `open_url` 那一侧的拍平。`open_url` 的文案多了「打开失败：」前缀，便于模型区分
+> 「门禁拒绝」与「网络故障」。
+>
+> **判定能离线单测**：公网闸的解析结果改为**可注入**（生产走真 DNS，测试给桩）。
+> 真 DNS 依赖网络环境——实测无 DNS 的机器上 `.invalid` 域名会等系统超时 **30 秒**，
+> 门禁不该等这个。单测 `public_url_gate_separates_denial_from_dns_failure` +
+> `open_url_gate_failures_are_not_all_denied`（已做变异复验：把 DNS 失败改回 denied /
+> 把解析失败改回策略拒绝 → 对应用例红）。
+
 ---
 
 ### D-3（已排除 · 实机否证）Windows 上会不会多出「采集失败」那行红字
@@ -2177,6 +2200,25 @@ let exited_early = entry.lock().map(|s| s.state == ServiceState::Exited) …  //
 
 **复验**：起一个 `readyPattern` 故意不匹配的服务（场景卡 **S32**）→ 文案应说「在 Ns 内未就绪，已停止」，且**不得**出现「退出码 1」；同时 `service.exited` 的 `uptime_ms` ≈ `readyTimeoutSecs`。
 
+> **✅ 2026-10-22 已修（源码侧，`aa80d2f9` `7f80865f` `a8b54f10`）**
+>
+> 上面「修法方向」四条逐条落地：
+>
+> 1. `wait_ready_pattern` 改为返回**四态**（就绪 / 进程自己退了 / 等超时 / readyPattern 非法），不再压成 `bool`；
+> 2. 失败归因改成 **先判后停**：停止前取快照（`resolve_ready_failure`），停了之后状态必然是 `Exited`、退出码必然是停止手段的，那时候读到的一切都归因错了；
+> 3. **停止的真实结果进文案**：停掉了说「已停止」；它自己先退了说「已退出」；停不掉说「停止失败：…（进程仍在运行）」——不再一律说「已停止」；
+> 4. 「退出码 N」只在**服务自己退出**时才是它的退出码；被我们杀掉时不再报退出码。
+>
+> 另加一条：`service.exited` 审计行补 **`stop_reason`**（`ready_timeout` / `port_violation` / `tool` / …，
+> 没有就是 `none`）——退出码单独一个数分不出「我们杀的」与「它自己退的」
+> （Windows 上 `taskkill /F` 的退出码就是 1）。
+>
+> **判定与文案都抽成了纯函数**（`classify_ready_failure` / `ready_failure_message` /
+> `resolve_ready_failure` / `exited_event_kv`），不糊在 async 流程里；
+> 另有一条**端到端用例**（真 spawn、真等超时、真停）复现原病灶：
+> 变异复验时它报出「服务「python3」启动后立即退出。」——而 stderr 里是被我们 SIGINT 的
+> `KeyboardInterrupt`，正是「服务活得好好的，是我们停的」。
+
 ---
 
 ### D-7（真缺陷，Windows 专属）本地服务面板把「采不到」显示成「合计内存 0 MB」
@@ -2220,6 +2262,26 @@ let exited_early = entry.lock().map(|s| s.state == ServiceState::Exited) …  //
 3. 内存阈值告警在 `!snapshot_supported()` 时应**明确跳过并留痕**（现在是无声地永不触发）。
 
 **复验**：Windows 上起一个受管服务 → 设置页「本地服务」面板应当**明说**「本平台暂不支持进程资源采集——内存 / CPU / 运行时长显示为空不代表没占用」，且**不得**把「0 MB」当实测值展示。
+
+> **✅ 2026-10-22 已修（源码侧，`2eeb707d`）**
+>
+> 三处按「修法方向」落地：
+>
+> 1. `services_snapshot_json` 补 **`snapshotSupported`**（与 MCP 面板同一份判据 `procs::snapshot_supported()`）；
+> 2. 采不到时 **`totalRssMb` 给 `null`**（不是 0）——面板据此**不显示**「合计内存」，改显示能力提示；
+> 3. 合计 RSS 阈值告警在 `!snapshot_supported()` 时**明确跳过**（判据函数返回「没判」，不是「没超」）。
+>
+> **面板那行提示照 MCP 面板的模式写，但去掉了「运行时长」**：本地服务面板的运行时长是有的
+> （`started_at_ms`），说它「显示为空」反而是假的。实际文案：
+> 「本平台暂不支持进程资源采集——内存 / CPU 显示为空不代表没占用」。
+>
+> 单测 `total_rss_is_not_published_when_the_platform_cannot_sample` /
+> `total_rss_threshold_is_not_judged_when_nothing_can_be_sampled` /
+> `snapshot_json_declares_whether_resources_can_be_sampled` + 前端
+> 「平台采不到资源：明说『没占用』不等于没判，且不显示合计内存」
+> （均已做变异复验：去掉 `snapshotSupported` / 把 null 变回 0 / 把「没判」改回「没超」 → 对应用例红）。
+>
+> **这一条仍然只能靠 Windows 实机验**（mac 上 `snapshot_supported()` = true）。
 
 **这一条在 macOS 上测不出来**（mac 上 `snapshot_supported()` = true，内存是真能采到的），要验只能用 Windows。
 
@@ -2305,3 +2367,27 @@ tool: run_python | args: {"code":"import ctypes … SetCursorPos(1370,321) … m
 **修法方向（供开发侧参考，不急）**：把危险动作闸下沉到**动作层**（真正调 `SendInput` / `mouse_event` 之前统一判定），而不是每个工具各判一次；或者在 `run_python` 开着时明确提示「危险动作确认不覆盖 Python 路径」。
 
 **复验**：在 `run_python` 能调 `mouse_event` 的前提下，对一个标题含「发送」的控件用坐标点击 → 应当**仍然**弹确认窗（当前行为：不弹）。
+
+---
+
+### D-10（观察级 · 本轮新发现）readyPattern 不是合法正则，被报成「未就绪」
+
+**来源**：2026-10-22 修 D-6 时读代码发现的（**不是实机跑出来的**，所以只定观察级）。
+
+**现象**：`readyPattern` 写成非法正则（例如 `*abc` 这类量词位置不对的写法）时：
+
+- `wait_ready_pattern` 的正则编译失败分支只写了审计行 `service.start_failed | reason=readyPattern 不是合法正则：…`，然后 `return false`；
+- `false` 与「等超时」是**同一个出口** → 工具返回给模型的是「服务「python」在 30s 内未就绪，已停止。」
+
+**危害**：模型以为是自己写的 pattern 没匹配上（于是去改 stdout flush / 换个 pattern 重试），
+而真相是「这个 pattern 根本不是合法正则」——**诊断方向偏了，但失败本身报出来了**（审计行里有），
+所以定观察级而不是真缺陷。
+
+**修法方向**：就绪判定不要把「正则非法 / 进程自己退了 / 等超时」压成同一个出口。
+
+> **✅ 2026-10-22 已修（源码侧，随 D-6 一起落地，`aa80d2f9`）**
+>
+> 就绪判定改成四态，`BadPattern` 单独归类 → 文案说「服务「python」的 readyPattern 不是合法正则：… 。已停止。」
+> 单测 `bad_ready_pattern_is_not_reported_as_timeout`（已做变异复验：把它改回「未就绪」→ 该用例红）。
+>
+> **实机未验**：这一条只在 Windows 复验时顺带看一眼（把 `readyPattern` 写成非法正则试一次）。
