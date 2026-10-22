@@ -235,4 +235,32 @@ describe("ServicesPanel 违规与平台降级", () => {
     await flush();
     expect(screen.queryByText(/端口闸本轮未判/)).not.toBeInTheDocument();
   });
+
+  it("平台采不到资源：明说「没占用」不等于没判，且不显示合计内存", async () => {
+    // Windows 上进程快照层退化 → 合计恒为 0。显示「合计内存 0 MB」等于告诉
+    // 用户「这些服务不占内存」——那是**没判**，不是「判了没事」。
+    const snap = structuredClone(SNAPSHOT) as unknown as Record<string, unknown>;
+    snap.snapshotSupported = false;
+    snap.totalRssMb = null;
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? snap : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    expect(screen.getByText(/本平台暂不支持进程资源采集/)).toBeInTheDocument();
+    expect(screen.queryByText(/合计内存/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/合计内存 0 MB/)).not.toBeInTheDocument();
+  });
+
+  it("平台采得到资源：显示合计内存，且不显示那句能力说明", async () => {
+    const snap = structuredClone(SNAPSHOT) as unknown as Record<string, unknown>;
+    snap.snapshotSupported = true;
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "services_list" ? snap : null,
+    );
+    render(<ServicesPanel />);
+    await flush();
+    expect(screen.getByText(/合计内存 145 MB/)).toBeInTheDocument();
+    expect(screen.queryByText(/本平台暂不支持进程资源采集/)).not.toBeInTheDocument();
+  });
 });

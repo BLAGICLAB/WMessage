@@ -51,7 +51,14 @@ type ManagedServiceView = {
 /** 服务全景（后端 services_snapshot_json） */
 type ServicesSnapshot = {
   services: ManagedServiceView[];
-  totalRssMb: number;
+  /**
+   * 全部在跑服务的合计内存（MB）。
+   * 本平台采不到进程资源时为 null——**「没判」不是「没占用」**，
+   * 面板不能把它显示成「合计内存 0 MB」。
+   */
+  totalRssMb: number | null;
+  /** 本平台能不能采到进程资源占用（Windows 不能） */
+  snapshotSupported?: boolean;
   warnings: string[];
   sampledAt: number | null;
   /** 本平台能不能采到监听 socket（Windows 不能） */
@@ -152,13 +159,23 @@ export function ServicesPanel() {
       {snapshot && (
         <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--t5)]">
           <span>运行中 {active.length} 个</span>
-          <span>合计内存 {snapshot.totalRssMb.toFixed(0)} MB</span>
+          {/* 采不到资源时不显示合计内存——写「合计内存 0 MB」等于告诉用户
+              「这些服务不占内存」，而真相是「这台机器采不到」 */}
+          {snapshot.totalRssMb !== null && snapshot.totalRssMb !== undefined && (
+            <span>合计内存 {snapshot.totalRssMb.toFixed(0)} MB</span>
+          )}
           {snapshot.warnings.map((w) => (
             <span key={w} className="text-[var(--danger)]">
               ⚠ {WARNING_LABEL[w] ?? w}
             </span>
           ))}
         </div>
+      )}
+
+      {snapshot && snapshot.snapshotSupported === false && (
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          本平台暂不支持进程资源采集——内存 / CPU 显示为空不代表没占用
+        </p>
       )}
 
       {snapshot && snapshot.listeningSupported === false && (

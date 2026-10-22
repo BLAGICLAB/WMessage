@@ -1826,9 +1826,16 @@ pub(crate) fn sample_resources<R: tauri::Runtime>(app: &AppHandle<R>) {
     // 合计口径：跨服务的集合属性，没有归属条目
     let usage = crate::app_state::services_usage(app);
     let mut u = usage.lock().unwrap_or_else(|e| e.into_inner());
+    // 本平台采不到进程快照 → 合计恒为 0。那不是「没占用」，是「没判」：
+    // 不发布这个数，也不拿它比阈值（否则永远判成「没超」，阈值告警永不触发）。
+    let Some(total_warn) = total_rss_warning(total_rss, snapshot_supported()) else {
+        u.total_rss_bytes = 0;
+        u.sampled_at_ms = None;
+        drop(u);
+        return;
+    };
     u.total_rss_bytes = total_rss;
     u.sampled_at_ms = Some(now);
-    let total_warn = total_rss >= RSS_TOTAL_WARN_BYTES;
     let already = u.warnings.iter().any(|w| w == WARN_TOTAL_RSS);
     if total_warn {
         if !already {
@@ -2196,6 +2203,35 @@ fn round1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
+/// 本平台能不能采到进程资源占用（Windows 不能：快照层走 ps / /proc）。
+///
+/// 与 MCP 面板同一份判据（`procs::snapshot_supported`）。
+fn snapshot_supported() -> bool {
+    crate::bot::procs::snapshot_supported()
+}
+
+/// 合计 RSS 告警该不该触发（纯函数，供测试钉住）。
+///
+/// **采不到时返回 None——不是「没超」**：本平台没有进程快照层，合计恒为 0，
+/// 拿 0 去比阈值等于把「没判」写成「判了没事」，阈值告警就永远不响。
+fn total_rss_warning(total_rss: u64, snapshot_supported: bool) -> Option<bool> {
+    if !snapshot_supported {
+        return None;
+    }
+    Some(total_rss >= RSS_TOTAL_WARN_BYTES)
+}
+
+/// 合计内存能不能给（纯函数，供测试钉住）。
+///
+/// 采不到就不给——给 0 等于把「没判」说成「没占用」：面板写「合计内存 0 MB」
+/// 会让用户以为这些服务不占内存，而真相是「这台机器采不到」。
+fn total_rss_mb(total_rss_bytes: u64, snapshot_supported: bool) -> Option<f64> {
+    if !snapshot_supported {
+        return None;
+    }
+    Some(round1(total_rss_bytes as f64 / 1024.0 / 1024.0))
+}
+
 /// 受管服务全景 → JSON（模型与设置页共用一份口径）。
 ///
 /// 顶层带合计口径（合计 RSS 与合计告警）——单服务数据在 `services` 数组里。
@@ -2207,9 +2243,15 @@ pub(crate) fn services_snapshot_json<R: tauri::Runtime>(
     let arr: Vec<serde_json::Value> = list.iter().map(|s| service_to_json(s, with_tail)).collect();
     let usage = crate::app_state::services_usage(app);
     let u = usage.lock().unwrap_or_else(|e| e.into_inner());
+    let can_sample = snapshot_supported();
     serde_json::json!({
         "services": arr,
-        "totalRssMb": round1(u.total_rss_bytes as f64 / 1024.0 / 1024.0),
+        // 合计内存：采不到时给 null——「没判」不是「没占用」，面板据此
+        // 不显示「合计内存 0 MB」，改说「本平台采不到」。
+        "totalRssMb": total_rss_mb(u.total_rss_bytes, can_sample),
+        // 本平台能不能采到进程资源占用（Windows 不能）。面板据此说明
+        // 「本平台暂不支持进程资源采集」，而不是让用户对着空白猜。
+        "snapshotSupported": can_sample,
         "warnings": u.warnings,
         "sampledAt": u.sampled_at_ms,
         // 本平台能不能采到监听 socket。Windows 不能——面板据此说明

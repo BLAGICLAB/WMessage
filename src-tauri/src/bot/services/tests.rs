@@ -1156,3 +1156,70 @@ fn exited_audit_line_distinguishes_our_kill_from_its_own_exit() {
         "自己退的写 none——不能留空让人以为字段丢了"
     );
 }
+
+// ── 资源采集能力：采不到 ≠ 没占用 ──
+
+/// 回归：本平台采不到进程快照时，面板不能显示「合计内存 0 MB」。
+///
+/// 空不等于没占用——那是**没判**。Windows 上快照层走 ps / /proc，采不到，
+/// 合计恒为 0；显示成「合计内存 0 MB」会让用户以为这些服务不占内存。
+#[test]
+fn total_rss_is_not_published_when_the_platform_cannot_sample() {
+    // 采得到 → 给数
+    assert_eq!(
+        total_rss_mb(145 * 1024 * 1024, true),
+        Some(145.0),
+        "采得到时给合计内存"
+    );
+    // 采不到 → 不给数（给 0 等于把「没判」说成「没占用」）
+    assert_eq!(total_rss_mb(0, false), None, "采不到就不给合计内存");
+    assert_eq!(
+        total_rss_mb(145 * 1024 * 1024, false),
+        None,
+        "采不到时即便有字节数也不给——那个数不是采来的"
+    );
+}
+
+/// 回归：采不到时，合计 RSS 的阈值告警是**没判**，不是「没超」。
+///
+/// 拿恒为 0 的合计去比 1GB 阈值，等于把「这台机器采不到」写成「内存没超」，
+/// 阈值告警在 Windows 上永远不响。
+#[test]
+fn total_rss_threshold_is_not_judged_when_nothing_can_be_sampled() {
+    assert_eq!(
+        total_rss_warning(0, false),
+        None,
+        "采不到不是「没超」——是没判"
+    );
+    assert_eq!(
+        total_rss_warning(RSS_TOTAL_WARN_BYTES, false),
+        None,
+        "采不到时连超了也不判"
+    );
+    assert_eq!(total_rss_warning(0, true), Some(false), "采得到：没超");
+    assert_eq!(
+        total_rss_warning(RSS_TOTAL_WARN_BYTES, true),
+        Some(true),
+        "采得到：超了"
+    );
+}
+
+/// 快照 JSON 必须声明本平台能不能采到资源（前端按它显示能力提示）。
+#[test]
+fn snapshot_json_declares_whether_resources_can_be_sampled() {
+    let app = tauri::test::mock_app();
+    app.manage(crate::app_state::AppState::default());
+    let json = services_snapshot_json(app.handle(), false);
+    assert_eq!(
+        json.get("snapshotSupported"),
+        Some(&serde_json::json!(crate::bot::procs::snapshot_supported())),
+        "snapshotSupported 键名/类型不能变（前端按它显示「本平台不支持采集」）"
+    );
+    if !crate::bot::procs::snapshot_supported() {
+        assert!(
+            json["totalRssMb"].is_null(),
+            "采不到时合计内存给 null，不给 0：{}",
+            json["totalRssMb"]
+        );
+    }
+}
