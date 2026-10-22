@@ -170,8 +170,19 @@ fn gate_no_line_break(text: &str) -> Option<ToolResult> {
     None
 }
 
+/// 敏感控件角色：这类角色本身就是密码框
+///
+/// macOS 的密码框角色是 AXSecureTextField，标题常是空的——只按「标题 / 标识里
+/// 有没有『密码』这类词」判，等于把闸门交给应用作者的文案习惯。
+const SENSITIVE_ROLES: &[&str] = &["AXSecureTextField"];
+
 /// 敏感控件闸：密码 / 验证码一类控件不接受输入
 fn gate_sensitive(node: &UiNode) -> Option<ToolResult> {
+    // 角色与平台标志优先于文案：密码框的标题可能是空的
+    let role = node.role.to_ascii_lowercase();
+    if node.is_password || SENSITIVE_ROLES.iter().any(|r| role.eq_ignore_ascii_case(r)) {
+        return Some(sensitive_denied(node));
+    }
     let hay = format!(
         "{} {} {}",
         node.role,
@@ -180,12 +191,21 @@ fn gate_sensitive(node: &UiNode) -> Option<ToolResult> {
     )
     .to_lowercase();
     if SENSITIVE_KEYWORDS.iter().any(|k| hay.contains(k)) {
-        return Some(ToolResult::denied(format!(
-            "拒绝操作：目标控件是敏感控件（{}），不代填密码 / 验证码类内容。",
-            node.title
-        )));
+        return Some(sensitive_denied(node));
     }
     None
+}
+
+/// 敏感控件拒绝文案（标题空时用角色，模型才知道拦的是哪个控件）
+fn sensitive_denied(node: &UiNode) -> ToolResult {
+    ToolResult::denied(format!(
+        "拒绝操作：目标控件是敏感控件（{}），不代填密码 / 验证码类内容。",
+        if node.title.is_empty() {
+            &node.role
+        } else {
+            &node.title
+        }
+    ))
 }
 
 /// 目标解析：控件 id 直接用；否则按标题 / 角色 / 标识模糊匹配树里的控件
@@ -740,6 +760,7 @@ mod tests {
             size: None,
             depth: 0,
             actionable: false,
+            is_password: false,
         };
         assert!(gate_sensitive(&node).is_some(), "密码框必须拒绝");
         let normal = UiNode {
@@ -748,6 +769,58 @@ mod tests {
             ..node
         };
         assert!(gate_sensitive(&normal).is_none(), "普通输入框不该拦");
+    }
+
+    /// 敏感控件闸：角色是密码框、标题为空时也要拦
+    ///
+    /// 只按文案判的旧实现在这里会放行——macOS 的 AXSecureTextField 标题常是空的，
+    /// 于是「密码框可被代填」。
+    #[test]
+    fn sensitive_gate_blocks_password_role_without_a_title() {
+        let node = UiNode {
+            id: "1:0.0".into(),
+            role: "AXSecureTextField".into(),
+            title: String::new(),
+            description: String::new(),
+            value: None,
+            identifier: None,
+            enabled: Some(true),
+            position: None,
+            size: None,
+            depth: 0,
+            actionable: false,
+            is_password: false,
+        };
+        assert!(
+            gate_sensitive(&node).is_some(),
+            "AXSecureTextField 必须拒绝（标题为空时更不能放行）"
+        );
+    }
+
+    /// 敏感控件闸：Windows UIA 报 IsPassword 的控件也要拦
+    ///
+    /// UIA 的密码框在本地化环境里角色只是普通「编辑」，Name 也可能是空的——
+    /// 靠角色文案判会漏，只能看 IsPassword 属性。
+    #[test]
+    fn sensitive_gate_blocks_uia_password_flag() {
+        let node = UiNode {
+            id: "1:0.1".into(),
+            role: "编辑".into(),
+            title: String::new(),
+            description: String::new(),
+            value: None,
+            identifier: None,
+            enabled: Some(true),
+            position: None,
+            size: None,
+            depth: 0,
+            actionable: false,
+            is_password: true,
+        };
+        assert!(
+            gate_sensitive(&node).is_some(),
+            "UIA 报 IsPassword 的控件必须拒绝"
+        );
     }
 
     /// 接线守卫：六件套必须真的接进工具表

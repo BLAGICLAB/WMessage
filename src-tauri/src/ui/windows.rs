@@ -290,6 +290,11 @@ fn collect(
             }),
             depth,
             actionable: supports_invoke(&child),
+            // 密码框的 Name 常是空的或写成「密码」以外的东西，靠标题匹配会漏
+            is_password: unsafe { child.CurrentIsPassword() }
+                .ok()
+                .map(|b| b.as_bool())
+                .unwrap_or(false),
         });
         if depth < max_depth {
             collect(auto, &child, id, depth + 1, max_depth, max_nodes, cond, out);

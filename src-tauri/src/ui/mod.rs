@@ -67,6 +67,8 @@ pub struct UiNode {
     pub depth: usize,
     /// 是否支持「按控件本身触发」（AXPress / UIA Invoke）——比坐标点击稳，优先用
     pub actionable: bool,
+    /// 是否是密码框（Windows UIA 的 IsPassword；macOS 用 AXSecureTextField 角色判定）
+    pub is_password: bool,
 }
 
 // ── 总开关（flag 文件）──────────────────────────────────────────────────────

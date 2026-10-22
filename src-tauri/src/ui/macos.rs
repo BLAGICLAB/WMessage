@@ -327,6 +327,8 @@ fn collect(
             size: size_attr(&child, AX_SIZE),
             depth,
             actionable: can_press(&child),
+            // macOS 的密码框靠 AXSecureTextField 角色判定（见 bot_ui 的敏感闸）
+            is_password: false,
         });
         if depth < max_depth {
             collect(&child, id, depth + 1, max_depth, max_nodes, out);
