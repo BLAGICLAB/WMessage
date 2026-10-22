@@ -19,11 +19,13 @@
 
 ## 一、换 exe
 
-### 1.1 mac 侧产物（2026-10-22 23:0x 重建，SHA256 随文核对）
+### 1.1 mac 侧产物（2026-10-23 出包时重建，SHA256 随文核对）
 
 上一轮那份 `wmessage.exe`（SHA256 `adebd0d…`，基线 `a20f0ec3`）**跟着 `src-tauri/target/` 整个清掉了**——
-本机一度没有可拷的产物，照旧 SHA256 去核对会直接扑空。已重建两次，当前这份含 **D-11 修复**
-（`create_skill` 前置拒绝记 WARN 而非 ERROR）：
+本机一度没有可拷的产物，照旧 SHA256 去核对会直接扑空。2026-10-23 出整包时重建了一次，
+当前这份含 **D-11 修复**（`create_skill` 前置拒绝记 WARN 而非 ERROR）+ **2026-10-23 分模块审计那批
+17 条修复**（UI 自动化 6 条 P2 + 2 条跨平台契约、凭据面 3 条、标签一致性 4 条、
+任务卡 3 条、底座 1 条、P3 择优 7 条）：
 
 ```
 /Users/renshi/Projects/wmessage/src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
@@ -31,12 +33,19 @@
 
 | 项 | 值 |
 |---|---|
-| 大小 | 74,550,625 B |
+| 大小 | 75,081,877 B |
 | 格式 | `PE32+ executable (GUI) x86-64 (stripped to external PDB), for MS Windows` |
-| SHA256 | `4fc1cdad5b4239cc9a0f7f96d413616bf7ed78d262c61644d7188a8b607a982e` |
-| 构建基线 | `76dc0335`（含 D-1 / D-2 / D-6 / D-7 / D-8 五项修复 + **D-11** + 本轮探针与对拍改动） |
+| SHA256 | `a53323316d632fedc07e79d2abd7f78c27af169b927e9484ca42b8cdb6ccc4e5` |
+| 构建基线 | `27ccf452`（含 D-1 / D-2 / D-6 / D-7 / D-8 五项修复 + **D-11** + 10-23 审计批 17 条） |
+| 整包 | `wmessage-portable-2026-10-23.zip`（110,219,309 B） |
+| 整包 SHA256 | `e0d98a9237fc4dc2af6d0b15b31f40dbe5d367964bf1e86c01af2d7641bdb2dc` |
 
-> 中间还有一份 `e24a91b1…`（74,635,241 B，基线 `1b44d38e`）——**不含 D-11**，已被本次替换，别再用。
+> 已被替换、别再用的旧产物：`4fc1cdad…`（74,550,625 B，基线 `76dc0335`，10-22 那轮重建）、
+> `e24a91b1…`（74,635,241 B，基线 `1b44d38e`，不含 D-11）、
+> `adebd0d…`（基线 `a20f0ec3`，产物已被 target 清理）。
+>
+> **大小不能当校验依据**——同一份源码的两次构建差过 85 KB（74,635,241 → 74,550,625），
+> 认 SHA256。
 
 重建命令（换机器或产物再丢时用）：
 
@@ -59,11 +68,16 @@ shasum -a 256 src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
 > （`app_data_dir | path=C:\wmessage-portable-2026-10-22`）——从 `D:\Program Files` 挪到了
 > `C:\`，因为 `Program Files` 普通账号写不进去。**下面所有命令里的 `$PKG` 都指你实际放的目录**，
 > 换机器时改这一处即可。
+>
+> **2026-10-23 出了新整包**（`wmessage-portable-2026-10-23.zip`）：解压到
+> `C:\wmessage-portable-2026-10-23`，把 `$PKG` 改成它。旧包 `C:\wmessage-portable-2026-10-22`
+> 里的 `wmessage.db` 不会自动跟过来——**要旧数据就把旧的 `wmessage.db` 与 `AI_Gen_Files` 一起拷过去**
+> （或者新包里直接换 exe，那数据自然还在原地）。
 
 ### 1.2 Windows 侧替换步骤
 
 ```powershell
-$PKG = "C:\wmessage-portable-2026-10-22"   # 按你实际放的位置改
+$PKG = "C:\wmessage-portable-2026-10-23"   # 按你实际放的位置改
 
 # 1) 确认应用没在跑（否则 exe 被占着，换不进去）
 Get-Process -Name wmessage -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
@@ -88,7 +102,7 @@ Get-FileHash "$PKG\wmessage.exe" -Algorithm SHA256 |
 
 ```powershell
 $PS  = "D:\wmessage-probe\regression-probe.ps1"
-$PKG = "C:\wmessage-portable-2026-10-22"
+$PKG = "C:\wmessage-portable-2026-10-23"
 powershell -ExecutionPolicy Bypass -File $PS locate -ExeDir $PKG
 ```
 
@@ -180,7 +194,7 @@ powershell -ExecutionPolicy Bypass -File $PS fixes -ExeDir $PKG
 
 ### 2.5 D-1 · 面板不再显示构建机路径（**2026-10-22 22:45 已复验转 PASS**）
 
-**已验到的证据**：`mcp.builtin_materialized | id: builtin-playwright | name: Playwright | 包: C:\wmessage-portable-2026-10-22\playwright-mcp（就位）`——路径指向**本包目录**、状态是「就位」，构建机 macOS 绝对路径不再泄漏。
+**已验到的证据**：`mcp.builtin_materialized | id: builtin-playwright | name: Playwright | 包: C:\wmessage-portable-2026-10-22\playwright-mcp（就位，10-22 包上的证据）`——路径指向**本包目录**、状态是「就位」，构建机 macOS 绝对路径不再泄漏。
 
 **回归确认**（换新包后顺手看一眼）：设置页 →「MCP 服务器」，看内置 Playwright 那条的包路径。
 

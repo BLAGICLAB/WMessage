@@ -6,6 +6,57 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-23（周五）出包：Windows 绿色版 `wmessage-portable-2026-10-23.zip`（105 MB）
+
+**背景**：要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程执行，
+全程 macOS 交叉编译，无 Windows 机器参与构建。
+
+**这一版的意义在于：2026-10-23 那批分模块审计的修复，第一次进 Windows 包。**
+其中 UI 自动化的 6 条 P2 与 2 条跨平台契约（macOS 前台实测、Windows 控件值读 UIA
+ValuePattern）是**只可能在 Windows 上验的**——它们此前只过了源码侧，实机一次没跑过。
+所以这一版既是「给用户的最新包」，也是「那批修复的第一次实机载体」。
+
+**构建**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-23.zip`
+  （110,219,309 B / 205 项 / 顶层 9 项，与 10-22 版同构）
+- `wmessage.exe`：75,081,877 B（约 71.6 MB，基于 main @ `27ccf452`，mingw 交叉编译，
+  完整 `npx tauri build --target x86_64-pc-windows-gnu --no-bundle`，前端 vite 先构建后嵌入）
+- exe SHA256：`a53323316d632fedc07e79d2abd7f78c27af169b927e9484ca42b8cdb6ccc4e5`
+- 整包 SHA256：`e0d98a9237fc4dc2af6d0b15b31f40dbe5d367964bf1e86c01af2d7641bdb2dc`
+- `dotnet/`：**复用上一版**（`packaging/wmessage-portable-dotnet-staging/` 那份 189 文件
+  self-contained .NET 8）——手册允许「`src-tauri/dotnet/` 自上次出包以来无改动即可复用」，
+  实测该目录自 10-19 起无提交，重 publish 只会得到同样内容。**注意别取错**：
+  `packaging/wmessage-portable-staging/dotnet/` 是 **framework-dependent 的 7 文件老货**
+  （用户机没装 .NET 8 就起不来）
+- `onnxruntime.dll`：1.28.0，从 NuGet 拉取（与 ort 2.0.0-rc.13 匹配，已核对
+  `ort-sys-2.0.0-rc.13/build/download/dist.tsv` 的 `ms@1.28.0`）
+- 模型目录（`bge-small-zh-v1.5/` 23 MB、`pp-ocr-v6/` 31 MB）从仓库根复制
+- 固定文件（WebView2Loader.dll / MicrosoftEdgeWebview2Setup.exe）从
+  `packaging/wmessage-portable-staging/` 复用
+- README 的「文件说明」按实际内容对齐（含 exe 实际大小），「更新记录」补 10-23 那条
+
+**距上一版（2026-10-22，基线 `7fbd3870`）**：72 个提交，源码变更 50 个文件；
+类型分布 fix 32、docs 32、test 6、feat 2。
+
+**校验**：
+- `ZIP_OK 205 files`，顶层 9 项，无多余文件夹层级，无 `.DS_Store`
+- 包内 exe 的 SHA256 与构建产物逐字节一致
+- `objdump -p wmessage.exe | grep -i onnxruntime` → 空（load-dynamic，运行时由随包 DLL 提供）
+- `file wmessage.exe` → PE32+ executable (GUI) x86-64
+- dotnet/ 抽查 `coreclr.dll` / `hostfxr.dll` / `hostpolicy.dll` / `wm-docx-revisions.exe`
+  齐备 → 确为 self-contained（`runtimeconfig.json` 带 `includedFrameworks`）
+- macOS 侧 `cargo check` 通过
+
+**记账**：exe 的 SHA256 与包路径同步进了 `docs/realmachine-rerun-2026-10-22.md` §1.1，
+旧的 `4fc1cdad…` / `e24a91b1…` / `adebd0d…` 三份标为已替换——**大小不能当校验依据，
+认 SHA256**（同一份源码的两次构建差过 85 KB）。
+
+**未做**：Windows 实机验收（人工）——双击启动、便携锚定（exe 同目录生成
+wmessage.db / AI_Gen_Files）、机器人语义检索与 `ocr_image` 跑一张带文字的本地图、
+以及**桌面 UI 自动化六件套按新的拒绝语义复验**：无标题控件一律要确认、控件值读得出、
+动作前复核窗口与控件身份——照旧预期判会误判成 FAIL（判据已写进
+`docs/realmachine-regression-test.md` 的 S25 与 W06 两张卡）。
+
 ## 2026-10-22（周四）实机变异测试：三个缺陷的修法，都在「判据与判定的位置」上
 
 **背景**：2026-10-22 的 Windows 实机跑完 W 序列（09 项），附录 D 记了 9 条发现。
