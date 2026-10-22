@@ -1217,6 +1217,37 @@ pub fn resolve_temperature(config: Option<f64>, entry: Option<f64>) -> Option<f6
     config.or(entry)
 }
 
+/// 终稿自检侧调条目的放行判定
+///
+/// 侧调是**真实带 key 的请求**：条目所属厂商没过连接测试时，主请求被 vendor 门
+/// 拦下，侧调请求却照发——等于把 key 发往未验证的 base_url。所以侧调过同一道门。
+/// 拦下时回落主路径内的自检（不阻断主流程）+ 审计。
+enum SelfcheckDecision {
+    /// 放行：条目解析成功且厂商已验证
+    Use(crate::bot::config::ResolvedModel),
+    /// 不放行：条目解析失败（不存在 / 已停用 / 拿不到 key）
+    ResolveFailed(String),
+    /// 不放行：厂商没过连接测试（回落主路径内的自检）
+    VendorNotVerified { vendor: String, reason: String },
+}
+
+/// 侧调条目的放行判定（纯判定，可单测）
+fn decide_selfcheck(
+    resolved: Result<crate::bot::config::ResolvedModel, crate::error::CommandError>,
+    verified_vendors: &[String],
+) -> SelfcheckDecision {
+    match resolved {
+        Err(e) => SelfcheckDecision::ResolveFailed(e.to_string()),
+        Ok(r) => match crate::bot::ensure_vendor_verified(r.vendor.as_deref(), verified_vendors) {
+            Ok(()) => SelfcheckDecision::Use(r),
+            Err(reason) => SelfcheckDecision::VendorNotVerified {
+                vendor: r.vendor.clone().unwrap_or_default(),
+                reason,
+            },
+        },
+    }
+}
+
 // 主循环本体：入口装配（deps / 出口分流）+ 轮次循环 + 每轮七类钩子接线。
 // 长度本身就是这些接线堆在一起的结果，拆函数会把「钩子相对答案定稿的位置」
 // 这条不变量摊散到多个文件里——而那正是上面 post_turn_layer_tests 要守的。
@@ -1309,12 +1340,13 @@ pub async fn run_model_loop(
     // model/协议/key）；解析失败 → 响亮审计 + 回落主循环内自检，不阻断。
     // 必须在主 http 构造前完成——那里会 move cfg 的字段。
     let selfcheck_http = cfg.selfcheck_model_id.as_ref().and_then(|entry_id| {
-        match crate::bot::resolve_model_override(
+        let resolved = crate::bot::resolve_model_override(
             cfg.models_by_provider.as_ref(),
             entry_id,
             cfg.max_tokens,
-        ) {
-            Ok(r) => Some(LlmHttp {
+        );
+        match decide_selfcheck(resolved, &cfg.verified_vendors) {
+            SelfcheckDecision::Use(r) => Some(LlmHttp {
                 client: shared_llm_client().clone(),
                 base_url: r.base_url,
                 api_key: r.api_key,
@@ -1327,12 +1359,25 @@ pub async fn run_model_loop(
                 top_p: None,
                 system_prompt: None,
             }),
-            Err(e) => {
+            SelfcheckDecision::ResolveFailed(e) => {
                 crate::audit::write_event(
                     &app,
                     crate::audit::AuditLevel::Warn,
                     "final_selfcheck.model_resolve_failed",
-                    &[("entry", entry_id.clone()), ("err", e.to_string())],
+                    &[("entry", entry_id.clone()), ("err", e)],
+                );
+                None
+            }
+            SelfcheckDecision::VendorNotVerified { vendor, reason } => {
+                crate::audit::write_event(
+                    &app,
+                    crate::audit::AuditLevel::Warn,
+                    "final_selfcheck.vendor_not_verified",
+                    &[
+                        ("entry", entry_id.clone()),
+                        ("vendor", vendor),
+                        ("err", reason),
+                    ],
                 );
                 None
             }
@@ -5569,6 +5614,78 @@ mod post_turn_layer_tests {
         assert!(
             consumed < ret_after_hook,
             "钩子失败的消费必须在返回之前，否则失败静默丢失"
+        );
+    }
+}
+
+#[cfg(test)]
+mod selfcheck_vendor_gate_tests {
+    use super::*;
+    use crate::bot::config::ResolvedModel;
+
+    fn resolved(vendor: Option<&str>) -> Result<ResolvedModel, crate::error::CommandError> {
+        Ok(ResolvedModel {
+            base_url: "https://third-party.example/v1".into(),
+            model: "m".into(),
+            api_provider: "openai".into(),
+            api_key: "sk-side".into(),
+            vendor: vendor.map(|v| v.to_string()),
+            inference: crate::bot::config::EffectiveInference {
+                max_tokens: 32,
+                temperature: None,
+                top_p: None,
+                system_prompt: None,
+            },
+        })
+    }
+
+    /// 侧调条目指向没过连接测试的厂商 → 侧调不发（回落主路径内的自检）
+    ///
+    /// 回归背景：主请求被 vendor 门拦下，侧调请求却照发——真实带 key 的请求
+    /// 打往未验证的 base_url。
+    #[test]
+    fn selfcheck_must_not_use_a_vendor_that_failed_the_connection_test() {
+        let d = decide_selfcheck(resolved(Some("未验证厂商")), &[]);
+        assert!(
+            matches!(d, SelfcheckDecision::VendorNotVerified { .. }),
+            "未验证厂商的侧调条目必须被拦下（侧调请求是真实带 key 的请求）"
+        );
+        let d = decide_selfcheck(resolved(Some("未验证厂商")), &["别的厂商".into()]);
+        assert!(
+            matches!(d, SelfcheckDecision::VendorNotVerified { .. }),
+            "已验证名单里没有它 → 仍须拦下"
+        );
+    }
+
+    /// 已验证厂商 → 放行；无 vendor 的老条目 → 放行（与主路径同口径）
+    #[test]
+    fn selfcheck_allows_verified_vendors_and_legacy_entries() {
+        assert!(
+            matches!(
+                decide_selfcheck(resolved(Some("已验证厂商")), &["已验证厂商".into()]),
+                SelfcheckDecision::Use(_)
+            ),
+            "已验证厂商应当放行"
+        );
+        assert!(
+            matches!(
+                decide_selfcheck(resolved(None), &[]),
+                SelfcheckDecision::Use(_)
+            ),
+            "无 vendor 的老条目没有验证概念，应当放行"
+        );
+    }
+
+    /// 条目解析失败 → 回落（不发侧调），错误可行动
+    #[test]
+    fn selfcheck_falls_back_when_the_entry_cannot_be_resolved() {
+        let d = decide_selfcheck(
+            Err(crate::error::CommandError::ApiKeyMissing),
+            &["已验证厂商".into()],
+        );
+        assert!(
+            matches!(d, SelfcheckDecision::ResolveFailed(_)),
+            "解析失败必须回落（不发侧调）"
         );
     }
 }
