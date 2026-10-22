@@ -171,6 +171,7 @@ Windows 机器上 13:13~13:44 那次运行（`D:\Program Files\wmessage-portable
 | **W09** 绿色包本身 | ✅ **PASS** | 实机确认：目录内容齐全、首跑在 exe 同目录生成 `wmessage.db` 与 `AI_Gen_Files`（便携锚定生效，与 W01 互证）。**D-1 附项已在 2026-10-22 22:45 复验转 PASS**（内置 Playwright 包路径指向本包目录且「就位」） |
 | **S32** ready 超时不误报成「立即退出」 | 🔧 **源码已修 · 待实机复验** | 未修时的实测：`service.stop_requested | reason=ready_timeout` → `service.exited | exit_code=1 | uptime_ms=30772` → `service.stopped | method=taskkill` → `service.start_failed | reason=服务「python」启动后立即退出（退出码 1）。`——**服务活了整整 30 秒才被我们停掉**，却报成「启动后立即退出」；那个退出码 1 是 `taskkill /F` 的签名（详见附录 D-6）。已修（`aa80d2f9` `7f80865f` `a8b54f10`）：就绪判定四态 + **先判后停**（停止前取快照）+ 停止结果如实进文案 + `service.exited` 补 `stop_reason`。macOS 侧已端到端复现并变异复验（真 spawn、真等超时、真停），**Windows 实机复验还没跑**。见 `docs/realmachine-rerun-2026-10-22.md` §2.1 |
 | **S07** 端口闸采集失败不折叠成「判了没事」 | 🟡 **代码路径本机跑通 · 采集器真坏那半也跑通（沙箱）** | 本机把 `lsof` 的 exec 用沙箱掐掉（`bash scripts/sandbox-lsof-test.sh`，不动系统文件）：采样器如实报 `complete=false`（**不是**「采空但采成功」）→ 判定层判「没判」（`Unsupported`）、动态保留集**不清空**、快照 JSON 的 `listeningSampleOk` 翻 false、面板红字由前端用例守。**顺带查出真缺陷 D-15**：审计事件记在**反的转折**上——第一次失败什么都没记、之后每 30s 刷一条（已修，见附录 D-15）。卡片配方也顺带修对（macOS 的 lsof 在 `/usr/sbin/lsof`，`/usr/bin/lsof` 不存在；只摘 PATH 造不出失败）。**未验**：真 app 里 30s 巡检那一轮 + 面板红字实拍 |
+| **S21** 三处文件绑定并发不被整列覆盖 | 🟡 **代码路径本机跑通** | 「合并基线取对话框返回后的现值」这条由 `src/lib/useTaskFiles.test.tsx` 钉住：对话框挂起期间另一个窗口绑进来的那批**不会被覆盖掉**（三条路径都走同一内核；`ContextRail` 那条是同一套 ref 写法、源码核对过）。**变异复验**：基线改回渲染期快照（当年的 bug 形态）→ 用例红。**未验**：真机上「两窗口同时操作」的实拍（任务卡 ↔ 详情面板 ↔ 聊天右侧栏各一次） |
 
 **日志里几条不是缺陷、但值得记的**：
 
@@ -213,6 +214,7 @@ UIPI、凭据管理器、系统通知）。本机（macOS）能定 ①；②③ 
 | **S10** 函数名跨断连稳定 | 新增 e2e `disambiguated_names_survive_a_server_dropping_out`：两台**真** Python 桩（`p x` / `p.x`，前缀同为 `p_x`）连上后，**读主 agent 工具清单那份 JSON**（`tools_json_with_mcp` 的产物——模型看到的就是它），断一台 → 看剩下的名字 → 反过来再断一台 | ✅ **本机真跑通过**：断连那台不在后，剩下那台的名字没漂（`mcp_p_x_echo_2` 没退化成 `mcp_p_x_echo`）；两次剩下的名字不同；断连那台的旧名仍能反查到归属（→ 不会被报成「未知工具」）。**变异复验**：命名退回「按在场顺序重编号」→ 用例红，报错正是 `left: mcp_p_x_echo / right: mcp_p_x_echo_2` | 只剩模型那半：让模型列一次清单、用旧名调一次，看它会不会照旧名调 |
 | **S13** stdio 读侧行长上限 | `stdio_transport` 的行长闸单测（截到 cap 字节）+ **真子进程** e2e（5MB 畸形行 → 会话不断、客户端不回 Invalid Request） | ✅ **后端半本机真跑过** | 宿主 stderr 那行诊断（GUI 启动看不到，要从 cmd 里跑 exe） |
 | **S07** 端口闸采集失败不折叠 | 沙箱掐掉 `lsof` 的 exec（`scripts/sandbox-lsof-test.sh`）→ 采样报 `complete=false` → 判定层判「没判」、保留集不清空、JSON 翻 false、审计留痕 | ✅ **整条链本机跑通**（并查出真缺陷 D-15，已修） | 真 app 里 30s 巡检那一轮 + 面板红字实拍 |
+| **S21** 三处文件绑定并发不整列覆盖 | `useTaskFiles.test.tsx`：对话框挂起期间的并发绑定不丢（合并基线取最新 files） | 🟡 **本机跑通**（变异复验过） | 真机上两窗口同时操作实拍（三条路径各一次） |
 | **S08 / S32** 停止路径 | unix 侧：停掉后**进程组整个消失**（含逃逸孙进程）、pid≤1 → `no_process` | ✅ **unix 半本机真跑过**（Windows 那半是 W02/W05 的事） | Windows：`Get-Process` / `tasklist` 两处都空；权限不匹配版的「停不掉」；pid 0 变异（unix 专属） |
 | **S11** 子 agent 预算触达 | 守卫 `classify_outcome_treats_tool_fuse_as_budget_exceeded`（FUSE_MARKER → `budget_exceeded` + 原因 `max_tool_calls` + 部分结果进 summary） | 🟡 分类有守卫，**本机没额外实跑** | 真派一个烧满工具预算的子 agent（要模型） |
 | **S12** `rollback: none` 不执行回滚段 | 守卫 `rollback_none_does_not_run_the_rollback_segment` | 🟡 有守卫 | A/B 两个技能真跑一遍（要模型） |
@@ -220,7 +222,7 @@ UIPI、凭据管理器、系统通知）。本机（macOS）能定 ①；②③ 
 | **S18** 连接指纹认 env/headers | 守卫 `fingerprint_tests`（headers 变了必须换指纹） | 🟡 有守卫 | Windows：改 token 看是否重连 |
 | **S19** busy 拒答不当模型答复 | 守卫 `busy_result_is_marked_busy_…` | 🟡 有守卫 | Windows：真发一轮 |
 | **S22** 工具 panic 隔离 | 守卫 `tool_execution_is_panic_isolated` / `panic_in_tool_is_normalized_into_an_error_result` | 🟡 有守卫 | Windows：真触发一次 |
-| **S15 / S16 / S17 / S20 / S21 / S23 / S24 / S25 / S26~S29** | 要 GUI、系统通知、桌面自动化或模型回合 | ⬜ 本机定不了 | 原样跑（S15 有单独的验收方案 `docs/realmachine-overflow-test.md`） |
+| **S15 / S16 / S17 / S20 / S23 / S24 / S25 / S26~S29** | 要 GUI、系统通知、桌面自动化或模型回合 | ⬜ 本机定不了 | 原样跑（S15 有单独的验收方案 `docs/realmachine-overflow-test.md`） |
 
 > **一句话**：本机把 **S10 的后端判据**彻底跑了（那张卡原本是本批次第一个卡住的），
 > 其余卡片的**代码路径**都有守卫在钉着，剩下的全是「模型会不会照做」「Windows 平台差异」——
@@ -1676,6 +1678,12 @@ print("K" * 200000, end="")
 **第三条路径**：聊天右侧栏（`ContextRail`）用的是 Rust 侧 `pick_files_dialog`（不是 webview 的 `dialog.open`），要单独开一个会话重做一遍同样的步骤。
 
 **已知残留**（不是本项的 bug）：三处的「选文件」通道仍未统一，本项统一的是「合并 / 提示 / 落库」这一段。
+
+**代码路径已由用例守住**（2026-10-23）：`src/lib/useTaskFiles.test.tsx` —— 对话框挂起期间
+另一个窗口绑进来的那批文件**不会被整列覆盖**（合并基线取「对话框返回后的现值」）。
+变异复验：基线改回渲染期快照（当年的 bug 形态）→ 用例红。
+第三条路径（`ContextRail`）是同一套 ref 取最新值的写法（源码核对），但那条 GUI 路径
+没有用例覆盖——真机那半仍要人做。
 
 ---
 
