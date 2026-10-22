@@ -4,7 +4,10 @@
 //! 登记表：快照解析、ppid 树收集、PID 复用识别、整组杀护栏。
 
 use super::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+// HashMap 只在 unix 专属的增量比对用例里用到（Windows 没有那套函数）
+#[cfg(unix)]
+use std::collections::HashMap;
 
 fn snap(pid: u32, ppid: u32, st: &str) -> ProcSnapshot {
     ProcSnapshot {

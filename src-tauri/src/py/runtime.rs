@@ -1132,6 +1132,8 @@ mod tests {
     #[test]
     fn kill_tree_reaps_the_child() {
         let mut child = silent_cmd("sleep").arg("30").spawn().expect("应能起 sleep");
+        // pid 必须在 kill 之前取（kill 后 pid 可能已被回收）；unix 专属断言才用它
+        #[cfg(unix)]
         let pid = child.id();
         kill_tree(&mut child, &RunLimits::new(64 * 1024 * 1024, 10));
         assert!(

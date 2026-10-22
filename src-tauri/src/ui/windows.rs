@@ -9,7 +9,7 @@
 //! 前提：UIAutomation 读别的进程不需要额外权限，但**注入输入**受 UIPI 保护
 //! ——高权限进程（如以管理员运行的程序）不会被注入，这是 Windows 的硬限制。
 
-use windows::core::{Interface, GUID};
+use windows::core::GUID;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,

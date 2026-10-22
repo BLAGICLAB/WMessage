@@ -1232,7 +1232,9 @@ mod tests {
         let cmd = silent_cmd("python");
         let mut found_io = false;
         let mut found_utf8 = false;
-        for (k, v) in cmd.get_envs().flatten() {
+        // get_envs 的项是 (键, Option<值>)：None = 「从环境里继承」，
+        // 只看显式设过的那些（filter_map 把 None 滤掉）
+        for (k, v) in cmd.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))) {
             if k.to_str() == Some("PYTHONIOENCODING") && v.to_str() == Some("utf-8") {
                 found_io = true;
             }
