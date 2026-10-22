@@ -61,11 +61,11 @@ cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（�
 ## 一致性对拍（tests-audit/，已在 test-all.sh 门禁内）
 
 源码文本断言式检查（不跑业务代码，读源码断言结构/协议），`scripts/test-all.sh` 第 3 步会跑，
-pre-push 自动触发。前三个是 pytest 用例，末一个是独立守卫脚本，两种形态分开跑：
+pre-push 自动触发。前四个是 pytest 用例，末一个是独立守卫脚本，两种形态分开跑：
 
 ```bash
 python3 -m pytest tests-audit/audit_error_codes.py tests-audit/audit_module_map.py \
-                  tests-audit/audit_tauri_bridge.py -q   # pytest 用例：必须逐个点名
+                  tests-audit/audit_tauri_bridge.py tests-audit/audit_doc_claims.py -q   # pytest 用例：必须逐个点名
 python3 tests-audit/audit_no_eval.py                     # 独立守卫脚本：看退出码
 ```
 
@@ -82,6 +82,11 @@ python3 tests-audit/audit_no_eval.py                     # 独立守卫脚本：
 - `audit_module_map.py`：模块地图对拍（`docs/rust-bot-architecture.md` 模块树 ↔ 实际
   `src-tauri/src/**/*.rs`：树条目必须指向真实文件、不得重复、标了 `(NNN)` 的行数要与文件一致，
   每个源码文件必须有条目）
+- `audit_doc_claims.py`：实机验收卡片的**审计事件名**对拍（`docs/realmachine-regression-test.md`
+  与 `docs/realmachine-rerun-2026-10-22.md` 里引用的每个 `a.b` 形事件名都必须在源码里真的
+  存在）。卡片与代码分家时，执行者在机器上 grep 不到那一行，只能靠猜是「应用坏了」还是
+  「文档过期」——附录 D-3 就是这么被实机否证的。中文期望文案不在这道闸里：它们多是
+  `format!` 拼出来的运行时文本，整句比对会得到一堆假失败
 - `audit_no_eval.py`：前端禁动态求值静态守卫（CSP 配套）
 
 改 `docs/rust-bot-architecture.md` 的模块树后，本地跑一遍 `audit_module_map.py`：新增/删除/
