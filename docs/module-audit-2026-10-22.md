@@ -560,6 +560,54 @@ D 跨平台契约 / E P3 择优 / F 待定性）未开批次。
 **这批没动的**：C 数据一致性组（M11 四条 / M1 三条 / M14 一行）、D 跨平台契约（M15 两条）、
 E P3 择优、F 待定性 11 处。
 
+## 修复批次 · 2026-10-23（C 数据一致性 8 条 + D 跨平台契约 2 条 + E P3 择优 7 条）
+
+同样口径：先落复现用例（红）→ 修 → 变异复验（改坏 → 用例红 → 改回 → 绿）→ 单独提交。
+
+### C 数据一致性
+
+| 编号 | 缺陷 | 修法 | 提交 |
+|---|---|---|---|
+| M14 P2 | `with_write_conn` 裸锁 `DB_WRITE_LOCK` 但不置 `HOLDING_DB_WRITE` 线程标记 → 闭包内调 `upsert_tasks` 的断言在 debug 构建必触发 | 临界区改走 `db::lock_db_write()`（唯一会置位的入口） | `2a4d5fd1` |
+| M11 P2-1 | 合并逐条 UPDATE 自动提交、history 行最后才写 → 中途失败留半合并态（改写了标签但没有回滚凭据） | 改写搬进 `conn.transaction()`；回滚同样包事务；签名改 `&mut Connection`；命令层走 `with_write_conn` | `bac7f803` |
+| M11 P2-2 | 别名用 SQL `instr(tags, ?)` 子串粗筛（「集成测试」含「测试」也命中），Rust 侧却无条件加主标签 → 无关卡被改写 | 精确判定移到 Rust 侧（精确相等才加主标签） | `bac7f803` |
+| M11 P2-3 | 「新建主标签」占位值 `__new__` 原样下传 → 建出一个真叫 `__new__` 的标签 | 后端加 `NEW_MAIN_PLACEHOLDER`，拒占位值/空白/超长（长度上限取系统口径 `MAX_TAG_LEN`=30，不是 autotag 的 12） | `8572b5d3` |
+| M11 P2-4 | 合并/撤销后不广播 → 归档页与图谱长期显示旧标签；模块头一直承诺的 `tag_merge` 审计事件没写 | 命令层广播 `tasks-updated`（行级）+ `tasks-changed`；补 `tag_merge` 审计事件；`RollbackResult` 补回写的任务 id 供前端刷新 | `8572b5d3` |
+| M11 附带 | 「新建主标签」输入框根本打不出名字（输入第一个字符 → `main` 变该字符 → 输入框当场消失） | 「新建」改成独立 `creating` 状态，不再拿 `main` 兼任两义 | `48b53c9b` |
+| M1 P2-1 | 图谱铭牌用 `innerHTML` 拼不可信任务标题（bot 写卡 / 外来信封 / HTTP API）→ 标题里的尖括号被当标记解析 | 改 `createElement` + `textContent` 逐段拼装（类名不变，样式不动）；另加一条常驻守卫扫全仓 10 个危险口子必须零命中 | `c23bc5d7` |
+| M1 P2-2 | 软删不清调度字段：注释 / SPEC / 代码三方不一致 | **订正口径、不改代码**：`tasks.schedule` 两列已随遗留清扫退役，定时作业走独立表；`planStart/planEnd` 是网格位置不是触发器；导出是全量备份不是泄漏面；可逆软删应保留位置 | `e7f73523` |
+| M1 P2-3 | 截止时间无格式校验 → 打字半截值落库，解析失败被当成「无截止」，通知静默不发 | 详情浮窗套 `isValidDateTimeLocal`（与卡片同一守卫）；后端 `task_patch` 写口加 `validate_due`（与 `due_notify` 同口径，只认 `YYYY-MM-DD` 与 `YYYY-MM-DDTHH:mm`）；不挂 `upsert_tasks`（否则旧存量行重存会被拒） | `92769b45` |
+
+### D 跨平台契约 + A 组 M5 余下 P2（合成一个提交——`ui/mod.rs` 改签名会让中间态编译不过，拆不开）
+
+| 编号 | 缺陷 | 修法 | 提交 |
+|---|---|---|---|
+| M5 P2-1 | macOS 窗口 id 复用 TOCTOU：闸门审的是 A 窗，动作打在同 id 的 B 窗 | 动作前复核窗口身份（pid + 标题），变了就拒绝并让模型重取 id | `1c9ea780` |
+| M5 P2-2 | 闸门审的控件 ≠ 实际动的控件（界面在 inspect 与 click 之间变了） | 新增 `NodeIdentity`（标题/角色/位置），两平台后端动作前逐项比对，对不上就拒绝 | `1c9ea780` |
+| M5 P2-3 | 无标题按钮（纸飞机、垃圾桶这类图标按钮）绕危险闸——判不出危险就默认放行 | fail-closed：无标题一律要确认 | `1c9ea780` |
+| M5 P2-4 | 注入无全局互斥 → 并发注入互相踩 | `INJECT_LOCK` 全局互斥（截图留锁外，不占闸） | `1c9ea780` |
+| M5 P2-5 | 总开关变更零留痕（事后查不到「UI 自动化是什么时候被谁打开的」）；开关文件建即 0644 | 开关变更写 `ui_automation_toggle` 审计（带 `enabled` 与当前系统用户）；unix 建即 0600 并收紧盘上旧 flag | `1c9ea780` |
+| M15 P2-1 | macOS `focused` 恒 false（没实测前台窗口） | 按 NSWorkspace 实测前台窗口，与注入闸同一口径 | `1c9ea780` |
+| M15 P2-2 | Windows `UiNode.value` 恒 None | 读 UIA `CurrentValue`（密码框跳过读值，避免读出明文） | `1c9ea780` |
+
+### E P3 择优（7 条）
+
+| 编号 | 缺陷 | 修法 | 提交 |
+|---|---|---|---|
+| 僵尸 app_runs 行 | 失败路径不回写 → 状态永远停在 running；进程被杀则永远僵尸 | 失败路径统一回写终态 + 陈旧 running 行清扫（阈值 2h）+ 启动即扫 | `ce3faead` |
+| api-token 空残留 | 空 token 文件占着路径，`create_new` 恒撞 AlreadyExists → `api_start` 恒失败 | 空文件改走原子覆写自愈（tmp + rename，不留明文残渣） | `afe7f47b` |
+| bing 大图 | 整个响应体先进内存才判大小 | 先查 `content-length`，再流式读边读边计数 | `992d7c5c` |
+| OCR 解码炸弹 | 输入无字节上限、无像素上限 | 字节上限 32MB + 像素预算 20MP（解码前只读文件头） | `e07b7a0d` |
+| Paused 技能占位 | 等确认的技能无限期占着同名技能，别人起不来 | Paused 纳入超时（口径与熔断、状态机统一）+ 启动清扫 + 冲突判定放行过期项 | `b1ac8348` |
+| 调度器空转 | 机器人总开关关着时，到点作业每 30s 派发一次、每次都被拒，一天几千条噪声 | 纯函数 `classify_job` 判 `Held`：不派发、水位不推进（保住「恢复后补跑」语义）、不写跳过审计；panic 后清 `retry_at` | `633e7111` |
+| taskEq 键序敏感 | `JSON.stringify` 全串比较，键序不同即判成变更（多余写 + 无意义推进 updatedAt） | 改键序无关的稳定序列化再比 | `b2ad135a` |
+
+**这批没动的**：A 组第 6 条 P2（授权模型 / 应用白名单是否产品化）——它不是缺陷，是要你拍方向；
+F 组 11 处 NEEDS-VERIFICATION 仍等你给口径。
+
+**本批的验证**：Rust 单测 1867 通过 / 前端 1011 通过 / clippy 干净 / 全量门禁
+（nextest + vitest + 29 条对拍）全绿；架构文档的行数标注同步更新（模块树变了，行数跟着变）。
+
 ---
 
 ## 汇总与拍板清单
@@ -576,15 +624,20 @@ machete 干净）。整体判断：**没有 P0**——安全边界（本地 API�
 （UI 自动化）与**凭据/数据一致性边角**（keyring 故障窗口、合并无事务），多为上轮审计
 「七链」之外的模块的首轮深审收益。
 
+修复推进到 2026-10-23 收口：P1 五条 + P2 二十条**全部落地**（M5 的「授权模型」一条不是缺陷、
+是要产品侧拍方向，另计），P3 择优七条落地。修完的基线：**Rust 单测 1867 通过 / 前端 1011 通过
+/ tests-audit 29 通过 / clippy 干净 / 全量门禁全绿**。剩 F 组 11 处待你给口径。
+
 ### 拍板清单（按修复收益分组，建议按序开修复批）
 
 **A. M5 UI 自动化整组（1 个文件群，5 P1 + 6 P2，建议整组一次修）**
 P1：危险关键词大小写敏感；ui_type 换行绕确认（违背 schema 承诺）；敏感判定缺
 AXSecureTextField/IsPassword 角色；Windows 坐标点击归一化 bug（落点失控）；后台窗口注入
-打进前台任意应用。**→ 5 条 P1 已于 2026-10-23 逐条修掉（见上方「修复批次」），6 条 P2 未动。**
+打进前台任意应用。**→ 5 条 P1 已于 2026-10-23 逐条修掉（见上方「修复批次」）。**
 P2：macOS 窗口 id 复用 TOCTOU；闸门快照与实际动作二次解析不一致；
 无标题按钮绕确认（建议 fail-closed）；注入无全局互斥；开关变更无审计+flag 权限；授权模型
 （应用白名单）是否要产品化——需要你拍方向。
+**→ 前五条已于 2026-10-23 修掉（与 D 组合并成一个提交）；第六条不是缺陷、是要你拍方向，仍未动。**
 
 **B. 凭据面（M12 三条 P2）**
 ① update_config_file 补 strip_verified_keys（keyring 故障窗口丢密钥，零丢失语义）；
@@ -597,15 +650,21 @@ M11 四条：合并搬进 with_write_conn+同事务；instr 子串越界改精�
 merge/rollback 补广播。M1 三条：软删补清 plan 字段（或订正注释+SPEC）；浮窗 due 套
 isValidDateTimeLocal+后端补格式校验；GraphCanvas 铭牌 innerHTML 改 textContent。
 M14 一行修：with_write_conn 改用 lock_db_write()（debug 构建 panic）。
+**→ 八条已于 2026-10-23 修掉（见上方「修复批次」）。** M1 那条软删选了「订正口径」而非「清字段」：
+调度两列早已退役、plan 是网格位置不是触发器、导出是全量备份——改代码会破坏可逆操作的语义。
 
 **D. 跨平台契约（M15 两条 P2）**
 macOS focused 实测前台（或 Option<bool>+声明）；Windows 读 UIA ValuePattern 或声明恒空。
+**→ 两条已于 2026-10-23 修掉**（与 A 组余下五条 P2 合成一个提交——`ui/mod.rs` 改签名会让中间态编译不过）。
 
 **E. P3 择优建议（其余 70+ 条见各批正文）**
 僵尸 app_runs 行+启动清扫；孤儿通知两条（服务告警撤收、ask wfq 回收）；机器人开关关闭的
 调度空转；Paused 技能超时；审计缺口三项（apps_run、配置变更/active 切换、consolidate 删除
 内容）；bing/ocr 输入上限；M10 token 文件空残留自愈；archiveRule 配置未加载不应用；
 taskEq 键序敏感。evolution/ 死目录随手清。
+**→ 已修 7 条**（僵尸行+启动清扫 / token 文件空残留 / bing 大图 / OCR 上限 / Paused 超时 /
+调度空转 / taskEq 键序）。**未修**：孤儿通知两条、审计缺口三项（apps_run 口径属 F 组第②条、
+配置变更与 consolidate 删除内容待排）、archiveRule 配置未加载不应用、evolution/ 死目录清理。
 
 **F. 待定性 11 处（需要你给口径，不急着修）**
 ① apps 是否纳管 py-enabled.flag；② apps_run 审计事件口径；③ 历史畸形 app id 是否存在
