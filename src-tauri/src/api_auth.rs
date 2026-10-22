@@ -27,30 +27,46 @@ const ENABLED_FLAG_FILE: &str = "api-enabled.flag";
 pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
     let dir = crate::paths::flags_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(TOKEN_FILE);
-    if let Ok(s) = std::fs::read_to_string(&path) {
-        let s = s.trim().to_string();
-        if !s.is_empty() {
-            // 存量文件权限可能过宽（历史版本 0644 写入窗口遗留）
-            // 永不补 chmod 的话会一直裸奔，读取时顺手收紧（best-effort，失败不挡读）
-            if let Err(e) = tighten_token_permissions(&path) {
-                eprintln!("[api_auth] 警告：存量 token 文件权限收紧失败（可能仍可读）：{e}");
+    load_or_create_token_at(&dir.join(TOKEN_FILE))
+}
+
+/// token 文件的读写决策（抽出便于单测：load_or_create_token 依赖 AppHandle 无法直测）。
+///
+/// 三种盘上状态：
+/// - 非空 → 直接用（顺手收紧权限）
+/// - 存在但为空 → 坏态（写 token 的进程崩在 create 与 write 之间），
+///   原子覆写自愈：create_new 在空文件上永远撞 AlreadyExists，
+///   走首建路径只会空转重试，「下次调用自愈」并不成立
+/// - 不存在 → 原子首建（并发首跑只有一个胜者）
+fn load_or_create_token_at(path: &std::path::Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let s = s.trim().to_string();
+            if !s.is_empty() {
+                // 存量文件权限可能过宽（历史版本 0644 写入窗口遗留）
+                // 永不补 chmod 的话会一直裸奔，读取时顺手收紧（best-effort，失败不挡读）
+                if let Err(e) = tighten_token_permissions(path) {
+                    eprintln!("[api_auth] 警告：存量 token 文件权限收紧失败（可能仍可读）：{e}");
+                }
+                return Ok(s);
             }
-            return Ok(s);
+            return repair_empty_token_file(path);
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("读取 token 文件失败：{e}")),
     }
     let token = uuid::Uuid::new_v4().simple().to_string();
     // 原子首建：并发首跑（双开应用/后台任务）两进程都可能
     // 观测不到 token 各生成 UUID——check-then-act 让后写覆盖先写，输家返回
     // 与磁盘不符的 token。create_new 原子占位：唯一胜者写自己的 token；
     // 输家重读胜者落盘的那份（胜者 create 与 write_all 之间有空窗，短暂重试）。
-    if create_token_file_atomic(&path, &token)? {
+    if create_token_file_atomic(path, &token)? {
         return Ok(token);
     }
     for _ in 0..50 {
         // 同步阻塞重试（上限 500ms 与胜者 create→write_all 空窗同量级）：
         // 本函数仅供 sync Tauri command 调用，勿在 async/UI 线程直接用。
-        if let Ok(s) = std::fs::read_to_string(&path) {
+        if let Ok(s) = std::fs::read_to_string(path) {
             let s = s.trim().to_string();
             if !s.is_empty() {
                 return Ok(s);
@@ -59,6 +75,21 @@ pub fn load_or_create_token(app: &AppHandle) -> Result<String, String> {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     Err("token 文件被并发创建但内容一直为空（读超时，下次调用自愈）".into())
+}
+
+/// 空 token 文件自愈：原子覆写（tmp + rename），不用 create_new——
+/// 空文件已经占着路径，create_new 必然撞 AlreadyExists，
+/// 覆写后以盘上值为准（并发自愈时双方读到同一份）。
+fn repair_empty_token_file(path: &std::path::Path) -> Result<String, String> {
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    write_token_file(path, &token)?;
+    let on_disk =
+        std::fs::read_to_string(path).map_err(|e| format!("自愈后读取 token 文件失败：{e}"))?;
+    let on_disk = on_disk.trim().to_string();
+    if on_disk.is_empty() {
+        return Err("token 文件自愈后仍为空".into());
+    }
+    Ok(on_disk)
 }
 
 /// 原子首建 token 文件（create_new 占位 + unix 0600）：Ok(true)=本次创建成功，
@@ -334,6 +365,62 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".tmp")),
             "成功后不得遗留 tmp 残渣"
+        );
+    }
+
+    /// 空 token 文件必须自愈成可用 token：create_new 撞 AlreadyExists 的旧路
+    /// 只会空转重试，api_start 恒失败。
+    #[test]
+    fn load_or_create_token_at_repairs_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-token.txt");
+        std::fs::write(&path, "").unwrap();
+        let token = load_or_create_token_at(&path).unwrap();
+        assert!(!token.is_empty(), "空文件自愈后必须拿到非空 token");
+        // 盘上值 = 返回值（下次调用读到的是同一份）
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), token);
+        // 再次调用不再重新生成（内容稳定）
+        assert_eq!(load_or_create_token_at(&path).unwrap(), token);
+    }
+
+    /// 空文件自愈不得留 tmp 残渣（tmp 里是明文 token）。
+    #[test]
+    fn load_or_create_token_at_repair_leaves_no_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-token.txt");
+        std::fs::write(&path, "   \n").unwrap();
+        load_or_create_token_at(&path).unwrap();
+        assert!(
+            !dir.path().read_dir().unwrap().any(|e| e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "自愈后不得遗留 tmp 残渣"
+        );
+    }
+
+    /// 文件不存在 → 原子首建，token 非空且落盘。
+    #[test]
+    fn load_or_create_token_at_creates_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-token.txt");
+        let token = load_or_create_token_at(&path).unwrap();
+        assert!(!token.is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), token);
+    }
+
+    /// 非空存量 token 直接沿用（不得被重新生成覆盖）。
+    #[test]
+    fn load_or_create_token_at_keeps_existing_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api-token.txt");
+        std::fs::write(&path, "existing-token").unwrap();
+        assert_eq!(load_or_create_token_at(&path).unwrap(), "existing-token");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "existing-token",
+            "存量 token 不得被改写"
         );
     }
 }
