@@ -16,6 +16,12 @@ use tauri::AppHandle;
 
 use crate::bot::registry::ToolResult;
 
+/// 图片字节上限：读文件前先查，超过直接拒（无上限读会把任意大文件吃进内存）。
+const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+/// 解码后像素上限（宽×高）：解码出的 RGB 常驻 = 宽×高×3 字节——
+/// 几 MB 的压缩 PNG 能撑出几百 MB，按像素卡才拦得住解码炸弹。
+const MAX_IMAGE_PIXELS: u64 = 20_000_000;
+
 /// ocr_image 工具：识别本地图片中的文字（路径白名单守卫复用 bot_fs::resolve_with_perm）。
 /// 非本地盘路径判定（隐私红线入口）：http/https/data:/file: 属 URL scheme，
 /// `\\` 开头是 Windows UNC（\\server\share，网络位置）——统一拒抓。
@@ -67,7 +73,7 @@ pub async fn tool_ocr_image(
     }
     let log_path = crate::bot::truncate_for_log(&canonical.display().to_string(), 200);
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
-        let bytes = std::fs::read(&canonical).map_err(|e| format!("读取图片失败：{e}"))?;
+        let bytes = read_image_file(&canonical, MAX_IMAGE_BYTES)?;
         recognize(&bytes)
     })
     .await;
@@ -88,9 +94,64 @@ pub async fn tool_ocr_image(
     }
 }
 
+/// 读图片文件并限长（字节上限）：读前查大小，读时再卡一道——
+/// 查与读之间文件可能变大，只查 metadata 会漏。
+fn read_image_file(path: &std::path::Path, max_bytes: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let meta = std::fs::metadata(path).map_err(|e| format!("读取图片失败：{e}"))?;
+    if meta.len() > max_bytes {
+        return Err(format!(
+            "图片文件超过大小上限（{} > {max_bytes} 字节）",
+            meta.len()
+        ));
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| format!("读取图片失败：{e}"))?;
+    let mut buf = Vec::new();
+    file.by_ref()
+        .take(max_bytes + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("读取图片失败：{e}"))?;
+    if buf.len() as u64 > max_bytes {
+        return Err(format!("图片文件超过大小上限（> {max_bytes} 字节）"));
+    }
+    Ok(buf)
+}
+
+/// 图片头尺寸（宽×高）：只读文件头，不解码像素——
+/// 像素闸必须在解码之前，判晚了内存已经吃掉了。
+/// 认不出的格式返回 None（交给平台解码器，它自己有能力判）。
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    reader.into_dimensions().ok()
+}
+
+/// 像素闸（纯函数）：宽×高 超过上限直接拒。
+fn check_pixel_budget(w: u32, h: u32, max_pixels: u64) -> Result<(), String> {
+    let pixels = w as u64 * h as u64;
+    if pixels > max_pixels {
+        return Err(format!(
+            "图片像素数超过上限（{w}×{h} = {pixels} > {max_pixels}）"
+        ));
+    }
+    Ok(())
+}
+
 /// 平台分发：图片字节 → 识别文本（多行，按引擎返回顺序拼接）。
 /// 同步阻塞接口：只能在阻塞线程调用（入口 spawn_blocking 保证）。
 fn recognize(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "图片字节数超过上限（{} > {MAX_IMAGE_BYTES}）",
+            bytes.len()
+        ));
+    }
+    // 解码前的像素闸：认得出的格式（PNG/JPEG）按文件头尺寸判，
+    // 认不出的（Vision 支持的 HEIC/TIFF 等）交给平台解码器自己限。
+    if let Some((w, h)) = image_dimensions(bytes) {
+        check_pixel_budget(w, h, MAX_IMAGE_PIXELS)?;
+    }
     #[cfg(target_os = "macos")]
     {
         macos::recognize(bytes)
@@ -649,6 +710,77 @@ mod tests {
         for p in ["/tmp/x.png", "C:\\Users\\a\\x.png", "img/x.png"] {
             assert!(!is_non_local_path(p), "{p} 是本地路径，不得误拒");
         }
+    }
+
+    // ── 输入体积闸：字节上限 + 解码前像素闸 ──
+
+    /// 读文件按字节上限拒：超限的文件不进内存。
+    #[test]
+    fn read_image_file_rejects_over_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        std::fs::write(&path, vec![0u8; 64]).unwrap();
+        assert!(read_image_file(&path, 32).is_err());
+        // 未超限的照常读出
+        let ok = read_image_file(&path, 64).unwrap();
+        assert_eq!(ok.len(), 64);
+    }
+
+    /// 像素闸（纯函数）：宽×高 超上限即拒。
+    #[test]
+    fn check_pixel_budget_rejects_oversized() {
+        assert!(check_pixel_budget(5000, 5000, 20_000_000).is_err());
+        assert!(check_pixel_budget(1920, 1080, 20_000_000).is_ok());
+        // 恰好等于上限放行
+        assert!(check_pixel_budget(5000, 4000, 20_000_000).is_ok());
+    }
+
+    /// 图片头尺寸只读头不解码：自造 IHDR 报出多大就是多大。
+    #[test]
+    fn image_dimensions_reads_header_only() {
+        let png = png_with_declared_size(1200, 800);
+        assert_eq!(image_dimensions(&png), Some((1200, 800)));
+    }
+
+    /// 解码炸弹闸：头里写着超大尺寸的图片在解码前就被拒（不碰平台解码器）。
+    #[test]
+    fn recognize_rejects_oversized_pixels_before_decode() {
+        let png = png_with_declared_size(50_000, 50_000);
+        let err = recognize(&png).unwrap_err();
+        assert!(
+            err.contains("像素数超过上限"),
+            "超大像素图必须在解码前被拒：{err}"
+        );
+    }
+
+    /// PNG 块 CRC32（IEEE）——自造 IHDR 夹具用（解码器会校 CRC）。
+    fn crc32(data: &[u8]) -> u32 {
+        let mut crc = 0xFFFF_FFFFu32;
+        for &b in data {
+            crc ^= b as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        !crc
+    }
+
+    /// 造一张「声明尺寸为 w×h」的 PNG：真 PNG 的 IHDR 尺寸字段改写 + CRC 重算，
+    /// 像素数据不动（这道闸只读头不解码，用不到像素）。
+    fn png_with_declared_size(w: u32, h: u32) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(2, 2)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("PNG 编码");
+        let mut png = buf.into_inner();
+        // IHDR 数据从 16 字节起：宽(4) 高(4) 位深(1) 颜色类型(1) 压缩(1) 滤波(1) 隔行(1)
+        png[16..20].copy_from_slice(&w.to_be_bytes());
+        png[20..24].copy_from_slice(&h.to_be_bytes());
+        // IHDR 的 CRC 覆盖「块类型 + 数据」= 12..29 字节
+        let crc = crc32(&png[12..29]);
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        png
     }
 
     #[test]
