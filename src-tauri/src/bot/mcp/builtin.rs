@@ -55,32 +55,52 @@ pub fn is_builtin_id(id: &str) -> bool {
 
 // 目录解析（纯函数，便于单测）
 
-/// 包目录解析：显式环境变量 → exe 同目录 → Tauri 资源目录 → 仓库根。
+/// 包目录解析：显式环境变量 → exe 同目录 → Tauri 资源目录 → 仓库根（仅 debug 构建）。
+///
 /// 命中条件只是「候选目录存在」，**不要求 cli.js 在位**：内置卡片必须先出现，
 /// 用户把包拷进来才连得上；反过来（拷了包但没卡片）用户无从得知这条服务器存在。
 /// 显式指定环境变量时不回退——路径写错应当显式失败，而不是静默换目录。
+///
+/// `allow_dev_dir` = **仓库根这个候选能不能用**。它只在 `tauri dev` / `cargo run`
+/// 布局下有意义（那里包就在仓库根）；发布构建里它是**构建机的绝对路径**——
+/// `env!("CARGO_MANIFEST_DIR")` 是编译期常量，交叉编译（mac → Windows）会把构建机
+/// 的路径烤进产物，面板与审计里显示一个在目标平台上永远无效的路径（用户按它放包
+/// 也放不对）。做成**运行时参数**而不是编译期 `cfg`：这样发布构建的行为在
+/// 单测里也能验（测试构建永远是 debug，`cfg` 分支根本走不到）。
 fn pick_package_dir(
     env_dir: Option<&str>,
     exe_dir: Option<PathBuf>,
     resource_dir: Option<PathBuf>,
     dev_dir: PathBuf,
+    allow_dev_dir: bool,
 ) -> PathBuf {
     if let Some(d) = env_dir.map(str::trim).filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    if let Some(p) = exe_dir.map(|d| d.join(DIR_NAME)).filter(|p| p.is_dir()) {
-        return p;
-    }
-    if let Some(p) = resource_dir
+    if let Some(p) = exe_dir
+        .as_ref()
         .map(|d| d.join(DIR_NAME))
         .filter(|p| p.is_dir())
     {
         return p;
     }
-    if dev_dir.is_dir() {
+    if let Some(p) = resource_dir
+        .as_ref()
+        .map(|d| d.join(DIR_NAME))
+        .filter(|p| p.is_dir())
+    {
+        return p;
+    }
+    if allow_dev_dir {
+        // debug 布局：包没拷进来也要给出路径，卡片才指得对地方
         return dev_dir;
     }
-    dev_dir
+    // 发布构建的兜底：**不泄漏构建机路径**。回落到「exe 同目录」这个用户真能放包
+    // 的位置——目录不存在就显示「缺失，开关打开会连不上」，用户按提示把包拷进去。
+    exe_dir
+        .or(resource_dir)
+        .map(|d| d.join(DIR_NAME))
+        .unwrap_or_default()
 }
 
 fn resolve_package_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -97,6 +117,9 @@ fn resolve_package_dir(app: &tauri::AppHandle) -> PathBuf {
         exe_dir,
         resource_dir,
         dev_dir,
+        // 仓库根这个候选只在 debug 构建下有意义——发布构建里它是**构建机的路径**
+        // （`env!` 是编译期常量，交叉编译会把 macOS 的路径烤进 Windows 包）。
+        cfg!(debug_assertions),
     )
 }
 
@@ -324,7 +347,8 @@ mod tests {
                 None,
                 Some(exe.clone()),
                 Some(res.clone()),
-                dev.join(DIR_NAME)
+                dev.join(DIR_NAME),
+                true
             ),
             exe.join(DIR_NAME)
         );
@@ -335,18 +359,20 @@ mod tests {
                 None,
                 Some(no_exe_dir.clone()),
                 Some(res.clone()),
-                dev.join(DIR_NAME)
+                dev.join(DIR_NAME),
+                true
             ),
             res.join(DIR_NAME)
         );
-        // 只剩仓库根有 → 选它（tauri dev 布局）
+        // 只剩仓库根有 → 选它（tauri dev 布局；仅 debug 构建允许这个候选）
         let empty_res = tmpdir("pick-empty2");
         assert_eq!(
             pick_package_dir(
                 None,
                 Some(no_exe_dir.clone()),
                 Some(empty_res),
-                dev.join(DIR_NAME)
+                dev.join(DIR_NAME),
+                true
             ),
             dev.join(DIR_NAME)
         );
@@ -354,7 +380,7 @@ mod tests {
         let explicit = tmpdir("pick-env");
         let dev2 = dev.clone();
         assert_eq!(
-            pick_package_dir(explicit.to_str(), Some(exe.clone()), Some(res), dev2),
+            pick_package_dir(explicit.to_str(), Some(exe.clone()), Some(res), dev2, true),
             explicit
         );
         let _ = std::fs::remove_dir_all(&dev);
@@ -365,9 +391,42 @@ mod tests {
     #[test]
     fn pick_package_dir_returns_dev_path_even_when_absent() {
         let dev = tmpdir("pick-missing");
-        let got = pick_package_dir(None, None, None, dev.clone());
+        let got = pick_package_dir(None, None, None, dev.clone(), true);
         assert_eq!(got, dev, "包没拷进来也要给出路径，卡片才指得对地方");
         let _ = std::fs::remove_dir_all(&dev);
+    }
+
+    /// 发布构建**绝不**回落到仓库根。
+    ///
+    /// 仓库根这个候选来自 `env!("CARGO_MANIFEST_DIR")`——编译期常量。绿色包是从
+    /// macOS 交叉编译出来的（`docs/PACKAGING-WINDOWS-PORTABLE.md` §1），于是构建机
+    /// 的目录结构被烤进 Windows 交付物：审计行显示
+    /// `包: /Users/<构建机>/…\playwright-mcp`，在 Windows 上永远无效，用户按它
+    /// 放包也放不对。
+    #[test]
+    fn release_build_never_falls_back_to_the_build_machine_path() {
+        let exe = tmpdir("pick-rel-exe");
+        let dev = tmpdir("pick-rel-dev");
+        let got = pick_package_dir(None, Some(exe.clone()), None, dev.join(DIR_NAME), false);
+        assert_ne!(
+            got,
+            dev.join(DIR_NAME),
+            "发布构建不得回落到仓库根（那是构建机路径）"
+        );
+        assert_eq!(
+            got,
+            exe.join(DIR_NAME),
+            "应回落到 exe 同目录——用户真能放包的位置"
+        );
+        // 连 exe / 资源目录都拿不到时，也不得吐出构建机路径
+        let got2 = pick_package_dir(None, None, None, dev.join(DIR_NAME), false);
+        assert_ne!(
+            got2,
+            dev.join(DIR_NAME),
+            "拿不到任何本地目录时也不能回落到构建机路径"
+        );
+        let _ = std::fs::remove_dir_all(&dev);
+        let _ = std::fs::remove_dir_all(&exe);
     }
 
     #[test]
