@@ -6,6 +6,42 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-22（周四）出包：Windows 绿色版 `wmessage-portable-2026-10-22.zip`（105 MB）
+
+**背景**：老板要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程执行，
+全程 macOS 交叉编译，无 Windows 机器参与构建。
+
+**构建**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-22.zip`
+  （110,093,400 B / 205 项 / 顶层 9 项，与 10-19 版同构）
+- `wmessage.exe`：74,681,102 B（约 71 MB，基于 main @ 7fbd3870，mingw 交叉编译，
+  完整 `npx tauri build --target x86_64-pc-windows-gnu --no-bundle`，前端 vite 先构建后嵌入）
+- `dotnet/`：**复用上一版**（10-19 包里的 189 文件 self-contained .NET 8）——手册允许
+  「`src-tauri/dotnet/` 自上次出包以来无改动即可复用」，实测该目录自 10-19 起无提交，
+  重 publish 只会得到同样内容。注意别取错：`packaging/wmessage-portable-staging/dotnet/`
+  是 **framework-dependent 的 7 文件老货**（用户机没装 .NET 8 就起不来），
+  `packaging/wmessage-portable-dotnet-staging/` 才是 self-contained 那份
+- `onnxruntime.dll`：1.28.0，从 NuGet 拉取（与 ort 2.0.0-rc.13 匹配，已核对
+  `ort-sys-2.0.0-rc.13/build/download/dist.tsv` 的 `ms@1.28.0`）
+- 模型目录（`bge-small-zh-v1.5/` 23 MB、`pp-ocr-v6/` 31 MB）从仓库根复制
+- 固定文件（WebView2Loader.dll / MicrosoftEdgeWebview2Setup.exe）从
+  `packaging/wmessage-portable-staging/` 复用
+
+**距上一版（2026-10-19）**：186 个提交，其中源码变更 151 个（Rust 后端 95 / 前端 79）；
+类型分布 fix 102、feat 36、docs 35、refactor 4、perf 4、test 3、style 1。
+exe 从 69 MB 涨到 71 MB（新增受管服务层、桌面 UI 自动化六件套、提醒工具组等）。
+
+**校验**：
+- `ZIP_OK 205 files`，顶层 9 项，无多余文件夹层级
+- `objdump -p wmessage.exe | grep -i onnxruntime` → 空（load-dynamic，运行时由随包 DLL 提供）
+- `file wmessage.exe` → PE32+ executable (GUI) x86-64
+- dotnet/ 抽查 `coreclr.dll` / `hostfxr.dll` / `wm-docx-revisions.exe` 齐备 → 确为 self-contained
+- macOS 侧 `cargo check` 通过
+
+**未做**：Windows 实机验收（人工）——双击启动、便携锚定（exe 同目录生成
+wmessage.db / AI_Gen_Files）、机器人语义检索与 `ocr_image` 跑一张带文字的本地图、
+受管服务面板的启停与端口闸告警。
+
 ## 2026-10-21（周三）受管长驻服务层：沙箱限额与服务生命周期分成两件事
 
 要让 skill 内部起一个活过本次工具调用的 node 进程（node MCP server / dev server），
