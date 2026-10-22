@@ -1438,4 +1438,95 @@ mod e2e_stdio {
         );
         assert_eq!(mgr.status_of("e2e-http-dns").state, "down");
     }
+
+    /// 实机卡片 S10 的地面真相（真子进程跑）：两台**同前缀不同名**的 stdio 服务器，
+    /// 消歧序号跨断连不漂移。
+    ///
+    /// 卡片问模型「列出你现在能用的工具」——那份清单的真身就是
+    /// `registry::tools_json_with_mcp` 的产物（每轮拼进请求），所以这里直接看那份
+    /// JSON：比问模型硬，也不受模型复述影响。
+    #[tokio::test]
+    async fn disambiguated_names_survive_a_server_dropping_out() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP 消歧稳定性 e2e");
+            return;
+        }
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+        // 两台同前缀不同名：`p x` / `p.x` → tool_prefix 都归成 `p_x`
+        let mut cfg_a = echo_cfg("s10-a");
+        cfg_a.name = "p x".into();
+        let mut cfg_b = echo_cfg("s10-b");
+        cfg_b.name = "p.x".into();
+        mgr.ensure_connected(&cfg_a).await.expect("A 连接应成功");
+        mgr.ensure_connected(&cfg_b).await.expect("B 连接应成功");
+
+        // 两台都在场 → 两个函数名（base + 消歧后缀）
+        let both = mcp_function_names();
+        assert_eq!(
+            both.len(),
+            2,
+            "两台各带一个工具 → 清单里两个函数名：{both:?}"
+        );
+        assert!(both.contains(&"mcp_p_x_echo".to_string()), "{both:?}");
+        assert!(both.contains(&"mcp_p_x_echo_2".to_string()), "{both:?}");
+        let name_a = function_name_of("s10-a");
+        let name_b = function_name_of("s10-b");
+        assert_ne!(name_a, name_b, "两台各自的函数名应不同");
+
+        // 关掉 A（面板禁用 = reload_from_config → disconnect，槽位被摘掉）
+        mgr.disconnect("s10-a").await;
+        let after_a = mcp_function_names();
+        assert_eq!(after_a.len(), 1, "A 断连后清单只剩一个：{after_a:?}");
+        assert_eq!(
+            after_a[0], name_b,
+            "A 断连不能让 B 的消歧序号漂移（按在场顺序重编号会退化成无后缀的 base 名）"
+        );
+        // A 的旧名仍归 A：dispatch 查得到 → 不会被报成「未知工具」
+        assert!(
+            crate::bot::mcp::mount::find_mounted(&name_a).is_some(),
+            "断连那台的旧名仍应能反查到归属"
+        );
+
+        // 反过来关 B：两次剩下的名字必须不同——相同即序号漂移
+        mgr.ensure_connected(&cfg_a).await.expect("A 重连应成功");
+        mgr.disconnect("s10-b").await;
+        let after_b = mcp_function_names();
+        assert_eq!(after_b.len(), 1, "B 断连后清单只剩一个：{after_b:?}");
+        assert_eq!(after_b[0], name_a, "B 断连后 A 保住自己的名字");
+        assert_ne!(
+            after_b[0], after_a[0],
+            "两次断连剩下的名字必须不同——相同就是序号在漂移"
+        );
+
+        mgr.shutdown().await;
+    }
+
+    /// 主 agent 这一轮看到的 MCP 函数名（真身 = tools_json_with_mcp 的产物）
+    fn mcp_function_names() -> Vec<String> {
+        let json = crate::bot::registry::tools_json_with_mcp(None);
+        let v: serde_json::Value =
+            serde_json::from_str(json.as_ref()).expect("工具清单应是合法 JSON");
+        v.as_array()
+            .expect("工具清单应是数组")
+            .iter()
+            .filter_map(|t| {
+                t.get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+            })
+            .filter(|n| n.starts_with("mcp_"))
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// 某台服务器当前挂载的函数名（登记簿口径：名字 ↔ 服务器的绑定）
+    fn function_name_of(server_id: &str) -> String {
+        crate::bot::mcp::mount::mcp_mounted_tools()
+            .into_iter()
+            .find(|t| t.server_id == server_id)
+            .map(|t| t.func_name)
+            .expect("该服务器应有挂载条目")
+    }
 }
