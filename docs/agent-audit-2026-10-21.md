@@ -526,7 +526,7 @@ if output_bytes > t.max_output_bytes { ... }   // ← per-tool 预算
 **修法**：指针文案补「单次读取上限 100KB」；或让 `read_text_file` 支持从
 offset 起读的字节窗（当前是「先读前 100KB 再按行切」）。
 
-#### P2-3 `screenshot` 实际写盘却标 `mutating: false`
+#### P2-3 `screenshot` 实际写盘却标 `mutating: false`（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/registry.rs:2220-2226`（`mutating: false`，
 `claims_patterns: &[]`）· `src-tauri/src/bot_desktop.rs:396-404`（落盘）
@@ -1097,6 +1097,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-11 | 已修 | 绑定内核收成一份（`taskFiles::applyBinding` + `lib/useTaskFiles.ts` hook）：卡片 / 详情面板 / 上下文栏三处共用，合并基线一律取最新 files |
 | P1-3 | 已修 | 服务层父进程看门狗（unix 管道 EOF 助手 + Windows `KILL_ON_JOB_CLOSE` job）+ `RunEvent::Exit` 兜底 |
 | P2-7 | 已修 | 迁移判据收成一份（`mcp::config::has_inline_secrets` 判**原始 JSON 条目**）+ `config/io.rs` 改调它 + 判据单源扫描守卫 |
+| P2-3 | 已修 | `screenshot` 归变更类（`mutating: true` + 声称话术）+ 产出二进制档落盘凭证（`bot_desktop::screenshot_ok_result`）|
 
 ### P0-1 的落地口径
 
@@ -1621,4 +1622,39 @@ mcp::config::has_inline_secrets」），确认这条守卫是承重的、不是�
 **已知残留**：`secrets.rs` 水合路径里的 `s.env.is_empty() && s.headers.is_empty()`
 **不是**迁移判据（它问的是「内存里有没有值 → 要不要回填 keyring」，判的是水合
 后的类型化配置，方向相反），本轮不动。
+
+### P2-3 的落地口径
+
+**两条后果，方向相反**：① 变更声称闸只扫 `mutating == true` 工具的声称话术，
+`screenshot` 不在其中 → 模型**不调工具**也能报「已截屏」，闸看不见；② 落盘凭证
+闸查「这个路径被任何工具写过吗」，而 `screenshot` **不产 `file_changes`** → 模型
+如实说「已生成截图 /path/x.png」时，路径在磁盘上（存在性那关过了）却查不到凭证，
+闸反过来把真截出来的图判成凭空声称、要求模型重截。**同一个「写盘却当只读」的
+根因，一边漏拦、一边误拦。**
+
+**改法两处**：`registry.rs` 的 `screenshot` 改 `mutating: true` + 声称话术；
+`bot_desktop.rs` 的截图成功路径改为产出**二进制档**凭证（路径 + 内容哈希、无行
+diff——PNG 不是 UTF-8 文本，按行 diff 只会产乱码，与生成类文档同档）。
+
+**声称话术为什么不收「已截图」**：`claims_mutation` 的第二阶段是「已」+ 8 字窗口
+里找**剥掉「已」后的词干**——「已截图」的词干是「截图」，于是「**已查看截图内容**」
+（用户传图让模型读图，模型用 `ocr_image` 看完后的如实说法）也会命中变更声称，
+凭空把这一轮打回去。所以只收词干不含裸名词的三个：「已截屏」（工具自己的返回
+文案）、「已保存截图」、「截图已保存」。这条有负例测试钉住。
+
+**为什么把结果构造抽成 `screenshot_ok_result`**：截图要真屏幕 + `AppHandle`，
+测试里跑不了；抽成纯函数后凭证能被直接断言（临时 PNG → 断言 `file_changes` 长度
+1、路径一致、带内容哈希）。这属于「函数住哪、测试住哪」的对齐，不是为将来预留
+的抽象——就这一个调用方 + 一个测试方。
+
+**老实说副作用**：归入变更类之后，截图成功会置 `mutation_done`（模型如实说
+「已截屏」不再被拦——这正是要的），并按变更类工具的既有节流触发一次自检（每 5 轮
+最多 1 次，问模型「这次截图符合预期吗 Y/N」）。自检是既有机制、节流照旧，代价
+是截图场景偶尔多一轮模型调用。
+
+**测试**（3 条新用例）：截图在工具表里必须是变更类且话术能命中「已截屏 / 已保存
+截图」；截图的声称话术**不得**命中「已查看截图内容」；截图结果必须带一条落盘凭证
+（路径 + 哈希）。另：`mutating_tools_matches_baseline` 这条基线表随截图归类同步
+补上 `screenshot`（这张表的作用是「变更类工具集合不许悄悄变」，不是把截图钉死在
+只读档）。
 

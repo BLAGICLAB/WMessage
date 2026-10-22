@@ -2220,8 +2220,10 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
     ToolDef {
         name: "screenshot",
         schema: SCHEMA_SCREENSHOT,
-        mutating: false,
-        claims_patterns: &[],
+        // 截图真写盘（PNG 落 AI_Gen_Files）——按变更类登记，否则「已截屏 /
+        // 已保存截图」这类声称对幻觉守卫完全不可见（模型不调工具也能报）。
+        mutating: true,
+        claims_patterns: &["已截屏", "已保存截图", "截图已保存"],
         max_output_bytes: 8192,
         call: call_screenshot,
     },
@@ -3114,6 +3116,7 @@ mod registry_tests {
             "ui_type",
             "start_service",
             "stop_service",
+            "screenshot",
         ]
         .into_iter()
         .collect();
@@ -3272,6 +3275,35 @@ mod registry_tests {
                 t.claims_patterns
             );
         }
+    }
+
+    /// screenshot 真写盘（PNG 落 AI_Gen_Files）——必须按变更类登记：否则
+    /// 「已截屏 / 已保存截图」这类声称对幻觉守卫完全不可见，模型不调工具也能报。
+    #[test]
+    fn screenshot_is_registered_as_a_mutating_tool() {
+        let t = TOOLS_TABLE
+            .iter()
+            .find(|t| t.name == "screenshot")
+            .expect("screenshot 必须在工具表里");
+        assert!(t.mutating, "截图真写盘，必须标 mutating");
+        assert!(
+            claims_mutation("已截屏：/tmp/a.png"),
+            "「已截屏」应命中变更声称"
+        );
+        assert!(
+            claims_mutation("已保存截图到 /tmp/a.png"),
+            "「已保存截图」应命中变更声称"
+        );
+    }
+
+    /// 截图的声称话术不得误伤「读图」：用户传图让模型看内容时，模型说的是
+    /// 「已查看截图」——那是只读动作（ocr_image），打回模型等于凭空多一轮。
+    #[test]
+    fn screenshot_claim_patterns_do_not_fire_on_reading_an_image() {
+        assert!(
+            !claims_mutation("已查看截图里的内容"),
+            "读图不是变更——截图的声称话术不得命中「已查看截图」"
+        );
     }
 
     /// 剪贴板语义豁免：「已复制到剪贴板」说的是系统剪贴板（clipboard_write /

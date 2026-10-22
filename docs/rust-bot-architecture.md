@@ -117,7 +117,7 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3793)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3825)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 ├── bot/dispatch.rs (1555)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
@@ -253,7 +253,7 @@ src-tauri/src/
 │   └── ui/windows.rs (403) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
-├── bot_desktop.rs (529) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+├── bot_desktop.rs (560) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
 │                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的

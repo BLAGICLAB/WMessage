@@ -358,6 +358,24 @@ pub(crate) fn capture_to(out: &std::path::Path) -> bool {
     }
 }
 
+/// 截图成功的工具结果：文本 + 图片 + 落盘凭证。
+///
+/// 凭证（`file_changes`）不能少：PNG 是真落在 AI_Gen_Files 的文件产物，模型
+/// 如实说「已生成截图 /path/x.png」时，落盘凭证闸要认得这个路径是工具产物——
+/// 认不出就把真截出来的图判成凭空声称，反过来要求模型重截。
+/// PNG 是二进制，只记路径与内容哈希（无行级 diff），与文档生成器同档。
+fn screenshot_ok_result(out: &std::path::Path, size: u64) -> ToolResult {
+    let path = out.display().to_string();
+    ToolResult::ok_with_images(
+        format!(
+            "已截屏：{path}\n主显示器全屏 PNG（{size} 字节）。截图已作为图片附在本消息之后，请直接用视觉能力读取内容。"
+        ),
+        Vec::new(),
+        vec![path.clone()],
+    )
+    .with_file_change(crate::bot_fs::build_binary_file_receipt(&path))
+}
+
 /// 截取主显示器画面 → AI_Gen_Files/wm-screen-<时间戳>.png，返回路径。
 /// 模型拿到路径后可接着 ocr_image 读屏上文字（读屏上内容不需要视觉模型）。
 pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
@@ -397,14 +415,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
                 &format!("desktop.screenshot | {} | {size} bytes", name),
             );
             // 图随 ToolResult 直接进对话（模型视觉读取），不再引导。
-            ToolResult::ok_with_images(
-                format!(
-                    "已截屏：{}\n主显示器全屏 PNG（{size} 字节）。截图已作为图片附在本消息之后，请直接用视觉能力读取内容。",
-                    out.display()
-                ),
-                Vec::new(),
-                vec![out.display().to_string()],
-            )
+            screenshot_ok_result(&out, size)
         }
         Ok(Err(e)) => ToolResult::error(format!("截图失败：{e}"), Vec::new()),
         Err(e) => ToolResult::error(format!("失败：截图线程异常：{e}"), Vec::new()),
@@ -471,6 +482,26 @@ mod tests {
         assert!(collect_clip_paths(&serde_json::json!({})).is_empty());
         // 全是空白
         assert!(collect_clip_paths(&serde_json::json!({"path": "  "})).is_empty());
+    }
+
+    /// 截图落盘凭证：成功结果必须带一条 file_changes（路径 + 内容哈希）。
+    /// 缺了它，模型如实说「已生成截图 /path/x.png」会被落盘凭证闸判成凭空声称，
+    /// 反过来要求模型重截——真截出来的图被当成编造。
+    #[test]
+    fn screenshot_result_carries_a_file_change_receipt() {
+        let dir = std::env::temp_dir().join(format!("wm-shot-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("wm-screen-test.png");
+        std::fs::write(&out, b"\x89PNG\r\n\x1a\nfake").unwrap();
+        let r = screenshot_ok_result(&out, 8);
+        assert_eq!(r.status, crate::bot::registry::ToolStatus::Ok);
+        assert_eq!(r.images.len(), 1, "截图要作为图片附在结果后");
+        assert_eq!(r.file_changes.len(), 1, "截图是文件产物，必须带落盘凭证");
+        let fc = &r.file_changes[0];
+        assert_eq!(fc.path, out.display().to_string());
+        assert_eq!(fc.kind, "create");
+        assert!(fc.after_sha.is_some(), "凭证要带内容哈希");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// 接线守卫：copy_file_to_clipboard 必须真的接进工具表（改了工具名/接线而
