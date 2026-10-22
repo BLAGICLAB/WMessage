@@ -704,6 +704,8 @@ fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
     let app2 = app.clone();
     let app_audit = app.clone();
     let job_id = job.id.clone();
+    let last_status = job.last_status.clone();
+    let last_error = job.last_error.clone();
     tauri::async_runtime::spawn(async move {
         // per-task panic 可见性（同任务卡/工作流路径）
         let body = std::panic::AssertUnwindSafe(run_scheduled_job(app2, job));
@@ -716,8 +718,101 @@ fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
                     crate::bot::truncate_for_log(&msg, 200)
                 ),
             );
+            // panic 发生在收尾之前 → 待触发的重试还挂在行上：
+            // 不清的话下一轮扫描它又到点、又跑一次、又 panic（每 30s 一轮的无限环）。
+            clear_pending_retry_after_panic(&app_audit, &job_id, last_status, last_error).await;
         }
     });
+}
+
+/// panic 兜底：清掉待触发的重试（retry_at / retry_count 归零）。
+/// 状态与错误保持原样——panic 时这次跑成什么样无从得知，不猜。
+async fn clear_pending_retry_after_panic(
+    app: &AppHandle,
+    job_id: &str,
+    last_status: Option<String>,
+    last_error: Option<String>,
+) {
+    let id = job_id.to_string();
+    let outcome = crate::db::lock::with_write_conn(app, move |conn| {
+        crate::db::update_job_run_state(
+            conn,
+            &id,
+            last_status.as_deref(),
+            last_error.as_deref(),
+            None,  // retry_at 清零：不再被扫描轮直接触发
+            None,  // retry_count 清零：下一周期从零计
+            false, // panic 不算「最终失败」，不自动暂停
+            chrono::Local::now().timestamp_millis(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await;
+    if let Err(e) = outcome {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "sched_job_retry_clear_failed | id: {job_id} | {}",
+                crate::bot::truncate_for_log(&e, 120)
+            ),
+        );
+    }
+}
+
+/// 本轮对单个作业的处置（纯函数，便于单测）。
+#[derive(Debug, PartialEq, Eq)]
+enum JobAction {
+    /// 到点且开关开启 → 派发执行
+    Dispatch,
+    /// 到点但机器人开关关闭 → 不派发，水位也不推进
+    /// （恢复后 2h 窗口内补跑、超窗判 missed——与开关关闭前的语义一致）
+    Held,
+    /// 重试到点且开关开启 → 派发执行
+    RetryDispatch,
+    /// 重试未到点 → 本轮跳过（防与 occurrence 判定叠加重复触发）
+    RetryPending,
+    /// 过期的一次性作业 → 删除
+    Delete,
+    /// 错过补跑窗口 → 消费该 occurrence
+    Missed,
+    /// 未到点 → 本轮无事
+    Idle,
+}
+
+/// 单个作业本轮怎么处置（纯函数）：判定顺序 = 重试 → 过期一次性 → 到点判定。
+/// 机器人开关关闭时到点的作业判 Held（不派发、水位不推进）——
+/// 派发了也会在 run_scheduled_job 里被拒，每 30s 一次 spawn + 一条跳过审计
+/// 就是一天几千条噪声；而水位不推进才保住「恢复后补跑」的语义。
+fn classify_job(
+    job: &crate::db::ScheduledJob,
+    now: chrono::DateTime<chrono::Local>,
+    bot_on: bool,
+) -> JobAction {
+    if let Some(retry_at) = job.retry_at {
+        return if retry_at <= now.timestamp_millis() {
+            if bot_on {
+                JobAction::RetryDispatch
+            } else {
+                JobAction::Held
+            }
+        } else {
+            JobAction::RetryPending
+        };
+    }
+    if at_expired(&job.schedule, job.sched_last, now) {
+        return JobAction::Delete;
+    }
+    match classify_due(&job.schedule, job.sched_last, now) {
+        DueVerdict::Run => {
+            if bot_on {
+                JobAction::Dispatch
+            } else {
+                JobAction::Held
+            }
+        }
+        DueVerdict::Missed => JobAction::Missed,
+        DueVerdict::NotDue => JobAction::Idle,
+    }
 }
 
 /// 内容型作业单轮：过期 at: 清理 + 重试触发 + 错过消费 + 到点分发（语义与任务卡/工作流一致）
@@ -730,30 +825,25 @@ async fn jobs_tick(app: &AppHandle) {
             return;
         }
     };
+    // 机器人开关关闭时本轮不派发任何作业（见 classify_job 的 Held）
+    let bot_on = crate::bot_slash::bot_get_enabled(app.clone());
     for job in jobs {
         if !job.sched_enabled() {
             continue; // 暂停（保留配置）
         }
-        // 重试触发（XXL-JOB 失败重试借鉴）：retry_at 到点直接触发，不等下一周期 occurrence；
-        // 未到点本轮跳过（防与 occurrence 判定叠加重复触发）
-        if let Some(retry_at) = job.retry_at {
-            if retry_at <= now.timestamp_millis() {
-                spawn_job_run(app, job);
+        match classify_job(&job, now, bot_on) {
+            JobAction::Dispatch | JobAction::RetryDispatch => spawn_job_run(app, job),
+            // 开关关闭：不派发，水位不推进（恢复后按原语义补跑或判 missed）
+            JobAction::Held | JobAction::RetryPending | JobAction::Idle => {}
+            // 过期一次性（从未执行且已过点）→ 删除作业（防重启后补跑过期任务）
+            JobAction::Delete => {
+                crate::bot::audit_log(
+                    app,
+                    &format!("sched_job_stale | id: {} | 过期一次性作业，删除", job.id),
+                );
+                delete_job_row(app, &job.id).await;
             }
-            continue;
-        }
-        // 过期一次性（从未执行且已过点）→ 删除作业（防重启后补跑过期任务）
-        if at_expired(&job.schedule, job.sched_last, now) {
-            crate::bot::audit_log(
-                app,
-                &format!("sched_job_stale | id: {} | 过期一次性作业，删除", job.id),
-            );
-            delete_job_row(app, &job.id).await;
-            continue;
-        }
-        match classify_due(&job.schedule, job.sched_last, now) {
-            DueVerdict::Run => spawn_job_run(app, job),
-            DueVerdict::Missed => {
+            JobAction::Missed => {
                 crate::bot::audit_log(
                     app,
                     &format!(
@@ -773,7 +863,6 @@ async fn jobs_tick(app: &AppHandle) {
                 )
                 .await;
             }
-            DueVerdict::NotDue => {}
         }
     }
 }
@@ -1229,6 +1318,91 @@ mod sched_tests {
         // 不因 occurrence 落在 1970 被误判 Missed
         let now = dt(2026, 8, 16, 12, 0);
         assert_eq!(classify_due("daily:10:00", None, now), DueVerdict::Run);
+    }
+
+    // ── 开关关闭时的本轮处置 ──
+
+    fn job(schedule: &str) -> crate::db::ScheduledJob {
+        crate::db::ScheduledJob {
+            id: "j1".into(),
+            content: "做事".into(),
+            schedule: schedule.into(),
+            sched_last: None,
+            enabled: Some(true),
+            created_at: None,
+            updated_at: None,
+            last_status: None,
+            last_error: None,
+            pause_on_failure: None,
+            retry_max: None,
+            retry_at: None,
+            retry_count: None,
+            expected_updated_at: None,
+        }
+    }
+
+    /// 机器人开关关闭时到点的作业不派发——派发了也会被 run_scheduled_job 拒掉，
+    /// 每 30s 一轮 spawn + 一条跳过审计就是一天几千条噪声。
+    #[test]
+    fn classify_job_due_held_when_bot_off() {
+        let now = dt(2026, 8, 16, 10, 30);
+        let j = job("daily:10:00");
+        assert_eq!(classify_job(&j, now, true), JobAction::Dispatch);
+        assert_eq!(classify_job(&j, now, false), JobAction::Held);
+    }
+
+    /// 开关关闭判 Held 时水位不推进——恢复后仍在 2h 窗口内补跑（语义不变）。
+    #[test]
+    fn classify_job_held_keeps_catchup_semantics() {
+        // 昨天 10:00 跑过、今天 10:00 到点，现在 10:30（窗口内）
+        let now = dt(2026, 8, 16, 10, 30);
+        let mut j = job("daily:10:00");
+        j.sched_last = Some(ms(2026, 8, 15, 10, 0));
+        assert_eq!(classify_job(&j, now, false), JobAction::Held);
+        // 恢复后（开关开启）判派发 → 窗口内补跑
+        assert_eq!(classify_job(&j, now, true), JobAction::Dispatch);
+    }
+
+    #[test]
+    fn classify_job_not_due_and_missed() {
+        let now = dt(2026, 8, 16, 10, 30);
+        // 今天 12:00 未到（跑过一次的作业才有「未到点」这回事：
+        // sched_last=None 的新作业按首跑语义立即生效）
+        let mut j = job("daily:12:00");
+        j.sched_last = Some(ms(2026, 8, 15, 12, 0));
+        assert_eq!(classify_job(&j, now, true), JobAction::Idle);
+        // 超补跑窗口 → 消费（与开关无关）
+        let mut j = job("daily:10:00");
+        j.sched_last = Some(ms(2026, 8, 15, 10, 0));
+        assert_eq!(
+            classify_job(&j, dt(2026, 8, 16, 13, 0), true),
+            JobAction::Missed
+        );
+        assert_eq!(
+            classify_job(&j, dt(2026, 8, 16, 13, 0), false),
+            JobAction::Missed
+        );
+    }
+
+    #[test]
+    fn classify_job_expired_at_is_deleted_regardless_of_switch() {
+        let now = dt(2026, 8, 16, 12, 0);
+        let j = job("at:2026-08-10T10:00");
+        assert_eq!(classify_job(&j, now, true), JobAction::Delete);
+        assert_eq!(classify_job(&j, now, false), JobAction::Delete);
+    }
+
+    /// 待触发的重试：到点且开关开启才派发；开关关闭同样不派发（不产生跳过噪声）。
+    #[test]
+    fn classify_job_retry_paths() {
+        let now = dt(2026, 8, 16, 10, 30);
+        let mut j = job("daily:10:00");
+        j.retry_at = Some(now.timestamp_millis() - 1000);
+        assert_eq!(classify_job(&j, now, true), JobAction::RetryDispatch);
+        assert_eq!(classify_job(&j, now, false), JobAction::Held);
+        // 未到点 → 本轮跳过
+        j.retry_at = Some(now.timestamp_millis() + 60_000);
+        assert_eq!(classify_job(&j, now, true), JobAction::RetryPending);
     }
 
     #[test]
