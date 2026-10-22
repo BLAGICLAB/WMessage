@@ -618,8 +618,59 @@ pub(crate) fn active_vendor_of(
         .filter(|v| !v.trim().is_empty())
 }
 
+/// LLM 请求用 key 的来源（纯判定，可单测）
+///
+/// 厂商条目**必须用自己的 key**：厂商没配 key 时不借用全局主 key——主 key 会带着
+/// 这个厂商的 base_url 出门（那个 base_url 是用户填的，可能指向任何第三方），
+/// 等于把主 key 交出去。老条目（没有 vendor 字段）没有厂商概念，仍用全局主 key。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LlmKeySource {
+    /// 用该厂商自己的 key
+    VendorKey,
+    /// 该厂商没配 key：不借用全局主 key（请求侧报 ApiKeyMissing）
+    VendorKeyMissing,
+    /// 老条目（无厂商）：用全局主 key
+    GlobalKey,
+}
+
+/// 请求用 key 的来源判定（纯函数）
+pub(crate) fn llm_key_source(vendor: Option<&str>, has_vendor_key: bool) -> LlmKeySource {
+    match vendor.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(_) if has_vendor_key => LlmKeySource::VendorKey,
+        Some(_) => LlmKeySource::VendorKeyMissing,
+        None => LlmKeySource::GlobalKey,
+    }
+}
+
+/// 探活（连接测试）用哪个 key（纯判定，可单测）
+///
+/// 厂商页用该厂商自己的 key；**厂商没配 key 就不带鉴权探**——不借用全局主 key：
+/// 探的 base_url 是用户填的（可能指向任何第三方），把主 key 发过去等于交出去。
+/// 无厂商的老条目用全局主 key（那条 base_url 就是全局配置里的那个）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProbeAuth {
+    /// 带这个 key 探
+    WithKey(String),
+    /// 不带鉴权探（端点通着 ≠ key 有效）
+    Anonymous,
+}
+
+pub(crate) fn probe_auth(
+    vendor: Option<&str>,
+    vendor_key: Option<&str>,
+    global_key: &str,
+) -> ProbeAuth {
+    match vendor.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(_) => match vendor_key.map(str::trim).filter(|k| !k.is_empty()) {
+            Some(k) => ProbeAuth::WithKey(k.to_string()),
+            None => ProbeAuth::Anonymous,
+        },
+        None => ProbeAuth::WithKey(global_key.to_string()),
+    }
+}
+
 /// 解析 LLM 请求用 key：active 模型所属厂商的厂商级 key 优先，
-/// 没配过回落全局主 key——存量配置零迁移感。
+/// 没配过则报错（不借用全局主 key——主 key 会带着该厂商的 base_url 出门）。
 /// keyring 真实故障（钥匙串锁定/权限拒绝）不透传吞掉：厂商路径报错直接上抛，
 /// 不静默回落全局 key（否则用户拿别的厂商的 key 打过去拿 401，误判成厂商故障）。
 pub fn read_llm_key(
@@ -628,14 +679,23 @@ pub fn read_llm_key(
     models_by_provider: Option<&ModelsByProvider>,
 ) -> CommandResult<String> {
     if let Some(vendor) = active_vendor_of(api_provider, active_model_id, models_by_provider) {
-        // has 先行：Ok(false)=未配置（回落全局）；Err=真实故障（上抛）。
+        // has 先行：Ok(false)=未配置；Err=真实故障（上抛）。
         // 随后的 read 同理必须透传 Err：has 与 read 是两次独立 keychain 访问，
         // 中途真实故障若被吞掉就会静默回落全局 key，请求带错 key 出门换 401
-        if has_vendor_key(&vendor)? {
-            let k = read_vendor_key(&vendor)?;
-            if !k.trim().is_empty() {
-                return Ok(k);
+        let has = has_vendor_key(&vendor)?;
+        match llm_key_source(Some(&vendor), has) {
+            LlmKeySource::VendorKey => {
+                let k = read_vendor_key(&vendor)?;
+                if !k.trim().is_empty() {
+                    return Ok(k);
+                }
             }
+            LlmKeySource::VendorKeyMissing => {
+                // 该厂商没配自己的 key：报缺 key，不借用全局主 key（它会带着
+                // 这个厂商的 base_url 出门——可能指向第三方）
+                return Err(CommandError::ApiKeyMissing);
+            }
+            LlmKeySource::GlobalKey => {}
         }
     }
     read_api_key()
@@ -662,6 +722,61 @@ mod vendor_key_tests {
             max_tokens: None,
             system_prompt: None,
         }
+    }
+
+    /// 厂商条目没配自己的 key 时，**不借用全局主 key**
+    ///
+    /// 回归背景：厂商条目借全局主 key 时，这个 key 会带着该厂商的 base_url 出门
+    /// ——那个 base_url 是用户填的，可能指向任何第三方，等于把主 key 交出去。
+    #[test]
+    fn vendor_entries_never_borrow_the_global_key() {
+        assert_eq!(
+            llm_key_source(Some("MiniMax"), true),
+            LlmKeySource::VendorKey,
+            "厂商有自己的 key 就用它的"
+        );
+        assert_eq!(
+            llm_key_source(Some("MiniMax"), false),
+            LlmKeySource::VendorKeyMissing,
+            "厂商没配 key 就不许借用全局主 key"
+        );
+        assert_eq!(
+            llm_key_source(None, false),
+            LlmKeySource::GlobalKey,
+            "无厂商的老条目没有厂商概念，仍用全局主 key"
+        );
+        assert_eq!(
+            llm_key_source(Some("  "), false),
+            LlmKeySource::GlobalKey,
+            "空厂商名等同无厂商"
+        );
+    }
+
+    /// 探活（连接测试）同理：厂商没配 key 就不带鉴权探
+    ///
+    /// 探的 base_url 是用户填的，带上主 key 就等于把它交给那个地址。
+    #[test]
+    fn probe_never_sends_the_global_key_to_a_vendor_endpoint() {
+        assert_eq!(
+            probe_auth(Some("MiniMax"), Some("vendor-key"), "global-key"),
+            ProbeAuth::WithKey("vendor-key".to_string()),
+            "厂商有自己的 key 就带它探"
+        );
+        assert_eq!(
+            probe_auth(Some("MiniMax"), None, "global-key"),
+            ProbeAuth::Anonymous,
+            "厂商没配 key 就不带鉴权探（不借全局主 key）"
+        );
+        assert_eq!(
+            probe_auth(Some("MiniMax"), Some("  "), "global-key"),
+            ProbeAuth::Anonymous,
+            "厂商 key 是空白等同于没配"
+        );
+        assert_eq!(
+            probe_auth(None, None, "global-key"),
+            ProbeAuth::WithKey("global-key".to_string()),
+            "无厂商的老条目用全局主 key"
+        );
     }
 
     #[test]

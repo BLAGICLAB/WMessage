@@ -626,16 +626,20 @@ pub fn resolve_model_override(
         )
         .into());
     }
-    // key：厂商 key 优先，缺 → 全局主 key 兜底（仅全局，不走 active 模型厂商——
-    // 该 key 会打 override 条目自己的 base_url，跨厂商回退是凭据泄漏）。
+    // key：厂商 key 优先；厂商没配自己的 key → 报错，**不借用全局主 key**
+    // （主 key 会带着这个条目自己的 base_url 出门——那个 base_url 是用户填的，
+    // 可能指向任何第三方）。无 vendor 的老条目没有厂商概念，用全局主 key。
     // 单次 read_vendor_key 的 Result 直接决策，不做 has 预检——预检+读取两段
     // keyring I/O 之间条目可被改删（check-then-act），且预检失败映射成 false 会吞掉
-    // 可行动的错误上下文；读取失败（含不存在）统一走全局兜底，行为与原先等价
+    // 可行动的错误上下文；读不到条目（空串）等同「该厂商没配 key」→ 报缺 key
     let api_key = match &entry.vendor {
-        Some(v) => match crate::bot::read_vendor_key(v) {
-            Ok(k) if !k.trim().is_empty() => k,
-            _ => crate::bot::config::keyring::read_api_key()?,
-        },
+        Some(v) => {
+            let k = crate::bot::read_vendor_key(v)?;
+            if k.trim().is_empty() {
+                return Err(CommandError::ApiKeyMissing);
+            }
+            k
+        }
         None => crate::bot::config::keyring::read_api_key()?,
     };
     // 兜底拿不到 key（NoEntry → classify_get_password 把 NoEntry 映射成 Ok("")）

@@ -813,19 +813,29 @@ pub async fn bot_test_connection(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-    let key = match &vendor {
-        Some(v) => {
-            if keyring::has_vendor_key(v)? {
-                keyring::read_vendor_key(v)?
-            } else {
-                keyring::read_api_key().unwrap_or_default()
-            }
-        }
-        None => keyring::read_api_key().unwrap_or_default(),
+    // 探活带哪个 key：厂商页用该厂商自己的 key；厂商没配 key 就**不带鉴权**探，
+    // 不借用全局主 key——探的 base_url 是用户填的（可能指向任何第三方），
+    // 把主 key 发过去等于把它交出去。无厂商的老条目用全局主 key。
+    let vendor_key = match &vendor {
+        Some(v) => Some(keyring::read_vendor_key(v)?),
+        None => None,
     };
+    let global_key = keyring::read_api_key().unwrap_or_default();
+    let key = match keyring::probe_auth(
+        vendor.as_deref(),
+        vendor_key.as_deref(),
+        global_key.as_str(),
+    ) {
+        keyring::ProbeAuth::WithKey(k) => k,
+        keyring::ProbeAuth::Anonymous => String::new(),
+    };
+    let authenticated = !key.trim().is_empty();
     let r = probe_connection(shared_llm_client(), &base_url, &api_format, &key).await;
+    // 没带鉴权（厂商没配 key）时，2xx 只说明端点通着，不说明 key 有效——
+    // 不能凭它把厂商转成「已验证」（转正后请求侧会拿主 key 打这个 base_url）。
+    let verified = r.ok && authenticated;
     if let Some(v) = vendor.as_deref() {
-        let ok = r.ok;
+        let ok = verified;
         if let Err(e) = super::io::update_config_file(&app, |cfg| {
             if ok {
                 if !cfg.verified_vendors.iter().any(|x| x == v) {
@@ -844,6 +854,17 @@ pub async fn bot_test_connection(
                 ),
             );
         }
+    }
+    // 未配 key 的厂商：如实说清「这次只探了连通性」，别报「连接测试通过」
+    if r.ok && !authenticated {
+        return Ok(ConnectionTestResult {
+            ok: false,
+            status: r.status,
+            error: Some(format!(
+                "厂商「{}」还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在厂商页填该厂商的 Key。",
+                vendor.clone().unwrap_or_default()
+            )),
+        });
     }
     Ok(r)
 }
