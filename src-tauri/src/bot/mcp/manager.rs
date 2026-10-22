@@ -33,11 +33,11 @@ use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, Tool};
 use rmcp::service::{DynService, RoleClient, RunningService, ServiceExt};
-use rmcp::transport::TokioChildProcess;
 use tauri::{Emitter, Runtime};
 use tokio::process::Command;
 
 use super::config::{McpServerConfig, McpTransport, STDIO_LAUNCH_ALLOWLIST};
+use super::stdio_transport::{CappedChildProcess, MAX_STDOUT_LINE};
 
 /// 建立连接（spawn 子进程 + initialize 握手）的总超时
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -367,7 +367,8 @@ impl McpManager {
                 cmd.args(&cfg.args)
                     .envs(cfg.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                     .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped());
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
                 if let Some(dir) = self.cwd.lock().unwrap_or_else(|e| e.into_inner()).clone() {
                     cmd.current_dir(dir);
                 }
@@ -383,37 +384,35 @@ impl McpManager {
                     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
                     cmd.creation_flags(CREATE_NO_WINDOW);
                 }
-                let (transport, stderr) = TokioChildProcess::builder(cmd)
-                    .stderr(std::process::Stdio::piped())
+                let mut child = cmd
                     .spawn()
                     .map_err(|e| format!("启动命令「{command}」失败：{e}"))?;
                 // pid 留着给停止路径（信号阶梯要按 pid 找进程组与子孙）
-                let child_pid = transport.id();
+                let child_pid = child.id();
+                let stdout = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| "子进程 stdout 未管道化".to_string())?;
+                let stdin = child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| "子进程 stdin 未管道化".to_string())?;
                 // stderr 后台收割：行进环形缓冲，进程退出时流关闭、任务自然结束
-                if let Some(stderr) = stderr {
+                if let Some(stderr) = child.stderr.take() {
                     let tail = self.stderr_ring(&cfg.id);
                     tauri::async_runtime::spawn(async move {
-                        use tokio::io::{AsyncBufReadExt, BufReader};
-                        let reader = BufReader::new(stderr);
-                        let mut lines = reader.lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            // 行级字节帽：子进程刷超长行时 BufReader::lines 会整行
-                            // 分配，4k 字符截断只影响尾部诊断展示不影响判定
-                            let line = if line.len() > 4000 {
-                                let mut t: String = line.chars().take(4000).collect();
-                                t.push('…');
-                                t
-                            } else {
-                                line
-                            };
-                            let mut ring = tail.lock().unwrap_or_else(|e| e.into_inner());
-                            if ring.len() >= STDERR_TAIL_LINES {
-                                ring.pop_front();
-                            }
-                            ring.push_back(line);
-                        }
+                        crate::bot::mcp::stdio_transport::harvest_stderr(
+                            stderr,
+                            tail,
+                            STDERR_TAIL_LINES,
+                        )
+                        .await;
                     });
                 }
+                // 读侧带行长上限的传输：外部 MCP 服务器一条不带换行的长行
+                // 就能把宿主内存撑爆（rmcp 原生 read_until 无上限，见
+                // mcp/stdio_transport 模块头）
+                let transport = CappedChildProcess::new(child, stdout, stdin, MAX_STDOUT_LINE);
                 let service = tokio::time::timeout(CONNECT_TIMEOUT, ().into_dyn().serve(transport))
                     .await
                     .map_err(|_| {
@@ -1159,6 +1158,59 @@ mod e2e_stdio {
             !crate::bot::registry::tools_json_with_mcp(None).contains("mcp_echo_echo"),
             "断开后工具应立即从清单消失"
         );
+    }
+
+    /// 外部 MCP 服务器一条超长行（5MB 的畸形 JSON）不能撑爆宿主内存，
+    /// 也不能打断会话：读侧行长上限把它截短 → 那条行不是消息 → 客户端不回
+    /// 响应；后续工具调用照常。
+    #[tokio::test]
+    async fn huge_stdio_line_is_truncated_and_session_survives() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP 超长行 e2e");
+            return;
+        }
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+        let mut cfg = echo_cfg("e2e-flood");
+        cfg.env = std::collections::BTreeMap::from([(
+            "WM_TEST_FLOOD_BYTES".to_string(),
+            (5 * 1024 * 1024).to_string(),
+        )]);
+        mgr.ensure_connected(&cfg)
+            .await
+            .expect("超长行不该打断连接");
+        assert_eq!(mgr.tools_of("e2e-flood").len(), 1, "工具发现应照常完成");
+
+        let result = mgr
+            .call_tool(&cfg, "echo", serde_json::json!({ "text": "你好" }))
+            .await
+            .expect("超长行之后的调用应成功");
+        let text = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default();
+        assert_eq!(text, "echo: 你好");
+
+        // 上限真的在生效：超长行被截短 → 不是消息 → 客户端不会回响应。
+        // （没有上限时这行会被当成「形状不对的 JSON-RPC」→ rmcp 回 Invalid Request）
+        for _ in 0..20 {
+            if mgr
+                .stderr_tail_snapshot("e2e-flood", 20)
+                .iter()
+                .any(|l| l.contains("client-reply"))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let tail = mgr.stderr_tail_snapshot("e2e-flood", 20);
+        assert!(
+            !tail.iter().any(|l| l.contains("client-reply")),
+            "超长行不该被当成消息（客户端不该回响应）：{tail:?}"
+        );
+        mgr.shutdown().await;
     }
 
     /// 资源采样：已连接的子进程能被采到内存/累计 CPU，第二次采样起才有占用率。

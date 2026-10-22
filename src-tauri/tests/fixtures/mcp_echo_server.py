@@ -27,13 +27,20 @@ def send(msg):
 def main():
     # 阶段 6 e2e：stderr 管道捕获的确定性锚点（manager 环形缓冲应捕获本行）
     print("echo-test stderr ready", file=sys.stderr, flush=True)
-    # 可选：按 WM_TEST_LISTEN_PORT 开一个真实 TCP 监听，让「子进程在监听什么端口」
+    # 可选：WM_TEST_LISTEN_PORT 开一个真实 TCP 监听，让「子进程在监听什么端口」
     # 的采样有真东西可采（e2e 用；不设这个变量就是普通桩）
     listen_port = os.environ.get("WM_TEST_LISTEN_PORT")
     if listen_port:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", int(listen_port)))
         sock.listen(8)
+    # 可选：WM_TEST_FLOOD_BYTES —— 先吐一条超长行（外部服务器的一条长行就能
+    # 把宿主内存撑爆；宿主读侧应有行长上限把它截短）。这行 JSON 只有在完整
+    # 时才合法，所以被截短后宿主应当**不**把它当成消息处理（不回响应）。
+    flood = os.environ.get("WM_TEST_FLOOD_BYTES")
+    if flood:
+        sys.stdout.write('{"pad":"' + "x" * int(flood) + '"}\n')
+        sys.stdout.flush()
     for raw in sys.stdin:
         line = raw.strip()
         if not line:
@@ -41,6 +48,11 @@ def main():
         req = json.loads(line)
         method = req.get("method")
         rid = req.get("id")
+        if method is None:
+            # 客户端回了一个「响应」（响应没有 method）——说明客户端把某条畸形
+            # 消息当成了消息处理。宿主读侧有行长上限时，超长行被截短 → 不是
+            # 消息 → 不该有这条。
+            print(f"echo-test client-reply id={rid}", file=sys.stderr, flush=True)
         if method == "initialize":
             send(
                 {

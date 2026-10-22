@@ -1085,6 +1085,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-1 | 已修 | 采集层显式回报采样成败（`procs::ListeningSample`）+ 采样失败降级 `Unsupported` |
 | P1-2 | 已修 | Windows 停止阶梯落地（`taskkill /T /F`）+ 停止失败不谎报「已停」+ pid 0/1 不许当树根（`procs::stop_tree` / `services::stop_entry`）|
 | P1-12 | 已修 | 主聊天路径工具执行包 `catch_unwind`（`dispatch::run_tool_panic_isolated`）+ 接线守卫 |
+| P2-6 | 已修 | stdio 读侧行长上限 1MB（`mcp/stdio_transport::LineCappedReader`）+ stderr 按字节块切行只留尾部 + 子进程生命周期自托管（`CappedChildProcess`）|
 | P1-7 | 已修 | 失效测试补回 `#[tokio::test]` + `cargo clippy --all-targets -- -D warnings` 进快门禁（`scripts/test-fast.sh`）+ 16 处存量 lint 清零 |
 | P1-6 | 已修 | 回滚段只在 `rollback: auto` 时执行（`scheduler`）+ `auto` 无回滚段降级为 `none`（`parse::normalize_rollback_meta`）|
 | P1-5 | 已修 | 工具预算触达落 `BudgetExceeded`（收尾读 `ctx.used_tool_calls` + `classify_outcome` 认工具熔断标记）|
@@ -1320,6 +1321,47 @@ panic → future unwind → `bot_chat` 整轮崩：用户这一轮对话全丢�
 
 **接线守卫**：`dispatch` 源码扫描钉住「内置工具执行与 MCP 兜底路由都必须走
 隔离层，隔离层必须真的 catch_unwind 且归一成 `ToolResult::error`」。
+
+### P2-6 的落地口径
+
+**不用 vendor rmcp，也不用加依赖**。rmcp 的 `transport-child-process` 特性
+**已隐含开启** `transport-async-rw`（同一个 crate 的另一个模块），于是
+`rmcp::transport::async_rw::AsyncRwTransport` 直接可用——它就是 rmcp 自己
+stdio 传输的**内核**（`TokioChildProcess` 内部就是
+`AsyncRwTransport::new(stdout, stdin)`），差别只在读侧那一层。
+
+**读侧行长上限**（`mcp/stdio_transport::LineCappedReader`）：每行最多转发
+1MB，超出的字节**直接丢弃**（不缓冲、不分配），换行符照常转发 → rmcp 的
+`read_until` 拿到的 `line_buf` 有界（≤1MB + 1），那条超长行按 rmcp 既有的
+「非法 JSON 逐行忽略」跳过，**会话不断**（服务器刷完长行仍能正常应答）。
+
+**为什么不选「超限直接断链」**：断链会把外部服务器的一次坏输出升级成
+「这条 MCP 服务器不可用」，还得靠懒重连兜；截断只丢那一条消息。代价是
+超长行之后的内容一起丢——但那条消息本来就不完整。
+
+**截断不静默**：每条连接第一次截断时打一行诊断（「服务器输出超长行已截断，
+该行被跳过，后续消息照常处理」），只报一次，免得被刷屏。
+
+**stderr 侧**：原来用 `BufReader::lines()`——**整行分配**（上界在分配之后，
+本报告原文已指出）。现在按 8KB 字节块读，行缓冲用 `VecDeque` 只留**尾部**
+4KB（超长行的末尾通常才是真正的错误信息；前面的进度条 / base64 没有诊断
+价值）。用双端队列而不是 `Vec` + `drain`：后者会让一条超长行退化成 O(n²)。
+
+**子进程生命周期自己托管**（`CappedChildProcess`）：不再用 rmcp 的
+`TokioChildProcess`（它把读侧写死了）。关闭口径与 rmcp 原实现一致——先关
+stdin（服务器看见 EOF 自己退）→ 3s 优雅退出窗口 → 超时强杀；传输被丢弃时
+同步 `start_kill`（不用 rmcp 的 `tokio::spawn(kill)`：后者在没有运行时的
+Drop 里会 panic）。
+
+**测试**：
+- `LineCappedReader` 单测：一条 100KB 的无换行长行 → 只转发 cap 字节；
+  正常行原样转发、超长行被截后**后续行照常送达**。
+- `harvest_stderr` 单测：100KB 超长行只留尾部且长度有界；环形缓冲满则挤掉
+  最老的一行。
+- e2e（真实 python3 桩）：桩先吐 5MB 畸形 JSON 行 → 连接与工具调用照常，
+  且**客户端没有回响应**（无上限时那行会被当成「形状不对的 JSON-RPC」→
+  rmcp 回 Invalid Request → 桩能在 stderr 里看到）。这条 e2e 对上限敏感：
+  把 cap 临时放大到 100MB 实测会失败（标记 `client-reply` 出现）。
 
 ### P1-7 的落地口径
 
