@@ -30,6 +30,10 @@ pub(crate) fn lock_or_recover<'a, T>(
 /// spawn_blocking 单写者接线：拿 `DB_WRITE_LOCK` + `open_db` + 注入 closure；
 /// closure 返回 `Result<R, String>` 透传。线程 join 失败统一报「DB 写线程 join 失败」。
 ///
+/// 拿锁走 `lock_db_write()` 而不是裸 `DB_WRITE_LOCK.lock()`——闭包里调
+/// `upsert_tasks` 这类契约函数时，它断言的是「当前线程持锁」这个线程本地标记；
+/// 裸锁拿到的互斥是真的，标记却是假的，debug 构建下当场 panic。
+///
 /// 配套语义：
 /// - 闭包拿 `&mut Connection`（业务需要事务/非事务时按需 `&*conn` 借用即可）
 /// - **不在 helper 内自动 ensure_table**：每个调用方表契约不同，闭包自己调一次
@@ -45,13 +49,33 @@ where
     let app = app.clone();
     let join_result: Result<Result<T, String>, tauri::Error> =
         tauri::async_runtime::spawn_blocking(move || -> Result<T, String> {
-            let _g = crate::db::DB_WRITE_LOCK.lock().unwrap_or_else(|e| {
-                eprintln!("[mutex_poisoned] with_write_conn DB_WRITE_LOCK: {e:?}");
-                e.into_inner()
-            });
+            let _g = crate::db::lock_db_write();
             let mut conn = crate::db::open_db(&app)?;
             f(&mut conn)
         })
         .await;
     join_result.map_err(|e| format!("DB 写线程 join 失败：{e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// with_write_conn 的临界区必须让当前线程被标记为「持 DB 写锁」。
+    ///
+    /// `upsert_tasks` 之类的契约函数断言的是这个线程本地标记，不是锁本身；
+    /// 拿锁方式与标记设置脱节时，互斥是真的、断言却是假的——debug 构建下
+    /// 闭包里调 `upsert_tasks` 会当场 panic，release 构建里被编译掉看不见。
+    #[tokio::test]
+    async fn write_conn_marks_the_closing_thread_as_holding_the_db_write_lock() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let marked = with_write_conn(&handle, |_conn| Ok(crate::db::holding_db_write()))
+            .await
+            .expect("写连接应能拿到");
+        assert!(
+            marked,
+            "with_write_conn 闭包内必须置位持锁标记——否则契约函数的断言会误判"
+        );
+    }
 }
