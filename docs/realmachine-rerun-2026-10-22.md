@@ -19,18 +19,28 @@
 
 ## 一、换 exe
 
-### 1.1 mac 侧产物（已构建，SHA256 随文核对）
+### 1.1 mac 侧产物（**要重新构建**：上一份已随 `target/` 整个清掉）
 
+上一轮那份 `wmessage.exe`（SHA256 `adebd0d…`，基线 `a20f0ec3`）**跟着 `src-tauri/target/` 一起没了**——
+本机现在没有可拷的产物，照旧 SHA256 去核对会直接扑空。重建（mac 交叉编译 Windows 目标，
+`mingw-w64` 已在 PATH）：
+
+```bash
+cd /Users/renshi/Projects/wmessage
+npm run build                                          # 前端产物（tauri build 需要 dist/）
+npx tauri build --target x86_64-pc-windows-gnu --no-bundle
+shasum -a 256 src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
 ```
-/Users/renshi/Projects/wmessage/src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
-```
+
+产物落在 `src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`。
+**重建后把上面命令打出的 SHA256 与大小回填到本表**（旧的那两行已作废）。
 
 | 项 | 值 |
 |---|---|
-| 大小 | 74,635,241 B |
+| 大小 | _（重建后回填）_ |
 | 格式 | `PE32+ executable (GUI) x86-64 (stripped to external PDB), for MS Windows` |
-| SHA256 | `adebd0d750278eb495a0e00e6b1fe80947c06ae4bda92eba1d9ffbda50badcc8` |
-| 构建基线 | main @ `a20f0ec3`（含 D-2 / D-6 / D-7 三项修复） |
+| SHA256 | _（重建后回填）_ |
+| 构建基线 | _（重建后回填：填 `git rev-parse --short HEAD`）_ |
 
 把 `wmessage.exe` 拷到 Windows 机器上，
 **替换 `D:\Program Files\wmessage-portable-2026-10-22\wmessage.exe`**。
@@ -52,7 +62,7 @@ Copy-Item "$PKG\wmessage.exe" "$PKG\wmessage.exe.bak-2026-10-22" -Force
 # 3) 替换（把拷过去的 wmessage.exe 放到 $PKG 下再执行）
 Copy-Item "D:\transfer\wmessage.exe" "$PKG\wmessage.exe" -Force
 
-# 4) 校验：大小 + 修改时间（应为 74,635,241 B）
+# 4) 校验：大小 + 修改时间（对照 §1.1 回填后的大小）
 Get-Item "$PKG\wmessage.exe" | Select-Object Length, LastWriteTime
 ```
 

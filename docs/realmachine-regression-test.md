@@ -1338,6 +1338,7 @@ Get-Content "$PKG\bot.log" -Encoding UTF8 | Select-String "service\.(started|sto
 
 期望读到 `service.stop_requested | reason=ready_timeout` → `service.exited | exit_code=1` → `service.stopped | method=taskkill`。
 **关键**：那条 `service.exited` 的 `uptime_ms` 应当 ≈ 5000（= `readyTimeoutSecs`）。**一个「启动后立即退出」的服务活不到 5 秒**——`uptime_ms` 就是「它一直好好的，是我们超时才停的」的直接证据。
+**再一条**：那条 `service.exited` 还得带 `stop_reason=ready_timeout`（源码 `exited_event_kv` 恒带这个字段；写成 `none` 表示「它自己退的」，与本卡的情形不符）。
 
 **对照（必须做，能证明问题只在文案）**：同一个服务换个能匹配上的 pattern 再起一次：
 
