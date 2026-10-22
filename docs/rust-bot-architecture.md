@@ -245,13 +245,13 @@ src-tauri/src/
 │                        敏感控件禁打（密码、验证码类不代填）；每次动作留审计 +
 │                        动作前后各一张截图（落 AI_Gen_Files）
 ├── ui/                 桌面 UI 自动化跨平台层（数据模型 + 总开关 + 平台分发）
-│   ├── ui/mod.rs (256) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
+│   ├── ui/mod.rs (317) UiWindow / UiNode 数据模型 + flag 开关（ui_get_enabled /
 │   │                 ui_set_enabled）+ 平台分发（list_windows / activate_window /
 │   │                 inspect_tree / press_node / focus_node / type_text）
 │   ├── ui/macos.rs (417) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
 │   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）
-│   └── ui/windows.rs (408) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
+│   └── ui/windows.rs (422) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
 ├── bot_desktop.rs (647) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path

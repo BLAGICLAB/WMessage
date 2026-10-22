@@ -21,10 +21,13 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
-    VIRTUAL_KEY,
+    KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+    MOUSEEVENTF_VIRTUALDESK, MOUSEINPUT, VIRTUAL_KEY,
 };
-use windows::Win32::UI::WindowsAndMessaging::{SetForegroundWindow, ShowWindow, SW_RESTORE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, SetForegroundWindow, ShowWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
+};
 
 use super::{UiNode, UiWindow};
 
@@ -333,9 +336,16 @@ pub fn focus_node(node_id: &str) -> Result<(), String> {
     unsafe { el.SetFocus() }.map_err(|e| format!("聚焦控件失败：{e}"))
 }
 
-/// 坐标点击（0-65535 归一化的绝对坐标）
+/// 坐标点击（像素坐标换算成 MOUSEEVENTF_ABSOLUTE 的 0-65535 归一化值）
 fn click_at(x: f64, y: f64) -> Result<(), String> {
-    let (sx, sy) = (x as i32, y as i32);
+    // 绝对鼠标坐标的基准是整个虚拟桌面，不是主屏：多显示器时原点也不是 (0,0)
+    let vx = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) } as f64;
+    let vy = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) } as f64;
+    let vw = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) } as f64;
+    let vh = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) } as f64;
+    let (sx, sy) = super::pixels_to_normalized_absolute(x, y, vx, vy, vw, vh).ok_or_else(|| {
+        format!("控件位置（{x:.0}, {y:.0}）不在当前屏幕范围内，跳过这次坐标兜底点击")
+    })?;
     let inputs = [
         INPUT {
             r#type: INPUT_MOUSE,
@@ -344,7 +354,7 @@ fn click_at(x: f64, y: f64) -> Result<(), String> {
                     dx: sx,
                     dy: sy,
                     mouseData: 0,
-                    dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTDOWN,
+                    dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_LEFTDOWN,
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -357,7 +367,7 @@ fn click_at(x: f64, y: f64) -> Result<(), String> {
                     dx: sx,
                     dy: sy,
                     mouseData: 0,
-                    dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_LEFTUP,
+                    dwFlags: MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | MOUSEEVENTF_LEFTUP,
                     time: 0,
                     dwExtraInfo: 0,
                 },

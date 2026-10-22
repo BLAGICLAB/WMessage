@@ -219,8 +219,38 @@ pub fn type_text(text: &str) -> Result<(), String> {
     }
 }
 
+/// 屏幕像素坐标 → MOUSEEVENTF_ABSOLUTE 用的 0-65535 归一化值
+///
+/// SendInput 的绝对鼠标坐标不是像素，是「虚拟桌面宽高的 65536 分之一」。把像素
+/// 直接塞进去，落点会缩到屏幕左上角附近（1920 宽屏上 x=500 落在约 15px 处），
+/// 一次点击就打到完全无关的控件上。
+///
+/// 基准是整个虚拟桌面（配 MOUSEEVENTF_VIRTUALDESK 用），原点是虚拟桌面的左上角
+/// ——多显示器时那个原点不是 (0, 0)。点落在虚拟桌面外返回 None（宁可不出手）。
+#[cfg(any(windows, test))]
+pub(crate) fn pixels_to_normalized_absolute(
+    x: f64,
+    y: f64,
+    origin_x: f64,
+    origin_y: f64,
+    width: f64,
+    height: f64,
+) -> Option<(i32, i32)> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let nx = ((x - origin_x) / width * 65535.0).round();
+    let ny = ((y - origin_y) / height * 65535.0).round();
+    if !(0.0..=65535.0).contains(&nx) || !(0.0..=65535.0).contains(&ny) {
+        return None;
+    }
+    Some((nx as i32, ny as i32))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// 接线守卫：六件套必须真的接进工具表（改了工具名而忘了登记，这里会红）
     #[test]
     fn ui_tools_are_wired_into_registry() {
@@ -251,6 +281,37 @@ mod tests {
         assert!(
             src.contains("crate::ui::ui_set_enabled"),
             "ui_set_enabled 必须注册进 invoke_handler"
+        );
+    }
+
+    /// 像素 → 归一化：落点必须跟像素对得上，不能缩到屏幕左上角
+    #[test]
+    fn pixel_coordinates_must_not_be_used_as_normalized_values() {
+        // 单屏 1920×1080：屏幕正中就该落在归一化坐标的中点附近
+        let (nx, ny) = pixels_to_normalized_absolute(960.0, 540.0, 0.0, 0.0, 1920.0, 1080.0)
+            .expect("屏幕内的点必须能换算");
+        assert_eq!((nx, ny), (32768, 32768));
+        // 左上角附近：几乎不动
+        let (nx, ny) = pixels_to_normalized_absolute(10.0, 10.0, 0.0, 0.0, 1920.0, 1080.0)
+            .expect("屏幕内的点必须能换算");
+        assert!(nx < 400 && ny < 700, "左上角的点不该被放大到屏幕中央");
+    }
+
+    /// 虚拟桌面有偏移时（多显示器），原点在左下屏时也要算得对
+    #[test]
+    fn normalized_coordinates_follow_the_virtual_desktop_origin() {
+        // 虚拟桌面从 x=-1920 起（左侧一块屏），宽 3840
+        let (nx, ny) = pixels_to_normalized_absolute(0.0, 0.0, -1920.0, 0.0, 3840.0, 1080.0)
+            .expect("虚拟桌面内的点必须能换算");
+        assert_eq!((nx, ny), (32768, 0), "虚拟桌面左缘应落在归一化中点");
+        // 桌面外的点不给出坐标（宁可不出手，也别点到别处）
+        assert!(
+            pixels_to_normalized_absolute(-3000.0, 0.0, -1920.0, 0.0, 3840.0, 1080.0).is_none(),
+            "桌面外的点必须拒绝换算"
+        );
+        assert!(
+            pixels_to_normalized_absolute(10.0, 10.0, 0.0, 0.0, 0.0, 1080.0).is_none(),
+            "屏幕尺寸读不到时必须拒绝换算"
         );
     }
 }
