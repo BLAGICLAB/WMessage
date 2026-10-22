@@ -186,6 +186,41 @@ powershell -ExecutionPolicy Bypass -File $PS fixes -ExeDir $PKG
 
 ## 三、再跑 S 序列剩余项
 
+### 3.1 跑法（三条，别省）
+
+1. **一项一段**：每项前 `mark` 打水位线 → 只做这一项 → `report` 取这段区间的事件。
+   同一轮塞多项时，后一项的失败会把前一项的现象盖掉（主文档 §1.3 铁律三）。
+2. **一轮一事实**：应用自报不算数。停了服务要看进程真没了、开了端口要看真被占、
+   写了机密要看条目真还在——地面真相在主文档 §1.4 的第三种形态里。
+3. **贴原文**：结论列只写 PASS / FAIL / 部分 PASS，证据列贴日志原文。
+   「大概好了」不算结论。
+
+macOS / Linux 上的等价命令（Windows 用同名子命令的 `.ps1`）：
+
+```bash
+bash scripts/regression-probe.sh mark      # 打水位线
+bash scripts/regression-probe.sh report    # 取水位线之后的事件
+bash scripts/regression-probe.sh fixes     # 本轮修过的三个缺陷的证据（D-1 / D-2 / D-6）
+bash scripts/regression-probe.sh services  # 受管服务的真实进程与监听端口
+bash scripts/regression-probe.sh orphans   # 宿主已死、服务还活着的孤儿
+```
+
+> `fixes` 是 unix 侧本轮新补的（此前只有 Windows 脚本有）：一条命令拿到
+> 「本轮修的东西在日志里的落点」，不用在几千行 bot.log 里手翻。
+
+### 3.2 顺序（前置条件是递进的，别跳着做）
+
+| 段 | 项 | 为什么这个顺序 |
+|---|---|---|
+| **第一段** | S03 → S04 | 安全边界：MCP 的 SSRF 闸与 keyring 机密。都在「MCP 服务」面板里做完，顺手建好的服务器给后面用 |
+| **第二段** | S08 → S10 → S11 → S13 | 静默失效（这批的失败形态都是「看起来正常」）。S08 要反复起停服务，放前面把服务生命周期踩熟；S13 要真的起一台 stdio MCP 桩服务器 |
+| **第三段** | S15 ~ S25 | 可感知语义，逐项独立，随时可停 |
+
+> **S07 在 Windows 上跳过**（端口闸真杀是 macOS/Linux 专属）。**S08 的 pid 0 变异注入单独安排**——
+> 那条有真实杀伤力（拿 launchd 子树当后代逐个 SIGKILL），别混在别的场景里。
+
+### 3.3 结果回填
+
 | 项 | 场景卡 | 档位 | 本轮结论 | 证据（原文） |
 |---|---|---|---|---|
 | S03 | 主文档 §四 | T0 | ⬜ 待跑 | |
@@ -206,12 +241,6 @@ powershell -ExecutionPolicy Bypass -File $PS fixes -ExeDir $PKG
 | S24 | 主文档 §六 | T2 | ⬜ 待跑 | |
 | S25 | 主文档 §六 | T2 | ⬜ 待跑 | |
 | **S07** | 主文档 §五 | T1 | **跳过** | macOS/Linux 专属（端口闸真杀），Windows 测不了——见主文档附录 C |
-
-**每项跑完**：
-
-1. `mark` → 操作 → `report`，把**原文**粘进上表「证据」列；
-2. 判 PASS / FAIL / 部分 PASS（有据可查的判定，别写「大概好了」）；
-3. **地面真相核对**：进程 / 端口 / 凭据管理器 / 通知 / 日志原文——**应用自报不算数**。
 
 **三条提示词铁律**（主文档 §1.3，写在这里免得翻）：
 
