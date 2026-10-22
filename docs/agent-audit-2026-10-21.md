@@ -801,7 +801,7 @@ stderr 侧注释自承同样的问题（`manager.rs:325-327`）：
 **修法**：读侧加行长上限（如 1MB 截断，或超限直接断开该连接并记审计）；
 stderr 侧改为「按字节流分块切行、只保留尾部 N 字节」，避免整行分配。
 
-#### P2-7 `has_inline_secrets` 零生产调用：死函数 + 文档口径不一致
+#### P2-7 `has_inline_secrets` 零生产调用：死函数 + 文档口径不一致（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/mcp/config.rs:225-229`（定义）·
 `src-tauri/src/bot/config/io.rs:288-289`（实现用的是**孪生的 Value 级判据**）
@@ -1096,6 +1096,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-10 | 已修 | SPEC 附录口径改成真话（v1 快照只读 / 机制详录活节并立真标题）|
 | P1-11 | 已修 | 绑定内核收成一份（`taskFiles::applyBinding` + `lib/useTaskFiles.ts` hook）：卡片 / 详情面板 / 上下文栏三处共用，合并基线一律取最新 files |
 | P1-3 | 已修 | 服务层父进程看门狗（unix 管道 EOF 助手 + Windows `KILL_ON_JOB_CLOSE` job）+ `RunEvent::Exit` 兜底 |
+| P2-7 | 已修 | 迁移判据收成一份（`mcp::config::has_inline_secrets` 判**原始 JSON 条目**）+ `config/io.rs` 改调它 + 判据单源扫描守卫 |
 
 ### P0-1 的落地口径
 
@@ -1583,4 +1584,41 @@ Rust `pick_files_dialog`）；本项统一的是「合并 / 提示 / 落库」�
 **已知残留**：Windows 侧的 Job Object 路径**只做了交叉编译验证，行为未实测**
 （本机无 Windows）；unix 侧依赖 `/bin/sh`（macOS / 主流 Linux 都有；缺了则
 看门狗装不上，服务照跑，只是不带这层兜底——装不上不拦启动）。
+
+### P2-7 的落地口径
+
+**选了哪条路**：审计给的两条里取「让生产调它」，但**改的是函数的判据层级**——
+`has_inline_secrets` 从「判类型化 `McpServerConfig`」改成「判**原始 JSON 条目**」，
+`config/io.rs` 的迁移段改调它。
+
+**为什么不按字面改成「io.rs 调类型化版」**：类型化版判的是**水合后**的配置，而
+水合会把 keyring 的值灌进每台服务器的 `env`/`headers`——用它判，恒为 true，迁移
+永远认为「文件里还有明文」，会反复迁移（且判不出「已剥离」这个幂等条件）。审计
+正文自己也点破了这点（注释说「水合后的内存值不适用」）。所以真正的修法是**把判据
+移到正确的层级**：`skip_serializing` 只挡序列化，不挡反序列化，原始文件里的
+`env`/`headers` 读得出来，判据因此可以落在原始 JSON 上。
+
+**语义逐条对齐（行为零变化）**：新判据与原来 io.rs 里那段孪生逻辑逐情况等价——
+缺字段 / `null` / 空对象 / 非对象形态（写成字符串、数组）都**不算**内联机密；
+任一段是非空对象即算。迁移行为与修前完全一致，这条是纯一致性修复，不改任何
+用户可见行为。
+
+**单测跟着搬家**：`secrets.rs` 里那条单测判的是类型化配置，签名一改就失去意义，
+随判据一起搬到 `config.rs` 的测试模块（函数住哪，测试住哪），改成判原始 JSON
+条目；顺带把「非对象形态不算内联机密」这一档也钉住。
+
+**判据单源守卫**：新增一条扫描守卫，钉住「`config/io.rs` 的生产段必须调
+`mcp::config::has_inline_secrets`，且不得再出现 `as_object().map(|m| m.is_empty())`
+这种平行的 Value 级复制品」。扫描前先切掉 `#[cfg(test)]` 尾段——不切的话，把调用
+点挪进 io.rs 的测试模块就能骗过守卫（同 `bot_model_loop.rs` 那条守卫的做法）。
+**变异实测**：把 io.rs 的生产实现退回孪生判据，守卫如期变红（报「迁移判据必须调
+mcp::config::has_inline_secrets」），确认这条守卫是承重的、不是空断言。
+
+**设计文档三处口径**（`docs/MCP-KEYSLOT-MIGRATION-DESIGN-2026-09-29.md:35`、`:59`、
+`:82`）改成「原始 JSON 条目级判据」——原先「`has_inline_secrets` 就是迁移判据」
+这句话现在才真正成立。
+
+**已知残留**：`secrets.rs` 水合路径里的 `s.env.is_empty() && s.headers.is_empty()`
+**不是**迁移判据（它问的是「内存里有没有值 → 要不要回填 keyring」，判的是水合
+后的类型化配置，方向相反），本轮不动。
 

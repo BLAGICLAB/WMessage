@@ -536,19 +536,7 @@ mod tests {
         assert!(resolve_masked(&incoming, &old).is_empty());
     }
 
-    // ── config.rs 判据与剥离 ──
-
-    #[test]
-    fn has_inline_secrets_detects_either_map() {
-        use crate::bot::mcp::config::has_inline_secrets;
-        let mut s = crate::bot::mcp::config::McpServerConfig::default();
-        assert!(!has_inline_secrets(&s));
-        s.env.insert("K".into(), "v".into());
-        assert!(has_inline_secrets(&s));
-        let mut s2 = crate::bot::mcp::config::McpServerConfig::default();
-        s2.headers.insert("H".into(), "v".into());
-        assert!(has_inline_secrets(&s2));
-    }
+    // ── 剥离（skip_serializing 语义）──
 
     #[test]
     fn server_serialization_never_emits_secrets() {

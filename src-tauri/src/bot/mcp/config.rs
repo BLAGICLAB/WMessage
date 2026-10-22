@@ -221,11 +221,19 @@ pub fn clamp_timeout(v: Option<u64>) -> Option<u64> {
     v.map(|n| n.clamp(MCP_TIMEOUT_MIN_SECS, MCP_TIMEOUT_MAX_SECS))
 }
 
-///  迁移判据：配置里这台服务器是否还带着内联机密（env/headers 非空）。
-/// 只用于**迁移前对原始文件内容**判定（水合后的内存值不适用——水合会让所有
-/// 服务器看起来都带机密）。
-pub fn has_inline_secrets(s: &McpServerConfig) -> bool {
-    !s.env.is_empty() || !s.headers.is_empty()
+/// 迁移判据：原始配置文件里这台服务器是否还带着内联机密（env/headers 任一非空对象）。
+///
+/// 判据必须落在**原始 JSON 条目**上：迁移读的是未水合的文件内容，而水合后的
+/// `McpServerConfig` 每台都带着 keyring 值（拿它判恒为 true，判不出「文件里还有
+/// 没有明文」）。非对象形态（env/headers 写成字符串或数组）不算内联机密——那种
+/// 条目没有可迁移的键值对，迁移段会在解析时上抛而不是静默放过。
+pub fn has_inline_secrets(server: &serde_json::Value) -> bool {
+    ["env", "headers"].iter().any(|k| {
+        server
+            .get(*k)
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|m| !m.is_empty())
+    })
 }
 
 /// 规范化：trim 各字符串字段 + 丢弃空 env 键 + 超时钳制。保存前调用。
@@ -921,5 +929,49 @@ mod tests {
         assert!(arr[0].get("timeoutSecs").is_none(), "None 超时不落盘");
         let cfg2: BotConfig = serde_json::from_value(v).unwrap();
         assert_eq!(cfg2.mcp_servers, cfg.mcp_servers);
+    }
+
+    // ── has_inline_secrets（迁移判据）──
+
+    #[test]
+    fn inline_secrets_predicate_reads_raw_json_entry() {
+        // 缺字段 / null / 空对象 / 非对象形态 = 文件里没有可迁移的键值对
+        assert!(!has_inline_secrets(
+            &serde_json::json!({"id": "a", "name": "n"})
+        ));
+        assert!(!has_inline_secrets(
+            &serde_json::json!({"id": "a", "env": null, "headers": {}})
+        ));
+        assert!(!has_inline_secrets(
+            &serde_json::json!({"id": "a", "env": "oops"})
+        ));
+        // 任一段非空即算内联机密
+        assert!(has_inline_secrets(
+            &serde_json::json!({"id": "a", "env": {"K": "v"}})
+        ));
+        assert!(has_inline_secrets(
+            &serde_json::json!({"id": "a", "headers": {"H": "v"}})
+        ));
+    }
+
+    /// 判据单源守卫：迁移路径必须调本函数，io.rs 不得再留平行的 Value 级复制品
+    ///
+    /// 先切掉 `#[cfg(test)]` 尾段再扫是这条守卫成立的前提：`include_str!` 把
+    /// io.rs 的测试模块也读进来了，不切的话，调用点被挪进测试模块后守卫照样绿。
+    #[test]
+    fn migration_uses_the_single_inline_secrets_predicate() {
+        let src = include_str!("../config/io.rs");
+        let production = src
+            .split_once("#[cfg(test)]")
+            .expect("io.rs 应有测试模块")
+            .0;
+        assert!(
+            production.contains("mcp::config::has_inline_secrets"),
+            "迁移判据必须调 mcp::config::has_inline_secrets（判据单源）"
+        );
+        assert!(
+            !production.contains("as_object().map(|m| m.is_empty())"),
+            "io.rs 不得自带平行的内联机密判据"
+        );
     }
 }

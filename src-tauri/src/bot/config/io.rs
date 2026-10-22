@@ -283,11 +283,13 @@ pub(crate) fn migrate_mcp_server_secrets_locked(app: &AppHandle) -> Result<(), S
         .iter()
         .filter_map(|s| {
             let id = s.get("id")?.as_str()?.to_string();
+            // 判据单源：迁移短路条件与单测同调 mcp::config::has_inline_secrets
+            if !crate::bot::mcp::config::has_inline_secrets(s) {
+                return None;
+            }
             let env = s.get("env").cloned().unwrap_or(serde_json::Value::Null);
             let headers = s.get("headers").cloned().unwrap_or(serde_json::Value::Null);
-            let inline = !env.as_object().map(|m| m.is_empty()).unwrap_or(true)
-                || !headers.as_object().map(|m| m.is_empty()).unwrap_or(true);
-            inline.then_some((
+            Some((
                 id,
                 s.get("name")
                     .and_then(|n| n.as_str())

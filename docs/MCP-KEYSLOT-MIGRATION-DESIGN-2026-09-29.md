@@ -32,7 +32,7 @@
 
 | 文件 | 改动 |
 |---|---|
-| `bot/mcp/config.rs`（配置层） | `env`/`headers` 加 `#[serde(skip_serializing)]` + 注释对齐 tavily_key 语义；新增纯函数内核：`secrets_blob(&server) -> McpSecrets`、`apply_secrets(&mut server, blob)`、`has_inline_secrets(&server) -> bool`（迁移判据）；模块头「敏感边界」注释改写（明文声明作废，指向 secrets.rs） |
+| `bot/mcp/config.rs`（配置层） | `env`/`headers` 加 `#[serde(skip_serializing)]` + 注释对齐 tavily_key 语义；新增纯函数内核：`secrets_blob(&server) -> McpSecrets`、`apply_secrets(&mut server, blob)`、`has_inline_secrets(&raw_entry) -> bool`（迁移判据，判**原始 JSON 条目**：水合后的类型化配置每台都带着 keyring 值，判它恒为 true，判不出文件里还有没有明文）；模块头「敏感边界」注释改写（明文声明作废，指向 secrets.rs） |
 | `bot/mcp/secrets.rs`（**新文件**） | blob 结构（serde）；`read/write/delete/has(server_id)` 按后端分发（复用 `key_backend()` 探测，**不改 keyring.rs**）；降级文件 IO（0600 + tmp+rename）；`hydrate_into(cfg)`（读路径水合，缓存命中不敲 keychain；keyring 故障 → 填空 + WARN `mcp.secret_read_failed`，**不炸配置加载**——服务器连不上时 UI 状态点可见）；`purge(server_id)` |
 | `bot/config/io.rs` | `load_config` 解析后调 `secrets::hydrate_into`；`migrate_mcp_server_secrets_locked(app)`（§4）挂在 `with_locked_config` 现有 `migrate_bot_config_schema_locked` 旁；启动路径（`lib.rs` setup / 现有迁移调用点）同加一次（幂等 + once 标记） |
 | `bot/mcp/commands.rs` | `mcp_server_save`：payload 里 env/headers → 写 blob（**先 keyring 后配置**，写败则整体报错不动配置）→ upsert；`mcp_server_delete`：锁内 `purge(id)`（配置删除成功才清 blob，清败 WARN 留孤儿可手动清）；`mcp_server_toggle` 不涉密（只动 enabled），水合值不会被写回（skip_serializing） |
@@ -56,7 +56,7 @@
    任一台失败 → **不写回**，配置保持原样（明文还在），WARN mcp.secret_migrate_failed，下次重试
 ```
 
-幂等性：剥离后的配置 `has_inline_secrets`=false → 迁移短路；keyring 已有条目被同内容覆盖 = 无害。**关键不变式：剥离明文的唯一途径是「keyring 已确认写入」之后的写回**——skip_serializing 使任何其他写路径都不可能把明文写回盘，迁移失败时明文仍在文件里，零丢失窗口。
+幂等性：剥离后的配置按**原始 JSON 条目**判 `has_inline_secrets`=false → 迁移短路；keyring 已有条目被同内容覆盖 = 无害。**关键不变式：剥离明文的唯一途径是「keyring 已确认写入」之后的写回**——skip_serializing 使任何其他写路径都不可能把明文写回盘，迁移失败时明文仍在文件里，零丢失窗口。
 
 ## 5. 失败与回滚（拍板问②）
 
@@ -79,7 +79,7 @@
 
 ## 7. 测试计划（对齐 keyring.rs 可测内核注入风格）
 
-1. 纯内核：blob serde 往返 / `has_inline_secrets` / 剥离等价性（skip_serializing 前后 diff）。
+1. 纯内核：blob serde 往返 / `has_inline_secrets`（原始 JSON 条目级：缺字段 / null / 空对象 / 非对象形态都不算内联机密）/ 剥离等价性（skip_serializing 前后 diff）。
 2. 降级后端注入（PlaintextFile + 临时文件）：blob 读写删、0600、原子写、损坏文件容忍（读败=空+WARN 不炸）。
 3. 迁移幂等：明文配置 → 迁移 → 文件无明文 + keyring 有值；再迁移 = no-op；keyring 写失败（注入错误后端）→ 配置原样。
 4. 命令集成（临时数据目录）：save 带机密 → 文件 grep 无值 + bot.log grep 无值 + blob 可读回；delete → blob 清；toggle → 机密不受影响。
