@@ -17,6 +17,7 @@
 #   services  list managed-service processes and their listening ports
 #   orphans   find services still alive after the host is gone
 #   keyring   list MCP credential-manager entries
+#   fixes     dump the log evidence for the fixed defects (D-1 / D-2 / D-6)
 #   usage     self help
 #
 # Usage:
@@ -321,6 +322,49 @@ function Cmd-Keyring {
   }
 }
 
+function Cmd-Fixes {
+  param([string]$Dir)
+  $dataDir = Resolve-DataDir $Dir
+  $log = Join-Path $dataDir 'bot.log'
+  Write-Host '-- fix re-verification evidence --'
+  Write-Host "  data_dir = $dataDir"
+  if (-not (Test-Path $log)) {
+    Write-Host '  [x] bot.log not found - run locate first'
+    return
+  }
+
+  Write-Host '-- D-2: open_url / fetch_url failure level (same cause must be same level) --'
+  $toolLines = Select-String -Path $log -Pattern 'tool\.return .*tool=(open_url|fetch_url)' -Encoding UTF8
+  if ($toolLines) {
+    $toolLines | Select-Object -Last 8 | ForEach-Object { Write-Host "  $($_.ToString().Trim())" }
+    Write-Host '  expect: a DNS failure shows ERROR for BOTH open_url and fetch_url'
+  } else {
+    Write-Host '  (no open_url / fetch_url tool.return lines yet)'
+  }
+
+  Write-Host '-- D-6: ready timeout attribution --'
+  $svcLines = Select-String -Path $log -Pattern 'service\.(started|ready|stop_requested|exited|stopped|start_failed)' -Encoding UTF8
+  if ($svcLines) {
+    $svcLines | Select-Object -Last 15 | ForEach-Object { Write-Host "  $($_.ToString().Trim())" }
+    Write-Host '  expect: start_failed reason = "not ready within Ns", never "exited immediately"'
+    Write-Host '  expect: the exited line carries stop_reason=ready_timeout'
+  } else {
+    Write-Host '  (no service lifecycle lines yet)'
+  }
+
+  Write-Host '-- D-1: build machine path leak (must be empty) --'
+  $leak = Select-String -Path $log -Pattern '/Users/|/home/[a-z]+/' -Encoding UTF8
+  if ($leak) {
+    $leak | Select-Object -Last 5 | ForEach-Object { Write-Host "  [!] $($_.ToString().Trim())" }
+  } else {
+    Write-Host '  [ok] no build machine path in bot.log'
+  }
+
+  Write-Host '-- human-eye items (UIAutomation cannot read the WebView2 DOM) --'
+  Write-Host '  D-7 panel: the services panel must show the capability line and NO "total memory 0 MB"'
+  Write-Host '  D-8 screenshot: taking a screenshot must not pop a console window'
+}
+
 function Cmd-Usage {
   Write-Host @'
 Usage:
@@ -332,6 +376,7 @@ Usage:
   services  list managed-service processes and their listening ports
   orphans   find services still alive after the host is gone
   keyring   list MCP credential-manager entries
+  fixes     dump the log evidence for the fixed defects (D-1 / D-2 / D-6)
   usage     this help
 
 The source is ASCII-only on purpose: PowerShell 5.1 reads .ps1 as ANSI
@@ -349,6 +394,7 @@ switch ($Command.ToLower()) {
   'services' { Cmd-Services $resolvedExe }
   'orphans'  { Cmd-Orphans $resolvedExe }
   'keyring'  { Cmd-Keyring }
+  'fixes'    { Cmd-Fixes $resolvedExe }
   'usage'    { Cmd-Usage }
   default    { Cmd-Usage; exit 1 }
 }
