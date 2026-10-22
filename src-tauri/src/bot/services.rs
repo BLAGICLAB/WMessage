@@ -1195,22 +1195,17 @@ pub(crate) fn do_start<R: tauri::Runtime>(
             guard.exit_code = status.ok().and_then(|s| s.code());
             // 服务自己退了 → 看门狗助手没有存在的意义了，收掉（别留空转的 sh）
             watchdog::disarm(&watch_id);
-            let exit_code = guard
-                .exit_code
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "none".to_string());
+            let exit_code = guard.exit_code;
             let uptime = guard.uptime_ms();
+            // 是宿主停的（还是它自己退的）——退出码单独一个数分不出来：
+            // Windows 上 `taskkill /F` 的退出码就是 1，和「服务自己挂了」撞脸。
+            let stop_reason = guard.stop_reason.clone();
             drop(guard);
             crate::audit::write_event(
                 &app,
                 AuditLevel::Info,
                 "service.exited",
-                &[
-                    ("service_id", watch_id.clone()),
-                    ("pid", pid.to_string()),
-                    ("exit_code", exit_code),
-                    ("uptime_ms", uptime.to_string()),
-                ],
+                &exited_event_kv(&watch_id, pid, exit_code, uptime, stop_reason),
             );
         });
     }
@@ -1225,7 +1220,7 @@ pub(crate) fn do_start<R: tauri::Runtime>(
     );
 
     // 就绪判定
-    let ready = match &req.ready_pattern {
+    let outcome = match &req.ready_pattern {
         Some(pattern) => wait_ready_pattern(app, &entry, pattern, req.ready_timeout_secs, &id),
         None => {
             std::thread::sleep(Duration::from_millis(LIVENESS_CONFIRM_MS));
@@ -1233,17 +1228,26 @@ pub(crate) fn do_start<R: tauri::Runtime>(
                 .lock()
                 .map(|s| s.state == ServiceState::Starting)
                 .unwrap_or(false);
-            alive
+            if alive {
+                ReadyOutcome::Ready
+            } else {
+                ReadyOutcome::Exited
+            }
         }
     };
 
-    if !ready {
+    if outcome != ReadyOutcome::Ready {
         // 就绪超时 / 提前退出：主动收掉这个服务，别留半死不活的东西
         let reason = "ready_timeout";
-        // 停不掉也要看得见：审计里有 service.stop_failed，这里再留一行诊断
-        if let Err(e) = stop_entry(app, &entry, reason) {
-            eprintln!("[bot::services] 就绪超时的服务收不掉：{e}");
-        }
+        // 先判定、后停止：停了之后状态必然是 Exited、退出码必然是停止手段的
+        // （Windows 上 taskkill /F = 1），那时候再读状态就归因错了——
+        // 「我们超时杀的」会被说成「它启动后立即退出（退出码 1）」。
+        let snapshot = resolve_ready_failure(&entry, || {
+            // 停不掉也要看得见：审计里有 service.stop_failed，这里再留一行诊断
+            if let Err(e) = stop_entry(app, &entry, reason) {
+                eprintln!("[bot::services] 就绪超时的服务收不掉：{e}");
+            }
+        });
         let stderr_tail = tail_lines(&stderr_path, TAIL_LINES);
         let stdout_tail = tail_lines(&stdout_path, TAIL_LINES);
         let mut detail = String::new();
@@ -1258,47 +1262,20 @@ pub(crate) fn do_start<R: tauri::Runtime>(
             detail.push_str("stderr: ");
             detail.push_str(&stderr_tail.join(" | "));
         }
-        let exited_early = entry
-            .lock()
-            .map(|s| s.state == ServiceState::Exited)
-            .unwrap_or(false);
-        // 端口闸在启动期杀了它 → 说清是违规致死，不是「没就绪」：
-        // 模型要拿到规则、地址和改绑示例才可能下一轮改对。
+        // 端口闸违规由巡检线程落：取最新的（违规致死优先于「没就绪」——
+        // 模型要拿到规则、地址和改绑示例才可能下一轮改对）。
         let violation = entry
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .last_violation
             .clone();
-        let msg = if let Some(v) = violation {
-            let mut m = format!(
-                "服务「{}」已被端口闸终止：{}",
-                req.command,
-                violation_message(v.rule, &v.address, v.port)
-            );
-            if !detail.is_empty() {
-                m.push(' ');
-                m.push_str(&detail);
-            }
-            m
-        } else if exited_early {
-            format!(
-                "服务「{}」启动后立即退出（{}）。{}",
-                req.command,
-                entry
-                    .lock()
-                    .map(|s| s
-                        .exit_code
-                        .map(|c| format!("退出码 {c}"))
-                        .unwrap_or_default())
-                    .unwrap_or_default(),
-                detail
-            )
-        } else {
-            format!(
-                "服务「{}」在 {}s 内未就绪，已停止。{}",
-                req.command, req.ready_timeout_secs, detail
-            )
-        };
+        let failure = classify_ready_failure(
+            &outcome,
+            &snapshot,
+            violation.as_ref(),
+            req.ready_timeout_secs,
+        );
+        let msg = ready_failure_message(&req.command, &failure, &detail);
         crate::audit::write_event(
             app,
             AuditLevel::Warn,
@@ -1335,6 +1312,149 @@ pub(crate) fn do_start<R: tauri::Runtime>(
     Ok(StartOutcome { id })
 }
 
+/// 就绪判定的结果。
+///
+/// 「进程自己退了」与「等超时了」必须分开：两者的根因不同，模型拿到
+/// 「启动后立即退出」会去查「这个命令为什么自己挂了」（改命令行、改依赖），
+/// 而真相常常是「readyPattern 没匹配上 / 输出没 flush」——诊断方向完全相反。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReadyOutcome {
+    /// stdout 出现匹配正则 → 就绪
+    Ready,
+    /// 进程自己退了（watcher 已记下它自己的退出码）
+    Exited,
+    /// 到点还没就绪，进程还活着
+    TimedOut,
+    /// readyPattern 不是合法正则（压根没开始等）
+    BadPattern(String),
+}
+
+/// 就绪失败的**停止前快照**。
+///
+/// 必须在停止之前取：停了之后状态必然是 Exited、退出码必然是停止手段的
+/// （Windows 上 `taskkill /F` 的退出码就是 1），那时候读到的一切都归因错了。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadyFailureSnapshot {
+    /// 停止之前它是不是已经自己退了
+    exited_early: bool,
+    /// 它自己退时的退出码（停止之前取的才是它自己的）
+    exit_code: Option<i32>,
+}
+
+/// 就绪失败的归类（决定给模型看的文案与根因）。
+#[derive(Debug, Clone)]
+enum ReadyFailure {
+    /// 端口闸违规致死
+    Violation(Violation),
+    /// readyPattern 不是合法正则
+    BadPattern(String),
+    /// 进程自己退了（退出码是它自己的）
+    ExitedEarly { exit_code: Option<i32> },
+    /// 等超时了（是我们停的）
+    TimedOut { timeout_secs: u64 },
+}
+
+/// 取停止前的状态快照（纯读，不改状态）。
+fn ready_failure_snapshot(entry: &ServiceEntry) -> ReadyFailureSnapshot {
+    let g = entry.lock().unwrap_or_else(|e| e.into_inner());
+    ReadyFailureSnapshot {
+        exited_early: g.state == ServiceState::Exited,
+        exit_code: g.exit_code,
+    }
+}
+
+/// 就绪失败的两步：**先判定、后停止**（顺序是语义的一部分）。
+///
+/// 停了之后状态必然变 Exited、退出码必然变成停止手段的——那时候再读状态，
+/// 「我们超时杀的」就会被说成「它启动后立即退出（退出码 1）」。
+fn resolve_ready_failure<F: FnOnce()>(entry: &ServiceEntry, stop: F) -> ReadyFailureSnapshot {
+    let snapshot = ready_failure_snapshot(entry);
+    stop();
+    snapshot
+}
+
+/// 就绪失败的归类（纯函数，供单测钉住）。
+///
+/// 优先级：端口闸违规 > readyPattern 非法 > 进程自己退 > 等超时。
+fn classify_ready_failure(
+    outcome: &ReadyOutcome,
+    snapshot: &ReadyFailureSnapshot,
+    violation: Option<&Violation>,
+    timeout_secs: u64,
+) -> ReadyFailure {
+    if let Some(v) = violation {
+        return ReadyFailure::Violation(v.clone());
+    }
+    match outcome {
+        ReadyOutcome::BadPattern(e) => ReadyFailure::BadPattern(e.clone()),
+        // 进程自己退了：退出码取停止前的快照（不是我们 kill 出来的那个）
+        _ if snapshot.exited_early => ReadyFailure::ExitedEarly {
+            exit_code: snapshot.exit_code,
+        },
+        _ => ReadyFailure::TimedOut { timeout_secs },
+    }
+}
+
+/// 就绪失败的文案（纯函数，供单测钉住）。
+///
+/// 「等超时」与「进程自己退」是两种病历：前者说「你的 readyPattern 没匹配上
+/// （输出多半没 flush）」，后者才报它自己的退出码。两者混起来，模型会被引到
+/// 错的方向上重试好几轮。
+fn ready_failure_message(command: &str, failure: &ReadyFailure, detail: &str) -> String {
+    match failure {
+        ReadyFailure::Violation(v) => {
+            let mut m = format!(
+                "服务「{command}」已被端口闸终止：{}",
+                violation_message(v.rule, &v.address, v.port)
+            );
+            if !detail.is_empty() {
+                m.push(' ');
+                m.push_str(detail);
+            }
+            m
+        }
+        ReadyFailure::BadPattern(e) => {
+            format!("服务「{command}」的 readyPattern 不是合法正则：{e}。已停止。{detail}")
+        }
+        ReadyFailure::ExitedEarly { exit_code } => match exit_code {
+            Some(c) => format!("服务「{command}」启动后立即退出（退出码 {c}）。{detail}"),
+            None => format!("服务「{command}」启动后立即退出。{detail}"),
+        },
+        ReadyFailure::TimedOut { timeout_secs } => {
+            format!("服务「{command}」在 {timeout_secs}s 内未就绪，已停止。{detail}")
+        }
+    }
+}
+
+/// `service.exited` 的 kv（纯函数，供测试钉住）。
+///
+/// **必须带 stop_reason**：退出码单独一个数分不出根因——Windows 上
+/// `taskkill /F` 的退出码是 1，和「服务自己挂了」撞脸；stop_reason=none
+/// 才是「它自己退的」。
+fn exited_event_kv(
+    service_id: &str,
+    pid: u32,
+    exit_code: Option<i32>,
+    uptime_ms: i64,
+    stop_reason: Option<String>,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("service_id", service_id.to_string()),
+        ("pid", pid.to_string()),
+        (
+            "exit_code",
+            exit_code
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        ),
+        ("uptime_ms", uptime_ms.to_string()),
+        (
+            "stop_reason",
+            stop_reason.unwrap_or_else(|| "none".to_string()),
+        ),
+    ]
+}
+
 /// 就绪等待：stdout 出现匹配正则即算就绪。
 fn wait_ready_pattern<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -1342,7 +1462,7 @@ fn wait_ready_pattern<R: tauri::Runtime>(
     pattern: &str,
     timeout_secs: u64,
     id: &str,
-) -> bool {
+) -> ReadyOutcome {
     let re = match regex::Regex::new(pattern) {
         Ok(r) => r,
         Err(e) => {
@@ -1355,7 +1475,7 @@ fn wait_ready_pattern<R: tauri::Runtime>(
                     ("reason", format!("readyPattern 不是合法正则：{e}")),
                 ],
             );
-            return false;
+            return ReadyOutcome::BadPattern(e.to_string());
         }
     };
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
@@ -1366,17 +1486,17 @@ fn wait_ready_pattern<R: tauri::Runtime>(
             .unwrap_or_default();
         let text = String::from_utf8_lossy(&read_tail_bytes(&stdout_path, 64 * 1024)).to_string();
         if re.is_match(&text) {
-            return true;
+            return ReadyOutcome::Ready;
         }
         let state = entry
             .lock()
             .map(|s| s.state)
             .unwrap_or(ServiceState::Failed);
         if state == ServiceState::Exited || state == ServiceState::Failed {
-            return false;
+            return ReadyOutcome::Exited;
         }
         if Instant::now() >= deadline {
-            return false;
+            return ReadyOutcome::TimedOut;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
