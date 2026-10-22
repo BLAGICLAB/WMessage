@@ -149,6 +149,75 @@ EOF
   （模型/引擎异常会自动降级关键词模式，不报错但功能缩水，需肉眼确认），并用一张带文字的
   本地图片让机器人跑 `ocr_image`（缺 pp-ocr-v6/ 时工具会报「请运行 scripts/fetch_ocr_models.sh…」）
 
+## 8. 邮件投递（QQ 邮箱，105 MB 绿色包发不出去整封时）
+
+绿色包约 105 MB，**单封邮件发不了**，必须切卷。2026-10-22 打通的做法如下。
+
+### 为什么切、切成几卷
+
+| 约束 | 实测值 | 后果 |
+|---|---|---|
+| QQ SMTP 单封上限 | 服务器自报 `250-SIZE 73400320` | 70 MiB。整包折 base64 约 140 MB，必被 `552 Message too large` 拒 |
+| macOS Mail MailDrop 阈值 | `Message Size >= 20000000` | 超过就改走 iCloud MailDrop 并**弹模态框**；无图形会话时无人应答 → 永远发不出去 |
+| 附件体积 | 18,348,929 B 时 `Message Size` 实测 18,595,840 | 体积开销约 +1.35%，每卷按 18.35 MB 留余量最稳 |
+
+切 6 卷（`ceil(110,093,570 / 18,348,929)`），用 7z 分卷集——收件人用 7-Zip/WinRAR **直接打开 `.001`** 就能出整包，不用手工拼：
+
+```bash
+7z a -t7z -mx=0 -v18348929 wmessage-portable-2026-10-22.7z wmessage-portable-2026-10-22.zip
+```
+
+分完必须自校验（还原出的 zip 必须与原包 SHA256 一致）：
+
+```bash
+7z t wmessage-portable-2026-10-22.7z.001
+mkdir -p /tmp/v && 7z e -y -o/tmp/v wmessage-portable-2026-10-22.7z.001 wmessage-portable-2026-10-22.zip
+shasum -a 256 /tmp/v/wmessage-portable-2026-10-22.zip   # 必须等于原包
+```
+
+### 发送前必做的一步
+
+该 QQ 账户默认「**在服务器上保存草稿**」是开的。开着的话，每封带附件的邮件都要先把整个附件上传到 IMAP 草稿箱；QQ 的 IMAP 处理这种大 APPEND 会失败，Mail 随即弹出 `NSAlert` 模态报错框——**无图形会话时没人能点掉它，之后所有 AppleScript 事件都被塞进这个模态循环，表现为「发着发着卡死」**。
+
+发信前关掉它，发完恢复：
+
+```bash
+osascript -e 'tell application "Mail" to set store drafts on server of account "QQ" to false'
+# …发完…
+osascript -e 'tell application "Mail" to set store drafts on server of account "QQ" to true'
+```
+
+### 发送
+
+一封一封串行发；每封之间重启 Mail 清干净残留状态。重启后仍偶发卡死就重试该封。
+
+```applescript
+set bodyHTML to (read "/tmp/body.html" as «class utf8»)
+set partFile to "/abs/path/wmessage-portable-2026-10-22.7z.001"
+with timeout of 120 seconds
+	tell application "Mail"
+		set theMsg to make new outgoing message with properties {subject:"…（1/6 卷）", content:bodyHTML}
+		tell theMsg
+			make new to recipient at end of to recipients with properties {address:"收件人@163.com"}
+			make new attachment with properties {file name:(POSIX file partFile)} at end of attachments
+		end tell
+		delay 15
+		send theMsg
+		return "sent"
+	end tell
+end timeout
+```
+
+正文里必须写清：卷序、每卷 SHA256、整包 SHA256、以及「6 个附件下到同一文件夹、用 7-Zip 打开 `.001`」的还原步骤——收件人只拿到这几封信，没有别的上下文。
+
+### 校验
+
+- `Sent Messages` 里逐封核对收件人地址
+- 日志确认没有 MailDrop 介入：`log show --predicate 'process == "Mail"' --last 5m | grep -i maildrop`；出现 `Unable to send via Maildrop. Invalid file size.` 即表示体积在阈值以下、走的是正常 SMTP 通道
+- 日志确认附件真的带上了：`Wrote binary attachment data for MFLibraryMessage … part 2.2`
+- 收件箱无退信
+- 字节级完整性最终靠收件人用邮件正文里的 SHA256 自核（发信方进不去对方的信箱）
+
 ## 坑位速查
 
 | 坑 | 应对 |
@@ -161,3 +230,6 @@ EOF
 | 用户不解压直接双击 zip 内 exe | 代码侧已兜底：exe 落 %TEMP% 时不在 temp 建数据，退化 app_data 并在 bot.log 记 `data_dir_fallback` WARN；仍应提醒用户解压后再运行（否则数据不随包走） |
 | 绿色包「带数据」/「带任务卡」 | 2026-10-10 已根治：`probe_log_dir` 识别 `target/.../{deps,debug,release}` 路径直接旁路便携分支（`is_cargo_target_dir`，见 `src-tauri/src/paths.rs`）——`cargo test` 写的 db 落系统 app_data_dir，不再污染 `target/`，下次 `tauri build` cp 的 release 目录干净。 |
 | dotnet/ 失效静默走 Python | dotnet/ 必须整目录随包；缺失时 Word 修订回退 Python（需用户机有 Python 3.10+） |
+| 绿色包发不出整封邮件 | QQ SMTP 单封 70 MiB；且 macOS Mail 消息体超 20 MB 就改走 iCloud MailDrop 弹框 → 见第 8 节，分 6 卷发 |
+| Mail 脚本「发着发着卡死」 | 账户「在服务器上保存草稿」开着 → 大附件先传 IMAP 草稿箱失败 → Mail 弹 `NSAlert` 模态框，无人应答时所有 AppleEvent 卡死。发信前 `set store drafts on server of account "QQ" to false`，发完恢复 |
+| AppleScript 读附件数恒为 0 / 抛错 | `count of attachments` 对库内邮件不可靠（会抛错）；附件是否真带上看日志 `Wrote binary attachment data … part 2.2`，别拿它当判据 |
