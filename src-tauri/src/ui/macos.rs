@@ -19,7 +19,7 @@ use std::ptr::NonNull;
 use objc2_application_services::{AXError, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{CFArray, CFRetained, CFString, CFType};
 
-use super::{UiNode, UiWindow};
+use super::{NodeIdentity, UiNode, UiWindow};
 
 // AX 属性名：AX 头文件里是 CFSTR 常量（kAXWindowsAttribute = CFSTR("AXWindows")），
 // 绑定没导出这批常量，按字面量建等价 CFString。
@@ -192,12 +192,13 @@ pub fn list_windows() -> Result<Vec<UiWindow>, String> {
         for (idx, win) in windows_of(&app_el).into_iter().enumerate() {
             let title = string_attr(&win, AX_TITLE).unwrap_or_default();
             // 无标题的窗口（面板、托盘窗）也列出来，但标注出来让模型自己挑
+            let focused = is_foreground_window(pid, &title);
             out.push(UiWindow {
                 id: format!("{pid}:{idx}"),
                 app: name.clone(),
                 pid: pid as u32,
                 title,
-                focused: false,
+                focused,
             });
         }
     }
@@ -282,17 +283,37 @@ pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
         .split_once(':')
         .ok_or("窗口 id 格式应为 <pid>:<窗口序号>")?;
     let pid: i32 = pid_str.parse().map_err(|_| "窗口 id 的 pid 段无法解析")?;
-    if frontmost_app_pid() != pid {
-        return Ok(false);
-    }
     let target_title = resolve(window_id)
         .ok()
         .and_then(|el| string_attr(&el, AX_TITLE))
         .unwrap_or_default();
-    Ok(same_window_by_title(
-        &target_title,
-        focused_window_title(pid).as_deref(),
-    ))
+    Ok(is_foreground_window(pid, &target_title))
+}
+
+/// 该窗口是不是前台窗口
+///
+/// 与注入闸（`window_is_foreground`）同一口径：list_windows 里标的「（前台）」
+/// 必须和闸门的结论一致，否则模型照着标注操作却被闸门拦下。
+fn is_foreground_window(pid: i32, title: &str) -> bool {
+    let frontmost = frontmost_app_pid();
+    if frontmost <= 0 || frontmost != pid {
+        return false;
+    }
+    foreground_matches(frontmost, pid, title, focused_window_title(pid).as_deref())
+}
+
+/// 前台判定的纯逻辑：前台应用的 pid 对上，且该应用聚焦窗口的标题对得上
+///
+/// frontmost_pid 拿不到时是 0（不等于任何真实 pid）——此时一律不算前台。
+fn foreground_matches(
+    frontmost_pid: i32,
+    target_pid: i32,
+    target_title: &str,
+    focused_title: Option<&str>,
+) -> bool {
+    frontmost_pid > 0
+        && frontmost_pid == target_pid
+        && same_window_by_title(target_title, focused_title)
 }
 
 /// 前台应用的 pid（拿不到就是 0——不等于任何真实 pid，等于「不在前台」）
@@ -386,9 +407,28 @@ fn collect(
     }
 }
 
-/// 按控件本身触发（AXPress）
-pub fn press_node(node_id: &str) -> Result<(), String> {
-    let el = resolve(node_id)?;
+/// 核对控件身份：解析出的元素必须还是闸门审过的那个控件
+///
+/// 闸门审的是控件树快照里的节点，这里解析出的是「现在」的元素——界面重排后
+/// 同一个路径可能已经指向别的控件。对不上就放弃这次操作（闸门与动作必须
+/// 落在同一个控件上）。
+fn verify_identity(node_id: &str, el: &AXUIElement, expect: &NodeIdentity) -> Result<(), String> {
+    let actual = NodeIdentity {
+        title: string_attr(el, AX_TITLE).unwrap_or_default(),
+        role: string_attr(el, AX_ROLE).unwrap_or_default(),
+        position: point_attr(el, AX_POSITION),
+    };
+    if expect.same_as(&actual) {
+        return Ok(());
+    }
+    Err(format!(
+        "界面已变：控件 {node_id} 现在是「{}」（{}），与刚才审过的那个（{}，{}）不是同一个控件——放弃这次操作",
+        actual.title, actual.role, expect.title, expect.role
+    ))
+}
+
+/// 触发控件（AXPress）
+fn press(el: &AXUIElement) -> Result<(), String> {
     let action = cfstr(AX_PRESS);
     let err = unsafe { el.perform_action(&action) };
     if err == AXError::Success {
@@ -398,19 +438,21 @@ pub fn press_node(node_id: &str) -> Result<(), String> {
     }
 }
 
+/// 按控件本身触发（AXPress）
+pub fn press_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
+    let el = resolve(node_id)?;
+    verify_identity(node_id, &el, expect)?;
+    press(&el)
+}
+
 /// 让控件获得焦点（输入前的准备）
 ///
 /// AX 没有「设焦点」这个通用属性：常规做法是对文本控件 AXPress（多数应用会
 /// 因此聚焦输入框），失败则如实报错。
-pub fn focus_node(node_id: &str) -> Result<(), String> {
+pub fn focus_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
     let el = resolve(node_id)?;
-    let action = cfstr(AX_PRESS);
-    let err = unsafe { el.perform_action(&action) };
-    if err == AXError::Success {
-        Ok(())
-    } else {
-        Err(format!("无法聚焦该控件（AXError {:?}）", err))
-    }
+    verify_identity(node_id, &el, expect)?;
+    press(&el).map_err(|e| format!("无法聚焦该控件（{e}）"))
 }
 
 /// 往当前焦点控件输入文本（CGEvent 造 Unicode 键盘事件）
@@ -465,6 +507,30 @@ mod tests {
         assert!(
             same_window_by_title("", Some("另一个窗口")),
             "目标窗口没标题时读不到可比的东西，退化为「同应用即可」"
+        );
+    }
+
+    /// 前台判定：前台应用 pid 对上、聚焦窗口标题对得上才算前台窗口
+    ///
+    /// list_windows 的「（前台）」标注必须与注入闸同一口径——标成前台却被闸门
+    /// 拦下，模型会照着标注反复重试。
+    #[test]
+    fn foreground_window_check_needs_the_same_app_and_title() {
+        assert!(
+            foreground_matches(501, 501, "微信", Some("微信")),
+            "同应用同标题算前台窗口"
+        );
+        assert!(
+            !foreground_matches(501, 502, "微信", Some("微信")),
+            "不是前台应用就不算前台窗口"
+        );
+        assert!(
+            !foreground_matches(0, 0, "微信", Some("微信")),
+            "读不到前台应用（pid=0）一律不算前台"
+        );
+        assert!(
+            !foreground_matches(501, 501, "微信", Some("另一个窗口")),
+            "同应用的另一个窗口不算前台窗口"
         );
     }
 

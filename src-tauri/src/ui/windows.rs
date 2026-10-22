@@ -17,7 +17,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::Accessibility::{
     IUIAutomation, IUIAutomationCondition, IUIAutomationElement, IUIAutomationInvokePattern,
-    TreeScope_Children, UIA_InvokePatternId,
+    IUIAutomationValuePattern, TreeScope_Children, UIA_InvokePatternId, UIA_ValuePatternId,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
@@ -29,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_RESTORE,
 };
 
-use super::{UiNode, UiWindow};
+use super::{NodeIdentity, UiNode, UiWindow};
 
 /// UIAutomation 的 CLSID / IID（系统固定值）
 const CLSID_UIAUTOMATION: GUID = GUID::from_u128(0xFF48DBA4_60EF_4201_AA87_54103EEF594E);
@@ -273,12 +273,19 @@ fn collect(
         };
         let id = format!("{prefix}.{i}");
         let rect = unsafe { child.CurrentBoundingRectangle() }.ok();
+        // 密码框的 Name 常是空的或写成「密码」以外的东西，靠标题匹配会漏
+        let is_password = unsafe { child.CurrentIsPassword() }
+            .ok()
+            .map(|b| b.as_bool())
+            .unwrap_or(false);
         out.push(UiNode {
             id: id.clone(),
             role: bstr_text(unsafe { child.CurrentLocalizedControlType() }),
             title: bstr_text(unsafe { child.CurrentName() }),
             description: bstr_text(unsafe { child.CurrentHelpText() }),
-            value: None,
+            // 密码框不读值：UIA 的 ValuePattern 会把明文密码读出来，进了工具
+            // 输出就是泄漏
+            value: if is_password { None } else { value_of(&child) },
             identifier: Some(bstr_text(unsafe { child.CurrentAutomationId() }))
                 .filter(|s| !s.is_empty()),
             enabled: unsafe { child.CurrentIsEnabled() }
@@ -293,11 +300,7 @@ fn collect(
             }),
             depth,
             actionable: supports_invoke(&child),
-            // 密码框的 Name 常是空的或写成「密码」以外的东西，靠标题匹配会漏
-            is_password: unsafe { child.CurrentIsPassword() }
-                .ok()
-                .map(|b| b.as_bool())
-                .unwrap_or(false),
+            is_password,
         });
         if depth < max_depth {
             collect(auto, &child, id, depth + 1, max_depth, max_nodes, cond, out);
@@ -310,16 +313,53 @@ fn supports_invoke(el: &IUIAutomationElement) -> bool {
     unsafe { el.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) }.is_ok()
 }
 
+/// 读控件当前值（UIA ValuePattern 的 CurrentValue）
+///
+/// 读不到就是 None：绝大多数控件（按钮、标签）不支持 ValuePattern。
+fn value_of(el: &IUIAutomationElement) -> Option<String> {
+    let pattern =
+        unsafe { el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }.ok()?;
+    let value = unsafe { pattern.CurrentValue() }.ok()?;
+    Some(value.to_string())
+}
+
 /// 目标窗口是否在前台
 pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
     let hwnd = parse_hwnd(window_id)?;
     Ok(is_foreground(hwnd))
 }
 
+/// 核对控件身份：解析出的元素必须还是闸门审过的那个控件
+///
+/// 闸门审的是控件树快照里的节点，这里解析出的是「现在」的元素——界面重排后
+/// 同一个路径可能已经指向别的控件。对不上就放弃这次操作（闸门与动作必须
+/// 落在同一个控件上）。
+fn verify_identity(
+    node_id: &str,
+    el: &IUIAutomationElement,
+    expect: &NodeIdentity,
+) -> Result<(), String> {
+    let actual = NodeIdentity {
+        title: bstr_text(unsafe { el.CurrentName() }),
+        role: bstr_text(unsafe { el.CurrentLocalizedControlType() }),
+        position: unsafe { el.CurrentBoundingRectangle() }
+            .ok()
+            .map(|r| (r.left as f64, r.top as f64)),
+    };
+    if expect.same_as(&actual) {
+        return Ok(());
+    }
+    Err(format!(
+        "界面已变：控件 {node_id} 现在是「{}」（{}），与刚才审过的那个（{}，{}）不是同一个控件——放弃这次操作",
+        actual.title, actual.role, expect.title, expect.role
+    ))
+}
+
 /// 按控件本身触发（Invoke 模式；不支持则退回坐标点击）
-pub fn press_node(node_id: &str) -> Result<(), String> {
+pub fn press_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
     let _com = ComGuard::new()?;
     let el = resolve(node_id)?;
+    verify_identity(node_id, &el, expect)?;
     let pattern =
         unsafe { el.GetCurrentPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId) };
     if let Ok(p) = pattern {
@@ -343,9 +383,10 @@ pub fn press_node(node_id: &str) -> Result<(), String> {
 }
 
 /// 让控件获得焦点
-pub fn focus_node(node_id: &str) -> Result<(), String> {
+pub fn focus_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
     let _com = ComGuard::new()?;
     let el = resolve(node_id)?;
+    verify_identity(node_id, &el, expect)?;
     unsafe { el.SetFocus() }.map_err(|e| format!("聚焦控件失败：{e}"))
 }
 

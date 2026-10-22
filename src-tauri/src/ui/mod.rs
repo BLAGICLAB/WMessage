@@ -7,8 +7,9 @@
 //! - `bot_ui.rs`：机器人工具层（六件套）+ 安全闸。
 //!
 //! **默认关闭**：设置页开关打开前，所有工具直接拒绝执行（flag 文件
-//! `ui-enabled.flag` 存在 = 开启）。UI 自动化会代替用户操作别的应用——
-//! 这是本仓里权限面最大的一档能力，必须由用户显式打开。
+//! `ui-enabled.flag` 存在 = 开启；unix 下该文件只有当前用户可写）。UI 自动化
+//! 会代替用户操作别的应用——这是本仓里权限面最大的一档能力，必须由用户显式
+//! 打开，开关变更留审计。
 //!
 //! **定位**（与 Playwright 的分工）：Playwright 在 DOM 层更强，本模块管
 //! **页面之外**——原生应用（微信 / 飞书 / Excel）、系统弹窗（下载框 / 支付确认 /
@@ -38,6 +39,9 @@ pub struct UiWindow {
     pub pid: u32,
     pub title: String,
     /// 该窗口当前是否在前台
+    ///
+    /// macOS 按「前台应用的 pid + 该应用聚焦窗口的标题」判定，Windows 按
+    /// GetForegroundWindow 实测——两边口径一致，标注与注入闸的结论相符。
     pub focused: bool,
 }
 
@@ -71,29 +75,109 @@ pub struct UiNode {
     pub is_password: bool,
 }
 
+/// 控件身份快照：闸门审过的那个控件的样子
+///
+/// 闸门审的是快照里的节点，动作却按 id 重新解析了一遍树——界面重排后同一个
+/// id 已经指向别的控件，于是闸门审的是旧控件、动的是新控件。动作前拿重新
+/// 解析出的控件跟这份快照对一次，对不上就放弃这次操作。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NodeIdentity {
+    /// 标题（AXTitle / UIA Name）
+    pub title: String,
+    /// 角色（AXRole / UIA ControlType）
+    pub role: String,
+    /// 屏幕坐标（控件左上角）
+    pub position: Option<(f64, f64)>,
+}
+
+/// 位置比对的容差（像素）：同一控件两次读取允许有亚像素抖动
+const POSITION_EPSILON: f64 = 1.0;
+
+impl NodeIdentity {
+    /// 从控件快照取身份
+    pub fn of(node: &UiNode) -> Self {
+        Self {
+            title: node.title.clone(),
+            role: node.role.clone(),
+            position: node.position,
+        }
+    }
+
+    /// 同一性判定：标题 / 角色 / 位置都对得上才算同一个控件
+    ///
+    /// 有一边读不到位置时没有可比信号，不据此拒动作（标题与角色仍要比）。
+    pub fn same_as(&self, other: &NodeIdentity) -> bool {
+        self.title == other.title
+            && self.role == other.role
+            && match (self.position, other.position) {
+                (Some((ax, ay)), Some((bx, by))) => {
+                    (ax - bx).abs() <= POSITION_EPSILON && (ay - by).abs() <= POSITION_EPSILON
+                }
+                _ => true,
+            }
+    }
+}
+
 // ── 总开关（flag 文件）──────────────────────────────────────────────────────
 
-fn ui_flag_path(app: &AppHandle) -> PathBuf {
+fn ui_flag_path<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     crate::paths::flags_dir(app).join("ui-enabled.flag")
 }
 
 /// UI 自动化是否已开启（工具层统一走这里）
-pub fn ui_enabled(app: &AppHandle) -> bool {
+pub fn ui_enabled<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
     ui_flag_path(app).exists()
 }
 
+/// 当前 OS 用户名（拿不到就是空串）
+fn os_user() -> String {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_default()
+}
+
+/// 写 flag 文件（unix 下创建即 0600）
+///
+/// flag 文件存在 = UI 自动化开启。0644 时同机的其它进程照样能创建这个文件，
+/// 把闸门顶开——0600 之后只有当前用户能写。创建时就带 0600（不是先建后 chmod
+/// 的竞态）：盘上若已有宽权限的旧 flag，创建时的 mode 不生效，写完再补一刀。
+///
+/// Windows 没有 unix 权限位：这层收紧在 Windows 上不生效，flag 只受用户目录
+/// 的 ACL 保护（同用户的其它进程仍能创建它）——那里真正的边界是窗口级授权与
+/// 危险动作确认两道闸，不是这个文件。
+fn write_flag_file(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(b"1")?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, b"1")
+    }
+}
+
 #[tauri::command]
-pub fn ui_get_enabled(app: AppHandle) -> bool {
+pub fn ui_get_enabled<R: tauri::Runtime>(app: AppHandle<R>) -> bool {
     ui_enabled(&app)
 }
 
 #[tauri::command]
-pub fn ui_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
+pub fn ui_set_enabled<R: tauri::Runtime>(app: AppHandle<R>, enabled: bool) -> CommandResult<bool> {
     let dir = crate::paths::flags_dir(&app);
     std::fs::create_dir_all(&dir).map_err(|e| CommandError::IoError(e.to_string()))?;
+    let before = ui_enabled(&app);
     if enabled {
-        std::fs::write(ui_flag_path(&app), b"1")
-            .map_err(|e| CommandError::IoError(e.to_string()))?;
+        write_flag_file(&ui_flag_path(&app)).map_err(|e| CommandError::IoError(e.to_string()))?;
     } else {
         // 只吞 NotFound；权限/占用等失败必须上抛——否则盘上残留 flag，
         // ui_get_enabled 仍返回 true，与刚返回给调用方的「已禁用」自相矛盾
@@ -107,7 +191,18 @@ pub fn ui_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
             }
         }
     }
-    Ok(enabled)
+    let after = ui_enabled(&app);
+    // 开关变更是本仓权限面最大的一次开口，必须留痕：事后要查得到
+    // 「UI 自动化是什么时候被谁打开的」
+    if before != after {
+        crate::audit::write_event(
+            &app,
+            crate::audit::AuditLevel::Info,
+            "ui_automation_toggle",
+            &[("enabled", after.to_string()), ("user", os_user())],
+        );
+    }
+    Ok(after)
 }
 
 // ── 平台分发 ───────────────────────────────────────────────────────────────
@@ -189,35 +284,40 @@ pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
 }
 
 /// 按控件本身触发（AXPress / UIA Invoke）
-pub fn press_node(node_id: &str) -> Result<(), String> {
+///
+/// expect 是闸门审过的那个控件的身份：解析出的控件对不上就放弃（界面重排后
+/// 同一个 id 可能已经指向别的控件）。
+pub fn press_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        macos::press_node(node_id)
+        macos::press_node(node_id, expect)
     }
     #[cfg(windows)]
     {
-        windows::press_node(node_id)
+        windows::press_node(node_id, expect)
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        let _ = node_id;
+        let _ = (node_id, expect);
         Err("当前平台不支持 UI 自动化".into())
     }
 }
 
 /// 让控件获得焦点（输入前的准备）
-pub fn focus_node(node_id: &str) -> Result<(), String> {
+///
+/// expect 同 [`press_node`]：动作前核对控件身份。
+pub fn focus_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        macos::focus_node(node_id)
+        macos::focus_node(node_id, expect)
     }
     #[cfg(windows)]
     {
-        windows::focus_node(node_id)
+        windows::focus_node(node_id, expect)
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        let _ = node_id;
+        let _ = (node_id, expect);
         Err("当前平台不支持 UI 自动化".into())
     }
 }
@@ -271,6 +371,9 @@ pub(crate) fn pixels_to_normalized_absolute(
 mod tests {
     use super::*;
 
+    /// flag 路径在 mock app 的数据目录里（进程内共享）——动 flag 的测试串着跑
+    static UI_FLAG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 接线守卫：六件套必须真的接进工具表（改了工具名而忘了登记，这里会红）
     #[test]
     fn ui_tools_are_wired_into_registry() {
@@ -301,6 +404,184 @@ mod tests {
         assert!(
             src.contains("crate::ui::ui_set_enabled"),
             "ui_set_enabled 必须注册进 invoke_handler"
+        );
+    }
+
+    /// 控件身份比对：界面重排后同一个 id 指向别的控件时必须判定为「不是同一个」
+    ///
+    /// 闸门审的是控件树快照里的节点，动作按 id 重新解析——两者对不上时，
+    /// 动的就不是闸门审过的那个控件（标题 / 角色 / 位置任一不同即视为换了）。
+    #[test]
+    fn node_identity_detects_a_replaced_control() {
+        let node = UiNode {
+            id: "1:0.2".into(),
+            role: "AXButton".into(),
+            title: "发送".into(),
+            description: String::new(),
+            value: None,
+            identifier: None,
+            enabled: Some(true),
+            position: Some((100.0, 200.0)),
+            size: Some((30.0, 20.0)),
+            depth: 0,
+            actionable: true,
+            is_password: false,
+        };
+        let identity = NodeIdentity::of(&node);
+        assert!(
+            identity.same_as(&identity.clone()),
+            "同一个控件必须认得出来"
+        );
+        let renamed = NodeIdentity {
+            title: "删除".into(),
+            ..identity.clone()
+        };
+        assert!(
+            !identity.same_as(&renamed),
+            "标题变了就不是同一个控件（闸门审的是旧控件）"
+        );
+        let other_role = NodeIdentity {
+            role: "AXTextField".into(),
+            ..identity.clone()
+        };
+        assert!(!identity.same_as(&other_role), "角色变了就不是同一个控件");
+        let moved = NodeIdentity {
+            position: Some((100.0, 260.0)),
+            ..identity.clone()
+        };
+        assert!(
+            !identity.same_as(&moved),
+            "位置变了就不是同一个控件（无标题的图标按钮靠位置认人）"
+        );
+        let jitter = NodeIdentity {
+            position: Some((100.4, 200.4)),
+            ..identity.clone()
+        };
+        assert!(identity.same_as(&jitter), "亚像素抖动不算换了控件");
+    }
+
+    /// 接线守卫：两个平台后端都必须在动作前核对控件身份
+    ///
+    /// Windows 后端在本机（macOS）编不出来，这道守卫保证它不会漏掉核对。
+    #[test]
+    fn platform_backends_must_verify_node_identity_before_acting() {
+        for (name, src) in [
+            ("macos.rs", include_str!("macos.rs")),
+            ("windows.rs", include_str!("windows.rs")),
+        ] {
+            assert!(
+                src.contains("fn verify_identity("),
+                "{name} 必须实现控件身份核对"
+            );
+            assert!(
+                src.contains("verify_identity(node_id, &el, expect)?"),
+                "{name} 必须在动作前调用身份核对"
+            );
+        }
+    }
+
+    /// 开关变更必须留审计事件：事后要查得到「UI 自动化是什么时候被谁打开的」
+    #[test]
+    fn ui_toggle_change_must_leave_an_audit_event() {
+        fn bot_log(app: &tauri::AppHandle<tauri::test::MockRuntime>) -> String {
+            let p = crate::db::data_dir(app).join("bot.log");
+            std::fs::read_to_string(p).unwrap_or_default()
+        }
+        let _g =
+            crate::db::lock::lock_or_recover(&UI_FLAG_TEST_LOCK, "ui::tests::UI_FLAG_TEST_LOCK");
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        // 先回到「关」：盘上可能残留着别的测试留下的 flag
+        let _ = ui_set_enabled(handle.clone(), false);
+        let before = bot_log(&handle);
+        ui_set_enabled(handle.clone(), true).expect("开启 UI 自动化");
+        let after = bot_log(&handle);
+        assert!(
+            after.contains("ui_automation_toggle"),
+            "开关变更必须写审计事件（原来只写 / 删文件，事后无从查起）"
+        );
+        assert!(
+            after.len() > before.len(),
+            "审计事件必须真的落盘（只读文件不算留痕）"
+        );
+        // 复原：关掉并清掉 flag，别影响别的测试
+        ui_set_enabled(handle.clone(), false).expect("关闭 UI 自动化");
+    }
+
+    /// flag 文件权限必须收紧：同机任意进程都能创建它把闸门顶开
+    ///
+    /// flag 文件存在 = UI 自动化开启。0644 时同机的其它进程照样能创建这个
+    /// 文件，把闸门顶开——收紧到只有当前用户可读写。
+    #[cfg(unix)]
+    #[test]
+    fn ui_flag_file_must_not_be_world_accessible() {
+        use std::os::unix::fs::PermissionsExt;
+        let _g =
+            crate::db::lock::lock_or_recover(&UI_FLAG_TEST_LOCK, "ui::tests::UI_FLAG_TEST_LOCK");
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        ui_set_enabled(handle.clone(), true).expect("开启 UI 自动化");
+        let path = ui_flag_path(&handle);
+        let mode = std::fs::metadata(&path)
+            .expect("读 flag 元数据")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "flag 文件不能给同机其它用户读写（现在 {mode:o}）"
+        );
+        assert_eq!(
+            mode & 0o600,
+            0o600,
+            "当前用户必须仍能读写 flag 文件（现在 {mode:o}）"
+        );
+        // 复原：关掉并清掉 flag，别影响别的测试
+        ui_set_enabled(handle.clone(), false).expect("关闭 UI 自动化");
+    }
+
+    /// 盘上已有的宽权限 flag 也要被收紧（创建时的 mode 只在新建时生效）
+    #[cfg(unix)]
+    #[test]
+    fn pre_existing_wide_permission_flag_gets_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("wm-ui-flag-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建测试目录");
+        let path = dir.join("ui-enabled.flag");
+        // 模拟旧版本留下的 0644 flag
+        std::fs::write(&path, b"1").expect("写旧 flag");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("设旧权限");
+        write_flag_file(&path).expect("重写 flag");
+        let mode = std::fs::metadata(&path)
+            .expect("读 flag 元数据")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "旧的宽权限 flag 也要被收紧（现在 {mode:o}）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 接线守卫：Windows 后端必须真读 UIA ValuePattern
+    ///
+    /// Windows 后端在本机（macOS）编不出来，这道守卫保证它不会把 value 又写成
+    /// 恒 None（控件值恒空，「按输入框内容找控件」整体失效）。
+    #[test]
+    fn windows_backend_must_read_the_value_pattern() {
+        let src = include_str!("windows.rs");
+        assert!(
+            src.contains("IUIAutomationValuePattern"),
+            "Windows 侧必须读 UIA ValuePattern"
+        );
+        assert!(
+            src.contains("CurrentValue"),
+            "Windows 侧必须读 ValuePattern 的 CurrentValue"
+        );
+        assert!(src.contains("value_of(&child)"), "读到的值必须填进控件节点");
+        assert!(
+            src.contains("if is_password"),
+            "密码框不能读值（明文会漏进工具输出）"
         );
     }
 

@@ -110,15 +110,54 @@ fn gate_window(window_id: &str) -> Result<UiWindow, ToolResult> {
     }
 }
 
+/// 窗口身份比对：闸门放行时的那扇窗 vs 动作前再读到的那扇窗
+///
+/// macOS 的窗口 id 形如 `pid:AXWindows 下标`：窗口 A 关掉后，同应用的新窗口
+/// B 会补位到同一下标，旧 id 就指向了另一扇窗。闸门只查「这个 id 还存在」，
+/// 查不出「还是不是当初那扇窗」——动作前再核一次标题，变了就是换了窗。
+///
+/// 闸门放行时窗口就没标题（面板 / 托盘窗）时没有可比信号，按旧口径放行。
+fn window_identity_ok(gated: &UiWindow, current: Option<&UiWindow>) -> bool {
+    match current {
+        None => false,
+        Some(c) => gated.title.trim().is_empty() || c.title == gated.title,
+    }
+}
+
+/// 窗口复用闸：动作前复核窗口身份，换了窗就拒绝动作
+fn gate_window_unchanged(window_id: &str, gated: &UiWindow) -> Result<(), ToolResult> {
+    let current = match crate::ui::list_windows() {
+        Ok(ws) => ws.into_iter().find(|w| w.id == window_id),
+        Err(e) => return Err(ToolResult::error(e, Vec::new())),
+    };
+    if window_identity_ok(gated, current.as_ref()) {
+        return Ok(());
+    }
+    let now_title = current
+        .as_ref()
+        .map(|w| w.title.as_str())
+        .unwrap_or("（窗口已关闭）");
+    Err(ToolResult::denied(format!(
+        "窗口 {window_id} 已经不是刚才那扇窗了（标题从「{}」变成「{now_title}」）：\
+         同一下标补位到了别的窗口，界面可能已经变了。\
+         请重新 list_windows 取窗口 id 与控件 id 后再操作。",
+        gated.title
+    )))
+}
+
 /// 危险动作闸：命中关键词就要用户确认
+///
+/// needs_confirm 由调用方判定：关键词命中，或目标控件判不出危险与否
+/// （无标题的图标按钮——fail-closed，一律确认）。
 async fn gate_dangerous(
     app: &AppHandle,
     tool: &str,
     detail: &str,
+    needs_confirm: bool,
     interactive: bool,
     session_id: Option<&str>,
 ) -> Option<ToolResult> {
-    if !detail_is_dangerous(detail) {
+    if !needs_confirm {
         return None;
     }
     let approved =
@@ -155,6 +194,15 @@ fn contains_word(hay: &str, needle: &str) -> bool {
         .any(|w| w == needle)
 }
 
+/// 点击是否要用户确认
+///
+/// 命中危险关键词就要确认。目标控件没有标题时（图标按钮：纸飞机发送、垃圾桶
+/// 删除）判不出危险与否——detail 只能退化到角色名，永远命中不了关键词，
+/// 于是这类按钮一个都不拦。按 fail-closed：拿不到标题就一律确认。
+fn click_needs_confirm(node: &UiNode, detail: &str) -> bool {
+    node.title.trim().is_empty() || detail_is_dangerous(detail)
+}
+
 /// ui_type 的文本闸：注入的换行等于按回车键
 ///
 /// 微信 / 飞书 / Electron 这类应用收到回车就当场发送或提交——而本工具的承诺是
@@ -175,6 +223,19 @@ fn gate_no_line_break(text: &str) -> Option<ToolResult> {
 /// macOS 的密码框角色是 AXSecureTextField，标题常是空的——只按「标题 / 标识里
 /// 有没有『密码』这类词」判，等于把闸门交给应用作者的文案习惯。
 const SENSITIVE_ROLES: &[&str] = &["AXSecureTextField"];
+
+/// 注入互斥锁：进程级
+///
+/// 键盘 / 鼠标注入是全局资源：A 会话 focus 完、B 会话插进来 type，文本就进错
+/// 控件了（用户看着像自己打的字，实际发到了另一个输入框）。注入段必须整体
+/// 串行——锁覆盖「聚焦 + 注入」整段，不只是单个字符。
+static INJECT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 注入段加锁执行（锁内只有注入本身，不含截图等慢操作）
+fn with_inject_lock<T>(f: impl FnOnce() -> T) -> T {
+    let _g = crate::db::lock::lock_or_recover(&INJECT_LOCK, "bot_ui::INJECT_LOCK");
+    f()
+}
 
 /// 前台判定的结论：放行还是拒绝
 ///
@@ -470,24 +531,42 @@ pub async fn tool_ui_click(
         Ok(n) => n,
         Err(t) => return t,
     };
+    // 控件身份：闸门审的就是这个节点，动作必须落在同一个控件上
+    let identity = crate::ui::NodeIdentity::of(&node);
     // 危险动作闸：点「发送 / 提交 / 支付 / 删除」这类按钮前要用户确认
+    // 无标题控件（图标按钮）判不出危险与否——按 fail-closed 走确认
+    let untitled = node.title.trim().is_empty();
     let detail = format!(
-        "在「{}」（{}）里点击「{}」",
+        "在「{}」（{}）里点击「{}」{}",
         w.title,
         w.app,
-        if node.title.is_empty() {
-            &node.role
+        if untitled { &node.role } else { &node.title },
+        if untitled {
+            "（该控件没有标题，无法判断是否属于危险操作，按保守策略需要确认）"
         } else {
-            &node.title
+            ""
         }
     );
-    if let Some(t) = gate_dangerous(app, "ui_click", &detail, interactive, session_id).await {
+    if let Some(t) = gate_dangerous(
+        app,
+        "ui_click",
+        &detail,
+        click_needs_confirm(&node, &detail),
+        interactive,
+        session_id,
+    )
+    .await
+    {
         return t;
     }
     let before = trace_shot(app, "before").await;
+    // 窗口复用闸：确认弹窗可能等了很久，期间窗口可能已经换了——动作前再核一次
+    if let Err(t) = gate_window_unchanged(&window_id, &w) {
+        return t;
+    }
     let click_res = tauri::async_runtime::spawn_blocking({
         let node_id = node.id.clone();
-        move || crate::ui::press_node(&node_id)
+        move || with_inject_lock(|| crate::ui::press_node(&node_id, &identity))
     })
     .await
     .unwrap_or_else(|e| Err(format!("点击线程失败：{e}")));
@@ -559,6 +638,8 @@ pub async fn tool_ui_type(
     if let Some(t) = gate_sensitive(&node) {
         return t;
     }
+    // 控件身份：闸门审的就是这个节点，注入必须落在同一个控件上
+    let identity = crate::ui::NodeIdentity::of(&node);
     // 前台闸：键盘事件路由给前台应用，目标窗口不在前台就会打进用户正在用的
     // 另一个应用（另一扇聊天窗、终端、地址栏）。判不出来也不注入。
     if let Err(msg) = foreground_verdict(crate::ui::window_is_foreground(&window_id)) {
@@ -576,15 +657,30 @@ pub async fn tool_ui_type(
         },
         crate::bot::truncate_for_log(&text, 60)
     );
-    if let Some(t) = gate_dangerous(app, "ui_type", &detail, interactive, session_id).await {
+    if let Some(t) = gate_dangerous(
+        app,
+        "ui_type",
+        &detail,
+        detail_is_dangerous(&detail),
+        interactive,
+        session_id,
+    )
+    .await
+    {
         return t;
     }
     let before = trace_shot(app, "before").await;
+    // 窗口复用闸：确认弹窗可能等了很久，期间窗口可能已经换了——注入前再核一次
+    if let Err(t) = gate_window_unchanged(&window_id, &w) {
+        return t;
+    }
     let node_id = node.id.clone();
     let typed = text.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        crate::ui::focus_node(&node_id)?;
-        crate::ui::type_text(&typed)
+        with_inject_lock(|| {
+            crate::ui::focus_node(&node_id, &identity)?;
+            crate::ui::type_text(&typed)
+        })
     })
     .await
     .unwrap_or_else(|e| Err(format!("输入线程失败：{e}")));
@@ -858,6 +954,126 @@ mod tests {
         assert!(
             gate_sensitive(&node).is_some(),
             "UIA 报 IsPassword 的控件必须拒绝"
+        );
+    }
+
+    /// 窗口复用闸：同一下标补位成别的窗口时，旧的窗口 id 必须失效
+    ///
+    /// macOS 的窗口 id 是 `pid:AXWindows 下标`，窗口关掉后同应用的新窗口补位到
+    /// 同一下标——旧 id 会指向另一扇窗。只查「id 还存在」的闸门查不出这件事。
+    #[test]
+    fn reused_window_id_must_not_pass_the_gate() {
+        let gated = UiWindow {
+            id: "501:0".into(),
+            app: "WeChat".into(),
+            pid: 501,
+            title: "张三的聊天".into(),
+            focused: false,
+        };
+        let same = UiWindow {
+            title: "张三的聊天".into(),
+            ..gated.clone()
+        };
+        let reused = UiWindow {
+            title: "李四的聊天".into(),
+            ..gated.clone()
+        };
+        assert!(
+            window_identity_ok(&gated, Some(&same)),
+            "还是那扇窗（标题没变）要放行"
+        );
+        assert!(
+            !window_identity_ok(&gated, Some(&reused)),
+            "标题变了说明这一格补位成了别的窗口，必须拒绝动作"
+        );
+        assert!(
+            !window_identity_ok(&gated, None),
+            "窗口已经关了，必须拒绝动作"
+        );
+        let untitled = UiWindow {
+            title: String::new(),
+            ..gated.clone()
+        };
+        assert!(
+            window_identity_ok(&untitled, Some(&reused)),
+            "闸门放行时窗口就没标题（面板 / 托盘窗）——没有可比信号，按旧口径放行"
+        );
+    }
+
+    /// 无标题控件（图标按钮）判不出危险与否——必须走确认闸
+    ///
+    /// 纸飞机发送、垃圾桶删除这类按钮没有 title，detail 退化到角色名后永远
+    /// 命中不了危险关键词——于是这类按钮一个都不拦。按 fail-closed 走确认。
+    #[test]
+    fn untitled_click_target_must_be_confirmed() {
+        let node = UiNode {
+            id: "1:0.2".into(),
+            role: "AXButton".into(),
+            title: String::new(),
+            description: String::new(),
+            value: None,
+            identifier: None,
+            enabled: Some(true),
+            position: Some((100.0, 200.0)),
+            size: Some((30.0, 20.0)),
+            depth: 0,
+            actionable: true,
+            is_password: false,
+        };
+        let detail = "在「微信」（WeChat）里点击「AXButton」";
+        assert!(
+            !detail_is_dangerous(detail),
+            "角色名不含危险关键词——这正是漏过确认闸的原因"
+        );
+        assert!(
+            click_needs_confirm(&node, detail),
+            "没有标题的控件判不出危险与否，必须走确认闸"
+        );
+        let named = UiNode {
+            title: "表情".into(),
+            ..node
+        };
+        assert!(
+            !click_needs_confirm(&named, "在「微信」（WeChat）里点击「表情」"),
+            "有标题且不危险的控件不该多问一次"
+        );
+        let dangerous = UiNode {
+            title: "发送".into(),
+            ..named
+        };
+        assert!(
+            click_needs_confirm(&dangerous, "在「微信」（WeChat）里点击「发送」"),
+            "有标题但命中危险关键词的控件照样要确认"
+        );
+    }
+
+    /// 注入段必须串行：两个会话的注入不能交错
+    ///
+    /// 键盘事件路由给前台应用——A 会话 focus 完、B 会话插进来 type，文本就进
+    /// 了另一个控件（用户看着像自己打的字，实际发到别处去了）。
+    #[test]
+    fn injection_sections_must_not_interleave() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let inflight = AtomicUsize::new(0);
+        let max_seen = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| {
+                    for _ in 0..20 {
+                        with_inject_lock(|| {
+                            let n = inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_seen.fetch_max(n, Ordering::SeqCst);
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                            inflight.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            1,
+            "注入段必须整体串行：两个会话交错会把文本打进别的控件"
         );
     }
 
