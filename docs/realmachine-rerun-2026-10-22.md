@@ -292,7 +292,7 @@ bash scripts/regression-probe.sh orphans   # 宿主已死、服务还活着的�
 
 | 项 | 为什么测不了 |
 |---|---|
-| **S07** 端口闸真杀 | macOS/Linux 专属（Windows 没有监听 socket 采集路径，闸本就不生效） |
+| **S07** 端口闸真杀 | macOS/Linux 专属（Windows 没有监听 socket 采集路径，闸本就不生效）。**macOS 侧本机已跑通**（2026-10-23，沙箱掐掉 `lsof` 的 exec，脚本 `scripts/sandbox-lsof-test.sh`；顺带查出并修掉真缺陷 D-15）——Windows 侧不用做 |
 | **W06 的 UIPI 拒绝分支** | 应用以管理员运行，UIPI 只拦「低→高」，高→任何都不拦 |
 | **W07 的降级触发法** | `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--disable-3d-apis` 是**推断的、本机未验**；没触发就退回 RDP 人工看 |
 | **W08 的「值有没有被改对」** | Windows 凭据管理器只能看条目名，看不出密码（只能验「条目还在不在、没被删」） |

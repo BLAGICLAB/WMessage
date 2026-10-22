@@ -170,6 +170,7 @@ Windows 机器上 13:13~13:44 那次运行（`D:\Program Files\wmessage-portable
 | **W08** 凭据管理器不删条目 | ✅ **PASS** | 实机确认：编辑 MCP 服务器只改超时、保存后**凭据管理器条目仍在、数量不变**，编辑表单显示掩码 + 那行掩码提示。P1-16 在 Windows 侧落地生效（**证据原文未贴**，只有口头结论；「值有没有被改对」那半 Windows 本就测不了，见附录 C） |
 | **W09** 绿色包本身 | ✅ **PASS** | 实机确认：目录内容齐全、首跑在 exe 同目录生成 `wmessage.db` 与 `AI_Gen_Files`（便携锚定生效，与 W01 互证）。**D-1 附项已在 2026-10-22 22:45 复验转 PASS**（内置 Playwright 包路径指向本包目录且「就位」） |
 | **S32** ready 超时不误报成「立即退出」 | 🔧 **源码已修 · 待实机复验** | 未修时的实测：`service.stop_requested | reason=ready_timeout` → `service.exited | exit_code=1 | uptime_ms=30772` → `service.stopped | method=taskkill` → `service.start_failed | reason=服务「python」启动后立即退出（退出码 1）。`——**服务活了整整 30 秒才被我们停掉**，却报成「启动后立即退出」；那个退出码 1 是 `taskkill /F` 的签名（详见附录 D-6）。已修（`aa80d2f9` `7f80865f` `a8b54f10`）：就绪判定四态 + **先判后停**（停止前取快照）+ 停止结果如实进文案 + `service.exited` 补 `stop_reason`。macOS 侧已端到端复现并变异复验（真 spawn、真等超时、真停），**Windows 实机复验还没跑**。见 `docs/realmachine-rerun-2026-10-22.md` §2.1 |
+| **S07** 端口闸采集失败不折叠成「判了没事」 | 🟡 **代码路径本机跑通 · 采集器真坏那半也跑通（沙箱）** | 本机把 `lsof` 的 exec 用沙箱掐掉（`bash scripts/sandbox-lsof-test.sh`，不动系统文件）：采样器如实报 `complete=false`（**不是**「采空但采成功」）→ 判定层判「没判」（`Unsupported`）、动态保留集**不清空**、快照 JSON 的 `listeningSampleOk` 翻 false、面板红字由前端用例守。**顺带查出真缺陷 D-15**：审计事件记在**反的转折**上——第一次失败什么都没记、之后每 30s 刷一条（已修，见附录 D-15）。卡片配方也顺带修对（macOS 的 lsof 在 `/usr/sbin/lsof`，`/usr/bin/lsof` 不存在；只摘 PATH 造不出失败）。**未验**：真 app 里 30s 巡检那一轮 + 面板红字实拍 |
 
 **日志里几条不是缺陷、但值得记的**：
 
@@ -211,6 +212,7 @@ UIPI、凭据管理器、系统通知）。本机（macOS）能定 ①；②③ 
 |---|---|---|---|
 | **S10** 函数名跨断连稳定 | 新增 e2e `disambiguated_names_survive_a_server_dropping_out`：两台**真** Python 桩（`p x` / `p.x`，前缀同为 `p_x`）连上后，**读主 agent 工具清单那份 JSON**（`tools_json_with_mcp` 的产物——模型看到的就是它），断一台 → 看剩下的名字 → 反过来再断一台 | ✅ **本机真跑通过**：断连那台不在后，剩下那台的名字没漂（`mcp_p_x_echo_2` 没退化成 `mcp_p_x_echo`）；两次剩下的名字不同；断连那台的旧名仍能反查到归属（→ 不会被报成「未知工具」）。**变异复验**：命名退回「按在场顺序重编号」→ 用例红，报错正是 `left: mcp_p_x_echo / right: mcp_p_x_echo_2` | 只剩模型那半：让模型列一次清单、用旧名调一次，看它会不会照旧名调 |
 | **S13** stdio 读侧行长上限 | `stdio_transport` 的行长闸单测（截到 cap 字节）+ **真子进程** e2e（5MB 畸形行 → 会话不断、客户端不回 Invalid Request） | ✅ **后端半本机真跑过** | 宿主 stderr 那行诊断（GUI 启动看不到，要从 cmd 里跑 exe） |
+| **S07** 端口闸采集失败不折叠 | 沙箱掐掉 `lsof` 的 exec（`scripts/sandbox-lsof-test.sh`）→ 采样报 `complete=false` → 判定层判「没判」、保留集不清空、JSON 翻 false、审计留痕 | ✅ **整条链本机跑通**（并查出真缺陷 D-15，已修） | 真 app 里 30s 巡检那一轮 + 面板红字实拍 |
 | **S08 / S32** 停止路径 | unix 侧：停掉后**进程组整个消失**（含逃逸孙进程）、pid≤1 → `no_process` | ✅ **unix 半本机真跑过**（Windows 那半是 W02/W05 的事） | Windows：`Get-Process` / `tasklist` 两处都空；权限不匹配版的「停不掉」；pid 0 变异（unix 专属） |
 | **S11** 子 agent 预算触达 | 守卫 `classify_outcome_treats_tool_fuse_as_budget_exceeded`（FUSE_MARKER → `budget_exceeded` + 原因 `max_tool_calls` + 部分结果进 summary） | 🟡 分类有守卫，**本机没额外实跑** | 真派一个烧满工具预算的子 agent（要模型） |
 | **S12** `rollback: none` 不执行回滚段 | 守卫 `rollback_none_does_not_run_the_rollback_segment` | 🟡 有守卫 | A/B 两个技能真跑一遍（要模型） |
@@ -1074,12 +1076,29 @@ content: |
 **步骤**：
 
 1. 正常起一个服务 → `probe.sh services` 能看到监听端口（对照组）。
-2. **制造采集失败**：把 `lsof` 从 PATH 上摘掉。
-   ```bash
-   sudo mv /usr/bin/lsof /usr/bin/lsof.bak   # 或 /usr/sbin/lsof
-   ```
-   重启应用（dev 构建），起一个服务，等 30s 巡检跑一轮。
-3. 恢复：`sudo mv /usr/bin/lsof.bak /usr/bin/lsof`
+2. **制造采集失败**（两种做法，从省事到彻底）：
+
+   - **沙箱（推荐：不用 sudo、不改系统文件）**：
+     ```bash
+     bash scripts/sandbox-lsof-test.sh
+     ```
+     沙箱只对**这个进程**掐掉 `lsof` 的 exec，跑完就没了。
+   - **改系统文件（要 sudo）**：macOS 上 lsof 在 **`/usr/sbin/lsof`**，
+     **`/usr/bin/lsof` 不存在**（旧卡写的路径照抄会「文件不存在」）：
+     ```bash
+     sudo mv /usr/sbin/lsof /usr/sbin/lsof.bak
+     ```
+     重启应用（dev 构建），起一个服务，等 30s 巡检跑一轮。
+     恢复：`sudo mv /usr/sbin/lsof.bak /usr/sbin/lsof`
+
+   > **只把 `lsof` 从 PATH 上摘掉是造不出失败的**：采样器试的是两个候选（PATH 里的
+   > `lsof` 与绝对路径 `/usr/sbin/lsof`），后者照样跑得起来 → 采到东西就还是「采成功」，
+   > 闸不会进入「没判」态。
+
+3. **判据里那两条断言（审计留痕 / 状态如实报没判）本机已由用例守住**：
+   `bot::services::tests::failed_listening_sample_is_audited_once_and_reported_as_not_judged`
+   与 `bot::procs::tests::listening_sample_reports_failure_when_lsof_cannot_run`
+   （后者用上面的沙箱脚本跑，见脚本头注释）。
 
 **判据**：
 
@@ -2115,7 +2134,7 @@ WARN/ERROR 同时镜像到 `error.log`。
 
 ## 附录 D：实机发现清单（2026-10-22 Windows 实机，待修）
 
-这十四条是 Windows 实机跑出来的：**D-1 / D-2 / D-6 / D-7 / D-8 / D-11 是真缺陷**（源码侧都已修，D-1 已实机复验转 PASS，其余待复验）；**D-4 / D-9 / D-10 / D-12 是观察级**（D-12 的 UI 错位已修）；**D-3 / D-5 / D-13 / D-14 是已排除**——后两条是**卡片自己写错了**。每条都给了复现步骤与根因位置。
+这十五条里 **D-15 是本机（macOS）代码路径实跑发现的**（S07 分诊时），其余十四条是 Windows 实机跑出来的：**D-1 / D-2 / D-6 / D-7 / D-8 / D-11 / D-15 是真缺陷**（源码侧都已修，D-1 已实机复验转 PASS，其余待复验）；**D-4 / D-9 / D-10 / D-12 是观察级**（D-12 的 UI 错位已修）；**D-3 / D-5 / D-13 / D-14 是已排除**——后两条是**卡片自己写错了**。每条都给了复现步骤与根因位置。
 
 > **D-3 特意留着**：它是**被实机否证**的旧怀疑。写在这里是为了不让下一个人重犯同一个推断错误——**只读采样函数的返回值、没读调用点前面的平台守卫，就断言「面板会多出一行红字」**，差点把一个正确实现判成缺陷。
 
@@ -2679,3 +2698,50 @@ if list
 > 而**禁用**会让服务器被 `reload_from_config` 断开、从挂载表里摘掉 → 取不到 → 退回 id
 > （代码自述「取不到 = 服务器已删」，但禁用同样取不到）。
 > 不影响 S10 判定（那句文案里服务器名那段不参与判据），但对用户不友好，等下一批一起修。
+
+---
+
+### D-15（真缺陷）采集失败的审计记在**反的转折**上——第一次失败没记录，之后每 30 秒刷一条
+
+**来源**：2026-10-23 S07 分诊（本机代码路径实跑；采集器真坏那半用沙箱在本机跑通）。
+
+**现象**：S07 卡的判据要求「bot.log 有 `service.listening_sample_failed`（WARN，只在「成功 → 失败」转折记一条，不刷屏）」。
+本机把采集器弄坏（沙箱掐掉 `lsof` 的 exec）后，这条断言是**红的**：
+
+```
+采集失败必须留一条 WARN 审计，实际新增：""
+```
+
+**根因**：`bot/services.rs` 的 `note_sample_status`：
+
+```rust
+let prev = LAST_SAMPLE_OK.swap(complete, Ordering::Relaxed);
+if prev || complete {
+    return;
+}
+// → 写审计
+```
+
+`swap` 返回的是**换之前**的值，所以 `prev` = 上一轮的结果。条件 `prev || complete` 为假
+（即 `prev == false && complete == false`）才写审计——记的是「**上一轮失败、本轮还失败**」：
+
+- **第一次失败**（上一轮成功、本轮失败）：`prev == true` → 直接 return → **什么都没记**
+  （面板红字照常显示，但日志里没有）；
+- **之后每一轮失败**：`prev == false` → **每 30s 记一条 WARN** → 刷屏。
+
+与函数自述（「只在「成功 → 失败」时写审计」）和卡片判据（「不刷屏」）正好相反。
+
+**危害**：安全边界静默失效的**那一刻**没有审计痕迹（排查时最需要的就是那一刻）；
+之后持续失效时日志被每 30 秒一条的同名 WARN 淹没，真事件埋在噪声里。
+
+**修法**：条件改成「上一轮成功且本轮失败」才写——`if !prev || complete { return; }`。
+
+**复验**：新增用例 `failed_listening_sample_is_audited_once_and_reported_as_not_judged`
+（转折那一条必须记、连续失败不再记、快照 JSON 的 `listeningSampleOk` 翻 false）。
+变异复验：条件退回 `prev || complete` → 用例红（就是本条发现时的状态）；改回 → 绿。
+
+> **顺带修掉的卡片配方错误**：S07 原卡让执行者 `sudo mv /usr/bin/lsof`——macOS 上
+> lsof 在 **`/usr/sbin/lsof`**，`/usr/bin/lsof` **不存在**（照抄会「文件不存在」）。
+> 而只从 PATH 摘掉 lsof 也**造不出失败**（采样器还有绝对路径那个候选）。
+> 卡片已改：优先用 `scripts/sandbox-lsof-test.sh`（不动系统文件），要动系统文件就移
+> `/usr/sbin/lsof`。
