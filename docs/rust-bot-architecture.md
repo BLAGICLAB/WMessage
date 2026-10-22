@@ -182,7 +182,7 @@ src-tauri/src/
 │                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
 │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
 │                        + 服务告警进通知中心（资源告警 / 端口违规，条件消失自动撤收）
-│   ├── bot/services/watchdog.rs (294)  服务层「宿主死了服务也得死」看门狗：
+│   ├── bot/services/watchdog.rs (295)  服务层「宿主死了服务也得死」看门狗：
 │   │                            unix 用管道 EOF（宿主一死 → 写端关闭 → 助手 TERM 服务整组）；
 │   │                            Windows 复用 py/runtime.rs 的 Job Object（KILL_ON_JOB_CLOSE）
 │   └── bot/services/tests.rs (1000)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+

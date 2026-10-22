@@ -55,8 +55,8 @@ pub fn disarm(service_id: &str) {
     map.remove(service_id);
 }
 
-/// 当前登记着的看门狗数（测试与诊断用）。
-#[cfg(test)]
+/// 当前登记着的看门狗数（测试与诊断用；只有 unix 侧的测试会读它）。
+#[cfg(all(test, unix))]
 pub fn registered_count() -> usize {
     WATCHDOGS.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
@@ -190,7 +190,8 @@ mod windows {
     }
 }
 
-#[cfg(test)]
+/// 全部用例都依赖 unix 的进程组语义（管道 EOF 看门狗），Windows 侧无对应实现。
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
