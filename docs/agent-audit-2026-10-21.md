@@ -1587,8 +1587,12 @@ Rust `pick_files_dialog`）；本项统一的是「合并 / 提示 / 落库」�
 进程，被杀后未回收前是**僵尸**，而 `kill(pid, 0)` 对僵尸照样返回成功，会把
 「已经死了」读成「还活着」。必须用 `try_wait()`（它顺手回收）。
 
-**已知残留**：Windows 侧的 Job Object 路径**只做了交叉编译验证，行为未实测**
-（本机无 Windows）；unix 侧依赖 `/bin/sh`（macOS / 主流 Linux 都有；缺了则
+**已知残留**：~~Windows 侧的 Job Object 路径只做了交叉编译验证，行为未实测~~
+——**已于 2026-10-22 在 Windows 实机验过并通过**（测法与证据见
+`docs/realmachine-regression-test.md` 的 **W05**）：强杀宿主（`Stop-Process -Force`）
+后受管服务进程随之消失、监听端口释放、bot.log 里**没有** `app_exit_cleanup`
+（确认走的是崩溃路径而非正常退出清理）→ Job Object 兜底成立。
+unix 侧依赖 `/bin/sh`（macOS / 主流 Linux 都有；缺了则
 看门狗装不上，服务照跑，只是不带这层兜底——装不上不拦启动）。
 
 ### P2-7 的落地口径
