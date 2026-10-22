@@ -1223,3 +1223,40 @@ fn snapshot_json_declares_whether_resources_can_be_sampled() {
         );
     }
 }
+
+/// 端到端复现「就绪超时被误报成启动后立即退出」：真 spawn、真等超时、真停。
+///
+/// 纯函数判定只能证明分类逻辑对；这条走完整流程——服务本身健康得很，
+/// 只是 readyPattern 永远匹配不上，于是被我们停掉。文案必须说「未就绪」，
+/// 不能说「启动后立即退出」（那会把模型引到「这个命令为什么自己挂了」）。
+#[test]
+fn ready_timeout_end_to_end_is_not_reported_as_exited_early() {
+    let Some((py, args)) = long_running_launcher() else {
+        eprintln!("跳过：环境里没有 python3");
+        return;
+    };
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    app.manage(crate::app_state::AppState::default());
+
+    let req = StartRequest {
+        command: py,
+        args,
+        cwd: std::env::temp_dir(),
+        name: "ready-timeout-demo".to_string(),
+        ready_pattern: Some("__never_match__".to_string()),
+        ready_timeout_secs: 2,
+        session_id: None,
+    };
+
+    let err = do_start(&handle, &req).expect_err("就绪超时必须失败");
+    assert!(err.contains("未就绪"), "就绪超时的文案要说清是超时：{err}");
+    assert!(
+        !err.contains("立即退出"),
+        "就绪超时不是「启动后立即退出」（服务活得好好的，是我们停的）：{err}"
+    );
+    assert!(
+        !err.contains("退出码"),
+        "就绪超时不报退出码（那个码是我们停它时产生的，不是它自己的）：{err}"
+    );
+}
