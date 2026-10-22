@@ -153,7 +153,7 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/procs.rs (1147)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+├── bot/procs.rs (1156)      进程树公共模块（受管服务层与 MCP stdio 共用）：
 │                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
 │                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
 │                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）

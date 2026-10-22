@@ -676,7 +676,7 @@ API token / 环境变量 → `mcp_server_save` 写盘成功 → `trigger_reload`
 （`timeout_secs` 是 `skip_serializing_if = "Option::is_none"`，Some 时会进
 指纹——所以改超时**会**重连，改机密**不会**，这个不对称正好印证了问题。）
 
-#### P2-4 MCP 面板没有「本平台能不能采集」的能力标志
+#### P2-4 MCP 面板没有「本平台能不能采集」的能力标志（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/mcp/commands.rs`（`mcp_status` 返回结构）·
 `src/components/SettingsPage/McpPanel.tsx`
@@ -1098,6 +1098,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P1-3 | 已修 | 服务层父进程看门狗（unix 管道 EOF 助手 + Windows `KILL_ON_JOB_CLOSE` job）+ `RunEvent::Exit` 兜底 |
 | P2-7 | 已修 | 迁移判据收成一份（`mcp::config::has_inline_secrets` 判**原始 JSON 条目**）+ `config/io.rs` 改调它 + 判据单源扫描守卫 |
 | P2-3 | 已修 | `screenshot` 归变更类（`mutating: true` + 声称话术）+ 产出二进制档落盘凭证（`bot_desktop::screenshot_ok_result`）|
+| P2-4 | 已修 | `McpServerStatus` 回带平台采集能力（`listeningSupported` / `resourceSupported`）+ 面板在 false 时明说「本平台不支持采集」（`procs::snapshot_supported`）|
 
 ### P0-1 的落地口径
 
@@ -1657,4 +1658,38 @@ diff——PNG 不是 UTF-8 文本，按行 diff 只会产乱码，与生成类�
 （路径 + 哈希）。另：`mutating_tools_matches_baseline` 这条基线表随截图归类同步
 补上 `screenshot`（这张表的作用是「变更类工具集合不许悄悄变」，不是把截图钉死在
 只读档）。
+
+### P2-4 的落地口径
+
+**症状**：Windows 上 MCP 面板对 stdio 服务器显示「无监听端口 / 无资源占用」——而真相
+是**没判**：`bot/procs.rs` 的进程快照层在非 Linux 平台走 `ps`，Windows 上没有这个
+命令 → 采回来是空表 → `tree_sample` 返回 `None` → 内存 / CPU / 监听全空。
+**空不等于没占用**：面板把「没判」显示成了「判了没事」。
+
+**服务层早守住了，MCP 层没守住**：`services_snapshot_json` 早就带
+`listeningSupported`（平台能力）+ `listeningSampleOk`（本轮采样成败），面板明说
+「本平台暂不支持监听端口采集」；MCP 的 `McpServerStatus` 没有对应字段——同一件
+事，两层两套口径。
+
+**改法**：① `bot/procs.rs` 新增 `snapshot_supported()`（进程快照层能不能用——
+Linux 走 `/proc`、macOS 走 `ps`、Windows 两者皆无），与既有的
+`listening_supported()` 同一形状；② `McpServerStatus` 加 `listening_supported` /
+`resource_supported` 两个布尔，`mcp_status` 从上面两个判据取值；③ 前端面板在
+false 时显示「本平台暂不支持进程资源采集 / 监听端口采集」。
+
+**标志挂在每台服务器上，面板只展示一次**：能力是**平台级**的，但 `mcp_status`
+返回的是数组（每台一条）。后端给每台都挂同一份标志（省掉「面板级」那条另立契约
+的改动），前端从首台取一次、面板顶部展示一次——每台服务器下面都挂一遍同样的提示
+是噪音。
+
+**边界（明说）**：这条只解决「**平台根本不支持采集**」。另一档「平台支持但**本轮
+采集失败**」（macOS 上 `ps` 起不来）在 MCP 侧仍不可见——服务层有 `listeningSampleOk`
+兜着，MCP 侧没有对应标志，本轮**没做**（不在审计给的修法里，且要动 manager 的采样
+返回形状）。也就是说：Windows 上现在会说「本平台不支持采集」，但 macOS 上如果
+`ps` 恰好起不来，面板仍会显示空值。
+
+**测试**：Rust 侧一条**契约测试**（`McpServerStatus` 序列化出的键名必须是
+`listeningSupported` / `resourceSupported`——改名会让提示静默消失，前端拿到
+undefined 一律当「支持」）；前端两条（false 时显示提示、true 时不显示）。两侧合
+起来把「后端改名」与「前端读错键」都钉住。
 

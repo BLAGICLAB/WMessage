@@ -277,6 +277,48 @@ describe("McpPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("本平台采不到：明说「不支持采集」，不把空值显示成没占用", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status"
+        ? [
+            {
+              ...STATUS_WITH_RES[0],
+              rssMb: null,
+              cpuPct: null,
+              cpuSeconds: null,
+              listeningSupported: false,
+              resourceSupported: false,
+            },
+          ]
+        : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(
+      screen.getByText(/本平台暂不支持进程资源采集/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/本平台暂不支持监听端口采集/),
+    ).toBeInTheDocument();
+  });
+
+  it("本平台能采集：不出「不支持采集」提示", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status"
+        ? [
+            {
+              ...STATUS_WITH_RES[0],
+              listeningSupported: true,
+              resourceSupported: true,
+            },
+          ]
+        : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    expect(screen.queryByText(/本平台暂不支持/)).not.toBeInTheDocument();
+  });
+
   it("首采无占用率：退化成累计 CPU 时间", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) =>
       cmd === "mcp_status"

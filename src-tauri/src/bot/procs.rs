@@ -393,6 +393,15 @@ pub fn listening_supported() -> bool {
     cfg!(any(target_os = "linux", target_os = "macos"))
 }
 
+/// 本平台能不能采到进程快照（进而采到资源占用）。
+///
+/// Windows 不能：快照层走 `ps`（Linux 走 `/proc`），Windows 上没有这个命令，
+/// 采回来是空表——于是「内存 / CPU / 监听」全空。**空不等于没占用**：那是
+/// **没判**，面板必须说出来，不能让用户对着空白猜这进程没在跑。
+pub fn snapshot_supported() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
+}
+
 /// 一次监听采样的结果：**采到什么** + **采没采成**。
 ///
 /// 两件事必须分开：采空了可能是「确实没人在监听」（**判了没事**），也可能是

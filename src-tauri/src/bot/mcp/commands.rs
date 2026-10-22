@@ -215,6 +215,12 @@ pub struct McpServerStatus {
     pub uptime_secs: Option<u64>,
     /// 子进程树在监听的 socket（TCP LISTEN / UDP 已绑定；整棵树合计）
     pub listening: Vec<ListeningBrief>,
+    /// 本平台能不能采到监听 socket（Windows 不能）。false = 面板要说明
+    /// 「本平台不支持采集」——采空不等于没人监听，那是**没判**。
+    pub listening_supported: bool,
+    /// 本平台能不能采到进程资源占用（Windows 上进程快照层退化，采不到）。
+    /// 同上：false 时内存 / CPU 恒空，不是「这进程没占资源」。
+    pub resource_supported: bool,
 }
 
 /// 一个监听 socket（面板展示用）。
@@ -249,6 +255,9 @@ pub async fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
         .await
         .unwrap_or_default();
     let now_ms = crate::db::now_ms();
+    // 平台采集能力：采不到时面板必须说明「没判」，不能把空值显示成「没占用」
+    let listening_supported = crate::bot::procs::listening_supported();
+    let resource_supported = crate::bot::procs::snapshot_supported();
     let mut out = Vec::new();
     for s in cfg.mcp_servers.unwrap_or_default() {
         let (state, error, tool_count) = {
@@ -299,6 +308,8 @@ pub async fn mcp_status(app: AppHandle) -> CommandResult<Vec<McpServerStatus>> {
                 Some(((now_ms - started_at_ms).max(0) / 1000) as u64)
             },
             listening,
+            listening_supported,
+            resource_supported,
         });
     }
     Ok(out)
@@ -336,4 +347,45 @@ pub fn mcp_server_tools(_app: AppHandle, id: String) -> CommandResult<Vec<McpToo
             description: t.description.as_ref().map(|d| d.to_string()),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 契约：面板按 camelCase 键读这两个能力标志。字段改名 / 漏填都会让
+    /// 「本平台不支持采集」的提示静默消失——前端拿到 undefined 一律当「支持」，
+    /// 于是采不到又被显示成「没占用」（**没判**被显示成**判了没事**）。
+    #[test]
+    fn status_serializes_platform_capability_flags() {
+        let st = McpServerStatus {
+            id: "srv1".into(),
+            name: "fs".into(),
+            transport: "stdio".into(),
+            enabled: true,
+            state: "connected".into(),
+            error: None,
+            tool_count: 3,
+            builtin: false,
+            pid: Some(42),
+            rss_mb: Some(1.0),
+            cpu_pct: Some(2.0),
+            cpu_seconds: Some(3.0),
+            uptime_secs: Some(4),
+            listening: Vec::new(),
+            listening_supported: false,
+            resource_supported: false,
+        };
+        let v = serde_json::to_value(&st).unwrap();
+        assert_eq!(
+            v.get("listeningSupported"),
+            Some(&serde_json::Value::Bool(false)),
+            "listeningSupported 键名/类型不能变（前端按它显示「本平台不支持采集」）"
+        );
+        assert_eq!(
+            v.get("resourceSupported"),
+            Some(&serde_json::Value::Bool(false)),
+            "resourceSupported 键名/类型不能变（前端按它显示「本平台不支持采集」）"
+        );
+    }
 }

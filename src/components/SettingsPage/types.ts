@@ -153,6 +153,11 @@ export type McpServerStatus = {
   uptimeSecs?: number | null;
   /** 子进程树在监听的 socket（TCP LISTEN / UDP 已绑定；整棵树合计） */
   listening?: { protocol: string; address: string; port: number }[];
+  /** 本平台能不能采到监听 socket；false = 面板说明「本平台不支持采集」
+   * （采空不等于没人监听，那是**没判**） */
+  listeningSupported?: boolean;
+  /** 本平台能不能采到进程资源占用；false = 同上（内存 / CPU 恒空不是没占用） */
+  resourceSupported?: boolean;
 };
 
 /** 服务器已发现的工具（名称 + 描述，设置页展示用） */

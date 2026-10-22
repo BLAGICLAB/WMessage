@@ -251,6 +251,10 @@ export function McpPanel() {
     noticeTimer.current = setTimeout(() => setNotice(""), 3000);
   }, []);
 
+  // 平台采集能力：后端把同一份能力标志挂在每台服务器上（平台级的，面板只展示一次）。
+  // false = 本平台采不到——内存 / CPU / 监听恒空是「没判」，不是「没占用」。
+  const caps = servers[0];
+
   const refresh = useCallback(async () => {
     try {
       // ?? [] 防御：mock invoke / 后端异常时保持数组形态
@@ -489,6 +493,16 @@ export function McpPanel() {
         连接外部 MCP 服务器，把它们的工具挂进机器人工具清单。启动器仅限{" "}
         {MCP_STDIO_LAUNCHERS.join(" / ")}；添加前会展示完整命令让你确认
       </p>
+      {caps?.resourceSupported === false && (
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          本平台暂不支持进程资源采集——内存 / CPU / 运行时长显示为空不代表没占用
+        </p>
+      )}
+      {caps?.listeningSupported === false && (
+        <p className="mt-1 text-xs text-[var(--t5)]">
+          本平台暂不支持监听端口采集——没有监听记录不代表没在监听
+        </p>
+      )}
       <div className="mt-3 flex items-center gap-2">
         <button
           className="nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
