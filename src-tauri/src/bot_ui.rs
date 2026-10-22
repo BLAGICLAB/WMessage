@@ -155,6 +155,21 @@ fn contains_word(hay: &str, needle: &str) -> bool {
         .any(|w| w == needle)
 }
 
+/// ui_type 的文本闸：注入的换行等于按回车键
+///
+/// 微信 / 飞书 / Electron 这类应用收到回车就当场发送或提交——而本工具的承诺是
+/// 「输入完不会自动发出去，发送是另一次 ui_click」。所以带换行的文本直接拒绝，
+/// 不静默剥除：剥了模型会以为换行已经打进去，下一轮再发一次。
+fn gate_no_line_break(text: &str) -> Option<ToolResult> {
+    if text.contains('\n') || text.contains('\r') {
+        return Some(ToolResult::denied(
+            "ui_type 拒绝带换行符的文本：注入换行等于按回车键，目标应用会当场发送 / 提交，\
+             而发送必须是另一次 ui_click。请去掉换行后重试（多行内容按行拆成多次 ui_type）。",
+        ));
+    }
+    None
+}
+
 /// 敏感控件闸：密码 / 验证码一类控件不接受输入
 fn gate_sensitive(node: &UiNode) -> Option<ToolResult> {
     let hay = format!(
@@ -492,6 +507,10 @@ pub async fn tool_ui_type(
     if text.is_empty() {
         return ToolResult::denied("ui_type 缺少 text 参数（要输入的内容）");
     }
+    // 文本闸：注入换行等于按回车键，目标应用会当场发送 / 提交
+    if let Some(t) = gate_no_line_break(&text) {
+        return t;
+    }
     let w = match gate_window(&window_id) {
         Ok(w) => w,
         Err(t) => return t,
@@ -682,6 +701,27 @@ mod tests {
         assert!(
             detail_is_dangerous("在「设置」里点击「OK」"),
             "OK 按钮本身仍要触发确认闸"
+        );
+    }
+
+    /// ui_type 不接受带换行的文本：注入换行等于按回车键，会当场发出去
+    #[test]
+    fn ui_type_rejects_text_carrying_line_breaks() {
+        assert!(
+            gate_no_line_break("早上好\n").is_some(),
+            "带换行的文本必须被拒绝（否则回车键把消息直接发出去）"
+        );
+        assert!(
+            gate_no_line_break("早上好\r\n").is_some(),
+            "CRLF 同样要拒绝"
+        );
+        assert!(
+            gate_no_line_break("早上好\r").is_some(),
+            "单独的 CR 也是回车键"
+        );
+        assert!(
+            gate_no_line_break("早上好").is_none(),
+            "普通单行文本不该被拦"
         );
     }
 

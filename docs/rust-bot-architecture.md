@@ -237,7 +237,7 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_ui.rs (731) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
+├── bot_ui.rs (771) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
 │                        ui_inspect / ui_click / ui_type / wait_for_element。
 │                        四道闸——独立总开关（ui::ui_enabled，默认关闭）/ 窗口级授权
 │                        （动作必带 windowId 且窗口真实存在）/ 危险动作确认

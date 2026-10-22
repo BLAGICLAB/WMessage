@@ -371,7 +371,7 @@ pub const SCHEMA_UI_CLICK: &str = r##"{"type":"function","function":{"name":"ui_
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
     "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"}
   },"required":["windowId","target"]}}}"##;
-pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填。输入完不会自动发出去——发送是另一次 ui_click","parameters":{"type":"object","properties":{
+pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填。输入完不会自动发出去——发送是另一次 ui_click。文本里不能带换行符：换行等于按回车键，目标应用会当场发出去","parameters":{"type":"object","properties":{
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
     "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"},
     "text":{"type":"string","description":"要输入的文本"}
