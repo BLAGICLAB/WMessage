@@ -10,6 +10,7 @@
 //! 下次拉取时被覆盖/清理，不会被当成有效缓存。
 
 use base64::Engine as _;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
@@ -151,23 +152,23 @@ async fn fetch_today(today: &str) -> CommandResult<BingDaily> {
     } else {
         format!("{BING_HOST}{}", img.url)
     };
-    let bytes = client
+    let resp = client
         .get(&image_url)
         .header(reqwest::header::USER_AGENT, "wmessage/0.1")
         .send()
         .await
         .map_err(req_err("壁纸图片下载失败"))?
         .error_for_status()
-        .map_err(req_err("壁纸图片下载返回错误状态"))?
-        .bytes()
-        .await
-        .map_err(req_err("壁纸图片读取失败"))?;
-    if bytes.len() > MAX_IMAGE_BYTES {
-        return Err(crate::error::CommandError::from(format!(
-            "壁纸图片超过大小上限（{} > {MAX_IMAGE_BYTES}）",
-            bytes.len()
-        )));
+        .map_err(req_err("壁纸图片下载返回错误状态"))?;
+    // 已知长度先拒：超限的响应体不拉进内存（整包读进来再判大小等于没有闸）
+    if let Some(len) = resp.content_length() {
+        if over_limit(len, MAX_IMAGE_BYTES) {
+            return Err(crate::error::CommandError::from(format!(
+                "壁纸图片超过大小上限（{len} > {MAX_IMAGE_BYTES}）"
+            )));
+        }
     }
+    let bytes = read_capped(resp, MAX_IMAGE_BYTES).await?;
     Ok(BingDaily {
         title: img.title.clone(),
         copyright: img.copyright.clone(),
@@ -175,6 +176,35 @@ async fn fetch_today(today: &str) -> CommandResult<BingDaily> {
         image_url,
         date: today.to_string(),
     })
+}
+
+/// 超限判定（纯函数）：已知长度与流式累计用同一口径。
+fn over_limit(total: u64, max: usize) -> bool {
+    total > max as u64
+}
+
+/// 流式读响应体并限长：边读边计数，超限即中止。
+/// 长度未知时（chunked / 无 content-length）逐块计数是唯一的闸。
+async fn read_capped(resp: reqwest::Response, max: usize) -> CommandResult<Vec<u8>> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(req_err("壁纸图片读取失败"))?;
+        push_capped(&mut buf, &chunk, max)?;
+    }
+    Ok(buf)
+}
+
+/// 追加一块并判超限（纯函数，便于单测）：超限直接报错，已收字节不再增长。
+fn push_capped(buf: &mut Vec<u8>, chunk: &[u8], max: usize) -> CommandResult<()> {
+    let total = buf.len() as u64 + chunk.len() as u64;
+    if over_limit(total, max) {
+        return Err(crate::error::CommandError::from(format!(
+            "壁纸图片超过大小上限（{total} > {max}）"
+        )));
+    }
+    buf.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn req_err(prefix: &'static str) -> impl Fn(reqwest::Error) -> crate::error::CommandError {
@@ -294,5 +324,29 @@ mod tests {
     fn data_url_roundtrip() {
         let url = to_data_url(b"abc");
         assert_eq!(decode_data_url(&url).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn over_limit_is_strictly_greater() {
+        assert!(!over_limit(MAX_IMAGE_BYTES as u64, MAX_IMAGE_BYTES));
+        assert!(over_limit(MAX_IMAGE_BYTES as u64 + 1, MAX_IMAGE_BYTES));
+    }
+
+    /// 流式累计：超限的那一块直接被拒，已收字节不再增长。
+    #[test]
+    fn push_capped_rejects_chunk_over_limit() {
+        let mut buf = Vec::new();
+        push_capped(&mut buf, &[0u8; 10], 16).unwrap();
+        assert_eq!(buf.len(), 10);
+        assert!(push_capped(&mut buf, &[0u8; 7], 16).is_err());
+        assert_eq!(buf.len(), 10, "超限后不得继续收字节");
+    }
+
+    /// 恰好等于上限的响应必须放行（闸是「超过」不是「达到」）。
+    #[test]
+    fn push_capped_accepts_exact_limit() {
+        let mut buf = Vec::new();
+        push_capped(&mut buf, &[0u8; 16], 16).unwrap();
+        assert_eq!(buf.len(), 16);
     }
 }
