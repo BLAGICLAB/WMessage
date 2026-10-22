@@ -125,6 +125,24 @@ fn tags_consolidate_scan(
     crate::bot::tags_consolidate::cluster_archived_tags(&conn, None)
 }
 
+/// 标签合并改写了归档卡的 tags —— 广播出去，归档页与图谱才不会长期显示旧标签。
+/// 行级事件走 `tasks-updated`（前端合并 UI 态），`tasks-changed` 让其余页面重读。
+fn broadcast_rewritten_tasks(app: &tauri::AppHandle, rows: &[crate::db::Task]) {
+    let _ = app.emit("tasks-changed", ());
+    if rows.is_empty() {
+        return;
+    }
+    let _ = app.emit_to(
+        "main",
+        "tasks-updated",
+        serde_json::json!({
+            "source": crate::mutation::MutationOrigin::Main.as_str(),
+            "upserts": rows,
+            "deletes": []
+        }),
+    );
+}
+
 #[tauri::command]
 async fn tags_consolidate_merge(
     app: tauri::AppHandle,
@@ -133,11 +151,38 @@ async fn tags_consolidate_merge(
 ) -> Result<crate::bot::tags_consolidate::RunRecord, String> {
     // 合并走写连接：改写与回滚凭据必须同一把写锁下的同一事务，
     // 否则并发写者能在改写与 history 行之间插进来。
-    crate::db::lock::with_write_conn(&app, move |conn| {
+    let (run, rows) = crate::db::lock::with_write_conn(&app, move |conn| {
         let member_refs: Vec<&str> = members.iter().map(String::as_str).collect();
-        crate::bot::tags_consolidate::merge_tag_cluster(conn, &main, &member_refs)
+        let run = crate::bot::tags_consolidate::merge_tag_cluster(conn, &main, &member_refs)?;
+        let mut rows = Vec::new();
+        for id in &run.affected_task_ids {
+            if let Some(t) = crate::db::load_task(conn, id)? {
+                rows.push(t);
+            }
+        }
+        Ok((run, rows))
     })
-    .await
+    .await?;
+    crate::audit::write_event(
+        &app,
+        crate::audit::AuditLevel::Info,
+        "tag_merge",
+        &[
+            ("run_id", run.run_id.clone()),
+            ("merged_from", run.merged_from.join(",")),
+            ("merged_to", run.merged_to.clone()),
+            (
+                "affected_task_count",
+                run.affected_task_ids.len().to_string(),
+            ),
+            (
+                "before_tags_per_task",
+                serde_json::to_string(&run.previous_tags).unwrap_or_default(),
+            ),
+        ],
+    );
+    broadcast_rewritten_tasks(&app, &rows);
+    Ok(run)
 }
 
 #[tauri::command]
@@ -146,10 +191,19 @@ async fn tags_consolidate_rollback(
     run_id: String,
 ) -> Result<crate::bot::tags_consolidate::RollbackResult, String> {
     let app_for_audit = app.clone();
-    crate::db::lock::with_write_conn(&app, move |conn| {
-        crate::bot::tags_consolidate::rollback_tag_merge(&app_for_audit, conn, &run_id)
+    let (result, rows) = crate::db::lock::with_write_conn(&app, move |conn| {
+        let r = crate::bot::tags_consolidate::rollback_tag_merge(&app_for_audit, conn, &run_id)?;
+        let mut rows = Vec::new();
+        for id in &r.restored_task_ids {
+            if let Some(t) = crate::db::load_task(conn, id)? {
+                rows.push(t);
+            }
+        }
+        Ok((r, rows))
     })
-    .await
+    .await?;
+    broadcast_rewritten_tasks(&app, &rows);
+    Ok(result)
 }
 
 #[tauri::command]

@@ -244,6 +244,13 @@ pub fn new_run_id() -> String {
     format!("tgc-{ts}-{:06x}", rand & 0xFFFFFF)
 }
 
+/// 前端「+ 新建主标签…」选项的占位值。
+///
+/// 前端把「新建」当成一个 select 选项传下来；不填名字直接提交时，
+/// 这个字面量会变成真的主标签名——整簇被并进一个叫 `__new__` 的标签。
+/// 后端必须认得它并拒掉。
+pub const NEW_MAIN_PLACEHOLDER: &str = "__new__";
+
 /// 按主标签 + 成员别名合并：把每个 task 的 tags 里出现的成员别名替换为主
 /// 标签，去重后写回。返回 run_id 与受影响 task 数（供 audit 落点）。
 /// 注意「成员里已有 main」时只去重、不动其他。
@@ -256,8 +263,17 @@ pub fn merge_tag_cluster(
     main: &str,
     members: &[&str],
 ) -> Result<RunRecord, String> {
+    let main = main.trim();
     if main.is_empty() {
         return Err("主标签不能为空".to_string());
+    }
+    if main == NEW_MAIN_PLACEHOLDER {
+        return Err("主标签名还没填——请输入新主标签名再合并".to_string());
+    }
+    // 主标签就是一条任务标签：长度跟任务标签同一套口径（写路径按 MAX_TAG_LEN 拒），
+    // 不能收下别的路径写不回去的名字。
+    if main.chars().count() > crate::bot::MAX_TAG_LEN {
+        return Err(format!("主标签过长（上限 {} 字）", crate::bot::MAX_TAG_LEN));
     }
     // 去重 + 移除 main 自身（main 不会成为自己的别名）
     let mut aliases: BTreeSet<String> = members.iter().map(|s| s.to_string()).collect();
@@ -678,5 +694,54 @@ mod tests {
         let _app = app_root.handle();
         let err = merge_tag_cluster(&mut c, "only", &["only"]);
         assert!(err.is_err());
+    }
+
+    /// 「+ 新建主标签…」的占位值不能当主标签名落库——
+    /// 否则整簇会被并进一个叫 `__new__` 的标签。
+    #[test]
+    fn merge_rejects_the_new_tag_placeholder_as_main() {
+        let mut c = conn();
+        insert_task(&c, "t1", vec!["买菜"], true);
+        let err = merge_tag_cluster(&mut c, NEW_MAIN_PLACEHOLDER, &["买菜"]);
+        assert!(err.is_err(), "占位值必须被拒：{err:?}");
+        let raw: String = c
+            .query_row("SELECT tags FROM tasks WHERE id='t1'", [], |r| r.get(0))
+            .unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, vec!["买菜".to_string()], "被拒的合并不得改卡");
+    }
+
+    #[test]
+    fn merge_rejects_blank_and_overlong_main() {
+        let mut c = conn();
+        insert_task(&c, "t1", vec!["买菜"], true);
+        assert!(
+            merge_tag_cluster(&mut c, "   ", &["买菜"]).is_err(),
+            "纯空白主标签必须被拒"
+        );
+        let long = "x".repeat(crate::bot::MAX_TAG_LEN + 1);
+        assert!(
+            merge_tag_cluster(&mut c, &long, &["买菜"]).is_err(),
+            "超长主标签必须被拒"
+        );
+        let ok = "x".repeat(crate::bot::MAX_TAG_LEN);
+        assert!(
+            merge_tag_cluster(&mut c, &ok, &["买菜"]).is_ok(),
+            "上限长度的主标签应当放行"
+        );
+    }
+
+    /// 主标签两端空白要被裁掉，否则「 买菜 」与「买菜」会变成两个标签。
+    #[test]
+    fn merge_trims_the_main_tag() {
+        let mut c = conn();
+        insert_task(&c, "t1", vec!["买菜", "购菜"], true);
+        let run = merge_tag_cluster(&mut c, "  买菜  ", &["购菜"]).unwrap();
+        assert_eq!(run.merged_to, "买菜", "主标签应被 trim");
+        let raw: String = c
+            .query_row("SELECT tags FROM tasks WHERE id='t1'", [], |r| r.get(0))
+            .unwrap();
+        let parsed: Vec<String> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed, vec!["买菜".to_string()]);
     }
 }
