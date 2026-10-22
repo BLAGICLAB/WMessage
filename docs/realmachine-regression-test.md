@@ -160,6 +160,7 @@ Windows 机器上 13:13~13:44 那次运行（`D:\Program Files\wmessage-portable
 | **S01** `create_skill` 意图宽度闸 | 🟡 **部分 PASS**（2026-10-22 22:52 Windows 实机） | 闸门生效：模型原样提交 `intents: .*` → `create_skill：intents「.*」模式过宽：必须包含至少 2 个连续的字面量字符（如「日报」或「(?i)(润色|修订).{0,15}(word|文档)」），不能是 .* 一类通配`；**没有弹确认窗**（准入核在确认窗之前，bot.log 那段区间里 tool.call 与 tool.return 之间无 `confirm` 行）；bot.log 里**无** `skill_create` 行。**未验**：技能目录 `skills/bad-broad-intents/` 不存在（要文件系统核对，见卡片里的命令）、对照组（合规 intents → 高危确认窗）。**顺带暴露一个真缺陷**：这次拒绝记的是 **ERROR**，而同一个准入核在 `install_skill` 上记 **WARN**（详见附录 D-11） |
 | **S03** MCP HTTP 传输的 SSRF 闸 | ✅ **PASS**（2026-10-22，执行者实机核对无误） | 执行者在 Windows 上跑完整张卡后报「没有问题」：保存口的字面量闸与连接时的 DNS 闸都按预期拒绝、公网正例放行。**证据原文在执行者一侧**（本轮未回贴日志原文——按 §1.4 的口径，判据以地面真相核对过为准） |
 | **S04** MCP 编辑服务器不删 keyring 机密 | 🟡 **语义面无异常 · UI 有缺陷**（2026-10-22，执行者实机） | 执行者核对后报「UI 有问题」：语义面（编辑只改超时 → 条目仍在、表单显示掩码）无异常，**但编辑表单的布局错位**——「已设置的机密以 •••••• 显示……」那句提示占住了标签列，把「超时（秒）」的标签挤到同一行、输入框掉到下一行（实机截图，见附录 D-12）。已修（前端一行 `col-span-2`），修完需复验 |
+| **S08** 停止路径：不谎报「已停」 | 🟡 **正常路径 PASS · 「停不掉」那半不可达**（2026-10-22 23:38 Windows 实机） | 停止阶梯的正常路径全对：`service.started | pid=14236` → `service.stop_requested | reason=tool` → `service.exited | exit_code=1 | uptime_ms=58216 | **stop_reason=tool**` → `service.stopped | method=taskkill | elapsed_ms=495`，工具返回 `{"method":"taskkill","stopped":true,"exitCode":1,"elapsedMs":495,"descendantsKilled":0}`。**`stop_reason=tool` 落地**（D-6 那轮新增的字段在 Windows 上有值，「我们停的」与「它自己退的」分得开）。**但旧卡片判据会把这一轮判成 FAIL**——那张卡的「杀不掉」配方在两个平台都造不出「停不掉」（Windows 无 SIGTERM 语义、unix Python 首个 SIGINT 就退），而且 `stopped:true` 在进程真没了时是**如实**不是谎报。卡片已重写（判据改成看地面真相，详见附录 D-13）。**未验**：进程真没了的地面真相（`Get-Process`/`tasklist` 两处都空）、权限不匹配版的「停不掉」、pid 0 变异注入（unix 专属） |
 | **W03** 端口闸在 Windows 上只诊断且明说 | ✅ **PASS** | `service.port_violation_precheck | command=python | rule=L1 | address=0.0.0.0 | port=0 | action=diagnostic | enforced=false`；工具返回带 `precheckNote`；服务**没被杀**（闸在 Windows 上本就不生效，符合预期）。面板**只有一行**灰字提示，**没有**第二行「采集失败」；`svc_24426226`（pid 12624）运行 **19 分 51 秒**（远超 30 秒巡检周期），审计里**没有** `service.listening_sample_failed`。原因：`enforce_listening_gate` 的平台守卫让 `note_sample_status` 在 Windows 上永不执行（详见附录 D-3 的否证记录） |
 | **W04** MCP 面板两行能力提示 | ✅ **PASS** | 实机确认：MCP 面板顶部出现**两行**灰字——「本平台暂不支持进程资源采集——内存 / CPU / 运行时长显示为空不代表没占用」「本平台暂不支持监听端口采集——没有监听记录不代表没在监听」。P2-4 在 MCP 面板这半落地生效 |
 | **W04 附** 本地服务面板「合计内存 0 MB」 | 🔧 **源码已修 · 待实机复验** | 未修时的实机截图：跑着 1 个 Python 服务（pid 12624，19 分 51 秒），面板写「合计内存 **0 MB**」且**无任何**能力提示；同一个设置页的 MCP 面板却明说「本平台暂不支持进程资源采集」——**两块面板口径矛盾**（详见附录 D-7）。已修（`2eeb707d`）：快照 JSON 补 `snapshotSupported`，采不到时 `totalRssMb` 给 `null`（面板不显示「合计内存 0 MB」，改说能力提示）；合计 RSS 阈值告警在「没判」时**不判成「没超」**。实机复验见 `docs/realmachine-rerun-2026-10-22.md` §2.3 |
@@ -1082,22 +1083,31 @@ content: |
 
 **步骤**：
 
-**A. 不谎报「已停」**：起一个**杀不掉**的服务（模拟停不掉），然后停它。
+**A. 停止结果如实**（不谎报「已停」）
 
-```
-用 start_service 起一个 python 进程，参数是 ["-c", "import signal,time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True: time.sleep(1)"]，name 叫 stubborn。
-```
+**先认清平台事实**——不然会把**正确行为**判成 FAIL（2026-10-22 实机就差点这么判，见附录 D-13）：
 
-然后：
+| 平台 | 停止手段 | 「停不掉」怎么才造得出来 |
+|---|---|---|
+| macOS / Linux | SIGINT → SIGTERM → SIGKILL（`bot/procs.rs:970-976`） | **同用户进程造不出来**：SIGKILL 不可拦截，Python 默认还会在第一个 SIGINT 就 KeyboardInterrupt 退掉。只能让目标属主不是当前用户 |
+| Windows | `taskkill /PID /T /F`（`bot/procs.rs:1084`） | 同用户进程造不出来（同权限 `/F` 必杀）。只能让**宿主权限低于目标**：宿主普通权限起、目标以管理员身份跑 → taskkill 报「拒绝访问」 |
 
-```
-停止服务 <把上一步的 serviceId 粘这里>。
-```
+**所以下面这个「stubborn」配方在两个平台上都不成立**：
 
-**判据**：
+- **Windows 上没有 SIGTERM 语义**，那段 `signal.signal(signal.SIGTERM, signal.SIG_IGN)` 是空操作 → 进程就是个普通长睡 → `taskkill /F` 一下就死 → 报「已停」是**如实**的，不是谎报；
+- **unix 上 Python 默认响应 SIGINT**（KeyboardInterrupt），阶梯第一级就退了，根本升不到 SIGTERM/SIGKILL。
 
-- PASS：阶梯跑完（SIGINT → SIGTERM → SIGKILL）后仍活着 → 返回 `停止失败：进程仍在运行（pid=N），停止未生效`，status=Error；bot.log 有 `service.stop_failed | … | reason=进程仍在运行`；**服务状态不写 `Exited`**（写 Exited 等于告诉退出清理「这个不用收了」）。
-- FAIL：返回 `stopped: true` / 状态变 `已退出` / 审计只有 `service.stopped` 没有 `service.stop_failed`。
+> 配方仍可留着跑——它验的是**正常路径**（起服务 → 停服务 → 审计字段齐），不是「停不掉」那半。
+> 真要造「停不掉」，按上面那张表：Windows 用权限不匹配，unix 用跨属主进程。
+
+**判据（按地面真相判，不按返回值判）**：
+
+- `stopped: true` **且进程真的没了** → ✅ **PASS**（如实报已停）。
+- `stopped: true` **但进程还在** → ❌ **FAIL**——这才是谎报（也正是修复前那个 bug 的形态）。
+- 停不掉时（`method=taskkill_failed` / `taskkill_unavailable`）→ 期望：返回
+  `停止失败：进程仍在运行（pid=N），停止未生效`（status=Error）、审计
+  `service.stop_failed | reason=进程仍在运行`、**服务状态不写 `Exited`**
+  （写 Exited 等于告诉退出清理「这个不用收了」，而它明明还在跑）。
 
 **B. pid 0 不当树根**（**变异复验时才注入**）：
 
@@ -1115,6 +1125,12 @@ grep -n "fn descendants" -A 12 src-tauri/src/bot/procs.rs
 
 ```bash
 bash scripts/regression-probe.sh services   # 服务进程真的没了吗
+```
+
+```powershell
+# Windows：两处都看不到才算真停掉
+Get-Process -Id <pid> -ErrorAction SilentlyContinue
+tasklist /FI "PID eq <pid>"
 ```
 
 ---
@@ -2491,3 +2507,44 @@ stdio 与 http 两个分支各有一处同样的提示（同一段文案，两�
 >
 > 单测钉住两处：`McpPanel.test.tsx` 断言机密提示带 `col-span-2` 且是网格的直接子项、
 > 参数框占位行数 ≤ 框高。变异复验：去掉 `col-span-2` / 还原 4 行占位 → 用例红；改回 → 绿。
+
+---
+
+### D-13（已排除 · 卡片判据写错）S08 卡的「不谎报已停」在两个平台都造不出来，且会把如实报已停误判成 FAIL
+
+**来源**：2026-10-22 S08 实机（Windows）。
+
+**现象**：卡片要求「起一个杀不掉的服务 → 停它 → 期望报『停止失败：进程仍在运行』」，
+给的配方是 `python -c "… signal.signal(signal.SIGTERM, signal.SIG_IGN) … while True: time.sleep(1)"`。
+
+实机跑出来：
+
+```
+[23:38:16] service.started  | service_id=svc_ea3a130d | command=python | pid=14236
+[23:39:13] service.stop_requested | reason=tool | pid=14236
+[23:39:14] service.exited   | pid=14236 | exit_code=1 | uptime_ms=58216 | stop_reason=tool
+[23:39:14] service.stopped  | method=taskkill | elapsed_ms=495 | descendants_killed=0
+工具返回：{"method":"taskkill","stopped":true,"exitCode":1,"elapsedMs":495,"descendantsKilled":0}
+```
+
+**按旧卡片判据这要判 FAIL**（返回了 `stopped: true`、审计只有 `service.stopped` 没有
+`service.stop_failed`）。但它是**正确行为**——进程真被杀了，报「已停」是如实的。
+
+**为什么配方不成立**：
+
+- **Windows 上没有 SIGTERM 语义**，那句 `signal.signal(SIGTERM, SIG_IGN)` 是空操作 → 进程就是个
+  普通长睡 → `taskkill /T /F` 一下就死；
+- **unix 上 Python 默认响应 SIGINT**（KeyboardInterrupt）→ 阶梯第一级就退，压根升不到 SIGTERM/SIGKILL；
+- unix 的 SIGKILL 不可拦截、Windows 的 `/F` 必杀 → **同用户进程根本造不出「停不掉」**。
+  真要造：Windows 用权限不匹配（宿主普通权限、目标管理员权限），unix 用跨属主进程。
+
+**根因**：卡片把「返回值形态」当判据，没把「进程是否真的还在」当判据。而修复前那个 bug 的形态
+恰恰是「进程还在却报已停」——所以判据必须是**返回值 + 地面真相一起看**。
+
+**修法**：卡片 A 段重写（先讲清两个平台的停止手段与「停不掉」的可达性；判据改成按地面真相判：
+`stopped:true` + 进程真没了 = PASS，`stopped:true` + 进程还在 = FAIL，只有
+`taskkill_failed`/`taskkill_unavailable` 时才期望 `service.stop_failed` + 状态不写 `Exited`）。
+
+> **本轮实机顺带确认的（D-6 那轮新增的字段在 Windows 上有值）**：`service.exited` 带
+> `stop_reason=tool`——「我们停的」与「它自己退的」分得开了。`uptime_ms=58216` 也说明
+> 这个服务健康地活着 58 秒才被停，`exit_code=1` 是 `taskkill /F` 的签名而非服务自己的退出码。

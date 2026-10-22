@@ -170,7 +170,120 @@ copy_file 无临时文件、失败分支 GlobalFree/EmptyClipboard 配平；scre
 
 ## 批 2 · 网络与 API 面（M10 本地 HTTP API / M12 模型元数据·配置·密钥 / M15 跨平台横切）
 
-（待跑）
+### M10 本地 HTTP API（api* + api_handlers 九件）
+
+无 P0-P2。安全设计成熟度高：回环硬编码、鉴权前置路由分发（仅 /api/health 免鉴权）、
+token 122 位熵+0600+恒定时间比对+不进 URL、SSE 有界队列(256)+尸体三重清理、
+body 1MB 上限+CL/TE 歧义全拒、RMW 基线 409、错误响应静态文案不回显内部。
+P3 六条：
+
+- **[P3] api-token.txt 空文件残留使 api_start 恒失败，「下次调用自愈」注释不成立**
+  （api_auth.rs:42-62——读空走生成、create_new 撞 AlreadyExists、重试 50 次仍空。
+  修法：读到空文件改原子覆写）。
+- **[P3] 服务运行中 token 文件被删后 api_status 返回与活服务不一致的新 token**
+  （commands.rs:300-309——磁盘新生成 UUID ≠ 内存 RunningApi.token，展示的 token 全 401。
+  修法：活服务存在时优先返回 running.token）。
+- **[P3] tiny_http 头部解析无行长/数量上限**（vendor/client.rs:80-102 buf 无界增长）——
+  慢滴注超长 header 可无限占内存；35s deadline 只罩 body 不罩 header。
+  修法：vendor patch 加 64KB/行、100 行上限，或补进 PATCHES.md 已知残留。
+- **[P3] MemStore 与 TauriStore 列表排序语义漂移**（api.rs:59 插入序 vs db/tasks.rs:570
+  `ORDER BY ord, rowid`）——MemStore 上通过的顺序断言不代表生产行为。
+- **[P3] `due` 只限长不验格式**，任意字符串入库（handlers.rs:252-256/564-567）——
+  due_notify 截止通知解析行为未定义。修法：非空 due 加格式白名单。
+- **[P3] 请求不校验 Content-Type**（body.rs:34-101）——协议健壮性项，无安全后果
+  （无 token 一律 401）。
+- NEEDS-VERIFICATION：Windows 下 token 文件无 ACL 收紧（api_auth.rs:104-107 显式 no-op
+  存根）——%APPDATA% 默认 ACL 可接受；便携模式（exe 落多用户可读目录）需实测。
+
+### M12 模型元数据·配置·密钥·个人资料（meta/ + bot/config/ + profile.rs）
+
+**[P2-1] update_config_file 路径静默剥掉未迁移的明文 legacy key（keyring 故障窗口内丢密钥）**（主会话已复核）
+- 位置：bot/config/io.rs:520-532（update_config_file 只有 MCP 机密迁移）vs io.rs:415-418
+  （add_allowed_dir 有 `strip_verified_keys` 防御纵深——grep 全仓仅此一处调用）+ io.rs:498-503
+  （write_bot_config_file_locked 无条件把三槽置 None）
+- 触发：启动迁移时 keyring 故障按「保留明文下次再试」（io.rs:585-586）→ 之后任何
+  update_config_file 调用方（记忆整理 last_run 回写 / verified_vendors 落盘 /
+  bot_clear_vendor_key）触发写盘 → 明文被剥但 keyring 里从未写入 → 密钥永久丢失。
+- 修法：update_config_file 写盘前对三个 legacy 槽位复用 strip_verified_keys
+  （零丢失语义：验证通过才剥，失败保留明文中止写）。
+
+**[P2-2] 终稿自检侧调模型绕过 vendor 未验证门**（主会话已复核）
+- 位置：bot_model_loop.rs:1273（主门）vs :1313-1330（selfcheck_http 构造无任何
+  ensure_vendor_verified）
+- 触发：selfcheckModelId 指向未验证厂商条目 → 主请求被拦，自检请求照发——
+  真实 LLM 请求带 key 发往未验证 base_url。
+- 修法：selfcheck_http 解析后补一道 ensure_vendor_verified，未验证回落主路径并审计。
+
+**[P2-3] 厂商条目无 key 时回退全局主 key，可发往任意用户配置 base_url**（主会话已复核）
+- 位置：bot/config/commands.rs:816-825（bot_test_connection 拿全局 key 探活）+
+  bot/config/keyring.rs:630-642（read_llm_key 同款回退）；对照 types.rs:629-633 注释明确把
+  跨厂商 key 借用定性为「凭据泄漏」并在 override 路径禁掉——active/探活路径保留回退。
+- 触发：添加带 vendor 名、base_url 指向第三方的条目且未配该厂商 key → 全局主力 key 作为
+  Bearer 发往该 base_url；对方对 GET /models 回任意 2xx 即进 verified_vendors 转正。
+- 修法：带 vendor 条目无厂商 key 时探活改无鉴权、请求侧报 ApiKeyMissing；
+  或厂商无 key 不得凭 2xx 写 verified_vendors。
+
+P3：
+
+- **[P3] 配置变更/key 写入清除/active 切换（含被 vendor 门拒切）零审计**
+  （commands.rs:311-383/438-451/492-499，grep 证实）。
+- **[P3] 损坏的 bot-config.json 无备份即回默认，下次保存覆盖**（io.rs:148-163 仅 eprintln；
+  profile.rs:130-148 有备份+ERROR 审计可对齐）。
+- **[P3] meta 模块文档漂移**：模块头称 8 个 meta_* 命令实际注册 3 个（lib.rs:770-772）；
+  user_custom 写入路径本版本不存在（守卫属防御性在位）；同步只增不删，上游已删行永久残留。
+- **[P3] max_tokens 注释陈旧**：「默认 8192」实为 32768（types.rs:135-137/341/503 vs schema.rs:235）。
+- **[P3] bot_set_config keyring 先写、配置后写的半成功中间态**（commands.rs:320-344/377-383，
+  io.rs:33-35 自认已转 B 类评估挂账）——未测试的 key 可能带着旧「已验证」绿点。
+- **[P3-信息] verified_vendors 可经 bot_set_config 由前端整包注入**（commands.rs:224-261
+  只删不加）——威胁模型内前端可信，记录 vendor 门强度边界。
+- **[P3-澄清] profile.rs 已是预设头像 ID 制**：5MB/扩展名/data URL/路径穿越等旧攻击面整体
+  不存在（AVATAR_IDS 双端 16 枚举+双侧校验，损坏备份+ERROR 审计在位）——旧检查项作废。
+
+已查证安全：models.dev 同步 16MB 流式上限+单事务无半截+幂等；user_custom ON CONFLICT WHERE
+守卫在位且无任何 DELETE；vendor 未验证门三道后端均在位且先于副作用（HTTP API 无 config 端点、
+MCP 配置路径不触碰 active）；keyring NoEntry 良性区分（老账已清，classify 函数+测试）；
+bot-config.json 三 key 字段 skip_serializing+写侧强制 None 双保险；schema 迁移幂等、未来版本
+不降级、原子写 fsync；max_tokens/temperature/top_p 全边界钳制、NaN filter；PermMode 实为四态、
+未知值落 Ask（安全偏严）；reasoning 只产结构化字段不拼 prompt；前端 botConfig.ts/modelMeta.ts
+逐字段对齐、avatars.ts 双端 16 枚举有测试。
+
+### M15 跨平台横切（全仓平台分支清单式专审）
+
+**修复验证**：2026-10-21 的「Windows 停止阶梯空转却报已停」已修复未回退——
+taskkill 三态区分（procs.rs:1076-1095）、停不掉 restore_state+`service.stop_failed` 审计
+（services.rs:1667-1687）、MCP 停止后 pid_exists 复核不谎报（manager.rs:804-823）。
+监听闸 Unsupported 三态：全部调用方按三态处理，前端确认消费 listeningSupported===false。
+
+**[P2-1] macOS `UiWindow.focused` 恒 false——同契约两平台一真一假**（主会话已复核）
+- 位置：ui/macos.rs:199（硬编码）vs ui/windows.rs:96（is_foreground 实测）
+- 触发：macOS list_windows 永远报无前台窗口——模型在 Windows 能看到焦点窗口、
+  macOS 看不到；bot_ui 据此标「（前台）」。修法：NSWorkspace.frontmostApplication
+  比对 pid，或 Option<bool>+文档声明。
+
+**[P2-2] Windows `UiNode.value` 恒 None——ui_inspect 在 Windows 读不到控件值且未声明**（主会话已复核）
+- 位置：ui/windows.rs:278（CurrentValue 未读）vs ui/macos.rs:323（AXValue 实读）
+- 触发：wait_for_element 的 query 搜索把 value 纳入匹配（bot_ui.rs:312-314）——
+  Windows 上「按输入框内容找控件」整体失效，None 被当「值为空」。修法：读 UIA
+  ValuePattern，或注释+工具描述声明 Windows 恒空。
+
+P3：
+
+- **[P3]** list_windows 空标题窗口策略两平台相反（Windows 跳过/macOS 保留且注释承诺的标注未兑现）；
+- **[P3]** Windows Job Object 创建失败时内存/CPU 限额静默不生效无留痕（py/runtime.rs:108-134
+  返回 None 无日志——与 unix S20「探测失败≠可用」纪律不对称）；
+- **[P3]** 路径同一性全仓小写归一，Linux（大小写敏感 FS）上凭证表会过度归并
+  （db/trace.rs:114 COLLATE NOCASE + bot_model_loop.rs:3370 to_lowercase）；
+- **[P3][需验证]** 受管服务 stdout 按 UTF-8 lossy 解码，Windows GBK 输出服务 readyPattern
+  永不匹配→被判就绪超时强杀、错误文案全乱码（services.rs:963-968；py 有 PYTHONUTF8=1，
+  services 层无等价物）；
+- **[P3]** Windows 便携包 OCR 依赖手工打包步骤，模型缺失时指引让用户跑 .sh（ocr.rs:183-184，
+  Windows 无直接执行手段；packaging/ staging 目录与手册有版本落差）；
+- **[P3][需验证]** Windows 长路径（>260）无全局兜底，bot_fs 剥 `\\?\` 前缀后失败报普通 IO 错误。
+
+已查证安全：全部「能力不可用」分支要么显式 Err/Unsupported、要么注释声明（无静默装好新案例）；
+pid_exists Windows 真实现；便携模式写探针+OnceLock 定版两平台一致；剪贴板失败分支对称清板；
+CREATE_NO_WINDOW 统一常量+源码锁；单实例/自启/通知/托盘三平台统一且有防 cfg 门测试；
+全仓无生产代码用 format! 拼 `/` 构造路径。
 
 ## 批 3 · 核心数据链（M1 任务卡 / M11 图谱标签 / M14 底座迁移）
 
