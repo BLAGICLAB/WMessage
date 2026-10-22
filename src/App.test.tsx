@@ -357,8 +357,9 @@ describe("App", () => {
     }
   });
 
-  // 软删除必须清调度字段——否则任务躺在回收站里 schedule
-  // 仍到点触发（deletedAt 不挡调度读取）。
+  // 软删只写 deletedAt：旧的 tasks.schedule / sched_last（到点触发器）两列早已退役，
+  // 定时作业走独立的 scheduled_jobs 表——回收站里的卡不会被定时器读到。
+  // 排期（planStart/planEnd）是周网格里的位置，软删是可逆的，恢复时该原样回来。
   // 入口：任务页池项 → 详情面板删除键（批 4 起替代旧看板卡删除键）
   it("软删除进回收站：task_patch 只带 deletedAt", async () => {
     const user = userEvent.setup();

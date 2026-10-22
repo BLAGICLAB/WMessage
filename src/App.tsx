@@ -869,7 +869,9 @@ function App() {
   };
 
   // 软删除：进回收站
-  // 软删必须清调度字段——否则任务躺在回收站里 schedule 仍到点触发
+  // 软删只写 deletedAt：排期（planStart/planEnd）是周网格里的「位置」，不是到点触发器
+  // ——旧的 tasks.schedule / sched_last 列早已退役，定时作业走独立的 scheduled_jobs 表，
+  // 回收站里的卡不会被任何定时器读到。位置留着：软删是可逆的，恢复时原样回到网格。
   // 有子任务卡时先询问：一并软删 or 仅删母卡（子卡保留，parentId 悬挂不清理——
   // 母卡从回收站恢复后关联仍成立）
   const confirm = useConfirm();
