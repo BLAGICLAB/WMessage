@@ -107,17 +107,25 @@ read_mark() {
 
 # ── 事件报告 ────────────────────────────────────────────────────────────
 cmd_report() {
-  local log off
+  local log off slice
   log="$(read_mark)" || { echo "✗ 没有有效水位线，先跑 mark"; return 1; }
   off="$(sed -n '2p' "$MARK_FILE")"
+  slice="$MARK_DIR/slice"
+  mkdir -p "$MARK_DIR"
+  tail -c "+$((off + 1))" "$log" >"$slice"
   echo "── 事件（bot.log 字节 ${off}+）──"
-  tail -c "+$((off + 1))" "$log" | grep -E ' \| (service|mcp|skill|subagent|tool|pre_step|app_exit)\.' || echo "（本区间没有匹配事件）"
+  # 事件名有两种落法：带级别的「[ts] LEVEL | 事件 | kv」与无级别的「[ts] 事件 | kv」。
+  # 两种都要匹配上——只认「 | 」会把 mcp.builtin_materialized 这类整条漏掉。
+  grep -E '([|] |\] )(service|mcp|skill|subagent|tool|pre_step|app_exit|bot_fs|reminder|ui|manage_file|desktop|confirm|loop|final_selfcheck|memory)\.' \
+    "$slice" || echo "（本区间没有匹配事件）"
   echo
   echo "── 自由格式技能行 ──"
-  tail -c "+$((off + 1))" "$log" | grep -E '^(skill_|confirm|skill_dsl_)' || echo "（无）"
+  # 锚点必须容下时间戳前缀：日志行以「[时间戳] 」开头，行首锚定永远匹配不到。
+  grep -E '(^|\] )(skill_|confirm|skill_dsl_)' "$slice" || echo "（无）"
   echo
   echo "── 工具调用与失败 ──"
-  tail -c "+$((off + 1))" "$log" | grep -E 'tool\.(call|return|panic)|工具输出超预算|超预算' | tail -40 || echo "（无）"
+  grep -E 'tool\.(call|return|panic)|工具输出超预算|超预算|budget_tool_calls_exceeded' "$slice" \
+    | tail -40 || echo "（无）"
 }
 
 # ── 受管服务：真机地面真相 ───────────────────────────────────────────────

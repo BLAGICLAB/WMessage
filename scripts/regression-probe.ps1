@@ -196,17 +196,19 @@ function Cmd-Report {
   $lines = $text -split "`r?`n"
 
   Write-Host "-- events (bot.log byte $($m.offset)+) --"
-  $ev = $lines | Where-Object { $_ -match '\| (service|mcp|skill|subagent|tool|pre_step|app_exit|bot_fs|reminder|ui|manage_file|desktop|confirm)\.' }
+  $ev = $lines | Where-Object { $_ -match '([|] |\] )(service|mcp|skill|subagent|tool|pre_step|app_exit|bot_fs|reminder|ui|manage_file|desktop|confirm|loop|final_selfcheck|memory)\.' }
   if ($ev) { $ev | ForEach-Object { Write-Host $_ } } else { Write-Host '(no matching events in this range)' }
 
   Write-Host ''
   Write-Host '-- free-form skill lines --'
-  $sk = $lines | Where-Object { $_ -match '^(skill_|confirm|skill_dsl_)' }
+  # The anchor must tolerate the timestamp prefix: every log line starts with
+  # '[timestamp] ', so a line-start anchor never matches anything.
+  $sk = $lines | Where-Object { $_ -match '(^|\] )(skill_|confirm|skill_dsl_)' }
   if ($sk) { $sk | ForEach-Object { Write-Host $_ } } else { Write-Host '(none)' }
 
   Write-Host ''
   Write-Host '-- tool calls and failures --'
-  $tl = $lines | Where-Object { $_ -match 'tool\.(call|return|panic)' }
+  $tl = $lines | Where-Object { $_ -match 'tool\.(call|return|panic)|budget_tool_calls_exceeded' }
   if ($tl) { $tl | Select-Object -Last 40 | ForEach-Object { Write-Host $_ } } else { Write-Host '(none)' }
 }
 
