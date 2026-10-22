@@ -5,6 +5,8 @@ import { Tags, X, Loader2 } from "lucide-react";
 import {
   tagsConsolidateScan,
   tagsConsolidateMerge,
+  NEW_MAIN_PLACEHOLDER,
+  MAX_MAIN_TAG_LEN,
   type TagCluster,
 } from "../lib/botConsolidate";
 import { handleCommandError } from "../lib/errorHandler";
@@ -13,7 +15,6 @@ import { Modal } from "../ui/Modal";
 
 interface Props {
   onClose: () => void;
-  onMerged?: (runIds: string[]) => void;
 }
 
 interface ClusterSelection {
@@ -21,9 +22,28 @@ interface ClusterSelection {
   main: string;
   /** 是否纳入本次合并（默认 true；用户可单簇取消） */
   enabled: boolean;
+  /**
+   * 是否处于「新建主标签」模式。
+   *
+   * 与 `main` 分开存：新建模式下 `main` 装的是用户起的名字（可能还是空的），
+   * 把「新建」这个选项本身塞进 `main` 的话，输入框会在第一个字符后就消失
+   * （条件是 `main === 占位值`），用户根本打不出名字。
+   */
+  creating: boolean;
 }
 
-export function TagConsolidateModal({ onClose, onMerged }: Props) {
+/** 主标签名是否可用（非空、非占位值、长度不超限） */
+function mainTagError(main: string, creating: boolean): string | null {
+  if (!creating) return null;
+  const v = main.trim();
+  if (!v) return "请填写新主标签名";
+  if (v === NEW_MAIN_PLACEHOLDER) return "新主标签名不能是占位值";
+  if ([...v].length > MAX_MAIN_TAG_LEN)
+    return `新主标签名过长（上限 ${MAX_MAIN_TAG_LEN} 字）`;
+  return null;
+}
+
+export function TagConsolidateModal({ onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [clusters, setClusters] = useState<TagCluster[]>([]);
@@ -63,6 +83,7 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
           next[i] = {
             main: clusters[i].suggested_main,
             enabled: true,
+            creating: false,
           };
         }
       }
@@ -79,25 +100,38 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
     [clusters, selections],
   );
 
+  /** 纳入合并但主标签名不可用的簇——提交前拦下并提示 */
+  const invalidMain = useMemo(() => {
+    for (let i = 0; i < clusters.length; i++) {
+      const sel = selections[i];
+      if (!sel?.enabled) continue;
+      const err = mainTagError(sel.main, sel.creating);
+      if (err) return err;
+    }
+    return null;
+  }, [clusters, selections]);
+
   const close = () => {
     if (submitting) return;
     onClose();
   };
 
   const submit = async () => {
+    if (invalidMain) {
+      handleCommandError(invalidMain, "整理标签");
+      return;
+    }
     setSubmitting(true);
-    const runIds: string[] = [];
     try {
       for (let i = 0; i < clusters.length; i++) {
         const sel = selections[i];
         if (!sel?.enabled) continue;
-        const rec = await tagsConsolidateMerge(
-          sel.main,
-          clusters[i].members.filter((m) => m !== sel.main),
+        const main = sel.creating ? sel.main.trim() : sel.main;
+        await tagsConsolidateMerge(
+          main,
+          clusters[i].members.filter((m) => m !== main),
         );
-        runIds.push(rec.run_id);
       }
-      onMerged?.(runIds);
       onClose();
     } catch (e) {
       handleCommandError(e, "整理标签");
@@ -199,13 +233,21 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
                     <div className="flex items-center gap-2 text-[11px] text-[var(--t4)]">
                       <span>主标签：</span>
                       <select
-                        value={sel.main}
-                        onChange={(e) =>
+                        value={sel.creating ? NEW_MAIN_PLACEHOLDER : sel.main}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const creating = v === NEW_MAIN_PLACEHOLDER;
                           setSelections((s) => ({
                             ...s,
-                            [i]: { ...sel, main: e.target.value },
-                          }))
-                        }
+                            [i]: {
+                              ...sel,
+                              creating,
+                              // 切到「新建」时清掉旧名字：留着上一个簇的主标签名，
+                              // 用户会以为名字已经填好了
+                              main: creating ? "" : v,
+                            },
+                          }));
+                        }}
                         className="nm-inset px-2 py-1 rounded text-xs text-[var(--t2)] outline-none flex-1 min-w-0"
                         disabled={!sel.enabled}
                       >
@@ -214,13 +256,17 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
                             #{m}
                           </option>
                         ))}
-                        <option value="__new__">+ 新建主标签…</option>
+                        <option value={NEW_MAIN_PLACEHOLDER}>
+                          + 新建主标签…
+                        </option>
                       </select>
-                      {sel.main === "__new__" && (
+                      {sel.creating && (
                         <input
                           autoFocus
                           type="text"
+                          value={sel.main}
                           placeholder="新主标签名"
+                          aria-label="新主标签名"
                           className="nm-inset px-2 py-1 rounded text-xs text-[var(--t2)] outline-none w-32"
                           onChange={(e) =>
                             setSelections((s) => ({
@@ -244,6 +290,9 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
               ? `将合并 ${selectedCount} 个簇`
               : "未选任何簇"}
           </span>
+          {invalidMain && (
+            <span className="text-[11px] text-[var(--danger)]">{invalidMain}</span>
+          )}
           <button
             type="button"
             className="ml-auto nm-btn px-3 py-1.5 text-xs text-[var(--t3)]"
@@ -256,7 +305,13 @@ export function TagConsolidateModal({ onClose, onMerged }: Props) {
             type="button"
             className="nm-btn px-3 py-1.5 text-xs text-[var(--t2)] disabled:opacity-50"
             onClick={submit}
-            disabled={loading || error !== null || selectedCount === 0 || submitting}
+            disabled={
+              loading ||
+              error !== null ||
+              selectedCount === 0 ||
+              submitting ||
+              invalidMain !== null
+            }
           >
             {submitting ? (
               <>

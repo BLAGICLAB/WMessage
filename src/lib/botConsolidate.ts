@@ -11,6 +11,12 @@ export interface TagCluster {
   affected_task_count: number;
 }
 
+/** 「+ 新建主标签…」选项的占位值——与后端 tags_consolidate::NEW_MAIN_PLACEHOLDER 同源 */
+export const NEW_MAIN_PLACEHOLDER = "__new__";
+
+/** 主标签长度上限（与后端任务标签口径一致：MAX_TAG_LEN = 30） */
+export const MAX_MAIN_TAG_LEN = 30;
+
 /** scan 返回 */
 export interface ClusterScanResult {
   scanned_tags: number;
@@ -34,6 +40,8 @@ export interface TagRollbackResult {
   run_id: string;
   merged_to: string;
   restored_task_count: number;
+  /** 实际被改回原 tags 的 task id */
+  restored_task_ids: string[];
   original_timestamp_ms: number;
 }
 
