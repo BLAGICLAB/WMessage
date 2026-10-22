@@ -494,4 +494,25 @@ describe("TaskDetailPanel 关闭拨杆", () => {
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
     expect(screen.getByText("保存关闭")).toBeInTheDocument();
   });
+
+  // 截止时间必须与任务卡的截止输入同一守卫：不合规的值不写库——
+  // due_notify 解析失败是「视为无截止」，任务会无声地过期。
+  it("截止时间：不合规的值不写库，合法值才写", () => {
+    const { onUpdate } = setup({ due: "2026-10-09T18:00" });
+    const input = screen.getByLabelText("截止时间") as HTMLInputElement;
+
+    // 带秒的 datetime-local 值：HTML 合法、但不是本仓约定的定长格式
+    fireEvent.change(input, { target: { value: "2026-10-09T18:00:30" } });
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "2026-10-09T20:30" } });
+    expect(onUpdate).toHaveBeenCalledWith({ due: "2026-10-09T20:30" });
+  });
+
+  it("截止时间：清空写 undefined", () => {
+    const { onUpdate } = setup({ due: "2026-10-09T18:00" });
+    const input = screen.getByLabelText("截止时间") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+    expect(onUpdate).toHaveBeenCalledWith({ due: undefined });
+  });
 });

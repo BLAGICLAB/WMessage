@@ -830,6 +830,28 @@ pub(crate) fn apply_task_patch(
         }
         Ok(())
     }
+    /// 截止时间格式校验：两种合法形态——"YYYY-MM-DD"（仅日期，当天 23:59 截止）
+    /// 与 "YYYY-MM-DDTHH:mm"（带时刻）。与 due_notify::parse_due_dt 同一口径。
+    ///
+    /// 其余一律拒：打字过程中的半截值（"2026-10"）、越界日期（2026-02-31）、
+    /// 越界时分（25:00）落进库里，due_notify 解析失败是「视为无截止」——
+    /// 静默不发通知，任务就这么无声地过期了。
+    fn validate_due(v: Option<&str>, field: &str, raw: &serde_json::Value) -> CommandResult<()> {
+        let Some(s) = v else {
+            return Ok(());
+        };
+        let s = s.trim();
+        let ok = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").is_ok()
+            || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok();
+        if !ok {
+            return Err(CommandError::InvalidArgument {
+                field: field.into(),
+                value: raw.to_string(),
+                reason: "截止时间格式必须是 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm".into(),
+            });
+        }
+        Ok(())
+    }
     for (k, v) in obj {
         match k.as_str() {
             // TaskStatus 的自定义 Deserialize 只支持借用字符串，from_value 走不通——
@@ -855,7 +877,10 @@ pub(crate) fn apply_task_patch(
             "note" => set_from(&mut task.note, v, k)?,
             "tags" => set_from(&mut task.tags, v, k)?,
             "subtasks" => set_from(&mut task.subtasks, v, k)?,
-            "due" => set_from(&mut task.due, v, k)?,
+            "due" => {
+                set_from(&mut task.due, v, k)?;
+                validate_due(task.due.as_deref(), k, v)?;
+            }
             "files" => set_from(&mut task.files, v, k)?,
             "order" => set_from(&mut task.order, v, k)?,
             "botAssigned" => set_from(&mut task.bot_assigned, v, k)?,
@@ -1817,6 +1842,56 @@ mod task_patch_tests {
             .unwrap();
         assert_eq!(reloaded.plan_start, None);
         assert_eq!(reloaded.plan_end, None);
+    }
+
+    /// 截止时间格式：两种合法形态放行，其余一律拒。
+    ///
+    /// 半截值（"2026-10"）与越界值（2026-02-31 / 25:00）落进库里的话，
+    /// due_notify 解析失败是「视为无截止」——任务就这么无声地过期了。
+    #[test]
+    fn task_patch_due_rejects_invalid_format_and_accepts_both_valid_shapes() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('duet', '截止卡', 'todo', 1000)",
+            [],
+        )
+        .unwrap();
+        for bad in [
+            "2026-10",
+            "明天下午",
+            "2026-02-31",
+            "2026-10-07T25:00",
+            "2026-10-07T09:70",
+            "2026-10-07 09:00",
+        ] {
+            let err = match run_patch(&mut conn, "duet", serde_json::json!({ "due": bad })) {
+                Err(e) => e,
+                Ok(_) => panic!("{bad} 应被拒绝"),
+            };
+            assert!(
+                matches!(err, CommandError::InvalidArgument { .. }),
+                "{bad} 应 InvalidArgument，got {err:?}"
+            );
+        }
+        // 两种合法形态都放行
+        for good in ["2026-10-07", "2026-10-07T09:00"] {
+            run_patch(&mut conn, "duet", serde_json::json!({ "due": good }))
+                .unwrap_or_else(|e| panic!("{good} 应放行，got {e:?}"));
+            let reloaded = load_all(&conn)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id == "duet")
+                .unwrap();
+            assert_eq!(reloaded.due.as_deref(), Some(good));
+        }
+        // null 清空
+        run_patch(&mut conn, "duet", serde_json::json!({ "due": null })).unwrap();
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "duet")
+            .unwrap();
+        assert_eq!(reloaded.due, None);
     }
 }
 

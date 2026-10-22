@@ -10,7 +10,7 @@ import {
   filesPatch,
   taskFiles,
 } from "../../lib/taskFiles";
-import { DOW1, formatCompletedAt } from "../../format";
+import { DOW1, formatCompletedAt, isValidDateTimeLocal } from "../../format";
 import { handleCommandError } from "../../lib/errorHandler";
 import { ActorAvatar } from "../ActorAvatar";
 import { Toggle } from "../Toggle/Toggle";
@@ -565,7 +565,13 @@ export function TaskDetailPanel({
         type="datetime-local"
         className="num w-full rounded-lg border border-[var(--edge)] bg-[var(--input-bg)] px-2 py-1.5 text-xs text-[var(--t2)] outline-none focus:border-[var(--brand)]"
         value={dueVal}
-        onChange={(e) => onUpdate({ due: e.target.value || undefined })}
+        onChange={(e) => {
+          const v = e.target.value;
+          // 与任务卡的截止输入同一守卫：打字过程中的半截值（"2026-10"）不入库，
+          // 否则 due_notify 解析失败是「视为无截止」——静默不发通知
+          if (v === "") onUpdate({ due: undefined });
+          else if (isValidDateTimeLocal(v)) onUpdate({ due: v.slice(0, 16) });
+        }}
         aria-label="截止时间"
       />
 
