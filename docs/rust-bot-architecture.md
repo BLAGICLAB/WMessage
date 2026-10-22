@@ -251,7 +251,7 @@ src-tauri/src/
 │   ├── ui/macos.rs (417) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
 │   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）
-│   └── ui/windows.rs (422) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
+│   └── ui/windows.rs (418) Windows 后端：UIAutomation 读控件树（Invoke 模式优先，
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
 ├── bot_desktop.rs (647) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
