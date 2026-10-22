@@ -199,6 +199,31 @@ C:\Users\Administrator\AppData\Local\Microsoft\WindowsApps\python.exe        ←
 > 所以上面三行标的是「🔧 源码已修 · 待实机复验」，**不是 PASS**。
 > 复验步骤（换 exe + 6 项清单 + S 序列剩余项 + 结果回填到哪）见 **`docs/realmachine-rerun-2026-10-22.md`**。
 
+### 1.6 本机（macOS）代跑：哪些能在这台机器上定案（2026-10-23）
+
+**为什么分这一层**：一张实机卡的判据分三截——① **行为**（真进程、真磁盘、真清单、真进程表），
+② **模型回合**（模型实际看到了什么、会不会照旧名去调），③ **平台与权限**（Windows 的 Job Object、
+UIPI、凭据管理器、系统通知）。本机（macOS）能定 ①；②③ 只能在装了真模型与 GUI 的机器上定。
+
+本轮把能定的 ① 都跑了一遍。**这张表不是「PASS 清单」**——它是「哪些不用再花实机时间」的边界：
+
+| 项 | 本机怎么定的 | 本机结论 | 剩下必须人做的 |
+|---|---|---|---|
+| **S10** 函数名跨断连稳定 | 新增 e2e `disambiguated_names_survive_a_server_dropping_out`：两台**真** Python 桩（`p x` / `p.x`，前缀同为 `p_x`）连上后，**读主 agent 工具清单那份 JSON**（`tools_json_with_mcp` 的产物——模型看到的就是它），断一台 → 看剩下的名字 → 反过来再断一台 | ✅ **本机真跑通过**：断连那台不在后，剩下那台的名字没漂（`mcp_p_x_echo_2` 没退化成 `mcp_p_x_echo`）；两次剩下的名字不同；断连那台的旧名仍能反查到归属（→ 不会被报成「未知工具」）。**变异复验**：命名退回「按在场顺序重编号」→ 用例红，报错正是 `left: mcp_p_x_echo / right: mcp_p_x_echo_2` | 只剩模型那半：让模型列一次清单、用旧名调一次，看它会不会照旧名调 |
+| **S13** stdio 读侧行长上限 | `stdio_transport` 的行长闸单测（截到 cap 字节）+ **真子进程** e2e（5MB 畸形行 → 会话不断、客户端不回 Invalid Request） | ✅ **后端半本机真跑过** | 宿主 stderr 那行诊断（GUI 启动看不到，要从 cmd 里跑 exe） |
+| **S08 / S32** 停止路径 | unix 侧：停掉后**进程组整个消失**（含逃逸孙进程）、pid≤1 → `no_process` | ✅ **unix 半本机真跑过**（Windows 那半是 W02/W05 的事） | Windows：`Get-Process` / `tasklist` 两处都空；权限不匹配版的「停不掉」；pid 0 变异（unix 专属） |
+| **S11** 子 agent 预算触达 | 守卫 `classify_outcome_treats_tool_fuse_as_budget_exceeded`（FUSE_MARKER → `budget_exceeded` + 原因 `max_tool_calls` + 部分结果进 summary） | 🟡 分类有守卫，**本机没额外实跑** | 真派一个烧满工具预算的子 agent（要模型） |
+| **S12** `rollback: none` 不执行回滚段 | 守卫 `rollback_none_does_not_run_the_rollback_segment` | 🟡 有守卫 | A/B 两个技能真跑一遍（要模型） |
+| **S05 / S06 / D-11** 拒绝与失败不同级 | 守卫 `tool_status_denied_is_warn_and_error_is_error` | 🟡 有守卫 | Windows 重跑一遍看审计级别（D-11 复验） |
+| **S18** 连接指纹认 env/headers | 守卫 `fingerprint_tests`（headers 变了必须换指纹） | 🟡 有守卫 | Windows：改 token 看是否重连 |
+| **S19** busy 拒答不当模型答复 | 守卫 `busy_result_is_marked_busy_…` | 🟡 有守卫 | Windows：真发一轮 |
+| **S22** 工具 panic 隔离 | 守卫 `tool_execution_is_panic_isolated` / `panic_in_tool_is_normalized_into_an_error_result` | 🟡 有守卫 | Windows：真触发一次 |
+| **S15 / S16 / S17 / S20 / S21 / S23 / S24 / S25 / S26~S29** | 要 GUI、系统通知、桌面自动化或模型回合 | ⬜ 本机定不了 | 原样跑（S15 有单独的验收方案 `docs/realmachine-overflow-test.md`） |
+
+> **一句话**：本机把 **S10 的后端判据**彻底跑了（那张卡原本是本批次第一个卡住的），
+> 其余卡片的**代码路径**都有守卫在钉着，剩下的全是「模型会不会照做」「Windows 平台差异」——
+> **那两截只能在装了真模型与 GUI 的机器上定**，本机代不了，也不该由文档代判。
+
 ---
 
 ## 二、场景总表
