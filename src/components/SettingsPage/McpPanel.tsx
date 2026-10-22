@@ -715,7 +715,7 @@ export function McpPanel() {
                     setForm({ ...form, argsText: e.target.value })
                   }
                   placeholder={
-                    "一行一个参数，如：\n-y\n@modelcontextprotocol/server-filesystem\n/Users/me/Documents"
+                    "一行一个参数，如：\n-y @modelcontextprotocol/server-filesystem\n/Users/me/Documents"
                   }
                 />
                 <label className="text-[var(--t4)]">环境变量</label>
@@ -729,7 +729,7 @@ export function McpPanel() {
                   placeholder={"一行一个 KEY=VALUE，可选"}
                 />
                 {form.maskText && (
-                  <p className="text-[0.65rem] text-[var(--t5)]">
+                  <p className="col-span-2 text-[0.65rem] text-[var(--t5)]">
                     已设置的机密以 {form.maskText} 显示（明文不回传）：原样保存即保留该值，改写即替换，删掉该行即删除该项
                   </p>
                 )}
@@ -756,7 +756,7 @@ export function McpPanel() {
                   }
                 />
                 {form.maskText && (
-                  <p className="text-[0.65rem] text-[var(--t5)]">
+                  <p className="col-span-2 text-[0.65rem] text-[var(--t5)]">
                     已设置的机密以 {form.maskText} 显示（明文不回传）：原样保存即保留该值，改写即替换，删掉该行即删除该项
                   </p>
                 )}

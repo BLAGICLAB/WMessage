@@ -364,6 +364,49 @@ describe("McpPanel", () => {
     expect(screen.getByText(/TCP 0\.0\.0\.0:8080/)).toBeInTheDocument();
   });
 
+  it("编辑表单：机密提示跨两列（不占标签列），参数占位示例不超框", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "mcp_status") return SAMPLE_STATUS;
+      if (cmd === "mcp_server_secrets_masked")
+        return { env: { TOKEN: "••••••" }, headers: {}, mask: "••••••" };
+      if (cmd === "bot_get_config")
+        return {
+          mcpServers: [
+            {
+              id: "srv-1",
+              name: "filesystem",
+              transport: "stdio",
+              command: "npx",
+              args: ["-y", "pkg"],
+              env: {},
+              headers: {},
+              timeoutSecs: 60,
+              enabled: true,
+            },
+          ],
+        };
+      return null;
+    });
+    const { container } = render(<McpPanel />);
+    await flush();
+    fireEvent.click(screen.getAllByLabelText("编辑")[0]);
+    await flush();
+
+    // 机密提示是网格子项，必须跨两列：否则它落进标签列（auto 宽度被这句长文撑开），
+    // 还会把「超时（秒）」的标签挤到同一行、输入框掉到下一行第一列（实机截图：附录 D-12）
+    const hint = screen.getByText(/已设置的机密以/).closest("p");
+    expect(hint).not.toBeNull();
+    expect(hint?.className).toContain("col-span-2");
+    const grid = container.querySelector(".grid-cols-\\[auto_1fr\\]");
+    expect(grid).not.toBeNull();
+    expect(hint?.parentElement).toBe(grid);
+
+    // 参数框的占位示例不能超过框高（rows=3）：第四行会被裁掉，用户读不全
+    const args = screen.getByPlaceholderText(/一行一个参数/) as HTMLTextAreaElement;
+    expect(args.rows).toBe(3);
+    expect(args.placeholder.split("\n").length).toBeLessThanOrEqual(3);
+  });
+
   it("无监听：不显示监听行", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) =>
       cmd === "mcp_status"
