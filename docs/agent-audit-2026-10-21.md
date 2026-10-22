@@ -695,7 +695,7 @@ Unsupported（没判）而不是 Ok（判了没事）——**安全闸在某个�
 **修法**：`McpServerStatus` 加 `listeningSupported` / `resourceSupported`
 布尔字段，前端在 false 时显示「本平台不支持采集」而非空值。
 
-#### P2-5 连接重建期间工具集瞬时消失，同前缀服务器会被错路由
+#### P2-5 连接重建期间工具集瞬时消失，同前缀服务器会被错路由（已修，见 §七）
 
 **位置**：`src-tauri/src/bot/mcp/manager.rs`（`ensure_connected`：先
 `slots.remove(&cfg.id)`，再 `close_old(old).await`，再 `spawn_service`）
@@ -1099,6 +1099,7 @@ bot/services.rs` 的**同一份**受管服务实现，并经过同一条 `execut
 | P2-7 | 已修 | 迁移判据收成一份（`mcp::config::has_inline_secrets` 判**原始 JSON 条目**）+ `config/io.rs` 改调它 + 判据单源扫描守卫 |
 | P2-3 | 已修 | `screenshot` 归变更类（`mutating: true` + 声称话术）+ 产出二进制档落盘凭证（`bot_desktop::screenshot_ok_result`）|
 | P2-4 | 已修 | `McpServerStatus` 回带平台采集能力（`listeningSupported` / `resourceSupported`）+ 面板在 false 时明说「本平台不支持采集」（`procs::snapshot_supported`）|
+| P2-5 | 已修 | 函数名走进程级登记簿（`mount::NameRegistry`）：名字 ↔ 服务器跨断连稳定；`find_mounted` 改查登记簿（离线服务器也能反查，走懒重连）|
 
 ### P0-1 的落地口径
 
@@ -1692,4 +1693,40 @@ false 时显示「本平台暂不支持进程资源采集 / 监听端口采集�
 `listeningSupported` / `resourceSupported`——改名会让提示静默消失，前端拿到
 undefined 一律当「支持」）；前端两条（false 时显示提示、true 时不显示）。两侧合
 起来把「后端改名」与「前端读错键」都钉住。
+
+### P2-5 的落地口径
+
+**根因不在「重连窗口」本身，而在「名字按在场顺序分配」**：挂载表每次 dispatch
+miss 都**实时重建**（`mount::build_mounted_tools`），消歧序号（`_2`）是按**当前
+在场顺序**给的。连接一断（重连窗口里槽被撤、或连接失败转 `Down`），这台服务器
+就从集合里消失 → 后面的服务器序号前移 → **模型按旧 schema 调的名字落到了另一台
+服务器头上**。触发面窄（同前缀 + 同工具名 + 断连在飞），后果是跨服务器静默错调。
+
+**改法：给函数名加一本进程级登记簿**（`mount::NameRegistry`）：
+- `(服务器 id, 工具名) → 函数名` **一经分配就不再变**；新分配时避开所有已用名
+  （含别的服务器已占用的、以及别的工具恰好叫 `read 2` 这种真实名）；
+- 名字一经分配即**占用**，不再释放给别的归属（服务器改名后旧名仍归它）——免得
+  「旧名被别人接管 → 模型的旧调用落到别人头上」；
+- **schema 构建与 dispatch 反查同用一本**（`mcp_tools_json_body` / `find_mounted`
+  都走登记簿），两边不会分家。
+
+**顺带修掉「工具集瞬时消失 → 未知工具」**：`find_mounted` 改为**先查登记簿**——
+服务器当前离线也照样能按名字定位到它，随后 dispatch 走 `ensure_connected` 懒
+重连（连上了就继续用这次调用），而不是把模型按旧 schema 调的名字报成「未知工具」。
+为此把反查返回值从 `McpMountedTool`（带 schema）拆成 `McpToolRef`（不含 schema）
+——路由本来就不需要 schema，而离线服务器也没有 schema 可给。
+
+**没做的那条**：审计给的另一条修法「重连期间保留旧槽（先建新槽、成功后再换旧）」
+本轮**没做**——同 id 的新旧两代进程会短暂并存（HTTP 传输可能撞端口、stdio 可能
+双跑一份），代价大于收益。名字稳定性由登记簿解决后，「工具集瞬时消失」也不再
+导致错路由：调用会落到**正确**的那台服务器上（离线则当场懒重连）。
+
+**测试**：
+- `names_survive_a_server_dropping_out`（核心回归）：同前缀两台，A 断连后 B 的
+  序号**不得**漂移，旧名仍归 A。**变异实测**：把构建逻辑退回旧实现（按在场顺序
+  重新编号），该用例如期变红（left `mcp_p_read` / right `mcp_p_read_2`）——确认
+  这条守卫承重、不是空断言；
+- `lookup_resolves_a_tool_of_an_offline_server`：服务器当前不在线时，仍能按名字
+  反查到归属（离线也能定位）；
+- 既有消歧用例（撞名、撞真实工具名、同输入同结果）全部保留，改走登记簿。
 

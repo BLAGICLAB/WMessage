@@ -668,9 +668,9 @@ impl McpManager {
 
     /// 已连接服务器的挂载视图（阶段 3 schema 注入 + 阶段 4 调用反查）：
     /// (服务器 id, 服务器名, tools)。名字来自连接槽缓存（ensure_connected 时带出）。
-    /// 按 id 排序输出（评审）：HashMap 迭代序非确定，而不确定性会让
-    /// 撞名消歧（mount::build_mounted_tools 按「构建序」分配 `_2`）跨重启/
-    /// 重连翻转——同名 function 静默换服务器路由。排序后构建序恒定。
+    /// 按 id 排序输出（评审）：HashMap 迭代序非确定，而不确定性会让撞名消歧的
+    /// **首次分配**顺序跨重启翻转。排序后首次分配恒定；之后的稳定由
+    /// `mount::NameRegistry` 兜住（名字一经分配就不再变，断连/重连不漂移）。
     pub fn mounted(&self) -> Vec<(String, String, Vec<Tool>)> {
         let mut out: Vec<(String, String, Vec<Tool>)> = self
             .slots()

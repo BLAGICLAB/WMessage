@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 157 个文件、约 11.3 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 157 个文件、约 11.4 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -137,7 +137,8 @@ src-tauri/src/
 │   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs：
 │   │                            RSS / CPU / 监听 socket，整棵进程树合计）
 │   ├── bot/mcp/mount.rs         挂载层：连接快照 → 工具 schema 段（撞名消歧/条数/schema 体积
-│   │                            上限）+ dispatch miss 反查 execute_mcp_tool（带超时/结果整形）
+│   │                            上限）+ dispatch miss 反查 execute_mcp_tool（带超时/结果整形）；
+│   │                            函数名走进程级登记簿（名字 ↔ 服务器跨断连稳定，不随重连漂移）
 │   ├── bot/mcp/secrets.rs       B4-6 机密存储：env/headers blob 走 keyring `mcp:<id>` 条目
 │   │                            （Linux 降级单文件 0600）+ 进程内缓存 + load_config 水合 +
 │   │                            迁移判据；配置永不明文（skip_serializing 收口）

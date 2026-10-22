@@ -6,11 +6,19 @@
 //! - `find_mounted(func_name)`：阶段 4 dispatch 反查（函数名 → 服务器 id + 原始工具名）
 //!
 //! 命名：`mcp_{服务器前缀}_{工具名}`（config::mcp_tool_name，64 字节硬上限内）。
-//! 不同服务器净化后前缀相同且工具同名会撞名——`build_mounted_tools` 按构建序
-//! 加 `_2`/`_3` 序号消歧，schema 与 dispatch 反查共用同一份构建结果，不漂移。
+//! 不同服务器净化后前缀相同且工具同名会撞名——由 `NameRegistry` 消歧。
+//!
+//! **名字必须跨断连稳定**（`NameRegistry` 的存在理由）：挂载表按连接槽**实时
+//! 重建**，而连接会断、会重连——若每次重建都按「当前在场顺序」重新编号，
+//! 同前缀服务器的 `_2` 序号会漂移：模型按旧 schema 调的名字会被路由到**另一台**
+//! 服务器（跨服务器静默错调）。登记簿把「名字 ↔ 服务器」的绑定钉住：已分配过
+//! 的名字不再变，schema 与 dispatch 反查同源。
 //!
 //! 会话边界：MCP 工具只进**主 agent** 清单（registry::tools_json_with_mcp 对
 //! 子 agent 会话短路返回白名单——设计 §5.1：子 agent 工具面静态、可枚举、可审计）。
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use rmcp::model::{CallToolResult, Tool};
 use serde_json::json;
@@ -32,6 +40,16 @@ pub struct McpMountedTool {
     pub tool_name: String,
     /// OpenAI function schema（parameters = 服务器给的 inputSchema 原样）
     pub schema: serde_json::Value,
+}
+
+/// 路由引用：函数名 → 服务器 + 原始工具名。**不含 schema**——路由不需要它
+/// （反查可能命中一台当前离线的服务器，那时没有 schema 可给）。
+#[derive(Debug, Clone)]
+pub struct McpToolRef {
+    pub func_name: String,
+    pub server_id: String,
+    pub server_name: String,
+    pub tool_name: String,
 }
 
 /// 工具结果文本总长上限（字节，fetch_url 同口径，防爆上下文）
@@ -102,22 +120,72 @@ fn clamp_fn_name(name: String) -> String {
     format!("{}_{suffix}", &name[..keep])
 }
 
+/// 函数名登记簿：`(服务器 id, 工具名) ↔ 函数名` 的双向绑定。
+///
+/// **已分配的名字不再变**。挂载表按连接槽实时重建，而连接会断、会重连：若每次
+/// 重建都按「当前在场顺序」重新编号，同前缀服务器的 `_2` 序号会漂移——模型按旧
+/// schema 调的名字会被路由到**另一台**服务器（跨服务器静默错调）。
+///
+/// 名字一经分配即**占用**（不再释放给别的归属）：服务器改名后旧名仍归它所有，
+/// 免得「旧名被别人接管 → 模型的旧调用落到别人头上」。
+#[derive(Default)]
+pub struct NameRegistry {
+    /// 归属 → 函数名
+    by_owner: HashMap<(String, String), String>,
+    /// 函数名 → 归属（新分配时查重：已用名不许再分给别人）
+    by_name: HashMap<String, (String, String)>,
+}
+
+impl NameRegistry {
+    /// 取该（服务器, 工具）的函数名：已分配过就沿用，没有才新分配。
+    ///
+    /// 新分配时避开所有**已用名**（含别的服务器已占用的、以及别的工具恰好叫
+    /// `read 2` 这种真实名）——保证函数名全局唯一，schema 里不出现重名。
+    fn assign(&mut self, server_id: &str, server_name: &str, tool_name: &str) -> String {
+        let key = (server_id.to_string(), tool_name.to_string());
+        if let Some(name) = self.by_owner.get(&key) {
+            return name.clone();
+        }
+        let base = mcp_tool_name(server_name, tool_name);
+        let mut n = 1usize;
+        let mut candidate = base.clone();
+        while self.by_name.contains_key(&candidate) {
+            n += 1;
+            candidate = clamp_fn_name(format!("{base}_{n}"));
+        }
+        self.by_owner.insert(key.clone(), candidate.clone());
+        self.by_name.insert(candidate.clone(), key);
+        candidate
+    }
+
+    /// 反查：函数名 → 归属（服务器 id, 工具名）。
+    fn owner(&self, func_name: &str) -> Option<(String, String)> {
+        self.by_name.get(func_name).cloned()
+    }
+}
+
+/// 进程级登记簿（名字跨断连 / 重连稳定）。
+static REGISTRY: std::sync::OnceLock<Mutex<NameRegistry>> = std::sync::OnceLock::new();
+
+fn registry() -> &'static Mutex<NameRegistry> {
+    REGISTRY.get_or_init(|| Mutex::new(NameRegistry::default()))
+}
+
 /// 构建挂载条目（纯函数内核，单测直打）。函数名全局唯一：
-/// 同 base 撞名按构建序加 `_2`/`_3`；后缀撞到**真实工具名**也继续递增
+/// 同 base 撞名加 `_2`/`_3`；后缀撞到**真实工具名**也继续递增
 ///（评审：A 服务器有 "read" 和 "read 2"、B 服务器（同前缀）有 "read" 时，
-/// 朴素计数会产出两个 mcp_p_read_2）——used 集合查重保证 schema 无重名。
-pub fn build_mounted_tools(servers: &[(String, String, Vec<Tool>)]) -> Vec<McpMountedTool> {
-    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+/// 朴素计数会产出两个 mcp_p_read_2）——登记簿查重保证 schema 无重名。
+///
+/// 名字来自登记簿：**同一台服务器的同一个工具，重连前后拿到同一个名字**
+/// （消歧序号不随在场服务器变化而漂移）。
+pub fn build_mounted_tools(
+    servers: &[(String, String, Vec<Tool>)],
+    registry: &mut NameRegistry,
+) -> Vec<McpMountedTool> {
     let mut out = Vec::new();
     for (server_id, server_name, tools) in servers {
         for t in tools {
-            let base = mcp_tool_name(server_name, t.name.as_ref());
-            let mut n = 1usize;
-            let mut func = base.clone();
-            while !used.insert(func.clone()) {
-                n += 1;
-                func = clamp_fn_name(format!("{base}_{n}"));
-            }
+            let func = registry.assign(server_id, server_name, t.name.as_ref());
             out.push(McpMountedTool {
                 schema: tool_schema(server_name, &func, t),
                 func_name: func,
@@ -132,15 +200,36 @@ pub fn build_mounted_tools(servers: &[(String, String, Vec<Tool>)]) -> Vec<McpMo
 
 /// 当前可挂载条目（读全局连接槽；无连接 → 空表）
 pub fn mcp_mounted_tools() -> Vec<McpMountedTool> {
-    build_mounted_tools(&shared().mounted())
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    build_mounted_tools(&shared().mounted(), &mut reg)
 }
 
 /// dispatch 反查（阶段 4）：函数名 → 挂载条目（拿 server_id 查配置、tool_name 调远端）。
-/// 现场重建挂载表做线性查——每轮模型循环最多 miss 一次才走到这，开销可忽略。
-pub fn find_mounted(func_name: &str) -> Option<McpMountedTool> {
-    mcp_mounted_tools()
+///
+/// **先查登记簿**（名字 ↔ 服务器的绑定跨断连稳定）：服务器当前离线也照样能定位
+/// 到它——dispatch 随后走 `ensure_connected` 懒重连，而不是把模型按旧 schema
+/// 调用的名字报成「未知工具」。服务器显示名从实时挂载表取（取不到 = 服务器已删，
+/// 退回 id 兜底）。
+pub fn find_mounted(func_name: &str) -> Option<McpToolRef> {
+    // 登记簿的锁在取到归属后立刻放掉——下面还要调 mcp_mounted_tools()（它自己
+    // 会拿这把锁），std Mutex 不可重入，嵌套持有即死锁。
+    let (server_id, tool_name) = {
+        let reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+        reg.owner(func_name)?
+    };
+    // 服务器显示名：登记簿只存归属，显示名从实时挂载表取；取不到（服务器已删）
+    // 时退回 id（错误文案兜底用，区别于 id 的语义在正常路径上成立）
+    let server_name = mcp_mounted_tools()
         .into_iter()
-        .find(|t| t.func_name == func_name)
+        .find(|t| t.server_id == server_id)
+        .map(|t| t.server_name)
+        .unwrap_or_else(|| server_id.clone());
+    Some(McpToolRef {
+        func_name: func_name.to_string(),
+        server_id,
+        server_name,
+        tool_name,
+    })
 }
 
 // 阶段 4：dispatch 路由桥
@@ -186,7 +275,7 @@ pub(crate) async fn execute_mcp_tool(
 /// 调用内核（无 AppHandle，单测直打）：带超时调远端 + 结果整形。
 pub(crate) async fn execute_mcp_direct(
     cfg: &McpServerConfig,
-    mounted: &McpMountedTool,
+    mounted: &McpToolRef,
     args: &str,
 ) -> crate::bot::registry::ToolResult {
     // 参数解析（ 评审：不再把 Null 静默透传远端）——非法 JSON 本地明确回
@@ -277,9 +366,11 @@ pub fn mcp_tools_json_body() -> String {
     build_tools_json_body(&shared().mounted())
 }
 
-/// 同上（纯函数内核，单测直打）
+/// 同上（纯函数内核，单测直打）。名字走登记簿——与 dispatch 反查同一本，
+/// 否则「模型看到的名字」与「路由用的名字」会分家。
 pub fn build_tools_json_body(servers: &[(String, String, Vec<Tool>)]) -> String {
-    let entries = build_mounted_tools(servers);
+    let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let entries = build_mounted_tools(servers, &mut reg);
     let mut s = String::new();
     for e in &entries {
         s.push_str(",\n  ");
@@ -305,9 +396,14 @@ mod tests {
         (id.into(), name.into(), tools)
     }
 
+    /// 每次构建用一本新登记簿（与生产的进程级登记簿同形，但用例之间互不干扰）
+    fn build(servers: &[(String, String, Vec<Tool>)]) -> Vec<McpMountedTool> {
+        build_mounted_tools(servers, &mut NameRegistry::default())
+    }
+
     #[test]
     fn mounted_entries_carry_names_schema_and_lookup_key() {
-        let out = build_mounted_tools(&[server("s1", "fs", vec![tool("read", "读文件")])]);
+        let out = build(&[server("s1", "fs", vec![tool("read", "读文件")])]);
         assert_eq!(out.len(), 1);
         let e = &out[0];
         assert_eq!(e.func_name, "mcp_fs_read");
@@ -322,7 +418,7 @@ mod tests {
     #[test]
     fn same_prefix_tools_are_disambiguated_in_build_order() {
         // 「my tool」和「my.tool」前缀同为 my_tool，read 工具撞名 → 第二个加 _2
-        let out = build_mounted_tools(&[
+        let out = build(&[
             server("a", "my tool", vec![tool("read", "A 的读")]),
             server("b", "my.tool", vec![tool("read", "B 的读")]),
         ]);
@@ -337,7 +433,7 @@ mod tests {
         // 评审：A 有 "read" + "read 2"（净化后 read_2），B（同前缀）有 "read"。
         // 朴素计数会给 B 产出 mcp_p_read_2 —— 与 A 的真实 read_2 重名。
         // used 集合查重后 B 应顺延到 read_3，schema 无重名。
-        let out = build_mounted_tools(&[
+        let out = build(&[
             server("a", "p", vec![tool("read", "A"), tool("read 2", "A2")]),
             server("b", "p", vec![tool("read", "B")]),
         ]);
@@ -355,22 +451,58 @@ mod tests {
             server("a", "p", vec![tool("read", "A")]),
             server("b", "p", vec![tool("read", "B")]),
         ];
-        let run1: Vec<String> = build_mounted_tools(&input)
-            .into_iter()
-            .map(|e| e.func_name)
-            .collect();
-        let run2: Vec<String> = build_mounted_tools(&input)
-            .into_iter()
-            .map(|e| e.func_name)
-            .collect();
+        let run1: Vec<String> = build(&input).into_iter().map(|e| e.func_name).collect();
+        let run2: Vec<String> = build(&input).into_iter().map(|e| e.func_name).collect();
         assert_eq!(run1, run2);
+    }
+
+    /// 核心回归：同前缀两台服务器，A 断连期间 **B 的序号不得漂移**。
+    ///
+    /// 旧实现按「当前在场顺序」重新编号：A 一离开，B 的 `mcp_p_read_2` 就变成
+    /// `mcp_p_read`——模型按旧 schema 调 A 的 `mcp_p_read` 会被路由到 **B**
+    /// （跨服务器静默错调）。
+    #[test]
+    fn names_survive_a_server_dropping_out() {
+        let mut reg = NameRegistry::default();
+        let both = build_mounted_tools(
+            &[
+                server("a", "p", vec![tool("read", "A")]),
+                server("b", "p", vec![tool("read", "B")]),
+            ],
+            &mut reg,
+        );
+        assert_eq!(both[0].func_name, "mcp_p_read");
+        assert_eq!(both[1].func_name, "mcp_p_read_2");
+        // A 断连（重建集合里只剩 B）→ B 的名字不能变
+        let only_b = build_mounted_tools(&[server("b", "p", vec![tool("read", "B")])], &mut reg);
+        assert_eq!(
+            only_b[0].func_name, "mcp_p_read_2",
+            "A 断连不能让 B 的消歧序号漂移（否则旧名会落到别人头上）"
+        );
+        // 旧名仍归 A：模型按旧 schema 调 A 的工具不会落到 B
+        assert_eq!(reg.owner("mcp_p_read").unwrap().0, "a");
+        assert_eq!(reg.owner("mcp_p_read_2").unwrap().0, "b");
+    }
+
+    /// 服务器当前离线时，dispatch 仍要能按名字定位到它——随后走
+    /// `ensure_connected` 懒重连，而不是把模型按旧 schema 调的名字报成「未知工具」。
+    #[test]
+    fn lookup_resolves_a_tool_of_an_offline_server() {
+        {
+            let mut reg = registry().lock().unwrap_or_else(|e| e.into_inner());
+            reg.assign("offline-probe", "offline probe", "read");
+        }
+        // 该服务器不在实时挂载表里（没连上）→ 仍能反查到归属
+        let r = find_mounted("mcp_offline_probe_read").expect("登记簿里分配过的名字应能反查");
+        assert_eq!(r.server_id, "offline-probe");
+        assert_eq!(r.tool_name, "read");
     }
 
     #[test]
     fn missing_description_falls_back_and_long_is_truncated() {
         let mut long = tool("t", "");
         long.description = Some("长".repeat(2000).into());
-        let out = build_mounted_tools(&[server("s", "srv", vec![tool("nodesc", ""), long])]);
+        let out = build(&[server("s", "srv", vec![tool("nodesc", ""), long])]);
         assert_eq!(
             out[0].schema["function"]["description"],
             "外部 MCP 工具（服务器：srv）"
@@ -408,7 +540,7 @@ mod tests {
             "inputSchema": { "type": "object", "properties": props }
         }))
         .unwrap();
-        let out = build_mounted_tools(&[server("s", "srv", vec![big])]);
+        let out = build(&[server("s", "srv", vec![big])]);
         let schema = &out[0].schema;
         assert!(
             serde_json::to_string(schema).unwrap().len() <= 8 * 1024,
@@ -451,12 +583,11 @@ mod tests {
     #[tokio::test]
     async fn non_object_args_are_rejected_before_remote_call() {
         let cfg = McpServerConfig::default();
-        let mounted = McpMountedTool {
+        let mounted = McpToolRef {
             func_name: "mcp_fs_read".into(),
             server_id: "s1".into(),
             server_name: "fs".into(),
             tool_name: "read".into(),
-            schema: json!({}),
         };
         for args in ["[1,2]", "\"x\"", "42"] {
             let out = execute_mcp_direct(&cfg, &mounted, args).await;
