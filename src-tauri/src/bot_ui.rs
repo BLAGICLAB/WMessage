@@ -37,6 +37,9 @@ const MAX_WAIT_MS: i64 = 30_000;
 const POLL_INTERVAL_MS: u64 = 300;
 
 /// 危险动作关键词：命中即弹窗确认（中文界面为主，附英文常见词）
+///
+/// 匹配按小写做（英文界面按钮首字母大写），其中两字母以内的短词按整词匹配，
+/// 见 `detail_is_dangerous`。
 const DANGEROUS_KEYWORDS: &[&str] = &[
     "发送",
     "发表",
@@ -65,6 +68,9 @@ const DANGEROUS_KEYWORDS: &[&str] = &[
     "buy",
     "order",
 ];
+
+/// 只按整词匹配的短词（子串匹配会误伤 Outlook / token 这类窗口名）
+const DANGEROUS_WHOLE_WORDS: &[&str] = &["ok"];
 
 /// 敏感控件关键词：命中即拒绝输入（密码 / 验证码 / 支付密码）
 const SENSITIVE_KEYWORDS: &[&str] = &[
@@ -112,7 +118,7 @@ async fn gate_dangerous(
     interactive: bool,
     session_id: Option<&str>,
 ) -> Option<ToolResult> {
-    if !DANGEROUS_KEYWORDS.iter().any(|k| detail.contains(k)) {
+    if !detail_is_dangerous(detail) {
         return None;
     }
     let approved =
@@ -121,6 +127,32 @@ async fn gate_dangerous(
         return None;
     }
     Some(ToolResult::denied("用户拒绝了这次操作，未执行。"))
+}
+
+/// 危险动作闸的判定：detail 是否命中危险关键词
+///
+/// 英文 UI 的标准写法是首字母大写（"Send" / "Delete" / "OK"），关键词全是小写
+/// 字面量时这些按钮一个都不拦——闸等于没设。所以匹配一律按小写做。
+///
+/// 但两字母以内的短词（"ok"）不能按子串找："Outlook" / "token" 这类窗口名里
+/// 都含 "ok"，每次点击都要人确认，确认疲劳之后用户会闭眼点同意——闸又白设。
+/// 短词因此只按整词匹配（词的边界按 ASCII 字母数字与下划线判定，中文不算词
+/// 字符，「发送ok」这种照样能命中）。
+fn detail_is_dangerous(detail: &str) -> bool {
+    let lower = detail.to_lowercase();
+    DANGEROUS_KEYWORDS.iter().any(|k| {
+        if DANGEROUS_WHOLE_WORDS.contains(k) {
+            contains_word(&lower, k)
+        } else {
+            lower.contains(k)
+        }
+    })
+}
+
+/// 整词匹配：词元恰好等于该词（不做正则，避开 Unicode 词边界的坑）
+fn contains_word(hay: &str, needle: &str) -> bool {
+    hay.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|w| w == needle)
 }
 
 /// 敏感控件闸：密码 / 验证码一类控件不接受输入
@@ -610,6 +642,47 @@ mod tests {
         assert!(DANGEROUS_KEYWORDS.iter().any(|k| "提交订单".contains(k)));
         assert!(!DANGEROUS_KEYWORDS.iter().any(|k| "搜索".contains(k)));
         assert!(!DANGEROUS_KEYWORDS.iter().any(|k| "查看图片".contains(k)));
+    }
+
+    /// 英文界面的按钮标题同样要命中危险闸
+    ///
+    /// 英文 UI 的标准写法是首字母大写（"Send" / "OK" / "Delete"），
+    /// 关键词全是小写字面量时这些按钮一个都不拦——闸等于没设。
+    #[test]
+    fn english_button_titles_must_hit_the_dangerous_gate() {
+        assert!(
+            detail_is_dangerous("在「Mail」（Mail）里点击「Send」"),
+            "英文按钮标题 Send 必须触发确认闸"
+        );
+        assert!(
+            detail_is_dangerous("在「GitHub」里点击「Delete」"),
+            "英文按钮标题 Delete 必须触发确认闸"
+        );
+        assert!(
+            detail_is_dangerous("在「设置」里点击「确定」"),
+            "中文按钮标题仍要触发确认闸"
+        );
+        assert!(
+            !detail_is_dangerous("在「搜索框」里输入：hello"),
+            "普通输入不该触发确认闸"
+        );
+    }
+
+    /// 短词 "ok" 只按整词匹配：Outlook 这类窗口名不该让每次点击都要人确认
+    #[test]
+    fn short_keyword_ok_must_not_trip_on_window_names() {
+        assert!(
+            !detail_is_dangerous("在「Outlook」（Microsoft Outlook）里点击「下一封」"),
+            "Outlook 不该被当成 OK 按钮"
+        );
+        assert!(
+            !detail_is_dangerous("在「Token 窗口」里点击「复制」"),
+            "token 不该被当成 OK 按钮"
+        );
+        assert!(
+            detail_is_dangerous("在「设置」里点击「OK」"),
+            "OK 按钮本身仍要触发确认闸"
+        );
     }
 
     /// 敏感控件闸：密码 / 验证码类角色要拦
