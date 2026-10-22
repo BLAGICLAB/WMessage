@@ -331,7 +331,10 @@ fn platform_capture(out: &std::path::Path) -> Result<(), String> {
          $bmp.Save('{}',[System.Drawing.Imaging.ImageFormat]::Png)",
         out_s
     );
-    let status = std::process::Command::new("powershell")
+    // 静默拉起：GUI 宿主拉控制台程序默认会给它**新建一个控制台窗口**——
+    // 用户桌面就会闪一个黑框。截屏在 UI 自动化里是「每个动作前后各一张」，
+    // 不抑制窗口就是每次操作闪两次，还抢焦点。
+    let status = crate::bot::procs::silent_cmd("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .status()
         .map_err(|e| format!("启动 PowerShell 失败：{e}"))?;
@@ -425,6 +428,32 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 本文件生产代码切片（测试模块之前）——源码文本守卫用。
+    fn desktop_src_before_tests() -> &'static str {
+        include_str!("bot_desktop.rs")
+            .split_once("#[cfg(test)]")
+            .expect("bot_desktop.rs 应有测试模块")
+            .0
+    }
+
+    /// Windows 截屏不许直接 `Command::new` 拉 powershell。
+    ///
+    /// GUI 宿主拉起控制台程序，Windows 默认给它**新建一个控制台窗口**——用户桌面
+    /// 闪一个黑框，还抢焦点。截屏在 UI 自动化里是「每个动作前后各一张」，
+    /// 不抑制窗口就是**一次操作闪两次**（真实漏过一次，见附录 D-8）。
+    #[test]
+    fn windows_capture_must_not_spawn_a_visible_console() {
+        let src = desktop_src_before_tests();
+        assert!(
+            !src.contains(r#"Command::new("powershell")"#),
+            "截屏不许直接 Command::new(\"powershell\")：会弹控制台窗口（改走 bot::procs::silent_cmd）"
+        );
+        assert!(
+            src.contains("silent_cmd("),
+            "Windows 截屏应通过 bot::procs::silent_cmd 拉起（带 CREATE_NO_WINDOW）"
+        );
+    }
 
     #[test]
     fn clip_text_rejects_blank_and_over_limit() {

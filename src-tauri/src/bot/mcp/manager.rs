@@ -381,8 +381,7 @@ impl McpManager {
                 // Windows 桌面应用不弹控制台窗（与 bot_py Python 子进程同惯例）
                 #[cfg(windows)]
                 {
-                    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-                    cmd.creation_flags(CREATE_NO_WINDOW);
+                    cmd.creation_flags(crate::bot::procs::CREATE_NO_WINDOW);
                 }
                 let mut child = cmd
                     .spawn()

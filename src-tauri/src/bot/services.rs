@@ -1113,8 +1113,7 @@ pub(crate) fn do_start<R: tauri::Runtime>(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.creation_flags(crate::bot::procs::CREATE_NO_WINDOW);
     }
 
     let started = Instant::now();

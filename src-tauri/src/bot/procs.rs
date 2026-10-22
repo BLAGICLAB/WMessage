@@ -273,12 +273,19 @@ pub(crate) fn clock_ticks() -> f64 {
 /// 而 pid 复用要在同一秒内完成回收+重分配，实际不可能）。
 #[cfg(not(target_os = "linux"))]
 fn snapshot_ps() -> Vec<ProcSnapshot> {
-    let Ok(out) = Command::new("ps")
-        .args([
-            "-o", "pid=", "-o", "ppid=", "-o", "lstart=", "-o", "rss=", "-o", "time=", "-ax",
-        ])
-        .output()
-    else {
+    let mut cmd = Command::new("ps");
+    cmd.args([
+        "-o", "pid=", "-o", "ppid=", "-o", "lstart=", "-o", "rss=", "-o", "time=", "-ax",
+    ]);
+    // Windows 上 `ps` 是控制台程序：GUI 宿主拉起它会闪一个黑框。
+    // Windows 本来没有 `ps`（这条命令多半直接起不来），但装了 Git for Windows
+    // 的机器上 `ps.exe` 在 PATH 里——那时它就真会每轮巡检闪一次。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let Ok(out) = cmd.output() else {
         return Vec::new();
     };
     parse_ps_rows(&String::from_utf8_lossy(&out.stdout))
@@ -1141,7 +1148,7 @@ fn taskkill_program() -> Option<std::path::PathBuf> {
 
 /// 静默执行一条外部命令（不弹控制台窗口、不接管道）。
 #[cfg(windows)]
-fn silent_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(crate) fn silent_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
     use std::os::windows::process::CommandExt;
     let mut cmd = Command::new(program);
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -1149,8 +1156,13 @@ fn silent_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
 }
 
 /// Windows 上创建控制台窗口的标志位（`CREATE_NO_WINDOW`）。
+///
+/// GUI 程序拉起控制台程序时，Windows 默认给它**新建一个控制台窗口**——用户桌面
+/// 上就会闪一个黑框。`CREATE_NO_WINDOW` 抑制它。**所有**拉起控制台程序的地方
+/// 都用这一个常量（不要就地再写一遍 0x0800_0000，写散了迟早漏一处——漏过一次的
+/// 见 `bot_desktop.rs` 的 Windows 截屏路径）。
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(test)]
 mod tests;

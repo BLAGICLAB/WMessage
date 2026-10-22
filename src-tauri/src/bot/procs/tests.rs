@@ -481,3 +481,77 @@ fn lsof_empty_output_means_no_match_not_failure() {
     );
     assert!(out.unwrap().is_empty(), "没有匹配项时 stdout 应为空");
 }
+
+/// 递归收集目录下的 .rs 文件。
+fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_rs(&p, out);
+        } else if p.extension().and_then(|s| s.to_str()) == Some("rs") {
+            out.push(p);
+        }
+    }
+}
+
+/// Windows 上 GUI 宿主拉起「控制台程序」会闪一个控制台窗口——用户桌面黑框，还抢焦点。
+///
+/// 真实漏过一次：Windows 截屏（`bot_desktop.rs`）拉 powershell 抓屏时没带
+/// `CREATE_NO_WINDOW`，而 UI 自动化是「每个动作前后各一张」→ **一次操作闪两个黑框**。
+///
+/// 本用例防的是**类**而不是那一个点：凡是**生产代码**里构造控制台程序的源码文件，
+/// 都必须有静默处理（`bot::procs::silent_cmd` 或 `creation_flags`）。
+/// 口径按**文件**而不是按函数——标志位常在构造点之外才补上（`services.rs` 的
+/// `build_command` 只造命令、标志在起进程前才加），按函数切会误判。
+#[test]
+fn files_spawning_console_programs_have_a_silent_path() {
+    const CONSOLE_PROGRAMS: &[&str] = &[
+        "powershell",
+        "cmd",
+        "taskkill",
+        "ps",
+        "lsof",
+        "npx",
+        "bunx",
+        "uvx",
+        "pipx",
+        "node",
+        "deno",
+        "python",
+        "python3",
+        "docker",
+        "podman",
+    ];
+    let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rs(&src_root, &mut files);
+    assert!(!files.is_empty(), "应扫到 src-tauri/src 下的源码文件");
+
+    for f in files {
+        // 测试专用文件（`mod tests;` 的内容）自己拉进程不算生产路径
+        if f.file_stem().and_then(|s| s.to_str()) == Some("tests") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&f).unwrap_or_default();
+        // 只看测试模块之前的生产代码
+        let prod = match text.find("#[cfg(test)]") {
+            Some(i) => &text[..i],
+            None => &text[..],
+        };
+        let spawns_console = CONSOLE_PROGRAMS
+            .iter()
+            .any(|p| prod.contains(&format!("Command::new(\"{p}\")")));
+        if !spawns_console {
+            continue;
+        }
+        assert!(
+            prod.contains("silent_cmd") || prod.contains("creation_flags"),
+            "{} 在生产代码里拉起控制台程序却没有静默标志：Windows 上会闪控制台窗口 \
+             （用 bot::procs::silent_cmd 或 bot::procs::CREATE_NO_WINDOW）",
+            f.display()
+        );
+    }
+}

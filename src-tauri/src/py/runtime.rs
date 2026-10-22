@@ -602,7 +602,7 @@ pub fn run_python_ungated(
 pub fn silent_cmd(program: &str) -> Command {
     use std::os::windows::process::CommandExt;
     let mut cmd = Command::new(program);
-    cmd.creation_flags(0x08000000)
+    cmd.creation_flags(crate::bot::procs::CREATE_NO_WINDOW)
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1");
     cmd
