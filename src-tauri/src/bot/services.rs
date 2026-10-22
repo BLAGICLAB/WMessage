@@ -230,7 +230,10 @@ static LAST_SAMPLE_OK: AtomicBool = AtomicBool::new(true);
 /// 记一次采样结果；只在「成功 → 失败」时写审计（每 30s 一轮，失败时逐轮记会刷屏）。
 fn note_sample_status<R: tauri::Runtime>(app: &AppHandle<R>, complete: bool) {
     let prev = LAST_SAMPLE_OK.swap(complete, Ordering::Relaxed);
-    if prev || complete {
+    // 写审计的条件是「上一轮成功、本轮失败」——`prev` 是**换之前**的值。
+    // （写成 `prev || complete` 时记的是「上一轮失败、本轮还失败」：转折那一条
+    // 反而没记，之后每 30s 刷一条——与本函数自述相反。）
+    if !prev || complete {
         return;
     }
     crate::audit::write_event(

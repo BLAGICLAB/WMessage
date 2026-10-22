@@ -1295,3 +1295,68 @@ fn timeout_message_reports_the_real_stop_result() {
     assert!(!msg.contains("已停止"), "停不掉就不能说「已停止」：{msg}");
     assert!(msg.contains("进程仍在运行"), "要说清进程还在：{msg}");
 }
+
+/// 采集失败这件事本身要**留痕**且**如实报「没判」**：审计记一条 WARN，
+/// 快照 JSON 的 `listeningSampleOk` 翻 false；且**只在「成功 → 失败」转折记一条**
+/// ——巡检每 30s 一轮，失败时逐轮记会刷屏。
+///
+/// S07 卡的判据分三截守：面板那半由前端用例守（`ServicesPanel.test.tsx`
+/// 的「采集失败：明说端口闸本轮未判」），「动态保留集不清空」由
+/// `reserved_dynamic_survives_a_failed_sample` 守，这条守中间那截——
+/// 失败有没有落到日志与状态里。
+#[test]
+fn failed_listening_sample_is_audited_once_and_reported_as_not_judged() {
+    let app = tauri::test::mock_app();
+    app.manage(crate::app_state::AppState::default());
+    let handle = app.handle().clone();
+    // 「本轮采成功」是进程级全局状态：退出前还回去，别把同进程后面的用例带进失败态
+    struct SampleOkGuard(tauri::AppHandle<tauri::test::MockRuntime>);
+    impl Drop for SampleOkGuard {
+        fn drop(&mut self) {
+            // 翻回成功不写审计（只有「成功 → 失败」的转折才记）
+            note_sample_status(&self.0, true);
+        }
+    }
+    let _guard = SampleOkGuard(handle.clone());
+
+    let log_path = crate::db::data_dir(&handle).join("bot.log");
+    note_sample_status(&handle, true); // 前置：上一轮采成功
+
+    // 失败一轮 → 留痕。日志是共享的追加文件，只看新增的那段
+    let before = file_len(&log_path);
+    note_sample_status(&handle, false);
+    let appended = read_from(&log_path, before);
+    assert!(
+        appended.contains("WARN | service.listening_sample_failed"),
+        "采集失败必须留一条 WARN 审计，实际新增：{appended:?}"
+    );
+
+    // 状态如实报「没判」，不能报成「没事」
+    let json = services_snapshot_json(&handle, false);
+    assert_eq!(
+        json.get("listeningSampleOk"),
+        Some(&serde_json::json!(false)),
+        "采集失败要报「本轮没判」，不能报成「没事」：{json}"
+    );
+
+    // 再失败一轮 → 不再记（不刷屏）
+    let mid = file_len(&log_path);
+    note_sample_status(&handle, false);
+    let appended2 = read_from(&log_path, mid);
+    assert!(
+        !appended2.contains("service.listening_sample_failed"),
+        "连续失败不该逐轮刷屏，实际新增：{appended2:?}"
+    );
+}
+
+fn file_len(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
+}
+
+/// 读日志文件从 `from` 字节起新增的内容（探针的水位线口径：共享日志只能看增量）
+fn read_from(path: &std::path::Path, from: u64) -> String {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    text.get(from as usize..).unwrap_or("").to_string()
+}

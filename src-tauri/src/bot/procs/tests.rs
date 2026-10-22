@@ -555,3 +555,37 @@ fn files_spawning_console_programs_have_a_silent_path() {
         );
     }
 }
+
+/// 采集失败与「采空」必须分开：lsof **起不来**（exec 不了）时，采样要报
+/// `complete=false`——判定层据此判「没判」。把它折叠成「采空但采成功」
+/// 就是旧行为（采集器一坏，端口闸判成了没事）。
+///
+/// 怎么造「lsof 起不来」：本机 lsof 可用时本用例**跳过**（跳过条件判的是
+/// **环境**而不是采样结果——用结果判该不该跑会把失败藏进 skip 里）；
+/// 要真跑它，用 `bash scripts/sandbox-lsof-test.sh`：沙箱只对这个进程掐掉
+/// lsof 的 exec，不改系统文件、不用 sudo。
+#[cfg(target_os = "macos")]
+#[test]
+fn listening_sample_reports_failure_when_lsof_cannot_run() {
+    use std::process::Command;
+    let runnable = ["lsof", "/usr/sbin/lsof"]
+        .iter()
+        .any(|bin| Command::new(bin).arg("-v").output().is_ok());
+    if runnable {
+        eprintln!(
+            "[skip] 本机 lsof 可用，造不出「采集失败」；跑 bash scripts/sandbox-lsof-test.sh"
+        );
+        return;
+    }
+    // lsof exec 不了 → 采样必须报失败
+    let sample = listening_sockets(&[std::process::id()]);
+    assert!(
+        !sample.complete,
+        "lsof exec 不了 → 采样必须报 complete=false（不能折叠成「采空但采成功」）：{sample:?}"
+    );
+    assert!(
+        sample.by_pid.is_empty(),
+        "采不到时不该编出 socket 归属：{:?}",
+        sample.by_pid
+    );
+}
