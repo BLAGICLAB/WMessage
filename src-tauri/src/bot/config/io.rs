@@ -1,7 +1,9 @@
 //! bot-config.json IO + 旧版本 key 迁移。
 //!
 //! - `config_path` / `load_config` / `add_allowed_dir` / `update_config_file`
-//! - `write_bot_config_file` 强制剥离 key 字段（双保险）+ base_url 安全告警
+//! - `write_bot_config_file` 落盘前先安置盘上残留的旧明文密钥（keyring 安置
+//!   不了就中止写盘——那三个字段永不序列化，写盘必抹，抹了就是永久丢密钥）
+//!   + base_url 安全告警
 //! - `read_bypass_llm_switch` 轻量开关读取（bot_chat 入口用）
 //! - `read_memory_control` 记忆可控开关轻量读取memory 门禁用）
 //! - `base_url_is_safe` SSRF / 明文传输警告
@@ -443,6 +445,22 @@ pub(crate) fn add_allowed_dir(app: &AppHandle, dir: &str) -> Result<(), String> 
 /// 每槽至多一次 read + （空槽时）一次 write（keyring 读路径自带 prepare 副作用，
 /// has+read 双探测会把副作用翻倍）。返回成功剥除的槽位名（供审计留痕）。
 fn strip_verified_keys(cfg: &mut BotConfig) -> Vec<&'static str> {
+    strip_verified_keys_with(
+        cfg,
+        &|slot| keyring::read_key_of_slot(slot).ok(),
+        &|slot, k| keyring::write_key_of_slot(slot, k).is_ok(),
+    )
+}
+
+/// 明文槽位的处置（凭据存储访问可注入，便于单测「故障窗口」这条分支）
+///
+/// 注入不是为了绕开真实凭据存储，而是为了能造出「keyring 读不到 / 写不进」
+/// 这个最要紧的状态——它恰恰是生产里密钥丢失的现场。
+fn strip_verified_keys_with(
+    cfg: &mut BotConfig,
+    read_slot: &dyn Fn(KeySlot) -> Option<String>,
+    write_slot: &dyn Fn(KeySlot, &str) -> bool,
+) -> Vec<&'static str> {
     let mut stripped = Vec::new();
     for (slot, field) in [
         (KeySlot::Llm, &mut cfg.api_key),
@@ -452,28 +470,37 @@ fn strip_verified_keys(cfg: &mut BotConfig) -> Vec<&'static str> {
         let Some(k) = field.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
             continue;
         };
-        // 单 read 探测：非空 = keyring 已有值（keyring 值优先，文件副本是过期残留）
-        let existing = keyring::read_key_of_slot(slot)
-            .ok()
-            .filter(|v| !v.trim().is_empty());
-        let wrote_now = existing.is_none();
-        let backed = match existing {
-            Some(v) => Some(v),
-            None => {
-                // 空槽：写入明文再读回——读回等值才担保落位（写入失败/读回缺失/读回
-                // 无关值都不剥，密钥零丢失优先）
-                if keyring::write_key_of_slot(slot, k).is_err() {
-                    continue;
-                }
-                keyring::read_key_of_slot(slot).ok()
-            }
-        };
-        if plaintext_strippable(backed.as_deref(), wrote_now, k) {
+        if strip_slot_if_backed(slot, k, read_slot, write_slot) {
             *field = None;
             stripped.push(slot.keyring_user());
         }
     }
     stripped
+}
+
+/// 单槽处置：keyring 读得到（或空槽时写入后读回等值）才允许剥除明文
+///
+/// 读不到 / 写不进 / 读回不等值 → 不剥（明文留在盘上，密钥零丢失优先）。
+fn strip_slot_if_backed(
+    slot: KeySlot,
+    plaintext: &str,
+    read_slot: &dyn Fn(KeySlot) -> Option<String>,
+    write_slot: &dyn Fn(KeySlot, &str) -> bool,
+) -> bool {
+    // 单 read 探测：非空 = keyring 已有值（keyring 值优先，文件副本是过期残留）
+    let existing = read_slot(slot).filter(|v| !v.trim().is_empty());
+    let (backed, wrote_now) = match existing {
+        Some(v) => (Some(v), false),
+        None => {
+            // 空槽：写入明文再读回——读回等值才担保落位（写入失败/读回缺失/读回
+            // 无关值都不剥，密钥零丢失优先）
+            if !write_slot(slot, plaintext.trim()) {
+                return false;
+            }
+            (read_slot(slot), true)
+        }
+    };
+    plaintext_strippable(backed.as_deref(), wrote_now, plaintext)
 }
 
 /// 纯决策内核（供单测）：keyring 侧实际读到的值能否担保文件明文可安全剥除。
@@ -489,18 +516,32 @@ fn plaintext_strippable(backed: Option<&str>, wrote_now: bool, plaintext: &str) 
 
 // write_bot_config_file / update_config_file
 
-/// bot_set_config 落盘内核（抽出便于单测）：强制剥离三个 key 字段
-/// （api_key/tavily_key/brave_key 一律 None）后写 bot-config.json。
+/// bot_set_config 落盘内核（抽出便于单测）：写盘前先确保盘上残留的旧明文密钥
+/// 已落进系统凭据存储（见 `ensure_legacy_plaintext_backed`）；
 /// base_url 非 https 且非回环 → 警告（api_key 明文传输风险）；
 /// 只警告不拒写——本地推理服务是合法场景，且不能破坏存量用户配置。
 /// 无锁内核：调用方必须已持 CONFIG_WRITE_LOCK（update_config_file 的 RMW 段内
 /// 复用——std Mutex 不可重入，经加锁外壳会自锁）。
 pub(crate) fn write_bot_config_file_locked(dir: &Path, config: BotConfig) -> CommandResult<()> {
+    write_bot_config_file_locked_with(
+        dir,
+        config,
+        &|slot| keyring::read_key_of_slot(slot).ok(),
+        &|slot, k| keyring::write_key_of_slot(slot, k).is_ok(),
+    )
+}
+
+/// 落盘内核（凭据存储访问可注入，便于单测 keyring 故障窗口）
+fn write_bot_config_file_locked_with(
+    dir: &Path,
+    config: BotConfig,
+    read_slot: &dyn Fn(KeySlot) -> Option<String>,
+    write_slot: &dyn Fn(KeySlot, &str) -> bool,
+) -> CommandResult<()> {
     debug_assert!(holding_config_write(), "必须持 CONFIG_WRITE_LOCK");
-    let mut cfg = config;
-    cfg.api_key = None;
-    cfg.tavily_key = None;
-    cfg.brave_key = None;
+    // 明文密钥零丢失：这一步不过，下面的写盘会把唯一一份密钥抹掉
+    ensure_legacy_plaintext_backed(dir, read_slot, write_slot)?;
+    let cfg = config;
     if !base_url_is_safe(&cfg.base_url) {
         eprintln!(
             "[bot] 警告：base_url 非 https 且非回环地址，API Key 将明文传输：{}",
@@ -512,6 +553,57 @@ pub(crate) fn write_bot_config_file_locked(dir: &Path, config: BotConfig) -> Com
         serde_json::to_string_pretty(&cfg).map_err(|e| CommandError::IoError(e.to_string()))?;
     write_config_atomic(&dir.join("bot-config.json"), &raw)
         .map_err(|e| CommandError::IoError(e.to_string()))
+}
+
+/// 写盘前的明文把关：盘上残留的旧明文必须先安置进系统凭据存储
+///
+/// 那三个 key 字段是 skip_serializing 的（明文永不落盘）——所以**每一次写盘都会
+/// 把盘上残留的旧明文抹掉**。若那份明文还没落进凭据存储（keyring 故障窗口：
+/// 启动迁移按「保留明文下次再试」留下的残留），抹掉就是永久丢密钥。
+///
+/// 所以写盘前先把它安置好：凭据存储里已有 → 盘上那份是过期副本，写盘剥掉是对的；
+/// 空槽 → 写进去并读回验证（读回等值才算落位）；**安置不了就中止本次写盘**
+/// （与启动迁移同一个失败方向：宁可这次配置没存上，也不丢密钥）。
+fn ensure_legacy_plaintext_backed(
+    dir: &Path,
+    read_slot: &dyn Fn(KeySlot) -> Option<String>,
+    write_slot: &dyn Fn(KeySlot, &str) -> bool,
+) -> CommandResult<()> {
+    for (slot, plaintext) in disk_plaintext_slots(dir) {
+        if strip_slot_if_backed(slot, &plaintext, read_slot, write_slot) {
+            continue;
+        }
+        return Err(CommandError::KeyringError(format!(
+            "系统凭据存储暂时不可用，bot-config.json 里还没迁进去的旧密钥（{}）安置不下；\
+             本次保存已中止（否则这份密钥会被永久抹掉）。请先让系统凭据存储可用\
+             （解锁钥匙串 / 确认应用有钥匙串访问权限）后重试。",
+            slot.keyring_user()
+        )));
+    }
+    Ok(())
+}
+
+/// 盘上三个 legacy 槽位的明文（读不到 / 解析失败就当没有）
+fn disk_plaintext_slots(dir: &Path) -> Vec<(KeySlot, String)> {
+    let Ok(raw) = std::fs::read_to_string(dir.join("bot-config.json")) else {
+        return Vec::new();
+    };
+    let Ok(disk) = serde_json::from_str::<BotConfig>(&raw) else {
+        return Vec::new();
+    };
+    [
+        (KeySlot::Llm, &disk.api_key),
+        (KeySlot::Tavily, &disk.tavily_key),
+        (KeySlot::Brave, &disk.brave_key),
+    ]
+    .into_iter()
+    .filter_map(|(slot, v)| {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|v| (slot, v.to_string()))
+    })
+    .collect()
 }
 
 /// 读-改-写 bot-config.json（记忆整理的 last_run_at 回写等内部配置更新用）：
@@ -867,5 +959,128 @@ mod tests {
         assert!(secret_map_from_value(None, "srv-1", "我的服务", "env")
             .unwrap()
             .is_empty());
+    }
+
+    /// 写盘不得抹掉盘上已有的明文密钥（keyring 故障窗口）
+    ///
+    /// 启动迁移时 keyring 故障按「保留明文下次再试」→ 之后任何一次无关的写盘
+    /// （记忆整理回写 / 切模型 / 存设置）都不能顺手把这唯一一份密钥删掉：
+    /// keyring 里从来没有过它，删了就永久丢。那三个字段是 skip_serializing 的
+    /// （写盘必抹），所以唯一能保住它的办法是**中止这次写盘**。
+    #[test]
+    fn write_is_blocked_when_the_credential_store_cannot_take_the_disk_plaintext() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 旧版本写出来的盘上文件长这样：明文 key 就在配置里
+        let raw_before = r#"{"apiKey":"sk-on-disk","baseUrl":"https://x/v1"}"#;
+        std::fs::write(tmp.path().join("bot-config.json"), raw_before).unwrap();
+        let _g = lock_config_write();
+        // 凭据存储故障：读不到、写不进
+        let err = write_bot_config_file_locked_with(
+            tmp.path(),
+            BotConfig::default(),
+            &|_| None,
+            &|_, _| false,
+        )
+        .expect_err("凭据存储安置不下旧明文时必须中止写盘");
+        assert!(
+            matches!(err, CommandError::KeyringError(_)),
+            "应为凭据存储类错误：{err:?}"
+        );
+        let raw_after = std::fs::read_to_string(tmp.path().join("bot-config.json")).unwrap();
+        assert_eq!(
+            raw_before, raw_after,
+            "中止写盘 → 盘上那份唯一一份明文必须原样留着"
+        );
+    }
+
+    /// 凭据存储里确实有它 → 写盘照常，盘上那份过期副本被剥掉（迁移已完成）
+    #[test]
+    fn write_strips_disk_plaintext_when_the_credential_store_has_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 旧版本写出来的盘上文件长这样：明文 key 就在配置里
+        std::fs::write(
+            tmp.path().join("bot-config.json"),
+            r#"{"apiKey":"sk-on-disk","baseUrl":"https://x/v1"}"#,
+        )
+        .unwrap();
+        let _g = lock_config_write();
+        write_bot_config_file_locked_with(
+            tmp.path(),
+            BotConfig::default(),
+            &|slot| (slot == KeySlot::Llm).then(|| "sk-on-disk".to_string()),
+            &|_, _| false,
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join("bot-config.json")).unwrap();
+        assert!(
+            !raw.contains("sk-on-disk"),
+            "凭据存储里已有它 → 明文必须剥掉：{raw}"
+        );
+    }
+
+    /// 凭据存储空但写得进 → 顺手完成迁移（明文进存储，配置里不再有）
+    #[test]
+    fn write_migrates_disk_plaintext_when_the_credential_store_takes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 旧版本写出来的盘上文件长这样：明文 key 就在配置里
+        std::fs::write(
+            tmp.path().join("bot-config.json"),
+            r#"{"apiKey":"sk-on-disk","baseUrl":"https://x/v1"}"#,
+        )
+        .unwrap();
+        let store = std::cell::RefCell::new(Vec::<(KeySlot, String)>::new());
+        let _g = lock_config_write();
+        write_bot_config_file_locked_with(
+            tmp.path(),
+            BotConfig::default(),
+            &|slot| {
+                store
+                    .borrow()
+                    .iter()
+                    .find(|(s, _)| *s == slot)
+                    .map(|(_, v)| v.clone())
+            },
+            &|slot, k| {
+                store.borrow_mut().push((slot, k.to_string()));
+                true
+            },
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join("bot-config.json")).unwrap();
+        assert!(
+            !raw.contains("sk-on-disk"),
+            "迁进凭据存储后配置里不该再有明文：{raw}"
+        );
+        assert!(
+            store.borrow().iter().any(|(_, v)| v == "sk-on-disk"),
+            "明文应当已被写进凭据存储"
+        );
+    }
+
+    /// 调用方带来的明文一律不落盘（前端误传 key 也不许进盘）
+    #[test]
+    fn write_never_persists_caller_supplied_plaintext() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = lock_config_write();
+        write_bot_config_file_locked_with(
+            tmp.path(),
+            BotConfig {
+                api_key: Some("sk-from-caller".into()),
+                tavily_key: Some("tvly-from-caller".into()),
+                ..Default::default()
+            },
+            &|_| None,
+            &|_, _| false,
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join("bot-config.json")).unwrap();
+        assert!(
+            !raw.contains("sk-from-caller"),
+            "调用方带来的明文不许落盘：{raw}"
+        );
+        assert!(
+            !raw.contains("tvly-from-caller"),
+            "调用方带来的明文不许落盘：{raw}"
+        );
     }
 }
