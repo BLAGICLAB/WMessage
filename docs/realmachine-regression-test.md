@@ -1362,7 +1362,8 @@ sys.stdout.flush()
 for raw in sys.stdin:
     req = json.loads(raw.strip()); m, rid = req.get("method"), req.get("id")
     if m == "initialize":
-        send({"jsonrpc":"2.0","id":rid,"result":{"protocolVersion":"2025-03-26",
+        send({"jsonrpc":"2.0","id":rid,"result":{"protocolVersion":
+              req.get("params",{}).get("protocolVersion","2025-03-26"),
               "capabilities":{"tools":{}},"serverInfo":{"name":"flood","version":"0.1"}}})
     elif m == "tools/list":
         send({"jsonrpc":"2.0","id":rid,"result":{"tools":[{"name":"echo","description":"回显",
@@ -1373,7 +1374,9 @@ for raw in sys.stdin:
         send({"jsonrpc":"2.0","id":rid,"error":{"code":-32601,"message":"method not found"}})
 ```
 
-2. 面板里加一台 stdio 服务器：命令 `python3`，参数 `/tmp/mcp_flood.py`。
+2. 面板里加一台 stdio 服务器：命令 `python`（Windows）/ `python3`（unix），参数写桩的**绝对路径**（unix 如 `/tmp/mcp_flood.py`，Windows 如 `D:\wmessage-probe\mcp_flood.py`）。
+
+   > **Windows 上别写 `python3`**——它多半不存在，会命中 Microsoft Store 的别名桩，秒退 9009（见 §1.5 的启动器陷阱）。表现是「服务起来就立刻没了」，很容易被误读成启动逻辑有问题。
 3. 连上后**先别调工具**，看面板状态。
 4. 再调一次工具。
 
