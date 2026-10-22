@@ -287,6 +287,142 @@ CREATE_NO_WINDOW 统一常量+源码锁；单实例/自启/通知/托盘三平�
 
 ## 批 3 · 核心数据链（M1 任务卡 / M11 图谱标签 / M14 底座迁移）
 
+### M1 任务卡与看板（db/tasks + exec_steps + 时间网格 + 浮窗/回收站/归档前端）
+
+状态模型确认为三轴：`column`(todo/doing/done) + `archived` + `deleted_at`。
+
+**[P2-1] 任务图谱铭牌 innerHTML 渲染任务标题——存储型 HTML 注入（CSP 拦住脚本执行，降级记录）**（主会话已复核 + CSP 分析）
+- 位置：src/components/GraphPage/GraphCanvas.tsx:559-562（`off.innerHTML = ...${node.label}...`，
+  全文件唯一 innerHTML）+ graph-build.ts:211（label = t.title，无转义）
+- 触发：任务标题含 HTML → 打开图谱页。标题不可信来源：bot 写卡（提示注入可控标题）、
+  `tasks_import` 外来信封（恶意共享 tasks.json）、HTTP API。
+- **CSP 缓解**（tauri.conf.json:20 `script-src 'self' blob:` 无 unsafe-inline）：`onerror=`
+  内联事件被 CSP 拦截，脚本执行面封死；connect-src 仅 ipc，无外传通道。剩余面＝标记注入 +
+  style 注入（style-src 有 unsafe-inline，可伪装覆盖 UI 诱导点击）。
+- 定级 P2（纵深防御仍应修——CSP 一旦回退即变 XSS→IPC）。修法：createElement+textContent 拼装。
+
+**[P2-2] 软删不清调度字段：注释/SPEC/代码三方不一致**（主会话已复核）
+- 位置：src/App.tsx:871-897——注释声称「软删必须清调度字段——否则任务躺在回收站里 schedule
+  仍到点触发」，实际 patch 只写 `deletedAt`；SPEC.md §1 同承诺。
+- 复核口径：注释里的理由已过时（tasks.schedule 列已随批 1 遗留清扫退役，无任何机制从回收站卡
+  触发）；实际影响＝planStart/planEnd 随导出信封/HTTP API 外泄、恢复后旧排期复活。
+  属「文档说的事实被代码否掉」同款契约漂移。修法：patch 补清 plan 字段或订正注释+SPEC。
+
+**[P2-3] 详情浮窗截止时间无校验直写 due（与 TodoCard 双标，后端也不校验）**（主会话已复核）
+- 位置：TaskDetailPanel.tsx:568（onChange 裸写）vs TodoCard.tsx:600-608（isValidDateTimeLocal
+  守卫+注释）；后端 db/tasks.rs:858 `"due" => set_from(...)` 无格式校验（planStart/planEnd 有，明显不对称）
+- 触发：datetime-local 打字过程中的部分值（"2026-10"）即入库 → due_notify 通知链解析行为未定义。
+- 修法：前端套同一守卫 + 后端 due 补定长格式校验。
+
+P3：
+
+- **[P3] 数据层无状态机守卫**：绕过 UI 闸（bot 工具/task_patch 直调）可编辑、完成、排期
+  回收站/归档卡（db/tasks.rs:708-739/791-963 无 deleted_at/archived 前置判断）。
+- **[P3] 归档「恢复」把 completedAt 伪造成当前时刻**（TodoCard.tsx:504）——与 archiveRule.ts:50
+  自己的注释口径矛盾；若为「重新计时」设计也应显式字段。
+- **[P3] 「恢复待办」落点不一致**：详情面板回 todo、任务卡回 doing——今日到期卡会被
+  applyTodayRule ≤60s 二次吸走（TaskDetailPanel.tsx:576 vs TodoCard.tsx:141-144）。
+- **[P3] planEnd <= planStart 无跨字段校验**（db/tasks.rs:862-871 注释自认靠 UI 成对提交保证；
+  bot/HTTP API 直写则网格隐身+假时长 60 分钟兜底）。
+- **[P3] 绑定文件无存在性门槛、无悬空清理**（db/tasks.rs:208-224，metadata 失败照样绑定）。
+- **[P3] 拖拽期间每次 pointermove 全页重渲染 + WeekGrid 无 memo 无虚拟化**
+  （数百块以上/1000 卡为最坏档；TaskTimelinePage.tsx:163-268）。
+- **[P3] 浮窗开着时卡被（他端）软删：浮窗不关、可继续编辑被删卡**（App.tsx:899-901 只兜硬删）。
+- **[P3] 标题/备注/标签无长度钳制（前后端皆无）**（db/tasks.rs:928-943 仅拒空白；恶意导入信封可灌超长）。
+- **[P3] 回收站恢复不级联**：母卡恢复后子卡仍留回收站（数据无损，纯 UX）。
+
+已查证安全：TaskStatus wire 字节级兼容+脏值兜底读有测试锁；created_at 永不被 UPDATE 覆盖；
+task_patch 白名单+未知/受保护键响亮拒绝+RMW 写冲突显式报错留审计；导出/导入路径闸门+64MB
+bounded reader+事务；exec_steps 会话分槽+ExecGuard 防重入+三条路径复位头像；排期吸附/钳制
+在前端且渲染期派生无写回路径（防死循环 guard 在位）；子任务进度纯渲染期派生；全部 SQL 参数化
+（唯一 format! 是 IN 占位符个数）；tasks-updated 四源广播齐全；无 useMemo 依赖缺失死循环；
+React 文本节点自动转义覆盖任务卡其余全部渲染面。
+
+NEEDS-VERIFICATION：HTTP SSE overlay 收不到主窗 UI/bot 写（api.rs notify_change 仅 API 写路径
+调用）——消费端有无轮询兜底待查（属 M10 联动面）。
+
+### M11 图谱与标签（task_autotag / tag_similar / tags_consolidate / people + GraphPage）
+
+2026-10-19 图谱审计修复点抽查 6 处（graphPrefs 迁移写确认后删、外观脏标、resumeForce 单一
+唤醒点、declutter 预算等）**全部未回退**。
+
+**[P2-1] 标签合并无事务、绕过 DB 写锁——中途失败产生不可回滚的半合并态**（主会话已复核）
+- 位置：bot/tags_consolidate.rs:315-323（循环内逐条 UPDATE 自动提交）+ :333-340（history INSERT
+  在全部 UPDATE 之后）；lib.rs:128-137 用裸 `open_db` 连接（对比 task_autotag 走 with_write_conn）
+- 触发：合并 N 张卡时任一条 UPDATE 失败（典型：并发写者超 2s busy timeout）→ 前面的 UPDATE
+  已落盘而回滚凭据（history 行）根本没写——「合并可完整撤销」在失败路径上不成立。
+- 修法：整段搬进 with_write_conn，UPDATE 循环 + history INSERT 包进同一事务。
+
+**[P2-2] `instr(tags, ?)` 子串匹配越界——主标签强加给从未拥有该别名的卡**（主会话已复核）
+- 位置：bot/tags_consolidate.rs:268-277（SQL 对 JSON 原文做 instr 子串命中）+ :292-300
+  （Rust 侧只按精确相等滤别名，然后无条件 push 主标签）
+- 触发：簇别名「测试」+ 卡标签 `["集成测试"]` → instr 命中 → 别名删不掉（精确不等）→
+  主标签照 push：从未带簇成员标签的卡被打上主标签（可撤销恢复但合并语义已错）。
+- 修法：SQL 只粗筛，Rust 侧校验 old_tags 精确含任一别名才入 updates。
+
+**[P2-3] 弹窗「+ 新建主标签…」未输入即提交 → 整簇并进字面量标签 `__new__`**（主会话已复核）
+- 位置：TagConsolidateModal.tsx:94-97（value="__new__" 原样下传）+ :217-231（input 只在
+  onChange 时替换 main）+ 后端 merge_tag_cluster 只查空串（tags_consolidate.rs:255）
+- 触发：选中「新建」后不输入直接点合并。顺带：新建名无 trim、无 ≤12 字上限（与 autotag 口径不一）。
+- 修法：提交前校验非占位值+trim 非空+长度钳制。
+
+**[P2-4] 合并/撤销后不广播不刷新——归档页与图谱长期显示旧标签**（主会话已复核）
+- 位置：lib.rs:131-146（merge/rollback 直接写库不 emit）对比 task_autotag.rs:210-219
+  （双广播）；ArchivePage.tsx:219 只传 onClose——TagConsolidateModal 的 `onMerged` prop 是死参数。
+- 修法：命令末尾广播 tasks-changed 或接上 onMerged 触发 reload。
+
+P3：同义组键并查集写法使「组键=组内最小标签」注释不成立（GraphPage.tsx:200，显示层瑕疵）；
+embed 不可用时整理扫描静默报「没有待合并簇」（tags_consolidate.rs:122-129，姊妹模块
+tag_similar 会 audit+Err 口径不一）；模块头注释声称的 tag_merge 审计事件不存在（只有回滚有）；
+信封成员卡每次导入抹掉已学到的头像（people.rs:75-78 None 直接覆盖，建议 COALESCE）；
+tag_similar 词表无输入上限+缓存 512 条整体清空（>512 标签时每轮全量重嵌入 O(n²)）；
+NEEDS-VERIFICATION：tags_consolidate_scan 同步命令体内跑阻塞式 ONNX 嵌入（是否卡界面取决于
+Tauri v2 同步命令线程模型，建议对齐 tag_similar 的 spawn_blocking）。
+
+已查证安全：autotag 幂等守卫链锁内重做；LLM 输出截断不整包拒；merge/rollback 影响域限定
+归档/回收站卡（有测试）；autotag 与 merge 操作集合不相交无并发冲突；合并中新归档卡下轮自然
+纳入；全部 SQL 参数化（动态部分只插占位符序号）；graphPrefs 损坏自愈；10-19 修复点无回退。
+
+### M14 数据底座与迁移（db/lock + migrations + migration/ 十件 + paths + app_state + error + audit + bing + ocr）
+
+模块定性：migration/ 是**桌面文件自动归档清理引擎**（cleanup-rules.json 规则表 + journal 崩溃
+恢复 + 扫描整理），与「测试阶段不做数据迁移」决策无冲突；旧 tasks.schedule 数据按 114330be
+退役口径随删列丢弃（符合决策，跨版本直升用户的旧定时数据无迁移属有意行为，备案）。
+
+**[P2] with_write_conn 未置位 HOLDING_DB_WRITE 线程本地标记——debug 构建下自动打标回写必触发
+debug_assert panic**（主会话已复核）
+- 位置：db/lock.rs:48（直接 `DB_WRITE_LOCK.lock()` 不走 lock_db_write()）+ task_autotag.rs:203
+  （with_write_conn 闭包内调 upsert_tasks）+ db/tasks.rs:294（`debug_assert!(holding_db_write())`）
+- 触发：tauri dev / cargo test 下任务卡完成触发自动打标回写即 panic；真实互斥是满足的
+  （锁确实持有），断言读的却是只有 lock_db_write() 才置位的标记。release 编译掉不受影响；
+  测试未覆盖该回写分支所以 CI 不红。
+- 修法：with_write_conn 临界区改用 lock_db_write()（一行，同时修好未来所有闭包内调契约函数的路径）。
+
+P3：
+
+- **[P3] journal_replay_pending 绕开 DB_WRITE_LOCK 写 journal**（migration/recovery.rs:75/118-159
+  `_inner` 直调+锁外 open_db，失败 `.ok()` 吞掉——行保持 pending 无丢失，但纪律破口）。
+- **[P3] frontend_event_report 对 detail 双重转义**（audit.rs:640 调用点预转义+中心路径再转义，
+  `|` 倍增）。
+- **[P3] bing 图片下载先全量进内存再做 8MB 检查**（bing.rs:154-165，建议 content_length 前置或
+  bytes_stream）。
+- **[P3] ocr 输入图片无大小/像素上限**（ocr.rs:70 std::fs::read 无上限 + :389 解码后 w×h×3
+  驻内存——解码炸弹面）。
+- **[P3] Windows OCR 引擎 OnceLock 缓存 Err：模型后装需重启**（ocr.rs:208，文档已声明，备案）。
+- **[P3] app_state 模块头「已迁入 8 张」与 struct 实际 14 字段漂移**（app_state.rs:69 vs 83-120）。
+- **[P3] bot_chat.rs:1710 锁标签文案名不副实**（锁的是 self.running）。
+
+已查证安全：两把锁中毒恢复全仓一致；journal 单向状态机+孤儿清理+1000 条封顶有测试；migration
+穿越三闸+TOCTOU 复检+staging 原子提交；CSV 导入 fail-closed 全链；open_db 幂等收敛（半截迁移
+下轮补齐）；error.rs 24 code 三重测试锁死+From 转换不丢上下文+recoverable 分类有防回退测试；
+audit 中心转义不可绕+error.log 镜像独立+防递归纪律；paths 便携判定四级兜底全测试；bing 缓存
+原子提交标记+时钟回拨只少删；ocr 隐私红线入口双层+失败缓存留指引；app_state 兜底实例语义
+验证成立（生产唯一注入点在 setup 内先于一切）。
+
+---
+
+## 批 4 · 已审模块复验（M2 / M6 / M7 / M8 / M9）
+
 （待跑）
 
 ## 批 4 · 已审模块复验（M2 / M6 / M7 / M8 / M9）
