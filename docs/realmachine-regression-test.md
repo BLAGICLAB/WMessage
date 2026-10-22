@@ -156,7 +156,8 @@ Windows 机器上 13:13~13:44 那次运行（`D:\Program Files\wmessage-portable
 | **S02** 远程技能安装 | 🟡 部分 PASS | 确认窗在：`confirm | id: 51ed268a | kind: danger | install_skill | 安装技能「ppt-craft-master」…共 7 个文件。`；安装审计在：`skill_install | ppt-craft-master | source: SkillHub ppt-craft-master | files: 7 | bytes: 120646`。**宽度闸那一半没验**（装的是正常包） |
 | **S12** `rollback: none` | 🟡 部分 PASS | `skill.start | name=pptx-design | … rollback=none` 且该技能无回滚段——**降级路径**生效。**「有回滚段但声明 none」的对照组还没跑** |
 | **S05 第四条** 同因不同级 | 🔧 **源码已修 · 待实机复验** | 未修时的实测：`fetch_url` 记 **ERROR**、`open_url` 同因记 **WARN**（详见 S05 第四条）。已修（`270e822c`）：公网闸的错误拆成「策略拒绝 / 解析故障」两类——`open_url` 的 DNS 失败改 **ERROR**（与 fetch_url 同级），策略拒绝仍 **WARN/Denied**；fetch_url 的文案与行为未动。实机复验见 `docs/realmachine-rerun-2026-10-22.md` §2.2 |
-| **W09 附** 内置 Playwright 路径 | ❌ **FAIL** | `mcp.builtin_materialized | … 包: /Users/renshi/Projects/wmessage\playwright-mcp（缺失，开关打开会连不上）`——构建机 macOS 路径泄漏进 Windows 包（详见 W09） |
+| **W09 附** 内置 Playwright 路径 | ✅ **PASS**（2026-10-22 22:45 复验） | 换包后重跑：`mcp.builtin_materialized | id: builtin-playwright | name: Playwright | 包: C:\wmessage-portable-2026-10-22\playwright-mcp（就位）`——路径指向**本包目录**且状态是「就位」，构建机 macOS 绝对路径不再泄漏。D-1 就此划掉（详见 W09） |
+| **S01** `create_skill` 意图宽度闸 | 🟡 **部分 PASS**（2026-10-22 22:52 Windows 实机） | 闸门生效：模型原样提交 `intents: .*` → `create_skill：intents「.*」模式过宽：必须包含至少 2 个连续的字面量字符（如「日报」或「(?i)(润色|修订).{0,15}(word|文档)」），不能是 .* 一类通配`；**没有弹确认窗**（准入核在确认窗之前，bot.log 那段区间里 tool.call 与 tool.return 之间无 `confirm` 行）；bot.log 里**无** `skill_create` 行。**未验**：技能目录 `skills/bad-broad-intents/` 不存在（要文件系统核对，见卡片里的命令）、对照组（合规 intents → 高危确认窗）。**顺带暴露一个真缺陷**：这次拒绝记的是 **ERROR**，而同一个准入核在 `install_skill` 上记 **WARN**（详见附录 D-11） |
 | **W03** 端口闸在 Windows 上只诊断且明说 | ✅ **PASS** | `service.port_violation_precheck | command=python | rule=L1 | address=0.0.0.0 | port=0 | action=diagnostic | enforced=false`；工具返回带 `precheckNote`；服务**没被杀**（闸在 Windows 上本就不生效，符合预期）。面板**只有一行**灰字提示，**没有**第二行「采集失败」；`svc_24426226`（pid 12624）运行 **19 分 51 秒**（远超 30 秒巡检周期），审计里**没有** `service.listening_sample_failed`。原因：`enforce_listening_gate` 的平台守卫让 `note_sample_status` 在 Windows 上永不执行（详见附录 D-3 的否证记录） |
 | **W04** MCP 面板两行能力提示 | ✅ **PASS** | 实机确认：MCP 面板顶部出现**两行**灰字——「本平台暂不支持进程资源采集——内存 / CPU / 运行时长显示为空不代表没占用」「本平台暂不支持监听端口采集——没有监听记录不代表没在监听」。P2-4 在 MCP 面板这半落地生效 |
 | **W04 附** 本地服务面板「合计内存 0 MB」 | 🔧 **源码已修 · 待实机复验** | 未修时的实机截图：跑着 1 个 Python 服务（pid 12624，19 分 51 秒），面板写「合计内存 **0 MB**」且**无任何**能力提示；同一个设置页的 MCP 面板却明说「本平台暂不支持进程资源采集」——**两块面板口径矛盾**（详见附录 D-7）。已修（`2eeb707d`）：快照 JSON 补 `snapshotSupported`，采不到时 `totalRssMb` 给 `null`（面板不显示「合计内存 0 MB」，改说能力提示）；合计 RSS 阈值告警在「没判」时**不判成「没超」**。实机复验见 `docs/realmachine-rerun-2026-10-22.md` §2.3 |
@@ -164,13 +165,14 @@ Windows 机器上 13:13~13:44 那次运行（`D:\Program Files\wmessage-portable
 | **W06** UI 自动化正向路径 | 🟡 部分 PASS | 普通权限窗口能读控件、能输入（返回 `已输入 N 个字符到「{title}」（控件 {id}）`）→ **正向路径成立**。**UIPI 拒绝那半测不了**（应用是管理员 → UIPI 只拦「低→高」，高→任何都不拦）。**同时暴露一个真缺陷**：每次截屏都弹一个 PowerShell 控制台窗口（详见附录 D-8） |
 | **W07** WebGL2 缺失时的图谱降级 | 🟡 基本通过 | 降级路径**代码核对通过**（`GraphCanvas.tsx`：键盘游标 API 在 362 行挂好、WebGL2 探测在 392-409 行，catch 只追加说明文案 → 「键盘游标降级时仍可用」成立）。实机未报明显问题 |
 | **W08** 凭据管理器不删条目 | ✅ **PASS** | 实机确认：编辑 MCP 服务器只改超时、保存后**凭据管理器条目仍在、数量不变**，编辑表单显示掩码 + 那行掩码提示。P1-16 在 Windows 侧落地生效（**证据原文未贴**，只有口头结论；「值有没有被改对」那半 Windows 本就测不了，见附录 C） |
-| **W09** 绿色包本身 | ✅ **PASS** | 实机确认：目录内容齐全、首跑在 exe 同目录生成 `wmessage.db` 与 `AI_Gen_Files`（便携锚定生效，与 W01 互证）。**D-1 附项仍 FAIL**（内置 Playwright 的包路径是构建机 macOS 绝对路径） |
+| **W09** 绿色包本身 | ✅ **PASS** | 实机确认：目录内容齐全、首跑在 exe 同目录生成 `wmessage.db` 与 `AI_Gen_Files`（便携锚定生效，与 W01 互证）。**D-1 附项已在 2026-10-22 22:45 复验转 PASS**（内置 Playwright 包路径指向本包目录且「就位」） |
 | **S32** ready 超时不误报成「立即退出」 | 🔧 **源码已修 · 待实机复验** | 未修时的实测：`service.stop_requested | reason=ready_timeout` → `service.exited | exit_code=1 | uptime_ms=30772` → `service.stopped | method=taskkill` → `service.start_failed | reason=服务「python」启动后立即退出（退出码 1）。`——**服务活了整整 30 秒才被我们停掉**，却报成「启动后立即退出」；那个退出码 1 是 `taskkill /F` 的签名（详见附录 D-6）。已修（`aa80d2f9` `7f80865f` `a8b54f10`）：就绪判定四态 + **先判后停**（停止前取快照）+ 停止结果如实进文案 + `service.exited` 补 `stop_reason`。macOS 侧已端到端复现并变异复验（真 spawn、真等超时、真停），**Windows 实机复验还没跑**。见 `docs/realmachine-rerun-2026-10-22.md` §2.1 |
 
 **日志里几条不是缺陷、但值得记的**：
 
 - `shortcut | msg=注册快捷键 W 失败：HotKey already registered` —— **同时开了两个实例**。测任何场景前先确认只跑一个，否则快捷键、端口、数据目录都会互相干扰。
 - `llm.response | code=LLM_API_ERROR | err=大模型 API 错误 404：The model "MiniMax-M2" is no longer available.` —— 配置里选的模型已下线（代码默认是 `MiniMax-M3`，`bot/config/mod.rs:138`）。**测任何要模型回话的场景前，先确认模型可用**，否则会在错误的地方失败。
+  > **2026-10-22 22:52 又踩了一次**：S01 第一发（`trace_id=3`）就是这条 404，`llm.request | model=MiniMax-M2` → 404 → `trace.complete | status=failed | turns=0 | tools=0`。换回 `MiniMax-M3` 重发（`trace_id=4`）才跑通。**换包不换配置**：绿色包里的 `bot-config.json` 仍记着下线的 `MiniMax-M2`，每次都要手改一次——**测之前先在设置页确认激活的模型**。
 - `final_selfcheck.fail | 已打开东海水产研究所官网：…` —— 终稿自检把一段看起来正常的答复判成了 fail。先记着，别当本次批次的 bug。
 
 **Windows 上的启动器陷阱（实测踩到）**：`where python` 给两条
@@ -806,7 +808,16 @@ content: |
 **判据**：
 
 - PASS：工具返回含 `模式过宽：必须包含至少 2 个连续的字面量字符`；**没有弹确认窗**；技能目录 `skills/bad-broad-intents/` **不存在**；bot.log 里**没有** `skill_create` 行（准入核早于落盘）。
+- **级别**：这条拒绝是**闸拦下**（工具根本没执行）→ 审计级别应当是 **WARN**（`ToolStatus::Denied`）。记成 ERROR 就是 D-11 那个形态（同一个准入核，`create_skill` 记 ERROR、`install_skill` 记 WARN）。
 - FAIL：弹了确认窗 / 技能被创建 / 后续随便一句话被路由进这个技能。
+
+**地面真相（技能目录那条要文件系统核对，日志里看不到）**：
+
+```powershell
+# 应报「找不到文件」——准入核早于落盘，目录不该存在
+Test-Path "C:\wmessage-portable-2026-10-22\skills\bad-broad-intents"
+Get-ChildItem "C:\wmessage-portable-2026-10-22\skills" -Name   # 里面不该有 bad-broad-intents
+```
 
 **对照组**（把 intents 改成 `任务清单周报` 重发一遍）：
 
@@ -2392,3 +2403,41 @@ tool: run_python | args: {"code":"import ctypes … SetCursorPos(1370,321) … m
 > 单测 `bad_ready_pattern_is_not_reported_as_timeout`（已做变异复验：把它改回「未就绪」→ 该用例红）。
 >
 > **实机未验**：这一条只在 Windows 复验时顺带看一眼（把 `readyPattern` 写成非法正则试一次）。
+
+---
+
+### D-11（真缺陷 · 同因不同级）`create_skill` 的准入核拒绝记 ERROR，同一个准入核在 `install_skill` 上记 WARN
+
+**来源**：2026-10-22 22:52 S01 实机跑出来的（Windows）。
+
+**现象**：S01 提交过宽 intents 被准时，审计里记的是
+
+```
+[2026-10-22 22:52:17.333] ERROR | tool.return | tool=create_skill | ms=5 | preview=create_skill：intents「.*」模式过宽：必须包含至少 2 个连续的字面量字符…
+```
+
+而**同一个准入核**（`validate_created_meta`）在远程技能安装那条路上是 `ToolResult::denied(...)`
+（`bot_skills/remote.rs:649`）→ 审计级别 **WARN**。
+
+**为什么是缺陷**：仓里对「被拒」的口径是写死的三处：
+
+- `audit.rs`：`ToolStatus::Denied => AuditLevel::Warn`，注释写着「被拒是预期内的控制流（闸拦下 / 用户点了否 / 预算触顶），不是故障」；
+- `registry.rs`：`ToolResult::denied` 的文档写着「门禁拒绝：工具**没有执行**」；
+- 工具层其余分支一律 denied——`create_task` 缺 title、空 query、`query_single_task` 没找到卡、开关未开、标签超上限，全是 denied；**`create_skill` 是这一族里唯一把「根本没执行」记成 ERROR 的**。
+
+**危害**：闸门正常工作、模型收到正确的拒绝文案，但 audit / error.log 里多一条 ERROR——
+正常控制流看起来像故障；`error.log` 是 WARN/ERROR 镜像，于是这条噪声进了错误日志。
+（D-2 是同一形态的另一头：同一个错误两个工具记两个级别。）
+
+**修法**：`create_skill` 的前置拒绝（缺 name / name 非法 / 缺 content / files 格式错 / 准入核不过）
+全部改走 `ToolResult::denied`；只有**落盘执行失败**（`create_skill_at` 报错）才留 `error`。
+「工具没执行 = Denied，执行失败 = Error」这条口径与工具层其余分支一致。
+
+> **✅ 2026-10-22 已修（源码侧）**
+>
+> 单测钉住两处：`bot_skills/manage.rs::tool_create_skill_pre_execution_rejections_are_denied`
+> （准入核那一支必须走 denied，且函数里只允许剩一处 error——落盘失败那处）、
+> `audit.rs::tool_status_denied_is_warn_and_error_is_error`（状态→级别映射）。
+> 两者都做了变异复验：把准入核改回 `error` → 用例红；改回 → 绿。
+>
+> **实机未验**：复验方法 = 重跑 S01，审计里那条 `tool.return | tool=create_skill` 的级别应当变成 **WARN**（文案不变）。
