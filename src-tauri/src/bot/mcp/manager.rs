@@ -175,7 +175,7 @@ async fn http_client_for_mcp(
     // DNS 级闸：解析出的每个 IP 都必须公网
     let addrs = crate::bot_web::check_public_url(&parsed)
         .await
-        .map_err(|e| format!("URL 安全闸：{e}"))?;
+        .map_err(|e| format!("URL 安全闸：{}", e.gate_message()))?;
     let host = parsed.host_str().unwrap_or_default().to_string();
     http_client_pinned(&host, &addrs, headers)
 }

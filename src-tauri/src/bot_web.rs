@@ -885,17 +885,81 @@ fn extract_baidu_snippet(tail: &str) -> String {
 
 // 网页抓取
 
+/// 公网闸的两类失败：**策略拒绝**与**解析故障**。
+///
+/// 两者的运维含义不同：策略拒绝是「这个地址不该去」（换个地址也没用），
+/// 解析故障是「这台机器到那个名字的路不通」（网络故障）。合成一个 Err 会把
+/// 真实故障降级：调用方只能一律按「换个地址重试」落地（Denied / WARN），
+/// 而模型看到「被拒」会换个 url 再来——把一次网络故障拖成多轮无效重试。
+///
+/// `reason` 是裸原因；展示文案要不要带 `[web] ` 域标签由调用方决定
+/// （公网闸判定带标签，参数级错误不带——与既有文案一致）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UrlGateError {
+    /// 策略拒绝：协议不对、地址非法、解析到本机/内网/保留地址。
+    Denied { reason: String },
+    /// DNS 解析失败：域名解析不出来（不是策略问题，是这台机器到不了那个名字）。
+    Unresolved { reason: String },
+}
+
+impl UrlGateError {
+    /// 裸原因（不含域标签）。
+    pub(crate) fn reason(&self) -> &str {
+        match self {
+            Self::Denied { reason } | Self::Unresolved { reason } => reason,
+        }
+    }
+
+    /// 公网闸判定的展示文案（带 `[web] ` 域标签）。
+    pub(crate) fn gate_message(&self) -> String {
+        format!("[web] {}", self.reason())
+    }
+
+    /// 补上 `[web] ` 域标签（公网闸判定用；参数级错误不带标签）。
+    fn labeled(self) -> Self {
+        match self {
+            Self::Denied { reason } => Self::Denied {
+                reason: format!("[web] {reason}"),
+            },
+            Self::Unresolved { reason } => Self::Unresolved {
+                reason: format!("[web] {reason}"),
+            },
+        }
+    }
+}
+
 /// 校验 URL 并返回通过校验的解析地址：协议 + 主机名字符串 + DNS 解析出的所有 IP
 /// 均须公网（防 DNS 重绑定/内网域名）。返回的地址由调用方钉给 reqwest
 /// （resolve_to_addrs，FIX-PLAN #7a），校验与请求之间不再二次解析，堵 DNS TOCTOU。
 pub(crate) async fn check_public_url(
     url: &url::Url,
-) -> Result<Vec<std::net::SocketAddr>, CommandError> {
+) -> Result<Vec<std::net::SocketAddr>, UrlGateError> {
+    check_public_url_with(url, |host| async move {
+        tokio::net::lookup_host((host.as_str(), 80))
+            .await
+            .map(|it| it.collect())
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// 公网闸的判定主体：协议 + 主机名 + 解析结果 → 公网地址集合。
+///
+/// 解析结果由调用方给：生产走真实 DNS，测试给桩。解析要触网，而「解析失败」
+/// 与「解析到内网」这两条判定必须能被离线钉住——真 DNS 依赖网络环境，
+/// 无 DNS 的机器上会一直等到系统超时。
+async fn check_public_url_with<F, Fut>(
+    url: &url::Url,
+    lookup: F,
+) -> Result<Vec<std::net::SocketAddr>, UrlGateError>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<std::net::SocketAddr>, String>>,
+{
     match url.scheme() {
         "http" | "https" => {}
         s => {
-            return Err(CommandError::DomainRule {
-                domain: "web".to_string(),
+            return Err(UrlGateError::Denied {
                 reason: format!("只支持 http/https 链接（收到 {s}://）"),
             })
         }
@@ -906,41 +970,35 @@ pub(crate) async fn check_public_url(
         .trim_end_matches('.')
         .to_lowercase();
     if host.is_empty() {
-        return Err(CommandError::DomainRule {
-            domain: "web".to_string(),
+        return Err(UrlGateError::Denied {
             reason: "网址缺少主机名".to_string(),
         });
     }
     if is_private_host(&host) {
-        return Err(CommandError::DomainRule {
-            domain: "web".to_string(),
+        return Err(UrlGateError::Denied {
             reason: "已拒绝访问本机/内网地址".to_string(),
         });
     }
     // DNS 解析校验：域名解析出的每个 IP 都必须是公网（防解析到 127.0.0.1 的内网域名）
     let mut out: Vec<std::net::SocketAddr> = Vec::new();
-    // tokio::net::lookup_host 返回同步迭代器（解析已在 await 内完成）；端口
-    // 与解析无关，查完由 with_url_port 统一重写成 URL 真实端口
-    let addrs = tokio::net::lookup_host((host.as_str(), 80))
+    // 端口与解析无关，查完由 with_url_port 统一重写成 URL 真实端口
+    let addrs = lookup(host.clone())
         .await
-        .map_err(|e| CommandError::DomainRule {
-            domain: "web".to_string(),
+        .map_err(|e| UrlGateError::Unresolved {
             reason: format!("域名解析失败：{e}"),
         })?;
     for addr in addrs {
         match addr.ip() {
             std::net::IpAddr::V4(v4) => {
                 if ipv4_is_private(v4) {
-                    return Err(CommandError::DomainRule {
-                        domain: "web".to_string(),
+                    return Err(UrlGateError::Denied {
                         reason: "已拒绝：域名解析到本机/内网地址".to_string(),
                     });
                 }
             }
             std::net::IpAddr::V6(v6) => {
                 if ipv6_is_private(v6) {
-                    return Err(CommandError::DomainRule {
-                        domain: "web".to_string(),
+                    return Err(UrlGateError::Denied {
                         reason: "已拒绝：域名解析到本机/内网地址".to_string(),
                     });
                 }
@@ -949,8 +1007,7 @@ pub(crate) async fn check_public_url(
         out.push(addr);
     }
     if out.is_empty() {
-        return Err(CommandError::DomainRule {
-            domain: "web".to_string(),
+        return Err(UrlGateError::Unresolved {
             reason: "域名没有解析到任何地址".to_string(),
         });
     }
@@ -1048,9 +1105,12 @@ async fn fetch_direct(raw_url: &str) -> Result<String, FetchErr> {
     loop {
         // 每跳都走「解析 → 校验 → 钉 IP」：check_public_url 返回校验过的地址，
         // per-hop client 用 resolve_to_addrs 钉住，reqwest 不再二次 DNS（FIX-PLAN #7a DNS TOCTOU）
-        let addrs = check_public_url(&url_cursor)
-            .await
-            .map_err(FetchErr::Rejected)?;
+        let addrs = check_public_url(&url_cursor).await.map_err(|e| {
+            FetchErr::Rejected(CommandError::DomainRule {
+                domain: "web".to_string(),
+                reason: e.reason().to_string(),
+            })
+        })?;
         resp = http_client_pinned(&url_cursor, &addrs)
             .map_err(|e| FetchErr::Rejected(e.into()))?
             .get(url_cursor.clone())
@@ -1164,14 +1224,22 @@ fn jina_reader_url(raw_url: &str) -> String {
 
 /// open_url 工具的 URL 准入门——parse + 仅 http/https + 与 fetch 同一公网闸
 /// （DNS 解析后拒绝本机/内网/保留地址）。返回校验过的 URL 供打开与日志。
-pub(crate) async fn ensure_public_http_url(raw: &str) -> Result<url::Url, String> {
+///
+/// 两类失败分开返回：策略拒绝（换地址也没用）与 DNS 解析失败（网络故障）。
+pub(crate) async fn ensure_public_http_url(raw: &str) -> Result<url::Url, UrlGateError> {
     let trimmed = raw.trim();
-    let url = url::Url::parse(trimmed).map_err(|_| format!("无效网址：{trimmed}"))?;
+    let url = url::Url::parse(trimmed).map_err(|_| UrlGateError::Denied {
+        reason: format!("无效网址：{trimmed}"),
+    })?;
     let scheme = url.scheme().to_string();
     if scheme != "http" && scheme != "https" {
-        return Err(format!("仅支持 http/https 网页地址，拒绝 {scheme}: 协议"));
+        return Err(UrlGateError::Denied {
+            reason: format!("仅支持 http/https 网页地址，拒绝 {scheme}: 协议"),
+        });
     }
-    check_public_url(&url).await?;
+    check_public_url(&url)
+        .await
+        .map_err(UrlGateError::labeled)?;
     Ok(url)
 }
 
@@ -1180,7 +1248,7 @@ pub(crate) async fn ensure_public_http_url(raw: &str) -> Result<url::Url, String
 async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
     let url =
         url::Url::parse(&jina_reader_url(raw_url)).map_err(|_| "Jina URL 无效".to_string())?;
-    let addrs = check_public_url(&url).await?;
+    let addrs = check_public_url(&url).await.map_err(|e| e.gate_message())?;
     let resp = http_client_pinned(&url, &addrs)?
         .get(url)
         .header(reqwest::header::USER_AGENT, UA)
@@ -1331,6 +1399,85 @@ fn decode_html(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 公网闸的两类失败必须分开：**策略拒绝** vs **DNS 解析失败**。
+    ///
+    /// 合成一个 Err 时，调用方只能一律按「换个地址重试」落地——真实网络故障
+    /// 于是被降级成 WARN/Denied。解析走桩：真 DNS 依赖网络环境，无 DNS 的机器
+    /// 上会一直等到系统超时（实测 30s），门禁不该等这个。
+    #[tokio::test]
+    async fn public_url_gate_separates_denial_from_dns_failure() {
+        let url = url::Url::parse("https://example.com/page").expect("URL 合法");
+
+        // 解析失败：网络故障，不是策略拒绝
+        let err = check_public_url_with(&url, |_host| async { Err("os error 11001".to_string()) })
+            .await
+            .expect_err("解析失败必须报错");
+        assert!(
+            matches!(err, UrlGateError::Unresolved { .. }),
+            "DNS 解析失败必须单独归类，不能混进策略拒绝：{err:?}"
+        );
+        assert!(
+            err.reason().contains("域名解析失败"),
+            "解析失败要给出可诊断的原因：{}",
+            err.reason()
+        );
+
+        // 解析到内网：策略拒绝
+        let err = check_public_url_with(&url, |_host| async {
+            Ok(vec![std::net::SocketAddr::from(([127, 0, 0, 1], 80))])
+        })
+        .await
+        .expect_err("解析到内网必须被拒");
+        assert!(
+            matches!(err, UrlGateError::Denied { .. }),
+            "解析到内网属于策略拒绝：{err:?}"
+        );
+        assert!(
+            err.reason().contains("已拒绝：域名解析到本机/内网地址"),
+            "拒绝理由要给模型看：{}",
+            err.reason()
+        );
+
+        // 解析到公网：放行（端口按 URL 真实端口重写）
+        let addrs = check_public_url_with(&url, |_host| async {
+            Ok(vec![std::net::SocketAddr::from(([93, 184, 216, 34], 80))])
+        })
+        .await
+        .expect("公网地址应放行");
+        assert_eq!(
+            addrs[0].port(),
+            443,
+            "端口按 URL 真实端口重写（https 默认 443，不是解析时的 80）"
+        );
+
+        // 公网闸判定的文案带域标签（与既有文案一致）
+        assert!(
+            err.gate_message().starts_with("[web] "),
+            "公网闸文案带 [web] 域标签：{}",
+            err.gate_message()
+        );
+    }
+
+    /// open_url 准入门：内网地址 / 非 http/https / 非法网址一律是**策略拒绝**
+    /// （这三条不触网，判定确定）。
+    #[tokio::test]
+    async fn open_url_gate_rejects_policy_violations_as_denied() {
+        for raw in [
+            "http://127.0.0.1:8080/",
+            "http://192.168.1.1/",
+            "ftp://example.com/",
+            "这不是一个网址",
+        ] {
+            let err = ensure_public_http_url(raw)
+                .await
+                .expect_err("策略违规必须被拒");
+            assert!(
+                matches!(err, UrlGateError::Denied { .. }),
+                "策略违规必须是策略拒绝（{raw}）：{err:?}"
+            );
+        }
+    }
 
     #[test]
     fn route_none_switch_keeps_legacy_auto() {

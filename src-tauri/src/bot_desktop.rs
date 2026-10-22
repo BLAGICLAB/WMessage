@@ -64,6 +64,20 @@ pub async fn tool_reveal_path(
 
 // open_url
 
+/// open_url 准入门失败怎么落地成工具结果（纯函数，供测试钉住）。
+///
+/// 策略拒绝 = 换个地址也没用（Denied → 审计 WARN，预期内控制流）；
+/// DNS 解析失败 = 网络故障（Error → 审计 ERROR）。两者混成一个 denied 会把
+/// 真实故障降级成「换个 url 重试」，模型会在同一条死路上反复试。
+fn open_url_gate_result(err: &crate::bot_web::UrlGateError) -> ToolResult {
+    match err {
+        crate::bot_web::UrlGateError::Denied { reason } => ToolResult::denied(reason.clone()),
+        crate::bot_web::UrlGateError::Unresolved { reason } => {
+            ToolResult::error(format!("打开失败：{reason}"), Vec::new())
+        }
+    }
+}
+
 /// 用系统默认浏览器打开网页。URL 准入门与 fetch_text 同一公网闸
 /// （仅 http/https；DNS 解析后拒绝本机/内网/保留地址）。
 pub async fn tool_open_url(app: &AppHandle, args: &str) -> ToolResult {
@@ -79,7 +93,7 @@ pub async fn tool_open_url(app: &AppHandle, args: &str) -> ToolResult {
     }
     let url = match crate::bot_web::ensure_public_http_url(&u).await {
         Ok(url) => url,
-        Err(e) => return ToolResult::denied(e),
+        Err(e) => return open_url_gate_result(&e),
     };
     use tauri_plugin_opener::OpenerExt;
     let shown = url.as_str().to_string();
@@ -452,6 +466,50 @@ mod tests {
         assert!(
             src.contains("silent_cmd("),
             "Windows 截屏应通过 bot::procs::silent_cmd 拉起（带 CREATE_NO_WINDOW）"
+        );
+    }
+
+    /// open_url 的准入门失败分两级：**策略拒绝**（WARN）与 **DNS 解析失败**（ERROR）。
+    ///
+    /// 混成一个 denied 会把真实网络故障降级成「换个 url 重试」——模型看不到
+    /// 「这是故障」，只会换个地址再来一轮。
+    #[test]
+    fn open_url_gate_failures_are_not_all_denied() {
+        use crate::audit::AuditLevel;
+        use crate::bot::registry::ToolStatus;
+        use crate::bot_web::UrlGateError;
+
+        let denied = open_url_gate_result(&UrlGateError::Denied {
+            reason: "[web] 已拒绝访问本机/内网地址".to_string(),
+        });
+        assert_eq!(
+            denied.status,
+            ToolStatus::Denied,
+            "策略拒绝是「工具没执行」，必须是 Denied"
+        );
+        assert_eq!(
+            AuditLevel::from_tool_status(denied.status),
+            AuditLevel::Warn,
+            "策略拒绝是预期内控制流，审计记 WARN"
+        );
+
+        let unresolved = open_url_gate_result(&UrlGateError::Unresolved {
+            reason: "[web] 域名解析失败：os error 11001".to_string(),
+        });
+        assert_eq!(
+            unresolved.status,
+            ToolStatus::Error,
+            "DNS 解析失败是执行故障，必须是 Error（不能降级成 Denied）"
+        );
+        assert_eq!(
+            AuditLevel::from_tool_status(unresolved.status),
+            AuditLevel::Error,
+            "DNS 解析失败必须记 ERROR——与同因的 fetch_url 同级"
+        );
+        assert!(
+            unresolved.text.contains("域名解析失败"),
+            "模型要看到真实原因：{}",
+            unresolved.text
         );
     }
 

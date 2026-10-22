@@ -241,7 +241,7 @@ async fn fetch_bytes(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
         let u = url::Url::parse(&cur).map_err(|e| format!("网址无效：{cur}（{e}）"))?;
         let addrs = crate::bot_web::check_public_url(&u)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.gate_message())?;
         let client = crate::bot_web::http_client_pinned(&u, &addrs).map_err(|e| e.to_string())?;
         let resp = client
             .get(u.clone())
