@@ -1242,9 +1242,17 @@ pub(crate) fn do_start<R: tauri::Runtime>(
         // 先判定、后停止：停了之后状态必然是 Exited、退出码必然是停止手段的
         // （Windows 上 taskkill /F = 1），那时候再读状态就归因错了——
         // 「我们超时杀的」会被说成「它启动后立即退出（退出码 1）」。
-        let snapshot = resolve_ready_failure(&entry, || {
-            // 停不掉也要看得见：审计里有 service.stop_failed，这里再留一行诊断
-            if let Err(e) = stop_entry(app, &entry, reason) {
+        // 停止的**真实结果**也要进文案：停不掉就不能说「已停止」。
+        let mut stop_note = String::from("已停止");
+        let snapshot = resolve_ready_failure(&entry, || match stop_entry(app, &entry, reason) {
+            Ok(o) if o.stopped => {}
+            Ok(o) if o.method == "already_exited" => stop_note = "已退出".to_string(),
+            Ok(o) => {
+                stop_note = format!("停止未确认（method={}，进程可能仍在运行）", o.method);
+            }
+            Err(e) => {
+                stop_note = format!("停止失败：{e}（进程仍在运行）");
+                // 停不掉也要看得见：审计里有 service.stop_failed，这里再留一行诊断
                 eprintln!("[bot::services] 就绪超时的服务收不掉：{e}");
             }
         });
@@ -1274,6 +1282,7 @@ pub(crate) fn do_start<R: tauri::Runtime>(
             &snapshot,
             violation.as_ref(),
             req.ready_timeout_secs,
+            &stop_note,
         );
         let msg = ready_failure_message(&req.command, &failure, &detail);
         crate::audit::write_event(
@@ -1350,8 +1359,11 @@ enum ReadyFailure {
     BadPattern(String),
     /// 进程自己退了（退出码是它自己的）
     ExitedEarly { exit_code: Option<i32> },
-    /// 等超时了（是我们停的）
-    TimedOut { timeout_secs: u64 },
+    /// 等超时了（是我们停的）——`stop_note` 说的是停止的**真实结果**
+    TimedOut {
+        timeout_secs: u64,
+        stop_note: String,
+    },
 }
 
 /// 取停止前的状态快照（纯读，不改状态）。
@@ -1381,6 +1393,7 @@ fn classify_ready_failure(
     snapshot: &ReadyFailureSnapshot,
     violation: Option<&Violation>,
     timeout_secs: u64,
+    stop_note: &str,
 ) -> ReadyFailure {
     if let Some(v) = violation {
         return ReadyFailure::Violation(v.clone());
@@ -1391,7 +1404,10 @@ fn classify_ready_failure(
         _ if snapshot.exited_early => ReadyFailure::ExitedEarly {
             exit_code: snapshot.exit_code,
         },
-        _ => ReadyFailure::TimedOut { timeout_secs },
+        _ => ReadyFailure::TimedOut {
+            timeout_secs,
+            stop_note: stop_note.to_string(),
+        },
     }
 }
 
@@ -1420,9 +1436,10 @@ fn ready_failure_message(command: &str, failure: &ReadyFailure, detail: &str) ->
             Some(c) => format!("服务「{command}」启动后立即退出（退出码 {c}）。{detail}"),
             None => format!("服务「{command}」启动后立即退出。{detail}"),
         },
-        ReadyFailure::TimedOut { timeout_secs } => {
-            format!("服务「{command}」在 {timeout_secs}s 内未就绪，已停止。{detail}")
-        }
+        ReadyFailure::TimedOut {
+            timeout_secs,
+            stop_note,
+        } => format!("服务「{command}」在 {timeout_secs}s 内未就绪，{stop_note}。{detail}"),
     }
 }
 

@@ -1047,7 +1047,7 @@ fn ready_timeout_is_not_reported_as_exited_early() {
         snapshot.exit_code
     );
 
-    let failure = classify_ready_failure(&ReadyOutcome::TimedOut, &snapshot, None, 5);
+    let failure = classify_ready_failure(&ReadyOutcome::TimedOut, &snapshot, None, 5, "已停止");
     let msg = ready_failure_message("python", &failure, "");
     assert!(
         msg.contains("在 5s 内未就绪"),
@@ -1079,7 +1079,7 @@ fn exited_early_keeps_the_process_own_exit_code() {
     assert!(snapshot.exited_early, "它自己退了");
     assert_eq!(snapshot.exit_code, Some(3), "退出码是它自己的");
 
-    let failure = classify_ready_failure(&ReadyOutcome::Exited, &snapshot, None, 5);
+    let failure = classify_ready_failure(&ReadyOutcome::Exited, &snapshot, None, 5, "已停止");
     let msg = ready_failure_message("python", &failure, "");
     assert!(msg.contains("启动后立即退出"), "{msg}");
     assert!(msg.contains("退出码 3"), "{msg}");
@@ -1099,7 +1099,13 @@ fn port_violation_message_wins_over_timeout() {
         exited_early: false,
         exit_code: None,
     };
-    let failure = classify_ready_failure(&ReadyOutcome::TimedOut, &snapshot, Some(&violation), 5);
+    let failure = classify_ready_failure(
+        &ReadyOutcome::TimedOut,
+        &snapshot,
+        Some(&violation),
+        5,
+        "已停止",
+    );
     let msg = ready_failure_message("python", &failure, "");
     assert!(msg.contains("已被端口闸终止"), "{msg}");
     assert!(msg.contains("L1"), "{msg}");
@@ -1118,6 +1124,7 @@ fn bad_ready_pattern_is_not_reported_as_timeout() {
         &snapshot,
         None,
         30,
+        "已停止",
     );
     let msg = ready_failure_message("python", &failure, "");
     assert!(msg.contains("readyPattern"), "{msg}");
@@ -1259,4 +1266,32 @@ fn ready_timeout_end_to_end_is_not_reported_as_exited_early() {
         !err.contains("退出码"),
         "就绪超时不报退出码（那个码是我们停它时产生的，不是它自己的）：{err}"
     );
+}
+
+/// 回归：停不掉时不能报「已停止」。
+///
+/// 停止的真实结果要进文案：进程还在跑却说「已停止」，模型会以为服务已经
+/// 收干净了（下一轮换个端口重试 → 撞端口占用）。
+#[test]
+fn timeout_message_reports_the_real_stop_result() {
+    let snapshot = ReadyFailureSnapshot {
+        exited_early: false,
+        exit_code: None,
+    };
+
+    let stopped = classify_ready_failure(&ReadyOutcome::TimedOut, &snapshot, None, 5, "已停止");
+    let msg = ready_failure_message("python", &stopped, "");
+    assert!(msg.contains("在 5s 内未就绪，已停止"), "{msg}");
+
+    let failed = classify_ready_failure(
+        &ReadyOutcome::TimedOut,
+        &snapshot,
+        None,
+        5,
+        "停止失败：停不掉（进程仍在运行）",
+    );
+    let msg = ready_failure_message("python", &failed, "");
+    assert!(msg.contains("未就绪"), "{msg}");
+    assert!(!msg.contains("已停止"), "停不掉就不能说「已停止」：{msg}");
+    assert!(msg.contains("进程仍在运行"), "要说清进程还在：{msg}");
 }
