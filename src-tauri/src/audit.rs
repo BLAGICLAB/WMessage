@@ -495,6 +495,12 @@ fn mirror_error_log(bot_log_path: &std::path::Path, line: &str) -> bool {
     append_line(&error_path, line)
 }
 
+/// 读 error.log 尾部（倒序最新在前）——**路径参数化**：单测走 tempdir 隔离，
+/// 不受并行测试的审计写入污染（tauri command 本身读的是共享数据目录）。
+fn error_log_tail_from(path: &std::path::Path, limit: Option<usize>) -> CommandResult<String> {
+    crate::bot::config::audit::read_log_tail(path, limit)
+}
+
 /// 诊断卡读 error.log 尾部（倒序最新在前；默认 200 行上限 2000）。
 /// NotFound → 占位文案（日志确实没东西）；其他 IO 错误 → Err + ERROR 审计。
 /// 复用 bot_log 的 read_log_tail（同一行导向格式，同一容错语义）。
@@ -505,7 +511,7 @@ pub fn error_log_read<R: tauri::Runtime>(
     limit: Option<usize>,
 ) -> CommandResult<String> {
     let p = crate::db::data_dir(&app).join(ERROR_LOG_NAME);
-    match crate::bot::config::audit::read_log_tail(&p, limit) {
+    match error_log_tail_from(&p, limit) {
         Ok(s) => Ok(s),
         Err(e) => {
             let err = e.to_string();
@@ -1360,24 +1366,21 @@ mod tests {
 
     #[test]
     fn error_log_read_returns_tail_newest_first() {
-        let _serial =
-            crate::db::lock::lock_or_recover(&BOT_LOG_TEST_LOCK, "audit::BOT_LOG_TEST_LOCK");
-        let app = tauri::test::mock_app();
-        let dir = crate::db::data_dir(app.handle());
-        let err_log = dir.join("error.log");
-        let _ = std::fs::remove_file(&err_log);
+        // tempdir 隔离（与 logs_bundle_text 那条同一口径）：共享 data_dir 会被
+        // **并行测试**的审计写入镜像进同一个 error.log——「删掉后读回占位文案」
+        // 这条断言会被挤掉（别的模块正好写了一行 ERROR），与本用例要验的
+        // 「倒序最新在前」毫无关系，却会让门禁随机红。
+        let tmp = tempfile::tempdir().unwrap();
+        let bot = tmp.path().join("bot.log");
+        let err_log = tmp.path().join("error.log");
 
         // 无文件 → 占位文案
-        assert_eq!(
-            error_log_read(app.handle().clone(), None).unwrap(),
-            "（暂无日志）"
-        );
+        assert_eq!(error_log_tail_from(&err_log, None).unwrap(), "（暂无日志）");
 
-        // 并行测试的其他模块 Error 审计也可能镜像进同一共享 data_dir/error.log，
-        // 断言按内容定位而非计数（抗并发污染）；事件名带独特后缀防子串误配
-        write_at(&err_log, AuditLevel::Warn, "w1-ord", &[]);
-        write_at(&err_log, AuditLevel::Error, "e2-ord", &[]);
-        let s = error_log_read(app.handle().clone(), None).unwrap();
+        // WARN 先、ERROR 后 → 读回来是倒序（最新在前）
+        write_at(&bot, AuditLevel::Warn, "w1-ord", &[]);
+        write_at(&bot, AuditLevel::Error, "e2-ord", &[]);
+        let s = error_log_tail_from(&err_log, None).unwrap();
         let lines: Vec<&str> = s.lines().collect();
         let i_w = lines
             .iter()
@@ -1388,8 +1391,6 @@ mod tests {
             .rposition(|l| l.contains("ERROR | e2-ord"))
             .expect("e2 应在");
         assert!(i_e < i_w, "倒序最新在前: {s}");
-
-        std::fs::remove_file(&err_log).ok();
     }
 
     #[test]
