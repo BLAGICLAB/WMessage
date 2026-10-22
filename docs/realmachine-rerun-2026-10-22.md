@@ -19,10 +19,11 @@
 
 ## 一、换 exe
 
-### 1.1 mac 侧产物（2026-10-22 22:37 重建，SHA256 随文核对）
+### 1.1 mac 侧产物（2026-10-22 23:0x 重建，SHA256 随文核对）
 
 上一轮那份 `wmessage.exe`（SHA256 `adebd0d…`，基线 `a20f0ec3`）**跟着 `src-tauri/target/` 整个清掉了**——
-本机一度没有可拷的产物，照旧 SHA256 去核对会直接扑空。已重建：
+本机一度没有可拷的产物，照旧 SHA256 去核对会直接扑空。已重建两次，当前这份含 **D-11 修复**
+（`create_skill` 前置拒绝记 WARN 而非 ERROR）：
 
 ```
 /Users/renshi/Projects/wmessage/src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
@@ -30,10 +31,12 @@
 
 | 项 | 值 |
 |---|---|
-| 大小 | 74,635,241 B |
+| 大小 | 74,550,625 B |
 | 格式 | `PE32+ executable (GUI) x86-64 (stripped to external PDB), for MS Windows` |
-| SHA256 | `e24a91b1b940d06b4ca67cf42954b2c3d0af3d7bc2d5cc65e3634ad5dc7c43a6` |
-| 构建基线 | `1b44d38e`（含 D-1 / D-2 / D-6 / D-7 / D-8 五项修复 + 本轮探针与对拍改动） |
+| SHA256 | `4fc1cdad5b4239cc9a0f7f96d413616bf7ed78d262c61644d7188a8b607a982e` |
+| 构建基线 | `76dc0335`（含 D-1 / D-2 / D-6 / D-7 / D-8 五项修复 + **D-11** + 本轮探针与对拍改动） |
+
+> 中间还有一份 `e24a91b1…`（74,635,241 B，基线 `1b44d38e`）——**不含 D-11**，已被本次替换，别再用。
 
 重建命令（换机器或产物再丢时用）：
 
@@ -44,18 +47,23 @@ npx tauri build --target x86_64-pc-windows-gnu --no-bundle
 shasum -a 256 src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
 ```
 
-> 大小与上一份**一模一样**（74,635,241 B）——所以别拿大小当校验，认 SHA256。
+> 大小**不能**当校验依据——同一份源码的两次构建差过 85 KB（74,635,241 → 74,550,625），
+> 认 SHA256。
 
-把 `wmessage.exe` 拷到 Windows 机器上，
-**替换 `D:\Program Files\wmessage-portable-2026-10-22\wmessage.exe`**。
+把 `wmessage.exe` 拷到 Windows 机器上，**替换绿色包里的 `wmessage.exe`**。
 
 > **只换 exe**：绿色包里其余内容（`dotnet/`、`onnxruntime.dll`、模型目录、WebView2 运行时）
 > 本轮没动，不用重新出包。
 
+> **绿色包放在哪**：2026-10-22 22:45 那次跑的是 `C:\wmessage-portable-2026-10-22`
+> （`app_data_dir | path=C:\wmessage-portable-2026-10-22`）——从 `D:\Program Files` 挪到了
+> `C:\`，因为 `Program Files` 普通账号写不进去。**下面所有命令里的 `$PKG` 都指你实际放的目录**，
+> 换机器时改这一处即可。
+
 ### 1.2 Windows 侧替换步骤
 
 ```powershell
-$PKG = "D:\Program Files\wmessage-portable-2026-10-22"
+$PKG = "C:\wmessage-portable-2026-10-22"   # 按你实际放的位置改
 
 # 1) 确认应用没在跑（否则 exe 被占着，换不进去）
 Get-Process -Name wmessage -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
@@ -66,9 +74,9 @@ Copy-Item "$PKG\wmessage.exe" "$PKG\wmessage.exe.bak-2026-10-22" -Force
 # 3) 替换（把拷过去的 wmessage.exe 放到 $PKG 下再执行）
 Copy-Item "D:\transfer\wmessage.exe" "$PKG\wmessage.exe" -Force
 
-# 4) 校验：认 SHA256（大小与旧版相同，不能拿大小当校验）
+# 4) 校验：认 SHA256（大小不能当校验依据）
 Get-FileHash "$PKG\wmessage.exe" -Algorithm SHA256 |
-  Select-Object Hash   # 期望 e24a91b1b940d06b4ca67cf42954b2c3d0af3d7bc2d5cc65e3634ad5dc7c43a6
+  Select-Object Hash   # 期望 4fc1cdad5b4239cc9a0f7f96d413616bf7ed78d262c61644d7188a8b607a982e
 ```
 
 ### 1.3 重启应用
@@ -80,12 +88,16 @@ Get-FileHash "$PKG\wmessage.exe" -Algorithm SHA256 |
 
 ```powershell
 $PS  = "D:\wmessage-probe\regression-probe.ps1"
-$PKG = "D:\Program Files\wmessage-portable-2026-10-22"
+$PKG = "C:\wmessage-portable-2026-10-22"
 powershell -ExecutionPolicy Bypass -File $PS locate -ExeDir $PKG
 ```
 
 > `locate` 会打出活的 `data_dir`（便携目录 vs `%APPDATA%` 回退）。
 > **后面所有读日志的命令都以它打出的目录为准**，不要默认就在 exe 同目录。
+>
+> **顺带确认模型可用**：换包不换配置——绿包里的 `bot-config.json` 可能还记着已下线的
+> `MiniMax-M2`，一开口就 404（S01 第一发就栽在这，见主文档 §1.5 的那条备注）。
+> **测任何要模型回话的场景前，先在设置页确认激活的模型。**
 
 ## 二、先跑这 6 项（修过的那几个）
 
@@ -166,13 +178,15 @@ powershell -ExecutionPolicy Bypass -File $PS fixes -ExeDir $PKG
 
 **判据**：PASS = **桌面上不再闪出 PowerShell 控制台窗口**（2026-10-22 那次每次截屏都闪一个）。
 
-### 2.5 D-1 · 面板不再显示构建机路径
+### 2.5 D-1 · 面板不再显示构建机路径（**2026-10-22 22:45 已复验转 PASS**）
 
-**步骤**：设置页 →「MCP 服务器」，看内置 Playwright 那条的包路径。
+**已验到的证据**：`mcp.builtin_materialized | id: builtin-playwright | name: Playwright | 包: C:\wmessage-portable-2026-10-22\playwright-mcp（就位）`——路径指向**本包目录**、状态是「就位」，构建机 macOS 绝对路径不再泄漏。
 
-**判据**：PASS = 路径指向 `D:\Program Files\wmessage-portable-2026-10-22\playwright-mcp`
+**回归确认**（换新包后顺手看一眼）：设置页 →「MCP 服务器」，看内置 Playwright 那条的包路径。
+
+**判据**：PASS = 路径指向**当前绿色包目录**下的 `playwright-mcp`（即 `$PKG\playwright-mcp`）
 或明确说「未随包分发」，**不得**出现 `/Users/...` 这样的 macOS 路径。
-探针的 `fixes` 子命令也会扫 `bot.log` 里的 `/Users/`、`/home/<user>/` 泄漏（应为空）。
+探针的 `fixes` 子命令会扫 `bot.log` 里的 `/Users/`、`/home/<user>/` 泄漏（应为空）。
 
 ### 2.6 W03 · 端口闸在 Windows 上只诊断且明说（回归确认）
 

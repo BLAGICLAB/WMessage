@@ -255,7 +255,8 @@ cmd_fixes() {
     while IFS= read -r p; do
       [ -n "$p" ] || continue
       if [ ! -e "$p" ]; then
-        leaks="  [!] 指向本机不存在的路径（构建机路径泄漏）：$p
+        leaks="  [!] 路径在本机不存在：$p
+         （要么包没随包分发，要么这个路径是别的机器留下的——对照上一行应用自己写的状态）
 "
       fi
     done <<<"$(printf '%s\n' "$mats" | sed -n 's/.*包: \(.*\)（.*/\1/p')"
