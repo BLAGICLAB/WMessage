@@ -506,6 +506,44 @@ async fn execute_tool_impl(
         // 触顶拒绝新调用（模型收到后自然收尾；墙钟/轮数两顶在 runner 侧）。
         // 原子 check-and-increment（ 采纳）：load→比较→add 三步在并行
         // tool_call 下可同时通过——fetch_update 保证「仅 prev<max 时 +1」原子完成。
+        //
+        // 软墙钟先判：剩余预算进入预留窗口后，工具数还有没有剩都不重要了——
+        // 这一刻该做的是收尾，不是继续探索。放在预算闸之前还有一层意义：
+        // 软墙钟拒的调用不消耗工具数配额（配额留给收尾那一轮）。
+        let remaining = ctx
+            .wall_deadline
+            .saturating_duration_since(std::time::Instant::now());
+        let reserve_secs =
+            crate::bot::params::subagent_wall_reserve_secs(ctx.budget.max_wall_seconds);
+        let reserve = std::time::Duration::from_secs(reserve_secs);
+        if remaining <= reserve {
+            let mut wall_kv: Vec<(&str, String)> = vec![
+                ("subagent_id", ctx.subagent_id.clone()),
+                ("remaining_secs", remaining.as_secs().to_string()),
+                ("reserve_secs", reserve_secs.to_string()),
+                ("max_wall_seconds", ctx.budget.max_wall_seconds.to_string()),
+            ];
+            wall_kv.extend(trace_kv(trace, session_id));
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "subagent_wall_soft_stop",
+                &wall_kv,
+            );
+            let ret_kv = tool_return_kv(
+                name,
+                "subagent_wall_soft_stop",
+                start.elapsed().as_millis() as u64,
+                session_id,
+                trace,
+            );
+            crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
+            return crate::bot::registry::ToolResult::denied(format!(
+                "⚠️ 时间预算即将耗尽（剩余约 {}s，预留收尾窗口 {}s）：停止新探索，把已拿到的结果整理出来，按任务包装末尾的 schema 输出收尾 JSON。",
+                remaining.as_secs(),
+                reserve_secs
+            ));
+        }
         let max = ctx.budget.max_tool_calls as usize;
         let acquired = ctx
             .used_tool_calls
@@ -1295,6 +1333,12 @@ mod pre_tool_hook_tests {
                     "⚠️ 工具「create_task」的 arguments 不是合法 JSON，已拒绝执行（未做任何改动）：expected value。",
                 ),
             ),
+            (
+                "墙钟收尾窗",
+                ToolResult::denied(
+                    "⚠️ 时间预算即将耗尽（剩余约 60s，收尾预留窗口 60s）：停止新探索，把已拿到的结果整理出来，按任务包装末尾的 schema 输出收尾 JSON。",
+                ),
+            ),
         ];
         for (label, r) in &cases {
             assert_eq!(
@@ -1342,13 +1386,13 @@ mod pre_tool_hook_tests {
             !production.contains("ToolResult::warn("),
             "dispatch 的生产代码不得构造 ToolResult::warn（会把「没执行」记成成功）"
         );
-        // 7 处：pre_tool 钩子拒绝 / 规则 deny / 确认被拒 / skill 熔断 /
-        // 子 agent 白名单外 / 预算触顶 / arguments 非法 JSON。
+        // 8 处：pre_tool 钩子拒绝 / 规则 deny / 确认被拒 / skill 熔断 /
+        // 子 agent 白名单外 / 预算触顶 / arguments 非法 JSON / 墙钟收尾窗。
         // 数量变了请同步本测试与 every_gate_denial_* 的用例表。
         assert_eq!(
             production.matches("ToolResult::denied(").count(),
-            7,
-            "门禁早退点应恰好 7 处"
+            8,
+            "门禁早退点应恰好 8 处"
         );
     }
 

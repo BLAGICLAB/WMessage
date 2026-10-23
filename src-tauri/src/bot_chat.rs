@@ -1227,6 +1227,8 @@ async fn bot_chat_inner(
         // 失败轨迹也要落 trace：熔断/API 失败时把已跑出的轮数工具数交回，
         // 否则 trace 记 turns=0（跑满 50 轮撞熔断那次实测就是 0）
         Some(&failed_trace),
+        // 主聊天不参与子 agent 墙钟治理
+        None,
     )
     .await;
     // 「已吸收」的 id 交出去，不在这里记：谁送达、谁记。
@@ -1911,6 +1913,8 @@ async fn run_task_in_chat_impl(
                 model,
                 None, // per-onion 温度覆盖：任务执行链路不挂
                 Some(&failed_for_run),
+                // 任务执行链路不参与子 agent 墙钟治理
+                None,
             )
             .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）

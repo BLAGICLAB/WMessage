@@ -1723,7 +1723,11 @@ mod task_patch_tests {
         let b = row.budget.as_ref().unwrap();
         assert_eq!(b.max_turns, 50, "上超钳到硬顶");
         assert_eq!(b.max_tool_calls, 1, "下超钳到下限");
-        assert_eq!(b.max_wall_seconds, 1, "下超钳到下限");
+        // 墙钟下界与配置键同源（30s）——「1 秒墙钟」等于白派一个子 agent
+        assert_eq!(
+            b.max_wall_seconds, 30,
+            "下超钳到墙钟下限（与 subagent.max_wall_secs 同源）"
+        );
     }
 
     /// budget/result 列损坏 → 兜底 None + 行仍可读（同 subtasks/files 契约）

@@ -69,6 +69,15 @@ pub struct SubagentSessionCtx {
     /// 此前轮数完全不落任何地方，主 agent 只能靠轮询猜子 agent 在不在推进。
     /// 强制点仍在 run_model_loop_core 的 max_rounds 熔断，这里只是仪表读数。
     pub used_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 墙钟**绝对期限**（子 agent 进入 running 的那一刻算起，排队时间不计）。
+    ///
+    /// 存在的理由是软墙钟要在**工具调用边界**检查剩余预算：剩余进入预留
+    /// 窗口就拒绝新调用，让模型把已有产出整理成收尾 JSON——而不是等到外层
+    /// 墙钟掐断整条 future，连已经说出口的正文一起丢掉。
+    ///
+    /// 用绝对期限而不是「每次调用重算剩余秒数」：闸在热路径上每次调用都得
+    /// 重新推导预算，起点漂移就等于没有统一口径。
+    pub wall_deadline: std::time::Instant,
 }
 
 static SUBAGENT_SESSIONS: OnceLock<std::sync::Mutex<HashMap<String, SubagentSessionCtx>>> =
@@ -200,6 +209,7 @@ mod tests {
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         }
     }
 

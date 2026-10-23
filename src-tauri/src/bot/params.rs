@@ -86,6 +86,21 @@ pub fn clamp_subagent_max_wall_secs(n: u64) -> u64 {
     n.clamp(SUBAGENT_MAX_WALL_SECS_MIN, SUBAGENT_MAX_WALL_SECS_MAX)
 }
 
+/// 软墙钟的**收尾预留窗口**（秒）：墙钟预算的 10%，下限 30s。
+///
+/// 业界口径是「软顶在边界检查 + 为收尾预留一段预算」：最后这段预算专门留给
+/// 「模型把已经拿到的结果整理成收尾 JSON」。不留这段，跑到临近上限的子
+/// agent 会被外层墙钟硬杀——正在跑的工具、已经说出口的正文一起没了。
+///
+/// 与硬墙钟的分工：软墙钟只**拒绝新调用**（不打断在飞工具），硬墙钟是绝对
+/// 兜底。预留窗口是软的，因此这里给的是下限而非精确比例。
+pub fn subagent_wall_reserve_secs(budget_secs: u64) -> u64 {
+    (budget_secs / 10).max(SUBAGENT_WALL_RESERVE_MIN_SECS)
+}
+
+/// 收尾预留窗口下限（秒）：预算很小时 10% 不够模型跑完最后一轮
+pub const SUBAGENT_WALL_RESERVE_MIN_SECS: u64 = 30;
+
 /// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）
 pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;
 /// 联网搜索结果条数下界（0 条搜索无意义）

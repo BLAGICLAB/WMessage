@@ -449,6 +449,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
+            wall_budget: None,
             session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),
@@ -471,6 +472,7 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
+            wall_budget: None,
             session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),
@@ -676,6 +678,7 @@ async fn turn_status_and_tool_running_events_are_emitted_in_order() {
         emit: &*emit,
         on_round: &|_| {},
         turn_status: Some(&*turn_status),
+        wall_budget: None,
         ..h.deps()
     };
 
@@ -737,6 +740,7 @@ async fn turn_status_is_interrupted_when_stopped() {
     let deps = ModelLoopDeps {
         on_round: &|_| {},
         turn_status: Some(&*turn_status),
+        wall_budget: None,
         ..h.deps()
     };
 

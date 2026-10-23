@@ -133,13 +133,19 @@ impl Default for SubagentBudget {
 }
 
 impl SubagentBudget {
-    /// 预算钳制：turns 硬顶 50、tool_calls/wall 下限 1。
+    /// 预算钳制：turns 硬顶 50、tool_calls 下限 1、wall 钳 30..=3600。
     /// **所有持久化写口（spawn / task_patch）必须过本函数**——字段是 pub 的，
     /// 构造侧不受限，钳制契约靠两个写口强制（防 task_patch 旁路）。
+    ///
+    /// 墙钟的上界原先只钳「≥1 秒」，于是**两条路两个闸**：配置键走
+    /// `clamp_subagent_max_wall_secs`（30..=3600），LLM 在 `spawn_subagent` 里
+    /// 显式给的 `maxWallSeconds` 只钳下限——墙钟的实际硬顶由调用方说了算。
+    /// 现在两路同源：不管预算从配置、调用方还是默认值来，**在校验边界处钳一次**。
     pub fn clamped(mut self) -> Self {
         self.max_turns = clamp_subagent_max_turns(self.max_turns);
         self.max_tool_calls = self.max_tool_calls.max(1);
-        self.max_wall_seconds = self.max_wall_seconds.max(1);
+        self.max_wall_seconds =
+            crate::bot::params::clamp_subagent_max_wall_secs(self.max_wall_seconds);
         self
     }
 }

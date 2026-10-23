@@ -659,6 +659,49 @@ pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
 /// 还原 `budget_exceeded`（见 bot_orchestrator::classify_outcome）。
 pub(crate) const ROUNDS_FUSE_MARKER: &str = "⏹ 已熔断（轮数上限）";
 
+/// 墙钟熔断标记。子 agent 侧据此还原 `budget_exceeded(max_wall_seconds)`
+/// 并**保留熔断前的正文**（与轮数熔断同款：同一个「预算触顶」，一个留产
+/// 一个不留，没有理由）。
+pub(crate) const WALL_FUSE_MARKER: &str = "⏹ 已熔断（墙钟上限）";
+
+/// 子 agent 墙钟预算（传进模型循环，让循环能在**轮边界**上做两件事）。
+///
+/// **软墙钟**：剩余进入收尾预留窗口就提醒模型停止展开新步骤、赶紧输出收尾
+/// JSON——模型还有一次完整轮次产出结构化结果。
+///
+/// **墙钟熔断**：期限到了就在轮边界带着最后一轮正文退出，而不是让外层
+/// `tokio::time::timeout` 把整条 future 掐掉——掐掉时正在跑的工具、已经说
+/// 出口的正文一起没了（业界口径：kills are last resorts，预算停止是设计好的
+/// 落地而不是失败）。
+///
+/// 用**绝对期限**而不是「每轮重算剩余秒数」：每层各算一份，起点漂移就等于
+/// 没有统一口径（gRPC deadline 纪律）。
+#[derive(Debug, Clone, Copy)]
+pub struct WallBudget {
+    /// 绝对期限（子 agent 进入 running 起算，排队时间不计）
+    pub deadline: std::time::Instant,
+    /// 收尾预留窗口：最后这段预算专门留给「把已有产出整理成收尾 JSON」
+    pub reserve: std::time::Duration,
+    /// 墙钟上限（秒）——只用于文案与审计留痕
+    pub max_wall_seconds: u64,
+}
+
+impl WallBudget {
+    /// 剩余时间（已过期的返回 0）
+    pub fn remaining(&self) -> std::time::Duration {
+        self.deadline
+            .saturating_duration_since(std::time::Instant::now())
+    }
+    /// 是否进入收尾预留窗口
+    pub fn in_reserve(&self) -> bool {
+        self.remaining() <= self.reserve
+    }
+    /// 是否已过期限
+    pub fn expired(&self) -> bool {
+        std::time::Instant::now() >= self.deadline
+    }
+}
+
 /// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
@@ -817,6 +860,18 @@ pub(crate) fn fuse_message(final_text: &str, hint: &str, cap: usize) -> String {
 pub(crate) fn rounds_fuse_message(partial: &str, hint: &str, max_rounds: usize) -> String {
     format!(
         "{partial}\n\n{ROUNDS_FUSE_MARKER}：对话轮数超过 {max_rounds} 轮上限（安全保护），已停止后续执行{hint}"
+    )
+}
+
+/// 墙钟熔断返回消息：与 `rounds_fuse_message` 同源（都带上熔断前的正文），
+/// 只是口径不同——轮数熔断是「轮」，墙钟熔断是「秒」。
+///
+/// 带正文是关键：墙钟触达时子 agent 可能已经跑了几十分钟、产出齐了，
+/// 只留一句「墙钟预算触达」等于把这段时间的产出全丢掉，父 agent 只能
+/// 从零重烧。
+pub(crate) fn wall_fuse_message(partial: &str, hint: &str, max_wall_seconds: u64) -> String {
+    format!(
+        "{partial}\n\n{WALL_FUSE_MARKER}：墙钟预算超过 {max_wall_seconds} 秒上限（安全保护），已停止后续执行{hint}"
     )
 }
 
@@ -982,6 +1037,9 @@ pub struct ModelLoopDeps<'a> {
     pub on_round: &'a (dyn Fn(usize) + Send + Sync),
     /// 回合状态变化出口（见 emit_turn_status）。传 None = 不发（测试直驱 core）。
     pub turn_status: Option<&'a (dyn Fn(TurnStatus, &str) + Send + Sync)>,
+    /// 子 agent 墙钟预算（软墙钟 + 墙钟熔断留产）。None = 不带墙钟
+    /// （主聊天、任务执行等链路不受墙钟治理）。
+    pub wall_budget: Option<WallBudget>,
     /// 本会话调用过的工具名（分「调用过」与「成功过」两档）——幻觉守卫「点名
     /// 判据」的排除集。
     ///
@@ -1276,6 +1334,9 @@ pub async fn run_model_loop(
     // 实测一次跑满 50 轮撞熔断的 255 秒执行，trace 里 turns=0/tools=0/tokens=0。
     // 想要失败轨迹也落库的调用方（trace 管道）传 Some 即可。
     failed_trace_out: Option<&std::sync::Arc<std::sync::Mutex<Option<LoopTrace>>>>,
+    // 子 agent 墙钟预算（软墙钟 + 墙钟熔断留产）。None = 不带墙钟治理
+    // （主聊天、任务执行等链路不参与子 agent 预算）。
+    wall_budget: Option<WallBudget>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     // 每卡模型覆盖优先：命中模型库条目则整组替换 base_url/model/协议/key
@@ -1493,6 +1554,7 @@ pub async fn run_model_loop(
                 serde_json::json!({ "status": status.as_str(), "detail": detail }),
             );
         }),
+        wall_budget,
         guard_claim_keywords: &guard_claim_keywords,
         // 本会话调用过的工具名（点名判据的排除集）：查库失败返 None
         // （= 查不到 → core 侧整档让开，查不到证据不等于有罪）。
@@ -1824,6 +1886,8 @@ where
     let mut soft_warn_sent: bool = false;
     // 轮数软警告同款：只发一次，发完不再打扰后续轮次
     let mut rounds_warn_sent: bool = false;
+    // 软墙钟提醒已注入（只一次）：进入收尾预留窗口时提醒一次，不重复刷屏
+    let mut wall_warn_sent: bool = false;
     // 防幻觉汇报守卫：本次提问是否实际执行过变更类工具（提问级一次置位、不按轮
     // 重置——后续正常汇报轮靠它放行，按轮重置会把改完再汇报的正常轮误判为幻觉）；
     // 补一轮机会（claim_retry）同样每次提问只用一次
@@ -1917,6 +1981,28 @@ where
     let mut body_outcome: Option<&'static str> = None;
     let body: Result<(String, Vec<TaskRef>), CommandError> = async {
     for round in 0..max_rounds {
+        // 墙钟熔断（轮边界检查）：期限已到就在这里退出，**带上上一轮的正文**。
+        //
+        // 为什么不交给外层的 tokio::timeout：timeout 掐掉整条 future 时，
+        // 正在跑的工具、已经说出口的正文、已落盘的产物全悬空——子 agent 跑
+        // 了几十分钟的产出归零，父 agent 只能从零重烧。轮边界退出与轮数熔断
+        // 同款：熔断是一种「设计好的落地」，不是失败。
+        if let Some(wb) = deps.wall_budget {
+            if wb.expired() {
+                let hint = skill_finish(false, "墙钟预算超限");
+                let kv: Vec<(&str, String)> = vec![
+                    ("max_wall_seconds", wb.max_wall_seconds.to_string()),
+                    ("round", round.to_string()),
+                    ("partial_chars", last_streamed.chars().count().to_string()),
+                ];
+                audit(crate::audit::AuditLevel::Warn, "fuse_wall", kv);
+                body_outcome = Some("fused");
+                return Ok((
+                    wall_fuse_message(&last_streamed, &hint, wb.max_wall_seconds),
+                    collected_refs,
+                ));
+            }
+        }
         // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
         // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
         // 本轮 msgs 总字符超阈值时记个 audit，不截断——便于后续评估是否要加主动压缩。
@@ -3605,6 +3691,30 @@ where
                 max_rounds,
                 rounds_left
             ));
+        }
+        // 软墙钟：剩余进入收尾预留窗口 → 提醒一次，让模型停止展开新步骤、
+        // 把已经拿到的结果整理成收尾 JSON（子 agent 按任务包装末尾的 schema）。
+        //
+        // 与轮数软警告同一位置注入（tool 响应全部回填之后）：此刻模型才看得见
+        // 新消息，提前注入会被当成上一轮的工具结果丢掉。
+        //
+        // 只提醒一次：反复刷同一条提醒只会挤占上下文，不会让模型更急着收尾。
+        if let Some(wb) = deps.wall_budget {
+            if !wall_warn_sent && wb.in_reserve() {
+                wall_warn_sent = true;
+                let remaining = wb.remaining().as_secs();
+                msgs.push(serde_json::json!({
+                    "role": "user",
+                    "content": format!(
+                        "【系统提示】时间预算即将耗尽（剩余约 {remaining} 秒，收尾预留窗口 {} 秒）：立刻停止展开新步骤——把已经拿到的结果整理出来收尾，子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。",
+                        wb.reserve.as_secs()
+                    ),
+                }));
+                audit_log(&format!(
+                    "wall_soft_warn | 剩余 {remaining}s，进入收尾预留窗口 {}s，追加收尾提醒",
+                    wb.reserve.as_secs()
+                ));
+            }
         }
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
         last_streamed = final_text.clone();

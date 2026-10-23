@@ -142,6 +142,11 @@ pub struct SpawnAck {
     /// 命中幂等键：返回的是**已在跑**的同一个子 agent，本次没有新建行、
     /// 也没有再起一个 runner。消费方据此区分「派发成功」与「重复派发未新建」。
     pub deduped: bool,
+    /// **生效**预算（钳制后的值，不是调用方给的值）。
+    ///
+    /// 回显给调用方是必须的：调用方给的墙钟可能被钳到 30..=3600，模型不知道
+    /// 自己的子 agent 最多能跑多久，就会按「我给了一小时」安排后续动作。
+    pub budget: SubagentBudget,
 }
 
 /// check 应答（设计 §5/§7：status/progress/result?/error?）。
@@ -262,12 +267,16 @@ pub(crate) fn spawn_subagent_locked(
         )
         .map_err(CommandError::DbError)?;
         if let Some(existing) = live {
+            // 回显**已在跑**那一条的生效预算，不是本次请求的——本次请求
+            // 根本没建行，它给的预算没有生效。
+            let existing_budget = budget_of_row(&existing);
             return Ok(SpawnAck {
                 subagent_id: existing.id,
                 task_id: existing.task_id,
                 trace_id: existing.trace_id,
                 status: existing.status,
                 deduped: true,
+                budget: existing_budget,
             });
         }
     }
@@ -311,7 +320,18 @@ pub(crate) fn spawn_subagent_locked(
         trace_id,
         status: SubagentStatus::Queued,
         deduped: false,
+        budget,
     })
+}
+
+/// 行上落盘的生效预算（读预算的唯一读法）：解析失败回落默认值。
+///
+/// 幂等命中时要用**已在跑**那条的预算回显——那才是真正生效的值。
+fn budget_of_row(row: &SubagentRow) -> SubagentBudget {
+    row.budget_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
 }
 
 /// 按 subagent_id / task_id / 子会话 id 解析行（设计 §5 双键 +  会话键：
@@ -774,7 +794,8 @@ pub(crate) fn extract_last_json_object(text: &str) -> Option<String> {
 }
 
 /// 收尾结果判定（纯函数，设计 §6/§7）：
-/// 墙钟触达 → budget_exceeded(max_wall_seconds)；轮数熔断 → budget_exceeded(max_turns)；
+/// 墙钟熔断 → budget_exceeded(max_wall_seconds) + 正文留产；
+/// 轮数熔断 → budget_exceeded(max_turns) + 正文留产；
 /// 其他循环错误 → failed；正文解析成功 → 模型自报 succeeded/failed（自报
 /// cancelled/budget_exceeded 视为 failed + error 说明）；解析失败 →
 /// failed + result_json_unparseable + 原文存 summary（部分结果不丢弃）。
@@ -787,7 +808,10 @@ pub(crate) fn classify_outcome(
     wall_exceeded: bool,
     final_text: Option<&str>,
 ) -> (SubagentStatus, Option<String>, Option<serde_json::Value>) {
+    let text = final_text.unwrap_or_default();
     if wall_exceeded {
+        // 外层墙钟兜底（future 被 timeout 掐掉）：正文随 future 一起没了，
+        // 没有可留的产出。常态路径是轮边界的墙钟熔断（下一条）——那边带正文。
         return (
             SubagentStatus::BudgetExceeded,
             Some("max_wall_seconds".into()),
@@ -801,7 +825,21 @@ pub(crate) fn classify_outcome(
             None,
         );
     }
-    let text = final_text.unwrap_or_default();
+    // 墙钟熔断（模型循环在轮边界退出，正文带着）：与轮数熔断同款留产。
+    //
+    // 必须判在 FUSE_MARKER 之前——墙钟标记是「⏹ 已熔断（墙钟上限）」，
+    // 而通用熔断标记是「⏹ 已熔断」，前者**包含**后者；判反了会被认成
+    // 工具调用熔断（max_tool_calls），真实原因「墙钟触顶」又被丢掉。
+    if text.contains(crate::bot_model_loop::WALL_FUSE_MARKER) {
+        return (
+            SubagentStatus::BudgetExceeded,
+            Some("max_wall_seconds".into()),
+            Some(serde_json::json!({
+                "summary": crate::bot::truncate_for_log(text, 800),
+                "note": "墙钟预算熔断，未产出收尾 JSON；以上为熔断前保留的最后一段正文"
+            })),
+        );
+    }
     // 轮数熔断：熔断出口返回 Ok，正文带 ROUNDS_FUSE_MARKER（见 bot_model_loop）。
     // 终态仍是 budget_exceeded，但正文不是丢弃而是存进 result_json.summary——
     // 跑完的那十几轮里查到的东西对父 agent 仍有价值（判断该不该原目标重试、
@@ -1718,11 +1756,7 @@ async fn run_subagent(
         );
         return;
     }
-    let budget: SubagentBudget = row
-        .budget_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
+    let budget: SubagentBudget = budget_of_row(&row);
 
     // 并发闸global 3 / per-session 2，超限等待不失败）。
     // 排队时间不计墙钟：max_wall_seconds 的 timeout 从 run_model_loop 起算（下方），
@@ -2030,6 +2064,10 @@ async fn run_subagent(
     // succeeded（父 agent 提示词教它「failed / budget_exceeded 都要读 error
     // 决定重试」，报成 succeeded 就不重试，产出残缺而无人知晓）。
     let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // 墙钟绝对期限：从**进入 running** 起算（排队时间不计，与现行口径一致）。
+    // 闸在 tool_guard 里按绝对期限算剩余——每层各算一份会漂。
+    let wall_deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(budget.max_wall_seconds.max(1));
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
         &session_id,
         crate::tool_guard::SubagentSessionCtx {
@@ -2041,6 +2079,7 @@ async fn run_subagent(
             artifact_dir: artifact_dir.clone(),
             used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
+            wall_deadline,
         },
     );
 
@@ -2196,6 +2235,15 @@ async fn run_subagent(
             .map(f64::from),
         // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
         None,
+        // 墙钟治理（软墙钟 + 墙钟熔断留产）：与上面 ctx 里的期限同一个绝对
+        // 时刻——两处各算一份，起点漂移就等于没有统一口径。
+        Some(crate::bot_model_loop::WallBudget {
+            deadline: wall_deadline,
+            reserve: std::time::Duration::from_secs(
+                crate::bot::params::subagent_wall_reserve_secs(budget.max_wall_seconds),
+            ),
+            max_wall_seconds: budget.max_wall_seconds,
+        }),
     );
     // runner panic 隔离（bot_scheduler 的既有范式）：panic 会跳过下面所有收尾
     // ——取消令牌反注册、状态落库、subagent-finished 事件——前端那一行永远转圈，
@@ -2276,9 +2324,11 @@ async fn run_subagent(
     }
     // 轮数熔断现在也走 Ok 出口（正文带 ROUNDS_FUSE_MARKER），机器验收必须把它
     // 排除掉：熔断行没有收尾 JSON，等于没交答卷，拿产物文件判它「未通过」只会
-    // 在正文里凭空多出一段子 agent 没说过的话。
+    // 在正文里凭空多出一段子 agent 没说过的话。墙钟熔断同理。
     let fused_on_rounds = matches!(&wall, Ok(Ok((text, _, _)))
         if text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER));
+    let fused_on_wall = matches!(&wall, Ok(Ok((text, _, _)))
+        if text.contains(crate::bot_model_loop::WALL_FUSE_MARKER));
     let final_text: String = match &wall {
         Ok(Ok((text, _, _))) => text.clone(),
         Ok(Err(e)) => format!("⚠️ 执行失败：{}", e.message()),
@@ -2287,7 +2337,7 @@ async fn run_subagent(
     // 机器可判定验收：verifier 收尾里的 met 是自述，服务端对「产物文件在不在」
     // 这类标准能自己判——判了才覆盖自评，并在正文里点名未通过项。
     // 只在跑完（有收尾 JSON）时判：预算触顶/异常退出的行没有验收可言。
-    let machine_verdicts = if matches!(wall, Ok(Ok(_))) && !fused_on_rounds {
+    let machine_verdicts = if matches!(wall, Ok(Ok(_))) && !fused_on_rounds && !fused_on_wall {
         eval_machine_criteria(&acceptance_criteria_of(&row), &artifact_dir)
     } else {
         Vec::new()
@@ -2887,16 +2937,23 @@ pub async fn tool_spawn_subagent(
 
 /// spawn 的工具回执文案。命中幂等键时要说清「没新建、还是那个」——
 /// 模型读到「已派发」会以为又多了一个子 agent，转述给用户时就会说错。
+///
+/// 回执里回显**生效**预算：调用方给的墙钟会被钳到 30..=3600，模型不知道它
+/// 的子 agent 最多能跑多久，就会照着自己给的数安排后续动作。
 fn spawn_receipt_text(ack: &SpawnAck) -> String {
+    let budget_note = format!(
+        "生效预算：墙钟 {}s / 轮数 {} / 工具调用 {}。",
+        ack.budget.max_wall_seconds, ack.budget.max_turns, ack.budget.max_tool_calls
+    );
     if ack.deduped {
         format!(
-            "同一目标已有在跑的子 agent，未重复派发：subagentId={} status={}。继续用 check_subagent 轮询它。",
+            "同一目标已有在跑的子 agent，未重复派发：subagentId={} status={}。{budget_note}继续用 check_subagent 轮询它。",
             ack.subagent_id,
             ack.status.as_str()
         )
     } else {
         format!(
-            "已派发子 agent（非阻塞）：subagentId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
+            "已派发子 agent（非阻塞）：subagentId={} status={}。{budget_note}用 check_subagent 轮询结果，先继续回应用户。",
             ack.subagent_id,
             ack.status.as_str()
         )
@@ -3782,6 +3839,7 @@ mod orchestrator_tests {
             artifact_dir: std::path::PathBuf::from("/tmp/art_c1"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         };
         assert_eq!(
             ctx.used_tool_calls
@@ -4477,10 +4535,13 @@ mod orchestrator_tests {
             trace_id: "trc_x".into(),
             status: SubagentStatus::Queued,
             deduped: false,
+            budget: SubagentBudget::default(),
         };
         let fresh = spawn_receipt_text(&ack);
         assert!(fresh.contains("已派发子 agent"), "{fresh}");
         assert!(fresh.contains("sa_x"), "{fresh}");
+        // 回执必须带生效预算——模型不知道墙钟被钳过，就会按自己给的数安排动作
+        assert!(fresh.contains("生效预算"), "{fresh}");
 
         let deduped = SpawnAck {
             deduped: true,
@@ -4534,7 +4595,8 @@ mod orchestrator_tests {
         }));
         assert_eq!(b.max_turns, MAX_TURNS_HARD_CAP);
         assert_eq!(b.max_tool_calls, 1);
-        assert_eq!(b.max_wall_seconds, 1);
+        // 墙钟下界与配置键同源（30s）——「1 秒墙钟」等于白派一个子 agent
+        assert_eq!(b.max_wall_seconds, 30);
         assert_eq!(
             clamp_budget(None),
             SubagentBudget {
@@ -4543,6 +4605,24 @@ mod orchestrator_tests {
                 max_wall_seconds: 600
             }
         );
+    }
+
+    /// 墙钟的硬顶必须与配置键走同一组常量——两条路两个闸时，LLM 显式给的
+    /// `maxWallSeconds=999999` 会原样生效，墙钟实际由调用方说了算。
+    #[test]
+    fn budget_wall_clock_is_capped_at_the_same_bound_as_config() {
+        let too_big = clamp_budget(Some(SubagentBudget {
+            max_turns: 30,
+            max_tool_calls: 100,
+            max_wall_seconds: 999_999,
+        }));
+        assert_eq!(
+            too_big.max_wall_seconds,
+            crate::bot::params::SUBAGENT_MAX_WALL_SECS_MAX
+        );
+        // 配置键路径给同一个数，钳完必须一模一样
+        let via_config = crate::bot::params::clamp_subagent_max_wall_secs(999_999);
+        assert_eq!(too_big.max_wall_seconds, via_config);
     }
 
     #[test]
@@ -4718,6 +4798,7 @@ mod orchestrator_tests {
                 artifact_dir: std::path::PathBuf::from("/tmp/art_rounds"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+                wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
             },
         );
         let running = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
@@ -4761,6 +4842,7 @@ mod orchestrator_tests {
                 artifact_dir: std::path::PathBuf::from("/tmp/art_view"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+                wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
             },
         );
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)
@@ -4797,6 +4879,7 @@ mod orchestrator_tests {
                     artifact_dir: std::path::PathBuf::from("/tmp/art_drop"),
                     used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(7)),
+                    wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
                 },
             );
             let row = crate::db::load_subagent(&conn, &ack.subagent_id)

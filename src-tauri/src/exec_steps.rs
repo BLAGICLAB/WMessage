@@ -266,6 +266,7 @@ async fn run_step(
         None, // 每卡模型覆盖：逐步执行链路不挂
         None, // per-onion 温度覆盖：逐步执行链路不挂
         None, // 失败明细出口：逐步执行不落 exec_traces，无需回传
+        None, // 逐步执行链路不参与子 agent 墙钟治理
     )
     .await?;
     park(
