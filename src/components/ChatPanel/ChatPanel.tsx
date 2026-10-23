@@ -698,9 +698,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   const resumeAllInflight = useCallback(async () => {
     try {
       const runs = await streamState.fetchInflightRuns();
-      for (const r of runs) {
-        await resumeInflight(r.sessionId);
-      }
+      // 各会话的回灌互不依赖（各自的 meta 与游标），并行即可
+      await Promise.all(runs.map((r) => resumeInflight(r.sessionId)));
     } catch {
       // 问不到在途列表就当没有（后端老版本没有这个命令时同理）
     }
