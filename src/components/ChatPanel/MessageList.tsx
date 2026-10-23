@@ -4,7 +4,7 @@
 // RichText 的 markdown 解析是重活，N 条消息 × 每帧一次的全列表重渲染是
 // 长会话掉帧主因）。回调句柄由父级 useCallback 固定，memo 浅比较即可命中。
 
-import { memo, useMemo, useState, type ComponentType } from "react";
+import { memo, useMemo, useRef, useState, type ComponentType } from "react";
 import {
   Bot,
   Check,
@@ -27,6 +27,7 @@ import type { SubagentRun } from "./ContextRail";
 import { Fold } from "./Fold";
 import { LiveIndicator } from "./LiveIndicator";
 import { RichText } from "./RichText";
+import { useStickyBubbleWidth } from "./stickyBubbleWidth";
 import { SubagentStrip } from "./SubagentStrip";
 import { UserBubbleContent } from "./UserBubbleContent";
 import { fmtElapsed, useElapsed } from "./useElapsed";
@@ -97,6 +98,10 @@ function MsgBubbleBase({
   // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）；
   // 流式末条气泡每帧重渲染，useMemo 让路径正则只在内容变化时重跑
   const fps = useMemo(() => extractFilePaths(m.content), [m.content]);
+  // 气泡宽度只增不减：工具行「正在跑 xxx」撑宽、跑完缩回，同一条回复宽度反复跳
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  const colRef = useRef<HTMLDivElement | null>(null);
+  useStickyBubbleWidth(bubbleRef, colRef);
   const hasContent = !!m.content.trim();
   const showActions =
     m.role === "assistant" &&
@@ -135,6 +140,7 @@ function MsgBubbleBase({
       {/* 归属头像：谁说的这条消息，悬停出姓名（ActorAvatar 自带 title） */}
       <ActorAvatar bot={m.role === "assistant"} size={24} />
       <div
+        ref={m.role === "assistant" ? colRef : undefined}
         className={
           m.role === "user"
             ? "max-w-[85%] min-w-0"
@@ -142,6 +148,7 @@ function MsgBubbleBase({
         }
       >
         <div
+          ref={m.role === "assistant" ? bubbleRef : undefined}
           className={`chat-bubble text-xs leading-relaxed whitespace-pre-wrap break-words ${
             m.role === "user" ? "chat-bubble-user" : "chat-bubble-bot"
           }`}
