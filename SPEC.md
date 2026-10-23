@@ -154,6 +154,7 @@ macOS），内置大模型机器人管理任务，向上长出子 Agent、任务
 - SQLite（WAL + busy_timeout 2s）单写者行级增量读写；主窗 `mutate()` diff 落盘广播 `tasks-changed`，后端 diff 上报；迁移链自动导入 data.json 旧数据（localStorage 迁移已删）
 - **本地 HTTP API**（tiny_http + SSE + token 鉴权）：启停/状态/换 token，供外部集成
 - 便携模式：数据库随 exe 走（exe 目录锚定，不可写兜底 app_data_dir）；Windows 绿色 zip + macOS dmg（Intel/Apple Silicon）
+- **交付给用户的产物不带「来自互联网」标记**（2026-10-23）：Windows 上复制文件会连带复制 Zone.Identifier 备用数据流（`CopyFileEx` 复制全部数据流），app 交出去的 docx 因此被 Office 当成外来的文件——打开走受保护视图、把文件复制进 Office 文档缓存（`INetCache\Content.Word\~WRDxxxx.docx`），杀软再把这次「写文档」按风险程序连坐拦掉（360 主动防御：「[自动阻止] 修改 文档或图片文件」，风险文件记的是 app 的 exe）。落点收在「app 交付出去的副本」：五个文档产物出口（word / word_revisions / excel / pdf / ppt）、Word 模板上传、run_python 产物搬运，交付前删掉 Zone.Identifier 这一条流（主数据流与其余流不动）；剥不掉只记审计不阻断——标记只影响 Office 的打开路径，文件本身是好的。**用户自己的原文件不动**（标记是用户的安全策略，app 不擅自改）
 - 桌面清理：CSV 规则表（模版下载/导入），`{year}` 占位，move/delete 两动作，10 分钟后台轮询，migration.log；看板/回收站附件绝不触碰
 - **日志体系**：数据目录四个落盘日志——bot.log（全应用结构化审计，`[ts] LEVEL | event | k=v`）、error.log（WARN/ERROR 事件镜像账本，不被 Info 流水稀释）、api.log（HTTP API 访问+变更）、migration.log（迁移执行），全部 5MB 轮转保留两代（`.old`/`.old.1`）；全局 panic 钩子记 ERROR；前端 window error/unhandledrejection 与 CSP 违规经 frontend_event_report 上报（32 签名去重）；设置页独立「日志」分类 = 三来源分段切换（错误 / 机器人审计 / 文件迁移，各读末条 200 行）+ 一键复制全部日志（error 信号在前、流水在后，单文件超 256KB 尾部截断）；api.log 无独立读命令，只出现在整包里
 - 全局快捷键：唤起/隐藏主窗口（macOS `Cmd+Ctrl+W` / Win `Ctrl+Alt+W`）、快速新建任务（`Cmd/Ctrl+Alt+N`，唤起并进入标题编辑）、切换深浅色（`Cmd/Ctrl+Alt+T`）；注册失败只记日志不影响启动

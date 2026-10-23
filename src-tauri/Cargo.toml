@@ -190,6 +190,11 @@ windows = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Threading",
+    # 剥「来自互联网」标记（Zone.Identifier 备用数据流）：CreateFileW +
+    # SetFileInformationByHandle(FileDispositionInfo)（platform/zone_id.rs）
+    # Win32_System_IO 随 WriteFile 引入——写测试用的标记流要写内容
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
     # UI 自动化（Windows）：COM 初始化（UIAutomation 是 COM 接口）
     "Win32_System_Com",
     "Win32_UI_Shell",

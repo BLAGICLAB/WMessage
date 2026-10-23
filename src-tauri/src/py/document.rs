@@ -1169,6 +1169,26 @@ pub fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
     }
 }
 
+/// 产物交付前的收口：剥掉「来自互联网」标记（Zone.Identifier 备用数据流）。
+///
+/// Windows 上复制文件会连带复制这个标记（`CopyFileEx` 复制全部数据流），
+/// 于是 app 交出去的副本被 Office 当成「外来的文件」：打开走受保护视图，
+/// 把文件复制进 Office 文档缓存（`INetCache\Content.Word\~WRDxxxx.docx`），
+/// 杀软再把这次「写文档」按风险程序连坐拦掉。
+///
+/// 剥不掉只记日志不中断——标记只影响打开路径，文件本身是好的。
+fn strip_download_mark(app: &AppHandle, path: &Path, tag: &str) {
+    if let Err(e) = crate::platform::zone_id::strip_zone_identifier(path) {
+        py_audit(
+            app,
+            &format!(
+                "{tag} 剥「来自互联网」标记失败 | {} | {e}",
+                crate::audit::escape_for_log(&path.to_string_lossy(), 200)
+            ),
+        );
+    }
+}
+
 pub async fn doc_make_word(
     app: AppHandle,
     title: String,
@@ -1253,6 +1273,7 @@ pub async fn doc_make_word(
             "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
         )));
     }
+    strip_download_mark(&app, Path::new(&out), "doc_make_word");
     py_audit(&app, &format!("doc_make_word{tpl_note} | out: {out}"));
     Ok(out)
 }
@@ -1303,6 +1324,7 @@ pub async fn doc_make_word_revisions(
             "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
         )));
     }
+    strip_download_mark(&app, Path::new(&out), "doc_make_word_revisions");
     py_audit(
         &app,
         &format!("doc_make_word_revisions | engine: {engine} | src: {src} | out: {out}"),
@@ -1339,6 +1361,7 @@ pub async fn doc_make_excel(
             "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
         )));
     }
+    strip_download_mark(&app, Path::new(&out), "doc_make_excel");
     py_audit(&app, &format!("doc_make_excel | out: {out}"));
     Ok(out)
 }
@@ -1382,6 +1405,7 @@ pub async fn doc_make_pdf(
             "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
         )));
     }
+    strip_download_mark(&app, Path::new(&out), "doc_make_pdf");
     py_audit(&app, &format!("doc_make_pdf | out: {out}"));
     Ok(out)
 }
@@ -1441,6 +1465,7 @@ pub async fn doc_make_ppt(
             "脚本退出正常但文件未生成（{out}），已拦截本次假成功"
         )));
     }
+    strip_download_mark(&app, Path::new(&out), "doc_make_ppt");
     py_audit(&app, &format!("doc_make_ppt | out: {out}"));
     Ok(out)
 }
@@ -1595,6 +1620,9 @@ pub async fn word_template_import(app: AppHandle, path: String) -> CommandResult
         });
     }
     std::fs::copy(&src, &dest).map_err(|e| CommandError::IoError(e.to_string()))?;
+    // 拷贝会连带复制「来自互联网」标记（CopyFileEx 复制全部备用数据流）——
+    // 模板是用户从网上下载的常见来源，标记留着会让它进 Office 受保护视图
+    strip_download_mark(&app, &dest, "word_template_import");
     // 参数层：上传即提取——模板打不开/损坏在这里 fail-closed，拷贝一并回滚；
     // 提取产物落旁车 json，生成与编辑面板都直接取参数
     let params = match harvest_template_params(&app, &dest).await {
@@ -2326,5 +2354,42 @@ mod fake_success_guard_tests {
             "rPr 未按首子元素插入"
         );
         assert!(make.contains("outlineLvl"), "生成脚本缺 outlineLvl");
+    }
+}
+
+/// 产物收口回归锁：每个交付给用户的文档产物都要剥掉「来自互联网」标记。
+///
+/// 标记留着，Office 打开它会走受保护视图、把文件复制进文档缓存
+/// （`INetCache\Content.Word\~WRDxxxx.docx`），杀软随即把这次「写文档」
+/// 按风险程序连坐拦掉——2026-10-23 实机挨的就是这个。
+///
+/// 新增文档产物时必须一并接上收口，这个锁不让它漏。
+#[cfg(test)]
+mod download_mark_guard_tests {
+    #[test]
+    fn every_doc_product_strips_download_mark() {
+        let src = include_str!("document.rs");
+        // 针线拼接写法：include_str 含测试自身源码，整串字面量会自命中
+        let call = concat!("strip_download_", "mark(&app, Path::new(&out), ");
+        for name in [
+            "doc_make_word",
+            "doc_make_word_revisions",
+            "doc_make_excel",
+            "doc_make_pdf",
+            "doc_make_ppt",
+        ] {
+            assert!(
+                src.contains(&format!("{call}\"{name}\")")),
+                "{name} 产物没接「剥来自互联网标记」收口"
+            );
+        }
+        // 模板上传那条落点是 dest 不是 out，单独锁
+        assert!(
+            src.contains(concat!(
+                "strip_download_",
+                "mark(&app, &dest, \"word_template_import\")"
+            )),
+            "word_template_import 没接「剥来自互联网标记」收口"
+        );
     }
 }

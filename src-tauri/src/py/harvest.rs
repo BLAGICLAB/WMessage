@@ -55,6 +55,16 @@ pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&st
         };
         if ok {
             moved += 1;
+            // 搬运会把「来自互联网」标记一起带过来：跨盘拷贝走 CopyFileEx（复制全部
+            // 备用数据流），同盘 rename 则是同一个文件、标记原样跟着走。产物目录里的
+            // 文件不该带这个标记——带了就进 Office 受保护视图，还会招杀软连坐拦截
+            let stripped = crate::platform::zone_id::strip_zone_identifier_rec(&dest, audit);
+            if stripped > 0 {
+                audit(&format!(
+                    "run_python | 剥「来自互联网」标记 | files: {stripped} | {}",
+                    dest.display()
+                ));
+            }
         }
     }
     if moved > 0 {
@@ -140,4 +150,56 @@ pub fn sweep_stale_py_runs_in(root: &Path, max_age: Duration, now: SystemTime) -
         }
     }
     removed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 搬运进产物目录的文件不该带「来自互联网」标记。
+    ///
+    /// 搬运本身就是传播途径：同盘 rename 是同一个文件、标记原样跟着走；
+    /// 跨盘拷贝走 CopyFileEx，复制全部备用数据流。产物落在 AI_Gen_Files 后
+    /// 是要交给用户双击打开的，带着标记就会进 Office 受保护视图。
+    #[cfg(windows)]
+    #[test]
+    fn harvested_file_loses_download_mark() {
+        let run = tempfile::tempdir().expect("临时运行目录");
+        let gen = tempfile::tempdir().expect("临时产物目录");
+        let src = run.path().join("downloaded.docx");
+        std::fs::write(&src, b"PK\x03\x04 payload").expect("写源文件");
+        crate::platform::zone_id::test_mark_file(&src);
+        assert!(crate::platform::zone_id::test_has_mark(&src));
+
+        let mut audit = |_m: &str| {};
+        harvest_run_outputs(run.path(), gen.path(), &mut audit);
+
+        let dest = gen.path().join("downloaded.docx");
+        assert!(dest.exists(), "产物没搬过来");
+        assert!(
+            !crate::platform::zone_id::test_has_mark(&dest),
+            "搬过来的产物还带着「来自互联网」标记"
+        );
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            b"PK\x03\x04 payload",
+            "剥标记不该动主数据流"
+        );
+    }
+
+    /// 非 Windows 平台搬运照常，标记那套是 no-op。
+    #[test]
+    #[cfg(not(windows))]
+    fn harvest_moves_files_without_marks() {
+        let run = tempfile::tempdir().expect("临时运行目录");
+        let gen = tempfile::tempdir().expect("临时产物目录");
+        std::fs::write(run.path().join("a.txt"), b"x").expect("写源文件");
+        let mut msgs: Vec<String> = Vec::new();
+        harvest_run_outputs(run.path(), gen.path(), &mut |m| msgs.push(m.to_string()));
+        assert!(gen.path().join("a.txt").exists());
+        assert!(
+            !msgs.iter().any(|m| m.contains("失败")),
+            "不该有失败审计：{msgs:?}"
+        );
+    }
 }
