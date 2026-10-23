@@ -16,6 +16,7 @@
 - `docs/realmachine-rerun-2026-10-22.md` — 复验手册：换 exe → 先跑修过的那 6 项 → 再跑 S 序列剩余项（含跑法、分段顺序、结果回填口径）
 - `docs/module-audit-2026-10-22.md` — 分模块代码审计账本（15 模块 / 6 批；批 1 已出 M5 五条 P1）——与实机卡片互补：卡片验「行为对不对」，审计查「闸漏不漏」
 - `docs/realmachine-overflow-test.md` — 实机验收方案：工具大结果溢出回灌（边界三连 / 指针读回 / 保留期清扫 / 转存失败兜底）
+- `docs/SUBAGENT-HANDOFF-BUDGET-REDESIGN-2026-10-23.md` — 子 agent ↔ 主 agent 衔接与墙钟治理改造方案（预算单一钳制 / 软墙钟收尾窗 / 熔断留产 / 收尾契约三段修复 / digest 补渲染）；含业界口径、不做清单、偏离登记
 
 ## 命令
 
