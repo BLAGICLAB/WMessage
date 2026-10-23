@@ -118,6 +118,33 @@ pub(crate) fn restore_failed_run_after_rollback<R: tauri::Runtime>(
     }
 }
 
+/// 活动优先级：Running > Paused > 终态。
+///
+/// 同会话可能同时存在「切走的旧技能（终态）」与「新启的技能（Running）」——
+/// 取到终态那条，主循环会把新技能当「已完成」直接收尾（技能一用就断）。
+fn run_liveness_rank(run: &SkillRun) -> u8 {
+    match run.state {
+        SkillState::Running => 0,
+        SkillState::Paused => 1,
+        _ => 2,
+    }
+}
+
+/// 快照取哪一条（纯函数，单测入口）：活的优先 → 同层取最近启动的 → 名字兜底。
+///
+/// 输入顺序不参与决策：候选来自 HashMap 迭代，序是随机的，
+/// 同一场景不能时好时坏（否则故障表现为「偶发」而不是「必现」）。
+fn pick_active_run(cands: &[&SkillRun]) -> Option<SkillRun> {
+    let mut ordered: Vec<&SkillRun> = cands.to_vec();
+    ordered.sort_by(|a, b| {
+        run_liveness_rank(a)
+            .cmp(&run_liveness_rank(b))
+            .then(b.started_at_ms.cmp(&a.started_at_ms))
+            .then(a.name.cmp(&b.name))
+    });
+    ordered.first().map(|r| (*r).clone())
+}
+
 /// 主循环接入用：克隆当前会话活动 Skill 快照（任意非 Loaded 状态）。
 /// 供 `bot_chat` 主循环与 DSL 调度器调，拿快照去 `advance_skill` / `advance_dsl` 决策，不再持锁。
 /// 按 session_id 过滤——别的会话暂停/运行中的 Skill 不可见、不推进。
@@ -125,20 +152,25 @@ pub(crate) fn restore_failed_run_after_rollback<R: tauri::Runtime>(
 /// 状态过滤说明：Loaded 是 start_skill 中的过渡态——技能预审通过后立即转为 Running，
 /// Loaded 仅在断言/异常路径短暂存在，advance_skill 返回 NoActive 与主循环预期一致。
 ///
-/// ⚠️ 终态（Completed/Failed/Terminated）也会被返回——这是 DSL 调度器感知
-/// 「用户 /stop / 工具失败」所必需的；调用方若是新一轮执行的入口（run_model_loop /
-/// run_skill_scheduler），必须先 `clear_terminal_skill_runs()` 清掉上轮遗留的僵尸终态，
-/// 否则会在第 0 步被 advance 短路（agent 假死事故根因）。
+/// 取哪一条：**活的优先**（Running > Paused > 终态），同层取最近启动的。
+/// 同会话同时有旧技能（终态）与新技能（Running）时必须取新技能——
+/// 取到终态那条，主循环会把新技能当「已完成」直接收尾（技能一用就断）。
+///
+/// ⚠️ 没有活着的 run 时才回退终态（Completed/Failed/Terminated）——这是 DSL 调度器
+/// 与主循环感知「用户 /stop / 工具失败 / 已完成」所必需的；调用方若是新一轮执行的
+/// 入口（run_model_loop / run_skill_scheduler），必须先 `clear_terminal_skill_runs()`
+/// 清掉上轮遗留的僵尸终态，否则会在第 0 步被 advance 短路（agent 假死事故根因）。
 pub fn active_skill_run_for<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: Option<&str>,
 ) -> Option<SkillRun> {
     let registry = skill_runs(app);
     let guard = crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs");
-    guard
+    let cands: Vec<&SkillRun> = guard
         .values()
-        .find(|r| !matches!(r.state, SkillState::Loaded) && r.session_id.as_deref() == session_id)
-        .cloned()
+        .filter(|r| !matches!(r.state, SkillState::Loaded) && r.session_id.as_deref() == session_id)
+        .collect();
+    pick_active_run(&cands)
 }
 
 /// 清理指定会话的终态 SkillRun（Completed/Failed/Terminated）——只清本会话，
@@ -366,6 +398,98 @@ mod tests {
         let mut g = crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs");
         g.remove("test-zombie-clear-live");
         g.remove("test-zombie-clear-other");
+    }
+
+    /// 同会话同时存在终态 run 与活着的 run → 快照必须取活着的：
+    /// 取到终态那条，主循环会把新启的技能当「已完成」直接收尾（技能一用就断）。
+    #[test]
+    fn active_skill_run_prefers_live_run_over_terminal_one() {
+        let app = test_handle();
+        {
+            let registry = skill_runs(&app);
+            let mut g =
+                crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs");
+            let mut old = test_run(8, 180);
+            old.name = "old-skill".into();
+            old.state = SkillState::Completed;
+            old.session_id = Some("sess-live".into());
+            old.started_at_ms = 1000;
+            let mut fresh = test_run(8, 180);
+            fresh.name = "new-skill".into();
+            fresh.state = SkillState::Running;
+            fresh.session_id = Some("sess-live".into());
+            fresh.started_at_ms = 2000;
+            g.insert(old.name.clone(), old);
+            g.insert(fresh.name.clone(), fresh);
+        }
+        let got = active_skill_run_for(&app, Some("sess-live")).expect("本会话应有活动 run");
+        assert_eq!(got.name, "new-skill", "必须取活着的 run，不能取终态那条");
+        assert_eq!(got.state, SkillState::Running);
+    }
+
+    /// 两条活着的 run → 取最近启动的那条：取哪一条不能取决于 HashMap 迭代序
+    /// （同一会话多条 run 时结果必须稳定，否则同一场景时好时坏）。
+    #[test]
+    fn active_skill_run_picks_most_recently_started_live_run() {
+        let app = test_handle();
+        {
+            let registry = skill_runs(&app);
+            let mut g =
+                crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs");
+            let mut newer = test_run(8, 180);
+            newer.name = "newer-skill".into();
+            newer.state = SkillState::Running;
+            newer.session_id = Some("sess-two".into());
+            newer.started_at_ms = 5000;
+            let mut older = test_run(8, 180);
+            older.name = "older-skill".into();
+            older.state = SkillState::Running;
+            older.session_id = Some("sess-two".into());
+            older.started_at_ms = 4000;
+            // 先插新的再插旧的：结果不能随插入顺序变
+            g.insert(newer.name.clone(), newer);
+            g.insert(older.name.clone(), older);
+        }
+        let got = active_skill_run_for(&app, Some("sess-two")).expect("本会话应有活动 run");
+        assert_eq!(got.name, "newer-skill", "同层多条取最近启动的");
+    }
+
+    /// 取数规则（纯函数）：活的必须压过终态，与输入顺序无关。
+    /// 确定性锁——旧实现取「迭代序第一条」，候选顺序一变结果就变（表现为偶发）。
+    #[test]
+    fn pick_active_run_prefers_live_over_terminal_regardless_of_input_order() {
+        let mut terminal = test_run(8, 180);
+        terminal.name = "old-skill".into();
+        terminal.state = SkillState::Completed;
+        // 终态那条「启动更晚」——优先级必须压过时间序，否则取了它主循环就收尾了
+        terminal.started_at_ms = 9000;
+        let mut live = test_run(8, 180);
+        live.name = "new-skill".into();
+        live.state = SkillState::Running;
+        live.started_at_ms = 1000;
+
+        for cands in [vec![&terminal, &live], vec![&live, &terminal]] {
+            let got = pick_active_run(&cands).expect("应有候选");
+            assert_eq!(got.name, "new-skill", "活的必须压过终态");
+        }
+    }
+
+    /// 取数规则（纯函数）：同层多条活着的取最近启动的，与输入顺序无关。
+    #[test]
+    fn pick_active_run_takes_most_recent_live_run_regardless_of_input_order() {
+        let mut older = test_run(8, 180);
+        older.name = "older-skill".into();
+        older.state = SkillState::Running;
+        older.started_at_ms = 1000;
+        let mut newer = test_run(8, 180);
+        newer.name = "newer-skill".into();
+        newer.state = SkillState::Running;
+        newer.started_at_ms = 2000;
+
+        for cands in [vec![&older, &newer], vec![&newer, &older]] {
+            let got = pick_active_run(&cands).expect("应有候选");
+            assert_eq!(got.name, "newer-skill", "同层取最近启动的");
+        }
     }
 
     /// 回滚窗口重开/复原——Failed 可重开为 Running（按会话匹配），

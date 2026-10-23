@@ -366,6 +366,21 @@ where
         // skill_terminate_all 用户 /stop / start_skill 切技能 → SkillRun.state 已被改，
         // 调度器必须感知。
         if let Some(run) = active_skill_run_for(app, session_id) {
+            // 别的技能接管了本会话（用户 use_skill 切换）→ 本调度器收手：
+            // 不推进接管方的状态、不跑剩余步骤、不记 done、不调 skill_finish
+            //（那会把接管方标成完成，等于把新技能掐死）。
+            if run.name != name {
+                let reason = format!("技能「{name}」已被技能「{}」接管，剩余步骤未执行", run.name);
+                crate::bot::audit_log_hook(
+                    app,
+                    &format!(
+                        "skill_dsl_run_replaced | name: {name} | active: {}",
+                        run.name
+                    ),
+                );
+                persist_outcome(name, "terminated", Some(&reason), None, None);
+                return Err(DslFailure::Terminated { reason });
+            }
             let ts = now_ms();
             match advance_dsl(&run, ts) {
                 DslAdvanceAction::Run => {}

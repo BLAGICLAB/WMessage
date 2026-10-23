@@ -84,6 +84,33 @@ fn skill_conflict_with_existing(
     }
 }
 
+/// 切技能语义纯函数（单测入口）：把同会话里其他活动技能从表里摘掉，
+/// 返回被摘技能的审计载荷（技能名 + 已走步数）。
+///
+/// 摘掉而不是「标成终态留在表里」：留在表里就是一条同会话的终态 run，
+/// 活动快照可能取到它 → 主循环把新技能当「已完成」直接收尾（技能一用就断）。
+fn take_over_switched_runs(
+    runs: &mut std::collections::HashMap<String, SkillRun>,
+    new_name: &str,
+    session_id: Option<&str>,
+) -> Vec<(String, usize)> {
+    let mut switched: Vec<(String, usize)> = Vec::new();
+    let mut drop_names: Vec<String> = Vec::new();
+    for (n, r) in runs.iter_mut() {
+        if *n != new_name
+            && (r.state == SkillState::Running || r.state == SkillState::Paused)
+            && r.session_id.as_deref() == session_id
+        {
+            switched.push((n.clone(), r.step));
+            drop_names.push(n.clone());
+        }
+    }
+    for n in &drop_names {
+        runs.remove(n);
+    }
+    switched
+}
+
 /// 启动 Skill：use_skill 工具调用即启动生命周期（预审 → 参数校验 → Running），
 /// 返回文档 + 运行约束提示。
 /// session_id：记录触发会话，活动判定/暂停/确认/推进按会话过滤（会话隔离）。
@@ -161,23 +188,13 @@ pub fn start_skill(
             meta.name
         ));
     }
-    // 单活动技能策略：新技能启动时，把本会话其他 Running/Paused 技能标 Completed。
+    // 单活动技能策略：新技能启动时，把本会话其他 Running/Paused 技能摘掉。
     // 步骤钩子/暂停/确认按「唯一活动技能」定位，多技能同时 Running 会导致
     // 步骤计数与暂停确认全部记到第一个技能、后续技能被静默忽略。
-    // 会话隔离：只结束同会话的技能，别的会话的活动技能不受影响。
+    // 会话隔离：只摘同会话的技能，别的会话的活动技能不受影响。
     // 锁内只做状态迁移 + 收集审计载荷；audit_log_hook（写盘 IO）移到锁外发，
     // 持锁跨外部调用 = 慢 IO 串行化全部写者 + 钩子重入 registry 即死锁。
-    let mut switched: Vec<(String, usize)> = Vec::new();
-    for (n, r) in runs.iter_mut() {
-        if *n != meta.name
-            && (r.state == SkillState::Running || r.state == SkillState::Paused)
-            && r.session_id.as_deref() == session_id
-        {
-            r.state = SkillState::Completed;
-            r.end_reason = "切换到其他技能".into();
-            switched.push((n.clone(), r.step));
-        }
-    }
+    let switched = take_over_switched_runs(&mut runs, &meta.name, session_id);
     runs.insert(meta.name.clone(), run);
     drop(runs);
     for name in &expired {
@@ -834,6 +851,54 @@ mod tests {
         assert!(
             !c3.contains("skill_finish_no_transition"),
             "ok=false 不应留痕: {c3}"
+        );
+    }
+
+    // ── 切技能语义 ──
+
+    /// 切技能：同会话的旧活动技能必须从表里摘掉——
+    /// 留在表里就是一条同会话的终态 run，活动快照可能取到它，
+    /// 主循环会把新技能当「已完成」直接收尾（技能一用就断）。
+    #[test]
+    fn take_over_switched_runs_drops_previous_skill_of_same_session() {
+        let mut runs: std::collections::HashMap<String, SkillRun> =
+            std::collections::HashMap::new();
+        let mut old = test_run(8, 180);
+        old.name = "old-skill".into();
+        old.state = SkillState::Running;
+        old.step = 4;
+        old.session_id = Some("sess-a".into());
+        runs.insert(old.name.clone(), old);
+
+        let mut other = test_run(8, 180);
+        other.name = "other-session-skill".into();
+        other.state = SkillState::Running;
+        other.session_id = Some("sess-b".into());
+        runs.insert(other.name.clone(), other);
+
+        let mut paused = test_run(8, 180);
+        paused.name = "paused-skill".into();
+        paused.state = SkillState::Paused;
+        paused.session_id = Some("sess-a".into());
+        runs.insert(paused.name.clone(), paused);
+
+        let mut switched = take_over_switched_runs(&mut runs, "new-skill", Some("sess-a"));
+        // 摘取顺序随 HashMap 迭代序走 → 比对前排序，别让断言依赖顺序
+        switched.sort();
+
+        assert_eq!(
+            switched,
+            vec![
+                ("old-skill".to_string(), 4),
+                ("paused-skill".to_string(), 0)
+            ],
+            "同会话的活动技能（Running/Paused）都要摘掉"
+        );
+        assert!(!runs.contains_key("old-skill"), "切走的技能必须出表");
+        assert!(!runs.contains_key("paused-skill"), "切走的技能必须出表");
+        assert!(
+            runs.contains_key("other-session-skill"),
+            "别的会话的技能不受影响"
         );
     }
 

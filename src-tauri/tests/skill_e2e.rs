@@ -200,7 +200,7 @@ use std::sync::{Arc, Mutex};
 use wmessage_lib::bot::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
 use wmessage_lib::bot_skills::{
     parse_meta, run_skill_scheduler_core, test_hook_insert_skill_run, test_hook_remove_skill_run,
-    test_hook_skill_run_state, DslOutcome, SkillRun, SkillState,
+    test_hook_skill_run_state, DslFailure, DslOutcome, SkillRun, SkillState,
 };
 
 static SKILL_SCHED_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -398,6 +398,76 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
     );
 
     test_hook_remove_skill_run(&app, "minimax-ppt");
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// 别的技能接管了本会话（用户 use_skill 切换）→ 调度器必须收手：
+/// 一步都不跑、不记 done、不碰接管方的 run 状态。
+/// 推进接管方的状态机 = 把别人的 run 当自己的用（技能一用就断的同源问题）。
+#[tokio::test]
+async fn scheduler_e2e_bails_out_when_another_skill_takes_over() {
+    let _serial = SKILL_SCHED_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (meta, body) = fixture_meta_body();
+    let app = mock_handle();
+    // 同会话里另一个技能在跑（= 用户 use_skill 切换后的状态）
+    let mut other = make_run("other-skill", SkillState::Running);
+    other.session_id = Some("sess-takeover".into());
+    test_hook_insert_skill_run(&app, other);
+    let log_offset = bot_log_len();
+
+    let calls: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls2 = calls.clone();
+    let exec = move |tool: String, args: String| {
+        let calls = calls2.clone();
+        async move {
+            calls.lock().unwrap().push((tool.clone(), args));
+            ToolResult::ok("不应被调用".to_string(), Vec::new())
+        }
+    };
+    let (conn, db_path) = open_temp_db("takeover");
+    let persist_calls: Arc<Mutex<Vec<(String, String, Option<String>, Option<bool>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let persist = make_persist(&conn, persist_calls.clone());
+
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta,
+        &body,
+        Some("sess-takeover"),
+        &serde_json::Value::Null,
+        exec,
+        persist,
+    )
+    .await;
+
+    match outcome {
+        Err(DslFailure::Terminated { reason }) => {
+            assert!(reason.contains("接管"), "reason 应说明被接管：{reason}");
+        }
+        other => panic!("期望 Terminated（被接管），got {other:?}"),
+    }
+    assert!(calls.lock().unwrap().is_empty(), "被接管后不该再跑任何步骤");
+    assert_eq!(
+        test_hook_skill_run_state(&app, "other-skill"),
+        Some(SkillState::Running),
+        "接管方的 run 状态不该被本调度器动过"
+    );
+    let persisted = persist_calls.lock().unwrap().clone();
+    assert_eq!(persisted.len(), 1, "只记一次终态：{persisted:?}");
+    assert_eq!(
+        persisted[0].1, "terminated",
+        "被接管记 terminated，不是 done"
+    );
+    let tail = bot_log_tail_since(log_offset);
+    assert!(
+        tail.contains("skill_dsl_run_replaced | name: minimax-ppt | active: other-skill"),
+        "bot.log 应留接管痕迹：{tail}"
+    );
+
+    test_hook_remove_skill_run(&app, "other-skill");
     let _ = std::fs::remove_file(&db_path);
 }
 
