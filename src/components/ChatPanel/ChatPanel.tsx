@@ -51,6 +51,12 @@ import type {
   VerboseLevel,
 } from "./types";
 import { DELTA_BATCH_MS, execTaskDedup, finishedExecTasks, SUBAGENT_POLL_MS, SUBAGENT_STATUS } from "./constants";
+import {
+  EMPTY_DRAFT,
+  readChatDrafts,
+  writeChatDrafts,
+  type ChatDraft,
+} from "./chatDrafts";
 import { useAutoGrow, useOutsideClose } from "./useChatUi";
 import { SessionRail } from "./SessionRail";
 import { ContextRail, type ContextTab, type SubagentRun } from "./ContextRail";
@@ -116,18 +122,48 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   // 输入窗口锁定对话（DRAFT-1）：草稿/附件按会话隔离——切走再切回各自保留，
-  // 会话 A 打的字切到 B 不会误发给 B。input/files 是「当前会话」的派生值，
-  // setInput/setFiles 伪装成 React setter，原有调用点（onChange/send/斜杠补全/
-  // 发送清空/附件增删）语义不变。覆盖只在内存，不落盘（会话历史由后端管）。
-  const [drafts, setDrafts] = useState<Map<string, string>>(new Map());
+  // 会话 A 打的字切到 B 不会误发给 B。input/files/refs 是「当前会话」的派生值，
+  // setInput/setFiles/setRefs 伪装成 React setter，原有调用点（onChange/send/斜杠补全/
+  // 发送清空/附件增删）语义不变。
+  //
+  // 落脚点在组件外（chatDrafts.ts，localStorage）：设置页在 App 里是提前 return，
+  // 主树整体被替换 → 聊天面板卸载 → 草稿放组件 state 里就归零（切一次设置，
+  // 输入框里的字就没了）。现在 state 仍是用起来的那一份，写下去/读回来交给 chatDrafts。
+  const [drafts, setDrafts] = useState<Map<string, ChatDraft>>(() =>
+    readChatDrafts(),
+  );
   const draftKey = sessionId ?? "";
-  const input = drafts.get(draftKey) ?? "";
-  const setInput = (v: string) =>
+  const draft = drafts.get(draftKey) ?? EMPTY_DRAFT;
+  /** 改某会话的草稿（函数式更新：拿最新一份，不是渲染时的快照） */
+  const patchDraft = (key: string, updater: (cur: ChatDraft) => ChatDraft) =>
     setDrafts((prev) => {
       const next = new Map(prev);
-      next.set(draftKey, v);
+      next.set(key, updater(prev.get(key) ?? EMPTY_DRAFT));
       return next;
     });
+  const input = draft.text;
+  const setInput = (v: string) =>
+    patchDraft(draftKey, (d) => ({ ...d, text: v }));
+  /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送）——按会话隔离（DRAFT-1） */
+  const files = draft.files;
+  const setFiles = (v: string[] | ((prev: string[]) => string[])) =>
+    patchDraft(draftKey, (d) => ({
+      ...d,
+      files: typeof v === "function" ? v(d.files) : v,
+    }));
+  /** 待发任务引用（右侧栏点任务加入，随消息一起发送）——按会话隔离，同附件口径。
+   *  语义是「把这张卡摆到对话里让机器人看着办」，不是「立刻让机器人去做」：
+   *  后者是任务卡 🤖 的活（runWithBot），两者的时机与代价完全不同 */
+  const refs = draft.refs;
+  const setRefs = (v: TaskRef[] | ((prev: TaskRef[]) => TaskRef[])) =>
+    patchDraft(draftKey, (d) => ({
+      ...d,
+      refs: typeof v === "function" ? v(d.refs) : v,
+    }));
+  /** 草稿落盘：改动后写一次（面板被卸载/重挂载后读回来，切设置不再丢输入） */
+  useEffect(() => {
+    writeChatDrafts(drafts);
+  }, [drafts]);
   /** 输入卡 textarea 引用：自动增高用（UI-1 单行 input 升级为多行 textarea） */
   const taRef = useRef<HTMLTextAreaElement>(null);
   /** 斜杠命令 autocomplete 选中项下标（输入「/」浮出后用 ↑↓ / Tab / 点选） */
@@ -154,36 +190,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     traceId: number;
     sessionId: string | null;
   } | null>(null);
-  /** 已添加的附件文件路径（➕ 或拖入，随消息一起发送）——按会话隔离（DRAFT-1） */
-  const [filesBySession, setFilesBySession] = useState<Map<string, string[]>>(
-    new Map(),
-  );
-  const files = filesBySession.get(draftKey) ?? [];
-  const setFiles = (v: string[] | ((prev: string[]) => string[])) =>
-    setFilesBySession((prev) => {
-      const next = new Map(prev);
-      next.set(
-        draftKey,
-        typeof v === "function" ? v(prev.get(draftKey) ?? []) : v,
-      );
-      return next;
-    });
-  /** 待发任务引用（右侧栏点任务加入，随消息一起发送）——按会话隔离，同附件口径。
-   *  语义是「把这张卡摆到对话里让机器人看着办」，不是「立刻让机器人去做」：
-   *  后者是任务卡 🤖 的活（runWithBot），两者的时机与代价完全不同 */
-  const [refsBySession, setRefsBySession] = useState<
-    Map<string, TaskRef[]>
-  >(new Map());
-  const refs = refsBySession.get(draftKey) ?? [];
-  const setRefs = (v: TaskRef[] | ((prev: TaskRef[]) => TaskRef[])) =>
-    setRefsBySession((prev) => {
-      const next = new Map(prev);
-      next.set(
-        draftKey,
-        typeof v === "function" ? v(prev.get(draftKey) ?? []) : v,
-      );
-      return next;
-    });
   /** 右侧栏点任务 = 把它摆进当前消息（同附件）。与「立刻让机器人去做」
    *  是两回事：后者会在新会话里开跑，这里只是让机器人看着这张卡回答。
    *  重复点同一张卡不叠加——引用是集合不是列表。
@@ -1458,13 +1464,10 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       await invoke("bot_session_delete", { id: sid });
       const rest = sessions.filter((s) => s.id !== sid);
       setSessions(rest);
-      // DRAFT-1：被删会话的草稿/附件/推理强度覆盖一并清掉（内存 Map 防积攒）
+      // DRAFT-1：被删会话的草稿/附件/任务引用/推理强度覆盖一并清掉
+      // （草稿这份 Map 现在同时装文本/附件/引用，删一条即全清；防积攒、
+      // 也防同 id 会话重建后误继承旧草稿）
       setDrafts((prev) => {
-        const next = new Map(prev);
-        next.delete(sid);
-        return next;
-      });
-      setFilesBySession((prev) => {
         const next = new Map(prev);
         next.delete(sid);
         return next;

@@ -1035,6 +1035,49 @@ describe("ChatPanel", () => {
     });
   });
 
+  // 设置页在 App 里是提前 return（整棵主树被替换掉），聊天面板随之卸载——
+  // 草稿放组件 state 里的话，切一次设置输入框就空了（用户报的「输入不持久」）。
+  // 这里用「卸载 → 重挂载」等效复现那条路径。
+  it("草稿跨挂载存活：面板卸载再挂载（切设置的等效动作），输入框内容还在", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "没发出去的半句话");
+    expect(input).toHaveValue("没发出去的半句话");
+
+    // 卸载 = 设置页接管主树；重挂载 = 点「返回」
+    unmount();
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    expect(screen.getByPlaceholderText(/和机器人说点什么/)).toHaveValue(
+      "没发出去的半句话",
+    );
+  });
+
+  it("草稿落盘：写进 localStorage（换窗口 / 应用重启后回来还在）", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+
+    await user.type(
+      screen.getByPlaceholderText(/和机器人说点什么/),
+      "留着下次接着写",
+    );
+    await waitFor(() => {
+      expect(localStorage.getItem("wmessage-chat-drafts")).toContain(
+        "留着下次接着写",
+      );
+    });
+    // 发出去即清空：空草稿不落盘（不堆垃圾条目）
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      const raw = localStorage.getItem("wmessage-chat-drafts") ?? "";
+      expect(raw).not.toContain("留着下次接着写");
+    });
+  });
+
   it("确认弹窗不再由聊天窗呈现：bot-confirm 只有 ConfirmMap 一个监听者", async () => {
     // 两个呈现者同窗挂载时同一请求会弹两次：ConfirmMap 答完，
     // 聊天窗那份 z-50 残影还在，点它只会静默失败

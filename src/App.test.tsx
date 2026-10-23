@@ -124,6 +124,38 @@ describe("App", () => {
     expect(label.className).toContain("truncate");
   });
 
+  // 用户报的原始路径：聊天里打了字 → 切设置（设置页是 App 里的提前 return，
+  // 主树整体被替换 → 聊天面板卸载）→ 点「返回」回来。草稿必须还在。
+  it("聊天草稿跨「切设置 → 返回」存活", async () => {
+    const user = userEvent.setup();
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_get_config")
+        return { baseUrl: "", model: "", hasApiKey: false };
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
+    });
+
+    await user.click(screen.getByRole("button", { name: "聊天" }));
+    const input = await screen.findByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "还没发出去的半句话");
+
+    // 切设置：设置页接管主树，聊天面板随之卸载
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("complementary", { name: "设置分类" });
+    // 返回：聊天面板重新挂载，草稿要还在
+    await user.click(screen.getByRole("button", { name: "返回" }));
+    expect(await screen.findByPlaceholderText(/和机器人说点什么/)).toHaveValue(
+      "还没发出去的半句话",
+    );
+  });
+
   it("初始渲染：首页视图 + 库内任务上任务池", async () => {
     render(<App />);
     await waitFor(() => {
