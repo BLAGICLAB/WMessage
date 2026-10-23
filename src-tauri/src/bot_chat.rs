@@ -720,8 +720,9 @@ async fn apply_skill_route(
         }) => {
             // SSE 推 Skill 失败给前端（让用户看到半成品 + rollback 状态）
             // payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
-            let _ = app.emit_to(
-                "main",
+            crate::bot::stream_log::emit_recorded(
+                app,
+                stop.session_id(),
                 "bot-skill-failed",
                 serde_json::json!({
                     "skillName": meta.name,
@@ -1440,8 +1441,9 @@ async fn persist_report_reply(
         );
         return Err(e);
     }
-    let _ = app.emit_to(
-        "main",
+    crate::bot::stream_log::emit_recorded(
+        app,
+        Some(session_id),
         "bot-chat-report",
         serde_json::json!({ "sessionId": session_id, "text": result.text }),
     );

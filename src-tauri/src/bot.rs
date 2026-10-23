@@ -57,6 +57,7 @@ pub mod procs;
 pub mod reasoning;
 pub mod registry;
 pub mod services;
+pub mod stream_log;
 pub mod tags_consolidate;
 pub mod tools;
 

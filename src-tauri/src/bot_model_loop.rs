@@ -1483,6 +1483,15 @@ pub async fn run_model_loop(
     // 串进用户当前会话的 streaming 气泡。Skill 归属同理按 session 过滤。
     let stream_to_main = stop.is_interactive();
     let session_id: Option<&str> = stop.session_id();
+    // 在途登记：这一轮开始。客户端重挂载后靠它知道「有回合正在跑」——
+    // 没有登记，客户端根本不会去问回放，在途回复就只剩最终正文。
+    // 位置约束：这段之后到 core 返回之间没有早退路径（配置 / key 校验都在更早），
+    // 所以收尾只挂在 core 返回那一处；往后若在这段里加早退，必须一并收尾。
+    if stream_to_main {
+        if let Some(sid) = session_id {
+            crate::bot::stream_log::begin(sid);
+        }
+    }
     // 流式事件出口统一收口（会话隔离）：非交互实例（后台定时任务）
     // 不发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
     // payload 统一注入 sessionId，前端按当前会话过滤——
@@ -1492,7 +1501,9 @@ pub async fn run_model_loop(
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("sessionId".into(), serde_json::json!(session_id));
             }
-            let _ = app.emit_to("main", event, payload);
+            // 走统一出口：分配序号 + 写会话缓冲 + 广播。
+            // 序号让客户端能按 seq 补齐（补齐与实时可能重叠，靠序号去重）。
+            crate::bot::stream_log::emit_recorded(&app, session_id, event, payload);
         }
     };
     // 执行明细采集（薄壳层，真实分发路径零改动）——
@@ -1764,6 +1775,13 @@ pub async fn run_model_loop(
         replan,
     )
     .await;
+    // 在途收尾：core 返回即回合结束（正常完成 / 熔断 / 停止 / API 报错都在这归一）。
+    // 缓冲不立刻丢——刚跑完就重连的客户端还要补齐最后一段（保留期到了才清扫）。
+    if stream_to_main {
+        if let Some(sid) = session_id {
+            crate::bot::stream_log::finish(sid);
+        }
+    }
     // 执行明细无论成败都要组装：熔断走 Ok 但 API 失败/流式中断走 Err，
     // 早先用 `.map()` 只在成功时填 LoopTrace，于是跑满 50 轮被熔断的那次
     // trace 落库 turns=0、tools=0、tokens=0（实测 255 秒的执行记成 0 轮）。

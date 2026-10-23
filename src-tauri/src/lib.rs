@@ -771,6 +771,8 @@ pub fn run() {
             bot::bot_set_active_model,
             bot::bot_set_perm_mode,
             bot::bot_effective_params,
+            bot::stream_log::bot_inflight_list,
+            bot::stream_log::bot_stream_replay,
             bot::memory_tuning_get,
             bot::memory_tuning_set,
             bot::mcp::commands::mcp_server_save,
