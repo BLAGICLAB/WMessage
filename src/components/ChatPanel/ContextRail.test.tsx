@@ -8,10 +8,15 @@ import type { Task } from "../../types";
 const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   openTargetMock: vi.fn(),
+  listenMock: vi.fn(async () => () => {}),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: mocks.invokeMock,
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: mocks.listenMock,
 }));
 
 vi.mock("../../lib/openTarget", async (importActual) => {
@@ -28,7 +33,7 @@ function renderRail(overrides: Partial<Parameters<typeof ContextRail>[0]> = {}) 
       onUpdateTask={vi.fn()}
       onRefTask={vi.fn()}
       refIds={[]}
-      fileChanges={[]}
+      sessionId={null}
       subagents={[]}
       onOpenSubagent={vi.fn()}
       onCancelSubagent={vi.fn()}
@@ -133,7 +138,7 @@ describe("ContextRail 绑定文件到任务卡", () => {
         onUpdateTask={onUpdateTask}
         onRefTask={vi.fn()}
         refIds={[]}
-        fileChanges={[]}
+        sessionId={null}
         subagents={[]}
         onOpenSubagent={vi.fn()}
         onCancelSubagent={vi.fn()}
@@ -154,7 +159,7 @@ describe("ContextRail 绑定文件到任务卡", () => {
         onUpdateTask={onUpdateTask}
         onRefTask={vi.fn()}
         refIds={[]}
-        fileChanges={[]}
+        sessionId={null}
         subagents={[]}
         onOpenSubagent={vi.fn()}
         onCancelSubagent={vi.fn()}
@@ -175,10 +180,33 @@ describe("ContextRail 绑定文件到任务卡", () => {
   });
 });
 
-// 文件预览的工作面：点行就地看内容，不跳系统默认程序。预览路径是受控的——
-// 对话正文里的路径链接也要能打开它，那些点击不在侧栏内部。
-describe("ContextRail 文件预览", () => {
-  const file = { path: "/Users/x/调研.md", added: 3, deleted: 1 };
+// 文件工作面：清单按后端口径取（本会话累计 ±），点开默认看「改动」而不是全文。
+// 口径由后端算（累计 / 逐次 / 无行级 diff 三档），前端不自己累加。
+describe("ContextRail 文件改动工作面", () => {
+  const PATH = "/Users/x/调研.md";
+  const item = {
+    path: PATH,
+    kind: "modify",
+    added: 7,
+    deleted: 2,
+    changes: 2,
+    mode: "session",
+    drifted: false,
+    note: null,
+  };
+  const detail = {
+    path: PATH,
+    kind: "modify",
+    mode: "session",
+    added: 7,
+    deleted: 2,
+    changes: 2,
+    truncated: false,
+    drifted: false,
+    diff: `--- ${PATH}\n+++ ${PATH}\n@@ -1,2 +1,2 @@\n-旧标题\n+新标题`,
+    perChange: [],
+    note: null,
+  };
   function previewOf(path: string) {
     return {
       kind: "text",
@@ -189,85 +217,129 @@ describe("ContextRail 文件预览", () => {
       lines: 2,
     };
   }
+  /** 后端口径模拟：带 path 的是详情请求，不带的是清单请求 */
+  function mockSessionFiles(
+    items: unknown[] = [item],
+    d: unknown = detail,
+    previewPath = PATH,
+  ) {
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: { path?: string }) => {
+        if (cmd === "bot_session_file_changes") {
+          return args?.path
+            ? { items: [], detail: d }
+            : { items, detail: null };
+        }
+        if (cmd === "bot_preview_text") return previewOf(previewPath);
+        return null;
+      },
+    );
+  }
 
-  it("点文件行：整栏切成预览并报给 onPreviewPath，不调起系统默认程序", async () => {
+  it("清单按后端口径取：显示累计 ±，不是前端累加的数字", async () => {
+    mockSessionFiles();
+    renderRail({ tab: "files", sessionId: "s1" });
+    expect(await screen.findByText("+7")).toBeInTheDocument();
+    expect(screen.getByText("−2")).toBeInTheDocument();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_file_changes", {
+      sessionId: "s1",
+    });
+  });
+
+  it("点文件行：切到改动视图并报给 onPreviewPath，不调起系统默认程序", async () => {
     const user = userEvent.setup();
     const onPreviewPath = vi.fn();
-    mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "bot_preview_text" ? previewOf(file.path) : null,
-    );
-    renderRail({
-      tab: "files",
-      fileChanges: [file],
-      previewPath: null,
-      onPreviewPath,
-    });
-    await user.click(screen.getByTitle(/点开预览内容/));
-    expect(onPreviewPath).toHaveBeenCalledWith(file.path);
+    mockSessionFiles();
+    renderRail({ tab: "files", sessionId: "s1", onPreviewPath });
+    await user.click(await screen.findByTitle(/点开看改动/));
+    expect(onPreviewPath).toHaveBeenCalledWith(PATH);
     expect(mocks.openTargetMock).not.toHaveBeenCalled();
   });
 
-  it("预览路径受父级控制：正文链接打开的路径即使不在改动列表里也能预览", async () => {
-    mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "bot_preview_text" ? previewOf("/Users/x/别的.md") : null,
+  it("改过的文件默认看累计 diff：拉详情、渲染改动，不读全文", async () => {
+    mockSessionFiles();
+    renderRail({ tab: "files", sessionId: "s1", previewPath: PATH });
+    expect(await screen.findByText("+新标题")).toBeInTheDocument();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_file_changes", {
+      sessionId: "s1",
+      path: PATH,
+    });
+    // 默认不读全文——全文是另一个视图，用户点「看全文」才读
+    expect(mocks.invokeMock).not.toHaveBeenCalledWith(
+      "bot_preview_text",
+      expect.anything(),
     );
+  });
+
+  it("「看全文」切到全文视图并读快照；再点「看改动」能回来", async () => {
+    const user = userEvent.setup();
+    mockSessionFiles();
+    renderRail({ tab: "files", sessionId: "s1", previewPath: PATH });
+    await user.click(await screen.findByRole("button", { name: "看全文" }));
+    expect(await screen.findByLabelText("文件内容")).toHaveTextContent(
+      "上海博士后政策",
+    );
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_preview_text", {
+      path: PATH,
+    });
+    await user.click(screen.getByRole("button", { name: "看改动" }));
+    expect(await screen.findByText("+新标题")).toBeInTheDocument();
+  });
+
+  it("没改过的路径（正文链接打开的）→ 直接看全文，不发详情请求", async () => {
+    const other = "/Users/x/别的.md";
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_session_file_changes") return { items: [item], detail: null };
+      if (cmd === "bot_preview_text") return previewOf(other);
+      return null;
+    });
     renderRail({
       tab: "files",
-      fileChanges: [file],
-      previewPath: "/Users/x/别的.md",
+      sessionId: "s1",
+      previewPath: other,
       onPreviewPath: vi.fn(),
     });
     expect(await screen.findByLabelText("文件内容")).toHaveTextContent(
       "上海博士后政策",
     );
-    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_preview_text", {
-      path: "/Users/x/别的.md",
-    });
-    // 不在本会话改动记录里 → 没有 ±行数可显示，那一行就不出现
-    expect(screen.queryByText(/^\+/)).toBeNull();
+    expect(mocks.invokeMock).not.toHaveBeenCalledWith(
+      "bot_session_file_changes",
+      expect.objectContaining({ path: other }),
+    );
   });
 
-  it("改动记录里命中的路径：预览头部带 ±行数", async () => {
-    mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "bot_preview_text" ? previewOf(file.path) : null,
-    );
-    renderRail({
-      tab: "files",
-      fileChanges: [file],
-      previewPath: file.path,
-      onPreviewPath: vi.fn(),
+  it("降级档（给不出累计）必须说清原因——口径变了却不说，用户会误读", async () => {
+    mockSessionFiles([{ ...item, mode: "perChange", note: "起始快照缺失" }], {
+      ...detail,
+      mode: "perChange",
+      diff: null,
+      perChange: [
+        {
+          id: 1,
+          kind: "modify",
+          added: 3,
+          deleted: 1,
+          diff: `--- ${PATH}\n+++ ${PATH}\n@@ -1 +1 @@\n-旧\n+新`,
+          truncated: false,
+        },
+      ],
+      note: "本会话第一次修改前的快照缺失；下面是本会话的逐次改动",
     });
-    expect(await screen.findByText("+3")).toBeInTheDocument();
-    expect(screen.getByText("−1")).toBeInTheDocument();
-  });
-
-  it("预览里的「用系统默认程序打开」按钮仍是出口（栏内看 ≠ 没有外部编辑器）", async () => {
-    const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "bot_preview_text" ? previewOf(file.path) : null,
-    );
-    renderRail({
-      tab: "files",
-      fileChanges: [file],
-      previewPath: file.path,
-      onPreviewPath: vi.fn(),
-    });
-    await user.click(
-      await screen.findByLabelText("用系统默认程序打开 调研.md"),
-    );
-    expect(mocks.openTargetMock).toHaveBeenCalledWith(file.path);
+    renderRail({ tab: "files", sessionId: "s1", previewPath: PATH });
+    expect(
+      await screen.findByText(/快照缺失/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("第 1 次改动 ·")).toBeInTheDocument();
   });
 
   it("返回文件列表：回到列表而不是空白", async () => {
     const user = userEvent.setup();
     const onPreviewPath = vi.fn();
-    mocks.invokeMock.mockImplementation(async (cmd: string) =>
-      cmd === "bot_preview_text" ? previewOf(file.path) : null,
-    );
+    mockSessionFiles();
     renderRail({
       tab: "files",
-      fileChanges: [file],
-      previewPath: file.path,
+      sessionId: "s1",
+      previewPath: PATH,
       onPreviewPath,
     });
     await user.click(await screen.findByText("返回文件列表"));

@@ -5,7 +5,7 @@
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -17,8 +17,16 @@ import {
   Paperclip,
 } from "lucide-react";
 import { basename } from "../../format";
-import { handleCommandError } from "../../lib/errorHandler";
+import { formatCommandError, handleCommandError } from "../../lib/errorHandler";
 import { FilePreview } from "./FilePreview";
+import { FileDiffView } from "./FileDiffView";
+import {
+  sessionFileChangeDetail,
+  sessionFileChangeList,
+  type SessionFileChangeItem,
+  type SessionFileDiff,
+} from "../../lib/sessionFileChanges";
+import { useTauriListen } from "../../lib/useTauriListen";
 import {
   applyBinding,
   filesPatch,
@@ -72,7 +80,10 @@ type ContextRailProps = {
   onRefTask: (t: { id: string; title: string }) => void;
   /** 已在待发引用里的任务 id（标出点过的项） */
   refIds: string[];
-  fileChanges: { path: string; added: number; deleted: number }[];
+  /** 本会话 id：文件改动清单按会话查后端痕迹表。
+   *  口径由后端定（累计 / 逐次 / 无行级 diff 三档），前端不自己累加——前端那份
+   *  是「后者覆盖前者」的单次写入数字，与详情里的累计 diff 对不上。 */
+  sessionId: string | null;
   /** 子 agent 运行列表（含在途与刚结束），按新到旧 */
   subagents: SubagentRun[];
   /** 点子 agent 条目 → 右侧栏切到它的详情视图 */
@@ -108,7 +119,7 @@ export function ContextRail({
   onUpdateTask,
   onRefTask,
   refIds,
-  fileChanges,
+  sessionId,
   subagents,
   onOpenSubagent,
   onCancelSubagent,
@@ -127,6 +138,95 @@ export function ContextRail({
   useEffect(() => {
     tasksRef.current = tasks;
   });
+
+  // ── 文件改动工作面（清单 + 详情）────────────────────────────────────
+  // 清单口径在后端（累计 ±）；前端只负责取数与呈现，不自己累加。
+  const [fileItems, setFileItems] = useState<SessionFileChangeItem[]>([]);
+  const [fileListError, setFileListError] = useState<string | null>(null);
+  const [fileListLoading, setFileListLoading] = useState(false);
+  /** 清单已经取回的是哪个会话（null = 还没取过）：判断「这个路径改没改」要用 */
+  const [listLoadedFor, setListLoadedFor] = useState<string | null>(null);
+  const [fileDetail, setFileDetail] = useState<SessionFileDiff | null>(null);
+  const [fileDetailError, setFileDetailError] = useState<string | null>(null);
+  const [fileDetailLoading, setFileDetailLoading] = useState(false);
+  /** 详情页在「看改动」与「看全文」之间切 */
+  const [showFull, setShowFull] = useState(false);
+  /** 最新 sessionId 镜像：事件回调只捕获一次（useTauriListen 的约定），读 ref 拿当前值 */
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+  /** 落盘事件计数：AI 又改了文件 → 清单要跟着长 */
+  const [fileChangeTick, setFileChangeTick] = useState(0);
+  useTauriListen<{ sessionId?: string | null }>("bot-file-changed", (payload) => {
+    const sid = payload.sessionId ?? null;
+    if (sid && sid === sessionIdRef.current) setFileChangeTick((t) => t + 1);
+  });
+
+  // 清单：切到「文件」页 / 切会话 / AI 又改了文件 → 重取。
+  // 防抖 200ms：一次回合里连着落盘十来个文件时，别把每个事件都变成一次全量重算。
+  useEffect(() => {
+    if (tab !== "files" || !sessionId) return;
+    let alive = true;
+    const timer = setTimeout(() => {
+      setFileListLoading(true);
+      sessionFileChangeList(sessionId)
+        .then((r) => {
+          if (!alive) return;
+          setFileItems(r?.items ?? []);
+          setFileListError(null);
+        })
+        .catch((e) => {
+          if (!alive) return;
+          handleCommandError(e, "读取会话文件改动", { silent: true });
+          setFileListError(formatCommandError(e) || "读取失败");
+        })
+        .finally(() => {
+          if (!alive) return;
+          setFileListLoading(false);
+          // 清单回来了（成功或失败）——失败也标上：这时该退到全文视图，
+          // 而不是一直卡在「读取中」
+          setListLoadedFor(sessionId);
+        });
+    }, 200);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [tab, sessionId, fileChangeTick]);
+
+  // 详情：点开某个改过的文件 → 取它的累计 diff（未改过的路径不在清单里，
+  // 由渲染处直接走全文视图，不发这次请求）
+  useEffect(() => {
+    if (!previewPath || !sessionId) return;
+    const hit = fileItems.some((i) => i.path === previewPath);
+    if (!hit) return;
+    let alive = true;
+    setFileDetailLoading(true);
+    setFileDetailError(null);
+    sessionFileChangeDetail(sessionId, previewPath)
+      .then((r) => {
+        if (!alive) return;
+        setFileDetail(r.detail ?? null);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        handleCommandError(e, "读取文件改动", { silent: true });
+        setFileDetailError(formatCommandError(e) || "读取失败");
+      })
+      .finally(() => {
+        if (alive) setFileDetailLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [previewPath, sessionId, fileItems]);
+
+  // 换文件就回到「看改动」：全文视图是上一份文件的遗留态
+  useEffect(() => {
+    setShowFull(false);
+    setFileDetail(null);
+  }, [previewPath]);
 
   /** 聊天窗口直接把本地文件绑到任务卡：选文件 → bind_files 探测 isDir →
    *  统一内核合并（去重/文件夹槽替换/10 上限）→ 走 onUpdateTask 既有落库通道。
@@ -245,10 +345,36 @@ export function ContextRail({
 
       {tab === "files" && (() => {
         // 预览态：整栏换成文件内容（与子 Agent 详情同级），返回才回列表。
-        // 不要求这个路径出现在改动列表里——正文里的链接与文件 pill 也能打开
-        // 任意本机路径，那种情况下没有 ±行数可显示，只是不显示那一行。
+        // 改过的文件 → 默认看「本会话累计」的改动；没改过的（正文里的路径链接、
+        // 文件 pill）→ 直接看全文——那种路径不在改动清单里，没有 diff 可给。
         if (previewPath) {
-          const hit = fileChanges.find((f) => f.path === previewPath);
+          const hit = fileItems.find((f) => f.path === previewPath);
+          // 清单还没回来：不知道这个路径改没改。先别渲染全文——那会闪一下
+          // 全文再跳到改动视图，看着像两次加载。
+          if (sessionId && listLoadedFor !== sessionId) {
+            return (
+              <section aria-label="文件改动">
+                <p className="inline-flex items-center gap-1 px-1.5 py-2 text-[11px] text-[var(--t5)]">
+                  <Loader2 size={11} aria-hidden className="wmsg-activity" />
+                  读取改动…
+                </p>
+              </section>
+            );
+          }
+          if (hit && !showFull) {
+            return (
+              <section aria-label="文件改动">
+                <FileDiffView
+                  path={previewPath}
+                  detail={fileDetail}
+                  loading={fileDetailLoading}
+                  error={fileDetailError}
+                  onShowFull={() => setShowFull(true)}
+                  onBack={() => setPreviewPath(null)}
+                />
+              </section>
+            );
+          }
           return (
             <section aria-label="文件预览">
               <FilePreview
@@ -257,6 +383,8 @@ export function ContextRail({
                 path={previewPath}
                 added={hit?.added}
                 deleted={hit?.deleted}
+                // 改过的文件在全文视图里也给一条「看改动」回去的路
+                onShowDiff={hit ? () => setShowFull(false) : undefined}
                 onOpenPath={setPreviewPath}
                 onBack={() => setPreviewPath(null)}
               />
@@ -270,20 +398,25 @@ export function ContextRail({
               本会话文件改动
             </span>
             <span className="font-mono text-[10px] text-[var(--t5)]">
-              {fileChanges.length}
+              {fileItems.length}
             </span>
           </div>
-          {fileChanges.length === 0 ? (
-            <EmptyHint>本会话还没有文件改动</EmptyHint>
+          {fileListError ? (
+            <p className="px-1.5 py-2 text-[11px] text-[var(--danger)]">
+              {fileListError}
+            </p>
+          ) : fileItems.length === 0 ? (
+            <EmptyHint>
+              {fileListLoading ? "读取改动中…" : "本会话还没有文件改动"}
+            </EmptyHint>
           ) : (
             <div className="space-y-0.5">
-              {fileChanges.map((f, i) => (
+              {fileItems.map((f) => (
                 <button
-                  // oxlint-disable-next-line react/no-array-index-key
-                  key={`${f.path}-${i}`}
+                  key={f.path}
                   type="button"
                   className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs hover:bg-[var(--hover-bg)]"
-                  title={`${f.path}（+${f.added} −${f.deleted}）· 点开预览内容`}
+                  title={`${f.path}（${f.mode === "noLineDiff" ? "无行级 diff" : `+${f.added} −${f.deleted}`}）· 点开看改动${f.note ? `｜${f.note}` : ""}`}
                   onClick={() => setPreviewPath(f.path)}
                 >
                   <FolderOpen
@@ -294,12 +427,26 @@ export function ContextRail({
                   <span className="min-w-0 flex-1 truncate text-[var(--t3)]">
                     {basename(f.path)}
                   </span>
-                  <span className="shrink-0 font-mono text-[10px] text-[var(--success)]">
-                    +{f.added}
-                  </span>
-                  <span className="shrink-0 font-mono text-[10px] text-[var(--danger)]">
-                    −{f.deleted}
-                  </span>
+                  {f.mode === "noLineDiff" ? (
+                    <span className="shrink-0 text-[10px] text-[var(--t5)]">
+                      无行级 diff
+                    </span>
+                  ) : (
+                    <>
+                      {/* 逐次档的行数是各次之和（不是净变化）——标出来，别让人误读 */}
+                      {f.mode === "perChange" && (
+                        <span className="shrink-0 text-[10px] text-[var(--t5)]">
+                          逐次
+                        </span>
+                      )}
+                      <span className="shrink-0 font-mono text-[10px] text-[var(--success)]">
+                        +{f.added}
+                      </span>
+                      <span className="shrink-0 font-mono text-[10px] text-[var(--danger)]">
+                        −{f.deleted}
+                      </span>
+                    </>
+                  )}
                 </button>
               ))}
             </div>

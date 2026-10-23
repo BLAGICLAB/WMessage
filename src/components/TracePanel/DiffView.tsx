@@ -1,18 +1,9 @@
 // TracePanel 子组件：unified diff 行着色渲染。
 // 不引第三方 diff 库——后端生成的是 unified diff 文本（similar），前端只做
-// 行级着色（+/−/@@/文件头）。解析逻辑 ~30 行，漂移面极小（ 决策留档）。
+// 行级着色（+/−/@@/文件头）与「省略段」标记。解析逻辑 ~30 行，漂移面极小
+// （ 决策留档）。着色与分段的规则在 lib/diff.ts（聊天侧栏的改动视图复用同源）。
 
-/** 单行着色类名：文件头弱化 / hunk 头高亮 / +/- 红绿 / 上下文原样 */
-function lineClass(line: string): string {
-  if (line.startsWith("+++") || line.startsWith("---"))
-    return "text-[var(--t5)]";
-  if (line.startsWith("@@")) return "text-[var(--info,#3b82f6)]";
-  if (line.startsWith("+"))
-    return "bg-[var(--ok,#22c55e)]/10 text-[var(--ok,#22c55e)]";
-  if (line.startsWith("-"))
-    return "bg-[var(--danger,#ef4444)]/10 text-[var(--danger,#ef4444)]";
-  return "";
-}
+import { diffLineClass, gapLabel, parseDiffSegments } from "../../lib/diff";
 
 export function DiffView({
   diff,
@@ -21,14 +12,27 @@ export function DiffView({
   diff: string;
   truncated?: boolean;
 }) {
-  const lines = diff.split("\n");
+  // 摊平成「行」序列：省略段也占一行，这样 pre 里仍是「一行一 div」的结构
+  const rows: { key: string; text: string; cls: string }[] = [];
+  parseDiffSegments(diff).forEach((seg, i) => {
+    if (seg.type === "gap") {
+      rows.push({
+        key: `gap-${i}`,
+        text: gapLabel(seg.omitted),
+        cls: "text-[var(--t5)]",
+      });
+      return;
+    }
+    seg.lines.forEach((l, j) => {
+      rows.push({ key: `${i}-${j}`, text: l || " ", cls: diffLineClass(l) });
+    });
+  });
   return (
     <div>
       <pre className="overflow-x-auto rounded-lg nm-inset p-2 font-mono text-[10px] leading-4">
-        {lines.map((l, i) => (
-          // oxlint-disable-next-line react/no-array-index-key
-          <div key={i} className={lineClass(l)}>
-            {l || " "}
+        {rows.map((r) => (
+          <div key={r.key} className={r.cls}>
+            {r.text}
           </div>
         ))}
       </pre>

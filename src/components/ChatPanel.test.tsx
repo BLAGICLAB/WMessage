@@ -1541,22 +1541,60 @@ describe("ChatPanel", () => {
 
   // ── 双命令：🧠 模型下拉 ──
 
-  it("右侧栏文件工作面：点文件就地预览内容，能返回列表", async () => {
+  it("右侧栏文件工作面：点文件看本会话的改动，能切全文、能返回列表", async () => {
     const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      // 回合不收尾（bot_chat 悬着）：文件改动是流式回合里才有的事件
-      if (cmd === "bot_chat") return new Promise(() => {});
-      if (cmd === "bot_preview_text")
-        return {
-          kind: "text",
-          path: "/tmp/报告.md",
-          content: "# 标题\n\n正文一段",
-          truncated: false,
-          totalBytes: 14,
-          lines: 3,
-        };
-      return defaultInvoke(cmd);
-    });
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: { path?: string }) => {
+        // 回合不收尾（bot_chat 悬着）：文件改动是流式回合里才有的事件
+        if (cmd === "bot_chat") return new Promise(() => {});
+        // 清单与详情按后端口径给（累计 ±）
+        if (cmd === "bot_session_file_changes") {
+          return args?.path
+            ? {
+                items: [],
+                detail: {
+                  path: "/tmp/报告.md",
+                  kind: "modify",
+                  mode: "session",
+                  added: 3,
+                  deleted: 1,
+                  changes: 1,
+                  truncated: false,
+                  drifted: false,
+                  diff:
+                    "--- /tmp/报告.md\n+++ /tmp/报告.md\n@@ -1 +1 @@\n-旧标题\n+新标题",
+                  perChange: [],
+                  note: null,
+                },
+              }
+            : {
+                items: [
+                  {
+                    path: "/tmp/报告.md",
+                    kind: "modify",
+                    added: 3,
+                    deleted: 1,
+                    changes: 1,
+                    mode: "session",
+                    drifted: false,
+                    note: null,
+                  },
+                ],
+                detail: null,
+              };
+        }
+        if (cmd === "bot_preview_text")
+          return {
+            kind: "text",
+            path: "/tmp/报告.md",
+            content: "# 标题\n\n正文一段",
+            truncated: false,
+            totalBytes: 14,
+            lines: 3,
+          };
+        return defaultInvoke(cmd);
+      },
+    );
     mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
       ((mocks.listeners[event] ??= []) as Array<typeof cb>).push(
         cb as (e: { payload: Record<string, unknown> }) => void,
@@ -1590,7 +1628,14 @@ describe("ChatPanel", () => {
     const row = await rail.findByTitle(/报告\.md/);
     expect(row.tagName).toBe("BUTTON");
     await user.click(row);
-    // 内容在侧栏里就地渲染，不跳出去
+    // 内容在侧栏里就地渲染，不跳出去——默认看的是本会话的改动
+    expect(await rail.findByText("+新标题")).toBeInTheDocument();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_file_changes", {
+      sessionId: "s1",
+      path: "/tmp/报告.md",
+    });
+    // 全文仍是有的路：切过去就地渲染，再能退回改动视图
+    await user.click(rail.getByRole("button", { name: "看全文" }));
     expect(mocks.invokeMock).toHaveBeenCalledWith("bot_preview_text", {
       path: "/tmp/报告.md",
     });

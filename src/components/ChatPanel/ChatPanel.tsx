@@ -526,15 +526,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       toggleSubagentStrip,
     ],
   );
-  /** 当前会话的文件变更累积（右侧「文件」面板）：去重按 path，保留最近一次统计。
-   *  取自消息而非 streamingMeta——后者收尾即删，面板要活到切会话为止 */
-  const sessionFileChanges = useMemo(() => {
-    const byPath = new Map<string, FileChangeLite>();
-    for (const m of messages) {
-      for (const f of m.fileChanges ?? []) byPath.set(f.path, f);
-    }
-    return [...byPath.values()].slice(-20);
-  }, [messages]);
   /** 本地提示消息：只显示不持久化（不污染上下文） */
   const addHint = (content: string, actionSessionId?: string) => {
     setMessages((prev) => [
@@ -2104,7 +2095,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           onUpdateTask={onUpdateTask}
           onRefTask={refTask}
           refIds={refs.map((r) => r.id)}
-          fileChanges={sessionFileChanges}
+          sessionId={sessionId}
           subagents={subagentRuns}
           onOpenSubagent={openSubagentDetail}
           onCancelSubagent={cancelSubagent}

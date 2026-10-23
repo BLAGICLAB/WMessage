@@ -13,7 +13,7 @@
 // 的——所以这一态给的是主行动按钮，不是红字报错加一个藏在角落的 ↗。
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, ExternalLink, FileText, FolderOpen, Loader2, TriangleAlert } from "lucide-react";
+import { ArrowLeft, ExternalLink, FileDiff, FileText, FolderOpen, Loader2, TriangleAlert } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { MarkdownText } from "../MarkdownText";
 import { openTarget } from "../../lib/openTarget";
@@ -50,6 +50,7 @@ export function FilePreview({
   path,
   added,
   deleted,
+  onShowDiff,
   onOpenPath,
   onBack,
 }: {
@@ -57,6 +58,8 @@ export function FilePreview({
   /** ±行数只在本会话改动记录里命中该路径时才有（正文链接打开的文件没有） */
   added?: number;
   deleted?: number;
+  /** 「看改动」回去的路：本文件在本会话被改过 → 全文视图之外还有改动视图 */
+  onShowDiff?: () => void;
   /** 正文里的路径链接 → 切到那个文件（预览里再点一层路径不必退出重来） */
   onOpenPath?: (path: string) => void;
   onBack: () => void;
@@ -89,13 +92,25 @@ export function FilePreview({
   return (
     <div className="flex min-h-0 flex-col">
       {/* 返回行与子 Agent 详情同款：详情是一层，返回才回列表 */}
-      <button
-        type="button"
-        onClick={onBack}
-        className="mb-1 inline-flex items-center gap-1 text-[11px] text-[var(--t4)] hover:text-[var(--t2)]"
-      >
-        <ArrowLeft size={11} aria-hidden /> 返回文件列表
-      </button>
+      <div className="mb-1 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="inline-flex items-center gap-1 text-[11px] text-[var(--t4)] hover:text-[var(--t2)]"
+        >
+          <ArrowLeft size={11} aria-hidden /> 返回文件列表
+        </button>
+        {onShowDiff && (
+          <button
+            type="button"
+            onClick={onShowDiff}
+            title="回到本会话的改动视图"
+            className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] text-[var(--t4)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
+          >
+            <FileDiff size={11} aria-hidden /> 看改动
+          </button>
+        )}
+      </div>
       <div className="mb-1.5 flex items-start gap-1.5 px-0.5">
         <FileText
           size={12}
