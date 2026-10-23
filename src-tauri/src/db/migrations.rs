@@ -152,12 +152,12 @@ pub fn reset_bot_assigned_with<F: FnOnce() -> Result<(), String>>(
     use std::sync::atomic::Ordering;
     // CAS 抢占执行权：load/exec/store 三步分离时，两个并发调用可能都观察到
     // false 而双双执行。compare_exchange 保证只有一个调用 false→true 成功；
-    // exec 失败要回滚标记——保留「失败可重试」语义（成功才消耗执行权）
+    // exec 失败要回滚标记——保留「失败可重试」语义（成功才消耗执行权）。
+    // 落选是每次连接打开的正常路径（每库只真正执行一次），不打日志。
     if done
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
-        eprintln!("[migrate] reset_bot_assigned_with：执行权已被并发调用持有，本次跳过");
         return Ok(());
     }
     match exec() {
