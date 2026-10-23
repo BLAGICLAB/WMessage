@@ -172,6 +172,7 @@ Windows 机器上 13:13~13:44 那次运行（`D:\Program Files\wmessage-portable
 | **S32** ready 超时不误报成「立即退出」 | 🔧 **源码已修 · 待实机复验** | 未修时的实测：`service.stop_requested | reason=ready_timeout` → `service.exited | exit_code=1 | uptime_ms=30772` → `service.stopped | method=taskkill` → `service.start_failed | reason=服务「python」启动后立即退出（退出码 1）。`——**服务活了整整 30 秒才被我们停掉**，却报成「启动后立即退出」；那个退出码 1 是 `taskkill /F` 的签名（详见附录 D-6）。已修（`aa80d2f9` `7f80865f` `a8b54f10`）：就绪判定四态 + **先判后停**（停止前取快照）+ 停止结果如实进文案 + `service.exited` 补 `stop_reason`。macOS 侧已端到端复现并变异复验（真 spawn、真等超时、真停），**Windows 实机复验还没跑**。见 `docs/realmachine-rerun-2026-10-22.md` §2.1 |
 | **S07** 端口闸采集失败不折叠成「判了没事」 | 🟡 **代码路径本机跑通 · 采集器真坏那半也跑通（沙箱）** | 本机把 `lsof` 的 exec 用沙箱掐掉（`bash scripts/sandbox-lsof-test.sh`，不动系统文件）：采样器如实报 `complete=false`（**不是**「采空但采成功」）→ 判定层判「没判」（`Unsupported`）、动态保留集**不清空**、快照 JSON 的 `listeningSampleOk` 翻 false、面板红字由前端用例守。**顺带查出真缺陷 D-15**：审计事件记在**反的转折**上——第一次失败什么都没记、之后每 30s 刷一条（已修，见附录 D-15）。卡片配方也顺带修对（macOS 的 lsof 在 `/usr/sbin/lsof`，`/usr/bin/lsof` 不存在；只摘 PATH 造不出失败）。**未验**：真 app 里 30s 巡检那一轮 + 面板红字实拍 |
 | **S21** 三处文件绑定并发不被整列覆盖 | 🟡 **代码路径本机跑通** | 「合并基线取对话框返回后的现值」这条由 `src/lib/useTaskFiles.test.tsx` 钉住：对话框挂起期间另一个窗口绑进来的那批**不会被覆盖掉**（三条路径都走同一内核；`ContextRail` 那条是同一套 ref 写法、源码核对过）。**变异复验**：基线改回渲染期快照（当年的 bug 形态）→ 用例红。**未验**：真机上「两窗口同时操作」的实拍（任务卡 ↔ 详情面板 ↔ 聊天右侧栏各一次） |
+| **D-16 / D-17 / D-18** 技能「刚切就断」 | 🔧 **源码已修 · 待实机复验**（2026-10-23 晚） | 用户实机报障（「用安装好的 skill 时总是一用就断」）带日志查出来的三条：**D-16** 切技能后新技能 0 步被判「已完成」、模型没被叫醒、整轮零产出（`trace.complete … files=0`）；**D-17** 用户点名的 `PPT-craft-master` 被 intent 正则截胡（先启了内置 `pptx-design`）；**D-18** 老库缺 `bot_sessions.onion_config` 两列 → 每会话读 onion 配置必炸。已修：`a55bb74c` / `708507bc` / `fad6ffa6`（各自都有变异复验，见附录 D）。**实机复验见 `docs/realmachine-rerun-2026-10-22.md` §2.7** |
 
 **日志里几条不是缺陷、但值得记的**：
 
@@ -195,11 +196,11 @@ C:\Users\Administrator\AppData\Local\Microsoft\WindowsApps\python.exe        ←
 
 这会伪装成「服务起不来」，实际上服务好好地跑着。**凡是拿 `http.server` 当 `readyPattern` 的靶子，args 必须带 `-u`。**（实测：加 `-u` 后 `service.ready | elapsed_ms=473`；不加 `-u` 则 30 秒后超时。）
 
-**还没跑过的**：**W 序列（W01–W09）已全部跑完**；S 序列已跑 **S01 / S02 / S03 / S04 / S05 / S06 / S08 / S12 / S14**（S09 与 W05 是同一条，已覆盖；其中 S01/S02/S04/S05/S06/S08/S12 还有未验的半，见上表各行）。**还没跑**：**S10 / S11 / S13 / S15~S25**（**S07 是 macOS/Linux 专属**，Windows 测不了——见附录 C），外加 **S32 的复验**（已跑出 FAIL，源码已修，待复验）。
+**还没跑过的**：**W 序列（W01–W09）已全部跑完**；S 序列已跑 **S01 / S02 / S03 / S04 / S05 / S06 / S08 / S12 / S14**（S09 与 W05 是同一条，已覆盖；其中 S01/S02/S04/S05/S06/S08/S12 还有未验的半，见上表各行）。**还没跑**：**S10 / S11 / S13 / S15~S25**（**S07 是 macOS/Linux 专属**，Windows 测不了——见附录 C），外加 **S32 的复验**（已跑出 FAIL，源码已修，待复验）与 **D-16 / D-17 / D-18 的复验**（技能「刚切就断」那条链，2026-10-23 新增）。
 
 > **2026-10-22 晚：本轮修了三个真缺陷（D-2 / D-6 / D-7），源码侧已提交并做了变异复验，但 Windows 实机一次都还没跑**——
 > 所以上面三行标的是「🔧 源码已修 · 待实机复验」，**不是 PASS**。
-> 复验步骤（换 exe + 6 项清单 + S 序列剩余项 + 结果回填到哪）见 **`docs/realmachine-rerun-2026-10-22.md`**。
+> 复验步骤（换 exe + 7 项清单 + S 序列剩余项 + 结果回填到哪）见 **`docs/realmachine-rerun-2026-10-22.md`**。
 
 ### 1.6 本机（macOS）代跑：哪些能在这台机器上定案（2026-10-23）
 
@@ -2199,7 +2200,12 @@ WARN/ERROR 同时镜像到 `error.log`。
 
 ## 附录 D：实机发现清单（2026-10-22 Windows 实机，待修）
 
-这十五条里 **D-15 是本机（macOS）代码路径实跑发现的**（S07 分诊时），其余十四条是 Windows 实机跑出来的：**D-1 / D-2 / D-6 / D-7 / D-8 / D-11 / D-15 是真缺陷**（源码侧都已修，D-1 已实机复验转 PASS，其余待复验）；**D-4 / D-9 / D-10 / D-12 是观察级**（D-12 的 UI 错位已修）；**D-3 / D-5 / D-13 / D-14 是已排除**——后两条是**卡片自己写错了**。每条都给了复现步骤与根因位置。
+这十八条里 **D-15 是本机（macOS）代码路径实跑发现的**（S07 分诊时），
+**D-16 / D-17 / D-18 是 2026-10-23 用户实机报障带日志查出来的**（技能「刚切就断」那一轮），
+其余十四条是 Windows 实机跑出来的：**D-1 / D-2 / D-6 / D-7 / D-8 / D-11 / D-15 /
+D-16 / D-17 / D-18 是真缺陷**（源码侧都已修，D-1 已实机复验转 PASS，其余待复验）；
+**D-4 / D-9 / D-10 / D-12 是观察级**（D-12 的 UI 错位已修）；**D-3 / D-5 / D-13 / D-14 是已排除**——
+后两条是**卡片自己写错了**。每条都给了复现步骤与根因位置。
 
 > **D-3 特意留着**：它是**被实机否证**的旧怀疑。写在这里是为了不让下一个人重犯同一个推断错误——**只读采样函数的返回值、没读调用点前面的平台守卫，就断言「面板会多出一行红字」**，差点把一个正确实现判成缺陷。
 
@@ -2810,3 +2816,94 @@ if prev || complete {
 > 而只从 PATH 摘掉 lsof 也**造不出失败**（采样器还有绝对路径那个候选）。
 > 卡片已改：优先用 `scripts/sandbox-lsof-test.sh`（不动系统文件），要动系统文件就移
 > `/usr/sbin/lsof`。
+
+### D-16（真缺陷）切技能后整轮直接收尾——新技能 0 步被判「已完成」，模型再没被叫醒
+
+**来源**：2026-10-23 用户实机报障（「使用安装好的 skill 时总是一用就断」），附件里是当次
+bot.log / error.log 原文（947 行）。
+
+**现象**：用户发「根据文件内容帮我做个PPT……用 PPT-craft-master 技能做」，日志末段是：
+
+```
+[2026-10-23 13:33:10] skill_completed | name: pptx-design | 切换技能结束 | steps: 4
+[2026-10-23 13:33:10.335] INFO | skill.start | name: ppt-craft-master | risk=medium | mode=interactive | max_steps=20
+[2026-10-23 13:33:10] skill_completed | name: ppt-craft-master | steps: 0        ← 新技能 0 步被判「完成」
+[2026-10-23 13:33:10.417] INFO | trace.complete | trace_id=7 | status=done | turns=5 | tools=5 | files=0
+```
+
+新技能加载后**再没有下一次 `llm.request`**——模型没被叫醒，整轮零产出（`files=0`，PPT 根本没生成）。
+
+**根因**：三处同源，串成一条链：
+
+1. `bot_skills/runtime.rs` 的 `start_skill` 切技能分支：把旧 run 标成终态 `Completed`，
+   但**仍留在活动表里**；
+2. `bot_skills/state.rs` 的 `active_skill_run_for` 会**返回终态 run**；且多条候选时按
+   `HashMap` 迭代序取（顺序随机）——于是主循环 `bot_model_loop.rs` 里取到的可能是那条终态 run；
+3. `bot_model_loop.rs` 拿到终态 run → `advance_skill` 判 `Finish` → `skill_finish(true)`
+   **把新技能也标成完成**并直接 return。
+
+入口处 `bot_model_loop.rs:1695` 的 `clear_terminal_skill_runs` 只在**进循环前**跑一次——
+管不到循环中切换产生的终态 run。
+
+**危害**：凡是用到「模型中途 `use_skill` 切技能」的场景（本产品的正常路径，不是边角），
+这一轮必然零产出；且日志上显示 `status=done`、技能「已完成」，**看起来像成功**——
+排查时会往「模型没写好内容」上找，而真因在运行时状态机。
+
+**修法**（`a55bb74c`，三处一起改）：
+
+- `state.rs` 新增 `run_liveness_rank` + 纯函数 `pick_active_run`：**活的优先**
+  （Running > Paused > 终态），同层取**最近启动**的，且与输入顺序无关；
+- `runtime.rs` 新增 `take_over_switched_runs`：切技能时旧 run **出表**（不留终态 run 污染活动快照）；
+- `scheduler.rs`：DSL 调度器发现活动 run 的名字不是自己的 → 记 `skill_dsl_run_replaced`、
+  persist `terminated`、返回 `DslFailure::Terminated`（**不记 done、不调 `skill_finish`**——
+  那会把接管方标成完成，等于换个姿势掐死新技能）。
+
+> 保留「无活 run 时回退终态」的语义是有意的：DSL 调度器需要感知终态（`/stop`、工具失败）。
+> 修的是**优先级与确定性**，不是把终态信号删掉。
+
+**复验**：新增用例——`state.rs` 4 例（活的优先 / 同层取最近启动 / 与输入顺序无关）、
+`runtime.rs` 1 例（切技能后旧 run 出表）、`tests/skill_e2e.rs` 1 例
+（`scheduler_e2e_bails_out_when_another_skill_takes_over`）。
+变异复验：把 `pick_active_run` 退回旧语义 → 4 条用例**确定性红**；改回 → 绿。
+
+### D-17（真缺陷）用户点名的技能被 intent 正则截胡——启错技能，逼出 D-16
+
+**来源**：2026-10-23 用户实机报障的同一份日志。
+
+**现象**：用户正文里明明写了 `PPT-craft-master`，路由却先启了内置的 `pptx-design`
+（其 `SKILL.md` 的 intents 含 `"PPT"`）。模型只能中途 `use_skill` 切换——正踩 D-16。
+
+**根因**：`intent_router.rs` 的 `match_compiled` 是 **first-match-wins**；而
+`bot_skills/manage.rs` 的 `intent_rules_from_dirs` 生成的规则里，
+**intent 正则规则排在点名规则之前**。
+
+**危害**：用户显式点名是最高优先级的意图信号，却被一条宽泛正则压过；
+结果是「启错技能 → 模型被迫切换 → 触发 D-16」——**D-17 是 D-16 的导火索**。
+修好 D-16 只让「切了也不断」，点名技能仍会被启错。
+
+**修法**（`708507bc`）：`intent_router.rs` 新增 `explicit_name_pattern`——
+大小写不敏感（用户正文写 `PPT-craft-master`、技能名是 `ppt-craft-master`）、
+名字前后不得是名字字符（避免 `xxx-ppt-craft-master-yyy` 误命中）；
+`manage.rs` 把点名规则**整体排在 intent 规则之前**。
+
+> 点名规则**只对含 `-` / `_` 的技能名生效**：单词名（如 `docx`）撞普通词会劫持路由。
+
+**复验**：`tests/skill_e2e.rs` 新增 `pre_step_routes_explicitly_named_skill_before_intent_rule`
+（路由表串行锁 `SKILL_ROUTES_TEST_LOCK`，避免与其它用例抢占全局路由表）。
+
+### D-18（真缺陷）老库缺 `bot_sessions.onion_config` 两列——每会话读 onion 配置必炸
+
+**来源**：2026-10-23 用户实机报障的同一份日志（`no such column` 报错）。
+
+**现象**：用户实机日志里每会话读 onion 配置都报 `no such column`——per-onion 配置**永远不生效**。
+
+**根因**：`db/migrations.rs:24` 定义了 `ensure_onion_config_columns`（给老库补这两列），
+但**全仓没有任何调用点**——函数定义了等于没有。
+
+**危害**：老用户升级后 per-onion 配置静默失效（每次读都失败，回落默认值，不炸界面）。
+
+**修法**（`fad6ffa6`）：`db/mod.rs` 的 `open_db` 补调 `migrations::ensure_onion_config_columns(&conn)?`。
+
+**复验**：`db/mod.rs` 测试模块 2 例——老库补列行为 + 接线守卫
+`open_db_calls_ensure_onion_config_columns`（断言 `open_db` 里**真的调了**那个函数；
+这道守卫就是为了防「定义了没人调」复发）。

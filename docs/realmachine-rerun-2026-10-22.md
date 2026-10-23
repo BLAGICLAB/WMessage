@@ -17,15 +17,40 @@
 **这三项的源码侧都做了变异复验**（把修复改回 → 对应测试必须红 → 改回后绿）。
 **实机侧一次都还没跑**——所以本文 §1.5 里那三行仍然是 ❌ FAIL，跑完请按 §四 回填。
 
+### 〇之二、2026-10-23 晚间这一轮：技能「刚切就断」
+
+| 缺陷 | 现象 | 修法 | commit |
+|---|---|---|---|
+| **D-16** | `use_skill` 换技能后**整轮直接收尾**：新技能 0 步被判「已完成」，模型再没被叫醒，本轮零产出（PPT 根本没生成） | 活动快照改「活的优先」（Running > Paused > 终态）+ 同层取最近启动的；切技能时旧 run 出表；DSL 调度器遇接管就收手 | `a55bb74c` |
+| **D-17** | 用户点名的技能被 intent 正则截胡：「用 PPT-craft-master 技能做PPT」先命中内置 `pptx-design` 的 `PPT` 正则 → 启错技能 → 模型只能中途切换 → 正踩 D-16 | 路由加「点名规则」并**整体排在 intent 规则之前**（大小写不敏感；只对带 `-`/`_` 的名字生效） | `708507bc` |
+| **D-18** | 老库缺 `bot_sessions.onion_config` 两列 → 每会话读 onion 配置必炸 `no such column`，per-onion 配置永远不生效 | `open_db` 补调 `ensure_onion_config_columns` | `fad6ffa6` |
+
+**D-16 的实机现场**（2026-10-23 13:33 那次的 bot.log 原文）：
+
+```
+[2026-10-23 13:33:10] skill_completed | name: pptx-design | 切换技能结束 | steps: 4
+[2026-10-23 13:33:10.335] INFO | skill.start | name: ppt-craft-master | risk=medium | mode=interactive | max_steps=20
+[2026-10-23 13:33:10] skill_completed | name: ppt-craft-master | steps: 0        ← 新技能 0 步被判「完成」
+[2026-10-23 13:33:10.417] INFO | trace.complete | trace_id=7 | status=done | turns=5 | tools=5 | files=0
+```
+
+新技能加载后**再没有下一次 `llm.request`**——模型没被叫醒，整轮零产出（`files=0`）。
+根因三处同源：切换时旧 run 被标终态却留在表里 → 活动快照取到那条终态 run → 主循环判「已完成」直接收尾。
+
+**D-17 是这条链的导火索**：用户明明点了名，路由却按 intent 正则启了别的技能，
+模型只能中途 `use_skill` 切换——正踩 D-16。修完点名直接命中，根本不需要切换。
+
+这三项的源码侧也做了变异复验（改回 → 对应测试红 → 改回后绿）。**实机侧同样一次都还没跑**——
+见本文 §2.7 的那张卡。
+
 ## 一、换 exe
 
-### 1.1 mac 侧产物（2026-10-23 出包时重建，SHA256 随文核对）
+### 1.1 mac 侧产物（2026-10-23 晚间重建，SHA256 随文核对）
 
 上一轮那份 `wmessage.exe`（SHA256 `adebd0d…`，基线 `a20f0ec3`）**跟着 `src-tauri/target/` 整个清掉了**——
-本机一度没有可拷的产物，照旧 SHA256 去核对会直接扑空。2026-10-23 出整包时重建了一次，
-当前这份含 **D-11 修复**（`create_skill` 前置拒绝记 WARN 而非 ERROR）+ **2026-10-23 分模块审计那批
-17 条修复**（UI 自动化 6 条 P2 + 2 条跨平台契约、凭据面 3 条、标签一致性 4 条、
-任务卡 3 条、底座 1 条、P3 择优 7 条）：
+本机一度没有可拷的产物，照旧 SHA256 去核对会直接扑空。2026-10-23 出整包时重建过一次
+（SHA256 `a5332331…`，基线 `27ccf452`）；**晚间又重建了一次**——当前这份是
+**D-16 / D-17 / D-18 三项修复**（技能「刚切就断」+ 点名路由优先 + 老库补 onion 两列）之后产物：
 
 ```
 /Users/renshi/Projects/wmessage/src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
@@ -33,14 +58,15 @@
 
 | 项 | 值 |
 |---|---|
-| 大小 | 75,081,877 B |
+| 大小 | 75,200,216 B |
 | 格式 | `PE32+ executable (GUI) x86-64 (stripped to external PDB), for MS Windows` |
-| SHA256 | `a53323316d632fedc07e79d2abd7f78c27af169b927e9484ca42b8cdb6ccc4e5` |
-| 构建基线 | `27ccf452`（含 D-1 / D-2 / D-6 / D-7 / D-8 五项修复 + **D-11** + 10-23 审计批 17 条） |
-| 整包 | `wmessage-portable-2026-10-23.zip`（110,219,309 B） |
-| 整包 SHA256 | `e0d98a9237fc4dc2af6d0b15b31f40dbe5d367964bf1e86c01af2d7641bdb2dc` |
+| SHA256 | `71f5017cfbdf1400092ef544bb190b8714d6ab349734d9261d9495cc1b4edef1` |
+| 构建基线 | `c6fe3560`（本轮 = D-16 / D-17 / D-18；基线之上还有 10-23 审计批 17 条 + D-11） |
+| 整包 | **本轮没重出整包**——沿用 `wmessage-portable-2026-10-23.zip`（110,219,309 B） |
+| 整包 SHA256 | `e0d98a9237fc4dc2af6d0b15b31f40dbe5d367964bf1e86c01af2d7641bdb2dc`（**对应旧 exe `a5332331…`**） |
 
-> 已被替换、别再用的旧产物：`4fc1cdad…`（74,550,625 B，基线 `76dc0335`，10-22 那轮重建）、
+> 已被替换、别再用的旧产物：`a5332331…`（75,081,877 B，基线 `27ccf452`，10-23 出整包那轮）、
+> `4fc1cdad…`（74,550,625 B，基线 `76dc0335`，10-22 那轮重建）、
 > `e24a91b1…`（74,635,241 B，基线 `1b44d38e`，不含 D-11）、
 > `adebd0d…`（基线 `a20f0ec3`，产物已被 target 清理）。
 >
@@ -73,24 +99,31 @@ shasum -a 256 src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
 > `C:\wmessage-portable-2026-10-23`，把 `$PKG` 改成它。旧包 `C:\wmessage-portable-2026-10-22`
 > 里的 `wmessage.db` 不会自动跟过来——**要旧数据就把旧的 `wmessage.db` 与 `AI_Gen_Files` 一起拷过去**
 > （或者新包里直接换 exe，那数据自然还在原地）。
+>
+> **⚠️ 10-23 那轮实际跑的位置又变了**：13:41 那次的日志写着
+> `app_data_dir | path=D:\Program Files\wmessage-portable-2026-10-23`——**10-23 整包被放回了
+> `D:\Program Files`**，而且是**以管理员身份跑的**（日志里 `ui_automation_toggle | user=Administrator`），
+> 所以 `Program Files` 写得进去、便携语义完整（数据跟着包走）。
+> **本轮换 exe 的对象就是它**：`$PKG = "D:\Program Files\wmessage-portable-2026-10-23"`。
+> 换成普通账号跑就会退回 `%APPDATA%`（见主文档 §1.0 ①）——那是账号问题，不是本轮的问题。
 
 ### 1.2 Windows 侧替换步骤
 
 ```powershell
-$PKG = "C:\wmessage-portable-2026-10-23"   # 按你实际放的位置改
+$PKG = "D:\Program Files\wmessage-portable-2026-10-23"   # 按你实际放的位置改
 
 # 1) 确认应用没在跑（否则 exe 被占着，换不进去）
 Get-Process -Name wmessage -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
 
 # 2) 备份旧 exe（出问题能退回去）
-Copy-Item "$PKG\wmessage.exe" "$PKG\wmessage.exe.bak-2026-10-22" -Force
+Copy-Item "$PKG\wmessage.exe" "$PKG\wmessage.exe.bak-2026-10-23" -Force
 
 # 3) 替换（把拷过去的 wmessage.exe 放到 $PKG 下再执行）
 Copy-Item "D:\transfer\wmessage.exe" "$PKG\wmessage.exe" -Force
 
 # 4) 校验：认 SHA256（大小不能当校验依据）
 Get-FileHash "$PKG\wmessage.exe" -Algorithm SHA256 |
-  Select-Object Hash   # 期望 4fc1cdad5b4239cc9a0f7f96d413616bf7ed78d262c61644d7188a8b607a982e
+  Select-Object Hash   # 期望 71f5017cfbdf1400092ef544bb190b8714d6ab349734d9261d9495cc1b4edef1
 ```
 
 ### 1.3 重启应用
@@ -102,7 +135,7 @@ Get-FileHash "$PKG\wmessage.exe" -Algorithm SHA256 |
 
 ```powershell
 $PS  = "D:\wmessage-probe\regression-probe.ps1"
-$PKG = "C:\wmessage-portable-2026-10-23"
+$PKG = "D:\Program Files\wmessage-portable-2026-10-23"
 powershell -ExecutionPolicy Bypass -File $PS locate -ExeDir $PKG
 ```
 
@@ -113,7 +146,7 @@ powershell -ExecutionPolicy Bypass -File $PS locate -ExeDir $PKG
 > `MiniMax-M2`，一开口就 404（S01 第一发就栽在这，见主文档 §1.5 的那条备注）。
 > **测任何要模型回话的场景前，先在设置页确认激活的模型。**
 
-## 二、先跑这 6 项（修过的那几个）
+## 二、先跑这 7 项（修过的那几个）
 
 > 每项跑完顺手打一次水位线：`mark` → 操作 → `report`。
 > 通用命令：
@@ -217,6 +250,44 @@ powershell -ExecutionPolicy Bypass -File $PS fixes -ExeDir $PKG
   面板**只有一行**「本平台暂不支持监听端口采集……」提示，**没有**第二行「采集失败」；
   审计里**没有** `service.listening_sample_failed`。
 
+### 2.7 D-16 / D-17 · 技能不再「刚切就断」
+
+**提示词**（原样粘贴，附件带上那个 .docx——一次只做这一件事）：
+
+```
+根据文件内容帮我做个PPT，用于职代会上宣贯，用PPT-craft-master技能做
+```
+
+**判据**（地面真相 = bot.log 原文 + 落盘文件，**不是**模型自报）——三条同时成立才算 PASS：
+
+1. **点名路由生效**：日志里出现 `pre_step.route_skill | skill=ppt-craft-master`，
+   **不是** `skill=pptx-design`（D-17 的修法就是让点名压过 intent 正则：
+   内置 `pptx-design` 的 `PPT` 正则不再截胡）。
+2. **切了也不断**：若日志里出现 `use_skill`，它后面**必须还有下一次 `llm.request`**（同一 trace_id）；
+   **不得**出现 `skill_completed | name: ppt-craft-master | steps: 0` 紧跟着 `trace.complete`
+   ——那是 D-16 的现场：新技能 0 步被判「已完成」，模型没被叫醒。
+3. **真有产出**：`trace.complete | trace_id=… | status=done | turns=… | tools=… | files=1`
+   （`files` 大于 0），且 `AI_Gen_Files\` 下**真的多出 .pptx**（文件系统核对，不是模型说做了）。
+
+**地面真相命令**：
+
+```powershell
+# ① 路由与切换：把这几类行按时间捞出来看（改前会看到 use_skill 后直接 skill_completed steps: 0）
+Get-Content "$PKG\bot.log" -Encoding UTF8 |
+  Select-String "pre_step\.route_skill|skill\.start|skill_completed|use_skill|llm\.request|trace\.complete"
+
+# ② 产出：看文件有没有真落盘（大小/时间对得上，不是模型口头声称）
+Get-ChildItem "$PKG\AI_Gen_Files" -Filter *.pptx | Sort-Object LastWriteTime -Descending |
+  Select-Object -First 3 Name, Length, LastWriteTime
+```
+
+> **顺带确认 D-18（不用做动作，换完 exe 跑一轮聊天后 grep 一下）**：
+> 老库补列后，每会话读 onion 配置不再报错——
+> `bot.log` 里**不该再有** `bot_onions read_meta_fail … no such column: onion_config`：
+> ```powershell
+> Get-Content "$PKG\bot.log" -Encoding UTF8 | Select-String "read_meta_fail"
+> ```
+
 ## 三、再跑 S 序列剩余项
 
 ### 3.1 跑法（三条，别省）
@@ -291,7 +362,7 @@ bash scripts/regression-probe.sh orphans   # 宿主已死、服务还活着的�
 
 | 跑完什么 | 回填到哪 |
 |---|---|
-| §二 的 6 项 | 主文档 `docs/realmachine-regression-test.md` §1.5 表里对应行（把 ❌ 改成 ✅/🟡 并贴原文） |
+| §二 的 7 项 | 主文档 `docs/realmachine-regression-test.md` §1.5 表里对应行（把 ❌ 改成 ✅/🟡 并贴原文） |
 | §三 的 S 项 | 同上 §1.5（新增行）+ 上面的表 |
 | 发现新缺陷 | 主文档 **附录 D**：接着现有编号往下写（真缺陷 / 观察级 / 已排除 三档），格式照 D-1~D-9 |
 | 踩到的坑（不是缺陷） | 主文档 §1.5 表下方的「日志里几条不是缺陷、但值得记的」 |
