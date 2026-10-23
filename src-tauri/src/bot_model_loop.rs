@@ -1567,7 +1567,13 @@ pub async fn run_model_loop(
         turn_status: Some(&|status, detail| {
             emit(
                 "bot-turn-status",
-                serde_json::json!({ "status": status.as_str(), "detail": detail }),
+                serde_json::json!({
+                    "status": status.as_str(),
+                    "detail": detail,
+                    // 本轮起点：前端回合秒表按真实起点算——回灌接回时用
+                    // 「本地此刻」当起点，秒表会从零开始（回复其实已跑了一会儿）
+                    "startedAt": session_id.and_then(crate::bot::stream_log::run_started_at),
+                }),
             );
         }),
         wall_budget,

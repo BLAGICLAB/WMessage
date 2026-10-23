@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act, within, fireEvent } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
+import * as streamState from "./ChatPanel/streamState";
 import { stubScrollNoop } from "../test/scrollNoop";
 
 // ChatPanel 自动滚动依赖 jsdom 未实现的 scrollTo/scrollIntoView（scoped noop）
@@ -154,6 +155,9 @@ beforeEach(() => {
   // 侧栏/水位档位等视图态持久化在 localStorage，jsdom 同一文件内跨用例共享——
   // 不清会让「默认收起」这类用例被前一个用例写下的展开态污染
   localStorage.clear();
+  // 流式在途态在模块 store 里（跨面板挂载存活），同样跨用例共享——
+  // 不复位会让上一例的「在途」改写这一例的渲染（占位文案 / 停止键）
+  streamState.resetAll();
 });
 
 describe("ChatPanel", () => {
@@ -2965,6 +2969,117 @@ describe("在途回合（切走再切回不丢消息）", () => {
     await waitFor(() => expect(currentTitle()).toHaveTextContent("会话一"));
     // 已读到的半截回复要接得上，不凭空少一半
     expect(await screen.findByText("已经说了一半")).toBeInTheDocument();
+  });
+
+  // 应用重启 / 面板重挂载后接回在途回复：后端说这一轮还在跑、本地没有它的
+  // 状态 → 把这一轮的事件按序补齐（补齐走的是与实时订阅同一批处理器）。
+  it("在途回灌：后端说还在跑 → 这一轮的事件补进气泡", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_stream_replay")
+        return {
+          events: [
+            {
+              seq: 1,
+              event: "bot-chat-delta",
+              payload: { text: "补齐的半截", sessionId: "s1", seq: 1 },
+            },
+          ],
+          lastSeq: 1,
+          truncated: false,
+          inflight: true,
+        };
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("补齐的半截")).toBeInTheDocument();
+  });
+
+  // 补齐与实时会重叠：同一条事件两边各来一次时，第二次必须被序号闸挡住——
+  // 不挡就是「重说了一遍」（正文叠成两半）。
+  it("在途回灌：同号事件再从实时通道来一次 → 不重复叠加", async () => {
+    let delta: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta")
+        delta = cb as typeof delta;
+      return () => {};
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_stream_replay")
+        return {
+          events: [
+            {
+              seq: 1,
+              event: "bot-chat-delta",
+              payload: { text: "只该有一遍", sessionId: "s1", seq: 1 },
+            },
+          ],
+          lastSeq: 1,
+          truncated: false,
+          inflight: true,
+        };
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findByText("只该有一遍")).toBeInTheDocument();
+    // 实时通道把同一条（seq=1）再送一次 → 序号闸挡住，正文不叠
+    await act(async () => {
+      (
+        delta as unknown as (e: { payload: Record<string, unknown> }) => void
+      )({
+        payload: { text: "只该有一遍", sessionId: "s1", seq: 1 },
+      });
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    const hits = screen.getAllByText("只该有一遍");
+    expect(hits).toHaveLength(1);
+  });
+
+  // 后端说没在跑 → 不回灌（这一轮已经收尾，正文以库为准）
+  it("在途回灌：后端说已收尾 → 不补任何东西", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_stream_replay")
+        return { events: [], lastSeq: 0, truncated: false, inflight: false };
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await waitFor(() => {
+      expect(
+        mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_stream_replay"),
+      ).not.toHaveLength(0);
+    });
+    expect(screen.queryByText("补齐的半截")).not.toBeInTheDocument();
+  });
+
+  // 挂载时把后端在跑的那些会话都接回来——不止当前会话：并行回复（PAR-1）
+  // 的那些会话的半截内容也在，别让它们只剩最终正文。
+  it("挂载时接回在途列表里的其他会话", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "bot_inflight_list")
+        return [
+          { sessionId: "s2", startedAt: 1, lastSeq: 1, eventCount: 1 },
+        ];
+      if (cmd === "bot_stream_replay" && (args as { sessionId?: string })?.sessionId === "s2")
+        return {
+          events: [
+            {
+              seq: 1,
+              event: "bot-chat-delta",
+              payload: { text: "另一会话的半截", sessionId: "s2", seq: 1 },
+            },
+          ],
+          lastSeq: 1,
+          truncated: false,
+          inflight: true,
+        };
+      return defaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    // s2 不在当前视图 → 内容进的是权威副本（切过去就能接上）
+    await waitFor(() => {
+      expect(streamState.metaOf("s2")?.text).toBe("另一会话的半截");
+    });
+    expect(streamState.isInflight("s2")).toBe(true);
   });
 
   it("回合开始即落库：在途时用户消息已经进库（崩了也不丢）", async () => {

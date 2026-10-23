@@ -232,6 +232,15 @@ pub fn emit_recorded<R: Runtime>(
     let _ = app.emit_to("main", event, payload);
 }
 
+/// 某会话本轮的起始时刻（毫秒）。
+///
+/// 前端的回合秒表要按真实起点算：回灌接回时「本地此刻」是补齐的那一刻，
+/// 拿它当起点会让秒表从零开始——回复其实已经跑了一会儿了。
+pub fn run_started_at(session_id: &str) -> Option<i64> {
+    let m = logs();
+    m.get(session_id).map(|v| v.started_at)
+}
+
 /// 在途会话列表（谁正在跑）。
 pub fn inflight_list() -> Vec<InflightRun> {
     let now = now_ms();

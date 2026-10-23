@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { stubScrollNoop } from "./test/scrollNoop";
+import * as streamState from "./components/ChatPanel/streamState";
 import { NAV_W } from "./lib/navWidth";
 import type { Task } from "./types";
 
@@ -81,6 +82,9 @@ beforeEach(() => {
   mocks.askMock.mockResolvedValue(true);
   alertMock.mockClear();
   window.alert = alertMock;
+  // 流式在途态在模块 store 里（跨面板挂载存活），跨用例共享——不复位会让
+  // 上一例的「在途」改写这一例的渲染
+  streamState.resetAll();
 });
 
 describe("App", () => {

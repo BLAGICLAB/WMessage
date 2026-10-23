@@ -37,7 +37,6 @@ import {
 
 import type {
   ChatModelEntry,
-  FileChangeLite,
   ModelItem,
   Msg,
   PermMode,
@@ -58,6 +57,7 @@ import {
   type ChatDraft,
 } from "./chatDrafts";
 import { useAutoGrow, useOutsideClose } from "./useChatUi";
+import * as streamState from "./streamState";
 import { SessionRail } from "./SessionRail";
 import { ContextRail, type ContextTab, type SubagentRun } from "./ContextRail";
 import { MessageList } from "./MessageList";
@@ -171,10 +171,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   const [slashIdx, setSlashIdx] = useState(0);
   /** 斜杠命令 picker 被 Esc 关掉后，输入未变化前不再自动浮出 */
   const [slashDismissed, setSlashDismissed] = useState(false);
-  /** PAR-1 并行回复：每个会话独立在途。inflightSids 驱动 UI（按视图会话判定），   *  inflightRef 供事件监听同步判断（⚠️ 必须与 setInflightSids 同步更新，
-   *  useEffect 镜像在同一帧内连按会有并发窗口） */
+  /** PAR-1 并行回复：每个会话独立在途。在途集合的真源在模块 store
+   *  （streamState），这里只是它给 UI 的镜像——事件监听与 UI 读同一份，
+   *  不再是 ref 与 state 两份副本各自更新（同帧连按会分叉）。 */
   const [inflightSids, setInflightSids] = useState<ReadonlySet<string>>(
-    new Set(),
+    () => new Set(streamState.inflightSessions()),
+  );
+  useEffect(
+    () => streamState.subscribeInflight((sids) => setInflightSids(new Set(sids))),
+    [],
   );
   /** 逐条复制按钮的反馈：记录当前“已复制”的消息下标 */
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
@@ -354,44 +359,20 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     // oxlint-disable-next-line react/set-state-in-effect
     setSubagentDetailId(null);
   }, [sessionId]);
-  /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；   *  并行回复各自累积互不串台，收尾并入最终消息后删除条目） */
-  const streamingMetaMapRef = useRef<
-    Map<
-      string,
-      {
-        thinking?: string;
-        tools?: ToolCall[];
-        skillFailure?: SkillFailure;
-        fileChanges?: FileChangeLite[];
-        /** 回合状态机 + 本轮起点（秒级计时的权威副本，同 tools 的处理口径） */
-        turnStatus?: TurnStatus;
-        turnDetail?: string;
-        turnStartedAt?: number;
-        /** 本轮已流出的正文：切走再切回时占位气泡靠它回填这半截，
-         *  不然重载历史等于把已读到的回复抹掉 */
-        text?: string;
-        /** 本轮用户消息：回合开始即落库，库里还没落地时靠它把视图补全 */
-        userMsg?: Msg;
-      }
-    >
-  >(new Map());
+  /** PAR-1：每会话流式元数据（thinking/tools/skillFailure 权威副本，按 sid 隔离；   *  并行回复各自累积互不串台，收尾并入最终消息后删除条目）。
+   *  落脚点在组件外（streamState）：状态要跨面板挂载存活，且必须与「已应用到
+   *  哪一号事件」的游标同生共死——游标跑在状态前面，补齐就会跳过本该重建的
+   *  那一段（接出来的是半截）。 */
   const metaFor = (sid: string | null) => {
     if (!sid) return undefined;
-    let m = streamingMetaMapRef.current.get(sid);
-    if (!m) {
-      m = {};
-      streamingMetaMapRef.current.set(sid, m);
-    }
-    return m;
+    return streamState.ensureMeta(sid);
   };
-  /** 在途会话集合（同步镜像，见 inflightSids 注释） */
-  const inflightRef = useRef<Set<string>>(new Set());
   /** 重建视图时接回在途回合：按会话重载历史拿到的是「回合收尾时」的库内容，
    *  库里还没有这一轮——不接回来，用户发出去的消息与已读到的半截回复就没了。
    *  用户消息在回合开始即落库，这里补的是库尚未落地的窗口与在途正文。 */
   const mergeInflight = useCallback((rows: Msg[], sid: string): Msg[] => {
-    if (!inflightRef.current.has(sid)) return rows;
-    const meta = streamingMetaMapRef.current.get(sid);
+    if (!streamState.isInflight(sid)) return rows;
+    const meta = streamState.metaOf(sid);
     const userMsg = meta?.userMsg;
     const last = rows[rows.length - 1];
     // 库里已经有这条用户消息（回合开始即落库）就不再补，避免重复一条
@@ -411,17 +392,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   }, []);
   /** 任务执行聊天化：围观流式回复中的会话时，到达的执行会话跳转排队（只留最新一个）；   *  执行本身不排队——后端已在新会话开跑 */
   const pendingExecRef = useRef<{ sid: string; title: string } | null>(null);
-  /** 任务 id → 执行会话 id（chat-open-session 事件建立；invoke 收尾时按它刷新历史） */
+  /** 任务 id → 执行会话 id（chat-open-session 事件建立；invoke 收尾后按它刷新历史） */
   const execSessionByTaskRef = useRef<Map<string, string>>(new Map());
   const enterChat = (sid: string) => {
-    inflightRef.current.add(sid);
-    setInflightSids(new Set(inflightRef.current));
+    streamState.markInflight(sid);
   };
   const exitChat = (sid: string) => {
-    inflightRef.current.delete(sid);
-    setInflightSids(new Set(inflightRef.current));
+    streamState.markFinished(sid);
     // 全部会话回复结束 → 兑现排队中的执行会话跳转提示（不打断刚结束的对话）
-    if (inflightRef.current.size === 0) {
+    if (streamState.inflightSessions().size === 0) {
       const pending = pendingExecRef.current;
       if (pending) {
         pendingExecRef.current = null;
@@ -648,6 +627,85 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       turnStatus: parseTurnStatus(r.turnStatus),
     }));
 
+  /** 终态后把最终正文取回来（回灌接回的那一轮没有 invoke 结果可等）。
+   *
+   *  终态事件比落库早到一点点：模型循环收尾 → 之后才写库。所以最后一次
+   *  取到的历史可能还停在用户消息那条——那就等一下再取，别把半截当最终态。 */
+  const loadFinalText = useCallback(async (sid: string, attempt = 0) => {
+    try {
+      const rows = await invoke<
+        {
+          role: string;
+          content: string;
+          refsJson?: string | null;
+          thinking?: string | null;
+          toolsJson?: string | null;
+        }[]
+      >("bot_history_load", { sessionId: sid });
+      const msgs = rowsToMsgs(rows ?? [], sid);
+      const last = msgs[msgs.length - 1];
+      if (last?.role === "user" && attempt < 6) {
+        window.setTimeout(() => void loadFinalText(sid, attempt + 1), 300);
+        return;
+      }
+      if (sessionIdRef.current === sid) setMessages(msgs);
+    } catch (e) {
+      handleCommandError(e, "bot_history_load", { silent: true });
+    }
+  }, []);
+
+  /** 在途回灌：后端说这个会话还有回合在跑、本地却没有这一轮的状态时，
+   *  把这一轮的事件按序补齐——应用重启 / 面板重挂载后接回在途回复。
+   *
+   *  补齐走的是与实时订阅**同一批**处理函数（streamHandlersRef），口径一致；
+   *  序号去重闸保证补齐与实时重叠时不会把正文叠成两半。 */
+  const resumeInflight = useCallback(
+    async (sid: string) => {
+      if (!enabled) return;
+      // 本地已有这一轮的内容 → 不用补（补一遍就是「重说了一遍」）。
+      // 判据是游标而不是在途标记：游标清零才说明本地没有这一轮的状态
+      // （一轮结束时连同 meta 一起清掉了）。
+      if (streamState.seqOf(sid) > 0) return;
+      // 同一会话的两次回灌不能并发（会灌两遍）：判定与置位连着做，中间不能有 await
+      if (streamState.isResuming(sid)) return;
+      streamState.markResuming(sid);
+      try {
+        const r = await streamState.fetchReplay(sid, 0);
+        // 后端说没在跑 → 这一轮已经收尾，正文以库为准（历史已加载）
+        if (!r.inflight || !r.events.length) return;
+        // 本地那份是上一轮的残留：清干净再灌（否则正文接成两段）
+        streamState.setMeta(sid, {});
+        streamState.resetCursor(sid);
+        // 补上在途标记：处理器按「非当前会话且不在途」过滤，不置位就接不住
+        streamState.markInflight(sid);
+        // 标记为「回灌接回」：这轮没有 invoke 结果可等，终态要自己取最终正文
+        streamState.markResumed(sid);
+        const handlers = streamHandlersRef.current;
+        for (const ev of r.events) {
+          handlers[ev.event]?.(ev.payload);
+        }
+      } catch (e) {
+        handleCommandError(e, "bot_stream_replay", { silent: true });
+      } finally {
+        streamState.clearResuming(sid);
+      }
+    },
+    [enabled],
+  );
+
+  /** 挂载时把后端在跑的那些会话都接回来——不止当前会话：
+   *  并行回复（PAR-1）的那些会话的半截内容也在，别让它们只剩最终正文。 */
+  const resumeAllInflight = useCallback(async () => {
+    try {
+      const runs = await streamState.fetchInflightRuns();
+      for (const r of runs) {
+        await resumeInflight(r.sessionId);
+      }
+    } catch {
+      // 问不到在途列表就当没有（后端老版本没有这个命令时同理）
+    }
+  }, [resumeInflight]);
+
   // 挂载：加载会话列表（空则新建一个），选中最近更新的会话并恢复其消息
   // enabled=false 时直接跳过（机器人关闭，容器仍挂载但内部不工作；
   // 重新开启后 useEffect 因为 enabled 变化重跑加载）
@@ -683,11 +741,15 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         if (rows?.length || msgs.length) {
           setMessages(msgs);
         }
+        // 历史到位后再回灌：回放出来的气泡要接在历史后面（顺序反了会被历史盖掉）
+        void resumeInflight(cur.id);
+        // 后端在跑的其他会话也接回来（并行回复的半截内容别丢）
+        void resumeAllInflight();
       } catch (e) {
         handleCommandError(e, "chat init", { silent: true });
       }
     })();
-  }, [enabled, mergeInflight]);
+  }, [enabled, mergeInflight, resumeInflight, resumeAllInflight]);
 
   // 点击模型下拉外关闭（镜像会话菜单：按钮与下拉不在同一 ref 容器，双 ref 检测）
   useOutsideClose(
@@ -805,11 +867,24 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   // 观感不变而 CPU 更稳。
   // **只延迟不丢**：同一窗口内的片段按到达顺序拼接后一次性写入，不会少字/错序；
   // 另有两层兜底——正文最终内容由 bot_chat 返回值 full.text 在收尾时整体覆盖，
-  // thinking 的权威副本是各会话的 streamingMetaMapRef 条目（事件到达即累加，不受缓冲影响）。
+  // thinking 的权威副本是各会话的 streamState 条目（事件到达即累加，不受缓冲影响）。
+  /** 事件处理器表（按事件名）：回放补齐按事件名取**同一批**处理函数来调——
+   *  两套口径迟早分家（回放出来的正文与实时出来的对不上，用户看到的是「重说了一遍」）。 */
+  const streamHandlersRef = useRef<Record<string, (p: unknown) => void>>({});
   useEffect(() => {
     const pending = { text: "", think: false };
     let frame: number | null = null;
     const rafOk = typeof requestAnimationFrame === "function";
+    // 事件处理器登记处：实时订阅与「回放补齐」走**同一批**处理函数。
+    // 两套口径迟早分家——回放出来的正文与实时出来的对不上，用户看到的是
+    // 「重说了一遍」。所以这里登记一份，回放时按事件名取同一份来调。
+    const handlers: Record<string, (p: unknown) => void> = {};
+    const reg = <T,>(name: string, cb: (p: T) => void) => {
+      handlers[name] = cb as (p: unknown) => void;
+      return listen<T>(name, (e) => cb(e.payload));
+    };
+    // 处理器表交给组件（回放补齐按事件名取同一份）
+    streamHandlersRef.current = handlers;
     const flush = () => {
       frame = null;
       const add = pending.text;
@@ -839,8 +914,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
           ...last,
           content: add ? last.content + add : last.content,
           thinking: thinkTouched
-            ? streamingMetaMapRef.current.get(sessionIdRef.current ?? "")
-                ?.thinking
+            ? streamState.metaOf(sessionIdRef.current ?? "")?.thinking
             : last.thinking,
         };
         return copy;
@@ -852,35 +926,40 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         ? requestAnimationFrame(flush)
         : window.setTimeout(flush, DELTA_BATCH_MS);
     };
-    const unlisten = listen<{ text?: string; sessionId?: string | null }>(
-      "bot-chat-delta",
-      (e) => {
-        const sid = e.payload?.sessionId ?? null;
-        const t = e.payload?.text;
+    const unlisten = reg<{
+      text?: string;
+      sessionId?: string | null;
+      seq?: number;
+    }>("bot-chat-delta", (p) => {
+        const sid = p?.sessionId ?? null;
+        const t = p?.text;
         if (!t) return;
         // 权威副本按「回复所属会话」累加（切走再切回时占位气泡要回填这半截）
         if (
           sid !== null &&
-          (inflightRef.current.has(sid) || sid === sessionIdRef.current)
+          (streamState.isInflight(sid) || sid === sessionIdRef.current)
         ) {
+          // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+          if (!streamState.noteSeq(sid, p?.seq)) return;
           const m = metaFor(sid);
           if (m) m.text = (m.text ?? "") + t;
         }
         if (sid !== sessionIdRef.current) return;
         pending.text += t;
         schedule();
-      },
-    );
-    const unThink = listen<{ text?: string; sessionId?: string | null }>(
-      "bot-think-delta",
-      (e) => {
-        const sid = e.payload?.sessionId ?? null;
-        const t = e.payload?.text;
+      });
+    const unThink = reg<{
+      text?: string;
+      sessionId?: string | null;
+      seq?: number;
+    }>("bot-think-delta", (p) => {
+        const sid = p?.sessionId ?? null;
+        const t = p?.text;
         if (!t) return;
         // 权威副本按「回复所属会话」累加（SWITCH-1：不随视图切换丢失），
         // 仅展示走同帧合并且只进当前视图
         if (
-          (sid !== null && inflightRef.current.has(sid)) ||
+          (sid !== null && streamState.isInflight(sid)) ||
           sid === sessionIdRef.current
         ) {
           const m = metaFor(sid);
@@ -891,16 +970,19 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         schedule();
       },
     );
-    const unTool = listen<{
+    const unTool = reg<{
       id?: string;
       name?: string;
       sessionId?: string | null;
-    }>("bot-tool", (e) => {
-      const sid = e.payload?.sessionId ?? null;
+      seq?: number;
+    }>("bot-tool", (p) => {
+      const sid = p?.sessionId ?? null;
       // 元数据按回复所属会话累加（SWITCH-1）；视觉更新仅当前视图
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const { id, name } = e.payload ?? {};
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      const { id, name } = p ?? {};
       if (!id) return;
       const m = metaFor(sid);
       if (!m) return;
@@ -916,15 +998,18 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         return copy;
       });
     });
-    const unToolName = listen<{
+    const unToolName = reg<{
       id?: string;
       name?: string;
       sessionId?: string | null;
-    }>("bot-tool-name", (e) => {
-      const sid = e.payload?.sessionId ?? null;
+      seq?: number;
+    }>("bot-tool-name", (p) => {
+      const sid = p?.sessionId ?? null;
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const { id, name } = e.payload ?? {};
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      const { id, name } = p ?? {};
       if (!id || !name) return;
       const m = metaFor(sid);
       if (!m) return;
@@ -941,7 +1026,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         return copy;
       });
     });
-    const unToolDone = listen<{
+    const unToolDone = reg<{
       id?: string;
       name?: string;
       args?: string;
@@ -949,11 +1034,14 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       ms?: number | null;
       ok?: boolean;
       sessionId?: string | null;
-    }>("bot-tool-done", (e) => {
-      const sid = e.payload?.sessionId ?? null;
+      seq?: number;
+    }>("bot-tool-done", (p) => {
+      const sid = p?.sessionId ?? null;
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const { id, name, args, result, ms, ok } = e.payload ?? {};
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      const { id, name, args, result, ms, ok } = p ?? {};
       if (!id) return;
       const m = metaFor(sid);
       if (!m) return;
@@ -980,16 +1068,19 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         return copy;
       });
     });
-    const unToolRunning = listen<{
+    const unToolRunning = reg<{
       id?: string;
       name?: string;
       args_preview?: string;
       sessionId?: string | null;
-    }>("bot-tool-running", (e) => {
-      const sid = e.payload?.sessionId ?? null;
+      seq?: number;
+    }>("bot-tool-running", (p) => {
+      const sid = p?.sessionId ?? null;
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const { id, name, args_preview: argsPreview } = e.payload ?? {};
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      const { id, name, args_preview: argsPreview } = p ?? {};
       if (!id) return;
       const m = metaFor(sid);
       if (!m) return;
@@ -1011,24 +1102,41 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     //  回合状态机（借鉴 ZCode turn view model）：running/settling 都算进行中。
     //  settling 是关键——正文已输出完但终稿自检还在跑，此时若把气泡置为
     //  「完成」，用户看到的正是一句「说完就停」的假静止。
-    const unTurnStatus = listen<{
+    const unTurnStatus = reg<{
       status?: TurnStatus;
       detail?: string;
       sessionId?: string | null;
-    }>("bot-turn-status", (e) => {
-      const sid = e.payload?.sessionId ?? null;
+      seq?: number;
+      startedAt?: number;
+    }>("bot-turn-status", (p) => {
+      const sid = p?.sessionId ?? null;
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const status = e.payload?.status;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      const status = p?.status;
       if (!status) return;
       const m = metaFor(sid);
       if (m) {
         m.turnStatus = status;
-        m.turnDetail = e.payload?.detail ?? undefined;
-        // 终态到来前记下开始时刻：running/settling 期间的秒表从这里起
+        m.turnDetail = p?.detail ?? undefined;
+        // 终态到来前记下开始时刻：running/settling 期间的秒表从这里起。
+        // 起点取后端记的本轮起始时刻——回灌接回时「本地此刻」是补齐那一刻，
+        // 拿它当起点秒表会从零开始（回复其实已经跑了一会儿）
         if (status === "running" && m.turnStartedAt == null) {
-          m.turnStartedAt = Date.now();
+          m.turnStartedAt = p?.startedAt ?? Date.now();
         }
+      }
+      // 回灌接回的那一轮：终态到了要把最终正文取回来——这轮没有 invoke
+      // 结果可等（发起它的那个窗口已经没了），只能自己去取库里的最终态
+      if (
+        status !== "running" &&
+        status !== "settling" &&
+        streamState.isResumed(sid)
+      ) {
+        streamState.clearResumed(sid);
+        exitChat(sid);
+        void loadFinalText(sid);
       }
       if (sid !== sessionIdRef.current) return;
       setMessages((prev) => {
@@ -1038,9 +1146,11 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         copy[copy.length - 1] = {
           ...last,
           turnStatus: status,
-          turnDetail: e.payload?.detail ?? undefined,
+          turnDetail: p?.detail ?? undefined,
           turnStartedAt:
-            status === "running" ? (last.turnStartedAt ?? Date.now()) : last.turnStartedAt,
+            status === "running"
+              ? (m?.turnStartedAt ?? last.turnStartedAt ?? Date.now())
+              : last.turnStartedAt,
         };
         return copy;
       });
@@ -1048,18 +1158,20 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     //  结构化文件变更：dispatch 在有 trace 的执行会话里 emit（全窗口）——
     // 每次落盘修改一条，按会话累积进 meta，收尾并入最终消息给 FileSummary 用。
     // 主聊天（无 trace）不产生事件 → FileSummary 走正则兜底，行为不变。
-    const unFileChanged = listen<{
+    const unFileChanged = reg<{
       path?: string;
       kind?: "create" | "modify" | "delete";
       added?: number;
       deleted?: number;
       sessionId?: string | null;
-    }>("bot-file-changed", (e) => {
-      const sid = e.payload?.sessionId ?? null;
+      seq?: number;
+    }>("bot-file-changed", (p) => {
+      const sid = p?.sessionId ?? null;
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const p = e.payload ?? {};
-      if (!p.path) return;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      if (!p?.path) return;
       const m = metaFor(sid);
       if (!m) return;
       const changes = [
@@ -1085,18 +1197,20 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     // FailedButRecoverable 时 emit `bot-skill-failed` event；前端把它挂到当前流式消息上
     // 渲染 ⚠️ 折叠行，让用户看到哪步成功哪步失败 + 是否回滚。
     // 注意：失败时同一条流式消息后续还会有 LLM 兜底回复，所以不要清空 streamingMeta。
-    const unSkillFailed = listen<{
+    const unSkillFailed = reg<{
       skillName?: string;
       reason?: string;
       completedSummary?: string;
       rollbackAttempted?: boolean;
       sessionId?: string | null;
-    }>("bot-skill-failed", (e) => {
-      const sid = e.payload?.sessionId ?? null;
+      seq?: number;
+    }>("bot-skill-failed", (p) => {
+      const sid = p?.sessionId ?? null;
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
-      const p = e.payload ?? {};
-      if (!p.skillName) return;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      if (!p?.skillName) return;
       const failure: SkillFailure = {
         skillName: p.skillName,
         reason: p.reason ?? "(无原因)",
@@ -1126,7 +1240,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     }>("bot-usage-delta", (e) => {
       const sid = e.payload?.sessionId ?? null;
       if (sid === null) return;
-      if (sid !== sessionIdRef.current && !inflightRef.current.has(sid)) return;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
       const i = e.payload?.inputTokens ?? 0;
       const o = e.payload?.outputTokens ?? 0;
       const cr = e.payload?.cacheReadTokens ?? 0;
@@ -1172,8 +1286,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       unlistenSafe(unFileChanged);
       unlistenSafe(unUsage);
       unlistenSafe(unSkillFailed);
+      streamHandlersRef.current = {};
     };
-  }, []);
+  }, [loadFinalText]);
 
   // 围观中的执行会话 sid；执行收尾（execute-task 的 history_load 完成）后清除
   const execWatchRef = useRef<string | null>(null);
@@ -1183,7 +1298,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     // 镜像同步落（effect 渲染后才补）：await 期间守卫读到的必须已是新会话，
     // 否则快响应会被「过期」守卫误丢
     sessionIdRef.current = sid;
-    streamingMetaMapRef.current.set(sid, {});
+    streamState.setMeta(sid, {});
     // 围观守卫：记录当前围观的执行会话——执行期间拦 Send
     //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由。
     // watch=false 的迟到查看不挂守卫：执行已结束，没有需要隔离的响应流
@@ -1196,6 +1311,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       // 围观期间用户已切走：丢弃过期历史，防旧会话消息刷进当前视图
       if (sessionIdRef.current !== sid) return;
       setMessages(mergeInflight(rowsToMsgs(rows, sid), sid));
+      // 历史到位后再回灌（顺序反了会被历史盖掉）
+      void resumeInflight(sid);
     } catch (e) {
       handleCommandError(e, "bot_history_load", { silent: true });
     }
@@ -1305,7 +1422,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         if (outcome === "success") openExecSessionRef.current(sid, false);
         return;
       }
-      if (inflightRef.current.has(sessionIdRef.current ?? "")) {
+      if (streamState.isInflight(sessionIdRef.current ?? "")) {
         pendingExecRef.current = { sid, title: title ?? "" };
         return;
       }
@@ -1387,7 +1504,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
 
   const switchSession = useCallback(
     async (sid: string) => {
-      // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（inflightRef），
+      // SWITCH-1/PAR-1：busy 期允许实时切换——回复仍按发起会话落库/流式路由（在途集合），
       // 切走不影响它在后台完成
       if (sid === sessionId) {
         return;
@@ -1415,11 +1532,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         // 库里只有上一轮收尾时的内容，不接回来用户会以为消息被吞了
         msgs = mergeInflight(msgs, sid);
         setMessages(msgs);
+        // 历史到位后再回灌：后端还跑着的那一轮，按序补齐（顺序反了会被历史盖掉）
+        void resumeInflight(sid);
       } catch (e) {
         handleCommandError(e, "bot_history_load", { silent: true });
       }
     },
-    [sessionId, mergeInflight],
+    [sessionId, mergeInflight, resumeInflight],
   );
 
   const newSession = async () => {
@@ -1449,7 +1568,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
 
   const deleteSession = async (sid: string) => {
     // SWITCH-1：只拦「删除正在回复的会话」（回复落库目标不能被删）；其他会话随便删
-    if (inflightRef.current.has(sid)) {
+    if (streamState.isInflight(sid)) {
       addHint("⏳ 该对话正在回复中，完成后才能删除");
       return;
     }
@@ -1529,7 +1648,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
    *  收尾时校验会话未切换才更新 UI；持久化始终按 sid 写（写的是正确会话） */
   const runChat = async (history: Msg[], renameText?: string) => {
     const sid = sessionId;
-    if (!sid || inflightRef.current.has(sid)) return;
+    if (!sid || streamState.isInflight(sid)) return;
     enterChat(sid);
     // 新的回合开始：上一轮的停止反馈作废（它说的是上一轮的事）
     setStopNotice(null);
@@ -1542,7 +1661,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     // 本轮在途内容的权威副本（按 sid 隔离，收尾时随消息并入最终气泡）：
     // 用户消息兜住「库尚未落地」的窗口，已流出的正文供切回时回填占位气泡
     const lastMsg = history[history.length - 1];
-    streamingMetaMapRef.current.set(sid, {
+    streamState.setMeta(sid, {
       text: "",
       userMsg: lastMsg?.role === "user" ? lastMsg : undefined,
     });
@@ -1576,7 +1695,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         return;
       }
       // 把流式过程中累积的思考/工具行并入最终消息
-      const meta = streamingMetaMapRef.current.get(sid) ?? {};
+      const meta = streamState.metaOf(sid) ?? {};
       const done: Msg[] = [
         ...history,
         {
@@ -1620,7 +1739,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         sessionIdRef.current === sid ? messagesRef.current : [];
       // 权威副本是本轮累积的流式正文（切走了也在）；视图只是它的近似
       const partial =
-        streamingMetaMapRef.current.get(sid)?.text ||
+        streamState.metaOf(sid)?.text ||
         viewMsgs[viewMsgs.length - 1]?.content ||
         "";
       const note = `⚠️ ${formatCommandError(e)}`;
@@ -1638,7 +1757,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     } finally {
       // 成功已并入消息、失败已丢弃——两种收尾条目都失效，统一在此清理，
       // 防失败路径的累积 thinking 滞留到下次 runChat 或重启
-      streamingMetaMapRef.current.delete(sid);
+      streamState.dropSession(sid);
       exitChat(sid);
     }
   };
@@ -1667,7 +1786,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     if (cmd === "/stop") {
       setInput("");
       // PAR-1：/stop 停「当前视图会话」的在途回复（并行回复按会话隔离）
-      if (inflightRef.current.has(sessionIdRef.current ?? "")) {
+      if (streamState.isInflight(sessionIdRef.current ?? "")) {
         stopCurrent();
       } else {
         addHint("当前对话没有进行中的回复");
@@ -1689,7 +1808,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     }
     if (cmd === "/compact") {
       setInput("");
-      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId)
+      if (streamState.isInflight(sessionIdRef.current ?? "") || !sessionId)
         return true;
       const sid = sessionId;
       const history = messages.filter(
@@ -1735,7 +1854,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     }
     if (cmd === "/retry") {
       setInput("");
-      if (inflightRef.current.has(sessionIdRef.current ?? "") || !sessionId)
+      if (streamState.isInflight(sessionIdRef.current ?? "") || !sessionId)
         return true;
       const msgs = messages.filter((m) => !m.streaming && !m.hint);
       // 找到最后一条用户消息，砍掉它之后的所有内容，重新生成回复
@@ -1775,7 +1894,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     }
     if (!text && !files.length && !refs.length) return;
     // PAR-1：并行回复按会话隔离——本会话在途时拦重复发送（其他会话可自由发送）
-    if (sessionId !== null && inflightRef.current.has(sessionId)) {
+    if (sessionId !== null && streamState.isInflight(sessionId)) {
       addHint(
         "⏳ 本对话正在回复中：可切换到其他对话发送，或输入 /stop 停止本条",
       );
@@ -1903,7 +2022,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
   }, [messages]);
   const removeMessage = useCallback((idx: number) => {
     const sid = sessionIdRef.current;
-    if (!sid || inflightRef.current.has(sid)) return;
+    if (!sid || streamState.isInflight(sid)) return;
     const next = messagesRef.current.filter((_, j) => j !== idx);
     setMessages(next);
     persistHistory(sid, next);
