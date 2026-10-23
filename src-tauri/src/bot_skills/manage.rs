@@ -224,11 +224,29 @@ pub(crate) fn registry_known_tools() -> std::collections::HashSet<String> {
 
 /// 全量技能路由规则扫描（未安装的技能不得有路由）：
 /// 遍历搜索路径读每个 SKILL.md 的 frontmatter `intents`；
-/// `enabled: false` / intents 为空 → 该技能不产生路由。同名去重、前面目录优先（与 scan_skill_dirs 一致）。
+/// `enabled: false` → 该技能不产生路由。同名去重、前面目录优先（与 scan_skill_dirs 一致）。
+///
+/// 两类规则，点名在前、intent 在后：
+/// - 点名规则：正文里出现技能名即命中（技能没声明 intents 也有这条）
+/// - intent 规则：frontmatter `intents` 声明的正则
+///
+/// 点名必须整体排在 intent 前面：两条规则都命中时取先到的，
+/// 「用 X 技能做个 PPT」要落到 X，而不是被另一个技能的 "PPT" 正则截胡。
 pub fn intent_rules_from_dirs(
     dirs: &[std::path::PathBuf],
 ) -> Vec<crate::intent_router::IntentRule> {
-    visit_skill_dirs(dirs, |meta, _dir_name, _text| {
+    let mut rules = visit_skill_dirs(dirs, |meta, _dir_name, _text| {
+        if !meta.enabled {
+            return None;
+        }
+        crate::intent_router::explicit_name_pattern(&meta.name).map(|pattern| {
+            crate::intent_router::IntentRule {
+                patterns: vec![pattern],
+                skill_name: meta.name.clone(),
+            }
+        })
+    });
+    rules.extend(visit_skill_dirs(dirs, |meta, _dir_name, _text| {
         if !meta.enabled || meta.intents.is_empty() {
             return None;
         }
@@ -236,7 +254,8 @@ pub fn intent_rules_from_dirs(
             patterns: meta.intents.clone(),
             skill_name: meta.name.clone(),
         })
-    })
+    }));
+    rules
 }
 
 /// 重建进程级技能路由表：app 启动调一次；skills_import / skills_delete 成功后再调。
@@ -1204,9 +1223,9 @@ mod tests {
     // ── intent_rules_from_dirs（未安装不得有路由） ──
 
     #[test]
-    fn intent_rules_collects_only_enabled_skills_with_intents() {
+    fn intent_rules_cover_enabled_skills_with_name_rule_before_intent_rule() {
         let temp = make_tempdir("intent-rules");
-        // enabled + 多行 intents（含量词逗号，验证不被切碎）→ 产生路由
+        // enabled + 多行 intents（含量词逗号，验证不被切碎）→ 点名规则 + intent 规则
         let dir_a = temp.0.join("skill-a");
         std::fs::create_dir_all(&dir_a).unwrap();
         std::fs::write(
@@ -1214,7 +1233,7 @@ mod tests {
             "---\nname: skill-a\ndescription: a\nintents:\n  - '(?i)(润色|修订).{0,15}(word|文档)'\n  - '(?is)\\.docx?'\n---\nbody\n",
         )
         .unwrap();
-        // 无 intents 声明 → 不产生路由
+        // enabled 但无 intents → 仍有点名规则（点名不依赖 intents）
         make_mock_skill(&temp.0, "skill-b", "no-intents");
         // enabled: false → 不产生路由
         let dir_c = temp.0.join("skill-c");
@@ -1226,14 +1245,31 @@ mod tests {
         .unwrap();
 
         let rules = intent_rules_from_dirs(std::slice::from_ref(&temp.0));
-        assert_eq!(rules.len(), 1, "只有 enabled 且声明 intents 的技能产生路由");
-        assert_eq!(rules[0].skill_name, "skill-a");
-        assert_eq!(rules[0].patterns.len(), 2);
-        assert!(
-            rules[0].patterns[0].contains("{0,15}"),
-            "量词逗号应完整保留: {}",
-            rules[0].patterns[0]
+        let names: Vec<&str> = rules.iter().map(|r| r.skill_name.as_str()).collect();
+        assert_eq!(
+            rules.len(),
+            3,
+            "skill-a（点名+intent）+ skill-b（只有点名）：{names:?}"
         );
+        assert!(
+            !names.contains(&"skill-c"),
+            "disabled 技能不产生路由：{names:?}"
+        );
+        // 点名规则整体排在 intent 规则之前
+        let a_rules: Vec<&crate::intent_router::IntentRule> =
+            rules.iter().filter(|r| r.skill_name == "skill-a").collect();
+        assert_eq!(a_rules.len(), 2);
+        assert_eq!(a_rules[0].patterns.len(), 1, "点名规则在 intent 规则之前");
+        assert_eq!(a_rules[1].patterns.len(), 2, "intent 规则保留全部声明");
+        assert!(
+            a_rules[1].patterns[0].contains("{0,15}"),
+            "量词逗号应完整保留: {}",
+            a_rules[1].patterns[0]
+        );
+        let b_rules: Vec<&crate::intent_router::IntentRule> =
+            rules.iter().filter(|r| r.skill_name == "skill-b").collect();
+        assert_eq!(b_rules.len(), 1, "无 intents 的技能只有点名规则");
+        assert_eq!(b_rules[0].patterns.len(), 1);
     }
 
     #[test]

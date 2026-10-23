@@ -71,6 +71,10 @@ impl Drop for RoutesResetGuard {
 fn pre_step_routes_installed_skill_intent_to_skill() {
     // 动态路由：路由表 = 已安装技能的 intents 声明。
     // 先按 fixture（已安装技能的替身）重建全局表，再走路由函数验证命中。
+    // 重建的是进程级全局表 → 与其他同样重建全局表的用例串行。
+    let _serial = SKILL_ROUTES_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     intent_router::rebuild_routes(bot_skills::intent_rules_from_dirs(
         &[fixtures_parent_path()],
     ));
@@ -83,6 +87,58 @@ fn pre_step_routes_installed_skill_intent_to_skill() {
         }
         other => panic!("期望命中 Skill, got {other:?}"),
     }
+}
+
+/// 用户点名技能 → 优先于 intent 正则：
+/// 「用 X 技能做个 PPT」必须落到 X，而不是被另一个技能的 "PPT" 正则截胡。
+/// 被截胡的后果是模型只能中途 use_skill 切换——那条路径出过「刚切就断」的事故。
+#[test]
+fn pre_step_routes_explicitly_named_skill_before_intent_rule() {
+    let _serial = SKILL_ROUTES_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!(
+        "wmessage-skill-e2e-named-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_millis()
+    ));
+    let alpha = dir.join("alpha-ppt");
+    let beta = dir.join("beta-craft");
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::create_dir_all(&beta).unwrap();
+    std::fs::write(
+        alpha.join("SKILL.md"),
+        "---\nname: alpha-ppt\ndescription: a\nintents: [\"PPT\"]\n---\nbody\n",
+    )
+    .unwrap();
+    std::fs::write(
+        beta.join("SKILL.md"),
+        "---\nname: beta-craft\ndescription: b\n---\nbody\n",
+    )
+    .unwrap();
+
+    intent_router::rebuild_routes(bot_skills::intent_rules_from_dirs(std::slice::from_ref(
+        &dir,
+    )));
+    let _routes_guard = RoutesResetGuard;
+    let route = intent_router::route_user_input("用beta-craft技能做个PPT");
+    match route {
+        RouteAction::Skill(s) => assert_eq!(s, "beta-craft", "点名应压过 intent 正则"),
+        other => panic!("期望命中 Skill, got {other:?}"),
+    }
+    // 正文大小写与技能名不一致也算点名（用户常写 "用 PPT-craft-master 技能做"）
+    let route = intent_router::route_user_input("用BETA-CRAFT技能做个PPT");
+    match route {
+        RouteAction::Skill(s) => assert_eq!(s, "beta-craft", "点名匹配应大小写不敏感"),
+        other => panic!("期望命中 Skill, got {other:?}"),
+    }
+    // 没点名 → 仍按 intent 正则走
+    let route = intent_router::route_user_input("做个PPT");
+    match route {
+        RouteAction::Skill(s) => assert_eq!(s, "alpha-ppt", "没点名时按 intent 走"),
+        other => panic!("期望命中 Skill, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -203,7 +259,13 @@ use wmessage_lib::bot_skills::{
     test_hook_skill_run_state, DslFailure, DslOutcome, SkillRun, SkillState,
 };
 
+/// 本文件里写进程级全局状态（SKILL_RUNS 表、全局路由表）的用例共用一把串行锁：
+/// 集成测试是独立 crate，够不到 lib 内 cfg(test) 的测试辅助，也注不进 `pub(crate)`
+/// 的 `AppState`，全局状态只能靠本进程内的锁互斥。
 static SKILL_SCHED_TEST_LOCK: Mutex<()> = Mutex::new(());
+/// 重建全局路由表的用例专用锁：路由表是进程级单例，两个用例同时重建会互相污染
+/// （一个用例重建完，另一个用例断言时读到的已经是对方的表）。
+static SKILL_ROUTES_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// 构造一个归属后台会话（session None）的 SkillRun（字段全 pub，无需 AppHandle）
 fn make_run(name: &str, state: SkillState) -> SkillRun {

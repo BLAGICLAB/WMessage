@@ -187,6 +187,28 @@ pub struct IntentRule {
     pub skill_name: String,
 }
 
+/// 技能名的「点名」路由正则：正文里出现技能名本身就是「用户点名这个技能」。
+///
+/// intent 正则管的是「说这件事该用谁」，点名管的是「我要用谁」——两者都要能路由，
+/// 且点名优先（否则「用 X 技能做个 PPT」会被另一个技能的 "PPT" 正则截胡，
+/// 只能靠模型中途 use_skill 切换——切换路径出过「刚切就断」的事故）。
+///
+/// 边界要求：名字前后不能是字母数字/连字符/下划线，否则 "my-ppt-craft-master"
+/// 会命中 "ppt-craft-master"。只对带 '-' / '_' 的名字生效——单词名（docx、note）
+/// 撞普通词的概率高，命中了就是路由劫持。
+///
+/// 大小写不敏感：正文里写 "用 PPT-craft-master 技能做" 与技能名 "ppt-craft-master"
+/// 大小写常常不一致，严格匹配等于没匹配上。
+pub fn explicit_name_pattern(name: &str) -> Option<String> {
+    if !name.contains('-') && !name.contains('_') {
+        return None;
+    }
+    Some(format!(
+        r"(?i)(?:^|[^A-Za-z0-9_.\-]){}(?:$|[^A-Za-z0-9_.\-])",
+        regex::escape(name)
+    ))
+}
+
 struct CompiledRule {
     regexes: Vec<Regex>,
     skill_name: String,
@@ -457,6 +479,48 @@ mod tests {
             patterns: patterns.iter().map(|s| s.to_string()).collect(),
             skill_name: name.to_string(),
         }
+    }
+
+    // ── 点名路由：正文里出现技能名 ──
+
+    #[test]
+    fn explicit_name_pattern_matches_standalone_name_only() {
+        let pattern =
+            explicit_name_pattern("ppt-craft-master").expect("带连字符的名字应有点名规则");
+        let re = Regex::new(&pattern).expect("点名正则应可编译");
+        assert!(re.is_match("用ppt-craft-master技能做PPT"));
+        assert!(re.is_match("跑一下 ppt-craft-master"));
+        assert!(re.is_match("ppt-craft-master"));
+        assert!(
+            re.is_match("用PPT-craft-master技能做"),
+            "正文大小写与技能名不一致也算点名"
+        );
+        assert!(
+            !re.is_match("my-ppt-craft-master-副本"),
+            "前后是名字字符时不算点名"
+        );
+        // 单词名不产生点名规则——撞普通词的概率高
+        assert!(explicit_name_pattern("docx").is_none());
+    }
+
+    #[test]
+    fn explicit_name_rule_wins_over_intent_rule() {
+        // 点名规则在前、intent 规则在后 → 两条都命中时走点名的那个
+        let pattern = explicit_name_pattern("ppt-craft-master").expect("点名规则");
+        let rules = vec![
+            rule("ppt-craft-master", &[pattern.as_str()]),
+            rule("pptx-design", &["PPT"]),
+        ];
+        assert_eq!(
+            route_with_rules("用ppt-craft-master技能做个PPT", &rules),
+            RouteAction::Skill("ppt-craft-master".to_string()),
+            "点名优先于 intent 正则"
+        );
+        // 没点名时仍按 intent 正则走
+        assert_eq!(
+            route_with_rules("做个PPT", &rules),
+            RouteAction::Skill("pptx-design".to_string())
+        );
     }
 
     /// minimax-docx 已安装 SKILL.md 的 intents 声明：与其 frontmatter 同源，
