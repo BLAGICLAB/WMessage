@@ -41,9 +41,23 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
 5. 完成后取结果，只向用户汇报：结论、产物路径、未完成项、风险。
 6. 复杂任务在 executor 收尾后强制加一次 verifier 子 agent——不接受"我自己看看就行"。
 
+### 派发粒度（力度分档）
+派发前先分档，别把不同性质的任务塞进同一个子 agent：
+- **单点事实**（一个 URL、一个数字、一次查询）：自己查，别派。
+- **对比类**（几家供应商、几个方案横向比）：派 2~4 个子 agent 并行，各查一个对象，
+  各自交一份，结论你自己合。
+- **复合调研**：先派 recon 子 agent 把「要查哪几块」拆出来，再按块派 executor。
+- **一个子 agent 一个目标**（任务边界）：把 7 个子问题塞给一个子 agent，它会一个都
+  交不出来——不是它不努力，是墙钟到点时它还在第 4 块。拆成 2~3 个，每个都交得出来。
+- 一次别派太多：同一会话并发上限 2、全局 3，派多了只能排队，排队期间空等。
+
 ### 失败与预算
-- failed / budget_exceeded / cancelled：先读 error 与 summary，
+- failed / budget_exceeded / cancelled：先读 error 与 summary（**残留产出**），
   决定重试、换 profile、降级直接回答，或如实向用户报告。
+- **带残留重试**：failed 且残留 summary 非空时，重派必须把残留摘要写进
+  contextSummary，禁止从零重烧——从零重烧等于把刚才那段时间全扔了。
+- error=result_json_unparseable：服务端已经自动补答过一次；仍失败说明子 agent
+  连收尾格式都没给，重派前先把验收标准写具体些。
 - 不得放宽子 agent 权限；不得让子 agent 再派发。
 - 不向子 agent 倾倒主对话全文：只给目标、验收标准、必要上下文摘要。
 
@@ -158,17 +172,21 @@ pub(crate) const PROFILE_VERIFIER: &str = r#"你是 verifier（验收）子 agen
 - 收尾输出 verified.json 到产物目录，结构：{"checks":[{"criterion":"…","met":true,"evidence":"…"}],"summary":"…"}。"#;
 
 /// 收尾 JSON schema 提示（设计 §7）——任务包装末尾重申用。
+///
+/// **减重**：必填键只有 `status` 与 `summary`，其余（acceptance_check /
+/// artifacts / blockers）没有就省掉。业界口径：结构化输出的失败率随 schema
+/// 复杂度上升（必填键越少，格式失败面越小）；必填键一多，模型漏一个就整份
+/// 报废——而漏的那部分往往与「这次到底做完没有」无关。
+///
+/// 此前还有 `next_actions` 与 `confidence` 两个键：`next_actions` 全仓无人读；
+/// `confidence` 的示例值 0.0 会被模型照抄（见下方注），两处都不值当。
 pub(crate) const RESULT_SCHEMA_HINT: &str = r#"{
   "status": "succeeded|failed|cancelled|budget_exceeded",
-  "summary": "…（摘要，不倒原文）",
+  "summary": "…（必填：结论摘要，不倒原文）",
   "acceptance_check": [{"criterion": "…", "met": true, "evidence": "…"}],
   "artifacts": [{"path": "…", "type": "…", "description": "…"}],
-  "blockers": [],
-  "next_actions": [],
-  "confidence": 0.0
+  "blockers": []
 }"#;
-// 注：confidence 示例 0.0 容易被模型照抄——包装里随 schema 附一句
-// 「confidence 取 0.0~1.0，按实际把握给值」的人类可读说明（见 render_task_wrapper）。
 
 #[cfg(test)]
 mod subagent_prompt_tests {
@@ -343,5 +361,54 @@ mod subagent_prompt_tests {
         assert!(v["artifacts"].is_array());
         // 无卡契约后不再要 subtasks——进度小计只认 acceptance_check（verifier 行认 checks）
         assert!(v.get("subtasks").is_none());
+    }
+
+    /// 收尾 schema 减重：必填键只留 status + summary，其余可省。
+    ///
+    /// 结构化输出的失败率随 schema 复杂度上升——必填键一多，模型漏一个就整份
+    /// 报废。`next_actions` 全仓无人读；`confidence` 的示例 0.0 会被模型照抄。
+    #[test]
+    fn result_schema_hint_is_lightweight() {
+        let v: serde_json::Value =
+            serde_json::from_str(RESULT_SCHEMA_HINT).expect("schema 提示必须是合法 JSON");
+        assert!(
+            v.get("next_actions").is_none(),
+            "next_actions 全仓无人读，不该占 schema 位"
+        );
+        assert!(
+            v.get("confidence").is_none(),
+            "confidence 的示例 0.0 会被模型照抄，不该占 schema 位"
+        );
+        // 必填的两个键必须在
+        assert!(v.get("status").is_some() && v.get("summary").is_some());
+    }
+
+    /// 派发粒度（力度分档）必须写进提示词。
+    ///
+    /// 实机两次 600s 墙钟熔断都是「7 个 subtask 塞给一个子 agent」——不是闸严，
+    /// 是任务粒度错了。缺这条规则，模型只会继续这么派。
+    #[test]
+    fn main_agent_addendum_promotes_dispatch_granularity() {
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("力度分档"),
+            "addendum 缺派发力度分档"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("一个子 agent 一个目标"),
+            "addendum 缺派发边界（一个子 agent 一个目标）"
+        );
+    }
+
+    /// 带残留重试：失败后重派必须带上残留摘要，禁止从零重烧。
+    #[test]
+    fn main_agent_addendum_teaches_retry_with_residual() {
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("带残留重试"),
+            "addendum 缺带残留重试指引"
+        );
+        assert!(
+            MAIN_AGENT_ADDENDUM.contains("禁止从零重烧"),
+            "addendum 缺「禁止从零重烧」硬约束"
+        );
     }
 }

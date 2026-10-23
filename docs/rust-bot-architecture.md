@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 157 个文件、约 11.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 157 个文件、约 11.8 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -104,8 +104,9 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (5691) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
-│                        SSE 解析、思考块拆分；单轮 Function 熔断；LlmHttp / ModelLoopDeps 依赖注入
+├── bot_model_loop.rs (5801) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+│                        SSE 解析、思考块拆分；单轮 Function 熔断；**墙钟治理**（WallBudget：软墙钟
+│                        收尾提醒 + 墙钟熔断留产，均在轮边界检查）；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
@@ -120,11 +121,12 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3825)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3826)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-├── bot/dispatch.rs (1555)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
-│                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计
+├── bot/dispatch.rs (1599)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+│                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计 +
+│                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）
 ├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
 │                        HookRegistry 进程级注册（OnceLock 单例，同层内按注册序；层序只由
 │                        dispatch 调用栈保证，注册表无任何层序配置入口）+ HookLayer 会话级禁用 +
@@ -230,7 +232,10 @@ src-tauri/src/
 │                        只存 parent_task_id 指向派发主卡，新行 task_id 恒 NULL）+ acceptance
 │                        落行上 acceptance_json + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
 │                        各自独立；LLM 工具暴露/runner（SUBA-2）与预算强制/并发排队（SUBA-3）
-│                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置
+│                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置；
+│                        **收尾契约**（2026-10-23）：预算单一钳制入口 + 收尾 JSON 三段修复
+│                        （本地修复 + 补答一次）+ digest 补渲染（残留产出 / 机检未过项）+
+│                        机器可判定条目的派发期形状校验
 │                        采样接线（run_task_in_chat 闭包喂 maybe_record_trace）
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→

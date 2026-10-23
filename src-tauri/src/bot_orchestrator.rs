@@ -215,7 +215,7 @@ fn validate_request(req: &SpawnRequest) -> CommandResult<()> {
         return Err(CommandError::InvalidArgument {
             field: "objective".into(),
             value: req.objective.clone(),
-            reason: "目标不能为空".into(),
+            reason: "目标不能为空。正确写法：objective=\"调研 X，产出 Y，含来源\"".into(),
         });
     }
     if req.acceptance_criteria.is_empty()
@@ -227,7 +227,54 @@ fn validate_request(req: &SpawnRequest) -> CommandResult<()> {
             reason: "验收标准必填且每条非空".into(),
         });
     }
+    // 机器可判定条目的**形状**校验（派发期即验，不等跑完才发现）。
+    for c in &req.acceptance_criteria {
+        if let Some(reason) = machine_criterion_shape_error(c) {
+            return Err(CommandError::InvalidArgument {
+                field: "acceptance_criteria".into(),
+                value: c.clone(),
+                reason,
+            });
+        }
+    }
     Ok(())
+}
+
+/// 机器可判定验收标准的**形状**校验（纯函数，单测锚点）。
+///
+/// 判据：条目前缀是 `file_exists:` / `file_nonempty:` 时，冒号后面必须是一个
+/// **干净的相对路径**——不带空格、不带说明文字、不逃出产物目录。
+///
+/// 为什么要在派发期就拒：此前这类条目要等子 agent 跑完十几分钟，服务端才拿
+/// 「产物不存在」判它没过——模型写的是 `file_exists:调研.md 已完成`，路径变成
+/// 「调研.md 已完成」，文件当然不存在。假阴性白烧一整轮预算，父 agent 还会
+/// 以为产物没产出。
+///
+/// 报错文案里带正例：模型连错几次，光说「格式不对」它不知道对的长什么样。
+fn machine_criterion_shape_error(criterion: &str) -> Option<String> {
+    let t = criterion.trim();
+    let (prefix, rest) = MACHINE_PREFIXES
+        .iter()
+        .find_map(|(prefix, _)| t.strip_prefix(prefix).map(|r| (*prefix, r)))?;
+    let rest = rest.trim();
+    if rest.is_empty() {
+        return Some(format!(
+            "{prefix} 后面必须给相对路径。正确写法：file_exists:report.md"
+        ));
+    }
+    if rest.chars().any(char::is_whitespace) {
+        return Some(format!(
+            "{prefix} 后面只能跟相对路径，不能带空格或说明文字（收到「{rest}」）。\
+             正确写法：file_exists:report.md；说明另起一条自然语言验收标准"
+        ));
+    }
+    if safe_rel_path(rest).is_none() {
+        return Some(format!(
+            "{prefix} 后面必须是不逃出产物目录的相对路径（收到「{rest}」）。\
+             正确写法：file_exists:report.md 或 file_exists:output/数据.xlsx"
+        ));
+    }
+    None
 }
 
 /// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 幂等查表 → 插 queued 行。
@@ -746,7 +793,11 @@ where
 /// 从文本提取**最后一个**顶层 JSON 对象（设计 §7 解析策略）。
 /// 字符串感知的花括号扫描：收集深度 1 的 {...} span，从末往前试 serde 解析，
 /// 首个成功且为 object 的返回。找不到/全失败 → None。
-pub(crate) fn extract_last_json_object(text: &str) -> Option<String> {
+/// 文本里所有**花括号配平**的顶层对象片段（按出现顺序）。
+///
+/// 收尾解析从末往前逐个试这些片段（见 [parse_final_json]）：最后一个对象坏了
+/// 就试前一个——与「取最后一个能直接解析的对象」的老语义一致。
+fn json_object_spans(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut depth = 0usize;
@@ -781,16 +832,188 @@ pub(crate) fn extract_last_json_object(text: &str) -> Option<String> {
             _ => {}
         }
     }
-    spans.reverse();
-    for (a, b) in spans {
-        let candidate: String = chars[a..b].iter().collect();
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&candidate) {
-            if v.is_object() {
-                return Some(candidate);
-            }
+    spans
+        .into_iter()
+        .map(|(a, b)| chars[a..b].iter().collect())
+        .collect()
+}
+
+/// 被截断的对象片段：最后一个 `{` 到文末。
+///
+/// 括号配平的对象找不着时才会走到这里——收尾 JSON 写到一半被 max_tokens
+/// 截断，就是这种形状。
+fn truncated_object_tail(text: &str) -> Option<String> {
+    let start = text.rfind('{')?;
+    let tail = text[start..].trim();
+    if tail.is_empty() {
+        None
+    } else {
+        Some(tail.to_string())
+    }
+}
+
+/// 收尾 JSON 的**本地修复**（结构化输出三段修复的第 2 段）。
+///
+/// 业界口径：干净解析 → 本地修复 → 带修正提示重试 LLM。本地修复零 token、
+/// 零延迟，必须排在补答之前——补答要再走一次 LLM 轮次。
+///
+/// 只做两种**不会改坏内容**的修复：
+/// - 尾逗号（`{"a":1,}` → `{"a":1}`）
+/// - 被截断的闭合（`{"a":1` → `{"a":1}`）
+///
+/// **不做** `None`/`True` → `null`/`true` 这类字面量替换——字符串内容里出现
+/// 这些词是合法的，替换会把模型写的正文字段改坏，比解析失败更糟。
+fn repair_json_candidate(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // 1) 尾逗号
+    let no_commas = strip_trailing_commas(trimmed);
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&no_commas) {
+        if v.is_object() {
+            return Some(no_commas);
+        }
+    }
+    // 2) 截断闭合（在尾逗号修复之后再做一次——两者可以叠加）
+    let closed = close_truncated_json(&no_commas)?;
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&closed) {
+        if v.is_object() {
+            return Some(closed);
         }
     }
     None
+}
+
+/// 去掉结构性的尾逗号（string-aware）：`,` 之后只跟空白再接 `}` / `]` 时删它。
+fn strip_trailing_commas(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut drop = vec![false; chars.len()];
+    let mut in_string = false;
+    let mut escaped = false;
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            ',' => {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < chars.len() && (chars[j] == '}' || chars[j] == ']') {
+                    drop[i] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if !drop.iter().any(|d| *d) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in chars.iter().enumerate() {
+        if !drop[i] {
+            out.push(*c);
+        }
+    }
+    out
+}
+
+/// 补上被截断的闭合括号（string-aware）。
+///
+/// 字符串没闭合时**补一个引号再补括号**：模型写到一半被 max_tokens 截断，
+/// 常见形态就是截在字符串中间（`{"status":"succeeded","summary":"调研完成`）。
+/// 不补就整份报废——status 这类关键字段明明已经写出来了，却跟着一起丢。
+/// 补出来的字符串是**残句**，但结构完整、关键字段在，比什么都拿不到强。
+///
+/// 只在片段末尾才会出现没闭合的字符串（片段本身就是尾巴），所以补引号不会
+/// 把后面正常的内容吞进字符串。
+fn close_truncated_json(s: &str) -> Option<String> {
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    for c in s.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => stack.push('}'),
+            '[' => stack.push(']'),
+            '}' | ']' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    out.push_str(s);
+    if in_string {
+        out.push('"');
+    }
+    for c in stack.iter().rev() {
+        out.push(*c);
+    }
+    Some(out)
+}
+
+/// 收尾 JSON 解析（干净解析 + 本地修复）。
+///
+/// 逐个候选对象从后往前试：最后一个对象坏了就试前一个——与「取最后一个能
+/// 直接解析的对象」的老语义一致。最后再试一次**被截断的对象**（最后一个
+/// `{` 到文末）：括号配平不上时，截断的 JSON 正是靠这条救。
+pub(crate) fn parse_final_json(text: &str) -> Option<serde_json::Value> {
+    for candidate in json_object_spans(text).into_iter().rev() {
+        if let Some(v) = parse_json_candidate(&candidate, false) {
+            return Some(v);
+        }
+    }
+    // 截断的尾段：只在修出来的对象**认得出收尾语义**时才认（有 status 或
+    // checks）。半截 JSON 往往连 status 都还没写就断了，修出来是个空壳——
+    // 而判定里「没有 status」默认按 succeeded 算，把「没说完」说成「说完了」。
+    if let Some(tail) = truncated_object_tail(text) {
+        if let Some(v) = parse_json_candidate(&tail, true) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// 单个候选片段的解析（干净 → 本地修复）。
+///
+/// `require_semantic`：额外要求对象里有 `status`（收尾语义）或 `checks`
+/// （verifier 的逐条验收）。只对截断尾段启用——见 [parse_final_json]。
+fn parse_json_candidate(candidate: &str, require_semantic: bool) -> Option<serde_json::Value> {
+    let v = serde_json::from_str::<serde_json::Value>(candidate)
+        .ok()
+        .or_else(|| {
+            repair_json_candidate(candidate)
+                .and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok())
+        })?;
+    if !v.is_object() {
+        return None;
+    }
+    if require_semantic && v.get("status").is_none() && v.get("checks").is_none() {
+        return None;
+    }
+    Some(v)
 }
 
 /// 收尾结果判定（纯函数，设计 §6/§7）：
@@ -869,8 +1092,9 @@ pub(crate) fn classify_outcome(
             })),
         );
     }
-    let parsed = extract_last_json_object(text)
-        .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok());
+    // 干净解析 + 本地修复（尾逗号 / 截断闭合）——结构化输出三段修复的第 1、2 段。
+    // 本地修复零 token 零延迟，排在补答（要再走一次 LLM）之前。
+    let parsed = parse_final_json(text);
     match parsed {
         Some(v) => {
             // verifier 子 agent 输出独有 schema：含 checks 数组的 verified.json
@@ -912,6 +1136,81 @@ pub(crate) fn classify_outcome(
                 "note": "收尾 JSON 解析失败，原文截断存此防丢（设计 §7）"
             })),
         ),
+    }
+}
+
+/// 收尾 JSON 解析失败时的补答（结构化输出三段修复的第 3 段）。
+///
+/// 业界口径：干净解析 → 本地修复 → 带修正提示重试 LLM。补答只做一次，
+/// 且**消耗同一份墙钟预算**（重试不重置时钟）。
+///
+/// 只在「文本非空 + 不含熔断标记 + 本地修复后仍解析不出」时补答：
+/// - 预算熔断（轮数 / 工具 / 墙钟）不是格式问题，补答只是白烧一次 token；
+/// - 本地修复能救的已经在 `parse_final_json` 里救掉了，不必再问模型。
+///
+/// 返回补答后的正文（可解析）；补答失败或仍不可解析 → None（走原失败路径）。
+async fn repair_final_json_once(
+    app: &AppHandle,
+    stop: &crate::bot_slash::StopGuard,
+    text: &str,
+    wall_budget: Option<crate::bot_model_loop::WallBudget>,
+) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    for marker in [
+        crate::bot_model_loop::ROUNDS_FUSE_MARKER,
+        crate::bot_model_loop::WALL_FUSE_MARKER,
+        crate::bot_model_loop::FUSE_MARKER,
+    ] {
+        if text.contains(marker) {
+            return None;
+        }
+    }
+    // 本地修复已经救回来的不算「解析失败」——别为一份能用的结果再烧一次 LLM
+    if parse_final_json(text).is_some() {
+        return None;
+    }
+    let prompt = format!(
+        "你上一步的收尾输出无法被解析为收尾 JSON。\n\
+         请把已经完成的工作整理成下面这个结构。**只输出 JSON 本身**，不要解释、不要调用任何工具：\n\
+         {}\n\n\
+         你上一步的原文（仅供参考，可能不完整或格式有误）：\n{}",
+        crate::prompts::RESULT_SCHEMA_HINT,
+        clip(text, 1500),
+    );
+    let msgs = vec![
+        serde_json::json!({ "role": "system", "content": crate::prompts::SUBAGENT_BASE }),
+        serde_json::json!({ "role": "user", "content": prompt }),
+    ];
+    // 一轮就够：补答只需要「把结果整理成 JSON」，不需要再探索。
+    let out = crate::bot_model_loop::run_model_loop(
+        app.clone(),
+        msgs,
+        1,
+        stop,
+        None,
+        None,
+        None,
+        None,
+        None,
+        wall_budget,
+    )
+    .await
+    .ok()?;
+    let (reply, _refs, _trace) = out;
+    if parse_final_json(&reply).is_some() {
+        crate::bot::audit_log(
+            app,
+            &format!(
+                "subagent_final_json_repaired | 收尾 JSON 补答成功（{} 字符）",
+                reply.chars().count()
+            ),
+        );
+        Some(reply)
+    } else {
+        crate::bot::audit_log(app, "subagent_final_json_repair_failed | 补答后仍不可解析");
+        None
     }
 }
 
@@ -1011,7 +1310,7 @@ pub(crate) fn render_task_wrapper(
         budget.max_turns, budget.max_tool_calls, budget.max_wall_seconds
     ));
     w.push_str(&format!("\n产物目录:\n{}\n", artifact_dir.display()));
-    w.push_str("\n完成后必须输出以下 JSON（confidence 取 0.0~1.0，按实际把握给值）：\n");
+    w.push_str("\n完成后必须输出以下 JSON（status 与 summary 必填；acceptance_check / artifacts / blockers 没有就省掉）：\n");
     w.push_str(crate::prompts::RESULT_SCHEMA_HINT);
     w
 }
@@ -1045,6 +1344,36 @@ fn clip(s: &str, max: usize) -> String {
 const DIGEST_MAX_ITEMS: usize = 8;
 const DIGEST_MAX_SUMMARY_CHARS: usize = 600;
 const DIGEST_MAX_ARTIFACTS: usize = 5;
+/// 失败/超预算行的残留产出渲染上限（字）。
+///
+/// 比成功行的摘要短：残留产出的作用是让父 agent 判断「值不值得带残留重试」，
+/// 不是让它读完——读太长会把当轮上下文挤爆。
+const DIGEST_MAX_RESIDUAL_CHARS: usize = 300;
+
+/// 机器验收未过的条目（只认服务端核验过的：`machine: true` 且 `met: false`）。
+///
+/// 不认模型自报的 `met: false`：那是子 agent 的自我评价，服务端没核验过，
+/// 摆出来会让父 agent 分不清「服务端验了没过」与「模型说自己没过」。
+fn machine_unmet_criteria(result: &serde_json::Value) -> Vec<String> {
+    let arr = result
+        .get("acceptance_check")
+        .or_else(|| result.get("checks"))
+        .and_then(|v| v.as_array());
+    let Some(arr) = arr else { return Vec::new() };
+    arr.iter()
+        .filter(|it| {
+            it.get("machine").and_then(|m| m.as_bool()) == Some(true)
+                && it.get("met").and_then(|m| m.as_bool()) == Some(false)
+        })
+        .filter_map(|it| {
+            it.get("criterion")
+                .and_then(|c| c.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| clip(s, 60))
+        })
+        .collect()
+}
 
 /// 一段渲染好的子任务回报 + 本次注入后应记为「父上下文已吸收」的子 agent id。
 pub(crate) struct SubagentDigest {
@@ -1123,6 +1452,16 @@ pub(crate) fn build_subagent_digest(
                             items.push_str(&format!("   产物：{}\n", shown.join("、")));
                         }
                     }
+                    // 机检未过项：「成功」与「机检没过」两件事同时成立时，父 agent
+                    // 必须看见后者——否则它只会以为这活干成了，把没过的项一起收下。
+                    let unmet = machine_unmet_criteria(&r);
+                    if !unmet.is_empty() {
+                        items.push_str(&format!(
+                            "   ⚠️ 机检未过 {} 项：{}\n",
+                            unmet.len(),
+                            unmet.join("、")
+                        ));
+                    }
                 }
             }
             other => {
@@ -1144,6 +1483,22 @@ pub(crate) fn build_subagent_digest(
                         _ => unreachable!("非终态已在上分支返回"),
                     }
                 ));
+                // 残留产出：失败/超预算 ≠ 产出为零。跑了几十分钟查到的东西对父
+                // agent 判断「该不该带残留重试」有决定性价值——不摆出来，父 agent
+                // 只能从零重烧一遍。
+                if let Some(r) = row.result_json.as_deref().and_then(parse_result_json) {
+                    if let Some(summary) = r
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        items.push_str(&format!(
+                            "   残留产出：{}\n",
+                            clip(summary, DIGEST_MAX_RESIDUAL_CHARS)
+                        ));
+                    }
+                }
             }
         }
     }
@@ -2217,34 +2572,48 @@ async fn run_subagent(
         serde_json::json!({ "role": "user", "content": wrapper }),
     ];
 
+    // 墙钟预算（软墙钟 + 墙钟熔断留产）：与上面 ctx 里的期限同一个绝对时刻
+    // ——两处各算一份，起点漂移就等于没有统一口径。
+    let wall_budget = crate::bot_model_loop::WallBudget {
+        deadline: wall_deadline,
+        reserve: std::time::Duration::from_secs(crate::bot::params::subagent_wall_reserve_secs(
+            budget.max_wall_seconds,
+        )),
+        max_wall_seconds: budget.max_wall_seconds,
+    };
+
     // 工具循环：轮数预算 + 墙钟预算（超时硬停→budget_exceeded；排队不计——running 起算）
-    let run = crate::bot_model_loop::run_model_loop(
-        app.clone(),
-        msgs,
-        budget.max_turns as usize,
-        &stop,
-        None,
-        None,
-        // 子 agent 模型走自身预算/派发通道（model_profile），不挂每卡覆盖
-        None,
-        // 配置档的采样温度（f32 → f64 无损）。这是 yaml `temperature:` 字段的
-        // 唯一消费者；None 时用模型条目自带的 temperature。
-        bound_onion
-            .as_ref()
-            .and_then(|c| c.temperature)
-            .map(f64::from),
-        // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
-        None,
-        // 墙钟治理（软墙钟 + 墙钟熔断留产）：与上面 ctx 里的期限同一个绝对
-        // 时刻——两处各算一份，起点漂移就等于没有统一口径。
-        Some(crate::bot_model_loop::WallBudget {
-            deadline: wall_deadline,
-            reserve: std::time::Duration::from_secs(
-                crate::bot::params::subagent_wall_reserve_secs(budget.max_wall_seconds),
-            ),
-            max_wall_seconds: budget.max_wall_seconds,
-        }),
-    );
+    //
+    // 收尾 JSON 解析失败时**补答一次**（结构化输出三段修复的第 3 段）：产出
+    // 完整、机检全过，只因最后一段不是 JSON 就判 failed，是完成率最大的单项
+    // 黑洞。补答走同一份墙钟预算（重试不重置时钟），仍在 timeout 之内。
+    let run = async {
+        let first = crate::bot_model_loop::run_model_loop(
+            app.clone(),
+            msgs,
+            budget.max_turns as usize,
+            &stop,
+            None,
+            None,
+            // 子 agent 模型走自身预算/派发通道（model_profile），不挂每卡覆盖
+            None,
+            // 配置档的采样温度（f32 → f64 无损）。这是 yaml `temperature:` 字段的
+            // 唯一消费者；None 时用模型条目的 temperature。
+            bound_onion
+                .as_ref()
+                .and_then(|c| c.temperature)
+                .map(f64::from),
+            // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
+            None,
+            Some(wall_budget),
+        )
+        .await?;
+        let (text, refs, trace) = first;
+        if let Some(fixed) = repair_final_json_once(&app, &stop, &text, Some(wall_budget)).await {
+            return Ok((fixed, refs, trace));
+        }
+        Ok((text, refs, trace))
+    };
     // runner panic 隔离（bot_scheduler 的既有范式）：panic 会跳过下面所有收尾
     // ——取消令牌反注册、状态落库、subagent-finished 事件——前端那一行永远转圈，
     // 行状态也停在 running（只能靠重启清扫僵尸行）。故把 panic 捕获成普通失败，
@@ -3728,6 +4097,66 @@ mod orchestrator_tests {
         );
     }
 
+    /// 失败/超预算行必须摆出**残留产出**。
+    ///
+    /// 父 agent 此前只看到「失败」二字，判断不了「该不该带残留重试」——
+    /// 于是从零重烧一遍。跑了几十分钟查到的东西就在 result_json.summary 里，
+    /// 不摆出来等于没有。
+    #[test]
+    fn digest_shows_residual_output_for_failed_rows() {
+        let rows = vec![digest_row(
+            "sa_failed",
+            SubagentStatus::BudgetExceeded,
+            Some(r#"{"summary":"已核到 3 家供应商报价单，还差比价","note":"墙钟熔断"}"#),
+        )];
+        let d = build_subagent_digest(&rows, &std::collections::HashSet::new()).unwrap();
+        assert!(
+            d.text.contains("残留产出："),
+            "失败行必须带残留产出：{}",
+            d.text
+        );
+        assert!(
+            d.text.contains("3 家供应商"),
+            "残留产出的内容要能看到：{}",
+            d.text
+        );
+    }
+
+    /// 成功行的**机检未过项**必须摆出来。
+    ///
+    /// 「成功」与「机检没过」两件事同时成立时，父 agent 只看到「成功」就会把
+    /// 没过的项一起收下。只认服务端核验过的（machine=true 且 met=false）——
+    /// 模型自报的 met:false 是自我评价，混进来会让父 agent 分不清。
+    #[test]
+    fn digest_shows_machine_unmet_criteria() {
+        let result = r#"{"status":"succeeded","acceptance_check":[
+            {"criterion":"file_exists:调研.md","met":true,"machine":true},
+            {"criterion":"file_nonempty:数据.xlsx","met":false,"machine":true},
+            {"criterion":"内容符合用户口径","met":false}
+        ]}"#;
+        let rows = vec![digest_row(
+            "sa_machine",
+            SubagentStatus::Succeeded,
+            Some(result),
+        )];
+        let d = build_subagent_digest(&rows, &std::collections::HashSet::new()).unwrap();
+        assert!(
+            d.text.contains("机检未过"),
+            "成功行必须带机检未过项：{}",
+            d.text
+        );
+        assert!(
+            d.text.contains("file_nonempty:数据.xlsx"),
+            "未过项要指名道姓：{}",
+            d.text
+        );
+        assert!(
+            !d.text.contains("内容符合用户口径"),
+            "模型自报的未过项不摆（服务端没核验过）：{}",
+            d.text
+        );
+    }
+
     #[test]
     fn digest_survives_malformed_result_json() {
         // 收尾 JSON 解析失败当「没有结果」：宁可少报一条，也不把半截 JSON
@@ -3803,7 +4232,7 @@ mod orchestrator_tests {
     fn onion_temperature_reaches_the_model_loop() {
         let body = include_str!("bot_orchestrator.rs");
         let runner = body
-            .split_once("let run = crate::bot_model_loop::run_model_loop(")
+            .split_once("let first = crate::bot_model_loop::run_model_loop(")
             .expect("子 agent 调模型循环")
             .1
             .split(";")
@@ -3861,18 +4290,19 @@ mod orchestrator_tests {
     fn extract_last_json_takes_the_last_object() {
         // 纯 JSON
         assert_eq!(
-            extract_last_json_object(r#"{"a":1}"#).as_deref(),
-            Some(r#"{"a":1}"#)
+            json_object_spans(r#"{"a":1}"#),
+            vec![r#"{"a":1}"#.to_string()],
+            "纯 JSON 应切出一个顶层对象"
         );
         // 散文夹 JSON + 多对象 → 取最后一个
         let t = r#"结论如下 {"status":"succeeded","summary":"第一步"} 中间 {"status":"succeeded","summary":"最终"}"#;
-        let got = extract_last_json_object(t).unwrap();
-        assert!(got.contains("最终"));
+        let got = parse_final_json(t).expect("多对象时取最后一个");
+        assert_eq!(got["summary"], "最终");
         // 字符串内花括号不破坏扫描
         let t2 = r#"{"summary":"带 } 花括号与 \" 引号"}"#;
-        assert!(extract_last_json_object(t2).is_some());
+        assert!(parse_final_json(t2).is_some());
         // 无 JSON
-        assert_eq!(extract_last_json_object("没有任何大括号的普通回复"), None);
+        assert!(parse_final_json("没有任何大括号的普通回复").is_none());
     }
 
     #[test]
@@ -3960,9 +4390,84 @@ mod orchestrator_tests {
         assert_eq!(err.as_deref(), Some("max_turns"));
     }
 
-    /// 假失败回归：产物齐、机器验收全过，只因最后一条消息没按 schema 写收尾
-    /// JSON 就被判 failed。实测踩过这个形态——13780 字节的政策调研稿确实落盘、
-    /// `subagent.machine_check_passed` 已进日志，行状态却是 failed。
+    /// 墙钟熔断必须落 budget_exceeded(max_wall_seconds) **并保留正文**。
+    ///
+    /// 两个坑：
+    /// 1. 墙钟标记「⏹ 已熔断（墙钟上限）」**包含**通用熔断标记「⏹ 已熔断」——
+    ///    判据顺序反了会被认成工具调用熔断，真实原因「墙钟触顶」又被丢掉。
+    /// 2. 与轮数熔断同款留产：跑了几十分钟的部分产出不能归零。
+    #[test]
+    fn classify_outcome_treats_wall_fuse_as_budget_exceeded_and_keeps_output() {
+        use SubagentStatus::*;
+        let partial = "已核到 3 家供应商的报价单，还差最后一步比价";
+        let fused = crate::bot_model_loop::wall_fuse_message(partial, "", 600);
+        let (st, err, res) = classify_outcome(None, false, Some(&fused));
+        assert_eq!(st, BudgetExceeded, "墙钟熔断必须落预算触达");
+        assert_eq!(
+            err.as_deref(),
+            Some("max_wall_seconds"),
+            "墙钟熔断不得被认成工具调用熔断（墙钟标记包含通用标记）"
+        );
+        let res = res.expect("墙钟熔断不得写 NULL result_json");
+        let summary = res["summary"].as_str().expect("熔断行必须带 summary");
+        assert!(
+            summary.contains("3 家供应商"),
+            "熔断前的正文应存进 summary 供父 agent 判断是否重试：{summary}"
+        );
+    }
+
+    /// 收尾 JSON 的本地修复（结构化输出三段修复的第 2 段）：零 token、零延迟，
+    /// 必须排在补答之前——补答要再走一次 LLM 轮次。
+    #[test]
+    fn parse_final_json_repairs_trailing_comma_and_truncation() {
+        // 尾逗号
+        let v = parse_final_json(r#"{"status":"succeeded","summary":"好了",}"#)
+            .expect("尾逗号应被本地修复救回");
+        assert_eq!(v["status"], "succeeded");
+        // 被截断（写到一半没了）
+        let v = parse_final_json(r#"{"status":"succeeded","summary":"调研完成，报告"#)
+            .expect("截断的 JSON 应被补闭合救回");
+        assert_eq!(v["status"], "succeeded");
+        // markdown 围栏（既有能力，顺带锁住）
+        let v = parse_final_json("```json\n{\"status\":\"failed\"}\n```").expect("围栏应能取到");
+        assert_eq!(v["status"], "failed");
+    }
+
+    /// 本地修复不得改坏字符串内容：模型写的正文里出现逗号/花括号是合法的。
+    #[test]
+    fn parse_final_json_does_not_corrupt_string_content() {
+        let raw = r#"{"status":"succeeded","summary":"结论：a, b, c"}"#;
+        let v = parse_final_json(raw).expect("正常 JSON 必须能解析");
+        assert_eq!(v["summary"], "结论：a, b, c");
+        // 字符串里的尾逗号形态不能被当成尾逗号删掉
+        let raw = r#"{"status":"succeeded","summary":"结尾带逗号,"}"#;
+        let v = parse_final_json(raw).expect("字符串里的逗号不得被改");
+        assert_eq!(v["summary"], "结尾带逗号,");
+    }
+
+    /// 散文收尾仍然解析不出来——修复不是万能的，解析失败要如实落失败。
+    #[test]
+    fn parse_final_json_leaves_prose_unparseable() {
+        assert!(parse_final_json("纯文本收尾，没有 JSON").is_none());
+        assert!(parse_final_json("").is_none());
+    }
+
+    /// 截断的 JSON 修出来若**认不出收尾语义**（没有 status / checks），
+    /// 不得认成收尾结果——判定里「没有 status」默认按 succeeded 算，
+    /// 把「没说完」说成「说完了」。
+    #[test]
+    fn parse_final_json_rejects_truncated_fragment_without_status() {
+        assert!(
+            parse_final_json(r#"{"summary":"写到一半断了"#).is_none(),
+            "半截 JSON 没有 status，不得被认成收尾结果"
+        );
+        // 有 status 的截断件认得出来（模型已经表明了结论）
+        assert!(
+            parse_final_json(r#"{"status":"succeeded","summary":"写到一半断了"#).is_some(),
+            "已有 status 的截断件应被救回"
+        );
+    }
+
     #[test]
     fn machine_pass_overrides_unparseable_finish() {
         let verdicts = vec![
@@ -4569,6 +5074,38 @@ mod orchestrator_tests {
             CommandError::TaskNotFound(id) => assert_eq!(id, "ghost-card"),
             other => panic!("应 TaskNotFound，实际 {other:?}"),
         }
+    }
+
+    /// 机器可判定条目带杂质要在**派发期**就拒。
+    ///
+    /// 模型写 `file_exists:调研.md 已完成`，服务端把路径当成「调研.md 已完成」，
+    /// 文件当然不存在——假阴性。此前要等子 agent 跑完十几分钟才暴露，白烧一整轮。
+    #[test]
+    fn spawn_rejects_machine_criterion_with_trailing_prose() {
+        let mut conn = test_conn();
+        let _g = crate::db::lock_db_write();
+        let mut r = req(None);
+        r.acceptance_criteria = vec!["file_exists:调研.md 已完成".into()];
+        let err = match spawn_subagent_locked(&mut conn, &r, 5_000) {
+            Ok(_) => panic!("带杂质的机器可判定条目必须当场拒"),
+            Err(e) => e,
+        };
+        let msg = err.message();
+        assert!(
+            msg.contains("file_exists:report.md"),
+            "报错要带正例（模型不知道对的长什么样）：{msg}"
+        );
+        // 干净的写法照常放行
+        let mut ok = req(None);
+        ok.acceptance_criteria = vec![
+            "file_exists:调研.md".into(),
+            "file_nonempty:output/数据.xlsx".into(),
+            "内容符合用户口径".into(),
+        ];
+        assert!(
+            spawn_subagent_locked(&mut conn, &ok, 5_000).is_ok(),
+            "干净的机器可判定条目不得被拒"
+        );
     }
 
     #[test]
