@@ -741,6 +741,7 @@ pub fn run() {
             crate::db::trace::usage_stats_by_model,
             crate::db::trace::usage_stats_daily_by_model,
             crate::db::trace::file_rollback,
+            crate::db::trace::bot_session_file_changes,
             crate::db::trace::trace_export,
             crate::db::schedule_jobs::scheduled_job_update,
             crate::db::schedule_jobs::scheduled_job_delete,

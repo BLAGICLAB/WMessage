@@ -1212,6 +1212,429 @@ impl<'a> TraceExportRow<'a> {
     }
 }
 
+// ── 本会话文件改动（聊天侧栏「文件」工作面）────────────────────────────
+//
+// 口径：**本会话累计**——某文件「本会话第一次改之前」 vs 「现在盘上的内容」。
+// 逐次 diff 只在累计给不出时降级用，且必须带降级原因：拿单次 diff 冒充累计，
+// 比干脆不给更糟——数字看着有、实则不是那个口径，用户无从察觉。
+//
+// 为什么不是「最近一次改动」：侧栏标题承诺的是「本会话文件改动」，逐次口径下
+// 标题与数字对不上（前端按 path 去重还是「后者覆盖前者」，多次改动只剩最后一次
+// 的数字）。累计口径两处同源：列表 ± 与详情 diff 出自同一次计算。
+//
+// 读盘与算 diff 都是同步 IO：命令是 async，但整体挪进 blocking 线程池。
+
+/// 本会话改动文件条数上限：侧栏是给人看的摘要面，全量在 `file_changes` 表里。
+pub const SESSION_FILE_CHANGES_MAX: usize = 50;
+
+/// 累计 diff 的文件大小上限（字节）：超了给不出「会话开始 vs 现在」的对比，
+/// 降级成逐次 diff（逐次 diff 存在库里，本来就有界）。
+const SESSION_DIFF_MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+/// 二进制探测窗口：与 `bot_skills::files` 的预览同口径（前 8KB 见 NUL 即二进制）。
+const SESSION_BINARY_SNIFF_BYTES: usize = 8 * 1024;
+
+/// 累计口径能给 / 不能给
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffMode {
+    /// 能给「本会话第一次改之前 vs 现在」的累计 diff
+    Session,
+    /// 只能给逐次 diff（起始快照缺失 / 文件已不在 / 过大）
+    PerChange,
+    /// 该文件没有行级 diff（二进制 / 无实际改动）
+    NoLineDiff,
+}
+
+impl DiffMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            DiffMode::Session => "session",
+            DiffMode::PerChange => "perChange",
+            DiffMode::NoLineDiff => "noLineDiff",
+        }
+    }
+}
+
+/// 文件内容的可取形态（基线与现状共用一套）
+enum FileState {
+    /// 内容拿到了
+    Text(String),
+    /// 二进制：没有行级 diff
+    Binary,
+    /// 取不到 + 人话原因（前端直接展示，不能吞）
+    Missing(String),
+}
+
+/// 单次改动的摘要（降级视图里逐条列）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFileChangeEntry {
+    pub id: i64,
+    pub kind: String,
+    pub added: i64,
+    pub deleted: i64,
+    pub diff: Option<String>,
+    pub truncated: bool,
+}
+
+/// 清单项：某文件在本会话的改动概览
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFileChangeItem {
+    pub path: String,
+    pub kind: String,
+    /// 累计口径下的 + 行数（降级时是各次之和，note 里说明）
+    pub added: i64,
+    pub deleted: i64,
+    /// 本会话被改了几次
+    pub changes: usize,
+    /// "session" | "perChange" | "noLineDiff"
+    pub mode: String,
+    /// 文件在 AI 最后一次写盘后又被改过：累计 diff 含非 AI 的改动
+    pub drifted: bool,
+    /// 降级/特殊情况的原因（人话）
+    pub note: Option<String>,
+}
+
+/// 单个文件的改动详情
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFileDiff {
+    pub path: String,
+    pub kind: String,
+    pub mode: String,
+    pub added: i64,
+    pub deleted: i64,
+    /// 本会话被改了几次
+    pub changes: usize,
+    pub truncated: bool,
+    pub drifted: bool,
+    /// 累计 diff 文本（mode=session 时有值）
+    pub diff: Option<String>,
+    /// 逐次 diff：只有 mode=perChange 才带（session 档捎带它是白费载荷——
+    /// 每次改动的 diff 都可能上千行）
+    pub per_change: Vec<SessionFileChangeEntry>,
+    pub note: Option<String>,
+}
+
+/// 命令返回体：不给 path 时是清单，给 path 时是该文件的详情
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFileChanges {
+    pub items: Vec<SessionFileChangeItem>,
+    pub detail: Option<SessionFileDiff>,
+}
+
+/// 某路径的汇总（内部计算结果）
+struct PathSummary {
+    path: String,
+    kind: String,
+    changes: usize,
+    mode: DiffMode,
+    added: i64,
+    deleted: i64,
+    truncated: bool,
+    drifted: bool,
+    diff: Option<String>,
+    per_change: Vec<SessionFileChangeEntry>,
+    note: Option<String>,
+}
+
+impl PathSummary {
+    fn to_item(&self) -> SessionFileChangeItem {
+        SessionFileChangeItem {
+            path: self.path.clone(),
+            kind: self.kind.clone(),
+            added: self.added,
+            deleted: self.deleted,
+            changes: self.changes,
+            mode: self.mode.as_str().to_string(),
+            drifted: self.drifted,
+            note: self.note.clone(),
+        }
+    }
+
+    fn to_detail(&self) -> SessionFileDiff {
+        SessionFileDiff {
+            path: self.path.clone(),
+            kind: self.kind.clone(),
+            mode: self.mode.as_str().to_string(),
+            added: self.added,
+            deleted: self.deleted,
+            changes: self.changes,
+            truncated: self.truncated,
+            drifted: self.drifted,
+            diff: self.diff.clone(),
+            // 逐次 diff 只在降级档给：session 档捎带它是白费载荷
+            per_change: if self.mode == DiffMode::PerChange {
+                self.per_change.clone()
+            } else {
+                Vec::new()
+            },
+            note: self.note.clone(),
+        }
+    }
+}
+
+/// 文本/二进制判定（与 `bot_skills::files` 的预览同口径：前 8KB 见 NUL 即二进制）
+fn decode_text_file(bytes: Vec<u8>) -> FileState {
+    if bytes
+        .iter()
+        .take(SESSION_BINARY_SNIFF_BYTES)
+        .any(|&b| b == 0u8)
+    {
+        return FileState::Binary;
+    }
+    match String::from_utf8(bytes) {
+        Ok(s) => FileState::Text(s),
+        Err(_) => FileState::Missing("文件不是合法 UTF-8 文本".into()),
+    }
+}
+
+/// 读当前文件内容（同步 IO，调用方在 blocking 线程）
+fn read_current_file(path: &str) -> FileState {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => return FileState::Missing(format!("读不到当前文件：{e}")),
+    };
+    if meta.len() > SESSION_DIFF_MAX_BYTES {
+        return FileState::Missing(format!("文件较大（{} 字节），给不出累计对比", meta.len()));
+    }
+    match std::fs::read(path) {
+        Ok(b) => decode_text_file(b),
+        Err(e) => FileState::Missing(format!("读不到当前文件：{e}")),
+    }
+}
+
+/// 会话起始内容（本会话第一次改之前）：快照闸与回滚同一口径。
+///
+/// 快照名来自 DB 行：带目录分隔符/父目录引用的一律拒绝（防读越界到任意文件）。
+/// 指纹不符 = 快照已损坏：不能拿它当累计基线（否则累计 diff 是错的，且错得看不出来）。
+fn read_before_snapshot(rows: &[FileChangeRow], checkpoint_dir: &std::path::Path) -> FileState {
+    let Some(first) = rows.first() else {
+        return FileState::Missing("本会话没有该文件的改动记录".into());
+    };
+    if first.kind == "create" {
+        // 会话开始前文件不存在 → 基线是空串（累计 diff = 整个文件都是新增）
+        return FileState::Text(String::new());
+    }
+    let Some(before_ref) = first.before_ref.as_deref() else {
+        return FileState::Missing("本会话第一次修改前的快照缺失（写盘时快照失败降级）".into());
+    };
+    let snap = std::path::Path::new(before_ref);
+    if before_ref.is_empty() || snap.file_name() != Some(snap.as_os_str()) {
+        return FileState::Missing("起始快照名非法（应为纯文件名）".into());
+    }
+    let bytes = match std::fs::read(checkpoint_dir.join(before_ref)) {
+        Ok(b) => b,
+        Err(e) => return FileState::Missing(format!("起始快照不可读：{e}")),
+    };
+    let state = decode_text_file(bytes);
+    if let (FileState::Text(t), Some(before_sha)) = (&state, first.before_sha.as_deref()) {
+        if before_sha != crate::bot_fs::sha256_hex(t) {
+            return FileState::Missing("起始快照指纹不符（已损坏）".into());
+        }
+    }
+    state
+}
+
+/// 某路径的累计/降级判定（纯函数：IO 都在外面做完）。
+///
+/// 基线与现状都得是文本才给得出累计 diff；否则分两档降级并各自说明原因：
+/// 当前是二进制 → 没有行级 diff；基线或现状取不到 → 给逐次 diff。
+fn summarize_path(
+    path: &str,
+    rows: &[FileChangeRow],
+    before: FileState,
+    current: FileState,
+) -> PathSummary {
+    let changes = rows.len();
+    let kind = rows
+        .first()
+        .map(|r| r.kind.clone())
+        .unwrap_or_else(|| "modify".to_string());
+    let per_change: Vec<SessionFileChangeEntry> = rows
+        .iter()
+        .map(|r| SessionFileChangeEntry {
+            id: r.id,
+            kind: r.kind.clone(),
+            added: r.added,
+            deleted: r.deleted,
+            diff: r.diff.clone(),
+            truncated: r.truncated,
+        })
+        .collect();
+    let base = PathSummary {
+        path: path.to_string(),
+        kind,
+        changes,
+        mode: DiffMode::PerChange,
+        added: 0,
+        deleted: 0,
+        truncated: false,
+        drifted: false,
+        diff: None,
+        per_change,
+        note: None,
+    };
+
+    if let (FileState::Text(b), FileState::Text(cur)) = (&before, &current) {
+        let (diff, added, deleted, truncated) = crate::bot_fs::build_unified_diff(b, cur, path);
+        // 漂移判定：当前内容指纹 vs AI 最后一次写盘时的 after_sha——
+        // 不符 = AI 写完之后文件又被改过（人改的），累计 diff 里混着非 AI 的改动。
+        let drifted = match rows.last().and_then(|r| r.after_sha.as_deref()) {
+            Some(a) => a != crate::bot_fs::sha256_hex(cur),
+            None => false,
+        };
+        return PathSummary {
+            mode: DiffMode::Session,
+            added,
+            deleted,
+            truncated,
+            drifted,
+            diff,
+            note: if drifted {
+                Some("文件在 AI 最后一次修改后又被改过，此处包含非 AI 的改动".into())
+            } else {
+                None
+            },
+            ..base
+        };
+    }
+
+    if matches!(&current, FileState::Binary) {
+        return PathSummary {
+            mode: DiffMode::NoLineDiff,
+            note: Some("二进制文件没有行级 diff；可切「查看全文」用系统默认程序打开".into()),
+            ..base
+        };
+    }
+
+    let reason = match (&before, &current) {
+        (FileState::Missing(r), _) => r.clone(),
+        (_, FileState::Missing(r)) => r.clone(),
+        _ => "起始快照与当前内容取不到累计对比所需的信息".to_string(),
+    };
+    PathSummary {
+        mode: DiffMode::PerChange,
+        added: rows.iter().map(|r| r.added).sum(),
+        deleted: rows.iter().map(|r| r.deleted).sum(),
+        note: Some(format!(
+            "{reason}；下面是本会话的逐次改动（行数是各次之和，不是净变化）"
+        )),
+        ..base
+    }
+}
+
+/// 本会话某会话的全部文件改动行（按落盘先后）
+pub fn file_changes_for_session(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Result<Vec<FileChangeRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT fc.id, fc.trace_id, fc.span_id, fc.path, fc.kind, fc.added, fc.deleted,
+                    fc.diff, fc.truncated, fc.before_ref, fc.before_sha, fc.after_sha, fc.created_at
+             FROM file_changes fc JOIN exec_traces t ON fc.trace_id = t.id
+             WHERE t.session_id = ?1 ORDER BY fc.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([session_id], file_change_from_row)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// 按路径分组（保持首次出现顺序；组内按落盘先后）
+fn group_by_path(rows: Vec<FileChangeRow>) -> Vec<(String, Vec<FileChangeRow>)> {
+    let mut groups: Vec<(String, Vec<FileChangeRow>)> = Vec::new();
+    for r in rows {
+        match groups.iter_mut().find(|(p, _)| *p == r.path) {
+            Some((_, g)) => g.push(r),
+            None => groups.push((r.path.clone(), vec![r])),
+        }
+    }
+    groups
+}
+
+/// 本会话文件改动（聊天侧栏「文件」工作面）。
+///
+/// 给 `path` = 取该文件的详情；不给 = 取本会话改动文件清单。
+/// 两种用法分开算：清单要的是「所有文件的累计 ±」，详情要的是「一个文件的 diff」，
+/// 各算各的最省——否则点开一个文件要把全会话的文件重读一遍。
+#[tauri::command]
+pub async fn bot_session_file_changes(
+    app: tauri::AppHandle,
+    session_id: String,
+    path: Option<String>,
+) -> CommandResult<SessionFileChanges> {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        session_file_changes_sync(&handle, &session_id, path.as_deref())
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("会话改动统计线程失败：{e}")))?
+}
+
+/// 同步内核（DB + 读盘 + 算 diff 都在 blocking 线程里）
+fn session_file_changes_sync(
+    app: &tauri::AppHandle,
+    session_id: &str,
+    path: Option<&str>,
+) -> CommandResult<SessionFileChanges> {
+    let conn = super::open_db(app)?;
+    let rows = file_changes_for_session(&conn, session_id)?;
+    let groups = group_by_path(rows);
+    let checkpoint_dir = crate::db::paths::data_dir(app).join("checkpoints");
+
+    if let Some(want) = path {
+        // 详情用法：只算这一个文件（清单由另一次调用给，前端缓存着）
+        let Some((_, group)) = groups.iter().find(|(p, _)| p == want) else {
+            return Ok(SessionFileChanges {
+                items: Vec::new(),
+                detail: None,
+            });
+        };
+        let summary = summarize_path(
+            want,
+            group,
+            read_before_snapshot(group, &checkpoint_dir),
+            read_current_file(want),
+        );
+        return Ok(SessionFileChanges {
+            items: Vec::new(),
+            detail: Some(summary.to_detail()),
+        });
+    }
+
+    // 清单用法：按落盘先后排；改动太多时只留最近的若干条
+    let capped: Vec<&(String, Vec<FileChangeRow>)> = if groups.len() > SESSION_FILE_CHANGES_MAX {
+        groups[groups.len() - SESSION_FILE_CHANGES_MAX..]
+            .iter()
+            .collect()
+    } else {
+        groups.iter().collect()
+    };
+    let mut items = Vec::with_capacity(capped.len());
+    for (p, group) in capped {
+        let summary = summarize_path(
+            p,
+            group,
+            read_before_snapshot(group, &checkpoint_dir),
+            read_current_file(p),
+        );
+        items.push(summary.to_item());
+    }
+    Ok(SessionFileChanges {
+        items,
+        detail: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2282,5 +2705,325 @@ mod tests {
             plan.iter().any(|p| p.contains("idx_changes_path")),
             "凭证查询应走 path 索引，实际计划：{plan:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod session_file_changes_tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn sha(s: &str) -> String {
+        crate::bot_fs::sha256_hex(s)
+    }
+
+    /// 造一条 file_changes 行（字段给全，测试不依赖真实落盘路径）
+    fn mk_row(
+        id: i64,
+        path: &str,
+        kind: &str,
+        before_ref: Option<&str>,
+        before_sha: Option<&str>,
+        after_sha: Option<&str>,
+    ) -> FileChangeRow {
+        FileChangeRow {
+            id,
+            trace_id: 1,
+            span_id: None,
+            path: path.to_string(),
+            kind: kind.to_string(),
+            added: 0,
+            deleted: 0,
+            diff: None,
+            truncated: false,
+            before_ref: before_ref.map(str::to_string),
+            before_sha: before_sha.map(str::to_string),
+            after_sha: after_sha.map(str::to_string),
+            created_at: 1000 + id,
+        }
+    }
+
+    /// 临时工作区：checkpoints 目录 + 一个目标文件路径（文件内容由各测试自己写）
+    fn workspace(tag: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let ck = dir.path().join("checkpoints");
+        fs::create_dir_all(&ck).unwrap();
+        let target = dir.path().join("x.txt");
+        let _ = tag;
+        (dir, ck, target)
+    }
+
+    /// 累计口径：基线（第一次改前的快照）vs 现在 → 给净变化，不是最后一次
+    #[test]
+    fn session_mode_diffs_against_session_start() {
+        let (_d, ck, target) = workspace("acc");
+        let before = "a\nb\nc\n";
+        fs::write(ck.join("snap1"), before).unwrap();
+        let now = "a\nb2\nc\n";
+        fs::write(&target, now).unwrap();
+
+        let mut rows = vec![mk_row(
+            1,
+            target.to_str().unwrap(),
+            "modify",
+            Some("snap1"),
+            Some(&sha(before)),
+            Some(&sha(now)),
+        )];
+        // 第二次改动：只给累计口径下会被折叠掉的干扰项
+        rows.push(mk_row(
+            2,
+            target.to_str().unwrap(),
+            "modify",
+            Some("snap2"),
+            None,
+            Some(&sha(now)),
+        ));
+
+        let s = summarize_path(
+            target.to_str().unwrap(),
+            &rows,
+            read_before_snapshot(&rows, &ck),
+            read_current_file(target.to_str().unwrap()),
+        );
+        assert_eq!(s.mode, DiffMode::Session);
+        assert_eq!(s.added, 1, "累计 + 行：b → b2");
+        assert_eq!(s.deleted, 1, "累计 − 行：b → b2");
+        assert_eq!(s.changes, 2);
+        assert!(!s.drifted, "after_sha 与盘上内容一致 → 不算漂移");
+        let diff = s.diff.unwrap();
+        assert!(
+            diff.contains("-b"),
+            "累计 diff 必须含被替换掉的行：\n{diff}"
+        );
+        assert!(diff.contains("+b2"), "累计 diff 必须含新行：\n{diff}");
+        assert!(!diff.contains("c\n"), "未改动的行不该整段进 diff：\n{diff}");
+    }
+
+    /// 新建文件：会话开始前文件不存在 → 基线是空串，累计 diff = 整个文件都是新增
+    #[test]
+    fn create_file_session_mode_treats_baseline_as_empty() {
+        let (_d, ck, target) = workspace("create");
+        let now = "x\ny\n";
+        fs::write(&target, now).unwrap();
+        let rows = vec![mk_row(
+            1,
+            target.to_str().unwrap(),
+            "create",
+            None,
+            None,
+            Some(&sha(now)),
+        )];
+        let s = summarize_path(
+            target.to_str().unwrap(),
+            &rows,
+            read_before_snapshot(&rows, &ck),
+            read_current_file(target.to_str().unwrap()),
+        );
+        assert_eq!(s.mode, DiffMode::Session);
+        assert_eq!(s.added, 2);
+        assert_eq!(s.deleted, 0);
+        assert!(s.diff.unwrap().contains("+x"));
+    }
+
+    /// 起始快照缺失（写盘时快照失败降级）：给不出累计 → 降级逐次并说明原因
+    #[test]
+    fn missing_snapshot_degrades_to_per_change_with_reason() {
+        let (_d, ck, target) = workspace("nosnap");
+        fs::write(&target, "now\n").unwrap();
+        let mut rows = vec![mk_row(
+            1,
+            target.to_str().unwrap(),
+            "modify",
+            None,
+            None,
+            None,
+        )];
+        rows[0].added = 3;
+        rows[0].deleted = 1;
+        let s = summarize_path(
+            target.to_str().unwrap(),
+            &rows,
+            read_before_snapshot(&rows, &ck),
+            read_current_file(target.to_str().unwrap()),
+        );
+        assert_eq!(s.mode, DiffMode::PerChange);
+        assert_eq!(s.added, 3, "降级时行数是各次之和");
+        assert_eq!(s.deleted, 1);
+        let note = s.note.unwrap();
+        assert!(note.contains("快照缺失"), "降级必须说明原因：{note}");
+        assert!(note.contains("逐次改动"), "降级必须说清给的是什么：{note}");
+    }
+
+    /// 起始快照指纹不符（已损坏）：不能拿它当基线——否则累计 diff 是错的且看不出来
+    #[test]
+    fn corrupted_snapshot_degrades_instead_of_producing_wrong_diff() {
+        let (_d, ck, target) = workspace("corrupt");
+        fs::write(ck.join("snap1"), "tampered\n").unwrap();
+        fs::write(&target, "a\nb\n").unwrap();
+        let rows = vec![mk_row(
+            1,
+            target.to_str().unwrap(),
+            "modify",
+            Some("snap1"),
+            Some(&sha("original\n")),
+            Some(&sha("a\nb\n")),
+        )];
+        let s = summarize_path(
+            target.to_str().unwrap(),
+            &rows,
+            read_before_snapshot(&rows, &ck),
+            read_current_file(target.to_str().unwrap()),
+        );
+        assert_eq!(s.mode, DiffMode::PerChange);
+        assert!(
+            s.note.unwrap().contains("指纹不符"),
+            "快照损坏必须说明原因，不能静默给出错误的累计 diff"
+        );
+    }
+
+    /// 二进制文件：没有行级 diff → 不给空 diff 面板，明说并指路
+    #[test]
+    fn binary_file_has_no_line_diff() {
+        let (_d, ck, target) = workspace("bin");
+        fs::write(&target, b"\x00\x01\x02binary").unwrap();
+        let rows = vec![mk_row(
+            1,
+            target.to_str().unwrap(),
+            "modify",
+            None,
+            None,
+            Some(&sha("x")),
+        )];
+        let s = summarize_path(
+            target.to_str().unwrap(),
+            &rows,
+            read_before_snapshot(&rows, &ck),
+            read_current_file(target.to_str().unwrap()),
+        );
+        assert_eq!(s.mode, DiffMode::NoLineDiff);
+        assert_eq!(s.added, 0);
+        assert_eq!(s.deleted, 0);
+        assert!(s.note.unwrap().contains("二进制"));
+    }
+
+    /// AI 写完后文件又被改过：累计 diff 含非 AI 的改动 → 必须标出来
+    #[test]
+    fn drift_after_last_ai_write_is_flagged() {
+        let (_d, ck, target) = workspace("drift");
+        let before = "a\n";
+        fs::write(ck.join("snap1"), before).unwrap();
+        let now = "a\nuser edit\n";
+        fs::write(&target, now).unwrap();
+        let rows = vec![mk_row(
+            1,
+            target.to_str().unwrap(),
+            "modify",
+            Some("snap1"),
+            Some(&sha(before)),
+            Some(&sha("a\n")),
+        )];
+        let s = summarize_path(
+            target.to_str().unwrap(),
+            &rows,
+            read_before_snapshot(&rows, &ck),
+            read_current_file(target.to_str().unwrap()),
+        );
+        assert_eq!(s.mode, DiffMode::Session);
+        assert!(s.drifted, "盘上内容 ≠ AI 最后一次写盘的内容 → 必须标漂移");
+        assert!(s.note.unwrap().contains("非 AI"));
+    }
+
+    /// 文件已不在（被用户删了）：现状读不到 → 降级逐次
+    #[test]
+    fn missing_current_file_degrades_to_per_change() {
+        let (_d, ck, target) = workspace("gone");
+        // 起始快照在（隔离出「现状缺失」这一个原因），但目标文件已被删
+        fs::write(ck.join("snap1"), "a\n").unwrap();
+        let rows = vec![mk_row(
+            1,
+            target.to_str().unwrap(),
+            "modify",
+            Some("snap1"),
+            Some(&sha("a\n")),
+            Some(&sha("a\n")),
+        )];
+        let s = summarize_path(
+            target.to_str().unwrap(),
+            &rows,
+            read_before_snapshot(&rows, &ck),
+            read_current_file(target.to_str().unwrap()),
+        );
+        assert_eq!(s.mode, DiffMode::PerChange);
+        assert!(s.note.unwrap().contains("读不到当前文件"));
+    }
+
+    /// 会话隔离：别的会话的改动不混进来
+    #[test]
+    fn file_changes_for_session_is_scoped_by_session() {
+        let conn = super::super::test_conn(&[EXEC_TRACE_DDL]);
+        let t1 = trace_start(
+            &conn,
+            &NewTrace {
+                session_id: "s1",
+                task_id: None,
+                origin: "Chat",
+                title: None,
+                started_at: 1000,
+            },
+        )
+        .unwrap();
+        let t2 = trace_start(
+            &conn,
+            &NewTrace {
+                session_id: "s2",
+                task_id: None,
+                origin: "Chat",
+                title: None,
+                started_at: 1000,
+            },
+        )
+        .unwrap();
+        for (trace_id, path) in [(t1, "/a/x.py"), (t2, "/b/y.py")] {
+            file_change_insert(
+                &conn,
+                &NewFileChange {
+                    trace_id,
+                    span_id: None,
+                    path,
+                    kind: "modify",
+                    added: 1,
+                    deleted: 0,
+                    diff: None,
+                    truncated: false,
+                    before_ref: None,
+                    before_sha: None,
+                    after_sha: None,
+                    created_at: 1001,
+                },
+            )
+            .unwrap();
+        }
+        let rows = file_changes_for_session(&conn, "s1").unwrap();
+        assert_eq!(rows.len(), 1, "只该看到本会话的改动");
+        assert_eq!(rows[0].path, "/a/x.py");
+    }
+
+    /// 按路径分组：保持首次出现顺序，组内保持落盘先后
+    #[test]
+    fn group_by_path_keeps_first_appearance_order() {
+        let rows = vec![
+            mk_row(1, "/a", "modify", None, None, None),
+            mk_row(2, "/b", "modify", None, None, None),
+            mk_row(3, "/a", "modify", None, None, None),
+        ];
+        let groups = group_by_path(rows);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].0, "/a");
+        assert_eq!(groups[0].1.len(), 2, "同路径的多次改动要归到一组");
+        assert_eq!(groups[0].1[0].id, 1);
+        assert_eq!(groups[0].1[1].id, 3, "组内保持落盘先后");
+        assert_eq!(groups[1].0, "/b");
     }
 }

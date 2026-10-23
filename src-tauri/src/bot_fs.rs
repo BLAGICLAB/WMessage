@@ -2577,6 +2577,28 @@ mod file_change_tests {
         assert!(d.contains("-b"), "{d}");
     }
 
+    /// hunk 头的行号语义是前端算「两段之间省略了多少行未改动」的依据：
+    /// 计数含上下文行（git 语义），故「下一段起始行 − 本段起始行 − 本段计数」
+    /// 就是中间被省略的旧行数。依赖升级改了 similar 的输出格式时这里会先炸——
+    /// 前端那套算式依赖的就是这个约定。
+    #[test]
+    fn diff_hunk_headers_follow_git_line_number_semantics() {
+        let before: String = (1..=12).map(|i| format!("line{i}\n")).collect();
+        let after = before
+            .replace("line2\n", "LINE2\n")
+            .replace("line10\n", "LINE10\n");
+        let (diff, _, _, _) = build_unified_diff(&before, &after, "/x.txt");
+        let d = diff.unwrap();
+        assert!(d.contains("@@ -1,5 +1,5 @@"), "hunk 头格式：\n{d}");
+        assert!(d.contains("@@ -7,6 +7,6 @@"), "hunk 头格式：\n{d}");
+        // 第 1 段覆盖旧行 1..5（1/3/4/5 上下文 + 第 2 行删除），第 2 段从旧行 7 起
+        // → 中间省略旧行 6
+        assert!(
+            !d.contains(" line6\n"),
+            "旧行 6 不该出现（两段之间的省略区）：\n{d}"
+        );
+    }
+
     #[test]
     fn diff_create_all_insertions() {
         let (diff, added, deleted, truncated) = build_unified_diff("", "l1\nl2\n", "/x/new.txt");
