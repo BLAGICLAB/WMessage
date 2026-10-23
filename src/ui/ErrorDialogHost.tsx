@@ -52,6 +52,9 @@ export function ErrorDialogHost() {
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
       onClose={() => finish(false)}
       data-testid="error-dialog-overlay"
+      // portal 到 body：宿主挂主树里，设置页盖住主树时主树被 inert
+      // （不可点），弹层留在里面就按不动了
+      portal
     >
       <div
         className="nm-card w-full max-w-md p-5 space-y-3"

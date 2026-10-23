@@ -104,6 +104,9 @@ export default function ConfirmMap() {
     <Modal
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-6"
       data-testid="confirm-map-modal"
+      // portal 到 body：确认可能在任何视图下发生，设置页盖住主树时
+      // 主树被 inert（不可点），弹层留在里面就按不动了
+      portal
     >
       <div className="nm-card w-full max-w-md p-5 space-y-4">
         <div className="flex items-center justify-between">

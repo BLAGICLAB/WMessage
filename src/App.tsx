@@ -958,21 +958,172 @@ function App() {
     if (view !== "settings") lastViewRef.current = view;
   }, [view]);
 
-  // 设置视图全屏接管：替换左导航+主内容，壳内自带返回与分类导航
-  if (view === "settings") {
-    return (
+  // 设置视图全屏接管：**叠在主树之上，不卸载主树**。
+  //
+  // 曾经这里是提前 return（整棵主树被替换掉）——代价是聊天面板随之卸载，
+  // 它的 11 路 bot-* 订阅一起注销：回复进行中切设置，那段时间后端广播的
+  // 增量事件没有任何接收者（广播即焚、没有游标也没有回放），在途回复的
+  // 流式过程就没了；execute-task / chat-open-session 这几路同理。
+  // 主树活着 → 面板活着 → 订阅活着 → 流式不断。
+  //
+  // 叠层而不是「换掉」还顺带保住了主树的滚动位置与在途浮窗（任务编辑）。
+  // inert：设置壳是模态，盖住期间主树不可聚焦/不可点（防串焦点）；
+  // 它不暂停 JS 监听器——这正是我们要的（在途流式得继续收）。
+  return (
+    <>
       <ErrorBoundary>
-        <div className="h-screen overflow-hidden bg-[var(--bg)]">
-          <SettingsPage
-            theme={theme}
-            onThemeChange={setTheme}
-            onExportTasks={exportTasks}
-            onImportTasks={importTasks}
-            onExportWorkspace={exportWorkspace}
-            onImportWorkspace={importWorkspace}
-            onBack={() => setView(lastViewRef.current)}
-          />
-          {paletteOpen && (
+        <div
+          className="flex h-screen overflow-hidden bg-[var(--bg)]"
+          inert={view === "settings"}
+        >
+          {/* 左侧导航栏：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入。
+              宽度 import 自 navWidth（浮窗左缘要越过它，口径必须单源），
+              省下的宽度原样转给聊天会话栏 */}
+          <nav
+            aria-label="主导航"
+            style={{ width: NAV_W }}
+            className="flex shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
+          >
+            <div className="mb-2 flex items-center gap-2 px-1 pt-1">
+              <img
+                src={mainLogo}
+                alt="WMessage"
+                className="h-6 w-6 shrink-0"
+                draggable={false}
+              />
+              <h1 className="text-sm font-semibold text-[var(--t2)]">WMessage</h1>
+            </div>
+            <RailButton
+              variant="action"
+              icon={Plus}
+              label="新建任务"
+              kbd={KBD_NEW}
+              onClick={addTask}
+            />
+            <RailButton
+              variant="action"
+              icon={Search}
+              label="搜索"
+              kbd={KBD_SEARCH}
+              onClick={() => setPaletteOpen(true)}
+            />
+            <RailSection label="任务卡" />
+            {NAV_ITEMS.map((item) => (
+              <RailButton
+                key={item.key}
+                icon={item.icon}
+                label={item.label}
+                active={view === item.key}
+                onClick={() => setView(item.key)}
+              />
+            ))}
+            <RailSection label="Agent能力" />
+            {AGENT_ITEMS.map((item) => (
+              <RailButton
+                key={item.key}
+                icon={item.icon}
+                label={item.label}
+                active={view === item.key}
+                onClick={() => setView(item.key)}
+                badge={item.badge ? notifCount : 0}
+              />
+            ))}
+            <div className="flex-1" />
+            <RailButton
+              icon={SettingsIcon}
+              label="设置"
+              onClick={() => setView("settings")}
+            />
+          </nav>
+          <main ref={mainRef} className="app-scroll min-w-0 flex-1 overflow-y-auto p-6">
+            {view === "home" ? (
+              <HomePage
+                tasks={visibleTasks}
+                scrollRef={mainRef}
+                onNavigate={setView}
+                onOpenTask={jumpToTask}
+              />
+            ) : view === "board" ? (
+              <TaskTimelinePage
+                tasks={visibleTasks}
+                onNewTask={addTask}
+                onUpdate={updateTask}
+                onSetColumn={setTaskColumn}
+                onOpenTask={jumpToTaskId}
+                onOpenArchived={jumpToArchive}
+              />
+            ) : view === "schedule" ? (
+              <SchedulePage onOpenChat={openChat} />
+            ) : view === "activity" ? (
+              <ActivityPage onOpenChat={openChat} />
+            ) : view === "graph" ? (
+              <GraphPage
+                tasks={tasks}
+                onOpenTask={jumpToTask}
+                onPatchTask={updateTask}
+              />
+            ) : view === "archive" ? (
+              <ArchivePage
+                tasks={visibleTasks}
+                onUpdate={updateTask}
+                onDelete={deleteTask}
+                onOpenSubtaskCard={jumpToTaskId}
+                highlightTaskId={archiveFocus}
+                onClearHighlight={() => setArchiveFocus(null)}
+              />
+            ) : view === "workspace" ? (
+              <WorkspacePage />
+            ) : view === "apps" ? (
+              <AppsPage />
+            ) : view === "trash" ? (
+              <TrashPage
+                tasks={visibleTasks}
+                onUpdate={updateTask}
+                onDelete={hardDeleteTask}
+                onOpenSubtaskCard={jumpToTaskId}
+              />
+            ) : view === "notifications" ? (
+              <NotificationsPage />
+            ) : null}
+            {/* 聊天常挂载：execute-task / chat-open-session / chat-focus-session /
+                subagent-finished 全靠组件内监听器驱动，条件挂载会让切走页面期间的
+                事件无处可去（挂件时代的「折叠不丢聊天」诉求，同解）。
+                切视图只切可见性，messages 与监听器全程存活。 */}
+            <div className={view === "chat" ? "h-full" : "hidden"}>
+              <ChatPanel
+                enabled={botOn}
+                tasks={openTasks}
+                onUpdateTask={updateTask}
+              />
+            </div>
+            {/* 全局确认弹窗 */}
+            <ConfirmMap />
+            {/* 应用内错误弹窗宿主（批 4：接管 errorHandler，替代原生 alert/confirm） */}
+            <ErrorDialogHost />
+          </main>
+          {/* 全局任务编辑浮窗：任何页面上层滑出（新建/编辑统一入口） */}
+          {editor && editorTask && (
+            <TaskEditorOverlay
+              task={editorTask}
+              autoFocusTitle={editor.autoFocus}
+              closing={editor.closing}
+              onClosed={dismissEditor}
+              onClose={closeEditor}
+              onDiscard={discardEditor}
+              onUpdate={(patch) => updateTask(editorTask.id, patch)}
+              onSetColumn={(col) => setTaskColumn(editorTask.id, col)}
+              onDelete={() => {
+                closeEditor();
+                deleteTask(editorTask.id);
+              }}
+              onCreateSubtaskCard={(subId, title) =>
+                createSubtaskCard(editorTask.id, subId, title)
+              }
+              onOpenTask={jumpToTaskId}
+              onDeleteSubtask={(subId) => deleteSubtaskRow(editorTask.id, subId)}
+            />
+          )}
+          {paletteOpen && view !== "settings" && (
             <CommandPalette
               onClose={() => setPaletteOpen(false)}
               tasks={visibleTasks}
@@ -982,169 +1133,34 @@ function App() {
           )}
         </div>
       </ErrorBoundary>
-    );
-  }
-
-  return (
-    <ErrorBoundary>
-      <div className="flex h-screen overflow-hidden bg-[var(--bg)]">
-        {/* 左侧导航栏：新建(⌘N)/搜索(⌘K)/视图切换/底部设置——职能自顶部工具条迁入。
-            宽度 import 自 navWidth（浮窗左缘要越过它，口径必须单源），
-            省下的宽度原样转给聊天会话栏 */}
-        <nav
-          aria-label="主导航"
-          style={{ width: NAV_W }}
-          className="flex shrink-0 flex-col gap-1 border-r border-[var(--edge)] p-3"
-        >
-          <div className="mb-2 flex items-center gap-2 px-1 pt-1">
-            <img
-              src={mainLogo}
-              alt="WMessage"
-              className="h-6 w-6 shrink-0"
-              draggable={false}
+      {/* 设置壳：叠在主树之上（z-[60] > 任务浮窗 z-40）。自带返回与分类导航，
+          外观与「全屏接管」一致；差别只是主树没被卸载。 */}
+      {view === "settings" && (
+        <ErrorBoundary>
+          <div className="fixed inset-0 z-[60] overflow-hidden bg-[var(--bg)]">
+            <SettingsPage
+              theme={theme}
+              onThemeChange={setTheme}
+              onExportTasks={exportTasks}
+              onImportTasks={importTasks}
+              onExportWorkspace={exportWorkspace}
+              onImportWorkspace={importWorkspace}
+              onBack={() => setView(lastViewRef.current)}
             />
-            <h1 className="text-sm font-semibold text-[var(--t2)]">WMessage</h1>
+            {/* 命令面板在设置壳内渲染（z-50 在本层上下文里，压得住设置页）；
+                主树那一份此时不渲染，避免同开两个面板 */}
+            {paletteOpen && (
+              <CommandPalette
+                onClose={() => setPaletteOpen(false)}
+                tasks={visibleTasks}
+                onJumpTask={jumpToTask}
+                onJumpSession={jumpToSession}
+              />
+            )}
           </div>
-          <RailButton
-            variant="action"
-            icon={Plus}
-            label="新建任务"
-            kbd={KBD_NEW}
-            onClick={addTask}
-          />
-          <RailButton
-            variant="action"
-            icon={Search}
-            label="搜索"
-            kbd={KBD_SEARCH}
-            onClick={() => setPaletteOpen(true)}
-          />
-          <RailSection label="任务卡" />
-          {NAV_ITEMS.map((item) => (
-            <RailButton
-              key={item.key}
-              icon={item.icon}
-              label={item.label}
-              active={view === item.key}
-              onClick={() => setView(item.key)}
-            />
-          ))}
-          <RailSection label="Agent能力" />
-          {AGENT_ITEMS.map((item) => (
-            <RailButton
-              key={item.key}
-              icon={item.icon}
-              label={item.label}
-              active={view === item.key}
-              onClick={() => setView(item.key)}
-              badge={item.badge ? notifCount : 0}
-            />
-          ))}
-          <div className="flex-1" />
-          <RailButton
-            icon={SettingsIcon}
-            label="设置"
-            onClick={() => setView("settings")}
-          />
-        </nav>
-        <main ref={mainRef} className="app-scroll min-w-0 flex-1 overflow-y-auto p-6">
-          {view === "home" ? (
-            <HomePage
-              tasks={visibleTasks}
-              scrollRef={mainRef}
-              onNavigate={setView}
-              onOpenTask={jumpToTask}
-            />
-          ) : view === "board" ? (
-            <TaskTimelinePage
-              tasks={visibleTasks}
-              onNewTask={addTask}
-              onUpdate={updateTask}
-              onSetColumn={setTaskColumn}
-              onOpenTask={jumpToTaskId}
-              onOpenArchived={jumpToArchive}
-            />
-          ) : view === "schedule" ? (
-            <SchedulePage onOpenChat={openChat} />
-          ) : view === "activity" ? (
-            <ActivityPage onOpenChat={openChat} />
-          ) : view === "graph" ? (
-            <GraphPage
-              tasks={tasks}
-              onOpenTask={jumpToTask}
-              onPatchTask={updateTask}
-            />
-          ) : view === "archive" ? (
-            <ArchivePage
-              tasks={visibleTasks}
-              onUpdate={updateTask}
-              onDelete={deleteTask}
-              onOpenSubtaskCard={jumpToTaskId}
-              highlightTaskId={archiveFocus}
-              onClearHighlight={() => setArchiveFocus(null)}
-            />
-          ) : view === "workspace" ? (
-            <WorkspacePage />
-          ) : view === "apps" ? (
-            <AppsPage />
-          ) : view === "trash" ? (
-            <TrashPage
-              tasks={visibleTasks}
-              onUpdate={updateTask}
-              onDelete={hardDeleteTask}
-              onOpenSubtaskCard={jumpToTaskId}
-            />
-          ) : view === "notifications" ? (
-            <NotificationsPage />
-          ) : null}
-          {/* 聊天常挂载：execute-task / chat-open-session / chat-focus-session /
-              subagent-finished 全靠组件内监听器驱动，条件挂载会让切走页面期间的
-              事件无处可去（挂件时代的「折叠不丢聊天」诉求，同解）。
-              切视图只切可见性，messages 与监听器全程存活。 */}
-          <div className={view === "chat" ? "h-full" : "hidden"}>
-            <ChatPanel
-              enabled={botOn}
-              tasks={openTasks}
-              onUpdateTask={updateTask}
-            />
-          </div>
-          {/* 全局确认弹窗 */}
-          <ConfirmMap />
-          {/* 应用内错误弹窗宿主（批 4：接管 errorHandler，替代原生 alert/confirm） */}
-          <ErrorDialogHost />
-        </main>
-        {/* 全局任务编辑浮窗：任何页面上层滑出（新建/编辑统一入口） */}
-        {editor && editorTask && (
-          <TaskEditorOverlay
-            task={editorTask}
-            autoFocusTitle={editor.autoFocus}
-            closing={editor.closing}
-            onClosed={dismissEditor}
-            onClose={closeEditor}
-            onDiscard={discardEditor}
-            onUpdate={(patch) => updateTask(editorTask.id, patch)}
-            onSetColumn={(col) => setTaskColumn(editorTask.id, col)}
-            onDelete={() => {
-              closeEditor();
-              deleteTask(editorTask.id);
-            }}
-            onCreateSubtaskCard={(subId, title) =>
-              createSubtaskCard(editorTask.id, subId, title)
-            }
-            onOpenTask={jumpToTaskId}
-            onDeleteSubtask={(subId) => deleteSubtaskRow(editorTask.id, subId)}
-          />
-        )}
-        {paletteOpen && (
-          <CommandPalette
-            onClose={() => setPaletteOpen(false)}
-            tasks={visibleTasks}
-            onJumpTask={jumpToTask}
-            onJumpSession={jumpToSession}
-          />
-        )}
-      </div>
-    </ErrorBoundary>
+        </ErrorBoundary>
+      )}
+    </>
   );
 }
 

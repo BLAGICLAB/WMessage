@@ -73,6 +73,8 @@ beforeEach(() => {
   mocks.invokeMock.mockClear();
   mocks.invokeMock.mockImplementation(defaultInvokeImpl); // 恢复默认实现（个别用例会覆盖）
   mocks.listenMock.mockClear();
+  // 恢复默认实现（个别用例会覆盖 listen 实现去捕获事件回调）
+  mocks.listenMock.mockImplementation(async () => () => {});
   mocks.openMock.mockClear();
   mocks.saveMock.mockClear();
   mocks.askMock.mockReset();
@@ -109,8 +111,8 @@ describe("App", () => {
     expect(main?.className).toContain("app-scroll");
   });
 
-  // 设置视图全屏接管（壳内自带返回与分类导航），所以拿不到主导航来比对——
-  // 只钉住它同样取自 navWidth：同一个壳、同一套字号，各自定宽就会出现
+  // 设置页是叠层（不是替换）：主导航仍在 DOM 里，只是 inert 不可交互。
+  // 两栏宽度各自取自 navWidth：同一个壳、同一套字号，各自定宽就会出现
   // 「一边刚好够、一边被截」的不一致
   it("设置页左栏宽度同样取自 navWidth，分类项不换行", async () => {
     render(<App />);
@@ -122,10 +124,12 @@ describe("App", () => {
     expect(aside.style.width).toBe(`${NAV_W}px`);
     const label = within(aside).getByText("文件整理");
     expect(label.className).toContain("truncate");
+    // 叠层而非替换：主导航还在（inert 不可交互，但没被卸载）
+    expect(screen.getByRole("navigation", { name: "主导航" })).toBeInTheDocument();
   });
 
-  // 用户报的原始路径：聊天里打了字 → 切设置（设置页是 App 里的提前 return，
-  // 主树整体被替换 → 聊天面板卸载）→ 点「返回」回来。草稿必须还在。
+  // 用户报的原始路径：聊天里打了字 → 切设置 → 点「返回」回来。草稿必须还在。
+  // （草稿按会话落 localStorage，不依赖壳层结构；这里守的是「切视图不丢草稿」）
   it("聊天草稿跨「切设置 → 返回」存活", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
@@ -154,6 +158,128 @@ describe("App", () => {
     expect(await screen.findByPlaceholderText(/和机器人说点什么/)).toHaveValue(
       "还没发出去的半句话",
     );
+  });
+
+  // 用户报的原始路径：回复进行中 → 切设置 → 那段时间后端广播的增量没人接。
+  // 根因是设置页曾把主树整棵换掉（提前 return），聊天面板随之卸载，
+  // 11 路 bot-* 订阅一起注销——广播即焚、没有回放，错过就是错过。
+  // 改成叠层后主树不卸载 → 订阅活着 → 流式不断。
+  it("在途回复切设置：流式订阅仍在（设置页叠层，主树不卸载）", async () => {
+    const user = userEvent.setup();
+    let deltaHandler:
+      | ((e: { payload: Record<string, unknown> }) => void)
+      | null = null;
+    const unregistered: string[] = [];
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta") deltaHandler = cb as typeof deltaHandler;
+      return () => {
+        unregistered.push(event);
+      };
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_get_enabled") return true;
+      if (cmd === "bot_sessions_load")
+        return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_get_config")
+        return { baseUrl: "", model: "", hasApiKey: false };
+      // 挂起不返回 → 这一轮一直在途，便于观察切设置期间的增量
+      if (cmd === "bot_chat") return new Promise(() => {});
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
+    });
+    await user.click(screen.getByRole("button", { name: "聊天" }));
+    const input = await screen.findByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "在途的问题");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(deltaHandler).not.toBeNull();
+    });
+
+    // 切设置
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("complementary", { name: "设置分类" });
+
+    // ① 主树没被卸载：聊天输入框仍在 DOM 里
+    //    （占位文案随状态变：默认「和机器人说点什么」/ 在途「回复中…」）
+    expect(
+      screen.getByPlaceholderText(/和机器人说点什么|回复中/),
+    ).toBeInTheDocument();
+    // ② 订阅没被注销（面板活着才谈得上「还在听」）
+    expect(unregistered).not.toContain("bot-chat-delta");
+    // ③ 设置期间主树是 inert：盖住期间不可聚焦/不可点（防串焦点与误点）
+    const shell = document.querySelector("main")?.parentElement;
+    expect(shell?.hasAttribute("inert")).toBe(true);
+
+    // ④ 设置页期间后端广播的增量照样被接住并渲染（流式气泡在长）
+    await act(async () => {
+      (
+        deltaHandler as unknown as (e: {
+          payload: Record<string, unknown>;
+        }) => void
+      )({ payload: { text: "设置页期间也在流", sessionId: "s1" } });
+    });
+    expect(await screen.findByText("设置页期间也在流")).toBeInTheDocument();
+  });
+
+  // 设置页盖住主树时，主树整棵是 inert（不可点不可聚焦）。全局弹窗若留在
+  // 主树里就跟着不可点——用户看见弹窗却按不动。所以弹层走 portal 到 body。
+  it("设置页盖住主树时：全局弹窗逃出 inert 子树（还能点）", async () => {
+    const user = userEvent.setup();
+    const handlers: Record<string, (e: unknown) => void> = {};
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      handlers[event] = cb as (e: unknown) => void;
+      return () => {};
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      // 读库失败 → errorHandler 弹应用内错误弹窗（宿主挂主树里）
+      if (cmd === "db_load") throw new Error("database is locked");
+      return defaultInvokeImpl(cmd);
+    });
+    render(<App />);
+    const errOverlay = await screen.findByTestId("error-dialog-overlay");
+    // 后端广播确认请求 → 全局确认弹窗
+    await act(async () => {
+      handlers["bot-confirm"]?.({
+        payload: {
+          id: "c1",
+          tool: "删除文件",
+          detail: "rm -rf /tmp/x",
+          kind: "danger",
+          sessionId: null,
+        },
+      });
+    });
+    const confirmModal = screen.getByTestId("confirm-map-modal");
+
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("complementary", { name: "设置分类" });
+
+    // 两个弹层都不在 inert 子树里（inert 的后代按不动）
+    expect(errOverlay.closest("[inert]")).toBeNull();
+    expect(confirmModal.closest("[inert]")).toBeNull();
+  });
+
+  // 命令面板在设置期间只能有一份：主树那份用 view 守卫让位，设置壳里渲染一份
+  it("设置页期间命令面板只渲染一份（不双挂）", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("db_load");
+    });
+    await user.click(screen.getByRole("button", { name: "设置" }));
+    await screen.findByRole("complementary", { name: "设置分类" });
+    // ⌘K 是 window 级快捷键：主树 inert 也不影响（键盘事件不进 inert 判定）
+    await user.keyboard("{Meta>}k{/Meta}");
+    const palettes = await screen.findAllByRole("dialog", {
+      name: "搜索任务与会话",
+    });
+    expect(palettes).toHaveLength(1);
+    // 挂在设置壳里，不在 inert 主树里
+    expect(palettes[0].closest("[inert]")).toBeNull();
   });
 
   it("初始渲染：首页视图 + 库内任务上任务池", async () => {

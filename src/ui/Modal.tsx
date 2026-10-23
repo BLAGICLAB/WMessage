@@ -15,7 +15,8 @@ type ModalProps = Omit<React.ComponentProps<"div">, "children"> & {
   /** Esc 关闭（挂 window keydown 监听）；缺省关 */
   closeOnEsc?: boolean;
   /** true = createPortal 到 document.body：卡片容器有 transform 包含块
-   * （fixed 被裁缩到卡片边界）时必须开 */
+   * （fixed 被裁缩到卡片边界）时必须开；祖先被 inert 标记时也要开——
+   * inert 的后代不可点，弹层留在里面就按不动了 */
   portal?: boolean;
 };
 
