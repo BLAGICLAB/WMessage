@@ -418,3 +418,78 @@ describe("McpPanel", () => {
     expect(screen.queryByText(/监听/)).not.toBeInTheDocument();
   });
 });
+
+describe("McpPanel 轮询（资源行是活的量）", () => {
+  // 假定时器必须在 render 之前装：轮询定时器是挂载时创建的，
+  // 之后再装 fake timers 管不到已经建好的那个
+  beforeEach(() => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status" ? STATUS_WITH_RES : [],
+    );
+  });
+
+  it("可见时每 5s 拉一次：已运行时长会走（不再停在打开那一刻的 0 秒）", async () => {
+    vi.useFakeTimers();
+    try {
+      let uptime = 0;
+      mocks.invokeMock.mockImplementation(async (cmd: string) =>
+        cmd === "mcp_status"
+          ? [{ ...STATUS_WITH_RES[0], uptimeSecs: uptime }]
+          : [],
+      );
+      render(<McpPanel />);
+      await flush();
+      expect(screen.getByText("已运行 0 秒")).toBeInTheDocument();
+
+      uptime = 65;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      await flush();
+      expect(screen.getByText("已运行 1 分 5 秒")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("不可见（active=false）：不轮询、不发请求（面板惰性挂载不卸载，别在后台空转）", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<McpPanel active={false} />);
+      await flush();
+      const before = mocks.invokeMock.mock.calls.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15000);
+      });
+      expect(mocks.invokeMock.mock.calls.length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("切回可见：立刻补一次刷新（面板不卸载，数值不能停在离开那刻）", async () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(<McpPanel active={false} />);
+      await flush();
+      const before = mocks.invokeMock.mock.calls.length;
+      rerender(<McpPanel active />);
+      await flush();
+      expect(mocks.invokeMock.mock.calls.length).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("卸载后不留计时器", async () => {
+    vi.useFakeTimers();
+    try {
+      const { unmount } = render(<McpPanel />);
+      await flush();
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

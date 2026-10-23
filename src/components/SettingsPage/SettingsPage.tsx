@@ -4002,7 +4002,9 @@ export function SettingsPage({
               hidden={activeSection !== "mcp"}
               className="space-y-4 pt-4"
             >
-              <McpPanel />
+              {/* active：分类隐藏时面板不卸载（惰性挂载），可见性要传下去，
+                  否则它在后台一直 5s 一次地拍 ps / lsof */}
+              <McpPanel active={activeSection === "mcp"} />
             </section>
           )}
           {mountedSections.has("services") && (

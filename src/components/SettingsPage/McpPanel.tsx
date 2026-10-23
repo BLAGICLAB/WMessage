@@ -2,6 +2,8 @@
 //
 // 数据流：mcp_status 读「配置 × 连接槽」合并视图；增删改走 mcp_server_save/delete/toggle
 //（后端落盘 + 自动重连，广播 mcp-status-changed 事件，本面板监听后刷新）。
+// 资源行（pid / 内存 / CPU / 已运行）是活的量 → 面板可见时按 5s 轮询
+//（后端采样层同 5s TTL 缓存，轮询间隔与它对齐才拿得到新快照）。
 // 权限模型：保存前显式确认弹窗完整展示将运行的命令行/参数/env。
 // stdio 启动器白名单前后端双重把关（前端下拉只能选白名单内启动器）。
 
@@ -224,8 +226,12 @@ function SaveConfirmDialog({
   );
 }
 
-/** MCP 服务器管理面板：列表（状态点/启停/工具）+ 表单（确认弹窗后保存） */
-export function McpPanel() {
+/** MCP 服务器管理面板：列表（状态点/启停/工具）+ 表单（确认弹窗后保存）
+ *
+ *  active：本分类是否正在显示。设置页分类是「惰性挂载 + hidden 隐藏」——
+ *  面板挂上后不会卸载，所以可见性要由外面告知，否则不可见时也在后台
+ *  5s 一次地拍 ps / lsof。默认 true（单独挂载时即视为可见）。 */
+export function McpPanel({ active = true }: { active?: boolean }) {
   const confirm = useConfirm();
   const [servers, setServers] = useState<McpServerStatus[]>([]);
   const [form, setForm] = useState<FormState | null>(null); // null = 表单收起
@@ -279,10 +285,6 @@ export function McpPanel() {
   }, [refresh]);
 
   useEffect(() => {
-    // 挂载即刷新连接态（外部数据同步既有模式）：refresh 链路含 setState，
-    // lint 对 effect 内调用按同步路径处理，保既有直写
-    // oxlint-disable-next-line react/set-state-in-effect
-    refresh();
     // 连接态是异步收敛的（启动重连 / 保存后重连），后端广播后刷新状态点
     const un = listen("mcp-status-changed", () => {
       refresh();
@@ -291,6 +293,28 @@ export function McpPanel() {
       unlistenSafe(un);
     };
   }, [refresh]);
+
+  /** 轮询：pid / 内存 / CPU / 已运行时长是活的量，只有挂载与事件两个刷新点时
+   *  它们会永远停在打开那一刻的值（uptime 停在 0 秒就是这么来的）。
+   *  间隔取 5s——与后端采样层的 5s TTL 缓存对齐，轮询更快反而拿同一份快照。 */
+  useEffect(() => {
+    if (!active) return;
+    let ticking = false;
+    const tick = async () => {
+      // 上一轮还没回来就不叠一轮（采样可能拍全机 ps，慢机器上会叠）
+      if (ticking) return;
+      ticking = true;
+      try {
+        await refresh();
+      } finally {
+        ticking = false;
+      }
+    };
+    // 切回本分类时立刻补一次（面板不卸载，数值不能停在离开那一刻）
+    tick();
+    const timer = setInterval(tick, 5000);
+    return () => clearInterval(timer);
+  }, [active, refresh]);
 
   /** 编辑回填 in-flight 闸（连点两行会双 invoke 竞态 setForm——按钮的
    * disabled 要等首个 invoke 落地才生效，ref 闸同步无窗口） */

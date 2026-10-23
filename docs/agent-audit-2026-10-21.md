@@ -861,6 +861,9 @@ let inline = !env.as_object().map(|m| m.is_empty()).unwrap_or(true)
   `ps`（~50ms）就重了」——当前前端根本不轮询，TTL 缓存形同虚设）。
   另外 `listening_sockets` **每次调用都现做**（`manager.rs:473`，不进缓存），
   macOS 上每次一趟 lsof。
+  **（已修，2026-10-23）**：面板可见时按 5s 轮询（间隔与采样层 TTL 对齐），
+  不可见时停——设置页分类惰性挂载 + hidden 不卸载，不停就会在后台空转
+  拍 ps / lsof；「已运行」不再停在 0 秒。
 - **P3**：`mount.rs:240` 注释称 MCP 结果上限「fetch_url 同口径」，实际
   30,000 vs 内置 `fetch_url` 的 65,536——**并非同口径**（MCP 侧更严）。
   方向安全（更小的上限不会撑爆上下文），但注释会误导后续维护者去对齐成 64KB。
