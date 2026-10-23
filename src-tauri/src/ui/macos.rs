@@ -37,6 +37,7 @@ const AX_SIZE: &str = "AXSize";
 const AX_ACTIONS: &str = "AXActions";
 const AX_PRESS: &str = "AXPress";
 const AX_FOCUSED_WINDOW: &str = "AXFocusedWindow";
+const AX_FOCUSED: &str = "AXFocused";
 
 fn cfstr(s: &str) -> CFRetained<CFString> {
     CFString::from_str(s)
@@ -449,12 +450,30 @@ pub fn press_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
 
 /// 让控件获得焦点（输入前的准备）
 ///
-/// AX 没有「设焦点」这个通用属性：常规做法是对文本控件 AXPress（多数应用会
-/// 因此聚焦输入框），失败则如实报错。
+/// 文本框不支持 AXPress（AppKit 对 NSTextField 返回 -25206「不支持按压
+/// 操作」）——拿按压当聚焦等于对文本框整体失效。聚焦走 kAXFocusedAttribute：
+/// 置 true 之后键盘事件才会路由到这个控件。
 pub fn focus_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
     let el = resolve(node_id)?;
     verify_identity(node_id, &el, expect)?;
-    press(&el).map_err(|e| format!("无法聚焦该控件（{e}）"))
+    set_focused(&el).map_err(|e| format!("无法聚焦该控件（{e}）"))
+}
+
+/// 置 kAXFocusedAttribute = true
+///
+/// 失败必须如实报错：静默失败时键盘事件会打进窗口里碰巧持有焦点的别的
+/// 控件——闸门审的控件和实际输入的控件就分家了。
+fn set_focused(el: &AXUIElement) -> Result<(), String> {
+    let attr = cfstr(AX_FOCUSED);
+    let value = unsafe { objc2_core_foundation::kCFBooleanTrue }
+        .ok_or("拿不到 kCFBooleanTrue（系统常量，理论不可达）")?;
+    let val: &CFType = value.as_ref();
+    let err = unsafe { el.set_attribute_value(&attr, val) };
+    if err == AXError::Success {
+        Ok(())
+    } else {
+        Err(format!("控件不接受聚焦（AXError {:?}）", err))
+    }
 }
 
 /// 往当前焦点控件输入文本（CGEvent 造 Unicode 键盘事件）
@@ -549,6 +568,27 @@ mod tests {
         assert!(
             !src.contains(concat!("is_password", ": false")),
             "is_password 写死 false 等于敏感闸对 macOS 原生密码框放行"
+        );
+    }
+
+    /// 聚焦必须置 AXFocused 属性：文本框不支持 AXPress（AppKit 对 NSTextField
+    /// 返回 -25206「不支持按压操作」），拿按压当聚焦等于 ui_type 对所有文本框
+    /// 失效（实机：测试台输入框、文本编辑正文区一律聚焦失败）。
+    #[test]
+    fn focus_must_set_the_focused_attribute_not_press() {
+        let src = include_str!("macos.rs");
+        let body = src
+            .split("pub fn focus_node")
+            .nth(1)
+            .and_then(|s| s.split("pub fn ").next())
+            .expect("focus_node 必须存在");
+        assert!(
+            body.contains("set_focused"),
+            "聚焦必须置 kAXFocusedAttribute"
+        );
+        assert!(
+            !body.contains("press(&el)"),
+            "文本框不支持 AXPress，按压当聚焦对所有文本框失效"
         );
     }
 
