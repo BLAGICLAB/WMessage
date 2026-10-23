@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 |---|---|
-| 覆盖窗口 | `git log --since=2026-10-23 00:00` → 68 个提交 / 99 个文件 / +11 285 −973 行；**外加实机跑卡时踩出来的 1 条崩溃修复**（M39） |
+| 覆盖窗口 | `git log --since=2026-10-23 00:00` → 68 个提交 / 99 个文件 / +11 285 −973 行；**外加实机跑卡时踩出来的 4 条修复**（M39 崩溃 + 附录 D D-2/D-3/D-4） |
 | 基线 | `7cd490c1`（2026-10-22 23:56，批 2 网络 API 面收尾） |
 | 行为变更 | 42 条（`fix` 32 / `feat` 7 / `test` 3），其余 26 条是文档 |
 | 卡片 | 42 张场景卡（M01–M39 双平台为主 + W01–W03 Windows 专章），覆盖 37 条行为变更 + 1 条实机崩溃修复 |
@@ -1833,7 +1833,14 @@ Get-Item -Path "C:\Users\<你>\Desktop\报告.docx" -Stream * | Select-Object St
 
 | # | 卡片 | 现象 | 级别 | 状态 |
 |---|---|---|---|---|
-| D-1 | M01 | `ui_inspect` 自己的窗口 → 应用被 WebKit 的 SIGTRAP 断言带走 | **真缺陷** | 🔧 **已修**（本轮）· 待实机复验 |
+| D-1 | M01 | `ui_inspect` 自己的窗口 → 应用被 WebKit 的 SIGTRAP 断言带走 | **真缺陷** | 🔧 **已修** · ✅ 实机复验（10-23 晚：清单无自己、碰自己被拒、应用不崩；详见下方 D-1 末尾） |
+| D-2 | M05 | macOS `ui_type` 对所有 AppKit 文本框失效：聚焦走 AXPress，文本框不支持按压（-25206） | **真缺陷** | 🔧 **已修**（10-24 `81b62c27`）· ✅ 实机复验（改置 AXFocused 后 `hello2026` 实落输入框） |
+| D-3 | M03 | 敏感控件闸对 macOS 原生密码框无效：AXRole 只是 AXTextField，密码身份在 AXSubrole，`is_password` 恒 false | **真缺陷**（安全） | 🔧 **已修**（10-24 `14f99201`）· ✅ 实机复验（ui_type 被拒 + 密码框零接触；修复前实际被 D-2 掩盖） |
+| D-4 | M01 | `ui_inspect` 深度参数被钳回默认 6：网页内容控件（约第 8 层）整体不可见 | **真缺陷**（能力受限） | 🔧 **已修**（10-24 `e45c8736`）· ✅ 实机复验（maxDepth=16 见第 9 层 Send，点击生效） |
+| D-5 | M09/M10 | 设置页「允许机器人操作桌面界面」开关：关闭直接生效，开启需确认弹窗；flag 文件 600 权限与留痕行为均符合预期 | **观察级** | 卡片无需改 |
+| D-6 | M06 | 真机造不出 unchanged 判据：模型撞前台闸后自己重新取新 id 自愈；且 `gate_window_unchanged` 在确认弹窗之后，弹窗被拒就到不了 | **观察级** | 主证据归单测（`reused_window_id_must_not_pass_the_gate`） |
+| D-7 | M04 | 模型拒绝调用带换行的 ui_type（知道规则、选择不调），真机驱动不通；registry 报「未知工具」正确拦下幻觉工具名 `CompatUiType9d2684` | **观察级** | 主证据归单测（`ui_type_rejects_text_carrying_line_breaks`） |
+| D-8 | M39 | 实际拒绝文案是「窗口 …不存在（可能已关闭）」而非卡片写的「不能操作 wmessage 自己的窗口」——`gate_window` 复用已剔除自己的清单，第一道闸先拦，`reject_own_window` 是纵深防御第二道 | **观察级** | **要改卡片**（D-1 修复生效的另一种可见形态） |
 
 **级别口径**（沿用兄弟文档）：
 
@@ -1915,13 +1922,73 @@ bot::registry::call_ui_inspect
 
 #### 待办
 
-- [ ] **实机复验 M39**：清单里应看不到 wmessage 自己；碰自己的窗口应被拒且应用不崩
+- [x] **实机复验 M39**（10-23 晚）：清单 8 个窗口全是外部应用；`ui_inspect <own_pid>:0` 被拒；应用不崩。拒绝文案是「窗口 …不存在」而非本卡的「不能操作自己的窗口」——见 D-8
 - [ ] **Windows 侧确认**：Windows 的 `list_windows` 同样会列自己（UIA 桌面根元素的顶层窗口），规则已覆盖，但 Windows 上没验过读自己的 WebView2 树会怎样
 
 #### 顺带发现（未修）
 
 - **`list_windows` 的文案与实现分家**：工具 schema（`bot/registry.rs`）说「只列有标题的窗口」，空清单时的提示也这么写；但 macOS 后端**把无标题窗口也列出来了**（注释明说「无标题的窗口也列出来，但标注出来让模型自己挑」），只有 Windows 后端跳过无标题窗口。这条会误导模型去选面板/托盘窗（M02 / M06 两张卡都要靠无标题控件）。
 - **权限不全时模型会烧轮次**：辅助功能与屏幕录制两项权限缺一时，工具一路报错，模型从 turn=0 烧到 turn=21 才停。§1.1 已加前置条件，但产品侧也许该在权限缺失时**一次性说清缺哪两项**。
+
+---
+
+### D-2（真缺陷 · 已修）macOS `ui_type` 对所有 AppKit 文本框失效
+
+**发现时间**：2026-10-23 晚（跑 M05 正向分支）
+**级别**：真缺陷（功能坏死级——ui_type 在 macOS 上整体不可用）
+**是否本批回归**：**否**——聚焦走 AXPress 是 UI 六件套引入时的既有实现
+
+#### 现象与根因
+
+`activate_window` 成功后 `ui_type` 一律报 `输入失败：无法聚焦该控件（控件不支持按压操作（AXError AXError(-25206)））`——对测试台的 NSTextField、TextEdit 正文区全部如此。根因：`ui/macos.rs::focus_node` 用 `press()`（AXPress）当聚焦，按钮可以，**文本框不支持 AXPress**。
+
+#### 修复（`81b62c27`，10-24）
+
+聚焦改置 `kAXFocusedAttribute = true`（`set_focused`），失败如实报错——静默失败会把文字打进窗口里碰巧有焦点的别的控件。守卫测试：`ui::macos::tests::focus_must_set_the_focused_attribute_not_press`。
+
+#### 实机复验（10-24）
+
+`activate_window` + `ui_type` 往测试台普通输入框 → `已输入 9 个字符到「AXTextField」`；地面真相：`osascript` 回读输入框值 = `hello2026`。
+
+---
+
+### D-3（真缺陷 · 已修）敏感控件闸对 macOS 原生密码框无效
+
+**发现时间**：2026-10-23 晚（跑 M03）
+**级别**：真缺陷（安全）——密码代填通道开着，只是当时被 D-2 掩盖（聚焦失败输入进不去）
+**是否本批回归**：**否**——`is_password: false` 是后端引入时的写法
+
+#### 现象与根因
+
+M03 跑完敏感闸**从未触发**（无「敏感控件」拒绝文案）。实机确认：NSSecureTextField 的 **AXRole 是 `AXTextField`，密码身份在 AXSubrole**；`SENSITIVE_ROLES = ["AXSecureTextField"]` 只比对角色，`macos.rs::collect` 又把 `is_password` 写死 `false`——两条判定材料全部缺失。
+
+#### 修复（`14f99201`，10-24）
+
+`collect` 读 `AXSubrole` 置位 `is_password`（`subrole == "AXSecureTextField"`）；`bot_ui::gate_sensitive` 本来就认 `node.is_password`，两平台口径从此一致（Windows 走 UIA `CurrentIsPassword`）。守卫测试：`ui::macos::tests::collect_must_flag_password_fields_from_the_subrole`。
+
+#### 实机复验（10-24）
+
+`ui_type` 打测试台密码框 → `拒绝操作：目标控件是敏感控件（AXTextField），不代填密码 / 验证码类内容。`（括号里是真实角色，证明命中的是新的 subrole 判定而非角色词表）；地面真相：密码框值仍为空。
+
+---
+
+### D-4（真缺陷 · 已修）`ui_inspect` 深度参数被钳回默认 6——网页内容控件整体不可见
+
+**发现时间**：2026-10-23 晚（跑 M01）
+**级别**：真缺陷（能力受限）——浏览器/Electron 内容区对 UI 自动化不可达
+**是否本批回归**：**否**——`.min(DEFAULT_MAX_DEPTH)` 是六件套引入时的写法
+
+#### 现象与根因
+
+模型传 `maxDepth: 16`，`bot_ui.rs` 用 `.min(DEFAULT_MAX_DEPTH)` 把它钳回 6；而网页控件在窗口壳下第 8 层上下（AXWindow → splitter → tab group → group×2 → scroll area → **AXWebArea** → group → AXButton）。实机：模型「共读到 39 个控件」全是窗口壳，M01 的 Send 按钮永远找不到。`resolve_target` / `wait_for_element` 用同一常量，inspect 看得到的 id 也解析不到。
+
+#### 修复（`e45c8736`，10-24）
+
+新增 `MAX_DEPTH_LIMIT = 16` 与 `clamp_max_depth(Option<u64>)`：不传用默认 6，显式值钳到硬顶 16（不压回默认值）；`resolve_target` / `wait_for_element` 的树解析同用硬顶——inspect 看得到的 id 必须解析得到。工具 schema 同步说明上限。纯函数测试：`bot_ui::tests::requested_depth_is_honored_up_to_the_hard_limit`。
+
+#### 实机复验（10-24）
+
+`ui_inspect maxDepth=16 query=Send` 对 Safari「Alpha测试页」→ 命中第 9 层控件 `1698:0.0.0.0.0.0.0.1.0`（AXButton / Send）；`ui_click` 点击生效（页面 log 落 `CLICKED: Send`），danger 确认窗正常弹。
 
 ---
 
