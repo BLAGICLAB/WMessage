@@ -290,6 +290,11 @@ pub fn open_db<R: tauri::Runtime>(
         "bot_sessions",
         &[("is_subagent", "INTEGER NOT NULL DEFAULT 0")],
     )?;
+    // 迁移（onions）：每会话 onion 配置两列。bot_sessions 的 DDL 是
+    // CREATE TABLE IF NOT EXISTS——老库走不到那句 DDL，只剩补列这一条路。
+    // 不补的后果不是「少个字段」，而是每会话读 onion 配置必炸
+    // no such column: onion_config（配置永远不生效）。
+    migrations::ensure_onion_config_columns(&conn)?;
     ensure_columns(&conn, "tasks", &[("bot_assigned", "INTEGER")])?;
     ensure_columns(&conn, "tasks", &[("ord", "REAL")])?;
     ensure_columns(&conn, "tasks", &[("updated_at", "INTEGER")])?;
@@ -490,6 +495,63 @@ mod tests {
             );
         }
         assert!(checked > 0, "没找到 bot_messages 的幂等补列调用");
+    }
+
+    /// 老库没有 onion 两列时必须补上。
+    ///
+    /// bot_sessions 的 DDL 是 CREATE TABLE IF NOT EXISTS——老库走不到那句 DDL，
+    /// 只剩 ensure_onion_config_columns 补列这一条路。缺列的后果不是「少个字段」，
+    /// 而是每会话读 onion 配置必炸 no such column: onion_config（配置永远不生效）。
+    #[test]
+    fn ensure_onion_config_columns_adds_columns_to_legacy_bot_sessions() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE bot_sessions (
+                 id         TEXT PRIMARY KEY,
+                 title      TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+        let cols = |c: &rusqlite::Connection| -> Vec<String> {
+            c.prepare("PRAGMA table_info(bot_sessions)")
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .filter_map(std::result::Result::ok)
+                .collect()
+        };
+        assert!(
+            !cols(&conn).contains(&"onion_config".to_string()),
+            "老库本来就没有这两列"
+        );
+        migrations::ensure_onion_config_columns(&conn).unwrap();
+        let after = cols(&conn);
+        assert!(
+            after.contains(&"onion_config".to_string()),
+            "老库必须补上 onion_config 列"
+        );
+        assert!(
+            after.contains(&"onion_max_turn".to_string()),
+            "老库必须补上 onion_max_turn 列"
+        );
+        // 幂等：每次 open_db 都会走这一遍，重复补列不得报错
+        migrations::ensure_onion_config_columns(&conn).unwrap();
+    }
+
+    /// 接线守卫：open_db 必须真的调 ensure_onion_config_columns。
+    ///
+    /// 上面的测试证明的是「机制能补」；这条证明的是「真接上了」——
+    /// 函数定义了却没人调，老库照样缺这两列。匹配串用 `concat!` 拆分防自匹配。
+    #[test]
+    fn open_db_calls_ensure_onion_config_columns() {
+        let src = include_str!("mod.rs");
+        let needle = concat!("ensure_onion_", "config_columns(");
+        assert!(
+            src.contains(needle),
+            "open_db 里必须调 ensure_onion_config_columns——定义了没人调等于没有"
+        );
     }
 
     // ── legacy WAL copy 不吞错 + 边车文件一并拷贝 ──
