@@ -365,7 +365,7 @@ pub const SCHEMA_ACTIVATE_WINDOW: &str = r##"{"type":"function","function":{"nam
 pub const SCHEMA_UI_INSPECT: &str = r##"{"type":"function","function":{"name":"ui_inspect","description":"读窗口里的控件树（角色 / 标题 / 当前值 / 是否可用 / 是否可直接触发），可按关键词过滤。点击与输入前先用它确认目标控件的 id","parameters":{"type":"object","properties":{
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
     "query":{"type":"string","description":"可选：按控件标题 / 角色 / 标识过滤（不填=全部）"},
-    "maxDepth":{"type":"integer","description":"可选：树深度上限，默认 6"}
+    "maxDepth":{"type":"integer","description":"可选：树深度上限，默认 6，最大 16（网页内容控件较深，默认看不到时可显式给 16）"}
   },"required":["windowId"]}}}"##;
 pub const SCHEMA_UI_CLICK: &str = r##"{"type":"function","function":{"name":"ui_click","description":"点击窗口里的某个控件（按控件 id 或标题关键词定位）。点「发送 / 提交 / 支付 / 删除」这类按钮前会弹窗请用户确认，用户拒绝则不执行——真发出去的消息撤不回来，所以这一步必须让用户过目","parameters":{"type":"object","properties":{
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},

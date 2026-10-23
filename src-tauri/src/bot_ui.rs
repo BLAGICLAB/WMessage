@@ -27,6 +27,17 @@ use crate::ui::{UiNode, UiWindow};
 
 /// 控件树最大深度（默认；超出即截断——深层树在原生应用里动辄几百节点）
 const DEFAULT_MAX_DEPTH: usize = 6;
+/// 显式请求深度的硬顶：浏览器 / Electron 的内容控件在窗口壳下第 8 层上下
+/// （窗口 → 页签 → 滚动区 → WebArea → 容器 → 控件），默认 6 看不进内容区。
+/// 深度硬顶只防极端深树，节点总量另有闸（DEFAULT_MAX_NODES）。
+const MAX_DEPTH_LIMIT: usize = 16;
+
+/// 深度参数的统一口径：不传用默认，显式值钳到硬顶（不压回默认值）
+fn clamp_max_depth(requested: Option<u64>) -> usize {
+    requested
+        .map(|d| (d as usize).min(MAX_DEPTH_LIMIT))
+        .unwrap_or(DEFAULT_MAX_DEPTH)
+}
 /// 控件树最多返回多少节点
 const DEFAULT_MAX_NODES: usize = 200;
 /// wait_for_element 默认等待上限
@@ -432,10 +443,7 @@ pub async fn tool_ui_inspect(app: &AppHandle, args: &str) -> ToolResult {
         Ok(w) => w,
         Err(t) => return t,
     };
-    let max_depth = v["maxDepth"]
-        .as_u64()
-        .map(|d| (d as usize).min(DEFAULT_MAX_DEPTH))
-        .unwrap_or(DEFAULT_MAX_DEPTH);
+    let max_depth = clamp_max_depth(v["maxDepth"].as_u64());
     let query = v["query"].as_str().unwrap_or("").trim().to_lowercase();
     let nodes = match crate::ui::inspect_tree(&window_id, max_depth, DEFAULT_MAX_NODES) {
         Ok(n) => n,
@@ -527,7 +535,7 @@ pub async fn tool_ui_click(
         Ok(w) => w,
         Err(t) => return t,
     };
-    let node = match resolve_target(&window_id, &target, DEFAULT_MAX_DEPTH) {
+    let node = match resolve_target(&window_id, &target, MAX_DEPTH_LIMIT) {
         Ok(n) => n,
         Err(t) => return t,
     };
@@ -630,7 +638,7 @@ pub async fn tool_ui_type(
         Ok(w) => w,
         Err(t) => return t,
     };
-    let node = match resolve_target(&window_id, &target, DEFAULT_MAX_DEPTH) {
+    let node = match resolve_target(&window_id, &target, MAX_DEPTH_LIMIT) {
         Ok(n) => n,
         Err(t) => return t,
     };
@@ -745,7 +753,7 @@ pub async fn tool_wait_for_element(app: &AppHandle, args: &str) -> ToolResult {
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms as u64);
     loop {
-        let nodes = crate::ui::inspect_tree(&window_id, DEFAULT_MAX_DEPTH, DEFAULT_MAX_NODES)
+        let nodes = crate::ui::inspect_tree(&window_id, MAX_DEPTH_LIMIT, DEFAULT_MAX_NODES)
             .unwrap_or_default();
         if let Some(node) = nodes.iter().find(|n| {
             n.title.to_lowercase().contains(&query)
@@ -839,6 +847,19 @@ mod tests {
             detail_is_dangerous("在「设置」里点击「OK」"),
             "OK 按钮本身仍要触发确认闸"
         );
+    }
+
+    /// 深度上限语义：显式请求被尊重到硬顶，而不是被压回默认值
+    ///
+    /// 浏览器 / Electron 的内容控件在窗口壳下第 8 层上下（窗口 → 页签 →
+    /// 滚动区 → WebArea → 容器 → 控件），默认 6 看不进内容区；把模型显式
+    /// 要的深度压回 6，等于「网页里的控件永远不可见」。
+    #[test]
+    fn requested_depth_is_honored_up_to_the_hard_limit() {
+        assert_eq!(clamp_max_depth(None), 6, "不传用默认值");
+        assert_eq!(clamp_max_depth(Some(2)), 2, "显式给浅值照收");
+        assert_eq!(clamp_max_depth(Some(16)), 16, "网页内容区需要 16 层");
+        assert_eq!(clamp_max_depth(Some(999)), 16, "超界钳到硬顶，不压回默认值");
     }
 
     /// ui_type 不接受带换行的文本：注入换行等于按回车键，会当场发出去
