@@ -225,9 +225,66 @@ def strip_rs_comments(text: str) -> str:
     return "".join(out)
 
 
+# 统一出口 emit_recorded(app, session_id, "evt", payload)：会话级流式事件全从这儿发
+# （分配序号 → 写会话缓冲 → 广播）。事件名在第 3 参——扫描器认不出这个形状，
+# 就会把「前端 listen 了 bot-chat-report」误判成「后端无人 emit」。
+RECORDED_CALL_RE = re.compile(r'\bemit_recorded\s*\(')
+
+
+def _split_top_level_args(text, start):
+    """从 `(` 之后切顶层实参：括号/方括号/花括号里的逗号不算分隔符。"""
+    args = []
+    depth = 0
+    cur = []
+    in_str = False
+    escape = False
+    for ch in text[start:]:
+        if in_str:
+            cur.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            cur.append(ch)
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    tail = "".join(cur).strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
+def recorded_event_names(text):
+    """统一出口调用里的事件名字面量（第 3 参）。变量转发取不到字面量就跳过，不臆测。"""
+    names = []
+    for m in RECORDED_CALL_RE.finditer(text):
+        args = _split_top_level_args(text, m.end())
+        if len(args) < 3:
+            continue
+        lit = args[2].strip()
+        if len(lit) >= 2 and lit.startswith('"') and lit.endswith('"'):
+            names.append(lit[1:-1])
+    return names
+
+
 def emitted_events():
-    """后端 .emit(\"e\")/.emit_to(\"w\",\"e\") + 闭包 emit(\"e\") 与前端 emit/emitTo 的事件名
-    （Rust 侧先剥注释，注释掉的 emit 不算）"""
+    """后端 .emit(\"e\")/.emit_to(\"w\",\"e\") + 闭包 emit(\"e\") + 统一出口 emit_recorded
+    与前端 emit/emitTo 的事件名（Rust 侧先剥注释，注释掉的 emit 不算）"""
     backend = {}
     for f, raw in RUST_SRC.items():
         t = strip_rs_comments(raw)
@@ -245,6 +302,9 @@ def emitted_events():
             resolved = resolve_rust_str_const(const_name)
             if resolved:
                 backend.setdefault(resolved, f)
+        # 统一出口 emit_recorded(app, session_id, "evt", payload)：事件名是第 3 参
+        for name in recorded_event_names(t):
+            backend.setdefault(name, f)
     frontend = {}
     for f, t in TS_SRC.items():
         for m in re.finditer(r'(?<![\w.])emit(?:To)?\(\s*"([^"]+)"', t):
@@ -260,6 +320,11 @@ def listened_events():
             out.setdefault(m.group(1), f)
         # useTauriListen<T>("evt", ...) 包装钩子：事件名是首参字面量
         for m in re.finditer(r'\buseTauriListen(?:<[^>]*>)?\(\s*"([^"]+)"', t):
+            out.setdefault(m.group(1), f)
+        # reg<T>("evt", ...)：会话级事件登记表（ChatPanel.tsx 的 reg 登记器——
+        # 实时订阅与回放补齐共用同一批处理函数）。认不出它，
+        # 「前端 listen 了却没人 emit」这条 FAIL 检查对半数会话事件就是空壳
+        for m in re.finditer(r'\breg(?:<[^>]*>)?\(\s*"([^"]+)"', t):
             out.setdefault(m.group(1), f)
         # useTauriListen<T>(CONST_NAME, ...) 字面量常量名：去对应 lib 文件查 const 值
         for m in re.finditer(r'\buseTauriListen(?:<[^>]*>)?\(\s*([A-Z][A-Z0-9_]+)\b', t):
@@ -400,8 +465,40 @@ def test_emitted_events_ignores_commented_emit():
     assert 'emit("e", "https://a.dev")' == strip_rs_comments('emit("e", "https://a.dev")')
 
 
+def test_recorded_event_names_reads_third_arg():
+    """统一出口 emit_recorded(app, session_id, "evt", payload)：事件名在第 3 参"""
+    src = '''
+crate::bot::stream_log::emit_recorded(
+    app,
+    stop.session_id(),
+    "bot-skill-failed",
+    serde_json::json!({ "sessionId": "s1", "reason": "boom" }),
+);
+'''
+    assert recorded_event_names(src) == ["bot-skill-failed"]
+
+
+def test_recorded_event_names_skips_non_literal():
+    """事件名是变量转发 → 取不到字面量就跳过，不臆测"""
+    assert recorded_event_names("emit_recorded(&app, session_id, event, payload);") == []
+
+
+def test_recorded_events_count_as_backend_emitters():
+    """真实样本：走统一出口的两个事件必须被认成后端 emit 点（前端在 listen）"""
+    backend, _ = emitted_events()
+    assert "bot-chat-report" in backend
+    assert "bot-skill-failed" in backend
+
+
+def test_listened_events_recognize_reg_registry():
+    """会话级事件登记表 reg<T>("evt", ...) 也算前端监听（否则 FAIL 检查对半数事件是空壳）"""
+    out = listened_events()
+    for evt in ("bot-skill-failed", "bot-turn-status", "bot-chat-delta"):
+        assert out.get(evt, "").endswith("ChatPanel.tsx"), f"{evt} 没被认成前端监听"
+
+
 def test_extractors_nonempty():
-    assert len(registered_commands()) >= 50, "命令提取异常（当前 55 个注册）"
+    assert len(registered_commands()) >= 50, "命令提取异常（当前 154 个注册）"
     assert len(frontend_invokes()) >= 50, "前端 invoke 提取异常"
     assert plugin_calls(), "plugin 调用提取异常"
     backend, frontend = emitted_events()
