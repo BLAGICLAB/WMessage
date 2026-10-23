@@ -25,6 +25,12 @@
 | **D-17** | 用户点名的技能被 intent 正则截胡：「用 PPT-craft-master 技能做PPT」先命中内置 `pptx-design` 的 `PPT` 正则 → 启错技能 → 模型只能中途切换 → 正踩 D-16 | 路由加「点名规则」并**整体排在 intent 规则之前**（大小写不敏感；只对带 `-`/`_` 的名字生效） | `708507bc` |
 | **D-18** | 老库缺 `bot_sessions.onion_config` 两列 → 每会话读 onion 配置必炸 `no such column`，per-onion 配置永远不生效 | `open_db` 补调 `ensure_onion_config_columns` | `fad6ffa6` |
 
+> **另有一条观察级 D-19**（同一次报障里发现的，不在修复范围）：上一版日志在**启动瞬间**有两条
+> `no such column`（`sched_last` / `file_path`）——都是 `open_db` 本身失败，但**此后再没复发**，
+> 库随后照常工作。已排除「退役列 DROP 失败」与「当前代码还在查这两列」两种解释，
+> 剩下的指向用户老库里残留的库对象，**没有实机 DB 可查就没下结论**（详见附录 D-19）。
+> 复验时顺带 grep 一下确认还在不在（见 §2.7 末尾）。
+
 **D-16 的实机现场**（2026-10-23 13:33 那次的 bot.log 原文）：
 
 ```
@@ -286,6 +292,18 @@ Get-ChildItem "$PKG\AI_Gen_Files" -Filter *.pptx | Sort-Object LastWriteTime -De
 > `bot.log` 里**不该再有** `bot_onions read_meta_fail … no such column: onion_config`：
 > ```powershell
 > Get-Content "$PKG\bot.log" -Encoding UTF8 | Select-String "read_meta_fail"
+> ```
+>
+> **再顺带看一眼 D-19（观察级 · 未定位，不修只观察）**：
+> 上一版日志在启动瞬间有两条 `no such column`（`sched_last` / `file_path`，见附录 D-19）。
+> 换完新 exe 跑一轮后，看还犯不犯：
+> ```powershell
+> Get-Content "$PKG\bot.log" -Encoding UTF8 | Select-String "no such column"
+> ```
+> **不出现** → 这条就此划掉；**还出现** → 把下面这段的回填给执行者，一并定位：
+> ```sql
+> PRAGMA table_info('tasks');
+> SELECT type, name, sql FROM sqlite_master WHERE tbl_name IN ('tasks','scheduled_jobs');
 > ```
 
 ## 三、再跑 S 序列剩余项
