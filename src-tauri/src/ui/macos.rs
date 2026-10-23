@@ -27,6 +27,7 @@ const AX_WINDOWS: &str = "AXWindows";
 const AX_CHILDREN: &str = "AXChildren";
 const AX_TITLE: &str = "AXTitle";
 const AX_ROLE: &str = "AXRole";
+const AX_SUBROLE: &str = "AXSubrole";
 const AX_DESCRIPTION: &str = "AXDescription";
 const AX_VALUE: &str = "AXValue";
 const AX_IDENTIFIER: &str = "AXIdentifier";
@@ -398,8 +399,9 @@ fn collect(
             size: size_attr(&child, AX_SIZE),
             depth,
             actionable: can_press(&child),
-            // macOS 的密码框靠 AXSecureTextField 角色判定（见 bot_ui 的敏感闸）
-            is_password: false,
+            // 原生密码框（NSSecureTextField）的 AXRole 只是 AXTextField，密码
+            // 身份在 AXSubrole——只看角色判不出，敏感闸就拦不住代填
+            is_password: string_attr(&child, AX_SUBROLE).as_deref() == Some("AXSecureTextField"),
         });
         if depth < max_depth {
             collect(&child, id, depth + 1, max_depth, max_nodes, out);
@@ -531,6 +533,22 @@ mod tests {
         assert!(
             !foreground_matches(501, 501, "微信", Some("另一个窗口")),
             "同应用的另一个窗口不算前台窗口"
+        );
+    }
+
+    /// collect 必须读 AXSubrole 判密码框：原生 NSSecureTextField 的 AXRole 只是
+    /// AXTextField（密码身份在 AXSubrole），角色判不出；is_password 再写死
+    /// false，敏感闸对原生密码框就是放行。
+    #[test]
+    fn collect_must_flag_password_fields_from_the_subrole() {
+        let src = include_str!("macos.rs");
+        assert!(
+            src.contains("AX_SUBROLE"),
+            "必须读 AXSubrole——原生密码框的角色只是普通 AXTextField"
+        );
+        assert!(
+            !src.contains(concat!("is_password", ": false")),
+            "is_password 写死 false 等于敏感闸对 macOS 原生密码框放行"
         );
     }
 
