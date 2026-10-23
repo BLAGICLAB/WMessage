@@ -2888,6 +2888,192 @@ async fn core_tool_selfcheck_explanation_treated_as_final_answer() {
     assert_eq!(server.request_count(), 2, "附解释不续跑");
 }
 
+/// 迟到的自检判定不能当终稿。
+///
+/// 实景（真机 2026-10-23）：模型用行动代替了回答（自检态随「以行动代回答」
+/// 释放），那句「请仅用一个字回答 Y/N」还留在上下文里，模型在后面某轮补了
+/// 一个 Y——那个 Y 落到出口就成了终稿：用户只看到一个 Y，真正的报告压根没
+/// 产出（模型正要写报告就被这一轮终结了）。
+///
+/// 出口闸：纯 Y/N 单字 + 本轮问过自检 → 续跑一轮，让模型说出真实结果。
+#[tokio::test]
+async fn core_late_selfcheck_verdict_is_not_returned_as_answer() {
+    let server = MockLlmServer::start();
+    // 第 1 轮：变更类工具成功 → 触发工具自检（那句 Y/N 问话进上下文）
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 2 轮：模型用行动代替回答（继续调工具，不答 Y/N）
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 3 轮：模型这才回答自检问话——一个裸 Y
+    server.push_behavior(MockBehavior::TextReply("Y".into()));
+    // 第 4 轮：被追问后说出真实结果
+    server.push_behavior(MockBehavior::TextReply(
+        "已创建任务并核验完成，可在任务页查看".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("迟到自检判定路径应 Ok");
+    assert!(
+        text.contains("已创建任务并核验完成"),
+        "裸 Y 不是答复，应被追问并拿到真实结果，实际：{text:?}"
+    );
+    assert!(
+        text.trim() != "Y" && text.trim() != "y",
+        "终稿不能是自检判定字样，实际：{text:?}"
+    );
+    // 4 次 LLM 请求：tool → 行动代答 → 迟到判定 → 追问后的真实结果
+    assert_eq!(
+        server.request_count(),
+        4,
+        "迟到判定应触发追问续跑，而不是拿 Y 终结回合"
+    );
+}
+
+/// 出口闸的作用域：没问过自检的回合里，一个裸 Y 就是合法答复（用户明说
+/// 「只回答 Y 或 N」）。闸不能把这种回答也劫走。
+#[tokio::test]
+async fn core_bare_yn_without_selfcheck_is_kept_as_answer() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::TextReply("Y".into()));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("无自检的裸 Y 路径应 Ok");
+    assert_eq!(text.trim(), "Y", "没问过自检时，裸 Y 是合法答复");
+    assert_eq!(server.request_count(), 1, "不该追问");
+}
+
+/// 模型只肯回判定字样时不能无限追着问：追问额度封顶后给一句可读的说明，
+/// 而不是把裸 Y 交给用户（那等于没回答）。
+#[tokio::test]
+async fn core_late_selfcheck_verdict_retry_is_bounded() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 之后全是裸 Y：问够了也不给结果
+    for _ in 0..3 {
+        server.push_behavior(MockBehavior::TextReply("Y".into()));
+    }
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("追问封顶路径应 Ok");
+    assert!(
+        text.contains("模型只回了自检判定"),
+        "追问额度用尽后应给可读说明，实际：{text:?}"
+    );
+    // 5 次请求：tool → 行动代答 → 判定 → 追问 1 → 追问 2（封顶后收尾）
+    assert_eq!(server.request_count(), 5, "追问次数有硬顶，不能无限追着问");
+}
+
+/// 终稿自检那条路上的迟到判定同样不能当终稿：模型用行动代替了回答（终稿
+/// 自检态随「以行动代回答」释放），那句 Y/N 问话留在上下文里，模型在后面
+/// 某轮补了个 Y——出口闸要把它认成判定并追问，而不是当成答复交出去。
+#[tokio::test]
+async fn core_late_final_selfcheck_verdict_is_not_returned_as_answer() {
+    let server = MockLlmServer::start();
+    // 前 3 轮工具调用：凑够终稿自检的 function_calls 下限
+    for _ in 0..3 {
+        server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+            name: "list_tasks".into(),
+            arguments: "{}".into(),
+        }));
+    }
+    // 第 4 轮：长文触发终稿自检（gap 默认 8，首次满足即触发）
+    server.push_behavior(MockBehavior::TextReply(
+        "已完成全部工作：本轮列出并逐条核对了所有任务条目，统计了完成与遗留情况，生成了汇总报告并写入文档，任务列表与统计结果均已在会话中展示完毕，没有遗漏任何步骤与细节，可以放心查阅。"
+            .into(),
+    ));
+    // 第 5 轮：模型不答 Y/N 而是继续调工具核验（以行动代回答）
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "list_tasks".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 6 轮：模型这才回答那句问话——一个裸 Y
+    server.push_behavior(MockBehavior::TextReply("Y".into()));
+    // 第 7 轮：被追问后说出真实结果
+    server.push_behavior(MockBehavior::TextReply(
+        "复核完成：所有条目与报告一致，结果无误。".into(),
+    ));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        12,
+        &h.stop,
+        None,
+        &h.deps_with_gap(None),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("终稿自检迟到判定路径应 Ok");
+    assert!(
+        text.contains("复核完成"),
+        "裸 Y 不是答复，应被追问并拿到真实结果，实际：{text:?}"
+    );
+    assert!(
+        text.trim() != "Y" && text.trim() != "y",
+        "终稿不能是自检判定字样，实际：{text:?}"
+    );
+    assert_eq!(
+        server.request_count(),
+        7,
+        "迟到判定应触发追问续跑，而不是拿 Y 终结回合"
+    );
+}
+
 /// 滚动降密度：连续 7 轮工具调用后，round-0 的工具结果轮龄 ≥5
 /// → 触发 `loop.msgs.age_compacted` 软压审计事件；随后文本轮正常收尾。
 #[tokio::test]

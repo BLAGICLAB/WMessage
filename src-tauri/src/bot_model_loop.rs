@@ -542,6 +542,11 @@ const AGE_HARD_ROUNDS: usize = 15;
 /// 终稿自检 N 判定追加到原文尾部的警告（in-loop 与侧调两条路径共用）。
 const FINAL_SELFCHECK_WARN: &str = "\n\n⚠️ 自检未达预期，请人工核对";
 
+/// 出口闸追问「请把真实结果说出来」的上限：模型只回 Y/N 判定时不能无限追着问。
+/// 2 次仍不给结果就落到兜底文案（别把裸 Y 交给用户）。追问是完整的一轮 LLM
+/// 调用，次数要有硬顶。
+const MAX_LATE_VERDICT_RETRIES: u8 = 2;
+
 /// 单条工具结果回灌默认上限（字节，UTF-8）。业界对齐——Claude Code 文件读 25K token、
 /// Bash 30K 输出、Gemini CLI 40K 输出。配置 Some(0) = 显式关闭截断。
 ///
@@ -1965,6 +1970,10 @@ where
     // 算的是「工具变更类自检」、final_selfcheck 算的是「终稿整体自检」，
     // 两条路径不互相抑制。
     let mut last_final_selfcheck_round: Option<usize> = None;
+    // 出口闸追问次数：模型隔了几轮才把自检判定（纯 Y/N）送回来时，出口追着它
+    // 要真实结果。次数有硬顶（MAX_LATE_VERDICT_RETRIES），否则模型只回 Y/N
+    // 就能把回合拖成死循环。
+    let mut late_verdict_retries: u8 = 0;
     let mut plan_state = plan_state;
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
@@ -3202,6 +3211,55 @@ where
                     final_text = "（回复被服务商的内容过滤拦截，请换个方式提问）".into();
                 }
                 _ => {}
+            }
+            // 出口闸：纯 Y/N 单字不是给用户的答复，是自检判定（协议见
+            // prompts/selfcheck.rs，in-loop 路径在「expecting_selfcheck」窗口内已
+            // 解析过一次）。模型可能隔几轮才回答那句「请仅用一个字回答 Y/N」——
+            // 中途它用行动代替了回答，自检态随「以行动代回答」释放了，那句问话
+            // 却还留在上下文里，模型在后面某轮补了个 Y。那个 Y 落到这里就成了
+            // 终稿：实测事故（真机 2026-10-23）用户只看到一个 Y，真正的报告
+            // 压根没产出（模型正要写报告就被这一轮终结了）。
+            //
+            // 判据：终稿是纯 Y/N 单字 + 本轮问过自检（两个 last_*_round 有值
+            // 即本轮问过）→ 续跑一轮，让模型把真实结果说出来。问过自检这一条
+            // 不能省：用户明说「只回答 Y 或 N」时，一个 Y 就是合法答复。
+            // 窗口内的判定（expecting_final_selfcheck）不算迟到——它由下面的
+            // 终稿自检 verdict 解析接管（Y 还原原文 / N 追加警告），闸不能抢。
+            let asked_selfcheck = !expecting_final_selfcheck
+                && (last_selfcheck_round.is_some() || last_final_selfcheck_round.is_some());
+            if asked_selfcheck
+                && crate::prompts::parse_selfcheck_response(final_text.trim()).is_some()
+            {
+                let passed = crate::prompts::parse_selfcheck_response(final_text.trim()) == Some(true);
+                if late_verdict_retries < MAX_LATE_VERDICT_RETRIES {
+                    late_verdict_retries += 1;
+                    let hint = if passed {
+                        "【系统提示】自检通过。请继续：完成剩余步骤，或直接向用户汇报结果。"
+                    } else {
+                        "【系统提示】自检未达预期：请检查本轮的实际结果是否真的达成预期，必要时换策略重做，然后向用户汇报。"
+                    };
+                    emit(
+                        "bot-chat-delta",
+                        serde_json::json!({
+                            "text": if passed { "✅ 自检通过\n\n" } else { "⚠️ 自检未达预期\n\n" }
+                        }),
+                    );
+                    msgs.push(with_thinking(
+                        serde_json::json!({ "role": "assistant", "content": final_text.clone() }),
+                        &thinking_blocks,
+                    ));
+                    msgs.push(serde_json::json!({
+                        "role": "user",
+                        "content": hint
+                    }));
+                    continue;
+                }
+                // 追问额度用尽：模型只肯给判定字样。给一句可读的说明，别把裸 Y
+                // 当答复交给用户——那等于没回答。
+                final_text = format!(
+                    "（模型只回了自检判定「{}」，没有给出可读的结果）",
+                    final_text.trim()
+                );
             }
             // 终稿自检节流闸：final_text 不在工具自检态、不在 final 自检态、
             // 字数 ≥ 80、累计函数调用 ≥ 3、距上次 ≥ gap（默认 8 轮；0 = 关闭）→
