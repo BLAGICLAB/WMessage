@@ -205,26 +205,73 @@ pub fn ui_set_enabled<R: tauri::Runtime>(app: AppHandle<R>, enabled: bool) -> Co
     Ok(after)
 }
 
+// ── 自操作拦截 ─────────────────────────────────────────────────────────────
+
+/// 本进程 pid
+fn own_pid() -> i32 {
+    std::process::id() as i32
+}
+
+/// 从 id 里取 pid 段（两平台 id 格式统一为 `<pid>:<…>`）
+fn pid_of(id: &str) -> Option<i32> {
+    id.split_once(':')?.0.trim().parse().ok()
+}
+
+/// 拒绝操作本进程自己的窗口
+///
+/// 自己的窗口里嵌着**本进程的** webview（macOS 的 WKWebView / Windows 的
+/// WebView2）。读它的辅助功能树会走进 webview 的无障碍实现——那是本进程内的
+/// 代码，而控件树是在后台线程读的：webview 那边会断言「这条 API 只能在主线程
+/// 调」（macOS 上是 WebKit 的 SIGTRAP 断言，整个应用当场退出；Rust 的
+/// catch_unwind 拦不住信号，拦不住整个进程的没）。
+///
+/// 2026-10-23 实机跑 UI 自动化卡片时，模型 inspect 了 wmessage 自己的窗口，
+/// 应用就崩在这条路上（崩溃报告见
+/// `docs/realmachine-mutation-test-2026-10-23.md` 附录 D-1）。
+///
+/// 拦下来不只是为了不崩：机器人操作自己的界面没有意义——这条能力是替用户
+/// 操作**外部**应用。
+fn reject_own_window(id: &str) -> Result<(), String> {
+    if pid_of(id) == Some(own_pid()) {
+        return Err("不能操作 wmessage 自己的窗口——UI 自动化只用于接管外部应用".to_string());
+    }
+    Ok(())
+}
+
+/// 清单里剔除本进程自己的窗口
+///
+/// 自己的窗口不给模型看：模型看不见就不会去 inspect 它，也不会拿它的 id 去
+/// 点击或输入。`reject_own_window` 是第二道——id 可以是模型自己编的，也可以是
+/// 上一轮留下的旧值，两道都要有。
+fn without_own_windows(wins: Vec<UiWindow>) -> Vec<UiWindow> {
+    let me = own_pid() as u32;
+    wins.into_iter().filter(|w| w.pid != me).collect()
+}
+
 // ── 平台分发 ───────────────────────────────────────────────────────────────
 
 /// 枚举可接管窗口
 pub fn list_windows() -> Result<Vec<UiWindow>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        macos::list_windows()
-    }
-    #[cfg(windows)]
-    {
-        windows::list_windows()
-    }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    {
-        Err("当前平台不支持 UI 自动化".into())
-    }
+    let wins = {
+        #[cfg(target_os = "macos")]
+        {
+            macos::list_windows()
+        }
+        #[cfg(windows)]
+        {
+            windows::list_windows()
+        }
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            Err("当前平台不支持 UI 自动化".into())
+        }
+    }?;
+    Ok(without_own_windows(wins))
 }
 
 /// 激活窗口（置前）
 pub fn activate_window(window_id: &str) -> Result<(), String> {
+    reject_own_window(window_id)?;
     #[cfg(target_os = "macos")]
     {
         macos::activate_window(window_id)
@@ -248,6 +295,7 @@ pub fn inspect_tree(
     max_depth: usize,
     max_nodes: usize,
 ) -> Result<Vec<UiNode>, String> {
+    reject_own_window(window_id)?;
     #[cfg(target_os = "macos")]
     {
         macos::inspect_tree(window_id, max_depth, max_nodes)
@@ -268,6 +316,7 @@ pub fn inspect_tree(
 /// 键盘事件路由给前台应用：目标窗口不在前台时，注入的字符会打进用户正在用的
 /// 另一个应用（另一扇聊天窗、终端、地址栏）。所以注入前必须问一句。
 pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
+    reject_own_window(window_id)?;
     #[cfg(target_os = "macos")]
     {
         macos::window_is_foreground(window_id)
@@ -288,6 +337,7 @@ pub fn window_is_foreground(window_id: &str) -> Result<bool, String> {
 /// expect 是闸门审过的那个控件的身份：解析出的控件对不上就放弃（界面重排后
 /// 同一个 id 可能已经指向别的控件）。
 pub fn press_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
+    reject_own_window(node_id)?;
     #[cfg(target_os = "macos")]
     {
         macos::press_node(node_id, expect)
@@ -307,6 +357,7 @@ pub fn press_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
 ///
 /// expect 同 [`press_node`]：动作前核对控件身份。
 pub fn focus_node(node_id: &str, expect: &NodeIdentity) -> Result<(), String> {
+    reject_own_window(node_id)?;
     #[cfg(target_os = "macos")]
     {
         macos::focus_node(node_id, expect)
@@ -478,6 +529,122 @@ mod tests {
                 "{name} 必须在动作前调用身份核对"
             );
         }
+    }
+
+    /// 自操作拦截：不能对本进程自己的窗口动手
+    ///
+    /// 自己的窗口里嵌着本进程的 webview，读它的辅助功能树会走进 webview 的
+    /// 无障碍实现——那是本进程内的代码，而控件树在后台线程读，webview 那边会
+    /// 断言「只能主线程调」（macOS 上是 WebKit 的 SIGTRAP，整个应用当场退出，
+    /// Rust 的 catch_unwind 拦不住信号）。2026-10-23 实机跑卡片时崩在这里。
+    #[test]
+    fn own_window_must_not_be_automated() {
+        let me = own_pid();
+        // 自己的窗口：两平台 id 都是 `<pid>:<…>`，节点 id 后面还带路径段
+        assert!(
+            reject_own_window(&format!("{me}:0")).is_err(),
+            "不能操作自己的窗口"
+        );
+        assert!(
+            reject_own_window(&format!("{me}:0.1.2")).is_err(),
+            "节点 id 带路径段时同样要拦住"
+        );
+        // 别人的窗口：放行
+        assert!(
+            reject_own_window(&format!("{}:0", me + 1)).is_ok(),
+            "别人的窗口必须放行"
+        );
+        assert!(
+            reject_own_window(&format!("{}:0.3", me + 7)).is_ok(),
+            "别人的节点 id 必须放行"
+        );
+        // id 形态不对：不由这里判（平台层各自报错），不得误伤别的窗口
+        assert!(
+            reject_own_window("not-an-id").is_ok(),
+            "形态不对的 id 交给平台层报错，这里不误伤"
+        );
+    }
+
+    /// 窗口清单里不许有本进程自己的窗口
+    ///
+    /// 模型看不见就不会去 inspect 它——第一道闸。「id 是模型自己编的」那条路
+    /// 由 `reject_own_window` 兜底，两道都要在。
+    #[test]
+    fn list_windows_must_not_include_our_own_windows() {
+        let me = own_pid() as u32;
+        let mk = |pid: u32, title: &str| UiWindow {
+            id: format!("{pid}:0"),
+            app: "测试应用".into(),
+            pid,
+            title: title.into(),
+            focused: false,
+        };
+        let kept = without_own_windows(vec![
+            mk(me, "wmessage 自己的窗口"),
+            mk(me + 1, "别人的窗口"),
+        ]);
+        assert_eq!(kept.len(), 1, "自己的窗口必须从清单里剔掉");
+        assert_eq!(kept[0].title, "别人的窗口");
+    }
+
+    /// 接线守卫：入口都必须真的调自操作拦截
+    ///
+    /// 上面两条证明的是「拦截本身拦得住」；这条证明的是「真接上了」——
+    /// 函数定义了却没人调等于没有（踩过的坑：`ensure_onion_config_columns`
+    /// 定义了但没接线，老库照样缺列）。
+    #[test]
+    fn entry_points_must_reject_our_own_window() {
+        /// 取某个函数的函数体（花括号配平；字符串里的花括号不算）
+        fn fn_body(src: &str, marker: &str) -> String {
+            let start = src
+                .find(marker)
+                .unwrap_or_else(|| panic!("源码里找不到 {marker}"));
+            let open = start + src[start..].find('{').expect("函数签名后应有 {");
+            let mut depth = 0i32;
+            let mut in_str = false;
+            let mut escaped = false;
+            for (i, ch) in src[open..].char_indices() {
+                if in_str {
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        in_str = false;
+                    }
+                    continue;
+                }
+                match ch {
+                    '"' => in_str = true,
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return src[open..open + i + 1].to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("{marker} 的函数体没闭合");
+        }
+        let src = include_str!("mod.rs");
+        for (name, marker) in [
+            ("activate_window", "pub fn activate_window("),
+            ("inspect_tree", "pub fn inspect_tree("),
+            ("window_is_foreground", "pub fn window_is_foreground("),
+            ("press_node", "pub fn press_node("),
+            ("focus_node", "pub fn focus_node("),
+        ] {
+            assert!(
+                fn_body(src, marker).contains("reject_own_window("),
+                "{name} 必须调 reject_own_window——定义了没人调等于没有"
+            );
+        }
+        assert!(
+            fn_body(src, "pub fn list_windows(").contains("without_own_windows("),
+            "list_windows 必须把本进程自己的窗口剔掉"
+        );
     }
 
     /// 开关变更必须留审计事件：事后要查得到「UI 自动化是什么时候被谁打开的」

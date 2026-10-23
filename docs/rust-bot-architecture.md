@@ -263,10 +263,11 @@ src-tauri/src/
 │                        注入全程持全局互斥；每次动作留审计 +
 │                        动作前后各一张截图（落 AI_Gen_Files）
 ├── ui/                 桌面 UI 自动化跨平台层（数据模型 + 总开关 + 平台分发）
-│   ├── ui/mod.rs (618) UiWindow / UiNode / NodeIdentity 数据模型 + flag 开关（ui_get_enabled /
+│   ├── ui/mod.rs (785) UiWindow / UiNode / NodeIdentity 数据模型 + flag 开关（ui_get_enabled /
 │   │                 ui_set_enabled，unix 建即 0600；每次切换写 ui_automation_toggle 审计）+
 │   │                 平台分发（list_windows / activate_window / inspect_tree / press_node /
-│   │                 focus_node / type_text）+ 前台窗口判定（window_is_foreground）
+│   │                 focus_node / type_text）+ 前台窗口判定（window_is_foreground）+
+│   │                 自操作拦截（不列自己的窗口、不许操作自己的窗口）
 │   ├── ui/macos.rs (554) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
 │   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）；
