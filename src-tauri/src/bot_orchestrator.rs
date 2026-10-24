@@ -3543,6 +3543,10 @@ pub struct SubagentRunView {
     pub rounds_used: Option<u32>,
     /// 轮数硬顶；与轮数同源同报，10/20 与 10/200 的紧迫度完全不同
     pub rounds_budget: Option<u32>,
+    /// 已执行工具调用数；与轮数同源（tool_guard 内存仪表），终态为 None
+    pub tool_calls_used: Option<u32>,
+    /// 工具调用硬顶；与已用数同报——收尾窗从 100/100 起开，只看轮数看不出
+    pub tool_calls_budget: Option<u32>,
 }
 
 /// 列某主会话派出的子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
@@ -3566,14 +3570,19 @@ pub async fn list_subagents(
     .map_err(|e| CommandError::from(format!("subagent list 线程 join 失败：{e}")))?
 }
 
-/// 把内存态轮数挂到 DB 行上。在途行取 tool_guard 的计数器，终态行留空。
+/// 把内存态仪表（轮数 / 工具调用数）挂到 DB 行上。在途行取 tool_guard 的
+/// 计数器，终态行留空。
 fn attach_rounds(row: crate::db::SubagentRow) -> SubagentRunView {
     let ctx = crate::tool_guard::subagent_ctx(row.session_id.as_deref());
     SubagentRunView {
         rounds_used: ctx
             .as_ref()
             .map(|c| c.used_rounds.load(std::sync::atomic::Ordering::Relaxed) as u32),
-        rounds_budget: ctx.map(|c| c.budget.max_turns),
+        rounds_budget: ctx.as_ref().map(|c| c.budget.max_turns),
+        tool_calls_used: ctx
+            .as_ref()
+            .map(|c| c.used_tool_calls.load(std::sync::atomic::Ordering::Relaxed) as u32),
+        tool_calls_budget: ctx.as_ref().map(|c| c.budget.max_tool_calls),
         row,
     }
 }
@@ -3610,7 +3619,6 @@ pub async fn tool_read_own_card(
         .budget_json
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
-    let cancelled = row.status == SubagentStatus::Cancelled;
     ToolResult::ok(
         own_card_payload(
             &row,

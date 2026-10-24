@@ -129,6 +129,10 @@ export type SubagentRow = {
   roundsUsed?: number | null;
   /** 轮数硬顶；与轮数同报，10/20 与 10/200 的紧迫度完全不同 */
   roundsBudget?: number | null;
+  /** 已执行工具调用数；在途才有（口径同轮数；收尾窗从 N/N 起开，只看轮数看不出触顶） */
+  toolCallsUsed?: number | null;
+  /** 工具调用硬顶；与已用数同报 */
+  toolCallsBudget?: number | null;
 };
 
 /** 🧠 模型下拉条目（bot_get_config 的 modelsByProvider 当前协议子列表）。

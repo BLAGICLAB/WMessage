@@ -54,6 +54,14 @@ function roundsText(s: SubagentRun): string | null {
     : `${s.roundsUsed} 轮`;
 }
 
+/** 工具调用进度文案，口径同轮数。收尾窗从 N/N 起开，只看轮数看不出触顶。 */
+function toolCallsText(s: SubagentRun): string | null {
+  if (s.toolCallsUsed == null) return null;
+  return s.toolCallsBudget != null
+    ? `${s.toolCallsUsed}/${s.toolCallsBudget} 次`
+    : `${s.toolCallsUsed} 次`;
+}
+
 /** 运行时长。在途每秒刷新，终态定死在 finishedAt-startedAt——
  *  终态还跳秒数等于让用户以为它还在跑。排队期没 startedAt，两端都没有就不显示。 */
 function useRunSeconds(s: SubagentRun): number | null {
@@ -69,13 +77,22 @@ function useRunSeconds(s: SubagentRun): number | null {
  *  （两处各算一遍轮数文案，早晚有一边忘加分母）。 */
 export function SubagentProgress({ run: s }: { run: SubagentRun }) {
   const rounds = roundsText(s);
+  const calls = toolCallsText(s);
   const secs = useRunSeconds(s);
-  if (rounds == null && secs == null) return null;
+  if (rounds == null && secs == null && calls == null) return null;
   return (
     <>
       {rounds && (
         <span className="shrink-0 font-mono text-[10px] text-[var(--t5)]">
           {rounds}
+        </span>
+      )}
+      {calls && (
+        <span
+          className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+          title="工具调用 / 预算"
+        >
+          {calls}
         </span>
       )}
       {secs != null && (

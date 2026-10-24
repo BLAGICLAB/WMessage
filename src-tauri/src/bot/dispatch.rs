@@ -23,6 +23,38 @@ const WRAP_UP_TOOLS: [&str; 4] = [
     "read_own_card",
 ];
 
+/// 子 agent 动作流（右侧栏实时可见性）：dispatch 在 call / return 两个相位
+/// 各旁路一条 UI 事件，前端按 toolCallId 合并成一行。事件即焚不落库——
+/// 历史回看走详情面板的结果与 digest，不另存流。
+/// preview 与审计同源同截断（80 字），不另开脱敏面。
+fn emit_subagent_activity(
+    app: &AppHandle,
+    ctx: &crate::tool_guard::SubagentSessionCtx,
+    name: &str,
+    trace: &ToolCallTrace,
+    phase: &str,
+    ok: Option<bool>,
+    ms: Option<u64>,
+    preview: &str,
+) {
+    let _ = app.emit_to(
+        "main",
+        "subagent-activity",
+        serde_json::json!({
+            "subagentId": ctx.subagent_id,
+            "turn": trace.turn,
+            "toolCallId": trace.tool_call_id,
+            "tool": name,
+            "phase": phase,
+            "ok": ok,
+            "ms": ms,
+            "preview": preview.chars().take(80).collect::<String>(),
+            "usedToolCalls": ctx.used_tool_calls.load(std::sync::atomic::Ordering::SeqCst),
+            "maxToolCalls": ctx.budget.max_tool_calls,
+        }),
+    );
+}
+
 /// 工具调用审计上下文（模型循环 → dispatch）：一次调用的「可整轮回放」标识。
 ///
 /// - `turn`：第几轮模型循环（0 起）——同一轮的多个 tool_call 归到一组，出问题整轮复现
@@ -511,6 +543,18 @@ async fn execute_tool_impl(
                 ctx.tools.len()
             ));
         }
+        // 动作流 call 相位：白名单通过即上屏（后续无论放行还是被预算/墙钟/收尾窗
+        // 拒，前端都能按 toolCallId 合并成一行带结局的动作）
+        emit_subagent_activity(
+            app,
+            &ctx,
+            name,
+            trace,
+            "call",
+            None,
+            None,
+            &args.chars().take(80).collect::<String>(),
+        );
         //  预算强制（设计 §6 max_tool_calls）：白名单工具执行前核对——
         // 触顶拒绝新调用（模型收到后自然收尾；墙钟/轮数两顶在 runner 侧）。
         // 原子 check-and-increment（ 采纳）：load→比较→add 三步在并行
@@ -546,12 +590,28 @@ async fn execute_tool_impl(
                 session_id,
                 trace,
             );
-            crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
-            return crate::bot::registry::ToolResult::denied(format!(
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "tool.return",
+                &ret_kv,
+            );
+            let deny_msg = format!(
                 "⚠️ 时间预算即将耗尽（剩余约 {}s，预留收尾窗口 {}s）：停止新探索，把已拿到的结果整理出来，按任务包装末尾的 schema 输出收尾 JSON。",
                 remaining.as_secs(),
                 reserve_secs
-            ));
+            );
+            emit_subagent_activity(
+                app,
+                &ctx,
+                name,
+                trace,
+                "return",
+                Some(false),
+                Some(start.elapsed().as_millis() as u64),
+                &deny_msg,
+            );
+            return crate::bot::registry::ToolResult::denied(deny_msg);
         }
         let max = ctx.budget.max_tool_calls as usize;
         // 收尾窗（预算触顶后）：只放行写产物类工具与 read_own_card，不占预算
@@ -572,10 +632,18 @@ async fn execute_tool_impl(
                     "tool.return",
                     &ret_kv,
                 );
-                return crate::bot::registry::ToolResult::denied(
-                    "⚠️ 工具调用预算已触顶，收尾窗内只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card；请把已有发现写成产物文件，然后输出收尾 JSON。"
-                    .to_string(),
+                let deny_msg = "⚠️ 工具调用预算已触顶，收尾窗内只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card；请把已有发现写成产物文件，然后输出收尾 JSON。";
+                emit_subagent_activity(
+                    app,
+                    &ctx,
+                    name,
+                    trace,
+                    "return",
+                    Some(false),
+                    Some(start.elapsed().as_millis() as u64),
+                    deny_msg,
                 );
+                return crate::bot::registry::ToolResult::denied(deny_msg.to_string());
             }
             // 写类放行：不 acquire、不计数，直接落到 progress 审计与执行
         } else {
@@ -625,9 +693,20 @@ async fn execute_tool_impl(
                     "tool.return",
                     &ret_kv,
                 );
-                return crate::bot::registry::ToolResult::denied(format!(
+                let deny_msg = format!(
                     "⚠️ 工具调用预算已触顶（{used} / {max}）：停止新探索。现在只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card——把已有发现写成产物文件，然后输出收尾 JSON。"
-                ));
+                );
+                emit_subagent_activity(
+                    app,
+                    &ctx,
+                    name,
+                    trace,
+                    "return",
+                    Some(false),
+                    Some(start.elapsed().as_millis() as u64),
+                    &deny_msg,
+                );
+                return crate::bot::registry::ToolResult::denied(deny_msg);
             }
         }
         let mut prog_kv: Vec<(&str, String)> = vec![
@@ -671,6 +750,20 @@ async fn execute_tool_impl(
             trace,
         );
         crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
+        // 动作流 return 相位（子 agent 会话）：call 已上屏，坏入参的拒绝也要有结局，
+        // 否则前端那行永远挂着「进行中」
+        if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {
+            emit_subagent_activity(
+                app,
+                &ctx,
+                name,
+                trace,
+                "return",
+                Some(false),
+                Some(start.elapsed().as_millis() as u64),
+                &msg,
+            );
+        }
         return crate::bot::registry::ToolResult::denied(msg);
     }
     // 工具仍返 (String, Vec<TaskRef>) 元组；From 过渡层默认 Ok。
@@ -748,6 +841,20 @@ async fn execute_tool_impl(
     // tool_call_id 可整轮回放一次模型循环里的工具序列
     kv.extend(trace_kv(trace, session_id));
     crate::audit::write_event(app, level, "tool.return", &kv);
+    // 动作流 return 相位（子 agent 会话）：带上耗时/成败/结果预览——前端把
+    // 同 toolCallId 的 call 行收口成一条带结局的动作
+    if let Some(ctx) = crate::tool_guard::subagent_ctx(session_id) {
+        emit_subagent_activity(
+            app,
+            &ctx,
+            name,
+            trace,
+            "return",
+            Some(result.status.is_success()),
+            Some(dur_ms),
+            &result.text,
+        );
+    }
     //  执行痕迹采集（Agent 透明化设计 §4.2）：会话在跑 trace 时逐调用落 span，
     // 文件类工具附带的变更证据落 file_changes + emit `bot-file-changed`（全窗口）。
     // fire-and-forget：sink 未初始化/满队列不阻断工具结果；registry 无映射（主聊天等）零开销跳过。
@@ -1368,6 +1475,22 @@ mod pre_tool_hook_tests {
         assert!(
             !branch.contains("fetch_update"),
             "收尾窗放行的写类不得占预算计数（不得 acquire）：{branch}"
+        );
+    }
+
+    /// 动作流接线守卫：call 相位 1 处（白名单后）+ return 相位 5 处
+    /// （墙钟拒 / 预算触顶拒 / 收尾窗拒 / 坏入参拒 / 正常执行完）。
+    /// 少一处，前端那行动作就永远挂着「进行中」或整条不显示。
+    #[test]
+    fn subagent_activity_emits_cover_call_and_all_return_paths() {
+        let production = include_str!("dispatch.rs")
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
+        assert_eq!(
+            production.matches("emit_subagent_activity(").count(),
+            7,
+            "动作流 emit 应为 7 处（1 定义不算 + 1 call + 5 return）——少了某条拒绝路径就没有结局"
         );
     }
 

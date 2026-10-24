@@ -25,6 +25,11 @@ import {
 } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getBotConfig } from "../../lib/botConfig";
+import {
+  applyActivityEvent,
+  type SubagentActivityEvent,
+  type SubagentActivityItem,
+} from "../../lib/subagentActivity";
 import type { Task } from "../../types";
 import { useConfirm } from "../../lib/useConfirm";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -438,6 +443,23 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     refreshSubagentsRef.current = refreshSubagents;
     refreshSubagents();
   }, [refreshSubagents]);
+  /** 动作流（subagent-activity 事件即焚）：在途行的最近动作，右侧栏渲染。
+   *  切会话整包清空——旧会话的子 agent 不会再有新事件，留着只是白占内存。 */
+  const [subagentActivity, setSubagentActivity] = useState<
+    Record<string, SubagentActivityItem[]>
+  >({});
+  useEffect(() => {
+    setSubagentActivity({});
+  }, [sessionId]);
+  useTauriListen<SubagentActivityEvent>("subagent-activity", (payload) => {
+    setSubagentActivity((prev) => ({
+      ...prev,
+      [payload.subagentId]: applyActivityEvent(
+        prev[payload.subagentId] ?? [],
+        payload,
+      ),
+    }));
+  });
   /** 在途行要显示实时轮数，而轮数只活在 tool_guard 的内存仪表里（不落库，
    *  落库就得每轮写一次），只能重拉才拿得到。3 秒一拍：子 agent 一轮最短也要
    *  几秒（要调模型），再密只是白烧 IPC；终态后子集为空，定时器自己停。 */
@@ -466,6 +488,13 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         // 在这里压掉就得让组件自己再拉一次行，等于把一次 IPC 复制成 N 次
         roundsUsed: r.roundsUsed ?? null,
         roundsBudget: r.roundsBudget ?? null,
+        toolCallsUsed: r.toolCallsUsed ?? null,
+        toolCallsBudget: r.toolCallsBudget ?? null,
+        // 动作流只在途挂（事件即焚，终态行没有新动作）
+        activity:
+          r.status === "running" || r.status === "queued"
+            ? subagentActivity[r.id]
+            : undefined,
         startedAt: r.startedAt ?? null,
         finishedAt: r.finishedAt ?? null,
         profile: r.profile,
@@ -474,7 +503,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
         result: parseJsonField(r.resultJson),
         traceId: r.traceId,
       })),
-    [subagents],
+    [subagents, subagentActivity],
   );
   /** 用户主动取消子 agent：子 agent 会话不在会话列表里（is_subagent=1 被
    *  排除），停止键那条路永远够不着它，卡片删除那条取消入口又随解绑一起没了

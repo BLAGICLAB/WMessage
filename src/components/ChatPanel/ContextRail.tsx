@@ -15,6 +15,7 @@ import {
   ListTodo,
   Loader2,
   Paperclip,
+  X,
 } from "lucide-react";
 import { basename } from "../../format";
 import { formatCommandError, handleCommandError } from "../../lib/errorHandler";
@@ -40,6 +41,7 @@ import {
 } from "./SubagentRowLine";
 import { SUBAGENT_STATUS } from "./constants";
 import { SubagentDetailPanel } from "./SubagentDetailPanel";
+import type { SubagentActivityItem } from "../../lib/subagentActivity";
 
 /** 三类工作面。key 用窄口径字符串，不另立枚举 */
 export type ContextTab = "tasks" | "files" | "agents";
@@ -58,6 +60,9 @@ export type SubagentRun = {
   roundsUsed?: number | null;
   /** 轮数硬顶，与轮数同报 */
   roundsBudget?: number | null;
+  /** 已执行工具调用数与硬顶，口径同轮数（收尾窗从 N/N 起开） */
+  toolCallsUsed?: number | null;
+  toolCallsBudget?: number | null;
   /** 毫秒时间戳；排队期未开跑故 startedAt 可空 */
   startedAt?: number | null;
   finishedAt?: number | null;
@@ -70,6 +75,8 @@ export type SubagentRun = {
   /** 收尾结构化结果：库里是 JSON 对象字符串，同上（含数组/原文兜底） */
   result?: string | string[] | Record<string, unknown> | null;
   traceId?: string | null;
+  /** 最近动作流（在途行才有数据；事件即焚，终态行不渲染动作区） */
+  activity?: SubagentActivityItem[];
 };
 
 type ContextRailProps = {
@@ -481,41 +488,41 @@ export function ContextRail({
           ) : (
             <div className="space-y-0.5">
               {subagents.map((s) => (
-                <div
-                  key={s.id}
-                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                >
-                  <button
-                    type="button"
-                    title={s.title}
-                    className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-[var(--t2)]"
-                    onClick={() => onOpenSubagent(s.id)}
-                  >
-                    {s.running ? (
-                      <Loader2
-                        size={12}
-                        aria-hidden
-                        className="shrink-0 wmsg-activity text-[var(--brand)]"
-                      />
-                    ) : (
-                      <Bot
-                        size={12}
-                        aria-hidden
-                        className={`shrink-0 ${SUBAGENT_STATUS[s.status].color}`}
-                      />
-                    )}
-                    <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                    <span
-                      className={`shrink-0 text-[10px] ${SUBAGENT_STATUS[s.status].color}`}
+                <div key={s.id} className="rounded-md hover:bg-[var(--hover-bg)]">
+                  <div className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs text-[var(--t3)]">
+                    <button
+                      type="button"
+                      title={s.title}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-[var(--t2)]"
+                      onClick={() => onOpenSubagent(s.id)}
                     >
-                      {SUBAGENT_STATUS[s.status].label}
-                    </span>
-                    <SubagentProgress run={s} />
-                  </button>
-                  <SubagentCancelButton
-                    run={s}
-                    onCancel={onCancelSubagent}
-                  />
+                      {s.running ? (
+                        <Loader2
+                          size={12}
+                          aria-hidden
+                          className="shrink-0 wmsg-activity text-[var(--brand)]"
+                        />
+                      ) : (
+                        <Bot
+                          size={12}
+                          aria-hidden
+                          className={`shrink-0 ${SUBAGENT_STATUS[s.status].color}`}
+                        />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                      <span
+                        className={`shrink-0 text-[10px] ${SUBAGENT_STATUS[s.status].color}`}
+                      >
+                        {SUBAGENT_STATUS[s.status].label}
+                      </span>
+                      <SubagentProgress run={s} />
+                    </button>
+                    <SubagentCancelButton
+                      run={s}
+                      onCancel={onCancelSubagent}
+                    />
+                  </div>
+                  <SubagentActivityLines run={s} />
                 </div>
               ))}
             </div>
@@ -524,5 +531,41 @@ export function ContextRail({
         );
       })()}
     </aside>
+  );
+}
+
+/** 动作流区（在途行下挂最近动作）：一行一条 `工具 · 预览 · 耗时`。
+ *  事件即焚——终态行没有 activity 数据，整块不渲染；这里回答的是
+ *  「它现在在干什么 / 有没有在打转」，完整回放有 bot.log。 */
+function SubagentActivityLines({ run: s }: { run: SubagentRun }) {
+  if (!s.running || !s.activity || s.activity.length === 0) return null;
+  return (
+    <div className="mb-1 ml-[26px] mr-2 space-y-px border-l border-[var(--border)] pl-2">
+      {s.activity.map((a, i) => (
+        <div
+          key={`${a.toolCallId ?? i}-${a.at}`}
+          className="flex items-center gap-1 text-[10px] leading-4"
+        >
+          {a.ok === null ? (
+            <Loader2
+              size={9}
+              aria-hidden
+              className="shrink-0 wmsg-activity text-[var(--brand)]"
+            />
+          ) : a.ok ? (
+            <Check size={9} aria-hidden className="shrink-0 text-[var(--success)]" />
+          ) : (
+            <X size={9} aria-hidden className="shrink-0 text-[var(--danger)]" />
+          )}
+          <span className="shrink-0 font-mono text-[var(--t5)]">{a.tool}</span>
+          <span className="min-w-0 flex-1 truncate text-[var(--t5)]" title={a.preview}>
+            {a.preview}
+          </span>
+          {a.ms != null && (
+            <span className="shrink-0 font-mono text-[var(--t5)]">{a.ms}ms</span>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }

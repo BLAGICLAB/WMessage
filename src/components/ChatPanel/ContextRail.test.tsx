@@ -375,6 +375,56 @@ describe("ContextRail 子 Agent 状态标签", () => {
   });
 });
 
+// 动作流（在途行下挂最近动作）：回答「它现在在干什么 / 有没有在打转」。
+// 终态行不渲染动作区——事件即焚，历史回看走详情面板。
+describe("ContextRail 子 Agent 动作流", () => {
+  it("在途行显示最近动作（工具 · 预览 · 耗时），进行中的动作没有耗时", () => {
+    renderRail({
+      tab: "agents",
+      subagents: [
+        {
+          id: "sa_1",
+          title: "读 SPEC 出素材稿",
+          status: "running",
+          running: true,
+          activity: [
+            { toolCallId: "t2", tool: "grep_files", ok: null, ms: null, preview: "P: 并发", at: 3 },
+            {
+              toolCallId: "t1",
+              tool: "read_text_file",
+              ok: true,
+              ms: 8,
+              preview: "SPEC.md（第 1-20 行 / 共 173 行）",
+              at: 1,
+            },
+          ],
+        },
+      ],
+    });
+    expect(screen.getByText("read_text_file")).toBeInTheDocument();
+    expect(screen.getByText("8ms")).toBeInTheDocument();
+    expect(screen.getByText("grep_files")).toBeInTheDocument();
+  });
+
+  it("终态行不渲染动作区（事件即焚，终态没有新动作）", () => {
+    renderRail({
+      tab: "agents",
+      subagents: [
+        {
+          id: "sa_1",
+          title: "已完成的任务",
+          status: "succeeded",
+          running: false,
+          activity: [
+            { toolCallId: "t1", tool: "read_text_file", ok: true, ms: 8, preview: "", at: 1 },
+          ],
+        },
+      ],
+    });
+    expect(screen.queryByText("read_text_file")).toBeNull();
+  });
+});
+
 // 类别切换钮的底色过渡必须常驻在元素上。
 // nm-inset 是随选中态增删的类，过渡跟着类走就变成「进不补间、退瞬切」：
 // 选中时底色淡入、取消选中时底色瞬间消失，hover 底色也是硬切。

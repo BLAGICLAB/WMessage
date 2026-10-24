@@ -34,6 +34,27 @@ describe("SubagentRowLine 子 agent 单行摘要", () => {
     expect(screen.getByText("10/20 轮")).toBeTruthy();
   });
 
+  it("工具调用与轮数并排同报：触顶（100/100 次）一眼可见", () => {
+    render(
+      <SubagentProgress
+        run={run({
+          roundsUsed: 12,
+          roundsBudget: 50,
+          toolCallsUsed: 100,
+          toolCallsBudget: 100,
+        })}
+      />,
+    );
+    expect(screen.getByText("12/50 轮")).toBeTruthy();
+    expect(screen.getByText("100/100 次")).toBeTruthy();
+  });
+
+  it("只有已用工具数没有预算时只报已用数，不编分母", () => {
+    render(<SubagentProgress run={run({ toolCallsUsed: 7 })} />);
+    expect(screen.getByText("7 次")).toBeTruthy();
+    expect(screen.queryByText(/7\/\d+ 次/)).toBeNull();
+  });
+
   it("只有已跑数没有预算时只报已跑数，不编分母", () => {
     render(<SubagentProgress run={run({ roundsUsed: 7 })} />);
     expect(screen.getByText("7 轮")).toBeTruthy();
