@@ -18,6 +18,7 @@ use crate::bot_model_loop::*;
 /// 那才是真的假保证。
 fn prod_src() -> String {
     [
+        include_str!("output.rs"),
         include_str!("types.rs"),
         include_str!("../bot_model_loop.rs"),
     ]

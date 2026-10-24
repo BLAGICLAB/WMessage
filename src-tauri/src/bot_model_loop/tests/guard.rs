@@ -4,6 +4,9 @@
 //! 只把源码守卫的扫描源换成 prod_src()。
 
 use super::*;
+use crate::bot_model_loop::output::cap_tool_output;
+use crate::bot_model_loop::output::effective_output_cap;
+use crate::bot_model_loop::output::preview_with_pointer;
 
 #[cfg(test)]
 mod hallucination_guard_tests {
