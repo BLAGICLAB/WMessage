@@ -113,7 +113,7 @@ pub fn apply_sync(
 ///（防无限 body 把进程内存打爆）。
 async fn fetch_models_dev(url: &str) -> Result<String, String> {
     const MAX_BODY: usize = 16 * 1024 * 1024;
-    let resp = crate::bot_model_loop::shared_llm_client()
+    let resp = crate::bot::shared_llm_client()
         .get(url)
         .timeout(SYNC_TIMEOUT)
         .send()

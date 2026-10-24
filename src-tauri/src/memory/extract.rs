@@ -304,7 +304,7 @@ async fn run_extract(app: AppHandle, session_id: String, mode: AutoExtract) -> R
     let msgs = load_recent_messages(app.clone(), &session_id).await?;
     run_extract_with(&app, &session_id, msgs, mode, |prompt, msgs| {
         let app = app.clone();
-        async move { crate::bot_chat::summarize_messages(&app, prompt, &msgs).await }
+        async move { crate::bot::summarize_messages(&app, prompt, &msgs).await }
     })
     .await
 }
@@ -370,7 +370,7 @@ fn plan_adjudication(
 fn build_adjudication_msgs(
     facts: &[ExtractedFact],
     candidates: &[Option<store::MemItem>],
-) -> Vec<crate::bot_chat::ChatMsg> {
+) -> Vec<crate::bot::ChatMsg> {
     let mut body = String::from("待裁决的新事实与各自对应的已有记忆：");
     let mut any = false;
     for (i, (f, c)) in facts.iter().zip(candidates).enumerate() {
@@ -384,7 +384,7 @@ fn build_adjudication_msgs(
     if !any {
         return Vec::new();
     }
-    vec![crate::bot_chat::ChatMsg {
+    vec![crate::bot::ChatMsg {
         role: "user".to_string(),
         content: body,
     }]
@@ -554,13 +554,13 @@ fn apply_insert(
 pub async fn run_extract_with<R, L, Fut>(
     app: &tauri::AppHandle<R>,
     session_id: &str,
-    msgs: Vec<crate::bot_chat::ChatMsg>,
+    msgs: Vec<crate::bot::ChatMsg>,
     mode: AutoExtract,
     llm: L,
 ) -> Result<(), String>
 where
     R: tauri::Runtime,
-    L: Fn(&'static str, Vec<crate::bot_chat::ChatMsg>) -> Fut,
+    L: Fn(&'static str, Vec<crate::bot::ChatMsg>) -> Fut,
     Fut: std::future::Future<Output = CommandResult<String>>,
 {
     if msgs.len() < 2 {
@@ -666,7 +666,7 @@ where
 async fn load_recent_messages(
     app: AppHandle,
     session_id: &str,
-) -> Result<Vec<crate::bot_chat::ChatMsg>, String> {
+) -> Result<Vec<crate::bot::ChatMsg>, String> {
     let sid = session_id.to_string();
     let rows =
         tauri::async_runtime::spawn_blocking(move || -> Result<Vec<(String, String)>, String> {
@@ -692,7 +692,7 @@ async fn load_recent_messages(
     Ok(rows
         .into_iter()
         .rev()
-        .map(|(role, content)| crate::bot_chat::ChatMsg {
+        .map(|(role, content)| crate::bot::ChatMsg {
             role,
             content: super::truncate_chars(&content, EXTRACT_MSG_CHARS, false),
         })

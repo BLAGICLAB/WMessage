@@ -408,12 +408,12 @@ pub async fn run_consolidation(app: &AppHandle) -> CommandResult<ConsolidateRepo
     if candidates.len() < 2 {
         return Ok(ConsolidateReport::default()); // 少于 2 条无可整理
     }
-    let msgs = vec![crate::bot_chat::ChatMsg {
+    let msgs = vec![crate::bot::ChatMsg {
         role: "user".into(),
         content: format_candidates(&candidates),
     }];
     // LLM 配置不可用（空 key 等）在这里自然报 ApiKeyMissing
-    let text = crate::bot_chat::summarize_messages(app, CONSOLIDATE_PROMPT, &msgs).await?;
+    let text = crate::bot::summarize_messages(app, CONSOLIDATE_PROMPT, &msgs).await?;
     let ops = parse_ops(&text);
     if ops.is_empty() {
         return Ok(ConsolidateReport::default());

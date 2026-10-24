@@ -1,7 +1,7 @@
 //! 内置机器人：大模型聊天 + WMessage 任务管理工具调用。
 //!
 //! 原 bot.rs 3444 行 → `bot/{config/, dispatch.rs, registry.rs, tools.rs}`。
-//! 本文件作为 facade，仅持有：
+//! 本文件是 **bot 族唯一对外门面**，仅持有：
 //! - 顶部跨模块 re-export（BotChatResult / TaskRef / model_loop / StopGuard / AuditLevel / db::* 等）
 //! - `pub mod config;` / `pub mod dispatch;` / `pub mod tools;` 子模块声明
 //! - 各子模块的 `pub use` / `pub(crate) use` re-export 块，保持 `crate::bot::<item>` 路径 1:1 不变
@@ -21,14 +21,20 @@
 //! - 审计日志：bot/config/audit.rs 的 audit_log
 //! - API Key 存系统凭据存储（keyring，bot/config/keyring.rs）；Linux 无 secret-service 时降级明文 + WARN
 
-// 保留对外接口 re-export，避免拆分后 bot_skills / tests/llm_integration 等
-// 已存在的调用方（`crate::bot::TaskRef` / `crate::bot::parse_sse_chunk` /
-// `crate::bot::ToolCallDelta` / `crate::bot::BotChatResult`）中断。
-// 新代码应优先直接引用 bot_chat / bot_model_loop 模块。
-pub use crate::bot_chat::{BotChatResult, TaskRef};
+//! 保留对外接口 re-export，避免拆分后 bot_skills / tests/llm_integration 等
+//! 已存在的调用方（`crate::bot::TaskRef` / `crate::bot::parse_sse_chunk` /
+//! `crate::bot::ToolCallDelta` / `crate::bot::BotChatResult`）中断。
+//!
+//! **跨族引用一律走本门面**：`crate::bot::<item>` 是 bot 族唯一对外路径，
+//! `crate::bot_chat::` / `crate::bot_model_loop::` 这类深层路径只供 bot 族
+//! 内部互引（族内免迁移），族外一律先在这里 re-export 再引用——
+//! 同一条目只留一条合法路径，新代码不必猜该走哪条。
+pub use crate::bot_chat::{BotChatResult, ChatMsg, TaskRef};
+// 记忆整理要拿对话摘要来做合并——chat 侧只此一项跨族调用。
+pub(crate) use crate::bot_chat::summarize_messages;
 pub use crate::bot_model_loop::{
     accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk, run_model_loop_core,
-    LlmHttp, ModelLoopDeps, ToolCallDelta, TurnStatus,
+    shared_llm_client, LlmHttp, ModelLoopDeps, ToolCallDelta, TurnStatus,
 };
 // bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
