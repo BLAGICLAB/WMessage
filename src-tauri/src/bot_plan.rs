@@ -70,8 +70,19 @@ pub fn parse_plan(text: &str) -> Option<Vec<String>> {
     };
     let steps: Vec<String> = arr
         .iter()
-        .filter_map(|s| s.as_str().map(|x| x.trim().to_string()))
-        .filter(|s| !s.is_empty())
+        .filter_map(|s| match s {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(x) => {
+                let t = x.trim();
+                (!t.is_empty()).then(|| t.to_string())
+            }
+            // 模型偶发把步骤写成对象（tool/parameters/note）——紧凑 JSON 原样
+            // 入计划，不猜字段：提示词管不住输出形态，解析器宽容是唯一防线
+            other => {
+                let t = serde_json::to_string(other).ok()?.trim().to_string();
+                (!t.is_empty() && t != "{}" && t != "[]").then_some(t)
+            }
+        })
         .take(MAX_PLAN_STEPS)
         .collect();
     if steps.is_empty() {
@@ -342,6 +353,35 @@ mod tests {
     fn parse_plan_accepts_bare_array_and_wrapped_text() {
         let steps = parse_plan("好的，计划如下：\n[\"步骤一\", \"步骤二\"]\n请查收").unwrap();
         assert_eq!(steps, vec!["步骤一", "步骤二"]);
+    }
+
+    #[test]
+    fn parse_plan_accepts_structured_object_steps() {
+        // Replan 模型偶发把步骤写成对象（tool/parameters/note）而非字符串——
+        // 只认 as_str 会把对象全滤掉 → 空计划 → plan.replan_failed 必然降级
+        let text = r#"{"steps":[
+            {"tool":"ui_click","parameters":{"windowId":"1698:0","target":"删除全部数据"},"note":"改为按标题关键词点击；只调用一次。"},
+            {"tool":"ui_inspect","parameters":{"windowId":"1698:0"},"note":"重新定位控件"}
+        ]}"#;
+        let steps = parse_plan(text).expect("对象步骤不应被丢弃");
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].contains("ui_click") && steps[0].contains("删除全部数据"));
+        assert!(steps[1].contains("ui_inspect"));
+    }
+
+    #[test]
+    fn parse_plan_mixed_string_and_object_steps() {
+        let text = r#"{"steps": ["读文件", {"tool": "write_file", "note": "写产物"}]}"#;
+        let steps = parse_plan(text).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0], "读文件");
+        assert!(steps[1].contains("write_file") && steps[1].contains("写产物"));
+    }
+
+    #[test]
+    fn parse_plan_drops_null_and_empty_object_steps() {
+        let steps = parse_plan(r#"{"steps": [null, {}, [], "唯一有效步骤"]}"#).unwrap();
+        assert_eq!(steps, vec!["唯一有效步骤"]);
     }
 
     #[test]
