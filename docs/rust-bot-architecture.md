@@ -103,7 +103,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (6315) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (6549) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；**墙钟治理**（WallBudget：软墙钟
 │                        收尾提醒 + 墙钟熔断留产，均在轮边界检查）；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
