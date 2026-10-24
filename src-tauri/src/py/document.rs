@@ -23,7 +23,7 @@ pub const EXTRACT_SCRIPT: &str = r#"import json, sys, os
 p = json.load(open('params.json', encoding='utf-8'))['path']
 ext = os.path.splitext(p)[1].lower()
 if not os.path.exists(p):
-    print('文件不存在：' + p); sys.exit(1)
+    print('文件不存在：' + p, file=sys.stderr); sys.exit(1)
 if ext == '.docx':
     import docx
     d = docx.Document(p)
@@ -66,7 +66,7 @@ elif ext == '.pdf':
         print(f'=== 第{i}页 ===')
         print(page.extract_text() or '')
 else:
-    print('不支持的格式：' + ext); sys.exit(1)
+    print('不支持的格式：' + ext, file=sys.stderr); sys.exit(1)
 "#;
 
 pub const MAKE_DOCX_SCRIPT: &str = r#"import json, os, re
@@ -399,7 +399,7 @@ rev = p.get('revised', [])
 out = p['out']
 
 if not rev:
-    print('revised 不能为空'); sys.exit(1)
+    print('revised 不能为空', file=sys.stderr); sys.exit(1)
 
 AUTHOR = 'WMessage AI'
 # 修订不写 w:date（修订日期不要了）
@@ -682,7 +682,7 @@ elif orig_model:
     orig = orig_model
     src_note = '原文取自提取列表'
 else:
-    print('缺少原文：请提供 original_path（Word 路径）或 original（原文行列表）'); sys.exit(1)
+    print('缺少原文：请提供 original_path（Word 路径）或 original（原文行列表）', file=sys.stderr); sys.exit(1)
 
 d = docx.Document()
 st = d.styles['Normal']
@@ -1155,7 +1155,13 @@ pub async fn pdf_render_pages(
 }
 
 pub fn script_fail_err(what: &str, stderr: &str) -> CommandError {
-    CommandError::Internal(format!("{what}：{}", stderr.trim()))
+    // 空细节不拼悬空冒号：明说脚本没给原因（排查方向转向 stdout / 外部信号）
+    let msg = if stderr.trim().is_empty() {
+        format!("{what}：（脚本未输出失败原因）")
+    } else {
+        format!("{what}：{}", stderr.trim())
+    };
+    CommandError::Internal(msg)
 }
 
 pub fn file_path_to_string(p: tauri_plugin_dialog::FilePath) -> Option<String> {
@@ -2354,6 +2360,61 @@ mod fake_success_guard_tests {
             "rPr 未按首子元素插入"
         );
         assert!(make.contains("outlineLvl"), "生成脚本缺 outlineLvl");
+    }
+}
+
+/// 失败原因回归锁：脚本里的失败输出必须走 stderr——打到 stdout 再非零退出，
+/// Rust 侧只看得见空 stderr，错误退化成无因的「提取失败：」套娃前缀。
+#[cfg(test)]
+mod script_stderr_guard_tests {
+    /// 针线拼接：include_str 含测试自身源码，整串字面量会自命中
+    #[test]
+    fn every_script_error_exit_prints_to_stderr() {
+        let src = include_str!("document.rs");
+        let needle = concat!("sys.", "exit(1)");
+        for line in src.lines().filter(|l| l.contains(needle)) {
+            assert!(
+                line.contains("file=sys.stderr"),
+                "脚本失败输出未走 stderr：{line}"
+            );
+        }
+    }
+}
+
+/// 真 python 执行层复现：不支持的扩展名 → 失败原因必须出现在 stderr
+#[cfg(test)]
+mod extract_script_e2e_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_extension_reports_reason_on_stderr() {
+        let probe = std::process::Command::new("python3")
+            .arg("--version")
+            .output();
+        if !probe.map(|o| o.status.success()).unwrap_or(false) {
+            eprintln!("[skip] 无 python3，跳过脚本 e2e");
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("a.txt");
+        std::fs::write(&target, b"plain").unwrap();
+        std::fs::write(
+            tmp.path().join("params.json"),
+            serde_json::json!({ "path": target.to_string_lossy() }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("s.py"), EXTRACT_SCRIPT).unwrap();
+        let out = std::process::Command::new("python3")
+            .arg("s.py")
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        assert_ne!(out.status.code(), Some(0), "不支持的格式必须失败退出");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("不支持的格式"),
+            "失败原因必须进 stderr（否则 script_fail_err 拿到空 detail）：{stderr}"
+        );
     }
 }
 

@@ -1139,6 +1139,18 @@ mod tests {
 
     // ── doc_* command 结构化错误迁移 ──
 
+    /// 空细节不拼悬空冒号：脚本失败但无 stderr 输出时，必须明说「没有原因」
+    /// 而不是产出「提取失败：」这种看起来被截断的无因错误
+    #[test]
+    fn f2_script_fail_err_empty_stderr_says_no_reason() {
+        let err = script_fail_err("提取失败", "  \n");
+        let msg = err.message();
+        assert!(
+            msg.contains("脚本未输出失败原因"),
+            "空 stderr 必须显式说明：{msg}"
+        );
+    }
+
     /// doc_extract 错误路径：对话框未选中文件 → CommandError::Internal（code 稳定）
     #[test]
     fn f2_resolve_doc_path_cancel_returns_internal() {
