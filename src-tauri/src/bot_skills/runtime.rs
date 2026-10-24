@@ -46,8 +46,10 @@ fn skill_timed_out(run: &SkillRun, now_ms: i64) -> bool {
     (now_ms - run.started_at_ms) / 1000 > run.timeout_secs as i64
 }
 
-/// 超时清扫：把等待确认等到超时的 Paused run 标成 Failed（终态），返回被扫掉的技能名。
-/// Paused 不是终态——不扫的话它一直占着同名技能，那个会话再也不回来就永久挡路。
+/// 超时清扫：把等到超时的非终态 run（Paused 等确认 / Running 跑在已死会话里）
+/// 标成 Failed（终态），返回被扫掉的技能名。非终态不扫的话它一直占着同名
+/// 技能——Paused 那个会话再也不回来确认、Running 那个会话模型循环带 Err
+/// 退出（advance_skill 只由本会话循环调），都会永久挡路。
 fn sweep_expired_pauses(
     runs: &mut std::collections::HashMap<String, SkillRun>,
     now_ms: i64,
@@ -57,6 +59,11 @@ fn sweep_expired_pauses(
         if run.state == SkillState::Paused && skill_timed_out(run, now_ms) {
             run.state = SkillState::Failed;
             run.end_reason = "等待确认超时，已过期".into();
+            expired.push(name.clone());
+        }
+        if run.state == SkillState::Running && skill_timed_out(run, now_ms) {
+            run.state = SkillState::Failed;
+            run.end_reason = "运行超时（会话未收尾），已过期".into();
             expired.push(name.clone());
         }
     }
@@ -78,7 +85,9 @@ fn skill_conflict_with_existing(
         return false; // 同会话同名重启：覆盖语义
     }
     match r.state {
-        SkillState::Running => true,
+        // Running 超时同样不算活动：死会话（模型循环带 Err 退出后无人推进）
+        // 留下的行不扫就是永久拒绝，直到重启进程
+        SkillState::Running => !skill_timed_out(r, now_ms),
         SkillState::Paused => !skill_timed_out(r, now_ms),
         _ => false,
     }
@@ -1309,14 +1318,48 @@ mod tests {
         runs.insert("running-skill".into(), running);
         let expired_at = 1000 + 181 * 1000;
         let expired = sweep_expired_pauses(&mut runs, expired_at);
-        assert_eq!(expired, vec!["paused-skill".to_string()]);
+        // 两个 run 同一 started_at：Paused 与 Running（死会话残留）都过超时线
+        assert_eq!(expired.len(), 2);
+        assert!(expired.contains(&"paused-skill".to_string()));
+        assert!(expired.contains(&"running-skill".to_string()));
         let swept = runs.get("paused-skill").unwrap();
         assert_eq!(swept.state, SkillState::Failed);
         assert!(swept.end_reason.contains("超时"), "{}", swept.end_reason);
-        // 未超时的 Running 不受影响
-        assert_eq!(
-            runs.get("running-skill").unwrap().state,
-            SkillState::Running
+        // 同一时刻的 Running（死会话残留）同样被扫——只扫 Paused 一半时，
+        // 模型循环带 Err 退出的会话会永久占着同名技能
+        let swept_running = runs.get("running-skill").unwrap();
+        assert_eq!(swept_running.state, SkillState::Failed);
+        assert!(
+            swept_running.end_reason.contains("超时"),
+            "{}",
+            swept_running.end_reason
         );
+        // 未超时的 Running 不受影响
+        let mut fresh = test_run(8, 3600);
+        fresh.state = SkillState::Running;
+        runs.insert("fresh-skill".into(), fresh);
+        let not_expired = sweep_expired_pauses(&mut runs, 1000 + 200 * 1000);
+        assert!(not_expired.is_empty());
+        assert_eq!(runs.get("fresh-skill").unwrap().state, SkillState::Running);
+    }
+
+    /// 冲突闸：超时的 Running（死会话残留）不再拦截同名技能启动
+    #[test]
+    fn conflict_gate_lets_timed_out_running_pass() {
+        let mut r = test_run(8, 180);
+        r.state = SkillState::Running;
+        r.session_id = Some("s-dead".into());
+        let expired_at = 1000 + 181 * 1000;
+        assert!(!skill_conflict_with_existing(
+            Some(&r),
+            Some("s-new"),
+            expired_at
+        ));
+        // 未超时的 Running 照旧拦截
+        assert!(skill_conflict_with_existing(
+            Some(&r),
+            Some("s-new"),
+            1000 + 10 * 1000
+        ));
     }
 }
