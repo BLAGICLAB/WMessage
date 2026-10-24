@@ -855,15 +855,22 @@ pub async fn bot_test_connection(
             );
         }
     }
-    // 未配 key 的厂商：如实说清「这次只探了连通性」，别报「连接测试通过」
+    // 未配 key：如实说清「这次只探了连通性」，别报「连接测试通过」。
+    // 无厂商的老条目与厂商条目分开说——unwrap_or_default 会把空厂商名
+    // 拼进「厂商「」还没配 API Key」，指路方向也是错的（该配全局 key）
     if r.ok && !authenticated {
+        let hint = match vendor.as_deref() {
+            Some(v) => format!(
+                "厂商「{v}」还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在厂商页填该厂商的 Key。"
+            ),
+            None =>
+                "全局还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在设置里填全局主 Key。"
+                    .to_string(),
+        };
         return Ok(ConnectionTestResult {
             ok: false,
             status: r.status,
-            error: Some(format!(
-                "厂商「{}」还没配 API Key：本次只探了端点连通性（未带鉴权），不算连接测试通过。请先在厂商页填该厂商的 Key。",
-                vendor.clone().unwrap_or_default()
-            )),
+            error: Some(hint),
         });
     }
     Ok(r)
