@@ -23,6 +23,7 @@
 - `docs/SUBAGENT-EFFICIENCY-TRANSPARENCY-DESIGN-2026-10-24.md` — 子 agent 效率与透明度改造（已落地）：小文件一次读完红线 / 预算触顶收尾窗只拒读放行写 / read_own_card 实时余量 / 右侧栏动作流实时上屏 / usage 三列记账；含实机账（PPT 素材稿 100 调用零产出）与实施偏离登记
 - `docs/MCP-ON-DEMAND-LIFECYCLE-DESIGN-2026-10-24.md` — MCP 外部服务器按需启停方案（静默待命 / 调用期拉起 / 调用完回收 / 工具清单落盘解耦可见性）+ 业界口径调研（VS Code autostart、mcp-proxy lazy、rho lazy）+ 踩坑记录
 - `docs/SKILL-ENABLE-TOGGLE-DESIGN-2026-10-24.md` — 技能启用开关方案（拨杆 UI / 状态写技能自身 frontmatter 的 enabled 键 / 关掉即三闸全拦 / 内置技能跨版本保留禁用态）+ 业界口径调研（Claude Code 的 frontmatter 属性与 skillOverrides、VS Code 1.109 同源）+ 踩坑记录
+- `docs/AGENT-REMEDIATION-PLAN-2026-10-24.md` — Agent 评分整改方案（2026-10-24 评分 8.2/10 的 13 项 → 12 批次 + 1 拍板项）：eval 层 / 巨型函数拆分 / 溢出漏斗存活变异补测 / 实机脚本进仓 / 审计 API 与双路径收敛 / MCP 审计口径 / 留底加固 / Windows 验证口径 / 模块审计补批；含不做清单、逐批验收与偏离登记
 ## 命令
 
 - 快检：`bash scripts/test-fast.sh`（pre-commit 自动跑，按改动智能跳过）
