@@ -56,6 +56,8 @@ cargo test --test task_chat_exec          # 集成：任务卡执行聊天化
 cargo test --test skill_e2e               # 集成：Skill DSL 端到端
 cargo test --test memory_v2_degraded      # 集成：记忆体 v2 降级模式
 cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（需仓库根 bge-small-zh-v1.5/）
+bash scripts/realmachine/smoke.sh        # 实机冒烟（macOS）：启动/静态面/退出清理自动化，
+                                         #   界面与聊天往返人工段衔接；输出报告同构清单
 ```
 
 ## Windows 发版前最低验证
