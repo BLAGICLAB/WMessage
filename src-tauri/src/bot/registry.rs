@@ -461,7 +461,7 @@ pub const SCHEMA_WRITE_ARTIFACT_FILE: &str = r##"{"type":"function","function":{
     "filename":{"type":"string","description":"纯文件名（不含路径分隔符 / 与 \\、不允许 .. 路径段与 NUL；Windows 保留设备名如 CON/NUL 拒绝），如 report.md / data.csv；同名自动加 (n) 序号"},
     "content":{"type":"string","description":"完整文本内容"}
   },"required":["filename","content"]}}}"##;
-pub const SCHEMA_READ_OWN_CARD: &str = r##"{"type":"function","function":{"name":"read_own_card","description":"重读自己的执行契约（objective / acceptanceCriteria / contextSummary / budget / status）：每轮开始建议先调，契约或 status 有变更则调整计划；status=cancelled = 派发已被取消，立即停止新探索并收尾","parameters":{"type":"object","properties":{}}}}"##;
+pub const SCHEMA_READ_OWN_CARD: &str = r##"{"type":"function","function":{"name":"read_own_card","description":"重读自己的执行契约（objective / acceptanceCriteria / contextSummary / budgetUsage 实时余量 / status）：每轮开始建议先调，契约或余量有变化则调整计划；status=cancelled = 派发已被取消，立即停止新探索并收尾","parameters":{"type":"object","properties":{}}}}"##;
 // 电脑辅助 Tier1（只「看」与「打开」，无鼠标键盘）
 pub const SCHEMA_REVEAL_PATH: &str = r##"{"type":"function","function":{"name":"reveal_path","description":"在访达（macOS）/资源管理器（Windows）中定位显示文件或文件夹（只定位，不打开文件本身；仅限白名单目录内路径，与读文件同一权限闸）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件或目录绝对路径（支持 ~ 开头）"}

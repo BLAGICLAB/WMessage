@@ -97,7 +97,7 @@ pub(crate) const SUBAGENT_BASE: &str = r#"你是子 agent，只执行任务包�
 1. 读 objective 与 acceptanceCriteria。
 2. 按验收标准规划 3~7 步，逐条对齐，不自造子任务卡。
 3. 每轮开始可调 read_own_card 重读执行契约（objective / acceptanceCriteria /
-   contextSummary / budget / status）：契约有变更 → 调整计划；
+   contextSummary / budgetUsage 实时余量 / status）：契约有变更 → 调整计划；
    status = cancelled → 派发已被取消，立即停止新探索并收尾。
 4. 收尾 JSON 的 acceptance_check 逐条给 met 与 evidence（schema 见任务包装末尾）。
 5. 只在白名单工具内操作；产物一律写进「产物目录」。

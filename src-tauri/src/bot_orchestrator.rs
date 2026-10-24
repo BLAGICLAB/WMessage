@@ -3612,22 +3612,52 @@ pub async fn tool_read_own_card(
         .and_then(|s| serde_json::from_str(s).ok());
     let cancelled = row.status == SubagentStatus::Cancelled;
     ToolResult::ok(
-        serde_json::json!({
-            "subagent_id": row.id,
-            "objective": row.objective,
-            "acceptanceCriteria": criteria,
-            "contextSummary": row.context_summary,
-            "budget": budget,
-            "status": row.status.as_str(),
-            "hint": if cancelled {
-                "派发已被取消：立即停止新探索，输出收尾 JSON（status=cancelled）"
-            } else {
-                "上面的验收标准与上下文摘要是本任务的全部契约，逐条对照完成后收尾"
-            }
-        })
+        own_card_payload(
+            &row,
+            criteria,
+            budget,
+            ctx.used_tool_calls.load(std::sync::atomic::Ordering::SeqCst),
+            ctx.used_rounds.load(std::sync::atomic::Ordering::SeqCst),
+            ctx.wall_deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_secs(),
+        )
         .to_string(),
         Vec::new(),
     )
+}
+
+/// read_own_card 返回体的纯构造：行上契约 + ctx 实时仪表合成单一 JSON。
+/// 抽离是因为 db 路径在 MockRuntime 测试下不可直驱，而「budgetUsage 必含
+/// 实时余量、静态 budget 键不再单独出现」是模型看得见的行为契约。
+fn own_card_payload(
+    row: &crate::db::subagents::SubagentRow,
+    criteria: Vec<String>,
+    budget: Option<SubagentBudget>,
+    tool_calls_used: usize,
+    rounds_used: usize,
+    wall_remaining_secs: u64,
+) -> serde_json::Value {
+    let cancelled = row.status == SubagentStatus::Cancelled;
+    serde_json::json!({
+        "subagent_id": row.id,
+        "objective": row.objective,
+        "acceptanceCriteria": criteria,
+        "contextSummary": row.context_summary,
+        "budgetUsage": {
+            "toolCallsUsed": tool_calls_used,
+            "toolCallsMax": budget.as_ref().map(|b| b.max_tool_calls),
+            "roundsUsed": rounds_used,
+            "roundsMax": budget.as_ref().map(|b| b.max_turns),
+            "wallRemainingSecs": wall_remaining_secs,
+        },
+        "status": row.status.as_str(),
+        "hint": if cancelled {
+            "派发已被取消：立即停止新探索，输出收尾 JSON（status=cancelled）"
+        } else {
+            "上面的验收标准与上下文摘要是本任务的全部契约；budgetUsage 是实时余量，逐条对照完成后收尾"
+        }
+    })
 }
 
 #[cfg(test)]
@@ -4377,6 +4407,56 @@ mod orchestrator_tests {
         // 未触顶 / 已是 budget_exceeded（熔断标记路径）→ 不改判
         assert!(!budget_force_needed(99, 100, Failed, false));
         assert!(!budget_force_needed(100, 100, BudgetExceeded, false));
+    }
+
+    /// read_own_card 的返回体：budgetUsage 一块含全部实时余量，静态 budget
+    /// 键不再单独出现（两份会让模型不知道看哪个）。
+    #[test]
+    fn own_card_payload_reports_live_budget_usage() {
+        let row = crate::db::subagents::SubagentRow {
+            id: "sa_x".into(),
+            status: SubagentStatus::Running,
+            profile: SubagentProfile::Research,
+            model: None,
+            parent_session_id: None,
+            session_id: None,
+            task_id: None,
+            objective: "调研 X".into(),
+            trace_id: "trc_x".into(),
+            acceptance_json: Some(r#"["覆盖 X"]"#.into()),
+            context_summary: None,
+            budget_json: None,
+            result_json: None,
+            error: None,
+            created_at: 0,
+            started_at: None,
+            finished_at: None,
+        };
+        let v = own_card_payload(
+            &row,
+            vec!["覆盖 X".into()],
+            Some(SubagentBudget {
+                max_turns: 50,
+                max_tool_calls: 100,
+                max_wall_seconds: 3600,
+            }),
+            47,
+            12,
+            1800,
+        );
+        assert_eq!(v["budgetUsage"]["toolCallsUsed"], 47);
+        assert_eq!(v["budgetUsage"]["toolCallsMax"], 100);
+        assert_eq!(v["budgetUsage"]["roundsUsed"], 12);
+        assert_eq!(v["budgetUsage"]["roundsMax"], 50);
+        assert_eq!(v["budgetUsage"]["wallRemainingSecs"], 1800);
+        assert!(
+            v.get("budget").is_none(),
+            "静态 budget 键已并入 budgetUsage，不得再单独出现"
+        );
+        // 预算缺失（老行）时 max 为 null，used 仍要报——余量读数不依赖预算存在
+        let v2 = own_card_payload(&row, vec![], None, 3, 1, 60);
+        assert_eq!(v2["budgetUsage"]["toolCallsUsed"], 3);
+        assert!(v2["budgetUsage"]["toolCallsMax"].is_null());
     }
 
     /// 轮数熔断必须保住已跑完的那十几轮产出。
