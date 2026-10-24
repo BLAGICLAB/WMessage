@@ -104,7 +104,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (5896) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (5917) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；**墙钟治理**（WallBudget：软墙钟
 │                        收尾提醒 + 墙钟熔断留产，均在轮边界检查）；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
@@ -121,10 +121,10 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3826)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
+├── bot/registry.rs (3827)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-├── bot/dispatch.rs (1599)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1823)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计 +
 │                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）
 ├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
