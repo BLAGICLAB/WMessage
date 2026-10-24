@@ -125,13 +125,19 @@ pub const FILE_SET_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 
 // ── 校验（纯函数，创建/更新/Tauri 命令共用） ──
 
-/// id 必须是合法相对路径分量（程序目录 `apps/<id>/`）
+/// id 必须是合法相对路径分量（程序目录 `apps/<id>/`）。
+/// 白名单而不是黑名单：`join` 只对「恰好一个普通分量」的 id 才不会走出
+/// `apps/`——`.`（折叠回根）、空格、非 ASCII 都不在白名单内。
 pub fn validate_app_id(id: &str) -> Result<(), CommandError> {
-    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+    let ok = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !ok {
         return Err(CommandError::InvalidArgument {
             field: "id".into(),
             value: id.to_string(),
-            reason: "id 不能为空、不能含路径分隔符或 `..`".into(),
+            reason: "id 只能是字母/数字/`-`/`_`（单个目录分量）".into(),
         });
     }
     Ok(())
@@ -1031,6 +1037,47 @@ mod tests {
         assert!(app.enabled_at.is_none());
         assert!(dir.join("app.py").is_file());
         assert!(db_apps::get_app(&conn, "wage").unwrap().is_some());
+    }
+
+    #[test]
+    fn app_id_rejects_non_component_values() {
+        // `apps_root.join(id)` 必须恰好落在 `apps/<id>/`：单个 "." 会把目录折叠回
+        // apps 根，归档后的彻底删除就成了对整个 apps 根的 remove_dir_all
+        for bad in ["", ".", "..", "a/b", "a\\b", "a b", "中", "a:b"] {
+            assert!(
+                validate_app_id(bad).is_err(),
+                "id {bad:?} 不该被当成合法程序 id"
+            );
+        }
+        for ok in ["wage", "pdf-merge-2", "hello_world"] {
+            assert!(validate_app_id(ok).is_ok(), "id {ok:?} 该被放行");
+        }
+    }
+
+    #[test]
+    fn create_rejects_dot_id_without_touching_root() {
+        let (tmp, conn) = temp_db();
+        let (id, name, desc, icon, schema, script, files, manual) = create_args(".");
+        let err = create_app_core(
+            tmp.path(),
+            &conn,
+            &id,
+            &name,
+            &desc,
+            &icon,
+            &schema,
+            &script,
+            &files,
+            &manual,
+            None,
+            1,
+        )
+        .unwrap_err();
+        assert!(matches!(err, CommandError::InvalidArgument { .. }));
+        assert!(
+            db_apps::get_app(&conn, ".").unwrap().is_none(),
+            "拒绝后不该留下折叠到根的库行"
+        );
     }
 
     #[test]
