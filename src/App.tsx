@@ -308,7 +308,8 @@ function App() {
   // 图谱页拿全量 tasks 自行过滤
   const visibleTasks = useMemo(() => tasks.filter((t) => !t.ownerId), [tasks]);
   // 聊天右侧栏「任务池」：未完成的自己的任务（已排期/未排期都列，排序直接复用
-  // 任务页任务池的 sortPoolTasks，避免同一批任务在两处顺序不同）
+  // 任务页任务池的 sortPoolTasks，避免同一批任务在两处顺序不同）。
+  // 过滤口径与任务页任务池同源 isActiveTask——回收站软删卡不再混进聊天任务池
   const openTasks = useMemo(
     () => sortPoolTasks(visibleTasks.filter((t) => t.column !== "done" && !t.archived)),
     [visibleTasks],
@@ -785,14 +786,26 @@ function App() {
       label: "tasks_import",
     });
 
-  // 重读全量任务：套规则 → 排序 → 更新状态 → 广播
+  // 重读全量任务：套规则 → 排序 → 更新状态 → 广播。
+  // 主体并入全局 mutating.chain（SYNC-1 同款）：reload 完成时若链上恰有在途
+  // mutate 停在 await 窗口，那条 mutate 恢复后会拿导入前的旧基线无条件回写
+  // tasksRef——弹出「导入完成 N 条」界面却没有新卡。
   const reloadTasks = async () => {
-    const res = await loadTasksFromDb();
-    if (!res.ok) throw res.error;
-    const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));
-    tasksRef.current = next;
-    setTasks(next);
-    emit("tasks-changed").catch(() => {});
+    const run = async () => {
+      const res = await loadTasksFromDb();
+      if (!res.ok) throw res.error;
+      const next = applyArchiveRule(applyTodayRule(sortByOrder(res.tasks)));
+      tasksRef.current = next;
+      setTasks(next);
+      emit("tasks-changed").catch(() => {});
+    };
+    const p = mutating.chain.then(run);
+    // 链推进沿用 mutate 的双分支写法：失败不把 rejection 留在链上毒化后续
+    mutating.chain = p.then(
+      () => undefined,
+      () => undefined,
+    );
+    await p;
   };
 
   // 导出工作区链接：全量 WorkspaceItem 写 JSON 文件（与任务数据管理风格一致；workspace 数据独立存于 workspace_items 表）
