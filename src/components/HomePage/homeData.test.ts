@@ -57,14 +57,16 @@ describe("todayPlanTasks", () => {
 });
 
 describe("planPhases", () => {
-  it("按 completedAt/doing 列分三态", () => {
+  it("按完成列/doing 列分三态（isTaskCompleted 单源）", () => {
     const tasks = [
-      task({ id: "1", planStart: "2026-10-11T09:00", completedAt: 1 }),
+      task({ id: "1", planStart: "2026-10-11T09:00", column: "done", completedAt: 1 }),
       task({ id: "2", planStart: "2026-10-11T10:00", column: "doing" }),
       task({ id: "3", planStart: "2026-10-11T11:00" }),
       task({ id: "4", planStart: "2026-10-12T11:00" }),
+      // 遗留 done 无 completedAt：同屏池计数算完成，这里也必须算完成
+      task({ id: "5", planStart: "2026-10-11T12:00", column: "done" }),
     ];
-    expect(planPhases(tasks, NOW)).toEqual({ done: 1, doing: 1, todo: 1 });
+    expect(planPhases(tasks, NOW)).toEqual({ done: 2, doing: 1, todo: 1 });
   });
 });
 

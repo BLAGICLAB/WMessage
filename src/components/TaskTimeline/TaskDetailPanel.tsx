@@ -15,6 +15,7 @@ import { handleCommandError } from "../../lib/errorHandler";
 import { ActorAvatar } from "../ActorAvatar";
 import { Toggle } from "../Toggle/Toggle";
 import { TracePanel } from "../TracePanel";
+import { isTaskCompleted } from "../../lib/taskScope";
 import { TaskFileChips } from "../task/TaskFileChips";
 import { SubtaskRow } from "../task/SubtaskRow";
 import {
@@ -350,8 +351,11 @@ export function TaskDetailPanel({
         </div>
       </div>
       <p className="mt-1 pl-8 text-[10px] text-[var(--t5)]">
-        {task.column === "done" && task.completedAt
-          ? formatCompletedAt(task.completedAt)
+        {/* 完成态按完成列判（isTaskCompleted 单源）；completedAt 只管时间文案 */}
+        {isTaskCompleted(task)
+          ? task.completedAt
+            ? formatCompletedAt(task.completedAt)
+            : "已完成"
           : task.botAssigned
             ? "机器人执行中…"
             : "未完成"}

@@ -29,11 +29,13 @@ export function todayPlanTasks(tasks: Task[], now: Date): Task[] {
 
 export type PlanPhases = { done: number; doing: number; todo: number };
 
-/** 今日排期三态：已完成（有 completedAt）/ 进行中（doing 列）/ 待开始 */
+/** 今日排期三态：已完成（按完成列，口径单源 isTaskCompleted）/ 进行中（doing 列）/ 待开始。
+ *  判据与同屏 poolCounts/KPI 同源——遗留 done 列无 completedAt 的卡在
+ *  「今日排期」算未完成、在池存量里算完成，同卡两处归属互斥。 */
 export function planPhases(tasks: Task[], now: Date): PlanPhases {
   const phases: PlanPhases = { done: 0, doing: 0, todo: 0 };
   for (const t of todayPlanTasks(tasks, now)) {
-    if (t.completedAt) phases.done++;
+    if (isTaskCompleted(t)) phases.done++;
     else if (t.column === "doing") phases.doing++;
     else phases.todo++;
   }

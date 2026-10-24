@@ -22,6 +22,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { runWithBot } from "../../lib/botRun";
 import { openFilePath } from "../../lib/openTarget";
+import { isTaskCompleted } from "../../lib/taskScope";
 import { planWindowLabel } from "../TaskTimeline/week";
 import { useConfirm } from "../../lib/useConfirm";
 import { useTaskFiles } from "../../lib/useTaskFiles";
@@ -656,8 +657,12 @@ export function TodoCardView({
             {!dueEditing && !trashed && (
               <div className="mt-1 flex items-center gap-1">
                 <p className="ml-2.5 text-[10px] text-[var(--t5)]">
-                  {task.column === "done" && task.completedAt
-                    ? formatCompletedAt(task.completedAt)
+                  {/* 完成态按完成列判（isTaskCompleted 单源）；completedAt 只管时间文案——
+                      遗留 done 无 completedAt 的卡绿勾亮着状态行却写「未完成」 */}
+                  {isTaskCompleted(task)
+                    ? task.completedAt
+                      ? formatCompletedAt(task.completedAt)
+                      : "已完成"
                     : "未完成"}
                 </p>
                 {!archived && (
