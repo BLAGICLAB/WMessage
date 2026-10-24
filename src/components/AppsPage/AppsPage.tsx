@@ -486,11 +486,19 @@ function TabChip({
 
 function RunsList({ appId }: { appId: string }) {
   const [runs, setRuns] = useState<AppRun[] | null>(null);
+  // 失败 ≠ 空库：catch 落错误态而不是 []，否则读失败被显示成「还没有运行记录」
+  const [loadError, setLoadError] = useState(false);
   useEffect(() => {
     listAppRuns(appId, 10)
-      .then(setRuns)
-      .catch(() => setRuns([]));
+      .then((r) => {
+        setRuns(r);
+        setLoadError(false);
+      })
+      .catch(() => setLoadError(true));
   }, [appId]);
+  if (runs === null && loadError) {
+    return <p className="text-[10px] text-[var(--t5)]">运行记录读取失败，稍后重试</p>;
+  }
   if (runs === null) {
     return <p className="text-[10px] text-[var(--t5)]">加载中…</p>;
   }
@@ -547,16 +555,24 @@ function VersionsList({
   onChanged: () => void;
 }) {
   const [versions, setVersions] = useState<AppVersionMeta[] | null>(null);
+  // 失败 ≠ 空库：同 RunsList
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
   const confirm = useConfirm();
   const reload = useCallback(() => {
     listAppVersions(appId)
-      .then(setVersions)
-      .catch(() => setVersions([]));
+      .then((v) => {
+        setVersions(v);
+        setLoadError(false);
+      })
+      .catch(() => setLoadError(true));
   }, [appId]);
   useEffect(() => {
     reload();
   }, [reload]);
+  if (versions === null && loadError) {
+    return <p className="text-[10px] text-[var(--t5)]">版本快照读取失败，稍后重试</p>;
+  }
   if (versions === null) {
     return <p className="text-[10px] text-[var(--t5)]">加载中…</p>;
   }
