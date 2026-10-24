@@ -2,8 +2,12 @@
 //
 // 气泡是「内容自适应」宽度——所在列是 flex 项，会收缩到内容宽度。工具折叠行里
 // 「正在跑 xxx」出现就把气泡撑宽，那行在工具跑完后变短又缩回去，同一条回复在
-// 流式过程中宽度反复跳。这里把见过的最宽宽度记成下限，之后只增不减；上限是
-// 所在行的可用宽度，窗口收放让可用宽度变了，下限按新上限收回（否则会溢出）。
+// 流式过程中宽度反复跳。这里把见过的最宽宽度记成下限，之后只增不减。
+//
+// 下限写成分 `min(下限px, 上限%)`：上限是列容器那条限宽（与用户气泡同一条），
+// 纯 px 的下限会盖掉列上的百分比 max-width（min-width 赢过 max-width），
+// 窗口收窄后下限就把气泡顶出上限、又伸到头像底下。百分比那一半随窗口走，
+// 收窄时上限跟着降，min() 自动取小。
 //
 // 用 ResizeObserver 而不是每次渲染都量：观测回调发生在布局之后、绘制之前，
 // 浏览器本来就要布局，省掉的是同步强制重排（流式期每帧一次强制重排是长会话
@@ -13,6 +17,7 @@
 // 是隐藏不卸载（见 SPEC「聊天常挂载」），切回来时下限应当还在。
 
 import { useEffect, useRef } from "react";
+import { BUBBLE_MAX_W_PCT } from "./constants";
 
 /** 宽度下限：只增不减 */
 export function stickyFloor(current: number, measured: number): number {
@@ -53,7 +58,10 @@ export function useStickyBubbleWidth(
       if (appliedRef.current === floor) return;
       appliedRef.current = floor;
       // 向上取整：下限只管宽、不管窄，抹掉小数像素的零头
-      col.style.minWidth = floor > 0 ? `${Math.ceil(floor)}px` : "";
+      // 上限那一半与列容器的 max-width 同源：纯 px 的下限会盖掉它（min-width
+      // 赢过 max-width），窗口收窄后气泡就被顶出上限、又伸到头像底下
+      col.style.minWidth =
+        floor > 0 ? `min(${Math.ceil(floor)}px, ${BUBBLE_MAX_W_PCT}%)` : "";
     };
 
     const ro = new ResizeObserver(() => {

@@ -38,6 +38,12 @@ export const execTaskDedup = {
 /** 流式增量合并窗口（约一帧）：同一窗口内到达的 SSE 片段攒起来一次写 state */
 export const DELTA_BATCH_MS = 16;
 
+/** 气泡列宽上限（占阅读带宽度百分比）：用户与机器人**同一条**上限。
+ *  机器人气泡原先是满宽，长回复一路伸到用户头像底下，两边不等宽——
+ *  一条上限两侧共用，机器人气泡不再侵入头像那一列。
+ *  粘性下限（stickyBubbleWidth）按同一个百分比封顶，两处共用同一份真相。 */
+export const BUBBLE_MAX_W_PCT = 85;
+
 /** 在途子 agent 的行重拉周期（毫秒）。轮数只活在后端内存仪表里，不轮询就
  *  永远看不到推进；3 秒够——子 agent 一轮最短也要几秒（要调模型）。 */
 export const SUBAGENT_POLL_MS = 3000;

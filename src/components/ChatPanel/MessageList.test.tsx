@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MessageList } from "./MessageList";
+import { BUBBLE_MAX_W_PCT } from "./constants";
 import type { Msg } from "./types";
 
 // 头像本体（资料加载 / 兜底首字母）由 ActorAvatar.test 覆盖，这里只看
@@ -59,7 +60,23 @@ describe("消息列表归属头像", () => {
     expect(container.querySelectorAll(".chat-bubble")).toHaveLength(2);
   });
 
-  it("头像不挤正文：气泡与操作行仍同列，限宽挂在列容器上", () => {
+  it("头像不挤正文：气泡与操作行仍同列", () => {
+    const messages: Msg[] = [
+      { role: "user", content: "整理周报" },
+      { role: "assistant", content: "已完成" },
+    ];
+    render(<MessageList messages={messages} {...baseProps} />);
+    const [, botAvatar] = screen.getAllByTestId("avatar");
+
+    // 操作行（复制/移除）与气泡同属列容器，否则会被排到头像那一列
+    expect(colOf(botAvatar)).toContainElement(
+      rowOf(botAvatar).querySelector(".chat-bubble") as HTMLElement,
+    );
+  });
+
+  it("机器人气泡与用户气泡同一条限宽上限：不再通栏伸到头像底下", () => {
+    // 回归：机器人列原先满宽（max-w-full），长回复一路伸到用户头像底下，
+    // 两边不等宽——用户与机器人的气泡上限必须是同一条
     const messages: Msg[] = [
       { role: "user", content: "整理周报" },
       { role: "assistant", content: "已完成" },
@@ -67,11 +84,9 @@ describe("消息列表归属头像", () => {
     render(<MessageList messages={messages} {...baseProps} />);
     const [userAvatar, botAvatar] = screen.getAllByTestId("avatar");
 
-    // 操作行（复制/移除）与气泡同属列容器，否则会被排到头像那一列
-    expect(colOf(botAvatar)).toContainElement(
-      rowOf(botAvatar).querySelector(".chat-bubble") as HTMLElement,
-    );
-    expect(colOf(botAvatar).className).toContain("max-w-full");
-    expect(colOf(userAvatar).className).toContain("max-w-[85%]");
+    expect(colOf(botAvatar).style.maxWidth).toBe(colOf(userAvatar).style.maxWidth);
+    // 上限挂在列容器上（不是气泡上）：头像不占正文宽度
+    expect(colOf(botAvatar).style.maxWidth).toBe(`${BUBBLE_MAX_W_PCT}%`);
+    expect(colOf(userAvatar).style.maxWidth).toBe(`${BUBBLE_MAX_W_PCT}%`);
   });
 });

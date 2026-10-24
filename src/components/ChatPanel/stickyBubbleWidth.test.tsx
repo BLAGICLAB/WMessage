@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import { MessageList } from "./MessageList";
+import { BUBBLE_MAX_W_PCT } from "./constants";
 import { availWidth, stickyFloor } from "./stickyBubbleWidth";
 import type { Msg } from "./types";
 
@@ -116,17 +117,17 @@ describe("机器人气泡宽度只增不减", () => {
     // 工具跑完，那行变短 → 气泡缩到 137 → 写回见过的最宽值
     state.bubbleWidth = 137;
     act(() => ro.trigger());
-    expect(col.style.minWidth).toBe("277px");
+    expect(col.style.minWidth).toBe(`min(277px, ${BUBBLE_MAX_W_PCT}%)`);
 
     // 正文继续变长：气泡自己涨上去，不必改下限
     state.bubbleWidth = 400;
     act(() => ro.trigger());
-    expect(col.style.minWidth).toBe("277px");
+    expect(col.style.minWidth).toBe(`min(277px, ${BUBBLE_MAX_W_PCT}%)`);
 
     // 再缩回去：按见过的最宽 400 写回
     state.bubbleWidth = 200;
     act(() => ro.trigger());
-    expect(col.style.minWidth).toBe("400px");
+    expect(col.style.minWidth).toBe(`min(400px, ${BUBBLE_MAX_W_PCT}%)`);
   });
 
   it("窗口收窄：下限按新的可用宽度收回，不溢出可用宽度", () => {
@@ -136,12 +137,12 @@ describe("机器人气泡宽度只增不减", () => {
     act(() => ro.trigger());
     state.bubbleWidth = 300;
     act(() => ro.trigger());
-    expect(col.style.minWidth).toBe("600px");
+    expect(col.style.minWidth).toBe(`min(600px, ${BUBBLE_MAX_W_PCT}%)`);
 
     // 窗口收窄到可用宽度 400：下限封顶收回
     state.rowRight = 434;
     act(() => ro.trigger());
-    expect(col.style.minWidth).toBe("400px");
+    expect(col.style.minWidth).toBe(`min(400px, ${BUBBLE_MAX_W_PCT}%)`);
   });
 
   it("容器隐藏（量到的全是 0）：不动下限", () => {
@@ -153,14 +154,26 @@ describe("机器人气泡宽度只增不减", () => {
     // 再建立下限：工具行变短 → 写回见过的最宽值
     state.bubbleWidth = 137;
     act(() => ro.trigger());
-    expect(col.style.minWidth).toBe("277px");
+    expect(col.style.minWidth).toBe(`min(277px, ${BUBBLE_MAX_W_PCT}%)`);
 
     // 隐藏态：行与列都量成 0
     state.rowRight = 0;
     state.colLeft = 0;
     state.bubbleWidth = 0;
     act(() => ro.trigger());
-    expect(col.style.minWidth).toBe("277px");
+    expect(col.style.minWidth).toBe(`min(277px, ${BUBBLE_MAX_W_PCT}%)`);
+  });
+
+  it("下限不越上限：粘性下限与限宽上限取小，窗口收窄也顶不出上限", () => {
+    // 纯 px 的下限会盖掉列上的百分比上限（min-width 赢过 max-width），
+    // 窗口收窄后气泡又被撑到头像底下——下限必须自带同一个上限
+    const { col, state, ro } = renderAssistant();
+
+    state.bubbleWidth = 700;
+    act(() => ro.trigger());
+    state.bubbleWidth = 300;
+    act(() => ro.trigger());
+    expect(col.style.minWidth).toBe(`min(700px, ${BUBBLE_MAX_W_PCT}%)`);
   });
 
   it("用户气泡不参与：宽度下限只管机器人气泡", () => {

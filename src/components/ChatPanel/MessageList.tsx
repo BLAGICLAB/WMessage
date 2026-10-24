@@ -23,6 +23,7 @@ import { basename } from "../../format";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import { ActorAvatar } from "../ActorAvatar";
 import { MarkdownText } from "../MarkdownText";
+import { BUBBLE_MAX_W_PCT } from "./constants";
 import type { SubagentRun } from "./ContextRail";
 import { Fold } from "./Fold";
 import { LiveIndicator } from "./LiveIndicator";
@@ -141,11 +142,10 @@ function MsgBubbleBase({
       <ActorAvatar bot={m.role === "assistant"} size={24} />
       <div
         ref={m.role === "assistant" ? colRef : undefined}
-        className={
-          m.role === "user"
-            ? "max-w-[85%] min-w-0"
-            : "max-w-full min-w-0"
-        }
+        className="min-w-0"
+        // 限宽挂在列容器上（不挂气泡）：头像不占正文宽度。
+        // 用户与机器人同一条上限——机器人气泡满宽时长回复会伸到用户头像底下
+        style={{ maxWidth: `${BUBBLE_MAX_W_PCT}%` }}
       >
         <div
           ref={m.role === "assistant" ? bubbleRef : undefined}

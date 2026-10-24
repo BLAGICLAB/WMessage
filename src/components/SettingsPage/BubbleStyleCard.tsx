@@ -13,6 +13,7 @@ import {
   resetBubbleStyle,
   type BubbleStyle,
 } from "../../bubbleStyle";
+import { BUBBLE_MAX_W_PCT } from "../ChatPanel/constants";
 
 export function BubbleStyleCard() {
   const [style, setStyle] = useState<BubbleStyle>(() => getBubbleStyle());
@@ -28,13 +29,14 @@ export function BubbleStyleCard() {
       <h2 className="text-lg font-semibold text-[var(--t1)]">聊天气泡</h2>
       <div className="mt-4 space-y-3">
         {/* 实时预览：直接用真气泡类，上面的设置一变全局 CSS 变量就变 */}
+        {/* 预览与聊天窗口同一条限宽：两侧共用一个上限，别让预览骗人 */}
         <div className="nm-inset space-y-2 rounded-[var(--r-md)] p-3">
-          <div className="ml-auto max-w-[80%]">
+          <div className="ml-auto" style={{ maxWidth: `${BUBBLE_MAX_W_PCT}%` }}>
             <div className="chat-bubble chat-bubble-user text-xs leading-relaxed">
               帮我把今天的任务标记完成
             </div>
           </div>
-          <div className="mr-auto max-w-full">
+          <div className="mr-auto" style={{ maxWidth: `${BUBBLE_MAX_W_PCT}%` }}>
             <div className="chat-bubble chat-bubble-bot text-xs leading-relaxed">
               好的，已标记 3 个任务完成 ✅
             </div>
