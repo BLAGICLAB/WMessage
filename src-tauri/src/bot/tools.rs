@@ -500,8 +500,16 @@ pub(crate) async fn tool_create_task(
         tags: None,
         files: None,
         column: match v["column"].as_str() {
+            None => TaskStatus::Todo,
+            Some("todo") => TaskStatus::Todo,
             Some("doing") => TaskStatus::Doing,
-            _ => TaskStatus::Todo,
+            // 非法枚举响亮拒绝（schema enum 只有 todo/doing）：静默降级成 todo
+            // 会让模型以为建成了它要的列
+            Some(other) => {
+                return ToolResult::denied(format!(
+                    "column 只能是 todo 或 doing（收到 {other:?}）"
+                ));
+            }
         },
         subtasks: None,
         completed_at: None,
@@ -566,8 +574,12 @@ pub(crate) async fn tool_complete_task(
         Err(e) => return resolve_task_err(e),
     };
     let mut next = task.clone();
+    // 完成三件套与 task_set_column / HTTP 同口径：Done + 完成时间 + 归档位
+    // 复位 + 机器人接管标记清除（漏了会让完成卡继续显示机器人在办）
     next.column = TaskStatus::Done;
     next.completed_at = Some(chrono::Utc::now().timestamp_millis());
+    next.archived = Some(false);
+    next.bot_assigned = None;
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
     next.updated_at = next.completed_at;
     commit_and_report(
@@ -840,16 +852,20 @@ pub(crate) async fn tool_edit_task(
             changed.push("绑定文件");
         }
     }
-    if let Some(c) = v["column"]
-        .as_str()
-        .and_then(|s| s.trim().parse::<TaskStatus>().ok())
-    {
+    if let Some(c) = v["column"].as_str() {
+        // 非法枚举响亮拒绝而不是静默跳过：跳过后模型收到「没有可修改的字段」，
+        // 错误归因会被带偏
+        let c: TaskStatus = match c.trim().parse() {
+            Ok(c) => c,
+            Err(e) => return ToolResult::denied(format!("column 不合法：{e}")),
+        };
         if c != next.column {
             next.column = c;
-            // 列变更补完成语义（与主窗口一致）
+            // 完成三件套与 task_set_column / HTTP 同口径（含清 bot_assigned）
             if c == TaskStatus::Done {
                 next.completed_at = Some(chrono::Utc::now().timestamp_millis());
                 next.archived = Some(false);
+                next.bot_assigned = None;
             } else {
                 next.completed_at = None;
                 next.archived = None;
