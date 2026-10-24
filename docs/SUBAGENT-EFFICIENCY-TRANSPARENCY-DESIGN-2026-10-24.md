@@ -1,6 +1,6 @@
 # 子 agent 效率与透明度改造 — 2026-10-24
 
-> 状态：**方案待拍板**（本文只设计不动手；落地时在 §9 登记 commit）。
+> 状态：**已落地**（本文是设计与取舍的依据；落地进度与偏离登记见 §9）。
 > 前置：`SUBAGENT-HANDOFF-BUDGET-REDESIGN-2026-10-23.md`（已落地）。那份管
 > 「产出不丢」（墙钟 / 收尾格式 / digest），这份管「花得省 + 看得见」（token /
 > 轮次 / 效率 / 运行透明度），互补不重叠，机制全部复用前者的形态。
@@ -260,4 +260,32 @@ prompt token 降一个量级（省的大头是每轮增长重发，不是读到�
 
 ## 9. 落地进度
 
-（待拍板后回填）
+| 改造 | 状态 | commit |
+|---|---|---|
+| ① 提示词红线（读文件整读 / 打转自检 / 产物早落盘） | 已落地 | `329ee3f6` |
+| ② 收尾窗（只拒读放行写 + 熔断裕量 + 被拒不耗裕量） | 已落地 | `ffc0487c` |
+| ③ read_own_card 实时余量 budgetUsage | 已落地 | `b270735d` |
+| ⑤ 动作流实时上屏 + 行进度补工具次数 | 已落地 | `2283fb3d` |
+| ④ usage 三列记账 | 已落地 | `95b3ea90` |
+| SPEC.md 功能规格同步 | 已落地 | （随收尾 docs 提交） |
+
+**实施中偏离方案之处**：
+
+1. **① 的落点从「三 profile 各补两行」改为 SUBAGENT_BASE 一份**——实现时
+   确认六种角色（research / coder / general / recon / executor / verifier）
+   全走同一个 `SUBAGENT_BASE` 前缀，红线放 base 覆盖全部且只写一份；方案里
+   「三 profile」是设计时的误读（把角色段当成了独立 profile）。
+2. **② 补了方案没写的一条：被拒调用不计入熔断计数**——「cap+5 = 1 次写 +
+   裕量」的算法在并行调用模型（MiniMax 一轮 4~5 个调用）下不成立：触顶后
+   一轮被拒的读类批就能烧光裕量，模型永远轮不到写。修正为循环层对
+   `ToolStatus::Denied` 的调用回退计数，裕量只被**实际执行**的写消耗。
+3. **② 的触顶改判多了一道豁免**：原「触顶一律强制 budget_exceeded」改为
+   「触顶且没交出可解析收尾 JSON 才强制」——收尾窗放行过写产物，触顶后交卷
+   是真实完成，改判会错触发父 agent 的带残留重试。纯函数
+   `budget_force_needed` 承载该判定。
+4. **⑤ 的 e2e 测试降了一档**：dispatch 绑定 Wry runtime，MockRuntime 直驱
+   不了真 dispatch——改为循环层注入 exec 测「被拒不耗裕量」（mock LLM 全链
+   路）+ 纯函数/接线守卫测试钉闸语义（WRAP_UP_TOOLS ⊆ 各 profile 白名单、
+   emit 7 处覆盖、budget_force_needed 四象限）。实机验收按 §8 跑。
+5. ③ 顺带把 `budgetUsage` 抽成纯函数 `own_card_payload`（db 路径在
+   MockRuntime 下不可直驱，抽离让返回体形状可单测）。
