@@ -405,8 +405,17 @@ async fn delete_job_row(app: &AppHandle, id: &str) {
 /// 到点执行一个内容型定时作业：新建任务卡 → 交机器人执行（run_task_in_chat
 /// 既有链路：新会话流式可见、结果写卡、完成/失败系统通知全继承）。
 async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
-    // 防重入守卫：与任务卡/工作流共用 SchedGuard 表（id 空间不相交）
+    // 防重入守卫：与任务卡/工作流共用 SchedGuard 表（id 空间不相交）。
+    // 拒绝也要留痕：ask_user 等待可达 24h，期间守卫不放，次日到点的同作业
+    // 会被这里吞掉——没有审计行，用户只会以为定时坏了。
     let Some(_sched_guard) = SchedGuard::acquire(&app, &job.id) else {
+        crate::bot::audit_log(
+            &app,
+            &format!(
+                "sched_job_skip | id: {} | 上一次执行仍在进行，本次到点不触发",
+                job.id
+            ),
+        );
         return;
     };
     // 机器人开关关闭时不触发（同任务卡/工作流：开关不能只管 UI）
