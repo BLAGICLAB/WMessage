@@ -129,10 +129,10 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
     );
     let system_prompt = format!("{GUIDANCE}{CONTRACT}");
 
-    let raw = match crate::bot_chat::summarize_messages(
+    let raw = match crate::bot::summarize_messages(
         &app,
         &system_prompt,
-        &[crate::bot_chat::ChatMsg {
+        &[crate::bot::ChatMsg {
             role: "user".into(),
             content: user_content,
         }],

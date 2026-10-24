@@ -282,7 +282,7 @@ pub(crate) async fn engine_ask_user(
     session_id: Option<&str>,
     args: &str,
     timeout: std::time::Duration,
-    stop: Option<&crate::bot_slash::StopGuard>,
+    stop: Option<&crate::bot::StopGuard>,
 ) -> crate::bot::registry::ToolResult {
     use crate::bot::registry::ToolResult;
     let parsed = match parse_ask_args(args) {

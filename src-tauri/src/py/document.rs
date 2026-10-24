@@ -9,7 +9,7 @@ use serde::Serialize;
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
 
-use crate::bot_slash::StopToken;
+use crate::bot::StopToken;
 use crate::error::{CommandError, CommandResult};
 use crate::py::audit::py_audit;
 use crate::py::env::run_dotnet_revisions;

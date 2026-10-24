@@ -80,10 +80,10 @@ fn save_state(app: &AppHandle, state: &HashMap<String, TaskNotifyState>) {
 fn parse_due_dt(due: &str) -> Option<DateTime<Local>> {
     let s = due.trim();
     if let Ok(t) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M") {
-        return crate::bot_scheduler::resolve_local(t);
+        return crate::bot::resolve_local(t);
     }
     if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return crate::bot_scheduler::resolve_local(d.and_hms_opt(23, 59, 0)?);
+        return crate::bot::resolve_local(d.and_hms_opt(23, 59, 0)?);
     }
     None
 }

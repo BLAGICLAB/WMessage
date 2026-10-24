@@ -3,7 +3,7 @@
 use std::io::Read;
 use std::time::{Duration, Instant};
 
-use crate::bot_slash::StopToken;
+use crate::bot::StopToken;
 use crate::py::runtime::OUTPUT_CAP;
 
 pub fn read_capped_drain<R: Read>(src: R, cap: usize) -> (Vec<u8>, bool) {

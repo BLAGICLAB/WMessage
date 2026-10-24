@@ -14,7 +14,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::bot_slash::StopToken;
+use crate::bot::StopToken;
 use crate::db;
 use crate::db::apps::{App, AppRun};
 use crate::py::runtime::{self, PyRunResult};

@@ -54,7 +54,7 @@ pub struct FileChangeRecord {
 /// 由 bot_fs::FileChangeReceipt 映射（dispatch 侧调用）
 pub(crate) fn file_change_record(
     trace_id: i64,
-    rc: &crate::bot_fs::FileChangeReceipt,
+    rc: &crate::bot::FileChangeReceipt,
 ) -> FileChangeRecord {
     FileChangeRecord {
         trace_id,
@@ -189,7 +189,7 @@ pub(crate) fn clamp_span_text<R: tauri::Runtime>(
 pub struct TraceCapture {
     pub trace_id: Option<i64>,
     pub session_id: Option<String>,
-    pub stats: Option<crate::bot_model_loop::LoopTrace>,
+    pub stats: Option<crate::bot::LoopTrace>,
 }
 
 /// 执行首：建 exec_traces 行 + 注册 session→trace 映射（span 采集开关）。

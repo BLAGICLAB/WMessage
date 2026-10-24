@@ -38,7 +38,7 @@ type ConfirmMap = Mutex<
     HashMap<
         String,
         (
-            tokio::sync::oneshot::Sender<crate::bot_slash::ConfirmReply>,
+            tokio::sync::oneshot::Sender<crate::bot::ConfirmReply>,
             Option<String>,
         ),
     >,
@@ -82,10 +82,10 @@ type QuestionWaiters = Mutex<HashMap<String, tokio::sync::oneshot::Sender<String
 #[derive(Default)]
 pub(crate) struct AppState {
     /// 活动 Skill 运行表：name → SkillRun（同一技能同轮只允许一个实例）
-    pub(crate) skill_runs: Arc<Mutex<HashMap<String, crate::bot_skills::SkillRun>>>,
+    pub(crate) skill_runs: Arc<Mutex<HashMap<String, crate::bot::SkillRun>>>,
     /// 产物登记表：task_id → 已登记产物（任务卡执行流程内收集，收尾按 origin 分流弹窗）
     pub(crate) artifact_registry:
-        tokio::sync::Mutex<HashMap<String, Vec<crate::bot_artifacts::RegisteredArtifact>>>,
+        tokio::sync::Mutex<HashMap<String, Vec<crate::bot::RegisteredArtifact>>>,
     /// 定时调度防重入（`SchedGuard` 持有）
     pub(crate) sched_running: Arc<Mutex<HashSet<String>>>,
     /// /stop 停止注册表（`StopGuard` 持有；`StopMap` 值 = 停止标志 + 是否交互触发 + 触发会话）
@@ -105,7 +105,7 @@ pub(crate) struct AppState {
     pub(crate) ask_contexts: Mutex<HashMap<String, crate::ask_engine::AskRegistration>>,
     /// 子 agent 取消令牌表（subagent_id → StopToken；
     /// cancel_subagent 持有的句柄，runner 注册 / 收尾删除）
-    pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>>,
+    pub(crate) subagent_stops: Arc<Mutex<HashMap<String, crate::bot::StopToken>>>,
     /// 执行痕迹注册表（Agent 透明化设计 §4.2）：session_id → 运行中 trace_id。
     /// 生命周期：run_task_in_chat_with 建 trace 时注册、收尾注销（trace_sink::begin/end_trace）。
     /// dispatch 据此判断「本会话在跑 trace」→ 决定 span/file_change 是否落库（无映射 = 零开销旁路）。
@@ -151,7 +151,7 @@ pub(crate) fn ext<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &AppState {
 /// 借用会踩 E0716（临时值先 drop）。
 pub(crate) fn skill_runs<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> Arc<Mutex<HashMap<String, crate::bot_skills::SkillRun>>> {
+) -> Arc<Mutex<HashMap<String, crate::bot::SkillRun>>> {
     ext(app).skill_runs.clone()
 }
 
@@ -159,7 +159,7 @@ pub(crate) fn skill_runs<R: tauri::Runtime>(
 /// 该表只在调用期间使用（无 Drop 清理诉求），故返回借用引用。
 pub(crate) fn artifact_registry<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> &tokio::sync::Mutex<HashMap<String, Vec<crate::bot_artifacts::RegisteredArtifact>>> {
+) -> &tokio::sync::Mutex<HashMap<String, Vec<crate::bot::RegisteredArtifact>>> {
     &ext(app).artifact_registry
 }
 
@@ -229,7 +229,7 @@ pub(crate) fn pending_map<R: tauri::Runtime>(
 /// 令牌生命周期需跨任务存活）。
 pub(crate) fn subagent_stops<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> Arc<Mutex<HashMap<String, crate::bot_slash::StopToken>>> {
+) -> Arc<Mutex<HashMap<String, crate::bot::StopToken>>> {
     ext(app).subagent_stops.clone()
 }
 

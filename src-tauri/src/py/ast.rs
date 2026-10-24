@@ -90,7 +90,7 @@ pub async fn tool_ast_inspect(
     args: &str,
     interactive: bool,
     session_id: Option<&str>,
-    stop: Option<&crate::bot_slash::StopGuard>,
+    stop: Option<&crate::bot::StopGuard>,
 ) -> ToolResult {
     let v = crate::bot::parse_args(args);
     let Some(op_raw) = v["op"].as_str() else {
@@ -132,13 +132,18 @@ pub async fn tool_ast_inspect(
         .clamp(1, MAX_CALLGRAPH_DEPTH);
 
     // 授权闸：白名单外这里就拒了，沙箱永远拿不到这条路径（A3）
-    let canonical =
-        match crate::bot_fs::resolve_with_perm(app, "ast_inspect", path, interactive, session_id)
-            .await
-        {
-            Ok(canonical) => canonical,
-            Err(e) => return ToolResult::denied(e),
-        };
+    let canonical = match crate::bot::resolve_with_perm(
+        app,
+        "ast_inspect",
+        path,
+        interactive,
+        session_id,
+    )
+    .await
+    {
+        Ok(canonical) => canonical,
+        Err(e) => return ToolResult::denied(e),
+    };
     let code = build_ast_code(op, &canonical.to_string_lossy(), symbol, depth);
     match crate::py::document::py_exec_sync_async(app.clone(), code, None, stop.map(|s| s.token()))
         .await

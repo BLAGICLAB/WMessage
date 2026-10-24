@@ -58,13 +58,18 @@ pub async fn tool_ocr_image(
             Vec::new(),
         );
     }
-    let canonical =
-        match crate::bot_fs::resolve_with_perm(app, "ocr_image", path, interactive, session_id)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => return ToolResult::denied(e),
-        };
+    let canonical = match crate::bot::resolve_with_perm(
+        app,
+        "ocr_image",
+        path,
+        interactive,
+        session_id,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => return ToolResult::denied(e),
+    };
     if canonical.is_dir() {
         return ToolResult::error(
             format!("失败：{path} 是目录，ocr_image 只接受图片文件"),

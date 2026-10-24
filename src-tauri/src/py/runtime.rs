@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::bot_slash::StopToken;
+use crate::bot::StopToken;
 use crate::error::CommandError;
 use crate::py::audit::py_audit;
 

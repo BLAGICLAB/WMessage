@@ -366,7 +366,7 @@ pub async fn scheduled_job_create(
     pause_on_failure: Option<bool>,
 ) -> CommandResult<ScheduledJob> {
     let content = validate_content(&content)?;
-    crate::bot_scheduler::validate_schedule(schedule.trim()).map_err(|reason| {
+    crate::bot::validate_schedule(schedule.trim()).map_err(|reason| {
         CommandError::InvalidArgument {
             field: "schedule".into(),
             value: schedule.clone(),
@@ -427,7 +427,7 @@ pub async fn scheduled_job_update(
         None => None,
     };
     if let Some(s) = &schedule {
-        crate::bot_scheduler::validate_schedule(s.trim()).map_err(|reason| {
+        crate::bot::validate_schedule(s.trim()).map_err(|reason| {
             CommandError::InvalidArgument {
                 field: "schedule".into(),
                 value: s.clone(),

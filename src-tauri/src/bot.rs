@@ -39,6 +39,22 @@ pub use crate::bot_model_loop::{
 // bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
 pub use crate::bot_slash::StopGuard;
+// 停止令牌：执行侧（py 子进程 / 桌面自动化 / 编排器）与运行期状态都要用。
+pub use crate::bot_slash::StopToken;
+// 危险操作确认的回执类型——只有跑 bot 流程的模块需要拿到它。
+pub(crate) use crate::bot_slash::ConfirmReply;
+// 产物登记行类型 + 技能运行态：运行期状态（AppState）与产物登记都指着它们。
+pub use crate::bot_artifacts::RegisteredArtifact;
+pub use crate::bot_skills::SkillRun;
+// 任务执行来源标记（对话内 / 任务卡 / 逐步执行）——工具侧的归属判定要用。
+pub use crate::bot_chat::TaskExecOrigin;
+// 单轮 trace 统计：trace 落盘侧要读它。
+pub use crate::bot_model_loop::LoopTrace;
+// 文件读上限与带权限的路径解析：读盘类工具（OCR / AST / 溢出兜底）共用。
+pub use crate::bot_fs::resolve_with_perm;
+pub(crate) use crate::bot_fs::{build_unified_diff, sha256_hex, READ_MAX_BYTES};
+// 定时任务的时间解析与表达式校验：调度与通知侧共用。
+pub(crate) use crate::bot_scheduler::{resolve_local, validate_schedule};
 // 同上：audit 模块私有，ModelLoopDeps.audit 回调签名里的 AuditLevel 在 tests/
 // 不可命名，测试构造 deps 需要它公开。
 pub use crate::audit::AuditLevel;

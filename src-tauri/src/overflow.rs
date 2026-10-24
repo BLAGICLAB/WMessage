@@ -54,7 +54,7 @@ pub fn spill<R: tauri::Runtime>(app: &AppHandle<R>, text: &str) -> Result<PathBu
 /// 分页读」，但超过 100KB 的文件分页读只能读到前部，后半段会撞上
 /// 「offset 超出范围」——模型读不到尾部会以为文件被截断了。
 pub fn pointer_text(tool: &str, path: &std::path::Path, text: &str) -> String {
-    let read_cap = crate::bot_fs::READ_MAX_BYTES;
+    let read_cap = crate::bot::READ_MAX_BYTES;
     let reach = if text.len() > read_cap {
         format!(
             "（单次读取上限 {}KB：分页读只能读到文件前部，后半段用 grep_files 按关键词定位）",
@@ -207,7 +207,7 @@ mod tests {
     /// 指针原先承诺「分页读」，但 100KB 之后的行压根到不了（offset 超出范围）。
     #[test]
     fn pointer_text_states_the_reachable_range_for_big_files() {
-        let big = "x".repeat(crate::bot_fs::READ_MAX_BYTES + 1);
+        let big = "x".repeat(crate::bot::READ_MAX_BYTES + 1);
         let p = pointer_text("run_python", std::path::Path::new("/x/o.txt"), &big);
         assert!(
             p.contains("单次读取上限 100KB"),

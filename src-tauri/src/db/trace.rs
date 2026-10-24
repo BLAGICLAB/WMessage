@@ -1100,7 +1100,7 @@ pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<Str
         .map_err(|e| CommandError::Internal(format!("当前文件不可读（{}）：{e}", c.path)))?;
     if c.after_sha
         .as_deref()
-        .is_none_or(|a| a != crate::bot_fs::sha256_hex(&current))
+        .is_none_or(|a| a != crate::bot::sha256_hex(&current))
     {
         return Err(CommandError::Internal(format!(
             "文件自本次修改后已被改动（指纹不符），拒绝回滚以免吞掉后续修改；请人工核对：{}",
@@ -1114,7 +1114,7 @@ pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<Str
         .map_err(|e| CommandError::Internal(format!("快照不可读（{before_ref}）：{e}")))?;
     if c.before_sha
         .as_deref()
-        .is_none_or(|b| b != crate::bot_fs::sha256_hex(&before))
+        .is_none_or(|b| b != crate::bot::sha256_hex(&before))
     {
         return Err(CommandError::Internal(
             "快照校验不符（before_sha），拒绝回滚".into(),
@@ -1442,7 +1442,7 @@ fn read_before_snapshot(rows: &[FileChangeRow], checkpoint_dir: &std::path::Path
     };
     let state = decode_text_file(bytes);
     if let (FileState::Text(t), Some(before_sha)) = (&state, first.before_sha.as_deref()) {
-        if before_sha != crate::bot_fs::sha256_hex(t) {
+        if before_sha != crate::bot::sha256_hex(t) {
             return FileState::Missing("起始快照指纹不符（已损坏）".into());
         }
     }
@@ -1490,11 +1490,11 @@ fn summarize_path(
     };
 
     if let (FileState::Text(b), FileState::Text(cur)) = (&before, &current) {
-        let (diff, added, deleted, truncated) = crate::bot_fs::build_unified_diff(b, cur, path);
+        let (diff, added, deleted, truncated) = crate::bot::build_unified_diff(b, cur, path);
         // 漂移判定：当前内容指纹 vs AI 最后一次写盘时的 after_sha——
         // 不符 = AI 写完之后文件又被改过（人改的），累计 diff 里混着非 AI 的改动。
         let drifted = match rows.last().and_then(|r| r.after_sha.as_deref()) {
-            Some(a) => a != crate::bot_fs::sha256_hex(cur),
+            Some(a) => a != crate::bot::sha256_hex(cur),
             None => false,
         };
         return PathSummary {
@@ -2726,7 +2726,7 @@ mod session_file_changes_tests {
     use std::path::PathBuf;
 
     fn sha(s: &str) -> String {
-        crate::bot_fs::sha256_hex(s)
+        crate::bot::sha256_hex(s)
     }
 
     /// 造一条 file_changes 行（字段给全，测试不依赖真实落盘路径）
