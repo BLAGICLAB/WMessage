@@ -279,8 +279,11 @@ fn workspace_import_merge_unchecked(
 
 #[tauri::command]
 pub async fn workspace_import(app: AppHandle, path: String) -> CommandResult<usize> {
+    // 路径闸门 + bounded 读与 tasks_import 同一口径——export 侧拒的路径
+    // import 侧不能照读
+    crate::db::tasks::check_export_path_gate(path.clone()).await?;
     async_runtime::spawn_blocking(move || {
-        let raw = std::fs::read_to_string(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
+        let raw = crate::db::tasks::read_import_bounded(&path, crate::db::tasks::MAX_IMPORT_BYTES)?;
         let ext: Vec<WorkspaceItem> =
             serde_json::from_str(&raw).map_err(|e| format!("不是有效的工作区链接 JSON：{e}"))?;
         if ext.is_empty() {

@@ -1396,34 +1396,37 @@ pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> 
     .map_err(|e| CommandError::from(format!("任务导出线程 join 失败：{e}")))?
 }
 
-/// tasks_import 读入文件大小上限（防内存 DoS：用户误选多 GB 文件时 read_to_string 直接吃满内存）
-const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+/// 导入文件读入大小上限（防内存 DoS：用户误选多 GB 文件时 read_to_string 直接吃满内存）
+pub(crate) const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// 导入文件的 bounded 读（tasks_import / workspace_import 共用）：上限在读侧
+/// 强制（不做 metadata 预检——check-then-act 之间文件可被换大，symlink swap），
+/// 只有限制实际读入字节数才兜底。先读字节再转 String：Take 截断可能切断
+/// UTF-8 码点边界，直接 read_to_string 会把超限文件误报成编码错误。
+pub(crate) fn read_import_bounded(path: &str, max_bytes: u64) -> Result<String, CommandError> {
+    let f = std::fs::File::open(path).map_err(|e| format!("无法读取所选文件：{e}"))?;
+    let mut limited = std::io::Read::take(f, max_bytes + 1);
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut limited, &mut buf)
+        .map_err(|e| format!("无法读取所选文件：{e}"))?;
+    if buf.len() as u64 > max_bytes {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path.to_string(),
+            reason: format!("导入文件超过大小上限（{max_bytes} 字节）"),
+        });
+    }
+    String::from_utf8(buf)
+        .map_err(|e| format!("不是有效的 UTF-8 文本：{e}"))
+        .map_err(CommandError::from)
+}
 
 #[tauri::command]
 pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> {
     // 路径闸门：fs 调用进阻塞线程（口径见 check_export_path_gate）
     crate::db::tasks::check_export_path_gate(path.clone()).await?;
     async_runtime::spawn_blocking(move || {
-        // 上限在读侧强制（bounded reader），不做 metadata 预检——check-then-act 之间
-        // 文件可被换大（symlink swap），只有限制实际读入字节数才兜底。
-        // 先读字节再转 String：Take 截断可能切断 UTF-8 码点边界，直接 read_to_string
-        // 会把超限文件误报成编码错误。
-        let f = std::fs::File::open(&path).map_err(|e| format!("无法读取所选文件：{e}"))?;
-        let mut limited = std::io::Read::take(f, MAX_IMPORT_BYTES + 1);
-        let mut buf = Vec::new();
-        std::io::Read::read_to_end(&mut limited, &mut buf)
-            .map_err(|e| format!("无法读取所选文件：{e}"))?;
-        if buf.len() as u64 > MAX_IMPORT_BYTES {
-            return Err(CommandError::InvalidArgument {
-                field: "path".into(),
-                value: path.clone(),
-                reason: format!(
-                    "任务数据文件超过大小上限（{} MB）",
-                    MAX_IMPORT_BYTES / (1024 * 1024)
-                ),
-            });
-        }
-        let raw = String::from_utf8(buf).map_err(|e| format!("不是有效的 UTF-8 文本：{e}"))?;
+        let raw = read_import_bounded(&path, MAX_IMPORT_BYTES)?;
         if raw.trim().is_empty() {
             return Ok(0);
         }
@@ -2317,5 +2320,32 @@ mod owner_graph_tests {
         let legacy_subs = legacy.subtasks.unwrap();
         assert_eq!(legacy_subs[0].task_id, None, "老格式应按 None 解析");
         assert_eq!(legacy_subs[0].text, "老格式");
+    }
+}
+
+#[cfg(test)]
+mod import_bounded_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_read_roundtrip_small_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("w.json");
+        std::fs::write(&p, r#"[{"kind":"note"}]"#).unwrap();
+        let s = read_import_bounded(p.to_str().unwrap(), 1024).unwrap();
+        assert_eq!(s, r#"[{"kind":"note"}]"#);
+    }
+
+    /// 超限必须按大小闸拒绝，而不是被 Take 截断后误报成 UTF-8 编码错误
+    #[test]
+    fn bounded_read_rejects_over_limit_instead_of_truncating() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.json");
+        std::fs::write(&p, "a".repeat(9)).unwrap();
+        let err = read_import_bounded(p.to_str().unwrap(), 8).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("大小上限"),
+            "应是大小闸拒绝：{err:?}"
+        );
     }
 }
