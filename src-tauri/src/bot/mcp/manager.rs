@@ -1,12 +1,24 @@
-//! MCP 连接生命周期管理（阶段 2）：连 / 断 / 指纹对齐重载 / 懒重连。
+//! MCP 连接生命周期管理（阶段 2）：按需启停 / 指纹对齐重载 / 懒重连。
 //!
 //! 托管形态：进程级 `OnceLock` 单例（`shared()`），lib.rs setup 触发
 //! 启动重载；命令、registry 挂载层、退出清理全部经 `shared()` 访问。
 //!
+//! **生命周期：按需启停（静默待命 → 调用期拉起 → 调用完回收）**
+//!
+//! 打开设置页的启用开关**不启动任何子进程**——服务器进入「静默待命」：
+//! 工具清单已知（来自磁盘快照 `tool_cache`），但没有进程在跑。模型真正调用
+//! 该服务器的工具时，才拉起子进程；调用结束立刻回收，进程不跨调用存活。
+//!
+//! 为什么这么切：业界客户端（Claude Code / Cursor 等）默认「启动即连、
+//! 常驻到退出」，一台 stdio 服务器（node/npx）常驻 80–150 MB，十来台就是
+//! 几 GB 纯待机内存（调研见 `docs/MCP-ON-DEMAND-LIFECYCLE-DESIGN-2026-10-24.md`）。
+//! mcp-proxy / VS Code / rho 都已转向 lazy：工具元数据与活连接解耦，
+//! 发现一次工具清单即落盘，用完即断，需要时透明重连。
+//!
 //! 隔离模型：
 //! - stdio 服务器 = 独立子进程，崩溃不伤宿主（传输断开 → 槽位转 Down）；
-//! - 懒重连：Down 不是终点——下次 `ensure_connected`（工具调用前 / 全量重载）
-//!   会重新拉起进程；连接失败把错误写进槽位 + 审计，绝不 panic / 不阻塞其他服务器；
+//! - 懒重连：Down 不是终点——下次 `ensure_connected`（工具调用前）会重新
+//!   拉起进程；连接失败把错误写进槽位 + 审计，绝不 panic / 不阻塞其他服务器；
 //! - 所有 await 都在锁外：std Mutex 只护 map 增删查（临界区内无 IO / 无 await），
 //!   调用前把 `Arc<RunningService>` 克隆出来。
 //!
@@ -42,14 +54,36 @@ use super::stdio_transport::{CappedChildProcess, MAX_STDOUT_LINE};
 /// 建立连接（spawn 子进程 + initialize 握手）的总超时
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 工具发现失败后的重试冷却（毫秒）。
+///
+/// 冷却的意义：没有它，一台连不上的服务器会让**每一轮对话**都去连一遍
+/// （连接超时 10s 起步），整轮提问被拖死。冷却期内面板照常显示错误，
+/// 用户手动开关 / 改配置即解除（`reload_from_config` 清冷却）。
+const DISCOVERY_RETRY_COOLDOWN_MS: i64 = 10 * 60 * 1000;
+
 /// 已连接客户端服务句柄。`into_dyn()` 后可作集合元素（rmcp 官方推荐存集合形态）。
 type ClientService = RunningService<RoleClient, Box<dyn DynService<RoleClient>>>;
 
-/// 单服务器连接槽：Connected（缓存 tools 快照）/ Down（最近失败信息）。
+/// 单服务器连接槽。三态：
+///
+/// - `Idle`（静默待命）：已启用、工具清单已知，但**没有子进程在跑**——
+///   这是按需启停下的常态。工具清单来自磁盘快照（`tool_cache`）或上次连接。
+/// - `Connected`（活连接）：只在一次工具调用期间存在，调用完即回收。
+/// - `Down`（最近失败信息）：连接失败 / 工具发现失败。
+///
 /// fingerprint = 配置指纹：重载时同指纹跳过重连，配置变了才断开重建。
 /// `name` 缓存自配置（连接槽唯一无 AppHandle 也能拿到的东西）：
 /// 阶段 3 工具挂载的 `mcp_{server}_{tool}` 前缀来源。
 enum Slot {
+    /// 静默待命：已启用但无进程。工具清单可见，模型可以调（调用时才拉起）。
+    Idle {
+        name: String,
+        /// 已知工具清单（可能为空 = 服务器确实没提供工具）
+        tools: Vec<Tool>,
+        /// 是否完成过一次工具发现。false = 还没发现过，模型清单里还没有它的工具，
+        /// 需要按需发现一次（连上→列工具→断开→落盘快照）。
+        discovered: bool,
+    },
     Connected {
         fingerprint: u64,
         name: String,
@@ -102,6 +136,11 @@ pub fn shared() -> &'static McpManager {
         stderr_tail: Mutex::new(HashMap::new()),
         sample_cache: Mutex::new(Vec::new()),
         cwd: Mutex::new(None),
+        enabled: Mutex::new(Vec::new()),
+        cache_dir: Mutex::new(None),
+        cache_lock: Mutex::new(()),
+        call_locks: Mutex::new(HashMap::new()),
+        discovery_retry_at: Mutex::new(HashMap::new()),
     })
 }
 
@@ -109,7 +148,8 @@ pub fn shared() -> &'static McpManager {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpSlotStatus {
-    /// "connected" | "down" | "absent"（absent = 进程内无槽位：未启用或还没轮到）
+    /// "connected"（调用中）| "idle"（静默待命）| "pending"（待发现工具）
+    /// | "down"（失败）| "absent"（进程内无槽位：未启用或还没轮到）
     pub state: String,
     pub error: Option<String>,
     pub tool_count: usize,
@@ -131,6 +171,26 @@ pub struct McpManager {
     /// 见 `reload_from_config` 的设置点：打包后进程 cwd 是 `/`，不钉住的话以
     /// 工作目录为文件沙箱根的服务器（Playwright）会把整块文件系统当可访问范围。
     cwd: Mutex<Option<std::path::PathBuf>>,
+    /// 启用中的服务器配置快照（重载时刷新）。
+    ///
+    /// 按需启停后，工具发现不再发生在「重载」那一刻，而是在模型真要用工具时
+    /// （`ensure_tools_known`）——那一刻进程内没有 AppHandle 上下文可读配置，
+    /// 靠这份快照拿到「该发现哪几台、用什么配置」。
+    enabled: Mutex<Vec<McpServerConfig>>,
+    /// 工具快照的落盘目录（数据目录）；None = 还没重载过（无盘上快照可读）。
+    cache_dir: Mutex<Option<std::path::PathBuf>>,
+    /// 工具快照的读-改-写互斥（发现线程与设置页可能同时写同一份文件）。
+    cache_lock: Mutex<()>,
+    /// 每台服务器的调用闸：同一台服务器的并发调用串行化。
+    ///
+    /// 「调用完即回收」要求同一时刻只有一条活连接——stdio 服务器的连接本来
+    /// 也只能服务一个调用方；并行调用排队即可，不丢请求。
+    call_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// 工具发现失败后的重试冷却（服务器 id → 最早可重试时刻，毫秒）。
+    ///
+    /// 没有冷却 = 每轮对话都去连一遍坏服务器（连接超时 10s 起步），一轮提问
+    /// 直接被拖死。冷却期内面板仍显示错误，用户手动开关/改配置即解除。
+    discovery_retry_at: Mutex<HashMap<String, i64>>,
 }
 
 /// 环形缓冲容量（行）
@@ -138,7 +198,7 @@ const STDERR_TAIL_LINES: usize = 20;
 
 /// 单服务器工具快照上限：外部服务器可返回
 /// 任意多工具，无上限会经挂载层每轮全量拼进 tools JSON 撑爆请求与上下文。
-/// 超限截断连接快照（进程内无 AppHandle，不另发审计——`mcp.connected` 的
+/// 超限截断连接快照（进程内无 AppHandle，不另发审计——`mcp.tools_discovered` 的
 /// tools 计数即截断后口径，设置页「查看工具」同源可见，dev 日志留痕）。
 const MAX_TOOLS_PER_SERVER: usize = 128;
 
@@ -258,6 +318,10 @@ impl McpManager {
 
     /// 确保该服务器已连接且连接对应的正是当前配置（指纹一致）。
     /// 幂等：已连接且同指纹 → no-op。失败返回错误文案（槽位转 Down）。
+    ///
+    /// 这是「拉起一条活连接」的底层原语——按需启停下它只在两处被调用：
+    /// 工具调用（`call_tool`）与工具发现（`discover_tools`）。
+    /// **重载不再调用它**（打开开关不启进程）。
     pub async fn ensure_connected(&self, cfg: &McpServerConfig) -> Result<(), String> {
         let fp = fingerprint(cfg);
         if let Some(Slot::Connected { fingerprint, .. }) = self.slots().get(&cfg.id) {
@@ -302,7 +366,232 @@ impl McpManager {
     pub async fn disconnect(&self, id: &str) {
         let old = self.slots().remove(id);
         self.prune_stderr(id);
+        // 停用 / 删除 = 用户显式动作 → 发现冷却一并解除（下次可直接重试）
+        self.discovery_retry_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
         Self::close_old(old).await;
+    }
+
+    /// 每台服务器的调用闸：同一台服务器的并发调用串行化。
+    ///
+    /// 「调用完即回收」要求同一时刻只有一条活连接（stdio 服务器的连接本来
+    /// 也只服务一个调用方）；并行调用排队即可，不丢请求。
+    fn call_lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.call_locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks
+            .entry(id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
+    /// 工具清单是否已知（已知 = 不用再发现一次）。
+    pub fn tools_known(&self, id: &str) -> bool {
+        match self.slots().get(id) {
+            Some(Slot::Idle { discovered, .. }) => *discovered,
+            Some(Slot::Connected { .. }) => true,
+            _ => false,
+        }
+    }
+
+    /// 清掉某台服务器的工具发现冷却（用户显式动作：开关 / 改配置 / 点「工具」）。
+    pub fn clear_discovery_cooldown(&self, id: &str) {
+        self.discovery_retry_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+    }
+
+    /// 为某台服务器按需发现一次工具清单（设置页「查看工具」触发）。
+    ///
+    /// 服务器不在启用列表里 → 不做（禁用 / 已删除的服务器没有工具可看）。
+    pub async fn discover_tools_for(&self, app: &tauri::AppHandle, id: &str) {
+        let cfg = self
+            .enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|c| c.id == id)
+            .cloned();
+        let Some(cfg) = cfg else { return };
+        self.discover_tools(app, &cfg).await;
+    }
+
+    /// 工具发现失败后的冷却期是否未过（未过则本轮不重试）。
+    fn discovery_cooling(&self, id: &str) -> bool {
+        let retry_at = self
+            .discovery_retry_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match retry_at.get(id) {
+            Some(at) => crate::db::now_ms() < *at,
+            None => false,
+        }
+    }
+
+    /// 按需发现工具清单：**只有快照缺失的启用服务器才连一次**。
+    ///
+    /// 由主 agent 会话进入模型循环前调用（子 agent 工具面静态、不挂 MCP 工具，
+    /// 不该在这里拉起服务器）。发现完立刻断开连接——工具清单已落盘，
+    /// 之后不必再连；模型真要调用时再按需拉起。
+    pub async fn ensure_tools_known(&self, app: &tauri::AppHandle) {
+        let targets: Vec<McpServerConfig> = self
+            .enabled
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        for cfg in targets {
+            if self.tools_known(&cfg.id) {
+                continue;
+            }
+            if self.discovery_cooling(&cfg.id) {
+                continue;
+            }
+            self.discover_tools(app, &cfg).await;
+        }
+    }
+
+    /// 工具发现：连上 → 列工具 → 断开 → 落盘快照 → 槽位转静默待命。
+    ///
+    /// 失败时槽位转 Down 并进入冷却（冷却期内不再重试）——没有冷却的话，
+    /// 一台坏服务器会让**每一轮对话**都去连一遍（连接超时 10s 起步），
+    /// 整轮提问被拖死。
+    async fn discover_tools(&self, app: &tauri::AppHandle, cfg: &McpServerConfig) {
+        // 有活连接在跑（调用进行中）→ 不动它：活连接的工具清单就是最新的，
+        // 覆盖槽位会把在途调用的连接抽走。
+        if matches!(self.slots().get(&cfg.id), Some(Slot::Connected { .. })) {
+            return;
+        }
+        let fp = fingerprint(cfg);
+        // 换了一代进程：旧进程的 stderr 尾巴不能混进新一代的诊断
+        self.prune_stderr(&cfg.id);
+        match self.spawn_service(cfg).await {
+            Ok((service, tools, pid)) => {
+                // 这一条连接只为拿工具清单而存在：发现完即断
+                Self::close_old(Some(Slot::Connected {
+                    fingerprint: fp,
+                    name: cfg.name.clone(),
+                    tools: tools.clone(),
+                    service,
+                    pid,
+                    started_at_ms: crate::db::now_ms(),
+                }))
+                .await;
+                if let Err(e) = self.write_tool_cache(cfg, fp, &tools) {
+                    crate::audit::write_event(
+                        app,
+                        crate::audit::AuditLevel::Warn,
+                        "mcp.tool_cache_write_failed",
+                        &[("id", cfg.id.clone()), ("err", e)],
+                    );
+                }
+                let tool_count = tools.len();
+                self.slots().insert(
+                    cfg.id.clone(),
+                    Slot::Idle {
+                        name: cfg.name.clone(),
+                        tools,
+                        discovered: true,
+                    },
+                );
+                self.discovery_retry_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&cfg.id);
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Info,
+                    "mcp.tools_discovered",
+                    &[
+                        ("id", cfg.id.clone()),
+                        ("name", cfg.name.clone()),
+                        ("tools", tool_count.to_string()),
+                    ],
+                );
+            }
+            Err(e) => {
+                let e = self.format_with_stderr_tail(&cfg.id, e);
+                self.slots()
+                    .insert(cfg.id.clone(), Slot::Down { error: e.clone() });
+                self.discovery_retry_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(
+                        cfg.id.clone(),
+                        crate::db::now_ms() + DISCOVERY_RETRY_COOLDOWN_MS,
+                    );
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Warn,
+                    "mcp.discover_failed",
+                    &[
+                        ("id", cfg.id.clone()),
+                        ("name", cfg.name.clone()),
+                        ("err", e),
+                    ],
+                );
+            }
+        }
+    }
+
+    /// 工具清单落盘（快照 = 「工具可见性」与「活连接」解耦的载体）。
+    ///
+    /// 读-改-写全程持 `cache_lock`：模型循环的按需发现与设置页点「工具」可能
+    /// 同时写同一份文件，不互斥会互相覆盖条目（丢一份 = 下次多发现一次）。
+    ///
+    /// 落盘失败不影响本次会话（内存里已有清单，模型照样看得见）——由调用方
+    /// 记审计。
+    fn write_tool_cache(
+        &self,
+        cfg: &McpServerConfig,
+        fp: u64,
+        tools: &[Tool],
+    ) -> Result<(), String> {
+        let Some(dir) = self
+            .cache_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        else {
+            return Err("数据目录未初始化".into());
+        };
+        let _g = self.cache_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = super::tool_cache::ToolCache::load(&dir);
+        cache.put(&cfg.id, fp, &cfg.name, tools.to_vec());
+        cache.save(&dir)
+    }
+
+    /// 调用完回收活连接：进程停掉，槽位转回静默待命（工具清单留着）。
+    ///
+    /// 「调用完即关」是按需启停的核心：子进程不跨调用存活，下一次调用重新拉起。
+    /// 期间若 reload 写入了新槽（配置变了），不覆盖它。
+    async fn retire(&self, id: &str, fp: u64) {
+        let old = {
+            let mut slots = self.slots();
+            match slots.get(id) {
+                Some(Slot::Connected { fingerprint, .. }) if *fingerprint == fp => slots.remove(id),
+                _ => None,
+            }
+        };
+        let Some(slot) = old else { return };
+        let Slot::Connected { name, tools, .. } = &slot else {
+            return;
+        };
+        let name = name.clone();
+        let tools = tools.clone();
+        Self::close_old(Some(slot)).await;
+        let mut slots = self.slots();
+        if !slots.contains_key(id) {
+            slots.insert(
+                id.to_string(),
+                Slot::Idle {
+                    name,
+                    tools,
+                    discovered: true,
+                },
+            );
+        }
     }
 
     /// 断开一个连接：先走信号阶梯把子进程树停干净，再取消令牌让 rmcp 收尾。
@@ -495,6 +784,12 @@ impl McpManager {
 
     /// 同上，但 TTL 可指定（测试用 0 = 每次都重采，逼出「第二次才有占用率」那条路径）。
     fn sample_children_within(&self, pids: &[u32], ttl_ms: i64) -> HashMap<u32, ChildResource> {
+        // 没有子进程可采 → 不拍全机 ps。按需启停下这恰恰是常态（服务器平时
+        // 静默待命、没有进程），而面板可见时每 5s 轮询一次——每次拍一张全机
+        // 快照（~50ms + 一次进程表遍历）在没有要采的东西时纯属白干。
+        if pids.is_empty() {
+            return HashMap::new();
+        }
         let mut guard = self.sample_cache.lock().unwrap_or_else(|e| e.into_inner());
         let now_ms = crate::db::now_ms();
         let fresh = guard
@@ -593,17 +888,52 @@ impl McpManager {
             .remove(id);
     }
 
-    /// 按配置全量对齐（启动 / 配置变更后调用）：启用且有槽同指纹 → 跳过；
-    /// 启用无槽 / 指纹变了 → 连接；禁用 / 已删除但有槽 → 断开。
+    /// 按配置全量对齐（启动 / 配置变更后调用）。
+    ///
+    /// **不预连任何子进程**：打开启用开关只是「允许机器人用这台服务器」，
+    /// 进程留到模型真要调用它的工具时才拉起（`call_tool`），调用完即回收。
+    /// 工具清单来自盘上快照（`tool_cache`）——没有活连接也能挂给模型。
+    ///
     /// 单台失败只记审计，不影响其他服务器（失败隔离）。
     /// 具体形态 `AppHandle`（= Wry）：load_config 是具体签名，本方法仅生产路径调用。
     pub async fn reload_from_config(&self, app: &tauri::AppHandle) {
-        *self.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(crate::db::data_dir(app));
+        let dir = crate::db::data_dir(app);
+        *self.cwd.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.clone());
+        *self.cache_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.clone());
         let servers = crate::bot::config::io::load_config(app)
             .mcp_servers
             .unwrap_or_default();
+        // 盘上工具快照（指纹一致才有效——配置变了这份就是陈旧的）
+        let cache = super::tool_cache::ToolCache::load(&dir);
+        let disconnected = self.apply_config(&servers, &cache).await;
+        for id in disconnected {
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Info,
+                "mcp.disconnected",
+                &[("id", id.clone())],
+            );
+        }
+        let _ = app.emit("mcp-status-changed", ());
+    }
+
+    /// 按配置对齐槽位（无 IO / 无 AppHandle，单测直打）。
+    ///
+    /// - 启用中的服务器 → **静默待命**（不连！工具清单取自盘上快照）
+    /// - 不再启用 / 已删除的 → 断开并摘槽
+    /// - 指纹变了 → 断开旧连接（换了一代连接，stderr 尾巴也一并清掉）
+    ///
+    /// 返回被摘掉的服务器 id（调用方记审计）。
+    pub async fn apply_config(
+        &self,
+        servers: &[McpServerConfig],
+        cache: &super::tool_cache::ToolCache,
+    ) -> Vec<String> {
+        // 启用中的配置快照：按需发现工具时用（那一刻进程内没有 AppHandle 上下文）
+        let enabled: Vec<McpServerConfig> = servers.iter().filter(|s| s.enabled).cloned().collect();
+        *self.enabled.lock().unwrap_or_else(|e| e.into_inner()) = enabled.clone();
         let mut want: HashMap<&str, &McpServerConfig> = HashMap::new();
-        for s in servers.iter().filter(|s| s.enabled) {
+        for s in enabled.iter() {
             want.insert(s.id.as_str(), s);
         }
         // 断开：槽位里有、但配置里不再启用（或整体不存在）的 id
@@ -613,60 +943,62 @@ impl McpManager {
             .filter(|id| !want.contains_key(id.as_str()))
             .cloned()
             .collect();
-        for id in stale {
-            self.disconnect(&id).await;
-            crate::audit::write_event(
-                app,
-                crate::audit::AuditLevel::Info,
-                "mcp.disconnected",
-                &[("id", id.clone())],
-            );
+        for id in &stale {
+            self.disconnect(id).await;
         }
-        // 连接：新增 / 指纹变化 / Down 重试（ensure_connected 内部幂等）
+        // 静默待命：启用中的服务器转 Idle（工具清单取自盘上快照）
         for (id, cfg) in want {
-            match self.ensure_connected(cfg).await {
-                Ok(()) => {
-                    let n = self.status_of(id).tool_count.to_string();
-                    crate::audit::write_event(
-                        app,
-                        crate::audit::AuditLevel::Info,
-                        "mcp.connected",
-                        &[
-                            ("id", id.to_string()),
-                            ("name", cfg.name.clone()),
-                            ("transport", cfg.transport_kind().as_str().to_string()),
-                            ("tools", n),
-                        ],
-                    );
-                }
-                Err(e) => {
-                    crate::audit::write_event(
-                        app,
-                        crate::audit::AuditLevel::Warn,
-                        "mcp.connect_failed",
-                        &[
-                            ("id", id.to_string()),
-                            ("name", cfg.name.clone()),
-                            ("err", e),
-                        ],
-                    );
-                }
+            let fp = fingerprint(cfg);
+            // 活连接且指纹一致 → 保留（调用进行中，调用完它自己回收）
+            if matches!(
+                self.slots().get(id),
+                Some(Slot::Connected { fingerprint, .. }) if *fingerprint == fp
+            ) {
+                continue;
             }
+            // 其余情形（无槽 / 指纹变了 / Down / Idle）→ 断开旧的再转 Idle
+            let old = self.slots().remove(id);
+            if old.is_some() {
+                // 换了一代连接：旧进程的 stderr 尾巴不能混进新一代的诊断
+                self.prune_stderr(id);
+            }
+            Self::close_old(old).await;
+            let (tools, discovered) = match cache.entry(id, fp) {
+                Some(e) => (e.tools.clone(), true),
+                None => (Vec::new(), false),
+            };
+            self.slots().insert(
+                id.to_string(),
+                Slot::Idle {
+                    name: cfg.name.clone(),
+                    tools,
+                    discovered,
+                },
+            );
+            // 配置刚变过 = 用户显式动作 → 发现冷却解除（下次可直接重试）
+            self.discovery_retry_at
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(id);
         }
-        let _ = app.emit("mcp-status-changed", ());
+        stale
     }
 
     /// 已连接服务器的缓存工具快照（连接成功时的 list_all_tools 结果；
-    /// 未连接 / 无槽 → 空）。阶段 3 schema 注入与设置页「查看工具」共用。
+    /// 静默待命时取盘上快照；未连接 / 无槽 → 空）。阶段 3 schema 注入与设置页
+    /// 「查看工具」共用。
     pub fn tools_of(&self, id: &str) -> Vec<Tool> {
         match self.slots().get(id) {
             Some(Slot::Connected { tools, .. }) => tools.clone(),
+            Some(Slot::Idle { tools, .. }) => tools.clone(),
             _ => Vec::new(),
         }
     }
 
-    /// 已连接服务器的挂载视图（阶段 3 schema 注入 + 阶段 4 调用反查）：
-    /// (服务器 id, 服务器名, tools)。名字来自连接槽缓存（ensure_connected 时带出）。
+    /// 可挂载服务器的视图（阶段 3 schema 注入 + 阶段 4 调用反查）：
+    /// (服务器 id, 服务器名, tools)。名字来自连接槽缓存（发现/连接时带出）。
+    /// **静默待命的服务器也算在内**——按需启停下服务器平时不连着，
+    /// 但工具照样要挂给模型，否则模型看不见它、永远调不到它。
     /// 按 id 排序输出（评审）：HashMap 迭代序非确定，而不确定性会让撞名消歧的
     /// **首次分配**顺序跨重启翻转。排序后首次分配恒定；之后的稳定由
     /// `mount::NameRegistry` 兜住（名字一经分配就不再变，断连/重连不漂移）。
@@ -678,6 +1010,9 @@ impl McpManager {
                 Slot::Connected { name, tools, .. } if !tools.is_empty() => {
                     Some((id.clone(), name.clone(), tools.clone()))
                 }
+                Slot::Idle { name, tools, .. } if !tools.is_empty() => {
+                    Some((id.clone(), name.clone(), tools.clone()))
+                }
                 _ => None,
             })
             .collect();
@@ -686,10 +1021,24 @@ impl McpManager {
     }
 
     /// 单服务器槽位状态快照（mcp_status 命令）
+    ///
+    /// 三态 + 一个待发现态：
+    /// - `connected`：调用中（活连接）
+    /// - `idle`：静默待命——已启用、工具清单已知、**没有进程在跑**（按需启停常态）
+    /// - `pending`：已启用但工具清单还没发现（首次对话时按需发现一次）
+    /// - `down`：最近一次连接 / 发现失败
+    /// - `absent`：进程内无槽位（未启用或还没轮到）
     pub fn status_of(&self, id: &str) -> McpSlotStatus {
         match self.slots().get(id) {
             Some(Slot::Connected { tools, .. }) => McpSlotStatus {
                 state: "connected".into(),
+                error: None,
+                tool_count: tools.len(),
+            },
+            Some(Slot::Idle {
+                tools, discovered, ..
+            }) => McpSlotStatus {
+                state: if *discovered { "idle" } else { "pending" }.into(),
                 error: None,
                 tool_count: tools.len(),
             },
@@ -722,8 +1071,14 @@ impl McpManager {
         }
     }
 
-    /// 调用外部工具（阶段 4 dispatch 消费）。入口先 ensure_connected（懒重连：
-    /// Down / 配置已变都会在这里重建），再带超时调用。
+    /// 调用外部工具（阶段 4 dispatch 消费）。
+    ///
+    /// **按需启停**：这一刻才拉起子进程（此前服务器静默待命、没有进程在跑），
+    /// 调用结束立刻回收——进程不跨调用存活。
+    ///
+    /// 同一台服务器的并发调用串行（`call_lock`）：活连接一次只服务一个调用方。
+    /// 入口先 ensure_connected（懒重连：Down / 配置已变都会在这里重建），
+    /// 再带超时调用。
     /// 连接级失败（TransportClosed/Send）→ 槽位转 Down，返回明确错误文案，
     /// 下次调用自动重连；**同一调用不原地重试**（外部工具可能有副作用，防双执行）。
     pub async fn call_tool(
@@ -732,23 +1087,39 @@ impl McpManager {
         tool: &str,
         args: serde_json::Value,
     ) -> Result<CallToolResult, String> {
-        self.ensure_connected(cfg).await?;
+        let call_lock = self.call_lock(&cfg.id);
+        let _serial = call_lock.lock().await;
         let fp = fingerprint(cfg);
+        self.ensure_connected(cfg).await?;
         let service = self.connected_service(&cfg.id, fp)?;
+        let result = self.invoke_tool(&service, cfg, tool, args).await;
+        // 调用完即回收：子进程不跨调用存活（下一次调用重新拉起）
+        self.retire(&cfg.id, fp).await;
+        result
+    }
+
+    /// 带超时的工具调用内核（连接级失败 → 槽位转 Down）。
+    async fn invoke_tool(
+        &self,
+        service: &Arc<ClientService>,
+        cfg: &McpServerConfig,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<CallToolResult, String> {
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = args.as_object().cloned();
         let timeout = Duration::from_secs(cfg.effective_timeout_secs());
         match tokio::time::timeout(timeout, service.call_tool_once(params)).await {
             Err(_) => Err(format!("工具调用超时（{}s）：{tool}", timeout.as_secs())),
             Ok(Err(rmcp::ServiceError::TransportClosed)) => {
-                self.mark_down(&cfg.id, fp, "连接已断开".into());
+                self.mark_down(&cfg.id, fingerprint(cfg), "连接已断开".into());
                 Err(self.format_with_stderr_tail(
                     &cfg.id,
                     "MCP 服务器连接已断开（已标记，下次调用自动重连）".into(),
                 ))
             }
             Ok(Err(e @ rmcp::ServiceError::TransportSend(_))) => {
-                self.mark_down(&cfg.id, fp, e.to_string());
+                self.mark_down(&cfg.id, fingerprint(cfg), e.to_string());
                 Err(self.format_with_stderr_tail(
                     &cfg.id,
                     format!("MCP 服务器连接异常（已标记，下次调用自动重连）：{e}"),
@@ -1035,6 +1406,7 @@ mod e2e_stdio {
     //! 走完 spawn → initialize → tools/list → tools/call → 懒重连 → shutdown。
     use super::*;
     use crate::bot::mcp::config::McpServerConfig;
+    use crate::bot::mcp::tool_cache::ToolCache;
 
     fn echo_cfg(id: &str) -> McpServerConfig {
         McpServerConfig {
@@ -1103,6 +1475,25 @@ mod e2e_stdio {
         let mounted = crate::bot::mcp::mount::find_mounted("mcp_echo_echo").expect("反查应命中");
         assert_eq!(mounted.tool_name, "echo");
         assert_eq!(mounted.server_id, "e2e-conn");
+        // 阶段 6：stderr 管道捕获——桩启动即写一行 stderr，轮询等待环形缓冲收进
+        //
+        // **在调用之前**断言：按需启停下调用结束要走停止阶梯（SIGINT），
+        // Python 桩会打一段 KeyboardInterrupt 回溯——那几行会把启动锚点挤出
+        // 「尾部 N 行」。启动诊断的价值本来就在「连不上时看尾巴」，而连接失败
+        // 那条路上没有回溯（那才是它要救的场景）。
+        let mut stderr_seen = false;
+        for _ in 0..20 {
+            if mgr
+                .stderr_tail_snapshot("e2e-conn", 5)
+                .iter()
+                .any(|l| l.contains("echo-test stderr ready"))
+            {
+                stderr_seen = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(stderr_seen, "stderr 环形缓冲应捕获桩的启动输出");
         // 阶段 4：调用内核（dispatch 路由的下游）——真实远端调用 + 结果整形
         let direct =
             crate::bot::mcp::mount::execute_mcp_direct(&cfg, &mounted, r#"{"text": "路由测试"}"#)
@@ -1124,20 +1515,25 @@ mod e2e_stdio {
             crate::bot::mcp::mount::find_mounted("mcp_echo_nope").is_none(),
             "挂载表外名字不应命中"
         );
-        // 阶段 6：stderr 管道捕获——桩启动即写一行 stderr，轮询等待环形缓冲收进
-        let mut stderr_seen = false;
-        for _ in 0..20 {
-            if mgr
-                .stderr_tail_snapshot("e2e-conn", 5)
-                .iter()
-                .any(|l| l.contains("echo-test stderr ready"))
-            {
-                stderr_seen = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        assert!(stderr_seen, "stderr 环形缓冲应捕获桩的启动输出");
+        // 按需启停：调用完即回收——活连接退回静默待命，工具清单留着
+        assert_eq!(
+            mgr.status_of("e2e-conn").state,
+            "idle",
+            "调用完应转静默待命（没有进程在跑）"
+        );
+        assert!(
+            mgr.connected_children().is_empty(),
+            "调用完不该再有子进程挂在连接槽上"
+        );
+        assert_eq!(
+            mgr.tools_of("e2e-conn").len(),
+            1,
+            "静默待命时工具清单仍可见（模型还得看得见它才调得到）"
+        );
+        assert!(
+            crate::bot::registry::tools_json_with_mcp(None).contains("\"mcp_echo_echo\""),
+            "静默待命的服务器照样挂进主 agent 清单"
+        );
         // 工具调用
         let result = mgr
             .call_tool(&cfg, "echo", serde_json::json!({ "text": "你好" }))
@@ -1157,6 +1553,148 @@ mod e2e_stdio {
             !crate::bot::registry::tools_json_with_mcp(None).contains("mcp_echo_echo"),
             "断开后工具应立即从清单消失"
         );
+    }
+
+    /// 按需启停 · 核心断言 1：**打开启用开关不启任何子进程**。
+    ///
+    /// 这是本次改造的要点：以前 `reload_from_config` 会给每台启用的服务器
+    /// 连一次（node/npx 一上来就吃掉百来 MB 内存）。现在开关只表示
+    /// 「允许机器人用这台服务器」，进程留到模型真调用时才拉起。
+    #[tokio::test]
+    async fn enabling_a_server_does_not_spawn_a_process() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP 按需启停 e2e");
+            return;
+        }
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+        let cfg = echo_cfg("e2e-lazy");
+        // 配置对齐（= 用户打开启用开关后发生的事）
+        mgr.apply_config(std::slice::from_ref(&cfg), &ToolCache::default())
+            .await;
+        assert!(
+            mgr.connected_children().is_empty(),
+            "打开启用开关不该拉起任何子进程"
+        );
+        assert_eq!(
+            mgr.status_of("e2e-lazy").state,
+            "pending",
+            "已启用但工具清单还没发现 → 待发现"
+        );
+        assert!(
+            mgr.tools_of("e2e-lazy").is_empty(),
+            "还没发现过工具 → 清单为空"
+        );
+        mgr.shutdown().await;
+    }
+
+    /// 按需启停 · 核心断言 2：**调用才拉起，调用完即回收**。
+    ///
+    /// 进程不跨调用存活——这是「按需启停」与「懒重连」的分水岭：
+    /// 懒重连是「断了再连」，按需启停是「没调用就不连」。
+    #[tokio::test]
+    async fn a_tool_call_spawns_the_child_then_reaps_it() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP 按需启停 e2e");
+            return;
+        }
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+        let cfg = echo_cfg("e2e-call");
+        mgr.apply_config(std::slice::from_ref(&cfg), &ToolCache::default())
+            .await;
+        // 调用前：没有进程
+        assert!(mgr.connected_children().is_empty());
+        let result = mgr
+            .call_tool(&cfg, "echo", serde_json::json!({ "text": "按需" }))
+            .await
+            .expect("echo 调用应成功");
+        let text = result
+            .content
+            .iter()
+            .find_map(|c| c.as_text().map(|t| t.text.clone()))
+            .unwrap_or_default();
+        assert_eq!(text, "echo: 按需");
+        // 调用完：进程回收了，但工具清单留着（模型还得看得见它才调得到）
+        assert!(
+            mgr.connected_children().is_empty(),
+            "调用完子进程必须被回收（不跨调用存活）"
+        );
+        assert_eq!(mgr.status_of("e2e-call").state, "idle");
+        assert_eq!(mgr.tools_of("e2e-call").len(), 1, "工具清单要留着");
+        mgr.shutdown().await;
+    }
+
+    /// 按需启停 · 核心断言 3：**工具可见性与活连接解耦**。
+    ///
+    /// 盘上快照里的工具清单，在没有任何进程的情况下照样挂进主 agent 清单——
+    /// 否则模型看不见这台服务器的工具，就永远不会去调它（死锁）。
+    #[tokio::test]
+    async fn cached_tools_are_mounted_without_any_live_connection() {
+        if !ensure_python3().await {
+            eprintln!("[skip] 无 python3，跳过 MCP 按需启停 e2e");
+            return;
+        }
+        let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+        shared().shutdown().await;
+        let mgr = shared();
+        let mut cfg = echo_cfg("e2e-cached");
+        // **换个服务器名**：函数名登记簿是进程级的，同前缀同工具名按序消歧——
+        // 用别的名字才不会跟别的用例抢「mcp_echo_echo」这个名字（抢到就变成
+        // mcp_echo_echo_2，别用例的精确断言会跟着飘）。
+        cfg.name = "cachedpool".into();
+        // 造一份「上次发现过」的盘上快照
+        let tool = serde_json::from_value(serde_json::json!({
+            "name": "echo",
+            "description": "回显",
+            "inputSchema": {"type": "object", "properties": {}}
+        }))
+        .expect("工具应能反序列化");
+        let mut cache = ToolCache::default();
+        cache.put(&cfg.id, fingerprint(&cfg), &cfg.name, vec![tool]);
+        mgr.apply_config(std::slice::from_ref(&cfg), &cache).await;
+        // 没有任何进程，但工具挂上了
+        assert!(mgr.connected_children().is_empty(), "不该有进程");
+        assert_eq!(mgr.status_of("e2e-cached").state, "idle", "静默待命");
+        let mounted = mcp_function_names();
+        // 函数名带消歧后缀是正常的（登记簿是进程级的，同前缀同工具名按序消歧）
+        assert!(
+            mounted.iter().any(|n| n.starts_with("mcp_cachedpool_echo")),
+            "静默待命的服务器的工具要照样挂进主 agent 清单，实际：{mounted:?}"
+        );
+        mgr.shutdown().await;
+    }
+
+    /// 按需启停 · 核心断言 4：**发现到的工具清单落盘，下次会话不用再连**。
+    ///
+    /// 落盘是「工具可见性」与「活连接」解耦的载体——没有它，每次对话都得
+    /// 先连一遍服务器才能拼工具清单（按需就退化成「每轮都启」）。
+    #[tokio::test]
+    async fn discovered_tools_are_written_to_the_disk_snapshot() {
+        let dir = std::env::temp_dir().join(format!("wmessage-mcp-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("临时目录应可建");
+        let mgr = McpManager::default();
+        *mgr.cache_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.clone());
+        let cfg = echo_cfg("snap-1");
+        let tool = serde_json::from_value(serde_json::json!({
+            "name": "echo",
+            "description": "回显",
+            "inputSchema": {"type": "object", "properties": {}}
+        }))
+        .expect("工具应能反序列化");
+        mgr.write_tool_cache(&cfg, fingerprint(&cfg), &[tool])
+            .expect("工具快照应能落盘");
+        // 盘上那份能被读回来，且指纹对得上（= 下次启动不用连也能挂工具）
+        let cache = ToolCache::load(&dir);
+        let entry = cache
+            .entry("snap-1", fingerprint(&cfg))
+            .expect("快照应命中");
+        assert_eq!(entry.tools.len(), 1);
+        assert_eq!(entry.tools[0].name, "echo");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 外部 MCP 服务器一条超长行（5MB 的畸形 JSON）不能撑爆宿主内存，

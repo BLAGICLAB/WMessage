@@ -1770,6 +1770,19 @@ pub async fn run_model_loop(
         let app = app.clone();
         async move { crate::bot_plan::replan(&app, &plan, &reason).await }
     };
+    // MCP 工具按需发现（放在拼装工具清单之前）：
+    // 外部 MCP 服务器平时静默待命、不连着——但模型要看得见它的工具才能调它。
+    // 快照缺失时在这里按需发现一次（连上→列工具→断开→落盘快照），此后不再连。
+    // 子 agent 会话不参与：它们的工具面是静态白名单，不挂 MCP 工具（§5.1 边界）。
+    let is_subagent = stop
+        .session_id()
+        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+        .is_some();
+    if !is_subagent {
+        crate::bot::mcp::manager::shared()
+            .ensure_tools_known(&app)
+            .await;
+    }
     let out = run_model_loop_core(
         &http,
         msgs,

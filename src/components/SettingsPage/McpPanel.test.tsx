@@ -100,7 +100,7 @@ describe("McpPanel", () => {
     expect(screen.getByText("filesystem")).toBeInTheDocument();
     expect(screen.getByText(/3 个工具/)).toBeInTheDocument();
     expect(screen.getByText(/已禁用/)).toBeInTheDocument();
-    const dot = screen.getByTitle("已连接");
+    const dot = screen.getByTitle("已连接（本次调用中）");
     expect(dot.className).toContain("bg-emerald-500");
   });
 
@@ -201,21 +201,37 @@ describe("McpPanel", () => {
     });
   });
 
-  it("启停：点复选框按 id 调 mcp_server_toggle", async () => {
+  it("启停：拨杆开关按 id 调 mcp_server_toggle", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) =>
       cmd === "mcp_status" ? SAMPLE_STATUS : [],
     );
     render(<McpPanel />);
     await flush();
-    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
-    // 第一个 = filesystem（enabled=true），点击取消勾选
-    expect(boxes[0].checked).toBe(true);
-    fireEvent.click(boxes[0]);
+    const switches = screen.getAllByRole("switch") as HTMLElement[];
+    // 第一个 = filesystem（enabled=true），点击即取消启用
+    expect(switches[0].getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(switches[0]);
     await flush();
     expect(mocks.invokeMock).toHaveBeenCalledWith("mcp_server_toggle", {
       id: "srv-1",
       enabled: false,
     });
+  });
+
+  it("启停开关：拨杆形态，解释文字走悬停 tooltip（按钮后不挂文字）", async () => {
+    mocks.invokeMock.mockImplementation(async (cmd: string) =>
+      cmd === "mcp_status" ? SAMPLE_STATUS : [],
+    );
+    render(<McpPanel />);
+    await flush();
+    const sw = screen.getAllByRole("switch")[0];
+    // 开关本体是 role=switch 的按钮（不再是 checkbox）
+    expect(sw.tagName).toBe("BUTTON");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    // 解释在 title 里（悬停可见），且不是行内可见文本
+    const tip = sw.getAttribute("title") ?? "";
+    expect(tip).toMatch(/静默待命|不进机器人清单/);
+    expect(sw.textContent).toBe("");
   });
 
   it("工具展开：点「工具」拉取 mcp_server_tools 并显示清单", async () => {
@@ -244,9 +260,9 @@ describe("McpPanel", () => {
     // 两台服务器，但只有自建那台有删除按钮
     expect(screen.getAllByTitle("删除")).toHaveLength(1);
     // 内置条目默认停用，开关可打开（第二张卡 = 内置那台）
-    const boxes = screen.getAllByRole("checkbox") as HTMLInputElement[];
-    expect(boxes[1].checked).toBe(false);
-    fireEvent.click(boxes[1]);
+    const switches = screen.getAllByRole("switch") as HTMLElement[];
+    expect(switches[1].getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(switches[1]);
     await flush();
     expect(mocks.invokeMock).toHaveBeenCalledWith("mcp_server_toggle", {
       id: "builtin-playwright",

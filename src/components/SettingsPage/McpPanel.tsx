@@ -19,6 +19,7 @@ import { getBotConfig } from "../../lib/botConfig";
 import { IconButton } from "../../ui/IconButton";
 import { Modal } from "../../ui/Modal";
 import { EmptyState } from "../EmptyState";
+import { Toggle } from "../Toggle/Toggle";
 import {
   MCP_STDIO_LAUNCHERS,
   type McpSecretsMasked,
@@ -129,11 +130,19 @@ function parseTimeoutSecs(raw: string): {
   return { value: n };
 }
 
-/** 状态点：connected 绿 / down 红（tooltip 带错误）/ absent 灰 */
+/** 状态点：connected 绿 / down 红（tooltip 带错误）/ idle 蓝（静默待命）/ absent 灰 */
 function StateDot({ status }: { status: McpServerStatus }) {
   const map: Record<string, { bg: string; tip: string }> = {
-    connected: { bg: "bg-emerald-500", tip: "已连接" },
+    connected: { bg: "bg-emerald-500", tip: "已连接（本次调用中）" },
     down: { bg: "bg-red-500", tip: `不可用：${status.error ?? "未知错误"}` },
+    idle: {
+      bg: "bg-sky-500",
+      tip: "静默待命：已启用但没有子进程在跑，大模型真正调用时才拉起，用完即关",
+    },
+    pending: {
+      bg: "bg-sky-500/60",
+      tip: "待发现工具：已启用，工具清单还没取过——第一次对话时按需连一次",
+    },
     absent: {
       bg: "bg-neutral-400",
       tip: status.enabled ? "未连接（启动中或等待）" : "已禁用",
@@ -490,6 +499,8 @@ export function McpPanel({ active = true }: { active?: boolean }) {
    * A 的工具渲染进 B 的展开行）；失败在展开行内报错（此前只上顶栏，
    * 展开行一直显示「暂无工具」，分不清没工具还是拉取失败） */
   const toolsReqRef = useRef(0);
+  /** 拉取工具可能要等一次按需发现（连上服务器列工具再断开），故有 loading 态 */
+  const [toolsLoading, setToolsLoading] = useState(false);
   const expandTools = async (s: McpServerStatus) => {
     if (expandedId === s.id) {
       setExpandedId(null);
@@ -499,12 +510,15 @@ export function McpPanel({ active = true }: { active?: boolean }) {
     setExpandedId(s.id);
     setTools([]);
     setToolsError("");
+    setToolsLoading(true);
     try {
       const t = await invoke<McpToolBrief[]>("mcp_server_tools", { id: s.id });
       if (toolsReqRef.current === req) setTools(t);
     } catch (e) {
       handleCommandError(e, "mcp_server_tools", { silent: true });
       if (toolsReqRef.current === req) setToolsError(formatCommandError(e));
+    } finally {
+      if (toolsReqRef.current === req) setToolsLoading(false);
     }
   };
 
@@ -515,7 +529,9 @@ export function McpPanel({ active = true }: { active?: boolean }) {
       </h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
         连接外部 MCP 服务器，把它们的工具挂进机器人工具清单。启动器仅限{" "}
-        {MCP_STDIO_LAUNCHERS.join(" / ")}；添加前会展示完整命令让你确认
+        {MCP_STDIO_LAUNCHERS.join(" / ")}；添加前会展示完整命令让你确认。
+        打开开关不会启动子进程——服务器静默待命，大模型真正调用它的工具时才拉起
+        子进程，调用完即关
       </p>
       {caps?.resourceSupported === false && (
         <p className="mt-1 text-xs text-[var(--t5)]">
@@ -578,18 +594,24 @@ export function McpPanel({ active = true }: { active?: boolean }) {
                     {" "}
                     · {s.transport}
                     {s.enabled ? ` · ${s.toolCount} 个工具` : " · 已禁用"}
+                    {s.enabled && s.state === "idle" ? " · 静默待命" : ""}
+                    {s.enabled && s.state === "pending" ? " · 待发现工具" : ""}
                     {s.state === "down" && s.error
                       ? ` · ${errorSummary(s.error)}`
                       : ""}
                   </span>
                 </span>
                 <button
-                  className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--t2)]"
+                  className="shrink-0 text-xs text-[var(--t5)] hover:text-[var(--t2)] disabled:opacity-50"
                   onClick={() => expandTools(s)}
-                  disabled={!s.enabled}
-                  title="查看已发现的工具"
+                  disabled={!s.enabled || toolsLoading}
+                  title={
+                    s.enabled
+                      ? "查看已发现的工具（没发现过会按需连一次服务器）"
+                      : "服务器已停用"
+                  }
                 >
-                  {expandedId === s.id ? "收起" : "工具"}
+                  {expandedId === s.id ? "收起" : toolsLoading ? "获取中…" : "工具"}
                 </button>
                 <IconButton
                   className="p-0.5 text-xs hover:text-[var(--t2)]"
@@ -612,17 +634,19 @@ export function McpPanel({ active = true }: { active?: boolean }) {
                     <Trash2 size={13} aria-hidden />
                   </IconButton>
                 )}
-                {/* 启停开关：与设置页其他 Toggle 同款语义——点击即持久化 */}
-                <label className="flex shrink-0 cursor-pointer items-center gap-1">
-                  <input
-                    type="checkbox"
-                    className="accent-[var(--t1)]"
-                    checked={s.enabled}
-                    disabled={busy}
-                    onChange={(e) => toggle(s, e.target.checked)}
-                  />
-                  <span className="text-xs text-[var(--t5)]">启用</span>
-                </label>
+                {/* 启停开关：拨杆形态，解释文字走悬停 tooltip（按钮后不挂文字） */}
+                <Toggle
+                  checked={s.enabled}
+                  disabled={busy}
+                  onChange={(next) => toggle(s, next)}
+                  ariaLabel={`启用 MCP 服务器 ${s.name}`}
+                  title={
+                    s.enabled
+                      ? "已启用：工具进机器人清单。静默待命——不启子进程，大模型真正调用时才拉起，用完即关"
+                      : "已停用：该服务器的工具不进机器人清单"
+                  }
+                  size="sm"
+                />
               </div>
               {s.pid ? (
                 <>

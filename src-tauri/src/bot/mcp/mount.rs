@@ -207,9 +207,9 @@ pub fn mcp_mounted_tools() -> Vec<McpMountedTool> {
 /// dispatch 反查（阶段 4）：函数名 → 挂载条目（拿 server_id 查配置、tool_name 调远端）。
 ///
 /// **先查登记簿**（名字 ↔ 服务器的绑定跨断连稳定）：服务器当前离线也照样能定位
-/// 到它——dispatch 随后走 `ensure_connected` 懒重连，而不是把模型按旧 schema
-/// 调用的名字报成「未知工具」。服务器显示名从实时挂载表取（取不到 = 服务器已删，
-/// 退回 id 兜底）。
+/// 到它——dispatch 随后走 `ensure_connected` 按需拉起（按需启停：调用这一刻才
+/// 启子进程），而不是把模型按旧 schema 调用的名字报成「未知工具」。服务器显示名
+/// 从实时挂载表取（取不到 = 服务器已删，退回 id 兜底）。
 pub fn find_mounted(func_name: &str) -> Option<McpToolRef> {
     // 登记簿的锁在取到归属后立刻放掉——下面还要调 mcp_mounted_tools()（它自己
     // 会拿这把锁），std Mutex 不可重入，嵌套持有即死锁。
@@ -485,7 +485,7 @@ mod tests {
     }
 
     /// 服务器当前离线时，dispatch 仍要能按名字定位到它——随后走
-    /// `ensure_connected` 懒重连，而不是把模型按旧 schema 调的名字报成「未知工具」。
+    /// `ensure_connected` 按需拉起，而不是把模型按旧 schema 调的名字报成「未知工具」。
     #[test]
     fn lookup_resolves_a_tool_of_an_offline_server() {
         {

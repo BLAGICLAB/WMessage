@@ -419,7 +419,8 @@ pub fn run() {
                     apps::sweep_stale_runs(&handle);
                 });
             }
-            // MCP 宿主（阶段 2）：进程级连接管理器 + 启动即连启用的服务器
+            // MCP 宿主（阶段 2）：进程级连接管理器 + 启动时对齐配置
+            //（按需启停：**不连**——启用的服务器进「静默待命」，模型真调用时才拉起）
             {
                 bot::mcp::manager::shared();
                 let handle = app.handle().clone();

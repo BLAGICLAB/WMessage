@@ -11,7 +11,9 @@
 //!
 //! 权限模型：显式确认在前端——添加/启用前 McpPanel 完整展示
 //! 将运行的命令行/参数/env，用户确认才发起 save；后端负责校验 + 审计留痕。
-//! 阶段 2 起 save/delete/toggle 成功后触发 mcp manager 重载连接。
+//! save/delete/toggle 成功后触发 mcp manager 重载**对齐配置**（按需启停：
+//! 重载不连子进程——启用只是「允许机器人用这台服务器」，进程留到模型真调用时
+//! 才拉起，调用完即回收）。
 
 use tauri::AppHandle;
 
@@ -154,8 +156,28 @@ pub fn mcp_server_delete(app: AppHandle, id: String) -> CommandResult<Vec<McpSer
     // 幂等 no-op（id 已不存在，如陈旧标签页重试）不触发重载：免得白拆白建全部连接
     if removed.is_some() {
         trigger_reload(&app);
+        // 服务器没了，它的工具快照也该走——留着是孤儿条目（按 id 找不到配置）。
+        // 快照落盘失败只记审计：孤儿条目无害（指纹对不上就用不上）。
+        if let Err(e) = purge_tool_cache(&app, &id) {
+            crate::audit::write_event(
+                &app,
+                crate::audit::AuditLevel::Warn,
+                "mcp.tool_cache_purge_failed",
+                &[("id", id.clone()), ("err", e)],
+            );
+        }
     }
     Ok(list)
+}
+
+/// 清掉已删除服务器的工具快照条目（删除路径专用）。
+fn purge_tool_cache(app: &AppHandle, id: &str) -> Result<(), String> {
+    let dir = crate::db::data_dir(app);
+    let mut cache = super::tool_cache::ToolCache::load(&dir);
+    if cache.servers.remove(id).is_none() {
+        return Ok(());
+    }
+    cache.save(&dir)
 }
 
 /// 启停 MCP 服务器（窄口径：只动 enabled 字段）。返回更新后的完整列表。
@@ -197,7 +219,8 @@ pub struct McpServerStatus {
     pub name: String,
     pub transport: String,
     pub enabled: bool,
-    /// "connected" | "down" | "absent"（absent = 未启用或尚未轮到连接）
+    /// "connected"（调用中）| "idle"（静默待命：已启用、无进程）
+    /// | "pending"（待发现工具）| "down"（失败）| "absent"（未启用 / 还没轮到）
     pub state: String,
     pub error: Option<String>,
     pub tool_count: usize,
@@ -335,11 +358,20 @@ pub fn mcp_server_secrets_masked(
     })
 }
 
-/// 单服务器已发现工具清单（设置页「查看工具」展开用）：只读连接槽的缓存快照，
-/// 不触发连接（未连接 → 空列表）。
+/// 单服务器已发现工具清单（设置页「查看工具」展开用）：读连接槽的缓存快照。
+///
+/// **按需启停下这里会按需发现一次**：工具清单还没发现过时（首次启用、配置改过），
+/// 用户点开「工具」= 显式要看清单 → 那就连一次（连上→列工具→断开）。
+/// 这是用户主动动作，与「开关一打开就启进程」不是一回事。
 #[tauri::command]
-pub fn mcp_server_tools(_app: AppHandle, id: String) -> CommandResult<Vec<McpToolBrief>> {
-    Ok(shared()
+pub async fn mcp_server_tools(app: AppHandle, id: String) -> CommandResult<Vec<McpToolBrief>> {
+    let mgr = shared();
+    if !mgr.tools_known(&id) {
+        // 显式查看 = 清掉发现冷却（用户等这一刻就是想要一次真结果）
+        mgr.clear_discovery_cooldown(&id);
+        mgr.discover_tools_for(&app, &id).await;
+    }
+    Ok(mgr
         .tools_of(&id)
         .into_iter()
         .map(|t| McpToolBrief {

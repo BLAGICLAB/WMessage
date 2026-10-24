@@ -135,7 +135,8 @@ export type McpServerStatus = {
   name: string;
   transport: string;
   enabled: boolean;
-  /** "connected" | "down" | "absent" */
+  /** "connected"（调用中）| "idle"（静默待命）| "pending"（待发现工具）
+   *  | "down"（失败）| "absent"（未启用 / 还没轮到） */
   state: string;
   error?: string | null;
   toolCount: number;

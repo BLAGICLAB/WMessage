@@ -789,7 +789,7 @@ UI 自动化未开启：请到 设置页 打开「允许机器人操作桌面界
 - 反向用例：把 env 那行**删掉**再保存 → 条目应被删除。
 - 反向用例 2：把 `TOKEN` 改成别的值保存 → 条目内容变化（Windows 上只能靠「条目被更新」，看不出值）。
 
-**另一条相关项**：指纹认 env/headers（P1-17）。改了 token 应当**重连**——看 bot.log 有没有新的 `mcp.connected`。
+**另一条相关项**：指纹认 env/headers（P1-17）。改了 token 应当**重连**——看 bot.log 有没有新的 `mcp.tools_discovered`（按需启停下「重连」表现为重新发现一次工具清单：指纹变 → 盘上快照作废 → 下次用到时按需重连重列）。
 
 ---
 
@@ -814,7 +814,7 @@ mcp.builtin_materialized | id: builtin-playwright | name: Playwright | 包: /Use
 
 **判据（这是个真缺陷，报告里要写）**：
 
-- **FAIL（当前状态）**：包路径是**编译机的 macOS 绝对路径** `/Users/renshi/Projects/wmessage`，还混了 Windows 的 `\` 分隔符 → 这个路径在 Windows 上永远无效 → 打开 Playwright 开关后必然 `mcp.connect_failed`（`初始化握手失败：connection closed: initialize response`）。
+- **FAIL（当前状态）**：包路径是**编译机的 macOS 绝对路径** `/Users/renshi/Projects/wmessage`，还混了 Windows 的 `\` 分隔符 → 这个路径在 Windows 上永远无效 → 打开 Playwright 开关后，机器人第一次用它时必然 `mcp.discover_failed`（`初始化握手失败：connection closed: initialize response`）。**按需启停的注记**：开关本身不再连它（打开开关不启子进程），失败出现在「首次发现工具 / 首次调用」那一刻——判据按这个时刻找事件，别在开开关的瞬间找。
 - 根因：`bot/mcp/builtin.rs` 的 `resolve_package_dir` 有一个兜底候选 `dev_dir` = `env!("CARGO_MANIFEST_DIR")/../playwright-mcp`——**编译期就烤进产物**。绿色包是从 macOS 交叉编译出来的（`docs/PACKAGING-WINDOWS-PORTABLE.md` §1），于是构建机的目录结构被带进了 Windows 包。前两个候选（exe 同目录 / Tauri 资源目录）都要求 `is_dir()`，而打包清单里**没有 `playwright-mcp/` 这一项** → 直接落到 dev_dir 兜底。
 - 危害有两层：① **构建机路径泄漏**进交付物；② 面板/审计里显示一个指向别的操作系统目录的路径，用户按它去放包也放不对。
 - 修法方向（供开发侧参考）：`dev_dir` 兜底在**非 debug 构建**下不参与（它只在 `tauri dev` / `cargo run` 布局下有意义）；或者打包时把 `playwright-mcp/` 一并带上、让它走 exe 同目录候选。
@@ -1631,13 +1631,13 @@ print("K" * 200000, end="")
 **步骤**：
 
 1. 建一台 http MCP 服务器，headers 里放一个 `Authorization: Bearer old-token`。
-2. 连上，确认「已连接」。
+2. 启用它并让机器人调一次它的工具，确认调用成功（按需启停下平时是「静默待命」，面板的「已连接」只在调用那几秒里出现）。
 3. 把 header 改成 `Bearer new-token`，保存。
-4. 看服务器是否**重连**（面板状态变化 / bot.log 出现 `mcp.disconnected` + `mcp.connected`）。
+4. 看服务器是否**重连**（面板状态变化 / bot.log 出现 `mcp.disconnected` + `mcp.tools_discovered`——按需启停下「连上」不再单独记事件，重连表现为重新发现工具清单）。
 
 **判据**：
 
-- PASS：第 4 步发生重连（bot.log 有新的 `mcp.connected`）；新凭据生效（服务器端能看到 new-token）。
+- PASS：第 4 步发生重连（bot.log 有新的 `mcp.tools_discovered`）；新凭据生效（服务器端能看到 new-token）。
 - FAIL：状态不变、没有重连、服务器端仍是 old-token。
 
 **反向用例**：改**非机密**字段（比如超时）→ 指纹**也**会变（逐字段哈希含全部字段）→ 会重连。这不算 bug，但要知道自己观察到的现象。
@@ -2217,7 +2217,8 @@ WARN/ERROR 同时镜像到 `error.log`。
 
 **服务**：`service.started` `service.ready` `service.start_failed` `service.exited` `service.stop_requested` `service.stopped`（含 `method=` `descendants_killed=`）`service.stop_failed`（含 `reason=进程仍在运行`）`service.stop_unsupported` `service.pid_reuse_skipped` `service.output_truncated` `service.resource_warning`（含 `threshold=`）`service.port_violation`（含 `rule=L1` `address=` `port=` `action=killed`）`service.port_violation_precheck` `service.listening_sample_failed` `service.denied` `app_exit_cleanup`（含 `services_stopped=N`）
 
-**MCP**：`mcp.connected` `mcp.connect_failed` `mcp.disconnected` `mcp.server_saved` `mcp.server_deleted` `mcp.server_toggled` `mcp.secret_migrated` `mcp.secret_fallback_plaintext` `mcp.secret_purge_failed`
+**MCP**：`mcp.tools_discovered` `mcp.discover_failed` `mcp.tool_cache_write_failed` `mcp.tool_cache_purge_failed` `mcp.disconnected` `mcp.server_saved` `mcp.server_deleted` `mcp.server_toggled` `mcp.secret_migrated` `mcp.secret_fallback_plaintext` `mcp.secret_purge_failed`
+（按需启停后没有「连上了」这种事件：开关只表示允许使用，连接活在被调用那几秒里；发现成功记 `mcp.tools_discovered`，发现失败记 `mcp.discover_failed`）
 
 **技能**：`skill.start` `skill_dsl_start` `skill_dsl_step` `skill_dsl_var_resolved` `skill_dsl_rollback_start` `skill_dsl_rollback_step_failed` `skill_dsl_rollback_done` `skill_dsl_finish_signal` `skill_dsl_await_user` `skill_dsl_terminated` `skill_dsl_done` `skill.compat_warn` `skill.allowed_tools_violation` `skill_step_ok` `skill_step_fail` `pre_step.route_skill` `pre_step.route_failed` `skill_create` `skill_create_failed` `skill_install` `skill_search` `confirm` `confirm_denied` `confirm_timeout` `confirm_skipped`
 

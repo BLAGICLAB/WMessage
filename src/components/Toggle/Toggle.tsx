@@ -12,6 +12,8 @@ type Props = {
   disabled?: boolean;
   /** ARIA 标签（Tauri webview / screen reader 用） */
   ariaLabel?: string;
+  /** 悬停说明（原生 tooltip）：开关旁边不跟文字解释时，解释放这里 */
+  title?: string;
   /** 尺寸：sm=24px，md=28px（默认） */
   size?: "sm" | "md";
 };
@@ -21,6 +23,7 @@ export function Toggle({
   onChange,
   disabled = false,
   ariaLabel,
+  title,
   size = "md",
 }: Props) {
   const id = useId();
@@ -36,6 +39,7 @@ export function Toggle({
       id={id}
       aria-checked={checked}
       aria-label={ariaLabel}
+      title={title}
       disabled={disabled}
       onClick={() => !disabled && onChange(!checked)}
       className={[

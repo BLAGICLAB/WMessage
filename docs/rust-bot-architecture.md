@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 159 个文件、约 12.0 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 160 个文件、约 12.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1189)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1190)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -104,7 +104,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (5883) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (5896) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；**墙钟治理**（WallBudget：软墙钟
 │                        收尾提醒 + 墙钟熔断留产，均在轮边界检查）；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
@@ -137,10 +137,14 @@ src-tauri/src/
 │   ├── bot/mcp/mod.rs   模块声明
 │   ├── bot/mcp/config.rs        McpServerConfig/校验（stdio 启动器白名单、URL 公网闸、
 │   │                            normalize/timeout 钳制）+ 工具命名 mcp_tool_name/tool_prefix
-│   ├── bot/mcp/manager.rs       McpManager（OnceLock 单例）：连接槽 ensure_connected/call_tool、
+│   ├── bot/mcp/manager.rs       McpManager（OnceLock 单例）：**按需启停**（静默待命 /
+│   │                            调用期拉起 / 调用完回收；ensure_connected/call_tool/retire）、
 │   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造、
 │   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs：
 │   │                            RSS / CPU / 监听 socket，整棵进程树合计）
+│   ├── bot/mcp/tool_cache.rs    工具清单磁盘快照（mcp-tool-cache.json）：按服务器 id 存
+│   │                            「配置指纹 + 工具清单」——按需启停下「工具可见性」与
+│   │                            「活连接」解耦的载体（没有它，模型看不见未连接的服务器）
 │   ├── bot/mcp/mount.rs         挂载层：连接快照 → 工具 schema 段（撞名消歧/条数/schema 体积
 │   │                            上限）+ dispatch miss 反查 execute_mcp_tool（带超时/结果整形）；
 │   │                            函数名走进程级登记簿（名字 ↔ 服务器跨断连稳定，不随重连漂移）
@@ -252,7 +256,7 @@ src-tauri/src/
 │                        notifications_list/pending_count/resolve/clear_done 四命令 +
 │                        notifications-changed 广播；双向同步（mem approve/reject、
 │                        confirm_artifact_batch 尾部回写消息状态）
-├── bot_ui.rs (1098) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
+├── bot_ui.rs (1119) 桌面 UI 自动化工具层（六件套）：list_windows / activate_window /
 │                        ui_inspect / ui_click / ui_type / wait_for_element。
 │                        四道闸——独立总开关（ui::ui_enabled，默认关闭）/ 窗口级授权
 │                        （动作必带 windowId 且窗口真实存在）/ 危险动作确认
@@ -268,7 +272,7 @@ src-tauri/src/
 │   │                 平台分发（list_windows / activate_window / inspect_tree / press_node /
 │   │                 focus_node / type_text）+ 前台窗口判定（window_is_foreground）+
 │   │                 自操作拦截（不列自己的窗口、不许操作自己的窗口）
-│   ├── ui/macos.rs (554) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
+│   ├── ui/macos.rs (612) macOS 后端：AX 读 UI 树（AXWindows / AXChildren / AXPress，
 │   │                 AXValue 取坐标）+ CGEvent 注入（Unicode 键盘事件）；
 │   │                 需本进程获「辅助功能」权限（AXIsProcessTrusted）；
 │   │                 前台窗口按 NSWorkspace 实测（不恒为 false）
@@ -339,7 +343,8 @@ src-tauri/src/
 │                                bot_archive 的限额闸（zip slip / 软链 / zip bomb），落盘失败回滚
 ├── bot_skills/builtin.rs        内置技能预装：`assets/skills/` include_bytes! 烘进二进制，启动时
 │                                物化到 builtin_skills/（与用户 skills 同父不同名，导入/删除语义互不干扰）；
-│                                物化幂等（Seeded/Updated/Unchanged）；搜索优先级：用户 > 内置 > dev mock
+│                                物化幂等（Seeded/Updated/Unchanged）；覆盖时保留用户关掉的开关；
+│                                搜索优先级：用户 > 内置 > dev mock
 ├── bot_skills/files.rs          open_file_path/delete_bound_file 路径白名单校验（防 XSS→RCE）
 │
 │─ 程序 apps/（聊天里写好的确定性小程序：落盘 app.py + manifest，点一下就跑）
@@ -677,6 +682,7 @@ flowchart TD
 - `bot/mcp/mount.rs`
 - `bot/mcp/secrets.rs`
 - `bot/mcp/stdio_transport.rs`
+- `bot/mcp/tool_cache.rs`
 - `bot/params.rs`
 - `bot/procs.rs`
 - `bot/procs/tests.rs`
