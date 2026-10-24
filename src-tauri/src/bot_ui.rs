@@ -414,7 +414,16 @@ pub async fn tool_activate_window(app: &AppHandle, args: &str) -> ToolResult {
         Ok(w) => w,
         Err(t) => return t,
     };
-    match crate::ui::activate_window(&window_id) {
+    // 置前与注入共用 INJECT_LOCK：并发会话的 activate_window 落在另一会话
+    // 「前台校验通过 → 注入」之间时，注入的键盘事件会进被置前的窗口。
+    // 平台调用走阻塞线程，锁语义与注入段一致。
+    let wid = window_id.clone();
+    let act = tauri::async_runtime::spawn_blocking(move || {
+        with_inject_lock(|| crate::ui::activate_window(&wid))
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("激活线程失败：{e}")));
+    match act {
         Ok(()) => {
             crate::bot::audit_log(
                 app,
@@ -684,9 +693,14 @@ pub async fn tool_ui_type(
     }
     let node_id = node.id.clone();
     let typed = text.clone();
+    let wid = window_id.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
         with_inject_lock(|| {
             crate::ui::focus_node(&node_id, &identity)?;
+            // 锁内复检前台：进入本锁之前经过确认弹窗（最长 60s）、截图、窗口
+            // 复核与等锁——每个 await 点之间用户都可能切走前台。入口处的前台
+            // 校验只负责快速失败，真正作数的是这一道。
+            foreground_verdict(crate::ui::window_is_foreground(&wid))?;
             crate::ui::type_text(&typed)
         })
     })
