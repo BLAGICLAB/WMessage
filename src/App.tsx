@@ -28,6 +28,7 @@ import {
   EDITOR_EXIT_MS,
 } from "./components/TaskTimeline/TaskEditorOverlay";
 import { sortPoolTasks } from "./components/TaskTimeline/week";
+import { isActiveTask } from "./lib/taskScope";
 import { HomePage } from "./components/HomePage/HomePage";
 import { CommandPalette } from "./components/CommandPalette";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
@@ -311,7 +312,7 @@ function App() {
   // 任务页任务池的 sortPoolTasks，避免同一批任务在两处顺序不同）。
   // 过滤口径与任务页任务池同源 isActiveTask——回收站软删卡不再混进聊天任务池
   const openTasks = useMemo(
-    () => sortPoolTasks(visibleTasks.filter((t) => t.column !== "done" && !t.archived)),
+    () => sortPoolTasks(visibleTasks.filter(isActiveTask)),
     [visibleTasks],
   );
 
