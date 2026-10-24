@@ -10,7 +10,13 @@
 
 ## 变异测试现状（已实测）
 
-`bash scripts/mutation-trace-funnel.sh` → **KILLED=6  SURVIVED=6  BUILD_ERR=0**
+> **2026-10-24 更新**：6 个存活变异已全部补单测按死（漏斗判定抽出泛型
+> `apply_output_cap` 直驱 + 溢出根白名单/清扫方向/负天数钳制各补测试；
+> M2 原表达式是等价变异——`usize::MAX` 会被随后的 `.min(global)` 钳回，
+> 已修正为 `unwrap_or(0)`）。复跑 **KILLED=12 SURVIVED=0**。下表保留
+> 首测历史，供追溯各场景的来由。
+
+`bash scripts/mutation-trace-funnel.sh` → 首测 **KILLED=6  SURVIVED=6  BUILD_ERR=0**；2026-10-24 起为 **KILLED=12  SURVIVED=0**
 
 | # | 变异 | 判 | 抓住它的测试 |
 |---|---|---|---|
