@@ -729,6 +729,9 @@ fn spawn_job_run(app: &AppHandle, job: crate::db::ScheduledJob) {
             );
             // panic 发生在收尾之前 → 待触发的重试还挂在行上：
             // 不清的话下一轮扫描它又到点、又跑一次、又 panic（每 30s 一轮的无限环）。
+            // 取舍：若 panic 恰好落在「已写 retry_at 之后、audit/通知之前」的窄窗，
+            // 这里会把刚承诺的重试一并清零、last_status 回滚——与 job_runs 已落库
+            // 的 fail 行不一致。宁可少跑一次重试也不进无限环，按此取舍。
             clear_pending_retry_after_panic(&app_audit, &job_id, last_status, last_error).await;
         }
     });

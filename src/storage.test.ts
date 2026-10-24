@@ -295,7 +295,8 @@ describe("loadWorkspaceFromDb 判别式结果", () => {
 });
 
 // diffTaskRows 不得就地突变 caller 的 next 行（React state 引用相等假设）。
-describe("diffTaskRows 不突变输入", () => {  const base: Task[] = [
+describe("diffTaskRows 不突变输入", () => {
+  const base: Task[] = [
     { id: "t1", title: "a", column: "todo", updatedAt: 1000 },
     { id: "t2", title: "b", column: "todo", updatedAt: 1000 },
   ];
