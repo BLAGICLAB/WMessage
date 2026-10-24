@@ -352,67 +352,78 @@ async fn writer<R: tauri::Runtime>(app: AppHandle<R>, mut rx: mpsc::Receiver<Tra
                 Err(_) => break,
             }
         }
-        if conn.is_none() {
-            match crate::db::open_db(&app) {
-                Ok(c) => conn = Some(c),
-                Err(e) => {
-                    eprintln!(
-                        "[trace_sink] 打开库失败，丢弃 {} 条观测记录：{e}",
-                        batch.len()
-                    );
-                    continue;
-                }
-            }
-        }
-        let c = conn.take().expect("上方保证已建连");
         let batch_len = batch.len();
-        let write = |c: &rusqlite::Connection| -> Result<(), String> {
-            let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
-            for m in &batch {
-                match m {
-                    TraceWrite::Span(s) => crate::db::span_insert(
-                        &tx,
-                        &crate::db::NewSpan {
-                            trace_id: s.trace_id,
-                            turn: s.turn,
-                            tool_call_id: s.tool_call_id.as_deref(),
-                            name: &s.name,
-                            args: s.args.as_deref(),
-                            result: s.result.as_deref(),
-                            ok: s.ok,
-                            error_class: s.error_class.as_deref(),
-                            duration_ms: s.duration_ms,
-                            created_at: s.created_at,
-                        },
-                    )?,
-                    TraceWrite::FileChange(f) => crate::db::file_change_insert(
-                        &tx,
-                        &crate::db::NewFileChange {
-                            trace_id: f.trace_id,
-                            span_id: None,
-                            path: &f.path,
-                            kind: f.kind,
-                            added: f.added,
-                            deleted: f.deleted,
-                            diff: f.diff.as_deref(),
-                            truncated: f.truncated,
-                            before_ref: f.before_ref.as_deref(),
-                            before_sha: f.before_sha.as_deref(),
-                            after_sha: f.after_sha.as_deref(),
-                            created_at: f.created_at,
-                        },
-                    )?,
-                };
+        // open_db（全套 DDL+PRAGMA 的同步磁盘 IO）与批量 insert 都不在
+        // tokio worker 上跑——worker 被磁盘占住会拖慢所有 async 任务。
+        // 连接随闭包进出：成功带回复用，失败丢弃下轮重开（open_db 幂等）。
+        let app2 = app.clone();
+        let joined = tauri::async_runtime::spawn_blocking(move || {
+            let conn = match conn.take() {
+                Some(c) => c,
+                None => match crate::db::open_db(&app2) {
+                    Ok(c) => c,
+                    Err(e) => return (None, Err(format!("打开库失败：{e}"))),
+                },
+            };
+            let write = |c: &rusqlite::Connection| -> Result<(), String> {
+                let tx = c.unchecked_transaction().map_err(|e| e.to_string())?;
+                for m in &batch {
+                    match m {
+                        TraceWrite::Span(s) => crate::db::span_insert(
+                            &tx,
+                            &crate::db::NewSpan {
+                                trace_id: s.trace_id,
+                                turn: s.turn,
+                                tool_call_id: s.tool_call_id.as_deref(),
+                                name: &s.name,
+                                args: s.args.as_deref(),
+                                result: s.result.as_deref(),
+                                ok: s.ok,
+                                error_class: s.error_class.as_deref(),
+                                duration_ms: s.duration_ms,
+                                created_at: s.created_at,
+                            },
+                        )?,
+                        TraceWrite::FileChange(f) => crate::db::file_change_insert(
+                            &tx,
+                            &crate::db::NewFileChange {
+                                trace_id: f.trace_id,
+                                span_id: None,
+                                path: &f.path,
+                                kind: f.kind,
+                                added: f.added,
+                                deleted: f.deleted,
+                                diff: f.diff.as_deref(),
+                                truncated: f.truncated,
+                                before_ref: f.before_ref.as_deref(),
+                                before_sha: f.before_sha.as_deref(),
+                                after_sha: f.after_sha.as_deref(),
+                                created_at: f.created_at,
+                            },
+                        )?,
+                    };
+                }
+                tx.commit().map_err(|e| e.to_string())
+            };
+            // DB_WRITE_LOCK 纪律：与主写者 / API 写者同锁串行（临界区 = 一批小 insert）
+            let result = {
+                let _guard = crate::db::lock_db_write();
+                write(&conn)
+            };
+            if result.is_ok() {
+                (Some(conn), Ok(()))
+            } else {
+                (None, result)
             }
-            tx.commit().map_err(|e| e.to_string())
-        };
-        // DB_WRITE_LOCK 纪律：与主写者 / API 写者同锁串行（临界区 = 一批小 insert）
-        let result = {
-            let _guard = crate::db::lock_db_write();
-            write(&c)
-        };
+        })
+        .await;
+        let (conn_back, result) = joined.unwrap_or_else(|e| {
+            eprintln!("[trace_sink] 批量落库线程 join 失败：{e}");
+            (None, Err(e.to_string()))
+        });
+        conn = conn_back;
         match result {
-            Ok(()) => conn = Some(c),
+            Ok(()) => {}
             Err(e) => {
                 // 半批丢弃 + 连接重开（下轮 open_db 幂等重建）；观测面 best-effort。
                 // 丢弃必须落审计留痕，否则观测面可能静默降级为零覆盖而无任何外部

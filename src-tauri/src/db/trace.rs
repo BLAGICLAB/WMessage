@@ -977,7 +977,18 @@ pub fn spawn_retention_sweep(app: &tauri::AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            if let Err(e) = retire_traces_before_days(&handle, None) {
+            // retire 内部是 lock_db_write + open_db + 全表 DELETE——同步磁盘
+            // IO 不落在 tokio worker 上（持锁等主窗长事务时会拖住整个 worker）
+            let h = handle.clone();
+            let retired =
+                tauri::async_runtime::spawn_blocking(move || retire_traces_before_days(&h, None))
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(crate::error::CommandError::from(format!(
+                            "清扫线程 join 失败：{e}"
+                        )))
+                    });
+            if let Err(e) = retired {
                 crate::audit::write_event(
                     &handle,
                     crate::audit::AuditLevel::Warn,
