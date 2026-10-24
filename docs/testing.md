@@ -77,11 +77,12 @@ bash scripts/realmachine/smoke.sh        # 实机冒烟（macOS）：启动/静�
 ## 一致性对拍（tests-audit/，已在 test-all.sh 门禁内）
 
 源码文本断言式检查（不跑业务代码，读源码断言结构/协议），`scripts/test-all.sh` 第 3 步会跑，
-pre-push 自动触发。前四个是 pytest 用例，末一个是独立守卫脚本，两种形态分开跑：
+pre-push 自动触发。前五个是 pytest 用例，末一个是独立守卫脚本，两种形态分开跑：
 
 ```bash
 python3 -m pytest tests-audit/audit_error_codes.py tests-audit/audit_module_map.py \
-                  tests-audit/audit_tauri_bridge.py tests-audit/audit_doc_claims.py -q   # pytest 用例：必须逐个点名
+                  tests-audit/audit_tauri_bridge.py tests-audit/audit_doc_claims.py \
+                  tests-audit/audit_bot_namespace.py -q   # pytest 用例：必须逐个点名
 python3 tests-audit/audit_no_eval.py                     # 独立守卫脚本：看退出码
 ```
 
@@ -104,6 +105,10 @@ python3 tests-audit/audit_no_eval.py                     # 独立守卫脚本：
   「文档过期」——附录 D-3 就是这么被实机否证的。中文期望文案不在这道闸里：它们多是
   `format!` 拼出来的运行时文本，整句比对会得到一堆假失败
 - `audit_no_eval.py`：前端禁动态求值静态守卫（CSP 配套）
+- `audit_bot_namespace.py`：bot 族命名空间守卫（族外不得直接摸 `crate::bot_*::`
+  深层路径，跨族引用必须走 `crate::bot::` 门面；族内互引豁免——豁免的边界是
+  「文件在族内」不是「路径在族内」）。同一条目只留一条合法路径，新代码不必猜
+  该走哪条；缺门面 re-export 时先补门面，不许回退到深层路径
 
 改 `docs/rust-bot-architecture.md` 的模块树后，本地跑一遍 `audit_module_map.py`：新增/删除/
 改名模块要同步登记条目，条目上标的行数也会随代码改动漂移。

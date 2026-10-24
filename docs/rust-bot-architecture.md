@@ -7,7 +7,7 @@
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1191)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1187)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -110,8 +110,11 @@ src-tauri/src/
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
 │                        事件（Anthropic 协议）
-├── bot.rs (171)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
-│                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
+├── bot.rs (211)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
+│                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
+│                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
+│                        `crate::bot_chat::` 这类深层路径（tests-audit/audit_bot_namespace.py
+│                        守卫，族内互引豁免）
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
 │                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
