@@ -882,7 +882,34 @@ pub(crate) fn apply_task_patch(
             "deletedAt" => set_from(&mut task.deleted_at, v, k)?,
             "collapsed" => set_from(&mut task.collapsed, v, k)?,
             "note" => set_from(&mut task.note, v, k)?,
-            "tags" => set_from(&mut task.tags, v, k)?,
+            "tags" => {
+                set_from(&mut task.tags, v, k)?;
+                // 双上限与 bot 工具 / HTTP 同一常量：UI 写入超限标签会让
+                // 同一行数据在另外两个写口被拒（同字段两套标准互相打架）
+                if let Some(tags) = &task.tags {
+                    if tags.len() > crate::bot::MAX_TAGS {
+                        return Err(CommandError::InvalidArgument {
+                            field: k.into(),
+                            value: v.to_string(),
+                            reason: format!("标签最多 {} 个", crate::bot::MAX_TAGS),
+                        });
+                    }
+                    if let Some(t) = tags
+                        .iter()
+                        .find(|t| t.chars().count() > crate::bot::MAX_TAG_LEN)
+                    {
+                        return Err(CommandError::InvalidArgument {
+                            field: k.into(),
+                            value: t.clone(),
+                            reason: format!("单个标签最长 {} 字", crate::bot::MAX_TAG_LEN),
+                        });
+                    }
+                }
+                // 空数组 = 清除（与 bot/HTTP 两写口的「空数组清除」约定一致）
+                if task.tags.as_ref().is_some_and(|t| t.is_empty()) {
+                    task.tags = None;
+                }
+            }
             "subtasks" => set_from(&mut task.subtasks, v, k)?,
             "due" => {
                 set_from(&mut task.due, v, k)?;
@@ -1906,6 +1933,53 @@ mod task_patch_tests {
             .find(|t| t.id == "duet")
             .unwrap();
         assert_eq!(reloaded.due, None);
+    }
+
+    /// UI 主写口的 tags 双上限：与 bot 工具 / HTTP 同一常量（MAX_TAGS=10 /
+    /// MAX_TAG_LEN=30）。这条写口此前零校验——UI 写入的超长标签，后续经
+    /// bot edit_task 提交或选为整理主标签时会被同一常量拒绝，两写口打架。
+    #[test]
+    fn task_patch_tags_enforces_shared_limits() {
+        let mut conn = setup_conn();
+        conn.execute(
+            "INSERT INTO tasks (id, title, col, updated_at) VALUES ('tagt', '标签卡', 'todo', 1000)",
+            [],
+        )
+        .unwrap();
+        // 超长标签
+        let err = match run_patch(
+            &mut conn,
+            "tagt",
+            serde_json::json!({ "tags": ["x".repeat(crate::bot::MAX_TAG_LEN + 1)] }),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("超长标签应被拒绝"),
+        };
+        assert!(
+            format!("{err:?}").contains("标签"),
+            "超长标签应被拒：{err:?}"
+        );
+        // 超数量
+        let many: Vec<String> = (0..=crate::bot::MAX_TAGS)
+            .map(|i| format!("t{i}"))
+            .collect();
+        let err = match run_patch(&mut conn, "tagt", serde_json::json!({ "tags": many })) {
+            Err(e) => e,
+            Ok(_) => panic!("超数量标签应被拒绝"),
+        };
+        assert!(
+            format!("{err:?}").contains("标签"),
+            "超数量标签应被拒：{err:?}"
+        );
+        // 边界内放行 + 空数组清除
+        run_patch(&mut conn, "tagt", serde_json::json!({ "tags": ["a", "b"] })).unwrap();
+        run_patch(&mut conn, "tagt", serde_json::json!({ "tags": [] })).unwrap();
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "tagt")
+            .unwrap();
+        assert_eq!(reloaded.tags, None);
     }
 }
 
