@@ -845,6 +845,7 @@ git checkout -- src-tauri/src/bot_ui.rs
 1. 程序页 → 找一个**跑过**的程序 → 展开「运行历史」（先确认现在显示的是真实历史，**不是**「还没有运行记录」）。
 2. **制造读失败**（可逆，不破坏数据）：把运行记录表临时改名——`sqlite3 <data_dir>/wmessage.db "alter table app_runs rename to app_runs_tmp;"`（版本页签同理改 `app_versions`）。
    > **别用「把库改名」**——`open_db` 会在原位**重建一个空库**，读取会「成功」并返回空列表，压根测不到这条。**别用「把库改坏」**——那会让整个应用到处报错，判据会被别的噪声淹掉。改表名最小、最可逆。
+   > **⚠️ 2026-10-24 实机否证：改表名这条路也走不通。** `open_db` 是**每连接跑全套 DDL**（CREATE TABLE IF NOT EXISTS），改名后下一次读命令会把 `app_runs` **原地重建为空表**——读取照样「成功」返回 0 行，界面显示「还没有运行记录」是对真空表的**正确**呈现，不是伪装空库。本卡的实机注入手段（库级/表级改名）在本构建上双双不可用，错误态判据回 `AppsPage.test.tsx` 的单测（`.catch(() => setLoadError(true))` 分支）钉。复跑者不要在改名上再花时间。
 3. 刷新程序页 → 看「运行历史」与「版本」两个页签。
 4. 恢复：`sqlite3 <data_dir>/wmessage.db "alter table app_runs_tmp rename to app_runs;"`。
 
@@ -1076,6 +1077,7 @@ git checkout -- src-tauri/src/bot_ui.rs
 - FAIL：恢复瞬间**立刻补跑了一次**那个过期重试。
 - **边界必做**：把 `retry_at` 调到**窗口内**（< 2 小时）→ 仍**照常派发**（保鲜窗口不能把正常重试也毙掉）。
 - **不留噪声**：过期重试被消费掉后，**下一轮不该再判 RetryStale**（否则天天一条审计噪声）。
+- **「回到正常排期」对 never-run 作业的语义（2026-10-24 实测）**：`sched_last=NULL` 的作业（从没跑过）在重试被丢弃后会**立即跑一次**——`classify_due` 对无基线作业是「首跑即补」语义（occurrence 从 epoch 起算必然 ≤ now 且 `sched_last.is_some()` 为 false 不判 Missed）。这是代码一致行为，**不是**「回到正常排期——不跑」被违反；用 DB 拨针复验本卡时，靶作业要么曾有 sched_last，要么预期里把首跑算进去。
 
 **变异注入复验**：
 - 把 `classify_job` 里的 `if now.timestamp_millis() - retry_at > CATCHUP_WINDOW.num_milliseconds() { return JobAction::RetryStale; }` 删掉 → 重跑应 **FAIL**（过期重试被派发）。
