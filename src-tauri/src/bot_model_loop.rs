@@ -1878,61 +1878,18 @@ where
     R: Fn(crate::bot_plan::PlanState, String) -> RP,
     RP: std::future::Future<Output = Option<Vec<String>>>,
 {
-    // URL 按协议分支（OpenAI 走 /chat/completions，
-    // Anthropic 走 /v1/messages，base_url 两种填法都归一化）
-    let url = match http.provider {
-        crate::bot::ApiProvider::Openai => {
-            format!("{}/chat/completions", http.base_url.trim_end_matches('/'))
-        }
-        crate::bot::ApiProvider::Anthropic => {
-            crate::bot_anthropic::anthropic_messages_url(&http.base_url)
-        }
-    };
-    // 工具 schema 按会话选取——子 agent 会话给 profile 白名单
-    //（递归双保险①：清单里无 spawn 等），其他会话默认全量；
-    // 阶段 3：主 agent 清单尾部追加外部 MCP 工具（tools_json_with_mcp，
-    // 子 agent 分支短路不受影响）。
-    // 拼装结果含外部 MCP description（外部
-    // 数据引入面），此处兜底改 fail-soft——解析失败记审计并回退「无 MCP 的
-    // 静态清单」（内置工具清单不陪 MCP 动态段陪葬；静态 base 恒合法，
-    // 末层空表只为防御到底），不再 panic 打断模型循环。
-    let tools: serde_json::Value = {
-        let assembled = crate::bot::registry::tools_json_with_mcp(stop.session_id());
-        match serde_json::from_str(assembled.as_ref()) {
-            Ok(v) => v,
-            Err(e) => {
-                (deps.audit)(
-                    crate::audit::AuditLevel::Error,
-                    "bot.tools_json_parse_fail",
-                    vec![("err", e.to_string())],
-                );
-                serde_json::from_str(
-                    crate::bot::registry::tools_json_for(stop.session_id()).as_ref(),
-                )
-                .unwrap_or_else(|_| serde_json::json!([]))
-            }
-        }
-    };
-
-    // 熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
-    // 其余 = bot-config maxFunctionCalls（缺省 100）。软警阈值 = cap*7/10。
-    // 钳位只在 fuse_cap_for 末端做一次（防巨值实质关闭熔断），上界取 params 的
-    // MAX_FUNCTION_CALLS_CAP，与子 agent 预算解析同一个数。
-    let fuse_cap = fuse_cap_for(
-        stop.session_id()
-            .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
-            .map(|c| c.budget.max_tool_calls),
-        deps.fuse_cap_override,
-    );
-    // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
-    // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
-    let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
-    // 轮数软警告阈值：与 soft_warn_at 同口径（7/10，留 30% 轮次收尾）。
-    // 轮数预算原先只有熔断、没有任何预警——子 agent 撞满 20 轮时往往一句收尾
-    // 都没说（全程只发工具调用），产出在 Err 里全丢。给足提前量后模型还有
-    // 几轮把已查到的东西写成收尾 JSON。钳位同 soft_warn_at：max_rounds 小到
-    // 7/10 塌成 0 时不注入失真的「已用 0 轮」。
-    let rounds_warn_at = (max_rounds * 7 / 10).clamp(1, max_rounds.saturating_sub(1).max(1));
+    // 循环级共享量一次性备好（URL / 工具 schema / 熔断上限与两个软警阈值 /
+    // 三个跨轮标志）——见 prepare_round。
+    let RoundCtx {
+        url,
+        tools,
+        fuse_cap,
+        soft_warn_at,
+        rounds_warn_at,
+        mut openai_usage_supported,
+        mut anthropic_thinking_dropped,
+        mut context_sheds,
+    } = prepare_round(http, stop, deps, max_rounds);
     let mut msgs = msgs;
     // 条目级 system prompt：追加到消息栈末尾——OpenAI 直接多一条 system
     // 消息；Anthropic 分支 openai_msgs_to_anthropic 会把它归并进顶层 system 块。
@@ -1962,13 +1919,6 @@ where
     // 幻觉守卫第二次拦下时写这里：终稿末尾追加一条如实更正（见判决处）。
     // None = 本次提问没有出现「返工后仍编造」，终稿照常。
     let mut fabrication_notice: Option<String> = None;
-    // 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）。
-    // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
-    // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
-    let mut openai_usage_supported: bool = true;
-    // Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救，见请求失败分支）。
-    // 只补救一次：重发后仍报同样的错就是别的问题，不该无限重试。
-    let mut anthropic_thinking_dropped: bool = false;
     // 执行类谎报守卫的凭证池：本次**用户提问**内所有工具调用的真实记录。
     //
     // 作用域是整条提问（= 一次 run_model_loop_core 调用 = exec_spans 的一条 trace_id），
@@ -2039,8 +1989,6 @@ where
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
     let mut last_streamed = String::new();
-    // 上下文超长降级次数（全循环共享）：超长时砍历史重发，至多两次
-    let mut context_sheds: u8 = 0;
     // 回合状态统一收口（见 TurnStatus）。整段循环体跑在 `run_body` 这个 async
     // 块里，外层只负责「出口 → 状态」映射：
     //
@@ -2073,117 +2021,8 @@ where
                 ));
             }
         }
-        // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
-        // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
-        // 本轮 msgs 总字符超阈值时记个 audit，不截断——便于后续评估是否要加主动压缩。
-        let msgs_chars: usize = msgs
-            .iter()
-            .filter_map(|m| m["content"].as_str())
-            .map(|s| s.chars().count())
-            .sum();
-        match crate::bot::compaction::classify_level(msgs_chars, MSGS_BUDGET_CHARS) {
-            crate::bot::compaction::CompactionLevel::None => {}
-            level @ (crate::bot::compaction::CompactionLevel::Soft
-            | crate::bot::compaction::CompactionLevel::Hard) => {
-                // 70%/85% 软/硬压缩：tool 消息按比例降密度，原文落 sidecar
-                //（AI_Gen_Files/conv-history，见 deps 构造处）；目录不可得时
-                // 压缩文本留「原文未保留」标记，那一条是真的丢原文
-                let session_id_owned = stop.session_id().map(|s| s.to_string());
-                let compact_fn = match level {
-                    crate::bot::compaction::CompactionLevel::Soft => {
-                        crate::bot::compaction::soft_compact
-                    }
-                    crate::bot::compaction::CompactionLevel::Hard => {
-                        crate::bot::compaction::hard_compact
-                    }
-                    _ => unreachable!(),
-                };
-                match compact_fn(
-                    &mut msgs,
-                    deps.conv_sidecar_dir,
-                    session_id_owned.as_deref(),
-                ) {
-                    Ok(report) => (deps.audit)(
-                        crate::audit::AuditLevel::Info,
-                        "loop.msgs.compacted",
-                        vec![
-                            (
-                                "level",
-                                match level {
-                                    crate::bot::compaction::CompactionLevel::Soft => "soft",
-                                    _ => "hard",
-                                }
-                                .to_string(),
-                            ),
-                            ("before", report.before_chars.to_string()),
-                            ("after", report.after_chars.to_string()),
-                            ("tools", report.tool_msgs_compacted.to_string()),
-                        ],
-                    ),
-                    Err(e) => (deps.audit)(
-                        crate::audit::AuditLevel::Warn,
-                        "loop.msgs.compact_failed",
-                        vec![("err", e.clone())],
-                    ),
-                }
-            }
-            crate::bot::compaction::CompactionLevel::Fuse => {
-                // 100% 熔断：仅 audit，soft_warn_queued 由 70% soft_warn_at 路径另起一行
-                (deps.audit)(
-                    crate::audit::AuditLevel::Info,
-                    "loop.msgs.over_budget",
-                    vec![
-                        ("chars", msgs_chars.to_string()),
-                        ("max", MSGS_BUDGET_CHARS.to_string()),
-                    ],
-                );
-            }
-        }
-        // 滚动降密度：老工具结果随轮龄降档。业界实证旧细节是噪音——SWE-agent
-        // 只留最近 5 条观察比全历史高 3 分；Anthropic context editing 实测
-        // token -84%、表现 +29%。70/85% 阈值压缩保留作预算兜底；⟦c:⟧ 标记
-        // 防软压重复、硬压沿用指针。无消息到龄时零开销（只遍历下标表）。
-        let session_id_owned = stop.session_id().map(|s| s.to_string());
-        let mut age_soft = 0usize;
-        let mut age_hard = 0usize;
-        for (born_round, idx) in &tool_msg_ages {
-            let age = round.saturating_sub(*born_round);
-            if age < AGE_SOFT_ROUNDS {
-                continue;
-            }
-            let hard = age >= AGE_HARD_ROUNDS;
-            match crate::bot::compaction::compact_one(
-                &mut msgs[*idx],
-                hard,
-                deps.conv_sidecar_dir,
-                session_id_owned.as_deref(),
-            ) {
-                Ok((true, _)) => {
-                    if hard {
-                        age_hard += 1;
-                    } else {
-                        age_soft += 1;
-                    }
-                }
-                Ok((false, _)) => {}
-                Err(e) => (deps.audit)(
-                    crate::audit::AuditLevel::Warn,
-                    "loop.msgs.compact_failed",
-                    vec![("err", e)],
-                ),
-            }
-        }
-        if age_soft + age_hard > 0 {
-            (deps.audit)(
-                crate::audit::AuditLevel::Info,
-                "loop.msgs.age_compacted",
-                vec![
-                    ("round", round.to_string()),
-                    ("soft", age_soft.to_string()),
-                    ("hard", age_hard.to_string()),
-                ],
-            );
-        }
+        // 轮前准备：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果降档）。
+        compact_before_round(&mut msgs, &tool_msg_ages, deps, stop, round);
         if stop.stopped() {
             let hint = skill_finish(false, "用户停止");
             return Ok((format!("⏹ 已停止{hint}"), collected_refs));
@@ -3922,6 +3761,230 @@ where
         cb(final_status, "");
     }
     body
+}
+
+/// 循环级共享量：把原先散在 run_model_loop_core 里的局部变量聚成结构体，
+/// 让各提取单元能显式传参。字段与原局部变量一一对应，不带行为。
+struct RoundCtx {
+    /// 请求 URL（协议分支派生一次：OpenAI /chat/completions，Anthropic /v1/messages）
+    url: String,
+    /// 工具 schema（按会话选取：子 agent 会话给 profile 白名单）
+    tools: serde_json::Value,
+    /// 单轮 Function 调用熔断上限
+    fuse_cap: usize,
+    /// 工具数软警告阈值（cap*7/10）
+    soft_warn_at: usize,
+    /// 轮数软警告阈值（max_rounds*7/10，与 soft_warn_at 同口径）
+    rounds_warn_at: usize,
+    /// 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）
+    openai_usage_supported: bool,
+    /// Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救）
+    anthropic_thinking_dropped: bool,
+    /// 上下文超长降级次数（全循环共享）
+    context_sheds: u8,
+}
+
+/// 轮次准备：请求 URL / 工具 schema / 熔断上限派生 + 跨轮标志初值。
+///
+/// 这几项都是**循环不变量**（与轮次无关），故只在进入轮循环前算一次；
+/// 每轮都要跑的压缩在 compact_before_round 里。
+fn prepare_round(
+    http: &LlmHttp,
+    stop: &StopGuard,
+    deps: &ModelLoopDeps<'_>,
+    max_rounds: usize,
+) -> RoundCtx {
+    // URL 按协议分支（OpenAI 走 /chat/completions，
+    // Anthropic 走 /v1/messages，base_url 两种填法都归一化）
+    let url = match http.provider {
+        crate::bot::ApiProvider::Openai => {
+            format!("{}/chat/completions", http.base_url.trim_end_matches('/'))
+        }
+        crate::bot::ApiProvider::Anthropic => {
+            crate::bot_anthropic::anthropic_messages_url(&http.base_url)
+        }
+    };
+    // 工具 schema 按会话选取——子 agent 会话给 profile 白名单
+    //（递归双保险①：清单里无 spawn 等），其他会话默认全量；
+    // 阶段 3：主 agent 清单尾部追加外部 MCP 工具（tools_json_with_mcp，
+    // 子 agent 分支短路不受影响）。
+    // 拼装结果含外部 MCP description（外部
+    // 数据引入面），此处兜底改 fail-soft——解析失败记审计并回退「无 MCP 的
+    // 静态清单」（内置工具清单不陪 MCP 动态段陪葬；静态 base 恒合法，
+    // 末层空表只为防御到底），不再 panic 打断模型循环。
+    let tools: serde_json::Value = {
+        let assembled = crate::bot::registry::tools_json_with_mcp(stop.session_id());
+        match serde_json::from_str(assembled.as_ref()) {
+            Ok(v) => v,
+            Err(e) => {
+                (deps.audit)(
+                    crate::audit::AuditLevel::Error,
+                    "bot.tools_json_parse_fail",
+                    vec![("err", e.to_string())],
+                );
+                serde_json::from_str(
+                    crate::bot::registry::tools_json_for(stop.session_id()).as_ref(),
+                )
+                .unwrap_or_else(|_| serde_json::json!([]))
+            }
+        }
+    };
+
+    // 熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
+    // 其余 = bot-config maxFunctionCalls（缺省 100）。软警阈值 = cap*7/10。
+    // 钳位只在 fuse_cap_for 末端做一次（防巨值实质关闭熔断），上界取 params 的
+    // MAX_FUNCTION_CALLS_CAP，与子 agent 预算解析同一个数。
+    let fuse_cap = fuse_cap_for(
+        stop.session_id()
+            .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+            .map(|c| c.budget.max_tool_calls),
+        deps.fuse_cap_override,
+    );
+    // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
+    // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
+    let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
+    // 轮数软警告阈值：与 soft_warn_at 同口径（7/10，留 30% 轮次收尾）。
+    // 轮数预算原先只有熔断、没有任何预警——子 agent 撞满 20 轮时往往一句收尾
+    // 都没说（全程只发工具调用），产出在 Err 里全丢。给足提前量后模型还有
+    // 几轮把已查到的东西写成收尾 JSON。钳位同 soft_warn_at：max_rounds 小到
+    // 7/10 塌成 0 时不注入失真的「已用 0 轮」。
+    let rounds_warn_at = (max_rounds * 7 / 10).clamp(1, max_rounds.saturating_sub(1).max(1));
+    // 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）。
+    // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
+    // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
+    let openai_usage_supported: bool = true;
+    // Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救，见请求失败分支）。
+    // 只补救一次：重发后仍报同样的错就是别的问题，不该无限重试。
+    let anthropic_thinking_dropped: bool = false;
+    // 上下文超长降级次数（全循环共享）：超长时砍历史重发，至多两次
+    let context_sheds: u8 = 0;
+    RoundCtx {
+        url,
+        tools,
+        fuse_cap,
+        soft_warn_at,
+        rounds_warn_at,
+        openai_usage_supported,
+        anthropic_thinking_dropped,
+        context_sheds,
+    }
+}
+
+/// 轮前压缩：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果随轮龄降档）。
+fn compact_before_round(
+    msgs: &mut [serde_json::Value],
+    tool_msg_ages: &[(usize, usize)],
+    deps: &ModelLoopDeps<'_>,
+    stop: &StopGuard,
+    round: usize,
+) {
+    // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
+    // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
+    // 本轮 msgs 总字符超阈值时记个 audit，不截断——便于后续评估是否要加主动压缩。
+    let msgs_chars: usize = msgs
+        .iter()
+        .filter_map(|m| m["content"].as_str())
+        .map(|s| s.chars().count())
+        .sum();
+    match crate::bot::compaction::classify_level(msgs_chars, MSGS_BUDGET_CHARS) {
+        crate::bot::compaction::CompactionLevel::None => {}
+        level @ (crate::bot::compaction::CompactionLevel::Soft
+        | crate::bot::compaction::CompactionLevel::Hard) => {
+            // 70%/85% 软/硬压缩：tool 消息按比例降密度，原文落 sidecar
+            //（AI_Gen_Files/conv-history，见 deps 构造处）；目录不可得时
+            // 压缩文本留「原文未保留」标记，那一条是真的丢原文
+            let session_id_owned = stop.session_id().map(|s| s.to_string());
+            let compact_fn = match level {
+                crate::bot::compaction::CompactionLevel::Soft => {
+                    crate::bot::compaction::soft_compact
+                }
+                crate::bot::compaction::CompactionLevel::Hard => {
+                    crate::bot::compaction::hard_compact
+                }
+                _ => unreachable!(),
+            };
+            match compact_fn(msgs, deps.conv_sidecar_dir, session_id_owned.as_deref()) {
+                Ok(report) => (deps.audit)(
+                    crate::audit::AuditLevel::Info,
+                    "loop.msgs.compacted",
+                    vec![
+                        (
+                            "level",
+                            match level {
+                                crate::bot::compaction::CompactionLevel::Soft => "soft",
+                                _ => "hard",
+                            }
+                            .to_string(),
+                        ),
+                        ("before", report.before_chars.to_string()),
+                        ("after", report.after_chars.to_string()),
+                        ("tools", report.tool_msgs_compacted.to_string()),
+                    ],
+                ),
+                Err(e) => (deps.audit)(
+                    crate::audit::AuditLevel::Warn,
+                    "loop.msgs.compact_failed",
+                    vec![("err", e.clone())],
+                ),
+            }
+        }
+        crate::bot::compaction::CompactionLevel::Fuse => {
+            // 100% 熔断：仅 audit，soft_warn_queued 由 70% soft_warn_at 路径另起一行
+            (deps.audit)(
+                crate::audit::AuditLevel::Info,
+                "loop.msgs.over_budget",
+                vec![
+                    ("chars", msgs_chars.to_string()),
+                    ("max", MSGS_BUDGET_CHARS.to_string()),
+                ],
+            );
+        }
+    }
+    // 滚动降密度：老工具结果随轮龄降档。业界实证旧细节是噪音——SWE-agent
+    // 只留最近 5 条观察比全历史高 3 分；Anthropic context editing 实测
+    // token -84%、表现 +29%。70/85% 阈值压缩保留作预算兜底；⟦c:⟧ 标记
+    // 防软压重复、硬压沿用指针。无消息到龄时零开销（只遍历下标表）。
+    let session_id_owned = stop.session_id().map(|s| s.to_string());
+    let mut age_soft = 0usize;
+    let mut age_hard = 0usize;
+    for (born_round, idx) in tool_msg_ages {
+        let age = round.saturating_sub(*born_round);
+        if age < AGE_SOFT_ROUNDS {
+            continue;
+        }
+        let hard = age >= AGE_HARD_ROUNDS;
+        match crate::bot::compaction::compact_one(
+            &mut msgs[*idx],
+            hard,
+            deps.conv_sidecar_dir,
+            session_id_owned.as_deref(),
+        ) {
+            Ok((true, _)) => {
+                if hard {
+                    age_hard += 1;
+                } else {
+                    age_soft += 1;
+                }
+            }
+            Ok((false, _)) => {}
+            Err(e) => (deps.audit)(
+                crate::audit::AuditLevel::Warn,
+                "loop.msgs.compact_failed",
+                vec![("err", e)],
+            ),
+        }
+    }
+    if age_soft + age_hard > 0 {
+        (deps.audit)(
+            crate::audit::AuditLevel::Info,
+            "loop.msgs.age_compacted",
+            vec![
+                ("round", round.to_string()),
+                ("soft", age_soft.to_string()),
+                ("hard", age_hard.to_string()),
+            ],
+        );
+    }
 }
 
 // 测试：feed_think / parse_sse_chunk / TOOLS schema
