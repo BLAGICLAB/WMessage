@@ -14,6 +14,10 @@ pub struct SkillMeta {
     pub enabled: bool,
     /// 是否支持暂停后断点续跑（false 时暂停即终止：确认完成当前动作后技能结束）
     pub resumable: bool,
+    /// 会话档（frontmatter `scope: session`）：模型 create_skill 建的技能。
+    /// 这类技能不进全局路由表（跨会话不劫持），只在创建会话内经
+    /// intent_router::add_session_route 生效；重启后不再自动触发。
+    pub session_scoped: bool,
     pub intents: Vec<String>,
     /// 多步 Skill 自报的对话轮数上限；
     /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（50）。
@@ -55,6 +59,7 @@ impl Default for SkillMeta {
             rollback: "none".into(),
             enabled: true,
             resumable: false,
+            session_scoped: false,
             intents: Vec::new(),
             max_rounds: None,
             allowed_tools: Vec::new(),
@@ -207,6 +212,12 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
             }
             "enabled" => {
                 m.enabled = !matches!(v.trim().to_ascii_lowercase().as_str(), "false" | "0" | "no");
+            }
+            // 会话档标记：模型 create_skill 建的技能被强制写为 scope: session——
+            // 全局路由扫描（intent_rules_from_dirs）跳过这类技能，路由只经
+            // add_session_route 进会话档。用户想提升为全局：改掉这行即可。
+            "scope" => {
+                m.session_scoped = v.trim().eq_ignore_ascii_case("session");
             }
             "resumable" => {
                 m.resumable =
@@ -362,7 +373,7 @@ pub fn set_frontmatter_enabled(text: &str, enabled: bool) -> Option<String> {
                     )
                 }
                 // 未声明 → 插在 frontmatter 内容区最前面（不落在别的键的续行里）
-                None => insert_enabled_key(fm, &key_line),
+                None => insert_key_line(fm, &key_line),
             };
             format!("{}{}{}", &body[..start], new_fm, &body[end..])
         }
@@ -390,7 +401,7 @@ pub fn set_frontmatter_enabled(text: &str, enabled: bool) -> Option<String> {
 ///   当成 enabled 键改掉 = 改坏了技能）
 /// - 取最后一个：parse_meta 逐行赋值，同名键**后者覆盖前者**——改最后一个
 ///   才与解析器实际生效的那一个对齐
-fn last_enabled_line(fm: &str) -> Option<std::ops::Range<usize>> {
+fn scan_last_key_line(fm: &str, target: &str) -> Option<std::ops::Range<usize>> {
     let mut found: Option<std::ops::Range<usize>> = None;
     let mut offset = 0usize;
     // 上一行是否开启了「多行块」——块内 `- ` 开头的行不是顶层键
@@ -420,7 +431,7 @@ fn last_enabled_line(fm: &str) -> Option<std::ops::Range<usize>> {
             {
                 in_block = true;
             }
-            if key == "enabled" {
+            if key == target {
                 found = Some(offset..offset + content_len);
             }
         }
@@ -429,7 +440,19 @@ fn last_enabled_line(fm: &str) -> Option<std::ops::Range<usize>> {
     found
 }
 
-/// 在 frontmatter 里插入 `enabled` 键行（纯函数，可单测）。
+/// frontmatter 里**最后一个** `enabled` 键所在行（[`last_key_line`] 的固定键名薄壳）
+fn last_enabled_line(fm: &str) -> Option<std::ops::Range<usize>> {
+    scan_last_key_line(fm, "enabled")
+}
+
+/// frontmatter 里**最后一个**指定键所在行的字节区间（不含行尾换行）。
+/// 与 parse_meta 逐行同口径（键判定 / 多行块跳过 / 后者覆盖前者），
+/// 详见 [`last_enabled_line`] 的历史注释——泛化自那个函数，规则没变。
+fn last_key_line(fm: &str, target: &str) -> Option<std::ops::Range<usize>> {
+    scan_last_key_line(fm, target)
+}
+
+/// 在 frontmatter 里插入一个键行（纯函数，可单测）。
 ///
 /// 插入点 = frontmatter 内容区（`---` 之后、闭合 `---` 之前）的**最前面**。
 /// 插在末尾会落进别的键的续行里（`intents:` / `params:` / `allowed-tools:`
@@ -437,13 +460,57 @@ fn last_enabled_line(fm: &str) -> Option<std::ops::Range<usize>> {
 ///
 /// frontmatter 内容区通常以「`---` 后的换行」开头，插在它之后 = 插在首个键之前；
 /// `---` 与首键粘连（无前导换行）的病态文件则补一个换行再插。
-fn insert_enabled_key(fm: &str, line: &str) -> String {
+fn insert_key_line(fm: &str, line: &str) -> String {
     let rest = fm.strip_prefix('\n').unwrap_or(fm);
     if rest.is_empty() {
         format!("\n{}", line)
     } else {
         format!("\n{}\n{}", line, rest)
     }
+}
+
+/// 把技能正文 frontmatter 的 `scope` 键强制写成 `session`（已声明则整行替换，
+/// 未声明则插在内容区最前面）。create_skill 落盘前调用——模型 content 里就算
+/// 写了别的 scope 值也会被覆盖：会话档是工具来源技能的结构属性（跨会话不
+/// 劫持、重启即失效），不是模型可自选的项。
+/// 无 frontmatter → None（create_skill 的准入核已保证 frontmatter 在场）。
+pub fn force_frontmatter_session_scope(text: &str) -> Option<String> {
+    let had_bom = text.starts_with('\u{feff}');
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let key_line = "scope: session";
+
+    let rewritten = match frontmatter_span(body) {
+        Some((start, end)) => {
+            let fm = &body[start..end];
+            let new_fm = match last_key_line(fm, "scope") {
+                // 改值：保留原行缩进与行尾，其余字节原样
+                Some(range) => {
+                    let orig = &fm[range.clone()];
+                    let lead = orig.len() - orig.trim_start().len();
+                    format!(
+                        "{}{}{}{}",
+                        &fm[..range.start],
+                        &orig[..lead],
+                        key_line,
+                        &fm[range.end..]
+                    )
+                }
+                None => insert_key_line(fm, key_line),
+            };
+            format!("{}{}{}", &body[..start], new_fm, &body[end..])
+        }
+        None => return None,
+    };
+
+    // 写完必须能被解析器读回目标值（与 set_frontmatter_enabled 同口径）
+    if !parse_meta(&rewritten, "").session_scoped {
+        return None;
+    }
+    Some(if had_bom {
+        format!("\u{feff}{}", rewritten)
+    } else {
+        rewritten
+    })
 }
 
 /// frontmatter 里**显式声明**的 `enabled` 值（未声明 → None）。
@@ -677,6 +744,54 @@ mod tests {
     use crate::bot_skills::{extract_task_id, substitute_vars, CompletedStep};
 
     // ── 元数据解析 ──
+
+    #[test]
+    fn scope_session_key_parses_into_meta() {
+        let m = parse_meta(
+            "---\nname: a\ndescription: d\nscope: session\n---\n正文",
+            "",
+        );
+        assert!(m.session_scoped, "scope: session 必须解析成会话档");
+        let m2 = parse_meta("---\nname: a\ndescription: d\n---\n正文", "");
+        assert!(!m2.session_scoped, "未声明 scope = 全局档（默认）");
+        let m3 = parse_meta("---\nname: a\ndescription: d\nscope: global\n---\n正文", "");
+        assert!(!m3.session_scoped, "scope: global 显式全局，不是会话档");
+    }
+
+    #[test]
+    fn force_session_scope_inserts_when_absent() {
+        let src = "---\nname: a\ndescription: d\nintents:\n  - 润色文档\n---\n正文";
+        let out = force_frontmatter_session_scope(src).expect("应注入成功");
+        assert!(
+            out.contains("scope: session"),
+            "注入后的 frontmatter 必须含 scope: session"
+        );
+        let m = parse_meta(&out, "");
+        assert!(m.session_scoped, "注入后必须能被解析器读回会话档");
+        assert!(
+            m.intents.contains(&"润色文档".to_string()),
+            "注入不得劈坏多行 intents 块：{out}"
+        );
+    }
+
+    #[test]
+    fn force_session_scope_overrides_any_existing_value() {
+        let src = "---\nname: a\ndescription: d\nscope: global\n---\n正文";
+        let out = force_frontmatter_session_scope(src).expect("应改写成功");
+        assert!(
+            !out.contains("scope: global"),
+            "模型写的 scope 值必须被覆盖（会话档不是模型可自选项）"
+        );
+        assert!(parse_meta(&out, "").session_scoped);
+    }
+
+    #[test]
+    fn force_session_scope_rejects_frontmatterless_text() {
+        assert!(
+            force_frontmatter_session_scope("没有 frontmatter 的正文").is_none(),
+            "无 frontmatter 无法标记，宁可失败也不静默放行"
+        );
+    }
 
     #[test]
     fn meta_parses_full_fields() {

@@ -48,6 +48,8 @@ pub mod compaction;
 pub mod config;
 pub mod corrections;
 pub mod dispatch;
+#[cfg(test)]
+mod eval;
 pub mod format;
 pub mod hooks;
 pub mod log_sanitize;

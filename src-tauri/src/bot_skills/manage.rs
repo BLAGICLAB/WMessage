@@ -247,24 +247,29 @@ pub(crate) fn registry_known_tools() -> std::collections::HashSet<String> {
 pub fn intent_rules_from_dirs(
     dirs: &[std::path::PathBuf],
 ) -> Vec<crate::intent_router::IntentRule> {
+    // 会话档技能（scope: session，模型 create_skill 建的）不进全局路由表：
+    // 它们的路由只经 add_session_route 进会话档（本会话生效、跨会话不劫持）。
+    // 文件在场但全局不可见——用户改掉 frontmatter 的 scope 才会提升为全局。
     let mut rules = visit_skill_dirs(dirs, |meta, _dir_name, _text| {
-        if !meta.enabled {
+        if !meta.enabled || meta.session_scoped {
             return None;
         }
         crate::intent_router::explicit_name_pattern(&meta.name).map(|pattern| {
             crate::intent_router::IntentRule {
                 patterns: vec![pattern],
                 skill_name: meta.name.clone(),
+                session: None,
             }
         })
     });
     rules.extend(visit_skill_dirs(dirs, |meta, _dir_name, _text| {
-        if !meta.enabled || meta.intents.is_empty() {
+        if !meta.enabled || meta.session_scoped || meta.intents.is_empty() {
             return None;
         }
         Some(crate::intent_router::IntentRule {
             patterns: meta.intents.clone(),
             skill_name: meta.name.clone(),
+            session: None,
         })
     }));
     rules
@@ -753,10 +758,23 @@ pub async fn tool_create_skill(
         Ok(m) => m,
         Err(reason) => return ToolResult::denied(format!("create_skill：{reason}")),
     };
+    // 会话档强制注入：模型 content 里写什么 scope 都会被覆盖成 session。
+    // 工具来源的技能只在本会话路由（本会话立即生效、跨会话不劫持、重启即失效），
+    // 想提升为全局由用户改 frontmatter 或走设置页导入——这层不由模型自选。
+    // frontmatter 缺席在此分支实际到不了（准入核已验 description 在场），按
+    // 「工具没执行 = denied」口径收口。
+    let content = match crate::bot_skills::parse::force_frontmatter_session_scope(&content) {
+        Some(c) => c,
+        None => {
+            return ToolResult::denied(
+                "create_skill：技能内容没有可用的 frontmatter，无法标记会话档，未创建".to_string(),
+            )
+        }
+    };
     // 确认窗展示 intents 与 mode：这两项决定「建成后哪些话会被路由进来」和
     // 「命中后是否绕开 LLM 直接执行」——不给用户看就等于让用户盲批
     let confirm_text = format!(
-        "创建技能「{name}」并立即生效（重启后仍有效）。触发词 intents：{}；执行模式 mode：{}（auto = 命中后不经 LLM 复核直接执行技能步骤）。",
+        "创建技能「{name}」并在**本会话**立即生效（仅本会话路由，重启后不再自动触发；如需长期启用请到设置页改技能的 scope）。触发词 intents：{}；执行模式 mode：{}（auto = 命中后不经 LLM 复核直接执行技能步骤）。",
         if meta.intents.is_empty() {
             "未声明（不会自动触发）".to_string()
         } else {
@@ -793,10 +811,29 @@ pub async fn tool_create_skill(
     .await;
     match created {
         Ok(file_count) => {
+            // 全局重建刷新既有技能的规则；新技能因 scope: session 被上面
+            // intent_rules_from_dirs 的过滤跳过——它只经下面的会话档进路由。
             rebuild_intent_routes(app);
+            // 会话档注册：本会话立即生效。session 缺席时不注册（技能在场但
+            // 不可路由，等用户改 scope 显式提升）——None 会变成全局档，那是
+            // 本设计明确要防的形态。
+            if let Some(sid) = session_id {
+                let mut patterns = Vec::new();
+                if let Some(p) = crate::intent_router::explicit_name_pattern(&name) {
+                    patterns.push(p);
+                }
+                patterns.extend(meta.intents.iter().cloned());
+                if !patterns.is_empty() {
+                    crate::intent_router::add_session_route(crate::intent_router::IntentRule {
+                        patterns,
+                        skill_name: name.clone(),
+                        session: Some(sid.to_string()),
+                    });
+                }
+            }
             ToolResult::ok(
                 format!(
-                    "技能「{name}」已创建并生效（附件 {file_count} 个），技能目录：{dir_log}。路由已重建：用户说出该技能 intents 关键词即会进入该技能流程。"
+                    "技能「{name}」已创建，在本会话立即生效（仅本会话路由，重启后不再自动触发；如需长期启用请在设置页把该技能的 scope 改为全局）。附件 {file_count} 个，技能目录：{dir_log}。用户在本会话说出该技能 intents 关键词即会进入该技能流程。"
                 ),
                 Vec::new(),
             )
@@ -1065,6 +1102,52 @@ mod tests {
         assert!(
             body.contains("validate_created_meta(&meta)"),
             "skills_import 必须调 validate_created_meta：导入是第三方内容入口，不能绕过准入核"
+        );
+    }
+
+    /// create_skill 必须把技能钉成会话档：落盘前强制 frontmatter `scope: session`
+    /// （模型 content 里写什么 scope 都会被覆盖）+ 落盘后经 add_session_route
+    /// 注册本会话路由。「模型建技能跨会话劫持路由」的入口就在这两处，少一处都回流。
+    #[test]
+    fn tool_create_skill_pins_session_scope() {
+        let body = manage_src_before_tests();
+        let body = body
+            .split_once("pub async fn tool_create_skill(")
+            .expect("找不到 tool_create_skill")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("tool_create_skill 应以顶格 } 收尾");
+        let inject = body
+            .find("force_frontmatter_session_scope(&content)")
+            .expect("落盘前必须强制 scope: session——模型写的 scope 值不可信");
+        let write = body
+            .find("create_skill_at(")
+            .expect("tool_create_skill 必须走 create_skill_at 落盘");
+        assert!(inject < write, "scope 注入必须在落盘之前");
+        assert!(
+            body.contains("add_session_route("),
+            "落盘后必须注册会话档路由（本会话立即生效）"
+        );
+    }
+
+    /// 会话档技能不得进全局路由表：intent_rules_from_dirs 的点名与 intents
+    /// 两个收集闭包都必须过滤 session_scoped——文件在场不等于全局可路由，
+    /// 否则重启/下次重建时模型建的技能就回流成全局劫持。
+    #[test]
+    fn intent_rules_from_dirs_skips_session_scoped_skills() {
+        let body = manage_src_before_tests();
+        let body = body
+            .split_once("pub fn intent_rules_from_dirs(")
+            .expect("找不到 intent_rules_from_dirs")
+            .1
+            .split("\n}\n")
+            .next()
+            .expect("intent_rules_from_dirs 应以顶格 } 收尾");
+        assert_eq!(
+            body.matches("meta.session_scoped").count(),
+            2,
+            "两个收集闭包都必须过滤会话档：{body}"
         );
     }
 

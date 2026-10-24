@@ -974,7 +974,7 @@ async fn bot_chat_inner(
         if let Some(task_ids) = crate::intent_router::is_chat_execute_trigger(&last.content) {
             Some(PreStepRoute::ExecuteTasks(task_ids))
         } else {
-            match crate::intent_router::route_user_input(&last.content) {
+            match crate::intent_router::route_user_input_for(&last.content, stop.session_id()) {
                 RouteAction::Skill(skill_name) => {
                     start_skill_with_audit(&app, skill_name, stop.session_id())
                         .map(|(meta, body)| PreStepRoute::Skill(meta, body))

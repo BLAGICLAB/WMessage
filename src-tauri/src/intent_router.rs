@@ -185,6 +185,10 @@ fn keyword_hit(user_cmd: &str, kw: &str) -> bool {
 pub struct IntentRule {
     pub patterns: Vec<String>,
     pub skill_name: String,
+    /// 会话档：Some(session_id) = 仅该会话内可见（模型 create_skill 建的技能——
+    /// 本会话立即生效、跨会话不劫持，随进程消亡不落任何持久层）；
+    /// None = 全局档（用户 install / import / 设置页导入的技能，有人工确认背书）。
+    pub session: Option<String>,
 }
 
 /// 技能名的「点名」路由正则：正文里出现技能名本身就是「用户点名这个技能」。
@@ -212,6 +216,7 @@ pub fn explicit_name_pattern(name: &str) -> Option<String> {
 struct CompiledRule {
     regexes: Vec<Regex>,
     skill_name: String,
+    session: Option<String>,
 }
 
 fn compile_rules(rules: &[IntentRule]) -> Vec<CompiledRule> {
@@ -225,6 +230,7 @@ fn compile_rules(rules: &[IntentRule]) -> Vec<CompiledRule> {
                 .filter_map(|p| Regex::new(p).ok())
                 .collect(),
             skill_name: r.skill_name.clone(),
+            session: r.session.clone(),
         })
         .filter(|r| !r.regexes.is_empty())
         .collect()
@@ -411,7 +417,7 @@ pub fn check_intent_pattern(pattern: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn match_compiled(text: &str, rules: &[CompiledRule]) -> RouteAction {
+fn match_compiled_refs(text: &str, rules: &[&CompiledRule]) -> RouteAction {
     for rule in rules {
         for re in &rule.regexes {
             if re.is_match(text) {
@@ -435,19 +441,62 @@ pub fn rebuild_routes(rules: Vec<IntentRule>) {
     }
 }
 
-/// L1 前置路由（生产路径）：读全局路由表
-pub fn route_user_input(text: &str) -> RouteAction {
+/// 追加一条会话档路由（模型 create_skill 建技能后本会话即时生效用）。
+/// 不去重不重建：create_skill 落盘有排他（同名目录已存在会失败），不会产生
+/// 同名双规则；会话档随进程消亡，不落任何持久层——重启后该技能不再自动触发，
+/// 直到用户显式改 frontmatter 的 scope 提升为全局。
+pub fn add_session_route(rule: IntentRule) {
+    let compiled = compile_rules(std::slice::from_ref(&rule));
+    match ROUTES.write() {
+        Ok(mut guard) => guard.extend(compiled),
+        Err(e) => e.into_inner().extend(compiled),
+    }
+}
+
+/// 会话可见性过滤：全局档恒可见；会话档只对本会话可见（无会话上下文时不可见）。
+fn visible_under_session<'a>(
+    rules: &'a [CompiledRule],
+    session: Option<&str>,
+) -> Vec<&'a CompiledRule> {
+    rules
+        .iter()
+        .filter(|r| match r.session.as_deref() {
+            None => true,
+            Some(s) => session == Some(s),
+        })
+        .collect()
+}
+
+/// L1 前置路由（生产路径）：读全局路由表，会话档只对本会话可见
+pub fn route_user_input_for(text: &str, session: Option<&str>) -> RouteAction {
     let guard = match ROUTES.read() {
         Ok(g) => g,
         Err(e) => e.into_inner(),
     };
-    match_compiled(text, &guard)
+    let visible = visible_under_session(&guard, session);
+    match_compiled_refs(text, &visible)
+}
+
+/// 兼容入口：无会话上下文的路由（只看得见全局档）
+pub fn route_user_input(text: &str) -> RouteAction {
+    route_user_input_for(text, None)
 }
 
 /// 纯函数核：规则注入式匹配。测试主入口（不碰全局表，无并行污染）；
 /// 也可用于「这份规则集会产生什么路由」的离线核验。
 pub fn route_with_rules(text: &str, rules: &[IntentRule]) -> RouteAction {
-    match_compiled(text, &compile_rules(rules))
+    route_with_rules_for(text, rules, None)
+}
+
+/// 纯函数核的会话版：离线核验「这份规则集在某个会话视角下会产生什么路由」。
+pub fn route_with_rules_for(
+    text: &str,
+    rules: &[IntentRule],
+    session: Option<&str>,
+) -> RouteAction {
+    let compiled = compile_rules(rules);
+    let visible = visible_under_session(&compiled, session);
+    match_compiled_refs(text, &visible)
 }
 
 #[cfg(test)]
@@ -475,9 +524,14 @@ mod tests {
     }
 
     fn rule(name: &str, patterns: &[&str]) -> IntentRule {
+        rule_scoped(name, patterns, None)
+    }
+
+    fn rule_scoped(name: &str, patterns: &[&str], session: Option<&str>) -> IntentRule {
         IntentRule {
             patterns: patterns.iter().map(|s| s.to_string()).collect(),
             skill_name: name.to_string(),
+            session: session.map(str::to_string),
         }
     }
 
@@ -692,6 +746,65 @@ mod tests {
             route_user_input("zzRouterProbePattern"),
             RouteAction::PassThrough
         );
+    }
+
+    /// 会话档规则只对本会话可见：别的会话、无会话上下文都看不见——
+    /// create_skill 建的技能不得跨会话劫持。
+    #[test]
+    fn session_scoped_rules_only_match_their_own_session() {
+        let rules = vec![
+            rule_scoped("zz-session-skill", &["zzSessionProbe"], Some("s1")),
+            rule("zz-global-skill", &["zzGlobalProbe"]),
+        ];
+        assert_eq!(
+            route_with_rules_for("zzSessionProbe", &rules, Some("s1")),
+            RouteAction::Skill("zz-session-skill".to_string()),
+            "本会话必须看得见自己的会话档"
+        );
+        assert_eq!(
+            route_with_rules_for("zzSessionProbe", &rules, Some("s2")),
+            RouteAction::PassThrough,
+            "别的会话不得看见 s1 的会话档"
+        );
+        assert_eq!(
+            route_with_rules_for("zzSessionProbe", &rules, None),
+            RouteAction::PassThrough,
+            "无会话上下文（旧入口）不得看见会话档"
+        );
+        for s in [Some("s1"), Some("s2"), None] {
+            assert_eq!(
+                route_with_rules_for("zzGlobalProbe", &rules, s),
+                RouteAction::Skill("zz-global-skill".to_string()),
+                "全局档不受会话过滤影响（session={s:?}）"
+            );
+        }
+    }
+
+    /// 会话档注册进全局表后的生产路径：add_session_route 追加的规则
+    /// 只在对应会话的路由视角里命中（探针模式独一无二，不与并行测试交叉）。
+    #[test]
+    fn add_session_route_registers_visible_only_to_its_session() {
+        rebuild_routes(vec![]);
+        add_session_route(rule_scoped(
+            "zz-session-probe-skill",
+            &["zzSessionRouteProbe"],
+            Some("zz-sid"),
+        ));
+        assert_eq!(
+            route_user_input_for("zzSessionRouteProbe", Some("zz-sid")),
+            RouteAction::Skill("zz-session-probe-skill".to_string())
+        );
+        assert_eq!(
+            route_user_input_for("zzSessionRouteProbe", Some("other-sid")),
+            RouteAction::PassThrough
+        );
+        assert_eq!(
+            route_user_input("zzSessionRouteProbe"),
+            RouteAction::PassThrough,
+            "旧入口（无会话）不得看见会话档"
+        );
+        // 还原空表，不污染其他测试
+        rebuild_routes(vec![]);
     }
 
     // ── intent 模式准入闸 ──
