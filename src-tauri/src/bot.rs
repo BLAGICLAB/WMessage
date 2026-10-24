@@ -64,6 +64,7 @@ pub mod subagent_digest;
 pub mod subagent_repair;
 pub mod subagent_runner;
 pub mod subagent_spawn;
+pub mod subagent_tools;
 pub mod tags_consolidate;
 pub mod tools;
 
