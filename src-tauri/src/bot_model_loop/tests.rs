@@ -24,6 +24,7 @@ fn prod_src() -> String {
         include_str!("fuse.rs"),
         include_str!("guard.rs"),
         include_str!("output.rs"),
+        include_str!("sse.rs"),
         include_str!("stream.rs"),
         include_str!("types.rs"),
         include_str!("../bot_model_loop.rs"),
