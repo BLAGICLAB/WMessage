@@ -7,7 +7,7 @@ import type { TraceRow } from "../../lib/trace";
 import { startOfWeek } from "../TaskTimeline/week";
 import { isTrashed, isPending, isArchived, isTaskCompleted } from "../../lib/taskScope";
 
-/** 本地日期键 YYYY-MM-DD（与 App.tsx 的 localDateStr 同口径） */
+/** 本地日期键 YYYY-MM-DD——导出文件名/今日判定共用的本地时区单源 */
 export function dayKey(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");

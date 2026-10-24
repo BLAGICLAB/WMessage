@@ -18,6 +18,7 @@ import {
   Upload,
 } from "lucide-react";
 import { formatCommandError } from "../../lib/errorHandler";
+import { dayKey } from "../HomePage/homeData";
 import { useConfirm } from "../../lib/useConfirm";
 import { IconButton } from "../../ui/IconButton";
 import { formatShortDateTime } from "../../format";
@@ -130,10 +131,9 @@ export function MemoryPanel() {
     dialogGateRef.current = true;
     try {
       const path = await save({
-        defaultPath: `wmessage-memories-${new Date()
-          .toISOString()
-          .slice(0, 10)
-          .replace(/-/g, "")}.json`,
+        // 本地日期（dayKey 单源）：UTC 的 toISOString 在 UTC+8 晚 8 点后
+        // 文件名日期比实际大一天
+        defaultPath: `wmessage-memories-${dayKey(new Date()).replace(/-/g, "")}.json`,
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (!path) return;

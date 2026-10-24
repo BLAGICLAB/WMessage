@@ -19,6 +19,7 @@ import {
   ownerColorKey,
   tagChipColor,
 } from "./graph-palette";
+import { formatDue, formatCompletedAt } from "../../format";
 import { isStalled } from "./graph-scene";
 import type { Rect } from "./graph-declutter";
 import {
@@ -563,17 +564,13 @@ export default function GraphPage({
                   {selectedNode.task.due && (
                     <div className="flex justify-between gap-2">
                       <dt className="text-[var(--t5)]">截止</dt>
-                      <dd>{selectedNode.task.due}</dd>
+                      <dd>{formatDue(selectedNode.task.due)}</dd>
                     </div>
                   )}
                   {selectedNode.completedAt && (
                     <div className="flex justify-between gap-2">
                       <dt className="text-[var(--t5)]">完成于</dt>
-                      <dd>
-                        {new Date(
-                          selectedNode.completedAt,
-                        ).toLocaleDateString()}
-                      </dd>
+                      <dd>{formatCompletedAt(selectedNode.completedAt)}</dd>
                     </div>
                   )}
                   {(selectedNode.tags ?? []).length > 0 && (
