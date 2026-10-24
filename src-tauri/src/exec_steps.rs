@@ -15,8 +15,7 @@
 use serde_json::json;
 use tauri::AppHandle;
 
-use crate::bot_chat::{BotChatResult, ExecGuard};
-use crate::bot_slash::StopGuard;
+use crate::bot::{BotChatResult, ExecGuard, StopGuard};
 use crate::error::{CommandError, CommandResult};
 
 /// 挂起的逐步执行：等用户确认当前子任务。
@@ -71,7 +70,7 @@ pub async fn clear_for(app: &AppHandle, session_id: Option<&str>, reason: &str) 
             app,
             &format!("exec_steps.clear | task: {} | {reason}", p.task_id),
         );
-        crate::bot_chat::set_bot_assigned(app, &p.task_id, false).await;
+        crate::bot::set_bot_assigned(app, &p.task_id, false).await;
     }
 }
 
@@ -239,10 +238,10 @@ async fn run_step(
         "{}\n{}\n\n{}\n\n{}",
         crate::prompts::EXECUTE_SYSTEM_PROMPT,
         crate::prompts::STEPWISE_ADDENDUM,
-        crate::bot_chat::gen_dir_rule(app),
-        crate::bot_skills::build_skill_block(app)
+        crate::bot::gen_dir_rule(app),
+        crate::bot::build_skill_block(app)
     );
-    let mut block = crate::bot_chat::build_task_block(&task);
+    let mut block = crate::bot::build_task_block(&task);
     block.push_str(&format!(
         "\n\n【逐步执行】本轮只做子任务「{}」（进度 {}/{}）。做完后用一两句话汇报你做了什么、结果/产物在哪。",
         sub.text,
@@ -256,10 +255,10 @@ async fn run_step(
         json!({"role": "system", "content": sys}),
         json!({"role": "user", "content": block}),
     ];
-    let (text, refs, _loop_trace) = crate::bot_model_loop::run_model_loop(
+    let (text, refs, _loop_trace) = crate::bot::run_model_loop(
         app.clone(),
         msgs,
-        crate::bot_model_loop::DEFAULT_MAX_ROUNDS,
+        crate::bot::DEFAULT_MAX_ROUNDS,
         stop,
         None,
         None, // 执行步骤恢复链路：按 bot-config.json 全局默认（RE-1）
@@ -318,7 +317,7 @@ async fn advance_or_finish(
     // → 必然取不到 → 卡片一直顶着机器人头像，直到重启。
     // 错误路径早就有显式复位（start 的早退、resume 的 cleanup_on_err），
     // 唯独成功路径漏了。
-    crate::bot_chat::set_bot_assigned(app, task_id, false).await;
+    crate::bot::set_bot_assigned(app, task_id, false).await;
     Ok(BotChatResult {
         text: "🎉 所有子任务都已完成并勾选。任务卡本身我没有标记完成——你确认没问题后自己勾完成，或跟我说「完成它」。".into(),
         task_refs: vec![],
@@ -357,7 +356,7 @@ pub async fn start(
             crate::bot::truncate_for_log(&task.title, 60)
         ),
     );
-    crate::bot_chat::set_bot_assigned(app, &task.id, true).await;
+    crate::bot::set_bot_assigned(app, &task.id, true).await;
     let first = match task
         .subtasks
         .as_deref()
@@ -367,7 +366,7 @@ pub async fn start(
         Some(id) => id,
         None => {
             // 早退也要复位机器人头像（否则 ? 直接返回，卡片永远顶头像）
-            crate::bot_chat::set_bot_assigned(app, &task.id, false).await;
+            crate::bot::set_bot_assigned(app, &task.id, false).await;
             return Err(CommandError::TaskInvalidState {
                 reason: "没有未完成的子任务".into(),
             });
@@ -379,7 +378,7 @@ pub async fn start(
     if r.is_err() {
         clear_for(app, session_id, "逐步执行起步失败").await;
         // 起步失败从未 park，上面的 clear_for 是 no-op，必须显式复位头像
-        crate::bot_chat::set_bot_assigned(app, &task.id, false).await;
+        crate::bot::set_bot_assigned(app, &task.id, false).await;
     }
     r
 }
@@ -448,7 +447,7 @@ pub async fn resume(
                 app,
                 &format!("exec_steps.clear | task: {} | 用户停止逐步执行", task_id),
             );
-            crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
+            crate::bot::set_bot_assigned(app, &task_id, false).await;
             Ok(BotChatResult {
                 text: "⏹ 已结束逐步执行。已确认勾选的子任务保持现状，其余未动。".into(),
                 task_refs: vec![],
@@ -468,7 +467,7 @@ pub async fn resume(
             let stop = StopGuard::new(app, true, session_id.map(|s| s.to_string()));
             let r = advance_or_finish(app, &task_id, &stop, exec_guard).await;
             if cleanup_on_err(app, &task_id, &r) {
-                crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
+                crate::bot::set_bot_assigned(app, &task_id, false).await;
             }
             r
         }
@@ -492,7 +491,7 @@ pub async fn resume(
             )
             .await;
             if cleanup_on_err(app, &task_id, &r) {
-                crate::bot_chat::set_bot_assigned(app, &task_id, false).await;
+                crate::bot::set_bot_assigned(app, &task_id, false).await;
             }
             r
         }
@@ -627,7 +626,7 @@ mod classify_tests {
                 task_id: "tA".into(),
                 subtask_id: "s1".into(),
                 session_id: Some("sess-a-p12".into()),
-                exec_guard: crate::bot_chat::ExecGuard::acquire(&app, "tA").expect("tA 守卫"),
+                exec_guard: crate::bot::ExecGuard::acquire(&app, "tA").expect("tA 守卫"),
             },
         );
         park(
@@ -636,7 +635,7 @@ mod classify_tests {
                 task_id: "tB".into(),
                 subtask_id: "s2".into(),
                 session_id: Some("sess-b-p12".into()),
-                exec_guard: crate::bot_chat::ExecGuard::acquire(&app, "tB").expect("tB 守卫"),
+                exec_guard: crate::bot::ExecGuard::acquire(&app, "tB").expect("tB 守卫"),
             },
         );
         assert!(has_pending_for(&app, Some("sess-a-p12")));
@@ -659,16 +658,15 @@ mod guard_tests {
     #[test]
     fn exec_guard_blocks_second_acquire_until_drop() {
         let app = super::test_handle();
-        let g =
-            crate::bot_chat::ExecGuard::acquire(&app, "batch5-test-task").expect("首次获取应成功");
+        let g = crate::bot::ExecGuard::acquire(&app, "batch5-test-task").expect("首次获取应成功");
         assert!(
-            crate::bot_chat::ExecGuard::acquire(&app, "batch5-test-task").is_none(),
+            crate::bot::ExecGuard::acquire(&app, "batch5-test-task").is_none(),
             "持有期间不得重复获取"
         );
         drop(g);
         // 守卫必须绑定到变量：临时值在语句结束即 Drop（参见 sched_guard 同款坑）
-        let again = crate::bot_chat::ExecGuard::acquire(&app, "batch5-test-task")
-            .expect("Drop 后应可再获取");
+        let again =
+            crate::bot::ExecGuard::acquire(&app, "batch5-test-task").expect("Drop 后应可再获取");
         drop(again);
     }
 

@@ -32,10 +32,17 @@
 pub use crate::bot_chat::{BotChatResult, ChatMsg, TaskRef};
 // 记忆整理要拿对话摘要来做合并——chat 侧只此一项跨族调用。
 pub(crate) use crate::bot_chat::summarize_messages;
+// 逐步执行要自己拼上下文并驱动一轮模型循环：任务卡渲染块、产物目录规则、
+// 技能提示段、执行闸、任务归属标记、轮数上限都在这一面取。
+pub(crate) use crate::bot_chat::{build_task_block, gen_dir_rule, set_bot_assigned, ExecGuard};
+pub use crate::bot_model_loop::run_model_loop;
+pub(crate) use crate::bot_model_loop::DEFAULT_MAX_ROUNDS;
+// 技能提示段：逐步执行的上下文里要带上当前技能说明。
 pub use crate::bot_model_loop::{
     accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk, run_model_loop_core,
     shared_llm_client, LlmHttp, ModelLoopDeps, ToolCallDelta, TurnStatus,
 };
+pub use crate::bot_skills::build_skill_block;
 // bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
 pub use crate::bot_slash::StopGuard;

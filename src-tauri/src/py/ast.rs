@@ -559,8 +559,16 @@ mod tests {
             .next()
             .expect("tool_ast_inspect 应以顶格 } 收尾");
         let gate = body
-            .find("resolve_with_perm(app, \"ast_inspect\", path, interactive, session_id)")
+            .find("resolve_with_perm(")
             .expect("tool_ast_inspect 必须调用 resolve_with_perm：白名单外路径不得进沙箱");
+        // 参数逐个认，不认整行文本：rustfmt 会在行宽不够时把调用拆成多行，
+        // 整行匹配会随格式漂移落空——守卫被格式器牵着走就等于没有守卫。
+        assert!(
+            body[gate..]
+                .get(..160)
+                .is_some_and(|seg| seg.contains("\"ast_inspect\"")),
+            "授权闸必须带 ast_inspect 工具名（闸按工具名查白名单）"
+        );
         let build = body
             .find("build_ast_code(")
             .expect("tool_ast_inspect 必须经 build_ast_code 生成沙箱代码");
