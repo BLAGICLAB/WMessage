@@ -109,6 +109,9 @@ pub async fn ask_respond(
     let answer_clone = answer.clone();
     let app2 = app.clone();
     let text = tauri::async_runtime::spawn_blocking(move || -> Result<Option<String>, String> {
+        // 通知表写入与全仓写口同纪律：持 DB 写锁——主窗导入/大事务持锁超
+        // busy_timeout 时，锁外直写会静默丢掉「用户点了选项」这条应答
+        let _g = crate::db::lock_db_write();
         let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
         respond_core(&conn, &qid, &action_clone, answer_clone.as_deref())
     })
@@ -350,6 +353,8 @@ pub(crate) async fn engine_ask_user(
     let qid_insert = qid.clone();
     let app2 = app.clone();
     let inserted = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
+        // 同 ask_answer：通知落库持 DB 写锁，不裸写
+        let _g = crate::db::lock_db_write();
         let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
         crate::notifications::notif_insert(
             &conn,
