@@ -97,6 +97,7 @@ export function TaskPool({
           {planChip(t.planStart)}
         </span>
       )}
+      {/* done 恒 false 不是笔误：池口径 isActiveTask 已保证非 done 列 */}
       <DoneCircle
         done={false}
         onToggle={() => onSetColumn?.(t.id, "done")}
