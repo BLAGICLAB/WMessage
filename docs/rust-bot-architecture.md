@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 166 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 170 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -260,7 +260,8 @@ src-tauri/src/
 │                        global 3，闸满排队）
 ├── bot/subagent_tools.rs (414) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
 │                        tool_cancel_subagent / tool_write_artifact_file / tool_read_own_card
-├── bot_orchestrator.rs  子 Agent 编排器（方案 B，SUBA 设计 2026-09-27）：受管子 agent 的
+├── bot_orchestrator.rs (692) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
+│                        核心 + 子模块 re-export；受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
 │                        落行上 acceptance_json + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
@@ -270,6 +271,14 @@ src-tauri/src/
 │                        （本地修复 + 补答一次）+ digest 补渲染（残留产出 / 机检未过项）+
 │                        机器可判定条目的派发期形状校验
 │                        采样接线（run_task_in_chat 闭包喂 maybe_record_trace）
+│   └── orchestrator_tests/  编排器测试模块（门面只留生产码，测试按职责拆三份）
+│       ├── orchestrator_tests.rs (114) 共享夹具：orch_prod_src（源码全景）/ test_conn /
+│       │                          parent_card / fake_state / digest_row / req / OK_RESULT
+│       ├── orchestrator_tests/lifecycle.rs (519) 生命周期与接线守卫：panic 隔离 / 收尾事件唤醒 /
+│       │                          wait 策略 / 摘要注入位置
+│       ├── orchestrator_tests/outcome.rs (676) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
+│       │                          包装渲染
+│       └── orchestrator_tests/spawn.rs (1036) 派发与并发闸：建行 / 预算钳制 / 幂等 / 队列位次
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
@@ -730,6 +739,12 @@ flowchart TD
 - `bot/stream_log.rs`
 - `bot/tags_consolidate.rs`
 - `bot/tools.rs`
+
+### `bot_orchestrator/`
+- `bot_orchestrator/orchestrator_tests.rs`
+- `bot_orchestrator/orchestrator_tests/lifecycle.rs`
+- `bot_orchestrator/orchestrator_tests/outcome.rs`
+- `bot_orchestrator/orchestrator_tests/spawn.rs`
 
 ### `bot_skills/`
 - `bot_skills/builtin.rs`
