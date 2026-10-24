@@ -200,7 +200,7 @@ pub(crate) fn parse_result_json(raw: &str) -> Option<serde_json::Value> {
 /// 不重复念一遍；而重启后重复念的后果是提示词里多几段旧结果（啰嗦，不是
 /// 错误），重启一次也只发生一次。这个取舍是刻意的，重启后重复汇报的口子
 /// 记在设计文档 §十。
-static DIGESTED: std::sync::OnceLock<
+pub(crate) static DIGESTED: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, std::collections::HashSet<String>>>,
 > = std::sync::OnceLock::new();
 fn digested(

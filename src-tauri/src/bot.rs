@@ -61,6 +61,7 @@ pub mod registry;
 pub mod services;
 pub mod stream_log;
 pub mod subagent_digest;
+pub mod subagent_repair;
 pub mod tags_consolidate;
 pub mod tools;
 

@@ -778,6 +778,7 @@ mod freeform_freeze {
         "bot/corrections.rs",
         "bot/mcp/builtin.rs",
         "bot/subagent_digest.rs",
+        "bot/subagent_repair.rs",
         "bot/mcp/commands.rs",
         "bot/tools.rs",
         "bot_fs.rs",
