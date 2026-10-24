@@ -17,7 +17,11 @@ use crate::bot_model_loop::*;
 /// 字面量就在测试文件里，生产调用真被删掉后 find 仍会命中它，测试照绿，
 /// 那才是真的假保证。
 fn prod_src() -> String {
-    [include_str!("../bot_model_loop.rs")].concat()
+    [
+        include_str!("types.rs"),
+        include_str!("../bot_model_loop.rs"),
+    ]
+    .concat()
 }
 
 /// 含指定调用点的那个生产文件的全文（运行时从磁盘读）。
