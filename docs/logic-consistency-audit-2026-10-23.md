@@ -180,3 +180,48 @@ mutating.chain 模块作用域跨 render 共享、StrictMode 不失效；mutate 
 **F. 文档账实一次收（C1-C8 + P3 群）**——架构文档四幽灵/过期表、回归文档 services.rs 行号族、溢出文档行号、SPEC/testing/AGENTS/DEVLOG 计数订正、注释漂移 5 条；可合并一两个 docs commit。
 
 **G. P3 择优**——死会话 Running 技能超时、D9 清扫前验 pid、D10/D11 广播与审计补口、E4/E5 完成判据单源化、E6-E8。
+
+---
+
+## 修复批次 · 2026-10-23（当天闭环）
+
+按基线口径逐条修：先落复现用例（红）→ 修 → 变异复验（改坏→红→改回）→ 单独提交（fmt 解堵提交 c2298582 除外——上一批遗留的 rustfmt 漂移挡住了所有提交）。
+
+| 编号 | 缺陷 | 修法 | 提交 |
+|---|---|---|---|
+| A1 P1 | 前台校验排在确认弹窗之前，确认后不复检；activate_window 不进注入锁 | 前台判定移进 with_inject_lock、focus 后注入前复检；置前与注入同锁 | `3efa1e25` |
+| B1 P1 | due 三写口三口径，schema 教的空格分隔格式全链唯一不认 | 判据提为 db::tasks::due_format_error 三口共用；bot 侧 due_param_denied、HTTP 侧 check_due 接线；schema 两个文案改 T 格式；fixture 重生成 | `ec0e25c7` |
+| A2 P2 | validate_app_id 放行 "."（目录折叠回程序根） | 收白名单 `[A-Za-z0-9_-]+` + `id="."` 与黑白名单用例；10-22 账本更正 19/20 并注明 | `009e811f` |
+| D1 | ask_engine 两处锁外直写 notifications | 闭包内补 lock_db_write | `e3604e71` |
+| D2 | workspace 三处裸锁不置线程标记 | 换 lock_db_write | `d6766145` |
+| D3 | workspace_import 无路径闸、无大小上限 | 接 check_export_path_gate + read_import_bounded（从 tasks_import 提出共用，上限参数化+用例） | `7d66f8a6` |
+| D4 | app_runs 四写口不持锁（回写失败=跑成功却报错+历史说谎） | 四处进锁 | `25ed736b` |
+| D5 | SchedGuard 拒绝零留痕（24h ask 吞次日作业） | 补 sched_job_skip 审计行 | `edf3c763` |
+| D6 | apps 六读命令同步 IO 跑 tokio worker | 全部包 spawn_blocking（含清扫） | `f2ee3f7b` |
+| D7 | trace 清扫与 sink writer 同步 DB 全套跑 async 任务体 | loop 体/批写段包 spawn_blocking，连接随闭包进出 | `07280b91` |
+| D8 | 暂停数日恢复瞬间立刻跑过期重试 | classify_job 增 RetryStale（保鲜窗=CATCHUP_WINDOW），消费时清 retry_at+审计；边界用例+变异复验 | `6f06f6ed` |
+| B2 | query schema 残留工作流/定时承诺 | 两 SCHEMA + 注释删除；fixture 重生成 | `6b441c16` |
+| B3 | task_patch tags 零校验（三写口三口径） | 补 MAX_TAGS/MAX_TAG_LEN 双上限 + 空数组=清除（与 bot/HTTP 约定归一）；用例 | `d86656c1` |
+| B4+B5 | complete_task/edit 缺三件套、column 非法值静默吞 | Done 补 archived=false+清 bot_assigned（两处）；create/edit column 响亮拒绝 | `20187e41` |
+| B6 | sched-status 无 skipped、missed 不发事件 | Missed 分支补发 `{jobId, phase:"skipped"}`（前端 handler 原生兼容） | `b88238a5` |
+| B7+B8 | pin 子串误伤、确认行为 schema 未声明 | SENSITIVE_WHOLE_WORDS 整词豁免（用例）；ui_click/ui_type schema 写明确认行为；fixture 重生成 | `d2efb15f` |
+| E1 | reloadTasks 绕 mutate 串行链（导入行从 UI 消失） | 主体并入 chain（SYNC-1 同款双分支推进） | `af1d959c` |
+| E2 | 聊天任务池漏滤 deletedAt | 换 isActiveTask 单源谓词 | `286720db` |
+| E3 | 浮窗 Esc 无层级裁决 | escCtxRef 裁决（trace>palette 让位>关浮窗）+ 标题 Esc stopPropagation + escBlocked 透传 | `a808778c` |
+| Running 技能 | 死会话 Running 永久占位 | sweep 覆盖超时 Running + 冲突闸放行超时项（更新既有用例+新用例） | `921f3477` |
+| D10+D11 | db_delete/tasks_import 不广播；导入导出无审计 | 落库补 tasks-changed；import/export 补 Info 审计（count+转义 path） | `20165f0e` |
+| E4+E5 | 完成判据三处绕单源（同卡同屏矛盾） | planPhases/TodoCard 状态行/详情面板状态行全换 isTaskCompleted；测试更新 | `0bdbebfb` |
+| E6+E7 | 导出日期 UTC/本地双实现、图谱详情裸 ISO | MemoryPanel 换 dayKey；GraphPage 换 formatDue/formatCompletedAt | `42262c9f` |
+| A-P3 ① | 探活文案拼空厂商名、指错方向 | 无厂商/厂商两分支文案 | `331f7ad2` |
+| A-P3 ②③ | panic 清重试取舍未声明、storage.test 格式 | 注释写明取舍；格式复原 | `3cf2c02d` |
+| E8 | 运行/版本读取失败伪装空态 | 失败态与空态分离（loadError） | `607e0fe6` |
+| E10 部分 | TaskPool 对勾恒 false 无说明 | 注释写明口径 | `cb72cd50` |
+| C1-C6 | 架构文档幽灵/错名/计数/类型表漂移 | 删 reflection 两幽灵、apply_reflection→save_summary、160 计数（并行会话 MCP 批 +1 文件）、类型位置表行号校准、parent_session_id、14 张表、perm_mode 四档、web_search 全描述 | `aa2e2b70` |
+| C7+C8 | 回归文档 services.rs 行号族 10 处、溢出文档错靶 | 全部按现码校准 | `4eb341ad` |
+| C-P3 群 | SPEC 200px、testing.md 例数/工单口径、test-all 自报、AGENTS 两计数、DEVLOG 一计数、注释漂移 5 条 | 全部对齐现码（Rust 1965 例/前端约 1050 例 100 文件） | `47d93b61` |
+
+**未修（拍板项，非遗漏）**：
+- **D9 睡眠双时钟**（活跑被清扫误标「进程中断」）——正解要 pid 出 run_python（现有 PyRunResult 无 pid）或 app_runs 加列，超出 P3 择优范围且审计标 NEEDS-VERIFICATION（mach_absolute_time 睡眠行为依 OS 版本）；建议随下次动 py/runtime 时一并拍。
+- **E9 坏 due 读侧三口径**——写口修后仅纵深防御，等有存量脏数据再统一读侧。
+- **E10 alert 三处统一**——视觉语言变更，需拍方向。
+- **F 组 11 处待定性**（10-22 轮遗留）与 **C 组缓存基线**等存量照旧。
