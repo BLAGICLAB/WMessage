@@ -898,6 +898,12 @@ async fn jobs_tick(app: &AppHandle) {
                         CATCHUP_WINDOW.num_hours()
                     ),
                 );
+                // 与 started/done/failed 同一事件面：错过也要让定时页的徽标
+                // 即时翻「已错过」，等下次 reload 才出现就是静默
+                let _ = app.emit(
+                    "sched-status",
+                    serde_json::json!({ "jobId": job.id, "phase": "skipped" }),
+                );
                 notify_schedule_missed(app, &job.content);
                 let _ = update_job_sched_fields(
                     app,
