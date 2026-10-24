@@ -175,14 +175,22 @@ mod tests {
             !text.contains(concat!("\"bind", "_file\" => tool_bind_file")),
             "tool_bind_file 死命令不得再注册到 dispatcher（前端用 bind_files 复数形）"
         );
-        let model_loop = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/bot_model_loop.rs"
-        ))
-        .unwrap();
+        // 拆分成 bot_model_loop/ 目录后，死命令名可能落在任一子模块里——
+        // 只扫门面文件等于不扫（文件里本来就没有，守卫成了假绿）。
+        // 这里扫整个族：门面 + 全部子模块（测试自留地 tests.rs 不算生产代码）。
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut model_loop = std::fs::read_to_string(src_root.join("bot_model_loop.rs")).unwrap();
+        for e in std::fs::read_dir(src_root.join("bot_model_loop")).unwrap() {
+            let p = e.unwrap().path();
+            if p.extension().is_some_and(|x| x == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                model_loop.push_str(&std::fs::read_to_string(&p).unwrap());
+            }
+        }
         assert!(
             !model_loop.contains(concat!("\"bind", "_file\"")),
-            "bind_file 工具名不应出现在 bot_model_loop.rs（schema / tools list 都不应有）"
+            "bind_file 工具名不应出现在 bot_model_loop 族（schema / tools list 都不应有）"
         );
     }
 
