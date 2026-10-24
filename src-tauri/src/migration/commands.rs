@@ -1,7 +1,7 @@
 //! 迁移模块 Tauri command 入口 + 日志读取纯函数。
 //!
-//! 共 7 个 #[tauri::command]（migration_rules_load / _import / _template_save /
-//! _run / _cancel / _log_read / _status）+ 内部辅助
+//! 共 11 个 #[tauri::command]（rules_load / _import / _template_save / _run /
+//! _cancel / _log_read / _status 等）+ 内部辅助
 //! （parse_rules_csv 已在 rules.rs；read_migration_log / tail_log_lines 在此模块
 //! 因与 _log_read 同生命周期）。
 

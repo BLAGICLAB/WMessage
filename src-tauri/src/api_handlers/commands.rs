@@ -1,4 +1,4 @@
-//! 5 个 tauri 命令（api_start / api_stop / api_status / api_rotate_token） + 持锁辅助。
+//! 4 个 tauri 命令（api_start / api_stop / api_status / api_rotate_token） + 持锁辅助。
 //!
 //! 持锁实现（api_start_locked / api_stop_locked）供多个 cmd 复用，
 //! 避免「检查→stop→start」之间的抢锁窗口（api_rotate_token 场景）。

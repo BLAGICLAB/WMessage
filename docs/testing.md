@@ -38,7 +38,7 @@ scripts/install-hooks.sh   # 首次 clone 后跑一次（幂等）：git 指向�
 - **machete 的正确用法是位置参数** `cargo machete src-tauri`（不支持 `--manifest-path`，
   这个坑是 fail 路径注入验证时抓到的）。
 - knip 在 devDependencies（`^6.35.1`），门禁走本地安装：`npx --no-install knip --no-progress`。
-- 工单号防线只看 staged 的 `.rs/.ts/.tsx` **新增行**——存量历史注释不会误炸。
+- 工单号防线对 `.rs/.ts/.tsx` **新增行**三源扫描——staged（无 staged 时看 unstaged）+ untracked 新文件全文；存量历史注释不会误炸。
 
 ## 全量验证（push 前 / 大改动后）
 
@@ -49,8 +49,8 @@ bash scripts/test-all.sh   # pre-push 自动跑：nextest 全量 + vitest + 一�
 分项：
 
 ```bash
-cd src-tauri && cargo test --lib          # Rust lib 单测（当前 1539 例）
-npm test                                  # 前端 vitest（当前 857 例，85 文件）
+cd src-tauri && cargo test --lib          # Rust lib 单测（当前 1965 例）
+npm test                                  # 前端 vitest（当前约 1050 例，100 文件）
 cargo test --test llm_integration         # 集成：mock LLM 全链路
 cargo test --test task_chat_exec          # 集成：任务卡执行聊天化
 cargo test --test skill_e2e               # 集成：Skill DSL 端到端

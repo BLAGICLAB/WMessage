@@ -123,7 +123,7 @@ pub(crate) fn store_lock() -> std::sync::MutexGuard<'static, ()> {
 /// 记忆参数：存 bot-config.json 的 memoryTuning 字段。
 /// None（老配置缺字段）= 全默认，行为与  之前完全一致。
 /// 读取侧统一过 [`MemoryTuning::clamped`]（超界值收敛到合法区间）。
-/// 本期无设置页 UI——手改 bot-config.json 生效（架构文档有注记）。
+/// 设置页「记忆检索参数」卡可调（memory_tuning_get/set）；缺字段 = 全默认。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MemoryTuning {

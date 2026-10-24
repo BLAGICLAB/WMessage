@@ -32,7 +32,7 @@ Win32 `CopyFileEx`，**备用数据流会跟着一起复制**——于是 app �
 **这一轮换了什么方向**：修产物，不修 exe。落点收在「app 交付出去的副本」——
 新增 `platform/zone_id.rs`，用 `CreateFileW` + `SetFileInformationByHandle
 (FileDispositionInfo)` 删掉 Zone.Identifier 这一条流（主数据流与其余流不动），
-非 Windows 是 no-op；接在四个地方：五个文档产物出口（word / word_revisions /
+非 Windows 是 no-op；接在三组出口：五个文档产物出口（word / word_revisions /
 excel / pdf / ppt）、Word 模板上传（`fs::copy` 会复制标记流）、run_python 产物搬运
 （跨盘拷贝走 CopyFileEx，同盘 rename 是同一个文件、标记原样跟着走）。
 

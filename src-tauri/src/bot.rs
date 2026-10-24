@@ -2,7 +2,7 @@
 //!
 //! 原 bot.rs 3444 行 → `bot/{config/, dispatch.rs, registry.rs, tools.rs}`。
 //! 本文件作为 facade，仅持有：
-//! - 顶部 6 个跨模块 re-export（BotChatResult / TaskRef / model_loop / StopGuard / AuditLevel / db::*）
+//! - 顶部跨模块 re-export（BotChatResult / TaskRef / model_loop / StopGuard / AuditLevel / db::* 等）
 //! - `pub mod config;` / `pub mod dispatch;` / `pub mod tools;` 子模块声明
 //! - 各子模块的 `pub use` / `pub(crate) use` re-export 块，保持 `crate::bot::<item>` 路径 1:1 不变
 //!
