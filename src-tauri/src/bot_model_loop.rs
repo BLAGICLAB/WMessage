@@ -1878,17 +1878,13 @@ where
     R: Fn(crate::bot_plan::PlanState, String) -> RP,
     RP: std::future::Future<Output = Option<Vec<String>>>,
 {
-    // 循环级共享量一次性备好（URL / 工具 schema / 熔断上限与两个软警阈值 /
-    // 三个跨轮标志）——见 prepare_round。
+    // 循环级共享量一次性备好（熔断上限与两个软警阈值 / 一次请求的固定件与
+    // 跨轮状态）——见 prepare_round。
     let RoundCtx {
-        url,
-        tools,
         fuse_cap,
         soft_warn_at,
         rounds_warn_at,
-        mut openai_usage_supported,
-        mut anthropic_thinking_dropped,
-        mut context_sheds,
+        mut plan,
     } = prepare_round(http, stop, deps, max_rounds);
     let mut msgs = msgs;
     // 条目级 system prompt：追加到消息栈末尾——OpenAI 直接多一条 system
@@ -2075,268 +2071,16 @@ where
                 ),
             );
         }
-        // body 按协议分支——内部消息流保持 OpenAI
-        // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
-        // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
-        let mut body = match build_request_body(http, &msgs, &tools, openai_usage_supported) {
-            Ok(b) => b,
-            Err(e) => {
-                let hint = skill_finish(false, "消息转换失败");
-                let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
-                audit(
-                    crate::audit::AuditLevel::Error,
-                    "llm.request_failed",
-                    crate::audit::error_kv(&err),
-                );
-                return Err(err);
+        // 请求段：装配 body → 发请求 → 失败重试/降级（见 request_round）。
+        let resp = match request_round(http, &mut msgs, &mut plan, stop, deps, &mut tool_msg_ages)
+            .await?
+        {
+            RequestOutcome::Response(r) => r,
+            RequestOutcome::Stopped => {
+                let hint = skill_finish(false, "用户停止");
+                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
             }
         };
-
-        // LLM 请求前记录
-        audit(
-            crate::audit::AuditLevel::Info,
-            "llm.request",
-            vec![
-                ("model", http.model.clone()),
-                ("msgs_count", msgs.len().to_string()),
-                ("provider", http.provider.as_str().to_string()),
-                ("reasoning", http.reasoning.describe()),
-            ],
-        );
-
-        // 429/5xx/发送失败重试一次——瞬时抖动不应直接作废整轮工具循环。
-        // 只在流式产出开始前重试，无部分内容重复/重放问题。
-        let mut attempt = 0usize;
-        let resp = loop {
-            attempt += 1;
-            // 鉴权头按协议分支
-            //（Anthropic 用 x-api-key + anthropic-version，OpenAI 用 Bearer）
-            let req = http.client.post(&url).json(&body);
-            let req = match http.provider {
-                crate::bot::ApiProvider::Openai => req.bearer_auth(http.api_key.trim()),
-                crate::bot::ApiProvider::Anthropic => {
-                    crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
-                }
-            };
-            // send() 单独挂响应头超时——共享客户端无默认
-            // 总超时，等头阶段（服务端收下请求但不回）会永久挂起；per-request
-            // total timeout 会连流式 body 一起算，不能用。60s 只覆盖
-            // 连接+发请求+收到响应头，body 由下方逐 chunk idle 超时接管
-            let send_result = match tokio::time::timeout(LLM_HEADER_TIMEOUT, req.send()).await {
-                Ok(r) => r.map_err(|e| e.to_string()),
-                Err(_) => Err(format!(
-                    "响应头超时（{}s 无响应，判定服务端挂起）",
-                    LLM_HEADER_TIMEOUT.as_secs()
-                )),
-            };
-            match send_result {
-                Ok(r) => {
-                    if !r.status().is_success() {
-                        let st = r.status().as_u16();
-                        // 错误响应体统一先读出来：stream_options 探测要用它，
-                        // 下面的报错文案与超长判定也要用同一份
-                        let text = r.text().await.unwrap_or_default();
-                        // 网关不认 stream_options 会 400。**只在错误体点名该字段
-                        // 时降级**——普通 400（鉴权错/参数错/上下文超长）不是它的
-                        // 问题，若一律重发，真错会被重试掩盖并变成一次多余请求。
-                        if st == 400
-                            && http.provider == crate::bot::ApiProvider::Openai
-                            && openai_usage_supported
-                            && body.get("stream_options").is_some()
-                            && text.contains("stream_options")
-                        {
-                            openai_usage_supported = false;
-                            // body 是轮外构造、轮内复用的同一份（重试不发新
-                            // body），故必须就地摘掉字段，否则重发还是带它
-                            if let Some(obj) = body.as_object_mut() {
-                                obj.remove("stream_options");
-                            }
-                            audit(
-                                crate::audit::AuditLevel::Warn,
-                                "llm.stream_options_unsupported",
-                                vec![("status", st.to_string())],
-                            );
-                            continue;
-                        }
-                        // Anthropic 的 thinking 块签名绑在会话前缀上：前缀变了
-                        // （换模型 / 改系统提示 / 砍历史）签名即失效，服务端回
-                        // 400 "Invalid `signature` in `thinking` block"。
-                        //
-                        // 官方给的补救是「删掉 thinking 与 redacted_thinking 块
-                        // 后重试一次」（block_binding 的 drop_block 只在
-                        // adaptive 模式可用，本项目走 budget_tokens 模式，只能手动删）。
-                        // 只在响应体点名 thinking + signature 时才走这条路——
-                        // 普通 400 不是它的问题，一律重发只会把真错掩盖成一次多余请求。
-                        if st == 400
-                            && http.provider == crate::bot::ApiProvider::Anthropic
-                            && !anthropic_thinking_dropped
-                            && text.contains("thinking")
-                            && text.contains("signature")
-                        {
-                            let key = crate::bot_anthropic::THINKING_KEY;
-                            let had = msgs.iter().any(|m| m.get(key).is_some());
-                            if had {
-                                anthropic_thinking_dropped = true;
-                                for m in msgs.iter_mut() {
-                                    if let Some(obj) = m.as_object_mut() {
-                                        obj.remove(key);
-                                    }
-                                }
-                                // body 已序列化：删完必须重建，否则重发还是带旧块
-                                body = match build_request_body(
-                                    http,
-                                    &msgs,
-                                    &tools,
-                                    openai_usage_supported,
-                                ) {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        let hint = skill_finish(false, "消息转换失败");
-                                        let err: CommandError =
-                                            format!("Anthropic 消息转换失败：{e}{hint}").into();
-                                        audit(
-                                            crate::audit::AuditLevel::Error,
-                                            "llm.request_failed",
-                                            crate::audit::error_kv(&err),
-                                        );
-                                        return Err(err);
-                                    }
-                                };
-                                audit(
-                                    crate::audit::AuditLevel::Warn,
-                                    "llm.anthropic_thinking_dropped",
-                                    vec![("status", st.to_string())],
-                                );
-                                continue;
-                            }
-                        }
-                        // 429/5xx 瞬时抖动：退避后重发同一请求
-                        if is_retryable_llm_status(st) && attempt < MAX_LLM_ATTEMPTS {
-                            audit(
-                                crate::audit::AuditLevel::Warn,
-                                "llm.retry",
-                                vec![
-                                    ("status", st.to_string()),
-                                    ("attempt", attempt.to_string()),
-                                ],
-                            );
-                            // 重试等待期响应 /stop——不再发出下一次请求（与主循环停止口径一致）
-                            if stop.stopped() {
-                                let hint = skill_finish(false, "用户停止");
-                                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
-                            }
-                            tokio::time::sleep(LLM_RETRY_DELAY).await;
-                            continue;
-                        }
-                        let overflow = is_context_overflow(st, &text);
-                        // 上下文超长：同一份 msgs 重发必然同样 400——砍掉最旧的
-                        // 会话消息后重发（请求尚未开始流式产出，本轮无副作用可重放）
-                        if overflow && context_sheds < CONTEXT_SHED_MAX {
-                            let before = msgs.iter().map(msg_chars).sum::<usize>();
-                            let (cut, dropped) =
-                                shed_oldest_history(&mut msgs, CONTEXT_SHED_KEEP_RATIO);
-                            if dropped > 0 {
-                                context_sheds += 1;
-                                // msgs 变短了：记账表里落在切口内的条目作废、
-                                // 其后左移，不同步就是下一轮按旧下标压缩时越界
-                                reindex_after_shed(&mut tool_msg_ages, cut, dropped);
-                                // body 在进循环前已序列化——砍完必须重建整个 body，
-                                // 否则重发的是同一份旧 body，降级等于没做。
-                                // 重建要走协议构造：OpenAI 形状的 msgs 直接回填进
-                                // Anthropic 的 body 会被拒（role=system / role=tool
-                                // 都不认）→ 那个 400 还不再像超长，用户拿不到
-                                // 「请 /compact」的指引。
-                                body = match build_request_body(
-                                    http,
-                                    &msgs,
-                                    &tools,
-                                    openai_usage_supported,
-                                ) {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        let hint = skill_finish(false, "消息转换失败");
-                                        let err: CommandError =
-                                            format!("Anthropic 消息转换失败：{e}{hint}").into();
-                                        audit(
-                                            crate::audit::AuditLevel::Error,
-                                            "llm.request_failed",
-                                            crate::audit::error_kv(&err),
-                                        );
-                                        return Err(err);
-                                    }
-                                };
-                                let after = msgs.iter().map(msg_chars).sum::<usize>();
-                                audit(
-                                    crate::audit::AuditLevel::Warn,
-                                    "llm.context_overflow",
-                                    vec![
-                                        ("status", st.to_string()),
-                                        ("dropped", dropped.to_string()),
-                                        ("from_chars", before.to_string()),
-                                        ("to_chars", after.to_string()),
-                                        ("shed", context_sheds.to_string()),
-                                    ],
-                                );
-                                if stop.stopped() {
-                                    let hint = skill_finish(false, "用户停止");
-                                    return Ok((format!("⏹ 已停止{hint}"), collected_refs));
-                                }
-                                continue;
-                            }
-                        }
-                        // 没得砍（或本就不是超长）：回错误。超长时给出可操作指引，
-                        // 别把裸 400 抛给用户——它看不出该 /compact 还是换模型；
-                        // 状态码定性的（402 余额不足等）同样说人话，别甩上游 JSON
-                        let advice = if overflow {
-                            Some("上下文超长：请 /compact 压缩历史或新建会话，也可在设置里调小历史预算")
-                        } else {
-                            crate::error::llm_status_advice(st)
-                        };
-                        let hint = skill_finish(false, advice.unwrap_or("大模型 API 错误"));
-                        let err = CommandError::LlmApiError {
-                            status: st,
-                            detail: format!(
-                                "{}{hint}",
-                                crate::error::llm_error_detail(st, &text, advice)
-                            ),
-                        };
-                        let mut kv = crate::audit::error_kv(&err);
-                        kv.push(("status", st.to_string()));
-                        audit(crate::audit::AuditLevel::Warn, "llm.response", kv);
-                        return Err(err);
-                    }
-                    break r;
-                }
-                Err(e) => {
-                    if attempt < MAX_LLM_ATTEMPTS {
-                        audit(
-                            crate::audit::AuditLevel::Warn,
-                            "llm.retry",
-                            vec![("err", e.to_string()), ("attempt", attempt.to_string())],
-                        );
-                        if stop.stopped() {
-                            let hint = skill_finish(false, "用户停止");
-                            return Ok((format!("⏹ 已停止{hint}"), collected_refs));
-                        }
-                        tokio::time::sleep(LLM_RETRY_DELAY).await;
-                        continue;
-                    }
-                    let hint = skill_finish(false, "大模型请求失败");
-                    let err: CommandError = format!("请求大模型失败：{e}{hint}").into();
-                    let mut kv = crate::audit::error_kv(&err);
-                    kv.push(("attempt", attempt.to_string()));
-                    audit(crate::audit::AuditLevel::Error, "llm.request_failed", kv);
-                    return Err(err);
-                }
-            }
-        };
-        // 非成功响应已在上面的请求循环内统一转 Err（429/5xx 退避重试、
-        // 上下文超长降级重发、其余直接带指引报错），走到这里必是 2xx
-        audit(
-            crate::audit::AuditLevel::Info,
-            "llm.response",
-            vec![("status", resp.status().as_u16().to_string())],
-        );
 
         let mut stream = resp.bytes_stream();
         // 字节缓冲按行切——逐 chunk from_utf8_lossy 时
@@ -3766,22 +3510,250 @@ where
 /// 循环级共享量：把原先散在 run_model_loop_core 里的局部变量聚成结构体，
 /// 让各提取单元能显式传参。字段与原局部变量一一对应，不带行为。
 struct RoundCtx {
-    /// 请求 URL（协议分支派生一次：OpenAI /chat/completions，Anthropic /v1/messages）
-    url: String,
-    /// 工具 schema（按会话选取：子 agent 会话给 profile 白名单）
-    tools: serde_json::Value,
     /// 单轮 Function 调用熔断上限
     fuse_cap: usize,
     /// 工具数软警告阈值（cap*7/10）
     soft_warn_at: usize,
     /// 轮数软警告阈值（max_rounds*7/10，与 soft_warn_at 同口径）
     rounds_warn_at: usize,
-    /// 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）
+    /// 一次请求的固定件与跨轮状态
+    plan: RequestPlan,
+}
+
+/// 一次请求要用的固定件 + 请求段跨轮共享的可变状态。
+struct RequestPlan {
+    /// 请求 URL（协议分支派生一次：OpenAI /chat/completions，Anthropic /v1/messages）
+    url: String,
+    /// 工具 schema（按会话选取：子 agent 会话给 profile 白名单）
+    tools: serde_json::Value,
+    /// 跨轮可变状态（随会话共享，不随轮清零）
+    state: RequestState,
+}
+
+/// 请求段的跨轮可变状态：usage 探测降级 / thinking 补救 / 上下文砍史次数。
+struct RequestState {
+    /// 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）。
+    /// 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
+    /// ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
     openai_usage_supported: bool,
-    /// Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救）
+    /// Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救，见请求失败分支）。
+    /// 只补救一次：重发后仍报同样的错就是别的问题，不该无限重试。
     anthropic_thinking_dropped: bool,
-    /// 上下文超长降级次数（全循环共享）
+    /// 上下文超长降级次数（全循环共享）：超长时砍历史重发，至多两次
     context_sheds: u8,
+}
+
+/// 请求段的出口：拿到 2xx 响应 / 用户在发请求途中叫停。
+enum RequestOutcome {
+    /// 拿到 2xx 响应（流还没开始读）
+    Response(reqwest::Response),
+    /// 用户叫停（重试间隙）：调用方组装「已停止」正文
+    Stopped,
+}
+
+/// 请求段的工作集：降级路径要同时改 body / 会话消息 / 工具消息轮龄表。
+struct RequestWork<'a> {
+    /// 当前请求 body（降级后重建时原地替换）
+    body: serde_json::Value,
+    /// 会话消息（thinking 补救 / 砍史会改它）
+    msgs: &'a mut Vec<serde_json::Value>,
+    /// 工具消息轮龄表（砍史后要重排下标）
+    tool_msg_ages: &'a mut Vec<(usize, usize)>,
+}
+
+/// 非 2xx 响应体：状态码 + 正文（降级判定与报错文案共用同一份）。
+struct ErrorResponse {
+    /// HTTP 状态码
+    status: u16,
+    /// 响应正文
+    text: String,
+}
+
+/// 非 2xx 响应的处置结果。
+enum ErrorDisposition {
+    /// 重发同一请求（已降级 / 已砍史 / 已退避）
+    Retry,
+    /// 用户叫停
+    Stopped,
+    /// 报错收场
+    Fatal(CommandError),
+}
+
+/// 非 2xx 响应的处置：按状态码与正文决定重发、叫停还是报错收场。
+///
+/// 降级顺序与原内联块一致：stream_options 探测降级 → Anthropic thinking
+/// 签名失效补救 → 429/5xx 退避重发 → 上下文超长砍史重发 → 报错。
+async fn handle_error_response(
+    http: &LlmHttp,
+    plan: &mut RequestPlan,
+    stop: &StopGuard,
+    deps: &ModelLoopDeps<'_>,
+    work: &mut RequestWork<'_>,
+    resp: ErrorResponse,
+    attempt: usize,
+) -> ErrorDisposition {
+    let st = resp.status;
+    let text = resp.text;
+    // 网关不认 stream_options 会 400。**只在错误体点名该字段
+    // 时降级**——普通 400（鉴权错/参数错/上下文超长）不是它的
+    // 问题，若一律重发，真错会被重试掩盖并变成一次多余请求。
+    if st == 400
+        && http.provider == crate::bot::ApiProvider::Openai
+        && plan.state.openai_usage_supported
+        && work.body.get("stream_options").is_some()
+        && text.contains("stream_options")
+    {
+        plan.state.openai_usage_supported = false;
+        // body 是轮外构造、轮内复用的同一份（重试不发新
+        // body），故必须就地摘掉字段，否则重发还是带它
+        if let Some(obj) = work.body.as_object_mut() {
+            obj.remove("stream_options");
+        }
+        (deps.audit)(
+            crate::audit::AuditLevel::Warn,
+            "llm.stream_options_unsupported",
+            vec![("status", st.to_string())],
+        );
+        return ErrorDisposition::Retry;
+    }
+    // Anthropic 的 thinking 块签名绑在会话前缀上：前缀变了
+    // （换模型 / 改系统提示 / 砍历史）签名即失效，服务端回
+    // 400 "Invalid `signature` in `thinking` block"。
+    //
+    // 官方给的补救是「删掉 thinking 与 redacted_thinking 块
+    // 后重试一次」（block_binding 的 drop_block 只在
+    // adaptive 模式可用，本项目走 budget_tokens 模式，只能手动删）。
+    // 只在响应体点名 thinking + signature 时才走这条路——
+    // 普通 400 不是它的问题，一律重发只会把真错掩盖成一次多余请求。
+    if st == 400
+        && http.provider == crate::bot::ApiProvider::Anthropic
+        && !plan.state.anthropic_thinking_dropped
+        && text.contains("thinking")
+        && text.contains("signature")
+    {
+        let key = crate::bot_anthropic::THINKING_KEY;
+        let had = work.msgs.iter().any(|m| m.get(key).is_some());
+        if had {
+            plan.state.anthropic_thinking_dropped = true;
+            for m in work.msgs.iter_mut() {
+                if let Some(obj) = m.as_object_mut() {
+                    obj.remove(key);
+                }
+            }
+            // body 已序列化：删完必须重建，否则重发还是带旧块
+            work.body = match build_request_body(
+                http,
+                &*work.msgs,
+                &plan.tools,
+                plan.state.openai_usage_supported,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let hint = (deps.skill_finish)(false, "消息转换失败");
+                    let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
+                    (deps.audit)(
+                        crate::audit::AuditLevel::Error,
+                        "llm.request_failed",
+                        crate::audit::error_kv(&err),
+                    );
+                    return ErrorDisposition::Fatal(err);
+                }
+            };
+            (deps.audit)(
+                crate::audit::AuditLevel::Warn,
+                "llm.anthropic_thinking_dropped",
+                vec![("status", st.to_string())],
+            );
+            return ErrorDisposition::Retry;
+        }
+    }
+    // 429/5xx 瞬时抖动：退避后重发同一请求
+    if is_retryable_llm_status(st) && attempt < MAX_LLM_ATTEMPTS {
+        (deps.audit)(
+            crate::audit::AuditLevel::Warn,
+            "llm.retry",
+            vec![("status", st.to_string()), ("attempt", attempt.to_string())],
+        );
+        // 重试等待期响应 /stop——不再发出下一次请求（与主循环停止口径一致）
+        if stop.stopped() {
+            return ErrorDisposition::Stopped;
+        }
+        tokio::time::sleep(LLM_RETRY_DELAY).await;
+        return ErrorDisposition::Retry;
+    }
+    let overflow = is_context_overflow(st, &text);
+    // 上下文超长：同一份 msgs 重发必然同样 400——砍掉最旧的
+    // 会话消息后重发（请求尚未开始流式产出，本轮无副作用可重放）
+    if overflow && plan.state.context_sheds < CONTEXT_SHED_MAX {
+        let before = work.msgs.iter().map(msg_chars).sum::<usize>();
+        let (cut, dropped) = shed_oldest_history(&mut *work.msgs, CONTEXT_SHED_KEEP_RATIO);
+        if dropped > 0 {
+            plan.state.context_sheds += 1;
+            // msgs 变短了：记账表里落在切口内的条目作废、
+            // 其后左移，不同步就是下一轮按旧下标压缩时越界
+            reindex_after_shed(&mut *work.tool_msg_ages, cut, dropped);
+            // body 在进循环前已序列化——砍完必须重建整个 body，
+            // 否则重发的是同一份旧 body，降级等于没做。
+            // 重建要走协议构造：OpenAI 形状的 msgs 直接回填进
+            // Anthropic 的 body 会被拒（role=system / role=tool
+            // 都不认）→ 那个 400 还不再像超长，用户拿不到
+            // 「请 /compact」的指引。
+            work.body = match build_request_body(
+                http,
+                &*work.msgs,
+                &plan.tools,
+                plan.state.openai_usage_supported,
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    let hint = (deps.skill_finish)(false, "消息转换失败");
+                    let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
+                    (deps.audit)(
+                        crate::audit::AuditLevel::Error,
+                        "llm.request_failed",
+                        crate::audit::error_kv(&err),
+                    );
+                    return ErrorDisposition::Fatal(err);
+                }
+            };
+            let after = work.msgs.iter().map(msg_chars).sum::<usize>();
+            (deps.audit)(
+                crate::audit::AuditLevel::Warn,
+                "llm.context_overflow",
+                vec![
+                    ("status", st.to_string()),
+                    ("dropped", dropped.to_string()),
+                    ("from_chars", before.to_string()),
+                    ("to_chars", after.to_string()),
+                    ("shed", plan.state.context_sheds.to_string()),
+                ],
+            );
+            if stop.stopped() {
+                return ErrorDisposition::Stopped;
+            }
+            return ErrorDisposition::Retry;
+        }
+    }
+    // 没得砍（或本就不是超长）：回错误。超长时给出可操作指引，
+    // 别把裸 400 抛给用户——它看不出该 /compact 还是换模型；
+    // 状态码定性的（402 余额不足等）同样说人话，别甩上游 JSON
+    let advice = if overflow {
+        Some("上下文超长：请 /compact 压缩历史或新建会话，也可在设置里调小历史预算")
+    } else {
+        crate::error::llm_status_advice(st)
+    };
+    let hint = (deps.skill_finish)(false, advice.unwrap_or("大模型 API 错误"));
+    let err = CommandError::LlmApiError {
+        status: st,
+        detail: format!(
+            "{}{hint}",
+            crate::error::llm_error_detail(st, &text, advice)
+        ),
+    };
+    let mut kv = crate::audit::error_kv(&err);
+    kv.push(("status", st.to_string()));
+    (deps.audit)(crate::audit::AuditLevel::Warn, "llm.response", kv);
+    ErrorDisposition::Fatal(err)
 }
 
 /// 轮次准备：请求 URL / 工具 schema / 熔断上限派生 + 跨轮标志初值。
@@ -3849,24 +3821,25 @@ fn prepare_round(
     // 几轮把已查到的东西写成收尾 JSON。钳位同 soft_warn_at：max_rounds 小到
     // 7/10 塌成 0 时不注入失真的「已用 0 轮」。
     let rounds_warn_at = (max_rounds * 7 / 10).clamp(1, max_rounds.saturating_sub(1).max(1));
-    // 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）。
-    // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
-    // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
-    let openai_usage_supported: bool = true;
-    // Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救，见请求失败分支）。
-    // 只补救一次：重发后仍报同样的错就是别的问题，不该无限重试。
-    let anthropic_thinking_dropped: bool = false;
-    // 上下文超长降级次数（全循环共享）：超长时砍历史重发，至多两次
-    let context_sheds: u8 = 0;
     RoundCtx {
-        url,
-        tools,
         fuse_cap,
         soft_warn_at,
         rounds_warn_at,
-        openai_usage_supported,
-        anthropic_thinking_dropped,
-        context_sheds,
+        plan: RequestPlan {
+            url,
+            tools,
+            state: RequestState {
+                // 网关是否接受 `stream_options.include_usage`（OpenAI 流式 usage 的前置）。
+                // 初值 true；收到 400 时翻 false 并原样重发一次，此后整场对话不再带该字段
+                // ——探测成本只付一次，且失败只降级统计口径、不影响回复本身。
+                openai_usage_supported: true,
+                // Anthropic 的 thinking 块是否已被丢弃过一次（签名失效时的补救，见请求失败分支）。
+                // 只补救一次：重发后仍报同样的错就是别的问题，不该无限重试。
+                anthropic_thinking_dropped: false,
+                // 上下文超长降级次数（全循环共享）：超长时砍历史重发，至多两次
+                context_sheds: 0,
+            },
+        },
     }
 }
 
@@ -3985,6 +3958,140 @@ fn compact_before_round(
             ],
         );
     }
+}
+
+/// 请求段：装配 body → 发请求 → 失败重试/降级。
+///
+/// 覆盖的降级路径：429/5xx 退避重发、stream_options 探测失败降级、
+/// Anthropic thinking 签名失效重建、上下文超长砍史重发。
+///
+/// 用户叫停时返回 `RequestOutcome::Stopped`——「已停止」正文由调用方组装
+/// （skill_finish 只在真正收尾的那一处调一次）。
+async fn request_round(
+    http: &LlmHttp,
+    msgs: &mut Vec<serde_json::Value>,
+    plan: &mut RequestPlan,
+    stop: &StopGuard,
+    deps: &ModelLoopDeps<'_>,
+    tool_msg_ages: &mut Vec<(usize, usize)>,
+) -> Result<RequestOutcome, CommandError> {
+    // body 按协议分支——内部消息流保持 OpenAI
+    // 形状不动，只在发请求前这一边界转换（bot_anthropic::build_anthropic_body）。
+    // 转换失败（理论不可达，msgs 必含 user 消息）记审计并报错，不静默发出畸形请求。
+    let body = match build_request_body(http, msgs, &plan.tools, plan.state.openai_usage_supported)
+    {
+        Ok(b) => b,
+        Err(e) => {
+            let hint = (deps.skill_finish)(false, "消息转换失败");
+            let err: CommandError = format!("Anthropic 消息转换失败：{e}{hint}").into();
+            (deps.audit)(
+                crate::audit::AuditLevel::Error,
+                "llm.request_failed",
+                crate::audit::error_kv(&err),
+            );
+            return Err(err);
+        }
+    };
+
+    // LLM 请求前记录
+    (deps.audit)(
+        crate::audit::AuditLevel::Info,
+        "llm.request",
+        vec![
+            ("model", http.model.clone()),
+            ("msgs_count", msgs.len().to_string()),
+            ("provider", http.provider.as_str().to_string()),
+            ("reasoning", http.reasoning.describe()),
+        ],
+    );
+
+    // 降级路径要同时改 body / 会话消息 / 轮龄表——收成一份工作集传下去
+    let mut work = RequestWork {
+        body,
+        msgs,
+        tool_msg_ages,
+    };
+
+    // 429/5xx/发送失败重试一次——瞬时抖动不应直接作废整轮工具循环。
+    // 只在流式产出开始前重试，无部分内容重复/重放问题。
+    let mut attempt = 0usize;
+    let resp = loop {
+        attempt += 1;
+        // 鉴权头按协议分支
+        //（Anthropic 用 x-api-key + anthropic-version，OpenAI 用 Bearer）
+        let req = http.client.post(&plan.url).json(&work.body);
+        let req = match http.provider {
+            crate::bot::ApiProvider::Openai => req.bearer_auth(http.api_key.trim()),
+            crate::bot::ApiProvider::Anthropic => {
+                crate::bot_anthropic::apply_anthropic_auth(req, http.api_key.trim())
+            }
+        };
+        // send() 单独挂响应头超时——共享客户端无默认
+        // 总超时，等头阶段（服务端收下请求但不回）会永久挂起；per-request
+        // total timeout 会连流式 body 一起算，不能用。60s 只覆盖
+        // 连接+发请求+收到响应头，body 由下方逐 chunk idle 超时接管
+        let send_result = match tokio::time::timeout(LLM_HEADER_TIMEOUT, req.send()).await {
+            Ok(r) => r.map_err(|e| e.to_string()),
+            Err(_) => Err(format!(
+                "响应头超时（{}s 无响应，判定服务端挂起）",
+                LLM_HEADER_TIMEOUT.as_secs()
+            )),
+        };
+        match send_result {
+            Ok(r) => {
+                if !r.status().is_success() {
+                    let st = r.status().as_u16();
+                    // 错误响应体统一先读出来：stream_options 探测要用它，
+                    // 下面的报错文案与超长判定也要用同一份
+                    let text = r.text().await.unwrap_or_default();
+                    match handle_error_response(
+                        http,
+                        plan,
+                        stop,
+                        deps,
+                        &mut work,
+                        ErrorResponse { status: st, text },
+                        attempt,
+                    )
+                    .await
+                    {
+                        ErrorDisposition::Retry => continue,
+                        ErrorDisposition::Stopped => return Ok(RequestOutcome::Stopped),
+                        ErrorDisposition::Fatal(err) => return Err(err),
+                    }
+                }
+                break r;
+            }
+            Err(e) => {
+                if attempt < MAX_LLM_ATTEMPTS {
+                    (deps.audit)(
+                        crate::audit::AuditLevel::Warn,
+                        "llm.retry",
+                        vec![("err", e.to_string()), ("attempt", attempt.to_string())],
+                    );
+                    if stop.stopped() {
+                        return Ok(RequestOutcome::Stopped);
+                    }
+                    tokio::time::sleep(LLM_RETRY_DELAY).await;
+                    continue;
+                }
+                let hint = (deps.skill_finish)(false, "大模型请求失败");
+                let err: CommandError = format!("请求大模型失败：{e}{hint}").into();
+                let mut kv = crate::audit::error_kv(&err);
+                kv.push(("attempt", attempt.to_string()));
+                (deps.audit)(crate::audit::AuditLevel::Error, "llm.request_failed", kv);
+                return Err(err);
+            }
+        }
+    };
+    // 非成功响应已在上面的请求循环内统一转 Err（429/5xx 退避重试、
+    // 上下文超长降级重发、其余直接带指引报错），走到这里必是 2xx
+    (deps.audit)(
+        crate::audit::AuditLevel::Info,
+        "llm.response",
+        vec![("status", resp.status().as_u16().to_string())],
+    );
+    Ok(RequestOutcome::Response(resp))
 }
 
 // 测试：feed_think / parse_sse_chunk / TOOLS schema
