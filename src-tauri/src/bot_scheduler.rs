@@ -780,6 +780,9 @@ enum JobAction {
     RetryDispatch,
     /// 重试未到点 → 本轮跳过（防与 occurrence 判定叠加重复触发）
     RetryPending,
+    /// 重试到点但已拖过保鲜窗口（作业被暂停数日后恢复的典型形态）→
+    /// 消费掉重试回到正常排期，不恢复瞬间立刻跑一次
+    RetryStale,
     /// 过期的一次性作业 → 删除
     Delete,
     /// 错过补跑窗口 → 消费该 occurrence
@@ -798,14 +801,19 @@ fn classify_job(
     bot_on: bool,
 ) -> JobAction {
     if let Some(retry_at) = job.retry_at {
-        return if retry_at <= now.timestamp_millis() {
-            if bot_on {
-                JobAction::RetryDispatch
-            } else {
-                JobAction::Held
-            }
+        if retry_at > now.timestamp_millis() {
+            return JobAction::RetryPending;
+        }
+        // 重试保鲜窗口：与正常到点的补跑窗口同宽。重试本该几分钟内发生，
+        // 拖过窗口（作业暂停期间数日、进程长期关闭）后再跑已无意义——
+        // 恢复瞬间立刻执行一次只会让用户莫名其妙。
+        if now.timestamp_millis() - retry_at > CATCHUP_WINDOW.num_milliseconds() {
+            return JobAction::RetryStale;
+        }
+        return if bot_on {
+            JobAction::RetryDispatch
         } else {
-            JobAction::RetryPending
+            JobAction::Held
         };
     }
     if at_expired(&job.schedule, job.sched_last, now) {
@@ -844,6 +852,34 @@ async fn jobs_tick(app: &AppHandle) {
             JobAction::Dispatch | JobAction::RetryDispatch => spawn_job_run(app, job),
             // 开关关闭：不派发，水位不推进（恢复后按原语义补跑或判 missed）
             JobAction::Held | JobAction::RetryPending | JobAction::Idle => {}
+            // 过期重试：清 retry_at 回到正常排期（sched_last 是 occurrence
+            // 水位，不动）；不清的话下一轮又判 RetryStale，天天一条审计噪声
+            JobAction::RetryStale => {
+                crate::bot::audit_log(
+                    app,
+                    &format!(
+                        "sched_job_retry_expired | id: {} | 重试到点已超 {}h 保鲜窗口，丢弃重试回到正常排期",
+                        job.id,
+                        CATCHUP_WINDOW.num_hours()
+                    ),
+                );
+                let job_id = job.id.clone();
+                let now_ms = now.timestamp_millis();
+                let _ = crate::db::lock::with_write_conn(app, move |conn| {
+                    crate::db::update_job_run_state(
+                        conn,
+                        &job_id,
+                        Some("retry_expired"),
+                        None,
+                        None, // retry_at 清零
+                        None, // retry_count 清零：下一周期从零计
+                        false,
+                        now_ms,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .await;
+            }
             // 过期一次性（从未执行且已过点）→ 删除作业（防重启后补跑过期任务）
             JobAction::Delete => {
                 crate::bot::audit_log(
@@ -1412,6 +1448,25 @@ mod sched_tests {
         // 未到点 → 本轮跳过
         j.retry_at = Some(now.timestamp_millis() + 60_000);
         assert_eq!(classify_job(&j, now, true), JobAction::RetryPending);
+    }
+
+    /// 重试保鲜窗口：拖过 CATCHUP_WINDOW 的过期重试不再恢复瞬间立刻跑，
+    /// 丢弃重试回到正常排期（暂停数日恢复是典型形态——重试本该 5 分钟内
+    /// 发生，拖几天后跑一次只会让用户莫名其妙）。
+    #[test]
+    fn classify_job_stale_retry_is_dropped_not_dispatched() {
+        let now = dt(2026, 8, 16, 10, 30);
+        let mut j = job("daily:10:00");
+        // 恰好在窗口边界内（< 2h）→ 照常派发
+        j.retry_at = Some(now.timestamp_millis() - CATCHUP_WINDOW.num_milliseconds() + 60_000);
+        assert_eq!(classify_job(&j, now, true), JobAction::RetryDispatch);
+        // 拖过窗口 → 丢弃重试
+        j.retry_at = Some(now.timestamp_millis() - CATCHUP_WINDOW.num_milliseconds() - 1);
+        assert_eq!(classify_job(&j, now, true), JobAction::RetryStale);
+        assert_eq!(classify_job(&j, now, false), JobAction::RetryStale);
+        // 暂停数日恢复的典型形态：retry_at 远在过去
+        j.retry_at = Some(ms(2026, 8, 10, 10, 00));
+        assert_eq!(classify_job(&j, now, true), JobAction::RetryStale);
     }
 
     #[test]
