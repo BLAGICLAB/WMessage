@@ -29,6 +29,12 @@ pub fn root<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
     crate::db::paths::data_dir(app).join("overflow")
 }
 
+/// 同进程内触碰溢出根目录的测试共用串行锁：sweep 会删整个根下的过期文件、
+/// 兜底用例会把根临时占成文件——并行互踩会互相制造假失败（nextest 每测试
+/// 一进程本无此问题，cargo test --lib 单进程并行时有）。
+#[cfg(test)]
+pub(crate) static OVERFLOW_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 转存完整工具输出，返回落盘路径。
 ///
 /// 目录按当天创建（解析即建，模型随后读回时不至于扑空）。
@@ -135,6 +141,50 @@ mod tests {
         // data_dir 在测试环境解析不到 → root 不存在；不该把「没溢出过」报成失败
         let app = tauri::test::mock_app();
         assert_eq!(sweep(app.handle(), None).unwrap_or_default(), 0);
+    }
+
+    /// 清扫方向：过期的删、保留期内的留。判定方向反过来时两条都会翻——
+    /// days=0 那轮删不掉任何文件；days=3650 那轮把该保留的删了。
+    #[test]
+    fn mutant_m8_sweep_removes_expired_keeps_fresh() {
+        let _g = OVERFLOW_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let app = tauri::test::mock_app();
+        let root = root(app.handle());
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join(chrono::Utc::now().format("%Y%m%d").to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        // days=0：cutoff=此刻，此前创建的文件必过期 → 删
+        let removed = sweep(app.handle(), Some(0)).unwrap();
+        assert_eq!(removed, 1, "days=0 时现存文件应判定过期删除");
+        assert!(!file.exists(), "过期文件应已删除");
+
+        // days=3650：cutoff 在十年前 → 新文件必须保留
+        //（sweep 会把删空的日期目录一并移除，重建后再放新文件）
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, "x").unwrap();
+        let kept = sweep(app.handle(), Some(3650)).unwrap();
+        assert_eq!(kept, 0, "保留期内的文件不得删除");
+        assert!(file.exists(), "保留期内的文件必须还在");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 负数天数必须钳到 0：`days as u64` 对 -1 翻成 u64::MAX，再乘 86400
+    /// 在 debug 构建直接 overflow panic；钳 0 后语义与 days=0 一致（全过期）。
+    #[test]
+    fn mutant_m9_sweep_negative_days_clamped_to_zero() {
+        let _g = OVERFLOW_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let app = tauri::test::mock_app();
+        let root = root(app.handle());
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join(chrono::Utc::now().format("%Y%m%d").to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        let removed = sweep(app.handle(), Some(-1)).unwrap();
+        assert_eq!(removed, 1, "负数天数按 0 处理：现存文件全部过期删除");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

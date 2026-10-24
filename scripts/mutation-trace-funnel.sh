@@ -90,36 +90,41 @@ run_mutant() {
 echo "══ 变异测试：trace 观测面 + 溢出回灌 ══"
 echo
 
-# ── 溢出回灌漏斗（commit 24a4ea6）────────────────────────────────
+# ── 溢出回灌漏斗 ────────────────────────────────────────────────
+# 行号锚点 2026-10-24 刷新（漏斗判定已抽成 apply_output_cap 泛型函数，见
+# bot_model_loop.rs；锚点漂移时 run_mutant 会报 NO-OP，照 grep 重对即可）。
 run_mutant M1 "L1/L2 取小写成取大 → run_python 不再溢出" \
-  bot_model_loop.rs 479 '/\.min(global_cap_bytes)/.max(global_cap_bytes)/' effective_cap
+  bot_model_loop.rs 574 '/\.min(global_cap_bytes)/.max(global_cap_bytes)/' effective_cap
 
-run_mutant M2 "未注册工具兜底改成 usize::MAX → MCP 工具无上限" \
-  bot_model_loop.rs 478 '/\.unwrap_or(global_cap_bytes)/.unwrap_or(usize::MAX)/' effective_cap
+# M2 原表达式 unwrap_or(usize::MAX) 是等价变异：后面同一行的 .min(global) 会
+# 把 MAX 钳回 global，任何行为测试都杀不死它。改成 unwrap_or(0)——未注册工具
+# 的兜底既不能放大也不能归零，既有测试（mcp_unknown → 全局 cap）即可杀死。
+run_mutant M2 "未注册工具兜底归零 → MCP 工具全部转存" \
+  bot_model_loop.rs 573 '/\.unwrap_or(global_cap_bytes)/.unwrap_or(0)/' effective_cap
 
 run_mutant M3 "SEPS 归零 → 节选凭空超出 cap 4 字符" \
-  bot_model_loop.rs 528 '/const SEPS: usize = 4;/const SEPS: usize = 0;/' preview_keeps_head
+  bot_model_loop.rs 663 '/const SEPS: usize = 4;/const SEPS: usize = 0;/' preview_keeps_head
 
 run_mutant M4 "指针长度按字符算 → 中文指针把正文预算算少" \
-  bot_model_loop.rs 529 '/notice\.len()/notice.chars().count()/' preview_
+  bot_model_loop.rs 664 '/notice\.len()/notice.chars().count()/' preview_
 
 run_mutant M5 "边界 > 改成 >= → 恰好等于 cap 的结果被白转存一次" \
-  bot_model_loop.rs 1310 '/if text\.len() > cap/if text.len() >= cap/' preview_
+  bot_model_loop.rs 632 '/if text\.len() > cap/if text.len() >= cap/' preview_
 
 run_mutant M6 "落盘失败兜底返回空串 → 工具结果凭空消失" \
-  bot_model_loop.rs 515 '/cap_tool_output(&text, cap_bytes)/String::new()/' preview_
+  bot_model_loop.rs 615 '/cap_tool_output(&text, cap_bytes)/String::new()/' preview_
 
 run_mutant M7 "白名单里的溢出目录路径写坏 → 指针成废纸" \
-  bot_fs.rs 270 '|crate::overflow::root(app)|crate::overflow::root(app).join("nope")|' preview_
+  bot_fs.rs 285 '|crate::overflow::root(app)|crate::overflow::root(app).join("nope")|' preview_
 
 run_mutant M8 "保留期判定方向反过来 → 只删新文件、老的永远留着" \
-  overflow.rs 105 '/mtime < cutoff/mtime > cutoff/' sweep
+  overflow.rs 126 '/mtime < cutoff/mtime > cutoff/' sweep
 
 run_mutant M9 "保留期天数去掉 max(0) 下限" \
-  overflow.rs 82 '/\.max(0)//' sweep
+  overflow.rs 103 '/\.max(0)//' sweep
 
 run_mutant M10 "指针里的行数按字符算 → read_text_file 的 offset 报错" \
-  overflow.rs 53 '/text\.lines()\.count()/text.chars().count()/' pointer_text
+  overflow.rs 73 '/text\.lines()\.count()/text.chars().count()/' pointer_text
 
 # ── trace 观测面（commit 7e474ff）────────────────────────────────
 run_mutant M11 "钳制标记预算不再扣标记长度 → span 字段超上限" \

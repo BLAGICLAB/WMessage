@@ -579,7 +579,12 @@ fn effective_output_cap(tool: &str, global_cap_bytes: usize) -> usize {
 /// 退回路径必须保留：落盘失败时若直接放行原文本，模型就白挨这一轮大上下文；
 /// 若返回空，结果凭空消失更糟。`cap_tool_output` 的四一分在无第二份拷贝时是对的，
 /// 这正是它作为兜底而非主路径的原因。
-fn spill_or_cap(app: &tauri::AppHandle, tool: &str, text: String, cap_bytes: usize) -> String {
+fn spill_or_cap<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    tool: &str,
+    text: String,
+    cap_bytes: usize,
+) -> String {
     match crate::overflow::spill(app, &text) {
         Ok(path) => {
             let notice = crate::overflow::pointer_text(tool, &path, &text);
@@ -610,6 +615,41 @@ fn spill_or_cap(app: &tauri::AppHandle, tool: &str, text: String, cap_bytes: usi
             cap_tool_output(&text, cap_bytes)
         }
     }
+}
+
+/// 回灌漏斗的判定与处置（L1 per-tool 预算 × L2 全局 cap 取小后的执行段）：
+/// 超出才转存/截断，没超原样透传。从薄壳 execute_tool 闭包抽出并泛型化——
+/// 闭包绑死 Wry AppHandle，MockRuntime 单测够不到判定本身；「恰等 cap 不
+/// 转存」「转存失败兜底非空」两条边界只有直驱这里才钉得住。
+fn apply_output_cap<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    tool_output_cap: Option<usize>,
+    name: &str,
+    mut text: String,
+) -> String {
+    if let Some(global_cap) = tool_output_cap {
+        let cap = effective_output_cap(name, global_cap);
+        if text.len() > cap {
+            // 「超预算」审计事件在**截断发生的地方**发：阈值就是这次
+            // 真正用的 cap（同一个数）。此前这条事件在 dispatch 侧按
+            // per-tool 预算报，而截断用 min(per-tool, 全局 cap)——
+            // 全局 cap 更紧时（默认 30000 vs 长输出工具 65536）文本被
+            // 截了而审计不报，运维据此查超预算会漏掉全部由全局 cap
+            // 触发的截断；反过来审计报了也可能根本没截。
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Info,
+                "tool.output.over_budget",
+                &[
+                    ("tool", name.to_string()),
+                    ("output_bytes", text.len().to_string()),
+                    ("max_bytes", cap.to_string()),
+                ],
+            );
+            text = spill_or_cap(app, name, text, cap);
+        }
+    }
+    text
 }
 
 /// 节选预览：头一半 + 指针 + 尾一半（字节口径）；指针自身长度先从 cap 里扣。
@@ -1740,29 +1780,7 @@ pub async fn run_model_loop(
             //      被调得比它大的那三个长输出工具。
             //   L3 db::SPAN_TEXT_MAX——在 trace 侧，只管存多少进 SQLite，不管这里。
             // trace span 仍存原文（钳在 L3），整轮回放的证据不因回灌节选而丢失。
-            let mut text = out.text;
-            if let Some(global_cap) = tool_output_cap {
-                let cap = effective_output_cap(&name, global_cap);
-                if text.len() > cap {
-                    // 「超预算」审计事件在**截断发生的地方**发：阈值就是这次
-                    // 真正用的 cap（同一个数）。此前这条事件在 dispatch 侧按
-                    // per-tool 预算报，而截断用 min(per-tool, 全局 cap)——
-                    // 全局 cap 更紧时（默认 30000 vs 长输出工具 65536）文本被
-                    // 截了而审计不报，运维据此查超预算会漏掉全部由全局 cap
-                    // 触发的截断；反过来审计报了也可能根本没截。
-                    crate::audit::write_event(
-                        &app,
-                        crate::audit::AuditLevel::Info,
-                        "tool.output.over_budget",
-                        &[
-                            ("tool", name.clone()),
-                            ("output_bytes", text.len().to_string()),
-                            ("max_bytes", cap.to_string()),
-                        ],
-                    );
-                    text = spill_or_cap(&app, &name, text, cap);
-                }
-            }
+            let text = apply_output_cap(&app, tool_output_cap, &name, out.text);
             if let Ok(mut n) = sink.lock() {
                 *n += 1;
             }
@@ -4657,6 +4675,56 @@ mod hallucination_guard_tests {
         assert_eq!(effective_output_cap("read_text_file", 30_000), 30_000);
         // 不在注册表里的名字（MCP 挂载工具）也走全局
         assert_eq!(effective_output_cap("mcp_unknown", 30_000), 30_000);
+    }
+
+    /// 恰好等于 cap 的输出不得转存：边界是严格大于。等号判成超限会把
+    /// 正好压线的输出白白转存一次（多一次 IO + 节选换指针）。
+    #[test]
+    fn mutant_m5_preview_exact_cap_output_is_not_spilled() {
+        let _g = crate::overflow::OVERFLOW_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let app = tauri::test::mock_app();
+        let root = crate::overflow::root(app.handle());
+        let _ = std::fs::remove_dir_all(&root);
+        // run_python 的 per-tool 预算 8192（与 effective_cap 既有断言同锚点）
+        let exact = "A".repeat(8_192);
+        let out = apply_output_cap(app.handle(), Some(30_000), "run_python", exact.clone());
+        assert_eq!(out, exact, "恰等于 cap 的输出必须原样回灌，不得转存");
+
+        let over: String =
+            apply_output_cap(app.handle(), Some(30_000), "run_python", "B".repeat(8_193));
+        assert!(
+            over.contains("已**完整**转存到本地文件"),
+            "超 cap 一个字节的输出必须换成指针：{}",
+            over.chars().take(60).collect::<String>()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 转存失败兜底不得返回空：溢出目录建不出来时退回纯头尾截断——
+    /// 结果凭空消失等于这轮工具白跑。把溢出根占成文件即可让 spill 失败。
+    #[test]
+    fn mutant_m6_preview_spill_failure_fallback_is_never_empty() {
+        let _g = crate::overflow::OVERFLOW_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let app = tauri::test::mock_app();
+        let root = crate::overflow::root(app.handle());
+        let _ = std::fs::remove_dir_all(&root);
+        if let Some(parent) = root.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&root, "占位文件：让 spill 的 create_dir_all 失败").unwrap();
+        let out = apply_output_cap(app.handle(), Some(30_000), "run_python", "A".repeat(8_193));
+        assert!(!out.is_empty(), "兜底路径必须保留节选，不得返回空串");
+        assert!(
+            out.contains("已按 maxToolOutputBytes=8192 截断"),
+            "兜底走纯头尾截断形态：{}",
+            out.chars().take(60).collect::<String>()
+        );
+        assert!(out.starts_with("AAAA"), "头部节选必须在场");
+        std::fs::remove_file(&root).unwrap();
     }
 
     #[test]

@@ -254,6 +254,19 @@ async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
         eprintln!("[bot_fs] 白名单 canonicalize 失败，回空白名单：{e}");
         Vec::new()
     });
+    // 活动技能目录 + 溢出目录的追加不依赖配置/DB 加载，独立成泛型函数：
+    // allowed_dirs 其余部分绑死 Wry AppHandle，这段抽出来后 MockRuntime
+    // 单测可以直驱，钉住「溢出根目录恒在读白名单且路径精确」。
+    append_session_read_dirs(app, session, &mut out);
+    out
+}
+
+/// 会话级附加读白名单：活动技能目录 + 溢出目录（都只加读侧，写闸门不受影响）。
+fn append_session_read_dirs<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session: Option<&str>,
+    out: &mut Vec<PathBuf>,
+) {
     // 活动技能目录（会话级，只加读白名单；无活动技能/无目录则无追加）
     if let Some(run) = crate::bot_skills::active_skill_run_for(app, session) {
         if let Some(dir) = &run.dir {
@@ -274,7 +287,6 @@ async fn allowed_dirs(app: &AppHandle, session: Option<&str>) -> Vec<PathBuf> {
             out.push(c);
         }
     }
-    out
 }
 
 /// 路径守卫（Kimi CLI 风格「执行前授权」）：
@@ -1898,6 +1910,28 @@ pub async fn tool_list_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 溢出根目录必须以精确路径钉在读白名单（canonical 后与 overflow::root
+    /// 完全相等）：路径写歪时 canonicalize 失败被静默跳过、不报错——
+    /// 指针文件从此读不回，比直接截断还糟，且没有任何显式失败可查。
+    #[test]
+    fn mutant_m7_preview_overflow_root_pinned_in_read_allowlist() {
+        let _g = crate::overflow::OVERFLOW_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let app = tauri::test::mock_app();
+        let root = crate::overflow::root(app.handle());
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        append_session_read_dirs(app.handle(), None, &mut dirs);
+        let expected = std::fs::canonicalize(&root).unwrap();
+        assert!(
+            dirs.contains(&expected),
+            "读白名单必须含溢出根目录 {expected:?}，实际：{dirs:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     // N3-6：grep 上下文渲染
 
