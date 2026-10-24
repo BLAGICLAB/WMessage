@@ -429,14 +429,21 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
         }
         other => panic!("期望 Done，got {other:?}"),
     }
-    // 审计写入真路径（audit_log_hook → bot.log）：start / step×2 / done
+    // 审计写入真路径（audit_log_hook → bot.log）：start / step×2 / done。
+    // 桥接后 free-form 行落盘为「INFO | 事件 | detail=...」，且 detail 内的
+    // 「 | 」被强转义成「|  」（防伪造日志行）——断言按事件名与键值分别 contains，
+    // 不再拼整行（跨转义边界）。
     let tail = bot_log_tail_since(log_offset);
     for needle in [
-        "skill_dsl_start | name: minimax-ppt | steps: 2",
-        "skill_dsl_step | name: minimax-ppt | step: 1",
-        "skill_dsl_step | name: minimax-ppt | step: 2",
-        "skill_completed | name: minimax-ppt",
-        "skill_dsl_done | name: minimax-ppt | steps_ok: 2",
+        "skill_dsl_start",
+        "name: minimax-ppt",
+        "steps: 2",
+        "skill_dsl_step",
+        "step: 1",
+        "step: 2",
+        "skill_completed",
+        "skill_dsl_done",
+        "steps_ok: 2",
     ] {
         assert!(
             tail.contains(needle),
@@ -524,10 +531,16 @@ async fn scheduler_e2e_bails_out_when_another_skill_takes_over() {
         "被接管记 terminated，不是 done"
     );
     let tail = bot_log_tail_since(log_offset);
-    assert!(
-        tail.contains("skill_dsl_run_replaced | name: minimax-ppt | active: other-skill"),
-        "bot.log 应留接管痕迹：{tail}"
-    );
+    for needle in [
+        "skill_dsl_run_replaced",
+        "name: minimax-ppt",
+        "active: other-skill",
+    ] {
+        assert!(
+            tail.contains(needle),
+            "bot.log 应留接管痕迹（缺 {needle}）：{tail}"
+        );
+    }
 
     test_hook_remove_skill_run(&app, "other-skill");
     let _ = std::fs::remove_file(&db_path);
@@ -584,10 +597,12 @@ async fn scheduler_e2e_paused_run_returns_await_user() {
     let stored = load_all_skill_outcomes(&conn).expect("load outcomes");
     assert_eq!(stored["minimax-ppt"].kind, "await_user");
     let tail = bot_log_tail_since(log_offset);
-    assert!(
-        tail.contains("skill_dsl_await_user | name: minimax-ppt | step: 1"),
-        "应记 await_user 审计：{tail}"
-    );
+    for needle in ["skill_dsl_await_user", "name: minimax-ppt", "step: 1"] {
+        assert!(
+            tail.contains(needle),
+            "应记 await_user 审计（缺 {needle}）：{tail}"
+        );
+    }
     // 暂停中的 run 不被调度器改动（等 bot_confirm_response 唤起）
     assert_eq!(
         test_hook_skill_run_state(&app, "minimax-ppt"),
@@ -694,8 +709,12 @@ async fn scheduler_e2e_failed_step_runs_rollback_window() {
     drop(calls);
     let tail = bot_log_tail_since(log_offset);
     for needle in [
-        "skill_dsl_rollback_start | name: minimax-ppt | step: 2",
-        "skill_dsl_rollback_done | name: minimax-ppt | steps: 1 | failed: 0",
+        "skill_dsl_rollback_start",
+        "name: minimax-ppt",
+        "step: 2",
+        "skill_dsl_rollback_done",
+        "steps: 1",
+        "failed: 0",
     ] {
         assert!(
             tail.contains(needle),

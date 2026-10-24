@@ -365,7 +365,6 @@ struct CoreHarness {
     stop: StopGuard,
     emit: Box<dyn Fn(&str, serde_json::Value) + Send + Sync>,
     audit: Box<dyn Fn(AuditLevel, &'static str, Vec<(&'static str, String)>) + Send + Sync>,
-    audit_log: Box<dyn Fn(&str) + Send + Sync>,
     skill_finish: Box<dyn Fn(bool, &str) -> String + Send + Sync>,
     /// 阶段 3.3：核心只读「活动技能快照」（等价 `bot_skills::active_skill_run_for`）
     active_skill_run:
@@ -411,7 +410,6 @@ impl CoreHarness {
             audit: Box::new(move |_, event, _| {
                 events2.lock().unwrap().push(event);
             }),
-            audit_log: Box::new(|_| {}),
             skill_finish: Box::new(|_, _| String::new()),
             // 用真 accessor（走兜底实例，与生产语义一致）；本组用例不插 run → 恒 None。
             // handle 构造时捕获一次：闭包里每次调 mock_handle() 会 Box::leak 一个新
@@ -446,7 +444,6 @@ impl CoreHarness {
             conv_sidecar_dir: None,
             emit: &*self.emit,
             audit: &*self.audit,
-            audit_log: &*self.audit_log,
             skill_finish: &*self.skill_finish,
             active_skill_run: &*self.active_skill_run,
             final_selfcheck_round_gap: Some(0),
@@ -469,7 +466,6 @@ impl CoreHarness {
             conv_sidecar_dir: None,
             emit: &*self.emit,
             audit: &*self.audit,
-            audit_log: &*self.audit_log,
             skill_finish: &*self.skill_finish,
             active_skill_run: &*self.active_skill_run,
             final_selfcheck_round_gap: gap,
@@ -2647,16 +2643,22 @@ async fn core_final_selfcheck_n_appends_warning_and_audits() {
     server.push_behavior(MockBehavior::TextReply("N".into()));
 
     let h = CoreHarness::new();
-    // 收集 audit_log 行（h.audit_log 默认 noop，自己包一个捕获版）
+    // 收集结构化审计行（event + kv 拼一行；h.audit 默认只记事件名，自己包捕获版）
     let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let logs2 = logs.clone();
-    // 直接用 deps() 但覆盖 audit_log 闭包捕获 final_selfcheck.fail 行
+    // 直接用 deps() 但覆盖 audit 闭包捕获 final_selfcheck.fail 事件
     let mut deps = h.deps_with_gap(Some(1));
-    deps.audit_log = {
-        let logs2 = logs2.clone();
-        Box::leak(Box::new(move |line: &str| {
-            logs2.lock().unwrap().push(line.to_string());
-        }))
+    deps.audit = {
+        let logs2 = logs.clone();
+        Box::leak(Box::new(
+            move |_lvl: AuditLevel, event: &'static str, kv: Vec<(&'static str, String)>| {
+                let kvs = kv
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                logs2.lock().unwrap().push(format!("{event} {kvs}"));
+            },
+        ))
     };
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
@@ -3316,11 +3318,18 @@ async fn core_final_selfcheck_sidecall_n_appends_warning() {
     let logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sc = selfcheck_http(&side);
     let mut deps = h.deps_with_selfcheck(&sc);
-    deps.audit_log = {
+    deps.audit = {
         let logs2 = logs.clone();
-        Box::leak(Box::new(move |line: &str| {
-            logs2.lock().unwrap().push(line.to_string());
-        }))
+        Box::leak(Box::new(
+            move |_lvl: AuditLevel, event: &'static str, kv: Vec<(&'static str, String)>| {
+                let kvs = kv
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                logs2.lock().unwrap().push(format!("{event} {kvs}"));
+            },
+        ))
     };
     let exec =
         |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
@@ -3355,17 +3364,24 @@ async fn core_final_selfcheck_sidecall_n_appends_warning() {
 // 非 mutating 工具（run_python / fetch_url / bash）的执行结果可以凭空叙述。
 // ────────────────────────────────────────────────────────────────────────────
 
-/// 捕获 audit_log 的 deps，用于断言守卫记了什么审计
+/// 捕获结构化审计的 deps（event + kv 拼一行），用于断言守卫记了什么审计
 fn deps_capturing_logs<'a>(
     h: &'a CoreHarness,
     logs: &'a Arc<Mutex<Vec<String>>>,
 ) -> ModelLoopDeps<'a> {
     let mut deps = h.deps();
-    deps.audit_log = {
+    deps.audit = {
         let logs2 = logs.clone();
-        Box::leak(Box::new(move |line: &str| {
-            logs2.lock().unwrap().push(line.to_string());
-        }))
+        Box::leak(Box::new(
+            move |_lvl: AuditLevel, event: &'static str, kv: Vec<(&'static str, String)>| {
+                let kvs = kv
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                logs2.lock().unwrap().push(format!("{event} {kvs}"));
+            },
+        ))
     };
     deps
 }

@@ -184,7 +184,6 @@ async fn run_task_in_chat_full_chain_manual_origin() {
                 guard_claim_keywords: &[],
                 file_receipts: None,
                 audit: &|_: AuditLevel, _: &'static str, _| {},
-                audit_log: &|_| {},
                 skill_finish: &|_, _| String::new(),
                 active_skill_run: &active_skill_run,
                 final_selfcheck_round_gap: Some(0),

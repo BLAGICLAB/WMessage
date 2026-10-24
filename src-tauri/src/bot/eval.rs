@@ -225,7 +225,6 @@ async fn run_case(case: &EvalCase, http: &LlmHttp, system: &str, usage: &UsageCo
         conv_sidecar_dir: None,
         emit: &|_, _| {},
         audit: &*audit,
-        audit_log: &|_| {},
         skill_finish: &|_, _| String::new(),
         active_skill_run: &|_| None,
         final_selfcheck_round_gap: Some(0),

@@ -1062,8 +1062,6 @@ pub struct ModelLoopDeps<'a> {
     pub audit: &'a (dyn Fn(crate::audit::AuditLevel, &'static str, Vec<(&'static str, String)>)
              + Send
              + Sync),
-    /// bot.log 文本行审计（bot::audit_log 等价物）
-    pub audit_log: &'a (dyn Fn(&str) + Send + Sync),
     /// Skill 收尾（bot_skills::skill_finish 等价物；返回附加提示文本）
     pub skill_finish: &'a (dyn Fn(bool, &str) -> String + Send + Sync),
     /// 读「本会话活动技能快照」（`bot_skills::active_skill_run_for` 等价物）。
@@ -1750,7 +1748,6 @@ pub async fn run_model_loop(
             }
             crate::audit::write_event(&app, level, event, &kv)
         },
-        audit_log: &|line| crate::bot::audit_log(&app, line),
         skill_finish: &|ok, reason| crate::bot_skills::skill_finish(&app, ok, reason, session_id),
         // 阶段 3.3（口径：只读走注入）：核心每轮要读「本会话活动技能快照」决定是否短路，
         // 但**不给它表**——写生命周期（收尾/暂停/清理）一律留在核心之外或既有回调里。
@@ -1944,7 +1941,6 @@ where
     }
     let emit = deps.emit;
     let audit = deps.audit;
-    let audit_log = deps.audit_log;
     let skill_finish = deps.skill_finish;
     let active_skill_run = deps.active_skill_run;
     let session_id: Option<&str> = stop.session_id();
@@ -3192,10 +3188,17 @@ where
                 };
                 if !claim_retry_used {
                     claim_retry_used = true;
-                    audit_log(&format!(
-                        "hallucination_guard | {kind}: {}",
-                        crate::bot::truncate_for_log(&final_text, 100)
-                    ));
+                    audit(
+                        crate::audit::AuditLevel::Warn,
+                        "hallucination_guard",
+                        vec![
+                            ("kind", kind.to_string()),
+                            (
+                                "detail",
+                                crate::bot::truncate_for_log(&final_text, 100),
+                            ),
+                        ],
+                    );
                     // 执行类谎报的补救路径与变更类不同：变更类要点名具体工具，
                     // 执行类（含 run_python / bash / fetch_url）点不全也不该点名——
                     // 该做的是把工具真正调起来，拿不到结果就如实说拿不到。
@@ -3229,10 +3232,14 @@ where
                     continue;
                 }
                 // 返工之后仍编造：不返工（见块首），只在终稿末尾挂一条如实更正。
-                audit_log(&format!(
-                    "hallucination_guard.repeat | {kind}: {}",
-                    crate::bot::truncate_for_log(&final_text, 100)
-                ));
+                audit(
+                    crate::audit::AuditLevel::Warn,
+                    "hallucination_guard.repeat",
+                    vec![
+                        ("kind", kind.to_string()),
+                        ("detail", crate::bot::truncate_for_log(&final_text, 100)),
+                    ],
+                );
                 fabrication_notice = Some(notice);
             }
             // stop_reason=max_tokens：思维链把输出预算吃光时，正文和排在最后的
@@ -3395,10 +3402,14 @@ where
                                         "bot-chat-delta",
                                         serde_json::json!({ "text": FINAL_SELFCHECK_WARN }),
                                     );
-                                    audit_log(&format!(
-                                        "final_selfcheck.fail | {}",
-                                        crate::bot::truncate_for_log(&snapshot, 200)
-                                    ));
+                                    audit(
+                                        crate::audit::AuditLevel::Warn,
+                                        "final_selfcheck.fail",
+                                        vec![(
+                                            "detail",
+                                            crate::bot::truncate_for_log(&snapshot, 200),
+                                        )],
+                                    );
                                 }
                             }
                         }
@@ -3438,10 +3449,14 @@ where
                                 "bot-chat-delta",
                                 serde_json::json!({ "text": FINAL_SELFCHECK_WARN }),
                             );
-                            audit_log(&format!(
-                                "final_selfcheck.fail | {}",
-                                crate::bot::truncate_for_log(&snapshot, 200)
-                            ));
+                                audit(
+                                    crate::audit::AuditLevel::Warn,
+                                    "final_selfcheck.fail",
+                                    vec![(
+                                        "detail",
+                                        crate::bot::truncate_for_log(&snapshot, 200),
+                                    )],
+                                );
                         }
                     }
                     Some(true) | None => {
@@ -3539,10 +3554,11 @@ where
             function_calls_total += 1;
             if should_fuse(function_calls_total, fuse_cap) {
                 let hint = skill_finish(false, "单轮 Function 调用超上限");
-                audit_log(&format!(
-                    "fuse | 单轮 Function 调用超过 {} 次，已熔断",
-                    fuse_cap
-                ));
+                audit(
+                    crate::audit::AuditLevel::Warn,
+                    "fuse",
+                    vec![("cap", fuse_cap.to_string())],
+                );
                 body_outcome = Some("tool_fuse");
                 return Ok((fuse_message(&final_text, &hint, fuse_cap), collected_refs));
             }
@@ -3553,10 +3569,14 @@ where
             if !soft_warn_sent && function_calls_total >= soft_warn_at {
                 soft_warn_sent = true;
                 soft_warn_queued = true;
-                audit_log(&format!(
-                    "soft_warn | Function 调用达 {} 次（上限 {}），追加收尾提醒",
-                    soft_warn_at, fuse_cap
-                ));
+                audit(
+                    crate::audit::AuditLevel::Info,
+                    "soft_warn",
+                    vec![
+                        ("used", soft_warn_at.to_string()),
+                        ("cap", fuse_cap.to_string()),
+                    ],
+                );
             }
             // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
             // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
@@ -3639,13 +3659,16 @@ where
                     "ok": !failed,
                 }),
             );
-            audit_log(&format!(
-                "tool: {} | args: {} | result: {}",
-                // 工具名是模型给的字符串：truncate_for_log = escape_for_log 别名（\n\r| 已转义），不可伪造日志行
-                crate::bot::truncate_for_log(name, 60),
-                crate::bot::truncate_for_log(args, 500),
-                crate::bot::truncate_for_log(result, 300)
-            ));
+            audit(
+                crate::audit::AuditLevel::Info,
+                "tool",
+                vec![
+                    // 工具名是模型给的字符串：truncate_for_log = escape_for_log 别名（\n\r| 已转义），不可伪造日志行
+                    ("tool", crate::bot::truncate_for_log(name, 60)),
+                    ("args", crate::bot::truncate_for_log(args, 500)),
+                    ("result", crate::bot::truncate_for_log(result, 300)),
+                ],
+            );
             collected_refs.extend(refs.iter().cloned());
             // PREVR 第 1 层：工具失败检测。判定走全链路统一口径
             // （audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
@@ -3711,10 +3734,14 @@ where
                             parts.push(part);
                             attached += 1;
                         }
-                        None => audit_log(&format!(
-                            "tool_image.skip | 读取失败/超限/非图片：{}",
-                            crate::bot::truncate_for_log(p, 200)
-                        )),
+                        None => audit(
+                            crate::audit::AuditLevel::Info,
+                            "tool_image.skip",
+                            vec![(
+                                "detail",
+                                crate::bot::truncate_for_log(p, 200),
+                            )],
+                        ),
                     }
                 }
                 if attached > 0 {
@@ -3814,12 +3841,15 @@ where
                     , round + 1
                 ),
             }));
-            audit_log(&format!(
-                "rounds_soft_warn | 对话已进行 {} 轮（上限 {}），剩余 {} 轮，追加收尾提醒",
-                round + 1,
-                max_rounds,
-                rounds_left
-            ));
+            audit(
+                crate::audit::AuditLevel::Info,
+                "rounds_soft_warn",
+                vec![
+                    ("round", (round + 1).to_string()),
+                    ("max_rounds", max_rounds.to_string()),
+                    ("left", rounds_left.to_string()),
+                ],
+            );
         }
         // 软墙钟：剩余进入收尾预留窗口 → 提醒一次，让模型停止展开新步骤、
         // 把已经拿到的结果整理成收尾 JSON（子 agent 按任务包装末尾的 schema）。
@@ -3839,10 +3869,14 @@ where
                         wb.reserve.as_secs()
                     ),
                 }));
-                audit_log(&format!(
-                    "wall_soft_warn | 剩余 {remaining}s，进入收尾预留窗口 {}s，追加收尾提醒",
-                    wb.reserve.as_secs()
-                ));
+                audit(
+                    crate::audit::AuditLevel::Info,
+                    "wall_soft_warn",
+                    vec![
+                        ("remaining_secs", remaining.to_string()),
+                        ("reserve_secs", wb.reserve.as_secs().to_string()),
+                    ],
+                );
             }
         }
         // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
