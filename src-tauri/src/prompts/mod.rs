@@ -138,6 +138,18 @@ mod tests {
         }
     }
 
+    /// 子 agent 的预算纪律三条红线（整读 / 打转自检 / 产物早落盘）——实机踩过
+    /// 「173 行文件碎读 91 次烧满预算零产出」的坑，删红线=复发，必须显式过 review。
+    #[test]
+    fn subagent_base_keeps_budget_redlines() {
+        for anchor in ["≤500 行一次读完", "白烧预算", "原地打转", "先写骨架"] {
+            assert!(
+                SUBAGENT_BASE.contains(anchor),
+                "SUBAGENT_BASE 预算红线缺锚点「{anchor}」"
+            );
+        }
+    }
+
     /// camelCase → snake_case（只处理小写字母/数字接大写字母这一处断点）。
     fn to_snake(name: &str) -> String {
         let mut out = String::with_capacity(name.len() + 4);
