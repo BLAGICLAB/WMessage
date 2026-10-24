@@ -764,6 +764,88 @@ macro_rules! audit_event {
 pub(crate) static BOT_LOG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
+mod freeform_freeze {
+    //! 老 free-form 审计入口冻结守卫：`audit_log` 已桥接到 write_event 单一写侧，
+    //! 存量调用点按白名单收敛（迁移完一文件摘一文件）；白名单外出现新的
+    //! `audit_log(` 调用即 fail——新代码一律 `audit_event!`。
+
+    const WHITELIST: &[&str] = &[
+        // 定义与桥接实现本体
+        "bot/config/audit.rs",
+        // 存量调用文件（迁移一批摘一批；摘干净后本白名单清空、audit_log 退役）
+        "apps/manage.rs",
+        "bot/config/commands.rs",
+        "bot/corrections.rs",
+        "bot/mcp/builtin.rs",
+        "bot/mcp/commands.rs",
+        "bot/tools.rs",
+        "bot_fs.rs",
+        "bot_chat.rs",
+        "bot_desktop.rs",
+        "bot_manage_file.rs",
+        "bot_model_loop.rs",
+        "bot_onions.rs",
+        "bot_orchestrator.rs",
+        "bot_reminders.rs",
+        "bot_scheduler.rs",
+        "bot_skills/files.rs",
+        "bot_skills/manage.rs",
+        "bot_skills/remote.rs",
+        "bot_skills/runtime.rs",
+        "bot_slash.rs",
+        "bot_ui.rs",
+        "bot_web.rs",
+        "db/bot_history.rs",
+        "due_notify.rs",
+        "exec_steps.rs",
+        "ocr.rs",
+        "py/document.rs",
+    ];
+
+    fn scan_dir(dir: &std::path::Path, hits: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                scan_dir(&p, hits);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                let rel = p
+                    .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+                    .unwrap_or(&p)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let Ok(body) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                // 只看生产切片：#[cfg(test)] 之后的属测试自留地
+                let prod = body
+                    .split_once("#[cfg(test)]")
+                    .map(|(a, _)| a)
+                    .unwrap_or(&body);
+                let count = prod.matches("audit_log(").count();
+                if count > 0 && !WHITELIST.contains(&rel.as_str()) {
+                    hits.push(format!("{rel}: {count} 处"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn audit_log_frozen_to_migration_whitelist() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        scan_dir(&src, &mut hits);
+        assert!(
+            hits.is_empty(),
+            "白名单外出现 audit_log( 调用（新代码一律 audit_event!；存量迁移完从白名单摘除）：\n  {}",
+            hits.join("\n  ")
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

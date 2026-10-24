@@ -22,8 +22,9 @@
 //!  add_allowed_dir/update_config_file/read_bypass_llm_switch/
 //!  base_url_is_safe）+ 老版本明文 key 迁移
 //!  （migrate_legacy_key/migrate_search_keys/migrate_search_key_slot）
-//! - `audit`    bot.log 审计写入（audit_log/audit_log_hook/append_bot_log_line）
-//!  + escape_for_log/truncate_for_log + read_log_tail
+//! - `audit`    bot.log 审计：free-form 兼容入口（audit_log/audit_log_hook，
+//!  已桥接到 audit::write_event 单一写侧）+ escape_for_log/truncate_for_log
+//!  + read_log_tail
 //! - `commands` 7 个 tauri command（bot_get_config/bot_set_config/bot_set_active_model/
 //!  bot_log_read/bot_test_connection）+ perm_mode helper
 
@@ -963,37 +964,64 @@ mod tests {
         let _ = std::fs::remove_file(&log);
     }
 
-    // audit_log 写盘内核
+    // audit_log free-form 行拆解（桥接后写侧单源在 audit::write_at，
+    // 本模块只测拆解口径；写内核行为由 audit.rs 自己的单测覆盖）
 
-    /// 不依赖 Tauri AppHandle，验证分页格式化（位置行 + 截断续读提示 + offset 切片）。
-    /// audit_log 写盘内核——成功带 [ts] 前缀落行；
-    /// 失败 eprintln 带 path + 返回 false（对齐 audit::append_line 的做法），不静默不 panic
+    /// 「事件名 | 细节」拆成 (event, detail=...)；事件名空白归一、无分隔整行进事件名
     #[test]
-    fn append_bot_log_line_ok_writes_with_ts() {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("bot.log");
-        assert!(super::audit::append_bot_log_line(&p, "hello"));
-        let content = std::fs::read_to_string(&p).unwrap();
-        assert!(
-            content.ends_with("] hello\n"),
-            "应带 [ts] 前缀落行：{content}"
-        );
+    fn split_freeform_line_names_event_and_detail() {
+        let (e, d) = super::audit::split_freeform_line("skill_create | name: x");
+        assert_eq!(e, "skill_create");
+        assert_eq!(d.as_deref(), Some("name: x"));
+
+        // 多段细节原样保留（只在首个 " | " 切一次）
+        let (e2, d2) = super::audit::split_freeform_line("hallucination_guard | kind: a | more");
+        assert_eq!(e2, "hallucination_guard");
+        assert_eq!(d2.as_deref(), Some("kind: a | more"));
+
+        // 无分隔：整行是事件名（空白归一成 _）
+        let (e3, d3) = super::audit::split_freeform_line("plain note line");
+        assert_eq!(e3, "plain_note_line");
+        assert_eq!(d3, None);
+
+        // 纯空白/空行退回 bot_note（trim 后为空才触发；「 | x」trim 后成
+        // 「| x」无分隔，整行归一成事件名——也是合法退化路径）
+        let (e4, d4) = super::audit::split_freeform_line(" | only detail");
+        assert_eq!(e4, "|_only_detail");
+        assert_eq!(d4, None);
+        let (e5, d5) = super::audit::split_freeform_line("   ");
+        assert_eq!(e5, "bot_note");
+        assert_eq!(d5, None);
     }
 
-    #[cfg(unix)]
+    /// 桥接端到端：audit_log 落出的行必须是结构化格式（INFO 前缀 + detail=），
+    /// 不再是老的裸 free-form 行——bot.log 全部行同一写法从这里保证
     #[test]
-    fn append_bot_log_line_readonly_dir_fails_visible() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let ro = dir.path().join("ro");
-        std::fs::create_dir(&ro).unwrap();
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let p = ro.join("bot.log");
-        // 写失败：返回 false + eprintln 带 path（不能 if let Ok 全静默，丢日志零痕迹）
-        assert!(!super::audit::append_bot_log_line(&p, "x"));
-        assert!(!p.exists());
-        // 恢复权限让 tempdir 清理不掉链子
-        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fn audit_log_bridges_to_structured_line() {
+        let app = tauri::test::mock_app();
+        let _g = crate::audit::BOT_LOG_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let p = crate::db::data_dir(app.handle()).join("bot.log");
+        let _ = std::fs::remove_file(&p);
+        super::audit::audit_log(app.handle(), "bridge_probe | value: 1");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            content.contains("INFO | bridge_probe | detail=value: 1"),
+            "桥接后必须落结构化行：{content}"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn split_freeform_line_never_panics_on_dirty_input() {
+        // 控制字符 / 超长行 / 非法 UTF-8 边界：拆解必须不 panic（审计路径禁 panic），
+        // 事件名恒非空（空退 bot_note）
+        for dirty in ["\u{0}\u{7}脏输入 | x", "", " | ", "a", &"长".repeat(500)] {
+            let (e, _) = super::audit::split_freeform_line(dirty);
+            assert!(!e.is_empty(), "脏输入 {dirty:?} 的事件名不得为空");
+            assert!(e.chars().count() <= 64, "事件名必须截 64");
+        }
     }
 
     // base_url 安全判定

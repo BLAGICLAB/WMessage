@@ -1,9 +1,10 @@
-//! Bot 审计日志（bot.log）：写一行 / 读尾部 + escape_for_log。
+//! Bot 审计日志（bot.log）：free-form 兼容入口（桥接到结构化写侧）/ 读尾部 + escape_for_log。
 //!
-//! 与 crate::audit 共享 BOT_LOG_LOCK 防并发 append 交错错行；
-//! 真实失败 eprintln 带 path，不静默吞（与 audit::append_line 同做法）。
+//! 写侧已收敛：`audit_log` 只做 free-form 行拆解，rotate / 写锁 / 转义 / 行格式
+//! 全部走 `crate::audit::write_event` 单一内核——bot.log 不再有第二种写法。
+//! 新代码一律 `audit_event!`（结构化 kv）；本入口为存量调用点保留，冻结守卫
+//! 拦新增（见 audit.rs 的 `audit_log_frozen_to_migration_whitelist`）。
 
-use std::io::Write;
 use std::path::Path;
 
 use tauri::AppHandle;
@@ -13,43 +14,47 @@ use crate::error::{CommandError, CommandResult};
 
 // 写
 
-/// 追加机器人审计日志：用户指令、工具名、入参、结果全部留痕（数据目录 bot.log）
+/// 追加机器人审计日志（free-form 兼容入口，已桥接到结构化写侧）。
+/// 行文按仓库惯例「事件名 | 细节」拆成 (event, detail) 交给 write_event：
+///   `skill_create | name: x` → `[ts] INFO | skill_create | detail=name: x`
+/// 拆不开「 | 」的整行进事件名（空白归一成 `_`，截 64 字符）。
 /// 审计日志外部钩子（bot_skills 调度器用；bot.rs 内部仍用 audit_log）
 pub fn audit_log_hook<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
     audit_log(app, line);
 }
 
 pub fn audit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, line: &str) {
-    // data_dir 解析 + rotation（stat+rename 数 MB）在锁外跑：慢 IO 不饿死其它
-    // audit 写者。rotate_log_if_large 容错竞争（metadata 失败跳过 / rename 失败
-    // 静默）——双写者并发 rotation 最坏 = 当次不轮转，下次调用补上，无数据破坏。
-    let p = db::data_dir(app).join("bot.log");
-    crate::db::rotate_log_if_large(&p, 5 * 1024 * 1024);
-    // 与 audit::write_event 共用同一把写锁，锁内只剩 open+append 防交错错行
-    let _g = crate::db::lock::lock_or_recover(
-        &crate::audit::BOT_LOG_LOCK,
-        "bot::config::audit::BOT_LOG_LOCK",
-    );
-    let _ = append_bot_log_line(&p, line);
+    let (event, detail) = split_freeform_line(line);
+    match detail {
+        Some(d) => crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            &event,
+            &[("detail", d)],
+        ),
+        None => crate::audit::write_event(app, crate::audit::AuditLevel::Info, &event, &[]),
+    }
 }
 
-/// bot.log 写一行内核：open/write 失败 eprintln 带路径并返回 false，
-/// 不 `if let Ok … { let _ = writeln! }` 全静默（对齐 audit::append_line 的做法）。
-/// 抽成路径参数版便于单测（与 bot_py.rs 同先例）。
-pub(crate) fn append_bot_log_line(p: &Path, line: &str) -> bool {
-    let mut f = match crate::audit::open_log_append(p) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("[audit] write failed: {} path={}", e, p.display());
-            return false;
-        }
+/// free-form 行拆解（纯函数，可单测）：首个 `" | "` 前是事件名（空白归一成
+/// `_`、截 64 字符），其后整体是细节；没有 `" | "` 的整行就是事件名。
+/// 事件名为空（行以 `" | "` 开头）退回 `bot_note`，不给空事件名进日志。
+pub(crate) fn split_freeform_line(line: &str) -> (String, Option<String>) {
+    let line = line.trim();
+    let (raw_event, detail) = match line.split_once(" | ") {
+        Some((e, d)) => (e, Some(d.trim().to_string())),
+        None => (line, None),
     };
-    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-    if let Err(e) = writeln!(f, "[{ts}] {line}") {
-        eprintln!("[audit] write failed: {} path={}", e, p.display());
-        return false;
+    let mut event: String = raw_event
+        .chars()
+        .take(64)
+        .map(|c| if c.is_whitespace() { '_' } else { c })
+        .collect();
+    if event.is_empty() {
+        event = "bot_note".to_string();
     }
-    true
+    let detail = detail.filter(|d| !d.is_empty());
+    (event, detail)
 }
 
 // 转义 + 截断
