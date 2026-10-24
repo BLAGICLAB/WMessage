@@ -78,4 +78,88 @@ mod tests {
             "with_write_conn 闭包内必须置位持锁标记——否则契约函数的断言会误判"
         );
     }
+
+    /// 持锁标记随守卫 Drop 清位：闭包结束后同线程不得残留「已持锁」——
+    /// 残留会让后续契约函数的断言误判（以为持锁其实没有）。
+    #[tokio::test]
+    async fn write_conn_clears_marker_after_completion() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        with_write_conn(&handle, |_conn| Ok::<(), String>(()))
+            .await
+            .expect("应成功");
+        assert!(!crate::db::holding_db_write(), "结束后持锁标记必须清位");
+    }
+
+    /// 中毒恢复：持锁线程 panic 后锁已毒，lock_or_recover 仍要拿到守卫——
+    /// 「中毒意味着另一线程 panic，崩溃日志已经在那里」，静默审计后继续用。
+    #[test]
+    fn lock_or_recover_survives_poisoned_mutex() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(vec![1i32]));
+        let m2 = m.clone();
+        let t = std::thread::spawn(move || {
+            let _g = m2.lock().unwrap();
+            panic!("毒化锁（测试手段，非失败）");
+        });
+        // join 的 Err 是毒化手段本身，吞掉；线程结束即锁已中毒
+        let _ = t.join();
+        assert!(m.is_poisoned(), "前置：锁确实被毒化");
+        let g = lock_or_recover(&m, "poison-probe");
+        assert_eq!(&*g, &vec![1], "中毒后仍能拿到守卫继续用");
+    }
+
+    /// 两个并发写连接：串行化后两条都在、无交叉损坏——with_write_conn
+    /// 串行语义的行为级证明（不只看锁标记）。
+    #[tokio::test]
+    async fn concurrent_write_conns_serialize_without_loss() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        with_write_conn(&handle, |conn| {
+            conn.execute_batch("CREATE TABLE IF NOT EXISTS lock_probe (id INTEGER PRIMARY KEY);")
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .expect("建表应成功");
+        let h1 = handle.clone();
+        let h2 = handle.clone();
+        let (a, b) = tokio::join!(
+            with_write_conn(&h1, |conn| {
+                conn.execute("INSERT INTO lock_probe (id) VALUES (1)", [])
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }),
+            with_write_conn(&h2, |conn| {
+                conn.execute("INSERT INTO lock_probe (id) VALUES (2)", [])
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            }),
+        );
+        a.expect("并发写 1 应成功");
+        b.expect("并发写 2 应成功");
+        let n: i64 = with_write_conn(&handle, |conn| {
+            conn.query_row("SELECT count(*) FROM lock_probe", [], |r| r.get(0))
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .expect("计数应成功");
+        assert_eq!(n, 2, "两条并发写都必须落库（串行不等于丢一条）");
+    }
+
+    /// 闭包 panic 映射成 join 失败错误，不上抛 panic、不挂起等待方。
+    /// 副作用：DB_WRITE_LOCK 从此中毒（std Mutex 进程内不可逆），后续获取
+    /// 走 lock_or_recover 的恢复路径照常工作——这正是该约定存在的原因。
+    #[tokio::test]
+    async fn closure_panic_maps_to_join_error_not_propagation() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let err = with_write_conn(&handle, |_conn| -> Result<(), String> {
+            panic!("闭包 panic（测试手段）");
+        })
+        .await
+        .expect_err("panic 应映射成 Err 而不是传播");
+        assert!(
+            err.contains("DB 写线程 join 失败"),
+            "错误应为 join 失败语义：{err}"
+        );
+    }
 }
