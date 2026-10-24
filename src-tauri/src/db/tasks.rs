@@ -1119,6 +1119,8 @@ pub async fn db_upsert_for<R: tauri::Runtime>(
 
 #[tauri::command]
 pub async fn db_delete(app: AppHandle, ids: Vec<String>) -> CommandResult<()> {
+    let app_emit = app.clone();
+    let ids_len = ids.len();
     async_runtime::spawn_blocking(move || {
         if ids.is_empty() {
             return Ok(());
@@ -1128,7 +1130,14 @@ pub async fn db_delete(app: AppHandle, ids: Vec<String>) -> CommandResult<()> {
         delete_tasks(&conn, &ids).map_err(CommandError::from)
     })
     .await
-    .map_err(|e| CommandError::from(format!("数据库删除线程 join 失败：{e}")))?
+    .map_err(|e| CommandError::from(format!("数据库删除线程 join 失败：{e}")))??;
+    // 落库必广播（协议与 task_patch / autotag / tags 一致）：当前前端调用方
+    // 自己补发闭环成立，但任何后端复用直调本命令都会静默漏发
+    if ids_len > 0 {
+        use tauri::Emitter;
+        let _ = app_emit.emit("tasks-changed", ());
+    }
+    Ok(())
 }
 
 /// 导出/导入路径统一闸门（五调用方共用：workspace/tasks/workflow 导出导入 +
@@ -1408,7 +1417,9 @@ pub fn import_tasks_conn(
 pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> {
     // 路径闸门：fs 调用进阻塞线程（口径见 check_export_path_gate）
     crate::db::tasks::check_export_path_gate(path.clone()).await?;
-    async_runtime::spawn_blocking(move || {
+    let path_for_audit = path.clone();
+    let app_audit = app.clone();
+    let count = async_runtime::spawn_blocking(move || -> CommandResult<usize> {
         // 导出读全表 + people 表，拿写锁保证快照一致——避免与 task_patch /
         // 调度器并发写产生「半新半旧」的撕裂信封（导出低频，锁竞争可接受）
         let _g = super::lock_db_write();
@@ -1420,7 +1431,20 @@ pub async fn tasks_export(app: AppHandle, path: String) -> CommandResult<usize> 
         Ok(count)
     })
     .await
-    .map_err(|e| CommandError::from(format!("任务导出线程 join 失败：{e}")))?
+    .map_err(|e| CommandError::from(format!("任务导出线程 join 失败：{e}")))?;
+    // 双 ? ：外层剥 join 错，内层剥闭包自己的 CommandResult
+    let count = count?;
+    // 整库外流留审计：导出可把全部任务+people 写到任意过闸路径
+    crate::audit::write_event(
+        &app_audit,
+        crate::audit::AuditLevel::Info,
+        "tasks_export",
+        &[
+            ("count", count.to_string()),
+            ("path", crate::bot::escape_for_log(&path_for_audit, 120)),
+        ],
+    );
+    Ok(count)
 }
 
 /// 导入文件读入大小上限（防内存 DoS：用户误选多 GB 文件时 read_to_string 直接吃满内存）
@@ -1452,7 +1476,9 @@ pub(crate) fn read_import_bounded(path: &str, max_bytes: u64) -> Result<String, 
 pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> {
     // 路径闸门：fs 调用进阻塞线程（口径见 check_export_path_gate）
     crate::db::tasks::check_export_path_gate(path.clone()).await?;
-    async_runtime::spawn_blocking(move || {
+    let path_for_audit = path.clone();
+    let app_audit = app.clone();
+    let imported = async_runtime::spawn_blocking(move || -> CommandResult<usize> {
         let raw = read_import_bounded(&path, MAX_IMPORT_BYTES)?;
         if raw.trim().is_empty() {
             return Ok(0);
@@ -1464,7 +1490,23 @@ pub async fn tasks_import(app: AppHandle, path: String) -> CommandResult<usize> 
         import_tasks_conn(&mut conn, &raw, &self_pid).map_err(CommandError::from)
     })
     .await
-    .map_err(|e| CommandError::from(format!("任务导入线程 join 失败：{e}")))?
+    .map_err(|e| CommandError::from(format!("任务导入线程 join 失败：{e}")))?;
+    let imported = imported?;
+    // 数据面变更留审计（谁何时导入了多少条）+ 落库必广播（同 db_delete 口径）
+    if imported > 0 {
+        crate::audit::write_event(
+            &app_audit,
+            crate::audit::AuditLevel::Info,
+            "tasks_import",
+            &[
+                ("count", imported.to_string()),
+                ("path", crate::bot::escape_for_log(&path_for_audit, 120)),
+            ],
+        );
+        use tauri::Emitter;
+        let _ = app_audit.emit("tasks-changed", ());
+    }
+    Ok(imported)
 }
 
 #[cfg(test)]
