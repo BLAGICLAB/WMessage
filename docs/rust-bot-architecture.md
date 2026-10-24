@@ -146,7 +146,11 @@ src-tauri/src/
 │   │                            「活连接」解耦的载体（没有它，模型看不见未连接的服务器）
 │   ├── bot/mcp/mount.rs         挂载层：连接快照 → 工具 schema 段（撞名消歧/条数/schema 体积
 │   │                            上限）+ dispatch miss 反查 execute_mcp_tool（带超时/结果整形）；
-│   │                            函数名走进程级登记簿（名字 ↔ 服务器跨断连稳定，不随重连漂移）
+│   │                            函数名走进程级登记簿（名字 ↔ 服务器跨断连稳定，不随重连漂移）；
+│   │                            外部工具结果超限（MAX_RESULT_BYTES 30K）同发
+│   │                            tool.output.over_budget（server 字段区分来源）——超长输出必须
+│   │                            留痕；但外部工具**不进**幻觉守卫（claims_mutation 只从内置
+│   │                            注册表派生，外部落盘行为宿主不可知，无从给判据）
 │   ├── bot/mcp/secrets.rs       B4-6 机密存储：env/headers blob 走 keyring `mcp:<id>` 条目
 │   │                            （Linux 降级单文件 0600）+ 进程内缓存 + load_config 水合 +
 │   │                            迁移判据；配置永不明文（skip_serializing 收口）

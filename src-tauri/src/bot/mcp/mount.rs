@@ -250,9 +250,9 @@ pub(crate) async fn execute_mcp_tool(
     };
     // load_config 是同步文件读（ 评审 HIGH）：挪 spawn_blocking，不阻塞
     // tokio worker——dispatch 的工具调用全在 runtime 线程上 await 这里
-    let app = app.clone();
+    let app_cfg = app.clone();
     let servers = tauri::async_runtime::spawn_blocking(move || {
-        crate::bot::config::io::load_config(&app)
+        crate::bot::config::io::load_config(&app_cfg)
             .mcp_servers
             .unwrap_or_default()
     })
@@ -260,7 +260,13 @@ pub(crate) async fn execute_mcp_tool(
     .unwrap_or_default();
     let server = servers.into_iter().find(|s| s.id == mounted.server_id);
     match server {
-        Some(cfg) if cfg.enabled => execute_mcp_direct(&cfg, &mounted, args).await,
+        Some(cfg) if cfg.enabled => {
+            let (out, original_bytes) = execute_mcp_direct(&cfg, &mounted, args).await;
+            if original_bytes > MAX_RESULT_BYTES {
+                audit_mcp_over_budget(app, name, &mounted.server_name, original_bytes);
+            }
+            out
+        }
         Some(_) => crate::bot::registry::ToolResult::denied(format!(
             "MCP 服务器「{}」已被禁用，工具 {name} 不可用；下轮清单刷新后不再出现",
             mounted.server_name
@@ -272,12 +278,39 @@ pub(crate) async fn execute_mcp_tool(
     }
 }
 
+/// 外部工具的超预算留痕：内置工具的 `tool.output.over_budget` 在回灌漏斗发
+/// （按注册表命中取 cap），外部 MCP 工具不进注册表、那条事件天然缺失——
+/// 这里按同一事件名补上，server 字段区分来源。「所有工具调用都有审计」这个
+/// 直觉对 MCP 也成立，靠这条补齐；外部工具**不进**幻觉守卫
+/// （claims_mutation 只从内置注册表派生，外部工具的落盘行为宿主不可知、
+/// 无从给判据）是既有口径，别把这条审计误读成守卫接入。
+fn audit_mcp_over_budget<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    tool: &str,
+    server: &str,
+    original_bytes: usize,
+) {
+    crate::audit::write_event(
+        app,
+        crate::audit::AuditLevel::Info,
+        "tool.output.over_budget",
+        &[
+            ("tool", tool.to_string()),
+            ("server", server.to_string()),
+            ("output_bytes", original_bytes.to_string()),
+            ("max_bytes", MAX_RESULT_BYTES.to_string()),
+        ],
+    );
+}
+
 /// 调用内核（无 AppHandle，单测直打）：带超时调远端 + 结果整形。
+/// 返回 (结果, 整形前总字节数)——原始规模要进审计留痕（execute_mcp_tool 侧发），
+/// 截断后的长度回不去原始值。
 pub(crate) async fn execute_mcp_direct(
     cfg: &McpServerConfig,
     mounted: &McpToolRef,
     args: &str,
-) -> crate::bot::registry::ToolResult {
+) -> (crate::bot::registry::ToolResult, usize) {
     // 参数解析（ 评审：不再把 Null 静默透传远端）——非法 JSON 本地明确回
     // warn 文本，模型拿错误自己重发；空串按空对象（无参工具的常见形态）
     let parsed: serde_json::Value = if args.trim().is_empty() {
@@ -286,9 +319,12 @@ pub(crate) async fn execute_mcp_direct(
         match serde_json::from_str(args) {
             Ok(v) => v,
             Err(e) => {
-                return crate::bot::registry::ToolResult::warn(
-                    format!("MCP 参数不是合法 JSON，未发起调用：{e}；请以 JSON 对象重发参数"),
-                    Vec::new(),
+                return (
+                    crate::bot::registry::ToolResult::warn(
+                        format!("MCP 参数不是合法 JSON，未发起调用：{e}；请以 JSON 对象重发参数"),
+                        Vec::new(),
+                    ),
+                    0,
                 );
             }
         }
@@ -296,32 +332,46 @@ pub(crate) async fn execute_mcp_direct(
     // 合法 JSON 但非对象（数组/字符串/数字等）也不透传：透传后远端按对象收参
     // 会拿不到字段 → 无参静默调用。本地明确回 warn，模型拿错误自己重发。
     if !parsed.is_object() {
-        return crate::bot::registry::ToolResult::warn(
-            format!(
-                "MCP 工具参数必须是 JSON 对象，未发起调用：{}；请以 JSON 对象重发参数",
-                mounted.func_name
+        return (
+            crate::bot::registry::ToolResult::warn(
+                format!(
+                    "MCP 工具参数必须是 JSON 对象，未发起调用：{}；请以 JSON 对象重发参数",
+                    mounted.func_name
+                ),
+                Vec::new(),
             ),
-            Vec::new(),
+            0,
         );
     }
     match shared().call_tool(cfg, &mounted.tool_name, parsed).await {
         Ok(result) => {
+            let (text, original_bytes) = shape_result_text(&result);
             if result.is_error == Some(true) {
-                crate::bot::registry::ToolResult::error(
-                    format!("MCP 工具报告错误：\n{}", shape_result_text(&result)),
-                    Vec::new(),
+                (
+                    crate::bot::registry::ToolResult::error(
+                        format!("MCP 工具报告错误：\n{text}"),
+                        Vec::new(),
+                    ),
+                    original_bytes,
                 )
             } else {
-                crate::bot::registry::ToolResult::ok(shape_result_text(&result), Vec::new())
+                (
+                    crate::bot::registry::ToolResult::ok(text, Vec::new()),
+                    original_bytes,
+                )
             }
         }
-        Err(e) => crate::bot::registry::ToolResult::error(format!("MCP 调用失败：{e}"), Vec::new()),
+        Err(e) => (
+            crate::bot::registry::ToolResult::error(format!("MCP 调用失败：{e}"), Vec::new()),
+            0,
+        ),
     }
 }
 
 /// CallToolResult → 模型可读文本：text 内容原样拼接，非文本块占位说明，
 /// structuredContent 附后。总长钳 MAX_RESULT_BYTES（fetch_url 同口径，防爆上下文）。
-fn shape_result_text(result: &CallToolResult) -> String {
+/// 返回 (文本, 整形前总字节数)——超限留痕要的是原始规模。
+fn shape_result_text(result: &CallToolResult) -> (String, usize) {
     let mut parts: Vec<String> = Vec::new();
     for block in &result.content {
         match block {
@@ -357,7 +407,7 @@ fn shape_result_text(result: &CallToolResult) -> String {
         text = crate::bot::format::truncate_bytes(&text, MAX_RESULT_BYTES);
         text.push_str(&format!("\n\n（内容过长已截断：原 {total} 字节）"));
     }
-    text
+    (text, total)
 }
 
 /// 拼进主 agent tools JSON 的动态段：`",\n  {schema}..."` 序列（空表 = 空串）。
@@ -561,7 +611,7 @@ mod tests {
     }
 
     /// 超大 structuredContent 不再无界拼入结果——总量被钳在上限附近，
-    /// 截断标注由整段截断统一给出
+    /// 截断标注由整段截断统一给出；整形前总字节数一并返回（审计留痕用）
     #[test]
     fn overlong_structured_content_is_capped() {
         let result: CallToolResult = serde_json::from_value(json!({
@@ -569,13 +619,56 @@ mod tests {
             "structuredContent": { "data": "x".repeat(50_000) },
         }))
         .expect("构造 CallToolResult");
-        let text = shape_result_text(&result);
+        let (text, original) = shape_result_text(&result);
         assert!(
             text.len() <= MAX_RESULT_BYTES + 60,
             "应在上限附近：{}",
             text.len()
         );
         assert!(text.contains("内容过长已截断"), "应有截断标注");
+        assert!(
+            original > MAX_RESULT_BYTES,
+            "整形前总长应超上限（留痕判据）：{original}"
+        );
+        assert!(
+            text.contains(&format!("原 {original} 字节")),
+            "截断标注里的原始字节数应与返回值同一个数：{text:.60}"
+        );
+    }
+
+    /// 超预算留痕必须真落 bot.log：外部工具不进注册表，内置漏斗的
+    /// over_budget 事件对它们不发——这条审计是唯一痕迹。
+    #[test]
+    fn mcp_over_budget_audit_lands_in_bot_log() {
+        let app = tauri::test::mock_app();
+        audit_mcp_over_budget(app.handle(), "mcp_probe_over_budget", "probe", 48_000);
+        let log = crate::db::paths::data_dir(app.handle()).join("bot.log");
+        let content = std::fs::read_to_string(&log).expect("bot.log 应可读");
+        assert!(
+            content.contains("tool.output.over_budget"),
+            "事件名必须落日志"
+        );
+        assert!(
+            content.contains("mcp_probe_over_budget") && content.contains("output_bytes=48000"),
+            "工具名与原始字节数必须一起在，末行：{}",
+            content.lines().last().unwrap_or_default()
+        );
+    }
+
+    /// execute_mcp_tool 必须把超限判定接到审计上：它绑死 Wry AppHandle，
+    /// MockRuntime 单测直驱不了——用源码文本守卫钉住接线在位（只查生产切片，
+    /// 防测试区自我应答）。
+    #[test]
+    fn execute_mcp_tool_wires_over_budget_audit() {
+        let src = include_str!("mount.rs");
+        let prod = src
+            .split_once("#[cfg(test)]")
+            .map(|(p, _)| p)
+            .unwrap_or(src);
+        assert!(
+            prod.contains("if original_bytes > MAX_RESULT_BYTES"),
+            "execute_mcp_tool 必须在原始字节数超限时发 over_budget 审计"
+        );
     }
 
     /// 非对象合法 JSON 参数（数组/字符串）不透传远端——透传会变成无参静默调用，
@@ -590,15 +683,16 @@ mod tests {
             tool_name: "read".into(),
         };
         for args in ["[1,2]", "\"x\"", "42"] {
-            let out = execute_mcp_direct(&cfg, &mounted, args).await;
+            let (out, original) = execute_mcp_direct(&cfg, &mounted, args).await;
             assert!(
                 out.text.contains("必须是 JSON 对象"),
                 "args={args} 应本地拒绝：{:?}",
                 out.text
             );
+            assert_eq!(original, 0, "本地拒绝的调用无原始结果规模可言");
         }
         // 空参（无参工具常见形态）仍按空对象放行——不会卡在本地校验
-        let empty = execute_mcp_direct(&cfg, &mounted, "").await;
+        let (empty, _) = execute_mcp_direct(&cfg, &mounted, "").await;
         assert!(
             !empty.text.contains("必须是 JSON 对象"),
             "空串应放行：{:?}",

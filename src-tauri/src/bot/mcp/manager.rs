@@ -1495,14 +1495,19 @@ mod e2e_stdio {
         }
         assert!(stderr_seen, "stderr 环形缓冲应捕获桩的启动输出");
         // 阶段 4：调用内核（dispatch 路由的下游）——真实远端调用 + 结果整形
-        let direct =
+        let (direct, direct_bytes) =
             crate::bot::mcp::mount::execute_mcp_direct(&cfg, &mounted, r#"{"text": "路由测试"}"#)
                 .await;
         assert_eq!(direct.status, crate::bot::registry::ToolStatus::Ok);
         assert_eq!(direct.text, "echo: 路由测试");
+        assert_eq!(
+            direct_bytes,
+            "echo: 路由测试".len(),
+            "未超限结果的原始规模即文本长度"
+        );
         // 非法参数 JSON：不再透传 Null 到远端（ 评审）——本地明确回 warn
         // 文本「参数非法」，模型拿着错误自己重发，省一轮下游类型困惑
-        let direct_bad =
+        let (direct_bad, _) =
             crate::bot::mcp::mount::execute_mcp_direct(&cfg, &mounted, "not-json").await;
         assert_eq!(direct_bad.status, crate::bot::registry::ToolStatus::Warn);
         assert!(
