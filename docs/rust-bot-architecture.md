@@ -103,7 +103,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (5917) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (5916) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；**墙钟治理**（WallBudget：软墙钟
 │                        收尾提醒 + 墙钟熔断留产，均在轮边界检查）；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
@@ -311,7 +311,7 @@ src-tauri/src/
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
 │                        软链既不跟随也不复制
 ├── bot_web.rs           web_search（Tavily/Brave 可配，Bing/百度抓取兜底）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
-├── bot_py.rs (1367)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
+├── bot_py.rs (1379)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
 │                        输入有字节与像素上限（解码前只读文件头，解码炸弹面）

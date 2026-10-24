@@ -37,6 +37,14 @@ describe("handleCommandError hint 文案", () => {
       expect(text).toContain("不可自动重试");
     }
   });
+
+  it("LLM_API_ERROR hint 引导查账户状态，不把余额不足说成「稍后重试」", () => {
+    // 402 这类错误重试无用（余额不会因重试而回来），hint 不能引向反复重试
+    handleCommandError(ce("LLM_API_ERROR", true));
+    const text = alertSpy.mock.calls[0][0] as string;
+    expect(text).toContain("账户状态");
+    expect(text).not.toContain("请稍后重试");
+  });
 });
 
 describe("handleCommandError recoverable 驱动重试 UI", () => {

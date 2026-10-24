@@ -910,20 +910,69 @@ async fn core_http_401_wrapped_no_retry() {
     };
 
     match err {
-        CommandError::LlmApiError {
-            status,
-            body_preview,
-        } => {
+        CommandError::LlmApiError { status, detail } => {
             assert_eq!(status, 401);
             assert!(
-                body_preview.contains("Invalid API key"),
-                "body_preview 应含服务端错误详情（截 300 字）：{body_preview}"
+                detail.contains("Invalid API key"),
+                "detail 应含服务端错误详情：{detail}"
+            );
+            assert!(
+                detail.contains("API Key"),
+                "401 应带可操作指引（检查密钥）：{detail}"
             );
         }
         other => panic!("401 应包装为 LlmApiError，got {other:?}"),
     }
     // mock server 在写回响应前已计数，此处无需 sleep 等待即可断言
     assert_eq!(server.request_count(), 1, "401 不可重试，只发 1 次请求");
+}
+
+#[tokio::test]
+async fn core_http_402_gives_actionable_balance_message() {
+    // 2026-10-24 实机：402 余额不足原样把上游 JSON 甩进气泡
+    // （`{"type":"error","error":{"type":"insufficient_balance_error",...}}`），
+    // 用户看不出该充值还是换模型。这里锁「说人话 + 不外泄原始 JSON」。
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::HttpError(
+        402,
+        r#"{"type":"error","error":{"type":"insufficient_balance_error","message":"insufficient balance (1008)"},"request_id":"072bb75eb78196241b5ab6e12744a166"}"#.into(),
+    ));
+    let h = CoreHarness::new();
+
+    let err = match run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("402 应报错"),
+    };
+
+    match err {
+        CommandError::LlmApiError { status, detail } => {
+            assert_eq!(status, 402);
+            assert!(detail.contains("余额"), "应说清是余额问题：{detail}");
+            assert!(detail.contains("充值"), "应给出下一步：{detail}");
+            assert!(
+                detail.contains("insufficient balance (1008)"),
+                "上游自己说的那句要留着：{detail}"
+            );
+            assert!(
+                !detail.contains("request_id"),
+                "上游原始 JSON 不该外泄：{detail}"
+            );
+        }
+        other => panic!("402 应包装为 LlmApiError，got {other:?}"),
+    }
+    // 402 不在重试白名单：余额不会因为重试而回来
+    assert_eq!(server.request_count(), 1, "402 不可重试，只发 1 次请求");
 }
 
 #[tokio::test]

@@ -1542,7 +1542,7 @@ mod tests {
     fn error_kv_carries_code_recoverable_and_message() {
         let err = crate::error::CommandError::LlmApiError {
             status: 502,
-            body_preview: "bad gateway".into(),
+            detail: "bad gateway".into(),
         };
         let kv = error_kv(&err);
         assert_eq!(kv_get(&kv, "code"), Some("LLM_API_ERROR"));

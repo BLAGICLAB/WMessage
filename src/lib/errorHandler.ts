@@ -138,8 +138,12 @@ function hintForCode(code: string): string | null {
     case "ATOMIC_TOOL_BLOCKED":
       return "原子工具禁止直接调用，需通过 Skill 内部使用";
     case "LLM_REQUEST_FAILED":
+      return "请检查网络与 API 配置后重试";
     case "LLM_API_ERROR":
-      return "请稍后重试或检查 API 配置";
+      // 上游状态码定性的错误（余额不足 / 密钥无效 / 模型下线）由后端在 message 里
+      // 给出具体下一步；这里的兜底只说「去查配置和账户状态」——说「稍后重试」
+      // 会把「充值才能恢复」这类错误引向反复重试。
+      return "请检查 API 配置与账户状态后再重试";
     case "CONFIRM_TIMEOUT":
       return "请在 60 秒内确认操作";
     case "CONFIRM_REJECTED":

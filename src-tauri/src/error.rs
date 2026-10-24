@@ -213,7 +213,11 @@ pub enum CommandError {
     /// 请求大模型失败（网络/超时）
     LlmRequestFailed(String),
     /// 大模型 API 错误（HTTP 非 2xx）
-    LlmApiError { status: u16, body_preview: String },
+    ///
+    /// `detail` 是给用户看的人话正文（状态码指引 + 上游自己说的那句），
+    /// 构造走 `llm_error_detail()`：上游原始错误体（JSON 信封 / HTML 错误页）
+    /// 不直接外泄到气泡。
+    LlmApiError { status: u16, detail: String },
 
     // 确认流
     /// 用户确认请求超时（60s 默认）
@@ -332,15 +336,12 @@ impl CommandError {
             }
             Self::SkillNotInstalled(name) => format!("Skill 未安装：{name}"),
             Self::LlmRequestFailed(s) => format!("请求大模型失败：{s}"),
-            Self::LlmApiError {
-                status,
-                body_preview,
-            } => {
+            Self::LlmApiError { status, detail } => {
                 // 剥控制字符（保留 \t\n\r；DEL 0x7F 与 C1 区 U+0080-U+009F
                 // 同属控制字符一并剥）：上游错误体可能混入脏字节，防 toast/日志串行
                 format!(
                     "大模型 API 错误 {status}：{}",
-                    body_preview
+                    detail
                         .chars()
                         .filter(|c| !matches!(
                             c,
@@ -365,6 +366,89 @@ impl CommandError {
 impl std::fmt::Display for CommandError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message())
+    }
+}
+
+// ── LLM API 错误的人话化 ─────────────────────────────────────────────
+//
+// 上游错误体是给开发者看的：OpenAI/Anthropic 信封、网关自定义形状、
+// MiniMax 的 base_resp……直接塞进气泡，用户只看到一坨 JSON。
+// 2026-10-24 实机就是这么把 402「账户余额不足」显示成
+// `{"type":"error","error":{"type":"insufficient_balance_error",...}}` 的。
+//
+// 折成两句：①状态码告诉用户下一步做什么 ②上游自己说的那句。
+
+/// 状态码 → 用户下一步该做什么（人话）。
+///
+/// 只列「状态码本身就能定性」的情形。**400 不在表里**：它可能是上下文超长
+/// （调用点有更具体的指引），也可能是参数错（上游原文才说得清）——
+/// 一律回退到上游原文，不猜。
+pub(crate) fn llm_status_advice(status: u16) -> Option<&'static str> {
+    match status {
+        401 => Some("API Key 无效或未配置：请到设置页「机器人设置」检查密钥"),
+        402 => Some("账户余额或额度不足：请到厂商控制台充值，或在设置页切换其他大模型"),
+        403 => Some("该模型无权访问：请检查账号权限，或在设置页换用其他模型"),
+        404 => Some("模型或接口不存在（可能已下线）：请到设置页确认当前模型"),
+        429 => Some("上游限流：请稍后重试"),
+        s if (500..=599).contains(&s) => Some("上游服务异常：请稍后重试"),
+        _ => None,
+    }
+}
+
+/// 取 JSON 对象里第一个能当字符串用的键值。
+fn json_pick_str<'a>(v: &'a serde_json::Value, keys: &[&str]) -> Option<&'a str> {
+    keys.iter().find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+}
+
+/// 上游错误体 → 人读的一句（最多 160 字）。
+///
+/// 取上游自己说的那句话：`error.message`（OpenAI/Anthropic 信封）、
+/// `base_resp.status_msg`（MiniMax 原生）、`message` / `msg`（网关自定义形状）。
+/// **取不到就回退截断后的原文**——形状没覆盖不等于原文没有价值。
+fn upstream_error_detail(body: &str) -> Option<String> {
+    const MAX_DETAIL_CHARS: usize = 160;
+    /// 只在体量像错误信封时才尝试解析：上游偶尔回整页 HTML，
+    /// 解析它白烧 CPU，正文里也取不到东西。
+    const MAX_PARSE_BYTES: usize = 8 * 1024;
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = if trimmed.len() <= MAX_PARSE_BYTES {
+        serde_json::from_str::<serde_json::Value>(trimmed).ok()
+    } else {
+        None
+    };
+    let picked = parsed.as_ref().and_then(|v| {
+        v.get("error")
+            .and_then(|e| json_pick_str(e, &["message", "msg", "type"]))
+            .or_else(|| {
+                v.get("base_resp")
+                    .and_then(|b| json_pick_str(b, &["status_msg", "message"]))
+            })
+            .or_else(|| json_pick_str(v, &["message", "msg", "detail"]))
+    });
+    Some(match picked {
+        Some(t) if !t.trim().is_empty() => t.trim().chars().take(MAX_DETAIL_CHARS).collect(),
+        // 回退原文：直接按上限截，不先复制整段（上游可能是几百 KB 的错误页）
+        _ => trimmed.chars().take(MAX_DETAIL_CHARS).collect(),
+    })
+}
+
+/// LLM API 错误的人话正文：状态码指引 + 上游自己说的那句。
+///
+/// `advice`：调用点已知的更具体原因（如上下文超长要给 `/compact` 指引），
+/// 给了就盖过状态码的通用指引。
+pub fn llm_error_detail(status: u16, body: &str, advice: Option<&str>) -> String {
+    let advice = advice
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .or_else(|| llm_status_advice(status));
+    match (advice, upstream_error_detail(body)) {
+        (Some(a), Some(d)) => format!("{a}（上游：{d}）"),
+        (Some(a), None) => a.to_string(),
+        (None, Some(d)) => d,
+        (None, None) => "上游未给出错误详情".to_string(),
     }
 }
 
@@ -527,7 +611,7 @@ mod tests {
             CommandError::LlmRequestFailed("x".into()).code(),
             CommandError::LlmApiError {
                 status: 500,
-                body_preview: "x".into(),
+                detail: "x".into(),
             }
             .code(),
             CommandError::ConfirmTimeout.code(),
@@ -614,12 +698,117 @@ mod tests {
         // C1 区 U+0080-U+009F 全剥；\t\n\r 保留（audit 侧 escape_for_log 再转义）
         let e = CommandError::LlmApiError {
             status: 500,
-            body_preview: "a\u{0}b\u{7F}c\td\ne\rf\u{1}g\u{9F}h".into(),
+            detail: "a\u{0}b\u{7F}c\td\ne\rf\u{1}g\u{9F}h".into(),
         };
         assert_eq!(e.message(), "大模型 API 错误 500：abc\td\ne\rfgh");
         let m = e.message();
         assert!(!m.contains('\u{7F}'), "DEL 必须被剥离：{m:?}");
         assert!(!m.contains('\u{9F}'), "C1 控制字符必须被剥离：{m:?}");
+    }
+
+    // ── LLM API 错误的人话化 ──
+
+    #[test]
+    fn llm_error_detail_402_says_balance_instead_of_raw_json() {
+        // 2026-10-24 实机：上游 402 原样甩进气泡，用户只看到一坨 JSON
+        let body = r#"{"type":"error","error":{"type":"insufficient_balance_error","message":"insufficient balance (1008)"},"request_id":"072bb75eb78196241b5ab6e12744a166"}"#;
+        let d = llm_error_detail(402, body, None);
+        assert!(d.contains("余额"), "应说清是余额问题：{d}");
+        assert!(d.contains("充值"), "应给出下一步（充值/换模型）：{d}");
+        assert!(
+            d.contains("insufficient balance (1008)"),
+            "上游自己说的那句要留着：{d}"
+        );
+        assert!(!d.contains("{\"type\""), "上游原始 JSON 不该外泄：{d}");
+        assert!(!d.contains("request_id"), "上游原始 JSON 不该外泄：{d}");
+    }
+
+    #[test]
+    fn llm_status_advice_names_the_next_step_for_known_codes() {
+        for (status, needle) in [
+            (401u16, "API Key"),
+            (402, "余额"),
+            (403, "权限"),
+            (404, "已下线"),
+            (429, "限流"),
+            (500, "服务异常"),
+            (503, "服务异常"),
+        ] {
+            let d = llm_error_detail(status, "", None);
+            assert!(d.contains(needle), "{status} 应含「{needle}」：{d}");
+        }
+        // 400 不猜：可能是超长也可能是参数错，回退上游原文
+        assert!(llm_status_advice(400).is_none());
+        assert!(llm_status_advice(200).is_none());
+    }
+
+    #[test]
+    fn llm_error_detail_advice_override_wins_over_status_advice() {
+        let d = llm_error_detail(
+            400,
+            r#"{"error":{"message":"prompt is too long"}}"#,
+            Some("上下文超长：请 /compact 压缩历史"),
+        );
+        assert!(d.contains("/compact"), "{d}");
+        assert!(
+            !d.contains("API Key"),
+            "调用点给了指引就不该再套状态码指引：{d}"
+        );
+    }
+
+    #[test]
+    fn llm_error_detail_400_without_advice_falls_back_to_upstream_text() {
+        let d = llm_error_detail(
+            400,
+            r#"{"error":{"message":"tools[0].function.parameters: invalid schema"}}"#,
+            None,
+        );
+        assert!(d.contains("invalid schema"), "{d}");
+        assert!(!d.contains("上游："), "没有指引时不套「上游：」前缀：{d}");
+    }
+
+    #[test]
+    fn llm_error_detail_reads_minimax_native_base_resp() {
+        let d = llm_error_detail(
+            402,
+            r#"{"base_resp":{"status_code":1008,"status_msg":"insufficient balance"}}"#,
+            None,
+        );
+        assert!(d.contains("insufficient balance"), "{d}");
+    }
+
+    #[test]
+    fn llm_error_detail_non_json_body_keeps_truncated_text() {
+        let d = llm_error_detail(502, "<html><body>502 Bad Gateway</body></html>", None);
+        assert!(d.contains("502 Bad Gateway"), "{d}");
+        let long = llm_error_detail(500, &"x".repeat(5000), None);
+        assert!(
+            long.chars().filter(|c| *c == 'x').count() <= 160,
+            "上游细节要有上限：{}",
+            long.chars().count()
+        );
+    }
+
+    #[test]
+    fn llm_error_detail_huge_body_is_truncated_not_parsed() {
+        // 上游回一整页 HTML：超体量门槛不解析，直接截断原文
+        let big = format!("<html>{}</html>", "x".repeat(50_000));
+        let d = llm_error_detail(500, &big, None);
+        assert!(
+            d.chars().filter(|c| *c == 'x').count() <= 160,
+            "上游细节要有上限：{}",
+            d.chars().count()
+        );
+    }
+
+    #[test]
+    fn llm_error_detail_empty_body_keeps_advice_only() {
+        let d = llm_error_detail(429, "   ", None);
+        assert!(d.contains("限流"), "{d}");
+        assert!(
+            !d.contains("上游："),
+            "没有上游细节就不该出现「上游：」：{d}"
+        );
     }
 
     #[test]

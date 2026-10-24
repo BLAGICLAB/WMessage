@@ -1544,7 +1544,7 @@ pub async fn summarize_http(
         let text = resp.text().await.unwrap_or_default();
         return Err(CommandError::LlmApiError {
             status: status.as_u16(),
-            body_preview: text.chars().take(300).collect::<String>(),
+            detail: crate::error::llm_error_detail(status.as_u16(), &text, None),
         });
     }
     let v: serde_json::Value = resp

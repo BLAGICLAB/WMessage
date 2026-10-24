@@ -2432,20 +2432,19 @@ where
                             }
                         }
                         // 没得砍（或本就不是超长）：回错误。超长时给出可操作指引，
-                        // 别把裸 400 抛给用户——它看不出该 /compact 还是换模型
-                        let hint = skill_finish(
-                            false,
-                            if overflow {
-                                "上下文超长：请 /compact 压缩历史或新建会话，也可在设置里调小历史预算"
-                            } else {
-                                "大模型 API 错误"
-                            },
-                        );
+                        // 别把裸 400 抛给用户——它看不出该 /compact 还是换模型；
+                        // 状态码定性的（402 余额不足等）同样说人话，别甩上游 JSON
+                        let advice = if overflow {
+                            Some("上下文超长：请 /compact 压缩历史或新建会话，也可在设置里调小历史预算")
+                        } else {
+                            crate::error::llm_status_advice(st)
+                        };
+                        let hint = skill_finish(false, advice.unwrap_or("大模型 API 错误"));
                         let err = CommandError::LlmApiError {
                             status: st,
-                            body_preview: format!(
+                            detail: format!(
                                 "{}{hint}",
-                                text.chars().take(300).collect::<String>()
+                                crate::error::llm_error_detail(st, &text, advice)
                             ),
                         };
                         let mut kv = crate::audit::error_kv(&err);
