@@ -101,6 +101,7 @@ pub fn run(
     // 新运行开始前先扫陈旧行：上一轮崩在写回之前的运行行会永远停在 running
     sweep_stale_runs(app_handle);
     let run_id = {
+        let _g = db::lock_db_write();
         let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
         db::record_app_run(&conn, &app.id, now_ms, "running").map_err(|e| e.to_string())?
     };
@@ -192,6 +193,7 @@ pub fn run(
     // 指回 output/<run_id>/ 看完整产物；库、通知、程序页历史同源生效
     let summary = bound_summary(summary, run_id);
     {
+        let _g = db::lock_db_write();
         let conn = db::open_db(app_handle).map_err(|e| e.to_string())?;
         if let Err(e) = db::finish_app_run(
             &conn,
@@ -242,6 +244,7 @@ fn mark_run_failed(
     status: &str,
     summary: &str,
 ) {
+    let _g = db::lock_db_write();
     let conn = match db::open_db(app_handle) {
         Ok(c) => c,
         Err(e) => {
@@ -280,6 +283,7 @@ fn sweep_stale_runs_conn(
 /// 清扫入口（开库 + 留痕）。调用点：程序页历史读取前、新运行开始前——
 /// 程序页的历史列表是这些行的唯一读出口，扫完用户看到的就是真实状态。
 pub(crate) fn sweep_stale_runs(app_handle: &AppHandle) {
+    let _g = db::lock_db_write();
     let conn = match db::open_db(app_handle) {
         Ok(c) => c,
         Err(e) => {
