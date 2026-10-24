@@ -54,6 +54,7 @@ export function TaskDetailPanel({
   onCreateSubtaskCard,
   onOpenTask,
   onDeleteSubtask,
+  escBlocked,
 }: {
   task: Task;
   /** 新建任务打开时聚焦标题并全选（自动进入编辑态） */
@@ -70,6 +71,9 @@ export function TaskDetailPanel({
   onOpenTask?: (id: string) => void;
   /** 子任务行 × 删除该行；已生成子任务卡时由接线方解除关联并保留子卡 */
   onDeleteSubtask?: (subId: string) => void;
+  /** 更上层浮层开着（命令面板等）：Esc 让位给它，浮窗不动——否则按一次 Esc
+   *  会连浮窗一起关掉，saveOnClose 连带提交草稿 / onDiscard 回滚已落库改动 */
+  escBlocked?: boolean;
 }) {
   // 标题本地草稿：任务切换/外部改名时回填，blur/Enter 提交，Esc 还原
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -183,19 +187,6 @@ export function TaskDetailPanel({
     }
   };
 
-  // Esc 与关闭键同一条路（拨杆语义一致）。handleClose 每渲染重建，用 ref 兜住
-  // 最新一份，免得每次渲染都重挂 window 监听
-  const closeRef = useRef(handleClose);
-  useEffect(() => {
-    closeRef.current = handleClose;
-  });
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.isComposing) closeRef.current();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
 
   const toggleSubtask = (sid: string) => {
     const next = (task.subtasks ?? []).map((s) =>
@@ -229,6 +220,31 @@ export function TaskDetailPanel({
 
   // 执行痕迹弹层（TracePanel 自带 portal 到 body）
   const [traceOpen, setTraceOpen] = useState(false);
+
+  // Esc 与关闭键同一条路（拨杆语义一致）。handleClose 每渲染重建，用 ref 兜住
+  // 最新一份，免得每次渲染都重挂 window 监听。
+  // 层级裁决（自上而下）：执行痕迹弹层 > 更上层浮层（命令面板，escBlocked）>
+  // 标题编辑态（textarea 自己 stopPropagation，到不了这里）> 关浮窗。
+  const closeRef = useRef(handleClose);
+  const escCtxRef = useRef({ traceOpen, escBlocked: !!escBlocked });
+  useEffect(() => {
+    closeRef.current = handleClose;
+    escCtxRef.current = { traceOpen, escBlocked: !!escBlocked };
+  });
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      const { traceOpen, escBlocked } = escCtxRef.current;
+      if (escBlocked) return; // 让位给更上层浮层
+      if (traceOpen) {
+        setTraceOpen(false);
+        return;
+      }
+      closeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // 复制反馈（惯例：原位瞬时换标 + aria-live 播报，~1.6s 还原）：
   // 按文件路径记 ok/err，成功「✓ 已复制」、失败「复制失败」
@@ -304,6 +320,9 @@ export function TaskDetailPanel({
               (e.target as HTMLTextAreaElement).blur();
             }
             if (e.key === "Escape") {
+              // 只还原标题草稿：不 stopPropagation 的话事件冒泡到 window，
+              // 会把整个浮窗关掉（连带提交 note/tags 草稿）
+              e.stopPropagation();
               skipTitleCommit.current = true;
               titleDraftRef.current = titleSaved.current;
               setTitleDraft(titleSaved.current);

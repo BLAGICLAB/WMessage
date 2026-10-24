@@ -1135,6 +1135,7 @@ function App() {
               }
               onOpenTask={jumpToTaskId}
               onDeleteSubtask={(subId) => deleteSubtaskRow(editorTask.id, subId)}
+              escBlocked={paletteOpen}
             />
           )}
           {paletteOpen && view !== "settings" && (

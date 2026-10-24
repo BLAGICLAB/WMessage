@@ -33,6 +33,7 @@ export function TaskEditorOverlay({
   onCreateSubtaskCard,
   onOpenTask,
   onDeleteSubtask,
+  escBlocked,
 }: {
   task: Task;
   /** 新建任务打开时聚焦标题并全选（自动进入编辑态） */
@@ -49,6 +50,8 @@ export function TaskEditorOverlay({
   onCreateSubtaskCard?: (subId: string, title: string) => void;
   onOpenTask?: (id: string) => void;
   onDeleteSubtask?: (subId: string) => void;
+  /** 更上层浮层开着：Esc 让位（透传 TaskDetailPanel.escBlocked） */
+  escBlocked?: boolean;
 }) {
   // 挂载帧先落在屏外（translateX 隐藏位），下一帧再滑入——首帧不闪现
   const [entered, setEntered] = useState(false);
@@ -91,6 +94,7 @@ export function TaskEditorOverlay({
         onCreateSubtaskCard={onCreateSubtaskCard}
         onOpenTask={onOpenTask}
         onDeleteSubtask={onDeleteSubtask}
+        escBlocked={escBlocked}
       />
     </div>
   );
