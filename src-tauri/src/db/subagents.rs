@@ -193,6 +193,11 @@ pub struct SubagentRow {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// token 用量记账（模型循环累计）：NULL = 未记（老行 / 循环没跑起来）。
+    /// 只落库可查，不进 UI——对账与预算调参的底账。
+    pub prompt_tokens: Option<i64>,
+    pub completion_tokens: Option<i64>,
+    pub cache_read_tokens: Option<i64>,
 }
 
 /// subagents 表 DDL（单源真相：open_db 与各测试建表共用同一份，防 schema 漂移——
@@ -215,7 +220,10 @@ pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
            error             TEXT,
            created_at        INTEGER NOT NULL,
            started_at        INTEGER,
-           finished_at       INTEGER
+           finished_at        INTEGER,
+           prompt_tokens     INTEGER,
+           completion_tokens INTEGER,
+           cache_read_tokens INTEGER
          );
          CREATE INDEX IF NOT EXISTS idx_subagents_status ON subagents(status);
          CREATE INDEX IF NOT EXISTS idx_subagents_parent ON subagents(parent_session_id);
@@ -294,6 +302,42 @@ pub fn ensure_context_summary_column(conn: &rusqlite::Connection) -> Result<(), 
         .map_err(|e| e.to_string())
 }
 
+/// 幂等迁移：补 token 用量三列（老库 NULL = 未记）。走 mod 里共享的
+/// ensure_columns 内核（探测 + ALTER，重复列不算错）。
+pub fn ensure_usage_columns(conn: &rusqlite::Connection) -> Result<(), String> {
+    super::ensure_columns(
+        conn,
+        "subagents",
+        &[
+            ("prompt_tokens", "INTEGER"),
+            ("completion_tokens", "INTEGER"),
+            ("cache_read_tokens", "INTEGER"),
+        ],
+    )
+}
+
+/// usage 记账：模型循环累计的 token 用量写进行。终态落库时随状态更新同一事务
+/// 调用；值来自 LoopTrace 的原子累计，不新增埋点。
+pub fn update_subagent_usage(
+    conn: &rusqlite::Connection,
+    id: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cache_read_tokens: u64,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE subagents SET prompt_tokens=?2, completion_tokens=?3, cache_read_tokens=?4 WHERE id=?1",
+        rusqlite::params![
+            id,
+            prompt_tokens as i64,
+            completion_tokens as i64,
+            cache_read_tokens as i64
+        ],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(), String> {
     conn.execute(
         "INSERT INTO subagents (id, status, profile, model, parent_session_id, session_id,
@@ -327,28 +371,28 @@ pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(
 const SQL_SELECT_BY_ID: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
      trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE id = ?1";
+     created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE id = ?1";
 const SQL_SELECT_BY_TASK: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
      trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE task_id = ?1 \
+     created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE task_id = ?1 \
      ORDER BY created_at DESC LIMIT 1";
 const SQL_SELECT_BY_SESSION: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
      trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE session_id = ?1 \
+     created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE session_id = ?1 \
      ORDER BY created_at DESC LIMIT 1";
 const SQL_SELECT_BY_STATUS: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
      trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE status = ?1 ORDER BY created_at";
+     created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE status = ?1 ORDER BY created_at";
 /// 按派发者主会话取全部子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
 /// 「子 Agent」工作面的数据源：子 agent 不再建独立会话后，用户只能从这里
 /// 看到自己派出去的那些还活着/刚跑完。
 const SQL_SELECT_BY_PARENT: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
      trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE parent_session_id = ?1 \
+     created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE parent_session_id = ?1 \
      ORDER BY created_at DESC LIMIT ?2";
 
 /// 按「同一份派发请求」找**还活着**的行（幂等去重用）。
@@ -358,7 +402,7 @@ const SQL_SELECT_BY_PARENT: &str =
 const SQL_SELECT_LIVE_BY_REQUEST: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
      trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
-     created_at, started_at, finished_at FROM subagents WHERE parent_session_id = ?1 \
+     created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE parent_session_id = ?1 \
      AND profile = ?2 AND objective = ?3 AND acceptance_json = ?4 AND model IS ?5 \
      AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1";
 
@@ -396,6 +440,9 @@ fn row_to_subagent(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRow> {
         created_at: row.get(14)?,
         started_at: row.get(15)?,
         finished_at: row.get(16)?,
+        prompt_tokens: row.get(17)?,
+        completion_tokens: row.get(18)?,
+        cache_read_tokens: row.get(19)?,
     })
 }
 
@@ -506,7 +553,7 @@ pub fn load_live_subagents_by_session(
         .prepare(
             "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
              trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
-             created_at, started_at, finished_at FROM subagents \
+             created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents \
              WHERE (parent_session_id = ?1 OR session_id = ?1) \
              AND status IN ('queued','running') ORDER BY created_at",
         )
@@ -627,6 +674,9 @@ mod subagent_db_tests {
             created_at: 1_000,
             started_at: None,
             finished_at: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
         }
     }
 
@@ -700,6 +750,24 @@ mod subagent_db_tests {
     fn load_missing_row_is_none_not_error() {
         let conn = test_conn();
         assert!(load_subagent(&conn, "sa_missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn usage_roundtrip_and_migration_are_idempotent() {
+        let conn = test_conn();
+        insert_subagent(&conn, &sample_row("sa_u", SubagentStatus::Running)).unwrap();
+        // 新行未记 usage（NULL，不是 0——对账时按「未记」读）
+        let fresh = load_subagent(&conn, "sa_u").unwrap().unwrap();
+        assert!(fresh.prompt_tokens.is_none() && fresh.completion_tokens.is_none());
+        // 终态记账后读回
+        update_subagent_usage(&conn, "sa_u", 12_345, 678, 45_678).unwrap();
+        let got = load_subagent(&conn, "sa_u").unwrap().unwrap();
+        assert_eq!(got.prompt_tokens, Some(12_345));
+        assert_eq!(got.completion_tokens, Some(678));
+        assert_eq!(got.cache_read_tokens, Some(45_678));
+        // 迁移幂等：列已在，重复跑不报错（open_db 每次启动都会过一遍）
+        ensure_usage_columns(&conn).unwrap();
+        ensure_usage_columns(&conn).unwrap();
     }
 
     #[test]
@@ -860,6 +928,8 @@ mod subagent_db_tests {
         .unwrap();
         ensure_context_summary_column(&conn).unwrap();
         ensure_task_id_nullable(&conn).unwrap();
+        // 老库升级按 open_db 的迁移顺序过完全部补列（load 的 SELECT 含 usage 三列）
+        ensure_usage_columns(&conn).unwrap();
         let legacy = load_subagent(&conn, "sa_old").unwrap().unwrap();
         assert_eq!(legacy.task_id.as_deref(), Some("card-old"));
         assert_eq!(
@@ -897,6 +967,8 @@ mod subagent_db_tests {
         .unwrap();
         ensure_context_summary_column(&conn).unwrap();
         ensure_context_summary_column(&conn).unwrap();
+        // 同一老库形状，usage 三列也要补齐（load 的 SELECT 全列读取）
+        ensure_usage_columns(&conn).unwrap();
         let row = SubagentRow {
             context_summary: Some("只给必要背景".into()),
             ..sample_row("sa_ctx", SubagentStatus::Queued)

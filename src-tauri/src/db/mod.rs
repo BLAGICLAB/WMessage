@@ -231,6 +231,9 @@ pub fn open_db<R: tauri::Runtime>(
     // 子 agent 不再建任务卡：task_id 的 NOT NULL 解除、UNIQUE 索引移除
     // （新行恒 NULL），老行保留原值（历史可按卡键反查）
     crate::db::subagents::ensure_task_id_nullable(&conn).map_err(|e| e.to_string())?;
+    // token 用量三列（老库 NULL = 未记）。排在 task_id 重建迁移之后——
+    // 重建搬运的是显式列清单，本列由这里补
+    crate::db::subagents::ensure_usage_columns(&conn).map_err(|e| e.to_string())?;
     // 定时任务表（定时任务模块）：内容型定时作业，到点据此新建任务卡并执行
     conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOBS_DDL)
         .map_err(|e| e.to_string())?;

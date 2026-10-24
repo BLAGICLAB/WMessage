@@ -357,6 +357,9 @@ pub(crate) fn spawn_subagent_locked(
         created_at: now,
         started_at: None,
         finished_at: None,
+        prompt_tokens: None,
+        completion_tokens: None,
+        cache_read_tokens: None,
     };
     crate::db::insert_subagent(&tx, &row).map_err(CommandError::DbError)?;
     tx.commit()
@@ -2781,6 +2784,16 @@ async fn run_subagent(
     let result_for_db = result.clone();
     let error_for_db = error.clone();
     let final_for_db = final_text.clone();
+    // usage 记账：模型循环累计的 token 三档随终态同事务落库（墙钟掐断 / panic
+    // 路径拿不到 trace，保持 NULL——对账时按「未记」读，不编 0）
+    let usage_for_db = match &wall {
+        Ok(Ok((_, _, trace))) => Some((
+            trace.prompt_tokens,
+            trace.completion_tokens,
+            trace.cache_read_tokens,
+        )),
+        _ => None,
+    };
     // 返回 fresh row——下游审计/事件直接用，免二次持锁查询
     let app_for_audit = app.clone();
     let finalized: Option<SubagentRow> =
@@ -2813,6 +2826,10 @@ async fn run_subagent(
                 .map_err(CommandError::DbError)?;
                 if let Some(v) = &result_for_db {
                     crate::db::set_subagent_result(&tx, &row_for_db.id, &v.to_string())
+                        .map_err(CommandError::DbError)?;
+                }
+                if let Some((p, c, cr)) = usage_for_db {
+                    crate::db::update_subagent_usage(&tx, &row_for_db.id, p, c, cr)
                         .map_err(CommandError::DbError)?;
                 }
                 crate::db::load_subagent(&tx, &row_for_db.id)
@@ -4029,6 +4046,9 @@ mod orchestrator_tests {
             created_at: 1_000,
             started_at: Some(1_001),
             finished_at: Some(1_002),
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
         }
     }
 
@@ -4439,6 +4459,9 @@ mod orchestrator_tests {
             created_at: 0,
             started_at: None,
             finished_at: None,
+            prompt_tokens: None,
+            completion_tokens: None,
+            cache_read_tokens: None,
         };
         let v = own_card_payload(
             &row,
