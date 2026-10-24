@@ -836,6 +836,131 @@ fn reserved_dynamic_survives_a_failed_sample() {
     assert!(!reserved_ports().contains(&52001));
 }
 
+// ── 采集金丝雀：采样自称成功却看不见宿主必在监听的端口 = 采集失明 ──
+
+fn canary_sock(pid: u32, port: u16) -> (u32, Vec<ListeningSocket>) {
+    (
+        pid,
+        vec![ListeningSocket {
+            protocol: crate::bot::procs::SocketProtocol::Tcp,
+            address: "127.0.0.1".to_string(),
+            port,
+        }],
+    )
+}
+
+#[test]
+fn canary_blind_separates_empty_from_blind() {
+    use crate::bot::procs::ListeningSample;
+    use std::collections::HashMap;
+
+    let port = crate::api::API_PORT;
+    // 采成功且看得见金丝雀端口 → 不失明
+    let mut by_pid = HashMap::new();
+    by_pid.insert(canary_sock(7, port).0, canary_sock(7, port).1);
+    let seen = ListeningSample {
+        by_pid,
+        complete: true,
+    };
+    assert!(
+        !canary_blind(&seen, Some(port)),
+        "看得见宿主端口 = 采样可信"
+    );
+
+    // 采成功却看不见 → 失明（lsof 权限不足一类：不报错也不出行）
+    let empty = ListeningSample {
+        by_pid: HashMap::new(),
+        complete: true,
+    };
+    assert!(
+        canary_blind(&empty, Some(port)),
+        "自称成功却看不见宿主必在监听的端口 = 采集失明，不得当「判了没事」"
+    );
+
+    // 采集失败（!complete）→ 金丝雀不重复报（那条路径已有自己的语义）
+    let failed = ListeningSample {
+        by_pid: HashMap::new(),
+        complete: false,
+    };
+    assert!(
+        !canary_blind(&failed, Some(port)),
+        "采集失败路径已有审计，金丝雀不得双重上报"
+    );
+
+    // API 没开（无金丝雀基准）→ 永不失明（不制造误报源）
+    assert!(!canary_blind(&empty, None), "没有基准就不判失明");
+}
+
+#[test]
+fn api_canary_port_tracks_running_api_liveness() {
+    use crate::api_server::{ApiState, RunningApi};
+
+    // 未 manage ApiState → 无金丝雀
+    let app = tauri::test::mock_app();
+    assert_eq!(api_canary_port(app.handle()), None);
+
+    // manage 了但没起服务 → 无金丝雀
+    app.manage(ApiState::default());
+    assert_eq!(api_canary_port(app.handle()), None);
+
+    // 活的 accept 线程 → 有金丝雀（宿主此刻必在监听 API_PORT）
+    let alive = ApiState(std::sync::Mutex::new(Some(RunningApi {
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        handle: Some(std::thread::spawn(std::thread::park)),
+        token: "t".to_string(),
+        active: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    })));
+    let app2 = tauri::test::mock_app();
+    app2.manage(alive);
+    assert_eq!(
+        api_canary_port(app2.handle()),
+        Some(crate::api::API_PORT),
+        "API 活着时金丝雀端口必须在场"
+    );
+
+    // accept 线程已死（is_finished）→ 不算在监听。
+    // join 会消费句柄，等退出只能轮询 is_finished（&self）
+    let dead_handle = std::thread::spawn(|| {});
+    while !dead_handle.is_finished() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let dead = ApiState(std::sync::Mutex::new(Some(RunningApi {
+        shutdown: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        handle: Some(dead_handle),
+        token: "t".to_string(),
+        active: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    })));
+    let app3 = tauri::test::mock_app();
+    app3.manage(dead);
+    assert_eq!(api_canary_port(app3.handle()), None);
+}
+
+/// 巡检必须先过金丝雀再进判定：canary_blind 的结论要汇入 complete，
+/// 否则金丝雀只是旁路日志、判定层照样把失明采样当「判了没事」。
+/// 巡检在 AppHandle 上跑（Wry 专属），单测直驱不了——源码文本守卫钉接线。
+#[test]
+fn patrol_wires_canary_before_judging() {
+    let src = include_str!("../services.rs");
+    let prod = src
+        .split_once("#[cfg(test)]")
+        .map(|(p, _)| p)
+        .unwrap_or(src);
+    let patrol = prod
+        .split_once("fn enforce_listening_gate")
+        .expect("应能定位巡检函数");
+    let patrol = patrol.1;
+    let canary = patrol
+        .find("canary_blind(&sample, canary_port)")
+        .expect("巡检必须调金丝雀判定");
+    let note = patrol
+        .find("note_sample_status")
+        .expect("巡检必须记录采样状态");
+    assert!(
+        canary < note,
+        "金丝雀必须在采样状态记录之前跑（失明要汇入 complete，不是旁路日志）"
+    );
+}
+
 #[test]
 fn judge_flags_mirrors_the_runtime_rules() {
     let mut reserved = HashSet::new();

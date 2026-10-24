@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 160 个文件、约 12.3 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 161 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -103,14 +103,14 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (5916) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
+├── bot_model_loop.rs (5984) LLM 流式调用+工具循环：run_model_loop(薄壳装配)/run_model_loop_core(可注入 mock)；
 │                        SSE 解析、思考块拆分；单轮 Function 熔断；**墙钟治理**（WallBudget：软墙钟
 │                        收尾提醒 + 墙钟熔断留产，均在轮边界检查）；LlmHttp / ModelLoopDeps 依赖注入
 │                        （TOOLS schema 已移出，见 bot/registry.rs）；工具结果回灌上限（字节口径）：
 │                        per-tool 预算与设置页 maxToolOutputBytes 取小，超限转存溢出文件、只回灌节选+指针
 │                        （tool.output.truncated 审计）+ llm.usage 薄壳累计 + bot-usage-delta 水位条
 │                        事件（Anthropic 协议）
-├── bot.rs (164)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
+├── bot.rs (166)         门面：跨模块 re-export（BotChatResult/TaskRef/model_loop/StopGuard/AuditLevel/db::*）
 │                        + 子模块声明；旧 `crate::bot::<item>` 路径 1:1 保持
 ├── bot/params.rs        Agent 运行参数注册表（P3-a）：PARAMS_TABLE 单源（可编辑 config 驱动 +
 │                        硬编码只读两区）+ resolve_* 读取口唯一（max_rounds/history_budget/
@@ -132,6 +132,11 @@ src-tauri/src/
 │                        ToolCallView 只读视图（字段全是共享借用，L4 无法改写入参）+ 内置观察钩子
 │                        （builtin_observer，计数 + bot.log 留痕）。接线点唯一：
 │                        dispatch.rs::run_pre_tool_layer（三道闸之前）
+├── bot/eval.rs           提示词评估层（cfg(test) 手动评估器，不进门禁）：真模型 × 生产
+│                        SYSTEM_PROMPT+MAIN_AGENT_ADDENDUM × 记录型 stub 工具，12 条纪律
+│                        用例（参数被拒不降级/拒绝不重试/失败不谎报/产物带路径/来源引用/
+│                        记忆纪律/小任务不派子 agent/溢出指针读回/格式重试/熔断如实收尾）；
+│                        配置快照 src-tauri/eval-bot-config.json（gitignore）+ key 走 keyring
 ├── bot/mcp/             外部 MCP 服务器接入（stdio/HTTP，设置页 McpPanel 管理）：
 │   ├── bot/mcp/mod.rs   模块声明
 │   ├── bot/mcp/config.rs        McpServerConfig/校验（stdio 启动器白名单、URL 公网闸、
@@ -181,7 +186,7 @@ src-tauri/src/
 │   └── bot/procs/tests.rs (591)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
 │                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
 │                        + 真子进程监听端口集成测试（验平台路径真能读到）
-├── bot/services.rs (2319) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (2391) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
@@ -191,6 +196,11 @@ src-tauri/src/
 │                        + **端口/监听地址闸**（P2-③）：判据 L1 默认只许 loopback
 │                        （放开靠独立开关）/ L2 禁占宿主保留端口 / L3 禁特权端口；
 │                        判定三态 Ok / Violated / **Unsupported**（Windows 没判≠没事）；
+│                        **采集金丝雀**：API server 开着时宿主必在监听 API_PORT——
+│                        采样自称成功却看不见它 = 采集失明（lsof 权限不足一类），
+│                        与采集失败同路处理（不判/保留集不动）+ 转折审计
+│                        service.listening_canary_failed；API 没开时无基准不判
+│                        （不制造误报源）；
 │                        违规记在**正交字段** last_violation（不复用状态机）+
 │                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
 │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
@@ -198,7 +208,7 @@ src-tauri/src/
 │   ├── bot/services/watchdog.rs (295)  服务层「宿主死了服务也得死」看门狗：
 │   │                            unix 用管道 EOF（宿主一死 → 写端关闭 → 助手 TERM 服务整组）；
 │   │                            Windows 复用 py/runtime.rs 的 Job Object（KILL_ON_JOB_CLOSE）
-│   └── bot/services/tests.rs (1362)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
+│   └── bot/services/tests.rs (1487)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
 │                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
 │                        资源告警判定（阈值 / 持续 / 去重）、
 │                        端口闸（flag 解析 / loopback 判定 / L1-L3 判据 / 保留集）、
@@ -680,6 +690,7 @@ flowchart TD
 - `bot/config/types.rs`
 - `bot/corrections.rs`
 - `bot/dispatch.rs`
+- `bot/eval.rs`
 - `bot/format.rs`
 - `bot/hooks.rs`
 - `bot/log_sanitize.rs`

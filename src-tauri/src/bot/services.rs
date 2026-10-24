@@ -260,6 +260,67 @@ fn static_reserved_ports() -> HashSet<u16> {
     s
 }
 
+// ── 采集金丝雀 ──────────────────────────────────────────────────────────
+// 已知残留（采样成败分离落地时论证过）：lsof 跑得通但**看不见本进程外**的
+// 监听时，它既不报错也不出行——「采空」与「采不到」在数据流里是同一个
+// 空集合，complete=true 骗过了判定层。金丝雀用宿主自己的已知事实把两者
+// 分开：API server 开着时宿主必在监听 API_PORT，采样自称成功却看不见
+// 这个端口 = 采集失明，本轮不可信。API 没开时没有基准，不制造误报源。
+
+/// 宿主已知监听端口（金丝雀锚点）：本地 HTTP API 活着 → 它必在监听 API_PORT。
+fn api_canary_port<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<u16> {
+    use tauri::Manager;
+    let state = app.try_state::<crate::api_server::ApiState>()?;
+    let g = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    let running = g.as_ref()?;
+    let alive = running
+        .handle
+        .as_ref()
+        .map(|h| !h.is_finished())
+        .unwrap_or(false);
+    alive.then_some(crate::api::API_PORT)
+}
+
+/// 金丝雀判定（纯函数）：采样自称成功却看不见宿主必在监听的端口 = 失明。
+/// 采集本身失败（!complete）时不重复报——那条路径已有自己的语义与审计。
+fn canary_blind(sample: &crate::bot::procs::ListeningSample, canary: Option<u16>) -> bool {
+    let Some(port) = canary else {
+        return false;
+    };
+    if !sample.complete {
+        return false;
+    }
+    !sample
+        .by_pid
+        .values()
+        .any(|socks| socks.iter().any(|s| s.port == port))
+}
+
+/// 金丝雀上一轮是否看见（true = 采到了宿主自己的端口）。
+/// 只在「看见 → 失明」转折记一条审计（30s 一轮，逐轮记会刷屏；恢复不记，
+/// 持续失明由面板的「本轮未判」呈现——金丝雀失明会连带 note_sample_status
+/// 报失败，面板文案沿用既有口径）。
+static CANARY_SEEN: AtomicBool = AtomicBool::new(true);
+
+fn note_canary_blind<R: tauri::Runtime>(app: &AppHandle<R>, port: u16) {
+    if !CANARY_SEEN.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    crate::audit::write_event(
+        app,
+        AuditLevel::Warn,
+        "service.listening_canary_failed",
+        &[
+            ("canary_port", port.to_string()),
+            (
+                "detail",
+                "采样自称成功但看不见宿主自身监听的 API 端口——采集失明（如 lsof 权限不足），端口闸本轮未判"
+                    .to_string(),
+            ),
+        ],
+    );
+}
+
 /// 当前保留集 = 静态 ∪ 动态。
 pub(crate) fn reserved_ports() -> HashSet<u16> {
     let mut out = static_reserved_ports();
@@ -667,8 +728,19 @@ fn enforce_listening_gate<R: tauri::Runtime>(app: &AppHandle<R>) {
         trees.push((entry, tree));
     }
     let sample = listening_sockets(&all_pids);
-    note_sample_status(app, sample.complete);
-    if !sample.complete {
+    // 金丝雀先行：API 开着时宿主必在监听 API_PORT（all_pids 含 self_pid），
+    // 采样自称成功却看不见它 = 采集失明——与采集失败同路处理（不判、
+    // 保留集不动、面板报「本轮未判」），并单独记转折审计。
+    let canary_port = api_canary_port(app);
+    let blind = canary_blind(&sample, canary_port);
+    if blind {
+        note_canary_blind(app, canary_port.expect("blind 为真时 canary 必为 Some"));
+    } else {
+        CANARY_SEEN.store(true, Ordering::Relaxed);
+    }
+    let complete = sample.complete && !blind;
+    note_sample_status(app, complete);
+    if !complete {
         // 采集失败 = 没判，不是「判了没事」。保留集动态部分也不动
         // （refresh_reserved_ports 在采样失败时原样保留旧集合）。
         return;
@@ -679,7 +751,7 @@ fn enforce_listening_gate<R: tauri::Runtime>(app: &AppHandle<R>) {
         .get(&self_pid)
         .map(|list| list.iter().map(|s| s.port).collect())
         .unwrap_or_default();
-    refresh_reserved_ports(&host_ports, sample.complete);
+    refresh_reserved_ports(&host_ports, complete);
     let reserved = reserved_ports();
     let allow_non_loopback = expose_net_allowed(app);
     for (entry, tree) in trees {
@@ -692,7 +764,7 @@ fn enforce_listening_gate<R: tauri::Runtime>(app: &AppHandle<R>) {
             rule,
             address,
             port,
-        } = judge_sockets(&listening, sample.complete, &reserved, allow_non_loopback)
+        } = judge_sockets(&listening, complete, &reserved, allow_non_loopback)
         {
             handle_violation(app, &entry, rule, &address, port, ViolationAction::Killed);
         }
