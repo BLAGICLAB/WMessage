@@ -1861,6 +1861,10 @@ pub async fn run_model_loop(
 /// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（50），多步 Skill 可自报 max_rounds 覆盖。
 /// plan_state（PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
 /// Replan（重规划剩余步骤，≤MAX_REPLANS 次）。None = 无计划自由循环。
+//
+// clippy 的 too_many_lines 只数函数体的非注释行（现 274 行，阈值 200），
+// 总量已收进 400 行内但代码行数仍超阈值——豁免暂留，再拆就得改已落地的
+// 各单元签名或把共享状态改成 struct 传递，两者都越过「纯机械搬移」的边界。
 #[allow(clippy::too_many_lines)]
 pub async fn run_model_loop_core<X, XP, R, RP>(
     http: &LlmHttp,
@@ -1993,320 +1997,249 @@ where
     // 内层跑完由外层统一判定出口类别，出口只有一处可漏。
     let mut body_outcome: Option<&'static str> = None;
     let body: Result<(String, Vec<TaskRef>), CommandError> = async {
-    for round in 0..max_rounds {
-        // 墙钟熔断（轮边界检查）：期限已到就在这里退出，**带上上一轮的正文**。
-        //
-        // 为什么不交给外层的 tokio::timeout：timeout 掐掉整条 future 时，
-        // 正在跑的工具、已经说出口的正文、已落盘的产物全悬空——子 agent 跑
-        // 了几十分钟的产出归零，父 agent 只能从零重烧。轮边界退出与轮数熔断
-        // 同款：熔断是一种「设计好的落地」，不是失败。
-        if let Some(wb) = deps.wall_budget {
-            if wb.expired() {
-                let hint = skill_finish(false, "墙钟预算超限");
-                let kv: Vec<(&str, String)> = vec![
-                    ("max_wall_seconds", wb.max_wall_seconds.to_string()),
-                    ("round", round.to_string()),
-                    ("partial_chars", last_streamed.chars().count().to_string()),
-                ];
-                audit(crate::audit::AuditLevel::Warn, "fuse_wall", kv);
+        for round in 0..max_rounds {
+            // 墙钟熔断（轮边界检查）：期限已到就在这里退出，**带上上一轮的正文**（见 check_fuses）。
+            if let Some(msg) = check_fuses(deps, &last_streamed, round) {
                 body_outcome = Some("fused");
-                return Ok((
-                    wall_fuse_message(&last_streamed, &hint, wb.max_wall_seconds),
-                    collected_refs,
-                ));
+                return Ok((msg, collected_refs));
             }
-        }
-        // 轮前准备：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果降档）。
-        compact_before_round(&mut msgs, &tool_msg_ages, deps, stop, round);
-        if stop.stopped() {
-            let hint = skill_finish(false, "用户停止");
-            return Ok((format!("⏹ 已停止{hint}"), collected_refs));
-        }
-        // 状态机推进决策：集中 Skill 推进逻辑
-        // 未来横切关注点（审批/沙箱/上下文压缩）只动 advance_skill，主循环不重构
-        if let Some(run) = active_skill_run(session_id) {
-            use crate::bot_skills::{advance_skill, AdvanceAction};
-            match advance_skill(&run, chrono::Utc::now().timestamp_millis()) {
-                AdvanceAction::NoActive | AdvanceAction::Continue => {} // 继续本轮
-                AdvanceAction::AwaitConfirm => {
-                    // Skill 暂停等用户确认，跳出主循环等待 bot_confirm_response 唤起。
-                    // 并发新消息在第 0 轮命中此分支时 last_streamed
-                    // 是空串，用户会得到空白回复——空串时给一句可读提示
-                    body_outcome = Some("await_confirm");
-                    if last_streamed.is_empty() {
-                        return Ok((
-                            "⏸ 上一个操作正在等待你的确认——请先处理确认弹窗，再继续对话。".into(),
-                            collected_refs,
-                        ));
-                    }
-                    return Ok((last_streamed.clone(), collected_refs));
-                }
-                AdvanceAction::Finish => {
-                    let _hint = skill_finish(true, "");
-                    body_outcome = Some("skill_finish");
-                    return Ok((last_streamed.clone(), collected_refs));
-                }
-                AdvanceAction::Fail(reason) => {
-                    let _hint = skill_finish(false, &reason);
-                    body_outcome = Some("skill_fail");
-                    return Ok((last_streamed.clone(), collected_refs));
-                }
-                AdvanceAction::Terminate(reason) => {
-                    let _hint = skill_finish(false, &reason);
-                    body_outcome = Some("skill_terminate");
-                    return Ok((last_streamed.clone(), collected_refs));
-                }
-            }
-        }
-        // 轮首活体信号：上一轮 bot-tool-done 之后到本轮首个 delta 之间是第二段
-        // 空窗（LLM 首 token 延迟，无工具行可挂）。发一条 running 让前端知道
-        // 「模型正在想」，配 turn 计数与已用时长的秒级刷新。
-        if let Some(cb) = deps.turn_status {
-            cb(
-                TurnStatus::Running,
-                &format!(
-                    "正在思考 · 第 {} 轮",
-                    round + 1
-                ),
-            );
-        }
-        // 请求段：装配 body → 发请求 → 失败重试/降级（见 request_round）。
-        let resp = match request_round(http, &mut msgs, &mut plan, stop, deps, &mut tool_msg_ages)
-            .await?
-        {
-            RequestOutcome::Response(r) => r,
-            RequestOutcome::Stopped => {
+            // 轮前准备：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果降档）。
+            compact_before_round(&mut msgs, &tool_msg_ages, deps, stop, round);
+            if stop.stopped() {
                 let hint = skill_finish(false, "用户停止");
                 return Ok((format!("⏹ 已停止{hint}"), collected_refs));
             }
-        };
+            // 状态机推进决策：集中 Skill 推进逻辑
+            // 未来横切关注点（审批/沙箱/上下文压缩）只动 advance_skill，主循环不重构
+            if let Some(run) = active_skill_run(session_id) {
+                use crate::bot_skills::{advance_skill, AdvanceAction};
+                match advance_skill(&run, chrono::Utc::now().timestamp_millis()) {
+                    AdvanceAction::NoActive | AdvanceAction::Continue => {} // 继续本轮
+                    AdvanceAction::AwaitConfirm => {
+                        // Skill 暂停等用户确认，跳出主循环等待 bot_confirm_response 唤起。
+                        // 并发新消息在第 0 轮命中此分支时 last_streamed
+                        // 是空串，用户会得到空白回复——空串时给一句可读提示
+                        body_outcome = Some("await_confirm");
+                        if last_streamed.is_empty() {
+                            return Ok((
+                                "⏸ 上一个操作正在等待你的确认——请先处理确认弹窗，再继续对话。"
+                                    .into(),
+                                collected_refs,
+                            ));
+                        }
+                        return Ok((last_streamed.clone(), collected_refs));
+                    }
+                    AdvanceAction::Finish => {
+                        let _hint = skill_finish(true, "");
+                        body_outcome = Some("skill_finish");
+                        return Ok((last_streamed.clone(), collected_refs));
+                    }
+                    AdvanceAction::Fail(reason) => {
+                        let _hint = skill_finish(false, &reason);
+                        body_outcome = Some("skill_fail");
+                        return Ok((last_streamed.clone(), collected_refs));
+                    }
+                    AdvanceAction::Terminate(reason) => {
+                        let _hint = skill_finish(false, &reason);
+                        body_outcome = Some("skill_terminate");
+                        return Ok((last_streamed.clone(), collected_refs));
+                    }
+                }
+            }
+            // 轮首活体信号：上一轮 bot-tool-done 之后到本轮首个 delta 之间是第二段
+            // 空窗（LLM 首 token 延迟，无工具行可挂）。发一条 running 让前端知道
+            // 「模型正在想」，配 turn 计数与已用时长的秒级刷新。
+            if let Some(cb) = deps.turn_status {
+                cb(
+                    TurnStatus::Running,
+                    &format!("正在思考 · 第 {} 轮", round + 1),
+                );
+            }
+            // 请求段：装配 body → 发请求 → 失败重试/降级（见 request_round）。
+            let resp =
+                match request_round(http, &mut msgs, &mut plan, stop, deps, &mut tool_msg_ages)
+                    .await?
+                {
+                    RequestOutcome::Response(r) => r,
+                    RequestOutcome::Stopped => {
+                        let hint = skill_finish(false, "用户停止");
+                        return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                    }
+                };
 
-        // 流消费：逐 chunk 解析 SSE → 正文 / 工具调用 / 思考块（见 stream_round）。
-        let sse = read_sse_stream(
-            http,
-            resp,
-            stop,
-            deps,
-            expecting_selfcheck,
-            expecting_final_selfcheck,
-        )
-        .await?;
-        let rs = stream_round(sse, deps, expecting_selfcheck, expecting_final_selfcheck)?;
-        if rs.stopped {
-            let hint = skill_finish(false, "用户停止");
-            return Ok((
-                format!("{}\n\n⏹ 已停止{hint}", rs.final_text),
-                collected_refs,
-            ));
-        }
-        let mut final_text = rs.final_text;
-        let tool_calls = rs.tool_calls;
-        let thinking_blocks = rs.thinking_blocks;
-        let last_finish_reason = rs.last_finish_reason;
+            // 流消费：逐 chunk 解析 SSE → 正文 / 工具调用 / 思考块（见 stream_round）。
+            let sse = read_sse_stream(
+                http,
+                resp,
+                stop,
+                deps,
+                expecting_selfcheck,
+                expecting_final_selfcheck,
+            )
+            .await?;
+            let rs = stream_round(sse, deps, expecting_selfcheck, expecting_final_selfcheck)?;
+            if rs.stopped {
+                let hint = skill_finish(false, "用户停止");
+                return Ok((
+                    format!("{}\n\n⏹ 已停止{hint}", rs.final_text),
+                    collected_refs,
+                ));
+            }
+            let mut final_text = rs.final_text;
+            let tool_calls = rs.tool_calls;
+            let thinking_blocks = rs.thinking_blocks;
+            let last_finish_reason = rs.last_finish_reason;
 
-        if tool_calls.is_empty() {
-            match finalize_without_tools(
+            if tool_calls.is_empty() {
+                match finalize_without_tools(
+                    &mut msgs,
+                    &mut mutation_done,
+                    &mut claim_retry_used,
+                    &mut fabrication_notice,
+                    &receipts,
+                    &evidence,
+                    &written_paths,
+                    &mut session_tools_cache,
+                    &mut function_calls_total,
+                    &mut last_selfcheck_round,
+                    &mut pending_selfcheck,
+                    &mut expecting_selfcheck,
+                    &mut expecting_final_selfcheck,
+                    &mut final_selfcheck_snapshot,
+                    &mut last_final_selfcheck_round,
+                    &mut late_verdict_retries,
+                    &mut length_continuations,
+                    &mut length_prefix,
+                    &mut final_text,
+                    deps,
+                    stop,
+                    round,
+                    &thinking_blocks,
+                    &last_finish_reason,
+                )
+                .await?
+                {
+                    FinalizeOutcome::Continue => continue,
+                    FinalizeOutcome::Proceed => {}
+                    FinalizeOutcome::Stopped(msg) => {
+                        return Ok((msg, collected_refs));
+                    }
+                }
+                let _ = skill_finish(true, "");
+                collected_refs = merge_task_refs_dedup(collected_refs);
+                let mut answer = if length_prefix.is_empty() {
+                    final_text.clone()
+                } else {
+                    format!("{length_prefix}{final_text}")
+                };
+                // 幻觉守卫返工后仍编造：把更正挂在终稿末尾（不删原文——谎话已经
+                // 流出去了，删掉它只会让用户更信那句假的）。前端收尾时用本返回值
+                // 覆盖流式气泡，所以这行更正会落到用户眼前的那一份文本上。
+                if let Some(notice) = &fabrication_notice {
+                    answer.push_str("\n\n⚠️ ");
+                    answer.push_str(notice);
+                }
+                // L6 post_turn 钩子层：回合收尾、答案定稿（终稿自检已还原、
+                // 长度续跑已拼好）之后、回灌与 emit 之前。
+                // 与 L5 同理：放这里意味着钩子看到并能改的，就是用户真正会看到的
+                // 那一份文本。/stop 的早退出口（「⏹ 已停止」占位）不走本层——
+                // 那是系统占位串不是模型回复，钩子对它做归档/沉淀没有意义。
+                {
+                    let run = crate::bot::hooks::registry().run_post_turn(
+                        stop.session_id(),
+                        &mut answer,
+                        round,
+                    );
+                    for f in &run.failures {
+                        let (kind, err) = match &f.kind {
+                            crate::bot::hooks::HookFailureKind::Returned(e) => {
+                                ("returned_err", e.as_str())
+                            }
+                            crate::bot::hooks::HookFailureKind::Panic(e) => ("panic", e.as_str()),
+                        };
+                        audit(
+                            crate::audit::AuditLevel::Warn,
+                            "post_turn.hook_failed",
+                            vec![
+                                ("hook", f.hook.to_string()),
+                                ("kind", kind.to_string()),
+                                ("err", err.to_string()),
+                                ("round", round.to_string()),
+                            ],
+                        );
+                    }
+                }
+                return Ok((answer, collected_refs));
+            }
+
+            match dispatch_round(
+                &execute_tool,
+                &replan,
                 &mut msgs,
-                &mut mutation_done,
-                &mut claim_retry_used,
-                &mut fabrication_notice,
-                &receipts,
-                &evidence,
-                &written_paths,
-                &mut session_tools_cache,
+                &final_text,
+                &tool_calls,
+                &thinking_blocks,
+                &mut collected_refs,
                 &mut function_calls_total,
-                &mut last_selfcheck_round,
-                &mut pending_selfcheck,
+                &mut mutation_done,
+                &mut receipts,
+                &mut evidence,
+                &mut written_paths,
                 &mut expecting_selfcheck,
+                &mut pending_selfcheck,
                 &mut expecting_final_selfcheck,
                 &mut final_selfcheck_snapshot,
-                &mut last_final_selfcheck_round,
-                &mut late_verdict_retries,
-                &mut length_continuations,
-                &mut length_prefix,
-                &mut final_text,
+                &mut last_selfcheck_round,
+                &mut last_failed_tool,
+                &mut last_fail_reason,
+                &mut consec_failures,
+                &mut fail_hint_queued,
+                &mut replan_exhausted_logged,
+                &mut soft_warn_sent,
+                &mut soft_warn_queued,
+                &mut tool_msg_ages,
+                fuse_cap,
+                soft_warn_at,
+                plan_state.as_deref_mut(),
                 deps,
                 stop,
                 round,
-                &thinking_blocks,
-                &last_finish_reason,
             )
             .await?
             {
-                FinalizeOutcome::Continue => continue,
-                FinalizeOutcome::Proceed => {}
-                FinalizeOutcome::Stopped(msg) => {
+                DispatchOutcome::Continue => {}
+                DispatchOutcome::Stopped(msg) => {
+                    return Ok((msg, collected_refs));
+                }
+                DispatchOutcome::Fused(msg) => {
+                    body_outcome = Some("tool_fuse");
                     return Ok((msg, collected_refs));
                 }
             }
-            let _ = skill_finish(true, "");
-            collected_refs = merge_task_refs_dedup(collected_refs);
-            let mut answer = if length_prefix.is_empty() {
-                final_text.clone()
-            } else {
-                format!("{length_prefix}{final_text}")
-            };
-            // 幻觉守卫返工后仍编造：把更正挂在终稿末尾（不删原文——谎话已经
-            // 流出去了，删掉它只会让用户更信那句假的）。前端收尾时用本返回值
-            // 覆盖流式气泡，所以这行更正会落到用户眼前的那一份文本上。
-            if let Some(notice) = &fabrication_notice {
-                answer.push_str("\n\n⚠️ ");
-                answer.push_str(notice);
-            }
-            // L6 post_turn 钩子层：回合收尾、答案定稿（终稿自检已还原、
-            // 长度续跑已拼好）之后、回灌与 emit 之前。
-            // 与 L5 同理：放这里意味着钩子看到并能改的，就是用户真正会看到的
-            // 那一份文本。/stop 的早退出口（「⏹ 已停止」占位）不走本层——
-            // 那是系统占位串不是模型回复，钩子对它做归档/沉淀没有意义。
-            {
-                let run = crate::bot::hooks::registry().run_post_turn(
-                    stop.session_id(),
-                    &mut answer,
-                    round,
-                );
-                for f in &run.failures {
-                    let (kind, err) = match &f.kind {
-                        crate::bot::hooks::HookFailureKind::Returned(e) => {
-                            ("returned_err", e.as_str())
-                        }
-                        crate::bot::hooks::HookFailureKind::Panic(e) => ("panic", e.as_str()),
-                    };
-                    audit(
-                        crate::audit::AuditLevel::Warn,
-                        "post_turn.hook_failed",
-                        vec![
-                            ("hook", f.hook.to_string()),
-                            ("kind", kind.to_string()),
-                            ("err", err.to_string()),
-                            ("round", round.to_string()),
-                        ],
-                    );
-                }
-            }
-            return Ok((answer, collected_refs));
-        }
-
-        match dispatch_round(
-            &execute_tool,
-            &replan,
-            &mut msgs,
-            &final_text,
-            &tool_calls,
-            &thinking_blocks,
-            &mut collected_refs,
-            &mut function_calls_total,
-            &mut mutation_done,
-            &mut receipts,
-            &mut evidence,
-            &mut written_paths,
-            &mut expecting_selfcheck,
-            &mut pending_selfcheck,
-            &mut expecting_final_selfcheck,
-            &mut final_selfcheck_snapshot,
-            &mut last_selfcheck_round,
-            &mut last_failed_tool,
-            &mut last_fail_reason,
-            &mut consec_failures,
-            &mut fail_hint_queued,
-            &mut replan_exhausted_logged,
-            &mut soft_warn_sent,
-            &mut soft_warn_queued,
-            &mut tool_msg_ages,
-            fuse_cap,
-            soft_warn_at,
-            plan_state.as_deref_mut(),
-            deps,
-            stop,
-            round,
-        )
-        .await?
-        {
-            DispatchOutcome::Continue => {}
-            DispatchOutcome::Stopped(msg) => {
-                return Ok((msg, collected_refs));
-            }
-            DispatchOutcome::Fused(msg) => {
-                body_outcome = Some("tool_fuse");
-                return Ok((msg, collected_refs));
-            }
-        }
-        // 轮数软警告：同样推迟到本轮 tool 响应全部回填后再注入（上面的 400 教训）。
-        // 剩最后一两轮时模型往往已经在连发工具调用——此刻不喊，它就只能撞熔断。
-        let rounds_left = max_rounds.saturating_sub(round + 1);
-        if !rounds_warn_sent && rounds_left <= max_rounds.saturating_sub(rounds_warn_at) {
-            rounds_warn_sent = true;
-            msgs.push(serde_json::json!({
-                "role": "user",
-                "content": format!(
-                    "【系统提示】对话已进行 {} / {max_rounds} 轮，最多还能跑 {rounds_left} 轮。请立刻停止展开新步骤：把已经拿到的结果整理出来收尾——子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。"
-                    , round + 1
-                ),
-            }));
-            audit(
-                crate::audit::AuditLevel::Info,
-                "rounds_soft_warn",
-                vec![
-                    ("round", (round + 1).to_string()),
-                    ("max_rounds", max_rounds.to_string()),
-                    ("left", rounds_left.to_string()),
-                ],
+            // 轮末软警告：轮数与墙钟各提醒一次（见 inject_soft_warnings）。
+            inject_soft_warnings(
+                deps,
+                &mut msgs,
+                &mut rounds_warn_sent,
+                &mut wall_warn_sent,
+                max_rounds,
+                rounds_warn_at,
+                round,
             );
+            // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
+            last_streamed = final_text.clone();
+            // 轮数自报：1-based 累计，「轮」的唯一口径来源。
+            // 报在轮末，轮数熔断（自然落出循环）因此能报满 max_rounds；早返回出口
+            // （已停止 / Skill 收尾 / 单轮熔断）在轮中 return，漏报它们所在那轮——
+            // 那些都是「没跑完的一轮」，不上报反而更贴近真实完成量。
+            (deps.on_round)(round + 1);
         }
-        // 软墙钟：剩余进入收尾预留窗口 → 提醒一次，让模型停止展开新步骤、
-        // 把已经拿到的结果整理成收尾 JSON（子 agent 按任务包装末尾的 schema）。
-        //
-        // 与轮数软警告同一位置注入（tool 响应全部回填之后）：此刻模型才看得见
-        // 新消息，提前注入会被当成上一轮的工具结果丢掉。
-        //
-        // 只提醒一次：反复刷同一条提醒只会挤占上下文，不会让模型更急着收尾。
-        if let Some(wb) = deps.wall_budget {
-            if !wall_warn_sent && wb.in_reserve() {
-                wall_warn_sent = true;
-                let remaining = wb.remaining().as_secs();
-                msgs.push(serde_json::json!({
-                    "role": "user",
-                    "content": format!(
-                        "【系统提示】时间预算即将耗尽（剩余约 {remaining} 秒，收尾预留窗口 {} 秒）：立刻停止展开新步骤——把已经拿到的结果整理出来收尾，子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。",
-                        wb.reserve.as_secs()
-                    ),
-                }));
-                audit(
-                    crate::audit::AuditLevel::Info,
-                    "wall_soft_warn",
-                    vec![
-                        ("remaining_secs", remaining.to_string()),
-                        ("reserve_secs", wb.reserve.as_secs().to_string()),
-                    ],
-                );
-            }
-        }
-        // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
-        last_streamed = final_text.clone();
-        // 轮数自报：1-based 累计，「轮」的唯一口径来源。
-        // 报在轮末，轮数熔断（自然落出循环）因此能报满 max_rounds；早返回出口
-        // （已停止 / Skill 收尾 / 单轮熔断）在轮中 return，漏报它们所在那轮——
-        // 那些都是「没跑完的一轮」，不上报反而更贴近真实完成量。
-        (deps.on_round)(round + 1);
-    }
-    // 轮数熔断补审计（单轮工具熔断已有 fuse 日志，对称留痕）
-    let hint = skill_finish(false, "对话轮数超限");
-    // 出口与单轮 Function 熔断同源：返回 Ok 并带上熔断前的正文，不做裸 Err。
-    // 早返回出口（已停止 / Skill 收尾 / 单轮熔断）都保正文，只有这里把正文连同
-    // 已跑完的那十几轮一起丢掉——子 agent 收不到收尾 JSON 时 result_json 写 NULL，
-    // 父 agent 回灌拿不到任何 summary，20 轮产出归零。熔断语义不靠返回类型表达
-    // （主聊天与子 agent 的下游处理不同），靠正文里的 ROUNDS_FUSE_MARKER 认。
-    let fuse = CommandError::Internal(format!("对话轮数超限{hint}"));
-    let mut kv = crate::audit::error_kv(&fuse);
-    kv.push(("max_rounds", max_rounds.to_string()));
-    // partial_chars：熔断时带回了多少正文。恒为 0 说明模型全程只发工具调用、
-    // 没说一个字——那是子任务派发卡本身写歪了（该写 objective 的没写），信号留痕备用。
-    kv.push(("partial_chars", last_streamed.chars().count().to_string()));
-    audit(crate::audit::AuditLevel::Warn, "fuse_rounds", kv);
-    body_outcome = Some("fused");
-    Ok((
-        rounds_fuse_message(&last_streamed, &hint, max_rounds),
-        collected_refs,
-    ))
+        // 轮数熔断补审计（单轮工具熔断已有 fuse 日志，对称留痕）
+        body_outcome = Some("fused");
+        Ok((
+            rounds_fuse_exit(deps, &last_streamed, max_rounds),
+            collected_refs,
+        ))
     }
     .await;
     // 回合状态收口：出口 → 状态。settling 在正文定稿后、收尾自检之前发，
@@ -2702,6 +2635,114 @@ where
             }));
     }
     Ok(DispatchOutcome::Continue)
+}
+
+/// 墙钟熔断检查（轮边界）：期限已到就在这里退出，**带上上一轮的正文**。
+///
+/// 为什么不交给外层的 tokio::timeout：timeout 掐掉整条 future 时，
+/// 正在跑的工具、已经说出口的正文、已落盘的产物全悬空——子 agent 跑
+/// 了几十分钟的产出归零，父 agent 只能从零重烧。轮边界退出与轮数熔断
+/// 同款：熔断是一种「设计好的落地」，不是失败。
+///
+/// 返回 Some(正文) = 墙钟熔断，调用方按熔断出口返回；None = 预算还在。
+fn check_fuses(deps: &ModelLoopDeps<'_>, last_streamed: &str, round: usize) -> Option<String> {
+    let wb = deps.wall_budget?;
+    if !wb.expired() {
+        return None;
+    }
+    let hint = (deps.skill_finish)(false, "墙钟预算超限");
+    let kv: Vec<(&str, String)> = vec![
+        ("max_wall_seconds", wb.max_wall_seconds.to_string()),
+        ("round", round.to_string()),
+        ("partial_chars", last_streamed.chars().count().to_string()),
+    ];
+    (deps.audit)(crate::audit::AuditLevel::Warn, "fuse_wall", kv);
+    Some(wall_fuse_message(last_streamed, &hint, wb.max_wall_seconds))
+}
+
+/// 轮末软警告注入：轮数软警告 + 墙钟软警告。
+///
+/// 两条都在「本轮 tool 响应全部回填之后」注入：此刻模型才看得见新消息，
+/// 提前注入会被当成上一轮的工具结果丢掉。
+fn inject_soft_warnings(
+    deps: &ModelLoopDeps<'_>,
+    msgs: &mut Vec<serde_json::Value>,
+    rounds_warn_sent: &mut bool,
+    wall_warn_sent: &mut bool,
+    max_rounds: usize,
+    rounds_warn_at: usize,
+    round: usize,
+) {
+    let audit = deps.audit;
+    // 轮数软警告：同样推迟到本轮 tool 响应全部回填后再注入（上面的 400 教训）。
+    // 剩最后一两轮时模型往往已经在连发工具调用——此刻不喊，它就只能撞熔断。
+    let rounds_left = max_rounds.saturating_sub(round + 1);
+    if !*rounds_warn_sent && rounds_left <= max_rounds.saturating_sub(rounds_warn_at) {
+        *rounds_warn_sent = true;
+        msgs.push(serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "【系统提示】对话已进行 {} / {max_rounds} 轮，最多还能跑 {rounds_left} 轮。请立刻停止展开新步骤：把已经拿到的结果整理出来收尾——子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。"
+                    , round + 1
+                ),
+            }));
+        audit(
+            crate::audit::AuditLevel::Info,
+            "rounds_soft_warn",
+            vec![
+                ("round", (round + 1).to_string()),
+                ("max_rounds", max_rounds.to_string()),
+                ("left", rounds_left.to_string()),
+            ],
+        );
+    }
+    // 软墙钟：剩余进入收尾预留窗口 → 提醒一次，让模型停止展开新步骤、
+    // 把已经拿到的结果整理成收尾 JSON（子 agent 按任务包装末尾的 schema）。
+    //
+    // 与轮数软警告同一位置注入（tool 响应全部回填之后）：此刻模型才看得见
+    // 新消息，提前注入会被当成上一轮的工具结果丢掉。
+    //
+    // 只提醒一次：反复刷同一条提醒只会挤占上下文，不会让模型更急着收尾。
+    if let Some(wb) = deps.wall_budget {
+        if !*wall_warn_sent && wb.in_reserve() {
+            *wall_warn_sent = true;
+            let remaining = wb.remaining().as_secs();
+            msgs.push(serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "【系统提示】时间预算即将耗尽（剩余约 {remaining} 秒，收尾预留窗口 {} 秒）：立刻停止展开新步骤——把已经拿到的结果整理出来收尾，子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。",
+                    wb.reserve.as_secs()
+                ),
+            }));
+            audit(
+                crate::audit::AuditLevel::Info,
+                "wall_soft_warn",
+                vec![
+                    ("remaining_secs", remaining.to_string()),
+                    ("reserve_secs", wb.reserve.as_secs().to_string()),
+                ],
+            );
+        }
+    }
+}
+
+/// 轮数熔断出口：落审计 + 带正文返回。
+///
+/// 出口与单轮 Function 熔断同源：返回 Ok 并带上熔断前的正文，不做裸 Err。
+/// 早返回出口（已停止 / Skill 收尾 / 单轮熔断）都保正文，只有这里把正文连同
+/// 已跑完的那十几轮一起丢掉——子 agent 收不到收尾 JSON 时 result_json 写 NULL，
+/// 父 agent 回灌拿不到任何 summary，20 轮产出归零。熔断语义不靠返回类型表达
+/// （主聊天与子 agent 的下游处理不同），靠正文里的 ROUNDS_FUSE_MARKER 认。
+fn rounds_fuse_exit(deps: &ModelLoopDeps<'_>, last_streamed: &str, max_rounds: usize) -> String {
+    let hint = (deps.skill_finish)(false, "对话轮数超限");
+    let fuse = CommandError::Internal(format!("对话轮数超限{hint}"));
+    let mut kv = crate::audit::error_kv(&fuse);
+    kv.push(("max_rounds", max_rounds.to_string()));
+    // partial_chars：熔断时带回了多少正文。恒为 0 说明模型全程只发工具调用、
+    // 没说一个字——那是子任务派发卡本身写歪了（该写 objective 的没写），信号留痕备用。
+    kv.push(("partial_chars", last_streamed.chars().count().to_string()));
+    (deps.audit)(crate::audit::AuditLevel::Warn, "fuse_rounds", kv);
+    rounds_fuse_message(last_streamed, &hint, max_rounds)
 }
 
 /// 无工具轮收尾判决的出口。
