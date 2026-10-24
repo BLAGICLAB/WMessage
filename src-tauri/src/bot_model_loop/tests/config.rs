@@ -4,6 +4,7 @@
 //! 只把源码守卫的扫描源换成 prod_src()。
 
 use super::*;
+use crate::bot_model_loop::request::build_request_body;
 
 #[cfg(test)]
 mod inference_param_tests {
