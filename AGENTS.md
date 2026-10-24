@@ -19,6 +19,7 @@
 - `docs/realmachine-overflow-test.md` — 实机验收方案：工具大结果溢出回灌（边界三连 / 指针读回 / 保留期清扫 / 转存失败兜底）
 - `docs/SUBAGENT-HANDOFF-BUDGET-REDESIGN-2026-10-23.md` — 子 agent ↔ 主 agent 衔接与墙钟治理改造方案（预算单一钳制 / 软墙钟收尾窗 / 熔断留产 / 收尾契约三段修复 / digest 补渲染）；含业界口径、不做清单、偏离登记
 
+- `docs/SUBAGENT-EFFICIENCY-TRANSPARENCY-DESIGN-2026-10-24.md` — 子 agent 效率与透明度改造方案（待拍板）：小文件一次读完红线 / 预算触顶收尾窗只拒读放行写 / read_own_card 实时余量 / usage 记账 / 右侧栏动作流实时上屏；实机账 = PPT 素材稿 100 调用零产出案例
 - `docs/MCP-ON-DEMAND-LIFECYCLE-DESIGN-2026-10-24.md` — MCP 外部服务器按需启停方案（静默待命 / 调用期拉起 / 调用完回收 / 工具清单落盘解耦可见性）+ 业界口径调研（VS Code autostart、mcp-proxy lazy、rho lazy）+ 踩坑记录
 - `docs/SKILL-ENABLE-TOGGLE-DESIGN-2026-10-24.md` — 技能启用开关方案（拨杆 UI / 状态写技能自身 frontmatter 的 enabled 键 / 关掉即三闸全拦 / 内置技能跨版本保留禁用态）+ 业界口径调研（Claude Code 的 frontmatter 属性与 skillOverrides、VS Code 1.109 同源）+ 踩坑记录
 ## 命令
