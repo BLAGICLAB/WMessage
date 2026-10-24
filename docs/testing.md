@@ -49,7 +49,7 @@ bash scripts/test-all.sh   # pre-push 自动跑：nextest 全量 + vitest + 一�
 分项：
 
 ```bash
-cd src-tauri && cargo test --lib          # Rust lib 单测（当前 1965 例）
+cd src-tauri && cargo test --lib          # Rust lib 单测（当前 1984 例）
 npm test                                  # 前端 vitest（当前约 1050 例，100 文件）
 cargo test --test llm_integration         # 集成：mock LLM 全链路
 cargo test --test task_chat_exec          # 集成：任务卡执行聊天化
@@ -57,6 +57,20 @@ cargo test --test skill_e2e               # 集成：Skill DSL 端到端
 cargo test --test memory_v2_degraded      # 集成：记忆体 v2 降级模式
 cargo test --lib memory::embed -- --ignored   # bge 模型真实推理冒烟（需仓库根 bge-small-zh-v1.5/）
 ```
+
+## Windows 发版前最低验证
+
+自动化测试平时只在 macOS 跑，Windows 行为靠实机 W 卡手测兜底。发 Windows 包之前，
+在 Windows 实机上按此最低口径过一遍，结果回填当次发版记录：
+
+1. **测试全量**：`cargo nextest`（或 `cargo test`）跑一遍——平台相关用例按既有
+   `#[cfg]` / skip 语义跳过是预期，**不许出现红的**（Windows 上没判 ≠ 没事，
+   见 procs 的 Unsupported 口径）。
+2. **冒烟子集**：realmachine 方案的 Windows 专章（当前 W04–W06）逐卡跑；上一版
+   修过 Windows 专属行为的，先跑复验手册点名的卡再跑其余。
+3. 不设 CI：单人项目无自托管 Windows runner，不为验证口径上云；口径本身只约束
+   「出包前」，不出包不触发。
+
 
 ## 一致性对拍（tests-audit/，已在 test-all.sh 门禁内）
 
