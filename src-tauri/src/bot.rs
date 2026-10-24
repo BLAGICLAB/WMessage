@@ -29,48 +29,59 @@
 //! `crate::bot_chat::` / `crate::bot_model_loop::` 这类深层路径只供 bot 族
 //! 内部互引（族内免迁移），族外一律先在这里 re-export 再引用——
 //! 同一条目只留一条合法路径，新代码不必猜该走哪条。
-pub use crate::bot_chat::{BotChatResult, ChatMsg, TaskRef};
-// 记忆整理要拿对话摘要来做合并——chat 侧只此一项跨族调用。
-pub(crate) use crate::bot_chat::summarize_messages;
-// 逐步执行要自己拼上下文并驱动一轮模型循环：任务卡渲染块、产物目录规则、
-// 技能提示段、执行闸、任务归属标记、轮数上限都在这一面取。
-pub(crate) use crate::bot_chat::{build_task_block, gen_dir_rule, set_bot_assigned, ExecGuard};
-pub use crate::bot_model_loop::run_model_loop;
-pub(crate) use crate::bot_model_loop::DEFAULT_MAX_ROUNDS;
-// 技能提示段：逐步执行的上下文里要带上当前技能说明。
-pub use crate::bot_model_loop::{
-    accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk, run_model_loop_core,
-    shared_llm_client, LlmHttp, ModelLoopDeps, ToolCallDelta, TurnStatus,
+pub use crate::bot_chat::{BotChatResult, ChatMsg, TaskExecOrigin, TaskRef};
+// 记忆整理要拿对话摘要来做合并；逐步执行要自己拼上下文、挂执行闸、
+// 标记任务归属——chat 侧只对外转出这五个。
+pub(crate) use crate::bot_chat::{
+    build_task_block, gen_dir_rule, set_bot_assigned, summarize_messages, ExecGuard,
 };
-pub use crate::bot_skills::build_skill_block;
+pub use crate::bot_model_loop::{
+    accumulate_tool_call_delta, drain_sse_lines, noop_replan, parse_sse_chunk, run_model_loop,
+    run_model_loop_core, shared_llm_client, LlmHttp, LoopTrace, ModelLoopDeps, ToolCallDelta,
+    TurnStatus,
+};
+// 逐步执行的轮数上限（取参数表里的默认值）。
+pub(crate) use crate::bot_model_loop::DEFAULT_MAX_ROUNDS;
 // bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
-pub use crate::bot_slash::StopGuard;
-// 停止令牌：执行侧（py 子进程 / 桌面自动化 / 编排器）与运行期状态都要用。
-pub use crate::bot_slash::StopToken;
+pub use crate::bot_slash::{StopGuard, StopToken};
 // 危险操作确认的回执类型——只有跑 bot 流程的模块需要拿到它。
 pub(crate) use crate::bot_slash::ConfirmReply;
-// 产物登记行类型 + 技能运行态：运行期状态（AppState）与产物登记都指着它们。
-pub use crate::bot_artifacts::RegisteredArtifact;
-pub use crate::bot_skills::SkillRun;
-// 任务执行来源标记（对话内 / 任务卡 / 逐步执行）——工具侧的归属判定要用。
-pub use crate::bot_chat::TaskExecOrigin;
-// 单轮 trace 统计：trace 落盘侧要读它。
-pub use crate::bot_model_loop::LoopTrace;
-// 文件读上限与带权限的路径解析：读盘类工具（OCR / AST / 溢出兜底）共用。
-pub use crate::bot_fs::resolve_with_perm;
+// bot_fs 模块私有，但集成测试要模拟「工具写盘并带回凭证」——凭证的**存在**
+// 是幻觉守卫「这个路径是工具产物吗」那道判据的依据，测试得能造一个。
+pub use crate::bot_fs::{resolve_with_perm, FileChangeReceipt};
+// 文件读上限、内容哈希与 diff 生成：trace 侧与读盘类工具共用。
 pub(crate) use crate::bot_fs::{build_unified_diff, sha256_hex, READ_MAX_BYTES};
-// 定时任务的时间解析与表达式校验：调度与通知侧共用。
+// 技能提示段与运行态：逐步执行要拼技能上下文，退出清理要判技能是不是还在跑。
+pub use crate::bot_skills::{build_skill_block, SkillRun, SkillState};
+// 技能运行态的测试夹具：退出清理用例要造一个「在跑的技能」再验它被终止。
+#[cfg(test)]
+pub(crate) use crate::bot_skills::{
+    test_insert_skill_run, test_remove_skill_run, test_skill_run_state,
+};
+// 定时任务的三个命令 + 时间解析与表达式校验：调度与通知侧共用。
+//
+// 命令宏的产物（__cmd__ / __tauri_command_name__）也得跟着转出：generate_handler
+// 按「路径所在模块」找这两个隐藏项——命令本体转走而宏产物留在原地，handler 侧
+// 就找不到入口了（bot/config 的命令是同一套做法）。
+pub use crate::bot_scheduler::{
+    __cmd__schedule_overview, __cmd__schedule_set_enabled, __cmd__scheduled_job_fire,
+    __tauri_command_name_schedule_overview, __tauri_command_name_schedule_set_enabled,
+    __tauri_command_name_scheduled_job_fire, schedule_overview, schedule_set_enabled,
+    scheduled_job_fire,
+};
 pub(crate) use crate::bot_scheduler::{resolve_local, validate_schedule};
+// 产物登记行类型：运行期状态与产物登记都指着它。
+pub use crate::bot_artifacts::RegisteredArtifact;
+// 退出标记复位：退出清理用例跑完要把 EXITING 复位，否则后续测试被误拒。
+#[cfg(test)]
+pub use crate::bot_py::reset_exiting_for_test;
 // 同上：audit 模块私有，ModelLoopDeps.audit 回调签名里的 AuditLevel 在 tests/
 // 不可命名，测试构造 deps 需要它公开。
 pub use crate::audit::AuditLevel;
 // 同上：db 模块私有，tests/skill_e2e.rs 的调度器 e2e 用真实 upsert/load 验证
 // persist_outcome 注入闭包的落库载荷（临时库文件）。
 pub use crate::db::{load_all_skill_outcomes, upsert_skill_outcome, PersistedSkillOutcome};
-// 同上：bot_fs 模块私有，但集成测试要模拟「工具写盘并带回凭证」——凭证的**存在**
-// 是幻觉守卫「这个路径是工具产物吗」那道判据的依据，测试得能造一个。
-pub use crate::bot_fs::FileChangeReceipt;
 
 // 子模块声明
 pub mod compaction;

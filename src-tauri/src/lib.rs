@@ -731,9 +731,9 @@ pub fn run() {
             crate::apps::commands::apps_versions_list,
             crate::apps::commands::apps_version_restore,
             crate::apps::commands::apps_open_output,
-            crate::bot_scheduler::schedule_overview,
-            crate::bot_scheduler::schedule_set_enabled,
-            crate::bot_scheduler::scheduled_job_fire,
+            crate::bot::schedule_overview,
+            crate::bot::schedule_set_enabled,
+            crate::bot::scheduled_job_fire,
             crate::db::schedule_jobs::scheduled_job_create,
             crate::db::trace::trace_list,
             crate::db::trace::trace_detail,
@@ -1075,11 +1075,7 @@ mod exit_cleanup_tests {
         }
         // mock 一个活动 Skill（Paused：terminate_all 覆盖 Running+Paused；
         // 不用 Running 是避免污染并行测试的 is_skill_active 全局断言）
-        crate::bot_skills::test_insert_skill_run(
-            &handle,
-            "p2-24-skill",
-            crate::bot_skills::SkillState::Paused,
-        );
+        crate::bot::test_insert_skill_run(&handle, "p2-24-skill", crate::bot::SkillState::Paused);
         // 模拟「API 开启中退出」：enabled flag 存在（api_start 成功后会写）
         let dir = crate::db::data_dir(&handle);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1090,7 +1086,7 @@ mod exit_cleanup_tests {
         // 退出清理必须置位在途执行实例（含后台 interactive=false）的停止标志
         // 停止表随 AppState，本用例注入独立实例（下面 cleanup_on_exit_with
         // 用的是同一 handle → 同一实例，断言口径不变）
-        let exec_guard = crate::bot_slash::StopGuard::new(&handle, false, None);
+        let exec_guard = crate::bot::StopGuard::new(&handle, false, None);
         // kill fn 注入 spy：全局 kill_all 会误杀并行测试注册的在途子进程，
         // 真杀路径由 bot_py::kill_py_children 单测覆盖
         let kill_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1127,8 +1123,8 @@ mod exit_cleanup_tests {
         );
         // Skill 已终止
         assert_eq!(
-            crate::bot_skills::test_skill_run_state(&handle, "p2-24-skill"),
-            Some(crate::bot_skills::SkillState::Terminated),
+            crate::bot::test_skill_run_state(&handle, "p2-24-skill"),
+            Some(crate::bot::SkillState::Terminated),
             "活动 Skill 应被终止"
         );
         // enabled flag 保留：退出路径区别于用户主动 api_stop（下次启动自动恢复）
@@ -1142,10 +1138,10 @@ mod exit_cleanup_tests {
 
         // 收尾：清掉本测试在数据目录产生的文件与 Skill run，不污染其他测试
         let _ = std::fs::remove_file(&flag);
-        crate::bot_skills::test_remove_skill_run(&handle, "p2-24-skill");
+        crate::bot::test_remove_skill_run(&handle, "p2-24-skill");
         // 复位 EXITING——否则本进程后续任何走生产 run_python() 的
         // 测试都会被「应用正在退出」误拒
-        crate::bot_py::reset_exiting_for_test();
+        crate::bot::reset_exiting_for_test();
     }
 }
 
