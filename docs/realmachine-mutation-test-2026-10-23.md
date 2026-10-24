@@ -1098,7 +1098,7 @@ git checkout -- src-tauri/src/bot_ui.rs
 
 **靶点**：`src-tauri/src/intent_router.rs::explicit_name_pattern`；`src-tauri/src/bot_skills/manage.rs::intent_rules_from_dirs`（提交 `708507bc`）
 
-**bug 形态**：用户发 `用 PPT-craft-master 技能做PPT`。修复前路由表只认 frontmatter 的 `intents` 正则，先命中先赢。内置 `pptx-design` 的 intents 里有一条 `"PPT"` 正则 → **先命中** → **启错技能**。后果链：模型只能中途 `use_skill` 切换 → 而切换路径**正是「技能刚加载就断」的事故现场**。
+**bug 形态**：用户发 `用 PPT-craft-master 技能做PPT`。修复前路由表只认 frontmatter 的 `intents` 正则，先命中先赢。某个 intents 里含 `"PPT"` 正则的技能 → **先命中** → **启错技能**。后果链：模型只能中途 `use_skill` 切换 → 而切换路径**正是「技能刚加载就断」的事故现场**。
 
 次生 bug：没有声明 `intents` 的技能**根本无法被点名**；第三个边界 bug：裸名字匹配会让 `my-ppt-craft-master` 命中 `ppt-craft-master`（子串误命中）。
 
@@ -1106,7 +1106,7 @@ git checkout -- src-tauri/src/bot_ui.rs
 
 **步骤**：
 
-1. 前置：已安装一个**名字带 `-` 或 `_`** 的技能（例 `ppt-craft-master`）；另有一个 intents 含 `"PPT"` 的技能（例内置 `pptx-design`）。
+1. 前置：已安装一个**名字带 `-` 或 `_`** 的技能（例 `ppt-craft-master`）；另有一个 intents 含 `"PPT"` 的技能（**内置 `pptx-design` 已于 2026-10-24 退役**——自建一个只含 `intents: ["PPT"]` 的最小技能即可，下文称「PPT-intent 技能」）。
 2. 发：`用 ppt-craft-master 技能做PPT`
 3. 大小写变体：`用 PPT-Craft-Master 技能做个 PPT`
 4. **对照组（必做）**：`做个PPT`
@@ -1114,9 +1114,9 @@ git checkout -- src-tauri/src/bot_ui.rs
 
 **判据**：
 
-- 第 2/3 步 PASS：bot.log 的 `skill.start` 审计事件 `name=ppt-craft-master`（**不是** `pptx-design`）；路由审计行 `action=skill` / `detail=ppt-craft-master`。
-- 第 2 步 FAIL：`skill.start` 的 `name=pptx-design` → 点名被 intent 截胡。
-- 第 4 步 PASS：这次命中 `pptx-design`（intent 正则仍工作）。**若对照组也命中 `ppt-craft-master` → 点名规则写太松（误命中）**。
+- 第 2/3 步 PASS：bot.log 的 `skill.start` 审计事件 `name=ppt-craft-master`（**不是**那个 PPT-intent 技能）；路由审计行 `action=skill` / `detail=ppt-craft-master`。
+- 第 2 步 FAIL：`skill.start` 的 `name` 是那个 PPT-intent 技能 → 点名被 intent 截胡。
+- 第 4 步 PASS：这次命中那个 PPT-intent 技能（intent 正则仍工作）。**若对照组也命中 `ppt-craft-master` → 点名规则写太松（误命中）**。
 - 第 5 步 PASS：**不**命中 `ppt-craft-master`（名字前后是名字字符时不算点名）。
 
 **变异注入复验**：

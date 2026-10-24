@@ -346,6 +346,8 @@ src-tauri/src/
 ├── bot_skills/builtin.rs        内置技能预装：`assets/skills/` include_bytes! 烘进二进制，启动时
 │                                物化到 builtin_skills/（与用户 skills 同父不同名，导入/删除语义互不干扰）；
 │                                物化幂等（Seeded/Updated/Unchanged）；覆盖时保留用户关掉的开关；
+│                                资产清单当前为空（pptx-design 已退役）——启动时先清退役副本
+│                                （物化目录里不在清单中的子目录全删，否则残留副本=删不掉的僵尸技能）；
 │                                搜索优先级：用户 > 内置 > dev mock
 ├── bot_skills/files.rs          open_file_path/delete_bound_file 路径白名单校验（防 XSS→RCE）
 │
