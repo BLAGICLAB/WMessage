@@ -283,7 +283,7 @@ print("A" * 8191, end="")
 
 | 层 | 位置 | 钳在 | 口径 |
 |---|---|---|---|
-| 字节层 | `py/runtime.rs:762` `read_capped_drain(OUTPUT_CAP + 1024)` | 66560 | 字节 |
+| 字节层 | `py/runtime.rs:900/:915` `read_capped_drain(OUTPUT_CAP + 1024)` | 66560 | 字节 |
 | 字符层 | `py/io.rs:101` `truncate_output` | 65536 + 9 字符截断标记 = **65545** | 字符 |
 
 所以 `print("B" * 200000, end="")` 的真实结果是 **65545 字符**，不是 200000。

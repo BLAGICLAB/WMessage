@@ -494,7 +494,7 @@ powershell -ExecutionPolicy Bypass -File $PS locate -ExeDir $PKG
 > 2. 审计里应当**没有** `service.listening_sample_failed`。**有 = FAIL**。
 >
 > **2026-10-22 实机结果：PASS。** `svc_24426226`（pid 12624）运行中 **19 分 51 秒**（远超巡检周期），面板只有一行，审计里没有 `service.listening_sample_failed`。
-> 原因是 `enforce_listening_gate` 开头就有平台守卫（`services.rs:639-643`），Windows 上整轮巡检直接返回，**走不到**唯一那个 `note_sample_status` 调用点（`services.rs:667`）→ `LAST_SAMPLE_OK` 保持初值 `true`。
+> 原因是 `enforce_listening_gate` 开头就有平台守卫（`services.rs:639-643`），Windows 上整轮巡检直接返回，**走不到**唯一那个 `note_sample_status` 调用点（`services.rs:670`）→ `LAST_SAMPLE_OK` 保持初值 `true`。
 > （我一度只读了采样函数的返回值、没读守卫，判成 FAIL——见附录 D-3 的否证记录。**这条现在是有据可查的 PASS，不是「没验」。**）
 
 **这条不能省**：Windows 上「闸不生效」是**已知降级**，但「明说自己不生效」是**必须**的——否则用户会以为端口闸在保护他。
@@ -525,7 +525,7 @@ powershell -ExecutionPolicy Bypass -File $PS locate -ExeDir $PKG
 >
 > 这和上面 MCP 面板那两行是**同一个 P2-4 口径的两半**——MCP 面板明说「显示为空不代表没占用」，本地服务面板却把同一个空值当成了「0 MB」这个事实。**两块面板互相矛盾。**
 >
-> **同一个根因还有第二个后果**：内存阈值告警（`total_rss >= RSS_TOTAL_WARN_BYTES`，`services.rs:1712`）在 0 上恒为 false → **「合计内存超阈值」在 Windows 上永远不会触发**——既「空值被当成事实」，又「真正的边界静默失效」，正是 P2-4 要防的那一类。
+> **同一个根因还有第二个后果**：内存阈值告警（`total_rss >= RSS_TOTAL_WARN_BYTES`，`services.rs:2241`）在 0 上恒为 false → **「合计内存超阈值」在 Windows 上永远不会触发**——既「空值被当成事实」，又「真正的边界静默失效」，正是 P2-4 要防的那一类。
 
 > **macOS 上这两行不该出现**（两个能力标志都为 true）。所以**这一项在 macOS 上验不了**——它是 Windows 专属验证点。
 
@@ -612,7 +612,7 @@ host pids        = 12345
 > | 实机结果 | 含义 | 日志里能看到线索吗 |
 > |---|---|---|
 > | **服务跟着死了**（PASS） | Job Object 生效，兜底成立 | — |
-> | **服务还在**（FAIL） | 两个静默失败点之一：① `create_kill_on_close()` 失败 → `attach` 返回 `None`；② `AssignProcessToJobObject` 失败 → 服务压根没进 job | **看不到**。`services.rs:1184` 的 `watchdog::attach(&id, pgid, &child);` **把返回值扔了**，`py/runtime.rs:142` 的 `let _ = AssignProcessToJobObject(...)` 也扔了——两处都没有日志、都没有审计 |
+> | **服务还在**（FAIL） | 两个静默失败点之一：① `create_kill_on_close()` 失败 → `attach` 返回 `None`；② `AssignProcessToJobObject` 失败 → 服务压根没进 job | **看不到**。`services.rs:1186` 的 `watchdog::attach(&id, pgid, &child);` **把返回值扔了**，`py/runtime.rs:142` 的 `let _ = AssignProcessToJobObject(...)` 也扔了——两处都没有日志、都没有审计 |
 >
 > **所以 FAIL 时不要去日志里找「看门狗失败」**——找不到，因为压根没记。**上报材料就是「宿主已被强杀 + 服务进程仍在 + 日志里没有任何相关事件」这个组合。** 那一刻还叠加了「安全边界静默失效且不留痕」，跟 P1-1 的主线是同一类。
 
@@ -2374,11 +2374,11 @@ fn enforce_listening_gate(app) {
     }
     …
     let sample = listening_sockets(&all_pids);
-    note_sample_status(app, sample.complete);     // services.rs:667：在守卫**之后**
+    note_sample_status(app, sample.complete);     // services.rs:670：在守卫**之后**
 }
 ```
 
-`note_sample_status` 全仓**只有一个调用点**（`services.rs:667`），而它在守卫之后 → Windows 上**永不执行** → `LAST_SAMPLE_OK` 保持初值 `true` → `listeningSampleOk: true` → 面板第二个条件（`listeningSampleOk === false`）不成立。
+`note_sample_status` 全仓**只有一个调用点**（`services.rs:670`），而它在守卫之后 → Windows 上**永不执行** → `LAST_SAMPLE_OK` 保持初值 `true` → `listeningSampleOk: true` → 面板第二个条件（`listeningSampleOk === false`）不成立。
 
 **为什么当时没看出来**：「Windows 分支返回 `complete=false`」这件事本身是**真的**——启动期路径 `services.rs:499`（`check_service_listening` → `listening_sockets(&tree)`，`tree` 永远含根 pid）就走得到；`judge_sockets`（`services.rs:332`）看到 `!listening_supported() || !sample_complete` → 判成 `Unsupported` → 不处置、不审计、**不杀进程**（实机也印证了：那个绑 `0.0.0.0` 的服务一直活着）。错的只是我把它当成了「采样结果被上报」的路径。
 
@@ -2418,7 +2418,7 @@ let alive = entry.lock().map(|s| s.state == ServiceState::Starting).unwrap_or(fa
 
 曾怀疑：就绪检查要求 `state == Starting`，若状态先转成 `Running` 就会判 `ready=false` → 误报「未就绪」并把好服务杀掉。
 
-**已排除**：`guard.state = ServiceState::Running` 写在 `services.rs:1321`，**位于就绪检查之后**，所以检查时刻状态只可能是 `Starting` / `Exited` / `Failed`。无误杀风险。
+**已排除**：`guard.state = ServiceState::Running` 写在 `services.rs:1309`，**位于就绪检查之后**，所以检查时刻状态只可能是 `Starting` / `Exited` / `Failed`。无误杀风险。
 
 > **别和 D-6 搞混**：这一条说的是「**没有 readyPattern** 时走的存活检查」。带 `readyPattern` 时是**另一条**路径（就绪超时），那条路径**确实会把好服务杀掉**——超时即收是设计如此——但它**报出来的文案是错的**，见下面 D-6。
 
@@ -2461,9 +2461,9 @@ if let Err(e) = stop_entry(app, &entry, reason) { … }   // 1245：先杀
 let exited_early = entry.lock().map(|s| s.state == ServiceState::Exited) …  // 1262：后读
 ```
 
-`stop_entry` 成功返回后，状态**必然**是 `Exited`（`stop_tree` → watcher 收尸 → `services.rs:1194` 置 `Exited`；`stop_entry` 自己在 `services.rs:1552-1556` 也会兜底置 `Exited`）→ `exited_early` **恒为 true** → 永远走「启动后立即退出」分支。
+`stop_entry` 成功返回后，状态**必然**是 `Exited`（`stop_tree` → watcher 收尸 → `services.rs:1196` 置 `Exited`；`stop_entry` 自己在 `services.rs:1559` 之后 stop 段也会兜底置 `Exited`）→ `exited_early` **恒为 true** → 永远走「启动后立即退出」分支。
 
-**其二：上游根本没有能力区分**。`wait_ready_pattern`（`services.rs:1340-1384`）只返回 `bool`，把「超时 / 进程自己退了 / 正则不合法」三种退出原因**压成一个 false** 交上去。
+**其二：上游根本没有能力区分**。`wait_ready_pattern`（`services.rs:1479` 起）只返回 `bool`，把「超时 / 进程自己退了 / 正则不合法」三种退出原因**压成一个 false** 交上去。
 
 **两条分支的话都不对，而且正好反了**：
 
@@ -2471,7 +2471,7 @@ let exited_early = entry.lock().map(|s| s.state == ServiceState::Exited) …  //
 |---|---|---|---|
 | 服务自己死了（真·立即退出） | `stop_entry` 命中 `already_exited` → 状态保持 `Exited` → `exited_early=true` | 「启动后立即退出（退出码 N）」 | ✅ 对，N 是服务自己的码 |
 | **ready 超时**（服务活着，被我们杀掉） | `stop_entry` 成功 → 状态变 `Exited` → `exited_early=true` | 「启动后立即退出（退出码 N）」 | ❌ **错**，N 是 taskkill 的码 |
-| **停不掉**（stop 失败，进程还在跑） | `stop_entry` 返回 Err → `restore_state` 把状态放回 `Starting`（`services.rs:1592-1597`）→ `exited_early=false` | 「在 Ns 内未就绪，**已停止**」 | ❌ **错**，进程还在，「已停止」是假的 |
+| **停不掉**（stop 失败，进程还在跑） | `stop_entry` 返回 Err → `restore_state` 把状态放回 `Starting`（`services.rs:1731`）→ `exited_early=false` | 「在 Ns 内未就绪，**已停止**」 | ❌ **错**，进程还在，「已停止」是假的 |
 
 第三行最讽刺：**唯一能说出「未就绪」的分支，恰恰是服务没被停掉的那一条**。
 
@@ -2531,13 +2531,13 @@ let exited_early = entry.lock().map(|s| s.state == ServiceState::Exited) …  //
 **根因**（五段各自都「说得通」，接起来才出事）：
 
 1. `bot/procs.rs:275-283`：Windows 上没有 `ps`，`Command::new("ps").output()` 起不来 → `return Vec::new()` → **进程快照是空表**。
-2. `bot/services.rs:1823-1828`：`sweep_round` 里的 `sample_resources(app)` **没有平台守卫**（隔壁的 `enforce_listening_gate` 有，`services.rs:639`）→ 照常跑，照常采到空表。
-3. `bot/services.rs:1710`：`u.total_rss_bytes = total_rss`（= 0）。
-4. `bot/services.rs:2091-2102`：`services_snapshot_json` 输出 `totalRssMb: 0`，但**只带** `listeningSupported` / `listeningSampleOk` 两个能力标志——`snapshot_supported()` 压根没被输出。
+2. `bot/services.rs:1969-1971`：`sweep_round` 里的 `sample_resources(app)` **没有平台守卫**（隔壁的 `enforce_listening_gate` 有，`services.rs:641`）→ 照常跑，照常采到空表。
+3. `bot/services.rs:1857`：`u.total_rss_bytes = total_rss`（= 0）。
+4. `bot/services.rs:2258`：`services_snapshot_json` 输出 `totalRssMb: 0`，但**只带** `listeningSupported` / `listeningSampleOk` 两个能力标志——`snapshot_supported()` 压根没被输出。
    > **对照 MCP 那一侧**：`bot/mcp/commands.rs:260` 就老老实实算了 `let resource_supported = crate::bot::procs::snapshot_supported();`，并塞进 `McpServerStatus`（`commands.rs:223`，序列化成 camelCase 的 `resourceSupported`）。**同一个标志，MCP 面板有、本地服务面板没有**——P2-4 那次只改了一半。
 5. `ServicesPanel.tsx:52-64` + `:155`：`ServicesSnapshot` 类型里**没有**资源采集能力字段（`types.ts:158` 那两个字段属于 MCP 的 caps 类型），前端**无从判断**这个 0 是「没占用」还是「采不到」→ 无条件渲染「合计内存 {totalRssMb} MB」。
 
-**第二个后果（比显示错更严重）**：`services.rs:1712` 的 `total_rss >= RSS_TOTAL_WARN_BYTES` 在 0 上**恒为 false** → 「全部服务合计内存超阈值」这条**安全阈值在 Windows 上永远不会触发**。
+**第二个后果（比显示错更严重）**：`services.rs:2241` 的 `total_rss >= RSS_TOTAL_WARN_BYTES` 在 0 上**恒为 false** → 「全部服务合计内存超阈值」这条**安全阈值在 Windows 上永远不会触发**。
 
 也就是说这里有**两个方向都不可信**：既把「空」当成「0」报给用户，又让真正的超阈值**静默失效**——而后者正是 P2-4 要防的那一类。
 
