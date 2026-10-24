@@ -8305,3 +8305,47 @@ W 序列跑完、三个真缺陷修掉之后，下一批是 S 序列 18 项。�
 `mcp.builtin_materialized` 记的包路径在本机存不存在：地面真相，不是猜。② 复验手册
 §1.1 指的那份 `wmessage.exe` 随 `src-tauri/target/` 整个清掉了，照旧 SHA256 去核对
 会直接扑空——改成给重建命令。手册里留着一个指不到的产物，等于第一步就卡住。
+
+## 技能启用开关：状态写进技能自己的 frontmatter，不另开状态表
+
+**为什么换方向**：`enabled` 字段一直有，但没有入口——想关掉一个技能只能自己去
+技能目录手改 `SKILL.md` 的 frontmatter。用户不知道在哪改、不知道改没改生效（要重启
+才看得出），更不敢关：技能清单每轮都进系统提示词，混着根本用不上的技能纯属白吃
+token。Claude Code 为这件事专门做了 `/skill-doctor`，列出「从没被调用过」的技能并
+告诉用户该去关哪个——**大厂把「关技能」当成正经的上下文治理动作**，我们缺的就是
+那个开关。
+
+**业界口径（这轮调研的收获）**：Claude Code 现行 skills 文档给了两条路——路 A 是
+frontmatter 属性（`disable-model-invocation: true` 原文「removes the skill from
+Claude's context entirely」；`user-invocable: false` 是「用户不能调、模型仍能调」的
+分身态）；路 B 是设置里的 `skillOverrides` 覆盖表（四态 `on` / `name-only` /
+`user-invocable-only` / `off`，`/skills` 菜单选中按 Space 循环态写进
+`.claude/settings.local.json`）。VS Code 1.109（2026-01）同源：技能接成斜杠命令，
+用 `user-invocable` / `disable-model-invocation` 两个 frontmatter 属性控制可见性与
+可调用性。共同点：**开关状态默认跟技能文件走**，关掉的语义是「从模型上下文里消失」
+而不只是「调不动」。
+
+**这次换的口径**：① 设置页每条技能最右一个拨杆（按钮后不跟文字解释，解释走悬停
+tooltip），关掉的整行置灰；② 状态写进技能自身 frontmatter 的 `enabled` 键；
+③ 关掉即不可用——清单过滤、意图路由、启动预审三道既有闸本就以 `meta.enabled` 为准，
+这次只补「写路径」，闸一行没改；④ 落盘目标是生效副本（按 `skill_search_paths`
+优先级取第一份存在的 SKILL.md，与读取侧同口径）；⑤ 内置技能跨版本保留禁用态——
+应用升级触发物化覆盖时，磁盘副本里显式声明的 `enabled: false` 保留。
+
+**为什么不做路 B（另开状态表）**：路 B 的适用场景文档写得很清楚——「技能在共享
+仓库里、不该被本地改」。我们的技能全是应用本地副本（用户导入的在内置物化目录
+旁，用户装的在 app_data_dir/skills），这条理由不成立；更麻烦的是双事实源：frontmatter
+一个 `enabled`、设置表一个覆盖值，用户手改 SKILL.md 时不知道该改哪一份，两份漂移
+后表现为「我明明关掉了它还在」。路 B 的中间态（`name-only` / `user-invocable-only`）
+在本项目也没有对应需求——本项目只有「模型能不能用」一个维度。
+
+**踩到的坑**：① BOM 不能用 `strip_prefix` 取——它返回的是**剩余部分**不是匹配的前缀，
+必须单独判再手工接回，否则 BOM 文件的 frontmatter 坐标整体错位一格；② 重复的
+`enabled` 键要改**最后一个**——解析器逐行赋值、同名键后者覆盖前者，改第一个等于
+改了那个不生效的键（开关点了没反应），源文件里本来就存在过两个 `enabled`；
+③ 多行块的续行不是顶层键（`intents:` / `params:` / `allowed-tools:` 的空值形式吞掉
+后续 `- ` 行），把 `allowed-tools` 里的工具名当 `enabled` 改掉 = 改坏了技能；
+④ 解析器不剥行尾注释，`enabled: false  # 关闭原因` 会被读成 `true`——只能整行替换；
+⑤ 意图路由是进程级缓存，改完必须重建，否则关掉的技能仍产路由条目、继续劫持用户
+消息；⑥ 写完必须能被解析器读回目标值，读不回就不写——写一份「开关点了没反应」的
+技能比报错更糟。

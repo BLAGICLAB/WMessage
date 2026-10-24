@@ -815,6 +815,7 @@ pub fn run() {
             bot_skills::skills_list,
             bot_skills::skills_import,
             bot_skills::skills_delete,
+            bot_skills::skills_set_enabled,
             bot_skills::skills_open_dir,
             bot_onions::onions_list,
             bot_onions::onions_import,

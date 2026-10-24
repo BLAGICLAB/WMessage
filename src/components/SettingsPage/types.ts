@@ -71,6 +71,8 @@ export type SkillOutcome = {
 export type SkillInfo = {
   name: string;
   description: string;
+  /** frontmatter enabled：关掉后技能不进清单、模型不可调用（缺省 = 启用） */
+  enabled?: boolean;
   lastOutcome?: SkillOutcome | null;
   /** frontmatter version（可选） */
   version?: string | null;

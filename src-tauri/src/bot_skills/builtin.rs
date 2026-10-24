@@ -4,11 +4,13 @@
 //! `builtin_skills/`（与用户 skills 目录同父、不同名，导入/删除语义互不干扰）。
 //! 物化幂等规则：目录缺失 → Seeded；磁盘版本 ≠ 内置版本 → Updated（覆盖）；
 //! 相同 → Unchanged（版本不变时保留用户对物化副本的本地修改）。
+//! 覆盖时仍保留用户在设置页关掉的开关（磁盘副本显式 `enabled: false`）——
+//! 应用升级不该把用户手动禁用的技能重新打开。
 //! 搜索优先级（`skill_search_paths`）：用户 skills > builtin_skills > dev mock——
 //! 用户导入同名副本时自然压过内置版；删除内置副本后运行期内不复活，
 //! 应用更新带新版本号时重新物化。
 
-use super::parse::parse_meta;
+use super::parse::{frontmatter_enabled_declared, parse_meta, set_frontmatter_enabled};
 use tauri::Manager;
 
 pub struct BuiltinSkill {
@@ -66,8 +68,8 @@ fn materialize_one(dir: &std::path::Path, skill: &BuiltinSkill) -> SeedOutcome {
     // 兄弟临时文件 + rename 覆盖：裸 fs::write 原地 truncate，中断留截断 SKILL.md
     // （dest 要么完整旧版要么完整新版）。tmp 在技能目录内，扫描只认 SKILL.md，不碍事。
     let tmp = dest_dir.join(".SKILL.md.tmp");
-    let write_result =
-        std::fs::write(&tmp, skill.content).and_then(|()| std::fs::rename(&tmp, &dest));
+    let content = materialize_content(&dest, existed, skill.content);
+    let write_result = std::fs::write(&tmp, content).and_then(|()| std::fs::rename(&tmp, &dest));
     if write_result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -75,6 +77,33 @@ fn materialize_one(dir: &std::path::Path, skill: &BuiltinSkill) -> SeedOutcome {
         Ok(()) if existed => SeedOutcome::Updated,
         Ok(()) => SeedOutcome::Seeded,
         Err(e) => SeedOutcome::Failed(format!("write: {e}")),
+    }
+}
+
+/// 物化内容 = 内置资产字节，或「保留用户显式关闭」后的字节。
+///
+/// 应用升级带来新版本时物化会覆盖磁盘副本——用户在设置页手动关掉的技能
+/// 会「自己又开了」。磁盘副本里显式声明 `enabled: false` = 用户的手动决定，
+/// 必须跨版本保留；未声明（None）= 用户没表态，跟随资产默认值。
+///
+/// 只保留 `false` 不保留 `true`：资产默认恒为启用（`builtin_assets_parse_clean`
+/// 锁死），保留 `true` 与跟随资产等价，多写一份状态只会多一个漂移源。
+fn materialize_content(dest: &std::path::Path, existed: bool, bundled: &[u8]) -> Vec<u8> {
+    if !existed {
+        return bundled.to_vec();
+    }
+    let Ok(old) = std::fs::read_to_string(dest) else {
+        return bundled.to_vec();
+    };
+    if frontmatter_enabled_declared(&old) != Some(false) {
+        return bundled.to_vec();
+    }
+    let Ok(text) = std::str::from_utf8(bundled) else {
+        return bundled.to_vec();
+    };
+    match set_frontmatter_enabled(text, false) {
+        Some(t) => t.into_bytes(),
+        None => bundled.to_vec(),
     }
 }
 
@@ -271,6 +300,66 @@ mod tests {
                 .unwrap()
                 .contains("PPT 设计规范"),
             "应覆盖为内置新版"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 应用升级（内置版本变化）不得把用户手动关掉的技能重新打开：
+    /// 磁盘副本显式 `enabled: false` → 物化新版内容时保留关闭态。
+    #[test]
+    fn keeps_user_disabled_flag_across_version_bump() {
+        let root = temp_root("seed-keep-disabled");
+        materialize_builtin_skills(&root);
+        let dest = skill_md(&root);
+        // 用户在设置页关掉内置技能（frontmatter 改写）
+        let text = std::fs::read_to_string(&dest).unwrap();
+        let off = super::super::parse::set_frontmatter_enabled(&text, false).unwrap();
+        std::fs::write(&dest, off).unwrap();
+        // 磁盘版本落后 → 触发覆盖式物化（版本号取自资产，勿硬编码）
+        let version = bundled_version(&BUILTIN_SKILLS[0]).unwrap_or_default();
+        std::fs::write(
+            &dest,
+            std::fs::read_to_string(&dest)
+                .unwrap()
+                .replace(&format!("version: {version}"), "version: 0.0.1"),
+        )
+        .unwrap();
+        let out = materialize_builtin_skills(&root);
+        assert!(matches!(out[0].1, SeedOutcome::Updated), "out: {out:?}");
+        let after = std::fs::read_to_string(&dest).unwrap();
+        assert!(after.contains("PPT 设计规范"), "应覆盖为内置新版内容");
+        assert!(
+            !parse_meta(&after, "pptx-design").enabled,
+            "用户关掉的技能不得被应用升级重新打开"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// 磁盘副本没声明 enabled（用户没表态）→ 跟随资产默认值，不擅自写状态。
+    #[test]
+    fn follows_asset_default_when_user_never_toggled() {
+        let root = temp_root("seed-follow-default");
+        materialize_builtin_skills(&root);
+        let dest = skill_md(&root);
+        // 去掉 enabled 键 + 改版本号，模拟「用户没动过开关的旧副本」
+        let version = bundled_version(&BUILTIN_SKILLS[0]).unwrap_or_default();
+        let text = std::fs::read_to_string(&dest).unwrap();
+        let stripped: String = text
+            .lines()
+            .filter(|l| !l.starts_with("enabled:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(
+            &dest,
+            stripped.replace(&format!("version: {version}"), "version: 0.0.1"),
+        )
+        .unwrap();
+        let out = materialize_builtin_skills(&root);
+        assert!(matches!(out[0].1, SeedOutcome::Updated), "out: {out:?}");
+        let after = std::fs::read_to_string(&dest).unwrap();
+        assert!(
+            parse_meta(&after, "pptx-design").enabled,
+            "未表态时跟随资产默认（启用）"
         );
         std::fs::remove_dir_all(&root).ok();
     }

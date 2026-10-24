@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 160 个文件、约 12.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 160 个文件、约 12.2 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1190)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1191)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -326,7 +326,8 @@ src-tauri/src/
 │                        大图先查长度再流式读，边读边计数（超限即中止）
 │─ 技能系统 bot_skills/（技能 = 数据目录 skills/<name>/SKILL.md，YAML frontmatter）
 ├── bot_skills/mod.rs            门面：全量 re-export 子模块
-├── bot_skills/parse.rs          SKILL.md frontmatter/正文解析 → SkillMeta（mode/intents/steps）
+├── bot_skills/parse.rs          SKILL.md frontmatter/正文解析 → SkillMeta（mode/intents/steps）；
+│                                兼 frontmatter 写侧（enabled 键改写，与解析器同口径）
 ├── bot_skills/state.rs          SkillRun 运行实例 + 状态机
 │                                （Loaded/Running/Paused/Finished/Failed/Terminated）、
 │                                SKILL_RUNS 表（已迁 app_state::AppState，访问器需 AppHandle）
@@ -336,7 +337,8 @@ src-tauri/src/
 ├── bot_skills/scheduler.rs      DSL 步骤调度器 run_skill_scheduler + DslOutcome
 │                                （Done/AwaitUser/FailedButRecoverable → LLM 兜底）
 ├── bot_skills/vars.rs           步骤变量替换（${stepN.field} / ${prev…} 嵌套路径）
-├── bot_skills/manage.rs         技能安装/列表/删除，路由表重建触发点
+├── bot_skills/manage.rs         技能安装/列表/删除/启停（enabled 落盘到生效副本的 SKILL.md），
+│                                路由表重建触发点
 ├── bot_skills/remote.rs         远程技能源：install_skill（GitHub 仓库 / 腾讯 SkillHub / zip 直链 →
 │                                下载 → 解包 → 定位 SKILL.md → 落盘 + 重建路由）与 search_skills
 │                                （SkillHub 公开搜索 API）；下载走公网闸逐跳校验重定向，解包复用

@@ -1,6 +1,6 @@
 use super::parse::{
-    parse_meta, parse_skill_steps, strip_frontmatter, unknown_tool_names, SkillMeta,
-    SKILL_NAME_CHARS_OK,
+    parse_meta, parse_skill_steps, set_frontmatter_enabled, strip_frontmatter, unknown_tool_names,
+    SkillMeta, SKILL_NAME_CHARS_OK,
 };
 use crate::error::{CommandError, CommandResult};
 use serde::Serialize;
@@ -110,6 +110,18 @@ pub(crate) fn skill_search_paths<R: tauri::Runtime>(
         }
     }
     paths
+}
+
+/// 生效副本的 SKILL.md 路径：按 `skill_search_paths` 优先级取第一份存在的
+/// `<dir>/<name>/SKILL.md`（与 `state::load_skill_meta` 的 fallback 同口径）。
+///
+/// 写入侧（启停开关）必须用它定位「改的是哪一份」——同名的用户副本压过内置
+/// 物化副本、后者压过 dev mock；改到别的副本会出现「关的是 A、生效的是 B」
+/// （用户点了开关却毫无反应，或关不掉真正生效的那份）。
+fn effective_skill_md(dirs: &[std::path::PathBuf], name: &str) -> Option<std::path::PathBuf> {
+    dirs.iter()
+        .map(|d| d.join(name).join("SKILL.md"))
+        .find(|p| p.is_file())
 }
 
 /// 扫描数据目录 + dev 模式 target/debug/skills 下所有 SKILL.md，返回 (目录名, 名称, 描述) 列表。
@@ -369,6 +381,63 @@ pub fn skills_open_dir(app: AppHandle) -> CommandResult<()> {
     app.opener()
         .open_path(dir.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|e| CommandError::IoError(format!("打开技能目录失败：{e}")))
+}
+
+/// 技能启用开关（设置页拨杆）：把 `enabled` 写进技能自身 SKILL.md 的 frontmatter。
+///
+/// **单一事实源 = frontmatter 的 `enabled` 键**（思路同 VS Code 把技能开关做成
+/// frontmatter 属性）：清单过滤（`build_skill_block`）、意图路由
+/// （`intent_rules_from_dirs`）、启动预审（`runtime::preflight`）三道既有闸
+/// 都以 `meta.enabled` 为准——改一处即全链路生效，不另开状态存储
+/// （两份事实源必然漂移，且用户手改 SKILL.md 时不知道该改哪一份）。
+///
+/// 落盘目标是**生效副本**（`effective_skill_md`）：与读取侧同一份，否则
+/// 「关的是 A、生效的是 B」。
+///
+/// 原子写：同目录 tmp + rename——中途断电不留半份 SKILL.md
+/// （技能文件被截断 = 整个技能失效）。
+#[tauri::command]
+pub fn skills_set_enabled(app: AppHandle, name: String, enabled: bool) -> CommandResult<()> {
+    if let Err(reason) = validate_skill_name(&name) {
+        return Err(CommandError::InvalidArgument {
+            field: "name".into(),
+            value: name,
+            reason,
+        });
+    }
+    let Some(md) = effective_skill_md(&skill_search_paths(&app), &name) else {
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: format!("技能「{name}」不存在（检查设置页技能列表）"),
+        });
+    };
+    write_enabled_to(&md, &name, enabled)?;
+    // 意图路由是进程级缓存：关掉的技能必须立刻从路由表里消失，
+    // 否则用户消息仍会被路由进一个已被禁用的技能。
+    rebuild_intent_routes(&app);
+    crate::audit_event!(
+        &app,
+        crate::audit::AuditLevel::Info,
+        "skill.enabled_changed",
+        "name" => name.clone(),
+        "enabled" => enabled
+    );
+    Ok(())
+}
+
+/// 把 `enabled` 写进指定 SKILL.md（原子写）。抽成独立函数是为了脱离 AppHandle 单测。
+fn write_enabled_to(md: &std::path::Path, name: &str, enabled: bool) -> Result<(), CommandError> {
+    let text = std::fs::read_to_string(md)
+        .map_err(|e| CommandError::IoError(format!("读取 {} 失败：{e}", md.display())))?;
+    // 改写后必须能被 parse_meta 读回目标值，读不回就不写
+    // （写一份「开关点了没反应」的技能比报错更糟）。
+    let Some(rewritten) = set_frontmatter_enabled(&text, enabled) else {
+        return Err(CommandError::DomainRule {
+            domain: "skill".to_string(),
+            reason: format!("技能「{name}」的 frontmatter 改写失败（写回后解析器读不回目标值）"),
+        });
+    };
+    crate::db::paths::atomic_write(md, &rewritten).map_err(CommandError::IoError)
 }
 
 /// 导入源 SKILL.md 字节上限：导入口无上限 read_to_string 会把超大文件整读进内存。
@@ -1428,5 +1497,85 @@ mod tests {
         std::fs::create_dir_all(&missing).unwrap();
         let err = read_import_skill_md(&missing).unwrap_err();
         assert!(err.to_string().contains("SKILL.md"), "got: {err}");
+    }
+
+    // ── 启用开关落盘 ──
+
+    /// 开关写进 SKILL.md 的 frontmatter，且解析器读得回来（关闭 → 不进清单/路由）。
+    #[test]
+    fn write_enabled_to_flips_frontmatter_flag() {
+        let tmp = make_tempdir("set-enabled");
+        let md = tmp.0.join("SKILL.md");
+        std::fs::write(
+            &md,
+            "---\nname: s1\ndescription: d\nversion: 1.0.0\n---\n# 正文\n",
+        )
+        .unwrap();
+        write_enabled_to(&md, "s1", false).unwrap();
+        let text = std::fs::read_to_string(&md).unwrap();
+        assert!(!parse_meta(&text, "s1").enabled, "关闭后解析器须读回 false");
+        assert!(text.contains("version: 1.0.0"), "其余 frontmatter 键不得丢");
+        write_enabled_to(&md, "s1", true).unwrap();
+        let text = std::fs::read_to_string(&md).unwrap();
+        assert!(parse_meta(&text, "s1").enabled, "开启后解析器须读回 true");
+    }
+
+    /// 写盘后不得留 tmp 残渣（原子写语义）。
+    #[test]
+    fn write_enabled_to_leaves_no_tmp_residue() {
+        let tmp = make_tempdir("set-enabled-tmp");
+        let md = tmp.0.join("SKILL.md");
+        std::fs::write(&md, "---\nname: s1\ndescription: d\n---\nbody").unwrap();
+        write_enabled_to(&md, "s1", false).unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(&tmp.0)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "不得遗留 tmp 残渣");
+    }
+
+    /// 生效副本 = 优先级最高的那份（用户副本压过内置副本）——
+    /// 写错副本就是「关的是 A、生效的是 B」。
+    #[test]
+    fn effective_skill_md_prefers_earlier_dir() {
+        let tmp = make_tempdir("effective-md");
+        let user = tmp.0.join("user");
+        let builtin = tmp.0.join("builtin");
+        for d in [&user, &builtin] {
+            std::fs::create_dir_all(d.join("s1")).unwrap();
+            std::fs::write(d.join("s1").join("SKILL.md"), "---\nname: s1\n---\n").unwrap();
+        }
+        let picked = effective_skill_md(&[user.clone(), builtin.clone()], "s1").unwrap();
+        assert_eq!(picked, user.join("s1").join("SKILL.md"));
+        // 用户目录没有该技能 → 落到内置副本
+        let picked = effective_skill_md(&[user.clone(), builtin.clone()], "s2");
+        assert!(picked.is_none(), "两边都没有时返回 None");
+    }
+
+    /// 关闭的技能不产出意图路由条目（开关必须真的拦得住路由）。
+    #[test]
+    fn disabled_skill_produces_no_intent_rules() {
+        let tmp = make_tempdir("disabled-routes");
+        let dir = tmp.0.join("skills");
+        std::fs::create_dir_all(dir.join("s1")).unwrap();
+        let md = dir.join("s1").join("SKILL.md");
+        let body = "---\nname: s1\ndescription: d\nintents:\n  - 做PPT\n---\nbody";
+        std::fs::write(&md, body).unwrap();
+        assert!(
+            !intent_rules_from_dirs(std::slice::from_ref(&dir)).is_empty(),
+            "开启时应有路由条目"
+        );
+        write_enabled_to(&md, "s1", false).unwrap();
+        assert!(
+            intent_rules_from_dirs(std::slice::from_ref(&dir)).is_empty(),
+            "关闭后不得产出任何路由条目"
+        );
+        // 清单同样过滤（禁用技能不再被广告给模型）
+        let listed = scan_skill_dirs(&[dir]);
+        assert!(
+            listed.iter().all(|s| !s.enabled),
+            "关闭后清单须标为 disabled"
+        );
     }
 }

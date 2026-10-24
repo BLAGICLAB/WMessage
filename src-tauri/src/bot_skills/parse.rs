@@ -303,6 +303,165 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
     m
 }
 
+/// frontmatter 内容区间（与 parse_meta 的边界判定**同口径**）：
+/// 返回 `(起始字节, 结束字节)`——区间内是首尾 `---` 之间的内容。
+///
+/// **坐标基准 = 传入文本本身**（调用方须传入 BOM 已剥离的文本）。
+/// 与 parse_meta 走完全同一条规则（`strip_prefix("---")` + `find("\n---")`）：
+/// 写入侧与解析侧若用两套边界判定，就会出现「拨杆点了没反应」
+/// （写进去的 `enabled` 落在解析器看不见的地方）。
+///
+/// 只在文本以 `---` 开头时定位——parse_meta 在这种情形下正是这么切的。
+/// 文本不以 `---` 开头时 parse_meta 会退而全文搜 `\n---`（把正文当 frontmatter
+/// 的病态文件），此时本函数返回 None → 走「新建 frontmatter」分支，
+/// 改写后的文件解析器一定看得见 `enabled`。
+fn frontmatter_span(text: &str) -> Option<(usize, usize)> {
+    let body = text.strip_prefix("---")?;
+    let end = body.find("\n---")?;
+    Some((3, 3 + end))
+}
+
+/// 改写 frontmatter 的 `enabled` 键（纯函数，可单测）。
+///
+/// 语义：
+/// - 有 frontmatter 且已声明 `enabled` → 原地改值（整行替换，保留缩进与行尾）
+/// - 有 frontmatter 但未声明 → 在 frontmatter 内容区**最前面**插入 `enabled: true|false`
+/// - 完全没有 frontmatter → 在文件头补一个只含 `enabled` 的 frontmatter
+///   （`name` 仍回退目录名、`description` 仍为空 → 与改写前的解析结果一致）
+///
+/// 整行替换而非只改值：解析器**不剥行尾注释**
+/// （`enabled: false  # 关闭原因` 会被读成 enabled=true——值不是 "false"）。
+/// 留注释 = 开关读不准 → 整行归一反而把值定死。
+///
+/// 收尾自检：改写后的文本必须能被 `parse_meta` 读回目标值，读不回就返回
+/// `None`——宁可不写，也不写一份「开关点了没反应」的技能。
+pub fn set_frontmatter_enabled(text: &str, enabled: bool) -> Option<String> {
+    // BOM 先剥离：parse_meta 也是先剥 BOM 再认 frontmatter，坐标须同基准。
+    // 剥下的 BOM 在最后原样接回（带 BOM 的文件 frontmatter 会整体静默丢失，
+    // 但那是既有解析行为，写入侧不该顺手改变文件编码）。
+    //
+    // strip_prefix 返回的是**剩余部分**而非匹配的前缀 → BOM 本身要单独取。
+    let had_bom = text.starts_with('\u{feff}');
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let key_line = format!("enabled: {}", if enabled { "true" } else { "false" });
+
+    let rewritten = match frontmatter_span(body) {
+        Some((start, end)) => {
+            let fm = &body[start..end];
+            let new_fm = match last_enabled_line(fm) {
+                // 改值：保留原行缩进与行尾，其余字节原样
+                Some(range) => {
+                    let orig = &fm[range.clone()];
+                    let lead = orig.len() - orig.trim_start().len();
+                    format!(
+                        "{}{}{}{}",
+                        &fm[..range.start],
+                        &orig[..lead],
+                        key_line,
+                        &fm[range.end..]
+                    )
+                }
+                // 未声明 → 插在 frontmatter 内容区最前面（不落在别的键的续行里）
+                None => insert_enabled_key(fm, &key_line),
+            };
+            format!("{}{}{}", &body[..start], new_fm, &body[end..])
+        }
+        // 无 frontmatter → 补一个只含 enabled 的（解析结果与改写前一致）
+        None => format!("---\n{}\n---\n{}", key_line, body),
+    };
+
+    // 写完必须能被解析器读回目标值
+    if parse_meta(&rewritten, "").enabled != enabled {
+        return None;
+    }
+    Some(if had_bom {
+        format!("\u{feff}{}", rewritten)
+    } else {
+        rewritten
+    })
+}
+
+/// frontmatter 里**最后一个** `enabled` 键所在行的字节区间（不含行尾换行）。
+///
+/// 与 parse_meta **逐行同口径**，两处规则必须一致：
+/// - 键判定：整行 trim 后按首个 ':' 切、键名再 trim（parse_meta 同款）
+/// - 多行块跳过：`intents` / `params` / `allowed-tools` 的空值形式会吞掉后续
+///   `- ` 开头的行，那些行**不是顶层键**（把 `allowed-tools` 里的工具名
+///   当成 enabled 键改掉 = 改坏了技能）
+/// - 取最后一个：parse_meta 逐行赋值，同名键**后者覆盖前者**——改最后一个
+///   才与解析器实际生效的那一个对齐
+fn last_enabled_line(fm: &str) -> Option<std::ops::Range<usize>> {
+    let mut found: Option<std::ops::Range<usize>> = None;
+    let mut offset = 0usize;
+    // 上一行是否开启了「多行块」——块内 `- ` 开头的行不是顶层键
+    let mut in_block = false;
+    for chunk in fm.split_inclusive('\n') {
+        // 行内容不含行尾的 \r / \n（CRLF 也算）
+        let content_len = chunk.trim_end_matches(['\n', '\r']).len();
+        let content = &chunk[..content_len];
+        let trimmed = content.trim();
+        if in_block {
+            if trimmed.starts_with("- ") {
+                offset += chunk.len();
+                continue;
+            }
+            in_block = false;
+        }
+        if let Some((k, v)) = trimmed.split_once(':') {
+            let key = k.trim();
+            // 值去引号（parse_meta 在进 match 前就剥了）后再判空
+            let val = v.trim().trim_matches(['"', '\'']);
+            // 这三个键的空值形式会吞掉后续 `- ` 行（parse_meta 同款）
+            if val.is_empty()
+                && matches!(
+                    key,
+                    "intents" | "params" | "allowed-tools" | "allowed_tools"
+                )
+            {
+                in_block = true;
+            }
+            if key == "enabled" {
+                found = Some(offset..offset + content_len);
+            }
+        }
+        offset += chunk.len();
+    }
+    found
+}
+
+/// 在 frontmatter 里插入 `enabled` 键行（纯函数，可单测）。
+///
+/// 插入点 = frontmatter 内容区（`---` 之后、闭合 `---` 之前）的**最前面**。
+/// 插在末尾会落进别的键的续行里（`intents:` / `params:` / `allowed-tools:`
+/// 的空值形式吞掉后续 `- ` 行），插在中间会劈开某个多行块——都改坏技能。
+///
+/// frontmatter 内容区通常以「`---` 后的换行」开头，插在它之后 = 插在首个键之前；
+/// `---` 与首键粘连（无前导换行）的病态文件则补一个换行再插。
+fn insert_enabled_key(fm: &str, line: &str) -> String {
+    let rest = fm.strip_prefix('\n').unwrap_or(fm);
+    if rest.is_empty() {
+        format!("\n{}", line)
+    } else {
+        format!("\n{}\n{}", line, rest)
+    }
+}
+
+/// frontmatter 里**显式声明**的 `enabled` 值（未声明 → None）。
+///
+/// 与 `parse_meta` 同口径取**最后一个** `enabled` 键（同名键后者覆盖前者）。
+/// 「未声明」与「声明为 true」必须能区分——内置技能物化时要靠这个判断
+/// 「用户是不是手动关过它」（没声明 ≠ 声明 true）。
+pub fn frontmatter_enabled_declared(text: &str) -> Option<bool> {
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let (start, end) = frontmatter_span(body)?;
+    let fm = &body[start..end];
+    let range = last_enabled_line(fm)?;
+    let line = &fm[range];
+    let (_, v) = line.split_once(':')?;
+    let val = v.trim().trim_matches(['"', '\'']).to_ascii_lowercase();
+    Some(!matches!(val.as_str(), "false" | "0" | "no"))
+}
+
 // DSL 解析 + 调度器
 
 /// Skill 步骤（DSL 解析后的结构）
@@ -599,6 +758,143 @@ mod tests {
         let t = "---\nenabled: false\n---\n";
         let m = parse_meta(t, "d");
         assert!(!m.enabled);
+    }
+
+    // ── enabled 键改写（设置页拨杆的落盘内核） ──
+
+    /// 改写后必须能被解析器读回目标值——这是「拨杆点了没反应」的唯一防线。
+    #[test]
+    fn set_enabled_flips_declared_value_and_keeps_other_keys() {
+        let src = "---\nname: demo\ndescription: 演示\nenabled: true\nmode: auto\n---\n正文\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        let m = parse_meta(&out, "demo");
+        assert!(!m.enabled, "关闭后解析器必须读到 false");
+        assert_eq!(m.name, "demo");
+        assert_eq!(m.description, "演示");
+        assert_eq!(m.mode, "auto", "其他键不得被改写波及");
+        assert!(out.contains("正文"), "正文必须原样保留");
+    }
+
+    #[test]
+    fn set_enabled_inserts_key_when_absent() {
+        let src = "---\nname: demo\ndescription: 演示\n---\n正文\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        assert!(!parse_meta(&out, "demo").enabled);
+        assert!(out.contains("enabled: false"), "应插入 enabled 键");
+        assert_eq!(parse_meta(&out, "demo").name, "demo");
+    }
+
+    /// 未声明 enabled 的技能默认是启用的（parse_meta 默认 true），
+    /// 插入不能把「默认启用」误改成「显式禁用」。
+    #[test]
+    fn set_enabled_inserts_true_when_turning_on_undeclared_skill() {
+        let src = "---\nname: demo\n---\n";
+        let out = set_frontmatter_enabled(src, true).expect("应可改写");
+        assert!(parse_meta(&out, "demo").enabled);
+        assert!(out.contains("enabled: true"));
+    }
+
+    /// 完全没有 frontmatter 的文件：补一个只含 enabled 的 frontmatter，
+    /// 其余解析结果（name 回退目录名 / description 空）保持不变。
+    #[test]
+    fn set_enabled_creates_frontmatter_when_absent() {
+        let src = "# 标题\n正文\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        let m = parse_meta(&out, "demo-dir");
+        assert!(!m.enabled);
+        assert_eq!(m.name, "demo-dir", "name 仍回退目录名");
+        assert!(m.description.is_empty(), "description 仍为空");
+        assert!(out.contains("# 标题"), "正文必须原样保留");
+    }
+
+    /// BOM 必须保留：带 BOM 的文件 frontmatter 会整体静默丢失（既有解析行为），
+    /// 写入侧不该顺手把文件的编码改了。
+    #[test]
+    fn set_enabled_preserves_bom() {
+        let src = "\u{feff}---\nname: demo\nenabled: true\n---\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        assert!(out.starts_with('\u{feff}'), "BOM 必须保留");
+        assert!(
+            !parse_meta(&out, "demo").enabled,
+            "BOM 存在时解析器仍须读到 false"
+        );
+    }
+
+    /// CRLF 行尾：改写不得把 \r\n 变成 \n（Windows 上 SKILL.md 是 CRLF 的）。
+    #[test]
+    fn set_enabled_preserves_crlf() {
+        let src = "---\r\nname: demo\r\nenabled: true\r\n---\r\n正文\r\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        assert!(out.contains("\r\n"), "CRLF 行尾必须保留");
+        assert!(!out.contains("\n\n"), "不得混入裸 LF");
+        assert!(!parse_meta(&out, "demo").enabled);
+    }
+
+    /// 解析器不剥行尾注释（`enabled: false  # 关闭原因` 的值不是 "false"
+    /// → 会被读成启用）。整行替换把值定死，不留注释。
+    #[test]
+    fn set_enabled_normalizes_line_with_trailing_comment() {
+        let src = "---\nname: demo\nenabled: true  # 默认开\n---\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        assert!(
+            !parse_meta(&out, "demo").enabled,
+            "带注释的行必须读到 false"
+        );
+        assert!(!out.contains("# 默认开"), "整行替换不保留行尾注释");
+    }
+
+    /// 多行块（intents / params / allowed-tools）的续行不是顶层键——
+    /// 把块内的 `- enabled: xxx` 当成 enabled 键改掉 = 改坏了技能。
+    #[test]
+    fn set_enabled_does_not_touch_multiline_block_items() {
+        let src = "---\nname: demo\nallowed-tools:\n  - enabled\n  - read_file\n---\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        assert!(out.contains("- enabled"), "块内条目不得被改写");
+        assert!(out.contains("- read_file"), "块内条目不得被改写");
+        assert!(!parse_meta(&out, "demo").enabled, "仍须写入顶层 enabled");
+    }
+
+    /// 同名键后者覆盖前者（parse_meta 逐行赋值）→ 改最后一个才与生效值对齐。
+    /// 用缩进区分两个同名键：改错了第一个，结果是「两个 false」；
+    /// 改对了最后一个，结果是「缩进的 true + 平的 false」。
+    #[test]
+    fn set_enabled_targets_the_last_declared_key() {
+        let src = "---\nname: demo\n  enabled: true\nenabled: false\n---\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        assert!(
+            out.contains("  enabled: true\nenabled: false"),
+            "只应改最后一个 enabled 键（前者原样保留），got:\n{out}"
+        );
+        assert!(!parse_meta(&out, "demo").enabled, "最后一个键决定生效值");
+    }
+
+    /// 缩进保留：frontmatter 里的缩进风格不该被改写抹掉。
+    #[test]
+    fn set_enabled_preserves_indentation() {
+        let src = "---\nname: demo\n  enabled: true\n---\n";
+        let out = set_frontmatter_enabled(src, false).expect("应可改写");
+        assert!(out.contains("  enabled: false"), "缩进必须保留");
+        assert!(!parse_meta(&out, "demo").enabled);
+    }
+
+    /// frontmatter_enabled_declared：区分「没声明」与「声明为 true」
+    /// （内置技能物化时据此判断用户是不是手动关过它）。
+    #[test]
+    fn frontmatter_enabled_declared_distinguishes_absent_from_true() {
+        assert_eq!(frontmatter_enabled_declared("---\nname: x\n---\n"), None);
+        assert_eq!(
+            frontmatter_enabled_declared("---\nname: x\nenabled: true\n---\n"),
+            Some(true)
+        );
+        assert_eq!(
+            frontmatter_enabled_declared("---\nname: x\nenabled: false\n---\n"),
+            Some(false)
+        );
+        assert_eq!(
+            frontmatter_enabled_declared("---\nname: x\nenabled: 0\n---\n"),
+            Some(false),
+            "0 / no / false 三种写法都算关闭（与 parse_meta 同口径）"
+        );
     }
 
     #[test]

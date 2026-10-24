@@ -9,6 +9,7 @@ import { FolderInput, FolderOpen, Trash2, Upload } from "lucide-react";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { useConfirm } from "../../lib/useConfirm";
 import { EmptyState } from "../EmptyState";
+import { Toggle } from "../Toggle/Toggle";
 import type { SkillInfo, SkillOutcome, SkillOutcomeKind } from "./types";
 
 /** Skill 状态徽章颜色 + 图标 */
@@ -132,12 +133,30 @@ export function SkillsPanel() {
     }
   };
 
+  /** 启停开关：写进技能自身 SKILL.md 的 frontmatter enabled 键。
+   * 关掉的技能不进机器人清单、也不产意图路由、use_skill 启动即拒。 */
+  const toggleEnabled = async (name: string, enabled: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await invoke("skills_set_enabled", { name, enabled });
+      await refresh();
+    } catch (e) {
+      handleCommandError(e, "skills_set_enabled", { silent: true });
+      setError(formatCommandError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="nm-card p-5">
       <h2 className="text-lg font-semibold text-[var(--t1)]">机器人技能</h2>
       <p className="mt-1 text-xs text-[var(--t5)]">
         技能 = 一个文件夹（SKILL.md +
-        可选脚本）。机器人对话时自动看到技能清单，需要时读取完整文档执行
+        可选脚本）。机器人对话时自动看到技能清单，需要时读取完整文档执行。
+        行尾开关关掉后该技能不进清单，模型看不到也调不到
       </p>
       <div className="mt-3 flex items-center gap-2">
         <button
@@ -172,42 +191,64 @@ export function SkillsPanel() {
         />
       ) : (
         <div className="mt-3 flex flex-col gap-1.5">
-          {skills.map((s) => (
-            <div key={s.name} className="flex items-center gap-2">
-              <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)]">
+          {skills.map((s) => {
+            const isEnabled = s.enabled !== false;
+            return (
+              <div key={s.name} className="flex items-center gap-2">
                 <span
-                  className={`font-medium ${
-                    s.unknownTools?.length
-                      ? "text-[var(--danger)]"
-                      : "text-[var(--t2)]"
+                  className={`min-w-0 flex-1 truncate text-xs ${
+                    isEnabled ? "text-[var(--t3)]" : "text-[var(--t5)]"
                   }`}
-                  title={
-                    s.unknownTools?.length
-                      ? `引用了未内置工具：${s.unknownTools.join("、")}`
-                      : undefined
-                  }
                 >
-                  {s.name}
+                  <span
+                    className={`font-medium ${
+                      s.unknownTools?.length
+                        ? "text-[var(--danger)]"
+                        : isEnabled
+                          ? "text-[var(--t2)]"
+                          : "text-[var(--t5)]"
+                    }`}
+                    title={
+                      s.unknownTools?.length
+                        ? `引用了未内置工具：${s.unknownTools.join("、")}`
+                        : undefined
+                    }
+                  >
+                    {s.name}
+                  </span>
+                  {s.version && (
+                    <span className="text-[var(--t5)]"> v{s.version}</span>
+                  )}
+                  {s.description && (
+                    <span className="text-[var(--t5)]"> — {s.description}</span>
+                  )}
                 </span>
-                {s.version && (
-                  <span className="text-[var(--t5)]"> v{s.version}</span>
-                )}
-                {s.description && (
-                  <span className="text-[var(--t5)]"> — {s.description}</span>
-                )}
-              </span>
-              {s.lastOutcome && <SkillOutcomeBadge outcome={s.lastOutcome} />}
-              <button
-                className="shrink-0 flex items-center text-[var(--t5)] hover:text-[var(--danger)]"
-                onClick={() => removeSkill(s.name)}
-                disabled={busy}
-                aria-label={`删除技能 ${s.name}`}
-                title="删除技能"
-              >
-                <Trash2 size={12} aria-hidden />
-              </button>
-            </div>
-          ))}
+                {s.lastOutcome && <SkillOutcomeBadge outcome={s.lastOutcome} />}
+                <button
+                  className="shrink-0 flex items-center text-[var(--t5)] hover:text-[var(--danger)]"
+                  onClick={() => removeSkill(s.name)}
+                  disabled={busy}
+                  aria-label={`删除技能 ${s.name}`}
+                  title="删除技能"
+                >
+                  <Trash2 size={12} aria-hidden />
+                </button>
+                {/* 启停开关：拨杆形态，解释文字走悬停 tooltip（按钮后不挂文字） */}
+                <Toggle
+                  checked={isEnabled}
+                  disabled={busy}
+                  onChange={(next) => toggleEnabled(s.name, next)}
+                  ariaLabel={`启用技能 ${s.name}`}
+                  title={
+                    isEnabled
+                      ? "已启用：技能进机器人清单，模型可按需读取执行"
+                      : "已停用：技能不进清单，模型看不到也调不到"
+                  }
+                  size="sm"
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
