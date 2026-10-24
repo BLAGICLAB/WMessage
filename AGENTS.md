@@ -30,6 +30,7 @@
 - 全量：`bash scripts/test-all.sh`（pre-push 自动跑：cargo nextest + vitest）
 - Rust 单测：`cd src-tauri && cargo test --lib`；lint：`cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`（**已在快门禁内**；clippy 是唯一能发现「测试压根没被收集运行」的信号，没装 = 门禁失败，不静默 skip）
 - 前端：`npm test`；lint：`npx oxlint src`；类型：`npx tsc --noEmit`
+- 文件行数：`python3 -m pytest tests-audit/audit_file_size.py -q`（已在全量门禁内）
 
 ## 硬性禁令（门禁会拦，人也退）
 
@@ -37,6 +38,7 @@
 - 不吞错误：禁空 catch、禁 `unwrap()`/`expect()` 绕错、禁 `as any` 逃逸类型——要么处理要么上抛。
 - 不留死代码：本次改动孤儿化的函数/导入/依赖随同一提交删除；未要求的无关遗留不顺手重构。
 - 不加投机抽象：trait/中间件/config 开关等，第二个调用方出现前不抽象（YAGNI）。
+- 新文件 ≤1500 行：超了先拆子模块；存量超限文件在 `tests-audit/audit_file_size.py` 的冻结清单里，只许变小不许变大（拆小了就更新清单行数）。
 - 密钥只走系统 keyring / 环境变量，不进源码、不进仓库。
 
 ## 工作方式
