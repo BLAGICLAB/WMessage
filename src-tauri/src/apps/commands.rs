@@ -23,8 +23,12 @@ use crate::py::runtime::resolve_timeout;
 /// 草稿卡带「草稿」徽章可试跑，归档不出现在程序页
 #[tauri::command]
 pub async fn apps_list_active(app: AppHandle) -> CommandResult<Vec<App>> {
-    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    db_apps::list_active_apps(&conn).map_err(CommandError::DbError)
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
+        db_apps::list_active_apps(&conn).map_err(CommandError::DbError)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("程序列表线程 join 失败：{e}")))?
 }
 
 /// 跑一个 app。表单模式把 `params` 传 JSON 串；文件夹模式传 None
@@ -38,9 +42,17 @@ pub struct RunArgs {
 
 #[tauri::command]
 pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResult> {
-    let a = db_apps::get_app(&open_db_or(&app)?, &args.id)
-        .map_err(CommandError::DbError)?
-        .ok_or_else(|| CommandError::TaskNotFound(args.id.clone()))?;
+    let a = {
+        let app2 = app.clone();
+        let id = args.id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            db_apps::get_app(&open_db_or(&app2)?, &id)
+                .map_err(CommandError::DbError)?
+                .ok_or_else(|| CommandError::TaskNotFound(id.clone()))
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("程序读取线程 join 失败：{e}")))?
+    }?;
     // M2 试跑闭环：草稿可运行（AI 创建后用户先试跑再上架）；归档不可运行
     if a.status == mc::STATUS_ARCHIVED {
         return Err(CommandError::InvalidArgument {
@@ -143,9 +155,18 @@ pub async fn apps_create(app: AppHandle, args: CreateArgs) -> CommandResult<App>
 /// 用户主动点击触发，无 LLM 参与——不走 bot 工具的白名单闸。
 #[tauri::command]
 pub async fn apps_open_output(app: AppHandle, id: String) -> CommandResult<String> {
-    db_apps::get_app(&open_db_or(&app)?, &id)
-        .map_err(CommandError::DbError)?
-        .ok_or_else(|| CommandError::TaskNotFound(id.clone()))?;
+    {
+        let app2 = app.clone();
+        let id2 = id.clone();
+        let found = tauri::async_runtime::spawn_blocking(move || {
+            db_apps::get_app(&open_db_or(&app2)?, &id2)
+                .map_err(CommandError::DbError)?
+                .ok_or_else(|| CommandError::TaskNotFound(id2.clone()))
+        })
+        .await
+        .map_err(|e| CommandError::from(format!("程序读取线程 join 失败：{e}")))?;
+        let _ = found?;
+    }
     let dir = apps_runner::app_dir(&app, &id).join("output");
     std::fs::create_dir_all(&dir).map_err(|e| CommandError::DbError(e.to_string()))?;
     use tauri_plugin_opener::OpenerExt;
@@ -158,8 +179,12 @@ pub async fn apps_open_output(app: AppHandle, id: String) -> CommandResult<Strin
 /// 已归档程序列表（程序页「已归档」视图 + 恢复入口）
 #[tauri::command]
 pub async fn apps_list_archived(app: AppHandle) -> CommandResult<Vec<App>> {
-    let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-    db_apps::list_archived_apps(&conn).map_err(CommandError::DbError)
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
+        db_apps::list_archived_apps(&conn).map_err(CommandError::DbError)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("归档列表线程 join 失败：{e}")))?
 }
 
 /// 归档（程序页用户动作；脚本/数据/版本/运行历史原地保留，可恢复）
@@ -211,7 +236,11 @@ pub async fn apps_runs_list(
     app_id: String,
     limit: Option<i64>,
 ) -> CommandResult<Vec<AppRun>> {
-    apps_runner::recent_runs(&app, &app_id, limit.unwrap_or(20)).map_err(CommandError::DbError)
+    tauri::async_runtime::spawn_blocking(move || {
+        apps_runner::recent_runs(&app, &app_id, limit.unwrap_or(20)).map_err(CommandError::DbError)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("运行历史线程 join 失败：{e}")))?
 }
 
 /// 版本快照列表（程序页「版本」页签；新→旧，不含脚本全文防 IPC 大载荷）
@@ -221,9 +250,13 @@ pub async fn apps_versions_list(
     app_id: String,
     limit: Option<i64>,
 ) -> CommandResult<Vec<db_apps::AppVersionMeta>> {
-    let conn = open_db_or(&app)?;
-    db_apps::list_app_version_metas(&conn, &app_id, limit.unwrap_or(100))
-        .map_err(CommandError::DbError)
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db_or(&app)?;
+        db_apps::list_app_version_metas(&conn, &app_id, limit.unwrap_or(100))
+            .map_err(CommandError::DbError)
+    })
+    .await
+    .map_err(|e| CommandError::from(format!("版本列表线程 join 失败：{e}")))?
 }
 
 /// 回滚到历史版本（程序页用户动作）：内容整体回旧版、生命周期状态保留，
