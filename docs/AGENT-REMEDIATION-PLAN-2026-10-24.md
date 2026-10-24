@@ -214,22 +214,29 @@ API 关闭 → 行为与现状一致。
 
 ### 批 5 · 审计 API 收敛（audit_log → audit_event!）
 
-现状：两套 API 写同一个 bot.log——老 free-form `audit_log`
-（bot/config/audit.rs:27，**166 处调用 / 20+ 文件**）与新结构化
-`audit_event!`/`write_event`（audit.rs）；共享 BOT_LOG_LOCK 与转义单源，
-但格式两套、解析端靠前缀区分（audit.rs 头注释自认迁移态）。
+> **落地状态（2026-10-24）**：核心目标已达成，落地形态与原案有两处偏离（见 §七）。
+> ① **桥接收敛**（645a9edf）：`audit_log` 内部改为 free-form 行拆解
+>（`split_freeform_line`：「事件名 | 细节」→ `(event, detail=...)`）后直调
+> `write_event`——rotate / 写锁 / 转义 / 行格式全部单源，bot.log 从此只有一种
+> 写法，**166 处调用点零编辑达成单一写侧**；`append_bot_log_line` 死函数随删。
+> ② **冻结守卫**（同 commit，audit.rs::freeform_freeze）：运行时扫源码，
+> 白名单外出现新 `audit_log(` 即 fail；白名单 = 存量 26 文件，迁一批摘一批。
+> ③ **注入口清除**（227fdb2b）：`ModelLoopDeps.audit_log` 字段整个移除，
+> core 内 10 处迁结构化 audit 回调（守卫/自检失败/熔断 → Warn 进 error.log
+> 镜像；软警告/工具流水 → Info）；llm_integration / eval / task_chat_exec /
+> exec_trace 四个 harness 同步；skill_e2e 五处 bot.log 断言改跨转义安全形态。
+> **剩余**：156 处直接调用点的逐点 kv 化——桥接后它们已是结构化行（事件名
+> 可 grep、detail 承载原文），逐点拆具名 kv 是长尾渐进项，由冻结守卫驱动
+> （每迁一文件摘一行白名单），全部迁完后退役 `audit_log`（原案第 3 步不变）。
 
-步骤（分三个子 commit，每个独立可回退）：
+原案步骤存档：
 
 1. **冻结**：加源码扫描守卫（audit.rs 既有守卫族同款）——生产代码新增
-   `audit_log(` 调用即 fail；存量白名单按文件清点。
+   `audit_log(` 调用即 fail；存量白名单按文件清点。✅ 已落地
 2. **迁移**：按文件分批把 166 处迁成 `audit_event!`（事件名按现有 free-form
    文案归类：`skill_start` / `tool_*` / `sched_*` 等既有名优先，不发明新名）。
-   每文件一 commit；bot_model_loop.rs / bot_chat.rs / bot_orchestrator.rs
-   三个大文件单独成批。regression-probe.sh 的 report 按域分组解析——已同时
-   兼容两种格式（今天两套并存），迁移过程探针不断档。
-3. **退役**：清零后删 `audit_log` / `audit_log_hook` 与白名单；架构文档 §1
-   审计段改写为单一事件口径。
+   每文件一 commit。⚠️ 形态调整：先桥接（全量即时收益），逐点 kv 化渐进。
+3. **退役**：清零后删 `audit_log` / `audit_log_hook` 与白名单。⬜ 待白名单清空
 
 验收：全仓 `audit_log(` 生产调用 0 处；`audit.log`（bot.log）新格式事件可被
 probe report 分组；既有 audit.rs 测试族全绿。
@@ -418,4 +425,10 @@ wmessage 的闸门/审计/流式序号（stream_log seq）都按序设计，串�
 
 | 日期 | 批次 | 偏离内容 | 理由 |
 |---|---|---|---|
+| 2026-10-24 | 1 | M2 变异从 `unwrap_or(usize::MAX)` 改为 `unwrap_or(0)`；漏斗判定抽泛型 `apply_output_cap`（spill_or_cap/allowed_dirs 尾段同泛型化）让单测可直驱 | 原表达式是等价变异（后随 `.min(global)` 把 MAX 钳回），任何行为测试都杀不死；判定原长在 Wry 专属闭包里，MockRuntime 够不到——这正是 6 个变异存活的根因 |
+| 2026-10-24 | 2 | 评估器住 `bot/eval.rs`（cfg(test) lib 内）而非 tests/；配置走 gitignore 快照 `eval-bot-config.json` 而非环境变量 | prompts/read_llm_key 等 pub(crate) 集成测试够不到；env→读文件被 Mimosa 污点链拦截，快照同样满足「key 不落盘」 |
+| 2026-10-24 | 2 | 首跑基线模型为 deepseek-v4-flash（MiniMax-M3 撞 402 余额不足）；13 用例（E07 拆正负两例）；stub 队列耗尽重复末次响应、报错文案不泄露评估框架 | 快照切条目即可换模型；E07 正负例判据独立；stub 报「评估桩」曾把 E05/E06 叙事带偏 |
+| 2026-10-24 | 5 | 166 处调用点不走「逐点重写」，改 **audit_log 内部桥接**（split_freeform_line → write_event）+ 冻结守卫白名单；逐点 kv 化转长尾渐进 | 桥接一处改动即达成单一写侧+统一行格式（批 5 的工程目标），166 处人眼映射 kv 的回归面大于其粒度收益；冻结守卫保证债务不增长、退役路径不变 |
+| 2026-10-24 | 5 | `ModelLoopDeps.audit_log` 字段整个移除（原案未提）；core 10 处迁结构化回调后守卫/熔断类事件开始进 error.log 镜像（Warn） | free-form 注入口与结构化注入口并存正是双轨的根；error.log 的设计口径本来就是「信号不进流水」 |
+| 2026-10-24 | 4b | 金丝雀锚点取 `ApiState` 内存态 + accept 线程存活（`is_finished`），不读 enabled flag 文件 | flag 只表示「希望开着」，内存态才表示「真在监听」；死 accept 线程不算监听，防僵尸误报 |
 | | | | |
