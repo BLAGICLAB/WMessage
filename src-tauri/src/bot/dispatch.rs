@@ -590,12 +590,7 @@ async fn execute_tool_impl(
                 session_id,
                 trace,
             );
-            crate::audit::write_event(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "tool.return",
-                &ret_kv,
-            );
+            crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
             let deny_msg = format!(
                 "⚠️ 时间预算即将耗尽（剩余约 {}s，预留收尾窗口 {}s）：停止新探索，把已拿到的结果整理出来，按任务包装末尾的 schema 输出收尾 JSON。",
                 remaining.as_secs(),
@@ -1502,7 +1497,8 @@ mod pre_tool_hook_tests {
         assert!(
             crate::audit::tool_call_failed("write_file", &msg),
             "钩子拒绝文案必须被判失败：{msg}"
-        );    }
+        );
+    }
 
     /// 门禁拒绝的文案必须同时满足两件事：status=Denied（成败判定）+
     /// 文本可被 classify_tool_failure 认出子类（error_class 细分 + 转换历史

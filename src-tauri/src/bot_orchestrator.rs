@@ -2701,8 +2701,14 @@ async fn run_subagent(
     // （熔断标记路径已自带 budget_exceeded；这里管「停了工具但只输出散文」的
     // 剩余路径）才改判，真实原因（预算触顶）不能丢。
     let tool_calls_used = used_tool_calls.load(std::sync::atomic::Ordering::SeqCst);
-    let wrapped_up_cleanly = matches!(&wall, Ok(Ok((text, _, _))) if parse_final_json(text).is_some());
-    if budget_force_needed(tool_calls_used, budget.max_tool_calls, status, wrapped_up_cleanly) {
+    let wrapped_up_cleanly =
+        matches!(&wall, Ok(Ok((text, _, _))) if parse_final_json(text).is_some());
+    if budget_force_needed(
+        tool_calls_used,
+        budget.max_tool_calls,
+        status,
+        wrapped_up_cleanly,
+    ) {
         status = SubagentStatus::BudgetExceeded;
         error = Some("max_tool_calls".into());
         // 部分结果不丢弃：熔断前跑出来的正文对父 agent 判断「该不该原目标
@@ -3641,7 +3647,8 @@ pub async fn tool_read_own_card(
             &row,
             criteria,
             budget,
-            ctx.used_tool_calls.load(std::sync::atomic::Ordering::SeqCst),
+            ctx.used_tool_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
             ctx.used_rounds.load(std::sync::atomic::Ordering::SeqCst),
             ctx.wall_deadline
                 .saturating_duration_since(std::time::Instant::now())
