@@ -283,7 +283,7 @@ fn render_task_line(t: &crate::db::Task) -> String {
 /// 查询任务（：原 list_tasks + search_tasks 合并）：
 /// - 无 query：列清单（view 默认 active = 原 list_tasks）
 /// - 有 query：关键词检索（view 默认 all 全库 = 原 search_tasks）
-/// - view/tag/limit 正交过滤；输出行带（工作流：名称）标记，模型可按标记汇总工作流问答
+/// - view/tag/limit 正交过滤
 pub(crate) async fn tool_query_tasks(app: &AppHandle, args: &str) -> ToolResult {
     let v = parse_args(args);
     let raw_query = v["query"].as_str().map(|s| s.trim().to_string());
