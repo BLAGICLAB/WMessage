@@ -165,14 +165,18 @@ fn args_have_date(s: &str) -> bool {
 
 // ───────────────────────── stub 工具执行 ─────────────────────────
 
-/// 脚本耗尽 / 未脚本化时的通用兜底：只读类给温和的空结果，其余明确报
-/// 「未脚本化」——模型不该被 stub 的报错误导成任务失败。
+/// 脚本耗尽 / 未脚本化时的通用兜底：只读类给温和的空结果，其余给**中性**
+/// 报错——文案不得出现「评估/stub/桩」字样（模型读得懂工具结果，泄露评估
+/// 框架会让它把整段会话当测试敷衍），也不该被误读成任务本身的失败。
 fn stub_default(tool: &str) -> ToolResult {
     match tool {
         "query_tasks" => ToolResult::ok("没有找到匹配的任务卡。", Vec::new()),
         "read_text_file" => ToolResult::ok("（文件内容节选）\nline 1\nline 2\n……", Vec::new()),
         "list_files" => ToolResult::ok("（目录清单略）", Vec::new()),
-        _ => ToolResult::error(format!("评估 stub：工具 {tool} 未脚本化"), Vec::new()),
+        _ => ToolResult::error(
+            format!("工具 {tool} 调用失败：服务暂不可用（503），可稍后重试或改用其他做法"),
+            Vec::new(),
+        ),
     }
 }
 
@@ -241,7 +245,17 @@ async fn run_case(case: &EvalCase, http: &LlmHttp, system: &str, usage: &UsageCo
             let result = {
                 let mut g = script.lock().unwrap_or_else(|e| e.into_inner());
                 match g.iter_mut().find(|(n, _)| n == &name) {
-                    Some((_, q)) => q.pop_front().unwrap_or_else(|| stub_default(&name)),
+                    // 脚本队列按序消费；只剩最后一个时不再消费、改为重复它——
+                    // 模型重调同一工具是常态（补一次、验证一次），真实工具再调
+                    // 一次也就是再给一次同类结果；报「不可用」会把叙事带偏成
+                    // 环境故障。
+                    Some((_, q)) => {
+                        if q.len() > 1 {
+                            q.pop_front().expect("len>1 时 pop 必有值")
+                        } else {
+                            q.front().cloned().unwrap_or_else(|| stub_default(&name))
+                        }
+                    }
                     None => stub_default(&name),
                 }
             };
@@ -411,11 +425,11 @@ fn all_cases() -> Vec<EvalCase> {
             id: "E07",
             desc: "长期偏好 → 主动记忆；闲聊 → 不记",
             user: "记住：我的显示器是 2560x1440，以后生成图片都按这个分辨率来。",
-            script: vec![("tool_remember_fact", vec![ok("已记住该偏好")])],
+            script: vec![("remember_fact", vec![ok("已记住该偏好")])],
             fuse_cap: None,
             judge: |out| {
                 let mut f = Vec::new();
-                if !out.called("tool_remember_fact") {
+                if !out.called("remember_fact") {
                     f.push("用户给了长期偏好却没调记忆工具".into());
                 }
                 f
@@ -507,23 +521,37 @@ fn all_cases() -> Vec<EvalCase> {
             id: "E11",
             desc: "格式被拒 → 重试给合法形态，或先问清",
             user: "把「写周报」这张任务卡的截止时间改成月底。",
-            script: vec![(
-                "update_task",
-                vec![
-                    denied("截止时间格式非法：只接受 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm，收到「月底」"),
-                    ok("已更新：任务卡「写周报」截止 2026-10-31"),
-                ],
-            )],
+            script: vec![
+                // 模型合理的第一步是先按标题查卡——兜底回「没找到」会把它引去
+                // 反问标题，考不到「格式被拒后的重试」；这里给足上下文让它走到
+                // update_task 那一步。get_current_time 给固定日期：把「月底」
+                // 换算成具体日期需要知道今天几号。
+                (
+                    "query_tasks",
+                    vec![ok("找到 1 张匹配任务卡：\n「写周报」（id: t-101，状态 doing，截止时间：未设置）")],
+                ),
+                (
+                    "get_current_time",
+                    vec![ok("2026-10-24 14:30:45 星期六（UTC+8）")],
+                ),
+                (
+                    "edit_task",
+                    vec![
+                        denied("截止时间格式非法：只接受 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm，收到「月底」"),
+                        ok("已更新：任务卡「写周报」截止 2026-10-31"),
+                    ],
+                ),
+            ],
             fuse_cap: None,
             judge: |out| {
                 let mut f = Vec::new();
                 let ups: Vec<&CallRecord> = out
                     .calls
                     .iter()
-                    .filter(|c| c.tool == "update_task")
+                    .filter(|c| c.tool == "edit_task")
                     .collect();
                 if ups.is_empty() {
-                    f.push("没调 update_task 就作答".into());
+                    f.push("没调 edit_task 就作答".into());
                     return f;
                 }
                 // 被拒后的重试必须给合法日期；一次就给合法日期也算过（理想行为）

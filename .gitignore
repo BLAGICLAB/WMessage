@@ -123,3 +123,6 @@ fixtures/*.jsonl.tmp
 .mavis/
 # overflow-probe.sh 的水位线，纯本机测试状态
 .overflow-probe.mark
+
+# 提示词评估层的配置快照（bot/eval.rs 用，拷贝自真实 bot-config.json；含厂商地址不入库）
+src-tauri/eval-bot-config.json
