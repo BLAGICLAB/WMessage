@@ -10,7 +10,7 @@ src-tauri/src/
 ├── lib.rs (1191)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
-│                        8 张执行期表 + 「全局状态总表」文档；详见 §2.1
+│                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
 ├── paths.rs             数据目录解析 + 便携模式判定
@@ -99,7 +99,6 @@ src-tauri/src/
 │   │                     JSON schema 提示；镜像资产 docs/prompts/subagent/
 │   prompts/system.rs       SYSTEM_PROMPT（主聊天规则底座 + 安全红线）
 │   prompts/summary.rs      SUMMARY_SYSTEM_PROMPT（截断即摘要 ≤200 字）/ COMPACT_SYSTEM_PROMPT（/compact ≤300 字）
-│   prompts/reflection.rs   REFLECTION_SYSTEM_PROMPT（多摘要 → 阶段总结）
 │   prompts/execute.rs      EXECUTE_SYSTEM_PROMPT（任务卡执行）/ STEPWISE_ADDENDUM（逐步执行附加段）
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
@@ -238,7 +237,7 @@ src-tauri/src/
 ├── exec_steps.rs        任务卡逐步执行模式：多子任务逐个做、用户确认「继续/重做/停」
 ├── bot_orchestrator.rs  子 Agent 编排器（方案 B，SUBA 设计 2026-09-27）：受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
-│                        只存 parent_task_id 指向派发主卡，新行 task_id 恒 NULL）+ acceptance
+│                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
 │                        落行上 acceptance_json + 预算钳制；与 bot_execute_task（单发子 agent）入口/存储/事件
 │                        各自独立；LLM 工具暴露/runner（SUBA-2）与预算强制/并发排队（SUBA-3）
 │                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置；
@@ -299,7 +298,7 @@ src-tauri/src/
 │                        edit_file/write_file（N6，Aider 式三级匹配：精确→空白容错→
 │                        reflection；写白名单≠读白名单：可写根=AI_Gen_Files+任务卡
 │                        绑定文件夹+allowedDirs；白名单外 perm_mode 三分支/覆盖确认）；
-│                        路径白名单 + perm_mode(strict/ask/yolo) 授权闸
+│                        路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸
 ├── bot_archive.rs (1404) 归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
 │                        （纯 Rust：zip + tar + flate2，不依赖本机 Python）；压缩包是外部
 │                        输入——条目名带 .. / 绝对路径 / 盘符 / 软链一律跳过并列出，单文件
@@ -311,7 +310,7 @@ src-tauri/src/
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
 │                        软链既不跟随也不复制
-├── bot_web.rs           web_search（Bing）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
+├── bot_web.rs           web_search（Tavily/Brave 可配，Bing/百度抓取兜底）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
 ├── bot_py.rs (1367)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
@@ -371,7 +370,7 @@ src-tauri/src/
 │
 └─ 记忆系统 memory/（v2，语义嵌入）
 ├── memory/mod.rs            门面：injection_block 聊天注入记忆块（U15 注入总闸）、
-│                            save_summary/apply_reflection、工具 tool_remember_fact/
+│                            save_summary（阶段摘要入库）、工具 tool_remember_fact/
 │                            recall_facts/record_lesson（U15 主动记忆门禁）、MemoryControl
 ├── memory/store.rs          mem_items 表 CRUD、500 条上限、余弦语义去重（合并/提示）
 ├── memory/embed.rs          bge-small-zh-v1.5 ONNX 本地嵌入（OnceCell 懒加载，失败全局降级关键词模式）
@@ -395,13 +394,14 @@ src-tauri/src/
 
 | 类型 | 位置 |
 |---|---|
-| `RouteAction` / `IntentRule` | intent_router.rs:23 / :100 |
-| `TaskStore` trait / `MemStore` / `TauriStore` | api.rs:30 / :48 / :95 |
-| `Task` / `Subtask` / `TaskFile` / `BotSession` | db.rs:32 / :13 / :22 / :544 |
+| `RouteAction` / `IntentRule` | intent_router.rs:23 / :185 |
+| `TaskStore` trait / `MemStore` / `TauriStore` | api.rs:35 / :53 / :104 |
+| `Task` / `Subtask` / `TaskFile` | db/tasks.rs:144 / :12 / :24 |
+| `BotSession` | db/bot_sessions.rs:24 |
 | `CommandError` / `CommandErrorCode` / `CommandResult` | error.rs:151 / :36 |
-| `ChatMsg` / `TaskRef` / `BotChatResult` / `TaskExecOrigin` | bot_chat.rs:35 / :458 / :466 / :1151 |
-| `BotConfig` / `ApiProvider` / `PermMode` / `KeySlot` | bot/config.rs:63 / :203 / :331 / :28 |
-| `LlmHttp` / `ModelLoopDeps` / `ParsedChunk` | bot_model_loop.rs:363 / :380 / :146 |
+| `ChatMsg` / `TaskRef` / `BotChatResult` / `TaskExecOrigin` | bot_chat.rs:39 / :519 / :527 / :1734 |
+| `BotConfig` / `ApiProvider` / `PermMode` / `KeySlot` | bot/config/types.rs:82 / :376 / :401 / :42 |
+| `LlmHttp` / `ModelLoopDeps` / `ParsedChunk` | bot_model_loop.rs:906 / :1014 / :156 |
 | `SkillRun` / `SkillState` | bot_skills/state.rs |
 | `SkillMeta` | bot_skills/parse.rs |
 | `DslOutcome` | bot_skills/scheduler.rs |
@@ -471,7 +471,7 @@ src-tauri/src/
      技能状态：核心只**读**「活动技能快照」（deps.active_skill_run 注入回调），
                收尾/入口清理等写操作留在核心之外（见 §2.1）
  → 记忆：组装 prompt 时 memory::injection_block 注入 top 记忆；
-   compact 时 memory::save_summary / apply_reflection
+   compact 时 memory::save_summary（阶段摘要入库）
  → 返回 BotChatResult{text, task_refs}
 ```
 
@@ -497,11 +497,12 @@ db / audit / paths / error   全员共享底座
   `wmessage.db`（SQLite）、`bot-config.json`（bot 配置，API key 已迁系统 keyring，自带 `schemaVersion`）、`bot.log`（审计）、`runtime/flags/`（`api-token.txt` / `api-enabled.flag` / `py-enabled.flag` / `bot-enabled.flag` 等运行期文件，根目录不再散落）、`profile.json` + `profile/`、`cleanup-rules.json`、`skills/<name>/SKILL.md`（用户技能）、`AI_Gen_Files/`（AI 产物唯一入口 `db::gen_dir`）
 - **Prompt 集中在 `src-tauri/src/prompts/`**（`&'static str` 编译期常量，无 IO 无状态）：
   `system.rs`（`SYSTEM_PROMPT`）、`summary.rs`（`SUMMARY_SYSTEM_PROMPT` / `COMPACT_SYSTEM_PROMPT`）、
-  `reflection.rs`、`execute.rs`（`EXECUTE_SYSTEM_PROMPT` / `STEPWISE_ADDENDUM`）、
-  `planner.rs`（`PLANNER_PROMPT` / `REPLANNER_PROMPT`）、`consolidate.rs`；统一从
+  `execute.rs`（`EXECUTE_SYSTEM_PROMPT` / `STEPWISE_ADDENDUM`）、
+  `planner.rs`（`PLANNER_PROMPT` / `REPLANNER_PROMPT`）、`consolidate.rs`、
+  `extract.rs` / `selfcheck.rs` / `subagent.rs`；统一从
   `crate::prompts::NAME` 取。**不是** `.md` 资源文件（`.md` + `include_str!` 会引入真实换行 =
   改提示词字节内容，属需单独评估的改动；若将来要换实现，调用方路径不变）。
-  工具 schema 单一来源 `TOOLS_TABLE`（bot/registry.rs:716）→ `tools_json()`（:1153，编译期常量原文拼接）
+  工具 schema 单一来源 `TOOLS_TABLE`（bot/registry.rs:1849）→ `tools_json()`（:2478，编译期常量原文拼接）
 - **打包资源**（tauri.conf.json resources）：
   `bge-small-zh-v1.5/`（嵌入模型 tokenizer+ONNX，项目根）、`pp-ocr-v6/`（Windows OCR 模型，scripts/fetch_ocr_models.sh 下载）、`src-tauri/icons/`、权限文件 `src-tauri/capabilities/default.json`（opener scope 收窄，有回归测试锁死）
 - **设计文档**：`docs/`（BOT-MEMORY-V2-DESIGN.md、SKILL-RUNTIME.md、SKILL-DSL.md、TASK-CHAT-EXECUTION-DESIGN.md、ARCH-REFACTOR-PLAN.md 及多份审计报告）
@@ -579,7 +580,7 @@ flowchart LR
     end
 
     BC[bot_chat 主流程] --> M1
-    BC2[bot_compact] --> M5[save_summary / apply_reflection]
+    BC2[bot_compact] --> M5[save_summary 阶段摘要]
     S2 -.同一执行路径.-> BC
 ```
 
@@ -599,7 +600,7 @@ flowchart TD
 
 ## 6.4 源文件清单（完整列表，由 `tests-audit/audit_module_map.py` 对拍）
 
-`src-tauri/src/` 实际 157 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
+`src-tauri/src/` 实际 160 个 `.rs` 文件（按模块分组）。本节由 `audit_module_map.py`
 对拍：每条必须指向真实文件，每个源文件必须在本节列出。新增模块请同步登记。
 
 ### 顶层
