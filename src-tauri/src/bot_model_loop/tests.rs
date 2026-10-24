@@ -26,6 +26,7 @@ fn prod_src() -> String {
         include_str!("guard.rs"),
         include_str!("output.rs"),
         include_str!("request.rs"),
+        include_str!("shell.rs"),
         include_str!("sse.rs"),
         include_str!("stream.rs"),
         include_str!("types.rs"),

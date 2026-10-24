@@ -662,6 +662,7 @@ mod hallucination_guard_tests {
 #[cfg(test)]
 mod stop_guard_tests {
     use super::*;
+
     /// `/stop` 必须覆盖主循环里两处长 await：
     /// - 终稿自检的侧调（`summarize_http`，单次最多 60s）；
     /// - 重规划（`replan`，单次最多 60s）。
@@ -881,6 +882,7 @@ mod rounds_fuse_tests {
 #[cfg(test)]
 mod post_turn_layer_tests {
     use super::*;
+
     #[test]
     fn post_turn_layer_is_wired_after_answer_is_final() {
         let production = prod_src();

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::bot_model_loop::request::build_request_body;
+use crate::bot_model_loop::shell::resolve_loop_inference;
 
 #[cfg(test)]
 mod inference_param_tests {
