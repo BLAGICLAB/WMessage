@@ -19,6 +19,7 @@ use crate::bot_model_loop::*;
 fn prod_src() -> String {
     [
         include_str!("context.rs"),
+        include_str!("core.rs"),
         include_str!("evidence.rs"),
         include_str!("finalize.rs"),
         include_str!("fuse.rs"),
