@@ -455,6 +455,16 @@ pub(crate) async fn tool_query_single_task(
     )
 }
 
+/// create/edit 共用的 due 参数闸：长度 + 格式一起判。格式判据与 task_patch /
+/// HTTP 三写口共用（db::tasks::due_format_error）——不合法的截止落库后
+/// due_notify 按「无截止」处理，通知静默不发。
+fn due_param_denied(d: &str) -> Option<ToolResult> {
+    if let Err(e) = check_len(d, MAX_DUE, "截止时间") {
+        return Some(ToolResult::denied(e));
+    }
+    crate::db::tasks::due_format_error(d).map(|r| ToolResult::denied(r.to_string()))
+}
+
 pub(crate) async fn tool_create_task(
     app: &AppHandle,
     args: &str,
@@ -475,10 +485,8 @@ pub(crate) async fn tool_create_task(
             return ToolResult::denied(e);
         }
     }
-    if let Some(d) = v["due"].as_str() {
-        if let Err(e) = check_len(d, MAX_DUE, "截止时间") {
-            return ToolResult::denied(e);
-        }
+    if let Some(denied) = v["due"].as_str().and_then(due_param_denied) {
+        return denied;
     }
     let now = chrono::Utc::now().timestamp_millis();
     let mut task = crate::db::Task {
@@ -789,8 +797,8 @@ pub(crate) async fn tool_edit_task(
     }
     if let Some(d) = v["due"].as_str() {
         if !d.trim().is_empty() {
-            if let Err(e) = check_len(d, MAX_DUE, "截止时间") {
-                return ToolResult::denied(e);
+            if let Some(denied) = due_param_denied(d) {
+                return denied;
             }
         }
         next.due = if d.trim().is_empty() {
@@ -2888,5 +2896,38 @@ mod n3_toolpolish_tests {
         assert_eq!(dropped, 2);
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&outside).ok();
+    }
+}
+
+#[cfg(test)]
+mod tool_due_format_tests {
+    use super::*;
+
+    /// create/edit 的 due 参数闸：长度 + 格式一起判。格式口径与 task_patch /
+    /// HTTP 三写口共用（db::tasks::due_format_error）——schema 曾教空格分隔
+    /// 格式，照旧传值落库后 due_notify 按「无截止」处理，通知静默不发。
+    #[test]
+    fn due_param_denied_rejects_space_format_and_half_typed() {
+        for bad in [
+            "2026-10-24 09:00",
+            "2026-10",
+            "2026-02-31",
+            "2026-10-24T25:00",
+            "明天下午",
+        ] {
+            let r = due_param_denied(bad).unwrap_or_else(|| panic!("该拒: {bad}"));
+            assert!(
+                r.text.contains("YYYY-MM-DDTHH:mm"),
+                "拒因要点明合法格式：{r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn due_param_denied_accepts_both_valid_shapes_and_over_length() {
+        assert!(due_param_denied("2026-10-24").is_none());
+        assert!(due_param_denied("2026-10-24T09:30").is_none());
+        let r = due_param_denied("x".repeat(MAX_DUE + 1).as_str()).unwrap();
+        assert!(r.text.contains("截止时间"), "超长走长度闸：{r:?}");
     }
 }

@@ -25,6 +25,18 @@ pub(crate) fn check_field(raw: Option<&str>, max: usize, label: &str) -> Option<
     over_limit(trimmed, max, label)
 }
 
+/// 截止时间格式闸：None / 全空白放行（存储侧本就过滤为 None），非空则必须是
+/// `YYYY-MM-DD` 或 `YYYY-MM-DDTHH:mm`——与 task_patch / bot 工具同一口径
+/// （db::tasks::due_format_error）。不合法的 due 落库后 due_notify 解析失败
+/// 按「无截止」处理，通知静默不发。
+pub(crate) fn check_due(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    crate::db::tasks::due_format_error(trimmed).map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +103,35 @@ mod tests {
     fn check_field_len_equals_max_plus_one_is_over_limit() {
         // max=3, 输入 4 字符 → 超限(Some)
         assert!(check_field(Some("abcd"), 3, "备注").is_some());
+    }
+
+    /// 空白串不是截止时间：None / 全空白放行（存储侧过滤为 None）
+    #[test]
+    fn check_due_skips_when_empty() {
+        assert_eq!(check_due(None), None);
+        assert_eq!(check_due(Some("")), None);
+        assert_eq!(check_due(Some("   ")), None);
+    }
+
+    /// 两种合法形态放行；前后空白按 trim 后判定
+    #[test]
+    fn check_due_accepts_both_valid_shapes() {
+        assert_eq!(check_due(Some("2026-10-23")), None);
+        assert_eq!(check_due(Some("2026-10-23T18:30")), None);
+        assert_eq!(check_due(Some("  2026-10-23  ")), None);
+    }
+
+    /// 越界日期/时分、半截值、空格分隔（schema 曾教的格式）一律 400 拒绝
+    #[test]
+    fn check_due_rejects_invalid_shapes() {
+        for bad in [
+            "2026-10",
+            "2026-02-31",
+            "2026-10-23T25:00",
+            "2026-10-23 18:30",
+            "明天下午",
+        ] {
+            assert!(check_due(Some(bad)).is_some(), "该拒: {bad:?}");
+        }
     }
 }

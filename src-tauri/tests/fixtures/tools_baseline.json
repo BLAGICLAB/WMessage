@@ -68,7 +68,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "due": {
-            "description": "截止时间，YYYY-MM-DD 或 YYYY-MM-DD HH:mm，可选",
+            "description": "截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选",
             "type": "string"
           },
           "files": {
@@ -161,7 +161,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "due": {
-            "description": "新截止时间，可选；空串清除",
+            "description": "新截止时间，可选；空串清除；格式 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔）",
             "type": "string"
           },
           "files": {

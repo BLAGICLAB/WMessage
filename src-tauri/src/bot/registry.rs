@@ -189,7 +189,7 @@ pub const SCHEMA_QUERY_SINGLE_TASK: &str = r##"{"type":"function","function":{"n
 pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"create_task","description":"新建任务","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"任务标题"},
     "note":{"type":"string","description":"备注，可选"},
-    "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DD HH:mm，可选"},
+    "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选"},
     "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo"},
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}}"##;
@@ -206,7 +206,7 @@ pub const SCHEMA_EDIT_TASK: &str = r##"{"type":"function","function":{"name":"ed
     "title":{"type":"string","description":"标题关键词，无 taskId 时用于定位任务"},
     "newTitle":{"type":"string","description":"新标题，可选"},
     "note":{"type":"string","description":"新备注，可选；空串清除"},
-    "due":{"type":"string","description":"新截止时间，可选；空串清除"},
+    "due":{"type":"string","description":"新截止时间，可选；空串清除；格式 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔）"},
     "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选"},
     "tags":{"type":"array","items":{"type":"string"},"description":"新标签列表，可选；空数组清除"},
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖已有绑定；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；空数组 = 无操作，本工具不能清空绑定；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃）"},

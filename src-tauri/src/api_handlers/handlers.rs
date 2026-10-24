@@ -254,6 +254,10 @@ fn create_task(
         let _ = req.respond(json_err(StatusCode(400), &e));
         return;
     }
+    if let Some(e) = super::validate::check_due(input.due.as_deref()) {
+        let _ = req.respond(json_err(StatusCode(400), &e));
+        return;
+    }
     // filePath 与 title/note/due 同规则限长
     if let Some(e) =
         super::validate::check_field(input.file_path.as_deref(), API_MAX_FILE_PATH, "文件路径")
@@ -563,6 +567,9 @@ fn validate_update_input(input: &UpdateReq) -> Result<(), String> {
     }
     if let Some(e) = super::validate::check_field(input.due.as_deref(), API_MAX_DUE, "截止时间")
     {
+        return Err(e);
+    }
+    if let Some(e) = super::validate::check_due(input.due.as_deref()) {
         return Err(e);
     }
     if let Some(tags) = input.tags.as_ref() {

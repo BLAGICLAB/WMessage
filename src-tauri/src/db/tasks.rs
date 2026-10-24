@@ -784,6 +784,24 @@ pub async fn task_set_column(
     Ok(row)
 }
 
+/// 截止时间格式校验（task_patch / bot 工具 / HTTP API 三写口共用）：
+/// 两种合法形态——"YYYY-MM-DD"（仅日期，当天 23:59 截止）与
+/// "YYYY-MM-DDTHH:mm"（带时刻）。与 due_notify::parse_due_dt 同一口径。
+///
+/// 其余一律拒：打字过程中的半截值（"2026-10"）、越界日期（2026-02-31）、
+/// 越界时分（25:00）落进库里，due_notify 解析失败是「视为无截止」——
+/// 静默不发通知，任务就这么无声地过期了。空白串同样不合法（清除用 null）。
+pub(crate) fn due_format_error(s: &str) -> Option<&'static str> {
+    let s = s.trim();
+    let ok = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").is_ok()
+        || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok();
+    if ok {
+        None
+    } else {
+        Some("截止时间格式必须是 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm")
+    }
+}
+
 /// TP-2：task_patch 的字段白名单应用器（纯逻辑，单测锚点）。
 /// **null = 清空**、缺键 = 不动；未知键/受保护键/空标题 → InvalidArgument 响亮失败。
 /// 受保护字段：id（主键）、updatedAt/expectedUpdatedAt（服务端统一打戳，前端快照不许带）、
@@ -830,24 +848,13 @@ pub(crate) fn apply_task_patch(
         }
         Ok(())
     }
-    /// 截止时间格式校验：两种合法形态——"YYYY-MM-DD"（仅日期，当天 23:59 截止）
-    /// 与 "YYYY-MM-DDTHH:mm"（带时刻）。与 due_notify::parse_due_dt 同一口径。
-    ///
-    /// 其余一律拒：打字过程中的半截值（"2026-10"）、越界日期（2026-02-31）、
-    /// 越界时分（25:00）落进库里，due_notify 解析失败是「视为无截止」——
-    /// 静默不发通知，任务就这么无声地过期了。
+    /// 截止时间格式校验：口径见 [`due_format_error`]（三写口共用）。
     fn validate_due(v: Option<&str>, field: &str, raw: &serde_json::Value) -> CommandResult<()> {
-        let Some(s) = v else {
-            return Ok(());
-        };
-        let s = s.trim();
-        let ok = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").is_ok()
-            || chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok();
-        if !ok {
+        if let Some(reason) = v.and_then(due_format_error) {
             return Err(CommandError::InvalidArgument {
                 field: field.into(),
                 value: raw.to_string(),
-                reason: "截止时间格式必须是 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm".into(),
+                reason: reason.into(),
             });
         }
         Ok(())
