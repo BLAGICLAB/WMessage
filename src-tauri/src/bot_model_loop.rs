@@ -1892,7 +1892,6 @@ where
     if let Some(sp) = &http.system_prompt {
         msgs.push(serde_json::json!({ "role": "system", "content": sp }));
     }
-    let emit = deps.emit;
     let audit = deps.audit;
     let skill_finish = deps.skill_finish;
     let active_skill_run = deps.active_skill_run;
@@ -2187,319 +2186,49 @@ where
             return Ok((answer, collected_refs));
         }
 
-        // 模型请求工具：进程内执行，结果回填后继续下一轮。
-        // 模型以工具调用回应自检提示 = 以行动代回答：丢弃工具自检态，
-        // 后续轮流式不再被抑制；终稿自检快照一并释放——最终回答以
-        // 模型核验后的新产出为准，不能把旧快照顶回去。
-        expecting_selfcheck = false;
-        pending_selfcheck = None;
-        expecting_final_selfcheck = false;
-        final_selfcheck_snapshot = None;
-        msgs.push(with_thinking(
-            serde_json::json!({
-                "role": "assistant",
-                "content": serde_json::Value::Null,
-                "tool_calls": tool_calls.iter().map(|(id, name, args)| serde_json::json!({
-                    "id": id, "type": "function",
-                    "function": {"name": name, "arguments": args}
-                })).collect::<Vec<_>>()
-            }),
+        match dispatch_round(
+            &execute_tool,
+            &replan,
+            &mut msgs,
+            &final_text,
+            &tool_calls,
             &thinking_blocks,
-        ));
-        if stop.stopped() {
-            let hint = skill_finish(false, "用户停止");
-            return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
-        }
-        for (id, name, args) in &tool_calls {
-            // 工具批中途可停——/stop 后剩余调用不执行，
-            // 但必须回填占位 tool 响应（tool_calls → tool 消息协议完整性，
-            // 缺响应会让下一轮请求被 API 拒为 400 invalid params）
-            if stop.stopped() {
-                msgs.push(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": id,
-                    "content": "⏹ 已停止，该工具未执行"
-                }));
-                tool_msg_ages.push((round, msgs.len() - 1));
-                continue;
+            &mut collected_refs,
+            &mut function_calls_total,
+            &mut mutation_done,
+            &mut receipts,
+            &mut evidence,
+            &mut written_paths,
+            &mut expecting_selfcheck,
+            &mut pending_selfcheck,
+            &mut expecting_final_selfcheck,
+            &mut final_selfcheck_snapshot,
+            &mut last_selfcheck_round,
+            &mut last_failed_tool,
+            &mut last_fail_reason,
+            &mut consec_failures,
+            &mut fail_hint_queued,
+            &mut replan_exhausted_logged,
+            &mut soft_warn_sent,
+            &mut soft_warn_queued,
+            &mut tool_msg_ages,
+            fuse_cap,
+            soft_warn_at,
+            plan_state.as_deref_mut(),
+            deps,
+            stop,
+            round,
+        )
+        .await?
+        {
+            DispatchOutcome::Continue => {}
+            DispatchOutcome::Stopped(msg) => {
+                return Ok((msg, collected_refs));
             }
-            function_calls_total += 1;
-            if should_fuse(function_calls_total, fuse_cap) {
-                let hint = skill_finish(false, "单轮 Function 调用超上限");
-                audit(
-                    crate::audit::AuditLevel::Warn,
-                    "fuse",
-                    vec![("cap", fuse_cap.to_string())],
-                );
+            DispatchOutcome::Fused(msg) => {
                 body_outcome = Some("tool_fuse");
-                return Ok((fuse_message(&final_text, &hint, fuse_cap), collected_refs));
+                return Ok((msg, collected_refs));
             }
-            // 软警告（soft_warn_at，按会话熔断上限派生）：置标志，推迟到本轮 tool 响应全部回填后再注入——
-            // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
-            // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
-            // 400 invalid params（实锤：两次 400 均紧跟 soft_warn 注入）
-            if !soft_warn_sent && function_calls_total >= soft_warn_at {
-                soft_warn_sent = true;
-                soft_warn_queued = true;
-                audit(
-                    crate::audit::AuditLevel::Info,
-                    "soft_warn",
-                    vec![
-                        ("used", soft_warn_at.to_string()),
-                        ("cap", fuse_cap.to_string()),
-                    ],
-                );
-            }
-            // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
-            // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
-            let t_tool = std::time::Instant::now();
-            // 工具执行段的活体信号：bot-tool 只说明「要调了」，bot-tool-done 要等
-            // 工具返回——中间这段（run_python 可静默 300s、MCP 600s）此前零事件，
-            // UI 只有一个静态「…」。补一条 running 事件让前端起计时与 spinner。
-            emit(
-                "bot-tool-running",
-                serde_json::json!({
-                    "id": id, "name": name,
-                    "args_preview": args.chars().take(200).collect::<String>(),
-                }),
-            );
-            let tool_outcome = execute_tool(
-                name.clone(),
-                args.clone(),
-                crate::bot::ToolCallTrace {
-                    turn: Some(round),
-                    tool_call_id: Some(id.clone()),
-                },
-            )
-            .await;
-            let tool_ms = t_tool.elapsed().as_millis() as u64;
-            let result = &tool_outcome.text;
-            let refs = &tool_outcome.refs;
-            // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
-            // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
-            if mutation_succeeded(name, &tool_outcome) {
-                mutation_done = true;
-                // 自检触发：变更类工具 + 非子 agent 路径 + 节流(5 轮 1 次)
-                // 失败路径写 last_failed_tool/consec_failures/fail_hint_queued，
-                // 复用 PREVR 第 1 层既有「换策略」注入
-                if crate::bot::registry::mutating_tools()
-                    .iter()
-                    .any(|t| *t == name)
-                    && stop
-                        .session_id()
-                        .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
-                        .is_none()
-                    && last_selfcheck_round.is_none_or(|r| round.saturating_sub(r) >= 5)
-                {
-                    let snippet: String = result.chars().take(80).collect();
-                    pending_selfcheck = Some((name.clone(), snippet));
-                }
-            }
-            // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
-            let failed = !tool_outcome.status.is_success();
-            // 被闸拒掉的调用（Denied：预算触顶 / 白名单外 / 用户拒绝）不计入熔断
-            // 计数——计数守的是「实际执行」的调用量。子 agent 收尾窗里模型可能
-            // 成批发读类调用试探，若被拒的也计数，一次并行批就能烧光收尾裕量，
-            // 模型永远轮不到写产物（写类在收尾窗放行、占裕量，正是设计语义）。
-            if tool_outcome.status == crate::bot::registry::ToolStatus::Denied {
-                function_calls_total = function_calls_total.saturating_sub(1);
-            }
-            // 证据池：参数与返回都留着。成功与失败都记——失败信息也是模型看得见的
-            // 内容（模型会照着它说「跑不了」），出处比对时算不算得到依据就在这里。
-            evidence.push(ToolEvidence {
-                ok: !failed,
-                args: args.clone(),
-                output: result.chars().take(EVIDENCE_OUTPUT_CHARS).collect(),
-            });
-            // 只有成功返回的工具才算数：被门禁拦下 / 用户拒绝 / 执行失败的调用没产出
-            // 任何可转述的东西，模型若照着它编结果，凭证表还得拦得住。
-            if !failed {
-                receipts.push(name.clone());
-                // 落盘凭证同步入池：写盘类工具成功时带回来的 file_changes 就是
-                // 「这个路径确实是工具产物」的凭据（文档生成器在 24a4ea6 之前
-                // 不带凭证，那是这道判据的地基缺口）。
-                for fc in &tool_outcome.file_changes {
-                    written_paths.push(fc.path.to_lowercase());
-                }
-            }
-            emit(
-                "bot-tool-done",
-                serde_json::json!({
-                    "id": id, "name": name, "args": args,
-                    "result": result.chars().take(2000).collect::<String>(),
-                    "ms": tool_ms,
-                    "ok": !failed,
-                }),
-            );
-            audit(
-                crate::audit::AuditLevel::Info,
-                "tool",
-                vec![
-                    // 工具名是模型给的字符串：truncate_for_log = escape_for_log 别名（\n\r| 已转义），不可伪造日志行
-                    ("tool", crate::bot::truncate_for_log(name, 60)),
-                    ("args", crate::bot::truncate_for_log(args, 500)),
-                    ("result", crate::bot::truncate_for_log(result, 300)),
-                ],
-            );
-            collected_refs.extend(refs.iter().cloned());
-            // PREVR 第 1 层：工具失败检测。判定走全链路统一口径
-            // （audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
-            // 同工具连续失败才升级——单次失败先提示换策略。
-            // 与 soft_warn 同理：提示推迟到本轮 tool 响应全部回填后注入（协议安全）
-            if failed {
-                if last_failed_tool.as_deref() == Some(name.as_str()) {
-                    consec_failures += 1;
-                } else {
-                    consec_failures = 1;
-                    last_failed_tool = Some(name.clone());
-                }
-                let reason = crate::bot::truncate_for_log(result, 200);
-                last_fail_reason = Some(reason.clone());
-                fail_hint_queued = Some(if consec_failures >= 2 {
-                    format!(
-                        "【系统提示】工具 {name} 已连续失败 {consec_failures} 次（最近原因：{reason}）。禁止再次以相同方式调用该工具；如果换参数/换路径仍无法完成，如实向用户说明失败原因与当前进度，由用户决定下一步。"
-                    )
-                } else {
-                    format!(
-                        "【系统提示】上一步调用的工具 {name} 失败了（原因：{reason}）。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
-                    )
-                });
-            } else if !result.is_empty() {
-                // 成功调用重置连续失败链（空结果不算成功也不算失败，不重置）
-                last_failed_tool = None;
-                last_fail_reason = None;
-                consec_failures = 0;
-            }
-            msgs.push(serde_json::json!({
-                "role": "tool",
-                "tool_call_id": id,
-                "content": result
-            }));
-            tool_msg_ages.push((round, msgs.len() - 1));
-            // 工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
-            // OpenAI 协议 tool 消息只收文本，「工具后追加带图 user 消息」是官方视觉
-            // 示例同款；Anthropic 转换器会把 [tool, user(图)] 合并成单条 user
-            // [tool_result, image]（官方 tool_result 附图形态，满足严格交替）。
-            // 图片消息在本轮 msgs 驻留后续轮次：单次截图场景 token 可控，不做
-            // 历史裁剪（循环内 msgs 生命周期只有一次运行，与 bot_chat 附件跨轮
-            // 「最后 3 条」裁剪不同源）。
-            if !tool_outcome.images.is_empty() {
-                let mut parts = vec![serde_json::json!({
-                    "type": "text",
-                    "text": "〔系统附图〕以上工具返回了截图，请直接用视觉能力读取图片内容。"
-                })];
-                // 单图至多 3MB（读文件 + base64）：与 bot_chat 附件链路同款包
-                // spawn_blocking，防多图/并发会话把 async runtime 线程占死
-                let images = tool_outcome.images.clone();
-                let read = tauri::async_runtime::spawn_blocking(move || {
-                    images
-                        .iter()
-                        .map(|p| crate::bot_chat::image_part_from_file(std::path::Path::new(p)))
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .unwrap_or_default();
-                let mut attached = 0usize;
-                for (p, part) in tool_outcome.images.iter().zip(read) {
-                    match part {
-                        Some(part) => {
-                            parts.push(part);
-                            attached += 1;
-                        }
-                        None => audit(
-                            crate::audit::AuditLevel::Info,
-                            "tool_image.skip",
-                            vec![(
-                                "detail",
-                                crate::bot::truncate_for_log(p, 200),
-                            )],
-                        ),
-                    }
-                }
-                if attached > 0 {
-                    msgs.push(serde_json::json!({ "role": "user", "content": parts }));
-                }
-            }
-        }
-        // PREVR 第 2 层：同工具连续失败 ≥2 且有计划 → Replan 一次
-        // （重规划剩余步骤，替换计划文本；≤MAX_REPLANS 次硬上限，防重规划死循环）。
-        // 预算不管成败都消耗——失败 replan 若不计数，
-        // Planner 持续故障时每轮会白烧一次调用，硬上限名不副实；fail_reason 带真实错误
-        // 文本（只传工具名的话 Planner 拿不到任何失败细节）。
-        // Replan 是同步阻塞本轮的 LLM 调用：放在 tool 响应全部回填后、注入提示前，
-        // 这样提示里带的就是新计划。
-        if consec_failures >= 2 {
-            if let Some(plan) = plan_state.as_deref_mut() {
-                if plan.replans_used < crate::bot_plan::MAX_REPLANS {
-                    plan.replans_used += 1;
-                    let reason = format!(
-                        "工具 {} 连续失败 {} 次，最近错误：{}",
-                        last_failed_tool.as_deref().unwrap_or("?"),
-                        consec_failures,
-                        last_fail_reason.as_deref().unwrap_or("（无错误详情）")
-                    );
-                    // replan 走注入回调；PlanState 按值快照传入（回调签名
-                    // 不能借用本轮局部 &mut，见 ModelLoopDeps 注释）
-                    let snapshot = crate::bot_plan::PlanState {
-                        task: plan.task.clone(),
-                        steps: plan.steps.clone(),
-                        replans_used: plan.replans_used,
-                    };
-                    // 用户已停止：不再重规划。planner 一次调用最多烧 60s，而
-                    // 它的产物只是给模型注入一段提示——用户已经叫停了。
-                    if stop.stopped() {
-                        let hint = skill_finish(false, "用户停止");
-                        return Ok((format!("{final_text}\n\n⏹ 已停止{hint}"), collected_refs));
-                    }
-                    if let Some(new_steps) = replan(snapshot, reason).await {
-                        plan.steps = new_steps;
-                        fail_hint_queued = Some(format!(
-                            "【系统提示】原计划执行受阻，已重新规划剩余步骤：\n{}\n请按新计划继续；若仍无法推进，如实向用户说明。",
-                            plan.steps.join("\n")
-                        ));
-                    }
-                } else if !replan_exhausted_logged {
-                    // 预算耗尽留痕（只记一次）——
-                    // 「连续失败持续发生但不再重规划」这件事不能零痕迹
-                    replan_exhausted_logged = true;
-                    audit(
-                        crate::audit::AuditLevel::Warn,
-                        "plan.replan_budget_exhausted",
-                        vec![("max", crate::bot_plan::MAX_REPLANS.to_string())],
-                    );
-                }
-            }
-        }
-        // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法。
-        // pending 保持 Some 直到回复轮消费——在这里 take() 提前清空，回复轮的解析
-        // 就会永远扑空（N 换策略路径整段死代码的根因）；expecting 守卫防重复注入。
-        if let Some((sc_name, sc_snippet)) = pending_selfcheck.as_ref() {
-            if !expecting_selfcheck {
-                last_selfcheck_round = Some(round);
-                expecting_selfcheck = true;
-                msgs.push(serde_json::json!({
-                    "role": "user",
-                    "content": crate::prompts::SELFCHECK_PROMPT
-                        .replace("{tool_name}", sc_name)
-                        .replace("{snippet}", sc_snippet),
-                }));
-            }
-        }
-        if let Some(hint) = fail_hint_queued.take() {
-            msgs.push(serde_json::json!({
-                "role": "user",
-                "content": hint,
-            }));
-        }
-        if soft_warn_queued {
-            soft_warn_queued = false;
-            msgs.push(serde_json::json!({
-                "role": "user",
-                "content": format!(
-                    "【系统提示】你已累计调用 {soft_warn_at} 个工具（全程累计），最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
-                    fuse_cap - soft_warn_at
-                ),
-            }));
         }
         // 轮数软警告：同样推迟到本轮 tool 响应全部回填后再注入（上面的 400 教训）。
         // 剩最后一两轮时模型往往已经在连发工具调用——此刻不喊，它就只能撞熔断。
@@ -2595,6 +2324,386 @@ where
     }
     body
 }
+/// 工具轮的执行出口。
+enum DispatchOutcome {
+    /// 本轮工具已执行完，继续下一轮
+    Continue,
+    /// 用户叫停：附「已停止」正文
+    Stopped(String),
+    /// 单轮 Function 调用熔断：附熔断正文
+    Fused(String),
+}
+
+/// 工具轮：execute_tool 分发 / 结果回灌 / 凭证登记。
+///
+/// 出口：跑完一轮（Continue）/ 用户叫停（Stopped，附「已停止」正文）/
+/// 单轮 Function 调用熔断（Fused，附熔断正文）。
+//
+// 本段顺序即不变量：assistant(tool_calls) 消息 → 逐个执行并回填 tool 响应 →
+// Replan → 各类提示注入。拆细会把「tool_calls 后必须紧跟 tool 消息」的协议
+// 约束切散到多处，反而更难看出哪一处破坏了它。
+#[allow(clippy::too_many_lines)]
+async fn dispatch_round<X, XP, R, RP>(
+    execute_tool: &X,
+    replan: &R,
+    msgs: &mut Vec<serde_json::Value>,
+    final_text: &str,
+    tool_calls: &[(String, String, String)],
+    thinking_blocks: &[serde_json::Value],
+    collected_refs: &mut Vec<TaskRef>,
+    function_calls_total: &mut usize,
+    mutation_done: &mut bool,
+    receipts: &mut Vec<String>,
+    evidence: &mut Vec<ToolEvidence>,
+    written_paths: &mut Vec<String>,
+    expecting_selfcheck: &mut bool,
+    pending_selfcheck: &mut Option<(String, String)>,
+    expecting_final_selfcheck: &mut bool,
+    final_selfcheck_snapshot: &mut Option<String>,
+    last_selfcheck_round: &mut Option<usize>,
+    last_failed_tool: &mut Option<String>,
+    last_fail_reason: &mut Option<String>,
+    consec_failures: &mut usize,
+    fail_hint_queued: &mut Option<String>,
+    replan_exhausted_logged: &mut bool,
+    soft_warn_sent: &mut bool,
+    soft_warn_queued: &mut bool,
+    tool_msg_ages: &mut Vec<(usize, usize)>,
+    fuse_cap: usize,
+    soft_warn_at: usize,
+    plan_state: Option<&mut crate::bot_plan::PlanState>,
+    deps: &ModelLoopDeps<'_>,
+    stop: &StopGuard,
+    round: usize,
+) -> Result<DispatchOutcome, CommandError>
+where
+    X: Fn(String, String, crate::bot::ToolCallTrace) -> XP,
+    XP: std::future::Future<Output = crate::bot::registry::ToolResult>,
+    R: Fn(crate::bot_plan::PlanState, String) -> RP,
+    RP: std::future::Future<Output = Option<Vec<String>>>,
+{
+    let emit = deps.emit;
+    let audit = deps.audit;
+    let skill_finish = deps.skill_finish;
+    // 模型请求工具：进程内执行，结果回填后继续下一轮。
+    // 模型以工具调用回应自检提示 = 以行动代回答：丢弃工具自检态，
+    // 后续轮流式不再被抑制；终稿自检快照一并释放——最终回答以
+    // 模型核验后的新产出为准，不能把旧快照顶回去。
+    *expecting_selfcheck = false;
+    *pending_selfcheck = None;
+    *expecting_final_selfcheck = false;
+    *final_selfcheck_snapshot = None;
+    msgs.push(with_thinking(
+        serde_json::json!({
+            "role": "assistant",
+            "content": serde_json::Value::Null,
+            "tool_calls": tool_calls.iter().map(|(id, name, args)| serde_json::json!({
+                "id": id, "type": "function",
+                "function": {"name": name, "arguments": args}
+            })).collect::<Vec<_>>()
+        }),
+        thinking_blocks,
+    ));
+    if stop.stopped() {
+        let hint = skill_finish(false, "用户停止");
+        return Ok(DispatchOutcome::Stopped(format!(
+            "{final_text}\n\n⏹ 已停止{hint}"
+        )));
+    }
+    for (id, name, args) in tool_calls {
+        // 工具批中途可停——/stop 后剩余调用不执行，
+        // 但必须回填占位 tool 响应（tool_calls → tool 消息协议完整性，
+        // 缺响应会让下一轮请求被 API 拒为 400 invalid params）
+        if stop.stopped() {
+            msgs.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": "⏹ 已停止，该工具未执行"
+            }));
+            tool_msg_ages.push((round, msgs.len() - 1));
+            continue;
+        }
+        *function_calls_total += 1;
+        if should_fuse(*function_calls_total, fuse_cap) {
+            let hint = skill_finish(false, "单轮 Function 调用超上限");
+            audit(
+                crate::audit::AuditLevel::Warn,
+                "fuse",
+                vec![("cap", fuse_cap.to_string())],
+            );
+            return Ok(DispatchOutcome::Fused(fuse_message(
+                final_text, &hint, fuse_cap,
+            )));
+        }
+        // 软警告（soft_warn_at，按会话熔断上限派生）：置标志，推迟到本轮 tool 响应全部回填后再注入——
+        // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
+        // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
+        // 400 invalid params（实锤：两次 400 均紧跟 soft_warn 注入）
+        if !*soft_warn_sent && *function_calls_total >= soft_warn_at {
+            *soft_warn_sent = true;
+            *soft_warn_queued = true;
+            audit(
+                crate::audit::AuditLevel::Info,
+                "soft_warn",
+                vec![
+                    ("used", soft_warn_at.to_string()),
+                    ("cap", fuse_cap.to_string()),
+                ],
+            );
+        }
+        // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
+        // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
+        let t_tool = std::time::Instant::now();
+        // 工具执行段的活体信号：bot-tool 只说明「要调了」，bot-tool-done 要等
+        // 工具返回——中间这段（run_python 可静默 300s、MCP 600s）此前零事件，
+        // UI 只有一个静态「…」。补一条 running 事件让前端起计时与 spinner。
+        emit(
+            "bot-tool-running",
+            serde_json::json!({
+                "id": id, "name": name,
+                "args_preview": args.chars().take(200).collect::<String>(),
+            }),
+        );
+        let tool_outcome = execute_tool(
+            name.clone(),
+            args.clone(),
+            crate::bot::ToolCallTrace {
+                turn: Some(round),
+                tool_call_id: Some(id.clone()),
+            },
+        )
+        .await;
+        let tool_ms = t_tool.elapsed().as_millis() as u64;
+        let result = &tool_outcome.text;
+        let refs = &tool_outcome.refs;
+        // 按执行结果置位——被门禁拦截/用户拒绝/执行失败的
+        // 变更工具不算「动过手」，幻觉守卫对后续虚假汇报保持拦截能力
+        if mutation_succeeded(name, &tool_outcome) {
+            *mutation_done = true;
+            // 自检触发：变更类工具 + 非子 agent 路径 + 节流(5 轮 1 次)
+            // 失败路径写 last_failed_tool/consec_failures/fail_hint_queued，
+            // 复用 PREVR 第 1 层既有「换策略」注入
+            if crate::bot::registry::mutating_tools()
+                .iter()
+                .any(|t| *t == name)
+                && stop
+                    .session_id()
+                    .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
+                    .is_none()
+                && last_selfcheck_round.is_none_or(|r| round.saturating_sub(r) >= 5)
+            {
+                let snippet: String = result.chars().take(80).collect();
+                *pending_selfcheck = Some((name.clone(), snippet));
+            }
+        }
+        // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
+        let failed = !tool_outcome.status.is_success();
+        // 被闸拒掉的调用（Denied：预算触顶 / 白名单外 / 用户拒绝）不计入熔断
+        // 计数——计数守的是「实际执行」的调用量。子 agent 收尾窗里模型可能
+        // 成批发读类调用试探，若被拒的也计数，一次并行批就能烧光收尾裕量，
+        // 模型永远轮不到写产物（写类在收尾窗放行、占裕量，正是设计语义）。
+        if tool_outcome.status == crate::bot::registry::ToolStatus::Denied {
+            *function_calls_total = function_calls_total.saturating_sub(1);
+        }
+        // 证据池：参数与返回都留着。成功与失败都记——失败信息也是模型看得见的
+        // 内容（模型会照着它说「跑不了」），出处比对时算不算得到依据就在这里。
+        evidence.push(ToolEvidence {
+            ok: !failed,
+            args: args.clone(),
+            output: result.chars().take(EVIDENCE_OUTPUT_CHARS).collect(),
+        });
+        // 只有成功返回的工具才算数：被门禁拦下 / 用户拒绝 / 执行失败的调用没产出
+        // 任何可转述的东西，模型若照着它编结果，凭证表还得拦得住。
+        if !failed {
+            receipts.push(name.clone());
+            // 落盘凭证同步入池：写盘类工具成功时带回来的 file_changes 就是
+            // 「这个路径确实是工具产物」的凭据（文档生成器在 24a4ea6 之前
+            // 不带凭证，那是这道判据的地基缺口）。
+            for fc in &tool_outcome.file_changes {
+                written_paths.push(fc.path.to_lowercase());
+            }
+        }
+        emit(
+            "bot-tool-done",
+            serde_json::json!({
+                "id": id, "name": name, "args": args,
+                "result": result.chars().take(2000).collect::<String>(),
+                "ms": tool_ms,
+                "ok": !failed,
+            }),
+        );
+        audit(
+            crate::audit::AuditLevel::Info,
+            "tool",
+            vec![
+                // 工具名是模型给的字符串：truncate_for_log = escape_for_log 别名（\n\r| 已转义），不可伪造日志行
+                ("tool", crate::bot::truncate_for_log(name, 60)),
+                ("args", crate::bot::truncate_for_log(args, 500)),
+                ("result", crate::bot::truncate_for_log(result, 300)),
+            ],
+        );
+        collected_refs.extend(refs.iter().cloned());
+        // PREVR 第 1 层：工具失败检测。判定走全链路统一口径
+        // （audit::tool_call_failed）——门禁拦截/熔断/暂停/拒绝都能识别；
+        // 同工具连续失败才升级——单次失败先提示换策略。
+        // 与 soft_warn 同理：提示推迟到本轮 tool 响应全部回填后注入（协议安全）
+        if failed {
+            if last_failed_tool.as_deref() == Some(name.as_str()) {
+                *consec_failures += 1;
+            } else {
+                *consec_failures = 1;
+                *last_failed_tool = Some(name.clone());
+            }
+            let reason = crate::bot::truncate_for_log(result, 200);
+            *last_fail_reason = Some(reason.clone());
+            *fail_hint_queued = Some(if *consec_failures >= 2 {
+                format!(
+                        "【系统提示】工具 {name} 已连续失败 {consec_failures} 次（最近原因：{reason}）。禁止再次以相同方式调用该工具；如果换参数/换路径仍无法完成，如实向用户说明失败原因与当前进度，由用户决定下一步。"
+                    )
+            } else {
+                format!(
+                        "【系统提示】上一步调用的工具 {name} 失败了（原因：{reason}）。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
+                    )
+            });
+        } else if !result.is_empty() {
+            // 成功调用重置连续失败链（空结果不算成功也不算失败，不重置）
+            *last_failed_tool = None;
+            *last_fail_reason = None;
+            *consec_failures = 0;
+        }
+        msgs.push(serde_json::json!({
+            "role": "tool",
+            "tool_call_id": id,
+            "content": result
+        }));
+        tool_msg_ages.push((round, msgs.len() - 1));
+        // 工具随结果附图（screenshot）→ 图作为紧随 tool 消息的 user 消息注入。
+        // OpenAI 协议 tool 消息只收文本，「工具后追加带图 user 消息」是官方视觉
+        // 示例同款；Anthropic 转换器会把 [tool, user(图)] 合并成单条 user
+        // [tool_result, image]（官方 tool_result 附图形态，满足严格交替）。
+        // 图片消息在本轮 msgs 驻留后续轮次：单次截图场景 token 可控，不做
+        // 历史裁剪（循环内 msgs 生命周期只有一次运行，与 bot_chat 附件跨轮
+        // 「最后 3 条」裁剪不同源）。
+        if !tool_outcome.images.is_empty() {
+            let mut parts = vec![serde_json::json!({
+                "type": "text",
+                "text": "〔系统附图〕以上工具返回了截图，请直接用视觉能力读取图片内容。"
+            })];
+            // 单图至多 3MB（读文件 + base64）：与 bot_chat 附件链路同款包
+            // spawn_blocking，防多图/并发会话把 async runtime 线程占死
+            let images = tool_outcome.images.clone();
+            let read = tauri::async_runtime::spawn_blocking(move || {
+                images
+                    .iter()
+                    .map(|p| crate::bot_chat::image_part_from_file(std::path::Path::new(p)))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            let mut attached = 0usize;
+            for (p, part) in tool_outcome.images.iter().zip(read) {
+                match part {
+                    Some(part) => {
+                        parts.push(part);
+                        attached += 1;
+                    }
+                    None => audit(
+                        crate::audit::AuditLevel::Info,
+                        "tool_image.skip",
+                        vec![("detail", crate::bot::truncate_for_log(p, 200))],
+                    ),
+                }
+            }
+            if attached > 0 {
+                msgs.push(serde_json::json!({ "role": "user", "content": parts }));
+            }
+        }
+    }
+    // PREVR 第 2 层：同工具连续失败 ≥2 且有计划 → Replan 一次
+    // （重规划剩余步骤，替换计划文本；≤MAX_REPLANS 次硬上限，防重规划死循环）。
+    // 预算不管成败都消耗——失败 replan 若不计数，
+    // Planner 持续故障时每轮会白烧一次调用，硬上限名不副实；fail_reason 带真实错误
+    // 文本（只传工具名的话 Planner 拿不到任何失败细节）。
+    // Replan 是同步阻塞本轮的 LLM 调用：放在 tool 响应全部回填后、注入提示前，
+    // 这样提示里带的就是新计划。
+    if *consec_failures >= 2 {
+        if let Some(plan) = plan_state {
+            if plan.replans_used < crate::bot_plan::MAX_REPLANS {
+                plan.replans_used += 1;
+                let reason = format!(
+                    "工具 {} 连续失败 {} 次，最近错误：{}",
+                    last_failed_tool.as_deref().unwrap_or("?"),
+                    consec_failures,
+                    last_fail_reason.as_deref().unwrap_or("（无错误详情）")
+                );
+                // replan 走注入回调；PlanState 按值快照传入（回调签名
+                // 不能借用本轮局部 &mut，见 ModelLoopDeps 注释）
+                let snapshot = crate::bot_plan::PlanState {
+                    task: plan.task.clone(),
+                    steps: plan.steps.clone(),
+                    replans_used: plan.replans_used,
+                };
+                // 用户已停止：不再重规划。planner 一次调用最多烧 60s，而
+                // 它的产物只是给模型注入一段提示——用户已经叫停了。
+                if stop.stopped() {
+                    let hint = skill_finish(false, "用户停止");
+                    return Ok(DispatchOutcome::Stopped(format!(
+                        "{final_text}\n\n⏹ 已停止{hint}"
+                    )));
+                }
+                if let Some(new_steps) = replan(snapshot, reason).await {
+                    plan.steps = new_steps;
+                    *fail_hint_queued = Some(format!(
+                            "【系统提示】原计划执行受阻，已重新规划剩余步骤：\n{}\n请按新计划继续；若仍无法推进，如实向用户说明。",
+                            plan.steps.join("\n")
+                        ));
+                }
+            } else if !*replan_exhausted_logged {
+                // 预算耗尽留痕（只记一次）——
+                // 「连续失败持续发生但不再重规划」这件事不能零痕迹
+                *replan_exhausted_logged = true;
+                audit(
+                    crate::audit::AuditLevel::Warn,
+                    "plan.replan_budget_exhausted",
+                    vec![("max", crate::bot_plan::MAX_REPLANS.to_string())],
+                );
+            }
+        }
+    }
+    // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法。
+    // pending 保持 Some 直到回复轮消费——在这里 take() 提前清空，回复轮的解析
+    // 就会永远扑空（N 换策略路径整段死代码的根因）；expecting 守卫防重复注入。
+    if let Some((sc_name, sc_snippet)) = pending_selfcheck.as_ref() {
+        if !*expecting_selfcheck {
+            *last_selfcheck_round = Some(round);
+            *expecting_selfcheck = true;
+            msgs.push(serde_json::json!({
+                "role": "user",
+                "content": crate::prompts::SELFCHECK_PROMPT
+                    .replace("{tool_name}", sc_name)
+                    .replace("{snippet}", sc_snippet),
+            }));
+        }
+    }
+    if let Some(hint) = fail_hint_queued.take() {
+        msgs.push(serde_json::json!({
+            "role": "user",
+            "content": hint,
+        }));
+    }
+    if *soft_warn_queued {
+        *soft_warn_queued = false;
+        msgs.push(serde_json::json!({
+                "role": "user",
+                "content": format!(
+                    "【系统提示】你已累计调用 {soft_warn_at} 个工具（全程累计），最多还能调 {} 个。请尽快收尾：合并调用、必要时汇总报告给用户、避免在剩余额度内继续展开新步骤。",
+                    fuse_cap - soft_warn_at
+                ),
+            }));
+    }
+    Ok(DispatchOutcome::Continue)
+}
+
 /// 无工具轮收尾判决的出口。
 enum FinalizeOutcome {
     /// 判决已定：继续走终稿组装（答案定稿 → post_turn 钩子 → 返回）
