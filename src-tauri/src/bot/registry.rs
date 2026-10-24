@@ -367,11 +367,11 @@ pub const SCHEMA_UI_INSPECT: &str = r##"{"type":"function","function":{"name":"u
     "query":{"type":"string","description":"可选：按控件标题 / 角色 / 标识过滤（不填=全部）"},
     "maxDepth":{"type":"integer","description":"可选：树深度上限，默认 6，最大 16（网页内容控件较深，默认看不到时可显式给 16）"}
   },"required":["windowId"]}}}"##;
-pub const SCHEMA_UI_CLICK: &str = r##"{"type":"function","function":{"name":"ui_click","description":"点击窗口里的某个控件（按控件 id 或标题关键词定位）。点「发送 / 提交 / 支付 / 删除」这类按钮前会弹窗请用户确认，用户拒绝则不执行——真发出去的消息撤不回来，所以这一步必须让用户过目","parameters":{"type":"object","properties":{
+pub const SCHEMA_UI_CLICK: &str = r##"{"type":"function","function":{"name":"ui_click","description":"点击窗口里的某个控件（按控件 id 或标题关键词定位）。点「发送 / 提交 / 支付 / 删除」这类按钮、以及没有标题的图标按钮（纸飞机/垃圾桶）前会弹窗请用户确认，用户拒绝或 60 秒无响应则不执行——真发出去的消息撤不回来，所以这一步必须让用户过目","parameters":{"type":"object","properties":{
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
     "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"}
   },"required":["windowId","target"]}}}"##;
-pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填。输入完不会自动发出去——发送是另一次 ui_click。文本里不能带换行符：换行等于按回车键，目标应用会当场发出去","parameters":{"type":"object","properties":{
+pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填；往「发送 / 提交」类输入框打字同样要先经用户确认。输入完不会自动发出去——发送是另一次 ui_click。文本里不能带换行符：换行等于按回车键，目标应用会当场发出去","parameters":{"type":"object","properties":{
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
     "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"},
     "text":{"type":"string","description":"要输入的文本"}

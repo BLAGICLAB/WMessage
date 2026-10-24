@@ -83,6 +83,9 @@ const DANGEROUS_KEYWORDS: &[&str] = &[
 /// 只按整词匹配的短词（子串匹配会误伤 Outlook / token 这类窗口名）
 const DANGEROUS_WHOLE_WORDS: &[&str] = &["ok"];
 
+/// 敏感词侧同款整词豁免（"pin" 子串会误伤 Spinner / shipping / typing）
+const SENSITIVE_WHOLE_WORDS: &[&str] = &["pin"];
+
 /// 敏感控件关键词：命中即拒绝输入（密码 / 验证码 / 支付密码）
 const SENSITIVE_KEYWORDS: &[&str] = &[
     "password",
@@ -278,7 +281,13 @@ fn gate_sensitive(node: &UiNode) -> Option<ToolResult> {
         node.title
     )
     .to_lowercase();
-    if SENSITIVE_KEYWORDS.iter().any(|k| hay.contains(k)) {
+    if SENSITIVE_KEYWORDS.iter().any(|k| {
+        if SENSITIVE_WHOLE_WORDS.contains(k) {
+            contains_word(&hay, k)
+        } else {
+            hay.contains(k)
+        }
+    }) {
         return Some(sensitive_denied(node));
     }
     None
@@ -938,6 +947,41 @@ mod tests {
             ..node
         };
         assert!(gate_sensitive(&normal).is_none(), "普通输入框不该拦");
+    }
+
+    /// 敏感词 "pin" 按整词匹配：子串匹配会把 Spinner / shipping / typing
+    /// 这类控件当密码框拒掉——危险词侧的 "ok" 早有同款整词豁免
+    #[test]
+    fn sensitive_pin_matches_whole_word_only() {
+        let mk = |role: &str, title: &str| UiNode {
+            id: "1:0.0".into(),
+            role: role.into(),
+            title: title.into(),
+            description: String::new(),
+            value: None,
+            identifier: None,
+            enabled: Some(true),
+            position: None,
+            size: None,
+            depth: 0,
+            actionable: false,
+            is_password: false,
+        };
+        for (role, title) in [
+            ("AXButton", "Spinner"),
+            ("AXTextField", "shipping"),
+            ("AXTextField", "typing"),
+            ("AXButton", "Spinning wheel"),
+        ] {
+            let n = mk(role, title);
+            assert!(
+                gate_sensitive(&n).is_none(),
+                "{title} 不是密码框，不该被 pin 子串误伤"
+            );
+        }
+        // 真正的 PIN 输入框（整词）照拦
+        assert!(gate_sensitive(&mk("AXTextField", "PIN")).is_some());
+        assert!(gate_sensitive(&mk("AXTextField", "请输入 pin")).is_some());
     }
 
     /// 敏感控件闸：角色是密码框、标题为空时也要拦
