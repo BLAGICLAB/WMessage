@@ -14,6 +14,15 @@ use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
 // 工具调度核心（execute_tool dispatch）
 
+/// 子 agent 收尾窗放行清单：预算触顶后仍可执行的写产物类工具 + 重读契约。
+/// read_own_card 在列是让模型触顶后还能查自己的状态与剩余量。
+const WRAP_UP_TOOLS: [&str; 4] = [
+    "write_artifact_file",
+    "write_file",
+    "edit_file",
+    "read_own_card",
+];
+
 /// 工具调用审计上下文（模型循环 → dispatch）：一次调用的「可整轮回放」标识。
 ///
 /// - `turn`：第几轮模型循环（0 起）——同一轮的多个 tool_call 归到一组，出问题整轮复现
@@ -545,47 +554,81 @@ async fn execute_tool_impl(
             ));
         }
         let max = ctx.budget.max_tool_calls as usize;
-        let acquired = ctx
-            .used_tool_calls
-            .fetch_update(
-                std::sync::atomic::Ordering::SeqCst,
-                std::sync::atomic::Ordering::SeqCst,
-                |prev| {
-                    if prev < max {
-                        Some(prev + 1)
-                    } else {
-                        None
-                    }
-                },
-            )
-            .is_ok();
-        if !acquired {
-            let used = ctx
+        // 收尾窗（预算触顶后）：只放行写产物类工具与 read_own_card，不占预算
+        // 计数——模型被拒的只是「继续探索」，把已有发现写成产物文件恰恰是
+        // 触顶后唯一该做的事。白名单闸在前，这里不必再验 ctx.tools。
+        if ctx.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
+            if !WRAP_UP_TOOLS.contains(&name) {
+                let ret_kv = tool_return_kv(
+                    name,
+                    "budget_wrap_up_deny",
+                    start.elapsed().as_millis() as u64,
+                    session_id,
+                    trace,
+                );
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Warn,
+                    "tool.return",
+                    &ret_kv,
+                );
+                return crate::bot::registry::ToolResult::denied(
+                    "⚠️ 工具调用预算已触顶，收尾窗内只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card；请把已有发现写成产物文件，然后输出收尾 JSON。"
+                    .to_string(),
+                );
+            }
+            // 写类放行：不 acquire、不计数，直接落到 progress 审计与执行
+        } else {
+            let acquired = ctx
                 .used_tool_calls
-                .load(std::sync::atomic::Ordering::SeqCst);
-            let mut budget_kv: Vec<(&str, String)> = vec![
-                ("subagent_id", ctx.subagent_id.clone()),
-                ("used", used.to_string()),
-                ("max", ctx.budget.max_tool_calls.to_string()),
-            ];
-            budget_kv.extend(trace_kv(trace, session_id));
-            crate::audit::write_event(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "subagent_budget_tool_calls_exceeded",
-                &budget_kv,
-            );
-            let ret_kv = tool_return_kv(
-                name,
-                "budget_tool_calls_exceeded",
-                start.elapsed().as_millis() as u64,
-                session_id,
-                trace,
-            );
-            crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
-            return crate::bot::registry::ToolResult::denied(format!(
-                "⚠️ 工具调用预算已触顶（{used} / {max}）：停止新探索，整理当前结果并输出收尾 JSON。"
-            ));
+                .fetch_update(
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                    |prev| {
+                        if prev < max {
+                            Some(prev + 1)
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .is_ok();
+            if !acquired {
+                // 首次触顶：进入收尾窗。拒绝本次调用并告知「现在只许写」——
+                // 硬熔断在模型循环层（预算 + 收尾裕量），那里才是兜底。
+                ctx.wrap_up.store(true, std::sync::atomic::Ordering::SeqCst);
+                let used = ctx
+                    .used_tool_calls
+                    .load(std::sync::atomic::Ordering::SeqCst);
+                let mut budget_kv: Vec<(&str, String)> = vec![
+                    ("subagent_id", ctx.subagent_id.clone()),
+                    ("used", used.to_string()),
+                    ("max", ctx.budget.max_tool_calls.to_string()),
+                ];
+                budget_kv.extend(trace_kv(trace, session_id));
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Warn,
+                    "subagent_budget_tool_calls_exceeded",
+                    &budget_kv,
+                );
+                let ret_kv = tool_return_kv(
+                    name,
+                    "budget_tool_calls_exceeded",
+                    start.elapsed().as_millis() as u64,
+                    session_id,
+                    trace,
+                );
+                crate::audit::write_event(
+                    app,
+                    crate::audit::AuditLevel::Warn,
+                    "tool.return",
+                    &ret_kv,
+                );
+                return crate::bot::registry::ToolResult::denied(format!(
+                    "⚠️ 工具调用预算已触顶（{used} / {max}）：停止新探索。现在只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card——把已有发现写成产物文件，然后输出收尾 JSON。"
+                ));
+            }
         }
         let mut prog_kv: Vec<(&str, String)> = vec![
             ("subagent_id", ctx.subagent_id.clone()),
@@ -1276,6 +1319,58 @@ mod pre_tool_hook_tests {
         );
     }
 
+    /// 收尾窗放行清单的漂移守卫：每个 profile 都必须有可用的写产物工具与
+    /// read_own_card——清单里出现 profile 白名单没有的工具名，收尾窗就对该
+    /// profile 整体关闭（写了也过不了白名单闸），触顶等于零产出路径复活。
+    #[test]
+    fn wrap_up_tools_exist_in_every_profile_whitelist() {
+        for profile in [
+            crate::db::SubagentProfile::Research,
+            crate::db::SubagentProfile::Coder,
+            crate::db::SubagentProfile::General,
+        ] {
+            let whitelist = crate::bot::registry::profile_whitelist(profile);
+            assert!(
+                whitelist.contains(&"read_own_card"),
+                "{:?} 缺 read_own_card：收尾窗内模型将无法重读契约",
+                profile
+            );
+            let has_writer = WRAP_UP_TOOLS
+                .iter()
+                .any(|t| *t != "read_own_card" && whitelist.contains(t));
+            assert!(
+                has_writer,
+                "{:?} 无任何收尾窗写产物工具，触顶后零产出路径复活",
+                profile
+            );
+        }
+    }
+
+    /// 收尾窗分支的接线守卫：wrap_up 置位后判据必须是 WRAP_UP_TOOLS（白名单闸
+    /// 在前已保证工具可用，这里只管「读拒写放」），且放行路径不得再走预算 acquire。
+    #[test]
+    fn wrap_up_branch_allows_writes_without_acquiring() {
+        let body = include_str!("dispatch.rs")
+            .split_once("#[cfg(test)]")
+            .expect("dispatch.rs 应有测试模块")
+            .0;
+        let branch = body
+            .split_once("if ctx.wrap_up.load(")
+            .expect("找不到收尾窗分支")
+            .1
+            .split("} else {")
+            .next()
+            .expect("收尾窗分支应有 else（预算 acquire 路径）");
+        assert!(
+            branch.contains("WRAP_UP_TOOLS.contains(&name)"),
+            "收尾窗判据必须是 WRAP_UP_TOOLS：{branch}"
+        );
+        assert!(
+            !branch.contains("fetch_update"),
+            "收尾窗放行的写类不得占预算计数（不得 acquire）：{branch}"
+        );
+    }
+
     #[test]
     fn hook_interrupt_text_is_classified_as_tool_failure() {
         // ⚠️ 前缀缺失时 Skill DSL 调度器会把拒跑记成步骤成功（scheduler 只看
@@ -1284,8 +1379,7 @@ mod pre_tool_hook_tests {
         assert!(
             crate::audit::tool_call_failed("write_file", &msg),
             "钩子拒绝文案必须被判失败：{msg}"
-        );
-    }
+        );    }
 
     /// 门禁拒绝的文案必须同时满足两件事：status=Denied（成败判定）+
     /// 文本可被 classify_tool_failure 认出子类（error_class 细分 + 转换历史
@@ -1324,7 +1418,13 @@ mod pre_tool_hook_tests {
             (
                 "预算触顶",
                 ToolResult::denied(
-                    "⚠️ 工具调用预算已触顶（12 / 12）：停止新探索，整理当前结果并输出收尾 JSON。",
+                    "⚠️ 工具调用预算已触顶（12 / 12）：停止新探索。现在只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card——把已有发现写成产物文件，然后输出收尾 JSON。",
+                ),
+            ),
+            (
+                "收尾窗内读类",
+                ToolResult::denied(
+                    "⚠️ 工具调用预算已触顶，收尾窗内只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card；请把已有发现写成产物文件，然后输出收尾 JSON。",
                 ),
             ),
             (
@@ -1386,13 +1486,14 @@ mod pre_tool_hook_tests {
             !production.contains("ToolResult::warn("),
             "dispatch 的生产代码不得构造 ToolResult::warn（会把「没执行」记成成功）"
         );
-        // 8 处：pre_tool 钩子拒绝 / 规则 deny / 确认被拒 / skill 熔断 /
-        // 子 agent 白名单外 / 预算触顶 / arguments 非法 JSON / 墙钟收尾窗。
+        // 9 处：pre_tool 钩子拒绝 / 规则 deny / 确认被拒 / skill 熔断 /
+        // 子 agent 白名单外 / 预算触顶（收尾窗开启）/ 收尾窗内读类拒绝 /
+        // arguments 非法 JSON / 墙钟收尾窗。
         // 数量变了请同步本测试与 every_gate_denial_* 的用例表。
         assert_eq!(
             production.matches("ToolResult::denied(").count(),
-            8,
-            "门禁早退点应恰好 8 处"
+            9,
+            "门禁早退点应恰好 9 处"
         );
     }
 

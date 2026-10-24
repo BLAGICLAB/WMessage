@@ -829,14 +829,24 @@ pub(crate) fn fuse_cap_upper_bound() -> usize {
     crate::bot::params::MAX_FUNCTION_CALLS_CAP as usize
 }
 
+/// 子 agent 收尾裕量：工具预算触顶后，熔断上限在预算之上再放行的**实际执行**
+/// 调用数（写产物 + 读契约）。dispatch 收尾窗拒掉的调用不计入熔断计数
+/// （见循环体 Denied 回退），所以这份裕量不会被被拒的读类调用烧掉——
+/// 否则一轮并行批就能把窗口吃光，模型永远轮不到写产物。
+const SUBAGENT_WRAP_UP_FUSE_MARGIN: usize = 5;
+
 /// 熔断上限派生链的唯一入口：子 agent 行上预算 > bot-config 覆盖 > 内置默认，
 /// 末端钳到 [1, 上界]。
+///
+/// 子 agent 在预算之上加收尾裕量：dispatch 预算闸触顶后进入收尾窗（只拒读、
+/// 放行写），这里的熔断退化为「收尾窗都没能让它停下」的绝对兜底。
+/// 主会话无预算轴，不受裕量影响。
 ///
 /// 上游（薄壳组装 deps）刻意不钳：`deps.fuse_cap_override` 也被单测直驱 core
 /// 注入，绕过薄壳，钳在薄壳等于给「实际生效的那条边界」留了个不生效的副本。
 fn fuse_cap_for(subagent_budget: Option<u32>, cfg_override: Option<usize>) -> usize {
     subagent_budget
-        .map(|n| n as usize)
+        .map(|n| n as usize + SUBAGENT_WRAP_UP_FUSE_MARGIN)
         .or(cfg_override)
         .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
         .clamp(1, fuse_cap_upper_bound())
@@ -3578,6 +3588,13 @@ where
             }
             // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
             let failed = !tool_outcome.status.is_success();
+            // 被闸拒掉的调用（Denied：预算触顶 / 白名单外 / 用户拒绝）不计入熔断
+            // 计数——计数守的是「实际执行」的调用量。子 agent 收尾窗里模型可能
+            // 成批发读类调用试探，若被拒的也计数，一次并行批就能烧光收尾裕量，
+            // 模型永远轮不到写产物（写类在收尾窗放行、占裕量，正是设计语义）。
+            if tool_outcome.status == crate::bot::registry::ToolStatus::Denied {
+                function_calls_total = function_calls_total.saturating_sub(1);
+            }
             // 证据池：参数与返回都留着。成功与失败都记——失败信息也是模型看得见的
             // 内容（模型会照着它说「跑不了」），出处比对时算不算得到依据就在这里。
             evidence.push(ToolEvidence {
@@ -5747,8 +5764,12 @@ mod rounds_fuse_tests {
         );
         assert_eq!(fuse_cap_for(None, Some(0)), 1, "0 次调用无意义，钳到 1");
         assert_eq!(fuse_cap_for(None, Some(30)), 30, "区间内原样放行");
-        // 子 agent 行上预算优先于全局覆盖，且同样受末端钳制约束
-        assert_eq!(fuse_cap_for(Some(7), Some(9_999)), 7);
+        // 子 agent 行上预算优先于全局覆盖，且同样受末端钳制约束；预算之上
+        // 恒加收尾裕量（预算触顶后 dispatch 只拒读放行写，熔断退为兜底）
+        assert_eq!(
+            fuse_cap_for(Some(7), Some(9_999)),
+            7 + SUBAGENT_WRAP_UP_FUSE_MARGIN
+        );
         assert_eq!(fuse_cap_for(Some(u32::MAX), None), cap);
         // 漂移守卫：同一条边界在本文件里只允许有一份。薄壳那份钳位被删掉后，
         // 生产代码里不应再出现 `clamp(1, 500)` 字面量——它是当年人手抄的副本，

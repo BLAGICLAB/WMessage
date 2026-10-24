@@ -69,6 +69,9 @@ pub struct SubagentSessionCtx {
     /// 此前轮数完全不落任何地方，主 agent 只能靠轮询猜子 agent 在不在推进。
     /// 强制点仍在 run_model_loop_core 的 max_rounds 熔断，这里只是仪表读数。
     pub used_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 工具预算触顶后进入收尾窗（dispatch 置位）：此后只放行写产物类工具与
+    /// read_own_card，其余调用拒绝。`Arc` 同上——dispatch 每次按值拿 ctx 克隆。
+    pub wrap_up: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 墙钟**绝对期限**（子 agent 进入 running 的那一刻算起，排队时间不计）。
     ///
     /// 存在的理由是软墙钟要在**工具调用边界**检查剩余预算：剩余进入预留
@@ -209,6 +212,7 @@ mod tests {
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         }
     }

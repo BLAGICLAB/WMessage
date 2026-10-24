@@ -391,6 +391,12 @@ struct CoreHarness {
 
 impl CoreHarness {
     fn new() -> Self {
+        Self::with_session(None)
+    }
+
+    /// 会话归属版：子 agent 会话的预算闸与熔断上限都从 stop.session_id()
+    /// 派生（tool_guard 全局注册表），None = 主会话默认。
+    fn with_session(session_id: Option<&str>) -> Self {
         let events: AuditEvents = Arc::new(Mutex::new(Vec::new()));
         let events2 = events.clone();
         let sub_tools: Arc<Mutex<Option<SessionTools>>> =
@@ -400,7 +406,7 @@ impl CoreHarness {
         let missing2 = missing.clone();
         Self {
             // 非交互实例：不发流式事件，stop 标志未置位
-            stop: StopGuard::new(&mock_handle(), false, None),
+            stop: StopGuard::new(&mock_handle(), false, session_id.map(str::to_string)),
             emit: Box::new(|_, _| {}),
             audit: Box::new(move |_, event, _| {
                 events2.lock().unwrap().push(event);
@@ -760,6 +766,76 @@ async fn turn_status_is_interrupted_when_stopped() {
         statuses.lock().unwrap().last(),
         Some(&TurnStatus::Interrupted),
         "stop 置位后终态须为 Interrupted"
+    );
+}
+
+/// 子 agent 熔断裕量语义：被闸拒（Denied）的调用不得计入熔断计数。
+/// 预算 2 → 熔断上限 = 2 + 收尾裕量 5 = 7。模型连发 9 轮被拒的读类调用：
+/// 若被拒的也计数，第 8 次就熔断（正文带 ⏹ 标记）；只有「实际执行的才算数」
+/// 才能让模型在收尾窗里继续试探并交卷。exec 注入模拟 dispatch 的拒绝回包。
+#[tokio::test]
+async fn core_denied_tool_calls_do_not_burn_fuse_margin() {
+    use std::sync::atomic::AtomicUsize;
+
+    let sid = "sess-fuse-margin-e2e";
+    let used = Arc::new(AtomicUsize::new(0));
+    let wrap_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    wmessage_lib::tool_guard::register_subagent_session(
+        sid,
+        wmessage_lib::tool_guard::SubagentSessionCtx {
+            subagent_id: "sa_fuse_margin".into(),
+            task_id: None,
+            profile: wmessage_lib::db::SubagentProfile::Research,
+            tools: Arc::new(vec!["read_text_file", "write_artifact_file"]),
+            budget: wmessage_lib::db::SubagentBudget {
+                max_turns: 50,
+                max_tool_calls: 2,
+                max_wall_seconds: 600,
+            },
+            artifact_dir: std::env::temp_dir().join("wmsg-fuse-margin-e2e"),
+            used_tool_calls: used.clone(),
+            used_rounds: Arc::new(AtomicUsize::new(0)),
+            wrap_up: wrap_flag.clone(),
+            wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
+        },
+    );
+
+    let server = MockLlmServer::start();
+    // 9 轮读类调用（exec 全部回 Denied，模拟 dispatch 预算闸的拒绝），然后交卷
+    for _ in 0..9 {
+        server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+            name: "read_text_file".into(),
+            arguments: r#"{"path":"/x.txt"}"#.into(),
+        }));
+    }
+    server.push_behavior(MockBehavior::TextReply(
+        r#"{"status":"succeeded","summary":"交卷"}"#.into(),
+    ));
+
+    let h = CoreHarness::with_session(Some(sid));
+    let exec = |name: String, _args: String, _trace: ToolCallTrace| async move {
+        assert_eq!(name, "read_text_file");
+        ToolResult::denied("⚠️ 工具调用预算已触顶：收尾窗内只放行写产物工具。")
+    };
+
+    let (text, _refs) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        20,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("被拒不计数时不应熔断，应跑到交卷轮");
+
+    wmessage_lib::tool_guard::unregister_subagent_session(sid);
+
+    assert!(
+        text.contains("succeeded") && !text.contains("⏹ 已熔断"),
+        "9 次被拒调用不得烧掉 7 的熔断上限（预算 2 + 裕量 5）：{text}"
     );
 }
 

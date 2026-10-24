@@ -3643,6 +3643,7 @@ mod registry_tests {
                 artifact_dir: std::path::PathBuf::from("/tmp/art_parity"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
             },
         );

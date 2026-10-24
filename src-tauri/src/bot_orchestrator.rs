@@ -1016,6 +1016,22 @@ fn parse_json_candidate(candidate: &str, require_semantic: bool) -> Option<serde
     Some(v)
 }
 
+/// 工具预算触顶后的强制改判条件（收尾窗语义，纯函数）：
+/// 触顶 + 终态还不是 budget_exceeded + 模型没交出可解析的收尾 JSON，
+/// 三者同时成立才把终态改判 budget_exceeded(max_tool_calls)。
+/// 交了卷的触顶是真实完成——dispatch 收尾窗放行过写产物，改判只会把
+/// 父 agent 的「带残留重试」逻辑错误触发。
+fn budget_force_needed(
+    tool_calls_used: usize,
+    max_tool_calls: u32,
+    status: SubagentStatus,
+    wrapped_up_cleanly: bool,
+) -> bool {
+    tool_calls_used >= max_tool_calls as usize
+        && status != SubagentStatus::BudgetExceeded
+        && !wrapped_up_cleanly
+}
+
 /// 收尾结果判定（纯函数，设计 §6/§7）：
 /// 墙钟熔断 → budget_exceeded(max_wall_seconds) + 正文留产；
 /// 轮数熔断 → budget_exceeded(max_turns) + 正文留产；
@@ -2419,6 +2435,9 @@ async fn run_subagent(
     // succeeded（父 agent 提示词教它「failed / budget_exceeded 都要读 error
     // 决定重试」，报成 succeeded 就不重试，产出残缺而无人知晓）。
     let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // 收尾窗标志：dispatch 预算闸置位后只放行写产物类工具——预算触顶不再等于
+    // 「什么都不能做」，把已有发现写成产物文件才是触顶后该做的事。
+    let wrap_up_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // 墙钟绝对期限：从**进入 running** 起算（排队时间不计，与现行口径一致）。
     // 闸在 tool_guard 里按绝对期限算剩余——每层各算一份会漂。
     let wall_deadline =
@@ -2434,6 +2453,7 @@ async fn run_subagent(
             artifact_dir: artifact_dir.clone(),
             used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
+            wrap_up: wrap_up_flag.clone(),
             wall_deadline,
         },
     );
@@ -2670,16 +2690,16 @@ async fn run_subagent(
         Ok(Err(e)) => classify_outcome(Some(&e.message()), false, None),
         Ok(Ok((text, _refs, _loop_trace))) => classify_outcome(None, false, Some(text)),
     };
-    // 工具预算触达 → 强制 budget_exceeded(max_tool_calls)。
+    // 工具预算触达 → 强制 budget_exceeded(max_tool_calls)——只针对「没交答卷」的。
     //
-    // dispatch 侧预算闸到顶后拒绝新调用，模型收到「停止新探索，整理当前结果」
-    // 的提示——它可能照办输出 {"status":"succeeded"}，也可能没来得及输出收尾
-    // JSON（落 failed + 解析失败）。两种都把真实原因（预算触顶）弄丢了：
-    // 父 agent 的提示词教它「failed / budget_exceeded 都要读 error 决定
-    // 重试」，报成 succeeded 就不会重试，产出残缺而无人知晓。
+    // dispatch 预算闸到顶后进入收尾窗：读类被拒、写产物放行。模型若照「只许写」
+    // 的指引交出合法收尾 JSON（含产物），那是真实完成，不得改判——改判会把
+    // 父 agent 的「带残留重试」逻辑错误触发，半成品被当失败重烧。没交答卷的
+    // （熔断标记路径已自带 budget_exceeded；这里管「停了工具但只输出散文」的
+    // 剩余路径）才改判，真实原因（预算触顶）不能丢。
     let tool_calls_used = used_tool_calls.load(std::sync::atomic::Ordering::SeqCst);
-    if tool_calls_used >= budget.max_tool_calls as usize && status != SubagentStatus::BudgetExceeded
-    {
+    let wrapped_up_cleanly = matches!(&wall, Ok(Ok((text, _, _))) if parse_final_json(text).is_some());
+    if budget_force_needed(tool_calls_used, budget.max_tool_calls, status, wrapped_up_cleanly) {
         status = SubagentStatus::BudgetExceeded;
         error = Some("max_tool_calls".into());
         // 部分结果不丢弃：熔断前跑出来的正文对父 agent 判断「该不该原目标
@@ -4268,6 +4288,7 @@ mod orchestrator_tests {
             artifact_dir: std::path::PathBuf::from("/tmp/art_c1"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         };
         assert_eq!(
@@ -4340,6 +4361,22 @@ mod orchestrator_tests {
         assert_eq!(err.as_deref(), Some("result_json_unparseable"));
         let res = res.unwrap();
         assert!(res["summary"].as_str().unwrap().contains("纯文本收尾"));
+    }
+
+    /// 触顶改判的四象限：交了卷的触顶是真实完成（收尾窗放行过写产物），
+    /// 只有「触顶 + 没交卷」才强制 budget_exceeded。
+    #[test]
+    fn budget_force_needed_only_when_not_wrapped_up() {
+        use SubagentStatus::*;
+        // 触顶 + 交卷（succeeded / 自报 failed 都是交卷）→ 不改判
+        assert!(!budget_force_needed(100, 100, Succeeded, true));
+        assert!(!budget_force_needed(100, 100, Failed, true));
+        // 触顶 + 没交卷 → 改判（真实原因是预算）
+        assert!(budget_force_needed(100, 100, Succeeded, false));
+        assert!(budget_force_needed(100, 100, Failed, false));
+        // 未触顶 / 已是 budget_exceeded（熔断标记路径）→ 不改判
+        assert!(!budget_force_needed(99, 100, Failed, false));
+        assert!(!budget_force_needed(100, 100, BudgetExceeded, false));
     }
 
     /// 轮数熔断必须保住已跑完的那十几轮产出。
@@ -5335,6 +5372,7 @@ mod orchestrator_tests {
                 artifact_dir: std::path::PathBuf::from("/tmp/art_rounds"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+                wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
             },
         );
@@ -5379,6 +5417,7 @@ mod orchestrator_tests {
                 artifact_dir: std::path::PathBuf::from("/tmp/art_view"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+                wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
             },
         );
@@ -5416,6 +5455,7 @@ mod orchestrator_tests {
                     artifact_dir: std::path::PathBuf::from("/tmp/art_drop"),
                     used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(7)),
+                    wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
                 },
             );
