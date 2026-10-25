@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 290 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 297 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -29,9 +29,11 @@ src-tauri/src/
 │─ 数据层
 ├── db/                  SQLite（wmessage.db）+ 迁移 + 产物 + 工作区（按表分文件）
 │   ├── db/mod.rs      模块声明 + 公共 re-export + open_db / ensure_columns
-│   ├── db/tests.rs     db 层单测（PRAGMA / ensure_columns / legacy 拷贝 / 迁移 /
+│   ├── db/tests.rs + db/tests/{pragmas,legacy_wal,migrate_json,files,history,session,upsert}.rs
+│   │                   db 层单测（PRAGMA / ensure_columns / legacy 拷贝 / 迁移 /
 │   │                   任务文件 / bot_history / upsert 语义）——原内联在 mod.rs 尾部，
-│   │                   拆分时逐字搬移；仍是 db 的直接子模块，`super::` 语义不变
+│   │                   拆分时逐字搬移；按主题切成七个子文件，门面只留共用辅助与
+│   │                   mod 声明；仍是 db 的直接子模块，`super::` 语义不变
 │   ├── db/ws_tests.rs  工作区（workspace / bind_files）单测
 │   ├── db/reset_tests.rs  reset 命令单测
 │   ├── db/atomic_write_tests.rs  原子写单测
@@ -1036,6 +1038,13 @@ flowchart TD
 - `db/tasks_patch.rs`
 - `db/tasks_transfer.rs`
 - `db/tests.rs`
+- `db/tests/files.rs`
+- `db/tests/history.rs`
+- `db/tests/legacy_wal.rs`
+- `db/tests/migrate_json.rs`
+- `db/tests/pragmas.rs`
+- `db/tests/session.rs`
+- `db/tests/upsert.rs`
 - `db/trace.rs`
 - `db/trace/tests.rs`
 - `db/trace_query.rs`
