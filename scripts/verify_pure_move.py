@@ -25,9 +25,13 @@
   「只是重新排版」误判成「内容被改」。
 - **空白无关**：代码段的空白（缩进、换行、行内空格）全部剔除后比对，
   所以行边界怎么变都不影响判定。
-- **字面量保真**：字符串 / 字符 / 原始字符串 / 注释的**内容逐字保留**
-  （不剔除空白）。schema 常量里的 JSON 描述文本里空格是有意义的
-  （`"a": 1` vs `"a":1`），抹掉会让真实改动蒙混过关。
+- **字面量保真**：字符串 / 字符 / 原始字符串的**内容逐字保留**（不剔除空白）。
+  schema 常量里的 JSON 描述文本里空格是有意义的（`"a": 1` vs `"a":1`），
+  抹掉会让真实改动蒙混过关。
+- **注释只放行前导缩进**：注释的**文字**逐字保留，但每行的前导空白不比——
+  内联 `mod tests { ... }` 整块搬成独立文件时必然要去掉一层缩进，
+  注释随之左移；按字面量逐字比会把纯搬移误报成「内容被改」。
+  原始字符串里的缩进**仍然逐字保留**（它本来就是内容）。
 - **可见性前缀可剥离**：`--strip-prefix` 指定的修饰（如 `pub(super) `）
   在两侧都剔除，于是「加可见性」这种获准的改动不算内容变化。
 
@@ -51,10 +55,16 @@ TRAILING_COMMA_RE = re.compile(r",(\s*[)\]}])")
 USE_START_RE = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?use\b")
 
 
-# ── 迷你词法：把文本切成「代码段」与「字面量段」 ──────────────────────────
-def segment(text: str) -> list[tuple[bool, str]]:
-    """返回 [(是否字面量, 片段), ...]。字面量段含注释与字符串/字符/原始字符串。"""
-    out: list[tuple[bool, str]] = []
+# ── 迷你词法：把文本切成「代码段」「注释段」「字面量段」 ────────────────────
+def segment(text: str) -> list[tuple[str, str]]:
+    """返回 [(类别, 片段), ...]，类别 ∈ {code, comment, literal}。
+
+    三类的比对口径不同（见 `key()`）：
+    - `code`    代码：空白无关，另可剥可见性前缀
+    - `comment` 注释：**逐行去前导空白**，其余逐字保留
+    - `literal` 字符串 / 字符 / 原始字符串：**逐字保留**（含缩进）
+    """
+    out: list[tuple[str, str]] = []
     i = 0
     n = len(text)
     buf: list[str] = []
@@ -80,7 +90,7 @@ def segment(text: str) -> list[tuple[bool, str]]:
                 if end == -1:
                     raise SystemExit("未闭合的原始字符串")
                 flush()
-                out.append((True, text[i : end + len(close)]))
+                out.append(("literal", text[i : end + len(close)]))
                 i = end + len(close)
                 code_start = i
                 continue
@@ -94,7 +104,7 @@ def segment(text: str) -> list[tuple[bool, str]]:
                     break
                 j += 1
             flush()
-            out.append((True, text[i : j + 1]))
+            out.append(("literal", text[i : j + 1]))
             i = j + 1
             code_start = i
             continue
@@ -106,13 +116,13 @@ def segment(text: str) -> list[tuple[bool, str]]:
                 while j < n and text[j] != "'":
                     j += 1
                 flush()
-                out.append((True, text[i : j + 1]))
+                out.append(("literal", text[i : j + 1]))
                 i = j + 1
                 code_start = i
                 continue
             if j + 1 < n and text[j + 1] == "'":
                 flush()
-                out.append((True, text[i : j + 2]))
+                out.append(("literal", text[i : j + 2]))
                 i = j + 2
                 code_start = i
                 continue
@@ -125,7 +135,7 @@ def segment(text: str) -> list[tuple[bool, str]]:
             if end == -1:
                 end = n
             flush()
-            out.append((True, text[i:end]))
+            out.append(("comment", text[i:end]))
             i = end
             code_start = i
             continue
@@ -144,7 +154,7 @@ def segment(text: str) -> list[tuple[bool, str]]:
                 else:
                     j += 1
             flush()
-            out.append((True, text[i:j]))
+            out.append(("comment", text[i:j]))
             i = j
             code_start = i
             continue
@@ -156,11 +166,21 @@ def segment(text: str) -> list[tuple[bool, str]]:
 
 
 def key(text: str, strip_prefixes: list[str]) -> str:
-    """比对键：代码段剔除空白与可见性前缀，字面量段逐字保留。"""
+    """比对键：代码段剔空白与可见性前缀；注释段逐行去前导空白；字面量段逐字保留。
+
+    为什么注释与字符串要分开：
+    - **字符串字面量**里的空格是有意义的（`"a": 1` vs `"a":1`），逐字保留。
+    - **注释的前导缩进**不是内容——内联 `mod tests { ... }` 整块搬成独立文件时
+      必然要去掉一层缩进，注释也就跟着左移。若把注释按字面量逐字比，
+      一次纯搬移会被报成「内容被改」。
+    注释的**文字**仍然逐字保留：改一个字照样被抓到。
+    """
     parts: list[str] = []
-    for is_literal, frag in segment(text):
-        if is_literal:
+    for kind, frag in segment(text):
+        if kind == "literal":
             parts.append(frag)
+        elif kind == "comment":
+            parts.append("\n".join(line.lstrip() for line in frag.split("\n")))
         else:
             for p in strip_prefixes:
                 frag = frag.replace(p, "")
