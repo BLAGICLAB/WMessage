@@ -19,6 +19,10 @@ const WHITELIST: &[&str] = &[
     "bot/tools.rs",
     "bot_fs.rs",
     "bot_chat.rs",
+    // 聊天主流程拆成 bot_chat/ 子模块后，存量调用点跟着搬了过来
+    "bot_chat/exec.rs",
+    "bot_chat/flow.rs",
+    "bot_chat/media.rs",
     "bot_desktop.rs",
     "bot_manage_file.rs",
     "bot_model_loop.rs",

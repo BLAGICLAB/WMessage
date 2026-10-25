@@ -513,7 +513,7 @@ fn digest_block_builds_without_absorbing() {
 /// 进 digest，子任务结果在本次进程内永久消失。
 #[test]
 fn digest_absorb_mark_is_left_to_the_caller() {
-    let chat = include_str!("../../bot_chat.rs");
+    let chat = include_str!("../../bot_chat/flow.rs");
     let start = chat
         .find("async fn bot_chat_inner(")
         .expect("bot_chat_inner 函数体起点");
@@ -555,7 +555,7 @@ fn missing_parent_session_blocks_the_report() {
 /// 刻意的（模型对末尾权重最高），说明插在它前面才不抢这份权重。
 #[test]
 fn report_turn_prompt_precedes_digest_injection() {
-    let src = include_str!("../../bot_chat.rs");
+    let src = include_str!("../../bot_chat/flow.rs");
     let prompt = src
         .find("REPORT_TURN_PROMPT}))")
         .expect("汇报轮必须注入轮次说明");

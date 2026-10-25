@@ -56,7 +56,6 @@ NEW_FILE_LIMIT = 1500
 # - 文件删除 → 整条销掉
 WHITELIST = {
     "src/bot/registry.rs": 3827,
-    "src/bot_chat.rs": 3028,
     "src/bot/tools.rs": 2949,
     "src/bot_fs.rs": 2846,
     "src/py/document.rs": 2456,

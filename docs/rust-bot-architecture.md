@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 222 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 232 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -116,9 +116,18 @@ src-tauri/src/
 │   └── api_handlers/types.rs    共享类型
 │
 │─ Bot 核心（编排 → 决策 → 工具分发）
-├── bot_chat.rs          入口编排：bot_chat / bot_compact / bot_execute_task 命令；五步主流程；
-│                        ChatMsg/TaskRef/BotChatResult/TaskExecOrigin；多模态图片组装；ChatGuard 防重入
-│                        （prompt 常量已移出，见 prompts/）
+├── bot_chat.rs (419)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
+│                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
+│   ├── bot_chat/flow.rs (676)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
+│   ├── bot_chat/exec.rs (558)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
+│   ├── bot_chat/media.rs (137)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
+│   ├── bot_chat/summary.rs (241) 历史摘要面：截断点选择 + 摘要请求 + 压缩
+│   ├── bot_chat/report.rs (154) 子任务汇报轮：回传结果 + 门控 + 历史映射
+│   ├── bot_chat/input.rs (110)  输入规范化面：不可见字符清洗 + 路由前判定 + 恢复提示
+│   ├── bot_chat/bot_chat_pure_helpers_tests.rs (643) 纯函数与接线守卫单测
+│   ├── bot_chat/image_attach_tests.rs (51)             图片附件单测
+│   ├── bot_chat/command_error_mapping_tests.rs (33)    命令错误映射单测
+│   └── bot_chat/chat_exec_guard_tests.rs (55)          ChatGuard / ExecGuard 语义单测
 │─ 提示词 prompts/（AI 应用的业务逻辑，与代码同等对待；统一从 `crate::prompts::NAME` 取）
 ├── prompts/mod.rs        模块声明 + `crate::prompts::NAME` 统一出口 + prompt 清单锁测试
 │   ├── prompts/subagent.rs 子 Agent 编排提示词（设计 §8）：主 agent 派发职责段/
@@ -510,7 +519,7 @@ src-tauri/src/
 | `Task` / `Subtask` / `TaskFile` | db/tasks.rs:154 / :22 / :34 |
 | `BotSession` | db/bot_sessions.rs:24 |
 | `CommandError` / `CommandErrorCode` / `CommandResult` | error.rs:151 / :36 |
-| `ChatMsg` / `TaskRef` / `BotChatResult` / `TaskExecOrigin` | bot_chat.rs:39 / :519 / :527 / :1734 |
+| `ChatMsg` / `TaskRef` / `BotChatResult` / `TaskExecOrigin` | bot_chat.rs:39 / :111 / :119 / bot_chat/exec.rs:138 |
 | `BotConfig` / `ApiProvider` / `PermMode` / `KeySlot` | bot/config/types.rs:82 / :376 / :401 / :42 |
 | `LlmHttp` / `ModelLoopDeps` / `ParsedChunk` | bot_model_loop.rs:906 / :1014 / :156 |
 | `SkillRun` / `SkillState` | bot_skills/state.rs |
@@ -532,8 +541,8 @@ src-tauri/src/
 | `skill_runs` | bot_skills/state.rs | 状态机 + `skill_terminate_all` / `clear_terminal_skill_runs` |
 | `stop_registry` | bot_slash.rs | `StopGuard::drop`（Arc 句柄） |
 | `confirm_requests` | bot_slash.rs | 前端应答 / 60s 超时 |
-| `chat_running` | bot_chat.rs | `ChatGuard::drop`（Arc 句柄） |
-| `exec_running` | bot_chat.rs | `ExecGuard::drop`（Arc 句柄） |
+| `chat_running` | bot_chat/flow.rs | `ChatGuard::drop`（Arc 句柄） |
+| `exec_running` | bot_chat/exec.rs | `ExecGuard::drop`（Arc 句柄） |
 | `sched_running` | bot_scheduler.rs | `SchedGuard::drop`（Arc 句柄） |
 | `pending` | exec_steps.rs | 用户应答 / 超时 |
 | `artifact_registry` | bot_artifacts.rs | 流程收尾 clear |
@@ -731,6 +740,16 @@ flowchart TD
 - `bot_archive.rs`
 - `bot_artifacts.rs`
 - `bot_chat.rs`
+- `bot_chat/bot_chat_pure_helpers_tests.rs`
+- `bot_chat/chat_exec_guard_tests.rs`
+- `bot_chat/command_error_mapping_tests.rs`
+- `bot_chat/exec.rs`
+- `bot_chat/flow.rs`
+- `bot_chat/image_attach_tests.rs`
+- `bot_chat/input.rs`
+- `bot_chat/media.rs`
+- `bot_chat/report.rs`
+- `bot_chat/summary.rs`
 - `bot_desktop.rs`
 - `bot_fs.rs`
 - `bot_manage_file.rs`

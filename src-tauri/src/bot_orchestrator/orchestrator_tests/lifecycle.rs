@@ -491,7 +491,7 @@ fn malformed_result_json_is_not_wrapped_and_carried_on() {
 /// 反了；放在更早还会被后续逻辑改写。匹配串 `concat!` 拆分防自匹配。
 #[test]
 fn digest_is_injected_at_the_end_of_message_assembly() {
-    let chat = include_str!("../../bot_chat.rs");
+    let chat = include_str!("../../bot_chat/flow.rs");
     let at = chat
         .find(concat!(
             "crate::bot_orchestrator::",
@@ -501,7 +501,7 @@ fn digest_is_injected_at_the_end_of_message_assembly() {
     let history_end = chat
         .find("msgs.push(serde_json::json!({\"role\": role, \"content\": m.content}))")
         .expect("历史消息循环的收尾 push");
-    // 模型循环锚点必须在注入点**之后**找：bot_chat.rs 前面还有若干处提到
+    // 模型循环锚点必须在注入点**之后**找：flow.rs 前面还有若干处提到
     // run_model_loop 的注释/别名，全文件搜第一个会命中它们。
     let runs_loop = chat[at..]
         .find("run_model_loop(")
