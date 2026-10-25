@@ -31,20 +31,20 @@
 
 | 文件 | 登记上限 | 实测 | 生产 | 内联测试 | 类别 | 落地 |
 |---|---|---|---|---|---|---|
-| `tests/llm_integration.rs` | 4645 | 4645 | 4646 | 0 | C | ⬜ |
-| `src/bot/registry.rs` | 3827 | 3827 | 2546 | 1282 | B | ⬜ |
-| `src/db/trace.rs` | 3040 | 3040 | 1652 | 1389 | B | ⬜ |
-| `src/bot_chat.rs` | 3028 | 3028 | 2764 | 265 | B | ⬜ |
-| `src/bot/tools.rs` | 2949 | 2949 | 2323 | 627 | B | ⬜ |
-| `src/bot_fs.rs` | 2846 | 2846 | 1875 | 972 | B | ⬜ |
+| `tests/llm_integration.rs` | 4645 | 4645 | 4646 | 0 | C | ✅ 目录形态 6 文件 |
+| `src/bot/registry.rs` | 3827 | 3827 | 2546 | 1282 | B | ⬜ 未开始 |
+| `src/db/trace.rs` | 3040 | 3040 | 1652 | 1389 | B | ✅ 908 |
+| `src/bot_chat.rs` | 3028 | 3028 | 2764 | 265 | B | ✅ 419（门面） |
+| `src/bot/tools.rs` | 2949 | 2949 | 2323 | 627 | B | ✅ 88（门面） |
+| `src/bot_fs.rs` | 2846 | 2846 | 1875 | 972 | B | ✅ 465（门面） |
 | `src/db/mod.rs` | 2468 | 2468 | 409 | 2060 | A | ✅ 416 |
-| `src/db/tasks.rs` | 2467 | 2467 | 1513 | 955 | B | ⬜ |
-| `src/py/document.rs` | 2456 | 2456 | 2142 | 315 | B | ⬜ |
-| `src/bot/services.rs` | 2391 | 2391 | 2389 | 3 | B | ⬜ |
+| `src/db/tasks.rs` | 2467 | 2467 | 1513 | 955 | B | ✅ 958 |
+| `src/py/document.rs` | 2456 | 2456 | 2142 | 315 | B | ✅ 1097 |
+| `src/bot/services.rs` | 2391 | 2391 | 2389 | 3 | B | ✅ 1332（门面） |
 | `src/bot/mcp/manager.rs` | 2075 | 2075 | 1213 | 863 | A | ✅ 1216 |
 | `src/bot_web.rs` | 2050 | 2050 | 1400 | 651 | A | ✅ 1400 |
 | `src/apps/manage.rs` | 1884 | 1884 | 966 | 919 | A | ✅ 966 |
-| `src/bot/dispatch.rs` | 1819 | 1819 | 1526 | 294 | B | ⬜ |
+| `src/bot/dispatch.rs` | 1819 | 1819 | 1526 | 294 | B | ✅ 1009 |
 | `src/audit.rs` | 1749 | 1749 | 715 | 1035 | A | ✅ 717 |
 | `src/bot_skills/manage.rs` | 1664 | 1664 | 1506 | 159 | A | ✅ 625 |
 | `src/bot_scheduler.rs` | 1617 | 1617 | 1162 | 456 | A | ✅ 1164 |
@@ -56,6 +56,15 @@
 
 **A 类 8 条已全部落地（2026-10-25）**：白名单 18 → 10 条，减债 8,394 行。
 落地过程中新发现三处计划未预判的坑，见 §九。
+
+**B 类 8 条 + C 类 1 条已落地（2026-10-25 续）**：白名单 10 → **1 条**
+（只剩 `src/bot/registry.rs` 3827）。B/C 类的实际切法、落地偏差与新发现的
+四个坑见 §十。
+
+> **原计划清单漏排两条**：`src/bot/dispatch.rs`（B 类，1819）与
+> `src/py/document.rs`（B 类，2456）**没有对应批次**——§三 的 12 批只覆盖了
+> 16 个文件。这两条是实测基线里有、计划里没排的，执行时按同一手法补做
+> （批次 1 / 批次 6c）。
 
 ---
 
@@ -102,22 +111,35 @@
 
 ### 批次总表
 
-| 批 | 内容 | 类别 | 触及文件 | 预计减债 | 风险 | 可否并行 |
+| 批 | 内容 | 类别 | 触及文件 | 预计减债 | 风险 | 实际落地（commit） |
 |---|---|---|---|---|---|---|
-| 1 | `db/mod.rs` 测试外移 | A | 1 | ~2060 | 极低 | ✅ 完成 |
-| 2 | `audit.rs` 测试外移 | A | 1 | ~1035 | 极低 | ✅ 完成 |
-| 3 | `bot/mcp/manager.rs` 测试外移 | A | 1 | ~863 | 极低 | ✅ 完成 |
-| 4 | `apps/manage.rs` 测试外移 | A | 1 | ~919 | 低 | ✅ 完成 |
-| 5 | `bot_anthropic.rs` + `bot_web.rs` + `bot_scheduler.rs` 测试外移 | A | 3 | ~1867 | 极低 | ✅ 完成 |
-| 6 | `bot_skills/manage.rs` 测试外移 + 生产切分 | A+B | 1 | ~160+ | 低 | ✅ 完成 |
-| 7 | `db/tasks.rs` 生产切分 | B | 1 | ~1500 | 中 | ✅ |
-| 8 | `db/trace.rs` 生产切分 | B | 1 | ~1650 | 中 | ✅ |
-| 9 | `bot_fs.rs` 生产切分 | B | 1 | ~1880 | 中 | ✅ |
-| 10 | `bot/tools.rs` + `bot/services.rs` 生产切分 | B | 2 | ~3000 | 中高 | ⚠️ 串行 |
-| 11 | `bot_chat.rs` + `bot/registry.rs` 生产切分 | B | 2 | ~3300 | 高 | ⚠️ 串行 |
-| 12 | `tests/llm_integration.rs` 拆分 | C | 1 | ~4650 | 中高 | ⚠️ 串行 |
+| 1 | `db/mod.rs` 测试外移 | A | 1 | ~2060 | 极低 | ✅ `2f909231` |
+| 2 | `audit.rs` 测试外移 | A | 1 | ~1035 | 极低 | ✅ `0b3c13df` |
+| 3 | `bot/mcp/manager.rs` 测试外移 | A | 1 | ~863 | 极低 | ✅ `bf66283b` |
+| 4 | `apps/manage.rs` 测试外移 | A | 1 | ~919 | 低 | ✅ `9d60cf67` |
+| 5 | `bot_anthropic.rs` + `bot_web.rs` + `bot_scheduler.rs` 测试外移 | A | 3 | ~1867 | 极低 | ✅ `97f6af2e` |
+| 6 | `bot_skills/manage.rs` 测试外移 + 生产切分 | A+B | 1 | ~160+ | 低 | ✅ `7306a2d4` |
+| 7 | `db/tasks.rs` 生产切分 | B | 1 | ~1500 | 中 | ✅ `50ea76c2` |
+| 8 | `db/trace.rs` 生产切分 | B | 1 | ~1650 | 中 | ✅ `5f745f79` |
+| 9 | `bot_fs.rs` 生产切分 | B | 1 | ~1880 | 中 | ✅ `b325f6dc` |
+| 10 | `bot/tools.rs` + `bot/services.rs` 生产切分 | B | 2 | ~3000 | 中高 | ✅ `6e5974d0` / `eb9c3eeb`（拆成两个 commit） |
+| 11 | `bot_chat.rs` + `bot/registry.rs` 生产切分 | B | 2 | ~3300 | 高 | 🔶 `bot_chat` ✅ `93658dba`；`registry` ⬜ 未开始 |
+| 12 | `tests/llm_integration.rs` 拆分 | C | 1 | ~4650 | 中高 | ✅ `694870af` |
+| 补 1 | `bot/dispatch.rs` 测试外移（**原清单漏排**） | B | 1 | ~810 | 极低 | ✅ `bfe0ab50` |
+| 补 2 | `py/document.rs` 生产切分 + Python 脚本真搬（**原清单漏排**） | B | 1 | ~1360 | 中 | ✅ `8eca65b1` |
 
 **批次 1–6 合计减债 ~8,400 行**，18 → 12 条（A 类 8 条全部清账）。
+**补 1/补 2 + 批次 7–12 全部落地后**：白名单 **18 → 1 条**（只剩 `bot/registry.rs`）。
+
+> **执行顺序与原计划不同**：原计划按「A 类 → B 类 → C 类」排，实际按
+> **依赖序**排（先做耦合最松的，再啃耦合最紧的）——`llm_integration`（C 类）
+> 提前到第 4 批做掉，`bot_chat`（原批次 11）提前到第 5 批。原因：C 类这条
+> 是**独立 crate**，不与任何生产模块耦合，先做掉不影响后面的手感；而
+> `bot_chat` / `tools` / `services` 三者共享 `TOOLS_TABLE` 与命令注册面，
+> 放在一串里连做会把改动面叠在一起。
+>
+> **每文件一个 commit**（不合并批次）：批次 10 的两个文件、批次 11 的两个文件
+> 都拆成了独立 commit，回退粒度按文件。
 
 ### 批次 1 · `src/db/mod.rs`（2468 → ~410）
 
@@ -499,16 +521,28 @@ bot_history / upsert 语义），且切完仍保持「直接子模块」形态�
 | 4 | ✅ 完成 | `9d60cf67` | 销 `src/apps/manage.rs` | 1884 → 966，测试外移 |
 | 5 | ✅ 完成 | `97f6af2e` | 销 `bot_anthropic` / `bot_web` / `bot_scheduler` | 1524→767 / 2050→1400 / 1617→1164 |
 | 6 | ✅ 完成 | `7306a2d4` | 销 `src/bot_skills/manage.rs` | 1664 → 625；生产切分（create.rs 337 行）+ 测试外移 |
-| 7 | ⬜ 未开始 | | | |
-| 8 | ⬜ 未开始 | | | 9 个 tauri 命令 |
-| 9 | ⬜ 未开始 | | | 顺带迁 audit_log |
-| 10 | ⬜ 未开始 | | | |
-| 11 | ⬜ 未开始 | | | 172 处引用，最险 |
-| 12 | ⬜ 未开始 | | | 集成测试 crate |
+| 7 | ✅ 完成 | `50ea76c2` | 销 `src/db/tasks.rs` | 2467 → 958，生产切分（`tasks_patch.rs` / `tasks_transfer.rs`）+ 测试外移 |
+| 8 | ✅ 完成 | `5f745f79` | 销 `src/db/trace.rs` | 3040 → 908，生产切分（`trace_query.rs` / `trace_usage.rs` / `trace_session.rs`）+ 测试外移 |
+| 9 | ✅ 完成 | `b325f6dc` | 销 `src/bot_fs.rs` | 2846 → 465（门面）+ `bot_fs/{edit,read,receipt}.rs`；`audit_log(` 冻结白名单同步补新路径 |
+| 10a | ✅ 完成 | `6e5974d0` | 销 `src/bot/tools.rs` | 2949 → 88（门面）+ `bot/tools/{common,task,doc,service}.rs` + 9 个测试文件 |
+| 10b | ✅ 完成 | `eb9c3eeb` | 销 `src/bot/services.rs` | 2391 → 1332（门面）+ `bot/services/{gate,logs,observe}.rs`（原计划只列了 `gate`，实际切 3 块） |
+| 11a | ✅ 完成 | `93658dba` | 销 `src/bot_chat.rs` | 3028 → 419（门面）+ `bot_chat/{flow,exec,media,summary,report,input}.rs` + 4 个测试文件 |
+| 11b | ⬜ 未开始 | | | `bot/registry.rs` 3827，172 处引用，最险——**需重新论证**（见 §十一） |
+| 12 | ✅ 完成 | `694870af` | 销 `tests/llm_integration.rs` | 4645 → 目录形态 6 文件（`core` / `sse` / `e2e` / `guard` / `anthropic` / `main`） |
+| 补 1 | ✅ 完成 | `bfe0ab50` | 销 `src/bot/dispatch.rs` | 1819 → 1009，内联测试外移到 `bot/dispatch/*_tests.rs`（原 12 批清单漏排） |
+| 补 2 | ✅ 完成 | `8eca65b1` | 销 `src/py/document.rs` | 2456 → 1097；8 段内嵌 Python **真搬成 `py/scripts/*.py`**（`include_str!` 载入，正文逐字节一致）+ 7 个测试文件 |
 
 **A 类小结（2026-10-25）**：白名单 18 → 10 条，减债 8,394 行；
 Rust 2191 例 + 前端 1065 例全绿；tests-audit 41 例全绿。
 源文件数 186 → 206（新增 20 个测试子文件），总行数基本不变（12.6 万）。
+
+**B/C 类小结（2026-10-25 续）**：白名单 10 → **1 条**，只剩 `bot/registry.rs`。
+Rust 2191 passed / 11 skipped、前端 100 files / 1065 tests、tests-audit 41 passed、
+`audit_no_eval.py` 通过、`cargo fmt --check` 与 `cargo clippy --all-targets -D warnings`
+干净、工单号防线通过。源文件数 206 → **262**，总行数 12.6 → **12.5 万**
+（减债主要来自把内嵌测试拆成独立文件后不再有重复的 import 噪音）。
+每批都是**纯搬移**：多重集比对确认「原文件行零丢失，新增行只有 `use` 增删 /
+`mod` 声明 / 可见性修饰 / 模块文档头」。
 
 ---
 
@@ -569,3 +603,160 @@ Rust 2191 例 + 前端 1065 例全绿；tests-audit 41 例全绿。
 
 **这条对 B 类同样成立**——`bot/registry.rs`（63 个 schema 字面量）、
 `bot/tools.rs`、`py/document.rs`（大段内嵌 Python 脚本）都是字符串密集区。
+
+---
+
+## 十、B/C 类落地时的实际切法与新发现的坑（2026-10-25 续）
+
+§九 的三个坑是 A 类（测试外移）撞出来的。B/C 类（生产切分）撞出另外四个，
+都是「切分手法」层面的，不是「文件内容」层面的。
+
+### 实际切法与 §三 计划的出入
+
+| 文件 | 计划 | 实际 | 差异原因 |
+|---|---|---|---|
+| `bot/dispatch.rs` | 未排 | 生产不动 + 5 个 `*_tests.rs` | 内联测试只 294 行，纯外移就够，无需生产切分 |
+| `db/tasks.rs` | ~1050 | 958（+ `tasks_patch.rs` / `tasks_transfer.rs`） | 计划的「~1050」是按「切一块」估的，实际两块都切才落进 1500 |
+| `db/trace.rs` | ~1650 | 908（+ `trace_query.rs` / `trace_usage.rs` / `trace_session.rs`） | 同上，切三块 |
+| `bot_fs.rs` | ~1500（7 文件） | 465（门面）+ 3 生产 + 4 测试 | 计划低估了测试块占比 |
+| `bot/tools.rs` | ~1450 | 88（门面）+ 4 生产 + 9 测试 | 同上 |
+| `bot/services.rs` | ~1200（门面 + `gate`） | 1332（门面）+ `gate` / `logs` / `observe` | 计划只列了 `gate` 一块；实测资源观测面与日志面各自独立，切一块放不下 |
+| `bot_chat.rs` | ~1400 | 419（门面）+ 6 生产 + 4 测试 | 同上 |
+| `py/document.rs` | 未排 | 1097 + `py/scripts/*.py`（8 个真 `.py` 文件） | 见下 |
+| `tests/llm_integration.rs` | 3 块 | 6 块 | **独立 crate**：`tests/` 下每个 `.rs` 是独立 target，子目录里的文件不会被自动编译 → **只能平铺** |
+| `bot/registry.rs` | 4 块 | 见 §十一 | 原计划的切法会打断 3 个接线守卫 |
+
+**`py/document.rs` 的额外决策**：它内嵌 8 段 Python（`const` + `r#"..."#`），
+搬成 Rust 子模块里的 `const` 后**行数照旧**（一行超长 + 编辑器无高亮 +
+Rust 工具链管不着）。改成**真 `.py` 文件**（`src-tauri/src/py/scripts/*.py`），
+Rust 侧 `include_str!` 载入——正文逐字节不变，编辑器高亮与语法检查恢复。
+这是 §三 之外新增的一种切法类别：**「非 Rust 载荷」单独成文件**。
+
+### 坑四：`pub(crate) use` 与私有 `use` 对「子模块 glob 取用」的口径不同
+
+门面把子模块的项转出来给仓库其他地方用，有四种写法，**选错会被
+`unused_imports` 打回**：
+
+| 用途 | 写法 | 判定口径 |
+|---|---|---|
+| 仓外可达（公开 API） | `pub use` | **永不被判 unused**——re-export 本身就是出口 |
+| 仓内可达（crate 内有引用） | `pub(crate) use` | 仓外**无人引用**时报 unused（`bot/tools.rs` 的 `TaskView` / `resolve_task_key` 即因此改成 `#[cfg(test)] use`） |
+| 仅门面自身 + 子模块经 `use super::*` 取用 | 私有 `use` | 子模块的 glob 取用**计入**「已使用」，不报 unused（`bot_chat` / `bot/tools` 已实证） |
+| 仅测试用 | `#[cfg(test)] use` | 同私有 `use`，且非测试构建下整个绑定消失 |
+
+**推论**：门面 re-export 清单要按**「仓外有没有人用」**分档，不是按
+「原来是不是 pub」。原来 `pub(crate)` 但仓外零引用的项，转进子模块后
+应降成 `pub(super)`（原可见域 = 该模块）+ 门面私有 `use`。
+反过来，原来 `pub` 的项必须**逐项 `pub use` 转出**，否则公开路径断掉。
+
+### 坑五：源码文本守卫随搬移失效，必须改指新家
+
+`services/tests.rs` 的 `patrol_wires_canary_before_judging` 用
+`include_str!("../services.rs")` 读**生产源码文本**，断言「金丝雀判定排在
+采样状态记录之前」。`enforce_listening_gate` 搬到 `gate.rs` 后守卫读的
+是门面——门面里没有那个函数 → 守卫 fail。
+
+**一般规则**：凡是 `include_str!` / `read_to_string` 读源码文本的守卫，
+搬移后必须改指新家；且**不能改成扫整个目录**——守卫里的签名字面量会扫到
+测试文件自身而自命中（`bot/tools.rs` 的 `sync_syscall_off_runtime_tests` 踩过，
+改法是 `include_str!` 显式列出生产文件）。
+
+### 坑六：`prod_slice` 遇 `#[cfg(test)]` 后的「找 `mod `」是纯文本定位
+
+`bot/test_files.rs::prod_slice` 遇到 `#[cfg(test)]` 后，会在**后续文本**里
+找第一个 `mod `，再从那里扫到配对的 `}` 整段丢弃。这个定位是**纯文本**的——
+注释或字符串里出现 `mod ` 就会误指，误指后从那里到下一个 `}` 的**生产代码
+会被整段丢弃**。
+
+**处置**：门面的 `#[cfg(test)] use` 块**必须放在文件末尾**（生产代码之后、
+`#[cfg(test)] mod X;` 之前），且注释里别出现 `mod ` 字样。
+（`bot/services.rs` 门面末尾的 `#[cfg(test)] use gate::{...}` 块就踩在这条线上。）
+
+### 坑七：枚举仓外引用时，`use crate::X::{a, b, c}` 的组形式必须一并 grep
+
+只扫 `crate::X::Y` 形式会漏掉**整组 import**——
+`pub(crate) use crate::bot_fs::{build_unified_diff, sha256_hex, READ_MAX_BYTES};`
+这一条在 `bot_fs` 拆分时就漏了，直到编译器报 unresolved 才补上。
+
+**处置**：枚举引用时同时 grep `use crate::X::` 与 `use crate::X::{` 两种形态。
+
+### 坑八（门禁侧）：拆完必须同步三处文档 + 白名单，缺一条就红
+
+`audit_module_map.py` 强校验三处：**模块树条目（`(NNN)` 行数标注须精确）**、
+**§6.4 源文件清单**、**开头散文「共 N 个文件、约 M 万行」**。
+文件数与总行数都要**重新算**——每拆一个文件，文件数 +1，总行数基本不变
+（拆测试块时 import 噪音反而减少）。`AGENTS.md` 与 `docs/testing.md` 里的
+「白名单 N 条」也要跟着改（它们是散文里的数字，脚本不校验，但会误导人）。
+
+---
+
+## 十一、`bot/registry.rs` 的重新论证（2026-10-25）
+
+§三 批次 11 把 registry.rs 标成「最险」，并说「需重新论证」。重新论证的
+结论：**该拆，但切法要改**——原计划那套切法会打断三个「接线守卫」。
+
+### 重新论证：三个原判断的实测修正
+
+| 原判断（计划 / 早前口径） | 实测 | 影响 |
+|---|---|---|
+| 「全仓 172 处 `crate::bot::registry::` 引用」 | 172 是**引用次数**；外部引用的**项**只有 **27 个**，分布在 48 个文件（`ToolResult` 125 次、`ToolStatus` 25 次，其余 25 项各 1–8 次） | 门面逐项 re-export **27 项 + 63 个 `SCHEMA_*`**（后者公开可见，零仓外引用但属公开 API，得转出保住路径）——量级可控，不是「172 处都要改」 |
+| 「63 个同质 `call_*`」是痛点 | 它们是**一行转发**（`call_query_tasks` → `crate::bot::tools::tool_query_tasks`），423 行合一块 | 不是痛点，合到 `handlers.rs` 即可，不必拆散 |
+| 「痛点是横向耦合」 | 真痛点是**6 个源码文本接线守卫** | 决定切法，见下 |
+
+### 真痛点：6 个「接线守卫」读的是 `bot/registry.rs` 的**文本**
+
+| 守卫 | 位置 | 断言 |
+|---|---|---|
+| `ui_tools_are_wired_into_registry` | `ui/mod.rs` | 6 个 UI 工具名出现在 `name: "X"` |
+| `ui_tools_are_wired_into_registry` | `bot_ui.rs` | 同上 |
+| `manage_file_is_wired_into_registry` | `bot_manage_file.rs` | `name: "manage_file"` **且** `SCHEMA_MANAGE_FILE` |
+| `copy_file_to_clipboard_is_wired_into_registry` | `bot_desktop.rs` | `name: "copy_file_to_clipboard"` **且** `SCHEMA_COPY_FILE_TO_CLIPBOARD` |
+| `reminder_tools_are_wired_into_registry` | `bot_reminders.rs` | 3 个提醒工具名 **且** `SCHEMA_SCHEDULE_REMINDER` |
+| `tools_table_has_no_cfg_gated_entries` | `bot/registry.rs` 内 | `TOOLS_TABLE` 体内不许有 `#[cfg(` |
+
+后三个断言 **`name:` 与 `SCHEMA_` 在同一个文件文本里**。若按原计划把
+`SCHEMA_*`（`schema.rs`）与 `TOOLS_TABLE`（`table.rs`）拆开，这三个守卫
+就得改成读两个文件——守卫语义从「接进工具表」退化成「两处都有」，
+**反而更弱**（原来「同一文件」蕴含了「同一份接线」，改完就没有这个保证了）。
+
+**结论：`SCHEMA_*` 与 `TOOLS_TABLE` 必须留在同一个文件。**
+
+### 切法（与原计划不同）
+
+```
+src/bot/registry.rs (~290)                类型（ToolCtx/ToolStatus/ToolResult/ToolDef）
+                                          + 门面逐项 re-export（87 项：63 个 SCHEMA_* / 11 个表侧 / 13 个判据侧）
+src/bot/registry/schemas.rs (~1160)       63 个 SCHEMA_* 常量 + TOOLS_INDEX / TOOLS_TABLE /
+                                          assemble_tools_json / tools_json* / profile_* / mutating_tools
+src/bot/registry/handlers.rs (~430)       63 个 call_* 转发（私有一行转发）
+src/bot/registry/claims.rs (~760)         声明判据（claims_mutation / claims_execution /
+                                          数字抽取 / 路径抽取 / mentioned_tool_names）
+src/bot/registry/mentioned_tool_names_tests.rs   原 1541–1621 内联块
+src/bot/registry/claimed_executed_tools_tests.rs 原 1622–1706 内联块
+src/bot/registry/result_claim_tests.rs           原 2689–2788 内联块
+src/bot/registry/registry_tests.rs               原 2789–3827 内联块
+```
+
+**跨模块接线**（门面是唯一 hub，子模块经 `use super::*` 取用）：
+
+```
+schemas.rs  ← SCHEMA_*（同文件）+ call_*（来自 handlers.rs）
+handlers.rs ← 无（纯转发，只依赖 crate::bot::tools）
+claims.rs   ← TOOLS_TABLE（来自 schemas.rs）+ TOOL_ALIASES（同文件）
+```
+
+**外部改动面**：只有 6 个守卫的 `include_str!` 路径（各改 1 行，指向
+`registry/schemas.rs`）——**没有一处外部调用点需要改**（27 项路径由门面
+re-export 保住）。
+
+**不动的三样**（§七 不做清单）：
+- `TOOLS_TABLE` 的**条目顺序**——整块搬移，顺序天然不变；
+- 63 个 schema 的**字面量**——逐字节搬移，正文不改；
+- `BUILTIN_TOOL_COUNT` 手写常量与表长度的关系——表整体搬移，条数不变。
+
+**风险与兜底**：
+1. 门面 re-export 漏一项 → 编译器报 unresolved（**兜底可靠**）；
+2. 守卫漏改路径 → 守卫当场红（**兜底可靠**）；
+3. 可见性收窄 → 编译器兜住（注意 `pub(super)` 在子模块里指向**该子模块的
+   父级**，不是原来的 `crate::bot::registry`——搬运时要逐项按「原可见域 =
+   `crate::bot::registry`」翻译，别照抄 `pub(super)`）。
