@@ -1,6 +1,10 @@
 //! 历史摘要面：截断点选择、摘要请求、压缩。
 
 use super::*;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::{LazyLock, Mutex};
 
 /// 截断点计算（纯函数）：返回保留起点下标（=丢弃条数）。最旧的先丢，最后一条永远保留。
 /// 剥出供截断即摘要复用——摘要路径需要「将被丢弃的消息」而不只是丢弃条数。
@@ -67,10 +71,55 @@ where
     )
 }
 
+/// 截断摘要的进程内复用水位：session → (dropped 集合指纹, 摘要正文)。
+///
+/// 历史每轮都从 DB 全量重载（截断不落库），split 点稳定时 dropped 集合
+/// 逐轮完全相同——没有这层水位，截断后的每一轮都会对着同一段消息重付
+/// 一次摘要 LLM 调用（该请求走独立通道不进 llm.usage，是观测盲区里的
+/// 真实开销）。指纹相同 ⇒ dropped 集合逐字节相同 ⇒ 旧摘要仍然完整覆盖。
+/// 每会话一条，条数超限整体重置（丢了的会话下轮重摘要一次，正确性不受影响）。
+static SUMMARY_REUSE: LazyLock<Mutex<HashMap<String, (u64, String)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(super) fn dropped_fingerprint(dropped: &[ChatMsg]) -> u64 {
+    let mut h = DefaultHasher::new();
+    dropped.len().hash(&mut h);
+    for m in dropped {
+        m.role.hash(&mut h);
+        m.content.hash(&mut h);
+    }
+    h.finish()
+}
+
+pub(super) fn cached_summary(session_id: Option<&str>, dropped: &[ChatMsg]) -> Option<String> {
+    let sid = session_id?;
+    let fp = dropped_fingerprint(dropped);
+    let map = SUMMARY_REUSE.lock().ok()?;
+    match map.get(sid) {
+        Some((f, s)) if *f == fp => Some(s.clone()),
+        _ => None,
+    }
+}
+
+pub(super) fn store_summary_reuse(session_id: Option<&str>, dropped: &[ChatMsg], summary: &str) {
+    let Some(sid) = session_id else {
+        return;
+    };
+    let fp = dropped_fingerprint(dropped);
+    if let Ok(mut map) = SUMMARY_REUSE.lock() {
+        if map.len() > 128 && !map.contains_key(sid) {
+            map.clear();
+        }
+        map.insert(sid.to_string(), (fp, summary.to_string()));
+    }
+}
+
 /// 截断即摘要（设计 5.2）生产薄壳：
 /// 超预算时先生成摘要并落库，返回 (保留的消息, 带
 /// 「[早前对话摘要]」前缀的摘要内容, 丢弃条数)；LLM/落库任何一步失败都退回
 /// 直接丢弃，绝不阻塞或弄挂主对话流程。
+/// dropped 集合与上一轮相同（指纹命中）→ 复用进程内摘要不再发请求，
+/// 并留 `chat.summary_reused` 审计让「省了这次调用」可见。
 pub(crate) async fn truncate_chat_history_with_summary(
     app: &AppHandle,
     session_id: Option<&str>,
@@ -78,9 +127,20 @@ pub(crate) async fn truncate_chat_history_with_summary(
     budget: usize,
     target_ratio: f64,
 ) -> (Vec<ChatMsg>, Option<String>, usize) {
+    let sid = session_id.map(str::to_string);
     let (kept, summary, dropped) =
-        truncate_with_summary_core(messages, budget, target_ratio, |dropped_msgs| async move {
-            summarize_messages(app, SUMMARY_SYSTEM_PROMPT, &dropped_msgs).await
+        truncate_with_summary_core(messages, budget, target_ratio, |dropped_msgs| {
+            let sid = sid.clone();
+            async move {
+                if let Some(s) = cached_summary(sid.as_deref(), &dropped_msgs) {
+                    crate::audit_event!(app, crate::audit::AuditLevel::Info, "chat.summary_reused",
+                        "session" => sid.as_deref().unwrap_or("-"));
+                    return Ok(s);
+                }
+                summarize_messages(app, SUMMARY_SYSTEM_PROMPT, &dropped_msgs)
+                    .await
+                    .inspect(|s| store_summary_reuse(sid.as_deref(), &dropped_msgs, s))
+            }
         })
         .await;
     if let Some(summary) = &summary {

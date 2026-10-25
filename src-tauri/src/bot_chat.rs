@@ -421,3 +421,5 @@ mod input;
 mod media;
 mod report;
 mod summary;
+#[cfg(test)]
+mod summary_reuse_tests;
