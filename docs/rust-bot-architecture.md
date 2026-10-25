@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 217 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 222 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -60,7 +60,7 @@ src-tauri/src/
 │   ├── schedule_jobs.rs  内容型定时作业（T1）：XXL-JOB 式调度日志——重试/自动暂停/
 │   │                     错过消费 + scheduled_job_runs 执行历史；定时单源本表
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
-│   ├── db/trace.rs        执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
+│   ├── db/trace.rs (908)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）；
 │   │                     保留期边界（TRACE_RETENTION_MIN/MAX_DAYS）与词元统计可查窗口
@@ -73,6 +73,13 @@ src-tauri/src/
 │   │                     session_tool_names（本会话调用过 / 成功过的工具名，两档 →
 │   │                     点名判据的排除集：跨提问的重述是真话；派过子 agent 的会话
 │   │                     整档让开——子 agent 的 span 记在子 trace 下，join 不成立）
+│   ├── db/trace_query.rs (148)   痕迹查询面：摘要列表 trace_query / 单条 trace_get_row +
+│   │                     会话 span spans_for_trace + 会话工具名 session_tool_names
+│   ├── db/trace_usage.rs (218)  词元统计聚合面：按日 / 按模型 / 按模型×按日三档
+│   ├── db/trace_session.rs (417) 本会话文件改动面（聊天侧栏「文件」）：清单 / 详情 /
+│   │                     累计 diff（累计口径 vs 逐次降级口径）
+│   ├── db/trace/tests.rs (1063)  痕迹层单测（三表写入 / 保留期 / 词元统计 / 查询面）
+│   ├── db/trace_session/session_file_changes_tests.rs (319) 本会话文件改动单测
 │   ├── db/apps.rs        程序 apps 表 CRUD + app_runs 运行史 + app_versions 版本快照
 │   │                     （滚动保留最近 100 版，见 docs/APPS-DESIGN-2026-10-15.md §5）
 │   └── workspace.rs      workspace / bind_files
@@ -891,6 +898,11 @@ flowchart TD
 - `db/tasks_transfer.rs`
 - `db/tests.rs`
 - `db/trace.rs`
+- `db/trace/tests.rs`
+- `db/trace_query.rs`
+- `db/trace_session.rs`
+- `db/trace_session/session_file_changes_tests.rs`
+- `db/trace_usage.rs`
 - `db/workspace.rs`
 - `db/ws_tests.rs`
 

@@ -40,6 +40,9 @@ pub mod tasks;
 pub mod tasks_patch;
 pub mod tasks_transfer;
 pub mod trace;
+pub mod trace_query;
+pub mod trace_session;
+pub mod trace_usage;
 pub mod workspace;
 
 pub mod apps;

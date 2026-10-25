@@ -57,7 +57,6 @@ NEW_FILE_LIMIT = 1500
 WHITELIST = {
     "tests/llm_integration.rs": 4645,
     "src/bot/registry.rs": 3827,
-    "src/db/trace.rs": 3040,
     "src/bot_chat.rs": 3028,
     "src/bot/tools.rs": 2949,
     "src/bot_fs.rs": 2846,
