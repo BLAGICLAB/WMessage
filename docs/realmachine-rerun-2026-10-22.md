@@ -51,12 +51,12 @@
 
 ## 一、换 exe
 
-### 1.1 mac 侧产物（2026-10-23 晚间重建，SHA256 随文核对）
+### 1.1 mac 侧产物（2026-10-26 出整包时重建，SHA256 随文核对）
 
 上一轮那份 `wmessage.exe`（SHA256 `adebd0d…`，基线 `a20f0ec3`）**跟着 `src-tauri/target/` 整个清掉了**——
 本机一度没有可拷的产物，照旧 SHA256 去核对会直接扑空。2026-10-23 出整包时重建过一次
-（SHA256 `a5332331…`，基线 `27ccf452`）；**晚间又重建了一次**——当前这份是
-**D-16 / D-17 / D-18 三项修复**（技能「刚切就断」+ 点名路由优先 + 老库补 onion 两列）之后产物：
+（SHA256 `a5332331…`，基线 `27ccf452`）；**晚间又重建了一次**（`71f5017c…`，基线 `c6fe3560`）；
+**2026-10-26 出整包时又重建了一次——当前这份是最新产物**：
 
 ```
 /Users/renshi/Projects/wmessage/src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
@@ -64,20 +64,32 @@
 
 | 项 | 值 |
 |---|---|
-| 大小 | 75,200,216 B |
+| 大小 | 76,051,927 B（约 72.5 MB） |
 | 格式 | `PE32+ executable (GUI) x86-64 (stripped to external PDB), for MS Windows` |
-| SHA256 | `71f5017cfbdf1400092ef544bb190b8714d6ab349734d9261d9495cc1b4edef1` |
-| 构建基线 | `c6fe3560`（本轮 = D-16 / D-17 / D-18；基线之上还有 10-23 审计批 17 条 + D-11） |
-| 整包 | **本轮没重出整包**——沿用 `wmessage-portable-2026-10-23.zip`（110,219,309 B） |
-| 整包 SHA256 | `e0d98a9237fc4dc2af6d0b15b31f40dbe5d367964bf1e86c01af2d7641bdb2dc`（**对应旧 exe `a5332331…`**） |
+| SHA256 | `94eb0ae23cba5ba45239b45e65716b5f6dd2ffa793069209b740b1308cc11572` |
+| 构建基线 | `0f51232b`（含 10-26 那三个技能中断根因的修复 + release 构建修复） |
+| 整包 | **本轮出了新整包**——`wmessage-portable-2026-10-26.zip`（110,485,886 B） |
+| 整包 SHA256 | `895de1d88813574794f831de6e7085ac87cc9f732b2cde72d4f1bd8246743169` |
 
-> 已被替换、别再用的旧产物：`a5332331…`（75,081,877 B，基线 `27ccf452`，10-23 出整包那轮）、
+> 已被替换、别再用的旧产物：`71f5017c…`（75,200,216 B，基线 `c6fe3560`，10-23 晚间重建）、
+> `a5332331…`（75,081,877 B，基线 `27ccf452`，10-23 出整包那轮）、
 > `4fc1cdad…`（74,550,625 B，基线 `76dc0335`，10-22 那轮重建）、
 > `e24a91b1…`（74,635,241 B，基线 `1b44d38e`，不含 D-11）、
 > `adebd0d…`（基线 `a20f0ec3`，产物已被 target 清理）。
 >
+> 旧整包 `wmessage-portable-2026-10-23.zip`（SHA256 `e0d98a9237fc4dc2af6d0b15b31f40dbe5d367964bf1e86c01af2d7641bdb2dc`，
+> 对应 exe `a5332331…`）同样作废。
+>
 > **大小不能当校验依据**——同一份源码的两次构建差过 85 KB（74,635,241 → 74,550,625），
 > 认 SHA256。
+
+> ⚠️ **本轮（10-26）出包时撞上的坑，动手前先看一眼**：出整包跑的是 release 构建，
+> 而**仓库门禁（fmt / check / clippy / nextest）全走 debug profile**——
+> `debug_assertions` 恒为真，被 `#[cfg(debug_assertions)]` 门控的项在门禁视角里永远存在，
+> release 下才消失。`93658dba`（bot_chat.rs 拆分）留了一条无条件 `pub use` 转出这类项，
+> 于是 release 构建 E0432 编译不过，**断了 207 个提交没人发现**。
+> 已修（`0f51232b`），打包手册第 7 步的回归检查也从 debug 改成 `cargo check --release`。
+> **以后出包前先跑那条 release 检查**，别等第 1 步挂。
 
 重建命令（换机器或产物再丢时用）：
 
@@ -101,35 +113,35 @@ shasum -a 256 src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe
 > `C:\`，因为 `Program Files` 普通账号写不进去。**下面所有命令里的 `$PKG` 都指你实际放的目录**，
 > 换机器时改这一处即可。
 >
-> **2026-10-23 出了新整包**（`wmessage-portable-2026-10-23.zip`）：解压到
-> `C:\wmessage-portable-2026-10-23`，把 `$PKG` 改成它。旧包 `C:\wmessage-portable-2026-10-22`
-> 里的 `wmessage.db` 不会自动跟过来——**要旧数据就把旧的 `wmessage.db` 与 `AI_Gen_Files` 一起拷过去**
-> （或者新包里直接换 exe，那数据自然还在原地）。
+> **2026-10-26 出了新整包**（`wmessage-portable-2026-10-26.zip`）：解压到
+> `C:\wmessage-portable-2026-10-26`，把 `$PKG` 改成它。旧包（`C:\wmessage-portable-2026-10-22`
+> 或 `-2026-10-23`）里的 `wmessage.db` 不会自动跟过来——**要旧数据就把旧的 `wmessage.db`
+> 与 `AI_Gen_Files` 一起拷过去**（或者新包里直接换 exe，那数据自然还在原地）。
 >
 > **⚠️ 10-23 那轮实际跑的位置又变了**：13:41 那次的日志写着
 > `app_data_dir | path=D:\Program Files\wmessage-portable-2026-10-23`——**10-23 整包被放回了
 > `D:\Program Files`**，而且是**以管理员身份跑的**（日志里 `ui_automation_toggle | user=Administrator`），
 > 所以 `Program Files` 写得进去、便携语义完整（数据跟着包走）。
-> **本轮换 exe 的对象就是它**：`$PKG = "D:\Program Files\wmessage-portable-2026-10-23"`。
-> 换成普通账号跑就会退回 `%APPDATA%`（见主文档 §1.0 ①）——那是账号问题，不是本轮的问题。
+> **换成 10-26 整包时同样注意**：放到 `D:\Program Files` 就得以管理员身份跑，
+> 否则退回 `%APPDATA%`（见主文档 §1.0 ①）——那是账号问题，不是包的问题。
 
 ### 1.2 Windows 侧替换步骤
 
 ```powershell
-$PKG = "D:\Program Files\wmessage-portable-2026-10-23"   # 按你实际放的位置改
+$PKG = "D:\Program Files\wmessage-portable-2026-10-26"   # 按你实际放的位置改
 
 # 1) 确认应用没在跑（否则 exe 被占着，换不进去）
 Get-Process -Name wmessage -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
 
 # 2) 备份旧 exe（出问题能退回去）
-Copy-Item "$PKG\wmessage.exe" "$PKG\wmessage.exe.bak-2026-10-23" -Force
+Copy-Item "$PKG\wmessage.exe" "$PKG\wmessage.exe.bak-2026-10-26" -Force
 
 # 3) 替换（把拷过去的 wmessage.exe 放到 $PKG 下再执行）
 Copy-Item "D:\transfer\wmessage.exe" "$PKG\wmessage.exe" -Force
 
 # 4) 校验：认 SHA256（大小不能当校验依据）
 Get-FileHash "$PKG\wmessage.exe" -Algorithm SHA256 |
-  Select-Object Hash   # 期望 71f5017cfbdf1400092ef544bb190b8714d6ab349734d9261d9495cc1b4edef1
+  Select-Object Hash   # 期望 94eb0ae23cba5ba45239b45e65716b5f6dd2ffa793069209b740b1308cc11572
 ```
 
 ### 1.3 重启应用
@@ -141,7 +153,7 @@ Get-FileHash "$PKG\wmessage.exe" -Algorithm SHA256 |
 
 ```powershell
 $PS  = "D:\wmessage-probe\regression-probe.ps1"
-$PKG = "D:\Program Files\wmessage-portable-2026-10-23"
+$PKG = "D:\Program Files\wmessage-portable-2026-10-26"
 powershell -ExecutionPolicy Bypass -File $PS locate -ExeDir $PKG
 ```
 

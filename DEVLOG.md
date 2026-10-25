@@ -6,6 +6,70 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-26（周一）出包：Windows 绿色版 `wmessage-portable-2026-10-26.zip`（105 MB）
+
+**背景**：要一份最新绿色包。按 `docs/PACKAGING-WINDOWS-PORTABLE.md` 全流程执行，
+全程 macOS 交叉编译，无 Windows 机器参与构建。**不发邮件**——用户只要包本身。
+
+**这一版的意义在于两件事**：一是「技能写到一半就中断」的三个根因修完（技能失败语义
+按模式分岔 + 技能正文不截断 + `grep_files` 兼容单文件），第一次进 Windows 包；
+二是子 agent 的预算治理与收尾契约、上下文与工具调用那一批优化（8 项 P1–P8），
+它们此前只过了源码侧与 macOS 实机。
+
+**出包过程撞上的硬墙：release 构建编译不过，断了 207 个提交。**
+第 1 步 `npx tauri build --target x86_64-pc-windows-gnu --no-bundle` 直接 E0432 挂掉：
+`bot_chat.rs` 里 `pub use flow::chat_guard_is_held;` 是无条件的，而被转出的那个函数带
+`#[cfg(debug_assertions)]`——debug 下 `debug_assertions` 恒为真，release 下它不存在，
+转出就编译不过。**引入点是 `93658dba`**（bot_chat.rs 拆分）：拆分前该函数就在
+bot_chat.rs 里，不需要 re-export；拆进 `bot_chat/flow.rs` 后，定义上的 cfg 门控没跟着
+搬到转出语句上。
+
+**为什么门禁一次都没拦住**：fmt / check / clippy / nextest 全走 debug profile，
+`debug_assertions` 恒为真，这类"release 才消失"的项在门禁视角里永远存在；而 release
+只有出包时才走到，上一次出包（10-23）还在这次拆分之前。**这不是疏忽能解释的**——
+门禁的覆盖面有洞，只是洞的位置只有出包才踩得到。
+
+**为什么不做个门禁把它堵住**：本仓库不设 CI（`d84cee17` 已明确），本地 pre-push 全量
+门禁加一条 `cargo check --release` 是能堵的，但首次跑要按 release 重编全部依赖、
+耗时以分钟计，与「不主动出包、平时只做源码侧改动」的节奏不匹配。故本轮**只把
+出包手册第 7 步的回归检查从 debug 改成 release**（手册里原本写的是 `cargo check`，
+debug 口径同样漏）并在坑位表补一条——**出包这件事本身才是 release 的唯一消费者，
+门禁就该挂在出包流程上，而不是挂在每次 push 上**。
+
+**构建**：
+- 路径：`/Users/renshi/Projects/wmessage/wmessage-portable-2026-10-26.zip`
+  （110,485,886 B / 205 项 / 顶层 9 项，与 10-23 版同构）
+- `wmessage.exe`：76,051,927 B（约 72.5 MB，基于 main @ `0f51232b`，mingw 交叉编译，
+  完整 `npx tauri build --target x86_64-pc-windows-gnu --no-bundle`，前端 vite 先构建后嵌入）
+- exe SHA256：`94eb0ae23cba5ba45239b45e65716b5f6dd2ffa793069209b740b1308cc11572`
+- 整包 SHA256：`895de1d88813574794f831de6e7085ac87cc9f732b2cde72d4f1bd8246743169`
+- `dotnet/`：**本轮重新 publish**（`scripts/publish-docx-dotnet.sh`，189 文件 self-contained
+  .NET 8）——虽然 `src-tauri/dotnet/` 自 10-10 起无改动、复用上一版也合法，但本轮
+  **没有复用**：`packaging/wmessage-portable-staging/dotnet/` 是 framework-dependent 的
+  7 文件老货（用户机没装 .NET 8 就起不来），`packaging/wmessage-portable-dotnet-staging/`
+  才是 self-contained 那份——目录名挨着，取错的代价是用户机上 Word 修订静默回退到
+  Python。重 publish 只需一分多钟，比赌一次取错便宜。本轮产出与上一版 dotnet/ 清单
+  **逐项相同**（189 项，无增减）
+- `onnxruntime.dll`：1.28.0，从 NuGet 拉取（与 ort 2.0.0-rc.13 匹配）。本轮**额外核了
+  SHA256 与上一版逐字节一致**（`18370c37…` / `599629fa…`）——版本没动但要证明没动
+- 模型目录（`bge-small-zh-v1.5/`、`pp-ocr-v6/`）从仓库根复制
+- 固定文件（WebView2Loader.dll / MicrosoftEdgeWebview2Setup.exe）从上一版绿色包复用
+- README 的「文件说明」按实际内容对齐（含 exe 实际大小），「更新记录」补 10-26 那条
+
+**距上一版（2026-10-23，基线 `27ccf452`）**：208 个提交，源码变更 385 个文件。
+
+**校验**：
+- `ZIP_OK 205 files`，顶层 9 项，无多余文件夹层级，无 `.DS_Store`
+- 包内 exe 的 SHA256 与构建产物逐字节一致（`94eb0ae2…`）
+- `objdump -p wmessage.exe | grep -i onnxruntime` → 空（load-dynamic，运行时由随包 DLL 提供）
+- `file wmessage.exe` → PE32+ executable (GUI) x86-64
+- dotnet/ 抽查 `coreclr.dll` / `hostfxr.dll` / `hostpolicy.dll` / `wm-docx-revisions.exe`
+  齐备 → 确为 self-contained（`runtimeconfig.json` 的 `runtimeOptions.includedFrameworks`
+  带 `Microsoft.NETCore.App 8.0.25`）
+- `cargo check --release`（原生与 `x86_64-pc-windows-gnu` 两个目标）均通过
+
+**没做**：邮件投递（用户明确说不用发）。
+
 ## 2026-10-25（周日）工具自检挪出主循环：判据从「历史压过没有」换成「这一轮多付多少」
 
 **为什么换方向**：方案（`docs/CONTEXT-TOOLCALL-OPTIMIZATION-DESIGN-2026-10-25.md`

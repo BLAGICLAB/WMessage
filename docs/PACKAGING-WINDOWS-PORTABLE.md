@@ -143,7 +143,13 @@ EOF
 
 - [ ] exe 无 onnxruntime 静态导入（抽查）：
   `x86_64-w64-mingw32-objdump -p .../wmessage.exe | grep -i onnxruntime` 应无输出
-- [ ] macOS 侧回归：`cd src-tauri && cargo check` 通过（Cargo.toml 有 target 特异配置时必跑）
+- [ ] macOS 侧回归：`cargo check --release --manifest-path src-tauri/Cargo.toml` 通过
+  （**必须带 `--release`**：debug profile 的 `debug_assertions` 恒为真，被
+  `#[cfg(debug_assertions)]` 门控的项在 debug 下永远存在、release 下才消失——
+  无条件 `pub use` 转出这类项会让 release 构建 E0432 编译不过，而门禁里的
+  fmt / check / clippy / nextest 全走 debug profile，一个都拦不住。2026-10-26 出包时
+  就是在第 1 步撞上这个：`93658dba` 拆分 bot_chat.rs 时把测试辅助
+  `chat_guard_is_held` 搬进子模块却留了无条件 re-export，release 构建挂了 207 个提交）
 - [ ] DEVLOG.md 记一条出包记录
 - [ ] Windows 实机验收（人工）：解压双击 wmessage.exe；确认 exe 同目录生成 wmessage.db 与 AI_Gen_Files（便携锚定）；重点验证机器人记忆语义检索
   （模型/引擎异常会自动降级关键词模式，不报错但功能缩水，需肉眼确认），并用一张带文字的
@@ -224,6 +230,7 @@ end timeout
 |---|---|
 | `ort-sys: no prebuilt binaries available for target x86_64-pc-windows-gnu` | 确认 Cargo.toml Windows 目标已加 `load-dynamic`（2026-09-10 起已在仓库） |
 | 直出 exe 报「无法访问此页面」 | 用了 `cargo build` 而非完整 `tauri build`，重跑第 1 步 |
+| 第 1 步 release 构建 E0432 编译不过 | 门禁全走 debug profile（`debug_assertions` 恒为真），`#[cfg(debug_assertions)]` 的项在 release 下不存在——无条件 `pub use` 转出这类项就编译不过。修完用 `cargo check --release` 单独验一遍再出包 |
 | Windows 解压报「位置不可用」 | zip 是 macOS `zip` 打的，改用第 6 步 Python zipfile |
 | 用户机报「找不到 webview2loader.dll」 | 漏拷 WebView2Loader.dll，与 WebView2 Runtime 无关 |
 | Win10 白屏/起不来 | 让用户先跑包内 MicrosoftEdgeWebview2Setup.exe 装 WebView2 |
