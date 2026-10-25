@@ -1,72 +1,23 @@
 // SettingsPage 主组件（orchestrator）。
 // 1846 → 1340 行：types / constants / SkillsPanel / ApiProviderSelect / ProfileRow / ModelRow
-// 拆到同目录子文件，本文件保留所有 useState / handlers / JSX render。
+// 拆到同目录子文件；后来 8 个分区区块拆成 *Section.tsx，状态与 handler 又按域拆进
+// useSettingsActions / useSettingsVendors / useSettingsOps——本文件现在只剩门面：
+// 分区导航状态、三个 hook 的挂载骨架、JSX render。
 //
 // 公开 import 路径保持稳定：外部仍 `import { SettingsPage } from "./components/SettingsPage"`，
 // Vite 解析到 `./SettingsPage/index.tsx` → 透传 `./SettingsPage`。
 
-import { useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { useRef, useState } from "react";
 import { useConfirm } from "../../lib/useConfirm";
 import { useDismissable } from "../../lib/useDismissable";
-import {
-  ArrowLeft,
-  BarChart3,
-  Bot,
-  Brain,
-  Check,
-  Cpu,
-  DatabaseBackup,
-  FolderOutput,
-  History,
-  Plug,
-  ScrollText,
-  Server,
-  Settings2,
-  Sparkles,
-  Waypoints,
-  type LucideIcon,
-} from "lucide-react";
-
-import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
+import { ArrowLeft, BarChart3, Bot, Brain, Cpu, DatabaseBackup, FolderOutput, History, Plug, ScrollText, Server, Settings2, Sparkles, Waypoints, LucideIcon } from "lucide-react";
 import { NAV_W } from "../../lib/navWidth";
-import { getBotConfig } from "../../lib/botConfig";
-import { DEFAULT_ARCHIVE_DAYS, MAX_ARCHIVE_DAYS } from "../../lib/archiveRule";
-import {
-  fetchProviders,
-  fetchModelsByProvider,
-  syncModelsDev,
-  type MetaProvider,
-  type MetaModel,
-} from "../../lib/modelMeta";
 import type { ThemeSetting } from "../../theme";
 import { MigrationPanel } from "../MigrationPanel";
-
-import {
-  type ApiStatus,
-  type ModelsByProvider,
-  type ActiveModelId,
-  type ModelEntry,
-  type ParamView,
-  type SectionKey,
-  genModelId,
-  metaModelToEntry,
-} from "./types";
-import {
-  type ApiProvider,
-  type UiFontSize,
-  PROVIDER_PRESETS,
-  type AutoExtractMode,
-  isAutoExtractMode,
-  KNOWN_PROTOCOL_URLS,
-  CURATED_PROVIDER_KEYS,
-  U32_MAX,
-} from "./constants";
+import type { SectionKey } from "./types";
 import { SkillsPanel } from "./SkillsPanel";
 import { OnionsPanel } from "./OnionsPanel";
 import { WordTemplatePanel } from "./WordTemplatePanel";
-import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
 import { ServicesPanel } from "./ServicesPanel";
 import { LogsPanel } from "./LogsPanel";
@@ -81,6 +32,9 @@ import { ModelSection } from "./ModelSection";
 import { BotApiSection } from "./BotApiSection";
 import { McpSection } from "./McpSection";
 import { BotToolsSection } from "./BotToolsSection";
+import { useSettingsActions } from "./useSettingsActions";
+import { useSettingsVendors } from "./useSettingsVendors";
+import { useSettingsOps } from "./useSettingsOps";
 
 type Props = {
   theme: ThemeSetting;
@@ -124,1676 +78,184 @@ export function SettingsPage({
 }: Props) {
   const confirm = useConfirm();
   const [activeSection, setActiveSection] = useState<SectionKey>("general");
-  const [mountedSections, setMountedSections] = useState<
-    ReadonlySet<SectionKey>
-  >(new Set(["general"]));
-  const openSection = (key: SectionKey) => {
-    setActiveSection(key);
-    setMountedSections((prev) =>
-      prev.has(key) ? prev : new Set(prev).add(key),
-    );
-  };
-  const [status, setStatus] = useState<ApiStatus>({
-    enabled: false,
-    port: 4763,
-    token: "",
+  const {
+    autostartBusy,
+    autostartEnabled,
+    autostartError,
+    botBusy,
+    botEnabled,
+    botError,
+    braveKeyInput,
+    checkPyEnv,
+    clearTraces,
+    config,
+    configBusy,
+    configSaved,
+    deleteNonSelfBusy,
+    deleteNonSelfDone,
+    exposeNetAllowed,
+    exposeNetBusy,
+    extractIntervalText,
+    loadConfig,
+    loadParamViews,
+    paramMaxText,
+    paramNumber,
+    paramViews,
+    pyBusy,
+    pyEnabled,
+    pyEnv,
+    pyEnvBusy,
+    pyEnvErr,
+    pyTimeoutView,
+    runDeleteNonSelf,
+    servicesBusy,
+    servicesEnabled,
+    setAutostartBusy,
+    setAutostartEnabled,
+    setAutostartError,
+    setBotError,
+    setBraveKeyInput,
+    setConfig,
+    setConfigBusy,
+    setConfigSaved,
+    setTavilyKeyInput,
+    setTraceRetainDays,
+    tavilyKeyInput,
+    toggleBot,
+    toggleExposeNet,
+    togglePy,
+    toggleServices,
+    toggleUi,
+    traceClearBusy,
+    traceClearMsg,
+    traceRetainDays,
+    traceRetentionDays,
+    traceRetentionTitle,
+    uiBusy,
+    uiEnabled,
+  } = useSettingsActions({
+    confirm,
   });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
-  /** 添加供应商网格：model 分类右栏的子视图 */
-  const [showProviderPicker, setShowProviderPicker] = useState(false);
-  /** 模型库（内置 Rust meta 模块）：null = 模块异常/不可用（回退内置预设网格）。
-   *  model 分类首次挂载时拉取一次（fetchProviders 内部 invoke，异常 → null） */
-  const [metaProviders, setMetaProviders] = useState<MetaProvider[] | null>(
-    null,
-  );
-  /** 模型库网格：搜索过滤词 / 同步 busy / 结果与错误文案 / 点选服务商 busy */
-  const [metaSearch, setMetaSearch] = useState("");
-  const [metaSyncBusy, setMetaSyncBusy] = useState(false);
-  const [metaSyncMsg, setMetaSyncMsg] = useState("");
-  const [metaApplyBusy, setMetaApplyBusy] = useState(false);
-  /** 预设/模型库共用的写入逻辑：同协议下替换同名厂商旧条目、首条启用、
-   *  其余 enabled:false；覆盖后立即落盘（skipReload 同 toggleTavily 模式）。
-   *  「同名」判定走 normalizeVendorName：预设名与模型库 provider_name
-   *  的大小写/命名差异不再造成同厂商两条目并存；合并保留**既有厂商名**——
-   *  keyring vendor:{名} 条目与 verified_vendors 都按既有名登记，换成新名即丢 key。
-   *  active 只在两情形下交给本厂商：全局本就由本厂商持有（条目刷新后重指首条，
-   *  防悬空）、或全局无任何 active（空配置首接）。否则只加条目不动
-   *  api_provider/active_model_id——点预设接入新厂商不该悄悄顶掉在用模型
-   *  （未验证厂商接管后任务执行/聊天全打未验证端点换 401）；换用走
-   *  「设为当前使用」，测试通过后才放行。 */
-  const applyVendorModels = async (
-    name: string,
-    protocol: "openai" | "anthropic",
-    models: ModelEntry[],
-  ) => {
-    const list = config.modelsByProvider[protocol] ?? [];
-    const norm = normalizeVendorName(name);
-    // 厂商制语义：同协议下其他厂商条目保留，仅替换同名（归一化后）厂商旧条目（若有）。
-    // 无 vendor 的老条目用 __legacy__ 哨兵而非 vendorNameOf 的「兼容」兜底名——
-    // 保证永不会被归一化匹配进任何真实厂商（哨兵名不可能出现在条目里）
-    const kept = list.filter(
-      (m) => normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) !== norm,
-    );
-    const existingName =
-      list.find(
-        (m) =>
-          normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) === norm,
-      )?.vendor ?? name;
-    const flagged = models.map((m, i) => ({
-      ...m,
-      vendor: existingName,
-      enabled: i === 0,
-    }));
-    const curActiveId = config.activeModelId[protocol] ?? null;
-    const activeIsMine =
-      config.apiProvider === protocol &&
-      curActiveId !== null &&
-      list.some(
-        (m) =>
-          m.id === curActiveId &&
-          normalizeVendorName(m.vendor ?? `__legacy__${protocol}`) === norm,
-      );
-    const nothingActive =
-      !(config.activeModelId.openai ?? null) &&
-      !(config.activeModelId.anthropic ?? null);
-    const takeActive = activeIsMine || nothingActive;
-    const next = {
-      ...config,
-      apiProvider: takeActive ? protocol : config.apiProvider,
-      modelsByProvider: {
-        ...config.modelsByProvider,
-        [protocol]: [...kept, ...flagged],
-      },
-      activeModelId: takeActive
-        ? { ...config.activeModelId, [protocol]: flagged[0]?.id ?? null }
-        : config.activeModelId,
-    };
-    setConfig(next);
-    // skipReload：本地 state 已是合并后最新（loadConfig 会拿旧 mock/磁盘值覆盖刚点字段）
-    await saveConfig(next, { skipReload: true });
-    setShowProviderPicker(false);
-    setActiveVendor(existingName);
-  };
-  /** 应用供应商预设：预填 baseUrl/模型列表，写入走共用 applyVendorModels */
-  const applyProviderPreset = async (p: (typeof PROVIDER_PRESETS)[number]) => {
-    const models = p.models.map((m) => ({
-      id: genModelId(),
-      label: m.id,
-      model: m.id,
-      baseUrl: p.baseUrl,
-      vendor: p.name,
-      ...(m.contextK != null ? { contextK: m.contextK } : {}),
-    }));
-    await applyVendorModels(p.name, p.protocol, models);
-  };
-  /** 点选模型库服务商：拉该服务商模型列表 → 字段映射 → 共用写入。
-   *  协议启发：provider_key === "anthropic" 或 base_url 含 "anthropic" → anthropic，否则 openai；
-   *  default_base_url 为 null 时用空串（用户手填）。 */
-  const applyMetaProvider = async (p: MetaProvider) => {
-    if (metaApplyBusy) return;
-    setMetaApplyBusy(true);
-    setMetaSyncMsg("");
-    try {
-      const ms = await fetchModelsByProvider(p.provider_key);
-      if (ms === null) {
-        // meta 模块中途异常：网格整体降级回内置预设
-        setMetaProviders(null);
-        return;
-      }
-      if (ms.length === 0) {
-        setMetaSyncMsg(`「${p.provider_name}」在模型库中暂无模型数据`);
-        return;
-      }
-      const baseUrl = p.default_base_url ?? "";
-      const protocol: "openai" | "anthropic" =
-        p.provider_key === "anthropic" || baseUrl.includes("anthropic")
-          ? "anthropic"
-          : "openai";
-      await applyVendorModels(
-        p.provider_name,
-        protocol,
-        ms.map((m) => metaModelToEntry(m, p.provider_name, baseUrl)),
-      );
-    } finally {
-      setMetaApplyBusy(false);
-    }
-  };
-  /** 「更新模型库」：meta_sync_models_dev 回源 models.dev，完成后刷新服务商列表 */
-  const syncMetaLibrary = async () => {
-    if (metaSyncBusy) return;
-    setMetaSyncBusy(true);
-    setMetaSyncMsg("");
-    try {
-      const r = await syncModelsDev();
-      if (r?.ok) {
-        setMetaSyncMsg(`已更新：${r.providers} 个厂商 / ${r.models} 个模型`);
-        const ps = await fetchProviders();
-        if (ps) setMetaProviders(curateProviders(ps));
-      } else {
-        setMetaSyncMsg(
-          r
-            ? `更新失败：${r.error ?? "未知错误"}`
-            : "更新失败：模型库服务不可用",
-        );
-      }
-    } finally {
-      setMetaSyncBusy(false);
-    }
-  };
-  const [exporting, setExporting] = useState(false);
-  const [importing, setImporting] = useState(false);
-  const [exportingWs, setExportingWs] = useState(false);
-  const [importingWs, setImportingWs] = useState(false);
-  const [botEnabled, setBotEnabled] = useState(false);
-  const [botBusy, setBotBusy] = useState(false);
-  const [botError, setBotError] = useState("");
-  // 开机自启动：登录系统时自动拉起 wmessage
-  // 走 tauri-plugin-autostart：is_enabled / enable / disable 三个命令
-  const [autostartEnabled, setAutostartEnabled] = useState(false);
-  const [autostartBusy, setAutostartBusy] = useState(false);
-  const [autostartError, setAutostartError] = useState("");
-  const [config, setConfig] = useState({
-    // API 协议：openai=OpenAI 兼容（默认）/ anthropic=Anthropic 兼容
-    apiProvider: "openai" as ApiProvider,
-    // 每协议下的大模型列表：
-    // 双协议各自独立一份 ModelEntry 列表，切换协议时整体切换显示；
-    // 初始空 = 老板要求「不设置默认厂商」，用户点「添加大模型」自己加
-    modelsByProvider: { openai: [], anthropic: [] } as ModelsByProvider,
-    // 每协议当前选中的模型 id：null = 该协议还没选 active
-    activeModelId: { openai: null, anthropic: null } as ActiveModelId,
-    // 被禁用的厂商名列表：禁用后该厂商模型行变淡、开关禁用，聊天选模型入口过滤
-    disabledVendors: [] as string[],
-    // 连接测试通过的厂商名列表（可用性依据：左栏绿点 + 聊天下拉过滤；
-    // key/URL/格式变更由后端置失效）
-    verifiedVendors: [] as string[],
-    // 界面字体大小：small/standard/large/xlarge 四档
-    // 默认 small（「目前字号为小」）；后端 None 也回退到 small
-    uiFontSize: "small" as UiFontSize,
-    hasApiKey: false,
-    // 已存 API Key 的厂商名列表（后端按配置里的厂商名逐个探测 keyring）：
-    // 厂商页按它显示「已存入 ✓」，key 按厂商名分条目存储
-    vendorKeys: [] as string[],
-    bypassLlmOnPreStepHit: true, // F-1 [P0] pre-step 路由外层是否跳过主 LLM；老配置默认 true
-    // 本地文件工具白名单目录（textarea 一行一个；空 = 后端内置默认 桌面/下载/文档+绑定文件夹）
-    allowedDirs: "",
-    // 幻觉守卫「执行类谎报」触发词表（textarea 一行一个；GuardKeywordsPanel 编辑）
-    guardClaimKeywords: "",
-    // 内置默认词表：只读参照 + 「恢复默认」取值来源（后端 view 带下来）
-    guardClaimKeywordsDefault: [] as string[],
-    // Tavily 搜索 key 是否已存系统凭据存储（key 本体不回填，
-    // 与主 API key 同模式：view 只给 has 标志，输入框独立 state 不回填）
-    hasTavilyKey: false,
-    // 「Tavily 搜索」开关：开 = web_search 走 Tavily；关 = Bing+百度双引擎
-    tavilyEnabled: false,
-    // Brave 搜索 key 是否已存系统凭据存储（同 hasTavilyKey）
-    hasBraveKey: false,
-    // 「Brave 搜索」开关：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
-    braveEnabled: false,
-    // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳上限见后端参数表）
-    pythonTimeoutSecs: "",
-    // Function 调用熔断上限（空 = 100 默认； 全域，含工作流节点执行）
-    maxFunctionCalls: "",
-    // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源
-    // 显示为字符串输入；"7" = 默认（后端 None 亦回 7）
-    archiveAfterDays: String(DEFAULT_ARCHIVE_DAYS),
-    // 授权模式：strict=白名单外硬拒 / ask=白名单外弹授权（默认）/ yolo=全放行
-    permMode: "ask" as "strict" | "ask" | "auto" | "yolo",
-    //  per-tool 权限规则表（deny/ask/allow 首中即停；空表 = 无规则）
-    toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
-    // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
-    // 都有 max_tokens，页底重复已删）；loadConfig 读到已存值原样透传保存，不丢
-    maxTokens: "",
-    // 推理强度后台默认（RE-1）：off/low/medium/high，默认 medium；
-    // 抽象档位——发送时后端按具体模型族映射到 reasoning_effort / thinking.budget_tokens
-    reasoningEffort: "medium" as "off" | "low" | "medium" | "high",
-    // 定时记忆整理：开关 + 频率（off/12h/daily/weekly）+ 上次整理时间
-    // 后端 None/缺字段 → 默认 { enabled: true, interval: "daily", lastRunAt: null }
-    memoryConsolidation: {
-      enabled: true,
-      interval: "daily",
-      lastRunAt: null as number | null,
-    },
-    //  记忆可控开关：注入总闸 + 模型主动记忆门禁（后端缺字段 = 全开）；
-    //  自动记忆抽取档位（后端缺字段/非法值 = off）
-    memoryControl: {
-      injectionEnabled: true,
-      autoWriteEnabled: true,
-      autoExtract: "off" as AutoExtractMode,
-    },
-    //  记忆参数（手改 bot-config.json 生效，本页无 UI）：
-    // 原样回传保存，防止设置页整体替换写把手改值冲掉
-    memoryTuning: null as Record<string, number> | null,
-    // ──  Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
-    maxRounds: "",
-    historyBudgetChars: "",
-    subagentMaxTurns: "",
-    subagentMaxWallSecs: "",
-    searchMaxResults: "",
-    maxToolOutputBytes: "",
-    askBudget: "",
-  });
-  // 「立即整理」按钮状态与结果提示（转圈 → 短暂 toast 式文案，同 configSaved 模式）
-  const [consolidateBusy, setConsolidateBusy] = useState(false);
-  const [consolidateMsg, setConsolidateMsg] = useState("");
-  // 执行痕迹清理（数据管理卡）。保留天数**留空 = 用后端内置默认**——
-  // 前端不自己留一份「30」：那个数在后端常量、参数表、前端文案三处各抄过一遍，
-  // 改一处就漂。空值直接传 null，由后端按 TRACE_RETENTION_DAYS 处理。
-  const [traceRetainDays, setTraceRetainDays] = useState("");
-  const [traceClearBusy, setTraceClearBusy] = useState(false);
-  const [traceClearMsg, setTraceClearMsg] = useState("");
-  const clearTraces = async () => {
-    if (traceClearBusy) return;
-    setTraceClearBusy(true);
-    setTraceClearMsg("");
-    try {
-      const days = parseInt(traceRetainDays, 10);
-      const removed = await invoke<number>("trace_clear_before", {
-        days: Number.isFinite(days) && days > 0 ? days : null,
-      });
-      setTraceClearMsg(
-        removed > 0 ? `已清理 ${removed} 条执行痕迹` : "没有需要清理的痕迹",
-      );
-    } catch (e) {
-      handleCommandError(e, "清理执行痕迹", { silent: true });
-      setTraceClearMsg(formatCommandError(e));
-    } finally {
-      setTraceClearBusy(false);
-    }
-  };
-  // 删除非本人的任务卡（数据管理卡）：点删除直接硬删（这些卡是别人程序导出的
-  // 统计用数据，无二次确认不放回收站）；结果在按钮文字上短暂反馈——
-  // 不新增提示行，避免布局抖动
-  const [deleteNonSelfBusy, setDeleteNonSelfBusy] = useState(false);
-  const [deleteNonSelfDone, setDeleteNonSelfDone] = useState<string | null>(
-    null,
-  );
-  const deleteNonSelfTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (deleteNonSelfTimer.current) clearTimeout(deleteNonSelfTimer.current);
-    },
-    [],
-  );
-  const runDeleteNonSelf = async () => {
-    if (deleteNonSelfBusy) return;
-    setDeleteNonSelfBusy(true);
-    try {
-      const n = await invoke<number>("tasks_delete_non_self");
-      setDeleteNonSelfDone(n > 0 ? `已删 ${n} 张` : "无此类卡");
-      if (deleteNonSelfTimer.current) clearTimeout(deleteNonSelfTimer.current);
-      deleteNonSelfTimer.current = setTimeout(
-        () => setDeleteNonSelfDone(null),
-        2500,
-      );
-    } catch (e) {
-      handleCommandError(e, "删除非本人任务卡");
-      setDeleteNonSelfBusy(false);
-      return;
-    }
-    setDeleteNonSelfBusy(false);
-  };
-  const [keyInput, setKeyInput] = useState("");
-  // Tavily/Brave key 输入框（与主 keyInput 同模式：不回填已存 key，
-  // 非空保存时覆盖写入系统凭据存储；空 = 不动已存 key）
-  const [tavilyKeyInput, setTavilyKeyInput] = useState("");
-  const [braveKeyInput, setBraveKeyInput] = useState("");
-  const [configBusy, setConfigBusy] = useState(false);
-  const [configSaved, setConfigSaved] = useState(false);
-  /** 「保存配置」按钮（拆卡后各含 setConfig 字段的卡各配一枚；cls 控制外距）。
-   *  aria-label 恒为「保存配置」：可见文本随状态变（已保存 ✓/保存中…），可访问名不变。 */
-  const renderSaveButton = (cls: string) => (
-    <div className={cls}>
-      <button
-        aria-label="保存配置"
-        className={`btn-sm-action ${
-          configBusy ? "nm-inset" : "nm-outset"
-        }`}
-        onClick={() => saveConfig()}
-        disabled={configBusy}
-      >
-        {configSaved ? (
-          <>
-            <Check size={12} aria-hidden /> 已保存
-          </>
-        ) : configBusy ? (
-          "保存中…"
-        ) : (
-          "保存配置"
-        )}
-      </button>
-    </div>
-  );
-  const [pyEnabled, setPyEnabled] = useState(false);
-  const [pyBusy, setPyBusy] = useState(false);
-  /** 受管长驻服务总开关（后端 flag 文件，默认关闭） */
-  const [servicesEnabled, setServicesEnabled] = useState(false);
-  const [servicesBusy, setServicesBusy] = useState(false);
-  /** 允许受管服务暴露到非 loopback（L1 放开开关，默认关闭） */
-  const [exposeNetAllowed, setExposeNetAllowed] = useState(false);
-  const [exposeNetBusy, setExposeNetBusy] = useState(false);
-  /** 桌面 UI 自动化总开关（后端 flag 文件，默认关闭） */
-  const [uiEnabled, setUiEnabled] = useState(false);
-  const [uiBusy, setUiBusy] = useState(false);
-  const [pyEnv, setPyEnv] = useState<{
-    available: boolean;
-    python: string;
-    version: string;
-    libs: string[];
-  } | null>(null);
-  const [pyEnvBusy, setPyEnvBusy] = useState(false);
-  /** 环境检查失败的错误文案（可见反馈，不再只 console.error） */
-  const [pyEnvErr, setPyEnvErr] = useState("");
-
-  const refreshBot = async () => {
-    try {
-      const on = await invoke<boolean>("bot_get_enabled");
-      setBotEnabled(on);
-    } catch (e) {
-      // 自动加载失败：只记 console，不打扰
-      handleCommandError(e, "bot_get_enabled", { silent: true });
-    }
-  };
-
-  /** Agent 运行参数卡的元数据（生效值/默认值/范围/来源）。
-   *  null = 还没拉到（后端老版本无此命令时也走这条）——渲染退回本地兜底文案。 */
-  const [paramViews, setParamViews] = useState<ParamView[] | null>(null);
-  /** 执行痕迹自动保留期（天）——后端参数表那行的生效值。
-   *  前端此前自己写着「30」（卡片文案 + 输入框初值 + 兜底三处），后端常量一改
-   *  页面就撒谎；现在只从后端取。 */
-  const traceRetentionDays = paramViews?.find(
-    (p) => p.key === "trace.retention_days",
-  )?.value;
-  /** Python 执行超时那行（默认值 + 上限）——同样只从后端取。 */
-  const pyTimeoutView = paramViews?.find(
-    (p) => p.key === "tools.python_timeout_secs",
-  );
-  /** 参数表里的上界（取不到 → 空串 = 留空 = 用内置默认）。
-   *  预设的「拉到上限」用它：上限就是后端的硬顶常量，不是前端选的数。 */
-  const paramMaxText = (key: string) => {
-    const max = paramViews?.find((p) => p.key === key)?.max;
-    return max != null ? String(max) : "";
-  };
-  /** 参数表里的可填范围（min–max，取不到 → null = 不公示范围）。 */
-  const paramRangeText = (key: string) => {
-    const row = paramViews?.find((p) => p.key === key);
-    return row?.min != null && row?.max != null ? `${row.min}–${row.max}` : null;
-  };
-  /** 秒 → 人读时长（整分钟走分钟，否则走秒）。单位换算不是数值，值本身来自后端。 */
-  const fmtDurationSecs = (secs: number) =>
-    secs % 60 === 0 ? `${secs / 60} 分钟` : `${secs} 秒`;
-  /** 自动记忆抽取的最小间隔（后端限频常量，单位秒）→ 展示文案。
-   *  取不到 → null = 文案里不写数字（宁可少说一句，不写一份手写副本）。 */
-  const extractIntervalText = (() => {
-    const raw = paramViews?.find(
-      (p) => p.key === "memory.extract_min_interval_secs",
-    )?.value;
-    const secs = Number(raw);
-    return raw != null && Number.isFinite(secs) && secs > 0
-      ? fmtDurationSecs(secs)
-      : null;
-  })();
-  /** Python 执行超时（参数 tools.python_timeout_secs，单位秒）→ 展示文案。
-   *  取的是**生效值**（已钳过），不是用户填的原值。取不到 → null = 不写数字。 */
-  const pyTimeoutText = (() => {
-    const raw = pyTimeoutView?.value;
-    const secs = Number(raw);
-    return raw != null && Number.isFinite(secs) && secs > 0
-      ? fmtDurationSecs(secs)
-      : null;
-  })();
-  /** 沙箱说明那半句（开启确认框用）：有数就把生效超时写出来，取不到就不写——
-   *  手写的那个秒数会随后端常量漂（此前硬编码 60，改成 120 后文案就说谎了）。 */
-  const pySandboxDesc = `沙箱：独立临时目录 + ${
-    pyTimeoutText ? `${pyTimeoutText} 超时` : "限时执行"
-  } + 审计留痕`;
-  /** 保留天数输入框的提示：范围与默认值都取自后端参数表。 */
-  const traceRetentionTitle = (() => {
-    const range = paramRangeText("trace.retention_days");
-    const tail = traceRetentionDays
-      ? `默认 ${traceRetentionDays}`
-      : "留空 = 用内置默认";
-    return range ? `保留天数（${range}，${tail}）` : `保留天数（${tail}）`;
-  })();
-  const loadParamViews = async () => {
-    try {
-      const views = await invoke<ParamView[]>("bot_effective_params");
-      setParamViews(Array.isArray(views) ? views : null);
-    } catch (e) {
-      // 拉不到就让卡片退回本地兜底：参数卡不能因为一个展示用的命令挂了就整块
-      // 消失（设置页其余部分照常用）
-      handleCommandError(e, "bot_effective_params", { silent: true });
-      setParamViews(null);
-    }
-  };
-
-  /** 数值型参数 → 落盘值（Agent 运行参数卡 + Python 超时共用）。
-   *
-   *  空 = null（未配置 = 用内置默认）；负数 = null（非法）。
-   *  **0 只有在参数下界为 0 时才是合法值**——工具输出截断的 0 是「显式关闭
-   *  截断」，此前被 `n > 0` 判成 null，用户填 0 静默无效（存下去还是默认
-   *  30000 字节）。其余数值钳到参数表给出的可填范围（与运行时钳制同一个数），
-   *  顺带挡住超 u32 的输入——那种值会让整份 bot_set_config 反序列化失败。
-   */
-  const paramNumber = (key: string, raw: string): number | null => {
-    const t = raw.trim();
-    if (!t) return null;
-    const n = parseInt(t, 10);
-    if (!Number.isFinite(n) || n < 0) return null;
-    const view = paramViews?.find((p) => p.key === key);
-    const lo = view?.min ?? 1;
-    const hi = view?.max ?? U32_MAX;
-    if (n === 0) return lo === 0 ? 0 : null;
-    if (n < lo) return lo;
-    if (n > hi) return hi;
-    return n;
-  };
-
-  const loadConfig = async () => {
-    try {
-      const c = await getBotConfig();
-      setConfig({
-        // 老配置缺字段/非法值 → openai（与后端 ApiProvider::from_cfg 回退一致）
-        apiProvider: c.apiProvider === "anthropic" ? "anthropic" : "openai",
-        // 老后端版本没返 modelsByProvider → 空列表（无默认厂商）
-        modelsByProvider: {
-          openai: c.modelsByProvider?.openai ?? [],
-          anthropic: c.modelsByProvider?.anthropic ?? [],
-        },
-        activeModelId: {
-          openai: c.activeModelId?.openai ?? null,
-          anthropic: c.activeModelId?.anthropic ?? null,
-        },
-        disabledVendors: c.disabledVendors ?? [],
-        // 连接测试通过的厂商名单（老后端没返 → 空）
-        verifiedVendors: c.verifiedVendors ?? [],
-        // 字体大小：老后端 / None / 非法值都回退 small（"目前字号为小"）
-        uiFontSize:
-          c.uiFontSize === "standard" ||
-          c.uiFontSize === "large" ||
-          c.uiFontSize === "xlarge"
-            ? c.uiFontSize
-            : "small",
-        hasApiKey: !!c.hasApiKey,
-        // 已存 key 的厂商名列表（老后端没返 → 空）
-        vendorKeys: c.vendorKeys ?? [],
-        // 老后端版本（没返 bypass 字段）默认 true，避免意外走 LEGACY 路径
-        bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit ?? true,
-        allowedDirs: (c.allowedDirs ?? []).join("\n"),
-        guardClaimKeywords: (c.guardClaimKeywords ?? []).join("\n"),
-        guardClaimKeywordsDefault: c.guardClaimDefaultKeywords ?? [],
-        // view 只给 has 标志；key 本体不回填（与 hasApiKey/keyInput 同模式）。
-        // 开关自动态：老配置没显式开关字段（null/undefined）时按 has 标志显示
-        hasTavilyKey: c.hasTavilyKey ?? false,
-        tavilyEnabled: c.tavilyEnabled ?? c.hasTavilyKey ?? false,
-        hasBraveKey: c.hasBraveKey ?? false,
-        braveEnabled: c.braveEnabled ?? c.hasBraveKey ?? false,
-        pythonTimeoutSecs:
-          c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
-        maxFunctionCalls:
-          c.maxFunctionCalls != null ? String(c.maxFunctionCalls) : "",
-        // 归档天数：后端 None / 老版本没返 → 显示默认 7
-        archiveAfterDays:
-          c.archiveAfterDays != null
-            ? String(c.archiveAfterDays)
-            : String(DEFAULT_ARCHIVE_DAYS),
-        // 老配置缺字段/非法值 → ask（与后端 PermMode::from_cfg 回退一致）
-        permMode:
-          c.permMode === "strict" ||
-          c.permMode === "yolo" ||
-          c.permMode === "auto"
-            ? c.permMode
-            : "ask",
-        // 空 = 内置默认（仅 Anthropic 模式用）
-        maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
-        // 推理强度：缺字段/非法值 → medium（与后端 EffortLevel::from_cfg 回退一致）
-        reasoningEffort:
-          c.reasoningEffort === "off" ||
-          c.reasoningEffort === "low" ||
-          c.reasoningEffort === "high"
-            ? c.reasoningEffort
-            : "medium",
-        // 记忆整理：缺字段/老后端 → 默认（启用 + daily）；非法 interval 回退 daily
-        memoryConsolidation: {
-          enabled: c.memoryConsolidation?.enabled ?? true,
-          interval: ["off", "12h", "daily", "weekly"].includes(
-            c.memoryConsolidation?.interval ?? "",
-          )
-            ? (c.memoryConsolidation?.interval as string)
-            : "daily",
-          lastRunAt: c.memoryConsolidation?.lastRunAt ?? null,
-        },
-        //  记忆可控开关：缺字段/老后端 → 全开； 抽取档位缺字段/非法 → off
-        memoryControl: {
-          injectionEnabled: c.memoryControl?.injectionEnabled ?? true,
-          autoWriteEnabled: c.memoryControl?.autoWriteEnabled ?? true,
-          autoExtract: isAutoExtractMode(c.memoryControl?.autoExtract)
-            ? c.memoryControl.autoExtract
-            : "off",
-        },
-        //  记忆参数原样回传
-        memoryTuning: c.memoryTuning ?? null,
-        // 规则表透传（老后端没返 → 空；非法 action 由后端清洗兜底）
-        toolRules: Array.isArray(c.toolRules)
-          ? c.toolRules.filter(
-              (r): r is { tool: string; action: "allow" | "ask" | "deny" } =>
-                typeof r?.tool === "string" &&
-                (r.action === "allow" ||
-                  r.action === "ask" ||
-                  r.action === "deny"),
-            )
-          : [],
-        //  Agent 运行参数：后端 None/老版本没返 → 空串（= 内置默认）
-        maxRounds: c.maxRounds != null ? String(c.maxRounds) : "",
-        historyBudgetChars:
-          c.historyBudgetChars != null ? String(c.historyBudgetChars) : "",
-        subagentMaxTurns:
-          c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
-        subagentMaxWallSecs:
-          c.subagentMaxWallSecs != null ? String(c.subagentMaxWallSecs) : "",
-        searchMaxResults:
-          c.searchMaxResults != null ? String(c.searchMaxResults) : "",
-        maxToolOutputBytes:
-          c.maxToolOutputBytes != null ? String(c.maxToolOutputBytes) : "",
-        askBudget: c.askBudget != null ? String(c.askBudget) : "",
-      });
-    } catch (e) {
-      handleCommandError(e, "bot_get_config", { silent: true });
-    }
-  };
-
-  const refreshPy = async () => {
-    try {
-      const on = await invoke<boolean>("py_get_enabled");
-      setPyEnabled(on);
-    } catch (e) {
-      handleCommandError(e, "py_get_enabled", { silent: true });
-    }
-  };
-
-  const refreshServices = async () => {
-    try {
-      const on = await invoke<boolean>("service_get_enabled");
-      setServicesEnabled(on);
-    } catch (e) {
-      handleCommandError(e, "service_get_enabled", { silent: true });
-    }
-    try {
-      const on = await invoke<boolean>("service_get_expose_net_allowed");
-      setExposeNetAllowed(on);
-    } catch (e) {
-      handleCommandError(e, "service_get_expose_net_allowed", { silent: true });
-    }
-  };
-
-  const checkPyEnv = async () => {
-    if (pyEnvBusy) return;
-    setPyEnvBusy(true);
-    setPyEnvErr("");
-    try {
-      const env = await invoke<{
-        available: boolean;
-        python: string;
-        version: string;
-        libs: string[];
-      }>("py_env_check");
-      setPyEnv(env);
-    } catch (e) {
-      handleCommandError(e, "py_env_check", { silent: true });
-      setPyEnvErr(formatCommandError(e));
-    } finally {
-      setPyEnvBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    // 挂载期多面板初始刷新（外部数据同步既有模式）：被调函数内部链路含 setState，
-    // lint 对 effect 内调用一律按同步路径处理，保既有直写
-    // oxlint-disable-next-line react/set-state-in-effect
-    refreshBot();
-    // oxlint-disable-next-line react/set-state-in-effect
-    loadConfig();
-    // Agent 运行参数卡的元数据（生效值/默认值/范围）——与 loadConfig 同步拉，
-    // 两者都来自后端同一份参数表
-    // oxlint-disable-next-line react/set-state-in-effect
-    loadParamViews();
-    // oxlint-disable-next-line react/set-state-in-effect
-    refreshPy();
-    // oxlint-disable-next-line react/set-state-in-effect
-    refreshServices();
-    // oxlint-disable-next-line react/set-state-in-effect
-    refreshUi();
-    // 拉取开机自启动状态
-    invoke<boolean>("plugin:autostart|is_enabled")
-      .then(setAutostartEnabled)
-      .catch((e) => {
-        handleCommandError(e, "plugin:autostart|is_enabled", { silent: true });
-        setAutostartError(formatCommandError(e));
-      });
-  }, []);
-
-  const togglePy = async () => {
-    if (pyBusy) return;
-    const enabling = !pyEnabled;
-    if (
-      enabling &&
-      !(await confirm(
-        `开启后机器人可执行 Python 代码（${pySandboxDesc}）。确认开启？`,
-      ))
-    )
-      return;
-    setPyBusy(true);
-    setBotError("");
-    try {
-      const next = await invoke<boolean>("py_set_enabled", {
-        enabled: enabling,
-      });
-      setPyEnabled(next);
-      if (next) checkPyEnv();
-    } catch (e) {
-      handleCommandError(e, "py_set_enabled", { silent: true });
-      setBotError(formatCommandError(e));
-      await refreshPy();
-    } finally {
-      setPyBusy(false);
-    }
-  };
-
-  const toggleExposeNet = async () => {
-    if (exposeNetBusy) return;
-    const enabling = !exposeNetAllowed;
-    if (
-      enabling &&
-      !(await confirm(
-        "开启后机器人起的本地服务可以监听 0.0.0.0 / :: 等非 loopback 地址，" +
-          "也就是同局域网（乃至公网可达）的机器能连上它。" +
-          "服务代码归机器人写、可能来自不可信来源，确认开启？",
-      ))
-    )
-      return;
-    setExposeNetBusy(true);
-    setBotError("");
-    try {
-      const next = await invoke<boolean>("service_set_expose_net_allowed", {
-        allowed: enabling,
-      });
-      setExposeNetAllowed(next);
-    } catch (e) {
-      handleCommandError(e, "service_set_expose_net_allowed", { silent: true });
-      setBotError(formatCommandError(e));
-      await refreshServices();
-    } finally {
-      setExposeNetBusy(false);
-    }
-  };
-
-  const toggleServices = async () => {
-    if (servicesBusy) return;
-    const enabling = !servicesEnabled;
-    if (
-      enabling &&
-      !(await confirm(
-        "开启后机器人可在本机启动长驻进程（node MCP server、dev server 等）。" +
-          "被启动的代码会继承宿主的环境变量，能读到其中的密钥；进程归机器人托管，" +
-          "但用户自己写的代码也可能读到。确认开启？",
-      ))
-    )
-      return;
-    setServicesBusy(true);
-    setBotError("");
-    try {
-      const next = await invoke<boolean>("service_set_enabled", {
-        enabled: enabling,
-      });
-      setServicesEnabled(next);
-    } catch (e) {
-      handleCommandError(e, "service_set_enabled", { silent: true });
-      setBotError(formatCommandError(e));
-      await refreshServices();
-    } finally {
-      setServicesBusy(false);
-    }
-  };
-
-  const refreshUi = async () => {
-    try {
-      const on = await invoke<boolean>("ui_get_enabled");
-      setUiEnabled(on);
-    } catch (e) {
-      handleCommandError(e, "ui_get_enabled", { silent: true });
-    }
-  };
-
-  const toggleUi = async () => {
-    if (uiBusy) return;
-    const enabling = !uiEnabled;
-    if (
-      enabling &&
-      !(await confirm(
-        "开启后机器人可以操作你电脑上的界面（读窗口控件、点击、输入文字）。涉及发送/提交/支付/删除的点击仍会弹窗请用户确认。确认开启？",
-      ))
-    )
-      return;
-    setUiBusy(true);
-    setBotError("");
-    try {
-      const next = await invoke<boolean>("ui_set_enabled", {
-        enabled: enabling,
-      });
-      setUiEnabled(next);
-    } catch (e) {
-      handleCommandError(e, "ui_set_enabled", { silent: true });
-      setBotError(formatCommandError(e));
-      await refreshUi();
-    } finally {
-      setUiBusy(false);
-    }
-  };
-
-  const toggleBot = async () => {
-    if (botBusy) return;
-    setBotBusy(true);
-    setBotError("");
-    try {
-      const next = await invoke<boolean>("bot_set_enabled", {
-        enabled: !botEnabled,
-      });
-      setBotEnabled(next);
-      // 广播 bot-changed：各页（聊天区高度随开关调整）同步刷新
-      emit("bot-changed", next).catch(() => {});
-    } catch (e) {
-      handleCommandError(e, "bot_set_enabled", { silent: true });
-      setBotError(formatCommandError(e));
-      await refreshBot();
-    } finally {
-      setBotBusy(false);
-    }
-  };
-
-  const saveConfig = async (
-    override?: typeof config | ((c: typeof config) => typeof config),
-    opts?: { skipReload?: boolean },
-  ): Promise<boolean> => {
-    if (configBusy) return false;
-    const c =
-      typeof override === "function" ? override(config) : (override ?? config);
-    setConfigBusy(true);
-    setBotError("");
-    try {
-      await invoke("bot_set_config", {
-        config: {
-          // 新结构——每协议下的大模型列表 + active 模型 id
-          // 后端落盘前会从 active 模型派生 base_url/model 回填老字段
-          // （bot_model_loop 不感知新结构，沿用 base_url/model/api_provider 三个老字段）
-          modelsByProvider: c.modelsByProvider,
-          activeModelId: c.activeModelId,
-          disabledVendors: c.disabledVendors,
-          // 已验证厂商名单透传（后端按 key/URL 变化 prune；前端整体替换写必须带上，
-          // 否则每次保存配置都把验证状态清成空）
-          verifiedVendors: c.verifiedVendors,
-          // 字体大小直接透传，后端原样存（None = small 默认）
-          uiFontSize: c.uiFontSize,
-          bypassLlmOnPreStepHit: c.bypassLlmOnPreStepHit,
-          // textarea 一行一个路径；空行/空白剔除；全空 = 后端内置默认白名单
-          allowedDirs: c.allowedDirs
-            .split("\n")
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0),
-          // 触发词表全量落盘（删词即失效，所以不能省字段——空数组是
-          // 「显式关掉这道触发器」的合法取值，必须能写上去）
-          guardClaimKeywords: c.guardClaimKeywords
-            .split("\n")
-            .map((s) => s.trim())
-            .filter((s) => s.length > 0),
-          // 空串视为未配置（后端 Option 语义）——key 存系统凭据存储，
-          // config 对象里的 key 字段固定传 null（后端强制置 None 双保险，不落明文）；
-          // 新 key 走顶层 tavilyKey/braveKey 参数（见下方 invoke 调用）
-          tavilyKey: null,
-          // 开关显式落盘：开 = Tavily，关 = Bing+百度双引擎
-          tavilyEnabled: c.tavilyEnabled,
-          braveKey: null,
-          // 开关显式落盘：开 = Brave，关 = 不走 Brave（与 Tavily 互斥，双开后端报错）
-          braveEnabled: c.braveEnabled,
-          // 空 = 用内置默认；非法输入按未配置处理（后端 resolve_timeout 硬钳到上限）
-          pythonTimeoutSecs: paramNumber(
-            "tools.python_timeout_secs",
-            c.pythonTimeoutSecs,
-          ),
-          // 任务卡归档天数：空/非法 = null（后端回默认 7）；钳 1..=MAX 与后端一致
-          archiveAfterDays: (() => {
-            const n = parseInt(c.archiveAfterDays.trim(), 10);
-            return Number.isFinite(n) && n > 0
-              ? Math.min(MAX_ARCHIVE_DAYS, n)
-              : null;
-          })(),
-          // 授权模式（strict/ask/yolo）
-          permMode: c.permMode,
-          // API 协议（openai/anthropic）
-          apiProvider: c.apiProvider,
-          // max_tokens：空 = 内置默认；非法输入按未配置处理（后端自钳）
-          maxTokens: paramNumber("model.max_tokens", c.maxTokens),
-          // 推理强度后台默认（RE-1）：四档抽象档位原样落盘
-          reasoningEffort: c.reasoningEffort,
-          // ──  Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘。
-          //    范围由后端参数表给出（与运行时钳制同一个数），这里先钳一遍：
-          //    一来落盘值 = 生效值，二来超 u32 的数字会让整个 bot_set_config
-          //    反序列化失败——一处输错字连带整份设置都存不下去。
-          maxRounds: paramNumber("loop.max_rounds", c.maxRounds),
-          maxFunctionCalls: paramNumber(
-            "loop.max_function_calls",
-            c.maxFunctionCalls,
-          ),
-          historyBudgetChars: paramNumber(
-            "loop.history_budget_chars",
-            c.historyBudgetChars,
-          ),
-          subagentMaxTurns: paramNumber(
-            "subagent.max_turns",
-            c.subagentMaxTurns,
-          ),
-          subagentMaxWallSecs: paramNumber(
-            "subagent.max_wall_secs",
-            c.subagentMaxWallSecs,
-          ),
-          searchMaxResults: paramNumber(
-            "search.max_results",
-            c.searchMaxResults,
-          ),
-          maxToolOutputBytes: paramNumber(
-            "tools.max_output_bytes",
-            c.maxToolOutputBytes,
-          ),
-          askBudget: paramNumber("tools.ask_budget", c.askBudget),
-          // 规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
-          toolRules: c.toolRules.length > 0 ? c.toolRules : null,
-          // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）
-          memoryConsolidation: c.memoryConsolidation,
-          //  记忆可控开关：原样透传
-          memoryControl: c.memoryControl,
-          //  记忆参数：原样透传（手改 bot-config.json 的值不被整体替换写冲掉）
-          memoryTuning: c.memoryTuning,
-        },
-        // 厂商页 key 输入框非空且当前在厂商页 → 按厂商名写入凭据存储；
-        // 留空保持该厂商已存 key 不变。apiKey 是旧全局槽位参数，前端已弃用（固定 null）
-        apiKey: null,
-        vendorKey:
-          keyInput.trim() && activeVendor
-            ? { vendor: activeVendor, key: keyInput.trim() }
-            : null,
-        // Tavily/Brave key 同主 key 模式——非空才覆盖写入系统凭据存储，
-        // null = 不动已存 key（开关切换走 toggleTavily/toggleBrave → saveConfig，
-        // 此时输入框为空 → keyring 不受任何影响）
-        tavilyKey: tavilyKeyInput.trim() ? tavilyKeyInput.trim() : null,
-        braveKey: braveKeyInput.trim() ? braveKeyInput.trim() : null,
-      });
-      setKeyInput("");
-      setTavilyKeyInput("");
-      setBraveKeyInput("");
-      // skipReload=true 用于点档即时落盘场景：末尾 loadConfig 会拿 mock/磁盘上的旧值覆盖刚点的字段
-      if (!opts?.skipReload) {
-        await loadConfig();
-        // 生效值跟着变（写侧钳过的值、刚改的默认值来源）——不重拉的话卡片上
-        // 还会显示保存前的「当前生效」
-        await loadParamViews();
-      }
-      // 广播 bot-config-changed：聊天头部 🧠 模型标签同步刷新
-      emit("bot-config-changed", null).catch(() => {});
-      setConfigSaved(true);
-      setTimeout(() => setConfigSaved(false), 1500);
-      return true;
-    } catch (e) {
-      handleCommandError(e, "bot_set_config", { silent: true });
-      setBotError(formatCommandError(e));
-      return false;
-    } finally {
-      setConfigBusy(false);
-    }
-  };
-
-  /** 厂商页保存 + 自动连接测试联动：保存成功后，厂商下有开关为开的模型
-   *  才跑一次厂商级探测（同厂商模型共享 Base URL/key，探一次即代表全部）；
-   *  结果落盘 verified_vendors（后端），这里 reload 刷绿点并广播给聊天下拉 */
-  const [vendorTestBusy, setVendorTestBusy] = useState(false);
-  /** null = 未测；true/false = 最近一次自动测试结果 */
-  const [vendorTestOk, setVendorTestOk] = useState<boolean | null>(null);
-  const [vendorTestMsg, setVendorTestMsg] = useState("");
-  const saveVendorPage = async () => {
-    if (!(await saveConfig())) return;
-    if (!activeVendor || !activeVendorEntries.some((m) => m.enabled !== false))
-      return;
-    setVendorTestBusy(true);
-    setVendorTestOk(null);
-    setVendorTestMsg("");
-    try {
-      const r = await invoke<{ ok: boolean; status?: number; error?: string }>(
-        "bot_test_connection",
-        {
-          baseUrl: vendorBaseUrl,
-          apiFormat: activeVendorProtocol,
-          vendor: activeVendor,
-        },
-      );
-      const ok = r?.ok === true;
-      setVendorTestOk(ok);
-      setVendorTestMsg(
-        ok
-          ? "连接测试通过 ✓"
-          : `连接测试失败：${r?.error ?? (r?.status ? `HTTP ${r.status}` : "未知错误")}`,
-      );
-    } catch (e) {
-      setVendorTestOk(false);
-      setVendorTestMsg(`连接测试失败：${formatCommandError(e)}`);
-    } finally {
-      setVendorTestBusy(false);
-    }
-    await loadConfig();
-    emit("bot-config-changed", null).catch(() => {});
-  };
-
-  // 双协议下大模型列表 handlers
-  // 厂商中心按厂商分组渲染；老配置可能缺 anthropic/openai 字段，
-  // 读取处一律 ?? [] 兜底
-
-  /** 更新大模型条目（label / baseUrl / model 任一字段变化）。
-   *  按条目实际所在的协议列表定位——不能用 config.apiProvider（厂商页可停留在
-   *  另一协议的厂商上，跨协议编辑会漂移到错的列表/写不进去）。 */
-  const updateModel = (id: string, patch: Partial<ModelEntry>) => {
-    setConfig((c) => {
-      const prov = (["openai", "anthropic"] as const).find((p) =>
-        (c.modelsByProvider[p] ?? []).some((m) => m.id === id),
-      );
-      if (!prov) return c;
-      const list = (c.modelsByProvider[prov] ?? []).map((m) =>
-        m.id === id ? { ...m, ...patch } : m,
-      );
-      return {
-        ...c,
-        modelsByProvider: {
-          ...c.modelsByProvider,
-          [prov]: list,
-        },
-      };
-    });
-  };
-
-  /** 删除大模型条目：确认后移除并立即落盘（同 deleteVendor 语义——
-   *  只改内存刷新会复活）；按条目实际所在协议定位（厂商页可停留在另一协议）；
-   *  若删的是该协议 active → 列表第一个顶替（无则 null） */
-  const deleteModel = async (id: string) => {
-    const prov = (["openai", "anthropic"] as const).find((p) =>
-      (config.modelsByProvider[p] ?? []).some((m) => m.id === id),
-    );
-    if (!prov) return;
-    if (!(await confirm("删除该模型？删除后立即生效。"))) return;
-    const list = (config.modelsByProvider[prov] ?? []).filter(
-      (m) => m.id !== id,
-    );
-    let nextActive = config.activeModelId[prov] ?? null;
-    if (nextActive === id) {
-      nextActive = list[0]?.id ?? null;
-    }
-    const next = {
-      ...config,
-      modelsByProvider: { ...config.modelsByProvider, [prov]: list },
-      activeModelId: { ...config.activeModelId, [prov]: nextActive },
-    };
-    setConfig(next);
-    // skipReload：本地 state 已是删除后最新（loadConfig 会拿盘上旧值把模型复活）
-    await saveConfig(next, { skipReload: true });
-  };
-
-  // 厂商中心：按厂商分组渲染，条目仍存双协议列表
-  // 全部 handler 走 setConfig 函数式（updater 内读最新 c.modelsByProvider）——
-  // 连续操作（改 URL→切格式→加模型）不得用外层 render 快照互相覆盖。
-  /** 选中厂商页（左栏）；null = 未选（显示引导）。值 = 厂商名 */
-  const [activeVendor, setActiveVendor] = useState<string | null>(null);
-  /** API Key 显隐（本地态，不落盘） */
-  const [showKey, setShowKey] = useState(false);
-  /** 厂商头「⋯」菜单开合（浮层/点外部/Esc 收起，同 ApiProviderSelect 模式） */
   const [vendorMenuOpen, setVendorMenuOpen] = useState(false);
   const vendorMenuRef = useRef<HTMLDivElement>(null);
   useDismissable(vendorMenuOpen, vendorMenuRef, () => setVendorMenuOpen(false));
-
-  /** 条目归属厂商名：有 vendor 用 vendor，老条目按所在列表协议名兜底。
-   *  prov 必须传「条目所在列表」的协议——不能用活的 apiProvider（会漂）。
-   *  已知边界：兜底名与预设厂商名撞名时二者合并展示（概率低，登记）。 */
-  const vendorNameOf = (m: ModelEntry, prov: "openai" | "anthropic") =>
-    m.vendor ?? (prov === "anthropic" ? "Anthropic 兼容" : "OpenAI 兼容");
-
-  /** 厂商分组：跨双协议列表聚合；isActiveVendor = 该厂商含全局 active 模型（⋯菜单「当前使用」）。
-   *  普通派生而非 useMemo（数据量小；compiler 对含 config 依赖的 memo 化报 warn） */
-  const vendorGroups = (() => {
-    const map = new Map<string, { name: string; isActiveVendor: boolean }>();
-    (["openai", "anthropic"] as const).forEach((prov) => {
-      const list = config.modelsByProvider[prov] ?? [];
-      const activeId = config.activeModelId[prov] ?? null;
-      list.forEach((m) => {
-        const name = vendorNameOf(m, prov);
-        const g = map.get(name) ?? { name, isActiveVendor: false };
-        if (m.id === activeId && config.apiProvider === prov)
-          g.isActiveVendor = true;
-        map.set(name, g);
-      });
-    });
-    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
-  })();
-
-  //  收尾引导：配置里有带 vendor 的条目，但 verifiedVendors 为空——
-  // 可用性改造后无自动迁移，需逐厂商点一次插头（连接测试）恢复聊天下拉可见
-  const needVendorReVerify =
-    ((config.modelsByProvider.openai ?? []).some((m) => m.vendor) ||
-      (config.modelsByProvider.anthropic ?? []).some((m) => m.vendor)) &&
-    config.verifiedVendors.length === 0;
-
-  const vendorOf = (name: string) =>
-    vendorGroups.find((v) => v.name === name) ?? null;
-
-  /** 厂商名 → 所在协议列表（渲染期版本，读 config state）；找不到 = null */
-  const protocolOfVendor = (name: string): "openai" | "anthropic" | null =>
-    protocolOfVendorIn(config, name);
-
-  /** updater 内版本：读传入的 config 快照（函数式 handler 用） */
-  const protocolOfVendorIn = (
-    cfg: typeof config,
-    name: string,
-  ): "openai" | "anthropic" | null => {
-    if (
-      (cfg.modelsByProvider.openai ?? []).some(
-        (m) => vendorNameOf(m, "openai") === name,
-      )
-    )
-      return "openai";
-    if (
-      (cfg.modelsByProvider.anthropic ?? []).some(
-        (m) => vendorNameOf(m, "anthropic") === name,
-      )
-    )
-      return "anthropic";
-    return null;
-  };
-
-  /** 当前厂商页条目与协议（activeVendor 为 null 时空） */
-  const activeVendorProtocol: "openai" | "anthropic" =
-    activeVendor !== null && protocolOfVendor(activeVendor) === "anthropic"
-      ? "anthropic"
-      : "openai";
-  const activeVendorEntries =
-    activeVendor === null
-      ? []
-      : (config.modelsByProvider[activeVendorProtocol] ?? []).filter(
-          (m) => vendorNameOf(m, activeVendorProtocol) === activeVendor,
-        );
-  const vendorBaseUrl = activeVendorEntries[0]?.baseUrl ?? "";
-
-  /** 厂商页 Base URL 编辑：函数式同步全部同名条目 */
-  const setVendorBaseUrl = (url: string) => {
-    setConfig((c) => {
-      const rewrite = (list: ModelEntry[], prov: "openai" | "anthropic") =>
-        list.map((m) =>
-          vendorNameOf(m, prov) === activeVendor ? { ...m, baseUrl: url } : m,
-        );
-      return {
-        ...c,
-        modelsByProvider: {
-          openai: rewrite(c.modelsByProvider.openai ?? [], "openai"),
-          anthropic: rewrite(c.modelsByProvider.anthropic ?? [], "anthropic"),
-        },
-      };
-    });
-  };
-
-  /** 厂商级 Base URL 记忆（API 格式切换用）：{ 厂商名: { 协议: 上次用的 URL } }，
-   *  切换时先把现值记到旧协议名下，再从目标协议恢复（无记忆走已知端点/预设/模型库） */
-  const [vendorUrlMem, setVendorUrlMem] = useState<
-    Record<string, Partial<Record<"openai" | "anthropic", string>>>
-  >({});
-  /** 目标协议的种子 URL：已知双协议表 > 预设（协议匹配时）> 模型库默认（端点风格匹配时） */
-  const seedVendorUrl = (
-    vendor: string,
-    prov: "openai" | "anthropic",
-  ): string | null => {
-    const norm = normalizeVendorName(vendor);
-    const known = KNOWN_PROTOCOL_URLS[norm]?.[prov];
-    if (known) return known;
-    const preset = PROVIDER_PRESETS.find(
-      (p) => normalizeVendorName(p.name) === norm,
-    );
-    if (preset?.protocol === prov) return preset.baseUrl;
-    const meta = metaProviders?.find(
-      (p) =>
-        p.provider_key === norm ||
-        normalizeVendorName(p.provider_name) === norm,
-    );
-    if (meta?.default_base_url) {
-      const metaIsAnthropic =
-        meta.provider_key === "anthropic" ||
-        meta.default_base_url.includes("anthropic");
-      if (metaIsAnthropic === (prov === "anthropic"))
-        return meta.default_base_url;
-    }
-    return null;
-  };
-
-  /** 厂商 API 格式切换：整厂商条目搬到另一协议列表（active 指针随条目走）；
-   *  Base URL 自动跟随目标协议（记忆 > 已知端点 > 保持现值） */
-  const setVendorProtocol = (prov: "openai" | "anthropic") => {
-    if (!activeVendor) return;
-    const from = protocolOfVendor(activeVendor);
-    if (from === null || from === prov) return;
-    const vendor = activeVendor;
-    const curUrl = vendorBaseUrl;
-    if (curUrl) {
-      setVendorUrlMem((m) => ({
-        ...m,
-        [vendor]: { ...m[vendor], [from]: curUrl },
-      }));
-    }
-    const targetUrl =
-      vendorUrlMem[vendor]?.[prov] || seedVendorUrl(vendor, prov);
-    setConfig((c) => {
-      const fromList = c.modelsByProvider[from] ?? [];
-      const toList = c.modelsByProvider[prov] ?? [];
-      const moving = fromList
-        .filter((m) => vendorNameOf(m, from) === vendor)
-        // 有目标协议的 URL 数据才改写；没有则保持用户现值
-        .map((m) => (targetUrl ? { ...m, baseUrl: targetUrl } : m));
-      const stay = fromList.filter((m) => vendorNameOf(m, from) !== vendor);
-      const curActive = c.activeModelId[from];
-      return {
-        ...c,
-        modelsByProvider: {
-          openai: prov === "openai" ? [...toList, ...moving] : stay,
-          anthropic: prov === "anthropic" ? [...toList, ...moving] : stay,
-        },
-        activeModelId: {
-          openai: prov === "openai" ? curActive : null,
-          anthropic: prov === "anthropic" ? curActive : null,
-        },
-      };
-    });
-  };
-
-  /** 厂商页「＋ 添加模型」：新条目带厂商名；该厂商首条且目标协议槽位尚无
-   *  active（空配置首接）→ 自动 active。槽位已有 active 时不抢——否则新加的
-   *  未验证厂商会悄悄顶掉在用模型，任务执行/聊天跟着打错端点 */
-  const addModelToVendor = () => {
-    setConfig((c) => {
-      if (!activeVendor) return c;
-      const from = protocolOfVendorIn(c, activeVendor) ?? "openai";
-      const list = c.modelsByProvider[from] ?? [];
-      const hadModels = list.some(
-        (m) => vendorNameOf(m, from) === activeVendor,
-      );
-      const baseUrl =
-        (list.find((m) => vendorNameOf(m, from) === activeVendor) ?? {})
-          .baseUrl ?? "";
-      const entry: ModelEntry = {
-        id: genModelId(),
-        label: "",
-        baseUrl,
-        model: "",
-        vendor: activeVendor,
-      };
-      return {
-        ...c,
-        modelsByProvider: { ...c.modelsByProvider, [from]: [...list, entry] },
-        activeModelId:
-          hadModels || c.activeModelId[from]
-            ? c.activeModelId
-            : { ...c.activeModelId, [from]: entry.id },
-      };
-    });
-  };
-
-  /** 删除厂商：移除其全部条目（active 指针兜底）并立即落盘——
-   *  确认框语义 = 最终操作，不能只改内存 state（否则刷新/重启后厂商复活） */
-  const deleteVendor = async (name: string) => {
-    const drop = (list: ModelEntry[], prov: "openai" | "anthropic") =>
-      list.filter((m) => vendorNameOf(m, prov) !== name);
-    const openai = drop(config.modelsByProvider.openai ?? [], "openai");
-    const anthropic = drop(
-      config.modelsByProvider.anthropic ?? [],
-      "anthropic",
-    );
-    const fix = (prov: "openai" | "anthropic", list: ModelEntry[]) => {
-      const cur = config.activeModelId[prov] ?? null;
-      if (cur === null) return null;
-      return list.some((m) => m.id === cur) ? cur : (list[0]?.id ?? null);
-    };
-    const next = {
-      ...config,
-      modelsByProvider: { openai, anthropic },
-      disabledVendors: config.disabledVendors.filter((v) => v !== name),
-      activeModelId: {
-        openai: fix("openai", openai),
-        anthropic: fix("anthropic", anthropic),
-      },
-    };
-    setConfig(next);
-    // skipReload：本地 state 已是删除后最新（loadConfig 会拿盘上旧值把厂商复活）
-    await saveConfig(next, { skipReload: true });
-    setActiveVendor((cur) => (cur === name ? null : cur));
-  };
-
-  /** 厂商页「设为当前使用」：把该厂商 active 模型设为全局聊天所用。
-   *  只放行已通过连接测试的厂商——未验证厂商的 key 没验证过，设成全局后
-   *  任务执行/聊天会拿它打请求换 401（后端 ensure_vendor_verified 同口径兜底） */
-  const makeVendorActive = () => {
-    if (!activeVendor) return;
-    if (!config.verifiedVendors.includes(activeVendor)) return;
-    setConfig((c) => {
-      if (!activeVendor) return c;
-      const from = protocolOfVendorIn(c, activeVendor);
-      if (from === null) return c;
-      const mine = (c.modelsByProvider[from] ?? []).filter(
-        (m) => vendorNameOf(m, from) === activeVendor,
-      );
-      if (!mine.length) return c;
-      const cur = c.activeModelId[from] ?? null;
-      const target = mine.some((m) => m.id === cur) ? cur : mine[0].id;
-      return {
-        ...c,
-        apiProvider: from,
-        activeModelId: { ...c.activeModelId, [from]: target },
-      };
-    });
-  };
-
-  /** 厂商总开关：checked = 不在 disabledVendors；切换即落盘（skipReload 同预设应用模式）。
-   *  只影响 UI 过滤与展示，不动 bot_set_active_model 的既有语义。 */
-  const vendorEnabled =
-    activeVendor !== null && !config.disabledVendors.includes(activeVendor);
-  const toggleVendorEnabled = async (next: boolean) => {
-    if (!activeVendor || configBusy) return;
-    const cur = config.disabledVendors;
-    const disabledVendors = next
-      ? cur.filter((v) => v !== activeVendor)
-      : [...cur.filter((v) => v !== activeVendor), activeVendor];
-    const nextCfg = { ...config, disabledVendors };
-    setConfig(nextCfg);
-    await saveConfig(nextCfg, { skipReload: true });
-  };
-  /** 当前厂商命中预设时携带的「获取 API Key」控制台地址 */
-  const activeVendorKeyUrl =
-    PROVIDER_PRESETS.find((p) => p.name === activeVendor)?.keyUrl ?? null;
-  /** 当前厂商是否已存 key（key 按厂商名分条目存 keyring） */
-  const activeVendorHasKey =
-    activeVendor !== null && config.vendorKeys.includes(activeVendor);
-
-  // 切厂商时清空 key 输入框与显隐（key 按厂商分存，输入框不带跨厂商残留）+ 自动测试结果
-  useEffect(() => {
-    // oxlint-disable-next-line react/set-state-in-effect
-    setKeyInput("");
-    // oxlint-disable-next-line react/set-state-in-effect
-    setShowKey(false);
-    // oxlint-disable-next-line react/set-state-in-effect
-    setVendorTestOk(null);
-    // oxlint-disable-next-line react/set-state-in-effect
-    setVendorTestMsg("");
-  }, [activeVendor]);
-
-  // 模型库（内置 Rust meta 模块）对接
-  /** 模型库服务商列表收敛到白名单（中国厂商 + 头部外国 + OpenRouter） */
-  const curateProviders = (ps: MetaProvider[]) =>
-    ps.filter((p) => CURATED_PROVIDER_KEYS.has(p.provider_key));
-
-  /** model 分类首次挂载后拉取一次服务商列表（异步回调 setState，非同步路径） */
-  const modelMounted = mountedSections.has("model");
-  useEffect(() => {
-    if (!modelMounted) return;
-    let cancelled = false;
-    fetchProviders().then((ps) => {
-      if (!cancelled) setMetaProviders(ps ? curateProviders(ps) : ps);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [modelMounted]);
-
-  /** 厂商名 → 模型库记录：先精确匹配（provider_name / provider_key），
-   *  再归一化匹配——两段式防兄弟厂商误抢（minimax / minimax-cn 归一化后同名）。
-   *  左栏列表与厂商头共用——左栏也要靠它拿 providerKey 解析 logo，
-   *  纯名字解析顶不住 models.dev 长显示名（"MiniMax Token Plan (minimax.cn)"） */
-  const vendorMetaOf = (name: string): MetaProvider | null => {
-    if (!metaProviders) return null;
-    const norm = normalizeVendorName(name);
-    return (
-      metaProviders.find(
-        (p) => p.provider_name === name || p.provider_key === name,
-      ) ??
-      metaProviders.find(
-        (p) => normalizeVendorName(p.provider_name) === norm,
-      ) ??
-      null
-    );
-  };
-
-  /** 当前厂商在模型库里的记录（用于厂商头图标 +「从模型库添加」入口）；服务不可用/无匹配 → null */
-  const activeVendorMeta =
-    activeVendor !== null ? vendorMetaOf(activeVendor) : null;
-
-  /** 「从模型库添加」自绘下拉（同 ApiProviderSelect 模式：浮层/点外部/Esc 收起） */
-  const [metaPickerOpen, setMetaPickerOpen] = useState(false);
-  /** 当前厂商在模型库中的模型列表（打开下拉时拉取）；null = 拉取失败 */
-  const [metaPickerModels, setMetaPickerModels] = useState<MetaModel[] | null>(
-    null,
-  );
+  const {
+    activeVendor,
+    activeVendorEntries,
+    activeVendorHasKey,
+    activeVendorKeyUrl,
+    activeVendorMeta,
+    activeVendorProtocol,
+    addMetaModel,
+    addModelToVendor,
+    applyMetaProvider,
+    applyProviderPreset,
+    deleteModel,
+    deleteVendor,
+    keyInput,
+    makeVendorActive,
+    metaApplyBusy,
+    metaPickerModels,
+    metaPickerOpen,
+    metaProviders,
+    metaSearch,
+    metaSyncBusy,
+    metaSyncMsg,
+    mountedSections,
+    needVendorReVerify,
+    openSection,
+    renderSaveButton,
+    saveConfig,
+    saveVendorPage,
+    setActiveVendor,
+    setKeyInput,
+    setMetaPickerOpen,
+    setMetaSearch,
+    setShowKey,
+    setShowProviderPicker,
+    setVendorBaseUrl,
+    setVendorProtocol,
+    showKey,
+    showProviderPicker,
+    syncMetaLibrary,
+    toggleMetaPicker,
+    toggleVendorEnabled,
+    updateModel,
+    vendorBaseUrl,
+    vendorEnabled,
+    vendorGroups,
+    vendorMetaOf,
+    vendorOf,
+    vendorTestBusy,
+    vendorTestMsg,
+    vendorTestOk,
+  } = useSettingsVendors({
+    braveKeyInput,
+    config,
+    configBusy,
+    configSaved,
+    confirm,
+    loadConfig,
+    loadParamViews,
+    paramNumber,
+    setActiveSection,
+    setBotError,
+    setBraveKeyInput,
+    setConfig,
+    setConfigBusy,
+    setConfigSaved,
+    setTavilyKeyInput,
+    tavilyKeyInput,
+  });
   const metaPickerRef = useRef<HTMLDivElement>(null);
   useDismissable(metaPickerOpen, metaPickerRef, () => setMetaPickerOpen(false));
-
-  /** 开/收「从模型库添加」下拉；打开时拉该厂商的模型库模型 */
-  const toggleMetaPicker = async () => {
-    if (metaPickerOpen) {
-      setMetaPickerOpen(false);
-      return;
-    }
-    setMetaPickerOpen(true);
-    if (activeVendorMeta) {
-      setMetaPickerModels(
-        await fetchModelsByProvider(activeVendorMeta.provider_key),
-      );
-    }
-  };
-
-  /** 从模型库添加单个模型：追加一条 enabled:false 的 ModelEntry（字段映射同网格点选），立即落盘 */
-  const addMetaModel = async (m: MetaModel) => {
-    if (!activeVendor || !activeVendorMeta || configBusy) return;
-    const proto = activeVendorProtocol;
-    const entry: ModelEntry = {
-      ...metaModelToEntry(
-        m,
-        activeVendor,
-        vendorBaseUrl || activeVendorMeta.default_base_url || "",
-      ),
-      enabled: false,
-    };
-    const list = config.modelsByProvider[proto] ?? [];
-    const next = {
-      ...config,
-      modelsByProvider: {
-        ...config.modelsByProvider,
-        [proto]: [...list, entry],
-      },
-    };
-    setConfig(next);
-    setMetaPickerOpen(false);
-    await saveConfig(next, { skipReload: true });
-  };
-
-  /** 「Tavily 搜索」开关：与「开启机器人聊天」同款——点击即持久化（复用整份配置保存） */
-  const toggleTavily = async () => {
-    const next = { ...config, tavilyEnabled: !config.tavilyEnabled };
-    setConfig(next);
-    await saveConfig(next);
-  };
-
-  /** 「Brave 搜索」开关：同 toggleTavily——点击即持久化（复用整份配置保存） */
-  const toggleBrave = async () => {
-    const next = { ...config, braveEnabled: !config.braveEnabled };
-    setConfig(next);
-    await saveConfig(next);
-  };
-
-  /** 授权模式切换：点击即持久化（同 toggleTavily 模式） */
-  const setPermMode = async (mode: "strict" | "ask" | "auto" | "yolo") => {
-    if (configBusy || config.permMode === mode) return;
-    const next = { ...config, permMode: mode };
-    setConfig(next);
-    await saveConfig(next);
-  };
-
-  /** 记忆整理开关/频率：点击即持久化（同 toggleTavily / setPermMode 模式） */
-  const setConsolidation = async (
-    patch: Partial<{ enabled: boolean; interval: string }>,
-  ) => {
-    if (configBusy) return;
-    const next = {
-      ...config,
-      memoryConsolidation: { ...config.memoryConsolidation, ...patch },
-    };
-    setConfig(next);
-    await saveConfig(next);
-  };
-
-  /** 记忆可控开关（含抽取档位）：点档即时落盘（同 setConsolidation 模式） */
-  const setMemoryControl = async (
-    patch: Partial<{
-      injectionEnabled: boolean;
-      autoWriteEnabled: boolean;
-      autoExtract: AutoExtractMode;
-    }>,
-  ) => {
-    if (configBusy) return;
-    const next = {
-      ...config,
-      memoryControl: { ...config.memoryControl, ...patch },
-    };
-    setConfig(next);
-    await saveConfig(next);
-  };
-
-  /** 记忆权限开关行：role=switch + aria-checked（与厂商总开关同一可访问语义） */
-  const renderMemoryToggle = (
-    label: string,
-    description: string,
-    field: "injectionEnabled" | "autoWriteEnabled",
-  ) => {
-    const on = config.memoryControl[field];
-    return (
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <p className="text-xs text-[var(--t3)]">{label}</p>
-          <p className="mt-0.5 text-xs text-[var(--t5)]">{description}</p>
-        </div>
-        <button
-          role="switch"
-          aria-checked={on}
-          aria-label={label}
-          className={`btn-sm-action ${
-            on ? "nm-inset" : "nm-outset"
-          }`}
-          onClick={() => setMemoryControl({ [field]: !on })}
-          disabled={configBusy}
-        >
-          {on ? "已开启" : "已关闭"}
-        </button>
-      </div>
-    );
-  };
-
-  /** 立即整理：转圈 → 结果文案短暂展示（同 configSaved 的 setTimeout 清除模式），并刷新「上次整理时间」 */
-  const consolidateNow = async () => {
-    if (consolidateBusy) return;
-    setConsolidateBusy(true);
-    setConsolidateMsg("");
-    try {
-      const r = await invoke<{
-        merged: number;
-        distilled: number;
-        contradictions: number;
-      }>("memory_consolidate_now");
-      setConsolidateMsg(
-        `整理完成：合并 ${r.merged} 条、提炼 ${r.distilled} 条规律、解决 ${r.contradictions} 处矛盾`,
-      );
-      await loadConfig();
-    } catch (e) {
-      handleCommandError(e, "memory_consolidate_now", { silent: true });
-      setConsolidateMsg(`整理失败：${formatCommandError(e)}`);
-    } finally {
-      setConsolidateBusy(false);
-      setTimeout(() => setConsolidateMsg(""), 4000);
-    }
-  };
-
-  const clearVendorKey = async () => {
-    if (configBusy || !activeVendor) return;
-    if (
-      !(await confirm(
-        `清除厂商「${activeVendor}」已保存的 API Key？清除后该厂商的机器人调用将失败。`,
-      ))
-    )
-      return;
-    setConfigBusy(true);
-    setBotError("");
-    try {
-      await invoke("bot_clear_vendor_key", { vendor: activeVendor });
-      await loadConfig();
-    } catch (e) {
-      handleCommandError(e, "bot_clear_vendor_key", { silent: true });
-      setBotError(formatCommandError(e));
-    } finally {
-      setConfigBusy(false);
-    }
-  };
-
-  /** 开机自启动切换：点击即落盘——macOS 写 LaunchAgent plist,
-   *  Windows 写注册表 Run 项，Linux 写 ~/.config/autostart/*.desktop。
-   *  失败时回滚到后端真实状态（部分成功的情况）。 */
-  const toggleAutostart = async () => {
-    if (autostartBusy) return;
-    setAutostartBusy(true);
-    setAutostartError("");
-    const next = !autostartEnabled;
-    try {
-      await invoke(
-        next ? "plugin:autostart|enable" : "plugin:autostart|disable",
-      );
-      setAutostartEnabled(next);
-    } catch (e) {
-      handleCommandError(
-        e,
-        next ? "plugin:autostart|enable" : "plugin:autostart|disable",
-        { silent: true },
-      );
-      setAutostartError(formatCommandError(e));
-      // 重新拉一次真实状态，UI 不漂
-      try {
-        const real = await invoke<boolean>("plugin:autostart|is_enabled");
-        setAutostartEnabled(real);
-      } catch {
-        // 拉失败也无所谓，保持 next 翻转前的状态
-      }
-    } finally {
-      setAutostartBusy(false);
-    }
-  };
-
-  const refresh = async () => {
-    try {
-      const s = await invoke<ApiStatus>("api_status");
-      setStatus(s);
-    } catch (e) {
-      handleCommandError(e, "api_status", { silent: true });
-    }
-  };
-
-  useEffect(() => {
-    // 挂载即刷新（外部数据同步既有模式）：refresh 链路含 setState，
-    // lint 对 effect 内调用按同步路径处理，保既有直写
-    // oxlint-disable-next-line react/set-state-in-effect
-    refresh();
-  }, []);
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      if (status.enabled) {
-        await invoke("api_stop");
-      } else {
-        await invoke("api_start");
-      }
-      await refresh();
-    } catch (e) {
-      handleCommandError(e, status.enabled ? "api_stop" : "api_start", {
-        silent: true,
-      });
-      setError(formatCommandError(e));
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const runExport = async () => {
-    if (exporting) return;
-    setExporting(true);
-    try {
-      await onExportTasks();
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  const runImport = async () => {
-    if (importing) return;
-    setImporting(true);
-    try {
-      await onImportTasks();
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  const runExportWs = async () => {
-    if (exportingWs) return;
-    if (!onExportWorkspace) return;
-    setExportingWs(true);
-    try {
-      await onExportWorkspace();
-    } finally {
-      setExportingWs(false);
-    }
-  };
-
-  const runImportWs = async () => {
-    if (importingWs) return;
-    if (!onImportWorkspace) return;
-    setImportingWs(true);
-    try {
-      await onImportWorkspace();
-    } finally {
-      setImportingWs(false);
-    }
-  };
-
-  const copyToken = async () => {
-    // disabled 状态下后端字段缺席(见 ApiStatus.token 注释),直接 return 避免
-    // 把 undefined 喂给 clipboard.writeText
-    if (!status.token) return;
-    try {
-      await navigator.clipboard.writeText(status.token);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch (e) {
-      handleCommandError(e, "clipboard", { silent: true });
-    }
-  };
-
-  const rotateToken = async () => {
-    if (busy) return;
-    if (
-      !(await confirm(
-        "重新生成 token？旧 token 会立即失效，已授权的客户端需要换新 token。",
-      ))
-    )
-      return;
-    setBusy(true);
-    setError("");
-    try {
-      await invoke("api_rotate_token");
-      await refresh();
-    } catch (e) {
-      handleCommandError(e, "api_rotate_token", { silent: true });
-      setError(formatCommandError(e));
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
+  const {
+    busy,
+    clearVendorKey,
+    consolidateBusy,
+    consolidateMsg,
+    consolidateNow,
+    copied,
+    copyToken,
+    error,
+    exporting,
+    exportingWs,
+    importing,
+    importingWs,
+    renderMemoryToggle,
+    rotateToken,
+    runExport,
+    runExportWs,
+    runImport,
+    runImportWs,
+    setConsolidation,
+    setMemoryControl,
+    setPermMode,
+    status,
+    toggle,
+    toggleAutostart,
+    toggleBrave,
+    toggleTavily,
+  } = useSettingsOps({
+    activeVendor,
+    autostartBusy,
+    autostartEnabled,
+    config,
+    configBusy,
+    confirm,
+    loadConfig,
+    onExportTasks,
+    onExportWorkspace,
+    onImportTasks,
+    onImportWorkspace,
+    saveConfig,
+    setAutostartBusy,
+    setAutostartEnabled,
+    setAutostartError,
+    setBotError,
+    setConfig,
+    setConfigBusy,
+  });
   const activeMeta =
     SECTIONS.find((s) => s.key === activeSection) ?? SECTIONS[0];
   return (
