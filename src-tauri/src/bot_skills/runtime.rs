@@ -46,12 +46,16 @@ fn skill_timed_out(run: &SkillRun, now_ms: i64) -> bool {
     (now_ms - run.started_at_ms) / 1000 > run.timeout_secs as i64
 }
 
-/// 技能预算软警告阈值：步数余量 / 墙钟余量（秒）。
+/// 技能预算软警告的阈值口径：按预算规模取比例，再钳到上下界。
 ///
-/// 取「够模型写完收尾」的量：收尾 = 一轮不调工具，把已经做出来的东西整理成
-/// 回复，几轮足够。阈值必须比硬闸提前一截，否则模型没机会自己收尾。
-pub(crate) const SKILL_SOFT_WARN_STEPS_LEFT: usize = 5;
-pub(crate) const SKILL_SOFT_WARN_SECS_LEFT: i64 = 60;
+/// 固定阈值对大预算太晚（步数多的时候剩几步已经来不及收尾），对小预算又太早
+/// （预算只有 3 步的技能会在第一轮就收到「快用完了」，纯属噪音）。
+/// 比例口径两头都对：默认预算（50 步 / 1800 秒）落在 5 步 / 60 秒。
+fn skill_budget_warn_limits(max_steps: usize, timeout_secs: u64) -> (usize, i64) {
+    let steps = (max_steps / 10).clamp(1, 5);
+    let secs = (timeout_secs / 4).clamp(5, 60) as i64;
+    (steps, secs)
+}
 
 /// 技能预算软警告文案：预算快用完时提醒模型收尾（一个运行只提醒一次）。
 ///
@@ -64,9 +68,10 @@ pub(crate) fn skill_budget_warning(run: &SkillRun, now_ms: i64) -> Option<String
     if run.state != SkillState::Running {
         return None;
     }
+    let (steps_limit, secs_limit) = skill_budget_warn_limits(run.max_steps, run.timeout_secs);
     let steps_left = run.max_steps.saturating_sub(run.step);
     let secs_left = run.timeout_secs as i64 - (now_ms - run.started_at_ms) / 1000;
-    if steps_left > SKILL_SOFT_WARN_STEPS_LEFT && secs_left > SKILL_SOFT_WARN_SECS_LEFT {
+    if steps_left > steps_limit && secs_left > secs_limit {
         return None;
     }
     Some(format!(

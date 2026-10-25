@@ -573,6 +573,18 @@ fn budget_warning_skips_non_running_states() {
     assert!(skill_budget_warning(&done, 1000 + 1790 * 1000).is_none());
 }
 
+/// 小预算技能不该在第一轮就收到「快用完了」：阈值按预算规模取比例。
+#[test]
+fn budget_warning_stays_quiet_for_small_budget() {
+    let mut r = test_run(6, 30);
+    r.state = SkillState::Running;
+    // 刚起步：6 步 / 30 秒都还充裕
+    assert!(skill_budget_warning(&r, 1000 + 1000).is_none());
+    // 走到只剩 1 步才提醒
+    r.step = 5;
+    assert!(skill_budget_warning(&r, 1000 + 1000).is_some());
+}
+
 // ── 技能出口兜底正文 ──
 
 /// 模型说过话就用它，没说话才兜底。
