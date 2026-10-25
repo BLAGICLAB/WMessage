@@ -43,7 +43,8 @@ const WHITELIST: &[&str] = &[
     "bot_skills/runtime.rs",
     "bot_slash.rs",
     "bot_ui.rs",
-    "bot_web.rs",
+    // 联网工具拆成 bot_web/ 子模块后，存量调用点跟着搬了过来
+    "bot_web/search.rs",
     "db/bot_history.rs",
     "due_notify.rs",
     "exec_steps.rs",

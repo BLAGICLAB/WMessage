@@ -134,5 +134,5 @@ cargo nextest 全量 / npm test / tests-audit 六件套 / audit_no_eval.py /
 | 6 | `bot_skills/runtime.rs` | ✅ 已完成 | 待填 | A 类。1365 → 823 生产 + `bot_skills/runtime/tests.rs` 540 |
 | 7 | `bot_archive.rs` | ✅ 已完成 | 待填 | A 类。1404 → 989 生产 + `bot_archive/tests.rs` 416 |
 | 8 | `bot_py.rs` | ✅ 已完成 | 待填 | A 类，门面只留转出。1379 → 41 门面 + 三个测试子文件（tests 1226 / exiting_tests 43 / platform_tests 70）。模块路径不变（`bot_py::tests` 等），`super::X` 仍经 pub use 解析为 `py::X` |
-| 9 | `bot_web.rs` | ⬜ 未开始 | | C 类，测试可见面最复杂 |
+| 9 | `bot_web.rs` | ✅ 已完成 | 待填 | C 类。1400 → 门面 162 + `bot_web/search.rs` 452 / `html.rs` 331 / `fetch.rs` 472。**类型与共享工具留门面**（SearchOpts / TimeRange / UrlGateError / UA / err_chain / http_client_* / read_body_capped）；测试改为**显式从子模块导入**（不经门面转出，门面保持干净）；冻结守卫白名单条目跟着迁移到 `bot_web/search.rs` |
 | 10 | `db/tests.rs` | ⬜ 未开始 | | B 类 |

@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 287 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 290 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -488,7 +488,11 @@ src-tauri/src/
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
 │                        软链既不跟随也不复制
-├── bot_web.rs           web_search（Tavily/Brave 可配，Bing/百度抓取兜底）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
+├── bot_web.rs + bot_web/search.rs + bot_web/html.rs + bot_web/fetch.rs
+│                        联网工具：web_search（Tavily/Brave 可配，Bing/百度抓取兜底）
+│                        + fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）。
+│                        **门面**——实现按面拆到三个子模块（search 搜索 / html 页面解析 /
+│                        fetch 抓取与公网闸），门面只留类型 / 常量 / 共享工具 / 逐项转出
 ├── bot_web/tests.rs     联网单测（各搜索后端解析 / URL 闸 / 正文抽取）
 ├── bot_py.rs (42) + bot_py/tests.rs + bot_py/exiting_tests.rs + bot_py/platform_tests.rs
 │                        Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
@@ -859,6 +863,9 @@ flowchart TD
 - `bot_slash.rs`
 - `bot_ui.rs`
 - `bot_web.rs`
+- `bot_web/fetch.rs`
+- `bot_web/html.rs`
+- `bot_web/search.rs`
 - `bot_web/tests.rs`
 - `due_notify.rs`
 - `error.rs`

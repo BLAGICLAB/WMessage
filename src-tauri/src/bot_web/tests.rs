@@ -1,3 +1,15 @@
+use super::fetch::{
+    check_public_url_with, fetch_direct, ipv4_is_private, ipv6_is_private, is_private_host,
+    jina_reader_url, status_worth_proxy_retry, with_url_port, FetchErr,
+};
+use super::html::{
+    extract_main_content, first_between, first_open_tag, href_from_tag, parse_baidu, parse_bing,
+    remove_tag_blocks, strip_tags,
+};
+use super::search::{
+    brave_query_and_params, clean_snippet, decode_search_body, domain_of, http_client,
+    parse_brave_results, resolve_search_route, tavily_payload, SearchRoute,
+};
 use super::*;
 
 /// 公网闸的两类失败必须分开：**策略拒绝** vs **DNS 解析失败**。
