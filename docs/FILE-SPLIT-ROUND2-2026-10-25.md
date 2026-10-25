@@ -128,7 +128,7 @@ cargo nextest 全量 / npm test / tests-audit 六件套 / audit_no_eval.py /
 |---|---|---|---|---|
 | 1 | `bot/services.rs` | ✅ 已完成 | 待填 | C 类，门面先行。1332 → 门面 468 + start 522 / stop 257 / serialize 114。**类型留门面**（StartRequest / StartOutcome / StopOutcome）、**登记表访问留门面**（lock_table / list_all 是三个子模块共同依赖的 hub），其余实现按面切走 |
 | 2 | `bot/services/tests.rs` | ✅ 已完成 | 待填 | B 类。1487 → 门面 62 + 七个主题子文件（adjudicate / canary / integration / logs / observe / port_gate / state）。**门面只留共用辅助**（`long_running_launcher` / `which`，被三个节共用）与 `#[cfg(test)] mod X;` 声明——`#[cfg(test)]` 不能省：`bot/test_files.rs::test_only_files` 靠模块声明识别测试专用文件，写成裸 `mod X;` 子文件会被当生产代码扫 |
-| 3 | `memory/extract.rs` | ⬜ 未开始 | | A 类 |
+| 3 | `memory/extract.rs` | ✅ 已完成 | 待填 | A 类。1452 → 850 生产 + `memory/extract/tests.rs` 601。**去缩排要「智慧」**：Rust 1.83 起普通字符串字面量允许裸换行，内容**包含**后续行的前导空白——去缩排会把字符串内容改了，所以多行字符串 / raw string / 块注释的内部行一律不缩 |
 | 4 | `bot_skills/parse.rs` | ⬜ 未开始 | | A 类 |
 | 5 | `bot_skills/scheduler.rs` | ⬜ 未开始 | | A 类 |
 | 6 | `bot_skills/runtime.rs` | ⬜ 未开始 | | A 类 |

@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 279 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 280 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -565,7 +565,7 @@ src-tauri/src/
 │                            mem_update（content 变更重算嵌入）/ mem_delete / mem_stats
 │                            （统计 + 嵌入引擎状态），MemItemView 不含向量本体；
 │                            mem_export/mem_import（JSON 带向量，导入走语义去重只增不删）
-├── memory/extract.rs        U16 自动记忆抽取：bot_chat 收尾触发（fire-and-forget，仅交互
+├── memory/extract.rs + memory/extract/tests.rs   U16 自动记忆抽取：bot_chat 收尾触发（fire-and-forget，仅交互
 │                            会话 + 30 分钟限频）→ LLM 抽取 → parse_extract 容错解析 →
 │                            auto 直接入库 / confirm 进 mem_pending 待确认队列
 │                            （mem_pending_list/approve/reject，approve 走语义去重入库）；
@@ -1035,6 +1035,7 @@ flowchart TD
 - `memory/consolidate/tests.rs`
 - `memory/embed.rs`
 - `memory/extract.rs`
+- `memory/extract/tests.rs`
 - `memory/mod.rs`
 - `memory/panel.rs`
 - `memory/rank.rs`
