@@ -28,6 +28,8 @@ const WHITELIST: &[&str] = &[
     "bot_scheduler.rs",
     "bot_skills/files.rs",
     "bot_skills/manage.rs",
+    // create_skill 链路从 bot_skills/manage.rs 拆出后，存量调用点跟着搬了过来
+    "bot_skills/manage/create.rs",
     "bot_skills/remote.rs",
     "bot_skills/runtime.rs",
     "bot_slash.rs",
