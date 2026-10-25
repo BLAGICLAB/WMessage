@@ -1,4 +1,4 @@
-//! 工具 schema 字面量与工具表：63 个 `SCHEMA_*` 常量 + `TOOLS_TABLE` 接线 +
+//! 工具 schema 字面量与工具表：65 个 `SCHEMA_*` 常量 + `TOOLS_TABLE` 接线 +
 //! tools JSON 拼装与子 agent profile 白名单。
 
 use std::sync::OnceLock;
@@ -317,6 +317,13 @@ pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"w
     "path":{"type":"string","description":"目标文件绝对路径（父目录必须已存在）"},
     "content":{"type":"string","description":"完整文件内容（UTF-8 文本；不能含 NUL 字节；上限 2MB）"}
   },"required":["path","content"]}}}"##;
+pub const SCHEMA_UPDATE_PLAN: &str = r##"{"type":"function","function":{"name":"update_plan","description":"更新本会话的执行计划（整表替换：每次调用都要交出完整清单，不要只交增量）。用途：多步任务开工前先列出步骤；每完成一步立刻调用一次更新该步状态，不要攒到最后一起补。状态三态：pending 未开始 / in_progress 正在做 / completed 已完成，任一时刻至多一条 in_progress。不要为了好看而虚报完成：completed 只给真正做完的步骤。什么时候不要用：单一目标的小任务、琐碎操作、三步以内能做完的事、纯信息问答——这类直接做，别建计划","parameters":{"type":"object","properties":{
+    "explanation":{"type":"string","description":"相对上一版改了什么（可选）：新增/删除/调整了哪些步骤、为什么改；只写变更说明，不要把清单再抄一遍"},
+    "plan":{"type":"array","description":"完整步骤清单（整表替换：调用一次即覆盖上一次的全部内容）","items":{"type":"object","properties":{
+      "step":{"type":"string","description":"这一步要做什么（祈使句，一句话，别写成一整段）"},
+      "status":{"type":"string","enum":["pending","in_progress","completed"],"description":"该步状态：pending 未开始 / in_progress 正在做 / completed 已完成"}
+    },"required":["step","status"]}}
+  },"required":["plan"]}}}"##;
 use std::collections::HashMap;
 
 /// TOOLS_TABLE 的 O(1) HashMap 索引。
@@ -331,7 +338,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 64;
+pub const BUILTIN_TOOL_COUNT: usize = 65;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -939,6 +946,15 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &[],
         max_output_bytes: 8192,
         call: call_list_services,
+    },
+    // 计划工具。追加在表尾：同 manage_file 的理由——基线只比前缀。
+    ToolDef {
+        name: "update_plan",
+        schema: SCHEMA_UPDATE_PLAN,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_update_plan,
     },
 ];
 /// TOOLS JSON 由 TOOLS_TABLE 顺序拼装（schema 常量原文直拼，不做 parse + re-serialize）。

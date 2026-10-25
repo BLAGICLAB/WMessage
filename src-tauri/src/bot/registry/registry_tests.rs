@@ -205,6 +205,7 @@ fn tools_table_count_matches_constant() {
         "start_service",
         "stop_service",
         "list_services",
+        "update_plan",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -284,6 +285,7 @@ fn tools_table_count_matches_constant() {
         "start_service",
         "stop_service",
         "list_services",
+        "update_plan",
     ]
     .iter()
     .map(|s| s.to_string())
@@ -384,8 +386,8 @@ fn tools_json_matches_baseline() {
     );
     assert_eq!(
         der_arr.len(),
-        base_arr.len() + 34,
-        "主可见应为 28+3+4+2+1+1+3+1+13+3+2+1（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具；+1 = 凭证召回工具 lookup_receipt）"
+        base_arr.len() + 35,
+        "主可见应为 28+3+4+2+1+1+3+1+13+3+2+1+1（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具；+1 = 凭证召回工具 lookup_receipt；+1 = 计划工具 update_plan）"
     );
 }
 
@@ -1033,5 +1035,62 @@ fn tools_json_with_mcp_assembly_contract() {
     assert_eq!(
         &arr[..main_visible],
         base_arr.as_array().unwrap().as_slice()
+    );
+}
+
+/// update_plan 的 schema 契约：整表替换 + 三态 + 门槛写在工具描述里。
+///
+/// 三条都是产品决定，锁在这里是防它们被顺手改掉：
+/// - `plan` 必填：没有清单就没有「计划」这回事；
+/// - status 只有三态且枚举写死：多一态（如 blocked）就多一套前端不会画的语义；
+/// - 描述里必须留着「什么时候不要用」：门槛写在工具描述里才拦得住模型，
+///   靠系统提示词劝是劝不住的（Codex / Claude Code 都把门槛写进工具描述）。
+#[test]
+fn update_plan_schema_contract() {
+    let v: serde_json::Value =
+        serde_json::from_str(SCHEMA_UPDATE_PLAN).expect("SCHEMA_UPDATE_PLAN 必须是合法 JSON");
+    assert_eq!(v["function"]["name"], "update_plan");
+    let required: Vec<&str> = v
+        .pointer("/function/parameters/required")
+        .and_then(|r| r.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        required.contains(&"plan"),
+        "plan 必须必填：没有清单就没有计划可言，actual required: {required:?}"
+    );
+    let status = v
+        .pointer("/function/parameters/properties/plan/items/properties/status")
+        .expect("plan.items 必须声明 status");
+    let enums: Vec<&str> = status["enum"]
+        .as_array()
+        .expect("status 必须有 enum")
+        .iter()
+        .filter_map(|s| s.as_str())
+        .collect();
+    assert_eq!(
+        enums,
+        vec!["pending", "in_progress", "completed"],
+        "状态只有三态：多一态就多一套面板画不出来的语义"
+    );
+    let desc = v["function"]["description"]
+        .as_str()
+        .expect("工具必须有 description");
+    assert!(
+        desc.contains("什么时候不要用"),
+        "描述里必须留着使用门槛（模型靠这个判断该不该建计划）：{desc}"
+    );
+    assert!(
+        desc.contains("整表替换"),
+        "描述里必须写明整表替换语义：模型按增量写会与后端状态错位：{desc}"
+    );
+    // 计划工具给主 agent 用；子 agent 另有 read_own_card 口径。
+    assert!(
+        !SUBAGENT_ONLY_TOOLS.contains(&"update_plan"),
+        "update_plan 不是子 agent 专属工具"
+    );
+    assert!(
+        tools_index().contains_key("update_plan"),
+        "update_plan 必须进 TOOLS_TABLE"
     );
 }

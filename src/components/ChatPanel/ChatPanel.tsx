@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
-import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, ListTodo } from "lucide-react";
 import { unlistenSafe, useTauriListen } from "../../lib/useTauriListen";
 import { getBotConfig } from "../../lib/botConfig";
 import type { Task } from "../../types";
@@ -23,6 +23,7 @@ import * as streamState from "./streamState";
 import { SessionRail } from "./SessionRail";
 import { ContextRail } from "./ContextRail";
 import { MessageList } from "./MessageList";
+import { PlanPanel } from "./PlanPanel";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
 import { STICK_BOTTOM_PX } from "./constants";
@@ -48,10 +49,12 @@ type Props = {
   tasks: Task[];
   /** 勾完成等任务改写（走 App 的 updateTask，后端广播 tasks-updated） */
   onUpdateTask: (taskId: string, patch: Partial<Task>) => void;
+  /** 更上层浮层开着（命令面板等）：Esc 让位给它，计划面板不抢这个键 */
+  escBlocked?: boolean;
 };
 
 /** 机器人聊天区：主窗口左导航「Agent 能力 → 聊天」整页；支持多会话 */
-export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
+export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
   const {
     files,
     input,
@@ -93,6 +96,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
     setRefs,
   });
   const [dragHover, setDragHover] = useState(false);
+  /** 执行计划浮层开合（右上角按钮切换；浮层不占右侧栏位置） */
+  const [planOpen, setPlanOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickBottomRef = useRef(true);
   const lastScrollTopRef = useRef(0);
@@ -670,43 +675,68 @@ export function ChatPanel({ enabled, tasks, onUpdateTask }: Props) {
       )}
       {/* 聊天主体头部：当前会话标题常驻可见——切到历史会话后，用户靠这一行
           确认自己在哪一段对话里，而不是靠侧栏高亮反推。
-          两端各一个折叠钮，是各自侧栏的唯一开关——侧栏内不再放第二个 */}
-      <header className="mb-2 flex shrink-0 items-center gap-2 border-b border-[var(--edge)] pb-2">
-        <button
-          type="button"
-          className="nm-icon-btn h-7 w-7"
-          aria-expanded={railOpen}
-          aria-controls="chat-session-rail"
-          aria-label={railOpen ? "收起会话栏" : "展开会话栏"}
-          title={railOpen ? "收起会话栏" : "展开会话栏"}
-          onClick={toggleRail}
-        >
-          {railOpen ? (
-            <PanelLeftClose size={15} aria-hidden />
-          ) : (
-            <PanelLeftOpen size={15} aria-hidden />
-          )}
-        </button>
-        <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
-          <span className="sr-only">当前会话：</span>
-          {currentTitle}
-        </h2>
-        <button
-          type="button"
-          className="nm-icon-btn h-7 w-7"
-          aria-expanded={ctxOpen}
-          aria-controls="chat-context-rail"
-          title={ctxOpen ? "收起右侧栏" : "展开右侧栏"}
-          aria-label={ctxOpen ? "收起右侧栏" : "展开右侧栏"}
-          onClick={toggleCtx}
-        >
-          {ctxOpen ? (
-            <PanelRightClose size={15} aria-hidden />
-          ) : (
-            <PanelRightOpen size={15} aria-hidden />
-          )}
-        </button>
-      </header>
+          两端各一个折叠钮，是各自侧栏的唯一开关——侧栏内不再放第二个。
+          头部块是 relative：计划浮层挂在它下面（top-full），
+          贴着聊天区右上角展开，不去挤右侧栏。 */}
+      <div className="relative mb-2 shrink-0 border-b border-[var(--edge)] pb-2">
+        <header className="flex items-center gap-2">
+          <button
+            type="button"
+            className="nm-icon-btn h-7 w-7"
+            aria-expanded={railOpen}
+            aria-controls="chat-session-rail"
+            aria-label={railOpen ? "收起会话栏" : "展开会话栏"}
+            title={railOpen ? "收起会话栏" : "展开会话栏"}
+            onClick={toggleRail}
+          >
+            {railOpen ? (
+              <PanelLeftClose size={15} aria-hidden />
+            ) : (
+              <PanelLeftOpen size={15} aria-hidden />
+            )}
+          </button>
+          <h2 className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--t1)]">
+            <span className="sr-only">当前会话：</span>
+            {currentTitle}
+          </h2>
+          <button
+            type="button"
+            className="nm-icon-btn h-7 w-7"
+            aria-expanded={planOpen}
+            aria-controls="chat-plan-panel"
+            aria-label={planOpen ? "收起计划面板" : "展开计划面板"}
+            title={planOpen ? "收起计划面板" : "展开计划面板"}
+            onClick={() => setPlanOpen((v) => !v)}
+          >
+            <ListTodo size={15} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="nm-icon-btn h-7 w-7"
+            aria-expanded={ctxOpen}
+            aria-controls="chat-context-rail"
+            title={ctxOpen ? "收起右侧栏" : "展开右侧栏"}
+            aria-label={ctxOpen ? "收起右侧栏" : "展开右侧栏"}
+            onClick={toggleCtx}
+          >
+            {ctxOpen ? (
+              <PanelRightClose size={15} aria-hidden />
+            ) : (
+              <PanelRightOpen size={15} aria-hidden />
+            )}
+          </button>
+        </header>
+        {planOpen && (
+          <div id="chat-plan-panel" className="absolute right-0 top-full mt-2 z-40">
+            <PlanPanel
+              sessionId={sessionId}
+              subagents={subagentRuns}
+              onClose={() => setPlanOpen(false)}
+              escBlocked={escBlocked}
+            />
+          </div>
+        )}
+      </div>
 
       {/* 上下文水位条（Anthropic 协议回合级 usage 累计；contextK 来自 active 模型条目） */}
       <UsageMeter

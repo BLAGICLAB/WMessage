@@ -585,6 +585,27 @@ describe("ChatPanel", () => {
     expect(screen.getAllByRole("button", { name: "收起会话栏" })).toHaveLength(1);
   });
 
+  it("计划面板浮层：头部按钮开合，浮层挂在聊天区右上角不占右侧栏", async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    // 初始收起：面板不在 DOM 里
+    expect(
+      screen.queryByRole("complementary", { name: "执行计划面板" }),
+    ).toBeNull();
+    const openBtn = screen.getByRole("button", { name: "展开计划面板" });
+    expect(openBtn).toHaveAttribute("aria-expanded", "false");
+    await user.click(openBtn);
+    expect(
+      await screen.findByRole("complementary", { name: "执行计划面板" }),
+    ).toBeInTheDocument();
+    // 再点同一个钮收起
+    await user.click(screen.getByRole("button", { name: "收起计划面板" }));
+    expect(
+      screen.queryByRole("complementary", { name: "执行计划面板" }),
+    ).toBeNull();
+  });
+
   it("会话侧栏常驻：切换会话不用先展开菜单，当前会话有 aria-current 标记", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {

@@ -1,4 +1,4 @@
-//! 工具转发层：63 个 `call_*` 一行转发（`ToolCtx` + args → 工具实现）。
+//! 工具转发层：65 个 `call_*` 一行转发（`ToolCtx` + args → 工具实现）。
 
 use super::{ToolCtx, ToolFuture};
 
@@ -426,4 +426,10 @@ pub(super) fn call_write_file<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFu
     Box::pin(
         async move { crate::bot_fs::tool_write_file(ctx.app, args, interactive, session_id).await },
     )
+}
+
+// 计划工具适配器
+pub(super) fn call_update_plan<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let session_id = ctx.session_id;
+    Box::pin(async move { crate::bot::tools::tool_update_plan(ctx.app, args, session_id).await })
 }

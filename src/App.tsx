@@ -1108,6 +1108,7 @@ function App() {
                 enabled={botOn}
                 tasks={openTasks}
                 onUpdateTask={updateTask}
+                escBlocked={paletteOpen}
               />
             </div>
             {/* 全局确认弹窗 */}

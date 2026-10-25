@@ -27,6 +27,7 @@ use crate::error::CommandError;
 
 mod common;
 mod doc;
+mod plan;
 mod service;
 mod task;
 mod trace;
@@ -40,6 +41,7 @@ pub(crate) use doc::{
     tool_create_word_revisions, tool_extract_document, tool_fetch_url, tool_run_python,
     tool_web_search,
 };
+pub(crate) use plan::tool_update_plan;
 #[cfg(debug_assertions)]
 pub use service::{
     test_hook_tool_list_services, test_hook_tool_start_service, test_hook_tool_stop_service,

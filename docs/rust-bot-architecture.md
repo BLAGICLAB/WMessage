@@ -190,10 +190,10 @@ src-tauri/src/
 ├── bot/registry.rs (221)  **工具单源真相（阶段 2）** 的门面：类型（ToolCtx / ToolStatus /
 │                        ToolResult / ToolDef）+ 逐项 re-export——实现按面拆到下面三个子模块，
 │                        `crate::bot::registry::X` 旧路径与旧可见性保持不变
-│   ├── bot/registry/schemas.rs (1183)  63 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
+│   ├── bot/registry/schemas.rs (1199)  65 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
 │   │                        数目以 BUILTIN_TOOL_COUNT 为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │   │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-│   ├── bot/registry/handlers.rs (429)   63 个 call_* 一行转发（ToolCtx + args → 工具实现）
+│   ├── bot/registry/handlers.rs (435)   65 个 call_* 一行转发（ToolCtx + args → 工具实现）
 │   ├── bot/registry/claims.rs (792)     声明判据面：模型「声称做了」的提取与判定
 │   │                        （变更声称 / 执行声称 / 数值 / 文档路径 / 工具点名）
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
@@ -358,6 +358,7 @@ src-tauri/src/
 │   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
 │   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
 │   ├── bot/tools/trace.rs (231)    凭证召回面：按 tool_call_id/span_id/trace_id 调回历史工具结果（只读、零新表）
+│   ├── bot/tools/plan.rs (73)      计划面：update_plan 整表替换写会话内计划状态 + 广播 bot-plan 事件
 │   ├── bot/tools/task_files_arg_tests.rs (181)     files 参数解析与安全校验单测
 │   ├── bot/tools/query_tasks_tests.rs (154)        查询族纯函数单测
 │   ├── bot/tools/n3_toolpolish_tests.rs (79)       N3 工具升级纯函数单测
@@ -368,6 +369,9 @@ src-tauri/src/
 │   ├── bot/tools/phase4_facts_tests.rs (24)         时间/事实类单测
 │   ├── bot/tools/trace_tests.rs (251)             凭证召回工具单测（查回一致/查不到/只读无副作用）
 │   └── bot/tools/background_dialog_tests.rs (24)    后台执行不得弹框的源码守卫
+├── bot/plan_state.rs (318)  Agent 计划状态（会话内 transient）：update_plan 的参数校验与状态存取
+│                        （整表替换、三态 pending/in_progress/completed、至多一条 in_progress）→
+│                        进程内会话表 → bot-plan 事件；bot_plan_state 命令给面板取当前快照
 ├── bot/stream_log.rs (444) 会话级流式事件的统一出口 emit_recorded：分配序号（会话内跨轮次连续，
 │                        客户端据此去重）→ 写会话回放缓冲（2 万条 / 8MB 双上限，
 │                        收尾后保留 120s 惰性清扫，游标老于窗口如实报 truncated）
@@ -983,12 +987,14 @@ flowchart TD
 - `bot/services/watchdog.rs`
 - `bot/stream_log.rs`
 - `bot/tags_consolidate.rs`
+- `bot/plan_state.rs`
 - `bot/tools.rs`
 - `bot/tools/background_dialog_tests.rs`
 - `bot/tools/common.rs`
 - `bot/tools/doc.rs`
 - `bot/tools/n3_toolpolish_tests.rs`
 - `bot/tools/phase4_facts_tests.rs`
+- `bot/tools/plan.rs`
 - `bot/tools/query_tasks_tests.rs`
 - `bot/tools/service.rs`
 - `bot/tools/sync_syscall_off_runtime_tests.rs`
