@@ -7,6 +7,15 @@ pub(crate) const SELFCHECK_PROMPT: &str = "\
 【自检】上一条工具调用 {tool_name} 返回成功（开头摘要：{snippet}）。\
 请仅用一个字回答：Y=符合预期，N=未达预期。回答后不要解释。";
 
+/// 工具自检的侧调版 prompt：比 in-loop 版多带一段「用户要什么」。
+///
+/// 侧调模型看不到主对话历史，只看这一段——少了原始要求，它判「是否达意」就
+/// 退化成「工具有没有报错」，那道闸等于白设（永远答 Y）。带上了才与 in-loop
+/// 判定站在同一条信息线上，判定力差距只剩「中间对话过程」那一份。
+pub(crate) const SIDE_SELFCHECK_PROMPT: &str = "\
+【自检】用户要求：{intent}\n上一条工具调用 {tool_name} 返回成功（开头摘要：{snippet}）。\
+请仅用一个字回答：Y=符合预期，N=未达预期。回答后不要解释。";
+
 /// 终稿自检：主出口前置触发，让模型对 final_text 做一次「无幻觉/包含幻觉」判定。
 /// 节流由 bot_model_loop 控制（设置项 final_selfcheck_round_gap，默认 8 轮一次，
 /// 0 = 关闭；trigger 条件 final_text ≥ 80 字 + function_calls ≥ 3 硬编码常量）；

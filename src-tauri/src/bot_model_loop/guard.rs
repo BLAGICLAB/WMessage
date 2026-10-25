@@ -3,8 +3,8 @@
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
 use super::{
-    claim_mutation_fires, context_sources, finalize_exit, finalize_selfcheck, number_sourced,
-    with_thinking, FinalizeOutcome, ModelLoopDeps, ToolEvidence,
+    claim_mutation_fires, context_sources, finalize_exit, finalize_selfcheck, msg_chars,
+    number_sourced, request, with_thinking, FinalizeOutcome, ModelLoopDeps, ToolEvidence,
 };
 use crate::bot::registry::{
     claimed_doc_paths, claimed_executed_tools, claims_execution_with, mentioned_tool_names,
@@ -12,6 +12,129 @@ use crate::bot::registry::{
 };
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
+
+/// 自检通过分支的注入文案（in-loop 与侧调两条路径共用一份）。
+///
+/// 文案分两处写的话，改一边漏另一边不会编译失败也不会测试失败——两条路径
+/// 说的是同一件事，用户看到的提示词就该是同一句。
+pub(crate) const SELFCHECK_PASS_HINT: &str =
+    "【系统提示】自检通过。请继续：完成剩余步骤，或直接向用户汇报结果。";
+
+/// 自检未达预期分支的注入文案（in-loop 与侧调两条路径共用）。
+pub(crate) fn selfcheck_retry_hint(tool_name: &str) -> String {
+    format!(
+        "【系统提示】你对工具 {tool_name} 的自检回复了「未达预期」。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
+    )
+}
+
+/// 自检通过 / 未达预期的流式视觉提示（两条路径共用）。
+pub(crate) const SELFCHECK_PASS_EMIT: &str = "✅ 自检通过\n\n";
+pub(crate) const SELFCHECK_FAIL_EMIT: &str = "⚠️ 自检未达预期,换策略中…\n\n";
+
+/// 侧调路由的上下文阈值（字符）：消息栈超过它才让侧调接管工具自检。
+///
+/// 口径是「省下一轮主循环请求值不值」：阈值取消息预算的 1/5（40K 字符）。
+/// 低于它，省下的只是一次几千字符的输入加一点延迟，却把判定力让了出去
+/// （侧调看不到主对话）；高于它，主循环那一轮重付的上下文已经值一次独立请求。
+///
+/// 为什么不取「已过软压档」那档（预算的 70%）：那档量的是**主模型看到的**体量，
+/// 而工具结果早就被轮内滑动窗与轮龄降密度换成桩子了——真到长会话，历史早就
+/// 压到阈值以下，那道判据就永远不成立，feature 变成死代码。这里量的是
+/// **这一轮要多付多少**，与省下的钱直接挂钩。
+pub(crate) const SIDE_SELFCHECK_MIN_CHARS: usize = request::MSGS_BUDGET_CHARS / 5;
+
+/// 侧调路由判定：这一轮的工具自检该不该挪到侧调通道（纯函数，单测直打）。
+///
+/// 三个条件缺一不可：配了侧调模型（没配就没有侧调这条路）、历史够长
+/// （省下的那一轮才值一次独立请求）、拿得到用户意图（拿不到就回落 in-loop——
+/// 侧调模型看不到主对话，没意图它只会答 Y，那道闸等于白设）。
+pub(crate) fn side_selfcheck_routes_to_sidecall(
+    has_side_model: bool,
+    has_intent: bool,
+    msgs_chars: usize,
+) -> bool {
+    has_side_model && has_intent && msgs_chars >= SIDE_SELFCHECK_MIN_CHARS
+}
+
+/// 工具自检的侧调判定：长历史时用一次小请求代替主循环整段历史重付。
+///
+/// 为什么值得单独一条路：in-loop 自检要占主循环一整轮——那一轮的请求体是
+/// 整段历史（agent 输入输出比 ~100:1，主循环多一轮 = 全史重付一次）。侧调
+/// 只带「工具名 + 结果摘要 + 用户意图」几百字符，省下的就是那一整轮。
+///
+/// 判定力的取舍写在 [`side_selfcheck_routes_to_sidecall`]：侧调模型看不到用户
+/// 的原始意图，判「是否达意」弱于主模型，故只在历史够长时才换；意图取不到
+/// （消息栈里没有真人用户消息）直接不换。
+///
+/// 返回 None = 没走侧调（没配侧调模型 / 历史不够长 / 拿不到意图 / 侧调没给出
+/// 可判定的答案）——调用方回落 in-loop 路径，这道闸不丢。
+pub(crate) async fn side_selfcheck_verdict(
+    deps: &ModelLoopDeps<'_>,
+    msgs: &[serde_json::Value],
+    intent: &str,
+    tool_name: &str,
+    snippet: &str,
+) -> Option<bool> {
+    let sc_http = deps.final_selfcheck_http?;
+    let chars: usize = msgs.iter().map(msg_chars).sum();
+    if !side_selfcheck_routes_to_sidecall(true, !intent.is_empty(), chars) {
+        return None;
+    }
+    let prompt = crate::prompts::SIDE_SELFCHECK_PROMPT
+        .replace("{intent}", intent)
+        .replace("{tool_name}", tool_name)
+        .replace("{snippet}", snippet);
+    let side_msgs = [crate::bot_chat::ChatMsg {
+        role: "user".to_string(),
+        content: prompt,
+    }];
+    let sidecall = crate::bot_chat::summarize_http(
+        &sc_http.client,
+        &sc_http.base_url,
+        &sc_http.api_key,
+        &sc_http.model,
+        "",
+        &side_msgs,
+        sc_http.provider,
+        // 判定 prompt 要求「仅回答 Y/N」——32 token 足够首字符判定
+        32,
+        None,
+        None,
+    )
+    .await;
+    match sidecall {
+        Ok(v) => {
+            // 宽松前缀判定：侧调模型爱在判定后加解释（「Y，已核对」），整段
+            // 严格匹配会把它当「判不出来」而白跑一次 in-loop
+            let verdict = crate::prompts::parse_selfcheck_reply_lenient(v.trim());
+            (deps.audit)(
+                crate::audit::AuditLevel::Info,
+                "tool_selfcheck.sidecall",
+                vec![
+                    ("chars", chars.to_string()),
+                    (
+                        "verdict",
+                        match verdict {
+                            Some(true) => "pass",
+                            Some(false) => "fail",
+                            None => "unknown",
+                        }
+                        .to_string(),
+                    ),
+                ],
+            );
+            verdict
+        }
+        Err(e) => {
+            (deps.audit)(
+                crate::audit::AuditLevel::Warn,
+                "tool_selfcheck.sidecall_failed",
+                vec![("err", e.to_string())],
+            );
+            None
+        }
+    }
+}
 
 /// 幻觉守卫的证据（收齐后交给判决）。
 struct GuardEvidence {
@@ -167,7 +290,7 @@ fn finalize_selfcheck_reply(
             Some(true) => {
                 emit(
                     "bot-chat-delta",
-                    serde_json::json!({ "text": "✅ 自检通过\n\n" }),
+                    serde_json::json!({ "text": SELFCHECK_PASS_EMIT }),
                 );
                 msgs.push(with_thinking(
                     serde_json::json!({ "role": "assistant", "content": final_text }),
@@ -175,7 +298,7 @@ fn finalize_selfcheck_reply(
                 ));
                 msgs.push(serde_json::json!({
                     "role": "user",
-                    "content": "【系统提示】自检通过。请继续：完成剩余步骤，或直接向用户汇报结果。"
+                    "content": SELFCHECK_PASS_HINT
                 }));
                 *expecting_selfcheck = false;
                 *pending_selfcheck = None;
@@ -184,18 +307,16 @@ fn finalize_selfcheck_reply(
             Some(false) => {
                 emit(
                     "bot-chat-delta",
-                    serde_json::json!({ "text": "⚠️ 自检未达预期,换策略中…\n\n" }),
+                    serde_json::json!({ "text": SELFCHECK_FAIL_EMIT }),
                 );
                 msgs.push(with_thinking(
                     serde_json::json!({ "role": "assistant", "content": final_text }),
                     thinking_blocks,
                 ));
                 msgs.push(serde_json::json!({
-                            "role": "user",
-                            "content": format!(
-                                "【系统提示】你对工具 {sc_name} 的自检回复了「未达预期」。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
-                            )
-                        }));
+                    "role": "user",
+                    "content": selfcheck_retry_hint(&sc_name)
+                }));
                 *expecting_selfcheck = false;
                 *pending_selfcheck = None;
                 return Ok(FinalizeOutcome::Continue);

@@ -57,7 +57,8 @@ pub use self::types::{
 // 跨模块共用的私有项：门面转出，子模块之间零直接依赖。
 pub(crate) use self::context::{
     apply_tool_window, is_context_overflow, is_retryable_llm_status, msg_chars, reindex_after_shed,
-    shed_oldest_history, tool_result_chars, TOOL_WINDOW_KEEP_RECENT, TOOL_WINDOW_TRIGGER_CHARS,
+    shed_oldest_history, tool_result_chars, user_intent_of, TOOL_WINDOW_KEEP_RECENT,
+    TOOL_WINDOW_TRIGGER_CHARS,
 };
 pub(crate) use self::evidence::{
     context_sources, number_sourced, ToolEvidence, EVIDENCE_OUTPUT_CHARS,
@@ -69,7 +70,10 @@ pub(crate) use self::fuse::{
     check_fuses, fuse_cap_for, fuse_message, inject_soft_warnings, rounds_fuse_exit, should_fuse,
     FUSE_MARKER, MAX_FUNCTION_CALLS_PER_REQUEST, ROUNDS_FUSE_MARKER, WALL_FUSE_MARKER,
 };
-pub(crate) use self::guard::finalize_without_tools;
+pub(crate) use self::guard::{
+    finalize_without_tools, selfcheck_retry_hint, side_selfcheck_verdict, SELFCHECK_FAIL_EMIT,
+    SELFCHECK_PASS_EMIT, SELFCHECK_PASS_HINT,
+};
 pub(crate) use self::output::{apply_output_cap, DEFAULT_TOOL_OUTPUT_CAP_BYTES};
 pub(crate) use self::request::{
     compact_before_round, prepare_round, request_round, LLM_RETRY_DELAY, MAX_LLM_ATTEMPTS,

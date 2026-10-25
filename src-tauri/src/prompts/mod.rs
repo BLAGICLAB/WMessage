@@ -32,7 +32,7 @@ pub(crate) use extract::{ADJUDICATE_PROMPT, EXTRACT_PROMPT};
 pub(crate) use planner::{PLANNER_PROMPT, REPLANNER_PROMPT};
 pub(crate) use selfcheck::{
     parse_selfcheck_reply_lenient, parse_selfcheck_response, FINAL_SELFCHECK_PROMPT,
-    SELFCHECK_PROMPT,
+    SELFCHECK_PROMPT, SIDE_SELFCHECK_PROMPT,
 };
 pub(crate) use subagent::{
     MAIN_AGENT_ADDENDUM, PROFILE_CODER, PROFILE_EXECUTOR, PROFILE_GENERAL, PROFILE_RECON,
@@ -51,6 +51,7 @@ mod tests {
         ("SUMMARY_SYSTEM_PROMPT", SUMMARY_SYSTEM_PROMPT),
         ("COMPACT_SYSTEM_PROMPT", COMPACT_SYSTEM_PROMPT),
         ("SELFCHECK_PROMPT", SELFCHECK_PROMPT),
+        ("SIDE_SELFCHECK_PROMPT", SIDE_SELFCHECK_PROMPT),
         ("EXECUTE_SYSTEM_PROMPT", EXECUTE_SYSTEM_PROMPT),
         ("STEPWISE_ADDENDUM", STEPWISE_ADDENDUM),
         ("PLANNER_PROMPT", PLANNER_PROMPT),
@@ -71,7 +72,7 @@ mod tests {
 
     #[test]
     fn all_prompts_are_registered_and_non_empty() {
-        assert_eq!(ALL.len(), 20, "prompt 清单与实际常量数不一致（新增请登记）");
+        assert_eq!(ALL.len(), 21, "prompt 清单与实际常量数不一致（新增请登记）");
         for (name, p) in ALL {
             assert!(
                 p.chars().count() >= 30,

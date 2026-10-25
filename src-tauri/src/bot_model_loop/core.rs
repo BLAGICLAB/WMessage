@@ -5,9 +5,9 @@
 use super::{
     check_fuses, compact_before_round, finalize_without_tools, fuse_message, inject_soft_warnings,
     mutation_succeeded, prepare_round, read_sse_stream, request_round, rounds_fuse_exit,
-    should_fuse, stamp_last_assistant_reasoning, stream_round, with_thinking, FinalizeOutcome,
-    LlmHttp, ModelLoopDeps, RequestOutcome, RoundCtx, ToolEvidence, TurnStatus,
-    EVIDENCE_OUTPUT_CHARS,
+    should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning, stream_round,
+    user_intent_of, with_thinking, FinalizeOutcome, LlmHttp, ModelLoopDeps, RequestOutcome,
+    RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS,
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
@@ -52,6 +52,9 @@ where
         mut plan,
     } = prepare_round(http, stop, deps, max_rounds);
     let mut msgs = msgs;
+    // 侧调自检要用的「用户要什么」：在进循环前从初始消息栈取一次——
+    // 循环里注入的提示块会混进消息栈，那时再取就分不清哪句是真人说的。
+    let user_intent = user_intent_of(&msgs);
     // 条目级 system prompt：追加到消息栈末尾——OpenAI 直接多一条 system
     // 消息；Anthropic 分支 openai_msgs_to_anthropic 会把它归并进顶层 system 块。
     if let Some(sp) = &http.system_prompt {
@@ -390,6 +393,7 @@ where
                 &mut tool_msg_ages,
                 fuse_cap,
                 soft_warn_at,
+                &user_intent,
                 plan_state.as_deref_mut(),
                 deps,
                 stop,
@@ -496,6 +500,7 @@ async fn dispatch_round<X, XP, R, RP>(
     tool_msg_ages: &mut Vec<(usize, usize)>,
     fuse_cap: usize,
     soft_warn_at: usize,
+    user_intent: &str,
     plan_state: Option<&mut crate::bot_plan::PlanState>,
     deps: &ModelLoopDeps<'_>,
     stop: &StopGuard,
@@ -803,16 +808,44 @@ where
     // 本轮 tool 响应已全部回填（tool_calls → tool×N 序列完整），此时注入提示才合法。
     // pending 保持 Some 直到回复轮消费——在这里 take() 提前清空，回复轮的解析
     // 就会永远扑空（N 换策略路径整段死代码的根因）；expecting 守卫防重复注入。
-    if let Some((sc_name, sc_snippet)) = pending_selfcheck.as_ref() {
-        if !*expecting_selfcheck {
+    if !*expecting_selfcheck {
+        if let Some((sc_name, sc_snippet)) = pending_selfcheck.clone() {
             *last_selfcheck_round = Some(round);
-            *expecting_selfcheck = true;
-            msgs.push(serde_json::json!({
-                "role": "user",
-                "content": crate::prompts::SELFCHECK_PROMPT
-                    .replace("{tool_name}", sc_name)
-                    .replace("{snippet}", sc_snippet),
-            }));
+            // 长历史 + 配了侧调模型 → 侧调判定，省掉主循环整段历史重付的那一轮；
+            // 侧调没给出可判定的答案就回落 in-loop（这道闸不丢）。
+            match side_selfcheck_verdict(deps, msgs, user_intent, &sc_name, &sc_snippet).await {
+                Some(true) => {
+                    emit(
+                        "bot-chat-delta",
+                        serde_json::json!({ "text": super::SELFCHECK_PASS_EMIT }),
+                    );
+                    msgs.push(serde_json::json!({
+                        "role": "user",
+                        "content": super::SELFCHECK_PASS_HINT
+                    }));
+                    *pending_selfcheck = None;
+                }
+                Some(false) => {
+                    emit(
+                        "bot-chat-delta",
+                        serde_json::json!({ "text": super::SELFCHECK_FAIL_EMIT }),
+                    );
+                    msgs.push(serde_json::json!({
+                        "role": "user",
+                        "content": super::selfcheck_retry_hint(&sc_name)
+                    }));
+                    *pending_selfcheck = None;
+                }
+                None => {
+                    *expecting_selfcheck = true;
+                    msgs.push(serde_json::json!({
+                        "role": "user",
+                        "content": crate::prompts::SELFCHECK_PROMPT
+                            .replace("{tool_name}", &sc_name)
+                            .replace("{snippet}", &sc_snippet),
+                    }));
+                }
+            }
         }
     }
     if let Some(hint) = fail_hint_queued.take() {

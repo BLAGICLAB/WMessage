@@ -754,3 +754,123 @@ async fn core_final_selfcheck_sidecall_n_appends_warning() {
         "应记 final_selfcheck.fail 审计：{lines:?}"
     );
 }
+
+// ───────────── 工具自检侧调（长历史走独立通道，省主循环一整轮） ─────────────
+
+/// 造一段足够长的历史：过了侧调路由阈值（消息预算的 1/5 = 40K 字符）。
+///
+/// 开头留一句可辨识的诉求——侧调请求里必须带上它（侧调模型看不到主对话，
+/// 没带诉求它只会答 Y，那道闸等于白设）。
+fn long_history_msgs() -> Vec<serde_json::Value> {
+    vec![serde_json::json!({
+        "role": "user",
+        "content": format!("整理季度报告{}", "旧".repeat(60_000)),
+    })]
+}
+
+/// 长历史 + 配了侧调模型 → 工具自检走侧调，主循环少一轮。
+///
+/// 判据是「主服务器少一次请求」：in-loop 自检要占一整轮（那一轮的请求体是
+/// 整段历史），侧调只发一次小请求。
+#[tokio::test]
+async fn core_tool_selfcheck_sidecall_saves_one_main_round() {
+    let main = MockLlmServer::start();
+    let side = MockLlmServer::start();
+    main.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    main.push_behavior(MockBehavior::TextReply("建好了".into()));
+    side.push_behavior(MockBehavior::OpenAiJsonReply("Y".into()));
+
+    let h = CoreHarness::new();
+    let sc = selfcheck_http(&side);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    run_model_loop_core(
+        &core_http(&main),
+        long_history_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_selfcheck(&sc),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("工具自检侧调路径应 Ok");
+
+    assert_eq!(side.request_count(), 1, "自检判定应打到侧调服务器");
+    let side_bodies = side.request_bodies();
+    assert!(
+        side_bodies[0].contains("整理季度报告"),
+        "侧调请求必须带上用户诉求：{}",
+        side_bodies[0]
+    );
+    assert!(
+        side_bodies[0].contains("create_task"),
+        "侧调请求必须带上工具名：{}",
+        side_bodies[0]
+    );
+    assert_eq!(
+        main.request_count(),
+        2,
+        "侧调不占主循环轮次：工具轮 + 收尾轮 = 2 次请求"
+    );
+    let bodies = main.request_bodies();
+    assert!(
+        !bodies[1].contains("【自检】"),
+        "走了侧调就不该再往主循环注入自检 prompt：{}",
+        bodies[1]
+    );
+    assert!(
+        bodies[1].contains("自检通过"),
+        "侧调 Y 应注入「自检通过」提示：{}",
+        bodies[1]
+    );
+}
+
+/// 短历史 → 留在主循环判（侧调模型看不到原始意图，短历史时那一轮重付本来
+/// 就不贵，用判定力换钱不划算）。
+#[tokio::test]
+async fn core_tool_selfcheck_stays_in_loop_on_short_history() {
+    let main = MockLlmServer::start();
+    let side = MockLlmServer::start();
+    main.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    // 自检回复轮：主模型答 Y
+    main.push_behavior(MockBehavior::TextReply("Y".into()));
+    main.push_behavior(MockBehavior::TextReply("建好了".into()));
+
+    let h = CoreHarness::new();
+    let sc = selfcheck_http(&side);
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    run_model_loop_core(
+        &core_http(&main),
+        user_msgs(),
+        10,
+        &h.stop,
+        None,
+        &h.deps_with_selfcheck(&sc),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("工具自检 in-loop 路径应 Ok");
+
+    assert_eq!(side.request_count(), 0, "短历史不该走侧调");
+    assert_eq!(
+        main.request_count(),
+        3,
+        "in-loop 自检占一整轮：工具轮 + 自检轮 + 收尾轮"
+    );
+    let bodies = main.request_bodies();
+    assert!(
+        bodies[1].contains("【自检】"),
+        "短历史应照旧往主循环注入自检 prompt：{}",
+        bodies[1]
+    );
+}

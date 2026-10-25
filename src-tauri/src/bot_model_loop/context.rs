@@ -108,6 +108,44 @@ fn tool_name_of(msgs: &[serde_json::Value], idx: usize, tool_call_id: &str) -> O
     })
 }
 
+/// 意图片段的字符上限：每段最多留这么多字进侧调请求。
+const INTENT_PART_CHARS: usize = 200;
+
+/// 用户意图摘要：侧调自检要用的「用户要什么」（纯函数）。
+///
+/// 侧调模型看不到主对话历史——不带意图，它判「是否达意」就退化成「工具有没有
+/// 报错」，那道闸等于白设（永远答 Y）。带上了才与 in-loop 判定站在同一条信息线上。
+///
+/// 取**最早**与**最近**两条真人用户消息：聊天链路的消息栈是整段会话历史
+/// （首条是最初的诉求、末条是本轮诉求），任务执行链路只有一条（任务卡块），
+/// 两种链路都落在这条规则上。首条取头、末条取尾——注入块（摘要/记忆）拼在
+/// 用户原话**前面**（见 bot_chat::inject），取尾才拿得到原话。
+pub(crate) fn user_intent_of(msgs: &[serde_json::Value]) -> String {
+    let users: Vec<&str> = msgs
+        .iter()
+        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+        .collect();
+    let first = users.first().copied().unwrap_or_default();
+    let last = users.last().copied().unwrap_or_default();
+    if first.is_empty() {
+        return String::new();
+    }
+    let head: String = first.chars().take(INTENT_PART_CHARS).collect();
+    let tail: String = {
+        let n = last.chars().count();
+        if n <= INTENT_PART_CHARS {
+            last.to_string()
+        } else {
+            last.chars().skip(n - INTENT_PART_CHARS).collect()
+        }
+    };
+    if head == tail {
+        return head;
+    }
+    format!("最早：{head}；最近：{tail}")
+}
+
 /// 可重试的 HTTP 状态：429 限流 + 5xx 服务端瞬时错误；401/400 等重试无意义
 pub(crate) fn is_retryable_llm_status(status: u16) -> bool {
     status == 429 || (500..=599).contains(&status)
