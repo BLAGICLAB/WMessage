@@ -215,6 +215,11 @@ pub(super) fn call_fetch_url<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFut
     Box::pin(async move { tool_fetch_url(ctx.app, args).await })
 }
 
+pub(super) fn call_lookup_receipt<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
+    let session_id = ctx.session_id;
+    Box::pin(async move { crate::bot::tools::tool_lookup_receipt(ctx.app, args, session_id).await })
+}
+
 pub(super) fn call_get_current_time<'a>(_ctx: &'a ToolCtx<'a>, _args: &'a str) -> ToolFuture<'a> {
     Box::pin(async move { tool_get_current_time() })
 }

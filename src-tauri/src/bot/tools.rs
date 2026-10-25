@@ -29,6 +29,7 @@ mod common;
 mod doc;
 mod service;
 mod task;
+mod trace;
 
 // 拆出后的子模块转出：保持 `crate::bot::tools::X` 旧路径与旧可见性不变
 // （pub 的转成 pub、pub(crate) 的转成 pub(crate)、模块私有的仍是私有）
@@ -49,6 +50,7 @@ pub(crate) use task::{
     tool_link_file_to_task, tool_query_single_task, tool_query_tasks, tool_remove_subtask,
     tool_toggle_subtask,
 };
+pub(crate) use trace::tool_lookup_receipt;
 
 // 跨模块共用项：门面转出后由 tools/ 各子模块经 `use super::*` 取用
 use common::{active_tasks, sanitize_task_files_arg};
@@ -86,3 +88,5 @@ mod tool_due_format_tests;
 mod tool_extract_document_tests;
 #[cfg(test)]
 mod tool_web_search_arg_tests;
+#[cfg(test)]
+mod trace_tests;

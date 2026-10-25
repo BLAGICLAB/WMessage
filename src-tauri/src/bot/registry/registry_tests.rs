@@ -167,6 +167,7 @@ fn tools_table_count_matches_constant() {
         "web_search",
         "fetch_url",
         "get_current_time",
+        "lookup_receipt",
         "remember_fact",
         "recall_facts",
         "record_lesson",
@@ -245,6 +246,7 @@ fn tools_table_count_matches_constant() {
         "web_search",
         "fetch_url",
         "get_current_time",
+        "lookup_receipt",
         "remember_fact",
         "recall_facts",
         "record_lesson",
@@ -382,8 +384,8 @@ fn tools_json_matches_baseline() {
     );
     assert_eq!(
         der_arr.len(),
-        base_arr.len() + 33,
-        "主可见应为 28+3+4+2+1+1+3+1+13+3+2（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具）"
+        base_arr.len() + 34,
+        "主可见应为 28+3+4+2+1+1+3+1+13+3+2+1（末位 +13 = 归档两工具 + manage_file + copy_file_to_clipboard + 提醒三工具 + UI 六件套；+3 = 受管服务三工具；+2 = 远程技能安装与搜索两工具；+1 = 凭证召回工具 lookup_receipt）"
     );
 }
 

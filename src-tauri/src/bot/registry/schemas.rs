@@ -220,6 +220,11 @@ pub const SCHEMA_FETCH_URL: &str = r##"{"type":"function","function":{"name":"fe
     "offset":{"type":"integer","description":"字符偏移（可选，默认 0；上一页返回的「已截断」提示里给了 offset 值，用它续读）"}
   },"required":["url"]}}}"##;
 pub const SCHEMA_GET_CURRENT_TIME: &str = r##"{"type":"function","function":{"name":"get_current_time","description":"获取当前日期时间和星期（涉及「今天/明天/昨天/周几/几点」类判断前必须先调，不要凭训练数据猜日期）","parameters":{"type":"object","properties":{}}}}"##;
+pub const SCHEMA_LOOKUP_RECEIPT: &str = r##"{"type":"function","function":{"name":"lookup_receipt","description":"调回历史工具调用的完整结果（工具消息不跨轮持久，上一轮的返回出了那一轮就不在上下文里了）。不传参数=列出本会话最近的工具调用凭证；传 tool_call_id / span_id / trace_id=调取那一条的完整返回。引用旧轮工具结果前必须先调本工具取回原文，不得凭记忆复述","parameters":{"type":"object","properties":{
+    "tool_call_id":{"type":"string","description":"工具调用 id（assistant 消息里 tool_calls 里的 id），可选"},
+    "span_id":{"type":"integer","description":"单条工具调用的 id（痕迹页逐条列出的那串数），可选"},
+    "trace_id":{"type":"integer","description":"一次执行的痕迹 id（一次执行里的全部工具调用），可选"}
+  },"required":[]}}}"##;
 pub const SCHEMA_REMEMBER_FACT: &str = r##"{"type":"function","function":{"name":"remember_fact","description":"记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短规范名词 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条；写入结果若提示相似已有记忆，优先用同 key 覆盖更新而非另开新 key 堆积）","parameters":{"type":"object","properties":{
     "key":{"type":"string","description":"简短规范名词，如「称呼」「偏好语言」「常用目录」"},
     "value":{"type":"string","description":"要记住的内容；空串 = 删除该条"},
@@ -326,7 +331,7 @@ pub fn tools_index() -> &'static HashMap<&'static str, &'static ToolDef> {
 /// 内置工具总数（= TOOLS_TABLE 条目数 = SCHEMA_* 常量数）。
 /// 注释与文档一律引用本常量而不另写数字；增删工具时只改这里一处，
 /// `builtin_tool_count_matches_table` 单测负责在数目对不上时红灯。
-pub const BUILTIN_TOOL_COUNT: usize = 63;
+pub const BUILTIN_TOOL_COUNT: usize = 64;
 
 // TOOLS_TABLE（内置工具单源真相：BUILTIN_TOOL_COUNT 个，其中 SUBAGENT_ONLY_TOOLS
 // 那几个仅子 agent 可见，主 agent 少这么多）
@@ -576,6 +581,14 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         claims_patterns: &[],
         max_output_bytes: 8192,
         call: call_get_current_time,
+    },
+    ToolDef {
+        name: "lookup_receipt",
+        schema: SCHEMA_LOOKUP_RECEIPT,
+        mutating: false,
+        claims_patterns: &[],
+        max_output_bytes: 8192,
+        call: call_lookup_receipt,
     },
     ToolDef {
         name: "remember_fact",

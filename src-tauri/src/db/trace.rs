@@ -19,7 +19,8 @@ use crate::error::{CommandError, CommandResult};
 
 // 拆出后的子模块转出：保持 `crate::db::trace::X` 与 `crate::db::X` 两条旧路径不变
 pub use super::trace_query::{
-    session_tool_names, spans_for_trace, trace_get_row, trace_query, SessionTools,
+    session_spans, session_tool_names, span_get_row, spans_for_trace, trace_get_row, trace_query,
+    SessionTools,
 };
 pub(crate) use super::trace_session::session_file_changes_sync;
 pub use super::trace_session::{

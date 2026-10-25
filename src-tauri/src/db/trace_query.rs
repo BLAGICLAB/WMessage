@@ -93,6 +93,79 @@ pub fn spans_for_trace(conn: &rusqlite::Connection, trace_id: i64) -> Result<Vec
     Ok(out)
 }
 
+/// 单条 span（按 span id 精确取）。
+///
+/// 供凭证召回工具用：模型手上拿到的可能是 span id（痕迹页逐条列出的那串数），
+/// 也可能是 tool_call_id 或 trace id——三条路都收敛到「一条 span」。
+pub fn span_get_row(conn: &rusqlite::Connection, span_id: i64) -> Result<Option<SpanRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, trace_id, turn, tool_call_id, name, args, result, ok, error_class, duration_ms, created_at
+             FROM exec_spans WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([span_id], span_row_from)
+        .map_err(|e| e.to_string())?;
+    match rows.next() {
+        Some(r) => Ok(Some(r.map_err(|e| e.to_string())?)),
+        None => Ok(None),
+    }
+}
+
+/// 本会话的工具调用凭证（按时间顺序，最多 `limit` 条）。
+///
+/// **会话内限定**：凭证召回工具绝不能读到别的会话去——痕迹表是全局的，
+/// 「本会话跑过什么」这个问题只该在本会话里答。join `exec_traces` 取
+/// session_id；子 agent 的 span 记在 `subagents.trace_id`（字符串）下，
+/// 与这里的整数 trace_id join 不成立，故子 agent 的调用不在本清单里
+/// （与 `session_tool_names` 同一口径）。
+pub fn session_spans(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    limit: usize,
+) -> Result<Vec<SpanRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, s.trace_id, s.turn, s.tool_call_id, s.name, s.args, s.result,
+                    s.ok, s.error_class, s.duration_ms, s.created_at
+             FROM exec_spans s
+             JOIN exec_traces t ON s.trace_id = t.id
+             WHERE t.session_id = ?1
+             ORDER BY s.id
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![session_id, limit.clamp(1, 500) as i64],
+            span_row_from,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// span 行 → 结构体（`session_spans` / `span_get_row` 共用的映射）。
+fn span_row_from(r: &rusqlite::Row<'_>) -> rusqlite::Result<SpanRow> {
+    Ok(SpanRow {
+        id: r.get(0)?,
+        trace_id: r.get(1)?,
+        turn: r.get(2)?,
+        tool_call_id: r.get(3)?,
+        name: r.get(4)?,
+        args: r.get(5)?,
+        result: r.get(6)?,
+        ok: r.get::<_, i64>(7)? != 0,
+        error_class: r.get(8)?,
+        duration_ms: r.get(9)?,
+        created_at: r.get(10)?,
+    })
+}
+
 /// 本会话调用过的工具名（分「调用过」与「成功过」两档）。
 ///
 /// 幻觉守卫「点名判据」的证据池。两档分开的理由是两道判据问的不是同一件事：

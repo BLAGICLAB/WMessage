@@ -859,6 +859,31 @@ const TOOLS: &str = r#"[
   },
   {
     "function": {
+      "description": "调回历史工具调用的完整结果（工具消息不跨轮持久，上一轮的返回出了那一轮就不在上下文里了）。不传参数=列出本会话最近的工具调用凭证；传 tool_call_id / span_id / trace_id=调取那一条的完整返回。引用旧轮工具结果前必须先调本工具取回原文，不得凭记忆复述",
+      "name": "lookup_receipt",
+      "parameters": {
+        "properties": {
+          "span_id": {
+            "description": "单条工具调用的 id（痕迹页逐条列出的那串数），可选",
+            "type": "integer"
+          },
+          "tool_call_id": {
+            "description": "工具调用 id（assistant 消息里 tool_calls 里的 id），可选",
+            "type": "string"
+          },
+          "trace_id": {
+            "description": "一次执行的痕迹 id（一次执行里的全部工具调用），可选",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
       "description": "记住一条用户偏好/事实（跨会话长期记忆，重启不丢；key 简短规范名词 ≤50 字，value 内容 ≤500 字；同 key 覆盖更新；value 传空串删除该条；写入结果若提示相似已有记忆，优先用同 key 覆盖更新而非另开新 key 堆积）",
       "name": "remember_fact",
       "parameters": {
@@ -926,32 +951,6 @@ const TOOLS: &str = r#"[
         },
         "required": [
           "lesson"
-        ],
-        "type": "object"
-      }
-    },
-    "type": "function"
-  },
-  {
-    "function": {
-      "description": "读取已安装技能（skill）的完整文档并按文档步骤执行。任务涉及的每个相关技能都要读（可多次调用）：例如做 PPT 时，若清单里同时有编排、生成、配色、风格类技能，应逐个读取、取长补短综合运用，不要只读一个",
-      "name": "use_skill",
-      "parameters": {
-        "properties": {
-          "name": {
-            "description": "技能名（系统提示词「已安装技能」清单里的名称，一次一个，可多次调用）",
-            "type": "string"
-          },
-          "params": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "技能参数（可选；键=参数名，值=字符串）。技能声明了必填参数时必须提供（缺失会拒绝启动并列出缺什么），声明了默认值的参数可省略",
-            "type": "object"
-          }
-        },
-        "required": [
-          "name"
         ],
         "type": "object"
       }
