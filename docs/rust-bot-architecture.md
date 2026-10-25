@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 262 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 269 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -106,7 +106,7 @@ src-tauri/src/
 │                        token 文件为空则原子覆写自愈（否则 create_new 恒撞 AlreadyExists，api_start 起不来）
 ├── api_handlers/        REST /api/tasks CRUD + SSE + api_start/stop 等命令
 │   ├── api_handlers/mod.rs  模块声明 + 路由分发
-│   ├── handlers.rs      HTTP 路由层
+│   ├── api_handlers/handlers.rs      HTTP 路由层
 │   ├── api_handlers/commands.rs  tauri 命令层
 │   ├── body.rs          请求/响应模型
 │   ├── api_handlers/sse.rs  SSE 事件流
@@ -180,9 +180,20 @@ src-tauri/src/
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs
 │                        的抽取限频——文案里的数不留手写副本
-├── bot/registry.rs (3827)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
-│                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
-│                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
+├── bot/registry.rs (220)  **工具单源真相（阶段 2）** 的门面：类型（ToolCtx / ToolStatus /
+│                        ToolResult / ToolDef）+ 逐项 re-export——实现按面拆到下面三个子模块，
+│                        `crate::bot::registry::X` 旧路径与旧可见性保持不变
+│   ├── bot/registry/schemas.rs (1170)  63 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
+│   │                        数目以 BUILTIN_TOOL_COUNT 为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
+│   │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
+│   ├── bot/registry/handlers.rs (424)   63 个 call_* 一行转发（ToolCtx + args → 工具实现）
+│   ├── bot/registry/claims.rs (792)     声明判据面：模型「声称做了」的提取与判定
+│   │                        （变更声称 / 执行声称 / 数值 / 文档路径 / 工具点名）
+│   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
+│   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
+│   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
+│   └── bot/registry/registry_tests.rs (1035)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
+│                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
 ├── bot/dispatch.rs (1009)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计 +
 │                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）
@@ -559,7 +570,7 @@ src-tauri/src/
 | `MetaProvider` / `MetaModel` / `MetaModelJoined` / `MetaSyncResult` | meta/mod.rs |
 | `StopGuard` | bot_slash.rs（注册表 `StopMap` 见 app_state.rs） |
 | 确认弹窗 `ConfirmMap` | app_state.rs（`confirms(app)` 访问器） |
-| `AppState` / `TOOLS_TABLE` / `ToolDef` | app_state.rs:113 / bot/registry.rs:335 / :36 |
+| `AppState` / `TOOLS_TABLE` / `ToolDef` | app_state.rs:113 / bot/registry/schemas.rs:333 / bot/registry.rs:159 |
 
 ### 2.1 运行期全局状态（阶段 3 收口，2026-09-13）
 
@@ -652,7 +663,7 @@ db / audit / paths / error   全员共享底座
   `extract.rs` / `selfcheck.rs` / `subagent.rs`；统一从
   `crate::prompts::NAME` 取。**不是** `.md` 资源文件（`.md` + `include_str!` 会引入真实换行 =
   改提示词字节内容，属需单独评估的改动；若将来要换实现，调用方路径不变）。
-  工具 schema 单一来源 `TOOLS_TABLE`（bot/registry.rs:1849）→ `tools_json()`（:2478，编译期常量原文拼接）
+  工具 schema 单一来源 `TOOLS_TABLE`（bot/registry/schemas.rs:333）→ `tools_json()`（:962，编译期常量原文拼接）
 - **打包资源**（tauri.conf.json resources）：
   `bge-small-zh-v1.5/`（嵌入模型 tokenizer+ONNX，项目根）、`pp-ocr-v6/`（Windows OCR 模型，scripts/fetch_ocr_models.sh 下载）、`src-tauri/icons/`、权限文件 `src-tauri/capabilities/default.json`（opener scope 收窄，有回归测试锁死）
 - **设计文档**：`docs/`（BOT-MEMORY-V2-DESIGN.md、SKILL-RUNTIME.md、SKILL-DSL.md、TASK-CHAT-EXECUTION-DESIGN.md、ARCH-REFACTOR-PLAN.md 及多份审计报告）
@@ -901,6 +912,13 @@ flowchart TD
 - `bot/subagent_spawn.rs`
 - `bot/subagent_tools.rs`
 - `bot/registry.rs`
+- `bot/registry/claimed_executed_tools_tests.rs`
+- `bot/registry/claims.rs`
+- `bot/registry/handlers.rs`
+- `bot/registry/mentioned_tool_names_tests.rs`
+- `bot/registry/registry_tests.rs`
+- `bot/registry/result_claim_tests.rs`
+- `bot/registry/schemas.rs`
 - `bot/services.rs`
 - `bot/services/gate.rs`
 - `bot/services/logs.rs`

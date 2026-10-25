@@ -1159,7 +1159,7 @@ mod tests {
     /// 接线守卫：六件套必须真的接进工具表
     #[test]
     fn ui_tools_are_wired_into_registry() {
-        let src = include_str!("bot/registry.rs");
+        let src = include_str!("bot/registry/schemas.rs");
         for name in [
             "list_windows",
             "activate_window",

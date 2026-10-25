@@ -54,9 +54,7 @@ NEW_FILE_LIMIT = 1500
 # - 文件变小 → 把上限更新成新行数（棘轮收紧）；拆到 ≤1500 就整条销掉
 # - 文件变大 → 门禁 fail；要么拆文件，要么先拆再加
 # - 文件删除 → 整条销掉
-WHITELIST = {
-    "src/bot/registry.rs": 3827,
-}
+WHITELIST = {}
 
 
 def source_files():

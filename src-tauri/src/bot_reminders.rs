@@ -547,7 +547,7 @@ mod tests {
     /// 接线守卫：提醒三工具必须真的接进工具表
     #[test]
     fn reminder_tools_are_wired_into_registry() {
-        let src = include_str!("bot/registry.rs");
+        let src = include_str!("bot/registry/schemas.rs");
         for name in ["schedule_reminder", "list_reminders", "cancel_reminder"] {
             assert!(
                 src.contains(&format!("name: \"{name}\"")),

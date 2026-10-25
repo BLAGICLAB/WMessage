@@ -595,7 +595,7 @@ mod tests {
     /// 忘了登记，这里会红）。
     #[test]
     fn copy_file_to_clipboard_is_wired_into_registry() {
-        let src = include_str!("bot/registry.rs");
+        let src = include_str!("bot/registry/schemas.rs");
         assert!(
             src.contains("name: \"copy_file_to_clipboard\""),
             "copy_file_to_clipboard 必须登记进 TOOLS_TABLE"

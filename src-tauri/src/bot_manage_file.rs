@@ -381,7 +381,7 @@ mod tests {
     /// 这里会红）。
     #[test]
     fn manage_file_is_wired_into_registry() {
-        let src = include_str!("bot/registry.rs");
+        let src = include_str!("bot/registry/schemas.rs");
         assert!(
             src.contains("name: \"manage_file\""),
             "manage_file 必须登记进 TOOLS_TABLE"
