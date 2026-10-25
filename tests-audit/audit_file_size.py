@@ -61,7 +61,6 @@ WHITELIST = {
     "src/bot_chat.rs": 3028,
     "src/bot/tools.rs": 2949,
     "src/bot_fs.rs": 2846,
-    "src/db/mod.rs": 2468,
     "src/db/tasks.rs": 2467,
     "src/py/document.rs": 2456,
     "src/bot/services.rs": 2391,

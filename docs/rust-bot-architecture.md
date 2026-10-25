@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 186 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 190 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -23,7 +23,13 @@ src-tauri/src/
 │
 │─ 数据层
 ├── db/                  SQLite（wmessage.db）+ 迁移 + 产物 + 工作区（按表分文件）
-│   ├── db/mod.rs      模块声明 + 公共 re-export
+│   ├── db/mod.rs      模块声明 + 公共 re-export + open_db / ensure_columns
+│   ├── db/tests.rs     db 层单测（PRAGMA / ensure_columns / legacy 拷贝 / 迁移 /
+│   │                   任务文件 / bot_history / upsert 语义）——原内联在 mod.rs 尾部，
+│   │                   拆分时逐字搬移；仍是 db 的直接子模块，`super::` 语义不变
+│   ├── db/ws_tests.rs  工作区（workspace / bind_files）单测
+│   ├── db/reset_tests.rs  reset 命令单测
+│   ├── db/atomic_write_tests.rs  原子写单测
 │   ├── tasks.rs         Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
 │                        （截止只认 YYYY-MM-DD 与 YYYY-MM-DDTHH:mm，解析不了的一律拒）
 │   ├── bot_sessions.rs   BotSession / 会话归属
@@ -801,6 +807,7 @@ flowchart TD
 
 ### `db/`
 - `db/apps.rs`
+- `db/atomic_write_tests.rs`
 - `db/bot_history.rs`
 - `db/bot_sessions.rs`
 - `db/lock.rs`
@@ -809,12 +816,15 @@ flowchart TD
 - `db/paths.rs`
 - `db/people.rs`
 - `db/reminders.rs`
+- `db/reset_tests.rs`
 - `db/schedule_jobs.rs`
 - `db/skill_out.rs`
 - `db/subagents.rs`
 - `db/tasks.rs`
+- `db/tests.rs`
 - `db/trace.rs`
 - `db/workspace.rs`
+- `db/ws_tests.rs`
 
 ### `memory/`
 - `memory/consolidate.rs`
