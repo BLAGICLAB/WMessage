@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 210 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 217 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -35,8 +35,17 @@ src-tauri/src/
 │   ├── db/ws_tests.rs  工作区（workspace / bind_files）单测
 │   ├── db/reset_tests.rs  reset 命令单测
 │   ├── db/atomic_write_tests.rs  原子写单测
-│   ├── tasks.rs         Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
-│                        （截止只认 YYYY-MM-DD 与 YYYY-MM-DDTHH:mm，解析不了的一律拒）
+│   ├── db/tasks.rs (958)  Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
+│   │                     （截止只认 YYYY-MM-DD 与 YYYY-MM-DDTHH:mm，解析不了的一律拒）
+│   ├── db/tasks_patch.rs (289)  task_patch / task_set_column 的锁内纯逻辑段（字段白名单应用器 +
+│   │                     锁内读改写段）；与 db/tasks.rs **同层**，`super::` 语义不变
+│   ├── db/tasks_transfer.rs (313) 导出/导入纯逻辑段（路径闸门 check_export_path + v2 信封组装 +
+│   │                     导入事务 + bounded 读）；与 db/tasks.rs **同层**，`super::` 语义不变
+│   ├── db/tasks/task_set_column_tests.rs (117)  列状态迁移单测
+│   ├── db/tasks/task_patch_tests.rs (391)       定向补丁单测
+│   ├── db/tasks/task_status_tests.rs (56)       TaskStatus 线格式单测
+│   ├── db/tasks/owner_graph_tests.rs (346)       归属归一 + 导入导出信封单测
+│   └── db/tasks/import_bounded_tests.rs (23)    导入文件 bounded 读单测
 │   ├── bot_sessions.rs   BotSession / 会话归属
 │   ├── bot_history.rs   会话聊天记录
 │   ├── migrations.rs     数据库迁移（历史顶层 migration.rs 已并入）
@@ -491,7 +500,7 @@ src-tauri/src/
 |---|---|
 | `RouteAction` / `IntentRule` | intent_router.rs:23 / :185 |
 | `TaskStore` trait / `MemStore` / `TauriStore` | api.rs:35 / :53 / :104 |
-| `Task` / `Subtask` / `TaskFile` | db/tasks.rs:144 / :12 / :24 |
+| `Task` / `Subtask` / `TaskFile` | db/tasks.rs:154 / :22 / :34 |
 | `BotSession` | db/bot_sessions.rs:24 |
 | `CommandError` / `CommandErrorCode` / `CommandResult` | error.rs:151 / :36 |
 | `ChatMsg` / `TaskRef` / `BotChatResult` / `TaskExecOrigin` | bot_chat.rs:39 / :519 / :527 / :1734 |
@@ -873,6 +882,13 @@ flowchart TD
 - `db/skill_out.rs`
 - `db/subagents.rs`
 - `db/tasks.rs`
+- `db/tasks/import_bounded_tests.rs`
+- `db/tasks/owner_graph_tests.rs`
+- `db/tasks/task_patch_tests.rs`
+- `db/tasks/task_set_column_tests.rs`
+- `db/tasks/task_status_tests.rs`
+- `db/tasks_patch.rs`
+- `db/tasks_transfer.rs`
 - `db/tests.rs`
 - `db/trace.rs`
 - `db/workspace.rs`

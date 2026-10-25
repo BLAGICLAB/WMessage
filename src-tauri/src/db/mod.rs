@@ -37,6 +37,8 @@ pub mod schedule_jobs;
 pub mod skill_out;
 pub mod subagents;
 pub mod tasks;
+pub mod tasks_patch;
+pub mod tasks_transfer;
 pub mod trace;
 pub mod workspace;
 
