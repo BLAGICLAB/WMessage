@@ -350,13 +350,16 @@ describe("main.css 浮层入场", () => {
     for (const [f, origin] of [
       ["src/components/SettingsPage/ApiProviderSelect.tsx", "origin-top"],
       ["src/components/SettingsPage/AvatarPicker.tsx", "origin-top-left"],
-      ["src/components/SettingsPage/SettingsPage.tsx", "origin-top-right"],
     ] as const) {
       const src = readFileSync(f, "utf-8");
       expect(src).toContain(origin);
     }
-    // SettingsPage 有两个浮层调用点，右对齐原点要两处都在
-    const settings = readFileSync("src/components/SettingsPage/SettingsPage.tsx", "utf-8");
-    expect(settings.match(/nm-popover[^"]*origin-top-right/g)?.length).toBe(2);
+    // 右对齐的两个浮层调用点（模型区下拉）住在哪个文件里会随组件拆分搬家，
+    // 扫全树数调用点，别把路径钉死
+    const rightAligned = tsxFiles().reduce((n, f) => {
+      const src = stripComments(readFileSync(join("src", f), "utf-8"));
+      return n + (src.match(/nm-popover[^"]*origin-top-right/g)?.length ?? 0);
+    }, 0);
+    expect(rightAligned).toBe(2);
   });
 });
