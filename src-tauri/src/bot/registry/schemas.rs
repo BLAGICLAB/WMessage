@@ -17,13 +17,13 @@ pub const SCHEMA_QUERY_SINGLE_TASK: &str = r##"{"type":"function","function":{"n
 pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"create_task","description":"新建任务","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"任务标题"},
     "note":{"type":"string","description":"备注，可选"},
-    "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选"},
-    "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo"},
+    "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选；示例：写 2026-10-24 或 2026-10-24T09:00，写 2026-10-24 09:00 或只写 2026-10 都会被拒"},
+    "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo；示例：只有 todo / doing 两个值（archived / done 不合法，归档与完成另有专门动作）"},
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}}"##;
 pub const SCHEMA_COMPLETE_TASK: &str = r##"{"type":"function","function":{"name":"complete_task","description":"完成任务（taskId 精确匹配优先；无 taskId 时按标题关键词匹配；任务卡带【验收标准】且未逐条达标时不要调用）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id（来自用户消息的 [已选任务] 引用块或 query_tasks 输出），可选，优先于 title"},
-    "title":{"type":"string","description":"标题关键词，无 taskId 时使用"}
+    "title":{"type":"string","description":"标题关键词，无 taskId 时使用；示例：只能完成未完成的卡——已归档或已删除的卡会报「未找到」，先 query_tasks 确认它还在哪一档"}
   },"required":[]}}}"##;
 pub const SCHEMA_DELETE_TASK: &str = r##"{"type":"function","function":{"name":"delete_task","description":"删除任务到回收站（taskId 精确匹配优先；无 taskId 时按标题关键词匹配）","parameters":{"type":"object","properties":{
     "taskId":{"type":"string","description":"任务 id，可选，优先于 title"},
@@ -35,7 +35,7 @@ pub const SCHEMA_EDIT_TASK: &str = r##"{"type":"function","function":{"name":"ed
     "newTitle":{"type":"string","description":"新标题，可选"},
     "note":{"type":"string","description":"新备注，可选；空串清除"},
     "due":{"type":"string","description":"新截止时间，可选；空串清除；格式 YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔）"},
-    "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选"},
+    "column":{"type":"string","enum":["todo","doing","done"],"description":"新状态列，可选；示例：只有 todo / doing / done 三个值（archived 不合法）"},
     "tags":{"type":"array","items":{"type":"string"},"description":"新标签列表，可选；空数组清除"},
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖已有绑定；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；空数组 = 无操作，本工具不能清空绑定；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃）"},
     "model":{"type":"string","description":"每卡执行模型（执行这张卡时覆盖全局激活模型），可选；空串清除=恢复跟随全局"},
@@ -199,7 +199,7 @@ pub const SCHEMA_UI_CLICK: &str = r##"{"type":"function","function":{"name":"ui_
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
     "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"}
   },"required":["windowId","target"]}}}"##;
-pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填；往「发送 / 提交」类输入框打字同样要先经用户确认。输入完不会自动发出去——发送是另一次 ui_click。文本里不能带换行符：换行等于按回车键，目标应用会当场发出去","parameters":{"type":"object","properties":{
+pub const SCHEMA_UI_TYPE: &str = r##"{"type":"function","function":{"name":"ui_type","description":"往窗口里的输入框输入文本（按控件 id 或标题关键词定位）。密码 / 验证码类控件不代填；往「发送 / 提交」类输入框打字同样要先经用户确认。输入完不会自动发出去——发送是另一次 ui_click。文本里不能带换行符：换行等于按回车键，目标应用会当场发出去。示例：先 activate_window 把目标窗口置前，否则报「目标窗口不在前台」；target 用 ui_inspect 返回的控件 id（形如 12358:0.7）；控件不支持按压时报「无法聚焦该控件」，改用 ui_click 先点它聚焦","parameters":{"type":"object","properties":{
     "windowId":{"type":"string","description":"窗口 id（list_windows 返回）"},
     "target":{"type":"string","description":"控件 id（ui_inspect 返回）或控件标题关键词"},
     "text":{"type":"string","description":"要输入的文本"}
@@ -216,7 +216,7 @@ pub const SCHEMA_WEB_SEARCH: &str = r##"{"type":"function","function":{"name":"w
     "site":{"type":"string","description":"限定站点域名，可选，如 github.com（不要带 https:// 前缀）"}
   },"required":["query"]}}}"##;
 pub const SCHEMA_FETCH_URL: &str = r##"{"type":"function","function":{"name":"fetch_url","description":"抓取网页正文（仅 http/https 公网地址；返回纯文本，用于读链接/总结网页内容；长网页带「已截断」提示时用 offset 参数续读）","parameters":{"type":"object","properties":{
-    "url":{"type":"string","description":"要抓取的网页地址"},
+    "url":{"type":"string","description":"要抓取的网页地址；示例：返回 403/429 说明站点拦自动化，改抓该页的原始文件或 API 地址；Content-Type 不是网页文本（JSON / PDF）会被拒"},
     "offset":{"type":"integer","description":"字符偏移（可选，默认 0；上一页返回的「已截断」提示里给了 offset 值，用它续读）"}
   },"required":["url"]}}}"##;
 pub const SCHEMA_GET_CURRENT_TIME: &str = r##"{"type":"function","function":{"name":"get_current_time","description":"获取当前日期时间和星期（涉及「今天/明天/昨天/周几/几点」类判断前必须先调，不要凭训练数据猜日期）","parameters":{"type":"object","properties":{}}}}"##;

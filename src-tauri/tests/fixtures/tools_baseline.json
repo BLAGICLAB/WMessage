@@ -60,7 +60,7 @@ const TOOLS: &str = r#"[
       "parameters": {
         "properties": {
           "column": {
-            "description": "状态列，默认 todo",
+            "description": "状态列，默认 todo；示例：只有 todo / doing 两个值（archived / done 不合法，归档与完成另有专门动作）",
             "enum": [
               "todo",
               "doing"
@@ -68,7 +68,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "due": {
-            "description": "截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选",
+            "description": "截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选；示例：写 2026-10-24 或 2026-10-24T09:00，写 2026-10-24 09:00 或只写 2026-10 都会被拒",
             "type": "string"
           },
           "files": {
@@ -114,7 +114,7 @@ const TOOLS: &str = r#"[
             "type": "string"
           },
           "title": {
-            "description": "标题关键词，无 taskId 时使用",
+            "description": "标题关键词，无 taskId 时使用；示例：只能完成未完成的卡——已归档或已删除的卡会报「未找到」，先 query_tasks 确认它还在哪一档",
             "type": "string"
           }
         },
@@ -152,7 +152,7 @@ const TOOLS: &str = r#"[
       "parameters": {
         "properties": {
           "column": {
-            "description": "新状态列，可选",
+            "description": "新状态列，可选；示例：只有 todo / doing / done 三个值（archived 不合法）",
             "enum": [
               "todo",
               "doing",
@@ -834,7 +834,7 @@ const TOOLS: &str = r#"[
             "type": "integer"
           },
           "url": {
-            "description": "要抓取的网页地址",
+            "description": "要抓取的网页地址；示例：返回 403/429 说明站点拦自动化，改抓该页的原始文件或 API 地址；Content-Type 不是网页文本（JSON / PDF）会被拒",
             "type": "string"
           }
         },
