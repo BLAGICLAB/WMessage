@@ -132,7 +132,7 @@ cargo nextest 全量 / npm test / tests-audit 六件套 / audit_no_eval.py /
 | 4 | `bot_skills/parse.rs` | ✅ 已完成 | 待填 | A 类。1401 → 742 生产 + `bot_skills/parse/tests.rs` 660 |
 | 5 | `bot_skills/scheduler.rs` | ✅ 已完成 | 待填 | A 类。1401 → 610 生产 + `bot_skills/scheduler/tests.rs` 789 |
 | 6 | `bot_skills/runtime.rs` | ✅ 已完成 | 待填 | A 类。1365 → 823 生产 + `bot_skills/runtime/tests.rs` 540 |
-| 7 | `bot_archive.rs` | ⬜ 未开始 | | A 类 |
+| 7 | `bot_archive.rs` | ✅ 已完成 | 待填 | A 类。1404 → 989 生产 + `bot_archive/tests.rs` 416 |
 | 8 | `bot_py.rs` | ⬜ 未开始 | | A 类，门面只留转出 |
 | 9 | `bot_web.rs` | ⬜ 未开始 | | C 类，测试可见面最复杂 |
 | 10 | `db/tests.rs` | ⬜ 未开始 | | B 类 |

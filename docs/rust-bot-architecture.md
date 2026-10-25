@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 283 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 284 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -477,7 +477,7 @@ src-tauri/src/
 │   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
 │   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
 │   └── bot_fs/tool_rule_tests.rs (47)      per-tool 规则表单测
-├── bot_archive.rs (1404) 归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
+├── bot_archive.rs (989) + bot_archive/tests.rs   归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
 │                        （纯 Rust：zip + tar + flate2，不依赖本机 Python）；压缩包是外部
 │                        输入——条目名带 .. / 绝对路径 / 盘符 / 软链一律跳过并列出，单文件
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
@@ -803,6 +803,7 @@ flowchart TD
 - `bot_anthropic.rs`
 - `bot_anthropic/tests.rs`
 - `bot_archive.rs`
+- `bot_archive/tests.rs`
 - `bot_artifacts.rs`
 - `bot_chat.rs`
 - `bot_chat/bot_chat_pure_helpers_tests.rs`
