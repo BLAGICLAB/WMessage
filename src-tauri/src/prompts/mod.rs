@@ -102,6 +102,23 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("绝不"), "安全红线段缺失");
     }
 
+    /// 执行计划浮层：模型必须知道面板存在。
+    ///
+    /// 没有这句，模型建计划的唯一动机只剩工具描述里那行「多步任务要建计划」——
+    /// 缺了「用户在面板里看进度」这层用户价值，多步任务漏建计划就没有代价
+    /// （实测：做 PPT 跑了 18 步工具调用，全程没建计划）。
+    #[test]
+    fn system_prompt_tells_model_about_plan_panel() {
+        assert!(
+            SYSTEM_PROMPT.contains("update_plan"),
+            "SYSTEM_PROMPT 必须点名 update_plan 工具"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("计划浮层"),
+            "SYSTEM_PROMPT 必须告诉模型计划浮层存在"
+        );
+    }
+
     /// 任务卡执行口径与 dispatch / bot_slash 的放行逻辑耦合：
     /// link_file_to_task 是收尾动作、complete_task 只在手动执行时调用
     #[test]

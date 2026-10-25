@@ -317,7 +317,7 @@ pub const SCHEMA_WRITE_FILE: &str = r##"{"type":"function","function":{"name":"w
     "path":{"type":"string","description":"目标文件绝对路径（父目录必须已存在）"},
     "content":{"type":"string","description":"完整文件内容（UTF-8 文本；不能含 NUL 字节；上限 2MB）"}
   },"required":["path","content"]}}}"##;
-pub const SCHEMA_UPDATE_PLAN: &str = r##"{"type":"function","function":{"name":"update_plan","description":"更新本会话的执行计划（整表替换：每次调用都要交出完整清单，不要只交增量）。用途：多步任务开工前先列出步骤；每完成一步立刻调用一次更新该步状态，不要攒到最后一起补。状态三态：pending 未开始 / in_progress 正在做 / completed 已完成，任一时刻至多一条 in_progress。不要为了好看而虚报完成：completed 只给真正做完的步骤。什么时候不要用：单一目标的小任务、琐碎操作、三步以内能做完的事、纯信息问答——这类直接做，别建计划","parameters":{"type":"object","properties":{
+pub const SCHEMA_UPDATE_PLAN: &str = r##"{"type":"function","function":{"name":"update_plan","description":"更新本会话的执行计划（整表替换：每次调用都要交出完整清单，不要只交增量）。用途：多步任务开工前先列出步骤；每完成一步立刻调用一次更新该步状态，不要攒到最后一起补。状态三态：pending 未开始 / in_progress 正在做 / completed 已完成，任一时刻至多一条 in_progress。不要为了好看而虚报完成：completed 只给真正做完的步骤。什么时候建计划（命中任意一条就建）：要产出多份文件或多个交付物、任务要分阶段推进、用户给了多份材料要合并整合、技能文档里有多个阶段——读完技能文档、看清它有哪几个阶段之后再建也算来得及。什么时候不要用：单一目标的小任务、琐碎操作、纯信息问答——这类直接做，别建计划","parameters":{"type":"object","properties":{
     "explanation":{"type":"string","description":"相对上一版改了什么（可选）：新增/删除/调整了哪些步骤、为什么改；只写变更说明，不要把清单再抄一遍"},
     "plan":{"type":"array","description":"完整步骤清单（整表替换：调用一次即覆盖上一次的全部内容）","items":{"type":"object","properties":{
       "step":{"type":"string","description":"这一步要做什么（祈使句，一句话，别写成一整段）"},
