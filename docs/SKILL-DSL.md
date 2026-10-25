@@ -280,6 +280,9 @@ Terminate        → 返回 Err(DslFailure::Terminated { ... })
 **SkillRun.state 何时改变**：
 - `Loaded → Running`：`start_skill()` 调用
 - `Running → Failed`：`skill_on_step_post` 检测工具返回失败 / `step_check` 步数熔断 / 超时
+  （**本文件描述的是 `mode: auto` 的 DSL 调度路径**：auto 模式下工具失败一步即判死，
+  调度器正是靠「run 变 Failed」感知步骤失败并触发回滚。`mode: interactive` 的失败语义
+  不同——连续失败 3 次才判死，见 `docs/SKILL-RUNTIME.md` §6）
 - `Running → Terminated`：`skill_terminate_all()` 用户 /stop / `start_skill` 切其他技能
 - `Running → Paused`：`step_check` Paused 拒绝 / `confirm_state(false)`
 

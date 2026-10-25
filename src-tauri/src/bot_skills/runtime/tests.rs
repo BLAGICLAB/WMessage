@@ -644,3 +644,127 @@ fn exit_body_distinguishes_terminated_from_failed() {
     assert!(failed.contains("执行中断"), "失败出口文案: {failed}");
     assert!(terminated.contains("已终止"), "终止出口文案: {terminated}");
 }
+
+// ── 失败语义：interactive 不因一次工具失败判死 ──
+
+/// 插入一个 Running 技能（测试用）：mode 决定失败语义（auto = 一步失败即判死）。
+fn insert_running_skill<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    name: &str,
+    session_id: &str,
+    mode: &str,
+) {
+    let mut run = test_run(50, 1800);
+    run.name = name.into();
+    run.state = SkillState::Running;
+    run.session_id = Some(session_id.into());
+    run.mode = mode.into();
+    let registry = crate::app_state::skill_runs(app);
+    let mut g = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
+    g.insert(name.into(), run);
+}
+
+/// 读技能当前状态（测试用）。
+fn run_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>, name: &str) -> SkillState {
+    let registry = crate::app_state::skill_runs(app);
+    let g = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
+    g.get(name)
+        .map(|r| r.state.clone())
+        .expect("技能 run 应存在")
+}
+
+/// 判死决策（纯函数）：auto 一步失败即判死，interactive 连续到阈值才判死。
+#[test]
+fn fail_decision_splits_auto_and_interactive() {
+    assert!(
+        should_fail_skill_on_step_error("auto", 1),
+        "auto 必须一步判死"
+    );
+    assert!(!should_fail_skill_on_step_error("interactive", 1));
+    assert!(!should_fail_skill_on_step_error("interactive", 2));
+    assert!(should_fail_skill_on_step_error("interactive", 3));
+}
+
+/// interactive 技能：一次工具失败不判死，模型还有机会换策略。
+///
+/// 回归锁：判死 → advance_skill 返回 Fail → 主循环 return 整个回合 →
+/// 用户只看到「技能中断，不能继续」（实测：模型一次参数用错就搭上整轮）。
+#[test]
+fn interactive_skill_survives_single_tool_failure() {
+    let app = tauri::test::mock_app();
+    let sid = "sess-int-fail";
+    let name = "test-interactive-fail";
+    insert_running_skill(app.handle(), name, sid, "interactive");
+    // 一次参数闸拒绝（模型把文件当目录传）→ 不判死
+    skill_on_step_post(
+        app.handle(),
+        "grep_files",
+        "…不是目录",
+        1,
+        crate::bot::registry::ToolStatus::Denied,
+        Some(sid),
+    );
+    assert_eq!(
+        run_state(app.handle(), name),
+        SkillState::Running,
+        "一次失败不该判死——模型还能换个工具继续"
+    );
+    // 成功一次 → 连续失败计数清零
+    skill_on_step_post(
+        app.handle(),
+        "read_text_file",
+        "ok",
+        1,
+        crate::bot::registry::ToolStatus::Ok,
+        Some(sid),
+    );
+    assert_eq!(run_state(app.handle(), name), SkillState::Running);
+    // 清零后再失败两次仍不判死
+    for _ in 0..2 {
+        skill_on_step_post(
+            app.handle(),
+            "grep_files",
+            "…不是目录",
+            1,
+            crate::bot::registry::ToolStatus::Denied,
+            Some(sid),
+        );
+    }
+    assert_eq!(run_state(app.handle(), name), SkillState::Running);
+    // 第三次连续失败 → 判死（兜底：模型一直不换策略就别耗着）
+    skill_on_step_post(
+        app.handle(),
+        "grep_files",
+        "…不是目录",
+        1,
+        crate::bot::registry::ToolStatus::Denied,
+        Some(sid),
+    );
+    assert_eq!(
+        run_state(app.handle(), name),
+        SkillState::Failed,
+        "连续失败到阈值必须判死"
+    );
+}
+
+/// auto（DSL 调度器）技能：一步失败即判死——调度器靠这个感知失败并跑回滚。
+#[test]
+fn auto_skill_dies_on_first_tool_failure() {
+    let app = tauri::test::mock_app();
+    let sid = "sess-auto-fail";
+    let name = "test-auto-fail";
+    insert_running_skill(app.handle(), name, sid, "auto");
+    skill_on_step_post(
+        app.handle(),
+        "create_task",
+        "失败：标题为空",
+        1,
+        crate::bot::registry::ToolStatus::Error,
+        Some(sid),
+    );
+    assert_eq!(
+        run_state(app.handle(), name),
+        SkillState::Failed,
+        "auto 模式必须一步判死，否则 DSL 回滚静默失效"
+    );
+}

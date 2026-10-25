@@ -273,6 +273,8 @@ fn make_run(name: &str, state: SkillState) -> SkillRun {
         name: name.into(),
         state,
         step: 0,
+        mode: "interactive".into(),
+        consec_failures: 0,
         max_steps: 5,
         started_at_ms: chrono::Utc::now().timestamp_millis(),
         timeout_secs: 60,

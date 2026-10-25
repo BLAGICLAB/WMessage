@@ -56,6 +56,17 @@ pub struct SkillRun {
     pub params: serde_json::Value,
     /// 技能目录（第三层渐进披露——references 清单 + 会话级读白名单）
     pub dir: Option<PathBuf>,
+    /// 运行模式（auto | interactive，元数据镜像）。
+    ///
+    /// 失败语义按它分岔：**auto**（DSL 调度器）的步骤失败必须立刻终止该步并跑
+    /// 回滚，调度器正是靠「run 变 Failed」感知失败的；**interactive**（LLM 驱动）
+    /// 里模型自己会换策略，一次工具失败不该把整个技能判死。
+    pub mode: String,
+    /// 连续失败次数（成功一次即清零）。
+    ///
+    /// 只在 interactive 模式下参与判死：达到阈值仍不换策略，才认定这次技能
+    /// 真的走不下去。
+    pub consec_failures: usize,
 }
 
 impl SkillRun {
@@ -75,6 +86,8 @@ impl SkillRun {
             session_id: None,
             params: serde_json::Value::Null,
             dir: None,
+            mode: meta.mode.clone(),
+            consec_failures: 0,
         }
     }
 }
@@ -289,6 +302,8 @@ pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
         session_id: None,
         params: serde_json::Value::Null,
         dir: None,
+        mode: "interactive".into(),
+        consec_failures: 0,
     };
     let registry = skill_runs(app);
     crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs")
@@ -337,6 +352,8 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
         session_id: None,
         params: serde_json::Value::Null,
         dir: None,
+        mode: "interactive".into(),
+        consec_failures: 0,
     }
 }
 

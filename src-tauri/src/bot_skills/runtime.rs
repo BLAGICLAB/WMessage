@@ -6,6 +6,16 @@ use crate::db::now_ms;
 use crate::error::CommandError;
 use tauri::AppHandle;
 
+/// interactive 模式技能的连续失败上限：累计到这次仍不换策略，才判技能失败。
+///
+/// 取 3 而不是 1：一次工具失败往往是模型的一次参数用错（目录当文件传、模块
+/// 路径没找对），模型换个工具就能继续——判死等于把整个回合一起带走，用户只
+/// 看到「技能中断」。也不取 2：同一轮里模型可能并行发几个调用，一次性把计数
+/// 打满，留不出「失败 → 换策略」的那一轮。
+///
+/// auto 模式（DSL 调度器）不适用：它的步骤失败必须立刻终止该步并跑回滚。
+pub(crate) const SKILL_INTERACTIVE_FAIL_LIMIT: usize = 3;
+
 /// 意图/描述危险关键词黑名单（与系统提示词安全红线一致）：命中即拒绝启动；
 /// create_skill 创建时也做同款预检（创建早于启动，把拒绝提前到落盘前）。
 pub(crate) const INTENT_BLACKLIST: [&str; 5] = [
@@ -494,8 +504,8 @@ pub fn skill_on_step(
 /// 停在 Running，技能对外报「✅ 完成」，而审计那边按 status 记的是 WARN。
 /// `result` 现在只用于失败时的日志预览与模型文案，不参与成败判定。
 /// 失败 → 把 Skill 标 Failed，写入 end_reason 让 `skill_finish` 知道不再继续后续步骤。
-pub fn skill_on_step_post(
-    app: &AppHandle,
+pub fn skill_on_step_post<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     tool: &str,
     result: &str,
     dur_ms: u64,
@@ -516,19 +526,52 @@ pub fn skill_on_step_post(
     // 锁内只做状态迁移 + 拼审计载荷；audit_log_hook（写盘 IO）移到锁外发，
     // 理由同 start_skill：持锁跨外部调用会串行化全部写者且钩子重入即死锁
     let log_line = if is_fail {
-        run.state = SkillState::Failed;
-        run.end_reason = format!("工具 {tool} 执行失败");
         let preview: String = result.chars().take(120).collect();
         // preview 是工具结果原文，换行/管道符会撕裂日志行，必须转义
-        format!(
-            "skill_step_fail | name: {name} | tool: {tool} | {}",
-            crate::bot::truncate_for_log(&preview, 120)
-        )
+        let preview = crate::bot::truncate_for_log(&preview, 120);
+        // 失败语义按运行模式分岔（见 SkillRun.mode 的说明）：
+        // - auto（DSL 调度器）：步骤失败必须立刻终止该步并跑回滚——调度器正是
+        //   靠「run 变 Failed」感知失败的（advance_dsl → advance_skill），这里改
+        //   判死时机就等于让回滚静默失效。
+        // - interactive（LLM 驱动）：模型自己会换策略，一次工具失败不该把技能
+        //   和整个回合一起带走。连续失败累计到阈值才判死——给模型留出换策略的
+        //   机会（实测：模型一次参数用错就把技能判死，用户只看到「中断」）。
+        if run.mode == "auto" {
+            run.state = SkillState::Failed;
+            run.end_reason = format!("工具 {tool} 执行失败");
+            format!("skill_step_fail | name: {name} | tool: {tool} | {preview}")
+        } else {
+            run.consec_failures += 1;
+            if should_fail_skill_on_step_error(&run.mode, run.consec_failures) {
+                run.state = SkillState::Failed;
+                run.end_reason = format!("工具 {tool} 连续失败 {} 次", run.consec_failures);
+                format!(
+                    "skill_step_fail | name: {name} | tool: {tool} | 连续失败 {} 次，判死 | {preview}",
+                    run.consec_failures
+                )
+            } else {
+                format!(
+                    "skill_step_fail | name: {name} | tool: {tool} | 第 {} 次失败，暂不判死 | {preview}",
+                    run.consec_failures
+                )
+            }
+        }
     } else {
+        // 成功一次即清零：模型换了策略就重新开始算
+        run.consec_failures = 0;
         format!("skill_step_ok | name: {name} | tool: {tool} | {dur_ms}ms")
     };
     drop(runs);
     crate::bot::audit_log_hook(app, &log_line);
+}
+
+/// 失败判死决策（纯函数，单测入口）。
+///
+/// auto（DSL 调度器）：一步失败即判死——调度器靠「run 变 Failed」感知步骤失败
+/// 并触发回滚，这里放宽就等于回滚静默失效。
+/// interactive（LLM 驱动）：连续失败累计到阈值才判死，给模型换策略的机会。
+fn should_fail_skill_on_step_error(mode: &str, consec_failures: usize) -> bool {
+    mode == "auto" || consec_failures >= SKILL_INTERACTIVE_FAIL_LIMIT
 }
 
 /// 参数摘要（动作记录用）
