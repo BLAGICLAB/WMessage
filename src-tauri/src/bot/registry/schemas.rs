@@ -66,9 +66,9 @@ pub const SCHEMA_READ_TEXT_FILE: &str = r##"{"type":"function","function":{"name
 pub const SCHEMA_OCR_IMAGE: &str = r##"{"type":"function","function":{"name":"ocr_image","description":"本地 OCR 识别图片文字，逐行返回（白名单目录内直接识别，白名单外自动弹窗请用户授权；隐私红线：图片仅在内存处理、绝不上传外网——macOS 用系统 Vision，Windows 用本地 PP-OCRv6 模型）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"图片绝对路径（支持 ~ 开头；仅本地文件，不接受网络地址）"}
   },"required":["path"]}}}"##;
-pub const SCHEMA_GREP_FILES: &str = r##"{"type":"function","function":{"name":"grep_files","description":"按正则搜索本地文件内容，返回 path:行号:内容（最多 50 条；白名单目录内直接搜，白名单外自动弹窗请用户授权）","parameters":{"type":"object","properties":{
+pub const SCHEMA_GREP_FILES: &str = r##"{"type":"function","function":{"name":"grep_files","description":"按正则搜索本地文件内容，返回 path:行号:内容（最多 50 条；白名单目录内直接搜，白名单外自动弹窗请用户授权）。dir 可以是目录（递归搜其下所有文件），也可以是单个文件的绝对路径（只搜那一个文件）","parameters":{"type":"object","properties":{
     "pattern":{"type":"string","description":"正则表达式（非法正则自动按字面量搜）"},
-    "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录"},
+    "dir":{"type":"string","description":"搜索目录，可选，缺省搜第一个白名单目录；也可传单个文件的绝对路径，此时只搜该文件"},
     "glob":{"type":"string","description":"文件名过滤，如 *.rs，可选"},
     "max":{"type":"integer","description":"最多返回条数，默认 50，可选"},
     "context":{"type":"integer","description":"命中行上下文行数，可选，0-5，默认 0（显示匹配行前后各 N 行，便于读懂语境）"}

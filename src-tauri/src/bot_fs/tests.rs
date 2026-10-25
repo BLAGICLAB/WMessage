@@ -1,3 +1,4 @@
+use super::read::{grep_file_into, grep_target, GrepTarget};
 use super::*;
 
 /// 溢出根目录必须以精确路径钉在读白名单（canonical 后与 overflow::root
@@ -674,4 +675,71 @@ async fn matching_inode_returns_the_file_content() {
     assert!(!is_binary);
     assert!(!truncated);
     assert_eq!(content, b"hello\nworld\n");
+}
+
+// ── grep_files 支持单文件 ──
+
+/// 路径类型 → 搜法：文件就该只搜它，不该回一句「不是目录」。
+///
+/// 回归锁：模型为找技能正文的章节标题去 grep 一个溢出指针文件 → 参数闸拒绝
+/// （Denied）→ 技能判死 → 整个回合结束（实测 2026-10-26）。
+#[test]
+fn grep_target_splits_dir_and_single_file() {
+    let p = PathBuf::from("/tmp/x/doc.md");
+    assert!(matches!(grep_target(Some(true), &p), Some(GrepTarget::Dir)));
+    match grep_target(Some(false), &p) {
+        Some(GrepTarget::File(f)) => assert_eq!(f, p),
+        other => panic!("文件路径应走单文件分支：{other:?}"),
+    }
+    // 探测失败 → None（调用方报错重试，不猜）
+    assert!(grep_target(None, &p).is_none());
+}
+
+/// 单文件匹配：glob 过滤 / 逐行匹配 / 命中行渲染，与目录 walk 同一条判定。
+#[test]
+fn grep_single_file_matches_and_respects_glob() {
+    let tmp = tempfile::tempdir().unwrap();
+    let doc = tmp.path().join("doc.md");
+    std::fs::write(
+        &doc,
+        "# 标题\n## 工作流程（七步法）\n第一步：需求澄清\n第二步：内容研究\n",
+    )
+    .unwrap();
+    let re = regex::Regex::new("^## ").unwrap();
+
+    let mut hits = Vec::new();
+    let mut found = 0usize;
+    let mut skipped = Vec::new();
+    let mut skipped_total = 0usize;
+    grep_file_into(
+        &doc,
+        &re,
+        "",
+        50,
+        0,
+        &mut hits,
+        &mut found,
+        &mut skipped,
+        &mut skipped_total,
+    );
+    assert_eq!(found, 1, "只应命中「## 工作流程」那一行：{hits:?}");
+    assert!(hits[0].contains("工作流程"), "命中行要带内容：{hits:?}");
+
+    // glob 不匹配 → 跳过，命中数 0
+    let mut hits2 = Vec::new();
+    let mut found2 = 0usize;
+    let mut skipped2 = Vec::new();
+    let mut skipped_total2 = 0usize;
+    grep_file_into(
+        &doc,
+        &re,
+        "*.py",
+        50,
+        0,
+        &mut hits2,
+        &mut found2,
+        &mut skipped2,
+        &mut skipped_total2,
+    );
+    assert_eq!(found2, 0, "glob 不该匹配时命中数为 0：{hits2:?}");
 }

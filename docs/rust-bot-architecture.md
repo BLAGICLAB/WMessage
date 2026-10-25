@@ -483,10 +483,10 @@ src-tauri/src/
 │   │                             （N6，Aider 式三级匹配：精确→空白容错→reflection；
 │   │                             写白名单≠读白名单：可写根=AI_Gen_Files+任务卡绑定文件夹+
 │   │                             allowedDirs；白名单外 perm_mode 三分支/覆盖确认）
-│   ├── bot_fs/read.rs (625)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
+│   ├── bot_fs/read.rs (704)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
 │   │                             只读工具 read_text_file/grep_files/list_files
 │   ├── bot_fs/receipt.rs (169)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
-│   ├── bot_fs/tests.rs (677)     读写闸与编辑内核单测
+│   ├── bot_fs/tests.rs (745)     读写闸与编辑内核单测
 │   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
 │   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
 │   └── bot_fs/tool_rule_tests.rs (47)      per-tool 规则表单测

@@ -389,6 +389,98 @@ pub(super) fn format_skip_note(skipped: &[String], total: usize) -> Option<Strin
     ))
 }
 
+/// 单文件匹配（目录 walk 与单文件路径共用同一条判定）。
+///
+/// glob 过滤 / 生成名跳过 / 超大文件跳过 / 二进制跳过 / 逐行匹配 / 上下文渲染
+/// 全在这里——单文件路径与目录 walk 走同一份逻辑，不复制第二套。
+///
+/// 返回 true = 可以继续（还有预算），false = 停（匹配数达上限）。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn grep_file_into(
+    path: &Path,
+    re: &regex::Regex,
+    glob: &str,
+    max: usize,
+    context: usize,
+    hits: &mut Vec<String>,
+    found: &mut usize,
+    skipped: &mut Vec<String>,
+    skipped_total: &mut usize,
+) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !glob.is_empty() && !glob_match(glob, &name) {
+        return true;
+    }
+    if is_generated_name(&name) {
+        return true;
+    }
+    if path
+        .metadata()
+        .map(|m| m.len() > GREP_MAX_FILE_BYTES)
+        .unwrap_or(true)
+    {
+        // 超大文件跳过必须可见（见 format_skip_note）
+        *skipped_total += 1;
+        if skipped.len() < 5 {
+            skipped.push(name);
+        }
+        return true;
+    }
+    if is_binary_file_sync(path) {
+        return true;
+    }
+    if let Ok(text) = std::fs::read_to_string(path) {
+        let lines: Vec<&str> = text.lines().collect();
+        let hit_idx: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| re.is_match(line))
+            .map(|(i, _)| i)
+            .collect();
+        if hit_idx.is_empty() {
+            return true;
+        }
+        // max 按匹配数计（渲染行数随 context 放大）；预算内才渲染
+        let budget = max.saturating_sub(*found);
+        let taken = budget.min(hit_idx.len());
+        hits.extend(render_context_hits(
+            &path.display().to_string(),
+            &lines,
+            &hit_idx[..taken],
+            context,
+        ));
+        *found += taken;
+        if *found >= max {
+            return false;
+        }
+    }
+    true
+}
+
+/// grep 的目标形态：目录（递归 walk 其下文件）或单个文件（只搜它）。
+#[derive(Debug)]
+pub(super) enum GrepTarget {
+    /// 目录：递归搜其下文件
+    Dir,
+    /// 单个文件：只搜这一个
+    File(PathBuf),
+}
+
+/// 按路径类型定搜法（纯函数，单测入口）。
+///
+/// 探测失败（None）= 拿不准路径类型 → 调用方报错让模型重试，不猜。
+pub(super) fn grep_target(is_dir: Option<bool>, path: &Path) -> Option<GrepTarget> {
+    match is_dir {
+        Some(true) => Some(GrepTarget::Dir),
+        Some(false) => Some(GrepTarget::File(path.to_path_buf())),
+        None => None,
+    }
+}
+
+/// grep_files：按正则搜索本地文件内容（dir 可传目录（递归）或单个文件（只搜它））
 pub async fn tool_grep_files(
     app: &AppHandle,
     args: &str,
@@ -421,18 +513,21 @@ pub async fn tool_grep_files(
             None => return ToolResult::denied("没有可用的白名单目录"),
         },
     };
-    match is_dir_async(&dir).await {
-        Some(true) => {}
-        Some(false) => {
-            return ToolResult::denied(format!("{} 不是目录", dir.display()));
-        }
+    // 路径类型决定搜法：目录 → 递归 walk；文件 → 只搜这一个文件。
+    //
+    // 「在某个文件里找关键词」只有这一条路：模型经常拿着一个**文件**路径来 grep
+    // （溢出回灌指针、工具回执里的路径、技能正文路径），目录型实现只会回一句
+    // 「不是目录」——而那句拒绝在技能里等于把技能判死（实测：模型为找技能正文的
+    // 章节标题去 grep 一个溢出指针文件 → 参数闸拒绝 → 技能判死 → 整个回合结束）。
+    let target = match grep_target(is_dir_async(&dir).await, &dir) {
+        Some(t) => t,
         None => {
             return ToolResult::error(
                 format!("无法确认 {} 的路径类型（探测失败），请重试", dir.display()),
                 Vec::new(),
             );
         }
-    }
+    };
     // walk 整体包 spawn_blocking：内部 read_dir / metadata / read_to_string
     // 都是同步 syscall，全部移到阻塞线程跑，不再阻塞 Tauri async runtime
     // （ performance critical）。
@@ -441,71 +536,50 @@ pub async fn tool_grep_files(
     // 返回（渲染行, 匹配数）二元组：max 按匹配数计、行数随 context 放大，
     // 上限提示要看匹配数；spawn_blocking 'static 闭包只能带值回传。
     let dir_log = dir.display().to_string();
+    let is_single_file = matches!(target, GrepTarget::File(_));
     let (hits, found, skipped, skipped_total) = crate::py::document::spawn_blocking_map(
         move || -> Result<(Vec<String>, usize, Vec<String>, usize), String> {
             let mut hits: Vec<String> = Vec::new();
             let mut found = 0usize;
             let mut skipped: Vec<String> = Vec::new();
             let mut skipped_total = 0usize;
-            walk(&dir, &mut |path: &Path, is_dir: bool| {
-                if found >= max {
-                    return false;
-                }
-                if is_dir {
-                    return true;
-                }
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if !glob.is_empty() && !glob_match(&glob, &name) {
-                    return true;
-                }
-                if is_generated_name(&name) {
-                    return true;
-                }
-                if path
-                    .metadata()
-                    .map(|m| m.len() > GREP_MAX_FILE_BYTES)
-                    .unwrap_or(true)
-                {
-                    // 超大文件跳过必须可见（见 format_skip_note）
-                    skipped_total += 1;
-                    if skipped.len() < 5 {
-                        skipped.push(name);
-                    }
-                    return true;
-                }
-                if is_binary_file_sync(path) {
-                    return true;
-                }
-                if let Ok(text) = std::fs::read_to_string(path) {
-                    let lines: Vec<&str> = text.lines().collect();
-                    let hit_idx: Vec<usize> = lines
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, line)| re.is_match(line))
-                        .map(|(i, _)| i)
-                        .collect();
-                    if hit_idx.is_empty() {
-                        return true;
-                    }
-                    // max 按匹配数计（渲染行数随 context 放大）；预算内才渲染
-                    let budget = max - found;
-                    let taken = budget.min(hit_idx.len());
-                    hits.extend(render_context_hits(
-                        &path.display().to_string(),
-                        &lines,
-                        &hit_idx[..taken],
+            match &target {
+                // 单文件：走与目录 walk 同一条判定（glob / 生成名 / 超大 / 二进制 / 匹配）
+                GrepTarget::File(file) => {
+                    grep_file_into(
+                        file,
+                        &re,
+                        &glob,
+                        max,
                         context,
-                    ));
-                    found += taken;
-                    if found >= max {
-                        return false;
-                    }
+                        &mut hits,
+                        &mut found,
+                        &mut skipped,
+                        &mut skipped_total,
+                    );
                 }
-                true
-            });
+                GrepTarget::Dir => {
+                    walk(&dir, &mut |path: &Path, is_dir: bool| {
+                        if found >= max {
+                            return false;
+                        }
+                        if is_dir {
+                            return true;
+                        }
+                        grep_file_into(
+                            path,
+                            &re,
+                            &glob,
+                            max,
+                            context,
+                            &mut hits,
+                            &mut found,
+                            &mut skipped,
+                            &mut skipped_total,
+                        )
+                    });
+                }
+            }
             Ok((hits, found, skipped, skipped_total))
         },
     )
@@ -523,8 +597,13 @@ pub async fn tool_grep_files(
     if hits.is_empty() {
         // 跳过的大文件随提示可见
         let skip_note = format_skip_note(&skipped, skipped_total).unwrap_or_default();
+        let scope = if is_single_file {
+            format!("文件 {dir_log}")
+        } else {
+            format!("{dir_log} 内")
+        };
         return ToolResult::ok(
-            format!("{} 内没有匹配「{pattern}」的内容{skip_note}", dir_log),
+            format!("{scope}没有匹配「{pattern}」的内容{skip_note}"),
             Vec::new(),
         );
     }

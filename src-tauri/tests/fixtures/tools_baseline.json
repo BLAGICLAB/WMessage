@@ -350,7 +350,7 @@ const TOOLS: &str = r#"[
   },
   {
     "function": {
-      "description": "按正则搜索本地文件内容，返回 path:行号:内容（最多 50 条；白名单目录内直接搜，白名单外自动弹窗请用户授权）",
+      "description": "按正则搜索本地文件内容，返回 path:行号:内容（最多 50 条；白名单目录内直接搜，白名单外自动弹窗请用户授权）。dir 可以是目录（递归搜其下所有文件），也可以是单个文件的绝对路径（只搜那一个文件）",
       "name": "grep_files",
       "parameters": {
         "properties": {
@@ -359,7 +359,7 @@ const TOOLS: &str = r#"[
             "type": "integer"
           },
           "dir": {
-            "description": "搜索目录，可选，缺省搜第一个白名单目录",
+            "description": "搜索目录，可选，缺省搜第一个白名单目录；也可传单个文件的绝对路径，此时只搜该文件",
             "type": "string"
           },
           "glob": {
