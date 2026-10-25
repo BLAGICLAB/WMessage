@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 232 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 245 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -303,8 +303,20 @@ src-tauri/src/
 │   │                     按模型族/协议的 ReasoningWire（OpenAI effort/GLM thinking/
 │   │                     Anthropic budget），resolve 装配 + describe 审计展示
 │   └── audit.rs         audit_log
-├── bot/tools.rs (2949)    23 个 tool_* 实现（任务卡 CRUD / 子任务 / 文档生成 / 联网 / 时间 / 记忆转发 /
-│                        受管服务起停查 start_service / stop_service / list_services）
+├── bot/tools.rs (88)      工具实现门面：23 个 tool_* 逐项转出（crate::bot::tools::X 旧路径 1:1 保持）
+│   ├── bot/tools/task.rs (1103)   任务面：查询族（view/过滤/渲染/query）+ 管理族（增删改/子任务/绑文件）
+│   ├── bot/tools/doc.rs (742)     文档面：提取文档 / Word·Excel·PPT·PDF 生成 / 联网搜索 / 抓页 / 自由 Python
+│   ├── bot/tools/service.rs (277) 受管服务面：start/stop/list 长驻进程 + 集成测试钩子
+│   ├── bot/tools/common.rs (153)  公共杂项面：时间工具 / files 参数解析与安全校验 / 审计补充 kv / 改库广播
+│   ├── bot/tools/task_files_arg_tests.rs (181)     files 参数解析与安全校验单测
+│   ├── bot/tools/query_tasks_tests.rs (154)        查询族纯函数单测
+│   ├── bot/tools/n3_toolpolish_tests.rs (79)       N3 工具升级纯函数单测
+│   ├── bot/tools/tool_extract_document_tests.rs (64) 文档提取输出格式化单测
+│   ├── bot/tools/tool_web_search_arg_tests.rs (45) 搜索 count 钳制单测
+│   ├── bot/tools/sync_syscall_off_runtime_tests.rs (49) 同步 syscall 不得裸跑的源码守卫
+│   ├── bot/tools/tool_due_format_tests.rs (29)      due 参数闸单测
+│   ├── bot/tools/phase4_facts_tests.rs (24)         时间/事实类单测
+│   └── bot/tools/background_dialog_tests.rs (24)    后台执行不得弹框的源码守卫
 ├── bot/stream_log.rs (444) 会话级流式事件的统一出口 emit_recorded：分配序号（会话内跨轮次连续，
 │                        客户端据此去重）→ 写会话回放缓冲（2 万条 / 8MB 双上限，
 │                        收尾后保留 120s 惰性清扫，游标老于窗口如实报 truncated）
@@ -870,6 +882,19 @@ flowchart TD
 - `bot/stream_log.rs`
 - `bot/tags_consolidate.rs`
 - `bot/tools.rs`
+- `bot/tools/background_dialog_tests.rs`
+- `bot/tools/common.rs`
+- `bot/tools/doc.rs`
+- `bot/tools/n3_toolpolish_tests.rs`
+- `bot/tools/phase4_facts_tests.rs`
+- `bot/tools/query_tasks_tests.rs`
+- `bot/tools/service.rs`
+- `bot/tools/sync_syscall_off_runtime_tests.rs`
+- `bot/tools/task.rs`
+- `bot/tools/task_files_arg_tests.rs`
+- `bot/tools/tool_due_format_tests.rs`
+- `bot/tools/tool_extract_document_tests.rs`
+- `bot/tools/tool_web_search_arg_tests.rs`
 
 ### `bot_orchestrator/`
 - `bot_orchestrator/orchestrator_tests.rs`

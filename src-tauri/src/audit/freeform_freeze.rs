@@ -16,7 +16,9 @@ const WHITELIST: &[&str] = &[
     "bot/subagent_spawn.rs",
     "bot/subagent_tools.rs",
     "bot/mcp/commands.rs",
-    "bot/tools.rs",
+    // 工具实现层拆成 bot/tools/ 子模块后，存量调用点跟着搬了过来
+    "bot/tools/common.rs",
+    "bot/tools/doc.rs",
     "bot_fs.rs",
     "bot_chat.rs",
     // 聊天主流程拆成 bot_chat/ 子模块后，存量调用点跟着搬了过来

@@ -13,7 +13,7 @@ fn every_commit_and_report_fail_prefix_is_classifiable() {
     let mut prefixes: Vec<String> = Vec::new();
     let mut in_call = false;
     let mut pending: Option<String> = None;
-    for line in include_str!("../tools.rs").lines() {
+    for line in include_str!("../tools/task.rs").lines() {
         let t = line.trim();
         if t.starts_with("commit_and_report(") {
             in_call = true;
