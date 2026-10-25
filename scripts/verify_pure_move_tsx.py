@@ -94,20 +94,38 @@ def find_contiguous(haystack: list[str], needle: list[str]) -> int:
     return -1
 
 
-def is_structural(line: str) -> bool:
-    """是否是「允许出现在清单之外」的行：import / export / 注释 / 空行 / 闭合括号。"""
-    s = line.strip()
-    if not s:
-        return True
-    if s.startswith(("//", "/*", "*")):
-        return True
-    if s.startswith(("import ", "export ", "import{", "export{")):
-        return True
-    if s.startswith("import type ") or s.startswith("export type "):
-        return True
-    if s.startswith(("}", ")", "]")):
-        return True
-    return False
+def structural_lines(lines: list[str]) -> set[int]:
+    """「允许出现在清单之外」的行号集合：import / export / 注释 / 空行 / 闭合括号。
+
+    多行 import 的**续行**（`import {` 与 `} from "..."` 之间的那些具名
+    导入项）也算 import 的一部分——它们逐字搬走时本来就会随用到的符号
+    增减，不该被当成「未登记的实体代码」。用一个小状态机跟踪是否身处
+    import 语句内部。
+    """
+    out: set[int] = set()
+    in_import = False
+    for i, line in enumerate(lines, 1):
+        s = line.strip()
+        if not s:
+            out.add(i)
+            continue
+        if in_import:
+            out.add(i)
+            if "from" in s or s.endswith(";"):
+                in_import = False
+            continue
+        if s.startswith(("//", "/*", "*")):
+            out.add(i)
+            continue
+        if s.startswith(("import ", "export ", "import{", "export{")):
+            out.add(i)
+            if not s.endswith(";") and "from" not in s:
+                in_import = True
+            continue
+        if s.startswith(("}", ")", "]")):
+            out.add(i)
+            continue
+    return out
 
 
 def main() -> int:
@@ -221,9 +239,10 @@ def main() -> int:
     for _, a, b in allowed:
         covered.update(range(a, b + 1))
 
+    structural_set = structural_lines(orig_lines)
     uncovered = [(i, l) for i, l in enumerate(orig_lines, 1) if i not in covered and l.strip()]
-    structural = [(i, l) for i, l in uncovered if is_structural(l)]
-    other = [(i, l) for i, l in uncovered if not is_structural(l)]
+    structural = [(i, l) for i, l in uncovered if i in structural_set]
+    other = [(i, l) for i, l in uncovered if i not in structural_set]
 
     if not args.quiet:
         print(
