@@ -55,7 +55,6 @@ NEW_FILE_LIMIT = 1500
 # - 文件变大 → 门禁 fail；要么拆文件，要么先拆再加
 # - 文件删除 → 整条销掉
 WHITELIST = {
-    "tests/llm_integration.rs": 4645,
     "src/bot/registry.rs": 3827,
     "src/bot_chat.rs": 3028,
     "src/bot/tools.rs": 2949,
