@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 206 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 210 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -158,9 +158,17 @@ src-tauri/src/
 ├── bot/registry.rs (3827)  **工具单源真相（阶段 2）**：`BUILTIN_TOOL_COUNT` 个 schema 常量 + `TOOLS_TABLE`
 │                        （name/schema/mutating/call，数目以该常量为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
-├── bot/dispatch.rs (1819)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1009)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计 +
 │                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）
+│   ├── bot/dispatch/commit_and_report_tests.rs (73)   写库失败口径单测：status 与文本同答案 +
+│   │                        fail_prefix 可被 classify_tool_failure 认出（7 处任务卡工具）
+│   ├── bot/dispatch/early_return_events_tests.rs (109) 早退事件序列单测：规则闸 deny 与 skill
+│   │                        熔断两条路径的 tool.return 配平 + trace 键集
+│   ├── bot/dispatch/invalid_args_tests.rs (95)        入参 JSON 闸单测：空参/非对象 JSON 放行、
+│   │                        坏 JSON 拒绝并回可解释文案 + 闸位接线守卫（源码文本）
+│   └── bot/dispatch/pre_tool_hook_tests.rs (529)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
+│                        panic 隔离守卫 + 收尾窗放行清单漂移 + 门禁早退 Denied 口径（9 处）
 ├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
 │                        HookRegistry 进程级注册（OnceLock 单例，同层内按注册序；层序只由
 │                        dispatch 调用栈保证，注册表无任何层序配置入口）+ HookLayer 会话级禁用 +
@@ -788,6 +796,10 @@ flowchart TD
 - `bot/config/types.rs`
 - `bot/corrections.rs`
 - `bot/dispatch.rs`
+- `bot/dispatch/commit_and_report_tests.rs`
+- `bot/dispatch/early_return_events_tests.rs`
+- `bot/dispatch/invalid_args_tests.rs`
+- `bot/dispatch/pre_tool_hook_tests.rs`
 - `bot/eval.rs`
 - `bot/format.rs`
 - `bot/hooks.rs`
