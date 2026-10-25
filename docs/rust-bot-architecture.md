@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 190 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 193 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -15,6 +15,11 @@ src-tauri/src/
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
 ├── paths.rs             数据目录解析 + 便携模式判定
 ├── audit.rs             审计事件写 bot.log（audit_event! 宏、write_event、error_kv 带 code）
+│   ├── audit/tests.rs   审计单测（日志写入 / 级别映射 / 错误分类 / panic 钩子）
+│   ├── audit/error_class_tests.rs  错误文本→错误码分类单测
+│   ├── audit/freeform_freeze.rs    free-form 审计入口冻结守卫（`audit_log(` 白名单）
+│                        ——口径：生产切片 = 全文剔除全部 `#[cfg(test)]` 块，与代码
+│                        位置无关；测试专用文件按 `#[cfg(test)] mod X;` 声明识别
 ├── profile.rs           个人资料：用户/机器人 头像 + 姓名（profile.json + 头像拷进 profile/；读回 base64 data URL，
 │                        原子写 + 损坏备份 + 5MB/扩展名校验）
 ├── mutation.rs          任务变更来源枚举 MutationOrigin（Main/Bot/Api/Migration），tasks-updated 事件分流
@@ -674,6 +679,9 @@ flowchart TD
 - `app_state.rs`
 - `ask_engine.rs`
 - `audit.rs`
+- `audit/error_class_tests.rs`
+- `audit/freeform_freeze.rs`
+- `audit/tests.rs`
 - `bing.rs`
 - `bot.rs`
 - `bot_anthropic.rs`

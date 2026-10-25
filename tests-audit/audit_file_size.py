@@ -68,7 +68,6 @@ WHITELIST = {
     "src/bot_web.rs": 2050,
     "src/apps/manage.rs": 1884,
     "src/bot/dispatch.rs": 1819,
-    "src/audit.rs": 1749,
     "src/bot_skills/manage.rs": 1664,
     "src/bot_scheduler.rs": 1617,
     "src/bot_anthropic.rs": 1524,
