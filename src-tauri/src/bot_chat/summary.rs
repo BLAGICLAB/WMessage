@@ -4,12 +4,31 @@ use super::*;
 
 /// 截断点计算（纯函数）：返回保留起点下标（=丢弃条数）。最旧的先丢，最后一条永远保留。
 /// 剥出供截断即摘要复用——摘要路径需要「将被丢弃的消息」而不只是丢弃条数。
-pub(super) fn truncate_split_point(messages: &[ChatMsg], budget: usize) -> usize {
+///
+/// **滞回**：超预算时不是贴着预算边裁，而是裁到 `target_ratio × budget`
+/// （默认 70%），留出余量。贴着边裁的后果是每轮可能只丢一两条——历史体量
+/// 缓涨时几乎每轮都触发一次裁剪，而每次裁剪都会改掉请求数组的缓存前缀，
+/// 把「长会话只付一次全价」打碎成「每轮都付全价」。留 30% 余量能稳住
+/// 好几轮的前缀，代价只是多裁一点历史。
+///
+/// `target_ratio` 钳在 0.5..=0.9：低于 0.5 一次裁太狠（历史断崖式变短），
+/// 高于 0.9 等于没有余量。
+pub(super) fn truncate_split_point(
+    messages: &[ChatMsg],
+    budget: usize,
+    target_ratio: f64,
+) -> usize {
+    // 没超预算就不动（历史一条不丢）
+    let total_all: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+    if total_all <= budget {
+        return 0;
+    }
+    let target = (budget as f64 * target_ratio.clamp(0.5, 0.9)) as usize;
     let mut total = 0usize;
     let mut keep_from = messages.len();
     for (i, m) in messages.iter().enumerate().rev() {
         let n = m.content.chars().count();
-        if total + n > budget && i != messages.len() - 1 {
+        if total + n > target && i != messages.len() - 1 {
             break;
         }
         total += n;
@@ -25,13 +44,14 @@ pub(super) fn truncate_split_point(messages: &[ChatMsg], budget: usize) -> usize
 pub async fn truncate_with_summary_core<S, Fut>(
     messages: Vec<ChatMsg>,
     budget: usize,
+    target_ratio: f64,
     summarize: S,
 ) -> (Vec<ChatMsg>, Option<String>, usize)
 where
     S: FnOnce(Vec<ChatMsg>) -> Fut,
     Fut: std::future::Future<Output = CommandResult<String>>,
 {
-    let keep_from = truncate_split_point(&messages, budget);
+    let keep_from = truncate_split_point(&messages, budget, target_ratio);
     if keep_from == 0 {
         return (messages, None, 0);
     }
@@ -56,9 +76,10 @@ pub(crate) async fn truncate_chat_history_with_summary(
     session_id: Option<&str>,
     messages: Vec<ChatMsg>,
     budget: usize,
+    target_ratio: f64,
 ) -> (Vec<ChatMsg>, Option<String>, usize) {
     let (kept, summary, dropped) =
-        truncate_with_summary_core(messages, budget, |dropped_msgs| async move {
+        truncate_with_summary_core(messages, budget, target_ratio, |dropped_msgs| async move {
             summarize_messages(app, SUMMARY_SYSTEM_PROMPT, &dropped_msgs).await
         })
         .await;

@@ -297,6 +297,7 @@ export function BotCoreSection({
                   maxFunctionCalls: "",
                   pythonTimeoutSecs: "",
                   historyBudgetChars: "",
+                  historyTruncateTargetPct: "",
                   subagentMaxTurns: "",
                   subagentMaxWallSecs: "",
                   searchMaxResults: "",

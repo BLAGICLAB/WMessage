@@ -55,6 +55,13 @@ pub const MAX_ROUNDS_MIN: u32 = 5;
 pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = 100_000;
 pub const HISTORY_BUDGET_MIN: u32 = 20_000;
 pub const HISTORY_BUDGET_MAX: u32 = 500_000;
+/// 历史截断滞回目标比例默认（百分比）：超预算时一次裁到预算的 70%。
+/// 贴边裁会让长会话几乎每轮都改一次缓存前缀，留 30% 余量能稳住好几轮。
+pub const DEFAULT_HISTORY_TRUNCATE_TARGET_PCT: u32 = 70;
+/// 滞回比例下界（50%）：再低就是历史断崖式变短，摘要都救不回来。
+pub const HISTORY_TRUNCATE_TARGET_PCT_MIN: u32 = 50;
+/// 滞回比例上界（90%）：再高等于没有余量，贴边裁的问题原样回来。
+pub const HISTORY_TRUNCATE_TARGET_PCT_MAX: u32 = 90;
 /// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）：
 /// max_tool_calls 仅是缺省兜底——配置了 max_function_calls 时子 agent 同源全域上限
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 = 30;
@@ -79,6 +86,14 @@ pub fn clamp_max_rounds(n: u32) -> u32 {
 /// 会话历史字符预算钳 20K..=500K
 pub fn clamp_history_budget_chars(n: u32) -> u32 {
     n.clamp(HISTORY_BUDGET_MIN, HISTORY_BUDGET_MAX)
+}
+
+/// 历史截断滞回比例钳 50..=90（百分比）
+pub fn clamp_history_truncate_target_pct(n: u32) -> u32 {
+    n.clamp(
+        HISTORY_TRUNCATE_TARGET_PCT_MIN,
+        HISTORY_TRUNCATE_TARGET_PCT_MAX,
+    )
 }
 
 /// 子 agent 墙钟秒数钳 30..=3600
@@ -171,6 +186,20 @@ pub fn resolve_history_budget_chars(cfg: &BotConfig) -> u32 {
         cfg.history_budget_chars
             .unwrap_or(DEFAULT_HISTORY_BUDGET_CHARS),
     )
+}
+
+/// 历史截断滞回比例（百分比，50..=90）：参数表展示与写盘都用这个整数口径。
+pub fn resolve_history_truncate_target_pct(cfg: &BotConfig) -> u32 {
+    clamp_history_truncate_target_pct(
+        cfg.history_truncate_target_pct
+            .unwrap_or(DEFAULT_HISTORY_TRUNCATE_TARGET_PCT),
+    )
+}
+
+/// 历史截断滞回比例（0.5..=0.9）：超预算时一次裁到预算的这个比例。
+/// 比例越低裁得越狠（前缀越稳、丢的历史越多）。
+pub fn resolve_history_truncate_target_ratio(cfg: &BotConfig) -> f64 {
+    resolve_history_truncate_target_pct(cfg) as f64 / 100.0
 }
 
 pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
@@ -287,6 +316,16 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         max: Some(HISTORY_BUDGET_MAX as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_history_budget_chars, history_budget_chars),
+    },
+    ParamDef {
+        key: "loop.history_truncate_target_pct",
+        label: "历史截断滞回比例（%）",
+        category: "loop",
+        hint: "超出预算时一次裁到预算的这个比例，留余量稳住缓存前缀；调小=前缀更稳但丢的历史更多",
+        min: Some(HISTORY_TRUNCATE_TARGET_PCT_MIN as u64),
+        max: Some(HISTORY_TRUNCATE_TARGET_PCT_MAX as u64),
+        editable: true,
+        resolve: cfg_resolver!(resolve_history_truncate_target_pct, history_truncate_target_pct),
     },
     // ── 可编辑：子 agent ──
     ParamDef {
@@ -688,6 +727,7 @@ mod tests {
             verified_vendors: Vec::new(),
             schema_version: 1,
             max_rounds: None,
+            history_truncate_target_pct: None,
             history_budget_chars: None,
             tool_rules: None,
             subagent_max_turns: None,

@@ -103,6 +103,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     // ──  Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
     maxRounds: "",
     historyBudgetChars: "",
+    historyTruncateTargetPct: "",
     subagentMaxTurns: "",
     subagentMaxWallSecs: "",
     searchMaxResults: "",
@@ -354,6 +355,10 @@ export function useSettingsActions(params: SettingsActionsParams) {
         maxRounds: c.maxRounds != null ? String(c.maxRounds) : "",
         historyBudgetChars:
           c.historyBudgetChars != null ? String(c.historyBudgetChars) : "",
+        historyTruncateTargetPct:
+          c.historyTruncateTargetPct != null
+            ? String(c.historyTruncateTargetPct)
+            : "",
         subagentMaxTurns:
           c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
         subagentMaxWallSecs:

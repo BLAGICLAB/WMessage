@@ -137,6 +137,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         verified_vendors: cfg.verified_vendors,
         max_rounds: cfg.max_rounds,
         history_budget_chars: cfg.history_budget_chars,
+        history_truncate_target_pct: cfg.history_truncate_target_pct,
         subagent_max_turns: cfg.subagent_max_turns,
         subagent_max_wall_secs: cfg.subagent_max_wall_secs,
         search_max_results: cfg.search_max_results,
@@ -272,6 +273,9 @@ fn clamp_agent_params(config: &mut BotConfig) {
     config.history_budget_chars = config
         .history_budget_chars
         .map(crate::bot::params::clamp_history_budget_chars);
+    config.history_truncate_target_pct = config
+        .history_truncate_target_pct
+        .map(crate::bot::params::clamp_history_truncate_target_pct);
     config.subagent_max_turns = config
         .subagent_max_turns
         .map(crate::db::clamp_subagent_max_turns);

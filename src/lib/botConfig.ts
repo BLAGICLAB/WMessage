@@ -63,6 +63,7 @@ export interface BotConfigView {
   mcpServers?: McpServerConfig[];
   maxRounds?: number | null;
   historyBudgetChars?: number | null;
+  historyTruncateTargetPct?: number | null;
   subagentMaxTurns?: number | null;
   subagentMaxWallSecs?: number | null;
   searchMaxResults?: number | null;

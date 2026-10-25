@@ -306,6 +306,7 @@ export type SettingsConfig = {
   memoryTuning: Record<string, number> | null;
   maxRounds: string;
   historyBudgetChars: string;
+  historyTruncateTargetPct: string;
   subagentMaxTurns: string;
   subagentMaxWallSecs: string;
   searchMaxResults: string;

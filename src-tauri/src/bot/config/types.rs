@@ -237,6 +237,10 @@ pub struct BotConfig {
     /// 会话历史字符预算（超出最旧先丢 + 摘要）：None = 100_000；钳 20_000..=500_000。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_budget_chars: Option<u32>,
+    /// 历史截断滞回比例（百分比）：超预算时一次裁到预算的这个比例，
+    /// 留余量稳住隐式前缀缓存。None = 70；钳 50..=90。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_truncate_target_pct: Option<u32>,
     /// 子 agent 默认轮数预算（LLM spawn 未显式给 budget 时）：None = 30；钳 1..=50（硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
@@ -358,6 +362,7 @@ impl Default for BotConfig {
             // Agent 运行参数全默认（None = 各 resolve_* 的内置默认）
             max_rounds: None,
             history_budget_chars: None,
+            history_truncate_target_pct: None,
             subagent_max_turns: None,
             subagent_max_wall_secs: None,
             search_max_results: None,
@@ -538,6 +543,8 @@ pub struct BotConfigView {
     pub max_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_budget_chars: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_truncate_target_pct: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

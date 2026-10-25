@@ -290,6 +290,10 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             "loop.history_budget_chars",
             c.historyBudgetChars,
           ),
+          historyTruncateTargetPct: paramNumber(
+            "loop.history_truncate_target_pct",
+            c.historyTruncateTargetPct,
+          ),
           subagentMaxTurns: paramNumber(
             "subagent.max_turns",
             c.subagentMaxTurns,

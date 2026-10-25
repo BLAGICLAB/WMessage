@@ -27,6 +27,7 @@
 - `docs/FILE-SPLIT-PLAN-2026-10-25.md` — 18 个超限大文件的拆分计划（12 批）：A 类测试外移 8 条 / B 类生产切分 7 条 / C 类特殊形态 3 条；含实测基线、三条门禁约束（行数棘轮 / 模块地图 / 命名空间）、冻结守卫与 `pub(super)` 下移陷阱、并行 worktree 策略与逐批收尾清单
 - `docs/FILE-SPLIT-ROUND2-2026-10-25.md` — 第二轮：贴线（1300–1500）的 10 个文件拆分计划——6 条测试外移 / 2 条纯测试文件按节切 / 2 条生产切分；含逐文件切法、执行顺序依赖与本轮特有的四个坑
 - `docs/FILE-SPLIT-FRONTEND-2026-10-25.md` — 第三轮（前端，**已执行完毕**）：5 个大文件（SettingsPage 4068 / ChatPanel.test 3105 / SettingsPage.test 2985 / ChatPanel 2270 / GraphCanvas 1245）的逐文件切法——A 类纯搬移 / B 类搬移+接线六条白名单 / 前端版核对器规格 / effect 顺序与 mock 作用域等十个坑 / 可粘贴的提示词；§十二 进度回填与 §十三 落地结果（含偏离登记与「exhaustive-deps 认作用域不认值」等五条教训）
+- `docs/CONTEXT-TOOLCALL-OPTIMIZATION-DESIGN-2026-10-25.md` — 上下文成本与工具调用优化方案（8 项 P1–P8，5 个批次）：缓存前缀解封 / 截断滞回 / `lookup_receipt` 召回工具 / 并行调用引导 / schema 示例 / 思考段回灌开关 / 轮内工具结果滑动窗；含业界实证口径（Anthropic PTC -37%、Context Editing +29%）、不做清单与逐项验收口径
 
 ## 命令
 

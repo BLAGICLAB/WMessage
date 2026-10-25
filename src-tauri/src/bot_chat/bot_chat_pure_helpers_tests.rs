@@ -482,13 +482,23 @@ fn msg(role: &str, content: &str) -> ChatMsg {
 
 /// 不调摘要器的截断内核 = 纯截断语义（mock summarizer 返 Err）
 async fn truncate_only(messages: Vec<ChatMsg>, budget: usize) -> (Vec<ChatMsg>, usize) {
-    let (kept, _summary, dropped) = truncate_with_summary_core(messages, budget, |_m| async {
-        Err(CommandError::DomainRule {
-            domain: "test".to_string(),
-            reason: "本测试不摘要".to_string(),
+    truncate_only_ratio(messages, budget, 1.0).await
+}
+
+/// 同上，但指定滞回比例（1.0 = 贴着预算边裁 = 无滞回）
+async fn truncate_only_ratio(
+    messages: Vec<ChatMsg>,
+    budget: usize,
+    target_ratio: f64,
+) -> (Vec<ChatMsg>, usize) {
+    let (kept, _summary, dropped) =
+        truncate_with_summary_core(messages, budget, target_ratio, |_m| async {
+            Err(CommandError::DomainRule {
+                domain: "test".to_string(),
+                reason: "本测试不摘要".to_string(),
+            })
         })
-    })
-    .await;
+        .await;
     (kept, dropped)
 }
 
@@ -524,6 +534,65 @@ fn truncate_chat_history_keeps_last_even_over_budget() {
     let (kept, dropped) = futures::executor::block_on(truncate_only(msgs, 10));
     assert_eq!(dropped, 0, "最后一条（本轮用户消息）永远保留");
     assert_eq!(kept.len(), 1);
+}
+
+/// 滞回：超预算时**一次**裁到目标比例，而不是贴着预算边裁。
+///
+/// 贴边裁的后果是每轮可能只丢一两条（历史体量缓涨时几乎每轮都触发），
+/// 每次裁剪都改掉请求数组的缓存前缀，把「长会话只付一次全价」打碎。
+/// 留 30% 余量能稳住好几轮的前缀。
+#[test]
+fn truncate_hysteresis_cuts_to_target_ratio() {
+    // 10 条各 100 字 = 1000 字；预算 500 → 超预算
+    let msgs: Vec<ChatMsg> = (0..10)
+        .map(|i| msg("user", &format!("{:0>100}", i)))
+        .collect();
+    let (kept, dropped) = futures::executor::block_on(truncate_only_ratio(msgs, 500, 0.7));
+    let kept_chars: usize = kept.iter().map(|m| m.content.chars().count()).sum();
+    assert!(
+        kept_chars <= 350,
+        "裁到预算 70% 以内（实得 {kept_chars} 字，预算 500）"
+    );
+    assert!(dropped > 0, "超预算必须裁");
+    assert_eq!(
+        kept.last().unwrap().content.chars().count(),
+        100,
+        "末条恒保留"
+    );
+}
+
+/// 滞回边界：比例越低裁得越狠（前缀越稳、丢的历史越多）
+#[test]
+fn truncate_hysteresis_lower_ratio_cuts_more() {
+    let build = || -> Vec<ChatMsg> {
+        (0..10)
+            .map(|i| msg("user", &format!("{:0>100}", i)))
+            .collect()
+    };
+    let (kept_high, _) = futures::executor::block_on(truncate_only_ratio(build(), 500, 0.9));
+    let (kept_low, _) = futures::executor::block_on(truncate_only_ratio(build(), 500, 0.5));
+    assert!(
+        kept_low.len() < kept_high.len(),
+        "50% 应比 90% 裁得更狠（{} vs {}）",
+        kept_low.len(),
+        kept_high.len()
+    );
+}
+
+/// 滞回比例出界时钳到 0.5..=0.9：0.1 会把历史砍到只剩末条，0.99 等于没余量
+#[test]
+fn truncate_hysteresis_ratio_is_clamped() {
+    let build = || -> Vec<ChatMsg> {
+        (0..10)
+            .map(|i| msg("user", &format!("{:0>100}", i)))
+            .collect()
+    };
+    let (kept_low, _) = futures::executor::block_on(truncate_only_ratio(build(), 500, 0.1));
+    let (kept_floor, _) = futures::executor::block_on(truncate_only_ratio(build(), 500, 0.5));
+    assert_eq!(kept_low.len(), kept_floor.len(), "0.1 应被钳到 0.5");
+    let (kept_high, _) = futures::executor::block_on(truncate_only_ratio(build(), 500, 0.99));
+    let (kept_ceil, _) = futures::executor::block_on(truncate_only_ratio(build(), 500, 0.9));
+    assert_eq!(kept_high.len(), kept_ceil.len(), "0.99 应被钳到 0.9");
 }
 
 #[test]
@@ -590,7 +659,7 @@ async fn truncate_with_summary_core_success_returns_summary() {
         msg("user", "本轮问题"),
     ];
     let (kept, summary, dropped) =
-        truncate_with_summary_core(msgs, 63, |dropped_msgs| async move {
+        truncate_with_summary_core(msgs, 63, 1.0, |dropped_msgs| async move {
             assert_eq!(dropped_msgs.len(), 2, "摘要器应收到的恰是将被丢弃的消息");
             Ok("用户在做记忆模块".to_string())
         })
@@ -609,7 +678,7 @@ async fn truncate_with_summary_core_llm_failure_falls_back_to_plain_drop() {
         msg("assistant", &long),
         msg("user", "本轮问题"),
     ];
-    let (kept, summary, dropped) = truncate_with_summary_core(msgs, 63, |_| async {
+    let (kept, summary, dropped) = truncate_with_summary_core(msgs, 63, 1.0, |_| async {
         Err(CommandError::Internal("boom".into()))
     })
     .await;
@@ -627,7 +696,7 @@ async fn truncate_with_summary_core_empty_summary_treated_as_failure() {
         msg("user", "本轮问题"),
     ];
     let (_, summary, dropped) =
-        truncate_with_summary_core(msgs, 63, |_| async { Ok("   ".to_string()) }).await;
+        truncate_with_summary_core(msgs, 63, 1.0, |_| async { Ok("   ".to_string()) }).await;
     assert_eq!(summary, None, "空白摘要按失败处理");
     assert_eq!(dropped, 2);
 }
@@ -635,7 +704,7 @@ async fn truncate_with_summary_core_empty_summary_treated_as_failure() {
 #[tokio::test]
 async fn truncate_with_summary_core_within_budget_never_calls_llm() {
     let msgs = vec![msg("user", "你好"), msg("assistant", "在的")];
-    let (kept, summary, dropped) = truncate_with_summary_core(msgs, 100, |_| async {
+    let (kept, summary, dropped) = truncate_with_summary_core(msgs, 100, 1.0, |_| async {
         panic!("预算内不应触发摘要调用")
     })
     .await;

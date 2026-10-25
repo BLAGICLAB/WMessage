@@ -389,6 +389,7 @@ pub use flow::chat_guard_is_held;
 pub(crate) use flow::TurnOrigin;
 #[cfg(test)]
 use flow::{busy_chat_result, require_bot_enabled};
+use inject::{build_history_msgs, build_injection};
 #[cfg(test)]
 use input::normalize_user_input_core;
 pub use input::{format_recovery_hint, merge_task_refs_dedup};
@@ -413,6 +414,9 @@ mod exec;
 mod flow;
 #[cfg(test)]
 mod image_attach_tests;
+mod inject;
+#[cfg(test)]
+mod inject_tests;
 mod input;
 mod media;
 mod report;

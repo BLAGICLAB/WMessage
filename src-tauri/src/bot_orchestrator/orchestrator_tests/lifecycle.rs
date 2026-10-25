@@ -499,7 +499,7 @@ fn digest_is_injected_at_the_end_of_message_assembly() {
         ))
         .expect("组装末尾必须调 subagent_digest_block");
     let history_end = chat
-        .find("msgs.push(serde_json::json!({\"role\": role, \"content\": m.content}))")
+        .find("msgs.extend(build_history_msgs(")
         .expect("历史消息循环的收尾 push");
     // 模型循环锚点必须在注入点**之后**找：flow.rs 前面还有若干处提到
     // run_model_loop 的注释/别名，全文件搜第一个会命中它们。

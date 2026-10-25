@@ -503,30 +503,42 @@ pub(super) async fn bot_chat_inner(
     // 历史字符预算——长会话最旧的先丢，
     // 最后一条（本轮用户消息）永远保留；丢弃时留审计
     // 截断即摘要（设计 5.2）：超预算先对将丢弃的消息
-    // 生成摘要；摘要单独以 system 消息放在截断后历史开头（不进 messages——下方
-    // role 白名单会把非 assistant 降级为 user，防注入语义不动）；
+    // 生成摘要；摘要不落库、不进 ChatMsg（只在本轮请求里并进末条消息）；
     // LLM 失败静默退回直接丢弃
     // 历史预算走配置解析（config historyBudgetChars，钳 20K..=500K；默认 100K）
-    let budget_used =
-        crate::bot::params::resolve_history_budget_chars(&crate::bot::load_config(&app)) as usize;
-    let (messages, summary, dropped) =
-        truncate_chat_history_with_summary(&app, session_id.as_deref(), messages, budget_used)
-            .await;
-    if let Some(summary) = summary {
-        msgs.push(serde_json::json!({"role": "system", "content": summary}));
-    }
-    // 记忆块独立 system 消息（设计第 6 节），紧跟主
-    // system prompt 与摘要消息之后。直接进 msgs 不经 ChatMsg——下方 role 白名单
-    // 会把非 assistant 降级为 user；检索查询 = 本轮用户消息原文 ≤200 字（汇报轮
+    let cfg_for_budget = crate::bot::load_config(&app);
+    let budget_used = crate::bot::params::resolve_history_budget_chars(&cfg_for_budget) as usize;
+    // 截断滞回比例（config historyTruncateTargetPct，钳 50..=90；默认 70%）：
+    // 超预算时一次裁到目标比例而不是贴着预算边裁——贴边裁每轮都可能只丢
+    // 一两条，把缓存前缀断成每轮一次。留出余量能稳住好几轮的前缀。
+    let truncate_ratio = crate::bot::params::resolve_history_truncate_target_ratio(&cfg_for_budget);
+    let (messages, summary, dropped) = truncate_chat_history_with_summary(
+        &app,
+        session_id.as_deref(),
+        messages,
+        budget_used,
+        truncate_ratio,
+    )
+    .await;
+    // 记忆块（设计第 6 节）：检索查询 = 本轮用户消息原文 ≤200 字（汇报轮
     // 没有用户消息 → 空查询：记忆块照常注入，只是没有语义检索的抓手）；
     // DB 任何失败静默降级为无记忆块（build_memory_block 内部兜底）。
     let memory_query = user_input
         .as_ref()
         .map(|m| m.content.chars().take(200).collect::<String>())
         .unwrap_or_default();
-    if let Some(block) = build_memory_block(&app, &memory_query).await {
-        msgs.push(serde_json::json!({"role": "system", "content": block}));
-    }
+    let memory_block = build_memory_block(&app, &memory_query).await;
+    // 摘要 + 记忆块并进**末条**消息（末条 = 本轮用户发言）。
+    //
+    // 位置是刻意选的：这两块每轮都变（摘要按截断生成、记忆块按本轮用户消息
+    // 做语义检索），原先它们卡在主 system 之后、全部历史之前——一变，后面
+    // 整段历史的隐式前缀缓存当场作废，长会话每轮都在付全价 input。挪到末条
+    // 消息里之后，稳定前缀 = 主 system + 全部历史，变的只有末条那一小段。
+    //
+    // 形态是「并进用户消息」而不是「另起 system 消息」：Anthropic 协议转换
+    // 会把数组里所有 role=system 的消息提到顶层 system 字段，另起 system
+    // 消息在 Anthropic 路径上等于没挪。
+    let injection = build_injection(summary.as_deref(), memory_block.as_deref());
     if dropped > 0 {
         crate::audit_event!(&app, crate::audit::AuditLevel::Info, "chat.history_truncated",
             "dropped" => dropped, "budget" => budget_used);
@@ -538,14 +550,10 @@ pub(super) async fn bot_chat_inner(
         TurnOrigin::User => image_attach_indices(&messages),
         TurnOrigin::Report => Vec::new(),
     };
+    // 先把每条历史消息的最终 content 备齐（纯文本或多模态块数组），
+    // 再由 build_history_msgs 统一组装消息数组并把注入块并进末条。
+    let mut contents: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
     for (i, m) in messages.iter().enumerate() {
-        // role 白名单：历史里的非法 role 一律按 user，
-        // 防污染历史注入 system/tool 角色
-        let role = if m.role == "assistant" {
-            "assistant"
-        } else {
-            "user"
-        };
         if img_indices.contains(&i) {
             // attach_images 全程同步 FS（canonicalize 白名单判定 + 整图读入转 base64，
             // 单图至多数 MB）——包 spawn_blocking，防多图/并发会话把 async runtime
@@ -556,11 +564,16 @@ pub(super) async fn bot_chat_inner(
                 tauri::async_runtime::spawn_blocking(move || attach_images(&app_img, &content_img))
                     .await
                     .unwrap_or_else(|_| serde_json::json!(m.content));
-            msgs.push(serde_json::json!({"role": role, "content": img_content}));
+            contents.push(img_content);
         } else {
-            msgs.push(serde_json::json!({"role": role, "content": m.content}));
+            contents.push(serde_json::json!(m.content));
         }
     }
+    msgs.extend(build_history_msgs(
+        &messages,
+        &contents,
+        injection.as_deref(),
+    ));
     // L2 落点 · 子任务回报（设计 §3.7「下一轮 assemble 检查」）：父 agent 派出去的
     // 子任务，终态的在这里打包成一段注入，在途的只报计数。放最后是刻意的——
     // 模型对本轮末尾的内容权重最高，而回报正是「此刻新增」的信息。
