@@ -113,3 +113,17 @@ export const SUBAGENT_STATUS: Record<
   cancelled: { label: "已取消", color: "text-[var(--t5)]" },
   budget_exceeded: { label: "预算耗尽", color: "text-[var(--danger)]" },
 };
+
+/** 回合状态取值域（与后端 TurnStatus::as_str 同源）。
+ *  库里出现未知值按缺失处理：旧版本写入/库被手改都不能让整段会话加载炸掉 */
+export const TURN_STATUS_VALUES: readonly string[] = [
+  "running",
+  "settling",
+  "completed",
+  "interrupted",
+  "failed",
+];
+
+/** 贴底阈值（px）：离底这么近就算「还贴着底」。
+ *  流式追加让内容高度每帧变，差几像素就当没贴底 → 视口在底部反复抽搐。 */
+export const STICK_BOTTOM_PX = 32;
