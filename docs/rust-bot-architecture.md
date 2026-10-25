@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 280 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 281 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -506,7 +506,7 @@ src-tauri/src/
 │                        大图先查长度再流式读，边读边计数（超限即中止）
 │─ 技能系统 bot_skills/（技能 = 数据目录 skills/<name>/SKILL.md，YAML frontmatter）
 ├── bot_skills/mod.rs            门面：全量 re-export 子模块
-├── bot_skills/parse.rs          SKILL.md frontmatter/正文解析 → SkillMeta（mode/intents/steps）；
+├── bot_skills/parse.rs + bot_skills/parse/tests.rs   SKILL.md frontmatter/正文解析 → SkillMeta（mode/intents/steps）；
 │                                兼 frontmatter 写侧（enabled 键改写，与解析器同口径）
 ├── bot_skills/state.rs          SkillRun 运行实例 + 状态机
 │                                （Loaded/Running/Paused/Finished/Failed/Terminated）、
@@ -990,6 +990,7 @@ flowchart TD
 - `bot_skills/manage/tests.rs`
 - `bot_skills/mod.rs`
 - `bot_skills/parse.rs`
+- `bot_skills/parse/tests.rs`
 - `bot_skills/recommend.rs`
 - `bot_skills/remote.rs`
 - `bot_skills/runtime.rs`
