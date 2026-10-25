@@ -17,7 +17,7 @@ pub const SCHEMA_QUERY_SINGLE_TASK: &str = r##"{"type":"function","function":{"n
 pub const SCHEMA_CREATE_TASK: &str = r##"{"type":"function","function":{"name":"create_task","description":"新建任务","parameters":{"type":"object","properties":{
     "title":{"type":"string","description":"任务标题"},
     "note":{"type":"string","description":"备注，可选"},
-    "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选；示例：写 2026-10-24 或 2026-10-24T09:00，写 2026-10-24 09:00 或只写 2026-10 都会被拒"},
+    "due":{"type":"string","description":"截止时间，YYYY-MM-DD 或 YYYY-MM-DDTHH:mm（T 分隔，空格分隔不合法），可选；示例：写 2026-10-24 或 2026-10-24T09:00，写 2026-10-24 09:00 或只写 2026-10 都会被拒。due 只触发截止提醒，到点不会执行任务——「到点自动执行」目前只支持用户在定时页建作业（schedule_reminder 到点也只说话不执行）；用户要定时执行时如实说明这一限制，不要建 due 卡就声称会自动运行"},
     "column":{"type":"string","enum":["todo","doing"],"description":"状态列，默认 todo；示例：只有 todo / doing 两个值（archived / done 不合法，归档与完成另有专门动作）"},
     "files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"isDir":{"type":"boolean"}}},"description":"追加绑定文件/文件夹（可选，追加不覆盖；最多 10 个，每卡一个文件夹，绑新文件夹替换旧的；安全约束：仅允许 AI_Gen_Files 目录内的已存在文件，其余会被丢弃；要绑其它文件请引导用户用 bind_file 手选）"}
   },"required":["title"]}}}"##;
