@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 272 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 279 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -315,11 +315,23 @@ src-tauri/src/
 │   ├── bot/services/watchdog.rs (295)  服务层「宿主死了服务也得死」看门狗：
 │   │                            unix 用管道 EOF（宿主一死 → 写端关闭 → 助手 TERM 服务整组）；
 │   │                            Windows 复用 py/runtime.rs 的 Job Object（KILL_ON_JOB_CLOSE）
-│   └── bot/services/tests.rs (1487)  服务层单测：进程快照纯函数（ppid 树 / starttime / RSS / CPU 解析）+
-│                        限额不继承、停止阶梯、setsid 逃逸子孙回收、输出截断无空洞、
-│                        资源告警判定（阈值 / 持续 / 去重）、
-│                        端口闸（flag 解析 / loopback 判定 / L1-L3 判据 / 保留集）、
-│                        服务告警落通知中心（资源告警 / 端口违规）等
+│   ├── bot/services/tests.rs (62)    服务层单测的**门面**：按主题拆到下面七个测试子文件，
+│   │                        这里只留共用辅助（找一个能长驻的启动器）与 mod 声明
+│   ├── bot/services/tests/adjudicate.rs (168) 就绪失败的归因（先判后停）：退出码取停止前的快照、
+│   │                        端口违规文案压过超时、非法 readyPattern 不报成超时、
+│   │                        审计行分得清「我们杀的」与「它自己退的」
+│   ├── bot/services/tests/canary.rs (291) 采集金丝雀：采样自称成功却看不见宿主必在监听的端口
+│   │                        = 采集失明；盲 / 空的区分、转折审计、巡检先过金丝雀再进判定
+│   ├── bot/services/tests/integration.rs (329) 集成用例：真起一个受管服务、真停它、
+│   │                        setsid 逃逸子孙回收、不继承 run_python 的 rlimit
+│   ├── bot/services/tests/logs.rs (72) 日志截断：截断后保尾、低于上限不动、
+│   │                        append 续写不留空洞
+│   ├── bot/services/tests/observe.rs (385) 资源观测：合计口径判定（阈值 / 持续 / 去重）+
+│   │                        采样一轮、告警落审计与通知中心、采不到 ≠ 没占用
+│   ├── bot/services/tests/port_gate.rs (173) 端口 / 监听地址闸：flag 解析、loopback 判定、
+│   │                        L1-L3 判据、动态保留集
+│   └── bot/services/tests/state.rs (45) 启动白名单与状态机：白名单逐臂构造 +
+│   │                        只有活着的状态算占名额
 ├── bot/config/          BotConfig/ApiProvider/PermMode/KeySlot（bot-config.json，key 走系统 keyring）；
 │   ├── bot/config/mod.rs  模块声明
 │   ├── bot/config/schema.rs        bot-config.json schemaVersion 迁移 + 双协议派生
@@ -939,6 +951,13 @@ flowchart TD
 - `bot/services/start.rs`
 - `bot/services/stop.rs`
 - `bot/services/tests.rs`
+- `bot/services/tests/adjudicate.rs`
+- `bot/services/tests/canary.rs`
+- `bot/services/tests/integration.rs`
+- `bot/services/tests/logs.rs`
+- `bot/services/tests/observe.rs`
+- `bot/services/tests/port_gate.rs`
+- `bot/services/tests/state.rs`
 - `bot/services/watchdog.rs`
 - `bot/stream_log.rs`
 - `bot/tags_consolidate.rs`
