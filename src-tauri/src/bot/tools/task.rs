@@ -291,11 +291,19 @@ pub(crate) async fn tool_query_single_task(
 /// create/edit 共用的 due 参数闸：长度 + 格式一起判。格式判据与 task_patch /
 /// HTTP 三写口共用（db::tasks::due_format_error）——不合法的截止落库后
 /// due_notify 按「无截止」处理，通知静默不发。
+///
+/// 格式拒因带行动指引：底座提示词虽有「被拒不降级重试」，实测模型在紧邻的
+/// 下一跳仍会丢参重建卡（用户要的截止时间悄悄消失）。回执是模型当下唯一
+/// 盯着的信息，指引贴在案发现场比重复底座提示词有效。
 pub(super) fn due_param_denied(d: &str) -> Option<ToolResult> {
     if let Err(e) = check_len(d, MAX_DUE, "截止时间") {
         return Some(ToolResult::denied(e));
     }
-    crate::db::tasks::due_format_error(d).map(|r| ToolResult::denied(r.to_string()))
+    crate::db::tasks::due_format_error(d).map(|r| {
+        ToolResult::denied(format!(
+            "{r}；due 参数被拒不接受丢参或改填别的值重试——把上面的原因原样转告用户，请用户给出明确的截止时间"
+        ))
+    })
 }
 
 pub(crate) async fn tool_create_task(

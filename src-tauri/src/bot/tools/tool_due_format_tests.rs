@@ -17,6 +17,12 @@ fn due_param_denied_rejects_space_format_and_half_typed() {
             r.text.contains("YYYY-MM-DDTHH:mm"),
             "拒因要点明合法格式：{r:?}"
         );
+        // 拒绝回执必须自带「勿丢参/换参重试」指引：底座提示词拦不住紧邻的
+        // 下一跳，回执是模型当下唯一盯着的信息
+        assert!(
+            r.text.contains("丢参或改填别的值重试"),
+            "拒因要带行动指引：{r:?}"
+        );
     }
 }
 
