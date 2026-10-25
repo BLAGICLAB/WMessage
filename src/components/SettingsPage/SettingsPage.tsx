@@ -61,12 +61,25 @@ import {
   type ActiveModelId,
   type ModelEntry,
   type ParamView,
+  type SectionKey,
   genModelId,
+  metaModelToEntry,
+  hostOf,
 } from "./types";
 import {
   UI_FONT_SIZE_OPTIONS,
   type ApiProvider,
   type UiFontSize,
+  PROVIDER_PRESETS,
+  API_FORMAT_OPTIONS,
+  AUTO_EXTRACT_MODES,
+  type AutoExtractMode,
+  isAutoExtractMode,
+  KNOWN_PROTOCOL_URLS,
+  CURATED_PROVIDER_KEYS,
+  AGENT_PARAM_ROWS,
+  AGENT_PARAM_FALLBACK_LABELS,
+  U32_MAX,
 } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
 import { OnionsPanel } from "./OnionsPanel";
@@ -89,211 +102,6 @@ import { Toggle } from "../Toggle/Toggle";
 import { ProviderLogo } from "./ProviderLogo";
 import { ApiProviderSelect } from "./ApiProviderSelect";
 
-/** 供应商预设（添加供应商网格）：点击 = 预填 baseUrl/模型列表（全局无 active
- *  时连协议+active 一起接管，见 applyVendorModels），完全落在现有双协议数据
- *  模型内（同一协议仅一份配置，预设会覆盖该协议当前同厂商条目——网格页注明）。
- *  模型名用户可改。
- *  keyUrl = 厂商控制台的 API Key 获取页（详情页「获取 API Key」外链）。 */
-type PresetModel = { id: string; contextK?: number };
-type ProviderPreset = {
-  name: string;
-  protocol: "openai" | "anthropic";
-  baseUrl: string;
-  keyUrl: string;
-  models: PresetModel[];
-};
-const PROVIDER_PRESETS: ProviderPreset[] = [
-  {
-    name: "DeepSeek",
-    protocol: "openai",
-    baseUrl: "https://api.deepseek.com",
-    keyUrl: "https://platform.deepseek.com/api_keys",
-    models: [
-      { id: "deepseek-chat", contextK: 128 },
-      { id: "deepseek-reasoner", contextK: 128 },
-    ],
-  },
-  {
-    name: "Kimi",
-    protocol: "openai",
-    baseUrl: "https://api.moonshot.cn/v1",
-    keyUrl: "https://platform.moonshot.cn/console/api-keys",
-    models: [
-      { id: "kimi-k2-0711-preview", contextK: 256 },
-      { id: "moonshot-v1-8k", contextK: 8 },
-    ],
-  },
-  {
-    name: "MiniMax",
-    protocol: "anthropic",
-    baseUrl: "https://api.minimaxi.com/anthropic",
-    keyUrl:
-      "https://platform.minimaxi.com/user-center/basic-information/interface-key",
-    models: [
-      { id: "MiniMax-M3", contextK: 1000 },
-      { id: "MiniMax-M2", contextK: 204.8 },
-    ],
-  },
-  {
-    name: "OpenRouter",
-    protocol: "openai",
-    baseUrl: "https://openrouter.ai/api/v1",
-    keyUrl: "https://openrouter.ai/keys",
-    models: [{ id: "openrouter/auto" }],
-  },
-  {
-    name: "阿里云百炼",
-    protocol: "openai",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    keyUrl: "https://bailian.console.aliyun.com/?apiKey=1#/api-key",
-    models: [
-      { id: "qwen-plus", contextK: 1024 },
-      { id: "qwen-max", contextK: 32 },
-    ],
-  },
-  {
-    name: "OpenAI",
-    protocol: "openai",
-    baseUrl: "https://api.openai.com/v1",
-    keyUrl: "https://platform.openai.com/api-keys",
-    models: [
-      { id: "gpt-4o", contextK: 128 },
-      { id: "gpt-4o-mini", contextK: 128 },
-    ],
-  },
-  {
-    name: "Anthropic",
-    protocol: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    keyUrl: "https://console.anthropic.com/settings/keys",
-    models: [
-      { id: "claude-sonnet-4-20250514", contextK: 200 },
-    ],
-  },
-  {
-    name: "xAI",
-    protocol: "openai",
-    baseUrl: "https://api.x.ai/v1",
-    keyUrl: "https://console.x.ai/",
-    models: [{ id: "grok-4", contextK: 256 }],
-  },
-];
-
-/** 厂商详情页 API 格式下拉选项（ApiProviderSelect 默认是协议短名，这里用全名） */
-const API_FORMAT_OPTIONS = [
-  { value: "openai", label: "OpenAI Chat Completions" },
-  { value: "anthropic", label: "Anthropic Messages" },
-] as const;
-
-/** 自动记忆抽取三档（档位唯一事实源：state 默认/校验/UI 映射都从这里派生） */
-const AUTO_EXTRACT_MODES = [
-  { value: "off", label: "关闭", aria: "自动记忆抽取：关闭" },
-  { value: "auto", label: "自动入库", aria: "自动记忆抽取：自动入库" },
-  { value: "confirm", label: "需确认", aria: "自动记忆抽取：需确认" },
-] as const;
-type AutoExtractMode = (typeof AUTO_EXTRACT_MODES)[number]["value"];
-const isAutoExtractMode = (v: unknown): v is AutoExtractMode =>
-  AUTO_EXTRACT_MODES.some((m) => m.value === v);
-/** 已知厂商的双协议 Base URL（key = 归一化厂商名，见 normalizeVendorName）：
- *  API 格式切换时 Base URL 自动跟随的数据源之一（预设/模型库只带单一协议端点，
- *  这里补「另一协议」的已知端点——目前只有 MiniMax 双协议都有官方端点） */
-const KNOWN_PROTOCOL_URLS: Record<
-  string,
-  { openai?: string; anthropic?: string }
-> = {
-  minimax: {
-    openai: "https://api.minimaxi.com/v1",
-    anthropic: "https://api.minimaxi.com/anthropic",
-  },
-};
-
-/** 添加厂商网格白名单（models.dev 200+ 家收敛）：中国厂商尽量保留，
- *  外国厂商只留头部（OpenAI/Anthropic/Google/xAI）+ OpenRouter */
-const CURATED_PROVIDER_KEYS = new Set([
-  // 中国厂商
-  "302ai",
-  "aihubmix",
-  "alibaba",
-  "alibaba-cn",
-  "alibaba-coding-plan",
-  "alibaba-coding-plan-cn",
-  "alibaba-token-plan",
-  "alibaba-token-plan-cn",
-  "bailing",
-  "deepseek",
-  "iflowcn",
-  "kimi-code-plan-cn",
-  "longcat",
-  "minimax",
-  "minimax-cn",
-  "minimax-cn-coding-plan",
-  "minimax-coding-plan",
-  "modelscope",
-  "moonshotai",
-  "moonshotai-cn",
-  "qiniu-ai",
-  "sensenova",
-  "siliconflow",
-  "siliconflow-cn",
-  "stepfun",
-  "stepfun-ai",
-  "stepfun-ai-step-plan",
-  "stepfun-step-plan",
-  "tencent-coding-plan",
-  "tencent-token-plan",
-  "tencent-tokenhub",
-  "volcengine",
-  "volcengine-coding-plan",
-  "xiaomi",
-  "xiaomi-token-plan-cn",
-  "zai",
-  "zai-coding-plan",
-  "zhipuai",
-  "zhipuai-coding-plan",
-  // 头部外国厂商 + OpenRouter
-  "openai",
-  "anthropic",
-  "google",
-  "xai",
-  "openrouter",
-]);
-
-/** 模型库模型 → ModelEntry：model 去掉 "provider/" 前缀（API 调用 id 取后段）、
- *  contextK = context_length/1000 四舍五入一位小数；推理参数仅非空才带（不写 undefined 字段） */
-function metaModelToEntry(
-  m: MetaModel,
-  vendor: string,
-  baseUrl: string,
-): ModelEntry {
-  const slash = m.model_key.indexOf("/");
-  return {
-    id: genModelId(),
-    label: m.display_name || m.model_key,
-    model: slash >= 0 ? m.model_key.slice(slash + 1) : m.model_key,
-    baseUrl,
-    vendor,
-    ...(m.context_length
-      ? { contextK: Math.round(m.context_length / 100) / 10 }
-      : {}),
-    ...(m.temperature != null ? { temperature: m.temperature } : {}),
-    ...(m.top_p != null ? { topP: m.top_p } : {}),
-    ...(m.max_tokens != null ? { maxTokens: m.max_tokens } : {}),
-    ...(m.default_system_prompt
-      ? { systemPrompt: m.default_system_prompt }
-      : {}),
-  };
-}
-
-/** 模型库网格右侧标注：默认 base URL 的域名（无法解析 → 空串不显示） */
-function hostOf(url: string | null): string {
-  if (!url) return "";
-  try {
-    return new URL(url).host;
-  } catch {
-    return "";
-  }
-}
-
 type Props = {
   theme: ThemeSetting;
   onThemeChange: (t: ThemeSetting) => void;
@@ -306,25 +114,6 @@ type Props = {
   onBack?: () => void;
 };
 
-/** 设置分类：key 顺序 = 侧栏顺序。
- *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python、
- *  卡2 授权/白名单、卡3 技能路由/外部 API；「MCP 服务」两段：Tavily/Brave
- *  搜索引擎卡 + McpPanel。面板惰性挂载。
- */
-type SectionKey =
-  | "general"
-  | "data"
-  | "bot"
-  | "model"
-  | "memory"
-  | "skills"
-  | "mcp"
-  | "services"
-  | "desk"
-  | "graph"
-  | "tokens"
-  | "opsHistory"
-  | "logs";
 const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "general", label: "基础设置", icon: Settings2 },
   { key: "data", label: "数据管理", icon: DatabaseBackup },
@@ -340,42 +129,6 @@ const SECTIONS: { key: SectionKey; label: string; icon: LucideIcon }[] = [
   { key: "opsHistory", label: "操作历史", icon: History },
   { key: "logs", label: "日志", icon: ScrollText },
 ];
-
-/** Agent 运行参数卡的行定义：后端参数表 key + 对应的 config 字段名。
- *
- *  这里只声明「哪一行、编辑哪个字段」——标签/说明/默认值/可填范围/当前生效值
- *  全部来自 `bot_effective_params`（后端 `bot::params` 单源）。前端此前自留了
- *  一份默认数字，两份各改各的：后端改了默认、页面还写着旧数，页面上「默认 X」
- *  与实际生效的 Y 就是两回事。
- */
-const AGENT_PARAM_ROWS = [
-  ["loop.max_rounds", "maxRounds"],
-  ["loop.max_function_calls", "maxFunctionCalls"],
-  ["loop.history_budget_chars", "historyBudgetChars"],
-  ["subagent.max_turns", "subagentMaxTurns"],
-  ["subagent.max_wall_secs", "subagentMaxWallSecs"],
-  ["search.max_results", "searchMaxResults"],
-  ["tools.max_output_bytes", "maxToolOutputBytes"],
-  ["tools.ask_budget", "askBudget"],
-] as const;
-
-/** 降级用的行名（后端参数表拉不到时用）。
- *  只放**名字**、不放任何数字——默认值与范围一律来自后端，前端多抄一份数字
- *  就是多一个能各自漂移的真相源。 */
-const AGENT_PARAM_FALLBACK_LABELS: Record<string, string> = {
-  "loop.max_rounds": "模型循环最大轮数",
-  "loop.max_function_calls": "调用工具上限（全域熔断）",
-  "loop.history_budget_chars": "会话历史字符预算",
-  "subagent.max_turns": "子 agent 轮数预算",
-  "subagent.max_wall_secs": "子 agent 墙钟预算（秒）",
-  "search.max_results": "联网搜索默认条数",
-  "tools.max_output_bytes": "工具结果截断字节数",
-  "tools.ask_budget": "任务提问预算（次）",
-};
-
-/** u32 上界——config 里这些字段是 Option<u32>，超了整份 bot_set_config
- *  反序列化失败（一处输错字连带整份设置都存不下去）。 */
-const U32_MAX = 4294967295;
 
 /** 设置壳（重设计）：左侧分类导航 + 右侧分类内容（大标题 + 卡片流）。
  *  面板惰性挂载：分类首次激活才挂载，挂后保留（hidden 切换）——

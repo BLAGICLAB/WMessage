@@ -3,6 +3,8 @@
 // 例外：lib/botConfig.ts 的 BotConfigView（bot_get_config 线格式单源）
 // 引用 ModelEntry / McpServerConfig——线格式本就与 wire 同形。
 
+import type { MetaModel } from "../../lib/modelMeta";
+
 /** 单个大模型条目：label / baseUrl / model 三元组 + 稳定 id。
  *  id 是前端 crypto.randomUUID() 生成的字符串，仅用于 React key + 标识 active，
  *  不参与 API 调用。 */
@@ -194,3 +196,71 @@ export const MCP_STDIO_LAUNCHERS = [
   "docker",
   "podman",
 ] as const;
+
+
+/** 供应商预设（添加供应商网格）：点击 = 预填 baseUrl/模型列表（全局无 active
+ *  时连协议+active 一起接管，见 applyVendorModels），完全落在现有双协议数据
+ *  模型内（同一协议仅一份配置，预设会覆盖该协议当前同厂商条目——网格页注明）。
+ *  模型名用户可改。
+ *  keyUrl = 厂商控制台的 API Key 获取页（详情页「获取 API Key」外链）。 */
+type PresetModel = { id: string; contextK?: number };
+export type ProviderPreset = {
+  name: string;
+  protocol: "openai" | "anthropic";
+  baseUrl: string;
+  keyUrl: string;
+  models: PresetModel[];
+};
+/** 模型库模型 → ModelEntry：model 去掉 "provider/" 前缀（API 调用 id 取后段）、
+ *  contextK = context_length/1000 四舍五入一位小数；推理参数仅非空才带（不写 undefined 字段） */
+export function metaModelToEntry(
+  m: MetaModel,
+  vendor: string,
+  baseUrl: string,
+): ModelEntry {
+  const slash = m.model_key.indexOf("/");
+  return {
+    id: genModelId(),
+    label: m.display_name || m.model_key,
+    model: slash >= 0 ? m.model_key.slice(slash + 1) : m.model_key,
+    baseUrl,
+    vendor,
+    ...(m.context_length
+      ? { contextK: Math.round(m.context_length / 100) / 10 }
+      : {}),
+    ...(m.temperature != null ? { temperature: m.temperature } : {}),
+    ...(m.top_p != null ? { topP: m.top_p } : {}),
+    ...(m.max_tokens != null ? { maxTokens: m.max_tokens } : {}),
+    ...(m.default_system_prompt
+      ? { systemPrompt: m.default_system_prompt }
+      : {}),
+  };
+}
+/** 模型库网格右侧标注：默认 base URL 的域名（无法解析 → 空串不显示） */
+export function hostOf(url: string | null): string {
+  if (!url) return "";
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+/** 设置分类：key 顺序 = 侧栏顺序。
+ *  「机器人」section 在源码中三段出现（同名同亮）：卡1 开关/Python、
+ *  卡2 授权/白名单、卡3 技能路由/外部 API；「MCP 服务」两段：Tavily/Brave
+ *  搜索引擎卡 + McpPanel。面板惰性挂载。
+ */
+export type SectionKey =
+  | "general"
+  | "data"
+  | "bot"
+  | "model"
+  | "memory"
+  | "skills"
+  | "mcp"
+  | "services"
+  | "desk"
+  | "graph"
+  | "tokens"
+  | "opsHistory"
+  | "logs";
