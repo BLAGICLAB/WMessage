@@ -170,6 +170,9 @@ struct CoreHarness {
     /// 思考段回灌开关（默认关）。开启后 assistant(tool_calls) 消息带上本轮
     /// reasoning_content 原文——要验「开/关两态的消息形状」用。
     reasoning_echo: bool,
+    /// 轮内工具结果滑动窗（默认开，与生产一致）。关掉后轮内工具结果永远
+    /// 全量留在上下文里。
+    in_turn_context_edit: bool,
     audit_events: AuditEvents,
 }
 
@@ -218,6 +221,7 @@ impl CoreHarness {
             }),
             audit_events: events,
             reasoning_echo: false,
+            in_turn_context_edit: true,
         }
     }
 
@@ -235,6 +239,7 @@ impl CoreHarness {
             fuse_cap_override: None,
             conv_sidecar_dir: None,
             reasoning_echo: self.reasoning_echo,
+            in_turn_context_edit: self.in_turn_context_edit,
             emit: &*self.emit,
             audit: &*self.audit,
             skill_finish: &*self.skill_finish,
@@ -258,6 +263,7 @@ impl CoreHarness {
             fuse_cap_override: None,
             conv_sidecar_dir: None,
             reasoning_echo: self.reasoning_echo,
+            in_turn_context_edit: self.in_turn_context_edit,
             emit: &*self.emit,
             audit: &*self.audit,
             skill_finish: &*self.skill_finish,

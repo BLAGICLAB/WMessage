@@ -137,6 +137,162 @@ data: [DONE]
     bodies[1].clone()
 }
 
+/// 轮内工具结果滑动窗：累计超阈值时，早期工具结果被换成可召回的桩子。
+///
+/// 触发条件是**轮内累计的工具结果字符数**（实测 p90 附近，24K 字符）。这里造
+/// 一轮 7 个并行调用、每个 5K 字符（合计 35K > 阈值），窗口保留最近 6 条，
+/// 于是最早的那一条被换成桩子。
+#[tokio::test]
+async fn core_tool_window_replaces_old_results_when_over_threshold() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(seven_tool_calls_sse().to_string()));
+    server.push_behavior(MockBehavior::TextReply("收工".into()));
+
+    let h = CoreHarness::new();
+    let exec = |name: String, _args: String, _trace: ToolCallTrace| async move {
+        // 每个结果 5K 字符 + 唯一标记：标记用来断言「哪一条被换了」
+        let idx = name.trim_start_matches("tool_").to_string();
+        ToolResult::ok(format!("MARKER{idx}-{}", "x".repeat(5_000)), Vec::new())
+    };
+
+    run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("滑动窗用例应 Ok");
+
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 2, "工具轮 + 收尾轮 = 2 次请求");
+    let second = &bodies[1];
+    assert!(
+        second.contains("已省略以控制上下文"),
+        "超阈值时早期工具结果应被换成桩子：{second}"
+    );
+    assert!(
+        !second.contains("MARKER0-"),
+        "最早那条的结果不该再原样出现：{second}"
+    );
+    assert!(
+        second.contains("MARKER6-"),
+        "窗口内的结果必须原样保留：{second}"
+    );
+    assert!(
+        second.contains("call_0"),
+        "桩子要给出调用 id（模型靠它调回原文）：{second}"
+    );
+}
+
+/// 未超阈值：一律零改写（工具结果全量留在上下文里）。
+#[tokio::test]
+async fn core_tool_window_leaves_results_untouched_under_threshold() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(seven_tool_calls_sse().to_string()));
+    server.push_behavior(MockBehavior::TextReply("收工".into()));
+
+    let h = CoreHarness::new();
+    let exec = |name: String, _args: String, _trace: ToolCallTrace| async move {
+        let idx = name.trim_start_matches("tool_").to_string();
+        ToolResult::ok(format!("MARKER{idx}-{}", "x".repeat(100)), Vec::new())
+    };
+
+    run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("滑动窗用例应 Ok");
+
+    let bodies = server.request_bodies();
+    let second = &bodies[1];
+    assert!(
+        !second.contains("已省略以控制上下文"),
+        "未超阈值不该有任何桩子：{second}"
+    );
+    assert!(
+        second.contains("MARKER0-") && second.contains("MARKER6-"),
+        "未超阈值时工具结果应原样保留：{second}"
+    );
+}
+
+/// 一次性：触发过就不再改写（否则窗口会随新结果右移，把上一轮保住的那条
+/// 又裁一次——那等于每轮都动缓存前缀，省下的 token 被缓存失效吃回去）。
+#[tokio::test]
+async fn core_tool_window_applies_only_once_per_run() {
+    let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::RawSse(seven_tool_calls_sse().to_string()));
+    server.push_behavior(MockBehavior::RawSse(
+        one_tool_call_sse("call_7", "tool_7").to_string(),
+    ));
+    server.push_behavior(MockBehavior::TextReply("收工".into()));
+
+    let h = CoreHarness::new();
+    let exec = |name: String, _args: String, _trace: ToolCallTrace| async move {
+        let idx = name.trim_start_matches("tool_").to_string();
+        let size = if idx == "7" { 100 } else { 5_000 };
+        ToolResult::ok(format!("MARKER{idx}-{}", "x".repeat(size)), Vec::new())
+    };
+
+    run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("滑动窗用例应 Ok");
+
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 3, "两个工具轮 + 收尾轮 = 3 次请求");
+    let third = &bodies[2];
+    assert_eq!(
+        third.matches("已省略以控制上下文").count(),
+        1,
+        "只应有第一轮那一个桩子；第二轮不得把窗口右移后多裁一条：{third}"
+    );
+    assert!(
+        third.contains("MARKER1-"),
+        "第一轮窗口内保住的 result 在第二轮后不该被再裁一次：{third}"
+    );
+}
+
+/// 一轮里 7 个工具调用的 SSE（够触发滑动窗：7 × 5K 字符 > 24K 阈值）。
+fn seven_tool_calls_sse() -> &'static str {
+    let mut s = String::new();
+    for i in 0..7 {
+        s.push_str(&format!(
+            "data: {{\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"mock-model\",\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"index\":{i},\"id\":\"call_{i}\",\"type\":\"function\",\"function\":{{\"name\":\"tool_{i}\",\"arguments\":\"{{}}\"}}}}]}},\"index\":0,\"finish_reason\":null}}]}}\n\n"
+        ));
+    }
+    s.push_str("data: {\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"mock-model\",\"choices\":[{\"delta\":{},\"index\":0,\"finish_reason\":\"tool_calls\"}]}\n\n");
+    s.push_str("data: [DONE]\n\n");
+    Box::leak(s.into_boxed_str())
+}
+
+/// 单个工具调用的 SSE。
+fn one_tool_call_sse(id: &str, name: &str) -> &'static str {
+    let s = format!(
+        "data: {{\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"mock-model\",\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{{\"index\":0,\"id\":\"{id}\",\"type\":\"function\",\"function\":{{\"name\":\"{name}\",\"arguments\":\"{{}}\"}}}}]}},\"index\":0,\"finish_reason\":null}}]}}\n\ndata: {{\"id\":\"chatcmpl-mock\",\"object\":\"chat.completion.chunk\",\"created\":1234567890,\"model\":\"mock-model\",\"choices\":[{{\"delta\":{{}},\"index\":0,\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
+    );
+    Box::leak(s.into_boxed_str())
+}
+
 #[tokio::test]
 async fn core_text_reply_happy_path() {
     let server = MockLlmServer::start();

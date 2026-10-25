@@ -56,8 +56,8 @@ pub use self::types::{
 
 // 跨模块共用的私有项：门面转出，子模块之间零直接依赖。
 pub(crate) use self::context::{
-    is_context_overflow, is_retryable_llm_status, msg_chars, reindex_after_shed,
-    shed_oldest_history,
+    apply_tool_window, is_context_overflow, is_retryable_llm_status, msg_chars, reindex_after_shed,
+    shed_oldest_history, tool_result_chars, TOOL_WINDOW_KEEP_RECENT, TOOL_WINDOW_TRIGGER_CHARS,
 };
 pub(crate) use self::evidence::{
     context_sources, number_sourced, ToolEvidence, EVIDENCE_OUTPUT_CHARS,

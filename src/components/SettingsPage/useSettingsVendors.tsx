@@ -298,6 +298,10 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             "loop.reasoning_echo_enabled",
             c.reasoningEchoEnabled,
           ),
+          inTurnContextEdit: paramNumber(
+            "loop.in_turn_context_edit",
+            c.inTurnContextEdit,
+          ),
           subagentMaxTurns: paramNumber(
             "subagent.max_turns",
             c.subagentMaxTurns,

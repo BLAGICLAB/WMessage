@@ -3,9 +3,10 @@
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
 use super::{
-    fuse_cap_for, is_context_overflow, is_retryable_llm_status, msg_chars, reindex_after_shed,
-    shed_oldest_history, strip_thinking_key, ErrorDisposition, ErrorResponse, LlmHttp,
-    ModelLoopDeps, RequestOutcome, RequestPlan, RequestState, RequestWork, RoundCtx,
+    apply_tool_window, fuse_cap_for, is_context_overflow, is_retryable_llm_status, msg_chars,
+    reindex_after_shed, shed_oldest_history, strip_thinking_key, tool_result_chars,
+    ErrorDisposition, ErrorResponse, LlmHttp, ModelLoopDeps, RequestOutcome, RequestPlan,
+    RequestState, RequestWork, RoundCtx, TOOL_WINDOW_KEEP_RECENT, TOOL_WINDOW_TRIGGER_CHARS,
 };
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
@@ -385,14 +386,41 @@ pub(crate) fn prepare_round(
     }
 }
 
-/// 轮前压缩：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果随轮龄降档）。
+/// 轮前压缩：预算硬压（msgs 字符分级）+ 轮内工具结果滑动窗 + 轮龄降密度。
 pub(crate) fn compact_before_round(
     msgs: &mut [serde_json::Value],
     tool_msg_ages: &[(usize, usize)],
     deps: &ModelLoopDeps<'_>,
     stop: &StopGuard,
     round: usize,
+    tool_window_applied: &mut bool,
 ) {
+    // 轮内工具结果滑动窗：累计超阈值时，**一次性**把「最近 K 条之外」的
+    // 工具结果换成桩子（原文仍在痕迹表里，桩子给出 lookup_receipt 的入口）。
+    //
+    // 一次性是硬要求：改写会改掉请求数组的缓存前缀，反复改写等于把前缀打碎，
+    // 省下的 token 又被缓存失效吃回去。触发之后前缀重新变成 append-only。
+    //
+    // 先于预算压缩与轮龄降密度判定：那个阈值量的是「本轮真正要发的工具结果
+    // 体量」，口径稳定，事后能对着痕迹库复算。
+    if deps.in_turn_context_edit && !*tool_window_applied {
+        let chars = tool_result_chars(msgs);
+        if chars > TOOL_WINDOW_TRIGGER_CHARS {
+            let trimmed = apply_tool_window(msgs, TOOL_WINDOW_KEEP_RECENT);
+            *tool_window_applied = true;
+            if trimmed > 0 {
+                (deps.audit)(
+                    crate::audit::AuditLevel::Info,
+                    "loop.tool_window.applied",
+                    vec![
+                        ("chars", chars.to_string()),
+                        ("trimmed", trimmed.to_string()),
+                        ("keep_recent", TOOL_WINDOW_KEEP_RECENT.to_string()),
+                    ],
+                );
+            }
+        }
+    }
     // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
     // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
     // 本轮 msgs 总字符超阈值时记个 audit，不截断——便于后续评估是否要加主动压缩。

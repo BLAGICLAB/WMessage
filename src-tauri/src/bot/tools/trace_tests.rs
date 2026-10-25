@@ -173,6 +173,51 @@ async fn lookup_without_session_is_denied() {
     );
 }
 
+/// 召回闭环：滑动窗把工具结果换成桩子后，模型照桩子里的 id 能调回原文。
+///
+/// 这是「轮内工具结果滑动窗」敢裁的前提——桩子不是「原文没了」，是「原文在
+/// 痕迹表里，这里给你入口」。这条用例把两端接上：桩子里的 tool_call_id →
+/// lookup_receipt → 原文一字不差。
+#[tokio::test]
+async fn stubbed_tool_result_can_be_looked_up_by_its_call_id() {
+    let _g = db_guard().await;
+    let app = mock_app();
+    let conn = crate::db::open_db(&app).unwrap();
+    let sid = format!("lr-{}", uuid::Uuid::new_v4().simple());
+    let original = "第一行命中\n第二行命中\n第三行命中";
+    seed(&conn, &sid, "call_win1", "grep_files", original);
+
+    // 造一条会被滑动窗裁掉的工具结果消息
+    let mut msgs = vec![serde_json::json!({"role": "user", "content": "干活"})];
+    msgs.push(serde_json::json!({
+        "role": "assistant",
+        "content": serde_json::Value::Null,
+        "tool_calls": [{"id": "call_win1", "type": "function",
+                        "function": {"name": "grep_files", "arguments": "{}"}}]
+    }));
+    msgs.push(serde_json::json!({
+        "role": "tool",
+        "tool_call_id": "call_win1",
+        "content": original
+    }));
+    let trimmed = crate::bot_model_loop::apply_tool_window(&mut msgs, 0);
+    assert_eq!(trimmed, 1, "该条应被换成桩子");
+    let stub = msgs[2]["content"].as_str().unwrap_or_default().to_string();
+    assert!(!stub.contains("第一行命中"), "桩子里不该留原文：{stub}");
+
+    // 模型照桩子里的 id 调回来
+    let out = tool_lookup_receipt(&app, "{\"tool_call_id\":\"call_win1\"}", Some(&sid)).await;
+    assert!(
+        out.text.contains("第一行命中") && out.text.contains("第三行命中"),
+        "桩子给出的入口必须能调回原文：{}",
+        out.text
+    );
+
+    conn.execute("DELETE FROM exec_spans WHERE trace_id IN (SELECT id FROM exec_traces WHERE session_id = ?1)", [&sid]).ok();
+    conn.execute("DELETE FROM exec_traces WHERE session_id = ?1", [&sid])
+        .ok();
+}
+
 /// 只读：本工具不写任何表（调用前后痕迹行数不变）
 #[tokio::test]
 async fn lookup_has_no_write_side_effects() {

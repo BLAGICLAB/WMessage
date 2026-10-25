@@ -1,6 +1,112 @@
-//! 上下文瘦身层：超限判定、历史裁剪与重排索引修正。
+//! 上下文瘦身层：超限判定、历史裁剪、轮内工具结果滑动窗与重排索引修正。
 //!
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
+
+// 轮内工具结果滑动窗（Anthropic context editing 对标）
+//
+// 触发阈值按**字符**而不是估算 token：真实痕迹库（124 trace / 861 span）里
+// 单次提问的工具结果总量 p50=1071 / p75=9704 / p90=22637 / p95=32764 /
+// max=359810 字符。取 24_000 落在 p90 与 p95 之间，约 9% 的提问会触发；
+// 换算成 token（24K token ≈ 72K 字符）只命中 0.8%——等于不做。
+//
+// 为什么不引 tokenizer：要多一个依赖 + 一份词表，换来的是把上面那个字符口径
+// 换成一个同样粗的估算（中文 1 字 ≈ 1 token，ASCII 1 字符 ≈ 0.3 token，两边
+// 都差着倍数），实测阈值本来也只要求「落在 p90 附近」这个量级。
+
+/// 轮内工具结果滑动窗的触发阈值（字符）：轮内累计工具结果超过它就触发裁剪。
+pub(crate) const TOOL_WINDOW_TRIGGER_CHARS: usize = 24_000;
+
+/// 滑动窗保留的最近工具结果条数：这几条永不裁。
+///
+/// 6 条的来由：SWE-agent 只留最近 5 条观察比全历史高 3 分；这里留 6 条，
+/// 比那条口径多一条余量——多一条的代价是几千字符，少一条的代价是模型忘了
+/// 上一轮刚做过什么（重跑工具 = 重跑副作用）。
+pub(crate) const TOOL_WINDOW_KEEP_RECENT: usize = 6;
+
+/// 桩子前缀：模型一眼认出「这条被裁了、原文还在、能调回来」。
+const TOOL_WINDOW_STUB_MARK: &str = "⚠️ 已省略以控制上下文";
+
+/// 轮内工具结果累计字符数（只算 role=tool 且 content 是字符串的消息）。
+///
+/// 只数工具结果：user/assistant 文本不参与这个口径（它们既不裁也不该触发裁剪）。
+pub(crate) fn tool_result_chars(msgs: &[serde_json::Value]) -> usize {
+    msgs.iter()
+        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("tool"))
+        .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+        .map(|s| s.chars().count())
+        .sum()
+}
+
+/// 轮内工具结果滑动窗：把「最近 keep_recent 条之外」的工具结果消息替换成桩子。
+///
+/// 护栏（逐条对着设计文档的口径）：
+/// - **只裁 role=tool 的消息**——user/assistant 文本一律不碰；
+/// - **最近 keep_recent 条永不裁**；
+/// - **带图片的消息整体跳过**——图片挂在 role=user 的多模态消息上，本来就不在
+///   可裁集合里（本函数只改 role=tool 消息的 content，多模态数组不碰）；
+/// - **只改 prompt，DB 零改动**——执行痕迹表与溢出文件原样保留，桩子给的是
+///   「调回原文」的入口，不是「原文没了」。
+///
+/// 返回改写条数（0 = 没裁）。
+pub(crate) fn apply_tool_window(msgs: &mut [serde_json::Value], keep_recent: usize) -> usize {
+    // 可裁集合：role=tool 且 content 是字符串的消息（content 是数组的多模态
+    // 消息不动——改它会毁掉图片块的结构）。
+    let candidates: Vec<usize> = msgs
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| {
+            m.get("role").and_then(|r| r.as_str()) == Some("tool")
+                && m.get("content").and_then(|c| c.as_str()).is_some()
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if candidates.len() <= keep_recent {
+        return 0;
+    }
+    // 最近 keep_recent 条留在窗口内
+    let cut_end = candidates.len() - keep_recent;
+    let mut trimmed = 0usize;
+    for &idx in candidates.iter().take(cut_end) {
+        let Some(call_id) = msgs[idx]
+            .get("tool_call_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        // 名字从上面那条 assistant(tool_calls) 消息里找——它不裁（护栏②），
+        // 桩子带上名字模型才知道自己省掉的是什么。
+        let name = tool_name_of(msgs, idx, &call_id).unwrap_or_else(|| "未知工具".to_string());
+        let stub = format!(
+            "{TOOL_WINDOW_STUB_MARK}。工具 {name} 的完整结果已存档（调用 id={call_id}），\
+             需要时调用 lookup_receipt(tool_call_id=\"{call_id}\") 调取原文。"
+        );
+        if let Some(obj) = msgs[idx].as_object_mut() {
+            obj.insert("content".to_string(), serde_json::Value::String(stub));
+            trimmed += 1;
+        }
+    }
+    trimmed
+}
+
+/// 某条 tool 结果对应的工具名：往上找最近那条带 tool_calls 的 assistant 消息，
+/// 按 tool_call_id 对上号。找不到返回 None（桩子里就不写名字，不编）。
+fn tool_name_of(msgs: &[serde_json::Value], idx: usize, tool_call_id: &str) -> Option<String> {
+    msgs[..idx].iter().rev().find_map(|m| {
+        if m.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            return None;
+        }
+        m.get("tool_calls")?.as_array()?.iter().find_map(|tc| {
+            if tc.get("id").and_then(|v| v.as_str()) != Some(tool_call_id) {
+                return None;
+            }
+            tc.get("function")?
+                .get("name")?
+                .as_str()
+                .map(str::to_string)
+        })
+    })
+}
 
 /// 可重试的 HTTP 状态：429 限流 + 5xx 服务端瞬时错误；401/400 等重试无意义
 pub(crate) fn is_retryable_llm_status(status: u16) -> bool {

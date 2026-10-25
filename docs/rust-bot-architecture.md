@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 301 个文件、约 12.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 302 个文件、约 12.7 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -153,24 +153,25 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 │   ├── bot_model_loop/stream.rs (425)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (826)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (835)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (586)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
-│   ├── bot_model_loop/request.rs (639)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
+│   ├── bot_model_loop/shell.rs (588)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/request.rs (667)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (481)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (574)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定
 │   ├── bot_model_loop/finalize.rs (336) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
 │   ├── bot_model_loop/fuse.rs (213)     熔断层：单轮 Function 调用上限 / 轮数·墙钟熔断 / 软警告注入
-│   ├── bot_model_loop/types.rs (342)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
+│   ├── bot_model_loop/types.rs (349)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (153)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
-│   ├── bot_model_loop/context.rs (110)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正
+│   ├── bot_model_loop/context.rs (216)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正
 │   ├── bot_model_loop/evidence.rs (94)  证据来源层：从消息抽文本·来源，数字是否可溯源
-│   ├── bot_model_loop/tests.rs (70)     单元测试三桶的入口 + prod_src() 生产代码全景扫描源
+│   ├── bot_model_loop/tests.rs (71)     单元测试四桶的入口 + prod_src() 生产代码全景扫描源
 │   ├── bot_model_loop/tests/guard.rs (922)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (587)   SSE 解析 / 增量累积 / schema 测试
-│   └── bot_model_loop/tests/config.rs (646) 推理参数 / 思考 / 上下文超限 / 侧调门测试
+│   ├── bot_model_loop/tests/config.rs (646) 推理参数 / 思考 / 上下文超限 / 侧调门测试
+│   └── bot_model_loop/tests/tool_window.rs (169) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
 ├── bot.rs (213)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
@@ -363,7 +364,7 @@ src-tauri/src/
 │   ├── bot/tools/sync_syscall_off_runtime_tests.rs (49) 同步 syscall 不得裸跑的源码守卫
 │   ├── bot/tools/tool_due_format_tests.rs (29)      due 参数闸单测
 │   ├── bot/tools/phase4_facts_tests.rs (24)         时间/事实类单测
-│   ├── bot/tools/trace_tests.rs (206)             凭证召回工具单测（查回一致/查不到/只读无副作用）
+│   ├── bot/tools/trace_tests.rs (251)             凭证召回工具单测（查回一致/查不到/只读无副作用）
 │   └── bot/tools/background_dialog_tests.rs (24)    后台执行不得弹框的源码守卫
 ├── bot/stream_log.rs (444) 会话级流式事件的统一出口 emit_recorded：分配序号（会话内跨轮次连续，
 │                        客户端据此去重）→ 写会话回放缓冲（2 万条 / 8MB 双上限，
@@ -851,6 +852,7 @@ flowchart TD
 - `bot_model_loop/stream.rs`
 - `bot_model_loop/tests.rs`
 - `bot_model_loop/tests/config.rs`
+- `bot_model_loop/tests/tool_window.rs`
 - `bot_model_loop/tests/guard.rs`
 - `bot_model_loop/tests/parse.rs`
 - `bot_model_loop/types.rs`
@@ -1128,3 +1130,4 @@ flowchart TD
 - `bot_chat/inject_tests.rs`
 - `bot/tools/trace.rs`
 - `bot/tools/trace_tests.rs`
+- `bot_model_loop/tests/tool_window.rs`

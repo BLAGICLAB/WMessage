@@ -67,6 +67,11 @@ pub const HISTORY_TRUNCATE_TARGET_PCT_MAX: u32 = 90;
 pub const DEFAULT_REASONING_ECHO_ENABLED: u32 = 0;
 /// 思考段回灌开关上界（1 = 开）：只有两态，中间值没有语义。
 pub const REASONING_ECHO_ENABLED_MAX: u32 = 1;
+/// 轮内工具结果滑动窗开关默认值（1 = 开）：触发条件是实测 p90 附近的阈值，
+/// 只影响约 9% 的提问，且召回闭环由 lookup_receipt 兜着。
+pub const DEFAULT_IN_TURN_CONTEXT_EDIT: u32 = 1;
+/// 轮内工具结果滑动窗开关上界（1 = 开）：只有两态。
+pub const IN_TURN_CONTEXT_EDIT_MAX: u32 = 1;
 /// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）：
 /// max_tool_calls 仅是缺省兜底——配置了 max_function_calls 时子 agent 同源全域上限
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 = 30;
@@ -104,6 +109,11 @@ pub fn clamp_history_truncate_target_pct(n: u32) -> u32 {
 /// 思考段回灌开关钳 0..=1（0 = 关，1 = 开）
 pub fn clamp_reasoning_echo_enabled(n: u32) -> u32 {
     n.min(REASONING_ECHO_ENABLED_MAX)
+}
+
+/// 轮内工具结果滑动窗开关钳 0..=1（0 = 关，1 = 开）
+pub fn clamp_in_turn_context_edit(n: u32) -> u32 {
+    n.min(IN_TURN_CONTEXT_EDIT_MAX)
 }
 
 /// 子 agent 墙钟秒数钳 30..=3600
@@ -228,6 +238,21 @@ pub fn reasoning_echo_on(raw: Option<u32>) -> bool {
 /// 思考段回灌开关（0 = 关 / 1 = 开）——参数表解析用。
 pub fn resolve_reasoning_echo_enabled(cfg: &BotConfig) -> u32 {
     reasoning_echo_enabled_value(cfg.reasoning_echo_enabled)
+}
+
+/// 轮内工具结果滑动窗开关取值（0 = 关 / 1 = 开）。
+pub fn in_turn_context_edit_value(raw: Option<u32>) -> u32 {
+    clamp_in_turn_context_edit(raw.unwrap_or(DEFAULT_IN_TURN_CONTEXT_EDIT))
+}
+
+/// 轮内工具结果滑动窗是否开启（读点用这个布尔口径）。
+pub fn in_turn_context_edit_on(raw: Option<u32>) -> bool {
+    in_turn_context_edit_value(raw) == 1
+}
+
+/// 轮内工具结果滑动窗开关（0 = 关 / 1 = 开）——参数表解析用。
+pub fn resolve_in_turn_context_edit(cfg: &BotConfig) -> u32 {
+    in_turn_context_edit_value(cfg.in_turn_context_edit)
 }
 
 pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
@@ -365,6 +390,16 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         editable: true,
         resolve: cfg_resolver!(resolve_reasoning_echo_enabled, reasoning_echo_enabled),
     },
+    ParamDef {
+        key: "loop.in_turn_context_edit",
+        label: "轮内工具结果滑动窗",
+        category: "loop",
+        hint: "1 = 轮内工具结果累计超阈值时，把最近几条之外的结果换成可召回的桩子（省重复重发的 token）；0 = 不裁（工具结果全量留在上下文里）",
+        min: Some(0),
+        max: Some(IN_TURN_CONTEXT_EDIT_MAX as u64),
+        editable: true,
+        resolve: cfg_resolver!(resolve_in_turn_context_edit, in_turn_context_edit),
+    },
     // ── 可编辑：子 agent ──
     ParamDef {
         key: "subagent.max_turns",
@@ -450,6 +485,26 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         resolve: cfg_resolver!(resolve_ask_budget_cfg, ask_budget),
     },
     // ── 硬编码只读区（调坏易出问题，仅展示） ──
+    ParamDef {
+        key: "loop.tool_window_trigger_chars",
+        label: "工具结果滑动窗触发阈值（字符）",
+        category: "loop",
+        hint: "轮内工具结果累计超过这个量就裁；实测单次提问的工具结果 p90 落在两万字出头，这个值取在 p90 与 p95 之间",
+        min: None,
+        max: None,
+        editable: false,
+        resolve: hardcoded_resolver!(crate::bot_model_loop::TOOL_WINDOW_TRIGGER_CHARS),
+    },
+    ParamDef {
+        key: "loop.tool_window_keep_recent",
+        label: "工具结果滑动窗保留条数",
+        category: "loop",
+        hint: "最近这几条工具结果永不裁；少一条模型就可能忘了上一轮做过什么（重跑工具 = 重跑副作用）",
+        min: None,
+        max: None,
+        editable: false,
+        resolve: hardcoded_resolver!(crate::bot_model_loop::TOOL_WINDOW_KEEP_RECENT),
+    },
     ParamDef {
         key: "subagent.max_running",
         label: "子 agent 全局并发",
@@ -767,6 +822,7 @@ mod tests {
             max_rounds: None,
             history_truncate_target_pct: None,
             reasoning_echo_enabled: None,
+            in_turn_context_edit: None,
             history_budget_chars: None,
             tool_rules: None,
             subagent_max_turns: None,

@@ -330,6 +330,8 @@ pub async fn run_model_loop(
         // 工具调用消息回灌历史（DeepSeek reasoner 缺了就 400，MiniMax M2/M3
         // 缺了思考链会断）。
         reasoning_echo: crate::bot::params::reasoning_echo_on(cfg.reasoning_echo_enabled),
+        // 轮内工具结果滑动窗：默认开（阈值在实测 p90 附近，只影响约 9% 的提问）
+        in_turn_context_edit: crate::bot::params::in_turn_context_edit_on(cfg.in_turn_context_edit),
         // 终稿自检轮次间隔：cfg 有值用之（已落盘前钳 0..=100），None = 默认 8。
         // 0 = 关闭 final 自检的 kill switch 直接透传。
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,

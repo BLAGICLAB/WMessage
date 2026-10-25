@@ -308,6 +308,7 @@ export type SettingsConfig = {
   historyBudgetChars: string;
   historyTruncateTargetPct: string;
   reasoningEchoEnabled: string;
+  inTurnContextEdit: string;
   subagentMaxTurns: string;
   subagentMaxWallSecs: string;
   searchMaxResults: string;

@@ -63,6 +63,8 @@ where
     let session_id: Option<&str> = stop.session_id();
     // 僵尸终态清理已上移到薄壳 `run_model_loop`（核心只读技能状态，
     // 写生命周期不在核心——原位置与现在等价，都在进入轮循环之前）
+    // 轮内工具结果滑动窗：一次性开关（触发过就不再改写，前缀重归 append-only）
+    let mut tool_window_applied = false;
     // 最多 max_rounds 轮（工具循环），每轮流式输出；收到 tool_calls 则执行后把结果续进对话
     let mut collected_refs: Vec<TaskRef> = Vec::new();
     let mut function_calls_total: usize = 0;
@@ -165,7 +167,14 @@ where
                 return Ok((msg, collected_refs));
             }
             // 轮前准备：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果降档）。
-            compact_before_round(&mut msgs, &tool_msg_ages, deps, stop, round);
+            compact_before_round(
+                &mut msgs,
+                &tool_msg_ages,
+                deps,
+                stop,
+                round,
+                &mut tool_window_applied,
+            );
             if stop.stopped() {
                 let hint = skill_finish(false, "用户停止");
                 return Ok((format!("⏹ 已停止{hint}"), collected_refs));

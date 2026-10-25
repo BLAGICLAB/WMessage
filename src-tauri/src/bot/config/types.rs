@@ -250,6 +250,13 @@ pub struct BotConfig {
     /// 「参数卡 ↔ 配置字段」的映射多一套类型分支。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_echo_enabled: Option<u32>,
+    /// 轮内工具结果滑动窗开关：None = 开（默认）；0 = 关。
+    ///
+    /// 打开后，轮内累计工具结果超阈值时把「最近 K 条之外」的工具结果换成桩子
+    /// （原文仍在痕迹表里，桩子给出 lookup_receipt 的调回入口）。关掉即整段旁路。
+    /// 用 0/1 而不是布尔：设置页的参数卡只有数值输入行。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_turn_context_edit: Option<u32>,
     /// 子 agent 默认轮数预算（LLM spawn 未显式给 budget 时）：None = 30；钳 1..=50（硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
@@ -373,6 +380,7 @@ impl Default for BotConfig {
             history_budget_chars: None,
             history_truncate_target_pct: None,
             reasoning_echo_enabled: None,
+            in_turn_context_edit: None,
             subagent_max_turns: None,
             subagent_max_wall_secs: None,
             search_max_results: None,
@@ -558,6 +566,9 @@ pub struct BotConfigView {
     /// 思考段回灌开关原样透传（None = 关；1 = 开）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_echo_enabled: Option<u32>,
+    /// 轮内工具结果滑动窗开关原样透传（None = 开；0 = 关）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_turn_context_edit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

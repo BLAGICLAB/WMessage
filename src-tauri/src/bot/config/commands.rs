@@ -139,6 +139,7 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         history_budget_chars: cfg.history_budget_chars,
         history_truncate_target_pct: cfg.history_truncate_target_pct,
         reasoning_echo_enabled: cfg.reasoning_echo_enabled,
+        in_turn_context_edit: cfg.in_turn_context_edit,
         subagent_max_turns: cfg.subagent_max_turns,
         subagent_max_wall_secs: cfg.subagent_max_wall_secs,
         search_max_results: cfg.search_max_results,
@@ -280,6 +281,9 @@ fn clamp_agent_params(config: &mut BotConfig) {
     config.reasoning_echo_enabled = config
         .reasoning_echo_enabled
         .map(crate::bot::params::clamp_reasoning_echo_enabled);
+    config.in_turn_context_edit = config
+        .in_turn_context_edit
+        .map(crate::bot::params::clamp_in_turn_context_edit);
     config.subagent_max_turns = config
         .subagent_max_turns
         .map(crate::db::clamp_subagent_max_turns);

@@ -299,6 +299,7 @@ export function BotCoreSection({
                   historyBudgetChars: "",
                   historyTruncateTargetPct: "",
                   reasoningEchoEnabled: "",
+                  inTurnContextEdit: "",
                   subagentMaxTurns: "",
                   subagentMaxWallSecs: "",
                   searchMaxResults: "",

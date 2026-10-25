@@ -105,6 +105,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     historyBudgetChars: "",
     historyTruncateTargetPct: "",
     reasoningEchoEnabled: "",
+    inTurnContextEdit: "",
     subagentMaxTurns: "",
     subagentMaxWallSecs: "",
     searchMaxResults: "",
@@ -364,6 +365,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
           c.reasoningEchoEnabled != null
             ? String(c.reasoningEchoEnabled)
             : "",
+        inTurnContextEdit:
+          c.inTurnContextEdit != null ? String(c.inTurnContextEdit) : "",
         subagentMaxTurns:
           c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
         subagentMaxWallSecs:

@@ -191,6 +191,7 @@ async fn trace_lifecycle_done_row_written() {
                 fuse_cap_override: None,
                 conv_sidecar_dir: None,
                 reasoning_echo: false,
+                in_turn_context_edit: false,
                 emit: &|_, _| {},
                 // 测试直驱 core，不接 DB：本次提问没有子 agent 可归并
                 session_tools: None,

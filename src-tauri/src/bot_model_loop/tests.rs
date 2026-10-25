@@ -68,3 +68,4 @@ fn prod_file_with(needle: &str) -> String {
 mod config;
 mod guard;
 mod parse;
+mod tool_window;
