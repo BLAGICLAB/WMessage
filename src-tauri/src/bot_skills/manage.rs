@@ -19,6 +19,12 @@ pub struct SkillInfo {
     pub description: String,
     /// frontmatter enabled（清单注入需要按它过滤）
     pub enabled: bool,
+    /// frontmatter scope: session（模型 create_skill 建的会话档）。设置页照常
+    /// 展示可管理；全局技能广告面与全局路由表都不收（与 intent_rules_from_dirs
+    /// 同口径）——会话档只经 add_session_route 在本会话生效，进了全局清单
+    /// 等于跨会话可见，别的会话模型会照着清单点名 use_skill。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub session_scoped: bool,
     /// last run outcome (SettingsPage badge)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_outcome: Option<crate::db::PersistedSkillOutcome>,
@@ -223,6 +229,7 @@ pub fn scan_skill_dirs(dirs: &[std::path::PathBuf]) -> Vec<SkillInfo> {
             name: meta.name.clone(),
             description: meta.description.clone(),
             enabled: meta.enabled,
+            session_scoped: meta.session_scoped,
             version: meta.version.clone(),
             unknown_tools: unknown,
             last_outcome: None,
@@ -286,12 +293,19 @@ pub fn rebuild_intent_routes(app: &AppHandle) {
     crate::intent_router::rebuild_routes(intent_rules_from_dirs(&skill_search_paths(app)));
 }
 
+/// 技能能否被广告给 LLM（系统提示技能清单）：启用中且非会话档。
+/// 禁用的不广告（否则模型调 use_skill 才被 preflight 拒绝，与路由表口径不一致）；
+/// 会话档不广告（跨会话/重启不生效，进清单等于教别的会话点名一个用不了的技能）。
+fn llm_advertisable(s: &SkillInfo) -> bool {
+    s.enabled && !s.session_scoped
+}
+
 /// 技能清单块：注入系统提示词尾部（progressive disclosure 第一层）。
 /// 过滤 enabled=false——禁用技能不再被广告给 LLM
 /// （否则模型调 use_skill 才被 preflight 拒绝，与路由表口径不一致）。
 pub fn build_skill_block<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     let all = scan_skills(app);
-    let skills: Vec<SkillInfo> = all.into_iter().filter(|s| s.enabled).collect();
+    let skills: Vec<SkillInfo> = all.into_iter().filter(llm_advertisable).collect();
     render_skill_block(skills, false)
 }
 
@@ -304,7 +318,7 @@ pub async fn build_skill_block_for<R: tauri::Runtime>(
     query: Option<&str>,
 ) -> String {
     let all = scan_skills(app);
-    let enabled: Vec<SkillInfo> = all.into_iter().filter(|s| s.enabled).collect();
+    let enabled: Vec<SkillInfo> = all.into_iter().filter(llm_advertisable).collect();
     if enabled.is_empty() {
         return "已安装技能：无".into();
     }

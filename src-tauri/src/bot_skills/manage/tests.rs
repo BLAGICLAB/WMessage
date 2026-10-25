@@ -324,6 +324,47 @@ fn make_mock_skill(parent: &std::path::Path, name: &str, description: &str) {
     std::fs::write(skill_dir.join("SKILL.md"), text).unwrap();
 }
 
+// ── 会话档技能的可见性：设置页可见，全局广告面不可见 ──
+
+#[test]
+fn scan_skill_dirs_propagates_session_scoped() {
+    let temp = make_tempdir("scan-session");
+    let dir = temp.0.join("dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    make_mock_skill(&dir, "plain-skill", "全局档");
+    let scoped_dir = dir.join("scoped-skill");
+    std::fs::create_dir_all(&scoped_dir).unwrap();
+    std::fs::write(
+        scoped_dir.join("SKILL.md"),
+        "---\nname: scoped-skill\ndescription: 会话档\nscope: session\n---\nbody\n",
+    )
+    .unwrap();
+    let all = scan_skill_dirs(&[dir]);
+    let get = |n: &str| all.iter().find(|s| s.name == n).unwrap();
+    assert!(!get("plain-skill").session_scoped);
+    assert!(get("scoped-skill").session_scoped);
+}
+
+#[test]
+fn llm_advertisable_excludes_disabled_and_session_scoped() {
+    let mk = |enabled: bool, session: bool| SkillInfo {
+        name: "x".into(),
+        description: String::new(),
+        enabled,
+        session_scoped: session,
+        version: None,
+        unknown_tools: vec![],
+        last_outcome: None,
+    };
+    assert!(llm_advertisable(&mk(true, false)), "全局档启用 = 广告");
+    assert!(!llm_advertisable(&mk(false, false)), "禁用 = 不广告");
+    assert!(
+        !llm_advertisable(&mk(true, true)),
+        "会话档启用也不进全局清单（清单是跨会话面，会话档只在本会话路由）"
+    );
+    assert!(!llm_advertisable(&mk(false, true)));
+}
+
 /// 正常模式（`app_data_dir()` 可得）：`skills_dir` 必须返回 `app_data_dir()/skills`。
 /// 这正是 `SkillsPanel` 的 `openPath` 目标，也是 opener scope `$APPDATA/**` 覆盖的路径。
 /// 锁此契约：若哪天误改成总是 fallback（便携 `data_dir()`），正常模式下 SkillsPanel

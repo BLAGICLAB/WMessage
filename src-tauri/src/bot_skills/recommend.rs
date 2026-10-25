@@ -70,6 +70,7 @@ mod tests {
             name: name.into(),
             description: desc.into(),
             enabled: true,
+            session_scoped: false,
             last_outcome: None,
             version: None,
             unknown_tools: Vec::new(),
