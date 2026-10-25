@@ -385,6 +385,10 @@ pub use exec::{
 };
 use exec::{create_exec_session, persist_exec_reply};
 use flow::bot_chat_inner;
+// 测试辅助，与 flow 侧定义的 cfg 门控必须一致：定义带 #[cfg(debug_assertions)]，
+// 而这里的 re-export 若是无条件的，release 构建就编译不过（debug_assertions 关掉
+// 后被转出的项不存在）。生产代码不调用它，release 下也不需要这条路径。
+#[cfg(debug_assertions)]
 pub use flow::chat_guard_is_held;
 pub(crate) use flow::TurnOrigin;
 #[cfg(test)]
