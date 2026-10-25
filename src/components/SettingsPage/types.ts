@@ -3,6 +3,8 @@
 // 例外：lib/botConfig.ts 的 BotConfigView（bot_get_config 线格式单源）
 // 引用 ModelEntry / McpServerConfig——线格式本就与 wire 同形。
 
+import type { ApiProvider, AutoExtractMode, UiFontSize } from "./constants";
+
 import type { MetaModel } from "../../lib/modelMeta";
 
 /** 单个大模型条目：label / baseUrl / model 三元组 + 稳定 id。
@@ -264,3 +266,49 @@ export type SectionKey =
   | "tokens"
   | "opsHistory"
   | "logs";
+
+/** 设置页表单的 config 状态形状（bot_set_config 的入参）。
+ *  各 section 组件都要读它——写成具名类型，省得每处抄一遍字段表。 */
+export type SettingsConfig = {
+  apiProvider: ApiProvider;
+  modelsByProvider: ModelsByProvider;
+  activeModelId: ActiveModelId;
+  disabledVendors: string[];
+  verifiedVendors: string[];
+  uiFontSize: UiFontSize;
+  hasApiKey: boolean;
+  vendorKeys: string[];
+  bypassLlmOnPreStepHit: boolean;
+  allowedDirs: string;
+  guardClaimKeywords: string;
+  guardClaimKeywordsDefault: string[];
+  hasTavilyKey: boolean;
+  tavilyEnabled: boolean;
+  hasBraveKey: boolean;
+  braveEnabled: boolean;
+  pythonTimeoutSecs: string;
+  maxFunctionCalls: string;
+  archiveAfterDays: string;
+  permMode: "strict" | "ask" | "auto" | "yolo";
+  toolRules: Array<{ tool: string; action: "allow" | "ask" | "deny" }>;
+  maxTokens: string;
+  reasoningEffort: "off" | "low" | "medium" | "high";
+  memoryConsolidation: {
+    enabled: boolean;
+    interval: string;
+    lastRunAt: number | null;
+  };
+  memoryControl: {
+    injectionEnabled: boolean;
+    autoWriteEnabled: boolean;
+    autoExtract: AutoExtractMode;
+  };
+  memoryTuning: Record<string, number> | null;
+  maxRounds: string;
+  historyBudgetChars: string;
+  subagentMaxTurns: string;
+  subagentMaxWallSecs: string;
+  searchMaxResults: string;
+  maxToolOutputBytes: string;
+  askBudget: string;
+};

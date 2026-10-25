@@ -10,7 +10,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { useConfirm } from "../../lib/useConfirm";
 import { useDismissable } from "../../lib/useDismissable";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
   BarChart3,
@@ -19,24 +18,13 @@ import {
   Check,
   Cpu,
   DatabaseBackup,
-  Download,
-  Eye,
-  EyeOff,
   FolderOutput,
   History,
-  Info,
-  Monitor,
-  Moon,
-  MoreHorizontal,
   Plug,
-  Plus,
   ScrollText,
   Server,
   Settings2,
   Sparkles,
-  Sun,
-  TriangleAlert,
-  Upload,
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
@@ -64,43 +52,35 @@ import {
   type SectionKey,
   genModelId,
   metaModelToEntry,
-  hostOf,
 } from "./types";
 import {
-  UI_FONT_SIZE_OPTIONS,
   type ApiProvider,
   type UiFontSize,
   PROVIDER_PRESETS,
-  API_FORMAT_OPTIONS,
-  AUTO_EXTRACT_MODES,
   type AutoExtractMode,
   isAutoExtractMode,
   KNOWN_PROTOCOL_URLS,
   CURATED_PROVIDER_KEYS,
-  AGENT_PARAM_ROWS,
-  AGENT_PARAM_FALLBACK_LABELS,
   U32_MAX,
 } from "./constants";
 import { SkillsPanel } from "./SkillsPanel";
 import { OnionsPanel } from "./OnionsPanel";
 import { WordTemplatePanel } from "./WordTemplatePanel";
-import { BubbleStyleCard } from "./BubbleStyleCard";
-import { HomeKpiPanel } from "./HomeKpiPanel";
 import { normalizeVendorName } from "./providerLogoMap";
 import { McpPanel } from "./McpPanel";
-import { MemoryPanel } from "./MemoryPanel";
 import { ServicesPanel } from "./ServicesPanel";
 import { LogsPanel } from "./LogsPanel";
-import { SettingRow } from "./SettingRow";
 import GraphSettingsPanel from "./GraphSettingsPanel";
-import { GuardKeywordsPanel } from "./GuardKeywordsPanel";
-import { ProfileRow } from "./ProfileRow";
-import { ModelRow } from "./ModelRow";
 import { UsageStatsCard } from "./UsageStatsCard";
 import { OperationHistoryTab } from "./OperationHistoryTab";
-import { Toggle } from "../Toggle/Toggle";
-import { ProviderLogo } from "./ProviderLogo";
-import { ApiProviderSelect } from "./ApiProviderSelect";
+import { GeneralSection } from "./GeneralSection";
+import { DataSection } from "./DataSection";
+import { BotCoreSection } from "./BotCoreSection";
+import { MemorySection } from "./MemorySection";
+import { ModelSection } from "./ModelSection";
+import { BotApiSection } from "./BotApiSection";
+import { McpSection } from "./McpSection";
+import { BotToolsSection } from "./BotToolsSection";
 
 type Props = {
   theme: ThemeSetting;
@@ -1867,128 +1847,17 @@ export function SettingsPage({
               hidden={activeSection !== "general"}
               className="space-y-4 pt-4"
             >
-              {/* 个人资料 */}
-              <div className="nm-card p-5">
-                <h2 className="text-lg font-semibold text-[var(--t1)]">
-                  个人资料
-                </h2>
-                <p className="mt-1 text-xs text-[var(--t5)]">
-                  任务卡上的归属头像：设了定时 → 一直机器人头像；🤖
-                  交给机器人执行中 → 机器人头像；执行完且无定时 →
-                  用户头像。悬停头像显示姓名。
-                </p>
-                <div className="mt-4 space-y-4">
-                  <ProfileRow kind="user" label="用户" defaultName="我" />
-                  <ProfileRow kind="bot" label="机器人" defaultName="机器人" />
-                </div>
-              </div>
-
-              {/* 基础设置：外观 + 开机自启动 wmessage */}
-              <div className="nm-card p-5">
-                <h2 className="text-lg font-semibold text-[var(--t1)]">
-                  基础设置
-                </h2>
-                <div className="mt-4 space-y-3">
-                  {/* 外观（原「深浅色模式」改名：主题是外观的一部分，名字更准确） */}
-                  <div>
-                    <p className="text-sm font-medium text-[var(--t2)]">外观</p>
-                    <div className="mt-3 flex gap-1">
-                      {(
-                        [
-                          { value: "light", label: "浅色", icon: Sun },
-                          { value: "dark", label: "深色", icon: Moon },
-                          { value: "system", label: "跟随系统", icon: Monitor },
-                        ] as {
-                          value: ThemeSetting;
-                          label: string;
-                          icon: LucideIcon;
-                        }[]
-                      ).map(({ value, label, icon: Icon }) => (
-                        <button
-                          key={value}
-                          className={`px-4 py-1.5 text-sm text-[var(--t3)] inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                            theme === value ? "nm-inset" : "nm-outset"
-                          }`}
-                          onClick={() => onThemeChange(value)}
-                        >
-                          <Icon
-                            size={13}
-                            aria-hidden
-                            className="inline-block align-[-2px]"
-                          />{" "}
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    {/* 字体大小：四档 small/standard/large/xlarge
-                默认 small（“目前字号为小”）。走 data-attr 全局套用，
-                视觉缩放在 main.css 里。点选即生效 + 即时落盘（与外观一致，
-                不用再点「保存配置」）。 */}
-                    <p className="mt-3 text-sm font-medium text-[var(--t2)]">
-                      字体大小
-                    </p>
-                    <div className="mt-2 flex gap-1">
-                      {UI_FONT_SIZE_OPTIONS.map((o) => (
-                        <button
-                          key={o.value}
-                          className={`flex-1 px-2 py-1.5 text-xs ${
-                            config.uiFontSize === o.value
-                              ? "nm-inset"
-                              : "nm-outset"
-                          } text-[var(--t3)]`}
-                          onClick={() => {
-                            const v = o.value;
-                            setConfig((c) => ({ ...c, uiFontSize: v }));
-                            // 点选即生效：data-attr 预览 + saveConfig 落盘（functional override
-                            // 拿最新 config，skipReload 避免末尾重拉用磁盘上可能的旧 uiFontSize
-                            // 覆盖刚点的字段）
-                            document.documentElement.dataset.fontSize = v;
-                            saveConfig((c) => ({ ...c, uiFontSize: v }), {
-                              skipReload: true,
-                            });
-                          }}
-                        >
-                          {o.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  {/* 开机自动启动 wmessage：走 tauri-plugin-autostart，
-              走现成的 plugin:autostart|enable / disable / is_enabled 命令。
-              点击即落盘：macOS 写 LaunchAgent plist / Windows 写注册表 Run / Linux 写 .desktop。 */}
-                  <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        开机自动启动 wmessage
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        登录系统时自动拉起 wmessage，开关改完即生效
-                      </p>
-                      {autostartError && (
-                        <p className="mt-1 text-xs text-[var(--danger)]">
-                          {autostartError}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      className={`btn-sm-action ${
-                        autostartEnabled ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={toggleAutostart}
-                      disabled={autostartBusy}
-                    >
-                      {autostartBusy
-                        ? "…"
-                        : autostartEnabled
-                          ? "已开启"
-                          : "已关闭"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* 聊天气泡外观：用户气泡颜色 + 机器人气泡材质（纯前端偏好，即点即生效） */}
-              <BubbleStyleCard />
+              <GeneralSection
+                theme={theme}
+                onThemeChange={onThemeChange}
+                config={config}
+                setConfig={setConfig}
+                saveConfig={saveConfig}
+                autostartError={autostartError}
+                autostartEnabled={autostartEnabled}
+                toggleAutostart={toggleAutostart}
+                autostartBusy={autostartBusy}
+              />
             </section>
           )}
           {mountedSections.has("data") && (
@@ -1996,219 +1865,29 @@ export function SettingsPage({
               hidden={activeSection !== "data"}
               className="space-y-4 pt-4"
             >
-              {/* 任务数据管理 */}
-              <div className="nm-card p-5">
-                <h2 className="text-lg font-semibold text-[var(--t1)]">
-                  任务数据管理
-                </h2>
-                <div className="mt-4 space-y-3">
-                  <SettingRow
-                    label="导出任务数据"
-                    description="全部任务卡（含归档、回收站）导出为 JSON 文件"
-                  >
-                    <button
-                      className={`btn-sm-action ${
-                        exporting ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={runExport}
-                      disabled={exporting}
-                    >
-                      {exporting ? (
-                        "导出中…"
-                      ) : (
-                        <>
-                          <Download size={12} aria-hidden /> 导出
-                        </>
-                      )}
-                    </button>
-                  </SettingRow>
-                  <SettingRow
-                    label="导入任务数据"
-                    description="从 JSON 文件导入任务卡；按 id 合并，同 id 保留最后修改的记录"
-                  >
-                    <button
-                      className={`btn-sm-action ${
-                        importing ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={runImport}
-                      disabled={importing}
-                    >
-                      {importing ? (
-                        "导入中…"
-                      ) : (
-                        <>
-                          <Upload size={12} aria-hidden /> 导入
-                        </>
-                      )}
-                    </button>
-                  </SettingRow>
-                  {/* 删除非本人的任务卡：导入带来的归属人为他人的统计用卡，
-              一键直接硬删（含回收站中的；本人 = 个人资料 personId，owner_id 为空的卡视为本人不动）。
-              后端广播 tasks-updated 三端同步；结果在按钮文字上短暂反馈（不新增行防抖动） */}
-                  <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        删除非本人的任务卡
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        立即删除归属人为他人的全部任务卡（含回收站，不可恢复）；本人卡与未设归属人的卡不受影响
-                      </p>
-                    </div>
-                    <button
-                      className={`shrink-0 min-w-[110px] px-4 py-1.5 text-sm inline-flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                        deleteNonSelfBusy ? "nm-inset" : "nm-outset"
-                      } ${deleteNonSelfDone ? "text-[var(--t4)]" : "text-[var(--danger)]"}`}
-                      onClick={() => void runDeleteNonSelf()}
-                      disabled={deleteNonSelfBusy}
-                    >
-                      {deleteNonSelfBusy
-                        ? "删除中…"
-                        : deleteNonSelfDone
-                          ? deleteNonSelfDone
-                          : "直接删除"}
-                    </button>
-                  </div>
-                  {/* 任务卡归档时间：完成满 N 天自动归档。前端看板规则与后端 migration
-              兜底归档（主窗口关闭时照常到期）同读 bot-config.json，改完阈值两侧一致 */}
-                  <div className="pt-3 border-t border-[var(--edge)] flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--t2)]">
-                        任务卡归档时间
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--t5)]">
-                        任务完成超过该天数后自动归档，从「完成」列隐藏；默认{" "}
-                        {DEFAULT_ARCHIVE_DAYS} 天，上限 {MAX_ARCHIVE_DAYS} 天
-                      </p>
-                    </div>
-                    <div className="shrink-0 flex items-center gap-2">
-                      <input
-                        value={config.archiveAfterDays}
-                        onChange={(e) =>
-                          setConfig((c) => ({
-                            ...c,
-                            archiveAfterDays: e.target.value,
-                          }))
-                        }
-                        placeholder={String(DEFAULT_ARCHIVE_DAYS)}
-                        inputMode="numeric"
-                        aria-label="任务卡归档天数"
-                        className="nm-inset w-20 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none text-right"
-                      />
-                      <span className="text-xs text-[var(--t5)]">天</span>
-                    </div>
-                  </div>
-                </div>
-                {/* 归档天数等 setConfig 字段靠本卡保存钮落盘（同机器人卡模式） */}
-                {renderSaveButton("mt-3 flex justify-end")}
-              </div>
-
-              {/* 首页 KPI 指标：8 选 4 + 调序，localStorage 即点即生效（首页事件同步） */}
-              <HomeKpiPanel />
-
-              {/* 执行痕迹清理（trace 三表 + 回滚快照保留期；trace_clear_before 命令） */}
-              <div className="nm-card p-5">
-                <h2 className="text-lg font-semibold text-[var(--t1)]">
-                  执行痕迹
-                </h2>
-                <p className="mt-1 text-xs text-[var(--t5)]">
-                  {traceRetentionDays
-                    ? `任务卡/定时/工作流执行的痕迹（工具调用时间线、文件
-                    diff、回滚快照）落本地库，默认保留 ${traceRetentionDays} 天`
-                    : `任务卡/定时/工作流执行的痕迹（工具调用时间线、文件
-                    diff、回滚快照）落本地库，按保留期自动清理`}
-                </p>
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      清理执行痕迹
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      删除「已收尾超过指定天数」与「挂起超过指定天数」的痕迹（含子表与过期回滚快照引用）；不影响任务数据
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <input
-                      aria-label="保留天数"
-                      value={traceRetainDays}
-                      onChange={(e) =>
-                        setTraceRetainDays(e.target.value.replace(/\D/g, ""))
-                      }
-                      inputMode="numeric"
-                      placeholder={traceRetentionDays ?? ""}
-                      className="w-16 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none"
-                      title={traceRetentionTitle}
-                    />
-                    <span className="text-xs text-[var(--t5)]">天前</span>
-                    <button
-                      className={`btn-sm-action ${
-                        traceClearBusy ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={clearTraces}
-                      disabled={traceClearBusy}
-                    >
-                      {traceClearBusy ? "清理中…" : "清理"}
-                    </button>
-                  </div>
-                </div>
-                {traceClearMsg && (
-                  <p className="mt-2 text-xs text-[var(--t4)]">
-                    {traceClearMsg}
-                  </p>
-                )}
-              </div>
-
-              {/* 工作区管理：与任务数据管理风格一致；workspace_items 数据独立于任务数据 */}
-              <div className="nm-card p-5">
-                <h2 className="text-lg font-semibold text-[var(--t1)]">
-                  工作区管理
-                </h2>
-                <p className="mt-1 text-xs text-[var(--t5)]">
-                  工作区是按用途分组的链接集合（文件路径 / 文件夹 /
-                  网页），与任务数据分开独立存储
-                </p>
-                <div className="mt-4 space-y-3">
-                  <SettingRow
-                    label="导出工作区链接"
-                    description="全部工作区条目（含分组、折叠状态、链接列表）导出为 JSON 文件"
-                  >
-                    <button
-                      className={`btn-sm-action ${
-                        exportingWs ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={runExportWs}
-                      disabled={exportingWs}
-                    >
-                      {exportingWs ? (
-                        "导出中…"
-                      ) : (
-                        <>
-                          <Download size={12} aria-hidden /> 导出
-                        </>
-                      )}
-                    </button>
-                  </SettingRow>
-                  <SettingRow
-                    label="导入工作区链接"
-                    description="从 JSON 文件导入工作区条目；按 id 合并，同 id 保留最后修改的记录"
-                  >
-                    <button
-                      className={`btn-sm-action ${
-                        importingWs ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={runImportWs}
-                      disabled={importingWs}
-                    >
-                      {importingWs ? (
-                        "导入中…"
-                      ) : (
-                        <>
-                          <Upload size={12} aria-hidden /> 导入
-                        </>
-                      )}
-                    </button>
-                  </SettingRow>
-                </div>
-              </div>
+              <DataSection
+                exporting={exporting}
+                runExport={runExport}
+                importing={importing}
+                runImport={runImport}
+                deleteNonSelfBusy={deleteNonSelfBusy}
+                deleteNonSelfDone={deleteNonSelfDone}
+                runDeleteNonSelf={runDeleteNonSelf}
+                config={config}
+                setConfig={setConfig}
+                renderSaveButton={renderSaveButton}
+                traceRetentionDays={traceRetentionDays}
+                traceRetainDays={traceRetainDays}
+                setTraceRetainDays={setTraceRetainDays}
+                traceRetentionTitle={traceRetentionTitle}
+                traceClearBusy={traceClearBusy}
+                clearTraces={clearTraces}
+                traceClearMsg={traceClearMsg}
+                exportingWs={exportingWs}
+                runExportWs={runExportWs}
+                importingWs={importingWs}
+                runImportWs={runImportWs}
+              />
             </section>
           )}
           {mountedSections.has("bot") && (
@@ -2216,346 +1895,35 @@ export function SettingsPage({
               hidden={activeSection !== "bot"}
               className="space-y-4 pt-4"
             >
-              <div className="nm-card p-5">
-                <h2 className="text-lg font-semibold text-[var(--t1)]">
-                  机器人设置
-                </h2>
-
-                {/* 内置机器人聊天开关 */}
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      开启机器人聊天
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      在主窗口「聊天」页与大模型对话，用它管理任务
-                    </p>
-                  </div>
-                  <button
-                    className={`btn-sm-action ${
-                      botEnabled ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={toggleBot}
-                    disabled={botBusy}
-                  >
-                    {botBusy ? "…" : botEnabled ? "已开启" : "已关闭"}
-                  </button>
-                </div>
-
-                {botError && (
-                  <p className="mt-2 text-xs text-[var(--danger)]">
-                    {botError}
-                  </p>
-                )}
-
-                {/* Python 编程开关 */}
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      允许机器人执行 Python
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      文档处理/编程工具的本机执行开关；沙箱：独立临时目录 +
-                      限时执行 + 审计留痕，默认关闭
-                    </p>
-                  </div>
-                  <button
-                    className={`btn-sm-action ${
-                      pyEnabled ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={togglePy}
-                    disabled={pyBusy}
-                  >
-                    {pyBusy ? "…" : pyEnabled ? "已开启" : "已关闭"}
-                  </button>
-                </div>
-
-                {/* 受管长驻服务开关 */}
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      允许机器人启动本地服务
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      起长驻进程（node MCP server / dev server / watcher），
-                      归机器人托管、可查可停、退出时自动收干净；
-                      被启动的代码会继承宿主环境变量（含其中密钥），默认关闭
-                    </p>
-                  </div>
-                  <button
-                    className={`btn-sm-action ${
-                      servicesEnabled ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={toggleServices}
-                    disabled={servicesBusy}
-                  >
-                    {servicesBusy ? "…" : servicesEnabled ? "已开启" : "已关闭"}
-                  </button>
-                </div>
-
-                {/* 非 loopback 暴露开关（L1 的放开方式） */}
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      允许服务暴露到非 loopback
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      默认只许受管服务监听 127.0.0.1 / ::1。打开后允许绑
-                      0.0.0.0 / :: —— 同局域网的机器能连上它
-                    </p>
-                  </div>
-                  <button
-                    className={`btn-sm-action ${
-                      exposeNetAllowed ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={toggleExposeNet}
-                    disabled={exposeNetBusy}
-                  >
-                    {exposeNetBusy
-                      ? "…"
-                      : exposeNetAllowed
-                        ? "已开启"
-                        : "已关闭"}
-                  </button>
-                </div>
-
-                {/* 桌面 UI 自动化开关 */}
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      允许机器人操作桌面界面
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      读取窗口控件、点击、输入文字（原生应用 / 系统弹窗 / 已登录窗口）；
-                      涉及发送、提交、支付、删除的点击会弹窗请用户确认，默认关闭
-                    </p>
-                  </div>
-                  <button
-                    className={`btn-sm-action ${
-                      uiEnabled ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={toggleUi}
-                    disabled={uiBusy}
-                  >
-                    {uiBusy ? "…" : uiEnabled ? "已开启" : "已关闭"}
-                  </button>
-                </div>
-
-                {/* Python 环境状态 */}
-                <div className="mt-3 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      本机 Python 环境
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      {pyEnvErr
-                        ? `检查失败：${pyEnvErr}`
-                        : pyEnv
-                          ? pyEnv.available
-                            ? `${pyEnv.version} · ${pyEnv.libs.join(" · ")}`
-                            : "未检测到 Python（macOS 装 Command Line Tools；Windows 到 python.org 安装）"
-                          : "点击右侧检查"}
-                    </p>
-                  </div>
-                  <button
-                    className={`btn-sm-action ${
-                      pyEnvBusy ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={checkPyEnv}
-                    disabled={pyEnvBusy}
-                  >
-                    {pyEnvBusy ? "检查中…" : "检查环境"}
-                  </button>
-                </div>
-
-                {/* Python 默认超时：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调。
-                    默认值与上限取自后端参数表（tools.python_timeout_secs）——前端此前
-                    自己写着「60」和「300」，后端常量一改页面就撒谎。 */}
-                <div className="mt-3 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      Python 默认超时（秒）
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      {pyTimeoutView
-                        ? `留空 = ${pyTimeoutView.default} 秒；大计算可调大，上限 ${pyTimeoutView.max} 秒（超出自动钳制）`
-                        : "留空 = 用内置默认；大计算可调大（超出自动钳制）"}
-                    </p>
-                  </div>
-                  <input
-                    aria-label="Python 默认超时（秒）"
-                    value={config.pythonTimeoutSecs}
-                    onChange={(e) =>
-                      setConfig((c) => ({
-                        ...c,
-                        pythonTimeoutSecs: e.target.value,
-                      }))
-                    }
-                    placeholder={pyTimeoutView?.default ?? ""}
-                    inputMode="numeric"
-                    className="nm-inset shrink-0 w-24 rounded-xl px-3 py-1.5 text-xs text-[var(--t3)] outline-none text-right"
-                  />
-                </div>
-                {/* Python 超时等 setConfig 字段靠本卡保存钮落盘（bot 关闭时 model 卡按钮不可达） */}
-                {renderSaveButton("mt-3 flex justify-end")}
-              </div>
-
-              {/* Agent 运行参数卡（Agent 透明化设计）——
-          可调项逐行输入（空 = 内置默认，title 带调参代价说明） */}
-              <div className="nm-card p-5">
-                <h2 className="text-lg font-semibold text-[var(--t1)]">
-                  Agent 运行参数
-                </h2>
-                <p className="mt-1 text-xs text-[var(--t5)]">
-                  控制 agent 循环深度、子 agent 预算与搜索行为；留空 =
-                  内置默认。调大 = 更强能力但更多 token 消耗
-                </p>
-                {/* Profiles 三预设：一键整组切换（写 config 字段 + 落盘；Python 开关是
-            独立 flag 文件不在预设内，保守预设的 py 语义 = 严格白名单下弹窗把关）。
-            预设里**不写默认值的字面量**：留空 = 用内置默认（后端参数表那份），
-            「拉到上限」用参数表的上界——默认值与上界都在后端，前端再抄一份就
-            是一处能各自漂移的真相源 */}
-                <div className="mt-3 flex gap-2">
-                  {(
-                    [
-                      [
-                        "保守",
-                        "严格白名单 + 默认轮数，慎用自动化",
-                        {
-                          permMode: "strict" as const,
-                          // 保守 = 内置默认（留空），不把默认值钉成字面量
-                          maxRounds: "",
-                          maxFunctionCalls: "",
-                          pythonTimeoutSecs: "",
-                          toolRules: [] as Array<{
-                            tool: string;
-                            action: "allow" | "ask" | "deny";
-                          }>,
-                        },
-                      ],
-                      [
-                        "标准",
-                        "默认参数（推荐日常档）",
-                        {
-                          permMode: "ask" as const,
-                          maxRounds: "",
-                          maxFunctionCalls: "",
-                          pythonTimeoutSecs: "",
-                          historyBudgetChars: "",
-                          subagentMaxTurns: "",
-                          subagentMaxWallSecs: "",
-                          searchMaxResults: "",
-                          maxToolOutputBytes: "",
-                          toolRules: [] as Array<{
-                            tool: string;
-                            action: "allow" | "ask" | "deny";
-                          }>,
-                        },
-                      ],
-                      [
-                        "放开",
-                        "白名单内全自动 + 高轮数长预算（适合无人值守批量）",
-                        {
-                          permMode: "auto" as const,
-                          // 轮数与 Python 超时 = 拉到后端允许的上界（参数表那份）
-                          maxRounds: paramMaxText("loop.max_rounds"),
-                          // 这一项是**档位值不是常量**：硬顶 500、默认 100，
-                          // 300 是产品选的中间档（≈3× 默认），后端没有对应常量，
-                          // 派生不出「档位」——所以这里保留手写并标明性质
-                          maxFunctionCalls: "300",
-                          pythonTimeoutSecs: paramMaxText(
-                            "tools.python_timeout_secs",
-                          ),
-                          toolRules: [] as Array<{
-                            tool: string;
-                            action: "allow" | "ask" | "deny";
-                          }>,
-                        },
-                      ],
-                    ] as const
-                  ).map(([label, hint, patch]) => (
-                    <button
-                      key={label}
-                      className="flex-1 rounded-[var(--r-sm)] px-2 py-1.5 text-xs text-[var(--t3)] nm-outset hover:text-[var(--t1)] disabled:opacity-50"
-                      title={hint}
-                      disabled={configBusy}
-                      onClick={() =>
-                        void saveConfig((c) => ({ ...c, ...patch }))
-                      }
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                {AGENT_PARAM_ROWS.map(([key, field]) => {
-                  const view = paramViews?.find((p) => p.key === key);
-                  // 说明行 = 默认值 + 可填范围 + 语义说明 + 当前生效值与来源。
-                  // 全部取自后端参数表：默认值是 resolver 派生的（与运行时同一份
-                  // 代码路径），范围是钳制常量，当前生效值是**钳过之后**的那个数。
-                  const desc = [
-                    view ? `默认 ${view.default}` : "",
-                    view && view.min != null && view.max != null
-                      ? `可填 ${view.min}–${view.max}`
-                      : "",
-                    view?.hint ?? "",
-                    view
-                      ? `当前生效 ${view.value}（${
-                          view.source === "config"
-                            ? "你的设置"
-                            : view.source === "default"
-                              ? "内置默认"
-                              : "只读常量"
-                        }）`
-                      : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" · ");
-                  return (
-                    <div
-                      key={key}
-                      className="mt-3 flex items-center justify-between gap-4"
-                    >
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-[var(--t2)]">
-                          {view?.label ?? AGENT_PARAM_FALLBACK_LABELS[key]}
-                        </p>
-                        <p className="mt-0.5 text-xs text-[var(--t5)]">
-                          {desc ||
-                            "参数说明暂不可用（后端参数表没拉到）；填空 = 用内置默认"}
-                        </p>
-                      </div>
-                      <input
-                        aria-label={view?.label ?? AGENT_PARAM_FALLBACK_LABELS[key]}
-                        title={view?.hint ?? ""}
-                        value={config[field]}
-                        onChange={(e) =>
-                          setConfig((prev) => ({
-                            ...prev,
-                            [field]: e.target.value,
-                          }))
-                        }
-                        placeholder={view?.default ?? ""}
-                        inputMode="numeric"
-                        className="w-28 shrink-0 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
-                      />
-                    </div>
-                  );
-                })}
-                {renderSaveButton("mt-4 flex justify-end")}
-              </div>
-
-              {/* 幻觉守卫触发词表：独立卡片（自带保存按钮，与 renderSaveButton
-                  无关——它只管下面那张 Agent 运行参数卡） */}
-              <GuardKeywordsPanel
-                value={config.guardClaimKeywords}
-                defaults={config.guardClaimKeywordsDefault}
-                onChange={(v) =>
-                  setConfig((prev) => ({ ...prev, guardClaimKeywords: v }))
-                }
-                onSave={() => {
-                  void saveConfig();
-                }}
-                busy={configBusy}
+              <BotCoreSection
+                botEnabled={botEnabled}
+                toggleBot={toggleBot}
+                botBusy={botBusy}
+                botError={botError}
+                pyEnabled={pyEnabled}
+                togglePy={togglePy}
+                pyBusy={pyBusy}
+                servicesEnabled={servicesEnabled}
+                toggleServices={toggleServices}
+                servicesBusy={servicesBusy}
+                exposeNetAllowed={exposeNetAllowed}
+                toggleExposeNet={toggleExposeNet}
+                exposeNetBusy={exposeNetBusy}
+                uiEnabled={uiEnabled}
+                toggleUi={toggleUi}
+                uiBusy={uiBusy}
+                pyEnvErr={pyEnvErr}
+                pyEnv={pyEnv}
+                pyEnvBusy={pyEnvBusy}
+                checkPyEnv={checkPyEnv}
+                pyTimeoutView={pyTimeoutView}
+                config={config}
+                setConfig={setConfig}
+                renderSaveButton={renderSaveButton}
+                paramMaxText={paramMaxText}
+                configBusy={configBusy}
+                saveConfig={saveConfig}
+                paramViews={paramViews}
               />
             </section>
           )}
@@ -2564,152 +1932,17 @@ export function SettingsPage({
               hidden={activeSection !== "memory"}
               className="space-y-4 pt-4"
             >
-              <div className="nm-card p-5">
-                {/* 定时记忆整理 */}
-                <div className="space-y-2">
-                  <SettingRow
-                    label="记忆整理"
-                    description="定期用大模型对近期记忆做一轮反思：合并相关条目、裁决矛盾、提炼规律（需要已配置大模型 API）"
-                  >
-                    <button
-                      className={`btn-sm-action ${
-                        config.memoryConsolidation.enabled
-                          ? "nm-inset"
-                          : "nm-outset"
-                      }`}
-                      onClick={() =>
-                        setConsolidation({
-                          enabled: !config.memoryConsolidation.enabled,
-                        })
-                      }
-                      disabled={configBusy}
-                    >
-                      {config.memoryConsolidation.enabled ? "已开启" : "已关闭"}
-                    </button>
-                  </SettingRow>
-                  {config.memoryConsolidation.enabled && (
-                    <>
-                      <div className="flex gap-2">
-                        {(
-                          [
-                            ["off", "关闭"],
-                            // 键是后端协议值，标签只是它的中文读法——「12」不是
-                            // 一个可配置数值，后端改协议时这里跟着改键即可
-                            ["12h", "每 12 小时"],
-                            ["daily", "每天"],
-                            ["weekly", "每周"],
-                          ] as const
-                        ).map(([iv, label]) => (
-                          <button
-                            key={iv}
-                            className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${
-                              config.memoryConsolidation.interval === iv
-                                ? "nm-inset"
-                                : "nm-outset"
-                            }`}
-                            onClick={() => setConsolidation({ interval: iv })}
-                            disabled={configBusy}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="flex items-center justify-between gap-4">
-                        <p className="text-xs text-[var(--t5)]">
-                          上次整理：
-                          {config.memoryConsolidation.lastRunAt
-                            ? new Date(
-                                config.memoryConsolidation.lastRunAt,
-                              ).toLocaleString("zh-CN", {
-                                month: "2-digit",
-                                day: "2-digit",
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })
-                            : "从未"}
-                        </p>
-                        <button
-                          className={`btn-sm-action ${
-                            consolidateBusy ? "nm-inset" : "nm-outset"
-                          }`}
-                          onClick={consolidateNow}
-                          disabled={consolidateBusy}
-                        >
-                          {consolidateBusy ? "整理中…" : "立即整理"}
-                        </button>
-                      </div>
-                      {consolidateMsg && (
-                        <p className="text-xs text-[var(--t4)]">
-                          {consolidateMsg}
-                        </p>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-              {/*  记忆可控开关：注入总闸 + 模型主动记忆门禁（点档即时落盘） */}
-              <div className="nm-card p-5">
-                <div className="space-y-3">
-                  <p className="text-sm font-medium text-[var(--t2)]">
-                    记忆权限
-                  </p>
-                  {renderMemoryToggle(
-                    "聊天注入记忆",
-                    "关闭后记忆仍会保留，但不再随对话发给模型（隐私总闸）",
-                    "injectionEnabled",
-                  )}
-                  {renderMemoryToggle(
-                    "模型自动记忆",
-                    "关闭后模型调用「记住 / 记教训」工具只会收到关闭提示，不写入",
-                    "autoWriteEnabled",
-                  )}
-                  {/* 自动记忆抽取三档：会话收尾低频触发；总闸（模型自动记忆）关闭时不跑，
-              三档随总闸禁用（radiogroup/radio 与厂商开关的 switch 同一可访问标准） */}
-                  <div className="space-y-1.5">
-                    <p className="text-xs text-[var(--t3)]">自动记忆抽取</p>
-                    <p className="text-xs text-[var(--t5)]">
-                      每次聊天结束后低频
-                      {extractIntervalText
-                        ? `（≥${extractIntervalText}一次）`
-                        : "地"}
-                      用大模型从对话里提取值得长期记住的偏好与事实；
-                      需「模型自动记忆」开启；「需确认」档会先存入下方待确认列表
-                    </p>
-                    <div
-                      className="flex gap-2"
-                      role="radiogroup"
-                      aria-label="自动记忆抽取"
-                    >
-                      {AUTO_EXTRACT_MODES.map(({ value, label, aria }) => {
-                        const selected =
-                          config.memoryControl.autoExtract === value;
-                        const disabled =
-                          configBusy || !config.memoryControl.autoWriteEnabled;
-                        return (
-                          <button
-                            key={value}
-                            type="button"
-                            role="radio"
-                            aria-checked={selected}
-                            aria-label={aria}
-                            className={`flex-1 px-2 py-1.5 text-xs text-[var(--t3)] ${
-                              selected ? "nm-inset" : "nm-outset"
-                            } ${disabled ? "opacity-50" : ""}`}
-                            onClick={() =>
-                              setMemoryControl({ autoExtract: value })
-                            }
-                            disabled={disabled}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              {/* 记忆库管理面板：列表/搜索/编辑/删除 + 统计与嵌入引擎状态 */}
-              <MemoryPanel />
+              <MemorySection
+                config={config}
+                setConsolidation={setConsolidation}
+                configBusy={configBusy}
+                consolidateBusy={consolidateBusy}
+                consolidateNow={consolidateNow}
+                consolidateMsg={consolidateMsg}
+                renderMemoryToggle={renderMemoryToggle}
+                extractIntervalText={extractIntervalText}
+                setMemoryControl={setMemoryControl}
+              />
             </section>
           )}
           {mountedSections.has("model") && (
@@ -2717,613 +1950,64 @@ export function SettingsPage({
               hidden={activeSection !== "model"}
               className="space-y-4 pt-4"
             >
-              {/* 页首：说明（原「刷新」按钮删除——bot_get_config 只合顶层字段，
-          厂商列表不跟随刷新，点了像没反应，属于误导性按钮） */}
-              <p className="text-xs text-[var(--t5)]">
-                管理模型供应商，配置后可在聊天时选择使用。
-              </p>
-              {/* 收尾引导：有带 vendor 的条目但 verifiedVendors 为空（可用性状态无自动迁移） */}
-              {needVendorReVerify && (
-                <p
-                  className="flex items-center gap-1.5 text-xs text-[var(--t3)]"
-                  role="note"
-                  aria-label="厂商可用性引导"
-                >
-                  <Info
-                    size={13}
-                    className="shrink-0 text-[var(--brand)]"
-                    aria-hidden
-                  />
-                  检测到已有厂商模型但均未通过连接测试：升级后需逐厂商点一次插头恢复可用。
-                </p>
-              )}
-              <div className="nm-card p-5">
-                {/* 大模型 API 配置（开关开启后显示） */}
-                {botEnabled && (
-                  <div className="space-y-3">
-                    {/*  厂商中心：左厂商列表 + 右厂商页；高度跟随窗口（视口高 - 页头占用），两视图对齐 */}
-                    <div className="flex h-[calc(100vh-14rem)] min-h-[320px] gap-4">
-                      {/* 左栏：厂商列表（绿点 = 该厂商含全局 active 模型） */}
-                      <div className="w-44 shrink-0 space-y-1 overflow-y-auto border-r border-[var(--edge)] pr-3">
-                        <p className="text-xs text-[var(--t5)]">厂商</p>
-                        {vendorGroups.map((v) => {
-                          const meta = vendorMetaOf(v.name);
-                          return (
-                            <button
-                              key={v.name}
-                              type="button"
-                              aria-current={
-                                activeVendor === v.name || undefined
-                              }
-                              onClick={() => setActiveVendor(v.name)}
-                              className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
-                                activeVendor === v.name
-                                  ? "nm-inset text-[var(--t1)]"
-                                  : "text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                              }`}
-                            >
-                              <ProviderLogo
-                                name={v.name}
-                                className="h-4 w-4"
-                                providerKey={meta?.provider_key}
-                                fallbackColor={meta?.fallback_color}
-                                fallbackChar={meta?.fallback_char}
-                              />
-                              <span className="flex-1 truncate">{v.name}</span>
-                              {/* 可用性提示点：绿 = 连接测试通过（key/URL/格式变了会自动失效需重测） */}
-                              <span
-                                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                                  config.verifiedVendors.includes(v.name)
-                                    ? "bg-[var(--success)]"
-                                    : "bg-[var(--t6)]"
-                                }`}
-                                title={
-                                  config.verifiedVendors.includes(v.name)
-                                    ? "连接测试已通过，模型可在聊天窗口选用"
-                                    : "未通过连接测试：点模型行的插头图标测试，通过后模型才进聊天窗口"
-                                }
-                              />
-                            </button>
-                          );
-                        })}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveVendor(null);
-                            setShowProviderPicker(true);
-                          }}
-                          className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-xs text-[var(--brand)] hover:bg-[var(--hover-bg)] ${
-                            showProviderPicker && activeVendor === null
-                              ? "nm-inset"
-                              : ""
-                          }`}
-                        >
-                          <Plus size={12} aria-hidden />
-                          添加厂商
-                        </button>{" "}
-                      </div>
-                      {/* 右栏：厂商页 / 添加厂商网格 / 引导（flex 列：列表区 flex-1 填满剩余高度） */}
-                      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-                        {showProviderPicker ? (
-                          <>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                className="nm-btn px-2 py-1 text-xs text-[var(--t3)]"
-                                onClick={() => setShowProviderPicker(false)}
-                              >
-                                ← 返回
-                              </button>
-                              <p className="text-sm font-medium text-[var(--t1)]">
-                                添加厂商
-                              </p>
-                            </div>
-                            <p className="text-xs text-[var(--t5)]">
-                              点选厂商即添加（同名厂商重新选择会覆盖其 Base URL
-                              与模型列表）；添加后可改 Base URL、API
-                              格式与模型列表。
-                            </p>
-                            {metaProviders === null ||
-                            metaProviders.length === 0 ? (
-                              <>
-                                <div className="flex items-center gap-2">
-                                  <p className="min-w-0 flex-1 text-xs text-[var(--t5)]">
-                                    模型库为空或同步中——启动时自动同步
-                                    models.dev，也可手动同步
-                                  </p>
-                                  <button
-                                    type="button"
-                                    className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
-                                    title="从 models.dev 回源同步最新厂商与模型数据"
-                                    onClick={syncMetaLibrary}
-                                    disabled={metaSyncBusy}
-                                  >
-                                    {metaSyncBusy ? "更新中…" : "更新模型库"}
-                                  </button>
-                                </div>
-                                {metaSyncMsg && (
-                                  <p className="text-xs text-[var(--t5)]">
-                                    {metaSyncMsg}
-                                  </p>
-                                )}
-                                <div className="grid grid-cols-2 gap-2">
-                                  {PROVIDER_PRESETS.map((p) => (
-                                    <button
-                                      key={p.name}
-                                      type="button"
-                                      onClick={() => applyProviderPreset(p)}
-                                      className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
-                                    >
-                                      <ProviderLogo name={p.name} />
-                                      <span className="flex-1 truncate">
-                                        {p.name}
-                                      </span>
-                                      <span
-                                        aria-hidden
-                                        className="text-xs text-[var(--t5)]"
-                                      >
-                                        {p.protocol === "anthropic"
-                                          ? "Anthropic 格式"
-                                          : "OpenAI 格式"}
-                                      </span>
-                                    </button>
-                                  ))}
-                                </div>
-                              </>
-                            ) : (
-                              <>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    value={metaSearch}
-                                    onChange={(e) =>
-                                      setMetaSearch(e.target.value)
-                                    }
-                                    placeholder="搜索厂商…"
-                                    aria-label="搜索厂商"
-                                    className="nm-inset min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-xs text-[var(--t3)] outline-none"
-                                  />
-                                  <button
-                                    type="button"
-                                    className="nm-btn shrink-0 px-2.5 py-1.5 text-xs text-[var(--t3)]"
-                                    title="从 models.dev 回源同步最新厂商与模型数据"
-                                    onClick={syncMetaLibrary}
-                                    disabled={metaSyncBusy}
-                                  >
-                                    {metaSyncBusy ? "更新中…" : "更新模型库"}
-                                  </button>
-                                </div>
-                                {metaSyncMsg && (
-                                  <p className="text-xs text-[var(--t5)]">
-                                    {metaSyncMsg}
-                                  </p>
-                                )}
-                                {/* 列数随宽度自适应；flex-1 填满右栏剩余高度，内部滚动保持搜索栏可见 */}
-                                <div className="grid min-h-0 flex-1 grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] content-start gap-2 overflow-y-auto">
-                                  {metaProviders
-                                    .filter((p) => {
-                                      const q = metaSearch.trim().toLowerCase();
-                                      if (!q) return true;
-                                      return (
-                                        p.provider_name
-                                          .toLowerCase()
-                                          .includes(q) ||
-                                        p.provider_key.toLowerCase().includes(q)
-                                      );
-                                    })
-                                    .map((p) => (
-                                      <button
-                                        key={p.provider_key}
-                                        type="button"
-                                        onClick={() => applyMetaProvider(p)}
-                                        disabled={metaApplyBusy}
-                                        className="nm-btn flex items-center gap-2 px-3 py-2.5 text-left text-xs text-[var(--t2)]"
-                                      >
-                                        <ProviderLogo
-                                          name={p.provider_name}
-                                          providerKey={p.provider_key}
-                                          fallbackColor={p.fallback_color}
-                                          fallbackChar={p.fallback_char}
-                                          className="h-7 w-7"
-                                        />
-                                        <span className="flex-1 truncate">
-                                          {p.provider_name}
-                                        </span>
-                                        <span
-                                          aria-hidden
-                                          className="truncate text-xs text-[var(--t5)]"
-                                        >
-                                          {hostOf(p.default_base_url)}
-                                        </span>
-                                      </button>
-                                    ))}
-                                </div>
-                                {metaProviders.length > 0 &&
-                                  metaSearch.trim() &&
-                                  !metaProviders.some((p) => {
-                                    const q = metaSearch.trim().toLowerCase();
-                                    return (
-                                      p.provider_name
-                                        .toLowerCase()
-                                        .includes(q) ||
-                                      p.provider_key.toLowerCase().includes(q)
-                                    );
-                                  }) && (
-                                    <p className="text-xs text-[var(--t5)]">
-                                      无匹配厂商，换个关键词试试
-                                    </p>
-                                  )}
-                              </>
-                            )}
-                          </>
-                        ) : !activeVendor ? (
-                          <p className="m-auto text-center text-xs text-[var(--t5)]">
-                            从左侧选择一个厂商，或点「添加厂商」接入新的模型供应商
-                          </p>
-                        ) : (
-                          <>
-                            {/* 厂商标题行：logo + 名称 ｜ 右侧厂商总开关 +「⋯」菜单（设为当前使用/删除厂商） */}
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="flex min-w-0 items-center gap-2">
-                                <ProviderLogo
-                                  name={activeVendor}
-                                  className="h-6 w-6"
-                                  providerKey={activeVendorMeta?.provider_key}
-                                  fallbackColor={
-                                    activeVendorMeta?.fallback_color
-                                  }
-                                  fallbackChar={activeVendorMeta?.fallback_char}
-                                />
-                                <h3 className="truncate text-base font-semibold text-[var(--t1)]">
-                                  {activeVendor}
-                                </h3>
-                              </div>
-                              <div className="flex shrink-0 items-center gap-2">
-                                <Toggle
-                                  checked={vendorEnabled}
-                                  onChange={toggleVendorEnabled}
-                                  ariaLabel={`启用厂商 ${activeVendor}`}
-                                  size="sm"
-                                />
-                                <div ref={vendorMenuRef} className="relative">
-                                  <button
-                                    type="button"
-                                    aria-label={`厂商 ${activeVendor} 更多操作`}
-                                    aria-haspopup="menu"
-                                    aria-expanded={vendorMenuOpen}
-                                    className="nm-icon-btn text-[var(--t5)] hover:text-[var(--t2)]"
-                                    onClick={() => setVendorMenuOpen((v) => !v)}
-                                  >
-                                    <MoreHorizontal size={15} aria-hidden />
-                                  </button>
-                                  {vendorMenuOpen && (
-                                    <div
-                                      role="menu"
-                                      className="nm-popover absolute right-0 z-50 mt-1 w-40 p-1 space-y-0.5 origin-top-right"
-                                    >
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        className="w-full text-left px-3 py-1.5 text-xs rounded-lg text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                                        disabled={
-                                          !activeVendorEntries.length ||
-                                          !config.verifiedVendors.includes(
-                                            activeVendor,
-                                          )
-                                        }
-                                        title={
-                                          config.verifiedVendors.includes(
-                                            activeVendor,
-                                          )
-                                            ? "把该厂商的 active 模型设为聊天当前使用的模型"
-                                            : "先点模型行插头通过「测试连接」，再设为当前使用"
-                                        }
-                                        onClick={() => {
-                                          setVendorMenuOpen(false);
-                                          makeVendorActive();
-                                        }}
-                                      >
-                                        {vendorOf(activeVendor)?.isActiveVendor
-                                          ? "当前使用 ✓"
-                                          : "设为当前使用"}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        className="w-full text-left px-3 py-1.5 text-xs rounded-lg text-[var(--danger)] hover:bg-[var(--hover-bg)]"
-                                        onClick={async () => {
-                                          setVendorMenuOpen(false);
-                                          if (
-                                            await confirm(
-                                              `删除厂商「${activeVendor}」？其全部模型条目将一并移除。`,
-                                            )
-                                          ) {
-                                            deleteVendor(activeVendor);
-                                          }
-                                        }}
-                                      >
-                                        删除厂商
-                                      </button>
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            {/* Base URL：厂商条目共用一个（编辑同步全部条目） */}
-                            <div className="space-y-1">
-                              <p className="text-xs text-[var(--t5)]">
-                                Base URL
-                              </p>
-                              <input
-                                value={vendorBaseUrl}
-                                onChange={(e) =>
-                                  setVendorBaseUrl(e.target.value)
-                                }
-                                placeholder="https://api.example.com/v1"
-                                className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-                              />
-                            </div>
-                            {/* API 格式：该厂商条目所在的协议列表（切换 = 条目整体搬移）；自绘下拉同 ApiProviderSelect 模式 */}
-                            <div className="space-y-1">
-                              <p className="text-xs text-[var(--t5)]">
-                                API 格式
-                              </p>
-                              <ApiProviderSelect
-                                value={activeVendorProtocol}
-                                onChange={setVendorProtocol}
-                                options={API_FORMAT_OPTIONS}
-                              />
-                            </div>
-                            {/* API Key：按厂商分存（keyring 条目按厂商名），各厂商独立——挂账记录 */}
-                            <div className="space-y-1">
-                              <div className="flex items-center justify-between">
-                                <p className="text-xs text-[var(--t5)]">
-                                  API Key
-                                  {activeVendorHasKey && (
-                                    <span className="text-[var(--success)]">
-                                      {" "}
-                                      · 已存入系统凭据存储 ✓
-                                    </span>
-                                  )}
-                                </p>
-                                {activeVendorKeyUrl && (
-                                  <button
-                                    type="button"
-                                    className="text-xs text-[var(--brand)] hover:underline"
-                                    onClick={() => {
-                                      openUrl(activeVendorKeyUrl).catch((e) =>
-                                        handleCommandError(e, "open url"),
-                                      );
-                                    }}
-                                  >
-                                    获取 API Key
-                                  </button>
-                                )}
-                              </div>
-                              <div className="relative">
-                                <input
-                                  type={showKey ? "text" : "password"}
-                                  value={keyInput}
-                                  onChange={(e) => setKeyInput(e.target.value)}
-                                  placeholder={
-                                    activeVendorHasKey
-                                      ? "已保存（输入新 Key 可覆盖）"
-                                      : "sk-…"
-                                  }
-                                  className="nm-inset w-full rounded-xl px-3 py-2 pr-9 text-xs text-[var(--t3)] outline-none"
-                                />
-                                <button
-                                  type="button"
-                                  aria-label={
-                                    showKey ? "隐藏 API Key" : "显示 API Key"
-                                  }
-                                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t5)] hover:text-[var(--t2)]"
-                                  onClick={() => setShowKey((v) => !v)}
-                                >
-                                  {showKey ? (
-                                    <EyeOff size={13} aria-hidden />
-                                  ) : (
-                                    <Eye size={13} aria-hidden />
-                                  )}
-                                </button>
-                              </div>
-                              {activeVendorHasKey && (
-                                <button
-                                  className="text-xs text-[var(--danger)] hover:underline"
-                                  onClick={clearVendorKey}
-                                >
-                                  清除已保存的 Key
-                                </button>
-                              )}
-                            </div>
-                            {/* 模型列表：行 = 名称 + 上下文徽标 + 能力徽标 + 插头（连接测试）+ 铅笔编辑 + 开关；flex-1 与添加厂商网格同高对齐 */}
-                            <div className="flex min-h-0 flex-1 flex-col gap-1">
-                              <div className="flex items-center justify-between">
-                                <p className="text-xs text-[var(--t5)]">
-                                  模型列表
-                                </p>
-                                <div className="flex items-center gap-1.5">
-                                  {activeVendorMeta && (
-                                    <div
-                                      ref={metaPickerRef}
-                                      className="relative"
-                                    >
-                                      <button
-                                        type="button"
-                                        aria-haspopup="listbox"
-                                        aria-expanded={metaPickerOpen}
-                                        className="nm-btn px-2.5 py-1 text-xs text-[var(--t3)]"
-                                        title="从模型库挑选该厂商的模型，自动填充上下文与推理参数；新模型默认禁用"
-                                        onClick={toggleMetaPicker}
-                                      >
-                                        从模型库添加 ▾
-                                      </button>
-                                      {metaPickerOpen && (
-                                        <div
-                                          role="listbox"
-                                          aria-label="从模型库添加"
-                                          className="nm-popover absolute right-0 z-50 mt-1 max-h-56 w-64 space-y-0.5 overflow-y-auto p-1 origin-top-right"
-                                        >
-                                          {(() => {
-                                            const added = new Set(
-                                              activeVendorEntries.map(
-                                                (m) => m.model,
-                                              ),
-                                            );
-                                            const options = (
-                                              metaPickerModels ?? []
-                                            ).filter(
-                                              (m) =>
-                                                !added.has(
-                                                  m.model_key.includes("/")
-                                                    ? m.model_key.slice(
-                                                        m.model_key.indexOf(
-                                                          "/",
-                                                        ) + 1,
-                                                      )
-                                                    : m.model_key,
-                                                ),
-                                            );
-                                            if (metaPickerModels === null)
-                                              return (
-                                                <p className="px-3 py-1.5 text-xs text-[var(--t5)]">
-                                                  模型库服务不可用
-                                                </p>
-                                              );
-                                            if (options.length === 0)
-                                              return (
-                                                <p className="px-3 py-1.5 text-xs text-[var(--t5)]">
-                                                  模型库中的模型均已添加
-                                                </p>
-                                              );
-                                            return options.map((m) => (
-                                              <button
-                                                key={m.model_key}
-                                                type="button"
-                                                role="option"
-                                                aria-selected={false}
-                                                className="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-xs text-[var(--t3)] hover:bg-[var(--hover-bg)]"
-                                                onClick={() => addMetaModel(m)}
-                                              >
-                                                <span className="min-w-0 flex-1 truncate">
-                                                  {m.display_name ||
-                                                    m.model_key}
-                                                </span>
-                                                {m.context_length ? (
-                                                  <span
-                                                    aria-hidden
-                                                    className="shrink-0 font-mono text-xs text-[var(--t5)]"
-                                                  >
-                                                    {Math.round(
-                                                      m.context_length / 100,
-                                                    ) / 10}
-                                                    K
-                                                  </span>
-                                                ) : null}
-                                              </button>
-                                            ));
-                                          })()}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                  <button
-                                    type="button"
-                                    className="nm-btn px-2.5 py-1 text-xs text-[var(--t3)]"
-                                    onClick={addModelToVendor}
-                                  >
-                                    ＋ 添加模型
-                                  </button>
-                                </div>
-                              </div>
-                              {activeVendorEntries.length === 0 ? (
-                                <p className="py-1 text-xs text-[var(--t5)]">
-                                  暂无模型，点「＋ 添加模型」开始添加
-                                </p>
-                              ) : (
-                                <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
-                                  {activeVendorEntries.map((m) => (
-                                    <ModelRow
-                                      key={m.id}
-                                      model={m}
-                                      apiProvider={activeVendorProtocol}
-                                      vendorDisabled={!vendorEnabled}
-                                      vendorVerified={config.verifiedVendors.includes(
-                                        activeVendor ?? "",
-                                      )}
-                                      onChange={(patch) =>
-                                        updateModel(m.id, patch)
-                                      }
-                                      onDelete={() => deleteModel(m.id)}
-                                      onTested={async () => {
-                                        // 可用性已落盘：await reload 拿到最新 verifiedVendors 再广播——
-                                        // 否则旧 state 的下一次整写会把刚落盘的验证状态覆盖掉
-                                        await loadConfig();
-                                        emit("bot-config-changed", null).catch(
-                                          () => {},
-                                        );
-                                      }}
-                                    />
-                                  ))}
-                                </div>
-                              )}
-                              <p className="text-xs text-[var(--t6)] leading-snug">
-                                插头 =
-                                连接测试：通过后厂商点亮绿点、开启的模型才进聊天窗口下拉（key/URL/格式变更后需重新测试）。当前使用的模型在聊天窗口
-                                🧠 下拉切换；max_tokens 在各模型的编辑里设置（仅
-                                Anthropic 格式生效）。
-                              </p>
-                            </div>
-                            {/* 全局 max_tokens 输入已删（每模型编辑里都有，页底重复）；BotConfig.maxTokens
-                仍作条目留空时的兜底层透传保存（条目 > 全局 > 内置默认），无 UI 入口 */}
-                            {/* 保存 + 自动连接测试：保存成功后厂商下有开启的模型即自动探测，
-                结果决定左栏绿点与聊天下拉可见性 */}
-                            <div className="mt-3 flex items-center justify-end gap-3">
-                              {botError && (
-                                <p className="text-xs text-[var(--danger)]">
-                                  {botError}
-                                </p>
-                              )}
-                              {vendorTestMsg && (
-                                <p
-                                  className={`text-xs ${
-                                    vendorTestOk
-                                      ? "text-[var(--success)]"
-                                      : "text-[var(--danger)]"
-                                  }`}
-                                >
-                                  {vendorTestMsg}
-                                </p>
-                              )}
-                              <button
-                                aria-label="保存配置"
-                                className={`btn-sm-action ${
-                                  configBusy || vendorTestBusy
-                                    ? "nm-inset"
-                                    : "nm-outset"
-                                }`}
-                                onClick={saveVendorPage}
-                                disabled={configBusy || vendorTestBusy}
-                              >
-                                {configSaved ? (
-                                  <>
-                                    <Check size={12} aria-hidden /> 已保存
-                                  </>
-                                ) : configBusy ? (
-                                  "保存中…"
-                                ) : vendorTestBusy ? (
-                                  "测试连接中…"
-                                ) : (
-                                  "保存配置"
-                                )}
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
+              <ModelSection
+                needVendorReVerify={needVendorReVerify}
+                botEnabled={botEnabled}
+                vendorGroups={vendorGroups}
+                vendorMetaOf={vendorMetaOf}
+                activeVendor={activeVendor}
+                setActiveVendor={setActiveVendor}
+                config={config}
+                setShowProviderPicker={setShowProviderPicker}
+                showProviderPicker={showProviderPicker}
+                metaProviders={metaProviders}
+                syncMetaLibrary={syncMetaLibrary}
+                metaSyncBusy={metaSyncBusy}
+                metaSyncMsg={metaSyncMsg}
+                applyProviderPreset={applyProviderPreset}
+                metaSearch={metaSearch}
+                setMetaSearch={setMetaSearch}
+                applyMetaProvider={applyMetaProvider}
+                metaApplyBusy={metaApplyBusy}
+                activeVendorMeta={activeVendorMeta}
+                vendorEnabled={vendorEnabled}
+                toggleVendorEnabled={toggleVendorEnabled}
+                vendorMenuRef={vendorMenuRef}
+                vendorMenuOpen={vendorMenuOpen}
+                setVendorMenuOpen={setVendorMenuOpen}
+                activeVendorEntries={activeVendorEntries}
+                makeVendorActive={makeVendorActive}
+                vendorOf={vendorOf}
+                confirm={confirm}
+                deleteVendor={deleteVendor}
+                vendorBaseUrl={vendorBaseUrl}
+                setVendorBaseUrl={setVendorBaseUrl}
+                activeVendorProtocol={activeVendorProtocol}
+                setVendorProtocol={setVendorProtocol}
+                activeVendorHasKey={activeVendorHasKey}
+                activeVendorKeyUrl={activeVendorKeyUrl}
+                showKey={showKey}
+                keyInput={keyInput}
+                setKeyInput={setKeyInput}
+                setShowKey={setShowKey}
+                clearVendorKey={clearVendorKey}
+                metaPickerRef={metaPickerRef}
+                metaPickerOpen={metaPickerOpen}
+                toggleMetaPicker={toggleMetaPicker}
+                metaPickerModels={metaPickerModels}
+                addMetaModel={addMetaModel}
+                addModelToVendor={addModelToVendor}
+                updateModel={updateModel}
+                deleteModel={deleteModel}
+                loadConfig={loadConfig}
+                botError={botError}
+                vendorTestMsg={vendorTestMsg}
+                vendorTestOk={vendorTestOk}
+                configBusy={configBusy}
+                vendorTestBusy={vendorTestBusy}
+                saveVendorPage={saveVendorPage}
+                configSaved={configSaved}
+              />
             </section>
           )}
           {mountedSections.has("bot") && (
@@ -3331,154 +2015,13 @@ export function SettingsPage({
               hidden={activeSection !== "bot"}
               className="space-y-4 pt-4"
             >
-              <div className="nm-card p-5">
-                {/* 授权模式（Kimi CLI 风格执行前授权） */}
-                <div className="space-y-1">
-                  <p className="text-sm font-medium text-[var(--t2)]">
-                    授权模式
-                  </p>
-                  <div className="flex gap-2">
-                    {(
-                      [
-                        ["strict", "严格白名单"],
-                        ["ask", "询问后放行"],
-                        ["auto", "白名单内自动"],
-                        ["yolo", "yolo 全放行"],
-                      ] as const
-                    ).map(([mode, label]) => (
-                      <button
-                        key={mode}
-                        className={`flex-1 px-2 py-1.5 text-xs ${
-                          config.permMode === mode ? "nm-inset" : "nm-outset"
-                        } ${mode === "yolo" ? "text-[var(--danger)]" : "text-[var(--t3)]"}`}
-                        onClick={() => setPermMode(mode)}
-                        disabled={configBusy}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-xs text-[var(--t6)] leading-snug">
-                    {config.permMode === "strict" &&
-                      "白名单外的文件访问一律拒绝。"}
-                    {config.permMode === "ask" &&
-                      "白名单内的文件直接读；白名单外弹窗请你授权（允许一次 / 始终允许该目录 / 拒绝）。"}
-                    {config.permMode === "auto" &&
-                      "白名单内的文件操作全自动（含覆盖写免确认）——定时/工作流无人值守写文件不再失败；白名单外仍弹窗授权。"}
-                    {config.permMode === "yolo" &&
-                      "⚠️ 不弹任何授权：机器人可读本机任意文件，且 Python 编程免开关直接执行（以本机用户权限，可联网）。仅在你完全信任所用模型时开启。"}
-                  </p>
-                </div>
-                {/* per-tool 权限规则表（deny/ask/allow 首中即停；无命中走授权模式） */}
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-[var(--t5)]">
-                      工具权限规则（按工具覆盖授权模式）
-                    </p>
-                    <button
-                      className="nm-btn px-2 py-0.5 text-xs text-[var(--t3)]"
-                      onClick={() =>
-                        setConfig((c) => ({
-                          ...c,
-                          toolRules: [
-                            ...c.toolRules,
-                            { tool: "", action: "deny" as const },
-                          ],
-                        }))
-                      }
-                    >
-                      + 添加规则
-                    </button>
-                  </div>
-                  {config.toolRules.length === 0 ? (
-                    <p className="text-xs text-[var(--t6)]">
-                      例：deny run_python 禁用编程工具；ask edit_file
-                      每次编辑都确认。规则优先于上方授权模式。
-                    </p>
-                  ) : (
-                    <div className="space-y-1">
-                      {config.toolRules.map((r, i) => (
-                        <div key={i} className="flex items-center gap-1.5">
-                          {/* oxlint-disable-next-line react/no-array-index-key */}
-                          <input
-                            value={r.tool}
-                            placeholder="工具名，如 run_python"
-                            onChange={(e) =>
-                              setConfig((c) => ({
-                                ...c,
-                                toolRules: c.toolRules.map((x, j) =>
-                                  j === i ? { ...x, tool: e.target.value } : x,
-                                ),
-                              }))
-                            }
-                            className="min-w-0 flex-1 rounded-lg nm-inset px-2 py-1 font-mono text-xs text-[var(--t2)] outline-none"
-                          />
-                          <select
-                            aria-label={`规则动作 ${r.tool || i + 1}`}
-                            value={r.action}
-                            onChange={(e) =>
-                              setConfig((c) => ({
-                                ...c,
-                                toolRules: c.toolRules.map((x, j) =>
-                                  j === i
-                                    ? {
-                                        ...x,
-                                        action: e.target.value as
-                                          "allow" | "ask" | "deny",
-                                      }
-                                    : x,
-                                ),
-                              }))
-                            }
-                            className="shrink-0 rounded-lg nm-inset px-1.5 py-1 text-xs text-[var(--t3)]"
-                          >
-                            <option value="allow">allow 放行</option>
-                            <option value="ask">ask 确认</option>
-                            <option value="deny">deny 禁用</option>
-                          </select>
-                          <button
-                            aria-label={`删除规则 ${r.tool || i + 1}`}
-                            className="shrink-0 px-1 text-sm text-[var(--t5)] hover:text-[var(--danger)]"
-                            onClick={() =>
-                              setConfig((c) => ({
-                                ...c,
-                                toolRules: c.toolRules.filter(
-                                  (_, j) => j !== i,
-                                ),
-                              }))
-                            }
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {/* 本地文件工具白名单（read_text_file/grep_files/list_files；
-                追加语义：在内置默认之上追加放行） */}
-                <div className="space-y-1">
-                  <p className="text-xs text-[var(--t5)]">
-                    文件工具白名单目录（一行一个绝对路径）
-                  </p>
-                  <textarea
-                    value={config.allowedDirs}
-                    onChange={(e) =>
-                      setConfig((c) => ({ ...c, allowedDirs: e.target.value }))
-                    }
-                    placeholder={
-                      "在内置默认之上追加：~/Desktop、~/Downloads、~/Documents + 任务卡绑定文件夹始终放行"
-                    }
-                    rows={3}
-                    className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none resize-y"
-                  />
-                  <p className="text-xs text-[var(--t6)] leading-snug">
-                    白名单内静默放行；白名单外按授权模式处理（见上）。授权弹窗点「始终允许该目录」会自动追加到这里。
-                  </p>
-                </div>
-                {/* 白名单 textarea 等 setConfig 字段靠本卡保存钮落盘 */}
-                {renderSaveButton("mt-3 flex justify-end")}
-              </div>
+              <BotApiSection
+                config={config}
+                setPermMode={setPermMode}
+                configBusy={configBusy}
+                setConfig={setConfig}
+                renderSaveButton={renderSaveButton}
+              />
             </section>
           )}
           {mountedSections.has("mcp") && (
@@ -3486,122 +2029,17 @@ export function SettingsPage({
               hidden={activeSection !== "mcp"}
               className="space-y-4 pt-4"
             >
-              <div className="nm-card p-5">
-                {/* Tavily 搜索 */}
-                <div className="space-y-1">
-                  <SettingRow
-                    label="Tavily 搜索"
-                    description="开启后 web_search 走 Tavily API（需填 key）；关闭走 Bing+百度双引擎"
-                  >
-                    <button
-                      className={`btn-sm-action ${
-                        config.tavilyEnabled ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={toggleTavily}
-                      disabled={configBusy}
-                    >
-                      {configBusy
-                        ? "…"
-                        : config.tavilyEnabled
-                          ? "已开启"
-                          : "已关闭"}
-                    </button>
-                  </SettingRow>
-                  <p className="text-xs text-[var(--t5)]">
-                    Tavily 搜索 API Key（可选）
-                  </p>
-                  <input
-                    type="password"
-                    value={tavilyKeyInput}
-                    onChange={(e) => setTavilyKeyInput(e.target.value)}
-                    placeholder={
-                      config.hasTavilyKey
-                        ? "已存入系统凭据存储 ✓（输入新 key 覆盖）"
-                        : "tvly-…（开关关闭时不使用）"
-                    }
-                    className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-                  />
-                  {config.tavilyEnabled &&
-                  !config.hasTavilyKey &&
-                  !tavilyKeyInput.trim() ? (
-                    <p className="text-xs text-[var(--danger)] leading-snug">
-                      已开启但未填 key：web_search 会报错提示，请填写 key
-                      后点「保存配置」，或关闭开关。
-                    </p>
-                  ) : (
-                    <p className="text-xs text-[var(--t6)] leading-snug">
-                      key 存系统凭据存储（与主 API key
-                      同），不再明文写进配置文件；填 key 后点「保存配置」生效；
-                      要停用请关闭开关（已存的 key
-                      不提供清除入口）。开关开启但缺 key / Tavily
-                      请求失败时会明确报错，不会静默走百度。
-                    </p>
-                  )}
-                </div>
-                {/* Brave 搜索（照搬 Tavily 模式；与 Tavily 互斥） */}
-                <div className="space-y-1">
-                  <SettingRow
-                    label="Brave 搜索"
-                    description="开启后 web_search 走 Brave Search API（需填 key）；关闭走 Bing+百度双引擎"
-                  >
-                    <button
-                      className={`btn-sm-action ${
-                        config.braveEnabled ? "nm-inset" : "nm-outset"
-                      }`}
-                      onClick={toggleBrave}
-                      disabled={configBusy}
-                    >
-                      {configBusy
-                        ? "…"
-                        : config.braveEnabled
-                          ? "已开启"
-                          : "已关闭"}
-                    </button>
-                  </SettingRow>
-                  <p className="text-xs text-[var(--t5)]">
-                    Brave 搜索 API Key（可选）
-                  </p>
-                  <input
-                    type="password"
-                    value={braveKeyInput}
-                    onChange={(e) => setBraveKeyInput(e.target.value)}
-                    placeholder={
-                      config.hasBraveKey
-                        ? "已存入系统凭据存储 ✓（输入新 key 覆盖）"
-                        : "BSA…（https://brave.com/search/api/ 免费获取；开关关闭时不使用）"
-                    }
-                    className="nm-inset w-full rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-                  />
-                  {config.braveEnabled &&
-                  !config.hasBraveKey &&
-                  !braveKeyInput.trim() ? (
-                    <p className="text-xs text-[var(--danger)] leading-snug">
-                      已开启但未填 key：web_search 会报错提示，请填写 key
-                      后点「保存配置」，或关闭开关。
-                    </p>
-                  ) : (
-                    <p className="text-xs text-[var(--t6)] leading-snug">
-                      key 存系统凭据存储（与主 API key
-                      同），不再明文写进配置文件；填 key 后点「保存配置」生效；
-                      要停用请关闭开关（已存的 key 不提供清除入口）。与 Tavily
-                      互斥，两个开关同时开启会报错。开关开启但缺 key / Brave
-                      请求失败时会明确报错，不会静默走百度。
-                    </p>
-                  )}
-                </div>
-                {/* Tavily/Brave 双开冲突提示：后端同样明确报错，这里提前可见 */}
-                {config.tavilyEnabled && config.braveEnabled && (
-                  <p className="text-xs text-[var(--danger)] leading-snug">
-                    <TriangleAlert
-                      size={10}
-                      aria-hidden
-                      className="inline-block align-[-1px]"
-                    />{" "}
-                    Tavily 与 Brave 只能开启一个，请关闭其中一个。
-                  </p>
-                )}
-                {renderSaveButton("mt-3 flex justify-end")}
-              </div>
+              <McpSection
+                config={config}
+                toggleTavily={toggleTavily}
+                configBusy={configBusy}
+                tavilyKeyInput={tavilyKeyInput}
+                setTavilyKeyInput={setTavilyKeyInput}
+                toggleBrave={toggleBrave}
+                braveKeyInput={braveKeyInput}
+                setBraveKeyInput={setBraveKeyInput}
+                renderSaveButton={renderSaveButton}
+              />
             </section>
           )}
           {mountedSections.has("bot") && (
@@ -3609,135 +2047,19 @@ export function SettingsPage({
               hidden={activeSection !== "bot"}
               className="space-y-4 pt-4"
             >
-              <div className="nm-card p-5">
-                {/*  bypass_llm_on_pre_step_hit 开关：技能路由新链路 / 旧链路回退闸 */}
-                <div className="space-y-1">
-                  <p className="text-xs text-[var(--t5)]">智能技能路由</p>
-                  <button
-                    className={`shrink-0 min-w-[160px] px-4 py-1.5 text-sm text-[var(--t3)] ${
-                      config.bypassLlmOnPreStepHit ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={() =>
-                      setConfig((c) => ({
-                        ...c,
-                        bypassLlmOnPreStepHit: !c.bypassLlmOnPreStepHit,
-                      }))
-                    }
-                    disabled={configBusy}
-                  >
-                    {config.bypassLlmOnPreStepHit
-                      ? "已开启（推荐）"
-                      : "已关闭（回退旧链路）"}
-                  </button>
-                  <p className="text-xs text-[var(--t6)] leading-snug">
-                    开启（推荐）：命中技能时 auto 模式走 DSL 调度器、interactive
-                    模式由 LLM 驱动技能步骤。
-                    <br />
-                    关闭：退回旧链路，由主 LLM
-                    自由选择技能——仅当新路由行为异常时紧急回退用。
-                  </p>
-                </div>
-
-                {/* 外部机器人 API 开关 */}
-                <div className="mt-4 flex items-center justify-between gap-4">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-[var(--t2)]">
-                      开启外部机器人 API 接口
-                    </p>
-                    <p className="mt-1 text-xs text-[var(--t5)]">
-                      {status.enabled
-                        ? `运行中 · http://127.0.0.1:${status.port}`
-                        : "默认关闭，开启后仅监听本机 127.0.0.1"}
-                    </p>
-                  </div>
-                  <button
-                    className={`btn-sm-action ${
-                      status.enabled ? "nm-inset" : "nm-outset"
-                    }`}
-                    onClick={toggle}
-                    disabled={busy}
-                  >
-                    {busy ? "…" : status.enabled ? "已开启" : "已关闭"}
-                  </button>
-                </div>
-
-                {error && (
-                  <p className="mt-2 text-xs text-[var(--danger)]">{error}</p>
-                )}
-
-                {/* token 展示 + 复制 */}
-                {status.enabled && (
-                  <>
-                    <div className="mt-5">
-                      <p className="text-xs text-[var(--t4)]">
-                        访问令牌（Bearer Token）
-                      </p>
-                      <div className="mt-1.5 flex items-center gap-2">
-                        <input
-                          readOnly
-                          value={status.token}
-                          className="nm-inset flex-1 min-w-0 rounded-xl px-3 py-2 text-xs text-[var(--t3)] outline-none"
-                          onFocus={(e) => e.currentTarget.select()}
-                        />
-                        <button
-                          className="nm-btn shrink-0 px-3 py-2 text-xs text-[var(--t3)] inline-flex items-center gap-1 whitespace-nowrap"
-                          onClick={copyToken}
-                        >
-                          {copied ? (
-                            <>
-                              <Check size={12} aria-hidden /> 已复制
-                            </>
-                          ) : (
-                            "复制"
-                          )}
-                        </button>
-                        <button
-                          className="nm-btn shrink-0 px-3 py-2 text-xs text-[var(--danger)]"
-                          onClick={rotateToken}
-                          disabled={busy}
-                        >
-                          重新生成
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* 接口说明 */}
-                    <div className="mt-5 space-y-1 text-xs text-[var(--t4)]">
-                      <p className="font-medium text-[var(--t3)]">
-                        接口（均需 Authorization: Bearer &lt;token&gt;）
-                      </p>
-                      <p>
-                        GET&nbsp;&nbsp;/api/health —
-                        健康检查（免鉴权，仅服务状态）
-                      </p>
-                      <p>
-                        GET&nbsp;&nbsp;/api/tasks —
-                        活跃任务（?status=todo|doing|done 筛选；?trash=1
-                        回收站；?archived=1 归档；?all=1 全量）
-                      </p>
-                      <p>GET&nbsp;&nbsp;/api/tasks/:id — 单条任务</p>
-                      <p>
-                        POST&nbsp;/api/tasks — 新建任务（title
-                        必填，note/status/filePath/fileIsDir/due/tags 可选）
-                      </p>
-                      <p>
-                        PUT&nbsp;&nbsp;/api/tasks/:id —
-                        更新（title/note/status/filePath/fileIsDir/due/tags/archived/deleted）
-                      </p>
-                      <p>DELETE&nbsp;/api/tasks/:id — 软删进回收站（幂等）</p>
-                      <p>
-                        GET&nbsp;&nbsp;/api/events — SSE 实时推送（?since=事件id
-                        断线重放）
-                      </p>
-                      <p className="mt-1 text-[var(--t5)]">
-                        开关状态自动记忆：退出时开启，下次启动自动恢复
-                      </p>
-                    </div>
-                  </>
-                )}
-                {/* 技能路由/外部 API 段的保存入口 */}
-                {renderSaveButton("mt-4 flex justify-end")}
-              </div>
+              <BotToolsSection
+                config={config}
+                setConfig={setConfig}
+                configBusy={configBusy}
+                status={status}
+                toggle={toggle}
+                busy={busy}
+                error={error}
+                copyToken={copyToken}
+                copied={copied}
+                rotateToken={rotateToken}
+                renderSaveButton={renderSaveButton}
+              />
             </section>
           )}
           {mountedSections.has("skills") && (
