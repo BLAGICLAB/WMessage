@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 269 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 272 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -274,8 +274,8 @@ src-tauri/src/
 │                        `#[cfg(test)] mod X;` 声明识别 + 生产切片剔除内联
 │                        `#[cfg(test)]` 块。判据不看文件名也不看代码位置——
 │                        位置启发式会把「测试块在前、生产代码在后」的文件整段漏扫
-├── bot/services.rs (1332) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
-│                        **门面**——实现按面拆到下面三个子模块，这里只留类型 / 常量 / use /
+├── bot/services.rs (468) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+│                        **门面**——实现按面拆到下面六个子模块，这里只留类型 / 常量 / use /
 │                        逐项转出（`crate::bot::services::X` 旧路径与旧可见性保持不变）
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
@@ -300,6 +300,18 @@ src-tauri/src/
 │   │                        每 30s 一轮的输出上限巡检
 │   ├── bot/services/observe.rs (282) 资源观测面：合计口径判定（阈值 / 持续 / 去重）+
 │   │                        采样一轮（整棵进程树 RSS / CPU）+ 告警落审计 + 系统通知
+│   ├── bot/services/serialize.rs (114) 序列化面：服务条目 → JSON（给模型看）+
+│   │                        受管服务全景快照（合计 RSS / 合计告警 / 本平台能否采样；
+│   │                        采不到时给 null 而不是 0——「没判」不是「没占用」）
+│   ├── bot/services/start.rs (522) 启动面：白名单逐臂构造（源码层不存在「变量 → 进程名」
+│   │                        的路径）+ 登记表占位（查与占在同一把锁里完成）+
+│   │                        就绪等待（stdout 匹配正则 / 无 pattern 时的短存活确认）+
+│   │                        就绪失败归因（端口违规 > 非法正则 > 进程自己退 > 等超时；
+│   │                        退出码取**停止前**的快照——停了之后读到的都是我们 kill 的那个）
+│   ├── bot/services/stop.rs (257) 停止面：降级信号阶梯（SIGINT → SIGTERM → SIGKILL）+
+│   │                        脱离进程组的子孙回收（带 starttime 防 PID 复用）+
+│   │                        退出确认（停不掉就报失败并把状态放回原样，不写 Exited——
+│   │                        写了等于把它从退出清理里摘掉，而它还在跑）
 │   ├── bot/services/watchdog.rs (295)  服务层「宿主死了服务也得死」看门狗：
 │   │                            unix 用管道 EOF（宿主一死 → 写端关闭 → 助手 TERM 服务整组）；
 │   │                            Windows 复用 py/runtime.rs 的 Job Object（KILL_ON_JOB_CLOSE）
@@ -923,6 +935,9 @@ flowchart TD
 - `bot/services/gate.rs`
 - `bot/services/logs.rs`
 - `bot/services/observe.rs`
+- `bot/services/serialize.rs`
+- `bot/services/start.rs`
+- `bot/services/stop.rs`
 - `bot/services/tests.rs`
 - `bot/services/watchdog.rs`
 - `bot/stream_log.rs`

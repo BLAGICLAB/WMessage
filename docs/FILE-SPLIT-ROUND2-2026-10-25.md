@@ -126,7 +126,7 @@ cargo nextest 全量 / npm test / tests-audit 六件套 / audit_no_eval.py /
 
 | # | 文件 | 状态 | commit | 备注 |
 |---|---|---|---|---|
-| 1 | `bot/services.rs` | ⬜ 未开始 | | C 类，门面先行 |
+| 1 | `bot/services.rs` | ✅ 已完成 | 待填 | C 类，门面先行。1332 → 门面 468 + start 522 / stop 257 / serialize 114。**类型留门面**（StartRequest / StartOutcome / StopOutcome）、**登记表访问留门面**（lock_table / list_all 是三个子模块共同依赖的 hub），其余实现按面切走 |
 | 2 | `bot/services/tests.rs` | ⬜ 未开始 | | 依赖 #1 |
 | 3 | `memory/extract.rs` | ⬜ 未开始 | | A 类 |
 | 4 | `bot_skills/parse.rs` | ⬜ 未开始 | | A 类 |
