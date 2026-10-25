@@ -20,6 +20,9 @@ const WHITELIST: &[&str] = &[
     "bot/tools/common.rs",
     "bot/tools/doc.rs",
     "bot_fs.rs",
+    // 文件工具拆成 bot_fs/ 子模块后，存量调用点跟着搬了过来
+    "bot_fs/edit.rs",
+    "bot_fs/read.rs",
     "bot_chat.rs",
     // 聊天主流程拆成 bot_chat/ 子模块后，存量调用点跟着搬了过来
     "bot_chat/exec.rs",

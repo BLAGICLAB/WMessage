@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 245 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 252 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -421,11 +421,20 @@ src-tauri/src/
 │                        原.workflow_questions，随画布退役中立化保留（手动执行任务卡共用）
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
-├── bot_fs.rs            只读工具 read_text_file/grep_files/list_files + 文件编辑
-│                        edit_file/write_file（N6，Aider 式三级匹配：精确→空白容错→
-│                        reflection；写白名单≠读白名单：可写根=AI_Gen_Files+任务卡
-│                        绑定文件夹+allowedDirs；白名单外 perm_mode 三分支/覆盖确认）；
-│                        路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸
+├── bot_fs.rs (465)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
+│                        per-tool 规则表（lookup_tool_rule / tool_rule_for）+ 读闸
+│                        （resolve_with_perm / allowed_dirs）；子模块转出（旧路径 1:1 保持）
+│   ├── bot_fs/edit.rs (649)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
+│   │                             （N6，Aider 式三级匹配：精确→空白容错→reflection；
+│   │                             写白名单≠读白名单：可写根=AI_Gen_Files+任务卡绑定文件夹+
+│   │                             allowedDirs；白名单外 perm_mode 三分支/覆盖确认）
+│   ├── bot_fs/read.rs (625)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
+│   │                             只读工具 read_text_file/grep_files/list_files
+│   ├── bot_fs/receipt.rs (169)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
+│   ├── bot_fs/tests.rs (677)     读写闸与编辑内核单测
+│   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
+│   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
+│   └── bot_fs/tool_rule_tests.rs (47)      per-tool 规则表单测
 ├── bot_archive.rs (1404) 归档工具 unpack_archive/pack_archive：zip / tar / tar.gz 的解包与打包
 │                        （纯 Rust：zip + tar + flate2，不依赖本机 Python）；压缩包是外部
 │                        输入——条目名带 .. / 绝对路径 / 盘符 / 软链一律跳过并列出，单文件
@@ -764,6 +773,13 @@ flowchart TD
 - `bot_chat/summary.rs`
 - `bot_desktop.rs`
 - `bot_fs.rs`
+- `bot_fs/edit.rs`
+- `bot_fs/file_change_tests.rs`
+- `bot_fs/read.rs`
+- `bot_fs/read_path_single_open_tests.rs`
+- `bot_fs/receipt.rs`
+- `bot_fs/tests.rs`
+- `bot_fs/tool_rule_tests.rs`
 - `bot_manage_file.rs`
 - `bot_model_loop.rs`
 - `bot_model_loop/context.rs`
