@@ -1,6 +1,6 @@
 # 前端拆分方案（第三轮 · 前端篇）
 
-> 状态：**待执行**（2026-10-25 出案）
+> 状态：**已执行完毕**（2026-10-25 收尾；落地结果见 §十二 / §十三）
 > 关联：`docs/FILE-SPLIT-PLAN-2026-10-25.md`（第一轮 · Rust 18 条）、`docs/FILE-SPLIT-ROUND2-2026-10-25.md`（第二轮 · Rust 10 条）
 > 交接：§十一 是**可直接粘贴到新对话任务的提示词**，新会话先读本文件再动手
 
@@ -525,6 +525,78 @@ pre-commit 会自动跑 scripts/test-fast.sh（TS 链路）；本批不涉及 Ru
 
 先读文档，然后告诉我你打算先做哪个文件、打算怎么切，等我确认后再动手。
 ```
+
+---
+
+## 十二、进度回填
+
+| # | 文件 / 批次 | 状态 | commit | 备注 |
+|---|---|---|---|---|
+| 0 | `scripts/verify_pure_move_tsx.py` | ✅ 已完成 | `1c194b02` | 前端版纯搬移核对器。逐行 lstrip 后必须完全相同（前端无格式化器，比 Rust 版更硬）。后续 `de581426` 补上多行 import 续行的识别 |
+| 1 | **F3** `ChatPanel.test.tsx` | ✅ 已完成 | `96bbca8a` | A 类。3105 → 7 个文件，最大 909。按嵌套 describe 主题切；每个新文件自带 `vi.mock` / `vi.hoisted` |
+| 2 | **F4** `SettingsPage.test.tsx` | ✅ 已完成 | `8d7ace7e` | A 类。2985 → 6 个文件 + 共享 `__testMocks.ts`，最大 860。mock 装置抽进共享模块（`vi.hoisted` 调用本身仍留在使用方文件顶层） |
+| 3 | **F1-S1** `SettingsPage.tsx` 常量/类型 | ✅ 已完成 | `83e4a88b` | A 类。4068 → 3822。类型与常量并入同目录既有的 `types.ts` / `constants.ts` |
+| 4 | **F1-S2** `SettingsPage.tsx` 8 个 hidden 区块 | ✅ 已完成 | `3008e069` | B 类。3822 → 2143。8 个 section 组件，最大 749。`hidden` 外壳留父组件（区块是同时挂载的） |
+| 5 | **F1-S3** `SettingsPage.tsx` 状态/handler | ✅ 已完成 | `f5260547` | B 类。2143 → 604。按域拆 3 个 hook。**偏离方案**（见 §十三） |
+| 6 | **F2-C1** `ChatPanel.tsx` 纯函数/常量 | ✅ 已完成 | `3582bea0` | A 类。2271 → 2231。`parse.ts` 新建，两个常量并入 `constants.ts` |
+| 7 | **F2-C2** `ChatPanel.tsx` 组件体 | ✅ 已完成 | `f3c173bc` | B 类。2231 → 826。拆成 11 个 hook，最大 458。**偏离方案**（见 §十三） |
+| 8 | **F5** `GraphCanvas.tsx` 材质 | ✅ 已完成 | `56fe8da2` | A 类（方案标「可选」）。1245 → 1134，新建 `graph-materials.ts` 133 行 |
+| 9 | 顺带修一处钉死路径的断言 | ✅ 已完成 | `790fbdb2` | `main.css` 浮层原点锁改成扫全树——拆分开前后都成立 |
+| 10 | 收尾：`.ts/.tsx` 纳管行数门禁 | ✅ 已完成 | `38700573` | `audit_file_size.py` 扫描根加前端 `src/`，阈值 1500，docstring 同步改写；另松开 `audit_tauri_bridge.py` 一处钉死 `ChatPanel.tsx` 的断言 |
+
+## 十三、落地结果（2026-10-25 收尾）
+
+5 个大文件全部拆完，**每文件一个 commit**，纯搬移逐段核对通过。
+
+| 指标 | 开工前 | 收工后 |
+|---|---|---|
+| 超过 1500 行的文件 | 4 | **0** |
+| 超过 1200 行的文件 | 5 | **0** |
+| 门禁口径内最大文件 | 4068（`SettingsPage.tsx`） | 1182（`src/App.tsx`） |
+| 前端文件数 / 总行数 | 249 / 59474 | 285 / 62151 |
+| vitest 用例数 | 1065 | **1065**（不变） |
+| vitest 文件数 | 100 | 111（测试文件按主题拆开，文件数增加不是用例增加） |
+| `audit_file_size.py` 的 `WHITELIST` | `{}`（前端不在口径内） | `{}`（前端已纳管，且无超限文件） |
+
+**本轮新学到的五条**：
+
+1. **oxlint 的 `exhaustive-deps` 认「值稳不稳」不认「值变没变」**：组件内的局部
+   绑定、`useState` 的 setter、`useRef`、hook 内的局部函数都算稳定值；**跨 hook
+   传来的参数一律算不稳定**——哪怕只是解构自 params 对象。于是「state 一个 hook、
+   handlers 另一个 hook」的切法会让每个 effect 捕获的 setter 都变成参数，规则把
+   effect 里调的函数全报成缺失依赖（值其实没变，只是作用域变了）。补进 deps 又会
+   让挂载期刷新每次渲染都重跑。按域分之后，每个 effect 回到拥有它依赖的那个
+   hook 里，依赖全是本作用域的稳定值。**这是 F1-S3 与 F2-C2 的共同成因**。
+2. **拆成小 hook 会让 React Compiler 重新看见旧问题**：原先 `loadFinalText` 自引用、
+   `addFilesRef.current = addFiles` 这类写法在 2000 行的组件里被 compiler 的
+   bail-out 盖住，拆成独立 hook 后各自能被成功分析，于是冒出来 4 条新 warning。
+   代码逐字没变——只是从「看不见」变成「看得见」。
+3. **按方案 §八.6，新增 warn 不修**：deps 数组补依赖、给旧写法加
+   `eslint-disable-next-line` 都会改被搬块的字节，那就不是纯搬移了。新增的
+   22 条 warning 记在这里，不修；门禁判据是「无新增 **error**」，实测 error 前后
+   都是 0。
+4. **「拆文件」会撞到按路径扫描的守卫**：这类守卫会**静默失效**或**自己变红**。
+   本批撞到两处——`main.css` 的浮层原点锁（`790fbdb2` 改成扫全树）与
+   `audit_tauri_bridge.py` 的会话事件登记表断言（`38700573` 改成认目录）。改法都
+   是把「钉死某个文件」放宽成「认一个范围」，断言的意图不变。
+5. **模块级模板字符串会把常量拖进依赖里**：F5 原计划只搬着色器与工厂，但着色器
+   在模块求值时就要读 `NODE_POINT_SCALE` / `EDGE_WIDTH`，常量留在原文件就形成
+   ESM 循环 + TDZ（一 import 就炸）。常量必须一并搬走，搬走后再从原文件 re-export
+   出去，测试的导入路径就不用动。
+
+**偏离方案三处**：
+
+| 方案写的 | 实际做的 | 为什么 |
+|---|---|---|
+| F1-S3：`useSettingsState` 装全部 useState + `useSettingsHandlers` 装 handlers | 按域拆 3 个 hook（`useSettingsActions` / `useSettingsVendors` / `useSettingsOps`），state 跟着域走 | 见新学到第 1 条。全部 useState 塞一个 hook 会让每个 effect 全报缺失依赖 |
+| F2-C2：6 个 hook，每个 ≤ 250 行 | 11 个 hook，最大 458（`useChatStream.ts`） | 聊天面板是「逻辑重、JSX 轻」：组件体 1965 行里 17 个 useEffect 交错在 state/handler 之间，按「连续段」切口要比预估的多；切口再少单个 hook 就会顶到 1500 门禁 |
+| F5：只搬 4 段着色器 + 2 个工厂 | 连同 7 个常量一起搬，原文件 re-export | 见新学到第 5 条 |
+
+**留下的债**：`docs/AGENT-TRANSPARENCY-DESIGN-2026-10-06.md` 与
+`docs/CHAT-SHELL-STATE-PRESERVATION-RESEARCH-2026-10-23.md` 里引用的
+`SettingsPage.tsx:644-656` 一类**行号锚点**已随拆分漂移（它们指向的代码搬进了
+section 组件与 hook）。这两份是历史设计文档、不在 `audit_doc_claims.py` 的对拍
+口径内，按「不顺手重构」的本批纪律没有改；它们是历史记录，不是现状文档。
 
 ---
 
