@@ -407,8 +407,11 @@ pub(crate) fn compact_before_round(
         let chars = tool_result_chars(msgs);
         if chars > TOOL_WINDOW_TRIGGER_CHARS {
             let trimmed = apply_tool_window(msgs, TOOL_WINDOW_KEEP_RECENT);
-            *tool_window_applied = true;
+            // flag 只在真裁剪时落位：跨阈值但候选 ≤ keep_recent 的轮什么都没改写，
+            // 缓存前缀未动——此处若烧掉唯一一次机会，同 trace 里后续更大的批次
+            // 将永远失去裁剪
             if trimmed > 0 {
+                *tool_window_applied = true;
                 (deps.audit)(
                     crate::audit::AuditLevel::Info,
                     "loop.tool_window.applied",

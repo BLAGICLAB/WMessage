@@ -3,8 +3,10 @@
 //! 四件验收对应四个用例：触发裁剪、护栏不越界、桩子可召回、未超阈值零改写。
 
 use crate::bot_model_loop::{
-    apply_tool_window, tool_result_chars, TOOL_WINDOW_KEEP_RECENT, TOOL_WINDOW_TRIGGER_CHARS,
+    apply_tool_window, compact_before_round, tool_result_chars, ModelLoopDeps,
+    TOOL_WINDOW_KEEP_RECENT, TOOL_WINDOW_TRIGGER_CHARS,
 };
+use crate::bot_slash::StopGuard;
 
 /// 造一条「工具调用 → 工具结果」的消息对。
 fn tool_pair(id: &str, name: &str, result: &str) -> Vec<serde_json::Value> {
@@ -166,4 +168,67 @@ fn tool_result_chars_counts_only_tool_messages() {
 fn trigger_threshold_is_near_the_measured_p90() {
     assert_eq!(TOOL_WINDOW_TRIGGER_CHARS, 24_000);
     assert_eq!(TOOL_WINDOW_KEEP_RECENT, 6);
+}
+
+/// 一次性门不得被「跨阈值但裁无可裁」的轮空消费：首批大结果跨过阈值但
+/// 候选 ≤ keep_recent（一条裁不了）时，flag 不应置位——否则同一 trace 里
+/// 后续更大的批次永远失去裁剪机会（实机变异 V76 的返工路径）。
+#[test]
+fn one_shot_gate_survives_a_threshold_crossing_without_trim() {
+    let app = tauri::test::mock_app();
+    let stop = StopGuard::new(app.handle(), false, None);
+    let emit = |_: &str, _: serde_json::Value| {};
+    let audit = |_: crate::audit::AuditLevel, _: &str, _: Vec<(&'static str, String)>| {};
+    let skill_finish = |_: bool, _: &str| String::new();
+    let no_skill_run = |_: Option<&str>| None;
+    let on_round = |_: usize| {};
+    let no_keywords: Vec<String> = Vec::new();
+    let deps = ModelLoopDeps {
+        fuse_cap_override: None,
+        emit: &emit,
+        audit: &audit,
+        skill_finish: &skill_finish,
+        active_skill_run: &no_skill_run,
+        conv_sidecar_dir: None,
+        final_selfcheck_round_gap: Some(0),
+        final_selfcheck_http: None,
+        on_round: &on_round,
+        turn_status: None,
+        wall_budget: None,
+        session_tools: None,
+        reasoning_echo: false,
+        in_turn_context_edit: true,
+        guard_claim_keywords: &no_keywords,
+        file_receipts: None,
+    };
+
+    let big = "x".repeat(9_000);
+    let mut msgs = vec![serde_json::json!({"role": "user", "content": "干活"})];
+    for i in 0..3 {
+        msgs.extend(tool_pair(&format!("call_{i}"), "read_text_file", &big));
+    }
+    // 3 条 × 9000 字符 = 27000 > 阈值，但候选 3 ≤ keep_recent：裁无可裁
+    let mut flag = false;
+    compact_before_round(&mut msgs, &[], &deps, &stop, 0, &mut flag);
+    assert!(!flag, "裁无可裁的跨阈值轮不得烧掉一次性门");
+    assert!(
+        !tool_content(&msgs[2]).contains("已省略"),
+        "没裁就不该有桩子"
+    );
+
+    // 追加 4 条 → 候选 7 > keep_recent：这一轮必须能启动窗口
+    for i in 3..7 {
+        msgs.extend(tool_pair(
+            &format!("call_{i}"),
+            "read_text_file",
+            &format!("第 {i} 次的结果"),
+        ));
+    }
+    compact_before_round(&mut msgs, &[], &deps, &stop, 1, &mut flag);
+    assert!(flag, "窗口真正裁剪后 flag 才置位");
+    assert!(
+        tool_content(&msgs[2]).contains("已省略"),
+        "最老的结果应被裁成桩子：{}",
+        tool_content(&msgs[2])
+    );
 }
