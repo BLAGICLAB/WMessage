@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 199 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 206 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -278,11 +278,15 @@ src-tauri/src/
 │                        → 广播；在途登记 begin/finish 挂在模型循环装配层（core 返回即回合结束）；
 │                        客户端不在场时靠 bot_inflight_list / bot_stream_replay 按 seq 补齐
 ├── bot_anthropic.rs     Anthropic 协议适配（纯函数）：OpenAI ↔ /v1/messages 双向转换、auth 头、prompt caching
+├── bot_anthropic/tests.rs  协议转换单测（body 构造 / 工具槽位映射 / 思考块 / SSE 事件解析）
 ├── bot_plan.rs          PREVR 动态规划：复杂任务先生成计划注入 prompt，失败 Replan（≤2 次）
 ├── bot_scheduler.rs     定时任务卡调度：30s 扫描 schedule（每日/每周/at:），到点走 run_task_in_chat 自动执行；
 │                        SchedGuard 防重入；完成发系统通知；
 │                        机器人总开关关着时到点的作业判 Held（不派发、水位不推进，
 │                        恢复后仍在补跑窗口内）——否则每 30s 空转一轮、每天几千条跳过审计
+├── bot_scheduler/sched_tests.rs        调度主逻辑单测（occurrence / 触发 / 作业执行 / 收尾）
+├── bot_scheduler/sched_guard_tests.rs   SchedGuard 防重入单测
+├── bot_scheduler/plan_window_tests.rs   计划窗口单测
 ├── bot_reminders.rs (562) 机器人提醒 schedule_reminder/list_reminders/cancel_reminder：
 │                        到点发系统通知（只说话，不建卡不执行内容）；when 支持绝对时间 /
 │                        今天 HH:MM / 相对 +30m；repeat none/daily/weekly/monthly；
@@ -389,6 +393,7 @@ src-tauri/src/
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
 │                        软链既不跟随也不复制
 ├── bot_web.rs           web_search（Tavily/Brave 可配，Bing/百度抓取兜底）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
+├── bot_web/tests.rs     联网单测（各搜索后端解析 / URL 闸 / 正文抽取）
 ├── bot_py.rs (1379)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（extract/make_docx/xlsx）、自由脚本 run_python
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
@@ -416,6 +421,9 @@ src-tauri/src/
 ├── bot_skills/vars.rs           步骤变量替换（${stepN.field} / ${prev…} 嵌套路径）
 ├── bot_skills/manage.rs         技能安装/列表/删除/启停（enabled 落盘到生效副本的 SKILL.md），
 │                                路由表重建触发点
+├── bot_skills/manage/create.rs  create_skill 链路：准入核（description 必填 / 危险词 /
+│                                intents 宽度闸）+ 落盘（整文件集提交 + 失败清理）+ 工具口
+├── bot_skills/manage/tests.rs   技能管理单测（扫描去重 / 导入准入 / 会话档路由钉死 / 路由宽度闸）
 ├── bot_skills/remote.rs         远程技能源：install_skill（GitHub 仓库 / 腾讯 SkillHub / zip 直链 →
 │                                下载 → 解包 → 定位 SKILL.md → 落盘 + 重建路由）与 search_skills
 │                                （SkillHub 公开搜索 API）；下载走公网闸逐跳校验重定向，解包复用
@@ -695,6 +703,7 @@ flowchart TD
 - `bing.rs`
 - `bot.rs`
 - `bot_anthropic.rs`
+- `bot_anthropic/tests.rs`
 - `bot_archive.rs`
 - `bot_artifacts.rs`
 - `bot_chat.rs`
@@ -724,9 +733,13 @@ flowchart TD
 - `bot_py.rs`
 - `bot_reminders.rs`
 - `bot_scheduler.rs`
+- `bot_scheduler/plan_window_tests.rs`
+- `bot_scheduler/sched_guard_tests.rs`
+- `bot_scheduler/sched_tests.rs`
 - `bot_slash.rs`
 - `bot_ui.rs`
 - `bot_web.rs`
+- `bot_web/tests.rs`
 - `due_notify.rs`
 - `error.rs`
 - `exec_steps.rs`
@@ -821,6 +834,8 @@ flowchart TD
 - `bot_skills/builtin.rs`
 - `bot_skills/files.rs`
 - `bot_skills/manage.rs`
+- `bot_skills/manage/create.rs`
+- `bot_skills/manage/tests.rs`
 - `bot_skills/mod.rs`
 - `bot_skills/parse.rs`
 - `bot_skills/recommend.rs`

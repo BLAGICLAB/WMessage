@@ -64,11 +64,7 @@ WHITELIST = {
     "src/db/tasks.rs": 2467,
     "src/py/document.rs": 2456,
     "src/bot/services.rs": 2391,
-    "src/bot_web.rs": 2050,
     "src/bot/dispatch.rs": 1819,
-    "src/bot_skills/manage.rs": 1664,
-    "src/bot_scheduler.rs": 1617,
-    "src/bot_anthropic.rs": 1524,
 }
 
 
