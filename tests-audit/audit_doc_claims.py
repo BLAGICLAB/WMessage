@@ -3,7 +3,8 @@
 
 - 真相源：`src-tauri/src/**/*.rs` + `src/**/*.{ts,tsx}`
 - 被查文档：`docs/realmachine-regression-test.md`、`docs/realmachine-rerun-2026-10-22.md`、
-  `docs/realmachine-mutation-test-2026-10-23.md`、`docs/realmachine-mutation-test-2026-10-24.md`
+  `docs/realmachine-mutation-test-2026-10-23.md`、`docs/realmachine-mutation-test-2026-10-24.md`、
+  `docs/realmachine-smoke-test-2026-10-25.md`
 
 **为什么要有这道闸**：实机卡片的判据大半落在「审计里出现哪条事件」上。
 卡片写的事件名一旦和代码分家（改名、删除、压根没写过），执行者在机器上
@@ -30,6 +31,7 @@ DOCS = [
     ROOT / "docs/realmachine-rerun-2026-10-22.md",
     ROOT / "docs/realmachine-mutation-test-2026-10-23.md",
     ROOT / "docs/realmachine-mutation-test-2026-10-24.md",
+    ROOT / "docs/realmachine-smoke-test-2026-10-25.md",
 ]
 SRC_DIRS = [ROOT / "src-tauri/src", ROOT / "src"]
 
