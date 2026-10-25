@@ -26,6 +26,8 @@
 - **空白无关**：代码段的空白（缩进、换行、行内空格）全部剔除后比对，
   所以行边界怎么变都不影响判定。
 - **字面量保真**：字符串 / 字符 / 原始字符串的**内容逐字保留**（不剔除空白）。
+  唯一的例外是普通字符串的**反斜杠续行**：Rust 规范会把续行之后的换行与
+  空白整段吃掉，那段缩进本就不是内容，去缩排时它会跟着动，所以归一化掉。
   schema 常量里的 JSON 描述文本里空格是有意义的（`"a": 1` vs `"a":1`），
   抹掉会让真实改动蒙混过关。
 - **注释只放行前导缩进**：注释的**文字**逐字保留，但每行的前导空白不比——
@@ -51,6 +53,8 @@ from pathlib import Path
 
 # rustfmt 拆行时补的尾随逗号（不是内容变化）
 TRAILING_COMMA_RE = re.compile(r",(\s*[)\]}])")
+# 普通字符串里的反斜杠续行（续行之后的空白不是内容）
+CONTINUATION_RE = re.compile(r"\\\n[ \t]*")
 # `use` 语句起点（含 pub / pub(crate) / pub(super) 变体）
 USE_START_RE = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?use\b")
 
@@ -62,7 +66,9 @@ def segment(text: str) -> list[tuple[str, str]]:
     三类的比对口径不同（见 `key()`）：
     - `code`    代码：空白无关，另可剥可见性前缀
     - `comment` 注释：**逐行去前导空白**，其余逐字保留
-    - `literal` 字符串 / 字符 / 原始字符串：**逐字保留**（含缩进）
+    - `literal` 字符串 / 字符：逐字保留，但**反斜杠续行的缩进归一化**
+      （Rust 规范会把续行后的空白整段吃掉，它不是内容）
+    - `raw`     原始字符串：逐字保留（含缩进——那里的空白就是内容）
     """
     out: list[tuple[str, str]] = []
     i = 0
@@ -90,7 +96,7 @@ def segment(text: str) -> list[tuple[str, str]]:
                 if end == -1:
                     raise SystemExit("未闭合的原始字符串")
                 flush()
-                out.append(("literal", text[i : end + len(close)]))
+                out.append(("raw", text[i : end + len(close)]))
                 i = end + len(close)
                 code_start = i
                 continue
@@ -178,6 +184,11 @@ def key(text: str, strip_prefixes: list[str]) -> str:
     parts: list[str] = []
     for kind, frag in segment(text):
         if kind == "literal":
+            # 普通字符串的反斜杠续行：Rust 规范会把续行之后的换行与空白整段
+            # 吃掉，所以那段缩进**不是字符串内容**——去缩排时它会跟着动。
+            # 归一化掉，否则一次纯搬移会被报成「字符串被改了」。
+            parts.append(CONTINUATION_RE.sub(lambda _m: "\\\n", frag))
+        elif kind == "raw":
             parts.append(frag)
         elif kind == "comment":
             parts.append("\n".join(line.lstrip() for line in frag.split("\n")))
