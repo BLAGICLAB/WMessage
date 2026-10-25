@@ -25,6 +25,7 @@
 - `docs/SKILL-ENABLE-TOGGLE-DESIGN-2026-10-24.md` — 技能启用开关方案（拨杆 UI / 状态写技能自身 frontmatter 的 enabled 键 / 关掉即三闸全拦 / 内置技能跨版本保留禁用态）+ 业界口径调研（Claude Code 的 frontmatter 属性与 skillOverrides、VS Code 1.109 同源）+ 踩坑记录
 - `docs/AGENT-REMEDIATION-PLAN-2026-10-24.md` — Agent 评分整改方案（2026-10-24 评分 8.2/10 的 13 项 → 12 批次 + 1 拍板项）：eval 层 / 巨型函数拆分 / 溢出漏斗存活变异补测 / 实机脚本进仓 / 审计 API 与双路径收敛 / MCP 审计口径 / 留底加固 / Windows 验证口径 / 模块审计补批；含不做清单、逐批验收与偏离登记
 - `docs/FILE-SPLIT-PLAN-2026-10-25.md` — 18 个超限大文件的拆分计划（12 批）：A 类测试外移 8 条 / B 类生产切分 7 条 / C 类特殊形态 3 条；含实测基线、三条门禁约束（行数棘轮 / 模块地图 / 命名空间）、冻结守卫与 `pub(super)` 下移陷阱、并行 worktree 策略与逐批收尾清单
+- `docs/FILE-SPLIT-ROUND2-2026-10-25.md` — 第二轮：贴线（1300–1500）的 10 个文件拆分计划——6 条测试外移 / 2 条纯测试文件按节切 / 2 条生产切分；含逐文件切法、执行顺序依赖与本轮特有的四个坑
 ## 命令
 
 - 快检：`bash scripts/test-fast.sh`（pre-commit 自动跑，按改动智能跳过）
