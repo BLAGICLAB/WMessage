@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 284 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 287 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -490,7 +490,8 @@ src-tauri/src/
 │                        软链既不跟随也不复制
 ├── bot_web.rs           web_search（Tavily/Brave 可配，Bing/百度抓取兜底）+ fetch_url（HTML→文本、GBK、SSRF 防护、钉 IP）
 ├── bot_web/tests.rs     联网单测（各搜索后端解析 / URL 闸 / 正文抽取）
-├── bot_py.rs (1379)     Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
+├── bot_py.rs (42) + bot_py/tests.rs + bot_py/exiting_tests.rs + bot_py/platform_tests.rs
+│                        Python 子进程执行：runtime/flags/py-enabled.flag 开关、独立临时目录、超时/内存/CPU 限额
 │                        （rlimit / Job Object）、固定脚本模板（`py/scripts/*.py`：extract/make_docx/xlsx/
 │                        pdf/pptx/harvest_proto/docx_revisions，Rust 侧 include_str! 载入）、
 │                        自由脚本 run_python
@@ -847,6 +848,9 @@ flowchart TD
 - `bot_orchestrator.rs`
 - `bot_plan.rs`
 - `bot_py.rs`
+- `bot_py/exiting_tests.rs`
+- `bot_py/platform_tests.rs`
+- `bot_py/tests.rs`
 - `bot_reminders.rs`
 - `bot_scheduler.rs`
 - `bot_scheduler/plan_window_tests.rs`
