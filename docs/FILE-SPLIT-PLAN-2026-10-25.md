@@ -531,6 +531,7 @@ bot_history / upsert 语义），且切完仍保持「直接子模块」形态�
 | 12 | ✅ 完成 | `694870af` | 销 `tests/llm_integration.rs` | 4645 → 目录形态 6 文件（`core` / `sse` / `e2e` / `guard` / `anthropic` / `main`） |
 | 补 1 | ✅ 完成 | `bfe0ab50` | 销 `src/bot/dispatch.rs` | 1819 → 1009，内联测试外移到 `bot/dispatch/*_tests.rs`（原 12 批清单漏排） |
 | 补 2 | ✅ 完成 | `8eca65b1` | 销 `src/py/document.rs` | 2456 → 1097；8 段内嵌 Python **真搬成 `py/scripts/*.py`**（`include_str!` 载入，正文逐字节一致）+ 7 个测试文件 |
+| 第二轮 | ✅ 完成 | 见 `FILE-SPLIT-ROUND2-2026-10-25.md` | 白名单仍为 0（第二轮拆的是**贴线文件**，不是超限文件） | 第一轮留下的 10 个 1300–1500 行的贴线文件也拆了：超过 1300 行的文件 10 → 0，门禁口径内最大文件 1487 → 1265 |
 
 **A 类小结（2026-10-25）**：白名单 18 → 10 条，减债 8,394 行；
 Rust 2191 例 + 前端 1065 例全绿；tests-audit 41 例全绿。

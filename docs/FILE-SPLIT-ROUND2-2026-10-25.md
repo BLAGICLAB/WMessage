@@ -126,13 +126,50 @@ cargo nextest 全量 / npm test / tests-audit 六件套 / audit_no_eval.py /
 
 | # | 文件 | 状态 | commit | 备注 |
 |---|---|---|---|---|
-| 1 | `bot/services.rs` | ✅ 已完成 | 待填 | C 类，门面先行。1332 → 门面 468 + start 522 / stop 257 / serialize 114。**类型留门面**（StartRequest / StartOutcome / StopOutcome）、**登记表访问留门面**（lock_table / list_all 是三个子模块共同依赖的 hub），其余实现按面切走 |
-| 2 | `bot/services/tests.rs` | ✅ 已完成 | 待填 | B 类。1487 → 门面 62 + 七个主题子文件（adjudicate / canary / integration / logs / observe / port_gate / state）。**门面只留共用辅助**（`long_running_launcher` / `which`，被三个节共用）与 `#[cfg(test)] mod X;` 声明——`#[cfg(test)]` 不能省：`bot/test_files.rs::test_only_files` 靠模块声明识别测试专用文件，写成裸 `mod X;` 子文件会被当生产代码扫 |
-| 3 | `memory/extract.rs` | ✅ 已完成 | 待填 | A 类。1452 → 850 生产 + `memory/extract/tests.rs` 601。**去缩排要「智慧」**：Rust 1.83 起普通字符串字面量允许裸换行，内容**包含**后续行的前导空白——去缩排会把字符串内容改了，所以多行字符串 / raw string / 块注释的内部行一律不缩 |
-| 4 | `bot_skills/parse.rs` | ✅ 已完成 | 待填 | A 类。1401 → 742 生产 + `bot_skills/parse/tests.rs` 660 |
-| 5 | `bot_skills/scheduler.rs` | ✅ 已完成 | 待填 | A 类。1401 → 610 生产 + `bot_skills/scheduler/tests.rs` 789 |
-| 6 | `bot_skills/runtime.rs` | ✅ 已完成 | 待填 | A 类。1365 → 823 生产 + `bot_skills/runtime/tests.rs` 540 |
-| 7 | `bot_archive.rs` | ✅ 已完成 | 待填 | A 类。1404 → 989 生产 + `bot_archive/tests.rs` 416 |
-| 8 | `bot_py.rs` | ✅ 已完成 | 待填 | A 类，门面只留转出。1379 → 41 门面 + 三个测试子文件（tests 1226 / exiting_tests 43 / platform_tests 70）。模块路径不变（`bot_py::tests` 等），`super::X` 仍经 pub use 解析为 `py::X` |
-| 9 | `bot_web.rs` | ✅ 已完成 | 待填 | C 类。1400 → 门面 162 + `bot_web/search.rs` 452 / `html.rs` 331 / `fetch.rs` 472。**类型与共享工具留门面**（SearchOpts / TimeRange / UrlGateError / UA / err_chain / http_client_* / read_body_capped）；测试改为**显式从子模块导入**（不经门面转出，门面保持干净）；冻结守卫白名单条目跟着迁移到 `bot_web/search.rs` |
-| 10 | `db/tests.rs` | ✅ 已完成 | 待填 | B 类。1461 → 门面 94 + 七个主题子文件。计划里只列了 4 个切点，实际第 6 节（files / bot_history / session / import / upsert）有 900 行，按主题再切成 files / history / session / upsert |
+| 1 | `bot/services.rs` | ✅ 已完成 | `46a680b7` | C 类，门面先行。1332 → 门面 468 + start 522 / stop 257 / serialize 114。**类型留门面**（StartRequest / StartOutcome / StopOutcome）、**登记表访问留门面**（lock_table / list_all 是三个子模块共同依赖的 hub），其余实现按面切走 |
+| 2 | `bot/services/tests.rs` | ✅ 已完成 | `20e7ccb8` | B 类。1487 → 门面 62 + 七个主题子文件（adjudicate / canary / integration / logs / observe / port_gate / state）。**门面只留共用辅助**（`long_running_launcher` / `which`，被三个节共用）与 `#[cfg(test)] mod X;` 声明——`#[cfg(test)]` 不能省：`bot/test_files.rs::test_only_files` 靠模块声明识别测试专用文件，写成裸 `mod X;` 子文件会被当生产代码扫 |
+| 3 | `memory/extract.rs` | ✅ 已完成 | `ef74757f` | A 类。1452 → 850 生产 + `memory/extract/tests.rs` 601。**去缩排要「智慧」**：Rust 1.83 起普通字符串字面量允许裸换行，内容**包含**后续行的前导空白——去缩排会把字符串内容改了，所以多行字符串 / raw string / 块注释的内部行一律不缩 |
+| 4 | `bot_skills/parse.rs` | ✅ 已完成 | `98c95209` | A 类。1401 → 742 生产 + `bot_skills/parse/tests.rs` 660 |
+| 5 | `bot_skills/scheduler.rs` | ✅ 已完成 | `7687ea98` | A 类。1401 → 610 生产 + `bot_skills/scheduler/tests.rs` 789 |
+| 6 | `bot_skills/runtime.rs` | ✅ 已完成 | `a8f8db1c` | A 类。1365 → 823 生产 + `bot_skills/runtime/tests.rs` 540 |
+| 7 | `bot_archive.rs` | ✅ 已完成 | `c4358f93` | A 类。1404 → 989 生产 + `bot_archive/tests.rs` 416 |
+| 8 | `bot_py.rs` | ✅ 已完成 | `0505d9ac` | A 类，门面只留转出。1379 → 41 门面 + 三个测试子文件（tests 1226 / exiting_tests 43 / platform_tests 70）。模块路径不变（`bot_py::tests` 等），`super::X` 仍经 pub use 解析为 `py::X` |
+| 9 | `bot_web.rs` | ✅ 已完成 | `547c7c30` | C 类。1400 → 门面 162 + `bot_web/search.rs` 452 / `html.rs` 331 / `fetch.rs` 472。**类型与共享工具留门面**（SearchOpts / TimeRange / UrlGateError / UA / err_chain / http_client_* / read_body_capped）；测试改为**显式从子模块导入**（不经门面转出，门面保持干净）；冻结守卫白名单条目跟着迁移到 `bot_web/search.rs` |
+| 10 | `db/tests.rs` | ✅ 已完成 | `73395609` | B 类。1461 → 门面 94 + 七个主题子文件。计划里只列了 4 个切点，实际第 6 节（files / bot_history / session / import / upsert）有 900 行，按主题再切成 files / history / session / upsert |
+
+## 六、落地结果（2026-10-25 收尾）
+
+10 条全部完成，**每文件一个 commit**，纯搬移逐段核对通过。
+
+| 指标 | 开工前 | 收工后 |
+|---|---|---|
+| 超过 1300 行的文件 | 10 | **0** |
+| 门禁口径内最大文件 | 1487（`bot/services/tests.rs`） | 1265（`py/runtime.rs`） |
+| 源码文件数 / 总行数 | 269 / 125460 | 297 / 125603 |
+| `audit_file_size.py` 的 `WHITELIST` | `{}` | `{}`（仍为空） |
+
+**本轮新学到的四条**（第一轮的八条仍然适用）：
+
+1. **Rust 1.83 起普通字符串字面量允许裸换行**，内容**包含**后续行的前导空白。
+   内联测试块搬成独立文件要整体去缩进 4 空格——直接去缩会把字符串内容改了。
+   所以去缩排必须是「智慧」的：多行字符串 / 原始字符串 / 块注释的内部行一律不缩。
+2. **注释的前导缩进不是内容**，字符串字面量里的空格是内容——核对器原先把两者
+   合成一类「逐字保留」，纯搬移会被误报成「内容被改」。核对器已拆成三类口径
+   （`d51e77b4` + `ed6b9a7d`）。
+3. **`pub(crate) use` 会判 unused**（`pub use` 不会）——私有模块里的 `pub use`
+   可达性只到 crate 内，crate 内无人按名引用就报 unused。门面的 re-export
+   要逐项核对「仓外是否有人按名引用」。
+4. **冻结守卫的白名单按路径登记**——存量调用搬到子模块后，白名单条目要跟着
+   迁移（`audit/freeform_freeze.rs` 的 `bot_web.rs` → `bot_web/search.rs`）。
+
+**切法上反复用到的一条原则**：**类型与共享工具留门面**。`bot/services.rs` 的
+三个对外数据契约（StartRequest / StartOutcome / StopOutcome）与
+`bot_web.rs` 的 SearchOpts / TimeRange / UrlGateError 留在门面，旧路径与旧
+可见性一字不改；反过来，**测试文件改为显式从子模块导入**（不经门面转出），
+门面因此不会出现二十多条只为测试服务的私有 use。
+
+**下一轮该看哪里**：剩下的最大文件是 `py/runtime.rs`（1265）与
+`bot_skills/remote.rs`（1236），都还在 1500 线内但贴着上限；
+前端还有 4 个 2000+ 行文件（`SettingsPage.tsx` 4068 / `ChatPanel.test.tsx`
+3105 / `SettingsPage.test.tsx` 2985 / `ChatPanel.tsx` 2270）不在门禁口径内，
+要不要纳管另议。
