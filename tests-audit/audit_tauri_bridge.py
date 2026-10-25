@@ -321,7 +321,7 @@ def listened_events():
         # useTauriListen<T>("evt", ...) 包装钩子：事件名是首参字面量
         for m in re.finditer(r'\buseTauriListen(?:<[^>]*>)?\(\s*"([^"]+)"', t):
             out.setdefault(m.group(1), f)
-        # reg<T>("evt", ...)：会话级事件登记表（ChatPanel.tsx 的 reg 登记器——
+        # reg<T>("evt", ...)：会话级事件登记表（聊天面板的 reg 登记器——
         # 实时订阅与回放补齐共用同一批处理函数）。认不出它，
         # 「前端 listen 了却没人 emit」这条 FAIL 检查对半数会话事件就是空壳
         for m in re.finditer(r'\breg(?:<[^>]*>)?\(\s*"([^"]+)"', t):
@@ -491,10 +491,17 @@ def test_recorded_events_count_as_backend_emitters():
 
 
 def test_listened_events_recognize_reg_registry():
-    """会话级事件登记表 reg<T>("evt", ...) 也算前端监听（否则 FAIL 检查对半数事件是空壳）"""
+    """会话级事件登记表 reg<T>("evt", ...) 也算前端监听（否则 FAIL 检查对半数事件是空壳）
+
+    只认「聊天面板组件目录下」而不钉死某个文件名：登记表已随聊天面板拆分
+    搬进 useChatStream.ts，钉死 ChatPanel.tsx 的话文件一搬这条就自己红。
+    """
     out = listened_events()
     for evt in ("bot-skill-failed", "bot-turn-status", "bot-chat-delta"):
-        assert out.get(evt, "").endswith("ChatPanel.tsx"), f"{evt} 没被认成前端监听"
+        where = out.get(evt, "")
+        assert where.startswith("src/components/ChatPanel/"), (
+            f"{evt} 没被认成前端监听（现在登记在 {where or '未知文件'}）"
+        )
 
 
 def test_extractors_nonempty():

@@ -29,13 +29,23 @@
 足够容纳正常的功能块，又比存量峰值低得多——新文件从第一天就被约束住，
 存量靠棘轮慢慢收敛。
 
+**2026-10-25：前端 `.ts/.tsx` 纳管进来。** 此前本脚本只扫 Rust，前端那
+4 个 2000+ 行文件（SettingsPage 4068 / ChatPanel.test 3105 /
+SettingsPage.test 2985 / ChatPanel 2270）长期无人拦。拆分方案与账本见
+`docs/FILE-SPLIT-FRONTEND-2026-10-25.md`：
+
+- 扫描根增加前端 `src/`，后缀 `.ts` / `.tsx`（含测试文件）；
+- 阈值沿用 1500（前端口径与 Rust 口径统一）；
+- 纳管时前端已无超限文件（最大 `src/App.tsx` 1182 行），白名单无需新增条目；
+- 口径从「Rust 行数」改成「前后端统一行数」。
+
 口径：
 - 扫描 `src-tauri/src/`、`src-tauri/tests/`、`src-tauri/examples/` 下的
   `*.rs`（`src-tauri/vendor/` 是 vendored 依赖，非业务代码，不在内）。
+- 扫描仓库根 `src/` 下的 `*.ts` / `*.tsx`。
 - 行数 = 换行符个数（与 `wc -l` 同值）。
-- **前端 `.ts/.tsx` 不在本门禁口径内**——那条 ≤1200 约定出自 Rust bot
-  架构文档，前端另有目录与构建约束。前端最大文件（SettingsPage.tsx 4068
-  行）要治是独立批次的事，不在本脚本混进来。
+- 白名单键：Rust 侧相对 `src-tauri/`（如 `src/bot/x.rs`），前端侧相对仓库根
+  （如 `src/components/X.tsx`）。两侧后缀不同，不会撞键。
 
 执行：python3 -m pytest tests-audit/audit_file_size.py -v
 """
@@ -47,8 +57,13 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 CRATE = ROOT / "src-tauri"
 
-# 扫描根（相对 src-tauri/）。vendor/ 不在其中——vendored 依赖不是业务代码。
-SCAN_ROOTS = ("src", "tests", "examples")
+# Rust 侧扫描根（相对 src-tauri/）。vendor/ 不在其中——vendored 依赖不是业务代码。
+RUST_SCAN_ROOTS = ("src", "tests", "examples")
+RUST_SUFFIXES = (".rs",)
+
+# 前端扫描根（相对仓库根）。与 Rust 侧同口径、同阈值。
+FRONTEND_SCAN_ROOTS = ("src",)
+FRONTEND_SUFFIXES = (".ts", ".tsx")
 
 # 新文件行数上限
 NEW_FILE_LIMIT = 1500
@@ -65,15 +80,35 @@ NEW_FILE_LIMIT = 1500
 WHITELIST = {}
 
 
-def source_files():
-    """扫描口径内的全部 .rs 文件（相对 src-tauri/ 的路径）。"""
-    out = []
-    for r in SCAN_ROOTS:
-        base = CRATE / r
-        if not base.exists():
+def _scan(base: Path, roots: tuple[str, ...], suffixes: tuple[str, ...]) -> list[tuple[str, Path]]:
+    """(白名单键, 绝对路径) 列表。键 = 相对 base 的 posix 路径。"""
+    out: list[tuple[str, Path]] = []
+    for r in roots:
+        root = base / r
+        if not root.exists():
             continue
-        out.extend(p for p in base.rglob("*.rs") if "vendor" not in p.parts)
-    return sorted(out)
+        for p in root.rglob("*"):
+            if not p.is_file() or p.suffix not in suffixes:
+                continue
+            if "vendor" in p.parts:
+                continue
+            out.append((p.relative_to(base).as_posix(), p))
+    return sorted(out, key=lambda kv: kv[0])
+
+
+def rust_files() -> list[tuple[str, Path]]:
+    """Rust 侧：(相对 src-tauri/ 的路径, 绝对路径)。"""
+    return _scan(CRATE, RUST_SCAN_ROOTS, RUST_SUFFIXES)
+
+
+def frontend_files() -> list[tuple[str, Path]]:
+    """前端侧：(相对仓库根的路径, 绝对路径)。"""
+    return _scan(ROOT, FRONTEND_SCAN_ROOTS, FRONTEND_SUFFIXES)
+
+
+def scanned_files() -> list[tuple[str, Path]]:
+    """两侧合并：(白名单键, 绝对路径)。白名单与上限检查都按这个口径走。"""
+    return rust_files() + frontend_files()
 
 
 def line_count(path: Path) -> int:
@@ -85,18 +120,23 @@ def test_scan_scope_is_not_empty():
     """扫描口径不能空转——空目录会让全部门禁「零命中即通过」。
 
     口径写错（比如把 SCAN_ROOTS 写成不存在的目录）时，脚本会一路绿灯，
-    白名单和新文件上限一起失效。
+    白名单和新文件上限一起失效。Rust 侧与前端侧分别断言——前端刚纳管，
+    口径写错同样会整条失效。
     """
-    files = source_files()
-    assert len(files) > 100, f"扫描口径只捞到 {len(files)} 个文件，SCAN_ROOTS 可能写错了"
-    assert any(p.parts[-1] == "bot_model_loop.rs" for p in files), "扫描口径漏掉了 src/ 下的业务文件"
+    rs = rust_files()
+    assert len(rs) > 100, f"Rust 侧只捞到 {len(rs)} 个文件，扫描根可能写错了"
+    assert any(p.name == "bot_model_loop.rs" for _, p in rs), "扫描口径漏掉了 src/ 下的业务文件"
+
+    fe = frontend_files()
+    assert len(fe) > 100, f"前端侧只捞到 {len(fe)} 个文件，前端扫描根可能写错了"
+    assert any(p.name == "App.tsx" for _, p in fe), "前端扫描口径漏掉了 src/ 下的业务组件"
+    assert any(p.name.endswith(".test.tsx") for _, p in fe), "前端扫描口径漏掉了测试文件"
 
 
 def test_new_files_respect_size_limit():
     """新文件（非白名单内）一律 ≤ 1500 行。"""
     over = []
-    for p in source_files():
-        rel = p.relative_to(CRATE).as_posix()
+    for rel, p in scanned_files():
         if rel in WHITELIST:
             continue
         n = line_count(p)
@@ -116,9 +156,9 @@ def test_whitelisted_files_only_shrink():
     """
     grown = []
     for rel, limit in sorted(WHITELIST.items()):
-        p = CRATE / rel
-        if not p.exists():
-            continue  # 文件已删除，由 test_frozen_list_has_no_stale_entries 报
+        p = whitelist_path(rel)
+        if p is None:
+            continue  # 文件已删除，由 test_whitelist_has_no_stale_entries 报
         n = line_count(p)
         if n > limit:
             grown.append(f"{rel}: 现 {n} 行 > 登记上限 {limit} 行（拆文件，或先拆再加）")
@@ -134,8 +174,8 @@ def test_whitelist_has_no_stale_entries():
     """
     stale = []
     for rel, limit in sorted(WHITELIST.items()):
-        p = CRATE / rel
-        if not p.exists():
+        p = whitelist_path(rel)
+        if p is None:
             stale.append(f"{rel}: 文件已不存在 → 从白名单销掉")
             continue
         n = line_count(p)
@@ -154,8 +194,7 @@ def test_whitelist_covers_every_over_limit_file():
     「请登记进白名单」而不是「这文件超限」，容易被人随手登记了事）。
     """
     missing = []
-    for p in source_files():
-        rel = p.relative_to(CRATE).as_posix()
+    for rel, p in scanned_files():
         if rel in WHITELIST:
             continue
         n = line_count(p)
@@ -164,6 +203,20 @@ def test_whitelist_covers_every_over_limit_file():
     assert not missing, (
         "有文件超限但没登记进白名单（登记即豁免，但要先拆小）：\n  " + "\n  ".join(missing)
     )
+
+
+def whitelist_path(rel: str) -> Path | None:
+    """按白名单键定位文件：Rust 侧相对 src-tauri/，前端侧相对仓库根。
+
+    键的后缀决定归属（.rs → Rust 侧，.ts/.tsx → 前端侧），这样两侧的
+    相对路径不会互相撞键。
+    """
+    if rel.endswith(".rs"):
+        base = CRATE
+    else:
+        base = ROOT
+    p = base / rel
+    return p if p.exists() else None
 
 
 if __name__ == "__main__":
