@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 282 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 283 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -511,7 +511,7 @@ src-tauri/src/
 ├── bot_skills/state.rs          SkillRun 运行实例 + 状态机
 │                                （Loaded/Running/Paused/Finished/Failed/Terminated）、
 │                                SKILL_RUNS 表（已迁 app_state::AppState，访问器需 AppHandle）
-├── bot_skills/runtime.rs        生命周期：start_skill 预审/启动、暂停/确认/推进、skill_finish 收尾；
+├── bot_skills/runtime.rs + bot_skills/runtime/tests.rs   生命周期：start_skill 预审/启动、暂停/确认/推进、skill_finish 收尾；
 │                                暂停态也算超时（等确认等到超时的按失败收，
 │                                否则同名技能被一直占着，别人起不来）
 ├── bot_skills/scheduler.rs + bot_skills/scheduler/tests.rs   DSL 步骤调度器 run_skill_scheduler + DslOutcome
@@ -994,6 +994,7 @@ flowchart TD
 - `bot_skills/recommend.rs`
 - `bot_skills/remote.rs`
 - `bot_skills/runtime.rs`
+- `bot_skills/runtime/tests.rs`
 - `bot_skills/scheduler.rs`
 - `bot_skills/scheduler/tests.rs`
 - `bot_skills/state.rs`

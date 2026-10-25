@@ -131,7 +131,7 @@ cargo nextest 全量 / npm test / tests-audit 六件套 / audit_no_eval.py /
 | 3 | `memory/extract.rs` | ✅ 已完成 | 待填 | A 类。1452 → 850 生产 + `memory/extract/tests.rs` 601。**去缩排要「智慧」**：Rust 1.83 起普通字符串字面量允许裸换行，内容**包含**后续行的前导空白——去缩排会把字符串内容改了，所以多行字符串 / raw string / 块注释的内部行一律不缩 |
 | 4 | `bot_skills/parse.rs` | ✅ 已完成 | 待填 | A 类。1401 → 742 生产 + `bot_skills/parse/tests.rs` 660 |
 | 5 | `bot_skills/scheduler.rs` | ✅ 已完成 | 待填 | A 类。1401 → 610 生产 + `bot_skills/scheduler/tests.rs` 789 |
-| 6 | `bot_skills/runtime.rs` | ⬜ 未开始 | | A 类 |
+| 6 | `bot_skills/runtime.rs` | ✅ 已完成 | 待填 | A 类。1365 → 823 生产 + `bot_skills/runtime/tests.rs` 540 |
 | 7 | `bot_archive.rs` | ⬜ 未开始 | | A 类 |
 | 8 | `bot_py.rs` | ⬜ 未开始 | | A 类，门面只留转出 |
 | 9 | `bot_web.rs` | ⬜ 未开始 | | C 类，测试可见面最复杂 |
