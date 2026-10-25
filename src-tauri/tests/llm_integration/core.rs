@@ -2,6 +2,72 @@
 
 use super::*;
 
+/// **一轮里多个 tool_calls** 必须只花一轮：引擎逐个执行本轮的全部调用、
+/// 逐个回填 tool 消息，然后才发下一次请求。
+///
+/// 这条是「并行调用引导」（提示词让模型把互不依赖的调用合并到同一轮）的
+/// 落地前提：提示词说得再好，引擎若一轮只认一个调用，省下的轮次就不存在。
+/// 回归钉两件事：①两个调用都被执行；②两次请求之间没有多发一轮
+/// （第二轮请求体里应同时带着两条 tool 结果）。
+#[tokio::test]
+async fn core_multiple_tool_calls_in_one_round_costs_one_round() {
+    let server = MockLlmServer::start();
+    // 一条 assistant 消息里带两个 tool_calls（index 0 / 1）
+    let two_calls = r#"data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"read_text_file","arguments":"{}"}},{"index":1,"id":"call_b","type":"function","function":{"name":"grep_files","arguments":"{}"}}]},"index":0,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-chat","choices":[{"delta":{},"index":0,"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#;
+    server.push_behavior(MockBehavior::RawSse(two_calls.to_string()));
+    server.push_behavior(MockBehavior::TextReply("都跑完了".into()));
+
+    let h = CoreHarness::new();
+    let called: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let called2 = called.clone();
+    let exec = move |name: String, _args: String, _trace: ToolCallTrace| {
+        let called = called2.clone();
+        async move {
+            called.lock().unwrap().push(name);
+            ToolResult::ok("ok", Vec::new())
+        }
+    };
+
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        &exec,
+        noop_replan,
+    )
+    .await
+    .expect("两调用一轮应 Ok");
+
+    assert_eq!(text, "都跑完了");
+    let names = called.lock().unwrap().clone();
+    assert_eq!(
+        names,
+        vec!["read_text_file".to_string(), "grep_files".to_string()],
+        "本轮的两个调用都应被执行"
+    );
+    // 只发了两轮请求：工具轮 + 收尾轮。中间若多发一轮，说明引擎一轮只认一个调用。
+    assert_eq!(
+        server.request_count(),
+        2,
+        "两个调用应挤在同一轮里（工具轮 + 收尾轮 = 2 次请求）"
+    );
+    let bodies = server.request_bodies();
+    let second = &bodies[1];
+    assert!(
+        second.contains("call_a") && second.contains("call_b"),
+        "第二轮请求体应同时带两条 tool 响应：{second}"
+    );
+}
+
 #[tokio::test]
 async fn core_text_reply_happy_path() {
     let server = MockLlmServer::start();
