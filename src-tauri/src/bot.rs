@@ -106,6 +106,8 @@ pub mod subagent_runner;
 pub mod subagent_spawn;
 pub mod subagent_tools;
 pub mod tags_consolidate;
+#[cfg(test)]
+pub mod test_files;
 pub mod tools;
 
 // params re-export：参数表命令（设置页「Agent 运行参数」卡的数据源）。

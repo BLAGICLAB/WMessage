@@ -530,17 +530,25 @@ fn files_spawning_console_programs_have_a_silent_path() {
     collect_rs(&src_root, &mut files);
     assert!(!files.is_empty(), "应扫到 src-tauri/src 下的源码文件");
 
+    // 测试专用文件（`#[cfg(test)] mod X;` 声明出来的子模块文件）整份是测试
+    // 代码，自己拉进程不算生产路径。判据是模块声明而不是文件名或代码位置：
+    // `bot/mcp/manager/e2e_stdio.rs` 是测试专用但名字里没有 "test"，
+    // 而「首个 #[cfg(test)] 之前的部分」那种位置启发式会把「测试块在前、
+    // 生产代码在后」的文件整段漏掉。
+    let test_only = crate::bot::test_files::test_only_files(&src_root);
+
     for f in files {
-        // 测试专用文件（`mod tests;` 的内容）自己拉进程不算生产路径
-        if f.file_stem().and_then(|s| s.to_str()) == Some("tests") {
+        let rel = f
+            .strip_prefix(&src_root)
+            .unwrap_or(&f)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if test_only.contains(&rel) {
             continue;
         }
         let text = std::fs::read_to_string(&f).unwrap_or_default();
-        // 只看测试模块之前的生产代码
-        let prod = match text.find("#[cfg(test)]") {
-            Some(i) => &text[..i],
-            None => &text[..],
-        };
+        // 只看生产代码：剔除全部 #[cfg(test)] 块
+        let prod = crate::bot::test_files::prod_slice(&text);
         let spawns_console = CONSOLE_PROGRAMS
             .iter()
             .any(|p| prod.contains(&format!("Command::new(\"{p}\")")));

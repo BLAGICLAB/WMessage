@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 193 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 199 个文件、约 12.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试文件与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -142,7 +142,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests/guard.rs (922)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (587)   SSE 解析 / 增量累积 / schema 测试
 │   └── bot_model_loop/tests/config.rs (595) 推理参数 / 思考 / 上下文超限 / 侧调门测试
-├── bot.rs (211)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
+├── bot.rs (213)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
 │                        `crate::bot_chat::` 这类深层路径（tests-audit/audit_bot_namespace.py
@@ -181,6 +181,10 @@ src-tauri/src/
 │   │                            指纹懒重连、stderr 环形缓冲、spawn 白名单字面量构造、
 │   │                            子进程资源采样（5s TTL 缓存，口径同 bot/procs：
 │   │                            RSS / CPU / 监听 socket，整棵进程树合计）
+│   ├── bot/mcp/manager/send_probe.rs        Send/Sync 断言 + stdio 允许清单与 spawn 构造一致性
+│   ├── bot/mcp/manager/fingerprint_tests.rs  配置指纹稳定性（含 env/headers 变化换指纹）
+│   ├── bot/mcp/manager/http_gate.rs         HTTP 分支两道闸单测（字面量闸 + DNS 闸 + 钉 IP）
+│   ├── bot/mcp/manager/e2e_stdio.rs         stdio 真进程端到端（连接/发现/调用/回收/长行截断）
 │   ├── bot/mcp/tool_cache.rs    工具清单磁盘快照（mcp-tool-cache.json）：按服务器 id 存
 │   │                            「配置指纹 + 工具清单」——按需启停下「工具可见性」与
 │   │                            「活连接」解耦的载体（没有它，模型看不见未连接的服务器）
@@ -218,9 +222,14 @@ src-tauri/src/
 │                        **Windows 没有**——现有进程快照层在 Windows 上本就退化）
 │                        + 平台能力声明 listening_supported（Windows 为 false——
 │                        判定层据此返回 Unsupported 而非 Ok）
-│   └── bot/procs/tests.rs (591)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
+│   └── bot/procs/tests.rs (599)  进程树纯函数单测：快照解析 / 树收集 / PID 复用 /
 │                        整组杀护栏 / 资源采样 / socket 解析（/proc/net 与 lsof 两套格式）
 │                        + 真子进程监听端口集成测试（验平台路径真能读到）
+│                        + 控制台程序静默标志守卫（扫 src/ 全树的生产切片）
+├── bot/test_files.rs (147) 源码结构识别（两个扫源码的门禁共用）：测试专用文件按
+│                        `#[cfg(test)] mod X;` 声明识别 + 生产切片剔除内联
+│                        `#[cfg(test)]` 块。判据不看文件名也不看代码位置——
+│                        位置启发式会把「测试块在前、生产代码在后」的文件整段漏扫
 ├── bot/services.rs (2391) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
@@ -430,6 +439,7 @@ src-tauri/src/
 │                        runs_list/versions_list/version_restore/preflight/open_output
 ├── apps/manage.rs       领域核 + 三个 bot 工具（apps_list / apps_create / apps_update_files，
 │                        整文件集提交）+ manifest 校验 + 版本快照/回滚/滚动 100 版
+├── apps/manage/tests.rs apps 领域单测（manifest 校验 / 版本快照 / 回滚 / 文件集提交）
 │
 │─ 路由/守卫
 ├── intent_router.rs     前置意图路由 RouteAction（Skill/ExecuteTasks/PassThrough）；
@@ -751,6 +761,7 @@ flowchart TD
 ### `apps/`
 - `apps/commands.rs`
 - `apps/manage.rs`
+- `apps/manage/tests.rs`
 - `apps/mod.rs`
 
 ### `bot/`
@@ -772,6 +783,10 @@ flowchart TD
 - `bot/mcp/commands.rs`
 - `bot/mcp/config.rs`
 - `bot/mcp/manager.rs`
+- `bot/mcp/manager/e2e_stdio.rs`
+- `bot/mcp/manager/fingerprint_tests.rs`
+- `bot/mcp/manager/http_gate.rs`
+- `bot/mcp/manager/send_probe.rs`
 - `bot/mcp/mod.rs`
 - `bot/mcp/mount.rs`
 - `bot/mcp/secrets.rs`
@@ -779,6 +794,8 @@ flowchart TD
 - `bot/mcp/tool_cache.rs`
 - `bot/params.rs`
 - `bot/procs.rs`
+- `bot/procs/tests.rs`
+- `bot/test_files.rs`
 - `bot/procs/tests.rs`
 - `bot/reasoning.rs`
 - `bot/subagent_digest.rs`
