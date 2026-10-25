@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 259 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 262 个文件、约 12.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -263,25 +263,32 @@ src-tauri/src/
 │                        `#[cfg(test)] mod X;` 声明识别 + 生产切片剔除内联
 │                        `#[cfg(test)]` 块。判据不看文件名也不看代码位置——
 │                        位置启发式会把「测试块在前、生产代码在后」的文件整段漏扫
-├── bot/services.rs (2391) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (1332) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+│                        **门面**——实现按面拆到下面三个子模块，这里只留类型 / 常量 / use /
+│                        逐项转出（`crate::bot::services::X` 旧路径与旧可见性保持不变）
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
 │                        + 宿主直接 spawn（不继承 run_python 的 rlimit）+ stdout/stderr 落 O_APPEND 文件
 │                        + 停止信号阶梯（SIGINT→100ms→SIGTERM→400ms→SIGKILL）+ ppid 树子孙回收
 │                        （带 starttime 防 PID 复用）+ 资源观测（整棵进程树 RSS / CPU，
 │                        只告警不杀）。与 py/runtime.rs 是两层：前者有界作业、
 │                        连坐杀组；本层长驻、宿主知道它、能停它、退出时收干净
-│                        + **端口/监听地址闸**（P2-③）：判据 L1 默认只许 loopback
-│                        （放开靠独立开关）/ L2 禁占宿主保留端口 / L3 禁特权端口；
-│                        判定三态 Ok / Violated / **Unsupported**（Windows 没判≠没事）；
-│                        **采集金丝雀**：API server 开着时宿主必在监听 API_PORT——
-│                        采样自称成功却看不见它 = 采集失明（lsof 权限不足一类），
-│                        与采集失败同路处理（不判/保留集不动）+ 转折审计
-│                        service.listening_canary_failed；API 没开时无基准不判
-│                        （不制造误报源）；
-│                        违规记在**正交字段** last_violation（不复用状态机）+
-│                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
-│                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
 │                        + 服务告警进通知中心（资源告警 / 端口违规，条件消失自动撤收）
+│   ├── bot/services/gate.rs (681)  端口/监听地址闸（P2-③）：判据 L1 默认只许 loopback
+│   │                        （放开靠独立开关）/ L2 禁占宿主保留端口 / L3 禁特权端口；
+│   │                        判定三态 Ok / Violated / **Unsupported**（Windows 没判≠没事）；
+│   │                        **采集金丝雀**：API server 开着时宿主必在监听 API_PORT——
+│   │                        采样自称成功却看不见它 = 采集失明（lsof 权限不足一类），
+│   │                        与采集失败同路处理（不判/保留集不动）+ 转折审计
+│   │                        service.listening_canary_failed；API 没开时无基准不判
+│   │                        （不制造误报源）；
+│   │                        违规记在**正交字段** last_violation（不复用状态机）+
+│   │                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
+│   │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
+│   ├── bot/services/logs.rs (147)  日志与输出上限面：服务日志目录 / append 写 /
+│   │                        尾部读（字节与行两种口径）+ 截断到 OUTPUT_CAP_BYTES +
+│   │                        每 30s 一轮的输出上限巡检
+│   ├── bot/services/observe.rs (282) 资源观测面：合计口径判定（阈值 / 持续 / 去重）+
+│   │                        采样一轮（整棵进程树 RSS / CPU）+ 告警落审计 + 系统通知
 │   ├── bot/services/watchdog.rs (295)  服务层「宿主死了服务也得死」看门狗：
 │   │                            unix 用管道 EOF（宿主一死 → 写端关闭 → 助手 TERM 服务整组）；
 │   │                            Windows 复用 py/runtime.rs 的 Job Object（KILL_ON_JOB_CLOSE）
@@ -570,7 +577,7 @@ src-tauri/src/
 | `pending` | exec_steps.rs | 用户应答 / 超时 |
 | `artifact_registry` | bot_artifacts.rs | 流程收尾 clear |
 | `services` | bot/services.rs | 受管服务状态机 + `stop_service` / 退出时 `services::stop_all` |
-| `services_usage` | bot/services.rs | 资源观测的**合计**口径（合计 RSS + 合计告警去重）——跨服务属性，没有归属条目 |
+| `services_usage` | bot/services/observe.rs | 资源观测的**合计**口径（合计 RSS + 合计告警去重）——跨服务属性，没有归属条目 |
 
 刻意**留档不收口**：`NEXT_STOP_ID`（id 发号器，进程级）、`SESSION_ORIGINS`（session 元数据，
 「写一次/读一处/随 session 消亡」，理由与三条测量结论见 `app_state.rs` 总表与 `tool_guard.rs:45`）、
@@ -895,6 +902,9 @@ flowchart TD
 - `bot/subagent_tools.rs`
 - `bot/registry.rs`
 - `bot/services.rs`
+- `bot/services/gate.rs`
+- `bot/services/logs.rs`
+- `bot/services/observe.rs`
 - `bot/services/tests.rs`
 - `bot/services/watchdog.rs`
 - `bot/stream_log.rs`

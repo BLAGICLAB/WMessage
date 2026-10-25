@@ -940,7 +940,7 @@ fn api_canary_port_tracks_running_api_liveness() {
 /// 巡检在 AppHandle 上跑（Wry 专属），单测直驱不了——源码文本守卫钉接线。
 #[test]
 fn patrol_wires_canary_before_judging() {
-    let src = include_str!("../services.rs");
+    let src = include_str!("gate.rs");
     let prod = src
         .split_once("#[cfg(test)]")
         .map(|(p, _)| p)
