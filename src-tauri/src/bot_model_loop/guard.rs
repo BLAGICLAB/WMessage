@@ -380,7 +380,12 @@ fn guard_collect(
     if fake_gen_path.is_none() && !claimed_paths.is_empty() && !unverifiable_ran {
         let pending: Vec<String> = claimed_paths
             .iter()
-            .filter(|p| !written_paths.contains(&p.to_lowercase()))
+            // 路径同一性按小写归一（凭证池存的是原始大小写，比对时两边都归一）
+            .filter(|p| {
+                !written_paths
+                    .iter()
+                    .any(|w| w.to_lowercase() == p.to_lowercase())
+            })
             .cloned()
             .collect();
         if !pending.is_empty() {

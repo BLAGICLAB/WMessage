@@ -1,6 +1,32 @@
 pub(crate) const SKILL_NAME_CHARS_OK: fn(char) -> bool =
     |c| c.is_ascii_alphanumeric() || c == '-' || c == '_';
 
+/// 技能步数上限（frontmatter `max_steps` 能声明到的最大值）。
+///
+/// 默认值 DEFAULT_MAX_STEPS 是「一个多步技能正常跑完要多少步」的量级，
+/// 上限留出两倍余量给特别长的流程——上限卡在默认值上，frontmatter 写多大
+/// 都会被夹回同一个数，声明就等于没写。
+pub(crate) const MAX_STEPS_LIMIT: usize = 100;
+
+/// 技能墙钟上限（frontmatter `timeout_secs` 能声明到的最大值，单位秒）。
+///
+/// 同上：默认 DEFAULT_TIMEOUT_SECS 是一般多步技能的量级，上限留两倍余量。
+pub(crate) const MAX_TIMEOUT_SECS_LIMIT: u64 = 3600;
+
+/// 技能步数默认值。
+///
+/// 步数按「非 use_skill 的工具调用」计（一次工具调用 = 一步）。产出型流程
+/// （检索 → 读模板 → 写脚本 → 跑脚本 → 逐页精修 → 合并 → 校验）天然二三十步，
+/// 默认值低于这个量级时技能会在做一半时被步数闸掐掉，而此时产物往往已经落盘。
+pub(crate) const DEFAULT_MAX_STEPS: usize = 50;
+
+/// 技能墙钟默认值（秒）。
+///
+/// 墙钟算的是技能启动到此刻的**累计墙钟**，里面大部分是等模型往返——每步
+/// 一次请求往返十几秒，多步任务的墙钟随步数线性增长。默认值按这个口径给：
+/// 只够十几步的秒数对多步技能是必然撞线的预算。
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 1800;
+
 /// SKILL.md 完整元数据（Skill 运行模型 v1.0 字段集，全部带默认值）
 #[derive(Debug, Clone)]
 pub struct SkillMeta {
@@ -49,13 +75,11 @@ impl Default for SkillMeta {
             description: String::new(),
             risk_level: "medium".into(),
             mode: "interactive".into(),
-            // 单技能步数硬上限的**默认值**（frontmatter `max_steps` 可覆盖，clamp 1..=20）。
-            // 默认 20（= clamp 上限）：实测 gorden-ppt-skill 这类
-            // 「读模板索引 → 探模板 JSON → 生成 PPT → 登记产物」的正常流程需 ~9 步，
-            // 默认 8 会中途熔断（skill_failed），进而丢掉 link_file_to_task 的产物登记。
-            // 防长流程仍由 timeout_secs（默认 180s，clamp 10..=600）与单轮 Function 上限兜底。
-            max_steps: 20,
-            timeout_secs: 180,
+            // 步数与墙钟的默认值见本文件顶部的 DEFAULT_MAX_STEPS / DEFAULT_TIMEOUT_SECS：
+            // 两者都按「多步产出型技能正常跑完」的量级给，且 clamp 上限留了两倍余量，
+            // frontmatter 声明的值才不会被夹回默认值。
+            max_steps: DEFAULT_MAX_STEPS,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
             rollback: "none".into(),
             enabled: true,
             resumable: false,
@@ -189,12 +213,12 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
             }
             "max_steps" => {
                 if let Ok(n) = v.parse::<usize>() {
-                    m.max_steps = n.clamp(1, 20);
+                    m.max_steps = n.clamp(1, MAX_STEPS_LIMIT);
                 }
             }
             "timeout_secs" => {
                 if let Ok(n) = v.parse::<u64>() {
-                    m.timeout_secs = n.clamp(10, 600);
+                    m.timeout_secs = n.clamp(10, MAX_TIMEOUT_SECS_LIMIT);
                 }
             }
             "max_rounds" => {

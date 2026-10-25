@@ -46,6 +46,88 @@ fn skill_timed_out(run: &SkillRun, now_ms: i64) -> bool {
     (now_ms - run.started_at_ms) / 1000 > run.timeout_secs as i64
 }
 
+/// 技能预算软警告阈值：步数余量 / 墙钟余量（秒）。
+///
+/// 取「够模型写完收尾」的量：收尾 = 一轮不调工具，把已经做出来的东西整理成
+/// 回复，几轮足够。阈值必须比硬闸提前一截，否则模型没机会自己收尾。
+pub(crate) const SKILL_SOFT_WARN_STEPS_LEFT: usize = 5;
+pub(crate) const SKILL_SOFT_WARN_SECS_LEFT: i64 = 60;
+
+/// 技能预算软警告文案：预算快用完时提醒模型收尾（一个运行只提醒一次）。
+///
+/// 返回 None = 预算还充裕。
+///
+/// 为什么要有软警告：步数/墙钟是硬闸，被它砍掉的那一轮模型往往刚做完关键动作
+/// （产物已落盘、正准备总结）——硬杀留给用户一个空气泡，软警告让模型有机会
+/// 先把结论和产物路径说出来。
+pub(crate) fn skill_budget_warning(run: &SkillRun, now_ms: i64) -> Option<String> {
+    if run.state != SkillState::Running {
+        return None;
+    }
+    let steps_left = run.max_steps.saturating_sub(run.step);
+    let secs_left = run.timeout_secs as i64 - (now_ms - run.started_at_ms) / 1000;
+    if steps_left > SKILL_SOFT_WARN_STEPS_LEFT && secs_left > SKILL_SOFT_WARN_SECS_LEFT {
+        return None;
+    }
+    Some(format!(
+        "【系统提示】技能「{name}」预算快用完（还剩 {steps_left} 步 / {secs_left} 秒）：立刻停止展开新步骤——把已经做出来的东西整理成最终回复（产物文件的完整路径 + 结论），不要再调工具。",
+        name = run.name,
+        steps_left = steps_left,
+        secs_left = secs_left.max(0),
+    ))
+}
+
+/// 技能出口类型（主循环的三个收尾出口）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillExitKind {
+    /// 技能跑完（Completed）
+    Completed,
+    /// 技能被闸门砍掉：步数/墙钟/工具失败（Failed）
+    Failed,
+    /// 技能被叫停：用户拒绝/强制停止（Terminated）
+    Terminated,
+}
+
+/// 技能出口正文：模型说了就用它，一个字没说就给一句可读兜底。
+///
+/// 兜底场景：模型一路只发工具调用、一个字没说，技能却结束了。这种情况下正文
+/// 是空串，用户看到的是空气泡——「什么也没干」和「干完了但没说」从界面上分不
+/// 出来。兜底把「发生了什么 + 已经产出什么」讲清楚。
+///
+/// produced：本提问里工具写过的路径。只列磁盘上还存在的——已被清理掉的临时
+/// 文件列出来反而误导用户去找一个不存在的文件。
+pub(crate) fn skill_exit_body(
+    streamed: &str,
+    kind: SkillExitKind,
+    name: &str,
+    reason: &str,
+    step: usize,
+    produced: &[String],
+) -> String {
+    if !streamed.trim().is_empty() {
+        return streamed.to_string();
+    }
+    let head = match kind {
+        SkillExitKind::Completed => format!("✅ 技能「{name}」已完成（共 {step} 步）。"),
+        SkillExitKind::Failed => format!("⏹ 技能「{name}」执行中断：{reason}（共 {step} 步）。"),
+        SkillExitKind::Terminated => format!("⏹ 技能「{name}」已终止：{reason}（共 {step} 步）。"),
+    };
+    let files: Vec<&str> = produced
+        .iter()
+        .map(|p| p.as_str())
+        .filter(|p| std::path::Path::new(p).exists())
+        .collect();
+    if files.is_empty() {
+        return head;
+    }
+    let list = files
+        .iter()
+        .map(|p| format!("- {p}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{head}\n已产出（文件仍在原处）：\n{list}")
+}
+
 /// 超时清扫：把等到超时的非终态 run（Paused 等确认 / Running 跑在已死会话里）
 /// 标成 Failed（终态），返回被扫掉的技能名。非终态不扫的话它一直占着同名
 /// 技能——Paused 那个会话再也不回来确认、Running 那个会话模型循环带 Err

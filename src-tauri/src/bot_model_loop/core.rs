@@ -11,6 +11,7 @@ use super::{
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
+use crate::bot_skills::skill_exit_body;
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
 
@@ -76,6 +77,8 @@ where
     let mut rounds_warn_sent: bool = false;
     // 软墙钟提醒已注入（只一次）：进入收尾预留窗口时提醒一次，不重复刷屏
     let mut wall_warn_sent: bool = false;
+    // 技能预算软警告已注入（只一次）：技能步数/墙钟快用完时提醒模型收尾
+    let mut skill_warn_sent: bool = false;
     // 防幻觉汇报守卫：本次提问是否实际执行过变更类工具（提问级一次置位、不按轮
     // 重置——后续正常汇报轮靠它放行，按轮重置会把改完再汇报的正常轮误判为幻觉）；
     // 补一轮机会（claim_retry）同样每次提问只用一次
@@ -105,11 +108,13 @@ where
     // 本会话调用过的工具名（调用过 / 成功过两档）——点名判据的排除集，跨提问的
     // 重述是真话。惰性拉一次：判据要用它，但每轮拉一次库不值当。None = 还没拉。
     let mut session_tools_cache: Option<Option<crate::db::trace::SessionTools>> = None;
-    // 本提问里被工具写过的路径（小写归一，与仓库既有的路径同一性口径一致）。
+    // 本提问里被工具写过的路径（存原始大小写：这条路径要给人看，
+    // 小写归一的版本只用于比对）。
     //
-    // 用途是幻觉守卫的「落盘凭证」那道判据：模型声称「已生成 /path/x.docx」，
-    // 而这个路径从来不是工具写出来的——那是凭空声称。凭证在**进程内**攒，
-    // 不等痕迹落库（本轮刚写的文件此刻还只在 trace sink 的队列里，查库查不到）。
+    // 用途有二：① 幻觉守卫的「落盘凭证」那道判据——模型声称「已生成
+    // /path/x.docx」，而这个路径从来不是工具写出来的——那是凭空声称。
+    // 凭证在**进程内**攒，不等痕迹落库（本轮刚写的文件此刻还只在 trace sink
+    // 的队列里，查库查不到）。② 技能收尾兜底正文里列出已产出文件。
     let mut written_paths: Vec<String> = Vec::new();
     // soft_warn 待注入标志：本轮 tool 响应全部回填后才真正 push（见循环内注释）
     let mut soft_warn_queued: bool = false;
@@ -205,17 +210,47 @@ where
                     AdvanceAction::Finish => {
                         let _hint = skill_finish(true, "");
                         body_outcome = Some("skill_finish");
-                        return Ok((last_streamed.clone(), collected_refs));
+                        return Ok((
+                            skill_exit_body(
+                                &last_streamed,
+                                crate::bot_skills::SkillExitKind::Completed,
+                                &run.name,
+                                "",
+                                run.step,
+                                &written_paths,
+                            ),
+                            collected_refs,
+                        ));
                     }
                     AdvanceAction::Fail(reason) => {
                         let _hint = skill_finish(false, &reason);
                         body_outcome = Some("skill_fail");
-                        return Ok((last_streamed.clone(), collected_refs));
+                        return Ok((
+                            skill_exit_body(
+                                &last_streamed,
+                                crate::bot_skills::SkillExitKind::Failed,
+                                &run.name,
+                                &reason,
+                                run.step,
+                                &written_paths,
+                            ),
+                            collected_refs,
+                        ));
                     }
                     AdvanceAction::Terminate(reason) => {
                         let _hint = skill_finish(false, &reason);
                         body_outcome = Some("skill_terminate");
-                        return Ok((last_streamed.clone(), collected_refs));
+                        return Ok((
+                            skill_exit_body(
+                                &last_streamed,
+                                crate::bot_skills::SkillExitKind::Terminated,
+                                &run.name,
+                                &reason,
+                                run.step,
+                                &written_paths,
+                            ),
+                            collected_refs,
+                        ));
                     }
                 }
             }
@@ -420,6 +455,30 @@ where
                 rounds_warn_at,
                 round,
             );
+            // 技能预算软警告：步数/墙钟快用完时提醒一次，让模型把已经做出来的
+            // 东西整理成回复（产物路径 + 结论）。硬闸砍掉的那一轮模型往往刚做完
+            // 关键动作、正准备总结——没有这句提醒，用户拿到的是空气泡。
+            if !skill_warn_sent {
+                if let Some(run) = active_skill_run(session_id) {
+                    if let Some(warn) = crate::bot_skills::skill_budget_warning(
+                        &run,
+                        chrono::Utc::now().timestamp_millis(),
+                    ) {
+                        msgs.push(serde_json::json!({ "role": "user", "content": warn }));
+                        skill_warn_sent = true;
+                        audit(
+                            crate::audit::AuditLevel::Info,
+                            "skill_budget_soft_warn",
+                            vec![
+                                ("name", run.name.clone()),
+                                ("step", run.step.to_string()),
+                                ("max_steps", run.max_steps.to_string()),
+                                ("timeout_secs", run.timeout_secs.to_string()),
+                            ],
+                        );
+                    }
+                }
+            }
             // 快照上轮 streamed 文本（供 AwaitConfirm/Finish/Fail/Terminate 跳出时返回）
             last_streamed = final_text.clone();
             // 轮数自报：1-based 累计，「轮」的唯一口径来源。
@@ -655,7 +714,7 @@ where
             // 「这个路径确实是工具产物」的凭据（文档生成器在 24a4ea6 之前
             // 不带凭证，那是这道判据的地基缺口）。
             for fc in &tool_outcome.file_changes {
-                written_paths.push(fc.path.to_lowercase());
+                written_paths.push(fc.path.clone());
             }
         }
         emit(

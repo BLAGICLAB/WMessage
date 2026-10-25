@@ -54,8 +54,8 @@ name: minimax-task-summary          # 必填，唯一标识
 description: 任务汇总报告生成       # 必填，注入系统提示词的技能清单用
 risk_level: low                    # low / medium / high，决定 mode 推导
 mode: auto                         # auto / interactive，显式优先于风险推导
-max_steps: 5                       # 默认 20，允许范围 1-20（硬上限防长流程）
-timeout_secs: 60                   # 默认 60，180 已覆盖大多数场景
+max_steps: 5                       # 默认 50，允许范围 1-100（硬上限防长流程）
+timeout_secs: 60                   # 默认 1800，允许范围 10-3600
 rollback: auto                     # none / auto，auto 时必须含 ## Rollback 段
 enabled: true                      # 启用开关
 resumable: false                   # 暂停后是否可续跑
@@ -69,8 +69,8 @@ intents:                           # 触发意图关键词（L1 路由硬锁）
 **字段优先级**：
 - `mode` 显式 > 风险推导：`high` 强制 `interactive`；`low` 且未显式声明 `mode` → `auto`；`medium` 默认 `interactive` 但可显式 `auto`
 - `risk_level` 默认 `medium`
-- `max_steps` 默认 20，允许范围 1-20（clamp；2026-09-13 默认值由 8 抬到 20，正常多步流程实测 ~9 步）
-- `timeout_secs` 默认 180 秒
+- `max_steps` 默认 50，允许范围 1-100（clamp；步数按「非 use_skill 的工具调用」计，产出型流程天然二三十步）
+- `timeout_secs` 默认 1800 秒，允许范围 10-3600（墙钟算的是技能启动到此刻的累计墙钟，绝大部分是等模型往返，多步任务的墙钟随步数线性增长）
 
 **`intents` 关键词黑名单**（命中即拒绝启动）：
 - `全盘遍历`、`批量删除`、`无确认删除`、`遍历文件系统`、`清空所有`

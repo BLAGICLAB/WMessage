@@ -538,3 +538,97 @@ fn conflict_gate_lets_timed_out_running_pass() {
         1000 + 10 * 1000
     ));
 }
+
+// ── 技能预算软警告 ──
+
+/// 软警告：预算充裕时不提醒，临近硬闸时提醒一次。
+#[test]
+fn budget_warning_fires_only_when_budget_nears_exhaustion() {
+    let mut r = test_run(50, 1800);
+    r.state = SkillState::Running;
+    // 刚起步：步数与墙钟都充裕
+    assert!(skill_budget_warning(&r, 1000 + 10 * 1000).is_none());
+    // 步数余量 ≤ 5 → 提醒
+    r.step = 46;
+    let w = skill_budget_warning(&r, 1000 + 10 * 1000).expect("步数快用完应提醒");
+    assert!(w.contains("还剩 4 步"), "文案要带步数余量: {w}");
+    assert!(w.contains("整理成最终回复"), "文案要指示模型收尾: {w}");
+    // 墙钟余量 ≤ 60 秒 → 提醒（步数还很充裕）
+    let mut r2 = test_run(50, 1800);
+    r2.state = SkillState::Running;
+    let w2 = skill_budget_warning(&r2, 1000 + 1741 * 1000).expect("墙钟快用完应提醒");
+    assert!(w2.contains("59 秒"), "文案要带秒数余量: {w2}");
+}
+
+/// 软警告只对运行中的技能发：暂停/终态不在这里刷屏。
+#[test]
+fn budget_warning_skips_non_running_states() {
+    let mut r = test_run(50, 1800);
+    r.state = SkillState::Paused;
+    r.step = 49;
+    assert!(skill_budget_warning(&r, 1000 + 1790 * 1000).is_none());
+    let mut done = test_run(50, 1800);
+    done.state = SkillState::Completed;
+    done.step = 50;
+    assert!(skill_budget_warning(&done, 1000 + 1790 * 1000).is_none());
+}
+
+// ── 技能出口兜底正文 ──
+
+/// 模型说过话就用它，没说话才兜底。
+#[test]
+fn exit_body_keeps_streamed_text_when_present() {
+    let out = skill_exit_body(
+        "PPT 已生成",
+        SkillExitKind::Completed,
+        "ppt-generator",
+        "",
+        12,
+        &[],
+    );
+    assert_eq!(out, "PPT 已生成");
+}
+
+/// 空回复兜底：说清楚发生了什么 + 已产出什么。
+#[test]
+fn exit_body_falls_back_when_model_spoke_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let ppt = dir.path().join("产品介绍.pptx");
+    std::fs::write(&ppt, b"pptx").unwrap();
+    let missing = dir.path().join("已删除.pptx");
+    let out = skill_exit_body(
+        "",
+        SkillExitKind::Failed,
+        "ppt-generator",
+        "超时（超过 1800 秒）",
+        21,
+        &[
+            ppt.to_string_lossy().into_owned(),
+            missing.to_string_lossy().into_owned(),
+        ],
+    );
+    assert!(out.contains("ppt-generator"), "要点名技能: {out}");
+    assert!(
+        out.contains("超时（超过 1800 秒）"),
+        "要点明中断原因: {out}"
+    );
+    assert!(out.contains("产品介绍.pptx"), "要列出已产出文件: {out}");
+    assert!(!out.contains("已删除.pptx"), "磁盘上没的文件不该列: {out}");
+}
+
+/// 技能正常完成但模型没说话：也要有一句可读正文。
+#[test]
+fn exit_body_fallback_for_completed_skill() {
+    let out = skill_exit_body("", SkillExitKind::Completed, "ppt-generator", "", 30, &[]);
+    assert!(out.contains("已完成"), "完成出口也要有正文: {out}");
+    assert!(out.contains("30 步"), "要带步数: {out}");
+}
+
+/// 终止出口（用户叫停）与失败出口要分得开。
+#[test]
+fn exit_body_distinguishes_terminated_from_failed() {
+    let failed = skill_exit_body("", SkillExitKind::Failed, "s", "超时", 3, &[]);
+    let terminated = skill_exit_body("", SkillExitKind::Terminated, "s", "用户拒绝", 3, &[]);
+    assert!(failed.contains("执行中断"), "失败出口文案: {failed}");
+    assert!(terminated.contains("已终止"), "终止出口文案: {terminated}");
+}

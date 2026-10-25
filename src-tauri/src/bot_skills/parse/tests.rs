@@ -96,8 +96,8 @@ fn meta_defaults_and_clamps() {
     let m = parse_meta("没有 frontmatter", "dir-x");
     assert_eq!(m.name, "dir-x");
     assert_eq!(m.risk_level, "medium");
-    assert_eq!(m.max_steps, 20); // 默认 = clamp 上限
-    assert_eq!(m.timeout_secs, 180);
+    assert_eq!(m.max_steps, DEFAULT_MAX_STEPS); // 默认 50 步
+    assert_eq!(m.timeout_secs, DEFAULT_TIMEOUT_SECS); // 默认 1800 秒
     assert!(!m.rollback.eq("auto"));
 
     // 非法值回退 + 越界 clamp
@@ -105,8 +105,18 @@ fn meta_defaults_and_clamps() {
     let m2 = parse_meta(t, "d");
     assert_eq!(m2.risk_level, "medium"); // 非法回退
     assert_eq!(m2.mode, "auto"); // 合法保留
-    assert_eq!(m2.max_steps, 20); // clamp 上限
+    assert_eq!(m2.max_steps, MAX_STEPS_LIMIT); // clamp 上限
     assert_eq!(m2.timeout_secs, 10); // clamp 下限
+}
+
+#[test]
+fn meta_frontmatter_budget_can_exceed_default() {
+    // 声明值必须真的生效：clamp 上限卡在默认值上时，frontmatter 写多大都被
+    // 夹回同一个数，声明等于没写。
+    let t = "---\nmax_steps: 80\ntimeout_secs: 3600\n---\n";
+    let m = parse_meta(t, "d");
+    assert_eq!(m.max_steps, 80);
+    assert_eq!(m.timeout_secs, 3600);
 }
 
 #[test]
