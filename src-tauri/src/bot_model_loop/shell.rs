@@ -326,6 +326,10 @@ pub async fn run_model_loop(
                 .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
         ),
         conv_sidecar_dir: conv_sidecar_path.as_deref(),
+        // 思考段回灌：默认关（维持现状），开了才把本轮 reasoning_content 随
+        // 工具调用消息回灌历史（DeepSeek reasoner 缺了就 400，MiniMax M2/M3
+        // 缺了思考链会断）。
+        reasoning_echo: crate::bot::params::reasoning_echo_on(cfg.reasoning_echo_enabled),
         // 终稿自检轮次间隔：cfg 有值用之（已落盘前钳 0..=100），None = 默认 8。
         // 0 = 关闭 final 自检的 kill switch 直接透传。
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,

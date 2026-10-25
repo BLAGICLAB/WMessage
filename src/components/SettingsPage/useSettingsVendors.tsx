@@ -294,6 +294,10 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             "loop.history_truncate_target_pct",
             c.historyTruncateTargetPct,
           ),
+          reasoningEchoEnabled: paramNumber(
+            "loop.reasoning_echo_enabled",
+            c.reasoningEchoEnabled,
+          ),
           subagentMaxTurns: paramNumber(
             "subagent.max_turns",
             c.subagentMaxTurns,

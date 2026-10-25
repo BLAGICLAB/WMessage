@@ -167,6 +167,9 @@ struct CoreHarness {
     /// 现造——`deps()` 要的是 `&'a dyn Fn`，现造就得 `Box::leak` 逃逸，
     /// 多轮用例下泄漏随调用次数增长。
     file_receipts: Box<dyn Fn(Option<&str>, &[String]) -> Vec<String> + Send + Sync>,
+    /// 思考段回灌开关（默认关）。开启后 assistant(tool_calls) 消息带上本轮
+    /// reasoning_content 原文——要验「开/关两态的消息形状」用。
+    reasoning_echo: bool,
     audit_events: AuditEvents,
 }
 
@@ -214,7 +217,14 @@ impl CoreHarness {
                     .collect()
             }),
             audit_events: events,
+            reasoning_echo: false,
         }
+    }
+
+    /// opt-in 思考段回灌：默认关（维持现状），要验开态的消息形状用这个。
+    fn with_reasoning_echo(mut self) -> Self {
+        self.reasoning_echo = true;
+        self
     }
 
     /// 依赖装配（默认关 final 自检，避免对历史用例产生回归干扰；
@@ -224,6 +234,7 @@ impl CoreHarness {
         ModelLoopDeps {
             fuse_cap_override: None,
             conv_sidecar_dir: None,
+            reasoning_echo: self.reasoning_echo,
             emit: &*self.emit,
             audit: &*self.audit,
             skill_finish: &*self.skill_finish,
@@ -246,6 +257,7 @@ impl CoreHarness {
         ModelLoopDeps {
             fuse_cap_override: None,
             conv_sidecar_dir: None,
+            reasoning_echo: self.reasoning_echo,
             emit: &*self.emit,
             audit: &*self.audit,
             skill_finish: &*self.skill_finish,

@@ -6,6 +6,48 @@
 > 「为什么换方向」，一事一段。工单号、拍板记录不再进入源码注释（见 SPEC.md
 > 「开发基线」）。以下 2026-10-08 之前的内容为历史批次详录，不再作为格式范例。
 
+## 2026-10-25（周日）思考段回灌：从「提质项」改判成「兼容硬要求」
+
+**为什么换方向**：方案（`docs/CONTEXT-TOOLCALL-OPTIMIZATION-DESIGN-2026-10-25.md`
+P6）把思考段回灌记成**提质**项：官方要求把 `reasoning_content` 连同 tool_calls
+回灌历史，省 token 与官方质量口径冲突，所以定成默认关的开关，「用实机 A/B 数据
+定默认值」。动手查证上游文档时发现这个定性是错的——
+
+DeepSeek 官方（思考模式 / 工具调用两节）原话：「携带了 tools 参数的请求，在后续
+所有请求中，必须完整回传 reasoning_content 给 API——即使该轮模型未实际进行工具
+调用。若您的代码中未正确回传 reasoning_content，API 会返回 400 报错。」Moonshot
+K2 同口径（「thinking is enabled but reasoning_content is missing in assistant tool
+call message」），MiniMax M2/M3 官方要求把整条 assistant 消息（含
+`reasoning_content`）原样 append 回历史，理由是「丢了思考链后续轮次会失去上下文」。
+
+也就是说：在带思考模式的模型上，**不回灌不是「少拿一点 agent 性能」，是工具调用
+那一轮直接 400**。而 DeepSeek 自 V4 起思考模式**默认开着**（`deepseek-v4-flash`
+默认 enabled、effort 默认 high），本仓库的推理参数映射对未知模型族一律不发字段
+（`bot/reasoning.rs` 的口径：未证实字段不发，防严格网关 400），于是 DeepSeek 的
+思考模式是「默认开着且我们关不掉」的状态——工具调用后那一轮请求一直在裸奔。
+
+**顺带纠正了一处覆盖面的错误**：方案写的是「把 `reasoning_content` 连同
+tool_calls 回灌」，即只挂工具轮那一条 assistant 消息。DeepSeek 的口径覆盖的是
+**所有**思考模式产出的 assistant 消息（「即使该轮模型未实际进行工具调用」），
+而本仓库里自检返工、幻觉守卫返工、长度续跑这三条路径都会再发一次请求，它们推回
+的 assistant 消息同样得带。盖章点因此统一落在「消息栈最后一条 assistant 消息」，
+而不是分散在各个 push 点——分散写等于每加一条返工路径就漏一次，而漏一次的表现是
+上游 400（不是本地能发现的错）。
+
+**默认值的取舍变了但没拍死**：受益（不 400）与代价（多付一份思考段的 input
+token）落在**同一批模型**上——没吐思考段的模型压根不挂这个字段，请求体零变化。
+所以「默认关」等于「DeepSeek 那条路径继续坏着」，「默认开」等于「所有思考模型
+多付一份 token（走缓存，命中价约 1 折）」。这条按方案口径交由实机数据定，同时
+在设置页把开关文案写明「哪些模型缺了会 400」。
+
+**另一个已知缺口**（本轮没做，记在这里免得下次找不到）：MiniMax 官方 OpenAI 原生
+格式（`reasoning_split=false`）是把思考段塞在 `content` 的 `<think>` 标签里，而
+本仓库的 `feed_think` 会把 `<think>` 段从正文里剥出来做展示、不留在历史里。也就是
+说 MiniMax 走 OpenAI 兼容端点时，它的思考段仍然丢（走 Anthropic 端点不受影响：
+那条路走 thinking 块原样回传）。这一档要单独处理（把 `<think>` 段原样留在
+content 里，而不是另开一个字段），不能拿 `reasoning_content` 顶替——官方口径是
+「切勿修改历史消息中的 content 字段」。
+
 ## 2026-10-25（周日）注入块挪位：从「末尾 system 消息」改成「并进本轮用户消息」
 
 **为什么换方向**：方案（`docs/CONTEXT-TOOLCALL-OPTIMIZATION-DESIGN-2026-10-25.md`

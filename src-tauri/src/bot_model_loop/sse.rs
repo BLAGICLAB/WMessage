@@ -22,6 +22,8 @@ pub(crate) struct SseStream {
     pub(crate) tool_calls: Vec<(String, String, String)>,
     /// 本轮 Anthropic thinking 块（回传服务端用）
     pub(crate) thinking_blocks: Vec<serde_json::Value>,
+    /// 本轮 reasoning_content 原文（M2/M3 回灌用；默认不回灌，只进前端展示出口）
+    pub(crate) reasoning_text: String,
     /// 收尾原因（length / content_filter 等）
     pub(crate) last_finish_reason: Option<String>,
     /// 是否见到正常收尾标记（[DONE] / finish_reason）
@@ -50,6 +52,8 @@ pub(crate) struct RoundStream {
     pub(crate) tool_calls: Vec<(String, String, String)>,
     /// 本轮 Anthropic thinking 块（回传服务端用）
     pub(crate) thinking_blocks: Vec<serde_json::Value>,
+    /// 本轮 reasoning_content 原文（M2/M3 回灌用）
+    pub(crate) reasoning_text: String,
     /// 收尾原因（length / content_filter 等）
     pub(crate) last_finish_reason: Option<String>,
     /// 用户在流中叫停（正文已出的部分照常返回给用户）
@@ -104,6 +108,8 @@ pub(crate) async fn read_sse_stream(
     // Anthropic 的 thinking 块收集器（仅 Anthropic 协议会收到增量）：
     // 块要原样回传服务端，故随本轮响应收集、随 assistant 消息入历史。
     let mut thinking_collector = crate::bot_anthropic::ThinkingCollector::default();
+    // reasoning_content 原文缓冲（回灌用；见下方 emit 处注释）
+    let mut reasoning_text = String::new();
 
     let mut stopped = false;
     {
@@ -160,7 +166,11 @@ pub(crate) async fn read_sse_stream(
                 last_finish_reason = Some(reason);
             }
             // reasoning_content 与 <think> 同出口（不进 final_text、不进历史）
+            // 另存一份原文：M2/M3 官方要求把 reasoning_content 随 tool_calls
+            // 回灌历史（「otherwise subsequent conversation will lose context」），
+            // 回灌与否由配置开关决定（默认关 = 只走前端展示出口）。
             if let Some(r) = parsed.reasoning {
+                reasoning_text.push_str(&r);
                 emit("bot-think-delta", serde_json::json!({ "text": r }));
             }
             if let Some(t) = parsed.content {
@@ -284,6 +294,7 @@ pub(crate) async fn read_sse_stream(
         final_text,
         tool_calls,
         thinking_blocks,
+        reasoning_text,
         last_finish_reason,
         stream_end_seen,
         think_buf,
@@ -311,6 +322,7 @@ pub(crate) fn stream_round(
         mut final_text,
         mut tool_calls,
         thinking_blocks,
+        reasoning_text,
         last_finish_reason,
         stream_end_seen,
         mut think_buf,
@@ -395,6 +407,7 @@ pub(crate) fn stream_round(
             final_text,
             tool_calls,
             thinking_blocks,
+            reasoning_text,
             last_finish_reason,
             stopped: true,
         });
@@ -461,6 +474,7 @@ pub(crate) fn stream_round(
         final_text,
         tool_calls,
         thinking_blocks,
+        reasoning_text,
         last_finish_reason,
         stopped: false,
     })

@@ -223,6 +223,7 @@ async fn run_case(case: &EvalCase, http: &LlmHttp, system: &str, usage: &UsageCo
     let deps = ModelLoopDeps {
         fuse_cap_override: case.fuse_cap,
         conv_sidecar_dir: None,
+        reasoning_echo: false,
         emit: &|_, _| {},
         audit: &*audit,
         skill_finish: &|_, _| String::new(),

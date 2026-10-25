@@ -104,6 +104,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     maxRounds: "",
     historyBudgetChars: "",
     historyTruncateTargetPct: "",
+    reasoningEchoEnabled: "",
     subagentMaxTurns: "",
     subagentMaxWallSecs: "",
     searchMaxResults: "",
@@ -358,6 +359,10 @@ export function useSettingsActions(params: SettingsActionsParams) {
         historyTruncateTargetPct:
           c.historyTruncateTargetPct != null
             ? String(c.historyTruncateTargetPct)
+            : "",
+        reasoningEchoEnabled:
+          c.reasoningEchoEnabled != null
+            ? String(c.reasoningEchoEnabled)
             : "",
         subagentMaxTurns:
           c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",

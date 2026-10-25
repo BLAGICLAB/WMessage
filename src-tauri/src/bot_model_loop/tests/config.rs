@@ -242,6 +242,57 @@ mod anthropic_thinking_tests {
     }
 }
 
+/// 思考段回灌的盖章机制（DeepSeek 这类模型缺了 reasoning_content 直接 400）。
+#[cfg(test)]
+mod reasoning_echo_tests {
+    use super::*;
+
+    /// 盖章打在**最后一条** assistant 消息上，早先的那条不动。
+    #[test]
+    fn stamps_the_last_assistant_message_only() {
+        let mut msgs = vec![
+            serde_json::json!({"role": "user", "content": "查一下"}),
+            serde_json::json!({"role": "assistant", "content": "早先那句"}),
+            serde_json::json!({"role": "user", "content": "系统提示：返工"}),
+            serde_json::json!({"role": "assistant", "content": "本轮答复"}),
+            serde_json::json!({"role": "user", "content": "系统提示：续跑"}),
+        ];
+        stamp_last_assistant_reasoning(&mut msgs, "本轮思考");
+        // 早先那条 assistant 没被动过（它是缓存前缀的一部分）
+        assert!(msgs[1].get("reasoning_content").is_none());
+        assert_eq!(msgs[3]["reasoning_content"], "本轮思考");
+    }
+
+    /// 已有 reasoning_content 的不覆盖（同一个 assistant 消息可能被盖两次）。
+    #[test]
+    fn does_not_overwrite_existing_reasoning() {
+        let mut msgs = vec![serde_json::json!({
+            "role": "assistant",
+            "content": "我查一下",
+            "reasoning_content": "原来的",
+        })];
+        stamp_last_assistant_reasoning(&mut msgs, "新的");
+        assert_eq!(msgs[0]["reasoning_content"], "原来的");
+    }
+
+    /// 空思考段不盖章：模型没思考就没有可回灌的东西。
+    #[test]
+    fn blank_reasoning_is_not_stamped() {
+        let mut msgs = vec![serde_json::json!({"role": "assistant", "content": "答"})];
+        stamp_last_assistant_reasoning(&mut msgs, "   ");
+        assert!(msgs[0].get("reasoning_content").is_none());
+    }
+
+    /// 没有 assistant 消息时不报错（防御：空栈）。
+    #[test]
+    fn no_assistant_message_is_a_noop() {
+        let mut msgs = vec![serde_json::json!({"role": "user", "content": "问"})];
+        stamp_last_assistant_reasoning(&mut msgs, "思考");
+        assert_eq!(msgs.len(), 1);
+        assert!(msgs[0].get("reasoning_content").is_none());
+    }
+}
+
 #[cfg(test)]
 mod think_tests {
     use super::*;

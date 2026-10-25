@@ -183,6 +183,18 @@ pub struct ModelLoopDeps<'a> {
     /// 任何工具。
     pub session_tools:
         Option<&'a (dyn Fn(Option<&str>) -> Option<crate::db::trace::SessionTools> + Send + Sync)>,
+    /// 思考段回灌开关：开启后 OpenAI 兼容路径的 assistant(tool_calls) 消息
+    /// 带上本轮的 reasoning_content 原文。
+    ///
+    /// MiniMax M2/M3、DeepSeek reasoner、Moonshot K2 这类模型要求思考段随工具
+    /// 调用消息一起回灌历史：DeepSeek 缺了直接 400（"reasoning_content in the
+    /// thinking mode must be passed back to the API"），Moonshot 报"thinking is
+    /// enabled but reasoning_content is missing in assistant tool call message"，
+    /// MiniMax 官方口径是丢了思考链后续轮次会失去上下文。
+    ///
+    /// 默认关（维持现状）：回灌要多付一份思考段的 input token，而受益只落在
+    /// 那些要求回灌的模型上——是否值得由设置页的开关决定，值由实机对拍定。
+    pub reasoning_echo: bool,
     /// 幻觉守卫「执行类谎报」触发词表（设置页「工具调用触发器关键词」可编辑）。
     ///
     /// 薄壳已把「没配过」回落成内置默认表再传进来，core 不再关心来源——

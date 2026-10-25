@@ -298,6 +298,7 @@ export function BotCoreSection({
                   pythonTimeoutSecs: "",
                   historyBudgetChars: "",
                   historyTruncateTargetPct: "",
+                  reasoningEchoEnabled: "",
                   subagentMaxTurns: "",
                   subagentMaxWallSecs: "",
                   searchMaxResults: "",

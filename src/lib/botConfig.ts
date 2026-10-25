@@ -64,6 +64,7 @@ export interface BotConfigView {
   maxRounds?: number | null;
   historyBudgetChars?: number | null;
   historyTruncateTargetPct?: number | null;
+  reasoningEchoEnabled?: number | null;
   subagentMaxTurns?: number | null;
   subagentMaxWallSecs?: number | null;
   searchMaxResults?: number | null;

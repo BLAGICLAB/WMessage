@@ -77,8 +77,8 @@ pub(crate) use self::request::{
 pub(crate) use self::shell::{resolve_max_rounds, DEFAULT_MAX_ROUNDS};
 pub(crate) use self::sse::{read_sse_stream, stream_round};
 pub(crate) use self::stream::{
-    claim_mutation_fires, feed_think, mutation_succeeded, strip_thinking_key,
-    unparsable_sse_payload, with_thinking,
+    claim_mutation_fires, feed_think, mutation_succeeded, stamp_last_assistant_reasoning,
+    strip_thinking_key, unparsable_sse_payload, with_thinking,
 };
 pub(crate) use self::types::{
     ErrorDisposition, ErrorResponse, RequestOutcome, RequestPlan, RequestState, RequestWork,

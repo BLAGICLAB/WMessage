@@ -241,6 +241,15 @@ pub struct BotConfig {
     /// 留余量稳住隐式前缀缓存。None = 70；钳 50..=90。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_truncate_target_pct: Option<u32>,
+    /// 思考段回灌开关：None = 关（维持现状）；1 = 开。
+    ///
+    /// 打开后 OpenAI 兼容路径的 assistant(tool_calls) 消息带上本轮
+    /// reasoning_content 原文——MiniMax M2/M3、DeepSeek reasoner、Moonshot K2
+    /// 要求思考段随工具调用消息回灌历史（DeepSeek 缺了直接 400）。
+    /// 用 0/1 而不是布尔：设置页的参数卡只有数值输入行，混进布尔会让
+    /// 「参数卡 ↔ 配置字段」的映射多一套类型分支。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_echo_enabled: Option<u32>,
     /// 子 agent 默认轮数预算（LLM spawn 未显式给 budget 时）：None = 30；钳 1..=50（硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
@@ -363,6 +372,7 @@ impl Default for BotConfig {
             max_rounds: None,
             history_budget_chars: None,
             history_truncate_target_pct: None,
+            reasoning_echo_enabled: None,
             subagent_max_turns: None,
             subagent_max_wall_secs: None,
             search_max_results: None,
@@ -545,6 +555,9 @@ pub struct BotConfigView {
     pub history_budget_chars: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_truncate_target_pct: Option<u32>,
+    /// 思考段回灌开关原样透传（None = 关；1 = 开）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_echo_enabled: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_turns: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

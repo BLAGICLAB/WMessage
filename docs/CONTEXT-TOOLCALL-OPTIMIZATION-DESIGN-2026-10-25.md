@@ -355,3 +355,44 @@ O(1)）。取舍理由是「两种协议都成立」值这点。
 这一列；为它加一列就得给 `exec_spans` 加写路径（破坏该表 append-only 的观测面
 定位）。回执改为给「存档原文按 16KB 上限截断」并如实说明——原文的前 16KB 仍在，
 超出部分确实取不到。属于已知能力缺口，不是遗漏。
+
+### 9.5 P6 的定性从「提质」改判成「兼容硬要求」，覆盖面比本文写的宽
+
+本文 §四把 P6 归为「提质 / token 上升」项，默认关。查上游文档时发现定性错了：
+
+| 上游 | 官方口径 |
+|---|---|
+| DeepSeek（思考模式 / 工具调用） | 「携带了 tools 参数的请求，在后续所有请求中，必须完整回传 reasoning_content 给 API——即使该轮模型未实际进行工具调用。若未正确回传，API 会返回 400 报错」 |
+| Moonshot K2 | 「thinking is enabled but reasoning_content is missing in assistant tool call message at index N」（400） |
+| MiniMax M2/M3 | 整条 assistant 消息（含 `reasoning_content`）必须原样 append 回历史，丢了思考链后续轮次失去上下文 |
+
+即：不回灌不是「少拿一点 agent 性能」，是**工具调用后的下一轮请求直接 400**。
+而 DeepSeek 自 V4 起思考模式默认开着（`deepseek-v4-flash` 默认 enabled），本仓库
+对未知模型族一律不发推理字段（`bot/reasoning.rs` 口径：未证实字段不发），所以
+这条路径是「默认开着且我们关不掉」的状态。
+
+两处实施偏离：
+
+1. **覆盖面比本文宽**。本文写「把 `reasoning_content` 连同 tool_calls 回灌」，
+   即只挂工具轮那一条 assistant 消息。DeepSeek 的口径覆盖**所有**思考模式产出的
+   assistant 消息，而本仓库的自检返工 / 幻觉守卫返工 / 长度续跑三条路径都会再发
+   一次请求，它们推回的 assistant 消息同样得带。盖章点因此统一落在「消息栈最后
+   一条 assistant 消息」（`stamp_last_assistant_reasoning`），不在各个 push 点
+   分写——分写等于每加一条返工路径就漏一次，漏一次的表现是上游 400。
+2. **只对 OpenAI 兼容路径生效**。Anthropic 协议走 thinking 块原样回传（既有
+   `with_thinking` 机制），转换层会丢掉 `reasoning_content` 这个键，故 Anthropic
+   路径不受此开关影响。没有吐思考段的模型不挂这个字段，请求体零变化。
+
+**默认值待实机拍板**：受益（不 400）与代价（多付一份思考段 input token）落在
+同一批模型上，所以「默认关」= DeepSeek 那条路径继续坏着，「默认开」= 所有思考
+模型多付一份 token（走缓存，命中价约 1 折）。设置页文案已写明「哪些模型缺了会
+400」。
+
+### 9.6 P6 的已知缺口：MiniMax OpenAI 原生格式的 `<think>` 段仍丢
+
+MiniMax 官方 OpenAI 原生格式（`reasoning_split=false`）把思考段塞在 `content` 的
+`<think>` 标签里，而本仓库的 `feed_think` 会把 `<think>` 段从正文剥出来做展示、
+不留进历史。所以 MiniMax 走 OpenAI 兼容端点时思考段仍然丢；走 Anthropic 端点不受
+影响（那条路走 thinking 块）。这一档不能拿 `reasoning_content` 顶替——官方口径是
+「切勿修改历史消息中的 content 字段」，正确做法是把 `<think>` 段原样留在 content
+里。未做，登记备查。

@@ -151,18 +151,18 @@ src-tauri/src/
 │                        在 types.rs + fuse.rs；LlmHttp / ModelLoopDeps 依赖注入在 types.rs；
 │                        llm.usage 薄壳累计 + bot-usage-delta 水位条事件在 shell.rs
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
-│   ├── bot_model_loop/stream.rs (391)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
+│   ├── bot_model_loop/stream.rs (425)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (799)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (826)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (582)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/shell.rs (586)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (639)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
-│   ├── bot_model_loop/sse.rs (467)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
+│   ├── bot_model_loop/sse.rs (481)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (574)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定
 │   ├── bot_model_loop/finalize.rs (336) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
 │   ├── bot_model_loop/fuse.rs (213)     熔断层：单轮 Function 调用上限 / 轮数·墙钟熔断 / 软警告注入
-│   ├── bot_model_loop/types.rs (330)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
+│   ├── bot_model_loop/types.rs (342)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (153)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
 │   ├── bot_model_loop/context.rs (110)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正
@@ -170,7 +170,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests.rs (70)     单元测试三桶的入口 + prod_src() 生产代码全景扫描源
 │   ├── bot_model_loop/tests/guard.rs (922)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (587)   SSE 解析 / 增量累积 / schema 测试
-│   └── bot_model_loop/tests/config.rs (595) 推理参数 / 思考 / 上下文超限 / 侧调门测试
+│   └── bot_model_loop/tests/config.rs (646) 推理参数 / 思考 / 上下文超限 / 侧调门测试
 ├── bot.rs (213)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸

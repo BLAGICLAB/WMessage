@@ -5,8 +5,9 @@
 use super::{
     check_fuses, compact_before_round, finalize_without_tools, fuse_message, inject_soft_warnings,
     mutation_succeeded, prepare_round, read_sse_stream, request_round, rounds_fuse_exit,
-    should_fuse, stream_round, with_thinking, FinalizeOutcome, LlmHttp, ModelLoopDeps,
-    RequestOutcome, RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS,
+    should_fuse, stamp_last_assistant_reasoning, stream_round, with_thinking, FinalizeOutcome,
+    LlmHttp, ModelLoopDeps, RequestOutcome, RoundCtx, ToolEvidence, TurnStatus,
+    EVIDENCE_OUTPUT_CHARS,
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
@@ -249,6 +250,18 @@ where
             let tool_calls = rs.tool_calls;
             let thinking_blocks = rs.thinking_blocks;
             let last_finish_reason = rs.last_finish_reason;
+            let reasoning_text = rs.reasoning_text;
+            // 思考段回灌：只对 OpenAI 兼容路径有意义（Anthropic 协议走 thinking 块
+            // 原样回传，转换层会丢掉这个键），且只在模型真吐了思考段时才带——
+            // 没思考段的模型挂了也是空字段，白占请求体。
+            let echo_reasoning: Option<&str> = if deps.reasoning_echo
+                && http.provider == crate::bot::ApiProvider::Openai
+                && !reasoning_text.trim().is_empty()
+            {
+                Some(reasoning_text.as_str())
+            } else {
+                None
+            };
 
             if tool_calls.is_empty() {
                 match finalize_without_tools(
@@ -279,7 +292,14 @@ where
                 )
                 .await?
                 {
-                    FinalizeOutcome::Continue => continue,
+                    FinalizeOutcome::Continue => {
+                        // 返工/续跑路径推回的 assistant 消息也要带思考段：
+                        // 这些路径都会再发一次请求，DeepSeek 这类模型缺了就 400。
+                        if let Some(r) = echo_reasoning {
+                            stamp_last_assistant_reasoning(&mut msgs, r);
+                        }
+                        continue;
+                    }
                     FinalizeOutcome::Proceed => {}
                     FinalizeOutcome::Stopped(msg) => {
                         return Ok((msg, collected_refs));
@@ -339,6 +359,7 @@ where
                 &final_text,
                 &tool_calls,
                 &thinking_blocks,
+                echo_reasoning,
                 &mut collected_refs,
                 &mut function_calls_total,
                 &mut mutation_done,
@@ -444,6 +465,7 @@ async fn dispatch_round<X, XP, R, RP>(
     final_text: &str,
     tool_calls: &[(String, String, String)],
     thinking_blocks: &[serde_json::Value],
+    echo_reasoning: Option<&str>,
     collected_refs: &mut Vec<TaskRef>,
     function_calls_total: &mut usize,
     mutation_done: &mut bool,
@@ -498,6 +520,11 @@ where
         }),
         thinking_blocks,
     ));
+    // 思考段盖在这条 assistant 消息上（回灌开启时）。盖在消息栈尾部那条，
+    // 更早的内容一个字节不动——隐式前缀缓存靠的就是那截不动。
+    if let Some(r) = echo_reasoning {
+        stamp_last_assistant_reasoning(msgs, r);
+    }
     if stop.stopped() {
         let hint = skill_finish(false, "用户停止");
         return Ok(DispatchOutcome::Stopped(format!(

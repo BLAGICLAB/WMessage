@@ -62,6 +62,11 @@ pub const DEFAULT_HISTORY_TRUNCATE_TARGET_PCT: u32 = 70;
 pub const HISTORY_TRUNCATE_TARGET_PCT_MIN: u32 = 50;
 /// 滞回比例上界（90%）：再高等于没有余量，贴边裁的问题原样回来。
 pub const HISTORY_TRUNCATE_TARGET_PCT_MAX: u32 = 90;
+/// 思考段回灌开关默认（0 = 关）：维持现状，不为「可能受益」的模型族预付
+/// 思考段的 input token；受益只落在明确要求回灌的模型上，由用户自己开。
+pub const DEFAULT_REASONING_ECHO_ENABLED: u32 = 0;
+/// 思考段回灌开关上界（1 = 开）：只有两态，中间值没有语义。
+pub const REASONING_ECHO_ENABLED_MAX: u32 = 1;
 /// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）：
 /// max_tool_calls 仅是缺省兜底——配置了 max_function_calls 时子 agent 同源全域上限
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 = 30;
@@ -94,6 +99,11 @@ pub fn clamp_history_truncate_target_pct(n: u32) -> u32 {
         HISTORY_TRUNCATE_TARGET_PCT_MIN,
         HISTORY_TRUNCATE_TARGET_PCT_MAX,
     )
+}
+
+/// 思考段回灌开关钳 0..=1（0 = 关，1 = 开）
+pub fn clamp_reasoning_echo_enabled(n: u32) -> u32 {
+    n.min(REASONING_ECHO_ENABLED_MAX)
 }
 
 /// 子 agent 墙钟秒数钳 30..=3600
@@ -200,6 +210,24 @@ pub fn resolve_history_truncate_target_pct(cfg: &BotConfig) -> u32 {
 /// 比例越低裁得越狠（前缀越稳、丢的历史越多）。
 pub fn resolve_history_truncate_target_ratio(cfg: &BotConfig) -> f64 {
     resolve_history_truncate_target_pct(cfg) as f64 / 100.0
+}
+
+/// 思考段回灌开关取值（0 = 关 / 1 = 开）。
+///
+/// 入口收原始 `Option<u32>` 而不是配置结构：配置本体与配置视图是两个类型，
+/// 但开关只有一个判定口径——写成两套 resolver 迟早漂。
+pub fn reasoning_echo_enabled_value(raw: Option<u32>) -> u32 {
+    clamp_reasoning_echo_enabled(raw.unwrap_or(DEFAULT_REASONING_ECHO_ENABLED))
+}
+
+/// 思考段回灌是否开启（读点用这个布尔口径）。
+pub fn reasoning_echo_on(raw: Option<u32>) -> bool {
+    reasoning_echo_enabled_value(raw) == 1
+}
+
+/// 思考段回灌开关（0 = 关 / 1 = 开）——参数表解析用。
+pub fn resolve_reasoning_echo_enabled(cfg: &BotConfig) -> u32 {
+    reasoning_echo_enabled_value(cfg.reasoning_echo_enabled)
 }
 
 pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
@@ -326,6 +354,16 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         max: Some(HISTORY_TRUNCATE_TARGET_PCT_MAX as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_history_truncate_target_pct, history_truncate_target_pct),
+    },
+    ParamDef {
+        key: "loop.reasoning_echo_enabled",
+        label: "思考段回灌",
+        category: "loop",
+        hint: "1 = 把本轮思考段随工具调用消息回灌历史（MiniMax M2/M3、DeepSeek reasoner、Moonshot K2 要求回灌，缺了会 400）；0 = 不回灌（省一份思考段的 input token）",
+        min: Some(0),
+        max: Some(REASONING_ECHO_ENABLED_MAX as u64),
+        editable: true,
+        resolve: cfg_resolver!(resolve_reasoning_echo_enabled, reasoning_echo_enabled),
     },
     // ── 可编辑：子 agent ──
     ParamDef {
@@ -728,6 +766,7 @@ mod tests {
             schema_version: 1,
             max_rounds: None,
             history_truncate_target_pct: None,
+            reasoning_echo_enabled: None,
             history_budget_chars: None,
             tool_rules: None,
             subagent_max_turns: None,
@@ -1107,5 +1146,32 @@ mod tests {
             resolve_history_budget_chars(&cfg),
             DEFAULT_HISTORY_BUDGET_CHARS
         );
+    }
+
+    /// 思考段回灌开关：只有 0/1 两态，别的值一律夹到 1；未配置 = 关。
+    #[test]
+    fn reasoning_echo_is_two_state_and_defaults_off() {
+        assert_eq!(reasoning_echo_enabled_value(None), 0);
+        assert!(!reasoning_echo_on(None));
+        assert_eq!(reasoning_echo_enabled_value(Some(0)), 0);
+        assert!(!reasoning_echo_on(Some(0)));
+        assert_eq!(reasoning_echo_enabled_value(Some(1)), 1);
+        assert!(reasoning_echo_on(Some(1)));
+        // 越界值夹到上界（当作开），不是夹成关——写侧已钳过，这里是读侧兜底
+        assert_eq!(reasoning_echo_enabled_value(Some(9)), 1);
+    }
+
+    /// 思考段回灌行的可填范围是 0–1，与钳制边界同源。
+    #[test]
+    fn reasoning_echo_param_row_range_matches_clamp() {
+        let views = effective_params(&empty_cfg());
+        let v = views
+            .iter()
+            .find(|v| v.key == "loop.reasoning_echo_enabled")
+            .expect("参数表应有思考段回灌这一条");
+        assert_eq!(v.min, Some(0));
+        assert_eq!(v.max, Some(REASONING_ECHO_ENABLED_MAX as u64));
+        assert!(v.editable);
+        assert_eq!(v.default, "0", "内置默认是关");
     }
 }

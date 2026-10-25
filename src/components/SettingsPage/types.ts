@@ -307,6 +307,7 @@ export type SettingsConfig = {
   maxRounds: string;
   historyBudgetChars: string;
   historyTruncateTargetPct: string;
+  reasoningEchoEnabled: string;
   subagentMaxTurns: string;
   subagentMaxWallSecs: string;
   searchMaxResults: string;

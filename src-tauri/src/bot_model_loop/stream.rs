@@ -260,6 +260,40 @@ pub(crate) fn with_thinking(
     msg
 }
 
+/// 给消息栈里最后一条 assistant 消息补上本轮思考段（已有则不动）。
+///
+/// 覆盖面必须比「工具轮那一条」更宽：凡是思考模式产出的 assistant 消息，
+/// 后续请求都得带上它的 reasoning_content——DeepSeek 官方口径是「携带 tools
+/// 的请求必须完整回传 reasoning_content，否则 API 返回 400」，且明确「即使
+/// 该轮模型未实际进行工具调用」也要回传。自检返工、幻觉守卫返工、长度续跑
+/// 这三条路径都会再发一次请求，它们推回的 assistant 消息同样要补——只补工具
+/// 轮那一条，这三条路径照样 400。
+///
+/// 空思考段不补：模型没思考就没有可回灌的东西。
+///
+/// 改的是消息栈**尾部**那条（它后面只跟着一条注入的 user 提示），不动更早
+/// 的内容——隐式前缀缓存靠的正是更早那截不动。
+pub(crate) fn stamp_last_assistant_reasoning(msgs: &mut [serde_json::Value], reasoning: &str) {
+    if reasoning.trim().is_empty() {
+        return;
+    }
+    let Some(idx) = msgs
+        .iter()
+        .rposition(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+    else {
+        return;
+    };
+    if msgs[idx].get("reasoning_content").is_some() {
+        return;
+    }
+    if let Some(obj) = msgs[idx].as_object_mut() {
+        obj.insert(
+            "reasoning_content".to_string(),
+            serde_json::Value::String(reasoning.to_string()),
+        );
+    }
+}
+
 /// 从内部消息里剥掉 provider 专属键（发 OpenAI 端点前用）。
 ///
 /// 只有 Anthropic 分支会挂 thinking 块载体，平时不命中——不命中时直接
