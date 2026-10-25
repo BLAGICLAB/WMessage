@@ -32,7 +32,7 @@
 | 文件 | 登记上限 | 实测 | 生产 | 内联测试 | 类别 | 落地 |
 |---|---|---|---|---|---|---|
 | `tests/llm_integration.rs` | 4645 | 4645 | 4646 | 0 | C | ✅ 目录形态 6 文件 |
-| `src/bot/registry.rs` | 3827 | 3827 | 2546 | 1282 | B | ⬜ 未开始 |
+| `src/bot/registry.rs` | 3827 | 3827 | 2546 | 1282 | B | ✅ 220（门面） |
 | `src/db/trace.rs` | 3040 | 3040 | 1652 | 1389 | B | ✅ 908 |
 | `src/bot_chat.rs` | 3028 | 3028 | 2764 | 265 | B | ✅ 419（门面） |
 | `src/bot/tools.rs` | 2949 | 2949 | 2323 | 627 | B | ✅ 88（门面） |
@@ -57,8 +57,8 @@
 **A 类 8 条已全部落地（2026-10-25）**：白名单 18 → 10 条，减债 8,394 行。
 落地过程中新发现三处计划未预判的坑，见 §九。
 
-**B 类 8 条 + C 类 1 条已落地（2026-10-25 续）**：白名单 10 → **1 条**
-（只剩 `src/bot/registry.rs` 3827）。B/C 类的实际切法、落地偏差与新发现的
+**B 类 9 条 + C 类 1 条已全部落地（2026-10-25 续）**：白名单 10 → **0 条**
+（`src/bot/registry.rs` 也已拆完，见 §十一）。**18 条债务全部清账。**B/C 类的实际切法、落地偏差与新发现的
 四个坑见 §十。
 
 > **原计划清单漏排两条**：`src/bot/dispatch.rs`（B 类，1819）与
@@ -123,13 +123,13 @@
 | 8 | `db/trace.rs` 生产切分 | B | 1 | ~1650 | 中 | ✅ `5f745f79` |
 | 9 | `bot_fs.rs` 生产切分 | B | 1 | ~1880 | 中 | ✅ `b325f6dc` |
 | 10 | `bot/tools.rs` + `bot/services.rs` 生产切分 | B | 2 | ~3000 | 中高 | ✅ `6e5974d0` / `eb9c3eeb`（拆成两个 commit） |
-| 11 | `bot_chat.rs` + `bot/registry.rs` 生产切分 | B | 2 | ~3300 | 高 | 🔶 `bot_chat` ✅ `93658dba`；`registry` ⬜ 未开始 |
+| 11 | `bot_chat.rs` + `bot/registry.rs` 生产切分 | B | 2 | ~3300 | 高 | ✅ `93658dba` / `7df13817`（拆成两个 commit，切法见 §十一） |
 | 12 | `tests/llm_integration.rs` 拆分 | C | 1 | ~4650 | 中高 | ✅ `694870af` |
 | 补 1 | `bot/dispatch.rs` 测试外移（**原清单漏排**） | B | 1 | ~810 | 极低 | ✅ `bfe0ab50` |
 | 补 2 | `py/document.rs` 生产切分 + Python 脚本真搬（**原清单漏排**） | B | 1 | ~1360 | 中 | ✅ `8eca65b1` |
 
 **批次 1–6 合计减债 ~8,400 行**，18 → 12 条（A 类 8 条全部清账）。
-**补 1/补 2 + 批次 7–12 全部落地后**：白名单 **18 → 1 条**（只剩 `bot/registry.rs`）。
+**补 1/补 2 + 批次 7–12 全部落地后**：白名单 **18 → 0 条**。
 
 > **执行顺序与原计划不同**：原计划按「A 类 → B 类 → C 类」排，实际按
 > **依赖序**排（先做耦合最松的，再啃耦合最紧的）——`llm_integration`（C 类）
@@ -527,7 +527,7 @@ bot_history / upsert 语义），且切完仍保持「直接子模块」形态�
 | 10a | ✅ 完成 | `6e5974d0` | 销 `src/bot/tools.rs` | 2949 → 88（门面）+ `bot/tools/{common,task,doc,service}.rs` + 9 个测试文件 |
 | 10b | ✅ 完成 | `eb9c3eeb` | 销 `src/bot/services.rs` | 2391 → 1332（门面）+ `bot/services/{gate,logs,observe}.rs`（原计划只列了 `gate`，实际切 3 块） |
 | 11a | ✅ 完成 | `93658dba` | 销 `src/bot_chat.rs` | 3028 → 419（门面）+ `bot_chat/{flow,exec,media,summary,report,input}.rs` + 4 个测试文件 |
-| 11b | ⬜ 未开始 | | | `bot/registry.rs` 3827，172 处引用，最险——**需重新论证**（见 §十一） |
+| 11b | ✅ 完成 | `7df13817` | 销 `src/bot/registry.rs` | 3827 → 220（门面）+ `registry/{schemas,handlers,claims}.rs` + 4 个测试文件；**切法与原计划不同**，重新论证见 §十一 |
 | 12 | ✅ 完成 | `694870af` | 销 `tests/llm_integration.rs` | 4645 → 目录形态 6 文件（`core` / `sse` / `e2e` / `guard` / `anthropic` / `main`） |
 | 补 1 | ✅ 完成 | `bfe0ab50` | 销 `src/bot/dispatch.rs` | 1819 → 1009，内联测试外移到 `bot/dispatch/*_tests.rs`（原 12 批清单漏排） |
 | 补 2 | ✅ 完成 | `8eca65b1` | 销 `src/py/document.rs` | 2456 → 1097；8 段内嵌 Python **真搬成 `py/scripts/*.py`**（`include_str!` 载入，正文逐字节一致）+ 7 个测试文件 |
@@ -536,10 +536,10 @@ bot_history / upsert 语义），且切完仍保持「直接子模块」形态�
 Rust 2191 例 + 前端 1065 例全绿；tests-audit 41 例全绿。
 源文件数 186 → 206（新增 20 个测试子文件），总行数基本不变（12.6 万）。
 
-**B/C 类小结（2026-10-25 续）**：白名单 10 → **1 条**，只剩 `bot/registry.rs`。
+**B/C 类小结（2026-10-25 续）**：白名单 10 → **0 条**，18 条债务全部清账。
 Rust 2191 passed / 11 skipped、前端 100 files / 1065 tests、tests-audit 41 passed、
 `audit_no_eval.py` 通过、`cargo fmt --check` 与 `cargo clippy --all-targets -D warnings`
-干净、工单号防线通过。源文件数 206 → **262**，总行数 12.6 → **12.5 万**
+干净、工单号防线通过。源文件数 206 → **269**，总行数 12.6 → **12.5 万**
 （减债主要来自把内嵌测试拆成独立文件后不再有重复的 import 噪音）。
 每批都是**纯搬移**：多重集比对确认「原文件行零丢失，新增行只有 `use` 增删 /
 `mod` 声明 / 可见性修饰 / 模块文档头」。
@@ -760,3 +760,35 @@ re-export 保住）。
 3. 可见性收窄 → 编译器兜住（注意 `pub(super)` 在子模块里指向**该子模块的
    父级**，不是原来的 `crate::bot::registry`——搬运时要逐项按「原可见域 =
    `crate::bot::registry`」翻译，别照抄 `pub(super)`）。
+
+### 落地结果（2026-10-25，commit `7df13817`）
+
+```
+src/bot/registry.rs (220)                    类型 + 门面逐项 re-export（89 项）
+src/bot/registry/schemas.rs (1170)           63 个 SCHEMA_* + TOOLS_TABLE + tools_json* + profile_*
+src/bot/registry/handlers.rs (424)           63 个 call_* 转发
+src/bot/registry/claims.rs (792)             声明判据
+src/bot/registry/registry_tests.rs (1035)    工具表基线守卫
+src/bot/registry/mentioned_tool_names_tests.rs (77)
+src/bot/registry/claimed_executed_tools_tests.rs (63)
+src/bot/registry/result_claim_tests.rs (98)
+```
+
+**外部改动面**：5 个接线守卫的 `include_str!` 路径（各 1 行）+ 1 处模块树条目
+（见坑三）。**没有一处外部调用点需要改**——89 项 re-export 全部保住了
+`crate::bot::registry::X` 旧路径与旧可见性。
+
+**落地时踩到的三处计划未预判**：
+
+1. **mid-file 的 `use` 要按用途归位，不能整块搬**：原文件 1830-1831 有两条
+   写在中间的 `use`（`serde::{Deserialize, Serialize}` 与 `std::collections::HashMap`），
+   还有顶部夹着的 `std::sync::OnceLock`。`serde` 归门面（`ToolStatus` 的 derive 用），
+   `HashMap` / `OnceLock` 归 `schemas.rs`（`TOOLS_INDEX` 与 `CACHE` 用）；
+   门面的 23 个工具函数 import 全部归 `handlers.rs`（只有 `call_*` 用它们）——
+   留在门面会报 `unused_imports`。
+2. **`include_str!` 的相对路径随文件深度变化**：`registry_tests.rs` 下沉一层后，
+   `../../tests/fixtures/tools_baseline.json` 要改成 `../../../tests/...`。
+3. **模块树里出现同名文件会让 `audit_module_map.py` 拒绝「同名就近」匹配**：
+   `api_handlers/handlers.rs` 与 `bot/registry/handlers.rs` 同名 → 门禁报
+   「尾段匹配歧义 2 个」，要求文档树写全路径。顺手把树里那条裸 `handlers.rs`
+   补成 `api_handlers/handlers.rs`（它的兄弟条目本来都带前缀）。
