@@ -32,6 +32,7 @@
 - Rust 单测：`cd src-tauri && cargo test --lib`；lint：`cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`（**已在快门禁内**；clippy 是唯一能发现「测试压根没被收集运行」的信号，没装 = 门禁失败，不静默 skip）
 - 前端：`npm test`；lint：`npx oxlint src`；类型：`npx tsc --noEmit`
 - 文件行数：`python3 -m pytest tests-audit/audit_file_size.py -q`（已在全量门禁内）
+- 拆大文件后核「纯搬移」：`python3 scripts/verify_pure_move.py <原文件> --manifest <清单> --base-dir <目录>`（清单每行 `<相对路径>:<起>-<止>`，行号指原文件；`--strip-prefix 'pub(super) '` 声明可见性改写，`--allow-chunk` 声明已知获准改动）
 
 ## 硬性禁令（门禁会拦，人也退）
 
