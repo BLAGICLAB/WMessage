@@ -638,7 +638,10 @@ pub static TOOLS_TABLE: &[ToolDef] = &[
         schema: SCHEMA_USE_SKILL,
         mutating: false,
         claims_patterns: &[],
-        max_output_bytes: 8192,
+        // 文档类输出：技能正文是模型要照着执行的流程说明，截掉中段等于删任务
+        // （实测 57KB 正文按 8KB 头尾节选后，「工作流程（七步法）」整节丢失）。
+        // 上限给到 65536，装得下任何一篇技能正文（正文自身另有 50KB 上限）。
+        max_output_bytes: 65536,
         call: call_use_skill,
     },
     ToolDef {

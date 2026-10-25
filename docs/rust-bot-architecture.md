@@ -163,13 +163,13 @@ src-tauri/src/
 │   ├── bot_model_loop/finalize.rs (336) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
 │   ├── bot_model_loop/fuse.rs (213)     熔断层：单轮 Function 调用上限 / 轮数·墙钟熔断 / 软警告注入
 │   ├── bot_model_loop/types.rs (349)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
-│   ├── bot_model_loop/output.rs (153)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
+│   ├── bot_model_loop/output.rs (171)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
 │   ├── bot_model_loop/context.rs (254)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正 /
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
 │   ├── bot_model_loop/evidence.rs (94)  证据来源层：从消息抽文本·来源，数字是否可溯源
 │   ├── bot_model_loop/tests.rs (72)     单元测试五桶的入口 + prod_src() 生产代码全景扫描源
-│   ├── bot_model_loop/tests/guard.rs (922)   幻觉守卫 / 熔断 / 接线类测试
+│   ├── bot_model_loop/tests/guard.rs (934)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (587)   SSE 解析 / 增量累积 / schema 测试
 │   ├── bot_model_loop/tests/config.rs (646) 推理参数 / 思考 / 上下文超限 / 侧调门测试
 │   ├── bot_model_loop/tests/tool_window.rs (234) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
@@ -190,7 +190,7 @@ src-tauri/src/
 ├── bot/registry.rs (221)  **工具单源真相（阶段 2）** 的门面：类型（ToolCtx / ToolStatus /
 │                        ToolResult / ToolDef）+ 逐项 re-export——实现按面拆到下面三个子模块，
 │                        `crate::bot::registry::X` 旧路径与旧可见性保持不变
-│   ├── bot/registry/schemas.rs (1199)  65 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
+│   ├── bot/registry/schemas.rs (1202)  65 个 SCHEMA_* 字面量 + TOOLS_TABLE（name/schema/mutating/call，
 │   │                        数目以 BUILTIN_TOOL_COUNT 为准，子 agent 专属工具见 SUBAGENT_ONLY_TOOLS）→
 │   │                        TOOLS JSON（tools_json）/ MUTATING_TOOLS / dispatch 查表三处全派生
 │   ├── bot/registry/handlers.rs (435)   65 个 call_* 一行转发（ToolCtx + args → 工具实现）

@@ -15,6 +15,17 @@ pub(crate) const DEFAULT_TOOL_OUTPUT_CAP_BYTES: usize = 30_000;
 /// 截断时尾部保留字节数：错误堆栈/汇总性内容常在尾部，只留头部会丢关键信息。
 const TOOL_OUTPUT_TAIL_KEEP_BYTES: usize = 6_000;
 
+/// 文档类工具：输出不是「工具结果回灌」，而是**模型明确要读的文档**。
+///
+/// 这类输出不按「结果回灌」漏斗截断/转存——截掉它不是省上下文，是删任务。
+/// 实测：57KB 的技能正文按 8KB 头尾节选后，86% 丢失，「三、工作流程（七步法）」
+/// 整节落在丢失的中段，模型不知道流程怎么走，只好自己去 grep 找标题，
+/// 工具用错 → 技能判死 → 整个回合结束。
+///
+/// 技能正文自身有上限（`bot_skills::state::MAX_SKILL_BODY` = 50KB），
+/// 所以放行不构成无界风险：per-tool 预算给到 65536 已经装得下任何一篇技能正文。
+const DOCUMENT_OUTPUT_TOOLS: [&str; 1] = ["use_skill"];
+
 /// 本次工具结果回灌的实际天花板（字节）：per-tool 预算与全局配置 cap 取小。
 ///
 /// 两个都要，不能只要一个：
@@ -22,12 +33,19 @@ const TOOL_OUTPUT_TAIL_KEEP_BYTES: usize = 6_000;
 ///   fetch_url / read_text_file / list_files 可以给到 65536，其余默认 8192。
 /// - 全局 cap 管用户在设置页调的总量，也是唯一兜底——per-tool 预算被调到比它大时
 ///   不能放任，否则设置页那个旋钮就成了空设置。
+///
+/// 例外：文档类工具（`DOCUMENT_OUTPUT_TOOLS`）按 per-tool 预算走，不与全局 cap
+/// 取小——全局 cap 调的是「工具结果」的总量，把「模型要读的文档」也压进去就是
+/// 把任务删了；文档类工具的体量另有自身上限兜着。
 pub(crate) fn effective_output_cap(tool: &str, global_cap_bytes: usize) -> usize {
-    crate::bot::registry::tools_index()
+    let per_tool = crate::bot::registry::tools_index()
         .get(tool)
         .map(|t| t.max_output_bytes)
-        .unwrap_or(global_cap_bytes)
-        .min(global_cap_bytes)
+        .unwrap_or(global_cap_bytes);
+    if DOCUMENT_OUTPUT_TOOLS.contains(&tool) {
+        return per_tool;
+    }
+    per_tool.min(global_cap_bytes)
 }
 
 /// 超预算时的渲染：优先转存溢出文件 + 指针；转存失败退回纯头尾截断。

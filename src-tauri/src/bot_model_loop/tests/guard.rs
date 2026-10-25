@@ -466,6 +466,18 @@ mod hallucination_guard_tests {
         assert_eq!(effective_output_cap("mcp_unknown", 30_000), 30_000);
     }
 
+    /// 文档类输出（技能正文）不受全局 cap 压制：截掉它不是省上下文，是删任务。
+    ///
+    /// 实测：57KB 技能正文按 8KB 头尾节选后 86% 丢失，「工作流程（七步法）」
+    /// 整节落在丢失的中段，模型不知道流程怎么走 → 自己去 grep 找标题 →
+    /// 工具用错 → 技能判死 → 整个回合结束。
+    #[test]
+    fn effective_cap_keeps_document_output_whole() {
+        assert_eq!(effective_output_cap("use_skill", 30_000), 65_536);
+        // 即便全局 cap 调得很小，文档类仍按自己的预算走
+        assert_eq!(effective_output_cap("use_skill", 1_000), 65_536);
+    }
+
     /// 恰好等于 cap 的输出不得转存：边界是严格大于。等号判成超限会把
     /// 正好压线的输出白白转存一次（多一次 IO + 节选换指针）。
     #[test]
