@@ -666,43 +666,11 @@ pub fn silent_cmd(program: &str) -> Command {
 fn apply_child_env(cmd: &mut Command) {
     cmd.env_clear();
     for (k, v) in std::env::vars_os() {
-        if k.to_str().is_some_and(py_env_allowed) {
+        if k.to_str().is_some_and(crate::bot::procs::child_env_allowed) {
             cmd.env(k, v);
         }
     }
     cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
-}
-
-/// 子进程环境白名单（py / apps 脚本可见的宿主变量）。注释里写全取舍：
-/// PATH/HOME/临时目录/locale 是解释器与常见脚本的地基；Windows 一组是
-/// Python 在 Windows 上启动与取系统路径的最低需求。代理变量、shell 配置、
-/// 其它一切自定义变量一律不带——需要就走脚本参数显式传。
-fn py_env_allowed(name: &str) -> bool {
-    match name {
-        "PATH" | "HOME" | "TMPDIR" | "TEMP" | "TMP" | "LANG" | "LC_ALL" | "LC_CTYPE"
-        | "LANGUAGE" => true,
-        _ if cfg!(windows) => matches!(
-            name,
-            "SystemRoot"
-                | "WINDIR"
-                | "COMSPEC"
-                | "PATHEXT"
-                | "SYSTEMDRIVE"
-                | "USERPROFILE"
-                | "HOMEDRIVE"
-                | "HOMEPATH"
-                | "APPDATA"
-                | "LOCALAPPDATA"
-                | "PROGRAMDATA"
-                | "ALLUSERSPROFILE"
-                | "USERNAME"
-                | "COMPUTERNAME"
-                | "NUMBER_OF_PROCESSORS"
-                | "OS"
-                | "PROCESSOR_ARCHITECTURE"
-        ),
-        _ => false,
-    }
 }
 
 // ── S20：setrlimit 可用性探测（子进程一次探测 + 进程内缓存，逐资源结论）──

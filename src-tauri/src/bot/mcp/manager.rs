@@ -671,6 +671,16 @@ impl McpManager {
                         ))
                     }
                 };
+                // 环境白名单（与 py / apps 子进程同口径，procs::child_env_allowed
+                // 单一真相源）：不继承宿主全量环境，用户 shell 里的密钥不进
+                // 第三方服务器。服务器需要的特殊变量由配置逐台声明——cfg.env
+                // 在白名单之后写入，声明的永远生效。
+                cmd.env_clear();
+                for (k, v) in std::env::vars_os() {
+                    if k.to_str().is_some_and(crate::bot::procs::child_env_allowed) {
+                        cmd.env(k, v);
+                    }
+                }
                 cmd.args(&cfg.args)
                     .envs(cfg.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
                     .stdin(std::process::Stdio::piped())

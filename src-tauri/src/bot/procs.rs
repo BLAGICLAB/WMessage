@@ -1164,5 +1164,39 @@ pub(crate) fn silent_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// 子进程环境白名单（单一真相源）：py / apps / MCP stdio 三类子进程共用，
+/// 不继承宿主全量环境——用户 shell 里导出的密钥（API token、数据库连接串）
+/// 不得进任何子进程可见范围。PATH/HOME/临时目录/locale 是解释器与常见脚本
+/// 的地基；Windows 一组是 Python/Node 在 Windows 上启动与取系统路径的最低
+/// 需求。代理变量、shell 配置、其它一切自定义变量一律不带——调用方需要的
+/// 特殊变量由各自的显式配置逐条补（在白名单之后写入，配置永远生效）。
+pub(crate) fn child_env_allowed(name: &str) -> bool {
+    match name {
+        "PATH" | "HOME" | "TMPDIR" | "TEMP" | "TMP" | "LANG" | "LC_ALL" | "LC_CTYPE"
+        | "LANGUAGE" => true,
+        _ if cfg!(windows) => matches!(
+            name,
+            "SystemRoot"
+                | "WINDIR"
+                | "COMSPEC"
+                | "PATHEXT"
+                | "SYSTEMDRIVE"
+                | "USERPROFILE"
+                | "HOMEDRIVE"
+                | "HOMEPATH"
+                | "APPDATA"
+                | "LOCALAPPDATA"
+                | "PROGRAMDATA"
+                | "ALLUSERSPROFILE"
+                | "USERNAME"
+                | "COMPUTERNAME"
+                | "NUMBER_OF_PROCESSORS"
+                | "OS"
+                | "PROCESSOR_ARCHITECTURE"
+        ),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests;
