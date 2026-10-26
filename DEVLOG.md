@@ -8821,3 +8821,14 @@ read_text_file 行窗、P2 截断滞回设置面（按设计文档旧字段名 g
 **还没做的**：O-1～O-4 修复的实机复验（代码全在，等真机）；W10–W12 Windows
 专章；eval MiniMax-M3 基线（账户充值）；audit_log 剩余约 136 处长尾（bot_fs
 20 处已迁）；M1 任务卡数据层状态机守卫等十余条 P3（明细在记忆与账本）。
+
+## 2026-10-27 · 绿色版出包（wmessage-portable-2026-10-27.zip）
+
+基于 main @ be6f9a46 出包，相对 2026-10-26 版（0f51232b）新增 48 个提交
+（技术债账本全修 + 15 项拍板落地）。zip 105 MB / 205 文件，SHA256
+8724f8c4feb6b7eb7f43a7087a6eec6ff28021d69550daf61077b55ebb956568。
+exe 76,445,564 字节；dotnet 侧车本次重新发布（非复用）；onnxruntime.dll
+按 ort 对应版本 1.28.0 从 NuGet 取。release check 先行通过（debug_assertions
+门控项无泄漏）。两处记账：包在仓库根 `wmessage-portable-2026-10-27.zip`，
+exe 在 `src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`。
+Windows 实机验收（解压双击 / 便携锚定 / 记忆语义检索 / ocr_image）待人工。
