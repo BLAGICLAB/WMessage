@@ -168,7 +168,7 @@ describe("SettingsPage", () => {
       screen.getByRole("switch", { name: "只看我的任务" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("radiogroup", { name: "布局松散度" }),
+      screen.getByRole("radiogroup", { name: "星点大小" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "记忆" }));
     expect(screen.getByText("记忆库")).toBeInTheDocument();

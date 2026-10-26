@@ -156,7 +156,7 @@ export default function GraphSettingsPanel() {
           }}
         />
         <SegmentedRow<GraphLooseness>
-          label="布局松散度"
+          label="星点大小"
           desc="这一档调的是星点的大小与亮暗，不改节点之间的排布——构图半径一变相机就同步后退，松紧差正好被抵消掉（实测相邻两档构图跨度只差 0.001%，星点直径却差 1.5 倍）。紧凑 = 星体更大更亮、看着更密实；宽松 = 星体更细更暗。任务多到星点挤成一团时，调紧凑更清楚"
           value={looseness}
           options={[

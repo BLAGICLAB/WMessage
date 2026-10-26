@@ -118,11 +118,16 @@ fn focus_main_window(app: tauri::AppHandle) {
 // 入口：ArchivePage 「整理标签」按钮 → 弹窗显示簇 + 用户选主 → 改源
 // 落 tag_merge_history 表 → 设置页「操作历史」可按 run_id 撤销
 #[tauri::command]
-fn tags_consolidate_scan(
+async fn tags_consolidate_scan(
     app: tauri::AppHandle,
 ) -> Result<crate::bot::tags_consolidate::ClusterScanResult, String> {
-    let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
-    crate::bot::tags_consolidate::cluster_archived_tags(&conn, None)
+    // 同步扫描（全表读 + 逐对嵌入）放 blocking 池，不占 async worker
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+        crate::bot::tags_consolidate::cluster_archived_tags(&conn, None)
+    })
+    .await
+    .map_err(|e| format!("标签整理扫描线程失败：{e}"))?
 }
 
 /// 标签合并改写了归档卡的 tags —— 广播出去，归档页与图谱才不会长期显示旧标签。

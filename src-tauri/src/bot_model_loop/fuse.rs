@@ -145,7 +145,7 @@ pub(crate) fn inject_soft_warnings(
         msgs.push(serde_json::json!({
                 "role": "user",
                 "content": format!(
-                    "【系统提示】对话已进行 {} / {max_rounds} 轮，最多还能跑 {rounds_left} 轮。请立刻停止展开新步骤：把已经拿到的结果整理出来收尾——子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。"
+                    "【系统提示】对话已进行 {} / {max_rounds} 轮，最多还能跑 {rounds_left} 轮。请立刻停止展开新步骤：把已经拿到的结果整理出来收尾，收尾必须说明还剩什么没做、进行到哪一步，不得只交成品不交代缺口——子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。"
                     , round + 1
                 ),
             }));
@@ -173,7 +173,7 @@ pub(crate) fn inject_soft_warnings(
             msgs.push(serde_json::json!({
                 "role": "user",
                 "content": format!(
-                    "【系统提示】时间预算即将耗尽（剩余约 {remaining} 秒，收尾预留窗口 {} 秒）：立刻停止展开新步骤——把已经拿到的结果整理出来收尾，子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。",
+                    "【系统提示】时间预算即将耗尽（剩余约 {remaining} 秒，收尾预留窗口 {} 秒）：立刻停止展开新步骤——把已经拿到的结果整理出来收尾，收尾必须说明还剩什么没做、进行到哪一步，不得只交成品不交代缺口。子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。",
                     wb.reserve.as_secs()
                 ),
             }));

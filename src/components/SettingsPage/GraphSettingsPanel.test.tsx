@@ -24,7 +24,7 @@ describe("GraphSettingsPanel", () => {
       screen.getByRole("radiogroup", { name: "连线粗细" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("radiogroup", { name: "布局松散度" }),
+      screen.getByRole("radiogroup", { name: "星点大小" }),
     ).toBeInTheDocument();
   });
 
@@ -41,7 +41,7 @@ describe("GraphSettingsPanel", () => {
     fireEvent.click(within(density).getByRole("radio", { name: "多" }));
     expect(localStorage.getItem("wm.graph.labelDensity")).toBe("dense");
 
-    const loose = screen.getByRole("radiogroup", { name: "布局松散度" });
+    const loose = screen.getByRole("radiogroup", { name: "星点大小" });
     fireEvent.click(within(loose).getByRole("radio", { name: "紧凑" }));
     expect(localStorage.getItem("wm.graph.looseness.v2")).toBe("tight");
   });
@@ -84,7 +84,7 @@ describe("GraphSettingsPanel", () => {
         .map((el) => el.textContent);
     expect(labels("标签密度")).toEqual(["少", "标准", "多"]);
     expect(labels("连线粗细")).toEqual(["细", "标准", "粗"]);
-    expect(labels("布局松散度")).toEqual(["紧凑", "标准", "宽松"]);
+    expect(labels("星点大小")).toEqual(["紧凑", "标准", "宽松"]);
   });
 
   it("文案里的关键口径不被改掉：度数分位、三档像素值、松散度调的是星点大小", () => {
@@ -94,7 +94,7 @@ describe("GraphSettingsPanel", () => {
     expect(text).toContain("度数前 7%");
     // 连线粗细：三档的名义像素值
     expect(text).toContain("细 1px / 标准 1.6px / 粗 2.8px");
-    // 布局松散度：调的是星点大小，不改节点排布
+    // 星点大小：调的是星点大小，不改节点排布
     expect(text).toContain("星点的大小与亮暗");
     expect(text).toContain("不改节点之间的排布");
   });

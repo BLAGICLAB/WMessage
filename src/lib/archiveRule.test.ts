@@ -142,4 +142,24 @@ describe("applyArchiveRule", () => {
     expect(next[1].archived).toBe(true);
     expect(next[1].completedAt).toBe(due.completedAt);
   });
+
+  it("恰满 N 天边界：满整 N 天归档（>=），差 1ms 不归档——与后端兜底同口径", () => {
+    setArchiveAfterDays(7);
+    const now = Date.now();
+    const completed = now - 7 * day;
+    // 恰满：now - completed == afterMs → >= 判归档
+    expect(applyArchiveRule([doneTask(completed)])[0].archived).toBe(true);
+    // 差 1ms：completed 晚 1ms → 未满，不归档
+    expect(
+      applyArchiveRule([doneTask(completed + 1)])[0].archived,
+    ).toBeUndefined();
+  });
+
+  it("completedAt 为 0 的垃圾值不参与归档（与后端 completed > 0 同口径）", () => {
+    setArchiveAfterDays(1);
+    const zero: Task = { id: "z", title: "零值", column: "done", completedAt: 0 };
+    const next = applyArchiveRule([zero]);
+    expect(next[0]).toBe(zero);
+    expect(next[0].archived).toBeUndefined();
+  });
 });

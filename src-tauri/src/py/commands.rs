@@ -16,6 +16,29 @@ pub fn py_get_enabled(app: AppHandle) -> bool {
     py_flag_path(&app).exists()
 }
 
+/// Python 执行面统一闸（run_python 工具与程序页 apps 共用）：
+/// 「允许机器人执行 Python」关着且非 yolo → Err（用户到设置页打开即可重试）；
+/// yolo 绕过时留审计——同一执行面同一口径，关掉开关不能只挡工具不挡程序页。
+pub fn ensure_py_enabled(app: &AppHandle) -> Result<(), String> {
+    let yolo = crate::bot::perm_mode(app) == crate::bot::PermMode::Yolo;
+    let flag_on = py_get_enabled(app.clone());
+    if !yolo && !flag_on {
+        return Err(
+            "Python 编程未开启：请到设置页「机器人设置」打开「允许机器人执行 Python」（或将授权模式切为 yolo）"
+                .into(),
+        );
+    }
+    if yolo && !flag_on {
+        crate::audit_event!(
+            app,
+            crate::audit::AuditLevel::Info,
+            "py.yolo_bypass",
+            "detail" => "授权模式 yolo，跳过 py-enabled 开关检查",
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn py_set_enabled(app: AppHandle, enabled: bool) -> CommandResult<bool> {
     let dir = crate::paths::flags_dir(&app);

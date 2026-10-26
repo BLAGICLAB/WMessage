@@ -58,6 +58,9 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   contextSummary，禁止从零重烧——从零重烧等于把刚才那段时间全扔了。
 - error=result_json_unparseable：服务端已经自动补答过一次；仍失败说明子 agent
   连收尾格式都没给，重派前先把验收标准写具体些。
+- 预算触顶收尾（自己的工具预算、轮数、墙钟，或子 agent 被熔断）时，汇报必须
+  说明还剩什么没做、进行到哪一步——不得只交成品就收笔，用户要能从汇报里
+  看出任务的真实完成度。
 - 不得放宽子 agent 权限；不得让子 agent 再派发。
 - 不向子 agent 倾倒主对话全文：只给目标、验收标准、必要上下文摘要。
 

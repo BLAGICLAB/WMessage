@@ -1018,19 +1018,7 @@ pub fn py_exec_sync(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, String> {
-    let yolo = crate::bot::perm_mode(app) == crate::bot::PermMode::Yolo;
-    let flag_on = crate::py::commands::py_get_enabled(app.clone());
-    if !yolo && !flag_on {
-        return Err(
-            "Python 编程未开启：请到设置页「机器人设置」打开「允许机器人执行 Python」（或将授权模式切为 yolo）".into(),
-        );
-    }
-    if yolo && !flag_on {
-        py_audit(
-            app,
-            "py_exec | yolo_bypass | 授权模式 yolo，跳过 py-enabled 开关检查",
-        );
-    }
+    crate::py::commands::ensure_py_enabled(app)?;
     if let Some(t) = timeout_secs {
         if t > MAX_TIMEOUT_SECS {
             py_audit(

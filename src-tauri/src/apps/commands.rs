@@ -61,6 +61,15 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
             reason: "已归档程序不可运行".into(),
         });
     }
+    // Python 执行面统一闸：「允许机器人执行 Python」关着且非 yolo 时，程序页
+    // 同样不能跑——同一执行面同一口径，关掉开关不能只挡工具不挡程序
+    crate::py::commands::ensure_py_enabled(&app).map_err(|reason| {
+        CommandError::InvalidArgument {
+            field: "pythonEnabled".into(),
+            value: "false".into(),
+            reason,
+        }
+    })?;
     // 超时来源优先级：调用方显式传入 > 程序声明的运行时长 > 内置默认。
     // 程序声明是**这个程序自己的属性**（登记时就知道它要跑多久），
     // 全局墙钟不该拿小程序的尺子量批量程序。resolve_timeout 统一把结果
