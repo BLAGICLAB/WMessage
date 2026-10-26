@@ -1254,3 +1254,34 @@ taskEq 键序敏感。evolution/ 死目录随手清。
 schema 已明写「继承」，MCP 侧无等价声明，是补声明还是补白名单。
 ⑭ `mcp_server_save` 半成功中间态（keyring 已写、配置未写）要不要回滚机密。
 ⑮ 跨服务器 MCP 工具总量闸加不加（加则牺牲外部工具可见性，不加则最坏 20MB/轮请求体）。
+
+## 拍板回填 · 2026-10-27（F/H 组全部收口）
+
+G1–G7 的 4 P1 + 7 P2 + 择优 P3 已于 2026-10-27 全批修完（commit 见 DEVLOG 同日条目）。
+F 组 11 处 + H 组 4 处 + 整改方案拍板项逐条口径如下：
+
+- ⑫（H）记忆导入语义：**承诺成立**——导入不淘汰，容量满计 skipped（实现已改，
+  StoreParams.no_evict；若日后要「导入即收敛」翻转 no_evict 一处即可）。
+- ⑬（H）MCP stdio 环境：**改白名单**——与 py/apps 共用 `procs::child_env_allowed`
+  单一真相源，配置逐台声明的 env 在白名单后写入永远生效；受管服务维持 schema
+  明写的「继承」不变。
+- ⑭（H）mcp_server_save 半成功：**回滚机密**——覆盖前读旧值作基线，配置写失败
+  即恢复（首次配置=清条目），回滚失败记 Error 审计。
+- ⑮（H）跨服务器工具总量闸：**不加**——实际配置规模远低于理论最坏，牺牲可见性不值。
+- F① py-enabled.flag 纳管 apps：**是**——`ensure_py_enabled` 统一闸，程序页与
+  run_python 同口径（yolo 绕过留结构化审计）。
+- F④ open_url 文案：**不补**；F⑤ opener capability：**维持现状**；
+  F⑥ SSE overlay 轮询兜底：**推演记账关闭**；F⑪ DST 算术：**备案接受**。
+- F⑦ archiveRule 恰 N 天边界：**已核对**——前后端同为 `>=`，唯一分叉
+  completedAt=0 已对齐（前端 `<= 0` 跳过），恰满/差 1ms/零值三类边界钉单测。
+- F⑧ tags_consolidate_scan：**包 spawn_blocking**。
+- F⑨ 受管服务 GBK 输出：**已修**——UTF-8 严格解码失败且 Windows 时 GBK 兜底。
+- F⑩ Windows 长路径：**文案点破**——read/write 失败在路径超长时追加
+  LongPathsEnabled 提示（全局长路径兜底不做）。
+- 整改方案 E05/E12 提示词：**已补**（产物路径无论核验成败都告知；收尾必须
+  说明还剩什么没做——软警告文案 + 主 agent 附录两处）。
+- M5 授权模型：**不产品化**；只读工具并行调用：**先不做**（等 eval 数据）。
+- 选文件通道：**统一 Rust 原生对话框**（pick_files_dialog 加 directory 参数，
+  三处绑定同通道；导出/导入类 webview 对话框维持）。
+- F4 定时执行：**不开放**——「截止≠执行」为定案口径；钥匙串 ACL：**保持 -A**
+  （出正式包前重录收紧）；星轨调节项：**改名「星点大小」**（键值不动）。

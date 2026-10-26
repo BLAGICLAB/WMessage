@@ -1,13 +1,13 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 310 个文件、约 13.2 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 310 个文件、约 13.3 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
 ```
 src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
-├── lib.rs (1188)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
+├── lib.rs (1193)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
 ├── app_state.rs (280)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
@@ -265,7 +265,7 @@ src-tauri/src/
 │   └── bot/mcp/builtin.rs       内置条目（Playwright 浏览器）：playwright-mcp/ 包目录解析
 │                                （env → exe 同目录 → 资源目录 → 仓库根）+ Chromium 内核定位
 │                                + 启动时缺失才补写配置（默认停用）
-├── bot/procs.rs (1168)      进程树公共模块（受管服务层与 MCP stdio 共用）：
+├── bot/procs.rs (1202)      进程树公共模块（受管服务层与 MCP stdio 共用）：
 │                        纯进程操作，不碰任何上层登记表——只依赖 pid 空间与系统进程表：
 │                        进程快照（pid/ppid/启动标识/RSS/CPU 时间，Linux 读 /proc、
 │                        macOS 调 ps）+ ppid 树子孙收集 + 增量比对（PID 复用识别）
@@ -306,7 +306,7 @@ src-tauri/src/
 │   │                        违规记在**正交字段** last_violation（不复用状态机）+
 │   │                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
 │   │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
-│   ├── bot/services/logs.rs (171)  日志与输出上限面：服务日志目录 / append 写 /
+│   ├── bot/services/logs.rs (189)  日志与输出上限面：服务日志目录 / append 写 /
 │   │                        尾部读（字节与行两种口径）+ 截断到 OUTPUT_CAP_BYTES +
 │   │                        每 30s 一轮的输出上限巡检
 │   ├── bot/services/observe.rs (282) 资源观测面：合计口径判定（阈值 / 持续 / 去重）+
@@ -314,7 +314,7 @@ src-tauri/src/
 │   ├── bot/services/serialize.rs (114) 序列化面：服务条目 → JSON（给模型看）+
 │   │                        受管服务全景快照（合计 RSS / 合计告警 / 本平台能否采样；
 │   │                        采不到时给 null 而不是 0——「没判」不是「没占用」）
-│   ├── bot/services/start.rs (522) 启动面：白名单逐臂构造（源码层不存在「变量 → 进程名」
+│   ├── bot/services/start.rs (523) 启动面：白名单逐臂构造（源码层不存在「变量 → 进程名」
 │   │                        的路径）+ 登记表占位（查与占在同一把锁里完成）+
 │   │                        就绪等待（stdout 匹配正则 / 无 pattern 时的短存活确认）+
 │   │                        就绪失败归因（端口违规 > 非法正则 > 进程自己退 > 等超时；
@@ -481,14 +481,14 @@ src-tauri/src/
 │                        原.workflow_questions，随画布退役中立化保留（手动执行任务卡共用）
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
-├── bot_fs.rs (508)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
+├── bot_fs.rs (527)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
 │                        per-tool 规则表（lookup_tool_rule / tool_rule_for）+ 读闸
 │                        （resolve_with_perm / allowed_dirs）；子模块转出（旧路径 1:1 保持）
-│   ├── bot_fs/edit.rs (649)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
+│   ├── bot_fs/edit.rs (657)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
 │   │                             （N6，Aider 式三级匹配：精确→空白容错→reflection；
 │   │                             写白名单≠读白名单：可写根=AI_Gen_Files+任务卡绑定文件夹+
 │   │                             allowedDirs；白名单外 perm_mode 三分支/覆盖确认）
-│   ├── bot_fs/read.rs (704)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
+│   ├── bot_fs/read.rs (712)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
 │   │                             只读工具 read_text_file/grep_files/list_files
 │   ├── bot_fs/receipt.rs (169)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
 │   ├── bot_fs/tests.rs (765)     读写闸与编辑内核单测
