@@ -185,18 +185,31 @@ fn plan_round(
     pending
 }
 
-/// 通知文案（纯函数）：title/body 按种类与时间精度拼装
-fn render(p: &Pending) -> (String, String) {
+/// 通知文案（纯函数）：title/body 按种类与时间精度拼装。相对时长按实际
+/// 剩余时间生成——H1 存在补发形态（任务创建/武装时距截止已不足 1h，首次
+/// 扫描立即发），此时固定说「还有 1 小时」与括号里的截止时刻自相矛盾。
+fn render(p: &Pending, now: DateTime<Local>) -> (String, String) {
     let when = if p.has_time {
         p.due_dt.format("%m-%d %H:%M").to_string()
     } else {
         p.due_dt.format("%m-%d").to_string()
     };
     match p.kind {
-        NotifyKind::H1 => (
-            "任务即将截止".to_string(),
-            format!("「{}」还有 1 小时截止（{when}）", p.title),
-        ),
+        NotifyKind::H1 => {
+            // 剩余分钟向上取整：截止提醒宁可报大勿报小（报小会让人放弃赶工）。
+            // ≥55 分钟视为整档「1 小时」（扫描周期 30s，按时触发落在 59-60 分，
+            // 逐分钟报数反而聒噪）。
+            let remaining_min = ((p.due_dt - now).num_seconds().max(0) + 59) / 60;
+            let left = if remaining_min >= 55 {
+                "还有 1 小时".to_string()
+            } else {
+                format!("还有 {remaining_min} 分钟")
+            };
+            (
+                "任务即将截止".to_string(),
+                format!("「{}」{left}截止（{when}）", p.title),
+            )
+        }
         NotifyKind::T0 => (
             "任务已到截止时间".to_string(),
             format!("「{}」截止时间已到（{when}）", p.title),
@@ -236,7 +249,7 @@ async fn run_round(app: &AppHandle) {
     let state = guard.get_or_insert_with(|| load_state(app));
     let pending = plan_round(state, &active, now);
     for p in &pending {
-        let (title, body) = render(p);
+        let (title, body) = render(p, now);
         match app.notification().builder().title(title).body(body).show() {
             Ok(()) => crate::bot::audit_log(
                 app,
@@ -456,7 +469,8 @@ mod due_notify_tests {
             has_time: true,
             due_dt: dt(2026, 9, 5, 18, 0),
         };
-        let (t, b) = render(&h1);
+        // 按时触发：距截止 60 分钟（扫描周期 30s，触发点落在 59-60 分档）
+        let (t, b) = render(&h1, dt(2026, 9, 5, 17, 0));
         assert_eq!(t, "任务即将截止");
         assert_eq!(b, "「写报告」还有 1 小时截止（09-05 18:00）");
         let t0 = Pending {
@@ -464,8 +478,33 @@ mod due_notify_tests {
             has_time: false,
             ..h1
         };
-        let (t, b) = render(&t0);
+        let (t, b) = render(&t0, dt(2026, 9, 5, 18, 0));
         assert_eq!(t, "任务已到截止时间");
         assert_eq!(b, "「写报告」截止时间已到（09-05）");
+    }
+
+    /// 补发形态：任务创建时距截止已不足 1h（如建卡后 2 分钟就到期），
+    /// H1 首次扫描立即发——相对文案必须按实际剩余生成，不得固定「1 小时」。
+    #[test]
+    fn render_h1_catchup_uses_actual_remaining() {
+        let p = Pending {
+            id: "a".into(),
+            title: "O2文案测试".into(),
+            kind: NotifyKind::H1,
+            has_time: true,
+            due_dt: dt(2026, 9, 5, 18, 0),
+        };
+        // 剩余 2 分钟整 → 分钟档
+        let (_, b) = render(&p, dt(2026, 9, 5, 17, 58));
+        assert_eq!(b, "「O2文案测试」还有 2 分钟截止（09-05 18:00）");
+        // 剩余 30 分钟整 → 分钟档
+        let (_, b) = render(&p, dt(2026, 9, 5, 17, 30));
+        assert_eq!(b, "「O2文案测试」还有 30 分钟截止（09-05 18:00）");
+        // 剩余 56 分钟 → 仍归整为 1 小时档
+        let (_, b) = render(&p, dt(2026, 9, 5, 17, 4));
+        assert_eq!(b, "「O2文案测试」还有 1 小时截止（09-05 18:00）");
+        // 剩余 54 分钟 → 分钟档
+        let (_, b) = render(&p, dt(2026, 9, 5, 17, 6));
+        assert_eq!(b, "「O2文案测试」还有 54 分钟截止（09-05 18:00）");
     }
 }
