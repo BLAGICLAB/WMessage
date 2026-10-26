@@ -8,11 +8,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
-const openMock = vi.fn();
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: (...args: unknown[]) => openMock(...args),
-}));
-
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -30,20 +25,20 @@ const taskWith = (paths: string[]): Task => ({
 
 describe("useTaskFiles 合并基线", () => {
   beforeEach(() => {
-    openMock.mockReset();
     invokeMock.mockReset();
   });
 
   it("对话框挂起期间并发绑进来的那批不被覆盖掉（基线取返回后的最新 files）", async () => {
-    let resolveOpen: (v: unknown) => void = () => {};
-    openMock.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveOpen = resolve;
-        }),
-    );
-    // 后端判 isDir 后回传
-    invokeMock.mockResolvedValueOnce([{ path: "/c.txt", isDir: false }]);
+    let resolvePick: (v: unknown) => void = () => {};
+    const pendingPick = new Promise((resolve) => {
+      resolvePick = resolve;
+    });
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "pick_files_dialog") return pendingPick;
+      if (cmd === "bind_files")
+        return Promise.resolve([{ path: "/c.txt", isDir: false }]);
+      return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
+    });
 
     const commit = vi.fn();
     const { result, rerender } = renderHook(
@@ -62,7 +57,7 @@ describe("useTaskFiles 合并基线", () => {
 
     // 用户选完 /c.txt 回来
     await act(async () => {
-      resolveOpen("/c.txt");
+      resolvePick(["/c.txt"]);
       await pending;
     });
 
@@ -74,11 +69,17 @@ describe("useTaskFiles 合并基线", () => {
   });
 
   it("没有并发改动时，按当前绑定追加（基线就是那份现值）", async () => {
-    openMock.mockResolvedValueOnce("/c.txt");
-    invokeMock.mockResolvedValueOnce([{ path: "/c.txt", isDir: false }]);
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "pick_files_dialog") return Promise.resolve(["/c.txt"]);
+      if (cmd === "bind_files")
+        return Promise.resolve([{ path: "/c.txt", isDir: false }]);
+      return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
+    });
 
     const commit = vi.fn();
-    const { result } = renderHook(() => useTaskFiles(taskWith(["/a.txt"]), commit));
+    const { result } = renderHook(() =>
+      useTaskFiles(taskWith(["/a.txt"]), commit),
+    );
 
     await act(async () => {
       await result.current.pickFile();
@@ -88,5 +89,24 @@ describe("useTaskFiles 合并基线", () => {
       { path: "/a.txt", isDir: false },
       { path: "/c.txt", isDir: false },
     ]);
+  });
+
+  it("选文件通道统一走 Rust 原生对话框：pickFolder 带 directory=true 单选", async () => {
+    invokeMock.mockImplementation((cmd: string, args?: unknown) => {
+      expect(cmd).toBe("pick_files_dialog");
+      expect((args as { directory?: boolean })?.directory).toBe(true);
+      return Promise.resolve(["/some/dir"]);
+    });
+
+    const commit = vi.fn();
+    const { result } = renderHook(() =>
+      useTaskFiles(taskWith([]), commit),
+    );
+
+    await act(async () => {
+      await result.current.pickFolder();
+    });
+
+    expect(commit).toHaveBeenCalledWith([{ path: "/some/dir", isDir: true }]);
   });
 });

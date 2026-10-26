@@ -323,11 +323,25 @@ pub async fn bot_preview_text(path: String) -> CommandResult<TextPreviewResult> 
 /// 文件多选对话框（Rust 侧 spawn_blocking 弹框）：聊天 ➕ 添加附件用。
 /// 此前前端 dialog.open 在 webview 里可能不弹框，与 doc_extract 弹框同方案修复。
 #[tauri::command]
-pub async fn pick_files_dialog(app: AppHandle) -> CommandResult<Vec<String>> {
+/// 任务卡绑定的**统一**选文件通道（Rust 原生对话框）：卡片 / 详情面板 /
+/// 聊天上下文栏三处绑定曾各走各的（webview dialog.open vs 这里），现只此
+/// 一条——与合并/提示/落库段同侧，不隔 IPC。
+/// `directory=true` 单选文件夹（每卡一个文件夹槽），否则多选文件。
+pub async fn pick_files_dialog(
+    app: AppHandle,
+    directory: Option<bool>,
+) -> CommandResult<Vec<String>> {
+    let directory = directory.unwrap_or(false);
     let handle = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
         use tauri_plugin_dialog::DialogExt;
-        handle.dialog().file().blocking_pick_files()
+        let builder = handle.dialog().file();
+        if directory {
+            // 单选文件夹归一成 vec，与多选分支同一返回形状
+            builder.blocking_pick_folder().map(|p| vec![p])
+        } else {
+            builder.blocking_pick_files()
+        }
     })
     .await
     .map_err(|e| CommandError::Internal(format!("对话框线程失败：{e}")))?;

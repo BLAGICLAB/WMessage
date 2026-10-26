@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import type { Task } from "../../types";
 
@@ -13,7 +12,6 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   WebviewWindow: { getByLabel: vi.fn().mockResolvedValue(null) },
 }));
@@ -285,15 +283,12 @@ describe("TaskDetailPanel", () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     let releaseOpen!: (v: string[]) => void;
-    vi.mocked(open).mockImplementationOnce(
-      () =>
-        new Promise<string[]>((resolve) => {
-          releaseOpen = resolve;
-        }) as never,
-    );
     vi.mocked(invoke).mockImplementation(async (cmd: string) => {
-      if (cmd === "bind_files")
-        return [{ path: "/docs/new.txt", isDir: false }];
+      if (cmd === "pick_files_dialog")
+        return new Promise<string[]>((resolve) => {
+          releaseOpen = resolve;
+        });
+      if (cmd === "bind_files") return [{ path: "/docs/new.txt", isDir: false }];
       return undefined;
     });
     const before: Task = {

@@ -282,19 +282,20 @@ describe("TodoCardView 多文件绑定", () => {
   });
 
   it("已绑文件时显示「绑定文件夹」，pickFolder 追加文件夹而不是替换文件", async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     const oneFile: Task = {
       ...baseTask,
       files: [{ path: "/docs/a.pdf", isDir: false }],
     };
-    vi.mocked(open).mockResolvedValueOnce("/some/dir" as never);
+    invokeMock.mockResolvedValueOnce(["/some/dir"]);
     render(
       <TodoCardView task={oneFile} onUpdate={onUpdate} onDelete={vi.fn()} />,
     );
     await user.click(screen.getByTitle("绑定文件夹"));
-    expect(vi.mocked(open)).toHaveBeenCalledWith({ directory: true });
+    expect(invokeMock).toHaveBeenCalledWith("pick_files_dialog", {
+      directory: true,
+    });
     const call = onUpdate.mock.calls[0];
     // 文件夹追加在后，已绑文件保留
     expect(call[1].files).toEqual([
@@ -304,7 +305,6 @@ describe("TodoCardView 多文件绑定", () => {
   });
 
   it("已绑文件夹时再绑新文件夹：替换旧文件夹（占原位），文件条目保留", async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     const withDir: Task = {
@@ -315,10 +315,12 @@ describe("TodoCardView 多文件绑定", () => {
         { path: "/docs/b.pdf", isDir: false },
       ],
     };
-    vi.mocked(open).mockResolvedValueOnce("/new/dir" as never);
+    invokeMock.mockResolvedValueOnce(["/new/dir"]);
     render(<TodoCardView task={withDir} onUpdate={onUpdate} onDelete={vi.fn()} />);
     await user.click(screen.getByTitle("绑定文件夹"));
-    expect(vi.mocked(open)).toHaveBeenCalledWith({ directory: true });
+    expect(invokeMock).toHaveBeenCalledWith("pick_files_dialog", {
+      directory: true,
+    });
     const call = onUpdate.mock.calls[0];
     // 新文件夹占旧文件夹原位，文件条目不动
     expect(call[1].files).toEqual([
@@ -329,19 +331,14 @@ describe("TodoCardView 多文件绑定", () => {
   });
 
   it("pickFile 多选追加：merge 去重保序 + bind_files 取 isDir", async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
     const onUpdate = vi.fn();
     const oneFile: Task = {
       ...baseTask,
       files: [{ path: "/docs/a.pdf", isDir: false }],
     };
-    vi.mocked(open).mockResolvedValueOnce([
-      "/docs/a.pdf",
-      "/docs/new.txt",
-    ] as never);
-    vi.mocked(invoke).mockResolvedValueOnce([
+    invokeMock.mockResolvedValueOnce(["/docs/a.pdf", "/docs/new.txt"]);
+    invokeMock.mockResolvedValueOnce([
       { path: "/docs/a.pdf", isDir: false },
       { path: "/docs/new.txt", isDir: false },
     ] as never);
@@ -361,8 +358,6 @@ describe("TodoCardView 多文件绑定", () => {
   });
 
   it("pickFile 超上限：截断到 10 并弹提示", async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { invoke } = await import("@tauri-apps/api/core");
     const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
     const user = userEvent.setup();
     const onUpdate = vi.fn();
@@ -377,8 +372,8 @@ describe("TodoCardView 多文件绑定", () => {
       { path: "/f/9.txt", isDir: false },
       { path: "/f/10.txt", isDir: false },
     ];
-    vi.mocked(open).mockResolvedValueOnce(added.map((f) => f.path) as never);
-    vi.mocked(invoke).mockResolvedValueOnce(added as never);
+    invokeMock.mockResolvedValueOnce(added.map((f) => f.path));
+    invokeMock.mockResolvedValueOnce(added as never);
     render(<TodoCardView task={nine} onUpdate={onUpdate} onDelete={vi.fn()} />);
     // 9 个文件时仍有「＋」（< 10）
     await user.click(screen.getByTitle("继续绑定文件"));
@@ -389,19 +384,21 @@ describe("TodoCardView 多文件绑定", () => {
   });
 
   it("pickFile 对话框挂起期间 task.files 被并发改动：合并基线取最新，两批文件都不丢", async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const { invoke } = await import("@tauri-apps/api/core");
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    // 挂起 open：点击「＋」后停在对话框，模拟用户选文件期间别处（另一窗口/机器人）动了绑定
+    // 挂起选取：点击「＋」后停在对话框，模拟用户选文件期间别处（另一窗口/机器人）动了绑定
     let releaseOpen!: (v: string[]) => void;
-    vi.mocked(open).mockImplementationOnce(
-      () =>
-        new Promise<string[]>((resolve) => {
+    invokeMock.mockImplementationOnce(
+      (cmd: string) => {
+        if (cmd !== "pick_files_dialog") {
+          return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
+        }
+        return new Promise<string[]>((resolve) => {
           releaseOpen = resolve;
-        }) as never,
+        });
+      },
     );
-    vi.mocked(invoke).mockResolvedValueOnce([
+    invokeMock.mockResolvedValueOnce([
       { path: "/docs/new.txt", isDir: false },
     ] as never);
     const before: Task = {
@@ -441,16 +438,14 @@ describe("TodoCardView 多文件绑定", () => {
   });
 
   it("pickFolder 对话框挂起期间 task.files 被并发改动：isDir 复查与合并都取最新，两批文件都不丢", async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
     const user = userEvent.setup();
     const onUpdate = vi.fn();
-    let releaseOpen!: (v: string) => void;
-    vi.mocked(open).mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          releaseOpen = resolve;
-        }) as never,
-    );
+    let releaseOpen!: (v: string[]) => void;
+    invokeMock.mockImplementationOnce(() => {
+      return new Promise<string[]>((resolve) => {
+        releaseOpen = resolve;
+      });
+    });
     const before: Task = {
       ...baseTask,
       files: [{ path: "/docs/a.pdf", isDir: false }],
@@ -474,7 +469,7 @@ describe("TodoCardView 多文件绑定", () => {
       />,
     );
     await act(async () => {
-      releaseOpen("/some/dir");
+      releaseOpen(["/some/dir"]);
     });
     const call = onUpdate.mock.calls[0];
     // 陈旧基线（只有 a.pdf）会丢掉 concurrent.txt；文件夹追加在后

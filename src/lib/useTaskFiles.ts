@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import type { Task } from "../types";
 import { handleCommandError } from "./errorHandler";
 import { applyBinding, taskFiles, type TaskFile } from "./taskFiles";
@@ -16,7 +15,8 @@ import { applyBinding, taskFiles, type TaskFile } from "./taskFiles";
  *
  * 现在只有这一份：合并基线一律取「await 之后的最新 files」。写侧差异
  * （TodoCard 走 onUpdate(taskId, patch)，详情面板走 onUpdate(patch)）由调用方
- * 用 `commit` 回调表达。
+ * 用 `commit` 回调表达。选文件通道也统一走 Rust 原生对话框
+ * （pick_files_dialog，与 ContextRail 同一条），不再用 webview dialog。
  */
 export function useTaskFiles(
   task: Task,
@@ -39,12 +39,7 @@ export function useTaskFiles(
   const pickFile = useCallback(async () => {
     try {
       // 文件与文件夹不互斥：已绑文件夹也可继续添加文件
-      const selected = await open({ multiple: true, directory: false });
-      const paths = Array.isArray(selected)
-        ? selected
-        : typeof selected === "string"
-          ? [selected]
-          : [];
+      const paths = await invoke<string[]>("pick_files_dialog");
       if (paths.length === 0) return;
       // isDir 由 Rust 侧 fs::metadata 判定（前端无法 stat）
       const added = await invoke<TaskFile[]>("bind_files", { paths });
@@ -61,11 +56,14 @@ export function useTaskFiles(
     try {
       // 文件夹单选（每卡一个文件夹槽）；文件与文件夹不互斥。
       // 绑定一律加法：已有文件夹时新文件夹替换旧文件夹（占原位），不再拦截
-      const selected = await open({ directory: true });
-      if (typeof selected !== "string") return;
+      const selected = await invoke<string[]>("pick_files_dialog", {
+        directory: true,
+      });
+      const path = selected[0];
+      if (!path) return;
       applyBinding(
         taskFiles(taskRef.current),
-        [{ path: selected, isDir: true }],
+        [{ path, isDir: true }],
         (files) => commitRef.current(files),
       );
     } catch (e) {
