@@ -279,6 +279,21 @@ export function useChatStream(params: ChatStreamParams) {
       if (!streamState.noteSeq(sid, p?.seq)) return;
       const status = p?.status;
       if (!status) return;
+      // 回合终态 = 这一轮结束。此刻还压在合并窗口里、没落地的增量属于**这一轮**：
+      // 落地它就等于给一个已经收尾的回合再开一个「正在思考」的气泡——没人会来
+      // 收它（终态事件已经来过了），活体指示永远转到用户以为还在跑
+      // （真机 2026-10-26：点了停止仍显示「正在思考 · 1m 32s」）。
+      //
+      // 丢掉的只是尾巴那几百字：最终答复里全都有（正文以库/返回值为准），
+      // 而那一版的正文本来就会整表替换掉流式气泡。
+      if (
+        status !== "running" &&
+        status !== "settling" &&
+        sid === sessionIdRef.current
+      ) {
+        pending.text = "";
+        pending.think = false;
+      }
       const m = metaFor(sid);
       if (m) {
         m.turnStatus = status;

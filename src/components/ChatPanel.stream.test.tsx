@@ -193,6 +193,92 @@ describe("ChatPanel", () => {
     expect(await screen.findByText("本会话输出")).toBeInTheDocument();
   });
 
+  it("用户叫停：回合终态后到达的迟到增量不再开一个「正在思考」的气泡（活体指示不该永远转）", async () => {
+    const user = userEvent.setup();
+    const handlers: Record<
+      string,
+      (e: { payload: Record<string, unknown> }) => void
+    > = {};
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[event] = cb as (e: { payload: Record<string, unknown> }) => void;
+        return () => {};
+      },
+    );
+    // bot_chat 挂起：回合在跑，等后端收尾才 resolve
+    let settleChat: ((v: { text: string; taskRefs: unknown[] }) => void) | null =
+      null;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat")
+        return new Promise((resolve) => {
+          settleChat = resolve as typeof settleChat;
+        });
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "做个 ppt");
+    await user.keyboard("{Enter}");
+    // 真机上的事件顺序（后端先推最后一块在途数据，再落终态，最后命令返回）：
+    // ① 迟到的思考增量 ② 回合终态 ③ bot_chat 返回最终答复
+    await act(async () => {
+      handlers["bot-think-delta"]?.({
+        payload: { text: "还在想", sessionId: "s1" },
+      });
+      handlers["bot-turn-status"]?.({
+        payload: { status: "interrupted", detail: "", sessionId: "s1" },
+      });
+      settleChat?.({ text: "⏹ 已停止", taskRefs: [] });
+      // 等过合并窗口（flush 落在下一帧）：增量此时已被处理完
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    expect(await screen.findByText("⏹ 已停止")).toBeInTheDocument();
+    // 判据：不得多出第二个「正在思考」气泡——回合已终，不会再有终态事件
+    // 来收它，活体指示会一直转到用户以为还在跑
+    expect(screen.queryByText("正在思考")).not.toBeInTheDocument();
+  });
+
+  it("后端主动起的一轮（子任务收尾汇报）：无预置气泡时增量照样开出活体气泡", async () => {
+    const user = userEvent.setup();
+    const handlers: Record<
+      string,
+      (e: { payload: Record<string, unknown> }) => void
+    > = {};
+    mocks.listenMock.mockImplementation(
+      async (event: string, cb: (e: { payload: unknown }) => void) => {
+        handlers[event] = cb as (e: { payload: Record<string, unknown> }) => void;
+        return () => {};
+      },
+    );
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
+      if (cmd === "bot_history_load") return [];
+      if (cmd === "bot_chat") return { text: "机器人回复", taskRefs: [] };
+      return null;
+    });
+    render(<ChatPanel {...defaultProps} />);
+    expect(await screen.findAllByText("默认会话")).not.toHaveLength(0);
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "你好");
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("机器人回复")).toBeInTheDocument();
+    // 后端主动起的一轮：先来一条 running 状态（回合状态机口径：本轮在跑），
+    // 再来增量——前端没有预置气泡，增量要能自己开一个
+    await act(async () => {
+      handlers["bot-turn-status"]?.({
+        payload: { status: "running", detail: "正在思考 · 第 1 轮", sessionId: "s1" },
+      });
+      handlers["bot-chat-delta"]?.({
+        payload: { text: "汇报正文", sessionId: "s1" },
+      });
+      await new Promise((r) => setTimeout(r, 60));
+    });
+    expect(screen.getByText("汇报正文")).toBeInTheDocument();
+  });
+
   it("自动滚动：环境没有 scrollTo 时不炸（可选链挡不住方法缺失）", async () => {
     const user = userEvent.setup();
     // jsdom 本身不实现 scrollTo，测试基建按 suite scope 临时补上——补的窗口期

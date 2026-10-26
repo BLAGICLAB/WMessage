@@ -94,6 +94,19 @@ pub(crate) async fn read_sse_stream(
     // 出口闭包就叫 emit：事件出口靠这个名字被一致性对拍认出来（前端 listen
     // 的每一件都得在 Rust 侧找得到 emit），改名会让门禁以为没人发这些事件
     let emit = |ev: &str, payload: serde_json::Value| {
+        // 用户已叫停：不再往前端推流式增量。
+        //
+        // 为什么必须在这里闸：读流循环只在**每轮开头**查一次停止标志，用户
+        // 按停止时往往正卡在 `stream.next()` 上——在途的那一块数据到了照样
+        // 被解析、被推出。于是「停止之后还在冒字」，而且这段迟到的增量到达
+        // 时回合往往已经收尾：前端据此新开一个没人收的「正在思考」气泡，
+        // 活体指示永远转（真机 2026-10-26：点了停止仍显示「正在思考」）。
+        //
+        // 正文照旧累积进 final_text——闸只挡「推流」，不挡「记账」，最终
+        // 答复里那半句字不会丢。
+        if stop.stopped() {
+            return;
+        }
         emitted_any.store(true, std::sync::atomic::Ordering::Relaxed);
         emit_raw(ev, payload);
     };

@@ -143,6 +143,11 @@ tempfile = "3"
 futures = { version = "0.3", features = ["executor"] }
 # F-6 step 3：mock LLM + reqwest 端到端需要 #[tokio::test] async 测试运行时
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# 读流层的单测要在内存里造一个 reqwest::Response（喂 SSE 数据块）。
+# 为什么需要它：reqwest 0.13 不再转出 http crate，而 reqwest::Response 除
+# `From<http::Response<T>>` 外没有公开构造口。http 本就随 reqwest 进依赖树
+# （同一 1.x 线），此处只作 dev 依赖声明，不新增任何 crate。
+http = "1"
 # 修订工具测试：解开 docx（zip）验证 word/document.xml 修订标记
 # （deflate：docx 默认压缩算法；default-features=false 会把它关掉导致解压失败）
 # zip 已提升为正式依赖（归档工具要用），这里不再重复声明——dev 段继承正式段。

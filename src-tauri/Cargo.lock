@@ -7296,6 +7296,7 @@ dependencies = [
  "futures",
  "futures-util",
  "html2text",
+ "http",
  "image",
  "keyring",
  "libc",
