@@ -75,6 +75,39 @@ if [[ -n "$BAD_LINES" ]]; then
 fi
 echo "  ✓ [0/N] 工单号防线通过"
 
+# ─── 步骤 0.5: CommandError 降级防线 ───────────────────────────────
+# blanket `From<String>` / `From<&str>` 把任意字符串压成 `Internal`
+# （recoverable=false）——前端因此只提示「不可自动重试；请反馈日志」。
+# 写错也踩：Err(format!("…")) 与 ? 一个 Result<_, String> 都会走到这条。
+#
+# 新增代码不得再走隐式降级：**显式选变体**（CommandError::Internal(..) /
+# DbError(..) / LlmApiError{..} / InvalidArgument{..} …）。确实是内部故障的
+# （线程 join 失败等），行内加 audit-ok 放行——那一行要写明为什么该是内部故障。
+#
+# 存量不改（历史事实，迁移另排期）：口径见 docs/FROM-STRING-GUARD-PROPOSAL-2026-10-26.md。
+DIFF_RS=$(git diff --cached -U0 -- '*.rs' 2>/dev/null || true)
+if [[ -z "$DIFF_RS" ]]; then
+    DIFF_RS=$(git diff -U0 -- '*.rs' 2>/dev/null || true)
+fi
+NEW_RS_LINES=$(echo "$DIFF_RS" | grep '^+' | grep -v '^+++' || true)
+while IFS= read -r -d '' f; do
+    if [[ -f "$f" ]]; then
+        NEW_RS_LINES="$NEW_RS_LINES
+$(cat "$f")"
+    fi
+done < <(git ls-files -z --others --exclude-standard -- '*.rs' 2>/dev/null)
+DOWNGRADE_LINES=$(echo "$NEW_RS_LINES" \
+    | grep -v 'audit-ok' \
+    | grep -E 'CommandError::from\(|: CommandError = .*\.into\(\)' || true)
+if [[ -n "$DOWNGRADE_LINES" ]]; then
+    echo "✗ [0.5/N] CommandError 降级防线：新增行出现 blanket 降级（From<String> → Internal，recoverable=false）："
+    echo "$DOWNGRADE_LINES" | head -10 | sed 's/^/    /'
+    echo "    → 显式选变体（CommandError::Internal / DbError / LlmApiError{..} / InvalidArgument{..} …）"
+    echo "    → 确实是内部故障的：行内加 audit-ok 放行，并写明为什么这条该是内部故障"
+    exit 1
+fi
+echo "  ✓ [0.5/N] CommandError 降级防线通过"
+
 # ── 是否需要跑 cargo 链路（fmt + check + test） ──
 NEED_CARGO=false
 if echo "$CHANGED" | grep -qE '^(src-tauri/|Cargo\.toml|Cargo\.lock)'; then

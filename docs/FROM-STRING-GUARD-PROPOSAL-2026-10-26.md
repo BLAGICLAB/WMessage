@@ -119,7 +119,37 @@ base64 解码失败）用 `INTERNAL` 是对的。问题在于**降级是隐式�
 某一种咬到的（`recoverable=false` → 前端不给重试入口）。只堵新增而不清存量，
 等于「下次同一个坑换个文件再踩一次」。
 
-## 五、待拍板
+## 五、拍板与实施结果
 
-请拍板：**A / B / C**，或指定别的方向。
-拍板后按「一个逻辑变更一个 commit」小步实施，每批跑快门禁 + 全量门禁。
+**2026-10-26 拍板：选项 B**（保留 impl + 加「新增行」门禁 + 逐点精确化语义失败）。
+实施结果如下——**与原方案的偏差逐条登记**：
+
+### 已落地
+
+1. **新增行门禁**：`scripts/test-fast.sh` 的步骤 0.5「CommandError 降级防线」，
+   扫本次改动的新增行（含 untracked `.rs` 全文），命中
+   `CommandError::from(` / `: CommandError = ….into()` 即拦下；行内 `audit-ok`
+   放行。已实测：违规样本被拦（exit 1）、加 `audit-ok` 后放行。
+2. **7 处语义性失败逐点精确化**（原方案说的「剩 7 处」，逐点复核后确认是这 7 处）：
+   - `bot_model_loop/request.rs` 模型请求打不通 → `LlmRequestFailed`
+   - `bot_plan.rs` Planner 请求打不通 → `LlmRequestFailed`；HTTP 状态错误 → `LlmApiError`
+   - `task_autotag.rs` 前置读失败 → `DbError`；任务被并发删掉 → `TaskNotFound`
+   - `memory/panel.rs` 导入文件过大 → `InvalidArgument`
+   - `memory/extract.rs` 收下时存储故障 → `DbError`
+3. **陷阱标注**：`error.rs` 两个 blanket impl 上写明「这是个陷阱」、新代码要显式选变体、
+   门禁在哪、存量为什么不删。
+
+### 偏差登记
+
+| 原方案 | 实际 | 原因 |
+|---|---|---|
+| 「剩 7 处语义失败」 | 复核后确认为 7 处，但其中 3 处（`task_autotag` 的 `DbError` / `memory/extract` 的 `DbError` / `bot_plan` 的 `LlmRequestFailed`）**分类精度改进**而非可恢复性改进——它们的 `recoverable` 前后都是 false，只是 `INTERNAL`→`DB_ERROR` / `INTERNAL`→`LLM_REQUEST_FAILED` 让前端 hint 与 code 对得上 | 复核时按「用户改一下就能重试」重新划线，发现原口径把「该有精确变体」与「该可恢复」混成了一档 |
+| 门禁只拦显式形态 | 同上，**这是门禁的已知缺口不是偏差** | `Err(format!(…))` / `?` 一个 `Result<_, String>` 这类隐式降级，行级扫描分不出来（同一闭包里 String 上下文本来就合法）。要分清得知道所在函数的返回类型，那已经是半个类型检查器 |
+| 存量 78 处不动 | 不动 | 但门禁会让**今后触碰到的行**逐步被迫显式化——迁移是渐进的，不是零 |
+
+### 仍然没有封死的部分
+
+- **隐式降级进不来**：`?` / `Err(String)` 这两条路门禁管不了。
+- **存量的 71 处真内部故障**仍是 `INTERNAL`（它们本来就对，形态上仍看不出是「有意」还是「顺手」）。
+- **根治仍待排期**：删两个 impl = 262 处编译错误 + 35 个文件改签名。
+  真要做，建议先只删 `From<&str>`（`Err("字面量".into())` 少），把爆炸半径压到一批评完的规模。

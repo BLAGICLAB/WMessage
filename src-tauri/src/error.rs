@@ -516,16 +516,28 @@ impl From<rusqlite::Error> for CommandError {
     }
 }
 
-/// String → CommandError (Internal)，便于从 Result<T, String> 机械迁移到 Result<T, CommandError>：
-/// 现有 `Err(format!("xxx"))` （format! 返回 String）经 From<String> 自动转 CommandError::Internal。
-/// 后续可逐个改为精确变体（BotDisabled / ApiKeyMissing / TaskNotFound 等）。
+/// String → CommandError (Internal)：**这是个陷阱**，新代码不要用。
+///
+/// 写 `Err(format!("…"))` 或 `?` 一个 `Result<_, String>`，就自动变成
+/// `Internal`——而 `Internal` 恒为 `recoverable=false`，前端只提示
+/// 「不可自动重试；请反馈日志」。作者不写错也踩：语义性失败（用户改一下
+/// 就能重试的那种）被降级成不可恢复，用户连重试入口都没有。
+///
+/// 故新代码**显式选变体**：`CommandError::Internal(..)` / `DbError(..)` /
+/// `LlmApiError{..}` / `InvalidArgument{..}` / `TaskNotFound(..)` …。
+/// 确实要保留这个 blanket（存量 78 处 + 内部 `Result<_, String>` 生态），
+/// 故不删；但 `scripts/test-fast.sh` 的「CommandError 降级防线」会拦新增的
+/// blanket 用法（行内 `audit-ok` 可放行）。背景与迁移口径见
+/// `docs/FROM-STRING-GUARD-PROPOSAL-2026-10-26.md`。
 impl From<String> for CommandError {
     fn from(s: String) -> Self {
         Self::Internal(s)
     }
 }
 
-/// &str → CommandError (Internal)：保留现有 `Err("literal".into())` 语法可继续使用。
+/// &str → CommandError (Internal)：同样是个陷阱，见上面的 `From<String>`。
+///
+/// 保留只为 `Err("字面量".into())` 这类存量写法还能编译；新代码显式选变体。
 impl From<&str> for CommandError {
     fn from(s: &str) -> Self {
         Self::Internal(s.to_string())
