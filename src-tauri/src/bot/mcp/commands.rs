@@ -90,9 +90,15 @@ pub fn mcp_server_save(
     }
     let server_id = server.id.clone();
     let app_for_blob = app.clone();
-    let (list, saved) = with_locked_config(&app, |cfg| {
+    // 半成功回滚基线：迁移后、覆盖前读旧机密。配置文件写失败（磁盘满/权限）
+    // 而 keyring 已写新值时，据此把机密恢复到旧值（None = 首次配置 → 清条目）。
+    let mut prev_secrets: Option<crate::bot::mcp::secrets::McpSecrets> = None;
+    let mut secrets_stored = false;
+    let result = with_locked_config(&app, |cfg| {
         // **先校验后落机密**：校验失败时已存机密原封不动。旧次序是先写机密
         // 再校验，校验失败就是「保存报错，但机密已被清空/替换」。
+        prev_secrets = crate::bot::mcp::secrets::read_server_secrets(&app_for_blob, &server_id)
+            .map_err(CommandError::KeyringError)?;
         upsert_in_config(cfg, server.clone())?;
         // 机密落 keyring/降级文件——**锁内、迁移之后**（评审 CRITICAL②：
         // 若在锁外先写，紧随其后的迁移会读文件里的旧明文同 id 覆盖刚写的新值）。
@@ -104,18 +110,58 @@ pub fn mcp_server_save(
             &server.headers,
         )
         .map_err(CommandError::KeyringError)?;
+        secrets_stored = true;
         let saved = cfg
             .mcp_servers
             .as_ref()
             .and_then(|l| l.iter().find(|s| s.id == server.id))
             .cloned();
         Ok((list_of(cfg), saved))
-    })?;
+    });
+    // 机密已写新值而配置未落盘 = 半成功：回滚机密到旧值，
+    // 不让「保存失败」留下 token 已换的暗状态。回滚自身失败不再上抛
+    // （主错误更重要），WARN 留痕可追溯。
+    if let Err(e) = &result {
+        if secrets_stored {
+            match restore_prev_secrets(&app_for_blob, &server_id, prev_secrets.as_ref()) {
+                Ok(()) => crate::audit_event!(
+                    &app,
+                    crate::audit::AuditLevel::Warn,
+                    "mcp.secrets_rollback_ok",
+                    "id" => server_id.clone(),
+                ),
+                Err(re) => crate::audit_event!(
+                    &app,
+                    crate::audit::AuditLevel::Error,
+                    "mcp.secrets_rollback_failed",
+                    "id" => server_id.clone(),
+                    "err" => re,
+                ),
+            }
+        }
+        return Err(e.clone());
+    }
+    let (list, saved) = result?;
     if let Some(s) = &saved {
         audit(&app, "mcp.server_saved", s);
     }
     trigger_reload(&app);
     Ok(list)
+}
+
+/// 把机密恢复到覆盖前的值（prev=None = 首次配置 → 清条目）。
+/// 复用 store_server_secrets 的写入与掩码内核，方向相反而已。
+fn restore_prev_secrets(
+    app: &AppHandle,
+    id: &str,
+    prev: Option<&crate::bot::mcp::secrets::McpSecrets>,
+) -> Result<(), String> {
+    let empty = Default::default();
+    let (env, headers) = match prev {
+        Some(s) => (&s.env, &s.headers),
+        None => (&empty, &empty),
+    };
+    crate::bot::mcp::secrets::store_server_secrets(app, id, env, headers)
 }
 
 /// 按 id 删除 MCP 服务器（幂等：不存在不报错）。返回删除后的完整列表。
