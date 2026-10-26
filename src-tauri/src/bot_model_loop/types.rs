@@ -20,6 +20,21 @@ pub struct TokenUsage {
     pub cache_creation_tokens: u64,
 }
 
+/// 200 流内错误载荷
+///
+/// 上游在 **HTTP 200 的流里** 报错（Anthropic 协议的 `{"type":"error",...}`、
+/// OpenAI 兼容网关的 `{"error":{...}}`）。此前只留一句 message，
+/// 丢掉了上游自己标的 `type`——而可重试性恰恰由 type 决定：
+/// `overloaded_error` / `api_error` 是瞬时故障（重发有意义），
+/// `authentication_error` / `invalid_request_error` 是确定性拒绝（重发无意义）。
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct StreamError {
+    /// 上游自己说的那句（截断到 200 字）
+    pub message: String,
+    /// 上游标的错误类型（Anthropic: `error.type`；OpenAI: `error.type` / `error.code`）
+    pub kind: Option<String>,
+}
+
 /// 一次 SSE chunk 解析结果（content / reasoning / tool_calls / finish_reason / 流内错误 / [DONE]）
 #[derive(Debug, Default, Clone)]
 pub struct ParsedChunk {
@@ -40,7 +55,7 @@ pub struct ParsedChunk {
     pub finish_reason: Option<String>,
     /// 200 流内错误载荷：部分 OpenAI 兼容网关在 200 流内发 `{"error":{...}}`，
     /// 静默丢弃会导致用户拿到空白回复——显式冒出
-    pub error: Option<String>,
+    pub error: Option<StreamError>,
     /// 本 chunk 携带的 token 用量（OpenAI 需请求带
     /// `stream_options.include_usage`，末块 usage 的 choices 为空数组）
     pub usage: Option<TokenUsage>,

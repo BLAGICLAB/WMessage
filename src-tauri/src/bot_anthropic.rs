@@ -739,7 +739,14 @@ pub fn parse_anthropic_event(line: &str) -> Option<AnthropicEvent> {
                 .as_str()
                 .or_else(|| v["error"].as_str())
                 .unwrap_or("未知错误");
-            ev.error = Some(msg.chars().take(200).collect());
+            // error.type 一并带出：可重试性由它决定（overloaded/api_error 瞬时，
+            // authentication/invalid_request 确定性）——丢了它就只剩一句文案，
+            // 无法判断该不该重发本轮。
+            let kind = v["error"]["type"].as_str().map(String::from);
+            ev.error = Some(crate::bot_model_loop::StreamError {
+                message: msg.chars().take(200).collect(),
+                kind,
+            });
             Some(ev)
         }
         // ping / content_block_stop / 未知 type → 跳过

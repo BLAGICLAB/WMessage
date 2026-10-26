@@ -50,8 +50,8 @@ pub use self::stream::{
 };
 #[allow(unused_imports)]
 pub use self::types::{
-    LlmHttp, LoopTrace, ModelLoopDeps, ParsedChunk, TokenUsage, ToolCallDelta, TurnStatus,
-    WallBudget,
+    LlmHttp, LoopTrace, ModelLoopDeps, ParsedChunk, StreamError, TokenUsage, ToolCallDelta,
+    TurnStatus, WallBudget,
 };
 
 // 跨模块共用的私有项：门面转出，子模块之间零直接依赖。

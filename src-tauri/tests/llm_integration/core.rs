@@ -818,13 +818,24 @@ async fn core_in_stream_error_payload_surfaced() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("大模型返回错误") && msg.contains("auth_failed"),
+        msg.contains("大模型 API 错误") && msg.contains("auth_failed"),
         "错误应带流内错误详情：{msg}"
+    );
+    // 流内错误按 HTTP 路径的分类口径报（此前 blanket From<String> 降级成
+    // 不可恢复的 INTERNAL，前端只让用户「反馈日志」）
+    assert!(
+        err.is_recoverable(),
+        "流内错误属可恢复错误（用户可重试）：{err}"
     );
     assert!(
         h.events().contains(&"llm.stream_error"),
         "应记 llm.stream_error 审计：{:?}",
         h.events()
+    );
+    assert_eq!(
+        server.request_count(),
+        1,
+        "错误类型认不出（网关自造标签）时按不可重试处理，不得白烧一次请求"
     );
 }
 

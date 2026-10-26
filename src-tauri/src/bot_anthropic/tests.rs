@@ -707,7 +707,10 @@ fn sse_error_event_surfaced() {
         r#"data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
     )
     .expect("error 事件应解析");
-    assert_eq!(ev.error.as_deref(), Some("Overloaded"));
+    let e = ev.error.expect("error 事件应带出错载荷");
+    assert_eq!(e.message, "Overloaded");
+    // 上游 type 一并带出：可重试性由它决定（overloaded = 瞬时故障）
+    assert_eq!(e.kind.as_deref(), Some("overloaded_error"));
 }
 
 #[test]

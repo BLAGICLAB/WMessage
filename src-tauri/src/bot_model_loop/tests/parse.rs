@@ -219,7 +219,10 @@ mod parse_sse_chunk_tests {
     fn openai_error_envelope_beats_usage_chunk() {
         let line = r#"data: {"choices":[],"usage":{"prompt_tokens":5},"error":{"message":"rate limited"}}"#;
         let c = parse_sse_chunk(line).expect("错误信封不该被当成纯 usage 末块");
-        assert_eq!(c.error.as_deref(), Some("rate limited"));
+        assert_eq!(
+            c.error.as_ref().map(|e| e.message.as_str()),
+            Some("rate limited")
+        );
     }
 
     /// OpenAI 形状的 usage 末块不得被算成「协议正常成分之外」的坏块
@@ -281,12 +284,18 @@ mod parse_sse_chunk_tests {
         // 必须显式冒出（主循环据此报错 + 审计）
         let line = r#"data: {"id":"x","error":{"message":"auth_failed","type":"auth_error"}}"#;
         let parsed = parse_sse_chunk(line).expect("error 载荷必须冒出，不得静默丢弃");
-        assert_eq!(parsed.error.as_deref(), Some("auth_failed"));
+        let e = parsed.error.expect("error 载荷必须带出");
+        assert_eq!(e.message, "auth_failed");
+        // 上游标的 type 一并带出——可重试性由它决定，丢了就只剩一句文案
+        assert_eq!(e.kind.as_deref(), Some("auth_error"));
 
         // error 为裸字符串的兼容形态
         let line2 = r#"data: {"error":"rate limited"}"#;
         let parsed2 = parse_sse_chunk(line2).unwrap();
-        assert_eq!(parsed2.error.as_deref(), Some("rate limited"));
+        assert_eq!(
+            parsed2.error.as_ref().map(|e| e.message.as_str()),
+            Some("rate limited")
+        );
     }
 
     #[test]

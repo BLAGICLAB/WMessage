@@ -67,6 +67,10 @@ pub enum MockBehavior {
     AnthropicToolCall(ToolCallResponse),
     /// 200 流内 error 事件（Anthropic 协议 {"type":"error",...}，对齐 OpenAI 侧 StreamError）
     AnthropicStreamError(String),
+    /// 200 流内 error 事件，**带指定 error.type**（Anthropic 协议）。
+    /// type 决定可重试性（`overloaded_error` = 瞬时故障，`authentication_error`
+    /// = 确定性拒绝）——默认变体固定发 `api_error`，测不了这个区分。
+    AnthropicStreamErrorTyped(String, String),
     /// 非流式 Anthropic message JSON 回复（Planner/摘要走 stream:false + resp.json()）
     AnthropicJsonReply(String),
     /// 非流式 OpenAI chat.completion JSON 回复（摘要 OpenAI 分支走 stream:false + resp.json()）
@@ -343,6 +347,9 @@ fn build_http_response(behavior: &MockBehavior) -> String {
                     anthropic_sse_text_then_tool_call_reply(text, &tc.name, &tc.arguments)
                 }
                 MockBehavior::AnthropicStreamError(msg) => anthropic_sse_error_reply(msg),
+                MockBehavior::AnthropicStreamErrorTyped(kind, msg) => {
+                    anthropic_sse_error_reply_typed(kind, msg)
+                }
                 _ => unreachable!(), // FragmentedTextReply 在连接处理分支里单独分片写出；AnthropicJsonReply 上面已处理
             };
             format!(
@@ -501,10 +508,16 @@ fn anthropic_sse_tool_call_reply(name: &str, arguments: &str) -> String {
 
 /// Anthropic 200 流内 error 事件（真实 API 在流中途失败时的形态；之后直接断流无 message_stop）
 fn anthropic_sse_error_reply(message: &str) -> String {
+    anthropic_sse_error_reply_typed("api_error", message)
+}
+
+/// 同上，但 error.type 可指定——type 决定可重试性（overloaded 瞬时 / auth 确定性）
+fn anthropic_sse_error_reply_typed(kind: &str, message: &str) -> String {
     let escaped = message.replace('\\', "\\\\").replace('"', "\\\"");
+    let kind_escaped = kind.replace('\\', "\\\\").replace('"', "\\\"");
     format!(
         "event: error\n\
-         data: {{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":\"{escaped}\"}}}}\n\
+         data: {{\"type\":\"error\",\"error\":{{\"type\":\"{kind_escaped}\",\"message\":\"{escaped}\"}}}}\n\
          \n"
     )
 }

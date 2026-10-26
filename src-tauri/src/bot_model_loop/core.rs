@@ -297,7 +297,11 @@ where
             // 这里统一收口：还没向前端吐过内容 → 重发本轮；吐过了 → 收尾技能后
             // 上抛（重发会把用户已看到的正文/工具行再来一遍）。
             let mut stream_retry = 0usize;
-            let sse = loop {
+            // 本轮 = 「请求 + 读流 + 收尾」。三段任一段失败都可能要求**重发本轮**
+            // （换一条新连接重试同一请求），故三段收在同一个重发循环里——
+            // `continue` 必须回到这里重发，而不是跳到下一轮（下一轮会带着
+            // 已推进的轮龄与提示重新规划，把「重试」变成「换了个问题」）。
+            let rs = loop {
                 // 请求段：装配 body → 发请求 → 失败重试/降级（见 request_round）。
                 // 请求侧自己的每条 Err 路径都已收尾技能，这里原样上抛。
                 let resp =
@@ -313,7 +317,7 @@ where
                     };
 
                 // 流消费：逐 chunk 解析 SSE → 正文 / 工具调用 / 思考块（见 stream_round）。
-                match read_sse_stream(
+                let sse = match read_sse_stream(
                     http,
                     resp,
                     stop,
@@ -323,9 +327,12 @@ where
                 )
                 .await
                 {
-                    Ok(sse) => break sse,
+                    Ok(sse) => sse,
                     Err(fail) => {
-                        if !fail.emitted_any && stream_retry < MAX_STREAM_RETRIES {
+                        // 没吐过内容 + 该失败值得重发 → 重发本轮
+                        // （吐过了就不重发：重发＝给用户看两遍）
+                        if fail.retryable && !fail.emitted_any && stream_retry < MAX_STREAM_RETRIES
+                        {
                             stream_retry += 1;
                             audit(
                                 crate::audit::AuditLevel::Warn,
@@ -343,12 +350,42 @@ where
                             continue;
                         }
                         // 放弃重试：收尾技能（不留悬空 run）后上抛。
-                        let _hint = skill_finish(false, "流式响应中断");
-                        return Err(fail.err);
+                        // 收尾原因由失败类型决定（流内错误 vs 流式中断），
+                        // 回滚建议接到错误正文尾部——用户看得见才有用。
+                        let hint = skill_finish(false, fail.reason);
+                        return Err(fail.err.append_detail(&hint));
+                    }
+                };
+
+                // 收尾侧：坏块可见化 / token 记账 / 流内错误判定 / 截断防线。
+                // 这里的失败与读侧同一处置：上游瞬时故障且没吐过内容 → 重发本轮。
+                match stream_round(sse, deps, expecting_selfcheck, expecting_final_selfcheck) {
+                    Ok(rs) => break rs,
+                    Err(fail) => {
+                        if fail.retryable && !fail.emitted_any && stream_retry < MAX_STREAM_RETRIES
+                        {
+                            stream_retry += 1;
+                            audit(
+                                crate::audit::AuditLevel::Warn,
+                                "llm.stream_retry",
+                                vec![
+                                    ("attempt", stream_retry.to_string()),
+                                    ("err", fail.err.to_string()),
+                                ],
+                            );
+                            if stop.stopped() {
+                                let hint = skill_finish(false, "用户停止");
+                                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                            }
+                            tokio::time::sleep(LLM_RETRY_DELAY).await;
+                            continue;
+                        }
+                        // 放弃重试：收尾技能（不留悬空 run）后上抛。
+                        let hint = skill_finish(false, fail.reason);
+                        return Err(fail.err.append_detail(&hint));
                     }
                 }
             };
-            let rs = stream_round(sse, deps, expecting_selfcheck, expecting_final_selfcheck)?;
             if rs.stopped {
                 let hint = skill_finish(false, "用户停止");
                 return Ok((

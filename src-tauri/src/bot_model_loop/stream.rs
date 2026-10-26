@@ -2,7 +2,7 @@
 //!
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
-use super::{ParsedChunk, TokenUsage, ToolCallDelta};
+use super::{ParsedChunk, StreamError, TokenUsage, ToolCallDelta};
 use crate::bot::registry::claims_mutation;
 use crate::bot::registry::mutating_tools as MUTATING_TOOLS;
 
@@ -347,13 +347,24 @@ pub(crate) fn unparsable_sse_payload(
     None
 }
 
-/// 从流内 JSON 载荷提取错误消息（`{"error":{"message":...}}` 或 `{"error":"..."}`，截 200 字）
-fn extract_stream_error(v: &serde_json::Value) -> Option<String> {
+/// 从流内 JSON 载荷提取错误（`{"error":{"message":...}}` 或 `{"error":"..."}`，截 200 字）
+///
+/// `type` / `code` 一并带出——可重试性由上游标的类型决定
+/// （`overloaded_error` / `api_error` 瞬时；鉴权 / 参数类确定性拒绝）。
+fn extract_stream_error(v: &serde_json::Value) -> Option<StreamError> {
     let e = v.get("error")?;
-    if let Some(m) = e.get("message").and_then(|m| m.as_str()) {
-        return Some(m.chars().take(200).collect());
-    }
-    e.as_str().map(|s| s.chars().take(200).collect())
+    let message = if let Some(m) = e.get("message").and_then(|m| m.as_str()) {
+        m.chars().take(200).collect()
+    } else {
+        e.as_str()?.chars().take(200).collect()
+    };
+    // type 优先，其次 code（兼容网关两种都用过）
+    let kind = e
+        .get("type")
+        .and_then(|t| t.as_str())
+        .or_else(|| e.get("code").and_then(|c| c.as_str()))
+        .map(String::from);
+    Some(StreamError { message, kind })
 }
 
 /// 从字节缓冲切出完整的 SSE 行（按 `b'\n'` 切，残余不完整行留在 buf）。

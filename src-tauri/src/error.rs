@@ -300,6 +300,30 @@ impl CommandError {
         }
     }
 
+    /// 把补充说明接到用户可见文案的末尾（技能回滚建议等）。
+    ///
+    /// 错误本体是在「要不要重发本轮」判定**之前**造出来的，而回滚建议只有
+    /// 确定不重发了才有——故留一个后补的口子，判定完了再接上。
+    ///
+    /// 只接在带自由正文的变体上；文案固定的变体原样返回（往固定文案的尾巴
+    /// 上拼东西会破坏它们的语义）。
+    pub fn append_detail(self, suffix: &str) -> Self {
+        if suffix.is_empty() {
+            return self;
+        }
+        match self {
+            Self::LlmApiError { status, detail } => Self::LlmApiError {
+                status,
+                detail: format!("{detail}{suffix}"),
+            },
+            Self::LlmRequestFailed(detail) => Self::LlmRequestFailed(format!("{detail}{suffix}")),
+            Self::Internal(detail) => Self::Internal(format!("{detail}{suffix}")),
+            Self::DbError(detail) => Self::DbError(format!("{detail}{suffix}")),
+            Self::IoError(detail) => Self::IoError(format!("{detail}{suffix}")),
+            other => other,
+        }
+    }
+
     /// 人类可读 message（前端默认 toast 用，可翻译）
     pub fn message(&self) -> String {
         match self {
@@ -339,11 +363,10 @@ impl CommandError {
             Self::LlmApiError { status, detail } => {
                 // 剥控制字符（保留 \t\n\r；DEL 0x7F 与 C1 区 U+0080-U+009F
                 // 同属控制字符一并剥）：上游错误体可能混入脏字节，防 toast/日志串行
-                format!(
-                    "大模型 API 错误 {status}：{}",
-                    detail
-                        .chars()
-                        .filter(|c| !matches!(
+                let clean = detail
+                    .chars()
+                    .filter(|c| {
+                        !matches!(
                             c,
                             '\x00'..='\x08'
                                 | '\x0B'
@@ -351,9 +374,16 @@ impl CommandError {
                                 | '\x0E'..='\x1F'
                                 | '\x7F'
                                 | '\u{80}'..='\u{9F}'
-                        ))
-                        .collect::<String>()
-                )
+                        )
+                    })
+                    .collect::<String>();
+                // status 0 = 上游没给可判定的状态码（流内错误且 type/message 都
+                // 认不出）：不编一个「错误 0」给用户看，只给正文
+                if *status == 0 {
+                    format!("大模型 API 错误：{clean}")
+                } else {
+                    format!("大模型 API 错误 {status}：{clean}")
+                }
             }
             Self::ConfirmTimeout => "确认请求超时（默认 60s）".into(),
             Self::ConfirmRejected => "用户拒绝确认".into(),

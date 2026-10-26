@@ -285,7 +285,11 @@ async fn core_anthropic_tool_call_round_trip_executes_and_continues() {
 #[tokio::test]
 async fn core_anthropic_stream_error_event_surfaced() {
     // Anthropic 协议流内 error 事件（200 流内错误）必须显式报错，对齐 OpenAI 侧 P1-3 防线  audit-ok
+    //
+    // mock 的 error.type 默认是 api_error（Anthropic 标准名 = 上游 5xx 语义）
+    // → 属瞬时故障，会先重发本轮一次。故两次都排上错误：重发后仍失败才报错。
     let server = MockLlmServer::start();
+    server.push_behavior(MockBehavior::AnthropicStreamError("overloaded".into()));
     server.push_behavior(MockBehavior::AnthropicStreamError("overloaded".into()));
     let h = CoreHarness::new();
 
@@ -307,13 +311,18 @@ async fn core_anthropic_stream_error_event_surfaced() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("大模型返回错误") && msg.contains("overloaded"),
+        msg.contains("大模型 API 错误") && msg.contains("overloaded"),
         "错误应带流内错误详情：{msg}"
     );
     assert!(
         h.events().contains(&"llm.stream_error"),
         "应记 llm.stream_error 审计：{:?}",
         h.events()
+    );
+    assert_eq!(
+        server.request_count(),
+        2,
+        "瞬时故障重发本轮一次（MAX_STREAM_RETRIES=1），两次都失败才报错"
     );
 }
 

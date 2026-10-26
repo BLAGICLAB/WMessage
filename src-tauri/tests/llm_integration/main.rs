@@ -51,6 +51,7 @@ pub struct ParsedStream {
     pub tool_calls: Vec<(String, String, String)>,
     pub finish_reason: Option<String>,
     /// 200 流内错误载荷（批次3审计 P1-3：OneAPI 类网关在 200 流内发 {"error":...}）  audit-ok
+    /// 带上游标的 type——可重试性由它决定（见 StreamError.kind）
     pub error: Option<String>,
 }
 
@@ -73,7 +74,7 @@ pub fn parse_sse_bytes(bytes: &[u8]) -> ParsedStream {
             accumulate_tool_call_delta(&mut out.tool_calls, &d);
         }
         if parsed.error.is_some() {
-            out.error = parsed.error;
+            out.error = parsed.error.map(|e| e.message);
         }
         if let Some(reason) = parsed.finish_reason {
             out.finish_reason = Some(reason);
@@ -569,4 +570,5 @@ mod e2e;
 mod guard;
 mod selfcheck;
 mod sse;
+mod stream_error_retry;
 mod stream_failure;
