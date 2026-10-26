@@ -614,7 +614,13 @@ fn confirm_state(run: &mut SkillRun, approved: bool, now_ms: i64) {
 
 /// 高危动作确认开始：本会话活动技能转入 Paused（ask_user_confirm 调用前触发）。
 /// 会话隔离：只暂停归属当前会话的 Running 技能，不动别的会话。
-pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) {
+/// confirm_id 记进 run：确认结果只作用于由这同一个确认窗暂停的技能。
+pub fn skill_mark_paused<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    tool: &str,
+    session_id: Option<&str>,
+    confirm_id: &str,
+) {
     let registry = skill_runs(app);
     let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     let mut log_line: Option<String> = None;
@@ -623,6 +629,7 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) 
         .find(|r| r.state == SkillState::Running && r.session_id.as_deref() == session_id)
     {
         pause_state(run);
+        run.pending_confirm_id = Some(confirm_id.to_string());
         log_line = Some(format!(
             "skill_paused | name: {} | at: {tool} | resumable: {}",
             run.name, run.resumable
@@ -638,15 +645,24 @@ pub fn skill_mark_paused(app: &AppHandle, tool: &str, session_id: Option<&str>) 
 
 /// 确认结果到达：恢复 Running / 暂停即终止 / 拒绝终止（bot_confirm_response 调用）。
 /// 会话隔离：只作用于归属该会话的 Paused 技能（session 从 ConfirmMap 条目取回）。
-pub fn skill_confirm_result(app: &AppHandle, approved: bool, session_id: Option<&str>) {
+/// 确认窗绑定：只作用于 pending_confirm_id == 本确认窗 id 的那条暂停——别的确认窗
+/// （哪怕同一会话）不能顺手恢复或终止这条暂停。
+pub fn skill_confirm_result<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    approved: bool,
+    session_id: Option<&str>,
+    confirm_id: &str,
+) {
     let registry = skill_runs(app);
     let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::runtime::skill_runs");
     let mut log_line: Option<String> = None;
-    if let Some(run) = runs
-        .values_mut()
-        .find(|r| r.state == SkillState::Paused && r.session_id.as_deref() == session_id)
-    {
+    if let Some(run) = runs.values_mut().find(|r| {
+        r.state == SkillState::Paused
+            && r.session_id.as_deref() == session_id
+            && r.pending_confirm_id.as_deref() == Some(confirm_id)
+    }) {
         confirm_state(run, approved, now_ms());
+        run.pending_confirm_id = None;
         let name = run.name.clone();
         let state = format!("{:?}", run.state);
         let reason = run.end_reason.clone();

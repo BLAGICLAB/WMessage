@@ -48,6 +48,11 @@ pub struct SkillRun {
     pub resumable: bool,
     /// resumable=false 时的暂停即终止：确认通过后执行当前动作，随后技能终止
     pub terminal_after_confirm: bool,
+    /// 触发本次暂停的确认窗 id：确认结果只作用于「由同一个确认窗暂停」的技能。
+    ///
+    /// 认错的暂停被误恢复或误终止，比不恢复更糟——没有 id 的暂停（手工置
+    /// Paused 的路径）不被任何确认窗结果命中。
+    pub pending_confirm_id: Option<String>,
     /// 归属会话：触发该技能的聊天会话 id；
     /// 后台定时任务为 None。active_skill_run / 暂停 / 确认按此过滤，
     /// 防会话 A 暂停中的 Skill 被会话 B 的主循环推进或确认。
@@ -83,6 +88,7 @@ impl SkillRun {
             end_reason: String::new(),
             resumable: meta.resumable,
             terminal_after_confirm: false,
+            pending_confirm_id: None,
             session_id: None,
             params: serde_json::Value::Null,
             dir: None,
@@ -299,6 +305,7 @@ pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
         end_reason: String::new(),
         resumable: true,
         terminal_after_confirm: false,
+        pending_confirm_id: None,
         session_id: None,
         params: serde_json::Value::Null,
         dir: None,
@@ -349,6 +356,7 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
         end_reason: String::new(),
         resumable: true,
         terminal_after_confirm: false,
+        pending_confirm_id: None,
         session_id: None,
         params: serde_json::Value::Null,
         dir: None,

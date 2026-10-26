@@ -236,13 +236,25 @@ pub(crate) struct ConfirmReply {
 // 可见性放宽到 pub(crate)（非公开 API），字段仍私有。
 use crate::app_state::confirms;
 
+/// 确认窗种类：危险动作确认（删除、装技能、覆盖文件、危险 UI 点击…）。
+///
+/// 这类确认会让本会话的活动技能转入暂停等确认——确认通过后按技能自身的
+/// resumable 语义恢复或终止。
+pub const CONFIRM_KIND_DANGER: &str = "danger";
+
+/// 确认窗种类：文件访问授权（白名单外路径的例行权限询问）。
+///
+/// 这是**环境权限**，不是技能的风险节点：弹窗期间工具调用本身阻塞，技能不会
+/// 并发推进，不需要靠暂停冻结。故它不触发技能暂停。
+pub const CONFIRM_KIND_FILE_ACCESS: &str = "file_access";
+
 /// 弹窗确认公共内核：发 "bot-confirm" 事件（带 kind 供前端渲染两/三按钮、
 /// 带 sessionId 供前端按会话过滤），60s 超时默认拒绝（安全兜底）；
 /// 非交互执行（后台定时任务，interactive=false）直接拒绝不弹窗——
 /// 无人在场时弹窗只会串进用户当前会话且必然超时。
 /// 主窗口不可见时同样直接拒绝，不白等 60s。
-async fn ask_confirm_inner(
-    app: &AppHandle,
+async fn ask_confirm_inner<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     tool: &str,
     detail: &str,
     kind: &str,
@@ -263,8 +275,18 @@ async fn ask_confirm_inner(
         );
         return deny;
     }
-    // Skill 调度器联动：高危动作确认开始 → 本会话活动技能转入 Paused
-    crate::bot_skills::skill_mark_paused(app, tool, session_id);
+    // 确认窗 id 先造出来：技能暂停要记它，确认结果只认这个 id
+    // （认错暂停被误恢复/误终止，比不恢复更糟）。
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    // Skill 调度器联动：**只有危险动作确认**才把本会话活动技能转入 Paused。
+    //
+    // 文件访问授权是环境的例行权限询问，不是技能的风险节点——两类确认接到
+    // 同一个钩子上，等于让「读一个白名单外路径」拥有杀技能的权力：技能不支持
+    // 断点续跑时（resumable=false）确认通过后即终止，用户点一次「允许」就把
+    // 整段流程连同已做的工作一起作废。
+    if kind == CONFIRM_KIND_DANGER {
+        crate::bot_skills::skill_mark_paused(app, tool, session_id, &id);
+    }
     // 确认弹窗只由主窗口的 ConfirmMap 呈现（bot-confirm 全窗广播 + ConfirmMap 挂主窗口）。
     // 主窗口不可见时没人能点确认，等满超时只会白等一轮——直接按默认拒绝走。
     let main_visible = app
@@ -279,11 +301,10 @@ async fn ask_confirm_inner(
                 crate::bot::truncate_for_log(detail, 120)
             ),
         );
-        crate::bot_skills::skill_confirm_result(app, false, session_id);
+        crate::bot_skills::skill_confirm_result(app, false, session_id, &id);
         return deny;
     }
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let id = uuid::Uuid::new_v4().simple().to_string();
     crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms")
         .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
     let _ = app.emit(
@@ -316,35 +337,51 @@ async fn ask_confirm_inner(
                     crate::bot::truncate_for_log(detail, 120)
                 ),
             );
-            crate::bot_skills::skill_confirm_result(app, false, session_id); // 超时默认拒绝
+            crate::bot_skills::skill_confirm_result(app, false, session_id, &id); // 超时默认拒绝
             deny
         }
     }
 }
 
 /// 请求用户确认危险操作（如删除任务）；60s 超时默认拒绝（安全兜底）
-pub async fn ask_user_confirm(
-    app: &AppHandle,
+pub async fn ask_user_confirm<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     tool: &str,
     detail: &str,
     interactive: bool,
     session_id: Option<&str>,
 ) -> bool {
-    ask_confirm_inner(app, tool, detail, "danger", interactive, session_id)
-        .await
-        .approved
+    ask_confirm_inner(
+        app,
+        tool,
+        detail,
+        CONFIRM_KIND_DANGER,
+        interactive,
+        session_id,
+    )
+    .await
+    .approved
 }
 
 /// 文件访问授权（Kimi CLI 风格）：白名单外路径弹三选一窗
 /// （允许一次 / 始终允许该目录 / 拒绝）。主窗口不可见/超时/后台执行 → Deny。
-pub async fn ask_path_confirm(
-    app: &AppHandle,
+pub async fn ask_path_confirm<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     tool: &str,
     detail: &str,
     interactive: bool,
     session_id: Option<&str>,
 ) -> ConfirmChoice {
-    match ask_confirm_inner(app, tool, detail, "file_access", interactive, session_id).await {
+    match ask_confirm_inner(
+        app,
+        tool,
+        detail,
+        CONFIRM_KIND_FILE_ACCESS,
+        interactive,
+        session_id,
+    )
+    .await
+    {
         ConfirmReply {
             approved: true,
             always: true,
@@ -369,7 +406,9 @@ pub fn bot_confirm_response(
 ) -> Result<(), String> {
     let (tx, session_id) = take_confirm(&app, &request_id)?;
     // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
-    crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref());
+    // 确认窗绑定：request_id 就是产生这次暂停的确认窗 id——别的确认窗的答案
+    // 碰巧落到这里时不会误伤这条暂停。
+    crate::bot_skills::skill_confirm_result(&app, approved, session_id.as_deref(), &request_id);
     // 用户点「拒绝」留痕
     if !approved {
         crate::bot::audit_log(
@@ -576,5 +615,91 @@ mod command_result_tests {
         .expect("rx 存活应送达");
         let reply = rx.blocking_recv().unwrap();
         assert!(!reply.approved && reply.always);
+    }
+}
+
+#[cfg(test)]
+mod confirm_skill_pause_tests {
+    use super::test_handle as mock_handle;
+
+    /// 文件访问授权（白名单外路径的例行权限询问）不得把活动技能转入暂停。
+    ///
+    /// 回归背景：文件访问授权与危险动作确认复用了同一个确认内核，内核无条件
+    /// 触发 skill_mark_paused —— 不支持断点续跑的技能（resumable=false）在用户
+    /// 点「允许」之后直接终止，整段流程连同已做的工作一起作废。
+    ///
+    /// 用 mock handle 走「主窗口不可见 → 直接拒绝」分支：确认被拒也不该
+    /// 暂停/终止技能（拒绝路径同样经过 skill_confirm_result）。
+    #[tokio::test]
+    async fn file_access_confirm_leaves_skill_running() {
+        let app = mock_handle();
+        let mut run = crate::bot_skills::test_run(8, 180);
+        run.name = "confirm-pause-file-access".into();
+        run.state = crate::bot_skills::SkillState::Running;
+        run.resumable = false; // 事故机型：暂停即终止
+        run.session_id = Some("sess-file-access".into());
+        let runs = crate::bot_skills::skill_runs(&app);
+        crate::db::lock::lock_or_recover(&runs, "bot_slash confirm_skill_pause_tests")
+            .insert(run.name.clone(), run);
+
+        let choice = super::ask_path_confirm(
+            &app,
+            "list_files",
+            "访问白名单外路径：C:\\Users\\x\\AppData\\Local\\Temp",
+            true,
+            Some("sess-file-access"),
+        )
+        .await;
+        assert!(
+            matches!(choice, super::ConfirmChoice::Deny),
+            "mock handle 没有 main 窗口，应按默认拒绝收场"
+        );
+
+        let runs = crate::bot_skills::skill_runs(&app);
+        let state = crate::db::lock::lock_or_recover(&runs, "bot_slash confirm_skill_pause_tests")
+            .get("confirm-pause-file-access")
+            .map(|r| r.state.clone());
+        assert_eq!(
+            state,
+            Some(crate::bot_skills::SkillState::Running),
+            "文件访问授权不得暂停（更不得终止）活动技能"
+        );
+    }
+
+    /// 危险动作确认仍要暂停技能——文件访问授权分流不能把这条也放跑。
+    #[tokio::test]
+    async fn danger_confirm_pauses_skill() {
+        let app = mock_handle();
+        let mut run = crate::bot_skills::test_run(8, 180);
+        run.name = "confirm-pause-danger".into();
+        run.state = crate::bot_skills::SkillState::Running;
+        run.session_id = Some("sess-danger".into());
+        // 确认超时的裁决看 started_at_ms：test_run 的初值是假 epoch，
+        // 按真实 now 起算才会走「未超时」分支
+        run.started_at_ms = crate::db::now_ms();
+        let runs = crate::bot_skills::skill_runs(&app);
+        crate::db::lock::lock_or_recover(&runs, "bot_slash confirm_skill_pause_tests")
+            .insert(run.name.clone(), run);
+
+        // 危险确认被拒 → 技能终止（回滚语义），说明确认确实作用到了技能
+        let approved = super::ask_user_confirm(
+            &app,
+            "delete_task",
+            "删除任务：演示",
+            true,
+            Some("sess-danger"),
+        )
+        .await;
+        assert!(!approved, "mock handle 无 main 窗口，危险确认应被拒");
+
+        let runs = crate::bot_skills::skill_runs(&app);
+        let state = crate::db::lock::lock_or_recover(&runs, "bot_slash confirm_skill_pause_tests")
+            .get("confirm-pause-danger")
+            .map(|r| r.state.clone());
+        assert_eq!(
+            state,
+            Some(crate::bot_skills::SkillState::Terminated),
+            "危险动作确认被拒 → 技能终止（回滚语义）"
+        );
     }
 }

@@ -285,6 +285,7 @@ fn make_run(name: &str, state: SkillState) -> SkillRun {
         params: serde_json::Value::Null,
         dir: None,
         terminal_after_confirm: false,
+        pending_confirm_id: None,
         session_id: None,
     }
 }

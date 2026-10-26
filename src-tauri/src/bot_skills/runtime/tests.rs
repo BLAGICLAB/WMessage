@@ -370,6 +370,58 @@ fn rollback_section_extracted() {
     assert_eq!(rollback_section("没有回滚章节"), "");
 }
 
+// ── 确认窗与暂停的绑定 ──
+
+/// 确认结果只作用于「由同一个确认窗暂停」的技能。
+///
+/// 回归背景：确认结果原先按「本会话里任意一条 Paused」匹配，别的确认窗
+/// （哪怕同一会话、哪怕是例行的文件访问授权）的答案会顺手恢复或终止这条暂停。
+#[test]
+fn confirm_result_only_applies_to_matching_confirm_window() {
+    // 读写共享 bot.log，必须持测试串行锁（与 audit / bot::config 同名用例互斥）
+    let _serial = crate::db::lock::lock_or_recover(
+        &crate::audit::BOT_LOG_TEST_LOCK,
+        "bot_skills::runtime::skill_runs",
+    );
+    let app = tauri::test::mock_app();
+    let mut paused = test_run(8, 180);
+    paused.name = "confirm-binding-skill".into();
+    paused.state = SkillState::Paused;
+    paused.resumable = true;
+    paused.session_id = Some("sess-binding".into());
+    paused.pending_confirm_id = Some("confirm-window-1".into());
+    // 确认超时的裁决看 started_at_ms：test_run 的初值是假 epoch，
+    // 按真实 now 起算才会走「未超时」分支
+    paused.started_at_ms = crate::db::now_ms();
+    let runs = super::skill_runs(app.handle());
+    crate::db::lock::lock_or_recover(&runs, "bot_skills::runtime::skill_runs")
+        .insert(paused.name.clone(), paused);
+
+    // 别的确认窗的答案：不得动这条暂停
+    skill_confirm_result(app.handle(), true, Some("sess-binding"), "confirm-window-2");
+    let runs = super::skill_runs(app.handle());
+    let state = crate::db::lock::lock_or_recover(&runs, "bot_skills::runtime::skill_runs")
+        .get("confirm-binding-skill")
+        .map(|r| r.state.clone());
+    assert_eq!(
+        state,
+        Some(SkillState::Paused),
+        "对不上的确认窗不得恢复/终止这条暂停"
+    );
+
+    // 本次暂停自己的确认窗：正常恢复
+    skill_confirm_result(app.handle(), true, Some("sess-binding"), "confirm-window-1");
+    let runs = super::skill_runs(app.handle());
+    let state = crate::db::lock::lock_or_recover(&runs, "bot_skills::runtime::skill_runs")
+        .get("confirm-binding-skill")
+        .map(|r| r.state.clone());
+    assert_eq!(
+        state,
+        Some(SkillState::Running),
+        "同一个确认窗的答案应恢复技能"
+    );
+}
+
 // ── 同名技能跨会话顶号拦截 ──
 
 /// test_run 的起点是 1000ms；NOW 取起点后 10s（未超时口径内）。
