@@ -85,7 +85,7 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
     let res = {
         let app2 = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let guard = crate::bot_slash::StopGuard::new(&app2, false, None);
+            let guard = crate::bot::StopGuard::new(&app2, false, None);
             let token = guard.token();
             let r = apps_runner::run(
                 &a,

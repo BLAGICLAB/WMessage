@@ -39,7 +39,7 @@ src-tauri/src/
 │   ├── db/atomic_write_tests.rs  原子写单测
 │   ├── db/tasks.rs (972)  Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
 │   │                     （截止只认 YYYY-MM-DD 与 YYYY-MM-DDTHH:mm，解析不了的一律拒）
-│   ├── db/tasks_patch.rs (289)  task_patch / task_set_column 的锁内纯逻辑段（字段白名单应用器 +
+│   ├── db/tasks_patch.rs (342)  task_patch / task_set_column 的锁内纯逻辑段（字段白名单应用器 +
 │   │                     锁内读改写段）；与 db/tasks.rs **同层**，`super::` 语义不变
 │   ├── db/tasks_transfer.rs (313) 导出/导入纯逻辑段（路径闸门 check_export_path + v2 信封组装 +
 │   │                     导入事务 + bounded 读）；与 db/tasks.rs **同层**，`super::` 语义不变
@@ -169,7 +169,7 @@ src-tauri/src/
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
 │   ├── bot_model_loop/evidence.rs (94)  证据来源层：从消息抽文本·来源，数字是否可溯源
 │   ├── bot_model_loop/tests.rs (74)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
-│   ├── bot_model_loop/tests/guard.rs (934)   幻觉守卫 / 熔断 / 接线类测试
+│   ├── bot_model_loop/tests/guard.rs (931)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
 │   ├── bot_model_loop/tests/config.rs (646) 推理参数 / 思考 / 上下文超限 / 侧调门测试
 │   ├── bot_model_loop/tests/tool_window.rs (234) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
@@ -491,7 +491,7 @@ src-tauri/src/
 │   ├── bot_fs/read.rs (712)      读取面：glob / 目录遍历 / 二进制判定 / inode 复核 +
 │   │                             只读工具 read_text_file/grep_files/list_files
 │   ├── bot_fs/receipt.rs (169)   文件变更凭证面：unified diff / sha256 / before 快照 / 回执
-│   ├── bot_fs/tests.rs (765)     读写闸与编辑内核单测
+│   ├── bot_fs/tests.rs (763)     读写闸与编辑内核单测
 │   ├── bot_fs/file_change_tests.rs (180) 变更凭证单测
 │   ├── bot_fs/read_path_single_open_tests.rs (70) 读路径只开一次 fd 的源码守卫
 │   └── bot_fs/tool_rule_tests.rs (47)      per-tool 规则表单测
