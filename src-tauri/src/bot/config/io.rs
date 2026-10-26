@@ -145,8 +145,10 @@ pub fn read_memory_control<R: tauri::Runtime>(
 /// 只要其中一个字段——记忆开关 / 记忆参数 / bypass 开关都在热路径上，不该为
 /// 取一个 bool 付整份水合的代价。
 ///
-/// 失败语义统一为「读失败 → fallback，解析失败 → fallback + stderr 一行」。
+/// 失败语义统一为「读失败 → fallback，解析失败 → 备份原文 + fallback + stderr 一行」。
 /// 解析失败必须留痕：手改配置改坏了要可诊断，静默回默认会让人以为开关生效着。
+/// 备份是硬要求：解析失败的原文是唯一一份「用户配置了什么」的记录，不留证的话
+/// 下次保存就把它覆盖了——手工修复的最后机会也没了。
 fn with_config<T, F>(path: &Path, label: &str, fallback: T, pick: F) -> T
 where
     T: Clone,
@@ -158,7 +160,17 @@ where
     match serde_json::from_str::<BotConfig>(&raw) {
         Ok(cfg) => pick(cfg),
         Err(e) => {
-            eprintln!("[bot-config] {label} 解析失败，按默认放行：{e}");
+            // 固定名覆盖写：同一份损坏原文反复备份内容一致，多读路径共用不堆文件
+            let backup = path.with_extension("corrupt.json");
+            match std::fs::copy(path, &backup) {
+                Ok(_) => eprintln!(
+                    "[bot-config] {label} 解析失败，原文已备份到 {}，按默认放行：{e}",
+                    backup.display()
+                ),
+                Err(be) => {
+                    eprintln!("[bot-config] {label} 解析失败且备份失败（{be}），按默认放行：{e}")
+                }
+            }
             fallback
         }
     }
@@ -772,6 +784,30 @@ pub(crate) fn migrate_search_key_slot(
 
 #[cfg(test)]
 mod tests {
+    /// 损坏配置先备份再回默认：解析失败的原文必须留在
+    /// `bot-config.corrupt.json`——下次保存会覆盖主文件，不留证就再也
+    /// 修不回来。合法文件不得触发备份。
+    #[test]
+    fn corrupt_config_is_backed_up_before_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bot-config.json");
+        let corrupt = r#"{"baseUrl": "https://x/v1", 残缺"#;
+        std::fs::write(&p, corrupt).unwrap();
+        let control = read_memory_control_at(&p);
+        assert_eq!(control, None, "解析失败按默认放行");
+        let backup = p.with_extension("corrupt.json");
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            corrupt,
+            "原文必须完整备份"
+        );
+        // 合法文件不触发备份
+        std::fs::write(&p, r#"{"schemaVersion":1}"#).unwrap();
+        let _ = read_memory_control_at(&p);
+        // 备份仍是损坏那份（未被合法读取改写）
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), corrupt);
+    }
+
     /// memoryTuning 写回走 write_config_atomic（tmp + fsync + rename）：
     /// fsync 行为不可直接断言，此处锁「内容正确落盘 + 目录无 tmp 残渣」——
     /// 裸 fs::write 原地 truncate 的旧路径一旦回归，残留/内容断言即红。
