@@ -89,11 +89,31 @@ pub(crate) fn build_user_content(
     c
 }
 
+/// 「任务已不存在」的哨兵串：写锁内复查发现行没了（前置读之后被删）。
+///
+/// `with_write_conn` 的闭包错误类型固定是 `String`（28 个调用点共用），
+/// 故用哨兵串把这一档与真内部故障区分开，外层再翻成 `TaskNotFound`
+/// （前端据此提示「该任务可能已被删除，请刷新列表」）。
+const TASK_GONE: &str = "任务已不存在";
+
+/// 写回失败 → CommandError：行被并发删掉报 TaskNotFound，其余是内部故障。
+///
+/// 拆成纯函数是为了能单测这条映射（命令本身要 AppHandle，单测够不着）。
+fn autotag_write_error(msg: String, id: &str) -> crate::error::CommandError {
+    if msg == TASK_GONE {
+        // 行在并发窗口里被删了：用户可刷新列表看到，不是内部故障
+        crate::error::CommandError::TaskNotFound(id.to_string())
+    } else {
+        crate::error::CommandError::Internal(msg)
+    }
+}
+
 /// 守卫链 + LLM + 回写。skip（不满足条件）返回 Ok(None)；
 /// LLM/校验失败返回 Err（调用方——前端——静默吞掉，此处已写审计）。
 #[tauri::command]
 pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Vec<String>>> {
     use crate::db::TaskStatus;
+    let id_err = id.clone();
 
     // 前置读（守卫链大部分与数据相关，先在锁外快速失败可省一次写锁）
     let app2 = app.clone();
@@ -119,7 +139,9 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
     let task = match prelude {
         Ok(Some(t)) => t,
         Ok(None) => return Ok(None), // 不满足守卫：静默跳过（幂等，重复调用无害）
-        Err(e) => return Err(crate::error::CommandError::from(e)),
+        // 前置读失败 = 库读故障（open_db / load_task 都落这一档），
+        // 不是「模型行为异常」——报 DbError 而不是 blanket 的 Internal
+        Err(e) => return Err(crate::error::CommandError::DbError(e)),
     };
 
     let user_content = build_user_content(
@@ -184,7 +206,7 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
     // 回写：与 task_patch 同一持久化纪律（锁内重读现值 → 白名单 patch → 打戳 → upsert → 广播）
     let row = crate::db::lock::with_write_conn(&app, move |conn| {
         let Some(mut t) = crate::db::load_task(conn, &id)? else {
-            return Err("任务已不存在".into());
+            return Err(TASK_GONE.into());
         };
         // 锁内重做完整守卫链（前置读只用于快速失败）：前置读到拿锁之间
         // 任务可能被取消归档/认领/改状态，只复查 tags 会漏掉这些变化
@@ -204,7 +226,7 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
         Ok(t)
     })
     .await
-    .map_err(crate::error::CommandError::from)?;
+    .map_err(|e| autotag_write_error(e, &id_err))?;
 
     // 广播：tasks-changed 让各页重读收敛；tasks-updated 行级合并
     let _ = app.emit("tasks-changed", ());
@@ -231,6 +253,23 @@ pub async fn task_autotag(app: AppHandle, id: String) -> CommandResult<Option<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 行被并发删掉 → TaskNotFound（前端提示「该任务可能已被删除，请刷新列表」）；
+    /// 其余写回失败是内部故障 → Internal。两者不能混：混了就把
+    /// 「刷新列表就能看到」说成「请反馈日志」。
+    #[test]
+    fn autotag_write_error_maps_gone_row_to_task_not_found() {
+        let err = autotag_write_error(TASK_GONE.to_string(), "t1");
+        assert!(
+            matches!(err, crate::error::CommandError::TaskNotFound(ref id) if id == "t1"),
+            "行没了应报 TaskNotFound，got {err:?}"
+        );
+        let other = autotag_write_error("写库炸了".to_string(), "t1");
+        assert!(
+            matches!(other, crate::error::CommandError::Internal(_)),
+            "其余写回失败应报 Internal，got {other:?}"
+        );
+    }
 
     #[test]
     fn parse_tolerates_fences_and_plain_array_items() {

@@ -535,35 +535,73 @@ const MEM_IMPORT_MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 const MEM_IMPORT_MAX_ITEMS: usize = 50_000;
 
 /// 从 JSON 文件导入记忆（只增不删，走既有语义去重合并；容量满按 skipped 计）。
+/// 导入文件大小闸：超限报 InvalidArgument（用户换个文件就能重试）。
+///
+/// 拆成纯函数是为了能单测——报 Internal 会让前端只提示「反馈日志」。
+fn validate_import_size(len: u64, path: &str) -> CommandResult<()> {
+    if len > MEM_IMPORT_MAX_FILE_BYTES {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: path.to_string(),
+            reason: format!(
+                "导入文件过大（{} MB，上限 {} MB），请确认选对了文件",
+                len / 1024 / 1024,
+                MEM_IMPORT_MAX_FILE_BYTES / 1024 / 1024
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// 解析、输入校验与预嵌入在锁外（文件 IO + ONNX 推理不占 DB 写锁临界区）。
 #[tauri::command]
 pub async fn mem_import(app: AppHandle, path: String) -> CommandResult<MemImportReport> {
     ensure_json_path(&path)?;
-    let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemImportReport, String> {
+    // 闭包错误类型用 CommandError 而非 String：文件过大这类「用户换个文件
+    // 就能重试」的语义失败必须报可恢复的变体——走 String 会被 blanket
+    // From<String> 压成 Internal（前端只提示「反馈日志」）。
+    let r = tauri::async_runtime::spawn_blocking(move || -> CommandResult<MemImportReport> {
         let len = std::fs::metadata(&path)
-            .map_err(|e| format!("读取导入文件失败：{e}"))?
+            .map_err(|e| CommandError::IoError(format!("读取导入文件失败：{e}")))?
             .len();
-        if len > MEM_IMPORT_MAX_FILE_BYTES {
-            return Err(format!(
-                "导入文件过大（{} MB，上限 {} MB），请确认选对了文件",
-                len / 1024 / 1024,
-                MEM_IMPORT_MAX_FILE_BYTES / 1024 / 1024
-            ));
-        }
-        let json = std::fs::read_to_string(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
+        validate_import_size(len, &path)?;
+        let json = std::fs::read_to_string(&path)
+            .map_err(|e| CommandError::IoError(format!("读取导入文件失败：{e}")))?;
         let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app));
         let _g = lock_db();
-        let conn = crate::db::open_db(&app).map_err(|e| e.to_string())?;
+        let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
         import_core(&conn, &json, &|t| embed::embed_text(t), now_ms(), &sp)
+            .map_err(CommandError::Internal)
     })
     .await;
-    r.map_err(|e| CommandError::from(format!("记忆导入线程 join 失败：{e}")))?
-        .map_err(CommandError::from)
+    // 内层已是 CommandError（不再 blanket 降级），单问号解外层即可
+    r.map_err(|e| CommandError::Internal(format!("记忆导入线程 join 失败：{e}")))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 导入文件过大是「换个文件就能重试」的参数错误——必须报可恢复的
+    /// InvalidArgument；降级成 Internal 会让前端只提示「反馈日志」。
+    #[test]
+    fn import_file_too_large_is_recoverable_invalid_argument() {
+        let err = validate_import_size(MEM_IMPORT_MAX_FILE_BYTES + 1, "/tmp/x.json")
+            .expect_err("超限应被拒");
+        match &err {
+            CommandError::InvalidArgument { field, value, .. } => {
+                assert_eq!(field, "path");
+                assert_eq!(value, "/tmp/x.json");
+            }
+            other => panic!("应报 InvalidArgument，got {other:?}"),
+        }
+        assert!(
+            err.is_recoverable(),
+            "换个文件就能重试，必须 recoverable=true"
+        );
+        // 未超限放行
+        assert!(validate_import_size(MEM_IMPORT_MAX_FILE_BYTES, "/tmp/x.json").is_ok());
+    }
     use crate::memory::store::NewItem;
 
     fn mem_db() -> rusqlite::Connection {

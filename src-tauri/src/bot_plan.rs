@@ -10,7 +10,7 @@
 //! - Planner 输出非法 / 调用失败 → 降级为原自由循环，不阻断聊天
 //! - 计划只是提示词文本，执行仍走 execute_tool 全量安全网关，无绕过通道
 
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult};
 use crate::prompts::{PLANNER_PROMPT, REPLANNER_PROMPT};
 
 /// 计划状态（随 run_model_loop 走完一轮对话；不入库）
@@ -118,6 +118,17 @@ pub fn format_plan_block(steps: &[String]) -> String {
     )
 }
 
+/// Planner 的 HTTP 状态错误 → CommandError（对齐模型循环的 HTTP 路径）。
+///
+/// 拆成纯函数是为了能单测：用户看到的是「401 去查密钥 / 402 去充值」这类
+/// 可执行指引，而不是 blanket 降级出来的「内部错误：请反馈日志」。
+fn planner_api_error(status: u16) -> CommandError {
+    CommandError::LlmApiError {
+        status,
+        detail: crate::error::llm_error_detail(status, "", None),
+    }
+}
+
 /// 调 Planner（单次非流式，60s 超时）。失败 → Err，调用方降级。
 /// Anthropic 兼容模式：按 provider 分支 URL/鉴权头/请求体/响应解析
 ///（Anthropic 侧转换走 bot_anthropic 纯函数；失败同样 Err → 调用方降级为 None）。
@@ -194,9 +205,12 @@ async fn call_planner(
     let resp = req
         .send()
         .await
-        .map_err(|e| format!("Planner 请求失败：{e}"))?;
+        .map_err(|e| CommandError::LlmRequestFailed(format!("Planner：{e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("Planner API 错误：{}", resp.status()).into());
+        // HTTP 状态码定性的上游错误：对齐模型循环的 HTTP 路径（LlmApiError），
+        // 用户看到的是「401 去查密钥 / 402 去充值」这类可执行指引，
+        // 而不是 blanket 降级出来的「内部错误：请反馈日志」
+        return Err(planner_api_error(resp.status().as_u16()));
     }
     let v: serde_json::Value = resp
         .json()
@@ -311,6 +325,21 @@ pub async fn replan(
 
 #[cfg(test)]
 mod tests {
+
+    /// Planner 的 HTTP 状态错误要对齐模型循环的 HTTP 路径：LlmApiError +
+    /// 按状态码的人话指引（401 去查密钥 / 402 去充值）。
+    #[test]
+    fn planner_api_error_is_llm_api_error_with_advice() {
+        let err = planner_api_error(401);
+        match &err {
+            CommandError::LlmApiError { status, detail } => {
+                assert_eq!(*status, 401);
+                assert!(detail.contains("API Key"), "401 应带可操作指引：{detail}");
+            }
+            other => panic!("应报 LlmApiError，got {other:?}"),
+        }
+        assert!(err.is_recoverable(), "状态码定性的错误用户可修正后重试");
+    }
     use super::*;
 
     #[test]

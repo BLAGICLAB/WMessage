@@ -547,6 +547,15 @@ pub(crate) fn compact_before_round(
 ///
 /// 用户叫停时返回 `RequestOutcome::Stopped`——「已停止」正文由调用方组装
 /// （skill_finish 只在真正收尾的那一处调一次）。
+/// 请求层失败（网络 / 超时 / 连接中断）→ CommandError。
+///
+/// 报 `LlmRequestFailed`（recoverable=true，前端给「重试」入口）——
+/// 用户换个网络环境就能重试；降级成 blanket 的 Internal 会让前端只提示
+/// 「不可自动重试；请反馈日志」，与实际处境相反。
+fn request_failure_error(detail: &str, hint: &str) -> CommandError {
+    CommandError::LlmRequestFailed(format!("{detail}{hint}"))
+}
+
 pub(crate) async fn request_round(
     http: &LlmHttp,
     msgs: &mut Vec<serde_json::Value>,
@@ -656,7 +665,10 @@ pub(crate) async fn request_round(
                     continue;
                 }
                 let hint = (deps.skill_finish)(false, "大模型请求失败");
-                let err: CommandError = format!("请求大模型失败：{e}{hint}").into();
+                // 请求没打通（网络 / 超时 / 连接失败）——用户可以重试，
+                // 报 LlmRequestFailed（recoverable=true，前端给「重试」入口）；
+                // 降级成 blanket 的 Internal 会让前端只提示「反馈日志」。
+                let err = request_failure_error(&e.to_string(), &hint);
                 let mut kv = crate::audit::error_kv(&err);
                 kv.push(("attempt", attempt.to_string()));
                 (deps.audit)(crate::audit::AuditLevel::Error, "llm.request_failed", kv);

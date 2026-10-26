@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 309 个文件、约 13 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 309 个文件、约 13.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -156,7 +156,7 @@ src-tauri/src/
 │   ├── bot_model_loop/core.rs (1019)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
 │   ├── bot_model_loop/shell.rs (588)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
-│   ├── bot_model_loop/request.rs (677)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
+│   ├── bot_model_loop/request.rs (689)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (724)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (700)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由

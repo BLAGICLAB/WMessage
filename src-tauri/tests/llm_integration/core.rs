@@ -674,6 +674,51 @@ async fn core_http_401_wrapped_no_retry() {
 }
 
 #[tokio::test]
+async fn core_request_transport_failure_is_recoverable() {
+    // 连接层失败（连不上 / 超时 / 连接中断）——用户换个网络环境就能重试，
+    // 报 LlmRequestFailed（recoverable=true，前端给「重试」入口）。
+    //
+    // 此前这条走 blanket From<String> 被压成 Internal（recoverable=false），
+    // 前端只提示「不可自动重试；请反馈日志」——与「网络不通，重试一下」的
+    // 实际处境相反。
+    let server = MockLlmServer::start();
+    let h = CoreHarness::new();
+    // 指向一个刚释放的端口：连接直接被拒（transport error，不是 HTTP 状态码）
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = dead.local_addr().expect("addr");
+    drop(dead);
+    let mut http = core_http(&server);
+    http.base_url = format!("http://{addr}");
+
+    let err = match run_model_loop_core(
+        &http,
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec_never,
+        noop_replan,
+    )
+    .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("连不上下游应报错"),
+    };
+
+    match &err {
+        CommandError::LlmRequestFailed(detail) => {
+            assert!(!detail.trim().is_empty(), "应带上游/连接层错误详情");
+        }
+        other => panic!("连接层失败应报 LlmRequestFailed，got {other:?}"),
+    }
+    assert!(
+        err.is_recoverable(),
+        "网络不通是用户可重试的错误，必须 recoverable=true：{err}"
+    );
+}
+
+#[tokio::test]
 async fn core_http_402_gives_actionable_balance_message() {
     // 2026-10-24 实机：402 余额不足原样把上游 JSON 甩进气泡
     // （`{"type":"error","error":{"type":"insufficient_balance_error",...}}`），

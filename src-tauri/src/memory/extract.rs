@@ -749,12 +749,21 @@ pub async fn mem_pending_list(app: AppHandle) -> CommandResult<Vec<MemPendingVie
         .map_err(CommandError::DbError)
 }
 
+/// 收下时的存储故障 → CommandError（DbError，不是 blanket 的 Internal）。
+///
+/// 拆成纯函数是为了能单测这条分类。
+fn pending_store_error(detail: &str) -> CommandError {
+    CommandError::DbError(format!(
+        "收下中止（存储故障，本批未提交任何变更，全部条目仍在列表）：{detail}"
+    ))
+}
+
 /// 收下待确认条目：逐条走 insert_item 既有语义去重入库。
 /// 三段式锁纪律：锁内取行 → 锁外预嵌入（ONNX 推理不持写锁）→ 锁内入库并删除。
 #[tauri::command]
 pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult<MemImportReport> {
     let app2 = app.clone();
-    let r = tauri::async_runtime::spawn_blocking(move || -> Result<MemImportReport, String> {
+    let r = tauri::async_runtime::spawn_blocking(move || -> CommandResult<MemImportReport> {
         // 去重（保序）：防前端重发导致同条目双嵌入/双入库
         let mut unique_ids: Vec<i64> = Vec::new();
         for id in ids {
@@ -765,10 +774,10 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
         // 第一段（锁内）：取待确认行
         let rows: Vec<(i64, PendingRow)> = {
             let _g = super::store_lock();
-            let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+            let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
             let mut out = Vec::new();
             for id in &unique_ids {
-                if let Some(row) = pending_get(&conn, *id)? {
+                if let Some(row) = pending_get(&conn, *id).map_err(CommandError::DbError)? {
                     out.push((*id, row));
                 }
             }
@@ -791,10 +800,12 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
         // RejectedFull → skipped 并删行（数据性拒收不可重试）
         let mut report = MemImportReport::default();
         let _g = super::store_lock();
-        let mut conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
+        let mut conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
         // 整批包同一事务：入库与删队列行必须同成败——半途失败整体回滚，
         // 不会出现「已入库但队列行还在」的重影（重收下会永远 Merging 清不掉）
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
         for (id, row, emb) in &prepared {
             let item = NewItem {
                 kind: row.kind.clone(),
@@ -807,23 +818,19 @@ pub async fn mem_pending_approve(app: AppHandle, ids: Vec<i64>) -> CommandResult
                 Ok((store::InsertOutcome::Inserted(_), _)) => report.inserted += 1,
                 Ok((store::InsertOutcome::Merged { .. }, _)) => report.merged += 1,
                 Ok((store::InsertOutcome::RejectedFull(_), _)) => report.skipped += 1,
-                Err(e) => {
-                    return Err(format!(
-                        "收下中止（存储故障，本批未提交任何变更，全部条目仍在列表）：{e}"
-                    ))
-                }
+                Err(e) => return Err(pending_store_error(&e.to_string())),
             }
-            pending_delete(&tx, &[*id])?;
+            pending_delete(&tx, &[*id]).map_err(CommandError::DbError)?;
         }
         // 通知中心回写：队列已处理的提案从对应消息中剔除/整条解决（收下→done）
-        crate::notifications::notif_sync_memory(&tx, crate::notifications::STATUS_DONE)?;
-        tx.commit().map_err(|e| e.to_string())?;
+        crate::notifications::notif_sync_memory(&tx, crate::notifications::STATUS_DONE)
+            .map_err(CommandError::DbError)?;
+        tx.commit()
+            .map_err(|e| CommandError::DbError(e.to_string()))?;
         Ok(report)
     })
     .await;
-    let report = r
-        .map_err(|e| CommandError::from(format!("收下线程 join 失败：{e}")))?
-        .map_err(CommandError::from)?;
+    let report = r.map_err(|e| CommandError::Internal(format!("收下线程 join 失败：{e}")))??;
     crate::notifications::emit_changed(&app);
     Ok(report)
 }

@@ -3,6 +3,21 @@
 use super::super::MemoryControl;
 use super::*;
 
+/// 收下时的存储故障要报 DbError（库故障），不是 blanket 的 Internal——
+/// 两者在前端给的是不同提示（「含操作步骤反馈日志」vs「含复现步骤」）。
+#[test]
+fn pending_store_error_is_db_error() {
+    let err = pending_store_error("唯一键冲突");
+    assert!(
+        matches!(err, crate::error::CommandError::DbError(ref d) if d.contains("唯一键冲突")),
+        "存储故障应报 DbError，got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("本批未提交任何变更"),
+        "要说明这批没提交（用户可重试）：{err}"
+    );
+}
+
 fn mem_db() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     ensure_pending_table(&conn).unwrap();
