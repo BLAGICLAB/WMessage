@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(
             resolve_max_tokens(None),
             DEFAULT_MAX_TOKENS,
-            "None = 默认 8192"
+            "None 走 DEFAULT_MAX_TOKENS 默认"
         );
         assert_eq!(resolve_max_tokens(Some(4096)), 4096);
         assert_eq!(

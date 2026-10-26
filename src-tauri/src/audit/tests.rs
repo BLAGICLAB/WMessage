@@ -732,6 +732,45 @@ fn kv_value_pipe_space_and_newline_stay_escaped() {
     assert!(line.contains("preview=a\\nb||  c"), "got: {line:?}");
 }
 
+/// frontend_event_report 的 detail 只转义一次：转义统一发生在 write_event
+/// 的拼装内核（append_kv_escaped），入口只做截断——入口再转一遍会把 `\n`
+/// 落成字面反斜杠 + n（双重转义），日志里读不回真实内容。
+#[test]
+fn frontend_event_report_escapes_detail_exactly_once() {
+    // bot.log 与其他用例共享：持测试串行锁 + 清残留（与
+    // p2_6_1_zero_text_audit_kv_writes_to_bot_log 同纪律）
+    let _serial = crate::db::lock::lock_or_recover(&BOT_LOG_TEST_LOCK, "audit::BOT_LOG_TEST_LOCK");
+    let app = tauri::test::mock_app();
+    let bot_log = crate::db::data_dir(app.handle()).join("bot.log");
+    let _ = std::fs::remove_file(&bot_log);
+    frontend_event_report(
+        app.handle().clone(),
+        "csp_violation".to_string(),
+        "evil\n[2026-01-01] forged | line".to_string(),
+    )
+    .expect("前端上报应成功");
+    let content = std::fs::read_to_string(&bot_log).expect("上报应写出 bot.log");
+    let last_line = content.lines().last().expect("至少一行");
+    assert!(
+        last_line.contains("WARN | frontend.csp_violation"),
+        "事件名缺失: {last_line}"
+    );
+    assert!(
+        !last_line.contains('\n'),
+        "detail 里的裸换行必须被转义: {last_line:?}"
+    );
+    // 单次转义形态：\n → 字面 \n 两字符、| → ||
+    assert!(
+        last_line.contains("evil\\n[2026-01-01] forged ||  line"),
+        "detail 应恰好转义一次: {last_line:?}"
+    );
+    // 双重转义形态（\\n）不得出现
+    assert!(
+        !last_line.contains("\\\\n"),
+        "detail 不得双重转义: {last_line:?}"
+    );
+}
+
 // ── format_event_line 与生产 write_event 共用 build_event_line ──
 
 #[test]

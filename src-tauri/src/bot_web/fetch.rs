@@ -74,6 +74,22 @@ where
             reason: "网址缺少主机名".to_string(),
         });
     }
+    // 带方括号的 IPv6 字面量（url 序列化 IPv6 host 一律带括号，如 `[::1]:8080`）：
+    // 剥括号按字面量判定、不走 DNS——lookup_host 对带括号的字面量必失败，会把
+    // 本机地址误报成「域名解析失败」（Unresolved/ERROR），策略拒绝被降级成网络故障
+    if let Some(v6) = bracketed_ipv6(&host) {
+        if ipv6_is_private(v6) {
+            return Err(UrlGateError::Denied {
+                reason: "已拒绝访问本机/内网地址".to_string(),
+            });
+        }
+        // 公网字面量：地址已确定，无需解析；端口与 DNS 路径同口径（URL 真实端口）
+        let port = url.port_or_known_default().unwrap_or(80);
+        return Ok(vec![std::net::SocketAddr::new(
+            std::net::IpAddr::V6(v6),
+            port,
+        )]);
+    }
     if is_private_host(&host) {
         return Err(UrlGateError::Denied {
             reason: "已拒绝访问本机/内网地址".to_string(),
@@ -381,12 +397,15 @@ async fn fetch_jina_reader(raw_url: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
-/// IPv4 是否为内网/本机段
+/// IPv4 是否为内网/本机段（含保留段：0.0.0.0/8 与受限广播）
 pub(super) fn ipv4_is_private(v4: std::net::Ipv4Addr) -> bool {
     v4.is_loopback()
         || v4.is_private()
         || v4.is_link_local()
-        || v4.is_unspecified()
+        // 0.0.0.0/8「本网络」段：is_unspecified 只认 0.0.0.0 本身，0.x.x.x 会漏
+        || v4.octets()[0] == 0
+        // 受限广播地址 255.255.255.255：is_private 不含
+        || v4.is_broadcast()
         // CGNAT 段 100.64.0.0/10（RFC 6598，Tailscale/运营商大内网）：
         // std is_private 不含此段，须显式判定
         || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
@@ -402,6 +421,14 @@ pub(super) fn ipv6_is_private(v6: std::net::Ipv6Addr) -> bool {
         || v6.is_unspecified()
         || v6.is_unique_local()
         || (v6.segments()[0] & 0xffc0) == 0xfe80
+}
+
+/// 带方括号的 IPv6 字面量识别（url 序列化 IPv6 host 一律带括号，如 `[::1]`；
+/// 裸 `[::1]` 解析不成 IpAddr，须先剥括号）
+fn bracketed_ipv6(host: &str) -> Option<std::net::Ipv6Addr> {
+    host.strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .and_then(|h| h.parse::<std::net::Ipv6Addr>().ok())
 }
 
 /// 整数/十六进制/八进制形式的 IPv4 字面量识别（"2130706433"、"0x7f000001"、"017700000001"）

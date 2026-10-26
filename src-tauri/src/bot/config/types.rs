@@ -133,7 +133,7 @@ pub struct BotConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_provider: Option<String>,
     /// max_tokens（可选）：仅 Anthropic 模式使用（Anthropic 必填 max_tokens）；
-    /// None = 默认 8192，钳制 256..=200000（resolve_max_tokens）。
+    /// None = 默认 32768（DEFAULT_MAX_TOKENS），钳制 256..=200000（resolve_max_tokens）。
     /// OpenAI 兼容模式不发送该字段（多数兼容网关不认识）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -358,7 +358,7 @@ impl Default for BotConfig {
             reasoning_effort: None,           // 未配置 = medium 默认（RE-1，resolve 兜底）
             perm_mode: None,                  // 未配置 = ask（弹授权）
             api_provider: None,               // 未配置 = openai（旧行为）
-            max_tokens: None,                 // 未配置 = 8192 默认（仅 Anthropic 模式用）
+            max_tokens: None,                 // 未配置 = 32768 默认（仅 Anthropic 模式用）
             models_by_provider: None,         // 未配置 = 设置页空列表（无默认厂商）
             active_model_id: None,            // 未配置 = 两协议都没选 active
             ui_font_size: None,               // 未配置 = small
@@ -523,7 +523,7 @@ pub struct BotConfigView {
     pub perm_mode: Option<String>,
     /// API 协议原样透传给设置页（None = openai 旧行为，非法值前端按 openai 显示）
     pub api_provider: Option<String>,
-    /// max_tokens 原样透传（None = 8192 默认；仅 Anthropic 模式用，后端钳 256..=200000）
+    /// max_tokens 原样透传（None = 32768 默认；仅 Anthropic 模式用，后端钳 256..=200000）
     pub max_tokens: Option<u32>,
     /// 推理强度后台默认原样透传（None = "medium"；抽象档位 off/low/medium/high，
     /// 线上参数映射在后端 bot/reasoning.rs，前端只存档位）

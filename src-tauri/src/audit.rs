@@ -563,8 +563,14 @@ const FRONTEND_REPORT_MAX_SIGNATURES: usize = 32;
 /// 目前唯一来源：WebView 的 securitypolicyviolation（CSP 违规，生产 csp 已
 /// 收紧，运行时违规必须可感知）。签名去重防风暴；容量满后新签名静默丢弃
 ///（最早的重复依然会被去重，丢弃的是「全新违例」，可接受——审计非计量）。
+///
+/// 泛型 Runtime：mock runtime 测试可直调（与 logs_bundle_text 同先例）。
 #[tauri::command]
-pub fn frontend_event_report(app: AppHandle, event: String, detail: String) -> Result<(), String> {
+pub fn frontend_event_report<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    event: String,
+    detail: String,
+) -> Result<(), String> {
     const MAX_DETAIL: usize = 200;
     // 指纹按字符截断（40 字符）：detail 常含中文，按字节切会切在多字节字符
     // 中间直接 panic——审计路径禁 panic
@@ -580,11 +586,17 @@ pub fn frontend_event_report(app: AppHandle, event: String, detail: String) -> R
             seen.push(fingerprint);
         }
     }
+    // detail 只按字符截断，**不在这里转义**：write_event 的拼装内核
+    // （append_kv_escaped）统一过 escape_for_log，这里再转一遍会双重转义
+    // （`\n` 变成字面 `\n` 两个字符），日志里读不出真实换行
     write_event(
         &app,
         AuditLevel::Warn,
         &format!("frontend.{event}"),
-        &[("detail", escape_for_log(&detail, MAX_DETAIL))],
+        &[(
+            "detail",
+            detail.chars().take(MAX_DETAIL).collect::<String>(),
+        )],
     );
     Ok(())
 }

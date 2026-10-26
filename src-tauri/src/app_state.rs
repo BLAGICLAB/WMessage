@@ -1,9 +1,11 @@
 //! 执行期全局状态单一入口：各表定义集中在此，业务模块 `pub(crate) use` 引入
 //! 原名字；表访问器按 `try_state` 注入（测试用 per-test `manage` 隔离）。
 //!
-//! 全局状态总表（SKILL_RUNS / STOP_REGISTRY / CONFIRMS / CHAT_RUNNING /
-//! EXEC_RUNNING / SCHED_RUNNING / PENDING / artifact_registry，及刻意留在
-//! 进程级的 NEXT_STOP_ID 与 tool_guard::SESSION_ORIGINS）的类型、生命周期、
+//! 全局状态总表（AppState 的 14 张表：skill_runs / artifact_registry /
+//! sched_running / stop_registry / chat_running / exec_running / pending /
+//! confirm_requests / question_waiters / ask_contexts / subagent_stops /
+//! trace_registry / services / services_usage，及刻意留在进程级的
+//! NEXT_STOP_ID 与 tool_guard::SESSION_ORIGINS）的类型、生命周期、
 //! 清理责任人盘点：见 git log 本文件头的历史版本——行号快照注定漂移，
 //! 盘点型内容不驻留源码。
 //!
@@ -65,10 +67,14 @@ type QuestionWaiters = Mutex<HashMap<String, tokio::sync::oneshot::Sender<String
 
 /// 应用级状态容器：全局可变状态的注入式载体（`tauri::Manager::manage` 注入）。
 ///
-/// 逐步收口；已迁入 **8 张**：`SKILL_RUNS`、`STOP_REGISTRY`、产物登记、
-/// `SCHED_RUNNING`、`CONFIRMS`、`CHAT_RUNNING`、`EXEC_RUNNING`、`PENDING`
-/// （见模块头总表里标「已迁入」的行）。`SESSION_ORIGINS` 按「情况 1：session 元数据」
-/// **有意留档**，不进本容器（判据与三条测量结论见模块头总表的对应条目）。
+/// 逐步收口；已迁入 **14 张**（以结构体实际字段为准）：`skill_runs`（SKILL_RUNS）、
+/// `artifact_registry`（产物登记）、`sched_running`（SCHED_RUNNING）、
+/// `stop_registry`（STOP_REGISTRY）、`chat_running`（CHAT_RUNNING）、
+/// `exec_running`（EXEC_RUNNING）、`pending`（PENDING）、
+/// `confirm_requests`（CONFIRMS）、`question_waiters`、`ask_contexts`、
+/// `subagent_stops`、`trace_registry`、`services`、`services_usage`。
+/// `SESSION_ORIGINS` 按「情况 1：session 元数据」**有意留档**，不进本容器
+/// （判据与三条测量结论见模块头总表的对应条目）。
 ///
 /// **「state 缺失」口径（本次定稿）**：
 /// - 生产：`lib.rs` setup 里 `app.manage(AppState::default())` 注入。`AppHandle` 上

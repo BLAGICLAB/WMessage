@@ -78,6 +78,9 @@ async fn open_url_gate_rejects_policy_violations_as_denied() {
     for raw in [
         "http://127.0.0.1:8080/",
         "http://192.168.1.1/",
+        // 方括号 IPv6 字面量：本机地址，须按字面量判成策略拒绝
+        //（误走 DNS 会误报「域名解析失败」，把策略拒绝降级成网络故障）
+        "http://[::1]:8080/",
         "ftp://example.com/",
         "这不是一个网址",
     ] {
@@ -89,6 +92,47 @@ async fn open_url_gate_rejects_policy_violations_as_denied() {
             "策略违规必须是策略拒绝（{raw}）：{err:?}"
         );
     }
+}
+
+/// 回归：带方括号的 IPv6 字面量 host 按字面量判定，不送 DNS 解析。
+///
+/// url 序列化 IPv6 host 一律带括号（`[::1]`），裸串解析不成 IpAddr——过去
+/// 直接把带括号的 host 送去 lookup_host，必失败，本机地址 `[::1]` 被误报成
+/// 「域名解析失败」（Unresolved/ERROR）。lookup 桩固定返回 Err：任何触 DNS
+/// 的路径都会把 Denied 降级成 Unresolved，测试即红。
+#[tokio::test]
+async fn bracketed_ipv6_literal_judged_without_dns() {
+    // 本机字面量 → 策略拒绝
+    let url = url::Url::parse("http://[::1]:8080/").expect("URL 合法");
+    let err = check_public_url_with(&url, |_host| async {
+        Err("字面量路径不得触 DNS".to_string())
+    })
+    .await
+    .expect_err("本机 IPv6 字面量必须被拒");
+    assert!(
+        matches!(err, UrlGateError::Denied { .. }),
+        "方括号 IPv6 本机地址必须是策略拒绝，不是 DNS 故障：{err:?}"
+    );
+    assert!(
+        err.reason().contains("已拒绝访问本机/内网地址"),
+        "拒绝理由要给模型看：{}",
+        err.reason()
+    );
+
+    // 公网字面量 → 按字面量放行（不触 DNS），端口按 URL 真实端口重写
+    let url = url::Url::parse("http://[2606:4700:4700::1111]:8443/").expect("URL 合法");
+    let addrs = check_public_url_with(&url, |_host| async {
+        Err("字面量路径不得触 DNS".to_string())
+    })
+    .await
+    .expect("公网 IPv6 字面量应放行");
+    assert_eq!(addrs.len(), 1, "字面量只有一个地址");
+    assert_eq!(
+        addrs[0].ip(),
+        "2606:4700:4700::1111".parse::<std::net::IpAddr>().unwrap(),
+        "地址即字面量本身"
+    );
+    assert_eq!(addrs[0].port(), 8443, "端口按 URL 真实端口重写");
 }
 
 #[test]
@@ -322,6 +366,10 @@ fn private_host_guard() {
         // 此处把 0.0.0.0 / :: 钉进回归
         "0.0.0.0",
         "::",
+        // 0.0.0.0/8「本网络」段（is_unspecified 只认 0.0.0.0，0.x.x.x 会漏）
+        "0.1.2.3",
+        // 受限广播地址
+        "255.255.255.255",
     ] {
         assert!(is_private_host(h), "应拦截 {h}");
     }
@@ -550,6 +598,50 @@ fn private_detection_covers_mapped_v6_and_cgnat() {
         !ipv4_is_private("99.255.0.1".parse().unwrap()),
         "CGNAT 段外"
     );
+}
+
+/// IPv4 保留段：0.0.0.0/8「本网络」段（is_unspecified 只认 0.0.0.0 本身，
+/// 其余 0.x.x.x 曾漏放）与受限广播 255.255.255.255 必须拦；段外公网地址不误伤
+#[test]
+fn ipv4_this_network_and_broadcast_blocked() {
+    assert!(ipv4_is_private("0.0.0.0".parse().unwrap()));
+    assert!(
+        ipv4_is_private("0.1.2.3".parse().unwrap()),
+        "0.0.0.0/8 段内非全零地址"
+    );
+    assert!(ipv4_is_private("0.255.255.255".parse().unwrap()));
+    assert!(
+        ipv4_is_private("255.255.255.255".parse().unwrap()),
+        "受限广播地址"
+    );
+    assert!(
+        !ipv4_is_private("1.0.0.1".parse().unwrap()),
+        "段外公网不误伤"
+    );
+}
+
+/// 公网域名解析到 0.0.0.0/8 或受限广播段：解析结果校验处必须策略拒绝
+///（过去这两段能从解析结果校验绕过）
+#[tokio::test]
+async fn resolved_this_network_and_broadcast_denied() {
+    let url = url::Url::parse("https://example.com/").expect("URL 合法");
+    for octets in [[0u8, 1, 2, 3], [0, 0, 0, 1], [255, 255, 255, 255]] {
+        let err = check_public_url_with(&url, move |_host| {
+            let a = std::net::SocketAddr::from((octets, 80));
+            async move { Ok(vec![a]) }
+        })
+        .await
+        .expect_err("解析到保留段必须被拒");
+        assert!(
+            matches!(err, UrlGateError::Denied { .. }),
+            "{octets:?} 属保留段，必须是策略拒绝：{err:?}"
+        );
+        assert!(
+            err.reason().contains("已拒绝：域名解析到本机/内网地址"),
+            "拒绝理由要给模型看：{}",
+            err.reason()
+        );
+    }
 }
 
 /// FIX-PLAN #7a（DNS TOCTOU）回归：钉住解析结果后请求必须走钉住的地址——

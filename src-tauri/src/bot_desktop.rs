@@ -198,6 +198,16 @@ fn collect_clip_paths(v: &serde_json::Value) -> Vec<String> {
     uniq
 }
 
+/// 成功审计行（纯函数，单测锚点）：路径拼进 free-form 审计行前过 escape_for_log
+/// ——路径来自文件系统，换行/管道符不得伪造或撕裂审计行（与 open_url /
+/// reveal_path 的成功审计行同惯例）
+fn clip_audit_line(n: usize, shown: &str) -> String {
+    format!(
+        "desktop.copy_file_to_clipboard | {n} 个文件 | {}",
+        crate::bot::escape_for_log(shown, 200)
+    )
+}
+
 /// 把本地文件放进系统剪贴板：用户在任意应用里按 Cmd/Ctrl+V 就能把这个文件粘出去
 /// （发微信 / 飞书附件的最短路径——机器人放好，用户自己粘）。
 ///
@@ -263,10 +273,7 @@ pub async fn tool_copy_file_to_clipboard(
     .await;
     match r {
         Ok(Ok(())) => {
-            crate::bot::audit_log(
-                app,
-                &format!("desktop.copy_file_to_clipboard | {n} 个文件 | {shown}"),
-            );
+            crate::bot::audit_log(app, &clip_audit_line(n, &shown));
             ToolResult::ok(
                 format!(
                     "已放入系统剪贴板（{n} 个文件）：{shown}。可在微信 / 飞书等应用里直接粘贴出这些文件。"
@@ -569,6 +576,30 @@ mod tests {
         assert!(collect_clip_paths(&serde_json::json!({})).is_empty());
         // 全是空白
         assert!(collect_clip_paths(&serde_json::json!({"path": "  "})).is_empty());
+    }
+
+    /// 成功审计行：路径过 escape_for_log——路径里的换行/管道符不得撕裂审计行，
+    /// 超长路径按 200 字符截断（与 open_url / reveal_path 同惯例）。
+    #[test]
+    fn clip_audit_line_escapes_and_truncates_path() {
+        let line = clip_audit_line(2, "/tmp/a\nb | c.txt");
+        assert!(!line.contains('\n'), "路径换行必须被转义: {line:?}");
+        assert!(line.contains("\\nb"), "换行落成 \\n 短形式: {line:?}");
+        assert!(!line.contains(" | c.txt"), "管道符必须被倍增转义: {line:?}");
+        assert!(
+            line.starts_with("desktop.copy_file_to_clipboard | 2 个文件 | "),
+            "{line:?}"
+        );
+        // 超长路径：转义后按 200 字符截断加省略号，不整条塞进日志
+        let long = "/x".repeat(300);
+        let truncated = clip_audit_line(1, &long);
+        let prefix = "desktop.copy_file_to_clipboard | 1 个文件 | ";
+        assert!(
+            truncated.chars().count() <= prefix.chars().count() + 201,
+            "超长路径必须截断: {}",
+            truncated.chars().count()
+        );
+        assert!(truncated.ends_with('…'), "截断带省略号: {truncated:?}");
     }
 
     /// 截图落盘凭证：成功结果必须带一条 file_changes（路径 + 内容哈希）。

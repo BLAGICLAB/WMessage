@@ -1,5 +1,5 @@
-//! Anthropic 兼容模式适配层（协议下拉切换 / max_tokens 默认 8192 /
-//! prompt caching 与主体一起做）。
+//! Anthropic 兼容模式适配层（协议下拉切换 / max_tokens 默认值见
+//! bot::config::DEFAULT_MAX_TOKENS / prompt caching 与主体一起做）。
 //!
 //! 设计：边界适配器——内部消息流全程保持 OpenAI 形状不动（run_model_loop_core 主循环
 //! 零改动），只在「发请求前」和「解析响应时」两个边界做协议转换：

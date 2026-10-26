@@ -731,6 +731,73 @@ mod tests {
         assert_eq!(st, 400, "update 超限 filePath 应 400");
     }
 
+    /// 畸形 due 回 400（不只限长，还验格式）：due 校验与 bot / task_patch
+    /// 写口同源（db::tasks::due_format_error）——畸形值一旦落库，due_notify
+    /// 解析失败按「无截止」静默处理，任务无声过期
+    #[test]
+    fn malformed_due_returns_400() {
+        let store: Arc<dyn TaskStore> = Arc::new(MemStore {
+            tasks: Mutex::new(vec![]),
+            hub: EventHub::new(),
+        });
+        let token = "test-token-123".to_string();
+        let port = free_port();
+        let _running =
+            ApiGuard(start_api(port, token.clone(), store.clone(), None, None, None).unwrap());
+
+        // create：畸形 due（打字半截值 / 越界日期 / 空格分隔）→ 400
+        for bad in ["2026-10", "2026-02-31", "2026-10-23 18:30", "明天"] {
+            let (st, _) = http(
+                port,
+                "POST",
+                "/api/tasks",
+                Some(&token),
+                Some(&format!(r#"{{"title":"t","due":"{bad}"}}"#)),
+            );
+            assert_eq!(st, 400, "create 畸形 due「{bad}」应 400");
+        }
+
+        // update：畸形 due → 400，合法形态放行
+        let (st, body) = http(
+            port,
+            "POST",
+            "/api/tasks",
+            Some(&token),
+            Some(r#"{"title":"正常任务"}"#),
+        );
+        assert_eq!(st, 201);
+        let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        for bad in ["2026-10", "2026-02-31", "2026-10-23 18:30"] {
+            let (st, _) = http(
+                port,
+                "PUT",
+                &format!("/api/tasks/{id}"),
+                Some(&token),
+                Some(&format!(r#"{{"due":"{bad}"}}"#)),
+            );
+            assert_eq!(st, 400, "update 畸形 due「{bad}」应 400");
+        }
+        let (st, _) = http(
+            port,
+            "PUT",
+            &format!("/api/tasks/{id}"),
+            Some(&token),
+            Some(r#"{"due":"2026-10-23"}"#),
+        );
+        assert_eq!(st, 200, "合法 due（仅日期）应放行");
+        let (st, _) = http(
+            port,
+            "PUT",
+            &format!("/api/tasks/{id}"),
+            Some(&token),
+            Some(r#"{"due":"2026-10-23T18:30"}"#),
+        );
+        assert_eq!(st, 200, "合法 due（带时刻）应放行");
+    }
+
     /// Content-Length 声明超 1MB → 立即 413，
     /// 不必等 body 读完（请求故意一字节 body 都不发：若不预拒，服务端会等 body
     /// 直到 5s 客户端读超时，测试会失败）
