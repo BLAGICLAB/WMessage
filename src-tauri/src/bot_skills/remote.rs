@@ -645,7 +645,7 @@ pub async fn tool_install_skill(
     let fallback = fallback_name(&source, &skill_dir, &unpack_dir);
     let meta = crate::bot_skills::parse_meta(&text, &fallback);
     let name = resolve_skill_name(&meta.name, &fallback);
-    if let Err(reason) = crate::bot_skills::validate_created_meta(&meta) {
+    if let Err(reason) = crate::bot_skills::validate_created_meta(&meta, &text) {
         return ToolResult::denied(format!("install_skill：拒绝安装——{reason}"));
     }
 

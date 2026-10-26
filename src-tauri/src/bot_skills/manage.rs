@@ -513,7 +513,7 @@ pub fn skills_import(app: AppHandle, path: String) -> CommandResult<String> {
     }
     // 准入核与 create_skill / install_skill 同一口径（description 必填 / 危险词 /
     // intents 宽度闸）：导入是第三方内容的入口，不能绕过闸门落盘
-    if let Err(reason) = validate_created_meta(&meta) {
+    if let Err(reason) = validate_created_meta(&meta, &text) {
         return Err(CommandError::DomainRule {
             domain: "skill".to_string(),
             reason: format!("拒绝导入：{reason}"),

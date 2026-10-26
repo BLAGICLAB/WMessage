@@ -17,7 +17,10 @@ const CREATE_MAX_TOTAL_BYTES: usize = 1024 * 1024;
 /// + intents/description 危险关键词预检（与运行时 preflight 同一黑名单——把拒绝
 /// 提前到落盘前，而非装上后每次启动才炸）+ intents 宽度闸（装上即进进程级路由表，
 /// 过宽模式会把此后每条用户消息都劫持进该技能）。
-pub fn validate_created_meta(meta: &SkillMeta) -> Result<(), String> {
+/// 三个装入入口（create_skill / install_skill / 设置页导入）共用的准入核：
+/// description 必填、intents/description 不命中危险关键词、intents 每条模式
+/// 可编译且不过宽、auto 模式必须有可执行的 Step 块。
+pub fn validate_created_meta(meta: &SkillMeta, content: &str) -> Result<(), String> {
     if meta.description.trim().is_empty() {
         return Err("frontmatter 缺少 description（技能清单与路由展示必需）".into());
     }
@@ -38,7 +41,30 @@ pub fn validate_created_meta(meta: &SkillMeta) -> Result<(), String> {
         crate::intent_router::check_intent_pattern(p)
             .map_err(|reason| format!("intents「{p}」{reason}"))?;
     }
-    Ok(())
+    validate_auto_mode_steps(meta, content)
+}
+
+/// auto = 命中后不经 LLM 直接执行步骤，正文必须解析得出可执行的 Step 块，
+/// 否则装上即首跑必败（调度器 DSL 解析为空当场终止）。解析口径与运行时
+/// 一致：正文按 MAX_SKILL_BODY 截断后走 parse_skill_steps。interactive 的
+/// 正文是给 LLM 的参考文档，不受此限。
+fn validate_auto_mode_steps(meta: &SkillMeta, content: &str) -> Result<(), String> {
+    if meta.mode != "auto" {
+        return Ok(());
+    }
+    let body: String = content
+        .chars()
+        .take(crate::bot_skills::state::MAX_SKILL_BODY)
+        .collect();
+    match parse_skill_steps(&body) {
+        Ok((steps, _)) if !steps.is_empty() => Ok(()),
+        Ok(_) => Err(
+            "mode=auto 要求正文含「## Step N:」加工具调用行形式的可执行步骤块，当前正文一个都没有（散文式流程请改用 mode: interactive）".into(),
+        ),
+        Err(e) => Err(format!(
+            "mode=auto 的步骤块解析失败：{e}；请修正「## Step N:」格式，或改用 mode: interactive"
+        )),
+    }
 }
 
 /// 待创建技能的元数据核（纯逻辑、可测）：解析 frontmatter + 名称一致性 +
@@ -53,7 +79,7 @@ fn prepare_created_meta(name: &str, content: &str) -> Result<SkillMeta, String> 
             meta.name
         ));
     }
-    validate_created_meta(&meta)?;
+    validate_created_meta(&meta, content)?;
     Ok(meta)
 }
 

@@ -157,8 +157,54 @@ fn skills_import_runs_the_admission_check() {
         .next()
         .expect("skills_import 应以顶格 } 收尾");
     assert!(
-        body.contains("validate_created_meta(&meta)"),
+        body.contains("validate_created_meta(&meta,"),
         "skills_import 必须调 validate_created_meta：导入是第三方内容入口，不能绕过准入核"
+    );
+}
+
+/// auto 模式的步骤块闸：mode=auto（含省略 mode 时低风险默认 auto、非法 mode
+/// 值按未声明回落 auto）而正文没有可执行的 Step 块 → 准入核拒绝。散文体配
+/// auto 的技能装上即首跑必败，必须在装入前拦下；interactive 的正文是参考
+/// 文档，不受此限。
+#[test]
+fn admission_rejects_auto_mode_without_step_blocks() {
+    let prose = "---\nname: t\ndescription: 测试技能\nrisk_level: low\n---\n\n## 步骤\n\n1. 先查任务列表。\n2. 报出最老的一张卡。\n";
+    // mode 省略 + risk_level: low → 默认推导 auto，散文体必须被拒
+    let meta = parse_meta(prose, "t");
+    assert_eq!(meta.mode, "auto", "低风险缺省应推导为 auto");
+    let err = validate_created_meta(&meta, prose).unwrap_err();
+    assert!(err.contains("Step"), "拒绝理由应指向 Step 块缺失：{err}");
+
+    // 模型自创的非法 mode 值按未声明处理 → 低风险默认 auto → 同样被拒
+    let bogus = prose.replace("description: 测试技能", "description: 测试技能\nmode: read");
+    let meta_bogus = parse_meta(&bogus, "t");
+    assert_eq!(meta_bogus.mode, "auto", "非法 mode 应回落默认推导");
+    assert!(validate_created_meta(&meta_bogus, &bogus).is_err());
+
+    // 带 Step 块的 auto 技能放行
+    let with_steps = "---\nname: t\ndescription: 测试技能\nmode: auto\n---\n\n## Step 1: 查询\nquery_tasks(view=all)\n";
+    let meta_ok = parse_meta(with_steps, "t");
+    assert!(
+        validate_created_meta(&meta_ok, with_steps).is_ok(),
+        "auto + 合法 Step 块不该被拒"
+    );
+
+    // interactive + 散文体放行（正文是给 LLM 的参考文档）
+    let interactive = prose.replace(
+        "description: 测试技能",
+        "description: 测试技能\nmode: interactive",
+    );
+    let meta_i = parse_meta(&interactive, "t");
+    assert_eq!(meta_i.mode, "interactive");
+    assert!(validate_created_meta(&meta_i, &interactive).is_ok());
+
+    // auto + Step 块格式错误（步骤序号重复）也要拒——运行时同样解析失败
+    let dup = "---\nname: t\ndescription: 测试技能\nmode: auto\n---\n\n## Step 1: 查询\nquery_tasks(view=all)\n\n## Step 1: 再查\nquery_tasks(view=all)\n";
+    let meta_dup = parse_meta(dup, "t");
+    let err_dup = validate_created_meta(&meta_dup, dup).unwrap_err();
+    assert!(
+        err_dup.contains("解析失败"),
+        "重复序号应报解析失败：{err_dup}"
     );
 }
 

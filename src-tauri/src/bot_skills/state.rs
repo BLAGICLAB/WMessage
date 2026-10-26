@@ -8,7 +8,7 @@ use crate::error::CommandError;
 pub(crate) use crate::app_state::skill_runs;
 use tauri::AppHandle;
 
-const MAX_SKILL_BODY: usize = 50 * 1024;
+pub(crate) const MAX_SKILL_BODY: usize = 50 * 1024;
 
 // Skill 调度器（运行模型 v1.0：状态机 + 步骤循环 + 熔断 + 回滚记录）
 
