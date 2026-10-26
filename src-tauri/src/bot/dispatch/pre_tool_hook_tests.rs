@@ -327,6 +327,12 @@ fn every_gate_denial_is_denied_status_and_classifiable_text() {
             ToolResult::denied("⚠️ 本轮不允许写盘"),
         ),
         (
+            "allowed-tools 集合外",
+            ToolResult::denied(
+                "⚠️ 技能「limited-skill」的 allowed-tools 未包含工具 write_file（声明集合：read_text_file, grep_files），已拒绝执行",
+            ),
+        ),
+        (
             "工具规则 deny",
             ToolResult::denied("⚠️ 工具「run_python」已被工具规则禁用（设置页授权卡可调整）。如任务确实需要，请向用户说明。"),
         ),
@@ -415,14 +421,14 @@ fn no_gate_early_return_uses_warn_status() {
         !production.contains("ToolResult::warn("),
         "dispatch 的生产代码不得构造 ToolResult::warn（会把「没执行」记成成功）"
     );
-    // 9 处：pre_tool 钩子拒绝 / 规则 deny / 确认被拒 / skill 熔断 /
-    // 子 agent 白名单外 / 预算触顶（收尾窗开启）/ 收尾窗内读类拒绝 /
+    // 10 处：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 确认被拒 /
+    // skill 熔断 / 子 agent 白名单外 / 预算触顶（收尾窗开启）/ 收尾窗内读类拒绝 /
     // arguments 非法 JSON / 墙钟收尾窗。
     // 数量变了请同步本测试与 every_gate_denial_* 的用例表。
     assert_eq!(
         production.matches("ToolResult::denied(").count(),
-        9,
-        "门禁早退点应恰好 9 处"
+        10,
+        "门禁早退点应恰好 10 处"
     );
 }
 

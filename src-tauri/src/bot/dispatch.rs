@@ -466,11 +466,12 @@ fn allowed_tools_violation<R: tauri::Runtime>(
     Some((run.name.clone(), run.allowed_tools.clone()))
 }
 
-/// 集合外调用的拒绝文案（纯函数，可测）：点名技能、声明集合与被拒工具，
+/// 集合外调用的拒绝文案（纯函数，可测）：⚠️ 开头进 GateDenied 分类
+/// （classify_tool_failure 的门禁臂），点名技能、声明集合与被拒工具，
 /// 模型才知道这是技能作者的自限、该改走集合内工具或请用户放宽。
 fn allowed_tools_denial_text(skill: &str, declared: &[String], name: &str) -> String {
     format!(
-        "技能「{skill}」声明了 allowed-tools（{declared}），工具 {name} 不在声明集合内，本次调用未执行",
+        "⚠️ 技能「{skill}」的 allowed-tools 未包含工具 {name}（声明集合：{declared}），已拒绝执行",
         declared = declared.join(", ")
     )
 }
