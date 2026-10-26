@@ -363,21 +363,42 @@ fn validate_script(script: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// 落盘：脚本写 `dir/app.py`（M1 起脚本路径恒定），附加文件写校验过的相对目标
+/// 落盘：脚本写 `dir/app.py`（M1 起脚本路径恒定），附加文件写校验过的相对目标。
+/// 每个写入点先查条目本身（symlink_metadata，不跟随）：目标已被预置成符号
+/// 链接时拒绝写入——跟随会把内容写到链接指向的任意位置（纵深防御；需要
+/// 本地写权限预置，LLM 不可独立触达，与 harvest 采集侧同款防线）。
 fn write_file_set(
     dir: &Path,
     script: Option<&str>,
     extra: &[PendingFile],
 ) -> Result<(), CommandError> {
     if let Some(s) = script {
-        std::fs::write(dir.join("app.py"), s).map_err(|e| CommandError::IoError(e.to_string()))?;
+        let target = dir.join("app.py");
+        reject_symlink_target(&target)?;
+        std::fs::write(&target, s).map_err(|e| CommandError::IoError(e.to_string()))?;
     }
     for f in extra {
         let target = dir.join(&f.rel);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| CommandError::IoError(e.to_string()))?;
         }
-        std::fs::write(target, &f.content).map_err(|e| CommandError::IoError(e.to_string()))?;
+        reject_symlink_target(&target)?;
+        std::fs::write(&target, &f.content).map_err(|e| CommandError::IoError(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// 目标已存在且是符号链接（含断链）→ 拒绝写。普通文件/目录/不存在都放行。
+fn reject_symlink_target(target: &Path) -> Result<(), CommandError> {
+    let is_symlink = std::fs::symlink_metadata(target)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
+    if is_symlink {
+        return Err(CommandError::InvalidArgument {
+            field: "path".into(),
+            value: target.display().to_string(),
+            reason: "目标位置已被符号链接占用，拒绝写入（防把内容写到程序目录之外）".to_string(),
+        });
     }
     Ok(())
 }

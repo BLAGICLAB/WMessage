@@ -67,6 +67,46 @@ pub fn cpu_limit_secs(timeout_secs: u64) -> u64 {
     timeout_secs.saturating_add(10)
 }
 
+/// 进程数上限（RLIMIT_NPROC / Job ACTIVE_PROCESS）：fork 炸弹在运行窗口内
+/// 可打满系统资源，超时杀组只是事后回收。
+///
+/// **RLIMIT_NPROC 的语义是按用户计数**（不是按进程组）：上限必须盖住当前
+/// 用户已有的全部进程再加余量，否则 Python 一启动自己就 EAGAIN（本机实测
+/// 单用户数百进程时设 64 = 探测都过、首次 spawn 即死）。基数取探测时刻的
+/// 用户进程数 + 64 余量：挡得住运行窗口内的进程风暴（风暴要在基数之上
+/// 再造几百个进程才撞限），又不误杀正常并发。
+#[cfg(unix)]
+pub(crate) fn nproc_limit() -> u64 {
+    nproc_limit_for(user_proc_count())
+}
+
+/// 基数 + 余量（纯函数，可测）。
+#[cfg(unix)]
+pub(crate) fn nproc_limit_for(base: u64) -> u64 {
+    base.saturating_add(64).max(128)
+}
+
+/// 当前用户名关联的进程数（`ps -u <user>` 行数减表头；拿不到用户名/执行
+/// 失败按 0 算——上限退到纯余量 128，仍比无限 Lind强者）。
+#[cfg(unix)]
+fn user_proc_count() -> u64 {
+    let user = std::env::var("USER").unwrap_or_default();
+    if user.is_empty() {
+        return 0;
+    }
+    std::process::Command::new("ps")
+        .args(["-u", &user, "-o", "pid="])
+        .output()
+        .ok()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count() as u64
+        })
+        .unwrap_or(0)
+}
+
 #[cfg(windows)]
 pub(crate) mod win_job {
     use std::process::Child;
@@ -698,13 +738,16 @@ pub enum SetrlimitProbe {
 pub struct SetrlimitSupport {
     pub rlimit_as: SetrlimitProbe,
     pub rlimit_cpu: SetrlimitProbe,
+    pub rlimit_nproc: SetrlimitProbe,
 }
 
 #[cfg(unix)]
 impl SetrlimitSupport {
     #[cfg(unix)]
     fn all_available(&self) -> bool {
-        self.rlimit_as == SetrlimitProbe::Available && self.rlimit_cpu == SetrlimitProbe::Available
+        self.rlimit_as == SetrlimitProbe::Available
+            && self.rlimit_cpu == SetrlimitProbe::Available
+            && self.rlimit_nproc == SetrlimitProbe::Available
     }
 }
 
@@ -723,6 +766,9 @@ const SETRLIMIT_PROBE_SCRIPT: &str = concat!(
     "        return '%s: %s' % (type(e).__name__, e)\n",
     "print('WM_RLIMIT_AS=' + _t(_r.RLIMIT_AS, int(sys.argv[1])))\n",
     "print('WM_RLIMIT_CPU=' + _t(_r.RLIMIT_CPU, int(sys.argv[2])))\n",
+    // NPROC 上限按生产值（argv[3]）：脚本进程自身 + 看门狗 + 用户脚本，
+    // 太紧会挡掉 multiprocessing 的正常并发，取值见 nproc_limit()
+    "print('WM_RLIMIT_NPROC=' + _t(_r.RLIMIT_NPROC, int(sys.argv[3])))\n",
 );
 // 探测值取生产上限，且**由 argv 从 Rust 常量传入**（不在脚本文本里写死数字）：
 // AS 2GB = mem_limit_bytes 封顶 / CPU = timeout 上限 + 10 宽限。脚本与生产共用
@@ -751,6 +797,7 @@ pub fn parse_setrlimit_probe_output(out: &str) -> SetrlimitSupport {
     SetrlimitSupport {
         rlimit_as: pick("WM_RLIMIT_AS=", out),
         rlimit_cpu: pick("WM_RLIMIT_CPU=", out),
+        rlimit_nproc: pick("WM_RLIMIT_NPROC=", out),
     }
 }
 
@@ -759,7 +806,11 @@ pub fn parse_setrlimit_probe_output(out: &str) -> SetrlimitSupport {
 #[cfg(unix)]
 pub fn rlimit_warn_line(s: &SetrlimitSupport) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
-    for (name, p) in [("RLIMIT_AS", &s.rlimit_as), ("RLIMIT_CPU", &s.rlimit_cpu)] {
+    for (name, p) in [
+        ("RLIMIT_AS", &s.rlimit_as),
+        ("RLIMIT_CPU", &s.rlimit_cpu),
+        ("RLIMIT_NPROC", &s.rlimit_nproc),
+    ] {
         match p {
             SetrlimitProbe::Available => {}
             SetrlimitProbe::Unavailable(w) => {
@@ -782,6 +833,7 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
         // 探测值来自生产常量（见 SETRLIMIT_PROBE_SCRIPT 注），脚本自己只读 argv
         .arg(mem_limit_bytes(MAX_TIMEOUT_SECS).to_string())
         .arg(cpu_limit_secs(MAX_TIMEOUT_SECS).to_string())
+        .arg(nproc_limit().to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -791,6 +843,7 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
             return SetrlimitSupport {
                 rlimit_as: SetrlimitProbe::ProbeError(format!("探测子进程 spawn 失败: {e}")),
                 rlimit_cpu: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
+                rlimit_nproc: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
             };
         }
     };
@@ -808,6 +861,9 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
                 return SetrlimitSupport {
                     rlimit_as: SetrlimitProbe::ProbeError(format!("探测子进程 wait 失败: {e}")),
                     rlimit_cpu: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
+                    rlimit_nproc: SetrlimitProbe::ProbeError(
+                        "同上（探测子进程未运行）".to_string(),
+                    ),
                 };
             }
         }
@@ -817,6 +873,7 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
         return SetrlimitSupport {
             rlimit_as: SetrlimitProbe::ProbeError(msg.clone()),
             rlimit_cpu: SetrlimitProbe::ProbeError(msg),
+            rlimit_nproc: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
         };
     };
     if !status.success() {
@@ -824,6 +881,7 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
         return SetrlimitSupport {
             rlimit_as: SetrlimitProbe::ProbeError(msg.clone()),
             rlimit_cpu: SetrlimitProbe::ProbeError(msg),
+            rlimit_nproc: SetrlimitProbe::ProbeError("同上（探测子进程未运行）".to_string()),
         };
     }
     let mut out = String::new();
@@ -860,6 +918,7 @@ fn retained_note(dir: &std::path::Path) -> String {
     )
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn run_python_at(
     py: &str,
     entry: Option<&str>,
@@ -897,7 +956,9 @@ pub fn run_python_at(
         }
         let as_ok = support.rlimit_as == SetrlimitProbe::Available;
         let cpu_ok = support.rlimit_cpu == SetrlimitProbe::Available;
-        if as_ok || cpu_ok {
+        let nproc_ok = support.rlimit_nproc == SetrlimitProbe::Available;
+        let nproc = nproc_limit();
+        if as_ok || cpu_ok || nproc_ok {
             // SAFETY: pre_exec 在 fork 后 exec 前运行，处于单线程上下文（POSIX 要求 async-signal-safe）。
             // libc::setrlimit 对 RLIMIT_AS / RLIMIT_CPU 是 async-signal-safe 调用。
             // mem_bytes / cpu_secs 来自 RunLimits，由调用方在子进程 spawn 前已 validate 非零。
@@ -920,6 +981,13 @@ pub fn run_python_at(
                         };
                         libc::setrlimit(libc::RLIMIT_CPU, &cpu);
                     }
+                    if nproc_ok {
+                        let np = libc::rlimit {
+                            rlim_cur: nproc as libc::rlim_t,
+                            rlim_max: nproc as libc::rlim_t,
+                        };
+                        libc::setrlimit(libc::RLIMIT_NPROC, &np);
+                    }
                     Ok(())
                 });
             }
@@ -935,6 +1003,14 @@ pub fn run_python_at(
     }
     if let Some(g) = gen_dir {
         cmd.env("WM_GEN_DIR", g);
+    }
+    // TEMP/TMP/TMPDIR 指到本次运行的目录（子进程 cwd 就是它）：脚本 tempfile
+    // 的临时文件不再落共享系统 /tmp——多用户机器上 params.json / 中间产物可被
+    // 同机其他用户读；运行目录由超龄清扫统一回收，不残留。
+    // WM_TMP_DIR 仍指系统临时目录：提示词拿它告诉模型「临时文件放哪」，模型
+    // 可见的合法落点不该悄悄变成随时会被清扫的 run 目录。
+    for tmp_key in ["TEMP", "TMP", "TMPDIR"] {
+        cmd.env(tmp_key, dir);
     }
     cmd.env("WM_TMP_DIR", std::env::temp_dir());
     cmd.args(args)

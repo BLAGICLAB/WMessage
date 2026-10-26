@@ -77,19 +77,26 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
     let timeout = resolve_run_timeout(args.timeout_secs, a.timeout_secs);
     // 执行内部阻塞等子进程至多 timeout 秒，必须挪进阻塞线程池（钉死 async
     // worker 会拖垮其余命令）；不持全局写锁——长跑的子进程不能挡住别的写者，
-    // 内部两次短写靠 busy_timeout 兜底
+    // 内部两次短写靠 busy_timeout 兜底。
+    // 停止接线：每次运行起一个后台 StopGuard（非交互、无会话归属），令牌
+    // 传进阻塞运行——/stop 全停与退出清理都能中断在途程序（最长 1800s
+    // 不能停就是失控）；guard 活到运行结束，Drop 自动注销。
     let app_name = a.name.clone();
     let res = {
         let app2 = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            apps_runner::run(
+            let guard = crate::bot_slash::StopGuard::new(&app2, false, None);
+            let token = guard.token();
+            let r = apps_runner::run(
                 &a,
                 &a.script_path,
                 args.params.as_deref(),
                 Some(timeout),
                 &app2,
-                None,
-            )
+                Some(&token),
+            );
+            drop(guard);
+            r
         })
         .await
         .map_err(|e| CommandError::from(format!("程序运行线程 join 失败：{e}")))?

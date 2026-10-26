@@ -547,6 +547,7 @@ fn rlimit_warn_line_pins_hard_constraint() {
     let all_ok = SetrlimitSupport {
         rlimit_as: SetrlimitProbe::Available,
         rlimit_cpu: SetrlimitProbe::Available,
+        rlimit_nproc: SetrlimitProbe::Available,
     };
     assert!(rlimit_warn_line(&all_ok).is_none());
     // 硬约束钉死：未生效项必须明说「限额未生效」；探测失败项必须明说
@@ -554,6 +555,7 @@ fn rlimit_warn_line_pins_hard_constraint() {
     let off = rlimit_warn_line(&SetrlimitSupport {
         rlimit_as: SetrlimitProbe::Unavailable("ValueError: bad".to_string()),
         rlimit_cpu: SetrlimitProbe::Available,
+        rlimit_nproc: SetrlimitProbe::Available,
     })
     .expect("未生效项必须留痕");
     assert!(off.contains("限额未生效"), "got: {off}");
@@ -561,6 +563,7 @@ fn rlimit_warn_line_pins_hard_constraint() {
     let err = rlimit_warn_line(&SetrlimitSupport {
         rlimit_as: SetrlimitProbe::Available,
         rlimit_cpu: SetrlimitProbe::ProbeError("spawn 失败".to_string()),
+        rlimit_nproc: SetrlimitProbe::Available,
     })
     .expect("探测失败必须留痕");
     assert!(err.contains("未探测到 setrlimit 可用性"), "got: {err}");
