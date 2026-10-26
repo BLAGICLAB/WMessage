@@ -451,6 +451,30 @@ where
     }
 }
 
+/// allowed-tools 闸判定（纯查询，mock handle 可测）：返回 Some((技能名, 声明集合))
+/// = 该会话的活动技能声明了 allowed-tools 且本工具不在集合内。
+/// use_skill 豁免由调用方把守（切技能是元动作，不属技能自身的工具面）。
+fn allowed_tools_violation<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+    session_id: Option<&str>,
+) -> Option<(String, Vec<String>)> {
+    let run = crate::bot_skills::active_skill_run_for(app, session_id)?;
+    if run.allowed_tools.is_empty() || run.allowed_tools.iter().any(|t| t == name) {
+        return None;
+    }
+    Some((run.name.clone(), run.allowed_tools.clone()))
+}
+
+/// 集合外调用的拒绝文案（纯函数，可测）：点名技能、声明集合与被拒工具，
+/// 模型才知道这是技能作者的自限、该改走集合内工具或请用户放宽。
+fn allowed_tools_denial_text(skill: &str, declared: &[String], name: &str) -> String {
+    format!(
+        "技能「{skill}」声明了 allowed-tools（{declared}），工具 {name} 不在声明集合内，本次调用未执行",
+        declared = declared.join(", ")
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 async fn execute_tool_impl(
@@ -475,6 +499,36 @@ async fn execute_tool_impl(
     // 钩子出错 fail-open（只记审计），只有 Interrupt 才拒绝本次工具调用。
     if let Some(interrupted) = run_pre_tool_layer(app, name, args, session_id, trace, &start) {
         return interrupted;
+    }
+    // 0.55 会话内活动技能的 allowed-tools 前置声明：作者自限的工具面。
+    // DSL 调度器步骤路径在 scheduler 里有同名校验，这里补齐 use_skill
+    // 交互路径——模型驱动的工具调用同样只放行声明集合内的工具，
+    // use_skill 豁免（切技能是元动作，与规则表闸同口径）。
+    if name != "use_skill" {
+        if let Some((skill, declared)) = allowed_tools_violation(app, name, session_id) {
+            let dur_ms = start.elapsed().as_millis() as u64;
+            let mut cause_kv: Vec<(&str, String)> = vec![
+                ("skill", skill.clone()),
+                ("tool", name.to_string()),
+                ("declared", declared.join(", ")),
+            ];
+            cause_kv.extend(trace_kv(trace, session_id));
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "skill.allowed_tools_violation",
+                &cause_kv,
+            );
+            crate::audit::write_event(
+                app,
+                crate::audit::AuditLevel::Warn,
+                "tool.return",
+                &tool_return_kv(name, "allowed_tools_violation", dur_ms, session_id, trace),
+            );
+            return crate::bot::registry::ToolResult::denied(allowed_tools_denial_text(
+                &skill, &declared, name,
+            ));
+        }
     }
     // 0.6  per-tool 规则表（Agent 透明化设计 §9.2-1）：deny 硬拒 / ask 强制确认 /
     // allow 到文件工具侧生效（bot_fs 两个 resolve 内接线）。Some = 已早退（配平完成），
@@ -1004,6 +1058,9 @@ mod early_return_events_tests;
 
 #[cfg(test)]
 mod pre_tool_hook_tests;
+
+#[cfg(test)]
+mod allowed_tools_tests;
 
 #[cfg(test)]
 mod invalid_args_tests;

@@ -284,6 +284,7 @@ fn make_run(name: &str, state: SkillState) -> SkillRun {
         resumable: true,
         params: serde_json::Value::Null,
         dir: None,
+        allowed_tools: Vec::new(),
         terminal_after_confirm: false,
         pending_confirm_id: None,
         session_id: None,

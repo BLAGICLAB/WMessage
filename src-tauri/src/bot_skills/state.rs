@@ -61,6 +61,9 @@ pub struct SkillRun {
     pub params: serde_json::Value,
     /// 技能目录（第三层渐进披露——references 清单 + 会话级读白名单）
     pub dir: Option<PathBuf>,
+    /// 作者自限工具面（元数据 allowed_tools 镜像）：非空时交互路径的工具
+    /// 调用闸按它放行（execute_tool_impl 消费）；空 = 不限制。
+    pub allowed_tools: Vec<String>,
     /// 运行模式（auto | interactive，元数据镜像）。
     ///
     /// 失败语义按它分岔：**auto**（DSL 调度器）的步骤失败必须立刻终止该步并跑
@@ -92,6 +95,7 @@ impl SkillRun {
             session_id: None,
             params: serde_json::Value::Null,
             dir: None,
+            allowed_tools: meta.allowed_tools.clone(),
             mode: meta.mode.clone(),
             consec_failures: 0,
         }
@@ -335,6 +339,7 @@ pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
         session_id: None,
         params: serde_json::Value::Null,
         dir: None,
+        allowed_tools: Vec::new(),
         mode: "interactive".into(),
         consec_failures: 0,
     };
@@ -386,6 +391,7 @@ pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
         session_id: None,
         params: serde_json::Value::Null,
         dir: None,
+        allowed_tools: Vec::new(),
         mode: "interactive".into(),
         consec_failures: 0,
     }
