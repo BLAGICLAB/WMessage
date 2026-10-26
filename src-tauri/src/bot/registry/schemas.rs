@@ -136,10 +136,11 @@ pub const SCHEMA_CREATE_PDF: &str = r##"{"type":"function","function":{"name":"c
     },"required":["rows"]}},
     "filename":{"type":"string","description":"文件名（不含扩展名），可选"}
   },"required":["paragraphs"]}}}"##;
-pub const SCHEMA_RUN_PYTHON: &str = r##"{"type":"function","function":{"name":"run_python","description":"执行 Python 代码（资源受限：CPU/内存/时长限额 + 独立临时目录，无文件系统隔离；默认超时 60s。默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）","parameters":{"type":"object","properties":{
+pub const SCHEMA_RUN_PYTHON: &str = r##"{"type":"function","function":{"name":"run_python","description":"执行 Python 代码（资源受限：CPU/内存/时长限额 + 独立临时目录，无文件系统隔离；默认超时 60s。默认需用户在设置页开启 Python 编程，授权模式为 yolo 时免开关）。脚本较长时先用 write_file 把代码落盘，再用 scriptPath 执行：出错只改出错的那几行重跑即可，不必把整段代码重写一遍。","parameters":{"type":"object","properties":{
     "code":{"type":"string","description":"要执行的 Python 代码，print 输出返回给用户"},
+    "scriptPath":{"type":"string","description":"可选：已落盘的 Python 脚本路径（白名单内，优先用 AI_Gen_Files 下的路径）。给了它就执行该文件、不再用 code。长脚本先 write_file 落盘再这样调用；出错后用 edit_file 改出错那一行重跑，不必整段重写"},
     "timeoutSecs":{"type":"integer","description":"超时秒数（可选，默认 60；大计算可调大，上限 1800）"}
-  },"required":["code"]}}}"##;
+  },"required":[]}}}"##;
 pub const SCHEMA_START_SERVICE: &str = r##"{"type":"function","function":{"name":"start_service","description":"启动一个受管长驻进程（node/deno/python 等白名单启动器）。进程归宿主托管：活过本次工具调用，可查可停，宿主退出时自动收干净。适合 node MCP server、dev server、watcher 这类需要持续运行的东西；一次性脚本用 run_python。启动器必须在白名单内（npx/bunx/uvx/pipx/node/deno/python/python3/docker/podman），不传 shell 字符串。默认需用户在设置页开启「允许机器人启动本地服务」，授权模式为 yolo 时免开关。服务继承宿主环境变量（含其中的密钥），只起自己写的代码","parameters":{"type":"object","properties":{
     "command":{"type":"string","description":"启动器名，必须在白名单内（npx/bunx/uvx/pipx/node/deno/python/python3/docker/podman）"},
     "args":{"type":"array","items":{"type":"string"},"description":"参数列表，逐个传入，不做 shell 解析"},

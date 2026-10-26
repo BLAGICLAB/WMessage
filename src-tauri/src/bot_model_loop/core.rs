@@ -15,6 +15,33 @@ use crate::bot_skills::skill_exit_body;
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
 
+/// 工具失败后的「换策略」提示：按工具给不同的下一步指引。
+///
+/// run_python 单列一条：内联代码出错时，模型最常见的反应是把整段代码重写一遍
+/// ——每次重写都重付一遍全文的输出 token，且改错无从对照（对不上原来哪一行）。
+/// 正确做法是先把脚本落盘、再只改出错的那几行。
+pub(super) fn fail_hint_for(tool: &str, reason: &str, consec_failures: usize) -> String {
+    if tool == "run_python" {
+        let repeat_guard = if consec_failures >= 2 {
+            format!("已连续失败 {consec_failures} 次，禁止再以相同方式调用该工具；")
+        } else {
+            String::new()
+        };
+        return format!(
+            "【系统提示】{repeat_guard}run_python 失败了（原因：{reason}）。不要把整段代码重写一遍：脚本较长时先用 write_file 把代码落盘，再用 run_python 的 scriptPath 执行；出错后用 edit_file 只改报错的那几行再重跑。"
+        );
+    }
+    if consec_failures >= 2 {
+        format!(
+            "【系统提示】工具 {tool} 已连续失败 {consec_failures} 次（最近原因：{reason}）。禁止再次以相同方式调用该工具；如果换参数/换路径仍无法完成，如实向用户说明失败原因与当前进度，由用户决定下一步。"
+        )
+    } else {
+        format!(
+            "【系统提示】上一步调用的工具 {tool} 失败了（原因：{reason}）。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
+        )
+    }
+}
+
 /// 流完整性收尾状态：替代旧 `saw_done_or_finish: bool`，区分具体收尾来源。
 /// - Done：SSE 协议终结哨兵（`data: [DONE]`）
 /// 模型工具循环核心：流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
@@ -786,15 +813,7 @@ where
             }
             let reason = crate::bot::truncate_for_log(result, 200);
             *last_fail_reason = Some(reason.clone());
-            *fail_hint_queued = Some(if *consec_failures >= 2 {
-                format!(
-                        "【系统提示】工具 {name} 已连续失败 {consec_failures} 次（最近原因：{reason}）。禁止再次以相同方式调用该工具；如果换参数/换路径仍无法完成，如实向用户说明失败原因与当前进度，由用户决定下一步。"
-                    )
-            } else {
-                format!(
-                        "【系统提示】上一步调用的工具 {name} 失败了（原因：{reason}）。不要重复同样的调用；分析原因后换策略：换参数、换工具、或把任务拆成更小的步骤再试一次。"
-                    )
-            });
+            *fail_hint_queued = Some(fail_hint_for(name, &reason, *consec_failures));
         } else if !result.is_empty() {
             // 成功调用重置连续失败链（空结果不算成功也不算失败，不重置）
             *last_failed_tool = None;

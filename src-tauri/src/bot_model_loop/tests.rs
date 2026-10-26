@@ -66,6 +66,7 @@ fn prod_file_with(needle: &str) -> String {
 }
 
 mod config;
+mod fail_hint;
 mod guard;
 mod intent;
 mod parse;

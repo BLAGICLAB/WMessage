@@ -416,6 +416,32 @@ pub async fn resolve_with_perm(
     }
 }
 
+/// 读白名单内文本文件的全部内容（有上限），供「按路径取内容」的工具用。
+///
+/// 与 read_text_file 走同一条授权链（resolve_with_perm：canonicalize + 白名单
+/// 判定 + 白名单外弹授权窗）+ 同一个有界读，不另开「只判路径不判内容」的旁路。
+/// 超上限按截断处理并在返回值里说明——静默截断会让模型以为脚本全文如此。
+pub async fn read_whitelisted_text(
+    app: &AppHandle,
+    tool: &str,
+    path: &str,
+    interactive: bool,
+    session_id: Option<&str>,
+    max_bytes: usize,
+) -> Result<String, String> {
+    let canonical = resolve_with_perm(app, tool, path, interactive, session_id).await?;
+    let (raw, truncated) =
+        spawn_blocking_io(move || read::read_capped_file_sync(&canonical, max_bytes)).await?;
+    let text = String::from_utf8_lossy(&raw).to_string();
+    if truncated {
+        return Err(format!(
+            "文件超过 {}KB 上限，只读到前部——请拆分后再试",
+            max_bytes / 1024
+        ));
+    }
+    Ok(text)
+}
+
 /// 白名单判定核（纯函数）：canonical 路径是否落在任一白名单目录内。
 ///
 /// `Path::starts_with` 按**路径分量**比较，所以白名单 `/tmp/ab` 不会误吞 `/tmp/abc`；

@@ -1113,3 +1113,34 @@ fn update_plan_schema_contract() {
         "update_plan 必须进 TOOLS_TABLE"
     );
 }
+
+/// run_python 必须公告 scriptPath，且不得把 code 列为必填。
+///
+/// 回归背景：长脚本的正确做法是「先落盘、出错只改出错那几行重跑」——内联代码
+/// 每改一次都重付一遍全文的输出 token。schema 里没有这条入口，模型就只会整段
+/// 重写；把 code 留成必填更是直接堵死「只给脚本路径」这条路。
+#[test]
+fn run_python_schema_advertises_script_path_without_forcing_code() {
+    let v: serde_json::Value = serde_json::from_str(super::schemas::SCHEMA_RUN_PYTHON)
+        .expect("run_python schema 必须是合法 JSON");
+    let func = &v["function"];
+    assert!(
+        func["parameters"]["properties"]["scriptPath"].is_object(),
+        "run_python 必须公告 scriptPath 参数：{v}"
+    );
+    assert!(
+        func["parameters"]["properties"]["code"].is_object(),
+        "run_python 仍要保留内联 code 参数：{v}"
+    );
+    let required = func["parameters"]["required"].as_array();
+    assert!(
+        required.is_some_and(|r| r.is_empty()),
+        "code 与 scriptPath 二选一，required 不得强绑 code：{v}"
+    );
+    // 描述里要点明「先落盘再执行」——参数名自解释不了为什么该用它
+    let desc = func["description"].as_str().unwrap_or_default();
+    assert!(
+        desc.contains("scriptPath"),
+        "描述里应说明 scriptPath 的用法：{desc}"
+    );
+}

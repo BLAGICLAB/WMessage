@@ -89,6 +89,8 @@ mod tool_due_format_tests;
 #[cfg(test)]
 mod tool_extract_document_tests;
 #[cfg(test)]
+mod tool_run_python_tests;
+#[cfg(test)]
 mod tool_web_search_arg_tests;
 #[cfg(test)]
 mod trace_tests;

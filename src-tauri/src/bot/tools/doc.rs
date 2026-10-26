@@ -695,18 +695,70 @@ pub(crate) async fn tool_fetch_url(
     }
 }
 
+/// run_python 的代码来源：内联代码，还是已落盘的脚本文件。
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ScriptSource {
+    /// 内联代码（`code` 参数）
+    Inline(String),
+    /// 已落盘的脚本文件路径（`scriptPath` 参数）
+    File(String),
+    /// 两个都没给
+    Missing,
+}
+
+/// 从工具参数里判定代码来源（纯函数，单测入口）。
+///
+/// scriptPath 优先于 code：模型改了脚本却仍传旧 code 时，执行旧 code 会让
+/// 「改了文件没生效」变成看不见的坑——文件是新的、跑的是旧的。
+pub(super) fn script_source(v: &serde_json::Value) -> ScriptSource {
+    let p = v["scriptPath"].as_str().unwrap_or("").trim();
+    if !p.is_empty() {
+        return ScriptSource::File(p.to_string());
+    }
+    match v["code"].as_str() {
+        Some(c) => ScriptSource::Inline(c.to_string()),
+        None => ScriptSource::Missing,
+    }
+}
+
 /// 自由 Python 编程：开关开启才放行（超时 60s、独立临时目录、输出截断）
 /// py_exec_sync 是 sync 阻塞（最长 300s），必须经 async 包装挪到 blocking
 /// 线程池，不得占住 async runtime worker（与 doc_* 同模式）。
 /// 透传 /stop 令牌，在途 Python 可被中断（StopGuard → owned StopToken）。
+///
+/// 代码从两处来：`code`（内联）或 `scriptPath`（已落盘的脚本文件）。
+/// 落盘那条是长脚本的正解：出错时只改出错的那几行重跑，不必把整段代码重写
+/// 一遍（内联代码每改一次就要重付一遍全文的输出 token，且改错无从对照）。
 pub(crate) async fn tool_run_python(
     app: &AppHandle,
     args: &str,
     stop: Option<&crate::bot_slash::StopGuard>,
+    interactive: bool,
+    session_id: Option<&str>,
 ) -> crate::bot::registry::ToolResult {
     let v = parse_args(args);
-    let Some(code) = v["code"].as_str() else {
-        return ToolResult::denied("run_python 缺少 code");
+    let code = match script_source(&v) {
+        ScriptSource::Inline(c) => c,
+        ScriptSource::File(p) => {
+            match crate::bot_fs::read_whitelisted_text(
+                app,
+                "run_python",
+                &p,
+                interactive,
+                session_id,
+                crate::bot_fs::READ_MAX_BYTES,
+            )
+            .await
+            {
+                Ok(text) => text,
+                Err(e) => return ToolResult::denied(format!("读取脚本失败：{e}")),
+            }
+        }
+        ScriptSource::Missing => {
+            return ToolResult::denied(
+                "run_python 缺少 code（内联代码）或 scriptPath（已落盘脚本）",
+            )
+        }
     };
     // 超时优先级：工具参数 timeoutSecs > 设置页配置 python_timeout_secs > 内置 60s
     //（pandas 大计算 60s 偏紧；硬钳在 py::runtime::resolve_timeout）
@@ -715,7 +767,7 @@ pub(crate) async fn tool_run_python(
         .or_else(|| load_config(app).python_timeout_secs);
     match crate::bot_py::py_exec_sync_async(
         app.clone(),
-        code.to_string(),
+        code,
         timeout_secs,
         stop.map(|s| s.token()),
     )

@@ -125,7 +125,9 @@ pub(super) fn call_create_pdf<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFu
 
 pub(super) fn call_run_python<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
     let stop = ctx.stop;
-    Box::pin(async move { tool_run_python(ctx.app, args, stop).await })
+    let interactive = ctx.interactive;
+    let session_id = ctx.session_id;
+    Box::pin(async move { tool_run_python(ctx.app, args, stop, interactive, session_id).await })
 }
 
 pub(super) fn call_start_service<'a>(ctx: &'a ToolCtx<'a>, args: &'a str) -> ToolFuture<'a> {
