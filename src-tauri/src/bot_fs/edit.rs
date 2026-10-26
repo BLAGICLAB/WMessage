@@ -125,23 +125,23 @@ pub(crate) async fn resolve_writable(
     }
     // allow 规则 = 单工具 yolo（写白名单外放行+审计，与读侧同语义）
     if crate::bot_fs::tool_rule_for(app, tool) == Some(crate::bot_fs::ToolRuleAction::Allow) {
-        crate::bot::audit_log(
+        crate::audit_event!(
             app,
-            &format!(
-                "bot_fs.rule_allow_write | tool: {tool} | path: {}",
-                crate::bot::truncate_for_log(p, 200)
-            ),
+            crate::audit::AuditLevel::Info,
+            "bot_fs.rule_allow_write",
+            "tool" => tool,
+            "path" => p,
         );
         return Ok(strip_verbatim(expanded));
     }
     match crate::bot::perm_mode(app) {
         crate::bot::PermMode::Yolo => {
-            crate::bot::audit_log(
+            crate::audit_event!(
                 app,
-                &format!(
-                    "bot_fs.yolo_allow_write | tool: {tool} | path: {}",
-                    crate::bot::truncate_for_log(p, 200)
-                ),
+                crate::audit::AuditLevel::Info,
+                "bot_fs.yolo_allow_write",
+                "tool" => tool,
+                "path" => p,
             );
             Ok(strip_verbatim(expanded))
         }
@@ -156,21 +156,21 @@ pub(crate) async fn resolve_writable(
             )
             .await;
             if approved {
-                crate::bot::audit_log(
+                crate::audit_event!(
                     app,
-                    &format!(
-                        "bot_fs.ask_allow_write | tool: {tool} | path: {}",
-                        crate::bot::truncate_for_log(p, 200)
-                    ),
+                    crate::audit::AuditLevel::Info,
+                    "bot_fs.ask_allow_write",
+                    "tool" => tool,
+                    "path" => p,
                 );
                 Ok(strip_verbatim(expanded))
             } else {
-                crate::bot::audit_log(
+                crate::audit_event!(
                     app,
-                    &format!(
-                        "bot_fs.ask_denied_write | tool: {tool} | path: {}",
-                        crate::bot::truncate_for_log(p, 200)
-                    ),
+                    crate::audit::AuditLevel::Warn,
+                    "bot_fs.ask_denied_write",
+                    "tool" => tool,
+                    "path" => p,
                 );
                 Err(format!(
                     "用户未授权写入该路径：{p}（可在设置页把目录加入白名单；后台执行时确认窗不可用，一律拒绝）"
@@ -178,12 +178,12 @@ pub(crate) async fn resolve_writable(
             }
         }
         crate::bot::PermMode::Strict => {
-            crate::bot::audit_log(
+            crate::audit_event!(
                 app,
-                &format!(
-                    "bot_fs.denied_write | path: {} | 不在可写目录内",
-                    crate::bot::truncate_for_log(p, 200)
-                ),
+                crate::audit::AuditLevel::Warn,
+                "bot_fs.denied_write",
+                "path" => p,
+                "reason" => "不在可写目录内",
             );
             Err(format!(
                 "路径不在可写目录内：{p}（可写目录：AI_Gen_Files + 任务卡绑定文件夹 + 设置页 allowedDirs）"
@@ -481,7 +481,6 @@ pub async fn tool_edit_file(
         Ok(p) => p,
         Err(e) => return ToolResult::denied(e),
     };
-    let log_path = crate::bot::truncate_for_log(&canonical.display().to_string(), 200);
     let shown = canonical.display().to_string();
     let write_target = canonical.clone();
     let out = crate::py::document::spawn_blocking_map(move || {
@@ -506,17 +505,19 @@ pub async fn tool_edit_file(
             } else {
                 "行数不变".to_string()
             };
-            crate::bot::audit_log(
+            let mode_tag = match mode {
+                EditMode::Exact => "exact",
+                EditMode::WhitespaceTolerant => "ws",
+                EditMode::Regex { .. } => "regex",
+            };
+            crate::audit_event!(
                 app,
-                &format!(
-                    "bot_fs.edit_file | {} | {} | {delta_note} | replacements={replacements}",
-                    log_path,
-                    match mode {
-                        EditMode::Exact => "exact",
-                        EditMode::WhitespaceTolerant => "ws",
-                        EditMode::Regex { .. } => "regex",
-                    }
-                ),
+                crate::audit::AuditLevel::Info,
+                "bot_fs.edit_file",
+                "path" => &shown,
+                "mode" => mode_tag,
+                "delta_lines" => delta,
+                "replacements" => replacements,
             );
             //  变更证据（Agent 透明化设计 §4.2）：unified diff + before 快照。
             // 快照失败降级 before_ref=None（checkpoint.write_fail 审计），不翻转业务结果。
@@ -530,14 +531,13 @@ pub async fn tool_edit_file(
             .with_file_change(receipt)
         }
         Err((kind, hint)) => {
-            crate::bot::audit_log(
+            crate::audit_event!(
                 app,
-                &format!(
-                    "bot_fs.edit_file.fail | {} | kind: {:?} | {}",
-                    log_path,
-                    kind,
-                    crate::bot::truncate_for_log(&hint, 200)
-                ),
+                crate::audit::AuditLevel::Warn,
+                "bot_fs.edit_file.fail",
+                "path" => &shown,
+                "kind" => format!("{kind:?}"),
+                "hint" => &hint,
             );
             ToolResult::error(hint, Vec::new())
         }
@@ -630,13 +630,13 @@ pub async fn tool_write_file(
             if let Some(b) = before_content.as_deref() {
                 receipt.before_ref = write_before_snapshot(app, b);
             }
-            crate::bot::audit_log(
+            crate::audit_event!(
                 app,
-                &format!(
-                    "bot_fs.write_file | {} | {lines} lines | {}",
-                    crate::bot::truncate_for_log(&written.display().to_string(), 200),
-                    action
-                ),
+                crate::audit::AuditLevel::Info,
+                "bot_fs.write_file",
+                "path" => written.display().to_string(),
+                "lines" => lines,
+                "action" => action,
             );
             ToolResult::ok(
                 format!("已写入 {}（{action}，{lines} 行）", written.display()),

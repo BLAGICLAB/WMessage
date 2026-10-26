@@ -19,10 +19,7 @@ const WHITELIST: &[&str] = &[
     // 工具实现层拆成 bot/tools/ 子模块后，存量调用点跟着搬了过来
     "bot/tools/common.rs",
     "bot/tools/doc.rs",
-    "bot_fs.rs",
-    // 文件工具拆成 bot_fs/ 子模块后，存量调用点跟着搬了过来
-    "bot_fs/edit.rs",
-    "bot_fs/read.rs",
+    // bot_fs 族（bot_fs.rs / bot_fs/edit.rs / bot_fs/read.rs）已迁 audit_event!，摘除
     "bot_chat.rs",
     // 聊天主流程拆成 bot_chat/ 子模块后，存量调用点跟着搬了过来
     "bot_chat/exec.rs",

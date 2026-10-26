@@ -317,23 +317,23 @@ pub async fn resolve_with_perm(
     // allow 规则 = 单工具 yolo（白名单外放行+审计；穿越/软链在 canonicalize
     // 后同样落白名单外——与全局 yolo 档同语义，由规则显式授权兜底）
     if crate::bot_fs::tool_rule_for(app, tool) == Some(crate::bot_fs::ToolRuleAction::Allow) {
-        crate::bot::audit_log(
+        crate::audit_event!(
             app,
-            &format!(
-                "bot_fs.rule_allow | tool: {tool} | path: {}",
-                crate::bot::truncate_for_log(p, 200)
-            ),
+            crate::audit::AuditLevel::Info,
+            "bot_fs.rule_allow",
+            "tool" => tool,
+            "path" => p,
         );
         return Ok(strip_verbatim(canonical));
     }
     match crate::bot::perm_mode(app) {
         crate::bot::PermMode::Yolo => {
-            crate::bot::audit_log(
+            crate::audit_event!(
                 app,
-                &format!(
-                    "bot_fs.yolo_allow | tool: {tool} | path: {}",
-                    crate::bot::truncate_for_log(p, 200)
-                ),
+                crate::audit::AuditLevel::Info,
+                "bot_fs.yolo_allow",
+                "tool" => tool,
+                "path" => p,
             );
             Ok(strip_verbatim(canonical))
         }
@@ -349,12 +349,12 @@ pub async fn resolve_with_perm(
             .await
             {
                 crate::bot_slash::ConfirmChoice::Once => {
-                    crate::bot::audit_log(
+                    crate::audit_event!(
                         app,
-                        &format!(
-                            "bot_fs.ask_allow_once | tool: {tool} | path: {}",
-                            crate::bot::truncate_for_log(p, 200)
-                        ),
+                        crate::audit::AuditLevel::Info,
+                        "bot_fs.ask_allow_once",
+                        "tool" => tool,
+                        "path" => p,
                     );
                     Ok(strip_verbatim(canonical))
                 }
@@ -373,12 +373,13 @@ pub async fn resolve_with_perm(
                         // 此刻都只是猜——猜成文件会把父目录（比用户选的宽一层）
                         // 写进白名单，安全闸门朝过度授权方向失败。宁可不授权。
                         None => {
-                            crate::bot::audit_log(
+                            crate::audit_event!(
                                 app,
-                                &format!(
-                                    "bot_fs.always_persist_skip | tool: {tool} | path: {} | 路径类型探测失败",
-                                    crate::bot::truncate_for_log(&expanded.to_string_lossy(), 200)
-                                ),
+                                crate::audit::AuditLevel::Warn,
+                                "bot_fs.always_persist_skip",
+                                "tool" => tool,
+                                "path" => expanded.to_string_lossy(),
+                                "reason" => "路径类型探测失败",
                             );
                             return Err(format!(
                                 "无法确认路径类型，本次授权未保存（探测失败，请重试）：{p}"
@@ -387,24 +388,29 @@ pub async fn resolve_with_perm(
                     };
                     let dir_str = strip_verbatim(dir).to_string_lossy().to_string();
                     if let Err(e) = crate::bot::add_allowed_dir(app, &dir_str) {
-                        crate::bot::audit_log(app, &format!("bot_fs.always_persist_fail | {e}"));
+                        crate::audit_event!(
+                            app,
+                            crate::audit::AuditLevel::Warn,
+                            "bot_fs.always_persist_fail",
+                            "err" => &e,
+                        );
                     }
-                    crate::bot::audit_log(
+                    crate::audit_event!(
                         app,
-                        &format!(
-                            "bot_fs.ask_allow_always | tool: {tool} | dir: {}",
-                            crate::bot::truncate_for_log(&dir_str, 200)
-                        ),
+                        crate::audit::AuditLevel::Info,
+                        "bot_fs.ask_allow_always",
+                        "tool" => tool,
+                        "dir" => &dir_str,
                     );
                     Ok(strip_verbatim(canonical))
                 }
                 crate::bot_slash::ConfirmChoice::Deny => {
-                    crate::bot::audit_log(
+                    crate::audit_event!(
                         app,
-                        &format!(
-                            "bot_fs.ask_denied | tool: {tool} | path: {}",
-                            crate::bot::truncate_for_log(p, 200)
-                        ),
+                        crate::audit::AuditLevel::Warn,
+                        "bot_fs.ask_denied",
+                        "tool" => tool,
+                        "path" => p,
                     );
                     Err(format!(
                         "用户未授权访问该路径：{p}（可在授权弹窗点「始终允许该目录」，或在设置页把目录加入白名单）"
@@ -413,12 +419,12 @@ pub async fn resolve_with_perm(
             }
         }
         crate::bot::PermMode::Strict => {
-            crate::bot::audit_log(
+            crate::audit_event!(
                 app,
-                &format!(
-                    "bot_fs.denied | path: {} | 不在白名单目录内",
-                    crate::bot::truncate_for_log(p, 200)
-                ),
+                crate::audit::AuditLevel::Warn,
+                "bot_fs.denied",
+                "path" => p,
+                "reason" => "不在白名单目录内",
             );
             Err(format!(
                 "路径不在白名单目录内：{p}（白名单：设置页 allowedDirs，默认 桌面/下载/文档 + 任务卡绑定文件夹）"

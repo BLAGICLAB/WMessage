@@ -261,12 +261,12 @@ pub async fn tool_read_text_file(
             Err(e) => return ToolResult::error(format!("读取失败：{e}"), Vec::new()),
         };
     if inode_check == InodeCheckOutcome::Replaced {
-        crate::bot::audit_log(
+        crate::audit_event!(
             app,
-            &format!(
-                "bot_fs.read_inode_mismatch | {} | canonicalize 与 stat 之间 inode 变了",
-                crate::bot::truncate_for_log(&canonical.display().to_string(), 200)
-            ),
+            crate::audit::AuditLevel::Warn,
+            "bot_fs.read_inode_mismatch",
+            "path" => canonical.display().to_string(),
+            "reason" => "canonicalize 与 stat 之间 inode 变了",
         );
         return ToolResult::denied(format!(
             "{} 在校验后被替换，拒绝读取（TOCTOU 防护）",
@@ -310,12 +310,14 @@ pub async fn tool_read_text_file(
         }
         out.push(')');
     }
-    crate::bot::audit_log(
+    crate::audit_event!(
         app,
-        &format!(
-            "bot_fs.read | {} | lines {offset}-{end}/{total}",
-            crate::bot::truncate_for_log(&canonical.display().to_string(), 200)
-        ),
+        crate::audit::AuditLevel::Info,
+        "bot_fs.read",
+        "path" => canonical.display().to_string(),
+        "offset" => offset,
+        "end" => end,
+        "total" => total,
     );
     ToolResult::ok(out, Vec::new())
 }
@@ -585,14 +587,13 @@ pub async fn tool_grep_files(
     )
     .await
     .unwrap_or_default();
-    crate::bot::audit_log(
+    crate::audit_event!(
         app,
-        &format!(
-            "bot_fs.grep | dir: {} | pattern: {} | hits: {}",
-            crate::bot::truncate_for_log(&dir_log, 200),
-            crate::bot::truncate_for_log(pattern, 100),
-            found
-        ),
+        crate::audit::AuditLevel::Info,
+        "bot_fs.grep",
+        "dir" => &dir_log,
+        "pattern" => pattern,
+        "hits" => found,
     );
     if hits.is_empty() {
         // 跳过的大文件随提示可见
@@ -678,13 +679,12 @@ pub async fn tool_list_files(
         })
         .await
         .unwrap_or_default();
-    crate::bot::audit_log(
+    crate::audit_event!(
         app,
-        &format!(
-            "bot_fs.list | dir: {} | entries: {}",
-            crate::bot::truncate_for_log(&canonical_log, 200),
-            entries.len()
-        ),
+        crate::audit::AuditLevel::Info,
+        "bot_fs.list",
+        "dir" => &canonical_log,
+        "entries" => entries.len(),
     );
     if entries.is_empty() {
         return ToolResult::ok(format!("{} 内没有匹配的文件", canonical_log), Vec::new());
