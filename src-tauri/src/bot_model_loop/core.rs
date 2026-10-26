@@ -7,7 +7,7 @@ use super::{
     mutation_succeeded, prepare_round, read_sse_stream, request_round, rounds_fuse_exit,
     should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning, stream_round,
     user_intent_of, with_thinking, FinalizeOutcome, LlmHttp, ModelLoopDeps, RequestOutcome,
-    RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS,
+    RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
@@ -263,28 +263,64 @@ where
                     &format!("正在思考 · 第 {} 轮", round + 1),
                 );
             }
-            // 请求段：装配 body → 发请求 → 失败重试/降级（见 request_round）。
-            let resp =
-                match request_round(http, &mut msgs, &mut plan, stop, deps, &mut tool_msg_ages)
-                    .await?
-                {
-                    RequestOutcome::Response(r) => r,
-                    RequestOutcome::Stopped => {
-                        let hint = skill_finish(false, "用户停止");
-                        return Ok((format!("⏹ 已停止{hint}"), collected_refs));
-                    }
-                };
+            // 本轮 = 「请求 + 流读取」。流读取失败的两条出口（idle 超时 / 连接
+            // 中断）原先直接穿出循环体，活动技能 run 停在 Running —— 下一条消息
+            // 进来还会被当成本会话的活动技能推进，技能一被暂停/终止就整段作废。
+            //
+            // 这里统一收口：还没向前端吐过内容 → 重发本轮；吐过了 → 收尾技能后
+            // 上抛（重发会把用户已看到的正文/工具行再来一遍）。
+            let mut stream_retry = 0usize;
+            let sse = loop {
+                // 请求段：装配 body → 发请求 → 失败重试/降级（见 request_round）。
+                // 请求侧自己的每条 Err 路径都已收尾技能，这里原样上抛。
+                let resp =
+                    match request_round(http, &mut msgs, &mut plan, stop, deps, &mut tool_msg_ages)
+                        .await
+                    {
+                        Ok(RequestOutcome::Response(r)) => r,
+                        Ok(RequestOutcome::Stopped) => {
+                            let hint = skill_finish(false, "用户停止");
+                            return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                        }
+                        Err(e) => return Err(e),
+                    };
 
-            // 流消费：逐 chunk 解析 SSE → 正文 / 工具调用 / 思考块（见 stream_round）。
-            let sse = read_sse_stream(
-                http,
-                resp,
-                stop,
-                deps,
-                expecting_selfcheck,
-                expecting_final_selfcheck,
-            )
-            .await?;
+                // 流消费：逐 chunk 解析 SSE → 正文 / 工具调用 / 思考块（见 stream_round）。
+                match read_sse_stream(
+                    http,
+                    resp,
+                    stop,
+                    deps,
+                    expecting_selfcheck,
+                    expecting_final_selfcheck,
+                )
+                .await
+                {
+                    Ok(sse) => break sse,
+                    Err(fail) => {
+                        if !fail.emitted_any && stream_retry < MAX_STREAM_RETRIES {
+                            stream_retry += 1;
+                            audit(
+                                crate::audit::AuditLevel::Warn,
+                                "llm.stream_retry",
+                                vec![
+                                    ("attempt", stream_retry.to_string()),
+                                    ("err", fail.err.to_string()),
+                                ],
+                            );
+                            if stop.stopped() {
+                                let hint = skill_finish(false, "用户停止");
+                                return Ok((format!("⏹ 已停止{hint}"), collected_refs));
+                            }
+                            tokio::time::sleep(LLM_RETRY_DELAY).await;
+                            continue;
+                        }
+                        // 放弃重试：收尾技能（不留悬空 run）后上抛。
+                        let _hint = skill_finish(false, "流式响应中断");
+                        return Err(fail.err);
+                    }
+                }
+            };
             let rs = stream_round(sse, deps, expecting_selfcheck, expecting_final_selfcheck)?;
             if rs.stopped {
                 let hint = skill_finish(false, "用户停止");

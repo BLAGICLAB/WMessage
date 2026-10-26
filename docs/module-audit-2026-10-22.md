@@ -548,13 +548,18 @@ UTF-8 边界回退；trace_sink 批次事务+失败重连+DROPPED 计数。
 - 修法：闸的触发条件绑定「自检提问仍悬在当前轮」而非「本提问问过自检」；补一条用户显式
   要求 Y/N 的豁免。
 
-**[P3-1] SSE 读侧两条错误出口不配对 `skill_finish` → 活动技能 run 停在 Running**
+**[P3-1] SSE 读侧两条错误出口不配对 `skill_finish` → 活动技能 run 停在 Running** —— **已修复**
 - 位置：bot_model_loop.rs `read_sse_stream` 的两条 `Err`（流式读取超时 / 流式读取失败）
   直接穿出循环体（`?`），**未调** `(deps.skill_finish)(false, …)`；对照 `handle_error_response`
   的 Fatal 路径、`stream_round` 的流内错误路径、`request_round` 的网络失败路径**都调了**。
 - 触发：模型调了 `use_skill`（会话技能 run 置 Running）→ SSE idle 超时（120s 无数据）或连接中断。
 - 后果：该会话技能 run 停在非终态 Running（UI 仍显示在跑、步数停在中间），直到技能超时清扫
   或下次 `start_skill` 才被标 Failed。
+- 修复：读侧失败改为返回 `StreamFailure`（错误本体 + 「失败前是否已向前端吐过内容」），
+  交主循环统一收口——还没吐过内容就重发本轮（`MAX_STREAM_RETRIES=1`）；吐过了、或重发仍失败，
+  就收尾技能（`skill_finish(false, "流式响应中断")`）后上抛，不再留悬空 run。
+  复现用例：`tests/llm_integration/stream_failure.rs` 三条（重发本轮 / 已吐过内容不重发 /
+  放弃重发时收尾技能）。
 
 **[P3-2] intent 准入闸第三道（探针）可被整体跳过 → 过宽模式能落盘并进路由表**
 - 位置：intent_router.rs `content_free_probe`（FILLERS 12 个字符）+ `check_intent_pattern`

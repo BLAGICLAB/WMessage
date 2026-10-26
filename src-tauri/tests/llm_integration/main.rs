@@ -157,6 +157,9 @@ struct CoreHarness {
     session_tools: Box<dyn Fn(Option<&str>) -> Option<SessionTools> + Send + Sync>,
     /// `session_tools` 闭包背后的数据，供测试写入
     session_tools_data: Arc<Mutex<Option<SessionTools>>>,
+    /// skill_finish 回调的调用记录（(ok, reason)）——验「失败出口必须收尾技能，
+    /// 不留悬空 run」。默认就记，不额外开开关：记录本身无副作用。
+    skill_finish_calls: Arc<Mutex<Vec<(bool, String)>>>,
     /// 执行类谎报守卫的触发词表。默认填**内置默认表**（与生产一致），
     /// 否则依赖守卫的既有用例会因空词表静默失效；要验自定义表改这个字段。
     guard_claim_keywords: Vec<String>,
@@ -191,6 +194,7 @@ impl CoreHarness {
         let sub_tools2 = sub_tools.clone();
         let missing: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let missing2 = missing.clone();
+        let finish_calls: Arc<Mutex<Vec<(bool, String)>>> = Arc::new(Mutex::new(Vec::new()));
         Self {
             // 非交互实例：不发流式事件，stop 标志未置位
             stop: StopGuard::new(&mock_handle(), false, session_id.map(str::to_string)),
@@ -198,7 +202,13 @@ impl CoreHarness {
             audit: Box::new(move |_, event, _| {
                 events2.lock().unwrap().push(event);
             }),
-            skill_finish: Box::new(|_, _| String::new()),
+            skill_finish: {
+                let calls = finish_calls.clone();
+                Box::new(move |ok, reason| {
+                    calls.lock().unwrap().push((ok, reason.to_string()));
+                    String::new()
+                })
+            },
             // 用真 accessor（走兜底实例，与生产语义一致）；本组用例不插 run → 恒 None。
             // handle 构造时捕获一次：闭包里每次调 mock_handle() 会 Box::leak 一个新
             // mock_app，多轮用例下泄漏随调用次数增长；兜底注册表是全局 OnceLock，
@@ -220,9 +230,15 @@ impl CoreHarness {
                     .collect()
             }),
             audit_events: events,
+            skill_finish_calls: finish_calls,
             reasoning_echo: false,
             in_turn_context_edit: true,
         }
+    }
+
+    /// skill_finish 的调用记录（(ok, reason)）
+    fn skill_finish_calls(&self) -> Vec<(bool, String)> {
+        self.skill_finish_calls.lock().unwrap().clone()
     }
 
     /// opt-in 思考段回灌：默认关（维持现状），要验开态的消息形状用这个。
@@ -553,3 +569,4 @@ mod e2e;
 mod guard;
 mod selfcheck;
 mod sse;
+mod stream_failure;

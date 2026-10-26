@@ -77,6 +77,7 @@ pub(crate) use self::guard::{
 pub(crate) use self::output::{apply_output_cap, DEFAULT_TOOL_OUTPUT_CAP_BYTES};
 pub(crate) use self::request::{
     compact_before_round, prepare_round, request_round, LLM_RETRY_DELAY, MAX_LLM_ATTEMPTS,
+    MAX_STREAM_RETRIES,
 };
 pub(crate) use self::shell::{resolve_max_rounds, DEFAULT_MAX_ROUNDS};
 pub(crate) use self::sse::{read_sse_stream, stream_round};

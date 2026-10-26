@@ -30,6 +30,13 @@ const AGE_HARD_ROUNDS: usize = 15;
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
 pub(crate) const MAX_LLM_ATTEMPTS: usize = 2;
 
+/// 流读取失败后的重发上限（本轮重发，不是重发整个回合）。
+///
+/// 只在「还没向前端吐过内容」时用得上——重发已显示过的内容等于给用户看两遍。
+/// 1 次够：死连接多半在响应头之后立刻断，重发一次仍断就是上游/网络真有问题，
+/// 再重发只是白烧一次请求。
+pub(crate) const MAX_STREAM_RETRIES: usize = 1;
+
 pub(crate) const LLM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// 上下文超长降级：保留的历史比例（砍掉一半再试）

@@ -60,10 +60,23 @@ pub(crate) struct RoundStream {
     pub(crate) stopped: bool,
 }
 
+/// 流读取失败：错误本体 + 失败前是否已向前端吐过内容。
+///
+/// 「有没有吐过内容」决定这条失败能不能重发本轮：正文、思考段、工具折叠行
+/// 一旦显示过，重发一遍就是重复内容；什么都没显示时重发才是干净的。
+pub(crate) struct StreamFailure {
+    pub(crate) err: CommandError,
+    pub(crate) emitted_any: bool,
+}
+
 /// 流消费（读侧）：逐 chunk 收 SSE 行 → 解析成正文 / 工具调用 / 思考块。
 ///
 /// 覆盖：SSE 行解析（两协议）· think 拆分 · 工具调用累积 · 流完整性标记
 /// （[DONE] / finish_reason）· 坏块计数 · token 用量累计 · 流内错误载荷。
+///
+/// 失败一律返回 `StreamFailure`（带「失败前是否已吐过内容」）：调用方据此决定
+/// 重发本轮还是收尾上抛。本函数**不**收尾技能——重试判定在调用方，收尾与重试
+/// 只能有一个地方做。
 pub(crate) async fn read_sse_stream(
     http: &LlmHttp,
     resp: reqwest::Response,
@@ -71,9 +84,17 @@ pub(crate) async fn read_sse_stream(
     deps: &ModelLoopDeps<'_>,
     expecting_selfcheck: bool,
     expecting_final_selfcheck: bool,
-) -> Result<SseStream, CommandError> {
+) -> Result<SseStream, StreamFailure> {
     let emit = deps.emit;
     let audit = deps.audit;
+    // 「本轮是否已向前端吐过内容」：正文、思考段、工具折叠行都算——
+    // 这三样显示过就不能重发本轮（重发＝重复内容）。
+    // 用原子量而非 Cell：读侧 future 要跨线程（Send），Cell 不满足 Sync
+    let emitted_any = std::sync::atomic::AtomicBool::new(false);
+    let emit_any = |ev: &str, payload: serde_json::Value| {
+        emitted_any.store(true, std::sync::atomic::Ordering::Relaxed);
+        emit(ev, payload);
+    };
     let mut stream = resp.bytes_stream();
     // 字节缓冲按行切——逐 chunk from_utf8_lossy 时
     // chunk 边界落在多字节字符中间会产生 U+FFFD（正文乱码尚可，
@@ -171,12 +192,12 @@ pub(crate) async fn read_sse_stream(
             // 回灌与否由配置开关决定（默认关 = 只走前端展示出口）。
             if let Some(r) = parsed.reasoning {
                 reasoning_text.push_str(&r);
-                emit("bot-think-delta", serde_json::json!({ "text": r }));
+                emit_any("bot-think-delta", serde_json::json!({ "text": r }));
             }
             if let Some(t) = parsed.content {
                 let (normal, think) = feed_think(&mut think_mode, &mut think_buf, &t);
                 if !think.is_empty() {
-                    emit("bot-think-delta", serde_json::json!({ "text": think }));
+                    emit_any("bot-think-delta", serde_json::json!({ "text": think }));
                 }
                 if !normal.is_empty() {
                     final_text.push_str(&normal);
@@ -185,7 +206,7 @@ pub(crate) async fn read_sse_stream(
                     // 终稿自检响应（Y/N）同样整段隐藏：用户已在主出口前看到
                     // final_text 全文，不该再叠一层 Y/N 字样
                     if !expecting_selfcheck && !expecting_final_selfcheck {
-                        emit("bot-chat-delta", serde_json::json!({ "text": normal }));
+                        emit_any("bot-chat-delta", serde_json::json!({ "text": normal }));
                     }
                 }
             }
@@ -213,7 +234,7 @@ pub(crate) async fn read_sse_stream(
                 let t = &tool_calls[tc_delta.index];
                 if first_id && !t.0.is_empty() {
                     // 新工具调用开始：推折叠行给前端
-                    emit("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
+                    emit_any("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
                 }
                 if tc_delta
                     .name_chunk
@@ -221,7 +242,7 @@ pub(crate) async fn read_sse_stream(
                     .is_some_and(|n| !n.is_empty())
                     && !t.0.is_empty()
                 {
-                    emit(
+                    emit_any(
                         "bot-tool-name",
                         serde_json::json!({ "id": t.0, "name": t.1 }),
                     );
@@ -246,11 +267,14 @@ pub(crate) async fn read_sse_stream(
                         "llm.stream_idle_timeout",
                         vec![("idle_secs", STREAM_CHUNK_IDLE_TIMEOUT.as_secs().to_string())],
                     );
-                    return Err(format!(
-                        "流式读取超时：连续 {}s 未收到数据，判定连接死亡",
-                        STREAM_CHUNK_IDLE_TIMEOUT.as_secs()
-                    )
-                    .into());
+                    return Err(StreamFailure {
+                        err: format!(
+                            "流式读取超时：连续 {}s 未收到数据，判定连接死亡",
+                            STREAM_CHUNK_IDLE_TIMEOUT.as_secs()
+                        )
+                        .into(),
+                        emitted_any: emitted_any.load(std::sync::atomic::Ordering::Relaxed),
+                    });
                 }
             };
             let chunk = match item {
@@ -262,7 +286,10 @@ pub(crate) async fn read_sse_stream(
                         "llm.stream_failed",
                         vec![("err", e.to_string())],
                     );
-                    return Err(format!("流式读取失败：{e}").into());
+                    return Err(StreamFailure {
+                        err: format!("流式读取失败：{e}").into(),
+                        emitted_any: emitted_any.load(std::sync::atomic::Ordering::Relaxed),
+                    });
                 }
             };
             byte_buf.extend_from_slice(&chunk);

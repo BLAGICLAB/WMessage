@@ -75,6 +75,12 @@ pub enum MockBehavior {
     /// text 块占 index 0、tool_use 块 index 1——Anthropic 块序号连文本一起数，
     /// 重映射防线（bot_anthropic::ToolSlotMapper）必须把它归位到工具槽位 0
     AnthropicTextThenToolCall(String, ToolCallResponse),
+    /// 200 但 body 提前断：Content-Length 声明得比实际写出的多，连接随后关闭
+    /// ——reqwest 侧表现为「error decoding response body」（传输层解码失败），
+    /// 与真实网关/代理中途断链同形。
+    /// 参数是**实际写出的 body 原文**：里面若有完整 data 行，模型侧已经吐过
+    /// 内容（不重试）；留空或只有半行则什么都没吐（可重发本轮）。
+    TruncatedStream(String),
 }
 
 pub struct MockLlmServer {
@@ -200,6 +206,22 @@ impl MockLlmServer {
                             let _ = stream.flush();
                             thread::sleep(Duration::from_millis(5));
                         }
+                    }
+                    // body 提前断：声明的 Content-Length 大于实际写出的字节数，
+                    // 连接随后关闭 → 对端解码失败（error decoding response body）
+                    MockBehavior::TruncatedStream(content) => {
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\n\
+                             Content-Type: text/event-stream\r\n\
+                             Content-Length: {}\r\n\
+                             Connection: close\r\n\
+                             \r\n",
+                            content.len() + 128
+                        );
+                        let _ = stream.write_all(head.as_bytes());
+                        let _ = stream.flush();
+                        let _ = stream.write_all(content.as_bytes());
+                        let _ = stream.flush();
                     }
                     // 普通 behavior：整响应一次 write（原逻辑不变）
                     _ => {
