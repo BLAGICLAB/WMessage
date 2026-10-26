@@ -650,10 +650,19 @@ pub async fn tool_install_skill(
     }
 
     // 安装前确认：装的是第三方内容，落盘后即进入技能目录、会被后续对话读取。
+    // intents 与 mode 必须给用户看：前者决定「装上后哪些话会被路由进这个技能」，
+    // 后者决定「命中后是否绕开 LLM 直接执行」——第三方技能自带宽触发词 + auto
+    // 模式等于免审执行，盲批就是把它放进来。
     let confirm_text = format!(
-        "安装技能「{name}」（来源：{}）到技能目录，共 {} 个文件。",
+        "安装技能「{name}」（来源：{}）到技能目录，共 {} 个文件。触发词 intents：{}；执行模式 mode：{}（auto = 命中后不经 LLM 复核直接执行技能步骤）。",
         describe_source(&source),
-        outcome.written.len()
+        outcome.written.len(),
+        if meta.intents.is_empty() {
+            "未声明（不会自动触发）".to_string()
+        } else {
+            meta.intents.join("、")
+        },
+        meta.mode
     );
     let approved = crate::bot_slash::ask_user_confirm(
         app,

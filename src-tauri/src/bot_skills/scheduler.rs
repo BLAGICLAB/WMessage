@@ -188,18 +188,28 @@ pub fn skill_terminate_all<R: tauri::Runtime>(
     session_id: Option<&str>,
 ) {
     let registry = skill_runs(app);
-    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::scheduler::skill_runs");
-    for (name, run) in runs.iter_mut() {
-        if run.state == SkillState::Running || run.state == SkillState::Paused {
-            if let Some(sid) = session_id {
-                if run.session_id.as_deref() != Some(sid) {
-                    continue; // 别的会话的技能不动
+    // 锁内只做状态迁移，审计挪到锁外收集后统一写：audit_log_hook 走全局
+    // DB 写锁，嵌在注册表锁里持双锁，别的线程拿锁顺序稍异就互卡。
+    let terminated: Vec<String> = {
+        let mut runs =
+            crate::db::lock::lock_or_recover(&registry, "bot_skills::scheduler::skill_runs");
+        let mut names = Vec::new();
+        for (name, run) in runs.iter_mut() {
+            if run.state == SkillState::Running || run.state == SkillState::Paused {
+                if let Some(sid) = session_id {
+                    if run.session_id.as_deref() != Some(sid) {
+                        continue; // 别的会话的技能不动
+                    }
                 }
+                run.state = SkillState::Terminated;
+                run.end_reason = reason.to_string();
+                names.push(name.clone());
             }
-            run.state = SkillState::Terminated;
-            run.end_reason = reason.to_string();
-            crate::bot::audit_log_hook(app, &format!("skill_terminated | name: {name} | {reason}"));
         }
+        names
+    };
+    for name in &terminated {
+        crate::bot::audit_log_hook(app, &format!("skill_terminated | name: {name} | {reason}"));
     }
 }
 

@@ -10,9 +10,19 @@ pub(crate) fn services_root() -> PathBuf {
 }
 
 /// 建服务的工作目录（stdout.log / stderr.log 落这里）。
+///
+/// Linux 多用户机器上系统 temp 是共享目录：目录收紧 0700、盘上已有的宽权限
+/// 目录补收紧，防其他用户读取日志（启动横幅可能含 token / 内网地址），也防
+/// 抢先放置同名目录/符号链接。
 pub(super) fn make_service_dir(id: &str) -> Result<PathBuf, String> {
     let dir = services_root().join(id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建服务目录失败：{e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("收紧服务目录权限失败：{e}"))?;
+    }
     Ok(dir)
 }
 
@@ -20,13 +30,27 @@ pub(super) fn make_service_dir(id: &str) -> Result<PathBuf, String> {
 ///
 /// 必须 append：子进程持有同一个 fd，`O_APPEND` 让它每次写都落到**当前文件末尾**。
 /// 宿主截断后（§ truncate_output_file）子进程续写会接在新末尾，而不是按旧偏移
-/// 写出"前面一段空洞"的稀疏文件。
+/// 写出"前面一段空洞"的稀疏文件。unix 下创建即 0600（stdout 可能含启动横幅
+/// 里的 token，0644 会让同机其他用户读到）。
 pub(super) fn open_append(path: &Path) -> Result<std::fs::File, String> {
-    std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|e| format!("打开日志文件失败（{}）：{e}", path.display()))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|e| format!("打开日志文件失败（{}）：{e}", path.display()))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| format!("打开日志文件失败（{}）：{e}", path.display()))
+    }
 }
 
 /// 读文件末尾 `n` 字节。

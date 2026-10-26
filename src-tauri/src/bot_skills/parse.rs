@@ -44,6 +44,11 @@ pub struct SkillMeta {
     /// 这类技能不进全局路由表（跨会话不劫持），只在创建会话内经
     /// intent_router::add_session_route 生效；重启后不再自动触发。
     pub session_scoped: bool,
+    /// 会话档的归属会话（frontmatter `session-owner`，create_skill 注入）。
+    /// 启动层据此拦跨会话 use_skill——清单不进广告面还不够，
+    /// 点名调用也必须挡。None = 创建时没有会话上下文（后台链路），
+    /// 仅无会话上下文的调用可用。
+    pub session_owner: Option<String>,
     pub intents: Vec<String>,
     /// 多步 Skill 自报的对话轮数上限；
     /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（50）。
@@ -84,6 +89,7 @@ impl Default for SkillMeta {
             enabled: true,
             resumable: false,
             session_scoped: false,
+            session_owner: None,
             intents: Vec::new(),
             max_rounds: None,
             allowed_tools: Vec::new(),
@@ -242,6 +248,16 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
             // add_session_route 进会话档。用户想提升为全局：改掉这行即可。
             "scope" => {
                 m.session_scoped = v.trim().eq_ignore_ascii_case("session");
+            }
+            // 会话档归属（create_skill 注入的创建会话 id）：启动层拦跨会话
+            // use_skill 的判据。空值当 None（没有归属 = 后台链路建的）。
+            "session-owner" => {
+                let t = v.trim();
+                m.session_owner = if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                };
             }
             "resumable" => {
                 m.resumable =
@@ -493,12 +509,14 @@ fn insert_key_line(fm: &str, line: &str) -> String {
     }
 }
 
-/// 把技能正文 frontmatter 的 `scope` 键强制写成 `session`（已声明则整行替换，
-/// 未声明则插在内容区最前面）。create_skill 落盘前调用——模型 content 里就算
-/// 写了别的 scope 值也会被覆盖：会话档是工具来源技能的结构属性（跨会话不
-/// 劫持、重启即失效），不是模型可自选的项。
+/// 把技能正文 frontmatter 的 `scope` 键强制写成 `session`，并注入归属会话
+/// `session-owner`（已声明则整行替换，未声明则插在内容区最前面）。
+/// create_skill 落盘前调用——模型 content 里就算写了别的 scope 值也会被覆盖：
+/// 会话档是工具来源技能的结构属性（跨会话不劫持、重启即失效），不是模型可
+/// 自选的项；归属会话一并钉死，启动层拦跨会话 use_skill 就有据可依。
+/// owner = None（后台链路）时不写归属行——这类技能仅无会话上下文的调用可用。
 /// 无 frontmatter → None（create_skill 的准入核已保证 frontmatter 在场）。
-pub fn force_frontmatter_session_scope(text: &str) -> Option<String> {
+pub fn force_frontmatter_session_scope(text: &str, owner: Option<&str>) -> Option<String> {
     let had_bom = text.starts_with('\u{feff}');
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
     let key_line = "scope: session";
@@ -521,13 +539,41 @@ pub fn force_frontmatter_session_scope(text: &str) -> Option<String> {
                 }
                 None => insert_key_line(fm, key_line),
             };
-            format!("{}{}{}", &body[..start], new_fm, &body[end..])
+            let with_scope = format!("{}{}{}", &body[..start], new_fm, &body[end..]);
+            match owner {
+                Some(sid) => {
+                    let owner_line = format!("session-owner: {}", sid);
+                    let body2 = with_scope.as_str();
+                    let (start2, end2) = frontmatter_span(body2)?;
+                    let fm2 = &body2[start2..end2];
+                    let new_fm2 = match last_key_line(fm2, "session-owner") {
+                        Some(range) => {
+                            let orig = &fm2[range.clone()];
+                            let lead = orig.len() - orig.trim_start().len();
+                            format!(
+                                "{}{}{}{}",
+                                &fm2[..range.start],
+                                &orig[..lead],
+                                owner_line,
+                                &fm2[range.end..]
+                            )
+                        }
+                        None => insert_key_line(fm2, &owner_line),
+                    };
+                    format!("{}{}{}", &body2[..start2], new_fm2, &body2[end2..])
+                }
+                None => with_scope,
+            }
         }
         None => return None,
     };
 
     // 写完必须能被解析器读回目标值（与 set_frontmatter_enabled 同口径）
-    if !parse_meta(&rewritten, "").session_scoped {
+    let meta = parse_meta(&rewritten, "");
+    if !meta.session_scoped {
+        return None;
+    }
+    if owner.is_some() && meta.session_owner.is_none() {
         return None;
     }
     Some(if had_bom {

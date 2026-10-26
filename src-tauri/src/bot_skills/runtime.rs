@@ -228,6 +228,14 @@ pub fn start_skill(
     session_id: Option<&str>,
 ) -> Result<(SkillMeta, String), String> {
     let (meta, body, dir) = load_skill_meta(app, name)?;
+    // 会话档技能只归创建它的会话用：清单层已把它挡在全局广告面外，
+    // 启动层还得拦点名调用——否则别的会话直接 use_skill 照样能跑。
+    // 归属缺席（后台链路创建）的会话档技能仅在无会话上下文的调用可用。
+    if meta.session_scoped && meta.session_owner.as_deref() != session_id {
+        return Err(format!(
+            "技能「{name}」是会话档技能（scope: session），仅创建它的会话可用；如需在当前会话使用，请让用户在设置页把它的 scope 改为全局"
+        ));
+    }
     // `rollback: auto` 但正文没有 `## Rollback` 段 → 降为 `none`。
     //
     // SKILL-DSL 承诺过这个降级：声明了 auto 却没有回滚段可跑 = 没有回滚。

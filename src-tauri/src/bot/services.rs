@@ -313,23 +313,12 @@ pub fn enabled<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
 
 /// 写开关状态。
 ///
-/// 只吞 NotFound：权限 / 占用类失败必须上抛——盘上残留 flag 时
-/// `service_get_enabled` 仍返 true，与刚返回给调用方的「已禁用」自相矛盾。
+/// flag 走 0600（与 UI 自动化开关同款）：0644 时同机其它进程能直接创建这个
+/// 文件把「允许机器人启动本地服务」的用户同意顶开。只吞 NotFound：权限 /
+/// 占用类失败必须上抛——盘上残留 flag 时 `service_get_enabled` 仍返 true，
+/// 与刚返回给调用方的「已禁用」自相矛盾。开关变更必须留痕。
 pub fn set_enabled<R: tauri::Runtime>(app: &AppHandle<R>, on: bool) -> Result<bool, String> {
-    let path = services_flag_path(app);
-    if on {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败：{e}"))?;
-        }
-        std::fs::write(&path, b"1").map_err(|e| format!("写入开关失败：{e}"))?;
-    } else {
-        match std::fs::remove_file(&path) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("删除开关失败：{e}")),
-        }
-    }
-    Ok(enabled(app))
+    set_flag_with_audit(app, &services_flag_path(app), on, "service.enable_toggle")
 }
 
 /// 读开关状态（设置页）。
@@ -357,24 +346,56 @@ pub fn expose_net_allowed<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
 }
 
 /// 写「允许服务暴露到非 loopback」开关。
+///
+/// L1 暴露闸的放开方式，与启用开关同款 0600 + 审计——这个 flag 一旦被
+/// 同机进程静默创建，受管服务就能绑 0.0.0.0 暴露到局域网，事后必须查得到
+/// 「是谁在什么时候放开的」。
 pub fn set_expose_net_allowed<R: tauri::Runtime>(
     app: &AppHandle<R>,
     on: bool,
 ) -> Result<bool, String> {
-    let path = expose_net_flag_path(app);
+    set_flag_with_audit(
+        app,
+        &expose_net_flag_path(app),
+        on,
+        "service.expose_net_toggle",
+    )
+}
+
+/// 服务权限 flag 的统一写入口：0600 写 / 删 + 变更审计（带 enabled 与 os 用户）。
+/// 盘上已有宽权限旧 flag 时，write_flag_file 会顺手收紧成 0600。
+fn set_flag_with_audit<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    path: &PathBuf,
+    on: bool,
+    event: &'static str,
+) -> Result<bool, String> {
+    let before = path.exists();
     if on {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败：{e}"))?;
         }
-        std::fs::write(&path, b"1").map_err(|e| format!("写入开关失败：{e}"))?;
+        crate::ui::write_flag_file(path).map_err(|e| format!("写入开关失败：{e}"))?;
     } else {
-        match std::fs::remove_file(&path) {
+        match std::fs::remove_file(path) {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("删除开关失败：{e}")),
         }
     }
-    Ok(expose_net_allowed(app))
+    let after = path.exists();
+    if before != after {
+        crate::audit::write_event(
+            app,
+            crate::audit::AuditLevel::Info,
+            event,
+            &[
+                ("enabled", after.to_string()),
+                ("user", crate::ui::os_user()),
+            ],
+        );
+    }
+    Ok(after)
 }
 
 /// 读「允许服务暴露到非 loopback」开关（设置页）。

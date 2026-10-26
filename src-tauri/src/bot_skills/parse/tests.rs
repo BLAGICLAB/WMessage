@@ -21,34 +21,51 @@ fn scope_session_key_parses_into_meta() {
 #[test]
 fn force_session_scope_inserts_when_absent() {
     let src = "---\nname: a\ndescription: d\nintents:\n  - 润色文档\n---\n正文";
-    let out = force_frontmatter_session_scope(src).expect("应注入成功");
+    let out = force_frontmatter_session_scope(src, Some("sess-1")).expect("应注入成功");
     assert!(
         out.contains("scope: session"),
         "注入后的 frontmatter 必须含 scope: session"
     );
     let m = parse_meta(&out, "");
     assert!(m.session_scoped, "注入后必须能被解析器读回会话档");
+    assert_eq!(
+        m.session_owner.as_deref(),
+        Some("sess-1"),
+        "归属会话一并注入（启动层拦跨会话 use_skill 的判据）：{out}"
+    );
     assert!(
         m.intents.contains(&"润色文档".to_string()),
         "注入不得劈坏多行 intents 块：{out}"
+    );
+    // 后台链路（无会话上下文）不写归属行
+    let out2 = force_frontmatter_session_scope(src, None).expect("无归属注入应成功");
+    assert!(
+        parse_meta(&out2, "").session_owner.is_none(),
+        "owner=None 不得写 session-owner 行：{out2}"
     );
 }
 
 #[test]
 fn force_session_scope_overrides_any_existing_value() {
-    let src = "---\nname: a\ndescription: d\nscope: global\n---\n正文";
-    let out = force_frontmatter_session_scope(src).expect("应改写成功");
+    let src = "---\nname: a\ndescription: d\nscope: global\nsession-owner: old\n---\n正文";
+    let out = force_frontmatter_session_scope(src, Some("sess-2")).expect("应改写成功");
     assert!(
         !out.contains("scope: global"),
         "模型写的 scope 值必须被覆盖（会话档不是模型可自选项）"
     );
-    assert!(parse_meta(&out, "").session_scoped);
+    let m = parse_meta(&out, "");
+    assert!(m.session_scoped);
+    assert_eq!(
+        m.session_owner.as_deref(),
+        Some("sess-2"),
+        "旧归属必须被覆盖，不能沿用：{out}"
+    );
 }
 
 #[test]
 fn force_session_scope_rejects_frontmatterless_text() {
     assert!(
-        force_frontmatter_session_scope("没有 frontmatter 的正文").is_none(),
+        force_frontmatter_session_scope("没有 frontmatter 的正文", Some("s")).is_none(),
         "无 frontmatter 无法标记，宁可失败也不静默放行"
     );
 }

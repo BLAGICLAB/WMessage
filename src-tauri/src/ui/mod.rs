@@ -130,7 +130,7 @@ pub fn ui_enabled<R: tauri::Runtime>(app: &AppHandle<R>) -> bool {
 }
 
 /// 当前 OS 用户名（拿不到就是空串）
-fn os_user() -> String {
+pub(crate) fn os_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_default()
@@ -138,14 +138,14 @@ fn os_user() -> String {
 
 /// 写 flag 文件（unix 下创建即 0600）
 ///
-/// flag 文件存在 = UI 自动化开启。0644 时同机的其它进程照样能创建这个文件，
+/// flag 文件存在 = 对应能力开启。0644 时同机的其它进程照样能创建这个文件，
 /// 把闸门顶开——0600 之后只有当前用户能写。创建时就带 0600（不是先建后 chmod
 /// 的竞态）：盘上若已有宽权限的旧 flag，创建时的 mode 不生效，写完再补一刀。
 ///
 /// Windows 没有 unix 权限位：这层收紧在 Windows 上不生效，flag 只受用户目录
 /// 的 ACL 保护（同用户的其它进程仍能创建它）——那里真正的边界是窗口级授权与
 /// 危险动作确认两道闸，不是这个文件。
-fn write_flag_file(path: &std::path::Path) -> std::io::Result<()> {
+pub(crate) fn write_flag_file(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;

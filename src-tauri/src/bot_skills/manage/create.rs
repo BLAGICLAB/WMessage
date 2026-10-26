@@ -273,14 +273,16 @@ pub async fn tool_create_skill(
     // 想提升为全局由用户改 frontmatter 或走设置页导入——这层不由模型自选。
     // frontmatter 缺席在此分支实际到不了（准入核已验 description 在场），按
     // 「工具没执行 = denied」口径收口。
-    let content = match crate::bot_skills::parse::force_frontmatter_session_scope(&content) {
-        Some(c) => c,
-        None => {
-            return ToolResult::denied(
-                "create_skill：技能内容没有可用的 frontmatter，无法标记会话档，未创建".to_string(),
-            )
-        }
-    };
+    let content =
+        match crate::bot_skills::parse::force_frontmatter_session_scope(&content, session_id) {
+            Some(c) => c,
+            None => {
+                return ToolResult::denied(
+                    "create_skill：技能内容没有可用的 frontmatter，无法标记会话档，未创建"
+                        .to_string(),
+                )
+            }
+        };
     // 确认窗展示 intents 与 mode：这两项决定「建成后哪些话会被路由进来」和
     // 「命中后是否绕开 LLM 直接执行」——不给用户看就等于让用户盲批
     let confirm_text = format!(

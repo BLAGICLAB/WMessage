@@ -209,8 +209,9 @@ fn admission_rejects_auto_mode_without_step_blocks() {
 }
 
 /// create_skill 必须把技能钉成会话档：落盘前强制 frontmatter `scope: session`
-/// （模型 content 里写什么 scope 都会被覆盖）+ 落盘后经 add_session_route
-/// 注册本会话路由。「模型建技能跨会话劫持路由」的入口就在这两处，少一处都回流。
+/// + 注入归属会话 `session-owner`（模型 content 里写什么 scope 都会被覆盖）
+/// + 落盘后经 add_session_route 注册本会话路由。「模型建技能跨会话劫持路由」
+/// 的入口就在这两处，少一处都回流。
 #[test]
 fn tool_create_skill_pins_session_scope() {
     let body = create_skill_src();
@@ -222,12 +223,16 @@ fn tool_create_skill_pins_session_scope() {
         .next()
         .expect("tool_create_skill 应以顶格 } 收尾");
     let inject = body
-        .find("force_frontmatter_session_scope(&content)")
+        .find("force_frontmatter_session_scope(")
         .expect("落盘前必须强制 scope: session——模型写的 scope 值不可信");
+    let owner = body[inject..]
+        .find("session_id")
+        .expect("scope 注入必须带上归属会话（启动层拦跨会话 use_skill 的判据）");
     let write = body
         .find("create_skill_at(")
         .expect("tool_create_skill 必须走 create_skill_at 落盘");
     assert!(inject < write, "scope 注入必须在落盘之前");
+    assert!(owner < write, "归属会话注入也在落盘之前");
     assert!(
         body.contains("add_session_route("),
         "落盘后必须注册会话档路由（本会话立即生效）"
