@@ -173,8 +173,34 @@ pub(super) async fn apply_skill_route(
             })
         }
         Err(crate::bot_skills::DslFailure::Terminated { reason }) => {
-            Err(CommandError::Internal(reason))
+            Err(skill_terminated_error(reason))
         }
+    }
+}
+
+/// 技能调度器终止（无可执行步骤 / DSL 解析失败等内容形态问题）的错误分类。
+/// 这是可诊断的预期失败，不是内部故障——与运行时步骤熔断同族，走
+/// DomainRule(skill)，不降级 INTERNAL（「内部错误」会把用户引向报障而非
+/// 修技能内容）。
+fn skill_terminated_error(reason: String) -> CommandError {
+    CommandError::DomainRule {
+        domain: "skill".to_string(),
+        reason,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 技能终止的用户可见文案不得再挂「内部错误」前缀——内容形态问题是
+    /// 域规则失败，用户该做的是改技能正文，不是反馈日志。
+    #[test]
+    fn skill_termination_is_not_classified_internal() {
+        let err = skill_terminated_error("技能「t」无可执行步骤（DSL 解析为空）".to_string());
+        let msg = err.to_string();
+        assert!(!msg.contains("内部错误"), "不得标成内部故障：{msg}");
+        assert!(msg.contains("[skill]"), "应走 skill 域规则分类：{msg}");
     }
 }
 
