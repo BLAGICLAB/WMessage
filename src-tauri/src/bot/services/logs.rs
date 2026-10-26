@@ -83,10 +83,28 @@ pub(crate) fn tail_lines(path: &Path, n: usize) -> Vec<String> {
     if bytes.is_empty() {
         return Vec::new();
     }
-    let text = String::from_utf8_lossy(&bytes);
+    let text = decode_log_bytes(&bytes);
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(n);
     lines[start..].iter().map(|s| s.to_string()).collect()
+}
+
+/// 服务日志字节 → 文本：先按 UTF-8 严格解码（现代服务器默认）；失败且是
+/// Windows 时按 GBK 宽松解码兜底——cmd/bat/部分老库在中文系统上输出本地
+/// 代码页，纯 lossy 会得到满屏 U+FFFD。非 Windows 不做 GBK 兜底：unix 上
+/// 非 UTF-8 输出多半是二进制噪声，U+FFFD 可见比「解码成另一种垃圾」更诚实。
+pub(crate) fn decode_log_bytes(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    #[cfg(windows)]
+    {
+        let (text, _, had_errors) = encoding_rs::GBK.decode(bytes);
+        if !had_errors {
+            return text.into_owned();
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// 截断日志文件到 `cap` 以内，只保留尾部。

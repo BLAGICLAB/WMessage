@@ -569,6 +569,8 @@ pub async fn tool_write_file(
         Ok(p) => p,
         Err(e) => return ToolResult::denied(e),
     };
+    // 错误文案用：canonical 马上要 move 进阻塞闭包，提示后缀提前留一份
+    let canonical_for_err = canonical.clone();
     // existed 只认文件：目录目标不弹覆盖确认，直接写盘自然 IsADirectory 失败
     let c = canonical.clone();
     let existed = spawn_blocking_io(move || Ok(c.is_file()))
@@ -644,6 +646,12 @@ pub async fn tool_write_file(
             )
             .with_file_change(receipt)
         }
-        Err(e) => ToolResult::error(format!("写入失败：{e}"), Vec::new()),
+        Err(e) => ToolResult::error(
+            format!(
+                "写入失败：{e}{}",
+                crate::bot_fs::win_long_path_hint(&canonical_for_err)
+            ),
+            Vec::new(),
+        ),
     }
 }

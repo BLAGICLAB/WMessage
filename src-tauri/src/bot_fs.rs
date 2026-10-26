@@ -135,6 +135,25 @@ pub(crate) fn strip_verbatim(p: PathBuf) -> PathBuf {
     }
 }
 
+/// Windows 长路径失败时的提示后缀：剥掉 `\\?\` 前缀的路径超过默认 260 上限、
+/// 系统又没开启长路径支持时，fs 调用报的是普通 IO 错误（找不到路径/文件名
+/// 过长），读不出真因——文案把这层点破。非 Windows 或路径不长时返回空串。
+pub(crate) fn win_long_path_hint(p: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        let n = p.as_os_str().to_string_lossy().chars().count();
+        if n > 240 {
+            return format!(
+                "（路径 {} 字符，接近或超过 Windows 默认 260 上限：系统未开启长路径支持时这类路径会操作失败，可缩短路径，或在组策略/注册表启用 LongPathsEnabled）",
+                n
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = p;
+    String::new()
+}
+
 /// 白名单原始路径合并（追加语义）：内置默认（桌面/下载/文档）+ AI 产物目录 +
 /// 任务卡绑定文件夹 + 用户 allowedDirs 四者并集（不能是「用户列表整体替换默认」——
 /// 否则授权弹窗「始终允许」写入一个目录后，内置默认反而失效）。

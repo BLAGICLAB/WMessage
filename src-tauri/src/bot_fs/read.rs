@@ -258,7 +258,15 @@ pub async fn tool_read_text_file(
     let (inode_check, is_binary, raw, byte_truncated) =
         match read_with_ino_check(&canonical, pre_ino, READ_MAX_BYTES).await {
             Ok(r) => r,
-            Err(e) => return ToolResult::error(format!("读取失败：{e}"), Vec::new()),
+            Err(e) => {
+                return ToolResult::error(
+                    format!(
+                        "读取失败：{e}{}",
+                        crate::bot_fs::win_long_path_hint(&canonical)
+                    ),
+                    Vec::new(),
+                )
+            }
         };
     if inode_check == InodeCheckOutcome::Replaced {
         crate::audit_event!(

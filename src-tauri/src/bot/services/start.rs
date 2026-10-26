@@ -487,7 +487,8 @@ fn wait_ready_pattern<R: tauri::Runtime>(
             .lock()
             .map(|s| s.stdout_path.clone())
             .unwrap_or_default();
-        let text = String::from_utf8_lossy(&read_tail_bytes(&stdout_path, 64 * 1024)).to_string();
+        let text =
+            crate::bot::services::logs::decode_log_bytes(&read_tail_bytes(&stdout_path, 64 * 1024));
         if re.is_match(&text) {
             return ReadyOutcome::Ready;
         }
@@ -507,7 +508,7 @@ fn wait_ready_pattern<R: tauri::Runtime>(
 
 /// 读文件末尾 `n` 字节并转成文本（尾部可能是半个 UTF-8 字符，替换掉即可）。
 fn tail_text(path: &Path, n: usize) -> String {
-    String::from_utf8_lossy(&read_tail_bytes(path, n)).to_string()
+    crate::bot::services::logs::decode_log_bytes(&read_tail_bytes(path, n))
 }
 
 /// 取文本头部 n 个字符（按字符切，不切碎 UTF-8）。
