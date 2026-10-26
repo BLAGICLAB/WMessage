@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Bot, FolderOpen, History, Paperclip } from "lucide-react";
 import type { ColumnId, Task } from "../../types";
 import { runWithBot } from "../../lib/botRun";
+import { isDueToday } from "../../format";
 import { openFilePath } from "../../lib/openTarget";
 import { useTaskFiles } from "../../lib/useTaskFiles";
 import {
@@ -44,6 +45,14 @@ function planDuration(task: Task): number {
  *  关闭键左侧的拨杆决定关闭语义：开 = 保存关闭（提交草稿后关），关 = 不保存关闭
  *  （草稿不提交，已落库的改动由宿主按打开浮窗时的快照回滚）。拨杆不持久化，
  *  每次打开（新建/编辑/换一张卡）都是「开」。 */
+/// 「恢复待办」的落点（单一口径）：今天到期的卡回「今日」（doing），
+/// 其余回「待办」（todo）——两处恢复入口（详情面板 / 卡片圈点）落点不一致时，
+/// 今日卡先回 todo 再被 applyTodayRule 60s 内二次吸走，用户看到卡「跳一下」。
+/// 与 TodoCard toggleDone 的 isDueToday 判定同一规则，改这里要同步那边。
+function restoreColumn(task: { due?: string }): "todo" | "doing" {
+  return isDueToday(task.due) ? "doing" : "todo";
+}
+
 export function TaskDetailPanel({
   task,
   autoFocusTitle = false,
@@ -602,7 +611,9 @@ export function TaskDetailPanel({
         <button
           type="button"
           className="flex-1 rounded-lg bg-[var(--accent)] py-2 text-[13px] font-medium text-white dark:text-[#101228]"
-          onClick={() => onSetColumn(task.column === "done" ? "todo" : "done")}
+          onClick={() =>
+            onSetColumn(task.column === "done" ? restoreColumn(task) : "done")
+          }
         >
           ✓ {task.column === "done" ? "恢复待办" : "标记完成"}
         </button>

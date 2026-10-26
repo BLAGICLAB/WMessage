@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { memo, useRef } from "react";
 import type { PlanSeg } from "./week";
 import { DAY_SPAN_MIN, DAY_START_MIN, fmtHours, titleRows } from "./week";
 import type { Task } from "../../types";
@@ -22,7 +22,10 @@ function stackSize(durMin: number): { size: 16 | 12 | 10; cls: string } {
  *  已完成任务原位保留（done）：整块降饱和，对勾变绿，不划线，点勾恢复待办。
  *  已归档卡（archived）：原位保留但封存——虚线边 + 印章替代对勾，无拖拽
  *  无对勾，仅双击跳归档区（交互收口在 WeekGrid，本组件只管渲染）。 */
-export function PlanBlockView({
+/** memo：拖拽期间每次 pointermove 都会重渲染整页（ghost 坐标是页面级 state），
+ *  数百块时每帧全量重排是拖掉帧的主因。块的全部 props 都来自 task 派生 +
+ *  稳定回调（WeekGrid 侧箭头随 task 引用走，task 不变即不变），浅比较足够。 */
+export const PlanBlockView = memo(function PlanBlockView({
   seg,
   task,
   color,
@@ -155,4 +158,4 @@ export function PlanBlockView({
       {tip.chip}
     </div>
   );
-}
+});

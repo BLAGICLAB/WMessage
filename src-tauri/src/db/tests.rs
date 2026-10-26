@@ -92,3 +92,51 @@ fn setup_bhs_db() -> (std::path::PathBuf, rusqlite::Connection) {
     conn.execute_batch(subagents::SUBAGENTS_DDL).unwrap();
     (dir, conn)
 }
+
+/// 状态机守卫（数据层兜底）：回收站/归档卡不接受内容编辑与列迁移；
+/// 恢复操作（patch 带状态位）放行。绕 UI 闸直调 task_patch / 拖拽迁移
+/// 时，这里是最后一道闸。
+#[test]
+fn sealed_cards_reject_content_edits_and_column_moves() {
+    let (_dir, mut conn) = setup_tasks_db();
+    let now = 1_000;
+
+    // 回收站卡：内容编辑被拒
+    let _g = crate::db::lock_db_write();
+    let mut trashed = mk_task("t1", "回收站卡");
+    trashed.deleted_at = Some(now);
+    upsert_tasks(&conn, std::slice::from_ref(&trashed)).unwrap();
+    let err = tasks_patch::task_patch_locked(
+        &mut conn,
+        "t1",
+        &serde_json::json!({"title": "改"}),
+        now + 1,
+    )
+    .err()
+    .expect("回收站卡内容编辑应被拒");
+    assert!(err.to_string().contains("回收站"), "{err}");
+    // 状态位 patch（恢复）放行
+    let restored = tasks_patch::task_patch_locked(
+        &mut conn,
+        "t1",
+        &serde_json::json!({"deletedAt": null}),
+        now + 1,
+    );
+    let restored = restored.expect("恢复操作必须放行");
+    assert!(restored.deleted_at.is_none());
+
+    // 归档卡：列迁移被拒、内容编辑被拒、状态位 patch 放行
+    let mut archived = mk_task("t2", "归档卡");
+    archived.column = crate::db::TaskStatus::Done;
+    archived.completed_at = Some(now);
+    archived.archived = Some(true);
+    upsert_tasks(&conn, std::slice::from_ref(&archived)).unwrap();
+    let err =
+        tasks_patch::task_patch_locked(&mut conn, "t2", &serde_json::json!({"note": "x"}), now + 1)
+            .err()
+            .expect("归档卡内容编辑应被拒");
+    assert!(err.to_string().contains("归档"), "{err}");
+    let err =
+        tasks_patch::task_set_column_locked(&mut conn, "t2", crate::db::TaskStatus::Doing, now + 1);
+    assert!(err.is_err(), "归档卡列迁移应被拒");
+}

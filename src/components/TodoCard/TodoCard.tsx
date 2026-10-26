@@ -502,7 +502,10 @@ export function TodoCardView({
               className="nm-btn mt-3 px-3 py-1 text-xs text-[var(--t3)] flex items-center gap-1 whitespace-nowrap"
               onPointerDown={stop}
               onClick={() =>
-                onUpdate(task.id, { archived: false, completedAt: Date.now() })
+                // 归档恢复不改 completedAt：完成时间是「任务何时做完」的事实，
+                // 伪造当前时刻会让 archiveRule 重新计时（恢复满 N 天又被归档，
+                // 原注释口径正是防这个）。旧行为需要重计时的话应显式重做。
+                onUpdate(task.id, { archived: false })
               }
             >
               <Undo2 size={11} aria-hidden />

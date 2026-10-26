@@ -22,6 +22,20 @@ pub(crate) fn task_set_column_locked(
     // 单卡定点读（PK 索引），不走 load_all 全表扫——每次拖拽/完成都在写锁内
     let mut task =
         load_task(conn, id)?.ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    // 状态机守卫（数据层兜底）：回收站/归档卡不接受列迁移——完成/排期/拖拽
+    // 一律先恢复。软删/归档写入自身走 task_patch（带状态位），不经此口。
+    if task.deleted_at.is_some() || task.archived == Some(true) {
+        let state = if task.deleted_at.is_some() {
+            "回收站"
+        } else {
+            "归档"
+        };
+        return Err(CommandError::InvalidArgument {
+            field: "col".into(),
+            value: status.as_str().to_string(),
+            reason: format!("任务卡在{state}中（已封存），不能迁移列状态；请先恢复到看板"),
+        });
+    }
     task.expected_updated_at = task.updated_at;
     task.updated_at = Some(now);
     match status {
@@ -265,6 +279,22 @@ pub(crate) fn apply_task_patch(
     Ok(())
 }
 
+/// 内容编辑类键：打在回收站/归档卡上 = 绕 UI 闸改已封存的数据。
+/// 状态迁移类键（archived/deletedAt/column）不在列——恢复/归档/软删操作
+/// 本身必须能打在封存卡上，否则回收站永远出不来。
+const CONTENT_EDIT_KEYS: &[&str] = &[
+    "title",
+    "note",
+    "tags",
+    "subtasks",
+    "files",
+    "due",
+    "planStart",
+    "planEnd",
+    "collapsed",
+    "completedAt",
+];
+
 /// task_patch 的锁内段（纯 DB 逻辑，单测锚点）：读现值 → 白名单应用 →
 /// 基线 = 锁内现读 updated_at → 服务端打戳 → 写。
 pub(crate) fn task_patch_locked(
@@ -276,6 +306,29 @@ pub(crate) fn task_patch_locked(
     // 单卡定点读（PK 索引），不走 load_all 全表扫——每次软删/归档/编辑/折叠都在写锁内
     let mut task =
         load_task(conn, id)?.ok_or_else(|| CommandError::TaskNotFound(id.to_string()))?;
+    // 状态机守卫（数据层兜底）：回收站/归档卡不接受内容编辑——UI 闸挡得住
+    // 正常操作，task_patch 直调（bot 工具/HTTP/脚本）绕得过 UI，这里挡数据。
+    // 恢复操作（patch 带状态位）不受限，否则封存卡永远出不来。
+    let seals_card = task.deleted_at.is_some() || task.archived == Some(true);
+    if seals_card {
+        let content_edits: Vec<&str> = CONTENT_EDIT_KEYS
+            .iter()
+            .filter(|k| patch.as_object().is_some_and(|o| o.contains_key(**k)))
+            .copied()
+            .collect();
+        if !content_edits.is_empty() {
+            let state = if task.deleted_at.is_some() {
+                "回收站"
+            } else {
+                "归档"
+            };
+            return Err(CommandError::InvalidArgument {
+                field: "patch".into(),
+                value: content_edits.join(","),
+                reason: format!("任务卡在{state}中（已封存），不能编辑内容；请先恢复到看板再操作"),
+            });
+        }
+    }
     apply_task_patch(&mut task, patch)?;
     task.expected_updated_at = task.updated_at;
     task.updated_at = Some(now);
