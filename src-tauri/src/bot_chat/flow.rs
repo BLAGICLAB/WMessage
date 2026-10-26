@@ -379,23 +379,20 @@ pub(super) async fn bot_chat_inner(
         ),
     );
 
-    // 步骤 3：pre-step 路由（固定两步直调：先选任务卡批量执行，再意图路由）：
-    // - is_chat_execute_trigger 命中（「完成/执行」+ [已选任务] 引用块）→ 批量执行选中任务卡
-    // - route_user_input 关键词 L1 硬锁命中复合业务 → start_skill
+    // 步骤 3：pre-step 路由（单一出口：route_user_input_for 内部先判批量执行、再查意图路由表）：
+    // - RouteAction::ExecuteTasks（「完成/执行」命令位关键词 + [已选任务] 引用块）→ 批量执行选中任务卡
+    // - RouteAction::Skill 关键词 L1 硬锁命中复合业务 → start_skill
     // - PassThrough → 放行进 LLM
     // 仅处理用户最新一条消息（后续轮次走原 LLM 路径）。
     // 路由命中的处理全部发生在本步骤之后，任何步骤不得抢跑、不得前置 return。
     let pre_routed_skill: Option<PreStepRoute> = if let Some(last) = user_input.as_ref() {
-        if let Some(task_ids) = crate::intent_router::is_chat_execute_trigger(&last.content) {
-            Some(PreStepRoute::ExecuteTasks(task_ids))
-        } else {
-            match crate::intent_router::route_user_input_for(&last.content, stop.session_id()) {
-                RouteAction::Skill(skill_name) => {
-                    start_skill_with_audit(&app, skill_name, stop.session_id())
-                        .map(|(meta, body)| PreStepRoute::Skill(meta, body))
-                }
-                RouteAction::ExecuteTasks(_) | RouteAction::PassThrough => None,
+        match crate::intent_router::route_user_input_for(&last.content, stop.session_id()) {
+            RouteAction::Skill(skill_name) => {
+                start_skill_with_audit(&app, skill_name, stop.session_id())
+                    .map(|(meta, body)| PreStepRoute::Skill(meta, body))
             }
+            RouteAction::ExecuteTasks(task_ids) => Some(PreStepRoute::ExecuteTasks(task_ids)),
+            RouteAction::PassThrough => None,
         }
     } else {
         None

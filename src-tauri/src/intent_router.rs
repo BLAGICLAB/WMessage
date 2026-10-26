@@ -9,8 +9,8 @@
 //! ## 运行语义
 //! - **L1 正则硬锁**：用户首条消息命中某技能的 intent 模式 → 直接加载该 Skill，LLM **不参与选择 Skill**
 //! - **选择任务卡批量执行**：`is_chat_execute_trigger`（「完成/执行」关键词 + [已选任务] 引用块）
-//!   由 bot_chat 主流程 pre-step 路由的第一步消费（`RouteAction::ExecuteTasks`），是 bot_chat 主流程
-//!   pre-step 路由的一个分支
+//!   收在 `route_user_input_for` 内部，与技能意图路由共用同一个出口
+//!   （`RouteAction::ExecuteTasks`），由 bot_chat 主流程 pre-step 路由消费
 //! - 未命中 / 路由表为空（未初始化、无已安装技能声明 intents）→ 放行进 LLM（现有路径）
 //! - 模式按正则匹配用户消息全文（含 [附件文件] 块内嵌的附件路径——附件上下文规则直接写进模式，
 //!   如 `(?is)(润色|修订)[\s\S]*\.docx?`），大小写敏由模式内联 `(?i)` 控制
@@ -157,17 +157,64 @@ pub fn is_chat_execute_trigger(content: &str) -> Option<Vec<(String, String)>> {
     Some(tasks)
 }
 
+/// CJK 触发词的疑问 / 否定 / 改期标记：出现在正文任意位置即不触发。
+/// 命中意味着把选中卡全部按自主执行跑一遍，「这两个什么时候完成」「先别执行这些」
+/// 「执行留到明天」都是拿选中卡闲聊或改期——宁可漏触发（漏了还有 LLM 主路径兜着），
+/// 误开跑没有回头路。
+const CJK_TRIGGER_BLOCKERS: &[&str] = &[
+    // 疑问
+    "什么时候",
+    "啥时候",
+    "几点",
+    "多久",
+    "是否",
+    "能否",
+    "能不能",
+    "可不可以",
+    "要不要",
+    "为什么",
+    "为何",
+    "怎么",
+    "怎样",
+    "如何",
+    "什么",
+    "吗",
+    "？",
+    "?",
+    // 否定 / 拒绝
+    "别",
+    "不",
+    "没",
+    "无需",
+    "尚未",
+    // 改期 / 暂缓（现在不要跑）
+    "稍后",
+    "回头",
+    "待会",
+    "等会",
+    "等下",
+    "等等",
+    "先放",
+    "留着",
+    "明天",
+    "今晚",
+    "下午",
+    "后天",
+    "下周",
+];
+
 /// 触发词命中（纯函数，便于单测）：
 ///
-/// - CJK 词按子串命中——中文没有词边界，「这些都完成」就该触发。
+/// - CJK 词必须落在**命令位**（整段以该词开头），且正文不含疑问 / 否定 / 改期标记。
+///   中文没有词边界，但裸子串命中会把「这两个什么时候完成」当成命令——误开跑的
+///   代价远大于漏触发，口径与 ASCII 分支对齐。
 /// - ASCII 词必须是命令的**第一个词**且右边界干净：go/run/do 单独成词太容易
-///   撞进英文句子（download、google 含 go；cargo run 的 run 不是首词），
-///   而命中意味着把选中卡**全部按自主执行跑一遍**——误判代价是用户只想聊天
-///   却开跑了。宁可漏触发：没触发时主流程按规则 1-16 正常处理，
+///   撞进英文句子（download、google 含 go；cargo run 的 run 不是首词）。
+///   宁可漏触发：没触发时主流程按规则 1-16 正常处理，
 ///   且系统提示词明令模型不得自行声称已开始批量执行。
 fn keyword_hit(user_cmd: &str, kw: &str) -> bool {
     if !kw.is_ascii() {
-        return user_cmd.contains(kw);
+        return cjk_keyword_in_command_position(user_cmd, kw);
     }
     let Some(rest) = user_cmd.strip_prefix(kw) else {
         return false;
@@ -177,6 +224,20 @@ fn keyword_hit(user_cmd: &str, kw: &str) -> bool {
         // 多字节 UTF-8 首字节 ≥ 0x80，不落 ASCII 分支——「go一下」照样算边界
         Some(&b) => !(b.is_ascii_alphanumeric() || b == b'_'),
     }
+}
+
+/// CJK 词的命令位判定：整段以该词开头 + 词后不跟时态助词 + 全文无疑问/否定/改期标记。
+/// 「完成了」「执行过了」是对现状的陈述，「完成吗」是疑问，都不是命令。
+fn cjk_keyword_in_command_position(user_cmd: &str, kw: &str) -> bool {
+    let Some(rest) = user_cmd.strip_prefix(kw) else {
+        return false;
+    };
+    if let Some(c) = rest.chars().next() {
+        if matches!(c, '了' | '过' | '着') {
+            return false;
+        }
+    }
+    CJK_TRIGGER_BLOCKERS.iter().all(|m| !user_cmd.contains(m))
 }
 
 /// 一条路由规则：技能名 + 该技能 frontmatter `intents` 声明的正则模式列表。
@@ -467,8 +528,12 @@ fn visible_under_session<'a>(
         .collect()
 }
 
-/// L1 前置路由（生产路径）：读全局路由表，会话档只对本会话可见
+/// L1 前置路由（生产路径）：批量执行触发与技能意图路由共用这一个出口，
+/// 消费方按 RouteAction 分派——两条路各自独立判定时会出现「将来两路抢跑」的歧义。
 pub fn route_user_input_for(text: &str, session: Option<&str>) -> RouteAction {
+    if let Some(tasks) = is_chat_execute_trigger(text) {
+        return RouteAction::ExecuteTasks(tasks);
+    }
     let guard = match ROUTES.read() {
         Ok(g) => g,
         Err(e) => e.into_inner(),
@@ -1054,6 +1119,62 @@ mod chat_execute_parse_tests {
                 "「{cmd}」应触发批量执行"
             );
         }
+    }
+
+    /// CJK 触发词裸子串匹配会把闲聊当命令：否定句 / 疑问句 / 改期话都不得
+    /// 自主开跑整批任务卡。关键词落在句中时同样不触发（命令位要求）。
+    #[test]
+    fn trigger_rejects_negated_interrogative_and_deferred_cjk() {
+        for cmd in [
+            "这两个什么时候完成？",
+            "先别执行这些",
+            "执行计划是什么",
+            "完成了吗",
+            "搞不定这些",
+            "执行留到明天",
+            "执行先等等",
+            "帮我把这两个做掉",
+            "这些都要执行",
+        ] {
+            let content = msg_with_block("[已选任务]\n- id=a，标题=b", cmd);
+            assert!(
+                is_chat_execute_trigger(&content).is_none(),
+                "「{cmd}」不是命令，不该触发批量执行"
+            );
+        }
+    }
+
+    /// 命令位的正面口径不受影响：动词开头、无疑问/否定/改期标记的短命令照常触发。
+    #[test]
+    fn trigger_accepts_clean_cjk_commands() {
+        for cmd in [
+            "完成",
+            "执行这些",
+            "搞定这两个",
+            "做掉它",
+            "开干吧",
+            "完成一下",
+        ] {
+            let content = msg_with_block("[已选任务]\n- id=a，标题=b", cmd);
+            assert!(
+                is_chat_execute_trigger(&content).is_some(),
+                "「{cmd}」是命令，应触发批量执行"
+            );
+        }
+    }
+
+    /// 路由收编契约：批量执行触发从 route_user_input_for 出来，
+    /// 消费方只看这一个出口（不再有 bot_chat 侧的前置短路两步直调）。
+    #[test]
+    fn route_user_input_for_returns_execute_tasks_for_trigger() {
+        let content = msg_with_block("[已选任务]\n- id=a，标题=A", "完成");
+        match route_user_input_for(&content, None) {
+            RouteAction::ExecuteTasks(tasks) => assert_eq!(tasks.len(), 1),
+            other => panic!("应为 ExecuteTasks，得到 {other:?}"),
+        }
+        // 无触发词的正文仍走路由表（测试进程表为空 → PassThrough）
+        let plain = msg_with_block("[已选任务]\n- id=a，标题=A", "看看这些");
+        assert_eq!(route_user_input_for(&plain, None), RouteAction::PassThrough);
     }
 
     /// 前端真实发送格式（ChatPanel.tsx 拼装的 [已选任务] 块在前、用户正文在后）

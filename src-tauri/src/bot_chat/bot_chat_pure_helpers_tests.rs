@@ -359,12 +359,16 @@ fn ingest_runs_before_every_input_decision_and_mutates_in_place() {
     let l0 = body
         .find("normalize_user_input(&mut messages)")
         .expect("bot_chat 必须调 L0 规范化");
-    // 五个输入侧判定各自扫 messages.last()，L0 必须排在它们之前
+    // 四个输入侧判定各自扫 messages.last()，L0 必须排在它们之前。
+    // 批量执行触发已收进 intent_router::route_user_input_for 内部（单一路由出口），
+    // 不再是 flow 里的独立判定点。
     for (label, needle) in [
         ("exec_steps 挂起恢复", "exec_steps::has_pending_for"),
         ("纠正信号检测", "corrections::detect_correction"),
-        ("批量执行触发", "intent_router::is_chat_execute_trigger"),
-        ("意图路由", "intent_router::route_user_input"),
+        (
+            "意图路由（含批量执行触发）",
+            "intent_router::route_user_input",
+        ),
         ("技能推荐", "build_skill_block_for"),
     ] {
         let at = body
