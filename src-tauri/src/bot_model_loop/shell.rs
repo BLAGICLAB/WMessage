@@ -511,7 +511,7 @@ pub async fn run_model_loop(
             //      被调得比它大的那三个长输出工具。
             //   L3 db::SPAN_TEXT_MAX——在 trace 侧，只管存多少进 SQLite，不管这里。
             // trace span 仍存原文（钳在 L3），整轮回放的证据不因回灌节选而丢失。
-            let text = apply_output_cap(&app, tool_output_cap, &name, out.text);
+            let text = apply_output_cap(&app, tool_output_cap, &name, out.text).await;
             if let Ok(mut n) = sink.lock() {
                 *n += 1;
             }

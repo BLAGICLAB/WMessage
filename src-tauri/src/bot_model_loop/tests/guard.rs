@@ -480,21 +480,19 @@ mod hallucination_guard_tests {
 
     /// 恰好等于 cap 的输出不得转存：边界是严格大于。等号判成超限会把
     /// 正好压线的输出白白转存一次（多一次 IO + 节选换指针）。
-    #[test]
-    fn mutant_m5_preview_exact_cap_output_is_not_spilled() {
-        let _g = crate::overflow::OVERFLOW_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    #[tokio::test]
+    async fn mutant_m5_preview_exact_cap_output_is_not_spilled() {
+        let _g = crate::overflow::OVERFLOW_TEST_LOCK.lock().await;
         let app = tauri::test::mock_app();
         let root = crate::overflow::root(app.handle());
         let _ = std::fs::remove_dir_all(&root);
         // run_python 的 per-tool 预算 8192（与 effective_cap 既有断言同锚点）
         let exact = "A".repeat(8_192);
-        let out = apply_output_cap(app.handle(), Some(30_000), "run_python", exact.clone());
+        let out = apply_output_cap(app.handle(), Some(30_000), "run_python", exact.clone()).await;
         assert_eq!(out, exact, "恰等于 cap 的输出必须原样回灌，不得转存");
 
         let over: String =
-            apply_output_cap(app.handle(), Some(30_000), "run_python", "B".repeat(8_193));
+            apply_output_cap(app.handle(), Some(30_000), "run_python", "B".repeat(8_193)).await;
         assert!(
             over.contains("已**完整**转存到本地文件"),
             "超 cap 一个字节的输出必须换成指针：{}",
@@ -505,11 +503,9 @@ mod hallucination_guard_tests {
 
     /// 转存失败兜底不得返回空：溢出目录建不出来时退回纯头尾截断——
     /// 结果凭空消失等于这轮工具白跑。把溢出根占成文件即可让 spill 失败。
-    #[test]
-    fn mutant_m6_preview_spill_failure_fallback_is_never_empty() {
-        let _g = crate::overflow::OVERFLOW_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    #[tokio::test]
+    async fn mutant_m6_preview_spill_failure_fallback_is_never_empty() {
+        let _g = crate::overflow::OVERFLOW_TEST_LOCK.lock().await;
         let app = tauri::test::mock_app();
         let root = crate::overflow::root(app.handle());
         let _ = std::fs::remove_dir_all(&root);
@@ -517,7 +513,8 @@ mod hallucination_guard_tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(&root, "占位文件：让 spill 的 create_dir_all 失败").unwrap();
-        let out = apply_output_cap(app.handle(), Some(30_000), "run_python", "A".repeat(8_193));
+        let out =
+            apply_output_cap(app.handle(), Some(30_000), "run_python", "A".repeat(8_193)).await;
         assert!(!out.is_empty(), "兜底路径必须保留节选，不得返回空串");
         assert!(
             out.contains("已按 maxToolOutputBytes=8192 截断"),

@@ -53,13 +53,13 @@ pub(crate) fn effective_output_cap(tool: &str, global_cap_bytes: usize) -> usize
 /// 退回路径必须保留：落盘失败时若直接放行原文本，模型就白挨这一轮大上下文；
 /// 若返回空，结果凭空消失更糟。`cap_tool_output` 的四一分在无第二份拷贝时是对的，
 /// 这正是它作为兜底而非主路径的原因。
-fn spill_or_cap<R: tauri::Runtime>(
+async fn spill_or_cap<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     tool: &str,
     text: String,
     cap_bytes: usize,
 ) -> String {
-    match crate::overflow::spill(app, &text) {
+    match crate::overflow::spill_async(app, &text).await {
         Ok(path) => {
             let notice = crate::overflow::pointer_text(tool, &path, &text);
             crate::audit::write_event(
@@ -95,7 +95,7 @@ fn spill_or_cap<R: tauri::Runtime>(
 /// 超出才转存/截断，没超原样透传。从薄壳 execute_tool 闭包抽出并泛型化——
 /// 闭包绑死 Wry AppHandle，MockRuntime 单测够不到判定本身；「恰等 cap 不
 /// 转存」「转存失败兜底非空」两条边界只有直驱这里才钉得住。
-pub(crate) fn apply_output_cap<R: tauri::Runtime>(
+pub(crate) async fn apply_output_cap<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     tool_output_cap: Option<usize>,
     name: &str,
@@ -120,7 +120,7 @@ pub(crate) fn apply_output_cap<R: tauri::Runtime>(
                     ("max_bytes", cap.to_string()),
                 ],
             );
-            text = spill_or_cap(app, name, text, cap);
+            text = spill_or_cap(app, name, text, cap).await;
         }
     }
     text

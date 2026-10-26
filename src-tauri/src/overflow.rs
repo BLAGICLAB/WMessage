@@ -33,7 +33,7 @@ pub fn root<R: tauri::Runtime>(app: &AppHandle<R>) -> PathBuf {
 /// 兜底用例会把根临时占成文件——并行互踩会互相制造假失败（nextest 每测试
 /// 一进程本无此问题，cargo test --lib 单进程并行时有）。
 #[cfg(test)]
-pub(crate) static OVERFLOW_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static OVERFLOW_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 转存完整工具输出，返回落盘路径。
 ///
@@ -45,6 +45,18 @@ pub fn spill<R: tauri::Runtime>(app: &AppHandle<R>, text: &str) -> Result<PathBu
     let path = dir.join(format!("{}.txt", uuid::Uuid::new_v4().simple()));
     crate::db::paths::atomic_write(&path, text)?;
     Ok(path)
+}
+
+/// spill 的异步壳：落盘是同步 syscall，放 blocking 池跑，不占 runtime 线程。
+pub async fn spill_async<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    text: &str,
+) -> Result<PathBuf, String> {
+    let app = app.clone();
+    let text = text.to_string();
+    tauri::async_runtime::spawn_blocking(move || spill(&app, &text))
+        .await
+        .map_err(|e| format!("溢出转存线程失败：{e}"))?
 }
 
 /// 给模型的指针文案：说清「完整内容在哪、怎么读」，别让它以为执行失败或结果为空。
@@ -77,18 +89,29 @@ pub fn pointer_text(tool: &str, path: &std::path::Path, text: &str) -> String {
 }
 
 /// 保留期清扫：启动即跑一次，此后每天一次（与 `db::trace::spawn_retention_sweep` 同构）。
+/// 扫描是同步目录遍历，放 blocking 池；单轮 panic 以 JoinError 形态收口——
+/// 清扫停摆 = 溢出文件无限堆积且无人察觉，循环绝不因单轮异常退出。
 /// 失败只记审计，不打断启动、不终止循环。
 pub fn spawn_sweep(app: &tauri::AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         loop {
-            if let Err(e) = sweep(&handle, None) {
-                crate::audit::write_event(
+            let h = handle.clone();
+            let outcome = tauri::async_runtime::spawn_blocking(move || sweep(&h, None)).await;
+            match outcome {
+                Err(e) => crate::audit::write_event(
                     &handle,
                     crate::audit::AuditLevel::Warn,
                     "overflow.sweep_fail",
-                    &[("err", e.to_string())],
-                );
+                    &[("err", format!("清扫任务异常（本轮跳过，循环继续）：{e}"))],
+                ),
+                Ok(Err(e)) => crate::audit::write_event(
+                    &handle,
+                    crate::audit::AuditLevel::Warn,
+                    "overflow.sweep_fail",
+                    &[("err", e)],
+                ),
+                Ok(Ok(_)) => {}
             }
             tokio::time::sleep(std::time::Duration::from_secs(SWEEP_INTERVAL_SECS)).await;
         }
@@ -97,13 +120,16 @@ pub fn spawn_sweep(app: &tauri::AppHandle) {
 
 /// 清扫保留期外的溢出文件，返回删除数。
 ///
-/// 目录不存在 = 还没有溢出文件发生过，返回 0 而不是报错。日期目录删空后一并移除；
-/// 删不掉（仍非空）忽略即可，下轮还会来。
+/// 目录不存在 = 还没有溢出文件发生过，返回 0 而不是报错。判龄锚点是**日期
+/// 目录名**（spill 落盘那天的 UTC 日期），不是文件 mtime——mtime 随任何触碰
+/// 变化，时钟回拨会把 mtime 推到未来（文件在时钟追上来之前永远清不掉），
+/// 时钟前跳则把保留期悄悄缩短；目录名只在创建时写一次，稳定可测。
+/// 按日粒度整目录删除；非日期目录（误放）不碰，删不掉的下轮再来。
 pub fn sweep<R: tauri::Runtime>(app: &AppHandle<R>, days: Option<i64>) -> Result<usize, String> {
-    let days = days.unwrap_or(OVERFLOW_RETENTION_DAYS).max(0);
-    let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(days as u64 * 86_400))
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    // 上限 100 年：Duration::days 对异常大的输入会 panic，钳住才谈得上防御
+    let days = days.unwrap_or(OVERFLOW_RETENTION_DAYS).clamp(0, 36_500);
+    let today = chrono::Utc::now().date_naive();
+    let cutoff = today - chrono::Duration::days(days);
     let root = root(app);
     let Ok(days_dir) = std::fs::read_dir(&root) else {
         return Ok(0);
@@ -114,20 +140,22 @@ pub fn sweep<R: tauri::Runtime>(app: &AppHandle<R>, days: Option<i64>) -> Result
         if !day_path.is_dir() {
             continue;
         }
+        let Ok(day_date) =
+            chrono::NaiveDate::parse_from_str(&day.file_name().to_string_lossy(), "%Y%m%d")
+        else {
+            continue;
+        };
+        // 只清创建日期早于（含当天恰好到期）cutoff 的整目录
+        if day_date > cutoff {
+            continue;
+        }
         let Ok(files) = std::fs::read_dir(&day_path) else {
             continue;
         };
-        for f in files.flatten() {
-            let Ok(meta) = f.metadata() else { continue };
-            if !meta.is_file() {
-                continue;
-            }
-            let Ok(mtime) = meta.modified() else { continue };
-            if mtime < cutoff && std::fs::remove_file(f.path()).is_ok() {
-                removed += 1;
-            }
+        let n = files.flatten().filter(|f| f.path().is_file()).count();
+        if std::fs::remove_dir_all(&day_path).is_ok() {
+            removed += n;
         }
-        let _ = std::fs::remove_dir(&day_path);
     }
     Ok(removed)
 }
@@ -147,7 +175,7 @@ mod tests {
     /// days=0 那轮删不掉任何文件；days=3650 那轮把该保留的删了。
     #[test]
     fn mutant_m8_sweep_removes_expired_keeps_fresh() {
-        let _g = OVERFLOW_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = OVERFLOW_TEST_LOCK.blocking_lock();
         let app = tauri::test::mock_app();
         let root = root(app.handle());
         let _ = std::fs::remove_dir_all(&root);
@@ -175,7 +203,7 @@ mod tests {
     /// 在 debug 构建直接 overflow panic；钳 0 后语义与 days=0 一致（全过期）。
     #[test]
     fn mutant_m9_sweep_negative_days_clamped_to_zero() {
-        let _g = OVERFLOW_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = OVERFLOW_TEST_LOCK.blocking_lock();
         let app = tauri::test::mock_app();
         let root = root(app.handle());
         let _ = std::fs::remove_dir_all(&root);
@@ -199,6 +227,36 @@ mod tests {
             !p.contains("单次读取上限"),
             "文件没超单次读取上限时不必提上限：{p}"
         );
+    }
+
+    /// 判龄锚点是目录名而非 mtime 的两个边界：
+    /// - 时钟回拨残留的「未来日期」目录不得被清（mtime 判龄时这类文件在
+    ///   时钟追上来之前永远清不掉，目录名判龄则直接跳过）；
+    /// - 非日期目录（用户误放进根目录的东西）原样不动。
+    #[test]
+    fn sweep_respects_future_dated_and_non_date_dirs() {
+        let _g = OVERFLOW_TEST_LOCK.blocking_lock();
+        let app = tauri::test::mock_app();
+        let root = root(app.handle());
+        let _ = std::fs::remove_dir_all(&root);
+        // 时钟回拨残留：目录名标着 10 天后的日期
+        let future = root.join(
+            (chrono::Utc::now().date_naive() + chrono::Duration::days(10))
+                .format("%Y%m%d")
+                .to_string(),
+        );
+        std::fs::create_dir_all(&future).unwrap();
+        std::fs::write(future.join("a.txt"), "x").unwrap();
+        // 非日期目录
+        let stray = root.join("not-a-date");
+        std::fs::create_dir_all(&stray).unwrap();
+        std::fs::write(stray.join("b.txt"), "x").unwrap();
+
+        let removed = sweep(app.handle(), Some(0)).unwrap();
+        assert_eq!(removed, 0, "未来日期与非日期目录都不得被 days=0 清扫");
+        assert!(future.join("a.txt").exists(), "未来日期目录必须原样保留");
+        assert!(stray.join("b.txt").exists(), "非日期目录必须原样保留");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 超过单次读取上限的文件：指针必须说清**可达范围**。

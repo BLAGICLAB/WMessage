@@ -6,9 +6,7 @@ use super::*;
 /// 指针文件从此读不回，比直接截断还糟，且没有任何显式失败可查。
 #[test]
 fn mutant_m7_preview_overflow_root_pinned_in_read_allowlist() {
-    let _g = crate::overflow::OVERFLOW_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let _g = crate::overflow::OVERFLOW_TEST_LOCK.blocking_lock();
     let app = tauri::test::mock_app();
     let root = crate::overflow::root(app.handle());
     let _ = std::fs::remove_dir_all(&root);
