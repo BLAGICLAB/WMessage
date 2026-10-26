@@ -473,6 +473,111 @@ async fn scheduler_e2e_done_path_finishes_run_audits_and_persists() {
     let _ = std::fs::remove_file(&db_path);
 }
 
+/// 零步骤终止出口（DSL 解析失败 / 无可执行步骤 / 全部工具未知）必须把 run
+/// 收尾为终态：这些出口不经过任何步骤钩子，run 此前会永远泄漏为僵尸
+/// Running——下一轮的无关确认窗把它当活动技能暂停/终止（终止气泡串进别人
+/// 的轮次、终止原因张冠李戴），后续轮次的工具调用还被步数熔断记到它头上。
+/// 三个出口逐一验证（与生产事故同形态：散文体技能 + risk_level low 默认
+/// auto，触发词路由建 run 后调度器发现正文没有 Step 块）。
+#[tokio::test]
+async fn scheduler_e2e_zero_step_terminated_exits_finish_the_run() {
+    let _serial = SKILL_SCHED_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let app = mock_handle();
+    let exec = |_tool: String, _args: String| async move {
+        wmessage_lib::bot::registry::ToolResult::ok(String::new(), Vec::new())
+    };
+    let noop_persist = |_name: &str,
+                        _kind: &str,
+                        _reason: Option<&str>,
+                        _summary: Option<&str>,
+                        _rb: Option<bool>| {};
+
+    // 场景 1（生产事故同形态）：run 已建（路由路径 start_skill），正文纯散文 → DSL 空
+    let mut run = make_run("minimax-ppt", SkillState::Running);
+    run.session_id = Some("sess-o1".into());
+    test_hook_insert_skill_run(&app, run);
+    let prose = "---\nname: minimax-ppt\ndescription: d\n---\n\n## 步骤\n\n1. 先查任务列表。\n2. 报出最老的一张卡。\n";
+    let meta = parse_meta(prose, "minimax-ppt");
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta,
+        prose,
+        Some("sess-o1"),
+        &serde_json::Value::Null,
+        exec,
+        noop_persist,
+    )
+    .await
+    .expect_err("散文体无 Step 块应 Terminated");
+    assert!(matches!(outcome, DslFailure::Terminated { .. }));
+    assert_eq!(
+        test_hook_skill_run_state(&app, "minimax-ppt"),
+        Some(SkillState::Terminated),
+        "DSL 空出口应收尾 run，不得泄漏为僵尸 Running"
+    );
+    test_hook_remove_skill_run(&app, "minimax-ppt");
+
+    // 场景 2：Step 块格式错误（步骤序号重复）→ 解析失败出口同样收尾
+    let dup = "---\nname: minimax-ppt\ndescription: d\n---\n\n## Step 1: 查询\nquery_tasks(view=all)\n\n## Step 1: 再查\nquery_tasks(view=all)\n";
+    let meta_dup = parse_meta(dup, "minimax-ppt");
+    test_hook_insert_skill_run(&app, {
+        let mut r = make_run("minimax-ppt", SkillState::Running);
+        r.session_id = Some("sess-o1".into());
+        r
+    });
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta_dup,
+        dup,
+        Some("sess-o1"),
+        &serde_json::Value::Null,
+        exec,
+        noop_persist,
+    )
+    .await
+    .expect_err("重复序号应解析失败 Terminated");
+    assert!(matches!(outcome, DslFailure::Terminated { .. }));
+    assert_eq!(
+        test_hook_skill_run_state(&app, "minimax-ppt"),
+        Some(SkillState::Terminated),
+        "解析失败出口应收尾 run"
+    );
+    test_hook_remove_skill_run(&app, "minimax-ppt");
+
+    // 场景 3：全部步骤引用未知工具 → 兼容终止出口同样收尾
+    let stale =
+        "---\nname: minimax-ppt\ndescription: d\n---\n\n## Step 1: 旧工具\nrenamed_tool_zzz(x)\n";
+    let meta_stale = parse_meta(stale, "minimax-ppt");
+    test_hook_insert_skill_run(&app, {
+        let mut r = make_run("minimax-ppt", SkillState::Running);
+        r.session_id = Some("sess-o1".into());
+        r
+    });
+    let outcome = run_skill_scheduler_core(
+        &app,
+        "minimax-ppt",
+        &meta_stale,
+        stale,
+        Some("sess-o1"),
+        &serde_json::Value::Null,
+        exec,
+        noop_persist,
+    )
+    .await
+    .expect_err("全未知工具应 Terminated");
+    assert!(matches!(outcome, DslFailure::Terminated { .. }));
+    assert_eq!(
+        test_hook_skill_run_state(&app, "minimax-ppt"),
+        Some(SkillState::Terminated),
+        "全部工具未知出口应收尾 run"
+    );
+    test_hook_remove_skill_run(&app, "minimax-ppt");
+}
+
 /// 别的技能接管了本会话（用户 use_skill 切换）→ 调度器必须收手：
 /// 一步都不跑、不记 done、不碰接管方的 run 状态。
 /// 推进接管方的状态机 = 把别人的 run 当自己的用（技能一用就断的同源问题）。

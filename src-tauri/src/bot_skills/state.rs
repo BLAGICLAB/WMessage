@@ -137,6 +137,32 @@ pub(crate) fn restore_failed_run_after_rollback<R: tauri::Runtime>(
     }
 }
 
+/// 调度器零步骤出口（DSL 解析失败 / 无可执行步骤 / 全部工具未知）的 run 收尾。
+/// 这些出口不经过任何步骤钩子，run 会永远停在 Running——下一轮的无关确认窗
+/// 会把它当活动技能暂停/终止（终止气泡串进别人的轮次、终止原因张冠李戴），
+/// 后续轮次的工具调用还会被步数熔断记到它头上。只收本会话该名字的非终态
+/// run；run 不存在（启动前失败）或已在终态时是安全 no-op。
+pub(crate) fn mark_session_run_terminated<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    name: &str,
+    session_id: Option<&str>,
+    reason: &str,
+) {
+    let registry = skill_runs(app);
+    let mut runs = crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs");
+    if let Some(run) = runs.get_mut(name) {
+        if run.session_id.as_deref() == session_id
+            && !matches!(
+                run.state,
+                SkillState::Completed | SkillState::Failed | SkillState::Terminated
+            )
+        {
+            run.state = SkillState::Terminated;
+            run.end_reason = reason.to_string();
+        }
+    }
+}
+
 /// 活动优先级：Running > Paused > 终态。
 ///
 /// 同会话可能同时存在「切走的旧技能（终态）」与「新启的技能（Running）」——

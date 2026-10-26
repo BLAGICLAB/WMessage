@@ -293,8 +293,15 @@ where
     // 僵尸终态清理：上轮遗留的 Completed/Failed/Terminated run 会在第 0 步被 advance_dsl
     // 误判为完成信号直接 break（与主循环同款假死根因）；只清本会话（跨会话隔离）
     clear_terminal_skill_runs(app, session_id);
-    let (steps, rollback) =
-        parse_skill_steps(body).map_err(|e| DslFailure::Terminated { reason: e })?;
+    let (steps, rollback) = match parse_skill_steps(body) {
+        Ok(r) => r,
+        Err(e) => {
+            // 零步骤出口也必须收尾 run（见 mark_session_run_terminated），
+            // 否则 run 泄漏为僵尸 Running，被下一轮的无关确认窗误杀
+            super::state::mark_session_run_terminated(app, name, session_id, &e);
+            return Err(DslFailure::Terminated { reason: e });
+        }
+    };
     // 回滚段**只在 `rollback: auto` 时才执行**。
     //
     // 作者显式声明「不执行回滚」时，正文里留着 `## Rollback` 段（复制模板时
@@ -312,9 +319,9 @@ where
             &format!("skill_dsl_empty | name: {name} | body_len: {}", body.len()),
         );
         persist_outcome(name, "terminated", Some("DSL 解析为空"), None, None);
-        return Err(DslFailure::Terminated {
-            reason: format!("技能「{name}」无可执行步骤（DSL 解析为空）"),
-        });
+        let reason = format!("技能「{name}」无可执行步骤（DSL 解析为空）");
+        super::state::mark_session_run_terminated(app, name, session_id, &reason);
+        return Err(DslFailure::Terminated { reason });
     }
     // 兼容审计——步骤/回滚引用了未内置的工具。全部未知 → 提前终止
     // （几乎必然是工具改名后未同步的旧技能，逐步失败只会白烧回滚）；部分未知 →
@@ -348,6 +355,7 @@ where
                 unknown.join("、")
             );
             persist_outcome(name, "terminated", Some(&reason), None, None);
+            super::state::mark_session_run_terminated(app, name, session_id, &reason);
             return Err(DslFailure::Terminated { reason });
         }
     }
