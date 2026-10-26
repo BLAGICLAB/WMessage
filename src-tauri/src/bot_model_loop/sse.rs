@@ -85,15 +85,17 @@ pub(crate) async fn read_sse_stream(
     expecting_selfcheck: bool,
     expecting_final_selfcheck: bool,
 ) -> Result<SseStream, StreamFailure> {
-    let emit = deps.emit;
+    let emit_raw = deps.emit;
     let audit = deps.audit;
     // 「本轮是否已向前端吐过内容」：正文、思考段、工具折叠行都算——
     // 这三样显示过就不能重发本轮（重发＝重复内容）。
     // 用原子量而非 Cell：读侧 future 要跨线程（Send），Cell 不满足 Sync
     let emitted_any = std::sync::atomic::AtomicBool::new(false);
-    let emit_any = |ev: &str, payload: serde_json::Value| {
+    // 出口闭包就叫 emit：事件出口靠这个名字被一致性对拍认出来（前端 listen
+    // 的每一件都得在 Rust 侧找得到 emit），改名会让门禁以为没人发这些事件
+    let emit = |ev: &str, payload: serde_json::Value| {
         emitted_any.store(true, std::sync::atomic::Ordering::Relaxed);
-        emit(ev, payload);
+        emit_raw(ev, payload);
     };
     let mut stream = resp.bytes_stream();
     // 字节缓冲按行切——逐 chunk from_utf8_lossy 时
@@ -192,12 +194,12 @@ pub(crate) async fn read_sse_stream(
             // 回灌与否由配置开关决定（默认关 = 只走前端展示出口）。
             if let Some(r) = parsed.reasoning {
                 reasoning_text.push_str(&r);
-                emit_any("bot-think-delta", serde_json::json!({ "text": r }));
+                emit("bot-think-delta", serde_json::json!({ "text": r }));
             }
             if let Some(t) = parsed.content {
                 let (normal, think) = feed_think(&mut think_mode, &mut think_buf, &t);
                 if !think.is_empty() {
-                    emit_any("bot-think-delta", serde_json::json!({ "text": think }));
+                    emit("bot-think-delta", serde_json::json!({ "text": think }));
                 }
                 if !normal.is_empty() {
                     final_text.push_str(&normal);
@@ -206,7 +208,7 @@ pub(crate) async fn read_sse_stream(
                     // 终稿自检响应（Y/N）同样整段隐藏：用户已在主出口前看到
                     // final_text 全文，不该再叠一层 Y/N 字样
                     if !expecting_selfcheck && !expecting_final_selfcheck {
-                        emit_any("bot-chat-delta", serde_json::json!({ "text": normal }));
+                        emit("bot-chat-delta", serde_json::json!({ "text": normal }));
                     }
                 }
             }
@@ -234,7 +236,7 @@ pub(crate) async fn read_sse_stream(
                 let t = &tool_calls[tc_delta.index];
                 if first_id && !t.0.is_empty() {
                     // 新工具调用开始：推折叠行给前端
-                    emit_any("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
+                    emit("bot-tool", serde_json::json!({ "id": t.0, "name": t.1 }));
                 }
                 if tc_delta
                     .name_chunk
@@ -242,7 +244,7 @@ pub(crate) async fn read_sse_stream(
                     .is_some_and(|n| !n.is_empty())
                     && !t.0.is_empty()
                 {
-                    emit_any(
+                    emit(
                         "bot-tool-name",
                         serde_json::json!({ "id": t.0, "name": t.1 }),
                     );
