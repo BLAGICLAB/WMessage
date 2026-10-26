@@ -25,6 +25,26 @@ const MAX_TREE_ENTRIES: usize = 5_000;
 /// 递归复制的总字节上限（单棵树）
 const MAX_TREE_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// macOS 选 NSFileManager.trashItemAtURL，不走 Finder AppleEvent：
+/// Finder 忙/无响应时 osascript 会阻塞到分钟级（实测首删静默挂起约 90 秒、
+/// 密集自动化下 -1712 超时两连），NSFileManager 是本地操作没有这条依赖，
+/// 也免去 Finder 自动化权限（TCC）弹窗。代价：废纸篓右键没有「放回原处」
+/// （macOS 上游 bug），文件仍在废纸篓可拖出恢复。Electron 的
+/// shell.trashItem 同走原生 NSWorkspace/NSFileManager 家族，不碰 AppleEvent。
+fn trash_context() -> trash::TrashContext {
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut ctx = trash::TrashContext::new();
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+        ctx
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        trash::TrashContext::new()
+    }
+}
+
 /// manage_file：文件复制 / 移动 / 删除。
 ///
 /// action:
@@ -154,7 +174,7 @@ fn move_impl(src: &Path, dst: &Path) -> Result<String, String> {
         Err(e) if is_cross_device(&e) => {
             let (entries, bytes) = copy_tree(src, dst)?;
             // 源入回收站：失败则报半成状态——目标已在，源还在，不算数据丢失
-            if let Err(te) = trash::delete(src) {
+            if let Err(te) = trash_context().delete(src) {
                 return Err(format!(
                     "跨卷移动：已复制到 {}（{entries} 项 / {bytes} 字节），但源文件移入回收站失败：{te}（源文件仍在原处，请手动清理）",
                     dst.display()
@@ -245,7 +265,7 @@ async fn delete_to_trash(
     }
     let target2 = target.clone();
     let res = tauri::async_runtime::spawn_blocking(move || {
-        trash::delete(&target2).map_err(|e| e.to_string())
+        trash_context().delete(&target2).map_err(|e| e.to_string())
     })
     .await
     .unwrap_or_else(|e| Err(format!("删除线程失败：{e}")));
@@ -308,6 +328,18 @@ fn dest_inside_src(src: &Path, dst: &Path) -> bool {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// macOS 必须选 NSFileManager 删除法：Finder AppleEvent 法在 Finder 忙时
+    /// 阻塞到分钟级，是删除挂起的根因。选择错了 = 挂起路径回流。
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn trash_context_selects_nsfile_manager() {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        assert!(matches!(
+            trash_context().delete_method(),
+            DeleteMethod::NsFileManager
+        ));
+    }
 
     fn tmpdir(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
