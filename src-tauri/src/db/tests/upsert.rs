@@ -314,3 +314,36 @@ fn upsert_null_row_existence_baseline() {
 
     fs::remove_dir_all(&dir).ok();
 }
+
+/// upsert 失败的错误分类：RMW 写冲突是「别的写者先改了这条」——
+/// 用户重读基线后重试即可，报可恢复的 `TaskInvalidState`；
+/// 降级成 `Internal`（不可恢复）会让前端只让用户「反馈日志」。
+///
+/// API 侧同一情形已映射 409，语义必须一致。
+#[test]
+fn upsert_conflict_maps_to_recoverable_task_invalid_state() {
+    let conflict = crate::db::tasks::upsert_failure(format!(
+        "{}：任务 t1 读快照后已被其他写者修改，本次整行写回被拒",
+        CONFLICT_ERR_PREFIX
+    ));
+    match &conflict {
+        crate::error::CommandError::TaskInvalidState { reason } => {
+            assert!(
+                reason.contains("其他写者"),
+                "冲突原因要留在文案里：{reason}"
+            );
+        }
+        other => panic!("写冲突应报 TaskInvalidState，got {other:?}"),
+    }
+    assert!(
+        conflict.is_recoverable(),
+        "写冲突是用户可修正后重试的错误，必须 recoverable=true"
+    );
+
+    // 其余失败仍是 DB 故障（不可恢复）
+    let db_fail = crate::db::tasks::upsert_failure("磁盘写满".to_string());
+    assert!(
+        matches!(db_fail, crate::error::CommandError::DbError(_)),
+        "非冲突失败应报 DbError，got {db_fail:?}"
+    );
+}

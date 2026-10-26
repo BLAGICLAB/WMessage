@@ -405,6 +405,22 @@ pub async fn notifications_pending_count(app: AppHandle) -> CommandResult<usize>
         .map_err(CommandError::DbError)
 }
 
+/// 解决状态取值校验（纯函数）：仅允许 done / dismissed。
+///
+/// 参数非法是「用户可修正后重试」，报 `InvalidArgument`（recoverable=true）；
+/// 降级成 Internal（recoverable=false）会让前端只提示「反馈日志」，
+/// 而这条错误用户改个状态就能重试。
+fn validate_resolve_status(status: &str) -> CommandResult<()> {
+    if status != STATUS_DONE && status != STATUS_DISMISSED {
+        return Err(CommandError::InvalidArgument {
+            field: "status".into(),
+            value: status.to_string(),
+            reason: format!("仅允许 {STATUS_DONE}/{STATUS_DISMISSED}"),
+        });
+    }
+    Ok(())
+}
+
 /// 解决一条通知：status 仅允许 done / dismissed（通知页「忽略/跳过」走这里）
 #[tauri::command]
 pub async fn notifications_resolve(
@@ -412,11 +428,7 @@ pub async fn notifications_resolve(
     id: String,
     status: String,
 ) -> CommandResult<()> {
-    if status != STATUS_DONE && status != STATUS_DISMISSED {
-        return Err(CommandError::from(format!(
-            "非法通知状态：{status}（仅允许 done/dismissed）"
-        )));
-    }
+    validate_resolve_status(&status)?;
     let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let conn = crate::db::open_db(&app2).map_err(|e| e.to_string())?;
@@ -466,6 +478,36 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    /// 非法状态是「用户可修正后重试」的参数错误——必须报可恢复的
+    /// `InvalidArgument`；降级成 `Internal`（不可恢复）会让前端只让用户
+    /// 「反馈日志」，而这条错误改个状态就能重试。
+    #[test]
+    fn resolve_illegal_status_is_recoverable_invalid_argument() {
+        let err = validate_resolve_status("nope").expect_err("非法状态必须被拒");
+        match &err {
+            CommandError::InvalidArgument {
+                field,
+                value,
+                reason,
+            } => {
+                assert_eq!(field, "status");
+                assert_eq!(value, "nope");
+                assert!(
+                    reason.contains(STATUS_DONE) && reason.contains(STATUS_DISMISSED),
+                    "要说清允许哪些值：{reason}"
+                );
+            }
+            other => panic!("非法状态应报 InvalidArgument，got {other:?}"),
+        }
+        assert!(
+            err.is_recoverable(),
+            "参数非法是用户可修正后重试的错误，必须 recoverable=true"
+        );
+        // 合法值放行
+        assert!(validate_resolve_status(STATUS_DONE).is_ok());
+        assert!(validate_resolve_status(STATUS_DISMISSED).is_ok());
     }
 
     #[test]

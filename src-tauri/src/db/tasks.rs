@@ -837,13 +837,27 @@ pub async fn db_upsert_for<R: tauri::Runtime>(
                     )],
                 );
             }
-            return Err(CommandError::from(msg));
+            return Err(upsert_failure(msg));
         }
         tx.commit()
             .map_err(|e| CommandError::DbError(e.to_string()))
     })
     .await
     .map_err(|e| CommandError::from(format!("数据库 upsert 线程 join 失败：{e}")))?
+}
+
+/// upsert 失败 → CommandError。
+///
+/// RMW 写冲突（别的写者先改了这条）报 `TaskInvalidState`——用户重读基线后
+/// 重试即可，不是内部故障；降级成 Internal 会让它 recoverable=false，前端
+/// 只让用户「反馈日志」而不是给重试入口（API 侧同一情形已映射 409，语义
+/// 必须一致）。其余失败报 `DbError`。
+pub(crate) fn upsert_failure(msg: String) -> CommandError {
+    if msg.starts_with(CONFLICT_ERR_PREFIX) {
+        CommandError::TaskInvalidState { reason: msg }
+    } else {
+        CommandError::DbError(msg)
+    }
 }
 
 #[tauri::command]

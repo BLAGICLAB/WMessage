@@ -37,7 +37,7 @@ src-tauri/src/
 │   ├── db/ws_tests.rs  工作区（workspace / bind_files）单测
 │   ├── db/reset_tests.rs  reset 命令单测
 │   ├── db/atomic_write_tests.rs  原子写单测
-│   ├── db/tasks.rs (958)  Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
+│   ├── db/tasks.rs (972)  Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
 │   │                     （截止只认 YYYY-MM-DD 与 YYYY-MM-DDTHH:mm，解析不了的一律拒）
 │   ├── db/tasks_patch.rs (289)  task_patch / task_set_column 的锁内纯逻辑段（字段白名单应用器 +
 │   │                     锁内读改写段）；与 db/tasks.rs **同层**，`super::` 语义不变
@@ -433,7 +433,7 @@ src-tauri/src/
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写
-├── notifications.rs (661) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
+├── notifications.rs (703) Agent 通知中心：notifications 表持久化消息（INSERT OR IGNORE 幂等，
 │                        memory_proposal / artifact_bind / task_question 三类决策事件 +
 │                        service_alert 一类服务告警——只告知不决策，条件消失时按
 │                        (serviceId, alertType, warning) 三元组自动撤收）+
