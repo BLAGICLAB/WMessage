@@ -695,6 +695,17 @@ pub(crate) async fn tool_fetch_url(
     }
 }
 
+/// run_python 算不算失败（纯函数，单测入口）。
+///
+/// 退出码非 0 = 脚本没跑成；没有退出码 = 异常终止（被信号杀死），同样不是成功。
+///
+/// 如实报失败的意义：报成功等于告诉模型「跑通了」，它就不会去改脚本；而
+/// 「别整段重写、只改出错那几行」的失败提示只在失败时才注入——这条链断了，
+/// 模型就会把整段脚本重写一遍（每次重写重付一遍全文的输出 token）。
+pub(super) fn run_failed(exit_code: Option<i32>) -> bool {
+    !matches!(exit_code, Some(0))
+}
+
 /// run_python 的代码来源：内联代码，还是已落盘的脚本文件。
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ScriptSource {
@@ -787,7 +798,31 @@ pub(crate) async fn tool_run_python(
             if out.is_empty() {
                 out = "执行完成（无输出）".into();
             }
-            ToolResult::ok(out, Vec::new())
+            // 退出码非 0 = 脚本没跑成，**如实报失败**：报成功等于告诉模型
+            // 「跑通了」，它就不会去改脚本；而失败提示（别整段重写、只改出错
+            // 那几行）也只在失败时才注入。
+            if run_failed(r.exit_code) {
+                let code_text = match r.exit_code {
+                    Some(c) => c.to_string(),
+                    None => "无退出码（异常终止）".to_string(),
+                };
+                let note = r
+                    .retained_dir
+                    .as_deref()
+                    .map(|d| {
+                        format!(
+                            "\n（脚本已保留在 {d}/{}，可 read_text_file 读回后只改出错的那几行，再用 run_python 的 scriptPath 重跑；报错行号与该文件一致）",
+                            crate::bot_py::SCRIPT_FILE
+                        )
+                    })
+                    .unwrap_or_default();
+                ToolResult::error(
+                    format!("脚本退出码 {code_text}（未跑成功）\n{out}{note}"),
+                    Vec::new(),
+                )
+            } else {
+                ToolResult::ok(out, Vec::new())
+            }
         }
         Err(e) => ToolResult::error(format!("执行失败：{e}"), Vec::new()),
     }

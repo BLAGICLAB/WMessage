@@ -1,4 +1,16 @@
-use crate::bot::tools::doc::{script_source, ScriptSource};
+use crate::bot::tools::doc::{run_failed, script_source, ScriptSource};
+
+/// 退出码非 0 必须算失败。
+///
+/// 回归背景：run_python 曾经完全不看退出码，脚本崩了也报「成功」——模型
+/// 于是以为跑通了，只把报错当普通输出，接着把整段脚本重写一遍。失败提示
+/// （别整段重写、只改出错那几行）也因此一次都没触发。
+#[test]
+fn nonzero_exit_code_counts_as_failure() {
+    assert!(!run_failed(Some(0)), "退出码 0 是成功");
+    assert!(run_failed(Some(1)), "非零退出码必须算失败");
+    assert!(run_failed(None), "没有退出码 = 异常终止，不能报成功");
+}
 
 /// scriptPath 优先于内联 code。
 ///
