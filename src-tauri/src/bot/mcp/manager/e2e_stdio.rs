@@ -666,3 +666,119 @@ fn function_name_of(server_id: &str) -> String {
         .map(|t| t.func_name)
         .expect("该服务器应有挂载条目")
 }
+
+/// 发现/调用互斥 · 断言 1：**spawn 在途窗口不算「未发现」**。
+///
+/// call_tool 先摘槽再 spawn（握手 + tools/list 最长 20s），这段窗口里槽位
+/// 若「不存在」，工具发现会判成「从未发现过」→ 对同一台服务器并发拉起
+/// 第二个子进程。Connecting 占位让 tools_known 在窗口内返回 true。
+#[tokio::test]
+async fn connecting_window_is_seen_as_tools_known() {
+    if !ensure_python3().await {
+        eprintln!("[skip] 无 python3，跳过 MCP 互斥 e2e");
+        return;
+    }
+    let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+    shared().shutdown().await;
+    let mgr = shared();
+    let mut cfg = echo_cfg("e2e-race");
+    cfg.name = "racepool".into();
+    mgr.apply_config(std::slice::from_ref(&cfg), &ToolCache::default())
+        .await;
+    // apply_config 后：Idle{discovered:false} → 未发现，且无子进程
+    assert!(!mgr.tools_known("e2e-race"));
+
+    let cfg_call = cfg.clone();
+    let call = tokio::spawn(async move {
+        shared()
+            .call_tool(&cfg_call, "echo", serde_json::json!({ "text": "竞态" }))
+            .await
+    });
+    // 占位窗口：还没有活连接（Connected 未落），但工具必须已被视为「已知」。
+    // 旧代码这里 tools_known 恒 false 直到 Connected 落地（活连接出现）。
+    let mut saw_placeholder = false;
+    for _ in 0..600 {
+        if mgr.connected_children().is_empty() && mgr.tools_known("e2e-race") {
+            saw_placeholder = true;
+            break;
+        }
+        if !mgr.connected_children().is_empty() {
+            // 已进 Connected：占位窗口错过前没观察到违规即通过
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        saw_placeholder,
+        "spawn 在途（尚无活连接）时 tools_known 必须为 true，否则发现路径会对同一台服务器再 spawn 一个子进程"
+    );
+    call.await
+        .expect("调用任务应成功")
+        .expect("echo 调用应成功");
+    assert_eq!(mgr.status_of("e2e-race").state, "idle");
+    assert!(mgr.tools_known("e2e-race"));
+    mgr.shutdown().await;
+}
+
+/// 发现/调用互斥 · 断言 2：**发现与调用并发时，同一台服务器全程至多一个子进程**。
+///
+/// 两条路径共用 per-server `call_lock`：发现要么在闸上等、要么拿到闸后看见
+/// 活连接/刚回收的静默待命态按序推进。整个重叠期连接槽里的子进程数不得 >1。
+#[tokio::test]
+async fn discovery_and_call_share_the_per_server_gate() {
+    if !ensure_python3().await {
+        eprintln!("[skip] 无 python3，跳过 MCP 互斥 e2e");
+        return;
+    }
+    let _serial = SHARED_MCP_TEST_LOCK.lock().await;
+    shared().shutdown().await;
+    let mgr = shared();
+    let mut cfg = echo_cfg("e2e-race2");
+    cfg.name = "racepool2".into();
+    mgr.apply_config(std::slice::from_ref(&cfg), &ToolCache::default())
+        .await;
+
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher_done = done.clone();
+    let watcher = tokio::spawn(async move {
+        let mut max_seen = 0usize;
+        while !watcher_done.load(std::sync::atomic::Ordering::Relaxed) {
+            let n = shared()
+                .connected_children()
+                .get("e2e-race2")
+                .map(|_| 1usize)
+                .unwrap_or(0);
+            max_seen = max_seen.max(n);
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+        max_seen
+    });
+
+    let cfg_call = cfg.clone();
+    let call = tokio::spawn(async move {
+        shared()
+            .call_tool(&cfg_call, "echo", serde_json::json!({ "text": "并发" }))
+            .await
+    });
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    let disc = tokio::spawn(async move {
+        shared().discover_tools_for(&handle, "e2e-race2").await;
+    });
+
+    call.await
+        .expect("调用任务应成功")
+        .expect("echo 调用应成功");
+    disc.await.expect("发现任务应结束");
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    let max_seen = watcher.await.expect("watcher 应结束");
+    assert!(
+        max_seen <= 1,
+        "同一台服务器在发现/调用并发期间不得出现第二个子进程（连接槽口径观察到 {max_seen} 个）"
+    );
+    // 终态自洽：发现落完清单，槽位回静默待命
+    assert_eq!(mgr.status_of("e2e-race2").state, "idle");
+    assert!(mgr.tools_known("e2e-race2"));
+    assert_eq!(mgr.tools_of("e2e-race2").len(), 1);
+    mgr.shutdown().await;
+}

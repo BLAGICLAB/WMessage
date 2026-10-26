@@ -98,6 +98,10 @@ enum Slot {
     Down {
         error: String,
     },
+    /// 连接建立中（spawn 在途，最长 20s）：占住槽位，让「工具是否已知」
+    /// 判定与工具发现不再把这段窗口误当成「从未发现过」——那会对同一台
+    /// 服务器并发拉起第二个子进程。建立完成转 Connected / 失败转 Down。
+    Connecting,
 }
 
 /// 一份进程快照（带采样时刻）。
@@ -335,6 +339,9 @@ impl McpManager {
         // stderr 旧尾巴同步清掉（评审 M-17）：同 id 重连复用环形缓冲，
         // 不清会把旧进程的诊断输出混进新进程的错误文案。
         let old = self.slots().remove(&cfg.id);
+        // 先落 Connecting 占位：spawn 最长 20s，这段窗口里槽位不能「不存在」，
+        // 否则 tools_known 误判为未发现、发现路径会对同一台服务器再 spawn 一个子进程
+        self.slots().insert(cfg.id.clone(), Slot::Connecting);
         self.prune_stderr(&cfg.id);
         Self::close_old(old).await;
         match self.spawn_service(cfg).await {
@@ -390,7 +397,9 @@ impl McpManager {
     pub fn tools_known(&self, id: &str) -> bool {
         match self.slots().get(id) {
             Some(Slot::Idle { discovered, .. }) => *discovered,
-            Some(Slot::Connected { .. }) => true,
+            // 活连接 / 连接建立中都算已知：连接成功会带回工具清单，
+            // 此刻再发现一次只会跟调用路径抢同一台服务器
+            Some(Slot::Connected { .. }) | Some(Slot::Connecting) => true,
             _ => false,
         }
     }
@@ -406,7 +415,7 @@ impl McpManager {
     /// 为某台服务器按需发现一次工具清单（设置页「查看工具」触发）。
     ///
     /// 服务器不在启用列表里 → 不做（禁用 / 已删除的服务器没有工具可看）。
-    pub async fn discover_tools_for(&self, app: &tauri::AppHandle, id: &str) {
+    pub async fn discover_tools_for<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>, id: &str) {
         let cfg = self
             .enabled
             .lock()
@@ -435,7 +444,7 @@ impl McpManager {
     /// 由主 agent 会话进入模型循环前调用（子 agent 工具面静态、不挂 MCP 工具，
     /// 不该在这里拉起服务器）。发现完立刻断开连接——工具清单已落盘，
     /// 之后不必再连；模型真要调用时再按需拉起。
-    pub async fn ensure_tools_known(&self, app: &tauri::AppHandle) {
+    pub async fn ensure_tools_known<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>) {
         let targets: Vec<McpServerConfig> = self
             .enabled
             .lock()
@@ -457,7 +466,16 @@ impl McpManager {
     /// 失败时槽位转 Down 并进入冷却（冷却期内不再重试）——没有冷却的话，
     /// 一台坏服务器会让**每一轮对话**都去连一遍（连接超时 10s 起步），
     /// 整轮提问被拖死。
-    async fn discover_tools(&self, app: &tauri::AppHandle, cfg: &McpServerConfig) {
+    async fn discover_tools<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        cfg: &McpServerConfig,
+    ) {
+        // 与 call_tool 共用同一把 per-server 闸：spawn 在途 / 调用进行中时，
+        // 发现要么在闸上等、要么拿到闸后看见活连接直接返回——同一台服务器
+        // 任何时刻只会有一个子进程，发现结束的 Idle 插入也不会覆盖在途连接。
+        let call_lock = self.call_lock(&cfg.id);
+        let _serial = call_lock.lock().await;
         // 有活连接在跑（调用进行中）→ 不动它：活连接的工具清单就是最新的，
         // 覆盖槽位会把在途调用的连接抽走。
         if matches!(self.slots().get(&cfg.id), Some(Slot::Connected { .. })) {
@@ -1045,6 +1063,12 @@ impl McpManager {
             Some(Slot::Down { error, .. }) => McpSlotStatus {
                 state: "down".into(),
                 error: Some(error.clone()),
+                tool_count: 0,
+            },
+            // 连接建立中（spawn 在途）：按「待发现」上报，面板语义兼容
+            Some(Slot::Connecting) => McpSlotStatus {
+                state: "pending".into(),
+                error: None,
                 tool_count: 0,
             },
             None => McpSlotStatus {
