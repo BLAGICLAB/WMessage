@@ -15,7 +15,9 @@ pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&st
     let mut moved = 0usize;
     for e in entries.flatten() {
         let name = e.file_name();
-        if name == "run.py" || name == "params.json" {
+        // run.py（执行入口）/ script.py（脚本正文）/ params.json（入参）不是产物：
+        // 搬进 AI_Gen_Files 只会给用户塞一堆看不懂的 .py 垃圾。
+        if name == "run.py" || name == "script.py" || name == "params.json" {
             continue;
         }
         let src = e.path();

@@ -23,6 +23,26 @@ fn mutant_m7_preview_overflow_root_pinned_in_read_allowlist() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// py 沙箱运行目录必须在读白名单里：脚本跑失败时留在里面，模型要读回
+/// 「刚才到底跑了什么」就得能读——读不到就只能把整段脚本重写一遍。
+///
+/// 只加读侧：模型不能往沙箱里写。
+#[test]
+fn py_runs_root_pinned_in_read_allowlist() {
+    let app = tauri::test::mock_app();
+    let root = crate::bot_py::py_runs_root();
+    // 只建不删：并行跑的真实 python 用例可能正在这个根下建目录，
+    // 删根会连带删掉它们的运行目录。
+    std::fs::create_dir_all(&root).expect("建 py 沙箱根目录");
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    append_session_read_dirs(app.handle(), None, &mut dirs);
+    let expected = std::fs::canonicalize(&root).unwrap();
+    assert!(
+        dirs.contains(&expected),
+        "读白名单必须含 py 沙箱根目录 {expected:?}，实际：{dirs:?}"
+    );
+}
+
 // N3-6：grep 上下文渲染
 
 #[test]

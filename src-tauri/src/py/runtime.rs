@@ -24,6 +24,10 @@ pub struct PyRunResult {
     pub duration_ms: u128,
     #[serde(default)]
     pub truncated: bool,
+    /// 失败时保留下来的运行目录（脚本还在里面，可读回后改几行再跑）。
+    /// 成功时为空——目录已连同产物一起清掉。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retained_dir: Option<String>,
 }
 
 pub const OUTPUT_CAP: usize = 64 * 1024;
@@ -256,13 +260,55 @@ pub fn kill_tree(child: &mut Child, limits: &RunLimits) {
     let _ = child.wait();
 }
 
-pub fn cleanup_after_fail(child: &mut Child, dir: &std::path::Path, limits: &RunLimits) {
+/// 运行目录里的脚本正文文件名（模型写的那份，原样落盘）。
+///
+/// 正文与执行入口**分文件**：正文保持模型写的样子，报错行号才与模型自己的
+/// 文件一一对应；入口只负责起看门狗后转交正文。
+pub const SCRIPT_FILE: &str = "script.py";
+/// 运行目录里的执行入口文件名（宿主生成）。
+pub const ENTRY_FILE: &str = "run.py";
+
+/// 执行入口正文：起看门狗后转交脚本正文。
+///
+/// 看门狗**不能拼进脚本正文**：拼进去 traceback 的行号会整体下移（unix 上 7 行），
+/// 模型按报错行号去改自己的脚本就会改错行——而「照着报错行号只改那一行」正是
+/// 长脚本不再整段重写的关键。正文单独放 script.py，行号才对得上。
+///
+/// 转交方式用 exec 而不是 runpy.run_path：后者会把 `sys.modules['__main__']`
+/// 换成临时模块，multiprocessing 的 spawn 子进程据此回读主模块时读到的就是
+/// script.py ——那份里没有看门狗，宿主崩了子进程会留下。exec 进 run.py 自己的
+/// 全局里，`__file__` / `sys.modules['__main__'].__file__` 都还指着入口，
+/// 与拆分前一致。
+fn entry_source() -> String {
+    let mut src = String::new();
+    #[cfg(unix)]
+    {
+        // 看门狗自带 import os/threading/time
+        src.push_str(PARENT_WATCHDOG);
+        src.push('\n');
+    }
+    #[cfg(not(unix))]
+    {
+        src.push_str("import os as _wm_os\n");
+    }
+    src.push_str(
+        "_wm_script = _wm_os.path.join(_wm_os.path.dirname(_wm_os.path.abspath(__file__)), 'script.py')\n",
+    );
+    // utf-8-sig：带 BOM 的脚本也能正常执行（拆前由解释器剥 BOM，拆后自己读要自己剥）
+    src.push_str("with open(_wm_script, encoding='utf-8-sig') as _wm_f:\n");
+    src.push_str("    exec(compile(_wm_f.read(), _wm_script, 'exec'), globals())\n");
+    src
+}
+
+pub fn cleanup_after_fail(child: &mut Child, limits: &RunLimits) {
     kill_tree(child, limits);
-    let _ = std::fs::remove_dir_all(dir);
+    // 运行目录**不删**：脚本留在里面，模型失败后能读回「刚才到底跑了什么」。
+    // 目录由超龄清扫回收（见 py::harvest::sweep_stale_py_runs_in）。
 }
 
 pub fn cleanup_after_spawn_fail(dir: &std::path::Path, limits: &RunLimits) {
     limits.terminate();
+    // spawn 失败 = 脚本根本没跑起来，没有「刚才跑了什么」可读回，直接清掉。
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -278,7 +324,10 @@ pub fn setup_run_dir(
     let dir = base.join(uuid::Uuid::new_v4().simple().to_string());
     let r = (|| -> Result<(), String> {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(dir.join("run.py"), script).map_err(|e| e.to_string())?;
+        // 正文（模型写的那份，原样）与执行入口（看门狗 + 转交正文）分文件：
+        // 正文行号与模型自己的文件一一对应，报错行号才能直接照着改。
+        std::fs::write(dir.join(SCRIPT_FILE), script).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join(ENTRY_FILE), entry_source()).map_err(|e| e.to_string())?;
         if let Some(j) = input_json {
             std::fs::write(dir.join("params.json"), j).map_err(|e| e.to_string())?;
         }
@@ -534,13 +583,8 @@ pub fn run_python_ungated(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, PyRunError> {
-    #[cfg(unix)]
-    let script_owned;
-    #[cfg(unix)]
-    let script = {
-        script_owned = format!("{PARENT_WATCHDOG}\n{script}");
-        script_owned.as_str()
-    };
+    // 看门狗不再拼进脚本正文：拼接会让 traceback 行号整体下移，模型按报错
+    // 行号改自己的脚本就会改错行。看门狗改由执行入口承担（见 entry_source）。
     let mut py = match crate::py::env::cached_python() {
         Some(p) => p,
         None => {
@@ -570,7 +614,7 @@ pub fn run_python_ungated(
         };
         match run_python_at(
             &py,
-            Some("run.py"),
+            Some(ENTRY_FILE),
             &dir,
             gen.as_deref(),
             args,
@@ -788,6 +832,18 @@ fn setrlimit_probe_cached(py: &str, audit: &mut dyn FnMut(&str)) -> SetrlimitSup
         .clone()
 }
 
+/// 失败后给模型的提示：脚本还在哪、怎么改。
+///
+/// 「脚本没跑成」最贵的代价是模型把整段代码重写一遍（每次重写都重付一遍全文
+/// 的输出 token）。留住脚本并给出路径，模型就能读回来只改出错的那几行。
+fn retained_note(dir: &std::path::Path) -> String {
+    format!(
+        "（脚本已保留在 {}/{}，可 read_text_file 读回后只改出错的那几行，再用 run_python 的 scriptPath 重跑；报错行号与该文件一致）",
+        dir.display(),
+        SCRIPT_FILE
+    )
+}
+
 pub fn run_python_at(
     py: &str,
     entry: Option<&str>,
@@ -929,18 +985,18 @@ pub fn run_python_at(
             Ok(Some(status)) => break status.code(),
             Ok(None) => {}
             Err(e) => {
-                cleanup_after_fail(&mut child, dir, &limits);
+                cleanup_after_fail(&mut child, &limits);
                 audit(&format!("run_python err | kind=wait_fail | {e}"));
                 crate::py::io::join_reader_threads(out_handle, err_handle, audit);
                 return Err(RunFail {
                     kind: PyFailKind::Runtime,
-                    msg: format!("等待子进程状态失败：{e}"),
+                    msg: format!("等待子进程状态失败：{e}{}", retained_note(dir)),
                     spawn_not_found: false,
                 });
             }
         }
         if start.elapsed() > timeout {
-            cleanup_after_fail(&mut child, dir, &limits);
+            cleanup_after_fail(&mut child, &limits);
             audit(&format!(
                 "run_python err | kind=timeout | timeout_secs={}",
                 timeout.as_secs()
@@ -948,17 +1004,21 @@ pub fn run_python_at(
             crate::py::io::join_reader_threads(out_handle, err_handle, audit);
             return Err(RunFail {
                 kind: PyFailKind::Timeout,
-                msg: format!("执行超时（{}s）已强制终止", timeout.as_secs()),
+                msg: format!(
+                    "执行超时（{}s）已强制终止{}",
+                    timeout.as_secs(),
+                    retained_note(dir)
+                ),
                 spawn_not_found: false,
             });
         }
         if stop.is_some_and(|s| s.stopped()) {
-            cleanup_after_fail(&mut child, dir, &limits);
+            cleanup_after_fail(&mut child, &limits);
             audit("run_python err | kind=stopped");
             crate::py::io::join_reader_threads(out_handle, err_handle, audit);
             return Err(RunFail {
                 kind: PyFailKind::Stopped,
-                msg: "已停止".into(),
+                msg: format!("已停止{}", retained_note(dir)),
                 spawn_not_found: false,
             });
         }
@@ -982,22 +1042,61 @@ pub fn run_python_at(
     if let Some(g) = gen_dir {
         crate::py::harvest::harvest_run_outputs(dir, g, audit);
     }
-    let _ = std::fs::remove_dir_all(dir);
     let Some(code) = exit_code else {
+        // 无退出码 = 被信号杀死：脚本跑过了（可能跑了一半），目录留着给模型读回
         audit("run_python err | kind=exit_none | 无退出码，子进程疑似被信号杀死");
+        let _ = finish_run_dir(dir, false, audit);
         return Err(RunFail {
             kind: PyFailKind::Runtime,
-            msg: "子进程异常终止（被信号杀死，无退出码）".into(),
+            msg: format!(
+                "子进程异常终止（被信号杀死，无退出码）{}",
+                retained_note(dir)
+            ),
             spawn_not_found: false,
         });
     };
+    // 退出码 0 = 脚本跑成了：目录连同产物一起清掉。
+    // 非 0 = 脚本跑了但没跑成：目录留着（脚本在里面），模型读回改几行再跑。
+    let retained_dir = finish_run_dir(dir, code == 0, audit);
     Ok(PyRunResult {
         stdout: crate::py::io::truncate_output(stdout),
         stderr: crate::py::io::truncate_output(stderr),
         exit_code: Some(code),
         duration_ms,
         truncated,
+        retained_dir,
     })
+}
+
+/// 跑完后的目录收尾：跑成了才清；没跑成留着（脚本在里面，模型要能读回）。
+///
+/// 返回留存目录路径（跑成时 None）。
+fn finish_run_dir(
+    dir: &std::path::Path,
+    succeeded: bool,
+    audit: &mut dyn FnMut(&str),
+) -> Option<String> {
+    if succeeded {
+        let _ = std::fs::remove_dir_all(dir);
+        return None;
+    }
+    prune_stale_run_dirs(audit);
+    Some(dir.to_string_lossy().to_string())
+}
+
+/// 留存运行目录后顺手清一遍超龄的（保留期 1h，与启动时清扫同一口径）。
+///
+/// 只在启动时清扫的话，长会话里一次次失败会把临时目录堆起来；每次留存时
+/// 顺带扫一遍，堆积就被压在一小时窗口内。
+fn prune_stale_run_dirs(audit: &mut dyn FnMut(&str)) {
+    let removed = crate::py::harvest::sweep_stale_py_runs_in(
+        &py_runs_root(),
+        Duration::from_secs(3600),
+        std::time::SystemTime::now(),
+    );
+    if removed > 0 {
+        audit(&format!("py_runs prune | removed={removed}"));
+    }
 }
 
 /// 安全边界测试：许可闸 / 子进程登记 / 进程组判定 / kill_tree 收割。

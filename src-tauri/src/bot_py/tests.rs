@@ -618,7 +618,8 @@ fn run_python_at_timeout_writes_audit_line() {
         lines.iter().any(|l| l.contains("kind=timeout")),
         "缺 timeout 审计行: {lines:?}"
     );
-    assert!(!dir.exists(), "超时路径应清理临时目录");
+    // 超时 = 脚本跑过了（可能跑了一半）→ 目录留着给模型读回
+    assert!(dir.exists(), "超时路径应保留运行目录（脚本留在里面）");
 }
 
 #[test]
@@ -692,9 +693,17 @@ fn spawn_fail_cleans_populated_dir_and_audits() {
 fn setup_run_dir_success_writes_script_and_params() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = setup_run_dir(tmp.path(), "print(1)\n", Some("{\"a\":1}")).unwrap();
+    // 脚本正文原样落盘（模型写的那份）：报错行号与它一一对应
     assert_eq!(
-        std::fs::read_to_string(dir.join("run.py")).unwrap(),
+        std::fs::read_to_string(dir.join("script.py")).unwrap(),
         "print(1)\n"
+    );
+    // 执行入口是宿主生成的：起看门狗后转交正文，不含用户脚本
+    let entry = std::fs::read_to_string(dir.join("run.py")).unwrap();
+    assert!(entry.contains("script.py"), "入口应转交 script.py：{entry}");
+    assert!(
+        !entry.contains("print(1)"),
+        "入口不得夹带用户脚本（正文单独成文件）：{entry}"
     );
     assert_eq!(
         std::fs::read_to_string(dir.join("params.json")).unwrap(),
@@ -720,16 +729,16 @@ fn setup_run_dir_write_failure_cleans_up() {
     std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
-// ── cleanup_after_fail（失败路径杀进程组 + 清临时目录）──
+// ── cleanup_after_fail（失败路径杀进程组 + 保留运行目录）──
 
 #[test]
-fn cleanup_after_fail_kills_child_and_removes_dir() {
-    // mock Child 难，直接 spawn `sleep` 验证：调用后子进程已退出、临时目录已删
+fn cleanup_after_fail_kills_child_and_keeps_dir() {
+    // mock Child 难，直接 spawn `sleep` 验证：调用后子进程已退出、运行目录留着
     //（Unix 下 RunLimits::terminate 是 no-op，kill_tree 兜底 child.kill()）
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("run-cleanup");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("run.py"), "x").unwrap();
+    std::fs::write(dir.join("script.py"), "x").unwrap();
     let sleeper = if cfg!(windows) { "cmd" } else { "sleep" };
     let args: &[&str] = if cfg!(windows) {
         &["/C", "ping", "-n", "30", "127.0.0.1"]
@@ -738,11 +747,158 @@ fn cleanup_after_fail_kills_child_and_removes_dir() {
     };
     let mut child = silent_cmd(sleeper).args(args).spawn().unwrap();
     let limits = RunLimits::new(0, 0);
-    cleanup_after_fail(&mut child, &dir, &limits);
-    assert!(!dir.exists(), "失败路径必须清理临时目录");
+    cleanup_after_fail(&mut child, &limits);
+    assert!(
+        dir.exists(),
+        "失败路径必须保留运行目录——脚本留在里面，模型失败后才能读回"
+    );
     assert!(
         child.try_wait().unwrap().is_some(),
         "子进程应已被杀死，不得留孤儿"
+    );
+}
+
+// ── 失败留存脚本（模型要能读回「刚才跑了什么」）──
+
+/// 脚本跑失败时，运行目录必须留着，且脚本正文原样可读。
+///
+/// 回归背景：脚本没跑成时目录被删掉，模型手里就只剩「失败」两个字——
+/// 想改就得把整段脚本重写一遍（每次重写都重付一遍全文的输出 token）。
+#[test]
+fn failed_run_keeps_script_readable() {
+    let Some(py) = detect_python() else {
+        return; // 无 Python 环境跳过
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let script = "raise SystemExit('boom')\n";
+    let dir = setup_run_dir(tmp.path(), script, None).unwrap();
+    let mut lines: Vec<String> = Vec::new();
+    let res = match run_python_at(
+        &py,
+        Some(ENTRY_FILE),
+        &dir,
+        None,
+        &[],
+        Some(10),
+        &mut |l: &str| lines.push(l.to_string()),
+        None,
+    ) {
+        Ok(r) => r,
+        Err(f) => panic!("非零退出码应如实返回结果而不是报错: {}", f.msg),
+    };
+    assert_eq!(res.exit_code, Some(1), "非零退出码要如实上报");
+    assert!(dir.exists(), "失败后运行目录必须留着");
+    assert_eq!(
+        std::fs::read_to_string(dir.join(SCRIPT_FILE)).unwrap(),
+        script,
+        "脚本正文必须原样可读回"
+    );
+    assert!(
+        res.retained_dir.is_some(),
+        "失败时必须把留存目录告诉调用方（模型才知道去哪读）"
+    );
+}
+
+/// 跑成功时运行目录连同产物一起清掉（不留垃圾）。
+#[test]
+fn successful_run_clears_run_dir() {
+    let Some(py) = detect_python() else {
+        return; // 无 Python 环境跳过
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = setup_run_dir(tmp.path(), "print(1)\n", None).unwrap();
+    let mut lines: Vec<String> = Vec::new();
+    let res = match run_python_at(
+        &py,
+        Some(ENTRY_FILE),
+        &dir,
+        None,
+        &[],
+        Some(10),
+        &mut |l: &str| lines.push(l.to_string()),
+        None,
+    ) {
+        Ok(r) => r,
+        Err(f) => panic!("正常脚本应跑成功: {}", f.msg),
+    };
+    assert_eq!(res.exit_code, Some(0));
+    assert!(!dir.exists(), "成功后运行目录必须清掉");
+    assert!(res.retained_dir.is_none(), "成功不留存目录（没失败可读回）");
+}
+
+/// traceback 的行号必须与脚本正文一致（模型照着报错行号改那一行才对得上）。
+///
+/// 回归背景：看门狗曾经拼在脚本正文前面，traceback 行号整体下移 7 行——
+/// 模型按报错行号改自己的脚本会改错行，「只改出错那一行」就变成了「改错一行」。
+#[test]
+fn traceback_line_numbers_match_script_body() {
+    let Some(py) = detect_python() else {
+        return; // 无 Python 环境跳过
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let script = "x = 1\ny = 2\nraise ValueError('boom')\n";
+    let dir = setup_run_dir(tmp.path(), script, None).unwrap();
+    let mut lines: Vec<String> = Vec::new();
+    let res = match run_python_at(
+        &py,
+        Some(ENTRY_FILE),
+        &dir,
+        None,
+        &[],
+        Some(10),
+        &mut |l: &str| lines.push(l.to_string()),
+        None,
+    ) {
+        Ok(r) => r,
+        Err(f) => panic!("脚本应跑完（只是非零退出）: {}", f.msg),
+    };
+    let frame = res
+        .stderr
+        .lines()
+        .find(|l| l.contains(SCRIPT_FILE) && l.contains("line"))
+        .unwrap_or_else(|| panic!("traceback 里没有脚本正文帧：{}", res.stderr));
+    assert!(
+        frame.contains("line 3"),
+        "报错帧应指向 {SCRIPT_FILE} 第 3 行（与模型写的文件一致）：{frame}"
+    );
+}
+
+/// 脚本必须仍以「主模块」身份执行，`__file__` 仍指向运行目录。
+///
+/// 回归背景：正文拆到 script.py 后由入口转交。转交方式选错（把主模块换成
+/// 临时模块）会让 `__name__` 不再是 `__main__`——脚本里
+/// `if __name__ == "__main__":` 那段就整段不执行，看起来「脚本跑了但什么也没做」。
+#[test]
+fn script_runs_as_main_module() {
+    let Some(py) = detect_python() else {
+        return; // 无 Python 环境跳过
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let script = "import sys\nprint('name=' + __name__)\nprint('file=' + __file__)\n";
+    let dir = setup_run_dir(tmp.path(), script, None).unwrap();
+    let mut lines: Vec<String> = Vec::new();
+    let res = match run_python_at(
+        &py,
+        Some(ENTRY_FILE),
+        &dir,
+        None,
+        &[],
+        Some(10),
+        &mut |l: &str| lines.push(l.to_string()),
+        None,
+    ) {
+        Ok(r) => r,
+        Err(f) => panic!("脚本应跑成功: {}", f.msg),
+    };
+    assert!(
+        res.stdout.contains("name=__main__"),
+        "脚本应以主模块身份执行：{}",
+        res.stdout
+    );
+    assert!(
+        res.stdout.contains("run.py"),
+        "__file__ 应指向运行目录里的入口：{}",
+        res.stdout
     );
 }
 
@@ -818,6 +974,7 @@ fn harvest_moves_new_files_and_skips_harness_files() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::create_dir_all(&gen).unwrap();
     std::fs::write(dir.join("run.py"), b"x").unwrap();
+    std::fs::write(dir.join("script.py"), b"y").unwrap();
     std::fs::write(dir.join("params.json"), b"{}").unwrap();
     std::fs::write(dir.join("report.docx"), b"a").unwrap();
     std::fs::create_dir_all(dir.join("out")).unwrap();
@@ -826,7 +983,12 @@ fn harvest_moves_new_files_and_skips_harness_files() {
     std::fs::write(gen.join("report.docx"), b"old").unwrap();
     let mut lines: Vec<String> = Vec::new();
     harvest_run_outputs(&dir, &gen, &mut |l: &str| lines.push(l.to_string()));
-    assert!(dir.join("run.py").exists() && dir.join("params.json").exists());
+    // 脚本正文也不搬：搬进 AI_Gen_Files 只会给用户塞一堆看不懂的 .py 垃圾
+    assert!(
+        dir.join("run.py").exists()
+            && dir.join("script.py").exists()
+            && dir.join("params.json").exists()
+    );
     assert!(!dir.join("report.docx").exists() && !dir.join("out").exists());
     assert_eq!(std::fs::read(gen.join("report.docx")).unwrap(), b"old");
     assert_eq!(std::fs::read(gen.join("report (1).docx")).unwrap(), b"a");
@@ -959,7 +1121,8 @@ fn run_python_at_stop_token_interrupts_promptly() {
         lines.iter().any(|l| l.contains("kind=stopped")),
         "缺 stopped 审计行: {lines:?}"
     );
-    assert!(!dir.exists(), "停止路径应清理临时目录");
+    // 停止 = 脚本跑过了（可能跑了一半）→ 目录留着给模型读回
+    assert!(dir.exists(), "停止路径应保留运行目录（脚本留在里面）");
 }
 
 // ── strip_known_ext（扩展名剥离大小写不敏感）──

@@ -43,19 +43,39 @@ fn bundled_exe_entry_preferred_over_dll() {
 
 /// 回归锁：Unix 脚本必须注入父进程看门狗（macOS 无 Job Object 等价物，
 /// 主进程崩溃时睡眠型失控脚本靠 RLIMIT_CPU 管不住）
+///
+/// 注入点从「拼进脚本正文」改成「写进执行入口」：拼进正文会让 traceback
+/// 行号整体下移，模型照报错行号改脚本就会改错行。守卫随之改为盯住注入链：
+/// run_python_ungated → setup_run_dir → entry_source → PARENT_WATCHDOG。
 #[cfg(unix)]
 #[test]
 fn unix_scripts_get_parent_watchdog() {
     let text =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/py/runtime.rs")).unwrap();
     assert!(text.contains("PARENT_WATCHDOG"), "必须有看门狗前导常量");
-    let fn_pos = text
+    let entry_pos = text
+        .find("fn entry_source()")
+        .expect("entry_source 必须存在");
+    let entry: String = text[entry_pos..].chars().take(800).collect();
+    assert!(
+        entry.contains("PARENT_WATCHDOG"),
+        "看门狗必须在执行入口里注入（覆盖全部 Python 执行入口）"
+    );
+    let setup_pos = text
+        .find("pub fn setup_run_dir(")
+        .expect("setup_run_dir 必须存在");
+    let setup: String = text[setup_pos..].chars().take(1200).collect();
+    assert!(
+        setup.contains("entry_source()"),
+        "运行目录必须写入含看门狗的执行入口"
+    );
+    let ungated_pos = text
         .find("fn run_python_ungated(")
         .expect("run_python_ungated 必须存在");
-    let body: String = text[fn_pos..].chars().take(1200).collect();
+    let ungated: String = text[ungated_pos..].chars().take(2000).collect();
     assert!(
-        body.contains("PARENT_WATCHDOG"),
-        "看门狗必须在 run_python_ungated 注入（覆盖全部 Python 执行入口）"
+        ungated.contains("setup_run_dir("),
+        "Python 执行入口必须经 setup_run_dir 落盘（看门狗才覆盖得到）"
     );
 }
 

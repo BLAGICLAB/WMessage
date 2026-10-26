@@ -236,6 +236,17 @@ fn append_session_read_dirs<R: tauri::Runtime>(
             out.push(c);
         }
     }
+    // py 沙箱运行目录（temp/wmessage-py-runs）：脚本跑失败时目录会留下来，
+    // 模型要读回「刚才到底跑了什么」就得能读它——读不到就只能把整段脚本重写一遍
+    // （每次重写都重付一遍全文的输出 token）。
+    // 目录还不存在（还没跑过 python）时 canonicalize 失败即跳过；白名单每次读调用
+    // 重算，等模型真去读时目录已经建好。
+    // 只加读侧：模型不能往沙箱里写（可写的只有 AI_Gen_Files 等既有根）。
+    if let Ok(c) = std::fs::canonicalize(crate::py::runtime::py_runs_root()) {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
 }
 
 /// 路径守卫（Kimi CLI 风格「执行前授权」）：
