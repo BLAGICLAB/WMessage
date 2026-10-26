@@ -137,6 +137,52 @@ data: [DONE]
     bodies[1].clone()
 }
 
+/// MiniMax 形态：思考段在正文 `<think>` 标签里（OpenAI 兼容端点没有
+/// reasoning_content 字段）。剥出的思考段并入 reasoning 原文，回灌开关
+/// 打开后随 assistant(tool_calls) 回传——否则这类模型的思考段永远缺在
+/// 历史里，要求回灌的上游照样 400。
+#[tokio::test]
+async fn core_reasoning_echo_covers_think_tag_content() {
+    let server = MockLlmServer::start();
+    let tool_round = r#"data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"minimax-m2","choices":[{"delta":{"role":"assistant","content":"<think>先想一下</think>"},"index":0}]}
+
+data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"minimax-m2","choices":[{"delta":{"content":null,"tool_calls":[{"index":0,"id":"call_think","type":"function","function":{"name":"read_text_file","arguments":"{}"}}]},"index":0,"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+"#;
+    server.push_behavior(MockBehavior::RawSse(tool_round.to_string()));
+    server.push_behavior(MockBehavior::TextReply("查完了".into()));
+
+    let h = CoreHarness::new().with_reasoning_echo();
+    let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
+        ToolResult::ok("内容", Vec::new())
+    };
+    run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("<think> 回灌用例应 Ok");
+
+    let bodies = server.request_bodies();
+    let second = &bodies[1];
+    assert!(
+        second.contains(r#""reasoning_content":"先想一下""#),
+        "<think> 剥出的思考段应随回灌进历史：{second}"
+    );
+    assert!(
+        !second.contains("<think>"),
+        "正文里的标签不应原样进历史：{second}"
+    );
+}
+
 /// 轮内工具结果滑动窗：累计超阈值时，早期工具结果被换成可召回的桩子。
 ///
 /// 触发条件是**轮内累计的工具结果字符数**（实测 p90 附近，24K 字符）。这里造

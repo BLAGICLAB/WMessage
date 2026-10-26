@@ -552,6 +552,7 @@ impl From<PyRunError> for CommandError {
     }
 }
 
+#[derive(Debug)]
 pub struct RunFail {
     pub kind: PyFailKind,
     pub msg: String,
@@ -655,6 +656,53 @@ pub fn silent_cmd(program: &str) -> Command {
 #[cfg(not(windows))]
 pub fn silent_cmd(program: &str) -> Command {
     Command::new(program)
+}
+
+/// 子进程环境裁剪 + 编码基线：子进程默认继承宿主全量环境，用户 shell 里
+/// 导出的密钥（API token、数据库连接串之类）会原样进 app / run_python 脚本
+/// 的可见范围。改白名单：只带运行 Python 必需的系统变量（见 py_env_allowed）；
+/// WM_* 业务变量由调用方在裁剪后显式补。编码基线原先只在 Windows 的
+/// silent_cmd 里设，裁剪后统一显式补，不依赖宿主 shell 恰好带没带。
+fn apply_child_env(cmd: &mut Command) {
+    cmd.env_clear();
+    for (k, v) in std::env::vars_os() {
+        if k.to_str().is_some_and(py_env_allowed) {
+            cmd.env(k, v);
+        }
+    }
+    cmd.env("PYTHONIOENCODING", "utf-8").env("PYTHONUTF8", "1");
+}
+
+/// 子进程环境白名单（py / apps 脚本可见的宿主变量）。注释里写全取舍：
+/// PATH/HOME/临时目录/locale 是解释器与常见脚本的地基；Windows 一组是
+/// Python 在 Windows 上启动与取系统路径的最低需求。代理变量、shell 配置、
+/// 其它一切自定义变量一律不带——需要就走脚本参数显式传。
+fn py_env_allowed(name: &str) -> bool {
+    match name {
+        "PATH" | "HOME" | "TMPDIR" | "TEMP" | "TMP" | "LANG" | "LC_ALL" | "LC_CTYPE"
+        | "LANGUAGE" => true,
+        _ if cfg!(windows) => matches!(
+            name,
+            "SystemRoot"
+                | "WINDIR"
+                | "COMSPEC"
+                | "PATHEXT"
+                | "SYSTEMDRIVE"
+                | "USERPROFILE"
+                | "HOMEDRIVE"
+                | "HOMEPATH"
+                | "APPDATA"
+                | "LOCALAPPDATA"
+                | "PROGRAMDATA"
+                | "ALLUSERSPROFILE"
+                | "USERNAME"
+                | "COMPUTERNAME"
+                | "NUMBER_OF_PROCESSORS"
+                | "OS"
+                | "PROCESSOR_ARCHITECTURE"
+        ),
+        _ => false,
+    }
 }
 
 // ── S20：setrlimit 可用性探测（子进程一次探测 + 进程内缓存，逐资源结论）──
@@ -867,6 +915,7 @@ pub fn run_python_at(
     let limits = RunLimits::new(mem_bytes, cpu_secs);
 
     let mut cmd = silent_cmd(py);
+    apply_child_env(&mut cmd);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1107,6 +1156,41 @@ fn prune_stale_run_dirs(audit: &mut dyn FnMut(&str)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 子进程不继承宿主全量环境：宿主进程里放一个伪造密钥，脚本打印自己的
+    /// 环境里是否可见——白名单裁剪后必须不可见；PATH 这类地基变量仍在。
+    #[test]
+    fn py_child_env_does_not_inherit_host_secrets() {
+        let Some(py) = crate::py::env::cached_python().or_else(crate::py::env::detect_python)
+        else {
+            return; // 本机无 python：跑不了真脚本，跳过
+        };
+        const CANARY: &str = "WM_HOST_SECRET_CANARY";
+        std::env::set_var(CANARY, "leak-me");
+        let script = format!(
+            "import os\nprint('LEAK' if '{CANARY}' in os.environ else 'CLEAN', bool(os.environ.get('PATH')))"
+        );
+        let tmp = tempfile::tempdir().expect("临时目录");
+        let dir = setup_run_dir(tmp.path(), &script, None).expect("运行目录应能建");
+        let mut audit = |_line: &str| {};
+        let r = run_python_at(
+            &py,
+            Some("run.py"),
+            &dir,
+            None,
+            &[],
+            Some(20),
+            &mut audit,
+            None,
+        )
+        .expect("脚本应正常跑完");
+        std::env::remove_var(CANARY);
+        let out = r.stdout.trim().to_string();
+        assert_eq!(
+            out, "CLEAN True",
+            "宿主密钥不得进子进程环境，PATH 等地基变量必须还在：{out:?}"
+        );
+    }
 
     /// 生产上限 → 资源限额：天花板 1800s 时内存封顶 2GB、CPU 限额 = 上限 + 10 宽限。
     /// 这两个数是 setrlimit 探针与 pre_exec 设限的依据，改天花板必须同步复核。

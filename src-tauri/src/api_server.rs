@@ -479,6 +479,97 @@ mod tests {
         running.shutdown.store(true, Ordering::SeqCst);
     }
 
+    /// 头部条数上限（vendor tiny_http patch）：一个请求塞超过上限的头，
+    /// 服务端必须终止该连接而不是照单全收；accept 循环照常服务后续请求。
+    #[test]
+    fn header_count_flood_connection_dropped_and_server_survives() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let store: Arc<dyn TaskStore> = Arc::new(crate::api::MemStore {
+            tasks: Mutex::new(Vec::new()),
+            hub: EventHub::new(),
+        });
+        let running = start_api(port, "tok".into(), store, None, None, None).unwrap();
+
+        let mut flood = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        flood
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut req = String::from("GET /api/health HTTP/1.1\r\n");
+        for i in 0..150 {
+            req.push_str(&format!("X-Fill-{i}: v\r\n"));
+        }
+        req.push_str("\r\n");
+        flood.write_all(req.as_bytes()).unwrap();
+        let mut buf = [0u8; 512];
+        match flood.read(&mut buf) {
+            Ok(0) => {} // EOF：连接被服务端终止
+            Ok(n) => assert!(
+                buf[..n].starts_with(b"HTTP/1.1 400"),
+                "超限连接应被 400 终止或直接断开，实际: {}",
+                String::from_utf8_lossy(&buf[..n])
+            ),
+            Err(_) => {} // 连接被掐断也算达成
+        }
+
+        // 服务端仍活着：新连接正常服务
+        let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        c.write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut resp = String::new();
+        c.read_to_string(&mut resp).unwrap();
+        assert!(
+            resp.starts_with("HTTP/1.1 200"),
+            "超限连接终止后服务端应照常服务: {resp}"
+        );
+        running.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    /// 头部单行长度上限（vendor tiny_http patch）：永不换行的超长「头」
+    /// 必须终止连接，读缓冲不得无限增长。
+    #[test]
+    fn oversized_header_line_connection_dropped() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let store: Arc<dyn TaskStore> = Arc::new(crate::api::MemStore {
+            tasks: Mutex::new(Vec::new()),
+            hub: EventHub::new(),
+        });
+        let running = start_api(port, "tok".into(), store, None, None, None).unwrap();
+
+        let mut flood = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        flood
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let long = "x".repeat(64 * 1024);
+        let req = format!("GET /api/health HTTP/1.1\r\nX-Flood: {long}\r\n\r\n");
+        flood.write_all(req.as_bytes()).unwrap();
+        let mut buf = [0u8; 512];
+        match flood.read(&mut buf) {
+            Ok(0) => {} // EOF
+            Ok(n) => assert!(
+                buf[..n].starts_with(b"HTTP/1.1 400"),
+                "超长头行应被 400 终止或直接断开，实际: {}",
+                String::from_utf8_lossy(&buf[..n])
+            ),
+            Err(_) => {}
+        }
+        running.shutdown.store(true, Ordering::SeqCst);
+    }
+
     /// since=5 断线重放——4 个 id<5 + id=5 本身都不重放，只推 id>5 的 6 条；
     /// 且每条带回事件 id，供 writer 端与在线推送去重（重放窗口内广播的事件既进
     /// history 又进在线队列，不带 id 就会重复推给客户端）

@@ -329,10 +329,12 @@ pub fn bot_set_config(
     brave_key: Option<String>,
     vendor_key: Option<VendorKeyParam>,
 ) -> CommandResult<()> {
+    let mut keys_written: Vec<(&'static str, String)> = Vec::new();
     if let Some(k) = api_key {
         let k = k.trim();
         if !k.is_empty() {
             keyring::write_api_key(k)?;
+            keys_written.push(("slot", "llm".into()));
         }
     }
     let mut key_overwritten: Option<String> = None;
@@ -341,6 +343,7 @@ pub fn bot_set_config(
         if !v.is_empty() && !k.is_empty() {
             keyring::write_vendor_key(v, k)?;
             key_overwritten = Some(v.to_string());
+            keys_written.push(("slot", format!("vendor:{}", v)));
         }
     }
     for (slot, key) in [
@@ -351,6 +354,7 @@ pub fn bot_set_config(
             let k = k.trim();
             if !k.is_empty() {
                 keyring::write_search_key(slot, k)?;
+                keys_written.push(("slot", slot.keyring_user().into()));
             }
         }
     }
@@ -391,7 +395,33 @@ pub fn bot_set_config(
     preserve_guard_keywords(&mut config, &disk);
     preserve_non_ui_fields(&mut config, &disk);
     prune_verified_vendors(&mut config, &disk, key_overwritten.as_deref());
-    super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)
+    // 配置与 key 的变更必须留痕（此前全程零审计）：事后要查得到「配置什么时候
+    // 被谁改的、key 什么时候被写过」。只记槽名 / 厂商名 / 模型计数，
+    // key 本体一个字节都不落日志。摘要先取（config 马上要 move 进写盘）。
+    let (n_openai, n_anthropic) = config
+        .models_by_provider
+        .as_ref()
+        .map(|m| (m.openai.len(), m.anthropic.len()))
+        .unwrap_or((0, 0));
+    let active = config
+        .active_model_id
+        .as_ref()
+        .map(|a| {
+            a.openai
+                .clone()
+                .or_else(|| a.anthropic.clone())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    super::io::write_bot_config_file_locked(&crate::db::data_dir(&app), config)?;
+    let mut kv: Vec<(&'static str, String)> = vec![
+        ("models_openai", n_openai.to_string()),
+        ("models_anthropic", n_anthropic.to_string()),
+        ("active", active),
+    ];
+    kv.extend(keys_written);
+    crate::audit::write_event(&app, crate::audit::AuditLevel::Info, "config.saved", &kv);
+    Ok(())
 }
 
 // bot_set_active_model
@@ -453,9 +483,35 @@ pub fn bot_set_active_model(app: AppHandle, model_id: String) -> CommandResult<B
     let _g = io::lock_config_write();
     let mut cfg = io::load_config(&app);
     schema::migrate_legacy_models(&mut cfg);
+    // 切换前的 active 记下来给审计：事后要查得到「active 从哪切到哪」
+    let prev_active = cfg
+        .active_model_id
+        .as_ref()
+        .map(|a| {
+            a.openai
+                .clone()
+                .or_else(|| a.anthropic.clone())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let prev_provider = cfg.api_provider.clone().unwrap_or_default();
     apply_active_model_switch(&mut cfg, &model_id)?;
     schema::derive_legacy_fields_from_active(&mut cfg);
+    let new_provider = ApiProvider::from_cfg(cfg.api_provider.as_deref())
+        .as_str()
+        .to_string();
     io::write_bot_config_file_locked(&crate::db::data_dir(&app), cfg)?;
+    crate::audit::write_event(
+        &app,
+        crate::audit::AuditLevel::Info,
+        "config.active_switched",
+        &[
+            ("from", prev_active),
+            ("to", model_id.clone()),
+            ("provider", new_provider),
+            ("prev_provider", prev_provider),
+        ],
+    );
     // bot_get_config 内 migrate_legacy_key/migrate_search_keys 会再取同一把非重入
     // CONFIG_WRITE_LOCK——必须先放本函数的写锁再读，否则必然自锁死。
     drop(_g);

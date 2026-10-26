@@ -320,6 +320,11 @@ impl StreamState {
         if let Some(t) = parsed.content {
             let (normal, think) = feed_think(&mut self.think_mode, &mut self.think_buf, &t);
             if !think.is_empty() {
+                // <think> 段并入 reasoning 原文：MiniMax 这类模型的 OpenAI
+                // 兼容端点把思考段放正文 <think> 标签里（没有 reasoning_content
+                // 字段），剥出后不留底，回灌开关就无从盖它——带 tools 的后续
+                // 请求里这一轮永远缺思考段。
+                self.reasoning_text.push_str(&think);
                 emit("bot-think-delta", serde_json::json!({ "text": think }));
             }
             if !normal.is_empty() {

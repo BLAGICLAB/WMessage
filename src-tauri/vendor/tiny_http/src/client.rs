@@ -7,6 +7,13 @@ use std::io::{BufReader, BufWriter, ErrorKind, Read};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+/// 单条头（含请求行）的长度上限（字节）：慢滴注防线，防一行永不完结的头
+/// 把读缓冲撑爆。正常请求的头远小于这个值。
+const MAX_HEADER_LINE_BYTES: usize = 16 * 1024;
+
+/// 单个请求的头部条数上限：防无限发头拖爆内存与解析时间。
+const MAX_HEADER_COUNT: usize = 100;
+
 use crate::common::{HTTPVersion, Method};
 use crate::util::RefinedTcpStream;
 use crate::util::{SequentialReader, SequentialReaderBuilder, SequentialWriterBuilder};
@@ -98,6 +105,15 @@ impl ClientConnection {
             prev_byte_was_cr = byte == b'\r';
 
             buf.push(byte);
+
+            // 单行长度上限：慢滴注客户端逐字节发一行永不换行的头，会把这里
+            // 的 buf 无限撑大占住内存。超限按 InvalidData 断开连接。
+            if buf.len() > MAX_HEADER_LINE_BYTES {
+                return Err(IoError::new(
+                    ErrorKind::InvalidData,
+                    "header line too long",
+                ));
+            }
         }
     }
 
@@ -118,6 +134,14 @@ impl ClientConnection {
             let headers = {
                 let mut headers = Vec::new();
                 loop {
+                    // 头部条数上限：无上限时客户端可以无限发头把内存与解析
+                    // 时间拖爆。超限按协议错误处理，连接就此终止。
+                    if headers.len() >= MAX_HEADER_COUNT {
+                        return Err(ReadError::ReadIoError(IoError::new(
+                            ErrorKind::InvalidData,
+                            "too many header fields",
+                        )));
+                    }
                     let line = self.read_next_line().map_err(ReadError::ReadIoError)?;
 
                     if line.is_empty() {
@@ -305,5 +329,46 @@ mod test {
 
         assert!(super::parse_request_line("GET /hello").is_err());
         assert!(super::parse_request_line("qsd qsd qsd").is_err());
+    }
+
+    /// 头部条数上限：超过 MAX_HEADER_COUNT 的请求必须终止连接（返回 None），
+    /// 而不是照单全收把内存与解析时间拖爆。
+    #[test]
+    fn too_many_headers_close_the_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client_side = std::net::TcpStream::connect(addr).unwrap();
+        let (server_raw, _) = listener.accept().unwrap();
+        let (write_closable, read_closable) = crate::util::RefinedTcpStream::new(server_raw);
+        let mut conn = super::ClientConnection::new(write_closable, read_closable);
+        use std::io::Write;
+        write!(client_side, "GET / HTTP/1.1\r\n").unwrap();
+        for i in 0..(super::MAX_HEADER_COUNT + 20) {
+            write!(client_side, "X-Fill-{}: v\r\n", i).unwrap();
+        }
+        write!(client_side, "\r\n").unwrap();
+        client_side.flush().unwrap();
+        assert!(conn.next().is_none(), "头部条数超限应终止连接");
+    }
+
+    /// 单行长度上限：一条不换行的超长「头」必须终止连接，不能让读缓冲
+    /// 无限增长（慢滴注防线）。
+    #[test]
+    fn oversized_header_line_closes_the_connection() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client_side = std::net::TcpStream::connect(addr).unwrap();
+        let (server_raw, _) = listener.accept().unwrap();
+        let (write_closable, read_closable) = crate::util::RefinedTcpStream::new(server_raw);
+        let mut conn = super::ClientConnection::new(write_closable, read_closable);
+        use std::io::Write;
+        write!(client_side, "GET / HTTP/1.1\r\n").unwrap();
+        // 一次性灌 3 条超长行（每条 > 上限），不写换行终结
+        let long = "x".repeat(super::MAX_HEADER_LINE_BYTES + 1);
+        for _ in 0..3 {
+            write!(client_side, "X-Flood: {}\r\n", long).unwrap();
+        }
+        client_side.flush().unwrap();
+        assert!(conn.next().is_none(), "超长头行应终止连接");
     }
 }
