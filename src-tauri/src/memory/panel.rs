@@ -308,7 +308,7 @@ pub struct MemExportFile {
 }
 
 /// 导入报告：inserted 新增 / merged 语义去重合并 / skipped 跳过（空内容、
-/// 容量满拒写、未知结构行）
+/// 容量满拒写、未知结构行、带逗号标签、向量异形）
 #[derive(Serialize, Clone, Debug, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MemImportReport {
@@ -363,7 +363,10 @@ pub(crate) fn parse_import(json: &str) -> Result<MemExportFile, String> {
 
 /// 导入前置（锁外做全量输入级校验 + 预嵌入）：内容/kind/source 契约外的条目
 /// 直接计 skipped，不做无谓 ONNX 推理。返回 (合法条目+向量, skipped 数)。
-/// 有向量的条目原样带过，无向量的现场重算（降级时 None = 关键词模式写入）。
+/// 有向量且维度/数值合法的条目原样带过（异形向量会毒化语义去重——两条同维
+/// 脏向量会互相命中），无向量或向量不合法的现场重算（降级时 None = 关键词模式写入）。
+/// 带逗号的标签同属输入级违规：存储层按逗号分隔标签，落盘即劈成两条，
+/// 计 skipped 而不是当存储故障中止整批。
 fn prepare_import_items(
     items: &[MemExportItem],
     reembed: &dyn Fn(&str) -> Option<Vec<f32>>,
@@ -380,6 +383,10 @@ fn prepare_import_items(
             skipped += 1;
             continue;
         }
+        if it.tags.iter().any(|t| t.contains(',')) {
+            skipped += 1;
+            continue;
+        }
         // source 三值契约 + 历史脏值 'user' 归一（与 store::normalize_source 同口径）
         let source = match it.source.as_str() {
             "user_stated" | "model_inferred" | "system" => it.source.clone(),
@@ -389,7 +396,15 @@ fn prepare_import_items(
                 continue;
             }
         };
-        let emb = it.embedding.clone().or_else(|| reembed(content));
+        let emb = match it.embedding.as_deref() {
+            Some(v)
+                if v.len() == crate::memory::embed::EMBED_DIM
+                    && v.iter().all(|f| f.is_finite()) =>
+            {
+                it.embedding.clone()
+            }
+            _ => reembed(content),
+        };
         valid.push((
             MemExportItem {
                 source,
@@ -402,7 +417,8 @@ fn prepare_import_items(
 }
 
 /// 导入内核（&Connection 可单测）：合法条目逐条走 insert_item 既有语义去重。
-/// 只增不删。skipped 口径：容量满拒写（输入级校验已在
+/// 只增不删——容量满按 skipped 计（no_evict 参数关掉淘汰，既有记忆一条不动）。
+/// skipped 口径：容量满拒写（输入级校验已在
 /// prepare 完成）；**存储故障（Err）不算 skipped——直接中止并上抛**，
 /// 不把真实故障伪装成「输入被跳过」。整批包在一个事务里：中途存储故障
 /// 一并回滚，不留下「一半已入库、一半丢失」的半截导入。
@@ -442,19 +458,18 @@ pub(crate) fn import_items(
     Ok(report)
 }
 
-/// 导入核心：json → 解析 → 条数上限校验 → 前置校验+预嵌入 → 逐条导入。
-///
-/// 生产和单测共用一份：`mem_import` 只多一层文件 IO 与体积上限，解析与落库全走这里。
-/// （此前这是两段各写一遍的代码——生产版多传 `StoreParams`、测试版硬编码
-/// `StoreParams::default()`，改导入语义要记得改两处。）
-/// 条数上限也收在这里：解析后立刻判，避免同一份 JSON 被解析两遍。
-pub(crate) fn import_core(
-    conn: &rusqlite::Connection,
+/// 导入前置阶段（锁外跑）：JSON 解析、条数上限、输入级校验与预嵌入
+/// （ONNX 推理一条 10~30ms、上限 5 万条——放在 DB 写锁临界区里会把
+/// 任务卡/聊天/调度器的写入全部卡住数十分钟）。锁内只做事务落库。
+pub(crate) struct PreparedImport {
+    pub items: Vec<(MemExportItem, Option<Vec<f32>>)>,
+    pub skipped: usize,
+}
+
+pub(crate) fn import_prepare(
     json: &str,
     reembed: &dyn Fn(&str) -> Option<Vec<f32>>,
-    now_ms: i64,
-    sp: &store::StoreParams,
-) -> Result<MemImportReport, String> {
+) -> Result<PreparedImport, String> {
     let file = parse_import(json)?;
     if file.items.len() > MEM_IMPORT_MAX_ITEMS {
         return Err(format!(
@@ -462,10 +477,8 @@ pub(crate) fn import_core(
             file.items.len()
         ));
     }
-    let (prepared, skipped) = prepare_import_items(&file.items, reembed);
-    let mut report = import_items(conn, &prepared, now_ms, sp)?;
-    report.skipped += skipped;
-    Ok(report)
+    let (items, skipped) = prepare_import_items(&file.items, reembed);
+    Ok(PreparedImport { items, skipped })
 }
 
 /// 记忆库统计 + 嵌入引擎状态（首次调用触发引擎懒加载，与注入路径同一份缓存）
@@ -553,7 +566,8 @@ fn validate_import_size(len: u64, path: &str) -> CommandResult<()> {
     Ok(())
 }
 
-/// 解析、输入校验与预嵌入在锁外（文件 IO + ONNX 推理不占 DB 写锁临界区）。
+/// 解析、输入校验与预嵌入在锁外（文件 IO + JSON 解析 + ONNX 推理不占 DB
+/// 写锁临界区，锁内只留事务落库）。导入不淘汰既有记忆：容量满按 skipped 计。
 #[tauri::command]
 pub async fn mem_import(app: AppHandle, path: String) -> CommandResult<MemImportReport> {
     ensure_json_path(&path)?;
@@ -567,11 +581,19 @@ pub async fn mem_import(app: AppHandle, path: String) -> CommandResult<MemImport
         validate_import_size(len, &path)?;
         let json = std::fs::read_to_string(&path)
             .map_err(|e| CommandError::IoError(format!("读取导入文件失败：{e}")))?;
-        let sp = store::StoreParams::of(&crate::bot::read_memory_tuning(&app));
+        let sp = store::StoreParams {
+            no_evict: true,
+            ..store::StoreParams::of(&crate::bot::read_memory_tuning(&app))
+        };
+        // 锁外：解析 + 输入校验 + 预嵌入（见 import_prepare 注释）
+        let prepared =
+            import_prepare(&json, &|t| embed::embed_text(t)).map_err(CommandError::Internal)?;
         let _g = lock_db();
         let conn = crate::db::open_db(&app).map_err(CommandError::DbError)?;
-        import_core(&conn, &json, &|t| embed::embed_text(t), now_ms(), &sp)
-            .map_err(CommandError::Internal)
+        let mut report =
+            import_items(&conn, &prepared.items, now_ms(), &sp).map_err(CommandError::Internal)?;
+        report.skipped += prepared.skipped;
+        Ok(report)
     })
     .await;
     // 内层已是 CommandError（不再 blanket 降级），单问号解外层即可
@@ -603,6 +625,21 @@ mod tests {
         assert!(validate_import_size(MEM_IMPORT_MAX_FILE_BYTES, "/tmp/x.json").is_ok());
     }
     use crate::memory::store::NewItem;
+
+    /// 测试助手：生产路径拆成「锁外 import_prepare + 锁内 import_items」两段，
+    /// 测试复走同一两段，保证语义一致。
+    fn import_core(
+        conn: &rusqlite::Connection,
+        json: &str,
+        reembed: &dyn Fn(&str) -> Option<Vec<f32>>,
+        now_ms: i64,
+        sp: &store::StoreParams,
+    ) -> Result<MemImportReport, String> {
+        let prepared = import_prepare(json, reembed)?;
+        let mut report = import_items(conn, &prepared.items, now_ms, sp)?;
+        report.skipped += prepared.skipped;
+        Ok(report)
+    }
 
     fn mem_db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -1056,5 +1093,117 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("版本过新"), "{err}");
+    }
+
+    #[test]
+    fn import_at_capacity_skips_instead_of_evicting() {
+        // 导入「只增不删」：容量满后按 skipped 计，绝不淘汰既有记忆——
+        // 此前逐条淘汰分最低者，报告还按「新增 N 条」计数，用户记忆被静默删掉。
+        let conn = mem_db();
+        let sp = store::StoreParams {
+            capacity: 3,
+            no_evict: true,
+            ..store::StoreParams::default()
+        };
+        insert(
+            &conn,
+            &new_item("fact", "既有甲", "user_stated"),
+            None,
+            1_000,
+        );
+        insert(
+            &conn,
+            &new_item("fact", "既有乙", "model_inferred"),
+            None,
+            1_100,
+        );
+        let file = MemExportFile {
+            version: MEM_EXPORT_VERSION,
+            exported_at: 1_000,
+            count: 3,
+            items: (0..3)
+                .map(|i| MemExportItem {
+                    kind: "fact".into(),
+                    content: format!("导入条目{i}"),
+                    tags: vec![],
+                    importance: 3,
+                    source: "user_stated".into(),
+                    created_at: 1_000,
+                    updated_at: 1_000,
+                    access_count: 0,
+                    last_accessed_at: None,
+                    embedding: None,
+                })
+                .collect(),
+        };
+        let json = serde_json::to_string(&file).unwrap();
+        let report = import_core(&conn, &json, &|_| None, 2_000, &sp).unwrap();
+        assert_eq!(report.inserted, 1, "容量 3 已有 2 条 → 只放行 1 条");
+        assert_eq!(report.skipped, 2, "满即 skipped，报告如实显示");
+        let all = store::load_all(&conn).unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(
+            all.iter().any(|m| m.content == "既有甲"),
+            "既有记忆一条不动"
+        );
+        assert!(all.iter().any(|m| m.content == "既有乙"));
+    }
+
+    #[test]
+    fn import_skips_comma_tags_and_reembeds_malformed_vectors() {
+        // 带逗号标签是输入级违规（存储按逗号分隔标签）→ skipped，不再伪装成
+        // 「存储故障」中止整批；异形向量（维度不对）不落库，退回现场重算。
+        // NaN/Inf 无需在此验证：JSON 里非有限浮点只能序列化成 null，解析层就拦下。
+        let conn = mem_db();
+        let wrong_dim = vec![0f32; 768];
+        let mk = |content: &str, tags: Vec<String>, emb: Option<Vec<f32>>| MemExportItem {
+            kind: "fact".into(),
+            content: content.into(),
+            tags,
+            importance: 3,
+            source: "user_stated".into(),
+            created_at: 1_000,
+            updated_at: 1_000,
+            access_count: 0,
+            last_accessed_at: None,
+            embedding: emb,
+        };
+        let file = MemExportFile {
+            version: MEM_EXPORT_VERSION,
+            exported_at: 1_000,
+            count: 2,
+            items: vec![
+                mk("带逗号标签", vec!["a,b".into()], None),
+                mk("异形向量退回重算", vec![], Some(wrong_dim)),
+            ],
+        };
+        let json = serde_json::to_string(&file).unwrap();
+        let calls = std::sync::Mutex::new(0u32);
+        let report = import_core(
+            &conn,
+            &json,
+            &|_c| {
+                let n = {
+                    let mut g = calls.lock().unwrap();
+                    let n = *g;
+                    *g += 1;
+                    n
+                };
+                Some(onehot(9 + n as usize))
+            },
+            2_000,
+            &store::StoreParams::default(),
+        )
+        .unwrap();
+        assert_eq!(report.skipped, 1, "带逗号标签计 skipped");
+        assert_eq!(report.inserted, 1);
+        assert_eq!(*calls.lock().unwrap(), 1, "异形向量退回现场重算");
+        for m in store::load_all(&conn).unwrap() {
+            assert_eq!(
+                m.embedding.as_deref().map(|v| v.len()),
+                Some(512),
+                "落库向量必须符合维度契约"
+            );
+        }
     }
 }

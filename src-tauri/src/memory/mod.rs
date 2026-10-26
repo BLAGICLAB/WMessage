@@ -3,7 +3,7 @@
 //! 旧 v1 fact 200 / 全表 300 双层上限 → v2 统一 500 综合分淘汰；
 //! 旧 v1 同 key 覆盖 + 关键词冲突 → v2 语义去重（cos≥0.92 合并，0.75~0.92 冲突提示）；
 //! 旧 v1 不注入任务卡 → v2 execute_task_core 也注入；旧 v1 无降级 → v2 嵌入缺失全局关键词模式不 panic。
-//! 不变：工具 schema（remember_fact / recall_facts）、`## 记忆` 三段式、预算 4000 字、`[推断]` 前缀、DB_WRITE_LOCK。
+//! 不变：工具 schema（remember_fact / recall_facts）、`## 记忆` 三段式、预算 4000 字（画像段同受预算约束，超裁时带显式提示行）、`[推断]` 前缀、DB_WRITE_LOCK。
 //! 旧 v1 表 bot_facts 废弃不导入（系统未上线即切换）；老库残表无害不清理，也不做数据迁移。
 //!
 //! - 存储：store.rs（新表 mem_items，统一 500 上限 + 语义去重 + 容量淘汰）
@@ -237,11 +237,10 @@ pub fn format_memory_block_with(inj: &MemInjection, budget_chars: usize) -> Opti
         m.kind == "summary" || m.kind == "reflection"
     }
     let mut sections: Vec<(&str, Vec<String>)> = Vec::new();
+    // 画像段是否在 sections[0]：预算裁剪与超裁提示都靠这个下标识别
+    const PINNED_HEADER: &str = "### 用户画像与偏好";
     if !inj.pinned.is_empty() {
-        sections.push((
-            "### 用户画像与偏好",
-            inj.pinned.iter().map(fact_line).collect(),
-        ));
+        sections.push((PINNED_HEADER, inj.pinned.iter().map(fact_line).collect()));
     }
     if !inj.hits.is_empty() {
         sections.push((
@@ -264,8 +263,7 @@ pub fn format_memory_block_with(inj: &MemInjection, budget_chars: usize) -> Opti
             inj.recent.iter().map(|m| dated_line(m, "%m-%d")).collect(),
         ));
     }
-    // lesson 段：追加在最后——超预算从后往前砍时它最先被砍，
-    // 画像段不砍的规则不变。lesson 内容自含场景，纯文本 bullet。
+    // lesson 段：追加在最后——超预算从后往前砍时它最先被砍。
     if !inj.lessons.is_empty() {
         sections.push((
             "### 经验教训",
@@ -287,8 +285,15 @@ pub fn format_memory_block_with(inj: &MemInjection, budget_chars: usize) -> Opti
                 })
                 .sum::<usize>()
     };
-    // 超预算从后往前砍（画像段不砍）
-    let trimmable_from = if inj.pinned.is_empty() { 0 } else { 1 };
+    // 超预算从后往前砍；画像段同样纳入预算（它此前永不裁，「## 记忆」块作为
+    // system 注入每轮都发，画像条数一多成本线性上涨且无上限）。画像被裁时
+    // 补一条固定长度的提示行，提示行自身也计入预算——装不下就继续裁画像行。
+    let pinned_idx = if sections[0].0 == PINNED_HEADER {
+        Some(0usize)
+    } else {
+        None
+    };
+    let mut pinned_trimmed = 0usize;
     let mut guard = 0;
     while block_chars(&sections) > budget_chars && guard < 10_000 {
         guard += 1;
@@ -296,12 +301,24 @@ pub fn format_memory_block_with(inj: &MemInjection, budget_chars: usize) -> Opti
             .iter_mut()
             .enumerate()
             .rev()
-            .find(|(i, (_, ls))| *i >= trimmable_from && !ls.is_empty())
+            .find(|(_, (_, ls))| !ls.is_empty())
         {
-            Some((_, (_, ls))) => {
+            Some((i, (_, ls))) => {
                 ls.pop();
+                if pinned_idx == Some(i) {
+                    pinned_trimmed += 1;
+                }
             }
             None => break,
+        }
+    }
+    if pinned_trimmed > 0 {
+        let i = pinned_idx.expect("裁掉过画像行则画像段必在 sections");
+        sections[i]
+            .1
+            .push("- （画像超出注入预算，部分画像/偏好未注入）".to_string());
+        while block_chars(&sections) > budget_chars && sections[i].1.len() > 1 {
+            sections[i].1.remove(0);
         }
     }
     sections.retain(|(_, ls)| !ls.is_empty());

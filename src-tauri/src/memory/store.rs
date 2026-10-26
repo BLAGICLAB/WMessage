@@ -4,7 +4,8 @@
 //! 淘汰分 = importance×2 + exp(-age_days/30) + ln(1+access_count)/5
 //! （importance 权重最高；age 基准 = max(updated_at, last_accessed_at)）。
 //! importance=5 且 source=user_stated 的条目不可淘汰；无可淘汰条目时拒写，
-//! 原因进工具结果让模型自己清理。
+//! 原因进工具结果让模型自己清理。导入路径（no_evict）例外：满即拒写计
+//! skipped，绝不淘汰既有记忆。
 //!
 //! 语义去重（仅写入侧带向量时）：
 //! - cos ≥ 0.92 → 同一条：合并更新已有条目（刷 content/updated_at/access+1/向量），不新增
@@ -33,6 +34,9 @@ pub struct StoreParams {
     pub capacity: i64,
     pub dedup_merge: f64,
     pub dedup_hint: f64,
+    /// 满即拒写（计 skipped），不做容量淘汰——导入路径用：导入是「只增不删」
+    /// 的批量写，静默淘汰既有记忆不可接受；常规写入（remember_fact 等）仍走淘汰。
+    pub no_evict: bool,
 }
 
 impl Default for StoreParams {
@@ -41,6 +45,7 @@ impl Default for StoreParams {
             capacity: MAX_MEM_ITEMS,
             dedup_merge: DEDUP_MERGE_COSINE,
             dedup_hint: DEDUP_HINT_COSINE,
+            no_evict: false,
         }
     }
 }
@@ -51,6 +56,7 @@ impl StoreParams {
             capacity: t.capacity,
             dedup_merge: t.dedup_merge_cosine,
             dedup_hint: t.dedup_hint_cosine,
+            no_evict: false,
         }
     }
 }
@@ -298,6 +304,16 @@ pub fn is_protected(item: &MemItem) -> bool {
     item.importance >= 5 && item.source == "user_stated"
 }
 
+/// source 的权威序：用户口述 > 系统 > 模型推断。合并时 importance/source
+/// 取更权威的一方，低权威的新值不拉低高权威的既有行。
+fn source_authority(s: &str) -> u8 {
+    match s {
+        "user_stated" => 3,
+        "system" => 2,
+        _ => 1,
+    }
+}
+
 /// 淘汰分（越低越先淘汰）：importance 权重最高 + 最近访问/更新新近度 + 访问次数
 pub(crate) fn evict_score(item: &MemItem, now_ms: i64) -> f64 {
     let base = item
@@ -411,6 +427,22 @@ pub fn insert_item_with(
         }
         if let Some((_, target)) = best {
             let orig_key = target.tags.first().cloned();
+            // 空 tags 不回抹：抽取/导入路径的条目常不带 tags，用空值覆盖会把既有行的
+            // key（tags[0]）抹掉——此后同 key 覆盖再也找不到行，受保护等级也随
+            // source/importance 一起被拉低。新条目带 tags 时仍按新值覆盖（同 key 更新语义）。
+            let merged_tags = if item.tags.is_empty() {
+                target.tags.clone()
+            } else {
+                item.tags.clone()
+            };
+            // importance/source 取更权威的一方：model_inferred 的低分抽取结果
+            // 不得把用户口述条目（user_stated）的来源与免淘汰保护拉掉。
+            let (merged_importance, merged_source) =
+                if source_authority(&item.source) >= source_authority(&target.source) {
+                    (item.importance.clamp(1, 5), item.source.clone())
+                } else {
+                    (target.importance, target.source.clone())
+                };
             // **kind 一并覆盖**：语义近重复的两条记忆说的是同一件事，留两行才是
             // 歧义本身。合并后的行统一代表「最后写入的那条」，五列齐平、行内自洽——
             // kind 若留在旧值，那行就成了「内容是新的、kind 是旧的」，
@@ -423,9 +455,9 @@ pub fn insert_item_with(
                  WHERE id = ?8",
                 rusqlite::params![
                     item.content,
-                    item.tags.join(","),
-                    item.importance.clamp(1, 5),
-                    item.source,
+                    merged_tags.join(","),
+                    merged_importance,
+                    merged_source,
                     item.kind,
                     ts_to_text(now_ms),
                     embedding_to_blob(emb),
@@ -436,9 +468,9 @@ pub fn insert_item_with(
             let merged = MemItem {
                 kind: item.kind.clone(),
                 content: item.content.clone(),
-                tags: item.tags.clone(),
-                importance: item.importance.clamp(1, 5),
-                source: item.source.clone(),
+                tags: merged_tags,
+                importance: merged_importance,
+                source: merged_source,
                 updated_at_ms: now_ms,
                 last_accessed_at_ms: Some(now_ms),
                 access_count: target.access_count + 1,
@@ -493,7 +525,18 @@ fn insert_new(
         Some(t) => t,
         None => conn,
     };
-    if let Err(e) = evict_if_needed(c, now_ms, p.capacity) {
+    if p.no_evict {
+        // 导入口径：满即拒写计 skipped，不动既有记忆
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM mem_items", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if count >= p.capacity {
+            return Ok(InsertOutcome::RejectedFull(format!(
+                "记忆库已满（{count}/{capacity} 条，导入不淘汰既有记忆，请调大容量或先清理）",
+                capacity = p.capacity
+            )));
+        }
+    } else if let Err(e) = evict_if_needed(c, now_ms, p.capacity) {
         return Ok(InsertOutcome::RejectedFull(e));
     }
     let id = uuid::Uuid::new_v4().simple().to_string();

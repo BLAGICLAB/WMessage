@@ -829,3 +829,106 @@ fn store_params_dedup_merge_threshold_override() {
         "默认阈值维持合并"
     );
 }
+
+#[test]
+fn merge_with_empty_tags_keeps_existing_key_source_importance() {
+    // 抽取路径的条目（无 tags、model_inferred、低重要度）与用户口述的带 key 条目
+    // 语义撞车时，合并不许用空 tags 抹掉 key、用低权威来源拉掉保护等级——
+    // 否则同 key 覆盖从此找不到行，受保护条目降级为可淘汰。
+    let conn = mem_db();
+    let now = 1_000_000;
+    let mut first = item("preference", "用户不吃辣");
+    first.tags = vec!["口味".into()];
+    first.importance = 5;
+    let (r1, _) = store::insert_item(&conn, &first, Some(&onehot(0)), now).unwrap();
+    let InsertOutcome::Inserted(ins) = r1 else {
+        panic!("首条应插入")
+    };
+
+    let mut second = item("preference", "用户不吃辣，微辣也不行");
+    second.source = "model_inferred".to_string();
+    second.importance = 2;
+    second.tags = Vec::new();
+    let (r2, _) = store::insert_item(&conn, &second, Some(&onehot(0)), now + 1).unwrap();
+    let InsertOutcome::Merged { item: m, orig_key } = r2 else {
+        panic!("应合并")
+    };
+    assert_eq!(m.id, ins.id, "合并更新的是同一条");
+    assert_eq!(m.content, "用户不吃辣，微辣也不行", "内容取新");
+    assert_eq!(m.tags, vec!["口味"], "空 tags 不回抹既有 key");
+    assert_eq!(m.source, "user_stated", "低权威来源不覆盖 user_stated");
+    assert_eq!(m.importance, 5, "低权威重要度不覆盖既有值");
+    assert_eq!(orig_key.as_deref(), Some("口味"));
+    // 合并后同 key 覆盖语义仍在：按 key 还能找到行，且保护等级未被拉掉
+    let by_key = store::find_by_key_tag(&conn, "口味")
+        .unwrap()
+        .expect("key 未被抹掉");
+    assert_eq!(by_key.id, ins.id);
+    assert!(store::is_protected(&by_key), "受保护条目不得降级为可淘汰");
+}
+
+#[test]
+fn merge_with_tags_still_overwrites_and_authoritative_new_source_wins() {
+    // 新条目带 tags（remember_fact 同 key 更新）时仍按新值覆盖；新条目来源
+    // 权威不低于既有行时，importance/source 取新值（tie 也取新，新鲜意图优先）。
+    let conn = mem_db();
+    let now = 1_000_000;
+    let mut first = item("fact", "住在上海");
+    first.tags = vec!["城市".into()];
+    first.importance = 2;
+    first.source = "model_inferred".to_string();
+    store::insert_item(&conn, &first, Some(&onehot(0)), now).unwrap();
+    let mut second = item("fact", "住在上海浦东");
+    second.tags = vec!["居住地".into()];
+    second.importance = 4;
+    second.source = "user_stated".to_string();
+    let (r, _) = store::insert_item(&conn, &second, Some(&onehot(0)), now + 1).unwrap();
+    let InsertOutcome::Merged { item: m, .. } = r else {
+        panic!("应合并")
+    };
+    assert_eq!(m.tags, vec!["居住地"], "新条目带 tags 时覆盖");
+    assert_eq!(m.source, "user_stated", "更权威来源覆盖");
+    assert_eq!(m.importance, 4, "更权威来源的重要度覆盖");
+}
+
+#[test]
+fn pinned_section_respects_injection_budget_with_explicit_hint() {
+    // 画像段也受注入预算约束（此前永不裁，「## 记忆」块可随画像条数无上限膨胀）；
+    // 被裁时带显式提示行，提示行自身计入预算。
+    let pinned: Vec<MemItem> = (0..6)
+        .map(|i| MemItem {
+            id: format!("p{i}"),
+            kind: "profile".into(),
+            content: "好".repeat(800),
+            tags: vec![format!("k{i}")],
+            importance: 5,
+            source: "user_stated".into(),
+            created_at_ms: 1_000,
+            updated_at_ms: 1_000,
+            access_count: 0,
+            last_accessed_at_ms: None,
+            embedding: None,
+        })
+        .collect();
+    let inj = rank::MemInjection {
+        pinned,
+        hits: vec![],
+        recent: vec![],
+        lessons: vec![],
+    };
+    let block = super::format_memory_block_with(&inj, 4_000).expect("画像被裁仍有记忆块");
+    assert!(
+        block.chars().count() <= 4_000,
+        "块不得突破预算：{} 字",
+        block.chars().count()
+    );
+    assert!(
+        block.contains("画像超出注入预算"),
+        "画像被裁必须带显式提示：{block}"
+    );
+    // 小预算下画像整段让位，只留提示行
+    let small = super::format_memory_block_with(&inj, 300).unwrap();
+    assert!(small.chars().count() <= 300, "{}", small);
+    assert!(!small.contains(&"好".repeat(10)), "画像行应全部裁掉");
+    assert!(small.contains("画像超出注入预算"));
+}
