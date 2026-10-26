@@ -71,6 +71,22 @@ describe("installGlobalErrorReport", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it("ResizeObserver loop 噪音不上报也不占 20 条配额（两种历史文案都滤）", async () => {
+    const { installGlobalErrorReport } = await importMod();
+    const target = new EventTarget();
+    installGlobalErrorReport(target);
+    fireError(
+      target,
+      "ResizeObserver loop completed with undelivered notifications.",
+      "http://localhost:1420/:0:0",
+    );
+    fireError(target, "ResizeObserver loop limit exceeded");
+    expect(invokeMock).not.toHaveBeenCalled();
+    // 配额不被噪音占用：真错误仍上报
+    fireError(target, "real boom");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
   it("unhandledrejection → 上报 js_unhandled_rejection（Error 取消息+首帧单行）", async () => {
     const { installGlobalErrorReport } = await importMod();
     const target = new EventTarget();

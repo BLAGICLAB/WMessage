@@ -9,6 +9,14 @@ const MAX_REPORTS = 20;
 let reports = 0;
 let installed = false;
 
+/** ResizeObserver 循环噪音：观察回调内改布局触发下一帧重排，规范自带的
+ * 「通知延后投递」提示，不是应用错误——Chromium 已把它移出控制台，
+ * Sentry 等上报器的标配 ignoreErrors。零诊断价值，只会挤占 Rust 侧 32
+ * 签名去重表和 error.log 镜像。两种历史文案（Chrome 新旧版本）都滤，
+ * 且在配额计数前丢弃（噪音不得占用真错误的名额）。 */
+const IGNORED_ERROR_PATTERN =
+  /^ResizeObserver loop (completed with undelivered notifications|limit exceeded)/;
+
 function report(event: string, detail: string): void {
   if (reports >= MAX_REPORTS) return;
   reports += 1;
@@ -37,6 +45,7 @@ export function installGlobalErrorReport(target: Window | EventTarget = window):
   target.addEventListener("error", (e) => {
     const ev = e as ErrorEvent;
     if (!ev.message) return;
+    if (IGNORED_ERROR_PATTERN.test(ev.message)) return;
     report(
       "js_error",
       `${ev.filename || "?"}:${ev.lineno ?? 0}:${ev.colno ?? 0} ${ev.message}`,
