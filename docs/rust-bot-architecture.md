@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 309 个文件、约 13.1 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 310 个文件、约 13.2 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -9,7 +9,7 @@ src-tauri/src/
 ├── main.rs (6行)        入口，调 wmessage_lib::run()
 ├── lib.rs (1188)         模块总表、Tauri setup、invoke_handler 注册、托盘/快捷键、退出清理
 │                        （setup 里另起清扫：上次被杀留下的 app_runs running 僵尸行）
-├── app_state.rs (274)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
+├── app_state.rs (280)   运行期全局状态单一入口 `AppState`（lib.rs setup `app.manage` 注入）：
 │                        14 张执行期表 + 「全局状态总表」文档；详见 §2.1
 │                        （原 consts.rs 已并入 app_consts 命令、本节不列）
 ├── error.rs             CommandError 结构化错误（code=CommandErrorCode 枚举/message/recoverable），全命令统一
@@ -120,16 +120,16 @@ src-tauri/src/
 │─ Bot 核心（编排 → 决策 → 工具分发）
 ├── bot_chat.rs (429)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
-│   ├── bot_chat/flow.rs (689)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
+│   ├── bot_chat/flow.rs (717)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
 │   ├── bot_chat/exec.rs (558)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
-│   ├── bot_chat/media.rs (137)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
+│   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (322) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (96)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
 │   ├── bot_chat/report.rs (154) 子任务汇报轮：回传结果 + 门控 + 历史映射
 │   ├── bot_chat/input.rs (110)  输入规范化面：不可见字符清洗 + 路由前判定 + 恢复提示
-│   ├── bot_chat/bot_chat_pure_helpers_tests.rs (712) 纯函数与接线守卫单测
+│   ├── bot_chat/bot_chat_pure_helpers_tests.rs (716) 纯函数与接线守卫单测
 │   ├── bot_chat/inject_tests.rs (139)                 注入面单测（注入位置 + 前缀稳定性）
-│   ├── bot_chat/image_attach_tests.rs (51)             图片附件单测
+│   ├── bot_chat/image_attach_tests.rs (73)             图片附件单测
 │   ├── bot_chat/command_error_mapping_tests.rs (33)    命令错误映射单测
 │   └── bot_chat/chat_exec_guard_tests.rs (55)          ChatGuard / ExecGuard 语义单测
 │─ 提示词 prompts/（AI 应用的业务逻辑，与代码同等对待；统一从 `crate::prompts::NAME` 取）
@@ -153,14 +153,14 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 │   ├── bot_model_loop/stream.rs (436)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (1019)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (1035)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
 │   ├── bot_model_loop/shell.rs (588)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
-│   ├── bot_model_loop/request.rs (689)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
-│   ├── bot_model_loop/sse.rs (724)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
-│   ├── bot_model_loop/guard.rs (700)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
+│   ├── bot_model_loop/request.rs (712)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
+│   ├── bot_model_loop/sse.rs (749)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
+│   ├── bot_model_loop/guard.rs (706)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
-│   ├── bot_model_loop/finalize.rs (336) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
+│   ├── bot_model_loop/finalize.rs (365) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
 │   ├── bot_model_loop/fuse.rs (213)     熔断层：单轮 Function 调用上限 / 轮数·墙钟熔断 / 软警告注入
 │   ├── bot_model_loop/types.rs (364)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (171)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
@@ -203,7 +203,7 @@ src-tauri/src/
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
 │   └── bot/registry/registry_tests.rs (1146)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
-├── bot/dispatch.rs (1009)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (1067)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计 +
 │                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）
 │   ├── bot/dispatch/commit_and_report_tests.rs (73)   写库失败口径单测：status 与文本同答案 +
@@ -212,8 +212,10 @@ src-tauri/src/
 │   │                        熔断两条路径的 tool.return 配平 + trace 键集
 │   ├── bot/dispatch/invalid_args_tests.rs (95)        入参 JSON 闸单测：空参/非对象 JSON 放行、
 │   │                        坏 JSON 拒绝并回可解释文案 + 闸位接线守卫（源码文本）
-│   └── bot/dispatch/pre_tool_hook_tests.rs (529)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
-│                        panic 隔离守卫 + 收尾窗放行清单漂移 + 门禁早退 Denied 口径（9 处）
+│   ├── bot/dispatch/pre_tool_hook_tests.rs (535)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
+│                        panic 隔离守卫 + 收尾窗放行清单漂移 + 门禁早退 Denied 口径（10 处）
+│   └── bot/dispatch/allowed_tools_tests.rs (109)      allowed-tools 交互路径闸：集合内外/未声明/跨会话
+│                        判定单测（mock handle + 真注册表）+ 接线守卫（闸在规则表之前）
 ├── bot/hooks.rs           L4 pre_tool 钩子扩展点（design ONION-HOOKS-DESIGN-2026-10-16 §四）：
 │                        HookRegistry 进程级注册（OnceLock 单例，同层内按注册序；层序只由
 │                        dispatch 调用栈保证，注册表无任何层序配置入口）+ HookLayer 会话级禁用 +
@@ -283,7 +285,7 @@ src-tauri/src/
 │                        `#[cfg(test)] mod X;` 声明识别 + 生产切片剔除内联
 │                        `#[cfg(test)]` 块。判据不看文件名也不看代码位置——
 │                        位置启发式会把「测试块在前、生产代码在后」的文件整段漏扫
-├── bot/services.rs (468) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
+├── bot/services.rs (489) 受管长驻服务层（宿主托管的长驻进程：node MCP server / dev server / watcher）：
 │                        **门面**——实现按面拆到下面六个子模块，这里只留类型 / 常量 / use /
 │                        逐项转出（`crate::bot::services::X` 旧路径与旧可见性保持不变）
 │                        登记表（AppState.services）+ 状态机（Starting/Running/Stopping/Exited/Failed）
@@ -304,7 +306,7 @@ src-tauri/src/
 │   │                        违规记在**正交字段** last_violation（不复用状态机）+
 │   │                        审计 service.port_violation + 面板红色徽章 + 通知中心一条；
 │   │                        启动期加密采样（0/0.5/1/2/5/10s）+ 30s 巡检，发现即终止
-│   ├── bot/services/logs.rs (147)  日志与输出上限面：服务日志目录 / append 写 /
+│   ├── bot/services/logs.rs (171)  日志与输出上限面：服务日志目录 / append 写 /
 │   │                        尾部读（字节与行两种口径）+ 截断到 OUTPUT_CAP_BYTES +
 │   │                        每 30s 一轮的输出上限巡检
 │   ├── bot/services/observe.rs (282) 资源观测面：合计口径判定（阈值 / 持续 / 去重）+
@@ -464,7 +466,7 @@ src-tauri/src/
 │                     无 Invoke 才退回坐标点击）+ SendInput 注输入；
 │                     控件值读 UIA ValuePattern（密码框不读，避免读出明文）；
 │                     COM 生命周期同线程成对（CoInitializeEx / CoUninitialize）
-├── bot_desktop.rs (647) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
+├── bot_desktop.rs (678) 电脑辅助 Tier1（N4，看 / 打开 / 把东西递到用户手上）：reveal_path
 │                        （opener 定位，白名单闸）/ open_url（公网闸 ensure_public_http_url）/
 │                        clipboard_write（官方 clipboard-manager v2）/ copy_file_to_clipboard
 │                        （文件进系统剪贴板，读白名单闸，复用 platform::copy_file 的
@@ -479,7 +481,7 @@ src-tauri/src/
 │                        原.workflow_questions，随画布退役中立化保留（手动执行任务卡共用）
 │
 │─ Bot 工具实现（被 bot.rs 分发调用）
-├── bot_fs.rs (502)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
+├── bot_fs.rs (508)       路径白名单 + perm_mode(strict/ask/auto/yolo) 四档授权闸；
 │                        per-tool 规则表（lookup_tool_rule / tool_rule_for）+ 读闸
 │                        （resolve_with_perm / allowed_dirs）；子模块转出（旧路径 1:1 保持）
 │   ├── bot_fs/edit.rs (649)      文件编辑面：写闸 + 三级匹配内核 + edit_file/write_file
@@ -499,7 +501,7 @@ src-tauri/src/
 │                        64MB、整包 256MB、条目 5000 条上限（超限报「疑似压缩炸弹」），放大比
 │                        200:1 封顶；已存在的文件不覆盖（跳过并列出）；解包只认源在读白名单、
 │                        落点在写白名单
-├── bot_manage_file.rs (394) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
+├── bot_manage_file.rs (426) 文件复制/移动/删除 manage_file：copy 复制（源保留）/
 │                        move 移动（同卷 rename、跨卷复制后源入回收站）/ delete 删除
 │                        （进系统回收站，删前弹窗确认、60s 无响应默认拒）；源走读
 │                        白名单、目标走写白名单；目标已存在一律不覆盖；目录树里的
@@ -939,6 +941,7 @@ flowchart TD
 - `bot/dispatch/early_return_events_tests.rs`
 - `bot/dispatch/invalid_args_tests.rs`
 - `bot/dispatch/pre_tool_hook_tests.rs`
+- `bot/dispatch/allowed_tools_tests.rs`
 - `bot/eval.rs`
 - `bot/format.rs`
 - `bot/hooks.rs`
