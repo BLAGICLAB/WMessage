@@ -628,7 +628,9 @@ pub fn install_panic_hook(log_dir: std::path::PathBuf) {
     let bot_log = log_dir.join("bot.log");
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let msg = escape_for_log(&panic_payload_msg(info.payload()), 2000);
+        // msg 不在这里预转义：write_at 的拼装内核统一过 escape_for_log，
+        // 这里再转一遍会把 `|` 叠成 `||||`（双重转义），日志读不出原文
+        let msg = panic_payload_msg(info.payload());
         let loc = info
             .location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
@@ -681,7 +683,8 @@ impl log::Log for AuditLogger {
             // max_level Info 已挡，这里双保险（防 enabled 语义被放宽）
             log::Level::Debug | log::Level::Trace => return,
         };
-        let msg = escape_for_log(&record.args().to_string(), 2000);
+        // 同上：转义单源在拼装内核，入口只截断
+        let msg = record.args().to_string();
         write_at(
             &self.dir.join("bot.log"),
             level,

@@ -57,7 +57,17 @@ pub struct MemStore {
 
 impl TaskStore for MemStore {
     fn load(&self) -> Result<Vec<db::Task>, String> {
-        Ok(self.tasks.lock().unwrap().clone())
+        let mut g = self.tasks.lock().unwrap().clone();
+        // 与生产 load_all 的 `ORDER BY ord, rowid` 同序：None 排在有线之后、
+        // 同序键按插入序（stable sort 保 push 顺序 = rowid 语义）。不排序的话
+        // handler 输出顺序随插入/替换历史漂移，同一份测试在两种 store 下结果不同。
+        g.sort_by(|a, b| match (a.order, b.order) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        Ok(g)
     }
     fn upsert(&self, tasks: Vec<db::Task>) -> Result<(), String> {
         let mut g = self.tasks.lock().unwrap();
