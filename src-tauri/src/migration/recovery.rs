@@ -12,7 +12,6 @@ use tauri::AppHandle;
 
 use crate::db;
 
-use super::journal::{journal_cleared_inner, journal_committed_inner};
 use super::ops::log_line;
 use super::types::JournalEntry;
 
@@ -73,10 +72,36 @@ pub(crate) fn decide_src_missing(
 /// 返回（恢复条数, 错误条数）供调用者记日志。
 pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String> {
     let conn = db::open_db(app).map_err(|e| e.to_string())?;
+    // journal 表的写操作走 DB_WRITE_LOCK 短临界区（单写者纪律；不能整函数持锁——
+    // recover_* 内部 block_on db_upsert 会到另一线程再取同一把锁，持锁跨调用即死锁）。
+    // 状态翻转失败不再 .ok() 吞掉：行残留 pending 会让下次启动重复重放（重放幂等，
+    // 但对账日志会撒谎），留痕让下次启动的人知道这一行为什么还在。
+    let flip = |committed: bool, id: i64, what: &str| {
+        let r = {
+            let _g = crate::db::lock_db_write();
+            if committed {
+                super::journal::journal_committed_inner(&conn, id)
+            } else {
+                super::journal::journal_cleared_inner(&conn, id)
+            }
+        };
+        if let Err(e) = &r {
+            log_line(
+                app,
+                &format!(
+                    "journal replay: {what}状态翻转失败 id={id}（残留 pending，下次启动重放）：{e}"
+                ),
+            );
+        }
+        r.is_ok()
+    };
     // 孤儿 pending 清理：MI-04a 修复前产生的同 (task_id, src) 多条
     // pending（id DESC 下不可见、仍被 replay 扫描 → 同 key 重复处置）。启动重放前
     // 一次性清理：只留 id 最大（最新尝试），其余删除 + 留痕。
-    let purged = purge_orphan_pending(&conn).map_err(|e| e.to_string())?;
+    let purged = {
+        let _g = crate::db::lock_db_write();
+        purge_orphan_pending(&conn).map_err(|e| e.to_string())?
+    };
     if purged > 0 {
         log_line(
             app,
@@ -115,7 +140,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                     // move 成功但 DB 未更新
                     match recover_move_db(app, &entry.task_id, &entry.src, d) {
                         Ok(true) => {
-                            journal_committed_inner(&conn, entry.id).ok();
+                            flip(true, entry.id, "修复后提交");
                             recovered += 1;
                             log_line(
                                 app,
@@ -125,7 +150,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         Ok(false) => {
                             // 任务 file_path 已不指向 src（用户重绑 / 已解绑）
                             // → 跳过修复，避免旧 journal 覆盖新绑定
-                            journal_cleared_inner(&conn, entry.id).ok();
+                            flip(false, entry.id, "清理：");
                             log_line(
                                 app,
                                 &format!(
@@ -139,7 +164,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                             // 永久性失败（任务卡已删）→ 清行终结对账环；
                             // 瞬时失败 → 保留 pending，下次启动重试
                             if is_permanent_replay_error(&e) {
-                                journal_cleared_inner(&conn, entry.id).ok();
+                                flip(false, entry.id, "清理：");
                             }
                             log_line(
                                 app,
@@ -150,14 +175,14 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                 }
                 _ => {
                     // 其他异常 / 未开始 / 异常状态 → clear 行
-                    journal_cleared_inner(&conn, entry.id).ok();
+                    flip(false, entry.id, "清理：");
                 }
             },
             "delete" if !src.exists() => {
                 // delete 成功但 DB 未清 file_path
                 match recover_delete_db(app, &entry.task_id, &entry.src) {
                     Ok(true) => {
-                        journal_committed_inner(&conn, entry.id).ok();
+                        flip(true, entry.id, "修复后提交");
                         recovered += 1;
                         log_line(
                             app,
@@ -166,7 +191,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                     }
                     Ok(false) => {
                         // 任务 file_path 已变更（用户重绑）→ 跳过，不清空新绑定
-                        journal_cleared_inner(&conn, entry.id).ok();
+                        flip(false, entry.id, "清理：");
                         log_line(
                             app,
                             &format!(
@@ -180,7 +205,7 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                         // 永久性失败（任务卡已删）→ 清行终结对账环；
                         // 瞬时失败 → 保留 pending，下次启动重试
                         if is_permanent_replay_error(&e) {
-                            journal_cleared_inner(&conn, entry.id).ok();
+                            flip(false, entry.id, "清理：");
                         }
                         log_line(
                             app,
@@ -190,20 +215,28 @@ pub fn journal_replay_pending(app: &AppHandle) -> Result<(usize, usize), String>
                 }
             }
             _ => {
-                journal_cleared_inner(&conn, entry.id).ok();
+                flip(false, entry.id, "清理：");
             }
         }
     }
 
     // 限制日志表大小：最近 1000 条保留，剩余 cleared/committed 的清理
     // （避免 journal 表无限增长）
-    let _ = conn.execute(
-        "DELETE FROM migration_journal
-         WHERE id NOT IN (
-             SELECT id FROM migration_journal ORDER BY id DESC LIMIT 1000
-         ) AND state IN ('committed', 'cleared')",
-        [],
-    );
+    {
+        let _g = crate::db::lock_db_write();
+        if let Err(e) = conn.execute(
+            "DELETE FROM migration_journal
+             WHERE id NOT IN (
+                 SELECT id FROM migration_journal ORDER BY id DESC LIMIT 1000
+             ) AND state IN ('committed', 'cleared')",
+            [],
+        ) {
+            log_line(
+                app,
+                &format!("journal replay: 历史清理失败（不影响对账）：{e}"),
+            );
+        }
+    }
 
     Ok((recovered, errors))
 }
