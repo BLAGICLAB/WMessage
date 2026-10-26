@@ -290,7 +290,10 @@ pub(crate) fn classify_get_password(r: Result<String, keyring::Error>) -> Comman
             // #[non_exhaustive] 兜底：keyring 4.x+ 未来新增的变体不静默吞——
             // 全部当作真错误上抛，保持调用方语义
             Err(CommandError::KeyringError(format!(
-                "读取 API Key 失败：{e}"
+                // 报错自标识后端：降级路径的文案带「降级文件存储」，这里带
+                // 「系统凭据存储」——两条路共用「读取 API Key 失败」前缀时，
+                // 排查不至于被降级字样带偏方向
+                "读取 API Key 失败（系统凭据存储）：{e}"
             )))
         }
     }
@@ -303,7 +306,7 @@ pub(crate) fn classify_has_key(r: Result<String, keyring::Error>) -> CommandResu
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
         Err(e) => Err(CommandError::KeyringError(format!(
-            "检查 API Key 失败：{e}"
+            "检查 API Key 失败（系统凭据存储）：{e}"
         ))),
     }
 }

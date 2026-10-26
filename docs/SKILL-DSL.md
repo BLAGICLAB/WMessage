@@ -99,7 +99,7 @@ intents:
 
 ```markdown
 ## Step 1: 列出当前所有任务
-list_tasks({})
+query_tasks({})
 
 ## Step 2: 查询第一张任务卡详情
 query_single_task({"id": "${step1.id}"})
@@ -116,7 +116,7 @@ DSL 可调用的工具（白名单由 bot.rs Function 工具集定义）：
 
 | 类别 | 工具 |
 |---|---|
-| 任务卡 | `list_tasks` / `query_single_task` / `search_tasks` / `create_task` / `edit_task` / `complete_task` / `delete_task` / `add_subtask` / `bind_file` |
+| 任务卡 | `query_tasks` / `query_single_task` / `create_task` / `edit_task` / `complete_task` / `delete_task` / `add_subtask` / `toggle_subtask` / `remove_subtask`（绑产物用 `link_file_to_task`，见下方黑名单说明） |
 | 文档抽取 | `extract_document` |
 | 文档生成 | `create_word` / `create_excel` / `create_ppt` / `create_pdf` |
 | 通用 | `run_python` / `web_search` / `fetch_url` |
@@ -146,14 +146,14 @@ rollback 段也走变量替换（失败前的步骤都已入 ctx），失败时�
 
 很多开发者在写 Skill 时都会撞同一类坑，先把语义说清：
 
-- **覆盖范围**：rollback 段**只覆盖段内显式声明的工具调用**。它在失败时跑一遍这些工具调用，对**之前 step 已写入的副作用**（如 `create_task` 已落库的任务、`edit_task` 已修改的字段、`bind_file` 已绑定的文件）**不会自动 undo**。如果你想逆向一个 `create_task`，必须在 rollback 里显式写一个 `delete_task`。
+- **覆盖范围**：rollback 段**只覆盖段内显式声明的工具调用**。它在失败时跑一遍这些工具调用，对**之前 step 已写入的副作用**（如 `create_task` 已落库的任务、`edit_task` 已修改的字段、`link_file_to_task` 已绑定的文件）**不会自动 undo**。如果你想逆向一个 `create_task`，必须在 rollback 里显式写一个 `delete_task`。
 - **不是事务**：rollback 段**按声明顺序执行**（不是原子事务），rollback 中任一步失败也只算「rollback 段跑挂」，不影响其它 rollback 步继续跑。每一步的成功 / 失败都会记到 `completed_summary`（用户和 LLM 都能看到）。
 - **`rollback_attempted` 语义**：最终 `DslOutcome::FailedButRecoverable { rollback_attempted, ... }` 里这个字段是 bool。
   - `true` = rollback 段存在**且**顺序跑完后没有 fail 步
   - `false` = rollback 段根本没写（`rollback: none`）/ 跑挂 / 在跑之前就 panic 了
   - 注意 `false` ≠「没有副作用」：即使 rollback_attempted=false，前面 step 的写入已经发生过了。
 - **step 工具必须幂等**：rollback 是 best-effort，可能只跑成功一半就挂了；LLM 兜底路径也可能基于「已完成产物」决定重试。所以**写操作的 step 必须幂等**（`create_task` 用稳定 key、`edit_task` 能多次执行不改坏、文件操作覆盖写入）。
-- **前置检查 step**：建议每个有副作用的 Skill 开头加一个「读」step（`list_tasks` / `query_single_task` / `search_tasks`），拿到 ID / 上下文后再走「写」。这样失败时 rollback 段能直接用 `${step1.id}`，不用再去翻状态。
+- **前置检查 step**：建议每个有副作用的 Skill 开头加一个「读」step（`query_tasks` / `query_single_task`），拿到 ID / 上下文后再走「写」。这样失败时 rollback 段能直接用 `${step1.id}`，不用再去翻状态。
 - **故意破坏性的 step 放最后**：删 / 归档 / 改状态这类 step 排到末尾，配合 rollback 段在前面抵消前面 step 的副作用，万一中间挂掉损失最小。
 
 #### 4.3.2 失败展示 UI 约定（前后端共同遵守）
@@ -325,7 +325,7 @@ intents:
 ---
 
 ## Step 1: 列出所有任务
-list_tasks({})
+query_tasks({})
 ```
 
 ### 8.2 含变量替换的 Skill：归档指定任务
@@ -371,7 +371,7 @@ intents:
 ---
 
 ## Step 1: 列出所有任务
-list_tasks({})
+query_tasks({})
 
 ## Step 2: 生成 Excel 文件
 create_excel({"tasks": "${step1.result}", "path": "/tmp/tasks.xlsx"})
@@ -380,19 +380,19 @@ create_excel({"tasks": "${step1.result}", "path": "/tmp/tasks.xlsx"})
 delete_file({"path": "${step2.path}"})
 ```
 
-`${step1.result}` 是 `list_tasks` 返回的 JSON 数组原文，`create_excel` 直接消费。
+`${step1.result}` 是 `query_tasks` 返回的 JSON 数组原文，`create_excel` 直接消费。
 
 ### 8.4 嵌套字段 + 数组索引示例：处理第一张任务
 
 ```markdown
 ## Step 1: 列出任务
-list_tasks({})
+query_tasks({})
 
 ## Step 2: 取第一张任务的 ID
 query_single_task({"id": "${step1.0.id}"})
 ```
 
-`${step1.0.id}` 取 `parsed[0]["id"]`（list_tasks 返回的是数组，第一个元素的 id 字段）。
+`${step1.0.id}` 取 `parsed[0]["id"]`（query_tasks 返回的是数组，第一个元素的 id 字段）。
 
 ### 8.5 失败场景示例：重命名任务 + 「读 → 修改 → 写」流程
 
@@ -419,18 +419,18 @@ query_single_task({"id": "${prev.id}"})
 edit_task({"id": "${step1.id}", "title": "新标题【】"})
 
 ## Step 3: 绑定文件（可选后续产物）
-bind_file({"task_id": "${step1.id}", "path": "/tmp/out.docx"})
+link_file_to_task({"taskId": "${step1.id}", "path": "<AI_Gen_Files 内的产物绝对路径>"})
 
 ## Rollback
 # 撤销修改：把 title 写回 step1 取到的旧值
 edit_task({"id": "${step1.id}", "title": "${step1.title}"})
 # 解绑刚才可能绑上的文件
-delete_file({"path": "/tmp/out.docx"})
+delete_file({"path": "<上一步绑定的产物路径>"})
 ```
 
 **正确要点**：
 - rollback 显式调用 `edit_task` 把标题改回 `${step1.title}`（原值），而不是「什么都不做」——因为 Step 2 可能已经写入再失败。
-- 删除可能写入的文件，即使 bind_file 在 Step 3 才跑（前面 step 挂了 rollback 也会跑同样的工具，按风险措词是 best-effort）。
+- 删除可能写入的文件，即使 link_file_to_task 在 Step 3 才跑（前面 step 挂了 rollback 也会跑同样的工具，按风险措词是 best-effort）。
 - 三个 step 顺序合理：读 → 改 → 写，避免直接对不存在的任务 ID 写。
 
 #### ❌ 错例：rollback 只写了「重跑」

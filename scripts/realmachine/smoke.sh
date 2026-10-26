@@ -135,9 +135,11 @@ if [ -f "$BOT_LOG" ]; then
     done
   fi
 fi
+# ${COMPLETE} 必须加大括号：紧随其后的 ×/（ 是多字节字符，老版 bash 解析
+# $COMPLETE 时会把这些字节吞进变量名 → unbound variable 直接死在 C→D 接缝
 [ "${COMPLETE:-0}" -ge 2 ] \
-  && result PASS "10/11" "两轮往返 trace.complete ×$COMPLETE（审计链完整）" \
-  || result SKIP "10/11" "水位后未见 2 条 trace.complete（$COMPLETE 条）——人工核对回复与用量条"
+  && result PASS "10/11" "两轮往返 trace.complete ×${COMPLETE}（审计链完整）" \
+  || result SKIP "10/11" "水位后未见 2 条 trace.complete（${COMPLETE} 条）——人工核对回复与用量条"
 
 # ── 阶段 D：优雅退出 + 收尾 ─────────────────────────────────────────────
 echo "── 阶段 D：优雅退出与收尾（自动）──"

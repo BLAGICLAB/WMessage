@@ -352,43 +352,6 @@ export function SettingsPage({
               />
             </section>
           )}
-          {mountedSections.has("bot") && (
-            <section
-              hidden={activeSection !== "bot"}
-              className="space-y-4 pt-4"
-            >
-              <BotCoreSection
-                botEnabled={botEnabled}
-                toggleBot={toggleBot}
-                botBusy={botBusy}
-                botError={botError}
-                pyEnabled={pyEnabled}
-                togglePy={togglePy}
-                pyBusy={pyBusy}
-                servicesEnabled={servicesEnabled}
-                toggleServices={toggleServices}
-                servicesBusy={servicesBusy}
-                exposeNetAllowed={exposeNetAllowed}
-                toggleExposeNet={toggleExposeNet}
-                exposeNetBusy={exposeNetBusy}
-                uiEnabled={uiEnabled}
-                toggleUi={toggleUi}
-                uiBusy={uiBusy}
-                pyEnvErr={pyEnvErr}
-                pyEnv={pyEnv}
-                pyEnvBusy={pyEnvBusy}
-                checkPyEnv={checkPyEnv}
-                pyTimeoutView={pyTimeoutView}
-                config={config}
-                setConfig={setConfig}
-                renderSaveButton={renderSaveButton}
-                paramMaxText={paramMaxText}
-                configBusy={configBusy}
-                saveConfig={saveConfig}
-                paramViews={paramViews}
-              />
-            </section>
-          )}
           {mountedSections.has("memory") && (
             <section
               hidden={activeSection !== "memory"}
@@ -472,6 +435,46 @@ export function SettingsPage({
               />
             </section>
           )}
+          {/* 机器人分区的三个子块聚在一处：各自独立 section、同挂 bot 分区，
+              切到 bot 时按 Core→Api→Tools 顺序同时显示。原先散落在
+              memory/model/mcp 分区之间，是重构遗留。 */}
+          {mountedSections.has("bot") && (
+            <section
+              hidden={activeSection !== "bot"}
+              className="space-y-4 pt-4"
+            >
+              <BotCoreSection
+                botEnabled={botEnabled}
+                toggleBot={toggleBot}
+                botBusy={botBusy}
+                botError={botError}
+                pyEnabled={pyEnabled}
+                togglePy={togglePy}
+                pyBusy={pyBusy}
+                servicesEnabled={servicesEnabled}
+                toggleServices={toggleServices}
+                servicesBusy={servicesBusy}
+                exposeNetAllowed={exposeNetAllowed}
+                toggleExposeNet={toggleExposeNet}
+                exposeNetBusy={exposeNetBusy}
+                uiEnabled={uiEnabled}
+                toggleUi={toggleUi}
+                uiBusy={uiBusy}
+                pyEnvErr={pyEnvErr}
+                pyEnv={pyEnv}
+                pyEnvBusy={pyEnvBusy}
+                checkPyEnv={checkPyEnv}
+                pyTimeoutView={pyTimeoutView}
+                config={config}
+                setConfig={setConfig}
+                renderSaveButton={renderSaveButton}
+                paramMaxText={paramMaxText}
+                configBusy={configBusy}
+                saveConfig={saveConfig}
+                paramViews={paramViews}
+              />
+            </section>
+          )}
           {mountedSections.has("bot") && (
             <section
               hidden={activeSection !== "bot"}
@@ -482,24 +485,6 @@ export function SettingsPage({
                 setPermMode={setPermMode}
                 configBusy={configBusy}
                 setConfig={setConfig}
-                renderSaveButton={renderSaveButton}
-              />
-            </section>
-          )}
-          {mountedSections.has("mcp") && (
-            <section
-              hidden={activeSection !== "mcp"}
-              className="space-y-4 pt-4"
-            >
-              <McpSection
-                config={config}
-                toggleTavily={toggleTavily}
-                configBusy={configBusy}
-                tavilyKeyInput={tavilyKeyInput}
-                setTavilyKeyInput={setTavilyKeyInput}
-                toggleBrave={toggleBrave}
-                braveKeyInput={braveKeyInput}
-                setBraveKeyInput={setBraveKeyInput}
                 renderSaveButton={renderSaveButton}
               />
             </section>
@@ -520,6 +505,24 @@ export function SettingsPage({
                 copyToken={copyToken}
                 copied={copied}
                 rotateToken={rotateToken}
+                renderSaveButton={renderSaveButton}
+              />
+            </section>
+          )}
+          {mountedSections.has("mcp") && (
+            <section
+              hidden={activeSection !== "mcp"}
+              className="space-y-4 pt-4"
+            >
+              <McpSection
+                config={config}
+                toggleTavily={toggleTavily}
+                configBusy={configBusy}
+                tavilyKeyInput={tavilyKeyInput}
+                setTavilyKeyInput={setTavilyKeyInput}
+                toggleBrave={toggleBrave}
+                braveKeyInput={braveKeyInput}
+                setBraveKeyInput={setBraveKeyInput}
                 renderSaveButton={renderSaveButton}
               />
             </section>
