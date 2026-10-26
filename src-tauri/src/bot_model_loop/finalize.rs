@@ -87,9 +87,8 @@ pub(crate) enum FinalizeOutcome {
 pub(crate) fn finalize_exit(
     expecting_final_selfcheck: &mut bool,
     expecting_selfcheck: &mut bool,
+    selfcheck_question_pending: &bool,
     final_text: &mut String,
-    last_final_selfcheck_round: &mut Option<usize>,
-    last_selfcheck_round: &mut Option<usize>,
     late_verdict_retries: &mut u8,
     length_continuations: &mut usize,
     length_prefix: &mut String,
@@ -147,13 +146,15 @@ pub(crate) fn finalize_exit(
     // 终稿：实测事故（真机 2026-10-23）用户只看到一个 Y，真正的报告
     // 压根没产出（模型正要写报告就被这一轮终结了）。
     //
-    // 判据：终稿是纯 Y/N 单字 + 本轮问过自检（两个 last_*_round 有值
-    // 即本轮问过）→ 续跑一轮，让模型把真实结果说出来。问过自检这一条
-    // 不能省：用户明说「只回答 Y 或 N」时，一个 Y 就是合法答复。
+    // 判据：终稿是纯 Y/N 单字 + **自检问句此刻仍悬着**（selfcheck_question_pending，
+    // 问句注入置 true、被消费或侧调裁决置 false——「本提问问过自检」不等于
+    // 「问句还悬着」，拿节流记忆当判据会把用户要的答复劫走）→ 续跑一轮，
+    // 让模型把真实结果说出来。豁免：用户最近一条真实消息里明确要求 Y/N
+    // 答复时，裸 Y/N 就是合法答复，闸不拦。
     // 窗口内的判定（expecting_final_selfcheck）不算迟到——它由下面的
     // 终稿自检 verdict 解析接管（Y 还原原文 / N 追加警告），闸不能抢。
-    let asked_selfcheck = !*expecting_final_selfcheck
-        && (last_selfcheck_round.is_some() || last_final_selfcheck_round.is_some());
+    let asked_selfcheck =
+        !*expecting_final_selfcheck && *selfcheck_question_pending && !user_demands_yn_answer(msgs);
     if asked_selfcheck && crate::prompts::parse_selfcheck_response(final_text.trim()).is_some() {
         let passed = crate::prompts::parse_selfcheck_response(final_text.trim()) == Some(true);
         if *late_verdict_retries < MAX_LATE_VERDICT_RETRIES {
@@ -189,10 +190,31 @@ pub(crate) fn finalize_exit(
     Ok(FinalizeOutcome::Proceed)
 }
 
+/// 用户显式要求 Y/N 答复的豁免判据：最近一条**真实用户消息**里明确说了
+/// 「只回答 Y/N」一类口径。系统注入的 user 消息（自检 prompt【自检】/
+/// 【终稿自检】、提示【系统提示】）自带锚点前缀，跳过它们才不会把
+/// 「仅回答 Y=无幻觉」的终稿自检问句误当成用户的 Y/N 诉求。
+fn user_demands_yn_answer(msgs: &[serde_json::Value]) -> bool {
+    const INJECTION_ANCHORS: [&str; 3] = ["【自检】", "【终稿自检】", "【系统提示】"];
+    let Some(content) = msgs.iter().rev().find_map(|m| {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            return None;
+        }
+        // 多模态数组（带图消息）不是 Y/N 文本诉求
+        let c = m.get("content")?.as_str()?;
+        (!INJECTION_ANCHORS.iter().any(|a| c.contains(a))).then_some(c)
+    }) else {
+        return false;
+    };
+    let lower = content.to_lowercase();
+    lower.contains("y/n") || lower.contains("y 或 n")
+}
+
 pub(crate) async fn finalize_selfcheck(
     expecting_final_selfcheck: &mut bool,
     expecting_selfcheck: &mut bool,
     final_selfcheck_snapshot: &mut Option<String>,
+    selfcheck_question_pending: &mut bool,
     final_text: &mut String,
     function_calls_total: &mut usize,
     last_final_selfcheck_round: &mut Option<usize>,
@@ -287,6 +309,9 @@ pub(crate) async fn finalize_selfcheck(
                 ),
             }
             *final_selfcheck_snapshot = None;
+            // 侧调已裁决（无论成败，本触发不再走 in-loop）：问句不悬着，
+            // 出口闸的迟到判定不得劫走模型后续自己的 Y/N 答复
+            *selfcheck_question_pending = false;
             // fall through：主出口照常返回，侧调不占主循环轮次
         } else {
             // in-loop 路径（未配置侧调模型）：注入 prompt 续跑一轮，
@@ -298,6 +323,7 @@ pub(crate) async fn finalize_selfcheck(
                     .replace("{snippet}", &snippet),
             }));
             *expecting_final_selfcheck = true;
+            *selfcheck_question_pending = true;
             return Ok(FinalizeOutcome::Continue);
         }
     }
@@ -331,6 +357,9 @@ pub(crate) async fn finalize_selfcheck(
         }
         // expecting_final_selfcheck 在此处置 false 之后立即 return，flag 不
         // 再被任何流式 emit 检查读取——下次循环触发由 trigger 分支重新置 true。
+        *expecting_final_selfcheck = false;
+        // 问句已被这句 Y/N 回答（或快照已还原）：悬着标志同步收掉
+        *selfcheck_question_pending = false;
     }
     Ok(FinalizeOutcome::Proceed)
 }

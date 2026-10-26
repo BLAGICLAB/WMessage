@@ -169,12 +169,12 @@ pub(crate) async fn finalize_without_tools(
     written_paths: &[String],
     session_tools_cache: &mut Option<Option<crate::db::trace::SessionTools>>,
     function_calls_total: &mut usize,
-    last_selfcheck_round: &mut Option<usize>,
     pending_selfcheck: &mut Option<(String, String)>,
     expecting_selfcheck: &mut bool,
     expecting_final_selfcheck: &mut bool,
     final_selfcheck_snapshot: &mut Option<String>,
     last_final_selfcheck_round: &mut Option<usize>,
+    selfcheck_question_pending: &mut bool,
     late_verdict_retries: &mut u8,
     length_continuations: &mut usize,
     length_prefix: &mut String,
@@ -189,6 +189,7 @@ pub(crate) async fn finalize_without_tools(
         msgs,
         pending_selfcheck,
         expecting_selfcheck,
+        selfcheck_question_pending,
         final_text,
         deps,
         thinking_blocks,
@@ -222,9 +223,8 @@ pub(crate) async fn finalize_without_tools(
     match finalize_exit(
         expecting_final_selfcheck,
         expecting_selfcheck,
+        selfcheck_question_pending,
         final_text,
-        last_final_selfcheck_round,
-        last_selfcheck_round,
         late_verdict_retries,
         length_continuations,
         length_prefix,
@@ -240,6 +240,7 @@ pub(crate) async fn finalize_without_tools(
         expecting_final_selfcheck,
         expecting_selfcheck,
         final_selfcheck_snapshot,
+        selfcheck_question_pending,
         final_text,
         function_calls_total,
         last_final_selfcheck_round,
@@ -260,6 +261,7 @@ fn finalize_selfcheck_reply(
     msgs: &mut Vec<serde_json::Value>,
     pending_selfcheck: &mut Option<(String, String)>,
     expecting_selfcheck: &mut bool,
+    selfcheck_question_pending: &mut bool,
     final_text: &mut str,
     deps: &ModelLoopDeps<'_>,
     thinking_blocks: &[serde_json::Value],
@@ -302,6 +304,8 @@ fn finalize_selfcheck_reply(
                 }));
                 *expecting_selfcheck = false;
                 *pending_selfcheck = None;
+                // 问句已被这句 Y 回答：出口闸的迟到判定不得再把它当悬着
+                *selfcheck_question_pending = false;
                 return Ok(FinalizeOutcome::Continue);
             }
             Some(false) => {
@@ -319,6 +323,7 @@ fn finalize_selfcheck_reply(
                 }));
                 *expecting_selfcheck = false;
                 *pending_selfcheck = None;
+                *selfcheck_question_pending = false;
                 return Ok(FinalizeOutcome::Continue);
             }
             None => {
@@ -326,6 +331,7 @@ fn finalize_selfcheck_reply(
                 emit("bot-chat-delta", serde_json::json!({ "text": final_text }));
                 *expecting_selfcheck = false;
                 *pending_selfcheck = None;
+                *selfcheck_question_pending = false;
             }
         }
     }

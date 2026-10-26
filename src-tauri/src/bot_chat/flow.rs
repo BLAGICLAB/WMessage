@@ -272,13 +272,18 @@ pub(super) async fn bot_chat_inner(
     // 同一条原文，只要有一处读到未清洗的原文，规范化就只做了一半
     // （「做\u{FEFF}PPT」照旧匹配不上技能）。
     let mut messages = messages;
-    if let Some(n) = normalize_user_input(&mut messages) {
-        crate::audit_event!(
-            &app,
-            crate::audit::AuditLevel::Info,
-            "user.input_normalized",
-            "stripped" => n.stripped.to_string(),
-        );
+    // 汇报轮没有用户输入动作，L0 不改写库里的历史消息（改的只是内存副本，
+    // 却会留下一条 user.input_normalized 审计 + 让模型看到的末条与库里原文
+    // 不一致）；L0 的价值在清洗用户刚发的内容，只在用户轮做。
+    if origin == TurnOrigin::User {
+        if let Some(n) = normalize_user_input(&mut messages) {
+            crate::audit_event!(
+                &app,
+                crate::audit::AuditLevel::Info,
+                "user.input_normalized",
+                "stripped" => n.stripped.to_string(),
+            );
+        }
     }
     // 本轮的用户输入：汇报轮恒为 None（它没有用户发言，只是把库里的历史摆回模型面前）。
     // 钉成一个变量而不是让各处各读一次 messages.last()：门控收在这里一处，将来

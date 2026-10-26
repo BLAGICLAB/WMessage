@@ -77,6 +77,14 @@ pub(super) fn attach_images_in(
             skipped += 1;
             continue;
         };
+        // 读前先判大小：几 GB 的全景 jpg、改名成 png 的视频不能整文件进堆
+        // （单条消息最多 4 张、最后 3 条消息都算，峰值可达 4×3×文件大小）
+        let Ok(meta) = std::fs::metadata(&canon) else {
+            continue;
+        };
+        if meta.len() == 0 || meta.len() > MAX_IMAGE_BYTES as u64 {
+            continue;
+        }
         let Ok(bytes) = std::fs::read(&canon) else {
             continue;
         };
@@ -116,6 +124,13 @@ pub(crate) fn image_part_from_file(p: &std::path::Path) -> Option<serde_json::Va
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
     if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    // 与附件链路同口径：读前先判大小，大文件不进堆
+    let Ok(meta) = std::fs::metadata(p) else {
+        return None;
+    };
+    if meta.len() == 0 || meta.len() > MAX_IMAGE_BYTES as u64 {
         return None;
     }
     let bytes = std::fs::read(p).ok()?;

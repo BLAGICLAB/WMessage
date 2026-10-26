@@ -182,6 +182,13 @@ where
     // 要真实结果。次数有硬顶（MAX_LATE_VERDICT_RETRIES），否则模型只回 Y/N
     // 就能把回合拖成死循环。
     let mut late_verdict_retries: u8 = 0;
+    // 自检问句仍悬着：问句注入（in-loop / 终稿）时置 true；被消费（模型答了
+    // Y/N 或带解释）或侧调已裁决时置 false。出口闸的「迟到判定」判据用它，
+    // 不用 last_*_round——那两个是节流记忆，「本提问问过自检」不等于
+    // 「问句此刻还悬着」，拿节流记忆当判据会把用户要的 Y/N 答复劫走。
+    // 以行动代回答（模型回工具调用）不清它：问句还留在上下文里，后面那句
+    // 孤零零的 Y 仍属迟到判定。
+    let mut selfcheck_question_pending = false;
     let mut plan_state = plan_state;
     // 上轮 streamed 文本快照：
     // AwaitConfirm/Finish/Fail/Terminate 跳出主循环时，返回 user 已看到的文本
@@ -421,12 +428,12 @@ where
                     &written_paths,
                     &mut session_tools_cache,
                     &mut function_calls_total,
-                    &mut last_selfcheck_round,
                     &mut pending_selfcheck,
                     &mut expecting_selfcheck,
                     &mut expecting_final_selfcheck,
                     &mut final_selfcheck_snapshot,
                     &mut last_final_selfcheck_round,
+                    &mut selfcheck_question_pending,
                     &mut late_verdict_retries,
                     &mut length_continuations,
                     &mut length_prefix,
@@ -453,7 +460,6 @@ where
                     }
                 }
                 let _ = skill_finish(true, "");
-                collected_refs = merge_task_refs_dedup(collected_refs);
                 let mut answer = if length_prefix.is_empty() {
                     final_text.clone()
                 } else {
@@ -518,6 +524,7 @@ where
                 &mut expecting_final_selfcheck,
                 &mut final_selfcheck_snapshot,
                 &mut last_selfcheck_round,
+                &mut selfcheck_question_pending,
                 &mut last_failed_tool,
                 &mut last_fail_reason,
                 &mut consec_failures,
@@ -595,6 +602,9 @@ where
         ))
     }
     .await;
+    // task_refs 去重在唯一的出口收口：主出口 / 早退（停止、熔断、技能收尾）
+    // 十几条 return 路径都从这过，单点去重不再有「早退返回重复引用」的旁路。
+    let body = body.map(|(msg, refs)| (msg, merge_task_refs_dedup(refs)));
     // 回合状态收口：出口 → 状态。settling 在正文定稿后、收尾自检之前发，
     // 它是「说完了但还在动」这个场景唯一的存在方式——没有它，前端只能把
     // 「正文说完」当「本轮结束」，随后那段收尾（可静默 300s）就是一片静止。
@@ -649,6 +659,7 @@ async fn dispatch_round<X, XP, R, RP>(
     expecting_final_selfcheck: &mut bool,
     final_selfcheck_snapshot: &mut Option<String>,
     last_selfcheck_round: &mut Option<usize>,
+    selfcheck_question_pending: &mut bool,
     last_failed_tool: &mut Option<String>,
     last_fail_reason: &mut Option<String>,
     consec_failures: &mut usize,
@@ -966,6 +977,8 @@ where
             // 侧调没给出可判定的答案就回落 in-loop（这道闸不丢）。
             match side_selfcheck_verdict(deps, msgs, user_intent, &sc_name, &sc_snippet).await {
                 Some(true) => {
+                    // 侧调已裁决：问句不再悬着，主模型后续的 Y/N 是自己的答复
+                    *selfcheck_question_pending = false;
                     emit(
                         "bot-chat-delta",
                         serde_json::json!({ "text": super::SELFCHECK_PASS_EMIT }),
@@ -977,6 +990,7 @@ where
                     *pending_selfcheck = None;
                 }
                 Some(false) => {
+                    *selfcheck_question_pending = false;
                     emit(
                         "bot-chat-delta",
                         serde_json::json!({ "text": super::SELFCHECK_FAIL_EMIT }),
@@ -988,6 +1002,8 @@ where
                     *pending_selfcheck = None;
                 }
                 None => {
+                    // in-loop 注入：问句悬着，等模型的 Y/N（或以行动代回答）
+                    *selfcheck_question_pending = true;
                     *expecting_selfcheck = true;
                     msgs.push(serde_json::json!({
                         "role": "user",

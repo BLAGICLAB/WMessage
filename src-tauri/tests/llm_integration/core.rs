@@ -1378,3 +1378,37 @@ async fn summarize_http_injects_sampling_params() {
     assert_eq!(v["temperature"], serde_json::json!(0.1));
     assert_eq!(v["top_p"], serde_json::json!(0.2));
 }
+
+/// SSE 单行长度上限：无换行的超长流（畸形/恶意上游）不能把缓冲无限撑大，
+/// 也不能断掉会话——超长残段在行完结前被截停，后面的正常事件照常消费
+/// 出完整答复（与 MCP stdio 读侧「丢行保会话」同口径）。
+#[tokio::test]
+async fn core_huge_unterminated_sse_line_is_truncated_and_session_survives() {
+    let server = MockLlmServer::start();
+    // 3MB 无换行垃圾 + 换行 + 正常回复：垃圾在行完结前就被上限截停，
+    // 残段与后续正常 data 行都按「不可解析行 / 正常事件」各自处理
+    let junk = "x".repeat(3 * 1024 * 1024);
+    let good = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"超长行之后照常回复\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    server.push_behavior(MockBehavior::RawSse(format!("{junk}\n{good}")));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        user_msgs(),
+        5,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("超长 SSE 行不该打断会话");
+    assert_eq!(text, "超长行之后照常回复");
+}

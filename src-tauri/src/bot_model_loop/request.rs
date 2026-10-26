@@ -45,6 +45,27 @@ const CONTEXT_SHED_KEEP_RATIO: f64 = 0.5;
 /// 单次模型循环内的降级次数上限（防「砍一半仍超长 → 再砍 → 再超」打转）
 const CONTEXT_SHED_MAX: u8 = 2;
 
+/// 非 2xx 错误响应体的读取上限（字节）：报错文案与 stream_options 探测只
+/// 需要开头一小段，无上限读会把异常/恶意服务端的超大错误体整包进内存。
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// 错误响应体截断读取：拿到上限内的开头部分即可。读到一半连接断了就保留
+/// 已读部分——错误体的价值在开头（status/message 字段），残缺好过丢弃。
+async fn read_body_capped(mut r: reqwest::Response, cap: usize) -> String {
+    let mut out: Vec<u8> = Vec::new();
+    while out.len() < cap {
+        match r.chunk().await {
+            Ok(Some(c)) => {
+                let remain = cap - out.len();
+                out.extend_from_slice(&c[..c.len().min(remain)]);
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// 条目级采样参数注入：temperature/top_p 有值才写请求体（有值才写 =
 /// 不打扰不认识这些字段或用服务端默认的模型）。OpenAI /chat/completions 与
 /// Anthropic /v1/messages 的顶层字段同名，一处实现两协议共用；
@@ -631,8 +652,10 @@ pub(crate) async fn request_round(
                 if !r.status().is_success() {
                     let st = r.status().as_u16();
                     // 错误响应体统一先读出来：stream_options 探测要用它，
-                    // 下面的报错文案与超长判定也要用同一份
-                    let text = r.text().await.unwrap_or_default();
+                    // 下面的报错文案与超长判定也要用同一份。带上限——报错
+                    // 文案只需要开头一小段，无上限读会把异常服务端的超大
+                    // 错误体整包进内存。
+                    let text = read_body_capped(r, MAX_ERROR_BODY_BYTES).await;
                     match handle_error_response(
                         http,
                         plan,

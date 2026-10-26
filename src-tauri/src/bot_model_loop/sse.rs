@@ -422,6 +422,11 @@ pub(crate) async fn read_sse_stream(
     // chunk 边界落在多字节字符中间会产生 U+FFFD（正文乱码尚可，
     // 嵌在工具 arguments 里则是「合法 JSON 但内容损坏」会被真实执行）
     let mut byte_buf: Vec<u8> = Vec::new();
+    // SSE 单行长度上限（字节）：单条合法 data 行上界 = 工具参数累积上限
+    // （MAX_TOOL_CALL_ARGUMENTS_BYTES，1MB）加 JSON 包装，2MB 是它的两倍——
+    // 正常生成永远碰不到，畸形流则在这里被截停。
+    const MAX_SSE_LINE_BYTES: usize = 2 * 1024 * 1024;
+    let mut line_cap_reported = false;
     let mut state = StreamState::new(
         http.provider,
         expecting_selfcheck,
@@ -484,6 +489,21 @@ pub(crate) async fn read_sse_stream(
                     stream_error = Some(e);
                     break;
                 }
+            }
+            // SSE 单行长度上限：无换行的畸形/恶意流不能把 byte_buf 无限撑大。
+            // drain 之后 buf 只剩未完结行，截掉它不影响已切出的完整行；残段
+            // 交给 handle_line 按不可解析行跳过（与 MCP stdio 读侧同口径：
+            // 丢行保会话），每条流只留一次审计。
+            if byte_buf.len() > MAX_SSE_LINE_BYTES {
+                if !line_cap_reported {
+                    line_cap_reported = true;
+                    audit(
+                        crate::audit::AuditLevel::Warn,
+                        "llm.sse_line_truncated",
+                        vec![("bytes", byte_buf.len().to_string())],
+                    );
+                }
+                byte_buf.clear();
             }
             if stream_error.is_some() {
                 break;

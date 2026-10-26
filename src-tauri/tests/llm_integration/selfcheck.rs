@@ -519,6 +519,49 @@ async fn core_bare_yn_without_selfcheck_is_kept_as_answer() {
     assert_eq!(server.request_count(), 1, "不该追问");
 }
 
+/// 用户明说「只回答 Y 或 N」时，自检消费完之后模型补答的 Y 是给用户的合法
+/// 答复：出口闸不得拿「本提问问过自检」当判据把它劫走（此前判据是两个
+/// last_*_round 有值即命中，问句早就答完了照样拦，用户要的答案被整体替换）。
+#[tokio::test]
+async fn core_yn_demand_answer_survives_after_selfcheck_consumed() {
+    let server = MockLlmServer::start();
+    // 第 1 轮：变更类工具成功 → 工具自检注入（那句 Y/N 问话进上下文）
+    server.push_behavior(MockBehavior::ToolCall(ToolCallResponse {
+        name: "create_task".into(),
+        arguments: "{}".into(),
+    }));
+    // 第 2 轮：模型答 Y——被 expecting 窗口当自检通过消费，问句到此为止
+    server.push_behavior(MockBehavior::TextReply("Y".into()));
+    // 第 3 轮：模型再答一次 Y——这是它对用户「只回答 Y 或 N」的答复
+    server.push_behavior(MockBehavior::TextReply("Y".into()));
+
+    let h = CoreHarness::new();
+    let exec =
+        |_n: String, _a: String, _t: ToolCallTrace| async { ToolResult::ok("done", Vec::new()) };
+    let msgs = vec![serde_json::json!({
+        "role": "user",
+        "content": "只回答 Y 或 N：这个任务建好了吗？"
+    })];
+    let (text, _) = run_model_loop_core(
+        &core_http(&server),
+        msgs,
+        10,
+        &h.stop,
+        None,
+        &h.deps(),
+        exec,
+        noop_replan,
+    )
+    .await
+    .expect("Y/N 诉求路径应 Ok");
+    assert_eq!(
+        text.trim(),
+        "Y",
+        "自检问句已消费，模型补答的 Y 是用户要的答复，实际：{text:?}"
+    );
+    assert_eq!(server.request_count(), 3, "不该追问");
+}
+
 /// 模型只肯回判定字样时不能无限追着问：追问额度封顶后给一句可读的说明，
 /// 而不是把裸 Y 交给用户（那等于没回答）。
 #[tokio::test]
