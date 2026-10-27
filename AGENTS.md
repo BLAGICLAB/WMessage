@@ -29,6 +29,7 @@
 - `docs/FILE-SPLIT-ROUND2-2026-10-25.md` — 第二轮：贴线（1300–1500）的 10 个文件拆分计划——6 条测试外移 / 2 条纯测试文件按节切 / 2 条生产切分；含逐文件切法、执行顺序依赖与本轮特有的四个坑
 - `docs/FILE-SPLIT-FRONTEND-2026-10-25.md` — 第三轮（前端，**已执行完毕**）：5 个大文件（SettingsPage 4068 / ChatPanel.test 3105 / SettingsPage.test 2985 / ChatPanel 2270 / GraphCanvas 1245）的逐文件切法——A 类纯搬移 / B 类搬移+接线六条白名单 / 前端版核对器规格 / effect 顺序与 mock 作用域等十个坑 / 可粘贴的提示词；§十二 进度回填与 §十三 落地结果（含偏离登记与「exhaustive-deps 认作用域不认值」等五条教训）
 - `docs/CONTEXT-TOOLCALL-OPTIMIZATION-DESIGN-2026-10-25.md` — 上下文成本与工具调用优化方案（8 项 P1–P8，5 个批次）：缓存前缀解封 / 截断滞回 / `lookup_receipt` 召回工具 / 并行调用引导 / schema 示例 / 思考段回灌开关 / 轮内工具结果滑动窗；含业界实证口径（Anthropic PTC -37%、Context Editing +29%）、不做清单与逐项验收口径
+- `docs/BOT-EVENT-ENVELOPE-DESIGN-2026-10-27.md` — 流式事件信封方案：会话号只在统一出口盖章（`emit_recorded` 唯一盖章处，调用方不许自带同名键）+ 计划状态外置到模块级 store；含业界口径调研（ACP / CloudEvents / Kafka headers / 行业 AI 流式）、根因链、踩坑记录与落地结果表
 
 ## 命令
 
