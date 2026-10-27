@@ -12,7 +12,7 @@ import { emit } from "@tauri-apps/api/event";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { getBotConfig } from "../../lib/botConfig";
 import { DEFAULT_ARCHIVE_DAYS } from "../../lib/archiveRule";
-import type { ModelsByProvider, ActiveModelId, ParamView } from "./types";
+import type { ModelsByProvider, ActiveModelId, ParamView, EnvCheck } from "./types";
 import { ApiProvider, UiFontSize, AutoExtractMode, isAutoExtractMode, U32_MAX } from "./constants";
 import type { ConfirmOptions } from "../../lib/useConfirm";
 
@@ -175,14 +175,9 @@ export function useSettingsActions(params: SettingsActionsParams) {
   const [exposeNetBusy, setExposeNetBusy] = useState(false);
   const [uiEnabled, setUiEnabled] = useState(false);
   const [uiBusy, setUiBusy] = useState(false);
-  const [pyEnv, setPyEnv] = useState<{
-    available: boolean;
-    python: string;
-    version: string;
-    libs: string[];
-  } | null>(null);
-  const [pyEnvBusy, setPyEnvBusy] = useState(false);
-  const [pyEnvErr, setPyEnvErr] = useState("");
+  const [env, setEnv] = useState<EnvCheck | null>(null);
+  const [envBusy, setEnvBusy] = useState(false);
+  const [envErr, setEnvErr] = useState("");
   const refreshBot = async () => {
     try {
       const on = await invoke<boolean>("bot_get_enabled");
@@ -403,23 +398,18 @@ export function useSettingsActions(params: SettingsActionsParams) {
       handleCommandError(e, "service_get_expose_net_allowed", { silent: true });
     }
   };
-  const checkPyEnv = async () => {
-    if (pyEnvBusy) return;
-    setPyEnvBusy(true);
-    setPyEnvErr("");
+  const checkEnv = async () => {
+    if (envBusy) return;
+    setEnvBusy(true);
+    setEnvErr("");
     try {
-      const env = await invoke<{
-        available: boolean;
-        python: string;
-        version: string;
-        libs: string[];
-      }>("py_env_check");
-      setPyEnv(env);
+      const result = await invoke<EnvCheck>("env_check");
+      setEnv(result);
     } catch (e) {
-      handleCommandError(e, "py_env_check", { silent: true });
-      setPyEnvErr(formatCommandError(e));
+      handleCommandError(e, "env_check", { silent: true });
+      setEnvErr(formatCommandError(e));
     } finally {
-      setPyEnvBusy(false);
+      setEnvBusy(false);
     }
   };
   useEffect(() => {
@@ -464,7 +454,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
         enabled: enabling,
       });
       setPyEnabled(next);
-      if (next) checkPyEnv();
+      if (next) checkEnv();
     } catch (e) {
       handleCommandError(e, "py_set_enabled", { silent: true });
       setBotError(formatCommandError(e));
@@ -588,7 +578,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     botEnabled,
     botError,
     braveKeyInput,
-    checkPyEnv,
+    checkEnv,
     clearTraces,
     config,
     configBusy,
@@ -605,9 +595,9 @@ export function useSettingsActions(params: SettingsActionsParams) {
     paramViews,
     pyBusy,
     pyEnabled,
-    pyEnv,
-    pyEnvBusy,
-    pyEnvErr,
+    env,
+    envBusy,
+    envErr,
     pyTimeoutView,
     runDeleteNonSelf,
     servicesBusy,

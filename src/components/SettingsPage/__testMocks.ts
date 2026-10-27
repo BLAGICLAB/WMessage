@@ -55,8 +55,20 @@ const defaultInvoke = async (cmd: string) => {
     // Agent 运行参数卡的元数据（默认值/可填范围/当前生效值）
     case "bot_effective_params":
       return paramViews;
-    case "py_env_check":
-      return { available: false, python: "", version: "", libs: [] };
+    case "env_check":
+      return {
+        failed: false,
+        python: { available: false, python: "", version: "", packages: [] },
+        node: {
+          available: false,
+          node: "",
+          version: "",
+          npm: "",
+          npmVersion: "",
+          packages: [],
+        },
+        launchers: [],
+      };
     case "api_status":
       // 模拟 disabled 状态:后端用 skip_serializing_if 剔除 token 字段
       return { enabled: false, port: 4763 };

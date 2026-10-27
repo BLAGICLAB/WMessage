@@ -4,9 +4,10 @@
  *  同时挂载的（hidden 切可见性），这里只管内容。
  */
 import { GuardKeywordsPanel } from "./GuardKeywordsPanel";
+import { EnvPanel } from "./EnvPanel";
 import { AGENT_PARAM_FALLBACK_LABELS, AGENT_PARAM_ROWS } from "./constants";
 import type { Dispatch, JSX, SetStateAction } from "react";
-import type { ParamView, SettingsConfig } from "./types";
+import type { EnvCheck, ParamView, SettingsConfig } from "./types";
 
 export type BotCoreSectionProps = {
   botEnabled: boolean;
@@ -25,10 +26,10 @@ export type BotCoreSectionProps = {
   uiEnabled: boolean;
   toggleUi: () => Promise<void>;
   uiBusy: boolean;
-  pyEnvErr: string;
-  pyEnv: { available: boolean; python: string; version: string; libs: string[]; } | null;
-  pyEnvBusy: boolean;
-  checkPyEnv: () => Promise<void>;
+  envErr: string;
+  env: EnvCheck | null;
+  envBusy: boolean;
+  checkEnv: () => Promise<void>;
   pyTimeoutView: ParamView | undefined;
   config: SettingsConfig;
   setConfig: Dispatch<SetStateAction<SettingsConfig>>;
@@ -56,10 +57,10 @@ export function BotCoreSection({
   uiEnabled,
   toggleUi,
   uiBusy,
-  pyEnvErr,
-  pyEnv,
-  pyEnvBusy,
-  checkPyEnv,
+  envErr,
+  env,
+  envBusy,
+  checkEnv,
   pyTimeoutView,
   config,
   setConfig,
@@ -196,33 +197,6 @@ export function BotCoreSection({
           </button>
         </div>
 
-        {/* Python 环境状态 */}
-        <div className="mt-3 flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--t2)]">
-              本机 Python 环境
-            </p>
-            <p className="mt-1 text-xs text-[var(--t5)]">
-              {pyEnvErr
-                ? `检查失败：${pyEnvErr}`
-                : pyEnv
-                  ? pyEnv.available
-                    ? `${pyEnv.version} · ${pyEnv.libs.join(" · ")}`
-                    : "未检测到 Python（macOS 装 Command Line Tools；Windows 到 python.org 安装）"
-                  : "点击右侧检查"}
-            </p>
-          </div>
-          <button
-            className={`btn-sm-action ${
-              pyEnvBusy ? "nm-inset" : "nm-outset"
-            }`}
-            onClick={checkPyEnv}
-            disabled={pyEnvBusy}
-          >
-            {pyEnvBusy ? "检查中…" : "检查环境"}
-          </button>
-        </div>
-
         {/* Python 默认超时：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调。
             默认值与上限取自后端参数表（tools.python_timeout_secs）——前端此前
             自己写着「60」和「300」，后端常量一改页面就撒谎。 */}
@@ -254,6 +228,10 @@ export function BotCoreSection({
         {/* Python 超时等 setConfig 字段靠本卡保存钮落盘（bot 关闭时 model 卡按钮不可达） */}
         {renderSaveButton("mt-3 flex justify-end")}
       </div>
+
+      {/* 本机运行环境卡（独立卡，不塞进「机器人设置」里——那卡讲的是开关，
+          这卡讲的是本机装了什么，两件事不该挤在一张卡里） */}
+      <EnvPanel env={env} busy={envBusy} error={envErr} onCheck={checkEnv} />
 
       {/* Agent 运行参数卡（Agent 透明化设计）——
   可调项逐行输入（空 = 内置默认，title 带调参代价说明） */}

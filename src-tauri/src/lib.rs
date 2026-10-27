@@ -33,6 +33,7 @@ mod bot_ui;
 mod bot_web;
 pub mod db;
 mod due_notify;
+pub mod env_probe;
 pub mod error;
 mod exec_steps;
 pub mod intent_router;
@@ -811,7 +812,7 @@ pub fn run() {
             bot::config::commands::bot_clear_vendor_key,
             bot_py::py_get_enabled,
             bot_py::py_set_enabled,
-            bot_py::py_env_check,
+            env_probe::env_check,
             bot::services::service_get_enabled,
             bot::services::service_set_enabled,
             bot::services::service_get_expose_net_allowed,

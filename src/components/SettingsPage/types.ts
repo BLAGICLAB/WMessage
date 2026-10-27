@@ -199,6 +199,50 @@ export const MCP_STDIO_LAUNCHERS = [
   "podman",
 ] as const;
 
+// ── 本机运行环境（后端 env_probe）──
+
+/** 单个 Python 包。`required` = 产品文档工具族的硬依赖，缺了对应工具直接不可用 */
+type EnvPyPackage = {
+  name: string;
+  available: boolean;
+  required: boolean;
+  purpose: string;
+};
+
+/** 单个全局 npm 包 */
+type EnvNodePackage = {
+  name: string;
+  available: boolean;
+  purpose: string;
+};
+
+/** 单个运行时 / 启动器命令 */
+type EnvLauncher = {
+  name: string;
+  available: boolean;
+  purpose: string;
+};
+
+/** 一次环境检查的结果。`failed` = 探测线程整体失败，三组数据都不可信 */
+export type EnvCheck = {
+  failed: boolean;
+  python: {
+    available: boolean;
+    python: string;
+    version: string;
+    /** 空数组 = 探针没跑出结果（不是「一个都没装」） */
+    packages: EnvPyPackage[];
+  };
+  node: {
+    available: boolean;
+    node: string;
+    version: string;
+    npm: string;
+    npmVersion: string;
+    packages: EnvNodePackage[];
+  };
+  launchers: EnvLauncher[];
+};
 
 /** 供应商预设（添加供应商网格）：点击 = 预填 baseUrl/模型列表（全局无 active
  *  时连协议+active 一起接管，见 applyVendorModels），完全落在现有双协议数据

@@ -86,7 +86,7 @@ export function SettingsPage({
     botEnabled,
     botError,
     braveKeyInput,
-    checkPyEnv,
+    checkEnv,
     clearTraces,
     config,
     configBusy,
@@ -103,9 +103,9 @@ export function SettingsPage({
     paramViews,
     pyBusy,
     pyEnabled,
-    pyEnv,
-    pyEnvBusy,
-    pyEnvErr,
+    env,
+    envBusy,
+    envErr,
     pyTimeoutView,
     runDeleteNonSelf,
     servicesBusy,
@@ -460,10 +460,10 @@ export function SettingsPage({
                 uiEnabled={uiEnabled}
                 toggleUi={toggleUi}
                 uiBusy={uiBusy}
-                pyEnvErr={pyEnvErr}
-                pyEnv={pyEnv}
-                pyEnvBusy={pyEnvBusy}
-                checkPyEnv={checkPyEnv}
+                envErr={envErr}
+                env={env}
+                envBusy={envBusy}
+                checkEnv={checkEnv}
                 pyTimeoutView={pyTimeoutView}
                 config={config}
                 setConfig={setConfig}

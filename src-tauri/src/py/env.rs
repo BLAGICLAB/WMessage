@@ -4,8 +4,6 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 
-use serde::Serialize;
-
 /// 带超时的版本探测：PATH 里的 python 可能是损坏 shim，
 /// 无超时的 `.output()` 会把探测本身卡死；超过 3s 不退出就杀掉按失败处理
 fn probe_version_ok(program: &str, args: &[&str]) -> bool {
@@ -210,19 +208,14 @@ pub fn run_dotnet_revisions(
     )
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PyEnv {
-    pub available: bool,
-    pub python: String,
-    pub version: String,
-    pub libs: Vec<String>,
-}
-
-/// 带超时且捕获 stdout 的探测（py_env_check_blocking 专用，3s 上限同 probe_version_ok）：
+/// 带超时且捕获 stdout 的探测（3s 上限同 probe_version_ok）：
 /// 坏 shim 会把无超时的 `.output()` 永久挂死，把整个检测后台线程卡住。
-/// 输出量有界（版本串 / 5 行模块探测，远小于管道缓冲），子进程退出后一次性读完即可。
-fn probe_output_with_timeout(program: &str, args: &[&str]) -> Option<String> {
+/// 输出量有界（版本串 / 包探测的几十行，远小于管道缓冲），子进程退出后一次性读完即可。
+///
+/// `pub(crate)`：这是仓里唯一的「跑程序 + 超时 + 抓 stdout」原语，Node 侧的
+/// `npm --version` / `npm root -g` 探测也用它（见 `crate::env_probe`），
+/// 另写一份就多一份超时与杀进程的重复实现。
+pub(crate) fn probe_output_with_timeout(program: &str, args: &[&str]) -> Option<String> {
     let mut child = crate::py::runtime::silent_cmd(program)
         .args(args)
         .stdin(Stdio::null())
@@ -257,44 +250,5 @@ fn probe_output_with_timeout(program: &str, args: &[&str]) -> Option<String> {
                 return None;
             }
         }
-    }
-}
-
-/// 同步检测核心（后台线程运行）
-pub fn py_env_check_blocking() -> PyEnv {
-    let Some(py) = detect_python() else {
-        return PyEnv {
-            available: false,
-            python: String::new(),
-            version: String::new(),
-            libs: Vec::new(),
-        };
-    };
-    let version = probe_output_with_timeout(&py, &["--version"])
-        .map(|o| o.trim().to_string())
-        .unwrap_or_default();
-    let probe = r#"import importlib
-for m in ["openpyxl", "docx", "pptx", "pypdf", "reportlab"]:
-    try:
-        importlib.import_module(m)
-        print(f"{m}:OK")
-    except Exception:
-        print(f"{m}:缺")
-"#;
-    let mut libs = Vec::new();
-    if let Some(out) = probe_output_with_timeout(&py, &["-c", probe]) {
-        for line in out.lines() {
-            // 只收探针格式的 `name:OK` / `name:缺` 行——sitecustomize 等额外
-            // stdout 混入时不得伪装成库条目
-            if line.ends_with(":OK") || line.ends_with(":缺") {
-                libs.push(line.to_string());
-            }
-        }
-    }
-    PyEnv {
-        available: true,
-        python: py,
-        version,
-        libs,
     }
 }

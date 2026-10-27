@@ -121,8 +121,20 @@ const agentParamsMock = async (cmd: string): Promise<unknown> => {
       return { services: [], totalRssMb: 0, warnings: [], sampledAt: null };
     case "services_stop":
       return { serviceId: "", stopped: true };
-    case "py_env_check":
-      return { available: false, python: "", version: "", libs: [] };
+    case "env_check":
+      return {
+        failed: false,
+        python: { available: false, python: "", version: "", packages: [] },
+        node: {
+          available: false,
+          node: "",
+          version: "",
+          npm: "",
+          npmVersion: "",
+          packages: [],
+        },
+        launchers: [],
+      };
     case "api_status":
       return { enabled: false, port: 4763 };
     case "skills_list":
@@ -261,8 +273,20 @@ describe("SettingsPage", () => {
         return { user: { name: "我", avatarId: null }, bot: { name: "机器人", avatarId: null } };
       if (cmd === "bot_get_enabled") return false;
       if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
-      if (cmd === "py_env_check")
-        return { available: false, python: "", version: "", libs: [] };
+      if (cmd === "env_check")
+        return {
+          failed: false,
+          python: { available: false, python: "", version: "", packages: [] },
+          node: {
+            available: false,
+            node: "",
+            version: "",
+            npm: "",
+            npmVersion: "",
+            packages: [],
+          },
+          launchers: [],
+        };
       // 机器人分区有张卡直接读 status.enabled，兜底 null 会渲染崩
       if (cmd === "api_status") return { enabled: false, port: 4763 };
       if (cmd === "skills_list") return [];
@@ -465,8 +489,20 @@ describe("SettingsPage", () => {
         return { user: { name: "我", avatarId: null }, bot: { name: "机器人", avatarId: null } };
       if (cmd === "bot_get_enabled") return false;
       if (cmd === "py_get_enabled" || cmd === "service_get_enabled") return false;
-      if (cmd === "py_env_check")
-        return { available: false, python: "", version: "", libs: [] };
+      if (cmd === "env_check")
+        return {
+          failed: false,
+          python: { available: false, python: "", version: "", packages: [] },
+          node: {
+            available: false,
+            node: "",
+            version: "",
+            npm: "",
+            npmVersion: "",
+            packages: [],
+          },
+          launchers: [],
+        };
       if (cmd === "api_status") return { enabled: false, port: 4763 };
       if (cmd === "skills_list") return [];
       if (cmd === "migration_rules_load") return { version: 1, rules: [] };
