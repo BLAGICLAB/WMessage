@@ -131,7 +131,6 @@ const agentParamsMock = async (cmd: string): Promise<unknown> => {
           version: "",
           npm: "",
           npmVersion: "",
-          packages: [],
         },
         launchers: [],
       };
@@ -283,7 +282,6 @@ describe("SettingsPage", () => {
             version: "",
             npm: "",
             npmVersion: "",
-            packages: [],
           },
           launchers: [],
         };
@@ -499,7 +497,6 @@ describe("SettingsPage", () => {
             version: "",
             npm: "",
             npmVersion: "",
-            packages: [],
           },
           launchers: [],
         };

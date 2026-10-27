@@ -1,11 +1,15 @@
 // SettingsPage 子模块：本机运行环境卡。
 //
-// 三组各答一个问题：Python 包 / Node 全局包 / 运行时与启动器。
+// 两组各答一个问题：Python 包 / 运行时与启动器。
 // 数据来自后端 `env_check`（src-tauri/src/env_probe.rs）。
 //
-// **为什么分组折叠**：全量清单 43 项（18 Python + 9 Node + 16 运行时）摊平
-// 是一堵墙——真正要看的通常只是「哪个缺」。折叠后卡片保持一屏高，缺的那几项
-// 单独给安装命令。
+// **为什么分组折叠**：全量清单 34 项（18 Python + 16 运行时）摊平是一堵墙——
+// 真正要看的通常只是「哪个缺」。折叠后卡片保持一屏高，缺的那几项单独给
+// 安装命令。
+//
+// **为什么没有 Node 包组**：产品文档链路全走 Python，Node 那侧能力与 Python
+// 组逐项重复且产品零引用（见 env_probe.rs 模块头）。node/npm 本身在
+// 「运行时与启动器」组里——它们是 MCP 启动器，不是待检查的包。
 
 import { useState } from "react";
 import type { EnvCheck } from "./types";
@@ -152,9 +156,6 @@ function buildGroups(env: EnvCheck): Group[] {
   const pyMissing = env.python.packages
     .filter((p) => !p.available)
     .map((p) => p.name);
-  const nodeMissing = env.node.packages
-    .filter((p) => !p.available)
-    .map((p) => p.name);
   return [
     {
       key: "python",
@@ -167,18 +168,6 @@ function buildGroups(env: EnvCheck): Group[] {
       })),
       install: pyMissing.length
         ? `python3 -m pip install ${pyMissing.join(" ")}`
-        : null,
-    },
-    {
-      key: "node",
-      title: "Node 全局包",
-      items: env.node.packages.map((p) => ({
-        name: p.name,
-        ok: p.available,
-        purpose: p.purpose,
-      })),
-      install: nodeMissing.length
-        ? `npm i -g ${nodeMissing.join(" ")}`
         : null,
     },
     {

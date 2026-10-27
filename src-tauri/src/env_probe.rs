@@ -1,19 +1,21 @@
 //! 本机运行环境探测 —— 设置页「本机运行环境」卡的数据源。
 //!
-//! 覆盖三组，各答一个问题：
+//! 覆盖两组，各答一个问题：
 //! - **Python 包**：办公文档族（Word/Excel/PPT/PDF）+ 数据/图表/抓取/模板
-//! - **Node 包**：全局 npm 里的办公工具（Word/PPT/Excel/PDF/飞书）
 //! - **运行时与启动器**：MCP stdio 启动器白名单里的命令 + dotnet/git/libreoffice
+//!
+//! **为什么没有 Node 包组**：产品的文档链路（`create_word` / `create_excel` /
+//! `create_ppt` / `create_pdf`）全部走 Python 脚本（`py/scripts/*.py`），没有
+//! 一条 node 文档路径；Node 那侧的 Word/PPT/Excel/PDF/图片能力与 Python 组
+//! 逐项重复，且在产品代码里零引用——列出来只是让用户对着两列做同一件事。
+//! node/npm 本身仍然要报：它们是 MCP stdio 启动器白名单里的命令，用户配
+//! MCP 服务器时靠它判断能不能起来（见 `LAUNCHERS`）。
 //!
 //! **为什么不用 `import` 判存在**：`import pandas` / `import matplotlib` /
 //! `import cv2` 光导入就 0.5–1s，18 个包串起来会撞穿探针 3s 超时——被超时
 //! 杀掉的探针输出为空，面板会把「装了」全报成「缺」。改用
 //! `importlib.util.find_spec`（只找不执行，18 个包实测 23ms），顺带避开
 //! matplotlib 导入时初始化绘图后端的副作用。
-//!
-//! **为什么 Node 全局包按目录判定**：`npm ls -g --depth=0` 慢且输出格式脆；
-//! `npm root -g` 给出全局 node_modules 根（实测 69ms），再按目录是否存在
-//! 判定即可——scoped 包（`@larksuite/cli`）在根下就是同名子目录。
 //!
 //! **命令定位**：PATH 解析（不经 shell），macOS 补 brew 前缀（从 Finder
 //! 启动的 GUI 应用 PATH 极简，只有 /usr/bin:/bin）、Windows 补
@@ -66,7 +68,13 @@ pub struct PyPackage {
     pub purpose: String,
 }
 
-/// Node 运行时 + 全局 npm 包可用性
+/// Node 运行时信息
+///
+/// **只报运行时，不报全局 npm 包**：产品自己的文档链路全走 Python
+/// （`py/scripts/*.py`），Node 那侧的 Word/PPT/Excel/PDF 能力与 Python 组
+/// 逐项重复，且在产品代码里零引用——列出来只是让用户对着两列做同一件事。
+/// node/npm 本身仍要报：它们是 MCP stdio 启动器白名单里的命令（见
+/// `LAUNCHERS`），用户配 MCP 服务器时靠它判断能不能起来。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeEnv {
@@ -80,19 +88,6 @@ pub struct NodeEnv {
     pub npm: String,
     /// npm 版本串
     pub npm_version: String,
-    /// 全局包可用性
-    pub packages: Vec<NodePackage>,
-}
-
-/// 单个全局 npm 包
-#[derive(Serialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct NodePackage {
-    /// npm 包名
-    pub name: String,
-    pub available: bool,
-    /// 用途说明
-    pub purpose: String,
 }
 
 /// 单个运行时 / 启动器命令
@@ -149,19 +144,6 @@ const PY_PACKAGES: &[(&str, &[&str], bool, &str)] = &[
     ("jinja2", &["jinja2"], false, "模板渲染"),
     ("python-dateutil", &["dateutil"], false, "日期/时区处理"),
     ("opencv-python", &["cv2"], false, "图像预处理"),
-];
-
-/// 全局 npm 包清单：(包名, 用途)
-const NODE_PACKAGES: &[(&str, &str)] = &[
-    ("docx", "Word 文档生成"),
-    ("pptxgenjs", "PPT 生成"),
-    ("exceljs", "Excel 读写"),
-    ("xlsx", "xls/xlsx 读写"),
-    ("pdf-lib", "PDF 生成/合并"),
-    ("mammoth", "docx 文本提取"),
-    ("sharp", "图片裁剪/压缩"),
-    ("@larksuite/cli", "飞书 CLI"),
-    ("@larksuiteoapi/node-sdk", "飞书开放平台 SDK"),
 ];
 
 /// 运行时 / 启动器清单：(命令名, 用途)。
@@ -228,7 +210,6 @@ pub async fn env_check() -> EnvCheck {
                     version: String::new(),
                     npm: String::new(),
                     npm_version: String::new(),
-                    packages: Vec::new(),
                 },
                 launchers: Vec::new(),
             }
@@ -263,23 +244,12 @@ fn python_env() -> PythonEnv {
 fn node_env() -> NodeEnv {
     let node = resolve_executable("node");
     let npm = resolve_executable("npm");
-    let root = npm_global_root(npm.as_deref());
-    let packages = NODE_PACKAGES
-        .iter()
-        .map(|(name, purpose)| NodePackage {
-            name: name.to_string(),
-            // scoped 包（@larksuite/cli）在全局根下就是同名子目录
-            available: root.as_deref().is_some_and(|r| r.join(name).is_dir()),
-            purpose: purpose.to_string(),
-        })
-        .collect();
     NodeEnv {
         available: node.is_some(),
         node: path_str(node.as_deref()),
         version: version_of(node.as_deref(), &["--version"]),
         npm: path_str(npm.as_deref()),
         npm_version: version_of(npm.as_deref(), &["--version"]),
-        packages,
     }
 }
 
@@ -357,40 +327,6 @@ fn parse_probe_output(out: &str) -> Vec<PyPackage> {
 }
 
 // ── 命令与路径定位 ──
-
-/// 全局 node_modules 根：优先 `npm root -g`（跟着用户的 npm 配置走，
-/// nvm/volta/自定义 prefix 都对）；npm 不可用时退回平台常见路径。
-fn npm_global_root(npm: Option<&Path>) -> Option<PathBuf> {
-    if let Some(npm) = npm {
-        if let Some(out) = probe_output_with_timeout(&npm.to_string_lossy(), &["root", "-g"]) {
-            // npm 偶尔在前面打警告行，取最后一行非空内容当路径
-            if let Some(line) = out.lines().rev().find(|l| !l.trim().is_empty()) {
-                let p = PathBuf::from(line.trim());
-                if p.is_dir() {
-                    return Some(p);
-                }
-            }
-        }
-    }
-    fallback_global_root()
-}
-
-/// npm 不可用时的常见全局根（brew / 官方安装 / Windows %APPDATA%）
-fn fallback_global_root() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    let candidates = [
-        PathBuf::from("/opt/homebrew/lib/node_modules"),
-        PathBuf::from("/usr/local/lib/node_modules"),
-    ];
-    #[cfg(windows)]
-    let candidates: [PathBuf; 1] = [std::env::var_os("APPDATA")
-        .map(|d| PathBuf::from(d).join("npm").join("node_modules"))
-        .unwrap_or_default()];
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let candidates: [PathBuf; 0] = [];
-
-    candidates.into_iter().find(|p| p.is_dir())
-}
 
 /// 在 PATH（含平台常见前缀）里定位可执行文件。None = 没装。
 fn resolve_executable(name: &str) -> Option<PathBuf> {
@@ -629,9 +565,6 @@ mod tests {
             eprintln!("  {:<16} {}", p.name, if p.available { "OK" } else { "缺" });
         }
         eprintln!("node={} npm={}", env.node.version, env.node.npm_version);
-        for p in &env.node.packages {
-            eprintln!("  {:<24} {}", p.name, if p.available { "OK" } else { "缺" });
-        }
         for l in &env.launchers {
             eprintln!("  {:<10} {}", l.name, if l.available { "OK" } else { "缺" });
         }

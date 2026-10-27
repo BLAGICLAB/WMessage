@@ -519,8 +519,9 @@ src-tauri/src/
 │                        自由脚本 run_python
 ├── env_probe.rs         本机运行环境探测（设置页「本机运行环境」卡的数据源，env_check 命令）：
 │                        Python 包（18 个：办公文档族 + 数据/图表/抓取/模板）/
-│                        Node 全局 npm 包（9 个）/ 运行时与启动器（16 个，含 MCP stdio
-│                        启动器白名单全量 + dotnet/git/libreoffice）。
+│                        运行时与启动器（16 个，含 MCP stdio 启动器白名单全量 +
+│                        dotnet/git/libreoffice）；**不报 Node 全局包**——产品文档
+│                        链路全走 Python，那侧能力与 Python 组逐项重复且零引用。
 │                        **find_spec 只找不执行**——import 一遍 pandas/matplotlib 就是
 │                        秒级，18 个包串起来会撞穿 3s 探针超时，超时被杀的探针输出为空，
 │                        面板会把「装了」全报成「缺」；命令定位走 PATH + 平台前缀

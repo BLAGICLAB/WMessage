@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { EnvPanel } from "./EnvPanel";
 import type { EnvCheck } from "./types";
 
-/** 造一份探测结果：Python 装 1 缺 1（缺的是硬依赖）、Node 装 1 缺 1、启动器 1 缺 1 */
+/** 造一份探测结果：Python 装 1 缺 2（其中一个是硬依赖）、启动器装 1 缺 1 */
 function sampleEnv(over: Partial<EnvCheck> = {}): EnvCheck {
   return {
     failed: false,
@@ -38,10 +38,6 @@ function sampleEnv(over: Partial<EnvCheck> = {}): EnvCheck {
       version: "v26.5.0",
       npm: "/usr/local/bin/npm",
       npmVersion: "11.17.0",
-      packages: [
-        { name: "docx", available: true, purpose: "Word 文档生成" },
-        { name: "exceljs", available: false, purpose: "Excel 读写" },
-      ],
     },
     launchers: [
       { name: "npx", available: true, purpose: "MCP 服务器启动器（npm）" },
@@ -120,7 +116,7 @@ describe("EnvPanel 本机运行环境卡", () => {
     ).toBeInTheDocument();
   });
 
-  it("Node 组给 npm 安装命令", () => {
+  it("没有 Node 包组（与 Python 组重复且产品不用）", () => {
     render(
       <EnvPanel
         env={sampleEnv()}
@@ -129,10 +125,9 @@ describe("EnvPanel 本机运行环境卡", () => {
         onCheck={async () => {}}
       />,
     );
-    fireEvent.click(screen.getByText("Node 全局包"));
-    expect(
-      screen.getByText("安装缺失项：npm i -g exceljs"),
-    ).toBeInTheDocument();
+    expect(screen.queryByText("Node 全局包")).not.toBeInTheDocument();
+    // node/npm 作为 MCP 启动器仍在运行时组里
+    expect(screen.getByText("运行时与启动器")).toBeInTheDocument();
   });
 
   it("硬依赖缺失单独标出来", () => {
