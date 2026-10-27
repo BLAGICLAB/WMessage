@@ -59,6 +59,40 @@ describe("LINK_OR_PATH_RE 带空格路径", () => {
   });
 });
 
+describe("全角括号在文件名里（中文文件名的常见形态）", () => {
+  it("Windows 路径含全角圆括号：完整匹配，不截成 D:\\Program", () => {
+    const p =
+      "D:\\Program Files\\wmessage-portable-2026-10-27\\AI_Gen_Files\\绩效工资分配实施办法宣贯（职工代表大会）.pptx";
+    expect(extractFilePaths(p)).toEqual([p]);
+  });
+
+  it("全角方括号同样当路径字符", () => {
+    const p = "D:\\Program Files\\App\\【定稿】周报.docx";
+    expect(extractFilePaths(p)).toEqual([p]);
+  });
+
+  it("扩展名之后不吞正文", () => {
+    expect(extractFilePaths("D:\\a\\报告.docx 已完成")).toEqual([
+      "D:\\a\\报告.docx",
+    ]);
+  });
+
+  it("全角逗号仍是边界（句读不是文件名的一部分）", () => {
+    expect(extractFilePaths("产物 D:\\a\\报告.docx，然后继续")).toEqual([
+      "D:\\a\\报告.docx",
+    ]);
+  });
+
+  it("无扩展名分支保持收紧：不因放开全角括号而吞整句", () => {
+    const tokens = [
+      ..."见 /Users/x/会议纪要 草稿版 已完成".matchAll(
+        new RegExp(LINK_OR_PATH_RE.source, "gi"),
+      ),
+    ].map((x) => x[0]);
+    expect(tokens).toEqual(["/Users/x/会议纪要"]);
+  });
+});
+
 describe("复合扩展名（archive.tar.gz 这类压缩层后缀）", () => {
   it("tar.gz / tar.bz2 / pdf.gz 完整提取，不在首个扩展名处截断", () => {
     expect(extractFilePaths("打包在 /Users/x/archive.tar.gz 了")).toEqual([
