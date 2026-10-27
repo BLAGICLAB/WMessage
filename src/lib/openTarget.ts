@@ -17,8 +17,10 @@ import { handleCommandError } from "./errorHandler";
  * 无后缀文件），路径字符必须收紧——放开就会把后续整句话吞进路径。
  */
 
-/** 已生成文档/常见文件扩展名（带空格路径必须锚定到扩展名，防贪婪吞掉后续正文） */
-const FILE_EXTS =
+/** 已生成文档/常见文件扩展名（带空格路径必须锚定到扩展名，防贪婪吞掉后续正文）。
+ *  导出给交付物形态判定复用——交付物区与链接识别认的是同一份扩展名清单，
+ *  两处各写一份必然漂移（一边加了 pptx 一边没加，交付物区就会漏挂）。 */
+export const FILE_EXTS =
   "(?:docx?|xlsx?|pptx?|pdf|markdown|md|txt|csv|json|xml|ya?ml|log|html?|png|jpe?g|gif|webp|svg|bmp|zip|rar|7z|tar|gz|mp[34]|wav|mov)";
 
 /** 可选压缩层后缀：复合扩展名（archive.tar.gz / report.pdf.gz）不再在首个扩展名处截断 */

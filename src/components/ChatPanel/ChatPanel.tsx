@@ -173,12 +173,32 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     toggleCtx,
     toggleRail,
   } = useChatRail();
-  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  /**
+   * 预览请求：打开哪个文件、看哪一面。
+   *
+   * 看哪一面由**点击来源**决定，不由「这个路径在不在改动清单里」决定——
+   * 交付物也可能是本轮写出来的（配套说明文档就是），按在不在清单里判会把
+   * 交付物打开成 diff，用户要看的是内容。
+   *
+   * 用一个对象而不是两个字段：每次打开都是新对象，栏内据此重置「看内容/
+   * 看改动」；用两个字段时，同一个文件从不同入口再点一次就分不清是哪次
+   * 请求的意图了。
+   */
+  const [previewReq, setPreviewReq] = useState<{
+    path: string;
+    mode: "content" | "diff";
+  } | null>(null);
   const openFilePreview = useCallback((path: string) => {
     setCtxOpen(true);
     localStorage.setItem("chat-ctx-open", "1");
     setCtxTab("files");
-    setPreviewPath(path);
+    setPreviewReq({ path, mode: "content" });
+  }, []);
+  /** 去右侧栏看本轮改动过的文件（交付物区空态提示的跳转） */
+  const openFileChanges = useCallback(() => {
+    setCtxOpen(true);
+    localStorage.setItem("chat-ctx-open", "1");
+    setCtxTab("files");
   }, []);
   useAutoGrow(taRef, input);
   useEffect(() => {
@@ -757,6 +777,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
         verboseLevel={verboseLevel}
         subagentSlot={subagentSlot}
         onPreviewFile={openFilePreview}
+        onShowFileChanges={openFileChanges}
         onPickStarter={setInput}
         onCopy={copyMessage}
         onRemove={removeMessage}
@@ -838,8 +859,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
           onCloseSubagentDetail={closeSubagentDetail}
           tab={ctxTab}
           onTabChange={setCtxTab}
-          previewPath={previewPath}
-          onPreviewPath={setPreviewPath}
+          previewReq={previewReq}
+          onPreviewReq={setPreviewReq}
         />
       )}
       {/* 执行详情弹层：按回合的 trace 打开（TracePanel 自带 portal） */}

@@ -104,11 +104,23 @@ type ContextRailProps = {
   /** 当前工作面（受控）：内嵌子 agent 区域要点侧栏切类别，状态得在父级 */
   tab: Tab;
   onTabChange: (t: Tab) => void;
-  /** 当前预览的文件（null = 停在列表页），受控——对话正文里的路径链接与
-   *  文件 pill 也要能把它打开，预览的归属方因此不能只在本组件内。
-   *  与子 Agent 详情同款：详情是一层，返回才回列表。 */
-  previewPath?: string | null;
-  onPreviewPath?: (path: string | null) => void;
+  /** 预览请求（受控，null = 停在列表页）：打开哪个文件、看哪一面。
+   *  对话正文里的路径链接与气泡交付物区也要能打开它，预览的归属方因此不能
+   *  只在本组件内。与子 Agent 详情同款：详情是一层，返回才回列表。
+   *
+   *  **每次打开都是一个新对象**：父级重新发请求 = 用户又点了一次，栏内据此
+   *  重置「看内容 / 看改动」。用两个字段（路径 + 模式）时，同一个文件从不同
+   *  入口再点一次就分不清是哪次的意图了。 */
+  previewReq?: PreviewRequest | null;
+  onPreviewReq?: (req: PreviewRequest | null) => void;
+};
+
+/** 预览请求：打开哪个文件 + 看哪一面 */
+export type PreviewRequest = {
+  /** 要预览的文件路径 */
+  path: string;
+  /** 看内容还是看改动：由点击来源决定（交付物/正文路径 → 内容，改动清单 → 差异） */
+  mode: "content" | "diff";
 };
 
 const TABS: { key: Tab; label: string; icon: ReactNode }[] = [
@@ -134,11 +146,41 @@ export function ContextRail({
   onCloseSubagentDetail,
   tab,
   onTabChange,
-  previewPath = null,
-  onPreviewPath,
+  previewReq = null,
+  onPreviewReq,
 }: ContextRailProps) {
   const runningCount = subagents.filter((s) => s.running).length;
-  const setPreviewPath = onPreviewPath ?? (() => {});
+
+  // ── 预览视图（父级发请求，栏内自己切面）────────────────────────────
+  // 父级发来的是**请求**（打开哪个文件 + 看哪一面），栏内把它落成当前视图。
+  // 视图是栏内的：预览里的「看全文 / 看改动」是同一次打开内部的动作，不该
+  // 反过来改父级状态；栏内自己点开别的文件时，再把请求回报父级。
+  //
+  // 父级每次「打开」都发一个**新对象**，栏内按对象身份判定「这是一次新的
+  // 打开」并丢掉上一次留下的视图——否则「点交付物看内容」之后在预览里切到
+  // 「看改动」，再点一次同一个交付物就还是差异视图，用户第二次点击的意图
+  // 被上一次残留吃掉了。
+  const [view, setView] = useState<PreviewRequest | null>(previewReq);
+  const [lastReq, setLastReq] = useState<PreviewRequest | null>(previewReq);
+  if (previewReq !== lastReq) {
+    setLastReq(previewReq);
+    setView(previewReq);
+  }
+  /** 打开一个文件：栏内立刻切视图，同时把请求回报父级（父级据此记「当前打开谁」） */
+  const openPreview = (path: string, mode: "content" | "diff") => {
+    setView({ path, mode });
+    onPreviewReq?.({ path, mode });
+  };
+  /** 同一份预览内部换一面（看全文 ↔ 看改动）：不惊动父级 */
+  const switchFace = (mode: "content" | "diff") => {
+    if (!view) return;
+    setView({ path: view.path, mode });
+  };
+  /** 回到文件列表 */
+  const closePreview = () => {
+    setView(null);
+    onPreviewReq?.(null);
+  };
   // 最新 tasks 镜像：绑定对话框挂起期间 files 可能被别处改动（另一窗口/机器人），
   // 合并基线必须取对话框返回后的现值，而非点击时的快照（ref 写放 effect）
   const tasksRef = useRef(tasks);
@@ -156,8 +198,6 @@ export function ContextRail({
   const [fileDetail, setFileDetail] = useState<SessionFileDiff | null>(null);
   const [fileDetailError, setFileDetailError] = useState<string | null>(null);
   const [fileDetailLoading, setFileDetailLoading] = useState(false);
-  /** 详情页在「看改动」与「看全文」之间切 */
-  const [showFull, setShowFull] = useState(false);
   /** 最新 sessionId 镜像：事件回调只捕获一次（useTauriListen 的约定），读 ref 拿当前值 */
   const sessionIdRef = useRef(sessionId);
   useEffect(() => {
@@ -205,13 +245,14 @@ export function ContextRail({
   // 详情：点开某个改过的文件 → 取它的累计 diff（未改过的路径不在清单里，
   // 由渲染处直接走全文视图，不发这次请求）
   useEffect(() => {
-    if (!previewPath || !sessionId) return;
-    const hit = fileItems.some((i) => i.path === previewPath);
+    const path = view?.path;
+    if (!path || !sessionId) return;
+    const hit = fileItems.some((i) => i.path === path);
     if (!hit) return;
     let alive = true;
     setFileDetailLoading(true);
     setFileDetailError(null);
-    sessionFileChangeDetail(sessionId, previewPath)
+    sessionFileChangeDetail(sessionId, path)
       .then((r) => {
         if (!alive) return;
         setFileDetail(r.detail ?? null);
@@ -227,13 +268,14 @@ export function ContextRail({
     return () => {
       alive = false;
     };
-  }, [previewPath, sessionId, fileItems]);
+  }, [view?.path, sessionId, fileItems]);
 
-  // 换文件就回到「看改动」：全文视图是上一份文件的遗留态
+  // 换文件就清掉上一份的差异详情：那是上一份文件的遗留态。
+  // 看哪一面（内容/改动）不在这里重置——由点击来源决定（交付物 → 内容，
+  // 改动清单 → 差异），重置会把用户的意图冲掉。
   useEffect(() => {
-    setShowFull(false);
     setFileDetail(null);
-  }, [previewPath]);
+  }, [view?.path]);
 
   /** 聊天窗口直接把本地文件绑到任务卡：选文件 → bind_files 探测 isDir →
    *  统一内核合并（去重/文件夹槽替换/10 上限）→ 走 onUpdateTask 既有落库通道。
@@ -352,13 +394,14 @@ export function ContextRail({
 
       {tab === "files" && (() => {
         // 预览态：整栏换成文件内容（与子 Agent 详情同级），返回才回列表。
-        // 改过的文件 → 默认看「本会话累计」的改动；没改过的（正文里的路径链接、
-        // 文件 pill）→ 直接看全文——那种路径不在改动清单里，没有 diff 可给。
-        if (previewPath) {
-          const hit = fileItems.find((f) => f.path === previewPath);
-          // 清单还没回来：不知道这个路径改没改。先别渲染全文——那会闪一下
-          // 全文再跳到改动视图，看着像两次加载。
-          if (sessionId && listLoadedFor !== sessionId) {
+        // 看内容还是看改动由「请求」给的（点击来源决定）：改动清单点进来
+        // 看差异，交付物点进来看内容——交付物也可能是本轮写出来的（配套说明
+        // 文档就是），按「在不在改动清单里」判会把交付物打开成 diff。
+        if (view) {
+          const hit = fileItems.find((f) => f.path === view.path);
+          // 差异视图要先知道这个路径改没改：清单没回来时不猜（否则会闪一下
+          // 全文再跳到改动视图，看着像两次加载）。内容视图不用等清单。
+          if (view.mode === "diff" && sessionId && listLoadedFor !== sessionId) {
             return (
               <section aria-label="文件改动">
                 <p className="inline-flex items-center gap-1 px-1.5 py-2 text-[11px] text-[var(--t5)]">
@@ -368,16 +411,16 @@ export function ContextRail({
               </section>
             );
           }
-          if (hit && !showFull) {
+          if (view.mode === "diff" && hit) {
             return (
               <section aria-label="文件改动">
                 <FileDiffView
-                  path={previewPath}
+                  path={view.path}
                   detail={fileDetail}
                   loading={fileDetailLoading}
                   error={fileDetailError}
-                  onShowFull={() => setShowFull(true)}
-                  onBack={() => setPreviewPath(null)}
+                  onShowFull={() => switchFace("content")}
+                  onBack={closePreview}
                 />
               </section>
             );
@@ -386,14 +429,17 @@ export function ContextRail({
             <section aria-label="文件预览">
               <FilePreview
                 // key 绑定 path：切文件即重挂载，预览状态天然清零
-                key={previewPath}
-                path={previewPath}
+                key={view.path}
+                path={view.path}
                 added={hit?.added}
                 deleted={hit?.deleted}
                 // 改过的文件在全文视图里也给一条「看改动」回去的路
-                onShowDiff={hit ? () => setShowFull(false) : undefined}
-                onOpenPath={setPreviewPath}
-                onBack={() => setPreviewPath(null)}
+                onShowDiff={
+                  hit ? () => switchFace("diff") : undefined
+                }
+                // 预览正文里再点一层路径：那是另一个文件的内容，看内容不看差异
+                onOpenPath={(p) => openPreview(p, "content")}
+                onBack={closePreview}
               />
             </section>
           );
@@ -424,7 +470,7 @@ export function ContextRail({
                   type="button"
                   className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs hover:bg-[var(--hover-bg)]"
                   title={`${f.path}（${f.mode === "noLineDiff" ? "无行级 diff" : `+${f.added} −${f.deleted}`}）· 点开看改动${f.note ? `｜${f.note}` : ""}`}
-                  onClick={() => setPreviewPath(f.path)}
+                  onClick={() => openPreview(f.path, "diff")}
                 >
                   <FolderOpen
                     size={12}

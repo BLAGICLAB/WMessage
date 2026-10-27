@@ -290,7 +290,7 @@ describe("ChatPanel", () => {
         return () => {};
       },
     );
-    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+    mocks.invokeMock.mockImplementation(async (cmd: string, args?: Record<string, unknown>) => {
       if (cmd === "bot_sessions_load") return [{ id: "s1", title: "默认会话" }];
       if (cmd === "bot_history_load") return [];
       if (cmd === "bot_preview_text")
@@ -302,6 +302,11 @@ describe("ChatPanel", () => {
           totalBytes: 5,
           lines: 1,
         };
+      // 交付物存在性探测：路径在 → 挂上交付物 chip
+      if (cmd === "bot_probe_paths")
+        return ((args as { paths: string[] } | undefined)?.paths ?? []).map(
+          (p) => ({ path: p, exists: true, isDir: false, size: 5 }),
+        );
       if (cmd === "bot_chat") return { text: "写到 /Users/x/out.md 了", taskRefs: [] };
       return defaultInvoke(cmd);
     });
@@ -313,9 +318,9 @@ describe("ChatPanel", () => {
         "写个文档",
       );
       await user.keyboard("{Enter}");
-      // 文件 pill（正文无改动的正则兜底路径）
+      // 交付物 chip（正文点名的路径，过存在性探测后挂上）
       const pill = await screen.findByTitle(
-        "在右侧栏预览：/Users/x/out.md",
+        "打开交付物：/Users/x/out.md",
       );
       await user.click(pill);
       const rail = within(

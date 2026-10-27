@@ -20,7 +20,9 @@ import {
   Wrench,
 } from "lucide-react";
 import { basename } from "../../format";
+import { mergeDeliverables } from "../../lib/deliverables";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
+import { useProbedDeliverables } from "../../lib/useDeliverables";
 import { ActorAvatar } from "../ActorAvatar";
 import { MarkdownText } from "../MarkdownText";
 import { BUBBLE_MAX_W_PCT } from "./constants";
@@ -33,7 +35,6 @@ import { SubagentStrip } from "./SubagentStrip";
 import { UserBubbleContent } from "./UserBubbleContent";
 import { fmtElapsed, useElapsed } from "./useElapsed";
 import type {
-  FileChangeLite,
   Msg,
   TaskRef,
   ToolCall,
@@ -80,6 +81,8 @@ type MsgBubbleProps = BubbleCallbacks & {
   /** 点文件（pill / 正文路径链接）→ 右侧栏就地预览。父级用 useCallback 固定，
    *  memo 浅比较才不会因新句柄把历史气泡全部重渲染一遍 */
   onPreviewFile?: (path: string) => void;
+  /** 交付物区空态提示的跳转：去右侧栏看本轮改动过的文件 */
+  onShowFileChanges?: () => void;
 };
 
 function MsgBubbleBase({
@@ -90,6 +93,7 @@ function MsgBubbleBase({
   verboseLevel,
   subagentSlot,
   onPreviewFile,
+  onShowFileChanges,
   onCopy,
   onRemove,
   onOpenTask,
@@ -99,6 +103,12 @@ function MsgBubbleBase({
   // 一次性算文件路径 + 是否显示操作行（避免在渲染条件里 IIFE + mutation m._fps 的反模式）；
   // 流式末条气泡每帧重渲染，useMemo 让路径正则只在内容变化时重跑
   const fps = useMemo(() => extractFilePaths(m.content), [m.content]);
+  // 交付物清单的另一半：本轮写盘产生的文件。写盘通道记的是「动过的文件」，
+  // 里面混着生成脚本等中间产物形态，合并时过形态过滤（见 mergeDeliverables）。
+  const producedPaths = useMemo(
+    () => (m.fileChanges ?? []).map((c) => c.path),
+    [m.fileChanges],
+  );
   // 气泡宽度只增不减：工具行「正在跑 xxx」撑宽、跑完缩回，同一条回复宽度反复跳
   const bubbleRef = useRef<HTMLDivElement | null>(null);
   const colRef = useRef<HTMLDivElement | null>(null);
@@ -110,6 +120,7 @@ function MsgBubbleBase({
     (hasContent ||
       (m.refs?.length ?? 0) > 0 ||
       fps.length > 0 ||
+      producedPaths.length > 0 ||
       m.traceId != null);
   /** 活体指示的显示条件：本条还在流式、且回合未落终态。
    *  turnStatus 缺省按 running 算（与 ChatPanel 旧的派生口径一致）——
@@ -300,10 +311,12 @@ function MsgBubbleBase({
                 执行轨迹
               </button>
             )}
-            <FileSummary
-              fps={fps}
-              changes={m.fileChanges}
-              onPreviewFile={onPreviewFile}
+            <DeliverableArea
+              declared={fps}
+              produced={producedPaths}
+              streaming={!!m.streaming}
+              onOpen={onPreviewFile ?? openTarget}
+              onShowChanges={onShowFileChanges}
             />
             {(m.refs ?? []).map((r) => (
               <button
@@ -452,87 +465,97 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** 文件变更摘要条（对齐截图）：≤2 个文件平铺 pill，更多则折叠为
- *  「📄 N 个文件」摘要条（点击展开）。
- *  P2-b：优先用结构化 fileChanges（bot-file-changed 事件，带 ±行统计）；
- *  无结构化数据时回退正文正则抽取（主聊天无 trace，行为不变） */
-function FileSummary({
-  fps,
-  changes,
-  onPreviewFile,
+/**
+ * 交付物区：这一轮的**最终产物**。
+ *
+ * 为什么不再摆执行过程文件：写盘通道记的是「动过的文件」，里面混着生成
+ * 脚本等中间产物——它们挂在交付物位上，真正要拿的那份反被淹没。改动文件
+ * 归右侧栏「改动」页与执行轨迹面板（那里才有 ±行 / diff / 回滚）。
+ *
+ * 两种空态要分得开：
+ * - 确实没产出 → 什么都不显示
+ * - 写了文件但机器人没在正文点名 → 给一行提示并可跳去看改动（正文自报
+ *   才是交付物清单的来源，模型漏写就等于没交付，用户该知道去哪找）
+ *
+ * 探测状态（存在性校验）持有在本组件内，**不放在气泡里**：探测结果落地
+ * 会重渲染整个气泡，正文里的链接 DOM 节点随之被替换——用户正好在那一刻
+ * 点正文路径，点的是已被换掉的旧节点，事件冒泡不到 React 根，点击就丢了。
+ */
+function DeliverableArea({
+  declared,
+  produced,
+  streaming,
+  onOpen,
+  onShowChanges,
 }: {
-  fps: string[];
-  changes?: FileChangeLite[];
-  /** 点文件 → 右侧栏就地预览；不传 = 沿用旧口径调起系统默认程序 */
-  onPreviewFile?: (path: string) => void;
+  /** 正文自报的路径（模型点名的交付物，不过形态过滤） */
+  declared: string[];
+  /** 本轮写盘产生的文件（合并时过形态过滤，脚本等中间产物挡掉） */
+  produced: string[];
+  /** 消息还在流式输出：正文每 token 都变，探一次就是每 token 一次 IPC */
+  streaming: boolean;
+  /** 点交付物：跳右侧栏预览 */
+  onOpen: (path: string) => void;
+  /** 空态提示的跳转：去右侧栏看本轮改动过的文件 */
+  onShowChanges?: () => void;
 }) {
+  const merged = useMemo(
+    () => mergeDeliverables(declared, produced),
+    [declared, produced],
+  );
+  const probed = useProbedDeliverables(merged, !streaming);
+  const items = probed.items;
   const [open, setOpen] = useState(false);
-  const structured = changes ?? [];
-  const click = (p: string) => {
-    if (onPreviewFile) onPreviewFile(p);
-    else openTarget(p);
-  };
-  const pillOf = (f: string) => (
+  if (items.length === 0) {
+    // 还没探完：先不渲染。探完才知道是「这轮没交付物」还是「在探」，
+    // 现在就报「没产出」会把刚写出来的文件说没了。
+    if (!probed.ready) return null;
+    // 空态提示里的数字取 produced 总数（含被形态过滤掉的脚本形态）：
+    // 用户要的是「有东西没给我」的总数，不是筛完剩几个
+    if (produced.length === 0) return null;
+    return (
+      <button
+        type="button"
+        className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)]"
+        title="机器人没有在回复里列出这些产物：点开看本轮改动过的文件"
+        onClick={() => onShowChanges?.()}
+      >
+        <FileText size={11} aria-hidden />
+        本轮有 {produced.length} 个产物未在回复中列出
+      </button>
+    );
+  }
+  const chips = items.map((d) => (
     <button
-      key={f}
+      key={d.path}
       type="button"
       className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-      title={onPreviewFile ? `在右侧栏预览：${f}` : `打开文件：${f}`}
-      onClick={() => click(f)}
+      title={`打开交付物：${d.path}`}
+      onClick={() => onOpen(d.path)}
     >
-      <span className="truncate max-w-[280px]">
-        <FileText
-          size={11}
-          aria-hidden
-          className="mr-1 inline text-[var(--t4)]"
-        />
-        {basename(f)}
-      </span>
+      <FileText size={11} aria-hidden className="shrink-0 text-[var(--t4)]" />
+      <span className="truncate max-w-[280px]">{basename(d.path)}</span>
     </button>
-  );
-  const structuredPillOf = (c: FileChangeLite) => (
-    <button
-      key={c.path}
-      type="button"
-      className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[10px] text-[var(--t3)] max-w-full"
-      title={onPreviewFile ? `在右侧栏预览：${c.path}` : `打开文件：${c.path}`}
-      onClick={() => click(c.path)}
-    >
-      <span className="truncate max-w-[240px]">
-        <FileText
-          size={11}
-          aria-hidden
-          className="mr-1 inline text-[var(--t4)]"
-        />
-        {basename(c.path)}
-      </span>
-      <span className="shrink-0 font-mono tabular-nums">
-        <span className="text-[var(--ok,#22c55e)]">+{c.added}</span>{" "}
-        <span className="text-[var(--danger,#ef4444)]">−{c.deleted}</span>
-      </span>
-    </button>
-  );
-  const items =
-    structured.length > 0 ? structured.map(structuredPillOf) : fps.map(pillOf);
+  ));
   // 统一 DOM 形状（w-full 容器），≤2 与 >2 只是容器内子元素不同
   return (
     <div className="w-full">
       {items.length <= 2 ? (
-        <div className="flex flex-wrap gap-1">{items}</div>
+        <div className="flex flex-wrap gap-1">{chips}</div>
       ) : (
         <>
           <button
             type="button"
             className="nm-btn inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[10px] text-[var(--t3)]"
             aria-expanded={open}
-            title={open ? "收起文件列表" : "展开文件列表"}
+            title={open ? "收起交付物列表" : "展开交付物列表"}
             onClick={() => setOpen((v) => !v)}
           >
             <FileText size={11} aria-hidden />
-            {items.length} 个文件
+            交付物 {items.length}
             <span aria-hidden>{open ? "▴" : "▾"}</span>
           </button>
-          {open && <div className="mt-1 flex flex-wrap gap-1">{items}</div>}
+          {open && <div className="mt-1 flex flex-wrap gap-1">{chips}</div>}
         </>
       )}
     </div>
@@ -555,6 +578,8 @@ type MessageListProps = BubbleCallbacks & {
   subagentSlot?: SubagentSlot;
   /** 点文件 → 右侧栏就地预览（不传 = 调起系统默认程序） */
   onPreviewFile?: (path: string) => void;
+  /** 交付物区空态提示的跳转：去右侧栏看本轮改动过的文件 */
+  onShowFileChanges?: () => void;
 };
 
 /** 空状态：一行灰字把「能做什么」全压在读者眼前最弱的位置。
@@ -602,6 +627,7 @@ function renderMessageList(
     verboseLevel,
     subagentSlot,
     onPreviewFile,
+    onShowFileChanges,
     onPickStarter,
     onCopy,
     onRemove,
@@ -648,6 +674,7 @@ function renderMessageList(
                 verboseLevel={verboseLevel}
                 subagentSlot={i === hostIdx ? subagentSlot : undefined}
                 onPreviewFile={onPreviewFile}
+                onShowFileChanges={onShowFileChanges}
                 onCopy={onCopy}
                 onRemove={onRemove}
                 onOpenTask={onOpenTask}

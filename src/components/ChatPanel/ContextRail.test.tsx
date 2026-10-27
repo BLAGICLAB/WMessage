@@ -246,19 +246,23 @@ describe("ContextRail 文件改动工作面", () => {
     });
   });
 
-  it("点文件行：切到改动视图并报给 onPreviewPath，不调起系统默认程序", async () => {
+  it("点文件行：切到改动视图并报给 onPreviewReq，不调起系统默认程序", async () => {
     const user = userEvent.setup();
-    const onPreviewPath = vi.fn();
+    const onPreviewReq = vi.fn();
     mockSessionFiles();
-    renderRail({ tab: "files", sessionId: "s1", onPreviewPath });
+    renderRail({ tab: "files", sessionId: "s1", onPreviewReq });
     await user.click(await screen.findByTitle(/点开看改动/));
-    expect(onPreviewPath).toHaveBeenCalledWith(PATH);
+    expect(onPreviewReq).toHaveBeenCalledWith({ path: PATH, mode: "diff" });
     expect(mocks.openTargetMock).not.toHaveBeenCalled();
   });
 
   it("改过的文件默认看累计 diff：拉详情、渲染改动，不读全文", async () => {
     mockSessionFiles();
-    renderRail({ tab: "files", sessionId: "s1", previewPath: PATH });
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      previewReq: { path: PATH, mode: "diff" },
+    });
     expect(await screen.findByText("+新标题")).toBeInTheDocument();
     expect(mocks.invokeMock).toHaveBeenCalledWith("bot_session_file_changes", {
       sessionId: "s1",
@@ -274,7 +278,11 @@ describe("ContextRail 文件改动工作面", () => {
   it("「看全文」切到全文视图并读快照；再点「看改动」能回来", async () => {
     const user = userEvent.setup();
     mockSessionFiles();
-    renderRail({ tab: "files", sessionId: "s1", previewPath: PATH });
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      previewReq: { path: PATH, mode: "diff" },
+    });
     await user.click(await screen.findByRole("button", { name: "看全文" }));
     expect(await screen.findByLabelText("文件内容")).toHaveTextContent(
       "上海博士后政策",
@@ -296,8 +304,8 @@ describe("ContextRail 文件改动工作面", () => {
     renderRail({
       tab: "files",
       sessionId: "s1",
-      previewPath: other,
-      onPreviewPath: vi.fn(),
+      previewReq: { path: other, mode: "content" },
+      onPreviewReq: vi.fn(),
     });
     expect(await screen.findByLabelText("文件内容")).toHaveTextContent(
       "上海博士后政策",
@@ -325,7 +333,11 @@ describe("ContextRail 文件改动工作面", () => {
       ],
       note: "本会话第一次修改前的快照缺失；下面是本会话的逐次改动",
     });
-    renderRail({ tab: "files", sessionId: "s1", previewPath: PATH });
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      previewReq: { path: PATH, mode: "diff" },
+    });
     expect(
       await screen.findByText(/快照缺失/),
     ).toBeInTheDocument();
@@ -334,16 +346,16 @@ describe("ContextRail 文件改动工作面", () => {
 
   it("返回文件列表：回到列表而不是空白", async () => {
     const user = userEvent.setup();
-    const onPreviewPath = vi.fn();
+    const onPreviewReq = vi.fn();
     mockSessionFiles();
     renderRail({
       tab: "files",
       sessionId: "s1",
-      previewPath: PATH,
-      onPreviewPath,
+      previewReq: { path: PATH, mode: "diff" },
+      onPreviewReq,
     });
     await user.click(await screen.findByText("返回文件列表"));
-    expect(onPreviewPath).toHaveBeenCalledWith(null);
+    expect(onPreviewReq).toHaveBeenCalledWith(null);
   });
 });
 

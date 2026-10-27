@@ -205,6 +205,66 @@ pub async fn open_file_path(app: AppHandle, path: String) -> CommandResult<()> {
         .map_err(|e| CommandError::IoError(format!("打开路径失败：{e}")))
 }
 
+/// 交付物路径探测（聊天交付物区用）：批量判定路径是否存在、是不是目录、多大。
+///
+/// 为什么需要独立命令而不是让前端自己判：存在性判定是**同步 syscall**
+/// （metadata），跑在 async runtime 线程上会阻塞全部 Tauri command 与
+/// event——一批路径几十次 metadata，足够让界面卡一下。整体包 blocking 池。
+///
+/// 不存在的路径**不是错误**：交付物区要据此把它从清单里剔掉（挂一个打不开
+/// 的条目正是要治的毛病），所以结果是「每条路径一份判定」，命令本身只在
+/// 参数越界时失败。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathProbe {
+    /// 原样回显（前端按这个去打开）
+    pub path: String,
+    /// 磁盘上是否存在
+    pub exists: bool,
+    /// 是目录（不是文件）
+    pub is_dir: bool,
+    /// 文件字节数（目录为 0）
+    pub size: u64,
+}
+
+/// 单次探测的路径条数上限：防把成千上万条路径塞进一次 IPC
+const PROBE_PATHS_MAX: usize = 500;
+
+#[tauri::command]
+pub async fn bot_probe_paths(paths: Vec<String>) -> CommandResult<Vec<PathProbe>> {
+    if paths.len() > PROBE_PATHS_MAX {
+        return Err(CommandError::InvalidArgument {
+            field: "paths".to_string(),
+            value: paths.len().to_string(),
+            reason: format!("一次最多探测 {PROBE_PATHS_MAX} 条路径"),
+        });
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        paths.into_iter().map(probe_one).collect::<Vec<PathProbe>>()
+    })
+    .await
+    .map_err(|e| CommandError::Internal(format!("路径探测线程 join 失败：{e}")))
+}
+
+/// 单条路径判定（同步内核，跑在 blocking 线程里）。
+///
+/// metadata 跟随符号链接：软链指向的文件算「存在且是文件」——用户点开软链
+/// 要的是它指向的东西，不是链接本身。软链断了就当不存在。
+fn probe_one(path: String) -> PathProbe {
+    let meta = std::fs::metadata(std::path::Path::new(&path)).ok();
+    let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+    PathProbe {
+        exists: meta.is_some(),
+        is_dir,
+        size: meta
+            .as_ref()
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+            .unwrap_or(0),
+        path,
+    }
+}
+
 /// 文本预览结果（右侧栏「文件」工作面点开文件后就地渲染）。
 ///
 /// **分两态而不是「成功 / 失败」**：二进制、文件夹这类目标**读得到、但渲染不了**
@@ -807,5 +867,47 @@ mod preview_tests {
             "原文件大小要如实报出，供前端提示「只显示了前 N」"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::probe_one;
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("wmessage-probe-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("建测试临时目录");
+        d
+    }
+
+    #[test]
+    fn probe_reports_existing_file_with_size() {
+        let dir = tmp_dir("file");
+        let p = dir.join("a.txt");
+        std::fs::write(&p, b"12345").expect("写测试文件");
+        let r = probe_one(p.to_string_lossy().into_owned());
+        assert!(r.exists, "存在的文件应报 exists");
+        assert!(!r.is_dir, "文件不是目录");
+        assert_eq!(r.size, 5, "文件字节数要如实报出");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_reports_directory() {
+        let dir = tmp_dir("dir");
+        let r = probe_one(dir.to_string_lossy().into_owned());
+        assert!(r.exists);
+        assert!(r.is_dir, "目录要认出来");
+        assert_eq!(r.size, 0, "目录没有文件字节数");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_reports_missing_path_without_erroring() {
+        let r = probe_one("/definitely/not/here/x.docx".to_string());
+        assert!(!r.exists, "不存在的路径不是错误，是一条判定结果");
+        assert!(!r.is_dir);
+        assert_eq!(r.size, 0);
     }
 }
