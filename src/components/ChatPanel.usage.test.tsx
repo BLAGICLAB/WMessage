@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { chatDefaultInvoke } from "../test/chatTestMocks";
 import { render, screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
@@ -33,67 +34,7 @@ const mocks = vi.hoisted(() => {
   return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners, askMock };
 });
 
-// 默认实现（具名：beforeEach 只 mockClear 不重置 implementation，
-// 后跑的用例需显式 mockImplementation(defaultInvoke) 恢复）
-const defaultInvoke = async (cmd: string) => {
-  switch (cmd) {
-    case "bot_sessions_load":
-      return [{ id: "s1", title: "默认会话" }];
-    case "bot_session_create":
-      return { id: "s-new", title: "新对话" };
-    case "bot_history_load":
-      return [];
-    case "bot_history_save":
-    case "bot_history_clear":
-    case "bot_session_delete":
-    case "bot_session_rename":
-      return null;
-    case "bot_chat":
-      return { text: "机器人回复", taskRefs: [] };
-    // 双命令：🧠 模型下拉的列表 + 窄口径切换
-    case "bot_get_config":
-      return {
-        baseUrl: "https://api.example.com/v1",
-        model: "MiniMax-M3",
-        apiProvider: "openai",
-        modelsByProvider: {
-          openai: [
-            {
-              id: "m1",
-              label: "MiniMax-M3",
-              baseUrl: "https://api.example.com/v1",
-              model: "MiniMax-M3",
-            },
-            {
-              id: "m2",
-              label: "DeepSeek-V3",
-              baseUrl: "https://api.deepseek.com",
-              model: "deepseek-chat",
-            },
-          ],
-          anthropic: [],
-        },
-        activeModelId: { openai: "m1", anthropic: null },
-      };
-    case "bot_set_active_model":
-      return {
-        model: "deepseek-chat",
-        apiProvider: "openai",
-        activeModelId: { openai: "m2", anthropic: null },
-      };
-    case "bot_execute_task":
-      return { text: "任务执行结果", taskRefs: [] };
-    case "bot_compact":
-      return "压缩后的摘要";
-    case "bot_stop":
-      return null;
-    case "pick_files_dialog":
-      return [];
-    default:
-      return null;
-  }
-};
-mocks.invokeMock.mockImplementation(defaultInvoke);
+mocks.invokeMock.mockImplementation(chatDefaultInvoke);
 mocks.listenMock.mockImplementation(async () => () => {});
 mocks.emitMock.mockImplementation(async () => {});
 
@@ -253,7 +194,7 @@ describe("ChatPanel", () => {
           totalBytes: 20,
           lines: 2,
         };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     try {
       render(<ChatPanel {...defaultProps} />);
@@ -274,7 +215,7 @@ describe("ChatPanel", () => {
         expect.anything(),
       );
     } finally {
-      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.invokeMock.mockImplementation(chatDefaultInvoke);
       mocks.listenMock.mockImplementation(async () => () => {});
     }
   });
@@ -308,7 +249,7 @@ describe("ChatPanel", () => {
           (p) => ({ path: p, exists: true, isDir: false, size: 5 }),
         );
       if (cmd === "bot_chat") return { text: "写到 /Users/x/out.md 了", taskRefs: [] };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     try {
       render(<ChatPanel {...defaultProps} />);
@@ -332,7 +273,7 @@ describe("ChatPanel", () => {
         expect.anything(),
       );
     } finally {
-      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.invokeMock.mockImplementation(chatDefaultInvoke);
       mocks.listenMock.mockImplementation(async () => () => {});
     }
   });
@@ -348,7 +289,7 @@ describe("ChatPanel", () => {
           // 没有 updatedAt 的行不该渲染出空的时间位
           { id: "s2", title: "写周报" },
         ];
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     try {
       render(<ChatPanel {...defaultProps} />);
@@ -380,7 +321,7 @@ describe("ChatPanel", () => {
       const timeLine = time.closest("span")?.parentElement as HTMLElement;
       expect(timeLine.className).toContain("pr-7");
     } finally {
-      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.invokeMock.mockImplementation(chatDefaultInvoke);
     }
   });
 
@@ -466,7 +407,7 @@ describe("ChatPanel", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_history_load")
         return [{ role: "user", content: "查一下上海博士后政策", refsJson: null }];
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     try {
       render(<ChatPanel {...defaultProps} />);
@@ -543,7 +484,7 @@ describe("ChatPanel", () => {
       // 新建会话返回与被删会话相同的 id：模拟观测面上 id 复用，
       // 让「水位条目未清理」变成可见回归（新会话继承旧水位）
       if (cmd === "bot_session_create") return { id: "s2", title: "复生会话" };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     try {
       render(<ChatPanel {...defaultProps} />);
@@ -612,7 +553,7 @@ describe("ChatPanel", () => {
             toolsJson: null,
           },
         ];
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     try {
       render(<ChatPanel {...defaultProps} />);
@@ -632,13 +573,13 @@ describe("ChatPanel", () => {
       );
     } finally {
       errorSpy.mockRestore();
-      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.invokeMock.mockImplementation(chatDefaultInvoke);
     }
   });
 
   it("点选模型调用 bot_set_active_model（窄口径）并广播同步", async () => {
     const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(defaultInvoke);
+    mocks.invokeMock.mockImplementation(chatDefaultInvoke);
     render(<ChatPanel {...defaultProps} />);
     await screen.findAllByText("默认会话");
     const chip = screen.getByTitle("切换模型");
@@ -692,7 +633,7 @@ describe("ChatPanel", () => {
           apiProvider: "anthropic",
           activeModelId: { openai: "m1", anthropic: "m2" },
         };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
     await screen.findAllByText("默认会话");
@@ -744,7 +685,7 @@ describe("ChatPanel", () => {
             saves.push(args);
             return null;
           default:
-            return defaultInvoke(cmd);
+            return chatDefaultInvoke(cmd);
         }
       },
     );
@@ -831,7 +772,7 @@ describe("ChatPanel", () => {
               ]);
           });
         }
-        return defaultInvoke(cmd);
+        return chatDefaultInvoke(cmd);
       },
     );
     try {
@@ -850,7 +791,7 @@ describe("ChatPanel", () => {
       // s1 的迟到历史被守卫丢弃，不得盖掉 s2 的视图
       expect(screen.queryByText("s1 的迟到历史")).not.toBeInTheDocument();
     } finally {
-      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.invokeMock.mockImplementation(chatDefaultInvoke);
       mocks.listenMock.mockImplementation(async () => () => {});
     }
   });
@@ -876,7 +817,7 @@ describe("ChatPanel", () => {
           releaseCreate = (s) => res(s);
         });
       }
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     try {
       render(<ChatPanel {...defaultProps} />);
@@ -907,7 +848,7 @@ describe("ChatPanel", () => {
       );
       expect(screen.queryByText("重建会话")).not.toBeInTheDocument();
     } finally {
-      mocks.invokeMock.mockImplementation(defaultInvoke);
+      mocks.invokeMock.mockImplementation(chatDefaultInvoke);
       mocks.listenMock.mockImplementation(async () => () => {});
     }
   });

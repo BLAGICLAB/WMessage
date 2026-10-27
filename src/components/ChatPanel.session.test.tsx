@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { chatDefaultInvoke } from "../test/chatTestMocks";
 import { render, screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
@@ -35,67 +36,7 @@ const mocks = vi.hoisted(() => {
   return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners, askMock };
 });
 
-// 默认实现（具名：beforeEach 只 mockClear 不重置 implementation，
-// 后跑的用例需显式 mockImplementation(defaultInvoke) 恢复）
-const defaultInvoke = async (cmd: string) => {
-  switch (cmd) {
-    case "bot_sessions_load":
-      return [{ id: "s1", title: "默认会话" }];
-    case "bot_session_create":
-      return { id: "s-new", title: "新对话" };
-    case "bot_history_load":
-      return [];
-    case "bot_history_save":
-    case "bot_history_clear":
-    case "bot_session_delete":
-    case "bot_session_rename":
-      return null;
-    case "bot_chat":
-      return { text: "机器人回复", taskRefs: [] };
-    // 双命令：🧠 模型下拉的列表 + 窄口径切换
-    case "bot_get_config":
-      return {
-        baseUrl: "https://api.example.com/v1",
-        model: "MiniMax-M3",
-        apiProvider: "openai",
-        modelsByProvider: {
-          openai: [
-            {
-              id: "m1",
-              label: "MiniMax-M3",
-              baseUrl: "https://api.example.com/v1",
-              model: "MiniMax-M3",
-            },
-            {
-              id: "m2",
-              label: "DeepSeek-V3",
-              baseUrl: "https://api.deepseek.com",
-              model: "deepseek-chat",
-            },
-          ],
-          anthropic: [],
-        },
-        activeModelId: { openai: "m1", anthropic: null },
-      };
-    case "bot_set_active_model":
-      return {
-        model: "deepseek-chat",
-        apiProvider: "openai",
-        activeModelId: { openai: "m2", anthropic: null },
-      };
-    case "bot_execute_task":
-      return { text: "任务执行结果", taskRefs: [] };
-    case "bot_compact":
-      return "压缩后的摘要";
-    case "bot_stop":
-      return null;
-    case "pick_files_dialog":
-      return [];
-    default:
-      return null;
-  }
-};
-mocks.invokeMock.mockImplementation(defaultInvoke);
+mocks.invokeMock.mockImplementation(chatDefaultInvoke);
 mocks.listenMock.mockImplementation(async () => () => {});
 mocks.emitMock.mockImplementation(async () => {});
 
@@ -405,7 +346,7 @@ describe("ChatPanel", () => {
             totalBytes: 14,
             lines: 3,
           };
-        return defaultInvoke(cmd);
+        return chatDefaultInvoke(cmd);
       },
     );
     mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
@@ -465,7 +406,7 @@ describe("ChatPanel", () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_set_perm_mode") throw { code: "IO", message: "只读磁盘" };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
     await screen.findAllByText("默认会话");
@@ -495,9 +436,9 @@ describe("ChatPanel", () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_config")
-        return { ...((await defaultInvoke("bot_get_config")) as object), permMode: "ask" };
-      if (cmd === "bot_set_perm_mode") return defaultInvoke("bot_get_config");
-      return defaultInvoke(cmd);
+        return { ...((await chatDefaultInvoke("bot_get_config")) as object), permMode: "ask" };
+      if (cmd === "bot_set_perm_mode") return chatDefaultInvoke("bot_get_config");
+      return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
     await screen.findAllByText("默认会话");
@@ -519,7 +460,7 @@ describe("ChatPanel", () => {
     const user = userEvent.setup();
     // 前面用例换过的 mockImplementation 会跨用例残留（beforeEach 只 mockClear），
     // 先恢复默认实现拿到 bot_get_config / bot_set_active_model 的 mock
-    mocks.invokeMock.mockImplementation(defaultInvoke);
+    mocks.invokeMock.mockImplementation(chatDefaultInvoke);
     render(<ChatPanel {...defaultProps} />);
     await screen.findAllByText("默认会话");
     // 等 bot_get_config reload 完成（chip 标签与 setModels 同一个 .then 刷新）；
@@ -630,7 +571,7 @@ describe("ChatPanel", () => {
           case "bot_session_create":
             return { id: "s-new", title: "新对话" };
           default:
-            return defaultInvoke(cmd);
+            return chatDefaultInvoke(cmd);
         }
       },
     );

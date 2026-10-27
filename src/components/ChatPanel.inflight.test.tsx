@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { chatDefaultInvoke } from "../test/chatTestMocks";
 import { render, screen, waitFor, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "./ChatPanel";
@@ -35,67 +36,7 @@ const mocks = vi.hoisted(() => {
   return { invokeMock, listenMock, emitMock, dragDropHandlers, listeners, askMock };
 });
 
-// 默认实现（具名：beforeEach 只 mockClear 不重置 implementation，
-// 后跑的用例需显式 mockImplementation(defaultInvoke) 恢复）
-const defaultInvoke = async (cmd: string) => {
-  switch (cmd) {
-    case "bot_sessions_load":
-      return [{ id: "s1", title: "默认会话" }];
-    case "bot_session_create":
-      return { id: "s-new", title: "新对话" };
-    case "bot_history_load":
-      return [];
-    case "bot_history_save":
-    case "bot_history_clear":
-    case "bot_session_delete":
-    case "bot_session_rename":
-      return null;
-    case "bot_chat":
-      return { text: "机器人回复", taskRefs: [] };
-    // 双命令：🧠 模型下拉的列表 + 窄口径切换
-    case "bot_get_config":
-      return {
-        baseUrl: "https://api.example.com/v1",
-        model: "MiniMax-M3",
-        apiProvider: "openai",
-        modelsByProvider: {
-          openai: [
-            {
-              id: "m1",
-              label: "MiniMax-M3",
-              baseUrl: "https://api.example.com/v1",
-              model: "MiniMax-M3",
-            },
-            {
-              id: "m2",
-              label: "DeepSeek-V3",
-              baseUrl: "https://api.deepseek.com",
-              model: "deepseek-chat",
-            },
-          ],
-          anthropic: [],
-        },
-        activeModelId: { openai: "m1", anthropic: null },
-      };
-    case "bot_set_active_model":
-      return {
-        model: "deepseek-chat",
-        apiProvider: "openai",
-        activeModelId: { openai: "m2", anthropic: null },
-      };
-    case "bot_execute_task":
-      return { text: "任务执行结果", taskRefs: [] };
-    case "bot_compact":
-      return "压缩后的摘要";
-    case "bot_stop":
-      return null;
-    case "pick_files_dialog":
-      return [];
-    default:
-      return null;
-  }
-};
-mocks.invokeMock.mockImplementation(defaultInvoke);
+mocks.invokeMock.mockImplementation(chatDefaultInvoke);
 mocks.listenMock.mockImplementation(async () => () => {});
 mocks.emitMock.mockImplementation(async () => {});
 
@@ -187,7 +128,7 @@ describe("在途回合（切走再切回不丢消息）", () => {
           return null;
         }
         if (cmd === "bot_chat") return new Promise(() => {});
-        return defaultInvoke(cmd);
+        return chatDefaultInvoke(cmd);
       },
     );
   };
@@ -196,7 +137,7 @@ describe("在途回合（切走再切回不丢消息）", () => {
     db.clear();
   });
   afterEach(() => {
-    mocks.invokeMock.mockImplementation(defaultInvoke);
+    mocks.invokeMock.mockImplementation(chatDefaultInvoke);
     mocks.listenMock.mockImplementation(async () => () => {});
   });
 
@@ -271,7 +212,7 @@ describe("在途回合（切走再切回不丢消息）", () => {
           truncated: false,
           inflight: true,
         };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
     expect(await screen.findByText("补齐的半截")).toBeInTheDocument();
@@ -300,7 +241,7 @@ describe("在途回合（切走再切回不丢消息）", () => {
           truncated: false,
           inflight: true,
         };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
     expect(await screen.findByText("只该有一遍")).toBeInTheDocument();
@@ -322,7 +263,7 @@ describe("在途回合（切走再切回不丢消息）", () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_stream_replay")
         return { events: [], lastSeq: 0, truncated: false, inflight: false };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
     await screen.findAllByText("默认会话");
@@ -355,7 +296,7 @@ describe("在途回合（切走再切回不丢消息）", () => {
           truncated: false,
           inflight: true,
         };
-      return defaultInvoke(cmd);
+      return chatDefaultInvoke(cmd);
     });
     render(<ChatPanel {...defaultProps} />);
     // s2 不在当前视图 → 内容进的是权威副本（切过去就能接上）
