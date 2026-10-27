@@ -13,7 +13,7 @@ use crate::error::CommandError;
 
 use super::ops::{
     claim_dst_name, filename_matches, log_line, move_entry, move_remove_permanently_failed,
-    path_inside, record_move_remove_failure, resolve_archive_dir_checked, verify_dir_within_base,
+    path_inside, record_move_remove_failure, resolve_archive_dir_checked, verify_dir_under,
     MigrationGuard, MAX_MOVE_REMOVE_FAILURES,
 };
 use super::rules::load_rules;
@@ -89,8 +89,8 @@ fn run_scan_inner(app: &AppHandle) -> Result<MigrationReport, CommandError> {
             };
             match rule.action.as_str() {
                 "move" => {
-                    let dir = match resolve_archive_dir_checked(&base, &rule.archive_dir) {
-                        Ok(d) => d,
+                    let target = match resolve_archive_dir_checked(&base, &rule.archive_dir) {
+                        Ok(t) => t,
                         Err(e) => {
                             report.skipped += 1;
                             let line = format!("[扫描]跳过「{name}」：{e}");
@@ -99,6 +99,7 @@ fn run_scan_inner(app: &AppHandle) -> Result<MigrationReport, CommandError> {
                             continue;
                         }
                     };
+                    let (dir, anchor) = (target.dir, target.anchor);
                     if let Err(e) = std::fs::create_dir_all(&dir) {
                         report.skipped += 1;
                         let line = format!("[扫描]跳过「{name}」：创建归档目录失败：{e}");
@@ -106,7 +107,7 @@ fn run_scan_inner(app: &AppHandle) -> Result<MigrationReport, CommandError> {
                         log_line(app, &line);
                         continue;
                     }
-                    if let Err(e) = verify_dir_within_base(&base, &dir) {
+                    if let Err(e) = verify_dir_under(&anchor, &dir) {
                         report.skipped += 1;
                         let line = format!("[扫描]跳过「{name}」：{e}");
                         report.log.push(line.clone());

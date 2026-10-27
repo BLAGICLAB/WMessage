@@ -63,33 +63,54 @@ pub(crate) fn expand_year_placeholder(template: &str) -> String {
     template.replace("{year}", &year)
 }
 
-/// 归档目录解析纯函数内核（供调用方以任意基准直调）——三道闸：
-/// 1. `..` 组件拒绝（相对路径逃逸桌面基准；/tmp/../etc 形态表达同被拒，无能力损失）；
-/// 2. 绝对路径拒绝（存量「文档化特性」按收窄：归档位置必须相对基准目录，可审计可随库迁移）；
-/// 3. symlink 逃逸校验：沿目标最深已存在祖先 canonicalize，须仍位于 canonical 基准目录内
-///    （叶子通常尚不存在，只能校到最深已存在祖先——祖先在基准外即拒；新建叶层走
-///    create_dir_all 常规目录创建，落在 canonical 祖先之下；以符号链接充当新建叶层
-///    的场景超出本闸能力，与 exists→canonicalize 的 TOCTOU 残余同属文件系统原语限制，
-///    归既有「Phase 6 TOCTOU 统一策略」follow-up）。
-pub(crate) fn resolve_archive_dir_checked(base: &Path, template: &str) -> Result<PathBuf, String> {
+/// 归档目标：落盘目录 + 锚点（落盘目录必须落在锚点之内）。
+///
+/// 锚点按归档目录形态分两种，解析时即捕获：
+/// - 相对路径 → 基准目录（归档位置随来源走）
+/// - 绝对路径 → 该路径自身的最深已存在祖先（归档位置固定；锚点必须在解析时
+///   捕获——落盘后再取「最深已存在祖先」拿到的就是目录自己，等于自证，挡不住
+///   祖先在解析与落盘之间被换成符号链接的竞态）
+#[derive(Debug)]
+pub(crate) struct ArchiveTarget {
+    /// 归档目录最终落盘路径（绝对）
+    pub(crate) dir: PathBuf,
+    /// 锚点（已 canonicalize）：落盘目录必须落在它之内
+    pub(crate) anchor: PathBuf,
+}
+
+/// 归档目录解析纯函数内核（供调用方以任意基准直调）——四道闸：
+/// 1. `..` 组件拒绝（相对路径逃逸基准；绝对路径同样拒，两种形态语义统一）；
+/// 2. 根式/盘符相对路径拒绝（Windows 下 `/foo`、`C:foo` 的落点随当前盘符漂移，
+///    同一份规则表换台机器就落到别处——必须写完整盘符路径或纯相对目录）；
+/// 3. 绝对路径：目录自身即落点（不拼基准），锚点 = 其最深已存在祖先；祖先必须
+///    存在且是目录——盘符未挂载时响亮失败，不在本地盘同名位置静默建出目录树；
+/// 4. 相对路径：落点 = 基准 + 目录，symlink 逃逸校验沿用（沿目标最深已存在祖先
+///    canonicalize，须仍位于 canonical 基准目录内；叶子通常尚不存在，只能校到
+///    最深已存在祖先——祖先在基准外即拒；新建叶层走 create_dir_all 常规目录创建，
+///    落在 canonical 祖先之下；以符号链接充当新建叶层的场景超出本闸能力，与
+///    exists→canonicalize 的 TOCTOU 残余同属文件系统原语限制，归既有
+///    「Phase 6 TOCTOU 统一策略」follow-up）。
+pub(crate) fn resolve_archive_dir_checked(
+    base: &Path,
+    template: &str,
+) -> Result<ArchiveTarget, String> {
     let expanded = expand_year_placeholder(template);
     let p = PathBuf::from(&expanded);
-    // 绝对路径先行：is_absolute 之外补 has_root——Windows 下 "/foo" 这类无前缀根式
-    // 路径 is_absolute=false 但 join 会替换基准，同样必须拒（unix 两值同真，无行为差）
-    if p.is_absolute() || p.has_root() {
+    reject_parent_dir_components(&p, template)?;
+    if p.is_absolute() {
+        return absolute_target(&p, template);
+    }
+    // 根式路径（unix 下同时是绝对路径，已在上面返回；此处只剩 Windows 语义）：
+    // "/foo" 无盘符但 join 会替换基准，"C:foo" 是盘符相对路径——两者落点都随
+    // 当前盘符漂移，必须拒
+    if p.has_root() || is_drive_relative(&p) {
         return Err(format!(
-            "归档目录必须是相对路径（相对桌面目录）：{template}。请改为如「工资/{{year}}」的相对写法"
+            "归档目录不能是根式/盘符相对路径（落点随当前盘符漂移）：{template}。请写完整绝对路径（如 E:\\归档\\{{year}}）或相对目录（如 工资/{{year}}）"
         ));
     }
-    reject_parent_dir_components(&p, template)?;
     let resolved = base.join(&p);
-    let mut anc: &Path = resolved.as_path();
-    while !anc.exists() {
-        match anc.parent() {
-            Some(parent) => anc = parent,
-            None => break,
-        }
-    }
+    let anc = deepest_existing_ancestor(&resolved)
+        .ok_or_else(|| format!("归档目录解析失败（基准目录不存在）：{}", base.display()))?;
     let canon_anc = anc
         .canonicalize()
         .map_err(|e| format!("归档目录解析失败（{}）：{e}", anc.display()))?;
@@ -103,24 +124,82 @@ pub(crate) fn resolve_archive_dir_checked(base: &Path, template: &str) -> Result
             canon_anc.display()
         ));
     }
-    Ok(resolved)
+    Ok(ArchiveTarget {
+        dir: resolved,
+        anchor: canon_base,
+    })
 }
 
-/// 归档目录落地后复验（终态 canonicalize 前缀校验）纯核，基准无关——桌面模式
-/// 传桌面、扫描模式传该源的归档基准。resolve 时只能校「最深已存在祖先」，
-/// create_dir_all 之前祖先可能被并发换成基准外符号链接——创建完成后对终态目录
-/// 整链 canonicalize 复验，不落基准即拒。残余窗缩至 create→verify 之间
-/// （文件系统原语限制，归既有「Phase 6 TOCTOU 统一策略」follow-up）。
-pub fn verify_dir_within_base(base: &Path, dir: &Path) -> Result<(), String> {
+/// 绝对路径归档目标：锚点 = 该路径的最深已存在祖先。
+///
+/// 祖先必须存在：Windows 下盘符未挂载时整条链都不存在，此时响亮失败，
+/// 而不是让 create_dir_all 在本地盘的同名位置静默建出一棵目录树。
+fn absolute_target(p: &Path, template: &str) -> Result<ArchiveTarget, String> {
+    if p.exists() && !p.is_dir() {
+        return Err(format!("归档目录已存在且不是目录：{}", p.display()));
+    }
+    let anc = deepest_existing_ancestor(p)
+        .ok_or_else(|| format!("归档目录所在路径不存在（盘符未挂载或上级目录缺失）：{template}"))?;
+    if !anc.is_dir() {
+        return Err(format!("归档目录的上级路径不是目录：{}", anc.display()));
+    }
+    let anchor = anc
+        .canonicalize()
+        .map_err(|e| format!("归档目录解析失败（{}）：{e}", anc.display()))?;
+    Ok(ArchiveTarget {
+        dir: p.to_path_buf(),
+        anchor,
+    })
+}
+
+/// 盘符相对路径判定（Windows 专有语义）：`C:foo` 不是绝对路径，但落点随当前
+/// 盘符漂移（相对 C 盘当前工作目录），同一份规则表换台机器就落到别处——与
+/// 根式路径 "/foo" 同类，必须拒绝。
+/// unix 无此概念（`:` 是合法文件名字符），故只在 Windows 下判定。
+pub(crate) fn is_drive_relative(p: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let Some(s) = p.to_str() else {
+            return false;
+        };
+        let b = s.as_bytes();
+        // 盘符后不是路径分隔符即盘符相对（"C:foo"、"C:"）；"C:\foo" 是绝对路径
+        b.len() >= 2
+            && b[1] == b':'
+            && (b[0] as char).is_ascii_alphabetic()
+            && !matches!(b.get(2), Some(b'\\') | Some(b'/'))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = p;
+        false
+    }
+}
+
+/// 最深已存在祖先：自底向上找到第一个存在的路径；整条链都不存在返回 None
+/// （Windows 下即盘符未挂载）。
+fn deepest_existing_ancestor(p: &Path) -> Option<PathBuf> {
+    let mut anc = p;
+    loop {
+        if anc.exists() {
+            return Some(anc.to_path_buf());
+        }
+        let parent = anc.parent()?;
+        anc = parent;
+    }
+}
+
+/// 归档目录落地后复验（终态 canonicalize 前缀校验）：落盘目录必须落在锚点之内。
+/// 锚点由 resolve 捕获（见 ArchiveTarget）——落盘后再取「最深已存在祖先」会拿到
+/// 目录自己，等于自证；此处的残余窗是 create→verify 之间（文件系统原语限制，
+/// 归既有「Phase 6 TOCTOU 统一策略」follow-up）。
+pub fn verify_dir_under(anchor: &Path, dir: &Path) -> Result<(), String> {
     let canon_dir = dir
         .canonicalize()
         .map_err(|e| format!("归档目录复验失败（{}）：{e}", dir.display()))?;
-    let canon_base = base
-        .canonicalize()
-        .map_err(|e| format!("基准目录解析失败（{}）：{e}", base.display()))?;
-    if !canon_dir.starts_with(&canon_base) {
+    if !canon_dir.starts_with(anchor) {
         return Err(format!(
-            "归档目录创建后逃逸基准目录（疑似符号链接指向基准外）：{} → {}",
+            "归档目录创建后逃逸锚点目录（疑似符号链接指向锚点外）：{} → {}",
             dir.display(),
             canon_dir.display()
         ));
@@ -128,9 +207,9 @@ pub fn verify_dir_within_base(base: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 归档目录 containment：拒绝 `..` 组件（相对路径会逃逸桌面基准；对绝对路径同样生效——
+/// 归档目录 containment：拒绝 `..` 组件（相对路径会逃逸基准；对绝对路径同样生效——
 /// /tmp/../etc 可直接写 /etc 表达，无能力损失）。契约边界：本函数只管 `..` 组件，
-/// 绝对路径/根式路径由调用方闸（resolve_archive_dir_checked / validate_rules）负责。
+/// 绝对路径与根式路径由调用方闸（resolve_archive_dir_checked / validate_rules）负责。
 pub(crate) fn reject_parent_dir_components(p: &Path, template: &str) -> Result<(), String> {
     if p.components()
         .any(|c| matches!(c, std::path::Component::ParentDir))
@@ -383,8 +462,11 @@ mod tests {
     #[test]
     fn resolve_checked_relative_ok() {
         let base = tmp_dir("rel");
-        let p = resolve_archive_dir_checked(&base, "工资/{year}").unwrap();
-        assert!(p.starts_with(&base), "应落在基准目录内：{p:?}");
+        let t = resolve_archive_dir_checked(&base, "工资/{year}").unwrap();
+        assert!(t.dir.starts_with(&base), "应落在基准目录内：{:?}", t.dir);
+        // 锚点是 canonical 后的基准（macOS 的 /var → /private/var 符号链接会让
+        // 原始路径与 canonical 路径不相等，故按 canonical 基准比对）
+        assert_eq!(t.anchor, base.canonicalize().unwrap(), "锚点应是基准目录");
         std::fs::remove_dir_all(&base).ok();
     }
 
@@ -397,14 +479,117 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
-    /// 绝对路径拒绝。
-    /// temp_dir 两平台都返回根级/驱动器级绝对路径，测试不依赖平台 is_absolute 细节
+    /// 绝对路径放行：目录自身即落点，不拼基准（桌面 → E 盘归档的基本能力）
     #[test]
-    fn resolve_checked_rejects_absolute() {
+    fn resolve_checked_accepts_absolute() {
         let base = tmp_dir("abs");
         let abs = std::env::temp_dir().join("wmessage-arch-abs");
+        let t = resolve_archive_dir_checked(&base, &abs.to_string_lossy()).unwrap();
+        assert_eq!(t.dir, abs, "绝对路径原样作为落点");
+        assert_eq!(
+            t.anchor,
+            std::env::temp_dir().canonicalize().unwrap(),
+            "锚点应是该路径的最深已存在祖先（canonical 口径）"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// 绝对路径含 `..` → 拒绝（两种形态同一把尺，语义统一）
+    #[test]
+    fn resolve_checked_absolute_rejects_parent_components() {
+        let base = tmp_dir("absdotdot");
+        let abs = std::env::temp_dir()
+            .join("wmessage-arch-abs")
+            .join("..")
+            .join("etc");
         let err = resolve_archive_dir_checked(&base, &abs.to_string_lossy()).unwrap_err();
-        assert!(err.contains("相对路径"), "got: {err}");
+        assert!(err.contains(".."), "got: {err}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// 绝对路径的 {year} 占位符照常展开（E:\归档\{year} 形态）
+    #[test]
+    fn resolve_checked_absolute_expands_year() {
+        let base = tmp_dir("absyear");
+        let abs = std::env::temp_dir().join("wmessage-arch-year-{year}");
+        let t = resolve_archive_dir_checked(&base, &abs.to_string_lossy()).unwrap();
+        assert!(!t.dir.to_string_lossy().contains("{year}"), "占位符应展开");
+        assert!(t
+            .dir
+            .to_string_lossy()
+            .contains(&chrono::Local::now().format("%Y").to_string()));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// 绝对路径已存在且是文件 → 拒绝（不是目录）
+    #[test]
+    fn resolve_checked_absolute_file_target_rejected() {
+        let base = tmp_dir("absfile");
+        let f = std::env::temp_dir().join(format!("wm-arch-file-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&f, b"x").unwrap();
+        let err = resolve_archive_dir_checked(&base, &f.to_string_lossy()).unwrap_err();
+        assert!(err.contains("不是目录"), "got: {err}");
+        std::fs::remove_file(&f).ok();
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// 根式路径（unix 下同时是绝对路径，放行；Windows 语义另测）
+    #[cfg(unix)]
+    #[test]
+    fn resolve_checked_unix_root_path_is_absolute() {
+        let base = tmp_dir("unixroot");
+        let t = resolve_archive_dir_checked(&base, "/tmp/wm-arch-root").unwrap();
+        assert_eq!(t.dir, PathBuf::from("/tmp/wm-arch-root"));
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Windows 根式/盘符相对路径拒绝：落点随当前盘符漂移
+    #[cfg(windows)]
+    #[test]
+    fn resolve_checked_rejects_root_style_paths() {
+        let base = tmp_dir("rootstyle");
+        for tpl in ["/wm-arch-root", "C:wm-arch-drive"] {
+            let err = resolve_archive_dir_checked(&base, tpl).unwrap_err();
+            assert!(err.contains("根式"), "got: {err}");
+        }
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Windows 盘符未挂载 → fail-closed：不在本地盘同名位置静默建目录树
+    #[cfg(windows)]
+    #[test]
+    fn resolve_checked_missing_drive_fails_closed() {
+        let base = tmp_dir("missingdrive");
+        // 找一个不存在的盘符（Z 往下找）；全都被占用则本用例无意义，跳过
+        let drive = ('Z'..='A')
+            .rev()
+            .find(|c| !PathBuf::from(format!("{c}:\\")).exists());
+        let Some(d) = drive else {
+            std::fs::remove_dir_all(&base).ok();
+            return;
+        };
+        let p = format!("{d}:\\wm-arch-missing\\x");
+        let err = resolve_archive_dir_checked(&base, &p).unwrap_err();
+        assert!(err.contains("不存在"), "got: {err}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// 锚点复验：目录落在锚点内 → 通过；落在锚点外 → 拒绝
+    #[test]
+    fn verify_dir_under_checks_anchor() {
+        let base = tmp_dir("verify");
+        let inside = base.join("inside");
+        std::fs::create_dir_all(&inside).unwrap();
+        let anchor = base.canonicalize().unwrap();
+        assert!(verify_dir_under(&anchor, &inside).is_ok(), "锚点内 → 通过");
+        let outside =
+            std::env::temp_dir().join(format!("wm-arch-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(
+            verify_dir_under(&anchor, &outside).is_err(),
+            "锚点外 → 拒绝"
+        );
+        std::fs::remove_dir_all(&outside).ok();
         std::fs::remove_dir_all(&base).ok();
     }
 

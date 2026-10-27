@@ -15,7 +15,7 @@ use crate::error::CommandError;
 use super::journal::{journal_cleared, journal_committed, journal_find_pending, journal_pending};
 use super::ops::{
     emit_upserts, filename_matches, log_line, move_entry, move_remove_permanently_failed,
-    path_inside, resolve_archive_dir_checked, verify_dir_within_base, MigrationGuard,
+    path_inside, resolve_archive_dir_checked, verify_dir_under, MigrationGuard,
     MAX_MOVE_REMOVE_FAILURES,
 };
 use super::recovery::{decide_src_missing, journal_replay_pending, SrcMissingAction};
@@ -140,8 +140,8 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                             continue;
                         }
                     };
-                    let dir = match resolve_archive_dir_checked(&base, &rule.archive_dir) {
-                        Ok(d) => d,
+                    let target = match resolve_archive_dir_checked(&base, &rule.archive_dir) {
+                        Ok(t) => t,
                         Err(e) => {
                             report.skipped += 1;
                             let line = format!("跳过「{name}」：{e}");
@@ -151,6 +151,7 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                             continue;
                         }
                     };
+                    let (dir, anchor) = (target.dir, target.anchor);
                     if let Err(e) = fs::create_dir_all(&dir) {
                         report.skipped += 1;
                         let line = format!("跳过「{name}」：创建归档目录失败：{e}");
@@ -160,9 +161,9 @@ fn run_migration_inner(app: &AppHandle) -> Result<MigrationReport, CommandError>
                         continue;
                     }
                     // 落地后复验：关闭 resolve→create 之间祖先被换成符号链接的窗口
-                    // （canonicalize 终态目录比对基准前缀；残余窗缩至 create→verify 间，
+                    // （canonicalize 终态目录比对锚点前缀；残余窗缩至 create→verify 间，
                     // 文件系统原语限制归既有 follow-up）
-                    if let Err(e) = verify_dir_within_base(&base, &dir) {
+                    if let Err(e) = verify_dir_under(&anchor, &dir) {
                         report.skipped += 1;
                         let line = format!("跳过「{name}」：{e}");
                         report.log.push(line.clone());

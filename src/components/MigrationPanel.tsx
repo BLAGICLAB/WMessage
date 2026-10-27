@@ -306,6 +306,11 @@ export function MigrationPanel() {
         规则用表格管理：下载表格模版（CSV，Excel/WPS
         可直接打开编辑），改完导入即生效。 规则顺序即优先级：靠前的行先匹配
       </p>
+      <p className="mt-1 text-[11px] text-[var(--t5)]">
+        {
+          "归档目录可写相对目录（相对该文件的来源文件夹，如 工资/{year}），也可写绝对路径固定归档位置（如 E:\\归档\\{year}）；含「..」一律拒绝"
+        }
+      </p>
       <div className="mt-2 space-y-1.5">
         {rules.length === 0 && (
           <p className="text-xs text-[var(--t5)]">

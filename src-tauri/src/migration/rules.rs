@@ -74,8 +74,8 @@ pub(crate) fn save_rules_to(path: &Path, rules: &RulesFile) -> Result<(), String
     crate::db::atomic_write(path, &text)
 }
 
-/// 校验规则：action 合法；move 必须有归档目录；归档目录相对路径（所有动作，
-/// 含 `..`/绝对路径拒绝）；关键字至少一个非空
+/// 校验规则：action 合法；move 必须有归档目录；归档目录形态合法（相对或绝对都
+/// 放行，含 `..`/根式/盘符相对路径拒绝）；关键字至少一个非空
 pub fn validate_rules(rules: &RulesFile) -> Result<(), String> {
     for (i, r) in rules.rules.iter().enumerate() {
         if r.action != "move" && r.action != "delete" {
@@ -90,10 +90,12 @@ pub fn validate_rules(rules: &RulesFile) -> Result<(), String> {
         // 校验，导入期早错（run 期 ops 侧还有一道）
         let p = std::path::Path::new(&r.archive_dir);
         super::ops::reject_parent_dir_components(p, &r.archive_dir)?;
-        // has_root 补 Windows 无前缀根式路径（"/foo" is_absolute=false 但 join 会替换基准）
-        if p.is_absolute() || p.has_root() {
+        // 归档目录两种合法形态：相对（随基准走，如 工资/{year}）或绝对（固定位置，
+        // 如 E:\归档\{year}）；根式/盘符相对路径拒绝——落点随当前盘符漂移，同一份
+        // 规则表换台机器就落到别处
+        if !p.is_absolute() && (p.has_root() || super::ops::is_drive_relative(p)) {
             return Err(format!(
-                "第 {} 条规则归档目录必须是相对路径（相对桌面目录）：{}",
+                "第 {} 条规则归档目录不能是根式/盘符相对路径（落点随当前盘符漂移）：{}",
                 i + 1,
                 r.archive_dir
             ));
@@ -308,11 +310,10 @@ mod tests {
         fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 
-    /// 导入期早错：归档目录绝对路径拒绝。
-    /// 用 temp_dir 构造绝对路径：unix 前导 `/` 在 Windows 不算 absolute（驱动器/UNC 才算），
-    /// temp_dir 两平台都返回真绝对路径。
+    /// 导入期：归档目录绝对路径放行（固定归档位置，如 E:\归档\{year}）。
+    /// temp_dir 两平台都返回真绝对路径，测试不依赖平台 is_absolute 细节
     #[test]
-    fn validate_rules_rejects_absolute_archive_dir() {
+    fn validate_rules_accepts_absolute_archive_dir() {
         let rules = RulesFile {
             version: 1,
             rules: vec![MigrationRule {
@@ -323,8 +324,33 @@ mod tests {
                 archive_dir: std::env::temp_dir().to_string_lossy().to_string(),
             }],
         };
-        let err = validate_rules(&rules).expect_err("绝对路径必须早错");
-        assert!(err.contains("相对路径"), "got: {err}");
+        assert!(
+            validate_rules(&rules).is_ok(),
+            "绝对路径归档目录应放行：{rules:?}"
+        );
+    }
+
+    /// 导入期：含 `..` 的归档目录早错（相对与绝对同一把尺）
+    #[test]
+    fn validate_rules_rejects_parent_dir_archive_dir() {
+        let mk = |archive_dir: &str| RulesFile {
+            version: 1,
+            rules: vec![MigrationRule {
+                id: "r1".into(),
+                enabled: true,
+                keywords: vec!["a".into()],
+                action: "move".into(),
+                archive_dir: archive_dir.into(),
+            }],
+        };
+        let err = validate_rules(&mk("../escape")).expect_err("含 .. 应拒绝");
+        assert!(err.contains(".."), "got: {err}");
+        let abs = std::env::temp_dir()
+            .join("wm-rules-abs")
+            .join("..")
+            .join("etc");
+        let err = validate_rules(&mk(&abs.to_string_lossy())).expect_err("绝对路径含 .. 应拒绝");
+        assert!(err.contains(".."), "got: {err}");
     }
 
     /// 空 JSON 文件（0 字节，手工误存/损坏的现实形态）= 解析失败 → DomainRule
@@ -342,7 +368,7 @@ mod tests {
     }
 
     /// containment 收窄到所有动作后的边界：delete + 空归档目录 / delete + 合法相对
-    /// 归档目录 → 通过；delete + 绝对路径 → 拒绝（未来动作变体自动获得同款校验）
+    /// 归档目录 / delete + 绝对归档目录 → 通过（未来动作变体自动获得同款校验）
     #[test]
     fn validate_rules_delete_action_archive_dir_boundaries() {
         let mk = |archive_dir: &str| MigrationRule {
@@ -362,11 +388,16 @@ mod tests {
             rules: vec![mk("归档/旧文件")],
         })
         .is_ok());
-        let err = validate_rules(&RulesFile {
+        assert!(validate_rules(&RulesFile {
             version: 1,
             rules: vec![mk(&std::env::temp_dir().to_string_lossy())],
         })
-        .expect_err("delete 规则的绝对路径归档目录同样拒绝");
-        assert!(err.contains("相对路径"), "got: {err}");
+        .is_ok());
+        let err = validate_rules(&RulesFile {
+            version: 1,
+            rules: vec![mk("../escape")],
+        })
+        .expect_err("delete 规则的含 .. 归档目录同样拒绝");
+        assert!(err.contains(".."), "got: {err}");
     }
 }
