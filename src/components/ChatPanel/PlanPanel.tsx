@@ -12,7 +12,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, Circle, Loader2, X } from "lucide-react";
 import { formatMonthDayTime } from "../../format";
-import { usePlanState, type PlanStepStatus } from "./usePlanState";
+import { usePlanState } from "./usePlanState";
+import type { PlanStepStatus } from "./planStore";
 import type { SubagentRun } from "./ContextRail";
 import { SUBAGENT_STATUS } from "./constants";
 import {

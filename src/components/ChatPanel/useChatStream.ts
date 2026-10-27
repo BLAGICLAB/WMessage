@@ -10,7 +10,9 @@ import { unlistenSafe } from "../../lib/useTauriListen";
 import type { Msg, SkillFailure, TurnStatus } from "./types";
 import { DELTA_BATCH_MS } from "./constants";
 import * as streamState from "./streamState";
+import * as planStore from "./planStore";
 import type { StreamMeta } from "./streamState";
+import type { PlanEventPayload } from "./planStore";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 
 export type ChatStreamParams = {
@@ -408,8 +410,16 @@ export function useChatStream(params: ChatStreamParams) {
         return copy;
       });
     });
+    //  执行计划：`update_plan` 工具整表写入会话计划表，经 `bot-plan` 事件广播。
+    //  与其它流式事件同一批处理器——实时订阅与「回放补齐」共用它：回放出来的
+    //  计划事件也要落到面板，否则重连后面板还停在旧状态。
+    //  不走序号闸：计划是整表状态，按 updatedAt 判新旧更贴切（序号闸是给
+    //  流式增量用的——内容判重做不到那里）。
+    const unPlan = reg<PlanEventPayload>("bot-plan", (p) => {
+      planStore.applyEvent(p);
+    });
     //  水位条数据源：Anthropic 回合级 usage 按会话累计（当前视图 + 在途会话，
-    // 与流式事件同过滤口径——切走的会话继续累计，切回可见）
+    //  与流式事件同过滤口径——切走的会话继续累计，切回可见）
     const unUsage = listen<{
       inputTokens?: number;
       outputTokens?: number;
@@ -465,6 +475,7 @@ export function useChatStream(params: ChatStreamParams) {
       unlistenSafe(unFileChanged);
       unlistenSafe(unUsage);
       unlistenSafe(unSkillFailed);
+      unlistenSafe(unPlan);
       streamHandlersRef.current = {};
     };
   }, [loadFinalText]);

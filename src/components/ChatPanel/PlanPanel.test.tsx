@@ -2,33 +2,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { PlanPanel } from "./PlanPanel";
+import * as planStore from "./planStore";
 import type { SubagentRun } from "./ContextRail";
 
 const mocks = vi.hoisted(() => {
   const invokeMock = vi.fn();
-  const listeners: Record<
-    string,
-    Array<(e: { payload: unknown }) => void>
-  > = {};
-  const listenMock = vi.fn(
-    async (event: string, cb: (e: { payload: unknown }) => void) => {
-      (listeners[event] ??= []).push(cb);
-      return () => {};
-    },
-  );
-  return { invokeMock, listenMock, listeners };
+  // 面板还订阅 bot-file-changed（环境信息段跟着落盘事件长）
+  const listenMock = vi.fn(async () => () => {});
+  return { invokeMock, listenMock };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invokeMock }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listenMock }));
-
-/** 触发一个已注册的事件回调（面板订阅 bot-plan / bot-file-changed） */
-async function fire(event: string, payload: unknown) {
-  const cbs = mocks.listeners[event] ?? [];
-  await act(async () => {
-    for (const cb of cbs) cb({ payload });
-  });
-}
 
 const run: SubagentRun = {
   id: "sa_1",
@@ -53,7 +38,8 @@ function renderPanel(
 beforeEach(() => {
   mocks.invokeMock.mockReset();
   mocks.listenMock.mockClear();
-  for (const k of Object.keys(mocks.listeners)) delete mocks.listeners[k];
+  // 计划状态在模块级 store 里（跨用例存活），不复位会串味
+  planStore.resetAll();
   mocks.invokeMock.mockImplementation(async (cmd: string) => {
     if (cmd === "bot_plan_state") return null;
     if (cmd === "bot_session_file_changes") return { items: [] };
@@ -91,16 +77,20 @@ describe("计划面板：计划段", () => {
     });
   });
 
+  // 计划事件由共享处理器落进模块级 store（实时与回放补齐共用同一份），
+  // 面板读 store——这里直接喂 store，等价于事件到达后的状态。
   it("bot-plan 事件整表替换步骤", async () => {
     renderPanel();
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalled();
     });
-    await fire("bot-plan", {
-      sessionId: "s1",
-      steps: [{ content: "换过的步骤", status: "pending" }],
-      updatedAt: 200,
-      turnStartedAt: 50,
+    act(() => {
+      planStore.applyEvent({
+        sessionId: "s1",
+        steps: [{ content: "换过的步骤", status: "pending" }],
+        updatedAt: 200,
+        turnStartedAt: 50,
+      });
     });
     expect(screen.getByText("换过的步骤")).toBeInTheDocument();
   });
@@ -120,18 +110,20 @@ describe("计划面板：计划段", () => {
     await waitFor(() => {
       expect(screen.getByText("本会话的步骤")).toBeInTheDocument();
     });
-    await fire("bot-plan", {
-      sessionId: "s2",
-      steps: [{ content: "别的会话的步骤", status: "pending" }],
-      updatedAt: 300,
-      turnStartedAt: 50,
+    act(() => {
+      planStore.applyEvent({
+        sessionId: "s2",
+        steps: [{ content: "别的会话的步骤", status: "pending" }],
+        updatedAt: 300,
+        turnStartedAt: 50,
+      });
     });
     expect(screen.queryByText("别的会话的步骤")).not.toBeInTheDocument();
     expect(screen.getByText("本会话的步骤")).toBeInTheDocument();
   });
 
   it("命令回包比事件旧时不覆盖新状态", async () => {
-    // 拉取挂起：先让事件到（新的），再放行命令回包（旧的）
+    // 拉取挂起：先落事件（新的），再放行命令回包（旧的）
     let release: (v: unknown) => void = () => {};
     const pending = new Promise((r) => {
       release = r;
@@ -149,11 +141,13 @@ describe("计划面板：计划段", () => {
       return null;
     });
     renderPanel();
-    await fire("bot-plan", {
-      sessionId: "s1",
-      steps: [{ content: "新状态", status: "pending" }],
-      updatedAt: 300,
-      turnStartedAt: 50,
+    act(() => {
+      planStore.applyEvent({
+        sessionId: "s1",
+        steps: [{ content: "新状态", status: "pending" }],
+        updatedAt: 300,
+        turnStartedAt: 50,
+      });
     });
     expect(screen.getByText("新状态")).toBeInTheDocument();
     release(null);
