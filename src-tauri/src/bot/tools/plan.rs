@@ -102,6 +102,13 @@ mod tests {
             .iter()
             .find(|e| e.event == "bot-plan")
             .expect("应记录 bot-plan 事件");
+        // 信封必须带会话号：前端按会话过滤这条事件，缺了就静默丢掉
+        // （面板于是不实时刷新，只在重新挂载拉快照时才对）
+        assert_eq!(
+            ev.payload["sessionId"],
+            serde_json::json!(sid),
+            "bot-plan 载荷必须带 sessionId"
+        );
         assert_eq!(
             ev.payload["steps"][0]["status"],
             serde_json::json!("completed")

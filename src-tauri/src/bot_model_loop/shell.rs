@@ -270,13 +270,11 @@ pub async fn run_model_loop(
     }
     // 流式事件出口统一收口（会话隔离）：非交互实例（后台定时任务）
     // 不发任何流式增量，防后台执行输出串进用户当前会话的 streaming 气泡。
-    // payload 统一注入 sessionId，前端按当前会话过滤——
+    // 会话号（信封）由 emit_recorded 统一盖章，这里不自带——
+    // 盖章权分散到各调用点，漏一处就静默丢事件。信封必须有会话号：
     // 事件不带会话标记时，两个会话并行跑 A 的流式增量会串进 B 正在显示的气泡。
-    let emit = |event: &str, mut payload: serde_json::Value| {
+    let emit = |event: &str, payload: serde_json::Value| {
         if stream_to_main {
-            if let Some(obj) = payload.as_object_mut() {
-                obj.insert("sessionId".into(), serde_json::json!(session_id));
-            }
             // 走统一出口：分配序号 + 写会话缓冲 + 广播。
             // 序号让客户端能按 seq 补齐（补齐与实时可能重叠，靠序号去重）。
             crate::bot::stream_log::emit_recorded(&app, session_id, event, payload);

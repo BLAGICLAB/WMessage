@@ -212,10 +212,20 @@ fn record(session_id: &str, event: &str, payload: &serde_json::Value) -> Option<
     Some(seq)
 }
 
-/// 会话级流式事件的统一出口：分配序号 → 写缓冲 → 广播。
+/// 会话级流式事件的统一出口：盖信封 → 分配序号 → 写缓冲 → 广播。
+///
+/// **信封字段在这里统一盖章**：载荷顶层的 `sessionId` 由本函数注入，调用方
+/// 不必自带。盖章权分散到各发射点，漏一处就静默丢事件——`bot-plan` 就漏过：
+/// 载荷里没有会话号，前端按会话过滤的闸门把每条实时更新都丢了，计划浮层
+/// 只在重新挂载（重开面板拉快照）时才更新。
+///
+/// 口径对齐业界事件信封（CloudEvents 的属性层 / Kafka 的 headers / ACP 的
+/// `session/update` params）：**会话号是信封，不进业务载荷**。信封只此一处
+/// 盖章，业务字段不许自带同名键。
 ///
 /// 序号写进载荷的 `seq` 字段（前端据此去重：补齐与实时可能重叠）。
-/// `session_id` 为 None 的事件不进缓冲（后台任务不推流，没有会话可归属）。
+/// `session_id` 为 None 的事件不进缓冲（后台任务不推流，没有会话可归属），
+/// 也就没有会话号可盖。
 pub fn emit_recorded<R: Runtime>(
     app: &AppHandle<R>,
     session_id: Option<&str>,
@@ -223,6 +233,10 @@ pub fn emit_recorded<R: Runtime>(
     mut payload: serde_json::Value,
 ) {
     if let Some(sid) = session_id {
+        // 信封：会话号由出口统一盖章（前端按会话过滤靠它）
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("sessionId".into(), serde_json::json!(sid));
+        }
         if let Some(seq) = record(sid, event, &payload) {
             if let Some(obj) = payload.as_object_mut() {
                 obj.insert("seq".into(), serde_json::json!(seq));
@@ -310,6 +324,32 @@ mod tests {
     /// 测例之间共享全局注册表：用唯一会话 id 隔开，避免互相串味。
     fn sid(tag: &str) -> String {
         format!("test-stream-log-{tag}-{}", uuid::Uuid::new_v4().simple())
+    }
+
+    /// 信封：会话号由统一出口盖章，调用方不自带也不会漏。
+    ///
+    /// 断言的是**缓冲里**的那份载荷——它与广播出去的是同一个值（盖章发生在
+    /// 写缓冲之前），所以这份断言同时罩住广播路径。
+    #[test]
+    fn emit_recorded_stamps_session_id_onto_payload() {
+        let app = tauri::test::mock_app();
+        let s = sid("stamp");
+        begin(&s);
+        emit_recorded(
+            app.handle(),
+            Some(&s),
+            "bot-plan",
+            serde_json::json!({ "steps": [] }),
+        );
+        let r = replay(&s, 0);
+        assert_eq!(r.events.len(), 1);
+        assert_eq!(
+            r.events[0].payload["sessionId"],
+            serde_json::json!(s),
+            "事件信封必须带会话号：前端按会话过滤，缺了就静默丢事件"
+        );
+        // 盖章不挤掉业务载荷
+        assert!(r.events[0].payload["steps"].is_array());
     }
 
     #[test]

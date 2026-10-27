@@ -150,7 +150,7 @@ pub(super) async fn apply_skill_route(
             rollback_attempted,
         }) => {
             // SSE 推 Skill 失败给前端（让用户看到半成品 + rollback 状态）
-            // payload 带 sessionId，前端按会话过滤，防串会话弹失败卡
+            // 会话号由 emit_recorded 统一盖信封，前端按会话过滤，防串会话弹失败卡
             crate::bot::stream_log::emit_recorded(
                 app,
                 stop.session_id(),
@@ -160,7 +160,6 @@ pub(super) async fn apply_skill_route(
                     "reason": reason,
                     "completedSummary": completed_summary,
                     "rollbackAttempted": rollback_attempted,
-                    "sessionId": stop.session_id(),
                 }),
             );
             // LLM 兜底：把「失败原因 + 已完成产物 + 回滚状态」拼进 system prompt 决策

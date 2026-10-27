@@ -148,7 +148,7 @@ pub(super) async fn persist_report_reply(
         app,
         Some(session_id),
         "bot-chat-report",
-        serde_json::json!({ "sessionId": session_id, "text": result.text }),
+        serde_json::json!({ "text": result.text }),
     );
     Ok(())
 }
