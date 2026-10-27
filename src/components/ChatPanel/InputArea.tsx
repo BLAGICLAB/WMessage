@@ -463,7 +463,8 @@ export function InputArea({
               </div>
             )}
           </div>
-          {/* ⚡ 推理强度（RE-1）：会话级覆盖下拉——默认跟随后台（缀「·默认」），
+          {/* ⚡ 推理强度（RE-1）：会话级覆盖下拉——未覆盖时按钮就叫「默认」
+              （跟随后台档位这一层解释放下拉首项的悬停提示里），
               选档只存本会话内存、不回写设置；向上弹出，交互镜像模型下拉 */}
           <div className="relative shrink-0">
             <button
@@ -476,8 +477,9 @@ export function InputArea({
               <span className="flex items-center gap-1">
                 <Zap size={13} aria-hidden className="shrink-0" />
                 <span>
-                  {EFFORT_LABELS[effort.effective]}
-                  {effort.isOverridden ? "" : "·默认"}
+                  {effort.isOverridden
+                    ? EFFORT_LABELS[effort.effective]
+                    : "默认"}
                 </span>
               </span>
               <span className="shrink-0 text-[10px]">

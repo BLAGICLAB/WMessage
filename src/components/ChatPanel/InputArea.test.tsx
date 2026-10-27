@@ -67,6 +67,20 @@ describe("InputArea 思考模式下拉", () => {
     expect(first.textContent).toBe("默认");
     expect(screen.queryByText(/后台默认（/)).toBeNull();
   });
+
+  it("未覆盖时按钮就叫「默认」，不再拼成「中·默认」", () => {
+    renderInput({ effort: { base: "medium", effective: "medium", isOverridden: false, menuOpen: false, setMenuOpen: vi.fn(), setForSession: vi.fn() } });
+    const chip = screen.getByTitle("推理强度：只影响当前会话的发送，不写入设置");
+    expect(chip.textContent).toContain("默认");
+    expect(chip.textContent).not.toContain("·");
+  });
+
+  it("覆盖后按钮显示所选档位，不再缀「默认」", () => {
+    renderInput({ effort: { base: "medium", effective: "high", isOverridden: true, menuOpen: false, setMenuOpen: vi.fn(), setForSession: vi.fn() } });
+    const chip = screen.getByTitle("推理强度：只影响当前会话的发送，不写入设置");
+    expect(chip.textContent).toContain("高");
+    expect(chip.textContent).not.toContain("默认");
+  });
 });
 
 describe("InputArea 发送/停止键在输入卡内", () => {

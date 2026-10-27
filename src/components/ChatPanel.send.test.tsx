@@ -483,7 +483,7 @@ describe("ChatPanel", () => {
     expect(screen.queryByText(/已停/)).not.toBeInTheDocument();
   });
 
-  it("推理强度：默认跟随后台（中·默认）随发送传入；会话覆盖只影响本会话且不回写（RE-1）", async () => {
+  it("推理强度：未覆盖按钮叫「默认」且发送带基线档位；会话覆盖只影响本会话且不回写（RE-1）", async () => {
     const user = userEvent.setup();
     // 上一个用例把 bot_chat 换成挂起 Promise，这里恢复默认实现（见 defaultInvoke 注释）
     mocks.invokeMock.mockImplementation(defaultInvoke);
@@ -491,8 +491,8 @@ describe("ChatPanel", () => {
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith("bot_sessions_load");
     });
-    // bot_get_config 未带 reasoningEffort → 基线 medium；按钮显示「中·默认」
-    expect(await screen.findByText(/中·默认/)).toBeInTheDocument();
+    // bot_get_config 未带 reasoningEffort → 基线 medium；未覆盖时按钮就叫「默认」
+    expect(await screen.findByText("默认")).toBeInTheDocument();
 
     // 发送第一条：生效档位 medium 随 bot_chat 传出；等回复落盘（busy 清除）
     const input = screen.getByPlaceholderText(/和机器人说点什么/);
@@ -506,7 +506,7 @@ describe("ChatPanel", () => {
     });
     expect(await screen.findByText("机器人回复")).toBeInTheDocument();
 
-    // 打开覆盖下拉选「高」→ 按钮去掉「·默认」角标
+    // 打开覆盖下拉选「高」→ 按钮改显所选档位
     await user.click(
       screen.getByTitle("推理强度：只影响当前会话的发送，不写入设置"),
     );
