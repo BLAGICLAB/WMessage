@@ -1,15 +1,16 @@
 // SettingsPage 子模块：本机运行环境卡。
 //
-// 两组各答一个问题：Python 包 / 运行时与启动器。
+// 三组各答一个问题：Python 包 / Node 全局包 / 运行时与启动器。
 // 数据来自后端 `env_check`（src-tauri/src/env_probe.rs）。
 //
-// **为什么分组折叠**：全量清单 34 项（18 Python + 16 运行时）摊平是一堵墙——
-// 真正要看的通常只是「哪个缺」。折叠后卡片保持一屏高，缺的那几项单独给
-// 安装命令。
+// **为什么分组折叠**：全量清单 37 项（18 Python + 3 Node + 16 运行时）摊平
+// 是一堵墙——真正要看的通常只是「哪个缺」。折叠后卡片保持一屏高，缺的那
+// 几项单独给安装命令。
 //
-// **为什么没有 Node 包组**：产品文档链路全走 Python，Node 那侧能力与 Python
-// 组逐项重复且产品零引用（见 env_probe.rs 模块头）。node/npm 本身在
-// 「运行时与启动器」组里——它们是 MCP 启动器，不是待检查的包。
+// **为什么 Node 组只有三个**：产品文档链路全走 Python，Node 那侧的
+// Word/Excel/PDF 能力与 Python 组重复；留的这三个要么是内置技能的真实
+// 依赖（pptxgenjs），要么是 Python 组覆盖不到的图表能力（mermaid /
+// Excalidraw）。理由见 env_probe.rs 模块头。
 
 import { useState } from "react";
 import type { EnvCheck } from "./types";
@@ -123,6 +124,8 @@ function EnvGroup({
               <div
                 key={it.name}
                 className="flex items-baseline gap-1.5 text-[11px]"
+                // 用途被 truncate 截掉时，悬停给全文
+                title={it.purpose}
               >
                 <span
                   className={
@@ -135,8 +138,14 @@ function EnvGroup({
                 >
                   {it.ok ? "✓" : "○"}
                 </span>
-                <span className="font-mono text-[var(--t3)]">{it.name}</span>
-                <span className="truncate text-[var(--t5)]">{it.purpose}</span>
+                {/* 包名不折行——scoped 名（@scope/name）折行后没法照着敲命令；
+                    用途是补充，截断可接受 */}
+                <span className="shrink-0 whitespace-nowrap font-mono text-[var(--t3)]">
+                  {it.name}
+                </span>
+                <span className="min-w-0 truncate text-[var(--t5)]">
+                  {it.purpose}
+                </span>
               </div>
             ))}
           </div>
@@ -156,6 +165,9 @@ function buildGroups(env: EnvCheck): Group[] {
   const pyMissing = env.python.packages
     .filter((p) => !p.available)
     .map((p) => p.name);
+  const nodeMissing = env.node.packages
+    .filter((p) => !p.available)
+    .map((p) => p.name);
   return [
     {
       key: "python",
@@ -168,6 +180,18 @@ function buildGroups(env: EnvCheck): Group[] {
       })),
       install: pyMissing.length
         ? `python3 -m pip install ${pyMissing.join(" ")}`
+        : null,
+    },
+    {
+      key: "node",
+      title: "Node 全局包",
+      items: env.node.packages.map((p) => ({
+        name: p.name,
+        ok: p.available,
+        purpose: p.purpose,
+      })),
+      install: nodeMissing.length
+        ? `npm i -g ${nodeMissing.join(" ")}`
         : null,
     },
     {

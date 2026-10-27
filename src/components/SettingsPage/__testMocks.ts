@@ -65,6 +65,7 @@ const defaultInvoke = async (cmd: string) => {
           version: "",
           npm: "",
           npmVersion: "",
+          packages: [],
         },
         launchers: [],
       };

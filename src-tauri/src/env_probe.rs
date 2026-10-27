@@ -1,13 +1,23 @@
 //! 本机运行环境探测 —— 设置页「本机运行环境」卡的数据源。
 //!
-//! 覆盖两组，各答一个问题：
+//! 覆盖三组，各答一个问题：
 //! - **Python 包**：办公文档族（Word/Excel/PPT/PDF）+ 数据/图表/抓取/模板
+//! - **Node 全局包**：三个与 Python 组不重复、且被内置技能或图表能力用到的包
 //! - **运行时与启动器**：MCP stdio 启动器白名单里的命令 + dotnet/git/libreoffice
 //!
-//! **为什么没有 Node 包组**：产品的文档链路（`create_word` / `create_excel` /
-//! `create_ppt` / `create_pdf`）全部走 Python 脚本（`py/scripts/*.py`），没有
-//! 一条 node 文档路径；Node 那侧的 Word/PPT/Excel/PDF/图片能力与 Python 组
-//! 逐项重复，且在产品代码里零引用——列出来只是让用户对着两列做同一件事。
+//! **Node 组只收三个包**：产品自带的文档链路（`create_word` / `create_excel` /
+//! `create_ppt` / `create_pdf`）全走 Python 脚本，Node 那侧的 Word/Excel/PDF
+//! 能力与 Python 组逐项重复，收进来只是让人对着两列做同一件事。留这三个的
+//! 理由各不相同：
+//! - `pptxgenjs`：**内置技能的真实依赖**——`ppt-craft-master/package.json`
+//!   直接声明了它、`scripts/generate.js` 里 `require('pptxgenjs')`，
+//!   `ppt-generator` 同理；技能自己的 SKILL.md 写的就是 `npm install -g
+//!   pptxgenjs`（全局——所以探的是全局 node_modules 根，不是项目本地）
+//! - `@mermaid-js/mermaid-cli`：Mermaid 图渲染（流程图/时序图出图），
+//!   Python 组里没有对应能力
+//! - `@agent-canvas/cli`：Agent Canvas（Excalidraw 画布，AI 绘图），
+//!   同上，Python 组覆盖不到
+//!
 //! node/npm 本身仍然要报：它们是 MCP stdio 启动器白名单里的命令，用户配
 //! MCP 服务器时靠它判断能不能起来（见 `LAUNCHERS`）。
 //!
@@ -68,13 +78,7 @@ pub struct PyPackage {
     pub purpose: String,
 }
 
-/// Node 运行时信息
-///
-/// **只报运行时，不报全局 npm 包**：产品自己的文档链路全走 Python
-/// （`py/scripts/*.py`），Node 那侧的 Word/PPT/Excel/PDF 能力与 Python 组
-/// 逐项重复，且在产品代码里零引用——列出来只是让用户对着两列做同一件事。
-/// node/npm 本身仍要报：它们是 MCP stdio 启动器白名单里的命令（见
-/// `LAUNCHERS`），用户配 MCP 服务器时靠它判断能不能起来。
+/// Node 运行时 + 全局 npm 包可用性
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct NodeEnv {
@@ -88,6 +92,20 @@ pub struct NodeEnv {
     pub npm: String,
     /// npm 版本串
     pub npm_version: String,
+    /// 全局 npm 包可用性（**全局**——技能的 SKILL.md 写的就是
+    /// `npm install -g pptxgenjs`，装到项目本地 require 不到）
+    pub packages: Vec<NodePackage>,
+}
+
+/// 单个全局 npm 包
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct NodePackage {
+    /// npm 包名
+    pub name: String,
+    pub available: bool,
+    /// 用途说明
+    pub purpose: String,
 }
 
 /// 单个运行时 / 启动器命令
@@ -144,6 +162,26 @@ const PY_PACKAGES: &[(&str, &[&str], bool, &str)] = &[
     ("jinja2", &["jinja2"], false, "模板渲染"),
     ("python-dateutil", &["dateutil"], false, "日期/时区处理"),
     ("opencv-python", &["cv2"], false, "图像预处理"),
+];
+
+/// 全局 npm 包清单：(包名, 用途)。
+///
+/// **只收与 Python 组不重复、且真有人用的**——见模块头「Node 组只收三个包」。
+/// scoped 包（`@mermaid-js/mermaid-cli`）在全局根下就是同名子目录，
+/// `Path::join` 直接拼即可。
+const NODE_PACKAGES: &[(&str, &str)] = &[
+    (
+        "pptxgenjs",
+        "PPT 生成（ppt-craft-master / ppt-generator 技能依赖）",
+    ),
+    (
+        "@mermaid-js/mermaid-cli",
+        "Mermaid 图渲染（流程图/时序图出图）",
+    ),
+    (
+        "@agent-canvas/cli",
+        "Agent Canvas（Excalidraw 画布，AI 绘图）",
+    ),
 ];
 
 /// 运行时 / 启动器清单：(命令名, 用途)。
@@ -210,6 +248,7 @@ pub async fn env_check() -> EnvCheck {
                     version: String::new(),
                     npm: String::new(),
                     npm_version: String::new(),
+                    packages: Vec::new(),
                 },
                 launchers: Vec::new(),
             }
@@ -244,12 +283,22 @@ fn python_env() -> PythonEnv {
 fn node_env() -> NodeEnv {
     let node = resolve_executable("node");
     let npm = resolve_executable("npm");
+    let root = npm_global_root(npm.as_deref());
+    let packages = NODE_PACKAGES
+        .iter()
+        .map(|(name, purpose)| NodePackage {
+            name: name.to_string(),
+            available: root.as_deref().is_some_and(|r| r.join(name).is_dir()),
+            purpose: purpose.to_string(),
+        })
+        .collect();
     NodeEnv {
         available: node.is_some(),
         node: path_str(node.as_deref()),
         version: version_of(node.as_deref(), &["--version"]),
         npm: path_str(npm.as_deref()),
         npm_version: version_of(npm.as_deref(), &["--version"]),
+        packages,
     }
 }
 
@@ -327,6 +376,49 @@ fn parse_probe_output(out: &str) -> Vec<PyPackage> {
 }
 
 // ── 命令与路径定位 ──
+
+/// 全局 node_modules 根：优先 `npm root -g`（跟着用户的 npm 配置走，
+/// nvm/volta/自定义 prefix 都对）；npm 不可用时退回平台常见路径。
+fn npm_global_root(npm: Option<&Path>) -> Option<PathBuf> {
+    if let Some(npm) = npm {
+        if let Some(out) = probe_output_with_timeout(&npm.to_string_lossy(), &["root", "-g"]) {
+            if let Some(p) = parse_npm_root(&out) {
+                if p.is_dir() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    fallback_global_root()
+}
+
+/// 从 `npm root -g` 的输出里取全局根路径。
+///
+/// npm 偶尔在路径前面打警告行（老版本把 warning 打到 stdout），所以取
+/// **最后一行非空内容**当路径，而不是第一行。
+fn parse_npm_root(out: &str) -> Option<PathBuf> {
+    out.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| PathBuf::from(l.trim()))
+}
+
+/// npm 不可用时的常见全局根（brew / 官方安装 / Windows %APPDATA%）
+fn fallback_global_root() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let candidates = [
+        PathBuf::from("/opt/homebrew/lib/node_modules"),
+        PathBuf::from("/usr/local/lib/node_modules"),
+    ];
+    #[cfg(windows)]
+    let candidates: [PathBuf; 1] = [std::env::var_os("APPDATA")
+        .map(|d| PathBuf::from(d).join("npm").join("node_modules"))
+        .unwrap_or_default()];
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let candidates: [PathBuf; 0] = [];
+
+    candidates.into_iter().find(|p| p.is_dir())
+}
 
 /// 在 PATH（含平台常见前缀）里定位可执行文件。None = 没装。
 fn resolve_executable(name: &str) -> Option<PathBuf> {
@@ -520,6 +612,37 @@ mod tests {
                 "启动器清单漏了 MCP 白名单里的 {launcher}"
             );
         }
+    }
+
+    #[test]
+    fn npm_root_输出取最后一行非空() {
+        // npm 把警告打到 stdout 时，路径在最后一行
+        let out = "npm warn config foo\n/opt/homebrew/lib/node_modules\n";
+        assert_eq!(
+            parse_npm_root(out),
+            Some(PathBuf::from("/opt/homebrew/lib/node_modules"))
+        );
+        assert_eq!(
+            parse_npm_root("/usr/local/lib/node_modules\n"),
+            Some(PathBuf::from("/usr/local/lib/node_modules"))
+        );
+        assert_eq!(parse_npm_root("\n  \n"), None);
+    }
+
+    #[test]
+    fn node_包清单不重复且非空() {
+        let mut names: Vec<&str> = NODE_PACKAGES.iter().map(|(n, _)| *n).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(names.len(), before, "npm 包名重复");
+        assert!(!NODE_PACKAGES.is_empty());
+        // scoped 包要能按「根/@scope/name」拼出来（Path::join 处理）
+        let scoped = NODE_PACKAGES
+            .iter()
+            .find(|(n, _)| n.starts_with('@'))
+            .expect("清单里应有一个 scoped 包");
+        assert!(Path::new("/root").join(scoped.0).is_absolute());
     }
 
     #[test]

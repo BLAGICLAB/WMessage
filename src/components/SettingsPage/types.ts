@@ -209,6 +209,13 @@ type EnvPyPackage = {
   purpose: string;
 };
 
+/** 单个全局 npm 包（与 Python 组不重复的那几个） */
+type EnvNodePackage = {
+  name: string;
+  available: boolean;
+  purpose: string;
+};
+
 /** 单个运行时 / 启动器命令 */
 type EnvLauncher = {
   name: string;
@@ -226,14 +233,16 @@ export type EnvCheck = {
     /** 空数组 = 探针没跑出结果（不是「一个都没装」） */
     packages: EnvPyPackage[];
   };
-  /** Node 运行时信息。**不报全局 npm 包**——产品文档链路全走 Python，
-   *  Node 那侧的办公能力与 Python 组逐项重复且产品零引用（见 env_probe.rs） */
+  /** Node 运行时 + 全局 npm 包。**只收与 Python 组不重复、且真有人用的**
+   *  三个（pptxgenjs 是内置技能依赖，另两个是 Python 组覆盖不到的图表能力，
+   *  见 env_probe.rs 模块头） */
   node: {
     available: boolean;
     node: string;
     version: string;
     npm: string;
     npmVersion: string;
+    packages: EnvNodePackage[];
   };
   launchers: EnvLauncher[];
 };

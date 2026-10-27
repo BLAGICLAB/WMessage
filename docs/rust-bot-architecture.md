@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 311 个文件、约 13.3 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 311 个文件、约 13.4 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -519,9 +519,10 @@ src-tauri/src/
 │                        自由脚本 run_python
 ├── env_probe.rs         本机运行环境探测（设置页「本机运行环境」卡的数据源，env_check 命令）：
 │                        Python 包（18 个：办公文档族 + 数据/图表/抓取/模板）/
+│                        Node 全局包（3 个：pptxgenjs 是内置技能依赖，mermaid-cli /
+│                        agent-canvas 是 Python 组覆盖不到的图表能力）/
 │                        运行时与启动器（16 个，含 MCP stdio 启动器白名单全量 +
-│                        dotnet/git/libreoffice）；**不报 Node 全局包**——产品文档
-│                        链路全走 Python，那侧能力与 Python 组逐项重复且零引用。
+│                        dotnet/git/libreoffice）。
 │                        **find_spec 只找不执行**——import 一遍 pandas/matplotlib 就是
 │                        秒级，18 个包串起来会撞穿 3s 探针超时，超时被杀的探针输出为空，
 │                        面板会把「装了」全报成「缺」；命令定位走 PATH + 平台前缀
