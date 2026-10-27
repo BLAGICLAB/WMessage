@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 311 个文件、约 13.4 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 311 个文件、约 13.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -39,7 +39,7 @@ src-tauri/src/
 │   ├── db/atomic_write_tests.rs  原子写单测
 │   ├── db/tasks.rs (972)  Task / Subtask / TaskFile；task_patch 写口校验截止与排期时间格式
 │   │                     （截止只认 YYYY-MM-DD 与 YYYY-MM-DDTHH:mm，解析不了的一律拒）
-│   ├── db/tasks_patch.rs (342)  task_patch / task_set_column 的锁内纯逻辑段（字段白名单应用器 +
+│   ├── db/tasks_patch.rs (343)  task_patch / task_set_column 的锁内纯逻辑段（字段白名单应用器 +
 │   │                     锁内读改写段）；与 db/tasks.rs **同层**，`super::` 语义不变
 │   ├── db/tasks_transfer.rs (313) 导出/导入纯逻辑段（路径闸门 check_export_path + v2 信封组装 +
 │   │                     导入事务 + bounded 读）；与 db/tasks.rs **同层**，`super::` 语义不变
@@ -62,7 +62,7 @@ src-tauri/src/
 │   ├── schedule_jobs.rs  内容型定时作业（T1）：XXL-JOB 式调度日志——重试/自动暂停/
 │   │                     错过消费 + scheduled_job_runs 执行历史；定时单源本表
 │   │                     （open_db 迁移把旧 tasks.schedule 迁入并清空任务卡侧）
-│   ├── db/trace.rs (909)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
+│   ├── db/trace.rs (927)   执行痕迹三表 exec_traces/exec_spans/file_changes（Agent 透明化
 │   │                     设计 §4.1）：append-only 观测面 + 钳制单源（SPAN_TEXT_MAX 16KB /
 │   │                     MAX_DIFF_LINES）+ 保留期清理 retire_traces_before（僵尸 running 同删）；
 │   │                     保留期边界（TRACE_RETENTION_MIN/MAX_DAYS）与词元统计可查窗口
@@ -80,7 +80,7 @@ src-tauri/src/
 │   ├── db/trace_usage.rs (218)  词元统计聚合面：按日 / 按模型 / 按模型×按日三档
 │   ├── db/trace_session.rs (417) 本会话文件改动面（聊天侧栏「文件」）：清单 / 详情 /
 │   │                     累计 diff（累计口径 vs 逐次降级口径）
-│   ├── db/trace/tests.rs (1063)  痕迹层单测（三表写入 / 保留期 / 词元统计 / 查询面）
+│   ├── db/trace/tests.rs (1263)  痕迹层单测（三表写入 / 保留期 / 词元统计 / 查询面）
 │   ├── db/trace_session/session_file_changes_tests.rs (319) 本会话文件改动单测
 │   ├── db/apps.rs        程序 apps 表 CRUD + app_runs 运行史 + app_versions 版本快照
 │   │                     （滚动保留最近 100 版，见 docs/APPS-DESIGN-2026-10-15.md §5）
