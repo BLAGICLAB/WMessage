@@ -397,18 +397,20 @@ export function InputArea({
             <Search size={10} aria-hidden /> {VERBOSE_LABELS[verbose.level]}
           </button>
           {/* 🧠 模型下拉（UI-1 从顶栏移入输入卡底栏；按钮/列表/切换逻辑不变，
-              相对按钮向上弹出，免 JS 测量定位） */}
-          <div className="relative shrink-0">
+              相对按钮向上弹出，免 JS 测量定位）。标签宽度上限 150px；本 chip 是
+              底栏唯一可收缩项（min-w-0）：窄窗下其余芯片都 shrink-0，空间不够时
+              由它先压标签，发送/停止键才不会被顶出输入卡右缘 */}
+          <div className="relative min-w-0">
             <button
               type="button"
               ref={modelBtnRef}
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
+              className="flex min-w-0 items-center gap-1 rounded-lg px-2 py-1 text-xs text-[var(--t4)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97]"
               title="切换模型"
               onClick={() => model.setMenuOpen((v) => !v)}
             >
-              <span className="flex min-w-0 items-center gap-1 truncate">
+              <span className="flex min-w-0 items-center gap-1">
                 <Brain size={13} aria-hidden className="shrink-0" />
-                <span className="truncate max-w-[150px]">{model.label}</span>
+                <span className="min-w-0 truncate max-w-[150px]">{model.label}</span>
               </span>
               <span className="shrink-0 text-[10px]">
                 {model.menuOpen ? "▴" : "▾"}
@@ -496,7 +498,7 @@ export function InputArea({
                   onClick={() => effort.setForSession(null)}
                   title={`清掉本会话覆盖，跟随后台默认（当前：${EFFORT_LABELS[effort.base]}）`}
                 >
-                  后台默认（{EFFORT_LABELS[effort.base]}）
+                  默认
                 </button>
                 {(["off", "low", "medium", "high"] as const).map((lv) => (
                   <button
