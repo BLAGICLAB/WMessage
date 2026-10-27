@@ -65,6 +65,75 @@ describe("SubagentDetailPanel 子 agent 只读详情", () => {
     expect(screen.getByText(/2\. 标注推断项/)).toBeTruthy();
   });
 
+  // 执行详情窗：逐步动作从列表行挪进详情页（2026-10-27），钉住位置与形态
+  it("执行详情逐步列出工具调用（工具 · 预览 · 耗时），进行中的动作没有耗时", () => {
+    render(
+      <SubagentDetailPanel
+        run={run({
+          status: "running",
+          running: true,
+          activity: [
+            { toolCallId: "t2", tool: "grep_files", ok: null, ms: null, preview: "P: 并发", at: 3 },
+            {
+              toolCallId: "t1",
+              tool: "read_text_file",
+              ok: true,
+              ms: 8,
+              preview: "SPEC.md（第 1-20 行）",
+              at: 1,
+            },
+          ],
+        })}
+        onBack={() => {}}
+      />,
+    );
+    expect(screen.getByText("read_text_file")).toBeTruthy();
+    expect(screen.getByText("8ms")).toBeTruthy();
+    expect(screen.getByText("grep_files")).toBeTruthy();
+  });
+
+  it("执行详情窗口定高 5 行、超出滚动（max-h-20 + overflow-y-auto）", () => {
+    render(
+      <SubagentDetailPanel
+        run={run({
+          status: "running",
+          running: true,
+          activity: [
+            { toolCallId: "t1", tool: "grep_files", ok: true, ms: 4, preview: "P: 并发", at: 1 },
+          ],
+        })}
+        onBack={() => {}}
+      />,
+    );
+    const win = screen.getByText("执行详情").nextElementSibling as HTMLElement;
+    expect(win.className).toContain("max-h-20");
+    expect(win.className).toContain("overflow-y-auto");
+  });
+
+  it("执行详情位于状态格（用时/trace）之后、结果之前", () => {
+    render(
+      <SubagentDetailPanel
+        run={run({
+          result: { summary: "结论一句话" },
+          activity: [
+            { toolCallId: "t1", tool: "grep_files", ok: true, ms: 4, preview: "P: 并发", at: 1 },
+          ],
+        })}
+        onBack={() => {}}
+      />,
+    );
+    const log = screen.getByText("执行详情");
+    const result = screen.getByText("结果");
+    expect(
+      log.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("没有动作数据（终态行事件即焚）不渲染执行详情块", () => {
+    render(<SubagentDetailPanel run={run()} onBack={() => {}} />);
+    expect(screen.queryByText("执行详情")).toBeNull();
+  });
+
   it("终态用时定死在 finishedAt-startedAt，并显示起止时刻与 trace", () => {
     const t0 = Date.now();
     vi.setSystemTime(t0);

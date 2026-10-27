@@ -27,9 +27,10 @@ export type SubagentActivityItem = {
   at: number;
 };
 
-/** 每个子 agent 保留的最近动作条数：动作流回答「现在在干什么」，
- *  更早的滚出视野即可——完整回放有 bot.log 与审计事件。 */
-export const ACTIVITY_MAX_ITEMS = 6;
+/** 每个子 agent 保留的最近动作条数：详情页的「执行详情」窗口按条滚动回看，
+ *  默认工具调用预算就是 100 次，留满 100 条整趟每一步都在窗里；仍是事件即焚
+ *  不落库——历史会话回看走详情面板的结果与 digest。 */
+export const ACTIVITY_MAX_ITEMS = 100;
 
 function eventToItem(e: SubagentActivityEvent, now: number): SubagentActivityItem {
   const done = e.phase === "return";

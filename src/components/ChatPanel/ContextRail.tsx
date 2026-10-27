@@ -15,7 +15,6 @@ import {
   ListTodo,
   Loader2,
   Paperclip,
-  X,
 } from "lucide-react";
 import { basename } from "../../format";
 import { formatCommandError, handleCommandError } from "../../lib/errorHandler";
@@ -39,7 +38,7 @@ import {
 import type { Task } from "../../types";
 import {
   SubagentCancelButton,
-  SubagentProgress,
+  SubagentElapsed,
 } from "./SubagentRowLine";
 import { SUBAGENT_STATUS } from "./constants";
 import { SubagentDetailPanel } from "./SubagentDetailPanel";
@@ -80,7 +79,8 @@ export type SubagentRun = {
   /** 收尾结构化结果：库里是 JSON 对象字符串，同上（含数组/原文兜底） */
   result?: string | string[] | Record<string, unknown> | null;
   traceId?: string | null;
-  /** 最近动作流（在途行才有数据；事件即焚，终态行不渲染动作区） */
+  /** 最近动作流（useChatSubagents 只给在途行挂数据；事件即焚不落库）——
+   *  详情页「执行详情」窗口消费，列表行不渲染 */
   activity?: SubagentActivityItem[];
 };
 
@@ -697,6 +697,9 @@ export function ContextRail({
             <div className="space-y-0.5">
               {subagents.map((s) => (
                 <div key={s.id} className="rounded-md hover:bg-[var(--hover-bg)]">
+                  {/* 列表行只留「名称 + 用时 + 停止键」：进度读数与逐步动作
+                      都在详情页，列表塞满数字就成了仪表盘。状态由图标带——
+                      在途转圈，终态看颜色。 */}
                   <div className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-xs text-[var(--t3)]">
                     <button
                       type="button"
@@ -718,19 +721,13 @@ export function ContextRail({
                         />
                       )}
                       <span className="min-w-0 flex-1 truncate">{s.title}</span>
-                      <span
-                        className={`shrink-0 text-[10px] ${SUBAGENT_STATUS[s.status].color}`}
-                      >
-                        {SUBAGENT_STATUS[s.status].label}
-                      </span>
-                      <SubagentProgress run={s} />
+                      <SubagentElapsed run={s} />
                     </button>
                     <SubagentCancelButton
                       run={s}
                       onCancel={onCancelSubagent}
                     />
                   </div>
-                  <SubagentActivityLines run={s} />
                 </div>
               ))}
             </div>
@@ -742,38 +739,3 @@ export function ContextRail({
   );
 }
 
-/** 动作流区（在途行下挂最近动作）：一行一条 `工具 · 预览 · 耗时`。
- *  事件即焚——终态行没有 activity 数据，整块不渲染；这里回答的是
- *  「它现在在干什么 / 有没有在打转」，完整回放有 bot.log。 */
-function SubagentActivityLines({ run: s }: { run: SubagentRun }) {
-  if (!s.running || !s.activity || s.activity.length === 0) return null;
-  return (
-    <div className="mb-1 ml-[26px] mr-2 space-y-px border-l border-[var(--border)] pl-2">
-      {s.activity.map((a, i) => (
-        <div
-          key={`${a.toolCallId ?? i}-${a.at}`}
-          className="flex items-center gap-1 text-[10px] leading-4"
-        >
-          {a.ok === null ? (
-            <Loader2
-              size={9}
-              aria-hidden
-              className="shrink-0 wmsg-activity text-[var(--brand)]"
-            />
-          ) : a.ok ? (
-            <Check size={9} aria-hidden className="shrink-0 text-[var(--success)]" />
-          ) : (
-            <X size={9} aria-hidden className="shrink-0 text-[var(--danger)]" />
-          )}
-          <span className="shrink-0 font-mono text-[var(--t5)]">{a.tool}</span>
-          <span className="min-w-0 flex-1 truncate text-[var(--t5)]" title={a.preview}>
-            {a.preview}
-          </span>
-          {a.ms != null && (
-            <span className="shrink-0 font-mono text-[var(--t5)]">{a.ms}ms</span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}

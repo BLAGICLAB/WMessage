@@ -3,7 +3,7 @@
 // 只读：执行中的子 agent 边跑边看，不在这里给任何干预入口——在途能做的只有
 // 取消，那留在列表行上（贴着状态图标，比藏在详情页深处更够得着）。
 
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Check, Loader2, X } from "lucide-react";
 import type { SubagentRun } from "./ContextRail";
 import { SubagentProgress } from "./SubagentRowLine";
 import { fmtElapsed, useElapsed } from "./useElapsed";
@@ -65,6 +65,47 @@ function timeText(ms?: number | null): string {
   return new Date(ms).toLocaleString("zh-CN", { hour12: false });
 }
 
+/** 执行详情窗：每一步工具调用一行 `工具 · 预览 · 耗时`，窗口定高 5 行、
+ *  超出滚动——逐步动作是点进详情才看的东西。数据新在头，最新一步永远
+ *  在窗顶，不用拖着滚动条追直播。动作流事件即焚，useChatSubagents 只给
+ *  在途行挂数据，终态行没有 activity，整块不渲染（历史回看走结果与 digest）。 */
+function SubagentActivityLog({ run: s }: { run: SubagentRun }) {
+  if (!s.activity || s.activity.length === 0) return null;
+  return (
+    <div className="rounded-md bg-[var(--hover-bg)] px-2 py-1.5">
+      <p className="text-[10px] font-medium text-[var(--t5)]">执行详情</p>
+      {/* max-h-20 = 80px：行高 leading-4（16px）× 5 行，第六行起进滚动 */}
+      <div className="mt-1 max-h-20 overflow-y-auto">
+        {s.activity.map((a, i) => (
+          <div
+            key={`${a.toolCallId ?? i}-${a.at}`}
+            className="flex items-center gap-1 text-[10px] leading-4"
+          >
+            {a.ok === null ? (
+              <Loader2
+                size={9}
+                aria-hidden
+                className="shrink-0 wmsg-activity text-[var(--brand)]"
+              />
+            ) : a.ok ? (
+              <Check size={9} aria-hidden className="shrink-0 text-[var(--success)]" />
+            ) : (
+              <X size={9} aria-hidden className="shrink-0 text-[var(--danger)]" />
+            )}
+            <span className="shrink-0 font-mono text-[var(--t5)]">{a.tool}</span>
+            <span className="min-w-0 flex-1 truncate text-[var(--t5)]" title={a.preview}>
+              {a.preview}
+            </span>
+            {a.ms != null && (
+              <span className="shrink-0 font-mono text-[var(--t5)]">{a.ms}ms</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SubagentDetailPanel({
   run: s,
   onBack,
@@ -108,6 +149,8 @@ export function SubagentDetailPanel({
         <span>用时：{secs != null ? fmtElapsed(secs) : "—"}</span>
         <span className="truncate">trace：{s.traceId ?? "—"}</span>
       </div>
+
+      <SubagentActivityLog run={s} />
 
       {summary != null && <DetailBlock label="结果" text={summary} defaultOpen />}
       {acceptance != null && <DetailBlock label="验收标准" text={acceptance} />}

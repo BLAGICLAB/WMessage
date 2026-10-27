@@ -503,81 +503,59 @@ describe("ContextRail 文件页双子页", () => {
   });
 });
 
-// 六态标签曾在本文件与 ChatPanel 的收尾提示各写一份，同一状态两处措辞不同
-// （succeeded 一处「完成」一处「已完成」）。现在共用 constants 一份，这里钉住
-// 侧栏渲染出来的就是那一份
-describe("ContextRail 子 Agent 状态标签", () => {
-  it("六态徽标文案 = constants 共享表", () => {
-    const STATES: [SubagentRun["status"], string][] = [
-      ["queued", "排队中"],
-      ["running", "执行中"],
-      ["succeeded", "完成"],
-      ["failed", "失败"],
-      ["cancelled", "已取消"],
-      ["budget_exceeded", "预算耗尽"],
+// 右侧栏列表行瘦身为「名称 + 用时 + 停止键」：状态标签、轮数/调用数进度
+// 与逐步动作流都进详情页——列表塞满数字就成了仪表盘，看过程点行进去。
+describe("ContextRail 子 Agent 列表行", () => {
+  const RUNNING_ROW: SubagentRun = {
+    id: "sa_1",
+    title: "读 SPEC 出素材稿",
+    status: "running",
+    running: true,
+    roundsUsed: 33,
+    roundsBudget: 50,
+    toolCallsUsed: 98,
+    toolCallsBudget: 100,
+    activity: [
+      { toolCallId: "t1", tool: "grep_files", ok: true, ms: 4, preview: "P: 并发", at: 1 },
+    ],
+  };
+
+  it("行上只有名称、用时和停止键；进度读数与动作流不进列表", () => {
+    // startedAt 取当下：describe 收集到用例执行间隔不定，固定值会让耗时在 0s/1s 间漂
+    renderRail({
+      tab: "agents",
+      subagents: [{ ...RUNNING_ROW, startedAt: Date.now() }],
+    });
+    expect(screen.getByText("读 SPEC 出素材稿")).toBeInTheDocument();
+    expect(screen.getByText("0s")).toBeInTheDocument();
+    expect(screen.getByLabelText("取消子 agent：读 SPEC 出素材稿")).toBeInTheDocument();
+    expect(screen.queryByText("33/50 轮")).toBeNull();
+    expect(screen.queryByText("98/100 次")).toBeNull();
+    expect(screen.queryByText("执行中")).toBeNull();
+    expect(screen.queryByText("grep_files")).toBeNull();
+  });
+
+  it("六态行都能渲染（图标色查表不炸）", () => {
+    const STATES: SubagentRun["status"][] = [
+      "queued",
+      "running",
+      "succeeded",
+      "failed",
+      "cancelled",
+      "budget_exceeded",
     ];
     renderRail({
       tab: "agents",
-      subagents: STATES.map(([status], i) => ({
+      subagents: STATES.map((status, i) => ({
         id: `sa_${i}`,
         title: `子任务${i}`,
         status,
         running: status === "running" || status === "queued",
       })),
     });
-    for (const [, label] of STATES) {
-      expect(screen.getByText(label)).toBeInTheDocument();
+    for (let i = 0; i < STATES.length; i++) {
+      expect(screen.getByText(`子任务${i}`)).toBeInTheDocument();
     }
-  });
-});
-
-// 动作流（在途行下挂最近动作）：回答「它现在在干什么 / 有没有在打转」。
-// 终态行不渲染动作区——事件即焚，历史回看走详情面板。
-describe("ContextRail 子 Agent 动作流", () => {
-  it("在途行显示最近动作（工具 · 预览 · 耗时），进行中的动作没有耗时", () => {
-    renderRail({
-      tab: "agents",
-      subagents: [
-        {
-          id: "sa_1",
-          title: "读 SPEC 出素材稿",
-          status: "running",
-          running: true,
-          activity: [
-            { toolCallId: "t2", tool: "grep_files", ok: null, ms: null, preview: "P: 并发", at: 3 },
-            {
-              toolCallId: "t1",
-              tool: "read_text_file",
-              ok: true,
-              ms: 8,
-              preview: "SPEC.md（第 1-20 行 / 共 173 行）",
-              at: 1,
-            },
-          ],
-        },
-      ],
-    });
-    expect(screen.getByText("read_text_file")).toBeInTheDocument();
-    expect(screen.getByText("8ms")).toBeInTheDocument();
-    expect(screen.getByText("grep_files")).toBeInTheDocument();
-  });
-
-  it("终态行不渲染动作区（事件即焚，终态没有新动作）", () => {
-    renderRail({
-      tab: "agents",
-      subagents: [
-        {
-          id: "sa_1",
-          title: "已完成的任务",
-          status: "succeeded",
-          running: false,
-          activity: [
-            { toolCallId: "t1", tool: "read_text_file", ok: true, ms: 8, preview: "", at: 1 },
-          ],
-        },
-      ],
-    });
-    expect(screen.queryByText("read_text_file")).toBeNull();
   });
 });
 

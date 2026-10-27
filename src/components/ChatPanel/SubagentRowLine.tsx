@@ -73,8 +73,9 @@ function useRunSeconds(s: SubagentRun): number | null {
   return live ?? settled;
 }
 
-/** 进度段：轮数 + 运行时长。侧栏有自己的一套状态图标与文字标签，只复用这一段
- *  （两处各算一遍轮数文案，早晚有一边忘加分母）。 */
+/** 进度段：轮数 + 工具调用数 + 运行时长。聊天内嵌行与详情页头共用这一段
+ *  （两处各算一遍轮数文案，早晚有一边忘加分母）；右侧栏列表行只要用时——
+ *  进度细节在详情页看，列表行塞满数字就成了仪表盘。 */
 export function SubagentProgress({ run: s }: { run: SubagentRun }) {
   const rounds = roundsText(s);
   const calls = toolCallsText(s);
@@ -104,6 +105,21 @@ export function SubagentProgress({ run: s }: { run: SubagentRun }) {
         </span>
       )}
     </>
+  );
+}
+
+/** 仅运行时长：右侧栏列表行的瘦身版（名称 + 用时 + 停止键），进度与
+ *  逐步动作都在详情页。口径与 SubagentProgress 同源（useRunSeconds 一份）。 */
+export function SubagentElapsed({ run: s }: { run: SubagentRun }) {
+  const secs = useRunSeconds(s);
+  if (secs == null) return null;
+  return (
+    <span
+      className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
+      title="本轮运行时长"
+    >
+      {fmtElapsed(secs)}
+    </span>
   );
 }
 
