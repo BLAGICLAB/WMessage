@@ -3,14 +3,15 @@
 // 三段式，各答一个问题，刻意不合并：
 // - 计划：模型自报的执行进度（update_plan 工具写入，后端整表替换）
 // - 后台任务：子 agent 在途与终态（复用右侧栏同一份运行列表）
-// - 环境信息：本会话动过的文件（会话口径累计 ±行，不是 git 差异）
+// - 环境信息：本会话动过的文件概览（会话口径累计 ±行，不是 git 差异）；
+//   完整清单在右侧栏文件页的「改动」子页——同一份数据不画两遍
 //
 // 「计划」与「后台任务」是两套机制：前者答「做到哪」，后者答「什么还在跑」，
 // 混成一段会让人分不清是进度还是并发。
 
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, Circle, Loader2, X } from "lucide-react";
-import { basename, formatMonthDayTime } from "../../format";
+import { formatMonthDayTime } from "../../format";
 import { usePlanState, type PlanStepStatus } from "./usePlanState";
 import type { SubagentRun } from "./ContextRail";
 import { SUBAGENT_STATUS } from "./constants";
@@ -21,9 +22,6 @@ import {
 import { formatCommandError, handleCommandError } from "../../lib/errorHandler";
 import { useTauriListen } from "../../lib/useTauriListen";
 
-/** 环境信息段最多列几个文件：再多就变成清单墙，看的人要的是概览 */
-const MAX_FILE_ROWS = 6;
-
 type PlanPanelProps = {
   sessionId: string | null;
   /** 子 agent 运行列表（与右侧栏同一份；在途 + 刚结束） */
@@ -31,6 +29,8 @@ type PlanPanelProps = {
   onClose: () => void;
   /** 更上层浮层开着（命令面板等）：Esc 让位给它，面板不动 */
   escBlocked?: boolean;
+  /** 跳到右侧栏文件页的「改动」子页（完整清单在那里，不在浮层里重画） */
+  onShowFileChanges?: () => void;
 };
 
 export function PlanPanel({
@@ -38,6 +38,7 @@ export function PlanPanel({
   subagents,
   onClose,
   escBlocked,
+  onShowFileChanges,
 }: PlanPanelProps) {
   const { plan, stale } = usePlanState(sessionId);
   /** 文件清单带上会话 id：切会话时靠它派生「不属于当前会话 → 不显示」 */
@@ -222,7 +223,8 @@ export function PlanPanel({
           )}
         </section>
 
-        {/* 环境信息 */}
+        {/* 环境信息：只报概览。完整清单在右侧栏文件页的「改动」子页——
+            同一份数据两处渲染，改一处就漏一处 */}
         <section aria-label="环境信息">
           <div className="mb-1 flex items-center gap-1.5">
             <span className="text-[11px] font-medium text-[var(--t2)]">
@@ -240,30 +242,23 @@ export function PlanPanel({
             <p className="text-[11px] text-[var(--t4)]">本会话没有文件改动</p>
           ) : (
             <>
-              <p className="mb-1 text-[11px] text-[var(--t3)]">
+              <p
+                className="text-[11px] text-[var(--t3)]"
+                title="会话口径（累计改动，非 git 差异）"
+              >
                 累计{" "}
                 <span className="text-[var(--success)]">+{added}</span> /{" "}
                 <span className="text-[var(--danger)]">-{deleted}</span> 行
               </p>
-              <ul className="space-y-0.5">
-                {fileItems.slice(0, MAX_FILE_ROWS).map((f) => (
-                  <li
-                    key={f.path}
-                    className="truncate text-[11px] text-[var(--t3)]"
-                    title={f.path}
-                  >
-                    {basename(f.path)}
-                  </li>
-                ))}
-              </ul>
-              {fileItems.length > MAX_FILE_ROWS && (
-                <p className="text-[10px] text-[var(--t4)]">
-                  还有 {fileItems.length - MAX_FILE_ROWS} 个文件
-                </p>
+              {onShowFileChanges && (
+                <button
+                  type="button"
+                  className="mt-1 text-[11px] text-[var(--brand)] hover:underline"
+                  onClick={onShowFileChanges}
+                >
+                  在右侧栏看改动清单 →
+                </button>
               )}
-              <p className="mt-1 text-[10px] text-[var(--t5)]">
-                会话口径（累计改动，非 git 差异）
-              </p>
             </>
           )}
         </section>

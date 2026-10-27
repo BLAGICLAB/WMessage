@@ -759,6 +759,7 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
               subagents={subagentRuns}
               onClose={() => setPlanOpen(false)}
               escBlocked={escBlocked}
+              onShowFileChanges={openFileChanges}
             />
           </div>
         )}

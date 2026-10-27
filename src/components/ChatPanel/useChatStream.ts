@@ -334,8 +334,9 @@ export function useChatStream(params: ChatStreamParams) {
       });
     });
     //  结构化文件变更：dispatch 在有 trace 的执行会话里 emit（全窗口）——
-    // 每次落盘修改一条，按会话累积进 meta，收尾并入最终消息给 FileSummary 用。
-    // 主聊天（无 trace）不产生事件 → FileSummary 走正则兜底，行为不变。
+    // 每次落盘修改一条，按会话累积进 meta，收尾并入最终消息，作交付物区
+    // 「produced」半边的来源。主聊天（无 trace）不产生事件 → 那半边为空，
+    // 交付物只来自正文自报。
     const unFileChanged = reg<{
       path?: string;
       kind?: "create" | "modify" | "delete";

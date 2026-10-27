@@ -199,7 +199,11 @@ describe("计划面板：其余两段", () => {
     expect(screen.getByText(/1 个执行中/)).toBeInTheDocument();
   });
 
-  it("环境信息段给会话口径的累计增删行，并标明非 git 差异", async () => {
+  // 环境信息段只留概览 + 跳转：完整清单在右侧栏文件页的「改动」子页，
+  // 同一份数据不在浮层里再画一遍
+  it("环境信息段给会话口径的累计增删行与跳转，清单不重复渲染", async () => {
+    const user = userEvent.setup();
+    const onShowFileChanges = vi.fn();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_plan_state") return null;
       if (cmd === "bot_session_file_changes")
@@ -218,13 +222,19 @@ describe("计划面板：其余两段", () => {
         };
       return null;
     });
-    renderPanel();
+    renderPanel({ onShowFileChanges });
     await waitFor(() => {
       expect(screen.getByText("+12")).toBeInTheDocument();
     });
     expect(screen.getByText("-3")).toBeInTheDocument();
-    expect(screen.getByText("a.rs")).toBeInTheDocument();
-    expect(screen.getByText(/非 git 差异/)).toBeInTheDocument();
+    expect(
+      screen.getByTitle("会话口径（累计改动，非 git 差异）"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("a.rs")).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: /在右侧栏看改动清单/ }),
+    );
+    expect(onShowFileChanges).toHaveBeenCalled();
   });
 });
 

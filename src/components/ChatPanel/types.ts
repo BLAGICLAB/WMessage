@@ -68,8 +68,8 @@ export type Msg = {
   thinking?: string;
   /** 本轮工具调用行（折叠显示） */
   tools?: ToolCall[];
-  /** 本轮结构化文件变更（bot-file-changed 累积；FileSummary 优先用，
-   *  空时回退正文正则抽取） */
+  /** 本轮结构化文件变更（bot-file-changed 累积）：交付物区「produced」
+   *  半边的来源；正文自报（declared）才是主来源，本字段只作兜底 */
   fileChanges?: FileChangeLite[];
   /** Skill 失败半成品上下文（折叠显示 ⚠️ 行；见 SkillFailure 说明） */
   skillFailure?: SkillFailure;
