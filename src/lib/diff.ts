@@ -14,11 +14,11 @@ const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 export function diffLineClass(line: string): string {
   if (line.startsWith("+++") || line.startsWith("---"))
     return "text-[var(--t5)]";
-  if (line.startsWith("@@")) return "text-[var(--info,#3b82f6)]";
+  if (line.startsWith("@@")) return "text-[var(--info)]";
   if (line.startsWith("+"))
-    return "bg-[var(--ok,#22c55e)]/10 text-[var(--ok,#22c55e)]";
+    return "bg-[var(--success)]/10 text-[var(--success)]";
   if (line.startsWith("-"))
-    return "bg-[var(--danger,#ef4444)]/10 text-[var(--danger,#ef4444)]";
+    return "bg-[var(--danger)]/10 text-[var(--danger)]";
   return "";
 }
 

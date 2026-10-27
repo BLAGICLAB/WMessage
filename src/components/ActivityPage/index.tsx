@@ -7,40 +7,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, Bot, ExternalLink } from "lucide-react";
 import { TracePanel } from "../TracePanel";
 import { formatCommandError } from "../../lib/errorHandler";
-import { traceList, traceListByOrigin, type TraceRow } from "../../lib/trace";
+import {
+  traceList,
+  traceListByOrigin,
+  TRACE_ORIGIN_LABEL,
+  TRACE_STATUS_CLS,
+  TRACE_STATUS_LABEL,
+  type TraceRow,
+} from "../../lib/trace";
 import { formatMsShort, formatShortDateTime } from "../../format";
-
-const ORIGIN_LABEL: Record<string, string> = {
-  manual: "手动",
-  scheduled: "定时",
-  batch: "批量",
-  // 聊天回合也落 trace（origin="chat"）：不加这项就显示英文原值
-  chat: "聊天",
-};
 
 /** 来源筛选项：null = 全部（不按来源过滤） */
 const ORIGIN_FILTERS: Array<{ key: string | null; label: string }> = [
   { key: null, label: "全部" },
-  { key: "manual", label: ORIGIN_LABEL.manual },
-  { key: "scheduled", label: ORIGIN_LABEL.scheduled },
-  { key: "batch", label: ORIGIN_LABEL.batch },
-  { key: "chat", label: ORIGIN_LABEL.chat },
+  { key: "manual", label: TRACE_ORIGIN_LABEL.manual },
+  { key: "scheduled", label: TRACE_ORIGIN_LABEL.scheduled },
+  { key: "batch", label: TRACE_ORIGIN_LABEL.batch },
+  { key: "chat", label: TRACE_ORIGIN_LABEL.chat },
 ];
-
-const STATUS_CLS: Record<string, string> = {
-  done: "text-[var(--success)]",
-  failed: "text-[var(--danger)]",
-  running: "text-[var(--brand)]",
-  stopped: "text-[var(--t5)]",
-  timeout: "text-[var(--t5)]",
-};
-const STATUS_LABEL: Record<string, string> = {
-  done: "完成",
-  failed: "失败",
-  running: "执行中",
-  stopped: "已停止",
-  timeout: "超时",
-};
 
 export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
@@ -160,10 +144,10 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
                     {t.title || t.sessionId}
                   </span>
                   <span className="shrink-0 nm-inset px-1.5 py-0.5 text-[10px] text-[var(--t4)]">
-                    {ORIGIN_LABEL[t.origin] ?? t.origin}
+                    {TRACE_ORIGIN_LABEL[t.origin] ?? t.origin}
                   </span>
                   <span
-                    className={`shrink-0 text-[10px] ${STATUS_CLS[t.status] ?? ""}`}
+                    className={`shrink-0 text-[10px] ${TRACE_STATUS_CLS[t.status] ?? ""}`}
                     title={t.error ?? undefined}
                   >
                     {t.status === "running" && (
@@ -173,7 +157,7 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
                         className="mr-1 inline wmsg-activity-pulse"
                       />
                     )}
-                    {STATUS_LABEL[t.status] ?? t.status}
+                    {TRACE_STATUS_LABEL[t.status] ?? t.status}
                   </span>
                   <span className="w-16 shrink-0 text-right font-mono text-[10px] tabular-nums text-[var(--t5)]">
                     {t.finishedAt ? formatMsShort(t.finishedAt - t.startedAt) : "—"}

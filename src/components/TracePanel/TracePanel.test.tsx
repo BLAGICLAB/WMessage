@@ -100,7 +100,7 @@ describe("DiffView", () => {
     expect(rows).toHaveLength(6);
     expect(rows[0].className).toContain("text-[var(--t5)]"); // --- 文件头
     expect(rows[3].className).toContain("--danger"); // -old
-    expect(rows[4].className).toContain("--ok"); // +new
+    expect(rows[4].className).toContain("--success"); // +new
     expect(rows[5].className).toBe(""); // 上下文无着色
   });
 

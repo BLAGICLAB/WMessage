@@ -36,6 +36,7 @@
   --brand-strong: #4a5879;
   --success: #16a34a;
   --danger: #dc2626;
+  --info: #3b82f6; /* 信息高亮（diff hunk 头等）；无暗色语义差，仅提亮 */
   /* 键盘焦点环（:focus-visible 统一配方）：静态 rgba 兜底（老 WebView 不识别
      color-mix 时整条声明失效会丢环），支持时再覆盖为 color-mix 精确混色 */
   --focus-ring: 0 0 0 3px rgba(95, 111, 148, 0.28);
@@ -90,6 +91,7 @@
   --brand-strong: #c0cdea;
   --success: #4ade80;
   --danger: #f87171;
+  --info: #60a5fa;
   /* 键盘焦点环（:focus-visible 统一配方）：深色主题的静态 rgba 兜底同上 */
   --focus-ring: 0 0 0 3px rgba(163, 182, 221, 0.28);
   @supports (color: color-mix(in srgb, red, blue)) {

@@ -21,17 +21,21 @@ import {
   traceListByOrigin,
   traceListBySession,
   traceListByTask,
+  TRACE_STATUS_CLS,
+  TRACE_STATUS_LABEL,
   type FileChangeRow,
   type SpanRow,
   type TraceRow,
 } from "../../lib/trace";
 
-const STATUS_BADGE: Record<string, { label: string; cls: string }> = {
-  done: { label: "完成", cls: "text-[var(--ok,#22c55e)]" },
-  failed: { label: "失败", cls: "text-[var(--danger,#ef4444)]" },
-  running: { label: "执行中", cls: "text-[var(--info,#3b82f6)]" },
-  stopped: { label: "已停止", cls: "text-[var(--t4)]" },
-};
+/** 状态徽标：标签与着色跟执行活动页同源（TRACE_STATUS_*），防两页口径漂移 */
+const STATUS_BADGE: Record<string, { label: string; cls: string }> =
+  Object.fromEntries(
+    Object.entries(TRACE_STATUS_LABEL).map(([k, label]) => [
+      k,
+      { label, cls: TRACE_STATUS_CLS[k] ?? "" },
+    ]),
+  );
 
 /** span 失败分类（后端 audit::classify_error_class 的九类）→ 中文短词。
  *  值域跟后端分类器一一对应，新增一类必须在此补词；未登记值不退化成统一
@@ -61,7 +65,7 @@ function SpanItem({ s }: { s: SpanRow }) {
     <div className="flex items-start gap-1.5">
       <span
         aria-hidden
-        className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${s.ok ? "bg-[var(--ok,#22c55e)]" : "bg-[var(--danger,#ef4444)]"}`}
+        className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${s.ok ? "bg-[var(--success)]" : "bg-[var(--danger)]"}`}
       />
       <details className="min-w-0 flex-1">
         <summary className="cursor-pointer select-none list-none">
@@ -71,7 +75,7 @@ function SpanItem({ s }: { s: SpanRow }) {
           <span className="ml-1.5 text-[10px] text-[var(--t5)]">
             第{s.turn}轮{s.durationMs != null && ` · ${formatMsShort(s.durationMs)}`}
             {!s.ok && (
-              <span className="text-[var(--danger,#ef4444)]">
+              <span className="text-[var(--danger)]">
                 {" "}
                 · {spanFailText(s)}
               </span>
@@ -129,8 +133,8 @@ function FileChangeItem({
           {basename(c.path)}
         </span>
         <span className="shrink-0 font-mono text-[10px] tabular-nums">
-          <span className="text-[var(--ok,#22c55e)]">+{c.added}</span>{" "}
-          <span className="text-[var(--danger,#ef4444)]">−{c.deleted}</span>
+          <span className="text-[var(--success)]">+{c.added}</span>{" "}
+          <span className="text-[var(--danger)]">−{c.deleted}</span>
         </span>
         {canRollback && (
           <button
@@ -369,7 +373,7 @@ export function TracePanel({
           <p className="mt-4 text-center text-xs text-[var(--t5)]">加载中…</p>
         )}
         {error && (
-          <p className="mt-4 text-xs text-[var(--danger,#ef4444)]">
+          <p className="mt-4 text-xs text-[var(--danger)]">
             <TriangleAlert size={11} aria-hidden className="mr-1 inline" />
             {error}
           </p>
@@ -430,7 +434,7 @@ export function TracePanel({
               )}
             </div>
             {detail.error && (
-              <p className="mt-2 text-xs text-[var(--danger,#ef4444)]">
+              <p className="mt-2 text-xs text-[var(--danger)]">
                 <TriangleAlert size={11} aria-hidden className="mr-1 inline" />
                 {detail.error}
               </p>

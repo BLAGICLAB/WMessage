@@ -3,7 +3,11 @@
 // 行为约定：面板只做聚合与跳转，完整操作（恢复/验收/提案裁决）留在各自模块页。
 
 import type { Task } from "../../types";
-import type { TraceRow } from "../../lib/trace";
+import {
+  TRACE_ORIGIN_LABEL,
+  TRACE_STATUS_LABEL,
+  type TraceRow,
+} from "../../lib/trace";
 import type { NotificationItem } from "../../lib/notifications";
 import { formatMsShort, relativeTime } from "../../format";
 import { planColorVar } from "../TaskTimeline/week";
@@ -72,19 +76,6 @@ const PILL_CLS: Record<TraceRow["status"], string> = {
   failed: "text-[var(--danger)] bg-[color-mix(in_srgb,var(--danger)_13%,transparent)]",
   stopped: "text-[var(--t5)] bg-[var(--inset-bg)]",
 };
-const PILL_LABEL: Record<TraceRow["status"], string> = {
-  running: "执行中",
-  done: "完成",
-  failed: "失败",
-  stopped: "已停止",
-};
-const ORIGIN_LABEL: Record<string, string> = {
-  manual: "手动",
-  scheduled: "定时",
-  batch: "批量",
-  // 聊天回合也落 trace（origin="chat"）：不加这项就显示英文原值
-  chat: "聊天",
-};
 
 export function BotPanel({
   traces,
@@ -137,12 +128,12 @@ export function BotPanel({
             <span
               className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10.5px] font-semibold ${PILL_CLS[tr.status]}`}
             >
-              {PILL_LABEL[tr.status]}
+              {TRACE_STATUS_LABEL[tr.status]}
             </span>
             <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--t2)]">
               {tr.title
-                ? `${ORIGIN_LABEL[tr.origin] ?? tr.origin} · ${tr.title}`
-                : ORIGIN_LABEL[tr.origin] ?? tr.origin}
+                ? `${TRACE_ORIGIN_LABEL[tr.origin] ?? tr.origin} · ${tr.title}`
+                : TRACE_ORIGIN_LABEL[tr.origin] ?? tr.origin}
             </span>
             <span className="num shrink-0 text-[11px] text-[var(--t5)]">
               {relativeTime(tr.startedAt, now.getTime())}

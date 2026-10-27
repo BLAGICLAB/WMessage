@@ -27,6 +27,32 @@ export type TraceRow = {
   model?: string | null;
 };
 
+/** 执行来源 → 中文标签（origin 值域由 Rust trace 写入侧决定，新增需两端同步） */
+export const TRACE_ORIGIN_LABEL: Record<string, string> = {
+  manual: "手动",
+  scheduled: "定时",
+  batch: "批量",
+  chat: "聊天",
+};
+
+/** 执行状态 → 中文标签 / 着色类。执行活动页与首页机器人动态同源，
+ *  防两页口径漂移（timeout 只出现在活动页列表，徽标场景取不到即回退） */
+export const TRACE_STATUS_LABEL: Record<string, string> = {
+  done: "完成",
+  failed: "失败",
+  running: "执行中",
+  stopped: "已停止",
+  timeout: "超时",
+};
+
+export const TRACE_STATUS_CLS: Record<string, string> = {
+  done: "text-[var(--success)]",
+  failed: "text-[var(--danger)]",
+  running: "text-[var(--brand)]",
+  stopped: "text-[var(--t5)]",
+  timeout: "text-[var(--t5)]",
+};
+
 /** 每次工具调用 = 一条 span（args/result 后端已按 16KB 钳制） */
 export type SpanRow = {
   id: number;

@@ -337,7 +337,7 @@ export function InputArea({
               aria-expanded={perm.menuOpen}
               className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] leading-4 transition-[color,background-color,border-color,transform] duration-[var(--dur-chip)] ease-[var(--ease-out)] active:scale-[0.97] ${
                 perm.mode === "yolo"
-                  ? "border-[var(--danger,#ef4444)] text-[var(--danger,#ef4444)] hover:bg-[var(--hover-bg)]"
+                  ? "border-[var(--danger)] text-[var(--danger)] hover:bg-[var(--hover-bg)]"
                   : "border-[var(--edge)] text-[var(--t4)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
               }`}
               title={`授权模式 ${PERM_LABELS[perm.mode]}：${PERM_HINTS[perm.mode]}（点击切换）`}

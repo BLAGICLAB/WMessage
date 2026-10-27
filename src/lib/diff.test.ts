@@ -27,7 +27,7 @@ describe("diffLineClass", () => {
     expect(diffLineClass("--- /x.txt")).toBe("text-[var(--t5)]");
     expect(diffLineClass("+++ /x.txt")).toBe("text-[var(--t5)]");
     expect(diffLineClass("@@ -1,5 +1,5 @@")).toContain("--info");
-    expect(diffLineClass("+LINE2")).toContain("--ok");
+    expect(diffLineClass("+LINE2")).toContain("--success");
     expect(diffLineClass("-line2")).toContain("--danger");
     expect(diffLineClass(" line3")).toBe("");
   });

@@ -46,7 +46,7 @@ export function UsageMeter({
   return (
     <div
       className={`flex items-center gap-1.5 px-3 pb-0.5 text-[10px] tabular-nums ${
-        high ? "text-[var(--danger,#ef4444)]" : "text-[var(--t5)]"
+        high ? "text-[var(--danger)]" : "text-[var(--t5)]"
       }`}
       title={`本会话累计：输入 ${input} + 输出 ${output} tokens${
         cacheTotal > 0
@@ -68,7 +68,7 @@ export function UsageMeter({
         <>
           <span className="h-1 w-16 overflow-hidden rounded-full bg-[var(--inset-bg)]">
             <span
-              className={`block h-full ${high ? "bg-[var(--danger,#ef4444)]" : "bg-[var(--brand)]"}`}
+              className={`block h-full ${high ? "bg-[var(--danger)]" : "bg-[var(--brand)]"}`}
               style={{ width: `${pct}%` }}
             />
           </span>

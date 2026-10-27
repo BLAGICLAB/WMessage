@@ -345,7 +345,7 @@ function ToolStatusMark({ t }: { t: ToolCall }) {
   const running = !t.done && t.ok !== false;
   const secs = useElapsed(t.startedAt, running);
   const tone = t.ok === false
-    ? "text-[var(--danger,#ef4444)]"
+    ? "text-[var(--danger)]"
     : t.done
       ? "text-[var(--success)]"
       : "";
@@ -399,7 +399,7 @@ const ToolBadges = memo(function ToolBadges({
             <span className="font-mono">
               调用工具 {done}/{tools.length}
               {failed > 0 && (
-                <span className="text-[var(--danger,#ef4444)]">
+                <span className="text-[var(--danger)]">
                   {" "}
                   · {failed} 失败
                 </span>

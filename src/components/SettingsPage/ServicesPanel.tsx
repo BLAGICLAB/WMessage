@@ -185,7 +185,7 @@ export function ServicesPanel() {
       )}
 
       {snapshot && snapshot.listeningSampleOk === false && (
-        <p className="mt-1 text-xs text-[var(--danger,#ef4444)]">
+        <p className="mt-1 text-xs text-[var(--danger)]">
           最近一次监听端口采集失败——端口闸本轮未判（不是「判了没事」），详见审计日志
           service.listening_sample_failed
         </p>
