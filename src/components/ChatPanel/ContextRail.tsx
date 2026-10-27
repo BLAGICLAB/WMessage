@@ -5,7 +5,7 @@
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -147,49 +147,6 @@ function EmptyHint({ children }: { children: ReactNode }) {
   return <p className="px-1.5 py-2 text-[11px] text-[var(--t5)]">{children}</p>;
 }
 
-/** 文件类型铭牌：行首 24px 方块亮出扩展名，是文件页唯一的身份设备。
- *  两档功能色——文档（md/pdf/office）brand、数据（json/csv/表格）success，
- *  代码与未知走中性灰不抢戏；改动页每行挂文件夹图标的老毛病顺手修掉 */
-const FILE_BADGE_TONES: Record<string, CSSProperties> = {
-  doc: {
-    background: "color-mix(in srgb, var(--brand) 15%, transparent)",
-    color: "var(--brand)",
-  },
-  data: {
-    background: "color-mix(in srgb, var(--success) 14%, transparent)",
-    color: "var(--success)",
-  },
-  other: { background: "var(--hover-bg)", color: "var(--t4)" },
-};
-const FILE_DOC_EXTS = new Set([
-  "md", "txt", "pdf", "doc", "docx", "ppt", "pptx", "rtf",
-]);
-const FILE_DATA_EXTS = new Set([
-  "json", "csv", "tsv", "xlsx", "xls", "yml", "yaml", "toml",
-]);
-
-function FileTypeBadge({ path }: { path: string }) {
-  // 扩展名从显示名取（与行内 basename 同源），/a.b/报告 这类无扩展名路径不误判
-  const name = basename(path);
-  const ext = name.includes(".")
-    ? name.slice(name.lastIndexOf(".") + 1).toLowerCase()
-    : "";
-  const tone = FILE_DOC_EXTS.has(ext)
-    ? FILE_BADGE_TONES.doc
-    : FILE_DATA_EXTS.has(ext)
-      ? FILE_BADGE_TONES.data
-      : FILE_BADGE_TONES.other;
-  return (
-    <span
-      aria-hidden
-      className="grid h-6 w-6 shrink-0 place-items-center rounded-md font-mono text-[8px] font-medium tracking-wide"
-      style={tone}
-    >
-      {ext ? ext.slice(0, 4).toUpperCase() : "?"}
-    </span>
-  );
-}
-
 /** 文件页空态：虚线框 + 主行 + 一句去向——空屏是邀请，不是死文本 */
 function FilePageEmpty({ main, sub }: { main: string; sub: string }) {
   return (
@@ -201,10 +158,11 @@ function FilePageEmpty({ main, sub }: { main: string; sub: string }) {
 }
 
 /**
- * 文件页的子页切换钮（下划线式）。
+ * 文件页的子页切换钮（分段式）：两条子页等分轨道宽、文字居中。
  *
- * 与一级类别钮（药丸式）刻意分开：子页嵌在类别里，两层都用药丸会看出
- * 层级。计数为 null 时**不显示数字**——探测没回来时的「0」会被读成
+ * 容器是 nm-inset 凹陷轨道、选中段 nm-outset 抬升——用系统的「凹陷/抬升」
+ * 对比承载选中；与一级类别钮（无轨道的按压药丸）靠轮廓差分层级。
+ * 计数为 null 时**不显示数字**——探测没回来时的「0」会被读成
  * 「确实没有交付物」。
  */
 function FileSubTabButton({
@@ -223,10 +181,10 @@ function FileSubTabButton({
       type="button"
       role="tab"
       aria-selected={active}
-      className={`-mb-px flex items-center gap-1 border-b-2 pb-1 text-[11px] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
+      className={`flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md py-1 text-[11px] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
         active
-          ? "border-[var(--brand)] text-[var(--t1)]"
-          : "border-transparent text-[var(--t3)] hover:text-[var(--t2)]"
+          ? "nm-outset font-medium text-[var(--t1)]"
+          : "text-[var(--t4)] hover:bg-[var(--hover-bg)] hover:text-[var(--t2)]"
       }`}
       onClick={onClick}
     >
@@ -584,7 +542,7 @@ export function ContextRail({
               通栏细边框幽灵钮——它是这页的锚，不是一条普通链接 */}
           <button
             type="button"
-            className="mb-1.5 flex w-full items-center gap-1.5 rounded-lg border border-[var(--edge)] px-2 py-1.5 text-[11px] text-[var(--t3)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t1)]"
+            className="mb-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--edge)] px-2 py-1.5 text-[11px] text-[var(--t3)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t1)]"
             title={
               genDir
                 ? `打开产物文件夹：${genDir}`
@@ -604,11 +562,12 @@ export function ContextRail({
               {genDirError}
             </p>
           )}
-          {/* 子页切换：改动（轨迹）/ 交付物（产物）。两类东西不混在一张清单里 */}
+          {/* 子页切换：改动（轨迹）/ 交付物（产物）。两类东西不混在一张清单里。
+              凹陷轨道 + 选中段抬升，两条子页等分轨道宽、文字居中 */}
           <div
             role="tablist"
             aria-label="文件分类"
-            className="mb-1.5 flex gap-3 border-b border-[var(--border)]"
+            className="mb-1.5 flex gap-0.5 rounded-lg nm-inset p-0.5"
           >
             <FileSubTabButton
               label="改动"
@@ -645,7 +604,6 @@ export function ContextRail({
                   title={`${d.path}（${d.source === "declared" ? "回复中点名" : "本会话新写"}）· 点开预览`}
                   onClick={() => openPreview(d.path, "content")}
                 >
-                  <FileTypeBadge path={d.path} />
                   <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] group-hover:text-[var(--t1)]">
                     {basename(d.path)}
                   </span>
@@ -679,7 +637,6 @@ export function ContextRail({
                   title={`${f.path}（${f.mode === "noLineDiff" ? "无行级 diff" : `+${f.added} −${f.deleted}`}）· 点开看改动${f.note ? `｜${f.note}` : ""}`}
                   onClick={() => openPreview(f.path, "diff")}
                 >
-                  <FileTypeBadge path={f.path} />
                   <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] group-hover:text-[var(--t1)]">
                     {basename(f.path)}
                   </span>

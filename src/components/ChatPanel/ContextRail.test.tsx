@@ -503,7 +503,7 @@ describe("ContextRail 文件页双子页", () => {
   });
 });
 
-// 文件页重设计的视觉契约：类型铭牌是唯一的身份设备，区头不再复读页签，
+// 文件页的视觉契约：子页签等分居中（分段轨道），区头不再复读页签，
 // 空态给去向不留死文本。
 describe("ContextRail 文件页视觉契约", () => {
   const PPTX = "/Users/x/宣贯.pptx";
@@ -514,9 +514,7 @@ describe("ContextRail 文件页视觉契约", () => {
     mocks.invokeMock.mockImplementation(
       async (cmd: string, args?: { paths?: string[]; path?: string }) => {
         if (cmd === "bot_session_file_changes") {
-          return args?.path
-            ? { items: [], detail: null }
-            : { items: [], detail: null };
+          return { items: [], detail: null };
         }
         if (cmd === "bot_probe_paths") {
           return (args?.paths ?? []).map((p) => ({
@@ -535,17 +533,17 @@ describe("ContextRail 文件页视觉契约", () => {
     { role: "assistant", content: `已生成 ${PPTX} 与 ${DOC}` },
   ];
 
-  it("交付物行带类型铭牌：扩展名大写缩进 24px 方块", async () => {
+  it("子页签等分轨道宽且文字居中（分段轨道样式）", () => {
     mockFiles();
-    renderRail({
-      tab: "files",
-      sessionId: "s1",
-      fileSubTab: "deliverables",
-      sessionMessages,
-    });
-    // 清单有 200ms 防抖 + 探测异步，用 findBy 等渲染
-    expect(await screen.findByText("PPTX")).toBeInTheDocument();
-    expect(screen.getByText("MD")).toBeInTheDocument();
+    renderRail({ tab: "files", sessionId: "s1" });
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs).toHaveLength(2);
+    for (const tab of tabs) {
+      expect(tab.className).toContain("flex-1");
+      expect(tab.className).toContain("justify-center");
+    }
+    const track = tabs[0].closest('[role="tablist"]') as HTMLElement;
+    expect(track.className).toContain("nm-inset");
   });
 
   it("区头不再复读页签：名字与计数只在页签上一份", () => {
