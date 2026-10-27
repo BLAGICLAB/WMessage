@@ -140,3 +140,59 @@ fn sealed_cards_reject_content_edits_and_column_moves() {
         tasks_patch::task_set_column_locked(&mut conn, "t2", crate::db::TaskStatus::Doing, now + 1);
     assert!(err.is_err(), "归档卡列迁移应被拒");
 }
+
+/// `collapsed` 是折叠视图状态，不在内容编辑闸里：归档/回收站卡的折叠键
+/// 必须能点开（点开才能看/打开/复制绑定的文件与文件夹）。混合补丁里只要
+/// 携带任一真内容键，整体仍须被拒——放行不得变成绕行口。
+#[test]
+fn sealed_cards_allow_collapsed_view_state_but_still_reject_content() {
+    let (_dir, mut conn) = setup_tasks_db();
+    let now = 1_000;
+    let _g = crate::db::lock_db_write();
+
+    for (id, trashed) in [("t1", true), ("t2", false)] {
+        let mut task = mk_task(id, "封存卡");
+        if trashed {
+            task.deleted_at = Some(now);
+        } else {
+            task.column = crate::db::TaskStatus::Done;
+            task.completed_at = Some(now);
+            task.archived = Some(true);
+        }
+        upsert_tasks(&conn, std::slice::from_ref(&task)).unwrap();
+
+        // 纯视图补丁放行：展开（collapsed=false）落库可往返
+        let row = tasks_patch::task_patch_locked(
+            &mut conn,
+            id,
+            &serde_json::json!({"collapsed": false}),
+            now + 1,
+        )
+        .unwrap_or_else(|e| panic!("封存卡折叠态应放行，got {e:?}"));
+        assert_eq!(row.collapsed, Some(false), "{id} 展开态应落库");
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(reloaded.collapsed, Some(false), "{id} 展开态应可往返");
+
+        // 混合补丁：夹带真内容键 → 整体拒（collapsed 不得当绕行口）
+        let err = tasks_patch::task_patch_locked(
+            &mut conn,
+            id,
+            &serde_json::json!({"collapsed": true, "title": "改"}),
+            now + 1,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{id} 混合内容补丁应被拒"));
+        assert!(err.to_string().contains("不能编辑内容"), "{err}");
+        // 拒后无半写：collapsed 保持上一笔的 false
+        let reloaded = load_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap();
+        assert_eq!(reloaded.collapsed, Some(false), "{id} 拒后不得半写");
+    }
+}

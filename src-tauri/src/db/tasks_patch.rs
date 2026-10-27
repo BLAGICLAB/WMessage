@@ -282,6 +282,8 @@ pub(crate) fn apply_task_patch(
 /// 内容编辑类键：打在回收站/归档卡上 = 绕 UI 闸改已封存的数据。
 /// 状态迁移类键（archived/deletedAt/column）不在列——恢复/归档/软删操作
 /// 本身必须能打在封存卡上，否则回收站永远出不来。
+/// `collapsed` 也不在列：它是折叠视图状态而非封存内容，归档/回收站卡的
+/// 折叠键必须能点开（点开才能看/开/复制绑定的文件与文件夹）。
 const CONTENT_EDIT_KEYS: &[&str] = &[
     "title",
     "note",
@@ -291,7 +293,6 @@ const CONTENT_EDIT_KEYS: &[&str] = &[
     "due",
     "planStart",
     "planEnd",
-    "collapsed",
     "completedAt",
 ];
 

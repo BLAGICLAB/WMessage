@@ -175,6 +175,61 @@ describe("TodoCard (归档/回收站版)", () => {
     expect(screen.getByText(/彻底删除/)).toBeInTheDocument();
   });
 
+  it("封存卡折叠键可用：归档/回收站态点 FoldToggle 照常回调 collapsed（视图状态闸已放行）", async () => {
+    const user = userEvent.setup();
+    for (const seal of [{ archived: true }, { trashed: true }]) {
+      const onUpdate = vi.fn();
+      const { unmount } = render(
+        <TodoCard
+          task={baseTask}
+          onUpdate={onUpdate}
+          onDelete={vi.fn()}
+          {...seal}
+        />,
+      );
+      await user.click(screen.getByTitle("收起"));
+      expect(onUpdate).toHaveBeenCalledWith("t1", { collapsed: true });
+      unmount();
+    }
+  });
+
+  it("封存卡展开后绑定文件可打开/复制：点文件名走 open_file_path、点「复制」走 copy_file_with_title；× 移除与绑定按钮不渲染", async () => {
+    const user = userEvent.setup();
+    const sealedTask: Task = {
+      ...baseTask,
+      files: [
+        { path: "/docs/a.pdf", isDir: false },
+        { path: "/docs/项目资料", isDir: true },
+      ],
+    };
+    for (const seal of [{ archived: true }, { trashed: true }]) {
+      const { unmount } = render(
+        <TodoCard
+          task={sealedTask}
+          onUpdate={vi.fn()}
+          onDelete={vi.fn()}
+          {...seal}
+        />,
+      );
+      // 点文件名打开（精确名：卡根是 dnd-kit 的 role=button，子树名会含 a.pdf）
+      await user.click(screen.getByRole("button", { name: "a.pdf" }));
+      expect(invokeMock).toHaveBeenCalledWith("open_file_path", {
+        path: "/docs/a.pdf",
+      });
+      // 点「复制」：文件 → copy_file_with_title（带卡标题）
+      await user.click(screen.getAllByText("复制")[0]);
+      expect(invokeMock).toHaveBeenCalledWith("copy_file_with_title", {
+        path: "/docs/a.pdf",
+        title: "默认任务",
+      });
+      // 只读面：无 × 移除、无绑定文件/文件夹按钮
+      expect(screen.queryByTitle("移除该文件")).not.toBeInTheDocument();
+      expect(screen.queryByText("绑定文件")).not.toBeInTheDocument();
+      expect(screen.queryByText("绑定文件夹")).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
   it("完成态：归档态显示完成时间（formatCompletedAt 在 due 区域下方，2026-09-08 老板）", () => {
     render(
       <TodoCard
