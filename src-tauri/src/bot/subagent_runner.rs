@@ -606,8 +606,6 @@ pub(crate) async fn run_subagent(
             &stop,
             None,
             None,
-            // 子 agent 模型走自身预算/派发通道（model_profile），不挂每卡覆盖
-            None,
             // 配置档的采样温度（f32 → f64 无损）。这是 yaml `temperature:` 字段的
             // 唯一消费者；None 时用模型条目的 temperature。
             bound_onion

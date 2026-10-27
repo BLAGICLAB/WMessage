@@ -529,7 +529,6 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         &app,
         &card.id,
         crate::bot_chat::TaskExecOrigin::Scheduled,
-        None,
     )
     .await;
     // 收尾状态广播（sessionId 供前端跳 ⏰ 执行会话）

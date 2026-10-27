@@ -295,7 +295,6 @@ pub(crate) async fn repair_final_json_once(
         None,
         None,
         None,
-        None,
         wall_budget,
     )
     .await

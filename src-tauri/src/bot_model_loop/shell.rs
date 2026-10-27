@@ -53,27 +53,6 @@ pub fn shared_llm_client() -> &'static reqwest::Client {
     })
 }
 
-/// 主循环推理参数选取：override 命中必须取覆盖条目的（resolve_model_override 已按
-/// 条目值 > 全局 max_tokens 兜底算好）；未命中才按 active 条目解析（active 条目 >
-/// 全局 > 内置默认，见 schema::effective_inference）。两路不可混用——覆盖端点打
-/// active 条目的 temperature/top_p/system_prompt 是参数张冠李戴。
-pub(crate) fn resolve_loop_inference(
-    resolved: Option<&crate::bot::config::ResolvedModel>,
-    api_provider: Option<&str>,
-    max_tokens: Option<u32>,
-    active_model_id: Option<&crate::bot::ActiveModelId>,
-    models_by_provider: Option<&crate::bot::ModelsByProvider>,
-) -> crate::bot::EffectiveInference {
-    resolved.map(|r| r.inference.clone()).unwrap_or_else(|| {
-        crate::bot::effective_inference(
-            api_provider,
-            max_tokens,
-            active_model_id,
-            models_by_provider,
-        )
-    })
-}
-
 /// 采样温度的优先级：**配置档 > 模型条目**。
 ///
 /// 与「权限只收紧、运行时优先」那条相反且是刻意的——采样温度不是权限，
@@ -101,9 +80,6 @@ pub async fn run_model_loop(
     // None = 任务执行/定时等后台链路，回落 bot-config.json 的全局默认。
     // 抽象档位 → 线上参数的按模型映射在 bot/reasoning.rs。
     reasoning_override: Option<String>,
-    // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active 模型。
-    // 解析失败（条目不存在/禁用/key 缺失）→ 响亮报错，不静默回落
-    model_override: Option<String>,
     // per-onion 配置档的采样温度（子 agent 用；None = 用模型条目的 temperature）。
     //
     // **配置档压过条目级**，理由见 `resolve_temperature`。刻意只传 temperature
@@ -120,64 +96,38 @@ pub async fn run_model_loop(
     wall_budget: Option<WallBudget>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
-    // 每卡模型覆盖优先：命中模型库条目则整组替换 base_url/model/协议/key
-    let resolved = match model_override.as_deref() {
-        Some(id) => Some(crate::bot::resolve_model_override(
-            cfg.models_by_provider.as_ref(),
-            id,
-            cfg.max_tokens,
-        )?),
-        None => None,
-    };
-    // 请求装配前厂商可用性守卫：实际命中条目（override 命中条目 / 全局 active
-    // 条目）带厂商且未通过连接测试 → 响亮拦截，不带未验证 key 出门换 401。
+    // 请求装配前厂商可用性守卫：全局 active 条目带厂商且未通过连接测试 → 响亮拦截，不带未验证 key 出门换 401。
     // 「设为当前使用」入口已挡未验证厂商，这里兜存量坏指针 / 测试失败撤绿 /
     // Base URL 改动失效三种来源；聊天与任务执行（🤖/⏰/📦/逐步）共用本循环，
     // 一处拦截全链路生效
-    let serving_vendor = match &resolved {
-        Some(r) => r.vendor.clone(),
-        None => crate::bot::active_model_entry(
-            cfg.api_provider.as_deref(),
-            cfg.active_model_id.as_ref(),
-            cfg.models_by_provider.as_ref(),
-        )
-        .and_then(|e| e.vendor.clone()),
-    };
+    let serving_vendor = crate::bot::active_model_entry(
+        cfg.api_provider.as_deref(),
+        cfg.active_model_id.as_ref(),
+        cfg.models_by_provider.as_ref(),
+    )
+    .and_then(|e| e.vendor.clone());
     crate::bot::ensure_vendor_verified(serving_vendor.as_deref(), &cfg.verified_vendors)?;
-    let api_key = match &resolved {
-        Some(r) => r.api_key.clone(),
-        None => crate::bot::read_llm_key(
-            cfg.api_provider.as_deref(),
-            cfg.active_model_id.as_ref(),
-            cfg.models_by_provider.as_ref(),
-        )?,
-    };
+    let api_key = crate::bot::read_llm_key(
+        cfg.api_provider.as_deref(),
+        cfg.active_model_id.as_ref(),
+        cfg.models_by_provider.as_ref(),
+    )?;
     if api_key.trim().is_empty() {
         return Err(CommandError::ApiKeyMissing);
     }
     // 共享客户端（连接池复用）；总超时取消，流式路径逐 chunk idle 超时兜底
     let client = shared_llm_client().clone();
-    // 推理参数族映射按实际请求端点：override 整组替换后走条目的 model/provider，
-    // 仍按全局 cfg 解析会把 OpenAI 风格 reasoning_effort 发去 Anthropic 端点（或反之）
-    let model_for_reasoning = resolved
-        .as_ref()
-        .map(|r| r.model.clone())
-        .unwrap_or_else(|| cfg.model.clone());
     // None/非法值 → Openai（旧行为零影响）
     let provider = crate::bot::ApiProvider::from_cfg(cfg.api_provider.as_deref());
-    let provider_for_reasoning = resolved
-        .as_ref()
-        .map(|r| crate::bot::ApiProvider::from_cfg(Some(r.api_provider.as_str())))
-        .unwrap_or(provider);
-    // 条目级推理参数：override 命中取覆盖条目的，未命中按 active 条目解析
+    // 条目级推理参数按 active 条目解析
     // （cfg 是对外视图 BotConfigView，拆参传入与 keyring::read_llm_key 同风格）
-    let inference = resolve_loop_inference(
-        resolved.as_ref(),
+    let inference = crate::bot::effective_inference(
         cfg.api_provider.as_deref(),
         cfg.max_tokens,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     );
+    let model_for_reasoning = cfg.model.clone();
     // 终稿自检侧调模型槽位：cfg 给了模型库条目 id 就整组解析（base_url/
     // model/协议/key）；解析失败 → 响亮审计 + 回落主循环内自检，不阻断。
     // 必须在主 http 构造前完成——那里会 move cfg 的字段。
@@ -227,16 +177,10 @@ pub async fn run_model_loop(
     });
     let http = LlmHttp {
         client,
-        base_url: resolved
-            .as_ref()
-            .map(|r| r.base_url.clone())
-            .unwrap_or(cfg.base_url),
+        base_url: cfg.base_url,
         api_key,
-        model: resolved
-            .as_ref()
-            .map(|r| r.model.clone())
-            .unwrap_or(cfg.model),
-        provider: provider_for_reasoning,
+        model: cfg.model,
+        provider,
         max_tokens: inference.max_tokens,
         temperature: resolve_temperature(temperature_override, inference.temperature),
         top_p: inference.top_p,
@@ -244,7 +188,7 @@ pub async fn run_model_loop(
         // 推理强度：覆盖优先于后台默认；抽象档位按模型族映射到线上参数。
         // budget < max_tokens 夹紧用的就是条目覆盖后的 max_tokens
         reasoning: crate::bot::reasoning::resolve(
-            provider_for_reasoning,
+            provider,
             &model_for_reasoning,
             crate::bot::reasoning::EffortLevel::from_cfg(
                 reasoning_override

@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::bot_model_loop::request::build_request_body;
-use crate::bot_model_loop::shell::resolve_loop_inference;
 
 #[cfg(test)]
 mod inference_param_tests {
@@ -86,10 +85,10 @@ mod inference_param_tests {
         assert_eq!(body["max_tokens"], 8_192);
     }
 
-    /// active 条目 temperature=0.9 / 覆盖条目 temperature=0.2：override 命中时
-    /// 主循环必须采用覆盖条目的推理参数（曾无条件走 active 条目解析，覆盖参数整组丢失）
+    /// active 条目 temperature=0.9：主循环推理参数按 active 条目整套解析
+    /// （temperature/top_p/max_tokens/system_prompt 全取条目值，压过全局默认）
     #[test]
-    fn override_hit_takes_entry_inference_not_active() {
+    fn inference_resolves_from_active_entry() {
         use crate::bot::{ActiveModelId, ModelEntry, ModelsByProvider};
 
         fn entry(id: &str, temperature: f64, top_p: f64) -> ModelEntry {
@@ -115,46 +114,16 @@ mod inference_param_tests {
             openai: Some("active-e".into()),
             anthropic: None,
         };
-        let resolved = crate::bot::config::ResolvedModel {
-            base_url: "https://override.example.com/v1".into(),
-            model: "override-model".into(),
-            api_provider: "openai".into(),
-            api_key: "k".into(),
-            vendor: None,
-            inference: crate::bot::EffectiveInference {
-                max_tokens: 4096,
-                temperature: Some(0.2),
-                top_p: Some(0.3),
-                system_prompt: Some("override-system".into()),
-            },
-        };
-
-        // 命中：temperature/top_p/max_tokens/system_prompt 全取覆盖条目，
-        // 不得混入 active 条目的 0.9/0.95/1111
-        let hit = resolve_loop_inference(
-            Some(&resolved),
+        let resolved = crate::bot::effective_inference(
             Some("openai"),
             Some(8192),
             Some(&active_id),
             Some(&mbp),
         );
-        assert_eq!(hit.temperature, Some(0.2));
-        assert_eq!(hit.top_p, Some(0.3));
-        assert_eq!(hit.max_tokens, 4096);
-        assert_eq!(hit.system_prompt.as_deref(), Some("override-system"));
-
-        // 未命中：回落 active 条目解析（原路径不得回归）
-        let miss = resolve_loop_inference(
-            None,
-            Some("openai"),
-            Some(8192),
-            Some(&active_id),
-            Some(&mbp),
-        );
-        assert_eq!(miss.temperature, Some(0.9));
-        assert_eq!(miss.top_p, Some(0.95));
-        assert_eq!(miss.max_tokens, 1111);
-        assert_eq!(miss.system_prompt.as_deref(), Some("active-e-system"));
+        assert_eq!(resolved.temperature, Some(0.9));
+        assert_eq!(resolved.top_p, Some(0.95));
+        assert_eq!(resolved.max_tokens, 1111);
+        assert_eq!(resolved.system_prompt.as_deref(), Some("active-e-system"));
     }
 }
 

@@ -650,8 +650,6 @@ pub(super) async fn bot_chat_inner(
         &stop,
         plan_state.as_mut(),
         reasoning_effort,
-        // 主聊天不挂每卡模型覆盖（ 仅工作流节点使用）
-        None,
         // per-onion 温度覆盖：主聊天不挂（仅子 agent 用）
         None,
         // 失败轨迹也要落 trace：熔断/API 失败时把已跑出的轮数工具数交回，

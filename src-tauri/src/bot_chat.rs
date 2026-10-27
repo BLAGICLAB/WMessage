@@ -279,7 +279,7 @@ pub async fn bot_execute_task(
             }
         }
     }
-    run_task_in_chat(&app, &task_id, TaskExecOrigin::Manual, None)
+    run_task_in_chat(&app, &task_id, TaskExecOrigin::Manual)
         .await
         .map(|r| r.result)
 }

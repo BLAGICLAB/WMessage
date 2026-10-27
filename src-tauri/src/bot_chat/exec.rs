@@ -48,7 +48,7 @@ pub async fn chat_execute_tasks(
             title.as_str()
         };
         all_text.push_str(&format!("\n── [{}/{}] {} ──\n", idx + 1, total, label));
-        match run_task_in_chat(app, task_id, TaskExecOrigin::Batch, None).await {
+        match run_task_in_chat(app, task_id, TaskExecOrigin::Batch).await {
             Ok(r) => {
                 if !r.result.text.is_empty() {
                     all_text.push_str(&r.result.text);
@@ -277,18 +277,14 @@ pub async fn run_task_in_chat(
     app: &AppHandle,
     task_id: &str,
     origin: TaskExecOrigin,
-    // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active
-    model: Option<String>,
 ) -> CommandResult<TaskChatRun> {
-    run_task_in_chat_impl(app, task_id, origin, model).await
+    run_task_in_chat_impl(app, task_id, origin).await
 }
 
 pub(super) async fn run_task_in_chat_impl(
     app: &AppHandle,
     task_id: &str,
     origin: TaskExecOrigin,
-    // 每卡模型覆盖：模型库条目 id；None = 跟随全局 active
-    model: Option<String>,
 ) -> CommandResult<TaskChatRun> {
     // 执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
     // 内核（run_task_in_chat_with）填归属并收尾。
@@ -316,7 +312,6 @@ pub(super) async fn run_task_in_chat_impl(
                 None,
                 // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
                 None,
-                model,
                 None, // per-onion 温度覆盖：任务执行链路不挂
                 Some(&failed_for_run),
                 // 任务执行链路不参与子 agent 墙钟治理
