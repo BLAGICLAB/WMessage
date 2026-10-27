@@ -801,7 +801,7 @@ pub(crate) async fn tool_run_python(
             // 退出码非 0 = 脚本没跑成，**如实报失败**：报成功等于告诉模型
             // 「跑通了」，它就不会去改脚本；而失败提示（别整段重写、只改出错
             // 那几行）也只在失败时才注入。
-            if run_failed(r.exit_code) {
+            let mut res = if run_failed(r.exit_code) {
                 let code_text = match r.exit_code {
                     Some(c) => c.to_string(),
                     None => "无退出码（异常终止）".to_string(),
@@ -822,7 +822,14 @@ pub(crate) async fn tool_run_python(
                 )
             } else {
                 ToolResult::ok(out, Vec::new())
+            };
+            // 脚本产物搬进产物目录后补落盘凭证：没凭证它们只躺在盘上——
+            // 右侧栏「改动」页看不见、交付物区挂不上，幻觉守卫还会把模型
+            // 真写出来的文档判成凭空声称。失败那次也补：产物确实落盘了。
+            for p in &r.harvested {
+                res = res.with_file_change(crate::bot_fs::build_binary_file_receipt(p));
             }
+            res
         }
         Err(e) => ToolResult::error(format!("执行失败：{e}"), Vec::new()),
     }

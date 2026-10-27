@@ -8,11 +8,18 @@ use tauri::AppHandle;
 use crate::py::audit::py_audit;
 use crate::py::runtime::py_runs_root;
 
-pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&str)) {
+/// 运行目录产物搬进产物目录（AI_Gen_Files）。
+///
+/// 返回搬过去的**文件**绝对路径：调用方据此给每个产物补一条落盘凭证
+/// （路径 + 内容哈希）。没有凭证的话产物只躺在盘上——右侧栏「改动」页看不见、
+/// 交付物区挂不上，幻觉守卫还会把模型真写出来的文档判成凭空声称。
+/// 目录本身不回报：凭证是给「落了一个文件」用的，内容哈希对目录取不到。
+pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&str)) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+        return Vec::new();
     };
     let mut moved = 0usize;
+    let mut moved_files: Vec<String> = Vec::new();
     for e in entries.flatten() {
         let name = e.file_name();
         // run.py（执行入口）/ script.py（脚本正文）/ params.json（入参）不是产物：
@@ -57,6 +64,10 @@ pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&st
         };
         if ok {
             moved += 1;
+            // 只回报**文件**：目录搬进产物目录是搬了个文件夹，凭证给不了内容哈希
+            if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                moved_files.push(dest.to_string_lossy().into_owned());
+            }
             // 搬运会把「来自互联网」标记一起带过来：跨盘拷贝走 CopyFileEx（复制全部
             // 备用数据流），同盘 rename 则是同一个文件、标记原样跟着走。产物目录里的
             // 文件不该带这个标记——带了就进 Office 受保护视图，还会招杀软连坐拦截
@@ -74,6 +85,7 @@ pub fn harvest_run_outputs(dir: &Path, gen_dir: &Path, audit: &mut dyn FnMut(&st
             "run_python | harvested={moved} | 运行目录产物已移入 AI_Gen_Files"
         ));
     }
+    moved_files
 }
 
 pub fn dedup_dest(dir: &Path, name: &std::ffi::OsStr) -> std::path::PathBuf {
@@ -202,6 +214,24 @@ mod tests {
         assert!(
             !msgs.iter().any(|m| m.contains("失败")),
             "不该有失败审计：{msgs:?}"
+        );
+    }
+
+    /// 回报给调用方的只有文件：目录搬过去是搬了个文件夹，凭证给不了内容哈希。
+    #[test]
+    fn harvest_reports_files_only() {
+        let run = tempfile::tempdir().expect("临时运行目录");
+        let gen = tempfile::tempdir().expect("临时产物目录");
+        std::fs::write(run.path().join("out.pptx"), b"x").expect("写源文件");
+        std::fs::create_dir_all(run.path().join("sub")).expect("建子目录");
+        std::fs::write(run.path().join("sub").join("a.csv"), b"y").expect("写源文件");
+
+        let moved = harvest_run_outputs(run.path(), gen.path(), &mut |_| {});
+
+        assert_eq!(
+            moved,
+            vec![gen.path().join("out.pptx").to_string_lossy().into_owned()],
+            "只该回报文件，目录不回报：{moved:?}"
         );
     }
 }

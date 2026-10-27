@@ -985,7 +985,7 @@ fn harvest_moves_new_files_and_skips_harness_files() {
     // gen 里已有同名文件 → 搬入必须加 (1) 序号，不覆盖
     std::fs::write(gen.join("report.docx"), b"old").unwrap();
     let mut lines: Vec<String> = Vec::new();
-    harvest_run_outputs(&dir, &gen, &mut |l: &str| lines.push(l.to_string()));
+    let moved = harvest_run_outputs(&dir, &gen, &mut |l: &str| lines.push(l.to_string()));
     // 脚本正文也不搬：搬进 AI_Gen_Files 只会给用户塞一堆看不懂的 .py 垃圾
     assert!(
         dir.join("run.py").exists()
@@ -1002,6 +1002,12 @@ fn harvest_moves_new_files_and_skips_harness_files() {
     assert!(
         lines.iter().any(|l| l.contains("harvested=2")),
         "缺回收审计行: {lines:?}"
+    );
+    // 回报给调用方的只有**文件**：目录搬过去是搬了个文件夹，凭证给不了内容哈希
+    assert_eq!(
+        moved,
+        vec![gen.join("report (1).docx").to_string_lossy().into_owned()],
+        "回报的产物清单不对：{moved:?}"
     );
 }
 

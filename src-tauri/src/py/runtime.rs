@@ -28,6 +28,10 @@ pub struct PyRunResult {
     /// 成功时为空——目录已连同产物一起清掉。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_dir: Option<String>,
+    /// 搬进产物目录的产物文件绝对路径：工具侧据此给每个产物补落盘凭证
+    /// （路径 + 内容哈希），否则它们只躺在盘上，谁都看不见
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub harvested: Vec<String>,
 }
 
 pub const OUTPUT_CAP: usize = 64 * 1024;
@@ -1132,9 +1136,10 @@ pub fn run_python_at(
         ));
     }
     let duration_ms = start.elapsed().as_millis();
-    if let Some(g) = gen_dir {
-        crate::py::harvest::harvest_run_outputs(dir, g, audit);
-    }
+    let harvested = match gen_dir {
+        Some(g) => crate::py::harvest::harvest_run_outputs(dir, g, audit),
+        None => Vec::new(),
+    };
     let Some(code) = exit_code else {
         // 无退出码 = 被信号杀死：脚本跑过了（可能跑了一半），目录留着给模型读回
         audit("run_python err | kind=exit_none | 无退出码，子进程疑似被信号杀死");
@@ -1158,6 +1163,7 @@ pub fn run_python_at(
         duration_ms,
         truncated,
         retained_dir,
+        harvested,
     })
 }
 
