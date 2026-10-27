@@ -5,7 +5,7 @@
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -145,6 +145,59 @@ const NO_SESSION_MESSAGES: { role: string; content: string }[] = [];
 
 function EmptyHint({ children }: { children: ReactNode }) {
   return <p className="px-1.5 py-2 text-[11px] text-[var(--t5)]">{children}</p>;
+}
+
+/** 文件类型铭牌：行首 24px 方块亮出扩展名，是文件页唯一的身份设备。
+ *  两档功能色——文档（md/pdf/office）brand、数据（json/csv/表格）success，
+ *  代码与未知走中性灰不抢戏；改动页每行挂文件夹图标的老毛病顺手修掉 */
+const FILE_BADGE_TONES: Record<string, CSSProperties> = {
+  doc: {
+    background: "color-mix(in srgb, var(--brand) 15%, transparent)",
+    color: "var(--brand)",
+  },
+  data: {
+    background: "color-mix(in srgb, var(--success) 14%, transparent)",
+    color: "var(--success)",
+  },
+  other: { background: "var(--hover-bg)", color: "var(--t4)" },
+};
+const FILE_DOC_EXTS = new Set([
+  "md", "txt", "pdf", "doc", "docx", "ppt", "pptx", "rtf",
+]);
+const FILE_DATA_EXTS = new Set([
+  "json", "csv", "tsv", "xlsx", "xls", "yml", "yaml", "toml",
+]);
+
+function FileTypeBadge({ path }: { path: string }) {
+  // 扩展名从显示名取（与行内 basename 同源），/a.b/报告 这类无扩展名路径不误判
+  const name = basename(path);
+  const ext = name.includes(".")
+    ? name.slice(name.lastIndexOf(".") + 1).toLowerCase()
+    : "";
+  const tone = FILE_DOC_EXTS.has(ext)
+    ? FILE_BADGE_TONES.doc
+    : FILE_DATA_EXTS.has(ext)
+      ? FILE_BADGE_TONES.data
+      : FILE_BADGE_TONES.other;
+  return (
+    <span
+      aria-hidden
+      className="grid h-6 w-6 shrink-0 place-items-center rounded-md font-mono text-[8px] font-medium tracking-wide"
+      style={tone}
+    >
+      {ext ? ext.slice(0, 4).toUpperCase() : "?"}
+    </span>
+  );
+}
+
+/** 文件页空态：虚线框 + 主行 + 一句去向——空屏是邀请，不是死文本 */
+function FilePageEmpty({ main, sub }: { main: string; sub: string }) {
+  return (
+    <div className="rounded-xl border border-dashed border-[var(--edge)] px-3 py-4 text-center">
+      <p className="text-[11px] text-[var(--t4)]">{main}</p>
+      <p className="mt-0.5 text-[10px] text-[var(--t6)]">{sub}</p>
+    </div>
+  );
 }
 
 /**
@@ -527,27 +580,30 @@ export function ContextRail({
         }
         return (
         <div>
-          {/* 产物目录入口：交付物落在 AI_Gen_Files，路径由后端解析后回传 */}
-          <div className="mb-1.5 flex items-center gap-1.5 px-1.5">
-            <button
-              type="button"
-              className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--brand)] hover:underline"
-              title={
-                genDir
-                  ? `打开产物文件夹：${genDir}`
-                  : "打开产物文件夹（AI_Gen_Files）"
-              }
-              onClick={() => void openGenDir()}
-            >
-              <FolderOpen size={12} aria-hidden className="shrink-0" />
-              <span className="truncate">打开产物文件夹</span>
-            </button>
-            {genDirError && (
-              <span className="min-w-0 truncate text-[10px] text-[var(--danger)]">
-                {genDirError}
-              </span>
-            )}
-          </div>
+          {/* 产物目录入口：交付物落在 AI_Gen_Files，路径由后端解析后回传。
+              通栏细边框幽灵钮——它是这页的锚，不是一条普通链接 */}
+          <button
+            type="button"
+            className="mb-1.5 flex w-full items-center gap-1.5 rounded-lg border border-[var(--edge)] px-2 py-1.5 text-[11px] text-[var(--t3)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] hover:bg-[var(--hover-bg)] hover:text-[var(--t1)]"
+            title={
+              genDir
+                ? `打开产物文件夹：${genDir}`
+                : "打开产物文件夹（AI_Gen_Files）"
+            }
+            onClick={() => void openGenDir()}
+          >
+            <FolderOpen
+              size={12}
+              aria-hidden
+              className="shrink-0 text-[var(--brand)]"
+            />
+            <span className="truncate">打开产物文件夹</span>
+          </button>
+          {genDirError && (
+            <p className="mb-1.5 truncate px-1 text-[10px] text-[var(--danger)]">
+              {genDirError}
+            </p>
+          )}
           {/* 子页切换：改动（轨迹）/ 交付物（产物）。两类东西不混在一张清单里 */}
           <div
             role="tablist"
@@ -569,34 +625,28 @@ export function ContextRail({
           </div>
           {fileSubTab === "deliverables" ? (
         <section role="tabpanel" aria-label="交付物">
-          <div className="mb-1 flex items-center gap-1.5 px-1.5">
-            <span className="text-[11px] font-medium text-[var(--t2)]">
-              本会话交付物
-            </span>
-            <span className="font-mono text-[10px] text-[var(--t5)]">
-              {sessionProbed.ready ? sessionProbed.items.length : "…"}
-            </span>
-          </div>
+          {/* 名字与计数已在页签上，区头不再复读一遍 */}
           {sessionProbed.items.length === 0 ? (
-            <EmptyHint>
-              {sessionProbed.ready ? "本会话还没有交付物" : "读取交付物中…"}
-            </EmptyHint>
+            sessionProbed.ready ? (
+              <FilePageEmpty
+                main="本会话还没有交付物"
+                sub="机器人产出的文件会汇总在这里，点开即预览"
+              />
+            ) : (
+              <EmptyHint>读取交付物中…</EmptyHint>
+            )
           ) : (
             <div className="space-y-0.5">
               {sessionProbed.items.map((d) => (
                 <button
                   key={d.path}
                   type="button"
-                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs hover:bg-[var(--hover-bg)]"
+                  className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--hover-bg)]"
                   title={`${d.path}（${d.source === "declared" ? "回复中点名" : "本会话新写"}）· 点开预览`}
                   onClick={() => openPreview(d.path, "content")}
                 >
-                  <FileText
-                    size={12}
-                    aria-hidden
-                    className="shrink-0 text-[var(--t5)]"
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[var(--t3)]">
+                  <FileTypeBadge path={d.path} />
+                  <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] group-hover:text-[var(--t1)]">
                     {basename(d.path)}
                   </span>
                 </button>
@@ -606,38 +656,31 @@ export function ContextRail({
         </section>
           ) : (
         <section role="tabpanel" aria-label="文件变更">
-          <div className="mb-1 flex items-center gap-1.5 px-1.5">
-            <span className="text-[11px] font-medium text-[var(--t2)]">
-              本会话文件改动
-            </span>
-            <span className="font-mono text-[10px] text-[var(--t5)]">
-              {fileItems.length}
-            </span>
-          </div>
           {fileListError ? (
             <p className="px-1.5 py-2 text-[11px] text-[var(--danger)]">
               {fileListError}
             </p>
           ) : fileItems.length === 0 ? (
-            <EmptyHint>
-              {fileListLoading ? "读取改动中…" : "本会话还没有文件改动"}
-            </EmptyHint>
+            fileListLoading ? (
+              <EmptyHint>读取改动中…</EmptyHint>
+            ) : (
+              <FilePageEmpty
+                main="本会话还没有文件改动"
+                sub="机器人改动过的文件会汇总在这里"
+              />
+            )
           ) : (
             <div className="space-y-0.5">
               {fileItems.map((f) => (
                 <button
                   key={f.path}
                   type="button"
-                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs hover:bg-[var(--hover-bg)]"
+                  className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-[var(--hover-bg)]"
                   title={`${f.path}（${f.mode === "noLineDiff" ? "无行级 diff" : `+${f.added} −${f.deleted}`}）· 点开看改动${f.note ? `｜${f.note}` : ""}`}
                   onClick={() => openPreview(f.path, "diff")}
                 >
-                  <FolderOpen
-                    size={12}
-                    aria-hidden
-                    className="shrink-0 text-[var(--t5)]"
-                  />
-                  <span className="min-w-0 flex-1 truncate text-[var(--t3)]">
+                  <FileTypeBadge path={f.path} />
+                  <span className="min-w-0 flex-1 truncate text-xs text-[var(--t3)] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] group-hover:text-[var(--t1)]">
                     {basename(f.path)}
                   </span>
                   {f.mode === "noLineDiff" ? (

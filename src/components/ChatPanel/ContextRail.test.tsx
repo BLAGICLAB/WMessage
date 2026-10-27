@@ -503,6 +503,79 @@ describe("ContextRail 文件页双子页", () => {
   });
 });
 
+// 文件页重设计的视觉契约：类型铭牌是唯一的身份设备，区头不再复读页签，
+// 空态给去向不留死文本。
+describe("ContextRail 文件页视觉契约", () => {
+  const PPTX = "/Users/x/宣贯.pptx";
+  const DOC = "/Users/x/设计说明.md";
+
+  function mockFiles(opts: { missing?: string[] } = {}) {
+    const missing = new Set(opts.missing ?? []);
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: { paths?: string[]; path?: string }) => {
+        if (cmd === "bot_session_file_changes") {
+          return args?.path
+            ? { items: [], detail: null }
+            : { items: [], detail: null };
+        }
+        if (cmd === "bot_probe_paths") {
+          return (args?.paths ?? []).map((p) => ({
+            path: p,
+            exists: !missing.has(p),
+            isDir: false,
+            size: 1,
+          }));
+        }
+        return null;
+      },
+    );
+  }
+
+  const sessionMessages = [
+    { role: "assistant", content: `已生成 ${PPTX} 与 ${DOC}` },
+  ];
+
+  it("交付物行带类型铭牌：扩展名大写缩进 24px 方块", async () => {
+    mockFiles();
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      fileSubTab: "deliverables",
+      sessionMessages,
+    });
+    // 清单有 200ms 防抖 + 探测异步，用 findBy 等渲染
+    expect(await screen.findByText("PPTX")).toBeInTheDocument();
+    expect(screen.getByText("MD")).toBeInTheDocument();
+  });
+
+  it("区头不再复读页签：名字与计数只在页签上一份", () => {
+    mockFiles();
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      fileSubTab: "deliverables",
+      sessionMessages,
+    });
+    expect(screen.queryByText("本会话交付物")).toBeNull();
+  });
+
+  it("空态是邀请不是死文本：主行 + 去向一句", async () => {
+    mockFiles({ missing: [PPTX, DOC] });
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      fileSubTab: "deliverables",
+      sessionMessages,
+    });
+    expect(
+      await screen.findByText("本会话还没有交付物"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("机器人产出的文件会汇总在这里，点开即预览"),
+    ).toBeInTheDocument();
+  });
+});
+
 // 右侧栏列表行瘦身为「名称 + 用时 + 停止键」：状态标签、轮数/调用数进度
 // 与逐步动作流都进详情页——列表塞满数字就成了仪表盘，看过程点行进去。
 describe("ContextRail 子 Agent 列表行", () => {
