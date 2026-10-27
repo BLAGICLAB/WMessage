@@ -47,7 +47,8 @@ export interface BotConfigView {
   disabledVendors?: string[] | null;
   vendorKeys?: string[] | null;
   verifiedVendors?: string[] | null;
-  /** 界面字体大小：small/standard/large/xlarge（None = small） */
+  /** 界面字体大小：small/standard/large（None = small；历史遗留的 xlarge
+   *  按非法值同口径回落 small） */
   uiFontSize?: string | null;
   memoryConsolidation?: {
     enabled?: boolean;
@@ -93,9 +94,7 @@ export function applyFontSizeSync(
     try {
       const c = await getBotConfig();
       document.documentElement.dataset.fontSize =
-        c.uiFontSize === "standard" ||
-        c.uiFontSize === "large" ||
-        c.uiFontSize === "xlarge"
+        c.uiFontSize === "standard" || c.uiFontSize === "large"
           ? c.uiFontSize
           : "small";
       onConfig?.(c);

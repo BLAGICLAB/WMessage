@@ -192,7 +192,8 @@ pub struct BotConfig {
     /// 切换协议时设置页据此取对应协议的 active 模型来填 baseUrl/model 输入框。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub active_model_id: Option<ActiveModelId>,
-    /// 界面字体大小：small / standard / large / xlarge
+    /// 界面字体大小：small / standard / large（xlarge 档已退役，历史值由
+    /// 前端按非法值同口径回落 small）
     /// "目前字号为小"=默认 small。设置页「通用设置 → 外观」调。
     /// 全局 css 通过 documentElement[data-font-size] 走缩放。
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -535,7 +536,7 @@ pub struct BotConfigView {
     /// 每协议 active 模型 id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_model_id: Option<ActiveModelId>,
-    /// 界面字体大小：small/standard/large/xlarge
+    /// 界面字体大小：small/standard/large
     /// None = small；前端根据实际值走 documentElement[data-font-size] 套用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font_size: Option<String>,

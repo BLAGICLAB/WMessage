@@ -554,9 +554,9 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════
-   字体大小（2026-09-08 老板拍板）：四档 small/standard/large/xlarge
+   字体大小：三档 small/standard/large
    - 默认 small = 当前渲染状态（"目前字号为小"），不动
-   - standard/large/xlarge 逐档把常用的 text-[10/11/12px] 放大
+   - standard/large 逐档把常用的 text-[10/11/12px] 放大
    - data-attr 由 App.tsx 启动时拉 bot config 套上，SettingsPage 实时预览
    - 没覆盖到的 text-sm / text-xs / 其它走 Tailwind 默认 rem
    - 没覆盖到的 text-[13/14/15px] 等其他任意值走 text-[10/11/12px]
@@ -580,15 +580,6 @@
 [data-font-size="large"] .text-\[12px\] {
   font-size: 14px;
 }
-[data-font-size="xlarge"] .text-\[10px\] {
-  font-size: 13px;
-}
-[data-font-size="xlarge"] .text-\[11px\] {
-  font-size: 14px;
-}
-[data-font-size="xlarge"] .text-\[12px\] {
-  font-size: 15px;
-}
 
 /* ═══════════════════════════════════════════════════════════════
    字体大小 — Tailwind 标准类 + input 覆盖（2026-09-08 Bugfix）
@@ -604,17 +595,11 @@
 [data-font-size="large"] .text-xs {
   font-size: 14px;
 }
-[data-font-size="xlarge"] .text-xs {
-  font-size: 16px;
-}
 [data-font-size="standard"] .text-sm {
   font-size: 15px;
 }
 [data-font-size="large"] .text-sm {
   font-size: 16px;
-}
-[data-font-size="xlarge"] .text-sm {
-  font-size: 18px;
 }
 [data-font-size="standard"] .text-base {
   font-size: 17px;
@@ -622,18 +607,11 @@
 [data-font-size="large"] .text-base {
   font-size: 18px;
 }
-[data-font-size="xlarge"] .text-base {
-  font-size: 20px;
-}
 
 /* input/textarea：保 16px 起跳防 macOS Safari 自动 zoom；small 不动 */
 [data-font-size="large"] input,
 [data-font-size="large"] textarea {
   font-size: 17px;
-}
-[data-font-size="xlarge"] input,
-[data-font-size="xlarge"] textarea {
-  font-size: 19px;
 }
 
 /* ═══════════════════════════════════════════════════════════════

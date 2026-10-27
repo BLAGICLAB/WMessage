@@ -188,7 +188,7 @@ describe("SettingsPage", () => {
     expect(toggle.textContent).toMatch(/已关闭/);
   });
 
-  it("通用设置：字体大小四档 → 点选即套 data-attr + 立即落盘（与外观点选一致，2026-09-08 老板）", async () => {
+  it("通用设置：字体大小三档 → 点选即套 data-attr + 立即落盘（与外观点选一致）", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
       if (cmd === "bot_get_enabled") return true;
@@ -219,19 +219,18 @@ describe("SettingsPage", () => {
       return null;
     });
     render(<SettingsPage {...defaultProps} />);
-    // 初始：small 高亮（nm-inset），4 档按钮
-    // 「字体大小」p 的下一个 sibling 就是字体按钮所在 div（避免 closest 抓到整张卡的 3+4 个按钮）
+    // 初始：small 高亮（nm-inset），3 档按钮
+    // 「字体大小」p 的下一个 sibling 就是字体按钮所在 div（避免 closest 抓到整张卡的按钮）
     const title = await screen.findByText("字体大小");
     const row = title.nextElementSibling as HTMLElement;
     expect(row).not.toBeNull();
     if (!row) return;
     const btns = row.querySelectorAll("button");
-    // 4 档：小 / 标准 / 大 / 特大
-    expect(btns).toHaveLength(4);
+    // 3 档：小 / 标准 / 大
+    expect(btns).toHaveLength(3);
     expect(btns[0].textContent).toBe("小");
     expect(btns[1].textContent).toBe("标准");
     expect(btns[2].textContent).toBe("大");
-    expect(btns[3].textContent).toBe("特大");
     // 初始 small 高亮
     expect(btns[0].className).toContain("nm-inset");
     // 点「标准」→ data-attr 变 + active 跳到第二档 + 立即落盘（与外观一致）
@@ -252,18 +251,18 @@ describe("SettingsPage", () => {
         }),
       );
     });
-    // 再点「特大」→ 同样立即落盘
-    await user.click(btns[3]);
-    expect(document.documentElement.dataset.fontSize).toBe("xlarge");
+    // 再点「大」（末档）→ 同样立即落盘
+    await user.click(btns[2]);
+    expect(document.documentElement.dataset.fontSize).toBe("large");
     await waitFor(() => {
-      expect(btns[3].className).toContain("nm-inset");
+      expect(btns[2].className).toContain("nm-inset");
     });
     await waitFor(() => {
       expect(mocks.invokeMock).toHaveBeenCalledWith(
         "bot_set_config",
         expect.objectContaining({
           config: expect.objectContaining({
-            uiFontSize: "xlarge",
+            uiFontSize: "large",
           }),
         }),
       );
@@ -282,20 +281,15 @@ describe("SettingsPage", () => {
       "../ui/main.css",
     );
     const css = await fs.readFile(cssPath, "utf-8");
-    // xlarge → text-xs: 16px；large → text-sm: 16px；standard → text-base: 17px
-    expect(css).toMatch(
-      /\[data-font-size="xlarge"\]\s+\.text-xs\s*\{\s*font-size:\s*16px/,
-    );
+    // large → text-sm: 16px；standard → text-base: 17px
     expect(css).toMatch(
       /\[data-font-size="large"\]\s+\.text-sm\s*\{\s*font-size:\s*16px/,
     );
     expect(css).toMatch(
       /\[data-font-size="standard"\]\s+\.text-base\s*\{\s*font-size:\s*17px/,
     );
-    // input/textarea 防 macOS Safari 自动 zoom（xlarge 档 19px）
-    expect(css).toMatch(
-      /\[data-font-size="xlarge"\]\s+input[\s\S]*?font-size:\s*19px/,
-    );
+    // xlarge 档已退役：覆盖表里不得再出现
+    expect(css).not.toMatch(/data-font-size="xlarge"/);
     // small 档保持不动（「目前字号为小」）
     expect(css).not.toMatch(/\[data-font-size="small"\]\s+\.text-xs/);
   });

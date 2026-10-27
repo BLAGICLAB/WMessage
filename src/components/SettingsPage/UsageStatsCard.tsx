@@ -444,8 +444,8 @@ function TokenTrendChart({
 /* ───────────────────────── 模型用量 3D 饼图 ───────────────────────── */
 
 /** 密集图例行的次级数字档：比正文低一档字号。
- *  text-[10px] 仍在 [data-font-size] 覆盖表内（standard/large/xlarge → 12/13/14px），
- *  四档字号照常生效——它与设置行的 text-xs 分工不同（设置行是主阅读面，
+ *  text-[10px] 仍在 [data-font-size] 覆盖表内（standard/large → 12/13px），
+ *  各档字号照常生效——它与设置行的 text-xs 分工不同（设置行是主阅读面，
  *  这里是三级元数据），不是任意值混排。 */
 const META_NUM = "text-[10px] font-mono tabular-nums text-[var(--t5)]";
 

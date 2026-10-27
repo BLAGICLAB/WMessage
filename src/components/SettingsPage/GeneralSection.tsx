@@ -89,7 +89,7 @@ export function GeneralSection({
                 </button>
               ))}
             </div>
-            {/* 字体大小：四档 small/standard/large/xlarge
+            {/* 字体大小：三档 small/standard/large
         默认 small（“目前字号为小”）。走 data-attr 全局套用，
         视觉缩放在 main.css 里。点选即生效 + 即时落盘（与外观一致，
         不用再点「保存配置」）。 */}

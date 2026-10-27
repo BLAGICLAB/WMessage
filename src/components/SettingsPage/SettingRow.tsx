@@ -1,7 +1,7 @@
 // 设置页排版原语：卡片与设置行。设置页 20+ 个面板共用同一套排版阶梯，
 // 面板里不再各自写 text-lg / text-sm / text-xs 原子串。
 //
-// 阶梯只有三级，字体大小四档（small/standard/large/xlarge）靠
+// 阶梯只有三级，字体大小三档（small/standard/large）靠
 // [data-font-size] 覆盖 Tailwind 标准类放大——所以这里只用 text-lg / text-sm /
 // text-xs 三个标准类，不用 text-[11px] 这类任意值：任意值类与标准类混排时
 // 同一档里字号会错位（曾出现的 10/11/12px 混用就是这么来的）。

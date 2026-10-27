@@ -43,7 +43,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     // 连接测试通过的厂商名列表（可用性依据：左栏绿点 + 聊天下拉过滤；
     // key/URL/格式变更由后端置失效）
     verifiedVendors: [] as string[],
-    // 界面字体大小：small/standard/large/xlarge 四档
+    // 界面字体大小：small/standard/large 三档
     // 默认 small（「目前字号为小」）；后端 None 也回退到 small
     uiFontSize: "small" as UiFontSize,
     hasApiKey: false,
@@ -272,11 +272,11 @@ export function useSettingsActions(params: SettingsActionsParams) {
         disabledVendors: c.disabledVendors ?? [],
         // 连接测试通过的厂商名单（老后端没返 → 空）
         verifiedVendors: c.verifiedVendors ?? [],
-        // 字体大小：老后端 / None / 非法值都回退 small（"目前字号为小"）
+        // 界面字体大小：small/standard/large 三档
+        // 默认 small（「目前字号为小」）；后端 None / 非法值（含历史遗留的
+        // xlarge）都回退到 small
         uiFontSize:
-          c.uiFontSize === "standard" ||
-          c.uiFontSize === "large" ||
-          c.uiFontSize === "xlarge"
+          c.uiFontSize === "standard" || c.uiFontSize === "large"
             ? c.uiFontSize
             : "small",
         hasApiKey: !!c.hasApiKey,
