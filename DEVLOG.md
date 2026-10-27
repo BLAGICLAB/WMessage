@@ -8917,3 +8917,16 @@ exe 76,445,564 字节；dotnet 侧车本次重新发布（非复用）；onnxrun
 门控项无泄漏）。两处记账：包在仓库根 `wmessage-portable-2026-10-27.zip`，
 exe 在 `src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`。
 Windows 实机验收（解压双击 / 便携锚定 / 记忆语义检索 / ocr_image）待人工。
+
+## 2026-10-28 · 绿色版出包（wmessage-portable-2026-10-28.zip）
+
+基于 main @ af000baa 出包，相对 2026-10-27 版（be6f9a46）新增 27 个提交
+（交付物区改造 + 归档目录放开绝对路径 + 聊天文件页重排）。zip 105 MB /
+205 文件，SHA256
+cc0c58ac4e697294c37a826cf37ab7ee53603d6aebb6cb83aec7e5e0e3ea8e70。
+exe 76,584,602 字节；dotnet 侧车复用上一版包（源码自 2026-10-13 起零改动）；
+onnxruntime.dll 沿用 /tmp/ort-dll 缓存（ort 2.0.0-rc.13 ↔ 1.28.0 未变）。
+release check 先行通过（debug_assertions 门控项无泄漏）。两处记账：包在
+仓库根 `wmessage-portable-2026-10-28.zip`，exe 在
+`src-tauri/target/x86_64-pc-windows-gnu/release/wmessage.exe`。
+Windows 实机验收（解压双击 / 便携锚定 / 记忆语义检索 / ocr_image）待人工。
