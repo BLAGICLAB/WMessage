@@ -527,6 +527,11 @@ src-tauri/src/
 │                        秒级，18 个包串起来会撞穿 3s 探针超时，超时被杀的探针输出为空，
 │                        面板会把「装了」全报成「缺」；命令定位走 PATH + 平台前缀
 │                        （macOS brew 前缀、Windows 的 .cmd）
+│                        **缺项安装指引也在这里出**（前端只渲染）：macOS 走 brew
+│                        （formula / cask），Windows 走 winget——包 ID 取自官方
+│                        manifest 仓库的 PackageIdentifier 字段（OpenJS.NodeJS.LTS
+│                        不存在、Microsoft.DotNet.SDK 要带版本段）；pipx 不在 winget
+│                        源里 → Windows 走官方文档的 pip 装法。平台知识只此一处
 ├── ocr.rs               ocr_image：macOS Vision / Windows PP-OCRv6 ONNX；纯本地不上网；
 │                        输入有字节与像素上限（解码前只读文件头，解码炸弹面）
 ├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +

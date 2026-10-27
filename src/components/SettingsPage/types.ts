@@ -221,6 +221,9 @@ type EnvLauncher = {
   name: string;
   available: boolean;
   purpose: string;
+  /** 缺失时的安装命令（brew / winget…）；null = 该平台没给命令。
+   *  平台知识在 Rust 后端（env_probe.rs），前端只渲染 */
+  install: string | null;
 };
 
 /** 一次环境检查的结果。`failed` = 探测线程整体失败，三组数据都不可信 */
@@ -232,6 +235,8 @@ export type EnvCheck = {
     version: string;
     /** 空数组 = 探针没跑出结果（不是「一个都没装」） */
     packages: EnvPyPackage[];
+    /** 缺失包的安装命令（后端按平台出）；null = 全装了 */
+    install: string | null;
   };
   /** Node 运行时 + 全局 npm 包。**只收与 Python 组不重复、且真有人用的**
    *  三个（pptxgenjs 是内置技能依赖，另两个是 Python 组覆盖不到的图表能力，
@@ -243,6 +248,8 @@ export type EnvCheck = {
     npm: string;
     npmVersion: string;
     packages: EnvNodePackage[];
+    /** 缺失包的安装命令（后端按平台出）；null = 全装了 */
+    install: string | null;
   };
   launchers: EnvLauncher[];
 };

@@ -31,6 +31,8 @@ function sampleEnv(over: Partial<EnvCheck> = {}): EnvCheck {
           purpose: "数据表处理",
         },
       ],
+      // 安装命令由后端给（平台相关），这里直接给成品
+      install: "python3 -m pip install pypdf pandas",
     },
     node: {
       available: true,
@@ -50,10 +52,21 @@ function sampleEnv(over: Partial<EnvCheck> = {}): EnvCheck {
           purpose: "Mermaid 图渲染（流程图/时序图出图）",
         },
       ],
+      install: "npm i -g @mermaid-js/mermaid-cli",
     },
     launchers: [
-      { name: "npx", available: true, purpose: "MCP 服务器启动器（npm）" },
-      { name: "docker", available: false, purpose: "容器运行时" },
+      {
+        name: "npx",
+        available: true,
+        purpose: "MCP 服务器启动器（npm；随 node 一起装）",
+        install: "brew install node",
+      },
+      {
+        name: "docker",
+        available: false,
+        purpose: "容器运行时",
+        install: "brew install --cask docker-desktop",
+      },
     ],
     ...over,
   };
@@ -159,6 +172,44 @@ describe("EnvPanel 本机运行环境卡", () => {
     expect(screen.getByText("1 项必需缺失")).toBeInTheDocument();
   });
 
+  it("运行时组缺项逐项给安装命令，已装的不给", () => {
+    render(
+      <EnvPanel
+        env={sampleEnv()}
+        busy={false}
+        error=""
+        onCheck={async () => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("运行时与启动器"));
+    expect(
+      screen.getByText("docker：brew install --cask docker-desktop"),
+    ).toBeInTheDocument();
+    // npx 已装 → 不给安装命令
+    expect(screen.queryByText(/npx：brew/)).not.toBeInTheDocument();
+  });
+
+  it("该平台没给命令的缺项只报缺，不给命令", () => {
+    const env = sampleEnv();
+    render(
+      <EnvPanel
+        env={{
+          ...env,
+          launchers: [
+            { name: "npx", available: true, purpose: "启动器", install: null },
+            { name: "bun", available: false, purpose: "Bun 运行时", install: null },
+          ],
+        }}
+        busy={false}
+        error=""
+        onCheck={async () => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("运行时与启动器"));
+    expect(screen.getByText("bun")).toBeInTheDocument();
+    expect(screen.queryByText(/bun：/)).not.toBeInTheDocument();
+  });
+
   it("都装齐了就不给安装命令", () => {
     const env = sampleEnv();
     render(
@@ -175,6 +226,7 @@ describe("EnvPanel 本机运行环境卡", () => {
                 purpose: "Excel 读写",
               },
             ],
+            install: null,
           },
         }}
         busy={false}

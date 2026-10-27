@@ -7,6 +7,9 @@
 // 是一堵墙——真正要看的通常只是「哪个缺」。折叠后卡片保持一屏高，缺的那
 // 几项单独给安装命令。
 //
+// **安装命令是后端给的**：brew / winget 是平台知识，留在 Rust 侧
+// （env_probe.rs）一处出，前端只渲染——前端自己拼就等于两份要同步。
+//
 // **为什么 Node 组只有三个**：产品文档链路全走 Python，Node 那侧的
 // Word/Excel/PDF 能力与 Python 组重复；留的这三个要么是内置技能的真实
 // 依赖（pptxgenjs），要么是 Python 组覆盖不到的图表能力（mermaid /
@@ -27,8 +30,10 @@ type Group = {
   key: string;
   title: string;
   items: Item[];
-  /** 缺失项的安装命令；null = 没有缺失项 */
-  install: string | null;
+  /** 缺失项安装命令；空数组 = 没有缺失项（或该平台没给命令）。
+   *  命令一律后端给（env_probe.rs）——brew 还是 winget 是平台知识，
+   *  前端复制一份就等于两份要同步 */
+  installs: { prefix: string; cmd: string }[];
 };
 
 export function EnvPanel({
@@ -149,10 +154,18 @@ function EnvGroup({
               </div>
             ))}
           </div>
-          {group.install && (
-            <p className="mt-2 break-all font-mono text-[11px] text-[var(--t5)]">
-              安装缺失项：{group.install}
-            </p>
+          {group.installs.length > 0 && (
+            <div className="mt-2 space-y-0.5">
+              {group.installs.map((ins) => (
+                <p
+                  key={ins.cmd}
+                  className="break-words font-mono text-[11px] text-[var(--t5)]"
+                >
+                  {ins.prefix}
+                  {ins.cmd}
+                </p>
+              ))}
+            </div>
           )}
         </>
       )}
@@ -162,12 +175,6 @@ function EnvGroup({
 
 /** 三组转成渲染用的分组（含缺失项安装命令） */
 function buildGroups(env: EnvCheck): Group[] {
-  const pyMissing = env.python.packages
-    .filter((p) => !p.available)
-    .map((p) => p.name);
-  const nodeMissing = env.node.packages
-    .filter((p) => !p.available)
-    .map((p) => p.name);
   return [
     {
       key: "python",
@@ -178,9 +185,9 @@ function buildGroups(env: EnvCheck): Group[] {
         purpose: p.purpose,
         required: p.required,
       })),
-      install: pyMissing.length
-        ? `python3 -m pip install ${pyMissing.join(" ")}`
-        : null,
+      installs: env.python.install
+        ? [{ prefix: "安装缺失项：", cmd: env.python.install }]
+        : [],
     },
     {
       key: "node",
@@ -190,9 +197,9 @@ function buildGroups(env: EnvCheck): Group[] {
         ok: p.available,
         purpose: p.purpose,
       })),
-      install: nodeMissing.length
-        ? `npm i -g ${nodeMissing.join(" ")}`
-        : null,
+      installs: env.node.install
+        ? [{ prefix: "安装缺失项：", cmd: env.node.install }]
+        : [],
     },
     {
       key: "launchers",
@@ -202,8 +209,11 @@ function buildGroups(env: EnvCheck): Group[] {
         ok: l.available,
         purpose: l.purpose,
       })),
-      // 各命令的装法按平台而异（brew/apt/dotnet 官网…），不给统一命令
-      install: null,
+      // 运行时组逐项给：每个工具装法不同（brew formula / cask / winget），
+      // 一条命令装不齐；已装的与没给命令的都不列
+      installs: env.launchers.flatMap((l) =>
+        !l.available && l.install ? [{ prefix: `${l.name}：`, cmd: l.install }] : [],
+      ),
     },
   ];
 }

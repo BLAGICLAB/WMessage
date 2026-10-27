@@ -58,7 +58,13 @@ const defaultInvoke = async (cmd: string) => {
     case "env_check":
       return {
         failed: false,
-        python: { available: false, python: "", version: "", packages: [] },
+        python: {
+          available: false,
+          python: "",
+          version: "",
+          packages: [],
+          install: null,
+        },
         node: {
           available: false,
           node: "",
@@ -66,6 +72,7 @@ const defaultInvoke = async (cmd: string) => {
           npm: "",
           npmVersion: "",
           packages: [],
+          install: null,
         },
         launchers: [],
       };

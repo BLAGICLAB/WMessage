@@ -30,6 +30,11 @@
 //! **命令定位**：PATH 解析（不经 shell），macOS 补 brew 前缀（从 Finder
 //! 启动的 GUI 应用 PATH 极简，只有 /usr/bin:/bin）、Windows 补
 //! `.exe/.cmd/.bat`（CreateProcess 只补 .exe，而 npm 的 npx/npm 是 .cmd）。
+//!
+//! **缺项安装指引也在后端出**：三组的安装命令都由这里生成（Python 组一条
+//! pip 命令装齐、Node 组一条 npm 命令装齐、运行时组逐项给 brew/winget），
+//! 前端只渲染。平台知识（brew 还是 winget、包 ID 叫什么）留在这一个地方——
+//! 前端复制一份就等于两份要同步，迟早漂。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -63,6 +68,8 @@ pub struct PythonEnv {
     pub version: String,
     /// 包可用性；**空 = 探针没跑出结果**（不是「全都没装」）
     pub packages: Vec<PyPackage>,
+    /// 缺失包的安装命令；None = 全都装了（或探针没跑出结果）
+    pub install: Option<String>,
 }
 
 /// 单个 Python 包
@@ -95,6 +102,8 @@ pub struct NodeEnv {
     /// 全局 npm 包可用性（**全局**——技能的 SKILL.md 写的就是
     /// `npm install -g pptxgenjs`，装到项目本地 require 不到）
     pub packages: Vec<NodePackage>,
+    /// 缺失包的安装命令；None = 全都装了
+    pub install: Option<String>,
 }
 
 /// 单个全局 npm 包
@@ -117,6 +126,8 @@ pub struct LauncherEnv {
     pub available: bool,
     /// 用途说明
     pub purpose: String,
+    /// 本平台的安装命令（brew / winget…）；None = 该平台没给命令
+    pub install: Option<String>,
 }
 
 // ── 清单 ──
@@ -184,30 +195,134 @@ const NODE_PACKAGES: &[(&str, &str)] = &[
     ),
 ];
 
-/// 运行时 / 启动器清单：(命令名, 用途)。
+/// 运行时 / 启动器清单。
 ///
 /// 前 10 个里 npx/bunx/uvx/pipx/node/deno/python/python3/docker/podman
 /// 是 MCP stdio 启动器白名单（`bot::mcp::config::STDIO_LAUNCH_ALLOWLIST`，
 /// 单一事实源）——用户在 MCP 面板挑了启动器，本机有没有装必须看得见，
 /// 否则只能等连接失败才知道。dotnet 是 Word 修订工具的前置条件
 /// （`py::env::detect_dotnet` 早就能探，但从不进面板）。
-const LAUNCHERS: &[(&str, &str)] = &[
-    ("dotnet", "Word 修订工具（.NET 8+）"),
-    ("node", "Node 运行时"),
-    ("npm", "npm 包管理器"),
-    ("npx", "MCP 服务器启动器（npm）"),
-    ("bun", "Bun 运行时"),
-    ("bunx", "MCP 服务器启动器（Bun）"),
-    ("uv", "Python 工具管理器"),
-    ("uvx", "MCP 服务器启动器（uv）"),
-    ("pipx", "MCP 服务器启动器（pipx）"),
-    ("python", "MCP 服务器启动器（Python）"),
-    ("python3", "MCP 服务器启动器（Python）"),
-    ("deno", "Deno 运行时"),
-    ("docker", "容器运行时"),
-    ("podman", "容器运行时"),
-    ("git", "版本库"),
-    ("soffice", "LibreOffice 命令行（Office 转 PDF）"),
+///
+/// **安装命令按平台分两列**：macOS 走 brew（formula / cask），Windows 走
+/// winget。winget 的包 ID 取自官方 manifest 仓库（microsoft/winget-pkgs）里
+/// manifest 的 `PackageIdentifier` 字段，不是照记忆写的——`OpenJS.NodeJS.LTS`
+/// 并不存在（真身是 `OpenJS.NodeJS`），`Microsoft.DotNet.SDK` 也不是完整 ID
+/// （要带版本段：`Microsoft.DotNet.SDK.8`）。平台知识只落在后端一处，前端
+/// 只渲染。
+///
+/// 同一上游的多个入口共用一条命令：npm/npx 随 node、uvx 随 uv、bunx 随
+/// bun、python3 随 python——装上游就有下游。
+struct LauncherSpec {
+    name: &'static str,
+    purpose: &'static str,
+    /// macOS 安装命令（brew）
+    macos: &'static str,
+    /// Windows 安装命令（winget；pipx 例外，见下）
+    windows: &'static str,
+}
+
+const LAUNCHERS: &[LauncherSpec] = &[
+    LauncherSpec {
+        name: "dotnet",
+        purpose: "Word 修订工具的 .NET 运行时（工具按 net8.0 构建，装 8 或更高都能跑）",
+        macos: "brew install --cask dotnet-sdk@8",
+        windows: "winget install Microsoft.DotNet.SDK.8",
+    },
+    LauncherSpec {
+        name: "node",
+        purpose: "Node 运行时",
+        macos: "brew install node",
+        windows: "winget install OpenJS.NodeJS",
+    },
+    LauncherSpec {
+        name: "npm",
+        purpose: "npm 包管理器（随 node 一起装）",
+        macos: "brew install node",
+        windows: "winget install OpenJS.NodeJS",
+    },
+    LauncherSpec {
+        name: "npx",
+        purpose: "MCP 服务器启动器（npm；随 node 一起装）",
+        macos: "brew install node",
+        windows: "winget install OpenJS.NodeJS",
+    },
+    LauncherSpec {
+        name: "bun",
+        purpose: "Bun 运行时",
+        macos: "brew install bun",
+        windows: "winget install Oven-sh.Bun",
+    },
+    LauncherSpec {
+        name: "bunx",
+        purpose: "MCP 服务器启动器（Bun；随 bun 一起装）",
+        macos: "brew install bun",
+        windows: "winget install Oven-sh.Bun",
+    },
+    LauncherSpec {
+        name: "uv",
+        purpose: "Python 工具管理器",
+        macos: "brew install uv",
+        windows: "winget install astral-sh.uv",
+    },
+    LauncherSpec {
+        name: "uvx",
+        purpose: "MCP 服务器启动器（uv；随 uv 一起装）",
+        macos: "brew install uv",
+        windows: "winget install astral-sh.uv",
+    },
+    LauncherSpec {
+        name: "pipx",
+        // pipx 不在 winget 官方源里（publisher 目录都查过，没有对应条目）
+        // → Windows 走官方文档给的 pip 装法
+        purpose: "MCP 服务器启动器（pipx；装完执行 pipx ensurepath 加 PATH）",
+        macos: "brew install pipx",
+        windows: "python -m pip install --user pipx",
+    },
+    LauncherSpec {
+        name: "python",
+        purpose: "MCP 服务器启动器（Python）",
+        macos: "brew install python",
+        windows: "winget install Python.Python.3.14",
+    },
+    LauncherSpec {
+        name: "python3",
+        // Windows 的官方 Python 安装器只装 python.exe / pythonw.exe，没有
+        // python3.exe（winget manifest 的 Files 列表里就这两个）——装完仍没有
+        // python3 是正常状态，MCP 面板该选 python
+        purpose: "MCP 服务器启动器（Python 3；Windows 上只有 python）",
+        macos: "brew install python",
+        windows: "winget install Python.Python.3.14",
+    },
+    LauncherSpec {
+        name: "deno",
+        purpose: "Deno 运行时",
+        macos: "brew install deno",
+        windows: "winget install DenoLand.Deno",
+    },
+    LauncherSpec {
+        name: "docker",
+        purpose: "容器运行时",
+        macos: "brew install --cask docker-desktop",
+        windows: "winget install Docker.DockerDesktop",
+    },
+    LauncherSpec {
+        name: "podman",
+        purpose: "容器运行时",
+        macos: "brew install podman",
+        windows: "winget install RedHat.Podman",
+    },
+    LauncherSpec {
+        name: "git",
+        purpose: "版本库",
+        macos: "brew install git",
+        windows: "winget install Git.Git",
+    },
+    LauncherSpec {
+        name: "soffice",
+        purpose: "LibreOffice 命令行（Office 转 PDF）",
+        macos: "brew install --cask libreoffice",
+        windows: "winget install TheDocumentFoundation.LibreOffice",
+    },
 ];
 
 // ── 探测入口 ──
@@ -241,6 +356,7 @@ pub async fn env_check() -> EnvCheck {
                     python: String::new(),
                     version: String::new(),
                     packages: Vec::new(),
+                    install: None,
                 },
                 node: NodeEnv {
                     available: false,
@@ -249,6 +365,7 @@ pub async fn env_check() -> EnvCheck {
                     npm: String::new(),
                     npm_version: String::new(),
                     packages: Vec::new(),
+                    install: None,
                 },
                 launchers: Vec::new(),
             }
@@ -262,6 +379,7 @@ fn python_env() -> PythonEnv {
             python: String::new(),
             version: String::new(),
             packages: Vec::new(),
+            install: None,
         };
     };
     let version = probe_output_with_timeout(&py, &["--version"])
@@ -272,11 +390,13 @@ fn python_env() -> PythonEnv {
         Some(out) => parse_probe_output(&out),
         None => Vec::new(),
     };
+    let install = python_install(&packages);
     PythonEnv {
         available: true,
         python: py,
         version,
         packages,
+        install,
     }
 }
 
@@ -284,7 +404,7 @@ fn node_env() -> NodeEnv {
     let node = resolve_executable("node");
     let npm = resolve_executable("npm");
     let root = npm_global_root(npm.as_deref());
-    let packages = NODE_PACKAGES
+    let packages: Vec<NodePackage> = NODE_PACKAGES
         .iter()
         .map(|(name, purpose)| NodePackage {
             name: name.to_string(),
@@ -292,6 +412,7 @@ fn node_env() -> NodeEnv {
             purpose: purpose.to_string(),
         })
         .collect();
+    let install = node_install(&packages);
     NodeEnv {
         available: node.is_some(),
         node: path_str(node.as_deref()),
@@ -299,18 +420,77 @@ fn node_env() -> NodeEnv {
         npm: path_str(npm.as_deref()),
         npm_version: version_of(npm.as_deref(), &["--version"]),
         packages,
+        install,
     }
 }
 
 fn launcher_env() -> Vec<LauncherEnv> {
     LAUNCHERS
         .iter()
-        .map(|(name, purpose)| LauncherEnv {
-            name: name.to_string(),
-            available: resolve_executable(name).is_some(),
-            purpose: purpose.to_string(),
+        .map(|spec| LauncherEnv {
+            name: spec.name.to_string(),
+            available: resolve_executable(spec.name).is_some(),
+            purpose: spec.purpose.to_string(),
+            install: platform_install(spec),
         })
         .collect()
+}
+
+// ── 安装指引 ──
+
+/// pip 命令名：Windows 的官方 Python 安装器只给 `python.exe`（没有
+/// `python3.exe`），写 `python3 -m pip` 在 Windows 上必然找不到命令。
+#[cfg(windows)]
+const PIP_CMD: &str = "python";
+#[cfg(not(windows))]
+const PIP_CMD: &str = "python3";
+
+/// 缺失 Python 包的安装命令（一条装齐）。
+///
+/// 探针没跑出结果时 packages 是空 → 返回 None：此时说「装这些」等于
+/// 让用户照着一张没探出来的清单装。
+fn python_install(pkgs: &[PyPackage]) -> Option<String> {
+    let missing: Vec<&str> = pkgs
+        .iter()
+        .filter(|p| !p.available)
+        .map(|p| p.name.as_str())
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!("{PIP_CMD} -m pip install {}", missing.join(" ")))
+}
+
+/// 缺失全局 npm 包的安装命令（一条装齐）。
+fn node_install(pkgs: &[NodePackage]) -> Option<String> {
+    let missing: Vec<&str> = pkgs
+        .iter()
+        .filter(|p| !p.available)
+        .map(|p| p.name.as_str())
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    Some(format!("npm i -g {}", missing.join(" ")))
+}
+
+/// 该平台的安装命令（macOS 走 brew，Windows 走 winget）。
+///
+/// 产品只发 macOS 与 Windows 两个平台：其余平台**不给命令**——宁可不显示，
+/// 也不丢一条没核实过的命令出去。
+fn platform_install(spec: &LauncherSpec) -> Option<String> {
+    let cmd = if cfg!(target_os = "macos") {
+        spec.macos
+    } else if cfg!(windows) {
+        spec.windows
+    } else {
+        return None;
+    };
+    if cmd.is_empty() {
+        None
+    } else {
+        Some(cmd.to_string())
+    }
 }
 
 // ── Python 探针 ──
@@ -455,6 +635,13 @@ fn search_dirs() -> Vec<PathBuf> {
         if let Some(appdata) = std::env::var_os("APPDATA") {
             dirs.push(PathBuf::from(appdata).join("npm"));
         }
+        // LibreOffice 的官网 / winget 安装器都不往 PATH 里放 soffice.exe
+        // （固定在 program 目录下）→ 不补这两个目录，装完了也永远探不到
+        dirs.push(PathBuf::from(r"C:\Program Files\LibreOffice\program"));
+        dirs.push(PathBuf::from(r"C:\Program Files (x86)\LibreOffice\program"));
+        // dotnet.exe 固定在 C:\Program Files\dotnet（装的时候一般会写进
+        // PATH，但 PATH 没生效时也得能探到）
+        dirs.push(PathBuf::from(r"C:\Program Files\dotnet"));
     }
     dirs
 }
@@ -608,10 +795,129 @@ mod tests {
         // （用户在 MCP 面板挑启动器，本机有没有装必须看得见）
         for launcher in crate::bot::mcp::config::STDIO_LAUNCH_ALLOWLIST {
             assert!(
-                LAUNCHERS.iter().any(|(n, _)| n == launcher),
+                LAUNCHERS.iter().any(|s| s.name == *launcher),
                 "启动器清单漏了 MCP 白名单里的 {launcher}"
             );
         }
+    }
+
+    #[test]
+    fn 每个启动器两个平台都有安装命令() {
+        for spec in LAUNCHERS {
+            assert!(
+                !spec.macos.is_empty(),
+                "{} 缺 macOS 安装命令（前端只会渲染后端给的命令）",
+                spec.name
+            );
+            assert!(
+                !spec.windows.is_empty(),
+                "{} 缺 Windows 安装命令",
+                spec.name
+            );
+        }
+    }
+
+    #[test]
+    fn windows_安装命令都是核实过的_winget_id() {
+        // winget 包 ID 取自官方 manifest 仓库的 PackageIdentifier 字段——
+        // 这条测试钉住「长这样」，防止手滑写成不存在的 ID
+        // （OpenJS.NodeJS.LTS / Microsoft.DotNet.SDK 就是照直觉写会写错的两个）
+        for spec in LAUNCHERS {
+            if spec.name == "pipx" {
+                // pipx 不在 winget 官方源里 → Windows 走官方文档给的 pip 装法
+                assert!(
+                    spec.windows.contains("pip install"),
+                    "pipx 的 Windows 装法应走 pip，实际：{}",
+                    spec.windows
+                );
+                continue;
+            }
+            assert!(
+                spec.windows.starts_with("winget install "),
+                "{} 的 Windows 装法不是 winget：{}",
+                spec.name,
+                spec.windows
+            );
+        }
+    }
+
+    #[test]
+    fn 安装命令按平台取() {
+        let git = LAUNCHERS.iter().find(|s| s.name == "git").unwrap();
+        assert_eq!(git.macos, "brew install git");
+        assert_eq!(git.windows, "winget install Git.Git");
+        #[cfg(target_os = "macos")]
+        assert_eq!(platform_install(git).as_deref(), Some("brew install git"));
+        #[cfg(windows)]
+        assert_eq!(
+            platform_install(git).as_deref(),
+            Some("winget install Git.Git")
+        );
+        #[cfg(not(any(target_os = "macos", windows)))]
+        assert!(platform_install(git).is_none(), "未发平台的命令不该给出去");
+    }
+
+    #[test]
+    fn 缺失包的安装命令带齐包名且不含已装的() {
+        let pkgs = vec![
+            PyPackage {
+                name: "pypdf".to_string(),
+                available: false,
+                required: true,
+                purpose: "PDF 文本层提取".to_string(),
+            },
+            PyPackage {
+                name: "pandas".to_string(),
+                available: false,
+                required: false,
+                purpose: "数据表处理".to_string(),
+            },
+            PyPackage {
+                name: "openpyxl".to_string(),
+                available: true,
+                required: true,
+                purpose: "Excel 读写".to_string(),
+            },
+        ];
+        let cmd = python_install(&pkgs).unwrap();
+        assert!(cmd.contains("pypdf") && cmd.contains("pandas"));
+        assert!(!cmd.contains("openpyxl"), "已装的包不该再出现在安装命令里");
+        #[cfg(windows)]
+        assert!(
+            cmd.starts_with("python -m pip install"),
+            "Windows 没有 python3.exe，命令得用 python：{cmd}"
+        );
+        #[cfg(not(windows))]
+        assert!(cmd.starts_with("python3 -m pip install"), "{cmd}");
+        // 全都装了 → 不给安装命令
+        assert!(python_install(&[PyPackage {
+            name: "openpyxl".to_string(),
+            available: true,
+            required: true,
+            purpose: "Excel 读写".to_string(),
+        }])
+        .is_none());
+    }
+
+    #[test]
+    fn node_缺失包给全局安装命令() {
+        let pkgs = vec![
+            NodePackage {
+                name: "pptxgenjs".to_string(),
+                available: true,
+                purpose: "PPT 生成".to_string(),
+            },
+            NodePackage {
+                name: "@mermaid-js/mermaid-cli".to_string(),
+                available: false,
+                purpose: "Mermaid 图渲染".to_string(),
+            },
+        ];
+        assert_eq!(
+            node_install(&pkgs).as_deref(),
+            Some("npm i -g @mermaid-js/mermaid-cli")
+        );
+        assert!(node_install(&[]).is_none());
     }
 
     #[test]
@@ -689,7 +995,14 @@ mod tests {
         }
         eprintln!("node={} npm={}", env.node.version, env.node.npm_version);
         for l in &env.launchers {
-            eprintln!("  {:<10} {}", l.name, if l.available { "OK" } else { "缺" });
+            eprintln!(
+                "  {:<10} {} {:?}",
+                l.name,
+                if l.available { "OK" } else { "缺" },
+                l.install
+            );
         }
+        eprintln!("python 安装命令: {:?}", env.python.install);
+        eprintln!("node 安装命令: {:?}", env.node.install);
     }
 }
