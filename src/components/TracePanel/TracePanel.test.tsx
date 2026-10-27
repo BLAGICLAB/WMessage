@@ -165,6 +165,40 @@ describe("TracePanel", () => {
     );
   });
 
+  it("导出：点击落 JSONL 并展示返回的绝对路径", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "trace_list") return Promise.resolve([TRACE]);
+      if (cmd === "trace_detail") return Promise.resolve(DETAIL);
+      if (cmd === "trace_export")
+        return Promise.resolve("/data/exports/trace-7.jsonl");
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+    render(<TracePanel taskId="t1" onClose={() => {}} />);
+    const btn = await screen.findByTitle(
+      "导出为 JSONL 文件（数据目录 exports/）",
+    );
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(screen.getByText(/\/data\/exports\/trace-7\.jsonl/)).toBeTruthy(),
+    );
+    expect(invokeMock).toHaveBeenCalledWith("trace_export", { traceId: 7 });
+  });
+
+  it("导出失败原文展示错误，不静默", async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "trace_list") return Promise.resolve([TRACE]);
+      if (cmd === "trace_detail") return Promise.resolve(DETAIL);
+      if (cmd === "trace_export") return Promise.reject("磁盘不可写");
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    });
+    render(<TracePanel taskId="t1" onClose={() => {}} />);
+    const btn = await screen.findByTitle(
+      "导出为 JSONL 文件（数据目录 exports/）",
+    );
+    fireEvent.click(btn);
+    await waitFor(() => expect(screen.getByText(/磁盘不可写/)).toBeTruthy());
+  });
+
   it("无执行痕迹时空态文案", async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === "trace_list") return Promise.resolve([]);

@@ -1061,3 +1061,203 @@ fn file_paths_with_receipt_query_uses_path_index() {
         "凭证查询应走 path 索引，实际计划：{plan:?}"
     );
 }
+
+// ── 回滚 / 导出命令核心：conn + 数据目录齐全即可测（AppHandle 外壳在外）────
+
+use std::fs;
+
+fn tmp_data_dir() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
+}
+
+/// 建一条变更行，kind 与指纹三件套可选注入（回滚闸口测试用）
+fn mk_change(
+    conn: &rusqlite::Connection,
+    trace_id: i64,
+    path: &str,
+    kind: &str,
+    before_ref: Option<&str>,
+    before_sha: Option<&str>,
+    after_sha: Option<&str>,
+) -> i64 {
+    file_change_insert(
+        conn,
+        &NewFileChange {
+            trace_id,
+            span_id: None,
+            path,
+            kind,
+            added: 1,
+            deleted: 1,
+            diff: None,
+            truncated: false,
+            before_ref,
+            before_sha,
+            after_sha,
+            created_at: 1001,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn rollback_restores_before_content_when_file_untouched() {
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    let dir = tmp_data_dir();
+    let target = dir.path().join("x.py");
+    let before = "before line\n";
+    let after = "after line\n";
+    fs::write(&target, after).unwrap();
+    let checkpoints = dir.path().join("checkpoints");
+    fs::create_dir_all(&checkpoints).unwrap();
+    fs::write(checkpoints.join("snap-1"), before).unwrap();
+    let change = mk_change(
+        &conn,
+        id,
+        target.to_str().unwrap(),
+        "modify",
+        Some("snap-1"),
+        Some(&crate::bot::sha256_hex(before)),
+        Some(&crate::bot::sha256_hex(after)),
+    );
+    let path = file_rollback_core(&conn, dir.path(), change).unwrap();
+    assert_eq!(path, target.to_str().unwrap());
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        before,
+        "回滚后文件必须恢复到 before 内容"
+    );
+}
+
+#[test]
+fn rollback_rejects_when_file_drifted_after_change() {
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    let dir = tmp_data_dir();
+    let target = dir.path().join("x.py");
+    let drifted = "after line\n+ human edit\n";
+    fs::write(&target, drifted).unwrap();
+    let checkpoints = dir.path().join("checkpoints");
+    fs::create_dir_all(&checkpoints).unwrap();
+    fs::write(checkpoints.join("snap-1"), "before line\n").unwrap();
+    let change = mk_change(
+        &conn,
+        id,
+        target.to_str().unwrap(),
+        "modify",
+        Some("snap-1"),
+        Some(&crate::bot::sha256_hex("before line\n")),
+        Some(&crate::bot::sha256_hex("after line\n")),
+    );
+    let err = file_rollback_core(&conn, dir.path(), change).unwrap_err();
+    assert!(
+        err.contains("拒绝回滚以免吞掉后续修改"),
+        "漂移必须被拒，实际：{err}"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        drifted,
+        "被拒后文件必须原样保留，一个字节都不能动"
+    );
+}
+
+#[test]
+fn rollback_rejects_create_kind_and_missing_snapshot_ref() {
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    let dir = tmp_data_dir();
+    let create_row = mk_change(&conn, id, "/a/new.py", "create", None, None, None);
+    let err = file_rollback_core(&conn, dir.path(), create_row).unwrap_err();
+    assert!(err.contains("暂不支持 create 类型的回滚"), "实际：{err}");
+
+    let modify_no_ref = mk_change(&conn, id, "/a/x.py", "modify", None, None, None);
+    let err = file_rollback_core(&conn, dir.path(), modify_no_ref).unwrap_err();
+    assert!(err.contains("无 before 快照"), "实际：{err}");
+}
+
+#[test]
+fn rollback_rejects_tampered_snapshot_content() {
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    let dir = tmp_data_dir();
+    let target = dir.path().join("x.py");
+    fs::write(&target, "after line\n").unwrap();
+    let checkpoints = dir.path().join("checkpoints");
+    fs::create_dir_all(&checkpoints).unwrap();
+    fs::write(checkpoints.join("snap-1"), "被换掉的内容\n").unwrap();
+    let change = mk_change(
+        &conn,
+        id,
+        target.to_str().unwrap(),
+        "modify",
+        Some("snap-1"),
+        Some(&crate::bot::sha256_hex("before line\n")),
+        Some(&crate::bot::sha256_hex("after line\n")),
+    );
+    let err = file_rollback_core(&conn, dir.path(), change).unwrap_err();
+    assert!(err.contains("快照校验不符"), "实际：{err}");
+}
+
+#[test]
+fn export_writes_trace_span_change_lines_in_order() {
+    let conn = setup_conn();
+    let id = mk_trace(&conn, "s1", Some("t1"), "Manual", 1000);
+    span_insert(
+        &conn,
+        &NewSpan {
+            trace_id: id,
+            turn: 1,
+            tool_call_id: Some("c1"),
+            name: "read_text_file",
+            args: Some("{}"),
+            result: None,
+            ok: true,
+            error_class: None,
+            duration_ms: Some(5),
+            created_at: 1001,
+        },
+    )
+    .unwrap();
+    mk_change(&conn, id, "/a/x.py", "modify", None, None, None);
+    let dir = tmp_data_dir();
+    let out = trace_export_core(&conn, dir.path(), id).unwrap();
+    assert!(
+        out.path.ends_with(&format!("exports/trace-{id}.jsonl"))
+            || out.path.ends_with(&format!("exports\\trace-{id}.jsonl")),
+        "应落在 exports/ 下，实际：{}",
+        out.path
+    );
+    assert_eq!(out.spans, 1);
+    assert_eq!(out.files, 1);
+    let body = fs::read_to_string(&out.path).unwrap();
+    let lines: Vec<&str> = body.lines().collect();
+    assert_eq!(lines.len(), 3, "首行 trace + 1 span + 1 file_change");
+    assert!(
+        lines[0].contains("\"type\":\"trace\""),
+        "首行：{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains("\"type\":\"span\"") && lines[1].contains("read_text_file"),
+        "次行：{}",
+        lines[1]
+    );
+    assert!(
+        lines[2].contains("\"type\":\"file_change\"") && lines[2].contains("x.py"),
+        "末行：{}",
+        lines[2]
+    );
+}
+
+#[test]
+fn export_missing_trace_is_error_not_empty_file() {
+    let conn = setup_conn();
+    let dir = tmp_data_dir();
+    let err = trace_export_core(&conn, dir.path(), 999).unwrap_err();
+    assert!(err.contains("999"), "报错应带上 trace id，实际：{err}");
+    assert!(
+        !dir.path().join("exports").exists(),
+        "导出失败不得留下空 exports 目录"
+    );
+}

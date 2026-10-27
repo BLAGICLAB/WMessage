@@ -698,151 +698,169 @@ pub fn usage_stats_by_model(
     )?)
 }
 
-/// 文件级回滚（设计 §9.2-3）：把一次 AI 修改恢复到修改前快照。
+/// 回滚核心：conn + 数据目录齐全即可完成全部闸口判定与恢复写盘，成功返回
+/// 目标路径。命令壳只负责开库、拼用户消息与审计（审计仅在成功路径写，与
+/// 抽核前行为一致）。
 /// 双闸防吞改：
 /// 1. **漂移闸**——当前文件内容 sha 必须等于本变更落盘时的 after_sha，文件被
 ///    （人/其他流程）动过即拒绝（覆盖会吞掉后续修改）；
 /// 2. **快照闸**——快照内容 sha 必须等于 before_sha（快照文件损坏/被换即拒绝）。
 /// 仅支持 modify：create 的撤销=删文件，属危险动作待立项（界面隐藏按钮兜底）。
-#[tauri::command]
-pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<String> {
-    let conn = super::open_db(&app)?;
-    let Some(c) = file_change_get(&conn, change_id)? else {
-        return Err(CommandError::Internal(format!(
-            "变更记录 {change_id} 不存在（可能已被保留期清理）"
-        )));
+pub(crate) fn file_rollback_core(
+    conn: &rusqlite::Connection,
+    data_dir: &std::path::Path,
+    change_id: i64,
+) -> Result<String, String> {
+    let Some(c) = file_change_get(conn, change_id)? else {
+        return Err(format!("变更记录 {change_id} 不存在（可能已被保留期清理）"));
     };
     if c.kind != "modify" {
-        return Err(CommandError::Internal(format!(
+        return Err(format!(
             "暂不支持 {} 类型的回滚（仅 modify；新建文件的撤销=删文件，属危险动作待立项）",
             c.kind
-        )));
+        ));
     }
     let Some(before_ref) = c.before_ref.clone() else {
-        return Err(CommandError::Internal(
-            "该变更无 before 快照（写盘时快照失败降级），无法回滚".into(),
-        ));
+        return Err("该变更无 before 快照（写盘时快照失败降级），无法回滚".into());
     };
     // 快照名由写入侧 uuid 发号（bot_fs）；带目录分隔符/父目录引用/绝对路径的
     // 一律视为被篡改的 DB 行，拒绝——防快照读取越界到任意文件
     let snap_path = std::path::Path::new(&before_ref);
     if before_ref.is_empty() || snap_path.file_name() != Some(snap_path.as_os_str()) {
-        return Err(CommandError::Internal(format!(
+        return Err(format!(
             "快照名非法（应为纯文件名），拒绝回滚：{before_ref}"
-        )));
+        ));
     }
     // 纵深防御：c.path 同样来自 DB 行，不直接信。回滚是覆盖写，目标若是
     // 符号链接会顺着链接打到任意文件，先拒绝；再给全文读取设硬上限防 OOM。
     // （残余窗口：检查与读写之间目标被换成符号链接，单机桌面场景可接受。）
     // 与用户白名单工作区的归一化比对涉及 bot_fs 策略口径，另行走闸口方案。
     let path = std::path::PathBuf::from(&c.path);
-    let meta = std::fs::symlink_metadata(&path)
-        .map_err(|_| CommandError::Internal(format!("目标文件已不存在：{}", c.path)))?;
+    let meta =
+        std::fs::symlink_metadata(&path).map_err(|_| format!("目标文件已不存在：{}", c.path))?;
     if meta.file_type().is_symlink() {
-        return Err(CommandError::Internal(format!(
+        return Err(format!(
             "目标是符号链接，拒绝回滚（防止写到链接指向的路径）：{}",
             c.path
-        )));
+        ));
     }
     if !meta.is_file() {
-        return Err(CommandError::Internal(format!(
-            "目标文件已不存在：{}",
-            c.path
-        )));
+        return Err(format!("目标文件已不存在：{}", c.path));
     }
     // 与 SPAN_TEXT_MAX 同思路：文本快照读写给个硬上限，防被指向超大文件拖爆内存
     const FILE_ROLLBACK_MAX_BYTES: u64 = 64 * 1024 * 1024;
     if meta.len() > FILE_ROLLBACK_MAX_BYTES {
-        return Err(CommandError::Internal(format!(
+        return Err(format!(
             "目标文件过大（{} 字节 > 上限 {FILE_ROLLBACK_MAX_BYTES}），拒绝回滚；请人工核对：{}",
             meta.len(),
             c.path
-        )));
+        ));
     }
-    let current = std::fs::read_to_string(&path)
-        .map_err(|e| CommandError::Internal(format!("当前文件不可读（{}）：{e}", c.path)))?;
+    let current =
+        std::fs::read_to_string(&path).map_err(|e| format!("当前文件不可读（{}）：{e}", c.path))?;
     if c.after_sha
         .as_deref()
         .is_none_or(|a| a != crate::bot::sha256_hex(&current))
     {
-        return Err(CommandError::Internal(format!(
+        return Err(format!(
             "文件自本次修改后已被改动（指纹不符），拒绝回滚以免吞掉后续修改；请人工核对：{}",
             c.path
-        )));
+        ));
     }
-    let snapshot = crate::db::paths::data_dir(&app)
-        .join("checkpoints")
-        .join(&before_ref);
+    let snapshot = data_dir.join("checkpoints").join(&before_ref);
     let before = std::fs::read_to_string(&snapshot)
-        .map_err(|e| CommandError::Internal(format!("快照不可读（{before_ref}）：{e}")))?;
+        .map_err(|e| format!("快照不可读（{before_ref}）：{e}"))?;
     if c.before_sha
         .as_deref()
         .is_none_or(|b| b != crate::bot::sha256_hex(&before))
     {
-        return Err(CommandError::Internal(
-            "快照校验不符（before_sha），拒绝回滚".into(),
-        ));
+        return Err("快照校验不符（before_sha），拒绝回滚".into());
     }
-    crate::db::atomic_write(&path, &before).map_err(CommandError::Internal)?;
+    crate::db::atomic_write(&path, &before)?;
+    Ok(c.path)
+}
+
+#[tauri::command]
+pub fn file_rollback(app: tauri::AppHandle, change_id: i64) -> CommandResult<String> {
+    let conn = super::open_db(&app)?;
+    let path = file_rollback_core(&conn, &crate::db::paths::data_dir(&app), change_id)
+        .map_err(CommandError::Internal)?;
     crate::audit::write_event(
         &app,
         crate::audit::AuditLevel::Warn,
         "file.rollback",
         &[
             ("change_id", change_id.to_string()),
-            ("path", crate::bot::truncate_for_log(&c.path, 200)),
+            ("path", crate::bot::truncate_for_log(&path, 200)),
         ],
     );
-    Ok(format!("已回滚 {}（恢复到本次修改前）", c.path))
+    Ok(format!("已回滚 {path}（恢复到本次修改前）"))
+}
+
+/// 导出结果（壳只拿它拼审计与返回值，不再回查）
+#[derive(Debug)]
+pub(crate) struct ExportOutcome {
+    pub path: String,
+    pub spans: usize,
+    pub files: usize,
 }
 
 /// 单次执行痕迹导出 JSONL（Codex rollout 本地文件化思想）——
 /// 第 1 行 trace 摘要，随后 span 行（`{"type":"span",...}`）与文件变更行
 /// （`{"type":"file_change",...}`）按 id 序混排。落 `data_dir/exports/`，
 /// 返回绝对路径供前端打开/分享。只读导出，不改动痕迹数据。
-#[tauri::command]
-pub fn trace_export(app: tauri::AppHandle, trace_id: i64) -> CommandResult<String> {
-    let conn = super::open_db(&app)?;
-    let Some(trace) = trace_get_row(&conn, trace_id)? else {
-        return Err(CommandError::Internal(format!(
-            "执行痕迹 {trace_id} 不存在（可能已被保留期清理）"
-        )));
+/// 核心与命令壳分离：conn + 数据目录即可测，壳只管开库与审计。
+pub(crate) fn trace_export_core(
+    conn: &rusqlite::Connection,
+    data_dir: &std::path::Path,
+    trace_id: i64,
+) -> Result<ExportOutcome, String> {
+    let Some(trace) = trace_get_row(conn, trace_id)? else {
+        return Err(format!("执行痕迹 {trace_id} 不存在（可能已被保留期清理）"));
     };
-    let spans = spans_for_trace(&conn, trace_id)?;
-    let changes = file_changes_for_trace(&conn, trace_id)?;
+    let spans = spans_for_trace(conn, trace_id)?;
+    let changes = file_changes_for_trace(conn, trace_id)?;
 
-    let dir = crate::db::paths::data_dir(&app).join("exports");
-    std::fs::create_dir_all(&dir).map_err(|e| CommandError::Internal(e.to_string()))?;
+    let dir = data_dir.join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("trace-{trace_id}.jsonl"));
-    let mut body = serde_json::to_string(&TraceExportRow::trace(&trace))
-        .map_err(|e| CommandError::Internal(e.to_string()))?;
+    let mut body =
+        serde_json::to_string(&TraceExportRow::trace(&trace)).map_err(|e| e.to_string())?;
     body.push('\n');
     for s in &spans {
-        body.push_str(
-            &serde_json::to_string(&TraceExportRow::span(s))
-                .map_err(|e| CommandError::Internal(e.to_string()))?,
-        );
+        body.push_str(&serde_json::to_string(&TraceExportRow::span(s)).map_err(|e| e.to_string())?);
         body.push('\n');
     }
     for c in &changes {
         body.push_str(
-            &serde_json::to_string(&TraceExportRow::file_change(c))
-                .map_err(|e| CommandError::Internal(e.to_string()))?,
+            &serde_json::to_string(&TraceExportRow::file_change(c)).map_err(|e| e.to_string())?,
         );
         body.push('\n');
     }
-    crate::db::atomic_write(&path, &body).map_err(CommandError::Internal)?;
+    crate::db::atomic_write(&path, &body)?;
+    Ok(ExportOutcome {
+        path: path.display().to_string(),
+        spans: spans.len(),
+        files: changes.len(),
+    })
+}
+
+#[tauri::command]
+pub fn trace_export(app: tauri::AppHandle, trace_id: i64) -> CommandResult<String> {
+    let conn = super::open_db(&app)?;
+    let out = trace_export_core(&conn, &crate::db::paths::data_dir(&app), trace_id)
+        .map_err(CommandError::Internal)?;
     crate::audit::write_event(
         &app,
         crate::audit::AuditLevel::Info,
         "trace.export",
         &[
             ("trace_id", trace_id.to_string()),
-            ("spans", spans.len().to_string()),
-            ("files", changes.len().to_string()),
+            ("spans", out.spans.to_string()),
+            ("files", out.files.to_string()),
         ],
     );
-    Ok(path.display().to_string())
+    Ok(out.path)
 }
 
 /// 导出行包装（type 字段区分 trace/span/file_change，消费方按行解析）
