@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FILE_EXTS } from "./openTarget";
+import { extractFilePaths, FILE_EXTS } from "./openTarget";
 
 /**
  * 交付物清单（聊天交付物区 + 右侧栏「交付物」页共用一套口径）。
@@ -47,6 +47,43 @@ export function pickDeliverableShaped(paths: string[]): string[] {
 }
 
 /**
+ * 每条消息的正文路径抽取结果缓存（键 = 消息对象）。
+ *
+ * 键用**对象身份**而不是内容：流式输出每来一个 token 就换一个新的消息
+ * 对象，历史消息的对象不变——按内容做键得把全会话正文重新比一遍，按对象
+ * 做键只重扫正在流的那一条（与气泡内的算法同量）。
+ */
+const declaredByMessage = new WeakMap<object, string[]>();
+
+/**
+ * 会话级「正文自报」路径汇总（右侧栏「交付物」页的 declared 半边）。
+ *
+ * 只收助手消息：用户消息里的路径是**引用**（让它读那个文件），不是交付。
+ * 去重按路径小写归一，与 `mergeDeliverables` 同口径。
+ */
+export function collectDeclaredPaths(
+  messages: { role: string; content: string }[],
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    let paths = declaredByMessage.get(m);
+    if (!paths) {
+      paths = extractFilePaths(m.content);
+      declaredByMessage.set(m, paths);
+    }
+    for (const p of paths) {
+      const key = normalizePathKey(p);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/**
  * 合并两个来源：declared 在前（正文出现顺序 = 机器人汇报顺序），produced
  * 追加在后（写盘顺序）。
  *
@@ -86,12 +123,25 @@ export type PathProbe = {
   size: number;
 };
 
+/** 单批探测的条数上限：与后端 `bot_probe_paths` 的参数上限一致 */
+const PROBE_BATCH_MAX = 500;
+
 /**
  * 批量探测路径是否存在。存在性判定是同步 syscall，在 Rust 侧 blocking 池
  * 跑（前端没有 stat 能力，也不能拿 opener 的报错当判据）。
+ *
+ * 分批发送：后端单次上限 500 条，长会话的交付物清单能超。超限直接发会被
+ * 后端判参数越界、整批探测作废——分批后每一批都在上限内。
  */
 export function probePaths(paths: string[]): Promise<PathProbe[]> {
-  return invoke<PathProbe[]>("bot_probe_paths", { paths });
+  if (paths.length === 0) return Promise.resolve([]);
+  const batches: string[][] = [];
+  for (let i = 0; i < paths.length; i += PROBE_BATCH_MAX) {
+    batches.push(paths.slice(i, i + PROBE_BATCH_MAX));
+  }
+  return Promise.all(
+    batches.map((b) => invoke<PathProbe[]>("bot_probe_paths", { paths: b })),
+  ).then((rs) => rs.flat());
 }
 
 /**

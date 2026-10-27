@@ -230,6 +230,25 @@ pub struct PathProbe {
 /// 单次探测的路径条数上限：防把成千上万条路径塞进一次 IPC
 const PROBE_PATHS_MAX: usize = 500;
 
+/// 打开产物目录（AI_Gen_Files）并在系统文件管理器里显示它。
+///
+/// 返回解析后的目录路径：前端要拿它做 tooltip（让用户知道产物落在哪），
+/// 不能让前端自己拼——便携模式下数据目录跟着 exe 走，前端拼不出来。
+///
+/// 目录解析即建（`db::gen_dir` 的既有语义）：产物目录是机器人写盘的落点，
+/// 启动时就预建过；这里再解析一次只是拿路径。
+#[tauri::command]
+pub async fn bot_open_gen_dir(app: AppHandle) -> CommandResult<String> {
+    let dir = crate::db::gen_dir(&app)
+        .map_err(|e| CommandError::IoError(format!("定位产物目录失败：{e}")))?;
+    let path = dir.to_string_lossy().into_owned();
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.clone(), None::<&str>)
+        .map_err(|e| CommandError::IoError(format!("打开产物目录失败：{e}")))?;
+    Ok(path)
+}
+
 #[tauri::command]
 pub async fn bot_probe_paths(paths: Vec<String>) -> CommandResult<Vec<PathProbe>> {
     if paths.len() > PROBE_PATHS_MAX {

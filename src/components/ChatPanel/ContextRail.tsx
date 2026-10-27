@@ -5,7 +5,7 @@
 // 「终端」「审查」不在此列：项目内无后端命令也无数据源，留空壳入口会变成
 // 永远点不动的死 UI（那是从零做 PTY / diff 模型的事，另有工程）。
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Bot,
@@ -21,6 +21,8 @@ import { basename } from "../../format";
 import { formatCommandError, handleCommandError } from "../../lib/errorHandler";
 import { FilePreview } from "./FilePreview";
 import { FileDiffView } from "./FileDiffView";
+import { mergeDeliverables, collectDeclaredPaths } from "../../lib/deliverables";
+import { useProbedDeliverables } from "../../lib/useDeliverables";
 import {
   sessionFileChangeDetail,
   sessionFileChangeList,
@@ -47,6 +49,9 @@ import type { SubagentActivityItem } from "../../lib/subagentActivity";
 export type ContextTab = "tasks" | "files" | "agents";
 
 type Tab = ContextTab;
+
+/** 文件页的两个子页：改动（轨迹）/ 交付物（产物） */
+export type FileSubTab = "changes" | "deliverables";
 
 export type SubagentRun = {
   /** 子 agent id（sa_ 前缀）——点开查详情/取消都用它 */
@@ -113,6 +118,11 @@ type ContextRailProps = {
    *  入口再点一次就分不清是哪次的意图了。 */
   previewReq?: PreviewRequest | null;
   onPreviewReq?: (req: PreviewRequest | null) => void;
+  /** 文件页当前子页：改动（轨迹）/ 交付物（产物） */
+  fileSubTab?: FileSubTab;
+  onFileSubTabChange?: (t: FileSubTab) => void;
+  /** 本会话的助手消息正文（会话级交付物清单的「正文自报」那半来源） */
+  sessionMessages?: { role: string; content: string }[];
 };
 
 /** 预览请求：打开哪个文件 + 看哪一面 */
@@ -129,8 +139,50 @@ const TABS: { key: Tab; label: string; icon: ReactNode }[] = [
   { key: "agents", label: "子 Agent", icon: <Bot size={14} /> },
 ];
 
+/** `sessionMessages` 的缺省值：模块级常量。每次渲染新建数组会破引用相等，
+ *  会话级交付物清单的 memo 会跟着每帧失效。 */
+const NO_SESSION_MESSAGES: { role: string; content: string }[] = [];
+
 function EmptyHint({ children }: { children: ReactNode }) {
   return <p className="px-1.5 py-2 text-[11px] text-[var(--t5)]">{children}</p>;
+}
+
+/**
+ * 文件页的子页切换钮（下划线式）。
+ *
+ * 与一级类别钮（药丸式）刻意分开：子页嵌在类别里，两层都用药丸会看出
+ * 层级。计数为 null 时**不显示数字**——探测没回来时的「0」会被读成
+ * 「确实没有交付物」。
+ */
+function FileSubTabButton({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number | null;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      className={`-mb-px flex items-center gap-1 border-b-2 pb-1 text-[11px] transition-colors duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
+        active
+          ? "border-[var(--brand)] text-[var(--t1)]"
+          : "border-transparent text-[var(--t3)] hover:text-[var(--t2)]"
+      }`}
+      onClick={onClick}
+    >
+      {label}
+      {count != null && (
+        <span className="font-mono text-[10px] text-[var(--t5)]">{count}</span>
+      )}
+    </button>
+  );
 }
 
 export function ContextRail({
@@ -148,6 +200,9 @@ export function ContextRail({
   onTabChange,
   previewReq = null,
   onPreviewReq,
+  fileSubTab = "changes",
+  onFileSubTabChange,
+  sessionMessages = NO_SESSION_MESSAGES,
 }: ContextRailProps) {
   const runningCount = subagents.filter((s) => s.running).length;
 
@@ -241,6 +296,32 @@ export function ContextRail({
       clearTimeout(timer);
     };
   }, [tab, sessionId, fileChangeTick]);
+
+  // ── 产物目录入口（打开 AI_Gen_Files）────────────────────────────────
+  // 路径由后端解析后回传：便携模式下数据目录跟着 exe 走，前端拼不出来。
+  const [genDir, setGenDir] = useState<string | null>(null);
+  const [genDirError, setGenDirError] = useState<string | null>(null);
+  const openGenDir = async () => {
+    try {
+      const p = await invoke<string>("bot_open_gen_dir");
+      setGenDir(p);
+      setGenDirError(null);
+    } catch (e) {
+      handleCommandError(e, "打开产物文件夹", { silent: true });
+      setGenDirError(formatCommandError(e) || "打开失败");
+    }
+  };
+
+  // ── 会话级交付物清单（右侧栏「交付物」页）──────────────────────────
+  // 每次渲染都算：贵的那步（逐条正文正则）由 collectDeclaredPaths 的
+  // 消息对象缓存吃掉——流式输出只重扫正在流的那一条，历史消息不重扫。
+  // 剩下的只是 O(消息数 + 路径数) 的查表与去重。
+  const sessionDeliverables = useMemo(() => {
+    const declared = collectDeclaredPaths(sessionMessages);
+    const produced = fileItems.map((f) => f.path);
+    return mergeDeliverables(declared, produced);
+  }, [sessionMessages, fileItems]);
+  const sessionProbed = useProbedDeliverables(sessionDeliverables, true);
 
   // 详情：点开某个改过的文件 → 取它的累计 diff（未改过的路径不在清单里，
   // 由渲染处直接走全文视图，不发这次请求）
@@ -445,7 +526,86 @@ export function ContextRail({
           );
         }
         return (
-        <section aria-label="文件变更">
+        <div>
+          {/* 产物目录入口：交付物落在 AI_Gen_Files，路径由后端解析后回传 */}
+          <div className="mb-1.5 flex items-center gap-1.5 px-1.5">
+            <button
+              type="button"
+              className="flex min-w-0 items-center gap-1 text-[11px] text-[var(--brand)] hover:underline"
+              title={
+                genDir
+                  ? `打开产物文件夹：${genDir}`
+                  : "打开产物文件夹（AI_Gen_Files）"
+              }
+              onClick={() => void openGenDir()}
+            >
+              <FolderOpen size={12} aria-hidden className="shrink-0" />
+              <span className="truncate">打开产物文件夹</span>
+            </button>
+            {genDirError && (
+              <span className="min-w-0 truncate text-[10px] text-[var(--danger)]">
+                {genDirError}
+              </span>
+            )}
+          </div>
+          {/* 子页切换：改动（轨迹）/ 交付物（产物）。两类东西不混在一张清单里 */}
+          <div
+            role="tablist"
+            aria-label="文件分类"
+            className="mb-1.5 flex gap-3 border-b border-[var(--border)]"
+          >
+            <FileSubTabButton
+              label="改动"
+              count={fileItems.length}
+              active={fileSubTab === "changes"}
+              onClick={() => onFileSubTabChange?.("changes")}
+            />
+            <FileSubTabButton
+              label="交付物"
+              count={sessionProbed.ready ? sessionProbed.items.length : null}
+              active={fileSubTab === "deliverables"}
+              onClick={() => onFileSubTabChange?.("deliverables")}
+            />
+          </div>
+          {fileSubTab === "deliverables" ? (
+        <section role="tabpanel" aria-label="交付物">
+          <div className="mb-1 flex items-center gap-1.5 px-1.5">
+            <span className="text-[11px] font-medium text-[var(--t2)]">
+              本会话交付物
+            </span>
+            <span className="font-mono text-[10px] text-[var(--t5)]">
+              {sessionProbed.ready ? sessionProbed.items.length : "…"}
+            </span>
+          </div>
+          {sessionProbed.items.length === 0 ? (
+            <EmptyHint>
+              {sessionProbed.ready ? "本会话还没有交付物" : "读取交付物中…"}
+            </EmptyHint>
+          ) : (
+            <div className="space-y-0.5">
+              {sessionProbed.items.map((d) => (
+                <button
+                  key={d.path}
+                  type="button"
+                  className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left text-xs hover:bg-[var(--hover-bg)]"
+                  title={`${d.path}（${d.source === "declared" ? "回复中点名" : "本会话新写"}）· 点开预览`}
+                  onClick={() => openPreview(d.path, "content")}
+                >
+                  <FileText
+                    size={12}
+                    aria-hidden
+                    className="shrink-0 text-[var(--t5)]"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-[var(--t3)]">
+                    {basename(d.path)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
+          ) : (
+        <section role="tabpanel" aria-label="文件变更">
           <div className="mb-1 flex items-center gap-1.5 px-1.5">
             <span className="text-[11px] font-medium text-[var(--t2)]">
               本会话文件改动
@@ -505,6 +665,8 @@ export function ContextRail({
             </div>
           )}
         </section>
+          )}
+        </div>
         );
       })()}
 

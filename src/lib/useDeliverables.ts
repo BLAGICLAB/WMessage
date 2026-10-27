@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { keepExisting, probePaths, type Deliverable } from "./deliverables";
 
 /** 探测结果：交付物清单 + 「探完了没」 */
@@ -24,6 +24,9 @@ export type ProbedDeliverables = {
  *
  * enabled=false（消息还在流式输出）时不探：正文每个 token 都在变，
  * 探一次就等于每个 token 触发一次 IPC。
+ *
+ * 重新探测的触发条件是**路径集合变了**，不是「清单数组换了身份」：会话级
+ * 清单每来一个 token 就重算一次数组，按身份判会每个 token 探一遍全量路径。
  */
 export function useProbedDeliverables(
   items: Deliverable[],
@@ -31,16 +34,22 @@ export function useProbedDeliverables(
 ): ProbedDeliverables {
   /** 探测结果按清单键打标：清单换了就返回空，不闪上一份的结果 */
   const key = items.map((d) => d.path).join("\u0000");
+  /** 清单与路径的最新值：探测回调里要用，但不该进依赖数组 */
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const [probed, setProbed] = useState<{ key: string; items: Deliverable[] }>({
     key: "",
     items: [],
   });
   useEffect(() => {
-    if (!enabled || items.length === 0) return;
+    if (!enabled || itemsRef.current.length === 0) return;
+    // 快照：探测回来时用**这一批**的清单做收敛，不用最新的——
+    // 最新的可能已经是另一批路径了（key 已变），拿它收敛就串了
+    const snapshot = itemsRef.current;
     let live = true;
-    probePaths(items.map((d) => d.path))
+    probePaths(snapshot.map((d) => d.path))
       .then((probes) => {
-        if (live) setProbed({ key, items: keepExisting(items, probes) });
+        if (live) setProbed({ key, items: keepExisting(snapshot, probes) });
       })
       .catch(() => {
         // 探测失败按「没有可确认存在的交付物」处理：不挂可能打不开的条目
@@ -49,8 +58,11 @@ export function useProbedDeliverables(
     return () => {
       live = false;
     };
-  }, [items, enabled, key]);
+  }, [key, enabled]);
   if (!enabled) return { items: [], ready: false };
   if (items.length === 0) return { items: [], ready: true };
-  return { items: probed.key === key ? probed.items : [], ready: probed.key === key };
+  return {
+    items: probed.key === key ? probed.items : [],
+    ready: probed.key === key,
+  };
 }

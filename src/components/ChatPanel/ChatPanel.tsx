@@ -162,10 +162,12 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     closeSubagentDetail,
     ctxOpen,
     ctxTab,
+    fileSubTab,
     openSubagentDetail,
     railOpen,
     setCtxOpen,
     setCtxTab,
+    setFileSubTab,
     setSubagentDetailId,
     setSubagentStripOpen,
     subagentDetailId,
@@ -192,6 +194,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     setCtxOpen(true);
     localStorage.setItem("chat-ctx-open", "1");
     setCtxTab("files");
+    // 落点是交付物页：点进来的是交付物，清单就在这一页
+    setFileSubTab("deliverables");
     setPreviewReq({ path, mode: "content" });
   }, []);
   /** 去右侧栏看本轮改动过的文件（交付物区空态提示的跳转） */
@@ -199,6 +203,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     setCtxOpen(true);
     localStorage.setItem("chat-ctx-open", "1");
     setCtxTab("files");
+    // 落点是改动页：那里才是改动文件的完整清单
+    setFileSubTab("changes");
   }, []);
   useAutoGrow(taRef, input);
   useEffect(() => {
@@ -859,6 +865,9 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
           onCloseSubagentDetail={closeSubagentDetail}
           tab={ctxTab}
           onTabChange={setCtxTab}
+          fileSubTab={fileSubTab}
+          onFileSubTabChange={setFileSubTab}
+          sessionMessages={messages}
           previewReq={previewReq}
           onPreviewReq={setPreviewReq}
         />

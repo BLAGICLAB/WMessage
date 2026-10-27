@@ -359,6 +359,150 @@ describe("ContextRail 文件改动工作面", () => {
   });
 });
 
+// 右侧栏文件页的「改动 / 交付物」双子页：两类东西不混在一张清单里。
+// 交付物 = 这个会话的产物（正文自报 ∪ 会话写盘），改动 = 这个会话动过的
+// 文件（带 ±行 / diff）。
+describe("ContextRail 文件页双子页", () => {
+  const CHANGED = "/Users/x/生成脚本.py";
+  const PPTX = "/Users/x/宣贯.pptx";
+  const DOC = "/Users/x/设计说明.md";
+
+  function mockFiles(
+    opts: {
+      items?: unknown[];
+      missing?: string[];
+      previewPath?: string;
+    } = {},
+  ) {
+    const items = opts.items ?? [
+      {
+        path: CHANGED,
+        kind: "modify",
+        added: 462,
+        deleted: 0,
+        changes: 1,
+        mode: "session",
+        drifted: false,
+        note: null,
+      },
+    ];
+    const missing = new Set(opts.missing ?? []);
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: { paths?: string[]; path?: string }) => {
+        if (cmd === "bot_session_file_changes") {
+          return args?.path ? { items: [], detail: null } : { items, detail: null };
+        }
+        if (cmd === "bot_probe_paths") {
+          return (args?.paths ?? []).map((p) => ({
+            path: p,
+            exists: !missing.has(p),
+            isDir: false,
+            size: 1,
+          }));
+        }
+        if (cmd === "bot_preview_text") {
+          return {
+            kind: "text",
+            path: opts.previewPath ?? DOC,
+            content: "# 设计说明\n正文一段",
+            truncated: false,
+            totalBytes: 20,
+            lines: 2,
+          };
+        }
+        if (cmd === "bot_open_gen_dir") return "/Users/x/AI_Gen_Files";
+        return null;
+      },
+    );
+  }
+
+  const sessionMessages = [
+    { role: "user", content: "参考 /Users/x/输入稿.md" },
+    { role: "assistant", content: `已生成 ${PPTX} 与 ${DOC}` },
+  ];
+
+  it("文件页顶部有「打开产物文件夹」：点击调后端并回显解析后的路径", async () => {
+    const user = userEvent.setup();
+    mockFiles();
+    renderRail({ tab: "files", sessionId: "s1" });
+    await user.click(
+      screen.getByRole("button", { name: /打开产物文件夹/ }),
+    );
+    await waitFor(() => {
+      expect(mocks.invokeMock).toHaveBeenCalledWith("bot_open_gen_dir");
+    });
+    expect(
+      screen.getByTitle("打开产物文件夹：/Users/x/AI_Gen_Files"),
+    ).toBeInTheDocument();
+  });
+
+  it("子页可切：点「交付物」报给 onFileSubTabChange", async () => {
+    const user = userEvent.setup();
+    const onFileSubTabChange = vi.fn();
+    mockFiles();
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      fileSubTab: "changes",
+      onFileSubTabChange,
+    });
+    await user.click(screen.getByRole("tab", { name: /交付物/ }));
+    expect(onFileSubTabChange).toHaveBeenCalledWith("deliverables");
+  });
+
+  it("改动页是改动清单（现有清单一行不改）", async () => {
+    mockFiles();
+    renderRail({ tab: "files", sessionId: "s1", fileSubTab: "changes" });
+    expect(await screen.findByText("生成脚本.py")).toBeInTheDocument();
+    expect(screen.getByText("+462")).toBeInTheDocument();
+  });
+
+  it("交付物页是会话级清单：正文点名的挂上，用户消息里的引用不算", async () => {
+    mockFiles();
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      fileSubTab: "deliverables",
+      sessionMessages,
+    });
+    expect(await screen.findByText("宣贯.pptx")).toBeInTheDocument();
+    expect(screen.getByText("设计说明.md")).toBeInTheDocument();
+    // 用户消息里的路径是「让它读那个文件」，不是交付
+    expect(screen.queryByText("输入稿.md")).toBeNull();
+    // 写盘通道记的脚本形态不进交付物位
+    expect(screen.queryByText("生成脚本.py")).toBeNull();
+  });
+
+  it("磁盘上不存在的路径不进交付物清单", async () => {
+    mockFiles({ missing: [DOC] });
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      fileSubTab: "deliverables",
+      sessionMessages,
+    });
+    expect(await screen.findByText("宣贯.pptx")).toBeInTheDocument();
+    expect(screen.queryByText("设计说明.md")).toBeNull();
+  });
+
+  it("点交付物走内容预览（mode=content），不看差异", async () => {
+    const user = userEvent.setup();
+    const onPreviewReq = vi.fn();
+    mockFiles();
+    renderRail({
+      tab: "files",
+      sessionId: "s1",
+      fileSubTab: "deliverables",
+      sessionMessages,
+      onPreviewReq,
+    });
+    await user.click(
+      await screen.findByTitle(`${PPTX}（回复中点名）· 点开预览`),
+    );
+    expect(onPreviewReq).toHaveBeenCalledWith({ path: PPTX, mode: "content" });
+  });
+});
+
 // 六态标签曾在本文件与 ChatPanel 的收尾提示各写一份，同一状态两处措辞不同
 // （succeeded 一处「完成」一处「已完成」）。现在共用 constants 一份，这里钉住
 // 侧栏渲染出来的就是那一份

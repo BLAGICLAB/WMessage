@@ -711,6 +711,7 @@ pub fn run() {
             audit::logs_bundle_text,
             bot_skills::bot_preview_text,
             bot_skills::bot_probe_paths,
+            bot_skills::bot_open_gen_dir,
             bot_skills::open_file_path,
             bot_skills::pick_files_dialog,
             bot_skills::delete_bound_file,
