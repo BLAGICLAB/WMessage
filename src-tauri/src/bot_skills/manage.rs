@@ -105,9 +105,6 @@ fn dev_skills_dir_at(target_root: &std::path::Path) -> Option<std::path::PathBuf
 /// Skill 搜索路径列表：用户 skills 必选 + 内置 builtin_skills + dev 模式追加
 /// target/debug/skills。顺序即优先级（scan_skill_dirs 去重取先扫到的同名技能）：
 /// 用户导入/修改的版本压过内置版，内置版压过 dev mock。
-/// `#[cfg_attr(not(debug_assertions), allow(dead_code))]` —— release 模式 dev_skills_dir
-/// 不存在，避免 dead_code 警告。
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub(crate) fn skill_search_paths<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Vec<std::path::PathBuf> {

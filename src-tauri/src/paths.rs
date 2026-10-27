@@ -272,7 +272,6 @@ fn probe_dir_cached(
 }
 
 /// 可测内核：OnceLock 定版语义——首次探测结果钉死，后续调用条件变化也不再翻转
-#[cfg_attr(not(test), allow(dead_code))] // 生产只经 probe_dir_cached 间接调用
 fn probe_dir_cached_in(
     cache: &std::sync::OnceLock<std::path::PathBuf>,
     exe_dir: Option<&std::path::Path>,
