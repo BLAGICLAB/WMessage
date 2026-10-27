@@ -8,6 +8,7 @@ import { Activity, Bot, ExternalLink } from "lucide-react";
 import { TracePanel } from "../TracePanel";
 import { formatCommandError } from "../../lib/errorHandler";
 import { traceList, traceListByOrigin, type TraceRow } from "../../lib/trace";
+import { formatMsShort, formatShortDateTime } from "../../format";
 
 const ORIGIN_LABEL: Record<string, string> = {
   manual: "手动",
@@ -40,11 +41,6 @@ const STATUS_LABEL: Record<string, string> = {
   stopped: "已停止",
   timeout: "超时",
 };
-
-function fmtDur(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
 
 export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
@@ -148,12 +144,7 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
                   onClick={() => setOpenTraceId(t.id)}
                 >
                   <span className="w-24 shrink-0 font-mono text-[10px] tabular-nums text-[var(--t5)]">
-                    {new Date(t.startedAt).toLocaleString("zh-CN", {
-                      month: "2-digit",
-                      day: "2-digit",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {formatShortDateTime(t.startedAt)}
                   </span>
                   <span
                     className="min-w-0 flex-1 truncate text-[var(--t2)]"
@@ -185,7 +176,7 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
                     {STATUS_LABEL[t.status] ?? t.status}
                   </span>
                   <span className="w-16 shrink-0 text-right font-mono text-[10px] tabular-nums text-[var(--t5)]">
-                    {t.finishedAt ? fmtDur(t.finishedAt - t.startedAt) : "—"}
+                    {t.finishedAt ? formatMsShort(t.finishedAt - t.startedAt) : "—"}
                   </span>
                   <span className="w-20 shrink-0 text-right font-mono text-[10px] tabular-nums text-[var(--t5)]">
                     {(t.promptTokens > 0 || t.completionTokens > 0) &&

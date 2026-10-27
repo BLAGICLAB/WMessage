@@ -34,6 +34,12 @@ export function formatShortDateTime(ms: number): string {
   });
 }
 
+/** 执行耗时 → 短文案：<1s 给毫秒（亚秒级任务占比高），否则一位小数秒 */
+export function formatMsShort(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 /** 图片扩展名白名单（与 Rust bot_chat.rs::IMAGE_EXTS 对齐；后端 attach_images
  *  按同一列表判断是否转 base64 image_url）。改动需两侧同步。 */
 const IMAGE_EXTS = ["png", "jpg", "jpeg", "webp", "gif", "bmp"] as const;

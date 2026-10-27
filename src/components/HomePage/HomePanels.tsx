@@ -5,14 +5,9 @@
 import type { Task } from "../../types";
 import type { TraceRow } from "../../lib/trace";
 import type { NotificationItem } from "../../lib/notifications";
-import { relativeTime } from "../../format";
+import { formatMsShort, relativeTime } from "../../format";
 import { planColorVar } from "../TaskTimeline/week";
 import type { ArchivePulse } from "./homeData";
-
-function fmtDur(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
 
 function Panel({
   dot,
@@ -151,7 +146,7 @@ export function BotPanel({
             </span>
             <span className="num shrink-0 text-[11px] text-[var(--t5)]">
               {relativeTime(tr.startedAt, now.getTime())}
-              {tr.finishedAt ? ` · ${fmtDur(tr.finishedAt - tr.startedAt)}` : ""}
+              {tr.finishedAt ? ` · ${formatMsShort(tr.finishedAt - tr.startedAt)}` : ""}
             </span>
           </Row>
         ))

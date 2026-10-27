@@ -19,7 +19,7 @@ import {
   TriangleAlert,
   Wrench,
 } from "lucide-react";
-import { basename } from "../../format";
+import { basename, formatMsShort } from "../../format";
 import { mergeDeliverables } from "../../lib/deliverables";
 import { extractFilePaths, openTarget } from "../../lib/openTarget";
 import { useProbedDeliverables } from "../../lib/useDeliverables";
@@ -406,7 +406,7 @@ const ToolBadges = memo(function ToolBadges({
               )}
               {verboseLevel === "debug" &&
                 totalMs > 0 &&
-                ` · Σ ${fmtMs(totalMs)}`}
+                ` · Σ ${formatMsShort(totalMs)}`}
             </span>
             {runningTool && (
               <span className="inline-flex items-center gap-1 text-[var(--brand)]">
@@ -436,7 +436,7 @@ const ToolBadges = memo(function ToolBadges({
                 <span className="font-mono text-[10px] text-[var(--t4)]">
                   {t.name || "tool"}
                   {t.ms != null && (
-                    <span className="ml-1 text-[var(--t5)]">{fmtMs(t.ms)}</span>
+                    <span className="ml-1 text-[var(--t5)]">{formatMsShort(t.ms)}</span>
                   )}
                 </span>
                 {t.args ? (
@@ -459,11 +459,6 @@ const ToolBadges = memo(function ToolBadges({
     </div>
   );
 });
-
-function fmtMs(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
 
 /**
  * 交付物区：这一轮的**最终产物**。

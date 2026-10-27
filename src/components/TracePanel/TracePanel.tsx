@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { Download, FileText, History, TriangleAlert, X } from "lucide-react";
 import { Modal } from "../../ui/Modal";
 import { stopPointer } from "../../lib/stopPointer";
-import { basename, formatMonthDayTime } from "../../format";
+import { basename, formatMonthDayTime, formatMsShort } from "../../format";
 import { DiffView } from "./DiffView";
 import {
   fileRollback,
@@ -55,11 +55,6 @@ function spanFailText(s: SpanRow): string {
   return ERROR_CLASS_LABEL[cls] ?? `失败（${cls}）`;
 }
 
-function fmtMs(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
-
 /** 单条 span：一行摘要 + <details> 展开入参/结果 */
 function SpanItem({ s }: { s: SpanRow }) {
   return (
@@ -74,7 +69,7 @@ function SpanItem({ s }: { s: SpanRow }) {
             {s.name}
           </span>
           <span className="ml-1.5 text-[10px] text-[var(--t5)]">
-            第{s.turn}轮{s.durationMs != null && ` · ${fmtMs(s.durationMs)}`}
+            第{s.turn}轮{s.durationMs != null && ` · ${formatMsShort(s.durationMs)}`}
             {!s.ok && (
               <span className="text-[var(--danger,#ef4444)]">
                 {" "}
@@ -273,7 +268,7 @@ export function TracePanel({
   const statusOf = (t: TraceRow | null) =>
     t ? (STATUS_BADGE[t.status] ?? null) : null;
   const duration = (t: TraceRow): string =>
-    t.finishedAt ? fmtMs(t.finishedAt - t.startedAt) : "进行中";
+    t.finishedAt ? formatMsShort(t.finishedAt - t.startedAt) : "进行中";
 
   return (
     <Modal

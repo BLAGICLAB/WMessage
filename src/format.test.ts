@@ -9,6 +9,7 @@ import {
   basename,
   relativeTime,
   untilTime,
+  formatMsShort,
 } from "./format";
 
 describe("isValidDateTimeLocal", () => {
@@ -137,5 +138,14 @@ describe("untilTime（定时任务模块「下次执行」倒计时）", () => {
   it("已过期/非法时间戳回「刚刚」", () => {
     expect(untilTime(now - 5_000, now)).toBe("刚刚");
     expect(untilTime(NaN, now)).toBe("刚刚");
+  });
+});
+
+describe("formatMsShort（执行耗时短文案）", () => {
+  it("不足 1 秒给毫秒，否则一位小数秒", () => {
+    expect(formatMsShort(0)).toBe("0ms");
+    expect(formatMsShort(999)).toBe("999ms");
+    expect(formatMsShort(1000)).toBe("1.0s");
+    expect(formatMsShort(255_000)).toBe("255.0s");
   });
 });

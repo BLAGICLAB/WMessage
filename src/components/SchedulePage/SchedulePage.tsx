@@ -4,7 +4,7 @@ import { emit } from "@tauri-apps/api/event";
 import { AlarmClock, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
-import { formatSchedule, relativeTime, untilTime } from "../../format";
+import { formatMsShort, formatSchedule, relativeTime, untilTime } from "../../format";
 import { EmptyState } from "../EmptyState";
 import { TracePanel } from "../TracePanel";
 import { ScheduleEditorPanel } from "./ScheduleEditorPanel";
@@ -23,12 +23,6 @@ const keyOf = (kind: ScheduleEntry["kind"], id: string) => `${kind}:${id}`;
 
 /** 作业内容上限（与后端 scheduled_job_create 校验一致；超限后端会 reject，前端先拦） */
 const JOB_CONTENT_MAX = 500;
-
-/** 执行耗时 → 短文案：<1s 给毫秒（亚秒级任务占比高），否则一位小数秒 */
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
-}
 
 export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   const [entries, setEntries] = useState<ScheduleEntry[]>([]);
@@ -413,7 +407,7 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
                     </span>
                     <span className="shrink-0">{relativeTime(r.firedAt)}</span>
                     <span className="shrink-0 tabular-nums">
-                      {formatDuration(r.durationMs)}
+                      {formatMsShort(r.durationMs)}
                     </span>
                     {r.summary && (
                       <span
