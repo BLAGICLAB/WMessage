@@ -68,7 +68,7 @@ pub use crate::bot_scheduler::{
     __tauri_command_name_scheduled_job_fire, schedule_overview, schedule_set_enabled,
     scheduled_job_fire,
 };
-pub(crate) use crate::bot_scheduler::{resolve_local, validate_schedule};
+pub(crate) use crate::bot_scheduler::{resolve_local, validate_schedule, SCHED_TICK_SECS};
 // 产物登记行类型：运行期状态与产物登记都指着它。
 pub use crate::bot_artifacts::RegisteredArtifact;
 // 退出标记复位：退出清理用例跑完要把 EXITING 复位，否则后续测试被误拒。
