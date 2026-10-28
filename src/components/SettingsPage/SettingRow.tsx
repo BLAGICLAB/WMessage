@@ -57,25 +57,14 @@ type SettingRowProps = {
   label: ReactNode;
   /** 说明文字：解释这个设置管什么、代价是什么 */
   description?: ReactNode;
-  /** 顶部分隔线：本行与上一行属于不同设置组时打开 */
-  divider?: boolean;
   /** 右侧控件 */
   children: ReactNode;
 };
 
-/** 设置行：左名称+说明、右控件。默认与上一行同组，divider 开分组线。 */
-export function SettingRow({
-  label,
-  description,
-  divider = false,
-  children,
-}: SettingRowProps) {
+/** 设置行：左名称+说明、右控件，与上一行同组。 */
+export function SettingRow({ label, description, children }: SettingRowProps) {
   return (
-    <div
-      className={`flex items-center justify-between gap-4 ${
-        divider ? "border-t border-[var(--edge)] pt-3" : ""
-      }`}
-    >
+    <div className="flex items-center justify-between gap-4">
       <div className="min-w-0">
         <p className={SET_LABEL_CLASS}>{label}</p>
         {description && (

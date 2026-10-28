@@ -19,7 +19,6 @@ import {
   fileRollback,
   traceDetail,
   traceExport,
-  traceListByOrigin,
   traceListBySession,
   traceListByTask,
   TRACE_STATUS_CLS,
@@ -168,10 +167,9 @@ export function TracePanel({
   taskTitle,
   traceId,
   sessionId,
-  origin,
   onClose,
 }: {
-  /** 按任务卡查（执行历史列表 → 选一条）；与 sessionId/origin/traceId 互斥 */
+  /** 按任务卡查（执行历史列表 → 选一条）；与 sessionId/traceId 互斥 */
   taskId?: string;
   taskTitle?: string;
   /**  直查模式：活动页按 trace id 直接打开单条 */
@@ -179,8 +177,6 @@ export function TracePanel({
   /** 按会话查（同会话的多次执行 → 选一条）；聊天回合跳执行轨迹用它。
    *  与 traceId 同时给 = 列表模式并预选这一条 */
   sessionId?: string;
-  /** 按来源查（手动/定时/批量/聊天） */
-  origin?: string;
   onClose: () => void;
 }) {
   const [traces, setTraces] = useState<TraceRow[]>([]);
@@ -196,13 +192,11 @@ export function TracePanel({
   // 竞态令牌：快速连点历史条目时，慢的旧 traceDetail 响应不得覆盖新选中的详情
   const race = useRaceSeq();
 
-  // 列表来源三选一：会话 → 来源 → 任务卡
+  // 列表来源三选一：会话 → 任务卡
   const loadList = () =>
     sessionId
       ? traceListBySession(sessionId)
-      : origin
-        ? traceListByOrigin(origin)
-        : traceListByTask(taskId ?? "");
+      : traceListByTask(taskId ?? "");
 
   const reload = (pickId: number | null) => {
     // 开头即作废在途响应：列表模式下慢的旧 reload 不得覆盖新选中的详情
@@ -210,8 +204,8 @@ export function TracePanel({
     setLoading(true);
     setError(null);
     // 直查模式（只给了 traceId）：单条结果即完整 detail，直接复用不再重复查询；
-    // 列表模式（任务卡/会话/来源）拉执行历史列表后按选中项再取详情
-    if (traceId != null && !sessionId && !origin) {
+    // 列表模式（任务卡/会话）拉执行历史列表后按选中项再取详情
+    if (traceId != null && !sessionId) {
       traceDetail(traceId)
         .then((d) => {
           if (!race.isCurrent(seq)) return;
@@ -268,7 +262,7 @@ export function TracePanel({
   useEffect(() => {
     reload(traceId ?? null);
     // eslint-disable-next-line react/exhaustive-deps -- 列表来源挂载期一次性加载；回滚后手动 reload
-  }, [taskId, traceId, sessionId, origin]);
+  }, [taskId, traceId, sessionId]);
 
   const statusOf = (t: TraceRow | null) =>
     t ? (STATUS_BADGE[t.status] ?? null) : null;

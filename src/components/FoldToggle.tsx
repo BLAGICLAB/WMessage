@@ -1,16 +1,13 @@
 // 标题行右侧的折叠/展开开关，各任务卡视图共用
 // 位于标题与打勾圆圈之间；三角符号加大；未折叠时卡片悬停才显现，已折叠时强制可见（保证能点开）
-// alwaysVisible：始终显示（窄面板用，避免 hover 才显现难找）
 import { stopPointer as stop } from "../lib/stopPointer";
 
 export function FoldToggle({
   collapsed,
   onToggle,
-  alwaysVisible = false,
 }: {
   collapsed: boolean;
   onToggle: () => void;
-  alwaysVisible?: boolean;
 }) {
   return (
     <button
@@ -18,9 +15,7 @@ export function FoldToggle({
       aria-expanded={!collapsed}
       aria-label={collapsed ? "展开" : "收起"}
       className={`shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-sm leading-none text-[var(--t5)] hover:text-[var(--t2)] hover:bg-[var(--hover-bg)] transition-opacity duration-[var(--dur-chip)] ease-[var(--ease-out)] ${
-        alwaysVisible || collapsed
-          ? "opacity-100"
-          : "opacity-0 group-hover:opacity-100"
+        collapsed ? "opacity-100" : "opacity-0 group-hover:opacity-100"
       }`}
       title={collapsed ? "展开" : "收起"}
       onPointerDown={stop}

@@ -125,17 +125,11 @@ export function SubagentElapsed({ run: s }: { run: SubagentRun }) {
 
 /** 一行摘要的内容部分（不含点击/取消外壳）——两个展示点各自套自己的外壳，
  *  只共用「一行里显示什么」。 */
-export function SubagentRowLine({
-  run: s,
-  textClass = "text-[11px]",
-}: {
-  run: SubagentRun;
-  textClass?: string;
-}) {
+export function SubagentRowLine({ run: s }: { run: SubagentRun }) {
   return (
     <>
       {STATUS_ICON[statusOf(s)]}
-      <span className={`min-w-0 flex-1 truncate ${textClass}`}>{s.title}</span>
+      <span className="min-w-0 flex-1 truncate text-[11px]">{s.title}</span>
       <SubagentProgress run={s} />
     </>
   );
