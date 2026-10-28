@@ -341,7 +341,7 @@ pub async fn run_task_in_chat_with<R: tauri::Runtime, Run, Fut>(
     app: &tauri::AppHandle<R>,
     task_id: &str,
     origin: TaskExecOrigin,
-    // 执行 trace 挂钩（None = 不采集，测试与遗留路径用）。
+    // 执行 trace 挂钩（None = 不采集，测试注入缝用）。
     // 内核负责建 trace（begin）与收尾（end）——成对执行，中途无早退分支。
     trace_hook: Option<std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>>>,
     // ask_user 提问预算（Wry 壳从 bot 参数解析后传入；内核是泛型 Runtime，

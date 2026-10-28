@@ -9,7 +9,7 @@
 //! `create_ppt` / `create_pdf`）全走 Python 脚本，Node 那侧的 Word/Excel/PDF
 //! 能力与 Python 组逐项重复，收进来只是让人对着两列做同一件事。留这三个的
 //! 理由各不相同：
-//! - `pptxgenjs`：**内置技能的真实依赖**——`ppt-craft-master/package.json`
+//! - `pptxgenjs`：**用户自装 PPT 技能的真实依赖**——`ppt-craft-master/package.json`
 //!   直接声明了它、`scripts/generate.js` 里 `require('pptxgenjs')`，
 //!   `ppt-generator` 同理；技能自己的 SKILL.md 写的就是 `npm install -g
 //!   pptxgenjs`（全局——所以探的是全局 node_modules 根，不是项目本地）
