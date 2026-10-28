@@ -178,7 +178,7 @@ pub fn parse_update_plan(args: &str) -> Result<(Vec<PlanStep>, Option<String>), 
             }
         };
         steps.push(PlanStep {
-            content: truncate_chars(content, MAX_STEP_CHARS),
+            content: super::log_sanitize::truncate_chars(content, MAX_STEP_CHARS, true),
             status,
         });
     }
@@ -191,18 +191,8 @@ pub fn parse_update_plan(args: &str) -> Result<(Vec<PlanStep>, Option<String>), 
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| truncate_chars(s, MAX_EXPLANATION_CHARS));
+        .map(|s| super::log_sanitize::truncate_chars(s, MAX_EXPLANATION_CHARS, true));
     Ok((steps, explanation))
-}
-
-/// 按字符截断（中文按字算，不切碎多字节）。
-fn truncate_chars(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(max).collect();
-    out.push('…');
-    out
 }
 
 /// 取本会话当前计划快照（面板打开时拉初值）。

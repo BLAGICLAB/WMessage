@@ -465,7 +465,7 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
     // （：list_tasks/search_tasks 合并为 query_tasks）
     const READONLY: [&str; 3] = ["query_tasks", "use_skill", "web_search"];
     if !READONLY.contains(&tool) {
-        let brief = truncate_skill_args(args, 120);
+        let brief = crate::bot::log_sanitize::truncate_chars(args, 120, true).replace('\n', " ");
         run.actions.push(format!("{tool} | {brief}"));
     }
     Ok(())
@@ -580,15 +580,6 @@ pub fn skill_on_step_post<R: tauri::Runtime>(
 /// interactive（LLM 驱动）：连续失败累计到阈值才判死，给模型换策略的机会。
 fn should_fail_skill_on_step_error(mode: &str, consec_failures: usize) -> bool {
     mode == "auto" || consec_failures >= SKILL_INTERACTIVE_FAIL_LIMIT
-}
-
-/// 参数摘要（动作记录用）
-fn truncate_skill_args(args: &str, max: usize) -> String {
-    let mut s: String = args.chars().take(max).collect();
-    if args.chars().count() > max {
-        s.push('…');
-    }
-    s.replace('\n', " ")
 }
 
 /// 暂停语义纯函数（单测入口）：把 Running 技能转入暂停等待。
