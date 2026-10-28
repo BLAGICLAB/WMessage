@@ -296,6 +296,17 @@ pub const CONFLICT_ERR_PREFIX: &str = "写冲突";
 /// 「行存在性」基线哨兵：i64::MIN 保证与任何合法毫秒时间戳不撞
 pub const BASELINE_NULL_ROW: i64 = i64::MIN;
 
+/// RMW 冲突判定（tasks / scheduled_jobs / api 内存层三处共用）：expected 为
+/// 行存在性哨兵时要求行仍在且 updated_at 仍为 NULL 才放行；否则要求
+/// updated_at 等于基线。`cur`：None = 行不存在，Some(None) = 行在但无基线时间戳。
+pub fn rmw_conflict(expected: i64, cur: Option<Option<i64>>) -> bool {
+    if expected == BASELINE_NULL_ROW {
+        cur != Some(None)
+    } else {
+        cur.flatten() != Some(expected)
+    }
+}
+
 pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), String> {
     // 契约断言：调用方必须持 DB_WRITE_LOCK（经 lock_db_write() 的守卫）。
     // 线程本地标记精确判定「当前线程持锁」—— try_lock 做不到（线程无关 + poisoned 也 Err）。
@@ -342,11 +353,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 })
                 .optional()
                 .map_err(|e| e.to_string())?;
-            let conflict = if expected == BASELINE_NULL_ROW {
-                cur != Some(None)
-            } else {
-                cur.flatten() != Some(expected)
-            };
+            let conflict = rmw_conflict(expected, cur);
             if conflict {
                 let cur_flat = cur.flatten();
                 let baseline_desc = if expected == BASELINE_NULL_ROW {

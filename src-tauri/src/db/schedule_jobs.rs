@@ -192,11 +192,7 @@ pub fn upsert_scheduled_job(conn: &rusqlite::Connection, j: &ScheduledJob) -> Re
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let conflict = if expected == super::tasks::BASELINE_NULL_ROW {
-            cur != Some(None)
-        } else {
-            cur.flatten() != Some(expected)
-        };
+        let conflict = super::tasks::rmw_conflict(expected, cur);
         if conflict {
             return Err(format!(
                 "{}：定时作业 {} 读快照后已被其他写者修改，写回被拒",

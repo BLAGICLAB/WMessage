@@ -347,3 +347,19 @@ fn upsert_conflict_maps_to_recoverable_task_invalid_state() {
         "非冲突失败应报 DbError，got {db_fail:?}"
     );
 }
+
+/// rmw_conflict 真值表：tasks / scheduled_jobs / api 内存层三处共用的判定核，
+/// 两条基线语义（行存在性哨兵 / 数值基线）各自钉住。
+#[test]
+fn rmw_conflict_truth_table() {
+    let base = crate::db::BASELINE_NULL_ROW;
+    // 行存在性哨兵：行在且 updated_at 仍为 NULL 放行，行被改/被删全拒
+    assert!(!crate::db::rmw_conflict(base, Some(None)));
+    assert!(crate::db::rmw_conflict(base, Some(Some(5))));
+    assert!(crate::db::rmw_conflict(base, None));
+    // 数值基线：updated_at 等于基线放行；不等 / 行被清成 NULL / 行被删全拒
+    assert!(!crate::db::rmw_conflict(5, Some(Some(5))));
+    assert!(crate::db::rmw_conflict(5, Some(Some(6))));
+    assert!(crate::db::rmw_conflict(5, Some(None)));
+    assert!(crate::db::rmw_conflict(5, None));
+}
