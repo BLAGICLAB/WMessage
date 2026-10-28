@@ -18,7 +18,8 @@ import { useConfirm } from "../../lib/useConfirm";
 import { handleCommandError, formatCommandError, isCommandError } from "../../lib/errorHandler";
 import type { ChatModelEntry, Msg, PermMode, Session, SubagentRow, VerboseLevel } from "./types";
 import { execTaskDedup, finishedExecTasks, SUBAGENT_STATUS } from "./constants";
-import { useAutoGrow, useOutsideClose } from "./useChatUi";
+import { useAutoGrow } from "./useChatUi";
+import { useDismissable } from "../../lib/useDismissable";
 import * as streamState from "./streamState";
 import { SessionRail } from "./SessionRail";
 import { ContextRail } from "./ContextRail";
@@ -330,24 +331,18 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     setSessions,
     streamHandlersRef,
   });
-  useOutsideClose(
-    modelMenuOpen,
-    () => setModelMenuOpen(false),
+  useDismissable(modelMenuOpen, () => setModelMenuOpen(false), [
     modelBtnRef,
     modelDropdownRef,
-  );
-  useOutsideClose(
-    effortMenuOpen,
-    () => setEffortMenuOpen(false),
+  ]);
+  useDismissable(effortMenuOpen, () => setEffortMenuOpen(false), [
     effortBtnRef,
     effortDropdownRef,
-  );
-  useOutsideClose(
-    permMenuOpen,
-    () => setPermMenuOpen(false),
+  ]);
+  useDismissable(permMenuOpen, () => setPermMenuOpen(false), [
     permBtnRef,
     permDropdownRef,
-  );
+  ]);
   useEffect(() => {
     const reload = () =>
       getBotConfig()

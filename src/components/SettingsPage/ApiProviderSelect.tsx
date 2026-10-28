@@ -25,8 +25,8 @@ export function ApiProviderSelect({
   const listboxId = useId();
   useDismissable(
     open,
-    rootRef,
     () => setOpen(false),
+    [rootRef],
     () => {
       setOpen(false);
       // 焦点归还触发钮（选项卸载后焦点会掉到 body）；点外部收起不归还

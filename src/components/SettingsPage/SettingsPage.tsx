@@ -138,7 +138,7 @@ export function SettingsPage({
   });
   const [vendorMenuOpen, setVendorMenuOpen] = useState(false);
   const vendorMenuRef = useRef<HTMLDivElement>(null);
-  useDismissable(vendorMenuOpen, vendorMenuRef, () => setVendorMenuOpen(false));
+  useDismissable(vendorMenuOpen, () => setVendorMenuOpen(false), [vendorMenuRef]);
   const {
     activeVendor,
     activeVendorEntries,
@@ -208,7 +208,7 @@ export function SettingsPage({
     tavilyKeyInput,
   });
   const metaPickerRef = useRef<HTMLDivElement>(null);
-  useDismissable(metaPickerOpen, metaPickerRef, () => setMetaPickerOpen(false));
+  useDismissable(metaPickerOpen, () => setMetaPickerOpen(false), [metaPickerRef]);
   const {
     busy,
     clearVendorKey,
