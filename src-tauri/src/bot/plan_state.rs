@@ -15,7 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 /// 步骤数上限：面板一屏放不下更多条，超了模型多半是在列流水账而不是列步骤。
-pub const MAX_PLAN_STEPS: usize = 20;
+pub const MAX_PLAN_ENTRIES: usize = 20;
 /// 单步文本上限（字符）：一步一句话，说太长就不是步骤了。
 pub const MAX_STEP_CHARS: usize = 120;
 /// 变更说明上限（字符）：只放「为什么改」，不放清单本身。
@@ -138,9 +138,9 @@ pub fn parse_update_plan(args: &str) -> Result<(Vec<PlanStep>, Option<String>), 
     if arr.is_empty() {
         return Err("plan 是空数组：没有步骤就别调本工具。".to_string());
     }
-    if arr.len() > MAX_PLAN_STEPS {
+    if arr.len() > MAX_PLAN_ENTRIES {
         return Err(format!(
-            "plan 有 {} 条，超过上限 {MAX_PLAN_STEPS} 条：合并同类步骤后再调。",
+            "plan 有 {} 条，超过上限 {MAX_PLAN_ENTRIES} 条：合并同类步骤后再调。",
             arr.len()
         ));
     }
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn parse_caps_step_count() {
-        let plan: Vec<String> = (0..MAX_PLAN_STEPS + 1)
+        let plan: Vec<String> = (0..MAX_PLAN_ENTRIES + 1)
             .map(|i| format!(r#"{{"step":"s{i}","status":"pending"}}"#))
             .collect();
         let args = format!(r#"{{"plan":[{}]}}"#, plan.join(","));

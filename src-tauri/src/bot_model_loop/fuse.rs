@@ -10,8 +10,8 @@ use crate::error::CommandError;
 //
 // 上限取**档位预设**：主会话默认拿均衡档全局工具池的 60%。更高的上限的失控风险
 // 由幻觉守卫（claims_mutation）+ 软警告 + /stop 兜底。用户可在设置页按档位
-// 调整，或用高级覆盖单项指定（子 agent 默认预算同源此值，resolve_subagent_budget）。
-// 软警告阈值动态 = cap*90%（见 request.rs 的阶梯派生）。
+// 调整，或用高级覆盖单项指定；子 agent 的工具额度是另一个独立键
+// （resolve_subagent_budget）。软警告阈值动态 = cap*90%（见 request.rs 的阶梯派生）。
 pub(crate) const MAX_FUNCTION_CALLS_PER_REQUEST: usize = crate::bot::params::budget_share(
     crate::bot::params::BALANCED_PRESET.global_tool_calls,
     crate::bot::params::MAIN_SESSION_BUDGET_PCT,
@@ -41,7 +41,8 @@ pub(crate) fn fuse_cap_upper_bound() -> usize {
 /// 调用数（写产物 + 读契约）。dispatch 收尾窗拒掉的调用不计入熔断计数
 /// （见循环体 Denied 回退），所以这份裕量不会被被拒的读类调用烧掉——
 /// 否则一轮并行批就能把窗口吃光，模型永远轮不到写产物。
-pub(crate) const SUBAGENT_WRAP_UP_FUSE_MARGIN: usize = 5;
+pub(crate) const SUBAGENT_WRAP_UP_FUSE_MARGIN: usize =
+    crate::bot::constants::SUBAGENT_WRAP_UP_FUSE_MARGIN;
 
 /// 熔断上限派生链的唯一入口：子 agent 行上预算 > bot-config 覆盖 > 内置默认，
 /// 末端钳到 [1, 上界]。
@@ -61,8 +62,7 @@ pub(crate) fn fuse_cap_for(subagent_budget: Option<u32>, cfg_override: Option<us
 }
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。
-/// cap 由会话派生：子 agent = 预算 max_tool_calls，其余 = 默认 100
-/// bot-config `maxFunctionCalls` 可覆盖，钳 1..=500）。
+/// cap 由会话派生（见 `fuse_cap_for`），边界单点在 `fuse_cap_upper_bound`。
 pub(crate) fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
     calls_so_far > cap
 }

@@ -1,6 +1,6 @@
 //! 上下文预算压缩：长会话工具结果累积时分级降密度，不动 user/assistant/system。
 //!
-//! 三档阈值（占 MSGS_BUDGET_CHARS 的比例）：
+//! 三档阈值（占上下文硬顶 `constants::CONTEXT_CHARS_HARD_CAP` 的比例）：
 //! - 软压缩（>70%）：tool 消息保留首 200 + 尾 100 字符，中间替换为 sidecar 指针
 //! - 硬压缩（>85%）：tool 消息只保留首 30 + 尾 30 + 指针
 //! - 熔断（>100%）：调用方应拒收新工具调用（不在本模块内做，靠 soft_warn_queued 触发）
@@ -41,7 +41,7 @@ pub struct CompactionReport {
     pub sidecar_paths: Vec<String>,
 }
 
-/// 判定当前字符数对应的压缩档位（边界与 bot_model_loop.rs 的 MSGS_BUDGET_CHARS 对齐）。
+/// 判定当前字符数对应的压缩档位（budget 由调用方传入，生产取 `constants::CONTEXT_CHARS_HARD_CAP`）。
 pub fn classify_level(chars: usize, budget: usize) -> CompactionLevel {
     if chars > budget {
         CompactionLevel::Fuse

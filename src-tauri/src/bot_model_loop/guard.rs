@@ -4,7 +4,7 @@
 
 use super::{
     claim_mutation_fires, context_sources, finalize_exit, finalize_selfcheck, msg_chars,
-    number_sourced, request, with_thinking, FinalizeOutcome, ModelLoopDeps, ToolEvidence,
+    number_sourced, with_thinking, FinalizeOutcome, ModelLoopDeps, ToolEvidence,
 };
 use crate::bot::registry::{
     claimed_doc_paths, claimed_executed_tools, claims_execution_with, mentioned_tool_names,
@@ -41,7 +41,8 @@ pub(crate) const SELFCHECK_FAIL_EMIT: &str = "⚠️ 自检未达预期,换策�
 /// 而工具结果早就被轮内滑动窗与轮龄降密度换成桩子了——真到长会话，历史早就
 /// 压到阈值以下，那道判据就永远不成立，feature 变成死代码。这里量的是
 /// **这一轮要多付多少**，与省下的钱直接挂钩。
-pub(crate) const SIDE_SELFCHECK_MIN_CHARS: usize = request::MSGS_BUDGET_CHARS / 5;
+pub(crate) const SIDE_SELFCHECK_MIN_CHARS: usize =
+    crate::bot::constants::CONTEXT_CHARS_HARD_CAP / 5;
 
 /// 侧调路由判定：这一轮的工具自检该不该挪到侧调通道（纯函数，单测直打）。
 ///

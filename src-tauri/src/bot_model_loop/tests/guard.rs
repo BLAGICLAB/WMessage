@@ -800,8 +800,8 @@ mod rounds_fuse_tests {
     }
 
     #[test]
-    fn skill_without_max_rounds_falls_back_to_default_50() {
-        // 现有 Skill 未声明 max_rounds → None → fallback（：fallback = 配置解析值，测试传默认 50）
+    fn skill_without_max_rounds_falls_back_to_config_default() {
+        // 现有 Skill 未声明 max_rounds → None → fallback = 配置解析值（这里传内置默认）
         let meta = crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
         assert_eq!(meta.max_rounds, None);
         assert_eq!(

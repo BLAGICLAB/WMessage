@@ -237,7 +237,7 @@ fn params_table_keys_unique_and_populated() {
 /// 参数表里的默认展示值必须等于代码里真正生效的那个数。
 ///
 /// `tools.max_output_bytes` 的 `default` 曾写「不截断」，而空配置下 resolver
-/// 返 30000、模型循环按 `DEFAULT_TOOL_OUTPUT_CAP_BYTES` 走——表里自相矛盾，且
+/// 返 30000、模型循环按自己那份字面量走——表里自相矛盾，且
 /// 没有任何测试把这两个数字绑在一起。这条把该绑的都绑上：改任一侧不同步即红。
 ///
 /// 现在 `default` 由 resolver 派生（不再是手写字面量），但「派生的结果等于

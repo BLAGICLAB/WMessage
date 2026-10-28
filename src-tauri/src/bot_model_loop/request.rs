@@ -11,11 +11,6 @@ use super::{
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
 
-/// 单轮 msgs 总字符软上限（仅 audit，不截断）。
-/// 默认 200K 字符（中文 ≈ 1 token/字符 ≈ 200K token 上下文）。
-/// 超出走 `loop.msgs.over_budget` 事件供事后分析；不主动压缩、不截断、不触发摘要。
-pub(crate) const MSGS_BUDGET_CHARS: usize = 200_000;
-
 /// 滚动降密度：轮龄 ≥ 此值的 tool 结果软压（头 200 + 尾 100 + sidecar 指针）。
 /// N=5 对齐业界——SWE-agent 消融只留最近 5 条观察比全历史高 3 分，
 /// Claude Code microcompact 亦为最近 5 条工具结果。
@@ -376,7 +371,7 @@ pub(crate) fn prepare_round(
     };
 
     // 熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
-    // 其余 = bot-config maxFunctionCalls（缺省 100）。软警阈值 = cap*7/10。
+    // 其余 = 主会话上限（resolve_main_tool_calls）。阶梯阈值见下方按占比派生。
     // 钳位只在 fuse_cap_for 末端做一次（防巨值实质关闭熔断），上界取 params 的
     // MAX_FUNCTION_CALLS_CAP，与子 agent 预算解析同一个数。
     let fuse_cap = fuse_cap_for(
@@ -463,15 +458,17 @@ pub(crate) fn compact_before_round(
             }
         }
     }
-    // 保守 token 预算——仅 audit，不压缩。超阈值走 `loop.msgs.over_budget` 事件。
-    // 默认阈 200K 字符（中文 ~1 token/字符；上限 ≈ 200K token 上下文）。
-    // 本轮 msgs 总字符超阈值时记个 audit，不截断——便于后续评估是否要加主动压缩。
+    // 请求体总字符对上下文硬顶分级：70% 软压 / 85% 硬压只降工具消息密度，
+    // 100% 只记 `loop.msgs.over_budget` 审计（新工具调用的拒收由软警告路径另管）。
     let msgs_chars: usize = msgs
         .iter()
         .filter_map(|m| m["content"].as_str())
         .map(|s| s.chars().count())
         .sum();
-    match crate::bot::compaction::classify_level(msgs_chars, MSGS_BUDGET_CHARS) {
+    match crate::bot::compaction::classify_level(
+        msgs_chars,
+        crate::bot::constants::CONTEXT_CHARS_HARD_CAP,
+    ) {
         crate::bot::compaction::CompactionLevel::None => {}
         level @ (crate::bot::compaction::CompactionLevel::Soft
         | crate::bot::compaction::CompactionLevel::Hard) => {
@@ -520,7 +517,10 @@ pub(crate) fn compact_before_round(
                 "loop.msgs.over_budget",
                 vec![
                     ("chars", msgs_chars.to_string()),
-                    ("max", MSGS_BUDGET_CHARS.to_string()),
+                    (
+                        "max",
+                        crate::bot::constants::CONTEXT_CHARS_HARD_CAP.to_string(),
+                    ),
                 ],
             );
         }

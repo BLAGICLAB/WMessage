@@ -16,7 +16,7 @@ pub(crate) fn status_label(status: TaskStatus) -> &'static str {
 
 /// 头部可安全切片的下标：取前 n_bytes 字节，切点回退到 UTF-8 字符边界。
 ///
-/// 工具输出体积上限统一按字节计（见 `bot_model_loop::DEFAULT_TOOL_OUTPUT_CAP_BYTES`）：
+/// 工具输出体积上限统一按字节计（模型循环的 `effective_output_cap` 生效点）：
 /// `String::len()` 是字节、`chars().count()` 是字符，拿字符数去卡一条字节预算，
 /// 中文内容会漏掉 3 倍。切点落在多字节字符中间时必须回退——切出半个 UTF-8 字符
 /// 会让回灌文本变成乱码，模型读到的就是坏数据。

@@ -24,10 +24,10 @@ pub struct PlanState {
 }
 
 /// Replan 硬上限：防「失败 → 重规划 → 再失败」死循环烧 token
-pub const MAX_REPLANS: usize = 2;
+pub const MAX_REPLANS: usize = crate::bot::constants::MAX_REPLANS;
 
 /// 计划步数上限：超出截断（防模型生成几十步的长计划稀释上下文）
-const MAX_PLAN_STEPS: usize = 8;
+const MAX_PLAN_STEPS: usize = crate::bot::constants::MAX_PLAN_STEPS;
 
 /// 多步意图关键词：命中任一即认为可能需要规划
 const MULTI_STEP_KEYWORDS: [&str; 10] = [

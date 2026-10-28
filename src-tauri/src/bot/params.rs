@@ -263,10 +263,11 @@ pub const HISTORY_BUDGET_MIN: u32 = 20_000;
 /// 历史截断滞回目标比例默认（百分比）：超预算时一次裁到预算的 70%。
 /// 贴边裁会让长会话几乎每轮都改一次缓存前缀，留 30% 余量能稳住好几轮。
 pub const DEFAULT_HISTORY_TRUNCATE_TARGET_PCT: u32 = 70;
-/// 滞回比例下界（50%）：再低就是历史断崖式变短，摘要都救不回来。
-pub const HISTORY_TRUNCATE_TARGET_PCT_MIN: u32 = 50;
-/// 滞回比例上界（90%）：再高等于没有余量，贴边裁的问题原样回来。
-pub const HISTORY_TRUNCATE_TARGET_PCT_MAX: u32 = 90;
+/// 滞回比例可取区间：钳制与设置页展示的可填范围共用，单源在 constants。
+pub const HISTORY_TRUNCATE_TARGET_PCT_MIN: u32 =
+    crate::bot::constants::HISTORY_TRUNCATE_TARGET_PCT_MIN;
+pub const HISTORY_TRUNCATE_TARGET_PCT_MAX: u32 =
+    crate::bot::constants::HISTORY_TRUNCATE_TARGET_PCT_MAX;
 /// 思考段回灌开关默认（0 = 关）：维持现状，不为「可能受益」的模型族预付
 /// 思考段的 input token；受益只落在明确要求回灌的模型上，由用户自己开。
 pub const DEFAULT_REASONING_ECHO_ENABLED: u32 = 0;
@@ -277,11 +278,11 @@ pub const REASONING_ECHO_ENABLED_MAX: u32 = 1;
 pub const DEFAULT_IN_TURN_CONTEXT_EDIT: u32 = 1;
 /// 轮内工具结果滑动窗开关上界（1 = 开）：只有两态。
 pub const IN_TURN_CONTEXT_EDIT_MAX: u32 = 1;
-/// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）：
-/// max_tool_calls 仅是缺省兜底——配置了 max_function_calls 时子 agent 同源全域上限
+/// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）。
 ///
 /// 轮数与工具数取均衡档全局池的 20%（分配规则给单个子 agent 的那一份），
-/// 墙钟同理；不是拍脑袋的独立默认值。
+/// 墙钟同理；不是拍脑袋的独立默认值。工具数与主会话的 max_function_calls
+/// 是两个独立键（见 resolve_subagent_budget）。
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 =
     budget_share(BALANCED_PRESET.global_turns, SUBAGENT_BUDGET_PCT);
 pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 =
@@ -1074,6 +1075,5 @@ pub fn bot_effective_params(app: tauri::AppHandle) -> Vec<ParamView> {
     effective_params(&cfg)
 }
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests;
