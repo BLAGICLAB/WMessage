@@ -181,7 +181,6 @@ fn hook_interrupt_balances_tool_call_with_same_shape_as_existing_early_returns()
     // 这段里（键集只由 tool_return_kv 决定）。
     for (event, label) in [
         ("subagent_whitelist_deny\",", "子 agent 白名单"),
-        ("subagent_budget_tool_calls_exceeded\",", "工具调用预算触顶"),
         ("tool_args_invalid_json", "入参 JSON 非法"),
     ] {
         let branch = body
@@ -236,6 +235,7 @@ fn subagent_whitelist_gate_judges_on_the_intersection() {
 /// profile 整体关闭（写了也过不了白名单闸），触顶等于零产出路径复活。
 #[test]
 fn wrap_up_tools_exist_in_every_profile_whitelist() {
+    use crate::bot::constants::WRAP_UP_TOOLS;
     for profile in [
         crate::db::SubagentProfile::Research,
         crate::db::SubagentProfile::Coder,
@@ -258,33 +258,31 @@ fn wrap_up_tools_exist_in_every_profile_whitelist() {
     }
 }
 
-/// 收尾窗分支的接线守卫：wrap_up 置位后判据必须是 WRAP_UP_TOOLS（白名单闸
-/// 在前已保证工具可用，这里只管「读拒写放」），且放行路径不得再走预算 acquire。
+/// 子 agent 路径不得再有自己的工具预算闸：阶梯判定单点在模型循环层
+/// （fuse::gate_call），dispatch 只留执行计数仪表。两处各算一份会分叉——
+/// 一处按 95% 开收尾窗、另一处按 100% 拒读，模型看到的是两套互相打架的提示。
 #[test]
-fn wrap_up_branch_allows_writes_without_acquiring() {
+fn dispatch_has_no_budget_gate_of_its_own() {
     let body = include_str!("../dispatch.rs")
         .split_once("#[cfg(test)]")
         .expect("dispatch.rs 应有测试模块")
         .0;
-    let branch = body
-        .split_once("if ctx.wrap_up.load(")
-        .expect("找不到收尾窗分支")
-        .1
-        .split("} else {")
-        .next()
-        .expect("收尾窗分支应有 else（预算 acquire 路径）");
     assert!(
-        branch.contains("WRAP_UP_TOOLS.contains(&name)"),
-        "收尾窗判据必须是 WRAP_UP_TOOLS：{branch}"
+        !body.contains("fetch_update"),
+        "dispatch 不得再做预算 acquire（阶梯在模型循环层）"
     );
     assert!(
-        !branch.contains("fetch_update"),
-        "收尾窗放行的写类不得占预算计数（不得 acquire）：{branch}"
+        !body.contains("WRAP_UP_TOOLS"),
+        "dispatch 不得再判收尾窗白名单（判据单点在 fuse::gate_call）"
+    );
+    assert!(
+        body.contains("used_tool_calls\n            .fetch_add(1,"),
+        "执行计数仪表必须保留（read_own_card 余量与收尾触达判定读它）"
     );
 }
 
-/// 动作流接线守卫：call 相位 1 处（白名单后）+ return 相位 5 处
-/// （墙钟拒 / 预算触顶拒 / 收尾窗拒 / 坏入参拒 / 正常执行完）。
+/// 动作流接线守卫：call 相位 1 处（白名单后）+ return 相位 3 处
+/// （墙钟拒 / 坏入参拒 / 正常执行完）。
 /// 少一处，前端那行动作就永远挂着「进行中」或整条不显示。
 #[test]
 fn subagent_activity_emits_cover_call_and_all_return_paths() {
@@ -294,8 +292,8 @@ fn subagent_activity_emits_cover_call_and_all_return_paths() {
         .0;
     assert_eq!(
         production.matches("emit_subagent_activity(").count(),
-        7,
-        "动作流 emit 应为 7 处（1 定义不算 + 1 call + 5 return）——少了某条拒绝路径就没有结局"
+        5,
+        "动作流 emit 应为 5 处（1 定义 + 1 call + 3 return）——少了某条拒绝路径就没有结局"
     );
 }
 
@@ -314,13 +312,13 @@ fn hook_interrupt_text_is_classified_as_tool_failure() {
 /// 文本可被 classify_tool_failure 认出子类（error_class 细分 + 转换历史
 /// 消息的 Anthropic 层靠它设 is_error）。
 ///
-/// 这条测试盯的是实际发出去的文案。历史上规则 deny / 用户拒绝 / 白名单外 /
-/// 预算触顶这 4 条既不带「⚠️」也不带「失败：」，classify 全部落空 → 返回 None
+/// 这条测试盯的是实际发出去的文案。历史上规则 deny / 用户拒绝 / 白名单外
+/// 这几条既不带「⚠️」也不带「失败：」，classify 全部落空 → 返回 None
 /// → Skill DSL 调度器把被拒步骤记成成功、trace span 记 ok=true。
 #[test]
 fn every_gate_denial_is_denied_status_and_classifiable_text() {
     use crate::bot::registry::{ToolResult, ToolStatus};
-    // 与 execute_tool_impl 里 7 个门禁早退点一一对应（rendered 文案）
+    // 与 execute_tool_impl 里的门禁早退点一一对应（rendered 文案）
     let cases: Vec<(&str, ToolResult)> = vec![
         (
             "pre_tool 钩子拒绝",
@@ -348,18 +346,6 @@ fn every_gate_denial_is_denied_status_and_classifiable_text() {
             "子 agent 白名单外",
             ToolResult::denied(
                 "⚠️ 子 agent 白名单外工具「edit_file」已拒绝（profile=Research，本次可用 8 个）。只能使用白名单内工具；遇到阻塞在收尾 JSON 的 blockers 里如实记录。",
-            ),
-        ),
-        (
-            "预算触顶",
-            ToolResult::denied(
-                "⚠️ 工具调用预算已触顶（12 / 12）：停止新探索。现在只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card——把已有发现写成产物文件，然后输出收尾 JSON。",
-            ),
-        ),
-        (
-            "收尾窗内读类",
-            ToolResult::denied(
-                "⚠️ 工具调用预算已触顶，收尾窗内只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card；请把已有发现写成产物文件，然后输出收尾 JSON。",
             ),
         ),
         (
@@ -421,14 +407,14 @@ fn no_gate_early_return_uses_warn_status() {
         !production.contains("ToolResult::warn("),
         "dispatch 的生产代码不得构造 ToolResult::warn（会把「没执行」记成成功）"
     );
-    // 10 处：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 确认被拒 /
-    // skill 熔断 / 子 agent 白名单外 / 预算触顶（收尾窗开启）/ 收尾窗内读类拒绝 /
-    // arguments 非法 JSON / 墙钟收尾窗。
+    // 8 处：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 确认被拒 /
+    // skill 熔断 / 子 agent 白名单外 / arguments 非法 JSON / 墙钟收尾窗。
+    // （工具调用预算的阶梯在模型循环层，dispatch 不再有预算类早退。）
     // 数量变了请同步本测试与 every_gate_denial_* 的用例表。
     assert_eq!(
         production.matches("ToolResult::denied(").count(),
-        10,
-        "门禁早退点应恰好 10 处"
+        8,
+        "门禁早退点应恰好 8 处"
     );
 }
 

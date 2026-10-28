@@ -143,7 +143,7 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (120) LLM 流式调用+工具循环的**门面**：只留 mod 声明 + re-export
+├── bot_model_loop.rs (121) LLM 流式调用+工具循环的**门面**：只留 mod 声明 + re-export
 │                        （旧路径 `crate::bot_model_loop::X` 1:1 保持）；实现全在
 │                        bot_model_loop/ 子模块
 ├── bot_model_loop/        模型循环子模块（按职责拆分；门面作唯一枢纽，子模块间零直接依赖）：
@@ -153,7 +153,7 @@ src-tauri/src/
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 │   ├── bot_model_loop/stream.rs (436)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (1076)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (1106)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
 │   ├── bot_model_loop/shell.rs (536)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (723)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
@@ -161,7 +161,8 @@ src-tauri/src/
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
 │   ├── bot_model_loop/finalize.rs (366) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
-│   ├── bot_model_loop/fuse.rs (215)     熔断层：单轮 Function 调用上限 / 轮数·墙钟熔断 / 软警告注入
+│   ├── bot_model_loop/fuse.rs (246)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call +
+│   │                                    收尾轮数出口）/ 轮数·墙钟熔断 / 软警告注入
 │   ├── bot_model_loop/types.rs (366)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (172)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
@@ -169,7 +170,7 @@ src-tauri/src/
 │   │                                    轮内工具结果滑动窗 / 用户意图抽取
 │   ├── bot_model_loop/evidence.rs (94)  证据来源层：从消息抽文本·来源，数字是否可溯源
 │   ├── bot_model_loop/tests.rs (74)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
-│   ├── bot_model_loop/tests/guard.rs (1024)   幻觉守卫 / 熔断 / 接线类测试
+│   ├── bot_model_loop/tests/guard.rs (1105)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
 │   ├── bot_model_loop/tests/config.rs (616) 推理参数 / 思考 / 上下文超限 / 侧调门测试
 │   ├── bot_model_loop/tests/tool_window.rs (234) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
@@ -208,18 +209,20 @@ src-tauri/src/
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
 │   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
-│   └── bot/registry/registry_tests.rs (1146)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
+│   └── bot/registry/registry_tests.rs (1145)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
-├── bot/dispatch.rs (1062)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+├── bot/dispatch.rs (961)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
 │                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计 +
-│                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）
+│                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）；
+│                        工具调用预算的阶梯不在这里（单点在模型循环层 fuse::gate_call），
+│                        dispatch 只留执行计数仪表
 │   ├── bot/dispatch/commit_and_report_tests.rs (73)   写库失败口径单测：status 与文本同答案 +
 │   │                        fail_prefix 可被 classify_tool_failure 认出（7 处任务卡工具）
 │   ├── bot/dispatch/early_return_events_tests.rs (109) 早退事件序列单测：规则闸 deny 与 skill
 │   │                        熔断两条路径的 tool.return 配平 + trace 键集
 │   ├── bot/dispatch/invalid_args_tests.rs (95)        入参 JSON 闸单测：空参/非对象 JSON 放行、
 │   │                        坏 JSON 拒绝并回可解释文案 + 闸位接线守卫（源码文本）
-│   ├── bot/dispatch/pre_tool_hook_tests.rs (535)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
+│   ├── bot/dispatch/pre_tool_hook_tests.rs (521)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
 │                        panic 隔离守卫 + 收尾窗放行清单漂移 + 门禁早退 Denied 口径（10 处）
 │   └── bot/dispatch/allowed_tools_tests.rs (109)      allowed-tools 交互路径闸：集合内外/未声明/跨会话
 │                        判定单测（mock handle + 真注册表）+ 接线守卫（闸在规则表之前）
@@ -416,7 +419,7 @@ src-tauri/src/
 │                        走服务端核验，不与模型自报的 met 混算）+ 父会话回报门控
 ├── bot/subagent_repair.rs (502) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome
-├── bot/subagent_runner.rs (1067) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+├── bot/subagent_runner.rs (1063) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
 │                        + 墙钟硬停 + 任务包装渲染
 ├── bot/subagent_spawn.rs (466) 子 agent 派发：入参校验 / 预算钳制 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
@@ -438,9 +441,9 @@ src-tauri/src/
 │       │                          parent_card / fake_state / digest_row / req / OK_RESULT
 │       ├── orchestrator_tests/lifecycle.rs (519) 生命周期与接线守卫：panic 隔离 / 收尾事件唤醒 /
 │       │                          wait 策略 / 摘要注入位置
-│       ├── orchestrator_tests/outcome.rs (679) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
+│       ├── orchestrator_tests/outcome.rs (678) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
 │       │                          包装渲染
-│       └── orchestrator_tests/spawn.rs (1037) 派发与并发闸：建行 / 预算钳制 / 幂等 / 队列位次
+│       └── orchestrator_tests/spawn.rs (1034) 派发与并发闸：建行 / 预算钳制 / 幂等 / 队列位次
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写

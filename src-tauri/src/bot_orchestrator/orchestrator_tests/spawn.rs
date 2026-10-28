@@ -456,7 +456,6 @@ fn check_reports_rounds_while_subagent_runs() {
             artifact_dir: std::path::PathBuf::from("/tmp/art_rounds"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
-            wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         },
     );
@@ -500,7 +499,6 @@ fn list_view_attaches_rounds_while_subagent_runs() {
             artifact_dir: std::path::PathBuf::from("/tmp/art_view"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
-            wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         },
     );
@@ -537,7 +535,6 @@ fn list_view_drops_rounds_after_guard_dropped() {
                 artifact_dir: std::path::PathBuf::from("/tmp/art_drop"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(7)),
-                wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
             },
         );

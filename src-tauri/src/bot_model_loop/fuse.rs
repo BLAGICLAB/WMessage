@@ -1,8 +1,9 @@
-//! 熔断层：单轮 Function 调用上限、轮数/墙钟熔断与软警告注入。
+//! 熔断层：单轮 Function 调用上限、收尾窗阶梯判定、轮数/墙钟熔断与软警告注入。
 //!
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
 use super::ModelLoopDeps;
+use crate::bot::constants::{WRAP_UP_ROUNDS, WRAP_UP_TOOLS};
 use crate::error::CommandError;
 
 /// Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
@@ -37,25 +38,17 @@ pub(crate) fn fuse_cap_upper_bound() -> usize {
     crate::bot::params::MAX_FUNCTION_CALLS_CAP as usize
 }
 
-/// 子 agent 收尾裕量：工具预算触顶后，熔断上限在预算之上再放行的**实际执行**
-/// 调用数（写产物 + 读契约）。dispatch 收尾窗拒掉的调用不计入熔断计数
-/// （见循环体 Denied 回退），所以这份裕量不会被被拒的读类调用烧掉——
-/// 否则一轮并行批就能把窗口吃光，模型永远轮不到写产物。
-pub(crate) const SUBAGENT_WRAP_UP_FUSE_MARGIN: usize =
-    crate::bot::constants::SUBAGENT_WRAP_UP_FUSE_MARGIN;
-
 /// 熔断上限派生链的唯一入口：子 agent 行上预算 > bot-config 覆盖 > 内置默认，
 /// 末端钳到 [1, 上界]。
 ///
-/// 子 agent 在预算之上加收尾裕量：dispatch 预算闸触顶后进入收尾窗（只拒读、
-/// 放行写），这里的熔断退化为「收尾窗都没能让它停下」的绝对兜底。
-/// 主会话无预算轴，不受裕量影响。
+/// 收尾阶梯（软告警 / 收尾窗 / 收尾轮数用尽硬停）按这个上限的占比派生，
+/// 主会话与子 agent 同一套（见 `gate_call`）——上限之上不再有任何裕量。
 ///
 /// 上游（薄壳组装 deps）刻意不钳：`deps.fuse_cap_override` 也被单测直驱 core
 /// 注入，绕过薄壳，钳在薄壳等于给「实际生效的那条边界」留了个不生效的副本。
 pub(crate) fn fuse_cap_for(subagent_budget: Option<u32>, cfg_override: Option<usize>) -> usize {
     subagent_budget
-        .map(|n| n as usize + SUBAGENT_WRAP_UP_FUSE_MARGIN)
+        .map(|n| n as usize)
         .or(cfg_override)
         .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
         .clamp(1, fuse_cap_upper_bound())
@@ -65,6 +58,44 @@ pub(crate) fn fuse_cap_for(subagent_budget: Option<u32>, cfg_override: Option<us
 /// cap 由会话派生（见 `fuse_cap_for`），边界单点在 `fuse_cap_upper_bound`。
 pub(crate) fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
     calls_so_far > cap
+}
+
+/// 单次工具调用在阶梯上的去向（见 `gate_call`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallGate {
+    /// 预算内：计数并执行。
+    Counted,
+    /// 收尾窗内的写产物类调用：执行但不计数——窗口里的额度是给「把结果落盘」用的。
+    WrapUpAllowed,
+    /// 收尾窗内的探索类调用：拒绝且不计数——计数守的是「实际执行」的调用量。
+    WrapUpDenied,
+}
+
+/// 阶梯判定：`counted` 是进入本次调用前已计数的执行次数。
+///
+/// 只计实际执行：被拒的调用没有消耗任何东西，计进去会让一轮并行批把窗口
+/// 吃光，模型永远轮不到写产物。写类放行也不计——否则窗口会被自己的写调用
+/// 烧光；窗口的出口是轮数（`wrap_up_rounds_exhausted`），不是计数。
+pub(crate) fn gate_call(counted: usize, wrap_up_at: usize, tool: &str) -> CallGate {
+    if counted < wrap_up_at {
+        CallGate::Counted
+    } else if WRAP_UP_TOOLS.contains(&tool) {
+        CallGate::WrapUpAllowed
+    } else {
+        CallGate::WrapUpDenied
+    }
+}
+
+/// 收尾窗轮数是否用尽：从进入那一轮起，之后最多再跑 `WRAP_UP_ROUNDS` 轮。
+pub(crate) fn wrap_up_rounds_exhausted(entered_round: Option<usize>, round: usize) -> bool {
+    entered_round.is_some_and(|r0| round > r0 + WRAP_UP_ROUNDS)
+}
+
+/// 收尾窗轮数用尽的硬停消息：与 `fuse_message` 同源（带上已产正文）。
+pub(crate) fn wrap_up_exhausted_message(final_text: &str, hint: &str) -> String {
+    format!(
+        "{final_text}\n\n{FUSE_MARKER}：工具调用预算已进入收尾窗，收尾 {WRAP_UP_ROUNDS} 轮用尽（安全保护），已停止后续执行{hint}"
+    )
 }
 
 /// 熔断返回消息（与主循环文案同源，单测直接断言）。

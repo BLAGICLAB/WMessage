@@ -14,10 +14,6 @@ use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
 // 工具调度核心（execute_tool dispatch）
 
-/// 子 agent 收尾窗放行清单：预算触顶后仍可执行的写产物类工具 + 重读契约。
-/// read_own_card 在列是让模型触顶后还能查自己的状态与剩余量。
-const WRAP_UP_TOOLS: [&str; 4] = crate::bot::constants::WRAP_UP_TOOLS;
-
 /// 子 agent 动作流（右侧栏实时可见性）：dispatch 在 call / return 两个相位
 /// 各旁路一条 UI 事件，前端按 toolCallId 合并成一行。事件即焚不落库——
 /// 历史回看走详情面板的结果与 digest，不另存流。
@@ -605,14 +601,9 @@ async fn execute_tool_impl(
             None,
             &args.chars().take(80).collect::<String>(),
         );
-        //  预算强制（设计 §6 max_tool_calls）：白名单工具执行前核对——
-        // 触顶拒绝新调用（模型收到后自然收尾；墙钟/轮数两顶在 runner 侧）。
-        // 原子 check-and-increment（ 采纳）：load→比较→add 三步在并行
-        // tool_call 下可同时通过——fetch_update 保证「仅 prev<max 时 +1」原子完成。
-        //
-        // 软墙钟先判：剩余预算进入预留窗口后，工具数还有没有剩都不重要了——
-        // 这一刻该做的是收尾，不是继续探索。放在预算闸之前还有一层意义：
-        // 软墙钟拒的调用不消耗工具数配额（配额留给收尾那一轮）。
+        // 软墙钟：剩余预算进入预留窗口后拒绝新调用——这一刻该做的是收尾，
+        // 不是继续探索。工具调用的阶梯（软告警 / 收尾窗 / 硬停）在模型循环层
+        // 统一判定（fuse::gate_call），这里不再设预算闸。
         let remaining = ctx
             .wall_deadline
             .saturating_duration_since(std::time::Instant::now());
@@ -658,102 +649,10 @@ async fn execute_tool_impl(
             );
             return crate::bot::registry::ToolResult::denied(deny_msg);
         }
-        let max = ctx.budget.max_tool_calls as usize;
-        // 收尾窗（预算触顶后）：只放行写产物类工具与 read_own_card，不占预算
-        // 计数——模型被拒的只是「继续探索」，把已有发现写成产物文件恰恰是
-        // 触顶后唯一该做的事。白名单闸在前，这里不必再验 ctx.tools。
-        if ctx.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
-            if !WRAP_UP_TOOLS.contains(&name) {
-                let ret_kv = tool_return_kv(
-                    name,
-                    "budget_wrap_up_deny",
-                    start.elapsed().as_millis() as u64,
-                    session_id,
-                    trace,
-                );
-                crate::audit::write_event(
-                    app,
-                    crate::audit::AuditLevel::Warn,
-                    "tool.return",
-                    &ret_kv,
-                );
-                let deny_msg = "⚠️ 工具调用预算已触顶，收尾窗内只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card；请把已有发现写成产物文件，然后输出收尾 JSON。";
-                emit_subagent_activity(
-                    app,
-                    &ctx,
-                    name,
-                    trace,
-                    "return",
-                    Some(false),
-                    Some(start.elapsed().as_millis() as u64),
-                    deny_msg,
-                );
-                return crate::bot::registry::ToolResult::denied(deny_msg.to_string());
-            }
-            // 写类放行：不 acquire、不计数，直接落到 progress 审计与执行
-        } else {
-            let acquired = ctx
-                .used_tool_calls
-                .fetch_update(
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                    |prev| {
-                        if prev < max {
-                            Some(prev + 1)
-                        } else {
-                            None
-                        }
-                    },
-                )
-                .is_ok();
-            if !acquired {
-                // 首次触顶：进入收尾窗。拒绝本次调用并告知「现在只许写」——
-                // 硬熔断在模型循环层（预算 + 收尾裕量），那里才是兜底。
-                ctx.wrap_up.store(true, std::sync::atomic::Ordering::SeqCst);
-                let used = ctx
-                    .used_tool_calls
-                    .load(std::sync::atomic::Ordering::SeqCst);
-                let mut budget_kv: Vec<(&str, String)> = vec![
-                    ("subagent_id", ctx.subagent_id.clone()),
-                    ("used", used.to_string()),
-                    ("max", ctx.budget.max_tool_calls.to_string()),
-                ];
-                budget_kv.extend(trace_kv(trace, session_id));
-                crate::audit::write_event(
-                    app,
-                    crate::audit::AuditLevel::Warn,
-                    "subagent_budget_tool_calls_exceeded",
-                    &budget_kv,
-                );
-                let ret_kv = tool_return_kv(
-                    name,
-                    "budget_tool_calls_exceeded",
-                    start.elapsed().as_millis() as u64,
-                    session_id,
-                    trace,
-                );
-                crate::audit::write_event(
-                    app,
-                    crate::audit::AuditLevel::Warn,
-                    "tool.return",
-                    &ret_kv,
-                );
-                let deny_msg = format!(
-                    "⚠️ 工具调用预算已触顶（{used} / {max}）：停止新探索。现在只放行写产物工具（write_artifact_file / write_file / edit_file）与 read_own_card——把已有发现写成产物文件，然后输出收尾 JSON。"
-                );
-                emit_subagent_activity(
-                    app,
-                    &ctx,
-                    name,
-                    trace,
-                    "return",
-                    Some(false),
-                    Some(start.elapsed().as_millis() as u64),
-                    &deny_msg,
-                );
-                return crate::bot::registry::ToolResult::denied(deny_msg);
-            }
-        }
+        // 执行计数仪表：read_own_card 的实时余量与收尾时的预算触达判定读它。
+        // 强制点在模型循环层的阶梯，这里只记数。
+        ctx.used_tool_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut prog_kv: Vec<(&str, String)> = vec![
             ("subagent_id", ctx.subagent_id.clone()),
             ("task_id", ctx.task_id.clone().unwrap_or_default()),

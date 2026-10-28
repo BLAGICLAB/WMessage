@@ -4,7 +4,7 @@
 //! 只把源码守卫的扫描源换成 prod_src()。
 
 use super::*;
-use crate::bot_model_loop::fuse::{MAX_FUNCTION_CALLS_PER_REQUEST, SUBAGENT_WRAP_UP_FUSE_MARGIN};
+use crate::bot_model_loop::fuse::MAX_FUNCTION_CALLS_PER_REQUEST;
 use crate::bot_model_loop::output::cap_tool_output;
 use crate::bot_model_loop::output::effective_output_cap;
 use crate::bot_model_loop::output::preview_with_pointer;
@@ -860,11 +860,8 @@ mod rounds_fuse_tests {
         assert_eq!(fuse_cap_for(None, Some(0)), 1, "0 次调用无意义，钳到 1");
         assert_eq!(fuse_cap_for(None, Some(30)), 30, "区间内原样放行");
         // 子 agent 行上预算优先于全局覆盖，且同样受末端钳制约束；预算之上
-        // 恒加收尾裕量（预算触顶后 dispatch 只拒读放行写，熔断退为兜底）
-        assert_eq!(
-            fuse_cap_for(Some(7), Some(9_999)),
-            7 + SUBAGENT_WRAP_UP_FUSE_MARGIN
-        );
+        // 不再有任何裕量（收尾窗的出口是轮数，见 gate_call / wrap_up_rounds_exhausted）
+        assert_eq!(fuse_cap_for(Some(7), Some(9_999)), 7);
         assert_eq!(fuse_cap_for(Some(u32::MAX), None), cap);
         // 漂移守卫：同一条边界在本文件里只允许有一份。薄壳那份钳位被删掉后，
         // 生产代码里不应再出现 `clamp(1, 500)` 字面量——它是当年人手抄的副本，
@@ -934,7 +931,7 @@ mod post_turn_layer_tests {
     }
 }
 
-/// 熔断阶梯：三段式（90% 软告警 → 95% 收尾窗 → 100% 硬熔断）。
+/// 熔断阶梯：三段式（90% 软告警 → 95% 收尾窗 → 收尾轮数用尽硬停）。
 ///
 /// 阶梯按**预算占比**定义而非绝对次数——档位变化时阈值自动跟着走，
 /// 写死绝对数会让「轻量档在 90 次就告警、深度档到 225 次才告警」这种
@@ -942,7 +939,7 @@ mod post_turn_layer_tests {
 #[cfg(test)]
 mod fuse_ladder_tests {
     use super::*;
-    use crate::bot::constants::{FUSE_SOFT_WARN_PCT, FUSE_WRAP_UP_PCT};
+    use crate::bot::constants::{FUSE_SOFT_WARN_PCT, FUSE_WRAP_UP_PCT, WRAP_UP_ROUNDS};
 
     /// 阶梯阈值按占比派生：90% / 95%，且软告警必在收尾窗之前。
     #[test]
@@ -1012,13 +1009,97 @@ mod fuse_ladder_tests {
         }
     }
 
-    /// 子 agent 的硬熔断上限 = 预算 + 收尾裕量：收尾窗都没能让它停下时，
-    /// 仍有几次机会把结果写出来再停。
+    /// 收尾窗只计实际执行：窗内探索类调用被拒不计、写产物类放行也不计，
+    /// 计数停在阈值上——窗口的出口是轮数，不是计数。
+    ///
+    /// 场景：预算 100 → 阈值 95；窗内连发 10 次读 + 5 次写，计数纹丝不动，
+    /// 硬熔断（cap+1）在窗口里不可达。
     #[test]
-    fn subagent_fuse_cap_carries_wrap_up_margin() {
-        assert_eq!(SUBAGENT_WRAP_UP_FUSE_MARGIN, 5);
-        let budget = 50u32;
-        let cap = fuse_cap_for(Some(budget), None);
-        assert_eq!(cap, (budget as usize) + SUBAGENT_WRAP_UP_FUSE_MARGIN);
+    fn wrap_up_window_counts_only_executed_calls() {
+        let cap = 100usize;
+        let wrap_up_at = cap * FUSE_WRAP_UP_PCT as usize / 100;
+        assert_eq!(wrap_up_at, 95);
+        let mut counted = 0usize;
+        for _ in 0..wrap_up_at {
+            assert_eq!(
+                gate_call(counted, wrap_up_at, "read_file"),
+                CallGate::Counted
+            );
+            counted += 1;
+        }
+        for _ in 0..10 {
+            assert_eq!(
+                gate_call(counted, wrap_up_at, "read_file"),
+                CallGate::WrapUpDenied,
+                "窗内探索类调用必须拒绝"
+            );
+        }
+        for tool in [
+            "write_file",
+            "edit_file",
+            "write_artifact_file",
+            "write_file",
+            "read_own_card",
+        ] {
+            assert_eq!(
+                gate_call(counted, wrap_up_at, tool),
+                CallGate::WrapUpAllowed,
+                "窗内写产物类调用必须放行：{tool}"
+            );
+        }
+        assert_eq!(counted, wrap_up_at, "窗内无论拒还是放都不动计数");
+        assert!(
+            !should_fuse(counted, cap),
+            "计数停在阈值上，硬熔断在窗口里不可达——出口只能是轮数"
+        );
+    }
+
+    /// 收尾窗出口：从进入那一轮起再跑 3 轮，第 4 轮硬停且带上已产正文。
+    #[test]
+    fn wrap_up_rounds_exhaust_after_three_more_rounds() {
+        let rounds = WRAP_UP_ROUNDS;
+        assert_eq!(rounds, 3);
+        assert!(!wrap_up_rounds_exhausted(None, 999), "未进入收尾窗永不触发");
+        let entered = Some(10usize);
+        for round in 10..=13 {
+            assert!(
+                !wrap_up_rounds_exhausted(entered, round),
+                "第 {round} 轮仍在收尾窗内"
+            );
+        }
+        assert!(
+            wrap_up_rounds_exhausted(entered, 14),
+            "进入后第 4 轮必须硬停"
+        );
+        let msg = wrap_up_exhausted_message("已有正文", "");
+        assert!(msg.starts_with("已有正文"), "硬停必须带上已产正文：{msg}");
+        assert!(
+            msg.contains(FUSE_MARKER),
+            "硬停走熔断标记，下游按同一标记识别：{msg}"
+        );
+        assert!(msg.contains("收尾 3 轮用尽"), "{msg}");
+    }
+
+    /// 接线守卫：核心循环必须真的经由阶梯判定与轮数出口，而不是另写一份判据。
+    ///
+    /// 变异实测把 core 里 gate_call 那行换回手写比较、或把轮数出口删掉时，
+    /// 上面两条纯函数测试照样全绿——它们验的是函数，验不到循环有没有调它。
+    #[test]
+    fn core_routes_every_call_through_the_ladder() {
+        let production = prod_src();
+        assert_eq!(
+            production.matches("gate_call(").count(),
+            2,
+            "gate_call 应为定义 + 核心循环恰一处调用"
+        );
+        assert_eq!(
+            production.matches("wrap_up_rounds_exhausted(").count(),
+            2,
+            "wrap_up_rounds_exhausted 应为定义 + 核心循环恰一处调用"
+        );
+        assert!(
+            !production.contains("WRAP_UP_TOOLS.contains(&name"),
+            "收尾窗白名单判据不得在核心循环里另写一份（单点在 gate_call）"
+        );
     }
 }

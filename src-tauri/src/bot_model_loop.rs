@@ -67,8 +67,9 @@ pub(crate) use self::finalize::{
     decide_selfcheck, finalize_exit, finalize_selfcheck, FinalizeOutcome, SelfcheckDecision,
 };
 pub(crate) use self::fuse::{
-    check_fuses, fuse_cap_for, fuse_message, inject_soft_warnings, rounds_fuse_exit, should_fuse,
-    FUSE_MARKER, ROUNDS_FUSE_MARKER, WALL_FUSE_MARKER,
+    check_fuses, fuse_cap_for, fuse_message, gate_call, inject_soft_warnings, rounds_fuse_exit,
+    should_fuse, wrap_up_exhausted_message, wrap_up_rounds_exhausted, CallGate, FUSE_MARKER,
+    ROUNDS_FUSE_MARKER, WALL_FUSE_MARKER,
 };
 pub(crate) use self::guard::{
     finalize_without_tools, selfcheck_retry_hint, side_selfcheck_verdict, SELFCHECK_FAIL_EMIT,

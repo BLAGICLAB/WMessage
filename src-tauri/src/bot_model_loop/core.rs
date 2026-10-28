@@ -3,10 +3,11 @@
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
 use super::{
-    check_fuses, compact_before_round, finalize_without_tools, fuse_message, inject_soft_warnings,
-    mutation_succeeded, prepare_round, read_sse_stream, request_round, rounds_fuse_exit,
-    should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning, stream_round,
-    user_intent_of, with_thinking, FinalizeOutcome, LlmHttp, ModelLoopDeps, RequestOutcome,
+    check_fuses, compact_before_round, finalize_without_tools, fuse_message, gate_call,
+    inject_soft_warnings, mutation_succeeded, prepare_round, read_sse_stream, request_round,
+    rounds_fuse_exit, should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning,
+    stream_round, user_intent_of, with_thinking, wrap_up_exhausted_message,
+    wrap_up_rounds_exhausted, CallGate, FinalizeOutcome, LlmHttp, ModelLoopDeps, RequestOutcome,
     RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
 };
 use crate::bot_chat::merge_task_refs_dedup;
@@ -14,9 +15,6 @@ use crate::bot_chat::TaskRef;
 use crate::bot_skills::skill_exit_body;
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
-
-/// 收尾窗放行的工具白名单（写产物类 + 读自己的任务卡）。
-use crate::bot::constants::WRAP_UP_TOOLS;
 
 /// 工具失败后的「换策略」提示：按工具给不同的下一步指引。
 ///
@@ -104,6 +102,8 @@ where
     let mut collected_refs: Vec<TaskRef> = Vec::new();
     let mut function_calls_total: usize = 0;
     let mut soft_warn_sent: bool = false;
+    // 进入收尾窗的那一轮：Some 之后收尾轮数从这里起算（见 wrap_up_rounds_exhausted）
+    let mut wrap_up_entered_round: Option<usize> = None;
     // 轮数软警告同款：只发一次，发完不再打扰后续轮次
     let mut rounds_warn_sent: bool = false;
     // 软墙钟提醒已注入（只一次）：进入收尾预留窗口时提醒一次，不重复刷屏
@@ -540,6 +540,7 @@ where
                 fuse_cap,
                 soft_warn_at,
                 wrap_up_at,
+                &mut wrap_up_entered_round,
                 &user_intent,
                 plan_state.as_deref_mut(),
                 deps,
@@ -675,6 +676,7 @@ async fn dispatch_round<X, XP, R, RP>(
     fuse_cap: usize,
     soft_warn_at: usize,
     wrap_up_at: usize,
+    wrap_up_entered_round: &mut Option<usize>,
     user_intent: &str,
     plan_state: Option<&mut crate::bot_plan::PlanState>,
     deps: &ModelLoopDeps<'_>,
@@ -720,6 +722,26 @@ where
             "{final_text}\n\n⏹ 已停止{hint}"
         )));
     }
+    // 收尾窗出口：进入窗口后最多再跑 WRAP_UP_ROUNDS 轮工具调用，用尽即硬停、
+    // 带上已产正文。窗口内写类不计数，光靠计数永远到不了熔断——轮数是唯一出口。
+    if wrap_up_rounds_exhausted(*wrap_up_entered_round, round) {
+        let hint = skill_finish(false, "收尾窗轮数用尽");
+        audit(
+            crate::audit::AuditLevel::Warn,
+            "fuse_wrap_up_rounds",
+            vec![
+                ("cap", fuse_cap.to_string()),
+                (
+                    "entered_round",
+                    wrap_up_entered_round.unwrap_or_default().to_string(),
+                ),
+                ("round", round.to_string()),
+            ],
+        );
+        return Ok(DispatchOutcome::Fused(wrap_up_exhausted_message(
+            final_text, &hint,
+        )));
+    }
     for (id, name, args) in tool_calls {
         // 工具批中途可停——/stop 后剩余调用不执行，
         // 但必须回填占位 tool 响应（tool_calls → tool 消息协议完整性，
@@ -733,28 +755,11 @@ where
             tool_msg_ages.push((round, msgs.len() - 1));
             continue;
         }
-        *function_calls_total += 1;
-        if should_fuse(*function_calls_total, fuse_cap) {
-            let hint = skill_finish(false, "单轮 Function 调用超上限");
-            audit(
-                crate::audit::AuditLevel::Warn,
-                "fuse",
-                vec![("cap", fuse_cap.to_string())],
-            );
-            return Ok(DispatchOutcome::Fused(fuse_message(
-                final_text, &hint, fuse_cap,
-            )));
-        }
-        // 收尾窗（95% 预算）：达到后只放行写产物类工具，且这些调用不占配额。
-        //
-        // 此前主会话只有「触顶即熔断」一档，模型撞线时正在跑的工具、已经说出口
-        // 的正文一起丢——产出归零。收尾窗给模型留一段「把已拿到的结果写成产物」
-        // 的路，与子 agent 的收尾窗同款口径（只放行写产物类工具、不计配额）。
-        //
-        // 计数口径：进入收尾窗的那次调用**照常计数**（它确实消耗了一次预算），
-        // 但窗口内放行的写类调用不计数——否则窗口会被自己的写调用烧光。
-        let in_wrap_up = *function_calls_total >= wrap_up_at;
-        if in_wrap_up && !WRAP_UP_TOOLS.contains(&name.as_str()) {
+        // 阶梯判定（主会话与子 agent 同一套，判据单点在 fuse::gate_call）：
+        // 预算内计数执行；进入收尾窗（wrap_up_at）后只放行写产物类工具且不计数，
+        // 其余拒绝且不计数——计数守的是「实际执行」的调用量。
+        let gate = gate_call(*function_calls_total, wrap_up_at, name.as_str());
+        if gate == CallGate::WrapUpDenied {
             let deny_msg = format!(
                 "⚠️ 工具调用预算已进入收尾窗（{}/{fuse_cap}）：只放行写产物类工具（write_artifact_file / write_file / edit_file）与 read_own_card。请把已有发现写成产物文件，然后收尾。",
                 *function_calls_total
@@ -776,21 +781,35 @@ where
             tool_msg_ages.push((round, msgs.len() - 1));
             continue;
         }
-        // 软警告（soft_warn_at，按会话熔断上限派生）：置标志，推迟到本轮 tool 响应全部回填后再注入——
-        // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
-        // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
-        // 400 invalid params（实锤：两次 400 均紧跟 soft_warn 注入）
-        if !*soft_warn_sent && *function_calls_total >= soft_warn_at {
-            *soft_warn_sent = true;
-            *soft_warn_queued = true;
-            audit(
-                crate::audit::AuditLevel::Info,
-                "soft_warn",
-                vec![
-                    ("used", soft_warn_at.to_string()),
-                    ("cap", fuse_cap.to_string()),
-                ],
-            );
+        if gate == CallGate::Counted {
+            *function_calls_total += 1;
+            if should_fuse(*function_calls_total, fuse_cap) {
+                let hint = skill_finish(false, "单轮 Function 调用超上限");
+                audit(
+                    crate::audit::AuditLevel::Warn,
+                    "fuse",
+                    vec![("cap", fuse_cap.to_string())],
+                );
+                return Ok(DispatchOutcome::Fused(fuse_message(
+                    final_text, &hint, fuse_cap,
+                )));
+            }
+            // 软警告（soft_warn_at，按会话熔断上限派生）：置标志，推迟到本轮 tool 响应全部回填后再注入——
+            // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
+            // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
+            // 400 invalid params（实锤：两次 400 均紧跟 soft_warn 注入）
+            if !*soft_warn_sent && *function_calls_total >= soft_warn_at {
+                *soft_warn_sent = true;
+                *soft_warn_queued = true;
+                audit(
+                    crate::audit::AuditLevel::Info,
+                    "soft_warn",
+                    vec![
+                        ("used", soft_warn_at.to_string()),
+                        ("cap", fuse_cap.to_string()),
+                    ],
+                );
+            }
         }
         // 把 /stop 守卫透传给 execute_tool，run_python 在途可中断；
         // turn + tool_call_id 一并下传，工具审计可按轮回放（见 bot::ToolCallTrace）
@@ -839,17 +858,28 @@ where
         }
         // 成败口径与全链路统一（ToolStatus 是唯一真相源）——bot-tool-done 的 ok 同源
         let failed = !tool_outcome.status.is_success();
-        // 被闸拒掉的调用（Denied：预算触顶 / 白名单外 / 用户拒绝）不计入熔断
-        // 计数——计数守的是「实际执行」的调用量。子 agent 收尾窗里模型可能
-        // 成批发读类调用试探，若被拒的也计数，一次并行批就能烧光收尾裕量，
-        // 模型永远轮不到写产物（写类在收尾窗放行、占裕量，正是设计语义）。
-        if tool_outcome.status == crate::bot::registry::ToolStatus::Denied {
+        // 被闸拒掉的调用（白名单外 / 用户拒绝 / 规则 deny）不计入熔断计数——
+        // 计数守的是「实际执行」的调用量；收尾窗放行的写类本就没计，不必回退。
+        if gate == CallGate::Counted
+            && tool_outcome.status == crate::bot::registry::ToolStatus::Denied
+        {
             *function_calls_total = function_calls_total.saturating_sub(1);
         }
-        // 收尾窗内放行的写类调用不占配额：窗口里的额度是给「把结果落盘」用的，
-        // 写调用若照常计数，模型多写几次就把窗口烧光，反而没机会收尾。
-        if in_wrap_up && WRAP_UP_TOOLS.contains(&name.as_str()) {
-            *function_calls_total = function_calls_total.saturating_sub(1);
+        // 这次执行把计数推到了收尾窗阈值：记下进入轮，收尾轮数从这里起算。
+        if gate == CallGate::Counted
+            && *function_calls_total >= wrap_up_at
+            && wrap_up_entered_round.is_none()
+        {
+            *wrap_up_entered_round = Some(round);
+            audit(
+                crate::audit::AuditLevel::Warn,
+                "fuse_wrap_up_enter",
+                vec![
+                    ("used", function_calls_total.to_string()),
+                    ("cap", fuse_cap.to_string()),
+                    ("round", round.to_string()),
+                ],
+            );
         }
         // 证据池：参数与返回都留着。成功与失败都记——失败信息也是模型看得见的
         // 内容（模型会照着它说「跑不了」），出处比对时算不算得到依据就在这里。

@@ -426,9 +426,6 @@ pub(crate) async fn run_subagent(
     // succeeded（父 agent 提示词教它「failed / budget_exceeded 都要读 error
     // 决定重试」，报成 succeeded 就不重试，产出残缺而无人知晓）。
     let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    // 收尾窗标志：dispatch 预算闸置位后只放行写产物类工具——预算触顶不再等于
-    // 「什么都不能做」，把已有发现写成产物文件才是触顶后该做的事。
-    let wrap_up_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // 墙钟绝对期限：从**进入 running** 起算（排队时间不计，与现行口径一致）。
     // 闸在 tool_guard 里按绝对期限算剩余——每层各算一份会漂。
     let wall_deadline =
@@ -444,7 +441,6 @@ pub(crate) async fn run_subagent(
             artifact_dir: artifact_dir.clone(),
             used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
-            wrap_up: wrap_up_flag.clone(),
             wall_deadline,
         },
     );

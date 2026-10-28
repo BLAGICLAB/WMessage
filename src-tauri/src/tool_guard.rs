@@ -61,17 +61,15 @@ pub struct SubagentSessionCtx {
     pub budget: SubagentBudget,
     /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
     pub artifact_dir: PathBuf,
-    /// 已执行工具调用累计（ 预算强制：dispatch 白名单闸后自增，
-    /// 触顶拒绝新调用——max_tool_calls 的强制点）
+    /// 已执行工具调用累计：dispatch 白名单闸后自增的仪表读数。
+    /// 强制点在模型循环层的阶梯（fuse::gate_call），这里只给 read_own_card 的
+    /// 实时余量与收尾时的预算触达判定读。
     pub used_tool_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// 已跑轮数累计（循环自报，见 ModelLoopDeps::on_round）。
     /// 只读消费：让 `check_subagent` 的 progress 能报「已跑 N / 预算 M 轮」——
     /// 此前轮数完全不落任何地方，主 agent 只能靠轮询猜子 agent 在不在推进。
     /// 强制点仍在 run_model_loop_core 的 max_rounds 熔断，这里只是仪表读数。
     pub used_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// 工具预算触顶后进入收尾窗（dispatch 置位）：此后只放行写产物类工具与
-    /// read_own_card，其余调用拒绝。`Arc` 同上——dispatch 每次按值拿 ctx 克隆。
-    pub wrap_up: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 墙钟**绝对期限**（子 agent 进入 running 的那一刻算起，排队时间不计）。
     ///
     /// 存在的理由是软墙钟要在**工具调用边界**检查剩余预算：剩余进入预留
@@ -220,7 +218,6 @@ mod tests {
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            wrap_up: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         }
     }
