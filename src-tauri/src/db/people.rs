@@ -76,13 +76,7 @@ pub fn people_upsert_entry(
          ON CONFLICT(id) DO UPDATE SET
            name=excluded.name, avatar=excluded.avatar, updated_at=excluded.updated_at,
            is_self=CASE WHEN people.is_self THEN 1 ELSE excluded.is_self END",
-        rusqlite::params![
-            id,
-            name,
-            avatar,
-            is_self as i64,
-            chrono::Utc::now().timestamp_millis()
-        ],
+        rusqlite::params![id, name, avatar, is_self as i64, crate::db::now_ms()],
     )
     .map_err(|e| e.to_string())?;
     Ok(())

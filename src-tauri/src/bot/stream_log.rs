@@ -130,7 +130,7 @@ fn logs() -> MutexGuard<'static, HashMap<String, SessionLog>> {
 }
 
 fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    crate::db::now_ms()
 }
 
 /// 载荷字节粗估：正文/思考取文本长度（这两类是大头），其余按常数计。

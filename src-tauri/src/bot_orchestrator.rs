@@ -449,7 +449,7 @@ pub async fn cancel_subagent_async(
     let ack = tauri::async_runtime::spawn_blocking(move || -> CommandResult<CancelAck> {
         let _g = crate::db::lock_db_write();
         let conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = crate::db::now_ms();
         cancel_subagent_locked(&conn, &key, &reason, now)
     })
     .await

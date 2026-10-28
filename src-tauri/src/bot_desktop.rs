@@ -408,7 +408,7 @@ pub async fn tool_screenshot(app: &AppHandle, _args: &str) -> ToolResult {
     let ts_ms = if ts_ns != 0 {
         ts_ns / 1_000_000
     } else {
-        chrono::Utc::now().timestamp_millis()
+        crate::db::now_ms()
     };
     // 毫秒内纳秒偏置（0–999999）后缀在文件名尾，并发同名 = 唯一
     let sub_ms = if ts_ns != 0 {

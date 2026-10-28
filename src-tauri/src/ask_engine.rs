@@ -339,7 +339,7 @@ pub(crate) async fn engine_ask_user(
         "why": parsed.why,
         "options": parsed.options,
         "assumption": parsed.assumption,
-        "createdAt": chrono::Utc::now().timestamp_millis(),
+        "createdAt": crate::db::now_ms(),
     });
     let title = question_title(&node_title);
     let body = parsed.question.clone();

@@ -922,7 +922,7 @@ async fn execute_tool_impl(
             // 由上面的 ok 决定；拿不到 status 的 MCP 工具靠这里兜住子类
             error_class: crate::audit::classify_error_class(&result.text).map(str::to_string),
             duration_ms: Some(dur_ms as i64),
-            created_at: chrono::Utc::now().timestamp_millis(),
+            created_at: crate::db::now_ms(),
         });
         for rc in &result.file_changes {
             crate::trace_sink::record_file_change(crate::trace_sink::file_change_record(

@@ -740,7 +740,7 @@ pub async fn task_set_column(
     let row = async_runtime::spawn_blocking(move || {
         let _g = super::lock_db_write();
         let mut conn = super::open_db(&app)?;
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = crate::db::now_ms();
         task_set_column_locked(&mut conn, &id, status, now)
     })
     .await
@@ -793,7 +793,7 @@ pub async fn task_patch(
     let row = async_runtime::spawn_blocking(move || {
         let _g = super::lock_db_write();
         let mut conn = super::open_db(&app)?;
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = crate::db::now_ms();
         task_patch_locked(&mut conn, &id, &patch, now)
     })
     .await

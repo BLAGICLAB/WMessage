@@ -177,7 +177,7 @@ pub fn export_tasks_json(
     let count = tasks.len();
     let file = TasksExportFileV2 {
         version: 2,
-        exported_at: chrono::Utc::now().timestamp_millis(),
+        exported_at: crate::db::now_ms(),
         profile: ExportProfileCard {
             person_id: self_pid.to_string(),
             name: self_name.to_string(),

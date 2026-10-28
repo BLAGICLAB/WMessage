@@ -263,7 +263,7 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
     let ack = tauri::async_runtime::spawn_blocking(move || -> CommandResult<SpawnAck> {
         let _g = crate::db::lock_db_write();
         let mut conn = crate::db::open_db(&app2).map_err(CommandError::DbError)?;
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = crate::db::now_ms();
         spawn_subagent_locked(&mut conn, &req, now)
     })
     .await

@@ -1125,7 +1125,7 @@ pub async fn schedule_set_enabled(
                         .ok_or(CommandError::TaskNotFound(id.clone()))?;
                     j.enabled = Some(enabled);
                     j.expected_updated_at = j.updated_at; // RMW 基线 = 快照 updated_at
-                    j.updated_at = Some(chrono::Utc::now().timestamp_millis());
+                    j.updated_at = Some(crate::db::now_ms());
                     crate::db::upsert_scheduled_job(&conn, &j).map_err(CommandError::from)?;
                     Ok(j)
                 },

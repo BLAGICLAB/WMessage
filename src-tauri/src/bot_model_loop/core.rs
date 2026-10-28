@@ -225,7 +225,7 @@ where
             // 未来横切关注点（审批/沙箱/上下文压缩）只动 advance_skill，主循环不重构
             if let Some(run) = active_skill_run(session_id) {
                 use crate::bot_skills::{advance_skill, AdvanceAction};
-                match advance_skill(&run, chrono::Utc::now().timestamp_millis()) {
+                match advance_skill(&run, crate::db::now_ms()) {
                     AdvanceAction::NoActive | AdvanceAction::Continue => {} // 继续本轮
                     AdvanceAction::AwaitConfirm => {
                         // Skill 暂停等用户确认，跳出主循环等待 bot_confirm_response 唤起。
@@ -567,10 +567,9 @@ where
             // 关键动作、正准备总结——没有这句提醒，用户拿到的是空气泡。
             if !skill_warn_sent {
                 if let Some(run) = active_skill_run(session_id) {
-                    if let Some(warn) = crate::bot_skills::skill_budget_warning(
-                        &run,
-                        chrono::Utc::now().timestamp_millis(),
-                    ) {
+                    if let Some(warn) =
+                        crate::bot_skills::skill_budget_warning(&run, crate::db::now_ms())
+                    {
                         msgs.push(serde_json::json!({ "role": "user", "content": warn }));
                         skill_warn_sent = true;
                         audit(

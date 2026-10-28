@@ -329,7 +329,7 @@ pub(crate) async fn tool_create_task(
     if let Some(denied) = v["due"].as_str().and_then(due_param_denied) {
         return denied;
     }
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = crate::db::now_ms();
     let mut task = crate::db::Task {
         plan_start: None,
         plan_end: None,
@@ -418,7 +418,7 @@ pub(crate) async fn tool_complete_task(
     // 完成三件套与 task_set_column / HTTP 同口径：Done + 完成时间 + 归档位
     // 复位 + 机器人接管标记清除（漏了会让完成卡继续显示机器人在办）
     next.column = TaskStatus::Done;
-    next.completed_at = Some(chrono::Utc::now().timestamp_millis());
+    next.completed_at = Some(crate::db::now_ms());
     next.archived = Some(false);
     next.bot_assigned = None;
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
@@ -462,7 +462,7 @@ pub(crate) async fn tool_delete_task(
         return ToolResult::denied("用户拒绝了删除，任务未删除");
     }
     let mut next = task.clone();
-    next.deleted_at = Some(chrono::Utc::now().timestamp_millis());
+    next.deleted_at = Some(crate::db::now_ms());
     next.expected_updated_at = next.updated_at; // RMW 写回基线 = 快照 updated_at
     next.updated_at = next.deleted_at;
     commit_and_report(
@@ -704,7 +704,7 @@ pub(crate) async fn tool_edit_task(
             next.column = c;
             // 完成三件套与 task_set_column / HTTP 同口径（含清 bot_assigned）
             if c == TaskStatus::Done {
-                next.completed_at = Some(chrono::Utc::now().timestamp_millis());
+                next.completed_at = Some(crate::db::now_ms());
                 next.archived = Some(false);
                 next.bot_assigned = None;
             } else {
@@ -1091,7 +1091,7 @@ pub(crate) async fn tool_link_file_to_task(
         ));
     }
     next.expected_updated_at = next.updated_at;
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    next.updated_at = Some(crate::db::now_ms());
     if let Err(e) = crate::db::db_upsert(app.clone(), vec![next.clone()]).await {
         return ToolResult::error(format!("绑定落库失败：{e}"), Vec::new());
     }

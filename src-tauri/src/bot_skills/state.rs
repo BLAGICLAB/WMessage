@@ -84,7 +84,7 @@ impl SkillRun {
             state: SkillState::Loaded,
             step: 0,
             max_steps: meta.max_steps,
-            started_at_ms: chrono::Utc::now().timestamp_millis(),
+            started_at_ms: crate::db::now_ms(),
             timeout_secs: meta.timeout_secs,
             rollback: meta.rollback.clone(),
             actions: Vec::new(),

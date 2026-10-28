@@ -357,7 +357,7 @@ async fn trace_shot(app: &AppHandle, tag: &str) -> Option<PathBuf> {
         Ok(d) => d,
         Err(_) => return None,
     };
-    let ts = chrono::Utc::now().timestamp_millis();
+    let ts = crate::db::now_ms();
     let path = dir.join(format!("wm-ui-{tag}-{ts}.png"));
     let p = path.clone();
     let ok = tauri::async_runtime::spawn_blocking(move || crate::bot_desktop::capture_to(&p))

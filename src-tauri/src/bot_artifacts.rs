@@ -131,7 +131,7 @@ pub async fn confirm_artifact_batch(
     // 绑定一律加法：合并进既有绑定（文件追加/文件夹槽替换），不覆盖卡上已有绑定
     let (bound, overflow) = crate::db::upsert_files_to_task(&mut next, files);
     next.expected_updated_at = next.updated_at;
-    next.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    next.updated_at = Some(crate::db::now_ms());
     crate::db::db_upsert(app.clone(), vec![next.clone()])
         .await
         .map_err(|e| format!("绑定失败：{e}"))?;

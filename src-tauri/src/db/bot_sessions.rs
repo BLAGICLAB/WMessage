@@ -95,7 +95,7 @@ fn bot_session_create_with_kind_inner(
     is_subagent: bool,
 ) -> Result<BotSession, String> {
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = crate::db::now_ms();
     let title = title
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
@@ -213,7 +213,7 @@ pub fn bot_session_delete_inner(conn: &mut rusqlite::Connection, id: &str) -> Co
     // 行留着不删——runner 收尾还要读它（删了 finalize 找不到行）。
     let live = crate::db::subagents::load_live_subagents_by_session(&tx, id)
         .map_err(CommandError::DbError)?;
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = crate::db::now_ms();
     for row in live {
         crate::db::subagents::update_subagent_status(
             &tx,
@@ -265,7 +265,7 @@ pub async fn bot_session_rename(app: AppHandle, id: String, title: String) -> Co
             &super::DB_WRITE_LOCK,
             "db::bot_sessions DB_WRITE_LOCK",
         );
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = crate::db::now_ms();
         let rows = conn
             .execute(
                 "UPDATE bot_sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",

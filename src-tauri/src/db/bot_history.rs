@@ -66,7 +66,7 @@ pub fn bot_history_save_inner(
     // 记录「本次覆写的原子时刻」（同批相同）。行序恢复不依赖 created_at——自增 id
     // 即 (created_at, id) 复合排序键的 row_sequence 分量；按 created_at 排
     // bot_messages 的消费方均属缺陷。
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = crate::db::now_ms();
     if !messages.is_empty() {
         let mut stmt = conn
             .prepare(
@@ -162,7 +162,7 @@ pub fn bot_history_append_inner(
     message: &BotMsgRow,
 ) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = crate::db::now_ms();
     tx.execute(
         "INSERT INTO bot_messages (role, content, refs, session_id, thinking, tools, turn_status, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
@@ -201,7 +201,7 @@ pub fn bot_history_clear_inner(
     .map_err(|e| e.to_string())?;
     // 清空也是一次会话活动：会话列表按 updated_at 倒序，不更新的话
     // 清空过的对话仍挂在旧位置，看着像「没动过」
-    let now = chrono::Utc::now().timestamp_millis();
+    let now = crate::db::now_ms();
     tx.execute(
         "UPDATE bot_sessions SET updated_at = ?1 WHERE id = ?2",
         rusqlite::params![now, session_id],

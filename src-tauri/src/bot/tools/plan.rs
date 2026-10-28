@@ -28,7 +28,7 @@ pub(crate) async fn tool_update_plan<R: tauri::Runtime>(
     let snapshot = crate::bot::plan_state::PlanSnapshot {
         steps,
         explanation,
-        updated_at: chrono::Utc::now().timestamp_millis(),
+        updated_at: crate::db::now_ms(),
     };
     crate::bot::plan_state::set_plan(session_id, snapshot);
     let view = crate::bot::plan_state::plan_view(session_id)

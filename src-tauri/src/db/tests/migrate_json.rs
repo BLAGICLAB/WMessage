@@ -21,7 +21,7 @@ fn prepare_for_upsert_with_none_timestamp_uses_baseline_null_row() {
     let mut t = mk_task("t1", "test");
     t.updated_at = None;
     t.expected_updated_at = None;
-    let before_ms = chrono::Utc::now().timestamp_millis();
+    let before_ms = crate::db::now_ms();
     prepare_for_upsert(&mut t);
     assert_eq!(t.expected_updated_at, Some(BASELINE_NULL_ROW));
     // 防止 `Some(0)` 这种"非 now 但 is_some"的回归

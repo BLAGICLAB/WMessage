@@ -30,7 +30,7 @@ fn persist_outcome_quiet(
         reason: reason.map(|s| s.to_string()),
         completed_summary: summary.map(|s| s.to_string()),
         rollback_attempted,
-        last_at_ms: chrono::Utc::now().timestamp_millis(),
+        last_at_ms: crate::db::now_ms(),
     };
     let _ = crate::db::upsert_skill_outcome(&conn, &outcome);
 }

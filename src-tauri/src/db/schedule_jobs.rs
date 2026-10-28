@@ -374,7 +374,7 @@ pub async fn scheduled_job_create(
     let row = tauri::async_runtime::spawn_blocking(move || -> CommandResult<ScheduledJob> {
         let _g = super::lock_db_write();
         let conn = super::open_db(&app)?;
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = crate::db::now_ms();
         let job = ScheduledJob {
             id: uuid::Uuid::new_v4().simple().to_string(),
             content,
@@ -454,7 +454,7 @@ pub async fn scheduled_job_update(
         job.retry_at = None;
         job.retry_count = None;
         job.expected_updated_at = job.updated_at; // RMW 基线 = 快照 updated_at
-        job.updated_at = Some(chrono::Utc::now().timestamp_millis());
+        job.updated_at = Some(crate::db::now_ms());
         upsert_scheduled_job(&conn, &job).map_err(CommandError::from)?;
         Ok(job)
     })

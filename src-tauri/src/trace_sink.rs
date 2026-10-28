@@ -67,7 +67,7 @@ pub(crate) fn file_change_record(
         before_ref: rc.before_ref.clone(),
         before_sha: rc.before_sha.clone(),
         after_sha: rc.after_sha.clone(),
-        created_at: chrono::Utc::now().timestamp_millis(),
+        created_at: crate::db::now_ms(),
     }
 }
 
@@ -207,7 +207,7 @@ pub(crate) async fn begin_trace<R: tauri::Runtime>(
     // 审计 kv 用副本（本体 move 进 spawn_blocking 闭包）
     let origin_label = origin.clone();
     let task_id_label = task_id.clone().unwrap_or_else(|| "-".into());
-    let started_at = chrono::Utc::now().timestamp_millis();
+    let started_at = crate::db::now_ms();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<i64, String> {
         let conn = crate::db::open_db(&app2)?;
         crate::db::trace_start(
@@ -291,7 +291,7 @@ pub(crate) async fn end_trace<R: tauri::Runtime>(
             ),
             None => (0, 0, 0, 0, 0, 0),
         };
-    let finished_at = chrono::Utc::now().timestamp_millis();
+    let finished_at = crate::db::now_ms();
     let app2 = app.clone();
     let r = tauri::async_runtime::spawn_blocking(move || -> Result<crate::db::TraceRow, String> {
         let conn = crate::db::open_db(&app2)?;

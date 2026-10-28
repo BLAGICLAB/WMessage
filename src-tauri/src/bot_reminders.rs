@@ -183,7 +183,7 @@ pub async fn tool_schedule_reminder(app: &AppHandle, args: &str) -> ToolResult {
     let inserted = tauri::async_runtime::spawn_blocking(move || -> Result<Reminder, String> {
         let _g = crate::db::lock_db_write();
         let conn = crate::db::open_db(&app2)?;
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let now_ms = crate::db::now_ms();
         let r = Reminder {
             id,
             text: text_for_db,

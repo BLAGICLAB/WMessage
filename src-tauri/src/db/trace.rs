@@ -618,7 +618,7 @@ pub fn retire_traces_before_days(
     let _g = super::lock_db_write();
     let conn = super::open_db(app)?;
     let days = days.unwrap_or(TRACE_RETENTION_DAYS);
-    let before = retention_cutoff_ms(days, chrono::Utc::now().timestamp_millis());
+    let before = retention_cutoff_ms(days, crate::db::now_ms());
     let removed = retire_traces_before(&conn, before)?;
     if removed > 0 {
         crate::audit::write_event(

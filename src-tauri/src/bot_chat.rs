@@ -361,7 +361,7 @@ pub(crate) async fn set_bot_assigned<R: tauri::Runtime>(
     }
     t.bot_assigned = Some(assigned);
     t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
-    t.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    t.updated_at = Some(crate::db::now_ms());
     if let Err(e) = crate::db::db_upsert_for(app, vec![t.clone()]).await {
         // 写失败不能只当没发生过：头像与库里的归属会一直不一致，且无迹可查
         crate::bot::audit_log(

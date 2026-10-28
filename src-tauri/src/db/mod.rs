@@ -66,7 +66,7 @@ pub(crate) fn now_ms() -> i64 {
 /// 用法：`db::prepare_for_upsert(&mut task)` 后接 `db::db_upsert(...)`。
 pub fn prepare_for_upsert(t: &mut Task) {
     t.expected_updated_at = Some(t.updated_at.unwrap_or(BASELINE_NULL_ROW));
-    t.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    t.updated_at = Some(now_ms());
 }
 
 /// 打开数据库（泛型 Runtime：mock runtime 测试可直调）
@@ -334,7 +334,7 @@ pub fn open_db<R: tauri::Runtime>(
             }
         };
         if orphan > 0 {
-            let now = chrono::Utc::now().timestamp_millis();
+            let now = now_ms();
             conn.execute(
                 "INSERT OR IGNORE INTO bot_sessions (id, title, created_at, updated_at) VALUES ('default', '默认对话', ?1, ?1)",
                 [now],

@@ -102,7 +102,7 @@ fn extract_pointer(text: &str) -> Option<String> {
 /// sidecar 文件路径：毫秒时间戳 + 8 位随机后缀——同一轮批量压缩落在同一毫秒
 /// 也不会同名互覆（旧版只有时间戳，前一条的指针会被后一条的原文覆盖）。
 fn sidecar_file_path(dir: &Path, session_id: Option<&str>) -> PathBuf {
-    let ts = chrono::Utc::now().timestamp_millis();
+    let ts = crate::db::now_ms();
     let sid_raw = session_id.unwrap_or("anon");
     let safe_sid: String = sid_raw
         .chars()

@@ -191,7 +191,7 @@ async fn mark_subtask_done(app: &AppHandle, task_id: &str, subtask_id: &str) {
         });
     let Some(text) = done_now else { return };
     t.expected_updated_at = t.updated_at; // RMW 基线 = 快照 updated_at
-    t.updated_at = Some(chrono::Utc::now().timestamp_millis());
+    t.updated_at = Some(crate::db::now_ms());
     if crate::db::db_upsert(app.clone(), vec![t.clone()])
         .await
         .is_ok()
