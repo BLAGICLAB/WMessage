@@ -3,7 +3,7 @@
 // 行点击看单次 trace（TracePanel traceId 直查模式）；顶部「看聊天」跳执行会话。
 // 数据源 = exec_traces（trace_list 命令）；10s 轻轮询兜底（有 running 行时才转）。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Activity, Bot, ExternalLink } from "lucide-react";
 import { TracePanel } from "../TracePanel";
 import { formatCommandError } from "../../lib/errorHandler";
@@ -16,6 +16,7 @@ import {
   type TraceRow,
 } from "../../lib/trace";
 import { formatMsShort, formatShortDateTime } from "../../format";
+import { useRaceSeq } from "../../lib/useRaceSeq";
 
 /** 来源筛选项：null = 全部（不按来源过滤） */
 const ORIGIN_FILTERS: Array<{ key: string | null; label: string }> = [
@@ -36,24 +37,24 @@ export function ActivityPage({ onOpenChat }: { onOpenChat: () => void }) {
   const [origin, setOrigin] = useState<string | null>(null);
 
   // 竞态令牌：10s 轮询 + 事件重入时，慢的旧 trace_list 响应不得覆盖新响应
-  const reqIdRef = useRef(0);
+  const race = useRaceSeq();
   const reload = useCallback(() => {
-    const reqId = ++reqIdRef.current;
+    const reqId = race.next();
     const p = origin ? traceListByOrigin(origin, 50) : traceList(50);
     p.then((rows) => {
-      if (reqId !== reqIdRef.current) return;
+      if (!race.isCurrent(reqId)) return;
       setTraces(rows);
       setLoadError("");
     })
       .catch((e) => {
-        if (reqId !== reqIdRef.current) return;
+        if (!race.isCurrent(reqId)) return;
         // 失败必须可见：静默吞掉会让首屏落进「还没有执行痕迹」空态误导用户
         setLoadError(formatCommandError(e));
       })
       .finally(() => {
-        if (reqId === reqIdRef.current) setLoaded(true);
+        if (race.isCurrent(reqId)) setLoaded(true);
       });
-  }, [origin]);
+  }, [origin, race]);
 
   useEffect(() => {
     reload();

@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw } from "lucide-react";
+import { useRaceSeq } from "../../lib/useRaceSeq";
 
 export type UsageDay = {
   day: string;
@@ -754,19 +755,19 @@ export function UsageStatsCard() {
   }, []);
 
   // 竞态令牌：快速切 7↔30（或连点刷新）时，慢的旧档位响应不得覆盖新档位数据
-  const modelDaysSeqRef = useRef(0);
+  const race = useRaceSeq();
   const loadModelDays = useCallback(() => {
-    const seq = ++modelDaysSeqRef.current;
+    const seq = race.next();
     invoke<UsageDayModelRow[]>("usage_stats_daily_by_model", { days: range })
       .then((r) => {
-        if (seq !== modelDaysSeqRef.current) return;
+        if (!race.isCurrent(seq)) return;
         setModelDays(Array.isArray(r) ? r : []);
       })
       .catch((e) => {
-        if (seq !== modelDaysSeqRef.current) return;
+        if (!race.isCurrent(seq)) return;
         setError(String(e));
       });
-  }, [range]);
+  }, [range, race]);
 
   // 挂载期拉一次；range 变化只重拉按模型序列（setState 在 await 后，lint 显式豁免——项目既有模式）
   useEffect(() => {

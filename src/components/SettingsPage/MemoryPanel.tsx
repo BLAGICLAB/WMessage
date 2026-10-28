@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useFlashMsg } from "../../lib/useFlashMsg";
+import { useRaceSeq } from "../../lib/useRaceSeq";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -185,10 +186,10 @@ export function MemoryPanel() {
   }, [query]);
 
   /** 竞态令牌：慢的旧响应（查询 A）不得覆盖新的（查询 B） */
-  const reqIdRef = useRef(0);
+  const race = useRaceSeq();
 
   const reload = useCallback(async (q: string, kind: string) => {
-    const reqId = ++reqIdRef.current;
+    const reqId = race.next();
     // allSettled：统计失败（横幅数据）不拖垮列表刷新
     const [listRes, stRes] = await Promise.allSettled([
       invoke<MemItemView[]>("mem_list", {
@@ -197,7 +198,7 @@ export function MemoryPanel() {
       }),
       invoke<MemStats | null>("mem_stats"),
     ]);
-    if (reqId !== reqIdRef.current) return; // 已有更新请求，丢弃过期结果
+    if (!race.isCurrent(reqId)) return; // 已有更新请求，丢弃过期结果
     if (listRes.status === "fulfilled") {
       const list = listRes.value;
       setItems(Array.isArray(list) ? list : []);
@@ -210,7 +211,7 @@ export function MemoryPanel() {
       if (st && typeof st === "object" && "total" in st) setStats(st);
     }
     setRowError("");
-  }, []);
+  }, [race]);
 
   useEffect(() => {
     reload(debouncedQuery, kindFilter);
@@ -218,20 +219,20 @@ export function MemoryPanel() {
 
   /**  待确认队列：加载（静默失败 = 无队列，不打扰）。   *  竞态令牌同 reload：approve 在途时的 reloadPending 与挂载期加载并发时，
    *  先发的慢响应不得用变更前的旧队列盖掉新结果 */
-  const pendingReqIdRef = useRef(0);
+  const pendingRace = useRaceSeq();
   const reloadPending = useCallback(async () => {
-    const reqId = ++pendingReqIdRef.current;
+    const reqId = pendingRace.next();
     try {
       const list = await invoke<MemPendingView[]>("mem_pending_list");
-      if (reqId !== pendingReqIdRef.current) return; // 已有更新请求，丢弃过期结果
+      if (!pendingRace.isCurrent(reqId)) return; // 已有更新请求，丢弃过期结果
       setPending(Array.isArray(list) ? list : []);
     } catch (e) {
-      if (reqId !== pendingReqIdRef.current) return;
+      if (!pendingRace.isCurrent(reqId)) return;
       // 静默降级为空队列，但留 console 痕迹（命令消失/DB 锁死等回归可查）
       console.warn("[MemoryPanel] mem_pending_list 失败，按空队列处理：", e);
       setPending([]);
     }
-  }, []);
+  }, [pendingRace]);
 
   useEffect(() => {
     reloadPending();

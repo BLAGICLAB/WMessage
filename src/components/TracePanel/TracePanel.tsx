@@ -8,11 +8,12 @@
 // 弹层 portal 到 body——TodoCard 容器的 hover transform 会创建 CSS
 // 包含块，position:fixed 子元素会被裁缩到卡片内（Modal 的 portal prop）。
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Download, FileText, History, TriangleAlert, X } from "lucide-react";
 import { Modal } from "../../ui/Modal";
 import { stopPointer } from "../../lib/stopPointer";
 import { basename, formatMonthDayTime, formatMsShort } from "../../format";
+import { useRaceSeq } from "../../lib/useRaceSeq";
 import { DiffView } from "./DiffView";
 import {
   fileRollback,
@@ -193,7 +194,7 @@ export function TracePanel({
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   // 竞态令牌：快速连点历史条目时，慢的旧 traceDetail 响应不得覆盖新选中的详情
-  const detailSeqRef = useRef(0);
+  const race = useRaceSeq();
 
   // 列表来源三选一：会话 → 来源 → 任务卡
   const loadList = () =>
@@ -205,7 +206,7 @@ export function TracePanel({
 
   const reload = (pickId: number | null) => {
     // 开头即作废在途响应：列表模式下慢的旧 reload 不得覆盖新选中的详情
-    const seq = ++detailSeqRef.current;
+    const seq = race.next();
     setLoading(true);
     setError(null);
     // 直查模式（只给了 traceId）：单条结果即完整 detail，直接复用不再重复查询；
@@ -213,7 +214,7 @@ export function TracePanel({
     if (traceId != null && !sessionId && !origin) {
       traceDetail(traceId)
         .then((d) => {
-          if (seq !== detailSeqRef.current) return;
+          if (!race.isCurrent(seq)) return;
           const list = d ? [d] : [];
           setTraces(list);
           const pick = list.find((t) => t.id === pickId) ?? list[0] ?? null;
@@ -221,16 +222,16 @@ export function TracePanel({
           setDetail(d);
         })
         .catch((e) => {
-          if (seq === detailSeqRef.current) setError(String(e));
+          if (race.isCurrent(seq)) setError(String(e));
         })
         .finally(() => {
-          if (seq === detailSeqRef.current) setLoading(false);
+          if (race.isCurrent(seq)) setLoading(false);
         });
       return;
     }
     loadList()
       .then(async (list) => {
-        if (seq !== detailSeqRef.current) return;
+        if (!race.isCurrent(seq)) return;
         setTraces(list);
         const pick =
           pickId != null
@@ -240,7 +241,7 @@ export function TracePanel({
           setSelected(pick);
           const d = await traceDetail(pick.id);
           // 二段 await 期间可能已有新选中/新 reload：过期即弃
-          if (seq !== detailSeqRef.current) return;
+          if (!race.isCurrent(seq)) return;
           setDetail(d);
           return;
         }
@@ -248,7 +249,7 @@ export function TracePanel({
           // 目标执行不在本页（会话执行多、已翻出 limit 之外）：直查单条，
           // 不回退到列表里的其它执行——回退等于给用户看错的那一次
           const d = await traceDetail(pickId);
-          if (seq !== detailSeqRef.current) return;
+          if (!race.isCurrent(seq)) return;
           setSelected(d);
           setDetail(d);
           return;
@@ -257,10 +258,10 @@ export function TracePanel({
         setDetail(null);
       })
       .catch((e) => {
-        if (seq === detailSeqRef.current) setError(String(e));
+        if (race.isCurrent(seq)) setError(String(e));
       })
       .finally(() => {
-        if (seq === detailSeqRef.current) setLoading(false);
+        if (race.isCurrent(seq)) setLoading(false);
       });
   };
 
@@ -344,18 +345,18 @@ export function TracePanel({
                     // 切换即清上次加载错误并进加载态：避免旧错误残留 + 空态文案闪现
                     setError(null);
                     setLoading(true);
-                    const seq = ++detailSeqRef.current;
+                    const seq = race.next();
                     traceDetail(t.id)
                       .then((d) => {
-                        if (seq !== detailSeqRef.current) return;
+                        if (!race.isCurrent(seq)) return;
                         setDetail(d);
                       })
                       .catch((e) => {
-                        if (seq !== detailSeqRef.current) return;
+                        if (!race.isCurrent(seq)) return;
                         setError(String(e));
                       })
                       .finally(() => {
-                        if (seq === detailSeqRef.current) setLoading(false);
+                        if (race.isCurrent(seq)) setLoading(false);
                       });
                   }}
                 >

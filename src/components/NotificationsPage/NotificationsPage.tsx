@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Bell,
@@ -25,6 +25,7 @@ import {
 } from "../../lib/notifications";
 import type { NotificationItem } from "../../lib/notifications";
 import { useTauriListen } from "../../lib/useTauriListen";
+import { useRaceSeq } from "../../lib/useRaceSeq";
 
 const KIND_META: Record<
   NotificationItem["kind"],
@@ -367,21 +368,21 @@ export function NotificationsPage() {
   const [loadError, setLoadError] = useState("");
 
   // 竞态令牌：挂载 + 事件风暴并发 reload 时，慢的旧响应不得覆盖新响应
-  const reloadSeqRef = useRef(0);
+  const race = useRaceSeq();
   const reload = useCallback(() => {
-    const seq = ++reloadSeqRef.current;
+    const seq = race.next();
     listNotifications()
       .then((list) => {
-        if (seq !== reloadSeqRef.current) return;
+        if (!race.isCurrent(seq)) return;
         setItems(list);
         setLoadError("");
       })
       .catch((e) => {
-        if (seq !== reloadSeqRef.current) return;
+        if (!race.isCurrent(seq)) return;
         setLoadError(String(e));
         console.error("[notifications] 列表加载失败:", e);
       });
-  }, []);
+  }, [race]);
   useEffect(() => {
     void reload();
   }, [reload]);

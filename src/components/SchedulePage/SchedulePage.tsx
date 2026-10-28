@@ -5,6 +5,7 @@ import { AlarmClock, Plus } from "lucide-react";
 import { useTauriListen } from "../../lib/useTauriListen";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { formatMsShort, formatSchedule, relativeTime, untilTime } from "../../format";
+import { useRaceSeq } from "../../lib/useRaceSeq";
 import { EmptyState } from "../EmptyState";
 import { TracePanel } from "../TracePanel";
 import { ScheduleEditorPanel } from "./ScheduleEditorPanel";
@@ -58,23 +59,23 @@ export function SchedulePage({ onOpenChat }: { onOpenChat: () => void }) {
   );
 
   // 竞态令牌：reload 由挂载/tasks-changed/sched-status 并发触发，慢的旧响应
-  // 不得覆盖新响应（NotificationsPage reloadSeqRef 同款模式）
-  const reloadSeqRef = useRef(0);
+  // 不得覆盖新响应
+  const race = useRaceSeq();
   const reload = useCallback(async () => {
-    const seq = ++reloadSeqRef.current;
+    const seq = race.next();
     try {
       const list = await invoke<ScheduleEntry[]>("schedule_overview");
-      if (seq !== reloadSeqRef.current) return;
+      if (!race.isCurrent(seq)) return;
       setEntries(list);
       setLoaded(true);
       setLoadError(null);
     } catch (e) {
-      if (seq !== reloadSeqRef.current) return;
+      if (!race.isCurrent(seq)) return;
       handleCommandError(e, "读取定时任务列表", { silent: true });
       // 失败不置 loaded：留错误行 + 重试入口，不渲染成「暂无定时任务」空态
       setLoadError(formatCommandError(e));
     }
-  }, []);
+  }, [race]);
 
   useEffect(() => {
     // 首次挂载拉列表：setState 都在 invoke await 之后，lint 误报同步 setState
