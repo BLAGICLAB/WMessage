@@ -12,7 +12,13 @@ import { emit } from "@tauri-apps/api/event";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import { getBotConfig } from "../../lib/botConfig";
 import { DEFAULT_ARCHIVE_DAYS } from "../../lib/archiveRule";
-import type { ModelsByProvider, ActiveModelId, ParamView, EnvCheck } from "./types";
+import type {
+  ModelsByProvider,
+  ActiveModelId,
+  ParamView,
+  EnvCheck,
+  TaskMode,
+} from "./types";
 import { ApiProvider, UiFontSize, AutoExtractMode, isAutoExtractMode, U32_MAX } from "./constants";
 import type { ConfirmOptions } from "../../lib/useConfirm";
 
@@ -101,12 +107,14 @@ export function useSettingsActions(params: SettingsActionsParams) {
     // 原样回传保存，防止设置页整体替换写把手改值冲掉
     memoryTuning: null as Record<string, number> | null,
     // ──  Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
+    taskMode: "balanced" as TaskMode,
     maxRounds: "",
     historyBudgetChars: "",
     historyTruncateTargetPct: "",
     reasoningEchoEnabled: "",
     inTurnContextEdit: "",
     subagentMaxTurns: "",
+    subagentMaxToolCalls: "",
     subagentMaxWallSecs: "",
     searchMaxResults: "",
     maxToolOutputBytes: "",
@@ -362,8 +370,14 @@ export function useSettingsActions(params: SettingsActionsParams) {
             : "",
         inTurnContextEdit:
           c.inTurnContextEdit != null ? String(c.inTurnContextEdit) : "",
+        taskMode:
+          c.taskMode === "light" || c.taskMode === "deep"
+            ? c.taskMode
+            : "balanced",
         subagentMaxTurns:
           c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
+        subagentMaxToolCalls:
+          c.subagentMaxToolCalls != null ? String(c.subagentMaxToolCalls) : "",
         subagentMaxWallSecs:
           c.subagentMaxWallSecs != null ? String(c.subagentMaxWallSecs) : "",
         searchMaxResults:

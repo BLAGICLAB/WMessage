@@ -281,6 +281,8 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
           //    范围由后端参数表给出（与运行时钳制同一个数），这里先钳一遍：
           //    一来落盘值 = 生效值，二来超 u32 的数字会让整个 bot_set_config
           //    反序列化失败——一处输错字连带整份设置都存不下去。
+          // 任务模式档位：light / balanced / deep（后端对非法值回落均衡档）
+          taskMode: c.taskMode,
           maxRounds: paramNumber("loop.max_rounds", c.maxRounds),
           maxFunctionCalls: paramNumber(
             "loop.max_function_calls",
@@ -305,6 +307,10 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
           subagentMaxTurns: paramNumber(
             "subagent.max_turns",
             c.subagentMaxTurns,
+          ),
+          subagentMaxToolCalls: paramNumber(
+            "subagent.max_tool_calls",
+            c.subagentMaxToolCalls,
           ),
           subagentMaxWallSecs: paramNumber(
             "subagent.max_wall_secs",

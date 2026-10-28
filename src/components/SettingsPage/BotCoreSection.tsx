@@ -243,6 +243,53 @@ export function BotCoreSection({
           控制 agent 循环深度、子 agent 预算与搜索行为；留空 =
           内置默认。调大 = 更强能力但更多 token 消耗
         </p>
+        {/* 任务模式三档：一键把六个预算一起定档（回合池 / 工具调用 / 墙钟 /
+            历史预算 / 输出上限 / 回填上限）。档位之下仍可逐项高级覆盖——
+            覆盖优先于档位，空着则按档位走。 */}
+        <div className="mt-3">
+          <p className="text-sm font-medium text-[var(--t2)]">任务模式</p>
+          <p className="mt-0.5 text-xs text-[var(--t5)]">
+            一次性定下六个预算的预设值；下方各行仍可单独覆盖
+          </p>
+          <div className="mt-2 flex gap-2">
+            {(
+              [
+                ["light", "轻量", "小修改、问答、单文件调试"],
+                ["balanced", "均衡", "日常开发、需求实现（推荐）"],
+                ["deep", "深度", "大重构、全仓库阅读、长文档分析"],
+              ] as const
+            ).map(([mode, label, hint]) => (
+              <button
+                key={mode}
+                className={`flex-1 rounded-[var(--r-sm)] px-2 py-1.5 text-xs nm-outset hover:text-[var(--t1)] disabled:opacity-50 ${
+                  config.taskMode === mode
+                    ? "text-[var(--brand)] ring-1 ring-[var(--brand)]"
+                    : "text-[var(--t3)]"
+                }`}
+                title={hint}
+                disabled={configBusy}
+                onClick={() =>
+                  // 换档位时清掉逐项覆盖：覆盖优先于档位，留着旧覆盖
+                  // 会让「换了档位却没变化」——用户看不出是覆盖卡住了。
+                  void saveConfig((c) => ({
+                    ...c,
+                    taskMode: mode,
+                    maxRounds: "",
+                    maxFunctionCalls: "",
+                    historyBudgetChars: "",
+                    subagentMaxTurns: "",
+                    subagentMaxToolCalls: "",
+                    subagentMaxWallSecs: "",
+                    maxTokens: "",
+                    maxToolOutputBytes: "",
+                  }))
+                }
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
         {/* Profiles 三预设：一键整组切换（写 config 字段 + 落盘；Python 开关是
     独立 flag 文件不在预设内，保守预设的 py 语义 = 严格白名单下弹窗把关）。
     预设里**不写默认值的字面量**：留空 = 用内置默认（后端参数表那份），
@@ -295,8 +342,9 @@ export function BotCoreSection({
                   permMode: "auto" as const,
                   // 轮数与 Python 超时 = 拉到后端允许的上界（参数表那份）
                   maxRounds: paramMaxText("loop.max_rounds"),
-                  // 这一项是**档位值不是常量**：硬顶 500、默认 100，
-                  // 300 是产品选的中间档（≈3× 默认），后端没有对应常量，
+                  // 这一项是**档位值不是常量**：硬顶 1200、默认由档位派生
+                  // （均衡档 = 全局池 250 的 60% = 150），
+                  // 300 是产品选的中间档（≈2× 默认），后端没有对应常量，
                   // 派生不出「档位」——所以这里保留手写并标明性质
                   maxFunctionCalls: "300",
                   pythonTimeoutSecs: paramMaxText(

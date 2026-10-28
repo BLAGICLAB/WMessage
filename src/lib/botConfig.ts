@@ -62,12 +62,14 @@ export interface BotConfigView {
   } | null;
   memoryTuning?: Record<string, number> | null;
   mcpServers?: McpServerConfig[];
+  taskMode?: string | null;
   maxRounds?: number | null;
   historyBudgetChars?: number | null;
   historyTruncateTargetPct?: number | null;
   reasoningEchoEnabled?: number | null;
   inTurnContextEdit?: number | null;
   subagentMaxTurns?: number | null;
+  subagentMaxToolCalls?: number | null;
   subagentMaxWallSecs?: number | null;
   searchMaxResults?: number | null;
   maxToolOutputBytes?: number | null;
