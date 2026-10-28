@@ -36,6 +36,10 @@ pub fn gen_dir<R: tauri::Runtime>(
     Ok(dir)
 }
 
+/// 日志轮转阈值：bot.log 家族（audit / py / ratelimit / migration 旁路写入点）
+/// 共用 5 MB，超过即让位。各写点不得自写字面量——阈值不一致时轮转行为会劈叉。
+pub(crate) const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
+
 /// 日志轮转：超过 size_limit 字节就整体改名让位，保留两代历史
 /// （`X.log.old` → 再超限时挪到 `X.log.old.1`，最老一代被覆盖挤出）。
 /// bot/api/migration 日志与 py、bot-config 两个旁路写入点共用本函数，

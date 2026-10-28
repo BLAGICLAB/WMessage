@@ -279,7 +279,9 @@ async fn run_round(app: &AppHandle) {
 /// 启动截止通知后台循环：每 30s 扫一次活跃任务卡的截止时间（App 启动时调用）
 pub fn start_due_notifier(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
+            crate::bot_scheduler::SCHED_TICK_SECS,
+        ));
         ticker.tick().await; // 消耗首个立即触发的 tick
         loop {
             ticker.tick().await;

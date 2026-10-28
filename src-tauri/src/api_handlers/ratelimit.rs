@@ -41,7 +41,7 @@ pub(crate) fn rate_check() -> bool {
 pub(crate) fn log_line(path: &Option<PathBuf>, line: &str) {
     let Some(p) = path else { return };
     let _g = crate::db::lock::lock_or_recover(&LOG_WRITE, "api_handlers::ratelimit::LOG_WRITE");
-    crate::db::rotate_log_if_large(p, 5 * 1024 * 1024);
+    crate::db::rotate_log_if_large(p, crate::db::LOG_ROTATE_BYTES);
     match std::fs::OpenOptions::new()
         .create(true)
         .append(true)

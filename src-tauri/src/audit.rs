@@ -391,12 +391,6 @@ fn append_line(path: &std::path::Path, line: &str) -> bool {
 
 // 写入公共内核（三个写入点共用）
 
-/// 日志 rotate 阈值：超过 5 MB 轮转让位（保留两代历史，见
-/// rotate_log_if_large）。bot.log / error.log 镜像共用同一阈值。
-/// 三个写入点（write_event / write_error_audit / write_warn_audit_to）共用，
-/// 由 `write_at` 统一调用，不再各自传常量。
-const LOG_ROTATE_BYTES: u64 = 5 * 1024 * 1024;
-
 /// error.log 文件名（与所写 bot.log 同目录）：WARN/ERROR 结构化事件的镜像账本。
 /// 机器人工具流水（bot/py 写入点，无级别自由行）**不**镜像——那是上下文不是
 /// 信号；信号账本不被流水稀释，5MB 能覆盖数月，诊断卡与问题反推以它为准。
@@ -422,7 +416,7 @@ fn write_at(
     kv: &[(&str, &str)],
 ) -> bool {
     let _g = crate::db::lock::lock_or_recover(&BOT_LOG_LOCK, "audit::BOT_LOG_LOCK");
-    crate::db::rotate_log_if_large(log_path, LOG_ROTATE_BYTES);
+    crate::db::rotate_log_if_large(log_path, crate::db::LOG_ROTATE_BYTES);
     let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
     let line = build_event_line(&ts.to_string(), level, event, kv);
     let ok = append_line(log_path, &line);
@@ -438,7 +432,7 @@ fn write_at(
 fn mirror_error_log(bot_log_path: &std::path::Path, line: &str) -> bool {
     let error_path = bot_log_path.with_file_name(ERROR_LOG_NAME);
     let _g = crate::db::lock::lock_or_recover(&ERROR_LOG_LOCK, "audit::ERROR_LOG_LOCK");
-    crate::db::rotate_log_if_large(&error_path, LOG_ROTATE_BYTES);
+    crate::db::rotate_log_if_large(&error_path, crate::db::LOG_ROTATE_BYTES);
     append_line(&error_path, line)
 }
 

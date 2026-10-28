@@ -27,7 +27,11 @@ pub(super) fn truncate_split_point(
     if total_all <= budget {
         return 0;
     }
-    let target = (budget as f64 * target_ratio.clamp(0.5, 0.9)) as usize;
+    let target = (budget as f64
+        * target_ratio.clamp(
+            crate::bot::params::HISTORY_TRUNCATE_TARGET_PCT_MIN as f64 / 100.0,
+            crate::bot::params::HISTORY_TRUNCATE_TARGET_PCT_MAX as f64 / 100.0,
+        )) as usize;
     let mut total = 0usize;
     let mut keep_from = messages.len();
     for (i, m) in messages.iter().enumerate().rev() {

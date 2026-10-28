@@ -426,7 +426,7 @@ pub(crate) fn log_line(app: &AppHandle, line: &str) {
     let raw = db::data_dir(app);
     let dir = std::fs::canonicalize(&raw).unwrap_or(raw);
     let log_path = dir.join(super::rules::LOG_FILE);
-    crate::db::rotate_log_if_large(&log_path, 5 * 1024 * 1024);
+    crate::db::rotate_log_if_large(&log_path, crate::db::LOG_ROTATE_BYTES);
     let full = format!("[{}] {line}", now_str());
     let _ = fs::OpenOptions::new()
         .create(true)
