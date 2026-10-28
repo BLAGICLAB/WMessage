@@ -119,6 +119,7 @@ mod inference_param_tests {
             Some(8192),
             Some(&active_id),
             Some(&mbp),
+            crate::bot::params::BALANCED_PRESET.max_tokens,
         );
         assert_eq!(resolved.temperature, Some(0.9));
         assert_eq!(resolved.top_p, Some(0.95));

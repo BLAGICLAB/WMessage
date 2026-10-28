@@ -28,7 +28,7 @@ const AGE_HARD_ROUNDS: usize = 15;
 /// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
-pub(crate) const MAX_LLM_ATTEMPTS: usize = 2;
+pub(crate) const MAX_LLM_ATTEMPTS: usize = crate::bot::constants::LLM_MAX_ATTEMPTS as usize;
 
 /// 流读取失败后的重发上限（本轮重发，不是重发整个回合）。
 ///
@@ -37,7 +37,8 @@ pub(crate) const MAX_LLM_ATTEMPTS: usize = 2;
 /// 再重发只是白烧一次请求。
 pub(crate) const MAX_STREAM_RETRIES: usize = 1;
 
-pub(crate) const LLM_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+pub(crate) const LLM_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(crate::bot::constants::LLM_RETRY_DELAY_MS);
 
 /// 上下文超长降级：保留的历史比例（砍掉一半再试）
 const CONTEXT_SHED_KEEP_RATIO: f64 = 0.5;
@@ -148,7 +149,8 @@ pub(crate) fn build_request_body(
 
 /// send() 响应头超时：只覆盖连接+发请求+收到响应头，
 /// 不含流式 body——服务端收下请求却挂起不回时兜底，防永久挂起
-pub const LLM_HEADER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+pub const LLM_HEADER_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(crate::bot::constants::LLM_HEADER_TIMEOUT_SECS);
 
 /// 非 2xx 响应的处置：按状态码与正文决定重发、叫停还是报错收场。
 ///
@@ -383,18 +385,27 @@ pub(crate) fn prepare_round(
             .map(|c| c.budget.max_tool_calls),
         deps.fuse_cap_override,
     );
-    // 小 cap 收敛：cap≤9 时 7/10 会塌到 0（提示「已调用 0 个」失真）——钳到
-    // [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可
-    let soft_warn_at = (fuse_cap * 7 / 10).clamp(1, fuse_cap.saturating_sub(1).max(1));
-    // 轮数软警告阈值：与 soft_warn_at 同口径（7/10，留 30% 轮次收尾）。
+    // 熔断阶梯：90% 软告警 → 95% 收尾窗 → 100% 硬熔断（+写文件裕量）。
+    //
+    // 小 cap 收敛：按百分比算阈值时 cap≤9 会塌到 0（提示「已调用 0 个」失真）——
+    // 钳到 [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可。
+    let soft_warn_at = (fuse_cap * crate::bot::constants::FUSE_SOFT_WARN_PCT as usize / 100)
+        .clamp(1, fuse_cap.saturating_sub(1).max(1));
+    // 收尾窗阈值：达到即只放行写产物类工具（不计配额），让模型把已有发现落盘。
+    // 与软告警同为预算占比口径，钳位同 soft_warn_at。
+    let wrap_up_at = (fuse_cap * crate::bot::constants::FUSE_WRAP_UP_PCT as usize / 100)
+        .clamp(1, fuse_cap.saturating_sub(1).max(1));
+    // 轮数软警告阈值：与 soft_warn_at 同口径（90%，留 10% 轮次收尾）。
     // 轮数预算原先只有熔断、没有任何预警——子 agent 撞满 20 轮时往往一句收尾
     // 都没说（全程只发工具调用），产出在 Err 里全丢。给足提前量后模型还有
     // 几轮把已查到的东西写成收尾 JSON。钳位同 soft_warn_at：max_rounds 小到
-    // 7/10 塌成 0 时不注入失真的「已用 0 轮」。
-    let rounds_warn_at = (max_rounds * 7 / 10).clamp(1, max_rounds.saturating_sub(1).max(1));
+    // 90% 塌成 0 时不注入失真的「已用 0 轮」。
+    let rounds_warn_at = (max_rounds * crate::bot::constants::FUSE_SOFT_WARN_PCT as usize / 100)
+        .clamp(1, max_rounds.saturating_sub(1).max(1));
     RoundCtx {
         fuse_cap,
         soft_warn_at,
+        wrap_up_at,
         rounds_warn_at,
         plan: RequestPlan {
             url,

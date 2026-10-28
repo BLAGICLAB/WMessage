@@ -166,7 +166,11 @@ fn task_patch_budget_is_clamped_to_hard_cap() {
     )
     .unwrap();
     let b = row.budget.as_ref().unwrap();
-    assert_eq!(b.max_turns, 50, "上超钳到硬顶");
+    assert_eq!(
+        b.max_turns,
+        crate::db::subagents::MAX_TURNS_HARD_CAP,
+        "上超钳到硬顶（全局回合池 500 的 20% = 100）"
+    );
     assert_eq!(b.max_tool_calls, 1, "下超钳到下限");
     // 墙钟下界与配置键同源（30s）——「1 秒墙钟」等于白派一个子 agent
     assert_eq!(

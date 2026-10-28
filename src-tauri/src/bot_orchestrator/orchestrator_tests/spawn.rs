@@ -262,12 +262,13 @@ fn budget_clamps_turns_to_hard_cap() {
     assert_eq!(b.max_tool_calls, 1);
     // 墙钟下界与配置键同源（30s）——「1 秒墙钟」等于白派一个子 agent
     assert_eq!(b.max_wall_seconds, 30);
+    // 默认预算 = 均衡档全局池的 20% 份额（引用常量，不写字面量）
     assert_eq!(
         clamp_budget(None),
         SubagentBudget {
-            max_turns: 30,
-            max_tool_calls: 100,
-            max_wall_seconds: 600
+            max_turns: DEFAULT_MAX_TURNS,
+            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+            max_wall_seconds: DEFAULT_MAX_WALL_SECONDS
         }
     );
 }

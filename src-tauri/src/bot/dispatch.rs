@@ -16,12 +16,7 @@ use crate::bot::tools::{broadcast_after_mutation, files_audit_kv};
 
 /// 子 agent 收尾窗放行清单：预算触顶后仍可执行的写产物类工具 + 重读契约。
 /// read_own_card 在列是让模型触顶后还能查自己的状态与剩余量。
-const WRAP_UP_TOOLS: [&str; 4] = [
-    "write_artifact_file",
-    "write_file",
-    "edit_file",
-    "read_own_card",
-];
+const WRAP_UP_TOOLS: [&str; 4] = crate::bot::constants::WRAP_UP_TOOLS;
 
 /// 子 agent 动作流（右侧栏实时可见性）：dispatch 在 call / return 两个相位
 /// 各旁路一条 UI 事件，前端按 toolCallId 合并成一行。事件即焚不落库——

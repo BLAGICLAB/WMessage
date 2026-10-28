@@ -6,26 +6,26 @@ pub(crate) const SKILL_NAME_CHARS_OK: fn(char) -> bool =
 /// 默认值 DEFAULT_MAX_STEPS 是「一个多步技能正常跑完要多少步」的量级，
 /// 上限留出两倍余量给特别长的流程——上限卡在默认值上，frontmatter 写多大
 /// 都会被夹回同一个数，声明就等于没写。
-pub(crate) const MAX_STEPS_LIMIT: usize = 100;
+pub(crate) const MAX_STEPS_LIMIT: usize = crate::bot::constants::SKILL_MAX_STEPS_LIMIT;
 
 /// 技能墙钟上限（frontmatter `timeout_secs` 能声明到的最大值，单位秒）。
 ///
 /// 同上：默认 DEFAULT_TIMEOUT_SECS 是一般多步技能的量级，上限留两倍余量。
-pub(crate) const MAX_TIMEOUT_SECS_LIMIT: u64 = 3600;
+pub(crate) const MAX_TIMEOUT_SECS_LIMIT: u64 = crate::bot::constants::SKILL_MAX_TIMEOUT_SECS_LIMIT;
 
 /// 技能步数默认值。
 ///
 /// 步数按「非 use_skill 的工具调用」计（一次工具调用 = 一步）。产出型流程
 /// （检索 → 读模板 → 写脚本 → 跑脚本 → 逐页精修 → 合并 → 校验）天然二三十步，
 /// 默认值低于这个量级时技能会在做一半时被步数闸掐掉，而此时产物往往已经落盘。
-pub(crate) const DEFAULT_MAX_STEPS: usize = 50;
+pub(crate) const DEFAULT_MAX_STEPS: usize = crate::bot::constants::SKILL_DEFAULT_MAX_STEPS;
 
 /// 技能墙钟默认值（秒）。
 ///
 /// 墙钟算的是技能启动到此刻的**累计墙钟**，里面大部分是等模型往返——每步
 /// 一次请求往返十几秒，多步任务的墙钟随步数线性增长。默认值按这个口径给：
 /// 只够十几步的秒数对多步技能是必然撞线的预算。
-pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 1800;
+pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = crate::bot::constants::SKILL_DEFAULT_TIMEOUT_SECS;
 
 /// SKILL.md 完整元数据（Skill 运行模型 v1.0 字段集，全部带默认值）
 #[derive(Debug, Clone)]

@@ -35,7 +35,7 @@ pub struct PyRunResult {
 }
 
 pub const OUTPUT_CAP: usize = 64 * 1024;
-pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
+pub const DEFAULT_TIMEOUT_SECS: u64 = crate::bot::constants::PYTHON_TIMEOUT_SECS;
 /// 全局天花板：任何一次 Python 执行（run_python / 程序）都不得超过这个秒数。
 /// 取值 1800（30 分钟）——上限存在的意义是兜住「跑飞」与「模型乱填」，
 /// 不是拿来卡正常活：耗时与输入规模成正比的批量活（语音转写、装依赖、

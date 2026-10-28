@@ -7,7 +7,7 @@
 /// 工具返回本身已被回灌上限钳过（默认 30K 字节），这里再钳一层是防极端值把
 /// 内存吃光。截掉的部分模型多半也没看见——真截在中间的数判成「无出处」是
 /// 误伤方向，宁可放过。
-pub(crate) const EVIDENCE_OUTPUT_CHARS: usize = 64 * 1024;
+pub(crate) const EVIDENCE_OUTPUT_CHARS: usize = crate::bot::constants::EVIDENCE_OUTPUT_CHARS;
 
 /// 一次工具调用的证据：参数与返回。
 ///

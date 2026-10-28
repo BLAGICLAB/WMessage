@@ -22,7 +22,8 @@ pub(crate) const MIN_FINAL_SELFCHECK_FUNCTION_CALLS: usize = 3;
 pub(crate) const FINAL_SELFCHECK_SNIPPET_CHARS: usize = 500;
 
 /// 终稿自检默认轮次间隔（设置项为 None 时启用）：8 轮 1 次。
-const DEFAULT_FINAL_SELFCHECK_ROUND_GAP: u32 = 8;
+const DEFAULT_FINAL_SELFCHECK_ROUND_GAP: u32 =
+    crate::bot::constants::FINAL_SELFCHECK_ROUND_GAP_DEFAULT;
 
 /// stop_reason=max_tokens 后的自动续跑配额。续跑是全新请求、带全新输出预算，
 /// 一轮通常就够；留 2 是为「首轮续跑仍撞上限」再给一次机会，再多只白烧 token

@@ -74,6 +74,7 @@ fn eval_http() -> (LlmHttp, u32) {
         cfg.max_tokens,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
+        crate::bot::params::resolve_preset(&cfg).max_tokens,
     );
     let reasoning = crate::bot::reasoning::resolve(
         provider,

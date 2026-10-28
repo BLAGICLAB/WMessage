@@ -66,7 +66,7 @@ pub use crate::db::{
 /// 的边际收益远小于「少醒几次」。短上限逼着模型反复短轮询——实测一个 3 分钟
 /// 的调研子任务被拆成 4 次 30s 等待，每次都是一轮模型开销，最后还因为等不到
 /// 而把「仍在进行中」当成了整轮答复。一次给足预算让它整个睡到终态，轮次降到 1。
-pub const CHECK_WAIT_MS_CAP: u64 = 600_000;
+pub const CHECK_WAIT_MS_CAP: u64 = crate::bot::constants::SUBAGENT_CHECK_WAIT_MS_CAP;
 /// wait 兜底轮询步长阶梯（毫秒）。首档 1500ms：终态另有事件唤醒
 /// （见 `finish_notify`），这条阶梯只是漏通知时的安全网，所以起手就不必密——
 /// 越密只是越频繁地开库跑全量 DDL。末档后恒定封顶：兜底延迟要有上界，

@@ -5,15 +5,17 @@
 use super::ModelLoopDeps;
 use crate::error::CommandError;
 
-// Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
+/// Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
 // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
 //
-// 上限默认 100：工作流节点等长链任务
-// 50 次不够用；更高上限的失控风险由幻觉守卫（claims_mutation）+ 软警告 +
-// /stop 兜底。可用 bot-config.json `maxFunctionCalls` 覆盖（None = 100）；
-// 子 agent 默认预算同源此值（resolve_subagent_budget），LLM 显式给的预算仍可覆盖。
-// 软警告阈值动态 = cap*7/10（保持 ~30% buffer），钳 [1, cap-1]。
-pub(crate) const MAX_FUNCTION_CALLS_PER_REQUEST: usize = 100;
+// 上限取**档位预设**：主会话默认拿均衡档全局工具池的 60%。更高的上限的失控风险
+// 由幻觉守卫（claims_mutation）+ 软警告 + /stop 兜底。用户可在设置页按档位
+// 调整，或用高级覆盖单项指定（子 agent 默认预算同源此值，resolve_subagent_budget）。
+// 软警告阈值动态 = cap*90%（见 request.rs 的阶梯派生）。
+pub(crate) const MAX_FUNCTION_CALLS_PER_REQUEST: usize = crate::bot::params::budget_share(
+    crate::bot::params::BALANCED_PRESET.global_tool_calls,
+    crate::bot::params::MAIN_SESSION_BUDGET_PCT,
+) as usize;
 
 /// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
 pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";

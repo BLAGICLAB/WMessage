@@ -4,7 +4,7 @@
 
 use super::{
     apply_output_cap, decide_selfcheck, run_model_loop_core, LlmHttp, LoopTrace, ModelLoopDeps,
-    SelfcheckDecision, WallBudget, DEFAULT_TOOL_OUTPUT_CAP_BYTES, MAX_FUNCTION_CALLS_PER_REQUEST,
+    SelfcheckDecision, WallBudget,
 };
 use crate::bot_chat::TaskRef;
 use crate::bot_slash::StopGuard;
@@ -121,6 +121,7 @@ pub async fn run_model_loop(
         cfg.max_tokens,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
+        crate::bot::params::resolve_preset(&cfg).max_tokens,
     );
     let model_for_reasoning = cfg.model.clone();
     // 终稿自检侧调模型槽位：cfg 给了模型库条目 id 就整组解析（base_url/
@@ -131,6 +132,7 @@ pub async fn run_model_loop(
             cfg.models_by_provider.as_ref(),
             entry_id,
             cfg.max_tokens,
+            crate::bot::params::resolve_preset(&cfg).max_tokens,
         );
         match decide_selfcheck(resolved, &cfg.verified_vendors) {
             SelfcheckDecision::Use(r) => Some(LlmHttp {
@@ -170,6 +172,16 @@ pub async fn run_model_loop(
             }
         }
     });
+    // 档位派生值在**移动 cfg 字段之前**算出来——cfg 的字段随后被 move 进
+    // LlmHttp / ModelLoopDeps，那时再借用整份 cfg 就是「部分移动后借用」。
+    //
+    // 主会话熔断上限 = 档位全局工具池的 60% 份额（高级覆盖 maxFunctionCalls
+    // 优先）。这里**不钳**——钳位单点在下方派生链末端（fuse_cap 的 clamp），
+    // 此处再钳一次等于把同一条边界抄成两份，改一处漏一处不会编译失败也不会
+    // 测试失败。
+    let main_tool_calls = crate::bot::params::resolve_main_tool_calls(&cfg) as usize;
+    // 档位画像（max_tokens 预设与工具回填上限都从这里取）
+    let preset = crate::bot::params::resolve_preset(&cfg);
     let http = LlmHttp {
         client,
         base_url: cfg.base_url,
@@ -254,14 +266,8 @@ pub async fn run_model_loop(
         .collect();
 
     let deps = ModelLoopDeps {
-        // 全域熔断上限：config 有值用之，None = 默认 100。这里**不钳**——
-        // 钳位单点在下方派生链末端（fuse_cap 的 clamp），此处再钳一次等于把
-        // 同一条边界抄成两份，改一处漏一处不会编译失败也不会测试失败。
-        fuse_cap_override: Some(
-            cfg.max_function_calls
-                .map(|v| v as usize)
-                .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST),
-        ),
+        // 主会话熔断上限（档位全局工具池的 60% 份额；高级覆盖优先）。
+        fuse_cap_override: Some(main_tool_calls),
         conv_sidecar_dir: conv_sidecar_path.as_deref(),
         // 思考段回灌：默认关（维持现状），开了才把本轮 reasoning_content 随
         // 工具调用消息回灌历史（DeepSeek reasoner 缺了就 400，MiniMax M2/M3
@@ -428,13 +434,18 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
-    // 配置化工具结果上限（设计 §3.2 maxToolOutputBytes，字节口径）——None = 显式关闭。
+    // 工具结果上限（字节口径）——None = 显式关闭。
     // 与 per-tool 预算取小后才是本次回灌的实际天花板，见 effective_output_cap。
+    // 默认取档位预设（轻量 64KB / 均衡 128KB / 深度 200KB）。
     let tool_output_cap: Option<usize> = match cfg.max_tool_output_bytes {
         Some(0) => None,
         // 上限单源在 bot::params（与写侧钳制、设置页展示同一个数）
         Some(n) => Some(crate::bot::params::clamp_max_tool_output_bytes(n) as usize),
-        None => Some(DEFAULT_TOOL_OUTPUT_CAP_BYTES),
+        None => Some(
+            preset
+                .tool_output_bytes
+                .min(crate::bot::params::MAX_TOOL_OUTPUT_BYTES_CAP) as usize,
+        ),
     };
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();

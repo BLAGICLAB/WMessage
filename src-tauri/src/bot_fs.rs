@@ -18,20 +18,20 @@ use crate::bot::registry::ToolResult;
 
 /// 单次读取上限（字节）。`pub(crate)`：溢出指针文案要据此说明「可达范围」
 /// （指针承诺了怎么读，就得说清读得到哪一段）。
-pub(crate) const READ_MAX_BYTES: usize = 100 * 1024;
-const READ_DEFAULT_LINES: usize = 500;
-const READ_MAX_LINES: usize = 2000;
-const GREP_MAX_HITS: usize = 50;
-const GREP_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
-const LIST_MAX_ENTRIES: usize = 200;
+pub(crate) const READ_MAX_BYTES: usize = crate::bot::constants::READ_MAX_BYTES;
+const READ_DEFAULT_LINES: usize = crate::bot::constants::READ_DEFAULT_LINES;
+const READ_MAX_LINES: usize = crate::bot::constants::READ_MAX_LINES;
+const GREP_MAX_HITS: usize = crate::bot::constants::GREP_MAX_HITS;
+const GREP_MAX_FILE_BYTES: u64 = crate::bot::constants::GREP_MAX_FILE_BYTES;
+const LIST_MAX_ENTRIES: usize = crate::bot::constants::LIST_MAX_ENTRIES;
 /// 目录递归上限（防止深层目录树把上下文/耗时打爆）
-const WALK_MAX_DEPTH: usize = 5;
+const WALK_MAX_DEPTH: usize = crate::bot::constants::WALK_MAX_DEPTH;
 /// 遍历时跳过的大而杂目录（另跳过所有 . 开头隐藏目录）
 const SKIP_DIRS: [&str; 4] = ["node_modules", "target", "dist", "build"];
 /// edit_file 可编辑文件上限（对齐 read 的可处理量级，超出提示拆分）
-const EDIT_MAX_FILE_BYTES: usize = 1024 * 1024;
+const EDIT_MAX_FILE_BYTES: usize = crate::bot::constants::EDIT_MAX_FILE_BYTES;
 /// write_file 内容上限（对齐 GREP_MAX_FILE_BYTES 量级）
-const WRITE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const WRITE_MAX_BYTES: usize = crate::bot::constants::WRITE_MAX_BYTES;
 
 // per-tool 权限规则（Agent 透明化设计 §9.2-1）
 

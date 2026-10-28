@@ -418,18 +418,18 @@ mod tests {
     #[test]
     fn max_tokens_default_and_clamped() {
         assert_eq!(
-            resolve_max_tokens(None),
+            resolve_max_tokens(None, DEFAULT_MAX_TOKENS),
             DEFAULT_MAX_TOKENS,
             "None 走 DEFAULT_MAX_TOKENS 默认"
         );
-        assert_eq!(resolve_max_tokens(Some(4096)), 4096);
+        assert_eq!(resolve_max_tokens(Some(4096), DEFAULT_MAX_TOKENS), 4096);
         assert_eq!(
-            resolve_max_tokens(Some(1)),
+            resolve_max_tokens(Some(1), DEFAULT_MAX_TOKENS),
             MIN_MAX_TOKENS,
             "低于下限钳 256"
         );
         assert_eq!(
-            resolve_max_tokens(Some(999_999)),
+            resolve_max_tokens(Some(999_999), DEFAULT_MAX_TOKENS),
             MAX_MAX_TOKENS,
             "高于上限钳 200000"
         );

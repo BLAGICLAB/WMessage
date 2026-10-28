@@ -14,14 +14,15 @@
 // 都差着倍数），实测阈值本来也只要求「落在 p90 附近」这个量级。
 
 /// 轮内工具结果滑动窗的触发阈值（字符）：轮内累计工具结果超过它就触发裁剪。
-pub(crate) const TOOL_WINDOW_TRIGGER_CHARS: usize = 24_000;
+pub(crate) const TOOL_WINDOW_TRIGGER_CHARS: usize =
+    crate::bot::constants::TOOL_WINDOW_TRIGGER_CHARS;
 
 /// 滑动窗保留的最近工具结果条数：这几条永不裁。
 ///
 /// 6 条的来由：SWE-agent 只留最近 5 条观察比全历史高 3 分；这里留 6 条，
 /// 比那条口径多一条余量——多一条的代价是几千字符，少一条的代价是模型忘了
 /// 上一轮刚做过什么（重跑工具 = 重跑副作用）。
-pub(crate) const TOOL_WINDOW_KEEP_RECENT: usize = 6;
+pub(crate) const TOOL_WINDOW_KEEP_RECENT: usize = crate::bot::constants::TOOL_WINDOW_KEEP_RECENT;
 
 /// 桩子前缀：模型一眼认出「这条被裁了、原文还在、能调回来」。
 const TOOL_WINDOW_STUB_MARK: &str = "⚠️ 已省略以控制上下文";

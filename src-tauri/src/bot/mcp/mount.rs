@@ -53,7 +53,10 @@ pub struct McpToolRef {
 }
 
 /// 工具结果文本总长上限（字节，与模型循环工具漏斗同源，防爆上下文）
-const MAX_RESULT_BYTES: usize = crate::bot_model_loop::DEFAULT_TOOL_OUTPUT_CAP_BYTES;
+///
+/// 取档位预设的均衡档值——MCP 结果在挂载期就被截断（工具还没进模型循环，
+/// 那条漏斗管不到），所以这个上限是它唯一的兜底。
+const MAX_RESULT_BYTES: usize = crate::bot::params::BALANCED_PRESET.tool_output_bytes as usize;
 
 /// 单工具 schema 序列化体积上限（字节）。：
 /// inputSchema 服务器侧原样透传，无上限会每轮全量拼进 tools JSON。超限不丢
@@ -614,9 +617,12 @@ mod tests {
     /// 截断标注由整段截断统一给出；整形前总字节数一并返回（审计留痕用）
     #[test]
     fn overlong_structured_content_is_capped() {
+        // 超限内容按**当前上限**造：上限改档位后写死 50000 的话，
+        // 上限调到 128KB 时这条测试就不再触发截断——它会「通过」但什么都没验。
+        let overlong = MAX_RESULT_BYTES + 20_000;
         let result: CallToolResult = serde_json::from_value(json!({
             "content": [],
-            "structuredContent": { "data": "x".repeat(50_000) },
+            "structuredContent": { "data": "x".repeat(overlong) },
         }))
         .expect("构造 CallToolResult");
         let (text, original) = shape_result_text(&result);

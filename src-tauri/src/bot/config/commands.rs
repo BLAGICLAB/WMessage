@@ -109,7 +109,9 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         has_brave_key,
         brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
+        task_mode: cfg.task_mode,
         max_function_calls: cfg.max_function_calls,
+        subagent_max_tool_calls: cfg.subagent_max_tool_calls,
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         selfcheck_model_id: cfg.selfcheck_model_id,
         // 回落成内置默认再给前端：设置页编辑的是「当前生效表」，
@@ -271,6 +273,16 @@ pub(crate) fn prune_verified_vendors(
 ///
 /// 单独成函数是为了能单测：`bot_set_config` 要 AppHandle，测不到里面这一段。
 fn clamp_agent_params(config: &mut BotConfig) {
+    // 任务模式：非法字面量归一成默认档。留一个非法值在配置里，读侧会按
+    // `from_cfg` 回落，但设置页显示的就是这个非法值——用户看着「xyz」却不知道
+    // 实际跑的是均衡档。落盘前归一，显示与生效才一致。
+    if let Some(raw) = config.task_mode.as_deref() {
+        config.task_mode = Some(
+            crate::bot::params::TaskMode::from_cfg(Some(raw))
+                .as_str()
+                .to_string(),
+        );
+    }
     config.max_rounds = config.max_rounds.map(crate::bot::params::clamp_max_rounds);
     config.history_budget_chars = config
         .history_budget_chars
@@ -287,6 +299,9 @@ fn clamp_agent_params(config: &mut BotConfig) {
     config.subagent_max_turns = config
         .subagent_max_turns
         .map(crate::db::clamp_subagent_max_turns);
+    config.subagent_max_tool_calls = config
+        .subagent_max_tool_calls
+        .map(crate::bot::params::clamp_max_function_calls);
     config.subagent_max_wall_secs = config
         .subagent_max_wall_secs
         .map(crate::bot::params::clamp_subagent_max_wall_secs);
@@ -373,7 +388,9 @@ pub fn bot_set_config(
     clamp_agent_params(&mut config);
     // 终稿自检间隔落盘前钳制（0..=100：0 = 关闭；上限放宽到 100 留充足调整空间，
     // 真实触发频率受 final_text 字数 / function_calls / round gap 共同约束）
-    config.final_selfcheck_round_gap = config.final_selfcheck_round_gap.map(|n| n.clamp(0, 100));
+    config.final_selfcheck_round_gap = config
+        .final_selfcheck_round_gap
+        .map(|n| n.clamp(0, crate::bot::constants::FINAL_SELFCHECK_ROUND_GAP_CAP));
     // 侧调模型条目 id：trim + 空串归一 None（设置页清空输入框 = 关闭侧调）
     config.selfcheck_model_id = config
         .selfcheck_model_id
@@ -1095,7 +1112,11 @@ mod perm_mode_tests {
             Some(crate::bot::params::clamp_max_function_calls(9999)),
             "熔断上限写侧此前不钳：设置页显示 9999、运行时按 500 走"
         );
-        assert_eq!(cfg.max_function_calls, Some(500));
+        assert_eq!(
+            cfg.max_function_calls,
+            Some(1200),
+            "熔断上限硬顶 = 全局工具池硬顶 1200"
+        );
         assert_eq!(
             cfg.history_budget_chars,
             Some(crate::bot::params::clamp_history_budget_chars(1))
@@ -1134,9 +1155,9 @@ mod perm_mode_tests {
         assert_eq!(
             cfg.max_tokens,
             Some(crate::bot::config::schema::clamp_max_tokens(999_999)),
-            "max_tokens 写侧此前不钳：设置页显示 999999、运行时按 200000 走"
+            "max_tokens 写侧此前不钳：设置页显示 999999、运行时按硬顶 32768 走"
         );
-        assert_eq!(cfg.max_tokens, Some(200_000));
+        assert_eq!(cfg.max_tokens, Some(32_768));
     }
 
     /// 钳制不碰「未配置」这一态：None 仍是 None（= 用内置默认），

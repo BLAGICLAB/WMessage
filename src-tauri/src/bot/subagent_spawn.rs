@@ -323,8 +323,8 @@ pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult
 }
 /// 并发上限（设计 §6 已）：全局 3、每个派发主会话 2。超限排队不失败
 ///（status=queued），有槽位唤醒。
-pub const MAX_GLOBAL_RUNNING: usize = 3;
-pub const MAX_PER_SESSION_RUNNING: usize = 2;
+pub const MAX_GLOBAL_RUNNING: usize = crate::bot::constants::SUBAGENT_MAX_GLOBAL_RUNNING;
+pub const MAX_PER_SESSION_RUNNING: usize = crate::bot::constants::SUBAGENT_MAX_PER_SESSION_RUNNING;
 pub(crate) fn gate() -> &'static SubagentGate {
     static GATE: std::sync::OnceLock<SubagentGate> = std::sync::OnceLock::new();
     GATE.get_or_init(|| SubagentGate {

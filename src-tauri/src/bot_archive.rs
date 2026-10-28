@@ -22,23 +22,23 @@ use crate::bot::registry::ToolResult;
 // 打包读的是用户自己的文件：上限放宽一档（几百 MB 的单个文件是正常需求）。
 
 /// 解包：单个文件解压后上限 64MB。
-const UNPACK_MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+const UNPACK_MAX_ENTRY_BYTES: u64 = crate::bot::constants::UNPACK_MAX_ENTRY_BYTES;
 /// 解包：整包解压总量上限 256MB。
-const UNPACK_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const UNPACK_MAX_TOTAL_BYTES: u64 = crate::bot::constants::UNPACK_MAX_TOTAL_BYTES;
 /// 解包：条目数上限 5000。
-const UNPACK_MAX_ENTRIES: usize = 5000;
+const UNPACK_MAX_ENTRIES: usize = crate::bot::constants::UNPACK_MAX_ENTRIES;
 /// 解包：放大比上限 200:1。低于 64MB 不看这条（小文件本来就压得狠，
 /// 一份 1MB 的重复文本能压到 5KB，比值 200:1 但毫无攻击性）。
-const MAX_EXPANSION_RATIO: u64 = 200;
+const MAX_EXPANSION_RATIO: u64 = crate::bot::constants::MAX_EXPANSION_RATIO;
 /// 放大比判定的地板：解压总量超过它才查比值。
-const RATIO_FLOOR_BYTES: u64 = 64 * 1024 * 1024;
+const RATIO_FLOOR_BYTES: u64 = crate::bot::constants::RATIO_FLOOR_BYTES;
 
 /// 打包：单个文件上限 512MB。
-const PACK_MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+const PACK_MAX_ENTRY_BYTES: u64 = crate::bot::constants::PACK_MAX_ENTRY_BYTES;
 /// 打包：整包总量上限 2GB。
-const PACK_MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const PACK_MAX_TOTAL_BYTES: u64 = crate::bot::constants::PACK_MAX_TOTAL_BYTES;
 /// 打包：条目数上限 20000。
-const PACK_MAX_ENTRIES: usize = 20_000;
+const PACK_MAX_ENTRIES: usize = crate::bot::constants::PACK_MAX_ENTRIES;
 
 /// 变更凭证回执上限：解出几千个文件时不能把回执列表撑爆（回执会进上下文）。
 const MAX_RECEIPTS: usize = 50;

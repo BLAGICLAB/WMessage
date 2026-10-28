@@ -4,7 +4,7 @@
 //! 只把源码守卫的扫描源换成 prod_src()。
 
 use super::*;
-use crate::bot_model_loop::fuse::SUBAGENT_WRAP_UP_FUSE_MARGIN;
+use crate::bot_model_loop::fuse::{MAX_FUNCTION_CALLS_PER_REQUEST, SUBAGENT_WRAP_UP_FUSE_MARGIN};
 use crate::bot_model_loop::output::cap_tool_output;
 use crate::bot_model_loop::output::effective_output_cap;
 use crate::bot_model_loop::output::preview_with_pointer;
@@ -811,30 +811,31 @@ mod rounds_fuse_tests {
             ),
             crate::bot::params::DEFAULT_MAX_ROUNDS as usize
         );
-        assert_eq!(crate::bot::params::DEFAULT_MAX_ROUNDS, 50);
+        // 均衡档全局回合池 100 → 主会话 60% = 60 轮
+        assert_eq!(crate::bot::params::DEFAULT_MAX_ROUNDS, 60);
     }
 
     #[test]
     fn fuse_trips_at_cap_boundary() {
-        // MAX_FUNCTION_CALLS_PER_REQUEST = 50 实际生效：模拟主循环计数，
-        // 构造 101 个 tool_calls → 第 101 次触发熔断默认上限 50→100）
-        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 100);
+        // MAX_FUNCTION_CALLS_PER_REQUEST 实际生效：模拟主循环计数，
+        // 构造 101 个 tool_calls → 第 101 次触发熔断（均衡档全局池 250 的 60% = 150）
+        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 150);
         let mut calls = 0usize;
         let mut fused_msg: Option<String> = None;
-        for _ in 0..101 {
+        for _ in 0..MAX_FUNCTION_CALLS_PER_REQUEST + 1 {
             calls += 1;
             if should_fuse(calls, MAX_FUNCTION_CALLS_PER_REQUEST) {
                 fused_msg = Some(fuse_message("前文", "", MAX_FUNCTION_CALLS_PER_REQUEST));
                 break;
             }
         }
-        let msg = fused_msg.expect("101 次 Function 调用内必须触发熔断");
+        let msg = fused_msg.expect("cap+1 次 Function 调用内必须触发熔断");
         assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
-        assert!(msg.contains("100 次上限"), "熔断消息应带上限值：{msg}");
+        assert!(msg.contains("150 次上限"), "熔断消息应带上限值：{msg}");
         // 配置覆盖：maxFunctionCalls=30 → 第 31 次熔断（派生链第二级）
-        // 边界：默认 100 时第 100 次放行、第 101 次熔断
-        assert!(!should_fuse(100, MAX_FUNCTION_CALLS_PER_REQUEST));
-        assert!(should_fuse(101, MAX_FUNCTION_CALLS_PER_REQUEST));
+        // 边界：默认 150 时第 150 次放行、第 151 次熔断
+        assert!(!should_fuse(150, MAX_FUNCTION_CALLS_PER_REQUEST));
+        assert!(should_fuse(151, MAX_FUNCTION_CALLS_PER_REQUEST));
         let fused = (1..=31).any(|n| should_fuse(n, 30));
         assert!(fused, "cap=30 时第 31 次必须熔断");
         // 边界：第 50 次放行，第 51 次熔断
@@ -930,5 +931,94 @@ mod post_turn_layer_tests {
             consumed < ret_after_hook,
             "钩子失败的消费必须在返回之前，否则失败静默丢失"
         );
+    }
+}
+
+/// 熔断阶梯：三段式（90% 软告警 → 95% 收尾窗 → 100% 硬熔断）。
+///
+/// 阶梯按**预算占比**定义而非绝对次数——档位变化时阈值自动跟着走，
+/// 写死绝对数会让「轻量档在 90 次就告警、深度档到 225 次才告警」这种
+/// 尺度漂移。
+#[cfg(test)]
+mod fuse_ladder_tests {
+    use super::*;
+    use crate::bot::constants::{FUSE_SOFT_WARN_PCT, FUSE_WRAP_UP_PCT};
+
+    /// 阶梯阈值按占比派生：90% / 95%，且软告警必在收尾窗之前。
+    #[test]
+    fn ladder_thresholds_follow_budget_ratio() {
+        // 常量折成局部变量再比——常量之间的比较是编译期常量表达式，
+        // clippy 会判它「恒真断言」；钉不住的断言等于没钉。
+        let soft_pct = FUSE_SOFT_WARN_PCT;
+        let wrap_pct = FUSE_WRAP_UP_PCT;
+        assert_eq!(soft_pct, 90);
+        assert_eq!(wrap_pct, 95);
+        assert!(
+            soft_pct < wrap_pct,
+            "软告警必须早于收尾窗：模型要有机会在窗口打开前就收尾"
+        );
+    }
+
+    /// cap=100 时：第 90 次软告警、第 95 次开收尾窗、第 101 次硬熔断。
+    ///
+    /// 收尾窗的语义是「已达 95% 但还没到 100%」——那 5% 的额度留给模型
+    /// 把结果写成产物。
+    #[test]
+    fn ladder_positions_on_a_100_call_cap() {
+        let cap = 100usize;
+        let soft = cap * FUSE_SOFT_WARN_PCT as usize / 100;
+        let wrap = cap * FUSE_WRAP_UP_PCT as usize / 100;
+        assert_eq!(soft, 90);
+        assert_eq!(wrap, 95);
+        assert!(soft < wrap);
+        // 硬熔断在 cap+1
+        assert!(!should_fuse(cap, cap));
+        assert!(should_fuse(cap + 1, cap));
+    }
+
+    /// 小 cap 收敛：占比算出的阈值不能塌到 0（「已调用 0 个」是失真提示）。
+    #[test]
+    fn ladder_thresholds_never_collapse_to_zero() {
+        for cap in 1..=20usize {
+            let soft =
+                (cap * FUSE_SOFT_WARN_PCT as usize / 100).clamp(1, cap.saturating_sub(1).max(1));
+            let wrap =
+                (cap * FUSE_WRAP_UP_PCT as usize / 100).clamp(1, cap.saturating_sub(1).max(1));
+            assert!(soft >= 1, "cap={cap} 软告警阈值塌到 0");
+            assert!(wrap >= 1, "cap={cap} 收尾窗阈值塌到 0");
+        }
+    }
+
+    /// 收尾窗放行的工具：写产物类 + 读自己的任务卡。
+    ///
+    /// 白名单外的工具在窗口内一律拒绝——触顶后继续探索没有意义，
+    /// 而「把已有发现写成产物」正是触顶后唯一该做的事。
+    #[test]
+    fn wrap_up_window_allows_only_write_tools() {
+        use crate::bot::constants::WRAP_UP_TOOLS;
+        for name in [
+            "write_artifact_file",
+            "write_file",
+            "edit_file",
+            "read_own_card",
+        ] {
+            assert!(WRAP_UP_TOOLS.contains(&name), "收尾窗必须放行 {name}");
+        }
+        for name in ["read_file", "grep_files", "web_search", "run_python"] {
+            assert!(
+                !WRAP_UP_TOOLS.contains(&name),
+                "收尾窗不得放行探索类工具 {name}"
+            );
+        }
+    }
+
+    /// 子 agent 的硬熔断上限 = 预算 + 收尾裕量：收尾窗都没能让它停下时，
+    /// 仍有几次机会把结果写出来再停。
+    #[test]
+    fn subagent_fuse_cap_carries_wrap_up_margin() {
+        assert_eq!(SUBAGENT_WRAP_UP_FUSE_MARGIN, 5);
+        let budget = 50u32;
+        let cap = fuse_cap_for(Some(budget), None);
+        assert_eq!(cap, (budget as usize) + SUBAGENT_WRAP_UP_FUSE_MARGIN);
     }
 }

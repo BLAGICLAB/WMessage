@@ -68,13 +68,13 @@ pub(crate) use self::finalize::{
 };
 pub(crate) use self::fuse::{
     check_fuses, fuse_cap_for, fuse_message, inject_soft_warnings, rounds_fuse_exit, should_fuse,
-    FUSE_MARKER, MAX_FUNCTION_CALLS_PER_REQUEST, ROUNDS_FUSE_MARKER, WALL_FUSE_MARKER,
+    FUSE_MARKER, ROUNDS_FUSE_MARKER, WALL_FUSE_MARKER,
 };
 pub(crate) use self::guard::{
     finalize_without_tools, selfcheck_retry_hint, side_selfcheck_verdict, SELFCHECK_FAIL_EMIT,
     SELFCHECK_PASS_EMIT, SELFCHECK_PASS_HINT,
 };
-pub(crate) use self::output::{apply_output_cap, DEFAULT_TOOL_OUTPUT_CAP_BYTES};
+pub(crate) use self::output::apply_output_cap;
 pub(crate) use self::request::{
     compact_before_round, prepare_round, request_round, LLM_RETRY_DELAY, MAX_LLM_ATTEMPTS,
     MAX_STREAM_RETRIES,

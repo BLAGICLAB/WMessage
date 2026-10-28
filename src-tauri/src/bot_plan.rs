@@ -153,6 +153,7 @@ async fn call_planner(
         cfg.max_tokens,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
+        crate::bot::params::resolve_preset(&cfg).max_tokens,
     );
     let (url, mut body) = match provider {
         crate::bot::ApiProvider::Openai => (

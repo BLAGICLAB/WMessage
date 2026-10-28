@@ -296,9 +296,11 @@ pub struct LoopTrace {
 pub(crate) struct RoundCtx {
     /// 单轮 Function 调用熔断上限
     pub(crate) fuse_cap: usize,
-    /// 工具数软警告阈值（cap*7/10）
+    /// 工具数软警告阈值（cap × 90%）
     pub(crate) soft_warn_at: usize,
-    /// 轮数软警告阈值（max_rounds*7/10，与 soft_warn_at 同口径）
+    /// 收尾窗阈值（cap × 95%）：达到后只放行写产物类工具，且这些调用不占配额。
+    pub(crate) wrap_up_at: usize,
+    /// 轮数软警告阈值（max_rounds × 90%，与 soft_warn_at 同口径）
     pub(crate) rounds_warn_at: usize,
     /// 一次请求的固定件与跨轮状态
     pub(crate) plan: RequestPlan,

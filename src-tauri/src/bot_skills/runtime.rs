@@ -62,8 +62,14 @@ fn skill_timed_out(run: &SkillRun, now_ms: i64) -> bool {
 /// （预算只有 3 步的技能会在第一轮就收到「快用完了」，纯属噪音）。
 /// 比例口径两头都对：默认预算（50 步 / 1800 秒）落在 5 步 / 60 秒。
 fn skill_budget_warn_limits(max_steps: usize, timeout_secs: u64) -> (usize, i64) {
-    let steps = (max_steps / 10).clamp(1, 5);
-    let secs = (timeout_secs / 4).clamp(5, 60) as i64;
+    let steps = (max_steps / crate::bot::constants::SKILL_BUDGET_WARN_STEPS_DIVISOR).clamp(
+        crate::bot::constants::SKILL_BUDGET_WARN_STEPS_CLAMP.0,
+        crate::bot::constants::SKILL_BUDGET_WARN_STEPS_CLAMP.1,
+    );
+    let secs = (timeout_secs / crate::bot::constants::SKILL_BUDGET_WARN_SECS_DIVISOR).clamp(
+        crate::bot::constants::SKILL_BUDGET_WARN_SECS_CLAMP.0,
+        crate::bot::constants::SKILL_BUDGET_WARN_SECS_CLAMP.1,
+    ) as i64;
     (steps, secs)
 }
 

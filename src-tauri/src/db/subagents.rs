@@ -18,13 +18,21 @@ use serde::{Deserialize, Serialize};
 /// 各写一份字面量：两处曾同为 30/100/600，改一处漏一处就是静默漂移——
 /// bot 读侧按 30 放行、行上按 100 记账这类偏差会一路掩到熔断才暴露。
 pub const DEFAULT_MAX_TURNS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TURNS;
-pub const MAX_TURNS_HARD_CAP: u32 = 50;
+/// 子 agent 轮数硬顶：全局回合池硬顶的 20% 份额。
+///
+/// 此前写死 50，与「子 agent 取全局池 20%」的分配规则冲突——全局池硬顶 500
+/// 时 20% 是 100，写死 50 会让深度档之外的高级覆盖永远够不到应有额度。
+/// 深度档（250）的 20% 恰好是 50，与旧值一致，行为不变。
+pub const MAX_TURNS_HARD_CAP: u32 = crate::bot::params::budget_share(
+    crate::bot::params::GLOBAL_TURNS_CAP,
+    crate::bot::params::SUBAGENT_BUDGET_PCT,
+);
 /// 轮数下界（0 轮 = 子 agent 一句话都说不完，等于白派）
 pub const MIN_SUBAGENT_TURNS: u32 = 1;
 pub const DEFAULT_MAX_TOOL_CALLS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS;
 pub const DEFAULT_MAX_WALL_SECONDS: u64 = crate::bot::params::DEFAULT_SUBAGENT_MAX_WALL_SECS;
 
-/// 子 agent 轮数钳制（1..=硬顶 50）——单一来源：config 落盘（bot_set_config）、
+/// 子 agent 轮数钳制（1..=硬顶）——单一来源：config 落盘（bot_set_config）、
 /// bot 读侧 resolver、预算持久化（[SubagentBudget::clamped]）三处共用，
 /// 边界只认这里的 `MAX_TURNS_HARD_CAP`，防改一处漏两处。
 pub fn clamp_subagent_max_turns(n: u32) -> u32 {

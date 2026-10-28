@@ -656,7 +656,10 @@ fn task_wrapper_contains_all_sections() {
     assert!(w.contains("- 覆盖至少 5 个产品"));
     // 上下文摘要取自行上 context_summary（不再从子卡 note 文本解析）
     assert!(w.contains("上下文摘要:\n上游已确认五个竞品清单"));
-    assert!(w.contains("max_turns=30, max_tool_calls=100, max_wall_seconds=600"));
+    assert!(w.contains(&format!(
+        "max_turns={}, max_tool_calls={}, max_wall_seconds={}",
+        DEFAULT_MAX_TURNS, DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_WALL_SECONDS
+    )));
     assert!(w.contains("产物目录:"));
     assert!(w.contains("/tmp/art"));
     assert!(w.contains("完成后必须输出以下 JSON"));

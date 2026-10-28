@@ -17,6 +17,43 @@
 
 use serde::Serialize;
 
+/// Agent 运行参数的**读取面**：配置本体（`BotConfig`）与对外视图
+/// （`BotConfigView`）字段同名，但类型不同。
+///
+/// 解析器写两份的话，「配置本体按 A 解析、视图按 B 解析」迟早分叉——设置页
+/// 显示一个值、运行时走另一个值，且不编译失败也不测试失败。trait 把两者的
+/// 字段名收敛到一处：新增参数只改这一处，两个类型都会被编译器盯着补实现。
+pub trait AgentParams {
+    /// 任务模式档位。
+    fn task_mode(&self) -> Option<&str>;
+    /// 主会话轮数上限（高级覆盖）。
+    fn max_rounds(&self) -> Option<u32>;
+    /// 主会话工具调用上限（高级覆盖）。
+    fn max_function_calls(&self) -> Option<u32>;
+    /// 会话历史字符预算（高级覆盖）。
+    fn history_budget_chars(&self) -> Option<u32>;
+    /// 历史截断滞回比例（高级覆盖）。
+    fn history_truncate_target_pct(&self) -> Option<u32>;
+    /// 思考段回灌开关（高级覆盖）。
+    fn reasoning_echo_enabled(&self) -> Option<u32>;
+    /// 轮内工具结果滑动窗开关（高级覆盖）。
+    fn in_turn_context_edit(&self) -> Option<u32>;
+    /// 子 agent 轮数预算（高级覆盖）。
+    fn subagent_max_turns(&self) -> Option<u32>;
+    /// 子 agent 工具调用上限（高级覆盖）。
+    fn subagent_max_tool_calls(&self) -> Option<u32>;
+    /// 子 agent 墙钟预算（高级覆盖）。
+    fn subagent_max_wall_secs(&self) -> Option<u64>;
+    /// 联网搜索默认条数（高级覆盖）。
+    fn search_max_results(&self) -> Option<u32>;
+    /// 工具结果回填上限（高级覆盖）。
+    fn max_tool_output_bytes(&self) -> Option<u32>;
+    /// 任务提问预算（高级覆盖）。
+    fn ask_budget(&self) -> Option<u8>;
+    /// 单轮输出 max_tokens（高级覆盖）。
+    fn max_tokens(&self) -> Option<u32>;
+}
+
 /// 硬编码只读条目的解析器：来源恒为 hardcoded。
 macro_rules! hardcoded_resolver {
     ($v:expr) => {{
@@ -43,18 +80,186 @@ macro_rules! cfg_resolver {
     }};
 }
 
-// 内置默认（单一事实源）
+// ── 三档任务模式（用户预设）──
+//
+// 用户侧只选一档，不暴露零散滑条；每档把「回合池 / 工具调用 / 墙钟 / 历史预算 /
+// 输出上限 / 回填上限」六项一次性定好。三档的取舍是「任务多重、失控代价多大」：
+// 轻量给问答与单文件小改，均衡给日常需求实现，深度给大重构与全仓库阅读。
+//
+// 档位不是三套独立的常量表——三档共用同一组**全局硬顶**，档位只是硬顶下的
+// 预设取值。三张表各写各的，迟早出现「某档超过硬顶」或「两档数值打架」。
 
-/// 模型循环默认轮数（原 bot_model_loop::DEFAULT_MAX_ROUNDS 同值；该处引用本常量）
-pub const DEFAULT_MAX_ROUNDS: u32 = 50;
-pub const MAX_ROUNDS_CAP: u32 = 200;
+/// 任务模式档位。
+///
+/// 取值三态：`light` / `balanced` / `deep`。未配置 = `balanced`（默认档）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskMode {
+    /// 轻量模式：小修改、问答、单文件调试。
+    Light,
+    /// 均衡模式（默认）：日常开发、需求实现。
+    Balanced,
+    /// 深度模式：大重构、全仓库阅读、长文档分析。
+    Deep,
+}
+
+impl TaskMode {
+    /// 档位 key（落盘用；前端也用这三个字面量）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskMode::Light => "light",
+            TaskMode::Balanced => "balanced",
+            TaskMode::Deep => "deep",
+        }
+    }
+
+    /// 从配置字面量解析；非法值回落默认档（`balanced`）。
+    ///
+    /// 大小写不敏感：档位名是人手输的字面量（前端下拉写死，但配置文件能手改），
+    /// `LIGHT` 与 `light` 指同一档——把大小写当成两档会让手改的配置静默变成
+    /// 默认档，用户以为在用轻量档。
+    pub fn from_cfg(raw: Option<&str>) -> TaskMode {
+        match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+            Some("light") => TaskMode::Light,
+            Some("deep") => TaskMode::Deep,
+            _ => TaskMode::Balanced,
+        }
+    }
+}
+
+/// 单档的预算画像：六项一次性定档。
+///
+/// 字段顺序与设置页参数卡的分组一致，读的时候能对着看。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModePreset {
+    /// 全局总回合（turn）：主会话 + 子 agent + 技能共用同一个池。
+    pub global_turns: u32,
+    /// 全局总工具调用次数：写文件收尾调用不计入配额。
+    pub global_tool_calls: u32,
+    /// 全局墙钟时长（秒）：倒计时全任务共享。
+    pub global_wall_secs: u64,
+    /// 会话历史字符预算。
+    pub history_budget_chars: u32,
+    /// 单轮输出 max_tokens。
+    pub max_tokens: u32,
+    /// 单条工具回填 payload 上限（字节）。
+    pub tool_output_bytes: u32,
+}
+
+/// 轻量模式画像。
+pub const LIGHT_PRESET: ModePreset = ModePreset {
+    global_turns: 60,
+    global_tool_calls: 150,
+    global_wall_secs: 300,
+    history_budget_chars: 80_000,
+    max_tokens: 8_192,
+    tool_output_bytes: 64 * 1024,
+};
+
+/// 均衡模式画像（默认档）。
+pub const BALANCED_PRESET: ModePreset = ModePreset {
+    global_turns: 100,
+    global_tool_calls: 250,
+    global_wall_secs: 900,
+    history_budget_chars: 100_000,
+    max_tokens: 16_384,
+    tool_output_bytes: 128 * 1024,
+};
+
+/// 深度模式画像。
+pub const DEEP_PRESET: ModePreset = ModePreset {
+    global_turns: 250,
+    global_tool_calls: 700,
+    global_wall_secs: 2_400,
+    history_budget_chars: 300_000,
+    max_tokens: 32_768,
+    tool_output_bytes: 200 * 1024,
+};
+
+/// 取指定档位的画像。
+pub fn preset_for(mode: TaskMode) -> ModePreset {
+    match mode {
+        TaskMode::Light => LIGHT_PRESET,
+        TaskMode::Balanced => BALANCED_PRESET,
+        TaskMode::Deep => DEEP_PRESET,
+    }
+}
+
+// ── 全局硬顶（三档共用）──
+//
+// 硬顶是「用户能调到的最大值」，档位预设都在硬顶之下。分档的用处是给日常
+// 选一个安全值；硬顶的用处是让「高级覆盖」有明确的天花板。
+
+/// 全局总回合硬顶。
+pub const GLOBAL_TURNS_CAP: u32 = 500;
+/// 全局总工具调用次数硬顶。
+pub const GLOBAL_TOOL_CALLS_CAP: u32 = 1_200;
+/// 全局墙钟硬顶（秒）。
+pub const GLOBAL_WALL_SECS_CAP: u64 = 3_600;
+/// 会话历史字符预算硬顶。
+///
+/// 不设 500K 档：历史预算与上下文窗口耦合，500K 字符已超多数模型的可用
+/// 输入量，高风险档位不开放。
+pub const HISTORY_BUDGET_MAX: u32 = 300_000;
+/// 单轮输出 max_tokens 硬顶。
+pub const MAX_TOKENS_CAP: u32 = 32_768;
+/// 单条工具回填 payload 硬顶（字节）。
+pub const GLOBAL_TOOL_OUTPUT_BYTES_CAP: u32 = 200 * 1024;
+
+// ── 预算分配比例（内置，不可配）──
+//
+// 同一个全局池按比例切给三个消费者：主会话、子 agent、技能。三者**各自
+// 独立计数**（不共用一个递减计数器）——业界口径是「子 agent 跑在各自隔离的
+// context / 独立预算里」：Claude Code 的子 agent 用隔离上下文正是为了不撑爆
+// 父窗口；AutoGen 系的父子约束是 `child_budget <= parent_available_budget`
+// 这类**上限**约束，不是共用一个计数器。共享递减池会让「主会话多跑两轮 →
+// 子 agent 少两轮额度」这种耦合传进每一次派发，调试时看不出是谁吃掉了谁。
+//
+// 比例含义：主会话 60%，单个子 agent 最多取用剩余 20%，单个技能最多取用
+// 剩余 15%。三者相加 95%，留 5% 余量。
+
+/// 主会话占用总预算的比例（百分比）。
+pub const MAIN_SESSION_BUDGET_PCT: usize = 60;
+/// 单个子 agent 最多取用剩余预算的比例（百分比）。
+pub const SUBAGENT_BUDGET_PCT: usize = 20;
+/// 单个技能最多取用剩余预算的比例（百分比）。
+pub const SKILL_BUDGET_PCT: usize = 15;
+
+/// 按比例取预算：`(总量 × 百分比) / 100`，向下取整，至少 1。
+///
+/// 至少 1 而不是允许 0：比例为 0 的话这个消费者等于被禁用，但「禁用」
+/// 不是本处的语义（要禁用有专门的开关），0 预算会让除法下游拿到 0 并炸掉。
+pub const fn budget_share(total: u32, pct: usize) -> u32 {
+    let raw = (total.saturating_mul(pct as u32)) / 100;
+    if raw == 0 {
+        1
+    } else {
+        raw
+    }
+}
+
+/// 墙钟按比例取预算（秒）：`(总量 × 百分比) / 100`，至少 1 秒。
+pub const fn wall_share(total: u64, pct: usize) -> u64 {
+    let raw = (total.saturating_mul(pct as u64)) / 100;
+    if raw == 0 {
+        1
+    } else {
+        raw
+    }
+}
+
+// ── 内置默认（单一事实源）──
+
+/// 模型循环默认轮数：均衡档全局池的 60%（分配规则给主会话的那一份）。
+pub const DEFAULT_MAX_ROUNDS: u32 =
+    budget_share(BALANCED_PRESET.global_turns, MAIN_SESSION_BUDGET_PCT);
+/// 轮数硬顶：全局回合池硬顶。
+pub const MAX_ROUNDS_CAP: u32 = GLOBAL_TURNS_CAP;
 /// 轮数下界（少于 5 轮的循环连一次工具往返都跑不完）——钳制与设置页展示的
 /// 可填范围共用这一个数。
 pub const MAX_ROUNDS_MIN: u32 = 5;
-/// 会话历史字符预算默认（原 bot_chat::HISTORY_BUDGET_CHARS 同值）
-pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = 100_000;
+/// 会话历史字符预算默认：均衡档画像。
+pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = BALANCED_PRESET.history_budget_chars;
 pub const HISTORY_BUDGET_MIN: u32 = 20_000;
-pub const HISTORY_BUDGET_MAX: u32 = 500_000;
 /// 历史截断滞回目标比例默认（百分比）：超预算时一次裁到预算的 70%。
 /// 贴边裁会让长会话几乎每轮都改一次缓存前缀，留 30% 余量能稳住好几轮。
 pub const DEFAULT_HISTORY_TRUNCATE_TARGET_PCT: u32 = 70;
@@ -74,26 +279,32 @@ pub const DEFAULT_IN_TURN_CONTEXT_EDIT: u32 = 1;
 pub const IN_TURN_CONTEXT_EDIT_MAX: u32 = 1;
 /// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）：
 /// max_tool_calls 仅是缺省兜底——配置了 max_function_calls 时子 agent 同源全域上限
-pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 = 30;
-pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 = 100;
-pub const DEFAULT_SUBAGENT_MAX_WALL_SECS: u64 = 600;
+///
+/// 轮数与工具数取均衡档全局池的 20%（分配规则给单个子 agent 的那一份），
+/// 墙钟同理；不是拍脑袋的独立默认值。
+pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 =
+    budget_share(BALANCED_PRESET.global_turns, SUBAGENT_BUDGET_PCT);
+pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 =
+    budget_share(BALANCED_PRESET.global_tool_calls, SUBAGENT_BUDGET_PCT);
+pub const DEFAULT_SUBAGENT_MAX_WALL_SECS: u64 =
+    wall_share(BALANCED_PRESET.global_wall_secs, SUBAGENT_BUDGET_PCT);
 /// 子 agent 墙钟下界（秒）——钳制与设置页展示的可填范围共用这一个数。
 pub const SUBAGENT_MAX_WALL_SECS_MIN: u64 = 30;
-/// 子 agent 墙钟上界（秒）
-pub const SUBAGENT_MAX_WALL_SECS_MAX: u64 = 3600;
-/// web_search 默认结果条数（原 bot_web SEARCH_MAX_RESULTS 同值）
-pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 8;
+/// 子 agent 墙钟上界（秒）：全局墙钟硬顶。
+pub const SUBAGENT_MAX_WALL_SECS_MAX: u64 = GLOBAL_WALL_SECS_CAP;
+/// 联网搜索默认结果条数（Tavily 主流推荐：6 条）。
+pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 6;
 
 // 钳制单源：写侧落盘（bot_set_config）与读侧生效（下方 resolve_*）共用同一组
 // 边界——字面量只落在这里，防两边各自改数后静默漂移。子 agent 轮数的边界是
 // subagents 域不变量，单源在 db::subagents::clamp_subagent_max_turns。
 
-/// 模型循环轮数钳 5..=200
+/// 模型循环轮数钳 5..=全局回合硬顶
 pub fn clamp_max_rounds(n: u32) -> u32 {
     n.clamp(MAX_ROUNDS_MIN, MAX_ROUNDS_CAP)
 }
 
-/// 会话历史字符预算钳 20K..=500K
+/// 会话历史字符预算钳 20K..=300K
 pub fn clamp_history_budget_chars(n: u32) -> u32 {
     n.clamp(HISTORY_BUDGET_MIN, HISTORY_BUDGET_MAX)
 }
@@ -137,9 +348,9 @@ pub fn subagent_wall_reserve_secs(budget_secs: u64) -> u64 {
 pub const SUBAGENT_WALL_RESERVE_MIN_SECS: u64 = 30;
 
 /// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）
-pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;
+pub const SEARCH_MAX_RESULTS_CAP: u32 = crate::bot::constants::SEARCH_MAX_RESULTS_CAP;
 /// 联网搜索结果条数下界（0 条搜索无意义）
-pub const SEARCH_MAX_RESULTS_MIN: u32 = 1;
+pub const SEARCH_MAX_RESULTS_MIN: u32 = crate::bot::constants::SEARCH_MAX_RESULTS_MIN;
 
 /// 联网搜索结果条数钳 1..=SEARCH_MAX_RESULTS_CAP
 pub fn clamp_search_max_results(n: u32) -> u32 {
@@ -148,7 +359,7 @@ pub fn clamp_search_max_results(n: u32) -> u32 {
 
 /// 单次请求工具调用熔断上限硬顶：写侧（子 agent 预算解析）与读侧（模型循环
 /// 派生链末端的 `.clamp`）共用这一个数，防「预算按 500 记账、循环按 999 放行」。
-pub const MAX_FUNCTION_CALLS_CAP: u32 = 500;
+pub const MAX_FUNCTION_CALLS_CAP: u32 = GLOBAL_TOOL_CALLS_CAP;
 /// 工具调用熔断下界（0 次调用无意义）
 pub const MAX_FUNCTION_CALLS_MIN: u32 = 1;
 
@@ -158,9 +369,9 @@ pub fn clamp_max_function_calls(n: u32) -> u32 {
 
 /// verifier 拒绝后的修复重试预算：未配置时的默认次数。
 pub const DEFAULT_VERIFIER_RETRY_MAX: u32 = 1;
-/// verifier 重试预算上限（超过 3 次还失败的任务属硬阻塞，如实汇报比继续烧
+/// verifier 重试预算上限（超过 2 次还失败的任务属硬阻塞，如实汇报比继续烧
 /// token 更省；与配置落盘前的写侧钳制共用）。
-pub const VERIFIER_RETRY_MAX_CAP: u32 = 3;
+pub const VERIFIER_RETRY_MAX_CAP: u32 = crate::bot::constants::VERIFIER_RETRY_MAX_CAP;
 
 pub fn clamp_verifier_retry_max(n: u32) -> u32 {
     n.clamp(0, VERIFIER_RETRY_MAX_CAP)
@@ -175,20 +386,20 @@ pub fn resolve_verifier_retry_max(configured: Option<u32>) -> u32 {
     clamp_verifier_retry_max(configured.unwrap_or(DEFAULT_VERIFIER_RETRY_MAX))
 }
 
-/// 单条工具结果回填上限钳（上限 200K 字节，UTF-8）。
+/// 单条工具结果回填上限钳（上限 200KB 字节，UTF-8）。
 ///
 /// 这个上限原先只落在模型循环的生效点（`.min(200_000)`），而读侧 resolver 原样
 /// 把配置值透给设置页——用户设 500000，设置页显示 500000，运行时按 200000 走，
 /// 两边都不知道发生了什么。写侧钳制 + 读侧 + 生效点三处共用这一个边界。
-pub const MAX_TOOL_OUTPUT_BYTES_CAP: u32 = 200_000;
+pub const MAX_TOOL_OUTPUT_BYTES_CAP: u32 = GLOBAL_TOOL_OUTPUT_BYTES_CAP;
 
 pub fn clamp_max_tool_output_bytes(n: u32) -> u32 {
     n.min(MAX_TOOL_OUTPUT_BYTES_CAP)
 }
 
 /// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
-pub const ASK_BUDGET_MIN: u8 = 1;
-pub const ASK_BUDGET_MAX: u8 = 5;
+pub const ASK_BUDGET_MIN: u8 = crate::bot::constants::ASK_BUDGET_MIN;
+pub const ASK_BUDGET_MAX: u8 = crate::bot::constants::ASK_BUDGET_MAX;
 
 /// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
 pub fn clamp_ask_budget(n: u8) -> u8 {
@@ -196,29 +407,93 @@ pub fn clamp_ask_budget(n: u8) -> u8 {
 }
 
 // 解析辅助（读取口唯一）
+//
+// 两段式：**档位预设**给默认，**高级覆盖**给单项手填。旧配置里已有的
+// maxRounds / maxFunctionCalls 等字段即高级覆盖位——老用户改过的值不会被
+// 档位悄悄顶掉，新用户不填任何东西时按档位走。两段都要过同一组 clamp，
+// 「显示的值 = 生效的值」这条不变量不许破。
 
-pub fn resolve_max_rounds_cfg(cfg: &BotConfig) -> u32 {
-    clamp_max_rounds(cfg.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS))
+/// 当前生效的任务档位。
+pub fn resolve_task_mode(cfg: &impl AgentParams) -> TaskMode {
+    TaskMode::from_cfg(cfg.task_mode())
 }
 
-pub fn resolve_history_budget_chars(cfg: &BotConfig) -> u32 {
-    clamp_history_budget_chars(
-        cfg.history_budget_chars
-            .unwrap_or(DEFAULT_HISTORY_BUDGET_CHARS),
-    )
+/// 当前档位的预算画像（未经单项覆盖）。
+pub fn resolve_preset(cfg: &impl AgentParams) -> ModePreset {
+    preset_for(resolve_task_mode(cfg))
+}
+
+/// 全局回合池（档位预设值；单项链制到全局硬顶）。
+pub fn resolve_global_turns(cfg: &impl AgentParams) -> u32 {
+    resolve_preset(cfg).global_turns.min(GLOBAL_TURNS_CAP)
+}
+
+/// 全局工具调用池（档位预设值）。
+pub fn resolve_global_tool_calls(cfg: &impl AgentParams) -> u32 {
+    resolve_preset(cfg)
+        .global_tool_calls
+        .min(GLOBAL_TOOL_CALLS_CAP)
+}
+
+/// 全局墙钟（秒，档位预设值）。
+pub fn resolve_global_wall_secs(cfg: &impl AgentParams) -> u64 {
+    resolve_preset(cfg)
+        .global_wall_secs
+        .min(GLOBAL_WALL_SECS_CAP)
+}
+
+/// 主会话回合上限：档位全局池的 60%，可被高级覆盖 `max_rounds` 顶掉。
+///
+/// 覆盖优先于分配比例——用户手填的值是他明确要的，档位只是默认值。
+pub fn resolve_max_rounds_cfg(cfg: &impl AgentParams) -> u32 {
+    match cfg.max_rounds() {
+        Some(n) => clamp_max_rounds(n),
+        None => clamp_max_rounds(budget_share(
+            resolve_global_turns(cfg),
+            MAIN_SESSION_BUDGET_PCT,
+        )),
+    }
+}
+
+/// 主会话工具调用上限：档位全局池的 60%，可被高级覆盖 `max_function_calls` 顶掉。
+pub fn resolve_main_tool_calls(cfg: &impl AgentParams) -> u32 {
+    match cfg.max_function_calls() {
+        Some(n) => clamp_max_function_calls(n),
+        None => clamp_max_function_calls(budget_share(
+            resolve_global_tool_calls(cfg),
+            MAIN_SESSION_BUDGET_PCT,
+        )),
+    }
+}
+
+/// 主会话墙钟预算（秒）：档位全局墙钟的 60%，可被高级覆盖顶掉。
+///
+/// 之前主会话**没有墙钟**（只有子 agent 有），长任务能被无限拖；档位给了
+/// 全局时间预算后，主会话这一路也必须有一份，否则「全局墙钟」名不副实。
+pub fn resolve_main_wall_secs(cfg: &impl AgentParams) -> u64 {
+    let shared = resolve_global_wall_secs(cfg) * MAIN_SESSION_BUDGET_PCT as u64 / 100;
+    clamp_subagent_max_wall_secs(shared.max(SUBAGENT_MAX_WALL_SECS_MIN))
+}
+
+/// 会话历史字符预算：档位预设值，可被高级覆盖顶掉。
+pub fn resolve_history_budget_chars(cfg: &impl AgentParams) -> u32 {
+    match cfg.history_budget_chars() {
+        Some(n) => clamp_history_budget_chars(n),
+        None => clamp_history_budget_chars(resolve_preset(cfg).history_budget_chars),
+    }
 }
 
 /// 历史截断滞回比例（百分比，50..=90）：参数表展示与写盘都用这个整数口径。
-pub fn resolve_history_truncate_target_pct(cfg: &BotConfig) -> u32 {
+pub fn resolve_history_truncate_target_pct(cfg: &impl AgentParams) -> u32 {
     clamp_history_truncate_target_pct(
-        cfg.history_truncate_target_pct
+        cfg.history_truncate_target_pct()
             .unwrap_or(DEFAULT_HISTORY_TRUNCATE_TARGET_PCT),
     )
 }
 
 /// 历史截断滞回比例（0.5..=0.9）：超预算时一次裁到预算的这个比例。
 /// 比例越低裁得越狠（前缀越稳、丢的历史越多）。
-pub fn resolve_history_truncate_target_ratio(cfg: &BotConfig) -> f64 {
+pub fn resolve_history_truncate_target_ratio(cfg: &impl AgentParams) -> f64 {
     resolve_history_truncate_target_pct(cfg) as f64 / 100.0
 }
 
@@ -236,8 +511,8 @@ pub fn reasoning_echo_on(raw: Option<u32>) -> bool {
 }
 
 /// 思考段回灌开关（0 = 关 / 1 = 开）——参数表解析用。
-pub fn resolve_reasoning_echo_enabled(cfg: &BotConfig) -> u32 {
-    reasoning_echo_enabled_value(cfg.reasoning_echo_enabled)
+pub fn resolve_reasoning_echo_enabled(cfg: &impl AgentParams) -> u32 {
+    reasoning_echo_enabled_value(cfg.reasoning_echo_enabled())
 }
 
 /// 轮内工具结果滑动窗开关取值（0 = 关 / 1 = 开）。
@@ -251,36 +526,52 @@ pub fn in_turn_context_edit_on(raw: Option<u32>) -> bool {
 }
 
 /// 轮内工具结果滑动窗开关（0 = 关 / 1 = 开）——参数表解析用。
-pub fn resolve_in_turn_context_edit(cfg: &BotConfig) -> u32 {
-    in_turn_context_edit_value(cfg.in_turn_context_edit)
+pub fn resolve_in_turn_context_edit(cfg: &impl AgentParams) -> u32 {
+    in_turn_context_edit_value(cfg.in_turn_context_edit())
 }
 
-pub fn resolve_subagent_budget(cfg: &BotConfig) -> crate::db::SubagentBudget {
+/// 子 agent 预算：档位全局池的 20%（分配规则给单个子 agent 的那一份），
+/// 三项各自可被高级覆盖顶掉。
+///
+/// 工具调用这一项**不与主会话同源**：主会话拿 60%、子 agent 拿 20%，是同一
+/// 个全局池的两份配额。此前两条共用一个 `max_function_calls`，等于子 agent
+/// 拿到了主会话同等的工具额度，分配规则无从谈起。
+pub fn resolve_subagent_budget(cfg: &impl AgentParams) -> crate::db::SubagentBudget {
     crate::db::SubagentBudget {
-        max_turns: crate::db::clamp_subagent_max_turns(
-            cfg.subagent_max_turns.unwrap_or(DEFAULT_SUBAGENT_MAX_TURNS),
-        ),
-        // 工具调用上限全域统一（合并两条设置）：子 agent 与主循环同源
-        // max_function_calls（缺省 100，钳 1..=MAX_FUNCTION_CALLS_CAP）；LLM 显式
-        // 给的预算仍可覆盖
-        max_tool_calls: clamp_max_function_calls(
-            cfg.max_function_calls
-                .unwrap_or(DEFAULT_SUBAGENT_MAX_TOOL_CALLS),
-        ),
-        max_wall_seconds: clamp_subagent_max_wall_secs(
-            cfg.subagent_max_wall_secs
-                .unwrap_or(DEFAULT_SUBAGENT_MAX_WALL_SECS),
-        ),
+        max_turns: match cfg.subagent_max_turns() {
+            Some(n) => crate::db::clamp_subagent_max_turns(n),
+            None => crate::db::clamp_subagent_max_turns(budget_share(
+                resolve_global_turns(cfg),
+                SUBAGENT_BUDGET_PCT,
+            )),
+        },
+        max_tool_calls: match cfg.subagent_max_tool_calls() {
+            Some(n) => clamp_max_function_calls(n),
+            None => clamp_max_function_calls(budget_share(
+                resolve_global_tool_calls(cfg),
+                SUBAGENT_BUDGET_PCT,
+            )),
+        },
+        max_wall_seconds: match cfg.subagent_max_wall_secs() {
+            Some(n) => clamp_subagent_max_wall_secs(n),
+            None => clamp_subagent_max_wall_secs(wall_share(
+                resolve_global_wall_secs(cfg),
+                SUBAGENT_BUDGET_PCT,
+            )),
+        },
     }
 }
 
-pub fn resolve_search_max_results(cfg: &BotConfig) -> u32 {
-    clamp_search_max_results(cfg.search_max_results.unwrap_or(DEFAULT_SEARCH_MAX_RESULTS))
+pub fn resolve_search_max_results(cfg: &impl AgentParams) -> u32 {
+    clamp_search_max_results(
+        cfg.search_max_results()
+            .unwrap_or(DEFAULT_SEARCH_MAX_RESULTS),
+    )
 }
 
 /// 任务执行提问预算（原 workflow_settings.ask_budget，随工作流退役迁入 bot 参数）
-pub fn resolve_ask_budget_cfg(cfg: &BotConfig) -> u8 {
-    clamp_ask_budget(cfg.ask_budget.unwrap_or(3))
+pub fn resolve_ask_budget_cfg(cfg: &impl AgentParams) -> u8 {
+    clamp_ask_budget(cfg.ask_budget().unwrap_or(3))
 }
 
 use crate::bot::config::types::BotConfig;
@@ -339,12 +630,23 @@ pub struct ParamView {
 
 /// 全量参数表：可编辑区在前，硬编码只读区在后（前端按 category 分组渲染）
 pub static PARAMS_TABLE: &[ParamDef] = &[
-    // ── 可编辑：循环/历史 ──
+    // ── 可编辑：任务档位 ──
+    ParamDef {
+        key: "mode.task_mode",
+        label: "任务模式",
+        category: "mode",
+        hint: "一次性定下全局回合池 / 工具调用 / 墙钟 / 历史预算 / 输出上限 / 回填上限六项；轻量=问答与小改，均衡=日常开发，深度=大重构",
+        min: None,
+        max: None,
+        editable: true,
+        resolve: cfg_resolver!(resolve_task_mode_label, task_mode),
+    },
+    // ── 可编辑：循环/历史（档位预设 + 高级覆盖）──
     ParamDef {
         key: "loop.max_rounds",
-        label: "模型循环最大轮数",
+        label: "主会话轮数",
         category: "loop",
-        hint: "单次对话/任务执行的 LLM 轮数上限；调大=更复杂任务但失控时更费 token。Skill 自报轮数优先于此值",
+        hint: "主会话单次对话/任务执行的 LLM 轮数上限；默认取档位全局池的 60%；调大=更复杂任务但失控时更费 token。Skill 自报轮数优先于此值",
         min: Some(MAX_ROUNDS_MIN as u64),
         max: Some(MAX_ROUNDS_CAP as u64),
         editable: true,
@@ -352,19 +654,19 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
     },
     ParamDef {
         key: "loop.max_function_calls",
-        label: "单次请求工具调用熔断",
+        label: "主会话工具调用上限",
         category: "loop",
-        hint: "全域工具调用熔断上限（子 agent 预算同源此值）；工作流节点等长链任务可调大；软警告在 70% 处自动触发",
+        hint: "主会话的工具调用熔断上限；默认取档位全局池的 60%；软警告在 90% 处触发，95% 进收尾窗，100% 硬熔断",
         min: Some(MAX_FUNCTION_CALLS_MIN as u64),
         max: Some(MAX_FUNCTION_CALLS_CAP as u64),
         editable: true,
-        resolve: cfg_resolver!(resolve_budget_tool_calls, max_function_calls),
+        resolve: cfg_resolver!(resolve_main_tool_calls, max_function_calls),
     },
     ParamDef {
         key: "loop.history_budget_chars",
         label: "会话历史字符预算",
         category: "loop",
-        hint: "超出后最旧消息先丢并生成摘要；调大=长对话记忆更好但上下文成本更高",
+        hint: "超出后最旧消息先丢并生成摘要；默认取档位预设；调大=长对话记忆更好但上下文成本更高",
         min: Some(HISTORY_BUDGET_MIN as u64),
         max: Some(HISTORY_BUDGET_MAX as u64),
         editable: true,
@@ -405,17 +707,27 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "subagent.max_turns",
         label: "子 agent 轮数预算",
         category: "subagent",
-        hint: "LLM 派发子 agent 未显式给预算时的默认轮数；任何配置（含 LLM 自报）都不能越过硬顶",
+        hint: "单个子 agent 的轮数上限；默认取档位全局池的 20%；任何配置（含 LLM 自报）都不能越过硬顶",
         min: Some(crate::db::MIN_SUBAGENT_TURNS as u64),
         max: Some(crate::db::MAX_TURNS_HARD_CAP as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_budget_turns, subagent_max_turns),
     },
     ParamDef {
+        key: "subagent.max_tool_calls",
+        label: "子 agent 工具调用上限",
+        category: "subagent",
+        hint: "单个子 agent 的工具调用上限；默认取档位全局工具池的 20%；与主会话是同一池的两份配额（主 60% / 子 20%）",
+        min: Some(MAX_FUNCTION_CALLS_MIN as u64),
+        max: Some(MAX_FUNCTION_CALLS_CAP as u64),
+        editable: true,
+        resolve: cfg_resolver!(resolve_budget_tool_calls, subagent_max_tool_calls),
+    },
+    ParamDef {
         key: "subagent.max_wall_secs",
         label: "子 agent 墙钟预算（秒）",
         category: "subagent",
-        hint: "子 agent 从起跑计的最长时长；排队不计入",
+        hint: "单个子 agent 从起跑计的最长时长；默认取档位全局墙钟的 20%；排队不计入",
         min: Some(SUBAGENT_MAX_WALL_SECS_MIN),
         max: Some(SUBAGENT_MAX_WALL_SECS_MAX),
         editable: true,
@@ -437,9 +749,9 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         key: "model.max_tokens",
         label: "全局 max_tokens",
         category: "model",
-        hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送。条目级设置优先于此全局值",
+        hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送。默认取档位预设；条目级设置优先于此全局值",
         min: Some(crate::bot::config::schema::MIN_MAX_TOKENS as u64),
-        max: Some(crate::bot::config::schema::MAX_MAX_TOKENS as u64),
+        max: Some(MAX_TOKENS_CAP as u64),
         editable: true,
         resolve: cfg_resolver!(plain_max_tokens, max_tokens),
     },
@@ -493,7 +805,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!(crate::bot_model_loop::TOOL_WINDOW_TRIGGER_CHARS),
+        resolve: hardcoded_resolver!(crate::bot::constants::TOOL_WINDOW_TRIGGER_CHARS),
     },
     ParamDef {
         key: "loop.tool_window_keep_recent",
@@ -503,7 +815,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!(crate::bot_model_loop::TOOL_WINDOW_KEEP_RECENT),
+        resolve: hardcoded_resolver!(crate::bot::constants::TOOL_WINDOW_KEEP_RECENT),
     },
     ParamDef {
         key: "subagent.max_running",
@@ -513,7 +825,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!(crate::bot_orchestrator::MAX_GLOBAL_RUNNING),
+        resolve: hardcoded_resolver!(crate::bot::constants::SUBAGENT_MAX_GLOBAL_RUNNING),
     },
     ParamDef {
         key: "subagent.per_session_running",
@@ -523,7 +835,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: None,
         max: None,
         editable: false,
-        resolve: hardcoded_resolver!(crate::bot_orchestrator::MAX_PER_SESSION_RUNNING),
+        resolve: hardcoded_resolver!(crate::bot::constants::SUBAGENT_MAX_PER_SESSION_RUNNING),
     },
     ParamDef {
         key: "subagent.turns_hard_cap",
@@ -627,26 +939,40 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
     },
 ];
 
-/// 生效值解析：可编辑项查 cfg 字段（None → 默认 / Some → 值），只读项出硬编码常量。
+/// 生效值解析：可编辑项查 cfg 字段（None → 档位预设 / Some → 值），只读项出硬编码常量。
 /// 子 agent 预算三个键共用同一份 `resolve_subagent_budget`，这里按需取字段。
-fn resolve_budget_tool_calls(cfg: &BotConfig) -> String {
+fn resolve_task_mode_label(cfg: &impl AgentParams) -> String {
+    resolve_task_mode(cfg).as_str().to_string()
+}
+
+fn resolve_budget_tool_calls(cfg: &impl AgentParams) -> String {
     resolve_subagent_budget(cfg).max_tool_calls.to_string()
 }
 
-fn resolve_budget_turns(cfg: &BotConfig) -> String {
+fn resolve_budget_turns(cfg: &impl AgentParams) -> String {
     resolve_subagent_budget(cfg).max_turns.to_string()
 }
 
-fn resolve_budget_wall(cfg: &BotConfig) -> String {
+fn resolve_budget_wall(cfg: &impl AgentParams) -> String {
     resolve_subagent_budget(cfg).max_wall_seconds.to_string()
 }
 
-fn plain_max_tokens(cfg: &BotConfig) -> String {
-    // 默认值取后端常量（32768）——此前这里手写 8192，而后端早已把默认提到 32K
-    // （截断自愈那条），两处就此各说各话：表里写 8192、运行时按 32768 走。
-    cfg.max_tokens
-        .unwrap_or(crate::bot::config::schema::DEFAULT_MAX_TOKENS)
-        .to_string()
+fn plain_max_tokens(cfg: &impl AgentParams) -> String {
+    // 档位预设（轻量 8K / 均衡 16K / 深度 32K），高级覆盖走 config.max_tokens；
+    // 条目级覆盖仍优先于此全局值（见 bot_model_loop 的请求装配）。
+    resolve_max_tokens(cfg).to_string()
+}
+
+/// 全局 max_tokens 生效值：档位预设 → 高级覆盖 → 钳到硬顶。
+///
+/// 硬顶 32768：单轮输出再大也不该超过这个量级——超长的单轮输出意味着模型在
+/// 一次回复里塞了太多东西，既烧钱又挤占后续轮次的输入预算。
+pub fn resolve_max_tokens(cfg: &impl AgentParams) -> u32 {
+    let preset = resolve_preset(cfg).max_tokens.min(MAX_TOKENS_CAP);
+    match cfg.max_tokens() {
+        Some(n) => n.clamp(crate::bot::config::schema::MIN_MAX_TOKENS, MAX_TOKENS_CAP),
+        None => preset,
+    }
 }
 
 fn plain_py_timeout(cfg: &BotConfig) -> String {
@@ -662,16 +988,22 @@ fn plain_reasoning(cfg: &BotConfig) -> String {
         .to_string()
 }
 
-/// max_output_bytes 有第三态：Some(0) = 显式关闭截断，展示串不是数字
+/// 工具结果回填上限：档位预设（64KB / 128KB / 200KB），高级覆盖走
+/// `max_tool_output_bytes`。
+///
+/// 有第三态：Some(0) = 显式关闭截断，展示串不是数字。
 ///
 /// 展示值必须等于生效值：这里显示的就是模型循环实际会用的那个数（同一个
 /// `clamp_max_tool_output_bytes`），配置手改越过上限时设置页也能看出被钳到哪。
-fn resolve_max_output_bytes(cfg: &BotConfig) -> (String, &'static str) {
-    match cfg.max_tool_output_bytes {
+fn resolve_max_output_bytes(cfg: &impl AgentParams) -> (String, &'static str) {
+    match cfg.max_tool_output_bytes() {
         Some(v) if v > 0 => (clamp_max_tool_output_bytes(v).to_string(), "config"),
         Some(_) => ("不截断（显式关闭）".into(), "config"),
         None => (
-            crate::bot_model_loop::DEFAULT_TOOL_OUTPUT_CAP_BYTES.to_string(),
+            resolve_preset(cfg)
+                .tool_output_bytes
+                .min(MAX_TOOL_OUTPUT_BYTES_CAP)
+                .to_string(),
             "default",
         ),
     }
@@ -743,491 +1075,5 @@ pub fn bot_effective_params(app: tauri::AppHandle) -> Vec<ParamView> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 每条参数都必须能被表里自带的 resolver 解析出真值。
-    ///
-    /// 这条测试替代原来的兜底臂：解析曾经是一个独立的 `match key`，兜底是
-    /// `other => (format!("?{other}"), "hardcoded")` —— 表里加了一条 key 而忘了
-    /// 加 match 臂时，不编译失败、不测试失败，只在设置页显示字面量
-    /// `?subagent.foo`。解析收进表之后，漏解析根本构造不出来。
-    #[test]
-    fn every_param_resolves_to_a_real_value() {
-        for d in PARAMS_TABLE {
-            let (value, source) = (d.resolve)(&empty_cfg());
-            assert!(!value.is_empty(), "{} 解析出空值", d.key);
-            assert!(
-                !value.starts_with('?'),
-                "{} 落进了兜底（key 与 resolver 对不上）",
-                d.key
-            );
-            assert!(
-                matches!(source, "config" | "default" | "hardcoded"),
-                "{} 来源非法：{source}",
-                d.key
-            );
-            assert_eq!(
-                d.editable,
-                source != "hardcoded",
-                "{}：可编辑性与来源标注不一致（editable={} source={source}）",
-                d.key,
-                d.editable
-            );
-        }
-    }
-
-    /// key 不得重复：设置页按 key 定位，重复会静默遮蔽前一条。
-    #[test]
-    fn param_keys_are_unique() {
-        let mut keys: Vec<&str> = PARAMS_TABLE.iter().map(|d| d.key).collect();
-        keys.sort_unstable();
-        let before = keys.len();
-        keys.dedup();
-        assert_eq!(before, keys.len(), "参数表里有重复 key");
-    }
-
-    fn empty_cfg() -> BotConfig {
-        BotConfig {
-            base_url: String::new(),
-            model: String::new(),
-            api_key: None,
-            bypass_llm_on_pre_step_hit: true,
-            allowed_dirs: Vec::new(),
-            tavily_key: None,
-            tavily_enabled: None,
-            brave_key: None,
-            brave_enabled: None,
-            python_timeout_secs: None,
-            perm_mode: None,
-            api_provider: None,
-            max_tokens: None,
-            reasoning_effort: None,
-            max_function_calls: None,
-            final_selfcheck_round_gap: None,
-            selfcheck_model_id: None,
-            guard_claim_keywords: None,
-            verifier_retry_max: None,
-            archive_after_days: None,
-            models_by_provider: None,
-            active_model_id: None,
-            ui_font_size: None,
-            memory_consolidation: None,
-            memory_control: None,
-            memory_tuning: None,
-            mcp_servers: None,
-            disabled_vendors: Vec::new(),
-            verified_vendors: Vec::new(),
-            schema_version: 1,
-            max_rounds: None,
-            history_truncate_target_pct: None,
-            reasoning_echo_enabled: None,
-            in_turn_context_edit: None,
-            history_budget_chars: None,
-            tool_rules: None,
-            subagent_max_turns: None,
-            subagent_max_wall_secs: None,
-            search_max_results: None,
-            max_tool_output_bytes: None,
-            ask_budget: None,
-        }
-    }
-
-    /// 硬编码只读区每行的展示值必须等于代码里真正生效的那个常量。
-    ///
-    /// 这些行的 resolve 取的是真常量（MAX_GLOBAL_RUNNING / MAX_TURNS_HARD_CAP /
-    /// clamp 上界 / SEARCH_OUTPUT_CAP_BYTES / 流式超时 / 重试两常量），而 `default`
-    /// 现在是**从 resolver 派生**的（空配置下的输出）——只读区两者恒等。
-    /// 这里逐条把派生值与常量双向钉死：任一侧单独改动而不改另一侧即红。
-    #[test]
-    fn hardcoded_rows_track_runtime_constants() {
-        let views = effective_params(&empty_cfg());
-        // 取一行的展示值，并断言生效值与 default 同源（只读区两者恒等）
-        let shown = |k: &str| -> String {
-            let v = views.iter().find(|v| v.key == k).unwrap();
-            assert_eq!(v.source, "hardcoded", "{k} 应属硬编码只读区");
-            assert_eq!(v.value, v.default, "{k}: 生效值与 default 不同源");
-            v.default.clone()
-        };
-        assert_eq!(
-            shown("subagent.max_running"),
-            crate::bot_orchestrator::MAX_GLOBAL_RUNNING.to_string()
-        );
-        assert_eq!(
-            shown("subagent.per_session_running"),
-            crate::bot_orchestrator::MAX_PER_SESSION_RUNNING.to_string()
-        );
-        assert_eq!(
-            shown("subagent.turns_hard_cap"),
-            crate::db::MAX_TURNS_HARD_CAP.to_string()
-        );
-        assert_eq!(
-            shown("search.count_cap"),
-            SEARCH_MAX_RESULTS_CAP.to_string(),
-            "搜索条数硬顶须与 clamp_search_max_results 上界同源"
-        );
-        assert_eq!(
-            shown("search.output_bytes"),
-            crate::bot_web::SEARCH_OUTPUT_CAP_BYTES.to_string()
-        );
-        assert_eq!(
-            shown("llm.stream_idle_secs"),
-            crate::bot_model_loop::STREAM_CHUNK_IDLE_TIMEOUT
-                .as_secs()
-                .to_string()
-        );
-        assert_eq!(
-            shown("llm.retry"),
-            format!(
-                "{}次/{}s",
-                crate::bot_model_loop::MAX_LLM_ATTEMPTS,
-                crate::bot_model_loop::LLM_RETRY_DELAY.as_millis() as f64 / 1000.0
-            )
-        );
-        // 扫描间隔 / 痕迹三表的两个钳制 + 保留期：这四条原先是表里的裸字面量
-        // （"30" / "16384" / "2000" / "30"），与真常量恰好相等纯属手写对了——
-        // 真常量一改，表里的旧数会静默留着（没有任何测试把两者绑住）。
-        // 现在 resolve 直接取常量，测试再钉一层。
-        assert_eq!(
-            shown("schedule.scan_secs"),
-            crate::bot_scheduler::SCHED_TICK_SECS.to_string()
-        );
-        assert_eq!(
-            shown("trace.span_text_max"),
-            crate::db::trace::SPAN_TEXT_MAX.to_string()
-        );
-        assert_eq!(
-            shown("trace.diff_max_lines"),
-            crate::db::trace::MAX_DIFF_LINES.to_string()
-        );
-        assert_eq!(
-            shown("trace.retention_days"),
-            crate::db::trace::TRACE_RETENTION_DAYS.to_string()
-        );
-        // 记忆抽取限频：设置页文案里的「≥N 分钟一次」引用的就是这个常量
-        assert_eq!(
-            shown("memory.extract_min_interval_secs"),
-            crate::memory::extract::EXTRACT_MIN_INTERVAL_SECS.to_string()
-        );
-        // 「每会话并发」此前只在 max_running 的 hint 里以文字出现，表里查不到；
-        // 现在它有自己的行，且展示值即派发闸真正认的那个数
-        assert!(PARAMS_TABLE
-            .iter()
-            .any(|d| d.key == "subagent.per_session_running"));
-    }
-
-    /// 工具调用熔断上界单源：子 agent 预算解析与模型循环派生链末端同一个数。
-    ///
-    /// 两处曾各写一份 `clamp(1, 500)`，其中薄壳那份还会被绕过（测试直驱 core
-    /// 传 deps.fuse_cap_override 时不经薄壳）——同一条边界抄两份，改一处漏一处
-    /// 不编译失败也不测试失败。
-    #[test]
-    fn max_function_calls_cap_is_single_sourced() {
-        let mut cfg = empty_cfg();
-        cfg.max_function_calls = Some(u32::MAX);
-        assert_eq!(
-            resolve_subagent_budget(&cfg).max_tool_calls,
-            MAX_FUNCTION_CALLS_CAP,
-            "预算侧须钳到 MAX_FUNCTION_CALLS_CAP"
-        );
-        assert_eq!(clamp_max_function_calls(0), 1, "0 次调用无意义，钳到 1");
-        assert_eq!(clamp_max_function_calls(30), 30, "区间内原样放行");
-        // 模型循环消费端（bot_model_loop::fuse_cap_for）用的是同一个常量的
-        // usize 投影——两边改数必须同时，否则一个按 500 记账一个按 999 放行
-        assert_eq!(
-            MAX_FUNCTION_CALLS_CAP as usize,
-            crate::bot_model_loop::fuse_cap_upper_bound()
-        );
-    }
-
-    /// verifier 重试预算：默认值与钳制边界单源，写侧落盘与读侧提示词同口径。
-    #[test]
-    fn resolve_verifier_retry_max_single_source() {
-        assert_eq!(resolve_verifier_retry_max(None), 1, "未配置 = 默认 1");
-        assert_eq!(resolve_verifier_retry_max(Some(0)), 0, "0 = 不重试，合法");
-        assert_eq!(
-            resolve_verifier_retry_max(Some(99)),
-            VERIFIER_RETRY_MAX_CAP,
-            "越界钳到上限"
-        );
-        assert_eq!(
-            clamp_verifier_retry_max(u32::MAX),
-            VERIFIER_RETRY_MAX_CAP,
-            "写侧与读侧共用同一钳制"
-        );
-    }
-
-    /// 表完整性：key 唯一 + 每项 category/hint 非空 + 行数下限（防漏登记）
-    #[test]
-    fn params_table_keys_unique_and_populated() {
-        let mut seen = std::collections::HashSet::new();
-        for d in PARAMS_TABLE {
-            assert!(seen.insert(d.key), "重复 key：{}", d.key);
-            assert!(!d.label.is_empty() && !d.hint.is_empty() && !d.category.is_empty());
-        }
-        assert!(
-            PARAMS_TABLE.len() >= 20,
-            "参数表 {} 项，疑似漏登记",
-            PARAMS_TABLE.len()
-        );
-    }
-
-    /// 参数表里的默认展示值必须等于代码里真正生效的那个数。
-    ///
-    /// `tools.max_output_bytes` 的 `default` 曾写「不截断」，而空配置下 resolver
-    /// 返 30000、模型循环按 `DEFAULT_TOOL_OUTPUT_CAP_BYTES` 走——表里自相矛盾，且
-    /// 没有任何测试把这两个数字绑在一起。这条把该绑的都绑上：改任一侧不同步即红。
-    ///
-    /// 现在 `default` 由 resolver 派生（不再是手写字面量），但「派生的结果等于
-    /// 运行时常量」这件事仍要钉住——派生走的是 resolver 路径，运行时走的是
-    /// 模型循环里的常量，两条路必须落在同一个数上。
-    #[test]
-    fn params_table_defaults_match_runtime_constants() {
-        let views = effective_params(&empty_cfg());
-        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-        assert_eq!(
-            by_key("tools.max_output_bytes").default,
-            crate::bot_model_loop::DEFAULT_TOOL_OUTPUT_CAP_BYTES.to_string(),
-            "参数表展示的默认截断字节数与模型循环实际生效的默认值不符"
-        );
-        // 其余可编辑项：展示的默认 = 运行时内置默认常量
-        assert_eq!(
-            by_key("loop.max_rounds").default,
-            DEFAULT_MAX_ROUNDS.to_string()
-        );
-        assert_eq!(
-            by_key("loop.max_function_calls").default,
-            DEFAULT_SUBAGENT_MAX_TOOL_CALLS.to_string()
-        );
-        assert_eq!(
-            by_key("loop.history_budget_chars").default,
-            DEFAULT_HISTORY_BUDGET_CHARS.to_string()
-        );
-        assert_eq!(
-            by_key("subagent.max_turns").default,
-            DEFAULT_SUBAGENT_MAX_TURNS.to_string()
-        );
-        assert_eq!(
-            by_key("subagent.max_wall_secs").default,
-            DEFAULT_SUBAGENT_MAX_WALL_SECS.to_string()
-        );
-        assert_eq!(
-            by_key("search.max_results").default,
-            DEFAULT_SEARCH_MAX_RESULTS.to_string()
-        );
-        // 全局 max_tokens：默认 32768（后端早已从 8192 提到 32K），表里若还写
-        // 8192 就是页面与运行时各说各话
-        assert_eq!(
-            by_key("model.max_tokens").default,
-            crate::bot::config::schema::DEFAULT_MAX_TOKENS.to_string()
-        );
-        // 越界配置：展示值必须已经是钳过的生效值，不能是用户填的原值
-        let mut cfg = empty_cfg();
-        cfg.max_tool_output_bytes = Some(MAX_TOOL_OUTPUT_BYTES_CAP + 100_000);
-        let views = effective_params(&cfg);
-        let v = views
-            .iter()
-            .find(|v| v.key == "tools.max_output_bytes")
-            .unwrap();
-        assert_eq!(v.value, MAX_TOOL_OUTPUT_BYTES_CAP.to_string());
-    }
-
-    /// 可填范围（min/max）必须等于实际生效的钳制边界。
-    ///
-    /// 设置页把这两个数直接显示成「可填 X–Y」——它跟真正生效的钳制不是同一个
-    /// 数的话，页面就在骗人（用户填 999，运行时按 200 走，页面却说可填到 999）。
-    #[test]
-    fn editable_rows_ranges_match_clamp_bounds() {
-        let views = effective_params(&empty_cfg());
-        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-        let range = |k: &str| -> (Option<u64>, Option<u64>) {
-            let v = by_key(k);
-            (v.min, v.max)
-        };
-        assert_eq!(
-            range("loop.max_rounds"),
-            (Some(MAX_ROUNDS_MIN as u64), Some(MAX_ROUNDS_CAP as u64))
-        );
-        assert_eq!(
-            range("loop.max_function_calls"),
-            (
-                Some(MAX_FUNCTION_CALLS_MIN as u64),
-                Some(MAX_FUNCTION_CALLS_CAP as u64)
-            )
-        );
-        assert_eq!(
-            range("loop.history_budget_chars"),
-            (
-                Some(HISTORY_BUDGET_MIN as u64),
-                Some(HISTORY_BUDGET_MAX as u64)
-            )
-        );
-        assert_eq!(
-            range("subagent.max_turns"),
-            (
-                Some(crate::db::MIN_SUBAGENT_TURNS as u64),
-                Some(crate::db::MAX_TURNS_HARD_CAP as u64)
-            )
-        );
-        assert_eq!(
-            range("subagent.max_wall_secs"),
-            (
-                Some(SUBAGENT_MAX_WALL_SECS_MIN),
-                Some(SUBAGENT_MAX_WALL_SECS_MAX)
-            )
-        );
-        assert_eq!(
-            range("search.max_results"),
-            (
-                Some(SEARCH_MAX_RESULTS_MIN as u64),
-                Some(SEARCH_MAX_RESULTS_CAP as u64)
-            )
-        );
-        assert_eq!(
-            range("tools.ask_budget"),
-            (Some(ASK_BUDGET_MIN as u64), Some(ASK_BUDGET_MAX as u64))
-        );
-        // 全局 max_tokens：页面显示的「可填 X–Y」要与写侧/读侧同一个边界
-        assert_eq!(
-            range("model.max_tokens"),
-            (
-                Some(crate::bot::config::schema::MIN_MAX_TOKENS as u64),
-                Some(crate::bot::config::schema::MAX_MAX_TOKENS as u64)
-            )
-        );
-        // 痕迹保留期：手动清理的输入框公示「1–365」，与实际删的范围同源
-        assert_eq!(
-            range("trace.retention_days"),
-            (
-                Some(crate::db::trace::TRACE_RETENTION_MIN_DAYS as u64),
-                Some(crate::db::trace::TRACE_RETENTION_MAX_DAYS as u64)
-            )
-        );
-        // 工具输出截断：0 是合法值（显式关闭截断），不是下界 1
-        assert_eq!(
-            range("tools.max_output_bytes"),
-            (Some(0), Some(MAX_TOOL_OUTPUT_BYTES_CAP as u64))
-        );
-        // 范围两端都要真的被钳制函数认（否则展示与生效又是一回事）
-        assert_eq!(clamp_max_rounds(MAX_ROUNDS_MIN), MAX_ROUNDS_MIN);
-        assert_eq!(clamp_max_rounds(MAX_ROUNDS_CAP), MAX_ROUNDS_CAP);
-        assert_eq!(
-            clamp_max_function_calls(MAX_FUNCTION_CALLS_CAP),
-            MAX_FUNCTION_CALLS_CAP
-        );
-        assert_eq!(clamp_ask_budget(ASK_BUDGET_MAX), ASK_BUDGET_MAX);
-        assert_eq!(
-            clamp_search_max_results(SEARCH_MAX_RESULTS_CAP),
-            SEARCH_MAX_RESULTS_CAP
-        );
-    }
-
-    /// 空配置 → 全部默认来源（可编辑区）；只读区恒 hardcoded
-    #[test]
-    fn effective_params_defaults_and_hardcoded() {
-        let views = effective_params(&empty_cfg());
-        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-        assert_eq!(by_key("loop.max_rounds").value, "50");
-        assert_eq!(by_key("loop.max_rounds").source, "default");
-        assert_eq!(by_key("subagent.max_wall_secs").value, "600");
-        assert_eq!(by_key("schedule.scan_secs").source, "hardcoded");
-        assert!(!by_key("schedule.scan_secs").editable);
-        assert_eq!(views.len(), PARAMS_TABLE.len());
-    }
-
-    /// 配置覆盖 → source=config 且值跟随；钳制在 resolve_* 生效
-    #[test]
-    fn effective_params_reflect_config_and_clamp() {
-        let mut cfg = empty_cfg();
-        cfg.max_rounds = Some(999);
-        cfg.subagent_max_turns = Some(1);
-        cfg.search_max_results = Some(99);
-        let views = effective_params(&cfg);
-        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-        assert_eq!(
-            by_key("loop.max_rounds").value,
-            "200",
-            "表展示生效值：999 已被 resolve 钳到硬顶 200"
-        );
-        assert_eq!(by_key("loop.max_rounds").source, "config");
-        // resolve_* 才是行为入口：钳 5..=200
-        assert_eq!(resolve_max_rounds_cfg(&cfg), 200);
-        assert_eq!(resolve_subagent_budget(&cfg).max_turns, 1);
-        assert_eq!(
-            by_key("search.max_results").value,
-            "10",
-            "表展示生效值：99 已钳到硬顶 10"
-        );
-        assert_eq!(resolve_search_max_results(&cfg), 10, "钳到硬顶 10");
-        // 非法推理强度：下游静默回退 medium，展示同步
-        cfg.reasoning_effort = Some("foobar".into());
-        let views = effective_params(&cfg);
-        let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-        assert_eq!(
-            by_key("model.reasoning_effort").value,
-            "medium",
-            "非法档位展示回退后的生效值"
-        );
-    }
-
-    /// resolve 链：子 agent 预算三项生效 + 各自钳制；工具调用全域同源 max_function_calls
-    #[test]
-    fn resolve_subagent_budget_independent_fields() {
-        let mut cfg = empty_cfg();
-        cfg.max_function_calls = Some(9999);
-        cfg.subagent_max_wall_secs = Some(10);
-        let b = resolve_subagent_budget(&cfg);
-        assert_eq!(b.max_turns, DEFAULT_SUBAGENT_MAX_TURNS);
-        assert_eq!(b.max_tool_calls, 500, "全域同源，钳 1..=500");
-        assert_eq!(b.max_wall_seconds, 30, "钳 30..=3600");
-    }
-
-    /// resolve 链：未配置 max_function_calls 时子 agent 工具调用落内置默认 100
-    #[test]
-    fn resolve_subagent_budget_tool_calls_default() {
-        let b = resolve_subagent_budget(&empty_cfg());
-        assert_eq!(b.max_tool_calls, DEFAULT_SUBAGENT_MAX_TOOL_CALLS);
-    }
-
-    /// resolve 链：历史预算钳 20K..=500K
-    #[test]
-    fn resolve_history_budget_clamps() {
-        let mut cfg = empty_cfg();
-        cfg.history_budget_chars = Some(100);
-        assert_eq!(resolve_history_budget_chars(&cfg), HISTORY_BUDGET_MIN);
-        cfg.history_budget_chars = Some(999_999_999);
-        assert_eq!(resolve_history_budget_chars(&cfg), HISTORY_BUDGET_MAX);
-        cfg.history_budget_chars = None;
-        assert_eq!(
-            resolve_history_budget_chars(&cfg),
-            DEFAULT_HISTORY_BUDGET_CHARS
-        );
-    }
-
-    /// 思考段回灌开关：只有 0/1 两态，别的值一律夹到 1；未配置 = 关。
-    #[test]
-    fn reasoning_echo_is_two_state_and_defaults_off() {
-        assert_eq!(reasoning_echo_enabled_value(None), 0);
-        assert!(!reasoning_echo_on(None));
-        assert_eq!(reasoning_echo_enabled_value(Some(0)), 0);
-        assert!(!reasoning_echo_on(Some(0)));
-        assert_eq!(reasoning_echo_enabled_value(Some(1)), 1);
-        assert!(reasoning_echo_on(Some(1)));
-        // 越界值夹到上界（当作开），不是夹成关——写侧已钳过，这里是读侧兜底
-        assert_eq!(reasoning_echo_enabled_value(Some(9)), 1);
-    }
-
-    /// 思考段回灌行的可填范围是 0–1，与钳制边界同源。
-    #[test]
-    fn reasoning_echo_param_row_range_matches_clamp() {
-        let views = effective_params(&empty_cfg());
-        let v = views
-            .iter()
-            .find(|v| v.key == "loop.reasoning_echo_enabled")
-            .expect("参数表应有思考段回灌这一条");
-        assert_eq!(v.min, Some(0));
-        assert_eq!(v.max, Some(REASONING_ECHO_ENABLED_MAX as u64));
-        assert!(v.editable);
-        assert_eq!(v.default, "0", "内置默认是关");
-    }
-}
+#[cfg(test)]
+mod tests;

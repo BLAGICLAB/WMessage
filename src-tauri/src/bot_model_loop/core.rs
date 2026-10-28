@@ -15,6 +15,9 @@ use crate::bot_skills::skill_exit_body;
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
 
+/// 收尾窗放行的工具白名单（写产物类 + 读自己的任务卡）。
+use crate::bot::constants::WRAP_UP_TOOLS;
+
 /// 工具失败后的「换策略」提示：按工具给不同的下一步指引。
 ///
 /// run_python 单列一条：内联代码出错时，模型最常见的反应是把整段代码重写一遍
@@ -76,6 +79,7 @@ where
     let RoundCtx {
         fuse_cap,
         soft_warn_at,
+        wrap_up_at,
         rounds_warn_at,
         mut plan,
     } = prepare_round(http, stop, deps, max_rounds);
@@ -535,6 +539,7 @@ where
                 &mut tool_msg_ages,
                 fuse_cap,
                 soft_warn_at,
+                wrap_up_at,
                 &user_intent,
                 plan_state.as_deref_mut(),
                 deps,
@@ -669,6 +674,7 @@ async fn dispatch_round<X, XP, R, RP>(
     tool_msg_ages: &mut Vec<(usize, usize)>,
     fuse_cap: usize,
     soft_warn_at: usize,
+    wrap_up_at: usize,
     user_intent: &str,
     plan_state: Option<&mut crate::bot_plan::PlanState>,
     deps: &ModelLoopDeps<'_>,
@@ -739,6 +745,37 @@ where
                 final_text, &hint, fuse_cap,
             )));
         }
+        // 收尾窗（95% 预算）：达到后只放行写产物类工具，且这些调用不占配额。
+        //
+        // 此前主会话只有「触顶即熔断」一档，模型撞线时正在跑的工具、已经说出口
+        // 的正文一起丢——产出归零。收尾窗给模型留一段「把已拿到的结果写成产物」
+        // 的路，与子 agent 的收尾窗同款口径（只放行写产物类工具、不计配额）。
+        //
+        // 计数口径：进入收尾窗的那次调用**照常计数**（它确实消耗了一次预算），
+        // 但窗口内放行的写类调用不计数——否则窗口会被自己的写调用烧光。
+        let in_wrap_up = *function_calls_total >= wrap_up_at;
+        if in_wrap_up && !WRAP_UP_TOOLS.contains(&name.as_str()) {
+            let deny_msg = format!(
+                "⚠️ 工具调用预算已进入收尾窗（{}/{fuse_cap}）：只放行写产物类工具（write_artifact_file / write_file / edit_file）与 read_own_card。请把已有发现写成产物文件，然后收尾。",
+                *function_calls_total
+            );
+            audit(
+                crate::audit::AuditLevel::Warn,
+                "fuse_wrap_up_deny",
+                vec![
+                    ("used", function_calls_total.to_string()),
+                    ("cap", fuse_cap.to_string()),
+                    ("tool", name.clone()),
+                ],
+            );
+            msgs.push(serde_json::json!({
+                "role": "tool",
+                "tool_call_id": id,
+                "content": deny_msg,
+            }));
+            tool_msg_ages.push((round, msgs.len() - 1));
+            continue;
+        }
         // 软警告（soft_warn_at，按会话熔断上限派生）：置标志，推迟到本轮 tool 响应全部回填后再注入——
         // 若在此直接 push user 消息，会插进 assistant(tool_calls) 与 tool 响应之间，
         // 破坏「tool_calls 后必须紧跟 tool 消息」的协议，下一轮请求被 API 拒为
@@ -807,6 +844,11 @@ where
         // 成批发读类调用试探，若被拒的也计数，一次并行批就能烧光收尾裕量，
         // 模型永远轮不到写产物（写类在收尾窗放行、占裕量，正是设计语义）。
         if tool_outcome.status == crate::bot::registry::ToolStatus::Denied {
+            *function_calls_total = function_calls_total.saturating_sub(1);
+        }
+        // 收尾窗内放行的写类调用不占配额：窗口里的额度是给「把结果落盘」用的，
+        // 写调用若照常计数，模型多写几次就把窗口烧光，反而没机会收尾。
+        if in_wrap_up && WRAP_UP_TOOLS.contains(&name.as_str()) {
             *function_calls_total = function_calls_total.saturating_sub(1);
         }
         // 证据池：参数与返回都留着。成功与失败都记——失败信息也是模型看得见的

@@ -643,6 +643,22 @@ pub(super) async fn bot_chat_inner(
             c.session_id = Some(sid.clone());
         }
     }
+    // 主会话墙钟预算（软墙钟 + 墙钟熔断留产）。
+    //
+    // 此前主会话**没有墙钟**（只有子 agent 有）：长任务能被无限拖住，模型
+    // 反复探索时没有任何时间维度的兜底。档位给了全局墙钟后，主会话这一路
+    // 也必须有一份，否则「全局墙钟」名不副实。
+    //
+    // 期限从**进入本轮循环**起算（与子 agent 的「running 起算」同口径）：
+    // 排队/准备阶段不算在模型跑的时间里。
+    let main_wall_secs = crate::bot::params::resolve_main_wall_secs(&cfg_for_rounds);
+    let main_wall_budget = crate::bot_model_loop::WallBudget {
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(main_wall_secs),
+        reserve: std::time::Duration::from_secs(crate::bot::params::subagent_wall_reserve_secs(
+            main_wall_secs,
+        )),
+        max_wall_seconds: main_wall_secs,
+    };
     let loop_result = crate::bot_model_loop::run_model_loop(
         app,
         msgs,
@@ -655,8 +671,8 @@ pub(super) async fn bot_chat_inner(
         // 失败轨迹也要落 trace：熔断/API 失败时把已跑出的轮数工具数交回，
         // 否则 trace 记 turns=0（跑满 50 轮撞熔断那次实测就是 0）
         Some(&failed_trace),
-        // 主聊天不参与子 agent 墙钟治理
-        None,
+        // 主会话墙钟（档位全局墙钟的 60% 份额）
+        Some(main_wall_budget),
     )
     .await;
     // 「已吸收」的 id 交出去，不在这里记：谁送达、谁记。
