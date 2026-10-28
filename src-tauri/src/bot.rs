@@ -40,8 +40,6 @@ pub use crate::bot_model_loop::{
     run_model_loop_core, shared_llm_client, LlmHttp, LoopTrace, ModelLoopDeps, ToolCallDelta,
     TurnStatus,
 };
-// 逐步执行的轮数上限（取参数表里的默认值）。
-pub(crate) use crate::bot_model_loop::DEFAULT_MAX_ROUNDS;
 // bot_slash 是私有模块，集成测试（tests/llm_integration.rs）驱动
 // run_model_loop_core 需要构造停止守卫，此处转出口径唯一公开。
 pub use crate::bot_slash::{StopGuard, StopToken};

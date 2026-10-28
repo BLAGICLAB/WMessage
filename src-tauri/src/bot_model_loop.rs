@@ -38,7 +38,7 @@ mod types;
 #[allow(unused_imports)]
 pub use self::core::run_model_loop_core;
 #[allow(unused_imports)]
-pub use self::request::{apply_inference_params, LLM_HEADER_TIMEOUT};
+pub use self::request::apply_inference_params;
 #[allow(unused_imports)]
 pub use self::shell::{noop_replan, resolve_temperature, run_model_loop, shared_llm_client};
 #[allow(unused_imports)]
@@ -79,7 +79,7 @@ pub(crate) use self::request::{
     compact_before_round, prepare_round, request_round, LLM_RETRY_DELAY, MAX_LLM_ATTEMPTS,
     MAX_STREAM_RETRIES,
 };
-pub(crate) use self::shell::{resolve_max_rounds, DEFAULT_MAX_ROUNDS};
+pub(crate) use self::shell::resolve_max_rounds;
 pub(crate) use self::sse::{read_sse_stream, stream_round};
 pub(crate) use self::stream::{
     claim_mutation_fires, feed_think, mutation_succeeded, stamp_last_assistant_reasoning,

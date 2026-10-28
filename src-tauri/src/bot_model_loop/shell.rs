@@ -12,13 +12,8 @@ use crate::error::CommandError;
 use tauri::AppHandle;
 use tauri::Emitter;
 
-/// 默认对话轮数（聊天 / 任务执行 / 逐步执行统一为 50）；
-/// 多步 Skill 可在 SKILL.md frontmatter 自报 max_rounds 覆盖（见 resolve_max_rounds）；
-/// 配置 `maxRounds` 亦可覆盖默认（Skill 仍最优先），常量单源 bot/params.rs。
-pub(crate) const DEFAULT_MAX_ROUNDS: usize = crate::bot::params::DEFAULT_MAX_ROUNDS as usize;
-
 /// 本轮工具循环的轮数上限：Skill 自报 max_rounds 最优先，其次配置 maxRounds，
-/// 都没有 → DEFAULT_MAX_ROUNDS（单源 bot/params.rs）。
+/// 都没有 → 调用方给的默认值（取 bot/params.rs 的 DEFAULT_MAX_ROUNDS）。
 pub(crate) fn resolve_max_rounds(
     skill_max_rounds: Option<usize>,
     config_max_rounds: usize,

@@ -805,10 +805,13 @@ mod rounds_fuse_tests {
         let meta = crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
         assert_eq!(meta.max_rounds, None);
         assert_eq!(
-            resolve_max_rounds(meta.max_rounds, DEFAULT_MAX_ROUNDS),
-            DEFAULT_MAX_ROUNDS
+            resolve_max_rounds(
+                meta.max_rounds,
+                crate::bot::params::DEFAULT_MAX_ROUNDS as usize
+            ),
+            crate::bot::params::DEFAULT_MAX_ROUNDS as usize
         );
-        assert_eq!(DEFAULT_MAX_ROUNDS, 50);
+        assert_eq!(crate::bot::params::DEFAULT_MAX_ROUNDS, 50);
     }
 
     #[test]
