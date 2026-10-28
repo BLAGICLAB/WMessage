@@ -63,7 +63,7 @@ export interface SourcesFile {
   sources: ScanSource[];
 }
 
-interface Subtask {
+export interface Subtask {
   id: string;
   text: string;
   done: boolean;

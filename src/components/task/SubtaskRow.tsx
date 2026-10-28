@@ -10,14 +10,7 @@ import { useEffect, useState } from "react";
 import { ArrowUpRight, Plus } from "lucide-react";
 import { useInlineEdit } from "../useInlineEdit";
 import { stopPointer as stop } from "../../lib/stopPointer";
-
-export type Subtask = {
-  id: string;
-  text: string;
-  done: boolean;
-  /** 已生成子任务卡：在场时显示 ↗ 跳转按钮（detail 模式无 taskId 则显示 ＋ 生成为任务卡） */
-  taskId?: string;
-};
+import type { Subtask } from "../../types";
 
 export type SubtaskRowVariant = "spacious" | "detail";
 

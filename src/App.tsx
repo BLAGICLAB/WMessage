@@ -237,6 +237,13 @@ type EditorState = {
   isNew: boolean;
 };
 
+/** tasks-updated 事件载荷（后端 db 层写库后广播，source = Bot/Api/Migration） */
+type TasksUpdatedPayload = {
+  upserts?: Task[];
+  deletes?: string[];
+  source?: string;
+};
+
 function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const tasksRef = useRef<Task[]>([]);
@@ -494,11 +501,7 @@ function App() {
     // 连续两个事件（bot 一轮多工具调用）都从同一个旧 tasksRef 出发合并、后完成者
     // 整体覆盖，先处理的事件在主窗口 state 里丢失（DB 不受影响）。Promise 链排队，逐个处理。
     // 单个事件失败 catch 住不阻断后续队列。
-    const handle = async (payload: {
-      upserts?: Task[];
-      deletes?: string[];
-      source?: string;
-    }) => {
+    const handle = async (payload: TasksUpdatedPayload) => {
       const upserts = payload?.upserts ?? [];
       const deletes = payload?.deletes ?? [];
       if (!upserts.length && !deletes.length) return;
@@ -555,11 +558,7 @@ function App() {
         console.error("emit tasks-changed failed", err);
       }
     };
-    const unlisten = listen<{
-      upserts?: Task[];
-      deletes?: string[];
-      source?: string;
-    }>("tasks-updated", (e) => {
+    const unlisten = listen<TasksUpdatedPayload>("tasks-updated", (e) => {
       // SYNC-1：并入全局 mutating.chain（与 UI mutate/每分钟规则定时器同一条串行链）。
       // 原先独立局部 queue 与 mutate 链互不感知：handle 的 await 让出窗口内，
       // UI 写从另一条链读到旧 tasksRef，merge 落盘后该写基线过期 →

@@ -5,7 +5,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SubtaskRow, type Subtask } from "./SubtaskRow";
+import { SubtaskRow } from "./SubtaskRow";
+import type { Subtask } from "../../types";
 
 const baseSub: Subtask = { id: "s1", text: "子任务一", done: false };
 
