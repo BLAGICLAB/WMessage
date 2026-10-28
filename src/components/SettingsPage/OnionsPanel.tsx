@@ -4,7 +4,8 @@
 // 服务端按「实际可用工具 = profile 白名单 ∩ 配置档 allowed」收窄权限。
 // 内置三份（probe / writereditor / validator）在首次启动时播种，列表里标「内置」。
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useFlashMsg } from "../../lib/useFlashMsg";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Download, Layers, Upload } from "lucide-react";
@@ -64,8 +65,7 @@ export function OnionsPanel() {
   const [configs, setConfigs] = useState<OnionSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [notice, flash] = useFlashMsg(3000);
 
   const refresh = useCallback(async () => {
     try {
@@ -83,12 +83,6 @@ export function OnionsPanel() {
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  const flash = (msg: string) => {
-    setNotice(msg);
-    if (noticeTimer.current) clearTimeout(noticeTimer.current);
-    noticeTimer.current = setTimeout(() => setNotice(""), 3000);
-  };
 
   const importConfig = async () => {
     if (busy) return;

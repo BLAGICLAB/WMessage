@@ -5,6 +5,7 @@
 // 命令：mem_list / mem_update / mem_delete / mem_stats（后端薄层，复用 store/rank）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFlashMsg } from "../../lib/useFlashMsg";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -712,17 +713,9 @@ function MemoryTuningCard() {
   /** GET 成功前禁存：空表 Save 会把 memoryTuning 块抹成默认还误报「已保存」 */
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [msg, flashMsg] = useFlashMsg(4000);
   /** 同帧双击闸（同 busyRef 先例）：state 要等重渲染提交，同帧两次点击都过不了 disabled 检查 */
   const saveBusyRef = useRef(false);
-  /** 提示自动消退计时器：重设前清旧（防连续保存时旧计时器提前清掉新提示），卸载清理 */
-  const msgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (msgTimer.current) clearTimeout(msgTimer.current);
-    },
-    [],
-  );
 
   useEffect(() => {
     void (async () => {
@@ -737,25 +730,23 @@ function MemoryTuningCard() {
       } catch (e) {
         // 读失败保持空表（后端同口径默认），但保存必须禁用 + 提示可见：
         // 纯静默会让用户对着空表点保存，抹掉全部已调参数
-        setMsg(`检索参数读取失败：${formatCommandError(e)}`);
+        flashMsg(`检索参数读取失败：${formatCommandError(e)}`, 0);
       }
     })();
-  }, []);
+  }, [flashMsg]);
 
   const save = async () => {
     if (saveBusyRef.current) return;
     saveBusyRef.current = true;
     setBusy(true);
-    setMsg("");
+    flashMsg("", 0);
     try {
       const parsed = parseMemoryTuningInput(tuning);
       await invoke("memory_tuning_set", { tuning: parsed });
-      setMsg("已保存");
+      flashMsg("已保存");
     } catch (e) {
-      setMsg(formatCommandError(e));
+      flashMsg(formatCommandError(e));
     } finally {
-      if (msgTimer.current) clearTimeout(msgTimer.current);
-      msgTimer.current = setTimeout(() => setMsg(""), 4000);
       saveBusyRef.current = false;
       setBusy(false);
     }

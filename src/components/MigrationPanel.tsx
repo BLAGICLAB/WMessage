@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useFlashMsg } from "../lib/useFlashMsg";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Check,
@@ -46,7 +47,7 @@ export function MigrationPanel() {
   const [scanReport, setScanReport] = useState<MigrationReport | null>(null);
   const [status, setStatus] = useState<MigrationStatus | null>(null);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, flashNotice] = useFlashMsg(3000);
   /** 整理记录弹窗（绑定整理与扫描整理写同一份 migration.log，最新在前） */
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
@@ -123,8 +124,7 @@ export function MigrationPanel() {
     try {
       const src = await invoke<SourcesFile>("migration_sources_add_folder");
       setSources(src.sources ?? []);
-      setNotice("已添加整理来源");
-      setTimeout(() => setNotice(""), 3000);
+      flashNotice("已添加整理来源");
     } catch (e) {
       handleCommandError(e, "migration_sources_add_folder", { silent: true });
       setError(formatCommandError(e));
@@ -136,8 +136,7 @@ export function MigrationPanel() {
   const downloadTemplate = async () => {
     try {
       const path = await invoke<string>("migration_rules_template_save");
-      if (path) setNotice(`模版已保存：${path}`);
-      setTimeout(() => setNotice(""), 5000);
+      if (path) flashNotice(`模版已保存：${path}`, 5000);
     } catch (e) {
       handleCommandError(e, "migration_rules_template_save", { silent: true });
       setError(formatCommandError(e));
@@ -147,8 +146,7 @@ export function MigrationPanel() {
   const importRules = async () => {
     try {
       const count = await invoke<number>("migration_rules_import");
-      setNotice(`已导入 ${count} 条规则`);
-      setTimeout(() => setNotice(""), 3000);
+      flashNotice(`已导入 ${count} 条规则`);
       await refresh();
     } catch (e) {
       handleCommandError(e, "migration_rules_import", { silent: true });

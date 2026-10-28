@@ -5,6 +5,7 @@
  *  搬移是逐字的：语句原样保留、顺序不变；对外接口只有 params 与返回值。
  */
 import { useEffect, useState } from "react";
+import { useFlashMsg } from "../../lib/useFlashMsg";
 import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError, formatCommandError } from "../../lib/errorHandler";
 import type { ApiStatus, ModelsByProvider, ActiveModelId } from "./types";
@@ -69,7 +70,7 @@ export function useSettingsOps(params: SettingsOpsParams) {
   const [exportingWs, setExportingWs] = useState(false);
   const [importingWs, setImportingWs] = useState(false);
   const [consolidateBusy, setConsolidateBusy] = useState(false);
-  const [consolidateMsg, setConsolidateMsg] = useState("");
+  const [consolidateMsg, flashConsolidateMsg] = useFlashMsg(4000);
   const toggleTavily = async () => {
     const next = { ...config, tavilyEnabled: !config.tavilyEnabled };
     setConfig(next);
@@ -142,23 +143,23 @@ export function useSettingsOps(params: SettingsOpsParams) {
   const consolidateNow = async () => {
     if (consolidateBusy) return;
     setConsolidateBusy(true);
-    setConsolidateMsg("");
+    flashConsolidateMsg("", 0);
     try {
       const r = await invoke<{
         merged: number;
         distilled: number;
         contradictions: number;
       }>("memory_consolidate_now");
-      setConsolidateMsg(
+      flashConsolidateMsg(
         `整理完成：合并 ${r.merged} 条、提炼 ${r.distilled} 条规律、解决 ${r.contradictions} 处矛盾`,
+        4000,
       );
       await loadConfig();
     } catch (e) {
       handleCommandError(e, "memory_consolidate_now", { silent: true });
-      setConsolidateMsg(`整理失败：${formatCommandError(e)}`);
+      flashConsolidateMsg(`整理失败：${formatCommandError(e)}`, 4000);
     } finally {
       setConsolidateBusy(false);
-      setTimeout(() => setConsolidateMsg(""), 4000);
     }
   };
   const clearVendorKey = async () => {

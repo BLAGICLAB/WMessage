@@ -8,6 +8,7 @@
 // stdio 启动器白名单前后端双重把关（前端下拉只能选白名单内启动器）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useFlashMsg } from "../../lib/useFlashMsg";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
@@ -247,24 +248,11 @@ export function McpPanel({ active = true }: { active?: boolean }) {
   const [pending, setPending] = useState<McpServerConfig | null>(null); // 确认弹窗
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
+  const [notice, flashNotice] = useFlashMsg(3000);
   /** 展开工具清单的服务器 id + 已拉取的工具（toolsError = 拉取失败，行内展示） */
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [tools, setTools] = useState<McpToolBrief[]>([]);
   const [toolsError, setToolsError] = useState("");
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(
-    () => () => {
-      if (noticeTimer.current) clearTimeout(noticeTimer.current);
-    },
-    [],
-  );
-
-  const flashNotice = useCallback((msg: string) => {
-    setNotice(msg);
-    if (noticeTimer.current) clearTimeout(noticeTimer.current);
-    noticeTimer.current = setTimeout(() => setNotice(""), 3000);
-  }, []);
 
   // 平台采集能力：后端把同一份能力标志挂在每台服务器上（平台级的，面板只展示一次）。
   // false = 本平台采不到——内存 / CPU / 监听恒空是「没判」，不是「没占用」。
