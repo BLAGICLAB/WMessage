@@ -1,10 +1,12 @@
-//! 任务执行问答引擎（ask_user 工具 + 通知页应答）。
+//! 任务问答引擎（ask_user 工具 + 通知页应答 + 会话内问题卡事件）。
 //! 原随工作流画布而生（workflow_questions），画布退役后中立化保留——
-//! 手动执行任务卡、以及未来一切「有人值守」的执行链路共用。
+//! 手动执行任务卡与普通聊天回合（bot_chat 用户轮）共用。
 //!
 //! ask 端（ask_user 工具，bot/registry 挂载）：落 notifications
 //! （kind=workflow_question，遗留名含库内历史行，id=wfq:{qid}）
-//! + 注册 oneshot waiter（AppState.question_waiters）阻塞等待。
+//! + 注册 oneshot waiter（AppState.question_waiters）阻塞等待
+//! + `bot-ask`/`bot-ask-resolved` 事件（会话内问题卡，经 emit_recorded
+//! 进回放缓冲——重开会话可还原终态）。
 //! 应答端（ask_respond 命令，通知页问题卡 invoke）：
 //! 答 → resolve 通知 → 唤醒（存活才发）→ 审计广播。
 //!
@@ -129,7 +131,10 @@ pub async fn ask_respond(
     )
     .remove(&question_id)
     {
-        let _ = tx.send(text);
+        let _ = tx.send(AskReply {
+            action: action.clone(),
+            text,
+        });
     }
     crate::audit::write_event(
         &app,
@@ -146,14 +151,60 @@ pub async fn ask_respond(
 /// 提问等待上限
 pub(crate) const ASK_TIMEOUT_SECS: u64 = 24 * 3600;
 
-/// 提问通知标题主体
-fn question_title(node_title: &str) -> String {
-    format!("任务卡「{node_title}」提问")
+/// 终态事件里「超时/停止未答」的动作值（与应答动作 answer/assume/dismiss 并列）
+pub const RESOLVE_EXPIRED: &str = "expired";
+
+/// waiter 回执：应答动作 + 回灌文本（answer 原文 / 未答按假设文案）。
+/// 动作随行是为了终态事件能区分「用户答了」与「按假设继续」——单靠文本
+/// 分不清（用户可以照抄那句假设文案当回答）。
+#[derive(Debug)]
+pub(crate) struct AskReply {
+    pub action: String,
+    pub text: String,
 }
 
-/// 会话级提问上下文（bot_chat 会话建立时注册、收尾注销；ask_user 查表）。
+/// 提问通知标题主体（按来源分叉：任务卡带卡名，聊天不带）
+fn question_title(origin: AskOrigin, node_title: &str) -> String {
+    match origin {
+        AskOrigin::TaskCard => format!("任务卡「{node_title}」提问"),
+        AskOrigin::Chat => "聊天提问".to_string(),
+    }
+}
+
+/// `bot-ask` 事件载荷（纯逻辑，单测锚点）：会话内问题卡与通知中心同构
+pub(crate) fn ask_event_payload(qid: &str, args: &AskArgs) -> Value {
+    serde_json::json!({
+        "questionId": qid,
+        "question": args.question,
+        "why": args.why,
+        "options": args.options,
+        "assumption": args.assumption,
+    })
+}
+
+/// `bot-ask-resolved` 事件载荷（纯逻辑，单测锚点）：action ∈
+/// answer/assume/dismiss/expired；answer 只在用户作答时携带
+pub(crate) fn resolved_event_payload(qid: &str, action: &str, answer: Option<&str>) -> Value {
+    serde_json::json!({
+        "questionId": qid,
+        "action": action,
+        "answer": answer,
+    })
+}
+
+/// 提问来源（决定通知标题口径；预算与等待机制不分叉）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskOrigin {
+    /// 手动执行任务卡（现有路径）
+    TaskCard,
+    /// 普通聊天回合（bot_chat 用户轮）
+    Chat,
+}
+
+/// 会话级提问上下文（会话建立时注册、收尾注销；ask_user 查表）。
 /// 预算计数在条目上——同一把锁内检查+扣减，无竞态。
 pub struct AskRegistration {
+    pub origin: AskOrigin,
     pub task_id: String,
     pub node_title: String,
     /// 提问模式开关
@@ -175,8 +226,30 @@ pub(crate) fn register_ask_context<R: tauri::Runtime>(
     crate::db::lock::lock_or_recover(crate::app_state::ask_contexts(app), "ask_contexts").insert(
         session_id.to_string(),
         AskRegistration {
+            origin: AskOrigin::TaskCard,
             task_id: task_id.to_string(),
             node_title: node_title.to_string(),
+            asks_enabled: true,
+            asks_left: std::sync::atomic::AtomicU8::new(budget),
+            asks_max: budget,
+        },
+    );
+}
+
+/// 注册聊天提问上下文（bot_chat 用户轮在 run_model_loop 前后成对调用）。
+/// 预算与任务卡同源（ASK_BUDGET_DEFAULT）；task_id/node_title 留空——
+/// 通知标题走「聊天提问」，不挂任务卡名。
+pub(crate) fn register_chat_ask_context<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    session_id: &str,
+) {
+    let budget = crate::bot::constants::ASK_BUDGET_DEFAULT;
+    crate::db::lock::lock_or_recover(crate::app_state::ask_contexts(app), "ask_contexts").insert(
+        session_id.to_string(),
+        AskRegistration {
+            origin: AskOrigin::Chat,
+            task_id: String::new(),
+            node_title: String::new(),
             asks_enabled: true,
             asks_left: std::sync::atomic::AtomicU8::new(budget),
             asks_max: budget,
@@ -291,7 +364,7 @@ pub(crate) async fn engine_ask_user(
     };
     let Some(sid) = session_id else {
         return ToolResult::warn(
-            "ask_user 仅任务执行中可用（手动执行任务卡）；聊天中请直接文字提问。请按你的假设继续执行。",
+            "当前会话未开放提问（提问仅限聊天与手动执行任务卡）。请按你的假设继续执行。",
             Vec::new(),
         );
     };
@@ -300,12 +373,12 @@ pub(crate) async fn engine_ask_user(
         parsed.assumption
     );
     // 锁内一次取全量 owned 数据（含模式检查与预算扣减）——引用不出锁作用域
-    let (task_id, node_title, budget_left, asks_max) = {
+    let (origin, task_id, node_title, budget_left, asks_max) = {
         let mut map =
             crate::db::lock::lock_or_recover(crate::app_state::ask_contexts(app), "ask_contexts");
         let Some(reg) = map.get_mut(sid) else {
             return ToolResult::warn(
-                "ask_user 仅任务执行中可用（手动执行任务卡）；聊天中请直接文字提问。请按你的假设继续执行。",
+                "当前会话未开放提问（提问仅限聊天与手动执行任务卡）。请按你的假设继续执行。",
                 Vec::new(),
             );
         };
@@ -318,6 +391,7 @@ pub(crate) async fn engine_ask_user(
                 .store(left - 1, std::sync::atomic::Ordering::SeqCst);
         }
         (
+            reg.origin,
             reg.task_id.clone(),
             reg.node_title.clone(),
             left,
@@ -341,13 +415,13 @@ pub(crate) async fn engine_ask_user(
         "assumption": parsed.assumption,
         "createdAt": crate::db::now_ms(),
     });
-    let title = question_title(&node_title);
+    let title = question_title(origin, &node_title);
     let body = parsed.question.clone();
     // waiter 先于 notif_insert 注册：通知落库后用户随时可从通知中心/应答入口进来，
     // 应答端写完才查 waiter——晚注册的窗口里回答会「档案落了回答、引擎按假设
     // 继续」两层不一致。qid 是本次新造的 uuid，落库前无人能引用，提前注册无重复
     // 消费面（应答端 remove 单次消费）；insert 失败路径负责注销防泄漏。
-    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+    let (tx, rx) = tokio::sync::oneshot::channel::<AskReply>();
     crate::db::lock::lock_or_recover(crate::app_state::question_waiters(app), "question_waiters")
         .insert(qid.clone(), tx);
     let qid_insert = qid.clone();
@@ -407,17 +481,24 @@ pub(crate) async fn engine_ask_user(
     let _ = app
         .notification()
         .builder()
-        .title(format!("❓ {}", question_title(&node_title)))
+        .title(format!("❓ {}", question_title(origin, &node_title)))
         .body(&parsed.question)
         .show();
+    // 会话内问题卡（emit_recorded 统一盖章进回放缓冲：重开会话可还原）
+    crate::bot::stream_log::emit_recorded(
+        app,
+        session_id,
+        "bot-ask",
+        ask_event_payload(&qid, &parsed),
+    );
     enum WaitOutcome {
-        Answered(String),
+        Answered(AskReply),
         /// 超时或用户停止（同口径：回落假设）
         Expired,
     }
     let waited = tokio::select! {
         r = tokio::time::timeout(timeout, rx) => match r {
-            Ok(Ok(answer)) => WaitOutcome::Answered(answer),
+            Ok(Ok(reply)) => WaitOutcome::Answered(reply),
             _ => WaitOutcome::Expired,
         },
         // /stop 等取消源：轮询停止标志（StopGuard 无 watch 通道，500ms 粒度足够——
@@ -434,16 +515,34 @@ pub(crate) async fn engine_ask_user(
     // 无论结果都摘除 waiter（应答端 remove 幂等；超时/停止路径靠这里防泄漏）
     remove_question_waiter(app, &qid);
     match waited {
-        WaitOutcome::Answered(answer) => {
-            ToolResult::ok(format!("用户回答了你的提问：{answer}"), Vec::new())
+        WaitOutcome::Answered(reply) => {
+            crate::bot::stream_log::emit_recorded(
+                app,
+                session_id,
+                "bot-ask-resolved",
+                resolved_event_payload(
+                    &qid,
+                    &reply.action,
+                    (reply.action == ACTION_ANSWER).then_some(reply.text.as_str()),
+                ),
+            );
+            ToolResult::ok(format!("用户回答了你的提问：{}", reply.text), Vec::new())
         }
-        WaitOutcome::Expired => ToolResult::warn(
-            format!(
-                "提问在等待期内未获回答，已按你声明的假设继续。假设：{}",
-                parsed.assumption
-            ),
-            Vec::new(),
-        ),
+        WaitOutcome::Expired => {
+            crate::bot::stream_log::emit_recorded(
+                app,
+                session_id,
+                "bot-ask-resolved",
+                resolved_event_payload(&qid, RESOLVE_EXPIRED, None),
+            );
+            ToolResult::warn(
+                format!(
+                    "提问在等待期内未获回答，已按你声明的假设继续。假设：{}",
+                    parsed.assumption
+                ),
+                Vec::new(),
+            )
+        }
     }
 }
 
@@ -578,6 +677,7 @@ mod tests {
         crate::app_state::ask_contexts(app).lock().unwrap().insert(
             sid.to_string(),
             AskRegistration {
+                origin: AskOrigin::TaskCard,
                 task_id: "t1".into(),
                 node_title: "写初稿".into(),
                 asks_enabled: true,
@@ -638,7 +738,7 @@ mod tests {
         // ② insert 失败路径注销后通道关闭、表内无泄漏条目。
         let app = test_handle();
         let qid = "q-window";
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<String>();
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<AskReply>();
         crate::app_state::question_waiters(&app)
             .lock()
             .unwrap()
@@ -649,9 +749,14 @@ mod tests {
             .unwrap()
             .remove(qid);
         got.expect("提前注册的 waiter 应答端必须找得到")
-            .send("知乎".into())
+            .send(AskReply {
+                action: ACTION_ANSWER.into(),
+                text: "知乎".into(),
+            })
             .unwrap();
-        assert_eq!(rx.try_recv().unwrap(), "知乎");
+        let reply = rx.try_recv().unwrap();
+        assert_eq!(reply.text, "知乎");
+        assert_eq!(reply.action, ACTION_ANSWER);
         assert!(
             crate::app_state::question_waiters(&app)
                 .lock()
@@ -661,7 +766,7 @@ mod tests {
             "应答端 remove 后无残留"
         );
         // insert 失败路径：注销防泄漏
-        let (tx2, mut rx2) = tokio::sync::oneshot::channel::<String>();
+        let (tx2, mut rx2) = tokio::sync::oneshot::channel::<AskReply>();
         crate::app_state::question_waiters(&app)
             .lock()
             .unwrap()
@@ -676,5 +781,64 @@ mod tests {
             "insert 失败注销后表内不得残留 waiter"
         );
         assert!(rx2.try_recv().is_err(), "注销后通道应关闭（tx 已 drop）");
+    }
+
+    #[test]
+    fn question_title_follows_origin() {
+        assert_eq!(
+            question_title(AskOrigin::TaskCard, "写初稿"),
+            "任务卡「写初稿」提问"
+        );
+        assert_eq!(question_title(AskOrigin::Chat, ""), "聊天提问");
+    }
+
+    #[test]
+    fn event_payloads_carry_card_fields_and_terminal_action() {
+        let args = AskArgs {
+            question: "投放哪个平台？".into(),
+            why: Some("规范不同".into()),
+            options: vec!["公众号".into(), "知乎".into()],
+            assumption: "公众号".into(),
+        };
+        let p = ask_event_payload("q1", &args);
+        assert_eq!(p["questionId"], "q1");
+        assert_eq!(p["question"], "投放哪个平台？");
+        assert_eq!(p["why"], "规范不同");
+        assert_eq!(p["options"][0], "公众号");
+        assert_eq!(p["assumption"], "公众号");
+
+        let r = resolved_event_payload("q1", ACTION_ANSWER, Some("知乎"));
+        assert_eq!(r["action"], "answer");
+        assert_eq!(r["answer"], "知乎");
+        let r = resolved_event_payload("q1", ACTION_ASSUME, None);
+        assert_eq!(r["action"], "assume");
+        assert!(r["answer"].is_null(), "未作答不携带 answer");
+        let r = resolved_event_payload("q1", RESOLVE_EXPIRED, None);
+        assert_eq!(r["action"], "expired");
+        assert!(r["answer"].is_null());
+    }
+
+    #[test]
+    fn chat_registration_uses_chat_origin_and_same_budget_source() {
+        let app = test_handle();
+        register_chat_ask_context(&app, "s-chat");
+        let (origin, task_id, node_title, asks_left) = {
+            let map = crate::app_state::ask_contexts(&app).lock().unwrap();
+            let reg = map.get("s-chat").unwrap();
+            (
+                reg.origin,
+                reg.task_id.clone(),
+                reg.node_title.clone(),
+                reg.asks_left.load(std::sync::atomic::Ordering::SeqCst),
+            )
+        };
+        assert_eq!(origin, AskOrigin::Chat);
+        assert_eq!(task_id, "");
+        assert_eq!(node_title, "");
+        assert_eq!(
+            asks_left,
+            crate::bot::constants::ASK_BUDGET_DEFAULT,
+            "聊天提问预算与任务卡同源"
+        );
     }
 }

@@ -50,9 +50,12 @@ type ConfirmMap = Mutex<
 
 /// 任务执行提问等待表：questionId → oneshot 通道。
 /// ask 端（ask_user 工具）注册、应答端（`ask_respond`）take 后发送。
+/// 载荷带应答动作（`AskReply`）：终态事件要区分「用户答了」与「按假设继续」，
+/// 单靠回灌文本分不清。
 /// 与 CONFIRMS 的区别：无 60s 超时默认拒——等待上限由 ask 端按提问超时配置兜底，
 /// 通道关闭/超时一律回落到问题自带的假设值（红线：忽略问题执行也能走）。
-type QuestionWaiters = Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>;
+type QuestionWaiters =
+    Mutex<HashMap<String, tokio::sync::oneshot::Sender<crate::ask_engine::AskReply>>>;
 
 // 执行期 · 会话/任务防重入
 

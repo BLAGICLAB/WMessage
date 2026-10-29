@@ -641,6 +641,22 @@ pub(super) async fn bot_chat_inner(
             c.session_id = Some(sid.clone());
         }
     }
+    // 提问授权（ask_user 按 session_id 查表）：普通聊天用户轮开放提问——
+    // 问题卡进当前会话（bot-ask 事件）+ 通知中心双写；汇报轮是后端自动轮，
+    // 保持无人值守（不注册，调用即回落假设）。注销必须赶在 session_id
+    // 按值转移（记忆抽取）之前，故紧跟 run_model_loop 成对收口。
+    let ask_registered = origin == TurnOrigin::User;
+    // 注销句柄提前克隆：app 随后按值消费进 run_model_loop，出循环后原句柄不可用
+    let ask_cleanup_app = if ask_registered {
+        Some(app.clone())
+    } else {
+        None
+    };
+    if ask_registered {
+        if let Some(sid) = session_id.as_ref() {
+            crate::ask_engine::register_chat_ask_context(&app, sid);
+        }
+    }
     let loop_result = crate::bot_model_loop::run_model_loop(
         app,
         msgs,
@@ -655,6 +671,12 @@ pub(super) async fn bot_chat_inner(
         Some(&failed_trace),
     )
     .await;
+    // 提问上下文成对注销（工具调用全部结束于此；无论成败都要收口）
+    if let Some(cleanup_app) = &ask_cleanup_app {
+        if let Some(sid) = session_id.as_ref() {
+            crate::ask_engine::unregister_ask_context(cleanup_app, sid);
+        }
+    }
     // 「已吸收」的 id 交出去，不在这里记：谁送达、谁记。
     // 模型循环失败时这段回报压根没送进模型，提前记等于把「已经说过了」提前
     // 宣布——汇报轮会因此以为说过、从此不再重提，子任务结果就此永久丢失。
