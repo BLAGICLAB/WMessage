@@ -9,10 +9,9 @@ use crate::error::CommandError;
 /// Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
 // max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
 //
-// 上限取**档位预设**：主会话默认拿均衡档全局工具池的 60%。更高的上限的失控风险
-// 由幻觉守卫（claims_mutation）+ 软警告 + /stop 兜底。用户可在设置页按档位
-// 调整，或用高级覆盖单项指定；子 agent 的工具额度是另一个独立键
-// （resolve_subagent_budget）。软警告阈值动态 = cap*90%（见 request.rs 的阶梯派生）。
+// 上限是安全网常量（constants::MAX_FUNCTION_CALLS，主会话与子 agent 共用同一
+// 个数）；fuse_cap_override 仅供 eval 用例与测试直驱注入。软警告阈值动态 =
+// cap×90%（见 request.rs 的阶梯派生）。
 pub(crate) const MAX_FUNCTION_CALLS_PER_REQUEST: usize =
     crate::bot::constants::MAX_FUNCTION_CALLS as usize;
 
@@ -46,7 +45,12 @@ pub(crate) fn fuse_cap_for(cfg_override: Option<usize>) -> usize {
 }
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。
-/// cap 由会话派生（见 `fuse_cap_for`），边界单点在 `fuse_cap_upper_bound`。
+///
+/// 正常路径走不到这里——收尾窗阈值恒钳在 cap-1 之下，计数执行 +1 后仍低于
+/// cap，真正的出口是收尾轮数用尽（`wrap_up_rounds_exhausted`）。保留它是
+/// 派生链变化时的最后防线：wrap_up_at 的派生若被改动（如某轴不再设收尾窗），
+/// 这里仍兜得住「无限执行」。业界同构：LangGraph 在 RemainingSteps 优雅
+/// 降级层之下仍保留 GraphRecursionError 硬上限。cap 由会话派生（`fuse_cap_for`）。
 pub(crate) fn should_fuse(calls_so_far: usize, cap: usize) -> bool {
     calls_so_far > cap
 }
