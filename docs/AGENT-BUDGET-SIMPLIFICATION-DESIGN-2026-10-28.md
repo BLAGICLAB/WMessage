@@ -215,3 +215,9 @@
 7. **思考段回灌由模型决定**：不设开关、不查模型表——上一轮发了 `reasoning_content` 就原样带回，没发就没有。
 8. **会话历史字符预算**：常量 **128K**（`128_000`），上下文硬顶 **200K**（`200_000`，单次请求 msgs 总字符绝对上限，压缩阶梯基数）；两者都是常量，无配置键。
 9. **（2026-10-29 补拍）轮数轴收尾窗**：剩最后 3 轮进窗（`max_rounds − WRAP_UP_ROUNDS`），共用 gate_call 白名单，出口 max_rounds 硬停带正文；同日补落地 §4.5 的 Python 120s/600s（apps 域拆独立 1800s 天花板）与 LLM 重试 3 次尝试（OpenAI/Anthropic SDK 默认同值）。
+## 11. 实施偏离登记（2026-10-29 补）
+
+- **`budget_exceeded` 终态分类保留**（§5.3 原写拆除）：子 agent 撞共享安全网熔断时仍需要一个终态落点（轮数出口的行状态与父 agent 重试判据），保留该终态不新增任何预算语义。
+- **停滞时间戳用进程内内存态**（§5.3 原写 `subagents` 行加 `last_progress_at` 字段）：子 agent 与 watcher 同在一个进程内，内存 AtomicU64（`tool_guard::SubagentSessionCtx.last_progress_ms`）即可，不落库；行上仍有 `error="stalled"` 区分停滞与其他失败。
+- **apps 域拆独立超时天花板**（§4.5 未提）：Python 收紧到 120s/600s 时发现 `MAX_TIMEOUT_SECS` 同时是 apps 单次运行的天花板——程序页用户直跑、无子 agent 停滞判定，SPEC 拍过 30 分钟（转写长录音场景），不随工具路径收紧：拆 `APPS_MAX_TIMEOUT_SECS=1800` 独立常量，默认值（120s）两路共用。
+- **轮数轴收尾窗补实现**（原方案只实现了工具轴）：见 §5.2 括号段与 §10 第 9 条。

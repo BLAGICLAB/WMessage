@@ -429,8 +429,8 @@ src-tauri/src/
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
 │                        落行上 acceptance_json；与 bot_execute_task（单发子 agent）入口/存储/事件
 │                        各自独立；LLM 工具暴露/runner（SUBA-2）与停滞超时/并发排队（SUBA-3）
-│                        按设计 §11 分批接入；P4：spawn 预算默认走 bot/params 配置；
-│                        **收尾契约**（2026-10-23）：预算单一钳制入口 + 收尾 JSON 三段修复
+│                        按设计 §11 分批接入；
+│                        **收尾契约**（2026-10-23；预算钳制入口已随子 agent 预算退役）：收尾 JSON 三段修复
 │                        （本地修复 + 补答一次）+ digest 补渲染（残留产出 / 机检未过项）+
 │                        机器可判定条目的派发期形状校验
 │                        采样接线（run_task_in_chat 闭包喂 maybe_record_trace）
@@ -547,7 +547,7 @@ src-tauri/src/
 ├── overflow.rs          工具大结果溢出存储：`data_dir/overflow/<日期>/<uuid>.txt` 转存 +
 │                        回灌指针文案 + 保留期清扫（30 天，启动一次 + 每天一次）。
 │                        配套 `bot_fs::allowed_dirs` 把本目录放进读白名单（模型靠它分页读回），
-│                        回灌上限取 per-tool 预算与设置页 maxToolOutputBytes 的小者（字节口径）
+│                        回灌上限常量 TOOL_OUTPUT_BYTES（128KB 即硬顶，不可配）
 ├── bing.rs              必应每日一图（首页小部件数据源）：cn.bing.com 官方 API + 按日落
 │                        `{data_dir}/runtime/bing/`（图片先 / 元数据后提交标记；保留 7 天，
 │                        过期随拉取清理）；base64 data URL 单 IPC 返回（免配 asset 协议）；

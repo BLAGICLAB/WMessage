@@ -693,8 +693,8 @@ export function ModelSection({
                         Anthropic 格式生效）。
                       </p>
                     </div>
-                    {/* 全局 max_tokens 输入已删（每模型编辑里都有，页底重复）；BotConfig.maxTokens
-        仍作条目留空时的兜底层透传保存（条目 > 全局 > 内置默认），无 UI 入口 */}
+                    {/* 全局 max_tokens 已随 2026-10-29 参数全常量化退役（条目级 max_tokens > 内置
+        默认 16384 两层）；保存不再透传盘上旧全局值，它会随下次保存清空 */}
                     {/* 保存 + 自动连接测试：保存成功后厂商下有开启的模型即自动探测，
         结果决定左栏绿点与聊天下拉可见性 */}
                     <div className="mt-3 flex items-center justify-end gap-3">

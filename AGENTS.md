@@ -19,7 +19,7 @@
 - `docs/realmachine-smoke-test-2026-10-25.md` — 实机冒烟测试方案：18 项主卡（M75–M92）+ 3 项 Windows 专章（W10–W12），覆盖 2026-10-24 10:51 → 10-25 15:36 这批 116 个提交（提示词 + 判据 + 变异注入锚点 V76–V96 + 事件名总表 + 未覆盖诚实清单）；主卡含 P1–P8 八项上下文/工具调用优化的逐条验收；66 个 refactor 由纯搬移核对器兜底、可见性与接线落到两张抽样卡；已纳入 `audit_doc_claims.py` 对拍门禁
 - `docs/module-audit-2026-10-22.md` — 分模块代码审计账本（15 模块 / 6 批；批 1 已出 M5 五条 P1）——与实机卡片互补：卡片验「行为对不对」，审计查「闸漏不漏」
 - `docs/realmachine-overflow-test.md` — 实机验收方案：工具大结果溢出回灌（边界三连 / 指针读回 / 保留期清扫 / 转存失败兜底）
-- `docs/SUBAGENT-HANDOFF-BUDGET-REDESIGN-2026-10-23.md` — 子 agent ↔ 主 agent 衔接与墙钟治理改造方案（预算单一钳制 / 软墙钟收尾窗 / 熔断留产 / 收尾契约三段修复 / digest 补渲染）；含业界口径、不做清单、偏离登记
+- `docs/SUBAGENT-HANDOFF-BUDGET-REDESIGN-2026-10-23.md` — 子 agent ↔ 主 agent 衔接与墙钟治理改造方案（预算单一钳制 / 软墙钟收尾窗 / 熔断留产 / 收尾契约三段修复 / digest 补渲染）；含业界口径、不做清单、偏离登记；**其墙钟部分已被 2026-10-28 预算简化方案取代**（全链路撤墙钟，见下方 AGENT-BUDGET-SIMPLIFICATION 条目）
 
 - `docs/SUBAGENT-EFFICIENCY-TRANSPARENCY-DESIGN-2026-10-24.md` — 子 agent 效率与透明度改造（已落地）：小文件一次读完红线 / 预算触顶收尾窗只拒读放行写 / read_own_card 实时余量 / 右侧栏动作流实时上屏 / usage 三列记账；含实机账（PPT 素材稿 100 调用零产出）与实施偏离登记
 - `docs/MCP-ON-DEMAND-LIFECYCLE-DESIGN-2026-10-24.md` — MCP 外部服务器按需启停方案（静默待命 / 调用期拉起 / 调用完回收 / 工具清单落盘解耦可见性）+ 业界口径调研（VS Code autostart、mcp-proxy lazy、rho lazy）+ 踩坑记录

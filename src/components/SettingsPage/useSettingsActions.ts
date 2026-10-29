@@ -81,10 +81,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
     permMode: "ask" as "strict" | "ask" | "auto" | "yolo",
     //  per-tool 权限规则表（deny/ask/allow 首中即停；空表 = 无规则）
     toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
-    // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
-    // 都有 max_tokens，页底重复已删）；loadConfig 读到已存值原样透传保存，不丢
-    // 推理强度后台默认（RE-1）：off/low/medium/high，默认 medium；
-    // 抽象档位——发送时后端按具体模型族映射到 reasoning_effort / thinking.budget_tokens
+    // 推理强度后台默认已常量化为 medium（无设置页入口）；聊天输入栏 ⚡ 的按会话覆盖保留——
+    // 发送时后端按模型族映射到 reasoning_effort / thinking.budget_tokens
     // 定时记忆整理：开关 + 频率（off/12h/daily/weekly）+ 上次整理时间
     // 后端 None/缺字段 → 默认 { enabled: true, interval: "daily", lastRunAt: null }
     memoryConsolidation: {

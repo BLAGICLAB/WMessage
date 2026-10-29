@@ -92,7 +92,7 @@
 
 ## 3. 目标一设计：参数透明化
 
-### 3.1 PARAMS_TABLE 参数注册表（新增 `src-tauri/src/bot/params.rs`）
+### 3.1 PARAMS_TABLE 参数注册表（新增 `src-tauri/src/bot/params.rs`；**已于 2026-10-29 缩表退彴**——Agent 参数全常量化，表只剩三行卡外消费者，见 docs/AGENT-BUDGET-SIMPLIFICATION-DESIGN-2026-10-28.md §3）
 
 仿 `ToolDef`/`TOOLS_TABLE`（bot/registry.rs:335）模式，每个参数一条注册项：
 
