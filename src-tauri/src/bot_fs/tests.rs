@@ -768,7 +768,8 @@ fn grep_single_file_matches_and_respects_glob() {
 fn read_slice_truncates_line_over_2000_chars_with_notice() {
     let long = "a".repeat(2500);
     let lines = vec![long.as_str()];
-    let out = render_read_slice(&lines, 1, 10);
+    let (out, capped) = render_read_slice(&lines, 1, 10);
+    assert!(!capped);
     assert_eq!(out.len(), 1);
     assert!(out[0].contains("…[本行超 2000 字符已截断]"), "{}", out[0]);
     let body = out[0].trim_start_matches("1: ");
@@ -781,7 +782,7 @@ fn read_slice_line_cap_counts_chars_not_bytes() {
     // 2500 个汉字（UTF-8 共 7500 字节）：按「字符」数截断——整字保留，不切出残字
     let long = "汉".repeat(2500);
     let lines = vec![long.as_str()];
-    let out = render_read_slice(&lines, 1, 10);
+    let (out, _) = render_read_slice(&lines, 1, 10);
     let body = out[0].trim_start_matches("1: ");
     let kept = body.trim_end_matches("…[本行超 2000 字符已截断]");
     assert_eq!(kept.chars().count(), 2000);
@@ -791,6 +792,54 @@ fn read_slice_line_cap_counts_chars_not_bytes() {
 #[test]
 fn read_slice_normal_lines_pass_through_unmarked() {
     let lines = vec!["fn main() {}", "let x = 1;"];
-    let out = render_read_slice(&lines, 1, 10);
+    let (out, capped) = render_read_slice(&lines, 1, 10);
+    assert!(!capped);
     assert_eq!(out, vec!["1: fn main() {}", "2: let x = 1;"]);
+}
+
+#[test]
+fn read_slice_stops_at_page_byte_budget() {
+    // 1000 行 × 100 字节：总量 100KB 装不进 56KB 一页——收页必须早于行数上限，
+    // 且英文窄行一页装得下大几百行（固定 500 行做不到的「英文页变宽」）
+    let line = "x".repeat(100);
+    let lines: Vec<&str> = std::iter::repeat_n(line.as_str(), 1000).collect();
+    let (out, capped) = render_read_slice(&lines, 1, READ_MAX_LINES);
+    assert!(capped, "56KB 预算应在 1000 行前收页");
+    assert!(out.len() < 1000);
+    assert!(
+        out.len() >= 400,
+        "56KB 应至少装下大几百行，实际 {}",
+        out.len()
+    );
+}
+
+#[test]
+fn read_slice_explicit_small_limit_beats_byte_budget() {
+    let line = "x".repeat(100);
+    let lines: Vec<&str> = std::iter::repeat_n(line.as_str(), 1000).collect();
+    let (out, capped) = render_read_slice(&lines, 1, 10);
+    assert!(!capped);
+    assert_eq!(out.len(), 10, "显式小 limit 不受预算影响");
+}
+
+#[test]
+fn read_slice_first_line_always_returned() {
+    // 行闸封顶后的行（≤2000 字符 ≤8KB）永远装得进 56KB 预算——首行必放行，
+    // 不存在「一页空手而归」；预算只在已有首行后才可能拦截
+    let long = "汉".repeat(2000);
+    let lines = vec![long.as_str(), "second"];
+    let (out, capped) = render_read_slice(&lines, 1, 10);
+    assert_eq!(out.len(), 2);
+    assert!(!capped);
+}
+
+#[test]
+fn read_slice_cjk_page_narrows_instead_of_hitting_funnel() {
+    // 中文宽行页自动变窄：60 汉字（180 字节）× 500 行 = 90KB > 56KB——
+    // 旧口径 500 行整页必撞 64KB 回灌漏斗转存；新口径收在预算内
+    let line = "汉".repeat(60);
+    let lines: Vec<&str> = std::iter::repeat_n(line.as_str(), 500).collect();
+    let (out, capped) = render_read_slice(&lines, 1, READ_MAX_LINES);
+    assert!(capped, "500 行中文必超 56KB 预算，应收窄");
+    assert!(out.len() < 500);
 }

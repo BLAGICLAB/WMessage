@@ -99,8 +99,11 @@ pub const READ_MAX_BYTES: usize = 100 * 1024;
 /// 原样穿过磁盘闸与行数闸，渲染时截断并标注。业界口径：Claude Code / Cline /
 /// Gemini CLI 同为 2000 字符。
 pub const READ_MAX_LINE_CHARS: usize = 2000;
-/// 文件读取默认行数。
-pub const READ_DEFAULT_LINES: usize = 500;
+/// read_text_file 默认页的字节预算。与回灌漏斗同单位（per-tool 回灌 64KB 的
+/// 7/8，余量给行号与提示语）——页与漏斗同单位，一页永不撞 64KB 转存；中文页
+/// 自动窄、英文页自动宽，固定行数做不到两全。行数硬顶 READ_MAX_LINES 仍在
+/// （防全空行文件把页耗穿）。
+pub const READ_PAGE_TARGET_BYTES: usize = 56 * 1024;
 /// 文件读取最大行数。
 pub const READ_MAX_LINES: usize = 2000;
 /// grep 最大命中条数。

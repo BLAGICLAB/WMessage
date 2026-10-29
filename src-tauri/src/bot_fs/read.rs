@@ -213,31 +213,46 @@ pub(super) async fn read_with_ino_check(
 
 // 工具实现（bot 分发签名：(String, Vec<TaskRef>)）
 
-/// read_text_file 行切片渲染（纯函数，单测入口）：offset/limit 行切片（1 起）
-/// 带行号前缀；单行超 READ_MAX_LINE_CHARS 字符截断并标注——超长行（minified
-/// 产物、单行 JSON）会原样穿过磁盘闸与行数闸，无标注的截断会让模型把半行
-/// 当整行。
-pub(super) fn render_read_slice(lines: &[&str], offset: usize, limit: usize) -> Vec<String> {
-    lines
-        .iter()
-        .skip(offset - 1)
-        .take(limit)
-        .enumerate()
-        .map(|(i, line)| {
-            let body = if line.chars().count() > READ_MAX_LINE_CHARS {
-                format!(
-                    "{}…[本行超 {READ_MAX_LINE_CHARS} 字符已截断]",
-                    line.chars().take(READ_MAX_LINE_CHARS).collect::<String>()
-                )
-            } else {
-                (*line).to_string()
-            };
-            format!("{}: {}", offset + i, body)
-        })
-        .collect()
+/// read_text_file 行切片渲染（纯函数，单测入口）：
+///
+/// - offset/limit 行切片（1 起）带行号前缀；
+/// - 单行超 READ_MAX_LINE_CHARS 字符截断并标注——超长行（minified 产物、
+///   单行 JSON）会原样穿过磁盘闸与行数闸，无标注的截断会让模型把半行当整行；
+/// - 渲染字节累计达 READ_PAGE_TARGET_BYTES 即收页（首行必放行，预算拦不住
+///   已被行闸封顶的第一行）——默认页与回灌漏斗同单位，一页永不撞 64KB 转存。
+///
+/// 返回（渲染行, 是否因字节预算提前收页）。
+pub(super) fn render_read_slice(
+    lines: &[&str],
+    offset: usize,
+    limit: usize,
+) -> (Vec<String>, bool) {
+    let mut out: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    let mut byte_capped = false;
+    for (i, line) in lines.iter().skip(offset - 1).take(limit).enumerate() {
+        let body = if line.chars().count() > READ_MAX_LINE_CHARS {
+            format!(
+                "{}…[本行超 {READ_MAX_LINE_CHARS} 字符已截断]",
+                line.chars().take(READ_MAX_LINE_CHARS).collect::<String>()
+            )
+        } else {
+            (*line).to_string()
+        };
+        let cost = body.len() + 2 + (offset + i).to_string().len() + 1;
+        if !out.is_empty() && used + cost > READ_PAGE_TARGET_BYTES {
+            byte_capped = true;
+            break;
+        }
+        used += cost;
+        out.push(format!("{}: {}", offset + i, body));
+    }
+    (out, byte_capped)
 }
 
-/// read_text_file：读白名单内 UTF-8 文本，offset/limit 行切片（1 起），超 100KB 截断
+/// read_text_file：读白名单内 UTF-8 文本，offset/limit 行切片（1 起）；单行超
+/// 2000 字符截断标注；默认页按字节预算（56KB）收页、行数硬顶 2000；磁盘侧超
+/// 100KB 截断。
 pub async fn tool_read_text_file(
     app: &AppHandle,
     args: &str,
@@ -312,8 +327,7 @@ pub async fn tool_read_text_file(
         ));
     }
     let offset = v["offset"].as_u64().unwrap_or(1).max(1) as usize;
-    let limit =
-        (v["limit"].as_u64().unwrap_or(READ_DEFAULT_LINES as u64) as usize).min(READ_MAX_LINES);
+    let limit = (v["limit"].as_u64().unwrap_or(READ_MAX_LINES as u64) as usize).min(READ_MAX_LINES);
     // 内容已在 read_with_ino_check 里从**核对过的那同一个 fd** 读出（不再按
     // 路径二次 open——二次 open 就是 TOCTOU 窗口）。
     let text = String::from_utf8_lossy(&raw).to_string();
@@ -322,7 +336,7 @@ pub async fn tool_read_text_file(
     if offset > total {
         return ToolResult::denied(format!("文件共 {total} 行，offset {offset} 超出范围"));
     }
-    let slice = render_read_slice(&lines, offset, limit);
+    let (slice, byte_capped) = render_read_slice(&lines, offset, limit);
     let end = offset + slice.len() - 1;
     let mut out = format!(
         "{}（第 {offset}-{end} 行 / 共 {total} 行）\n{}",
@@ -333,6 +347,12 @@ pub async fn tool_read_text_file(
         out.push_str(&format!("\n…（截断，继续读请用 offset={}", end + 1));
         if byte_truncated {
             out.push_str(&format!("；文件超 {}KB 只读了前部", READ_MAX_BYTES / 1024));
+        }
+        if byte_capped {
+            out.push_str(&format!(
+                "；本页达 {}KB 字节预算",
+                READ_PAGE_TARGET_BYTES / 1024
+            ));
         }
         out.push(')');
     }

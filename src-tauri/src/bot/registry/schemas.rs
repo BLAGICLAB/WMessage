@@ -58,10 +58,10 @@ pub const SCHEMA_REMOVE_SUBTASK: &str = r##"{"type":"function","function":{"name
     "subtaskId":{"type":"string","description":"要删除的子任务 id（query_single_task 输出），可选，优先于 text"},
     "text":{"type":"string","description":"要删除的子任务内容关键词，无 subtaskId 时必填"}
   },"required":[]}}}"##;
-pub const SCHEMA_READ_TEXT_FILE: &str = r##"{"type":"function","function":{"name":"read_text_file","description":"读取本地文本文件内容（白名单目录内直接读，白名单外自动弹窗请用户授权；≤500 行的文件不传 limit 一次读完，offset/limit 分页只用于更大的文件；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
+pub const SCHEMA_READ_TEXT_FILE: &str = r##"{"type":"function","function":{"name":"read_text_file","description":"读取本地文本文件内容（白名单目录内直接读，白名单外自动弹窗请用户授权；不传 limit 时按字节预算自动翻页——每页约 56KB、最多 2000 行，读不满一页即到文件尾；单行超 2000 字符会截断并标注；Office/PDF 用 extract_document，图片用户会直接发图）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"文件绝对路径（支持 ~ 开头）"},
     "offset":{"type":"integer","description":"起始行号，从 1 开始，可选"},
-    "limit":{"type":"integer","description":"读取行数，默认 500，最多 2000，可选"}
+    "limit":{"type":"integer","description":"读取行数，最多 2000，可选；不传则按每页约 56KB 的字节预算自动分页"}
   },"required":["path"]}}}"##;
 pub const SCHEMA_OCR_IMAGE: &str = r##"{"type":"function","function":{"name":"ocr_image","description":"本地 OCR 识别图片文字，逐行返回（白名单目录内直接识别，白名单外自动弹窗请用户授权；隐私红线：图片仅在内存处理、绝不上传外网——macOS 用系统 Vision，Windows 用本地 PP-OCRv6 模型）","parameters":{"type":"object","properties":{
     "path":{"type":"string","description":"图片绝对路径（支持 ~ 开头；仅本地文件，不接受网络地址）"}

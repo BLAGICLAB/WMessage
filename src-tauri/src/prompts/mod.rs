@@ -160,7 +160,7 @@ mod tests {
     /// 「173 行文件碎读 91 次烧满预算零产出」的坑，删红线=复发，必须显式过 review。
     #[test]
     fn subagent_base_keeps_budget_redlines() {
-        for anchor in ["≤500 行一次读完", "白烧预算", "原地打转", "先写骨架"] {
+        for anchor in ["一次读一大页", "白烧预算", "原地打转", "先写骨架"] {
             assert!(
                 SUBAGENT_BASE.contains(anchor),
                 "SUBAGENT_BASE 预算红线缺锚点「{anchor}」"

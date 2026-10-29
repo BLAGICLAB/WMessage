@@ -19,8 +19,8 @@ use crate::bot::registry::ToolResult;
 /// 单次读取上限（字节）。`pub(crate)`：溢出指针文案要据此说明「可达范围」
 /// （指针承诺了怎么读，就得说清读得到哪一段）。
 pub(crate) const READ_MAX_BYTES: usize = crate::bot::constants::READ_MAX_BYTES;
-const READ_DEFAULT_LINES: usize = crate::bot::constants::READ_DEFAULT_LINES;
 const READ_MAX_LINES: usize = crate::bot::constants::READ_MAX_LINES;
+const READ_PAGE_TARGET_BYTES: usize = crate::bot::constants::READ_PAGE_TARGET_BYTES;
 const READ_MAX_LINE_CHARS: usize = crate::bot::constants::READ_MAX_LINE_CHARS;
 const GREP_MAX_HITS: usize = crate::bot::constants::GREP_MAX_HITS;
 const GREP_MAX_FILE_BYTES: u64 = crate::bot::constants::GREP_MAX_FILE_BYTES;
