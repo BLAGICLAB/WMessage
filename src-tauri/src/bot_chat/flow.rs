@@ -483,12 +483,11 @@ pub(super) async fn bot_chat_inner(
         }
     }
     // 轮数三层优先级：Skill frontmatter 自报 > 配置 maxRounds > 默认 50
-    let cfg_for_rounds = crate::bot::load_config(&app);
     let max_rounds = crate::bot_model_loop::resolve_max_rounds(
         pre_routed_skill
             .as_ref()
             .and_then(|(meta, _)| meta.max_rounds),
-        crate::bot::params::resolve_max_rounds_cfg(&cfg_for_rounds) as usize,
+        crate::bot::constants::MAX_ROUNDS as usize,
     );
     let pre_routed_active_skill = pre_routed_skill.map(|(_, body)| body);
     // interactive 模式的技能正文拼入 system prompt（无分隔符接 SkillCatalog）
@@ -532,13 +531,12 @@ pub(super) async fn bot_chat_inner(
     // 截断即摘要（设计 5.2）：超预算先对将丢弃的消息
     // 生成摘要；摘要不落库、不进 ChatMsg（只在本轮请求里并进末条消息）；
     // LLM 失败静默退回直接丢弃
-    // 历史预算走配置解析（config historyBudgetChars，钳 20K..=500K；默认 100K）
-    let cfg_for_budget = crate::bot::load_config(&app);
-    let budget_used = crate::bot::params::resolve_history_budget_chars(&cfg_for_budget) as usize;
+    // 历史预算是常量（constants::HISTORY_BUDGET_CHARS）
+    let budget_used = crate::bot::constants::HISTORY_BUDGET_CHARS as usize;
     // 截断滞回比例（config historyTruncateTargetPct，钳 50..=90；默认 70%）：
     // 超预算时一次裁到目标比例而不是贴着预算边裁——贴边裁每轮都可能只丢
     // 一两条，把缓存前缀断成每轮一次。留出余量能稳住好几轮的前缀。
-    let truncate_ratio = crate::bot::params::resolve_history_truncate_target_ratio(&cfg_for_budget);
+    let truncate_ratio = crate::bot::params::DEFAULT_HISTORY_TRUNCATE_TARGET_PCT as f64 / 100.0;
     let (messages, summary, dropped) = truncate_chat_history_with_summary(
         &app,
         session_id.as_deref(),

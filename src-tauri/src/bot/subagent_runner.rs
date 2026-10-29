@@ -117,11 +117,10 @@ pub(crate) async fn run_subagent(
         );
         return;
     }
-    // 轮数与主会话共用同一套安全网（配置解析值）；配置档 `max_turn` 只收紧——
+    // 轮数与主会话共用同一套安全网（常量）；配置档 `max_turn` 只收紧——
     // 配置档是权限上限，不是「优先于调用方的指令」，取 min 而非覆盖。
     let max_rounds: usize = {
-        let cfg = crate::bot::load_config(&app);
-        let shared = crate::bot::params::resolve_max_rounds_cfg(&cfg) as usize;
+        let shared = crate::bot::constants::MAX_ROUNDS as usize;
         match onion.as_ref().and_then(|o| o.max_turn) {
             Some(cap) => shared.min(cap as usize).max(1),
             None => shared,

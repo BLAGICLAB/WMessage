@@ -289,7 +289,6 @@ pub(super) async fn run_task_in_chat_impl(
     // 执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
     // 内核（run_task_in_chat_with）填归属并收尾。
     // 轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
-    let cfg_for_rounds = crate::bot::load_config(app);
     let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
         Default::default();
     let hook_for_run = hook.clone();
@@ -302,12 +301,12 @@ pub(super) async fn run_task_in_chat_impl(
         task_id,
         origin,
         Some(hook),
-        crate::bot::params::resolve_ask_budget_cfg(&cfg_for_rounds),
+        crate::bot::constants::ASK_BUDGET_DEFAULT,
         |app2, msgs, stop| async move {
             let outcome = crate::bot_model_loop::run_model_loop(
                 app2,
                 msgs,
-                crate::bot::params::resolve_max_rounds_cfg(&cfg_for_rounds) as usize,
+                crate::bot::constants::MAX_ROUNDS as usize,
                 &stop,
                 None,
                 // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）

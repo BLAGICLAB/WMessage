@@ -74,8 +74,6 @@ mod stop_emit_gate_tests {
             on_round: &on_round,
             turn_status: None,
             session_tools: None,
-            reasoning_echo: false,
-            in_turn_context_edit: false,
             guard_claim_keywords: &no_keywords,
             file_receipts: None,
         };
@@ -135,8 +133,6 @@ mod stop_emit_gate_tests {
             on_round: &on_round,
             turn_status: None,
             session_tools: None,
-            reasoning_echo: false,
-            in_turn_context_edit: false,
             guard_claim_keywords: &no_keywords,
             file_receipts: None,
         };

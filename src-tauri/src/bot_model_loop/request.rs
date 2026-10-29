@@ -431,7 +431,7 @@ pub(crate) fn compact_before_round(
     //
     // 先于预算压缩与轮龄降密度判定：那个阈值量的是「本轮真正要发的工具结果
     // 体量」，口径稳定，事后能对着痕迹库复算。
-    if deps.in_turn_context_edit && !*tool_window_applied {
+    if !*tool_window_applied {
         let chars = tool_result_chars(msgs);
         if chars > TOOL_WINDOW_TRIGGER_CHARS {
             let trimmed = apply_tool_window(msgs, TOOL_WINDOW_KEEP_RECENT);

@@ -405,8 +405,10 @@ where
             // 思考段回灌：只对 OpenAI 兼容路径有意义（Anthropic 协议走 thinking 块
             // 原样回传，转换层会丢掉这个键），且只在模型真吐了思考段时才带——
             // 没思考段的模型挂了也是空字段，白占请求体。
-            let echo_reasoning: Option<&str> = if deps.reasoning_echo
-                && http.provider == crate::bot::ApiProvider::Openai
+            // 思考段回灌「发了就回」：上一轮流里有思考段就原样带回（OpenAI 兼容
+            // 路径；Anthropic 走 thinking 块原样回传，不经这里）。没有拨杆、
+            // 不查模型表——要求回灌的模型必发思考段，因此不可能再 400。
+            let echo_reasoning: Option<&str> = if http.provider == crate::bot::ApiProvider::Openai
                 && !reasoning_text.trim().is_empty()
             {
                 Some(reasoning_text.as_str())

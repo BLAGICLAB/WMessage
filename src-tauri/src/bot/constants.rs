@@ -187,7 +187,8 @@ pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;
 /// 联网搜索单次返回条数下限。
 pub const SEARCH_MAX_RESULTS_MIN: u32 = 1;
 
-/// ask_user 单次执行可问次数上限。
+/// ask_user 单次执行可问次数默认与上限。
+pub const ASK_BUDGET_DEFAULT: u8 = 3;
 pub const ASK_BUDGET_MIN: u8 = 1;
 pub const ASK_BUDGET_MAX: u8 = 5;
 

@@ -309,10 +309,9 @@ pub async fn tool_read_own_card(
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
-    // 上限与主会话同一套安全网（配置解析值）——余量读数要对着上限看才有意义
-    let cfg = crate::bot::load_config(app);
-    let tool_calls_max = crate::bot::params::resolve_main_tool_calls(&cfg);
-    let rounds_max = crate::bot::params::resolve_max_rounds_cfg(&cfg);
+    // 上限与主会话同一套安全网（常量）——余量读数要对着上限看才有意义
+    let tool_calls_max = crate::bot::constants::MAX_FUNCTION_CALLS;
+    let rounds_max = crate::bot::constants::MAX_ROUNDS;
     ToolResult::ok(
         own_card_payload(
             &row,

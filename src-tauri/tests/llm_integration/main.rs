@@ -173,10 +173,8 @@ struct CoreHarness {
     file_receipts: Box<dyn Fn(Option<&str>, &[String]) -> Vec<String> + Send + Sync>,
     /// 思考段回灌开关（默认关）。开启后 assistant(tool_calls) 消息带上本轮
     /// reasoning_content 原文——要验「开/关两态的消息形状」用。
-    reasoning_echo: bool,
     /// 轮内工具结果滑动窗（默认开，与生产一致）。关掉后轮内工具结果永远
     /// 全量留在上下文里。
-    in_turn_context_edit: bool,
     audit_events: AuditEvents,
 }
 
@@ -232,20 +230,12 @@ impl CoreHarness {
             }),
             audit_events: events,
             skill_finish_calls: finish_calls,
-            reasoning_echo: false,
-            in_turn_context_edit: true,
         }
     }
 
     /// skill_finish 的调用记录（(ok, reason)）
     fn skill_finish_calls(&self) -> Vec<(bool, String)> {
         self.skill_finish_calls.lock().unwrap().clone()
-    }
-
-    /// opt-in 思考段回灌：默认关（维持现状），要验开态的消息形状用这个。
-    fn with_reasoning_echo(mut self) -> Self {
-        self.reasoning_echo = true;
-        self
     }
 
     /// 依赖装配（默认关 final 自检，避免对历史用例产生回归干扰；
@@ -255,8 +245,6 @@ impl CoreHarness {
         ModelLoopDeps {
             fuse_cap_override: None,
             conv_sidecar_dir: None,
-            reasoning_echo: self.reasoning_echo,
-            in_turn_context_edit: self.in_turn_context_edit,
             emit: &*self.emit,
             audit: &*self.audit,
             skill_finish: &*self.skill_finish,
@@ -278,8 +266,6 @@ impl CoreHarness {
         ModelLoopDeps {
             fuse_cap_override: None,
             conv_sidecar_dir: None,
-            reasoning_echo: self.reasoning_echo,
-            in_turn_context_edit: self.in_turn_context_edit,
             emit: &*self.emit,
             audit: &*self.audit,
             skill_finish: &*self.skill_finish,

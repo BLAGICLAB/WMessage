@@ -627,11 +627,10 @@ pub(crate) async fn tool_web_search(
     );
     // 过滤参数（count/timeRange/site），缺省 = 旧行为；
     // count 缺省值走配置解析（config searchMaxResults，默认 8）；
-    // 模型显式给的 count 与配置缺省值共用 params 的同一条钳制边界
-    let cfg_search = crate::bot::load_config(app);
+    // 模型显式给的 count 与常量缺省值共用 params 的同一条钳制边界
     let opts = crate::bot_web::SearchOpts {
         count: parse_search_count(&v["count"])
-            .unwrap_or(crate::bot::params::resolve_search_max_results(&cfg_search)),
+            .unwrap_or(crate::bot::params::DEFAULT_SEARCH_MAX_RESULTS),
         time_range: crate::bot_web::TimeRange::parse(v["timeRange"].as_str()),
         site: v["site"].as_str().and_then(crate::bot_web::sanitize_site),
     };

@@ -75,30 +75,25 @@ data: [DONE]
 /// the thinking mode must be passed back to the API"），Moonshot K2 报"thinking is
 /// enabled but reasoning_content is missing in assistant tool call message"。
 /// 但回灌要实打实多付一份思考段的 input token，受益只落在要求回灌的模型上，
-/// 故做成默认关的开关，而不是一律回灌。
-///
 /// 断言打在**第二轮**请求体上：第一轮还没发过 assistant(tool_calls) 消息。
+///
+/// 「发了就回」后只有一态；echo 参数留作调用形状（恒 true），避免改签名。
 #[tokio::test]
-async fn core_reasoning_echo_switch_controls_message_shape() {
-    let off = reasoning_echo_second_request_body(false).await;
+async fn core_reasoning_echo_always_carries_reasoning_content() {
+    // 「发了就回」：上一轮流里有思考段就原样带回，没有拨杆。工具调用本身照带。
+    let body = reasoning_echo_second_request_body().await;
     assert!(
-        !off.contains("reasoning_content"),
-        "关态不应带 reasoning_content：{off}"
+        body.contains(r#""reasoning_content":"先想一下""#),
+        "应带本轮 reasoning_content 原文：{body}"
     );
-    assert!(off.contains("call_echo"), "两态都应带上工具调用本身：{off}");
-
-    let on = reasoning_echo_second_request_body(true).await;
-    assert!(
-        on.contains(r#""reasoning_content":"先想一下""#),
-        "开态应带本轮 reasoning_content 原文：{on}"
-    );
+    assert!(body.contains("call_echo"), "应带上工具调用本身：{body}");
 }
 
 /// 跑一轮「思考段 + 工具调用」对话，返回第二轮（工具轮之后那一轮）的请求体。
 ///
 /// 两态共用同一份 SSE：思考段与工具调用同在一个 delta 里，与 DeepSeek
 /// reasoner 的真实形状一致。
-async fn reasoning_echo_second_request_body(echo: bool) -> String {
+async fn reasoning_echo_second_request_body() -> String {
     let server = MockLlmServer::start();
     let tool_round = r#"data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","created":1234567890,"model":"deepseek-reasoner","choices":[{"delta":{"role":"assistant","reasoning_content":"先想一下","content":null,"tool_calls":[{"index":0,"id":"call_echo","type":"function","function":{"name":"read_text_file","arguments":"{}"}}]},"index":0,"finish_reason":null}]}
 
@@ -110,11 +105,7 @@ data: [DONE]
     server.push_behavior(MockBehavior::RawSse(tool_round.to_string()));
     server.push_behavior(MockBehavior::TextReply("查完了".into()));
 
-    let h = if echo {
-        CoreHarness::new().with_reasoning_echo()
-    } else {
-        CoreHarness::new()
-    };
+    let h = CoreHarness::new();
     let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
         ToolResult::ok("内容", Vec::new())
     };
@@ -154,7 +145,7 @@ data: [DONE]
     server.push_behavior(MockBehavior::RawSse(tool_round.to_string()));
     server.push_behavior(MockBehavior::TextReply("查完了".into()));
 
-    let h = CoreHarness::new().with_reasoning_echo();
+    let h = CoreHarness::new();
     let exec = |_name: String, _args: String, _trace: ToolCallTrace| async {
         ToolResult::ok("内容", Vec::new())
     };
