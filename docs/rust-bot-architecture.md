@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 313 个文件、约 13.6 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（16 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 313 个文件、约 13.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -44,7 +44,7 @@ src-tauri/src/
 │   ├── db/tasks_transfer.rs (313) 导出/导入纯逻辑段（路径闸门 check_export_path + v2 信封组装 +
 │   │                     导入事务 + bounded 读）；与 db/tasks.rs **同层**，`super::` 语义不变
 │   ├── db/tasks/task_set_column_tests.rs (117)  列状态迁移单测
-│   ├── db/tasks/task_patch_tests.rs (395)       定向补丁单测
+│   ├── db/tasks/task_patch_tests.rs (389)       定向补丁单测
 │   ├── db/tasks/task_status_tests.rs (56)       TaskStatus 线格式单测
 │   ├── db/tasks/owner_graph_tests.rs (346)       归属归一 + 导入导出信封单测
 │   └── db/tasks/import_bounded_tests.rs (23)    导入文件 bounded 读单测
@@ -120,8 +120,8 @@ src-tauri/src/
 │─ Bot 核心（编排 → 决策 → 工具分发）
 ├── bot_chat.rs (429)    入口编排门面：bot_chat / bot_compact / bot_execute_task 命令 + 公共类型
 │                        （ChatMsg/TaskRef/BotChatResult）+ 子模块转出（旧路径 1:1 保持）
-│   ├── bot_chat/flow.rs (730)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
-│   ├── bot_chat/exec.rs (563)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
+│   ├── bot_chat/flow.rs (712)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
+│   ├── bot_chat/exec.rs (551)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
 │   ├── bot_chat/summary.rs (327) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (96)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
@@ -143,27 +143,27 @@ src-tauri/src/
 │   prompts/planner.rs      PLANNER_PROMPT / REPLANNER_PROMPT（bot_plan 动态计划，只输出 JSON）
 │   prompts/consolidate.rs  CONSOLIDATE_PROMPT（记忆整理，只输出 JSON ops）
 │   prompts/extract.rs      EXTRACT_PROMPT（U16 会话收尾记忆抽取，只输出 JSON 数组）
-├── bot_model_loop.rs (121) LLM 流式调用+工具循环的**门面**：只留 mod 声明 + re-export
+├── bot_model_loop.rs (120) LLM 流式调用+工具循环的**门面**：只留 mod 声明 + re-export
 │                        （旧路径 `crate::bot_model_loop::X` 1:1 保持）；实现全在
 │                        bot_model_loop/ 子模块
 ├── bot_model_loop/        模型循环子模块（按职责拆分；门面作唯一枢纽，子模块间零直接依赖）：
-│                        **墙钟治理**（WallBudget：软墙钟收尾提醒 + 墙钟熔断留产，均在轮边界检查）
-│                        在 types.rs + fuse.rs；LlmHttp / ModelLoopDeps 依赖注入在 types.rs；
+│                        **无墙钟**：时间兜底只在工具级超时（LLM 首包/流空闲、Python、MCP），
+│                        不在会话或子 agent 上设截止时间；LlmHttp / ModelLoopDeps 依赖注入在 types.rs；
 │                        llm.usage 薄壳累计 + bot-usage-delta 水位条事件在 shell.rs
 │                        （TOOLS schema 已移出，见 bot/registry.rs）
 │   ├── bot_model_loop/stream.rs (436)   SSE 解析层：parse_sse_chunk / feed_think（思考块拆分）/
 │   │                                    tool_call 增量累积 / token usage 归一
-│   ├── bot_model_loop/core.rs (1106)     核心循环：run_model_loop_core（可注入 mock）+
+│   ├── bot_model_loop/core.rs (1098)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (536)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/shell.rs (532)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (723)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (749)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
 │   ├── bot_model_loop/finalize.rs (366) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
-│   ├── bot_model_loop/fuse.rs (246)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call +
-│   │                                    收尾轮数出口）/ 轮数·墙钟熔断 / 软警告注入
-│   ├── bot_model_loop/types.rs (366)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
+│   ├── bot_model_loop/fuse.rs (173)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call +
+│   │                                    收尾轮数出口）/ 轮数熔断 / 软警告注入
+│   ├── bot_model_loop/types.rs (325)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (172)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
 │   ├── bot_model_loop/context.rs (255)  上下文瘦身层：超限判定 / 历史裁剪 / 索引重排修正 /
@@ -173,10 +173,10 @@ src-tauri/src/
 │   ├── bot_model_loop/tests/guard.rs (1105)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
 │   ├── bot_model_loop/tests/config.rs (616) 推理参数 / 思考 / 上下文超限 / 侧调门测试
-│   ├── bot_model_loop/tests/tool_window.rs (234) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
+│   ├── bot_model_loop/tests/tool_window.rs (233) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
 │   ├── bot_model_loop/tests/fail_hint.rs (58)   工具失败「换策略」提示按工具分流的单测
 │   ├── bot_model_loop/tests/intent.rs (113)  侧调自检测试（路由阈值两态 / 用户意图抽取）
-│   ├── bot_model_loop/tests/sse.rs (157)    读流层测试（叫停后不推流 / 正文照旧记账）
+│   ├── bot_model_loop/tests/sse.rs (155)    读流层测试（叫停后不推流 / 正文照旧记账）
 ├── bot.rs (213)         bot 族唯一对外门面：跨族 re-export（BotChatResult/TaskRef/ChatMsg/
 │                        model_loop/StopGuard/StopToken/AuditLevel/db::* 等）+ 子模块声明；
 │                        **跨族引用一律走 `crate::bot::`**，族外不得直接摸
@@ -187,8 +187,8 @@ src-tauri/src/
 │                        subagent 预算/search 条数）+ bot_effective_params 命令；settings 页参数卡同源
 │                        （默认值 = resolver 在空配置下的派生值；可填范围 = 钳制常量 min/max；
 │                        生效值 = 钳过之后的数 + 来源标注——页面不再自留一份硬编码数字）。
-│                        **三档任务模式**（light/balanced/deep）在此：每档一次性给六个预算的
-│                        预设值（全局回合池 / 工具调用 / 墙钟 / 历史预算 / 输出上限 / 回填上限），
+│                        **三档任务模式**（light/balanced/deep）在此：每档一次性给五个预算的
+│                        预设值（全局回合池 / 工具调用 / 历史预算 / 输出上限 / 回填上限），
 │                        分配比例主会话 60% / 单个子 agent 20% / 单个技能 15% 内置不可配；
 │                        逐项高级覆盖优先于档位。测试在 bot/params/tests.rs。
 ├── bot/constants.rs     Agent 风控工程常量（开发者维护，设置页不暴露）：上下文/IO 闸、
@@ -209,20 +209,19 @@ src-tauri/src/
 │   ├── bot/registry/mentioned_tool_names_tests.rs (77)  工具点名整词匹配单测
 │   ├── bot/registry/claimed_executed_tools_tests.rs (63) 执行声称单测
 │   ├── bot/registry/result_claim_tests.rs (98)  结果值抽取与回声判定单测
-│   └── bot/registry/registry_tests.rs (1145)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
+│   └── bot/registry/registry_tests.rs (1144)  工具表基线守卫（表长 / 条目顺序 / schema 字面量 /
 │                        profile 白名单 / tools JSON 形状）+ TOOLS_TABLE 无 cfg-gated 条目守卫
-├── bot/dispatch.rs (961)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
-│                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计 +
-│                        子 agent 软墙钟闸（剩余预算进入收尾窗口即拒绝新调用，不打断在飞工具）；
+├── bot/dispatch.rs (915)  工具调度核心 execute_tool / execute_tool_impl：**TOOLS_TABLE 查表**（非 match）+
+│                        pre_execute 洋葱入口 + skill_on_step 钩子 + tool.return 结构化审计；
 │                        工具调用预算的阶梯不在这里（单点在模型循环层 fuse::gate_call），
-│                        dispatch 只留执行计数仪表
+│                        dispatch 只留执行计数仪表，不设预算闸、不设墙钟
 │   ├── bot/dispatch/commit_and_report_tests.rs (73)   写库失败口径单测：status 与文本同答案 +
 │   │                        fail_prefix 可被 classify_tool_failure 认出（7 处任务卡工具）
 │   ├── bot/dispatch/early_return_events_tests.rs (109) 早退事件序列单测：规则闸 deny 与 skill
 │   │                        熔断两条路径的 tool.return 配平 + trace 键集
 │   ├── bot/dispatch/invalid_args_tests.rs (95)        入参 JSON 闸单测：空参/非对象 JSON 放行、
 │   │                        坏 JSON 拒绝并回可解释文案 + 闸位接线守卫（源码文本）
-│   ├── bot/dispatch/pre_tool_hook_tests.rs (521)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
+│   ├── bot/dispatch/pre_tool_hook_tests.rs (515)      pre_tool 钩子接线守卫（语句存在 + 三点相对位置）+
 │                        panic 隔离守卫 + 收尾窗放行清单漂移 + 门禁早退 Denied 口径（10 处）
 │   └── bot/dispatch/allowed_tools_tests.rs (109)      allowed-tools 交互路径闸：集合内外/未声明/跨会话
 │                        判定单测（mock handle + 真注册表）+ 接线守卫（闸在规则表之前）
@@ -417,15 +416,15 @@ src-tauri/src/
 ├── bot/subagent_digest.rs (580) 子 agent 摘要与验收判据：build_subagent_digest / subagent_digest_block（父会话注入段）
 │                        / mark_digested（已消化记账）+ 机器判据（file_exists / file_nonempty
 │                        走服务端核验，不与模型自报的 met 混算）+ 父会话回报门控
-├── bot/subagent_repair.rs (502) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
+├── bot/subagent_repair.rs (465) 收尾 JSON 的本地修复与结果判定：结构化输出三段修复的第二段（尾逗号 / 截断闭合，
 │                        零 token 零延迟）+ parse_final_json + classify_outcome
-├── bot/subagent_runner.rs (1063) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
-│                        + 墙钟硬停 + 任务包装渲染
+├── bot/subagent_runner.rs (1027) 子 agent 执行体：run_subagent（建会话 → 工具循环 → 收尾落库）+ 取消 watcher
+│                        + panic 隔离 + 任务包装渲染
 ├── bot/subagent_spawn.rs (466) 子 agent 派发：入参校验 / 预算钳制 / 建行 / 并发闸 SubagentGate（per-session 2 /
 │                        global 3，闸满排队）
-├── bot/subagent_tools.rs (414) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
+├── bot/subagent_tools.rs (404) 子 agent 的五个 LLM 工具：tool_spawn_subagent / tool_check_subagent /
 │                        tool_cancel_subagent / tool_write_artifact_file / tool_read_own_card
-├── bot_orchestrator.rs (692) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
+├── bot_orchestrator.rs (690) 子 Agent 编排器门面（方案 B，SUBA 设计 2026-09-27）：类型与生命周期
 │                        核心 + 子模块 re-export；受管子 agent 的
 │                        spawn/check/cancel 生命周期状态机 + 无任务卡（子 agent 不再建卡，行上
 │                        只存 parent_session_id 指向派发会话，遗留可空 task_id 不再写入）+ acceptance
@@ -441,9 +440,9 @@ src-tauri/src/
 │       │                          parent_card / fake_state / digest_row / req / OK_RESULT
 │       ├── orchestrator_tests/lifecycle.rs (519) 生命周期与接线守卫：panic 隔离 / 收尾事件唤醒 /
 │       │                          wait 策略 / 摘要注入位置
-│       ├── orchestrator_tests/outcome.rs (678) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
+│       ├── orchestrator_tests/outcome.rs (632) 收尾契约与摘要：机器判据 / digest 幂等 / 汇报轮顺序 /
 │       │                          包装渲染
-│       └── orchestrator_tests/spawn.rs (1034) 派发与并发闸：建行 / 预算钳制 / 幂等 / 队列位次
+│       └── orchestrator_tests/spawn.rs (1004) 派发与并发闸：建行 / 预算钳制 / 幂等 / 队列位次
 ├── bot_artifacts.rs     产物登记：link_file_to_task → 收尾按 TaskExecOrigin 分流 →
 │                        落「通知中心」artifact_bind 消息（原 artifact-batch-ready 挂件弹窗已下线）→
 │                        通知页勾选 → confirm_artifact_batch 落库 + notif_resolve_artifact 回写

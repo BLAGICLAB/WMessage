@@ -312,10 +312,6 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             "subagent.max_tool_calls",
             c.subagentMaxToolCalls,
           ),
-          subagentMaxWallSecs: paramNumber(
-            "subagent.max_wall_secs",
-            c.subagentMaxWallSecs,
-          ),
           searchMaxResults: paramNumber(
             "search.max_results",
             c.searchMaxResults,

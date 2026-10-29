@@ -70,7 +70,6 @@ export interface BotConfigView {
   inTurnContextEdit?: number | null;
   subagentMaxTurns?: number | null;
   subagentMaxToolCalls?: number | null;
-  subagentMaxWallSecs?: number | null;
   searchMaxResults?: number | null;
   maxToolOutputBytes?: number | null;
   askBudget?: number | null;

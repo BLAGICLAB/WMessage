@@ -115,7 +115,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
     inTurnContextEdit: "",
     subagentMaxTurns: "",
     subagentMaxToolCalls: "",
-    subagentMaxWallSecs: "",
     searchMaxResults: "",
     maxToolOutputBytes: "",
     askBudget: "",
@@ -378,8 +377,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
           c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
         subagentMaxToolCalls:
           c.subagentMaxToolCalls != null ? String(c.subagentMaxToolCalls) : "",
-        subagentMaxWallSecs:
-          c.subagentMaxWallSecs != null ? String(c.subagentMaxWallSecs) : "",
         searchMaxResults:
           c.searchMaxResults != null ? String(c.searchMaxResults) : "",
         maxToolOutputBytes:

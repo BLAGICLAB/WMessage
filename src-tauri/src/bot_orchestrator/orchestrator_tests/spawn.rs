@@ -37,7 +37,6 @@ fn spawn_creates_row_only_and_no_subcard() {
     let budget: SubagentBudget = serde_json::from_str(row.budget_json.as_deref().unwrap()).unwrap();
     assert_eq!(budget.max_turns, DEFAULT_MAX_TURNS);
     assert_eq!(budget.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
-    assert_eq!(budget.max_wall_seconds, DEFAULT_MAX_WALL_SECONDS);
 }
 /// 空白上下文摘要不落库（否则包装会渲染一个空标题段）
 #[test]
@@ -256,38 +255,17 @@ fn budget_clamps_turns_to_hard_cap() {
     let b = clamp_budget(Some(SubagentBudget {
         max_turns: 9_999,
         max_tool_calls: 0,
-        max_wall_seconds: 0,
     }));
     assert_eq!(b.max_turns, MAX_TURNS_HARD_CAP);
     assert_eq!(b.max_tool_calls, 1);
-    // 墙钟下界与配置键同源（30s）——「1 秒墙钟」等于白派一个子 agent
-    assert_eq!(b.max_wall_seconds, 30);
     // 默认预算 = 均衡档全局池的 20% 份额（引用常量，不写字面量）
     assert_eq!(
         clamp_budget(None),
         SubagentBudget {
             max_turns: DEFAULT_MAX_TURNS,
             max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
-            max_wall_seconds: DEFAULT_MAX_WALL_SECONDS
         }
     );
-}
-/// 墙钟的硬顶必须与配置键走同一组常量——两条路两个闸时，LLM 显式给的
-/// `maxWallSeconds=999999` 会原样生效，墙钟实际由调用方说了算。
-#[test]
-fn budget_wall_clock_is_capped_at_the_same_bound_as_config() {
-    let too_big = clamp_budget(Some(SubagentBudget {
-        max_turns: 30,
-        max_tool_calls: 100,
-        max_wall_seconds: 999_999,
-    }));
-    assert_eq!(
-        too_big.max_wall_seconds,
-        crate::bot::params::SUBAGENT_MAX_WALL_SECS_MAX
-    );
-    // 配置键路径给同一个数，钳完必须一模一样
-    let via_config = crate::bot::params::clamp_subagent_max_wall_secs(999_999);
-    assert_eq!(too_big.max_wall_seconds, via_config);
 }
 #[test]
 fn cancel_sets_cancelled_and_terminal_noop() {
@@ -456,7 +434,6 @@ fn check_reports_rounds_while_subagent_runs() {
             artifact_dir: std::path::PathBuf::from("/tmp/art_rounds"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
-            wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         },
     );
     let running = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
@@ -499,7 +476,6 @@ fn list_view_attaches_rounds_while_subagent_runs() {
             artifact_dir: std::path::PathBuf::from("/tmp/art_view"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
-            wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
         },
     );
     let row = crate::db::load_subagent(&conn, &ack.subagent_id)
@@ -535,7 +511,6 @@ fn list_view_drops_rounds_after_guard_dropped() {
                 artifact_dir: std::path::PathBuf::from("/tmp/art_drop"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(7)),
-                wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
             },
         );
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)
@@ -564,10 +539,6 @@ fn subagent_budget_defaults_have_single_source() {
     assert_eq!(
         crate::db::subagents::DEFAULT_MAX_TOOL_CALLS,
         crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS
-    );
-    assert_eq!(
-        crate::db::subagents::DEFAULT_MAX_WALL_SECONDS,
-        crate::bot::params::DEFAULT_SUBAGENT_MAX_WALL_SECS
     );
 }
 #[test]
@@ -925,7 +896,6 @@ fn onion_turn_cap_only_tightens() {
     let mut b = SubagentBudget {
         max_turns: 30,
         max_tool_calls: 100,
-        max_wall_seconds: 600,
     };
     // 配置档更紧 → 压到配置档的值
     apply_onion_turn_cap(&mut b, Some(4));

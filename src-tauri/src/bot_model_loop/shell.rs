@@ -4,7 +4,7 @@
 
 use super::{
     apply_output_cap, decide_selfcheck, run_model_loop_core, LlmHttp, LoopTrace, ModelLoopDeps,
-    SelfcheckDecision, WallBudget,
+    SelfcheckDecision,
 };
 use crate::bot_chat::TaskRef;
 use crate::bot_slash::StopGuard;
@@ -86,9 +86,6 @@ pub async fn run_model_loop(
     // 实测一次跑满 50 轮撞熔断的 255 秒执行，trace 里 turns=0/tools=0/tokens=0。
     // 想要失败轨迹也落库的调用方（trace 管道）传 Some 即可。
     failed_trace_out: Option<&std::sync::Arc<std::sync::Mutex<Option<LoopTrace>>>>,
-    // 子 agent 墙钟预算（软墙钟 + 墙钟熔断留产）。None = 不带墙钟治理
-    // （主聊天、任务执行等链路不参与子 agent 预算）。
-    wall_budget: Option<WallBudget>,
 ) -> Result<(String, Vec<TaskRef>, LoopTrace), CommandError> {
     let cfg = crate::bot::bot_get_config(app.clone())?;
     // 请求装配前厂商可用性守卫：全局 active 条目带厂商且未通过连接测试 → 响亮拦截，不带未验证 key 出门换 401。
@@ -301,7 +298,6 @@ pub async fn run_model_loop(
                 }),
             );
         }),
-        wall_budget,
         guard_claim_keywords: &guard_claim_keywords,
         // 本会话调用过的工具名（点名判据的排除集）：查库失败返 None
         // （= 查不到 → core 侧整档让开，查不到证据不等于有罪）。

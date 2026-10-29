@@ -304,17 +304,6 @@ pub(super) async fn run_task_in_chat_impl(
         Some(hook),
         crate::bot::params::resolve_ask_budget_cfg(&cfg_for_rounds),
         |app2, msgs, stop| async move {
-            // 任务执行链路同样带墙钟（档位全局墙钟的 60% 份额）：与主聊天
-            // 同一口径，任务卡执行也不该能无限拖。
-            let main_wall_secs = crate::bot::params::resolve_main_wall_secs(&cfg_for_rounds);
-            let wall_budget = crate::bot_model_loop::WallBudget {
-                deadline: std::time::Instant::now()
-                    + std::time::Duration::from_secs(main_wall_secs),
-                reserve: std::time::Duration::from_secs(
-                    crate::bot::params::subagent_wall_reserve_secs(main_wall_secs),
-                ),
-                max_wall_seconds: main_wall_secs,
-            };
             let outcome = crate::bot_model_loop::run_model_loop(
                 app2,
                 msgs,
@@ -325,7 +314,6 @@ pub(super) async fn run_task_in_chat_impl(
                 None,
                 None, // per-onion 温度覆盖：任务执行链路不挂
                 Some(&failed_for_run),
-                Some(wall_budget),
             )
             .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）

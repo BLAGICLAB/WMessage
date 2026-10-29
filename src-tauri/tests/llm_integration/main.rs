@@ -267,7 +267,6 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
-            wall_budget: None,
             session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),
@@ -291,7 +290,6 @@ impl CoreHarness {
                 let _ = rounds;
             },
             turn_status: None,
-            wall_budget: None,
             session_tools: Some(&*self.session_tools),
             guard_claim_keywords: &self.guard_claim_keywords,
             file_receipts: Some(&*self.file_receipts),
@@ -567,6 +565,7 @@ fn deps_capturing_logs<'a>(
 mod anthropic;
 mod core;
 mod e2e;
+mod fuse_ladder;
 mod guard;
 mod selfcheck;
 mod sse;

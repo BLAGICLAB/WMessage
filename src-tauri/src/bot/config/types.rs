@@ -275,9 +275,6 @@ pub struct BotConfig {
     /// （主 60% / 子 20%），共用一个键等于子 agent 拿到了主会话同等的额度。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_tool_calls: Option<u32>,
-    /// 子 agent 默认墙钟预算（秒）：None = 档位全局墙钟的 20% 份额；钳 30..=全局墙钟硬顶。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_wall_secs: Option<u64>,
     /// web_search 默认结果条数（模型未传 count 时）：None = 内置默认（`params::DEFAULT_SEARCH_MAX_RESULTS`）；钳 1..=10（后端硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
@@ -399,7 +396,6 @@ impl Default for BotConfig {
             in_turn_context_edit: None,
             subagent_max_turns: None,
             subagent_max_tool_calls: None,
-            subagent_max_wall_secs: None,
             search_max_results: None,
             max_tool_output_bytes: None,
             ask_budget: None,
@@ -594,8 +590,6 @@ pub struct BotConfigView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_max_tool_calls: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_wall_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_bytes: Option<u32>,
@@ -636,9 +630,6 @@ impl crate::bot::params::AgentParams for BotConfig {
     }
     fn subagent_max_tool_calls(&self) -> Option<u32> {
         self.subagent_max_tool_calls
-    }
-    fn subagent_max_wall_secs(&self) -> Option<u64> {
-        self.subagent_max_wall_secs
     }
     fn search_max_results(&self) -> Option<u32> {
         self.search_max_results
@@ -683,9 +674,6 @@ impl crate::bot::params::AgentParams for BotConfigView {
     }
     fn subagent_max_tool_calls(&self) -> Option<u32> {
         self.subagent_max_tool_calls
-    }
-    fn subagent_max_wall_secs(&self) -> Option<u64> {
-        self.subagent_max_wall_secs
     }
     fn search_max_results(&self) -> Option<u32> {
         self.search_max_results

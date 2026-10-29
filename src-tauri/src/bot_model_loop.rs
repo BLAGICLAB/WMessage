@@ -51,7 +51,7 @@ pub use self::stream::{
 #[allow(unused_imports)]
 pub use self::types::{
     LlmHttp, LoopTrace, ModelLoopDeps, ParsedChunk, StreamError, TokenUsage, ToolCallDelta,
-    TurnStatus, WallBudget,
+    TurnStatus,
 };
 
 // 跨模块共用的私有项：门面转出，子模块之间零直接依赖。
@@ -67,9 +67,8 @@ pub(crate) use self::finalize::{
     decide_selfcheck, finalize_exit, finalize_selfcheck, FinalizeOutcome, SelfcheckDecision,
 };
 pub(crate) use self::fuse::{
-    check_fuses, fuse_cap_for, fuse_message, gate_call, inject_soft_warnings, rounds_fuse_exit,
-    should_fuse, wrap_up_exhausted_message, wrap_up_rounds_exhausted, CallGate, FUSE_MARKER,
-    ROUNDS_FUSE_MARKER, WALL_FUSE_MARKER,
+    fuse_cap_for, fuse_message, gate_call, inject_soft_warnings, rounds_fuse_exit, should_fuse,
+    wrap_up_exhausted_message, wrap_up_rounds_exhausted, CallGate, FUSE_MARKER, ROUNDS_FUSE_MARKER,
 };
 pub(crate) use self::guard::{
     finalize_without_tools, selfcheck_retry_hint, side_selfcheck_verdict, SELFCHECK_FAIL_EMIT,
@@ -94,7 +93,7 @@ pub(crate) use self::types::{
 // 只有测试在用的私有项：按构建期切换——非测试构建里它们没人用，
 // 转出会被 rustc 判 unused import。
 #[cfg(test)]
-pub(crate) use self::fuse::{fuse_cap_upper_bound, rounds_fuse_message, wall_fuse_message};
+pub(crate) use self::fuse::{fuse_cap_upper_bound, rounds_fuse_message};
 // ── 拆分模块声明 结束 ──
 
 // 防幻觉汇报守卫

@@ -207,7 +207,6 @@ async fn trace_lifecycle_done_row_written() {
                     let _ = rounds;
                 },
                 turn_status: None,
-                wall_budget: None,
             };
             let out =
                 run_model_loop_core(&http, msgs, 10, &stop, None, &deps, exec_never, noop_replan)

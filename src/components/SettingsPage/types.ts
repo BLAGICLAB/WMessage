@@ -370,7 +370,6 @@ export type SettingsConfig = {
   inTurnContextEdit: string;
   subagentMaxTurns: string;
   subagentMaxToolCalls: string;
-  subagentMaxWallSecs: string;
   searchMaxResults: string;
   maxToolOutputBytes: string;
   askBudget: string;

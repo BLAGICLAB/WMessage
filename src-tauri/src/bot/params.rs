@@ -42,8 +42,6 @@ pub trait AgentParams {
     fn subagent_max_turns(&self) -> Option<u32>;
     /// 子 agent 工具调用上限（高级覆盖）。
     fn subagent_max_tool_calls(&self) -> Option<u32>;
-    /// 子 agent 墙钟预算（高级覆盖）。
-    fn subagent_max_wall_secs(&self) -> Option<u64>;
     /// 联网搜索默认条数（高级覆盖）。
     fn search_max_results(&self) -> Option<u32>;
     /// 工具结果回填上限（高级覆盖）。
@@ -135,8 +133,6 @@ pub struct ModePreset {
     pub global_turns: u32,
     /// 全局总工具调用次数：写文件收尾调用不计入配额。
     pub global_tool_calls: u32,
-    /// 全局墙钟时长（秒）：倒计时全任务共享。
-    pub global_wall_secs: u64,
     /// 会话历史字符预算。
     pub history_budget_chars: u32,
     /// 单轮输出 max_tokens。
@@ -149,7 +145,6 @@ pub struct ModePreset {
 pub const LIGHT_PRESET: ModePreset = ModePreset {
     global_turns: 60,
     global_tool_calls: 150,
-    global_wall_secs: 300,
     history_budget_chars: 80_000,
     max_tokens: 8_192,
     tool_output_bytes: 64 * 1024,
@@ -159,7 +154,6 @@ pub const LIGHT_PRESET: ModePreset = ModePreset {
 pub const BALANCED_PRESET: ModePreset = ModePreset {
     global_turns: 100,
     global_tool_calls: 250,
-    global_wall_secs: 900,
     history_budget_chars: 100_000,
     max_tokens: 16_384,
     tool_output_bytes: 128 * 1024,
@@ -169,7 +163,6 @@ pub const BALANCED_PRESET: ModePreset = ModePreset {
 pub const DEEP_PRESET: ModePreset = ModePreset {
     global_turns: 250,
     global_tool_calls: 700,
-    global_wall_secs: 2_400,
     history_budget_chars: 300_000,
     max_tokens: 32_768,
     tool_output_bytes: 200 * 1024,
@@ -193,8 +186,6 @@ pub fn preset_for(mode: TaskMode) -> ModePreset {
 pub const GLOBAL_TURNS_CAP: u32 = 500;
 /// 全局总工具调用次数硬顶。
 pub const GLOBAL_TOOL_CALLS_CAP: u32 = 1_200;
-/// 全局墙钟硬顶（秒）。
-pub const GLOBAL_WALL_SECS_CAP: u64 = 3_600;
 /// 会话历史字符预算硬顶。
 ///
 /// 不设 500K 档：历史预算与上下文窗口耦合，500K 字符已超多数模型的可用
@@ -237,16 +228,6 @@ pub const fn budget_share(total: u32, pct: usize) -> u32 {
     }
 }
 
-/// 墙钟按比例取预算（秒）：`(总量 × 百分比) / 100`，至少 1 秒。
-pub const fn wall_share(total: u64, pct: usize) -> u64 {
-    let raw = (total.saturating_mul(pct as u64)) / 100;
-    if raw == 0 {
-        1
-    } else {
-        raw
-    }
-}
-
 // ── 内置默认（单一事实源）──
 
 /// 模型循环默认轮数：均衡档全局池的 60%（分配规则给主会话的那一份）。
@@ -280,19 +261,13 @@ pub const DEFAULT_IN_TURN_CONTEXT_EDIT: u32 = 1;
 pub const IN_TURN_CONTEXT_EDIT_MAX: u32 = 1;
 /// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）。
 ///
-/// 轮数与工具数取均衡档全局池的 20%（分配规则给单个子 agent 的那一份），
-/// 墙钟同理；不是拍脑袋的独立默认值。工具数与主会话的 max_function_calls
+/// 轮数与工具数取均衡档全局池的 20%（分配规则给单个子 agent 的那一份）；
+/// 不是拍脑袋的独立默认值。工具数与主会话的 max_function_calls
 /// 是两个独立键（见 resolve_subagent_budget）。
 pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 =
     budget_share(BALANCED_PRESET.global_turns, SUBAGENT_BUDGET_PCT);
 pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 =
     budget_share(BALANCED_PRESET.global_tool_calls, SUBAGENT_BUDGET_PCT);
-pub const DEFAULT_SUBAGENT_MAX_WALL_SECS: u64 =
-    wall_share(BALANCED_PRESET.global_wall_secs, SUBAGENT_BUDGET_PCT);
-/// 子 agent 墙钟下界（秒）——钳制与设置页展示的可填范围共用这一个数。
-pub const SUBAGENT_MAX_WALL_SECS_MIN: u64 = 30;
-/// 子 agent 墙钟上界（秒）：全局墙钟硬顶。
-pub const SUBAGENT_MAX_WALL_SECS_MAX: u64 = GLOBAL_WALL_SECS_CAP;
 /// 联网搜索默认结果条数（Tavily 主流推荐：6 条）。
 pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 6;
 
@@ -327,26 +302,6 @@ pub fn clamp_reasoning_echo_enabled(n: u32) -> u32 {
 pub fn clamp_in_turn_context_edit(n: u32) -> u32 {
     n.min(IN_TURN_CONTEXT_EDIT_MAX)
 }
-
-/// 子 agent 墙钟秒数钳 30..=3600
-pub fn clamp_subagent_max_wall_secs(n: u64) -> u64 {
-    n.clamp(SUBAGENT_MAX_WALL_SECS_MIN, SUBAGENT_MAX_WALL_SECS_MAX)
-}
-
-/// 软墙钟的**收尾预留窗口**（秒）：墙钟预算的 10%，下限 30s。
-///
-/// 业界口径是「软顶在边界检查 + 为收尾预留一段预算」：最后这段预算专门留给
-/// 「模型把已经拿到的结果整理成收尾 JSON」。不留这段，跑到临近上限的子
-/// agent 会被外层墙钟硬杀——正在跑的工具、已经说出口的正文一起没了。
-///
-/// 与硬墙钟的分工：软墙钟只**拒绝新调用**（不打断在飞工具），硬墙钟是绝对
-/// 兜底。预留窗口是软的，因此这里给的是下限而非精确比例。
-pub fn subagent_wall_reserve_secs(budget_secs: u64) -> u64 {
-    (budget_secs / 10).max(SUBAGENT_WALL_RESERVE_MIN_SECS)
-}
-
-/// 收尾预留窗口下限（秒）：预算很小时 10% 不够模型跑完最后一轮
-pub const SUBAGENT_WALL_RESERVE_MIN_SECS: u64 = 30;
 
 /// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）
 pub const SEARCH_MAX_RESULTS_CAP: u32 = crate::bot::constants::SEARCH_MAX_RESULTS_CAP;
@@ -436,13 +391,6 @@ pub fn resolve_global_tool_calls(cfg: &impl AgentParams) -> u32 {
         .min(GLOBAL_TOOL_CALLS_CAP)
 }
 
-/// 全局墙钟（秒，档位预设值）。
-pub fn resolve_global_wall_secs(cfg: &impl AgentParams) -> u64 {
-    resolve_preset(cfg)
-        .global_wall_secs
-        .min(GLOBAL_WALL_SECS_CAP)
-}
-
 /// 主会话回合上限：档位全局池的 60%，可被高级覆盖 `max_rounds` 顶掉。
 ///
 /// 覆盖优先于分配比例——用户手填的值是他明确要的，档位只是默认值。
@@ -465,15 +413,6 @@ pub fn resolve_main_tool_calls(cfg: &impl AgentParams) -> u32 {
             MAIN_SESSION_BUDGET_PCT,
         )),
     }
-}
-
-/// 主会话墙钟预算（秒）：档位全局墙钟的 60%，可被高级覆盖顶掉。
-///
-/// 之前主会话**没有墙钟**（只有子 agent 有），长任务能被无限拖；档位给了
-/// 全局时间预算后，主会话这一路也必须有一份，否则「全局墙钟」名不副实。
-pub fn resolve_main_wall_secs(cfg: &impl AgentParams) -> u64 {
-    let shared = resolve_global_wall_secs(cfg) * MAIN_SESSION_BUDGET_PCT as u64 / 100;
-    clamp_subagent_max_wall_secs(shared.max(SUBAGENT_MAX_WALL_SECS_MIN))
 }
 
 /// 会话历史字符预算：档位预设值，可被高级覆盖顶掉。
@@ -532,7 +471,7 @@ pub fn resolve_in_turn_context_edit(cfg: &impl AgentParams) -> u32 {
 }
 
 /// 子 agent 预算：档位全局池的 20%（分配规则给单个子 agent 的那一份），
-/// 三项各自可被高级覆盖顶掉。
+/// 两项各自可被高级覆盖顶掉。
 ///
 /// 工具调用这一项**不与主会话同源**：主会话拿 60%、子 agent 拿 20%，是同一
 /// 个全局池的两份配额。此前两条共用一个 `max_function_calls`，等于子 agent
@@ -550,13 +489,6 @@ pub fn resolve_subagent_budget(cfg: &impl AgentParams) -> crate::db::SubagentBud
             Some(n) => clamp_max_function_calls(n),
             None => clamp_max_function_calls(budget_share(
                 resolve_global_tool_calls(cfg),
-                SUBAGENT_BUDGET_PCT,
-            )),
-        },
-        max_wall_seconds: match cfg.subagent_max_wall_secs() {
-            Some(n) => clamp_subagent_max_wall_secs(n),
-            None => clamp_subagent_max_wall_secs(wall_share(
-                resolve_global_wall_secs(cfg),
                 SUBAGENT_BUDGET_PCT,
             )),
         },
@@ -723,16 +655,6 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         max: Some(MAX_FUNCTION_CALLS_CAP as u64),
         editable: true,
         resolve: cfg_resolver!(resolve_budget_tool_calls, subagent_max_tool_calls),
-    },
-    ParamDef {
-        key: "subagent.max_wall_secs",
-        label: "子 agent 墙钟预算（秒）",
-        category: "subagent",
-        hint: "单个子 agent 从起跑计的最长时长；默认取档位全局墙钟的 20%；排队不计入",
-        min: Some(SUBAGENT_MAX_WALL_SECS_MIN),
-        max: Some(SUBAGENT_MAX_WALL_SECS_MAX),
-        editable: true,
-        resolve: cfg_resolver!(resolve_budget_wall, subagent_max_wall_secs),
     },
     // ── 可编辑：搜索 ──
     ParamDef {
@@ -952,10 +874,6 @@ fn resolve_budget_tool_calls(cfg: &impl AgentParams) -> String {
 
 fn resolve_budget_turns(cfg: &impl AgentParams) -> String {
     resolve_subagent_budget(cfg).max_turns.to_string()
-}
-
-fn resolve_budget_wall(cfg: &impl AgentParams) -> String {
-    resolve_subagent_budget(cfg).max_wall_seconds.to_string()
 }
 
 fn plain_max_tokens(cfg: &impl AgentParams) -> String {

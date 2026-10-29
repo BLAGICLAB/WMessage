@@ -6,9 +6,7 @@ use crate::bot_orchestrator::{
     cancel_subagent_async, check_subagent, db_locked, resolve_spawn_profile, spawn_subagent,
     SpawnAck, SpawnOnion, SpawnRequest, SubagentStage, CHECK_WAIT_MS_CAP,
 };
-use crate::bot_orchestrator::{
-    DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS, DEFAULT_MAX_WALL_SECONDS,
-};
+use crate::bot_orchestrator::{DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS};
 use crate::db::{SubagentBudget, SubagentProfile, SubagentStatus};
 use crate::error::CommandError;
 use std::path::PathBuf;
@@ -88,9 +86,6 @@ pub async fn tool_spawn_subagent(
                     .as_u64()
                     .unwrap_or(DEFAULT_MAX_TOOL_CALLS as u64)
                     as u32,
-                max_wall_seconds: v["budget"]["maxWallSeconds"]
-                    .as_u64()
-                    .unwrap_or(DEFAULT_MAX_WALL_SECONDS),
             }
             .clamped(),
         ),
@@ -123,12 +118,12 @@ pub async fn tool_spawn_subagent(
 /// spawn 的工具回执文案。命中幂等键时要说清「没新建、还是那个」——
 /// 模型读到「已派发」会以为又多了一个子 agent，转述给用户时就会说错。
 ///
-/// 回执里回显**生效**预算：调用方给的墙钟会被钳到 30..=3600，模型不知道它
-/// 的子 agent 最多能跑多久，就会照着自己给的数安排后续动作。
+/// 回执里回显**生效**预算：调用方给的数会被钳到硬顶，模型不知道它
+/// 的子 agent 实际能跑多少，就会照着自己给的数安排后续动作。
 pub(crate) fn spawn_receipt_text(ack: &SpawnAck) -> String {
     let budget_note = format!(
-        "生效预算：墙钟 {}s / 轮数 {} / 工具调用 {}。",
-        ack.budget.max_wall_seconds, ack.budget.max_turns, ack.budget.max_tool_calls
+        "生效预算：轮数 {} / 工具调用 {}。",
+        ack.budget.max_turns, ack.budget.max_tool_calls
     );
     if ack.deduped {
         format!(
@@ -350,9 +345,6 @@ pub async fn tool_read_own_card(
             ctx.used_tool_calls
                 .load(std::sync::atomic::Ordering::SeqCst),
             ctx.used_rounds.load(std::sync::atomic::Ordering::SeqCst),
-            ctx.wall_deadline
-                .saturating_duration_since(std::time::Instant::now())
-                .as_secs(),
         )
         .to_string(),
         Vec::new(),
@@ -367,7 +359,6 @@ pub(crate) fn own_card_payload(
     budget: Option<SubagentBudget>,
     tool_calls_used: usize,
     rounds_used: usize,
-    wall_remaining_secs: u64,
 ) -> serde_json::Value {
     let cancelled = row.status == SubagentStatus::Cancelled;
     serde_json::json!({
@@ -380,7 +371,6 @@ pub(crate) fn own_card_payload(
             "toolCallsMax": budget.as_ref().map(|b| b.max_tool_calls),
             "roundsUsed": rounds_used,
             "roundsMax": budget.as_ref().map(|b| b.max_turns),
-            "wallRemainingSecs": wall_remaining_secs,
         },
         "status": row.status.as_str(),
         "hint": if cancelled {

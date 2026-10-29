@@ -247,7 +247,7 @@ pub(crate) fn budget_force_needed(
 /// 且**消耗同一份墙钟预算**（重试不重置时钟）。
 ///
 /// 只在「文本非空 + 不含熔断标记 + 本地修复后仍解析不出」时补答：
-/// - 预算熔断（轮数 / 工具 / 墙钟）不是格式问题，补答只是白烧一次 token；
+/// - 预算熔断（轮数 / 工具）不是格式问题，补答只是白烧一次 token；
 /// - 本地修复能救的已经在 `parse_final_json` 里救掉了，不必再问模型。
 ///
 /// 返回补答后的正文（可解析）；补答失败或仍不可解析 → None（走原失败路径）。
@@ -255,14 +255,12 @@ pub(crate) async fn repair_final_json_once(
     app: &AppHandle,
     stop: &crate::bot_slash::StopGuard,
     text: &str,
-    wall_budget: Option<crate::bot_model_loop::WallBudget>,
 ) -> Option<String> {
     if text.trim().is_empty() {
         return None;
     }
     for marker in [
         crate::bot_model_loop::ROUNDS_FUSE_MARKER,
-        crate::bot_model_loop::WALL_FUSE_MARKER,
         crate::bot_model_loop::FUSE_MARKER,
     ] {
         if text.contains(marker) {
@@ -286,19 +284,10 @@ pub(crate) async fn repair_final_json_once(
         serde_json::json!({ "role": "user", "content": prompt }),
     ];
     // 一轮就够：补答只需要「把结果整理成 JSON」，不需要再探索。
-    let out = crate::bot_model_loop::run_model_loop(
-        app.clone(),
-        msgs,
-        1,
-        stop,
-        None,
-        None,
-        None,
-        None,
-        wall_budget,
-    )
-    .await
-    .ok()?;
+    let out =
+        crate::bot_model_loop::run_model_loop(app.clone(), msgs, 1, stop, None, None, None, None)
+            .await
+            .ok()?;
     let (reply, _refs, _trace) = out;
     if parse_final_json(&reply).is_some() {
         crate::bot::audit_log(
@@ -315,7 +304,6 @@ pub(crate) async fn repair_final_json_once(
     }
 }
 /// 收尾结果判定（纯函数，设计 §6/§7）：
-/// 墙钟熔断 → budget_exceeded(max_wall_seconds) + 正文留产；
 /// 轮数熔断 → budget_exceeded(max_turns) + 正文留产；
 /// 其他循环错误 → failed；正文解析成功 → 模型自报 succeeded/failed（自报
 /// cancelled/budget_exceeded 视为 failed + error 说明）；解析失败 →
@@ -326,39 +314,14 @@ pub(crate) async fn repair_final_json_once(
 /// 是为了让「模型说了什么」与「服务端验到了什么」各自独立可测。
 pub(crate) fn classify_outcome(
     run_err: Option<&str>,
-    wall_exceeded: bool,
     final_text: Option<&str>,
 ) -> (SubagentStatus, Option<String>, Option<serde_json::Value>) {
     let text = final_text.unwrap_or_default();
-    if wall_exceeded {
-        // 外层墙钟兜底（future 被 timeout 掐掉）：正文随 future 一起没了，
-        // 没有可留的产出。常态路径是轮边界的墙钟熔断（下一条）——那边带正文。
-        return (
-            SubagentStatus::BudgetExceeded,
-            Some("max_wall_seconds".into()),
-            None,
-        );
-    }
     if let Some(err) = run_err {
         return (
             SubagentStatus::Failed,
             Some(crate::bot::truncate_for_log(err, 300)),
             None,
-        );
-    }
-    // 墙钟熔断（模型循环在轮边界退出，正文带着）：与轮数熔断同款留产。
-    //
-    // 必须判在 FUSE_MARKER 之前——墙钟标记是「⏹ 已熔断（墙钟上限）」，
-    // 而通用熔断标记是「⏹ 已熔断」，前者**包含**后者；判反了会被认成
-    // 工具调用熔断（max_tool_calls），真实原因「墙钟触顶」又被丢掉。
-    if text.contains(crate::bot_model_loop::WALL_FUSE_MARKER) {
-        return (
-            SubagentStatus::BudgetExceeded,
-            Some("max_wall_seconds".into()),
-            Some(serde_json::json!({
-                "summary": crate::bot::truncate_for_log(text, 800),
-                "note": "墙钟预算熔断，未产出收尾 JSON；以上为熔断前保留的最后一段正文"
-            })),
         );
     }
     // 轮数熔断：熔断出口返回 Ok，正文带 ROUNDS_FUSE_MARKER（见 bot_model_loop）。

@@ -9,7 +9,7 @@
 //!   parent_task_id 关联（行上存派发时的主卡 id，不建子卡）+ 预算字段落表 +
 //!   审计 subagent_spawned。不暴露 LLM 工具、不注册 tauri 命令。
 //! - 三工具进 registry + 递归双保险 + 任务包装渲染 + 提示词 + runner + 收尾 JSON 解析。
-//! - 预算强制（turns/tool_calls/wall）+ 并发排队（per-session 2 / global 3）+ 前端。
+//! - 预算强制（turns/tool_calls）+ 并发排队（per-session 2 / global 3）+ 前端。
 //!
 //! 结构约定（同 task_patch / task_patch_locked 先例）：纯 DB 核心 `*_locked` 可在
 //! in-memory conn 上单测；异步包装负责 spawn_blocking + DB_WRITE_LOCK + 审计 + 广播。
@@ -55,9 +55,7 @@ pub(crate) use crate::bot::subagent_tools::safe_rel_path;
 
 /// 预算默认值与硬顶（设计 §6 已）——常量与钳制实现在 db::SubagentBudget（写口
 /// 强制：spawn 与 task_patch 都过 clamped()），此处 re-export 保持原路径可用。
-pub use crate::db::{
-    DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS, DEFAULT_MAX_WALL_SECONDS, MAX_TURNS_HARD_CAP,
-};
+pub use crate::db::{DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS, MAX_TURNS_HARD_CAP};
 /// check_subagent 的 wait_ms 上限（设计 §5；放宽理由见
 /// docs/SUBAGENT-CHECK-BACKOFF-DESIGN-2026-10-18.md）。
 ///

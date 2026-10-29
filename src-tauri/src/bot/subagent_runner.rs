@@ -121,8 +121,6 @@ pub(crate) async fn run_subagent(
     let budget: SubagentBudget = budget_of_row(&row);
 
     // 并发闸global 3 / per-session 2，超限等待不失败）。
-    // 排队时间不计墙钟：max_wall_seconds 的 timeout 从 run_model_loop 起算（下方），
-    // 天然满足设计 §6。
     // 排队可取消——每轮退避同时查行终态，取消即退队；Running 改在**拿到槽位并复核后**
     // 才写，排队中的行不再假挂运行中。
     let sid_gate_check = row.id.clone();
@@ -426,10 +424,6 @@ pub(crate) async fn run_subagent(
     // succeeded（父 agent 提示词教它「failed / budget_exceeded 都要读 error
     // 决定重试」，报成 succeeded 就不重试，产出残缺而无人知晓）。
     let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    // 墙钟绝对期限：从**进入 running** 起算（排队时间不计，与现行口径一致）。
-    // 闸在 tool_guard 里按绝对期限算剩余——每层各算一份会漂。
-    let wall_deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(budget.max_wall_seconds.max(1));
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
         &session_id,
         crate::tool_guard::SubagentSessionCtx {
@@ -441,7 +435,6 @@ pub(crate) async fn run_subagent(
             artifact_dir: artifact_dir.clone(),
             used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
-            wall_deadline,
         },
     );
 
@@ -579,21 +572,12 @@ pub(crate) async fn run_subagent(
         serde_json::json!({ "role": "user", "content": wrapper }),
     ];
 
-    // 墙钟预算（软墙钟 + 墙钟熔断留产）：与上面 ctx 里的期限同一个绝对时刻
-    // ——两处各算一份，起点漂移就等于没有统一口径。
-    let wall_budget = crate::bot_model_loop::WallBudget {
-        deadline: wall_deadline,
-        reserve: std::time::Duration::from_secs(crate::bot::params::subagent_wall_reserve_secs(
-            budget.max_wall_seconds,
-        )),
-        max_wall_seconds: budget.max_wall_seconds,
-    };
-
-    // 工具循环：轮数预算 + 墙钟预算（超时硬停→budget_exceeded；排队不计——running 起算）
+    // 工具循环：轮数预算（熔断→budget_exceeded；排队不计——running 起算）。
+    // 没有墙钟：时间兜底在工具级超时与停滞判定，不在整条 future 上掐。
     //
     // 收尾 JSON 解析失败时**补答一次**（结构化输出三段修复的第 3 段）：产出
     // 完整、机检全过，只因最后一段不是 JSON 就判 failed，是完成率最大的单项
-    // 黑洞。补答走同一份墙钟预算（重试不重置时钟），仍在 timeout 之内。
+    // 黑洞。
     let run = async {
         let first = crate::bot_model_loop::run_model_loop(
             app.clone(),
@@ -610,11 +594,10 @@ pub(crate) async fn run_subagent(
                 .map(f64::from),
             // 子 agent 不落 exec_traces，无需失败明细回传槽（轮数另走 tool_guard 仪表）
             None,
-            Some(wall_budget),
         )
         .await?;
         let (text, refs, trace) = first;
-        if let Some(fixed) = repair_final_json_once(&app, &stop, &text, Some(wall_budget)).await {
+        if let Some(fixed) = repair_final_json_once(&app, &stop, &text).await {
             return Ok((fixed, refs, trace));
         }
         Ok((text, refs, trace))
@@ -623,20 +606,13 @@ pub(crate) async fn run_subagent(
     // ——取消令牌反注册、状态落库、subagent-finished 事件——前端那一行永远转圈，
     // 行状态也停在 running（只能靠重启清扫僵尸行）。故把 panic 捕获成普通失败，
     // 让收尾路径照常走完：行落 failed，事件发出去，前端不再转圈。
-    let wall = match tokio::time::timeout(
-        std::time::Duration::from_secs(budget.max_wall_seconds.max(1)),
-        std::panic::AssertUnwindSafe(run).catch_unwind(),
-    )
-    .await
-    {
-        // 墙钟触达
-        Err(elapsed) => Err(elapsed),
+    let outcome = match std::panic::AssertUnwindSafe(run).catch_unwind().await {
         // 正常跑完
-        Ok(Ok(Ok(v))) => Ok(Ok(v)),
+        Ok(Ok(v)) => Ok(v),
         // runner 自己返错
-        Ok(Ok(Err(e))) => Ok(Err(e)),
+        Ok(Err(e)) => Err(e),
         // runner panic → 归一成普通失败（与返错同一层，收尾路径不变）
-        Ok(Err(panic)) => {
+        Err(panic) => {
             let msg = crate::audit::panic_payload_msg(panic.as_ref());
             crate::bot::audit_log(
                 &app,
@@ -646,17 +622,9 @@ pub(crate) async fn run_subagent(
                     crate::bot::truncate_for_log(&msg, 200)
                 ),
             );
-            Ok(Err(panic_to_command_error(&msg)))
+            Err(panic_to_command_error(&msg))
         }
     };
-
-    // 墙钟触达先 stop 后收尾——run future 被 timeout 掐掉时，脱离 runtime
-    // 的在飞 Python/MCP（spawn_blocking 不随 future 取消）靠 StopToken 自行退出；
-    // 短 grace 给它们的退出清理/Drop 留时间，不留孤儿进程
-    if wall.is_err() {
-        stop.force_stop();
-        tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-    }
 
     // 收尾清理：watcher 由 AbortOnDrop Drop 保证中止（含 panic/unwind 路径——
     // StopGuard::drop 不置位停止标志，单靠手动 abort 会泄漏）
@@ -670,21 +638,20 @@ pub(crate) async fn run_subagent(
     drop(chat_guard);
 
     // 收尾判定（设计 §6/§7）
-    let (mut status, mut error, mut result) = match &wall {
-        Err(_elapsed) => classify_outcome(None, true, None),
-        Ok(Err(e)) => classify_outcome(Some(&e.message()), false, None),
-        Ok(Ok((text, _refs, _loop_trace))) => classify_outcome(None, false, Some(text)),
+    let (mut status, mut error, mut result) = match &outcome {
+        Err(e) => classify_outcome(Some(&e.message()), None),
+        Ok((text, _refs, _loop_trace)) => classify_outcome(None, Some(text)),
     };
     // 工具预算触达 → 强制 budget_exceeded(max_tool_calls)——只针对「没交答卷」的。
     //
-    // dispatch 预算闸到顶后进入收尾窗：读类被拒、写产物放行。模型若照「只许写」
+    // 预算触顶后进入收尾窗：读类被拒、写产物放行。模型若照「只许写」
     // 的指引交出合法收尾 JSON（含产物），那是真实完成，不得改判——改判会把
     // 父 agent 的「带残留重试」逻辑错误触发，半成品被当失败重烧。没交答卷的
     // （熔断标记路径已自带 budget_exceeded；这里管「停了工具但只输出散文」的
     // 剩余路径）才改判，真实原因（预算触顶）不能丢。
     let tool_calls_used = used_tool_calls.load(std::sync::atomic::Ordering::SeqCst);
     let wrapped_up_cleanly =
-        matches!(&wall, Ok(Ok((text, _, _))) if parse_final_json(text).is_some());
+        matches!(&outcome, Ok((text, _, _)) if parse_final_json(text).is_some());
     if budget_force_needed(
         tool_calls_used,
         budget.max_tool_calls,
@@ -695,7 +662,7 @@ pub(crate) async fn run_subagent(
         error = Some("max_tool_calls".into());
         // 部分结果不丢弃：熔断前跑出来的正文对父 agent 判断「该不该原目标
         // 重试、还是放宽预算」仍有价值
-        if let Ok(Ok((text, _, _))) = &wall {
+        if let Ok((text, _, _)) = &outcome {
             result = Some(serde_json::json!({
                 "summary": crate::bot::truncate_for_log(text, 800),
                 "note": "工具调用预算触达，未产出收尾 JSON；以上为触达前保留的最后一段正文"
@@ -704,20 +671,17 @@ pub(crate) async fn run_subagent(
     }
     // 轮数熔断现在也走 Ok 出口（正文带 ROUNDS_FUSE_MARKER），机器验收必须把它
     // 排除掉：熔断行没有收尾 JSON，等于没交答卷，拿产物文件判它「未通过」只会
-    // 在正文里凭空多出一段子 agent 没说过的话。墙钟熔断同理。
-    let fused_on_rounds = matches!(&wall, Ok(Ok((text, _, _)))
+    // 在正文里凭空多出一段子 agent 没说过的话。
+    let fused_on_rounds = matches!(&outcome, Ok((text, _, _))
         if text.contains(crate::bot_model_loop::ROUNDS_FUSE_MARKER));
-    let fused_on_wall = matches!(&wall, Ok(Ok((text, _, _)))
-        if text.contains(crate::bot_model_loop::WALL_FUSE_MARKER));
-    let final_text: String = match &wall {
-        Ok(Ok((text, _, _))) => text.clone(),
-        Ok(Err(e)) => format!("⚠️ 执行失败：{}", e.message()),
-        Err(_) => "⏹ 墙钟预算触达，执行被强制停止（部分产物已保留）".into(),
+    let final_text: String = match &outcome {
+        Ok((text, _, _)) => text.clone(),
+        Err(e) => format!("⚠️ 执行失败：{}", e.message()),
     };
     // 机器可判定验收：verifier 收尾里的 met 是自述，服务端对「产物文件在不在」
     // 这类标准能自己判——判了才覆盖自评，并在正文里点名未通过项。
     // 只在跑完（有收尾 JSON）时判：预算触顶/异常退出的行没有验收可言。
-    let machine_verdicts = if matches!(wall, Ok(Ok(_))) && !fused_on_rounds && !fused_on_wall {
+    let machine_verdicts = if outcome.is_ok() && !fused_on_rounds {
         eval_machine_criteria(&acceptance_criteria_of(&row), &artifact_dir)
     } else {
         Vec::new()
@@ -772,10 +736,10 @@ pub(crate) async fn run_subagent(
     let result_for_db = result.clone();
     let error_for_db = error.clone();
     let final_for_db = final_text.clone();
-    // usage 记账：模型循环累计的 token 三档随终态同事务落库（墙钟掐断 / panic
+    // usage 记账：模型循环累计的 token 三档随终态同事务落库（返错 / panic
     // 路径拿不到 trace，保持 NULL——对账时按「未记」读，不编 0）
-    let usage_for_db = match &wall {
-        Ok(Ok((_, _, trace))) => Some((
+    let usage_for_db = match &outcome {
+        Ok((_, _, trace)) => Some((
             trace.prompt_tokens,
             trace.completion_tokens,
             trace.cache_read_tokens,
@@ -1008,8 +972,8 @@ pub(crate) fn render_task_wrapper(
         w.push('\n');
     }
     w.push_str(&format!(
-        "\n预算:\nmax_turns={}, max_tool_calls={}, max_wall_seconds={}\n",
-        budget.max_turns, budget.max_tool_calls, budget.max_wall_seconds
+        "\n预算:\nmax_turns={}, max_tool_calls={}\n",
+        budget.max_turns, budget.max_tool_calls
     ));
     w.push_str(&format!("\n产物目录:\n{}\n", artifact_dir.display()));
     w.push_str("\n完成后必须输出以下 JSON（status 与 summary 必填；acceptance_check / artifacts / blockers 没有就省掉）：\n");

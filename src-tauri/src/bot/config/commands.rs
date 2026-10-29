@@ -143,7 +143,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         reasoning_echo_enabled: cfg.reasoning_echo_enabled,
         in_turn_context_edit: cfg.in_turn_context_edit,
         subagent_max_turns: cfg.subagent_max_turns,
-        subagent_max_wall_secs: cfg.subagent_max_wall_secs,
         search_max_results: cfg.search_max_results,
         max_tool_output_bytes: cfg.max_tool_output_bytes,
         ask_budget: cfg.ask_budget,
@@ -302,9 +301,6 @@ fn clamp_agent_params(config: &mut BotConfig) {
     config.subagent_max_tool_calls = config
         .subagent_max_tool_calls
         .map(crate::bot::params::clamp_max_function_calls);
-    config.subagent_max_wall_secs = config
-        .subagent_max_wall_secs
-        .map(crate::bot::params::clamp_subagent_max_wall_secs);
     config.search_max_results = config
         .search_max_results
         .map(crate::bot::params::clamp_search_max_results);
@@ -1093,7 +1089,6 @@ mod perm_mode_tests {
             max_function_calls: Some(9999),
             history_budget_chars: Some(1),
             subagent_max_turns: Some(0),
-            subagent_max_wall_secs: Some(10),
             search_max_results: Some(99),
             ask_budget: Some(99),
             max_tool_output_bytes: Some(999_999),
@@ -1124,10 +1119,6 @@ mod perm_mode_tests {
         assert_eq!(
             cfg.subagent_max_turns,
             Some(crate::db::clamp_subagent_max_turns(0))
-        );
-        assert_eq!(
-            cfg.subagent_max_wall_secs,
-            Some(crate::bot::params::clamp_subagent_max_wall_secs(10))
         );
         assert_eq!(
             cfg.search_max_results,

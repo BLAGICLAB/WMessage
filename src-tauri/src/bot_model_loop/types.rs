@@ -76,44 +76,6 @@ pub struct ToolCallDelta {
     pub arguments_chunk: Option<String>,
 }
 
-/// 子 agent 墙钟预算（传进模型循环，让循环能在**轮边界**上做两件事）。
-///
-/// **软墙钟**：剩余进入收尾预留窗口就提醒模型停止展开新步骤、赶紧输出收尾
-/// JSON——模型还有一次完整轮次产出结构化结果。
-///
-/// **墙钟熔断**：期限到了就在轮边界带着最后一轮正文退出，而不是让外层
-/// `tokio::time::timeout` 把整条 future 掐掉——掐掉时正在跑的工具、已经说
-/// 出口的正文一起没了（业界口径：kills are last resorts，预算停止是设计好的
-/// 落地而不是失败）。
-///
-/// 用**绝对期限**而不是「每轮重算剩余秒数」：每层各算一份，起点漂移就等于
-/// 没有统一口径（gRPC deadline 纪律）。
-#[derive(Debug, Clone, Copy)]
-pub struct WallBudget {
-    /// 绝对期限（子 agent 进入 running 起算，排队时间不计）
-    pub deadline: std::time::Instant,
-    /// 收尾预留窗口：最后这段预算专门留给「把已有产出整理成收尾 JSON」
-    pub reserve: std::time::Duration,
-    /// 墙钟上限（秒）——只用于文案与审计留痕
-    pub max_wall_seconds: u64,
-}
-
-impl WallBudget {
-    /// 剩余时间（已过期的返回 0）
-    pub fn remaining(&self) -> std::time::Duration {
-        self.deadline
-            .saturating_duration_since(std::time::Instant::now())
-    }
-    /// 是否进入收尾预留窗口
-    pub fn in_reserve(&self) -> bool {
-        self.remaining() <= self.reserve
-    }
-    /// 是否已过期限
-    pub fn expired(&self) -> bool {
-        std::time::Instant::now() >= self.deadline
-    }
-}
-
 /// 可注入的 LLM HTTP 连接参数：
 /// base_url/client/api_key/model 由调用方注入，run_model_loop_core 不在函数体内
 /// 经 AppHandle 取配置——集成测试可指向 tests/mock_llm.rs 的 mock server 跑真路径。
@@ -184,9 +146,6 @@ pub struct ModelLoopDeps<'a> {
     pub on_round: &'a (dyn Fn(usize) + Send + Sync),
     /// 回合状态变化出口（见 emit_turn_status）。传 None = 不发（测试直驱 core）。
     pub turn_status: Option<&'a (dyn Fn(TurnStatus, &str) + Send + Sync)>,
-    /// 子 agent 墙钟预算（软墙钟 + 墙钟熔断留产）。None = 不带墙钟
-    /// （主聊天、任务执行等链路不受墙钟治理）。
-    pub wall_budget: Option<WallBudget>,
     /// 本会话调用过的工具名（分「调用过」与「成功过」两档）——幻觉守卫「点名
     /// 判据」的排除集。
     ///

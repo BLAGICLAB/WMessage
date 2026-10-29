@@ -194,7 +194,6 @@ fn one_shot_gate_survives_a_threshold_crossing_without_trim() {
         final_selfcheck_http: None,
         on_round: &on_round,
         turn_status: None,
-        wall_budget: None,
         session_tools: None,
         reasoning_echo: false,
         in_turn_context_edit: true,

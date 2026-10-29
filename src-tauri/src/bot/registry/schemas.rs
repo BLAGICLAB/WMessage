@@ -278,7 +278,7 @@ pub const SCHEMA_SPAWN_SUBAGENT: &str = r##"{"type":"function","function":{"name
     "stage":{"type":"string","enum":["recon","executor","verifier"],"description":"三段式派发阶段（可选）：recon=只读调研 / executor=基于报告动手实现 / verifier=逐条验收。不给 stage 时仅按 profile 走基线提示词；只给 stage 不给 profile 时按默认派生（recon/verifier→research，executor→coder）"},
     "acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"description":"验收标准，每条可检验"},
     "contextSummary":{"type":"string","description":"必要上下文摘要（可选；不含主对话全文）"},
-    "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限，默认 30，硬顶 50"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限；整个 budget 不给时取全局熔断配置（设置页参数 loop.max_function_calls），此处显式给值才覆盖"},"maxWallSeconds":{"type":"integer","description":"墙钟秒数上限，默认 600（排队不计）"}},"description":"预算三硬顶（可选；不给则按上示默认与全局配置取值）"},
+    "budget":{"type":"object","properties":{"maxTurns":{"type":"integer","description":"工具循环轮数上限（钳到硬顶）"},"maxToolCalls":{"type":"integer","description":"累计工具调用上限；整个 budget 不给时取全局熔断配置（设置页参数 loop.max_function_calls），此处显式给值才覆盖"}},"description":"预算两硬顶（可选；不给则按默认与全局配置取值）"},
     "modelProfile":{"type":"string","description":"指定模型名（可选；未指定/无效回退当前激活模型）"},
     "parentTaskId":{"type":"string","description":"主卡 id（可选；编排计划卡，缺卡报错）"}
   },"required":["objective","acceptanceCriteria"]}}}"##;

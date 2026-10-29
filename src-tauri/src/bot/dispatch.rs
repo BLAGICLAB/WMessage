@@ -601,54 +601,8 @@ async fn execute_tool_impl(
             None,
             &args.chars().take(80).collect::<String>(),
         );
-        // 软墙钟：剩余预算进入预留窗口后拒绝新调用——这一刻该做的是收尾，
-        // 不是继续探索。工具调用的阶梯（软告警 / 收尾窗 / 硬停）在模型循环层
-        // 统一判定（fuse::gate_call），这里不再设预算闸。
-        let remaining = ctx
-            .wall_deadline
-            .saturating_duration_since(std::time::Instant::now());
-        let reserve_secs =
-            crate::bot::params::subagent_wall_reserve_secs(ctx.budget.max_wall_seconds);
-        let reserve = std::time::Duration::from_secs(reserve_secs);
-        if remaining <= reserve {
-            let mut wall_kv: Vec<(&str, String)> = vec![
-                ("subagent_id", ctx.subagent_id.clone()),
-                ("remaining_secs", remaining.as_secs().to_string()),
-                ("reserve_secs", reserve_secs.to_string()),
-                ("max_wall_seconds", ctx.budget.max_wall_seconds.to_string()),
-            ];
-            wall_kv.extend(trace_kv(trace, session_id));
-            crate::audit::write_event(
-                app,
-                crate::audit::AuditLevel::Warn,
-                "subagent_wall_soft_stop",
-                &wall_kv,
-            );
-            let ret_kv = tool_return_kv(
-                name,
-                "subagent_wall_soft_stop",
-                start.elapsed().as_millis() as u64,
-                session_id,
-                trace,
-            );
-            crate::audit::write_event(app, crate::audit::AuditLevel::Warn, "tool.return", &ret_kv);
-            let deny_msg = format!(
-                "⚠️ 时间预算即将耗尽（剩余约 {}s，预留收尾窗口 {}s）：停止新探索，把已拿到的结果整理出来，按任务包装末尾的 schema 输出收尾 JSON。",
-                remaining.as_secs(),
-                reserve_secs
-            );
-            emit_subagent_activity(
-                app,
-                &ctx,
-                name,
-                trace,
-                "return",
-                Some(false),
-                Some(start.elapsed().as_millis() as u64),
-                &deny_msg,
-            );
-            return crate::bot::registry::ToolResult::denied(deny_msg);
-        }
+        // 工具调用的阶梯（软告警 / 收尾窗 / 硬停）在模型循环层统一判定
+        // （fuse::gate_call），这里不设预算闸、不设墙钟。
         // 执行计数仪表：read_own_card 的实时余量与收尾时的预算触达判定读它。
         // 强制点在模型循环层的阶梯，这里只记数。
         ctx.used_tool_calls

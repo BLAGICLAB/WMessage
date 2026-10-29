@@ -3,12 +3,12 @@
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
 use super::{
-    check_fuses, compact_before_round, finalize_without_tools, fuse_message, gate_call,
-    inject_soft_warnings, mutation_succeeded, prepare_round, read_sse_stream, request_round,
-    rounds_fuse_exit, should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning,
-    stream_round, user_intent_of, with_thinking, wrap_up_exhausted_message,
-    wrap_up_rounds_exhausted, CallGate, FinalizeOutcome, LlmHttp, ModelLoopDeps, RequestOutcome,
-    RoundCtx, ToolEvidence, TurnStatus, EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
+    compact_before_round, finalize_without_tools, fuse_message, gate_call, inject_soft_warnings,
+    mutation_succeeded, prepare_round, read_sse_stream, request_round, rounds_fuse_exit,
+    should_fuse, side_selfcheck_verdict, stamp_last_assistant_reasoning, stream_round,
+    user_intent_of, with_thinking, wrap_up_exhausted_message, wrap_up_rounds_exhausted, CallGate,
+    FinalizeOutcome, LlmHttp, ModelLoopDeps, RequestOutcome, RoundCtx, ToolEvidence, TurnStatus,
+    EVIDENCE_OUTPUT_CHARS, LLM_RETRY_DELAY, MAX_STREAM_RETRIES,
 };
 use crate::bot_chat::merge_task_refs_dedup;
 use crate::bot_chat::TaskRef;
@@ -106,9 +106,7 @@ where
     let mut wrap_up_entered_round: Option<usize> = None;
     // 轮数软警告同款：只发一次，发完不再打扰后续轮次
     let mut rounds_warn_sent: bool = false;
-    // 软墙钟提醒已注入（只一次）：进入收尾预留窗口时提醒一次，不重复刷屏
-    let mut wall_warn_sent: bool = false;
-    // 技能预算软警告已注入（只一次）：技能步数/墙钟快用完时提醒模型收尾
+    // 技能预算软警告已注入（只一次）：技能步数快用完时提醒模型收尾
     let mut skill_warn_sent: bool = false;
     // 防幻觉汇报守卫：本次提问是否实际执行过变更类工具（提问级一次置位、不按轮
     // 重置——后续正常汇报轮靠它放行，按轮重置会把改完再汇报的正常轮误判为幻觉）；
@@ -207,11 +205,6 @@ where
     let mut body_outcome: Option<&'static str> = None;
     let body: Result<(String, Vec<TaskRef>), CommandError> = async {
         for round in 0..max_rounds {
-            // 墙钟熔断（轮边界检查）：期限已到就在这里退出，**带上上一轮的正文**（见 check_fuses）。
-            if let Some(msg) = check_fuses(deps, &last_streamed, round) {
-                body_outcome = Some("fused");
-                return Ok((msg, collected_refs));
-            }
             // 轮前准备：预算硬压（msgs 字符分级）+ 轮龄降密度（老工具结果降档）。
             compact_before_round(
                 &mut msgs,
@@ -558,12 +551,11 @@ where
                     return Ok((msg, collected_refs));
                 }
             }
-            // 轮末软警告：轮数与墙钟各提醒一次（见 inject_soft_warnings）。
+            // 轮末软警告：轮数提醒一次（见 inject_soft_warnings）。
             inject_soft_warnings(
                 deps,
                 &mut msgs,
                 &mut rounds_warn_sent,
-                &mut wall_warn_sent,
                 max_rounds,
                 rounds_warn_at,
                 round,

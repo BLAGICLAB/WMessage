@@ -88,7 +88,6 @@ fn empty_cfg() -> BotConfig {
         history_budget_chars: None,
         tool_rules: None,
         subagent_max_turns: None,
-        subagent_max_wall_secs: None,
         search_max_results: None,
         max_tool_output_bytes: None,
         ask_budget: None,
@@ -277,10 +276,6 @@ fn params_table_defaults_match_runtime_constants() {
         DEFAULT_SUBAGENT_MAX_TURNS.to_string()
     );
     assert_eq!(
-        by_key("subagent.max_wall_secs").default,
-        DEFAULT_SUBAGENT_MAX_WALL_SECS.to_string()
-    );
-    assert_eq!(
         by_key("search.max_results").default,
         DEFAULT_SEARCH_MAX_RESULTS.to_string()
     );
@@ -339,13 +334,6 @@ fn editable_rows_ranges_match_clamp_bounds() {
         )
     );
     assert_eq!(
-        range("subagent.max_wall_secs"),
-        (
-            Some(SUBAGENT_MAX_WALL_SECS_MIN),
-            Some(SUBAGENT_MAX_WALL_SECS_MAX)
-        )
-    );
-    assert_eq!(
         range("search.max_results"),
         (
             Some(SEARCH_MAX_RESULTS_MIN as u64),
@@ -399,8 +387,6 @@ fn effective_params_defaults_and_hardcoded() {
     // 均衡档全局池 100 回合 → 主会话 60% = 60 轮
     assert_eq!(by_key("loop.max_rounds").value, "60");
     assert_eq!(by_key("loop.max_rounds").source, "default");
-    // 均衡档全局墙钟 900s → 单个子 agent 20% = 180s
-    assert_eq!(by_key("subagent.max_wall_secs").value, "180");
     assert_eq!(by_key("schedule.scan_secs").source, "hardcoded");
     assert!(!by_key("schedule.scan_secs").editable);
     assert_eq!(views.len(), PARAMS_TABLE.len());
@@ -441,20 +427,18 @@ fn effective_params_reflect_config_and_clamp() {
     );
 }
 
-/// resolve 链：子 agent 预算三项生效 + 各自钳制；工具调用走**独立键**
+/// resolve 链：子 agent 预算两项生效 + 各自钳制；工具调用走**独立键**
 /// `subagent_max_tool_calls`（主会话 60% / 子 agent 20%，同一池的两份配额）
 #[test]
 fn resolve_subagent_budget_independent_fields() {
     let mut cfg = empty_cfg();
     cfg.subagent_max_tool_calls = Some(9999);
-    cfg.subagent_max_wall_secs = Some(10);
     let b = resolve_subagent_budget(&cfg);
     assert_eq!(b.max_turns, DEFAULT_SUBAGENT_MAX_TURNS);
     assert_eq!(
         b.max_tool_calls, 1200,
         "子 agent 工具数独立于主会话，钳 1..=全局工具池硬顶 1200"
     );
-    assert_eq!(b.max_wall_seconds, 30, "钳 30..=3600");
 }
 
 /// resolve 链：未配置 max_function_calls 时子 agent 工具调用落内置默认 100
@@ -519,7 +503,6 @@ fn mode_presets_match_the_spec_table() {
         ModePreset {
             global_turns: 60,
             global_tool_calls: 150,
-            global_wall_secs: 300,
             history_budget_chars: 80_000,
             max_tokens: 8_192,
             tool_output_bytes: 64 * 1024,
@@ -531,7 +514,6 @@ fn mode_presets_match_the_spec_table() {
         ModePreset {
             global_turns: 100,
             global_tool_calls: 250,
-            global_wall_secs: 900,
             history_budget_chars: 100_000,
             max_tokens: 16_384,
             tool_output_bytes: 128 * 1024,
@@ -543,7 +525,6 @@ fn mode_presets_match_the_spec_table() {
         ModePreset {
             global_turns: 250,
             global_tool_calls: 700,
-            global_wall_secs: 2_400,
             history_budget_chars: 300_000,
             max_tokens: 32_768,
             tool_output_bytes: 200 * 1024,
@@ -552,12 +533,11 @@ fn mode_presets_match_the_spec_table() {
     );
 }
 
-/// 全局硬顶三档共用：回合 500 / 工具 1200 / 墙钟 3600s。
+/// 全局硬顶三档共用：回合 500 / 工具 1200。
 #[test]
 fn global_caps_are_shared_by_all_modes() {
     assert_eq!(GLOBAL_TURNS_CAP, 500);
     assert_eq!(GLOBAL_TOOL_CALLS_CAP, 1_200);
-    assert_eq!(GLOBAL_WALL_SECS_CAP, 3_600);
     // 每档的预设都必须在硬顶之下
     for mode in [TaskMode::Light, TaskMode::Balanced, TaskMode::Deep] {
         let p = preset_for(mode);
@@ -569,11 +549,6 @@ fn global_caps_are_shared_by_all_modes() {
         assert!(
             p.global_tool_calls <= GLOBAL_TOOL_CALLS_CAP,
             "{} 工具数超硬顶",
-            mode.as_str()
-        );
-        assert!(
-            p.global_wall_secs <= GLOBAL_WALL_SECS_CAP,
-            "{} 墙钟超硬顶",
             mode.as_str()
         );
     }
@@ -617,7 +592,6 @@ fn switching_mode_changes_effective_budgets() {
         seen.push((
             resolve_max_rounds_cfg(&cfg),
             resolve_main_tool_calls(&cfg),
-            resolve_main_wall_secs(&cfg),
             resolve_history_budget_chars(&cfg),
             resolve_max_tokens(&cfg),
         ));
@@ -625,24 +599,22 @@ fn switching_mode_changes_effective_budgets() {
     for i in 0..seen.len() - 1 {
         assert!(seen[i].0 < seen[i + 1].0, "回合数未随档位递增：{:?}", seen);
         assert!(seen[i].1 < seen[i + 1].1, "工具数未随档位递增：{:?}", seen);
-        assert!(seen[i].2 < seen[i + 1].2, "墙钟未随档位递增：{:?}", seen);
         assert!(
-            seen[i].3 < seen[i + 1].3,
+            seen[i].2 < seen[i + 1].2,
             "历史预算未随档位递增：{:?}",
             seen
         );
         assert!(
-            seen[i].4 < seen[i + 1].4,
+            seen[i].3 < seen[i + 1].3,
             "输出上限未随档位递增：{:?}",
             seen
         );
     }
-    // 均衡档（默认）：回合 60 / 工具 150 / 墙钟 540s / 历史 100K / 输出 16384
+    // 均衡档（默认）：回合 60 / 工具 150 / 历史 100K / 输出 16384
     assert_eq!(seen[1].0, 60);
     assert_eq!(seen[1].1, 150);
-    assert_eq!(seen[1].2, 540);
-    assert_eq!(seen[1].3, 100_000);
-    assert_eq!(seen[1].4, 16_384);
+    assert_eq!(seen[1].2, 100_000);
+    assert_eq!(seen[1].3, 16_384);
 }
 
 /// 高级覆盖优先于档位预设：用户手填的值是他明确要的，档位只是默认值。
@@ -670,7 +642,4 @@ fn main_and_subagent_take_separate_shares() {
     assert_eq!(b.max_turns, 20, "子 agent 拿 20%");
     assert_eq!(resolve_main_tool_calls(&cfg), 150, "主会话工具数拿 60%");
     assert_eq!(b.max_tool_calls, 50, "子 agent 工具数拿 20%");
-    // 墙钟同理：主 60% / 子 20%
-    assert_eq!(resolve_main_wall_secs(&cfg), 540);
-    assert_eq!(b.max_wall_seconds, 180);
 }

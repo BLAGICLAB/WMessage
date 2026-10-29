@@ -118,7 +118,7 @@ fn task_patch_orchestration_fields_set_and_null_clears() {
         "suba",
         serde_json::json!({
             "assignee": "sess-child-1",
-            "budget": {"maxTurns": 30, "maxToolCalls": 100, "maxWallSeconds": 600},
+            "budget": {"maxTurns": 30, "maxToolCalls": 100},
             "result": {"status": "succeeded", "summary": "结论"}
         }),
     )
@@ -136,7 +136,6 @@ fn task_patch_orchestration_fields_set_and_null_clears() {
     let rb = reloaded.budget.as_ref().unwrap();
     assert_eq!(rb.max_turns, 30);
     assert_eq!(rb.max_tool_calls, 100);
-    assert_eq!(rb.max_wall_seconds, 600);
     assert_eq!(reloaded.result.as_ref().unwrap()["summary"], "结论");
     // null = 清空三字段
     let cleared = run_patch(
@@ -162,7 +161,7 @@ fn task_patch_budget_is_clamped_to_hard_cap() {
     let row = run_patch(
         &mut conn,
         "clamp",
-        serde_json::json!({"budget": {"maxTurns": 9999, "maxToolCalls": 0, "maxWallSeconds": 0}}),
+        serde_json::json!({"budget": {"maxTurns": 9999, "maxToolCalls": 0}}),
     )
     .unwrap();
     let b = row.budget.as_ref().unwrap();
@@ -172,11 +171,6 @@ fn task_patch_budget_is_clamped_to_hard_cap() {
         "上超钳到硬顶（全局回合池 500 的 20% = 100）"
     );
     assert_eq!(b.max_tool_calls, 1, "下超钳到下限");
-    // 墙钟下界与配置键同源（30s）——「1 秒墙钟」等于白派一个子 agent
-    assert_eq!(
-        b.max_wall_seconds, 30,
-        "下超钳到墙钟下限（与 subagent.max_wall_secs 同源）"
-    );
 }
 
 /// budget/result 列损坏 → 兜底 None + 行仍可读（同 subtasks/files 契约）
@@ -191,7 +185,7 @@ fn load_all_tolerates_corrupted_budget_result_json() {
     run_patch(
         &mut conn,
         "bad",
-        serde_json::json!({"assignee": "keep-me", "budget": {"maxTurns": 10, "maxToolCalls": 10, "maxWallSeconds": 60}}),
+        serde_json::json!({"assignee": "keep-me", "budget": {"maxTurns": 10, "maxToolCalls": 10}}),
     )
     .unwrap();
     conn.execute("UPDATE tasks SET result = '{not-json' WHERE id = 'bad'", [])

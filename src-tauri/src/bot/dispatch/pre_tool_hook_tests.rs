@@ -281,8 +281,8 @@ fn dispatch_has_no_budget_gate_of_its_own() {
     );
 }
 
-/// 动作流接线守卫：call 相位 1 处（白名单后）+ return 相位 3 处
-/// （墙钟拒 / 坏入参拒 / 正常执行完）。
+/// 动作流接线守卫：call 相位 1 处（白名单后）+ return 相位 2 处
+/// （坏入参拒 / 正常执行完）。
 /// 少一处，前端那行动作就永远挂着「进行中」或整条不显示。
 #[test]
 fn subagent_activity_emits_cover_call_and_all_return_paths() {
@@ -292,8 +292,8 @@ fn subagent_activity_emits_cover_call_and_all_return_paths() {
         .0;
     assert_eq!(
         production.matches("emit_subagent_activity(").count(),
-        5,
-        "动作流 emit 应为 5 处（1 定义 + 1 call + 3 return）——少了某条拒绝路径就没有结局"
+        4,
+        "动作流 emit 应为 4 处（1 定义 + 1 call + 2 return）——少了某条拒绝路径就没有结局"
     );
 }
 
@@ -354,12 +354,6 @@ fn every_gate_denial_is_denied_status_and_classifiable_text() {
                 "⚠️ 工具「create_task」的 arguments 不是合法 JSON，已拒绝执行（未做任何改动）：expected value。",
             ),
         ),
-        (
-            "墙钟收尾窗",
-            ToolResult::denied(
-                "⚠️ 时间预算即将耗尽（剩余约 60s，收尾预留窗口 60s）：停止新探索，把已拿到的结果整理出来，按任务包装末尾的 schema 输出收尾 JSON。",
-            ),
-        ),
     ];
     for (label, r) in &cases {
         assert_eq!(
@@ -407,14 +401,14 @@ fn no_gate_early_return_uses_warn_status() {
         !production.contains("ToolResult::warn("),
         "dispatch 的生产代码不得构造 ToolResult::warn（会把「没执行」记成成功）"
     );
-    // 8 处：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 确认被拒 /
-    // skill 熔断 / 子 agent 白名单外 / arguments 非法 JSON / 墙钟收尾窗。
-    // （工具调用预算的阶梯在模型循环层，dispatch 不再有预算类早退。）
+    // 7 处：pre_tool 钩子拒绝 / allowed-tools 集合外 / 规则 deny / 确认被拒 /
+    // skill 熔断 / 子 agent 白名单外 / arguments 非法 JSON。
+    // （工具调用预算的阶梯在模型循环层，dispatch 不再有预算类早退；墙钟整套已取消。）
     // 数量变了请同步本测试与 every_gate_denial_* 的用例表。
     assert_eq!(
         production.matches("ToolResult::denied(").count(),
-        8,
-        "门禁早退点应恰好 8 处"
+        7,
+        "门禁早退点应恰好 7 处"
     );
 }
 

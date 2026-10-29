@@ -118,11 +118,10 @@ export interface Task {
   parentId?: string | null;
   /** 子 agent 编排（ 投影）：串链键 = 子 agent 执行会话 id（不直接展示） */
   assignee?: string | null;
-  /** 预算三硬顶（上卡可见）：轮数 / 工具调用 / 墙钟秒 */
+  /** 预算两硬顶（上卡可见）：轮数 / 工具调用 */
   budget?: {
     maxTurns: number;
     maxToolCalls: number;
-    maxWallSeconds: number;
   } | null;
   /** 收尾结构化结果（设计 §7）：卡片折叠展示 */
   result?: {

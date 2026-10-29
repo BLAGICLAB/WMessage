@@ -30,7 +30,6 @@ pub const MAX_TURNS_HARD_CAP: u32 = crate::bot::params::budget_share(
 /// 轮数下界（0 轮 = 子 agent 一句话都说不完，等于白派）
 pub const MIN_SUBAGENT_TURNS: u32 = 1;
 pub const DEFAULT_MAX_TOOL_CALLS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS;
-pub const DEFAULT_MAX_WALL_SECONDS: u64 = crate::bot::params::DEFAULT_SUBAGENT_MAX_WALL_SECS;
 
 /// 子 agent 轮数钳制（1..=硬顶）——单一来源：config 落盘（bot_set_config）、
 /// bot 读侧 resolver、预算持久化（[SubagentBudget::clamped]）三处共用，
@@ -118,16 +117,14 @@ impl SubagentProfile {
     }
 }
 
-/// 预算三硬顶（设计 §6 默认值）。落行上 budget_json（check 可查），不是隐藏参数。
+/// 预算两硬顶（设计 §6 默认值）。落行上 budget_json（check 可查），不是隐藏参数。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubagentBudget {
-    /// 工具循环轮数；默认 30，硬顶 50（spawn 时钳制）
+    /// 工具循环轮数（spawn 时钳到硬顶）
     pub max_turns: u32,
-    /// 累计工具调用次数；默认 100（强制点在 dispatch 层，A3）
+    /// 累计工具调用次数（强制点在模型循环层的阶梯）
     pub max_tool_calls: u32,
-    /// 墙钟秒数；默认 600，排队时间不计入（从 running 起算）
-    pub max_wall_seconds: u64,
 }
 
 impl Default for SubagentBudget {
@@ -135,25 +132,17 @@ impl Default for SubagentBudget {
         Self {
             max_turns: DEFAULT_MAX_TURNS,
             max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
-            max_wall_seconds: DEFAULT_MAX_WALL_SECONDS,
         }
     }
 }
 
 impl SubagentBudget {
-    /// 预算钳制：turns 硬顶 50、tool_calls 下限 1、wall 钳 30..=3600。
+    /// 预算钳制：turns 钳到硬顶、tool_calls 下限 1。
     /// **所有持久化写口（spawn / task_patch）必须过本函数**——字段是 pub 的，
     /// 构造侧不受限，钳制契约靠两个写口强制（防 task_patch 旁路）。
-    ///
-    /// 墙钟的上界原先只钳「≥1 秒」，于是**两条路两个闸**：配置键走
-    /// `clamp_subagent_max_wall_secs`（30..=3600），LLM 在 `spawn_subagent` 里
-    /// 显式给的 `maxWallSeconds` 只钳下限——墙钟的实际硬顶由调用方说了算。
-    /// 现在两路同源：不管预算从配置、调用方还是默认值来，**在校验边界处钳一次**。
     pub fn clamped(mut self) -> Self {
         self.max_turns = clamp_subagent_max_turns(self.max_turns);
         self.max_tool_calls = self.max_tool_calls.max(1);
-        self.max_wall_seconds =
-            crate::bot::params::clamp_subagent_max_wall_secs(self.max_wall_seconds);
         self
     }
 }

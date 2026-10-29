@@ -54,7 +54,6 @@ function baseConfig(over?: Partial<SettingsConfig>): SettingsConfig {
     inTurnContextEdit: "",
     subagentMaxTurns: "",
     subagentMaxToolCalls: "",
-    subagentMaxWallSecs: "",
     searchMaxResults: "",
     maxToolOutputBytes: "",
     askBudget: "",
@@ -122,7 +121,6 @@ describe("任务模式档位选择", () => {
         maxFunctionCalls: "88",
         subagentMaxTurns: "9",
         subagentMaxToolCalls: "7",
-        subagentMaxWallSecs: "600",
         historyBudgetChars: "200000",
         maxTokens: "4096",
         maxToolOutputBytes: "100000",
@@ -138,7 +136,6 @@ describe("任务模式档位选择", () => {
     expect(next.maxFunctionCalls).toBe("");
     expect(next.subagentMaxTurns).toBe("");
     expect(next.subagentMaxToolCalls).toBe("");
-    expect(next.subagentMaxWallSecs).toBe("");
     expect(next.historyBudgetChars).toBe("");
     expect(next.maxTokens).toBe("");
     expect(next.maxToolOutputBytes).toBe("");

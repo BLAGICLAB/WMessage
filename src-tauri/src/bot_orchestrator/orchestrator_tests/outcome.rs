@@ -45,12 +45,10 @@ fn tool_call_counter_accumulates() {
         budget: SubagentBudget {
             max_turns: 5,
             max_tool_calls: 2,
-            max_wall_seconds: 60,
         },
         artifact_dir: std::path::PathBuf::from("/tmp/art_c1"),
         used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        wall_deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
     };
     assert_eq!(
         ctx.used_tool_calls
@@ -86,33 +84,26 @@ fn extract_last_json_takes_the_last_object() {
 #[test]
 fn classify_outcome_maps_all_paths() {
     use SubagentStatus::*;
-    // 墙钟 → budget_exceeded
-    let (st, err, _) = classify_outcome(None, true, None);
-    assert_eq!(st, BudgetExceeded);
-    assert_eq!(err.as_deref(), Some("max_wall_seconds"));
     // 轮数熔断 → budget_exceeded（标记在正文里，出口见 bot_model_loop 熔断）
     let fused = crate::bot_model_loop::rounds_fuse_message("上轮正文", "", 20);
-    let (st, err, _) = classify_outcome(None, false, Some(&fused));
+    let (st, err, _) = classify_outcome(None, Some(&fused));
     assert_eq!(st, BudgetExceeded);
     assert_eq!(err.as_deref(), Some("max_turns"));
     // 其他错误 → failed
-    let (st, _, _) = classify_outcome(Some("HTTP 500"), false, None);
+    let (st, _, _) = classify_outcome(Some("HTTP 500"), None);
     assert_eq!(st, Failed);
     // 解析成功 + 模型自报 succeeded
-    let (st, err, res) = classify_outcome(
-        None,
-        false,
-        Some(r#"结论 {"status":"succeeded","summary":"ok"}"#),
-    );
+    let (st, err, res) =
+        classify_outcome(None, Some(r#"结论 {"status":"succeeded","summary":"ok"}"#));
     assert_eq!(st, Succeeded);
     assert_eq!(err, None);
     assert_eq!(res.unwrap()["summary"], "ok");
     // 模型自报 failed → failed + 说明
-    let (st, err, _) = classify_outcome(None, false, Some(r#"{"status":"failed","summary":"x"}"#));
+    let (st, err, _) = classify_outcome(None, Some(r#"{"status":"failed","summary":"x"}"#));
     assert_eq!(st, Failed);
     assert_eq!(err.as_deref(), Some("model_reported_failure"));
     // 解析失败 → failed + result_json_unparseable + 原文存 summary（部分结果不丢）
-    let (st, err, res) = classify_outcome(None, false, Some("纯文本收尾，没有 JSON"));
+    let (st, err, res) = classify_outcome(None, Some("纯文本收尾，没有 JSON"));
     assert_eq!(st, Failed);
     assert_eq!(err.as_deref(), Some("result_json_unparseable"));
     let res = res.unwrap();
@@ -165,23 +156,20 @@ fn own_card_payload_reports_live_budget_usage() {
         Some(SubagentBudget {
             max_turns: 50,
             max_tool_calls: 100,
-            max_wall_seconds: 3600,
         }),
         47,
         12,
-        1800,
     );
     assert_eq!(v["budgetUsage"]["toolCallsUsed"], 47);
     assert_eq!(v["budgetUsage"]["toolCallsMax"], 100);
     assert_eq!(v["budgetUsage"]["roundsUsed"], 12);
     assert_eq!(v["budgetUsage"]["roundsMax"], 50);
-    assert_eq!(v["budgetUsage"]["wallRemainingSecs"], 1800);
     assert!(
         v.get("budget").is_none(),
         "静态 budget 键已并入 budgetUsage，不得再单独出现"
     );
     // 预算缺失（老行）时 max 为 null，used 仍要报——余量读数不依赖预算存在
-    let v2 = own_card_payload(&row, vec![], None, 3, 1, 60);
+    let v2 = own_card_payload(&row, vec![], None, 3, 1);
     assert_eq!(v2["budgetUsage"]["toolCallsUsed"], 3);
     assert!(v2["budgetUsage"]["toolCallsMax"].is_null());
 }
@@ -195,7 +183,7 @@ fn classify_outcome_keeps_partial_output_on_rounds_fuse() {
     use SubagentStatus::*;
     let partial = "查到 pp-ocr-v6/ 下有 det.onnx / cls.onnx / rec.onnx + keys.txt";
     let fused = crate::bot_model_loop::rounds_fuse_message(partial, "", 20);
-    let (st, err, res) = classify_outcome(None, false, Some(&fused));
+    let (st, err, res) = classify_outcome(None, Some(&fused));
     assert_eq!(st, BudgetExceeded);
     assert_eq!(err.as_deref(), Some("max_turns"));
     let res = res.expect("轮数熔断不得写 NULL result_json");
@@ -215,7 +203,7 @@ fn classify_outcome_treats_tool_fuse_as_budget_exceeded() {
     use SubagentStatus::*;
     let partial = "查到 3 个候选包，还差最后一步没跑";
     let fused = crate::bot_model_loop::fuse_message(partial, "", 100);
-    let (st, err, res) = classify_outcome(None, false, Some(&fused));
+    let (st, err, res) = classify_outcome(None, Some(&fused));
     assert_eq!(st, BudgetExceeded, "工具熔断必须落预算触达");
     assert_eq!(err.as_deref(), Some("max_tool_calls"));
     let res = res.expect("工具熔断不得写 NULL result_json");
@@ -227,34 +215,9 @@ fn classify_outcome_treats_tool_fuse_as_budget_exceeded() {
 
     // 轮数熔断仍归 max_turns（轮数标记是工具标记的前缀，判据不能反）
     let rounds = crate::bot_model_loop::rounds_fuse_message(partial, "", 20);
-    let (st, err, _) = classify_outcome(None, false, Some(&rounds));
+    let (st, err, _) = classify_outcome(None, Some(&rounds));
     assert_eq!(st, BudgetExceeded);
     assert_eq!(err.as_deref(), Some("max_turns"));
-}
-/// 墙钟熔断必须落 budget_exceeded(max_wall_seconds) **并保留正文**。
-///
-/// 两个坑：
-/// 1. 墙钟标记「⏹ 已熔断（墙钟上限）」**包含**通用熔断标记「⏹ 已熔断」——
-///    判据顺序反了会被认成工具调用熔断，真实原因「墙钟触顶」又被丢掉。
-/// 2. 与轮数熔断同款留产：跑了几十分钟的部分产出不能归零。
-#[test]
-fn classify_outcome_treats_wall_fuse_as_budget_exceeded_and_keeps_output() {
-    use SubagentStatus::*;
-    let partial = "已核到 3 家供应商的报价单，还差最后一步比价";
-    let fused = crate::bot_model_loop::wall_fuse_message(partial, "", 600);
-    let (st, err, res) = classify_outcome(None, false, Some(&fused));
-    assert_eq!(st, BudgetExceeded, "墙钟熔断必须落预算触达");
-    assert_eq!(
-        err.as_deref(),
-        Some("max_wall_seconds"),
-        "墙钟熔断不得被认成工具调用熔断（墙钟标记包含通用标记）"
-    );
-    let res = res.expect("墙钟熔断不得写 NULL result_json");
-    let summary = res["summary"].as_str().expect("熔断行必须带 summary");
-    assert!(
-        summary.contains("3 家供应商"),
-        "熔断前的正文应存进 summary 供父 agent 判断是否重试：{summary}"
-    );
 }
 /// 收尾 JSON 的本地修复（结构化输出三段修复的第 2 段）：零 token、零延迟，
 /// 必须排在补答之前——补答要再走一次 LLM 轮次。
@@ -318,7 +281,7 @@ fn machine_pass_overrides_unparseable_finish() {
             reason: "服务端核验：存在（13780 字节）".into(),
         },
     ];
-    let (st, err, res) = classify_outcome(None, false, Some("散文收尾，没写 JSON"));
+    let (st, err, res) = classify_outcome(None, Some("散文收尾，没写 JSON"));
     assert_eq!(st, SubagentStatus::Failed, "起点是解析失败");
     assert!(res
         .expect("原文必须留在 result_json")
@@ -571,7 +534,6 @@ fn classify_outcome_verifier_paths() {
     // 全部 met=true → Succeeded
     let (st, err, _) = classify_outcome(
         None,
-        false,
         Some(r#"{"checks":[{"criterion":"c1","met":true,"evidence":"x"}],"summary":"all ok"}"#),
     );
     assert_eq!(st, Succeeded);
@@ -579,7 +541,6 @@ fn classify_outcome_verifier_paths() {
     // 全部 met=false → Failed + reason 列前 3 项 criterion
     let (st, err, res) = classify_outcome(
         None,
-        false,
         Some(
             r#"{"checks":[{"criterion":"导出 PDF","met":false,"evidence":"缺依赖"},
                               {"criterion":"样式对齐","met":false,"evidence":"字体不一致"}],
@@ -598,7 +559,6 @@ fn classify_outcome_verifier_paths() {
     // 部分 met=true → Succeeded（主 agent 看 checks 自己决策）
     let (st, err, _) = classify_outcome(
         None,
-        false,
         Some(
             r#"{"checks":[{"criterion":"c1","met":true,"evidence":"x"},
                               {"criterion":"c2","met":false,"evidence":"y"}],
@@ -610,7 +570,6 @@ fn classify_outcome_verifier_paths() {
     // checks 空 + summary 含「未通过」 → Failed
     let (st, err, _) = classify_outcome(
         None,
-        false,
         Some(r#"{"checks":[],"summary":"未通过：缺关键证据"}"#),
     );
     assert_eq!(st, Failed);
@@ -623,17 +582,12 @@ fn classify_outcome_verifier_paths() {
     // checks 空 + summary 不含否决词 → Succeeded（fail-safe 放行）
     let (st, err, _) = classify_outcome(
         None,
-        false,
         Some(r#"{"checks":[],"summary":"没有可检查项，跳过验证"}"#),
     );
     assert_eq!(st, Succeeded);
     assert_eq!(err, None);
     // status=succeeded 的普通收尾无 checks → 走现有路径不受影响
-    let (st, err, _) = classify_outcome(
-        None,
-        false,
-        Some(r#"{"status":"succeeded","summary":"ok"}"#),
-    );
+    let (st, err, _) = classify_outcome(None, Some(r#"{"status":"succeeded","summary":"ok"}"#));
     assert_eq!(st, Succeeded);
     assert_eq!(err, None);
 }
@@ -656,8 +610,8 @@ fn task_wrapper_contains_all_sections() {
     // 上下文摘要取自行上 context_summary（不再从子卡 note 文本解析）
     assert!(w.contains("上下文摘要:\n上游已确认五个竞品清单"));
     assert!(w.contains(&format!(
-        "max_turns={}, max_tool_calls={}, max_wall_seconds={}",
-        DEFAULT_MAX_TURNS, DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_WALL_SECONDS
+        "max_turns={}, max_tool_calls={}",
+        DEFAULT_MAX_TURNS, DEFAULT_MAX_TOOL_CALLS
     )));
     assert!(w.contains("产物目录:"));
     assert!(w.contains("/tmp/art"));

@@ -234,7 +234,6 @@ async fn run_case(case: &EvalCase, http: &LlmHttp, system: &str, usage: &UsageCo
         final_selfcheck_http: None,
         on_round: &|_| {},
         turn_status: None,
-        wall_budget: None,
         // 守卫置惰（模块头口径）：量模型，不量守卫
         session_tools: None,
         guard_claim_keywords: &[],

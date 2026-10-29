@@ -1,4 +1,4 @@
-//! 熔断层：单轮 Function 调用上限、收尾窗阶梯判定、轮数/墙钟熔断与软警告注入。
+//! 熔断层：单轮 Function 调用上限、收尾窗阶梯判定、轮数熔断与软警告注入。
 //!
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
@@ -25,11 +25,6 @@ pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
 /// Function 熔断正文仍可被当普通回复展示，轮数熔断则要被子任务侧认出来
 /// 还原 `budget_exceeded`（见 bot_orchestrator::classify_outcome）。
 pub(crate) const ROUNDS_FUSE_MARKER: &str = "⏹ 已熔断（轮数上限）";
-
-/// 墙钟熔断标记。子 agent 侧据此还原 `budget_exceeded(max_wall_seconds)`
-/// 并**保留熔断前的正文**（与轮数熔断同款：同一个「预算触顶」，一个留产
-/// 一个不留，没有理由）。
-pub(crate) const WALL_FUSE_MARKER: &str = "⏹ 已熔断（墙钟上限）";
 
 /// 熔断上界的 usize 投影：与子 agent 预算解析（params::MAX_FUNCTION_CALLS_CAP）
 /// 是同一个数，这里只做类型转换——两处各写一份字面量就会在「预算按 500 记账、
@@ -117,54 +112,14 @@ pub(crate) fn rounds_fuse_message(partial: &str, hint: &str, max_rounds: usize) 
     )
 }
 
-/// 墙钟熔断返回消息：与 `rounds_fuse_message` 同源（都带上熔断前的正文），
-/// 只是口径不同——轮数熔断是「轮」，墙钟熔断是「秒」。
+/// 轮末软警告注入：轮数软警告。
 ///
-/// 带正文是关键：墙钟触达时子 agent 可能已经跑了几十分钟、产出齐了，
-/// 只留一句「墙钟预算触达」等于把这段时间的产出全丢掉，父 agent 只能
-/// 从零重烧。
-pub(crate) fn wall_fuse_message(partial: &str, hint: &str, max_wall_seconds: u64) -> String {
-    format!(
-        "{partial}\n\n{WALL_FUSE_MARKER}：墙钟预算超过 {max_wall_seconds} 秒上限（安全保护），已停止后续执行{hint}"
-    )
-}
-
-/// 墙钟熔断检查（轮边界）：期限已到就在这里退出，**带上上一轮的正文**。
-///
-/// 为什么不交给外层的 tokio::timeout：timeout 掐掉整条 future 时，
-/// 正在跑的工具、已经说出口的正文、已落盘的产物全悬空——子 agent 跑
-/// 了几十分钟的产出归零，父 agent 只能从零重烧。轮边界退出与轮数熔断
-/// 同款：熔断是一种「设计好的落地」，不是失败。
-///
-/// 返回 Some(正文) = 墙钟熔断，调用方按熔断出口返回；None = 预算还在。
-pub(crate) fn check_fuses(
-    deps: &ModelLoopDeps<'_>,
-    last_streamed: &str,
-    round: usize,
-) -> Option<String> {
-    let wb = deps.wall_budget?;
-    if !wb.expired() {
-        return None;
-    }
-    let hint = (deps.skill_finish)(false, "墙钟预算超限");
-    let kv: Vec<(&str, String)> = vec![
-        ("max_wall_seconds", wb.max_wall_seconds.to_string()),
-        ("round", round.to_string()),
-        ("partial_chars", last_streamed.chars().count().to_string()),
-    ];
-    (deps.audit)(crate::audit::AuditLevel::Warn, "fuse_wall", kv);
-    Some(wall_fuse_message(last_streamed, &hint, wb.max_wall_seconds))
-}
-
-/// 轮末软警告注入：轮数软警告 + 墙钟软警告。
-///
-/// 两条都在「本轮 tool 响应全部回填之后」注入：此刻模型才看得见新消息，
+/// 在「本轮 tool 响应全部回填之后」注入：此刻模型才看得见新消息，
 /// 提前注入会被当成上一轮的工具结果丢掉。
 pub(crate) fn inject_soft_warnings(
     deps: &ModelLoopDeps<'_>,
     msgs: &mut Vec<serde_json::Value>,
     rounds_warn_sent: &mut bool,
-    wall_warn_sent: &mut bool,
     max_rounds: usize,
     rounds_warn_at: usize,
     round: usize,
@@ -191,34 +146,6 @@ pub(crate) fn inject_soft_warnings(
                 ("left", rounds_left.to_string()),
             ],
         );
-    }
-    // 软墙钟：剩余进入收尾预留窗口 → 提醒一次，让模型停止展开新步骤、
-    // 把已经拿到的结果整理成收尾 JSON（子 agent 按任务包装末尾的 schema）。
-    //
-    // 与轮数软警告同一位置注入（tool 响应全部回填之后）：此刻模型才看得见
-    // 新消息，提前注入会被当成上一轮的工具结果丢掉。
-    //
-    // 只提醒一次：反复刷同一条提醒只会挤占上下文，不会让模型更急着收尾。
-    if let Some(wb) = deps.wall_budget {
-        if !*wall_warn_sent && wb.in_reserve() {
-            *wall_warn_sent = true;
-            let remaining = wb.remaining().as_secs();
-            msgs.push(serde_json::json!({
-                "role": "user",
-                "content": format!(
-                    "【系统提示】时间预算即将耗尽（剩余约 {remaining} 秒，收尾预留窗口 {} 秒）：立刻停止展开新步骤——把已经拿到的结果整理出来收尾，收尾必须说明还剩什么没做、进行到哪一步，不得只交成品不交代缺口。子 agent 按任务包装末尾的 schema 输出 JSON，主对话直接给结论。",
-                    wb.reserve.as_secs()
-                ),
-            }));
-            audit(
-                crate::audit::AuditLevel::Info,
-                "wall_soft_warn",
-                vec![
-                    ("remaining_secs", remaining.to_string()),
-                    ("reserve_secs", wb.reserve.as_secs().to_string()),
-                ],
-            );
-        }
     }
 }
 
