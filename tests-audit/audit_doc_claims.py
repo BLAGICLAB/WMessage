@@ -61,6 +61,10 @@ NOT_EVENTS = {
     "subagent.max_wall_secs": "已退役的参数表键（墙钟整套取消），只在历史实机方案里出现",
     "loop.tool_window_trigger_chars": "已删的参数表只读行（随参数卡退役），只在历史实机方案里出现",
     "loop.tool_window_keep_recent": "已删的参数表只读行（随参数卡退役），只在历史实机方案里出现",
+    "loop.history_truncate_target_pct": "已删的参数表键（Agent 参数全常量化），只在历史实机方案里出现",
+    "loop.reasoning_echo_enabled": "已删的参数表键（回灌改「发了就回」），只在历史实机方案里出现",
+    "loop.in_turn_context_edit": "已删的参数表键（滑动窗恒开），只在历史实机方案里出现",
+    "loop.history_budget_chars": "已删的参数表键（历史预算 128K 常量化），只在历史实机方案里出现",
 }
 
 EVENT_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
