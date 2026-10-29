@@ -1016,14 +1016,14 @@ mod fuse_ladder_tests {
         let mut counted = 0usize;
         for _ in 0..wrap_up_at {
             assert_eq!(
-                gate_call(counted, wrap_up_at, "read_file"),
+                gate_call(counted, wrap_up_at, false, "read_file"),
                 CallGate::Counted
             );
             counted += 1;
         }
         for _ in 0..10 {
             assert_eq!(
-                gate_call(counted, wrap_up_at, "read_file"),
+                gate_call(counted, wrap_up_at, false, "read_file"),
                 CallGate::WrapUpDenied,
                 "窗内探索类调用必须拒绝"
             );
@@ -1036,7 +1036,7 @@ mod fuse_ladder_tests {
             "read_own_card",
         ] {
             assert_eq!(
-                gate_call(counted, wrap_up_at, tool),
+                gate_call(counted, wrap_up_at, false, tool),
                 CallGate::WrapUpAllowed,
                 "窗内写产物类调用必须放行：{tool}"
             );
@@ -1046,6 +1046,33 @@ mod fuse_ladder_tests {
             !should_fuse(counted, cap),
             "计数停在阈值上，硬熔断在窗口里不可达——出口只能是轮数"
         );
+    }
+
+    /// 轮数轴收尾窗：轮数进窗（rounds_in_wrap_up=true）后，即使工具计数远未达
+    /// 阈值，探索类也拒绝、写产物类放行——两轴各自独立生效，谁先进窗谁说了算。
+    /// 出口是 max_rounds 自然硬停（带正文），不走工具轴的三轮窗口出口。
+    #[test]
+    fn rounds_wrap_up_gates_independently_of_tool_count() {
+        use crate::bot::constants::WRAP_UP_TOOLS;
+        let counted = 10usize;
+        let wrap_up_at = 95usize;
+        assert_eq!(
+            gate_call(counted, wrap_up_at, false, "read_file"),
+            CallGate::Counted,
+            "两轴都没进窗：正常计数执行"
+        );
+        assert_eq!(
+            gate_call(counted, wrap_up_at, true, "read_file"),
+            CallGate::WrapUpDenied,
+            "轮数进窗、工具计数未达：探索类照拒"
+        );
+        for tool in WRAP_UP_TOOLS {
+            assert_eq!(
+                gate_call(counted, wrap_up_at, true, tool),
+                CallGate::WrapUpAllowed,
+                "轮数进窗后写产物类照放：{tool}"
+            );
+        }
     }
 
     /// 收尾窗出口：从进入那一轮起再跑 3 轮，第 4 轮硬停且带上已产正文。

@@ -392,11 +392,20 @@ pub(crate) fn prepare_round(
     // 90% 塌成 0 时不注入失真的「已用 0 轮」。
     let rounds_warn_at = (max_rounds * crate::bot::constants::FUSE_SOFT_WARN_PCT as usize / 100)
         .clamp(1, max_rounds.saturating_sub(1).max(1));
+    // 轮数轴收尾窗：剩最后 WRAP_UP_ROUNDS 轮时只放行写产物类工具（LangGraph
+    // `RemainingSteps` 同思路——剩余步数不足时拒新工具、转最终输出）。不用百分比：
+    // 窗口宽度就该是「够写产物 + 补一次」的三轮，与总轮数无关；出口是 max_rounds
+    // 自然硬停（带正文），不设窗口专属出口。max_rounds ≤ 3 时钳到 1（round ≥ 1
+    // 才可能成立，单轮会话不进窗）。
+    let rounds_wrap_up_at = max_rounds
+        .saturating_sub(crate::bot::constants::WRAP_UP_ROUNDS)
+        .max(1);
     RoundCtx {
         fuse_cap,
         soft_warn_at,
         wrap_up_at,
         rounds_warn_at,
+        rounds_wrap_up_at,
         plan: RequestPlan {
             url,
             tools,

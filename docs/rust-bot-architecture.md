@@ -161,8 +161,9 @@ src-tauri/src/
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
 │   ├── bot_model_loop/finalize.rs (366) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
-│   ├── bot_model_loop/fuse.rs (169)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call +
-│   │                                    收尾轮数出口）/ 轮数熔断 / 软警告注入
+│   ├── bot_model_loop/fuse.rs (176)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call，
+│   │                                    工具轴 95% + 轮数轴「剩 3 轮」两路进窗）/ 收尾轮数出口 /
+│   │                                    轮数熔断 / 软警告注入
 │   ├── bot_model_loop/types.rs (323)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (172)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
 │   │                                    超限转存溢出文件 + 只回灌节选与指针
@@ -189,7 +190,8 @@ src-tauri/src/
 │                        bot-config.json 手改键。测试在 bot/params/tests.rs。
 ├── bot/constants.rs     Agent 风控工程常量（开发者维护，设置页不暴露）：安全网（轮数 200 /
 │                        工具 400）、历史预算 128K、上下文硬顶 200K、回填 128KB、上下文/IO 闸、
-│                        熔断阶梯（90% 软告警 / 95% 收尾窗 / 收尾轮数用尽硬停）、流程风控常量、
+│                        熔断阶梯（工具轴 90% 软告警 / 95% 收尾窗 / 收尾轮数用尽硬停；轮数轴 90% 软告警 /
+│                        剩 3 轮收尾窗 / max_rounds 硬停）、流程风控常量、
 │                        技能配额、子 agent 并发——改风控策略只改这一处。
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：
 │                        如 trace.retention_days 的可填范围、memory.extract_min_interval_secs

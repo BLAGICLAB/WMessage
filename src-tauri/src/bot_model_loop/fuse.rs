@@ -62,13 +62,20 @@ pub(crate) enum CallGate {
     WrapUpDenied,
 }
 
-/// 阶梯判定：`counted` 是进入本次调用前已计数的执行次数。
+/// 阶梯判定：`counted` 是进入本次调用前已计数的执行次数，`rounds_in_wrap_up`
+/// 是轮数轴是否已进收尾窗（round ≥ rounds_wrap_up_at，见 request.rs 派生）。
 ///
 /// 只计实际执行：被拒的调用没有消耗任何东西，计进去会让一轮并行批把窗口
 /// 吃光，模型永远轮不到写产物。写类放行也不计——否则窗口会被自己的写调用
-/// 烧光；窗口的出口是轮数（`wrap_up_rounds_exhausted`），不是计数。
-pub(crate) fn gate_call(counted: usize, wrap_up_at: usize, tool: &str) -> CallGate {
-    if counted < wrap_up_at {
+/// 烧光；工具轴窗口的出口是轮数（`wrap_up_rounds_exhausted`），不是计数，
+/// 轮数轴窗口的出口是 max_rounds 自然硬停。
+pub(crate) fn gate_call(
+    counted: usize,
+    wrap_up_at: usize,
+    rounds_in_wrap_up: bool,
+    tool: &str,
+) -> CallGate {
+    if counted < wrap_up_at && !rounds_in_wrap_up {
         CallGate::Counted
     } else if WRAP_UP_TOOLS.contains(&tool) {
         CallGate::WrapUpAllowed

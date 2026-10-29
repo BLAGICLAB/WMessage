@@ -259,6 +259,10 @@ pub(crate) struct RoundCtx {
     pub(crate) wrap_up_at: usize,
     /// 轮数软警告阈值（max_rounds × 90%，与 soft_warn_at 同口径）
     pub(crate) rounds_warn_at: usize,
+    /// 轮数轴收尾窗阈值（max_rounds − WRAP_UP_ROUNDS，钳 ≥1）：从这轮起只放行
+    /// 写产物类工具，出口就是 max_rounds 自然硬停（带正文）——轮数每轮必 +1，
+    /// 不需要工具轴那套「再跑 N 轮」的窗口出口。
+    pub(crate) rounds_wrap_up_at: usize,
     /// 一次请求的固定件与跨轮状态
     pub(crate) plan: RequestPlan,
 }

@@ -79,6 +79,7 @@ where
         soft_warn_at,
         wrap_up_at,
         rounds_warn_at,
+        rounds_wrap_up_at,
         mut plan,
     } = prepare_round(http, stop, deps, max_rounds);
     let mut msgs = msgs;
@@ -104,6 +105,8 @@ where
     let mut soft_warn_sent: bool = false;
     // 进入收尾窗的那一轮：Some 之后收尾轮数从这里起算（见 wrap_up_rounds_exhausted）
     let mut wrap_up_entered_round: Option<usize> = None;
+    // 轮数轴收尾窗只发一次进窗审计（窗口本身每轮都生效，重复报没有信息量）
+    let mut rounds_wrap_up_notified: bool = false;
     // 轮数软警告同款：只发一次，发完不再打扰后续轮次
     let mut rounds_warn_sent: bool = false;
     // 技能预算软警告已注入（只一次）：技能步数快用完时提醒模型收尾
@@ -536,6 +539,9 @@ where
                 soft_warn_at,
                 wrap_up_at,
                 &mut wrap_up_entered_round,
+                rounds_wrap_up_at,
+                max_rounds,
+                &mut rounds_wrap_up_notified,
                 &user_intent,
                 plan_state.as_deref_mut(),
                 deps,
@@ -670,6 +676,9 @@ async fn dispatch_round<X, XP, R, RP>(
     soft_warn_at: usize,
     wrap_up_at: usize,
     wrap_up_entered_round: &mut Option<usize>,
+    rounds_wrap_up_at: usize,
+    max_rounds: usize,
+    rounds_wrap_up_notified: &mut bool,
     user_intent: &str,
     plan_state: Option<&mut crate::bot_plan::PlanState>,
     deps: &ModelLoopDeps<'_>,
@@ -715,6 +724,20 @@ where
             "{final_text}\n\n⏹ 已停止{hint}"
         )));
     }
+    // 轮数轴进窗审计（只一次）：从这轮起 gate 只放行写产物类，出口是 max_rounds
+    // 自然硬停。与工具轴的 fuse_wrap_up_enter 对称留痕，axis 键区分两轴。
+    if round >= rounds_wrap_up_at && !*rounds_wrap_up_notified {
+        *rounds_wrap_up_notified = true;
+        audit(
+            crate::audit::AuditLevel::Warn,
+            "fuse_wrap_up_enter",
+            vec![
+                ("axis", "rounds".to_string()),
+                ("round", (round + 1).to_string()),
+                ("max_rounds", max_rounds.to_string()),
+            ],
+        );
+    }
     // 收尾窗出口：进入窗口后最多再跑 WRAP_UP_ROUNDS 轮工具调用，用尽即硬停、
     // 带上已产正文。窗口内写类不计数，光靠计数永远到不了熔断——轮数是唯一出口。
     if wrap_up_rounds_exhausted(*wrap_up_entered_round, round) {
@@ -749,20 +772,49 @@ where
             continue;
         }
         // 阶梯判定（主会话与子 agent 同一套，判据单点在 fuse::gate_call）：
-        // 预算内计数执行；进入收尾窗（wrap_up_at）后只放行写产物类工具且不计数，
-        // 其余拒绝且不计数——计数守的是「实际执行」的调用量。
-        let gate = gate_call(*function_calls_total, wrap_up_at, name.as_str());
+        // 预算内计数执行；工具轴（wrap_up_at）或轮数轴（rounds_wrap_up_at）任一
+        // 进收尾窗后只放行写产物类工具且不计数，其余拒绝且不计数——计数守的是
+        // 「实际执行」的调用量。
+        let rounds_in_wrap_up = round >= rounds_wrap_up_at;
+        let gate = gate_call(
+            *function_calls_total,
+            wrap_up_at,
+            rounds_in_wrap_up,
+            name.as_str(),
+        );
         if gate == CallGate::WrapUpDenied {
-            let deny_msg = format!(
-                "⚠️ 工具调用预算已进入收尾窗（{}/{fuse_cap}）：只放行写产物类工具（write_artifact_file / write_file / edit_file）与 read_own_card。请把已有发现写成产物文件，然后收尾。",
-                *function_calls_total
-            );
+            // 文案点名触发轴：工具轴是「额度将尽」，轮数轴是「轮次将尽」——
+            // 模型据此选收尾动作（前者抓紧落盘、后者直接交正文）。
+            let deny_msg = if rounds_in_wrap_up && *function_calls_total < wrap_up_at {
+                format!(
+                    "⚠️ 对话轮数已进入收尾窗（第 {}/{} 轮）：只放行写产物类工具（{}）。请把已有发现写成产物文件或直接给出收尾正文，不要再展开新的探索。",
+                    round + 1,
+                    max_rounds,
+                    crate::bot::constants::WRAP_UP_TOOLS.join(" / ")
+                )
+            } else {
+                format!(
+                    "⚠️ 工具调用预算已进入收尾窗（{}/{fuse_cap}）：只放行写产物类工具（{}）。请把已有发现写成产物文件，然后收尾。",
+                    *function_calls_total,
+                    crate::bot::constants::WRAP_UP_TOOLS.join(" / ")
+                )
+            };
             audit(
                 crate::audit::AuditLevel::Warn,
                 "fuse_wrap_up_deny",
                 vec![
+                    (
+                        "axis",
+                        if rounds_in_wrap_up {
+                            "rounds"
+                        } else {
+                            "tool_calls"
+                        }
+                        .to_string(),
+                    ),
                     ("used", function_calls_total.to_string()),
                     ("cap", fuse_cap.to_string()),
+                    ("round", (round + 1).to_string()),
                     ("tool", name.clone()),
                 ],
             );
