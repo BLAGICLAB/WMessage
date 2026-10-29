@@ -1,7 +1,7 @@
 # ask_user 聊天放开 + 选择题提问 —— 业界调研与方案（待拍板）
 
 > 2026-10-30。用户诉求原文：「Ask user 工具普通聊天 agent 也可以用，以选择题的形式提问」。
-> 本文只做调研与方案对比，**未动任何代码**；拍板后按 §九 实施。
+> 本文先做调研与方案对比；**方案 B 已于同日拍板并落地**（七项拍板全按推荐执行），见 §十一 落地结果。
 
 ## 一、结论先行
 
@@ -259,3 +259,19 @@
   [gemini-cli#7056](https://github.com/google-gemini/gemini-cli/issues/7056)
 - 缺席者：[copilot community#169482](https://github.com/orgs/community/discussions/169482) ·
   [warp#8519](https://github.com/warpdotdev/warp/issues/8519)
+
+## 十一、落地结果（同日实施）
+
+方案 B 三笔提交：后端 `d7ec5c60`、前端 `b504d006`、文档本笔。Rust 2171 + 前端 1170 全绿，clippy 干净（仅 vendored 2 条既有警告）。
+
+**拍板执行情况**：P1 超时/假设沿用 24h+假设（引擎零改动）；P2 预算沿用全局常量；P3 消息内嵌卡（落在 MessageList 与输入区之间，与停止反馈同区）；P4 通知中心双写（现状机制零改动）；P5 多问/多选/描述未做（二期）；P6 子 agent 维持禁用（白名单未动）；P7 「按假设继续」显式成卡上一等按钮。
+
+**实现要点**（超出 §九 备注的部分）：
+- 事件成对：`bot-ask`（提问）+ `bot-ask-resolved`（终态，action ∈ answer/assume/dismiss/expired）都经 `emit_recorded` 进回放缓冲——重开会话问题卡还原含终态，不依赖通知状态查询。
+- waiter 回执从纯文本改为 `AskReply{action, text}`：单靠回灌文本区分不了「用户答了」与「按假设继续」（用户可以照抄假设文案当回答），动作必须随行。
+- 聊天注册包在 `bot_chat_inner` 的 `run_model_loop` 前后（工具调用只发生在循环内，比「会话建立时」更精确）；`app` 按值消费进模型循环，注销用提前克隆的句柄。汇报轮（TurnOrigin::Report）不注册。
+- 通知标题按来源分叉：任务卡带卡名，聊天固定「聊天提问」。
+
+**偏离登记**（对照 §九）：`SCHEMA_ASK_USER` 在基线前缀外的预判成立，fixture 未动、`BUILTIN_TOOL_COUNT` 不变；无其他偏离。
+
+**踩坑**：前端 `asksOf` 空态返回新建 `[]`，`useSyncExternalStore` 的 getSnapshot 引用不稳 → 全部 ChatPanel 测试无限重渲染（76 例连坐）——空态必须共享模块级实例，已加契约测试锁死。
