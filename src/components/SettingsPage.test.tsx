@@ -356,29 +356,6 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("工具结果截断字节数填 0 → 落盘 0（显式关闭截断），不是当成未配置", async () => {
-    // 0 是这一项的合法第三态（关闭截断）。此前前端 `n > 0` 把它判成 null，
-    // 用户填 0 存下去还是默认 30000 字节——设了等于没设。
-    const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(agentParamsMock);
-    render(<SettingsPage {...defaultProps} />);
-    await openAgentParams(user);
-    const input = (await screen.findByLabelText(
-      "工具结果截断字节数",
-    )) as HTMLInputElement;
-    await user.clear(input);
-    await user.type(input, "0");
-    await user.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => {
-      expect(mocks.invokeMock).toHaveBeenCalledWith(
-        "bot_set_config",
-        expect.objectContaining({
-          config: expect.objectContaining({ maxToolOutputBytes: 0 }),
-        }),
-      );
-    });
-  });
-
   it("Python 默认超时：默认秒数与上限取自后端参数表", async () => {
     // 前端此前手写「留空 = 60 秒 / 上限 N 秒」——后端常量一改页面就撒谎
     const user = userEvent.setup();

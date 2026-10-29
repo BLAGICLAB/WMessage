@@ -265,10 +265,6 @@ pub struct BotConfig {
     /// （业界对齐：Claude Code 文件读 25K token / Bash 30K 输出、Gemini CLI 40K 输出）；
     /// 0 = 显式关闭截断（逃生口，长会话请依赖上下文压缩兜底）。
     ///
-    /// 口径是字节不是字符：这条上限管的是「别撑爆上下文」，撑爆的是 token。
-    /// 同一条漏斗里 trace 侧 `db::SPAN_TEXT_MAX` 与溢出指针文案都按字节报。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tool_output_bytes: Option<u32>,
     /// 任务执行提问预算（ask_user 每次执行可问次数）：None = 3；钳 1..=5。
     /// 原 workflow_settings.ask_budget，随工作流退役迁入。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -377,7 +373,6 @@ impl Default for BotConfig {
             reasoning_echo_enabled: None,
             in_turn_context_edit: None,
             search_max_results: None,
-            max_tool_output_bytes: None,
             ask_budget: None,
             tool_rules: None,
         }
@@ -565,8 +560,6 @@ pub struct BotConfigView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tool_output_bytes: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask_budget: Option<u8>,
     /// per-tool 权限规则表原样透传（设置页授权卡编辑）
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -597,9 +590,6 @@ impl crate::bot::params::AgentParams for BotConfig {
     }
     fn search_max_results(&self) -> Option<u32> {
         self.search_max_results
-    }
-    fn max_tool_output_bytes(&self) -> Option<u32> {
-        self.max_tool_output_bytes
     }
     fn ask_budget(&self) -> Option<u8> {
         self.ask_budget
@@ -632,9 +622,6 @@ impl crate::bot::params::AgentParams for BotConfigView {
     }
     fn search_max_results(&self) -> Option<u32> {
         self.search_max_results
-    }
-    fn max_tool_output_bytes(&self) -> Option<u32> {
-        self.max_tool_output_bytes
     }
     fn ask_budget(&self) -> Option<u8> {
         self.ask_budget

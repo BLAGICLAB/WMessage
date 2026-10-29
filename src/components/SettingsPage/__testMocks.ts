@@ -148,18 +148,6 @@ export const paramViews = [
     max: 1200,
   },
   {
-    key: "tools.max_output_bytes",
-    label: "工具结果截断字节数",
-    category: "tools",
-    hint: "单条工具结果回填模型上下文的截断上限（字节，UTF-8）；设 0 = 显式关闭截断",
-    value: "30000",
-    default: "30000",
-    source: "default",
-    editable: true,
-    min: 0,
-    max: 200000,
-  },
-  {
     // 故意用 45 而不是真实的 30：页面显示的数必须来自后端参数表，
     // 前端自留一份「30」的话这条就会露馅
     key: "trace.retention_days",

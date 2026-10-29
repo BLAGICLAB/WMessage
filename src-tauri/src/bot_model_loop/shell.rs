@@ -429,18 +429,9 @@ pub async fn run_model_loop(
     // 上轮遗留的 Completed/Failed/Terminated run 会在第 0 轮被 advance 短路（agent 假死根因）。
     // 位置与原核心内调用等价——都发生在进入轮循环之前。
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
-    // 工具结果上限（字节口径）——None = 显式关闭。
+    // 工具结果回填上限（字节口径，constants::TOOL_OUTPUT_BYTES 即硬顶）。
     // 与 per-tool 预算取小后才是本次回灌的实际天花板，见 effective_output_cap。
-    // 默认取 constants::TOOL_OUTPUT_BYTES（128KB 即硬顶）。
-    let tool_output_cap: Option<usize> = match cfg.max_tool_output_bytes {
-        Some(0) => None,
-        // 上限单源在 bot::params（与写侧钳制、设置页展示同一个数）
-        Some(n) => Some(crate::bot::params::clamp_max_tool_output_bytes(n) as usize),
-        None => Some(
-            crate::bot::constants::TOOL_OUTPUT_BYTES
-                .min(crate::bot::params::MAX_TOOL_OUTPUT_BYTES_CAP as usize),
-        ),
-    };
+    let tool_output_cap: Option<usize> = Some(crate::bot::constants::TOOL_OUTPUT_BYTES);
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {
         let app = app.clone();
         let sink = tool_trace_for_exec.clone();

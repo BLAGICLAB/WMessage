@@ -306,10 +306,6 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             "search.max_results",
             c.searchMaxResults,
           ),
-          maxToolOutputBytes: paramNumber(
-            "tools.max_output_bytes",
-            c.maxToolOutputBytes,
-          ),
           askBudget: paramNumber("tools.ask_budget", c.askBudget),
           // 规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
           toolRules: c.toolRules.length > 0 ? c.toolRules : null,

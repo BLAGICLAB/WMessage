@@ -112,7 +112,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
     reasoningEchoEnabled: "",
     inTurnContextEdit: "",
     searchMaxResults: "",
-    maxToolOutputBytes: "",
     askBudget: "",
   });
   const [traceRetainDays, setTraceRetainDays] = useState("");
@@ -367,8 +366,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
           c.inTurnContextEdit != null ? String(c.inTurnContextEdit) : "",
         searchMaxResults:
           c.searchMaxResults != null ? String(c.searchMaxResults) : "",
-        maxToolOutputBytes:
-          c.maxToolOutputBytes != null ? String(c.maxToolOutputBytes) : "",
         askBudget: c.askBudget != null ? String(c.askBudget) : "",
       });
     } catch (e) {

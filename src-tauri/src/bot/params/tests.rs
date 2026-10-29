@@ -86,7 +86,6 @@ fn empty_cfg() -> BotConfig {
         history_budget_chars: None,
         tool_rules: None,
         search_max_results: None,
-        max_tool_output_bytes: None,
         ask_budget: None,
     }
 }
@@ -237,13 +236,6 @@ fn params_table_keys_unique_and_populated() {
 fn params_table_defaults_match_runtime_constants() {
     let views = effective_params(&empty_cfg());
     let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-    assert_eq!(
-        by_key("tools.max_output_bytes").default,
-        (crate::bot::constants::TOOL_OUTPUT_BYTES as u32)
-            .min(crate::bot::params::MAX_TOOL_OUTPUT_BYTES_CAP)
-            .to_string(),
-        "参数表展示的默认截断字节数与常量不符"
-    );
     // 其余可编辑项：展示的默认 = 运行时内置默认常量
     assert_eq!(
         by_key("loop.max_rounds").default,
@@ -268,15 +260,6 @@ fn params_table_defaults_match_runtime_constants() {
         by_key("model.max_tokens").default,
         crate::bot::config::schema::DEFAULT_MAX_TOKENS.to_string()
     );
-    // 越界配置：展示值必须已经是钳过的生效值，不能是用户填的原值
-    let mut cfg = empty_cfg();
-    cfg.max_tool_output_bytes = Some(MAX_TOOL_OUTPUT_BYTES_CAP + 100_000);
-    let views = effective_params(&cfg);
-    let v = views
-        .iter()
-        .find(|v| v.key == "tools.max_output_bytes")
-        .unwrap();
-    assert_eq!(v.value, MAX_TOOL_OUTPUT_BYTES_CAP.to_string());
 }
 
 /// 可填范围（min/max）必须等于实际生效的钳制边界。
@@ -335,11 +318,6 @@ fn editable_rows_ranges_match_clamp_bounds() {
             Some(crate::db::trace::TRACE_RETENTION_MIN_DAYS as u64),
             Some(crate::db::trace::TRACE_RETENTION_MAX_DAYS as u64)
         )
-    );
-    // 工具输出截断：0 是合法值（显式关闭截断），不是下界 1
-    assert_eq!(
-        range("tools.max_output_bytes"),
-        (Some(0), Some(MAX_TOOL_OUTPUT_BYTES_CAP as u64))
     );
     // 范围两端都要真的被钳制函数认（否则展示与生效又是一回事）
     assert_eq!(clamp_max_rounds(MAX_ROUNDS_MIN), MAX_ROUNDS_MIN);

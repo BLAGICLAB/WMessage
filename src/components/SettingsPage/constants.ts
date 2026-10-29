@@ -186,7 +186,6 @@ export const AGENT_PARAM_ROWS = [
   ["loop.reasoning_echo_enabled", "reasoningEchoEnabled"],
   ["loop.in_turn_context_edit", "inTurnContextEdit"],
   ["search.max_results", "searchMaxResults"],
-  ["tools.max_output_bytes", "maxToolOutputBytes"],
   ["tools.ask_budget", "askBudget"],
 ] as const;
 /** 降级用的行名（后端参数表拉不到时用）。
@@ -200,7 +199,6 @@ export const AGENT_PARAM_FALLBACK_LABELS: Record<string, string> = {
   "loop.reasoning_echo_enabled": "思考段回灌",
   "loop.in_turn_context_edit": "轮内工具结果滑动窗",
   "search.max_results": "联网搜索默认条数",
-  "tools.max_output_bytes": "工具结果截断字节数",
   "tools.ask_budget": "任务提问预算（次）",
 };
 /** u32 上界——config 里这些字段是 Option<u32>，超了整份 bot_set_config

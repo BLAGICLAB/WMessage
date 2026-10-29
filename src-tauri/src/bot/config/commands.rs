@@ -141,7 +141,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         reasoning_echo_enabled: cfg.reasoning_echo_enabled,
         in_turn_context_edit: cfg.in_turn_context_edit,
         search_max_results: cfg.search_max_results,
-        max_tool_output_bytes: cfg.max_tool_output_bytes,
         ask_budget: cfg.ask_budget,
         tool_rules: cfg.tool_rules,
     })
@@ -296,9 +295,6 @@ fn clamp_agent_params(config: &mut BotConfig) {
     // 工具输出截断上限（0 = 显式关闭不动，其余钳到 params 的上限）——原先这个
     // 字段没有任何写侧钳制，只有模型循环生效点的一行 `.min(200_000)`，于是设置页
     // 显示用户设的值、运行时按另一个值走
-    config.max_tool_output_bytes = config
-        .max_tool_output_bytes
-        .map(crate::bot::params::clamp_max_tool_output_bytes);
     // Python 执行超时：运行期钳在 py::runtime::resolve_timeout，但那条只在
     // **执行时**生效——写侧不钳的话设置页写下去 10000、显示 10000、实际跑 300。
     // 写侧用同一个上界钳一遍（边界仍是 py::runtime 那一个常量）。
@@ -1071,7 +1067,6 @@ mod perm_mode_tests {
             history_budget_chars: Some(1),
             search_max_results: Some(99),
             ask_budget: Some(99),
-            max_tool_output_bytes: Some(999_999),
             python_timeout_secs: Some(10_000),
             max_tokens: Some(999_999),
             ..Default::default()
@@ -1105,10 +1100,6 @@ mod perm_mode_tests {
             Some(crate::bot::params::clamp_ask_budget(99))
         );
         assert_eq!(
-            cfg.max_tool_output_bytes,
-            Some(crate::bot::params::clamp_max_tool_output_bytes(999_999))
-        );
-        assert_eq!(
             cfg.python_timeout_secs,
             Some(crate::py::runtime::clamp_timeout_secs(10_000)),
             "Python 超时写侧此前不钳：设置页显示 10000、运行时按上限跑"
@@ -1135,17 +1126,6 @@ mod perm_mode_tests {
         clamp_agent_params(&mut cfg);
         assert_eq!(cfg.max_rounds, None, "未配置不该被写成 0 之类的值");
         assert_eq!(cfg.max_function_calls, None);
-        assert_eq!(cfg.max_tool_output_bytes, None);
-
-        let mut cfg = BotConfig {
-            max_tool_output_bytes: Some(0),
-            ..Default::default()
-        };
-        clamp_agent_params(&mut cfg);
-        assert_eq!(
-            cfg.max_tool_output_bytes,
-            Some(0),
-            "0 = 显式关闭截断，写侧不许抹成 null"
-        );
+        assert_eq!(cfg.max_rounds, None);
     }
 }

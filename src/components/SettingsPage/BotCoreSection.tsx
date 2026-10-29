@@ -279,7 +279,6 @@ export function BotCoreSection({
                   reasoningEchoEnabled: "",
                   inTurnContextEdit: "",
                   searchMaxResults: "",
-                  maxToolOutputBytes: "",
                   toolRules: [] as Array<{
                     tool: string;
                     action: "allow" | "ask" | "deny";

@@ -364,6 +364,5 @@ export type SettingsConfig = {
   reasoningEchoEnabled: string;
   inTurnContextEdit: string;
   searchMaxResults: string;
-  maxToolOutputBytes: string;
   askBudget: string;
 };
