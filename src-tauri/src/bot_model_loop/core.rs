@@ -577,7 +577,6 @@ where
                                 ("name", run.name.clone()),
                                 ("step", run.step.to_string()),
                                 ("max_steps", run.max_steps.to_string()),
-                                ("timeout_secs", run.timeout_secs.to_string()),
                             ],
                         );
                     }

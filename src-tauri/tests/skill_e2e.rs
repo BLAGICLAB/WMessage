@@ -234,7 +234,6 @@ fn real_skill_fixture_loads_via_scan_skill_dirs() {
     assert_eq!(meta.mode, "auto", "fixture mode 应为 auto");
     assert_eq!(meta.risk_level, "low");
     assert_eq!(meta.max_steps, 5);
-    assert_eq!(meta.timeout_secs, 60);
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -277,7 +276,6 @@ fn make_run(name: &str, state: SkillState) -> SkillRun {
         consec_failures: 0,
         max_steps: 5,
         started_at_ms: chrono::Utc::now().timestamp_millis(),
-        timeout_secs: 60,
         rollback: "none".into(),
         actions: Vec::new(),
         end_reason: String::new(),

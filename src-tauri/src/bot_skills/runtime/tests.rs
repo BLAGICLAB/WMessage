@@ -49,20 +49,20 @@ fn skill_finish_no_transition_audits_only_when_reason_non_empty() {
 #[test]
 fn take_over_switched_runs_drops_previous_skill_of_same_session() {
     let mut runs: std::collections::HashMap<String, SkillRun> = std::collections::HashMap::new();
-    let mut old = test_run(8, 180);
+    let mut old = test_run(8);
     old.name = "old-skill".into();
     old.state = SkillState::Running;
     old.step = 4;
     old.session_id = Some("sess-a".into());
     runs.insert(old.name.clone(), old);
 
-    let mut other = test_run(8, 180);
+    let mut other = test_run(8);
     other.name = "other-session-skill".into();
     other.state = SkillState::Running;
     other.session_id = Some("sess-b".into());
     runs.insert(other.name.clone(), other);
 
-    let mut paused = test_run(8, 180);
+    let mut paused = test_run(8);
     paused.name = "paused-skill".into();
     paused.state = SkillState::Paused;
     paused.session_id = Some("sess-a".into());
@@ -92,7 +92,7 @@ fn take_over_switched_runs_drops_previous_skill_of_same_session() {
 
 #[test]
 fn advance_loaded_returns_no_active() {
-    let run = test_run(8, 180);
+    let run = test_run(8);
     // test_run 初始状态就是 Loaded
     assert_eq!(run.state, SkillState::Loaded);
     assert_eq!(advance_skill(&run, 1000), AdvanceAction::NoActive);
@@ -100,33 +100,38 @@ fn advance_loaded_returns_no_active() {
 
 #[test]
 fn advance_running_no_timeout_continues() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Running;
-    // started_at_ms=1000, now=10s 后 11000, timeout=180s → 仍可继续
+    // started_at_ms=1000, now=10s 后 11000，寿命上限 3600s → 仍可继续
     assert_eq!(advance_skill(&run, 11000), AdvanceAction::Continue);
 }
 
 #[test]
-fn advance_running_just_before_timeout_continues() {
-    let mut run = test_run(8, 60);
+fn advance_running_just_before_lifetime_expires_continues() {
+    let mut run = test_run(8);
     run.state = SkillState::Running;
-    // 恰好 60s 未超时（入 strict > 才 Fail）
+    // 恰好到寿命上限（3600s）未超（strict > 才 Fail）
+    let cap = crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64;
     assert_eq!(
-        advance_skill(&run, 1000 + 60 * 1000),
+        advance_skill(&run, 1000 + cap * 1000),
         AdvanceAction::Continue
     );
 }
 
 #[test]
-fn advance_running_timeout_returns_fail() {
-    let mut run = test_run(8, 60);
+fn advance_running_lifetime_expired_returns_fail() {
+    let mut run = test_run(8);
     run.state = SkillState::Running;
-    // 启动 61s 后超时 (60s 上限)
-    let action = advance_skill(&run, 1000 + 61 * 1000);
+    // 超过寿命上限 1 秒 → Fail（Paused 占位保护同口径）
+    let cap = crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64;
+    let action = advance_skill(&run, 1000 + (cap + 1) * 1000);
     match action {
         AdvanceAction::Fail(reason) => {
-            assert!(reason.contains("超时"), "reason 应含「超时」: {reason}");
-            assert!(reason.contains("60"), "reason 应含阈值 60s: {reason}");
+            assert!(
+                reason.contains("寿命上限"),
+                "reason 应含「寿命上限」: {reason}"
+            );
+            assert!(reason.contains("3600"), "reason 应含阈值 3600s: {reason}");
         }
         other => panic!("expected Fail, got {other:?}"),
     }
@@ -134,21 +139,21 @@ fn advance_running_timeout_returns_fail() {
 
 #[test]
 fn advance_paused_returns_await_confirm() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Paused;
     assert_eq!(advance_skill(&run, 1000), AdvanceAction::AwaitConfirm);
 }
 
 #[test]
 fn advance_completed_returns_finish() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Completed;
     assert_eq!(advance_skill(&run, 1000), AdvanceAction::Finish);
 }
 
 #[test]
 fn advance_failed_returns_fail_with_end_reason() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Failed;
     run.end_reason = "超过最大步数上限（8 步）".into();
     assert_eq!(
@@ -159,7 +164,7 @@ fn advance_failed_returns_fail_with_end_reason() {
 
 #[test]
 fn advance_terminated_returns_terminate_with_end_reason() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Terminated;
     run.end_reason = "用户拒绝确认".into();
     assert_eq!(
@@ -172,7 +177,7 @@ fn advance_terminated_returns_terminate_with_end_reason() {
 
 #[test]
 fn advance_dsl_continue_returns_run() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Running;
     // Running 11s（未超 180s 上限）→ 正常执行
     assert!(matches!(advance_dsl(&run, 11000), DslAdvanceAction::Run));
@@ -183,14 +188,14 @@ fn advance_dsl_no_active_loaded_returns_run() {
     // 防御性分支：生产上 Loaded 只是 SkillRun::new 的瞬时初态（start_skill 直接置
     // Running，见 runtime.rs start_skill 注释），advance_dsl 永远收不到 Loaded。
     // 本测试锁定兜底语义——万一收到 Loaded 也不阻断 step 执行（按 Run 处理）。
-    let run = test_run(8, 180);
+    let run = test_run(8);
     assert_eq!(run.state, SkillState::Loaded);
     assert!(matches!(advance_dsl(&run, 1000), DslAdvanceAction::Run));
 }
 
 #[test]
 fn advance_dsl_paused_returns_await_user() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Paused;
     assert!(matches!(
         advance_dsl(&run, 1000),
@@ -200,14 +205,14 @@ fn advance_dsl_paused_returns_await_user() {
 
 #[test]
 fn advance_dsl_completed_returns_finish() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Completed;
     assert!(matches!(advance_dsl(&run, 1000), DslAdvanceAction::Finish));
 }
 
 #[test]
 fn advance_dsl_failed_returns_fail_with_rollback() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Failed;
     run.end_reason = "超过最大步数上限（8 步）".into();
     match advance_dsl(&run, 1000) {
@@ -220,7 +225,7 @@ fn advance_dsl_failed_returns_fail_with_rollback() {
 
 #[test]
 fn advance_dsl_terminated_returns_terminate_no_rollback() {
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Terminated;
     run.end_reason = "用户 /stop".into();
     match advance_dsl(&run, 1000) {
@@ -233,13 +238,16 @@ fn advance_dsl_terminated_returns_terminate_no_rollback() {
 fn advance_dsl_timeout_returns_fail_with_rollback() {
     // 端到端：Running + 启动后 61s（60s 上限）→ advance_skill 内部超时检测 → Fail
     // → advance_dsl 映射成 FailWithRollback（含 reason）
-    let mut run = test_run(8, 60);
+    let mut run = test_run(8);
     run.state = SkillState::Running;
-    let action = advance_dsl(&run, 1000 + 61 * 1000);
+    let cap = crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64;
+    let action = advance_dsl(&run, 1000 + (cap + 1) * 1000);
     match action {
         DslAdvanceAction::FailWithRollback(reason) => {
-            assert!(reason.contains("超时"), "reason 应含「超时」: {reason}");
-            assert!(reason.contains("60"), "reason 应含阈值 60s: {reason}");
+            assert!(
+                reason.contains("寿命上限"),
+                "reason 应含「寿命上限」: {reason}"
+            );
         }
         other => panic!("expected FailWithRollback, got {other:?}"),
     }
@@ -284,7 +292,7 @@ fn preflight_passes_normal() {
 
 #[test]
 fn step_check_counts_and_records_actions() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Running;
     // query_tasks 在 READONLY 豁免清单（ 后），只读不记入回滚清单
     assert!(step_check(&mut r, "query_tasks", "{}", 2000).is_ok());
@@ -297,7 +305,7 @@ fn step_check_counts_and_records_actions() {
 
 #[test]
 fn step_check_fuses_on_max_steps() {
-    let mut r = test_run(2, 180);
+    let mut r = test_run(2);
     r.state = SkillState::Running;
     assert!(step_check(&mut r, "create_task", "{}", 2000).is_ok());
     assert!(step_check(&mut r, "edit_task", "{}", 2000).is_ok());
@@ -308,17 +316,18 @@ fn step_check_fuses_on_max_steps() {
 
 #[test]
 fn step_check_fuses_on_timeout() {
-    let mut r = test_run(8, 60);
+    let mut r = test_run(8);
     r.state = SkillState::Running;
-    // 已过 61 秒
-    let e = step_check(&mut r, "list_tasks", "{}", 1000 + 61 * 1000).unwrap_err();
-    assert!(e.to_string().contains("超时"));
+    // 已过寿命上限
+    let cap = crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64;
+    let e = step_check(&mut r, "list_tasks", "{}", 1000 + (cap + 1) * 1000).unwrap_err();
+    assert!(e.to_string().contains("寿命上限"));
     assert_eq!(r.state, SkillState::Failed);
 }
 
 #[test]
 fn step_check_rejects_when_paused() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Paused;
     assert!(step_check(&mut r, "list_tasks", "{}", 2000).is_err());
     assert_eq!(r.step, 0); // 暂停态不计数
@@ -327,7 +336,7 @@ fn step_check_rejects_when_paused() {
 #[test]
 fn pause_state_resumable_flows() {
     // resumable=true：暂停后可恢复
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Running;
     r.resumable = true;
     pause_state(&mut r);
@@ -347,7 +356,7 @@ fn pause_state_resumable_flows() {
 #[test]
 fn pause_state_non_resumable_terminates_after_confirm() {
     // resumable=false：暂停即终止——确认通过后技能终止
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Running;
     r.resumable = false;
     pause_state(&mut r);
@@ -384,7 +393,7 @@ fn confirm_result_only_applies_to_matching_confirm_window() {
         "bot_skills::runtime::skill_runs",
     );
     let app = tauri::test::mock_app();
-    let mut paused = test_run(8, 180);
+    let mut paused = test_run(8);
     paused.name = "confirm-binding-skill".into();
     paused.state = SkillState::Paused;
     paused.resumable = true;
@@ -429,7 +438,7 @@ const NOW: i64 = 11_000;
 
 #[test]
 fn skill_conflict_other_session_running_is_blocked() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Running;
     r.session_id = Some("s-a".into());
     assert!(skill_conflict_with_existing(Some(&r), Some("s-b"), NOW));
@@ -437,7 +446,7 @@ fn skill_conflict_other_session_running_is_blocked() {
 
 #[test]
 fn skill_conflict_other_session_paused_is_blocked() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Paused;
     r.session_id = Some("s-a".into());
     assert!(skill_conflict_with_existing(Some(&r), Some("s-b"), NOW));
@@ -448,7 +457,7 @@ fn skill_conflict_other_session_paused_is_blocked() {
 #[test]
 fn skill_conflict_same_session_restart_allowed() {
     // 同会话同名重启：保留原有覆盖语义，不拦截
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Running;
     r.session_id = Some("s-a".into());
     assert!(!skill_conflict_with_existing(Some(&r), Some("s-a"), NOW));
@@ -462,7 +471,7 @@ fn skill_conflict_terminal_state_allowed() {
         SkillState::Failed,
         SkillState::Terminated,
     ] {
-        let mut r = test_run(8, 180);
+        let mut r = test_run(8);
         r.state = state.clone();
         r.session_id = Some("s-a".into());
         assert!(
@@ -480,15 +489,16 @@ fn skill_conflict_no_existing_allowed() {
 
 // ── 暂停（Paused）超时 ──
 
-/// Paused 不是终态：不判超时它就一直占着同名技能，
+/// Paused 不是终态：不判过期它就一直占着同名技能，
 /// 别的会话再也起不来（那个会话不回来就永久挡路）。
 #[test]
 fn skill_conflict_expired_pause_no_longer_blocks() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Paused;
     r.session_id = Some("s-a".into());
-    // 超时后（180s 之后）不再算活动
-    let expired_at = r.started_at_ms + 181 * 1000;
+    // 过了寿命上限后不再算活动
+    let expired_at =
+        r.started_at_ms + (crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64 + 1) * 1000;
     assert!(!skill_conflict_with_existing(
         Some(&r),
         Some("s-b"),
@@ -500,22 +510,23 @@ fn skill_conflict_expired_pause_no_longer_blocks() {
 /// 状态机：暂停等确认超过技能超时 → 判失败（不再无限等确认）。
 #[test]
 fn advance_skill_paused_fails_after_timeout() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Paused;
-    let expired_at = r.started_at_ms + 181 * 1000;
+    let expired_at =
+        r.started_at_ms + (crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64 + 1) * 1000;
     match advance_skill(&r, expired_at) {
-        AdvanceAction::Fail(reason) => assert!(reason.contains("超时"), "{reason}"),
-        other => panic!("超时的暂停应判失败，实得 {other:?}"),
+        AdvanceAction::Fail(reason) => assert!(reason.contains("寿命上限"), "{reason}"),
+        other => panic!("过期的暂停应判失败，实得 {other:?}"),
     }
 }
 
 /// 未超时的暂停仍等确认（不得提前判失败）。
 #[test]
 fn advance_skill_paused_within_timeout_awaits_confirm() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Paused;
     assert_eq!(
-        advance_skill(&r, r.started_at_ms + 179 * 1000),
+        advance_skill(&r, r.started_at_ms + 1000),
         AdvanceAction::AwaitConfirm
     );
 }
@@ -523,28 +534,29 @@ fn advance_skill_paused_within_timeout_awaits_confirm() {
 /// 过了超时的暂停不再恢复：确认通过也不能让过期计划继续动手。
 #[test]
 fn confirm_state_expired_pause_fails_instead_of_resuming() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Paused;
     r.resumable = true;
-    let expired_at = r.started_at_ms + 181 * 1000;
+    let expired_at =
+        r.started_at_ms + (crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64 + 1) * 1000;
     confirm_state(&mut r, true, expired_at);
     assert_eq!(r.state, SkillState::Failed);
-    assert!(r.end_reason.contains("超时"), "{}", r.end_reason);
+    assert!(r.end_reason.contains("寿命上限"), "{}", r.end_reason);
 }
 
 /// 清扫：过期的暂停被标成 Failed（终态），占位随之释放。
 #[test]
 fn sweep_expired_pauses_marks_failed_and_frees_slot() {
     let mut runs: std::collections::HashMap<String, SkillRun> = std::collections::HashMap::new();
-    let mut paused = test_run(8, 180);
+    let mut paused = test_run(8);
     paused.state = SkillState::Paused;
     paused.session_id = Some("s-a".into());
-    let mut running = test_run(8, 180);
+    let mut running = test_run(8);
     running.state = SkillState::Running;
     running.session_id = Some("s-b".into());
     runs.insert("paused-skill".into(), paused);
     runs.insert("running-skill".into(), running);
-    let expired_at = 1000 + 181 * 1000;
+    let expired_at = 1000 + (crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64 + 1) * 1000;
     let expired = sweep_expired_pauses(&mut runs, expired_at);
     // 两个 run 同一 started_at：Paused 与 Running（死会话残留）都过超时线
     assert_eq!(expired.len(), 2);
@@ -563,7 +575,7 @@ fn sweep_expired_pauses_marks_failed_and_frees_slot() {
         swept_running.end_reason
     );
     // 未超时的 Running 不受影响
-    let mut fresh = test_run(8, 3600);
+    let mut fresh = test_run(8);
     fresh.state = SkillState::Running;
     runs.insert("fresh-skill".into(), fresh);
     let not_expired = sweep_expired_pauses(&mut runs, 1000 + 200 * 1000);
@@ -574,10 +586,10 @@ fn sweep_expired_pauses_marks_failed_and_frees_slot() {
 /// 冲突闸：超时的 Running（死会话残留）不再拦截同名技能启动
 #[test]
 fn conflict_gate_lets_timed_out_running_pass() {
-    let mut r = test_run(8, 180);
+    let mut r = test_run(8);
     r.state = SkillState::Running;
     r.session_id = Some("s-dead".into());
-    let expired_at = 1000 + 181 * 1000;
+    let expired_at = 1000 + (crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64 + 1) * 1000;
     assert!(!skill_conflict_with_existing(
         Some(&r),
         Some("s-new"),
@@ -596,7 +608,7 @@ fn conflict_gate_lets_timed_out_running_pass() {
 /// 软警告：预算充裕时不提醒，临近硬闸时提醒一次。
 #[test]
 fn budget_warning_fires_only_when_budget_nears_exhaustion() {
-    let mut r = test_run(50, 1800);
+    let mut r = test_run(50);
     r.state = SkillState::Running;
     // 刚起步：步数与墙钟都充裕
     assert!(skill_budget_warning(&r, 1000 + 10 * 1000).is_none());
@@ -605,21 +617,20 @@ fn budget_warning_fires_only_when_budget_nears_exhaustion() {
     let w = skill_budget_warning(&r, 1000 + 10 * 1000).expect("步数快用完应提醒");
     assert!(w.contains("还剩 4 步"), "文案要带步数余量: {w}");
     assert!(w.contains("整理成最终回复"), "文案要指示模型收尾: {w}");
-    // 墙钟余量 ≤ 60 秒 → 提醒（步数还很充裕）
-    let mut r2 = test_run(50, 1800);
+    // 步数充裕 → 不提醒（技能无墙钟，软警告只剩步数一轴）
+    let mut r2 = test_run(50);
     r2.state = SkillState::Running;
-    let w2 = skill_budget_warning(&r2, 1000 + 1741 * 1000).expect("墙钟快用完应提醒");
-    assert!(w2.contains("59 秒"), "文案要带秒数余量: {w2}");
+    assert!(skill_budget_warning(&r2, 1000 + 10 * 1000).is_none());
 }
 
 /// 软警告只对运行中的技能发：暂停/终态不在这里刷屏。
 #[test]
 fn budget_warning_skips_non_running_states() {
-    let mut r = test_run(50, 1800);
+    let mut r = test_run(50);
     r.state = SkillState::Paused;
     r.step = 49;
     assert!(skill_budget_warning(&r, 1000 + 1790 * 1000).is_none());
-    let mut done = test_run(50, 1800);
+    let mut done = test_run(50);
     done.state = SkillState::Completed;
     done.step = 50;
     assert!(skill_budget_warning(&done, 1000 + 1790 * 1000).is_none());
@@ -628,7 +639,7 @@ fn budget_warning_skips_non_running_states() {
 /// 小预算技能不该在第一轮就收到「快用完了」：阈值按预算规模取比例。
 #[test]
 fn budget_warning_stays_quiet_for_small_budget() {
-    let mut r = test_run(6, 30);
+    let mut r = test_run(6);
     r.state = SkillState::Running;
     // 刚起步：6 步 / 30 秒都还充裕
     assert!(skill_budget_warning(&r, 1000 + 1000).is_none());
@@ -706,7 +717,7 @@ fn insert_running_skill<R: tauri::Runtime>(
     session_id: &str,
     mode: &str,
 ) {
-    let mut run = test_run(50, 1800);
+    let mut run = test_run(50);
     run.name = name.into();
     run.state = SkillState::Running;
     run.session_id = Some(session_id.into());

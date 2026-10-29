@@ -633,7 +633,7 @@ mod confirm_skill_pause_tests {
     #[tokio::test]
     async fn file_access_confirm_leaves_skill_running() {
         let app = mock_handle();
-        let mut run = crate::bot_skills::test_run(8, 180);
+        let mut run = crate::bot_skills::test_run(8);
         run.name = "confirm-pause-file-access".into();
         run.state = crate::bot_skills::SkillState::Running;
         run.resumable = false; // 事故机型：暂停即终止
@@ -670,7 +670,7 @@ mod confirm_skill_pause_tests {
     #[tokio::test]
     async fn danger_confirm_pauses_skill() {
         let app = mock_handle();
-        let mut run = crate::bot_skills::test_run(8, 180);
+        let mut run = crate::bot_skills::test_run(8);
         run.name = "confirm-pause-danger".into();
         run.state = crate::bot_skills::SkillState::Running;
         run.session_id = Some("sess-danger".into());

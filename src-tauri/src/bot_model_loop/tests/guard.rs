@@ -789,14 +789,16 @@ mod rounds_fuse_tests {
     }
 
     #[test]
-    fn skill_frontmatter_max_rounds_overrides_default() {
-        // Skill frontmatter 声明 max_rounds: 25 → 生效，run_model_loop 收到 25
+    fn skill_frontmatter_max_rounds_only_tightens() {
+        // Skill frontmatter 声明 max_rounds: 25（比配置紧）→ 生效 25；
+        // 声明得比配置宽 → 不许抬高（frontmatter 是任务画像不是权限）。
         let meta = crate::bot_skills::parse_meta(
             "---\nname: minimax-docx\nmax_rounds: 25\n---\n# body\n",
             "minimax-docx",
         );
         assert_eq!(meta.max_rounds, Some(25));
         assert_eq!(resolve_max_rounds(meta.max_rounds, 50), 25);
+        assert_eq!(resolve_max_rounds(meta.max_rounds, 20), 20);
     }
 
     #[test]

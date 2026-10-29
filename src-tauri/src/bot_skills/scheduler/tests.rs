@@ -181,7 +181,7 @@ fn e2e_terminates_skips_rollback() {
     assert_eq!(rollback.len(), 1);
 
     // mock SkillRun：state = Terminated（用户 /stop 触发）
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Terminated;
     run.end_reason = "用户 /stop".into();
 
@@ -219,7 +219,7 @@ fn e2e_pauses_with_await_user_when_paused() {
     let (steps, rollback) = parse_skill_steps(body).unwrap();
 
     // mock SkillRun：state = Paused（用户确认等待中）
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.state = SkillState::Paused;
 
     let calls: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
@@ -492,7 +492,7 @@ fn rollback_restore_guard_restores_failed_on_panic() {
         app.handle().clone()
     };
     let name = "test-rb-guard-panic";
-    let mut run = test_run(8, 180);
+    let mut run = test_run(8);
     run.name = name.into();
     run.state = SkillState::Failed;
     run.session_id = Some("s-rb-g".into());

@@ -16,7 +16,7 @@ fn test_handle() -> AppHandle<tauri::test::MockRuntime> {
 
 /// 插入一个带 allowed_tools 的 Running run（挂在指定会话）
 fn insert_run(app: &AppHandle<tauri::test::MockRuntime>, session: &str, allowed: &[&str]) {
-    let mut run = crate::bot_skills::test_run(8, 180);
+    let mut run = crate::bot_skills::test_run(8);
     run.name = "limited-skill".into();
     run.state = crate::bot::SkillState::Running;
     run.session_id = Some(session.into());

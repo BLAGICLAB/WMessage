@@ -49,28 +49,23 @@ fn preflight(meta: &SkillMeta) -> Result<(), String> {
     Ok(())
 }
 
-/// 技能超时判定（单一口径）：已跑秒数 > 声明的 timeout_secs。
-/// 步骤熔断、状态机实时检测、暂停过期清扫都走这里——口径分叉会让
-/// 「同一次运行在不同入口超时时刻不同」。
+/// 技能寿命判定（单一口径）：已跑秒数超过绝对寿命上限。步骤熔断、状态机
+/// 实时检测、Paused 占位清扫都走这里——口径分叉会让「同一次运行在不同入口
+/// 过期时刻不同」。这不是性能预算，是 Paused 槽位的泄漏保护。
 fn skill_timed_out(run: &SkillRun, now_ms: i64) -> bool {
-    (now_ms - run.started_at_ms) / 1000 > run.timeout_secs as i64
+    (now_ms - run.started_at_ms) / 1000 > crate::bot::constants::SKILL_MAX_LIFETIME_SECS as i64
 }
 
-/// 技能预算软警告的阈值口径：按预算规模取比例，再钳到上下界。
+/// 技能步数软警告的阈值口径：按总步数取比例，再钳到上下界。
 ///
 /// 固定阈值对大预算太晚（步数多的时候剩几步已经来不及收尾），对小预算又太早
 /// （预算只有 3 步的技能会在第一轮就收到「快用完了」，纯属噪音）。
-/// 比例口径两头都对：默认预算（50 步 / 1800 秒）落在 5 步 / 60 秒。
-fn skill_budget_warn_limits(max_steps: usize, timeout_secs: u64) -> (usize, i64) {
-    let steps = (max_steps / crate::bot::constants::SKILL_BUDGET_WARN_STEPS_DIVISOR).clamp(
+/// 比例口径两头都对：默认 100 步落在钳制区间的 10 步。
+fn skill_budget_warn_limits(max_steps: usize) -> usize {
+    (max_steps / crate::bot::constants::SKILL_BUDGET_WARN_STEPS_DIVISOR).clamp(
         crate::bot::constants::SKILL_BUDGET_WARN_STEPS_CLAMP.0,
         crate::bot::constants::SKILL_BUDGET_WARN_STEPS_CLAMP.1,
-    );
-    let secs = (timeout_secs / crate::bot::constants::SKILL_BUDGET_WARN_SECS_DIVISOR).clamp(
-        crate::bot::constants::SKILL_BUDGET_WARN_SECS_CLAMP.0,
-        crate::bot::constants::SKILL_BUDGET_WARN_SECS_CLAMP.1,
-    ) as i64;
-    (steps, secs)
+    )
 }
 
 /// 技能预算软警告文案：预算快用完时提醒模型收尾（一个运行只提醒一次）。
@@ -80,21 +75,19 @@ fn skill_budget_warn_limits(max_steps: usize, timeout_secs: u64) -> (usize, i64)
 /// 为什么要有软警告：步数/墙钟是硬闸，被它砍掉的那一轮模型往往刚做完关键动作
 /// （产物已落盘、正准备总结）——硬杀留给用户一个空气泡，软警告让模型有机会
 /// 先把结论和产物路径说出来。
-pub(crate) fn skill_budget_warning(run: &SkillRun, now_ms: i64) -> Option<String> {
+pub(crate) fn skill_budget_warning(run: &SkillRun, _now_ms: i64) -> Option<String> {
     if run.state != SkillState::Running {
         return None;
     }
-    let (steps_limit, secs_limit) = skill_budget_warn_limits(run.max_steps, run.timeout_secs);
+    let steps_limit = skill_budget_warn_limits(run.max_steps);
     let steps_left = run.max_steps.saturating_sub(run.step);
-    let secs_left = run.timeout_secs as i64 - (now_ms - run.started_at_ms) / 1000;
-    if steps_left > steps_limit && secs_left > secs_limit {
+    if steps_left > steps_limit {
         return None;
     }
     Some(format!(
-        "【系统提示】技能「{name}」预算快用完（还剩 {steps_left} 步 / {secs_left} 秒）：立刻停止展开新步骤——把已经做出来的东西整理成最终回复（产物文件的完整路径 + 结论），不要再调工具。",
+        "【系统提示】技能「{name}」步数快用完（还剩 {steps_left} 步）：立刻停止展开新步骤——把已经做出来的东西整理成最终回复（产物文件的完整路径 + 结论），不要再调工具。",
         name = run.name,
         steps_left = steps_left,
-        secs_left = secs_left.max(0),
     ))
 }
 
@@ -338,7 +331,6 @@ pub fn start_skill(
         "risk" => meta.risk_level.clone(),
         "mode" => meta.mode.clone(),
         "max_steps" => meta.max_steps,
-        "timeout_secs" => meta.timeout_secs,
         "rollback" => meta.rollback.clone(),
     );
     Ok((meta, body))
@@ -357,7 +349,7 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
     match start_skill(app, &name, params, session_id) {
         Ok((meta, body)) => {
             let hint = format!(
-                "【技能文档：{}】{}\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 超时 {} 秒 · 回滚 {}",
+                "【技能文档：{}】{}\n风险等级 {} · 运行模式 {} · 最多 {} 步 · 回滚 {}",
                 meta.name,
                 meta.version
                     .as_deref()
@@ -366,7 +358,6 @@ pub fn tool_use_skill(app: &AppHandle, args: &str, session_id: Option<&str>) -> 
                 meta.risk_level,
                 meta.mode,
                 meta.max_steps,
-                meta.timeout_secs,
                 meta.rollback
             );
             let mut out = hint + "\n\n" + &body;
@@ -458,10 +449,13 @@ fn step_check(run: &mut SkillRun, tool: &str, args: &str, now: i64) -> Result<()
             reason: format!("技能「{}」{}，已强制终止", run.name, run.end_reason),
         });
     }
-    // 超时熔断
+    // 寿命熔断（Paused 占位保护；步骤/连续失败两道闸才是主闸）
     if skill_timed_out(run, now) {
         run.state = SkillState::Failed;
-        run.end_reason = format!("超时（超过 {} 秒）", run.timeout_secs);
+        run.end_reason = format!(
+            "超过寿命上限（{} 秒）",
+            crate::bot::constants::SKILL_MAX_LIFETIME_SECS
+        );
         return Err(CommandError::DomainRule {
             domain: "skill".to_string(),
             reason: format!("技能「{}」{}，已强制终止", run.name, run.end_reason),
@@ -601,7 +595,7 @@ fn pause_state(run: &mut SkillRun) {
 fn confirm_state(run: &mut SkillRun, approved: bool, now_ms: i64) {
     if skill_timed_out(run, now_ms) {
         run.state = SkillState::Failed;
-        run.end_reason = "等待确认超时，已过期".into();
+        run.end_reason = "等待确认超过寿命上限，已过期".into();
         return;
     }
     if approved {
@@ -906,18 +900,24 @@ pub fn advance_skill(run: &SkillRun, now_ms: i64) -> AdvanceAction {
     match run.state {
         SkillState::Loaded => AdvanceAction::NoActive,
         SkillState::Running => {
-            // 实时超时检测（即使 step_check 没跑到，主循环也能感知）
+            // 实时寿命检测（即使 step_check 没跑到，主循环也能感知）
             if skill_timed_out(run, now_ms) {
-                AdvanceAction::Fail(format!("超时（超过 {} 秒）", run.timeout_secs))
+                AdvanceAction::Fail(format!(
+                    "超过寿命上限（{} 秒）",
+                    crate::bot::constants::SKILL_MAX_LIFETIME_SECS
+                ))
             } else {
                 AdvanceAction::Continue
             }
         }
         SkillState::Paused => {
-            // 暂停等确认同样有超时：Paused 不是终态，不判超时它就一直占着同名技能，
-            // 那个会话不再回来就永久挡着别的会话。
+            // 暂停等确认同样有寿命上限：Paused 不是终态，不判过期它就一直占着
+            // 同名技能的槽，那个会话不再回来就永久挡着别的会话。
             if skill_timed_out(run, now_ms) {
-                AdvanceAction::Fail(format!("超时（超过 {} 秒）", run.timeout_secs))
+                AdvanceAction::Fail(format!(
+                    "超过寿命上限（{} 秒）",
+                    crate::bot::constants::SKILL_MAX_LIFETIME_SECS
+                ))
             } else {
                 AdvanceAction::AwaitConfirm
             }

@@ -193,39 +193,24 @@ pub const ASK_BUDGET_MAX: u8 = 5;
 
 // ── 技能配额 ──
 
-/// 技能步数默认值。
-///
-/// 步数按「非 use_skill 的工具调用」计。产出型流程（检索 → 读模板 → 写脚本
-/// → 跑脚本 → 逐页精修 → 合并 → 校验）天然二三十步，默认值低于这个量级时
-/// 技能会在做一半时被步数闸掐掉，而此时产物往往已经落盘。
-pub const SKILL_DEFAULT_MAX_STEPS: usize = 50;
+/// 技能步数闸默认值：**只用于 auto（DSL 调度器）模式的死循环防护**——
+/// DSL 靠「run 变 Failed」感知步骤失败，无限循环就是死循环。interactive
+/// 模式不设步数闸（连续失败判死兜着）。
+pub const SKILL_DEFAULT_MAX_STEPS: usize = 100;
 
-/// 技能步数声明上限。
-///
-/// 上限留两倍余量给特别长的流程——上限卡在默认值上时，技能写多大的声明都会
-/// 被夹回同一个数，声明等于没写。
-pub const SKILL_MAX_STEPS_LIMIT: usize = 100;
+/// 技能步数声明上限（frontmatter `max_steps` 能声明到的最大值）。
+pub const SKILL_MAX_STEPS_LIMIT: usize = 200;
 
-/// 技能墙钟默认值（秒）。
+/// 技能绝对寿命上限（秒）：启动到此刻的硬顶，**含 Paused 等确认的时间**。
 ///
-/// 墙钟算的是技能启动到此刻的**累计墙钟**，里面大部分是等模型往返——每步
-/// 一次请求往返十几秒，多步任务的墙钟随步数线性增长。
-pub const SKILL_DEFAULT_TIMEOUT_SECS: u64 = 1800;
-
-/// 技能墙钟声明上限（秒）。
-pub const SKILL_MAX_TIMEOUT_SECS_LIMIT: u64 = 3600;
+/// 不是性能预算（技能没有墙钟），是 Paused 槽位的泄漏保护：等确认的技能
+/// 不判过期就永久占着同名技能的槽，那个会话不再回来就挡死别的会话。
+pub const SKILL_MAX_LIFETIME_SECS: u64 = 3600;
 
 /// 技能预算软警告：步数余量阈值（剩余步数 ≤ 总步数的这个比例即提醒）。
 pub const SKILL_BUDGET_WARN_STEPS_DIVISOR: usize = 10;
 /// 技能预算软警告：步数余量阈值钳制区间。
 pub const SKILL_BUDGET_WARN_STEPS_CLAMP: (usize, usize) = (1, 5);
-/// 技能预算软警告：时间余量阈值（剩余时间 ≤ 总时间的这个比例即提醒）。
-pub const SKILL_BUDGET_WARN_SECS_DIVISOR: u64 = 4;
-/// 技能预算软警告：时间余量阈值钳制区间（秒）。
-///
-/// 上下界与 `timeout_secs` 同类型（u64）：余量是「已经过了多少秒」，
-/// 恒非负；有符号类型在这里只会逼着调用点做一次无谓的转换。
-pub const SKILL_BUDGET_WARN_SECS_CLAMP: (u64, u64) = (5, 60);
 
 // ── 子 agent 编排 ──
 

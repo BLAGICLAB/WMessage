@@ -38,7 +38,6 @@ pub struct SkillRun {
     pub step: usize,
     pub max_steps: usize,
     pub started_at_ms: i64,
-    pub timeout_secs: u64,
     pub rollback: String,
     /// 已执行动作记录（工具名+参数摘要；回滚清单来源）
     pub actions: Vec<String>,
@@ -85,7 +84,6 @@ impl SkillRun {
             step: 0,
             max_steps: meta.max_steps,
             started_at_ms: crate::db::now_ms(),
-            timeout_secs: meta.timeout_secs,
             rollback: meta.rollback.clone(),
             actions: Vec::new(),
             end_reason: String::new(),
@@ -329,7 +327,6 @@ pub(crate) fn test_insert_skill_run<R: tauri::Runtime>(
         step: 0,
         max_steps: 8,
         started_at_ms: 0,
-        timeout_secs: 180,
         rollback: "auto".into(),
         actions: Vec::new(),
         end_reason: String::new(),
@@ -372,16 +369,15 @@ pub(crate) fn test_skill_run_state<R: tauri::Runtime>(
 // 彼此不可见；而 runtime.rs / scheduler.rs 的测试是纯状态机（不碰表）。
 // 换言之，「并行互删对方 run」这条路已从结构上消失，不再需要人肉串行。
 
-/// 测试辅助：构造一个指定 max_steps / timeout 的 SkillRun（跨子模块测试共用）
+/// 测试辅助：构造一个指定 max_steps 的 SkillRun（跨子模块测试共用）
 #[cfg(test)]
-pub(crate) fn test_run(max_steps: usize, timeout_secs: u64) -> SkillRun {
+pub(crate) fn test_run(max_steps: usize) -> SkillRun {
     SkillRun {
         name: "test-skill".into(),
         state: SkillState::Loaded,
         step: 0,
         max_steps,
         started_at_ms: 1000,
-        timeout_secs,
         rollback: "auto".into(),
         actions: Vec::new(),
         end_reason: String::new(),
@@ -416,15 +412,15 @@ mod tests {
         let app = test_handle();
         let zombie = "test-zombie-clear";
         // 本会话：一个 Failed 残留 + 一个 Paused 活跃；他会话：一个 Failed 终态
-        let mut failed = test_run(8, 180);
+        let mut failed = test_run(8);
         failed.name = zombie.into();
         failed.state = SkillState::Failed;
         failed.session_id = Some("sess-clear-a".into());
-        let mut paused = test_run(8, 180);
+        let mut paused = test_run(8);
         paused.name = "test-zombie-clear-live".into();
         paused.state = SkillState::Paused;
         paused.session_id = Some("sess-clear-a".into());
-        let mut other = test_run(8, 180);
+        let mut other = test_run(8);
         other.name = "test-zombie-clear-other".into();
         other.state = SkillState::Failed;
         other.session_id = Some("sess-clear-b".into());
@@ -466,12 +462,12 @@ mod tests {
             let registry = skill_runs(&app);
             let mut g =
                 crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs");
-            let mut old = test_run(8, 180);
+            let mut old = test_run(8);
             old.name = "old-skill".into();
             old.state = SkillState::Completed;
             old.session_id = Some("sess-live".into());
             old.started_at_ms = 1000;
-            let mut fresh = test_run(8, 180);
+            let mut fresh = test_run(8);
             fresh.name = "new-skill".into();
             fresh.state = SkillState::Running;
             fresh.session_id = Some("sess-live".into());
@@ -493,12 +489,12 @@ mod tests {
             let registry = skill_runs(&app);
             let mut g =
                 crate::db::lock::lock_or_recover(&registry, "bot_skills::state::skill_runs");
-            let mut newer = test_run(8, 180);
+            let mut newer = test_run(8);
             newer.name = "newer-skill".into();
             newer.state = SkillState::Running;
             newer.session_id = Some("sess-two".into());
             newer.started_at_ms = 5000;
-            let mut older = test_run(8, 180);
+            let mut older = test_run(8);
             older.name = "older-skill".into();
             older.state = SkillState::Running;
             older.session_id = Some("sess-two".into());
@@ -515,12 +511,12 @@ mod tests {
     /// 确定性锁——旧实现取「迭代序第一条」，候选顺序一变结果就变（表现为偶发）。
     #[test]
     fn pick_active_run_prefers_live_over_terminal_regardless_of_input_order() {
-        let mut terminal = test_run(8, 180);
+        let mut terminal = test_run(8);
         terminal.name = "old-skill".into();
         terminal.state = SkillState::Completed;
         // 终态那条「启动更晚」——优先级必须压过时间序，否则取了它主循环就收尾了
         terminal.started_at_ms = 9000;
-        let mut live = test_run(8, 180);
+        let mut live = test_run(8);
         live.name = "new-skill".into();
         live.state = SkillState::Running;
         live.started_at_ms = 1000;
@@ -534,11 +530,11 @@ mod tests {
     /// 取数规则（纯函数）：同层多条活着的取最近启动的，与输入顺序无关。
     #[test]
     fn pick_active_run_takes_most_recent_live_run_regardless_of_input_order() {
-        let mut older = test_run(8, 180);
+        let mut older = test_run(8);
         older.name = "older-skill".into();
         older.state = SkillState::Running;
         older.started_at_ms = 1000;
-        let mut newer = test_run(8, 180);
+        let mut newer = test_run(8);
         newer.name = "newer-skill".into();
         newer.state = SkillState::Running;
         newer.started_at_ms = 2000;
@@ -555,7 +551,7 @@ mod tests {
     fn reopen_failed_run_for_rollback_scoped_by_state_and_session() {
         let app = test_handle();
         let name = "test-rollback-reopen";
-        let mut run = test_run(8, 180);
+        let mut run = test_run(8);
         run.name = name.into();
         run.state = SkillState::Failed;
         run.end_reason = "step 失败".into();

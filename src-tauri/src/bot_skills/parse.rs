@@ -8,24 +8,12 @@ pub(crate) const SKILL_NAME_CHARS_OK: fn(char) -> bool =
 /// 都会被夹回同一个数，声明就等于没写。
 pub(crate) const MAX_STEPS_LIMIT: usize = crate::bot::constants::SKILL_MAX_STEPS_LIMIT;
 
-/// 技能墙钟上限（frontmatter `timeout_secs` 能声明到的最大值，单位秒）。
-///
-/// 同上：默认 DEFAULT_TIMEOUT_SECS 是一般多步技能的量级，上限留两倍余量。
-pub(crate) const MAX_TIMEOUT_SECS_LIMIT: u64 = crate::bot::constants::SKILL_MAX_TIMEOUT_SECS_LIMIT;
-
 /// 技能步数默认值。
 ///
 /// 步数按「非 use_skill 的工具调用」计（一次工具调用 = 一步）。产出型流程
 /// （检索 → 读模板 → 写脚本 → 跑脚本 → 逐页精修 → 合并 → 校验）天然二三十步，
 /// 默认值低于这个量级时技能会在做一半时被步数闸掐掉，而此时产物往往已经落盘。
 pub(crate) const DEFAULT_MAX_STEPS: usize = crate::bot::constants::SKILL_DEFAULT_MAX_STEPS;
-
-/// 技能墙钟默认值（秒）。
-///
-/// 墙钟算的是技能启动到此刻的**累计墙钟**，里面大部分是等模型往返——每步
-/// 一次请求往返十几秒，多步任务的墙钟随步数线性增长。默认值按这个口径给：
-/// 只够十几步的秒数对多步技能是必然撞线的预算。
-pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = crate::bot::constants::SKILL_DEFAULT_TIMEOUT_SECS;
 
 /// SKILL.md 完整元数据（Skill 运行模型 v1.0 字段集，全部带默认值）
 #[derive(Debug, Clone)]
@@ -35,7 +23,6 @@ pub struct SkillMeta {
     pub risk_level: String, // low | medium | high
     pub mode: String,       // auto | interactive
     pub max_steps: usize,
-    pub timeout_secs: u64,
     pub rollback: String, // none | auto
     pub enabled: bool,
     /// 是否支持暂停后断点续跑（false 时暂停即终止：确认完成当前动作后技能结束）
@@ -84,7 +71,6 @@ impl Default for SkillMeta {
             // 两者都按「多步产出型技能正常跑完」的量级给，且 clamp 上限留了两倍余量，
             // frontmatter 声明的值才不会被夹回默认值。
             max_steps: DEFAULT_MAX_STEPS,
-            timeout_secs: DEFAULT_TIMEOUT_SECS,
             rollback: "none".into(),
             enabled: true,
             resumable: false,
@@ -221,10 +207,16 @@ pub fn parse_meta(text: &str, dir_name: &str) -> SkillMeta {
                 if let Ok(n) = v.parse::<usize>() {
                     m.max_steps = n.clamp(1, MAX_STEPS_LIMIT);
                 }
+                // max_steps 只在 auto 模式生效（死循环防护）；interactive 无步数闸
             }
+            // timeout_secs 已废弃（技能无墙钟；寿命上限是常量）：解析时忽略并
+            // 告警一次，旧 SKILL.md 里的这行不再有语义。
             "timeout_secs" => {
-                if let Ok(n) = v.parse::<u64>() {
-                    m.timeout_secs = n.clamp(10, MAX_TIMEOUT_SECS_LIMIT);
+                if v.parse::<u64>().is_ok() {
+                    eprintln!(
+                        "[skills] {} 的 frontmatter timeout_secs 已废弃（技能无墙钟），已忽略",
+                        m.name
+                    );
                 }
             }
             "max_rounds" => {

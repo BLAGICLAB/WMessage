@@ -12,13 +12,16 @@ use crate::error::CommandError;
 use tauri::AppHandle;
 use tauri::Emitter;
 
-/// 本轮工具循环的轮数上限：Skill 自报 max_rounds 最优先，其次配置 maxRounds，
-/// 都没有 → 调用方给的默认值（取 bot/params.rs 的 DEFAULT_MAX_ROUNDS）。
+/// 本轮工具循环的轮数上限：Skill 自报 max_rounds 只许**收紧**（取 min），
+/// 没自报 → 配置 maxRounds（缺省即内置安全网 constants::MAX_ROUNDS）。
+/// frontmatter 是任务画像不是权限：让声明值抬高轮数等于给技能开后门。
 pub(crate) fn resolve_max_rounds(
     skill_max_rounds: Option<usize>,
     config_max_rounds: usize,
 ) -> usize {
-    skill_max_rounds.unwrap_or(config_max_rounds)
+    skill_max_rounds
+        .map(|n| config_max_rounds.min(n))
+        .unwrap_or(config_max_rounds)
 }
 
 /// 空 replan 出口：无计划/测试调用方直驱 run_model_loop_core 时传入，
