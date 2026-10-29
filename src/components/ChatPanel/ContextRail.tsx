@@ -62,11 +62,8 @@ export type SubagentRun = {
   error?: string | null;
   /** 已跑轮数；在途才有（终态守卫注销后读不到，报 null 不报 0） */
   roundsUsed?: number | null;
-  /** 轮数硬顶，与轮数同报 */
-  roundsBudget?: number | null;
-  /** 已执行工具调用数与硬顶，口径同轮数（收尾窗从 N/N 起开） */
+  /** 已执行工具调用数；口径同轮数 */
   toolCallsUsed?: number | null;
-  toolCallsBudget?: number | null;
   /** 毫秒时间戳；排队期未开跑故 startedAt 可空 */
   startedAt?: number | null;
   finishedAt?: number | null;

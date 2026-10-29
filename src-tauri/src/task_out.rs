@@ -51,7 +51,6 @@ mod tests {
             updated_at: Some(1000),
             bot_assigned: None,
             assignee: None,
-            budget: None,
             result: None,
             depends_on: None,
             model: None,

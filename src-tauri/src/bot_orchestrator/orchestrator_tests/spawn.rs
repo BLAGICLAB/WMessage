@@ -6,7 +6,6 @@ use crate::bot::subagent_digest::should_report_to_parent;
 use crate::bot::subagent_digest::MachineCheck;
 use crate::bot::subagent_digest::MachineVerdict;
 use crate::bot::subagent_runner::effective_status;
-use crate::bot::subagent_spawn::apply_onion_turn_cap;
 use crate::bot::subagent_spawn::spawn_subagent_locked;
 use crate::bot::subagent_tools::spawn_receipt_text;
 
@@ -33,10 +32,6 @@ fn spawn_creates_row_only_and_no_subcard() {
         serde_json::from_str(row.acceptance_json.as_deref().unwrap()).unwrap();
     assert_eq!(criteria.len(), 2);
     assert!(row.context_summary.is_none());
-    // 预算上表可见（默认值）
-    let budget: SubagentBudget = serde_json::from_str(row.budget_json.as_deref().unwrap()).unwrap();
-    assert_eq!(budget.max_turns, DEFAULT_MAX_TURNS);
-    assert_eq!(budget.max_tool_calls, DEFAULT_MAX_TOOL_CALLS);
 }
 /// 空白上下文摘要不落库（否则包装会渲染一个空标题段）
 #[test]
@@ -171,13 +166,12 @@ fn spawn_receipt_text_distinguishes_new_from_deduped() {
         trace_id: "trc_x".into(),
         status: SubagentStatus::Queued,
         deduped: false,
-        budget: SubagentBudget::default(),
     };
     let fresh = spawn_receipt_text(&ack);
     assert!(fresh.contains("已派发子 agent"), "{fresh}");
     assert!(fresh.contains("sa_x"), "{fresh}");
-    // 回执必须带生效预算——模型不知道墙钟被钳过，就会按自己给的数安排动作
-    assert!(fresh.contains("生效预算"), "{fresh}");
+    // 子 agent 没有独立预算，回执不得再报「生效预算」——那会让模型按它安排动作
+    assert!(!fresh.contains("生效预算"), "{fresh}");
 
     let deduped = SpawnAck {
         deduped: true,
@@ -249,23 +243,6 @@ fn spawn_rejects_blank_objective_and_empty_acceptance() {
     let mut r3 = req(None);
     r3.acceptance_criteria = vec!["  ".into()];
     assert!(spawn_subagent_locked(&mut conn, &r3, 5_000).is_err());
-}
-#[test]
-fn budget_clamps_turns_to_hard_cap() {
-    let b = clamp_budget(Some(SubagentBudget {
-        max_turns: 9_999,
-        max_tool_calls: 0,
-    }));
-    assert_eq!(b.max_turns, MAX_TURNS_HARD_CAP);
-    assert_eq!(b.max_tool_calls, 1);
-    // 默认预算 = 均衡档全局池的 20% 份额（引用常量，不写字面量）
-    assert_eq!(
-        clamp_budget(None),
-        SubagentBudget {
-            max_turns: DEFAULT_MAX_TURNS,
-            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
-        }
-    );
 }
 #[test]
 fn cancel_sets_cancelled_and_terminal_noop() {
@@ -430,18 +407,17 @@ fn check_reports_rounds_while_subagent_runs() {
             task_id: None,
             profile: SubagentProfile::Research,
             tools: std::sync::Arc::new(vec![]),
-            budget: SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from("/tmp/art_rounds"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+            last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
     );
     let running = check_subagent_locked(&conn, &ack.subagent_id).unwrap();
     assert_eq!(running.progress["roundsUsed"], 14);
-    assert_eq!(
-        running.progress["roundsBudget"],
-        SubagentBudget::default().max_turns,
-        "预算必须与轮数同报：10/20 与 10/200 紧迫度完全不同"
+    assert!(
+        running.progress.get("roundsBudget").is_none(),
+        "子 agent 没有独立预算，不再报 roundsBudget"
     );
 }
 /// list_subagents 的行视图与 check_subagent 同口径：在途报轮数与预算，
@@ -460,8 +436,7 @@ fn list_view_attaches_rounds_while_subagent_runs() {
         .expect("spawn 后应有行");
     let queued = attach_rounds(row);
     assert_eq!(
-        (queued.rounds_used, queued.rounds_budget),
-        (None, None),
+        queued.rounds_used, None,
         "无在跑仪表时不得报轮数（凭空造数比不报更坏）"
     );
 
@@ -472,10 +447,10 @@ fn list_view_attaches_rounds_while_subagent_runs() {
             task_id: None,
             profile: SubagentProfile::Research,
             tools: std::sync::Arc::new(vec![]),
-            budget: SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from("/tmp/art_view"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(14)),
+            last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
     );
     let row = crate::db::load_subagent(&conn, &ack.subagent_id)
@@ -483,11 +458,6 @@ fn list_view_attaches_rounds_while_subagent_runs() {
         .expect("行仍在");
     let running = attach_rounds(row);
     assert_eq!(running.rounds_used, Some(14));
-    assert_eq!(
-        running.rounds_budget,
-        Some(SubagentBudget::default().max_turns),
-        "预算必须与轮数同报：10/20 与 10/200 紧迫度完全不同"
-    );
 }
 /// 守卫注销（子 agent 收尾）后轮数归空：列表要显示的是「这轮跑了多久」，
 /// 不是死后残留的最后一帧计数。终态行拿 started/finished 算时长即可。
@@ -507,10 +477,10 @@ fn list_view_drops_rounds_after_guard_dropped() {
                 task_id: None,
                 profile: SubagentProfile::Research,
                 tools: std::sync::Arc::new(vec![]),
-                budget: SubagentBudget::default(),
                 artifact_dir: std::path::PathBuf::from("/tmp/art_drop"),
                 used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(7)),
+                last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             },
         );
         let row = crate::db::load_subagent(&conn, &ack.subagent_id)
@@ -523,23 +493,7 @@ fn list_view_drops_rounds_after_guard_dropped() {
         .unwrap()
         .expect("行仍在");
     let after = attach_rounds(row);
-    assert_eq!(
-        (after.rounds_used, after.rounds_budget),
-        (None, None),
-        "守卫注销后不得继续报轮数"
-    );
-}
-/// 子 agent 预算默认值单源：db 侧常量必须引用 bot::params，改一处不漏两处。
-#[test]
-fn subagent_budget_defaults_have_single_source() {
-    assert_eq!(
-        crate::db::subagents::DEFAULT_MAX_TURNS,
-        crate::bot::params::DEFAULT_SUBAGENT_MAX_TURNS
-    );
-    assert_eq!(
-        crate::db::subagents::DEFAULT_MAX_TOOL_CALLS,
-        crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS
-    );
+    assert_eq!(after.rounds_used, None, "守卫注销后不得继续报轮数");
 }
 #[test]
 fn check_counts_progress_from_acceptance_and_result() {
@@ -890,22 +844,6 @@ fn spawn_profile_priority_is_explicit_then_config_then_stage() {
     );
     // ④ 三者皆无 → None，调用方据此报错（不许猜一个默认档）
     assert_eq!(resolve_spawn_profile(None, None, None), None);
-}
-#[test]
-fn onion_turn_cap_only_tightens() {
-    let mut b = SubagentBudget {
-        max_turns: 30,
-        max_tool_calls: 100,
-    };
-    // 配置档更紧 → 压到配置档的值
-    apply_onion_turn_cap(&mut b, Some(4));
-    assert_eq!(b.max_turns, 4);
-    // 配置档更松 → 不许被它顶开（配置档是上限，不是覆盖）
-    apply_onion_turn_cap(&mut b, Some(50));
-    assert_eq!(b.max_turns, 4, "配置档比派发值宽时不应放宽轮数");
-    // 没给上限 → 不动
-    apply_onion_turn_cap(&mut b, None);
-    assert_eq!(b.max_turns, 4);
 }
 /// 接线守卫：配置档从派发到执行的四段链路，一段都不能靠单测推断。
 ///

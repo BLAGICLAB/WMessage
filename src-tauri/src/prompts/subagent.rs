@@ -48,7 +48,7 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   各自交一份，结论你自己合。
 - **复合调研**：先派 recon 子 agent 把「要查哪几块」拆出来，再按块派 executor。
 - **一个子 agent 一个目标**（任务边界）：把 7 个子问题塞给一个子 agent，它会一个都
-  交不出来——不是它不努力，是墙钟到点时它还在第 4 块。拆成 2~3 个，每个都交得出来。
+  交不出来——不是它不努力，是轮数用完时它还在第 4 块。拆成 2~3 个，每个都交得出来。
 - 一次别派太多：同一会话并发上限 2、全局 3，派多了只能排队，排队期间空等。
 
 ### 失败与预算
@@ -58,7 +58,7 @@ pub(crate) const MAIN_AGENT_ADDENDUM: &str = r#"
   contextSummary，禁止从零重烧——从零重烧等于把刚才那段时间全扔了。
 - error=result_json_unparseable：服务端已经自动补答过一次；仍失败说明子 agent
   连收尾格式都没给，重派前先把验收标准写具体些。
-- 预算触顶收尾（自己的工具预算、轮数、墙钟，或子 agent 被熔断）时，汇报必须
+- 预算触顶收尾（工具调用、轮数，或子 agent 被熔断）时，汇报必须
   说明还剩什么没做、进行到哪一步——不得只交成品就收笔，用户要能从汇报里
   看出任务的真实完成度。
 - 不得放宽子 agent 权限；不得让子 agent 再派发。
@@ -393,7 +393,7 @@ mod subagent_prompt_tests {
 
     /// 派发粒度（力度分档）必须写进提示词。
     ///
-    /// 实机两次 600s 墙钟熔断都是「7 个 subtask 塞给一个子 agent」——不是闸严，
+    /// 实机两次预算熔断都是「7 个 subtask 塞给一个子 agent」——不是闸严，
     /// 是任务粒度错了。缺这条规则，模型只会继续这么派。
     #[test]
     fn main_agent_addendum_promotes_dispatch_granularity() {

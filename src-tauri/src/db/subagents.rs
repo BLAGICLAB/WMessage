@@ -12,32 +12,6 @@
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
-/// 预算默认值与硬顶（设计 §6 已；钳制实现见 [SubagentBudget::clamped]）。
-///
-/// 默认值单源在 `bot::params`（DEFAULT_SUBAGENT_MAX_*），这里直接引用而不是
-/// 各写一份字面量：两处曾同为 30/100/600，改一处漏一处就是静默漂移——
-/// bot 读侧按 30 放行、行上按 100 记账这类偏差会一路掩到熔断才暴露。
-pub const DEFAULT_MAX_TURNS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TURNS;
-/// 子 agent 轮数硬顶：全局回合池硬顶的 20% 份额。
-///
-/// 此前写死 50，与「子 agent 取全局池 20%」的分配规则冲突——全局池硬顶 500
-/// 时 20% 是 100，写死 50 会让深度档之外的高级覆盖永远够不到应有额度。
-/// 深度档（250）的 20% 恰好是 50，与旧值一致，行为不变。
-pub const MAX_TURNS_HARD_CAP: u32 = crate::bot::params::budget_share(
-    crate::bot::params::GLOBAL_TURNS_CAP,
-    crate::bot::params::SUBAGENT_BUDGET_PCT,
-);
-/// 轮数下界（0 轮 = 子 agent 一句话都说不完，等于白派）
-pub const MIN_SUBAGENT_TURNS: u32 = 1;
-pub const DEFAULT_MAX_TOOL_CALLS: u32 = crate::bot::params::DEFAULT_SUBAGENT_MAX_TOOL_CALLS;
-
-/// 子 agent 轮数钳制（1..=硬顶）——单一来源：config 落盘（bot_set_config）、
-/// bot 读侧 resolver、预算持久化（[SubagentBudget::clamped]）三处共用，
-/// 边界只认这里的 `MAX_TURNS_HARD_CAP`，防改一处漏两处。
-pub fn clamp_subagent_max_turns(n: u32) -> u32 {
-    n.clamp(MIN_SUBAGENT_TURNS, MAX_TURNS_HARD_CAP)
-}
-
 /// 子 agent 生命周期六态（设计 §3 状态机）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -117,36 +91,6 @@ impl SubagentProfile {
     }
 }
 
-/// 预算两硬顶（设计 §6 默认值）。落行上 budget_json（check 可查），不是隐藏参数。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SubagentBudget {
-    /// 工具循环轮数（spawn 时钳到硬顶）
-    pub max_turns: u32,
-    /// 累计工具调用次数（强制点在模型循环层的阶梯）
-    pub max_tool_calls: u32,
-}
-
-impl Default for SubagentBudget {
-    fn default() -> Self {
-        Self {
-            max_turns: DEFAULT_MAX_TURNS,
-            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
-        }
-    }
-}
-
-impl SubagentBudget {
-    /// 预算钳制：turns 钳到硬顶、tool_calls 下限 1。
-    /// **所有持久化写口（spawn / task_patch）必须过本函数**——字段是 pub 的，
-    /// 构造侧不受限，钳制契约靠两个写口强制（防 task_patch 旁路）。
-    pub fn clamped(mut self) -> Self {
-        self.max_turns = clamp_subagent_max_turns(self.max_turns);
-        self.max_tool_calls = self.max_tool_calls.max(1);
-        self
-    }
-}
-
 /// 状态机合法转移表（设计 §3）：
 /// queued → running | cancelled；running → 4 终态；终态一律禁移（含自环——
 /// 同态重入的放行走 [update_subagent_status] 的同态短路，不经本表）。
@@ -181,8 +125,6 @@ pub struct SubagentRow {
     pub acceptance_json: Option<String>,
     /// 上下文摘要（设计 §8.5）：此前只落子卡 note，文本解析取回；无卡后独立成列
     pub context_summary: Option<String>,
-    /// SubagentBudget 的 JSON
-    pub budget_json: Option<String>,
     /// 收尾结构化结果（设计 §7 schema）的 JSON；解析失败时缺省（原文在 error 侧链路）
     pub result_json: Option<String>,
     /// 失败/取消/预算触达原因
@@ -212,7 +154,6 @@ pub(crate) const SUBAGENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS subagents (
            trace_id          TEXT NOT NULL,
            acceptance_json   TEXT,
            context_summary   TEXT,
-           budget_json       TEXT,
            result_json       TEXT,
            error             TEXT,
            created_at        INTEGER NOT NULL,
@@ -338,9 +279,9 @@ pub fn update_subagent_usage(
 pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(), String> {
     conn.execute(
         "INSERT INTO subagents (id, status, profile, model, parent_session_id, session_id,
-             task_id, objective, trace_id, acceptance_json, context_summary, budget_json,
+             task_id, objective, trace_id, acceptance_json, context_summary,
              result_json, error, created_at, started_at, finished_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         rusqlite::params![
             r.id,
             r.status.as_str(),
@@ -353,7 +294,6 @@ pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(
             r.trace_id,
             r.acceptance_json,
             r.context_summary,
-            r.budget_json,
             r.result_json,
             r.error,
             r.created_at,
@@ -367,28 +307,28 @@ pub fn insert_subagent(conn: &rusqlite::Connection, r: &SubagentRow) -> Result<(
 
 const SQL_SELECT_BY_ID: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
-     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE id = ?1";
 const SQL_SELECT_BY_TASK: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
-     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE task_id = ?1 \
      ORDER BY created_at DESC LIMIT 1";
 const SQL_SELECT_BY_SESSION: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
-     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE session_id = ?1 \
      ORDER BY created_at DESC LIMIT 1";
 const SQL_SELECT_BY_STATUS: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
-     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE status = ?1 ORDER BY created_at";
 /// 按派发者主会话取全部子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
 /// 「子 Agent」工作面的数据源：子 agent 不再建独立会话后，用户只能从这里
 /// 看到自己派出去的那些还活着/刚跑完。
 const SQL_SELECT_BY_PARENT: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
-     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE parent_session_id = ?1 \
      ORDER BY created_at DESC LIMIT ?2";
 
@@ -398,7 +338,7 @@ const SQL_SELECT_BY_PARENT: &str =
 /// 被去重吞掉。`model IS ?5` 用 IS 而不是 =，NULL 行（未指定模型）也要能匹配上。
 const SQL_SELECT_LIVE_BY_REQUEST: &str =
     "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
-     trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+     trace_id, acceptance_json, context_summary, result_json, error, \
      created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents WHERE parent_session_id = ?1 \
      AND profile = ?2 AND objective = ?3 AND acceptance_json = ?4 AND model IS ?5 \
      AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1";
@@ -431,16 +371,33 @@ fn row_to_subagent(row: &rusqlite::Row<'_>) -> rusqlite::Result<SubagentRow> {
         trace_id: row.get(8)?,
         acceptance_json: row.get(9)?,
         context_summary: row.get(10)?,
-        budget_json: row.get(11)?,
-        result_json: row.get(12)?,
-        error: row.get(13)?,
-        created_at: row.get(14)?,
-        started_at: row.get(15)?,
-        finished_at: row.get(16)?,
-        prompt_tokens: row.get(17)?,
-        completion_tokens: row.get(18)?,
-        cache_read_tokens: row.get(19)?,
+        result_json: row.get(11)?,
+        error: row.get(12)?,
+        created_at: row.get(13)?,
+        started_at: row.get(14)?,
+        finished_at: row.get(15)?,
+        prompt_tokens: row.get(16)?,
+        completion_tokens: row.get(17)?,
+        cache_read_tokens: row.get(18)?,
     })
+}
+
+/// 旧 `budget_json` 列清扫（幂等）：子 agent 预算整套退役后列恒 NULL，
+/// pragma 查有此列即 DROP；新库/已清库直接返回。
+pub fn drop_legacy_budget_column(conn: &rusqlite::Connection) -> Result<(), String> {
+    let has: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('subagents') WHERE name = 'budget_json'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .map_err(|e| e.to_string())?;
+    if has {
+        conn.execute_batch("ALTER TABLE subagents DROP COLUMN budget_json")
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub fn load_subagent(conn: &rusqlite::Connection, id: &str) -> Result<Option<SubagentRow>, String> {
@@ -549,7 +506,7 @@ pub fn load_live_subagents_by_session(
     let mut stmt = conn
         .prepare(
             "SELECT id, status, profile, model, parent_session_id, session_id, task_id, objective, \
-             trace_id, acceptance_json, context_summary, budget_json, result_json, error, \
+             trace_id, acceptance_json, context_summary, result_json, error, \
              created_at, started_at, finished_at, prompt_tokens, completion_tokens, cache_read_tokens FROM subagents \
              WHERE (parent_session_id = ?1 OR session_id = ?1) \
              AND status IN ('queued','running') ORDER BY created_at",
@@ -665,7 +622,6 @@ mod subagent_db_tests {
             trace_id: format!("trc-{id}"),
             acceptance_json: Some(r#"["覆盖5个产品"]"#.into()),
             context_summary: None,
-            budget_json: Some(r#"{"maxTurns":30,"maxToolCalls":100,"maxWallSeconds":600}"#.into()),
             result_json: None,
             error: None,
             created_at: 1_000,
@@ -738,7 +694,6 @@ mod subagent_db_tests {
         assert!(got.task_id.is_none());
         assert_eq!(got.trace_id, "trc-sa_1");
         assert!(got.acceptance_json.is_some());
-        assert!(got.budget_json.is_some());
         assert!(got.session_id.is_none());
         assert!(got.started_at.is_none());
     }

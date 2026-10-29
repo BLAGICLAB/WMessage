@@ -13,7 +13,6 @@ export type SubagentActivityEvent = {
   ms?: number | null;
   preview?: string | null;
   usedToolCalls?: number | null;
-  maxToolCalls?: number | null;
 };
 
 /** 合并后的动作行：return 到达即有结局，call 未收口 = 进行中 */

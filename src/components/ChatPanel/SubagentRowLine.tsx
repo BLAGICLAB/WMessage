@@ -45,21 +45,14 @@ function statusOf(s: SubagentRun): keyof typeof STATUS_ICON {
   return "done";
 }
 
-/** 轮数进度文案。没有 budget 就只报已跑数——凭空补个分母等于编数据。
- *  两者皆空（终态：守卫注销后读不到仪表）就不显示这一栏。 */
+/** 进度文案：只报已跑数——分母与主会话共用一套安全网，子 agent 行不单报。
+ *  空（终态：守卫注销后读不到仪表）就不显示这一栏。 */
 function roundsText(s: SubagentRun): string | null {
-  if (s.roundsUsed == null) return null;
-  return s.roundsBudget != null
-    ? `${s.roundsUsed}/${s.roundsBudget} 轮`
-    : `${s.roundsUsed} 轮`;
+  return s.roundsUsed == null ? null : `${s.roundsUsed} 轮`;
 }
 
-/** 工具调用进度文案，口径同轮数。收尾窗从 N/N 起开，只看轮数看不出触顶。 */
 function toolCallsText(s: SubagentRun): string | null {
-  if (s.toolCallsUsed == null) return null;
-  return s.toolCallsBudget != null
-    ? `${s.toolCallsUsed}/${s.toolCallsBudget} 次`
-    : `${s.toolCallsUsed} 次`;
+  return s.toolCallsUsed == null ? null : `${s.toolCallsUsed} 次`;
 }
 
 /** 运行时长。在途每秒刷新，终态定死在 finishedAt-startedAt——

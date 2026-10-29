@@ -226,25 +226,9 @@ pub(crate) fn parse_final_json(text: &str) -> Option<serde_json::Value> {
     }
     None
 }
-/// 工具预算触顶后的强制改判条件（收尾窗语义，纯函数）：
-/// 触顶 + 终态还不是 budget_exceeded + 模型没交出可解析的收尾 JSON，
-/// 三者同时成立才把终态改判 budget_exceeded(max_tool_calls)。
-/// 交了卷的触顶是真实完成——dispatch 收尾窗放行过写产物，改判只会把
-/// 父 agent 的「带残留重试」逻辑错误触发。
-pub(crate) fn budget_force_needed(
-    tool_calls_used: usize,
-    max_tool_calls: u32,
-    status: SubagentStatus,
-    wrapped_up_cleanly: bool,
-) -> bool {
-    tool_calls_used >= max_tool_calls as usize
-        && status != SubagentStatus::BudgetExceeded
-        && !wrapped_up_cleanly
-}
 /// 收尾 JSON 解析失败时的补答（结构化输出三段修复的第 3 段）。
 ///
-/// 业界口径：干净解析 → 本地修复 → 带修正提示重试 LLM。补答只做一次，
-/// 且**消耗同一份墙钟预算**（重试不重置时钟）。
+/// 业界口径：干净解析 → 本地修复 → 带修正提示重试 LLM。补答只做一次。
 ///
 /// 只在「文本非空 + 不含熔断标记 + 本地修复后仍解析不出」时补答：
 /// - 预算熔断（轮数 / 工具）不是格式问题，补答只是白烧一次 token；

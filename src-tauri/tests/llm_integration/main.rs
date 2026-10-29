@@ -454,7 +454,6 @@ fn t1_seed_task(
         updated_at: Some(1_000),
         bot_assigned: None,
         assignee: None,
-        budget: None,
         result: None,
         depends_on: None,
         model: None,

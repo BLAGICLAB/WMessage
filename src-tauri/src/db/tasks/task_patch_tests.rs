@@ -118,13 +118,11 @@ fn task_patch_orchestration_fields_set_and_null_clears() {
         "suba",
         serde_json::json!({
             "assignee": "sess-child-1",
-            "budget": {"maxTurns": 30, "maxToolCalls": 100},
             "result": {"status": "succeeded", "summary": "结论"}
         }),
     )
     .unwrap();
     assert_eq!(row.assignee.as_deref(), Some("sess-child-1"));
-    assert_eq!(row.budget.as_ref().unwrap().max_turns, 30);
     assert_eq!(row.result.as_ref().unwrap()["status"], "succeeded");
     let reloaded = load_all(&conn)
         .unwrap()
@@ -133,61 +131,28 @@ fn task_patch_orchestration_fields_set_and_null_clears() {
         .unwrap();
     assert_eq!(reloaded.assignee.as_deref(), Some("sess-child-1"));
     // 往返后按值复核（不只 is_some）：JSON TEXT 序列化无损
-    let rb = reloaded.budget.as_ref().unwrap();
-    assert_eq!(rb.max_turns, 30);
-    assert_eq!(rb.max_tool_calls, 100);
     assert_eq!(reloaded.result.as_ref().unwrap()["summary"], "结论");
-    // null = 清空三字段
+    // null = 清空两字段
     let cleared = run_patch(
         &mut conn,
         "suba",
-        serde_json::json!({"assignee": null, "budget": null, "result": null}),
+        serde_json::json!({"assignee": null, "result": null}),
     )
     .unwrap();
     assert_eq!(cleared.assignee, None);
-    assert_eq!(cleared.budget, None);
     assert_eq!(cleared.result, None);
 }
 
-/// budget 走 task_patch 也必须被硬顶钳制（写口强制，防旁路）
+/// result 列损坏 → 兜底 None + 行仍可读（同 subtasks/files 契约）
 #[test]
-fn task_patch_budget_is_clamped_to_hard_cap() {
-    let mut conn = setup_conn();
-    conn.execute(
-        "INSERT INTO tasks (id, title, col, updated_at) VALUES ('clamp', '预算钳制', 'doing', 1000)",
-        [],
-    )
-    .unwrap();
-    let row = run_patch(
-        &mut conn,
-        "clamp",
-        serde_json::json!({"budget": {"maxTurns": 9999, "maxToolCalls": 0}}),
-    )
-    .unwrap();
-    let b = row.budget.as_ref().unwrap();
-    assert_eq!(
-        b.max_turns,
-        crate::db::subagents::MAX_TURNS_HARD_CAP,
-        "上超钳到硬顶（全局回合池 500 的 20% = 100）"
-    );
-    assert_eq!(b.max_tool_calls, 1, "下超钳到下限");
-}
-
-/// budget/result 列损坏 → 兜底 None + 行仍可读（同 subtasks/files 契约）
-#[test]
-fn load_all_tolerates_corrupted_budget_result_json() {
+fn load_all_tolerates_corrupted_result_json() {
     let mut conn = setup_conn();
     conn.execute(
         "INSERT INTO tasks (id, title, col, updated_at) VALUES ('bad', '损坏行', 'doing', 1000)",
         [],
     )
     .unwrap();
-    run_patch(
-        &mut conn,
-        "bad",
-        serde_json::json!({"assignee": "keep-me", "budget": {"maxTurns": 10, "maxToolCalls": 10}}),
-    )
-    .unwrap();
+    run_patch(&mut conn, "bad", serde_json::json!({"assignee": "keep-me"})).unwrap();
     conn.execute("UPDATE tasks SET result = '{not-json' WHERE id = 'bad'", [])
         .unwrap();
     let row = load_all(&conn)
@@ -202,8 +167,8 @@ fn load_all_tolerates_corrupted_budget_result_json() {
         "同行其他字段不受影响"
     );
     assert!(
-        row.budget.is_some(),
-        "完好的 budget 不受同行的损坏 result 影响"
+        row.assignee.as_deref() == Some("keep-me"),
+        "同行其他字段不受损坏 result 影响"
     );
 }
 

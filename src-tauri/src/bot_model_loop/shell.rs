@@ -222,6 +222,9 @@ pub async fn run_model_loop(
     // 盖章权分散到各调用点，漏一处就静默丢事件。信封必须有会话号：
     // 事件不带会话标记时，两个会话并行跑 A 的流式增量会串进 B 正在显示的气泡。
     let emit = |event: &str, payload: serde_json::Value| {
+        // 子 agent 进展心跳：任何流式事件（增量 / 工具开始 / 工具返回）都算有进展，
+        // 停滞判定读它。非子 agent 会话这一步静默。
+        crate::tool_guard::touch_subagent_progress(session_id);
         if stream_to_main {
             // 走统一出口：分配序号 + 写会话缓冲 + 广播。
             // 序号让客户端能按 seq 补齐（补齐与实时可能重叠，靠序号去重）。

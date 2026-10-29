@@ -68,8 +68,6 @@ export interface BotConfigView {
   historyTruncateTargetPct?: number | null;
   reasoningEchoEnabled?: number | null;
   inTurnContextEdit?: number | null;
-  subagentMaxTurns?: number | null;
-  subagentMaxToolCalls?: number | null;
   searchMaxResults?: number | null;
   maxToolOutputBytes?: number | null;
   askBudget?: number | null;

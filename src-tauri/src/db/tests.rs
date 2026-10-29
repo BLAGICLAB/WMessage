@@ -53,7 +53,6 @@ fn mk_task(id: &str, title: &str) -> Task {
         updated_at: Some(1),
         bot_assigned: None,
         assignee: None,
-        budget: None,
         result: None,
         depends_on: None,
         model: None,

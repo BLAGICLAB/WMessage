@@ -472,7 +472,6 @@ async fn run_scheduled_job(app: AppHandle, job: crate::db::ScheduledJob) {
         updated_at: Some(now.timestamp_millis()),
         bot_assigned: None,
         assignee: None,
-        budget: None,
         result: None,
         depends_on: None,
         model: None,

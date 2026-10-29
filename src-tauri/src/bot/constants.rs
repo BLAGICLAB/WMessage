@@ -209,3 +209,9 @@ pub const SUBAGENT_MAX_PER_SESSION_RUNNING: usize = 2;
 
 /// `check_subagent` 单次等待上限（毫秒）。
 pub const SUBAGENT_CHECK_WAIT_MS_CAP: u64 = 600_000;
+
+/// 子 agent 停滞超时（秒）：这么久没有任何 LLM 流增量、工具开始或返回，判为假死停掉。
+///
+/// 子 agent 没有墙钟，这是它唯一的时间维度。取值是所有工具单次最长时长的上界
+/// （Python 沙箱上限同为 600s）：工具还在跑就不会被误判停滞。
+pub const SUBAGENT_STALL_TIMEOUT_SECS: u64 = 600;

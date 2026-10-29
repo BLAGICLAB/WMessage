@@ -421,27 +421,18 @@ fn base_arr_len() -> usize {
     baseline.as_array().unwrap().len()
 }
 
-/// spawn_subagent 的 maxToolCalls 描述不得写死默认条数。
-///
-/// 真源是全局配置 maxFunctionCalls（budget 整个不给时由
-/// params::resolve_subagent_budget 取，见 params 的 loop.max_function_calls
-/// 条目），写死「默认 100」在用户改过配置后就是给模型的假信息——模型据此
-/// 判断要不要给 budget。
+/// spawn_subagent 不再暴露 budget 参数：子 agent 没有独立预算，轮数 / 工具数与
+/// 主会话共用安全网。schema 里一旦又长出 budget，模型就会按自己给的数安排
+/// 后续动作，而那个数根本不生效。
 #[test]
-fn spawn_subagent_tool_calls_description_points_at_the_config() {
+fn spawn_subagent_schema_has_no_budget_param() {
     let v: serde_json::Value =
         serde_json::from_str(SCHEMA_SPAWN_SUBAGENT).expect("schema 常量必须是合法 JSON");
-    let desc = v["function"]["parameters"]["properties"]["budget"]["properties"]["maxToolCalls"]
-        ["description"]
-        .as_str()
-        .expect("maxToolCalls 缺 description");
     assert!(
-        desc.contains("loop.max_function_calls"),
-        "maxToolCalls 描述须指向全局熔断配置（设置页参数 loop.max_function_calls），实际：{desc}"
-    );
-    assert!(
-        !desc.contains("默认 100"),
-        "maxToolCalls 描述不得写死默认条数（改配置后即过期），实际：{desc}"
+        v["function"]["parameters"]["properties"]
+            .get("budget")
+            .is_none(),
+        "spawn_subagent schema 不得再有 budget 参数（子 agent 无独立预算）"
     );
 }
 
@@ -852,10 +843,10 @@ fn gate_whitelist_and_schema_list_are_computed_from_the_same_intersection() {
                 runtime_profile,
                 &allowed,
             )),
-            budget: crate::db::SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from("/tmp/art_parity"),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
     );
 

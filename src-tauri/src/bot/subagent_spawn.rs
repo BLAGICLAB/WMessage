@@ -7,26 +7,12 @@
 use crate::bot_orchestrator::{
     run_subagent, safe_rel_path, SpawnAck, SpawnRequest, SubagentStage, MACHINE_PREFIXES,
 };
-use crate::db::{SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus};
+use crate::db::{SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
 use std::collections::HashMap;
 use tauri::AppHandle;
 use tauri::Emitter;
 
-/// 预算钳制：None → 默认值；其余交给 SubagentBudget::clamped（硬顶 50 / 下限 1）。
-pub fn clamp_budget(budget: Option<SubagentBudget>) -> SubagentBudget {
-    budget.unwrap_or_default().clamped()
-}
-/// 配置档的 `max_turn` 只收紧：派发给的轮数更宽时不许被配置档顶开。
-///
-/// 取 min 而非覆盖——配置档是权限上限，不是「优先于调用方的指令」。
-pub(crate) fn apply_onion_turn_cap(budget: &mut SubagentBudget, cap: Option<u32>) {
-    if let Some(cap) = cap {
-        if cap < budget.max_turns {
-            budget.max_turns = cap;
-        }
-    }
-}
 /// 派发 profile 的解析顺序：显式 `profile` > 配置档的 `profile` > `stage` 派生。
 ///
 /// **不是「配置档说了算」**：让 yaml 的 profile 覆盖运行时 profile 就是放宽
@@ -111,7 +97,7 @@ fn machine_criterion_shape_error(criterion: &str) -> Option<String> {
 }
 /// spawn 纯 DB 核心：校验 → 缺 parent 卡 TaskNotFound → 幂等查表 → 插 queued 行。
 /// 子 agent 不再建任务卡——执行契约全在行上（objective / acceptance_json /
-/// context_summary / budget_json），前端经 `list_subagents` 读行看进度。
+/// context_summary），前端经 `list_subagents` 读行看进度。
 pub(crate) fn spawn_subagent_locked(
     conn: &mut rusqlite::Connection,
     req: &SpawnRequest,
@@ -124,7 +110,6 @@ pub(crate) fn spawn_subagent_locked(
             return Err(CommandError::TaskNotFound(parent.clone()));
         }
     }
-    let budget = clamp_budget(req.budget.clone());
     let objective = req.objective.trim().to_string();
     let acceptance_json = serde_json::to_string(&req.acceptance_criteria)
         .map_err(|e| CommandError::Internal(e.to_string()))?;
@@ -146,16 +131,12 @@ pub(crate) fn spawn_subagent_locked(
         )
         .map_err(CommandError::DbError)?;
         if let Some(existing) = live {
-            // 回显**已在跑**那一条的生效预算，不是本次请求的——本次请求
-            // 根本没建行，它给的预算没有生效。
-            let existing_budget = budget_of_row(&existing);
             return Ok(SpawnAck {
                 subagent_id: existing.id,
                 task_id: existing.task_id,
                 trace_id: existing.trace_id,
                 status: existing.status,
                 deduped: true,
-                budget: existing_budget,
             });
         }
     }
@@ -181,9 +162,6 @@ pub(crate) fn spawn_subagent_locked(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string),
-        budget_json: Some(
-            serde_json::to_string(&budget).map_err(|e| CommandError::Internal(e.to_string()))?,
-        ),
         result_json: None,
         error: None,
         created_at: now,
@@ -202,17 +180,7 @@ pub(crate) fn spawn_subagent_locked(
         trace_id,
         status: SubagentStatus::Queued,
         deduped: false,
-        budget,
     })
-}
-/// 行上落盘的生效预算（读预算的唯一读法）：解析失败回落默认值。
-///
-/// 幂等命中时要用**已在跑**那条的预算回显——那才是真正生效的值。
-pub(crate) fn budget_of_row(row: &SubagentRow) -> SubagentBudget {
-    row.budget_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default()
 }
 /// 按 subagent_id / task_id / 子会话 id 解析行（设计 §5 双键 +  会话键：
 /// 任务卡停止按钮与子会话停止键只持有会话 id）。
@@ -238,17 +206,8 @@ pub(crate) fn resolve_row(conn: &rusqlite::Connection, key: &str) -> CommandResu
 /// spawn 异步包装：持锁执行核心 → 审计 subagent_spawned → 发 subagent-spawned
 /// 事件（行建好即通知前端重拉，收尾前就可见可取消）→ 派发 runner。
 pub async fn spawn_subagent(app: &AppHandle, req: SpawnRequest) -> CommandResult<SpawnAck> {
-    // LLM 未显式给预算时用配置默认（config subagentMax* 三项，resolve 内钳制）；
-    // 显式给了的仍走 clamp_budget 硬顶。Gate 并发数（max_running）保持常量不在本路径。
-    let mut req = req;
-    if req.budget.is_none() {
-        let cfg = crate::bot::load_config(app);
-        req.budget = Some(crate::bot::params::resolve_subagent_budget(&cfg));
-    }
-    // 配置档 max_turn 只收紧（规则见 apply_onion_turn_cap）
-    if let Some(b) = req.budget.as_mut() {
-        apply_onion_turn_cap(b, req.onion.as_ref().and_then(|o| o.max_turn));
-    }
+    // 子 agent 没有独立预算：轮数 / 工具数与主会话共用同一套安全网（runner 取
+    // 配置解析值，配置档 max_turn 只收紧）。Gate 并发数（max_running）保持常量不在本路径。
     // 审计字段先拷出（闭包要 move req 进 spawn_blocking）；校验只走 locked 核心
     //（wrapper 侧重复调用已删——）
     let audit_parent_session = req.parent_session_id.clone();

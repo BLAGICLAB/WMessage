@@ -37,7 +37,7 @@ pub fn is_task_execution_flow(session_id: Option<&str>) -> bool {
 
 // 子 agent 会话注册表
 
-use crate::db::{SubagentBudget, SubagentProfile};
+use crate::db::SubagentProfile;
 use std::path::PathBuf;
 
 /// 子 agent 执行会话的上下文（runner 开跑时写、收尾删）。
@@ -58,7 +58,6 @@ pub struct SubagentSessionCtx {
     ///
     /// 无 per-onion 配置时就是 profile 白名单原样，闸语义与既往完全一致。
     pub tools: std::sync::Arc<Vec<&'static str>>,
-    pub budget: SubagentBudget,
     /// 产物目录 gen_dir/subagents/{subagent_id}/（write_artifact_file 的唯一可写区）
     pub artifact_dir: PathBuf,
     /// 已执行工具调用累计：dispatch 白名单闸后自增的仪表读数。
@@ -70,6 +69,11 @@ pub struct SubagentSessionCtx {
     /// 此前轮数完全不落任何地方，主 agent 只能靠轮询猜子 agent 在不在推进。
     /// 强制点仍在 run_model_loop_core 的 max_rounds 熔断，这里只是仪表读数。
     pub used_rounds: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// 最近一次有进展的时刻（Unix 毫秒）：LLM 流有增量到达、工具开始或返回都刷新
+    /// （见 `touch_subagent_progress`，挂在模型循环薄壳的流式事件出口上）。
+    /// 停滞判定（runner 的 watcher）读它——超过停滞超时无刷新即判停。只在轮边界
+    /// 刷新会把一次几分钟的长流式回复误判成假死，所以刷新点必须细到增量。
+    pub last_progress_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 static SUBAGENT_SESSIONS: OnceLock<std::sync::Mutex<HashMap<String, SubagentSessionCtx>>> =
@@ -149,6 +153,16 @@ pub fn subagent_ctx(session_id: Option<&str>) -> Option<SubagentSessionCtx> {
     lock_subagent_sessions().get(sid).cloned()
 }
 
+/// 子 agent 进展心跳：有 LLM 流增量或工具事件就刷新；非子 agent 会话静默。
+pub fn touch_subagent_progress(session_id: Option<&str>) {
+    if let Some(ctx) = subagent_ctx(session_id) {
+        ctx.last_progress_ms.store(
+            crate::db::now_ms() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,10 +219,10 @@ mod tests {
                 crate::bot::registry::profile_whitelist(crate::db::SubagentProfile::Research)
                     .to_vec(),
             ),
-            budget: crate::db::SubagentBudget::default(),
             artifact_dir: std::path::PathBuf::from(format!("/tmp/art/{subagent_id}")),
             used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -222,7 +236,6 @@ mod tests {
         assert_eq!(ctx.subagent_id, "sa_rt1");
         assert_eq!(ctx.task_id, None);
         assert_eq!(ctx.profile, crate::db::SubagentProfile::Research);
-        assert_eq!(ctx.budget.max_turns, crate::db::DEFAULT_MAX_TURNS);
         unregister_subagent_session(sid);
         assert!(!is_subagent_session(Some(sid)));
         assert!(subagent_ctx(Some(sid)).is_none());

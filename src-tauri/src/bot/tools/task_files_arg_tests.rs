@@ -125,7 +125,6 @@ fn resolve_task_key_requires_existing_unique_card() {
         updated_at: None,
         bot_assigned: None,
         assignee: None,
-        budget: None,
         result: None,
         depends_on: None,
         model: None,

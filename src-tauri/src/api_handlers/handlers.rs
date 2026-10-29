@@ -353,7 +353,6 @@ fn create_task(
             updated_at: Some(now),
             bot_assigned: None,
             assignee: None,
-            budget: None,
             result: None,
             depends_on: None,
             model: None,

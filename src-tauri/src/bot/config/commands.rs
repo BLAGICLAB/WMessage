@@ -111,7 +111,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         python_timeout_secs: cfg.python_timeout_secs,
         task_mode: cfg.task_mode,
         max_function_calls: cfg.max_function_calls,
-        subagent_max_tool_calls: cfg.subagent_max_tool_calls,
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         selfcheck_model_id: cfg.selfcheck_model_id,
         // 回落成内置默认再给前端：设置页编辑的是「当前生效表」，
@@ -142,7 +141,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         history_truncate_target_pct: cfg.history_truncate_target_pct,
         reasoning_echo_enabled: cfg.reasoning_echo_enabled,
         in_turn_context_edit: cfg.in_turn_context_edit,
-        subagent_max_turns: cfg.subagent_max_turns,
         search_max_results: cfg.search_max_results,
         max_tool_output_bytes: cfg.max_tool_output_bytes,
         ask_budget: cfg.ask_budget,
@@ -266,9 +264,9 @@ pub(crate) fn prune_verified_vendors(
 
 /// Agent 运行参数落盘前钳制（None = 内置默认不动）。
 ///
-/// 边界单源：bot::params clamp_* / db::clamp_subagent_max_turns /
-/// py::runtime::clamp_timeout_secs，与读侧 resolver 共用同一组数字——写侧钳过的
-/// 值就是运行时生效的值，设置页显示的与实际跑的是同一个数。
+/// 边界单源：bot::params clamp_* / py::runtime::clamp_timeout_secs，与读侧
+/// resolver 共用同一组数字——写侧钳过的值就是运行时生效的值，设置页显示的
+/// 与实际跑的是同一个数。
 ///
 /// 单独成函数是为了能单测：`bot_set_config` 要 AppHandle，测不到里面这一段。
 fn clamp_agent_params(config: &mut BotConfig) {
@@ -295,12 +293,6 @@ fn clamp_agent_params(config: &mut BotConfig) {
     config.in_turn_context_edit = config
         .in_turn_context_edit
         .map(crate::bot::params::clamp_in_turn_context_edit);
-    config.subagent_max_turns = config
-        .subagent_max_turns
-        .map(crate::db::clamp_subagent_max_turns);
-    config.subagent_max_tool_calls = config
-        .subagent_max_tool_calls
-        .map(crate::bot::params::clamp_max_function_calls);
     config.search_max_results = config
         .search_max_results
         .map(crate::bot::params::clamp_search_max_results);
@@ -380,7 +372,7 @@ pub fn bot_set_config(
         .archive_after_days
         .map(|n| n.clamp(1, super::types::MAX_ARCHIVE_DAYS));
     // Agent 运行参数落盘前钳制（None = 内置默认不动；与 archive 同款）——
-    // 边界单源：bot::params clamp_* / db::clamp_subagent_max_turns，与读侧 resolver 共用
+    // 边界单源：bot::params clamp_*，与读侧 resolver 共用
     clamp_agent_params(&mut config);
     // 终稿自检间隔落盘前钳制（0..=100：0 = 关闭；上限放宽到 100 留充足调整空间，
     // 真实触发频率受 final_text 字数 / function_calls / round gap 共同约束）
@@ -1088,7 +1080,6 @@ mod perm_mode_tests {
             max_rounds: Some(999),
             max_function_calls: Some(9999),
             history_budget_chars: Some(1),
-            subagent_max_turns: Some(0),
             search_max_results: Some(99),
             ask_budget: Some(99),
             max_tool_output_bytes: Some(999_999),
@@ -1115,10 +1106,6 @@ mod perm_mode_tests {
         assert_eq!(
             cfg.history_budget_chars,
             Some(crate::bot::params::clamp_history_budget_chars(1))
-        );
-        assert_eq!(
-            cfg.subagent_max_turns,
-            Some(crate::db::clamp_subagent_max_turns(0))
         );
         assert_eq!(
             cfg.search_max_results,

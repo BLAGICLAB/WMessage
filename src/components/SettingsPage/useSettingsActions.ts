@@ -113,8 +113,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
     historyTruncateTargetPct: "",
     reasoningEchoEnabled: "",
     inTurnContextEdit: "",
-    subagentMaxTurns: "",
-    subagentMaxToolCalls: "",
     searchMaxResults: "",
     maxToolOutputBytes: "",
     askBudget: "",
@@ -373,10 +371,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
           c.taskMode === "light" || c.taskMode === "deep"
             ? c.taskMode
             : "balanced",
-        subagentMaxTurns:
-          c.subagentMaxTurns != null ? String(c.subagentMaxTurns) : "",
-        subagentMaxToolCalls:
-          c.subagentMaxToolCalls != null ? String(c.subagentMaxToolCalls) : "",
         searchMaxResults:
           c.searchMaxResults != null ? String(c.searchMaxResults) : "",
         maxToolOutputBytes:

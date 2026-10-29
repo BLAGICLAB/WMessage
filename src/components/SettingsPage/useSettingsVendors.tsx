@@ -304,14 +304,6 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
             "loop.in_turn_context_edit",
             c.inTurnContextEdit,
           ),
-          subagentMaxTurns: paramNumber(
-            "subagent.max_turns",
-            c.subagentMaxTurns,
-          ),
-          subagentMaxToolCalls: paramNumber(
-            "subagent.max_tool_calls",
-            c.subagentMaxToolCalls,
-          ),
           searchMaxResults: paramNumber(
             "search.max_results",
             c.searchMaxResults,

@@ -277,8 +277,6 @@ export function BotCoreSection({
                     maxRounds: "",
                     maxFunctionCalls: "",
                     historyBudgetChars: "",
-                    subagentMaxTurns: "",
-                    subagentMaxToolCalls: "",
                     maxTokens: "",
                     maxToolOutputBytes: "",
                   }))
@@ -324,7 +322,6 @@ export function BotCoreSection({
                   historyTruncateTargetPct: "",
                   reasoningEchoEnabled: "",
                   inTurnContextEdit: "",
-                  subagentMaxTurns: "",
                   searchMaxResults: "",
                   maxToolOutputBytes: "",
                   toolRules: [] as Array<{

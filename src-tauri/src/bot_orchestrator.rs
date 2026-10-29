@@ -14,13 +14,12 @@
 //! 结构约定（同 task_patch / task_patch_locked 先例）：纯 DB 核心 `*_locked` 可在
 //! in-memory conn 上单测；异步包装负责 spawn_blocking + DB_WRITE_LOCK + 审计 + 广播。
 
-use crate::db::{now_ms, SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus};
+use crate::db::{now_ms, SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
 use tauri::AppHandle;
 
 // ── subagent-split: begin ──
 // 拆分后的子模块 re-export：旧路径 `crate::bot_orchestrator::<name>` 1:1 保持可用。
-pub use crate::bot::subagent_spawn::clamp_budget;
 pub use crate::bot::subagent_spawn::spawn_subagent;
 pub use crate::bot::subagent_spawn::MAX_GLOBAL_RUNNING;
 pub use crate::bot::subagent_spawn::MAX_PER_SESSION_RUNNING;
@@ -39,13 +38,13 @@ pub(crate) use crate::bot::subagent_digest::spawn_parent_report;
 pub(crate) use crate::bot::subagent_digest::subagent_digest_block;
 pub(crate) use crate::bot::subagent_digest::MACHINE_PREFIXES;
 pub(crate) use crate::bot::subagent_digest::UNPARSEABLE_MARKER;
-pub(crate) use crate::bot::subagent_repair::budget_force_needed;
 pub(crate) use crate::bot::subagent_repair::classify_outcome;
-pub(crate) use crate::bot::subagent_repair::parse_final_json;
 pub(crate) use crate::bot::subagent_repair::repair_final_json_once;
 pub(crate) use crate::bot::subagent_runner::run_subagent;
-pub(crate) use crate::bot::subagent_spawn::budget_of_row;
 pub(crate) use crate::bot::subagent_spawn::resolve_row;
+// 只有测试在用的私有项：非测试构建里没人消费，按构建期切换避免 unused import
+#[cfg(test)]
+pub(crate) use crate::bot::subagent_repair::parse_final_json;
 pub(crate) use crate::bot::subagent_spawn::resolve_spawn_profile;
 pub(crate) use crate::bot::subagent_spawn::SubagentGate;
 pub(crate) use crate::bot::subagent_tools::artifact_dir_of;
@@ -53,9 +52,6 @@ pub(crate) use crate::bot::subagent_tools::gen_dir_rule_for;
 pub(crate) use crate::bot::subagent_tools::safe_rel_path;
 // ── subagent-split: end ──
 
-/// 预算默认值与硬顶（设计 §6 已）——常量与钳制实现在 db::SubagentBudget（写口
-/// 强制：spawn 与 task_patch 都过 clamped()），此处 re-export 保持原路径可用。
-pub use crate::db::{DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS, MAX_TURNS_HARD_CAP};
 /// check_subagent 的 wait_ms 上限（设计 §5；放宽理由见
 /// docs/SUBAGENT-CHECK-BACKOFF-DESIGN-2026-10-18.md）。
 ///
@@ -147,7 +143,6 @@ pub struct SpawnRequest {
     /// 上下文摘要（设计 §8.5「上下文摘要」段）：只给必要背景，不倒主对话全文。
     /// 落行上 context_summary——runner 渲染包装时从行上现读。
     pub context_summary: Option<String>,
-    pub budget: Option<SubagentBudget>,
     /// A 期参数透传：None/无效值回退当前 active model（设计 §5）
     pub model_profile: Option<String>,
     /// per-onion 配置档（设计 §3.7 三段流水线的权限载体）。
@@ -174,11 +169,6 @@ pub struct SpawnAck {
     /// 命中幂等键：返回的是**已在跑**的同一个子 agent，本次没有新建行、
     /// 也没有再起一个 runner。消费方据此区分「派发成功」与「重复派发未新建」。
     pub deduped: bool,
-    /// **生效**预算（钳制后的值，不是调用方给的值）。
-    ///
-    /// 回显给调用方是必须的：调用方给的墙钟可能被钳到 30..=3600，模型不知道
-    /// 自己的子 agent 最多能跑多久，就会按「我给了一小时」安排后续动作。
-    pub budget: SubagentBudget,
 }
 
 /// check 应答（设计 §5/§7：status/progress/result?/error?）。
@@ -248,19 +238,11 @@ pub(crate) fn check_subagent_locked(
         "subtasksTotal": subtasks_total,
     });
     // 轮数读数：子 agent 在跑时 ctx 里有活的计数器，终态后守卫注销读不到。
-    // 预算从行上 budget_json 取——轮数与预算放一起看才有意义（10/20 与 10/200
-    // 是完全不同的紧迫度）。readOnly 消费，不参与任何强制。
-    if let Some(budget) = row
-        .budget_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str::<SubagentBudget>(s).ok())
+    // readOnly 消费，不参与任何强制（轮数上限与主会话同一套安全网）。
+    if let Some(used) = crate::tool_guard::subagent_ctx(row.session_id.as_deref())
+        .map(|c| c.used_rounds.load(std::sync::atomic::Ordering::Relaxed))
     {
-        let used = crate::tool_guard::subagent_ctx(row.session_id.as_deref())
-            .map(|c| c.used_rounds.load(std::sync::atomic::Ordering::Relaxed));
-        if let Some(used) = used {
-            progress["roundsUsed"] = serde_json::json!(used);
-            progress["roundsBudget"] = serde_json::json!(budget.max_turns);
-        }
+        progress["roundsUsed"] = serde_json::json!(used);
     }
     if let Some(pos) = queue_position {
         progress["queuePosition"] = serde_json::json!(pos);
@@ -640,12 +622,8 @@ pub struct SubagentRunView {
     pub row: crate::db::SubagentRow,
     /// 已跑轮数；非在途（守卫已注销）为 None
     pub rounds_used: Option<u32>,
-    /// 轮数硬顶；与轮数同源同报，10/20 与 10/200 的紧迫度完全不同
-    pub rounds_budget: Option<u32>,
     /// 已执行工具调用数；与轮数同源（tool_guard 内存仪表），终态为 None
     pub tool_calls_used: Option<u32>,
-    /// 工具调用硬顶；与已用数同报——收尾窗从 100/100 起开，只看轮数看不出
-    pub tool_calls_budget: Option<u32>,
 }
 
 /// 列某主会话派出的子 agent（新→旧）。聊天内嵌子 agent 区域与右侧栏
@@ -677,11 +655,9 @@ fn attach_rounds(row: crate::db::SubagentRow) -> SubagentRunView {
         rounds_used: ctx
             .as_ref()
             .map(|c| c.used_rounds.load(std::sync::atomic::Ordering::Relaxed) as u32),
-        rounds_budget: ctx.as_ref().map(|c| c.budget.max_turns),
         tool_calls_used: ctx
             .as_ref()
             .map(|c| c.used_tool_calls.load(std::sync::atomic::Ordering::Relaxed) as u32),
-        tool_calls_budget: ctx.as_ref().map(|c| c.budget.max_tool_calls),
         row,
     }
 }

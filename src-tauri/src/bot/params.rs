@@ -38,10 +38,6 @@ pub trait AgentParams {
     fn reasoning_echo_enabled(&self) -> Option<u32>;
     /// 轮内工具结果滑动窗开关（高级覆盖）。
     fn in_turn_context_edit(&self) -> Option<u32>;
-    /// 子 agent 轮数预算（高级覆盖）。
-    fn subagent_max_turns(&self) -> Option<u32>;
-    /// 子 agent 工具调用上限（高级覆盖）。
-    fn subagent_max_tool_calls(&self) -> Option<u32>;
     /// 联网搜索默认条数（高级覆盖）。
     fn search_max_results(&self) -> Option<u32>;
     /// 工具结果回填上限（高级覆盖）。
@@ -198,22 +194,12 @@ pub const GLOBAL_TOOL_OUTPUT_BYTES_CAP: u32 = 200 * 1024;
 
 // ── 预算分配比例（内置，不可配）──
 //
-// 同一个全局池按比例切给三个消费者：主会话、子 agent、技能。三者**各自
-// 独立计数**（不共用一个递减计数器）——业界口径是「子 agent 跑在各自隔离的
-// context / 独立预算里」：Claude Code 的子 agent 用隔离上下文正是为了不撑爆
-// 父窗口；AutoGen 系的父子约束是 `child_budget <= parent_available_budget`
-// 这类**上限**约束，不是共用一个计数器。共享递减池会让「主会话多跑两轮 →
-// 子 agent 少两轮额度」这种耦合传进每一次派发，调试时看不出是谁吃掉了谁。
-//
-// 比例含义：主会话 60%，单个子 agent 最多取用剩余 20%，单个技能最多取用
-// 剩余 15%。三者相加 95%，留 5% 余量。
+// 主会话按比例取全局池。子 agent 不再有独立份额：轮数 / 工具数与主会话
+// 共用同一套安全网（见 resolve_max_rounds_cfg / resolve_main_tool_calls），
+// 时间维度由停滞超时兜底。
 
 /// 主会话占用总预算的比例（百分比）。
 pub const MAIN_SESSION_BUDGET_PCT: usize = 60;
-/// 单个子 agent 最多取用剩余预算的比例（百分比）。
-pub const SUBAGENT_BUDGET_PCT: usize = 20;
-/// 单个技能最多取用剩余预算的比例（百分比）。
-pub const SKILL_BUDGET_PCT: usize = 15;
 
 /// 按比例取预算：`(总量 × 百分比) / 100`，向下取整，至少 1。
 ///
@@ -259,15 +245,6 @@ pub const REASONING_ECHO_ENABLED_MAX: u32 = 1;
 pub const DEFAULT_IN_TURN_CONTEXT_EDIT: u32 = 1;
 /// 轮内工具结果滑动窗开关上界（1 = 开）：只有两态。
 pub const IN_TURN_CONTEXT_EDIT_MAX: u32 = 1;
-/// 子 agent 默认预算（行上预算缺省时的兜底；db::subagents 的 DEFAULT_* 引用此处）。
-///
-/// 轮数与工具数取均衡档全局池的 20%（分配规则给单个子 agent 的那一份）；
-/// 不是拍脑袋的独立默认值。工具数与主会话的 max_function_calls
-/// 是两个独立键（见 resolve_subagent_budget）。
-pub const DEFAULT_SUBAGENT_MAX_TURNS: u32 =
-    budget_share(BALANCED_PRESET.global_turns, SUBAGENT_BUDGET_PCT);
-pub const DEFAULT_SUBAGENT_MAX_TOOL_CALLS: u32 =
-    budget_share(BALANCED_PRESET.global_tool_calls, SUBAGENT_BUDGET_PCT);
 /// 联网搜索默认结果条数（Tavily 主流推荐：6 条）。
 pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 6;
 
@@ -470,31 +447,6 @@ pub fn resolve_in_turn_context_edit(cfg: &impl AgentParams) -> u32 {
     in_turn_context_edit_value(cfg.in_turn_context_edit())
 }
 
-/// 子 agent 预算：档位全局池的 20%（分配规则给单个子 agent 的那一份），
-/// 两项各自可被高级覆盖顶掉。
-///
-/// 工具调用这一项**不与主会话同源**：主会话拿 60%、子 agent 拿 20%，是同一
-/// 个全局池的两份配额。此前两条共用一个 `max_function_calls`，等于子 agent
-/// 拿到了主会话同等的工具额度，分配规则无从谈起。
-pub fn resolve_subagent_budget(cfg: &impl AgentParams) -> crate::db::SubagentBudget {
-    crate::db::SubagentBudget {
-        max_turns: match cfg.subagent_max_turns() {
-            Some(n) => crate::db::clamp_subagent_max_turns(n),
-            None => crate::db::clamp_subagent_max_turns(budget_share(
-                resolve_global_turns(cfg),
-                SUBAGENT_BUDGET_PCT,
-            )),
-        },
-        max_tool_calls: match cfg.subagent_max_tool_calls() {
-            Some(n) => clamp_max_function_calls(n),
-            None => clamp_max_function_calls(budget_share(
-                resolve_global_tool_calls(cfg),
-                SUBAGENT_BUDGET_PCT,
-            )),
-        },
-    }
-}
-
 pub fn resolve_search_max_results(cfg: &impl AgentParams) -> u32 {
     clamp_search_max_results(
         cfg.search_max_results()
@@ -635,27 +587,6 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         editable: true,
         resolve: cfg_resolver!(resolve_in_turn_context_edit, in_turn_context_edit),
     },
-    // ── 可编辑：子 agent ──
-    ParamDef {
-        key: "subagent.max_turns",
-        label: "子 agent 轮数预算",
-        category: "subagent",
-        hint: "单个子 agent 的轮数上限；默认取档位全局池的 20%；任何配置（含 LLM 自报）都不能越过硬顶",
-        min: Some(crate::db::MIN_SUBAGENT_TURNS as u64),
-        max: Some(crate::db::MAX_TURNS_HARD_CAP as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_budget_turns, subagent_max_turns),
-    },
-    ParamDef {
-        key: "subagent.max_tool_calls",
-        label: "子 agent 工具调用上限",
-        category: "subagent",
-        hint: "单个子 agent 的工具调用上限；默认取档位全局工具池的 20%；与主会话是同一池的两份配额（主 60% / 子 20%）",
-        min: Some(MAX_FUNCTION_CALLS_MIN as u64),
-        max: Some(MAX_FUNCTION_CALLS_CAP as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_budget_tool_calls, subagent_max_tool_calls),
-    },
     // ── 可编辑：搜索 ──
     ParamDef {
         key: "search.max_results",
@@ -761,16 +692,6 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         resolve: hardcoded_resolver!(crate::bot::constants::SUBAGENT_MAX_PER_SESSION_RUNNING),
     },
     ParamDef {
-        key: "subagent.turns_hard_cap",
-        label: "子 agent 轮数硬顶",
-        category: "subagent",
-        hint: "任何配置（含 LLM 自报）都不能超过的轮数硬顶",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::db::MAX_TURNS_HARD_CAP),
-    },
-    ParamDef {
         key: "search.count_cap",
         label: "搜索条数硬顶",
         category: "search",
@@ -866,14 +787,6 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
 /// 子 agent 预算三个键共用同一份 `resolve_subagent_budget`，这里按需取字段。
 fn resolve_task_mode_label(cfg: &impl AgentParams) -> String {
     resolve_task_mode(cfg).as_str().to_string()
-}
-
-fn resolve_budget_tool_calls(cfg: &impl AgentParams) -> String {
-    resolve_subagent_budget(cfg).max_tool_calls.to_string()
-}
-
-fn resolve_budget_turns(cfg: &impl AgentParams) -> String {
-    resolve_subagent_budget(cfg).max_turns.to_string()
 }
 
 fn plain_max_tokens(cfg: &impl AgentParams) -> String {

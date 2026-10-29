@@ -33,18 +33,16 @@ pub(crate) fn fuse_cap_upper_bound() -> usize {
     crate::bot::params::MAX_FUNCTION_CALLS_CAP as usize
 }
 
-/// 熔断上限派生链的唯一入口：子 agent 行上预算 > bot-config 覆盖 > 内置默认，
-/// 末端钳到 [1, 上界]。
+/// 熔断上限派生链的唯一入口：bot-config 覆盖 > 内置默认，末端钳到 [1, 上界]。
+/// 主会话与子 agent 同一个数——子 agent 没有独立预算。
 ///
-/// 收尾阶梯（软告警 / 收尾窗 / 收尾轮数用尽硬停）按这个上限的占比派生，
-/// 主会话与子 agent 同一套（见 `gate_call`）——上限之上不再有任何裕量。
+/// 收尾阶梯（软告警 / 收尾窗 / 收尾轮数用尽硬停）按这个上限的占比派生
+/// （见 `gate_call`）——上限之上不再有任何裕量。
 ///
 /// 上游（薄壳组装 deps）刻意不钳：`deps.fuse_cap_override` 也被单测直驱 core
 /// 注入，绕过薄壳，钳在薄壳等于给「实际生效的那条边界」留了个不生效的副本。
-pub(crate) fn fuse_cap_for(subagent_budget: Option<u32>, cfg_override: Option<usize>) -> usize {
-    subagent_budget
-        .map(|n| n as usize)
-        .or(cfg_override)
+pub(crate) fn fuse_cap_for(cfg_override: Option<usize>) -> usize {
+    cfg_override
         .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
         .clamp(1, fuse_cap_upper_bound())
 }

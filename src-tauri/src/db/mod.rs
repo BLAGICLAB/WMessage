@@ -243,6 +243,8 @@ pub fn open_db<R: tauri::Runtime>(
     // token 用量三列（老库 NULL = 未记）。排在 task_id 重建迁移之后——
     // 重建搬运的是显式列清单，本列由这里补
     crate::db::subagents::ensure_usage_columns(&conn).map_err(|e| e.to_string())?;
+    // 子 agent 预算整套退役：旧 budget_json 列清扫（幂等）
+    crate::db::subagents::drop_legacy_budget_column(&conn).map_err(|e| e.to_string())?;
     // 定时任务表（定时任务模块）：内容型定时作业，到点据此新建任务卡并执行
     conn.execute_batch(crate::db::schedule_jobs::SCHEDULED_JOBS_DDL)
         .map_err(|e| e.to_string())?;
@@ -280,13 +282,9 @@ pub fn open_db<R: tauri::Runtime>(
     ensure_columns(&conn, "tasks", &crate::db::tasks::PLAN_TASK_COLUMNS)?;
     // 迁移：子任务卡出身 parent_id（子任务行一键生成的关联键；NULL = 普通卡）
     ensure_columns(&conn, "tasks", &crate::db::tasks::PARENT_ID_TASK_COLUMNS)?;
-    // 迁移：子 agent 编排三字段设计 §4.1——assignee/budget/result 走
-    // task_patch 既有通道；budget/result 存 JSON TEXT）
-    ensure_columns(
-        &conn,
-        "tasks",
-        &[("assignee", "TEXT"), ("budget", "TEXT"), ("result", "TEXT")],
-    )?;
+    // 迁移：子 agent 编排两字段设计 §4.1——assignee/result 走
+    // task_patch 既有通道；result 存 JSON TEXT）
+    ensure_columns(&conn, "tasks", &[("assignee", "TEXT"), ("result", "TEXT")])?;
     // 迁移设计 §3.1）：工作流四字段 + 画布坐标。
     // origin 缺省 NULL 视作 "user"（读路径归一），不加 DEFAULT 避免 ALTER 语义分叉
     ensure_columns(&conn, "tasks", &crate::db::tasks::W1_TASK_COLUMNS)?;

@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// 被闸拒（Denied）的调用不得计入熔断计数：预算 2 → 熔断上限 2，模型连发
+/// 被闸拒（Denied）的调用不得计入熔断计数：熔断上限 2，模型连发
 /// 9 轮被拒的读类调用（exec 模拟 dispatch 白名单 / 规则闸的拒绝回包）：若被拒
 /// 的也计数，第 3 次就熔断；只有「实际执行的才算数」才能让模型继续试探并交卷。
 #[tokio::test]
@@ -21,13 +21,10 @@ async fn core_denied_tool_calls_do_not_count_toward_fuse() {
             task_id: None,
             profile: wmessage_lib::db::SubagentProfile::Research,
             tools: Arc::new(vec!["read_text_file", "write_artifact_file"]),
-            budget: wmessage_lib::db::SubagentBudget {
-                max_turns: 50,
-                max_tool_calls: 2,
-            },
             artifact_dir: std::env::temp_dir().join("wmsg-fuse-denied-e2e"),
             used_tool_calls: used.clone(),
             used_rounds: Arc::new(AtomicUsize::new(0)),
+            last_progress_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
     );
 
@@ -47,6 +44,9 @@ async fn core_denied_tool_calls_do_not_count_toward_fuse() {
         assert_eq!(name, "read_text_file");
         ToolResult::denied("⚠️ 子 agent 白名单外工具已拒绝。")
     };
+    // 熔断上限与主会话同源（配置覆盖位）：这里直接注入 2
+    let mut deps = h.deps();
+    deps.fuse_cap_override = Some(2);
 
     let (text, _refs) = run_model_loop_core(
         &core_http(&server),
@@ -54,7 +54,7 @@ async fn core_denied_tool_calls_do_not_count_toward_fuse() {
         20,
         &h.stop,
         None,
-        &h.deps(),
+        &deps,
         exec,
         noop_replan,
     )
@@ -69,7 +69,7 @@ async fn core_denied_tool_calls_do_not_count_toward_fuse() {
     );
 }
 
-/// 收尾窗端到端：预算 4 → 阈值 3。前 3 轮读计满进窗；窗内读被核心循环
+/// 收尾窗端到端：熔断上限 4 → 收尾窗阈值 3。前 3 轮读计满进窗；窗内读被核心循环
 /// 拒绝（根本不会到 exec）、写放行（到 exec）且都不计数；进入后第 4 轮硬停，
 /// 走熔断标记而不是计数熔断。
 ///
@@ -88,13 +88,10 @@ async fn core_wrap_up_window_denies_reads_allows_writes_then_stops_by_rounds() {
             task_id: None,
             profile: wmessage_lib::db::SubagentProfile::Research,
             tools: Arc::new(vec!["read_text_file", "write_artifact_file"]),
-            budget: wmessage_lib::db::SubagentBudget {
-                max_turns: 50,
-                max_tool_calls: 4,
-            },
             artifact_dir: std::env::temp_dir().join("wmsg-wrap-up-e2e"),
             used_tool_calls: Arc::new(AtomicUsize::new(0)),
             used_rounds: Arc::new(AtomicUsize::new(0)),
+            last_progress_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         },
     );
 
@@ -137,13 +134,17 @@ async fn core_wrap_up_window_denies_reads_allows_writes_then_stops_by_rounds() {
         }
     };
 
+    // 熔断上限与主会话同源（配置覆盖位）：注入 4 → 收尾窗阈值 3
+    let mut deps = h.deps();
+    deps.fuse_cap_override = Some(4);
+
     let (text, _refs) = run_model_loop_core(
         &core_http(&server),
         user_msgs(),
         20,
         &h.stop,
         None,
-        &h.deps(),
+        &deps,
         exec,
         noop_replan,
     )

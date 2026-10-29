@@ -370,17 +370,11 @@ pub(crate) fn prepare_round(
         }
     };
 
-    // 熔断上限按会话派生——子 agent 预算 max_tool_calls（子会话注册表），
-    // 其余 = 主会话上限（resolve_main_tool_calls）。阶梯阈值见下方按占比派生。
-    // 钳位只在 fuse_cap_for 末端做一次（防巨值实质关闭熔断），上界取 params 的
-    // MAX_FUNCTION_CALLS_CAP，与子 agent 预算解析同一个数。
-    let fuse_cap = fuse_cap_for(
-        stop.session_id()
-            .and_then(|sid| crate::tool_guard::subagent_ctx(Some(sid)))
-            .map(|c| c.budget.max_tool_calls),
-        deps.fuse_cap_override,
-    );
-    // 熔断阶梯：90% 软告警 → 95% 收尾窗 → 100% 硬熔断（+写文件裕量）。
+    // 熔断上限 = 主会话上限（resolve_main_tool_calls，主/子同一个数）。阶梯阈值见
+    // 下方按占比派生。钳位只在 fuse_cap_for 末端做一次（防巨值实质关闭熔断），
+    // 上界取 params 的 MAX_FUNCTION_CALLS_CAP。
+    let fuse_cap = fuse_cap_for(deps.fuse_cap_override);
+    // 熔断阶梯：90% 软告警 → 95% 收尾窗 → 收尾轮数用尽硬停。
     //
     // 小 cap 收敛：按百分比算阈值时 cap≤9 会塌到 0（提示「已调用 0 个」失真）——
     // 钳到 [1, cap-1]；cap=1 时软警本就无意义（下一次调用即熔断），钳到 1 即可。

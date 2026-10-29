@@ -32,7 +32,7 @@ fn onion_temperature_reaches_the_model_loop() {
         "传的是配置档的 temperature 字段：{runner}"
     );
 }
-/// tool_calls 预算计数器（ctx 侧）——dispatch 累计语义的单测锚点
+/// tool_calls 计数器（ctx 侧）——dispatch 累计语义的单测锚点（纯仪表，强制在模型循环层）
 #[test]
 fn tool_call_counter_accumulates() {
     let ctx = crate::tool_guard::SubagentSessionCtx {
@@ -42,13 +42,10 @@ fn tool_call_counter_accumulates() {
         tools: std::sync::Arc::new(
             crate::bot::registry::profile_whitelist(SubagentProfile::Coder).to_vec(),
         ),
-        budget: SubagentBudget {
-            max_turns: 5,
-            max_tool_calls: 2,
-        },
         artifact_dir: std::path::PathBuf::from("/tmp/art_c1"),
         used_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         used_rounds: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        last_progress_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     assert_eq!(
         ctx.used_tool_calls
@@ -60,8 +57,6 @@ fn tool_call_counter_accumulates() {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         1
     );
-    // used(2) >= max(2) → dispatch 层下一次调用将拒绝
-    assert!(2 >= ctx.budget.max_tool_calls as usize);
 }
 #[test]
 fn extract_last_json_takes_the_last_object() {
@@ -109,23 +104,8 @@ fn classify_outcome_maps_all_paths() {
     let res = res.unwrap();
     assert!(res["summary"].as_str().unwrap().contains("纯文本收尾"));
 }
-/// 触顶改判的四象限：交了卷的触顶是真实完成（收尾窗放行过写产物），
-/// 只有「触顶 + 没交卷」才强制 budget_exceeded。
-#[test]
-fn budget_force_needed_only_when_not_wrapped_up() {
-    use SubagentStatus::*;
-    // 触顶 + 交卷（succeeded / 自报 failed 都是交卷）→ 不改判
-    assert!(!budget_force_needed(100, 100, Succeeded, true));
-    assert!(!budget_force_needed(100, 100, Failed, true));
-    // 触顶 + 没交卷 → 改判（真实原因是预算）
-    assert!(budget_force_needed(100, 100, Succeeded, false));
-    assert!(budget_force_needed(100, 100, Failed, false));
-    // 未触顶 / 已是 budget_exceeded（熔断标记路径）→ 不改判
-    assert!(!budget_force_needed(99, 100, Failed, false));
-    assert!(!budget_force_needed(100, 100, BudgetExceeded, false));
-}
-/// read_own_card 的返回体：budgetUsage 一块含全部实时余量，静态 budget
-/// 键不再单独出现（两份会让模型不知道看哪个）。
+/// read_own_card 的返回体：budgetUsage 一块含全部实时余量（上限取共享安全网），
+/// 静态 budget 键不再单独出现（两份会让模型不知道看哪个）。
 #[test]
 fn own_card_payload_reports_live_budget_usage() {
     let row = crate::db::subagents::SubagentRow {
@@ -140,7 +120,6 @@ fn own_card_payload_reports_live_budget_usage() {
         trace_id: "trc_x".into(),
         acceptance_json: Some(r#"["覆盖 X"]"#.into()),
         context_summary: None,
-        budget_json: None,
         result_json: None,
         error: None,
         created_at: 0,
@@ -150,16 +129,7 @@ fn own_card_payload_reports_live_budget_usage() {
         completion_tokens: None,
         cache_read_tokens: None,
     };
-    let v = own_card_payload(
-        &row,
-        vec!["覆盖 X".into()],
-        Some(SubagentBudget {
-            max_turns: 50,
-            max_tool_calls: 100,
-        }),
-        47,
-        12,
-    );
+    let v = own_card_payload(&row, vec!["覆盖 X".into()], 47, 100, 12, 50);
     assert_eq!(v["budgetUsage"]["toolCallsUsed"], 47);
     assert_eq!(v["budgetUsage"]["toolCallsMax"], 100);
     assert_eq!(v["budgetUsage"]["roundsUsed"], 12);
@@ -168,10 +138,6 @@ fn own_card_payload_reports_live_budget_usage() {
         v.get("budget").is_none(),
         "静态 budget 键已并入 budgetUsage，不得再单独出现"
     );
-    // 预算缺失（老行）时 max 为 null，used 仍要报——余量读数不依赖预算存在
-    let v2 = own_card_payload(&row, vec![], None, 3, 1);
-    assert_eq!(v2["budgetUsage"]["toolCallsUsed"], 3);
-    assert!(v2["budgetUsage"]["toolCallsMax"].is_null());
 }
 /// 轮数熔断必须保住已跑完的那十几轮产出。
 ///
@@ -601,18 +567,15 @@ fn task_wrapper_contains_all_sections() {
     let row = crate::db::load_subagent(&conn, &ack.subagent_id)
         .unwrap()
         .unwrap();
-    let budget = crate::db::SubagentBudget::default();
-    let w = render_task_wrapper(&row, &budget, std::path::Path::new("/tmp/art"));
+    let w = render_task_wrapper(&row, std::path::Path::new("/tmp/art"));
     assert!(w.contains("[子任务派发]"));
     assert!(w.contains(&format!("subagent_id: {}", row.id)));
     assert!(w.contains("objective: 调研五个竞品并输出报告"));
     assert!(w.contains("- 覆盖至少 5 个产品"));
     // 上下文摘要取自行上 context_summary（不再从子卡 note 文本解析）
     assert!(w.contains("上下文摘要:\n上游已确认五个竞品清单"));
-    assert!(w.contains(&format!(
-        "max_turns={}, max_tool_calls={}",
-        DEFAULT_MAX_TURNS, DEFAULT_MAX_TOOL_CALLS
-    )));
+    // 子 agent 没有独立预算，包装里不再有预算段
+    assert!(!w.contains("预算:"));
     assert!(w.contains("产物目录:"));
     assert!(w.contains("/tmp/art"));
     assert!(w.contains("完成后必须输出以下 JSON"));
@@ -627,6 +590,6 @@ fn task_wrapper_omits_absent_context_summary() {
     let row = crate::db::load_subagent(&conn, &ack.subagent_id)
         .unwrap()
         .unwrap();
-    let w = render_task_wrapper(&row, &SubagentBudget::default(), std::path::Path::new("/a"));
+    let w = render_task_wrapper(&row, std::path::Path::new("/a"));
     assert!(!w.contains("上下文摘要"));
 }

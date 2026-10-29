@@ -851,18 +851,15 @@ mod rounds_fuse_tests {
     #[test]
     fn fuse_cap_clamps_at_the_only_consumer() {
         let cap = fuse_cap_upper_bound();
-        assert_eq!(fuse_cap_for(None, None), MAX_FUNCTION_CALLS_PER_REQUEST);
+        assert_eq!(fuse_cap_for(None), MAX_FUNCTION_CALLS_PER_REQUEST);
         assert_eq!(
-            fuse_cap_for(None, Some(9_999)),
+            fuse_cap_for(Some(9_999)),
             cap,
             "上游未钳时，末端必须收口到上界"
         );
-        assert_eq!(fuse_cap_for(None, Some(0)), 1, "0 次调用无意义，钳到 1");
-        assert_eq!(fuse_cap_for(None, Some(30)), 30, "区间内原样放行");
-        // 子 agent 行上预算优先于全局覆盖，且同样受末端钳制约束；预算之上
-        // 不再有任何裕量（收尾窗的出口是轮数，见 gate_call / wrap_up_rounds_exhausted）
-        assert_eq!(fuse_cap_for(Some(7), Some(9_999)), 7);
-        assert_eq!(fuse_cap_for(Some(u32::MAX), None), cap);
+        assert_eq!(fuse_cap_for(Some(0)), 1, "0 次调用无意义，钳到 1");
+        assert_eq!(fuse_cap_for(Some(30)), 30, "区间内原样放行");
+        assert_eq!(fuse_cap_for(Some(usize::MAX)), cap);
         // 漂移守卫：同一条边界在本文件里只允许有一份。薄壳那份钳位被删掉后，
         // 生产代码里不应再出现 `clamp(1, 500)` 字面量——它是当年人手抄的副本，
         // 被绕过也不报错（单测直驱 core 时根本不经薄壳）。

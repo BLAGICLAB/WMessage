@@ -37,7 +37,6 @@ fn min_task(owner: Option<&str>) -> Task {
         updated_at: None,
         bot_assigned: None,
         assignee: None,
-        budget: None,
         result: None,
         depends_on: None,
         model: None,

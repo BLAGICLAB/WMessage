@@ -583,9 +583,7 @@ describe("ContextRail 子 Agent 列表行", () => {
     status: "running",
     running: true,
     roundsUsed: 33,
-    roundsBudget: 50,
     toolCallsUsed: 98,
-    toolCallsBudget: 100,
     activity: [
       { toolCallId: "t1", tool: "grep_files", ok: true, ms: 4, preview: "P: 并发", at: 1 },
     ],

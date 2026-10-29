@@ -52,8 +52,6 @@ function baseConfig(over?: Partial<SettingsConfig>): SettingsConfig {
     historyTruncateTargetPct: "",
     reasoningEchoEnabled: "",
     inTurnContextEdit: "",
-    subagentMaxTurns: "",
-    subagentMaxToolCalls: "",
     searchMaxResults: "",
     maxToolOutputBytes: "",
     askBudget: "",
@@ -119,8 +117,6 @@ describe("任务模式档位选择", () => {
         taskMode: "balanced",
         maxRounds: "77",
         maxFunctionCalls: "88",
-        subagentMaxTurns: "9",
-        subagentMaxToolCalls: "7",
         historyBudgetChars: "200000",
         maxTokens: "4096",
         maxToolOutputBytes: "100000",
@@ -134,8 +130,6 @@ describe("任务模式档位选择", () => {
     // 覆盖必须被清空——留着旧覆盖，档位切换看起来「没生效」
     expect(next.maxRounds).toBe("");
     expect(next.maxFunctionCalls).toBe("");
-    expect(next.subagentMaxTurns).toBe("");
-    expect(next.subagentMaxToolCalls).toBe("");
     expect(next.historyBudgetChars).toBe("");
     expect(next.maxTokens).toBe("");
     expect(next.maxToolOutputBytes).toBe("");

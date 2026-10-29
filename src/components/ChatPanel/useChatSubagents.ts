@@ -88,12 +88,10 @@ export function useChatSubagents(params: ChatSubagentsParams) {
         status: r.status,
         running: r.status === "running" || r.status === "queued",
         error: r.error ?? null,
-        // 轮数与时间戳原样带下去：单行摘要要显示「已跑 N/M 轮 · 运行时长」，
+        // 轮数与时间戳原样带下去：单行摘要要显示「已跑 N 轮 · 运行时长」，
         // 在这里压掉就得让组件自己再拉一次行，等于把一次 IPC 复制成 N 次
         roundsUsed: r.roundsUsed ?? null,
-        roundsBudget: r.roundsBudget ?? null,
         toolCallsUsed: r.toolCallsUsed ?? null,
-        toolCallsBudget: r.toolCallsBudget ?? null,
         // 动作流只在途挂（事件即焚，终态行没有新动作）
         activity:
           r.status === "running" || r.status === "queued"

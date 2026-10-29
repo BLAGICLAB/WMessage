@@ -39,7 +39,7 @@ pub fn ensure_files_column(conn: &rusqlite::Connection) -> Result<(), String> {
 /// acceptance（画布验收）。逐列按 pragma 实际存在性删，跨版本老库缺哪列补删哪列。
 /// 前置：legacy 绑定/定时数据迁移已随列删除一并移除（在库数据均已迁移完毕）。
 pub fn drop_legacy_task_columns(conn: &rusqlite::Connection) -> Result<(), String> {
-    const RETIRED: [&str; 7] = [
+    const RETIRED: [&str; 8] = [
         "file_path",
         "file_is_dir",
         "schedule",
@@ -47,6 +47,7 @@ pub fn drop_legacy_task_columns(conn: &rusqlite::Connection) -> Result<(), Strin
         "enabled",
         "origin",
         "acceptance",
+        "budget",
     ];
     let existing: std::collections::HashSet<String> = {
         let mut stmt = conn

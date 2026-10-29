@@ -5,12 +5,11 @@
 
 use crate::bot_chat::ChatGuard;
 use crate::bot_orchestrator::{
-    acceptance_criteria_of, apply_machine_verdicts, artifact_dir_of, budget_force_needed,
-    budget_of_row, classify_outcome, db_locked, eval_machine_criteria, finish_notify,
-    gen_dir_rule_for, parse_final_json, reconcile_machine_override, repair_final_json_once,
-    spawn_parent_report, SpawnOnion, SubagentStage,
+    acceptance_criteria_of, apply_machine_verdicts, artifact_dir_of, classify_outcome, db_locked,
+    eval_machine_criteria, finish_notify, gen_dir_rule_for, reconcile_machine_override,
+    repair_final_json_once, spawn_parent_report, SpawnOnion, SubagentStage,
 };
-use crate::db::{now_ms, SubagentBudget, SubagentProfile, SubagentRow, SubagentStatus};
+use crate::db::{now_ms, SubagentProfile, SubagentRow, SubagentStatus};
 use crate::error::{CommandError, CommandResult};
 use futures_util::FutureExt;
 use std::path::PathBuf;
@@ -118,7 +117,16 @@ pub(crate) async fn run_subagent(
         );
         return;
     }
-    let budget: SubagentBudget = budget_of_row(&row);
+    // 轮数与主会话共用同一套安全网（配置解析值）；配置档 `max_turn` 只收紧——
+    // 配置档是权限上限，不是「优先于调用方的指令」，取 min 而非覆盖。
+    let max_rounds: usize = {
+        let cfg = crate::bot::load_config(&app);
+        let shared = crate::bot::params::resolve_max_rounds_cfg(&cfg) as usize;
+        match onion.as_ref().and_then(|o| o.max_turn) {
+            Some(cap) => shared.min(cap as usize).max(1),
+            None => shared,
+        }
+    };
 
     // 并发闸global 3 / per-session 2，超限等待不失败）。
     // 排队可取消——每轮退避同时查行终态，取消即退队；Running 改在**拿到槽位并复核后**
@@ -323,7 +331,6 @@ pub(crate) async fn run_subagent(
     let setup = {
         let artifact_dir = artifact_dir.clone();
         let row = row.clone();
-        let budget = budget.clone();
         let onion = onion.clone();
         db_locked(&app, move |conn| -> CommandResult<(String, String)> {
             // 建会话与回填 session_id 包同一事务，防出现「建了会话但行没记」的孤儿会话
@@ -336,7 +343,7 @@ pub(crate) async fn run_subagent(
             // 历史落库统一在 finalize 全量覆盖写（setup 的
             // bot_history_save_inner 是半截写，会被 finalize DELETE+INSERT 覆盖，
             // 中途崩溃还留「只有任务块没有结论」的误导历史）
-            let wrapper = render_task_wrapper(&row, &budget, &artifact_dir);
+            let wrapper = render_task_wrapper(&row, &artifact_dir);
             crate::db::set_subagent_session(&tx, &row.id, &session.id)
                 .map_err(CommandError::DbError)?;
             // 配置档元列随会话一起建：配置正文在 `<数据目录>/onions/`，这里只存指针。
@@ -424,6 +431,8 @@ pub(crate) async fn run_subagent(
     // succeeded（父 agent 提示词教它「failed / budget_exceeded 都要读 error
     // 决定重试」，报成 succeeded 就不重试，产出残缺而无人知晓）。
     let used_tool_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // 进展心跳：从进入 running 起算，模型循环薄壳的流式事件出口每次刷新
+    let last_progress_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(now_ms() as u64));
     let _session_guard = crate::tool_guard::SubagentSessionGuard::new(
         &session_id,
         crate::tool_guard::SubagentSessionCtx {
@@ -431,10 +440,10 @@ pub(crate) async fn run_subagent(
             task_id: row.task_id.clone(),
             profile: row.profile,
             tools: std::sync::Arc::new(subagent_tools),
-            budget: budget.clone(),
             artifact_dir: artifact_dir.clone(),
             used_tool_calls: used_tool_calls.clone(),
             used_rounds: rounds_gauge.clone(),
+            last_progress_ms: last_progress_ms.clone(),
         },
     );
 
@@ -495,10 +504,15 @@ pub(crate) async fn run_subagent(
 
     // 取消 watcher（设计 §4.3 硬停）：2s 轮询行状态，进终态即停工具循环。
     // 子 agent 无卡，不再有「软删卡 = 取消派发」这条信号——cancel 置行终态，
-    // 这是唯一的外部取消入口
+    // 这是唯一的外部取消入口。
+    // 同一轮询顺带判停滞：心跳超过停滞超时没刷新 → 置位 stalled 并停循环
+    // （子 agent 没有墙钟，这是它唯一的时间兜底）。
     let watcher_app = app.clone();
     let watcher_stop = stop.token();
     let watcher_sid = row.id.clone();
+    let watcher_progress = last_progress_ms.clone();
+    let stalled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher_stalled = stalled.clone();
     struct AbortOnDrop(tauri::async_runtime::JoinHandle<()>);
     impl Drop for AbortOnDrop {
         fn drop(&mut self) {
@@ -509,6 +523,20 @@ pub(crate) async fn run_subagent(
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             if watcher_stop.stopped() {
+                return;
+            }
+            let idle_ms = (now_ms() as u64)
+                .saturating_sub(watcher_progress.load(std::sync::atomic::Ordering::Relaxed));
+            if idle_ms >= crate::bot::constants::SUBAGENT_STALL_TIMEOUT_SECS * 1000 {
+                watcher_stalled.store(true, std::sync::atomic::Ordering::SeqCst);
+                crate::bot::audit_log(
+                    &watcher_app,
+                    &format!(
+                        "subagent_stalled | id: {} | idle_ms: {idle_ms} | 停滞超时，已强制停止",
+                        watcher_sid
+                    ),
+                );
+                watcher_stop.stop();
                 return;
             }
             let sid = watcher_sid.clone();
@@ -582,7 +610,7 @@ pub(crate) async fn run_subagent(
         let first = crate::bot_model_loop::run_model_loop(
             app.clone(),
             msgs,
-            budget.max_turns as usize,
+            max_rounds,
             &stop,
             None,
             None,
@@ -642,30 +670,19 @@ pub(crate) async fn run_subagent(
         Err(e) => classify_outcome(Some(&e.message()), None),
         Ok((text, _refs, _loop_trace)) => classify_outcome(None, Some(text)),
     };
-    // 工具预算触达 → 强制 budget_exceeded(max_tool_calls)——只针对「没交答卷」的。
-    //
-    // 预算触顶后进入收尾窗：读类被拒、写产物放行。模型若照「只许写」
-    // 的指引交出合法收尾 JSON（含产物），那是真实完成，不得改判——改判会把
-    // 父 agent 的「带残留重试」逻辑错误触发，半成品被当失败重烧。没交答卷的
-    // （熔断标记路径已自带 budget_exceeded；这里管「停了工具但只输出散文」的
-    // 剩余路径）才改判，真实原因（预算触顶）不能丢。
-    let tool_calls_used = used_tool_calls.load(std::sync::atomic::Ordering::SeqCst);
-    let wrapped_up_cleanly =
-        matches!(&outcome, Ok((text, _, _)) if parse_final_json(text).is_some());
-    if budget_force_needed(
-        tool_calls_used,
-        budget.max_tool_calls,
-        status,
-        wrapped_up_cleanly,
-    ) {
-        status = SubagentStatus::BudgetExceeded;
-        error = Some("max_tool_calls".into());
-        // 部分结果不丢弃：熔断前跑出来的正文对父 agent 判断「该不该原目标
-        // 重试、还是放宽预算」仍有价值
+    // 停滞超时强制停止：循环按「用户停止」出口带正文返回，判定看不出是假死，
+    // 这里按真实原因改判——父 agent 读 error 决定重试，「stalled」比
+    // 「result_json_unparseable」如实得多。部分正文照常保留。
+    if stalled.load(std::sync::atomic::Ordering::SeqCst) {
+        status = SubagentStatus::Failed;
+        error = Some("stalled".into());
         if let Ok((text, _, _)) = &outcome {
             result = Some(serde_json::json!({
                 "summary": crate::bot::truncate_for_log(text, 800),
-                "note": "工具调用预算触达，未产出收尾 JSON；以上为触达前保留的最后一段正文"
+                "note": format!(
+                    "停滞超时（{}s 无 LLM 增量与工具进展），已强制停止；以上为停止前保留的最后一段正文",
+                    crate::bot::constants::SUBAGENT_STALL_TIMEOUT_SECS
+                )
             }));
         }
     }
@@ -946,12 +963,8 @@ pub(crate) async fn run_subagent(
     spawn_parent_report(&app, &row, effective_status);
 }
 /// 任务包装（设计 §8.5）：orchestrator 从 subagents 行渲染，不接受 LLM 自由拼接。
-/// 目标 / 验收标准 / 上下文摘要 / 预算全部来自行上字段。
-pub(crate) fn render_task_wrapper(
-    row: &SubagentRow,
-    budget: &SubagentBudget,
-    artifact_dir: &std::path::Path,
-) -> String {
+/// 目标 / 验收标准 / 上下文摘要全部来自行上字段。
+pub(crate) fn render_task_wrapper(row: &SubagentRow, artifact_dir: &std::path::Path) -> String {
     let criteria: Vec<String> = acceptance_criteria_of(row);
     let mut w = String::new();
     w.push_str("[子任务派发]\n");
@@ -971,10 +984,6 @@ pub(crate) fn render_task_wrapper(
         w.push_str(ctx);
         w.push('\n');
     }
-    w.push_str(&format!(
-        "\n预算:\nmax_turns={}, max_tool_calls={}\n",
-        budget.max_turns, budget.max_tool_calls
-    ));
     w.push_str(&format!("\n产物目录:\n{}\n", artifact_dir.display()));
     w.push_str("\n完成后必须输出以下 JSON（status 与 summary 必填；acceptance_check / artifacts / blockers 没有就省掉）：\n");
     w.push_str(crate::prompts::RESULT_SCHEMA_HINT);

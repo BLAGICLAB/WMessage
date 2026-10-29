@@ -186,11 +186,10 @@ pub(crate) fn apply_task_patch(
                 set_from(&mut task.plan_end, v, k)?;
                 validate_plan_time(task.plan_end.as_deref(), k, v)?;
             }
-            // 子 agent 编排三字段走 task_patch 既有通道；
-            // null = 清空。assignee/budget/result 由服务端编排写，前端仅投影展示。
-            // budget 落库前必须过 clamped()——硬顶契约在写口强制，防 task_patch
-            // 旁路 maxTurns（ 采纳）。assignee 拒绝空串（它是串链
-            // subagents 表的 join 键，空串会产生孤儿指向——）。
+            // 子 agent 编排两字段走 task_patch 既有通道；
+            // null = 清空。assignee/result 由服务端编排写，前端仅投影展示。
+            // assignee 拒绝空串（它是串链 subagents 表的 join 键，空串会产生
+            // 孤儿指向）。
             "assignee" => {
                 set_from(&mut task.assignee, v, k)?;
                 if task
@@ -204,10 +203,6 @@ pub(crate) fn apply_task_patch(
                         reason: "assignee 不能为空串（子 agent 串链键）".into(),
                     });
                 }
-            }
-            "budget" => {
-                set_from(&mut task.budget, v, k)?;
-                task.budget = task.budget.take().map(|b| b.clamped());
             }
             "result" => set_from(&mut task.result, v, k)?,
             "dependsOn" => {

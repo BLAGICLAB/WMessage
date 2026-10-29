@@ -265,16 +265,6 @@ pub struct BotConfig {
     /// 用 0/1 而不是布尔：设置页的参数卡只有数值输入行。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_turn_context_edit: Option<u32>,
-    /// 子 agent 默认轮数预算（LLM spawn 未显式给 budget 时）：None = 档位全局池的
-    /// 20% 份额；钳 1..=硬顶（`db::subagents::MAX_TURNS_HARD_CAP`）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_turns: Option<u32>,
-    /// 子 agent 工具调用上限：None = 档位全局工具池的 20% 份额；钳 1..=1200。
-    ///
-    /// 与主会话的 `max_function_calls` **分开**：两者是同一个全局池的两份配额
-    /// （主 60% / 子 20%），共用一个键等于子 agent 拿到了主会话同等的额度。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_tool_calls: Option<u32>,
     /// web_search 默认结果条数（模型未传 count 时）：None = 内置默认（`params::DEFAULT_SEARCH_MAX_RESULTS`）；钳 1..=10（后端硬顶）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
@@ -394,8 +384,6 @@ impl Default for BotConfig {
             history_truncate_target_pct: None,
             reasoning_echo_enabled: None,
             in_turn_context_edit: None,
-            subagent_max_turns: None,
-            subagent_max_tool_calls: None,
             search_max_results: None,
             max_tool_output_bytes: None,
             ask_budget: None,
@@ -586,10 +574,6 @@ pub struct BotConfigView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_turn_context_edit: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_turns: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagent_max_tool_calls: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_max_results: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_bytes: Option<u32>,
@@ -624,12 +608,6 @@ impl crate::bot::params::AgentParams for BotConfig {
     }
     fn in_turn_context_edit(&self) -> Option<u32> {
         self.in_turn_context_edit
-    }
-    fn subagent_max_turns(&self) -> Option<u32> {
-        self.subagent_max_turns
-    }
-    fn subagent_max_tool_calls(&self) -> Option<u32> {
-        self.subagent_max_tool_calls
     }
     fn search_max_results(&self) -> Option<u32> {
         self.search_max_results
@@ -668,12 +646,6 @@ impl crate::bot::params::AgentParams for BotConfigView {
     }
     fn in_turn_context_edit(&self) -> Option<u32> {
         self.in_turn_context_edit
-    }
-    fn subagent_max_turns(&self) -> Option<u32> {
-        self.subagent_max_turns
-    }
-    fn subagent_max_tool_calls(&self) -> Option<u32> {
-        self.subagent_max_tool_calls
     }
     fn search_max_results(&self) -> Option<u32> {
         self.search_max_results

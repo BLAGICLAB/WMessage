@@ -6,8 +6,7 @@ use crate::bot_orchestrator::{
     cancel_subagent_async, check_subagent, db_locked, resolve_spawn_profile, spawn_subagent,
     SpawnAck, SpawnOnion, SpawnRequest, SubagentStage, CHECK_WAIT_MS_CAP,
 };
-use crate::bot_orchestrator::{DEFAULT_MAX_TOOL_CALLS, DEFAULT_MAX_TURNS};
-use crate::db::{SubagentBudget, SubagentProfile, SubagentStatus};
+use crate::db::{SubagentProfile, SubagentStatus};
 use crate::error::CommandError;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -76,28 +75,12 @@ pub async fn tool_spawn_subagent(
             Vec::new(),
         );
     }
-    let budget = match &v["budget"] {
-        serde_json::Value::Object(_) => Some(
-            SubagentBudget {
-                max_turns: v["budget"]["maxTurns"]
-                    .as_u64()
-                    .unwrap_or(DEFAULT_MAX_TURNS as u64) as u32,
-                max_tool_calls: v["budget"]["maxToolCalls"]
-                    .as_u64()
-                    .unwrap_or(DEFAULT_MAX_TOOL_CALLS as u64)
-                    as u32,
-            }
-            .clamped(),
-        ),
-        _ => None,
-    };
     let req = SpawnRequest {
         objective,
         profile,
         stage,
         acceptance_criteria: criteria,
         context_summary: v["contextSummary"].as_str().map(str::to_string),
-        budget,
         model_profile: v["modelProfile"].as_str().map(str::to_string),
         onion: onion_cfg.as_ref().map(|c| SpawnOnion {
             config: c.onion_id.clone(),
@@ -117,23 +100,16 @@ pub async fn tool_spawn_subagent(
 }
 /// spawn 的工具回执文案。命中幂等键时要说清「没新建、还是那个」——
 /// 模型读到「已派发」会以为又多了一个子 agent，转述给用户时就会说错。
-///
-/// 回执里回显**生效**预算：调用方给的数会被钳到硬顶，模型不知道它
-/// 的子 agent 实际能跑多少，就会照着自己给的数安排后续动作。
 pub(crate) fn spawn_receipt_text(ack: &SpawnAck) -> String {
-    let budget_note = format!(
-        "生效预算：轮数 {} / 工具调用 {}。",
-        ack.budget.max_turns, ack.budget.max_tool_calls
-    );
     if ack.deduped {
         format!(
-            "同一目标已有在跑的子 agent，未重复派发：subagentId={} status={}。{budget_note}继续用 check_subagent 轮询它。",
+            "同一目标已有在跑的子 agent，未重复派发：subagentId={} status={}。继续用 check_subagent 轮询它。",
             ack.subagent_id,
             ack.status.as_str()
         )
     } else {
         format!(
-            "已派发子 agent（非阻塞）：subagentId={} status={}。{budget_note}用 check_subagent 轮询结果，先继续回应用户。",
+            "已派发子 agent（非阻塞）：subagentId={} status={}。用 check_subagent 轮询结果，先继续回应用户。",
             ack.subagent_id,
             ack.status.as_str()
         )
@@ -306,7 +282,7 @@ pub async fn tool_write_artifact_file(
     }
 }
 /// read_own_card 工具：只读自己的执行契约。子 agent 不再建卡——契约在
-/// subagents 行上（objective / acceptance_json / context_summary / budget_json），
+/// subagents 行上（objective / acceptance_json / context_summary），
 /// 行不存在只可能是 runner 上下文串了会话，属真错误要响亮报出。
 pub async fn tool_read_own_card(
     app: &AppHandle,
@@ -333,18 +309,19 @@ pub async fn tool_read_own_card(
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or_default();
-    let budget: Option<SubagentBudget> = row
-        .budget_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
+    // 上限与主会话同一套安全网（配置解析值）——余量读数要对着上限看才有意义
+    let cfg = crate::bot::load_config(app);
+    let tool_calls_max = crate::bot::params::resolve_main_tool_calls(&cfg);
+    let rounds_max = crate::bot::params::resolve_max_rounds_cfg(&cfg);
     ToolResult::ok(
         own_card_payload(
             &row,
             criteria,
-            budget,
             ctx.used_tool_calls
                 .load(std::sync::atomic::Ordering::SeqCst),
+            tool_calls_max,
             ctx.used_rounds.load(std::sync::atomic::Ordering::SeqCst),
+            rounds_max,
         )
         .to_string(),
         Vec::new(),
@@ -356,9 +333,10 @@ pub async fn tool_read_own_card(
 pub(crate) fn own_card_payload(
     row: &crate::db::subagents::SubagentRow,
     criteria: Vec<String>,
-    budget: Option<SubagentBudget>,
     tool_calls_used: usize,
+    tool_calls_max: u32,
     rounds_used: usize,
+    rounds_max: u32,
 ) -> serde_json::Value {
     let cancelled = row.status == SubagentStatus::Cancelled;
     serde_json::json!({
@@ -368,9 +346,9 @@ pub(crate) fn own_card_payload(
         "contextSummary": row.context_summary,
         "budgetUsage": {
             "toolCallsUsed": tool_calls_used,
-            "toolCallsMax": budget.as_ref().map(|b| b.max_tool_calls),
+            "toolCallsMax": tool_calls_max,
             "roundsUsed": rounds_used,
-            "roundsMax": budget.as_ref().map(|b| b.max_turns),
+            "roundsMax": rounds_max,
         },
         "status": row.status.as_str(),
         "hint": if cancelled {

@@ -57,7 +57,6 @@ pub const TASKS_DDL: &str = "CREATE TABLE IF NOT EXISTS tasks (
    bot_assigned INTEGER,
    files        TEXT,
    assignee     TEXT,
-   budget       TEXT,
    result       TEXT,
    depends_on   TEXT,
    model        TEXT,
@@ -173,9 +172,6 @@ pub struct Task {
     /// 普通卡恒为 None。经 task_patch 通道读写（服务端编排写）。
     #[serde(default)]
     pub assignee: Option<String>,
-    /// 预算三硬顶（上卡可见，非隐藏参数）；存 JSON TEXT
-    #[serde(default)]
-    pub budget: Option<super::subagents::SubagentBudget>,
     /// 收尾结构化结果（设计 §7 schema）；存 JSON TEXT，卡片折叠展示
     #[serde(default)]
     pub result: Option<serde_json::Value>,
@@ -323,9 +319,9 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             "INSERT INTO tasks
                (id, title, due, note, tags, col, subtasks,
                 completed_at, archived, deleted_at, collapsed, ord, updated_at, bot_assigned, files,
-                assignee, budget, result, depends_on, model, owner_id, created_at,
+                assignee, result, depends_on, model, owner_id, created_at,
                 plan_start, plan_end, parent_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
              ON CONFLICT(id) DO UPDATE SET
                title=excluded.title, due=excluded.due, note=excluded.note,
                tags=excluded.tags,
@@ -335,7 +331,7 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                collapsed=excluded.collapsed, ord=excluded.ord,
                updated_at=excluded.updated_at,
                bot_assigned=excluded.bot_assigned, files=excluded.files,
-               assignee=excluded.assignee, budget=excluded.budget, result=excluded.result,
+               assignee=excluded.assignee, result=excluded.result,
                depends_on=excluded.depends_on,
                model=excluded.model, owner_id=excluded.owner_id,
                plan_start=excluded.plan_start, plan_end=excluded.plan_end,
@@ -380,10 +376,6 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
             Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
             None => None,
         };
-        let budget = match &t.budget {
-            Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
-            None => None,
-        };
         let result = match &t.result {
             Some(v) => Some(serde_json::to_string(v).map_err(|e| e.to_string())?),
             None => None,
@@ -410,7 +402,6 @@ pub fn upsert_tasks(conn: &rusqlite::Connection, tasks: &[Task]) -> Result<(), S
                 t.bot_assigned.map(|b| b as i64),
                 files,
                 t.assignee,
-                budget,
                 result,
                 depends_on,
                 t.model,
@@ -466,15 +457,14 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
     let bot_assigned: Option<i64> = row.get(13)?;
     let files: Option<String> = row.get(14)?;
     let assignee: Option<String> = row.get(15)?;
-    let budget: Option<String> = row.get(16)?;
-    let result: Option<String> = row.get(17)?;
-    let depends_on: Option<String> = row.get(18)?;
-    let model: Option<String> = row.get(19)?;
-    let owner_id: Option<String> = row.get(20)?;
-    let created_at: Option<i64> = row.get(21)?;
-    let plan_start: Option<String> = row.get(22)?;
-    let plan_end: Option<String> = row.get(23)?;
-    let parent_id: Option<String> = row.get(24)?;
+    let result: Option<String> = row.get(16)?;
+    let depends_on: Option<String> = row.get(17)?;
+    let model: Option<String> = row.get(18)?;
+    let owner_id: Option<String> = row.get(19)?;
+    let created_at: Option<i64> = row.get(20)?;
+    let plan_start: Option<String> = row.get(21)?;
+    let plan_end: Option<String> = row.get(22)?;
+    let parent_id: Option<String> = row.get(23)?;
     // col 从 DB 读出仍是 String(列类型 TEXT),parse 到 TaskStatus enum。
     // 与 subtasks/files JSON 损坏「warn + 按空读取」的契约对齐:
     // 单行 col 异常不应让整个读失败、把全部任务藏起来。
@@ -516,17 +506,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         },
         None => None,
     };
-    // budget/result 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
-    let budget = match &budget {
-        Some(s) => match serde_json::from_str(s) {
-            Ok(v) => Some(v),
-            Err(_) => {
-                eprintln!("[db] 任务 {id} 的 budget JSON 损坏，按空读取（原值未动）");
-                None
-            }
-        },
-        None => None,
-    };
+    // result 存 JSON TEXT；损坏按空读取（同 subtasks/files 契约）
     let result = match &result {
         Some(s) => match serde_json::from_str(s) {
             Ok(v) => Some(v),
@@ -565,7 +545,6 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
         updated_at,
         bot_assigned: bot_assigned.map(|v| v != 0),
         assignee,
-        budget,
         result,
         depends_on,
         model,
@@ -580,7 +559,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<super::Task> {
 
 const TASK_SELECT_COLS: &str = "SELECT id, title, due, note, tags, col, subtasks, \
      completed_at, archived, deleted_at, collapsed, ord, updated_at, \
-     bot_assigned, files, assignee, budget, result, depends_on, \
+     bot_assigned, files, assignee, result, depends_on, \
      model, owner_id, created_at, plan_start, plan_end, parent_id FROM tasks";
 
 pub fn load_all(conn: &rusqlite::Connection) -> Result<Vec<super::Task>, String> {

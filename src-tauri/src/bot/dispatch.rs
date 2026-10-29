@@ -41,7 +41,6 @@ fn emit_subagent_activity(
             "ms": ms,
             "preview": preview.chars().take(80).collect::<String>(),
             "usedToolCalls": ctx.used_tool_calls.load(std::sync::atomic::Ordering::SeqCst),
-            "maxToolCalls": ctx.budget.max_tool_calls,
         }),
     );
 }

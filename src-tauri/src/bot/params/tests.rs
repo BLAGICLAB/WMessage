@@ -80,14 +80,12 @@ fn empty_cfg() -> BotConfig {
         verified_vendors: Vec::new(),
         schema_version: 1,
         task_mode: None,
-        subagent_max_tool_calls: None,
         max_rounds: None,
         history_truncate_target_pct: None,
         reasoning_echo_enabled: None,
         in_turn_context_edit: None,
         history_budget_chars: None,
         tool_rules: None,
-        subagent_max_turns: None,
         search_max_results: None,
         max_tool_output_bytes: None,
         ask_budget: None,
@@ -117,10 +115,6 @@ fn hardcoded_rows_track_runtime_constants() {
     assert_eq!(
         shown("subagent.per_session_running"),
         crate::bot::constants::SUBAGENT_MAX_PER_SESSION_RUNNING.to_string()
-    );
-    assert_eq!(
-        shown("subagent.turns_hard_cap"),
-        crate::db::MAX_TURNS_HARD_CAP.to_string()
     );
     assert_eq!(
         shown("search.count_cap"),
@@ -184,12 +178,10 @@ fn hardcoded_rows_track_runtime_constants() {
 /// 不编译失败也不测试失败。
 #[test]
 fn max_function_calls_cap_is_single_sourced() {
-    let mut cfg = empty_cfg();
-    cfg.subagent_max_tool_calls = Some(u32::MAX);
     assert_eq!(
-        resolve_subagent_budget(&cfg).max_tool_calls,
+        clamp_max_function_calls(u32::MAX),
         MAX_FUNCTION_CALLS_CAP,
-        "预算侧须钳到 MAX_FUNCTION_CALLS_CAP"
+        "写侧须钳到 MAX_FUNCTION_CALLS_CAP"
     );
     assert_eq!(clamp_max_function_calls(0), 1, "0 次调用无意义，钳到 1");
     assert_eq!(clamp_max_function_calls(30), 30, "区间内原样放行");
@@ -272,10 +264,6 @@ fn params_table_defaults_match_runtime_constants() {
         DEFAULT_HISTORY_BUDGET_CHARS.to_string()
     );
     assert_eq!(
-        by_key("subagent.max_turns").default,
-        DEFAULT_SUBAGENT_MAX_TURNS.to_string()
-    );
-    assert_eq!(
         by_key("search.max_results").default,
         DEFAULT_SEARCH_MAX_RESULTS.to_string()
     );
@@ -324,13 +312,6 @@ fn editable_rows_ranges_match_clamp_bounds() {
         (
             Some(HISTORY_BUDGET_MIN as u64),
             Some(HISTORY_BUDGET_MAX as u64)
-        )
-    );
-    assert_eq!(
-        range("subagent.max_turns"),
-        (
-            Some(crate::db::MIN_SUBAGENT_TURNS as u64),
-            Some(crate::db::MAX_TURNS_HARD_CAP as u64)
         )
     );
     assert_eq!(
@@ -397,7 +378,6 @@ fn effective_params_defaults_and_hardcoded() {
 fn effective_params_reflect_config_and_clamp() {
     let mut cfg = empty_cfg();
     cfg.max_rounds = Some(999);
-    cfg.subagent_max_turns = Some(1);
     cfg.search_max_results = Some(99);
     let views = effective_params(&cfg);
     let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
@@ -409,7 +389,6 @@ fn effective_params_reflect_config_and_clamp() {
     assert_eq!(by_key("loop.max_rounds").source, "config");
     // resolve_* 才是行为入口：钳 5..=500
     assert_eq!(resolve_max_rounds_cfg(&cfg), 500);
-    assert_eq!(resolve_subagent_budget(&cfg).max_turns, 1);
     assert_eq!(
         by_key("search.max_results").value,
         "10",
@@ -425,27 +404,6 @@ fn effective_params_reflect_config_and_clamp() {
         "medium",
         "非法档位展示回退后的生效值"
     );
-}
-
-/// resolve 链：子 agent 预算两项生效 + 各自钳制；工具调用走**独立键**
-/// `subagent_max_tool_calls`（主会话 60% / 子 agent 20%，同一池的两份配额）
-#[test]
-fn resolve_subagent_budget_independent_fields() {
-    let mut cfg = empty_cfg();
-    cfg.subagent_max_tool_calls = Some(9999);
-    let b = resolve_subagent_budget(&cfg);
-    assert_eq!(b.max_turns, DEFAULT_SUBAGENT_MAX_TURNS);
-    assert_eq!(
-        b.max_tool_calls, 1200,
-        "子 agent 工具数独立于主会话，钳 1..=全局工具池硬顶 1200"
-    );
-}
-
-/// resolve 链：未配置 max_function_calls 时子 agent 工具调用落内置默认 100
-#[test]
-fn resolve_subagent_budget_tool_calls_default() {
-    let b = resolve_subagent_budget(&empty_cfg());
-    assert_eq!(b.max_tool_calls, DEFAULT_SUBAGENT_MAX_TOOL_CALLS);
 }
 
 /// resolve 链：历史预算钳 20K..=500K
@@ -569,17 +527,10 @@ fn task_mode_falls_back_to_balanced_on_garbage() {
     );
 }
 
-/// 分配比例：主会话 60% / 单个子 agent 20% / 单个技能 15%，合计 95%。
+/// 分配比例：主会话 60%（子 agent 不再有独立份额，与主会话共用安全网）。
 #[test]
 fn budget_allocation_ratios_are_pinned() {
     assert_eq!(MAIN_SESSION_BUDGET_PCT, 60);
-    assert_eq!(SUBAGENT_BUDGET_PCT, 20);
-    assert_eq!(SKILL_BUDGET_PCT, 15);
-    assert_eq!(
-        MAIN_SESSION_BUDGET_PCT + SUBAGENT_BUDGET_PCT + SKILL_BUDGET_PCT,
-        95,
-        "三者合计 95%，留 5% 余量"
-    );
 }
 
 /// 档位切换真的改生效值：轻量 < 均衡 < 深度。
@@ -630,16 +581,4 @@ fn advanced_override_wins_over_mode_preset() {
     assert_eq!(resolve_main_tool_calls(&cfg), 88);
     assert_eq!(resolve_history_budget_chars(&cfg), 99_000);
     assert_eq!(resolve_max_tokens(&cfg), 4_096);
-}
-
-/// 子 agent 与主会话是同一池的两份配额：主 60% / 子 20%，互不占用。
-#[test]
-fn main_and_subagent_take_separate_shares() {
-    let mut cfg = empty_cfg();
-    cfg.task_mode = Some("balanced".into());
-    let b = resolve_subagent_budget(&cfg);
-    assert_eq!(resolve_max_rounds_cfg(&cfg), 60, "主会话拿 60%");
-    assert_eq!(b.max_turns, 20, "子 agent 拿 20%");
-    assert_eq!(resolve_main_tool_calls(&cfg), 150, "主会话工具数拿 60%");
-    assert_eq!(b.max_tool_calls, 50, "子 agent 工具数拿 20%");
 }
