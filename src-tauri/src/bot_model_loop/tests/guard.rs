@@ -403,7 +403,7 @@ mod hallucination_guard_tests {
             "T".repeat(10_000)
         );
         let out = cap_tool_output(&text, 30_000);
-        assert!(out.contains("已按 maxToolOutputBytes=30000 截断，原文 50000 字节"));
+        assert!(out.contains("已按回灌上限 30000 字节截断，原文 50000 字节"));
         // 头部保留 cap - 6K = 24K（原文头 20K 全 H + 中段 4K M）；尾部保留 6K
         assert!(out.starts_with(&format!("{}{}", "H".repeat(20_000), "M".repeat(4_000))));
         assert!(out.ends_with(&"T".repeat(6_000)));
@@ -422,7 +422,7 @@ mod hallucination_guard_tests {
             &out[..90]
         );
         assert!(out.ends_with(&"A".repeat(20)));
-        assert!(out.contains("已按 maxToolOutputBytes=100 截断"));
+        assert!(out.contains("已按回灌上限 100 字节截断"));
     }
 
     #[test]
@@ -459,8 +459,8 @@ mod hallucination_guard_tests {
 
     #[test]
     fn effective_cap_falls_back_to_global_when_budget_is_looser() {
-        // read_text_file 的 per-tool 预算 65536 比全局大 → 全局兜底，否则设置页那个
-        // 旋钮在长输出工具上就成空设置
+        // read_text_file 的 per-tool 预算 65536 比全局小 → 全局常量兜底（常量收紧
+        // 后长输出工具也不得突破）
         assert_eq!(effective_output_cap("read_text_file", 30_000), 30_000);
         // 不在注册表里的名字（MCP 挂载工具）也走全局
         assert_eq!(effective_output_cap("mcp_unknown", 30_000), 30_000);
@@ -517,7 +517,7 @@ mod hallucination_guard_tests {
             apply_output_cap(app.handle(), Some(30_000), "run_python", "A".repeat(8_193)).await;
         assert!(!out.is_empty(), "兜底路径必须保留节选，不得返回空串");
         assert!(
-            out.contains("已按 maxToolOutputBytes=8192 截断"),
+            out.contains("已按回灌上限 8192 字节截断"),
             "兜底走纯头尾截断形态：{}",
             out.chars().take(60).collect::<String>()
         );

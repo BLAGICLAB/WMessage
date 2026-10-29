@@ -1,7 +1,7 @@
 //! 子 agent 执行体：run_subagent 及其生命周期配套。
 //!
 //! runner 负责「跑完一个子 agent」的全过程：排队取闸位 → 建会话 → 跑工具循环
-//! → 收尾落库 → 回报父会话。取消 watcher 与墙钟硬停也在这条路径上。
+//! → 收尾落库 → 回报父会话。取消 watcher 与停滞判停也在这条路径上。
 
 use crate::bot_chat::ChatGuard;
 use crate::bot_orchestrator::{

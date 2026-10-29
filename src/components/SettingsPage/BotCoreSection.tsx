@@ -230,7 +230,7 @@ export function BotCoreSection({
 
 
       {/* 幻觉守卫触发词表：独立卡片（自带保存按钮，与 renderSaveButton
-          无关——它只管下面那张 Agent 运行参数卡） */}
+          无关——它只管上面那张机器人设置卡） */}
       <GuardKeywordsPanel
         value={config.guardClaimKeywords}
         defaults={config.guardClaimKeywordsDefault}

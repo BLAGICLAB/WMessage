@@ -301,7 +301,7 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
       // skipReload=true 用于点档即时落盘场景：末尾 loadConfig 会拿 mock/磁盘上的旧值覆盖刚点的字段
       if (!opts?.skipReload) {
         await loadConfig();
-        // 生效值跟着变（写侧钳过的值、刚改的默认值来源）——不重拉的话卡片上
+        // 生效值跟着变（写侧钳过的值、刚改的默认值来源）——不重拉的话页面
         // 还会显示保存前的「当前生效」
         await loadParamViews();
       }

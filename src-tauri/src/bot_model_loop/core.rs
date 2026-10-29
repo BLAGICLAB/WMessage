@@ -48,7 +48,7 @@ pub(super) fn fail_hint_for(tool: &str, reason: &str, consec_failures: usize) ->
 /// 模型工具循环核心：流式请求（思考拆分 + 工具折叠事件）、进程内执行工具。
 /// 配置/Key/HTTP 客户端/副作用出口全部注入，不依赖 AppHandle。
 /// msgs 需已含 system 消息；返回 (最终正文, 任务引用)。
-/// 轮数上限由调用方传入：默认 DEFAULT_MAX_ROUNDS（50），多步 Skill 可自报 max_rounds 覆盖。
+/// 轮数上限由调用方传入（缺省安全网常量 MAX_ROUNDS = 200，多步 Skill 只许往下收紧）。
 /// plan_state（PREVR 第 2 层）：复杂任务的动态计划；工具连续失败时触发
 /// Replan（重规划剩余步骤，≤MAX_REPLANS 次）。None = 无计划自由循环。
 //

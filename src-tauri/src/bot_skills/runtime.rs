@@ -72,7 +72,7 @@ fn skill_budget_warn_limits(max_steps: usize) -> usize {
 ///
 /// 返回 None = 预算还充裕。
 ///
-/// 为什么要有软警告：步数/墙钟是硬闸，被它砍掉的那一轮模型往往刚做完关键动作
+/// 为什么要有软警告：步数是硬闸（仅 auto 模式），被它砍掉的那一轮模型往往刚做完关键动作
 /// （产物已落盘、正准备总结）——硬杀留给用户一个空气泡，软警告让模型有机会
 /// 先把结论和产物路径说出来。
 pub(crate) fn skill_budget_warning(run: &SkillRun, _now_ms: i64) -> Option<String> {
@@ -96,7 +96,7 @@ pub(crate) fn skill_budget_warning(run: &SkillRun, _now_ms: i64) -> Option<Strin
 pub enum SkillExitKind {
     /// 技能跑完（Completed）
     Completed,
-    /// 技能被闸门砍掉：步数/墙钟/工具失败（Failed）
+    /// 技能被闸门砍掉：步数（仅 auto）/工具失败（Failed）
     Failed,
     /// 技能被叫停：用户拒绝/强制停止（Terminated）
     Terminated,

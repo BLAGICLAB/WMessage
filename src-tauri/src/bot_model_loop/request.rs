@@ -371,7 +371,7 @@ pub(crate) fn prepare_round(
         }
     };
 
-    // 熔断上限 = 主会话上限（resolve_main_tool_calls，主/子同一个数）。阶梯阈值见
+    // 熔断上限：None = 安全网常量（主/子同一个数）；Some 仅 eval 与单测注入。阶梯阈值见
     // 下方按占比派生。钳位只在 fuse_cap_for 末端做一次（防巨值实质关闭熔断），
     // 上界取 params 的 MAX_FUNCTION_CALLS_CAP。
     let fuse_cap = fuse_cap_for(deps.fuse_cap_override);

@@ -108,9 +108,8 @@ pub struct LlmHttp {
 /// 使核心循环不依赖 AppHandle；异步出口（execute_tool / replan）因 Rust 闭包生命周期
 /// 限制走泛型参数。生产薄壳 run_model_loop 传入 AppHandle 实现，测试传 stub。
 pub struct ModelLoopDeps<'a> {
-    /// 单次请求 Function 调用熔断上限覆盖：薄壳从 bot-config
-    /// `maxFunctionCalls` 读入；None = 默认 100。子 agent 预算优先级更高
-    /// （core 派生链第一级），测试直驱 core 传 Some(n) 可锚定任意 cap。
+    /// 单次请求 Function 调用熔断上限覆盖：生产恒传 None（用安全网常量）；
+    /// Some 只剩 eval 用例与单测直驱 core 注入，可锚定任意 cap。
     pub fuse_cap_override: Option<usize>,
     /// 流式事件出口（bot-chat-delta / bot-think-delta / bot-tool / bot-tool-name / bot-tool-done）
     pub emit: &'a (dyn Fn(&str, serde_json::Value) + Send + Sync),

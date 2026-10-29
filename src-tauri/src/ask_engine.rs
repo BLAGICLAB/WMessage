@@ -164,7 +164,7 @@ pub struct AskRegistration {
 }
 
 /// 注册提问上下文（bot_chat 在 register_exec_session 之后调用，手动执行路径）。
-/// budget = 全局提问预算（bot 参数 tools.ask_budget）
+/// budget = 全局提问预算（常量 ASK_BUDGET_DEFAULT）
 pub(crate) fn register_ask_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     session_id: &str,

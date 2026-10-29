@@ -86,7 +86,6 @@ export type SkillInfo = {
 
 // MCP（外部工具服务器）
 
-/** 单个外部 MCP 服务器配置（与 Rust bot::mcp::config::McpServerConfig 同形，camelCase） */
 /** bot_effective_params 返回的一行（与 Rust bot::params::ParamView 同形，camelCase）。
  *
  *  字段口径：
@@ -106,6 +105,7 @@ export type ParamView = {
   min?: number | null;
   max?: number | null;
 };
+/** 单个外部 MCP 服务器配置（与 Rust bot::mcp::config::McpServerConfig 同形，camelCase） */
 export type McpServerConfig = {
   /** "" = 新建（后端生成 uuid） */
   id: string;

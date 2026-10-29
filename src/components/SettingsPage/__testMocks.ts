@@ -52,7 +52,7 @@ const defaultInvoke = async (cmd: string) => {
       return { services: [], totalRssMb: 0, warnings: [], sampledAt: null };
     case "services_stop":
       return { serviceId: "", stopped: true };
-    // Agent 运行参数卡的元数据（默认值/可填范围/当前生效值）
+    // 参数表元数据（默认值/可填范围/当前生效值）——与后端 PARAMS_TABLE 三行同形
     case "bot_effective_params":
       return paramViews;
     case "env_check":
@@ -122,32 +122,6 @@ export const expectLogoSlug = (img: Element | null, slug: string) => {
  *  的唯一来源。 */
 export const paramViews = [
   {
-    key: "loop.max_rounds",
-    label: "模型循环最大轮数",
-    category: "loop",
-    hint: "单次对话/任务执行的 LLM 轮数上限；调大=更复杂任务但失控时更费 token",
-    value: "50",
-    default: "50",
-    source: "default",
-    editable: true,
-    // 上界故意用 1000（真值 200）：预设里的「拉到上限」若写死字面量就露馅——
-    // 钳制只会把超出的往下拉，写死 200 落盘还是 200，派生则落盘 1000
-    min: 5,
-    max: 1000,
-  },
-  {
-    key: "loop.max_function_calls",
-    label: "主会话工具调用安全网",
-    category: "loop",
-    hint: "主会话的工具调用熔断上限；默认取共享安全网常量",
-    value: "400",
-    default: "400",
-    source: "default",
-    editable: true,
-    min: 1,
-    max: 1200,
-  },
-  {
     // 故意用 45 而不是真实的 30：页面显示的数必须来自后端参数表，
     // 前端自留一份「30」的话这条就会露馅
     key: "trace.retention_days",
@@ -175,20 +149,6 @@ export const paramViews = [
     editable: false,
     min: null,
     max: null,
-  },
-  {
-    // 全局 max_tokens：真默认 32768（后端 schema::DEFAULT_MAX_TOKENS），
-    // 范围 256..=200000
-    key: "model.max_tokens",
-    label: "全局 max_tokens",
-    category: "model",
-    hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送",
-    value: "32768",
-    default: "32768",
-    source: "default",
-    editable: true,
-    min: 256,
-    max: 200000,
   },
   {
     // Python 超时：value/default 是 mock 自造值（真值在后端 py::runtime 常量），

@@ -288,7 +288,7 @@ pub(super) async fn run_task_in_chat_impl(
 ) -> CommandResult<TaskChatRun> {
     // 执行 trace 挂钩——壳造槽，闭包填 LoopTrace 统计，
     // 内核（run_task_in_chat_with）填归属并收尾。
-    // 轮数走配置解析（config maxRounds，钳 5..=200；默认 50）
+    // 轮数上限 = 安全网常量 MAX_ROUNDS
     let hook: std::sync::Arc<std::sync::Mutex<crate::trace_sink::TraceCapture>> =
         Default::default();
     let hook_for_run = hook.clone();
@@ -414,7 +414,7 @@ where
     // 执行提问授权（ask_user 按 session_id 查表）：
     // - 手动执行任务卡：默认开启（预算 + 假设兜底 + 可停止的等待）——
     //   交互式技能的确认点（题材/书名等）在手动执行里也要有通道；
-    // - 预算 = bot 参数 tools.ask_budget（Wry 壳解析后传入）；
+    // - 预算 = 常量 ASK_BUDGET_DEFAULT（壳层解析后传入）；
     //   定时/批量保持无人值守自治（不注册，调用即回落假设）
     let ask_registered = if origin == TaskExecOrigin::Manual {
         crate::ask_engine::register_ask_context(app, &sid, &task.id, &task.title, ask_budget);

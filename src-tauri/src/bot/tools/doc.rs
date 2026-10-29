@@ -626,7 +626,7 @@ pub(crate) async fn tool_web_search(
         &format!("web_search | query: {}", escape_for_log(&query, 100)),
     );
     // 过滤参数（count/timeRange/site），缺省 = 旧行为；
-    // count 缺省值走配置解析（config searchMaxResults，默认 8）；
+    // count 缺省值走常量（SEARCH_MAX_RESULTS_DEFAULT = 6）；
     // 模型显式给的 count 与常量缺省值共用 params 的同一条钳制边界
     let opts = crate::bot_web::SearchOpts {
         count: parse_search_count(&v["count"])

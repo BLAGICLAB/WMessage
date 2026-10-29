@@ -482,7 +482,7 @@ pub(super) async fn bot_chat_inner(
             }
         }
     }
-    // 轮数三层优先级：Skill frontmatter 自报 > 配置 maxRounds > 默认 50
+    // 轮数上限：Skill frontmatter 自报（只许收紧）> 安全网常量 MAX_ROUNDS
     let max_rounds = crate::bot_model_loop::resolve_max_rounds(
         pre_routed_skill
             .as_ref()
@@ -533,7 +533,7 @@ pub(super) async fn bot_chat_inner(
     // LLM 失败静默退回直接丢弃
     // 历史预算是常量（constants::HISTORY_BUDGET_CHARS）
     let budget_used = crate::bot::constants::HISTORY_BUDGET_CHARS as usize;
-    // 截断滞回比例（config historyTruncateTargetPct，钳 50..=90；默认 70%）：
+    // 截断滞回比例（常量 HISTORY_TRUNCATE_TARGET_PCT = 70%）：
     // 超预算时一次裁到目标比例而不是贴着预算边裁——贴边裁每轮都可能只丢
     // 一两条，把缓存前缀断成每轮一次。留出余量能稳住好几轮的前缀。
     let truncate_ratio = crate::bot::constants::HISTORY_TRUNCATE_TARGET_PCT as f64 / 100.0;

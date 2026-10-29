@@ -166,7 +166,7 @@ pub struct ToolDef {
     pub claims_patterns: &'static [&'static str],
     /// 工具返回文本的回灌上限（字节，UTF-8）。超阈值把完整结果转存成溢出文件、
     /// 回灌节选 + 指针（见 bot_model_loop::effective_output_cap 与 overflow 模块）。
-    /// 与设置页的全局 maxToolOutputBytes 取小后生效，两层都要。
+    /// 与全局常量 TOOL_OUTPUT_BYTES 取小后生效，两层都要。
     /// 默认 8192；长输出工具（read_text_file/fetch_url/list_files）自定 65536。
     pub max_output_bytes: usize,
     pub call: for<'a> fn(&'a ToolCtx<'a>, &'a str) -> ToolFuture<'a>,

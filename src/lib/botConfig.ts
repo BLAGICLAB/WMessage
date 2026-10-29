@@ -32,7 +32,6 @@ export interface BotConfigView {
   /** 授权模式：strict/ask/auto/yolo（None = ask） */
   permMode?: string | null;
   apiProvider?: string | null;
-  /** 推理强度后台默认：off/low/medium/high（缺字段/非法 → 前端按 medium） */
   modelsByProvider?: {
     openai?: ModelEntry[];
     anthropic?: ModelEntry[];

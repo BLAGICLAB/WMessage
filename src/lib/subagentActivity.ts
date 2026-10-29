@@ -27,8 +27,7 @@ export type SubagentActivityItem = {
 };
 
 /** 每个子 agent 保留的最近动作条数：详情页的「执行详情」窗口按条滚动回看，
- *  默认工具调用预算就是 100 次，留满 100 条整趟每一步都在窗里；仍是事件即焚
- *  不落库——历史会话回看走详情面板的结果与 digest。 */
+ *  100 条够覆盖一次典型调研的全过程；事件即焚不落库——历史会话回看走详情面板的结果与 digest。 */
 export const ACTIVITY_MAX_ITEMS = 100;
 
 function eventToItem(e: SubagentActivityEvent, now: number): SubagentActivityItem {

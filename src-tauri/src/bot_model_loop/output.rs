@@ -2,10 +2,8 @@
 //!
 //! 本文件由 bot_model_loop.rs 拆分而来（纯搬移，行为零变化）。
 
-// 单条工具结果回灌的默认上限改由**档位**给（轻量 64KB / 均衡 128KB / 深度
-// 200KB，见 `bot::params` 的 ModePreset），不再有独立的内置常量——
-// 「默认值」有两个来源（档位与常量）时，改一处漏一处就会让设置页显示的值
-// 与实际生效的值不是一回事。
+// 单条工具结果回灌的全局上限是常量（constants::TOOL_OUTPUT_BYTES，128KB
+// 即硬顶），不分档不可配——单一来源，不存在「默认值有两个来源」的分叉。
 //
 // 上限按字节而不是字符：这条上限的职责是「别把模型上下文撑爆」，而撑爆的是
 // token，不是字符数。字节到 token 的换算跨语种稳定得多（中文约 3 字节/token、
@@ -32,8 +30,8 @@ const DOCUMENT_OUTPUT_TOOLS: [&str; 1] = ["use_skill"];
 /// 两个都要，不能只要一个：
 /// - per-tool 预算（`ToolDef.max_output_bytes`）管「这个工具天生输出就大」——
 ///   fetch_url / read_text_file / list_files 可以给到 65536，其余默认 8192。
-/// - 全局 cap 管用户在设置页调的总量，也是唯一兜底——per-tool 预算被调到比它大时
-///   不能放任，否则设置页那个旋钮就成了空设置。
+/// - 全局 cap 是常量 TOOL_OUTPUT_BYTES（128KB），兜住 per-tool 预算被调得比它大的长输出
+///   工具（当前 65536 < 128KB，取小恒为 per-tool；分支仍是常量收紧后的兜底）。
 ///
 /// 例外：文档类工具（`DOCUMENT_OUTPUT_TOOLS`）按 per-tool 预算走，不与全局 cap
 /// 取小——全局 cap 调的是「工具结果」的总量，把「模型要读的文档」也压进去就是
@@ -108,7 +106,7 @@ pub(crate) async fn apply_output_cap<R: tauri::Runtime>(
             // 「超预算」审计事件在**截断发生的地方**发：阈值就是这次
             // 真正用的 cap（同一个数）。此前这条事件在 dispatch 侧按
             // per-tool 预算报，而截断用 min(per-tool, 全局 cap)——
-            // 全局 cap 更紧时（默认 30000 vs 长输出工具 65536）文本被
+            // 全局 cap 更紧时（常量收紧 vs 长输出工具 65536）文本被
             // 截了而审计不报，运维据此查超预算会漏掉全部由全局 cap
             // 触发的截断；反过来审计报了也可能根本没截。
             crate::audit::write_event(
@@ -165,7 +163,7 @@ pub(crate) fn cap_tool_output(text: &str, cap_bytes: usize) -> String {
     let head_bytes = head_end;
     let tail_bytes = total - tail_start;
     format!(
-        "{}\n…（已按 maxToolOutputBytes={cap_bytes} 截断，原文 {total} 字节，头 {head_bytes} + 尾 {tail_bytes} 保留）…\n{}",
+        "{}\n…（已按回灌上限 {cap_bytes} 字节截断，原文 {total} 字节，头 {head_bytes} + 尾 {tail_bytes} 保留）…\n{}",
         &text[..head_end],
         &text[tail_start..]
     )

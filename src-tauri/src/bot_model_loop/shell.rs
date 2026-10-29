@@ -254,10 +254,6 @@ pub async fn run_model_loop(
         // 用例与单测直驱注入一条路。
         fuse_cap_override: None,
         conv_sidecar_dir: conv_sidecar_path.as_deref(),
-        // 思考段回灌：默认关（维持现状），开了才把本轮 reasoning_content 随
-        // 工具调用消息回灌历史（DeepSeek reasoner 缺了就 400，MiniMax M2/M3
-        // 缺了思考链会断）。
-        // 轮内工具结果滑动窗：默认开（阈值在实测 p90 附近，只影响约 9% 的提问）
         // 终稿自检轮次间隔：cfg 有值用之（已落盘前钳 0..=100），None = 默认 8。
         // 0 = 关闭 final 自检的 kill switch 直接透传。
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
@@ -427,7 +423,7 @@ pub async fn run_model_loop(
             // 三层漏斗（owner 各不相同，缺一不可）：
             //   L1 per-tool 预算（ToolDef.max_output_bytes，最紧）——超了就把完整结果
             //      转存成溢出文件，回灌节选 + 指针；模型按需 read_text_file 分页读回。
-            //   L2 本配置 cap（maxToolOutputBytes，默认 30K 字节）——兜住 per-tool 预算
+            //   L2 全局常量 cap（TOOL_OUTPUT_BYTES = 128KB）——兜住 per-tool 预算
             //      被调得比它大的那三个长输出工具。
             //   L3 db::SPAN_TEXT_MAX——在 trace 侧，只管存多少进 SQLite，不管这里。
             // trace span 仍存原文（钳在 L3），整轮回放的证据不因回灌节选而丢失。

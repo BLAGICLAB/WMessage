@@ -38,7 +38,7 @@ pub struct SkillMeta {
     pub session_owner: Option<String>,
     pub intents: Vec<String>,
     /// 多步 Skill 自报的对话轮数上限；
-    /// None → 运行时 fallback bot_model_loop::DEFAULT_MAX_ROUNDS（50）。
+    /// None → 运行时用安全网常量 MAX_ROUNDS（200）。
     /// 解析时 clamp 到 1..=60（现有 Skill 未声明该字段 → None，不受影响）。
     pub max_rounds: Option<usize>,
     /// allowed-tools 前置声明（agentskills.io 开放标准字段）。
@@ -67,7 +67,7 @@ impl Default for SkillMeta {
             description: String::new(),
             risk_level: "medium".into(),
             mode: "interactive".into(),
-            // 步数与墙钟的默认值见本文件顶部的 DEFAULT_MAX_STEPS / DEFAULT_TIMEOUT_SECS：
+            // 步数默认值见本文件顶部的 DEFAULT_MAX_STEPS（墙钟已废弃）：
             // 两者都按「多步产出型技能正常跑完」的量级给，且 clamp 上限留了两倍余量，
             // frontmatter 声明的值才不会被夹回默认值。
             max_steps: DEFAULT_MAX_STEPS,

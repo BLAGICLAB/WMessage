@@ -19,7 +19,7 @@ describe("SubagentRowLine 子 agent 单行摘要", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("在途行显示「已跑/预算 轮」与运行时长", () => {
+  it("在途行显示已跑轮数与运行时长", () => {
     const t0 = Date.now();
     vi.setSystemTime(t0);
     render(<SubagentRowLine run={run({ startedAt: t0 - 4000 })} />);

@@ -84,7 +84,7 @@ export function SubagentProgress({ run: s }: { run: SubagentRun }) {
       {calls && (
         <span
           className="shrink-0 font-mono text-[10px] text-[var(--t5)]"
-          title="工具调用 / 预算"
+          title="工具调用"
         >
           {calls}
         </span>

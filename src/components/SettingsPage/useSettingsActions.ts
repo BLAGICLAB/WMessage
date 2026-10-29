@@ -73,7 +73,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
     braveEnabled: false,
     // run_python 默认超时秒数（空 = 120s 默认；模型 timeoutSecs 参数优先；硬钳上限见后端参数表）
     pythonTimeoutSecs: "",
-    // Function 调用熔断上限（空 = 100 默认； 全域，含工作流节点执行）
     // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源
     // 显示为字符串输入；"7" = 默认（后端 None 亦回 7）
     archiveAfterDays: String(DEFAULT_ARCHIVE_DAYS),
@@ -100,7 +99,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
     //  记忆参数（手改 bot-config.json 生效，本页无 UI）：
     // 原样回传保存，防止设置页整体替换写把手改值冲掉
     memoryTuning: null as Record<string, number> | null,
-    // ──  Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
   });
   const [traceRetainDays, setTraceRetainDays] = useState("");
   const [traceClearBusy, setTraceClearBusy] = useState(false);
@@ -221,7 +219,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
       const views = await invoke<ParamView[]>("bot_effective_params");
       setParamViews(Array.isArray(views) ? views : null);
     } catch (e) {
-      // 拉不到就让卡片退回本地兜底：参数卡不能因为一个展示用的命令挂了就整块
+      // 拉不到就让页面退回本地兜底：展示文案不能因为一个展示用的命令挂了就整块
       // 消失（设置页其余部分照常用）
       handleCommandError(e, "bot_effective_params", { silent: true });
       setParamViews(null);
@@ -371,7 +369,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     refreshBot();
     // oxlint-disable-next-line react/set-state-in-effect
     loadConfig();
-    // Agent 运行参数卡的元数据（生效值/默认值/范围）——与 loadConfig 同步拉，
+    // 参数表（三行只读）的元数据（生效值/默认值/范围）——与 loadConfig 同步拉，
     // 两者都来自后端同一份参数表
     // oxlint-disable-next-line react/set-state-in-effect
     loadParamViews();
