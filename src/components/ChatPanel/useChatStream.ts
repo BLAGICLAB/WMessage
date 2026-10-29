@@ -11,6 +11,7 @@ import type { Msg, SkillFailure, TurnStatus } from "./types";
 import { DELTA_BATCH_MS } from "./constants";
 import * as streamState from "./streamState";
 import * as planStore from "./planStore";
+import * as askStore from "./askStore";
 import type { StreamMeta } from "./streamState";
 import type { PlanEventPayload } from "./planStore";
 import type { Dispatch, RefObject, SetStateAction } from "react";
@@ -281,6 +282,11 @@ export function useChatStream(params: ChatStreamParams) {
       if (!streamState.noteSeq(sid, p?.seq)) return;
       const status = p?.status;
       if (!status) return;
+      // 回合终态：答完的提问卡清走（提问阻塞模型轮，终态前引擎必已回落；
+      // 未答的卡正常不存在，clearResolved 防御性不动它）
+      if (status !== "running" && status !== "settling") {
+        askStore.clearResolved(sid);
+      }
       // 回合终态 = 这一轮结束。此刻还压在合并窗口里、没落地的增量属于**这一轮**：
       // 落地它就等于给一个已经收尾的回合再开一个「正在思考」的气泡——没人会来
       // 收它（终态事件已经来过了），活体指示永远转到用户以为还在跑
@@ -418,6 +424,39 @@ export function useChatStream(params: ChatStreamParams) {
     const unPlan = reg<PlanEventPayload>("bot-plan", (p) => {
       planStore.applyEvent(p);
     });
+    //  会话内提问卡：ask_user 发起（bot-ask）与终态（bot-ask-resolved）。
+    //  与其它流式事件同一批处理器——实时订阅与「回放补齐」共用：重开会话时
+    //  回放里的问题卡要还原（含终态），否则补齐后卡就不见了。
+    const unAsk = reg<{
+      questionId?: string;
+      question?: string;
+      why?: string | null;
+      options?: unknown;
+      assumption?: string | null;
+      sessionId?: string | null;
+      seq?: number;
+    }>("bot-ask", (p) => {
+      const sid = p?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      askStore.applyAsk(p);
+    });
+    const unAskResolved = reg<{
+      questionId?: string;
+      action?: string;
+      answer?: string | null;
+      sessionId?: string | null;
+      seq?: number;
+    }>("bot-ask-resolved", (p) => {
+      const sid = p?.sessionId ?? null;
+      if (sid === null) return;
+      if (sid !== sessionIdRef.current && !streamState.isInflight(sid)) return;
+      // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
+      if (!streamState.noteSeq(sid, p?.seq)) return;
+      askStore.applyResolved(p);
+    });
     //  水位条数据源：Anthropic 回合级 usage 按会话累计（当前视图 + 在途会话，
     //  与流式事件同过滤口径——切走的会话继续累计，切回可见）
     const unUsage = listen<{
@@ -476,6 +515,8 @@ export function useChatStream(params: ChatStreamParams) {
       unlistenSafe(unUsage);
       unlistenSafe(unSkillFailed);
       unlistenSafe(unPlan);
+      unlistenSafe(unAsk);
+      unlistenSafe(unAskResolved);
       streamHandlersRef.current = {};
     };
   }, [loadFinalText]);

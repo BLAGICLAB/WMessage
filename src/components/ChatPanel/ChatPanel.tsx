@@ -25,6 +25,7 @@ import { SessionRail } from "./SessionRail";
 import { ContextRail } from "./ContextRail";
 import { MessageList } from "./MessageList";
 import { PlanPanel } from "./PlanPanel";
+import { AskCard, useAskCards } from "./AskCard";
 import { UsageMeter } from "./UsageMeter";
 import { InputArea } from "./InputArea";
 import { STICK_BOTTOM_PX } from "./constants";
@@ -99,6 +100,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
   const [dragHover, setDragHover] = useState(false);
   /** 执行计划浮层开合（右上角按钮切换；浮层不占右侧栏位置） */
   const [planOpen, setPlanOpen] = useState(false);
+  // 提问卡（ask_user）：bot-ask 事件落 store，贴输入区上方呈现
+  const askCards = useAskCards(sessionId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickBottomRef = useRef(true);
   const lastScrollTopRef = useRef(0);
@@ -782,6 +785,14 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
         onOpenExecSession={switchSession}
         onOpenTrace={openTraceFor}
       />
+      {/* 提问卡（ask_user）：贴输入区上方，答完保留终态到回合收尾 */}
+      {askCards.length > 0 && (
+        <div className="shrink-0 space-y-2 px-1 pb-1">
+          {askCards.map((a) => (
+            <AskCard key={a.questionId} ask={a} />
+          ))}
+        </div>
+      )}
       {/* 停止反馈（bot_stop 回传置位条数）：贴在输入区上方，不进消息流 */}
       {stopNotice && stopNotice.sid === sessionId && (
         <p

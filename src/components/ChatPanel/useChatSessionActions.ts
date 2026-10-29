@@ -12,6 +12,7 @@ import type { Msg, ReasoningLevel, Session, TaskRef } from "./types";
 import type { ChatDraft } from "./chatDrafts";
 import * as streamState from "./streamState";
 import * as planStore from "./planStore";
+import * as askStore from "./askStore";
 import type { ConfirmOptions } from "../../lib/useConfirm";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 
@@ -163,6 +164,8 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
       });
       // 计划挂在会话上：被删会话的计划一并清掉（防同 id 重建后继承旧计划）
       planStore.dropSession(sid);
+      // 提问卡同上：挂在会话上，删会话一并清（防同 id 重建后继承旧卡）
+      askStore.dropSession(sid);
       if (sid === sessionId) {
         // 删的是当前会话：切到剩余第一个；没有则新建
         if (rest.length) {
