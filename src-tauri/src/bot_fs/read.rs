@@ -213,6 +213,30 @@ pub(super) async fn read_with_ino_check(
 
 // 工具实现（bot 分发签名：(String, Vec<TaskRef>)）
 
+/// read_text_file 行切片渲染（纯函数，单测入口）：offset/limit 行切片（1 起）
+/// 带行号前缀；单行超 READ_MAX_LINE_CHARS 字符截断并标注——超长行（minified
+/// 产物、单行 JSON）会原样穿过磁盘闸与行数闸，无标注的截断会让模型把半行
+/// 当整行。
+pub(super) fn render_read_slice(lines: &[&str], offset: usize, limit: usize) -> Vec<String> {
+    lines
+        .iter()
+        .skip(offset - 1)
+        .take(limit)
+        .enumerate()
+        .map(|(i, line)| {
+            let body = if line.chars().count() > READ_MAX_LINE_CHARS {
+                format!(
+                    "{}…[本行超 {READ_MAX_LINE_CHARS} 字符已截断]",
+                    line.chars().take(READ_MAX_LINE_CHARS).collect::<String>()
+                )
+            } else {
+                (*line).to_string()
+            };
+            format!("{}: {}", offset + i, body)
+        })
+        .collect()
+}
+
 /// read_text_file：读白名单内 UTF-8 文本，offset/limit 行切片（1 起），超 100KB 截断
 pub async fn tool_read_text_file(
     app: &AppHandle,
@@ -298,13 +322,7 @@ pub async fn tool_read_text_file(
     if offset > total {
         return ToolResult::denied(format!("文件共 {total} 行，offset {offset} 超出范围"));
     }
-    let slice: Vec<String> = lines
-        .iter()
-        .skip(offset - 1)
-        .take(limit)
-        .enumerate()
-        .map(|(i, l)| format!("{}: {}", offset + i, l))
-        .collect();
+    let slice = render_read_slice(&lines, offset, limit);
     let end = offset + slice.len() - 1;
     let mut out = format!(
         "{}（第 {offset}-{end} 行 / 共 {total} 行）\n{}",

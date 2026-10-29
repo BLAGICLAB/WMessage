@@ -95,6 +95,10 @@ pub const PYTHON_TIMEOUT_SECS: u64 = 120;
 
 /// 文件读取单次上限（字节）。
 pub const READ_MAX_BYTES: usize = 100 * 1024;
+/// read_text_file 单行渲染上限（字符）：超长行（minified 产物、单行 JSON）会
+/// 原样穿过磁盘闸与行数闸，渲染时截断并标注。业界口径：Claude Code / Cline /
+/// Gemini CLI 同为 2000 字符。
+pub const READ_MAX_LINE_CHARS: usize = 2000;
 /// 文件读取默认行数。
 pub const READ_DEFAULT_LINES: usize = 500;
 /// 文件读取最大行数。

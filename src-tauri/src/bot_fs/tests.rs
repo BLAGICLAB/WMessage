@@ -761,3 +761,36 @@ fn grep_single_file_matches_and_respects_glob() {
     );
     assert_eq!(found2, 0, "glob 不该匹配时命中数为 0：{hits2:?}");
 }
+
+// —— read_text_file 行切片渲染（render_read_slice）——
+
+#[test]
+fn read_slice_truncates_line_over_2000_chars_with_notice() {
+    let long = "a".repeat(2500);
+    let lines = vec![long.as_str()];
+    let out = render_read_slice(&lines, 1, 10);
+    assert_eq!(out.len(), 1);
+    assert!(out[0].contains("…[本行超 2000 字符已截断]"), "{}", out[0]);
+    let body = out[0].trim_start_matches("1: ");
+    let kept = body.trim_end_matches("…[本行超 2000 字符已截断]");
+    assert_eq!(kept.chars().count(), 2000, "只保留前 2000 字符");
+}
+
+#[test]
+fn read_slice_line_cap_counts_chars_not_bytes() {
+    // 2500 个汉字（UTF-8 共 7500 字节）：按「字符」数截断——整字保留，不切出残字
+    let long = "汉".repeat(2500);
+    let lines = vec![long.as_str()];
+    let out = render_read_slice(&lines, 1, 10);
+    let body = out[0].trim_start_matches("1: ");
+    let kept = body.trim_end_matches("…[本行超 2000 字符已截断]");
+    assert_eq!(kept.chars().count(), 2000);
+    assert_eq!(kept.len(), 6000, "2000 汉字 = 6000 字节，无残字");
+}
+
+#[test]
+fn read_slice_normal_lines_pass_through_unmarked() {
+    let lines = vec!["fn main() {}", "let x = 1;"];
+    let out = render_read_slice(&lines, 1, 10);
+    assert_eq!(out, vec!["1: fn main() {}", "2: let x = 1;"]);
+}

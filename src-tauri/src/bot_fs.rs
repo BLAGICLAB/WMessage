@@ -21,6 +21,7 @@ use crate::bot::registry::ToolResult;
 pub(crate) const READ_MAX_BYTES: usize = crate::bot::constants::READ_MAX_BYTES;
 const READ_DEFAULT_LINES: usize = crate::bot::constants::READ_DEFAULT_LINES;
 const READ_MAX_LINES: usize = crate::bot::constants::READ_MAX_LINES;
+const READ_MAX_LINE_CHARS: usize = crate::bot::constants::READ_MAX_LINE_CHARS;
 const GREP_MAX_HITS: usize = crate::bot::constants::GREP_MAX_HITS;
 const GREP_MAX_FILE_BYTES: u64 = crate::bot::constants::GREP_MAX_FILE_BYTES;
 const LIST_MAX_ENTRIES: usize = crate::bot::constants::LIST_MAX_ENTRIES;
@@ -514,7 +515,7 @@ use edit::{
 #[cfg(test)]
 use read::{
     format_skip_note, glob_match, is_generated_name, read_with_ino_check, render_context_hits,
-    walk, InodeCheckOutcome,
+    render_read_slice, walk, InodeCheckOutcome,
 };
 
 #[cfg(test)]
