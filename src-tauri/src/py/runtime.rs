@@ -36,16 +36,10 @@ pub struct PyRunResult {
 
 pub const OUTPUT_CAP: usize = 64 * 1024;
 pub const DEFAULT_TIMEOUT_SECS: u64 = crate::bot::constants::PYTHON_TIMEOUT_SECS;
-/// run_python 工具路径的单次执行天花板（秒）。Claude Code Bash 同值（10 分钟）。
-/// 它同时是子 agent 停滞超时（`SUBAGENT_STALL_TIMEOUT_SECS`，600s）的上界：
-/// 工具还在跑就不该被判停滞，两个数必须一起动。
+/// run_python 工具路径的单次执行天花板（秒，Claude Code Bash 同值），也是子 agent
+/// 停滞超时（600s）的上界——两个数必须一起动；apps 用更宽的 1800s（用户直跑）。
 pub const MAX_TIMEOUT_SECS: u64 = 600;
-/// 程序（apps）单次运行的天花板（秒）：用户在程序页直跑、无子 agent 停滞冲突，
-/// 转写长录音这类批量活需要比工具路径更长的窗（SPEC：全局天花板 30 分钟）。
 pub const APPS_MAX_TIMEOUT_SECS: u64 = 1800;
-
-/// 解析超时（run_python 工具路径）：None → 内置默认；越上限钳到天花板并
-/// 返回 clamped=true。apps 运行不走这条（上限 1800，见 `apps` 域的解析）。
 pub fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
     match timeout_secs {
         None => (DEFAULT_TIMEOUT_SECS, false),
@@ -54,11 +48,9 @@ pub fn resolve_timeout(timeout_secs: Option<u64>) -> (u64, bool) {
     }
 }
 
-/// 写侧钳制（1..=MAX_TIMEOUT_SECS）——设置页落盘前用。
-///
-/// 运行期钳制在 `resolve_timeout`，但那条只在**执行时**生效：设置页写下去的是
-/// 原值（10000），页面显示 10000、实际跑 600——用户看到的和生效的不是一回事。
-/// 写侧用同一个上界钳一遍，落盘值 = 生效值。
+/// 写侧钳制（1..=MAX_TIMEOUT_SECS）——设置页落盘前用。运行期钳制在
+/// `resolve_timeout` 但只在执行时生效：写下 10000、显示 10000、实跑 600——
+/// 落盘值必须等于生效值，写侧先钳一遍。
 pub fn clamp_timeout_secs(n: u64) -> u64 {
     n.clamp(1, MAX_TIMEOUT_SECS)
 }
@@ -838,8 +830,7 @@ pub fn run_setrlimit_probe(py: &str) -> SetrlimitSupport {
     cmd.arg("-c")
         .arg(SETRLIMIT_PROBE_SCRIPT)
         // 探测值来自生产常量（见 SETRLIMIT_PROBE_SCRIPT 注），脚本自己只读 argv。
-        // 取两条执行路径（工具 600s / apps 1800s）中更宽的限额去探测：能设宽的
-        // 才代表 setrlimit 真可用，探测窄值会漏报「宽限额设不上」的降级场景。
+        // 取两条路径（工具 600s / apps 1800s）中更宽的限额探测：能设宽才代表真可用。
         .arg(mem_limit_bytes(APPS_MAX_TIMEOUT_SECS).to_string())
         .arg(cpu_limit_secs(APPS_MAX_TIMEOUT_SECS).to_string())
         .arg(nproc_limit().to_string())
@@ -1247,8 +1238,8 @@ mod tests {
         );
     }
 
-    /// 生产上限 → 资源限额：apps 天花板 1800s 时内存封顶 2GB、CPU 限额 = 上限 + 10
-    /// 宽限。这两个数是 setrlimit 探针与 pre_exec 设限的依据，改天花板必须同步复核。
+    /// 生产上限 → 资源限额：apps 天花板 1800s 时内存封顶 2GB、CPU = 上限 + 10。
+    /// 这两个数是探针与 pre_exec 设限的依据，改天花板必须同步复核。
     #[test]
     fn production_ceiling_maps_to_resource_limits() {
         assert_eq!(

@@ -766,13 +766,16 @@ async fn core_http_429_retried_once_then_success() {
 
 #[tokio::test]
 async fn core_http_500_exhausts_attempts_then_error() {
-    // 重试预算耗尽（MAX_LLM_ATTEMPTS=2）：连续 500 → 第二次不再重试，包装报错
+    // 重试预算耗尽（MAX_LLM_ATTEMPTS=3，首次 + 2 次重试）：
+    // 连续 500 → 第三次之后不再重试，包装报错
     let server = MockLlmServer::start();
-    server.push_behavior(MockBehavior::HttpError(500, r#"{"error":"boom"}"#.into()));
-    server.push_behavior(MockBehavior::HttpError(
-        500,
-        r#"{"error":"boom again"}"#.into(),
-    ));
+    for body in [
+        r#"{"error":"boom"}"#,
+        r#"{"error":"boom 2"}"#,
+        r#"{"error":"boom 3"}"#,
+    ] {
+        server.push_behavior(MockBehavior::HttpError(500, body.into()));
+    }
     server.push_behavior(MockBehavior::TextReply("不应到达".into()));
     let h = CoreHarness::new();
 
@@ -789,7 +792,7 @@ async fn core_http_500_exhausts_attempts_then_error() {
     .await
     {
         Err(e) => e,
-        Ok(_) => panic!("500 连续两次应报错"),
+        Ok(_) => panic!("500 连续三次应报错"),
     };
 
     match err {
@@ -798,8 +801,8 @@ async fn core_http_500_exhausts_attempts_then_error() {
     }
     assert_eq!(
         server.request_count(),
-        2,
-        "MAX_LLM_ATTEMPTS=2：恰好 2 次请求后放弃"
+        3,
+        "MAX_LLM_ATTEMPTS=3：恰好 3 次请求后放弃"
     );
 }
 
