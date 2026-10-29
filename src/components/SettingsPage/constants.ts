@@ -171,36 +171,6 @@ export const CURATED_PROVIDER_KEYS = new Set([
   "xai",
   "openrouter",
 ]);
-/** Agent 运行参数卡的行定义：后端参数表 key + 对应的 config 字段名。
- *
- *  这里只声明「哪一行、编辑哪个字段」——标签/说明/默认值/可填范围/当前生效值
- *  全部来自 `bot_effective_params`（后端 `bot::params` 单源）。前端此前自留了
- *  一份默认数字，两份各改各的：后端改了默认、页面还写着旧数，页面上「默认 X」
- *  与实际生效的 Y 就是两回事。
- */
-export const AGENT_PARAM_ROWS = [
-  ["loop.max_rounds", "maxRounds"],
-  ["loop.max_function_calls", "maxFunctionCalls"],
-  ["loop.history_budget_chars", "historyBudgetChars"],
-  ["loop.history_truncate_target_pct", "historyTruncateTargetPct"],
-  ["loop.reasoning_echo_enabled", "reasoningEchoEnabled"],
-  ["loop.in_turn_context_edit", "inTurnContextEdit"],
-  ["search.max_results", "searchMaxResults"],
-  ["tools.ask_budget", "askBudget"],
-] as const;
-/** 降级用的行名（后端参数表拉不到时用）。
- *  只放**名字**、不放任何数字——默认值与范围一律来自后端，前端多抄一份数字
- *  就是多一个能各自漂移的真相源。 */
-export const AGENT_PARAM_FALLBACK_LABELS: Record<string, string> = {
-  "loop.max_rounds": "模型循环最大轮数",
-  "loop.max_function_calls": "调用工具上限（全域熔断）",
-  "loop.history_budget_chars": "会话历史字符预算",
-  "loop.history_truncate_target_pct": "历史截断滞回比例（%）",
-  "loop.reasoning_echo_enabled": "思考段回灌",
-  "loop.in_turn_context_edit": "轮内工具结果滑动窗",
-  "search.max_results": "联网搜索默认条数",
-  "tools.ask_budget": "任务提问预算（次）",
-};
 /** u32 上界——config 里这些字段是 Option<u32>，超了整份 bot_set_config
  *  反序列化失败（一处输错字连带整份设置都存不下去）。 */
 export const U32_MAX = 4294967295;

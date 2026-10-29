@@ -150,7 +150,8 @@ async fn call_planner(
     // temperature/top_p 条目有值才写。Planner 不追加条目 system_prompt（system 是固定规划提示词）
     let inference = crate::bot::effective_inference(
         cfg.api_provider.as_deref(),
-        cfg.max_tokens,
+        // 全局 max_tokens 键已退役：None = 常量默认；条目级覆盖仍生效
+        None,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     );

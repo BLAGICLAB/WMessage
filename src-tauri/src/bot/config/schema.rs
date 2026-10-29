@@ -469,7 +469,7 @@ mod inference_tests {
     fn eff(cfg: &BotConfig) -> EffectiveInference {
         effective_inference(
             cfg.api_provider.as_deref(),
-            cfg.max_tokens,
+            None,
             cfg.active_model_id.as_ref(),
             cfg.models_by_provider.as_ref(),
         )
@@ -571,14 +571,10 @@ mod inference_tests {
         let mut e = entry("m1", "a");
         e.max_tokens = Some(4_096);
         let mut cfg = cfg_with(vec![e], vec![], Some("m1"), None, "openai");
-        cfg.max_tokens = Some(100_000);
-        // 条目值 > 全局值
+        // 条目值生效
         assert_eq!(eff(&cfg).max_tokens, 4_096);
-        // 条目无值 → 回退全局（全局值超硬顶时钳到硬顶 32768）
+        // 条目无值 → 内置默认（全局键已退役）
         cfg.models_by_provider.as_mut().unwrap().openai[0].max_tokens = None;
-        assert_eq!(eff(&cfg).max_tokens, MAX_MAX_TOKENS);
-        // 都无值 → 内置默认
-        cfg.max_tokens = None;
         assert_eq!(eff(&cfg).max_tokens, DEFAULT_MAX_TOKENS);
         // 钳制在覆盖之后：条目 50 → 256，条目 999999 → 200000
         for (raw, clamped) in [(50u32, MIN_MAX_TOKENS), (999_999, MAX_MAX_TOKENS)] {

@@ -807,14 +807,9 @@ mod rounds_fuse_tests {
         let meta = crate::bot_skills::parse_meta("---\nname: x\ndescription: d\n---\nbody\n", "x");
         assert_eq!(meta.max_rounds, None);
         assert_eq!(
-            resolve_max_rounds(
-                meta.max_rounds,
-                crate::bot::params::DEFAULT_MAX_ROUNDS as usize
-            ),
-            crate::bot::params::DEFAULT_MAX_ROUNDS as usize
+            resolve_max_rounds(meta.max_rounds, crate::bot::constants::MAX_ROUNDS as usize),
+            crate::bot::constants::MAX_ROUNDS as usize
         );
-        // 内置轮数安全网（constants::MAX_ROUNDS，主/子共用）
-        assert_eq!(crate::bot::params::DEFAULT_MAX_ROUNDS, 200);
     }
 
     #[test]

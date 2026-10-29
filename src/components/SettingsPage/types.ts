@@ -341,12 +341,9 @@ export type SettingsConfig = {
   hasBraveKey: boolean;
   braveEnabled: boolean;
   pythonTimeoutSecs: string;
-  maxFunctionCalls: string;
   archiveAfterDays: string;
   permMode: "strict" | "ask" | "auto" | "yolo";
   toolRules: Array<{ tool: string; action: "allow" | "ask" | "deny" }>;
-  maxTokens: string;
-  reasoningEffort: "off" | "low" | "medium" | "high";
   memoryConsolidation: {
     enabled: boolean;
     interval: string;
@@ -358,11 +355,4 @@ export type SettingsConfig = {
     autoExtract: AutoExtractMode;
   };
   memoryTuning: Record<string, number> | null;
-  maxRounds: string;
-  historyBudgetChars: string;
-  historyTruncateTargetPct: string;
-  reasoningEchoEnabled: string;
-  inTurnContextEdit: string;
-  searchMaxResults: string;
-  askBudget: string;
 };

@@ -73,14 +73,14 @@ fn eval_http() -> (LlmHttp, u32) {
     let provider = ApiProvider::from_cfg(cfg.api_provider.as_deref());
     let inference = crate::bot::effective_inference(
         cfg.api_provider.as_deref(),
-        cfg.max_tokens,
+        None,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     );
     let reasoning = crate::bot::reasoning::resolve(
         provider,
         &cfg.model,
-        crate::bot::reasoning::EffortLevel::from_cfg(cfg.reasoning_effort.as_deref()),
+        crate::bot::reasoning::EffortLevel::from_cfg(None),
         inference.max_tokens,
     );
     let http = LlmHttp {

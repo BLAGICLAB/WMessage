@@ -273,40 +273,6 @@ export function useSettingsVendors(params: SettingsVendorsParams) {
           permMode: c.permMode,
           // API 协议（openai/anthropic）
           apiProvider: c.apiProvider,
-          // max_tokens：空 = 内置默认；非法输入按未配置处理（后端自钳）
-          maxTokens: paramNumber("model.max_tokens", c.maxTokens),
-          // 推理强度后台默认（RE-1）：四档抽象档位原样落盘
-          reasoningEffort: c.reasoningEffort,
-          // ──  Agent 运行参数：空/非法 = null（后端内置默认）；数值合法即落盘。
-          //    范围由后端参数表给出（与运行时钳制同一个数），这里先钳一遍：
-          //    一来落盘值 = 生效值，二来超 u32 的数字会让整个 bot_set_config
-          //    反序列化失败——一处输错字连带整份设置都存不下去。
-          maxRounds: paramNumber("loop.max_rounds", c.maxRounds),
-          maxFunctionCalls: paramNumber(
-            "loop.max_function_calls",
-            c.maxFunctionCalls,
-          ),
-          historyBudgetChars: paramNumber(
-            "loop.history_budget_chars",
-            c.historyBudgetChars,
-          ),
-          historyTruncateTargetPct: paramNumber(
-            "loop.history_truncate_target_pct",
-            c.historyTruncateTargetPct,
-          ),
-          reasoningEchoEnabled: paramNumber(
-            "loop.reasoning_echo_enabled",
-            c.reasoningEchoEnabled,
-          ),
-          inTurnContextEdit: paramNumber(
-            "loop.in_turn_context_edit",
-            c.inTurnContextEdit,
-          ),
-          searchMaxResults: paramNumber(
-            "search.max_results",
-            c.searchMaxResults,
-          ),
-          askBudget: paramNumber("tools.ask_budget", c.askBudget),
           // 规则表透传（空 tool 名/非法 action 由后端 sanitize 清洗）
           toolRules: c.toolRules.length > 0 ? c.toolRules : null,
           // 定时记忆整理：原样透传（后端 serde default 兜底缺字段）

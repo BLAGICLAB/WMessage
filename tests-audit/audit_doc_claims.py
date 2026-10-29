@@ -59,6 +59,8 @@ NOT_EVENTS = {
     "http.server": "Python 标准库模块名（python -m http.server）",
     "meta.rollback": "技能 frontmatter 的字段名，不是审计事件",
     "subagent.max_wall_secs": "已退役的参数表键（墙钟整套取消），只在历史实机方案里出现",
+    "loop.tool_window_trigger_chars": "已删的参数表只读行（随参数卡退役），只在历史实机方案里出现",
+    "loop.tool_window_keep_recent": "已删的参数表只读行（随参数卡退役），只在历史实机方案里出现",
 }
 
 EVENT_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")

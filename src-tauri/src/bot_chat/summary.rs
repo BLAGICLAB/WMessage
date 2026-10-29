@@ -27,11 +27,7 @@ pub(super) fn truncate_split_point(
     if total_all <= budget {
         return 0;
     }
-    let target = (budget as f64
-        * target_ratio.clamp(
-            crate::bot::params::HISTORY_TRUNCATE_TARGET_PCT_MIN as f64 / 100.0,
-            crate::bot::params::HISTORY_TRUNCATE_TARGET_PCT_MAX as f64 / 100.0,
-        )) as usize;
+    let target = (budget as f64 * target_ratio.clamp(0.5, 0.9)) as usize;
     let mut total = 0usize;
     let mut keep_from = messages.len();
     for (i, m) in messages.iter().enumerate().rev() {
@@ -306,7 +302,7 @@ pub(crate) async fn summarize_messages(
     // 条目有值才发。摘要不追加条目 system_prompt（这里的 system_prompt 是固定任务提示词）
     let inference = crate::bot::effective_inference(
         Some(provider_str),
-        cfg.max_tokens,
+        None,
         active_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     );

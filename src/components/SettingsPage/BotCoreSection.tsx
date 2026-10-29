@@ -5,7 +5,6 @@
  */
 import { GuardKeywordsPanel } from "./GuardKeywordsPanel";
 import { EnvPanel } from "./EnvPanel";
-import { AGENT_PARAM_FALLBACK_LABELS, AGENT_PARAM_ROWS } from "./constants";
 import type { Dispatch, JSX, SetStateAction } from "react";
 import type { EnvCheck, ParamView, SettingsConfig } from "./types";
 
@@ -34,10 +33,8 @@ export type BotCoreSectionProps = {
   config: SettingsConfig;
   setConfig: Dispatch<SetStateAction<SettingsConfig>>;
   renderSaveButton: (cls: string) => JSX.Element;
-  paramMaxText: (key: string) => string;
   configBusy: boolean;
   saveConfig: (override?: SettingsConfig | ((c: SettingsConfig) => SettingsConfig), opts?: { skipReload?: boolean; }) => Promise<boolean>;
-  paramViews: ParamView[] | null;
 };
 
 export function BotCoreSection({
@@ -65,10 +62,8 @@ export function BotCoreSection({
   config,
   setConfig,
   renderSaveButton,
-  paramMaxText,
   configBusy,
   saveConfig,
-  paramViews,
 }: BotCoreSectionProps) {
   return (
     <>
@@ -233,146 +228,6 @@ export function BotCoreSection({
           这卡讲的是本机装了什么，两件事不该挤在一张卡里） */}
       <EnvPanel env={env} busy={envBusy} error={envErr} onCheck={checkEnv} />
 
-      {/* Agent 运行参数卡（Agent 透明化设计）——
-  可调项逐行输入（空 = 内置默认，title 带调参代价说明） */}
-      <div className="nm-card p-5">
-        <h2 className="text-lg font-semibold text-[var(--t1)]">
-          Agent 运行参数
-        </h2>
-        <p className="mt-1 text-xs text-[var(--t5)]">
-          控制 agent 循环深度、子 agent 预算与搜索行为；留空 =
-          内置默认。调大 = 更强能力但更多 token 消耗
-        </p>
-        {/* Profiles 三预设：一键整组切换（写 config 字段 + 落盘；Python 开关是
-    独立 flag 文件不在预设内，保守预设的 py 语义 = 严格白名单下弹窗把关）。
-    预设里**不写默认值的字面量**：留空 = 用内置默认（后端参数表那份），
-    「拉到上限」用参数表的上界——默认值与上界都在后端，前端再抄一份就
-    是一处能各自漂移的真相源 */}
-        <div className="mt-3 flex gap-2">
-          {(
-            [
-              [
-                "保守",
-                "严格白名单 + 默认轮数，慎用自动化",
-                {
-                  permMode: "strict" as const,
-                  // 保守 = 内置默认（留空），不把默认值钉成字面量
-                  maxRounds: "",
-                  maxFunctionCalls: "",
-                  pythonTimeoutSecs: "",
-                  toolRules: [] as Array<{
-                    tool: string;
-                    action: "allow" | "ask" | "deny";
-                  }>,
-                },
-              ],
-              [
-                "标准",
-                "默认参数（推荐日常档）",
-                {
-                  permMode: "ask" as const,
-                  maxRounds: "",
-                  maxFunctionCalls: "",
-                  pythonTimeoutSecs: "",
-                  historyBudgetChars: "",
-                  historyTruncateTargetPct: "",
-                  reasoningEchoEnabled: "",
-                  inTurnContextEdit: "",
-                  searchMaxResults: "",
-                  toolRules: [] as Array<{
-                    tool: string;
-                    action: "allow" | "ask" | "deny";
-                  }>,
-                },
-              ],
-              [
-                "放开",
-                "白名单内全自动 + 高轮数长预算（适合无人值守批量）",
-                {
-                  permMode: "auto" as const,
-                  // 轮数、工具调用与 Python 超时 = 拉到后端允许的上界（参数表那份）
-                  maxRounds: paramMaxText("loop.max_rounds"),
-                  maxFunctionCalls: paramMaxText("loop.max_function_calls"),
-                  pythonTimeoutSecs: paramMaxText(
-                    "tools.python_timeout_secs",
-                  ),
-                  toolRules: [] as Array<{
-                    tool: string;
-                    action: "allow" | "ask" | "deny";
-                  }>,
-                },
-              ],
-            ] as const
-          ).map(([label, hint, patch]) => (
-            <button
-              key={label}
-              className="flex-1 rounded-[var(--r-sm)] px-2 py-1.5 text-xs text-[var(--t3)] nm-outset hover:text-[var(--t1)] disabled:opacity-50"
-              title={hint}
-              disabled={configBusy}
-              onClick={() =>
-                void saveConfig((c) => ({ ...c, ...patch }))
-              }
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {AGENT_PARAM_ROWS.map(([key, field]) => {
-          const view = paramViews?.find((p) => p.key === key);
-          // 说明行 = 默认值 + 可填范围 + 语义说明 + 当前生效值与来源。
-          // 全部取自后端参数表：默认值是 resolver 派生的（与运行时同一份
-          // 代码路径），范围是钳制常量，当前生效值是**钳过之后**的那个数。
-          const desc = [
-            view ? `默认 ${view.default}` : "",
-            view && view.min != null && view.max != null
-              ? `可填 ${view.min}–${view.max}`
-              : "",
-            view?.hint ?? "",
-            view
-              ? `当前生效 ${view.value}（${
-                  view.source === "config"
-                    ? "你的设置"
-                    : view.source === "default"
-                      ? "内置默认"
-                      : "只读常量"
-                }）`
-              : "",
-          ]
-            .filter(Boolean)
-            .join(" · ");
-          return (
-            <div
-              key={key}
-              className="mt-3 flex items-center justify-between gap-4"
-            >
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-[var(--t2)]">
-                  {view?.label ?? AGENT_PARAM_FALLBACK_LABELS[key]}
-                </p>
-                <p className="mt-0.5 text-xs text-[var(--t5)]">
-                  {desc ||
-                    "参数说明暂不可用（后端参数表没拉到）；填空 = 用内置默认"}
-                </p>
-              </div>
-              <input
-                aria-label={view?.label ?? AGENT_PARAM_FALLBACK_LABELS[key]}
-                title={view?.hint ?? ""}
-                value={config[field]}
-                onChange={(e) =>
-                  setConfig((prev) => ({
-                    ...prev,
-                    [field]: e.target.value,
-                  }))
-                }
-                placeholder={view?.default ?? ""}
-                inputMode="numeric"
-                className="w-28 shrink-0 rounded-[var(--r-sm)] nm-inset px-2 py-1 text-right font-mono text-xs text-[var(--t2)] outline-none focus:ring-1 focus:ring-[var(--brand)]"
-              />
-            </div>
-          );
-        })}
-        {renderSaveButton("mt-4 flex justify-end")}
-      </div>
 
       {/* 幻觉守卫触发词表：独立卡片（自带保存按钮，与 renderSaveButton
           无关——它只管下面那张 Agent 运行参数卡） */}

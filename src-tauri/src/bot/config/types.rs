@@ -132,23 +132,6 @@ pub struct BotConfig {
     /// 非法值按 openai 处理（ApiProvider::from_cfg 防御回退，与 perm_mode 同风格）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_provider: Option<String>,
-    /// max_tokens（可选）：仅 Anthropic 模式使用（Anthropic 必填 max_tokens）；
-    /// None = 默认 32768（DEFAULT_MAX_TOKENS），钳制 256..=200000（resolve_max_tokens）。
-    /// OpenAI 兼容模式不发送该字段（多数兼容网关不认识）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-    /// 推理强度后台默认（可选）："off" / "low" / "medium" / "high"。
-    /// None = "medium"（默认中）。这是**抽象档位**，发送前按具体模型族
-    /// 映射到各 provider 的线上参数（glm 的 reasoning_effort/thinking、
-    /// OpenAI 的 reasoning_effort、Anthropic 的 thinking.budget_tokens，
-    /// 映射表见 bot/reasoning.rs）。聊天可按会话覆盖此值（不回写）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-    /// 单次请求 Function 调用熔断上限（可选，全域统一）：None = 默认 100；
-    /// 子 agent 默认预算同源此值（resolve_subagent_budget），LLM 显式给的预算仍可覆盖。
-    /// 工作流节点等长链任务可调大；软警阈值 = cap*7/10 自动跟随。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_function_calls: Option<u32>,
     /// 终稿自检节流轮次间隔（可选）：final_text 主出口前置触发 LLM 自检的
     /// 轮次下限。None = 默认 8 轮；0 = 关闭 final 自检（设 kill switch）；
     /// 落盘前钳制 0..=100。设置页「Agent 运行参数」区域显示。
@@ -229,46 +212,6 @@ pub struct BotConfig {
     /// key」的判定走 raw JSON（见 migrate_config_value），不靠反序列化结果。
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
-    // Agent 运行参数（Agent 透明化设计 §3）：全 Option = 老配置零影响，
-    //      None = 内置默认；生效值/来源经 bot_effective_params 可查
-    /// 模型循环最大轮数：None = 内置安全网（constants::MAX_ROUNDS）；钳 5..=500。
-    /// Skill frontmatter 自报 max_rounds 仍优先于本值。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rounds: Option<u32>,
-    /// 会话历史字符预算（超出最旧先丢 + 摘要）：None = 档位预设；钳 20_000..=300_000。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_budget_chars: Option<u32>,
-    /// 历史截断滞回比例（百分比）：超预算时一次裁到预算的这个比例，
-    /// 留余量稳住隐式前缀缓存。None = 70；钳 50..=90。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_truncate_target_pct: Option<u32>,
-    /// 思考段回灌开关：None = 关（维持现状）；1 = 开。
-    ///
-    /// 打开后 OpenAI 兼容路径的 assistant(tool_calls) 消息带上本轮
-    /// reasoning_content 原文——MiniMax M2/M3、DeepSeek reasoner、Moonshot K2
-    /// 要求思考段随工具调用消息回灌历史（DeepSeek 缺了直接 400）。
-    /// 用 0/1 而不是布尔：设置页的参数卡只有数值输入行，混进布尔会让
-    /// 「参数卡 ↔ 配置字段」的映射多一套类型分支。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_echo_enabled: Option<u32>,
-    /// 轮内工具结果滑动窗开关：None = 开（默认）；0 = 关。
-    ///
-    /// 打开后，轮内累计工具结果超阈值时把「最近 K 条之外」的工具结果换成桩子
-    /// （原文仍在痕迹表里，桩子给出 lookup_receipt 的调回入口）。关掉即整段旁路。
-    /// 用 0/1 而不是布尔：设置页的参数卡只有数值输入行。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub in_turn_context_edit: Option<u32>,
-    /// web_search 默认结果条数（模型未传 count 时）：None = 内置默认（`params::DEFAULT_SEARCH_MAX_RESULTS`）；钳 1..=10（后端硬顶）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_max_results: Option<u32>,
-    /// 单条工具结果回填消息栈的截断字节数（UTF-8）。None = 默认 30000 字节
-    /// （业界对齐：Claude Code 文件读 25K token / Bash 30K 输出、Gemini CLI 40K 输出）；
-    /// 0 = 显式关闭截断（逃生口，长会话请依赖上下文压缩兜底）。
-    ///
-    /// 任务执行提问预算（ask_user 每次执行可问次数）：None = 3；钳 1..=5。
-    /// 原 workflow_settings.ask_budget，随工作流退役迁入。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask_budget: Option<u8>,
     /// per-tool 权限规则表：deny/ask/allow 首中即停，无命中走全局 perm_mode。
     /// None/空 = 无规则（现状）；清洗见 commands::sanitize_tool_rules。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -346,10 +289,8 @@ impl Default for BotConfig {
             brave_key: None,                  // 未配置 = 不走 Brave
             brave_enabled: None,              // 未显式设置 = 配了 key 就自动启用（同 Tavily）
             python_timeout_secs: None,        // 未配置 = 60s 默认
-            reasoning_effort: None,           // 未配置 = medium 默认（RE-1，resolve 兜底）
             perm_mode: None,                  // 未配置 = ask（弹授权）
             api_provider: None,               // 未配置 = openai（旧行为）
-            max_tokens: None,                 // 未配置 = 32768 默认（仅 Anthropic 模式用）
             models_by_provider: None,         // 未配置 = 设置页空列表（无默认厂商）
             active_model_id: None,            // 未配置 = 两协议都没选 active
             ui_font_size: None,               // 未配置 = small
@@ -357,7 +298,6 @@ impl Default for BotConfig {
             memory_control: None,       // 未配置 = 注入/主动记忆全开（与 Default 一致）
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
-            max_function_calls: None,   // 未配置 = 内置安全网（constants::MAX_FUNCTION_CALLS）
             final_selfcheck_round_gap: None, // 未配置 = 8 默认终稿自检间隔（0 = 关闭）
             guard_claim_keywords: None, // 未配置 = 内置默认触发词表
             selfcheck_model_id: None,   // 未配置 = 自检在主循环内跑（现状）
@@ -366,14 +306,6 @@ impl Default for BotConfig {
             disabled_vendors: Vec::new(), // 未配置 = 无厂商被禁用
             verified_vendors: Vec::new(), // 未配置 = 无厂商通过连接测试
             schema_version: BOT_CONFIG_SCHEMA_VERSION, // 新建配置即当前版本
-            // Agent 运行参数全默认（None = 各 resolve_* 的内置默认）
-            max_rounds: None,
-            history_budget_chars: None,
-            history_truncate_target_pct: None,
-            reasoning_echo_enabled: None,
-            in_turn_context_edit: None,
-            search_max_results: None,
-            ask_budget: None,
             tool_rules: None,
         }
     }
@@ -490,9 +422,6 @@ pub struct BotConfigView {
     pub python_timeout_secs: Option<u64>,
     /// 单次请求 Function 调用熔断上限（ 全域统一）：None = 默认 100；
     /// 子 agent 默认预算同源此值
-    pub max_function_calls: Option<u32>,
-    /// 终稿自检轮次间隔原样透传（None = 8 默认；0 = 关闭；设置页「Agent
-    /// 运行参数」可调，后端钳 0..=100）
     pub final_selfcheck_round_gap: Option<u32>,
     /// 终稿自检侧调模型条目 id 原样透传（None = 自检在主循环内跑；Some =
     /// 独立小请求打该模型库条目；条目解析失败回落主循环路径并审计）
@@ -511,12 +440,6 @@ pub struct BotConfigView {
     pub perm_mode: Option<String>,
     /// API 协议原样透传给设置页（None = openai 旧行为，非法值前端按 openai 显示）
     pub api_provider: Option<String>,
-    /// max_tokens 原样透传（None = 32768 默认；仅 Anthropic 模式用，后端钳 256..=200000）
-    pub max_tokens: Option<u32>,
-    /// 推理强度后台默认原样透传（None = "medium"；抽象档位 off/low/medium/high，
-    /// 线上参数映射在后端 bot/reasoning.rs，前端只存档位）
-    pub reasoning_effort: Option<String>,
-    /// 每协议下的模型列表：None = 老配置未迁移（前端显示空列表让用户点「添加大模型」）；
     /// 已有数据则透传。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub models_by_provider: Option<ModelsByProvider>,
@@ -544,23 +467,6 @@ pub struct BotConfigView {
     pub vendor_keys: Vec<String>,
     /// 连接测试通过的厂商名单原样透传（空 = 都未验证；聊天下拉过滤用）
     pub verified_vendors: Vec<String>,
-    // Agent 运行参数：原样透传给设置页参数卡
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rounds: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_budget_chars: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub history_truncate_target_pct: Option<u32>,
-    /// 思考段回灌开关原样透传（None = 关；1 = 开）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_echo_enabled: Option<u32>,
-    /// 轮内工具结果滑动窗开关原样透传（None = 开；0 = 关）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub in_turn_context_edit: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_max_results: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ask_budget: Option<u8>,
     /// per-tool 权限规则表原样透传（设置页授权卡编辑）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_rules: Option<Vec<ToolRule>>,
@@ -568,69 +474,7 @@ pub struct BotConfigView {
 
 // 字段上限 + check_len
 
-/// `BotConfig` 的 Agent 参数读取面实现（见 `bot::params::AgentParams`）。
-impl crate::bot::params::AgentParams for BotConfig {
-    fn max_rounds(&self) -> Option<u32> {
-        self.max_rounds
-    }
-    fn max_function_calls(&self) -> Option<u32> {
-        self.max_function_calls
-    }
-    fn history_budget_chars(&self) -> Option<u32> {
-        self.history_budget_chars
-    }
-    fn history_truncate_target_pct(&self) -> Option<u32> {
-        self.history_truncate_target_pct
-    }
-    fn reasoning_echo_enabled(&self) -> Option<u32> {
-        self.reasoning_echo_enabled
-    }
-    fn in_turn_context_edit(&self) -> Option<u32> {
-        self.in_turn_context_edit
-    }
-    fn search_max_results(&self) -> Option<u32> {
-        self.search_max_results
-    }
-    fn ask_budget(&self) -> Option<u8> {
-        self.ask_budget
-    }
-    fn max_tokens(&self) -> Option<u32> {
-        self.max_tokens
-    }
-}
-
 /// `BotConfigView` 的 Agent 参数读取面实现——字段名与 `BotConfig` 一致，
-/// 解析器对两者行为相同（见 `bot::params::AgentParams`）。
-impl crate::bot::params::AgentParams for BotConfigView {
-    fn max_rounds(&self) -> Option<u32> {
-        self.max_rounds
-    }
-    fn max_function_calls(&self) -> Option<u32> {
-        self.max_function_calls
-    }
-    fn history_budget_chars(&self) -> Option<u32> {
-        self.history_budget_chars
-    }
-    fn history_truncate_target_pct(&self) -> Option<u32> {
-        self.history_truncate_target_pct
-    }
-    fn reasoning_echo_enabled(&self) -> Option<u32> {
-        self.reasoning_echo_enabled
-    }
-    fn in_turn_context_edit(&self) -> Option<u32> {
-        self.in_turn_context_edit
-    }
-    fn search_max_results(&self) -> Option<u32> {
-        self.search_max_results
-    }
-    fn ask_budget(&self) -> Option<u8> {
-        self.ask_budget
-    }
-    fn max_tokens(&self) -> Option<u32> {
-        self.max_tokens
-    }
-}
-
 pub const MAX_TITLE: usize = 200;
 pub const MAX_NOTE: usize = 5000;
 pub const MAX_KEYWORD: usize = 100;

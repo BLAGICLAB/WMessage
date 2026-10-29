@@ -258,7 +258,7 @@ async fn run_step(
     let (text, refs, _loop_trace) = crate::bot::run_model_loop(
         app.clone(),
         msgs,
-        crate::bot::params::DEFAULT_MAX_ROUNDS as usize,
+        crate::bot::constants::MAX_ROUNDS as usize,
         stop,
         None,
         None, // 执行步骤恢复链路：按 bot-config.json 全局默认（RE-1）

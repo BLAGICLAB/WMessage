@@ -118,7 +118,8 @@ pub async fn run_model_loop(
     // （cfg 是对外视图 BotConfigView，拆参传入与 keyring::read_llm_key 同风格）
     let inference = crate::bot::effective_inference(
         cfg.api_provider.as_deref(),
-        cfg.max_tokens,
+        // 全局 max_tokens 键已退役：None = 常量默认；条目级覆盖仍生效
+        None,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
     );
@@ -127,11 +128,8 @@ pub async fn run_model_loop(
     // model/协议/key）；解析失败 → 响亮审计 + 回落主循环内自检，不阻断。
     // 必须在主 http 构造前完成——那里会 move cfg 的字段。
     let selfcheck_http = cfg.selfcheck_model_id.as_ref().and_then(|entry_id| {
-        let resolved = crate::bot::resolve_model_override(
-            cfg.models_by_provider.as_ref(),
-            entry_id,
-            cfg.max_tokens,
-        );
+        let resolved =
+            crate::bot::resolve_model_override(cfg.models_by_provider.as_ref(), entry_id, None);
         match decide_selfcheck(resolved, &cfg.verified_vendors) {
             SelfcheckDecision::Use(r) => Some(LlmHttp {
                 client: shared_llm_client().clone(),
@@ -174,7 +172,7 @@ pub async fn run_model_loop(
     // 算出来——cfg 的字段随后被 move 进 LlmHttp / ModelLoopDeps，那时再借用
     // 整份 cfg 就是「部分移动后借用」。这里**不钳**——钳位单点在派生链末端
     // （fuse_cap 的 clamp），此处再钳一次等于把边界抄成两份。
-    let main_tool_calls = crate::bot::params::resolve_main_tool_calls(&cfg) as usize;
+    let main_tool_calls = crate::bot::constants::MAX_FUNCTION_CALLS as usize;
     let http = LlmHttp {
         client,
         base_url: cfg.base_url,
@@ -191,9 +189,7 @@ pub async fn run_model_loop(
             provider,
             &model_for_reasoning,
             crate::bot::reasoning::EffortLevel::from_cfg(
-                reasoning_override
-                    .as_deref()
-                    .or(cfg.reasoning_effort.as_deref()),
+                reasoning_override.as_deref().or(Some("medium")),
             ),
             inference.max_tokens,
         ),

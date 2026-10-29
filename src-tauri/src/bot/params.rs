@@ -1,49 +1,20 @@
-//! Agent 运行参数注册表（Agent 透明化设计 §3）：
+//! Agent 运行参数注册表（缩表版）：
 //!
-//! **单一真相源查表**（仿 bot/registry.rs TOOLS_TABLE 哲学）——每个影响 agent
-//! 行为的参数一条 `ParamDef`，元数据与生效值解析都在这一条里，
-//! `bot_effective_params` 命令遍历出表，设置页参数卡渲染生效值/默认值/来源。
-//! 以后加参数 = 表里加一条，展示自动跟随；解析函数也随条目一起给，
-//! 不存在「加了 key 忘了加解析分支」这种静默漏解析。
+//! Agent 运行参数已全部常量化（轮数 / 工具数安全网、历史预算、max_tokens、
+//! 回填上限、搜索条数、提问预算、回灌与滑动窗开关——见 `bot/constants.rs` 与
+//! 各消费点），设置页不再有「Agent 运行参数」卡。本表只剩**仍有卡外消费者**
+//! 的三行：
+//! - `tools.python_timeout_secs`（「机器人设置」卡的输入框 + Python 开启确认
+//!   框文案读它的生效值）；
+//! - `trace.retention_days`（数据管理卡公示默认天数与可填范围）；
+//! - `memory.extract_min_interval_secs`（记忆区的抽取限频文案）。
 //!
-//! 两区：
-//! - **可编辑区**（`editable=true`，config 驱动）：值 = config 字段解析（None →
-//!   内置默认，source=default / Some → source=config）；
-//! - **硬编码只读区**（`editable=false`）：调坏容易出问题的运行时常量
-//!   （LLM 超时/重试、调度间隔、硬顶/硬上限），只展示不开放编辑（设计 §3.2）。
-//!
-//! 解析辅助 `resolve_*` 是唯一读取口：读取点不得各写一份 `unwrap_or(默认)`——
-//! 否则「展示的默认值」与「实际生效值」会漂。
+//! 三行的口径不变：默认值由 resolver 在空配置下的输出派生，可填范围 = 钳制
+//! 常量，生效值 = 钳过之后的数——「页面显示的与实际跑的是同一个数」。
 
 use serde::Serialize;
 
-/// Agent 运行参数的**读取面**：配置本体（`BotConfig`）与对外视图
-/// （`BotConfigView`）字段同名，但类型不同。
-///
-/// 解析器写两份的话，「配置本体按 A 解析、视图按 B 解析」迟早分叉——设置页
-/// 显示一个值、运行时走另一个值，且不编译失败也不测试失败。trait 把两者的
-/// 字段名收敛到一处：新增参数只改这一处，两个类型都会被编译器盯着补实现。
-pub trait AgentParams {
-    /// 主会话轮数上限（高级覆盖）。
-    fn max_rounds(&self) -> Option<u32>;
-    /// 主会话工具调用上限（高级覆盖）。
-    fn max_function_calls(&self) -> Option<u32>;
-    /// 会话历史字符预算（高级覆盖）。
-    fn history_budget_chars(&self) -> Option<u32>;
-    /// 历史截断滞回比例（高级覆盖）。
-    fn history_truncate_target_pct(&self) -> Option<u32>;
-    /// 思考段回灌开关（高级覆盖）。
-    fn reasoning_echo_enabled(&self) -> Option<u32>;
-    /// 轮内工具结果滑动窗开关（高级覆盖）。
-    fn in_turn_context_edit(&self) -> Option<u32>;
-    /// 联网搜索默认条数（高级覆盖）。
-    fn search_max_results(&self) -> Option<u32>;
-    /// 工具结果回填上限（高级覆盖）。
-    /// 任务提问预算（高级覆盖）。
-    fn ask_budget(&self) -> Option<u8>;
-    /// 单轮输出 max_tokens（高级覆盖）。
-    fn max_tokens(&self) -> Option<u32>;
-}
+use crate::bot::config::types::BotConfig;
 
 /// 硬编码只读条目的解析器：来源恒为 hardcoded。
 macro_rules! hardcoded_resolver {
@@ -55,267 +26,60 @@ macro_rules! hardcoded_resolver {
     }};
 }
 
-/// 可编辑条目的解析器：值走 resolve_* 取运行时真值（避免「看到 999、实际
-/// 钳到 200」的脱节），来源按「config 里有没有这个字段」标注。
-macro_rules! cfg_resolver {
-    ($resolve:path, $field:ident) => {{
-        fn f(cfg: &BotConfig) -> (String, &'static str) {
-            let src = if cfg.$field.is_some() {
-                "config"
-            } else {
-                "default"
-            };
-            ($resolve(cfg).to_string(), src)
-        }
-        f as fn(&BotConfig) -> (String, &'static str)
-    }};
-}
+// ── 仍有外部消费的常量与钳制（配置键已退役的一律收进 constants）──
 
-// ── 全局硬顶（三档共用）──
-//
-// 硬顶是「用户能调到的最大值」，档位预设都在硬顶之下。分档的用处是给日常
-// 选一个安全值；硬顶的用处是让「高级覆盖」有明确的天花板。
-
-/// 全局总回合硬顶。
-pub const GLOBAL_TURNS_CAP: u32 = 500;
-/// 全局总工具调用次数硬顶。
-pub const GLOBAL_TOOL_CALLS_CAP: u32 = 1_200;
-/// 会话历史字符预算硬顶。
-///
-/// 不设 500K 档：历史预算与上下文窗口耦合，500K 字符已超多数模型的可用
-/// 输入量，高风险档位不开放。
-pub const HISTORY_BUDGET_MAX: u32 = 300_000;
-/// 单轮输出 max_tokens 硬顶。
+/// 单轮输出 max_tokens 硬顶（schema::MAX_MAX_TOKENS 与模型循环共用）。
 pub const MAX_TOKENS_CAP: u32 = 32_768;
 
-// ── 预算分配（内置，不可配）──
-//
-// 子 agent 不再有独立份额：轮数 / 工具数与主会话共用同一套安全网
-// （见 resolve_max_rounds_cfg / resolve_main_tool_calls），时间维度由停滞
-// 超时兜底。默认值单源在 constants，这里只做覆盖解析。
-
-// ── 内置默认（单一事实源）──
-
-/// 模型循环默认轮数：主会话与子 agent 共用的轮数安全网，单源在 constants。
-pub const DEFAULT_MAX_ROUNDS: u32 = crate::bot::constants::MAX_ROUNDS;
-/// 轮数硬顶：全局回合池硬顶。
-pub const MAX_ROUNDS_CAP: u32 = GLOBAL_TURNS_CAP;
-/// 轮数下界（少于 5 轮的循环连一次工具往返都跑不完）——钳制与设置页展示的
-/// 可填范围共用这一个数。
-pub const MAX_ROUNDS_MIN: u32 = 5;
-/// 会话历史字符预算默认：单源在 constants。
-pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = crate::bot::constants::HISTORY_BUDGET_CHARS;
-pub const HISTORY_BUDGET_MIN: u32 = 20_000;
 /// 历史截断滞回目标比例默认（百分比）：超预算时一次裁到预算的 70%。
 /// 贴边裁会让长会话几乎每轮都改一次缓存前缀，留 30% 余量能稳住好几轮。
 pub const DEFAULT_HISTORY_TRUNCATE_TARGET_PCT: u32 = 70;
-/// 滞回比例可取区间：钳制与设置页展示的可填范围共用，单源在 constants。
-pub const HISTORY_TRUNCATE_TARGET_PCT_MIN: u32 =
-    crate::bot::constants::HISTORY_TRUNCATE_TARGET_PCT_MIN;
-pub const HISTORY_TRUNCATE_TARGET_PCT_MAX: u32 =
-    crate::bot::constants::HISTORY_TRUNCATE_TARGET_PCT_MAX;
-/// 思考段回灌开关默认（0 = 关）：维持现状，不为「可能受益」的模型族预付
-/// 思考段的 input token；受益只落在明确要求回灌的模型上，由用户自己开。
-pub const DEFAULT_REASONING_ECHO_ENABLED: u32 = 0;
-/// 思考段回灌开关上界（1 = 开）：只有两态，中间值没有语义。
-pub const REASONING_ECHO_ENABLED_MAX: u32 = 1;
-/// 轮内工具结果滑动窗开关默认值（1 = 开）：触发条件是实测 p90 附近的阈值，
-/// 只影响约 9% 的提问，且召回闭环由 lookup_receipt 兜着。
-pub const DEFAULT_IN_TURN_CONTEXT_EDIT: u32 = 1;
-/// 轮内工具结果滑动窗开关上界（1 = 开）：只有两态。
-pub const IN_TURN_CONTEXT_EDIT_MAX: u32 = 1;
+
 /// 联网搜索默认结果条数（Tavily 主流推荐：6 条）。
 pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 6;
-
-// 钳制单源：写侧落盘（bot_set_config）与读侧生效（下方 resolve_*）共用同一组
-// 边界——字面量只落在这里，防两边各自改数后静默漂移。子 agent 轮数的边界是
-// subagents 域不变量，单源在 db::subagents::clamp_subagent_max_turns。
-
-/// 模型循环轮数钳 5..=全局回合硬顶
-pub fn clamp_max_rounds(n: u32) -> u32 {
-    n.clamp(MAX_ROUNDS_MIN, MAX_ROUNDS_CAP)
-}
-
-/// 会话历史字符预算钳 20K..=300K
-pub fn clamp_history_budget_chars(n: u32) -> u32 {
-    n.clamp(HISTORY_BUDGET_MIN, HISTORY_BUDGET_MAX)
-}
-
-/// 历史截断滞回比例钳 50..=90（百分比）
-pub fn clamp_history_truncate_target_pct(n: u32) -> u32 {
-    n.clamp(
-        HISTORY_TRUNCATE_TARGET_PCT_MIN,
-        HISTORY_TRUNCATE_TARGET_PCT_MAX,
-    )
-}
-
-/// 思考段回灌开关钳 0..=1（0 = 关，1 = 开）
-pub fn clamp_reasoning_echo_enabled(n: u32) -> u32 {
-    n.min(REASONING_ECHO_ENABLED_MAX)
-}
-
-/// 轮内工具结果滑动窗开关钳 0..=1（0 = 关，1 = 开）
-pub fn clamp_in_turn_context_edit(n: u32) -> u32 {
-    n.min(IN_TURN_CONTEXT_EDIT_MAX)
-}
-
-/// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）
+/// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）。
 pub const SEARCH_MAX_RESULTS_CAP: u32 = crate::bot::constants::SEARCH_MAX_RESULTS_CAP;
-/// 联网搜索结果条数下界（0 条搜索无意义）
+/// 联网搜索结果条数下界。
 pub const SEARCH_MAX_RESULTS_MIN: u32 = crate::bot::constants::SEARCH_MAX_RESULTS_MIN;
 
-/// 联网搜索结果条数钳 1..=SEARCH_MAX_RESULTS_CAP
 pub fn clamp_search_max_results(n: u32) -> u32 {
     n.clamp(SEARCH_MAX_RESULTS_MIN, SEARCH_MAX_RESULTS_CAP)
 }
 
-/// 单次请求工具调用熔断上限硬顶：写侧（子 agent 预算解析）与读侧（模型循环
-/// 派生链末端的 `.clamp`）共用这一个数，防「预算按 500 记账、循环按 999 放行」。
-pub const MAX_FUNCTION_CALLS_CAP: u32 = GLOBAL_TOOL_CALLS_CAP;
-/// 工具调用熔断下界（0 次调用无意义）
+/// 工具调用安全网的派生链边界：`fuse_cap_upper_bound` 与写侧钳制共用，
+/// 防「记账按一个数、循环按另一个数放行」。
+pub const MAX_FUNCTION_CALLS_CAP: u32 = crate::bot::constants::MAX_FUNCTION_CALLS;
 pub const MAX_FUNCTION_CALLS_MIN: u32 = 1;
 
 pub fn clamp_max_function_calls(n: u32) -> u32 {
     n.clamp(MAX_FUNCTION_CALLS_MIN, MAX_FUNCTION_CALLS_CAP)
 }
 
-/// verifier 拒绝后的修复重试预算：未配置时的默认次数。
+/// verifier 拒绝后的修复重试预算：未配置时的默认次数与上限。
+/// `verifier_retry_max` 是保留的 bot-config.json 手改键（无 UI）。
 pub const DEFAULT_VERIFIER_RETRY_MAX: u32 = 1;
-/// verifier 重试预算上限（超过 2 次还失败的任务属硬阻塞，如实汇报比继续烧
-/// token 更省；与配置落盘前的写侧钳制共用）。
 pub const VERIFIER_RETRY_MAX_CAP: u32 = crate::bot::constants::VERIFIER_RETRY_MAX_CAP;
 
 pub fn clamp_verifier_retry_max(n: u32) -> u32 {
     n.clamp(0, VERIFIER_RETRY_MAX_CAP)
 }
 
-/// verifier 重试预算生效值：读取点唯一入口。
-///
-/// 入参是「配置里有没有这一项」而不是整份 config——调用方
-/// （bot_chat 的提示词尾段）手上是 View，View 与 BotConfig 在这个可选字段上
-/// 同形，传 Option 才能让两边共用同一份「默认 + 钳制」。
 pub fn resolve_verifier_retry_max(configured: Option<u32>) -> u32 {
     clamp_verifier_retry_max(configured.unwrap_or(DEFAULT_VERIFIER_RETRY_MAX))
 }
 
-/// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
-pub const ASK_BUDGET_MIN: u8 = crate::bot::constants::ASK_BUDGET_MIN;
-pub const ASK_BUDGET_MAX: u8 = crate::bot::constants::ASK_BUDGET_MAX;
-
-/// 任务执行提问预算（ask_user 每次执行可问次数）钳 1..=5
-pub fn clamp_ask_budget(n: u8) -> u8 {
-    n.clamp(ASK_BUDGET_MIN, ASK_BUDGET_MAX)
-}
-
-// 解析辅助（读取口唯一）
-//
-// 两段式：**档位预设**给默认，**高级覆盖**给单项手填。旧配置里已有的
-// maxRounds / maxFunctionCalls 等字段即高级覆盖位——老用户改过的值不会被
-// 档位悄悄顶掉，新用户不填任何东西时按档位走。两段都要过同一组 clamp，
-// 「显示的值 = 生效的值」这条不变量不许破。
-
-/// 主会话回合上限：档位全局池的 60%，可被高级覆盖 `max_rounds` 顶掉。
-///
-/// 覆盖优先于分配比例——用户手填的值是他明确要的，档位只是默认值。
-pub fn resolve_max_rounds_cfg(cfg: &impl AgentParams) -> u32 {
-    match cfg.max_rounds() {
-        Some(n) => clamp_max_rounds(n),
-        None => clamp_max_rounds(crate::bot::constants::MAX_ROUNDS),
-    }
-}
-
-/// 主会话工具调用上限：档位全局池的 60%，可被高级覆盖 `max_function_calls` 顶掉。
-pub fn resolve_main_tool_calls(cfg: &impl AgentParams) -> u32 {
-    match cfg.max_function_calls() {
-        Some(n) => clamp_max_function_calls(n),
-        None => clamp_max_function_calls(crate::bot::constants::MAX_FUNCTION_CALLS),
-    }
-}
-
-/// 会话历史字符预算：档位预设值，可被高级覆盖顶掉。
-pub fn resolve_history_budget_chars(cfg: &impl AgentParams) -> u32 {
-    match cfg.history_budget_chars() {
-        Some(n) => clamp_history_budget_chars(n),
-        None => clamp_history_budget_chars(crate::bot::constants::HISTORY_BUDGET_CHARS),
-    }
-}
-
-/// 历史截断滞回比例（百分比，50..=90）：参数表展示与写盘都用这个整数口径。
-pub fn resolve_history_truncate_target_pct(cfg: &impl AgentParams) -> u32 {
-    clamp_history_truncate_target_pct(
-        cfg.history_truncate_target_pct()
-            .unwrap_or(DEFAULT_HISTORY_TRUNCATE_TARGET_PCT),
-    )
-}
-
-/// 历史截断滞回比例（0.5..=0.9）：超预算时一次裁到预算的这个比例。
-/// 比例越低裁得越狠（前缀越稳、丢的历史越多）。
-pub fn resolve_history_truncate_target_ratio(cfg: &impl AgentParams) -> f64 {
-    resolve_history_truncate_target_pct(cfg) as f64 / 100.0
-}
-
-/// 思考段回灌开关取值（0 = 关 / 1 = 开）。
-///
-/// 入口收原始 `Option<u32>` 而不是配置结构：配置本体与配置视图是两个类型，
-/// 但开关只有一个判定口径——写成两套 resolver 迟早漂。
-pub fn reasoning_echo_enabled_value(raw: Option<u32>) -> u32 {
-    clamp_reasoning_echo_enabled(raw.unwrap_or(DEFAULT_REASONING_ECHO_ENABLED))
-}
-
-/// 思考段回灌是否开启（读点用这个布尔口径）。
-pub fn reasoning_echo_on(raw: Option<u32>) -> bool {
-    reasoning_echo_enabled_value(raw) == 1
-}
-
-/// 思考段回灌开关（0 = 关 / 1 = 开）——参数表解析用。
-pub fn resolve_reasoning_echo_enabled(cfg: &impl AgentParams) -> u32 {
-    reasoning_echo_enabled_value(cfg.reasoning_echo_enabled())
-}
-
-/// 轮内工具结果滑动窗开关取值（0 = 关 / 1 = 开）。
-pub fn in_turn_context_edit_value(raw: Option<u32>) -> u32 {
-    clamp_in_turn_context_edit(raw.unwrap_or(DEFAULT_IN_TURN_CONTEXT_EDIT))
-}
-
-/// 轮内工具结果滑动窗是否开启（读点用这个布尔口径）。
-pub fn in_turn_context_edit_on(raw: Option<u32>) -> bool {
-    in_turn_context_edit_value(raw) == 1
-}
-
-/// 轮内工具结果滑动窗开关（0 = 关 / 1 = 开）——参数表解析用。
-pub fn resolve_in_turn_context_edit(cfg: &impl AgentParams) -> u32 {
-    in_turn_context_edit_value(cfg.in_turn_context_edit())
-}
-
-pub fn resolve_search_max_results(cfg: &impl AgentParams) -> u32 {
-    clamp_search_max_results(
-        cfg.search_max_results()
-            .unwrap_or(DEFAULT_SEARCH_MAX_RESULTS),
-    )
-}
-
-/// 任务执行提问预算（原 workflow_settings.ask_budget，随工作流退役迁入 bot 参数）
-pub fn resolve_ask_budget_cfg(cfg: &impl AgentParams) -> u8 {
-    clamp_ask_budget(cfg.ask_budget().unwrap_or(3))
-}
-
-use crate::bot::config::types::BotConfig;
-
-// 参数表
+// ── 参数表（三行）──
 
 /// 参数定义（编译期常量表；value 的解析在 `bot_effective_params` 内查 cfg 字段）
 pub struct ParamDef {
-    /// 稳定 key（前端 React key + 未来深链定位），点分分层
+    /// 稳定 key（前端 React key），点分分层
     pub key: &'static str,
     /// 中文展示名
     pub label: &'static str,
-    /// 分组（设置页参数卡按此分节）：loop / subagent / search / model / tools / schedule
+    /// 分组
     pub category: &'static str,
-    /// 一句话说明（含调大的代价）。
-    ///
-    /// **不写具体数字**：默认值由 resolver 在空配置下的输出派生（见
-    /// `effective_params`），可填范围由 `min`/`max`（钳制常量）给出——文案里
-    /// 再抄一遍数字就是第二份真相源，改一边漏另一边不会编译失败也不会测试失败。
+    /// 一句话说明。**不写具体数字**：默认值由 resolver 派生、范围由 min/max 给出，
+    /// 文案里再抄一遍数字就是第二份真相源。
     pub hint: &'static str,
     /// 可填范围下界（None = 不限或不适用）
     pub min: Option<u64>,
@@ -324,10 +88,6 @@ pub struct ParamDef {
     /// true = bot-config.json 有对应字段可改；false = 硬编码只读
     pub editable: bool,
     /// 生效值解析（值展示串, 来源）。
-    ///
-    /// 解析随表走，不另开一个 `match key` —— 那等于给「加参数」留了一条能静默
-    /// 漏掉的旁路：表里加了一条 key 而忘了加 match 臂，不编译失败、不测试失败，
-    /// 只在设置页显示字面量 `?subagent.foo` 并把来源标成 hardcoded。
     resolve: fn(&BotConfig) -> (String, &'static str),
 }
 
@@ -341,8 +101,7 @@ pub struct ParamView {
     pub hint: &'static str,
     /// 生效值展示串（config 解析或硬编码常量）
     pub value: String,
-    /// 内置默认值（**由 resolver 在空配置下的输出派生**，不是手写字面量——
-    /// 手写的那份曾与真正的内置默认各自漂移，且没有任何测试把两者绑在一起）
+    /// 内置默认值（由 resolver 在空配置下的输出派生，不是手写字面量）
     pub default: String,
     /// config = 配置覆盖生效 / default = 用内置默认 / hardcoded = 硬编码只读
     pub source: &'static str,
@@ -353,101 +112,25 @@ pub struct ParamView {
     pub max: Option<u64>,
 }
 
-/// 全量参数表：可编辑区在前，硬编码只读区在后（前端按 category 分组渲染）
+fn plain_py_timeout(cfg: &BotConfig) -> String {
+    crate::py::runtime::clamp_timeout_secs(
+        cfg.python_timeout_secs
+            .unwrap_or(crate::py::runtime::DEFAULT_TIMEOUT_SECS),
+    )
+    .to_string()
+}
+
+fn python_timeout_row(cfg: &BotConfig) -> (String, &'static str) {
+    let src = if cfg.python_timeout_secs.is_some() {
+        "config"
+    } else {
+        "default"
+    };
+    (plain_py_timeout(cfg), src)
+}
+
+/// 缩表后的参数表：只留仍有卡外消费者的三行（模块头注释）。
 pub static PARAMS_TABLE: &[ParamDef] = &[
-    // ── 可编辑：循环/历史（档位预设 + 高级覆盖）──
-    ParamDef {
-        key: "loop.max_rounds",
-        label: "主会话轮数",
-        category: "loop",
-        hint: "主会话单次对话/任务执行的 LLM 轮数上限；默认取档位全局池的 60%；调大=更复杂任务但失控时更费 token。Skill 自报轮数优先于此值",
-        min: Some(MAX_ROUNDS_MIN as u64),
-        max: Some(MAX_ROUNDS_CAP as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_max_rounds_cfg, max_rounds),
-    },
-    ParamDef {
-        key: "loop.max_function_calls",
-        label: "主会话工具调用上限",
-        category: "loop",
-        hint: "主会话的工具调用熔断上限；默认取档位全局池的 60%；软警告在 90% 处触发，95% 进收尾窗，100% 硬熔断",
-        min: Some(MAX_FUNCTION_CALLS_MIN as u64),
-        max: Some(MAX_FUNCTION_CALLS_CAP as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_main_tool_calls, max_function_calls),
-    },
-    ParamDef {
-        key: "loop.history_budget_chars",
-        label: "会话历史字符预算",
-        category: "loop",
-        hint: "超出后最旧消息先丢并生成摘要；默认取档位预设；调大=长对话记忆更好但上下文成本更高",
-        min: Some(HISTORY_BUDGET_MIN as u64),
-        max: Some(HISTORY_BUDGET_MAX as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_history_budget_chars, history_budget_chars),
-    },
-    ParamDef {
-        key: "loop.history_truncate_target_pct",
-        label: "历史截断滞回比例（%）",
-        category: "loop",
-        hint: "超出预算时一次裁到预算的这个比例，留余量稳住缓存前缀；调小=前缀更稳但丢的历史更多",
-        min: Some(HISTORY_TRUNCATE_TARGET_PCT_MIN as u64),
-        max: Some(HISTORY_TRUNCATE_TARGET_PCT_MAX as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_history_truncate_target_pct, history_truncate_target_pct),
-    },
-    ParamDef {
-        key: "loop.reasoning_echo_enabled",
-        label: "思考段回灌",
-        category: "loop",
-        hint: "1 = 把本轮思考段随工具调用消息回灌历史（MiniMax M2/M3、DeepSeek reasoner、Moonshot K2 要求回灌，缺了会 400）；0 = 不回灌（省一份思考段的 input token）",
-        min: Some(0),
-        max: Some(REASONING_ECHO_ENABLED_MAX as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_reasoning_echo_enabled, reasoning_echo_enabled),
-    },
-    ParamDef {
-        key: "loop.in_turn_context_edit",
-        label: "轮内工具结果滑动窗",
-        category: "loop",
-        hint: "1 = 轮内工具结果累计超阈值时，把最近几条之外的结果换成可召回的桩子（省重复重发的 token）；0 = 不裁（工具结果全量留在上下文里）",
-        min: Some(0),
-        max: Some(IN_TURN_CONTEXT_EDIT_MAX as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_in_turn_context_edit, in_turn_context_edit),
-    },
-    // ── 可编辑：搜索 ──
-    ParamDef {
-        key: "search.max_results",
-        label: "联网搜索默认条数",
-        category: "search",
-        hint: "web_search 未指定 count 时的结果条数；后端有硬顶",
-        min: Some(SEARCH_MAX_RESULTS_MIN as u64),
-        max: Some(SEARCH_MAX_RESULTS_CAP as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_search_max_results, search_max_results),
-    },
-    // ── 可编辑：模型（已有字段入表展示） ──
-    ParamDef {
-        key: "model.max_tokens",
-        label: "全局 max_tokens",
-        category: "model",
-        hint: "仅 Anthropic 协议发送；OpenAI 兼容模式不发送。默认取档位预设；条目级设置优先于此全局值",
-        min: Some(crate::bot::config::schema::MIN_MAX_TOKENS as u64),
-        max: Some(MAX_TOKENS_CAP as u64),
-        editable: true,
-        resolve: cfg_resolver!(plain_max_tokens, max_tokens),
-    },
-    ParamDef {
-        key: "model.reasoning_effort",
-        label: "推理强度默认档",
-        category: "model",
-        hint: "off/low/medium/high；按模型族映射到线上参数（聊天输入栏 ⚡ 可按会话覆盖）",
-        min: None,
-        max: None,
-        editable: true,
-        resolve: cfg_resolver!(plain_reasoning, reasoning_effort),
-    },
     ParamDef {
         key: "tools.python_timeout_secs",
         label: "Python 执行超时（秒）",
@@ -456,129 +139,7 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
         min: Some(1),
         max: Some(crate::py::runtime::MAX_TIMEOUT_SECS),
         editable: true,
-        resolve: cfg_resolver!(plain_py_timeout, python_timeout_secs),
-    },
-    // ── 可编辑：工具输出截断（字节口径） ──
-    ParamDef {
-        key: "tools.ask_budget",
-        label: "任务提问预算（次）",
-        category: "tools",
-        hint: "ask_user 每次任务执行最多提问次数，超限按 AI 假设继续",
-        min: Some(ASK_BUDGET_MIN as u64),
-        max: Some(ASK_BUDGET_MAX as u64),
-        editable: true,
-        resolve: cfg_resolver!(resolve_ask_budget_cfg, ask_budget),
-    },
-    // ── 硬编码只读区（调坏易出问题，仅展示） ──
-    ParamDef {
-        key: "loop.tool_window_trigger_chars",
-        label: "工具结果滑动窗触发阈值（字符）",
-        category: "loop",
-        hint: "轮内工具结果累计超过这个量就裁；实测单次提问的工具结果 p90 落在两万字出头，这个值取在 p90 与 p95 之间",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::bot::constants::TOOL_WINDOW_TRIGGER_CHARS),
-    },
-    ParamDef {
-        key: "loop.tool_window_keep_recent",
-        label: "工具结果滑动窗保留条数",
-        category: "loop",
-        hint: "最近这几条工具结果永不裁；少一条模型就可能忘了上一轮做过什么（重跑工具 = 重跑副作用）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::bot::constants::TOOL_WINDOW_KEEP_RECENT),
-    },
-    ParamDef {
-        key: "subagent.max_running",
-        label: "子 agent 全局并发",
-        category: "subagent",
-        hint: "全局同时运行的子 agent 上限；排队在 SubagentGate（单会话上限见「每会话并发」）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::bot::constants::SUBAGENT_MAX_GLOBAL_RUNNING),
-    },
-    ParamDef {
-        key: "subagent.per_session_running",
-        label: "子 agent 每会话并发",
-        category: "subagent",
-        hint: "同一个主会话同时运行的子 agent 上限；与全局上限取更紧者（全局见「全局并发」）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::bot::constants::SUBAGENT_MAX_PER_SESSION_RUNNING),
-    },
-    ParamDef {
-        key: "search.count_cap",
-        label: "搜索条数硬顶",
-        category: "search",
-        hint: "工具参数 count 的硬上限（防单次搜索拉爆上下文）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(SEARCH_MAX_RESULTS_CAP),
-    },
-    ParamDef {
-        key: "search.output_bytes",
-        label: "搜索输出字节上限",
-        category: "search",
-        hint: "搜索结果合并渲染后的截断长度（字节，UTF-8）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::bot_web::SEARCH_OUTPUT_CAP_BYTES),
-    },
-    ParamDef {
-        key: "llm.stream_idle_secs",
-        label: "流式空闲超时（秒）",
-        category: "model",
-        hint: "两个流式 chunk 间隔超过此值判定连接死亡；总时长不设限（长生成合法）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: resolve_stream_idle_secs,
-    },
-    ParamDef {
-        key: "llm.retry",
-        label: "LLM 请求重试",
-        category: "model",
-        hint: "429/5xx 自动重试次数与间隔",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: resolve_llm_retry,
-    },
-    ParamDef {
-        key: "schedule.scan_secs",
-        label: "定时扫描间隔（秒）",
-        category: "schedule",
-        hint: "定时任务/工作流调度的扫描周期（执行最早延迟该时长）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::bot_scheduler::SCHED_TICK_SECS),
-    },
-    ParamDef {
-        key: "trace.span_text_max",
-        label: "痕迹单条文本上限（字节）",
-        category: "tools",
-        hint: "执行痕迹里单条工具入参/结果的落库钳制（超出留审计）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::db::trace::SPAN_TEXT_MAX),
-    },
-    ParamDef {
-        key: "trace.diff_max_lines",
-        label: "文件 diff 最大行数",
-        category: "tools",
-        hint: "执行痕迹里 unified diff 的行数钳制（±行计数不随截断丢失）",
-        min: None,
-        max: None,
-        editable: false,
-        resolve: hardcoded_resolver!(crate::db::trace::MAX_DIFF_LINES),
+        resolve: python_timeout_row,
     },
     ParamDef {
         key: "trace.retention_days",
@@ -602,71 +163,11 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
     },
 ];
 
-/// 生效值解析：可编辑项查 cfg 字段（None → 内置默认 / Some → 值），只读项出硬编码常量。
-fn plain_max_tokens(cfg: &impl AgentParams) -> String {
-    // 默认 16K（constants::MAX_TOKENS_DEFAULT），高级覆盖走 config.max_tokens；
-    // 条目级覆盖仍优先于此全局值（见 bot_model_loop 的请求装配）。
-    resolve_max_tokens(cfg).to_string()
-}
-
-/// 全局 max_tokens 生效值：档位预设 → 高级覆盖 → 钳到硬顶。
+/// 遍历参数表产出生效值视图（命令体直接映射）。
 ///
-/// 硬顶 32768：单轮输出再大也不该超过这个量级——超长的单轮输出意味着模型在
-/// 一次回复里塞了太多东西，既烧钱又挤占后续轮次的输入预算。
-pub fn resolve_max_tokens(cfg: &impl AgentParams) -> u32 {
-    let default = crate::bot::constants::MAX_TOKENS_DEFAULT.min(MAX_TOKENS_CAP);
-    match cfg.max_tokens() {
-        Some(n) => n.clamp(crate::bot::config::schema::MIN_MAX_TOKENS, MAX_TOKENS_CAP),
-        None => default,
-    }
-}
-
-fn plain_py_timeout(cfg: &BotConfig) -> String {
-    cfg.python_timeout_secs
-        .unwrap_or(crate::py::runtime::DEFAULT_TIMEOUT_SECS)
-        .to_string()
-}
-
-/// 推理强度无钳制但有静默回退：非法值下游一律按 medium 生效，展示同步取回退结果
-fn plain_reasoning(cfg: &BotConfig) -> String {
-    crate::bot::reasoning::EffortLevel::from_cfg(cfg.reasoning_effort.as_deref())
-        .as_str()
-        .to_string()
-}
-
-/// 流式空闲超时是 `Duration`：展示串取秒（该超时只按秒粒度配置与告警）
-fn resolve_stream_idle_secs(_cfg: &BotConfig) -> (String, &'static str) {
-    (
-        crate::bot_model_loop::STREAM_CHUNK_IDLE_TIMEOUT
-            .as_secs()
-            .to_string(),
-        "hardcoded",
-    )
-}
-
-/// 重试策略是两个独立常量（次数 / 间隔），拼成一个展示串——任一常量改动都
-/// 自动带进设置页，不留「显示 2 次实际 3 次」的缝
-fn resolve_llm_retry(_cfg: &BotConfig) -> (String, &'static str) {
-    let delay_ms = crate::bot_model_loop::LLM_RETRY_DELAY.as_millis() as f64;
-    (
-        format!(
-            "{}次/{}s",
-            crate::bot_model_loop::MAX_LLM_ATTEMPTS,
-            delay_ms / 1000.0
-        ),
-        "hardcoded",
-    )
-}
-
-/// 遍历参数表产出生效值视图（命令体直接映射）
-///
-/// **默认值从 resolver 派生**：同一份 resolver 在空配置下的输出就是内置默认，
-/// 不再另抄一份字面量。此前 `ParamDef.default` 是手写 `&'static str`，
-/// 与 resolver 各自漂移且没有测试把两者绑在一起——后端改了默认、设置页仍
-/// 写着旧数，页面上「默认 X」与实际生效的 Y 就是两回事。
+/// 默认值从 resolver 在空配置下的输出派生——派生与运行时同走一条路，不存在
+/// 「页面默认 X、实际生效 Y」的分叉。
 pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
-    // 空配置 = 各 resolver 的内置默认分支（BotConfig::default 里 Agent 运行
-    // 参数全为 None，正是「未配置」这一态）
     let empty = BotConfig::default();
     PARAMS_TABLE
         .iter()
@@ -689,10 +190,7 @@ pub fn effective_params(cfg: &BotConfig) -> Vec<ParamView> {
         .collect()
 }
 
-/// 设置页「Agent 运行参数」卡的数据源：生效值 + 默认值 + 来源 + 可填范围。
-///
-/// 命令而不是函数：设置页要的是**当前这份配置**下的生效值（用户改过什么、
-/// 哪些被钳过、哪些还在用内置默认），core 里的表只回答「有哪些参数」。
+/// 数据管理卡 / 记忆区 / Python 确认框的常量数据源：生效值 + 默认值 + 来源 + 范围。
 #[tauri::command]
 pub fn bot_effective_params(app: tauri::AppHandle) -> Vec<ParamView> {
     let cfg = crate::bot::config::load_config(&app);

@@ -86,12 +86,6 @@ const defaultProps = {
 };
 
 
-/** 机器人分区的 Agent 参数卡：进分区 + 拿到参数表 */
-async function openAgentParams(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "机器人" }));
-  return screen.findByText("Agent 运行参数");
-}
-
 /** 机器人分区的 invoke mock（标准命令 + Agent 参数表）。
  *  必须自带 bot_effective_params：前一个用例覆写过 invoke 实现，未识别的
  *  命令一律返 null——参数表拉不到时页面会走降级渲染（不显示默认值/范围）。 */
@@ -316,46 +310,6 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("Agent 运行参数卡：默认值/可填范围/当前生效值来自后端参数表", async () => {
-    // 这条盯的是「页面显示的数 = 真正生效的数」：默认值与范围此前是前端
-    // 自留的一份硬编码，后端改了默认页面还写着旧数。
-    const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(agentParamsMock);
-    render(<SettingsPage {...defaultProps} />);
-    await openAgentParams(user);
-    const desc = await screen.findByText(/默认 50/);
-    expect(desc.textContent).toContain("可填 5–1000");
-    expect(desc.textContent).toContain("当前生效 50");
-    expect(desc.textContent).toContain("内置默认");
-    // 输入框的 placeholder = 后端给的默认值（留空 = 用内置默认）
-    const input = screen.getByLabelText(
-      "模型循环最大轮数",
-    ) as HTMLInputElement;
-    expect(input.value).toBe("");
-    expect(input.placeholder).toBe("50");
-  });
-
-  it("Agent 运行参数卡：改数值保存 → 落盘钳到后端给的可填范围", async () => {
-    const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(agentParamsMock);
-    render(<SettingsPage {...defaultProps} />);
-    await openAgentParams(user);
-    const input = (await screen.findByLabelText(
-      "模型循环最大轮数",
-    )) as HTMLInputElement;
-    await user.clear(input);
-    await user.type(input, "9999");
-    await user.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => {
-      expect(mocks.invokeMock).toHaveBeenCalledWith(
-        "bot_set_config",
-        expect.objectContaining({
-          config: expect.objectContaining({ maxRounds: 1000 }),
-        }),
-      );
-    });
-  });
-
   it("Python 默认超时：默认秒数与上限取自后端参数表", async () => {
     // 前端此前手写「留空 = 60 秒 / 上限 N 秒」——后端常量一改页面就撒谎
     const user = userEvent.setup();
@@ -383,50 +337,6 @@ describe("SettingsPage", () => {
         "bot_set_config",
         expect.objectContaining({
           config: expect.objectContaining({ pythonTimeoutSecs: 1000 }),
-        }),
-      );
-    });
-  });
-
-  it("一键预设「保守」：轮数/调用数/超时全部留空（用后端内置默认），不钉成字面量", async () => {
-    // 预设里写死 50/100/60 = 把后端默认值抄成前端副本：后端改默认，预设还是
-    // 旧数，页面说「保守档」实际按另一套跑。留空才是「交给后端默认」。
-    const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(agentParamsMock);
-    render(<SettingsPage {...defaultProps} />);
-    await openAgentParams(user);
-    await user.click(await screen.findByRole("button", { name: "保守" }));
-    await waitFor(() => {
-      expect(mocks.invokeMock).toHaveBeenCalledWith(
-        "bot_set_config",
-        expect.objectContaining({
-          config: expect.objectContaining({
-            maxRounds: null,
-            maxFunctionCalls: null,
-            pythonTimeoutSecs: null,
-          }),
-        }),
-      );
-    });
-  });
-
-  it("一键预设「放开」：轮数、工具调用与 Python 超时全部取参数表上界", async () => {
-    const user = userEvent.setup();
-    mocks.invokeMock.mockImplementation(agentParamsMock);
-    render(<SettingsPage {...defaultProps} />);
-    await openAgentParams(user);
-    await user.click(await screen.findByRole("button", { name: "放开" }));
-    await waitFor(() => {
-      expect(mocks.invokeMock).toHaveBeenCalledWith(
-        "bot_set_config",
-        expect.objectContaining({
-          config: expect.objectContaining({
-            // 上界来自参数表（mock：轮数/超时上界都是 1000、调用数上界 1200，非
-            // 真值——写死字面量时钳制不会把它拉到上界，断言就能分辨）
-            maxRounds: 1000,
-            maxFunctionCalls: 1200,
-            pythonTimeoutSecs: 1000,
-          }),
         }),
       );
     });

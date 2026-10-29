@@ -124,7 +124,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     effortBySession,
     effortDropdownRef,
     effortMenuOpen,
-    setEffortBase,
     setEffortBySession,
     setEffortMenuOpen,
   } = useEffortMenu();
@@ -374,12 +373,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
               isOpenai ? "openai" : "anthropic"
             ] ?? null,
           );
-          // RE-1 推理强度后台默认：缺字段/非法值回 medium（与后端 from_cfg 一致）。
-          // 只刷新基线——已选过覆盖的会话保持覆盖（验收 3），没覆盖过的即时跟随新默认
-          const raw = c.reasoningEffort;
-          setEffortBase(
-            raw === "off" || raw === "low" || raw === "high" ? raw : "medium",
-          );
+          // RE-1 推理强度后台默认已常量化（medium）：这里只把会话基线拉回
+          // medium——已选过覆盖的会话保持覆盖（验收 3）。
           // 授权模式：非法/缺省回 ask（与后端 PermMode::from_cfg 一致）
           const pm = c.permMode;
           const next: PermMode =

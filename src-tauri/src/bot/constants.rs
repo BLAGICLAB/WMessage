@@ -41,14 +41,6 @@ pub const TOOL_OUTPUT_BYTES: usize = 128 * 1024;
 
 // ── 上下文与 IO 闸 ──
 
-/// 上下文裁剪滞回比例（百分比）的可取区间：超预算时一次裁到预算的这个比例。
-///
-/// 留余量稳住隐式前缀缓存——贴边裁会让长会话几乎每轮都改一次缓存前缀。
-/// 下界再低就是历史断崖式变短，摘要都救不回来；上界再高等于没有余量，
-/// 贴边裁的问题原样回来。
-pub const HISTORY_TRUNCATE_TARGET_PCT_MIN: u32 = 50;
-pub const HISTORY_TRUNCATE_TARGET_PCT_MAX: u32 = 90;
-
 /// 单次请求 msgs 总字符硬顶：请求体压缩阶梯（软压 70% / 硬压 85% / Fuse 100%）
 /// 的基数。
 ///
@@ -187,10 +179,8 @@ pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;
 /// 联网搜索单次返回条数下限。
 pub const SEARCH_MAX_RESULTS_MIN: u32 = 1;
 
-/// ask_user 单次执行可问次数默认与上限。
+/// ask_user 单次执行可问次数默认值（预算随运行传入，无独立的上下限闸）。
 pub const ASK_BUDGET_DEFAULT: u8 = 3;
-pub const ASK_BUDGET_MIN: u8 = 1;
-pub const ASK_BUDGET_MAX: u8 = 5;
 
 // ── 技能配额 ──
 

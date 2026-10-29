@@ -23,7 +23,6 @@ export interface BotConfigView {
   hasBraveKey?: boolean;
   braveEnabled?: boolean | null;
   pythonTimeoutSecs?: number | null;
-  maxFunctionCalls?: number | null;
   /** 执行类谎报守卫触发词表（后端已把「没配过」回落成内置默认表）；
    *  guardClaimDefaultKeywords 是内置默认，只读参照 + 设置页「恢复默认」用 */
   guardClaimKeywords?: string[];
@@ -33,9 +32,7 @@ export interface BotConfigView {
   /** 授权模式：strict/ask/auto/yolo（None = ask） */
   permMode?: string | null;
   apiProvider?: string | null;
-  maxTokens?: number | null;
   /** 推理强度后台默认：off/low/medium/high（缺字段/非法 → 前端按 medium） */
-  reasoningEffort?: string | null;
   modelsByProvider?: {
     openai?: ModelEntry[];
     anthropic?: ModelEntry[];
@@ -62,13 +59,6 @@ export interface BotConfigView {
   } | null;
   memoryTuning?: Record<string, number> | null;
   mcpServers?: McpServerConfig[];
-  maxRounds?: number | null;
-  historyBudgetChars?: number | null;
-  historyTruncateTargetPct?: number | null;
-  reasoningEchoEnabled?: number | null;
-  inTurnContextEdit?: number | null;
-  searchMaxResults?: number | null;
-  askBudget?: number | null;
   toolRules?: Array<{ tool: string; action: string }> | null;
 }
 

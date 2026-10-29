@@ -98,9 +98,7 @@ export function SettingsPage({
     extractIntervalText,
     loadConfig,
     loadParamViews,
-    paramMaxText,
     paramNumber,
-    paramViews,
     pyBusy,
     pyEnabled,
     env,
@@ -468,10 +466,8 @@ export function SettingsPage({
                 config={config}
                 setConfig={setConfig}
                 renderSaveButton={renderSaveButton}
-                paramMaxText={paramMaxText}
                 configBusy={configBusy}
                 saveConfig={saveConfig}
-                paramViews={paramViews}
               />
             </section>
           )}

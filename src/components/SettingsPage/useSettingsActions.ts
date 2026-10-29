@@ -74,7 +74,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
     // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳上限见后端参数表）
     pythonTimeoutSecs: "",
     // Function 调用熔断上限（空 = 100 默认； 全域，含工作流节点执行）
-    maxFunctionCalls: "",
     // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源
     // 显示为字符串输入；"7" = 默认（后端 None 亦回 7）
     archiveAfterDays: String(DEFAULT_ARCHIVE_DAYS),
@@ -84,10 +83,8 @@ export function useSettingsActions(params: SettingsActionsParams) {
     toolRules: [] as Array<{ tool: string; action: "allow" | "ask" | "deny" }>,
     // max_tokens 兜底层（仅 Anthropic 模式发送）：无设置页 UI 入口（每模型编辑里
     // 都有 max_tokens，页底重复已删）；loadConfig 读到已存值原样透传保存，不丢
-    maxTokens: "",
     // 推理强度后台默认（RE-1）：off/low/medium/high，默认 medium；
     // 抽象档位——发送时后端按具体模型族映射到 reasoning_effort / thinking.budget_tokens
-    reasoningEffort: "medium" as "off" | "low" | "medium" | "high",
     // 定时记忆整理：开关 + 频率（off/12h/daily/weekly）+ 上次整理时间
     // 后端 None/缺字段 → 默认 { enabled: true, interval: "daily", lastRunAt: null }
     memoryConsolidation: {
@@ -106,13 +103,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
     // 原样回传保存，防止设置页整体替换写把手改值冲掉
     memoryTuning: null as Record<string, number> | null,
     // ──  Agent 运行参数（空串 = 后端内置默认；显示与保存都是字符串输入） ──
-    maxRounds: "",
-    historyBudgetChars: "",
-    historyTruncateTargetPct: "",
-    reasoningEchoEnabled: "",
-    inTurnContextEdit: "",
-    searchMaxResults: "",
-    askBudget: "",
   });
   const [traceRetainDays, setTraceRetainDays] = useState("");
   const [traceClearBusy, setTraceClearBusy] = useState(false);
@@ -297,8 +287,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
         braveEnabled: c.braveEnabled ?? c.hasBraveKey ?? false,
         pythonTimeoutSecs:
           c.pythonTimeoutSecs != null ? String(c.pythonTimeoutSecs) : "",
-        maxFunctionCalls:
-          c.maxFunctionCalls != null ? String(c.maxFunctionCalls) : "",
         // 归档天数：后端 None / 老版本没返 → 显示默认 7
         archiveAfterDays:
           c.archiveAfterDays != null
@@ -311,15 +299,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
           c.permMode === "auto"
             ? c.permMode
             : "ask",
-        // 空 = 内置默认（仅 Anthropic 模式用）
-        maxTokens: c.maxTokens != null ? String(c.maxTokens) : "",
-        // 推理强度：缺字段/非法值 → medium（与后端 EffortLevel::from_cfg 回退一致）
-        reasoningEffort:
-          c.reasoningEffort === "off" ||
-          c.reasoningEffort === "low" ||
-          c.reasoningEffort === "high"
-            ? c.reasoningEffort
-            : "medium",
         // 记忆整理：缺字段/老后端 → 默认（启用 + daily）；非法 interval 回退 daily
         memoryConsolidation: {
           enabled: c.memoryConsolidation?.enabled ?? true,
@@ -350,23 +329,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
                   r.action === "deny"),
             )
           : [],
-        //  Agent 运行参数：后端 None/老版本没返 → 空串（= 内置默认）
-        maxRounds: c.maxRounds != null ? String(c.maxRounds) : "",
-        historyBudgetChars:
-          c.historyBudgetChars != null ? String(c.historyBudgetChars) : "",
-        historyTruncateTargetPct:
-          c.historyTruncateTargetPct != null
-            ? String(c.historyTruncateTargetPct)
-            : "",
-        reasoningEchoEnabled:
-          c.reasoningEchoEnabled != null
-            ? String(c.reasoningEchoEnabled)
-            : "",
-        inTurnContextEdit:
-          c.inTurnContextEdit != null ? String(c.inTurnContextEdit) : "",
-        searchMaxResults:
-          c.searchMaxResults != null ? String(c.searchMaxResults) : "",
-        askBudget: c.askBudget != null ? String(c.askBudget) : "",
       });
     } catch (e) {
       handleCommandError(e, "bot_get_config", { silent: true });

@@ -109,7 +109,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         has_brave_key,
         brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
-        max_function_calls: cfg.max_function_calls,
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         selfcheck_model_id: cfg.selfcheck_model_id,
         // 回落成内置默认再给前端：设置页编辑的是「当前生效表」，
@@ -123,8 +122,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         archive_after_days: cfg.archive_after_days,
         perm_mode: cfg.perm_mode,
         api_provider: cfg.api_provider,
-        max_tokens: cfg.max_tokens,
-        reasoning_effort: cfg.reasoning_effort,
         models_by_provider: cfg.models_by_provider,
         active_model_id: cfg.active_model_id,
         ui_font_size: cfg.ui_font_size,
@@ -135,13 +132,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         disabled_vendors: cfg.disabled_vendors,
         vendor_keys,
         verified_vendors: cfg.verified_vendors,
-        max_rounds: cfg.max_rounds,
-        history_budget_chars: cfg.history_budget_chars,
-        history_truncate_target_pct: cfg.history_truncate_target_pct,
-        reasoning_echo_enabled: cfg.reasoning_echo_enabled,
-        in_turn_context_edit: cfg.in_turn_context_edit,
-        search_max_results: cfg.search_max_results,
-        ask_budget: cfg.ask_budget,
         tool_rules: cfg.tool_rules,
     })
 }
@@ -268,44 +258,20 @@ pub(crate) fn prune_verified_vendors(
 ///
 /// 单独成函数是为了能单测：`bot_set_config` 要 AppHandle，测不到里面这一段。
 fn clamp_agent_params(config: &mut BotConfig) {
-    config.max_rounds = config.max_rounds.map(crate::bot::params::clamp_max_rounds);
-    config.history_budget_chars = config
-        .history_budget_chars
-        .map(crate::bot::params::clamp_history_budget_chars);
-    config.history_truncate_target_pct = config
-        .history_truncate_target_pct
-        .map(crate::bot::params::clamp_history_truncate_target_pct);
-    config.reasoning_echo_enabled = config
-        .reasoning_echo_enabled
-        .map(crate::bot::params::clamp_reasoning_echo_enabled);
-    config.in_turn_context_edit = config
-        .in_turn_context_edit
-        .map(crate::bot::params::clamp_in_turn_context_edit);
-    config.search_max_results = config
-        .search_max_results
-        .map(crate::bot::params::clamp_search_max_results);
-    config.ask_budget = config.ask_budget.map(crate::bot::params::clamp_ask_budget);
-    // 工具调用熔断上限：写侧此前**没有**钳制，只有模型循环派生链末端的一行
-    // `.clamp(1, 500)`——于是设置页显示用户设的值（999）、运行时按另一个值
-    // 走（500），用户看到的和实际生效的不是一回事。写侧补上钳制后落盘值
-    // = 生效值；边界仍是 params::clamp_max_function_calls 这一个数。
-    config.max_function_calls = config
-        .max_function_calls
-        .map(crate::bot::params::clamp_max_function_calls);
-    // 工具输出截断上限（0 = 显式关闭不动，其余钳到 params 的上限）——原先这个
-    // 字段没有任何写侧钳制，只有模型循环生效点的一行 `.min(200_000)`，于是设置页
-    // 显示用户设的值、运行时按另一个值走
     // Python 执行超时：运行期钳在 py::runtime::resolve_timeout，但那条只在
     // **执行时**生效——写侧不钳的话设置页写下去 10000、显示 10000、实际跑 300。
     // 写侧用同一个上界钳一遍（边界仍是 py::runtime 那一个常量）。
     config.python_timeout_secs = config
         .python_timeout_secs
         .map(crate::py::runtime::clamp_timeout_secs);
-    // 全局 max_tokens：读侧 resolve_max_tokens 会钳到 256..=200000，写侧不钳的话
-    // 落盘的是原值、运行时按钳过的值走（手改过 config 的场景）
-    config.max_tokens = config
-        .max_tokens
-        .map(crate::bot::config::schema::clamp_max_tokens);
+    // final 自检间隔（0..=100）与 verifier 重试（0..=2）：流程键保留为
+    // bot-config.json 手改项，写侧钳一遍保证落盘值 = 生效值。
+    config.final_selfcheck_round_gap = config
+        .final_selfcheck_round_gap
+        .map(|n| n.clamp(0, crate::bot::constants::FINAL_SELFCHECK_ROUND_GAP_CAP));
+    config.verifier_retry_max = config
+        .verifier_retry_max
+        .map(crate::bot::params::clamp_verifier_retry_max);
 }
 
 #[tauri::command]
@@ -1044,61 +1010,35 @@ mod perm_mode_tests {
     fn apply_perm_mode_touches_only_perm_mode() {
         let mut cfg = BotConfig {
             tool_rules: sanitize_tool_rules(Some(vec![rule("edit_file", "ask")])),
-            max_rounds: Some(42),
+            python_timeout_secs: Some(120),
             perm_mode: Some("ask".into()),
             ..Default::default()
         };
         let before_rules = cfg.tool_rules.clone();
         apply_perm_mode(&mut cfg, "yolo");
         assert_eq!(cfg.perm_mode.as_deref(), Some("yolo"));
-        assert_eq!(cfg.max_rounds, Some(42), "max_rounds 不该被动过");
+        assert_eq!(
+            cfg.python_timeout_secs,
+            Some(120),
+            "python_timeout_secs 不该被动过"
+        );
         assert_eq!(cfg.tool_rules, before_rules, "tool_rules 不该被动过");
     }
 
     /// 落盘值 = 生效值：越界配置必须在写侧就被钳到运行时真正认的那个数。
     ///
     /// 写侧不钳 = 设置页显示用户设的值、运行时按另一个值走（用户看到的和
-    /// 实际生效的不是一回事）。`max_function_calls` 此前就漏在钳制列表外。
+    /// 实际生效的不是一回事）。三个保留键（Python 超时 / final 自检间隔 /
+    /// verifier 重试）逐个验证落盘值 = 生效值。
     #[test]
     fn clamp_agent_params_makes_stored_value_equal_effective_value() {
         let mut cfg = BotConfig {
-            max_rounds: Some(999),
-            max_function_calls: Some(9999),
-            history_budget_chars: Some(1),
-            search_max_results: Some(99),
-            ask_budget: Some(99),
             python_timeout_secs: Some(10_000),
-            max_tokens: Some(999_999),
+            final_selfcheck_round_gap: Some(999),
+            verifier_retry_max: Some(999),
             ..Default::default()
         };
         clamp_agent_params(&mut cfg);
-        // 每个落盘值都必须等于读侧 resolver 对同一份配置的解析结果
-        assert_eq!(
-            cfg.max_rounds,
-            Some(crate::bot::params::clamp_max_rounds(999))
-        );
-        assert_eq!(
-            cfg.max_function_calls,
-            Some(crate::bot::params::clamp_max_function_calls(9999)),
-            "熔断上限写侧此前不钳：设置页显示 9999、运行时按 500 走"
-        );
-        assert_eq!(
-            cfg.max_function_calls,
-            Some(1200),
-            "熔断上限硬顶 = 全局工具池硬顶 1200"
-        );
-        assert_eq!(
-            cfg.history_budget_chars,
-            Some(crate::bot::params::clamp_history_budget_chars(1))
-        );
-        assert_eq!(
-            cfg.search_max_results,
-            Some(crate::bot::params::clamp_search_max_results(99))
-        );
-        assert_eq!(
-            cfg.ask_budget,
-            Some(crate::bot::params::clamp_ask_budget(99))
-        );
         assert_eq!(
             cfg.python_timeout_secs,
             Some(crate::py::runtime::clamp_timeout_secs(10_000)),
@@ -1109,23 +1049,23 @@ mod perm_mode_tests {
             Some(crate::py::runtime::MAX_TIMEOUT_SECS),
             "落盘值必须等于生效值（天花板常量一改这里跟着走）"
         );
-        // 全局 max_tokens：写侧此前不钳，页面显示用户填的原值、运行时按钳过的走
         assert_eq!(
-            cfg.max_tokens,
-            Some(crate::bot::config::schema::clamp_max_tokens(999_999)),
-            "max_tokens 写侧此前不钳：设置页显示 999999、运行时按硬顶 32768 走"
+            cfg.final_selfcheck_round_gap,
+            Some(crate::bot::constants::FINAL_SELFCHECK_ROUND_GAP_CAP)
         );
-        assert_eq!(cfg.max_tokens, Some(32_768));
+        assert_eq!(
+            cfg.verifier_retry_max,
+            Some(crate::bot::params::clamp_verifier_retry_max(999))
+        );
     }
 
-    /// 钳制不碰「未配置」这一态：None 仍是 None（= 用内置默认），
-    /// 且 0（工具输出截断的「显式关闭」）不能被当成非法值抹掉。
+    /// 钳制不碰「未配置」这一态：None 仍是 None（= 用内置默认）。
     #[test]
-    fn clamp_agent_params_keeps_none_and_zero() {
+    fn clamp_agent_params_keeps_none() {
         let mut cfg = BotConfig::default();
         clamp_agent_params(&mut cfg);
-        assert_eq!(cfg.max_rounds, None, "未配置不该被写成 0 之类的值");
-        assert_eq!(cfg.max_function_calls, None);
-        assert_eq!(cfg.max_rounds, None);
+        assert_eq!(cfg.python_timeout_secs, None, "未配置不该被写成 0 之类的值");
+        assert_eq!(cfg.final_selfcheck_round_gap, None);
+        assert_eq!(cfg.verifier_retry_max, None);
     }
 }

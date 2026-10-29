@@ -526,7 +526,6 @@ describe("SettingsPage", () => {
           hasApiKey: true,
           bypassLlmOnPreStepHit: true,
           apiProvider: "openai",
-          maxTokens: null,
         };
       if (cmd === "bot_set_config") return null;
       if (cmd === "api_status")
@@ -574,7 +573,6 @@ describe("SettingsPage", () => {
           };
           activeModelId: { anthropic: string | null };
           apiProvider: string;
-          maxTokens: number | null;
         };
         apiKey: string | null;
         tavilyKey: string | null;
@@ -592,8 +590,8 @@ describe("SettingsPage", () => {
       );
       // apiProvider 透传
       expect(arg.config.apiProvider).toBe("anthropic");
-      // maxTokens 兜底层无 UI 入口（每模型编辑里都有）：未配置原样透传 null
-      expect(arg.config.maxTokens).toBeNull();
+      // 全局 maxTokens 兜底层已退役（每模型编辑里都有）：payload 不再带该键
+      expect("maxTokens" in arg.config).toBe(false);
       // 顶层 key 字段仍按以前模式传 null
       expect(arg.apiKey).toBeNull();
       expect(arg.tavilyKey).toBeNull();
