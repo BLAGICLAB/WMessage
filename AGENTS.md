@@ -31,6 +31,7 @@
 - `docs/CONTEXT-TOOLCALL-OPTIMIZATION-DESIGN-2026-10-25.md` — 上下文成本与工具调用优化方案（8 项 P1–P8，5 个批次）：缓存前缀解封 / 截断滞回 / `lookup_receipt` 召回工具 / 并行调用引导 / schema 示例 / 思考段回灌开关 / 轮内工具结果滑动窗；含业界实证口径（Anthropic PTC -37%、Context Editing +29%）、不做清单与逐项验收口径
 - `docs/AGENT-BUDGET-SIMPLIFICATION-DESIGN-2026-10-28.md` — Agent 预算与风控简化方案（**已执行完毕**，7 批 + 批 7 两段，2026-10-29 收官）：取代「三档 × 六预算 × 60/20/15 + 墙钟」模型——无墙钟 / 无档位 / 子 agent 无独立预算（停滞超时 600s 接替）/ 安全网常量 200 轮 400 工具主子共用 / 回填 128KB 固定 / 参数卡退役、参数表缩三行 / 回灌「发了就回」；§10 八条拍板记录与业界口径调研（Claude Code / Cursor / Gemini CLI / OpenAI SDK / LangGraph / AutoGen / Devin）在录
 - `docs/BOT-EVENT-ENVELOPE-DESIGN-2026-10-27.md` — 流式事件信封方案：会话号只在统一出口盖章（`emit_recorded` 唯一盖章处，调用方不许自带同名键）+ 计划状态外置到模块级 store；含业界口径调研（ACP / CloudEvents / Kafka headers / 行业 AI 流式）、根因链、踩坑记录与落地结果表
+- `docs/ASK-USER-CHAT-MULTICHOICE-RESEARCH-2026-10-30.md` — ask_user 聊天放开 + 选择题提问调研（**待拍板**）：五家大厂口径（Claude Code AskUserQuestion / Codex request_user_input / Cursor / Cline-Roo / Kiro）+ MCP elicitation + 我们现状盘点（options 参数与通知页选项按钮已存在，聊天被 schema 描述与引擎双闸挡死）+ 三方案与七项拍板清单
 
 ## 命令
 
