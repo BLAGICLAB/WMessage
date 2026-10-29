@@ -423,7 +423,7 @@ describe("SettingsPage", () => {
     mocks.invokeMock.mockImplementation(agentParamsMock);
     render(<SettingsPage {...defaultProps} />);
     await user.click(screen.getByRole("button", { name: "记忆" }));
-    // mock 给 900 秒 = 15 分钟（真值 1800 = 30 分钟）
+    // mock 给 900 秒 = 15 分钟（真值 600 = 10 分钟）
     expect(await screen.findByText(/≥15 分钟一次/)).toBeInTheDocument();
   });
 

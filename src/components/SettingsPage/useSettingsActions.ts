@@ -71,7 +71,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     hasBraveKey: false,
     // 「Brave 搜索」开关：开 = web_search 走 Brave；与 Tavily 互斥，双开报错
     braveEnabled: false,
-    // run_python 默认超时秒数（空 = 60s 默认；模型 timeoutSecs 参数优先；硬钳上限见后端参数表）
+    // run_python 默认超时秒数（空 = 120s 默认；模型 timeoutSecs 参数优先；硬钳上限见后端参数表）
     pythonTimeoutSecs: "",
     // Function 调用熔断上限（空 = 100 默认； 全域，含工作流节点执行）
     // 任务卡归档天数（数据管理卡）：完成满 N 天自动归档；后端 migration 兜底归档同源

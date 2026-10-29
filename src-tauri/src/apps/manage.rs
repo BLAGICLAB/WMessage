@@ -177,7 +177,8 @@ pub fn validate_manifest_meta(
 pub fn normalize_declared_timeout(v: Option<u64>) -> Option<u64> {
     match v {
         None | Some(0) => None,
-        Some(n) => Some(crate::py::runtime::clamp_timeout_secs(n)),
+        // apps 域天花板（1800s），不走 run_python 工具路径的 600s 钳制
+        Some(n) => Some(n.clamp(1, crate::py::runtime::APPS_MAX_TIMEOUT_SECS)),
     }
 }
 

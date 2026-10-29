@@ -71,16 +71,18 @@ pub const EVIDENCE_OUTPUT_CHARS: usize = 64 * 1024;
 /// 由流式空闲超时兜底。
 pub const LLM_HEADER_TIMEOUT_SECS: u64 = 60;
 
-/// 流式重试次数：首包失败最多重试这么多次。
-pub const LLM_MAX_ATTEMPTS: u32 = 2;
+/// LLM 请求总尝试数（首次 + 重试）：429/5xx/网络错误重试到这个次数为止。
+///
+/// 与 OpenAI / Anthropic 官方 SDK 的默认口径一致（max_retries=2 即 3 次尝试）。
+pub const LLM_MAX_ATTEMPTS: u32 = 3;
 
 /// 流式重试间隔（毫秒）。
 ///
 /// 间隔太短会撞上游 500（重试本身成了压测源）。
 pub const LLM_RETRY_DELAY_MS: u64 = 1500;
 
-/// Python 沙箱单次执行超时（秒）。
-pub const PYTHON_TIMEOUT_SECS: u64 = 60;
+/// Python 沙箱单次执行超时默认（秒）。Claude Code Bash 同值（2 分钟）。
+pub const PYTHON_TIMEOUT_SECS: u64 = 120;
 
 /// 文件读取单次上限（字节）。
 pub const READ_MAX_BYTES: usize = 100 * 1024;

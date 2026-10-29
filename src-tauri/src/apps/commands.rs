@@ -17,7 +17,6 @@ use crate::apps::{self as apps_runner, AppRunResult};
 use crate::db::apps as db_apps;
 use crate::db::apps::{App, AppRun};
 use crate::error::{CommandError, CommandResult};
-use crate::py::runtime::resolve_timeout;
 
 /// 程序页 M2 全量视图（草稿 + 已启用，按 updated_at 倒序）：
 /// 草稿卡带「草稿」徽章可试跑，归档不出现在程序页
@@ -72,8 +71,8 @@ pub async fn apps_run(app: AppHandle, args: RunArgs) -> CommandResult<AppRunResu
     })?;
     // 超时来源优先级：调用方显式传入 > 程序声明的运行时长 > 内置默认。
     // 程序声明是**这个程序自己的属性**（登记时就知道它要跑多久），
-    // 全局墙钟不该拿小程序的尺子量批量程序。resolve_timeout 统一把结果
-    // 钳到全局天花板——谁给的数都越不过那道顶。
+    // 全局墙钟不该拿小程序的尺子量批量程序。resolve_run_timeout 统一把
+    // 结果钳到 apps 天花板（1800s）——谁给的数都越不过那道顶。
     let timeout = resolve_run_timeout(args.timeout_secs, a.timeout_secs);
     // 执行内部阻塞等子进程至多 timeout 秒，必须挪进阻塞线程池（钉死 async
     // worker 会拖垮其余命令）；不持全局写锁——长跑的子进程不能挡住别的写者，
@@ -306,11 +305,13 @@ pub async fn apps_version_restore(
 /// 单次运行的时长上限（纯函数，单测直打）：
 ///
 /// 来源优先级 = 调用方显式传入 > 程序声明的运行时长 > 内置默认。
-/// 三者都过 `resolve_timeout`：超上限的钳到天花板（谁给的数都越不过那道顶），
-/// 都没给就是内置默认。
+/// 天花板是 `APPS_MAX_TIMEOUT_SECS`（1800s，用户直跑的长批量活）——不复用
+/// run_python 工具路径的 600s 上限：程序页没有子 agent 停滞判定，窗可以更长。
 pub fn resolve_run_timeout(caller_secs: Option<u64>, declared_secs: Option<u64>) -> u64 {
-    let (t, _) = resolve_timeout(caller_secs.or(declared_secs));
-    t
+    caller_secs
+        .or(declared_secs)
+        .unwrap_or(crate::py::runtime::DEFAULT_TIMEOUT_SECS)
+        .min(crate::py::runtime::APPS_MAX_TIMEOUT_SECS)
 }
 
 fn open_db_or(app: &AppHandle) -> Result<rusqlite::Connection, CommandError> {
@@ -405,7 +406,7 @@ pub mod manifest_contract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::py::runtime::{DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS};
+    use crate::py::runtime::{APPS_MAX_TIMEOUT_SECS, DEFAULT_TIMEOUT_SECS};
 
     /// 运行超时的来源优先级：调用方 > 程序声明 > 内置默认；越不过天花板
     #[test]
@@ -419,12 +420,12 @@ mod tests {
         );
         assert_eq!(
             resolve_run_timeout(Some(9999), None),
-            MAX_TIMEOUT_SECS,
+            APPS_MAX_TIMEOUT_SECS,
             "超上限的调用方值钳到天花板"
         );
         assert_eq!(
             resolve_run_timeout(None, Some(9999)),
-            MAX_TIMEOUT_SECS,
+            APPS_MAX_TIMEOUT_SECS,
             "超上限的声明值钳到天花板"
         );
     }

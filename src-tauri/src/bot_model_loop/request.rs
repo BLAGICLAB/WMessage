@@ -20,7 +20,8 @@ const AGE_SOFT_ROUNDS: usize = 5;
 /// （见 docs/AGENT-TOKEN-EFFICIENCY-PLAN.md 滚动降密度一节）。
 const AGE_HARD_ROUNDS: usize = 15;
 
-/// LLM 请求重试：429/5xx/网络错误重试一次（1.5s 退避）。
+/// LLM 请求重试（1.5s 固定退避）：429/5xx/网络错误，总尝试数 = MAX_LLM_ATTEMPTS
+/// （首次 + 重试，OpenAI / Anthropic SDK 同口径）。
 /// 只在流式产出开始前重试——响应已开始流式产出后不重试（无重放风险：
 /// 重试发的是同一轮请求，已执行的工具在 msgs 里，不会因重发而重放）。
 pub(crate) const MAX_LLM_ATTEMPTS: usize = crate::bot::constants::LLM_MAX_ATTEMPTS as usize;

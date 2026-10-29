@@ -259,7 +259,7 @@ fn mark_run_failed(
 
 /// 陈旧 running 行的判定阈值：超过这个时长仍停在 running 的行，
 /// 它的进程早就不在了（崩在写回之前）——按中断处理。
-/// 取 py::runtime::MAX_TIMEOUT_SECS（30 分钟）的四倍：再长的运行也早该结束了。
+/// 取 py::runtime::APPS_MAX_TIMEOUT_SECS（30 分钟）的四倍：再长的运行也早该结束了。
 const STALE_RUN_AGE_MS: i64 = 2 * 60 * 60 * 1000;
 
 /// 清扫陈旧的 running 行（僵尸行，纯函数便于单测）：

@@ -192,7 +192,7 @@ export function BotCoreSection({
           </button>
         </div>
 
-        {/* Python 默认超时：pandas 大计算 60s 偏紧；模型可用 timeoutSecs 参数临时调。
+        {/* Python 默认超时 120s、上限 600s；模型可用 timeoutSecs 参数临时调。
             默认值与上限取自后端参数表（tools.python_timeout_secs）——前端此前
             自己写着「60」和「300」，后端常量一改页面就撒谎。 */}
         <div className="mt-3 flex items-center justify-between gap-4">

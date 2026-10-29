@@ -288,7 +288,7 @@ impl Default for BotConfig {
             tavily_enabled: None,             // 未显式设置 = 配了 key 就自动启用（旧行为）
             brave_key: None,                  // 未配置 = 不走 Brave
             brave_enabled: None,              // 未显式设置 = 配了 key 就自动启用（同 Tavily）
-            python_timeout_secs: None,        // 未配置 = 60s 默认
+            python_timeout_secs: None,        // 未配置 = 120s 默认
             perm_mode: None,                  // 未配置 = ask（弹授权）
             api_provider: None,               // 未配置 = openai（旧行为）
             models_by_provider: None,         // 未配置 = 设置页空列表（无默认厂商）

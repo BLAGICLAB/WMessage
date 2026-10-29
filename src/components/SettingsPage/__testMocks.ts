@@ -191,7 +191,8 @@ export const paramViews = [
     max: 200000,
   },
   {
-    // Python 超时：默认 60 是后端真值（py::runtime 常量），前端此前手写这两个数。
+    // Python 超时：value/default 是 mock 自造值（真值在后端 py::runtime 常量），
+    // 测试断言的就是 mock 给的数——页面若手写真值就露馅。
     // 上界故意用 1000（真值是后端 MAX_TIMEOUT_SECS）：预设「拉到上限」若写死就露馅（同上）
     key: "tools.python_timeout_secs",
     label: "Python 执行超时（秒）",
