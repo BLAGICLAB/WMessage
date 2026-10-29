@@ -4,7 +4,7 @@
 //! 只把源码守卫的扫描源换成 prod_src()。
 
 use super::*;
-use crate::bot_model_loop::fuse::MAX_FUNCTION_CALLS_PER_REQUEST;
+use crate::bot::constants::MAX_FUNCTION_CALLS;
 use crate::bot_model_loop::output::cap_tool_output;
 use crate::bot_model_loop::output::effective_output_cap;
 use crate::bot_model_loop::output::preview_with_pointer;
@@ -814,25 +814,26 @@ mod rounds_fuse_tests {
 
     #[test]
     fn fuse_trips_at_cap_boundary() {
-        // MAX_FUNCTION_CALLS_PER_REQUEST 实际生效：模拟主循环计数，
+        // 安全网常量实际生效：模拟主循环计数，
         // 构造 401 个 tool_calls → 第 401 次触发熔断（共享工具安全网 400）
-        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 400);
+        let cap = MAX_FUNCTION_CALLS as usize;
+        assert_eq!(cap, 400);
         let mut calls = 0usize;
         let mut fused_msg: Option<String> = None;
-        for _ in 0..MAX_FUNCTION_CALLS_PER_REQUEST + 1 {
+        for _ in 0..cap + 1 {
             calls += 1;
-            if should_fuse(calls, MAX_FUNCTION_CALLS_PER_REQUEST) {
-                fused_msg = Some(fuse_message("前文", "", MAX_FUNCTION_CALLS_PER_REQUEST));
+            if should_fuse(calls, cap) {
+                fused_msg = Some(fuse_message("前文", "", cap));
                 break;
             }
         }
         let msg = fused_msg.expect("cap+1 次 Function 调用内必须触发熔断");
         assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
         assert!(msg.contains("400 次上限"), "熔断消息应带上限值：{msg}");
-        // 配置覆盖：maxFunctionCalls=30 → 第 31 次熔断（派生链第二级）
+        // eval / 测试注入的覆盖值同样走这条派生链（cap=30 → 第 31 次熔断）
         // 边界：默认 400 时第 400 次放行、第 401 次熔断
-        assert!(!should_fuse(400, MAX_FUNCTION_CALLS_PER_REQUEST));
-        assert!(should_fuse(401, MAX_FUNCTION_CALLS_PER_REQUEST));
+        assert!(!should_fuse(400, cap));
+        assert!(should_fuse(401, cap));
         let fused = (1..=31).any(|n| should_fuse(n, 30));
         assert!(fused, "cap=30 时第 31 次必须熔断");
         // 边界：第 50 次放行，第 51 次熔断
@@ -847,8 +848,8 @@ mod rounds_fuse_tests {
     /// （9999 进来，末端才钳），本测试钉住这条契约。
     #[test]
     fn fuse_cap_clamps_at_the_only_consumer() {
-        let cap = fuse_cap_upper_bound();
-        assert_eq!(fuse_cap_for(None), MAX_FUNCTION_CALLS_PER_REQUEST);
+        let cap = MAX_FUNCTION_CALLS as usize;
+        assert_eq!(fuse_cap_for(None), cap);
         assert_eq!(
             fuse_cap_for(Some(9_999)),
             cap,
@@ -863,11 +864,7 @@ mod rounds_fuse_tests {
         let production = prod_src();
         assert!(
             !production.contains("clamp(1, 500)"),
-            "熔断上界不得在本文件内再存一份字面量副本（边界单源在 params）"
-        );
-        assert!(
-            production.matches("fuse_cap_upper_bound()").count() >= 2,
-            "熔断钳位必须走上界投影（定义 + 至少一处调用），不得另写数字"
+            "熔断上界不得在本文件内再存一份字面量副本（边界单源在 constants）"
         );
     }
 }

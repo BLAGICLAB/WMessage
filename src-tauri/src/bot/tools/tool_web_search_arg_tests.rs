@@ -11,7 +11,7 @@ use super::*;
 /// 只会让「设置页显示硬顶 10、模型传 12 就真给 12 条」。
 #[test]
 fn search_count_follows_the_params_clamp() {
-    let cap = crate::bot::params::SEARCH_MAX_RESULTS_CAP;
+    let cap = crate::bot::constants::SEARCH_MAX_RESULTS_CAP;
     assert_eq!(
         parse_search_count(&serde_json::json!(0)),
         Some(1),

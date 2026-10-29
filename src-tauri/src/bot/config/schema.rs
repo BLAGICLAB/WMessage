@@ -237,7 +237,7 @@ pub fn effective_inference(
 /// 不该超过这个量级。
 pub const DEFAULT_MAX_TOKENS: u32 = crate::bot::constants::MAX_TOKENS_DEFAULT;
 pub const MIN_MAX_TOKENS: u32 = 256;
-pub const MAX_MAX_TOKENS: u32 = crate::bot::params::MAX_TOKENS_CAP;
+pub const MAX_MAX_TOKENS: u32 = crate::bot::constants::MAX_TOKENS_CAP;
 
 /// max_tokens 配置解析：None = 内置默认；Some 钳制到 256..=硬顶。
 pub fn resolve_max_tokens(v: Option<u32>) -> u32 {

@@ -630,7 +630,7 @@ pub(crate) async fn tool_web_search(
     // 模型显式给的 count 与常量缺省值共用 params 的同一条钳制边界
     let opts = crate::bot_web::SearchOpts {
         count: parse_search_count(&v["count"])
-            .unwrap_or(crate::bot::params::DEFAULT_SEARCH_MAX_RESULTS),
+            .unwrap_or(crate::bot::constants::SEARCH_MAX_RESULTS_DEFAULT),
         time_range: crate::bot_web::TimeRange::parse(v["timeRange"].as_str()),
         site: v["site"].as_str().and_then(crate::bot_web::sanitize_site),
     };

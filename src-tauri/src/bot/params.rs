@@ -28,40 +28,20 @@ macro_rules! hardcoded_resolver {
 
 // ── 仍有外部消费的常量与钳制（配置键已退役的一律收进 constants）──
 
-/// 单轮输出 max_tokens 硬顶（schema::MAX_MAX_TOKENS 与模型循环共用）。
-pub const MAX_TOKENS_CAP: u32 = 32_768;
-
-/// 历史截断滞回目标比例默认（百分比）：超预算时一次裁到预算的 70%。
-/// 贴边裁会让长会话几乎每轮都改一次缓存前缀，留 30% 余量能稳住好几轮。
-pub const DEFAULT_HISTORY_TRUNCATE_TARGET_PCT: u32 = 70;
-
-/// 联网搜索默认结果条数（Tavily 主流推荐：6 条）。
-pub const DEFAULT_SEARCH_MAX_RESULTS: u32 = 6;
-/// 联网搜索结果条数硬顶（clamp 下界恒为 1：count=0 无意义）。
-pub const SEARCH_MAX_RESULTS_CAP: u32 = crate::bot::constants::SEARCH_MAX_RESULTS_CAP;
-/// 联网搜索结果条数下界。
-pub const SEARCH_MAX_RESULTS_MIN: u32 = crate::bot::constants::SEARCH_MAX_RESULTS_MIN;
-
+/// 联网搜索条数的工具入参钳制（web_search 的 count 仍需上限，其余配置键已退役）。
 pub fn clamp_search_max_results(n: u32) -> u32 {
-    n.clamp(SEARCH_MAX_RESULTS_MIN, SEARCH_MAX_RESULTS_CAP)
-}
-
-/// 工具调用安全网的派生链边界：`fuse_cap_upper_bound` 与写侧钳制共用，
-/// 防「记账按一个数、循环按另一个数放行」。
-pub const MAX_FUNCTION_CALLS_CAP: u32 = crate::bot::constants::MAX_FUNCTION_CALLS;
-pub const MAX_FUNCTION_CALLS_MIN: u32 = 1;
-
-pub fn clamp_max_function_calls(n: u32) -> u32 {
-    n.clamp(MAX_FUNCTION_CALLS_MIN, MAX_FUNCTION_CALLS_CAP)
+    n.clamp(
+        crate::bot::constants::SEARCH_MAX_RESULTS_MIN,
+        crate::bot::constants::SEARCH_MAX_RESULTS_CAP,
+    )
 }
 
 /// verifier 拒绝后的修复重试预算：未配置时的默认次数与上限。
 /// `verifier_retry_max` 是保留的 bot-config.json 手改键（无 UI）。
 pub const DEFAULT_VERIFIER_RETRY_MAX: u32 = 1;
-pub const VERIFIER_RETRY_MAX_CAP: u32 = crate::bot::constants::VERIFIER_RETRY_MAX_CAP;
 
 pub fn clamp_verifier_retry_max(n: u32) -> u32 {
-    n.clamp(0, VERIFIER_RETRY_MAX_CAP)
+    n.clamp(0, crate::bot::constants::VERIFIER_RETRY_MAX_CAP)
 }
 
 pub fn resolve_verifier_retry_max(configured: Option<u32>) -> u32 {

@@ -92,7 +92,7 @@ pub(crate) use self::types::{
 // 只有测试在用的私有项：按构建期切换——非测试构建里它们没人用，
 // 转出会被 rustc 判 unused import。
 #[cfg(test)]
-pub(crate) use self::fuse::{fuse_cap_upper_bound, rounds_fuse_message};
+pub(crate) use self::fuse::rounds_fuse_message;
 // ── 拆分模块声明 结束 ──
 
 // 防幻觉汇报守卫

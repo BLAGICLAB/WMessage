@@ -26,12 +26,21 @@ pub const MAX_FUNCTION_CALLS: u32 = 400;
 
 /// 会话历史字符预算：超预算丢最旧 + 摘要，裁至 70%。
 ///
+/// 滞回目标比例（下一个常量）：一次裁到预算的这个比例而不是贴边裁——
+/// 贴边裁每轮都可能只丢一两条，把缓存前缀断成每轮一次；留出余量能稳住好几轮。
+///
 /// 与 `CONTEXT_CHARS_HARD_CAP` 是两层：这里管持久化对话历史裁到多大，硬顶管
 /// 一次请求连同轮内工具结果最多多大。
 pub const HISTORY_BUDGET_CHARS: u32 = 128_000;
 
+/// 历史截断滞回目标比例（百分比）。
+pub const HISTORY_TRUNCATE_TARGET_PCT: u32 = 70;
+
 /// 单轮输出 max_tokens 默认（仅 Anthropic 协议发送；模型条目级可覆盖）。
 pub const MAX_TOKENS_DEFAULT: u32 = 16_384;
+
+/// 单轮输出 max_tokens 硬顶（仅钳模型条目级输入）。
+pub const MAX_TOKENS_CAP: u32 = 32_768;
 
 /// 单条工具回填 payload 上限（字节）：超限转存文件 + 节选 + 指针。
 ///
@@ -180,6 +189,8 @@ pub const VERIFIER_RETRY_MAX_CAP: u32 = 2;
 pub const SEARCH_MAX_RESULTS_CAP: u32 = 10;
 /// 联网搜索单次返回条数下限。
 pub const SEARCH_MAX_RESULTS_MIN: u32 = 1;
+/// 联网搜索未声明条数时的默认值（Tavily 主流推荐 6 条）。
+pub const SEARCH_MAX_RESULTS_DEFAULT: u32 = 6;
 
 /// ask_user 单次执行可问次数默认值（预算随运行传入，无独立的上下限闸）。
 pub const ASK_BUDGET_DEFAULT: u8 = 3;

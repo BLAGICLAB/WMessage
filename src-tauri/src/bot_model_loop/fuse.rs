@@ -6,15 +6,6 @@ use super::ModelLoopDeps;
 use crate::bot::constants::{WRAP_UP_ROUNDS, WRAP_UP_TOOLS};
 use crate::error::CommandError;
 
-/// Harness 第 5 层：单轮对话 Function 总调用上限（每轮可并行多个 tool_calls，
-// max_rounds 管轮数管不住并行调用数，必须有独立计数熔断）
-//
-// 上限是安全网常量（constants::MAX_FUNCTION_CALLS，主会话与子 agent 共用同一
-// 个数）；fuse_cap_override 仅供 eval 用例与测试直驱注入。软警告阈值动态 =
-// cap×90%（见 request.rs 的阶梯派生）。
-pub(crate) const MAX_FUNCTION_CALLS_PER_REQUEST: usize =
-    crate::bot::constants::MAX_FUNCTION_CALLS as usize;
-
 /// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
 pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
 
@@ -23,25 +14,17 @@ pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";
 /// 还原 `budget_exceeded`（见 bot_orchestrator::classify_outcome）。
 pub(crate) const ROUNDS_FUSE_MARKER: &str = "⏹ 已熔断（轮数上限）";
 
-/// 熔断上界的 usize 投影：与子 agent 预算解析（params::MAX_FUNCTION_CALLS_CAP）
-/// 是同一个数，这里只做类型转换——两处各写一份字面量就会在「预算按 500 记账、
-/// 循环按 999 放行」这种偏差上分叉，且分叉到熔断才暴露。
-pub(crate) fn fuse_cap_upper_bound() -> usize {
-    crate::bot::params::MAX_FUNCTION_CALLS_CAP as usize
-}
-
-/// 熔断上限派生链的唯一入口：bot-config 覆盖 > 内置默认，末端钳到 [1, 上界]。
+/// 熔断上限派生链的唯一入口：覆盖 > 安全网常量，末端钳到 [1, 安全网]。
 /// 主会话与子 agent 同一个数——子 agent 没有独立预算。
 ///
 /// 收尾阶梯（软告警 / 收尾窗 / 收尾轮数用尽硬停）按这个上限的占比派生
 /// （见 `gate_call`）——上限之上不再有任何裕量。
 ///
-/// 上游（薄壳组装 deps）刻意不钳：`deps.fuse_cap_override` 也被单测直驱 core
-/// 注入，绕过薄壳，钳在薄壳等于给「实际生效的那条边界」留了个不生效的副本。
+/// 钳位只在这里做：`deps.fuse_cap_override` 被 eval 用例与单测直接注入，
+/// 上游不钳的越界值在末端收口。
 pub(crate) fn fuse_cap_for(cfg_override: Option<usize>) -> usize {
-    cfg_override
-        .unwrap_or(MAX_FUNCTION_CALLS_PER_REQUEST)
-        .clamp(1, fuse_cap_upper_bound())
+    let ceiling = crate::bot::constants::MAX_FUNCTION_CALLS as usize;
+    cfg_override.unwrap_or(ceiling).clamp(1, ceiling)
 }
 
 /// 熔断判定：第 n 次（1-based 累计）Function 调用是否超上限。

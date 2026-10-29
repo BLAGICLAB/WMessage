@@ -536,7 +536,7 @@ pub(super) async fn bot_chat_inner(
     // 截断滞回比例（config historyTruncateTargetPct，钳 50..=90；默认 70%）：
     // 超预算时一次裁到目标比例而不是贴着预算边裁——贴边裁每轮都可能只丢
     // 一两条，把缓存前缀断成每轮一次。留出余量能稳住好几轮的前缀。
-    let truncate_ratio = crate::bot::params::DEFAULT_HISTORY_TRUNCATE_TARGET_PCT as f64 / 100.0;
+    let truncate_ratio = crate::bot::constants::HISTORY_TRUNCATE_TARGET_PCT as f64 / 100.0;
     let (messages, summary, dropped) = truncate_chat_history_with_summary(
         &app,
         session_id.as_deref(),

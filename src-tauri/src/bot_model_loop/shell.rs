@@ -13,15 +13,12 @@ use tauri::AppHandle;
 use tauri::Emitter;
 
 /// 本轮工具循环的轮数上限：Skill 自报 max_rounds 只许**收紧**（取 min），
-/// 没自报 → 配置 maxRounds（缺省即内置安全网 constants::MAX_ROUNDS）。
+/// 没自报 → 安全网常量（constants::MAX_ROUNDS）。
 /// frontmatter 是任务画像不是权限：让声明值抬高轮数等于给技能开后门。
-pub(crate) fn resolve_max_rounds(
-    skill_max_rounds: Option<usize>,
-    config_max_rounds: usize,
-) -> usize {
+pub(crate) fn resolve_max_rounds(skill_max_rounds: Option<usize>, safety_net: usize) -> usize {
     skill_max_rounds
-        .map(|n| config_max_rounds.min(n))
-        .unwrap_or(config_max_rounds)
+        .map(|n| safety_net.min(n))
+        .unwrap_or(safety_net)
 }
 
 /// 空 replan 出口：无计划/测试调用方直驱 run_model_loop_core 时传入，
@@ -168,11 +165,6 @@ pub async fn run_model_loop(
             }
         }
     });
-    // 主会话熔断上限（高级覆盖 maxFunctionCalls 优先）在**移动 cfg 字段之前**
-    // 算出来——cfg 的字段随后被 move 进 LlmHttp / ModelLoopDeps，那时再借用
-    // 整份 cfg 就是「部分移动后借用」。这里**不钳**——钳位单点在派生链末端
-    // （fuse_cap 的 clamp），此处再钳一次等于把边界抄成两份。
-    let main_tool_calls = crate::bot::constants::MAX_FUNCTION_CALLS as usize;
     let http = LlmHttp {
         client,
         base_url: cfg.base_url,
@@ -258,8 +250,9 @@ pub async fn run_model_loop(
         .collect();
 
     let deps = ModelLoopDeps {
-        // 主会话熔断上限（高级覆盖优先；主/子同一套安全网）。
-        fuse_cap_override: Some(main_tool_calls),
+        // 熔断上限：None = 安全网常量（主/子同一套）；Some 只剩 eval
+        // 用例与单测直驱注入一条路。
+        fuse_cap_override: None,
         conv_sidecar_dir: conv_sidecar_path.as_deref(),
         // 思考段回灌：默认关（维持现状），开了才把本轮 reasoning_content 随
         // 工具调用消息回灌历史（DeepSeek reasoner 缺了就 400，MiniMax M2/M3

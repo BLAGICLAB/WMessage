@@ -184,10 +184,6 @@ export function useSettingsActions(params: SettingsActionsParams) {
   const pyTimeoutView = paramViews?.find(
     (p) => p.key === "tools.python_timeout_secs",
   );
-  const paramMaxText = (key: string) => {
-    const max = paramViews?.find((p) => p.key === key)?.max;
-    return max != null ? String(max) : "";
-  };
   const paramRangeText = (key: string) => {
     const row = paramViews?.find((p) => p.key === key);
     return row?.min != null && row?.max != null ? `${row.min}–${row.max}` : null;
@@ -546,9 +542,7 @@ export function useSettingsActions(params: SettingsActionsParams) {
     extractIntervalText,
     loadConfig,
     loadParamViews,
-    paramMaxText,
     paramNumber,
-    paramViews,
     pyBusy,
     pyEnabled,
     env,

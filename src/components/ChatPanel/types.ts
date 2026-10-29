@@ -117,8 +117,6 @@ export type SubagentRow = {
   acceptanceJson?: string | null;
   /** 收尾结构化结果 JSON 原文，同上 */
   resultJson?: string | null;
-  /** SubagentBudget 的 JSON 原文（NOT NULL 列：所有子 agent 行都有值） */
-  budgetJson?: string | null;
   /** 贯穿 bot.log 的串链键（NOT NULL 列） */
   traceId: string;
   /** 毫秒时间戳（NOT NULL 列） */
