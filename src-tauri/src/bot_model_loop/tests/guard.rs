@@ -811,15 +811,15 @@ mod rounds_fuse_tests {
             ),
             crate::bot::params::DEFAULT_MAX_ROUNDS as usize
         );
-        // 均衡档全局回合池 100 → 主会话 60% = 60 轮
-        assert_eq!(crate::bot::params::DEFAULT_MAX_ROUNDS, 60);
+        // 内置轮数安全网（constants::MAX_ROUNDS，主/子共用）
+        assert_eq!(crate::bot::params::DEFAULT_MAX_ROUNDS, 200);
     }
 
     #[test]
     fn fuse_trips_at_cap_boundary() {
         // MAX_FUNCTION_CALLS_PER_REQUEST 实际生效：模拟主循环计数，
-        // 构造 101 个 tool_calls → 第 101 次触发熔断（均衡档全局池 250 的 60% = 150）
-        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 150);
+        // 构造 401 个 tool_calls → 第 401 次触发熔断（共享工具安全网 400）
+        assert_eq!(MAX_FUNCTION_CALLS_PER_REQUEST, 400);
         let mut calls = 0usize;
         let mut fused_msg: Option<String> = None;
         for _ in 0..MAX_FUNCTION_CALLS_PER_REQUEST + 1 {
@@ -831,11 +831,11 @@ mod rounds_fuse_tests {
         }
         let msg = fused_msg.expect("cap+1 次 Function 调用内必须触发熔断");
         assert!(msg.contains("⏹ 已熔断"), "熔断消息应含「⏹ 已熔断」：{msg}");
-        assert!(msg.contains("150 次上限"), "熔断消息应带上限值：{msg}");
+        assert!(msg.contains("400 次上限"), "熔断消息应带上限值：{msg}");
         // 配置覆盖：maxFunctionCalls=30 → 第 31 次熔断（派生链第二级）
-        // 边界：默认 150 时第 150 次放行、第 151 次熔断
-        assert!(!should_fuse(150, MAX_FUNCTION_CALLS_PER_REQUEST));
-        assert!(should_fuse(151, MAX_FUNCTION_CALLS_PER_REQUEST));
+        // 边界：默认 400 时第 400 次放行、第 401 次熔断
+        assert!(!should_fuse(400, MAX_FUNCTION_CALLS_PER_REQUEST));
+        assert!(should_fuse(401, MAX_FUNCTION_CALLS_PER_REQUEST));
         let fused = (1..=31).any(|n| should_fuse(n, 30));
         assert!(fused, "cap=30 时第 31 次必须熔断");
         // 边界：第 50 次放行，第 51 次熔断

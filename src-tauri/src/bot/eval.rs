@@ -39,7 +39,9 @@ use crate::bot::{
     ToolCallTrace,
 };
 
-const MAX_ROUNDS: usize = 6;
+/// 评估用例的轮数上限：量模型不量守卫，6 轮够任一用例跑完工具往返；
+/// 与运行时安全网（constants::MAX_ROUNDS）是两回事，故不同名。
+const EVAL_MAX_ROUNDS: usize = 6;
 /// 评估配置快照文件名（src-tauri/ 下，gitignore；见模块头跑法①）
 const EVAL_CONFIG_FILE: &str = "eval-bot-config.json";
 
@@ -74,7 +76,6 @@ fn eval_http() -> (LlmHttp, u32) {
         cfg.max_tokens,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
-        crate::bot::params::resolve_preset(&cfg).max_tokens,
     );
     let reasoning = crate::bot::reasoning::resolve(
         provider,
@@ -275,7 +276,7 @@ async fn run_case(case: &EvalCase, http: &LlmHttp, system: &str, usage: &UsageCo
     let (text, _refs) = run_model_loop_core(
         http,
         msgs,
-        MAX_ROUNDS,
+        EVAL_MAX_ROUNDS,
         &stop,
         None,
         &deps,
@@ -628,7 +629,7 @@ async fn eval_prompt_discipline_report() {
         }
     );
     println!(
-        "  系统提示词 {} 字符；每用例 ≤{MAX_ROUNDS} 轮",
+        "  系统提示词 {} 字符；每用例 ≤{EVAL_MAX_ROUNDS} 轮",
         system.chars().count()
     );
 

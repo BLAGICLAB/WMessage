@@ -1,6 +1,6 @@
 # wmessage Rust Bot 架构说明
 
-> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 313 个文件、约 13.5 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
+> 项目形态：Tauri 2 桌面应用（任务看板 + AI 助手）。单 crate（`src-tauri/`，lib 名 `wmessage_lib`），`main.rs` 仅 6 行调 `wmessage_lib::run()`。Rust 业务源码共 313 个文件、约 13.4 万行，全在 `src-tauri/src/`；同 crate 里另有 `src-tauri/tests/` 10 个集成测试 target（17 个源文件——llm_integration 拆成目录形态 `tests/llm_integration/`）与 `examples/` 1 个。`src-tauri/vendor/tiny_http` 是 vendored 补丁依赖，非业务代码。
 
 ## 1. 文件结构 + 职责
 
@@ -123,7 +123,7 @@ src-tauri/src/
 │   ├── bot_chat/flow.rs (712)   聊天主流程：bot_chat_inner 主体 + 技能路由 + ChatGuard 防重入
 │   ├── bot_chat/exec.rs (551)   任务执行面：批量执行 + ExecGuard + run_task_in_chat 全链路
 │   ├── bot_chat/media.rs (152)  多模态图片组装：base64 入模 + 扩展名白名单 + 附件索引
-│   ├── bot_chat/summary.rs (327) 历史摘要面：截断点选择 + 摘要请求 + 压缩
+│   ├── bot_chat/summary.rs (326) 历史摘要面：截断点选择 + 摘要请求 + 压缩
 │   ├── bot_chat/inject.rs (96)  上下文注入面：摘要/记忆块并入末条消息（保缓存前缀稳定）
 │   ├── bot_chat/report.rs (154) 子任务汇报轮：回传结果 + 门控 + 历史映射
 │   ├── bot_chat/input.rs (110)  输入规范化面：不可见字符清洗 + 路由前判定 + 恢复提示
@@ -155,13 +155,13 @@ src-tauri/src/
 │   │                                    tool_call 增量累积 / token usage 归一
 │   ├── bot_model_loop/core.rs (1098)     核心循环：run_model_loop_core（可注入 mock）+
 │   │                                    dispatch_round（工具分发/回灌）
-│   ├── bot_model_loop/shell.rs (535)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
+│   ├── bot_model_loop/shell.rs (527)    薄壳装配层：run_model_loop（构造 LlmHttp + ModelLoopDeps）
 │   ├── bot_model_loop/request.rs (717)  请求装配层：请求体构造 / 429·超限重试 / 轮前准备与压缩
 │   ├── bot_model_loop/sse.rs (749)      SSE 流消费层：逐 chunk 读取 / 空闲超时 / 流内错误
 │   ├── bot_model_loop/guard.rs (707)    防幻觉守卫层：终稿声称与实际动作对账（guard_collect/
 │   │                                    guard_verdict）+ 自检回复判定 + 工具自检侧调路由
 │   ├── bot_model_loop/finalize.rs (366) 收尾层：无工具收尾 / 自检侧调（decide_selfcheck）/ 出口闸
-│   ├── bot_model_loop/fuse.rs (171)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call +
+│   ├── bot_model_loop/fuse.rs (169)     熔断层：单轮 Function 调用上限 / 收尾窗阶梯判定（gate_call +
 │   │                                    收尾轮数出口）/ 轮数熔断 / 软警告注入
 │   ├── bot_model_loop/types.rs (325)    共享类型：ModelLoopDeps / 请求状态机 / 流结构 / 数据类
 │   ├── bot_model_loop/output.rs (172)   工具结果回灌体积漏斗：per-tool 预算与全局 cap 取小、
@@ -172,7 +172,7 @@ src-tauri/src/
 │   ├── bot_model_loop/tests.rs (74)     单元测试六桶的入口 + prod_src() 生产代码全景扫描源
 │   ├── bot_model_loop/tests/guard.rs (1102)   幻觉守卫 / 熔断 / 接线类测试
 │   ├── bot_model_loop/tests/parse.rs (596)   SSE 解析 / 增量累积 / schema 测试
-│   ├── bot_model_loop/tests/config.rs (616) 推理参数 / 思考 / 上下文超限 / 侧调门测试
+│   ├── bot_model_loop/tests/config.rs (615) 推理参数 / 思考 / 上下文超限 / 侧调门测试
 │   ├── bot_model_loop/tests/tool_window.rs (233) 轮内工具结果滑动窗测试（裁剪口径 / 护栏 / 桩子）
 │   ├── bot_model_loop/tests/fail_hint.rs (58)   工具失败「换策略」提示按工具分流的单测
 │   ├── bot_model_loop/tests/intent.rs (113)  侧调自检测试（路由阈值两态 / 用户意图抽取）
@@ -187,11 +187,11 @@ src-tauri/src/
 │                        search 条数）+ bot_effective_params 命令；settings 页参数卡同源
 │                        （默认值 = resolver 在空配置下的派生值；可填范围 = 钳制常量 min/max；
 │                        生效值 = 钳过之后的数 + 来源标注——页面不再自留一份硬编码数字）。
-│                        **三档任务模式**（light/balanced/deep）在此：每档一次性给五个预算的
-│                        预设值（全局回合池 / 工具调用 / 历史预算 / 输出上限 / 回填上限），
-│                        分配比例主会话 60% / 单个子 agent 20% / 单个技能 15% 内置不可配；
-│                        逐项高级覆盖优先于档位。测试在 bot/params/tests.rs。
-├── bot/constants.rs     Agent 风控工程常量（开发者维护，设置页不暴露）：上下文/IO 闸、
+│                        **无档位**：轮数 / 工具调用安全网、历史预算、max_tokens 全是 constants
+│                        里的常量（主会话与子 agent 同一套），这里只做高级覆盖的解析与钳制。
+│                        测试在 bot/params/tests.rs。
+├── bot/constants.rs     Agent 风控工程常量（开发者维护，设置页不暴露）：安全网（轮数 200 /
+│                        工具 400）、历史预算 128K、上下文硬顶 200K、回填 128KB、上下文/IO 闸、
 │                        熔断阶梯（90% 软告警 / 95% 收尾窗 / 100% 硬熔断）、流程风控常量、
 │                        技能配额、子 agent 并发——改风控策略只改这一处。
 │                        只读行不作为设置项露出，但**可被设置页文案引用**（值从表里取）：

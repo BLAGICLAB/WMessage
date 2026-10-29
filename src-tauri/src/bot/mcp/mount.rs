@@ -56,7 +56,7 @@ pub struct McpToolRef {
 ///
 /// 取档位预设的均衡档值——MCP 结果在挂载期就被截断（工具还没进模型循环，
 /// 那条漏斗管不到），所以这个上限是它唯一的兜底。
-const MAX_RESULT_BYTES: usize = crate::bot::params::BALANCED_PRESET.tool_output_bytes as usize;
+const MAX_RESULT_BYTES: usize = crate::bot::constants::TOOL_OUTPUT_BYTES;
 
 /// 单工具 schema 序列化体积上限（字节）。：
 /// inputSchema 服务器侧原样透传，无上限会每轮全量拼进 tools JSON。超限不丢

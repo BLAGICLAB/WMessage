@@ -215,14 +215,13 @@ pub fn effective_inference(
     max_tokens: Option<u32>,
     active_model_id: Option<&ActiveModelId>,
     models_by_provider: Option<&ModelsByProvider>,
-    max_tokens_preset: u32,
 ) -> EffectiveInference {
     let provider = ApiProvider::from_cfg(api_provider);
     let entry = active_model_entry(api_provider, active_model_id, models_by_provider);
     match entry {
-        Some(e) => inference_for_entry(e, provider, max_tokens, max_tokens_preset),
+        Some(e) => inference_for_entry(e, provider, max_tokens),
         None => EffectiveInference {
-            max_tokens: resolve_max_tokens(max_tokens, max_tokens_preset),
+            max_tokens: resolve_max_tokens(max_tokens),
             temperature: resolve_temperature(None, provider),
             top_p: resolve_top_p(None),
             system_prompt: None,
@@ -232,21 +231,18 @@ pub fn effective_inference(
 
 // max_tokens
 
-/// max_tokens 默认值与合法范围（默认取档位预设；仅 Anthropic 模式发送）
+/// max_tokens 默认值与合法范围（仅 Anthropic 模式发送）
 ///
-/// 默认值不再写死 32768：档位决定它（轻量 8K / 均衡 16K / 深度 32K），
-/// 硬顶固定 32768——单轮输出再大也不该超过这个量级。
-pub const DEFAULT_MAX_TOKENS: u32 = crate::bot::params::BALANCED_PRESET.max_tokens;
+/// 默认 16K（constants::MAX_TOKENS_DEFAULT），硬顶 32768——单轮输出再大也
+/// 不该超过这个量级。
+pub const DEFAULT_MAX_TOKENS: u32 = crate::bot::constants::MAX_TOKENS_DEFAULT;
 pub const MIN_MAX_TOKENS: u32 = 256;
 pub const MAX_MAX_TOKENS: u32 = crate::bot::params::MAX_TOKENS_CAP;
 
-/// max_tokens 配置解析：None = 档位预设；Some 钳制到 256..=硬顶。
-///
-/// `preset` 是档位给出的基准值（调用方从 `bot::params::resolve_preset` 取），
-/// 让「档位 → 单轮输出上限」这条链只有一个入口。
-pub fn resolve_max_tokens(v: Option<u32>, preset: u32) -> u32 {
-    let base = preset.clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS);
-    v.unwrap_or(base).clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
+/// max_tokens 配置解析：None = 内置默认；Some 钳制到 256..=硬顶。
+pub fn resolve_max_tokens(v: Option<u32>) -> u32 {
+    v.unwrap_or(DEFAULT_MAX_TOKENS)
+        .clamp(MIN_MAX_TOKENS, MAX_MAX_TOKENS)
 }
 
 /// max_tokens 写侧钳制（256..=硬顶）——落盘前用。
@@ -411,10 +407,9 @@ pub fn inference_for_entry(
     entry: &ModelEntry,
     provider: ApiProvider,
     global_max_tokens: Option<u32>,
-    max_tokens_preset: u32,
 ) -> EffectiveInference {
     EffectiveInference {
-        max_tokens: resolve_max_tokens(entry.max_tokens.or(global_max_tokens), max_tokens_preset),
+        max_tokens: resolve_max_tokens(entry.max_tokens.or(global_max_tokens)),
         temperature: resolve_temperature(entry.temperature, provider),
         top_p: resolve_top_p(entry.top_p),
         system_prompt: entry
@@ -477,7 +472,6 @@ mod inference_tests {
             cfg.max_tokens,
             cfg.active_model_id.as_ref(),
             cfg.models_by_provider.as_ref(),
-            crate::bot::params::BALANCED_PRESET.max_tokens,
         )
     }
 
@@ -599,7 +593,7 @@ mod inference_tests {
         for raw in [0u32, 50, MIN_MAX_TOKENS, 32_768, MAX_MAX_TOKENS, u32::MAX] {
             assert_eq!(
                 clamp_max_tokens(raw),
-                resolve_max_tokens(Some(raw), DEFAULT_MAX_TOKENS),
+                resolve_max_tokens(Some(raw)),
                 "写侧与读侧边界必须一致：{raw}"
             );
         }

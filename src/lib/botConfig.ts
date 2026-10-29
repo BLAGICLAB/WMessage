@@ -62,7 +62,6 @@ export interface BotConfigView {
   } | null;
   memoryTuning?: Record<string, number> | null;
   mcpServers?: McpServerConfig[];
-  taskMode?: string | null;
   maxRounds?: number | null;
   historyBudgetChars?: number | null;
   historyTruncateTargetPct?: number | null;

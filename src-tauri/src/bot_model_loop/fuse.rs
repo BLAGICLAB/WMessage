@@ -13,10 +13,8 @@ use crate::error::CommandError;
 // 由幻觉守卫（claims_mutation）+ 软警告 + /stop 兜底。用户可在设置页按档位
 // 调整，或用高级覆盖单项指定；子 agent 的工具额度是另一个独立键
 // （resolve_subagent_budget）。软警告阈值动态 = cap*90%（见 request.rs 的阶梯派生）。
-pub(crate) const MAX_FUNCTION_CALLS_PER_REQUEST: usize = crate::bot::params::budget_share(
-    crate::bot::params::BALANCED_PRESET.global_tool_calls,
-    crate::bot::params::MAIN_SESSION_BUDGET_PCT,
-) as usize;
+pub(crate) const MAX_FUNCTION_CALLS_PER_REQUEST: usize =
+    crate::bot::constants::MAX_FUNCTION_CALLS as usize;
 
 /// 熔断消息标记（runner 端识别熔断结果用同一常量，勿散落字符串字面量——W5 r1）
 pub(crate) const FUSE_MARKER: &str = "⏹ 已熔断";

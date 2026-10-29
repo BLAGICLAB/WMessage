@@ -79,7 +79,6 @@ fn empty_cfg() -> BotConfig {
         disabled_vendors: Vec::new(),
         verified_vendors: Vec::new(),
         schema_version: 1,
-        task_mode: None,
         max_rounds: None,
         history_truncate_target_pct: None,
         reasoning_echo_enabled: None,
@@ -240,10 +239,10 @@ fn params_table_defaults_match_runtime_constants() {
     let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
     assert_eq!(
         by_key("tools.max_output_bytes").default,
-        crate::bot::params::BALANCED_PRESET
-            .tool_output_bytes
+        (crate::bot::constants::TOOL_OUTPUT_BYTES as u32)
+            .min(crate::bot::params::MAX_TOOL_OUTPUT_BYTES_CAP)
             .to_string(),
-        "参数表展示的默认截断字节数与档位预设不符"
+        "参数表展示的默认截断字节数与常量不符"
     );
     // 其余可编辑项：展示的默认 = 运行时内置默认常量
     assert_eq!(
@@ -252,12 +251,8 @@ fn params_table_defaults_match_runtime_constants() {
     );
     assert_eq!(
         by_key("loop.max_function_calls").default,
-        crate::bot::params::budget_share(
-            BALANCED_PRESET.global_tool_calls,
-            MAIN_SESSION_BUDGET_PCT,
-        )
-        .to_string(),
-        "主会话工具调用默认 = 均衡档全局池的 60%"
+        crate::bot::constants::MAX_FUNCTION_CALLS.to_string(),
+        "主会话工具调用默认 = 共享工具安全网"
     );
     assert_eq!(
         by_key("loop.history_budget_chars").default,
@@ -365,8 +360,11 @@ fn editable_rows_ranges_match_clamp_bounds() {
 fn effective_params_defaults_and_hardcoded() {
     let views = effective_params(&empty_cfg());
     let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
-    // 均衡档全局池 100 回合 → 主会话 60% = 60 轮
-    assert_eq!(by_key("loop.max_rounds").value, "60");
+    // 内置轮数安全网（constants::MAX_ROUNDS）
+    assert_eq!(
+        by_key("loop.max_rounds").value,
+        crate::bot::constants::MAX_ROUNDS.to_string()
+    );
     assert_eq!(by_key("loop.max_rounds").source, "default");
     assert_eq!(by_key("schedule.scan_secs").source, "hardcoded");
     assert!(!by_key("schedule.scan_secs").editable);
@@ -448,131 +446,34 @@ fn reasoning_echo_param_row_range_matches_clamp() {
     assert_eq!(v.default, "0", "内置默认是关");
 }
 
-// ── 三档任务模式 ──
+// ── 安全网（主/子共用，常量单源）──
 
-/// 三档的六项画像必须与定稿文档逐个对齐。
-///
-/// 这条是「定稿总表」与代码之间的**对拍闸**：文档改数而代码没改（或反之）
-/// 即红。数值写死在这里是刻意的——它就是那份文档的可执行副本。
+/// 共享安全网的默认值必须在 constants 单源，且轮数 / 工具数 / 历史预算 /
+/// max_tokens 的参数表默认与其一致——参数卡虽已退役，bot_effective_params
+/// 仍对外暴露这三行只读常量，口径不能漂。
 #[test]
-fn mode_presets_match_the_spec_table() {
+fn safety_net_defaults_match_constants() {
+    assert_eq!(DEFAULT_MAX_ROUNDS, crate::bot::constants::MAX_ROUNDS);
     assert_eq!(
-        LIGHT_PRESET,
-        ModePreset {
-            global_turns: 60,
-            global_tool_calls: 150,
-            history_budget_chars: 80_000,
-            max_tokens: 8_192,
-            tool_output_bytes: 64 * 1024,
-        },
-        "轻量档与定稿表不符"
+        clamp_max_function_calls(crate::bot::constants::MAX_FUNCTION_CALLS),
+        crate::bot::constants::MAX_FUNCTION_CALLS
     );
     assert_eq!(
-        BALANCED_PRESET,
-        ModePreset {
-            global_turns: 100,
-            global_tool_calls: 250,
-            history_budget_chars: 100_000,
-            max_tokens: 16_384,
-            tool_output_bytes: 128 * 1024,
-        },
-        "均衡档（默认）与定稿表不符"
+        DEFAULT_HISTORY_BUDGET_CHARS,
+        crate::bot::constants::HISTORY_BUDGET_CHARS
     );
+    let views = effective_params(&empty_cfg());
+    let by_key = |k: &str| views.iter().find(|v| v.key == k).unwrap();
     assert_eq!(
-        DEEP_PRESET,
-        ModePreset {
-            global_turns: 250,
-            global_tool_calls: 700,
-            history_budget_chars: 300_000,
-            max_tokens: 32_768,
-            tool_output_bytes: 200 * 1024,
-        },
-        "深度档与定稿表不符"
+        by_key("loop.max_rounds").default,
+        crate::bot::constants::MAX_ROUNDS.to_string()
     );
 }
 
-/// 全局硬顶三档共用：回合 500 / 工具 1200。
+/// 高级覆盖优先于内置默认：用户手填的值是他明确要的。
 #[test]
-fn global_caps_are_shared_by_all_modes() {
-    assert_eq!(GLOBAL_TURNS_CAP, 500);
-    assert_eq!(GLOBAL_TOOL_CALLS_CAP, 1_200);
-    // 每档的预设都必须在硬顶之下
-    for mode in [TaskMode::Light, TaskMode::Balanced, TaskMode::Deep] {
-        let p = preset_for(mode);
-        assert!(
-            p.global_turns <= GLOBAL_TURNS_CAP,
-            "{} 回合超硬顶",
-            mode.as_str()
-        );
-        assert!(
-            p.global_tool_calls <= GLOBAL_TOOL_CALLS_CAP,
-            "{} 工具数超硬顶",
-            mode.as_str()
-        );
-    }
-}
-
-/// 档位解析：非法字面量回落默认档（均衡）。
-#[test]
-fn task_mode_falls_back_to_balanced_on_garbage() {
-    assert_eq!(TaskMode::from_cfg(None), TaskMode::Balanced);
-    assert_eq!(TaskMode::from_cfg(Some("light")), TaskMode::Light);
-    assert_eq!(TaskMode::from_cfg(Some("deep")), TaskMode::Deep);
-    assert_eq!(TaskMode::from_cfg(Some("balanced")), TaskMode::Balanced);
-    assert_eq!(TaskMode::from_cfg(Some("LIGHT")), TaskMode::Light);
-    assert_eq!(
-        TaskMode::from_cfg(Some("nonsense")),
-        TaskMode::Balanced,
-        "非法档位必须回落默认档，不能崩也不能默默取别的档"
-    );
-}
-
-/// 分配比例：主会话 60%（子 agent 不再有独立份额，与主会话共用安全网）。
-#[test]
-fn budget_allocation_ratios_are_pinned() {
-    assert_eq!(MAIN_SESSION_BUDGET_PCT, 60);
-}
-
-/// 档位切换真的改生效值：轻量 < 均衡 < 深度。
-#[test]
-fn switching_mode_changes_effective_budgets() {
+fn advanced_override_wins_over_default() {
     let mut cfg = empty_cfg();
-    let mut seen = Vec::new();
-    for mode in ["light", "balanced", "deep"] {
-        cfg.task_mode = Some(mode.into());
-        seen.push((
-            resolve_max_rounds_cfg(&cfg),
-            resolve_main_tool_calls(&cfg),
-            resolve_history_budget_chars(&cfg),
-            resolve_max_tokens(&cfg),
-        ));
-    }
-    for i in 0..seen.len() - 1 {
-        assert!(seen[i].0 < seen[i + 1].0, "回合数未随档位递增：{:?}", seen);
-        assert!(seen[i].1 < seen[i + 1].1, "工具数未随档位递增：{:?}", seen);
-        assert!(
-            seen[i].2 < seen[i + 1].2,
-            "历史预算未随档位递增：{:?}",
-            seen
-        );
-        assert!(
-            seen[i].3 < seen[i + 1].3,
-            "输出上限未随档位递增：{:?}",
-            seen
-        );
-    }
-    // 均衡档（默认）：回合 60 / 工具 150 / 历史 100K / 输出 16384
-    assert_eq!(seen[1].0, 60);
-    assert_eq!(seen[1].1, 150);
-    assert_eq!(seen[1].2, 100_000);
-    assert_eq!(seen[1].3, 16_384);
-}
-
-/// 高级覆盖优先于档位预设：用户手填的值是他明确要的，档位只是默认值。
-#[test]
-fn advanced_override_wins_over_mode_preset() {
-    let mut cfg = empty_cfg();
-    cfg.task_mode = Some("light".into());
     cfg.max_rounds = Some(77);
     cfg.max_function_calls = Some(88);
     cfg.history_budget_chars = Some(99_000);

@@ -24,8 +24,6 @@ use serde::Serialize;
 /// 显示一个值、运行时走另一个值，且不编译失败也不测试失败。trait 把两者的
 /// 字段名收敛到一处：新增参数只改这一处，两个类型都会被编译器盯着补实现。
 pub trait AgentParams {
-    /// 任务模式档位。
-    fn task_mode(&self) -> Option<&str>;
     /// 主会话轮数上限（高级覆盖）。
     fn max_rounds(&self) -> Option<u32>;
     /// 主会话工具调用上限（高级覆盖）。
@@ -74,105 +72,6 @@ macro_rules! cfg_resolver {
     }};
 }
 
-// ── 三档任务模式（用户预设）──
-//
-// 用户侧只选一档，不暴露零散滑条；每档把「回合池 / 工具调用 / 墙钟 / 历史预算 /
-// 输出上限 / 回填上限」六项一次性定好。三档的取舍是「任务多重、失控代价多大」：
-// 轻量给问答与单文件小改，均衡给日常需求实现，深度给大重构与全仓库阅读。
-//
-// 档位不是三套独立的常量表——三档共用同一组**全局硬顶**，档位只是硬顶下的
-// 预设取值。三张表各写各的，迟早出现「某档超过硬顶」或「两档数值打架」。
-
-/// 任务模式档位。
-///
-/// 取值三态：`light` / `balanced` / `deep`。未配置 = `balanced`（默认档）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskMode {
-    /// 轻量模式：小修改、问答、单文件调试。
-    Light,
-    /// 均衡模式（默认）：日常开发、需求实现。
-    Balanced,
-    /// 深度模式：大重构、全仓库阅读、长文档分析。
-    Deep,
-}
-
-impl TaskMode {
-    /// 档位 key（落盘用；前端也用这三个字面量）。
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TaskMode::Light => "light",
-            TaskMode::Balanced => "balanced",
-            TaskMode::Deep => "deep",
-        }
-    }
-
-    /// 从配置字面量解析；非法值回落默认档（`balanced`）。
-    ///
-    /// 大小写不敏感：档位名是人手输的字面量（前端下拉写死，但配置文件能手改），
-    /// `LIGHT` 与 `light` 指同一档——把大小写当成两档会让手改的配置静默变成
-    /// 默认档，用户以为在用轻量档。
-    pub fn from_cfg(raw: Option<&str>) -> TaskMode {
-        match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-            Some("light") => TaskMode::Light,
-            Some("deep") => TaskMode::Deep,
-            _ => TaskMode::Balanced,
-        }
-    }
-}
-
-/// 单档的预算画像：六项一次性定档。
-///
-/// 字段顺序与设置页参数卡的分组一致，读的时候能对着看。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ModePreset {
-    /// 全局总回合（turn）：主会话 + 子 agent + 技能共用同一个池。
-    pub global_turns: u32,
-    /// 全局总工具调用次数：写文件收尾调用不计入配额。
-    pub global_tool_calls: u32,
-    /// 会话历史字符预算。
-    pub history_budget_chars: u32,
-    /// 单轮输出 max_tokens。
-    pub max_tokens: u32,
-    /// 单条工具回填 payload 上限（字节）。
-    pub tool_output_bytes: u32,
-}
-
-/// 轻量模式画像。
-pub const LIGHT_PRESET: ModePreset = ModePreset {
-    global_turns: 60,
-    global_tool_calls: 150,
-    history_budget_chars: 80_000,
-    max_tokens: 8_192,
-    tool_output_bytes: 64 * 1024,
-};
-
-/// 均衡模式画像（默认档）。
-pub const BALANCED_PRESET: ModePreset = ModePreset {
-    global_turns: 100,
-    global_tool_calls: 250,
-    history_budget_chars: 100_000,
-    max_tokens: 16_384,
-    tool_output_bytes: 128 * 1024,
-};
-
-/// 深度模式画像。
-pub const DEEP_PRESET: ModePreset = ModePreset {
-    global_turns: 250,
-    global_tool_calls: 700,
-    history_budget_chars: 300_000,
-    max_tokens: 32_768,
-    tool_output_bytes: 200 * 1024,
-};
-
-/// 取指定档位的画像。
-pub fn preset_for(mode: TaskMode) -> ModePreset {
-    match mode {
-        TaskMode::Light => LIGHT_PRESET,
-        TaskMode::Balanced => BALANCED_PRESET,
-        TaskMode::Deep => DEEP_PRESET,
-    }
-}
-
 // ── 全局硬顶（三档共用）──
 //
 // 硬顶是「用户能调到的最大值」，档位预设都在硬顶之下。分档的用处是给日常
@@ -192,40 +91,23 @@ pub const MAX_TOKENS_CAP: u32 = 32_768;
 /// 单条工具回填 payload 硬顶（字节）。
 pub const GLOBAL_TOOL_OUTPUT_BYTES_CAP: u32 = 200 * 1024;
 
-// ── 预算分配比例（内置，不可配）──
+// ── 预算分配（内置，不可配）──
 //
-// 主会话按比例取全局池。子 agent 不再有独立份额：轮数 / 工具数与主会话
-// 共用同一套安全网（见 resolve_max_rounds_cfg / resolve_main_tool_calls），
-// 时间维度由停滞超时兜底。
-
-/// 主会话占用总预算的比例（百分比）。
-pub const MAIN_SESSION_BUDGET_PCT: usize = 60;
-
-/// 按比例取预算：`(总量 × 百分比) / 100`，向下取整，至少 1。
-///
-/// 至少 1 而不是允许 0：比例为 0 的话这个消费者等于被禁用，但「禁用」
-/// 不是本处的语义（要禁用有专门的开关），0 预算会让除法下游拿到 0 并炸掉。
-pub const fn budget_share(total: u32, pct: usize) -> u32 {
-    let raw = (total.saturating_mul(pct as u32)) / 100;
-    if raw == 0 {
-        1
-    } else {
-        raw
-    }
-}
+// 子 agent 不再有独立份额：轮数 / 工具数与主会话共用同一套安全网
+// （见 resolve_max_rounds_cfg / resolve_main_tool_calls），时间维度由停滞
+// 超时兜底。默认值单源在 constants，这里只做覆盖解析。
 
 // ── 内置默认（单一事实源）──
 
-/// 模型循环默认轮数：均衡档全局池的 60%（分配规则给主会话的那一份）。
-pub const DEFAULT_MAX_ROUNDS: u32 =
-    budget_share(BALANCED_PRESET.global_turns, MAIN_SESSION_BUDGET_PCT);
+/// 模型循环默认轮数：主会话与子 agent 共用的轮数安全网，单源在 constants。
+pub const DEFAULT_MAX_ROUNDS: u32 = crate::bot::constants::MAX_ROUNDS;
 /// 轮数硬顶：全局回合池硬顶。
 pub const MAX_ROUNDS_CAP: u32 = GLOBAL_TURNS_CAP;
 /// 轮数下界（少于 5 轮的循环连一次工具往返都跑不完）——钳制与设置页展示的
 /// 可填范围共用这一个数。
 pub const MAX_ROUNDS_MIN: u32 = 5;
-/// 会话历史字符预算默认：均衡档画像。
-pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = BALANCED_PRESET.history_budget_chars;
+/// 会话历史字符预算默认：单源在 constants。
+pub const DEFAULT_HISTORY_BUDGET_CHARS: u32 = crate::bot::constants::HISTORY_BUDGET_CHARS;
 pub const HISTORY_BUDGET_MIN: u32 = 20_000;
 /// 历史截断滞回目标比例默认（百分比）：超预算时一次裁到预算的 70%。
 /// 贴边裁会让长会话几乎每轮都改一次缓存前缀，留 30% 余量能稳住好几轮。
@@ -346,38 +228,13 @@ pub fn clamp_ask_budget(n: u8) -> u8 {
 // 档位悄悄顶掉，新用户不填任何东西时按档位走。两段都要过同一组 clamp，
 // 「显示的值 = 生效的值」这条不变量不许破。
 
-/// 当前生效的任务档位。
-pub fn resolve_task_mode(cfg: &impl AgentParams) -> TaskMode {
-    TaskMode::from_cfg(cfg.task_mode())
-}
-
-/// 当前档位的预算画像（未经单项覆盖）。
-pub fn resolve_preset(cfg: &impl AgentParams) -> ModePreset {
-    preset_for(resolve_task_mode(cfg))
-}
-
-/// 全局回合池（档位预设值；单项链制到全局硬顶）。
-pub fn resolve_global_turns(cfg: &impl AgentParams) -> u32 {
-    resolve_preset(cfg).global_turns.min(GLOBAL_TURNS_CAP)
-}
-
-/// 全局工具调用池（档位预设值）。
-pub fn resolve_global_tool_calls(cfg: &impl AgentParams) -> u32 {
-    resolve_preset(cfg)
-        .global_tool_calls
-        .min(GLOBAL_TOOL_CALLS_CAP)
-}
-
 /// 主会话回合上限：档位全局池的 60%，可被高级覆盖 `max_rounds` 顶掉。
 ///
 /// 覆盖优先于分配比例——用户手填的值是他明确要的，档位只是默认值。
 pub fn resolve_max_rounds_cfg(cfg: &impl AgentParams) -> u32 {
     match cfg.max_rounds() {
         Some(n) => clamp_max_rounds(n),
-        None => clamp_max_rounds(budget_share(
-            resolve_global_turns(cfg),
-            MAIN_SESSION_BUDGET_PCT,
-        )),
+        None => clamp_max_rounds(crate::bot::constants::MAX_ROUNDS),
     }
 }
 
@@ -385,10 +242,7 @@ pub fn resolve_max_rounds_cfg(cfg: &impl AgentParams) -> u32 {
 pub fn resolve_main_tool_calls(cfg: &impl AgentParams) -> u32 {
     match cfg.max_function_calls() {
         Some(n) => clamp_max_function_calls(n),
-        None => clamp_max_function_calls(budget_share(
-            resolve_global_tool_calls(cfg),
-            MAIN_SESSION_BUDGET_PCT,
-        )),
+        None => clamp_max_function_calls(crate::bot::constants::MAX_FUNCTION_CALLS),
     }
 }
 
@@ -396,7 +250,7 @@ pub fn resolve_main_tool_calls(cfg: &impl AgentParams) -> u32 {
 pub fn resolve_history_budget_chars(cfg: &impl AgentParams) -> u32 {
     match cfg.history_budget_chars() {
         Some(n) => clamp_history_budget_chars(n),
-        None => clamp_history_budget_chars(resolve_preset(cfg).history_budget_chars),
+        None => clamp_history_budget_chars(crate::bot::constants::HISTORY_BUDGET_CHARS),
     }
 }
 
@@ -515,17 +369,6 @@ pub struct ParamView {
 
 /// 全量参数表：可编辑区在前，硬编码只读区在后（前端按 category 分组渲染）
 pub static PARAMS_TABLE: &[ParamDef] = &[
-    // ── 可编辑：任务档位 ──
-    ParamDef {
-        key: "mode.task_mode",
-        label: "任务模式",
-        category: "mode",
-        hint: "一次性定下全局回合池 / 工具调用 / 墙钟 / 历史预算 / 输出上限 / 回填上限六项；轻量=问答与小改，均衡=日常开发，深度=大重构",
-        min: None,
-        max: None,
-        editable: true,
-        resolve: cfg_resolver!(resolve_task_mode_label, task_mode),
-    },
     // ── 可编辑：循环/历史（档位预设 + 高级覆盖）──
     ParamDef {
         key: "loop.max_rounds",
@@ -783,14 +626,9 @@ pub static PARAMS_TABLE: &[ParamDef] = &[
     },
 ];
 
-/// 生效值解析：可编辑项查 cfg 字段（None → 档位预设 / Some → 值），只读项出硬编码常量。
-/// 子 agent 预算三个键共用同一份 `resolve_subagent_budget`，这里按需取字段。
-fn resolve_task_mode_label(cfg: &impl AgentParams) -> String {
-    resolve_task_mode(cfg).as_str().to_string()
-}
-
+/// 生效值解析：可编辑项查 cfg 字段（None → 内置默认 / Some → 值），只读项出硬编码常量。
 fn plain_max_tokens(cfg: &impl AgentParams) -> String {
-    // 档位预设（轻量 8K / 均衡 16K / 深度 32K），高级覆盖走 config.max_tokens；
+    // 默认 16K（constants::MAX_TOKENS_DEFAULT），高级覆盖走 config.max_tokens；
     // 条目级覆盖仍优先于此全局值（见 bot_model_loop 的请求装配）。
     resolve_max_tokens(cfg).to_string()
 }
@@ -800,10 +638,10 @@ fn plain_max_tokens(cfg: &impl AgentParams) -> String {
 /// 硬顶 32768：单轮输出再大也不该超过这个量级——超长的单轮输出意味着模型在
 /// 一次回复里塞了太多东西，既烧钱又挤占后续轮次的输入预算。
 pub fn resolve_max_tokens(cfg: &impl AgentParams) -> u32 {
-    let preset = resolve_preset(cfg).max_tokens.min(MAX_TOKENS_CAP);
+    let default = crate::bot::constants::MAX_TOKENS_DEFAULT.min(MAX_TOKENS_CAP);
     match cfg.max_tokens() {
         Some(n) => n.clamp(crate::bot::config::schema::MIN_MAX_TOKENS, MAX_TOKENS_CAP),
-        None => preset,
+        None => default,
     }
 }
 
@@ -832,8 +670,7 @@ fn resolve_max_output_bytes(cfg: &impl AgentParams) -> (String, &'static str) {
         Some(v) if v > 0 => (clamp_max_tool_output_bytes(v).to_string(), "config"),
         Some(_) => ("不截断（显式关闭）".into(), "config"),
         None => (
-            resolve_preset(cfg)
-                .tool_output_bytes
+            (crate::bot::constants::TOOL_OUTPUT_BYTES as u32)
                 .min(MAX_TOOL_OUTPUT_BYTES_CAP)
                 .to_string(),
             "default",

@@ -323,9 +323,6 @@ export type SectionKey =
 
 /** 设置页表单的 config 状态形状（bot_set_config 的入参）。
  *  各 section 组件都要读它——写成具名类型，省得每处抄一遍字段表。 */
-/** 任务模式档位（与后端 `bot::params::TaskMode` 同名） */
-export type TaskMode = "light" | "balanced" | "deep";
-
 export type SettingsConfig = {
   apiProvider: ApiProvider;
   modelsByProvider: ModelsByProvider;
@@ -361,8 +358,6 @@ export type SettingsConfig = {
     autoExtract: AutoExtractMode;
   };
   memoryTuning: Record<string, number> | null;
-  /** 任务模式档位：light / balanced / deep（空串 = 后端默认均衡档） */
-  taskMode: TaskMode;
   maxRounds: string;
   historyBudgetChars: string;
   historyTruncateTargetPct: string;

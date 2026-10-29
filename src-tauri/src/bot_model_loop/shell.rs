@@ -118,7 +118,6 @@ pub async fn run_model_loop(
         cfg.max_tokens,
         cfg.active_model_id.as_ref(),
         cfg.models_by_provider.as_ref(),
-        crate::bot::params::resolve_preset(&cfg).max_tokens,
     );
     let model_for_reasoning = cfg.model.clone();
     // 终稿自检侧调模型槽位：cfg 给了模型库条目 id 就整组解析（base_url/
@@ -129,7 +128,6 @@ pub async fn run_model_loop(
             cfg.models_by_provider.as_ref(),
             entry_id,
             cfg.max_tokens,
-            crate::bot::params::resolve_preset(&cfg).max_tokens,
         );
         match decide_selfcheck(resolved, &cfg.verified_vendors) {
             SelfcheckDecision::Use(r) => Some(LlmHttp {
@@ -169,16 +167,11 @@ pub async fn run_model_loop(
             }
         }
     });
-    // 档位派生值在**移动 cfg 字段之前**算出来——cfg 的字段随后被 move 进
-    // LlmHttp / ModelLoopDeps，那时再借用整份 cfg 就是「部分移动后借用」。
-    //
-    // 主会话熔断上限 = 档位全局工具池的 60% 份额（高级覆盖 maxFunctionCalls
-    // 优先）。这里**不钳**——钳位单点在下方派生链末端（fuse_cap 的 clamp），
-    // 此处再钳一次等于把同一条边界抄成两份，改一处漏一处不会编译失败也不会
-    // 测试失败。
+    // 主会话熔断上限（高级覆盖 maxFunctionCalls 优先）在**移动 cfg 字段之前**
+    // 算出来——cfg 的字段随后被 move 进 LlmHttp / ModelLoopDeps，那时再借用
+    // 整份 cfg 就是「部分移动后借用」。这里**不钳**——钳位单点在派生链末端
+    // （fuse_cap 的 clamp），此处再钳一次等于把边界抄成两份。
     let main_tool_calls = crate::bot::params::resolve_main_tool_calls(&cfg) as usize;
-    // 档位画像（max_tokens 预设与工具回填上限都从这里取）
-    let preset = crate::bot::params::resolve_preset(&cfg);
     let http = LlmHttp {
         client,
         base_url: cfg.base_url,
@@ -266,7 +259,7 @@ pub async fn run_model_loop(
         .collect();
 
     let deps = ModelLoopDeps {
-        // 主会话熔断上限（档位全局工具池的 60% 份额；高级覆盖优先）。
+        // 主会话熔断上限（高级覆盖优先；主/子同一套安全网）。
         fuse_cap_override: Some(main_tool_calls),
         conv_sidecar_dir: conv_sidecar_path.as_deref(),
         // 思考段回灌：默认关（维持现状），开了才把本轮 reasoning_content 随
@@ -435,15 +428,14 @@ pub async fn run_model_loop(
     crate::bot_skills::clear_terminal_skill_runs(&app, session_id);
     // 工具结果上限（字节口径）——None = 显式关闭。
     // 与 per-tool 预算取小后才是本次回灌的实际天花板，见 effective_output_cap。
-    // 默认取档位预设（轻量 64KB / 均衡 128KB / 深度 200KB）。
+    // 默认取 constants::TOOL_OUTPUT_BYTES（128KB 即硬顶）。
     let tool_output_cap: Option<usize> = match cfg.max_tool_output_bytes {
         Some(0) => None,
         // 上限单源在 bot::params（与写侧钳制、设置页展示同一个数）
         Some(n) => Some(crate::bot::params::clamp_max_tool_output_bytes(n) as usize),
         None => Some(
-            preset
-                .tool_output_bytes
-                .min(crate::bot::params::MAX_TOOL_OUTPUT_BYTES_CAP) as usize,
+            crate::bot::constants::TOOL_OUTPUT_BYTES
+                .min(crate::bot::params::MAX_TOOL_OUTPUT_BYTES_CAP as usize),
         ),
     };
     let execute_tool = |name: String, args: String, trace: crate::bot::ToolCallTrace| {

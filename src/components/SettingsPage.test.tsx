@@ -433,7 +433,7 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("一键预设「放开」：轮数与 Python 超时取参数表上界，调用数是产品档位值 300", async () => {
+  it("一键预设「放开」：轮数、工具调用与 Python 超时全部取参数表上界", async () => {
     const user = userEvent.setup();
     mocks.invokeMock.mockImplementation(agentParamsMock);
     render(<SettingsPage {...defaultProps} />);
@@ -444,12 +444,11 @@ describe("SettingsPage", () => {
         "bot_set_config",
         expect.objectContaining({
           config: expect.objectContaining({
-            // 上界来自参数表（mock：轮数/超时上界都是 1000，非真值——
-            // 写死字面量时钳制不会把它拉到上界，断言就能分辨）
+            // 上界来自参数表（mock：轮数/超时上界都是 1000、调用数上界 1200，非
+            // 真值——写死字面量时钳制不会把它拉到上界，断言就能分辨）
             maxRounds: 1000,
+            maxFunctionCalls: 1200,
             pythonTimeoutSecs: 1000,
-            // 这一项后端没有对应常量（硬顶 500、默认 100），是产品选的中间档
-            maxFunctionCalls: 300,
           }),
         }),
       );

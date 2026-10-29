@@ -309,7 +309,6 @@ pub(crate) async fn summarize_messages(
         cfg.max_tokens,
         active_id.as_ref(),
         cfg.models_by_provider.as_ref(),
-        crate::bot::params::resolve_preset(&cfg).max_tokens,
     );
     summarize_http(
         &client,

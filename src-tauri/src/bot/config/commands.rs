@@ -109,7 +109,6 @@ pub fn bot_get_config(app: AppHandle) -> CommandResult<BotConfigView> {
         has_brave_key,
         brave_enabled: cfg.brave_enabled,
         python_timeout_secs: cfg.python_timeout_secs,
-        task_mode: cfg.task_mode,
         max_function_calls: cfg.max_function_calls,
         final_selfcheck_round_gap: cfg.final_selfcheck_round_gap,
         selfcheck_model_id: cfg.selfcheck_model_id,
@@ -270,16 +269,6 @@ pub(crate) fn prune_verified_vendors(
 ///
 /// 单独成函数是为了能单测：`bot_set_config` 要 AppHandle，测不到里面这一段。
 fn clamp_agent_params(config: &mut BotConfig) {
-    // 任务模式：非法字面量归一成默认档。留一个非法值在配置里，读侧会按
-    // `from_cfg` 回落，但设置页显示的就是这个非法值——用户看着「xyz」却不知道
-    // 实际跑的是均衡档。落盘前归一，显示与生效才一致。
-    if let Some(raw) = config.task_mode.as_deref() {
-        config.task_mode = Some(
-            crate::bot::params::TaskMode::from_cfg(Some(raw))
-                .as_str()
-                .to_string(),
-        );
-    }
     config.max_rounds = config.max_rounds.map(crate::bot::params::clamp_max_rounds);
     config.history_budget_chars = config
         .history_budget_chars

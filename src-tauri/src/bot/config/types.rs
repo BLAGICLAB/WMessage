@@ -231,14 +231,7 @@ pub struct BotConfig {
     pub schema_version: u32,
     // Agent 运行参数（Agent 透明化设计 §3）：全 Option = 老配置零影响，
     //      None = 内置默认；生效值/来源经 bot_effective_params 可查
-    /// 任务模式档位：`light` / `balanced` / `deep`。None = `balanced`（默认档）。
-    ///
-    /// 档位一次性定下六个预算的预设值（全局回合池 / 工具调用 / 墙钟 / 历史
-    /// 字符预算 / 单轮 max_tokens / 工具回填上限）。其余 Agent 参数是档位的
-    /// **高级覆盖位**：留空则按档位走，填了就以填的为准。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_mode: Option<String>,
-    /// 模型循环最大轮数：None = 档位预设的 60% 份额；钳 5..=500。
+    /// 模型循环最大轮数：None = 内置安全网（constants::MAX_ROUNDS）；钳 5..=500。
     /// Skill frontmatter 自报 max_rounds 仍优先于本值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rounds: Option<u32>,
@@ -368,8 +361,7 @@ impl Default for BotConfig {
             memory_control: None,       // 未配置 = 注入/主动记忆全开（与 Default 一致）
             memory_tuning: None,        // 未配置 = 参数全默认（U17 前行为）
             mcp_servers: None,          // 未配置 = 无外部 MCP 服务器（老配置零影响）
-            task_mode: None,            // 未配置 = 均衡档（默认）
-            max_function_calls: None,   // 未配置 = 档位预设（均衡档全局池的 60%）
+            max_function_calls: None,   // 未配置 = 内置安全网（constants::MAX_FUNCTION_CALLS）
             final_selfcheck_round_gap: None, // 未配置 = 8 默认终稿自检间隔（0 = 关闭）
             guard_claim_keywords: None, // 未配置 = 内置默认触发词表
             selfcheck_model_id: None,   // 未配置 = 自检在主循环内跑（现状）
@@ -558,9 +550,6 @@ pub struct BotConfigView {
     /// 连接测试通过的厂商名单原样透传（空 = 都未验证；聊天下拉过滤用）
     pub verified_vendors: Vec<String>,
     // Agent 运行参数：原样透传给设置页参数卡
-    /// 任务模式档位原样透传（None = 均衡档）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -588,9 +577,6 @@ pub struct BotConfigView {
 
 /// `BotConfig` 的 Agent 参数读取面实现（见 `bot::params::AgentParams`）。
 impl crate::bot::params::AgentParams for BotConfig {
-    fn task_mode(&self) -> Option<&str> {
-        self.task_mode.as_deref()
-    }
     fn max_rounds(&self) -> Option<u32> {
         self.max_rounds
     }
@@ -626,9 +612,6 @@ impl crate::bot::params::AgentParams for BotConfig {
 /// `BotConfigView` 的 Agent 参数读取面实现——字段名与 `BotConfig` 一致，
 /// 解析器对两者行为相同（见 `bot::params::AgentParams`）。
 impl crate::bot::params::AgentParams for BotConfigView {
-    fn task_mode(&self) -> Option<&str> {
-        self.task_mode.as_deref()
-    }
     fn max_rounds(&self) -> Option<u32> {
         self.max_rounds
     }
@@ -703,7 +686,6 @@ pub fn resolve_model_override(
     models_by_provider: Option<&ModelsByProvider>,
     entry_id: &str,
     global_max_tokens: Option<u32>,
-    max_tokens_preset: u32,
 ) -> Result<ResolvedModel, CommandError> {
     let lists = models_by_provider;
     fn find<'a>(items: &'a [ModelEntry], entry_id: &str) -> Option<&'a ModelEntry> {
@@ -766,7 +748,6 @@ pub fn resolve_model_override(
             entry,
             crate::bot::ApiProvider::from_cfg(Some(provider)),
             global_max_tokens,
-            max_tokens_preset,
         ),
     })
 }
@@ -827,14 +808,9 @@ mod model_override_tests {
 
     #[test]
     fn resolve_finds_entry_across_protocols() {
-        let Some(r) = run_with_keychain_guard(|| {
-            resolve_model_override(
-                models().as_ref(),
-                "glm",
-                None,
-                crate::bot::params::BALANCED_PRESET.max_tokens,
-            )
-        }) else {
+        let Some(r) =
+            run_with_keychain_guard(|| resolve_model_override(models().as_ref(), "glm", None))
+        else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
@@ -862,26 +838,15 @@ mod model_override_tests {
     #[test]
     fn resolve_rejects_missing_and_disabled() {
         // 错误路径可能在读取 key 前就返回，但守卫兜底同款（锁屏环境不挂死）
-        let ghost = run_with_keychain_guard(|| {
-            resolve_model_override(
-                models().as_ref(),
-                "ghost",
-                None,
-                crate::bot::params::BALANCED_PRESET.max_tokens,
-            )
-        });
+        let ghost =
+            run_with_keychain_guard(|| resolve_model_override(models().as_ref(), "ghost", None));
         let Some(m) = ghost else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
             return;
         };
         assert!(m.is_err(), "不存在的 id 应报错");
         let disabled = run_with_keychain_guard(|| {
-            resolve_model_override(
-                models().as_ref(),
-                "disabled1",
-                None,
-                crate::bot::params::BALANCED_PRESET.max_tokens,
-            )
+            resolve_model_override(models().as_ref(), "disabled1", None)
         });
         let Some(err) = disabled else {
             eprintln!("[skip] 钥匙串 3 秒无响应（疑似锁屏等待授权），跳过本测");
