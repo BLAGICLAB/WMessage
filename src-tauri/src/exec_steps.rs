@@ -255,7 +255,7 @@ async fn run_step(
         json!({"role": "system", "content": sys}),
         json!({"role": "user", "content": block}),
     ];
-    let (text, refs, _loop_trace) = crate::bot_model_loop::catch_model_loop_panic(
+    let (text, refs, _loop_trace) = crate::bot::catch_model_loop_panic(
         app,
         stop.session_id(),
         "逐步执行",

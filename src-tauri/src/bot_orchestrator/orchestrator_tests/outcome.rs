@@ -384,6 +384,8 @@ fn report_failure_is_retried_instead_of_given_up() {
 ///
 /// 兜底写的是「行停在 queued/running」的唯一补救；它自己失败时若不记，
 /// 那行就永远停在那里，面板上一直转圈，事后也查不到是哪一步失败的。
+/// 留痕与重试集中收在 `write_terminal_with_retry`（DB 锁瞬态指数退避），
+/// 四处兜底写口都走它——守卫断「口子都接上了」+「助手自身留痕不吞失败」。
 /// 匹配串用 `concat!` 拆分防自匹配（本测试自身的源码不算命中）。
 #[test]
 fn terminal_state_fallback_write_leaves_a_trace_on_failure() {
@@ -392,22 +394,31 @@ fn terminal_state_fallback_write_leaves_a_trace_on_failure() {
         !src.contains(concat!("let _ = db_", "locked(")),
         "兜底写终态不得吞掉失败——行会永远停在 queued/running"
     );
-    let write_needle = concat!("let write = db_", "locked(");
-    let trace_needle = concat!("subagent_terminal_state_write_", "failed");
-    // 按「兜底写」切段：每段到下一个兜底写为止，每段都要有自己的失败留痕
-    let segments: Vec<&str> = src.split(write_needle).skip(1).collect();
+    let helper_needle = concat!("write_terminal_with_", "retry(");
+    let call_count = src.matches(helper_needle).count();
+    // 四处兜底写口（加载失败 / 产物目录不可用 / 会话建立失败 / 收尾失败）
+    // 各一次调用，助手的递归循环里还有一次 → 下界 5
     assert!(
-        segments.len() >= 4,
-        "兜底写终态有四处（加载失败 / 产物目录不可用 / 会话建立失败 / 收尾失败），\
-             现 {len} 处",
-        len = segments.len()
+        call_count >= 5,
+        "兜底写终态有四处（加助手内部一次），现 {call_count} 处走集中助手"
     );
-    for seg in &segments {
-        assert!(
-            seg.contains(trace_needle),
-            "兜底写终态失败必须留痕——行永远停在 queued/running 时只有这条线索"
-        );
-    }
+    // 助手本体：失败留痕 + 有界重试 ladder 都要在
+    let helper_pos = src
+        .find(concat!("async fn write_terminal_with_", "retry("))
+        .expect("集中助手必须存在");
+    let helper_body_end = src[helper_pos..]
+        .find("\n}\n")
+        .map(|i| helper_pos + i)
+        .unwrap_or(src.len());
+    let helper = &src[helper_pos..helper_body_end];
+    assert!(
+        helper.contains(concat!("subagent_terminal_state_write_", "failed")),
+        "兜底写终态失败必须留痕——行永远停在 queued/running 时只有这条线索"
+    );
+    assert!(
+        helper.contains("RETRY_DELAYS_MS"),
+        "兜底写要有界重试（DB 锁瞬态不该一次失败就永久挂行）"
+    );
 }
 /// 接线守卫：`subagent_digest_block` 只造段，不得顺手记「已吸收」。
 ///

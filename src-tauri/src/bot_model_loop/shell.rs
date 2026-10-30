@@ -47,12 +47,12 @@ pub async fn catch_model_loop_panic<T>(
         Ok(r) => r,
         Err(panic) => {
             let msg = crate::audit::panic_payload_msg(panic.as_ref());
-            crate::bot::audit_log(
+            crate::audit_event!(
                 app,
-                &format!(
-                    "{what}_panic | {} | 已归一为执行失败",
-                    crate::bot::truncate_for_log(&msg, 200)
-                ),
+                crate::audit::AuditLevel::Error,
+                "model_loop_panic",
+                "where" => what,
+                "detail" => crate::bot::truncate_for_log(&msg, 200)
             );
             if let Some(sid) = session_id {
                 crate::bot::stream_log::emit_recorded(

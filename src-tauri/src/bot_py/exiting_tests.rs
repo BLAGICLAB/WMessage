@@ -20,15 +20,18 @@ fn exiting_check_is_inside_gate_acquire() {
         run_body.contains("py_gate_acquire_with_stop(stop)"),
         "run_python 必须过并发闸门"
     );
-    // 闸门内核：EXITING 终检必须在等待循环体内、且位于成功取许可分支之后
-    //（「拿到许可后复查」这条防线不许被挪到循环外变死代码——评审 M 采纳）
-    let gate_pos = text
+    // 闸门内核（闸门族已拆到 py/gate.rs）：EXITING 终检必须在等待循环体内、
+    // 且位于成功取许可分支之后（「拿到许可后复查」这条防线不许被挪到循环外
+    // 变死代码——评审 M 采纳）
+    let gate_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/py/gate.rs"))
+        .expect("gate.rs 必须存在");
+    let gate_pos = gate_src
         .find("fn py_gate_acquire_inner(")
         .expect("闸门内核必须存在");
-    let gate_body_end = text[gate_pos..]
+    let gate_body_end = gate_src[gate_pos..]
         .find("\n}\n")
         .expect("闸门内核顶层收括号必须存在");
-    let gate_body = &text[gate_pos..gate_pos + gate_body_end];
+    let gate_body = &gate_src[gate_pos..gate_pos + gate_body_end];
     let loop_pos = gate_body.find("loop {").expect("闸门内核必须有等待循环");
     let success_pos = gate_body
         .find("if *avail > 0")

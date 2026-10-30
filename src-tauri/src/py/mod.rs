@@ -21,6 +21,7 @@ pub mod audit;
 pub mod commands;
 pub mod document;
 pub mod env;
+mod gate;
 pub mod harvest;
 pub mod io;
 pub mod runtime;
