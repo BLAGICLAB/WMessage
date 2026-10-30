@@ -112,24 +112,79 @@ export function useChatHistory(params: ChatHistoryParams) {
   const resumeInflight = useCallback(
     async (sid: string) => {
       if (!enabled) return;
-      // 本地已有这一轮的内容 → 不用补（补一遍就是「重说了一遍」）。
-      // 判据是游标而不是在途标记：游标清零才说明本地没有这一轮的状态
-      // （一轮结束时连同 meta 一起清掉了）。
-      if (streamState.seqOf(sid) > 0) return;
       // 同一会话的两次回灌不能并发（会灌两遍）：判定与置位连着做，中间不能有 await
       if (streamState.isResuming(sid)) return;
       streamState.markResuming(sid);
       try {
         const r = await streamState.fetchReplay(sid, 0);
-        // 后端说没在跑 → 这一轮已经收尾，正文以库为准（历史已加载）
-        if (!r.inflight || !r.events.length) return;
-        // 本地那份是上一轮的残留：清干净再灌（否则正文接成两段）
-        streamState.setMeta(sid, {});
-        streamState.resetCursor(sid);
+        if (!r.inflight) {
+          // 后端没在跑 → 这一轮已经收尾，正文以库为准（历史已加载）。
+          // 本地若还有上一轮的残迹（终态事件丢过才会走到这）一并清掉，
+          // 当前视图按库刷一遍；invoke 驱动的轮例外，收尾权在 runChat。
+          if (
+            !streamState.isInvoked(sid) &&
+            (streamState.seqOf(sid) > 0 || streamState.isInflight(sid))
+          ) {
+            streamState.dropSession(sid);
+            if (sessionIdRef.current === sid) void loadFinalText(sid);
+          }
+          return;
+        }
+        // 后端在跑。本地游标与回放窗口**连续**（本地一直跟着这一轮）→ 按
+        // seq 增量补，重叠段被去重闸挡掉；**不连续**（游标属于上一轮 / 缓冲
+        // 头部被裁）→ 本地状态对不上这一轮，清干净整轮重建——上一轮的残文
+        // 混进这一轮比缺一段更糟。本地没有游标（= 0）时无可混的旧文，缓冲
+        // 有多少灌多少（缺头是缓冲裁剪所致，终态以库为准收口）。
+        const local = streamState.seqOf(sid);
+        const first = r.events[0]?.seq;
+        const continuous =
+          local === 0 ||
+          (!r.truncated && first !== undefined && first <= local + 1);
+        if (!continuous) {
+          streamState.setMeta(sid, {});
+          streamState.resetCursor(sid);
+          // 视图里若还挂着旧内容的流式气泡（mergeInflight 按旧 meta 建的），
+          // 正文清空等回放重灌——不清就是新旧两段拼一条
+          if (sessionIdRef.current === sid) {
+            setMessages((prev) => {
+              const last = prev[prev.length - 1];
+              if (!last?.streaming) return prev;
+              const copy = [...prev];
+              copy[copy.length - 1] = { ...last, content: "" };
+              return copy;
+            });
+          }
+        }
         // 补上在途标记：处理器按「非当前会话且不在途」过滤，不置位就接不住
         streamState.markInflight(sid);
-        // 标记为「回灌接回」：这轮没有 invoke 结果可等，终态要自己取最终正文
-        streamState.markResumed(sid);
+        // 标记为「回灌接回」：这轮没有 invoke 结果可等，终态要自己取最终
+        // 正文。invoke 驱动的轮（切走再切回）不标：收尾权在 runChat。
+        if (!streamState.isInvoked(sid)) streamState.markResumed(sid);
+        // 在途气泡先挂上（围观执行会话此前没被标过在途，本函数之前的
+        // mergeInflight 接不住半截正文；已有流式气泡则不动）——**必须在
+        // 回放之前**：回放出来的增量经队列 flush 往气泡上追加，先建快照
+        // 再流增量恰好各计一次；先放增量再补快照就把同一段文字算两遍。
+        // 快照值在 setState 之外取：函数式更新的 updater 渲染时才执行，
+        // 在里面读 meta 会读到回放灌完之后的「未来」值。
+        if (sessionIdRef.current === sid) {
+          const m = streamState.metaOf(sid);
+          const snapshot = m?.text ?? "";
+          const startedAt = m?.turnStartedAt ?? Date.now();
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.streaming) return prev;
+            return [
+              ...prev,
+              {
+                role: "assistant" as const,
+                content: snapshot,
+                streaming: true,
+                turnStatus: "running" as const,
+                turnStartedAt: startedAt,
+              },
+            ];
+          });
+        }
         const handlers = streamHandlersRef.current;
         for (const ev of r.events) {
           handlers[ev.event]?.(ev.payload);
@@ -140,7 +195,7 @@ export function useChatHistory(params: ChatHistoryParams) {
         streamState.clearResuming(sid);
       }
     },
-    [enabled],
+    [enabled, loadFinalText, sessionIdRef, setMessages],
   );
   const resumeAllInflight = useCallback(async () => {
     try {

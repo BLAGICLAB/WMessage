@@ -326,3 +326,168 @@ describe("在途回合（切走再切回不丢消息）", () => {
     });
   });
 });
+
+/* 后端发起的轮（围观执行会话 / 回灌接回）没有 invoke 收尾，终态事件就是
+ * 唯一的清场时机：终态不清场，下一轮的正文会接在旧文本上、二次回灌被
+ * 游标挡住（切走再切回丢正文的根）。 */
+describe("后端发起轮：终态清场与回灌重建", () => {
+  afterEach(() => {
+    mocks.invokeMock.mockImplementation(chatDefaultInvoke);
+    mocks.listenMock.mockImplementation(async () => () => {});
+  });
+
+  it("回灌轮收到终态 → 游标与权威副本一并清掉，下一轮从零累积", async () => {
+    const fire: Record<
+      string,
+      (e: { payload: Record<string, unknown> }) => void
+    > = {};
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      fire[event] = cb as (e: { payload: Record<string, unknown> }) => void;
+      return () => {};
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_stream_replay")
+        return {
+          events: [
+            {
+              seq: 1,
+              event: "bot-chat-delta",
+              payload: { text: "上一轮的尾巴", sessionId: "s1", seq: 1 },
+            },
+          ],
+          lastSeq: 1,
+          truncated: false,
+          inflight: true,
+        };
+      return chatDefaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText("上一轮的尾巴");
+    await act(async () => {
+      fire["bot-turn-status"]?.({
+        payload: { status: "completed", sessionId: "s1" },
+      });
+    });
+    await act(async () => {});
+    expect(streamState.seqOf("s1")).toBe(0);
+    expect(streamState.metaOf("s1")).toBeUndefined();
+    expect(streamState.isInflight("s1")).toBe(false);
+    expect(streamState.isResumed("s1")).toBe(false);
+    // 下一轮的增量从零累积，不接旧尾巴
+    await act(async () => {
+      fire["bot-chat-delta"]?.({
+        payload: { text: "新一轮", sessionId: "s1", seq: 2 },
+      });
+    });
+    expect(streamState.metaOf("s1")?.text).toBe("新一轮");
+  });
+
+  it("二次回灌窗口与本地游标不连续 → 清残迹整轮重建，旧文不混入", async () => {
+    const user = userEvent.setup();
+    let s1Calls = 0;
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_sessions_load")
+          return [
+            { id: "s1", title: "会话一" },
+            { id: "s2", title: "会话二" },
+          ];
+        if (cmd === "bot_stream_replay") {
+          if ((args as { sessionId?: string })?.sessionId !== "s1")
+            return { events: [], lastSeq: 0, truncated: false, inflight: false };
+          s1Calls += 1;
+          if (s1Calls === 1)
+            return {
+              events: [
+                {
+                  seq: 1,
+                  event: "bot-chat-delta",
+                  payload: { text: "上一轮", sessionId: "s1", seq: 1 },
+                },
+              ],
+              lastSeq: 1,
+              truncated: false,
+              inflight: true,
+            };
+          // 缓冲头部已被裁（truncated）：新一轮事件从 seq 5 起，
+          // 本地游标还停在 1——中间对不上，必须清掉重建
+          return {
+            events: [
+              {
+                seq: 5,
+                event: "bot-chat-delta",
+                payload: { text: "新一轮开头", sessionId: "s1", seq: 5 },
+              },
+            ],
+            lastSeq: 5,
+            truncated: true,
+            inflight: true,
+          };
+        }
+        return chatDefaultInvoke(cmd);
+      },
+    );
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findByText("上一轮");
+    // 切走再切回，触发第二次回灌
+    await user.click(railSession("会话二"));
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话二"));
+    await user.click(railSession("会话一"));
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话一"));
+    await waitFor(() => {
+      expect(streamState.metaOf("s1")?.text).toBe("新一轮开头");
+    });
+    expect(streamState.metaOf("s1")?.text).not.toContain("上一轮");
+  });
+
+  it("切会话卡在合并窗里：旧会话的增量不打进新会话的视图", async () => {
+    const user = userEvent.setup();
+    let delta: ((e: { payload: Record<string, unknown> }) => void) | null = null;
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      if (event === "bot-chat-delta")
+        delta = cb as typeof delta;
+      return () => {};
+    });
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_sessions_load")
+        return [
+          { id: "s1", title: "会话一" },
+          { id: "s2", title: "会话二" },
+        ];
+      return chatDefaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话一"));
+    // 增量入队（rAF 合并窗挂着）后立刻切走
+    await act(async () => {
+      delta?.({ payload: { text: "旧会话的尾巴", sessionId: "s1", seq: 1 } });
+    });
+    await user.click(railSession("会话二"));
+    await waitFor(() => expect(currentTitle()).toHaveTextContent("会话二"));
+    // 放合并窗落地：这批增量属于 s1，不得进 s2 的视图
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 40));
+    });
+    expect(screen.queryByText("旧会话的尾巴")).not.toBeInTheDocument();
+  });
+
+  it("dead-man 看门狗：在途会话长时间无事件 → 判死回收并叫停后端", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<ChatPanel {...defaultProps} />);
+      await act(async () => {});
+      streamState.markInflight("s1");
+      streamState.rewindActivityForTest("s1", 700_000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(16_000);
+      });
+      expect(streamState.isInflight("s1")).toBe(false);
+      expect(
+        mocks.invokeMock.mock.calls.filter((c) => c[0] === "bot_stop"),
+      ).not.toHaveLength(0);
+      expect(screen.getByText(/长时间无任何流式事件/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

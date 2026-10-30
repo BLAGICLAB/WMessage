@@ -224,6 +224,9 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
       text: "",
       userMsg: lastMsg?.role === "user" ? lastMsg : undefined,
     });
+    // 这一轮由本窗口 invoke 发起：终态事件的清场不归它管（收尾要从权威
+    // 副本并 thinking/tools），runChat 的 finally 统一 dropSession
+    streamState.markInvoked(sid);
     // RE-1 推理强度：生效档位 = 本会话覆盖 ?? 后台默认（具体值传后端，
     // 覆盖本身只存前端内存，不回写 bot-config.json）
     const effort = effortBySession.get(sid) ?? effortBase;

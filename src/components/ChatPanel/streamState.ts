@@ -76,6 +76,12 @@ const cursors = new Map<string, number>();
 const resumed = new Set<string>();
 /** 正在回灌的会话：同一会话的两次回灌不能并发（会重复灌一遍） */
 const resuming = new Set<string>();
+/** 本窗口 invoke 发起的轮：终态清场权在 runChat（收尾要从权威副本并
+ *  thinking/tools），终态事件不得代 drop——后端发起轮（围观执行会话 /
+ *  回灌轮）没有 invoke 可等，才归终态事件清场 */
+const invoked = new Set<string>();
+/** 每会话最近一次流式活动时刻（dead-man 看门狗读它） */
+const activity = new Map<string, number>();
 const inflightListeners = new Set<(sids: ReadonlySet<string>) => void>();
 
 /** 某会话的流式内容（没有则 undefined）。 */
@@ -104,6 +110,8 @@ export function dropSession(sid: string): void {
   cursors.delete(sid);
   inflight.delete(sid);
   resumed.delete(sid);
+  invoked.delete(sid);
+  activity.delete(sid);
   notifyInflight();
 }
 
@@ -114,6 +122,7 @@ export function isInflight(sid: string): boolean {
 
 /** 标记某会话在途（发消息时置位 / 回灌时补上）。 */
 export function markInflight(sid: string): void {
+  if (!activity.has(sid)) activity.set(sid, Date.now());
   if (inflight.has(sid)) return;
   inflight.add(sid);
   notifyInflight();
@@ -155,11 +164,34 @@ function notifyInflight(): void {
  * 无序号的（老后端 / 非会话事件）一律放行。
  */
 export function noteSeq(sid: string, seq: number | undefined | null): boolean {
+  // 活动时刻先于去重闸记：被闸挡掉的重复事件同样证明「还活着」
+  activity.set(sid, Date.now());
   if (seq === undefined || seq === null) return true;
   const cur = cursors.get(sid) ?? 0;
   if (seq <= cur) return false;
   cursors.set(sid, seq);
   return true;
+}
+
+/** 某会话最近一次流式活动时刻（从未活动过 = 0）。dead-man 看门狗读它。 */
+export function lastActivityOf(sid: string): number {
+  return activity.get(sid) ?? 0;
+}
+
+/** 测试用：把某会话的最近活动时刻拨回去（看门狗用例要造「沉默超窗」）。 */
+export function rewindActivityForTest(sid: string, ms: number): void {
+  const cur = activity.get(sid) ?? Date.now();
+  activity.set(sid, cur - ms);
+}
+
+/** 标记某会话这一轮由本窗口 invoke 发起（终态清场权归 runChat）。 */
+export function markInvoked(sid: string): void {
+  invoked.add(sid);
+}
+
+/** 该会话这一轮是否本窗口 invoke 发起的。 */
+export function isInvoked(sid: string): boolean {
+  return invoked.has(sid);
 }
 
 /** 该会话已应用到的最大序号（拉回放时的游标）。 */
@@ -229,5 +261,7 @@ export function resetAll(): void {
   cursors.clear();
   resumed.clear();
   resuming.clear();
+  invoked.clear();
+  activity.clear();
   notifyInflight();
 }

@@ -221,10 +221,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     // oxlint-disable-next-line react/set-state-in-effect
     setSubagentDetailId(null);
   }, [sessionId]);
-  const metaFor = (sid: string | null) => {
-    if (!sid) return undefined;
-    return streamState.ensureMeta(sid);
-  };
   const mergeInflight = useCallback((rows: Msg[], sid: string): Msg[] => {
     if (!streamState.isInflight(sid)) return rows;
     const meta = streamState.metaOf(sid);
@@ -421,7 +417,6 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
   useChatStream({
     exitChat,
     loadFinalText,
-    metaFor,
     sessionIdRef,
     setMessages,
     setSessionUsage,
@@ -433,7 +428,8 @@ export function ChatPanel({ enabled, tasks, onUpdateTask, escBlocked }: Props) {
     // 镜像同步落（effect 渲染后才补）：await 期间守卫读到的必须已是新会话，
     // 否则快响应会被「过期」守卫误丢
     sessionIdRef.current = sid;
-    streamState.setMeta(sid, {});
+    // 不清 meta：在途回合的权威副本是唯一的过程记录，清了切走再切回就
+    // 没人重建（回灌有游标连续性判定兜着，残迹由它负责清）
     // 围观守卫：记录当前围观的执行会话——执行期间拦 Send
     //（防用户输入与执行响应交错 + 被收尾 history_load 冲掉）；切换会话自由。
     // watch=false 的迟到查看不挂守卫：执行已结束，没有需要隔离的响应流

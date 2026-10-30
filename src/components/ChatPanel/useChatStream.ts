@@ -5,21 +5,20 @@
  *  搬移是逐字的：语句原样保留、顺序不变；对外接口只有 params 与返回值。
  */
 import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { unlistenSafe } from "../../lib/useTauriListen";
 import type { Msg, SkillFailure, TurnStatus } from "./types";
-import { DELTA_BATCH_MS } from "./constants";
+import { DELTA_BATCH_MS, STREAM_DEAD_IDLE_MS } from "./constants";
 import * as streamState from "./streamState";
 import * as planStore from "./planStore";
 import * as askStore from "./askStore";
-import type { StreamMeta } from "./streamState";
 import type { PlanEventPayload } from "./planStore";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 
 export type ChatStreamParams = {
   exitChat: (sid: string) => void;
   loadFinalText: (sid: string, attempt?: number) => Promise<void>;
-  metaFor: (sid: string | null) => StreamMeta | undefined;
   sessionIdRef: RefObject<string | null>;
   setMessages: Dispatch<SetStateAction<Msg[]>>;
   setSessionUsage: Dispatch<SetStateAction<Record<string, { input: number; output: number; cacheRead: number; cacheCreation: number; lastInput: number; lastCacheRead: number; }>>>;
@@ -30,7 +29,6 @@ export function useChatStream(params: ChatStreamParams) {
   const {
     exitChat,
     loadFinalText,
-    metaFor,
     sessionIdRef,
     setMessages,
     setSessionUsage,
@@ -38,7 +36,7 @@ export function useChatStream(params: ChatStreamParams) {
   } = params;
 
   useEffect(() => {
-    const pending = { text: "", think: false };
+    const pending = { text: "", think: false, sid: null as string | null };
     let frame: number | null = null;
     const rafOk = typeof requestAnimationFrame === "function";
     // 事件处理器登记处：实时订阅与「回放补齐」走**同一批**处理函数。
@@ -55,9 +53,15 @@ export function useChatStream(params: ChatStreamParams) {
       frame = null;
       const add = pending.text;
       const thinkTouched = pending.think;
+      const pendingSid = pending.sid;
       pending.text = "";
       pending.think = false;
+      pending.sid = null;
       if (!add && !thinkTouched) return;
+      // 这批增量属于别的会话（入队后用户切走了）：只留权威副本，不动当前
+      // 视图——打进新会话的视图就是串台。权威副本在处理器里已按各自会话
+      // 累加，切回时靠 mergeInflight / 回灌回填。
+      if (pendingSid !== null && pendingSid !== sessionIdRef.current) return;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (!last || !last.streaming) {
@@ -92,6 +96,19 @@ export function useChatStream(params: ChatStreamParams) {
         ? requestAnimationFrame(flush)
         : window.setTimeout(flush, DELTA_BATCH_MS);
     };
+    // 视图合并队列：按「增量所属会话」入队。入队与落地（flush）之间隔了
+    // 一帧，期间用户可能已切走——换主了就把上一批作废（权威副本已有），
+    // 旧会话的尾巴不能打进新会话的视图。
+    const queue = (sid: string | null, text: string, think: boolean) => {
+      if (pending.sid !== null && pending.sid !== sid) {
+        pending.text = "";
+        pending.think = false;
+      }
+      if (text) pending.text += text;
+      if (think) pending.think = true;
+      pending.sid = sid;
+      schedule();
+    };
     const unlisten = reg<{
       text?: string;
       sessionId?: string | null;
@@ -107,12 +124,11 @@ export function useChatStream(params: ChatStreamParams) {
         ) {
           // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
           if (!streamState.noteSeq(sid, p?.seq)) return;
-          const m = metaFor(sid);
-          if (m) m.text = (m.text ?? "") + t;
+          const m = streamState.ensureMeta(sid);
+          m.text = (m.text ?? "") + t;
         }
         if (sid !== sessionIdRef.current) return;
-        pending.text += t;
-        schedule();
+        queue(sid, t, false);
       });
     const unThink = reg<{
       text?: string;
@@ -125,15 +141,14 @@ export function useChatStream(params: ChatStreamParams) {
         // 权威副本按「回复所属会话」累加（SWITCH-1：不随视图切换丢失），
         // 仅展示走同帧合并且只进当前视图
         if (
-          (sid !== null && streamState.isInflight(sid)) ||
-          sid === sessionIdRef.current
+          sid !== null &&
+          (streamState.isInflight(sid) || sid === sessionIdRef.current)
         ) {
-          const m = metaFor(sid);
-          if (m) m.thinking = (m.thinking ?? "") + t;
+          const m = streamState.ensureMeta(sid);
+          m.thinking = (m.thinking ?? "") + t;
         }
         if (sid !== sessionIdRef.current) return;
-        pending.think = true;
-        schedule();
+        queue(sid, "", true);
       },
     );
     const unTool = reg<{
@@ -150,8 +165,7 @@ export function useChatStream(params: ChatStreamParams) {
       if (!streamState.noteSeq(sid, p?.seq)) return;
       const { id, name } = p ?? {};
       if (!id) return;
-      const m = metaFor(sid);
-      if (!m) return;
+      const m = streamState.ensureMeta(sid);
       const tools = [...(m.tools ?? [])];
       if (!tools.some((x) => x.id === id)) tools.push({ id, name: name ?? "" });
       m.tools = tools;
@@ -177,8 +191,7 @@ export function useChatStream(params: ChatStreamParams) {
       if (!streamState.noteSeq(sid, p?.seq)) return;
       const { id, name } = p ?? {};
       if (!id || !name) return;
-      const m = metaFor(sid);
-      if (!m) return;
+      const m = streamState.ensureMeta(sid);
       const tools = (m.tools ?? []).map((x) =>
         x.id === id ? { ...x, name } : x,
       );
@@ -209,8 +222,7 @@ export function useChatStream(params: ChatStreamParams) {
       if (!streamState.noteSeq(sid, p?.seq)) return;
       const { id, name, args, result, ms, ok } = p ?? {};
       if (!id) return;
-      const m = metaFor(sid);
-      if (!m) return;
+      const m = streamState.ensureMeta(sid);
       const tools = (m.tools ?? []).map((x) =>
         x.id === id
           ? {
@@ -248,8 +260,7 @@ export function useChatStream(params: ChatStreamParams) {
       if (!streamState.noteSeq(sid, p?.seq)) return;
       const { id, name, args_preview: argsPreview } = p ?? {};
       if (!id) return;
-      const m = metaFor(sid);
-      if (!m) return;
+      const m = streamState.ensureMeta(sid);
       // 记本地开始时刻：工具返回后以 done 事件的 ms 为准，前端计时只在
       // 「bot-tool 已收到但还没回」这段窗口里显示，不与后端耗时重复计。
       const tools = (m.tools ?? []).map((x) =>
@@ -302,16 +313,14 @@ export function useChatStream(params: ChatStreamParams) {
         pending.text = "";
         pending.think = false;
       }
-      const m = metaFor(sid);
-      if (m) {
-        m.turnStatus = status;
-        m.turnDetail = p?.detail ?? undefined;
-        // 终态到来前记下开始时刻：running/settling 期间的秒表从这里起。
-        // 起点取后端记的本轮起始时刻——回灌接回时「本地此刻」是补齐那一刻，
-        // 拿它当起点秒表会从零开始（回复其实已经跑了一会儿）
-        if (status === "running" && m.turnStartedAt == null) {
-          m.turnStartedAt = p?.startedAt ?? Date.now();
-        }
+      const m = streamState.ensureMeta(sid);
+      m.turnStatus = status;
+      m.turnDetail = p?.detail ?? undefined;
+      // 终态到来前记下开始时刻：running/settling 期间的秒表从这里起。
+      // 起点取后端记的本轮起始时刻——回灌接回时「本地此刻」是补齐那一刻，
+      // 拿它当起点秒表会从零开始（回复其实已经跑了一会儿）
+      if (status === "running" && m.turnStartedAt == null) {
+        m.turnStartedAt = p?.startedAt ?? Date.now();
       }
       // 回灌接回的那一轮：终态到了要把最终正文取回来——这轮没有 invoke
       // 结果可等（发起它的那个窗口已经没了），只能自己去取库里的最终态
@@ -323,6 +332,17 @@ export function useChatStream(params: ChatStreamParams) {
         streamState.clearResumed(sid);
         exitChat(sid);
         void loadFinalText(sid);
+      }
+      // 后端发起的轮（围观执行会话 / 回灌轮）：终态即本轮结束，游标与权威
+      // 副本一并清掉——残留会让下一轮的正文接在旧文本上、回灌被游标早退
+      // 拦住。invoke 驱动的轮不动：runChat 收尾还要从权威副本并
+      // thinking/tools，它的 finally 自会 dropSession。
+      if (
+        status !== "running" &&
+        status !== "settling" &&
+        !streamState.isInvoked(sid)
+      ) {
+        streamState.dropSession(sid);
       }
       if (sid !== sessionIdRef.current) return;
       setMessages((prev) => {
@@ -337,6 +357,9 @@ export function useChatStream(params: ChatStreamParams) {
             status === "running"
               ? (m?.turnStartedAt ?? last.turnStartedAt ?? Date.now())
               : last.turnStartedAt,
+          // 终态即收尾：摘掉 streaming——后端发起的轮没有 invoke 替它换装，
+          // 不摘的话下一轮的增量会接在这一轮的气泡尾巴上
+          streaming: status === "running" || status === "settling",
         };
         return copy;
       });
@@ -359,8 +382,7 @@ export function useChatStream(params: ChatStreamParams) {
       // 序号去重：补齐与实时会重叠（同一条事件两边各来一次）
       if (!streamState.noteSeq(sid, p?.seq)) return;
       if (!p?.path) return;
-      const m = metaFor(sid);
-      if (!m) return;
+      const m = streamState.ensureMeta(sid);
       const changes = [
         ...(m.fileChanges ?? []),
         {
@@ -404,8 +426,7 @@ export function useChatStream(params: ChatStreamParams) {
         completedSummary: p.completedSummary ?? "(无已完成步骤)",
         rollbackAttempted: !!p.rollbackAttempted,
       };
-      const m = metaFor(sid);
-      if (!m) return;
+      const m = streamState.ensureMeta(sid);
       m.skillFailure = failure;
       if (sid !== sessionIdRef.current) return;
       setMessages((prev) => {
@@ -498,7 +519,49 @@ export function useChatStream(params: ChatStreamParams) {
         };
       });
     });
+    // dead-man 看门狗：在途会话超过 STREAM_DEAD_IDLE_MS 没有任何流式事件
+    // → 判死回收。前端是后端「还在跑」的唯一见证人，终态事件丢失或后端
+    // 异常挂起时，没有它本会话就永远「回复中」（/stop 是唯一出口）。
+    const watchdog = window.setInterval(() => {
+      const now = Date.now();
+      for (const sid of streamState.inflightSessions()) {
+        if (now - streamState.lastActivityOf(sid) < STREAM_DEAD_IDLE_MS) continue;
+        // 判死前先取残文：dropSession 之后权威副本就没了
+        const partial = streamState.metaOf(sid)?.text ?? "";
+        streamState.dropSession(sid);
+        exitChat(sid);
+        if (sessionIdRef.current === sid) {
+          const note =
+            "⚠️ 长时间无任何流式事件，回合已按失败处理；若后端仍在运行，重新打开会话可查看最终结果";
+          const content = partial ? `${partial}\n\n${note}` : note;
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (!last || !last.streaming) {
+              return [
+                ...prev,
+                {
+                  role: "assistant" as const,
+                  content,
+                  turnStatus: "failed" as const,
+                },
+              ];
+            }
+            const copy = [...prev];
+            copy[copy.length - 1] = {
+              ...last,
+              content,
+              turnStatus: "failed" as const,
+              streaming: false,
+            };
+            return copy;
+          });
+        }
+        // 后端若真还挂着（判死只回收前端视图），顺手叫停
+        invoke("bot_stop", { sessionId: sid }).catch(() => {});
+      }
+    }, 15_000);
     return () => {
+      window.clearInterval(watchdog);
       if (frame !== null) {
         if (rafOk) cancelAnimationFrame(frame);
         else window.clearTimeout(frame);
