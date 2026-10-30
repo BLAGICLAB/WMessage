@@ -140,6 +140,41 @@ async fn wait_returns_early_when_user_stops() {
     );
 }
 #[tokio::test]
+async fn stop_interrupts_a_mid_step_wait_within_slice_budget() {
+    // /stop 落在步长中间：整步一把睡过去的实现要等满首档 1500ms 才检查令牌；
+    // 切片后 ≤500ms 内就该醒，且 DB 读频不随切片变密（重读仍只在通知或
+    // 整步走完时发生）。
+    let stop = crate::bot_slash::StopToken::new_for_test();
+    let stop_flag = stop.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        stop_flag.stop();
+    });
+    let reads = std::cell::Cell::new(0usize);
+    let started = std::time::Instant::now();
+    let (_, exit) = wait_until_terminal(
+        || {
+            reads.set(reads.get() + 1);
+            async { Ok::<_, CommandError>(fake_state(SubagentStatus::Running)) }
+        },
+        CHECK_WAIT_MS_CAP,
+        Some(&stop),
+    )
+    .await
+    .unwrap();
+    assert_eq!(exit, WaitExit::Stopped);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1_000),
+        "/stop 落在步长中间没能及时打断等待：{:?}",
+        started.elapsed()
+    );
+    assert!(
+        reads.get() <= 3,
+        "切片不得加密 DB 读频：1.5s 步长内读了 {} 次",
+        reads.get()
+    );
+}
+#[tokio::test]
 async fn long_budget_does_not_reopen_db_on_every_step() {
     // 阶梯的意义就在这：每次读都要开一次库跑全量 DDL。旧的固定 150ms
     // 步长下 1.5s 预算要读 11 次，递进后只读 2 次（起手就 1500ms）。

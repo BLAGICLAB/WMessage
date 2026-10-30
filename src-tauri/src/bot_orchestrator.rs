@@ -69,6 +69,11 @@ const CHECK_POLL_LADDER_MS: [u64; 10] = [
     1_500, 3_000, 6_000, 12_000, 24_000, 30_000, 60_000, 120_000, 300_000, 600_000,
 ];
 
+/// 步长内的停止检查切片（毫秒）：每个步长切成这么薄的片睡，片间查一次
+/// 停止标志——/stop 的响应延迟以此为上界，不再随步长阶梯走到分钟级。
+/// 只影响睡眠粒度，DB 重读仍只在事件唤醒或整步走完时发生。
+const CHECK_STOP_SLICE_MS: u64 = 500;
+
 /// 三段式派发阶段（设计 §8.5）——主 agent 在 recon/executor/verifier 三段闭环中
 /// 选定当前阶段的角色语义。**不破坏 SubagentProfile 枚举**——profile 仍是工具白名单
 /// 档（Research/Coder/General），stage 在 prompt 装配层额外拼一段角色 prompt：
@@ -357,7 +362,24 @@ where
         }
         let step_ms = next_poll_step(step);
         step += 1;
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(step_ms), notified).await;
+        // 整步切成薄片睡：/stop 落在步长中间时 ≤500ms 内醒（一把睡过去的
+        // 话末档 600s 要等满整个预算）。监听复用上面已 enable 的那个
+        // notified——事件到达时立刻破片回去重读状态；薄片到点只查停止
+        // 标志，不重读——DB 读频不随切片变密。
+        let step_end = std::time::Instant::now() + std::time::Duration::from_millis(step_ms);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= step_end {
+                break;
+            }
+            let slice = std::time::Duration::from_millis(CHECK_STOP_SLICE_MS).min(step_end - now);
+            if tokio::time::timeout(slice, notified.as_mut()).await.is_ok() {
+                break;
+            }
+            if stop.is_some_and(|t| t.stopped()) {
+                break;
+            }
+        }
     }
 }
 
