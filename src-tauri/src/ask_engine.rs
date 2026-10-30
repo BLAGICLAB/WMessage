@@ -496,21 +496,28 @@ pub(crate) async fn engine_ask_user(
         /// 超时或用户停止（同口径：回落假设）
         Expired,
     }
-    let waited = tokio::select! {
-        r = tokio::time::timeout(timeout, rx) => match r {
-            Ok(Ok(reply)) => WaitOutcome::Answered(reply),
-            _ => WaitOutcome::Expired,
-        },
-        // /stop 等取消源：轮询停止标志（StopGuard 无 watch 通道，500ms 粒度足够——
-        // 提问本身以小时计），命中 = 用户主动放弃本轮执行，同超时口径回落假设
-        _ = async {
-            loop {
-                match stop {
-                    Some(s) if s.stopped() => break,
-                    _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
-                }
+    let waited = {
+        // 先收应答、后判超时的轮询环，不用 select：超时与应答同时就绪时
+        // select 随机裁决，可能把用户已写进通知表的回答扔掉、模型按假设
+        // 继续——通知显示「已回答」而模型没收到，两层各说各话。
+        // /stop 同环轮询（StopGuard 无 watch 通道；提问以小时计，500ms 无感），
+        // 命中 = 用户主动放弃本轮执行，同超时口径回落假设。
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut rx = rx;
+        loop {
+            // oneshot 关闭（应答端被异常摘除）与超时同口径
+            if let Ok(Ok(reply)) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), &mut rx).await
+            {
+                break WaitOutcome::Answered(reply);
             }
-        } => WaitOutcome::Expired,
+            if stop.is_some_and(|s| s.stopped()) {
+                break WaitOutcome::Expired;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break WaitOutcome::Expired;
+            }
+        }
     };
     // 无论结果都摘除 waiter（应答端 remove 幂等；超时/停止路径靠这里防泄漏）
     remove_question_waiter(app, &qid);
