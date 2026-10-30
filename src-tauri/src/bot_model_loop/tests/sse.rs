@@ -204,4 +204,130 @@ mod stop_emit_gate_tests {
             sse.final_text
         );
     }
+
+    /// 注释行（`:` 开头的 keep-alive）按 SSE 规范不终结事件：一条事件的
+    /// 两半 data 行被注释隔开时仍要拼回一条——把它当事件边界会两半都丢。
+    #[tokio::test]
+    async fn comment_lines_do_not_break_data_batch() {
+        let app = tauri::test::mock_app();
+        let stop = StopGuard::new(app.handle(), true, Some("s1".to_string()));
+        let body = reqwest::Body::wrap_stream(futures_util::stream::once(async {
+            Ok::<_, std::io::Error>(
+                "data: {\"choices\":[{\"delta\":{\n: keep-alive\ndata: \"content\":\"拼回\"}}]}\n\n"
+                    .to_string(),
+            )
+        }));
+        let resp = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(body)
+                .expect("应能造出响应"),
+        );
+        let emitted: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = emitted.clone();
+        let emit = move |ev: &str, _: serde_json::Value| {
+            sink.lock().expect("锁不该中毒").push(ev.to_string());
+        };
+        let audit = |_: crate::audit::AuditLevel, _: &str, _: Vec<(&'static str, String)>| {};
+        let skill_finish = |_: bool, _: &str| String::new();
+        let no_skill_run = |_: Option<&str>| None;
+        let on_round = |_: usize| {};
+        let no_keywords: Vec<String> = Vec::new();
+        let deps = ModelLoopDeps {
+            fuse_cap_override: None,
+            emit: &emit,
+            audit: &audit,
+            skill_finish: &skill_finish,
+            active_skill_run: &no_skill_run,
+            conv_sidecar_dir: None,
+            final_selfcheck_round_gap: Some(0),
+            final_selfcheck_http: None,
+            on_round: &on_round,
+            turn_status: None,
+            session_tools: None,
+            guard_claim_keywords: &no_keywords,
+            file_receipts: None,
+        };
+        let sse = match read_sse_stream(&llm_http(), resp, &stop, &deps, false, false).await {
+            Ok(s) => s,
+            Err(f) => panic!("注释行不该让流失败：{}", f.err),
+        };
+        assert!(
+            sse.final_text.contains("拼回"),
+            "注释行隔开的两半 data 行要拼回一条：{:?}",
+            sse.final_text
+        );
+    }
+
+    /// 无事件边界、连续 data 行的攒批超 2MB 上限：截停 + 审计一次，流本身
+    /// 不失败（丢批保会话，与单行超限同口径）——不设上限时故障/恶意流可
+    /// 绕过单行配额无限攒内存。
+    #[tokio::test]
+    async fn oversized_data_batch_is_truncated_with_audit() {
+        let app = tauri::test::mock_app();
+        let stop = StopGuard::new(app.handle(), true, Some("s1".to_string()));
+        // ~2.6MB 的 data 行流，不给事件边界（不空行）
+        let mut body_text = String::with_capacity(3 * 1024 * 1024);
+        for _ in 0..2_600 {
+            body_text.push_str("data: ");
+            body_text.push_str(&"x".repeat(1000));
+            body_text.push('\n');
+        }
+        let body = reqwest::Body::wrap_stream(futures_util::stream::once(async {
+            Ok::<_, std::io::Error>(body_text)
+        }));
+        let resp = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(body)
+                .expect("应能造出响应"),
+        );
+        let audits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = audits.clone();
+        let emit = |_: &str, _: serde_json::Value| {};
+        let audit = move |_: crate::audit::AuditLevel, ev: &str, _: Vec<(&'static str, String)>| {
+            sink.lock().expect("锁不该中毒").push(ev.to_string());
+        };
+        let skill_finish = |_: bool, _: &str| String::new();
+        let no_skill_run = |_: Option<&str>| None;
+        let on_round = |_: usize| {};
+        let no_keywords: Vec<String> = Vec::new();
+        let deps = ModelLoopDeps {
+            fuse_cap_override: None,
+            emit: &emit,
+            audit: &audit,
+            skill_finish: &skill_finish,
+            active_skill_run: &no_skill_run,
+            conv_sidecar_dir: None,
+            final_selfcheck_round_gap: Some(0),
+            final_selfcheck_http: None,
+            on_round: &on_round,
+            turn_status: None,
+            session_tools: None,
+            guard_claim_keywords: &no_keywords,
+            file_receipts: None,
+        };
+        let sse = match read_sse_stream(&llm_http(), resp, &stop, &deps, false, false).await {
+            Ok(s) => s,
+            Err(f) => panic!("攒批超限是截停不是流失败：{}", f.err),
+        };
+        let events = audits.lock().expect("锁不该中毒").clone();
+        assert!(
+            events.iter().any(|e| e == "llm.sse_data_batch_truncated"),
+            "超限截停要留一次审计：{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .filter(|e| *e == "llm.sse_data_batch_truncated")
+                .count()
+                <= 1,
+            "截停审计每条流只留一次：{events:?}"
+        );
+        assert!(
+            sse.final_text.is_empty(),
+            "被截停的攒批内容不进正文：{:?}",
+            sse.final_text
+        );
+    }
 }

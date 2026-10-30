@@ -432,6 +432,7 @@ pub(crate) async fn read_sse_stream(
     // 正常生成永远碰不到，畸形流则在这里被截停。
     const MAX_SSE_LINE_BYTES: usize = 2 * 1024 * 1024;
     let mut line_cap_reported = false;
+    let mut data_cap_reported = false;
     let mut state = StreamState::new(
         http.provider,
         expecting_selfcheck,
@@ -496,11 +497,30 @@ pub(crate) async fn read_sse_stream(
             byte_buf.extend_from_slice(&chunk);
             for line in drain_sse_lines(&mut byte_buf) {
                 let line = line.trim();
+                // 注释行（: 开头）按 SSE 规范忽略——它不终结正在攒的事件，
+                // 也不产生输出；keep-alive 常见形态
+                if line.starts_with(':') {
+                    continue;
+                }
                 if let Some(rest) = line.strip_prefix("data:") {
                     if !data_buf.is_empty() {
                         data_buf.push('\n');
                     }
                     data_buf.push_str(rest.trim_start());
+                    // 攒批缓冲与单行同口径上限：切出的完整 data 行不占
+                    // byte_buf 的 2MB 配额，故障/恶意流持续发短 data 行即可
+                    // 无限攒——超限截停并留痕一次（丢批保会话，同单行口径）
+                    if data_buf.len() > MAX_SSE_LINE_BYTES {
+                        if !data_cap_reported {
+                            data_cap_reported = true;
+                            audit(
+                                crate::audit::AuditLevel::Warn,
+                                "llm.sse_data_batch_truncated",
+                                vec![("bytes", data_buf.len().to_string())],
+                            );
+                        }
+                        data_buf.clear();
+                    }
                     continue;
                 }
                 // 非 data 行 = 事件边界：把攒到的 data 行拼成一条再解析
@@ -541,6 +561,10 @@ pub(crate) async fn read_sse_stream(
             byte_buf.push(b'\n');
             for line in drain_sse_lines(&mut byte_buf) {
                 let line = line.trim();
+                // 注释行忽略（同主循环：不终结攒批、不产生输出）
+                if line.starts_with(':') {
+                    continue;
+                }
                 if let Some(rest) = line.strip_prefix("data:") {
                     if !data_buf.is_empty() {
                         data_buf.push('\n');
