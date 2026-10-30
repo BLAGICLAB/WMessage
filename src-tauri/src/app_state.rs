@@ -49,6 +49,10 @@ pub(crate) struct PendingConfirmRequest {
     pub(crate) tool: String,
     pub(crate) detail: String,
     pub(crate) kind: String,
+    /// 入表时刻（毫秒）：后端 60s deadline 从此刻起算，重查还原要按它算
+    /// 剩余时长——前端自己的倒计时重置成满 60s 是假象，用户会在「看着
+    /// 还剩很多」时点到一条后端早已超时拒绝的请求上。
+    pub(crate) created_at_ms: i64,
 }
 
 // CONFIRMS 已迁入 `AppState.confirm_requests`（访问器 `confirms(app)` 见文件尾）。

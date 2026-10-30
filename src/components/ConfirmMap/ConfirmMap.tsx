@@ -24,6 +24,8 @@ type BotConfirmPayload = {
   detail: string;
   kind: string; // "danger" | "file_access" | ...
   sessionId: string | null;
+  /** 重查还原行独有：后端 60s deadline 的剩余整秒（实时事件不带） */
+  remainingSecs?: number;
 };
 
 const TIMEOUT_SECS = 60;
@@ -61,27 +63,34 @@ export default function ConfirmMap() {
   });
 
   // 挂载还原：webview 重载会丢掉挂在事件上的弹窗——后端确认表里还在等的
-  // 请求按原样还原（60s 兜底与倒计时照常）。多请求并发时呈现 UI 只有一格，
-  // 还原第一条、其余按 stale 口径立即拒收（60s 兜底仍在，拒错不放大）
+  // 请求按原样还原。倒计时用后端剩余秒数（deadline 从提问时刻起算不随还原
+  // 重置，重置满 60s 是假象——用户会在「看着还剩很多」时点到一条后端早已
+  // 超时拒绝的请求上）；已到期的（0）还原无意义，直接按拒收回收。
+  // 多请求并发时呈现 UI 只有一格，还原最早入表那条、其余按 stale 口径
+  // 拒收（60s 兜底仍在，拒错不放大；busy 在飞时与监听路径同守卫，不补刀）
   useEffect(() => {
     let cancelled = false;
     invoke<BotConfirmPayload[]>("bot_pending_confirms")
       .then((rows) => {
         if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
-        const [first, ...rest] = rows;
-        for (const stale of rest) {
+        const rejectStale = (id: string) => {
           invoke("bot_confirm_response", {
-            requestId: stale.id,
+            requestId: id,
             approved: false,
             always: null,
-          }).catch((e) =>
-            console.error("auto-reject stale confirm failed:", e),
-          );
+          }).catch((e) => console.error("auto-reject stale confirm failed:", e));
+        };
+        const live = rows.filter((r) => (r.remainingSecs ?? 0) > 0);
+        const expired = rows.filter((r) => (r.remainingSecs ?? 0) <= 0);
+        if (!busyRef.current) {
+          for (const r of expired) rejectStale(r.id);
+          for (const stale of live.slice(1)) rejectStale(stale.id);
         }
+        const first = live[0];
         if (!first?.id) return;
         pendingRef.current = first;
         setPending(first);
-        setRemaining(TIMEOUT_SECS);
+        setRemaining(Math.min(TIMEOUT_SECS, first.remainingSecs ?? TIMEOUT_SECS));
       })
       .catch((e) => console.error("restore pending confirms failed:", e));
     return () => {

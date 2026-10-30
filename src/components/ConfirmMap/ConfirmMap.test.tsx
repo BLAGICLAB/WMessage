@@ -289,4 +289,86 @@ describe("ConfirmMap", () => {
       });
     });
   });
+
+  /* 挂载还原（webview 重载后按后端确认表重查）：倒计时用后端剩余秒数
+   * （deadline 不随还原重置），已到期的不还原直接拒收，多条并发还原最早
+   * 那条、其余拒收。 */
+  it("挂载还原：带后端剩余时长的第一条上屏，过期与其余的拒收", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_pending_confirms")
+        return [
+          {
+            id: "expired-1",
+            tool: "删除任务",
+            detail: "早已到期",
+            kind: "danger",
+            sessionId: "s1",
+            remainingSecs: 0,
+          },
+          {
+            id: "old-1",
+            tool: "删除任务",
+            detail: "50 秒前入表",
+            kind: "danger",
+            sessionId: "s1",
+            remainingSecs: 9,
+          },
+          {
+            id: "fresh-1",
+            tool: "apps_publish",
+            detail: "刚入表",
+            kind: "danger",
+            sessionId: "s1",
+            remainingSecs: 59,
+          },
+        ];
+      return undefined;
+    });
+    render(<ConfirmMap />);
+    // 还原最早那条（old-1），倒计时是后端剩余 9s 而不是重置的 60s
+    expect(await screen.findByTestId("confirm-map-modal")).toBeInTheDocument();
+    expect(screen.getByTestId("confirm-map-countdown").textContent).toBe("9s");
+    expect(screen.getByTestId("confirm-map-detail").textContent).toContain(
+      "50 秒前入表",
+    );
+    // 过期的与较新的按 stale 口径拒收
+    await waitFor(() => {
+      const calls = invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_confirm_response",
+      );
+      const ids = calls.map((c) => (c[1] as { requestId: string }).requestId);
+      expect(ids).toContain("expired-1");
+      expect(ids).toContain("fresh-1");
+      expect(ids).not.toContain("old-1");
+    });
+  });
+
+  it("挂载还原：全部已到期 → 不弹窗，全部拒收", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_pending_confirms")
+        return [
+          {
+            id: "dead-1",
+            tool: "删除任务",
+            detail: "d",
+            kind: "danger",
+            sessionId: null,
+            remainingSecs: 0,
+          },
+        ];
+      return undefined;
+    });
+    render(<ConfirmMap />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(screen.queryByTestId("confirm-map-modal")).not.toBeInTheDocument();
+    await waitFor(() => {
+      const calls = invokeMock.mock.calls.filter(
+        (c) => c[0] === "bot_confirm_response",
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0][1]).toMatchObject({ requestId: "dead-1", approved: false });
+    });
+  });
 });

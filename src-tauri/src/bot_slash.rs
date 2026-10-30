@@ -313,6 +313,7 @@ async fn ask_confirm_inner<R: tauri::Runtime>(
             tool: tool.to_string(),
             detail: detail.to_string(),
             kind: kind.to_string(),
+            created_at_ms: crate::db::now_ms(),
         },
     );
     // 走统一出口盖章 + 进回放缓冲：webview 重载后挂载的 ConfirmMap 按
@@ -389,18 +390,27 @@ async fn wait_confirm_reply(
 }
 
 /// 在途确认列表（前端 ConfirmMap 挂载时重查还原弹窗用）。
+///
+/// 按入表时刻升序（FIFO）：呈现 UI 只有一格，「还原哪条」必须是确定的。
+/// remaining_secs 按后端 60s deadline 算剩余——前端倒计时不重置满格。
 #[tauri::command]
 pub fn bot_pending_confirms<R: tauri::Runtime>(app: AppHandle<R>) -> Vec<PendingConfirmView> {
+    const CONFIRM_TIMEOUT_MS: i64 = 60_000;
     let map = crate::db::lock::lock_or_recover(confirms(&app), "bot_slash confirms");
-    map.iter()
+    let now = crate::db::now_ms();
+    let mut rows: Vec<PendingConfirmView> = map
+        .iter()
         .map(|(id, r)| PendingConfirmView {
             id: id.clone(),
             tool: r.tool.clone(),
             detail: r.detail.clone(),
             kind: r.kind.clone(),
             session_id: r.session_id.clone(),
+            remaining_secs: ((r.created_at_ms + CONFIRM_TIMEOUT_MS - now).max(0) / 1000) as u64,
         })
-        .collect()
+        .collect();
+    rows.sort_by_key(|r| r.remaining_secs);
+    rows
 }
 
 /// `bot_pending_confirms` 的行载荷（serde camelCase 与前端对齐）。
@@ -412,6 +422,8 @@ pub struct PendingConfirmView {
     pub detail: String,
     pub kind: String,
     pub session_id: Option<String>,
+    /// 后端 60s deadline 的剩余整秒（0 = 已到期/即将被默认拒绝）
+    pub remaining_secs: u64,
 }
 
 /// 某会话是否有执行实例已被置位停止：/stop 后的等待类操作（确认弹窗等）
@@ -663,6 +675,7 @@ mod command_result_tests {
                 tool: "test_tool".into(),
                 detail: "d".into(),
                 kind: super::CONFIRM_KIND_DANGER.into(),
+                created_at_ms: crate::db::now_ms(),
             },
         );
         assert_eq!(
@@ -834,6 +847,50 @@ mod confirm_skill_pause_tests {
             started.elapsed() < std::time::Duration::from_secs(2),
             "停止应立即生效，实际等了 {:?}",
             started.elapsed()
+        );
+    }
+
+    /// 重查还原的三要素：按入表时刻 FIFO（呈现 UI 一格，「还原哪条」必须
+    /// 确定）、剩余秒数按后端 deadline 算（不重置满 60）、过期条目剩余为 0。
+    #[test]
+    fn pending_confirms_ordered_fifo_with_backend_remaining_secs() {
+        let app = mock_handle();
+        let now = crate::db::now_ms();
+        let mk = |id: &str, age_ms: i64| {
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            crate::app_state::PendingConfirmRequest {
+                tx,
+                session_id: None,
+                tool: format!("tool-{id}"),
+                detail: "d".into(),
+                kind: super::CONFIRM_KIND_DANGER.into(),
+                created_at_ms: now - age_ms,
+            }
+        };
+        {
+            let mut map =
+                crate::db::lock::lock_or_recover(super::confirms(&app), "bot_slash confirms");
+            map.insert("fresh".into(), mk("fresh", 1_000));
+            map.insert("old".into(), mk("old", 50_000));
+            map.insert("expired".into(), mk("expired", 61_000));
+        }
+        let rows = super::bot_pending_confirms(app);
+        assert_eq!(
+            rows.iter().map(|r| r.tool.as_str()).collect::<Vec<_>>(),
+            vec!["tool-expired", "tool-old", "tool-fresh"],
+            "按剩余时长升序 = 入表先后（FIFO）：{:?}",
+            rows.iter().map(|r| r.tool.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(rows[0].remaining_secs, 0, "已过期的剩余为 0");
+        assert!(
+            rows[1].remaining_secs > 0 && rows[1].remaining_secs <= 10,
+            "50s 前入表 → 剩余约 10s：{}",
+            rows[1].remaining_secs
+        );
+        assert!(
+            rows[2].remaining_secs > 50 && rows[2].remaining_secs <= 60,
+            "刚入表 → 剩余接近 60s：{}",
+            rows[2].remaining_secs
         );
     }
 }
