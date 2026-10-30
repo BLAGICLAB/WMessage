@@ -40,7 +40,9 @@ pub use self::core::run_model_loop_core;
 #[allow(unused_imports)]
 pub use self::request::apply_inference_params;
 #[allow(unused_imports)]
-pub use self::shell::{noop_replan, resolve_temperature, run_model_loop, shared_llm_client};
+pub use self::shell::{
+    catch_model_loop_panic, noop_replan, resolve_temperature, run_model_loop, shared_llm_client,
+};
 #[allow(unused_imports)]
 pub use self::sse::STREAM_CHUNK_IDLE_TIMEOUT;
 #[allow(unused_imports)]

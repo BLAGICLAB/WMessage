@@ -188,9 +188,9 @@ fn record(session_id: &str, event: &str, payload: &serde_json::Value) -> Option<
     let now = now_ms();
     let mut m = logs();
     sweep_expired(&mut m, now);
-    let entry = m
-        .entry(session_id.to_string())
-        .or_insert_with(|| SessionLog::new(now));
+    // 未 begin 的会话不建条目：条目一旦建出，sweep 对「未收尾」恒保留，
+    // 回合外事件每漏一条就多一条永久残渣。建条目是 begin 的专属职责。
+    let entry = m.get_mut(session_id)?;
     if !entry.inflight {
         return None;
     }
@@ -198,10 +198,16 @@ fn record(session_id: &str, event: &str, payload: &serde_json::Value) -> Option<
     entry.next_seq += 1;
     entry.event_count += 1;
     entry.bytes += estimate_bytes(payload);
+    // 序号同时写进缓冲副本：回放事件与实时广播同构（都带 seq），前端的
+    // 序号去重闸对两路同一口径——缓冲副本缺 seq，回放流就整段绕过去重闸。
+    let mut stored = payload.clone();
+    if let Some(obj) = stored.as_object_mut() {
+        obj.insert("seq".into(), serde_json::json!(seq));
+    }
     entry.events.push_back(BufferedEvent {
         seq,
         event: event.to_string(),
-        payload: payload.clone(),
+        payload: stored,
     });
     while entry.events.len() > MAX_EVENTS_PER_SESSION || entry.bytes > MAX_BYTES_PER_SESSION {
         let Some(old) = entry.events.pop_front() else {
@@ -480,5 +486,28 @@ mod tests {
         assert_eq!(r.last_seq, 7);
         assert!(!r.truncated);
         assert!(!r.inflight);
+    }
+
+    #[test]
+    fn replayed_payloads_carry_seq_like_live_ones() {
+        let s = sid("replay-seq");
+        begin(&s);
+        record(&s, "bot-chat-delta", &serde_json::json!({ "text": "a" })).expect("在途事件有序号");
+        let r = replay(&s, 0);
+        assert_eq!(
+            r.events[0].payload["seq"],
+            serde_json::json!(r.events[0].seq),
+            "回放载荷必须带 seq：前端去重闸按它判重，缓冲副本缺了回放流就整段绕闸"
+        );
+    }
+
+    #[test]
+    fn record_never_creates_registry_entry_for_unknown_session() {
+        let s = sid("orphan");
+        assert!(record(&s, "e", &serde_json::json!({})).is_none());
+        assert!(
+            !logs().contains_key(&s),
+            "回合外事件不得对未 begin 会话建条目：sweep 对未收尾条目永不过期，会一直累积"
+        );
     }
 }

@@ -9,8 +9,67 @@ use super::{
 use crate::bot_chat::TaskRef;
 use crate::bot_slash::StopGuard;
 use crate::error::CommandError;
+use futures_util::FutureExt;
 use tauri::AppHandle;
 use tauri::Emitter;
+
+/// 在途登记的 RAII 收尾：drop 即 `stream_log::finish`（含早退与 panic 展开路径）。
+/// begin/finish 手工成对挡不住 panic——展开会跳过收尾点，会话在注册表里永久
+/// 在途（sweep 对未收尾条目不过期），前端重挂载会把一个永远等不到终态的回合
+/// 标成在途回放，「正在思考」永不复位。正常路径先显式 finish 再 defuse，
+/// 收尾时序与原先完全一致。
+struct StreamFinishGuard(Option<String>);
+
+impl StreamFinishGuard {
+    fn defuse(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for StreamFinishGuard {
+    fn drop(&mut self) {
+        if let Some(sid) = self.0.take() {
+            crate::bot::stream_log::finish(&sid);
+        }
+    }
+}
+
+/// 模型循环的 panic 隔离：panic 归一成普通失败（subagent_runner 同范式），
+/// 并补发 `bot-turn-status` 失败终态——panic 会跳过 core 出口的状态映射，
+/// 交互轮前端只能靠 invoke 兜底或看门狗 recovery，当场给终态才是正路。
+pub async fn catch_model_loop_panic<T>(
+    app: &AppHandle,
+    session_id: Option<&str>,
+    what: &str,
+    fut: impl std::future::Future<Output = Result<T, CommandError>>,
+) -> Result<T, CommandError> {
+    match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(r) => r,
+        Err(panic) => {
+            let msg = crate::audit::panic_payload_msg(panic.as_ref());
+            crate::bot::audit_log(
+                app,
+                &format!(
+                    "{what}_panic | {} | 已归一为执行失败",
+                    crate::bot::truncate_for_log(&msg, 200)
+                ),
+            );
+            if let Some(sid) = session_id {
+                crate::bot::stream_log::emit_recorded(
+                    app,
+                    Some(sid),
+                    "bot-turn-status",
+                    serde_json::json!({
+                        "status": "failed",
+                        "detail": "内部错误：模型循环异常终止",
+                        "startedAt": crate::bot::stream_log::run_started_at(sid),
+                    }),
+                );
+            }
+            Err(crate::bot::subagent_runner::panic_to_command_error(&msg))
+        }
+    }
+}
 
 /// 本轮工具循环的轮数上限：Skill 自报 max_rounds 只许**收紧**（取 min），
 /// 没自报 → 安全网常量（constants::MAX_ROUNDS）。
@@ -193,11 +252,14 @@ pub async fn run_model_loop(
     let session_id: Option<&str> = stop.session_id();
     // 在途登记：这一轮开始。客户端重挂载后靠它知道「有回合正在跑」——
     // 没有登记，客户端根本不会去问回放，在途回复就只剩最终正文。
-    // 位置约束：这段之后到 core 返回之间没有早退路径（配置 / key 校验都在更早），
-    // 所以收尾只挂在 core 返回那一处；往后若在这段里加早退，必须一并收尾。
+    // 收尾由 stream_guard 兜底（drop 即 finish）：往后任何早退或 panic 展开
+    // 都不会再把会话留在「永久在途」里；core 返回处仍显式 finish + defuse，
+    // 保持既有收尾时序。
+    let mut stream_guard = StreamFinishGuard(None);
     if stream_to_main {
         if let Some(sid) = session_id {
             crate::bot::stream_log::begin(sid);
+            stream_guard.0 = Some(sid.to_string());
         }
     }
     // 流式事件出口统一收口（会话隔离）：非交互实例（后台定时任务）
@@ -476,6 +538,7 @@ pub async fn run_model_loop(
             crate::bot::stream_log::finish(sid);
         }
     }
+    stream_guard.defuse();
     // 执行明细无论成败都要组装：熔断走 Ok 但 API 失败/流式中断走 Err，
     // 早先用 `.map()` 只在成功时填 LoopTrace，于是跑满 50 轮被熔断的那次
     // trace 落库 turns=0、tools=0、tokens=0（实测 255 秒的执行记成 0 轮）。

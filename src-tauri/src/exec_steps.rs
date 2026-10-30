@@ -255,15 +255,20 @@ async fn run_step(
         json!({"role": "system", "content": sys}),
         json!({"role": "user", "content": block}),
     ];
-    let (text, refs, _loop_trace) = crate::bot::run_model_loop(
-        app.clone(),
-        msgs,
-        crate::bot::constants::MAX_ROUNDS as usize,
-        stop,
-        None,
-        None, // 执行步骤恢复链路：按 bot-config.json 全局默认（RE-1）
-        None, // per-onion 温度覆盖：逐步执行链路不挂
-        None, // 失败明细出口：逐步执行不落 exec_traces，无需回传
+    let (text, refs, _loop_trace) = crate::bot_model_loop::catch_model_loop_panic(
+        app,
+        stop.session_id(),
+        "逐步执行",
+        crate::bot::run_model_loop(
+            app.clone(),
+            msgs,
+            crate::bot::constants::MAX_ROUNDS as usize,
+            stop,
+            None,
+            None, // 执行步骤恢复链路：按 bot-config.json 全局默认（RE-1）
+            None, // per-onion 温度覆盖：逐步执行链路不挂
+            None, // 失败明细出口：逐步执行不落 exec_traces，无需回传
+        ),
     )
     .await?;
     park(

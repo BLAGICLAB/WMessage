@@ -303,16 +303,23 @@ pub(super) async fn run_task_in_chat_impl(
         Some(hook),
         crate::bot::constants::ASK_BUDGET_DEFAULT,
         |app2, msgs, stop| async move {
-            let outcome = crate::bot_model_loop::run_model_loop(
-                app2,
-                msgs,
-                crate::bot::constants::MAX_ROUNDS as usize,
-                &stop,
-                None,
-                // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
-                None,
-                None, // per-onion 温度覆盖：任务执行链路不挂
-                Some(&failed_for_run),
+            // panic 隔离用句柄提前克隆：app2 随后按值消费进 run_model_loop
+            let panic_app = app2.clone();
+            let outcome = crate::bot_model_loop::catch_model_loop_panic(
+                &panic_app,
+                stop.session_id(),
+                "任务执行",
+                crate::bot_model_loop::run_model_loop(
+                    app2,
+                    msgs,
+                    crate::bot::constants::MAX_ROUNDS as usize,
+                    &stop,
+                    None,
+                    // 任务执行链路不挂单次覆盖，按 bot-config.json 全局默认（RE-1）
+                    None,
+                    None, // per-onion 温度覆盖：任务执行链路不挂
+                    Some(&failed_for_run),
+                ),
             )
             .await;
             // LoopTrace 统计进 trace 汇总槽（轮数/工具数/tokens → exec_traces 行）

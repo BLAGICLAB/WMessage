@@ -350,7 +350,22 @@ pub(crate) async fn finalize_selfcheck(
                     );
                 }
             }
-            Some(true) | None => {
+            Some(true) => {
+                if let Some(snapshot) = final_selfcheck_snapshot.take() {
+                    *final_text = snapshot;
+                }
+            }
+            // 宽松解析也认不出 Y/N（模型写了散文或别的）：快照照旧还原不改变
+            // 行为，但这段回复随流式抑制一起消失——留一条 Warn，不让内容无痕蒸发
+            None => {
+                audit(
+                    crate::audit::AuditLevel::Warn,
+                    "final_selfcheck.reply_unparsed",
+                    vec![(
+                        "detail",
+                        crate::bot::truncate_for_log(final_text.trim(), 200),
+                    )],
+                );
                 if let Some(snapshot) = final_selfcheck_snapshot.take() {
                     *final_text = snapshot;
                 }

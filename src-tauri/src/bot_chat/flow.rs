@@ -657,18 +657,25 @@ pub(super) async fn bot_chat_inner(
             crate::ask_engine::register_chat_ask_context(&app, sid);
         }
     }
-    let loop_result = crate::bot_model_loop::run_model_loop(
-        app,
-        msgs,
-        max_rounds,
-        &stop,
-        plan_state.as_mut(),
-        reasoning_effort,
-        // per-onion 温度覆盖：主聊天不挂（仅子 agent 用）
-        None,
-        // 失败轨迹也要落 trace：熔断/API 失败时把已跑出的轮数工具数交回，
-        // 否则 trace 记 turns=0（跑满 50 轮撞熔断那次实测就是 0）
-        Some(&failed_trace),
+    // panic 隔离用句柄提前克隆：app 随后按值消费进 run_model_loop
+    let app_for_panic = app.clone();
+    let loop_result = crate::bot_model_loop::catch_model_loop_panic(
+        &app_for_panic,
+        session_id.as_deref(),
+        "主聊天",
+        crate::bot_model_loop::run_model_loop(
+            app,
+            msgs,
+            max_rounds,
+            &stop,
+            plan_state.as_mut(),
+            reasoning_effort,
+            // per-onion 温度覆盖：主聊天不挂（仅子 agent 用）
+            None,
+            // 失败轨迹也要落 trace：熔断/API 失败时把已跑出的轮数工具数交回，
+            // 否则 trace 记 turns=0（跑满 50 轮撞熔断那次实测就是 0）
+            Some(&failed_trace),
+        ),
     )
     .await;
     // 提问上下文成对注销（工具调用全部结束于此；无论成败都要收口）
