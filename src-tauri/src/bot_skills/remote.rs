@@ -597,7 +597,7 @@ pub async fn tool_install_skill(
         return ToolResult::error(format!("install_skill：创建解包目录失败——{e}"), Vec::new());
     }
     let limits = crate::bot_archive::Limits::unpack();
-    let unpack = crate::bot_archive::unpack(&zip_path, &unpack_dir, &limits, None);
+    let unpack = crate::bot_archive::unpack(&zip_path, &unpack_dir, &limits, None, None);
     let outcome = match unpack {
         Ok(o) => o,
         Err(e) => {
@@ -1191,7 +1191,7 @@ mod tests {
             let out = tmp.path().join("unpacked");
             std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
             let limits = crate::bot_archive::Limits::unpack();
-            crate::bot_archive::unpack(&zip, &out, &limits, None)
+            crate::bot_archive::unpack(&zip, &out, &limits, None, None)
                 .map_err(|e| format!("解包失败：{e}"))?;
             let dir = locate_skill(&out, hint)?;
             let (files, _) = install_skill_dir(&dir, dest_root, "e2e-skill")?;

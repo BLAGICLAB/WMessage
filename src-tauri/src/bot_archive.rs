@@ -244,15 +244,16 @@ pub(crate) fn unpack(
     dest: &Path,
     limits: &Limits,
     format: Option<ArchiveFormat>,
+    progress: Option<&str>,
 ) -> std::io::Result<UnpackOutcome> {
     let fmt = match format {
         Some(f) => f,
         None => detect_format(src)?,
     };
     let mut outcome = match fmt {
-        ArchiveFormat::Zip => unpack_zip(src, dest, limits)?,
-        ArchiveFormat::Tar => unpack_tar(File::open(src)?, dest, limits, file_size(src))?,
-        ArchiveFormat::TarGz => unpack_tar_gz(src, dest, limits)?,
+        ArchiveFormat::Zip => unpack_zip(src, dest, limits, progress)?,
+        ArchiveFormat::Tar => unpack_tar(File::open(src)?, dest, limits, file_size(src), progress)?,
+        ArchiveFormat::TarGz => unpack_tar_gz(src, dest, limits, progress)?,
     };
     outcome.format = Some(fmt);
     Ok(outcome)
@@ -263,17 +264,27 @@ fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-fn unpack_tar_gz(src: &Path, dest: &Path, limits: &Limits) -> std::io::Result<UnpackOutcome> {
+fn unpack_tar_gz(
+    src: &Path,
+    dest: &Path,
+    limits: &Limits,
+    progress: Option<&str>,
+) -> std::io::Result<UnpackOutcome> {
     use flate2::read::GzDecoder;
     let f = File::open(src)?;
     // gzip 头里的原始大小不可信，放大比按「压缩包文件大小」算：够用且不会误判
     // （一个 2MB 的 tar.gz 解出 100MB，比值 50:1，正常）。
     let compressed = f.metadata().map(|m| m.len()).unwrap_or(0);
     let dec = GzDecoder::new(f);
-    unpack_tar(dec, dest, limits, compressed)
+    unpack_tar(dec, dest, limits, compressed, progress)
 }
 
-fn unpack_zip(src: &Path, dest: &Path, limits: &Limits) -> std::io::Result<UnpackOutcome> {
+fn unpack_zip(
+    src: &Path,
+    dest: &Path,
+    limits: &Limits,
+    progress: Option<&str>,
+) -> std::io::Result<UnpackOutcome> {
     let file = File::open(src)?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| {
         std::io::Error::new(
@@ -284,6 +295,7 @@ fn unpack_zip(src: &Path, dest: &Path, limits: &Limits) -> std::io::Result<Unpac
     let mut out = UnpackOutcome::default();
     let mut compressed_total: u64 = 0;
     for i in 0..archive.len() {
+        crate::tool_guard::touch_subagent_progress(progress);
         if out.written.len() + out.skipped.len() >= limits.max_entries {
             out.skipped.push((
                 "…".into(),
@@ -387,6 +399,7 @@ fn unpack_tar<R: Read>(
     dest: &Path,
     limits: &Limits,
     compressed_total: u64,
+    progress: Option<&str>,
 ) -> std::io::Result<UnpackOutcome> {
     let mut archive = tar::Archive::new(reader);
     let entries = archive.entries().map_err(|e| {
@@ -397,6 +410,7 @@ fn unpack_tar<R: Read>(
     })?;
     let mut out = UnpackOutcome::default();
     for entry in entries {
+        crate::tool_guard::touch_subagent_progress(progress);
         if out.written.len() + out.skipped.len() >= limits.max_entries {
             out.skipped.push((
                 "…".into(),
@@ -554,6 +568,7 @@ fn pack(
     out: &Path,
     format: ArchiveFormat,
     limits: &Limits,
+    progress: Option<&str>,
 ) -> std::io::Result<PackOutcome> {
     // 输出不能落在源目录内部：否则会把自己打进自己，越打越大
     if src.is_dir() && out.starts_with(src) {
@@ -563,8 +578,8 @@ fn pack(
         ));
     }
     match format {
-        ArchiveFormat::Zip => pack_zip(src, out, limits),
-        ArchiveFormat::Tar | ArchiveFormat::TarGz => pack_tar(src, out, format, limits),
+        ArchiveFormat::Zip => pack_zip(src, out, limits, progress),
+        ArchiveFormat::Tar | ArchiveFormat::TarGz => pack_tar(src, out, format, limits, progress),
     }
 }
 
@@ -574,6 +589,7 @@ fn pack(
 fn collect_files(
     root: &Path,
     limits: &Limits,
+    progress: Option<&str>,
 ) -> std::io::Result<(Vec<(PathBuf, PathBuf)>, Vec<(String, String)>)> {
     let mut files = Vec::new();
     let mut skipped = Vec::new();
@@ -587,6 +603,7 @@ fn collect_files(
     }
     let mut stack = vec![(root.to_path_buf(), PathBuf::from(&root_name))];
     while let Some((dir, rel_dir)) = stack.pop() {
+        crate::tool_guard::touch_subagent_progress(progress);
         let rd = match std::fs::read_dir(&dir) {
             Ok(rd) => rd,
             Err(e) => {
@@ -648,8 +665,13 @@ fn collect_files(
     Ok((files, skipped))
 }
 
-fn pack_zip(src: &Path, out: &Path, limits: &Limits) -> std::io::Result<PackOutcome> {
-    let (files, skipped) = collect_files(src, limits)?;
+fn pack_zip(
+    src: &Path,
+    out: &Path,
+    limits: &Limits,
+    progress: Option<&str>,
+) -> std::io::Result<PackOutcome> {
+    let (files, skipped) = collect_files(src, limits, progress)?;
     let file = File::create(out)?;
     let mut zw = zip::ZipWriter::new(file);
     let opts = zip::write::SimpleFileOptions::default()
@@ -658,6 +680,7 @@ fn pack_zip(src: &Path, out: &Path, limits: &Limits) -> std::io::Result<PackOutc
     let mut total = 0u64;
     let mut count = 0usize;
     for (path, rel) in &files {
+        crate::tool_guard::touch_subagent_progress(progress);
         let mut f = File::open(path)?;
         zw.start_file(entry_name_of(rel), opts)
             .map_err(|e| std::io::Error::other(format!("zip 写入失败：{e}")))?;
@@ -690,10 +713,11 @@ fn pack_tar(
     out: &Path,
     format: ArchiveFormat,
     limits: &Limits,
+    progress: Option<&str>,
 ) -> std::io::Result<PackOutcome> {
     use flate2::write::GzEncoder;
     use flate2::Compression;
-    let (files, skipped) = collect_files(src, limits)?;
+    let (files, skipped) = collect_files(src, limits, progress)?;
     let file = File::create(out)?;
     let mut total = 0u64;
     let mut count = 0usize;
@@ -702,6 +726,7 @@ fn pack_tar(
             let enc = GzEncoder::new(file, Compression::default());
             let mut builder = tar::Builder::new(enc);
             for (path, rel) in &files {
+                crate::tool_guard::touch_subagent_progress(progress);
                 let n = file_size(path);
                 builder
                     .append_path_with_name(path, entry_name_of(rel))
@@ -718,6 +743,7 @@ fn pack_tar(
         _ => {
             let mut builder = tar::Builder::new(file);
             for (path, rel) in &files {
+                crate::tool_guard::touch_subagent_progress(progress);
                 let n = file_size(path);
                 builder
                     .append_path_with_name(path, entry_name_of(rel))
@@ -798,12 +824,20 @@ pub(crate) async fn tool_unpack_archive(
     };
     let dest_for_task = dest.clone();
     let archive = canonical.clone();
+    let progress = session_id.map(|s| s.to_string());
     let res = crate::py::document::spawn_blocking_map(move || -> Result<UnpackOutcome, String> {
         std::fs::create_dir_all(&dest_for_task).map_err(|e| format!("创建目标目录失败：{e}"))?;
         let dest_canon =
             std::fs::canonicalize(&dest_for_task).map_err(|e| format!("解析目标目录失败：{e}"))?;
         let limits = Limits::unpack();
-        unpack(&archive, &dest_canon, &limits, explicit).map_err(|e| format!("解压失败：{e}"))
+        unpack(
+            &archive,
+            &dest_canon,
+            &limits,
+            explicit,
+            progress.as_deref(),
+        )
+        .map_err(|e| format!("解压失败：{e}"))
     })
     .await;
     let outcome = match res {
@@ -856,6 +890,7 @@ pub(crate) async fn tool_pack_archive(
     interactive: bool,
     session_id: Option<&str>,
 ) -> ToolResult {
+    let progress = session_id.map(|s| s.to_string());
     let v = crate::bot::parse_args(args);
     let Some(src) = v["sourcePath"]
         .as_str()
@@ -900,7 +935,14 @@ pub(crate) async fn tool_pack_archive(
     let out_for_task = out.clone();
     let res = crate::py::document::spawn_blocking_map(move || -> Result<PackOutcome, String> {
         let limits = Limits::pack();
-        pack(&src_for_task, &out_for_task, format, &limits).map_err(|e| format!("打包失败：{e}"))
+        pack(
+            &src_for_task,
+            &out_for_task,
+            format,
+            &limits,
+            progress.as_deref(),
+        )
+        .map_err(|e| format!("打包失败：{e}"))
     })
     .await;
     let outcome = match res {

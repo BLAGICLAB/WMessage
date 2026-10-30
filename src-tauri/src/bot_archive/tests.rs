@@ -130,7 +130,7 @@ fn unpack_writes_files_and_dirs() {
     );
     let dest = d.path().join("out");
     std::fs::create_dir_all(&dest).unwrap();
-    let outcome = unpack(&zip, &dest, &Limits::unpack(), None).unwrap();
+    let outcome = unpack(&zip, &dest, &Limits::unpack(), None, None).unwrap();
     assert_eq!(outcome.written.len(), 2);
     assert!(outcome.skipped.is_empty(), "{:?}", outcome.skipped);
     assert_eq!(
@@ -156,7 +156,7 @@ fn unpack_zip_slip_never_writes_outside_dest() {
     );
     let dest = d.path().join("out");
     std::fs::create_dir_all(&dest).unwrap();
-    let outcome = unpack(&zip, &dest, &Limits::unpack(), None).unwrap();
+    let outcome = unpack(&zip, &dest, &Limits::unpack(), None, None).unwrap();
     assert_eq!(outcome.written.len(), 1, "只应写出 ok.txt");
     assert!(!d.path().join("escaped.txt").exists(), "逃逸文件必须不存在");
     assert_eq!(outcome.skipped.len(), 1);
@@ -174,7 +174,7 @@ fn unpack_skips_symlink_entries() {
     make_zip_with_symlink(&zip, "link", "/etc/passwd");
     let dest = d.path().join("out");
     std::fs::create_dir_all(&dest).unwrap();
-    let outcome = unpack(&zip, &dest, &Limits::unpack(), None).unwrap();
+    let outcome = unpack(&zip, &dest, &Limits::unpack(), None, None).unwrap();
     assert!(outcome.written.is_empty(), "软链不得落盘");
     assert_eq!(outcome.skipped.len(), 1);
     assert!(
@@ -192,7 +192,7 @@ fn unpack_skips_existing_targets_without_overwriting() {
     let dest = d.path().join("out");
     std::fs::create_dir_all(&dest).unwrap();
     std::fs::write(dest.join("keep.txt"), b"original").unwrap();
-    let outcome = unpack(&zip, &dest, &Limits::unpack(), None).unwrap();
+    let outcome = unpack(&zip, &dest, &Limits::unpack(), None, None).unwrap();
     assert!(outcome.written.is_empty());
     assert_eq!(outcome.skipped.len(), 1);
     assert_eq!(
@@ -212,7 +212,7 @@ fn unpack_enforces_total_size_cap() {
     std::fs::create_dir_all(&dest).unwrap();
     let mut limits = Limits::unpack();
     limits.max_total_bytes = 1024; // 1KB 顶
-    let err = unpack(&zip, &dest, &limits, None).unwrap_err();
+    let err = unpack(&zip, &dest, &limits, None, None).unwrap_err();
     assert!(err.to_string().contains("上限"), "超总量必须报错：{err}");
 }
 
@@ -232,7 +232,7 @@ fn unpack_enforces_entry_count_cap() {
     std::fs::create_dir_all(&dest).unwrap();
     let mut limits = Limits::unpack();
     limits.max_entries = 3;
-    let outcome = unpack(&zip, &dest, &limits, None).unwrap();
+    let outcome = unpack(&zip, &dest, &limits, None, None).unwrap();
     assert_eq!(outcome.written.len(), 3, "条目数必须被卡住");
     assert!(outcome.skipped.iter().any(|(n, _)| n == "…"));
 }
@@ -244,7 +244,7 @@ fn unpack_targz_reads_entries() {
     make_targz(&tgz, &[("x.txt", b"content"), ("y/z.txt", b"deep")]);
     let dest = d.path().join("out");
     std::fs::create_dir_all(&dest).unwrap();
-    let outcome = unpack(&tgz, &dest, &Limits::unpack(), None).unwrap();
+    let outcome = unpack(&tgz, &dest, &Limits::unpack(), None, None).unwrap();
     assert_eq!(outcome.written.len(), 2, "{:?}", outcome.skipped);
     assert_eq!(
         std::fs::read(dest.join("y/z.txt")).unwrap(),
@@ -277,11 +277,11 @@ fn pack_zip_then_unpack_roundtrip() {
     std::fs::write(src.join("a.txt"), b"alpha").unwrap();
     std::fs::write(src.join("sub/b.txt"), b"beta").unwrap();
     let out = d.path().join("out.zip");
-    let outcome = pack(&src, &out, ArchiveFormat::Zip, &Limits::pack()).unwrap();
+    let outcome = pack(&src, &out, ArchiveFormat::Zip, &Limits::pack(), None).unwrap();
     assert_eq!(outcome.entries, 2);
     let dest = d.path().join("unpacked");
     std::fs::create_dir_all(&dest).unwrap();
-    let back = unpack(&out, &dest, &Limits::unpack(), None).unwrap();
+    let back = unpack(&out, &dest, &Limits::unpack(), None, None).unwrap();
     assert_eq!(back.written.len(), 2, "{:?}", back.skipped);
     // 目录名随包带出（zip -r 口径）：解出来是 proj/
     assert_eq!(
@@ -301,11 +301,11 @@ fn pack_targz_then_unpack_roundtrip() {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("x.txt"), b"payload").unwrap();
     let out = d.path().join("out.tar.gz");
-    let outcome = pack(&src, &out, ArchiveFormat::TarGz, &Limits::pack()).unwrap();
+    let outcome = pack(&src, &out, ArchiveFormat::TarGz, &Limits::pack(), None).unwrap();
     assert_eq!(outcome.entries, 1);
     let dest = d.path().join("unpacked");
     std::fs::create_dir_all(&dest).unwrap();
-    let back = unpack(&out, &dest, &Limits::unpack(), None).unwrap();
+    let back = unpack(&out, &dest, &Limits::unpack(), None, None).unwrap();
     assert_eq!(back.written.len(), 1, "{:?}", back.skipped);
     assert_eq!(
         std::fs::read(dest.join("data/x.txt")).unwrap(),
@@ -320,7 +320,7 @@ fn pack_refuses_output_inside_source() {
     std::fs::create_dir_all(&src).unwrap();
     std::fs::write(src.join("a.txt"), b"a").unwrap();
     let out = src.join("self.zip");
-    let err = pack(&src, &out, ArchiveFormat::Zip, &Limits::pack()).unwrap_err();
+    let err = pack(&src, &out, ArchiveFormat::Zip, &Limits::pack(), None).unwrap_err();
     assert!(err.to_string().contains("内部"), "{err}");
 }
 
@@ -333,7 +333,7 @@ fn pack_skips_symlinks_in_source() {
     #[cfg(unix)]
     std::os::unix::fs::symlink("/etc/passwd", src.join("link.txt")).unwrap();
     let out = d.path().join("out.zip");
-    let outcome = pack(&src, &out, ArchiveFormat::Zip, &Limits::pack()).unwrap();
+    let outcome = pack(&src, &out, ArchiveFormat::Zip, &Limits::pack(), None).unwrap();
     assert_eq!(outcome.entries, 1, "软链不得进包");
     assert!(
         outcome.skipped.iter().any(|(_, why)| why.contains("软链")),
@@ -348,10 +348,10 @@ fn pack_single_file_keeps_file_name() {
     let file = d.path().join("note.txt");
     std::fs::write(&file, b"note").unwrap();
     let out = d.path().join("out.zip");
-    pack(&file, &out, ArchiveFormat::Zip, &Limits::pack()).unwrap();
+    pack(&file, &out, ArchiveFormat::Zip, &Limits::pack(), None).unwrap();
     let dest = d.path().join("unpacked");
     std::fs::create_dir_all(&dest).unwrap();
-    let back = unpack(&out, &dest, &Limits::unpack(), None).unwrap();
+    let back = unpack(&out, &dest, &Limits::unpack(), None, None).unwrap();
     assert_eq!(back.written.len(), 1);
     assert_eq!(
         std::fs::read(dest.join("note.txt")).unwrap(),
