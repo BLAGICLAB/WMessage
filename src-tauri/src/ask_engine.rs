@@ -345,6 +345,43 @@ fn restore_ask_budget<R: tauri::Runtime>(app: &tauri::AppHandle<R>, sid: &str, p
     }
 }
 
+/// 一次提问等待的结果。
+enum WaitOutcome {
+    Answered(AskReply),
+    /// 超时 / 用户停止 / 应答通道消失（同口径：回落假设）
+    Expired,
+}
+
+/// 等一次提问应答：先收应答、后判停止/超时的轮询环，不用 select——
+/// 超时与应答同时就绪时 select 随机裁决，可能把用户已写进通知表的回答
+/// 扔掉、模型按假设继续（通知显示「已回答」而模型没收到，两层各说各话）。
+/// /stop 同环轮询（StopGuard 无 watch 通道；提问以小时计，500ms 无感）。
+/// 超时口径按片判定：deadline 后已开片内到达的应答仍被采纳——超时窗口
+/// 实际为 deadline + 至多一个片长，方向偏用户（超时边缘的回答不该扔）。
+async fn wait_ask_reply(
+    mut rx: tokio::sync::oneshot::Receiver<AskReply>,
+    is_stopped: impl Fn() -> bool,
+    timeout: std::time::Duration,
+) -> WaitOutcome {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), &mut rx).await {
+            Ok(Ok(reply)) => return WaitOutcome::Answered(reply),
+            // oneshot 关闭（应答端在摘除与发送之间消失）必须立即退出：
+            // 关闭的通道每次 poll 立即就绪，继续循环就退化成无让出的忙等，
+            // 白烧一个 worker 到 deadline（提问窗以小时计）
+            Ok(Err(_)) => return WaitOutcome::Expired,
+            Err(_) => {}
+        }
+        if is_stopped() {
+            return WaitOutcome::Expired;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return WaitOutcome::Expired;
+        }
+    }
+}
+
 /// ask_user 工具入口（registry TOOLS_TABLE 挂载；timeout 参数化供测试用短值）：
 /// 未注册上下文（聊天等非执行链路）→ warn 引导自行继续；模式关闭/超预算 → 不落队列直接回落假设；
 /// 正常路径：落通知队列（wfq:{qid}）+ 系统通知门铃 → oneshot 等待 → 回答/假设作为工具结果。
@@ -491,34 +528,7 @@ pub(crate) async fn engine_ask_user(
         "bot-ask",
         ask_event_payload(&qid, &parsed),
     );
-    enum WaitOutcome {
-        Answered(AskReply),
-        /// 超时或用户停止（同口径：回落假设）
-        Expired,
-    }
-    let waited = {
-        // 先收应答、后判超时的轮询环，不用 select：超时与应答同时就绪时
-        // select 随机裁决，可能把用户已写进通知表的回答扔掉、模型按假设
-        // 继续——通知显示「已回答」而模型没收到，两层各说各话。
-        // /stop 同环轮询（StopGuard 无 watch 通道；提问以小时计，500ms 无感），
-        // 命中 = 用户主动放弃本轮执行，同超时口径回落假设。
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut rx = rx;
-        loop {
-            // oneshot 关闭（应答端被异常摘除）与超时同口径
-            if let Ok(Ok(reply)) =
-                tokio::time::timeout(std::time::Duration::from_millis(500), &mut rx).await
-            {
-                break WaitOutcome::Answered(reply);
-            }
-            if stop.is_some_and(|s| s.stopped()) {
-                break WaitOutcome::Expired;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                break WaitOutcome::Expired;
-            }
-        }
-    };
+    let waited = wait_ask_reply(rx, || stop.is_some_and(|s| s.stopped()), timeout).await;
     // 无论结果都摘除 waiter（应答端 remove 幂等；超时/停止路径靠这里防泄漏）
     remove_question_waiter(app, &qid);
     match waited {
@@ -846,6 +856,47 @@ mod tests {
             asks_left,
             crate::bot::constants::ASK_BUDGET_DEFAULT,
             "聊天提问预算与任务卡同源"
+        );
+    }
+
+    /// 等待环对「通道关闭」必须立即退出：关闭的 oneshot 每次 poll 立即就绪，
+    /// 不退出就退化成无让出的忙等——烧一个 worker 到 deadline（提问窗以小时计）。
+    /// 关闭 = sender 被 drop（应答端在摘除与发送之间消失），不是「已建未答」。
+    #[tokio::test]
+    async fn wait_ask_reply_exits_promptly_on_closed_channel() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<AskReply>();
+        drop(tx);
+        let started = std::time::Instant::now();
+        let out = wait_ask_reply(rx, || false, std::time::Duration::from_secs(600)).await;
+        assert!(matches!(out, WaitOutcome::Expired));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "通道关闭应立即退出，实际等了 {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_ask_reply_returns_answer_and_honors_stop() {
+        // 已就绪的应答立即返回
+        let (tx, rx) = tokio::sync::oneshot::channel::<AskReply>();
+        tx.send(AskReply {
+            action: ACTION_ANSWER.to_string(),
+            text: "答了".into(),
+        })
+        .unwrap();
+        let out = wait_ask_reply(rx, || false, std::time::Duration::from_secs(60)).await;
+        assert!(matches!(out, WaitOutcome::Answered(_)));
+
+        // /stop 命中即退出（不等满窗口）
+        let (_tx2, rx2) = tokio::sync::oneshot::channel::<AskReply>();
+        let started = std::time::Instant::now();
+        let out2 = wait_ask_reply(rx2, || true, std::time::Duration::from_secs(600)).await;
+        assert!(matches!(out2, WaitOutcome::Expired));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "停止应立即生效，实际等了 {:?}",
+            started.elapsed()
         );
     }
 }

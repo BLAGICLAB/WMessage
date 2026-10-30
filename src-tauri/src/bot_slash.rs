@@ -304,7 +304,7 @@ async fn ask_confirm_inner<R: tauri::Runtime>(
         crate::bot_skills::skill_confirm_result(app, false, session_id, &id);
         return deny;
     }
-    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    let (tx, rx) = tokio::sync::oneshot::channel();
     crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms").insert(
         id.clone(),
         crate::app_state::PendingConfirmRequest {
@@ -338,26 +338,12 @@ async fn ask_confirm_inner<R: tauri::Runtime>(
     );
     // 500ms 粒度同时盯应答与 /stop：用户按停止后这一步不该再挂满 60s
     //（engine_ask_user 同口径）。先收应答后判停止/超时，同时就绪时答案优先。
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-    let mut stopped = false;
-    let reply = loop {
-        // oneshot 关闭（/stop 已把条目摘走）与超时同走拒绝分支
-        if let Ok(Ok(reply)) =
-            tokio::time::timeout(std::time::Duration::from_millis(500), &mut rx).await
-        {
-            break Some(reply);
-        }
-        let hit_stop = session_id
+    let (reply, stopped) = wait_confirm_reply(rx, || {
+        session_id
             .map(|sid| is_session_stopped(app, sid))
-            .unwrap_or(false);
-        if hit_stop {
-            stopped = true;
-            break None;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            break None;
-        }
-    };
+            .unwrap_or(false)
+    })
+    .await;
     match reply {
         Some(reply) => reply,
         None => {
@@ -373,6 +359,31 @@ async fn ask_confirm_inner<R: tauri::Runtime>(
             );
             crate::bot_skills::skill_confirm_result(app, false, session_id, &id); // 超时默认拒绝
             deny
+        }
+    }
+}
+
+/// 等一次确认应答：500ms 片轮询，先收应答后判停止/超时（答案优先）。
+/// oneshot 关闭（/stop 摘走条目等路径）必须立即退出——关闭的通道每次
+/// poll 立即就绪，继续循环就退化成无让出的忙等烧到 60s deadline。
+/// 返回 (应答, 是否因 /stop 退出)。
+async fn wait_confirm_reply(
+    mut rx: tokio::sync::oneshot::Receiver<ConfirmReply>,
+    is_stopped: impl Fn() -> bool,
+) -> (Option<ConfirmReply>, bool) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), &mut rx).await {
+            Ok(Ok(reply)) => return (Some(reply), false),
+            // 通道关闭多半是 /stop 摘走了条目——回查一次以保住审计里的拒绝原因
+            Ok(Err(_)) => return (None, is_stopped()),
+            Err(_) => {}
+        }
+        if is_stopped() {
+            return (None, true);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return (None, false);
         }
     }
 }
@@ -703,6 +714,7 @@ mod command_result_tests {
 #[cfg(test)]
 mod confirm_skill_pause_tests {
     use super::test_handle as mock_handle;
+    use super::{wait_confirm_reply, ConfirmReply};
 
     /// 文件访问授权（白名单外路径的例行权限询问）不得把活动技能转入暂停。
     ///
@@ -782,6 +794,46 @@ mod confirm_skill_pause_tests {
             state,
             Some(crate::bot_skills::SkillState::Terminated),
             "危险动作确认被拒 → 技能终止（回滚语义）"
+        );
+    }
+
+    /// 等待环对「通道关闭」必须立即退出：关闭的 oneshot 每次 poll 立即就绪，
+    /// 不退出就退化成无让出的忙等烧到 60s deadline。关闭 = sender 被 drop。
+    #[tokio::test]
+    async fn wait_confirm_reply_exits_promptly_on_closed_channel() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<ConfirmReply>();
+        drop(tx);
+        let started = std::time::Instant::now();
+        let (reply, stopped) = wait_confirm_reply(rx, || false).await;
+        assert!(reply.is_none() && !stopped);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "通道关闭应立即退出，实际等了 {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_confirm_reply_answer_wins_and_stop_classified() {
+        // 已就绪的应答立即返回
+        let (tx, rx) = tokio::sync::oneshot::channel::<ConfirmReply>();
+        tx.send(ConfirmReply {
+            approved: true,
+            always: false,
+        })
+        .unwrap();
+        let (reply, stopped) = wait_confirm_reply(rx, || true).await;
+        assert!(reply.expect("应答优先").approved && !stopped);
+
+        // /stop 命中即退出，且 stopped 标记要能区分拒绝原因
+        let (_tx2, rx2) = tokio::sync::oneshot::channel::<ConfirmReply>();
+        let started = std::time::Instant::now();
+        let (reply2, stopped2) = wait_confirm_reply(rx2, || true).await;
+        assert!(reply2.is_none() && stopped2);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "停止应立即生效，实际等了 {:?}",
+            started.elapsed()
         );
     }
 }
