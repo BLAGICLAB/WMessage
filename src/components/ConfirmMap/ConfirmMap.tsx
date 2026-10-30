@@ -60,6 +60,35 @@ export default function ConfirmMap() {
     setRemaining(TIMEOUT_SECS);
   });
 
+  // 挂载还原：webview 重载会丢掉挂在事件上的弹窗——后端确认表里还在等的
+  // 请求按原样还原（60s 兜底与倒计时照常）。多请求并发时呈现 UI 只有一格，
+  // 还原第一条、其余按 stale 口径立即拒收（60s 兜底仍在，拒错不放大）
+  useEffect(() => {
+    let cancelled = false;
+    invoke<BotConfirmPayload[]>("bot_pending_confirms")
+      .then((rows) => {
+        if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
+        const [first, ...rest] = rows;
+        for (const stale of rest) {
+          invoke("bot_confirm_response", {
+            requestId: stale.id,
+            approved: false,
+            always: null,
+          }).catch((e) =>
+            console.error("auto-reject stale confirm failed:", e),
+          );
+        }
+        if (!first?.id) return;
+        pendingRef.current = first;
+        setPending(first);
+        setRemaining(TIMEOUT_SECS);
+      })
+      .catch((e) => console.error("restore pending confirms failed:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 60s 倒计时：到 0 自动拒绝（前端防御，后端会兜底）
   useEffect(() => {
     if (!pending) return;

@@ -35,16 +35,21 @@ pub(crate) static NEXT_STOP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic
 
 // 执行期 · 危险操作确认
 
-/// 待确认请求：id → (oneshot 通道, 归属会话 id)
-type ConfirmMap = Mutex<
-    HashMap<
-        String,
-        (
-            tokio::sync::oneshot::Sender<crate::bot::ConfirmReply>,
-            Option<String>,
-        ),
-    >,
->;
+/// 待确认请求：id → 条目（通道 + 归属会话 + 重查还原用的展示字段）
+///
+/// 展示字段（tool/detail/kind）给 `bot_pending_confirms` 用：webview 重载
+/// 会丢掉挂在事件上的弹窗，ConfirmMap 挂载时按这张表还原在途确认。
+type ConfirmMap = Mutex<HashMap<String, PendingConfirmRequest>>;
+
+/// 一条待确认请求（表值）。
+#[derive(Debug)]
+pub(crate) struct PendingConfirmRequest {
+    pub(crate) tx: tokio::sync::oneshot::Sender<crate::bot::ConfirmReply>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) tool: String,
+    pub(crate) detail: String,
+    pub(crate) kind: String,
+}
 
 // CONFIRMS 已迁入 `AppState.confirm_requests`（访问器 `confirms(app)` 见文件尾）。
 

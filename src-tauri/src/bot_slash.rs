@@ -11,7 +11,7 @@
 //! 切到这里后 bot_model_loop.rs 只 import StopGuard，不再持有底层注册表。
 
 use crate::error::CommandResult;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 // /stop 停止标志（按执行实例隔离）
 
@@ -176,7 +176,7 @@ pub fn bot_stop(app: AppHandle, session_id: Option<String>) -> Result<usize, Str
         let mut map = crate::db::lock::lock_or_recover(confirms(&app), "app_state::confirms");
         let keys: Vec<String> = map
             .iter()
-            .filter(|(_, (_, sid))| sid.as_deref() == session_id.as_deref())
+            .filter(|(_, r)| r.session_id.as_deref() == session_id.as_deref())
             .map(|(k, _)| k.clone())
             .collect();
         for k in keys {
@@ -304,17 +304,28 @@ async fn ask_confirm_inner<R: tauri::Runtime>(
         crate::bot_skills::skill_confirm_result(app, false, session_id, &id);
         return deny;
     }
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms")
-        .insert(id.clone(), (tx, session_id.map(|s| s.to_string())));
-    let _ = app.emit(
+    let (tx, mut rx) = tokio::sync::oneshot::channel();
+    crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms").insert(
+        id.clone(),
+        crate::app_state::PendingConfirmRequest {
+            tx,
+            session_id: session_id.map(|s| s.to_string()),
+            tool: tool.to_string(),
+            detail: detail.to_string(),
+            kind: kind.to_string(),
+        },
+    );
+    // 走统一出口盖章 + 进回放缓冲：webview 重载后挂载的 ConfirmMap 按
+    // bot_pending_confirms 重查这张表还原弹窗，事件丢了也恢复得回来
+    crate::bot::stream_log::emit_recorded(
+        app,
+        session_id,
         "bot-confirm",
         serde_json::json!({
             "id": id,
             "tool": tool,
             "detail": detail,
             "kind": kind,
-            "sessionId": session_id,
         }),
     );
     crate::bot::audit_log(
@@ -325,15 +336,38 @@ async fn ask_confirm_inner<R: tauri::Runtime>(
             crate::bot::truncate_for_log(detail, 120)
         ),
     );
-    match tokio::time::timeout(std::time::Duration::from_secs(60), rx).await {
-        Ok(Ok(reply)) => reply,
-        _ => {
+    // 500ms 粒度同时盯应答与 /stop：用户按停止后这一步不该再挂满 60s
+    //（engine_ask_user 同口径）。先收应答后判停止/超时，同时就绪时答案优先。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut stopped = false;
+    let reply = loop {
+        // oneshot 关闭（/stop 已把条目摘走）与超时同走拒绝分支
+        if let Ok(Ok(reply)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut rx).await
+        {
+            break Some(reply);
+        }
+        let hit_stop = session_id
+            .map(|sid| is_session_stopped(app, sid))
+            .unwrap_or(false);
+        if hit_stop {
+            stopped = true;
+            break None;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break None;
+        }
+    };
+    match reply {
+        Some(reply) => reply,
+        None => {
             crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms").remove(&id);
-            // 确认超时默认拒绝留痕
+            let reason = if stopped { "/stop" } else { "60s 无响应" };
+            // 确认超时/停止默认拒绝留痕
             crate::bot::audit_log(
                 app,
                 &format!(
-                    "confirm_timeout | {tool} | {} | 60s 无响应，默认拒绝",
+                    "confirm_timeout | {tool} | {} | {reason}，默认拒绝",
                     crate::bot::truncate_for_log(detail, 120)
                 ),
             );
@@ -341,6 +375,45 @@ async fn ask_confirm_inner<R: tauri::Runtime>(
             deny
         }
     }
+}
+
+/// 在途确认列表（前端 ConfirmMap 挂载时重查还原弹窗用）。
+#[tauri::command]
+pub fn bot_pending_confirms<R: tauri::Runtime>(app: AppHandle<R>) -> Vec<PendingConfirmView> {
+    let map = crate::db::lock::lock_or_recover(confirms(&app), "bot_slash confirms");
+    map.iter()
+        .map(|(id, r)| PendingConfirmView {
+            id: id.clone(),
+            tool: r.tool.clone(),
+            detail: r.detail.clone(),
+            kind: r.kind.clone(),
+            session_id: r.session_id.clone(),
+        })
+        .collect()
+}
+
+/// `bot_pending_confirms` 的行载荷（serde camelCase 与前端对齐）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingConfirmView {
+    pub id: String,
+    pub tool: String,
+    pub detail: String,
+    pub kind: String,
+    pub session_id: Option<String>,
+}
+
+/// 某会话是否有执行实例已被置位停止：/stop 后的等待类操作（确认弹窗等）
+/// 不持有 StopGuard，只能按会话号反查注册表。
+fn is_session_stopped<R: tauri::Runtime>(app: &tauri::AppHandle<R>, session_id: &str) -> bool {
+    stop_registry(app)
+        .lock()
+        .map(|m| {
+            m.values().any(|(flag, _, sid)| {
+                flag.load(std::sync::atomic::Ordering::SeqCst) && sid.as_deref() == Some(session_id)
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// 请求用户确认危险操作（如删除任务）；60s 超时默认拒绝（安全兜底）
@@ -404,7 +477,8 @@ pub fn bot_confirm_response(
     approved: bool,
     always: Option<bool>,
 ) -> Result<(), String> {
-    let (tx, session_id) = take_confirm(&app, &request_id)?;
+    let entry = take_confirm(&app, &request_id)?;
+    let (tx, session_id) = (entry.tx, entry.session_id);
     // Skill 调度器联动：确认结果 → 本会话技能恢复 Running / 拒绝终止 / 暂停即终止
     // 确认窗绑定：request_id 就是产生这次暂停的确认窗 id——别的确认窗的答案
     // 碰巧落到这里时不会误伤这条暂停。
@@ -432,7 +506,7 @@ pub fn bot_confirm_response(
 fn take_confirm<R: tauri::Runtime>(
     app: &AppHandle<R>,
     request_id: &str,
-) -> Result<(tokio::sync::oneshot::Sender<ConfirmReply>, Option<String>), String> {
+) -> Result<crate::app_state::PendingConfirmRequest, String> {
     crate::db::lock::lock_or_recover(confirms(app), "bot_slash confirms")
         .remove(request_id)
         .ok_or_else(|| {
@@ -570,8 +644,16 @@ mod command_result_tests {
         let a = mock_handle();
         let b = mock_handle();
         let (tx, _rx) = tokio::sync::oneshot::channel();
-        crate::db::lock::lock_or_recover(super::confirms(&a), "bot_slash confirms")
-            .insert("req-iso".into(), (tx, Some("sess-1".into())));
+        crate::db::lock::lock_or_recover(super::confirms(&a), "bot_slash confirms").insert(
+            "req-iso".into(),
+            crate::app_state::PendingConfirmRequest {
+                tx,
+                session_id: Some("sess-1".into()),
+                tool: "test_tool".into(),
+                detail: "d".into(),
+                kind: super::CONFIRM_KIND_DANGER.into(),
+            },
+        );
         assert_eq!(
             crate::db::lock::lock_or_recover(super::confirms(&a), "bot_slash confirms").len(),
             1

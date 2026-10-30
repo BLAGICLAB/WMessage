@@ -808,6 +808,7 @@ pub fn run() {
             bot_slash::bot_stop,
             bot_chat::bot_compact,
             bot_slash::bot_confirm_response,
+            bot_slash::bot_pending_confirms,
             bot_artifacts::confirm_artifact_batch,
             bot::bot_log_read,
             bot::config::commands::bot_test_connection,
