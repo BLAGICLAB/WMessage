@@ -148,4 +148,60 @@ mod stop_emit_gate_tests {
             "正常回合必须照旧推流：{events:?}"
         );
     }
+
+    /// 一条事件拆多条 data: 行（SSE 规范：按 \n 拼接成一条载荷）。
+    /// 中间代理对超长行按 token 边界断开重发时会出现这种形状——
+    /// 逐行独立解析会把两半都当坏块跳过，正文就丢了。
+    #[tokio::test]
+    async fn split_data_lines_are_joined_into_one_event() {
+        let app = tauri::test::mock_app();
+        let stop = StopGuard::new(app.handle(), true, Some("s1".to_string()));
+        let body = reqwest::Body::wrap_stream(futures_util::stream::once(async {
+            Ok::<_, std::io::Error>(
+                "data: {\"choices\":[{\"delta\":{\ndata: \"content\":\"世界\"}}]}\n\n".to_string(),
+            )
+        }));
+        let resp = reqwest::Response::from(
+            http::Response::builder()
+                .status(200)
+                .body(body)
+                .expect("应能造出响应"),
+        );
+
+        let emitted: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = emitted.clone();
+        let emit = move |ev: &str, _payload: serde_json::Value| {
+            sink.lock().expect("锁不该中毒").push(ev.to_string());
+        };
+        let audit = |_: crate::audit::AuditLevel, _: &str, _: Vec<(&'static str, String)>| {};
+        let skill_finish = |_: bool, _: &str| String::new();
+        let no_skill_run = |_: Option<&str>| None;
+        let on_round = |_: usize| {};
+        let no_keywords: Vec<String> = Vec::new();
+        let deps = ModelLoopDeps {
+            fuse_cap_override: None,
+            emit: &emit,
+            audit: &audit,
+            skill_finish: &skill_finish,
+            active_skill_run: &no_skill_run,
+            conv_sidecar_dir: None,
+            final_selfcheck_round_gap: Some(0),
+            final_selfcheck_http: None,
+            on_round: &on_round,
+            turn_status: None,
+            session_tools: None,
+            guard_claim_keywords: &no_keywords,
+            file_receipts: None,
+        };
+
+        let sse = match read_sse_stream(&llm_http(), resp, &stop, &deps, false, false).await {
+            Ok(s) => s,
+            Err(f) => panic!("拆行事件不该被当坏块：{}", f.err),
+        };
+        assert!(
+            sse.final_text.contains("世界"),
+            "拆成两条 data: 行的一条事件要拼回完整载荷：{:?}",
+            sse.final_text
+        );
+    }
 }

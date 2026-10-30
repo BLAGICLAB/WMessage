@@ -440,6 +440,11 @@ pub(crate) async fn read_sse_stream(
     let mut stream_error: Option<StreamError> = None;
 
     let mut stopped = false;
+    // data 攒批：SSE 规范允许一条事件拆多条 `data:` 行（按 \n 拼接成一条
+    // 载荷），逐行独立解析会把它当坏块跳过、丢内容。攒到事件边界（非 data
+    // 行）或流尾再拼成一条交给解析。跨 chunk 保留——事件边界行可能与它的
+    // data 行落在不同 chunk。
+    let mut data_buf = String::new();
     {
         // 逐 chunk idle 超时——next() 单次等待超过 STREAM_CHUNK_IDLE_TIMEOUT
         // 即判定死连接（总时长不再设限，合法长生成不受 300s 总超时误杀）
@@ -490,7 +495,24 @@ pub(crate) async fn read_sse_stream(
             };
             byte_buf.extend_from_slice(&chunk);
             for line in drain_sse_lines(&mut byte_buf) {
-                if let Some(e) = state.handle_line(line.trim(), &emit, audit) {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("data:") {
+                    if !data_buf.is_empty() {
+                        data_buf.push('\n');
+                    }
+                    data_buf.push_str(rest.trim_start());
+                    continue;
+                }
+                // 非 data 行 = 事件边界：把攒到的 data 行拼成一条再解析
+                if !data_buf.is_empty() {
+                    let joined = format!("data:{data_buf}");
+                    data_buf.clear();
+                    if let Some(e) = state.handle_line(joined.trim(), &emit, audit) {
+                        stream_error = Some(e);
+                        break;
+                    }
+                }
+                if let Some(e) = state.handle_line(line, &emit, audit) {
                     stream_error = Some(e);
                     break;
                 }
@@ -518,10 +540,34 @@ pub(crate) async fn read_sse_stream(
         if !stopped && stream_error.is_none() && !byte_buf.is_empty() {
             byte_buf.push(b'\n');
             for line in drain_sse_lines(&mut byte_buf) {
-                if let Some(e) = state.handle_line(line.trim(), &emit, audit) {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("data:") {
+                    if !data_buf.is_empty() {
+                        data_buf.push('\n');
+                    }
+                    data_buf.push_str(rest.trim_start());
+                    continue;
+                }
+                if !data_buf.is_empty() {
+                    let joined = format!("data:{data_buf}");
+                    data_buf.clear();
+                    if let Some(e) = state.handle_line(joined.trim(), &emit, audit) {
+                        stream_error = Some(e);
+                        break;
+                    }
+                }
+                if let Some(e) = state.handle_line(line, &emit, audit) {
                     stream_error = Some(e);
                     break;
                 }
+            }
+        }
+        // 流尾 data 攒批的尾巴：最后一条事件可能没有空行收边
+        if !stopped && stream_error.is_none() && !data_buf.is_empty() {
+            let joined = format!("data:{data_buf}");
+            data_buf.clear();
+            if let Some(e) = state.handle_line(joined.trim(), &emit, audit) {
+                stream_error = Some(e);
             }
         }
     }
