@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { handleCommandError } from "../../lib/errorHandler";
 import type { Msg, Session, TaskRef, ToolCall } from "./types";
 import * as streamState from "./streamState";
+import * as askStore from "./askStore";
 import { parseTurnStatus } from "./parse";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 
@@ -115,8 +116,21 @@ export function useChatHistory(params: ChatHistoryParams) {
       // 同一会话的两次回灌不能并发（会灌两遍）：判定与置位连着做，中间不能有 await
       if (streamState.isResuming(sid)) return;
       streamState.markResuming(sid);
+      // 终态代际：fetch 往返期间若终态事件已处理（回合收尾），旧快照里
+      // 的 inflight:true 就是过期的——不得把死轮重新标成在途（会卡 busy
+      // 直到切回自愈或看门狗兜底）
+      const epoch0 = streamState.termEpochOf(sid);
       try {
         const r = await streamState.fetchReplay(sid, 0);
+        if (streamState.termEpochOf(sid) !== epoch0) {
+          // 快照过期：回合已在往返期间收尾，按「没在跑」分支同款收口
+          if (!streamState.isInvoked(sid)) {
+            streamState.dropSession(sid);
+            askStore.clearResolved(sid);
+            if (sessionIdRef.current === sid) void loadFinalText(sid);
+          }
+          return;
+        }
         if (!r.inflight) {
           // 后端没在跑 → 这一轮已经收尾，正文以库为准（历史已加载）。
           // 本地若还有上一轮的残迹（终态事件丢过才会走到这）一并清掉，
@@ -126,6 +140,7 @@ export function useChatHistory(params: ChatHistoryParams) {
             (streamState.seqOf(sid) > 0 || streamState.isInflight(sid))
           ) {
             streamState.dropSession(sid);
+            askStore.clearResolved(sid);
             if (sessionIdRef.current === sid) void loadFinalText(sid);
           }
           return;
@@ -195,7 +210,7 @@ export function useChatHistory(params: ChatHistoryParams) {
         streamState.clearResuming(sid);
       }
     },
-    [enabled, loadFinalText, sessionIdRef, setMessages],
+    [enabled, loadFinalText, sessionIdRef, setMessages, streamHandlersRef],
   );
   const resumeAllInflight = useCallback(async () => {
     try {

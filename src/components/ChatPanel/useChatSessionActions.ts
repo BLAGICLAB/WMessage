@@ -166,6 +166,8 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
       planStore.dropSession(sid);
       // 提问卡同上：挂在会话上，删会话一并清（防同 id 重建后继承旧卡）
       askStore.dropSession(sid);
+      // 流式残迹（游标/meta/世代——不在途时才是纯残迹）一并清，防内存微漏
+      streamState.dropSession(sid);
       if (sid === sessionId) {
         // 删的是当前会话：切到剩余第一个；没有则新建
         if (rest.length) {
@@ -227,6 +229,9 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
     // 这一轮由本窗口 invoke 发起：终态事件的清场不归它管（收尾要从权威
     // 副本并 thinking/tools），runChat 的 finally 统一 dropSession
     streamState.markInvoked(sid);
+    // 回合世代：finally 只在「仍是本世代」时清场——看门狗判死放行后用户
+    // 开了新轮的话，本轮迟到的收尾不得把新轮状态一并带走
+    const turn = streamState.beginTurn(sid);
     // RE-1 推理强度：生效档位 = 本会话覆盖 ?? 后台默认（具体值传后端，
     // 覆盖本身只存前端内存，不回写 bot-config.json）
     const effort = effortBySession.get(sid) ?? effortBase;
@@ -305,11 +310,15 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
         viewMsgs[viewMsgs.length - 1]?.content ||
         "";
       const note = `⚠️ ${formatCommandError(e)}`;
+      // 看门狗判死已往气泡里写过一轮失败文案时不再叠第二条（partial 回落
+      // 到视图末条时会把它带上）
+      const alreadyNoted = partial.includes("长时间无任何流式事件");
       const failed: Msg[] = [
         ...history,
         {
           role: "assistant",
-          content: partial ? `${partial}\n\n${note}` : note,
+          content:
+            partial && !alreadyNoted ? `${partial}\n\n${note}` : partial || note,
         },
       ];
       persistHistory(sid, failed);
@@ -318,9 +327,13 @@ export function useChatSessionActions(params: ChatSessionActionsParams) {
       handleCommandError(e, "bot_chat", { silent: true });
     } finally {
       // 成功已并入消息、失败已丢弃——两种收尾条目都失效，统一在此清理，
-      // 防失败路径的累积 thinking 滞留到下次 runChat 或重启
-      streamState.dropSession(sid);
-      exitChat(sid);
+      // 防失败路径的累积 thinking 滞留到下次 runChat 或重启。
+      // 世代守卫：看门狗判死放行后用户开了新轮（世代已推走）时，本轮的
+      // 清场作废——不得把新轮刚建的状态带走
+      if (streamState.endTurn(sid, turn)) {
+        streamState.dropSession(sid);
+        exitChat(sid);
+      }
     }
   };
   const currentSession = sessions.find((s) => s.id === sessionId);

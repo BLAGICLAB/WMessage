@@ -491,3 +491,168 @@ describe("后端发起轮：终态清场与回灌重建", () => {
     }
   });
 });
+
+/* 终态清场权与赛跑防线：invoke 轮的终态事件不得代 runChat 清场（收尾要
+ * 从权威副本并 thinking/tools）；回放快照过期不得把死轮复活；世代守卫
+ * 防旧轮迟到的收尾误清新轮——三条都是「删掉守卫、现有别处不红」的关键闸。 */
+describe("终态清场权与赛跑防线", () => {
+  afterEach(() => {
+    mocks.invokeMock.mockImplementation(chatDefaultInvoke);
+    mocks.listenMock.mockImplementation(async () => () => {});
+  });
+
+  it("invoke 轮的终态不清场：meta 存活到 runChat 收尾才清", async () => {
+    const user = userEvent.setup();
+    const fire: Record<
+      string,
+      (e: { payload: Record<string, unknown> }) => void
+    > = {};
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      fire[event] = cb as (e: { payload: Record<string, unknown> }) => void;
+      return () => {};
+    });
+    const db = new Map<string, { role: string; content: string }[]>();
+    let release: ((v: { text: string; taskRefs?: unknown[] }) => void) | null =
+      null;
+    mocks.invokeMock.mockImplementation(
+      async (cmd: string, args?: Record<string, unknown>) => {
+        if (cmd === "bot_sessions_load")
+          return [{ id: "s1", title: "会话一" }];
+        if (cmd === "bot_history_load")
+          return db.get(String(args?.sessionId)) ?? [];
+        if (cmd === "bot_history_save") {
+          db.set(
+            String(args?.sessionId),
+            (args?.messages ?? []) as { role: string; content: string }[],
+          );
+          return null;
+        }
+        if (cmd === "bot_chat")
+          return new Promise<{ text: string; taskRefs?: unknown[] }>((res) => {
+            release = res;
+          });
+        return chatDefaultInvoke(cmd);
+      },
+    );
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("会话一");
+    const input = screen.getByPlaceholderText(/和机器人说点什么/);
+    await user.type(input, "发一轮");
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      fire["bot-chat-delta"]?.({
+        payload: { text: "流出的正文", sessionId: "s1", seq: 1 },
+      });
+    });
+    // 终态事件先于 invoke 落地到达：不得清 invoke 轮的权威副本
+    await act(async () => {
+      fire["bot-turn-status"]?.({
+        payload: { status: "completed", sessionId: "s1", seq: 2 },
+      });
+    });
+    expect(streamState.metaOf("s1")?.text).toBe("流出的正文");
+    expect(streamState.isInflight("s1")).toBe(true);
+    expect(streamState.isResumed("s1")).toBe(false);
+    // 放行 invoke：runChat 的 finally 才统一清场
+    await act(async () => {
+      release?.({ text: "最终答复", taskRefs: [] });
+    });
+    await waitFor(() =>
+      expect(streamState.metaOf("s1")).toBeUndefined(),
+    );
+    expect(streamState.isInflight("s1")).toBe(false);
+  });
+
+  it("回放快照过期（fetch 期间终态已到）→ 不得把死轮重新标在途", async () => {
+    const fire: Record<
+      string,
+      (e: { payload: Record<string, unknown> }) => void
+    > = {};
+    mocks.listenMock.mockImplementation(async (event: string, cb: unknown) => {
+      fire[event] = cb as (e: { payload: Record<string, unknown> }) => void;
+      return () => {};
+    });
+    let resolveReplay: ((v: unknown) => void) | null = null;
+    mocks.invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "bot_stream_replay")
+        return new Promise((res) => {
+          resolveReplay = res;
+        });
+      if (cmd === "bot_history_load") return [];
+      return chatDefaultInvoke(cmd);
+    });
+    render(<ChatPanel {...defaultProps} />);
+    await screen.findAllByText("默认会话");
+    await waitFor(() => expect(resolveReplay).toBeTruthy());
+    // fetch 挂起期间终态事件先处理（代际 bump）
+    await act(async () => {
+      fire["bot-turn-status"]?.({
+        payload: { status: "completed", sessionId: "s1" },
+      });
+    });
+    // 旧快照随后返回：inflight=true、事件里没有终态（取自终态记录之前）
+    await act(async () => {
+      resolveReplay?.({
+        events: [
+          {
+            seq: 1,
+            event: "bot-chat-delta",
+            payload: { text: "旧半截", sessionId: "s1", seq: 1 },
+          },
+        ],
+        lastSeq: 1,
+        truncated: false,
+        inflight: true,
+      });
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(
+      streamState.isInflight("s1"),
+      "死轮不得复活（会卡 busy 到看门狗兜底）",
+    ).toBe(false);
+    expect(streamState.metaOf("s1")).toBeUndefined();
+    const loads = mocks.invokeMock.mock.calls.filter(
+      (c) => c[0] === "bot_history_load",
+    ).length;
+    expect(loads, "过期快照按收尾收口（loadFinalText 刷库）").toBeGreaterThan(
+      1,
+    );
+  });
+
+  it("世代守卫：旧轮迟到的收尾不得清掉新轮状态", () => {
+    streamState.markInflight("sx");
+    const staleTurn = streamState.beginTurn("sx");
+    // 看门狗判死 → 状态清空 → 用户开新轮
+    streamState.dropSession("sx");
+    streamState.markInflight("sx");
+    const freshTurn = streamState.beginTurn("sx");
+    expect(streamState.endTurn("sx", staleTurn)).toBe(false);
+    expect(streamState.isInflight("sx")).toBe(true);
+    expect(streamState.endTurn("sx", freshTurn)).toBe(true);
+    streamState.dropSession("sx");
+  });
+
+  it("markInflight 刷新活动时刻：新轮不继承旧时间戳", () => {
+    streamState.markInflight("sy");
+    streamState.rewindActivityForTest("sy", 700_000);
+    expect(Date.now() - streamState.lastActivityOf("sy")).toBeGreaterThan(
+      660_000,
+    );
+    streamState.markInflight("sy");
+    expect(Date.now() - streamState.lastActivityOf("sy")).toBeLessThan(1_000);
+    streamState.dropSession("sy");
+  });
+
+  it("终态代际是墓碑：dropSession 之后仍可对出「已收尾」", () => {
+    const e0 = streamState.termEpochOf("sz");
+    streamState.bumpTermEpoch("sz");
+    expect(streamState.termEpochOf("sz")).toBeGreaterThan(e0);
+    streamState.dropSession("sz");
+    expect(
+      streamState.termEpochOf("sz"),
+      "终态代际不随 dropSession 清除，否则过期快照重新对上号",
+    ).toBeGreaterThan(e0);
+  });
+});

@@ -82,6 +82,17 @@ const resuming = new Set<string>();
 const invoked = new Set<string>();
 /** 每会话最近一次流式活动时刻（dead-man 看门狗读它） */
 const activity = new Map<string, number>();
+/** 回合世代（全局单调递增）：runChat 收尾只在「仍是本世代」时清场——
+ *  看门狗判死放行后用户新开了一轮时，旧轮迟到的 finally 不得把新轮状态
+ *  一并带走。counter 是全进程单调的：dropSession 清掉会话条目后新轮
+ *  重新计数也不会与旧世代撞号。 */
+let turnSeq = 0;
+const sessionTurns = new Map<string, number>();
+/** 终态代际（全局单调递增）：回灌在 fetch 往返期间用它发现「快照之后
+ *  回合已收尾」——终态事件已处理过的旧快照不得把死轮重新标成在途。
+ *  不随 dropSession 清除：墓碑语义，删了旧快照就会重新对上号。 */
+let termSeq = 0;
+const termEpochs = new Map<string, number>();
 const inflightListeners = new Set<(sids: ReadonlySet<string>) => void>();
 
 /** 某会话的流式内容（没有则 undefined）。 */
@@ -104,7 +115,8 @@ export function setMeta(sid: string, meta: StreamMeta): void {
   metas.set(sid, meta);
 }
 
-/** 删会话时一并清干净（meta / 游标 / 在途标记 / 回灌标记）。 */
+/** 删会话时一并清干净（meta / 游标 / 在途标记 / 回灌标记）。
+ *  终态代际不清（墓碑语义，见 termEpochs 声明处）。 */
 export function dropSession(sid: string): void {
   metas.delete(sid);
   cursors.delete(sid);
@@ -112,7 +124,37 @@ export function dropSession(sid: string): void {
   resumed.delete(sid);
   invoked.delete(sid);
   activity.delete(sid);
+  sessionTurns.delete(sid);
   notifyInflight();
+}
+
+/** 开始一轮（runChat 发起时调用）：登记世代号，返回值交给 endTurn 配对。 */
+export function beginTurn(sid: string): number {
+  turnSeq += 1;
+  sessionTurns.set(sid, turnSeq);
+  return turnSeq;
+}
+
+/**
+ * 收尾这一轮：仅当世代仍是本轮时清场并返回 true。
+ * 看门狗判死放行后用户开了新轮（世代已推走）时，旧轮迟到的收尾
+ * 返回 false——不得把新轮的 meta/在途标记一并带走。
+ */
+export function endTurn(sid: string, turn: number): boolean {
+  if (sessionTurns.get(sid) !== turn) return false;
+  sessionTurns.delete(sid);
+  return true;
+}
+
+/** 终态事件到达时 bump 代际：在途回灌用它发现快照已过期。 */
+export function bumpTermEpoch(sid: string): void {
+  termSeq += 1;
+  termEpochs.set(sid, termSeq);
+}
+
+/** 某会话的终态代际（从未有过终态 = 0）。 */
+export function termEpochOf(sid: string): number {
+  return termEpochs.get(sid) ?? 0;
 }
 
 /** 该会话是否正在跑。 */
@@ -120,9 +162,11 @@ export function isInflight(sid: string): boolean {
   return inflight.has(sid);
 }
 
-/** 标记某会话在途（发消息时置位 / 回灌时补上）。 */
+/** 标记某会话在途（发消息时置位 / 回灌时补上）。活动时刻无条件刷新：
+ *  新一轮就是新生命，不能继承上一轮（判死前）的旧时间戳——否则看门狗
+ *  会立刻把新轮再判一次死。 */
 export function markInflight(sid: string): void {
-  if (!activity.has(sid)) activity.set(sid, Date.now());
+  activity.set(sid, Date.now());
   if (inflight.has(sid)) return;
   inflight.add(sid);
   notifyInflight();
@@ -263,5 +307,7 @@ export function resetAll(): void {
   resuming.clear();
   invoked.clear();
   activity.clear();
+  sessionTurns.clear();
+  termEpochs.clear();
   notifyInflight();
 }

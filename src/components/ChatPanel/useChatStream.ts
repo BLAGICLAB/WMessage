@@ -294,9 +294,12 @@ export function useChatStream(params: ChatStreamParams) {
       const status = p?.status;
       if (!status) return;
       // 回合终态：答完的提问卡清走（提问阻塞模型轮，终态前引擎必已回落；
-      // 未答的卡正常不存在，clearResolved 防御性不动它）
+      // 未答的卡正常不存在，clearResolved 防御性不动它）。同时 bump 终态
+      // 代际——在途回灌的 fetch 往返里读到它即知「快照之后回合已收尾」，
+      // 旧快照不得把死轮重新标成在途
       if (status !== "running" && status !== "settling") {
         askStore.clearResolved(sid);
+        streamState.bumpTermEpoch(sid);
       }
       // 回合终态 = 这一轮结束。此刻还压在合并窗口里、没落地的增量属于**这一轮**：
       // 落地它就等于给一个已经收尾的回合再开一个「正在思考」的气泡——没人会来
@@ -556,8 +559,12 @@ export function useChatStream(params: ChatStreamParams) {
             return copy;
           });
         }
-        // 后端若真还挂着（判死只回收前端视图），顺手叫停
-        invoke("bot_stop", { sessionId: sid }).catch(() => {});
+        // 后端若真还挂着（判死只回收前端视图），顺手叫停。叫停前复核一次
+        // 在途：判死放行后用户可能已开新轮（markInflight 已重新置位），
+        // bot_stop 按 sessionId 置位全部实例——不复核会把新轮一并误停
+        if (!streamState.isInflight(sid)) {
+          invoke("bot_stop", { sessionId: sid }).catch(() => {});
+        }
       }
     }, 15_000);
     return () => {
