@@ -450,15 +450,14 @@ impl McpManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        for cfg in targets {
-            if self.tools_known(&cfg.id) {
-                continue;
-            }
-            if self.discovery_cooling(&cfg.id) {
-                continue;
-            }
-            self.discover_tools(app, &cfg).await;
-        }
+        // 待发现的并行连：串行时一台坏服务器拖 20s（连接+列工具各 10s）×N 台，
+        // 回合首 token 被拖到分钟级。各台发现互不依赖，内部超时结构不变。
+        let futures: Vec<_> = targets
+            .iter()
+            .filter(|cfg| !self.tools_known(&cfg.id) && !self.discovery_cooling(&cfg.id))
+            .map(|cfg| self.discover_tools(app, cfg))
+            .collect();
+        futures_util::future::join_all(futures).await;
     }
 
     /// 工具发现：连上 → 列工具 → 断开 → 落盘快照 → 槽位转静默待命。
