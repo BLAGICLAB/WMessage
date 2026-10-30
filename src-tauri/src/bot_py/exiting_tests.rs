@@ -17,7 +17,7 @@ fn exiting_check_is_inside_gate_acquire() {
         .expect("run_python 顶层收括号必须存在");
     let run_body = &text[fn_pos..fn_pos + run_body_end];
     assert!(
-        run_body.contains("py_gate_acquire()"),
+        run_body.contains("py_gate_acquire_with_stop(stop)"),
         "run_python 必须过并发闸门"
     );
     // 闸门内核：EXITING 终检必须在等待循环体内、且位于成功取许可分支之后

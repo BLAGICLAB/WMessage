@@ -478,17 +478,35 @@ impl Drop for PyGateGuard {
 /// pub(crate)：py/document 的 doc 生成流持一个许可跨 dotnet+python 兜底
 ///（内部 run_python_ungated 不重复计闸）。
 pub(crate) fn py_gate_acquire() -> Result<PyGateGuard, CommandError> {
-    py_gate_acquire_inner(true)
+    py_gate_acquire_inner(true, None)
 }
 
-fn py_gate_acquire_inner(check_exiting: bool) -> Result<PyGateGuard, CommandError> {
+/// 同上，另接停止令牌：排队等许可期间每轮唤醒（200ms 粒度）顺带查一次——
+/// 两个许可被长任务占满时，/stop 的排队者最坏要再等 2×600s 才拿闸，那时
+/// 才响应停止等于白等。拿到许可就跑、因停止而退出的过闸即拒。
+pub(crate) fn py_gate_acquire_with_stop(
+    stop: Option<&StopToken>,
+) -> Result<PyGateGuard, CommandError> {
+    py_gate_acquire_inner(true, stop)
+}
+
+fn py_gate_acquire_inner(
+    check_exiting: bool,
+    stop: Option<&StopToken>,
+) -> Result<PyGateGuard, CommandError> {
     let mut avail = crate::db::lock::lock_or_recover(&PY_PERMITS, "py::runtime::PY_PERMITS");
     loop {
-        // EXITING 复查①：本轮循环顶（= 等待前 / 每轮唤醒后）
+        // EXITING 复查①：本轮循环顶（= 等待前 / 每轮唤醒后）；停止同点复查
         if check_exiting && EXITING.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(CommandError::DomainRule {
                 domain: "python".to_string(),
                 reason: "应用正在退出，不再启动新的 Python 任务".to_string(),
+            });
+        }
+        if stop.is_some_and(|t| t.stopped()) {
+            return Err(CommandError::DomainRule {
+                domain: "python".to_string(),
+                reason: "执行已被用户停止，不再排队等待 Python 许可".to_string(),
             });
         }
         if *avail > 0 {
@@ -520,7 +538,7 @@ fn py_gate_acquire_inner(check_exiting: bool) -> Result<PyGateGuard, CommandErro
 /// 阻塞式取许可（非 try 语义），名字按评审 M 采纳与行为对齐。
 #[cfg(test)]
 pub fn py_gate_acquire_for_test() -> PyGateGuard {
-    py_gate_acquire_inner(false).expect("非退出态取许可必须成功")
+    py_gate_acquire_inner(false, None).expect("非退出态取许可必须成功")
 }
 
 /// 闸门测试的串行锁。
@@ -606,9 +624,9 @@ pub fn run_python(
     timeout_secs: Option<u64>,
     stop: Option<&StopToken>,
 ) -> Result<PyRunResult, PyRunError> {
-    // 有界并发闸（许可 2）。EXITING 复查在闸门内完成（等待前/唤醒后/
+    // 有界并发闸（许可 2）。EXITING 与停止复查在闸门内完成（等待前/唤醒后/
     // 拿到许可后），排队者过闸即拒——不会 spawn 出无人收割的孤儿进程
-    let _gate = py_gate_acquire().map_err(|e| PyRunError {
+    let _gate = py_gate_acquire_with_stop(stop).map_err(|e| PyRunError {
         kind: PyFailKind::StartFailed,
         msg: e.message(),
     })?;
