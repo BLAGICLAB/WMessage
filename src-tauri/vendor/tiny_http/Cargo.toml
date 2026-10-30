@@ -80,3 +80,8 @@ ssl-rustls = [
     "rustls-pemfile",
     "zeroize",
 ]
+
+# [wmessage patch] 2026-10-31：上游 0.12.0 原生 lint 噪音消音，登记见 PATCHES.md §2.5
+[lints.rust]
+unused_imports = "allow"
+dead_code = "allow"

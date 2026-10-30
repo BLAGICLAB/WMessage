@@ -7,11 +7,11 @@ use std::io::{BufReader, BufWriter, ErrorKind, Read};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
-/// 单条头（含请求行）的长度上限（字节）：慢滴注防线，防一行永不完结的头
+/// [wmessage patch] 2026-10-27：单条头（含请求行）的长度上限（字节）：慢滴注防线，防一行永不完结的头
 /// 把读缓冲撑爆。正常请求的头远小于这个值。
 const MAX_HEADER_LINE_BYTES: usize = 16 * 1024;
 
-/// 单个请求的头部条数上限：防无限发头拖爆内存与解析时间。
+/// [wmessage patch] 2026-10-27：单个请求的头部条数上限：防无限发头拖爆内存与解析时间。
 const MAX_HEADER_COUNT: usize = 100;
 
 use crate::common::{HTTPVersion, Method};
@@ -106,7 +106,7 @@ impl ClientConnection {
 
             buf.push(byte);
 
-            // 单行长度上限：慢滴注客户端逐字节发一行永不换行的头，会把这里
+            // [wmessage patch] 2026-10-27：单行长度上限：慢滴注客户端逐字节发一行永不换行的头，会把这里
             // 的 buf 无限撑大占住内存。超限按 InvalidData 断开连接。
             if buf.len() > MAX_HEADER_LINE_BYTES {
                 return Err(IoError::new(
@@ -134,7 +134,7 @@ impl ClientConnection {
             let headers = {
                 let mut headers = Vec::new();
                 loop {
-                    // 头部条数上限：无上限时客户端可以无限发头把内存与解析
+                    // [wmessage patch] 2026-10-27：头部条数上限：无上限时客户端可以无限发头把内存与解析
                     // 时间拖爆。超限按协议错误处理，连接就此终止。
                     if headers.len() >= MAX_HEADER_COUNT {
                         return Err(ReadError::ReadIoError(IoError::new(
